@@ -384,6 +384,17 @@ if P:GetStore(STORE_ID) == nil then
 end
 
 function F:GetSettings() return self.State.settings end
+
+-- Restore every display/layout setting to current defaults. The floating
+-- window's visibility is preserved (a reset should not close the user's open
+-- window); tracked ids and classification are intentionally included in the
+-- reset scope — the page labels the button 恢复默认 and documents the sweep.
+function F:ResetSettings()
+    local keepVisible = self.State ~= nil and self.State.widgetVisible == true
+    self.State = NormalizeState(nil)
+    if keepVisible then self.State.widgetVisible = true end
+    return true
+end
 function F:EnsureStoreLoaded()
     if self.StoreLoaded == true then return true end
     local store = P:GetStore(STORE_ID)

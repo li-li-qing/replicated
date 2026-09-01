@@ -145,7 +145,8 @@ local function LaneInterval(laneKey)
     if laneKey == "aura" then return settings.refreshMs or 120 end
     if laneKey == "position" or laneKey == "distance" or laneKey == "cast" then return settings.headRefreshMs or 50 end
     if laneKey == "metadata" then return 1000 end
-    if laneKey == "equipment" then return 2000 end
+    -- Drift backstop only: UNIT_EQUIPMENT_CHANGED owns swap immediacy.
+    if laneKey == "equipment" then return 1000 end
     return 400
 end
 
@@ -833,6 +834,15 @@ function F:_QueueEventRefresh(reason, delayMs)
     local eventReason = tostring(reason or "event")
     local ok = S.Scheduler:AddOneShot(self.eventTaskName, math.max(80, tonumber(delayMs) or 120), function()
         if F.enabled == true and (tonumber(F.consumerCount) or 0) > 0 then
+            local settings = Settings()
+            -- Equipment events refresh ONLY the equipment lane: a weapon swap
+            -- says nothing about aura facts, and mirroring the aura-lane rule
+            -- (events never trigger foreign lanes' Native reads) keeps the
+            -- swap path at 4-5 cheap reads.
+            if eventReason == "equipment_changed" then
+                if LaneNeeds("equipment", settings) then F:EquipmentTick() end
+                return true
+            end
             -- Aura events refresh only Aura facts. They must not trigger class,
             -- equipment or cast Native reads; those lanes own their cadence.
             F:Refresh(eventReason)
@@ -840,7 +850,6 @@ function F:_QueueEventRefresh(reason, delayMs)
                 -- UNIT-SCOPE: a new target invalidates the cached kind so the
                 -- equipment/class gates re-evaluate on the very next lane tick.
                 targetKindCache.at = 0
-                local settings = Settings()
                 if LaneNeeds("position", settings) then F:PositionTick() end
                 if LaneNeeds("distance", settings) then F:DistanceTick() end
                 if LaneNeeds("metadata", settings) then F:MetadataTick() end
@@ -870,6 +879,12 @@ function F:_StartEvents()
     if S.Events:SubscribeOptional("TARGET_CHANGED", self, function()
         F.eventEdges = (tonumber(F.eventEdges) or 0) + 1
         return F:_QueueEventRefresh("target_changed", 80)
+    end) == true then any = true end
+    -- Weapon/glider swaps must reach the head icons near-instantly (PvP swap
+    -- tracking); the 1000ms equipment lane is only a drift backstop.
+    if S.Events:SubscribeOptional("UNIT_EQUIPMENT_CHANGED", self, function()
+        F.eventEdges = (tonumber(F.eventEdges) or 0) + 1
+        return F:_QueueEventRefresh("equipment_changed", 60)
     end) == true then any = true end
     -- internal: re-gate lanes when any display setting changes
     if type(S.Events.SubscribeInternal) == "function" then
@@ -1290,6 +1305,19 @@ end
 
 F.Commands = {
     Refresh = function(_, reason) return F:Refresh(reason or "buff_display_command") end,
+    ResetAllSettings = function()
+        if type(F.ResetSettings) ~= "function" then return false, "重置入口不可用" end
+        F:ResetSettings()
+        F.trackedIndex = F:BuildTrackedIndex(Settings())
+        F:ClearFrozenRows()
+        F:ReconcileLanes()
+        F:RefreshScope("player")
+        F:RefreshScope("target")
+        -- Persist immediately so a reload cannot resurrect the old layout.
+        local marked, markErr = F:MarkStoreDirty(250, "reset_settings")
+        if marked ~= true then return false, markErr or "重置已生效但保存失败" end
+        return true
+    end,
     SetSetting = function(_, key, value)
         local ok, err = F:SetSettingValue(key, value)
         if ok == true then

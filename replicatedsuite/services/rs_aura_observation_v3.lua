@@ -140,6 +140,14 @@ local function ResolveBuffInfoById(id)
     return nil
 end
 
+-- Read-only cache probe for the scan path: returns the cached resolution (or
+-- nil for unknown/missed ids) WITHOUT issuing native reads or caching a miss.
+local function PeekBuffInfo(id)
+    local cached = buffInfoCache[tostring(id)]
+    if cached == nil then return nil end
+    return cached ~= false and cached or nil
+end
+
 
 local function AddSourceMask(mask, sourceMask)
     mask = math.max(0, math.floor(tonumber(mask) or 0))
@@ -225,12 +233,19 @@ function A:_ScanLane(unitId, lane, limit)
             if okData == true then data = value else dataWorking, reliable = false, false end
         end
         local effectId = ExtractEffectId(data, nil)
-        if effectId == nil and tipWorking then
+        -- RU unit rows frequently omit the name field. When the id is missing
+        -- OR the row carries no usable name and the ability-tooltip cache
+        -- cannot resolve that id yet, fetch the tooltip row — the plates-proven
+        -- co-authority (rp_api reads tip.name / extra.name alike). Gating on
+        -- the cache keeps steady-state scans free of extra tooltip reads: only
+        -- first-seen ids pay one tooltip read, then the ability cache answers.
+        local rowName = PickString(data, nil, STATUS_KEYS.name)
+        if tipWorking and (effectId == nil or (rowName == nil and PeekBuffInfo(effectId) == nil)) then
             self.nativeReads = self.nativeReads + 1
             self.tooltipFallbacks = self.tooltipFallbacks + 1
             local okTip, value = S.Api:Call(X2Unit, spec.tip, unitId, index)
             if okTip == true then tooltip = value else tipWorking, reliable = false, false end
-            effectId = ExtractEffectId(data, tooltip)
+            if effectId == nil then effectId = ExtractEffectId(data, tooltip) end
         end
         rows[#rows + 1] = {
             index = index,
@@ -355,6 +370,17 @@ function A:GetStatusMap(snapshot, options)
                             end
                         end
                         if name == "" then name = tostring(id) end
+                        -- Cache positive unit-row/tooltip resolutions so
+                        -- _ScanLane's PeekBuffInfo gate stops re-fetching the
+                        -- tooltip for an id whose name is already known.
+                        if name ~= tostring(id) and buffInfoCache[tostring(id)] == nil
+                            and (PickString(data, nil, STATUS_KEYS.name) == nil) then
+                            buffInfoCache[tostring(id)] = { name = name, iconPath = iconPath }
+                            buffInfoCacheCount = buffInfoCacheCount + 1
+                            if buffInfoCacheCount >= BUFF_INFO_CACHE_MAX then
+                                buffInfoCache, buffInfoCacheCount = {}, 0
+                            end
+                        end
                         local entry = map[id]
                         if entry == nil then
                             entry = {

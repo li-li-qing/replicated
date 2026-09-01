@@ -138,6 +138,10 @@ local function BuildPage(parent, route)
     local selectedText = RSUI:Text({ id = "v3_buff_display_selected", parent = trackRow, text = "点击状态行可追踪 / 取消追踪", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1, minWidth = 150 } })
     local freezeButton = RSUI:Button({ id = "v3_buff_display_track_freeze", parent = trackRow, text = "冻结列表：关", compact = true, slot = { size = "fixed", width = 96 } })
     local clearTrackButton = RSUI:Button({ id = "v3_buff_display_track_clear", parent = trackRow, text = "清空追踪", compact = true, slot = { size = "fixed", width = 78 } })
+    -- Restores every display/layout setting (column widths, sizes, gaps,
+    -- presets, refresh cadence, tracked ids) to current defaults; used when a
+    -- stale saved layout makes list content hard to read.
+    local resetButton = RSUI:Button({ id = "v3_buff_display_track_reset", parent = trackRow, text = "恢复默认", compact = true, slot = { size = "fixed", width = 78 } })
 
     -- DataView callbacks must be supplied at construction. TableView snapshots
     -- them into its internal ListView; assigning tableView.onSelectionChanged or
@@ -596,6 +600,16 @@ local function BuildPage(parent, route)
     end
     freezeButton.onClick = function() local settings = Feature:GetSettingsProjection(); return Apply("freezeEnabled", not (settings.freezeEnabled == true)) end
     clearTrackButton.onClick = function() local ok, err = Feature.Commands:ClearTrackedIds(); if ok then root:Refresh() end; return ok, err end
+    resetButton.onClick = function()
+        local ok, err = Feature.Commands:ResetAllSettings()
+        if ok == true then
+            selectedText:SetText("已恢复默认显示与布局设置")
+            root:Refresh()
+        else
+            selectedText:SetText("恢复默认失败：" .. tostring(err or "未知错误"))
+        end
+        return ok, err
+    end
 
     local function QuickImportText(mode)
         local text = ""
@@ -647,7 +661,7 @@ local function BuildPage(parent, route)
         return true
     end
 
-    for _, button in ipairs({ featureButton, widgetButton, buffButton, debuffButton, hiddenButton, searchClear, freezeButton, clearTrackButton, quickImport, quickOverwrite, exportBtn, importTextBtn, clearTextBtn }) do
+    for _, button in ipairs({ featureButton, widgetButton, buffButton, debuffButton, hiddenButton, searchClear, freezeButton, clearTrackButton, resetButton, quickImport, quickOverwrite, exportBtn, importTextBtn, clearTextBtn }) do
         if button ~= nil and button.root ~= nil then S.UI:SafeHandler(button.root, "OnClick", button.onClick, "v3_buff_display:" .. tostring(button.id or "action")) end
     end
 
