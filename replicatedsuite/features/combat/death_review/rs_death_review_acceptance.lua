@@ -71,7 +71,7 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function()
     for index = 1, 30 do
         summaries[index] = { serial = index, storageId = index, time = index, clock = "12:34:56", windowMs = 10000, totalDamage = 999999, lethalSource = "预算测试来源", lethalAbility = "预算测试技能", lethalAmount = 9999, eventCount = 96, debuffCount = 10 }
     end
-    local syntheticIndex = { settings = settings, history = { serial = 30, entries = summaries }, legacyImported = true, widgetWindow = { x = 100, y = 100, width = 470, height = 330 } }
+    local syntheticIndex = { settings = settings, history = { serial = 30, entries = summaries }, widgetWindow = { x = 100, y = 100, width = 470, height = 330 } }
     local indexProbe = S.Persistence:InspectPayload({ payload = syntheticIndex, __rsmeta = { framework = S.Persistence.FrameworkVersion, store = "v3.death_review", owner = "v3.death_review", contractVersion = 3, lifetime = "Permanent", scope = "Account", schema = 1 } }, F.IndexBudget)
     if type(indexProbe) ~= "table" or indexProbe.ok ~= true then return Fail("index_budget:" .. tostring(indexProbe and indexProbe.reason)) end
 

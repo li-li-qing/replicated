@@ -18,9 +18,6 @@ local U = S.Utils
 
 local STORE_ID = "v3.healer"
 local SCHEMA = 3
-local LEGACY_SCHEMA = 222
-local LEGACY_KEY = "replicated_healer_recommender_v2"
-local LEGACY_BACKUP_KEY = LEGACY_KEY .. "_backup"
 local MAX_RULES = 20
 local MAX_ROLE_OVERRIDES = 200
 
@@ -170,37 +167,6 @@ local function NormalizePresentation(value)
     }
 end
 
-local function LegacyPresentation(raw)
-    if type(raw) ~= "table" then return DefaultPresentation() end
-    local defaults = DefaultPresentation()
-    local function LegacyRect(value, fallback)
-        return NormalizeRect(type(value) == "table" and {
-            x = value.offsetX, y = value.offsetY, width = value.width, height = value.height,
-        } or nil, fallback)
-    end
-    return NormalizePresentation({
-        head = {
-            enabled = true, count = raw.headMarkerCount, effectMode = raw.headEffectMode,
-            shapeMode = raw.headShapeMode, sizes = raw.headSizes, showName = raw.showHeadName,
-            showDistance = raw.showHeadDistance, showScore = raw.showHeadScore, refreshMs = 50,
-        },
-        raid = {
-            enabled = true, effectMode = raw.raidEffectMode, showRanks = raw.showRaidRanks,
-            rankCount = raw.raidRankCount, rankFontSize = raw.raidRankFontSize,
-            rankAlpha = raw.raidRankAlpha, rankCorner = raw.raidRankCorner,
-            rankOffsetX = raw.raidRankOffsetX, rankOffsetY = raw.raidRankOffsetY,
-            proximityMode = raw.proximityMode, calibration = false,
-            calibrationSection = raw.raidCalibrationSection, calibrationScope = raw.raidCalibrationScope,
-            sections = {
-                LegacyRect(raw.raidOverlayTop, defaults.raid.sections[1]),
-                LegacyRect(raw.raidOverlayBottom, defaults.raid.sections[2]),
-                LegacyRect(raw.raidOverlayTopRaid2, defaults.raid.sections[3]),
-                LegacyRect(raw.raidOverlayBottomRaid2, defaults.raid.sections[4]),
-            },
-        },
-    })
-end
-
 local function DefaultSettings()
     return {
         maxDistance = 27,
@@ -322,7 +288,7 @@ local function NormalizeRoleOverrides(value)
     return out
 end
 
-local function NormalizeSettings(value, legacyImport)
+local function NormalizeSettings(value)
     local defaults = DefaultSettings()
     value = type(value) == "table" and value or {}
     local enterThreshold = Clamp(value.enterThreshold, 1, 100, defaults.enterThreshold)
@@ -334,11 +300,11 @@ local function NormalizeSettings(value, legacyImport)
     local high = Clamp(level.high, attention + 1, 99, defaults.levelThresholds.high)
     local emergency = Clamp(level.emergency, high + 1, 100, defaults.levelThresholds.emergency)
     local roleScores = type(value.roleScores) == "table" and value.roleScores or {}
-    -- Legacy SettingsModel treated an absent trackedBuffs field as an empty list.
-    -- Do not use Lua's `and/or` idiom here: nil would incorrectly fall through
-    -- to V3 defaults and silently create tracking the user never configured.
+    -- An absent trackedBuffs field falls back to V3 defaults. Do not use Lua's
+    -- `and/or` idiom here: nil would incorrectly fall through and silently
+    -- create tracking the user never configured.
     local trackedSource = value.trackedBuffs
-    if legacyImport ~= true and trackedSource == nil then trackedSource = defaults.trackedBuffs end
+    if trackedSource == nil then trackedSource = defaults.trackedBuffs end
 
     return {
         maxDistance = Clamp(value.maxDistance or value.proximityDistance, 1, 100, defaults.maxDistance),
@@ -384,13 +350,6 @@ local function NormalizeState(value)
         -- normalization to Presentation internals.
         widgetWindow = type(value.widgetWindow) == "table" and DeepCopy(value.widgetWindow) or {},
         presentation = NormalizePresentation(value.presentation),
-        migration = {
-            legacyImported = type(value.migration) == "table" and value.migration.legacyImported == true or false,
-            visualImported = type(value.migration) == "table" and value.migration.visualImported == true or false,
-            source = type(value.migration) == "table" and tostring(value.migration.source or "none") or "none",
-            legacyVersion = type(value.migration) == "table" and math.max(0, math.floor(tonumber(value.migration.legacyVersion) or 0)) or 0,
-            futureLegacy = type(value.migration) == "table" and value.migration.futureLegacy == true or false,
-        },
     }
 end
 
@@ -420,40 +379,9 @@ if P:GetStore(STORE_ID) == nil then
     end
 end
 
-local function ReadLegacyCandidate(key)
-    if type(P.ReadLegacy) ~= "function" then return nil, "legacy read unavailable" end
-    local raw, err = P:ReadLegacy(key)
-    if err ~= nil then return nil, err end
-    if type(raw) ~= "table" then return nil, nil end
-    if type(raw.payload) == "table" then raw = raw.payload end
-    return raw, nil
-end
-
-function F:ImportLegacySettingsIfPresent()
-    local raw, err = ReadLegacyCandidate(LEGACY_KEY)
-    local source = "primary"
-    if type(raw) ~= "table" then
-        raw, err = ReadLegacyCandidate(LEGACY_BACKUP_KEY)
-        source = "backup"
-    end
-    if type(raw) ~= "table" then return true, false, err end
-
-    local version = math.max(0, math.floor(tonumber(raw.settingsVersion) or 0))
-    self.State = NormalizeState({
-        settings = NormalizeSettings(raw, true),
-        presentation = LegacyPresentation(raw),
-        migration = {
-            legacyImported = true,
-            visualImported = true,
-            source = source,
-            legacyVersion = version,
-            futureLegacy = version > LEGACY_SCHEMA,
-        },
-    })
-    local saved, saveErr = P:SaveStore(STORE_ID, { consumeDirty = true, reason = "healer_legacy_import" })
-    if saved ~= true then return false, false, saveErr or "legacy import persistence failed" end
-    return true, true, nil
-end
+-- (Old-plugin legacy import bridge removed 2026-09-01 by directive: the old
+-- `replicated_healer_recommender_v2` key is reference-only and its settings are
+-- never migrated into the V3 store. New-framework stores read their own keys.)
 
 function F:EnsureStoreLoaded()
     if self.StoreLoaded == true then return true end
@@ -461,32 +389,14 @@ function F:EnsureStoreLoaded()
     if store == nil then return false, "治疗辅助设置存档不可用" end
     local status, _, err = P:LoadStore(STORE_ID)
     if status ~= true and status ~= "empty" then return false, err or tostring(status or "读取失败") end
-    if status == "empty" then
-        ApplyState(nil)
-        local imported, _, importErr = self:ImportLegacySettingsIfPresent()
-        if imported ~= true then return false, importErr or "旧治疗配置迁移失败" end
-    elseif self.State.migration.legacyImported == true and self.State.migration.visualImported ~= true then
-        -- Schema 2 imported treatment policy before visual state had a V3 home.
-        -- Re-read the immutable legacy source once so custom marker/raid layout
-        -- is recovered instead of silently resetting to V3 defaults.
-        local raw = nil
-        local source = tostring(self.State.migration.source or "primary")
-        if source == "backup" then raw = select(1, ReadLegacyCandidate(LEGACY_BACKUP_KEY))
-        else raw = select(1, ReadLegacyCandidate(LEGACY_KEY)) end
-        if type(raw) ~= "table" then
-            raw = select(1, ReadLegacyCandidate(source == "backup" and LEGACY_KEY or LEGACY_BACKUP_KEY))
-        end
-        if type(raw) == "table" then self.State.presentation = LegacyPresentation(raw) end
-        self.State.migration.visualImported = true
-        local saved, saveErr = P:SaveStore(STORE_ID, { consumeDirty = true, reason = "healer_visual_schema3_recovery" })
-        if saved ~= true then return false, saveErr or "治疗显示配置升级失败" end
-    end
+    if status == "empty" then ApplyState(nil) end
     self.StoreLoaded = true
     return true
 end
 
 function F:GetSettings() return self.State.settings end
-function F:GetMigrationInfo() return DeepCopy(self.State.migration) end
+-- Migration metadata no longer exists in State; kept as a stable read model.
+function F:GetMigrationInfo() return { legacyImported = false, visualImported = false, source = "none", legacyVersion = 0, futureLegacy = false } end
 -- Presentation-owned window geometry is a detached read model. Mutations return
 -- through the Feature Commands facade and the shared FloatingSurface persistence
 -- callback; Widget code never receives the live Store table.

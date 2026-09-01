@@ -1049,7 +1049,7 @@ function G:Run(options)
     AddCheck(report, "persistence_v3_contract_api",
         S.Persistence ~= nil and type(S.Persistence.RegisterV3Store) == "function"
             and type(S.Persistence.InspectPayload) == "function"
-            and type(S.Persistence.ReadLegacy) == "function" and type(S.Persistence.ClearStore) == "function"
+            and type(S.Persistence.ClearStore) == "function"
             and type(S.Persistence.CanWrite) == "function" and type(S.Persistence.IsStoreLoaded) == "function"
             and type(S.Persistence.V3KeyPrefix) == "string",
         "blocker", "explicit v3 owner/scope/key/budget contract")

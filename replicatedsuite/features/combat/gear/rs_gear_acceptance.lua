@@ -82,8 +82,8 @@ G:RegisterSequenceCase("v3_m4_gear_screen_buttons", function()
             quickX = 300 + index * 3, quickY = 100 + index * 2, quickPositionCustomized = true, payloadRevision = 99 }
     end
     local indexEncoded = {
-        payload = { revision = 99, nextId = 41, nextStorageId = 41, sets = syntheticSets, legacyImported = true,
-            quickHud = F.NormalizeQuickHud({ layoutMode = "buttons-v1", visible = true, locked = true, snapEnabled = true, snapDistance = 16, buttonGap = 0, overallOpacity = 0.9, backgroundOpacity = 0.8, textOpacity = 1, legacyImported = true }) },
+        payload = { revision = 99, nextId = 41, nextStorageId = 41, sets = syntheticSets,
+            quickHud = F.NormalizeQuickHud({ layoutMode = "buttons-v1", visible = true, locked = true, snapEnabled = true, snapDistance = 16, buttonGap = 0, overallOpacity = 0.9, backgroundOpacity = 0.8, textOpacity = 1 }) },
         __rsmeta = { framework = S.Persistence.FrameworkVersion, store = "v3.gear.index", owner = "v3.gear", contractVersion = 3, lifetime = "Permanent", scope = "Character", schema = 4 },
     }
     local indexBudgetProbe = S.Persistence:InspectPayload(indexEncoded, F.IndexBudget)

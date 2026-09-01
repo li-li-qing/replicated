@@ -62,7 +62,6 @@ S.Persistence = {
         encodedPayloadRejected = 0,
         metadataMismatches = 0,
         keyCollisions = 0,
-        legacyReads = 0,
         clears = 0,
         clearFailures = 0,
     },
@@ -793,20 +792,9 @@ function P:SaveStore(id, options)
     return self:SaveValue(id, value, options)
 end
 
--- Legacy/raw migration reads and physical clears stay behind Persistence so
--- Feature stores never mutate framework internals or call SaveData APIs directly.
-function P:ReadLegacy(key)
-    key = NonEmptyText(key)
-    if key == nil then return nil, "legacy key required" end
-    if S.Api == nil or type(S.Api.LoadData) ~= "function" then return nil, "LoadData unavailable" end
-    local value, err = S.Api:LoadData(key)
-    self.stats.legacyReads = (tonumber(self.stats.legacyReads) or 0) + 1
-    if err ~= nil then
-        Emit("warning", "STORE_LEGACY_READ_FAILED", "Legacy migration source read failed", { key = key, error = tostring(err) })
-        return nil, err
-    end
-    return DeepCopy(value), nil
-end
+-- NOTE: the old ReadLegacy bridge (arbitrary SaveData key reads for old-plugin
+-- migration) was removed on 2026-09-01 by directive: the old plugin generation
+-- is reference-only and its data is never migrated into V3 stores.
 
 function P:ClearStore(id, options)
     options = type(options) == "table" and options or {}

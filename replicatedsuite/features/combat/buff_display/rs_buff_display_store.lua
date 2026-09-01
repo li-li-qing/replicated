@@ -61,23 +61,6 @@ if type(Floating) ~= "table" or type(Floating.NormalizeState) ~= "function" then
 
 local COMPONENT_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar" }
 
--- Exact M1.16.0.18.50 defaults are kept only as a compatibility fingerprint.
--- A saved component is moved to the compact v2 preset only when its geometry
--- still matches this fingerprint. Any user-adjusted position/size/font/alpha is
--- left untouched, so an upgrade cannot overwrite a deliberate HUD layout.
-local LEGACY_COMPONENT_DEFAULTS = {
-    buffs     = { enabled = true,  x = 0,   y = -54,  size = 24, fontSize = 9,  alpha = 1.0 },
-    debuffs   = { enabled = true,  x = 0,   y = -84,  size = 24, fontSize = 9,  alpha = 1.0 },
-    distance  = { enabled = true,  x = 0,   y = -108, size = 0,  fontSize = 10, alpha = 1.0 },
-    class     = { enabled = true,  x = 0,   y = -122, size = 0,  fontSize = 10, alpha = 1.0 },
-    gearScore = { enabled = true,  x = 0,   y = -136, size = 0,  fontSize = 10, alpha = 1.0 },
-    mainHand  = { enabled = true,  x = -22, y = -156, size = 18, fontSize = 0,  alpha = 1.0 },
-    offHand   = { enabled = true,  x = 0,   y = -156, size = 18, fontSize = 0,  alpha = 1.0 },
-    ranged    = { enabled = true,  x = 22,  y = -156, size = 18, fontSize = 0,  alpha = 1.0 },
-    wings     = { enabled = true,  x = 0,   y = -178, size = 18, fontSize = 0,  alpha = 1.0 },
-    castBar   = { enabled = true,  x = 0,   y = -40,  size = 6,  fontSize = 10, alpha = 1.0 },
-}
-
 -- Anchor-relative compact preset (v3). Every x/y is now a LOCAL fine-tune
 -- offset relative to the health-bar proxy rectangle, NOT a screen coordinate.
 -- Default 0 for all: the layout function places buffs above the bar, debuffs
@@ -95,23 +78,6 @@ local COMPONENT_DEFAULTS = {
     ranged    = { enabled = true,  x = 0, y = 0, size = 26, fontSize = 0,  alpha = 1.0 },
     wings     = { enabled = true,  x = 0, y = 0, size = 26, fontSize = 0,  alpha = 1.0 },
     castBar   = { enabled = true,  x = 0, y = 0, size = 7,  fontSize = 12, alpha = 1.0 },
-}
-
--- The "broken anchor layout" preset shipped on GitHub main: these absolute y/x
--- values were the v2 defaults. A saved component matching this fingerprint is
--- migrated to the v3 anchor-relative 0/0 defaults; a user-adjusted value is
--- left untouched (the renderer now treats x/y as local offsets).
-local BROKEN_COMPONENT_DEFAULTS = {
-    buffs     = { enabled = true,  x = 0,   y = -108, size = 24, fontSize = 9,  alpha = 1.0 },
-    debuffs   = { enabled = true,  x = 0,   y = -136, size = 24, fontSize = 9,  alpha = 1.0 },
-    distance  = { enabled = true,  x = -62, y = -82,  size = 0,  fontSize = 10, alpha = 1.0 },
-    class     = { enabled = true,  x = 0,   y = -94,  size = 0,  fontSize = 10, alpha = 1.0 },
-    gearScore = { enabled = true,  x = 62,  y = -82,  size = 0,  fontSize = 10, alpha = 1.0 },
-    mainHand  = { enabled = true,  x = -36, y = -58,  size = 22, fontSize = 0,  alpha = 1.0 },
-    offHand   = { enabled = true,  x = -12, y = -58,  size = 22, fontSize = 0,  alpha = 1.0 },
-    ranged    = { enabled = true,  x = 12,  y = -58,  size = 22, fontSize = 0,  alpha = 1.0 },
-    wings     = { enabled = true,  x = 36,  y = -58,  size = 22, fontSize = 0,  alpha = 1.0 },
-    castBar   = { enabled = true,  x = 0,   y = -34,  size = 6,  fontSize = 10, alpha = 1.0 },
 }
 
 local function NormalizeTrackedIds(value)
@@ -160,47 +126,15 @@ local function NormalizeComponent(value, defaults)
     }
 end
 
-local function SameLegacyGeometry(component, legacy)
-    if type(component) ~= "table" or type(legacy) ~= "table" then return false end
-    return component.x == legacy.x and component.y == legacy.y
-        and component.size == legacy.size and component.fontSize == legacy.fontSize
-        and math.abs((tonumber(component.alpha) or 1) - (tonumber(legacy.alpha) or 1)) < 0.0001
-end
-
-local function NormalizeComponents(value, presetVersion)
+local function NormalizeComponents(value)
     value = type(value) == "table" and value or {}
-    presetVersion = math.floor(tonumber(presetVersion) or 0)
     local out = {}
     for _, key in ipairs(COMPONENT_KEYS) do
-        local source = value[key]
-        local fresh = NormalizeComponent(nil, COMPONENT_DEFAULTS[key])
-        if presetVersion >= LAYOUT_PRESET_VERSION then
-            -- Already on the anchor-relative preset: normalize as-is.
-            out[key] = NormalizeComponent(source, COMPONENT_DEFAULTS[key])
-        elseif type(source) ~= "table" then
-            -- No saved value: use the new anchor-relative default.
-            out[key] = fresh
-        else
-            -- Three-generation migration. Only a component whose geometry still
-            -- EXACTLY matches a known old default (legacy v1 or broken v2) is
-            -- moved to the v3 default; any user-adjusted value is preserved and
-            -- simply re-interpreted as a local offset.
-            local asLegacy = NormalizeComponent(source, LEGACY_COMPONENT_DEFAULTS[key])
-            local asBroken = NormalizeComponent(source, BROKEN_COMPONENT_DEFAULTS[key])
-            local enabled = source.enabled ~= false
-            if SameLegacyGeometry(asLegacy, LEGACY_COMPONENT_DEFAULTS[key])
-                or SameLegacyGeometry(asBroken, BROKEN_COMPONENT_DEFAULTS[key]) then
-                local migrated = NormalizeComponent(COMPONENT_DEFAULTS[key], COMPONENT_DEFAULTS[key])
-                migrated.enabled = enabled
-                out[key] = migrated
-            else
-                -- User-customized: keep their values; only fill the new fields
-                -- (spacing/maxPerRow/maxRows) from the v3 default when absent.
-                local kept = NormalizeComponent(source, COMPONENT_DEFAULTS[key])
-                kept.enabled = enabled
-                out[key] = kept
-            end
-        end
+        -- New-framework contract: stored values normalize against CURRENT
+        -- defaults only (missing fields filled from defaults). No old-default
+        -- fingerprint migration — the old plugin generation was kept as
+        -- reference only and is never carried forward (2026-09-01 directive).
+        out[key] = NormalizeComponent(value[key], COMPONENT_DEFAULTS[key])
     end
     return out
 end
@@ -220,13 +154,6 @@ local function NormalizeSettings(value)
     value = type(value) == "table" and value or {}
     local tracked = type(value.tracked) == "table" and value.tracked or {}
     local layoutPresetVersion = math.floor(tonumber(value.layoutPresetVersion) or 0)
-    local headOffsetY = ClampInt(value.headOffsetY, -400, 400, COMPONENT_DEFAULTS.buffs.y)
-    if layoutPresetVersion < LAYOUT_PRESET_VERSION then
-        local legacyHeadOffset = tonumber(value.headOffsetY)
-        if legacyHeadOffset == nil or math.floor(legacyHeadOffset) == LEGACY_COMPONENT_DEFAULTS.buffs.y then
-            headOffsetY = COMPONENT_DEFAULTS.buffs.y
-        end
-    end
     -- NativeBarProxy: the RU API exposes no native unit-frame rectangle, so the
     -- anchor is the unit screen projection point + a calibratable offset that
     -- the player aligns onto the game's own health bar. This proxy is used ONLY
@@ -235,9 +162,8 @@ local function NormalizeSettings(value)
     local info = type(value.info) == "table" and value.info or {}
     -- y=0 centers the proxy on the unit projection point by default; the
     -- calibrate mode / plate.y slider lets the player land it on the native bar.
-    -- headOffsetY is legacy-only and never feeds the anchor chain.
     -- Default plate.y = 22 (up 4px from the original 26 to better align with
-    -- the native health bar after the 1.5× size increase).
+    -- the native health bar after the 1.2× size increase).
     if plate.y == nil and value.plate == nil then
         plate.y = 22
     end
@@ -272,7 +198,6 @@ local function NormalizeSettings(value)
         headTarget = value.headTarget ~= false,
         headIconSize = ClampInt(value.headIconSize, 8, 64, 24),
         headMaxIcons = ClampInt(value.headMaxIcons, 1, 12, 8),
-        headOffsetY = headOffsetY,
         headRefreshMs = (tonumber(value.headRefreshMs) == 100) and 50
             or ClampInt(value.headRefreshMs, 1, 2000, 50),
         headShowStacks = value.headShowStacks ~= false,
@@ -340,7 +265,7 @@ local function MigrateState(value, fromSchema)
         local buffList, debuffList, seen = {}, {}, {}
         for _, raw in ipairs(legacyIds) do
             local id = math.floor(tonumber(raw) or 0)
-            if id > 0 and seen[id] ~= true and #buffList + #debuffList < 64 then
+            if id > 0 and seen[id] ~= true and #buffList + #debuffList < 1024 then
                 seen[id] = true
                 local category = "buff"
                 if classification ~= nil and type(classification.ClassifyId) == "function" then
@@ -351,19 +276,6 @@ local function MigrateState(value, fromSchema)
             end
         end
         out.settings.tracked.buff, out.settings.tracked.debuff = buffList, debuffList
-    end
-
-    -- 2) Mirror legacy head fields into the buffs component only when the old
-    --    state carried no components (schema 1/2/3). Keep the compact preset's
-    --    relative spacing so an old headOffset still behaves as a row anchor.
-    if type(settings.components) ~= "table" and type(value.components) ~= "table" then
-        local buffs = out.settings.components.buffs
-        local offset = ClampInt(settings.headOffsetY, -400, 400, COMPONENT_DEFAULTS.buffs.y)
-        local iconSize = ClampInt(settings.headIconSize, 8, 64, 24)
-        buffs.x, buffs.y, buffs.size = 0, offset, iconSize
-        buffs.fontSize = math.max(6, math.floor(iconSize * 0.38))
-        out.settings.components.debuffs.y = offset - 28
-        out.settings.headOffsetY = offset
     end
     return out
 end
@@ -576,11 +488,6 @@ function F:ApplySettingRaw(key, value)
         settings.headMaxIcons = ClampInt(value, 1, 12, settings.headMaxIcons)
         if settings.components.buffs then settings.components.buffs.maxPerRow = settings.headMaxIcons end
         if settings.components.debuffs then settings.components.debuffs.maxPerRow = settings.headMaxIcons end
-    elseif key == "headOffsetY" then
-        -- Legacy compatibility only: this field no longer drives layout. The
-        -- single anchor offset is plate.x/plate.y (NativeBarProxy). Kept so
-        -- older saved values survive migration without re-entering runtime.
-        settings.headOffsetY = ClampInt(value, -500, 500, settings.headOffsetY)
     elseif key == "headRefreshMs" then settings.headRefreshMs = ClampInt(value, 1, 2000, settings.headRefreshMs)
     elseif key == "headShowStacks" then settings.headShowStacks = value == true
     elseif key == "headShowTime" then settings.headShowTime = value == true

@@ -339,7 +339,7 @@ function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, 
     local scale = math.max(0.5, math.min(2, tonumber(settings.plateScale) or 1))
 
     -- NativeBarProxy rectangle: the single geometric anchor. Only plate.x/y
-    -- offset the bar; headOffsetY is legacy-only and never enters this chain.
+    -- offset the bar; nothing else enters this chain.
     local barW = math.max(24, math.floor(N(plateCfg.width, 180) * scale))
     local barH = math.max(8, math.floor(N(plateCfg.height, 24) * scale))
     local centerX = math.floor((tonumber(anchorX) or 0) + N(plateCfg.x, 0) * scale)

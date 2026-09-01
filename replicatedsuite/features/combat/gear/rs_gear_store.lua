@@ -15,10 +15,6 @@ S.Features.Gear = S.Features.Gear or {}
 local F = S.Features.Gear
 
 local INDEX_STORE = "v3.gear.index"
-local LEGACY_ROOT_KEY = "replicated_gear_v1"
-local LEGACY_PAYLOAD_PREFIX = "replicated_gear_v1_payload_"
-local LEGACY_ROOT_SCHEMA = 9
-local LEGACY_PAYLOAD_SCHEMA = 2
 local PAYLOAD_PREFIX = P.V3KeyPrefix .. "gear_payload_"
 local MAX_SETS = 40
 local QUICK_SNAP_DISTANCE_DEFAULT = 16
@@ -155,7 +151,6 @@ local function NormalizeQuickHud(value)
         overallOpacity = math.max(0, math.min(1, tonumber(value.overallOpacity) or 0.94)),
         backgroundOpacity = math.max(0, math.min(1, tonumber(value.backgroundOpacity) or 1.0)),
         textOpacity = math.max(0, math.min(1, tonumber(value.textOpacity) or 1.0)),
-        legacyImported = buttonMode and value.legacyImported == true or false,
     }
 end
 
@@ -178,7 +173,6 @@ local function NormalizeIndex(value)
         nextId = math.max(1, math.floor(tonumber(value.nextId) or (#sets + 1))),
         nextStorageId = math.max(maxStorage + 1, math.floor(tonumber(value.nextStorageId) or 1)),
         sets = sets,
-        legacyImported = value.legacyImported == true,
         quickHud = NormalizeQuickHud(value.quickHud),
     }
 end
@@ -277,141 +271,12 @@ function F:ClearPayload(storageId)
     return P:ClearStore(id, { reason = "gear_clear_payload" })
 end
 
-local function CharacterLegacyKey()
-    if X2Unit == nil or S.Api == nil then return nil end
-    local ok, value = S.Api:CallCapability("X2Unit:UnitNameWithWorld", X2Unit, "UnitNameWithWorld", "player")
-    local text = ok and Trim(value) or ""
-    return text ~= "" and string.lower(text) or nil
-end
-
-function F:TryImportLegacy()
-    if self.State.legacyImported == true or #self.State.sets > 0 then return true end
-    local legacy, loadErr = P:ReadLegacy(LEGACY_ROOT_KEY)
-    if loadErr ~= nil or type(legacy) ~= "table" then
-        -- Absence is normal. Mark only in memory; do not create a new Gear key
-        -- merely because this character never used the old module.
-        return true
-    end
-    local legacySchema = math.max(0, math.floor(tonumber(legacy.schema) or 0))
-    if legacySchema > LEGACY_ROOT_SCHEMA then
-        return false, "检测到更高版本的旧换装存档（schema " .. tostring(legacySchema) .. "），已停止自动迁移以避免降级覆盖"
-    end
-    local charKey = CharacterLegacyKey()
-    if charKey == nil then return false, "角色世界信息尚未就绪，暂不能迁移旧换装" end
-    local characters = type(legacy.characters) == "table" and legacy.characters or {}
-    local char = characters[charKey]
-    if type(char) ~= "table" and type(characters["__default__"]) == "table" then char = characters["__default__"] end
-    if type(char) ~= "table" or type(char.sets) ~= "table" or #char.sets == 0 then
-        self.State.legacyImported = true
-        P:MarkDirty(INDEX_STORE, 0, "gear_legacy_empty")
-        return true
-    end
-
-    local imported, maxStorage = {}, 0
-    for index, oldSet in ipairs(char.sets) do
-        if #imported >= MAX_SETS then break end
-        local meta = NormalizeSetMeta(oldSet, index)
-        maxStorage = math.max(maxStorage, meta.storageId)
-        local payload = nil
-        local primary = P:ReadLegacy(LEGACY_PAYLOAD_PREFIX .. tostring(meta.storageId))
-        local backup = P:ReadLegacy(LEGACY_PAYLOAD_PREFIX .. tostring(meta.storageId) .. "_backup")
-        local primarySchema = type(primary) == "table" and math.max(0, math.floor(tonumber(primary.schema) or 0)) or 0
-        local backupSchema = type(backup) == "table" and math.max(0, math.floor(tonumber(backup.schema) or 0)) or 0
-        local futureSchema = math.max(primarySchema, backupSchema)
-        if futureSchema > LEGACY_PAYLOAD_SCHEMA then
-            return false, "方案“" .. tostring(meta.name) .. "”使用更高版本的旧分片 schema " .. tostring(futureSchema) .. "，已停止迁移"
-        end
-        local oldPayload = nil
-        if type(primary) == "table" and type(backup) == "table" then
-            local pr = math.max(0, math.floor(tonumber(primary.revision) or 0))
-            local br = math.max(0, math.floor(tonumber(backup.revision) or 0))
-            oldPayload = br > pr and backup or primary
-        elseif type(primary) == "table" then oldPayload = primary
-        elseif type(backup) == "table" then oldPayload = backup end
-        if type(oldPayload) == "table" then
-            payload = NormalizePayload(oldPayload)
-        elseif (type(oldSet.items) == "table" and #oldSet.items > 0) or oldSet.title ~= nil then
-            payload = NormalizePayload(oldSet)
-        end
-        if payload ~= nil then
-            local saved, saveErr = self:SavePayload(meta.storageId, payload)
-            if saved ~= true then return false, "迁移旧方案“" .. tostring(meta.name) .. "”失败：" .. tostring(saveErr) end
-            meta.configured = payload.configured == true
-            meta.payloadRevision = math.max(meta.payloadRevision, payload.revision)
-        end
-        imported[#imported + 1] = meta
-    end
-    self.State.sets = imported
-    self.State.nextId = math.max(tonumber(char.nextId) or 1, #imported + 1)
-    self.State.nextStorageId = math.max(tonumber(legacy.nextStorageId) or 1, maxStorage + 1)
-    self.State.legacyImported = true
-    self.State.revision = self.State.revision + 1
-    local saved, saveErr = P:SaveStore(INDEX_STORE, { consumeDirty = true })
-    if saved ~= true then return false, "保存迁移后的换装索引失败：" .. tostring(saveErr) end
-    return true
-end
-
-function F:TryImportLegacyQuickHud()
-    self.State.quickHud = NormalizeQuickHud(self.State.quickHud)
-    if self.State.quickHud.legacyImported == true then return true end
-    local legacy, loadErr = P:ReadLegacy(LEGACY_ROOT_KEY)
-    if loadErr ~= nil or type(legacy) ~= "table" then
-        -- No legacy source is a completed migration too; otherwise every load
-        -- would perform the same unnecessary SaveData lookup forever.
-        self.State.quickHud.legacyImported = true
-        local ok, err = P:SaveStore(INDEX_STORE, { consumeDirty = true, reason = "gear_quick_buttons_no_legacy" })
-        return ok == true, err
-    end
-
-    local quick = type(legacy.ui) == "table" and type(legacy.ui.quick) == "table" and legacy.ui.quick or {}
-    local charKey = CharacterLegacyKey()
-    local characters = type(legacy.characters) == "table" and legacy.characters or {}
-    local char = charKey and characters[charKey] or nil
-    if type(char) ~= "table" and type(characters["__default__"]) == "table" then char = characters["__default__"] end
-
-    -- Restore the old and user-friendly model one-to-one: each plan owns its
-    -- own small draggable screen button. Match by storageId first because IDs
-    -- may have been normalized during earlier V3 migration.
-    if type(char) == "table" and type(char.sets) == "table" then
-        local byStorage, byId, byName = {}, {}, {}
-        for _, oldSet in ipairs(char.sets) do
-            local storageId = tonumber(oldSet.storageId)
-            if storageId ~= nil then byStorage[math.floor(storageId)] = oldSet end
-            if Trim(oldSet.id) ~= "" then byId[Trim(oldSet.id)] = oldSet end
-            if Trim(oldSet.name) ~= "" then byName[Trim(oldSet.name)] = oldSet end
-        end
-        for _, set in ipairs(self.State.sets or {}) do
-            local oldSet = byStorage[tonumber(set.storageId)] or byId[tostring(set.id)] or byName[tostring(set.name)]
-            if type(oldSet) == "table" then
-                set.quick = oldSet.quick ~= false
-                local x, y = tonumber(oldSet.quickX), tonumber(oldSet.quickY)
-                local customized = oldSet.quickPositionCustomized == true and x ~= nil and y ~= nil
-                set.quickPositionCustomized = customized
-                set.quickX = customized and math.floor(x + 0.5) or nil
-                set.quickY = customized and math.floor(y + 0.5) or nil
-            end
-        end
-    end
-
-    local hud = self.State.quickHud
-    hud.visible = quick.visible ~= false
-    hud.locked = quick.locked == true or hud.locked == true
-    hud.legacyImported = true
-    local ok, err = P:SaveStore(INDEX_STORE, { consumeDirty = true, reason = "gear_quick_buttons_legacy_import" })
-    if ok ~= true then return false, err end
-    return true
-end
-
 function F:EnsureStoreLoaded()
     if self.StoreLoaded == true then return true end
     local status, _, err = P:LoadStore(INDEX_STORE)
     if status ~= true and status ~= "empty" then return false, err or tostring(status or "读取换装索引失败") end
     if status == "empty" then ApplyIndex(nil) end
     self.StoreLoaded = true
-    local imported, importErr = self:TryImportLegacy()
-    if imported ~= true then return false, importErr end
-    local quickImported, quickErr = self:TryImportLegacyQuickHud()
-    if quickImported ~= true then return false, quickErr end
     return true
 end
 

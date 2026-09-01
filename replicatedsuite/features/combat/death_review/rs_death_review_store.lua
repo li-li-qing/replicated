@@ -168,7 +168,6 @@ local function NormalizeIndex(value)
     return {
         settings = settings,
         history = { serial = serial, entries = entries },
-        legacyImported = value.legacyImported == true,
         widgetWindow = type(value.widgetWindow) == "table" and value.widgetWindow or {},
     }
 end
@@ -302,53 +301,6 @@ function F:MarkStoreDirty(delayMs, reason)
     return P:MarkDirty(INDEX_STORE, tonumber(delayMs) or 350, reason or "death_review_changed")
 end
 
-local function ImportLegacyPayload(payload)
-    if type(payload) ~= "table" then return true, false end
-    local settings = type(payload.settings) == "table" and payload.settings or {}
-    local life = type(payload.life) == "table" and payload.life or {}
-    local historyPayload = type(life.damageReviewHistory) == "table" and life.damageReviewHistory or nil
-    local touched = false
-    if settings.damageReviewAutoShow ~= nil then F.State.settings.autoShow = settings.damageReviewAutoShow == true; touched = true end
-    if settings.damageReviewWindowMs ~= nil then F.State.settings.windowMs = ClampInt(settings.damageReviewWindowMs, 3000, 20000, 10000); touched = true end
-    if settings.damageReviewMaxHistory ~= nil then F.State.settings.maxHistory = ClampInt(settings.damageReviewMaxHistory, 1, MAX_HISTORY, 10); touched = true end
-    if settings.damageReviewMinDamage ~= nil then F.State.settings.minDamage = ClampInt(settings.damageReviewMinDamage, 0, 5000, 0); touched = true end
-    if settings.damageReviewShowDebuffs ~= nil then F.State.settings.showDebuffs = settings.damageReviewShowDebuffs == true; touched = true end
-
-    if type(historyPayload) == "table" then
-        local oldEntries = type(historyPayload.entries) == "table" and historyPayload.entries or {}
-        local first = math.max(1, #oldEntries - F.State.settings.maxHistory + 1)
-        local summaries = {}
-        local maxSerial = math.max(0, tonumber(historyPayload.serial) or 0)
-        for index = first, #oldEntries do
-            local old = NormalizeRecord(oldEntries[index], index)
-            maxSerial = math.max(maxSerial, tonumber(old.serial) or 0)
-            local used = {}; for _, row in ipairs(summaries) do used[row.storageId] = true end
-            local storageId = nil
-            for slot = 1, RECORD_SLOTS do if used[slot] ~= true then storageId = slot; break end end
-            if storageId == nil then return false, "旧死亡回顾迁移没有可用记录分片" end
-            local saved, saveErr = F:SaveRecord(storageId, old)
-            if saved ~= true then return false, "迁移旧死亡回顾记录失败：" .. tostring(saveErr) end
-            summaries[#summaries + 1] = SummaryFromRecord(old, storageId)
-        end
-        F.State.history = { serial = maxSerial, entries = summaries }
-        touched = true
-    end
-    F.State.settings = NormalizeSettings(F.State.settings)
-    return true, touched
-end
-
-function F:TryImportLegacy()
-    if self.State.legacyImported == true then return true end
-    if P == nil or type(P.ReadLegacy) ~= "function" then return false, "legacy persistence boundary unavailable" end
-    local payload, loadErr = P:ReadLegacy(S.SaveKey)
-    if loadErr ~= nil then return false, "旧死亡回顾存档读取失败：" .. tostring(loadErr) end
-    local imported, importErr = ImportLegacyPayload(payload)
-    if imported ~= true then return false, importErr end
-    self.State.legacyImported = true
-    local ok, err = P:SaveStore(INDEX_STORE, { consumeDirty = true, reason = "death_review_legacy_import" })
-    return ok == true, err
-end
-
 function F:EnsureStoreLoaded()
     if self.StoreLoaded == true then return true end
     local store = P:GetStore(INDEX_STORE)
@@ -356,8 +308,6 @@ function F:EnsureStoreLoaded()
     local status, _, err = P:LoadStore(INDEX_STORE)
     if status ~= true and status ~= "empty" then return false, err or tostring(status or "读取失败") end
     if status == "empty" then ApplyIndex(nil) end
-    local imported, importErr = self:TryImportLegacy()
-    if imported ~= true then self.StoreLoaded = false; return false, importErr end
     self.StoreLoaded = true
     return true
 end
