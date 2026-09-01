@@ -274,7 +274,7 @@ local CAPABILITIES = {
     ["X2Quest:GetQuestContextMainTitle"] = { OfficialState="Unknown", SideEffectFree=true },
     ["X2Quest:IsCompleted"] = { OfficialState="Unknown", SideEffectFree=true },
     ["X2Achievement:GetTodayAssignmentInfo"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Equipment:GetEquippedItemTooltipInfo"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Equipment:GetEquippedItemTooltipInfo"] = { OfficialState="Unknown", SideEffectFree=true, Notes="targetEquippedItem flag silently ignored on current RU client: always returns the player's OWN gear (real-machine evidence 2026-09-01); never use for target-scope reads" },
     ["X2Auction:GetSearchedItemCount"] = { OfficialState="Unknown", SideEffectFree=true },
     ["X2Auction:GetSearchedItemInfo"] = { OfficialState="Unknown", SideEffectFree=true },
     ["X2Resident:GetResidentBoardContent"] = { OfficialState="Unknown", SideEffectFree=true },
