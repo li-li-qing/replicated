@@ -311,14 +311,15 @@ end
 -- Default visual spacing (verified defaults; derived from the legacy
 -- Professional Plates section-flow experience, widened for clear layering).
 -- Buff/Debuff/Info/equipment are all computed from the bar rect only.
-local BUFF_TO_BAR = 7        -- first buff row bottom -> bar.top
-local BUFF_ROW_GAP = 3       -- between buff rows (NOT size+spacing)
-local DEBUFF_TO_BAR = 7      -- first debuff row top -> bar.bottom
-local DEBUFF_ROW_GAP = 3     -- between debuff rows
-local INFO_TO_BUFF = 6       -- info bottom -> top-most actual buff row top
-local INFO_TO_BAR = 8        -- info bottom -> bar.top when no buffs
-local EQUIP_TO_BAR = 6       -- equipment inner edge -> bar side
-local EQUIP_GAP = 3          -- between two equipment icons (legacy gap=3)
+-- Gap constants scaled 1.5× to match the new default icon sizes.
+local BUFF_TO_BAR = 11       -- first buff row bottom -> bar.top
+local BUFF_ROW_GAP = 5       -- between buff rows
+local DEBUFF_TO_BAR = 11     -- first debuff row top -> bar.bottom
+local DEBUFF_ROW_GAP = 5     -- between debuff rows
+local INFO_TO_BUFF = 9       -- info bottom -> top-most actual buff row top
+local INFO_TO_BAR = 12       -- info bottom -> bar.top when no buffs
+local EQUIP_TO_BAR = 9       -- equipment inner edge -> bar side
+local EQUIP_GAP = 5          -- between two equipment icons
 
 -- Pure layout computation. No widgets, no native reads, no store mutation.
 -- Inputs are the projected anchor (unit screen position), settings, and the
@@ -339,8 +340,8 @@ function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, 
 
     -- NativeBarProxy rectangle: the single geometric anchor. Only plate.x/y
     -- offset the bar; headOffsetY is legacy-only and never enters this chain.
-    local barW = math.max(24, math.floor(N(plateCfg.width, 150) * scale))
-    local barH = math.max(8, math.floor(N(plateCfg.height, 20) * scale))
+    local barW = math.max(24, math.floor(N(plateCfg.width, 225) * scale))
+    local barH = math.max(8, math.floor(N(plateCfg.height, 30) * scale))
     local centerX = math.floor((tonumber(anchorX) or 0) + N(plateCfg.x, 0) * scale)
     local centerY = math.floor((tonumber(anchorY) or 0) + N(plateCfg.y, 0) * scale)
     local left = centerX - math.floor(barW / 2)
@@ -352,8 +353,8 @@ function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, 
     -- Buff rows: row1.bottom = bar.top - BuffToBarGap; extra rows stack upward
     -- at BuffRowGap. Component y is a local micro offset only.
     local buffCfg = components.buffs or {}
-    local buffSize = math.max(8, math.floor(N(buffCfg.size, 24) * scale))
-    local buffSpacing = math.max(0, math.floor(N(buffCfg.spacing, 2) * scale))
+    local buffSize = math.max(8, math.floor(N(buffCfg.size, 36) * scale))
+    local buffSpacing = math.max(0, math.floor(N(buffCfg.spacing, 3) * scale))
     local buffMaxPerRow = math.max(1, math.min(16, math.floor(N(buffCfg.maxPerRow, 8))))
     local buffMaxRows = math.max(1, math.min(4, math.floor(N(buffCfg.maxRows, 2))))
     local buffGap = BUFF_TO_BAR * scale + math.floor(N(buffCfg.y, 0) * scale)
@@ -365,8 +366,8 @@ function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, 
     -- Debuff rows: row1.top = bar.bottom + DebuffToBarGap; extra rows stack
     -- downward at DebuffRowGap.
     local debuffCfg = components.debuffs or {}
-    local debuffSize = math.max(8, math.floor(N(debuffCfg.size, 24) * scale))
-    local debuffSpacing = math.max(0, math.floor(N(debuffCfg.spacing, 2) * scale))
+    local debuffSize = math.max(8, math.floor(N(debuffCfg.size, 36) * scale))
+    local debuffSpacing = math.max(0, math.floor(N(debuffCfg.spacing, 3) * scale))
     local debuffMaxPerRow = math.max(1, math.min(16, math.floor(N(debuffCfg.maxPerRow, 8))))
     local debuffMaxRows = math.max(1, math.min(4, math.floor(N(debuffCfg.maxRows, 2))))
     local debuffGap = DEBUFF_TO_BAR * scale + math.floor(N(debuffCfg.y, 0) * scale)
@@ -374,7 +375,7 @@ function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, 
     local debuffFirstTop = bar.bottom + debuffGap
 
     -- Info row: above the top-most ACTUAL buff row; above the bar when no buffs.
-    local infoFont = math.max(8, math.floor(N(infoCfg.fontSize, 10) * scale))
+    local infoFont = math.max(8, math.floor(N(infoCfg.fontSize, 15) * scale))
     local infoH = infoFont + 4
     local infoGap = (buffActualRows > 0 and INFO_TO_BUFF or INFO_TO_BAR) * scale
     local infoTop = (buffActualRows > 0 and buffTopMostTop or bar.top) - infoGap - infoH
@@ -391,7 +392,7 @@ function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, 
             local cfg = components[key] or {}
             local enabled = equip[key] == true
             if enabled then
-                local size = math.max(8, math.floor(N(cfg.size, 22) * scale))
+                local size = math.max(8, math.floor(N(cfg.size, 33) * scale))
                 local gap = math.max(1, math.floor(N(cfg.gap or cfg.spacing, EQUIP_GAP) * scale))
                 local x
                 if direction < 0 then x = edge - gap - size else x = edge + gap end

@@ -83,17 +83,18 @@ local LEGACY_COMPONENT_DEFAULTS = {
 -- Default 0 for all: the layout function places buffs above the bar, debuffs
 -- below, equipment flanks, info on top. `enabled` is the only meaningful
 -- default divergence (ranged OFF by default; wings ON as the right-side slot).
+-- Default sizes are 1.5× the original v3 baseline (24→36 icons, 22→33 equip).
 local COMPONENT_DEFAULTS = {
-    buffs     = { enabled = true,  x = 0, y = 0, size = 24, fontSize = 9,  alpha = 1.0, spacing = 2, maxPerRow = 8, maxRows = 2 },
-    debuffs   = { enabled = true,  x = 0, y = 0, size = 24, fontSize = 9,  alpha = 1.0, spacing = 2, maxPerRow = 8, maxRows = 2 },
-    distance  = { enabled = true,  x = 0, y = 0, size = 0,  fontSize = 10, alpha = 1.0 },
-    class     = { enabled = true,  x = 0, y = 0, size = 0,  fontSize = 10, alpha = 1.0 },
-    gearScore = { enabled = true,  x = 0, y = 0, size = 0,  fontSize = 10, alpha = 1.0 },
-    mainHand  = { enabled = true,  x = 0, y = 0, size = 22, fontSize = 0,  alpha = 1.0 },
-    offHand   = { enabled = true,  x = 0, y = 0, size = 22, fontSize = 0,  alpha = 1.0 },
-    ranged    = { enabled = false, x = 0, y = 0, size = 22, fontSize = 0,  alpha = 1.0 },
-    wings     = { enabled = true,  x = 0, y = 0, size = 22, fontSize = 0,  alpha = 1.0 },
-    castBar   = { enabled = true,  x = 0, y = 0, size = 6,  fontSize = 10, alpha = 1.0 },
+    buffs     = { enabled = true,  x = 0, y = 0, size = 36, fontSize = 13, alpha = 1.0, spacing = 3, maxPerRow = 8, maxRows = 2 },
+    debuffs   = { enabled = true,  x = 0, y = 0, size = 36, fontSize = 13, alpha = 1.0, spacing = 3, maxPerRow = 8, maxRows = 2 },
+    distance  = { enabled = true,  x = 0, y = 0, size = 0,  fontSize = 15, alpha = 1.0 },
+    class     = { enabled = true,  x = 0, y = 0, size = 0,  fontSize = 15, alpha = 1.0 },
+    gearScore = { enabled = true,  x = 0, y = 0, size = 0,  fontSize = 15, alpha = 1.0 },
+    mainHand  = { enabled = true,  x = 0, y = 0, size = 33, fontSize = 0,  alpha = 1.0 },
+    offHand   = { enabled = true,  x = 0, y = 0, size = 33, fontSize = 0,  alpha = 1.0 },
+    ranged    = { enabled = true,  x = 0, y = 0, size = 33, fontSize = 0,  alpha = 1.0 },
+    wings     = { enabled = true,  x = 0, y = 0, size = 33, fontSize = 0,  alpha = 1.0 },
+    castBar   = { enabled = true,  x = 0, y = 0, size = 9,  fontSize = 15, alpha = 1.0 },
 }
 
 -- The "broken anchor layout" preset shipped on GitHub main: these absolute y/x
@@ -229,8 +230,10 @@ local function NormalizeSettings(value)
     -- y=0 centers the proxy on the unit projection point by default; the
     -- calibrate mode / plate.y slider lets the player land it on the native bar.
     -- headOffsetY is legacy-only and never feeds the anchor chain.
+    -- Default plate.y = 22 (up 4px from the original 26 to better align with
+    -- the native health bar after the 1.5× size increase).
     if plate.y == nil and value.plate == nil then
-        plate.y = 0
+        plate.y = 22
     end
     return {
         showBuffs = value.showBuffs ~= false,

@@ -37,6 +37,24 @@ local function BuildTrackedIndex(settings)
     return index
 end
 
+-- Compact time display for head-plate icons and table rows.
+--   >= 60s  → M.SS.cc  (e.g. 1.20.10 = 1 min 20 sec 10 cs)
+--   <  60s  → S.c      (e.g. 10.0 = 10 sec 0 cs)
+--   nil     → "--"
+-- Input: timeLeft in milliseconds.
+local function FormatCompactTime(ms)
+    if ms == nil then return "--" end
+    local totalCs = math.max(0, math.floor(ms / 10))  -- centiseconds
+    local sec = math.floor(totalCs / 100)
+    local cs = totalCs % 100
+    if sec >= 60 then
+        local min = math.floor(sec / 60)
+        sec = sec % 60
+        return string.format("%d.%02d.%02d", min, sec, cs)
+    end
+    return string.format("%d.%d", sec, math.floor(cs / 10))
+end
+
 local function SortRows(a, b)
     local at, bt = tonumber(a.timeLeft), tonumber(b.timeLeft)
     if at ~= nil and bt ~= nil and at ~= bt then return at < bt end
@@ -76,7 +94,7 @@ function F.ProjectStatusMap(statusMap, meta, settings, scope, limit, trackedInde
                 category = category, detectionSource = kind.detectionSource or "normal",
                 effectType = category, effectTypeText = category == "debuff" and "Debuff" or "Buff",
                 stack = math.max(1, math.floor(tonumber(entry.stack) or 1)), timeLeft = timeLeft,
-                timeText = timeLeft ~= nil and (tostring(math.max(0, math.floor(timeLeft / 1000 + 0.5))) .. "s") or "--",
+                timeText = FormatCompactTime(timeLeft),
                 sourceMask = tonumber(entry.sourceMask) or 0, timeKnown = timeLeft ~= nil,
                 tracked = tracked == true,
                 trackedText = tracked == true and "已追踪" or "",

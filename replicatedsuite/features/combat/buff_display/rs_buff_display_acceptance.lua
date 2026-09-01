@@ -75,7 +75,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         mapSettings, "player", 8, { buff = { [101] = true }, debuff = {} })
     if type(rows) ~= "table" or #rows ~= 3 or rows[1].id ~= 101 or rows[2].id ~= 202 or rows[3].id ~= 303
         or rows[1].category ~= "buff" or rows[2].category ~= "debuff" or rows[3].category ~= "debuff"
-        or rows[3].detectionSource ~= "hidden" or rows[1].timeText ~= "3s" or rows[1].tracked ~= true
+        or rows[3].detectionSource ~= "hidden" or rows[1].timeText ~= "3.0" or rows[1].tracked ~= true
         or rows[1].trackedText ~= "已追踪" or rows[3].trackedText ~= "" then return false, "projection_contract" end
     -- Hidden-sourced statuses are an independent fact source: they must survive
     -- a disabled buff/debuff category toggle so 只看隐藏 always has rows to show.
@@ -118,16 +118,20 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     end
     local Compute = markers.ComputePlateLayout
 
+    -- Base settings use the new 1.5× defaults (icons 36, equip 33, bar 225×30).
     local function base(overrides)
         local s = {
-            plate = { x = 0, y = 0, width = 150, height = 20 },
-            info = { enabled = true, x = 0, y = 0, fontSize = 10, showClass = true, showGear = true, showDistance = true },
+            plate = { x = 0, y = 0, width = 225, height = 30 },
+            info = { enabled = true, x = 0, y = 0, fontSize = 15, showClass = true, showGear = true, showDistance = true },
             plateScale = 1.0,
+            gaps = { buffToBar = 11, debuffToBar = 11, infoToBuff = 9, equipToBar = 9, castToBar = 8, castToDebuff = 6, rowGap = 5 },
             components = {
-                buffs = { enabled = true, x = 0, y = 0, size = 24, spacing = 2, maxPerRow = 8, maxRows = 4 },
-                debuffs = { enabled = true, x = 0, y = 0, size = 24, spacing = 2, maxPerRow = 8, maxRows = 4 },
+                buffs = { enabled = true, x = 0, y = 0, size = 36, spacing = 3, maxPerRow = 8, maxRows = 4 },
+                debuffs = { enabled = true, x = 0, y = 0, size = 36, spacing = 3, maxPerRow = 8, maxRows = 4 },
                 class = { enabled = true }, gearScore = { enabled = true }, distance = { enabled = true },
-                mainHand = { enabled = true }, offHand = { enabled = true }, ranged = { enabled = false }, wings = { enabled = true },
+                mainHand = { enabled = true, size = 33 }, offHand = { enabled = true, size = 33 },
+                ranged = { enabled = true, size = 33 }, wings = { enabled = true, size = 33 },
+                castBar = { enabled = true, width = 180, size = 9, fontSize = 15 },
             },
         }
         if type(overrides) == "table" then
@@ -136,7 +140,7 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
         return s
     end
     local function layout(buffCount, debuffCount, equip, settings)
-        return Compute(500, 400, settings or base(), buffCount, debuffCount, equip or { mainHand = true, offHand = true, wings = true, ranged = false })
+        return Compute(500, 400, settings or base(), buffCount, debuffCount, equip or { mainHand = true, offHand = true, wings = true, ranged = true })
     end
 
     -- CASE 1: 0 buff / 0 debuff -> info sits directly above the bar.
@@ -144,19 +148,18 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     if l1.info.top + l1.info.height >= l1.bar.top then return false, "case1_info_not_above_bar" end
 
     -- CASE 2/3/4: actual buff rows (not MaxRows) drive info placement.
-    local l1buff = layout(1, 0)          -- 1 buff, maxRows=4 -> 1 actual row
-    local l8buff = layout(8, 0)          -- 8 buffs -> 1 row
-    local l9buff = layout(9, 0)          -- 9 buffs -> 2 rows
+    local l1buff = layout(1, 0)
+    local l8buff = layout(8, 0)
+    local l9buff = layout(9, 0)
     if l1buff.buff.actualRows ~= 1 then return false, "case2_actual_rows_wrong:" .. tostring(l1buff.buff.actualRows) end
     if l8buff.buff.actualRows ~= 1 then return false, "case3_actual_rows_wrong" end
     if l9buff.buff.actualRows ~= 2 then return false, "case4_actual_rows_wrong:" .. tostring(l9buff.buff.actualRows) end
-    -- Info must be above the top-most ACTUAL row, not above MaxRows worth of rows.
     if l1buff.info.top + l1buff.info.height >= l1buff.buff.topMostTop then return false, "case2_info_not_above_actual_row" end
     if l9buff.buff.topMostTop >= l1buff.buff.topMostTop then return false, "case4_rows_not_stacking_upward" end
 
-    -- CASE 5: 1 debuff first row = bar.bottom + DebuffToBarGap(7) (not + iconSize).
+    -- CASE 5: 1 debuff first row = bar.bottom + DebuffToBarGap(11).
     local l1deb = layout(0, 1)
-    local expectedGap = 7 * 1.0  -- DEBUFF_TO_BAR(7) * scale(1)
+    local expectedGap = 11 * 1.0
     if math.abs(l1deb.debuff.firstTop - (l1deb.bar.bottom + expectedGap)) > 1 then
         return false, "case5_debuff_gap_wrong:" .. tostring(l1deb.debuff.firstTop - l1deb.bar.bottom)
     end
@@ -169,24 +172,21 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     local lNoWing = layout(0, 0, { mainHand = true, offHand = true, wings = false, ranged = false })
     if lNoWing.equip.wings ~= false then return false, "case8_collapse_wrong" end
 
-    -- CASE 9/10: two flank icons must not overlap — left group has exactly 2
-    -- slots, each 22px, separated by EquipmentGap(3); right group wings+ranged.
+    -- CASE 9/10: Left = [mainHand][offHand][ranged], Right = [wings].
     local lBoth = layout(0, 0, { mainHand = true, offHand = true, wings = true, ranged = true })
-    if #lBoth.leftGroup.slots ~= 2 or #lBoth.rightGroup.slots ~= 2 then
-        return false, "case9_10_equip_group_slot_count_wrong"
+    if #lBoth.leftGroup.slots ~= 3 or #lBoth.rightGroup.slots ~= 1 then
+        return false, "case9_10_equip_group_slot_count_wrong:left=" .. tostring(#lBoth.leftGroup.slots) .. ",right=" .. tostring(#lBoth.rightGroup.slots)
     end
-    local s0, s1 = lBoth.leftGroup.slots[1], lBoth.leftGroup.slots[2]
-    if s0.key ~= "offHand" or s1.key ~= "mainHand" then return false, "case9_left_order_wrong" end
-    -- offHand.left == 425-6-22 = 397; mainHand.right == offHand.left - 3 = 394
-    if s0.x ~= 397 or s1.x + s1.size ~= 394 then
-        return false, "case9_left_geometry_wrong:" .. tostring(s0.x) .. "," .. tostring(s1.x)
+    local sl = lBoth.leftGroup.slots
+    if sl[1].key ~= "ranged" or sl[2].key ~= "offHand" or sl[3].key ~= "mainHand" then
+        return false, "case9_left_order_wrong:" .. tostring(sl[1].key) .. "," .. tostring(sl[2].key) .. "," .. tostring(sl[3].key)
     end
+    if lBoth.rightGroup.slots[1].key ~= "wings" then return false, "case9_right_order_wrong" end
+    -- ranged closest to bar: x = bar.left - gap - size = 388-9-33 = 346.
+    if sl[1].x ~= 346 then return false, "case9_ranged_position_wrong:" .. tostring(sl[1].x) end
 
-    -- CASE 11/12: info concatenation is presentation-side; verify the layout's
-    -- info font/height contract. Info must not reserve space when disabled.
-    local lNoInfo = Compute(500, 400, base({ info = { enabled = false, fontSize = 10 } }), 3, 0, { mainHand = true, offHand = true, wings = true, ranged = false })
-    -- info.enabled=false is handled by the renderer; the pure layout still returns
-    -- geometry, but bar geometry must remain the stable anchor.
+    -- CASE 11/12: bar geometry stable regardless of info toggle.
+    local lNoInfo = Compute(500, 400, base({ info = { enabled = false, fontSize = 15 } }), 3, 0, { mainHand = true, offHand = true, wings = true, ranged = true })
     if lNoInfo.bar.top >= lNoInfo.bar.bottom then return false, "case11_bar_geometry_wrong" end
 
     -- CASE 13: fresh config defaults are anchor-relative (component y == 0).
@@ -195,32 +195,50 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     if type(comps.buffs) ~= "table" or comps.buffs.y ~= 0 or comps.debuffs.y ~= 0 then
         return false, "case13_fresh_defaults_not_anchor_relative"
     end
-    -- ranged is off by default in the new preset; wings is on.
-    if comps.ranged.enabled ~= false or comps.wings.enabled ~= true then
+    -- ranged is ON by default (left-side slot); wings is on (right-side slot).
+    if comps.ranged.enabled ~= true or comps.wings.enabled ~= true then
         return false, "case13_ranged_wings_default_wrong"
     end
 
-    -- CASE 14/15: geometry matches the fixed reference coordinates and keeps
-    -- clear vertical separation. anchor(500,300), bar 150x20 -> left 425/right
-    -- 575/top 290/bottom 310. Buff 24px: row1 259..283. Debuff 24px: 317..341.
-    -- Equipment 22px: offHand 397..419, mainHand 372..394, wings 581..603.
-    if l1.bar.left ~= 425 or l1.bar.right ~= 575 or l1.bar.top ~= 290 or l1.bar.bottom ~= 310 then
+    -- CASE 14/15: geometry with 1.5× sizes. anchor(500,400), bar 225x30 ->
+    -- left 388/right 613/top 385/bottom 415. Buff 36px: firstTop=385-11-36=338.
+    -- Debuff: firstTop=415+11=426. Equip 33px: ranged at 388-9-33=346, wings at 613+9=622.
+    if l1.bar.left ~= 388 or l1.bar.right ~= 613 or l1.bar.top ~= 385 or l1.bar.bottom ~= 415 then
         return false, "case14_bar_rect_wrong:" .. tostring(l1.bar.left) .. "," .. tostring(l1.bar.right)
     end
-    if l1buff.buff.firstTop ~= 259 or l1deb.debuff.firstTop ~= 317 then
+    if l1buff.buff.firstTop ~= 338 or l1deb.debuff.firstTop ~= 426 then
         return false, "case14_row_positions_wrong:" .. tostring(l1buff.buff.firstTop) .. "," .. tostring(l1deb.debuff.firstTop)
     end
-    local sL = l1.leftGroup.slots[1]
-    local sR = l1.rightGroup.slots[1]
-    if sL.x ~= 397 or sR.x ~= 581 then
+    local sL = l1.leftGroup.slots[1]  -- ranged (closest to bar)
+    local sR = l1.rightGroup.slots[1] -- wings
+    if sL.key ~= "ranged" then return false, "case14_left_first_key_wrong:" .. tostring(sL.key) end
+    if sL.x ~= 346 or sR.x ~= 622 then
         return false, "case14_equip_positions_wrong:" .. tostring(sL.x) .. "," .. tostring(sR.x)
     end
     -- Vertical separation: no two regions overlap (info < buff < bar < debuff).
-    local buffBottom = l1buff.buff.firstTop + 24
+    local buffBottom = l1buff.buff.firstTop + 36
     if l1buff.info.top + l1buff.info.height > l1buff.buff.firstTop - 2
         or buffBottom > l1.bar.top - 4
         or l1deb.debuff.firstTop < l1.bar.bottom + 4 then
         return false, "case15_vertical_separation_failed"
+    end
+
+    -- Name resolution + compact time format tests.
+    if rows[1].name ~= "A" then return false, "projection_name_valid_passthrough:" .. tostring(rows[1].name) end
+    local nameMap = { [22263] = { id = 22263, name = "测试减益", iconPath = "x.dds", stack = 1, timeLeft = 21000, sources = { debuff = true } } }
+    local nameRows = F.ProjectStatusMap(nameMap, { available = true }, { showBuffs = true, showDebuffs = true, classification = {} }, "player", 8)
+    if type(nameRows) ~= "table" or #nameRows ~= 1 or nameRows[1].name ~= "测试减益"
+        or nameRows[1].id ~= 22263 or nameRows[1].effectTypeText ~= "Debuff"
+        or nameRows[1].timeText ~= "21.0" then return false, "case_a_name_resolution" end
+    local idNameMap = { [22263] = { id = 22263, name = "22263", iconPath = "", stack = 1, sources = { debuff = true } } }
+    local idNameRows = F.ProjectStatusMap(idNameMap, { available = true }, { showBuffs = true, showDebuffs = true, classification = {} }, "player", 8)
+    if type(idNameRows) ~= "table" or #idNameRows ~= 1 then return false, "case_b_row_count" end
+    if idNameRows[1].name == "22263" then return false, "case_b_name_equals_id_not_resolved" end
+    -- Compact time: 80010ms = 1m20s1cs → "1.20.01".
+    local timeMap = { [999] = { id = 999, name = "T", stack = 1, timeLeft = 80010, sources = { buff = true } } }
+    local timeRows = F.ProjectStatusMap(timeMap, { available = true }, { showBuffs = true, showDebuffs = true, classification = {} }, "player", 8)
+    if type(timeRows) ~= "table" or #timeRows ~= 1 or timeRows[1].timeText ~= "1.20.01" then
+        return false, "compact_time_format_wrong:" .. tostring(timeRows[1] and timeRows[1].timeText)
     end
 
     return true
