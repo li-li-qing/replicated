@@ -69,7 +69,7 @@ ReplicatedSuiteConfig = {
             craftAssist = {
                 enabled = true,
                 autoShow = true,
-                -- G2: persisted window size (clamped by rs_state; position goes
+                -- G2: persisted window size (clamped by layout metrics; position goes
                 -- through S.Layout floating storage).
                 width = 560,
                 height = 430,

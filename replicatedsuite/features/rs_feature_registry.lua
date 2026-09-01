@@ -75,7 +75,6 @@ function R:Register(spec)
         blacklist = tostring(spec.blacklist or ""),
         capabilities = type(spec.capabilities) == "table" and spec.capabilities or {},
         defaultEnabled = spec.defaultEnabled == true,
-        legacyReference = spec.legacyReference,
         runtimeBlocked = spec.runtimeBlocked == true,
         runtimeBlocker = tostring(spec.runtimeBlocker or ""),
         currentImplementation = tostring(spec.currentImplementation or ""),
@@ -133,7 +132,7 @@ Add("home", "home", "今日总览", "home", 10,
 
 Add("combat_stats", "combat.stats", "伤害统计", "combat", 10, "逐事件 PVP/PVE 分类的伤害、承伤与治疗统计；M1.16 起通过 CombatAnalytics 共享唯一 scope=all 战斗事实流。", {
     status = "migrated_m16", lifecycle = "independent", authority = "v3.dps + v3.combat_analytics",
-    legacyReference = "Replicated DPS", widgetCapable = true, settingsCapable = true,
+    widgetCapable = true, settingsCapable = true,
 })
 Add("combat_analytics", "combat.analytics", "战斗分析", "combat", 15, "模块化战斗贡献分析：战斗历史、击杀/助攻、技能、爆发、控制、乐器、辅助、Aura 与 Boss 机制；每个指标独立启停并共享单一 CombatEventBus 消费者。", {
     status = "migrated_m16_foundation", lifecycle = "independent_metrics", authority = "v3.combat_analytics",
@@ -141,32 +140,32 @@ Add("combat_analytics", "combat.analytics", "战斗分析", "combat", 15, "模�
 })
 Add("combat_healer", "combat.healer", "治疗辅助", "combat", 20, "治疗推荐核心与团队校准/屏幕色块：共享团队名单与 Aura 事实；不再提供无意义的推荐列表悬浮窗，校准可在治疗计算关闭时独立显示。", {
     status = "migrated_m16_18", lifecycle = "independent", authority = "v3.healer + v3.team_roster + v3.aura_observation",
-    legacyReference = "Replicated Healer", widgetCapable = false, settingsCapable = true, defaultEnabled = false,
+    widgetCapable = false, settingsCapable = true, defaultEnabled = false,
     apiDependencies = { "X2Team:GetRole", "X2Unit:UnitHealth", "X2Unit:UnitMaxHealth", "X2Unit:UnitDistance", "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:UnitDeBuffCount", "X2Unit:UnitDeBuff", "X2Unit:UnitHiddenBuffCount", "X2Unit:UnitHiddenBuff", "X2Unit:GetUnitScreenPosition" },
     apiReadiness = "partial", apiPolicy = "read_only_sliced", currentImplementation = "页面策略配置 + 头顶标记 + 团队覆盖层；Raid calibration 是独立 Presentation 模式，不获取治疗 Consumer", remainingCapability = "继续按实机校准团队框位置/颜色，不恢复推荐列表悬浮窗", evidence = "V3 Healer Domain + HeadMarker/RaidOverlay; TeamRosterV3 + AuraObservationV3 shared facts",
 })
 Add("combat_death_review", "combat.death_review", "死亡回顾", "combat", 30, "独立低开销死亡前时间线与历史。", {
     status = "migrated_m15_2", lifecycle = "independent", authority = "v3.death_review",
-    legacyReference = "DamageReviewService", widgetCapable = true, settingsCapable = true,
+    widgetCapable = true, settingsCapable = true,
 })
 Add("combat_buff_display", "combat.buff_display", "状态显示", "combat", 40, "首个 Plates/BUFF V3 消费端：player/target 的增益、减益与隐藏状态 bounded display；事实只来自共享 StatusMap。", {
     status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.buff_display + v3.aura_observation",
-    legacyReference = "Replicated Plates", widgetCapable = true, settingsCapable = true, defaultEnabled = false,
+    widgetCapable = true, settingsCapable = true, defaultEnabled = false,
     apiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:UnitBuffTooltip", "X2Unit:UnitDeBuffCount", "X2Unit:UnitDeBuff", "X2Unit:UnitDeBuffTooltip", "X2Unit:UnitHiddenBuffCount", "X2Unit:UnitHiddenBuff", "X2Unit:UnitHiddenBuffTooltip" },
     apiReadiness = "shared_service_partial", apiPolicy = "read_only_bounded",
     evidence = "AuraObservationV3:GetStatusMap(); V3 Page/Widget projection and lifecycle contract",
 })
-Add("combat_boss_alerts", "combat.boss_alerts", "首领机制 / 战斗警报", "combat", 50, "首领机制静态规则目录 + 可配置/可测试屏幕 HUD；实时施法/Aura 触发仍待验证事实桥。", { status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.boss_alerts + alerts_service", widgetCapable = false, settingsCapable = true, legacyReference = "AlertsService", apiReadiness = "static_plus_presenter", apiPolicy = "read_only_push_hud", currentImplementation = "按真实 alert/kind/names/debuffId/style 字段投影机制；HUD 支持中央/顶部、字号、时长以及大字/倒计时测试", remainingCapability = "需要已验证的施法/Aura 事件事实把静态规则接到实时触发；不使用 CHAT_MESSAGE 猜机制", evidence = "V3 static BossAlerts + AlertsService push presenter; CHAT_MESSAGE false-positive matcher removed" })
-Add("combat_target_monitor", "combat.target_monitor", "目标监控", "combat", 60, "按需追踪当前目标身份、名称与距离；不伪造仇恨目标。", { status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.target_monitor", widgetCapable = true, legacyReference = "TargetService", apiDependencies = { "X2Unit:GetTargetUnitId", "X2Unit:UnitName", "X2Unit:UnitDistance" }, apiReadiness = "partial", apiPolicy = "on_demand_read_only", currentImplementation = "TARGET_CHANGED 即时刷新 + 500ms Demand-scoped 距离采样；Consumer=0 时任务和事件全部释放", remainingCapability = "仇恨目标需要独立、已验证的 RU 事实来源后再接入", evidence = "V3 target observation contract v1; event edge + bounded Scheduler distance refresh" })
-Add("combat_unit_lines", "combat.unit_lines", "单位连线", "combat", 70, "当前实现为自己 ↔ 当前目标的独立屏幕连线；不恢复官方禁用的附近单位枚举。", { status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.unit_lines + screen_projection_v3", currentImplementation = "100ms Demand-scoped 当前目标投影 + 有界点线 Presenter；支持点数/大小/透明度", remainingCapability = "全单位关系网络仍需要官方允许的单位集合来源；GetUnitsInSight 保持禁用", legacyReference = "Replicated Plates lines", widgetCapable = false, settingsCapable = true, apiDependencies = { "X2Unit:GetUnitScreenPosition", "X2Unit:GetUnitWorldPositionByTarget" }, apiReadiness = "partial", apiPolicy = "bounded_current_target_only" })
-Add("combat_range_assist", "combat.range_assist", "范围辅助", "combat", 80, "以玩家为圆心绘制用户指定半径的范围圆；不猜技能/魔法阵真实范围。", { status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.range_assist + screen_projection_v3", currentImplementation = "200ms Demand-scoped 玩家世界坐标 + 12-48 个有界投影点；支持半径/点数/点大小/透明度", remainingCapability = "技能/魔法阵自动半径需要独立已验证的技能范围事实；当前只承诺用户自定义半径", legacyReference = "Replicated Plates circle/magiccircle", widgetCapable = false, settingsCapable = true, apiDependencies = { "X2Unit:GetUnitWorldPositionByTarget" }, apiReadiness = "partial", apiPolicy = "bounded_user_radius" })
+Add("combat_boss_alerts", "combat.boss_alerts", "首领机制 / 战斗警报", "combat", 50, "首领机制静态规则目录 + 可配置/可测试屏幕 HUD；实时施法/Aura 触发仍待验证事实桥。", { status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.boss_alerts + alerts_service", widgetCapable = false, settingsCapable = true, apiReadiness = "static_plus_presenter", apiPolicy = "read_only_push_hud", currentImplementation = "按真实 alert/kind/names/debuffId/style 字段投影机制；HUD 支持中央/顶部、字号、时长以及大字/倒计时测试", remainingCapability = "需要已验证的施法/Aura 事件事实把静态规则接到实时触发；不使用 CHAT_MESSAGE 猜机制", evidence = "V3 static BossAlerts + AlertsService push presenter; CHAT_MESSAGE false-positive matcher removed" })
+Add("combat_target_monitor", "combat.target_monitor", "目标监控", "combat", 60, "按需追踪当前目标身份、名称与距离；不伪造仇恨目标。", { status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.target_monitor", widgetCapable = true, apiDependencies = { "X2Unit:GetTargetUnitId", "X2Unit:UnitName", "X2Unit:UnitDistance" }, apiReadiness = "partial", apiPolicy = "on_demand_read_only", currentImplementation = "TARGET_CHANGED 即时刷新 + 500ms Demand-scoped 距离采样；Consumer=0 时任务和事件全部释放", remainingCapability = "仇恨目标需要独立、已验证的 RU 事实来源后再接入", evidence = "V3 target observation contract v1; event edge + bounded Scheduler distance refresh" })
+Add("combat_unit_lines", "combat.unit_lines", "单位连线", "combat", 70, "当前实现为自己 ↔ 当前目标的独立屏幕连线；不恢复官方禁用的附近单位枚举。", { status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.unit_lines + screen_projection_v3", currentImplementation = "100ms Demand-scoped 当前目标投影 + 有界点线 Presenter；支持点数/大小/透明度", remainingCapability = "全单位关系网络仍需要官方允许的单位集合来源；GetUnitsInSight 保持禁用", widgetCapable = false, settingsCapable = true, apiDependencies = { "X2Unit:GetUnitScreenPosition", "X2Unit:GetUnitWorldPositionByTarget" }, apiReadiness = "partial", apiPolicy = "bounded_current_target_only" })
+Add("combat_range_assist", "combat.range_assist", "范围辅助", "combat", 80, "以玩家为圆心绘制用户指定半径的范围圆；不猜技能/魔法阵真实范围。", { status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.range_assist + screen_projection_v3", currentImplementation = "200ms Demand-scoped 玩家世界坐标 + 12-48 个有界投影点；支持半径/点数/点大小/透明度", remainingCapability = "技能/魔法阵自动半径需要独立已验证的技能范围事实；当前只承诺用户自定义半径", widgetCapable = false, settingsCapable = true, apiDependencies = { "X2Unit:GetUnitWorldPositionByTarget" }, apiReadiness = "partial", apiPolicy = "bounded_user_radius" })
 Add("combat_buff_cap", "combat.buff_cap", "增益容量监控", "combat", 85, "读取自身普通/隐藏增益数量；RU 容量与顶替阈值未验证前不生成风险告警。", {
     status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.buff_cap", widgetCapable = true, settingsCapable = true,
     apiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitHiddenBuffCount" }, apiReadiness = "partial", apiPolicy = "read_only",
     currentImplementation = "Demand-scoped BUFF_UPDATE/TARGET_CHANGED 事件边 + 120ms one-shot 合并刷新，并保留低频兜底；Consumer=0 时不保留事件或任务；不推断容量阈值", remainingCapability = "需要 RU Buff 容量、顶替顺序与预警阈值的实机证据后才能恢复风险提示",
     evidence = "Bundled X2Unit buff-count getters; no verified RU eviction threshold",
 })
-Add("combat_team_tools", "combat.team_tools", "团队管理", "combat", 90, "全队职责只读与当前玩家职责设置；成员移动在无法合法证明队长权限时安全停用。", { status = "migrated_partial", lifecycle = "explicit_action", authority = "v3.team_tools", settingsCapable = true, legacyReference = "TeamUtilityService", apiDependencies = { "X2Team:GetRole", "X2Team:SetRole" }, apiReadiness = "partial", verification = "static_signature_verified_pending_ru_runtime", apiPolicy = "explicit_action_fail_closed", currentImplementation = "TeamRoster 更新驱动的全队职责只读；X2Team:SetRole(role) 仅作为当前玩家职责写入；成员移动按钮不可执行", remainingCapability = "MoveTeamMember/MoveTeamMemberToParty 需要允许使用的队长/权限 getter；当前 IsTeamOwner 明确 NotAllowed", evidence = "Bundled TMROLE_* globals + X2Team signatures + capability registry permission fence" })
+Add("combat_team_tools", "combat.team_tools", "团队管理", "combat", 90, "全队职责只读与当前玩家职责设置；成员移动在无法合法证明队长权限时安全停用。", { status = "migrated_partial", lifecycle = "explicit_action", authority = "v3.team_tools", settingsCapable = true, apiDependencies = { "X2Team:GetRole", "X2Team:SetRole" }, apiReadiness = "partial", verification = "static_signature_verified_pending_ru_runtime", apiPolicy = "explicit_action_fail_closed", currentImplementation = "TeamRoster 更新驱动的全队职责只读；X2Team:SetRole(role) 仅作为当前玩家职责写入；成员移动按钮不可执行", remainingCapability = "MoveTeamMember/MoveTeamMemberToParty 需要允许使用的队长/权限 getter；当前 IsTeamOwner 明确 NotAllowed", evidence = "Bundled TMROLE_* globals + X2Team signatures + capability registry permission fence" })
 Add("combat_raid_readiness", "combat.raid_readiness", "团队战备检查", "combat", 92, "按需检查团队职责、关键增益、装分与职业准备状态，不依赖 DPS 常驻运行。", {
     status = "migrated_m16_14", lifecycle = "on_demand_scan", authority = "v3.raid_readiness + v3.team_roster + v3.aura_observation",
     widgetCapable = false, settingsCapable = true, defaultEnabled = false,
@@ -189,7 +188,7 @@ Add("combat_siege_readiness", "combat.siege_readiness", "攻城战备检查", "c
 Add("combat_gear", "combat.gear", "换装 / 称号", "combat", 100,
     "装备、武器、防具、饰品与效果称号使用同一套方案保存和一键切换；每套常用方案可生成一个独立可拖动的屏幕按钮。", {
     status = "migrated_m4", lifecycle = "independent", authority = "v3.gear",
-    legacyReference = "Replicated Gear", widgetCapable = true, settingsCapable = true, defaultEnabled = true,
+    widgetCapable = true, settingsCapable = true, defaultEnabled = true,
     apiDependencies = {
         "X2Equipment:GetEquippedItemTooltipInfo", "X2Bag:GetBagItemInfo", "X2Bag:EquipBagItem",
         "X2Player:GetShowingAppellation", "X2Player:GetEffectAppellation",
@@ -201,7 +200,7 @@ Add("combat_gear", "combat.gear", "换装 / 称号", "combat", 100,
 
 Add("life_activities", "life.activities", "活动", "life", 10, "世界活动、区域阶段、任务/实例参与进度。", {
     status = "migrated_m1", lifecycle = "independent", authority = "v3.activity",
-    legacyReference = "EventService", widgetCapable = true, settingsCapable = true,
+    widgetCapable = true, settingsCapable = true,
     apiDependencies = {
         "X2Map:GetZoneStateInfoByZoneId",
         "X2Quest:GetActiveQuestListCount", "X2Quest:GetActiveQuestType", "X2Quest:IsCompleted", "X2Quest:IsReadyForCompleteQuest",
@@ -213,17 +212,17 @@ Add("life_activities", "life.activities", "活动", "life", 10, "世界活动、
 })
 Add("life_trade", "life.trade", "跑商", "life", 20, "路线、多货物与实时货率；材料身份/数量可读，材料报价与利润改为独立显式询价后再接回。", {
     status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.life.trade", widgetCapable = true, settingsCapable = true,
-    legacyReference = "TradeService", apiDependencies = { "X2Store:GetProductionZoneGroups", "X2Store:GetSellableZoneGroups", "X2Store:GetSpecialtyRatioBetween" },
+    apiDependencies = { "X2Store:GetProductionZoneGroups", "X2Store:GetSellableZoneGroups", "X2Store:GetSpecialtyRatioBetween" },
     apiReadiness = "official_mixed", apiPolicy = "on_demand_server_query", currentImplementation = "路线/区域/服务器货率 + bounded 材料 itemType/数量投影；普通 Refresh 不调用拍卖报价", remainingCapability = "建立独立、限速、显式 GetLowestPrice 报价队列后才能恢复材料成本/利润", evidence = "V3 Trade Authority + SPECIALTY_RATIO_BETWEEN_INFO; quote fan-out removed in M1.16.0.18.39",
 })
 Add("life_bonds", "life.bonds", "债券 / 居民板", "life", 30, "每日居民板材料、完成状态与背包资源。", {
     status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.life.bonds", widgetCapable = true, settingsCapable = true,
-    legacyReference = "ResidentService", apiDependencies = { "X2Resident:GetResidentBoardContent", "X2Bag:Capacity", "X2Bag:GetBagItemInfo", "X2Quest:IsCompleted", "X2Quest:IsReadyForCompleteQuest" }, apiReadiness = "official_mixed", apiPolicy = "on_demand_read_only",
+    apiDependencies = { "X2Resident:GetResidentBoardContent", "X2Bag:Capacity", "X2Bag:GetBagItemInfo", "X2Quest:IsCompleted", "X2Quest:IsReadyForCompleteQuest" }, apiReadiness = "official_mixed", apiPolicy = "on_demand_read_only",
     evidence = "V3 Bonds resolves curated/verified constant mappings and projects QuestProgressV3 states plus bounded resource diagnostics; unknown runtime fields remain fail-closed",
 })
 Add("life_tasks", "life.tasks", "任务追踪", "life", 40, "用户选择的日常与周常任务追踪；支持子任务展开和独立悬浮追踪。", {
     status = "migrated_m1", lifecycle = "independent", authority = "v3.tasks",
-    legacyReference = "QuestService", widgetCapable = true, settingsCapable = true, defaultEnabled = true,
+    widgetCapable = true, settingsCapable = true, defaultEnabled = true,
     apiDependencies = {
         "X2Quest:GetActiveQuestListCount", "X2Quest:GetActiveQuestType",
         "X2Quest:IsCompleted", "X2Quest:IsReadyForCompleteQuest", "X2Quest:GetQuestContextMainTitle",
@@ -233,7 +232,7 @@ Add("life_tasks", "life.tasks", "任务追踪", "life", 40, "用户选择的日�
 })
 Add("life_treasure", "life.treasure", "寻宝", "life", 50, "藏宝图坐标、方向与距离。", {
     status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.life.treasure", widgetCapable = true, settingsCapable = true,
-    legacyReference = "TreasureService", apiDependencies = { "X2Bag:GetBagItemInfo", "X2Bag:Capacity", "X2Unit:GetUnitWorldPositionByTarget" }, apiReadiness = "official_mixed", apiPolicy = "on_demand_read_only",
+    apiDependencies = { "X2Bag:GetBagItemInfo", "X2Bag:Capacity", "X2Unit:GetUnitWorldPositionByTarget" }, apiReadiness = "official_mixed", apiPolicy = "on_demand_read_only",
     currentImplementation = "有界背包藏宝图扫描 + 500ms Demand-scoped 玩家位置/方向/距离刷新；Consumer=0 立即停任务",
     evidence = "V3 Treasure observation contract v1; bounded bag scan + Scheduler position projection; Legacy Resource/Treasure is not loaded",
 })
@@ -241,7 +240,7 @@ Add("life_fishing", "life.fishing", "钓鱼", "life", 60, "目标鱼动作 Buff 
   status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.life.fishing", widgetCapable = true, settingsCapable = true,
   currentImplementation = "V3 页面、Demand、TARGET_CHANGED/BUFF_UPDATE 驱动的 bounded 目标 Buff observation 与技能栏推荐可用；Auto-R 按钮明确禁用",
   remainingCapability = "需要迁移并验证原 R/目标槽位快照、写入回读、异常恢复、Reload 恢复与原键还原事务",
-  legacyReference = "FishingService", apiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Player:PlayerInCombat" }, apiReadiness = "partial", apiPolicy = "read_only_until_hotkey_transaction_verified",
+  apiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Player:PlayerInCombat" }, apiReadiness = "partial", apiPolicy = "read_only_until_hotkey_transaction_verified",
   evidence = "Active V3 Fishing observation contract v1; target/buff events refresh detached projection; fake autoArmed completion removed in M1.16.0.18.39",
 })
 Add("life_craft_planner", "life.craft_planner", "制作规划", "life", 70, "多配方材料、持有量/缺口与已知记录制作链规划；市场成本必须走后续显式限速报价。", {
@@ -265,7 +264,6 @@ Add("life_butler", "life.butler", "管家助手", "life", 90, "预留管家充�
 
 Add("tools_bag", "tools.bag_organizer", "整理背包", "tools", 10, "背包/仓库整理、黑名单与按类别有界批量移动。", {
     status = "migrated_partial", lifecycle = "explicit_action", authority = "v3.bag", settingsCapable = true,
-    legacyReference = "BagOrganizerService",
     capabilities = { "category_batch", "scheduler_queue", "window_commands", "native_window_quick_take_put", "blacklist_filter", "read_verify_stop" },
     scheduler = "Shared Scheduler serializes bounded category moves and native-window quick take/put; quick/category tasks are mutually exclusive; one move per scheduled step; no per-frame polling",
     window = "打开银行/箱子时 V3 Presenter 跟随背包显示“取/放/停”；显式点击才建立同类物品移动计划，页面保留高级整理入口",
@@ -280,7 +278,7 @@ Add("tools_bag", "tools.bag_organizer", "整理背包", "tools", 10, "背包/仓
 })
 Add("tools_auction", "tools.auction_favorites", "拍卖收藏", "tools", 20, "拍卖关键词/收藏、当前挂单查询、稳定分页与单物品显式报价；服务器搜索统一走共享查询服务。", {
     status = "migrated_partial", lifecycle = "explicit_query", authority = "v3.auction", settingsCapable = true,
-    legacyReference = "AuctionFavoritesService", apiDependencies = { "X2Auction:SearchAuctionArticle", "X2Auction:GetSearchedItemCount", "X2Auction:GetSearchedItemInfo", "X2Auction:GetLowestPrice" },
+    apiDependencies = { "X2Auction:SearchAuctionArticle", "X2Auction:GetSearchedItemCount", "X2Auction:GetSearchedItemInfo", "X2Auction:GetLowestPrice" },
     apiReadiness = "official_mixed", verification = "local_contract_verified_pending_ru_runtime", apiPolicy = "explicit_server_query",
     currentImplementation = "收藏增删/持久化/分页可用；AuctionQueryV3 串行拥有无 token 的 AUCTION_ITEM_SEARCHED，使用已验证 9 参数搜索并归一化 bounded 当前挂单；Quote 是单次显式 GetLowestPrice",
     remainingCapability = "RU 搜索结果的全部字段/排序语义与更丰富筛选仍待实机验证；当前结果不能被当成历史成交样本",
@@ -292,7 +290,7 @@ Add("tools_market_analysis", "tools.market_analysis", "拍卖行情", "tools", 2
     apiReadiness = "official", apiPolicy = "explicit_server_query", evidence = "Retained rs_auction_service.lua 9-parameter SearchInteractive + AuctionQueryV3 serialized completion ownership; history remains explicitly unclaimed",
 })
 Add("tools_craft", "tools.craft_assist", "制作台助手", "tools", 30, "制作台上下文的材料、持有量与缺口辅助；生命周期与跑商解耦，批量市场报价不在普通刷新执行。", {
-    status = "migrated_partial", lifecycle = "page_scoped", authority = "v3.craft", settingsCapable = true, legacyReference = "CraftAssistService",
+    status = "migrated_partial", lifecycle = "page_scoped", authority = "v3.craft", settingsCapable = true,
     apiDependencies = { "X2Craft:GetCraftTypeByItemType", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo", "X2Bag:Capacity", "X2Bag:GetBagItemInfo" },
     apiReadiness = "official_mixed_pending_runtime", verification = "local_contract_verified_pending_ru_runtime", apiPolicy = "on_demand_read_only",
     currentImplementation = "用户从已核制作物目录选择，不输入 doodadId/craftType；bounded product/material、held/shortage 与 known-record graph；Native 材料不可读时可回退已核静态贸易配方",

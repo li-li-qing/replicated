@@ -3166,15 +3166,15 @@ Domain 不能同时成为 Window Lifecycle Authority。
 后续重构必须明确：
 
 - Native Game State Authority：ArcheAge X2 API；
-- External Proxy / Observation：统一缓存游戏读取；Professional Domain 需要额外 Native 边界时使用窄 API Gateway（Healer 已落地 `api/rh_api.lua`）；
-- Domain Authority：各业务模块自己的状态；
-- Lifecycle Authority：ModuleManager；
+- External Proxy / Observation：统一缓存游戏读取；Feature 需要额外 Native 边界时使用能力门治理的 `S.Api:CallCapability`（见 [`CURRENT_ARCHITECTURE_OVERVIEW.md`](CURRENT_ARCHITECTURE_OVERVIEW.md) §6）；
+- Domain Authority：各 Feature 自己的 store/authority；
+- Lifecycle Authority：FeatureRuntime（旧 ModuleManager 已删除）；
 - Diagnostics Authority：DiagnosticsManager；
 - Game Identity Authority：GameDataRegistry / `GameIds`；
-- Persistence Policy Authority：Persistence Framework（基础框架已落地，Domain 分阶段迁移）；
-- Runtime Budget Policy Authority：FrameBudget v1；当前主动治理 Suite Scheduler，Healer 已完成 Health/Status/Visual/Roster 接入，Plates Runtime Foundation v1 也已完成 lane admission + warm watchdog recovery；其他 Domain 分阶段迁移；
-- UI Lifecycle Authority：RSUI Diff/Lifecycle v1；UI Design/Composition Authority：UI Framework v2；WindowManager 继续复用已验证的 ManagedWindow / HudManager，不重复建立位置 Authority；
-- `S.State` 长期只作为 Suite 生命周期/Projection，不继续扩张成所有业务可写共享状态。
+- Persistence Policy Authority：Persistence Framework（`P:RegisterV3Store`，见 CURRENT_ARCHITECTURE_OVERVIEW.md §5）；
+- Runtime Budget Policy Authority：FrameBudget v1；主动治理 Suite Scheduler，各 Feature 按需接入；
+- UI Lifecycle Authority：RSUI Diff/Lifecycle v1；UI Design/Composition Authority：UI Framework v2；WindowManager 已由 V3 UIHostManager + WindowShell 取代（旧 ManagedWindow / HudManager 已删除）；
+- 旧 `S.State` / `S.Storage` 已删除（replicatedsuite.lua 显式置 nil + foundation_gate 断言）；业务状态只走各自 Feature Store。
 
 ---
 
@@ -4305,27 +4305,24 @@ ArcheAge RU Native UI
 
 #### 2.1 Domain / Persistence Authority 不变
 
-Healer 设置最终写入仍必须经过：
+Healer 设置最终写入仍必须经过 `Feature.Commands`（V3 契约，见 [`HEALER_ARCHITECTURE.md`](HEALER_ARCHITECTURE.md)）：
 
 ```text
 UI Field
   → BindingV2
-  → ReplicatedHealerModule:SetSuiteSetting()
-  → SettingsModel:CoerceSuiteSetting()
-  → state
-  → SaveState()
-  → Healer Persistence Dirty + Debounce
+  → Feature.Commands:SetSetting()
+  → Store Normalize/MarkDirty
+  → Persistence Dirty + Debounce
 ```
 
-Bound Field 不能直接写 `state`、`SaveData` 或 Permanent Store。
+Bound Field 不能直接写 `Store.State`、`SaveData` 或绕过能力门。旧 `ReplicatedHealerModule` 已删除。
 
 #### 2.2 Preview 不等于 Commit
 
 新增：
 
 ```lua
-SettingsModel:PreviewSuiteSetting(target, key, value)
-ReplicatedHealerModule:PreviewSuiteSetting(key, value)
+Feature.Commands:PreviewSetting(key, value)
 ```
 
 Preview 复用 Settings Model 的真实规格与耦合阈值规则，但：

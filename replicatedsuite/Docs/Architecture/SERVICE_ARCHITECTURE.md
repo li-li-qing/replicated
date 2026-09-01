@@ -232,9 +232,9 @@ V3 Presentation (Widget/Page) —— FloatingSurface + WidgetHost + PageHost + V
 - **零 Tick**：事实回调只做有界 `OnCombatFact`；Projection 用 400ms `Scheduler:AddOneShot` 合并发布，关系/Kind 证据重放用 160ms one-shot。`TeamRosterV3 v4` 只在 Demand 0→1 / TEAM_MEMBERS_CHANGED 后的安全点扫描；冷启动失败最多追加 3 次约 450ms one-shot 重试并保留最后有效快照，不在 CombatFact 回调扫描单位。
 - **身份键保守性**：DPS 聚合键不再裁掉 `@World`；两个都明确带 World 且 World 不同的名字绝不合并。短名与带 World 名在没有稳定 ID 证据时宁可暂时分行，也不把两个跨服角色错误合并。
 
-## 7. Legacy Reference
+## 7. 旧版架构（已删除）
 
-`modules/professional/`、旧 `services/` 与 `ModuleManager` 相关代码仍可作为行为/数据迁移参考，但当前不在 Active TOC。迁移时必须拆分“共享事实 Service”和“Feature 业务判断”，禁止重新建立超级 Service/Core。
+`modules/professional/`、旧 `services/`、`ModuleManager`、`rs_state`、`rs_storage`、`rs_module_manager`、`rs_module_sandbox` 等旧版代码已于 2026-09-01/02 全部物理删除（commit 09010c0），不再随包。用户持有全量离线备份，插件树内绝不重新引入。V3 共享服务见 `services/` 目录与 [`CURRENT_ARCHITECTURE_OVERVIEW.md`](CURRENT_ARCHITECTURE_OVERVIEW.md) §9。重建被删功能时必须拆分"共享事实 Service"和"Feature 业务判断"，禁止重新建立超级 Service/Core。
 
 
 ## CombatEventBus RU Release Compatibility（M1.15.2H1）

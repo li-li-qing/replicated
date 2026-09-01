@@ -4,7 +4,7 @@
 
 ## 这个项目一句话
 
-Replicated Suite 是 ArcheRage RU 客户端的一个公开 Addon（`globals` + `replicatedsuite` + `z_api_functions`），当前处于 **V3 重建（v3_rebuild）** 阶段：Active TOC 已切到单一 V3 Host；Legacy/Professional 源码保留为迁移参考，在 ArcheAge 有限原生 UI API 之上继续建设 RSUI、共享 Runtime Foundation 与独立 Feature 生命周期。
+Replicated Suite 是 ArcheRage RU 客户端的一个公开 Addon（`globals` + `replicatedsuite` + `z_api_functions`），当前处于 **V3 重建（v3_rebuild）** 阶段：Active TOC 只加载单一 V3 Host；**旧版（Legacy/Professional）源码已于 2026-09-01/02 全部物理删除**（用户持有全量离线备份，插件树内绝不重新引入），在 ArcheAge 有限原生 UI API 之上继续建设 RSUI、共享 Runtime Foundation 与独立 Feature 生命周期。新人上手见 [`Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md`](Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md)。
 
 ## 文档权威等级（Authority Levels）
 
@@ -48,4 +48,4 @@ Replicated Suite 是 ArcheRage RU 客户端的一个公开 Addon（`globals` + `
 
 ## 加载模型（新同学必读）
 
-引擎按 **目录树 + `toc.g`** 加载 addon，**没有** `require` / `dofile` / `loadfile`。文件在顶层自行注册（如 `S.Services.Alerts = {...}`）；专业模块首行用 `ReplicatedSuiteModuleSandbox:Enter(id, {'ReplicatedX','ReplicatedXConfig'})` 进入独立 Lua 环境。因此：**不要凭文件名猜测“孤儿文件”**——任何在 `toc.g` 或自注册路径上的 `.lua` 都可能是运行时责任。
+引擎按 **目录树 + `toc.g`** 加载 addon，**没有** `require` / `dofile` / `loadfile`。文件在顶层自行注册（如 `S.Services.Alerts = {...}`）。因此：**不要凭文件名猜测"孤儿文件"**——任何在 `toc.g` 或自注册路径上的 `.lua` 都可能是运行时责任；反过来说，磁盘上有但 `toc.g` 没有的 `.lua` 即死文件。

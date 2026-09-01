@@ -2,8 +2,8 @@
 -- Replicated Suite - RSUI Window Shell v3
 --
 -- Generic top-level window composition for future V3 dialogs/tools.  It uses
--- the common RSUI Windowing authority instead of the retired ManagedWindow /
--- S.State path.  Feature/application code may supply persistence callbacks,
+-- the common RSUI Windowing authority instead of the retired ManagedWindow path
+-- (S.State 已删除, 旧版架构).  Feature/application code may supply persistence callbacks,
 -- but this shell never owns domain state and never creates a private Tick.
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end

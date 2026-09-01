@@ -585,26 +585,9 @@ local function BondQuestEvidence(materialKey, text)
     if quantity ~= nil then return map[quantity], quantity, token end
     return nil, nil, token
 end
-local function BondDateCache()
-    local life = S.State and S.State.life
-    if type(life) ~= "table" then return nil end
-    local dateKey = S.Utils and type(S.Utils.ServerDateKey) == "function" and S.Utils.ServerDateKey() or "unknown"
-    local cache = life.bondCache
-    if type(cache) ~= "table" then
-        cache = { dateKey = "unknown", west = nil, east = nil, auroria = nil, completedMainlandBondKeys = {} }
-        life.bondCache = cache
-    end
-    if dateKey ~= "unknown" and tostring(cache.dateKey) ~= tostring(dateKey) then
-        cache = { dateKey = dateKey, west = nil, east = nil, auroria = nil, completedMainlandBondKeys = {} }
-        life.bondCache = cache
-        if S.Storage and type(S.Storage.RequestSave) == "function" then S.Storage:RequestSave(0) end
-    elseif type(cache.completedMainlandBondKeys) ~= "table" then
-        cache.completedMainlandBondKeys = {}
-        if S.Storage and type(S.Storage.RequestSave) == "function" then S.Storage:RequestSave(0) end
-    end
-    if dateKey ~= "unknown" then cache.dateKey = dateKey end
-    return cache
-end
+-- BondDateCache removed 2026-09-02: S.State 永远 nil (replicatedsuite.lua 显式置 nil
+-- + foundation_gate 断言), 整个函数返回 nil, 调用方 cache 逻辑不可达.
+-- 大陆债券完成状态由 questStatus 直接决定, 无缓存层.
 local function ReadBondResources()
     local totals, expected = {}, {}
     for key in pairs(S.Constants and S.Constants.BondMaterialItemTypes or {}) do totals[key] = 0; expected[key] = true end
@@ -682,11 +665,8 @@ function BA:Refresh()
                     local questStatus = "UNKNOWN"
                     local progress = S.Services and S.Services.QuestProgressV3
                     if questId ~= nil and progress and type(progress.QuestState) == "function" then questStatus = tostring(progress:QuestState(questId) or "UNKNOWN") end
-                    local cache = BondDateCache()
                     local sharedKey = materialKey and quantity and (tostring(materialKey) .. ":" .. tostring(quantity)) or nil
                     local completed = questStatus == "COMPLETED"
-                    if sharedKey and index < 5 and cache and cache.completedMainlandBondKeys and cache.completedMainlandBondKeys[sharedKey] == true then completed = true end
-                    if completed and sharedKey and index < 5 and cache and cache.completedMainlandBondKeys then cache.completedMainlandBondKeys[sharedKey] = true; S.Storage:RequestSave(150) end
                     local continentKey = BondContinentKey(line)
                     if continentKey == nil and index >= 5 then continentKey = "auroria" end
                     local category = continentKey == "auroria" and "auroria" or (quantity == 20 and "q20" or quantity == 60 and "q60" or quantity == 100 and "q100" or nil)

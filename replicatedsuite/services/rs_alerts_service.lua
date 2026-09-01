@@ -4,7 +4,7 @@
 --
 -- S.Services.Alerts:Push({text, style, durationMs, sound}) is the single
 -- screen-wide notification channel. Combat alerts are the first consumer
--- (plates rp_runtime); event reminders ("screen" tier) and fishing/trade
+-- (旧 plates rp_runtime, 已删除); event reminders ("screen" tier) and fishing/trade
 -- feedback can join later without duplicating the host window.
 --
 -- Design:

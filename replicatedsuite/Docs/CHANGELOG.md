@@ -1,5 +1,7 @@
 # Replicated Suite 变更记录（Changelog）
 
+> **⚠️ 架构变更声明（2026-09-01/02）**：旧版（Legacy/Professional）源码已全部物理删除（163 文件、−10.3 万行，commit 09010c0）。本文件是历史变更日志，早期条目（M1.16.0.18.x 及之前）可能引用已删文件（`rp_*`/`rh_*`/`rg_*`/`rdps_*`/`modules/professional/`/`S.State`/`S.Storage`/`rs_state`/`rs_storage`/`rs_module_manager`/`rs_module_sandbox`/`ReplicatedSuiteModuleSandbox`/`ReplicatedHealerModule`/`ReplicatedPlatesModule`/`ReplicatedDps` 等）。这些引用仅作历史记录，不代表当前代码。当前架构以 [`Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md`](Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md) 为准。
+
 ## M1.16.0.18.50 — StatusDisplay 头顶全显（headShowAll）+ 勾选即见联动（参考 addon show-all 精华）（2026-08-31）
 
 - **用户报告 Bug（延续）**：.49 修复渲染器 `HasTracked` 总开关后，勾选"头顶显示"且已追踪若干状态时图标仍不出现。深挖发现残留门禁：`ProjectPlates` 的 `BoundedTracked` 在投影层按 tracked 行过滤，tracked 列表为空（或玩家身上的 Buff 不在追踪列表）时 buffs/debuffs lane 产出 0 行——渲染器虽已启动但无行可画，表现为"任何图标都不出现"。对照 GitHub 同类 addon（belovres/ArcheRage-addons，RU 同客户端）精华：`targetdebufftracker/self.lua` 用 `target_buffs[strBuffId] ~= nil or showAllBuffs` 做**全显开关**，空 tracked 列表时用户开箱即可看到全部在场 Buff/Debuff；`buffcaptracker.lua` 单窗口容器 + OnUpdate；`distracker.lua`/`gstracker.lua` nil 时移屏 (5000,5000) + z>0 深度门禁。

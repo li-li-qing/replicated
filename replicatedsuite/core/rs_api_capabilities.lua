@@ -257,7 +257,7 @@ local CAPABILITIES = {
     -- API. Suite does NOT depend on it: A:ProjectWorldToScreen absorbs the same
     -- UIParent camera math internally (G1b 2026-08-24). Registered only as
     -- documentation to prevent future misuse.
-    ["WorldToScreen"] = { OfficialState="Unknown", SideEffectFree=true, Method="WorldToScreen", Source="community globals/WorldToScreen.lua (NOT a game API)", Notes="custom camera projection; Suite absorbs the logic in rp_api, does not call this global" },
+    ["WorldToScreen"] = { OfficialState="Unknown", SideEffectFree=true, Method="WorldToScreen", Source="community globals/WorldToScreen.lua (NOT a game API)", Notes="custom camera projection; Suite 自有投影逻辑 (旧 rp_api 已删除), does not call this global" },
     ["X2Unit:GetTargetAbilityTemplates"] = { OfficialState="Unknown", SideEffectFree=true },
     ["X2Unit:GetUnitScreenPosition"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
     ["X2Option:GetConsoleVariable"] = { OfficialState="Unknown", SideEffectFree=true },

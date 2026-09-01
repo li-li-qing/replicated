@@ -1,5 +1,7 @@
 # Replicated Suite 当前重建里程碑
 
+> **架构变更（2026-09-01/02）**：旧版源码已全部物理删除（commit 09010c0）。本文件早期条目可能引用已删文件（`rp_*`/`rh_*`/`rg_*`/`modules/professional/`/`S.State`/`S.Storage` 等），仅作历史记录。当前架构以 [`../Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md`](../Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md) 为准。
+
 - **Product Usability Recovery（M1.16.0.18.45）**：恢复用户明确指出的旧版高价值能力：真实团队校准、Buff 头顶追踪、四类目标/焦点连线与刷新频率、逻辑坐标范围圆、自动职责、Trade/Treasure/Fishing HUD、Craft 去 raw ID、Bag 原生窗口取放、Auction current-listing 查询；同时以单一事件 Authority/任务互斥/Store schema parity 门禁防止“看起来能用但运行态不真实”。`UIV3Acceptance v35 + FoundationGate v61`。
 - **DPS Skill Proxy Source Classification（M1.16.0.18.44）**：RU 实机证明“治愈之泉”是玩家施放的 60s 技能实体，却被 DPS 以 sourceName 当成独立玩家。DPS Domain v7 现在先查 `CombatSourceProxyCatalog v1`；当前无可靠 proxy→caster owner API，因此技能实体不再进入玩家排行/CombatRelation，也不按最近施法者猜主人，而进入显式“技能代理未归属”统计。无新增 Native consumer。`UIV3Acceptance v33 + FoundationGate v59`；产品能力计数不因本次 correctness hotfix 改变。
 - **Combat / Life Usability Recovery（M1.16.0.18.43）**：按 RU 实机负面证据恢复产品可用性：DPS/DeathReview 默认折叠高占用设置；Healer 删除推荐悬浮窗与页面名单、standalone 校准独立显示团队色块；BuffDisplay 补事件观察；Boss 接入共享 Alert HUD 与测试；Unit Lines/Range Assist 收缩为可证明的当前目标连线/用户半径圆；Trade/Bonds 新增独立 FloatingSurface，Trade 兼容 RU boolean-set zone payload。`UIV3Acceptance v32` + `FoundationGate v58`，Foundation Audit `190/190 + 346/346` 与 5 组定向契约 PASS；RU Fresh Reload 仍是视觉/字段最终证据。
@@ -15,7 +17,7 @@
 
 - **Bonds Filter / Duplicate Priority（M1.16.0.18.30）**：Active V3 Bonds 增加可持久化的 20/60/100/Auroria 过滤、数量/大陆排序、重复材质数量的西/东优先级；页面按钮通过 Commands 写入并刷新，缺少可靠大陆身份时保留重复行并输出诊断。`bonds_v3_filters_test.lua`、全量 37/37 harness 与 Foundation Audit `186/186 + 342/342` 通过；RU 字段和视觉往返仍待验收。
 
-- **Bonds Completion / Resource Projection（M1.16.0.18.29）**：Active V3 Bonds 现在自包含解析受治理的 mainland/Auroria 债券任务映射，读取 `QuestProgressV3` 的完成/可交付/进行中/未接/未知状态；按需有界扫描 240 个背包槽位，投影需求、持有量、缺口与 `partial/unknown` 诊断；每日 mainland `materialKey:quantity` 完成键经过 `S.State.life.bondCache` 持久化并跨大陆复用。页面新增任务状态列，Registry 依赖与证据同步。定向 Bonds harness、全量 36/36 harness 与 Foundation Audit `186/186 + 342/342` 通过；RU Fresh Reload、真实字段/视觉和剩余过滤优先级仍待验收。
+- **Bonds Completion / Resource Projection（M1.16.0.18.29）**：Active V3 Bonds 现在自包含解析受治理的 mainland/Auroria 债券任务映射，读取 `QuestProgressV3` 的完成/可交付/进行中/未接/未知状态；按需有界扫描 240 个背包槽位，投影需求、持有量、缺口与 `partial/unknown` 诊断；每日 mainland `materialKey:quantity` 完成键的持久化路径（旧 `S.State.life.bondCache`）因 S.State 已删除而失效，待迁移至 Feature Store（见 WU4）。页面新增任务状态列，Registry 依赖与证据同步。定向 Bonds harness、全量 36/36 harness 与 Foundation Audit `186/186 + 342/342` 通过；RU Fresh Reload、真实字段/视觉和剩余过滤优先级仍待验收。
 
 - **Foundation Gate / BuffDisplay Schema Parity（M1.16.0.18.27）**：发现并修复 Foundation Gate 仍按 schema 1 检查 `v3.buff_display` 的门禁漂移，使其与当前 Store schema 2 和 Feature Acceptance 对齐；Foundation Gate 已升至 v51。修复后 Foundation Audit `182/182 + 338/338`、24 个 Harness 全部通过，RU Fresh Reload 仍待实机验收。
 

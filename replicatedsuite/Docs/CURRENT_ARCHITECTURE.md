@@ -102,12 +102,12 @@
 ## 1. 形态与阶段
 
 - 单一公开 Addon：`globals` + `replicatedsuite` + `z_api_functions`（发布白名单见 `CORE_ARCHITECTURE.md` § Public Release 约束）。
-- 架构模式：`v3_rebuild`。**Active TOC 只加载 V3 Application/Presentation Host**；Legacy/Professional 源码仍随包保留用于行为、数据和迁移参考，但不属于当前正常 Runtime。已迁移 Feature 由 `FeatureRuntime` 管理独立生命周期。
+- 架构模式：`v3_rebuild`。Active TOC 只加载 V3 Application/Presentation Host。**旧版（Legacy/Professional）源码已于 2026-09-01/02 全部物理删除，不再随包**（用户持有全量离线备份，插件树内绝不重新引入）。已迁移 Feature 由 `FeatureRuntime` 管理独立生命周期。新人上手总览见 [`Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md`](Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md)。
 
 ## 2. 加载模型
 
 - 引擎按 **目录树 + `toc.g`** 加载 addon；**无** `require`/`dofile`/`loadfile`。
-- 文件在顶层自注册（如 `S.Services.Alerts = {...}`）；专业模块首行 `ReplicatedSuiteModuleSandbox:Enter(id, {...})` 进入隔离 Lua 环境。
+- 文件在顶层自注册（如 `S.Services.Alerts = {...}`）。
 - 含义：判断“是否还在用”必须查 `toc.g` + 自注册路径 + 运行时引用，**不能**凭文件名。
 
 ## 3. 分层（自上而下）
@@ -136,9 +136,9 @@ Native Foundation（NativeObjectFactory / Write Fence / Strict Native Authority�
 | 服务 / Demand / Refresh / Aura / Combat Facts | `Architecture/SERVICE_ARCHITECTURE.md` | V3 Shared Service、Consumer Lease、RefreshCoordinator、Aura Facts、UnitIdentity 与 CombatEventBus |
 | 持久化 | `Architecture/PERSISTENCE_ARCHITECTURE.md` | 五 Lifetime、Store Contract、Write Fence |
 | RSUI | `Architecture/RSUI_ARCHITECTURE.md` | UMG 风格 Widget 基础层；Windowing/WindowShell/FloatingSurface 管窗口契约，ViewState/ActionRunner/Persistent Binding 已成为 Active V3 的标准数据状态、操作边界与设置持久化路径 |
-| Healer | `Architecture/HEALER_ARCHITECTURE.md` | Domain/Runtime/Glue/Roster/Settings/V3 Presentation |
+| Healer | `Architecture/HEALER_ARCHITECTURE.md` | 旧 Healer 模块已删除，见 V3 对应物索引 |
 | Combat Analytics | `Architecture/COMBAT_ANALYTICS_ARCHITECTURE.md` | 单 all-scope Consumer + Metric Registry；击杀/控制/乐器/Aura/Encounter 等独立生命周期 |
-| Feature 分类 + 专业要点 | `Architecture/FEATURE_ARCHITECTURE.md` | Plates 等历史架构审计 + Feature 契约 |
+| Feature 分类 + 契约 | `Architecture/FEATURE_ARCHITECTURE.md` | Feature 契约（旧 plates 已删除，见 V3 对应物索引） |
 | 静态 ID | `STATIC_DATA.md` | 身份命名空间与当前核验基线 |
 
 ## 5. 导航与信息架构
@@ -151,16 +151,16 @@ Native Foundation（NativeObjectFactory / Write Fence / Strict Native Authority�
 - Demand Observation / API pacing（2026-08-31 / M1.16.0.18.40）：Active V3 Presentation 不得直接 `FeatureRuntime:Enable/Disable`，用户偏好只经 `SetPreferredEnabled` 改变，页面生命周期只拥有 Consumer Lease。Acquire 的 `0→1` 是初始 read/observation 的唯一 Authority，不允许页面随后再做一次重复 Refresh。需要动态变化的只读能力必须声明 Observation contract 并以 Event + 共享 Scheduler 按需运行：Target/Treasure 为 500ms 低频采样，Fishing 的高频 Buff edge 合并为 100ms one-shot；Consumer=0 后事件/任务必须全部释放。`ApiCapabilities.Cooldown` 由 `S.Api` 中央执行，不允许每个 Feature 自己选择是否遵守原生 cooldown。
 - Action Direction / Specialized Persistence（2026-08-31 / M1.16.0.18.41）：库存移动必须显式区分 `source container` 与 `target policy scope`，禁止用目标容器替代源槽读取；异步批量任务的 Scheduler 创建、取消和 Feature Disable 都属于同一可释放生命周期。Team role 的读取契约允许 `(teamIndex, memberIndex)`，写契约只按 bundled `SetRole(role)` 定义为当前玩家职责，不把读索引虚构成写参数。Activity/Tasks 等专用 Feature 的配置 mutation 必须采用 `snapshot -> mutate -> MarkDirty -> rollback on failure`，不允许 UI 内存态先成功而永久 Store 写入失败。动态 Buff 数量观察使用事件合并 one-shot，不允许 Tick。
 - M1.16.0.14 新增 `combat_raid_readiness` 作为 Aura Phase 12B 首个按需 Consumer：页面只维持 TeamRoster 轻量租约；显式运行检查时分片读取职责/装分/距离，只有配置关键 Buff ID 时短暂 Acquire AuraObservation。Aura v2 提供纯事实 `GetStatusMap/EvaluateRequiredEffects`，不拥有团队通过/失败业务结论；未知 Native/扫描覆盖必须显示“待确认”。
-- M1.16.0.15–M1.16.0.18.3 完成 Healer Aura Bridge → V3 Domain Runtime → Page/Floating → Visual Consumers → Advanced Editors/Build Fence：`combat_healer` 已注册 FeatureRuntime 实现，Roster 复用 TeamRosterV3，Health/Status 由 Suite Scheduler 以 20/8 分片运行，Recommendation 保持评分/规则/距离/滞回 Authority；Aura 共享事实不完整时只走准确性 fallback。V3 Page/Floating/Head Marker/Raid Overlay 全部只经 Feature Projection/Commands 取数；Head 的 50ms Visual Task 只做 Feature-side ScreenProjection + Diff，Raid 静态模式事件驱动且 4×25 槽位预分配，动态效果才建立 100ms 视觉任务。高级编辑器已通过同一 Store Command/Normalize/MarkDirty 写入；严格 BuildScope 对非可选组件失败拒绝 Commit 并回滚。**Professional Healer 整包仍未接回 TOC**；当前剩余是 RU Fresh Reload、保存回读与视觉交互验收。
+- M1.16.0.15–M1.16.0.18.3 完成 Healer Aura Bridge → V3 Domain Runtime → Page/Floating → Visual Consumers → Advanced Editors/Build Fence：`combat_healer` 已注册 FeatureRuntime 实现，Roster 复用 TeamRosterV3，Health/Status 由 Suite Scheduler 以 20/8 分片运行，Recommendation 保持评分/规则/距离/滞回 Authority；Aura 共享事实不完整时只走准确性 fallback。V3 Page/Floating/Head Marker/Raid Overlay 全部只经 Feature Projection/Commands 取数；Head 的 50ms Visual Task 只做 Feature-side ScreenProjection + Diff，Raid 静态模式事件驱动且 4×25 槽位预分配，动态效果才建立 100ms 视觉任务。高级编辑器已通过同一 Store Command/Normalize/MarkDirty 写入；严格 BuildScope 对非可选组件失败拒绝 Commit 并回滚。**旧 Professional Healer 模块已删除**（commit 09010c0）；V3 Healer 已在 Active TOC（`features/combat/healer/`），剩余是 RU Fresh Reload、保存回读与视觉交互验收。
 - M1.16.0.18.1 对 V3 UI Foundation 做 Recovery：所有 TableView 仍共享同一 DataView Authority，`NormalizeColumn` 的同步字段只读当前 column，只有 Native 延迟 callback 才捕获 iteration-local `columnRef`；Generic WindowShell 的 BuildScope 成功/失败均必须闭合，禁止把构建事务遗留到下一 Page。NativeImports v2 / NativeObjectFactory v3 增加 Optional negative cache 与 ImportObject result fence；运行期 DataView/Scrollbar 显隐只能经过 `UI:SetVisible` Strict Write Fence。
 - M1.16.0.18.13 进一步收口 Active V3 Presentation mutation：Page/Widget 的 Feature Binding setter 与 Store dirty 写入统一经 Feature `Commands` facade；读取仍走 Projection/getter，生命周期仍走 Feature lease，Domain/Store 的 Normalize、rollback 与持久化协议不变。
 - M1.16.0.18.14 统一 HUD 交互：FloatingSurface 的公共 Chrome 默认 compact-minimize 为小方块；有限范围 Numeric 通过 `CompactNumericSetting` 复用 Slider+精确输入的单一 Binding Authority。Healer 设置面改为紧凑网格/策略与显示分组，Raid Calibration 背景仍只属于 Presentation；DeathReview 单条删除进入 Feature Command + Store transaction；Activity/Task HUD 详情进入独立 session FloatingSurface，主 Page 仍可继续使用 ModalHost。
 - M1.16.0.18.15 继续收敛 HUD Chrome：所有 FloatingSurface 默认只在标题栏增加轻量“外”入口，外观面板首次点击才构建，透明度/字号最终仍通过 WindowShell→FloatingSurface state/persist 单 Authority；Activity TableView 的滚动条改为 overlay、列宽随 viewport 重算，不再为滚动条保留黑边；Combat Analytics 排行 value 改用 Feature Command 驱动的 SegmentedSelector，Presentation 不持有第二份选择状态。
 - M1.16.0.18.16 修复窄 HUD 外观 NumericRow 的空间分配：`NumericInlineContractVersion v2` 允许紧凑 Consumer 配置 label/input/slider minimum 与 label share；Floating Appearance 使用更窄的两字标签与精确输入，把剩余宽度优先交给 Slider，普通设置页继续保持旧默认下限。
 - M1.16.0.18.3 扩展该构建契约：Page/Widget/Modal/Main Shell 的严格作用域遇到非 `buildOptional=true` 的 RSUI 组件失败时不得提交半成品；Host 检查 `EndBuildScope(..., true)` 结果并对失败页面/悬浮窗做 Generation quarantine。表单关键控件在构造阶段向上传播失败，只有显式可选控件允许降级。
-- M1.16.0.18.4 开始 Plates/BUFF 的第一条 Active V3 消费路径：`combat.buff_display` 只经 `AuraObservationV3:GetStatusMap()` 读取 player/target Buff、Debuff、Hidden 事实，Feature Demand 管理唯一 Aura lease，Page/Widget 只消费 bounded detached projection；Legacy Plates Runtime 仍不在 Active TOC。
-- M1.16.0.18.5 将 Legacy Plates 的重要冷却、魔法阵候选、目标装备状态与计时修正登记为 `GameDataRegistry` 语义集合；集合保留 `curated / verified=false`，Legacy 消费端不再重复维护这些 ID，且不因此把 Legacy Runtime 接回 Active TOC。
-- M1.16.0.18.5 同时为 Legacy Plates Manager/Storage/Runtime 暴露只读 Diagnostics Facade；Suite 摘要可观察目录、发现/捕获 staging、分片、Dirty、write fence、FrameBudget 与关系集合计数，诊断读取不执行持久化 API或新的 RU 扫描。
+- M1.16.0.18.4 开始 Plates/BUFF 的第一条 Active V3 消费路径：`combat.buff_display` 只经 `AuraObservationV3:GetStatusMap()` 读取 player/target Buff、Debuff、Hidden 事实，Feature Demand 管理唯一 Aura lease，Page/Widget 只消费 bounded detached projection。旧 Plates Runtime 已删除。
+- M1.16.0.18.5 将重要冷却、魔法阵候选、目标装备状态与计时修正登记为 `GameDataRegistry` 语义集合（`data/ids/rs_plates_ids.lua`）；集合保留 `curated / verified=false` 元数据。旧 Plates 消费端已随文件删除。
+- M1.16.0.18.5 曾为旧 Plates Manager/Storage/Runtime 暴露只读 Diagnostics Facade；**旧 Plates 文件已于 2026-09-01 全部删除**（commit 09010c0），诊断由 V3 各服务 `GetHealth()` 承担。
 - M1.16.0.18.6 收紧 V3 Visibility Authority：BuildScope rollback、Owner Release、重复注册拒绝和 Primitive degraded 隔离统一经过 `UI:SetVisible()` / `SetEnabled()` / `SetPickable()`；`false` 的 Diff cache 无变化/拒绝语义不再被上层误判为原生 `Show(false)` 旁路许可。
 - M1.16.0.18.8 收紧 Active V3 Presentation read model：Page/Widget 不直接访问 `Feature.State`；窗口几何、Activity/Task 行数与显隐偏好、Task 作用域和 Gear 方案计数通过 Feature getter 获取，显隐写入通过 Commands；新增 boundary Harness `12/12`。更深的 Authority projection 拆分仍按各业务域独立推进。
 - M1.16.0.18.9 收紧 Activity/Task Projection boundary：Page/Widget 不直接持有 `Feature.Authority`；rows/summary/lookup/widget projection 经 Feature getter，刷新/隐藏/恢复/展开经 Commands，且 Activity 手动刷新与脏事件刷新保持不同扫描语义。
@@ -168,7 +168,7 @@ Native Foundation（NativeObjectFactory / Write Fence / Strict Native Authority�
 - M1.16.0.18.11 收口 Factory Reset/P0 persistence contract：Suite-owned keys 由 `Persistence:GetPersistentKeys()` 纳入，Plates Aura Library 的 manifest 与 `a/b/c × 32` bounded shards 显式清理，reset 后旧 generation 通过 fence/quiesce 防止回写；`GetEffectIds` 只保留一个 Authority，Alerts 使用 full-scan mode。
 - M1.16.0.18.12 收紧 Healer Presentation mutation boundary：规则、Tracked Buff、颜色、布局、Roster 刷新、Persistent Binding setter 与 widget dirty callback 均经 `v3.healer.Feature.Commands`，Store 继续拥有 Normalize/MarkDirty rollback，Presentation 只消费 Projection/Commands。
 - M1.16.0.2 起，V3 Design Root 支持 `id` 或 spec table 两种兼容入口；可选 Native 控件（例如 RU Build 的 EditBox）必须 fail-open，单个可选控件不可让整个 Page Factory 失败。用户触发的路由失败必须进入 Diagnostics + Toast/状态栏，禁止再静默返回 false。
-- Legacy UI/Professional 源码不在 Active TOC；禁止新功能回写 Legacy Presentation。
+- 旧版 UI/Professional 源码已全部删除；禁止重新引入旧逻辑或迁移桥。
 
 ## 6. 性能基线
 

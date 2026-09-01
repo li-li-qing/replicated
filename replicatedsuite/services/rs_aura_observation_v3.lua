@@ -220,7 +220,7 @@ function A:_ScanLane(unitId, lane, limit)
         -- RU unit rows frequently omit the name field. When the id is missing
         -- OR the row carries no usable name and the ability-tooltip cache
         -- cannot resolve that id yet, fetch the tooltip row — the plates-proven
-        -- co-authority (rp_api reads tip.name / extra.name alike). Gating on
+        -- co-authority (旧 rp_api 曾读 tip.name / extra.name alike, 该文件已删除). Gating on
         -- the cache keeps steady-state scans free of extra tooltip reads: only
         -- first-seen ids pay one tooltip read, then the ability cache answers.
         local rowName = PickString(data, nil, STATUS_KEYS.name) or NameFromExtra(dataExtra)

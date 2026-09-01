@@ -28,7 +28,7 @@ end
 
 local function ActiveMainPlacement()
     -- V3 Shell owns its geometry in v3.shell. Layout remains a pure metrics
-    -- authority and must not reach back into the retired S.State tree.
+    -- authority and must not reach back into retired state trees (S.State 已删除).
     return {}
 end
 
@@ -135,7 +135,7 @@ end
 -- Apply one responsive presentation transaction. In V3 rebuild mode the
 -- active presentation Authority is UIHostManager, not the legacy UI factory.
 -- Keeping this bridge here prevents resolution/UI-scale changes from falling
--- through into legacy S.State-dependent code that is intentionally not loaded.
+-- through into legacy state-dependent code (S.State 已删除, 不加载).
 function L:ApplyResponsivePresentation(fromMetricsChange)
     if S.Theme ~= nil and type(S.Theme.RefreshTypography) == "function" then
         S.Theme:RefreshTypography()
