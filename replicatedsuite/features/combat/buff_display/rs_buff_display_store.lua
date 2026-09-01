@@ -245,7 +245,7 @@ local function NormalizeSettings(value)
         freezeEnabled = value.freezeEnabled == true,
         playerRows = ClampInt(value.playerRows, 1, 64, 24),
         targetRows = ClampInt(value.targetRows, 1, 64, 24),
-        refreshMs = ClampInt(value.refreshMs, 1, 2000, 400),
+        refreshMs = ClampInt(value.refreshMs, 1, 2000, 120),
         components = NormalizeComponents(value.components, layoutPresetVersion),
         layoutPresetVersion = LAYOUT_PRESET_VERSION,
         tracked = {
@@ -260,7 +260,7 @@ local function NormalizeSettings(value)
         headIconSize = ClampInt(value.headIconSize, 8, 64, 24),
         headMaxIcons = ClampInt(value.headMaxIcons, 1, 12, 8),
         headOffsetY = headOffsetY,
-        headRefreshMs = ClampInt(value.headRefreshMs, 1, 2000, 100),
+        headRefreshMs = ClampInt(value.headRefreshMs, 1, 2000, 50),
         headShowStacks = value.headShowStacks ~= false,
         headShowTime = value.headShowTime ~= false,
         -- Global plate scale multiplies every region (health bar, icons, text).

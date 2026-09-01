@@ -27,7 +27,7 @@ R.StatusSliceMembers = 8
 R.RosterSlotSliceMembers = 16
 R.RosterRoleSliceMembers = 8
 R.RosterPollMs = 1000
-R.VisualMs = 50
+R.VisualMs = 30       -- visual pass target interval (was 50)
 R.MetricsMs = 500
 
 R.health = R.health or {
@@ -214,8 +214,8 @@ function R:OnRosterRebuilt()
     self.statusGeneration = 0
     self.healthGeneration = 0
 
-    healthElapsed = math.max(tonumber(healthElapsed) or 0, tonumber(state and state.healthScanMs) or 150)
-    buffElapsed = math.max(tonumber(buffElapsed) or 0, tonumber(state and state.buffScanMs) or 300)
+    healthElapsed = math.max(tonumber(healthElapsed) or 0, tonumber(state and state.healthScanMs) or 100)
+    buffElapsed = math.max(tonumber(buffElapsed) or 0, tonumber(state and state.buffScanMs) or 200)
     self:MarkVisualDirty("all")
     DiagnosticsCount("ROSTER_GENERATION_CHANGED", 1)
     return true
@@ -225,8 +225,8 @@ function R:OnScoringPolicyChanged(reason)
     -- Scoring configuration is Domain policy. Abort only staged generations so
     -- one atomic Recommendation generation never mixes old/new scoring rules.
     self:AbortCycles()
-    healthElapsed = math.max(tonumber(healthElapsed) or 0, tonumber(state and state.healthScanMs) or 150)
-    buffElapsed = math.max(tonumber(buffElapsed) or 0, tonumber(state and state.buffScanMs) or 300)
+    healthElapsed = math.max(tonumber(healthElapsed) or 0, tonumber(state and state.healthScanMs) or 100)
+    buffElapsed = math.max(tonumber(buffElapsed) or 0, tonumber(state and state.buffScanMs) or 200)
     self:MarkVisualDirty("all")
     DiagnosticsCount("SCORING_POLICY_CHANGED", 1)
 end
@@ -236,7 +236,7 @@ function R:OnStatusSnapshotCommitted()
     self.metrics.statusCyclesCompleted = (tonumber(self.metrics.statusCyclesCompleted) or 0) + 1
     -- Status affects rescue score and raid tint. Force one health generation so
     -- every recommendation observes the newly committed status generation.
-    healthElapsed = math.max(tonumber(healthElapsed) or 0, tonumber(state and state.healthScanMs) or 150)
+    healthElapsed = math.max(tonumber(healthElapsed) or 0, tonumber(state and state.healthScanMs) or 100)
     self.visual.raid = true
 end
 
@@ -516,7 +516,10 @@ function R:_RunVisualPass()
     local needRaid = self.visual.raid == true or animateRaid
     if not needRecommendation and not needMarkers and not needRaid then return false end
 
-    local granted = self:_RequestLane("visual", "P2", 2, math.max(1, (tonumber(visualElapsed) or 0) / self.VisualMs))
+    -- Visual lane uses P1 priority so raid overlay / head markers are not
+    -- starved during heavy combat frames. The cost is low (just widget
+    -- position/color updates, no Native reads).
+    local granted = self:_RequestLane("visual", "P1", 1, math.max(1, (tonumber(visualElapsed) or 0) / self.VisualMs))
     if not granted then return false end
 
     if needRecommendation then
@@ -579,7 +582,7 @@ function R:Tick(dt)
 
         local rosterReady = rosterDomain == nil or type(rosterDomain.IsReady) ~= "function" or rosterDomain:IsReady()
         if rosterReady then
-            if self.status.active ~= true and buffElapsed >= math.max(200, tonumber(state.buffScanMs) or 300) then
+            if self.status.active ~= true and buffElapsed >= math.max(100, tonumber(state.buffScanMs) or 200) then
                 buffElapsed = 0
                 self:StartStatusCycle()
             end
@@ -591,7 +594,7 @@ function R:Tick(dt)
             -- complete Status first, then publish the first Recommendation.
             if not initialStatusPending then
                 if self.health.active ~= true
-                    and healthElapsed >= math.max(100, tonumber(state.healthScanMs) or 150) then
+                    and healthElapsed >= math.max(50, tonumber(state.healthScanMs) or 100) then
                     healthElapsed = 0
                     self:StartHealthCycle()
                 end
@@ -606,7 +609,7 @@ function R:Tick(dt)
             end
 
             if self.status.active == true and not healthWorkedThisFrame then
-                local interval = math.max(200, tonumber(state.buffScanMs) or 300)
+                local interval = math.max(100, tonumber(state.buffScanMs) or 200)
                 local lateRatio = math.max(0, ((tonumber(animationClock) or 0) - (tonumber(self.status.startedAt) or 0)) / interval)
                 local granted = self:_RequestLane("status", "P2", 2, lateRatio)
                 if granted then Profile("healer:status_slice", RunStatusSliceProfile, self) end

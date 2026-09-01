@@ -33,8 +33,8 @@ M.SuiteSettingSpecs = {
     showRaidRanks={kind="boolean"}, raidRankCount={kind="number",min=0,max=50,integer=true},
     raidRankFontSize={kind="number",min=8,max=20,integer=true}, raidRankAlpha={kind="number",min=0.10,max=1.00},
     raidRankCorner={kind="number",min=1,max=4,integer=true}, raidRankOffsetX={kind="number",min=-50,max=50},
-    raidRankOffsetY={kind="number",min=-50,max=50}, healthScanMs={kind="number",min=100,max=1000,integer=true},
-    buffScanMs={kind="number",min=200,max=2000,integer=true}, minHoldMs={kind="number",min=0,max=5000,integer=true},
+    raidRankOffsetY={kind="number",min=-50,max=50}, healthScanMs={kind="number",min=50,max=1000,integer=true},
+    buffScanMs={kind="number",min=100,max=2000,integer=true}, minHoldMs={kind="number",min=0,max=5000,integer=true},
     scoreLead={kind="number",min=0,max=50}, healthCurveMode={kind="number",min=1,max=2,integer=true},
     healthAccelMode={kind="number",min=1,max=3,integer=true}, distanceCurveMode={kind="number",min=1,max=2,integer=true},
     distanceEdgePercent={kind="number",min=5,max=80}, missingSensitivity={kind="number",min=5000,max=200000},
@@ -376,8 +376,8 @@ function M:NormalizeState(target, defaults, settingsVersion)
     target.fullRecommendCount = math.floor(Clamp(target.fullRecommendCount or 10, 1, 100))
     target.miniRecommendCount = math.floor(Clamp(target.miniRecommendCount or 3, 1, 3))
     target.headMarkerCount = math.floor(Clamp(target.headMarkerCount or 5, 1, 50))
-    target.healthScanMs = math.floor(Clamp(target.healthScanMs or 150, 100, 1000))
-    target.buffScanMs = math.floor(Clamp(target.buffScanMs or 300, 200, 2000))
+    target.healthScanMs = math.floor(Clamp(target.healthScanMs or 100, 50, 1000))
+    target.buffScanMs = math.floor(Clamp(target.buffScanMs or 200, 100, 2000))
     target.enterThreshold = Clamp(target.enterThreshold or defaults.enterThreshold or 100, 1, 100)
     target.exitThreshold = Clamp(target.exitThreshold or defaults.exitThreshold or 100, target.enterThreshold, 100)
     target.selfThreshold = Clamp(target.selfThreshold or 70, 1, 100)

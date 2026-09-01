@@ -230,7 +230,7 @@ function Observer:Tick(deltaMs, runtimeEnabled, rosterStable, rosterPollMs)
         end
     end
 
-    local interval = math.max(300, state and tonumber(state.buffScanMs) or 300)
+    local interval = math.max(150, state and tonumber(state.buffScanMs) or 200)
     if buffObserverScanElapsed >= interval then
         buffObserverScanElapsed = 0
         self:Refresh(runtimeEnabled ~= true)

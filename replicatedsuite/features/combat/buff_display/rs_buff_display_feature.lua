@@ -138,8 +138,8 @@ end
 
 local function LaneInterval(laneKey)
     local settings = Settings()
-    if laneKey == "aura" then return settings.refreshMs or 400 end
-    if laneKey == "position" or laneKey == "distance" or laneKey == "cast" then return settings.headRefreshMs or 100 end
+    if laneKey == "aura" then return settings.refreshMs or 120 end
+    if laneKey == "position" or laneKey == "distance" or laneKey == "cast" then return settings.headRefreshMs or 50 end
     if laneKey == "metadata" then return 1000 end
     if laneKey == "equipment" then return 2000 end
     return 400
