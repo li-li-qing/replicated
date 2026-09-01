@@ -11,6 +11,7 @@
 --   * 10 head components projected through GetSettingsProjection
 --   * ProjectStatusMap rows carry category/detectionSource; hidden-sourced
 --     rows classify as debuff
+--   * equipment projection preserves the verified grade overlay texture
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -40,7 +41,8 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or type(F.GetProjection) ~= "function" or type(F.GetSettingsProjection) ~= "function"
         or type(F.RefreshScope) ~= "function" or type(F.Refresh) ~= "function"
         or type(F.AcquireConsumer) ~= "function" or type(F.ReleaseConsumer) ~= "function"
-        or tonumber(F.SchemaVersion) ~= 4 or (tonumber(F.ProjectPlatesContractVersion) or 0) < 1
+        or tonumber(F.SchemaVersion) ~= 4 or (tonumber(F.ProjectPlatesContractVersion) or 0) < 3
+        or type(F.SyncTrackedProjectionFlags) ~= "function"
         or type(F.Commands) ~= "table" or type(F.Commands.SetSetting) ~= "function"
         or type(F.Commands.ApplySettingFromBinding) ~= "function" or type(F.Commands.MarkStoreDirty) ~= "function"
         or type(F.Commands.GetWidgetVisible) ~= "function" or type(F.Commands.SetWidgetVisible) ~= "function"
@@ -48,7 +50,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or type(F.Commands.SetComponentField) ~= "function" or type(F.Commands.ImportTrackedIds) ~= "function"
         or type(F.Commands.ExportAll) ~= "function" or type(F.Commands.SerializeExport) ~= "function"
         or type(F.Commands.ParseImportText) ~= "function" or type(F.Commands.ImportAll) ~= "function"
-        or (tonumber(F.BuffHeadMarkerContractVersion) or 0) < 3 then return false, "feature_contract" end
+        or (tonumber(F.BuffHeadMarkerContractVersion) or 0) < 4 then return false, "feature_contract" end
     -- Head renderer gate contract: tracked-independent start (HasRenderableComponents
     -- gate) + GetDiagnostics triage surface + anchorFailure trail on hidden scopes.
     local headMarkers = S.UIV3 and S.UIV3.BuffHeadMarkersV3 or nil
@@ -82,10 +84,15 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     for _, key in ipairs(componentKeys) do if type(components[key]) ~= "table" then missingComponents = missingComponents + 1 end end
     if missingComponents ~= 0 or type(tracked.buff) ~= "table" or type(tracked.debuff) ~= "table" then return false, "schema4_settings_projection" end
     -- Head plates projection: bounded tracked rows + enabled component data.
-    local plates = F.ProjectPlates({ buffRows = { { id = 101, name = "A" } }, distance = 1234.5, class = "法师", gearScore = 12345 }, settingsProjection)
+    local plates = F.ProjectPlates({
+        buffRows = { { id = 101, name = "A" } }, distance = 1234.5, class = "法师", gearScore = 12345,
+        mainHand = { icon = "weapon.dds", gradeIconPath = "grade.dds", name = "武器" },
+    }, settingsProjection)
     if type(plates) ~= "table" or type(plates.components) ~= "table" or type(plates.buffs) ~= "table"
         or type(plates.distance) ~= "table" or plates.distance.value ~= "1.23km"
         or type(plates.class) ~= "table" or plates.class.value ~= "法师"
-        or type(plates.gearScore) ~= "table" or plates.gearScore.value ~= "12345" then return false, "plates_projection_contract" end
+        or type(plates.gearScore) ~= "table" or plates.gearScore.value ~= "12345"
+        or type(plates.mainHand) ~= "table" or plates.mainHand.icon ~= "weapon.dds"
+        or plates.mainHand.gradeIconPath ~= "grade.dds" then return false, "plates_projection_contract" end
     return true
 end)

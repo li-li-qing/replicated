@@ -68,6 +68,9 @@ local function MakeIcon(scope, index)
     if root == nil then return nil, err end
     root.rsUiOwner = P.owner
     local icon = root.CreateIconDrawable and root:CreateIconDrawable("artwork") or nil
+    -- Equipment quality uses a second texture over the base item icon. It is
+    -- allocated lazily only when this pooled marker actually renders equipment,
+    -- so ordinary Aura-only slots do not pay an extra drawable allocation.
     local stack = S.UI:CreateLabel(root, "v3_buff_head_" .. scope .. "_stack_" .. tostring(index), "", 0, 0, 18, 14, 9, "strong", "RIGHT", true)
     local time = S.UI:CreateLabel(root, "v3_buff_head_" .. scope .. "_time_" .. tostring(index), "", 0, 0, 40, 12, 8, "default", "CENTER", true)
     if icon == nil or stack == nil or time == nil then
@@ -75,7 +78,7 @@ local function MakeIcon(scope, index)
         return nil, "buff_head_marker_child_create_failed"
     end
     S.UI:SetVisible(root, false, P.owner)
-    return { root=root, icon=icon, stack=stack, time=time, iconPath=nil, layout={} }
+    return { root=root, icon=icon, grade=nil, stack=stack, time=time, iconPath=nil, gradePath=nil, layout={} }
 end
 
 local function MakeLabel(scope, index)
@@ -159,6 +162,10 @@ local function LayoutIcon(marker, size, showStacks, showTime)
     S.UI:SetExtent(marker.root, size, totalH, P.owner)
     S.UI:SetExtent(marker.icon, size, size, P.owner)
     S.UI:SetAnchor(marker.icon, marker.root, 0, 0, P.owner)
+    if marker.grade ~= nil then
+        S.UI:SetExtent(marker.grade, size, size, P.owner)
+        S.UI:SetAnchor(marker.grade, marker.root, 0, 0, P.owner)
+    end
     S.UI:SetAnchor(marker.stack, marker.root, 0, 0, P.owner)
     S.UI:SetExtent(marker.stack, size - 2, math.max(12, math.floor(size * 0.5)), P.owner)
     S.UI:SetAnchor(marker.time, marker.root, 0, size, P.owner)
@@ -180,6 +187,22 @@ local function ApplyIcon(marker, row, size, cfg, x, y, showStacks, showTime)
     if path ~= marker.iconPath then
         S.UI:SetIconTexture(marker.icon, path ~= "" and path or UNKNOWN_ICON, P.owner)
         marker.iconPath = path
+    end
+    local gradePath = tostring(row and row.gradeIconPath or "")
+    if gradePath ~= "" and marker.grade == nil and marker.root ~= nil and type(marker.root.CreateIconDrawable) == "function" then
+        marker.grade = marker.root:CreateIconDrawable("artwork")
+        if marker.grade ~= nil then
+            S.UI:SetExtent(marker.grade, size, size, P.owner)
+            S.UI:SetAnchor(marker.grade, marker.root, 0, 0, P.owner)
+            S.UI:SetVisible(marker.grade, false, P.owner)
+        end
+    end
+    if marker.grade ~= nil then
+        if gradePath ~= marker.gradePath then
+            if gradePath ~= "" then S.UI:SetIconTexture(marker.grade, gradePath, P.owner) end
+            marker.gradePath = gradePath
+        end
+        S.UI:SetVisible(marker.grade, gradePath ~= "", P.owner)
     end
     marker.stack:SetText((showStacks and N(row.stack, 1) > 1) and tostring(math.floor(N(row.stack, 1))) or "")
     marker.time:SetText(showTime and tostring(row.timeText or "--") or "")
@@ -303,7 +326,7 @@ local function RenderScope(scope, settings)
                 local size = math.max(8, math.floor(N(cfg.size, 18)))
                 local x = math.floor(anchorX + N(cfg.x, 0) - size / 2)
                 local y = math.floor(anchorY + N(cfg.y, 0))
-                ApplyIcon(marker, { iconPath = item.icon, stack = nil, timeText = nil }, size, cfg, x, y, false, false)
+                ApplyIcon(marker, { iconPath = item.icon, gradeIconPath = item.gradeIconPath, stack = nil, timeText = nil }, size, cfg, x, y, false, false)
                 slot = slot + 1
             end
         end

@@ -91,7 +91,7 @@ end
 ------------------------------------------------------------------------
 -- Head-plate projection. `laneData` is produced by the Feature runtime lanes:
 --   { buffRows, debuffRows, distance, class, gearScore,
---     mainHand={icon,name}, offHand, ranged, wings,
+--     mainHand={icon,gradeIconPath,name}, offHand, ranged, wings,
 --     cast={casting, spellName, currMs, totalMs} }
 -- Returns only enabled components; tracked rows are bounded per component.
 --
@@ -157,7 +157,13 @@ function F.ProjectPlates(laneData, settings)
     if laneData.gearScore ~= nil then out.gearScore = { value = tostring(math.floor(tonumber(laneData.gearScore) or 0)) } end
     for _, key in ipairs({ "mainHand", "offHand", "ranged", "wings" }) do
         local item = type(laneData[key]) == "table" and laneData[key] or nil
-        if item ~= nil and (item.icon ~= nil or item.name ~= nil) then out[key] = { icon = tostring(item.icon or ""), name = tostring(item.name or "") } end
+        if item ~= nil and (item.icon ~= nil or item.name ~= nil) then
+            out[key] = {
+                icon = tostring(item.icon or ""),
+                gradeIconPath = tostring(item.gradeIconPath or ""),
+                name = tostring(item.name or ""),
+            }
+        end
     end
     if type(laneData.cast) == "table" and laneData.cast.casting == true then
         out.cast = {
@@ -169,4 +175,4 @@ function F.ProjectPlates(laneData, settings)
     return out
 end
 
-F.ProjectPlatesContractVersion = 2
+F.ProjectPlatesContractVersion = 3

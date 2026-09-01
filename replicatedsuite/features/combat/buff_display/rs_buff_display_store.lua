@@ -26,6 +26,7 @@ local F = S.Features.BuffDisplay
 local U = S.Utils
 local STORE_ID = "v3.buff_display"
 local SCHEMA = 4
+local LAYOUT_PRESET_VERSION = 2
 
 local function Copy(value)
     if U ~= nil and type(U.DeepCopy) == "function" then return U.DeepCopy(value) end
@@ -53,7 +54,12 @@ local Floating = S.RSUI and S.RSUI.FloatingSurface or nil
 if type(Floating) ~= "table" or type(Floating.NormalizeState) ~= "function" then error("FloatingSurface unavailable for BuffDisplay store") end
 
 local COMPONENT_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar" }
-local COMPONENT_DEFAULTS = {
+
+-- Exact M1.16.0.18.50 defaults are kept only as a compatibility fingerprint.
+-- A saved component is moved to the compact v2 preset only when its geometry
+-- still matches this fingerprint. Any user-adjusted position/size/font/alpha is
+-- left untouched, so an upgrade cannot overwrite a deliberate HUD layout.
+local LEGACY_COMPONENT_DEFAULTS = {
     buffs     = { enabled = true,  x = 0,   y = -54,  size = 24, fontSize = 9,  alpha = 1.0 },
     debuffs   = { enabled = true,  x = 0,   y = -84,  size = 24, fontSize = 9,  alpha = 1.0 },
     distance  = { enabled = true,  x = 0,   y = -108, size = 0,  fontSize = 10, alpha = 1.0 },
@@ -64,6 +70,23 @@ local COMPONENT_DEFAULTS = {
     ranged    = { enabled = true,  x = 22,  y = -156, size = 18, fontSize = 0,  alpha = 1.0 },
     wings     = { enabled = true,  x = 0,   y = -178, size = 18, fontSize = 0,  alpha = 1.0 },
     castBar   = { enabled = true,  x = 0,   y = -40,  size = 6,  fontSize = 10, alpha = 1.0 },
+}
+
+-- Compact preset: equipment is one continuous row close to the native plate;
+-- metadata stays between equipment and effect rows. This follows the proven
+-- Professional Plates / community Extended Plates visual grouping while keeping
+-- every component independently adjustable through schema-4 fields.
+local COMPONENT_DEFAULTS = {
+    buffs     = { enabled = true,  x = 0,   y = -108, size = 24, fontSize = 9,  alpha = 1.0 },
+    debuffs   = { enabled = true,  x = 0,   y = -136, size = 24, fontSize = 9,  alpha = 1.0 },
+    distance  = { enabled = true,  x = -62, y = -82,  size = 0,  fontSize = 10, alpha = 1.0 },
+    class     = { enabled = true,  x = 0,   y = -94,  size = 0,  fontSize = 10, alpha = 1.0 },
+    gearScore = { enabled = true,  x = 62,  y = -82,  size = 0,  fontSize = 10, alpha = 1.0 },
+    mainHand  = { enabled = true,  x = -36, y = -58,  size = 22, fontSize = 0,  alpha = 1.0 },
+    offHand   = { enabled = true,  x = -12, y = -58,  size = 22, fontSize = 0,  alpha = 1.0 },
+    ranged    = { enabled = true,  x = 12,  y = -58,  size = 22, fontSize = 0,  alpha = 1.0 },
+    wings     = { enabled = true,  x = 36,  y = -58,  size = 22, fontSize = 0,  alpha = 1.0 },
+    castBar   = { enabled = true,  x = 0,   y = -34,  size = 6,  fontSize = 10, alpha = 1.0 },
 }
 
 local function NormalizeTrackedIds(value)
@@ -98,10 +121,36 @@ local function NormalizeComponent(value, defaults)
     }
 end
 
-local function NormalizeComponents(value)
+local function SameLegacyGeometry(component, legacy)
+    if type(component) ~= "table" or type(legacy) ~= "table" then return false end
+    return component.x == legacy.x and component.y == legacy.y
+        and component.size == legacy.size and component.fontSize == legacy.fontSize
+        and math.abs((tonumber(component.alpha) or 1) - (tonumber(legacy.alpha) or 1)) < 0.0001
+end
+
+local function NormalizeComponents(value, presetVersion)
     value = type(value) == "table" and value or {}
+    presetVersion = math.floor(tonumber(presetVersion) or 0)
     local out = {}
-    for _, key in ipairs(COMPONENT_KEYS) do out[key] = NormalizeComponent(value[key], COMPONENT_DEFAULTS[key]) end
+    for _, key in ipairs(COMPONENT_KEYS) do
+        local source = value[key]
+        if presetVersion < LAYOUT_PRESET_VERSION then
+            if type(source) ~= "table" then
+                out[key] = NormalizeComponent(nil, COMPONENT_DEFAULTS[key])
+            else
+                local legacy = NormalizeComponent(source, LEGACY_COMPONENT_DEFAULTS[key])
+                if SameLegacyGeometry(legacy, LEGACY_COMPONENT_DEFAULTS[key]) then
+                    local migrated = NormalizeComponent(COMPONENT_DEFAULTS[key], COMPONENT_DEFAULTS[key])
+                    migrated.enabled = source.enabled ~= false
+                    out[key] = migrated
+                else
+                    out[key] = NormalizeComponent(source, COMPONENT_DEFAULTS[key])
+                end
+            end
+        else
+            out[key] = NormalizeComponent(source, COMPONENT_DEFAULTS[key])
+        end
+    end
     return out
 end
 
@@ -119,6 +168,14 @@ end
 local function NormalizeSettings(value)
     value = type(value) == "table" and value or {}
     local tracked = type(value.tracked) == "table" and value.tracked or {}
+    local layoutPresetVersion = math.floor(tonumber(value.layoutPresetVersion) or 0)
+    local headOffsetY = ClampInt(value.headOffsetY, -400, 400, COMPONENT_DEFAULTS.buffs.y)
+    if layoutPresetVersion < LAYOUT_PRESET_VERSION then
+        local legacyHeadOffset = tonumber(value.headOffsetY)
+        if legacyHeadOffset == nil or math.floor(legacyHeadOffset) == LEGACY_COMPONENT_DEFAULTS.buffs.y then
+            headOffsetY = COMPONENT_DEFAULTS.buffs.y
+        end
+    end
     return {
         showBuffs = value.showBuffs ~= false,
         showDebuffs = value.showDebuffs ~= false,
@@ -126,7 +183,8 @@ local function NormalizeSettings(value)
         playerRows = ClampInt(value.playerRows, 1, 64, 24),
         targetRows = ClampInt(value.targetRows, 1, 64, 24),
         refreshMs = ClampInt(value.refreshMs, 1, 2000, 400),
-        components = NormalizeComponents(value.components),
+        components = NormalizeComponents(value.components, layoutPresetVersion),
+        layoutPresetVersion = LAYOUT_PRESET_VERSION,
         tracked = {
             buff = NormalizeTrackedIds(tracked.buff),
             debuff = NormalizeTrackedIds(tracked.debuff),
@@ -138,7 +196,7 @@ local function NormalizeSettings(value)
         headTarget = value.headTarget ~= false,
         headIconSize = ClampInt(value.headIconSize, 8, 64, 24),
         headMaxIcons = ClampInt(value.headMaxIcons, 1, 12, 8),
-        headOffsetY = ClampInt(value.headOffsetY, -400, 400, -54),
+        headOffsetY = headOffsetY,
         headRefreshMs = ClampInt(value.headRefreshMs, 1, 2000, 100),
         headShowStacks = value.headShowStacks ~= false,
         headShowTime = value.headShowTime ~= false,
@@ -195,14 +253,16 @@ local function MigrateState(value, fromSchema)
     end
 
     -- 2) Mirror legacy head fields into the buffs component only when the old
-    --    state carried no components (schema 1/2/3).
+    --    state carried no components (schema 1/2/3). Keep the compact preset's
+    --    relative spacing so an old headOffset still behaves as a row anchor.
     if type(settings.components) ~= "table" and type(value.components) ~= "table" then
         local buffs = out.settings.components.buffs
-        local offset = ClampInt(settings.headOffsetY, -400, 400, -54)
+        local offset = ClampInt(settings.headOffsetY, -400, 400, COMPONENT_DEFAULTS.buffs.y)
         local iconSize = ClampInt(settings.headIconSize, 8, 64, 24)
         buffs.x, buffs.y, buffs.size = 0, offset, iconSize
         buffs.fontSize = math.max(6, math.floor(iconSize * 0.38))
-        out.settings.components.debuffs.y = offset - 30
+        out.settings.components.debuffs.y = offset - 28
+        out.settings.headOffsetY = offset
     end
     return out
 end
@@ -387,10 +447,10 @@ function F:ApplySettingRaw(key, value)
     elseif key == "headMaxIcons" then settings.headMaxIcons = ClampInt(value, 1, 12, settings.headMaxIcons)
     elseif key == "headOffsetY" then
         -- Proxy write: the "上下位置" slider moves the buffs row and keeps the
-        -- debuffs row 30px above it (same delta the schema 1/2/3 migration used).
+        -- debuffs row in the same compact vertical rhythm.
         settings.headOffsetY = ClampInt(value, -400, 400, settings.headOffsetY)
         if settings.components.buffs then settings.components.buffs.y = settings.headOffsetY end
-        if settings.components.debuffs then settings.components.debuffs.y = settings.headOffsetY - 30 end
+        if settings.components.debuffs then settings.components.debuffs.y = settings.headOffsetY - 28 end
     elseif key == "headRefreshMs" then settings.headRefreshMs = ClampInt(value, 1, 2000, settings.headRefreshMs)
     elseif key == "headShowStacks" then settings.headShowStacks = value == true
     elseif key == "headShowTime" then settings.headShowTime = value == true

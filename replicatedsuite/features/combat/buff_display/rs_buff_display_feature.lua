@@ -230,6 +230,26 @@ function F:BuildTrackedIndex(settings)
     return index
 end
 
+-- Tracking is a user-setting mutation, not a Native Aura mutation. Re-stamp the
+-- already bounded projection rows immediately so the table's 追踪 column and the
+-- head whitelist react in the same click without forcing another Aura scan.
+function F:SyncTrackedProjectionFlags()
+    local index = self.trackedIndex or self:BuildTrackedIndex(Settings())
+    for _, scope in ipairs({ "player", "target" }) do
+        for _, row in ipairs(self.projections[scope] or {}) do
+            local category = row.category == "debuff" and "debuff" or "buff"
+            local id = math.floor(tonumber(row.id) or 0)
+            local tracked = id > 0 and type(index[category]) == "table" and index[category][id] == true
+            row.tracked = tracked == true
+            row.trackedText = tracked == true and "追踪" or ""
+        end
+    end
+    self.revision = (tonumber(self.revision) or 0) + 1
+    Publish("v3.buff_display.updated", "tracked_projection")
+    Publish("v3.buff_display.plates.updated", "tracked_projection")
+    return true
+end
+
 function F:Refresh(reason)
     if self.auraHeld ~= true then return false, "buff display aura lease not held" end
     self:RefreshScope("player")
@@ -362,13 +382,24 @@ local EQUIPMENT_SLOTS = {
 local function ReadEquippedIcon(slotId, scope)
     if slotId == nil then return nil end
     local api = Api()
-    if api == nil or type(api.CallCapability) ~= "function" or X2Equipment == nil then return nil end
-    local ok, item = api:CallCapability("X2Equipment:GetEquippedItemTooltipInfo", X2Equipment, "GetEquippedItemTooltipInfo", slotId, scope == "target")
+    local equipment = Global("X2Equipment")
+    if api == nil or type(api.CallCapability) ~= "function" or equipment == nil then return nil end
+    local ok, item = api:CallCapability("X2Equipment:GetEquippedItemTooltipInfo", equipment, "GetEquippedItemTooltipInfo", slotId, scope == "target")
     if ok ~= true or type(item) ~= "table" then return nil end
     local icon = tostring(item.icon or item.iconPath or item.path or "")
+    local rawGradeIcon = item.gradeIcon or item.grade_icon
+    local gradeIconPath = type(rawGradeIcon) == "string" and rawGradeIcon or ""
     local name = tostring(item.name or item.itemName or "")
     if icon == "" and name == "" then return nil end
-    return { icon = icon, name = name }
+    return { icon = icon, gradeIconPath = gradeIconPath, name = name }
+end
+
+local function SameEquipmentItem(left, right)
+    if left == nil or right == nil then return left == right end
+    if type(left) ~= "table" or type(right) ~= "table" then return false end
+    return tostring(left.icon or "") == tostring(right.icon or "")
+        and tostring(left.gradeIconPath or "") == tostring(right.gradeIconPath or "")
+        and tostring(left.name or "") == tostring(right.name or "")
 end
 
 function F:EquipmentTick()
@@ -388,15 +419,14 @@ function F:EquipmentTick()
                 end
                 if lane.gearScore ~= score then lane.gearScore, changed = score, true end
             end
-            -- weapon / glider icons
+            -- weapon / glider icons. Grade overlay is part of the same tooltip
+            -- fact and therefore adds no Native read; compare it as well so a
+            -- quality change cannot be hidden behind an unchanged base icon.
             for _, key in ipairs({ "mainHand", "offHand", "ranged", "wings" }) do
                 if ComponentEnabled(key) then
                     local slotId = EQUIPMENT_SLOTS[key]()
                     local item = ReadEquippedIcon(slotId, scope)
-                    local old = lane[key]
-                    local oldIcon = type(old) == "table" and old.icon or nil
-                    local newIcon = type(item) == "table" and item.icon or nil
-                    if oldIcon ~= newIcon then lane[key], changed = item, true end
+                    if not SameEquipmentItem(lane[key], item) then lane[key], changed = item, true end
                 end
             end
             self.laneData[scope] = lane
@@ -821,6 +851,7 @@ function F:ImportTrackedIds(text, category, mode)
     local marked, markErr = self:MarkStoreDirty(250, "import_tracked")
     if marked ~= true then self.State.settings = before; return false, markErr or "追踪 ID 导入保存失败" end
     self.trackedIndex = self:BuildTrackedIndex(settings)
+    self:SyncTrackedProjectionFlags()
     Publish("v3.buff_display.settings", "tracked")
     local details = { "有效 " .. tostring(#parsed.ids) }
     if (tonumber(parsed.duplicates) or 0) > 0 then details[#details + 1] = "重复 " .. tostring(parsed.duplicates) end
@@ -1024,6 +1055,7 @@ function F:ImportAll(data, mode)
     local marked, markErr = self:MarkStoreDirty(250, "import_all")
     if marked ~= true then self.State.settings = before; return false, markErr or "完整导入保存失败" end
     self.trackedIndex = self:BuildTrackedIndex(settings)
+    self:SyncTrackedProjectionFlags()
     self:ReconcileLanes()
     Publish("v3.buff_display.settings", "import")
     return true, "完整导入成功"
@@ -1038,12 +1070,18 @@ F.Commands = {
     end,
     SetTrackedId = function(_, id, category, enabled)
         local ok, err = F:SetTrackedId(id, category, enabled)
-        if ok == true then F.trackedIndex = F:BuildTrackedIndex(Settings()) end
+        if ok == true then
+            F.trackedIndex = F:BuildTrackedIndex(Settings())
+            F:SyncTrackedProjectionFlags()
+        end
         return ok, err
     end,
     ClearTrackedIds = function(_, category)
         local ok, err = F:ClearTrackedIds(category)
-        if ok == true then F.trackedIndex = F:BuildTrackedIndex(Settings()) end
+        if ok == true then
+            F.trackedIndex = F:BuildTrackedIndex(Settings())
+            F:SyncTrackedProjectionFlags()
+        end
         return ok, err
     end,
     SetComponentField = function(_, componentKey, field, value)

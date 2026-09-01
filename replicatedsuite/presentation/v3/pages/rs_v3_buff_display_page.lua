@@ -33,7 +33,7 @@ local COMPONENT_META = {
     mainHand  = { title = "主手",           desc = "主手武器图标" },
     offHand   = { title = "副手",           desc = "副手武器图标" },
     ranged    = { title = "远程",           desc = "远程武器图标" },
-    wings     = { title = "翅膀",           desc = "滑翔翼图标" },
+    wings     = { title = "背部",           desc = "背部 / 滑翔翼装备图标" },
     castBar   = { title = "读条",           desc = "目标施法进度条" },
 }
 
@@ -145,6 +145,26 @@ local function BuildPage(parent, route)
     local untrackButton = RSUI:Button({ id = "v3_buff_display_track_remove", parent = trackRow, text = "取消追踪", compact = true, slot = { size = "fixed", width = 78 } })
     local clearTrackButton = RSUI:Button({ id = "v3_buff_display_track_clear", parent = trackRow, text = "清空追踪", compact = true, slot = { size = "fixed", width = 78 } })
 
+    -- DataView callbacks must be supplied at construction. TableView snapshots
+    -- them into its internal ListView; assigning tableView.onSelectionChanged or
+    -- tableView.onItemActivated afterwards leaves the native row click path nil.
+    root.selectedBuffId, root.selectedBuffName, root.selectedBuffCategory = nil, nil, nil
+    local function SelectFrom(tableView, index)
+        if type(tableView) ~= "table" or type(tableView.GetItem) ~= "function" then return false end
+        local row = tableView:GetItem(index)
+        root.selectedBuffId = row and tonumber(row.id) or nil
+        root.selectedBuffName = row and tostring(row.name or row.id or "") or nil
+        root.selectedBuffCategory = row and (row.category == "debuff" and "debuff" or "buff") or nil
+        selectedText:SetText(root.selectedBuffId and ("选中状态：" .. tostring(root.selectedBuffName) .. " · ID " .. tostring(root.selectedBuffId)) or "选中状态：无")
+        return true
+    end
+    local function ToggleRowTracked(item, index, key, view, reason)
+        if type(item) ~= "table" or item.id == nil then return true end
+        local ok, err = Feature.Commands:SetTrackedId(tonumber(item.id), item.category == "debuff" and "debuff" or "buff", not (item.tracked == true))
+        if ok == true then root:Refresh() end
+        return ok, err
+    end
+
     local tableRow = RSUI:HorizontalBox({ id = "v3_buff_display_tables", parent = tabTrack, gap = 7, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
     local function MakeTable(id, title)
         local panel = RSUI:Border({ id = id .. "_panel", parent = tableRow, padding = 5, variant = "card", slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
@@ -153,6 +173,10 @@ local function BuildPage(parent, route)
         local tableView = RSUI:TableView({
             id = id .. "_table", parent = stack, items = {}, rowHeight = 25, headerHeight = 23, desiredRows = 8,
             overscan = 1, scrollbar = true, selectable = true, selectionMode = "single", columnResize = true, headerInteractive = false,
+            onSelectionChanged = function(index, previousIndex, view)
+                return SelectFrom(view, index)
+            end,
+            onItemActivated = ToggleRowTracked,
             columns = {
                 { id = "icon", title = "", field = "iconPath", cellType = "icon", iconSize = 18, fallbackIcon = "ui/icon/icon_unknown_item.dds", size = "fixed", width = 25, minWidth = 24, sortable = false, resizable = false },
                 { id = "name", title = "状态", field = "name", size = "fill", minWidth = 90, fill = 1, getTone = function(item) return item and item.effectType == "debuff" and "red" or (item and item.effectType == "hidden" and "muted" or "default") end },
@@ -223,8 +247,8 @@ local function BuildPage(parent, route)
         get = function() return (Feature:GetSettingsProjection() or {}).headIconSize or 24 end, set = function(v) return Feature.Commands:SetSetting("headIconSize", v) end, slot = { size = "fill", fill = 1 } })
     AddHeadField({ id = "v3_buff_display_head_max_icons", label = "最多图标", min = 1, max = 12, step = 1, integer = true, slider = true,
         get = function() return (Feature:GetSettingsProjection() or {}).headMaxIcons or 8 end, set = function(v) return Feature.Commands:SetSetting("headMaxIcons", v) end, slot = { size = "fill", fill = 1 } })
-    AddHeadField({ id = "v3_buff_display_head_offset", label = "上下位置", min = -140, max = 80, step = 2, integer = true, unit = "px", slider = true,
-        get = function() return (Feature:GetSettingsProjection() or {}).headOffsetY or -54 end, set = function(v) return Feature.Commands:SetSetting("headOffsetY", v) end, slot = { size = "fill", fill = 1 } })
+    AddHeadField({ id = "v3_buff_display_head_offset", label = "上下位置", min = -180, max = 80, step = 2, integer = true, unit = "px", slider = true,
+        get = function() return (Feature:GetSettingsProjection() or {}).headOffsetY or -108 end, set = function(v) return Feature.Commands:SetSetting("headOffsetY", v) end, slot = { size = "fill", fill = 1 } })
     AddHeadField({ id = "v3_buff_display_head_refresh", label = "位置刷新", min = 50, max = 500, step = 25, integer = true, unit = "ms", slider = true,
         get = function() return (Feature:GetSettingsProjection() or {}).headRefreshMs or 100 end, set = function(v) return Feature.Commands:SetSetting("headRefreshMs", v) end, slot = { size = "fill", fill = 1 } })
 
@@ -341,30 +365,6 @@ local function BuildPage(parent, route)
     end
 
     ------------------------------------------------------------------
-    -- Selection / row-click tracked toggle
-    ------------------------------------------------------------------
-    root.selectedBuffId, root.selectedBuffName, root.selectedBuffCategory = nil, nil, nil
-    local function SelectFrom(tableView, index)
-        local row = tableView:GetItem(index)
-        root.selectedBuffId = row and tonumber(row.id) or nil
-        root.selectedBuffName = row and tostring(row.name or row.id or "") or nil
-        root.selectedBuffCategory = row and (row.category == "debuff" and "debuff" or "buff") or nil
-        selectedText:SetText(root.selectedBuffId and ("选中状态：" .. tostring(root.selectedBuffName) .. " · ID " .. tostring(root.selectedBuffId)) or "选中状态：无")
-        return true
-    end
-    playerTable.onSelectionChanged = function(index) return SelectFrom(playerTable, index) end
-    targetTable.onSelectionChanged = function(index) return SelectFrom(targetTable, index) end
-    -- Row click toggles tracked state (schema 4: category passed explicitly).
-    local function ToggleRowTracked(item, index, key, view, reason)
-        if type(item) ~= "table" or item.id == nil then return true end
-        local ok, err = Feature.Commands:SetTrackedId(tonumber(item.id), item.category == "debuff" and "debuff" or "buff", not (item.tracked == true))
-        if ok == true then root:Refresh() end
-        return ok, err
-    end
-    playerTable.onItemActivated = ToggleRowTracked
-    targetTable.onItemActivated = ToggleRowTracked
-
-    ------------------------------------------------------------------
     -- Refresh
     ------------------------------------------------------------------
     function root:Refresh()
@@ -400,7 +400,7 @@ local function BuildPage(parent, route)
         hiddenButton:SetText("只看隐藏：" .. (settings.showHidden == true and "开" or "关"))
         local tracked = type(settings.tracked) == "table" and settings.tracked or {}
         local trackedCount = #(type(tracked.buff) == "table" and tracked.buff or {}) + #(type(tracked.debuff) == "table" and tracked.debuff or {})
-        hint:SetText(enabled and ("BUFF/目标变化事件驱动 + " .. tostring(settings.refreshMs or 400) .. "ms 低频兜底；已追踪 " .. tostring(trackedCount) .. " 个状态；头顶" .. (settings.headShowAll ~= false and "全部显示（不受追踪限制）" or "仅显示已追踪") .. "，位置刷新 " .. tostring(settings.headRefreshMs or 100) .. "ms，点击行可切换追踪；只看隐藏仅显示客户端隐藏来源行。") or "状态显示功能未启用。")
+        hint:SetText(enabled and ("BUFF/目标变化事件驱动 + " .. tostring(settings.refreshMs or 400) .. "ms 低频兜底；已追踪 " .. tostring(trackedCount) .. " 个状态；头顶" .. (settings.headShowAll == true and "全部显示（不受追踪限制）" or "仅显示已追踪") .. "，位置刷新 " .. tostring(settings.headRefreshMs or 100) .. "ms，点击行可切换追踪；只看隐藏仅显示客户端隐藏来源行。") or "状态显示功能未启用。")
         -- Keep the active tab's controls in sync with the authoritative store.
         if self.activeTab == "head" then
             for _, toggle in ipairs(headToggles) do if type(toggle.Render) == "function" then toggle:Render() end end
