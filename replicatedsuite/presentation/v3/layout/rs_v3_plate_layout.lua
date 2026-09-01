@@ -41,40 +41,40 @@ local function Floor(v) return math.floor(v + 0.5) end
 -- Presets
 ------------------------------------------------------------------------
 
--- All presets use 1.5× baseline sizes (icons 36, equip 33) as the new default.
+-- All presets use 1.2× baseline sizes (icons 29, equip 26) as the new default.
 L.PRESETS = {
     compact = {
         label = "紧凑",
         plateScale = 0.85,
-        plate = { width = 180, height = 24 },
-        info = { fontSize = 13 },
-        buffs = { size = 27, spacing = 2, maxPerRow = 6, maxRows = 1 },
-        debuffs = { size = 27, spacing = 2, maxPerRow = 6, maxRows = 1 },
-        equipment = { size = 27, gap = 3 },
-        castBar = { width = 135, height = 6, fontSize = 12 },
-        gaps = { buffToBar = 8, debuffToBar = 8, infoToBuff = 6, equipToBar = 6, castToBar = 6, castToDebuff = 5, rowGap = 3 },
+        plate = { width = 144, height = 19 },
+        info = { fontSize = 11 },
+        buffs = { size = 22, spacing = 1, maxPerRow = 6, maxRows = 1 },
+        debuffs = { size = 22, spacing = 1, maxPerRow = 6, maxRows = 1 },
+        equipment = { size = 22, gap = 2 },
+        castBar = { width = 108, height = 5, fontSize = 10 },
+        gaps = { buffToBar = 6, debuffToBar = 6, infoToBuff = 5, equipToBar = 5, castToBar = 5, castToDebuff = 4, rowGap = 2 },
     },
     standard = {
         label = "标准",
         plateScale = 1.0,
-        plate = { width = 225, height = 30 },
-        info = { fontSize = 15 },
-        buffs = { size = 36, spacing = 3, maxPerRow = 8, maxRows = 2 },
-        debuffs = { size = 36, spacing = 3, maxPerRow = 8, maxRows = 2 },
-        equipment = { size = 33, gap = 5 },
-        castBar = { width = 180, height = 9, fontSize = 15 },
-        gaps = { buffToBar = 11, debuffToBar = 11, infoToBuff = 9, equipToBar = 9, castToBar = 8, castToDebuff = 6, rowGap = 5 },
+        plate = { width = 180, height = 24 },
+        info = { fontSize = 12 },
+        buffs = { size = 29, spacing = 2, maxPerRow = 8, maxRows = 2 },
+        debuffs = { size = 29, spacing = 2, maxPerRow = 8, maxRows = 2 },
+        equipment = { size = 26, gap = 4 },
+        castBar = { width = 144, height = 7, fontSize = 12 },
+        gaps = { buffToBar = 8, debuffToBar = 8, infoToBuff = 7, equipToBar = 7, castToBar = 6, castToDebuff = 5, rowGap = 4 },
     },
     information = {
         label = "信息",
         plateScale = 1.1,
-        plate = { width = 270, height = 33 },
-        info = { fontSize = 18 },
-        buffs = { size = 39, spacing = 3, maxPerRow = 10, maxRows = 3 },
-        debuffs = { size = 39, spacing = 3, maxPerRow = 10, maxRows = 3 },
-        equipment = { size = 36, gap = 5 },
-        castBar = { width = 225, height = 11, fontSize = 17 },
-        gaps = { buffToBar = 12, debuffToBar = 12, infoToBuff = 11, equipToBar = 11, castToBar = 9, castToDebuff = 8, rowGap = 5 },
+        plate = { width = 216, height = 26 },
+        info = { fontSize = 14 },
+        buffs = { size = 31, spacing = 2, maxPerRow = 10, maxRows = 3 },
+        debuffs = { size = 31, spacing = 2, maxPerRow = 10, maxRows = 3 },
+        equipment = { size = 29, gap = 4 },
+        castBar = { width = 180, height = 8, fontSize = 13 },
+        gaps = { buffToBar = 10, debuffToBar = 10, infoToBuff = 8, equipToBar = 8, castToBar = 7, castToDebuff = 6, rowGap = 2 },
     },
 }
 
@@ -137,22 +137,22 @@ function L.BuildPolicy(settings)
 
     local buffCfg = Comp("buffs")
     local debuffCfg = Comp("debuffs")
-    local buffSize = Max(8, Floor(N(buffCfg.size, 36) * scale))
-    local debuffSize = Max(8, Floor(N(debuffCfg.size, 36) * scale))
-    local equipSize = Max(8, Floor(N(Comp("mainHand").size, 33) * scale))
-    local equipGap = Max(1, Floor(N(gaps.equipToBar, 9) * scale))
+    local buffSize = Max(8, Floor(N(buffCfg.size, 29) * scale))
+    local debuffSize = Max(8, Floor(N(debuffCfg.size, 29) * scale))
+    local equipSize = Max(8, Floor(N(Comp("mainHand").size, 26) * scale))
+    local equipGap = Max(1, Floor(N(gaps.equipToBar, 7) * scale))
 
     return {
         scale = scale,
         bar = {
-            width = Max(24, Floor(N(plateCfg.width, 225) * scale)),
-            height = Max(8, Floor(N(plateCfg.height, 30) * scale)),
+            width = Max(24, Floor(N(plateCfg.width, 180) * scale)),
+            height = Max(8, Floor(N(plateCfg.height, 24) * scale)),
             offsetX = Floor(N(plateCfg.x, 0) * scale),
             offsetY = Floor(N(plateCfg.y, 22) * scale),
         },
         info = {
             enabled = infoCfg.enabled ~= false,
-            fontSize = Max(8, Floor(N(infoCfg.fontSize, 15) * scale)),
+            fontSize = Max(8, Floor(N(infoCfg.fontSize, 12) * scale)),
             showClass = infoCfg.showClass ~= false,
             showGear = infoCfg.showGear ~= false,
             showDistance = infoCfg.showDistance ~= false,
@@ -162,7 +162,7 @@ function L.BuildPolicy(settings)
         buff = {
             enabled = buffCfg.enabled ~= false,
             size = buffSize,
-            spacing = Max(0, Floor(N(buffCfg.spacing, 3) * scale)),
+            spacing = Max(0, Floor(N(buffCfg.spacing, 2) * scale)),
             maxPerRow = Clamp(N(buffCfg.maxPerRow, 8), 1, 16),
             maxRows = Clamp(N(buffCfg.maxRows, 2), 1, 4),
             rowPitch = buffSize + Gap("rowGap"),
@@ -173,7 +173,7 @@ function L.BuildPolicy(settings)
         debuff = {
             enabled = debuffCfg.enabled ~= false,
             size = debuffSize,
-            spacing = Max(0, Floor(N(debuffCfg.spacing, 3) * scale)),
+            spacing = Max(0, Floor(N(debuffCfg.spacing, 2) * scale)),
             maxPerRow = Clamp(N(debuffCfg.maxPerRow, 8), 1, 16),
             maxRows = Clamp(N(debuffCfg.maxRows, 2), 1, 4),
             rowPitch = debuffSize + Gap("rowGap"),
@@ -190,9 +190,9 @@ function L.BuildPolicy(settings)
         },
         cast = {
             enabled = Comp("castBar").enabled ~= false,
-            width = Max(24, Floor(N(Comp("castBar").width, 180) * scale)),
-            height = Max(3, Floor(N(Comp("castBar").size, 9) * scale)),
-            fontSize = Max(8, Floor(N(Comp("castBar").fontSize, 15) * scale)),
+            width = Max(24, Floor(N(Comp("castBar").width, 144) * scale)),
+            height = Max(3, Floor(N(Comp("castBar").size, 7) * scale)),
+            fontSize = Max(8, Floor(N(Comp("castBar").fontSize, 12) * scale)),
             showText = Comp("castBar").showText ~= false,
             gapToBar = Gap("castToBar"),
             gapToDebuff = Gap("castToDebuff"),

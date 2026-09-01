@@ -118,20 +118,20 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     end
     local Compute = markers.ComputePlateLayout
 
-    -- Base settings use the new 1.5× defaults (icons 36, equip 33, bar 225×30).
+    -- Base settings use the 1.2× defaults (icons 29, equip 26, bar 180×24).
     local function base(overrides)
         local s = {
-            plate = { x = 0, y = 0, width = 225, height = 30 },
-            info = { enabled = true, x = 0, y = 0, fontSize = 15, showClass = true, showGear = true, showDistance = true },
+            plate = { x = 0, y = 0, width = 180, height = 24 },
+            info = { enabled = true, x = 0, y = 0, fontSize = 12, showClass = true, showGear = true, showDistance = true },
             plateScale = 1.0,
-            gaps = { buffToBar = 11, debuffToBar = 11, infoToBuff = 9, equipToBar = 9, castToBar = 8, castToDebuff = 6, rowGap = 5 },
+            gaps = { buffToBar = 8, debuffToBar = 8, infoToBuff = 7, equipToBar = 7, castToBar = 6, castToDebuff = 5, rowGap = 4 },
             components = {
-                buffs = { enabled = true, x = 0, y = 0, size = 36, spacing = 3, maxPerRow = 8, maxRows = 4 },
-                debuffs = { enabled = true, x = 0, y = 0, size = 36, spacing = 3, maxPerRow = 8, maxRows = 4 },
+                buffs = { enabled = true, x = 0, y = 0, size = 29, spacing = 2, maxPerRow = 8, maxRows = 4 },
+                debuffs = { enabled = true, x = 0, y = 0, size = 29, spacing = 2, maxPerRow = 8, maxRows = 4 },
                 class = { enabled = true }, gearScore = { enabled = true }, distance = { enabled = true },
-                mainHand = { enabled = true, size = 33 }, offHand = { enabled = true, size = 33 },
-                ranged = { enabled = true, size = 33 }, wings = { enabled = true, size = 33 },
-                castBar = { enabled = true, width = 180, size = 9, fontSize = 15 },
+                mainHand = { enabled = true, size = 26 }, offHand = { enabled = true, size = 26 },
+                ranged = { enabled = true, size = 26 }, wings = { enabled = true, size = 26 },
+                castBar = { enabled = true, width = 144, size = 7, fontSize = 12 },
             },
         }
         if type(overrides) == "table" then
@@ -157,9 +157,9 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     if l1buff.info.top + l1buff.info.height >= l1buff.buff.topMostTop then return false, "case2_info_not_above_actual_row" end
     if l9buff.buff.topMostTop >= l1buff.buff.topMostTop then return false, "case4_rows_not_stacking_upward" end
 
-    -- CASE 5: 1 debuff first row = bar.bottom + DebuffToBarGap(11).
+    -- CASE 5: 1 debuff first row = bar.bottom + DebuffToBarGap(8).
     local l1deb = layout(0, 1)
-    local expectedGap = 11 * 1.0
+    local expectedGap = 8 * 1.0
     if math.abs(l1deb.debuff.firstTop - (l1deb.bar.bottom + expectedGap)) > 1 then
         return false, "case5_debuff_gap_wrong:" .. tostring(l1deb.debuff.firstTop - l1deb.bar.bottom)
     end
@@ -182,11 +182,11 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
         return false, "case9_left_order_wrong:" .. tostring(sl[1].key) .. "," .. tostring(sl[2].key) .. "," .. tostring(sl[3].key)
     end
     if lBoth.rightGroup.slots[1].key ~= "wings" then return false, "case9_right_order_wrong" end
-    -- ranged closest to bar: x = bar.left - gap - size = 388-9-33 = 346.
-    if sl[1].x ~= 346 then return false, "case9_ranged_position_wrong:" .. tostring(sl[1].x) end
+    -- ranged closest to bar: x = bar.left - gap - size = 410-7-26 = 377.
+    if sl[1].x ~= 377 then return false, "case9_ranged_position_wrong:" .. tostring(sl[1].x) end
 
     -- CASE 11/12: bar geometry stable regardless of info toggle.
-    local lNoInfo = Compute(500, 400, base({ info = { enabled = false, fontSize = 15 } }), 3, 0, { mainHand = true, offHand = true, wings = true, ranged = true })
+    local lNoInfo = Compute(500, 400, base({ info = { enabled = false, fontSize = 12 } }), 3, 0, { mainHand = true, offHand = true, wings = true, ranged = true })
     if lNoInfo.bar.top >= lNoInfo.bar.bottom then return false, "case11_bar_geometry_wrong" end
 
     -- CASE 13: fresh config defaults are anchor-relative (component y == 0).
@@ -200,23 +200,23 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
         return false, "case13_ranged_wings_default_wrong"
     end
 
-    -- CASE 14/15: geometry with 1.5× sizes. anchor(500,400), bar 225x30 ->
-    -- left 388/right 613/top 385/bottom 415. Buff 36px: firstTop=385-11-36=338.
-    -- Debuff: firstTop=415+11=426. Equip 33px: ranged at 388-9-33=346, wings at 613+9=622.
-    if l1.bar.left ~= 388 or l1.bar.right ~= 613 or l1.bar.top ~= 385 or l1.bar.bottom ~= 415 then
+    -- CASE 14/15: geometry with 1.2× sizes. anchor(500,400), bar 180x24 ->
+    -- left 410/right 590/top 388/bottom 412. Buff 29px: firstTop=388-8-29=351.
+    -- Debuff: firstTop=412+8=420. Equip 26px: ranged at 410-7-26=377, wings at 590+7=597.
+    if l1.bar.left ~= 410 or l1.bar.right ~= 590 or l1.bar.top ~= 388 or l1.bar.bottom ~= 412 then
         return false, "case14_bar_rect_wrong:" .. tostring(l1.bar.left) .. "," .. tostring(l1.bar.right)
     end
-    if l1buff.buff.firstTop ~= 338 or l1deb.debuff.firstTop ~= 426 then
+    if l1buff.buff.firstTop ~= 351 or l1deb.debuff.firstTop ~= 420 then
         return false, "case14_row_positions_wrong:" .. tostring(l1buff.buff.firstTop) .. "," .. tostring(l1deb.debuff.firstTop)
     end
     local sL = l1.leftGroup.slots[1]  -- ranged (closest to bar)
     local sR = l1.rightGroup.slots[1] -- wings
     if sL.key ~= "ranged" then return false, "case14_left_first_key_wrong:" .. tostring(sL.key) end
-    if sL.x ~= 346 or sR.x ~= 622 then
+    if sL.x ~= 377 or sR.x ~= 597 then
         return false, "case14_equip_positions_wrong:" .. tostring(sL.x) .. "," .. tostring(sR.x)
     end
     -- Vertical separation: no two regions overlap (info < buff < bar < debuff).
-    local buffBottom = l1buff.buff.firstTop + 36
+    local buffBottom = l1buff.buff.firstTop + 29
     if l1buff.info.top + l1buff.info.height > l1buff.buff.firstTop - 2
         or buffBottom > l1.bar.top - 4
         or l1deb.debuff.firstTop < l1.bar.bottom + 4 then

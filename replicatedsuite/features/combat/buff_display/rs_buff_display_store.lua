@@ -83,18 +83,18 @@ local LEGACY_COMPONENT_DEFAULTS = {
 -- Default 0 for all: the layout function places buffs above the bar, debuffs
 -- below, equipment flanks, info on top. `enabled` is the only meaningful
 -- default divergence (ranged OFF by default; wings ON as the right-side slot).
--- Default sizes are 1.5× the original v3 baseline (24→36 icons, 22→33 equip).
+-- Default sizes are 1.2× the original v3 baseline (24→29 icons, 22→26 equip).
 local COMPONENT_DEFAULTS = {
-    buffs     = { enabled = true,  x = 0, y = 0, size = 36, fontSize = 13, alpha = 1.0, spacing = 3, maxPerRow = 8, maxRows = 2 },
-    debuffs   = { enabled = true,  x = 0, y = 0, size = 36, fontSize = 13, alpha = 1.0, spacing = 3, maxPerRow = 8, maxRows = 2 },
-    distance  = { enabled = true,  x = 0, y = 0, size = 0,  fontSize = 15, alpha = 1.0 },
-    class     = { enabled = true,  x = 0, y = 0, size = 0,  fontSize = 15, alpha = 1.0 },
-    gearScore = { enabled = true,  x = 0, y = 0, size = 0,  fontSize = 15, alpha = 1.0 },
-    mainHand  = { enabled = true,  x = 0, y = 0, size = 33, fontSize = 0,  alpha = 1.0 },
-    offHand   = { enabled = true,  x = 0, y = 0, size = 33, fontSize = 0,  alpha = 1.0 },
-    ranged    = { enabled = true,  x = 0, y = 0, size = 33, fontSize = 0,  alpha = 1.0 },
-    wings     = { enabled = true,  x = 0, y = 0, size = 33, fontSize = 0,  alpha = 1.0 },
-    castBar   = { enabled = true,  x = 0, y = 0, size = 9,  fontSize = 15, alpha = 1.0 },
+    buffs     = { enabled = true,  x = 0, y = 0, size = 29, fontSize = 11, alpha = 1.0, spacing = 2, maxPerRow = 8, maxRows = 2 },
+    debuffs   = { enabled = true,  x = 0, y = 0, size = 29, fontSize = 11, alpha = 1.0, spacing = 2, maxPerRow = 8, maxRows = 2 },
+    distance  = { enabled = true,  x = 0, y = 0, size = 0,  fontSize = 12, alpha = 1.0 },
+    class     = { enabled = true,  x = 0, y = 0, size = 0,  fontSize = 12, alpha = 1.0 },
+    gearScore = { enabled = true,  x = 0, y = 0, size = 0,  fontSize = 12, alpha = 1.0 },
+    mainHand  = { enabled = true,  x = 0, y = 0, size = 26, fontSize = 0,  alpha = 1.0 },
+    offHand   = { enabled = true,  x = 0, y = 0, size = 26, fontSize = 0,  alpha = 1.0 },
+    ranged    = { enabled = true,  x = 0, y = 0, size = 26, fontSize = 0,  alpha = 1.0 },
+    wings     = { enabled = true,  x = 0, y = 0, size = 26, fontSize = 0,  alpha = 1.0 },
+    castBar   = { enabled = true,  x = 0, y = 0, size = 7,  fontSize = 12, alpha = 1.0 },
 }
 
 -- The "broken anchor layout" preset shipped on GitHub main: these absolute y/x
@@ -282,7 +282,7 @@ local function NormalizeSettings(value)
             enabled = info.enabled ~= false,
             x = ClampInt(info.x, -400, 400, 0),
             y = ClampInt(info.y, -120, 120, 0),
-            fontSize = ClampInt(info.fontSize, 8, 24, 10),
+            fontSize = ClampInt(info.fontSize, 8, 24, 12),
             showClass = info.showClass ~= false,
             showGear = info.showGear ~= false,
             showDistance = info.showDistance ~= false,
