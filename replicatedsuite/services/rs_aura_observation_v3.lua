@@ -89,6 +89,58 @@ local function PickString(primary, secondary, keys)
     return Pick(primary) or Pick(secondary)
 end
 
+-- Buff-id -> name/icon resolution fallback. The RU client's UnitBuff rows
+-- frequently omit the name field entirely (real-machine evidence 2026-09-01:
+-- the status list rendered raw effect ids in the name column), so unresolved
+-- ids go through the RU-enabled X2Ability:GetBuffTooltip — the same cached
+-- chain as the mature Plates module (rp_api GetBuffInfoById) and
+-- rs_target_service. Bounded cache; a miss is remembered as false so an
+-- unknown id costs at most a few calls per session.
+local buffInfoCache, buffInfoCacheCount = {}, 0
+local BUFF_INFO_CACHE_MAX = 512
+local function FirstIconPath(info)
+    if type(info) ~= "table" then return nil end
+    local path = info.path or info.iconPath or info.icon_path or info.icon
+        or info.skillIcon or info.skill_icon or info.texture
+    return type(path) == "string" and path ~= "" and path or nil
+end
+local function ResolveBuffInfoById(id)
+    local key = tostring(id)
+    if key:match("^%d+$") == nil then return nil end
+    local cached = buffInfoCache[key]
+    if cached ~= nil then return cached ~= false and cached or nil end
+    if buffInfoCacheCount >= BUFF_INFO_CACHE_MAX then
+        buffInfoCache, buffInfoCacheCount = {}, 0
+    end
+    local api = S.Api
+    local gateOpen = type(api) == "table" and type(api.CallCapability) == "function"
+        and X2Ability ~= nil
+        and (type(api.IsCapabilityAllowed) ~= "function"
+            or api:IsCapabilityAllowed("X2Ability:GetBuffTooltip") == true)
+    if gateOpen ~= true then
+        buffInfoCache[key], buffInfoCacheCount = false, buffInfoCacheCount + 1
+        return nil
+    end
+    local numericId = tonumber(key)
+    -- Item level is irrelevant for ordinary combat auras on current RU; try the
+    -- cheap/common values and stop on the first structurally useful tooltip.
+    for _, itemLevel in ipairs({ 0, 1, 55 }) do
+        local ok, info = api:CallCapability("X2Ability:GetBuffTooltip", X2Ability, "GetBuffTooltip", numericId, itemLevel)
+        if ok == true and type(info) == "table" then
+            local iconPath = FirstIconPath(info)
+            local name = tostring(info.name or "")
+            if iconPath ~= nil or name ~= "" then
+                local resolved = { name = name, iconPath = iconPath or "" }
+                buffInfoCache[key], buffInfoCacheCount = resolved, buffInfoCacheCount + 1
+                return resolved
+            end
+        end
+    end
+    buffInfoCache[key], buffInfoCacheCount = false, buffInfoCacheCount + 1
+    return nil
+end
+
+
 local function AddSourceMask(mask, sourceMask)
     mask = math.max(0, math.floor(tonumber(mask) or 0))
     sourceMask = math.max(1, math.floor(tonumber(sourceMask) or 1))
@@ -290,8 +342,19 @@ function A:GetStatusMap(snapshot, options)
                         local data, tooltip = item.data, item.tooltip
                         local stack = PickNumber(tooltip, data, STATUS_KEYS.stack) or 1
                         local timeLeft = PickNumber(tooltip, data, STATUS_KEYS.timeLeft)
-                        local name = PickString(tooltip, data, STATUS_KEYS.name) or tostring(id)
+                        local name = PickString(tooltip, data, STATUS_KEYS.name) or ""
                         local iconPath = PickString(tooltip, data, STATUS_KEYS.icon) or ""
+                        -- Unit rows often carry neither name nor (rarely) icon on
+                        -- current RU; a placeholder name equal to the raw id (or a
+                        -- missing icon) triggers the cached ability-tooltip lookup.
+                        if name == "" or name == tostring(id) or iconPath == "" then
+                            local resolved = ResolveBuffInfoById(id)
+                            if resolved ~= nil then
+                                if name == "" or name == tostring(id) then name = resolved.name end
+                                if iconPath == "" then iconPath = resolved.iconPath end
+                            end
+                        end
+                        if name == "" then name = tostring(id) end
                         local entry = map[id]
                         if entry == nil then
                             entry = {
