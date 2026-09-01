@@ -546,6 +546,23 @@ function R:_RunVisualPass()
         if type(refreshRaid) == "function" then Profile("healer:raid_highlights", refreshRaid) end
         self.visual.raid = false
     end
+
+    -- Periodic Z-order recovery: re-Raise visible overlays every visual tick so
+    -- they stay above native game UI (team list, tooltips, etc.) that may have
+    -- been clicked/opened since the last lifecycle boundary. Raise() is a single
+    -- lightweight Native call per widget; SetUILayer is only needed at creation.
+    if state ~= nil and state.enabled == true and raidOverlays ~= nil then
+        for sectionIndex = 1, 4 do
+            local overlay = raidOverlays[sectionIndex]
+            if overlay ~= nil and overlay.window ~= nil then
+                local visible = overlay.window:IsVisible and overlay.window:IsVisible()
+                if visible == true and overlay.window.Raise ~= nil then
+                    pcall(overlay.window.Raise, overlay.window)
+                end
+            end
+        end
+    end
+
     self.metrics.visualPasses = (tonumber(self.metrics.visualPasses) or 0) + 1
     return true
 end

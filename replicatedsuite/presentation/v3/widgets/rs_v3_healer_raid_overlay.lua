@@ -200,7 +200,11 @@ function P:RefreshHighlights(nowMs)
         local changed = S.UI:SetVisible(section.window, show, self.owner)
         S.UI:SetPickable(section.window, calibrationVisible, self.owner)
         if type(section.window.EnableDrag) == "function" then pcall(function() section.window:EnableDrag(calibrationVisible) end) end
-        if changed == true and show then
+        -- Always reassert Z-order for visible sections, not just on visibility
+        -- change. The native team list / tooltips can raise above us at any time;
+        -- periodic Raise() keeps our overlay on top without waiting for a
+        -- lifecycle boundary.
+        if show then
             S.UI:TrySetUILayer(section.window, "system")
             if type(section.window.Raise) == "function" then pcall(function() section.window:Raise() end) end
         end
