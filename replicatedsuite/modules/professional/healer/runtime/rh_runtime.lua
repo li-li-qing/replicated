@@ -555,7 +555,7 @@ function R:_RunVisualPass()
         for sectionIndex = 1, 4 do
             local overlay = raidOverlays[sectionIndex]
             if overlay ~= nil and overlay.window ~= nil then
-                local visible = overlay.window:IsVisible and overlay.window:IsVisible()
+                local visible = overlay.window.IsVisible and overlay.window:IsVisible()
                 if visible == true and overlay.window.Raise ~= nil then
                     pcall(overlay.window.Raise, overlay.window)
                 end

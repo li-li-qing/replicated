@@ -398,6 +398,25 @@ function P:RegisterStore(def)
     table.sort(self.order)
     self.stats.registered = (tonumber(self.stats.registered) or 0) + 1
     Count("STORE_REGISTERED", 1)
+    -- Boot-time budget self-check: validate the store's DEFAULT payload against
+    -- its own budget at registration. A budget too small for the store's real
+    -- data used to surface only as a first-save rejection + session write fence
+    -- (2026-09-01: buff display's 192-entry budget starved a 713-id payload);
+    -- catching it here turns that into a visible boot diagnostic instead.
+    if state.lifetime ~= LIFETIME.Session then
+        local okDefault, defaultPayload = pcall(state.default)
+        if okDefault then
+            local inspection = self:InspectPayload(defaultPayload, state.budget)
+            if inspection.ok ~= true then
+                state.lastError = "default_payload_rejected:" .. tostring(inspection.reason or "unknown")
+                Emit("error", "STORE_DEFAULT_BUDGET_EXCEEDED",
+                    "注册即超预算：store 默认 payload 无法通过自身 SaveData 预算检查，所有保存都将被拒绝", {
+                        store = id, reason = inspection.reason, nodes = inspection.nodes,
+                        stringBytes = inspection.stringBytes, maxTableEntries = inspection.maxTableEntries,
+                    })
+            end
+        end
+    end
     return state
 end
 
@@ -748,6 +767,10 @@ function P:SaveValue(id, value, options)
         self.stats.saveFailures = (tonumber(self.stats.saveFailures) or 0) + 1
         Count("STORE_SAVE_FAILED", 1)
         Emit("warning", "STORE_SAVE_FAILED", "独立存档保存失败", { store = store.id, error = saveErr })
+        if S.WarnOnce ~= nil then
+            S.WarnOnce("store_save_failed_" .. store.id,
+                "[" .. store.id .. "] 存档保存失败，本次修改可能无法保留：" .. tostring(saveErr or "unknown"))
+        end
         if options.consumeDirty ~= true then
             store.dirty = true
             store.dueAt = NowMs() + math.min(30000, math.max(2000, tonumber(options.retryMs) or 5000))

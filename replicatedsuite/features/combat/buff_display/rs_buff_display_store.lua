@@ -153,7 +153,6 @@ end
 local function NormalizeSettings(value)
     value = type(value) == "table" and value or {}
     local tracked = type(value.tracked) == "table" and value.tracked or {}
-    local layoutPresetVersion = math.floor(tonumber(value.layoutPresetVersion) or 0)
     -- NativeBarProxy: the RU API exposes no native unit-frame rectangle, so the
     -- anchor is the unit screen projection point + a calibratable offset that
     -- the player aligns onto the game's own health bar. This proxy is used ONLY
@@ -185,7 +184,7 @@ local function NormalizeSettings(value)
         -- existing saves). User-tuned values (anything else) are preserved.
         refreshMs = (tonumber(value.refreshMs) == 400) and 120
             or ClampInt(value.refreshMs, 1, 2000, 120),
-        components = NormalizeComponents(value.components, layoutPresetVersion),
+        components = NormalizeComponents(value.components),
         layoutPresetVersion = LAYOUT_PRESET_VERSION,
         tracked = {
             buff = NormalizeTrackedIds(tracked.buff),
