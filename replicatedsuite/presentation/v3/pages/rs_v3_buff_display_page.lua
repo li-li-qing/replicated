@@ -275,7 +275,7 @@ local function BuildPage(parent, route)
     AddPlateField({ id = "v3_buff_display_plate_x", label = "血条 X", min = -200, max = 200, step = 2, integer = true, slider = true,
         get = function() return (Feature:GetSettingsProjection() or {}).plate and (Feature:GetSettingsProjection() or {}).plate.x or 0 end, set = function(v) return Feature.Commands:SetSetting("plate.x", v) end, slot = { size = "fill", fill = 1 } })
     AddPlateField({ id = "v3_buff_display_plate_y", label = "血条 Y (对齐原生血条)", min = -500, max = 500, step = 5, integer = true, slider = true,
-        get = function() return (Feature:GetSettingsProjection() or {}).plate and (Feature:GetSettingsProjection() or {}).plate.y or 26 end, set = function(v) return Feature.Commands:SetSetting("plate.y", v) end, slot = { size = "fill", fill = 1 } })
+        get = function() return (Feature:GetSettingsProjection() or {}).plate and (Feature:GetSettingsProjection() or {}).plate.y or 0 end, set = function(v) return Feature.Commands:SetSetting("plate.y", v) end, slot = { size = "fill", fill = 1 } })
     AddPlateField({ id = "v3_buff_display_plate_scale", label = "全局缩放", min = 0.5, max = 2, step = 0.05, integer = false, slider = true,
         get = function() return (Feature:GetSettingsProjection() or {}).plateScale or 1 end, set = function(v) return Feature.Commands:SetSetting("plateScale", v) end, slot = { size = "fill", fill = 1 } })
     local infoGrid = RSUI:UniformGrid({ id = "v3_buff_display_info_settings", parent = tabHead, minCellWidth = 180, minCellHeight = 30, maxColumns = 4, gap = 5, slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
@@ -364,10 +364,19 @@ local function BuildPage(parent, route)
             if field ~= nil then cardFields[#cardFields + 1] = field end
             return field
         end
-        AddField("x", "X 偏移", -400, 400, 2, "px", true)
-        AddField("y", "Y 偏移", -400, 400, 2, "px", true)
+        -- class/gearScore/distance merge into the single InfoRow; their own
+        -- x/y have no runtime meaning (position is owned by info.x/info.y), so
+        -- we don't expose dead position controls for them. Equipment and cast
+        -- components keep x/y as local anchor-relative fine-tune offsets.
+        local isInfoField = key == "class" or key == "gearScore" or key == "distance"
+        if not isInfoField then
+            AddField("x", "X 偏移", -400, 400, 2, "px", true)
+            AddField("y", "Y 偏移", -400, 400, 2, "px", true)
+        end
         AddField("size", "尺寸", 0, 64, 1, "px", true)
-        AddField("fontSize", "字号", 0, 32, 1, "px", true)
+        if not isInfoField then
+            AddField("fontSize", "字号", 0, 32, 1, "px", true)
+        end
         AddField("alpha", "透明度", 0.1, 1.0, 0.05, "", false)
         if key == "buffs" or key == "debuffs" then
             AddField("spacing", "图标间距", 0, 24, 1, "px", true)

@@ -100,51 +100,6 @@ end
 
 local COMPONENT_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar" }
 
--- Class role icons for the head "职业" component. The client exposes the three
--- ability-template indices; the role (Tank/Melee/Mage/...) is derived from the
--- same ArcheRage class key mapping used by Replicated Plates, and the role maps
--- to a stable skill-icon path. Sourced from the legacy classmappings baseline.
-local CLASS_ROLE_ICONS = {
-    Tank = "ui/icon/icon_skill_adamant15.dds",
-    Songer = "ui/icon/icon_skill_romance15.dds",
-    Melee = "ui/icon/icon_skill_fight37.dds",
-    Archer = "ui/icon/icon_skill_wild35.dds",
-    Mage = "ui/icon/icon_skill_magic40.dds",
-    Gunner = "ui/icon/icon_skill_madness07.dds",
-    Malediction = "ui/icon/icon_skill_hatred25.dds",
-    Dancer = "ui/icon/icon_skill_pleasure02.dds",
-    Swiftblade = "ui/icon/icon_skill_assassin43.dds",
-    Healer = "ui/icon/icon_skill_love01.dds",
-    unknown = "ui/icon/top_question_mark.dds",
-}
-local CLASS_ROLE_MAP = {
-    ["name_3_4_5"]="Tank",["name_2_3_4"]="Tank",["name_3_5_8"]="Tank",["name_2_4_5"]="Tank",["name_4_5_9"]="Tank",
-    ["name_1_5_8"]="Melee",["name_1_5_9"]="Melee",["name_1_3_5"]="Melee",["name_1_4_5"]="Melee",["name_1_3_8"]="Melee",
-    ["name_1_8_9"]="Melee",["name_1_3_4"]="Melee",["name_1_4_8"]="Melee",["name_1_4_9"]="Melee",["name_1_2_8"]="Melee",
-    ["name_1_2_9"]="Melee",["name_1_10_14"]="Melee",
-    ["name_1_8_12"]="Swiftblade",["name_1_5_12"]="Swiftblade",["name_1_9_12"]="Swiftblade",
-    ["name_7_8_11"]="Malediction",["name_2_7_11"]="Malediction",["name_4_8_11"]="Malediction",["name_7_9_11"]="Malediction",
-    ["name_8_9_11"]="Malediction",["name_5_9_11"]="Malediction",["name_4_9_11"]="Malediction",
-    ["name_4_7_9"]="Mage",["name_7_8_9"]="Mage",["name_4_7_8"]="Mage",["name_4_7_11"]="Mage",["name_3_4_7"]="Mage",
-    ["name_2_7_8"]="Mage",["name_2_4_7"]="Mage",["name_4_5_7"]="Mage",["name_2_5_7"]="Mage",["name_7_9_14"]="Mage",
-    ["name_6_8_9"]="Archer",["name_6_9_10"]="Archer",["name_2_6_9"]="Archer",["name_3_6_8"]="Archer",
-    ["name_6_9_12"]="Archer",["name_4_6_8"]="Archer",["name_4_6_9"]="Archer",
-    ["name_4_6_13"]="Gunner",["name_3_6_13"]="Gunner",["name_6_9_13"]="Gunner",["name_3_4_13"]="Gunner",
-    ["name_6_8_13"]="Gunner",["name_6_13_14"]="Gunner",["name_3_10_13"]="Gunner",["name_4_8_13"]="Gunner",
-    ["name_5_6_13"]="Gunner",["name_8_9_13"]="Gunner",["name_4_9_13"]="Gunner",["name_3_9_13"]="Gunner",
-    ["name_3_5_13"]="Gunner",["name_9_13_14"]="Gunner",["name_3_8_13"]="Gunner",["name_1_3_13"]="Gunner",["name_3_13_14"]="Gunner",
-    ["name_3_4_9"]="Songer",["name_2_3_9"]="Songer",["name_2_4_9"]="Songer",["name_3_6_9"]="Songer",["name_4_8_9"]="Songer",
-    ["name_4_9_14"]="Dancer",["name_9_10_14"]="Dancer",["name_8_10_14"]="Dancer",["name_2_10_14"]="Dancer",
-    ["name_3_4_14"]="Dancer",["name_1_3_14"]="Dancer",["name_8_9_14"]="Dancer",["name_3_9_14"]="Dancer",
-    ["name_3_10_14"]="Healer",["name_3_8_10"]="Healer",["name_2_8_10"]="Healer",["name_4_8_10"]="Healer",
-    ["name_5_8_10"]="Healer",["name_2_9_10"]="Healer",["name_8_9_10"]="Healer",["name_3_9_10"]="Healer",
-    ["name_4_9_10"]="Healer",["name_2_5_10"]="Healer",["name_2_3_10"]="Healer",["name_2_4_10"]="Healer",
-}
-local function ClassIconFor(key)
-    local role = CLASS_ROLE_MAP[tostring(key or "")]
-    return CLASS_ROLE_ICONS[role] or CLASS_ROLE_ICONS.unknown
-end
-
 local function SplitLines(text)
     local lines = {}
     text = tostring(text or "")
@@ -512,9 +467,9 @@ local function ReadClass(scope)
     if x2Locale == nil or type(x2Locale.LocalizeUiText) ~= "function" or combinedText == nil then return nil end
     local localizedOk, localized = api:CallCapability("X2Locale:LocalizeUiText", x2Locale, "LocalizeUiText", combinedText, key, "")
     if localizedOk ~= true or localized == nil or tostring(localized) == "" then return nil end
-    -- Class icon derives from the same ability-template key through the role
-    -- mapping; the head renderer shows the icon (with the name as fallback).
-    return { name = tostring(localized), key = key, icon = ClassIconFor(key) }
+    -- Class contributes only its localized NAME text to the InfoRow. No role
+    -- icon: the class component's sole purpose is the display name.
+    return { name = tostring(localized), key = key }
 end
 
 function F:MetadataTick()
@@ -528,13 +483,12 @@ function F:MetadataTick()
             -- a foreign unit's head plate.
             local value = nil
             if scope == "player" or TargetIsPlayer() then value = ReadClass(scope) end
-            -- Normalize legacy string lane values to { name, icon } records.
+            -- Normalize legacy string lane values to { name } records.
             local normalized = value
-            if type(value) == "string" then normalized = { name = value, key = nil, icon = nil } end
+            if type(value) == "string" then normalized = { name = value, key = nil } end
             local same = (lane.class == nil and normalized == nil)
                 or (type(lane.class) == "table" and type(normalized) == "table"
-                    and tostring(lane.class.name) == tostring(normalized.name)
-                    and tostring(lane.class.icon) == tostring(normalized.icon))
+                    and tostring(lane.class.name) == tostring(normalized.name))
             if same ~= true then lane.class, changed = normalized, true end
             self.laneData[scope] = lane
         end

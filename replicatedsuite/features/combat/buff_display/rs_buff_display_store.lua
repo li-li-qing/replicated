@@ -26,7 +26,13 @@ local F = S.Features.BuffDisplay
 local U = S.Utils
 local STORE_ID = "v3.buff_display"
 local SCHEMA = 4
-local LAYOUT_PRESET_VERSION = 2
+-- Layout preset version. Schema 4 (tracked buckets / classification) is
+-- unchanged; layout geometry evolves through this preset counter, NOT schema.
+--   v1 -> v2 : compact one-row equipment preset (M1.16.0.18.50)
+--   v2 -> v3 : health-bar anchor layout (this round). Absolute component y
+--              values are no longer screen offsets — they become local
+--              anchor-relative fine-tune offsets. Defaults collapse to 0.
+local LAYOUT_PRESET_VERSION = 3
 
 local function Copy(value)
     if U ~= nil and type(U.DeepCopy) == "function" then return U.DeepCopy(value) end
@@ -72,11 +78,29 @@ local LEGACY_COMPONENT_DEFAULTS = {
     castBar   = { enabled = true,  x = 0,   y = -40,  size = 6,  fontSize = 10, alpha = 1.0 },
 }
 
--- Compact preset: equipment is one continuous row close to the native plate;
--- metadata stays between equipment and effect rows. This follows the proven
--- Professional Plates / community Extended Plates visual grouping while keeping
--- every component independently adjustable through schema-4 fields.
+-- Anchor-relative compact preset (v3). Every x/y is now a LOCAL fine-tune
+-- offset relative to the health-bar proxy rectangle, NOT a screen coordinate.
+-- Default 0 for all: the layout function places buffs above the bar, debuffs
+-- below, equipment flanks, info on top. `enabled` is the only meaningful
+-- default divergence (ranged OFF by default; wings ON as the right-side slot).
 local COMPONENT_DEFAULTS = {
+    buffs     = { enabled = true,  x = 0, y = 0, size = 24, fontSize = 9,  alpha = 1.0, spacing = 2, maxPerRow = 8, maxRows = 2 },
+    debuffs   = { enabled = true,  x = 0, y = 0, size = 24, fontSize = 9,  alpha = 1.0, spacing = 2, maxPerRow = 8, maxRows = 2 },
+    distance  = { enabled = true,  x = 0, y = 0, size = 0,  fontSize = 10, alpha = 1.0 },
+    class     = { enabled = true,  x = 0, y = 0, size = 0,  fontSize = 10, alpha = 1.0 },
+    gearScore = { enabled = true,  x = 0, y = 0, size = 0,  fontSize = 10, alpha = 1.0 },
+    mainHand  = { enabled = true,  x = 0, y = 0, size = 22, fontSize = 0,  alpha = 1.0 },
+    offHand   = { enabled = true,  x = 0, y = 0, size = 22, fontSize = 0,  alpha = 1.0 },
+    ranged    = { enabled = false, x = 0, y = 0, size = 22, fontSize = 0,  alpha = 1.0 },
+    wings     = { enabled = true,  x = 0, y = 0, size = 22, fontSize = 0,  alpha = 1.0 },
+    castBar   = { enabled = true,  x = 0, y = 0, size = 6,  fontSize = 10, alpha = 1.0 },
+}
+
+-- The "broken anchor layout" preset shipped on GitHub main: these absolute y/x
+-- values were the v2 defaults. A saved component matching this fingerprint is
+-- migrated to the v3 anchor-relative 0/0 defaults; a user-adjusted value is
+-- left untouched (the renderer now treats x/y as local offsets).
+local BROKEN_COMPONENT_DEFAULTS = {
     buffs     = { enabled = true,  x = 0,   y = -108, size = 24, fontSize = 9,  alpha = 1.0 },
     debuffs   = { enabled = true,  x = 0,   y = -136, size = 24, fontSize = 9,  alpha = 1.0 },
     distance  = { enabled = true,  x = -62, y = -82,  size = 0,  fontSize = 10, alpha = 1.0 },
@@ -142,21 +166,33 @@ local function NormalizeComponents(value, presetVersion)
     local out = {}
     for _, key in ipairs(COMPONENT_KEYS) do
         local source = value[key]
-        if presetVersion < LAYOUT_PRESET_VERSION then
-            if type(source) ~= "table" then
-                out[key] = NormalizeComponent(nil, COMPONENT_DEFAULTS[key])
-            else
-                local legacy = NormalizeComponent(source, LEGACY_COMPONENT_DEFAULTS[key])
-                if SameLegacyGeometry(legacy, LEGACY_COMPONENT_DEFAULTS[key]) then
-                    local migrated = NormalizeComponent(COMPONENT_DEFAULTS[key], COMPONENT_DEFAULTS[key])
-                    migrated.enabled = source.enabled ~= false
-                    out[key] = migrated
-                else
-                    out[key] = NormalizeComponent(source, COMPONENT_DEFAULTS[key])
-                end
-            end
-        else
+        local fresh = NormalizeComponent(nil, COMPONENT_DEFAULTS[key])
+        if presetVersion >= LAYOUT_PRESET_VERSION then
+            -- Already on the anchor-relative preset: normalize as-is.
             out[key] = NormalizeComponent(source, COMPONENT_DEFAULTS[key])
+        elseif type(source) ~= "table" then
+            -- No saved value: use the new anchor-relative default.
+            out[key] = fresh
+        else
+            -- Three-generation migration. Only a component whose geometry still
+            -- EXACTLY matches a known old default (legacy v1 or broken v2) is
+            -- moved to the v3 default; any user-adjusted value is preserved and
+            -- simply re-interpreted as a local offset.
+            local asLegacy = NormalizeComponent(source, LEGACY_COMPONENT_DEFAULTS[key])
+            local asBroken = NormalizeComponent(source, BROKEN_COMPONENT_DEFAULTS[key])
+            local enabled = source.enabled ~= false
+            if SameLegacyGeometry(asLegacy, LEGACY_COMPONENT_DEFAULTS[key])
+                or SameLegacyGeometry(asBroken, BROKEN_COMPONENT_DEFAULTS[key]) then
+                local migrated = NormalizeComponent(COMPONENT_DEFAULTS[key], COMPONENT_DEFAULTS[key])
+                migrated.enabled = enabled
+                out[key] = migrated
+            else
+                -- User-customized: keep their values; only fill the new fields
+                -- (spacing/maxPerRow/maxRows) from the v3 default when absent.
+                local kept = NormalizeComponent(source, COMPONENT_DEFAULTS[key])
+                kept.enabled = enabled
+                out[key] = kept
+            end
         end
     end
     return out
@@ -184,16 +220,16 @@ local function NormalizeSettings(value)
             headOffsetY = COMPONENT_DEFAULTS.buffs.y
         end
     end
-    -- Schema 5: a virtual health-bar rectangle is the single layout anchor.
-    -- The RU API exposes no native unit-frame rect, so the player aligns this
-    -- rect onto the game's own health bar via x/y/width/height. Nothing is
-    -- drawn for it; the native bar draws itself. Old fields are migrated below.
+    -- NativeBarProxy: the RU API exposes no native unit-frame rectangle, so the
+    -- anchor is the unit screen projection point + a calibratable offset that
+    -- the player aligns onto the game's own health bar. This proxy is used ONLY
+    -- for layout geometry (left/right/top/bottom/center) — nothing is drawn.
     local plate = type(value.plate) == "table" and value.plate or {}
     local info = type(value.info) == "table" and value.info or {}
-    -- Migrate legacy headOffsetY into the anchor's vertical offset. User-verified
-    -- default: y=26 puts buffs right on the native bar for standard units.
+    -- y=0 centers the proxy on the unit projection point by default; the
+    -- calibrate mode / plate.y slider lets the player land it on the native bar.
     if plate.y == nil and value.plate == nil then
-        plate.y = ClampInt(headOffsetY, -500, 500, 26)
+        plate.y = ClampInt(headOffsetY, -500, 500, 0)
     end
     return {
         showBuffs = value.showBuffs ~= false,
@@ -225,15 +261,15 @@ local function NormalizeSettings(value)
         headShowTime = value.headShowTime ~= false,
         -- Global plate scale multiplies every region (health bar, icons, text).
         plateScale = ClampFloat(value.plateScale, 0.5, 2.0, 1.0),
-        -- Virtual health-bar anchor rect: aligned by the player onto the native
-        -- bar. Not drawn; used only for layout (enabled/opacity/showName kept
-        -- for backward compatibility and ignored by the renderer).
+        -- NativeBarProxy anchor rect: aligned by the player onto the native bar
+        -- via x/y/width/height. Not drawn; used only for layout. enabled/
+        -- opacity/showName kept for backward compatibility, ignored by renderer.
         plate = {
             enabled = plate.enabled ~= false,
             width = ClampInt(plate.width, 80, 320, 150),
             height = ClampInt(plate.height, 8, 40, 20),
             x = ClampInt(plate.x, -400, 400, 0),
-            y = ClampInt(plate.y, -500, 500, 26),
+            y = ClampInt(plate.y, -500, 500, 0),
             opacity = ClampFloat(plate.opacity, 0.2, 1.0, 0.85),
             showName = plate.showName ~= false,
         },
@@ -503,10 +539,10 @@ function F:ApplySettingRaw(key, value)
         if settings.components.buffs then settings.components.buffs.maxPerRow = settings.headMaxIcons end
         if settings.components.debuffs then settings.components.debuffs.maxPerRow = settings.headMaxIcons end
     elseif key == "headOffsetY" then
-        -- Schema 5: the plate is the anchor; this legacy slider now offsets the
-        -- health-bar plate vertically (buffs/debuffs follow automatically).
-        settings.headOffsetY = ClampInt(value, -400, 400, settings.headOffsetY)
-        settings.plate.y = ClampInt(value, -120, 40, settings.plate.y)
+        -- Legacy proxy: this slider now offsets the NativeBarProxy anchor
+        -- vertically (buffs/debuffs/equipment follow automatically).
+        settings.headOffsetY = ClampInt(value, -500, 500, settings.headOffsetY)
+        settings.plate.y = ClampInt(value, -500, 500, settings.plate.y)
     elseif key == "headRefreshMs" then settings.headRefreshMs = ClampInt(value, 1, 2000, settings.headRefreshMs)
     elseif key == "headShowStacks" then settings.headShowStacks = value == true
     elseif key == "headShowTime" then settings.headShowTime = value == true
@@ -516,9 +552,9 @@ function F:ApplySettingRaw(key, value)
         local before = settings.plate
         if field == "enabled" then settings.plate.enabled = value == true
         elseif field == "width" then settings.plate.width = ClampInt(value, 80, 320, before.width)
-        elseif field == "height" then settings.plate.height = ClampInt(value, 18, 64, before.height)
+        elseif field == "height" then settings.plate.height = ClampInt(value, 8, 40, before.height)
         elseif field == "x" then settings.plate.x = ClampInt(value, -400, 400, before.x)
-        elseif field == "y" then settings.plate.y = ClampInt(value, -120, 40, before.y)
+        elseif field == "y" then settings.plate.y = ClampInt(value, -500, 500, before.y)
         elseif field == "opacity" then settings.plate.opacity = ClampFloat(value, 0.2, 1.0, before.opacity)
         elseif field == "showName" then settings.plate.showName = value == true
         else return false, "unknown plate field: " .. tostring(field) end

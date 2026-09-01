@@ -161,10 +161,7 @@ function F.ProjectPlates(laneData, settings)
     end
     if laneData.class ~= nil then
         local class = type(laneData.class) == "table" and laneData.class or { name = laneData.class }
-        out.class = {
-            value = tostring(class.name or ""),
-            icon = type(class.icon) == "string" and class.icon or "",
-        }
+        out.class = { value = tostring(class.name or "") }
     end
     if laneData.gearScore ~= nil then out.gearScore = { value = tostring(math.floor(tonumber(laneData.gearScore) or 0)) } end
     for _, key in ipairs({ "mainHand", "offHand", "ranged", "wings" }) do

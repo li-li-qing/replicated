@@ -20,7 +20,7 @@ if type(Feature) ~= "table" or type(S.UI) ~= "table" or type(S.Events) ~= "table
 S.UIV3 = S.UIV3 or {}
 S.UIV3.BuffHeadMarkersV3 = S.UIV3.BuffHeadMarkersV3 or {}
 local P = S.UIV3.BuffHeadMarkersV3
-P.version = 4
+P.version = 5
 P.owner = "v3:buff_head_markers"
 P.consumerToken = "presentation:buff_head_markers"
 P.running = P.running == true
@@ -30,7 +30,7 @@ P.lifecycleOwner = P.lifecycleOwner or {}
 P.metrics = P.metrics or { starts=0, stops=0, ticks=0, projections=0, allocated=0, anchorFailures={} }
 
 local SCOPES = { "player", "target" }
-local RENDERABLE_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar", "plate", "info" }
+local RENDERABLE_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar" }
 local UNKNOWN_ICON = "ui/icon/icon_unknown_item.dds"
 
 local function N(v, fallback) return tonumber(v) or tonumber(fallback) or 0 end
@@ -298,6 +298,89 @@ local function RenderRows(scope, pool, rows, cfg, centerX, firstRowTop, showStac
 end
 
 ------------------------------------------------------------------------
+-- Layout geometry (pure)
+------------------------------------------------------------------------
+
+-- Small visual gap between the health-bar proxy and the first buff/debuff row.
+local PROXY_GAP = 2
+
+-- Pure layout computation. No widgets, no native reads, no store mutation.
+-- Inputs are the projected anchor (unit screen position), settings, and the
+-- actual visible row/equipment counts. Returns a geometry table the renderer
+-- applies verbatim. This is the single authority for "where does X go".
+--
+--   anchorX, anchorY : unit screen projection point (ScreenProjectionV3 space)
+--   settings         : BuffDisplay settings projection (plate/info/components)
+--   buffCount        : visible buff rows count (already bounded)
+--   debuffCount      : visible debuff rows count
+--   equip            : { mainHand=bool, offHand=bool, ranged=bool, wings=bool }
+function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, equip)
+    settings = type(settings) == "table" and settings or {}
+    local plateCfg = type(settings.plate) == "table" and settings.plate or {}
+    local infoCfg = type(settings.info) == "table" and settings.info or {}
+    local components = type(settings.components) == "table" and settings.components or {}
+    local scale = math.max(0.5, math.min(2, tonumber(settings.plateScale) or 1))
+
+    -- NativeBarProxy rectangle: the single geometric anchor.
+    local barW = math.max(24, math.floor(N(plateCfg.width, 150) * scale))
+    local barH = math.max(8, math.floor(N(plateCfg.height, 20) * scale))
+    local centerX = math.floor((tonumber(anchorX) or 0) + N(plateCfg.x, 0) * scale)
+    local centerY = math.floor((tonumber(anchorY) or 0) + N(plateCfg.y, 0) * scale)
+    local left = centerX - math.floor(barW / 2)
+    local right = left + barW
+    local top = centerY - math.floor(barH / 2)
+    local bottom = centerY + math.floor(barH / 2)
+
+    local bar = { centerX = centerX, centerY = centerY, left = left, right = right, top = top, bottom = bottom, width = barW, height = barH }
+
+    -- Buff rows: first row's bottom sits `buffGap` above bar.top; extra rows
+    -- stack upward at rowGap (iconSize + spacing). y is a local fine-tune offset.
+    local buffCfg = components.buffs or {}
+    local buffSize = math.max(8, math.floor(N(buffCfg.size, 24) * scale))
+    local buffSpacing = math.max(0, math.floor(N(buffCfg.spacing, 2) * scale))
+    local buffMaxPerRow = math.max(1, math.min(16, math.floor(N(buffCfg.maxPerRow, 8))))
+    local buffMaxRows = math.max(1, math.min(4, math.floor(N(buffCfg.maxRows, 2))))
+    local buffGap = PROXY_GAP * scale + math.floor(N(buffCfg.y, 0) * scale)
+    local buffRowGap = buffSize + buffSpacing
+    local buffFirstTop = bar.top - buffGap - buffSize
+    local buffActualRows = math.min(buffMaxRows, math.ceil(buffCount / buffMaxPerRow))
+    local buffTopMostTop = buffFirstTop - (buffActualRows - 1) * buffRowGap
+
+    -- Debuff rows: first row's top sits `debuffGap` below bar.bottom.
+    local debuffCfg = components.debuffs or {}
+    local debuffSize = math.max(8, math.floor(N(debuffCfg.size, 24) * scale))
+    local debuffSpacing = math.max(0, math.floor(N(debuffCfg.spacing, 2) * scale))
+    local debuffMaxPerRow = math.max(1, math.min(16, math.floor(N(debuffCfg.maxPerRow, 8))))
+    local debuffMaxRows = math.max(1, math.min(4, math.floor(N(debuffCfg.maxRows, 2))))
+    local debuffGap = PROXY_GAP * scale + math.floor(N(debuffCfg.y, 0) * scale)
+    local debuffRowGap = debuffSize + debuffSpacing
+    local debuffFirstTop = bar.bottom + debuffGap
+    local debuffActualRows = math.min(debuffMaxRows, math.ceil(debuffCount / debuffMaxPerRow))
+
+    -- Info row: sits above the actual top-most buff row (0 buff rows -> above
+    -- the bar directly). Never reserves space for non-existent rows.
+    local infoFont = math.max(8, math.floor(N(infoCfg.fontSize, 10) * scale))
+    local infoH = infoFont + 4
+    local infoTop = (buffActualRows > 0 and buffTopMostTop or bar.top) - infoH - math.max(3, math.floor(2 * scale))
+    infoTop = infoTop + math.floor(N(infoCfg.y, 0) * scale)
+
+    return {
+        bar = bar,
+        buff = { firstTop = buffFirstTop, rowGap = buffRowGap, size = buffSize, spacing = buffSpacing,
+                 maxPerRow = buffMaxPerRow, maxRows = buffMaxRows, actualRows = buffActualRows, topMostTop = buffTopMostTop },
+        debuff = { firstTop = debuffFirstTop, rowGap = debuffRowGap, size = debuffSize, spacing = debuffSpacing,
+                   maxPerRow = debuffMaxPerRow, maxRows = debuffMaxRows, actualRows = debuffActualRows },
+        info = { top = infoTop, font = infoFont, height = infoH },
+        equip = { mainHand = equip.mainHand == true, offHand = equip.offHand == true, ranged = equip.ranged == true, wings = equip.wings == true },
+        scale = scale,
+    }
+end
+
+-- Expose the pure layout function for acceptance geometry tests and any other
+-- consumer that needs the plate geometry without touching widgets.
+P.ComputePlateLayout = ComputePlateLayout
+
+------------------------------------------------------------------------
 -- Render
 ------------------------------------------------------------------------
 
@@ -340,8 +423,9 @@ local function RecordAnchorFailure(scope, reason)
 end
 
 -- Render one equipment icon flanking the plate. direction -1 stacks leftward
--- (each new icon further left), +1 stacks rightward. Returns the new slot count
--- and the new outward edge so consecutive slots never overlap.
+-- (each new icon further left), +1 stacks rightward. cfg.x/cfg.y are LOCAL
+-- fine-tune offsets applied on top of the canonical slot position (they now
+-- genuinely move the icon). Returns the new slot count and outward edge.
 local function RenderEquipSlot(scope, pool, item, cfg, edgeX, centerY, direction, slot, scale)
     if item == nil or item.icon == nil or cfg == nil or cfg.enabled == false then return slot, edgeX end
     local marker = pool.icons[slot + 1]
@@ -354,7 +438,9 @@ local function RenderEquipSlot(scope, pool, item, cfg, edgeX, centerY, direction
     else
         x = edgeX + gap
     end
-    local y = centerY - math.floor(size / 2)
+    -- Local offset: cfg.x/cfg.y are relative to the canonical slot origin.
+    x = x + math.floor(N(cfg.x, 0) * (scale or 1))
+    local y = centerY - math.floor(size / 2) + math.floor(N(cfg.y, 0) * (scale or 1))
     ApplyIcon(marker, { iconPath = item.icon, gradeIconPath = item.gradeIconPath, stack = nil, timeText = nil }, size, cfg, x, y, false, false)
     local newEdge = direction < 0 and x or (x + size)
     return slot + 1, newEdge
@@ -417,101 +503,67 @@ local function RenderScope(scope, settings)
         return
     end
     local components = type(settings.components) == "table" and settings.components or {}
-    local plateCfg = type(settings.plate) == "table" and settings.plate or {}
     local infoCfg = type(settings.info) == "table" and settings.info or {}
-    local scale = math.max(0.5, math.min(2, tonumber(settings.plateScale) or 1))
     local showStacks = settings.headShowStacks ~= false
     local showTime = settings.headShowTime ~= false
 
-    -- === Layout: the native health bar is the single anchor ===
-    -- The RU API exposes no native unit-frame rectangle, so the anchor is the
-    -- unit screen position with a user-adjustable virtual rect (width/height/
-    -- x/y) that the player aligns onto the game's own health bar. Nothing is
-    -- drawn here — the native bar draws itself.
-    local healthW = math.max(24, math.floor(N(plateCfg.width, 150) * scale))
-    local healthH = math.max(8, math.floor(N(plateCfg.height, 20) * scale))
-    local plateX = anchorX + math.floor(N(plateCfg.x, 0) * scale)
-    local plateCenterY = anchorY + math.floor(N(plateCfg.y, 0) * scale)
-    local plateLeft = plateX - math.floor(healthW / 2)
-    local plateRight = plateLeft + healthW
-    local plateTopY = plateCenterY - math.floor(healthH / 2)
-    local plateBottomY = plateCenterY + math.floor(healthH / 2)
+    -- Equipment visibility: collapse slots that have no item. Ranged stays an
+    -- independent opt-in component (default off); wings is the default right slot.
+    local equip = {}
+    for _, key in ipairs({ "mainHand", "offHand", "ranged", "wings" }) do
+        local cfg = components[key] or {}
+        local item = plates[key]
+        equip[key] = cfg.enabled ~= false and item ~= nil and item.icon ~= nil
+    end
 
-    -- Buff rows above the plate, stacking upward, bounded by MaxPerRow/MaxRows.
-    local buffCfg = components.buffs or {}
-    local buffSize = math.max(8, math.floor(N(buffCfg.size, 24) * scale))
-    local buffSpacing = math.max(0, math.floor(N(buffCfg.spacing, 2) * scale))
-    local buffMaxPerRow = math.max(1, math.min(16, math.floor(N(buffCfg.maxPerRow, 8))))
-    local buffMaxRows = math.max(1, math.min(4, math.floor(N(buffCfg.maxRows, 2))))
-    local buffRowGap = math.max(1, buffSize + buffSpacing)
-    local buffExtraY = math.floor(N(buffCfg.y, 0) * scale)
-    local buffFirstTop = plateTopY - buffRowGap + buffExtraY  -- first row above plate
+    local buffRows = plates.buffs or {}
+    local debuffRows = plates.debuffs or {}
+    local buffEnabled = (components.buffs or {}).enabled ~= false
+    local debuffEnabled = (components.debuffs or {}).enabled ~= false
+    local buffCount = buffEnabled and #buffRows or 0
+    local debuffCount = debuffEnabled and #debuffRows or 0
 
-    -- Debuff rows below the plate.
-    local debuffCfg = components.debuffs or {}
-    local debuffSize = math.max(8, math.floor(N(debuffCfg.size, 24) * scale))
-    local debuffSpacing = math.max(0, math.floor(N(debuffCfg.spacing, 2) * scale))
-    local debuffMaxPerRow = math.max(1, math.min(16, math.floor(N(debuffCfg.maxPerRow, 8))))
-    local debuffMaxRows = math.max(1, math.min(4, math.floor(N(debuffCfg.maxRows, 2))))
-    local debuffRowGap = math.max(1, debuffSize + debuffSpacing)
-    local debuffExtraY = math.floor(N(debuffCfg.y, 0) * scale)
-    local debuffFirstTop = plateBottomY + debuffRowGap + debuffExtraY
+    -- Single pure layout authority.
+    local L = ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, equip)
+    local bar = L.bar
+    local scale = L.scale
 
-    -- Info row above the highest buff row (auto-raises with extra buff rows).
-    local infoFont = math.max(8, math.floor(N(infoCfg.fontSize, 10) * scale))
-    local infoH = infoFont + 4
-    local highestBuffTop = buffFirstTop - (buffMaxRows - 1) * buffRowGap
-    local infoY = highestBuffTop - infoH - math.max(3, math.floor(2 * scale)) + math.floor(N(infoCfg.y, 0) * scale)
-
-    -- === Render ===
     local slot = 0
-    -- Buff rows
-    if buffCfg.enabled ~= false then
-        slot = slot + RenderRows(scope, pool, plates.buffs or {}, buffCfg, plateX, buffFirstTop, showStacks, showTime, slot, buffSize, buffSpacing, buffMaxPerRow, buffMaxRows, buffRowGap, -1)
+    -- Buff rows (stack upward from bar.top).
+    if buffEnabled then
+        slot = slot + RenderRows(scope, pool, buffRows, components.buffs or {}, bar.centerX, L.buff.firstTop, showStacks, showTime, slot, L.buff.size, L.buff.spacing, L.buff.maxPerRow, L.buff.maxRows, L.buff.rowGap, -1)
     end
-    -- Debuff rows
-    if debuffCfg.enabled ~= false then
-        slot = slot + RenderRows(scope, pool, plates.debuffs or {}, debuffCfg, plateX, debuffFirstTop, showStacks, showTime, slot, debuffSize, debuffSpacing, debuffMaxPerRow, debuffMaxRows, debuffRowGap, 1)
+    -- Debuff rows (stack downward from bar.bottom).
+    if debuffEnabled then
+        slot = slot + RenderRows(scope, pool, debuffRows, components.debuffs or {}, bar.centerX, L.debuff.firstTop, showStacks, showTime, slot, L.debuff.size, L.debuff.spacing, L.debuff.maxPerRow, L.debuff.maxRows, L.debuff.rowGap, 1)
     end
-    -- Equipment left flank (mainHand, offHand): offHand sits right next to the
-    -- plate, mainHand further left; each stacks outward from the previous edge.
-    local leftEdge = plateLeft
+    -- Left flank: offHand closest to bar, mainHand further left.
+    local leftEdge = bar.left
     for _, key in ipairs({ "offHand", "mainHand" }) do
         local cfg = components[key] or {}
-        slot, leftEdge = RenderEquipSlot(scope, pool, plates[key], cfg, leftEdge, plateCenterY, -1, slot, scale)
+        slot, leftEdge = RenderEquipSlot(scope, pool, plates[key], cfg, leftEdge, bar.centerY, -1, slot, scale)
     end
-    -- Equipment right flank (wings, ranged): wings next to the plate, ranged
-    -- further right; each stacks outward from the previous edge.
-    local rightEdge = plateRight
+    -- Right flank: wings closest to bar; ranged only if the player opts in.
+    local rightEdge = bar.right
     for _, key in ipairs({ "wings", "ranged" }) do
         local cfg = components[key] or {}
-        slot, rightEdge = RenderEquipSlot(scope, pool, plates[key], cfg, rightEdge, plateCenterY, 1, slot, scale)
-    end
-    -- Class role icon above the info text (optional, mirrors old behavior)
-    local classCfg = components.class or {}
-    local classPlates = type(plates.class) == "table" and plates.class or {}
-    if classCfg.enabled ~= false and type(classPlates.icon) == "string" and classPlates.icon ~= "" then
-        local csize = math.max(12, math.floor(N(classCfg.size, 14) * scale))
-        local marker = pool.icons[slot + 1]
-        if marker ~= nil then
-            ApplyIcon(marker, { iconPath = classPlates.icon, stack = nil, timeText = nil }, csize, classCfg, plateX - math.floor(csize / 2), infoY, false, false)
-            slot = slot + 1
-        end
+        slot, rightEdge = RenderEquipSlot(scope, pool, plates[key], cfg, rightEdge, bar.centerY, 1, slot, scale)
     end
     for index = slot + 1, #pool.icons do HideIcon(pool.icons[index]) end
 
-    -- Info row
+    -- Info row (class name · gear score · distance), auto-placed above actual rows.
     if infoCfg.enabled ~= false then
-        RenderInfo(scope, plates, infoCfg, components, plateX, infoY, infoFont)
+        RenderInfo(scope, plates, infoCfg, components, bar.centerX, L.info.top, L.info.font)
     else
         local info = pool.info
         if info then S.UI:SetVisible(info.root, false, P.owner) end
     end
 
-    -- Cast bar (below debuff rows; hidden when casting ends)
+    -- Cast bar below the debuff rows (hidden when not casting).
     local castCfg = components.castBar or {}
     if castCfg.enabled ~= false and plates.cast ~= nil then
-        RenderCastBar(scope, plates.cast, castCfg, plateX, debuffFirstTop + (debuffCfg.enabled ~= false and (debuffMaxRows * debuffRowGap) or 0) + 6, scale)
+        local castY = bar.bottom + (debuffEnabled and (L.debuff.actualRows * L.debuff.rowGap) or 0) + 6 * scale
+        RenderCastBar(scope, plates.cast, castCfg, bar.centerX, castY, scale)
     else
         local cast = pool.cast
         if cast then S.UI:SetVisible(cast.root, false, P.owner) end
@@ -609,7 +661,8 @@ if type(S.Events.SubscribeInternal) == "function" then
     S.Events:SubscribeInternal("v3.buff_display.settings", P.lifecycleOwner, function() P:Reconcile("settings_global") end)
 end
 
--- Contract 4: render gate is decoupled from tracked state, stale text is
--- fail-closed, and failed Consumer release remains observable/retryable.
-Feature.BuffHeadMarkerContractVersion = 4
+-- Contract 5: health-bar proxy anchor layout via pure ComputePlateLayout;
+-- class contributes name text only (no role icon); equipment collapses when
+-- absent; right flank defaults to wings (ranged opt-in); x/y are local offsets.
+Feature.BuffHeadMarkerContractVersion = 5
 P:Reconcile("load")
