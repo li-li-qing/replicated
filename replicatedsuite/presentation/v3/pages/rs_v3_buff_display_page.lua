@@ -142,6 +142,9 @@ local function BuildPage(parent, route)
     -- presets, refresh cadence, tracked ids) to current defaults; used when a
     -- stale saved layout makes list content hard to read.
     local resetButton = RSUI:Button({ id = "v3_buff_display_track_reset", parent = trackRow, text = "恢复默认", compact = true, slot = { size = "fixed", width = 78 } })
+    -- One-shot live probe: prints the RAW buff-table shapes the client returns
+    -- to chat, so name-field questions are answered with evidence, not guesses.
+    local probeButton = RSUI:Button({ id = "v3_buff_display_track_probe", parent = trackRow, text = "字段诊断", compact = true, slot = { size = "fixed", width = 78 } })
 
     -- DataView callbacks must be supplied at construction. TableView snapshots
     -- them into its internal ListView; assigning tableView.onSelectionChanged or
@@ -610,6 +613,12 @@ local function BuildPage(parent, route)
         end
         return ok, err
     end
+    probeButton.onClick = function()
+        local ok, summary = Feature.Commands:ProbeAuraFields()
+        selectedText:SetText(ok == true and ("字段诊断已输出到聊天框 · " .. tostring(summary)) or tostring(summary or "诊断失败"))
+        root:Refresh()
+        return ok, summary
+    end
 
     local function QuickImportText(mode)
         local text = ""
@@ -661,7 +670,7 @@ local function BuildPage(parent, route)
         return true
     end
 
-    for _, button in ipairs({ featureButton, widgetButton, buffButton, debuffButton, hiddenButton, searchClear, freezeButton, clearTrackButton, resetButton, quickImport, quickOverwrite, exportBtn, importTextBtn, clearTextBtn }) do
+    for _, button in ipairs({ featureButton, widgetButton, buffButton, debuffButton, hiddenButton, searchClear, freezeButton, clearTrackButton, resetButton, probeButton, quickImport, quickOverwrite, exportBtn, importTextBtn, clearTextBtn }) do
         if button ~= nil and button.root ~= nil then S.UI:SafeHandler(button.root, "OnClick", button.onClick, "v3_buff_display:" .. tostring(button.id or "action")) end
     end
 

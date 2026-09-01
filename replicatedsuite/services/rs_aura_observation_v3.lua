@@ -124,8 +124,20 @@ local function ResolveBuffInfoById(id)
     local numericId = tonumber(key)
     -- Item level is irrelevant for ordinary combat auras on current RU; try the
     -- cheap/common values and stop on the first structurally useful tooltip.
+    -- Community docs describe builds where GetBuffTooltip returns tooltip TEXT
+    -- (a string) instead of a table; the first line of a buff tooltip is the
+    -- buff name, so accept that shape too.
     for _, itemLevel in ipairs({ 0, 1, 55 }) do
         local ok, info = api:CallCapability("X2Ability:GetBuffTooltip", X2Ability, "GetBuffTooltip", numericId, itemLevel)
+        if ok == true and type(info) == "string" and info ~= "" then
+            local firstLine = string.match(info, "^([^\r\n]+)") or ""
+            firstLine = string.match(firstLine, "^%s*(.-)%s*$") or ""
+            if firstLine ~= "" and string.match(firstLine, "^%d+$") == nil then
+                local resolved = { name = firstLine, iconPath = "" }
+                buffInfoCache[key], buffInfoCacheCount = resolved, buffInfoCacheCount + 1
+                return resolved
+            end
+        end
         if ok == true and type(info) == "table" then
             local iconPath = FirstIconPath(info)
             local name = tostring(info.name or "")
@@ -146,6 +158,26 @@ local function PeekBuffInfo(id)
     local cached = buffInfoCache[tostring(id)]
     if cached == nil then return nil end
     return cached ~= false and cached or nil
+end
+
+-- Conservative name extraction from trailing native returns (A:Call surfaces
+-- up to three extras). A display name is a short, non-numeric string with no
+-- path separators or file extensions; anything else (ids, icon paths, tooltip
+-- text blobs) is rejected rather than guessed.
+local function NameFromExtra(extra)
+    if type(extra) ~= "table" then return nil end
+    for i = 1, #extra do
+        local v = extra[i]
+        if type(v) == "string" and v ~= "" and #v <= 64
+            and string.match(v, "^%d+$") == nil
+            and string.find(v, "/", 1, true) == nil
+            and string.find(v, "\\", 1, true) == nil
+            and string.find(v, ".dds", 1, true) == nil
+            and string.find(v, "\n", 1, true) == nil then
+            return v
+        end
+    end
+    return nil
 end
 
 
@@ -174,6 +206,8 @@ local function CopyLane(row)
             effectId = item.effectId,
             data = CopyShallow(item.data),
             tooltip = CopyShallow(item.tooltip),
+            extra = CopyShallow(item.extra),
+            tooltipExtra = CopyShallow(item.tooltipExtra),
         }
     end
     return out
@@ -227,10 +261,19 @@ function A:_ScanLane(unitId, lane, limit)
     local dataWorking, tipWorking = canData == true, canTip == true
     for index = 1, scanned do
         local data, tooltip = nil, nil
+        local dataExtra, tipExtra = nil, nil
         if dataWorking then
             self.nativeReads = self.nativeReads + 1
-            local okData, value = S.Api:Call(X2Unit, spec.data, unitId, index)
-            if okData == true then data = value else dataWorking, reliable = false, false end
+            -- A:Call surfaces trailing native returns at positions 4-6; some RU
+            -- builds move the display name OUT of the row table into a second
+            -- return, so capture them instead of dropping them.
+            local okData, value, _, b2, c2, d2 = S.Api:Call(X2Unit, spec.data, unitId, index)
+            if okData == true then
+                data = value
+                if b2 ~= nil or c2 ~= nil or d2 ~= nil then dataExtra = { b2, c2, d2 } end
+            else
+                dataWorking, reliable = false, false
+            end
         end
         local effectId = ExtractEffectId(data, nil)
         -- RU unit rows frequently omit the name field. When the id is missing
@@ -239,12 +282,17 @@ function A:_ScanLane(unitId, lane, limit)
         -- co-authority (rp_api reads tip.name / extra.name alike). Gating on
         -- the cache keeps steady-state scans free of extra tooltip reads: only
         -- first-seen ids pay one tooltip read, then the ability cache answers.
-        local rowName = PickString(data, nil, STATUS_KEYS.name)
+        local rowName = PickString(data, nil, STATUS_KEYS.name) or NameFromExtra(dataExtra)
         if tipWorking and (effectId == nil or (rowName == nil and PeekBuffInfo(effectId) == nil)) then
             self.nativeReads = self.nativeReads + 1
             self.tooltipFallbacks = self.tooltipFallbacks + 1
-            local okTip, value = S.Api:Call(X2Unit, spec.tip, unitId, index)
-            if okTip == true then tooltip = value else tipWorking, reliable = false, false end
+            local okTip, value, _, tb, tc, td = S.Api:Call(X2Unit, spec.tip, unitId, index)
+            if okTip == true then
+                tooltip = value
+                if tb ~= nil or tc ~= nil or td ~= nil then tipExtra = { tb, tc, td } end
+            else
+                tipWorking, reliable = false, false
+            end
             if effectId == nil then effectId = ExtractEffectId(data, tooltip) end
         end
         rows[#rows + 1] = {
@@ -252,6 +300,8 @@ function A:_ScanLane(unitId, lane, limit)
             effectId = effectId,
             data = CopyShallow(data),
             tooltip = CopyShallow(tooltip),
+            extra = dataExtra,
+            tooltipExtra = tipExtra,
         }
     end
     local complete = scanned >= count
@@ -362,6 +412,11 @@ function A:GetStatusMap(snapshot, options)
                         -- Unit rows often carry neither name nor (rarely) icon on
                         -- current RU; a placeholder name equal to the raw id (or a
                         -- missing icon) triggers the cached ability-tooltip lookup.
+                        -- Trailing native returns are checked first (zero cost).
+                        if name == "" or name == tostring(id) then
+                            local extraName = NameFromExtra(item.extra) or NameFromExtra(item.tooltipExtra)
+                            if extraName ~= nil then name = extraName end
+                        end
                         if name == "" or name == tostring(id) or iconPath == "" then
                             local resolved = ResolveBuffInfoById(id)
                             if resolved ~= nil then

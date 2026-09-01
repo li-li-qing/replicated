@@ -1305,6 +1305,64 @@ end
 
 F.Commands = {
     Refresh = function(_, reason) return F:Refresh(reason or "buff_display_command") end,
+    -- Ground-truth field probe: dump the RAW shapes the live client returns for
+    -- the player's first buff row (UnitBuff row, UnitBuffTooltip row, trailing
+    -- returns, GetBuffTooltip return). Read-only, one-shot, bypasses every
+    -- cache — this is how we settle which field actually carries the name on
+    -- the current RU client instead of guessing at aliases.
+    ProbeAuraFields = function()
+        if X2Unit == nil then return false, "X2Unit 不可用" end
+        local function ShapeOf(value, limit)
+            local t = type(value)
+            if t == "table" then
+                local keys = {}
+                for k, v in pairs(value) do keys[#keys + 1] = tostring(k) .. ":" .. type(v) end
+                table.sort(keys)
+                return "{" .. table.concat(keys, ",") .. "}"
+            end
+            local s = tostring(value)
+            if #s > (limit or 48) then s = string.sub(s, 1, limit or 48) .. "…" end
+            return t .. "(" .. s .. ")"
+        end
+        local lines = {}
+        local function SafeN(fn, ...)
+            local rets = { pcall(fn, ...) }
+            if rets[1] ~= true then return nil end
+            return rets[2], rets[3], rets[4]
+        end
+        local okCount, count = pcall(function() return X2Unit:UnitBuffCount("player") end)
+        lines[#lines + 1] = "BuffCount=" .. (okCount == true and tostring(count) or "ERR")
+        if okCount ~= true or tonumber(count) == nil or tonumber(count) < 1 then
+            return false, "自己身上没有可探测的 Buff，请先给自己上一个增益再点。"
+        end
+        local retA, retB, retC = SafeN(function(...) return X2Unit:UnitBuff(...) end, "player", 1)
+        lines[#lines + 1] = "UnitBuff[1]=" .. ShapeOf(retA)
+        if retB ~= nil or retC ~= nil then
+            lines[#lines + 1] = "UnitBuff额外返回=" .. ShapeOf(retB) .. " , " .. ShapeOf(retC)
+        end
+        if type(X2Unit.UnitBuffTooltip) == "function" then
+            local tA, tB = SafeN(function(...) return X2Unit:UnitBuffTooltip(...) end, "player", 1)
+            lines[#lines + 1] = "Tooltip[1]=" .. ShapeOf(tA)
+            if tB ~= nil then lines[#lines + 1] = "Tooltip额外=" .. ShapeOf(tB) end
+        else
+            lines[#lines + 1] = "Tooltip=函数不存在"
+        end
+        local id = nil
+        if type(retA) == "table" then
+            id = tonumber(retA.effectId or retA.effect_id or retA.buff_id or retA.buffId or retA.buffID or retA.id or retA.buffType)
+        end
+        if id ~= nil and X2Ability ~= nil and type(X2Ability.GetBuffTooltip) == "function" then
+            local gA, gB = SafeN(function(...) return X2Ability:GetBuffTooltip(...) end, id, 0)
+            lines[#lines + 1] = "GetBuffTooltip(" .. id .. ",0)=" .. ShapeOf(gA, 80)
+            if gB ~= nil then lines[#lines + 1] = "GetBuff额外=" .. ShapeOf(gB) end
+        else
+            lines[#lines + 1] = "GetBuffTooltip=不可探测(id或函数缺失)"
+        end
+        for _, line in ipairs(lines) do
+            if S.SafeChat ~= nil then S.SafeChat("[状态诊断] " .. line, "info", "buff_display") end
+        end
+        return true, table.concat(lines, " | ")
+    end,
     ResetAllSettings = function()
         if type(F.ResetSettings) ~= "function" then return false, "重置入口不可用" end
         F:ResetSettings()
