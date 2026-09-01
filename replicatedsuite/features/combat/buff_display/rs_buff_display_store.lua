@@ -118,6 +118,14 @@ local function NormalizeComponent(value, defaults)
         size = ClampInt(value.size, 0, 64, defaults.size),
         fontSize = ClampInt(value.fontSize, 0, 32, defaults.fontSize),
         alpha = ClampFloat(value.alpha, 0.1, 1.0, defaults.alpha),
+        -- CastBar-only extras (ignored by other components). width is the bar
+        -- length in px; showText toggles the spell-name label under the bar.
+        width = ClampInt(value.width, 20, 480, defaults.width or 120),
+        showText = value.showText ~= false,
+        -- Row layout extras for buff/debuff rows (ignored elsewhere).
+        spacing = ClampInt(value.spacing, 0, 24, defaults.spacing or 2),
+        maxPerRow = ClampInt(value.maxPerRow, 1, 16, defaults.maxPerRow or 8),
+        maxRows = ClampInt(value.maxRows, 1, 4, defaults.maxRows or 2),
     }
 end
 
@@ -176,10 +184,25 @@ local function NormalizeSettings(value)
             headOffsetY = COMPONENT_DEFAULTS.buffs.y
         end
     end
+    -- Schema 5: a virtual health-bar rectangle is the single layout anchor.
+    -- The RU API exposes no native unit-frame rect, so the player aligns this
+    -- rect onto the game's own health bar via x/y/width/height. Nothing is
+    -- drawn for it; the native bar draws itself. Old fields are migrated below.
+    local plate = type(value.plate) == "table" and value.plate or {}
+    local info = type(value.info) == "table" and value.info or {}
+    -- Migrate legacy headOffsetY into the anchor's vertical offset. User-verified
+    -- default: y=26 puts buffs right on the native bar for standard units.
+    if plate.y == nil and value.plate == nil then
+        plate.y = ClampInt(headOffsetY, -500, 500, 26)
+    end
     return {
         showBuffs = value.showBuffs ~= false,
         showDebuffs = value.showDebuffs ~= false,
         showHidden = value.showHidden == true,
+        -- freezeEnabled: keep every tracked row in the list even after its aura
+        -- expires/disappears (Legacy Plates freeze semantics). The Feature keeps
+        -- a session frozen-row snapshot while this is on.
+        freezeEnabled = value.freezeEnabled == true,
         playerRows = ClampInt(value.playerRows, 1, 64, 24),
         targetRows = ClampInt(value.targetRows, 1, 64, 24),
         refreshMs = ClampInt(value.refreshMs, 1, 2000, 400),
@@ -200,6 +223,30 @@ local function NormalizeSettings(value)
         headRefreshMs = ClampInt(value.headRefreshMs, 1, 2000, 100),
         headShowStacks = value.headShowStacks ~= false,
         headShowTime = value.headShowTime ~= false,
+        -- Global plate scale multiplies every region (health bar, icons, text).
+        plateScale = ClampFloat(value.plateScale, 0.5, 2.0, 1.0),
+        -- Virtual health-bar anchor rect: aligned by the player onto the native
+        -- bar. Not drawn; used only for layout (enabled/opacity/showName kept
+        -- for backward compatibility and ignored by the renderer).
+        plate = {
+            enabled = plate.enabled ~= false,
+            width = ClampInt(plate.width, 80, 320, 150),
+            height = ClampInt(plate.height, 8, 40, 20),
+            x = ClampInt(plate.x, -400, 400, 0),
+            y = ClampInt(plate.y, -500, 500, 26),
+            opacity = ClampFloat(plate.opacity, 0.2, 1.0, 0.85),
+            showName = plate.showName ~= false,
+        },
+        -- Info row above buffs: class · gear score · distance (each toggleable).
+        info = {
+            enabled = info.enabled ~= false,
+            x = ClampInt(info.x, -400, 400, 0),
+            y = ClampInt(info.y, -120, 120, 0),
+            fontSize = ClampInt(info.fontSize, 8, 24, 10),
+            showClass = info.showClass ~= false,
+            showGear = info.showGear ~= false,
+            showDistance = info.showDistance ~= false,
+        },
     }
 end
 
@@ -277,7 +324,7 @@ if P:GetStore(STORE_ID) == nil then
         id = STORE_ID, owner = "v3.buff_display", scope = P.Scope and P.Scope.Account or "account",
         lifetime = P.Lifetime and P.Lifetime.Permanent or "permanent", schemaVersion = SCHEMA,
         legacySchemaVersion = 1, key = P.V3KeyPrefix and (P.V3KeyPrefix .. "buff_display") or STORE_ID,
-        budget = { maxDepth = 5, maxNodes = 320, maxStringBytes = 1400, maxEntriesPerTable = 96 },
+        budget = { maxDepth = 6, maxNodes = 1024, maxStringBytes = 2800, maxEntriesPerTable = 192 },
         default = function() return NormalizeState(nil) end,
         get = function() return NormalizeState(F.State) end,
         apply = ApplyState,
@@ -391,6 +438,11 @@ function F:SetComponentField(componentKey, field, value)
     elseif field == "size" then component.size = ClampInt(value, 0, 64, defaults.size)
     elseif field == "fontSize" then component.fontSize = ClampInt(value, 0, 32, defaults.fontSize)
     elseif field == "alpha" then component.alpha = ClampFloat(value, 0.1, 1.0, defaults.alpha)
+    elseif field == "width" then component.width = ClampInt(value, 20, 480, defaults.width or 120)
+    elseif field == "showText" then component.showText = value ~= false
+    elseif field == "spacing" then component.spacing = ClampInt(value, 0, 24, defaults.spacing or 2)
+    elseif field == "maxPerRow" then component.maxPerRow = ClampInt(value, 1, 16, defaults.maxPerRow or 8)
+    elseif field == "maxRows" then component.maxRows = ClampInt(value, 1, 4, defaults.maxRows or 2)
     else return false, "未知组件字段：" .. tostring(field) end
     local marked, markErr = self:MarkStoreDirty(250, "component_" .. componentKey .. "_" .. field)
     if marked ~= true then self.State.settings = before; return false, markErr or "组件设置保存失败" end
@@ -431,6 +483,7 @@ function F:ApplySettingRaw(key, value)
     if key == "showBuffs" then settings.showBuffs = value == true
     elseif key == "showDebuffs" then settings.showDebuffs = value == true
     elseif key == "showHidden" then settings.showHidden = value == true
+    elseif key == "freezeEnabled" then settings.freezeEnabled = value == true
     elseif key == "playerRows" then settings.playerRows = ClampInt(value, 1, 64, settings.playerRows)
     elseif key == "targetRows" then settings.targetRows = ClampInt(value, 1, 64, settings.targetRows)
     elseif key == "refreshMs" then settings.refreshMs = ClampInt(value, 1, 2000, settings.refreshMs)
@@ -444,16 +497,42 @@ function F:ApplySettingRaw(key, value)
         settings.headIconSize = ClampInt(value, 8, 64, settings.headIconSize)
         if settings.components.buffs then settings.components.buffs.size = settings.headIconSize end
         if settings.components.debuffs then settings.components.debuffs.size = settings.headIconSize end
-    elseif key == "headMaxIcons" then settings.headMaxIcons = ClampInt(value, 1, 12, settings.headMaxIcons)
+    elseif key == "headMaxIcons" then
+        -- Proxy write: per-row cap for buffs/debuffs (schema 5 row layout).
+        settings.headMaxIcons = ClampInt(value, 1, 12, settings.headMaxIcons)
+        if settings.components.buffs then settings.components.buffs.maxPerRow = settings.headMaxIcons end
+        if settings.components.debuffs then settings.components.debuffs.maxPerRow = settings.headMaxIcons end
     elseif key == "headOffsetY" then
-        -- Proxy write: the "上下位置" slider moves the buffs row and keeps the
-        -- debuffs row in the same compact vertical rhythm.
+        -- Schema 5: the plate is the anchor; this legacy slider now offsets the
+        -- health-bar plate vertically (buffs/debuffs follow automatically).
         settings.headOffsetY = ClampInt(value, -400, 400, settings.headOffsetY)
-        if settings.components.buffs then settings.components.buffs.y = settings.headOffsetY end
-        if settings.components.debuffs then settings.components.debuffs.y = settings.headOffsetY - 28 end
+        settings.plate.y = ClampInt(value, -120, 40, settings.plate.y)
     elseif key == "headRefreshMs" then settings.headRefreshMs = ClampInt(value, 1, 2000, settings.headRefreshMs)
     elseif key == "headShowStacks" then settings.headShowStacks = value == true
     elseif key == "headShowTime" then settings.headShowTime = value == true
+    elseif key == "plateScale" then settings.plateScale = ClampFloat(value, 0.5, 2.0, settings.plateScale)
+    elseif string.sub(key, 1, 6) == "plate." then
+        local field = string.sub(key, 7)
+        local before = settings.plate
+        if field == "enabled" then settings.plate.enabled = value == true
+        elseif field == "width" then settings.plate.width = ClampInt(value, 80, 320, before.width)
+        elseif field == "height" then settings.plate.height = ClampInt(value, 18, 64, before.height)
+        elseif field == "x" then settings.plate.x = ClampInt(value, -400, 400, before.x)
+        elseif field == "y" then settings.plate.y = ClampInt(value, -120, 40, before.y)
+        elseif field == "opacity" then settings.plate.opacity = ClampFloat(value, 0.2, 1.0, before.opacity)
+        elseif field == "showName" then settings.plate.showName = value == true
+        else return false, "unknown plate field: " .. tostring(field) end
+    elseif string.sub(key, 1, 5) == "info." then
+        local field = string.sub(key, 6)
+        local before = settings.info
+        if field == "enabled" then settings.info.enabled = value == true
+        elseif field == "x" then settings.info.x = ClampInt(value, -400, 400, before.x)
+        elseif field == "y" then settings.info.y = ClampInt(value, -120, 120, before.y)
+        elseif field == "fontSize" then settings.info.fontSize = ClampInt(value, 8, 24, before.fontSize)
+        elseif field == "showClass" then settings.info.showClass = value == true
+        elseif field == "showGear" then settings.info.showGear = value == true
+        elseif field == "showDistance" then settings.info.showDistance = value == true
+        else return false, "unknown info field: " .. tostring(field) end
     elseif string.sub(key, 1, 11) == "components." then
         local rest = string.sub(key, 12)
         local dot = string.find(rest, ".", 1, true)

@@ -10,7 +10,13 @@
 --       metadata  -> GetTargetAbilityTemplates class (class component)
 --       equipment -> UnitGearScore + equipped slots (gearScore/weapons/wings)
 --       cast      -> UnitCastingInfo (castBar component)
+--   * UNIT-SCOPE gate: equipment/gear/class facts for the target lane are only
+--     read when the target resolves to a PLAYER unit; NPC/UNKNOWN targets fail
+--     closed (purged) so the player's own gear can never leak onto a foreign
+--     head plate.
 --   * O(1) tracked index rebuilt on demand
+--   * freeze list (freezeEnabled): tracked rows keep a session snapshot so
+--     expired/vanish buffs stay in the list until untracked or freeze is off
 --   * tracked-id import / full export-import with schema migration awareness
 --
 -- Closing a component stops its lane tasks and clears its cached facts; hiding
@@ -39,6 +45,9 @@ F.projections = F.projections or { player = {}, target = {} }
 F.coverage = F.coverage or { player = {}, target = {} }
 F.laneData = F.laneData or { player = {}, target = {} }
 F.trackedIndex = F.trackedIndex or { buff = {}, debuff = {} }
+-- Session snapshot of tracked rows that have left the live StatusMap while
+-- freezeEnabled is on; keeps them visible in the list for convenient tracking.
+F.frozenRows = F.frozenRows or { player = {}, target = {} }
 F.lanes = F.lanes or {
     -- The aura lane intentionally keeps the historical contract task name so
     -- FoundationGate / GetHealth() keep observing the same scheduled task the
@@ -90,6 +99,51 @@ function F:InvalidateSettingsCache()
 end
 
 local COMPONENT_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar" }
+
+-- Class role icons for the head "职业" component. The client exposes the three
+-- ability-template indices; the role (Tank/Melee/Mage/...) is derived from the
+-- same ArcheRage class key mapping used by Replicated Plates, and the role maps
+-- to a stable skill-icon path. Sourced from the legacy classmappings baseline.
+local CLASS_ROLE_ICONS = {
+    Tank = "ui/icon/icon_skill_adamant15.dds",
+    Songer = "ui/icon/icon_skill_romance15.dds",
+    Melee = "ui/icon/icon_skill_fight37.dds",
+    Archer = "ui/icon/icon_skill_wild35.dds",
+    Mage = "ui/icon/icon_skill_magic40.dds",
+    Gunner = "ui/icon/icon_skill_madness07.dds",
+    Malediction = "ui/icon/icon_skill_hatred25.dds",
+    Dancer = "ui/icon/icon_skill_pleasure02.dds",
+    Swiftblade = "ui/icon/icon_skill_assassin43.dds",
+    Healer = "ui/icon/icon_skill_love01.dds",
+    unknown = "ui/icon/top_question_mark.dds",
+}
+local CLASS_ROLE_MAP = {
+    ["name_3_4_5"]="Tank",["name_2_3_4"]="Tank",["name_3_5_8"]="Tank",["name_2_4_5"]="Tank",["name_4_5_9"]="Tank",
+    ["name_1_5_8"]="Melee",["name_1_5_9"]="Melee",["name_1_3_5"]="Melee",["name_1_4_5"]="Melee",["name_1_3_8"]="Melee",
+    ["name_1_8_9"]="Melee",["name_1_3_4"]="Melee",["name_1_4_8"]="Melee",["name_1_4_9"]="Melee",["name_1_2_8"]="Melee",
+    ["name_1_2_9"]="Melee",["name_1_10_14"]="Melee",
+    ["name_1_8_12"]="Swiftblade",["name_1_5_12"]="Swiftblade",["name_1_9_12"]="Swiftblade",
+    ["name_7_8_11"]="Malediction",["name_2_7_11"]="Malediction",["name_4_8_11"]="Malediction",["name_7_9_11"]="Malediction",
+    ["name_8_9_11"]="Malediction",["name_5_9_11"]="Malediction",["name_4_9_11"]="Malediction",
+    ["name_4_7_9"]="Mage",["name_7_8_9"]="Mage",["name_4_7_8"]="Mage",["name_4_7_11"]="Mage",["name_3_4_7"]="Mage",
+    ["name_2_7_8"]="Mage",["name_2_4_7"]="Mage",["name_4_5_7"]="Mage",["name_2_5_7"]="Mage",["name_7_9_14"]="Mage",
+    ["name_6_8_9"]="Archer",["name_6_9_10"]="Archer",["name_2_6_9"]="Archer",["name_3_6_8"]="Archer",
+    ["name_6_9_12"]="Archer",["name_4_6_8"]="Archer",["name_4_6_9"]="Archer",
+    ["name_4_6_13"]="Gunner",["name_3_6_13"]="Gunner",["name_6_9_13"]="Gunner",["name_3_4_13"]="Gunner",
+    ["name_6_8_13"]="Gunner",["name_6_13_14"]="Gunner",["name_3_10_13"]="Gunner",["name_4_8_13"]="Gunner",
+    ["name_5_6_13"]="Gunner",["name_8_9_13"]="Gunner",["name_4_9_13"]="Gunner",["name_3_9_13"]="Gunner",
+    ["name_3_5_13"]="Gunner",["name_9_13_14"]="Gunner",["name_3_8_13"]="Gunner",["name_1_3_13"]="Gunner",["name_3_13_14"]="Gunner",
+    ["name_3_4_9"]="Songer",["name_2_3_9"]="Songer",["name_2_4_9"]="Songer",["name_3_6_9"]="Songer",["name_4_8_9"]="Songer",
+    ["name_4_9_14"]="Dancer",["name_9_10_14"]="Dancer",["name_8_10_14"]="Dancer",["name_2_10_14"]="Dancer",
+    ["name_3_4_14"]="Dancer",["name_1_3_14"]="Dancer",["name_8_9_14"]="Dancer",["name_3_9_14"]="Dancer",
+    ["name_3_10_14"]="Healer",["name_3_8_10"]="Healer",["name_2_8_10"]="Healer",["name_4_8_10"]="Healer",
+    ["name_5_8_10"]="Healer",["name_2_9_10"]="Healer",["name_8_9_10"]="Healer",["name_3_9_10"]="Healer",
+    ["name_4_9_10"]="Healer",["name_2_5_10"]="Healer",["name_2_3_10"]="Healer",["name_2_4_10"]="Healer",
+}
+local function ClassIconFor(key)
+    local role = CLASS_ROLE_MAP[tostring(key or "")]
+    return CLASS_ROLE_ICONS[role] or CLASS_ROLE_ICONS.unknown
+end
 
 local function SplitLines(text)
     local lines = {}
@@ -202,6 +256,9 @@ function F:RefreshScope(scope)
         available = meta and meta.available, complete = meta and meta.complete, reliable = meta and meta.reliable,
         revision = snapshot.revision,
     }, settings, scope, limit, self.trackedIndex)
+    -- Freeze list: while freezeEnabled is on, tracked rows that have vanished
+    -- from the live StatusMap stay in the list for convenient tracking.
+    rows = self:ApplyFreezeRows(scope, rows, settings)
     coverage.scannedAt, coverage.buffCount = tonumber(snapshot.at) or 0, snapshot.buff and tonumber(snapshot.buff.count) or 0
     coverage.debuffCount, coverage.hiddenCount = snapshot.debuff and tonumber(snapshot.debuff.count) or 0, snapshot.hidden and tonumber(snapshot.hidden.count) or 0
     self.projections[scope], self.coverage[scope] = rows, coverage
@@ -241,13 +298,89 @@ function F:SyncTrackedProjectionFlags()
             local id = math.floor(tonumber(row.id) or 0)
             local tracked = id > 0 and type(index[category]) == "table" and index[category][id] == true
             row.tracked = tracked == true
-            row.trackedText = tracked == true and "追踪" or ""
+            row.trackedText = tracked == true and "已追踪" or ""
         end
     end
     self.revision = (tonumber(self.revision) or 0) + 1
     Publish("v3.buff_display.updated", "tracked_projection")
     Publish("v3.buff_display.plates.updated", "tracked_projection")
     return true
+end
+
+------------------------------------------------------------------------
+-- Freeze list (Legacy Plates freeze semantics)
+------------------------------------------------------------------------
+
+-- Purge one tracked id from every frozen snapshot (used on untrack so a row the
+-- player explicitly stopped following disappears immediately).
+function F:DropFrozenRows(id)
+    id = math.floor(tonumber(id) or 0)
+    if id <= 0 then return true end
+    for _, scope in ipairs({ "player", "target" }) do
+        local frozen = self.frozenRows[scope] or {}
+        if frozen[id] ~= nil then
+            frozen[id] = nil
+            self.frozenRows[scope] = frozen
+        end
+    end
+    return true
+end
+
+function F:ClearFrozenRows()
+    self.frozenRows = { player = {}, target = {} }
+    return true
+end
+
+-- Re-bind the frozen snapshot and re-append vanished tracked rows. Called from
+-- RefreshScope right after ProjectStatusMap; pure row transformation, no Native
+-- reads. While freezeEnabled is on the snapshot is refreshed from the live
+-- tracked rows (so icon/name stay current), then every tracked id no longer
+-- present in the live projection is re-appended as a frozen placeholder row.
+function F:ApplyFreezeRows(scope, rows, settings)
+    scope = tostring(scope or "")
+    settings = type(settings) == "table" and settings or Settings()
+    if settings.freezeEnabled ~= true then return rows end
+    local frozen = self.frozenRows[scope] or {}
+    -- 1) refresh the snapshot from currently live tracked rows
+    for _, row in ipairs(rows) do
+        if row.tracked == true then
+            frozen[row.id] = {
+                id = row.id, name = row.name, iconPath = row.iconPath,
+                category = row.category, detectionSource = row.detectionSource,
+                stack = row.stack,
+            }
+        end
+    end
+    -- 2) append tracked rows that have vanished from the live StatusMap
+    local present = {}
+    for _, row in ipairs(rows) do present[row.id] = true end
+    for id, snap in pairs(frozen) do
+        if present[id] ~= true then
+            local category = snap.category == "debuff" and "debuff" or "buff"
+            rows[#rows + 1] = {
+                key = tostring(scope) .. ":frozen:" .. tostring(id), id = id,
+                name = tostring(snap.name or id), iconPath = tostring(snap.iconPath or ""),
+                category = category, detectionSource = snap.detectionSource or "frozen",
+                effectType = category, effectTypeText = category == "debuff" and "Debuff" or "Buff",
+                stack = math.max(1, math.floor(tonumber(snap.stack) or 1)),
+                timeLeft = nil, timeText = "已冻结", sourceMask = 0, timeKnown = false,
+                tracked = true, trackedText = "已追踪", frozen = true,
+            }
+        end
+    end
+    -- 3) re-sort and re-bound so frozen rows respect the page row budget
+    table.sort(rows, function(a, b)
+        local at, bt = tonumber(a.timeLeft), tonumber(b.timeLeft)
+        if at ~= nil and bt ~= nil and at ~= bt then return at < bt end
+        if at ~= nil and bt == nil then return true end
+        if at == nil and bt ~= nil then return false end
+        return (tonumber(a.id) or 0) < (tonumber(b.id) or 0)
+    end)
+    local limit = scope == "player" and settings.playerRows or settings.targetRows
+    limit = math.max(1, math.floor(tonumber(limit) or 24))
+    while #rows > limit do rows[#rows] = nil end
+    self.frozenRows[scope] = frozen
+    return rows
 end
 
 function F:Refresh(reason)
@@ -332,6 +465,39 @@ function F:DistanceTick()
     return true
 end
 
+-- UNIT-SCOPE gate: player-only metadata (equipment/gear score/class templates)
+-- must never be read for a non-player target. The RU client can fall back to the
+-- player's own gear when asked for an NPC target's equipment, so the lane fails
+-- closed (nil + cached-value purge) unless the target resolves to a PLAYER unit.
+-- The resolved kind is cached briefly; UnitIdentityV3:GetById additionally keeps
+-- its own 60s kind TTL and a 1.5s miss TTL, so this helper adds no hot-path cost.
+local targetKindCache = { kind = nil, at = 0 }
+local TARGET_KIND_TTL_MS = 1200
+local function ResolveTargetKind()
+    local now = math.max(0, tonumber(S.NowMs and S.NowMs()) or 0)
+    if targetKindCache.kind ~= nil and now - targetKindCache.at <= TARGET_KIND_TTL_MS then return targetKindCache.kind end
+    local kind = nil
+    local identity = S.Services and S.Services.UnitIdentityV3 or nil
+    local api = Api()
+    if type(identity) == "table" and type(identity.GetById) == "function"
+        and api ~= nil and type(api.CallCapability) == "function" and X2Unit ~= nil then
+        local ok, targetId = api:CallCapability("X2Unit:GetTargetUnitId", X2Unit, "GetTargetUnitId")
+        if ok ~= true or targetId == nil then
+            ok, targetId = api:CallCapability("X2Unit:GetUnitId", X2Unit, "GetUnitId", "target")
+        end
+        local idText = tostring(targetId or "")
+        if idText ~= "" and idText ~= "0" and idText ~= "nil" then
+            local info = identity:GetById(idText, { includeKind = true })
+            if type(info) == "table" and info.kind ~= nil then kind = info.kind end
+        end
+    end
+    targetKindCache.kind, targetKindCache.at = kind, now
+    return kind
+end
+local function TargetIsPlayer()
+    return ResolveTargetKind() == "PLAYER"
+end
+
 local function ReadClass(scope)
     local api = Api()
     if api == nil or type(api.CallCapability) ~= "function" then return nil end
@@ -346,7 +512,9 @@ local function ReadClass(scope)
     if x2Locale == nil or type(x2Locale.LocalizeUiText) ~= "function" or combinedText == nil then return nil end
     local localizedOk, localized = api:CallCapability("X2Locale:LocalizeUiText", x2Locale, "LocalizeUiText", combinedText, key, "")
     if localizedOk ~= true or localized == nil or tostring(localized) == "" then return nil end
-    return tostring(localized)
+    -- Class icon derives from the same ability-template key through the role
+    -- mapping; the head renderer shows the icon (with the name as fallback).
+    return { name = tostring(localized), key = key, icon = ClassIconFor(key) }
 end
 
 function F:MetadataTick()
@@ -355,8 +523,19 @@ function F:MetadataTick()
     for _, scope in ipairs({ "player", "target" }) do
         if ScopeHeadEnabled(scope) and ComponentEnabled("class") then
             local lane = self.laneData[scope] or {}
-            local value = ReadClass(scope)
-            if lane.class ~= value then lane.class, changed = value, true end
+            -- UNIT-SCOPE gate: ability templates are player metadata. NPC/UNKNOWN
+            -- targets fail closed so the player's own class can never leak onto
+            -- a foreign unit's head plate.
+            local value = nil
+            if scope == "player" or TargetIsPlayer() then value = ReadClass(scope) end
+            -- Normalize legacy string lane values to { name, icon } records.
+            local normalized = value
+            if type(value) == "string" then normalized = { name = value, key = nil, icon = nil } end
+            local same = (lane.class == nil and normalized == nil)
+                or (type(lane.class) == "table" and type(normalized) == "table"
+                    and tostring(lane.class.name) == tostring(normalized.name)
+                    and tostring(lane.class.icon) == tostring(normalized.icon))
+            if same ~= true then lane.class, changed = normalized, true end
             self.laneData[scope] = lane
         end
     end
@@ -409,27 +588,39 @@ function F:EquipmentTick()
     for _, scope in ipairs({ "player", "target" }) do
         if ScopeHeadEnabled(scope) then
             local lane = self.laneData[scope] or {}
-            -- gear score
-            if ComponentEnabled("gearScore") then
-                local score = nil
-                if api ~= nil and type(api.CallCapability) == "function" and X2Unit ~= nil then
-                    local ok, raw = api:CallCapability("X2Unit:UnitGearScore", X2Unit, "UnitGearScore", scope, true)
-                    local n = ok and tonumber(raw) or nil
-                    if n ~= nil and n > 0 then score = n end
+            -- UNIT-SCOPE gate: only a PLAYER target carries its own equipment.
+            -- NPC/UNKNOWN targets must fail closed: no gear/weapon Native reads
+            -- AND any previously cached (possibly player-derived) values are
+            -- purged so a stale plate can never survive a target switch.
+            if scope ~= "player" and TargetIsPlayer() ~= true then
+                for _, key in ipairs({ "gearScore", "mainHand", "offHand", "ranged", "wings" }) do
+                    if lane[key] ~= nil then lane[key], changed = nil, true end
                 end
-                if lane.gearScore ~= score then lane.gearScore, changed = score, true end
-            end
-            -- weapon / glider icons. Grade overlay is part of the same tooltip
-            -- fact and therefore adds no Native read; compare it as well so a
-            -- quality change cannot be hidden behind an unchanged base icon.
-            for _, key in ipairs({ "mainHand", "offHand", "ranged", "wings" }) do
-                if ComponentEnabled(key) then
-                    local slotId = EQUIPMENT_SLOTS[key]()
-                    local item = ReadEquippedIcon(slotId, scope)
-                    if not SameEquipmentItem(lane[key], item) then lane[key], changed = item, true end
+                self.laneData[scope] = lane
+            else
+                -- gear score. The second argument mirrors ReadEquippedIcon:
+                -- false for the player's own gear, true only for target reads.
+                if ComponentEnabled("gearScore") then
+                    local score = nil
+                    if api ~= nil and type(api.CallCapability) == "function" and X2Unit ~= nil then
+                        local ok, raw = api:CallCapability("X2Unit:UnitGearScore", X2Unit, "UnitGearScore", scope, scope == "target")
+                        local n = ok and tonumber(raw) or nil
+                        if n ~= nil and n > 0 then score = n end
+                    end
+                    if lane.gearScore ~= score then lane.gearScore, changed = score, true end
                 end
+                -- weapon / glider icons. Grade overlay is part of the same tooltip
+                -- fact and therefore adds no Native read; compare it as well so a
+                -- quality change cannot be hidden behind an unchanged base icon.
+                for _, key in ipairs({ "mainHand", "offHand", "ranged", "wings" }) do
+                    if ComponentEnabled(key) then
+                        local slotId = EQUIPMENT_SLOTS[key]()
+                        local item = ReadEquippedIcon(slotId, scope)
+                        if not SameEquipmentItem(lane[key], item) then lane[key], changed = item, true end
+                    end
+                end
+                self.laneData[scope] = lane
             end
-            self.laneData[scope] = lane
         end
     end
     BumpLane("equipment")
@@ -573,6 +764,61 @@ function F:GetTrackedHeadProjection(scope)
     return out, self.revision, S.Utils.DeepCopy(self.coverage[scope] or {})
 end
 
+-- Full tracked list for the floating widget's tracking manager. Every tracked
+-- id (buff + debuff) becomes one row; live projection rows contribute their
+-- name/icon/scope, while tracked ids that have vanished (and are not frozen)
+-- stay as "已消失" placeholders so the player can still untrack them.
+function F:GetTrackedList()
+    local settings = Settings()
+    local tracked = type(settings.tracked) == "table" and settings.tracked or {}
+    local live = {}
+    for _, scope in ipairs({ "player", "target" }) do
+        for _, row in ipairs(self.projections[scope] or {}) do
+            local idNum = math.floor(tonumber(row.id) or 0)
+            if idNum > 0 then live[idNum] = { row = row, scope = scope } end
+        end
+    end
+    local rows, seen = {}, {}
+    local function AddCategory(category, idList)
+        for _, id in ipairs(type(idList) == "table" and idList or {}) do
+            id = math.floor(tonumber(id) or 0)
+            if id > 0 and seen[id] ~= true then
+                seen[id] = true
+                local entry = live[id]
+                if type(entry) == "table" and type(entry.row) == "table" then
+                    local row = entry.row
+                    rows[#rows + 1] = {
+                        key = "tracked:" .. tostring(category) .. ":" .. tostring(id),
+                        id = id, category = category, effectType = category,
+                        effectTypeText = category == "debuff" and "Debuff" or "Buff",
+                        name = tostring(row.name or id), iconPath = tostring(row.iconPath or ""),
+                        scope = entry.scope, scopeText = entry.scope == "player" and "自己" or "目标",
+                        stack = math.max(1, math.floor(tonumber(row.stack) or 1)),
+                        tracked = true, trackedText = "已追踪", vanished = false,
+                    }
+                else
+                    rows[#rows + 1] = {
+                        key = "tracked:" .. tostring(category) .. ":" .. tostring(id),
+                        id = id, category = category, effectType = category,
+                        effectTypeText = category == "debuff" and "Debuff" or "Buff",
+                        name = tostring(id), iconPath = "",
+                        scope = nil, scopeText = "已消失",
+                        stack = 1, tracked = true, trackedText = "已追踪", vanished = true,
+                    }
+                end
+            end
+        end
+    end
+    AddCategory("buff", tracked.buff)
+    AddCategory("debuff", tracked.debuff)
+    table.sort(rows, function(a, b)
+        if a.vanished ~= b.vanished then return a.vanished == false end
+        if a.category ~= b.category then return a.category == "buff" end
+        return (tonumber(a.id) or 0) < (tonumber(b.id) or 0)
+    end)
+    return rows, self.revision
+end
+
 ------------------------------------------------------------------------
 -- Aura consumer lease (unchanged contract)
 ------------------------------------------------------------------------
@@ -616,6 +862,9 @@ function F:_QueueEventRefresh(reason, delayMs)
             -- equipment or cast Native reads; those lanes own their cadence.
             F:Refresh(eventReason)
             if eventReason == "target_changed" then
+                -- UNIT-SCOPE: a new target invalidates the cached kind so the
+                -- equipment/class gates re-evaluate on the very next lane tick.
+                targetKindCache.at = 0
                 local settings = Settings()
                 if LaneNeeds("position", settings) then F:PositionTick() end
                 if LaneNeeds("distance", settings) then F:DistanceTick() end
@@ -685,6 +934,7 @@ function F:ReconcileDemand(before, after)
         self.projections = { player = {}, target = {} }
         self.coverage = { player = {}, target = {} }
         self.laneData = { player = {}, target = {} }
+        self.frozenRows = { player = {}, target = {} }
     end
     return true
 end
@@ -699,6 +949,7 @@ local demand, demandErr = S.Demand:Create({
         for laneKey in pairs(F.lanes) do SetLaneActive(laneKey, false, nil) end
         F:_ReleaseAura()
         F.laneData = { player = {}, target = {} }
+        F.frozenRows = { player = {}, target = {} }
         return true
     end,
 })
@@ -870,6 +1121,7 @@ function F:ExportAll()
         classification = S.Utils.DeepCopy(settings.classification or {}),
         settings = {
             showBuffs = settings.showBuffs ~= false, showDebuffs = settings.showDebuffs ~= false,
+            showHidden = settings.showHidden == true, freezeEnabled = settings.freezeEnabled == true,
             playerRows = settings.playerRows, targetRows = settings.targetRows,
             refreshMs = settings.refreshMs, headEnabled = settings.headEnabled ~= false,
             headShowAll = settings.headShowAll == true,
@@ -906,7 +1158,7 @@ function F:SerializeExport(data)
         end
     end
     local policy = type(data.settings) == "table" and data.settings or {}
-    for _, key in ipairs({ "refreshMs", "headRefreshMs", "headMaxIcons", "playerRows", "targetRows", "showBuffs", "showDebuffs", "headEnabled", "headShowAll", "headPlayer", "headTarget", "headShowStacks", "headShowTime" }) do
+    for _, key in ipairs({ "refreshMs", "headRefreshMs", "headMaxIcons", "playerRows", "targetRows", "showBuffs", "showDebuffs", "showHidden", "freezeEnabled", "headEnabled", "headShowAll", "headPlayer", "headTarget", "headShowStacks", "headShowTime" }) do
         if policy[key] ~= nil then lines[#lines + 1] = "SETTING=" .. key .. ":" .. tostring(policy[key]) end
     end
     return table.concat(lines, "\n")
@@ -1047,7 +1299,7 @@ function F:ImportAll(data, mode)
         if key == "refreshMs" or key == "headRefreshMs" then settings[key] = math.max(1, math.min(2000, math.floor(tonumber(value) or settings[key])))
         elseif key == "headMaxIcons" then settings.headMaxIcons = math.max(1, math.min(12, math.floor(tonumber(value) or settings.headMaxIcons)))
         elseif key == "playerRows" or key == "targetRows" then settings[key] = math.max(1, math.min(64, math.floor(tonumber(value) or settings[key])))
-        elseif key == "showBuffs" or key == "showDebuffs" or key == "headEnabled" or key == "headShowAll" or key == "headPlayer" or key == "headTarget" or key == "headShowStacks" or key == "headShowTime" then
+        elseif key == "showBuffs" or key == "showDebuffs" or key == "showHidden" or key == "freezeEnabled" or key == "headEnabled" or key == "headShowAll" or key == "headPlayer" or key == "headTarget" or key == "headShowStacks" or key == "headShowTime" then
             local raw = tostring(value):lower()
             settings[key] = raw == "1" or raw == "true"
         end
@@ -1065,22 +1317,39 @@ F.Commands = {
     Refresh = function(_, reason) return F:Refresh(reason or "buff_display_command") end,
     SetSetting = function(_, key, value)
         local ok, err = F:SetSettingValue(key, value)
-        if ok == true then F:ReconcileLanes() end
+        if ok == true then
+            -- Turning the freeze list off drops every frozen snapshot so the next
+            -- projection shows only live rows again; turning it on immediately
+            -- re-binds the snapshot from the current tracked rows.
+            if key == "freezeEnabled" and value ~= true then F:ClearFrozenRows() end
+            F:ReconcileLanes()
+            if key == "freezeEnabled" then
+                F:RefreshScope("player")
+                F:RefreshScope("target")
+            end
+        end
         return ok, err
     end,
     SetTrackedId = function(_, id, category, enabled)
         local ok, err = F:SetTrackedId(id, category, enabled)
         if ok == true then
+            if enabled ~= true then F:DropFrozenRows(id) end
             F.trackedIndex = F:BuildTrackedIndex(Settings())
             F:SyncTrackedProjectionFlags()
+            -- re-project so a frozen row leaves/joins the list immediately
+            F:RefreshScope("player")
+            F:RefreshScope("target")
         end
         return ok, err
     end,
     ClearTrackedIds = function(_, category)
         local ok, err = F:ClearTrackedIds(category)
         if ok == true then
+            F:ClearFrozenRows()
             F.trackedIndex = F:BuildTrackedIndex(Settings())
             F:SyncTrackedProjectionFlags()
+            F:RefreshScope("player")
+            F:RefreshScope("target")
         end
         return ok, err
     end,

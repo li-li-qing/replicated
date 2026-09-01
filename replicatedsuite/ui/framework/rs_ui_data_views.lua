@@ -1635,7 +1635,17 @@ local function NewTableRow(kind, spec)
     -- pickable (which would steal wheel/click events from the virtual list).
     local autoTooltip = spec.header ~= true and spec.autoTooltip ~= false
     if type(spec.onClick) == "function" or autoTooltip then spec.pickable = true end
-    local c, err = Host(kind, spec)
+    -- Interactive rows use a native Button root. The RU input system reliably
+    -- dispatches OnClick to Button widgets (every page control in the addon
+    -- proves it), while EmptyWidget surfaces do not receive OnClick on this
+    -- client -- which made table row clicks silently dead. ListView's selectable
+    -- rows already use RSUI:Button; align TableRow with that proven pattern so
+    -- row clicks reach HandleRowClick. Cells stay children of the button root.
+    local rowRootFactory = type(spec.onClick) == "function" and function(s)
+        return UI:CreateButton(s.parent, s.id, "", N(s.x,0), N(s.y,0),
+            math.max(1,N(s.width,1)), math.max(1,N(s.height,1)), tonumber(s.fontSize) or 11, false, false)
+    end or nil
+    local c, err = Host(kind, spec, rowRootFactory)
     if c == nil then return nil, err end
     local parentComponent = type(spec.parent) == "table" and spec.parent or nil
     local tableOwner = parentComponent and (parentComponent.tableOwner or (type(parentComponent.spec) == "table" and parentComponent.spec.tableOwner)) or nil
@@ -2210,6 +2220,12 @@ local function NewTableView(kind, spec)
     function c:GetViewState() return self.list:GetViewState() end
     function c:SetViewState(state, options) return self.list:SetViewState(state, options) end
     function c:GetColumns() return self.columns end
+    -- Item access proxied to the internal ListView. Consumers (e.g. selection
+    -- callbacks) call tableView:GetItem(index) to resolve the clicked row;
+    -- without these the call silently no-ops and selection bookkeeping breaks.
+    function c:GetItem(index) return self.list:GetItem(index) end
+    function c:GetItemCount() return self.list:GetItemCount() end
+    function c:GetItemKey(item, index) return self.list:GetItemKey(item, index) end
 
     function c:GetSortState()
         return { columnId = self.sortColumnId, direction = self.sortDirection }

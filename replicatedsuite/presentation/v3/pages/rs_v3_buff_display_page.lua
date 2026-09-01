@@ -2,7 +2,8 @@
 -- Replicated Suite V3 - Buff Display Page (four-tab layout)
 --
 --  * Tab 1  状态追踪: Buff/Debuff/隐藏 filter + keyword search + row-click
---            tracked toggle on player/target projections.
+--            tracked toggle on player/target projections; 冻结列表 toggle keeps
+--            vanished tracked rows in the list (freezeEnabled).
 --  * Tab 2  头顶显示: head scope toggles (自己/目标), 层数/时间 flags and
 --            icon size / max icons / offset Y / refresh interval fields.
 --  * Tab 3  布局外观: ten head components (buffs..castBar), each with an
@@ -37,14 +38,6 @@ local COMPONENT_META = {
     castBar   = { title = "读条",           desc = "目标施法进度条" },
 }
 
-local function CoverageText(scope, coverage)
-    coverage = type(coverage) == "table" and coverage or {}
-    if coverage.available ~= true then return scope .. "：不可用" end
-    local state = coverage.complete == true and coverage.reliable == true and "完整" or "待确认"
-    return scope .. "：" .. state .. " · Buff " .. tostring(coverage.buffCount or 0)
-        .. " · Debuff " .. tostring(coverage.debuffCount or 0) .. " · Hidden " .. tostring(coverage.hiddenCount or 0)
-end
-
 -- Keyword search over the projection rows (name / id / type text).
 local function MatchRow(row, query)
     query = tostring(query or ""):lower()
@@ -75,11 +68,10 @@ local function BuildPage(parent, route)
     local root, rootErr = D:PageRoot(parent, "v3_page_buff_display")
     if root == nil then return nil, "状态显示页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
     root.activeTab, root.filterText, root.quickText, root.importCategory = "track", "", "", "auto"
-    D:PageHeader(root, "v3_buff_display_header", "状态显示", "追踪自己/目标的 Buff、Debuff 与隐藏状态；可把选中的 Buff 固定显示在自己或目标头顶。", "刷新", function()
+    D:PageHeader(root, "v3_buff_display_header", "状态显示", "追踪自己/目标的 Buff、Debuff 与隐藏状态；点击状态行切换追踪。", "刷新", function()
         return Feature.Commands:Refresh("page_manual")
     end)
 
-    local summary = D:InfoCard(root, { id = "v3_buff_display_summary", title = "共享事实层", value = "功能已关闭", detail = "启用后按需读取 AuraObservationV3。", slot = { size = "fixed", height = 76, hAlign = "fill" } })
     local actionRow = RSUI:HorizontalBox({ id = "v3_buff_display_actions", parent = root, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
     local featureButton = RSUI:Button({ id = "v3_buff_display_feature_toggle", parent = actionRow, text = "启用功能", compact = true, slot = { size = "fixed", width = 96 } })
     local widgetButton = RSUI:Button({ id = "v3_buff_display_widget_toggle", parent = actionRow, text = "打开悬浮窗", compact = true, slot = { size = "fixed", width = 116 } })
@@ -140,28 +132,33 @@ local function BuildPage(parent, route)
     local searchClear = RSUI:Button({ id = "v3_buff_display_search_clear", parent = filterRow, text = "清空筛选", compact = true, slot = { size = "fixed", width = 72 } })
 
     local trackRow = RSUI:HorizontalBox({ id = "v3_buff_display_tab_track_actions", parent = tabTrack, gap = 6, slot = { size = "fixed", height = 28, hAlign = "fill" } })
-    local selectedText = RSUI:Text({ id = "v3_buff_display_selected", parent = trackRow, text = "选中状态：无", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1, minWidth = 120 } })
-    local trackButton = RSUI:Button({ id = "v3_buff_display_track_add", parent = trackRow, text = "追踪选中", compact = true, slot = { size = "fixed", width = 78 } })
-    local untrackButton = RSUI:Button({ id = "v3_buff_display_track_remove", parent = trackRow, text = "取消追踪", compact = true, slot = { size = "fixed", width = 78 } })
+    -- Row-click is the primary track interaction (onItemActivated). The old
+    -- 追踪选中/取消追踪 buttons were removed per UX request; 清空追踪 and the
+    -- freeze-list toggle stay as list-level operations.
+    local selectedText = RSUI:Text({ id = "v3_buff_display_selected", parent = trackRow, text = "点击状态行可追踪 / 取消追踪", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1, minWidth = 150 } })
+    local freezeButton = RSUI:Button({ id = "v3_buff_display_track_freeze", parent = trackRow, text = "冻结列表：关", compact = true, slot = { size = "fixed", width = 96 } })
     local clearTrackButton = RSUI:Button({ id = "v3_buff_display_track_clear", parent = trackRow, text = "清空追踪", compact = true, slot = { size = "fixed", width = 78 } })
 
     -- DataView callbacks must be supplied at construction. TableView snapshots
     -- them into its internal ListView; assigning tableView.onSelectionChanged or
     -- tableView.onItemActivated afterwards leaves the native row click path nil.
+    -- Row activation mirrors the gear editor's proven interaction: selectable =
+    -- false + onItemActivated, so a row click goes straight to the activate
+    -- path (no SelectionModel round-trip) and toggles tracking immediately.
     root.selectedBuffId, root.selectedBuffName, root.selectedBuffCategory = nil, nil, nil
-    local function SelectFrom(tableView, index)
-        if type(tableView) ~= "table" or type(tableView.GetItem) ~= "function" then return false end
-        local row = tableView:GetItem(index)
-        root.selectedBuffId = row and tonumber(row.id) or nil
-        root.selectedBuffName = row and tostring(row.name or row.id or "") or nil
-        root.selectedBuffCategory = row and (row.category == "debuff" and "debuff" or "buff") or nil
-        selectedText:SetText(root.selectedBuffId and ("选中状态：" .. tostring(root.selectedBuffName) .. " · ID " .. tostring(root.selectedBuffId)) or "选中状态：无")
-        return true
-    end
     local function ToggleRowTracked(item, index, key, view, reason)
         if type(item) ~= "table" or item.id == nil then return true end
-        local ok, err = Feature.Commands:SetTrackedId(tonumber(item.id), item.category == "debuff" and "debuff" or "buff", not (item.tracked == true))
-        if ok == true then root:Refresh() end
+        local target = not (item.tracked == true)
+        local ok, err = Feature.Commands:SetTrackedId(tonumber(item.id), item.category == "debuff" and "debuff" or "buff", target)
+        if ok == true then
+            selectedText:SetText((target == true and "已追踪：" or "已取消追踪：") .. tostring(item.name or item.id or "") .. " · ID " .. tostring(item.id))
+            root:Refresh()
+        else
+            -- Surface command failures (e.g. the 32-id cap or an invalid id)
+            -- instead of a silent dead click, so the user sees why the toggle
+            -- did not apply and the failure is diagnosable in the client.
+            selectedText:SetText("追踪失败：" .. tostring(item.name or item.id or "") .. " · " .. tostring(err or "未知错误"))
+        end
         return ok, err
     end
 
@@ -172,18 +169,20 @@ local function BuildPage(parent, route)
         local caption = RSUI:Text({ id = id .. "_caption", parent = stack, text = title, fontSize = 10, tone = "strong", slot = { size = "fixed", height = 20 } })
         local tableView = RSUI:TableView({
             id = id .. "_table", parent = stack, items = {}, rowHeight = 25, headerHeight = 23, desiredRows = 8,
-            overscan = 1, scrollbar = true, selectable = true, selectionMode = "single", columnResize = true, headerInteractive = false,
-            onSelectionChanged = function(index, previousIndex, view)
-                return SelectFrom(view, index)
-            end,
+            overscan = 1, scrollbar = true, selectable = false, columnResize = true, headerInteractive = false,
             onItemActivated = ToggleRowTracked,
             columns = {
                 { id = "icon", title = "", field = "iconPath", cellType = "icon", iconSize = 18, fallbackIcon = "ui/icon/icon_unknown_item.dds", size = "fixed", width = 25, minWidth = 24, sortable = false, resizable = false },
-                { id = "name", title = "状态", field = "name", size = "fill", minWidth = 90, fill = 1, getTone = function(item) return item and item.effectType == "debuff" and "red" or (item and item.effectType == "hidden" and "muted" or "default") end },
+                { id = "name", title = "状态", field = "name", size = "fill", minWidth = 90, fill = 1, getTone = function(item)
+                    if type(item) ~= "table" then return "default" end
+                    if item.effectType == "debuff" then return "red" end
+                    if item.detectionSource == "hidden" or item.frozen == true then return "muted" end
+                    return "default"
+                end },
                 { id = "type", title = "类型", field = "effectTypeText", size = "fixed", width = 54, minWidth = 48, sortable = false },
                 { id = "stack", title = "层", field = "stack", size = "fixed", width = 36, minWidth = 30, sortable = false },
                 { id = "time", title = "剩余", field = "timeText", size = "fixed", width = 52, minWidth = 44, sortable = false },
-                { id = "tracked", title = "追踪", field = "trackedText", size = "fixed", width = 48, minWidth = 42, sortable = false, getTone = function(item) return item and item.tracked == true and "green" or "muted" end },
+                { id = "tracked", title = "追踪", field = "trackedText", size = "fixed", width = 56, minWidth = 50, sortable = false, getTone = function(item) return item and item.tracked == true and "green" or "muted" end },
             },
             slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
         })
@@ -191,7 +190,6 @@ local function BuildPage(parent, route)
     end
     local playerCaption, playerTable = MakeTable("v3_buff_display_player", "自己")
     local targetCaption, targetTable = MakeTable("v3_buff_display_target", "目标")
-    local hint = RSUI:Text({ id = "v3_buff_display_hint", parent = tabTrack, text = "点击状态行可切换追踪；Aura 事实未知时保留待确认状态，不把缺失数据伪装成无 Buff。", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 20, hAlign = "fill" } })
 
     ------------------------------------------------------------------
     -- Tab 2: 头顶显示
@@ -249,8 +247,67 @@ local function BuildPage(parent, route)
         get = function() return (Feature:GetSettingsProjection() or {}).headMaxIcons or 8 end, set = function(v) return Feature.Commands:SetSetting("headMaxIcons", v) end, slot = { size = "fill", fill = 1 } })
     AddHeadField({ id = "v3_buff_display_head_offset", label = "上下位置", min = -180, max = 80, step = 2, integer = true, unit = "px", slider = true,
         get = function() return (Feature:GetSettingsProjection() or {}).headOffsetY or -108 end, set = function(v) return Feature.Commands:SetSetting("headOffsetY", v) end, slot = { size = "fill", fill = 1 } })
-    AddHeadField({ id = "v3_buff_display_head_refresh", label = "位置刷新", min = 50, max = 500, step = 25, integer = true, unit = "ms", slider = true,
+    AddHeadField({ id = "v3_buff_display_head_refresh", label = "位置刷新", min = 1, max = 2000, step = 25, integer = true, unit = "ms", slider = true,
         get = function() return (Feature:GetSettingsProjection() or {}).headRefreshMs or 100 end, set = function(v) return Feature.Commands:SetSetting("headRefreshMs", v) end, slot = { size = "fill", fill = 1 } })
+
+    -- Schema 5: virtual health-bar anchor (aligned onto the native bar by the
+    -- player) + global scale + info row controls. Nothing is drawn for the bar
+    -- itself — the game's own health bar renders it.
+    local plateRow = RSUI:HorizontalBox({ id = "v3_buff_display_plate_actions", parent = tabHead, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
+    local infoToggle = RSUI:Toggle({
+        id = "v3_buff_display_info_enabled", parent = plateRow, width = 104, height = 26,
+        onText = "信息行：开", offText = "信息行：关",
+        get = function() return (Feature:GetSettingsProjection() or {}).info ~= nil and (Feature:GetSettingsProjection() or {}).info.enabled ~= false end,
+        set = function(v) return Feature.Commands:SetSetting("info.enabled", v == true) end,
+        slot = { size = "fixed", width = 104 },
+    })
+    if infoToggle ~= nil then headToggles[#headToggles + 1] = infoToggle end
+    local plateGrid = RSUI:UniformGrid({ id = "v3_buff_display_plate_settings", parent = tabHead, minCellWidth = 180, minCellHeight = 30, maxColumns = 4, gap = 5, slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
+    local function AddPlateField(spec)
+        local field = D:CompactNumericSetting(plateGrid, spec)
+        if field ~= nil then headFields[#headFields + 1] = field end
+        return field
+    end
+    AddPlateField({ id = "v3_buff_display_plate_width", label = "血条宽度", min = 80, max = 320, step = 4, integer = true, unit = "px", slider = true,
+        get = function() return (Feature:GetSettingsProjection() or {}).plate and (Feature:GetSettingsProjection() or {}).plate.width or 150 end, set = function(v) return Feature.Commands:SetSetting("plate.width", v) end, slot = { size = "fill", fill = 1 } })
+    AddPlateField({ id = "v3_buff_display_plate_height", label = "血条高度", min = 8, max = 40, step = 1, integer = true, unit = "px", slider = true,
+        get = function() return (Feature:GetSettingsProjection() or {}).plate and (Feature:GetSettingsProjection() or {}).plate.height or 20 end, set = function(v) return Feature.Commands:SetSetting("plate.height", v) end, slot = { size = "fill", fill = 1 } })
+    AddPlateField({ id = "v3_buff_display_plate_x", label = "血条 X", min = -200, max = 200, step = 2, integer = true, slider = true,
+        get = function() return (Feature:GetSettingsProjection() or {}).plate and (Feature:GetSettingsProjection() or {}).plate.x or 0 end, set = function(v) return Feature.Commands:SetSetting("plate.x", v) end, slot = { size = "fill", fill = 1 } })
+    AddPlateField({ id = "v3_buff_display_plate_y", label = "血条 Y (对齐原生血条)", min = -500, max = 500, step = 5, integer = true, slider = true,
+        get = function() return (Feature:GetSettingsProjection() or {}).plate and (Feature:GetSettingsProjection() or {}).plate.y or 26 end, set = function(v) return Feature.Commands:SetSetting("plate.y", v) end, slot = { size = "fill", fill = 1 } })
+    AddPlateField({ id = "v3_buff_display_plate_scale", label = "全局缩放", min = 0.5, max = 2, step = 0.05, integer = false, slider = true,
+        get = function() return (Feature:GetSettingsProjection() or {}).plateScale or 1 end, set = function(v) return Feature.Commands:SetSetting("plateScale", v) end, slot = { size = "fill", fill = 1 } })
+    local infoGrid = RSUI:UniformGrid({ id = "v3_buff_display_info_settings", parent = tabHead, minCellWidth = 180, minCellHeight = 30, maxColumns = 4, gap = 5, slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
+    local function AddInfoField(spec)
+        local field = D:CompactNumericSetting(infoGrid, spec)
+        if field ~= nil then headFields[#headFields + 1] = field end
+        return field
+    end
+    AddInfoField({ id = "v3_buff_display_info_font", label = "信息行字号", min = 8, max = 24, step = 1, integer = true, slider = true,
+        get = function() return (Feature:GetSettingsProjection() or {}).info and (Feature:GetSettingsProjection() or {}).info.fontSize or 10 end, set = function(v) return Feature.Commands:SetSetting("info.fontSize", v) end, slot = { size = "fill", fill = 1 } })
+    AddInfoField({ id = "v3_buff_display_info_x", label = "信息行 X", min = -200, max = 200, step = 2, integer = true, slider = true,
+        get = function() return (Feature:GetSettingsProjection() or {}).info and (Feature:GetSettingsProjection() or {}).info.x or 0 end, set = function(v) return Feature.Commands:SetSetting("info.x", v) end, slot = { size = "fill", fill = 1 } })
+    AddInfoField({ id = "v3_buff_display_info_y", label = "信息行 Y", min = -80, max = 80, step = 2, integer = true, slider = true,
+        get = function() return (Feature:GetSettingsProjection() or {}).info and (Feature:GetSettingsProjection() or {}).info.y or 0 end, set = function(v) return Feature.Commands:SetSetting("info.y", v) end, slot = { size = "fill", fill = 1 } })
+    local infoToggles = {
+        { key = "showClass", text = "职业", on = "职业：开", off = "职业：关" },
+        { key = "showGear", text = "装分", on = "装分：开", off = "装分：关" },
+        { key = "showDistance", text = "距离", on = "距离：开", off = "距离：关" },
+    }
+    for _, toggleSpec in ipairs(infoToggles) do
+        local t = RSUI:Toggle({
+            id = "v3_buff_display_info_" .. toggleSpec.key, parent = tabHead, width = 96, height = 26,
+            onText = toggleSpec.on, offText = toggleSpec.off,
+            get = function()
+                local info = (Feature:GetSettingsProjection() or {}).info or {}
+                return info[toggleSpec.key] ~= false
+            end,
+            set = function(v) return Feature.Commands:SetSetting("info." .. toggleSpec.key, v == true) end,
+            slot = { size = "fixed", width = 96 },
+        })
+        if t ~= nil then headToggles[#headToggles + 1] = t end
+    end
 
     ------------------------------------------------------------------
     -- Tab 3: 布局外观（10 个头顶组件卡片）
@@ -291,7 +348,17 @@ local function BuildPage(parent, route)
                     local value = component[fieldKey]
                     return value ~= nil and value or 0
                 end,
-                set = function(v) return Feature.Commands:SetComponentField(key, fieldKey, v) end,
+                set = function(v)
+                    local ok, err = Feature.Commands:SetComponentField(key, fieldKey, v)
+                    -- A rejected write (e.g. store write-fence) must not look
+                    -- like a silent dead control; surface it to diagnostics so
+                    -- the client log pinpoints why the value snapped back.
+                    if ok ~= true and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarnRateLimited) == "function" then
+                        S.DiagnosticsManager:WarnRateLimited("buff_display_page", "COMPONENT_FIELD_REJECTED", 3000,
+                            "组件设置保存失败", { component = key, field = fieldKey, error = tostring(err or "unknown"), value = tostring(v) })
+                    end
+                    return ok, err
+                end,
                 slot = { size = "fill", fill = 1, hAlign = "fill" },
             })
             if field ~= nil then cardFields[#cardFields + 1] = field end
@@ -302,9 +369,31 @@ local function BuildPage(parent, route)
         AddField("size", "尺寸", 0, 64, 1, "px", true)
         AddField("fontSize", "字号", 0, 32, 1, "px", true)
         AddField("alpha", "透明度", 0.1, 1.0, 0.05, "", false)
+        if key == "buffs" or key == "debuffs" then
+            AddField("spacing", "图标间距", 0, 24, 1, "px", true)
+            AddField("maxPerRow", "每行数量", 1, 16, 1, "", true)
+            AddField("maxRows", "最大行数", 1, 4, 1, "", true)
+        end
+        if key == "castBar" then
+            AddField("width", "条宽", 20, 480, 4, "px", true)
+            local showTextToggle = RSUI:Toggle({
+                id = cardId .. "_showText", parent = stack, width = 116, height = 22,
+                onText = "施法名：开", offText = "施法名：关",
+                get = function()
+                    local components = (Feature:GetSettingsProjection() or {}).components or {}
+                    local component = components[key] or {}
+                    return component.showText ~= false
+                end,
+                set = function(v) return Feature.Commands:SetComponentField(key, "showText", v == true) end,
+                slot = { size = "fixed", width = 116 },
+            })
+            if showTextToggle ~= nil then cardToggles[#cardToggles + 1] = showTextToggle end
+        end
         return card
     end
-    for _, key in ipairs({ "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar" }) do
+    -- castBar first so the 施法条 settings are immediately visible without
+    -- scrolling past nine other component cards.
+    for _, key in ipairs({ "castBar", "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings" }) do
         local meta = COMPONENT_META[key] or { title = key, desc = "" }
         BuildComponentCard(key, meta)
     end
@@ -381,26 +470,26 @@ local function BuildPage(parent, route)
         targetTable:SetItems(filteredTarget, targetRevision)
         local playerAvailable = enabled and type(playerCoverage) == "table" and playerCoverage.available == true
         local targetAvailable = enabled and type(targetCoverage) == "table" and targetCoverage.available == true
+        local hiddenEmptyDetail = hiddenOnly and "已开启只看隐藏，但当前没有客户端隐藏来源（Hidden Buff）的状态行；潜行/隐匿等效果出现时会显示在这里。" or "当前 Aura 事实已成功读取，但没有符合筛选的状态行。"
         playerTable:SetViewState(not enabled and "unavailable" or (not playerAvailable and "unavailable" or (#filteredPlayer > 0 and "ready" or "empty")), {
             title = not enabled and "功能已关闭" or (not playerAvailable and "自己状态事实不可用" or "暂无自己状态"),
-            detail = not enabled and "启用功能后按需读取共享 Aura 事实。" or (not playerAvailable and tostring(playerCoverage and playerCoverage.error or "Aura 读取失败") or "当前 Aura 事实已成功读取，但没有符合筛选的状态行。")
+            detail = not enabled and "启用功能后按需读取共享 Aura 事实。" or (not playerAvailable and tostring(playerCoverage and playerCoverage.error or "Aura 读取失败") or hiddenEmptyDetail)
         })
         targetTable:SetViewState(not enabled and "unavailable" or (not targetAvailable and "unavailable" or (#filteredTarget > 0 and "ready" or "empty")), {
             title = not enabled and "功能已关闭" or (not targetAvailable and "目标状态事实不可用" or "暂无目标状态"),
-            detail = not enabled and "启用功能后按需读取共享 Aura 事实。" or (not targetAvailable and tostring(targetCoverage and targetCoverage.error or "Aura 读取失败/当前无可读目标") or "目标 Aura 事实已成功读取，但没有符合筛选的状态行。")
+            detail = not enabled and "启用功能后按需读取共享 Aura 事实。" or (not targetAvailable and tostring(targetCoverage and targetCoverage.error or "Aura 读取失败/当前无可读目标") or hiddenEmptyDetail)
         })
-        playerCaption:SetText(CoverageText("自己", playerCoverage))
-        targetCaption:SetText(CoverageText("目标", targetCoverage))
-        summary:SetData({ value = enabled and "共享 Aura 已接入" or "功能已关闭", detail = CoverageText("自己", playerCoverage) .. "\n" .. CoverageText("目标", targetCoverage) .. " · projection " .. tostring(math.max(tonumber(playerRevision) or 0, tonumber(targetRevision) or 0)) })
+        playerCaption:SetText("自己 · " .. tostring(#filteredPlayer) .. " 个状态")
+        targetCaption:SetText("目标 · " .. tostring(#filteredTarget) .. " 个状态")
         featureButton:SetText(enabled and "关闭功能" or "启用功能")
         widgetButton:SetEnabled(enabled)
         widgetButton:SetText(WidgetHost:IsVisible("combat.buff_display") and "关闭悬浮窗" or "打开悬浮窗")
         buffButton:SetText("Buff：" .. (settings.showBuffs ~= false and "开" or "关"))
         debuffButton:SetText("Debuff：" .. (settings.showDebuffs ~= false and "开" or "关"))
         hiddenButton:SetText("只看隐藏：" .. (settings.showHidden == true and "开" or "关"))
+        freezeButton:SetText("冻结列表：" .. (settings.freezeEnabled == true and "开" or "关"))
         local tracked = type(settings.tracked) == "table" and settings.tracked or {}
         local trackedCount = #(type(tracked.buff) == "table" and tracked.buff or {}) + #(type(tracked.debuff) == "table" and tracked.debuff or {})
-        hint:SetText(enabled and ("BUFF/目标变化事件驱动 + " .. tostring(settings.refreshMs or 400) .. "ms 低频兜底；已追踪 " .. tostring(trackedCount) .. " 个状态；头顶" .. (settings.headShowAll == true and "全部显示（不受追踪限制）" or "仅显示已追踪") .. "，位置刷新 " .. tostring(settings.headRefreshMs or 100) .. "ms，点击行可切换追踪；只看隐藏仅显示客户端隐藏来源行。") or "状态显示功能未启用。")
         -- Keep the active tab's controls in sync with the authoritative store.
         if self.activeTab == "head" then
             for _, toggle in ipairs(headToggles) do if type(toggle.Render) == "function" then toggle:Render() end end
@@ -460,6 +549,10 @@ local function BuildPage(parent, route)
                 S.Events:UnsubscribeInternalOwner(root)
                 S.Events:SubscribeInternal("v3.buff_display.updated", root, function() root:Refresh() end)
             end
+            -- Fill the projection synchronously; the aura lane only runs on the
+            -- next Scheduler frame, and the first paint must not show an empty
+            -- table (the reload-first-open symptom).
+            Feature.Commands:Refresh("page_enable")
         else
             if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(root) end
         end
@@ -476,18 +569,7 @@ local function BuildPage(parent, route)
         if searchInput ~= nil and type(searchInput.SetValue) == "function" then searchInput:SetValue("", false, "search_clear") end
         return root:Refresh()
     end
-    trackButton.onClick = function()
-        if root.selectedBuffId == nil then return false, "请先在自己或目标列表选择一个状态" end
-        local ok, err = Feature.Commands:SetTrackedId(root.selectedBuffId, root.selectedBuffCategory, true)
-        if ok then root:Refresh() end
-        return ok, err
-    end
-    untrackButton.onClick = function()
-        if root.selectedBuffId == nil then return false, "请先选择要取消追踪的状态" end
-        local ok, err = Feature.Commands:SetTrackedId(root.selectedBuffId, root.selectedBuffCategory, false)
-        if ok then root:Refresh() end
-        return ok, err
-    end
+    freezeButton.onClick = function() local settings = Feature:GetSettingsProjection(); return Apply("freezeEnabled", not (settings.freezeEnabled == true)) end
     clearTrackButton.onClick = function() local ok, err = Feature.Commands:ClearTrackedIds(); if ok then root:Refresh() end; return ok, err end
 
     local function QuickImportText(mode)
@@ -540,7 +622,7 @@ local function BuildPage(parent, route)
         return true
     end
 
-    for _, button in ipairs({ featureButton, widgetButton, buffButton, debuffButton, hiddenButton, searchClear, trackButton, untrackButton, clearTrackButton, quickImport, quickOverwrite, exportBtn, importTextBtn, clearTextBtn }) do
+    for _, button in ipairs({ featureButton, widgetButton, buffButton, debuffButton, hiddenButton, searchClear, freezeButton, clearTrackButton, quickImport, quickOverwrite, exportBtn, importTextBtn, clearTextBtn }) do
         if button ~= nil and button.root ~= nil then S.UI:SafeHandler(button.root, "OnClick", button.onClick, "v3_buff_display:" .. tostring(button.id or "action")) end
     end
 
@@ -549,12 +631,19 @@ local function BuildPage(parent, route)
     ------------------------------------------------------------------
     function root:OnActivated()
         if S.FeatureRuntime:IsEnabled("combat_buff_display") == true then
+            -- Reload flow: the Feature is already enabled with a loaded store,
+            -- but the aura lane only fills the projection on the next Scheduler
+            -- frame. Refresh synchronously here so the first open shows facts
+            -- and tracked state immediately instead of an empty/untracked table
+            -- that only recovers after a close/reopen cycle.
+            if type(Feature.EnsureStoreLoaded) == "function" then Feature:EnsureStoreLoaded() end
             local ok, err = Feature:AcquireConsumer("page:buff_display")
             if ok ~= true then return false, err end
             if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" and type(S.Events.SubscribeInternal) == "function" then
                 S.Events:UnsubscribeInternalOwner(self)
                 S.Events:SubscribeInternal("v3.buff_display.updated", self, function() root:Refresh() end)
             end
+            Feature.Commands:Refresh("page_activated")
         end
         return self:Refresh()
     end

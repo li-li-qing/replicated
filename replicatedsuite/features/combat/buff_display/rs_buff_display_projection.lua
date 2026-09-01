@@ -57,7 +57,13 @@ function F.ProjectStatusMap(statusMap, meta, settings, scope, limit, trackedInde
             or { category = entry.sources and entry.sources.debuff == true and "debuff" or "buff",
                  detectionSource = entry.sources and entry.sources.hidden == true and "hidden" or "normal" }
         local category = kind.category or "buff"
-        local allowed = (category == "buff" and settings.showBuffs ~= false)
+        -- Hidden-sourced statuses are an independent fact source: they must never
+        -- be suppressed by the buff/debuff category toggles (the page's 只看隐藏
+        -- filter owns them), otherwise a hidden effect the player wants to inspect
+        -- silently vanishes the moment one category is toggled off.
+        local hiddenSource = kind.detectionSource == "hidden"
+        local allowed = hiddenSource == true
+            or (category == "buff" and settings.showBuffs ~= false)
             or (category == "debuff" and settings.showDebuffs ~= false)
         if allowed == true and seen[id] ~= true then
             seen[id] = true
@@ -73,7 +79,7 @@ function F.ProjectStatusMap(statusMap, meta, settings, scope, limit, trackedInde
                 timeText = timeLeft ~= nil and (tostring(math.max(0, math.floor(timeLeft / 1000 + 0.5))) .. "s") or "--",
                 sourceMask = tonumber(entry.sourceMask) or 0, timeKnown = timeLeft ~= nil,
                 tracked = tracked == true,
-                trackedText = tracked == true and "追踪" or "",
+                trackedText = tracked == true and "已追踪" or "",
             }
         end
     end
@@ -153,7 +159,13 @@ function F.ProjectPlates(laneData, settings)
             out.distance = { value = string.format("%.2f", distance / 1000) .. "km" }
         end
     end
-    if laneData.class ~= nil then out.class = { value = tostring(laneData.class) } end
+    if laneData.class ~= nil then
+        local class = type(laneData.class) == "table" and laneData.class or { name = laneData.class }
+        out.class = {
+            value = tostring(class.name or ""),
+            icon = type(class.icon) == "string" and class.icon or "",
+        }
+    end
     if laneData.gearScore ~= nil then out.gearScore = { value = tostring(math.floor(tonumber(laneData.gearScore) or 0)) } end
     for _, key in ipairs({ "mainHand", "offHand", "ranged", "wings" }) do
         local item = type(laneData[key]) == "table" and laneData[key] or nil

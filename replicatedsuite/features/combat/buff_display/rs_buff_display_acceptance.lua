@@ -70,11 +70,19 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     -- entry classifies as debuff. Explicit overrides keep this deterministic
     -- regardless of the seeded registry.
     local map = { [101] = { id = 101, name = "A", iconPath = "a.dds", stack = 2, timeLeft = 3000, sources = { buff = true } }, [202] = { id = 202, name = "B", sources = { debuff = true } }, [303] = { id = 303, name = "H", sources = { hidden = true } } }
+    local mapSettings = { showBuffs = true, showDebuffs = true, showHidden = false, classification = { [101] = "buff", [202] = "debuff", [303] = "debuff" } }
     local rows = F.ProjectStatusMap(map, { available = true, complete = true, reliable = true, revision = 1 },
-        { showBuffs = true, showDebuffs = true, showHidden = false, classification = { [101] = "buff", [202] = "debuff", [303] = "debuff" } }, "player", 8)
+        mapSettings, "player", 8, { buff = { [101] = true }, debuff = {} })
     if type(rows) ~= "table" or #rows ~= 3 or rows[1].id ~= 101 or rows[2].id ~= 202 or rows[3].id ~= 303
         or rows[1].category ~= "buff" or rows[2].category ~= "debuff" or rows[3].category ~= "debuff"
-        or rows[3].detectionSource ~= "hidden" or rows[1].timeText ~= "3s" or rows[1].tracked ~= false then return false, "projection_contract" end
+        or rows[3].detectionSource ~= "hidden" or rows[1].timeText ~= "3s" or rows[1].tracked ~= true
+        or rows[1].trackedText ~= "已追踪" or rows[3].trackedText ~= "" then return false, "projection_contract" end
+    -- Hidden-sourced statuses are an independent fact source: they must survive
+    -- a disabled buff/debuff category toggle so 只看隐藏 always has rows to show.
+    local hiddenOnlyRows = F.ProjectStatusMap(map, { available = true, complete = true, reliable = true, revision = 1 },
+        { showBuffs = true, showDebuffs = false, showHidden = false, classification = mapSettings.classification }, "player", 8)
+    if type(hiddenOnlyRows) ~= "table" or #hiddenOnlyRows ~= 2 or hiddenOnlyRows[1].id ~= 101
+        or hiddenOnlyRows[2].id ~= 303 or hiddenOnlyRows[2].detectionSource ~= "hidden" then return false, "hidden_source_not_suppressed_by_category_toggle" end
     -- Settings projection exposes all 10 head components + category-keyed tracked.
     local settingsProjection = type(F.GetSettingsProjection) == "function" and F:GetSettingsProjection() or {}
     local components = type(settingsProjection.components) == "table" and settingsProjection.components or {}
@@ -82,7 +90,8 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     local componentKeys = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar" }
     local missingComponents = 0
     for _, key in ipairs(componentKeys) do if type(components[key]) ~= "table" then missingComponents = missingComponents + 1 end end
-    if missingComponents ~= 0 or type(tracked.buff) ~= "table" or type(tracked.debuff) ~= "table" then return false, "schema4_settings_projection" end
+    if missingComponents ~= 0 or type(tracked.buff) ~= "table" or type(tracked.debuff) ~= "table"
+        or settingsProjection.freezeEnabled ~= false or settingsProjection.showHidden ~= false then return false, "schema4_settings_projection" end
     -- Head plates projection: bounded tracked rows + enabled component data.
     local plates = F.ProjectPlates({
         buffRows = { { id = 101, name = "A" } }, distance = 1234.5, class = "法师", gearScore = 12345,

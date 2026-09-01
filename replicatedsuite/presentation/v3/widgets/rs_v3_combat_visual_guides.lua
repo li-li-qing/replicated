@@ -57,6 +57,17 @@ local UNIT_COLORS = {
     target = {1.00,0.72,0.12}, targettarget = {0.94,0.42,0.20},
     focus = {0.35,0.82,1.00}, focustarget = {0.67,0.52,1.00},
 }
+-- Resolve a per-pair color override from the Feature projection; falls back to
+-- the hardcoded palette so older stores without colors keep rendering.
+local function UnitLineColor(projection, pairKey)
+    local colors = type(projection) == "table" and projection.colors or nil
+    if type(colors) == "table" then
+        local c = colors[tostring(pairKey or "")]
+        if type(c) == "table" then return c[1], c[2], c[3] end
+    end
+    local c = UNIT_COLORS[tostring(pairKey or "target")] or UNIT_COLORS.target
+    return c[1], c[2], c[3]
+end
 function P:EnsureUnitPairPool(pairKey, count)
     pairKey=tostring(pairKey or "target")
     count=math.max(0,math.min(48,math.floor(tonumber(count) or 0)))
@@ -101,15 +112,19 @@ function P:HidePool(pool)
     for _,dot in ipairs(pool) do S.UI:SetVisible(dot.root, false, self.owner) end
 end
 
-function P:PlaceDot(dot, x, y, size, opacity, kind, pairKey)
+function P:PlaceDot(dot, x, y, size, opacity, kind, pairKey, r, g, b)
     size=math.max(2,math.min(10,math.floor(tonumber(size) or 4)))
     S.UI:SetAnchor(dot.root, kind == "unit" and self.unitHost or self.rangeHost, math.floor((tonumber(x) or 0)-size/2), math.floor((tonumber(y) or 0)-size/2), self.owner)
     S.UI:SetExtent(dot.root, size, size, self.owner)
     S.UI:SetAnchor(dot.drawable, dot.root, 0, 0, self.owner); S.UI:SetExtent(dot.drawable, size, size, self.owner)
     if kind == "range" then S.UI:SetColor(dot.drawable, 0.20, 0.82, 1.00, math.max(0.1,math.min(1,tonumber(opacity) or 0.68)), self.owner)
     else
-        local c=UNIT_COLORS[tostring(pairKey or "target")] or UNIT_COLORS.target
-        S.UI:SetColor(dot.drawable,c[1],c[2],c[3],math.max(0.1,math.min(1,tonumber(opacity) or 0.78)),self.owner)
+        local cr, cg, cb = r, g, b
+        if cr == nil then
+            local c = UNIT_COLORS[tostring(pairKey or "target")] or UNIT_COLORS.target
+            cr, cg, cb = c[1], c[2], c[3]
+        end
+        S.UI:SetColor(dot.drawable, cr, cg, cb, math.max(0.1,math.min(1,tonumber(opacity) or 0.78)),self.owner)
     end
     S.UI:SetVisible(dot.root, true, self.owner)
 end
@@ -118,16 +133,21 @@ function P:RenderUnit()
     if self.unitHeld ~= true then self:HideUnitPools(); return true end
     local projection=UnitFeature:GetProjection() or {}; local rows=type(projection.rows)=="table" and projection.rows or {}
     if #rows==0 then self:HideUnitPools(); return true end
-    local count=math.max(8,math.min(48,math.floor(tonumber(projection.pointCount) or 24)))
+    local pairPoints = type(projection.pairPoints) == "table" and projection.pairPoints or {}
+    local pairSizes = type(projection.pairSizes) == "table" and projection.pairSizes or {}
     local active={}
     for _,row in ipairs(rows) do
         if type(row)=="table" and tonumber(row.x1)~=nil and tonumber(row.y1)~=nil and tonumber(row.x2)~=nil and tonumber(row.y2)~=nil then
             local key=tostring(row.pairKey or row.key or "target"):gsub("[^%w_]","_")
+            -- Per-pair points/size override the global defaults when configured.
+            local count=math.max(8,math.min(48,math.floor(tonumber(pairPoints[row.pairKey]) or tonumber(projection.pointCount) or 24)))
+            local size=math.max(2,math.min(10,math.floor(tonumber(pairSizes[row.pairKey]) or tonumber(projection.pointSize) or 4)))
+            local cr,cg,cb=UnitLineColor(projection,row.pairKey)
             local pool,err=self:EnsureUnitPairPool(key,count); if pool==nil then return false,err end
             active[key]=true
             for i=1,count do
                 local t=(i-1)/math.max(1,count-1)
-                self:PlaceDot(pool[i],row.x1+(row.x2-row.x1)*t,row.y1+(row.y2-row.y1)*t,projection.pointSize,projection.opacity,"unit",key)
+                self:PlaceDot(pool[i],row.x1+(row.x2-row.x1)*t,row.y1+(row.y2-row.y1)*t,size,projection.opacity,"unit",key,cr,cg,cb)
             end
             for i=count+1,#pool do S.UI:SetVisible(pool[i].root,false,self.owner) end
         end

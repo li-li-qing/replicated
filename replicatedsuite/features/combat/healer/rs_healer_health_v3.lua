@@ -164,8 +164,12 @@ function H:OnRosterUpdated(reason)
     if self.running ~= true then return true end
     local roster = Roster()
     if type(roster) ~= "table" or type(roster.SyncFromShared) ~= "function" then return false, "healer roster domain unavailable" end
-    local ok, err = roster:SyncFromShared(reason or "team_roster_updated", true)
+    local ok, err, changed = roster:SyncFromShared(reason or "team_roster_updated", true)
     if ok ~= true then return false, err end
+    -- TeamRosterV3 no longer publishes no-op refreshes, but keep a defensive
+    -- identity gate here too: an unchanged roster must not wipe every team
+    -- recommendation/health color (the "all colors disappear" symptom).
+    if changed == false then return true end
     self.metrics.rosterChanges = (tonumber(self.metrics.rosterChanges) or 0) + 1
     self:Reset("roster_changed", true)
     DiagnosticsCount("ROSTER_GENERATION_CHANGED", 1)

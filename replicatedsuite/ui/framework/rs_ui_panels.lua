@@ -67,8 +67,13 @@ local function Arrange(child, x, y, width, height, force)
     if type(child.Layout) == "function" then child:Layout(x, y, width, height); return true end
     return false
 end
-local function Host(kind, spec)
-    local root = UI:CreateEmptyWidget(spec.parent, spec.id, N(spec.x,0), N(spec.y,0), math.max(1,N(spec.width,1)), math.max(1,N(spec.height,1)), spec.pickable==true)
+local function Host(kind, spec, rootFactory)
+    local root
+    if type(rootFactory) == "function" then
+        root = rootFactory(spec)
+    else
+        root = UI:CreateEmptyWidget(spec.parent, spec.id, N(spec.x,0), N(spec.y,0), math.max(1,N(spec.width,1)), math.max(1,N(spec.height,1)), spec.pickable==true)
+    end
     if root == nil then return nil, string.lower(kind).."_create_failed" end
     local c = RSUI:NewComponent(kind, spec, root)
     c.slots, c.gap = {}, math.max(0,N(spec.gap,Token("spacing.sm",8)))

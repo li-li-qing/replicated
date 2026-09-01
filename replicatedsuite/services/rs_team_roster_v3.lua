@@ -134,6 +134,27 @@ function T:ScheduleRetry(delayMs, reason)
     end, self, "P1", 1)
 end
 
+-- Roster identity snapshot comparison. TEAM_MEMBERS_CHANGED fires often while
+-- the team layout is stable (combat callbacks, zone transitions, party-role
+-- pulses). Publishing "v3.team_roster.updated" for every no-op refresh forces
+-- Healer's OnRosterUpdated -> ResetTransient to wipe every recommendation/
+-- health color, which the user sees as "all team colors disappear, then slowly
+-- come back". Only bump revision and publish when the identity set changed.
+local function SameRosterSnapshot(a, b)
+    if type(a) ~= "table" or type(b) ~= "table" or #a ~= #b then return false end
+    for index = 1, #a do
+        local x, y = a[index], b[index]
+        if type(x) ~= "table" or type(y) ~= "table" then return false end
+        if tostring(x.name) ~= tostring(y.name)
+            or tostring(x.unitToken) ~= tostring(y.unitToken)
+            or tonumber(x.teamIndex) ~= tonumber(y.teamIndex)
+            or tonumber(x.memberIndex) ~= tonumber(y.memberIndex) then
+            return false
+        end
+    end
+    return true
+end
+
 function T:Refresh(reason)
     if self.consumerCount <= 0 then return true, 0 end
     local nextMembers, nextOrdered = {}, {}
@@ -172,10 +193,14 @@ function T:Refresh(reason)
         end
     end
 
+    local changed = not SameRosterSnapshot(nextOrdered, self.ordered)
     self.members, self.ordered = nextMembers, nextOrdered
+    self.lastRefreshAt = NowMs()
+    -- Identity unchanged: keep the snapshot warm but do not churn consumers
+    -- (Healer re-evaluation, UI refreshes) with a fake revision.
+    if changed ~= true then return true, #nextOrdered end
     self.revision = self.revision + 1
     self.scans = self.scans + 1
-    self.lastRefreshAt = NowMs()
     if S.Events ~= nil and type(S.Events.Publish) == "function" then
         S.Events:Publish("v3.team_roster.updated", self.revision, tostring(reason or "refresh"))
     end

@@ -103,7 +103,10 @@ function R:SyncFromShared(reason, forceRoles)
     if type(snapshot) ~= "table" then return false, "TeamRosterV3 snapshot unavailable" end
     local settings = Settings()
     local previous = self.byKey or {}
+    local previousKeys = {}
+    for key in pairs(previous) do previousKeys[key] = true end
     local nextMembers, nextByKey = {}, {}
+    local nextKeys = {}
 
     for _, row in ipairs(type(snapshot.members) == "table" and snapshot.members or {}) do
         local name = Trim(row.name)
@@ -121,6 +124,7 @@ function R:SyncFromShared(reason, forceRoles)
                 role = nil,
             }
             member.key = IdentityKey(member)
+            nextKeys[member.key] = true
             local old = previous[member.key]
             if type(old) == "table" then
                 member.officialRole = old.officialRole
@@ -131,6 +135,18 @@ function R:SyncFromShared(reason, forceRoles)
             nextByKey[member.key] = member
         end
     end
+
+    -- Identity diff: same member set (order-insensitive) means the roster did
+    -- not actually change. Callers (Healer OnRosterUpdated) use this to skip
+    -- the expensive full ResetTransient that wipes every team color.
+    local changed = false
+    local keyCount, previousKeyCount = 0, 0
+    for key in pairs(nextKeys) do
+        keyCount = keyCount + 1
+        if previousKeys[key] ~= true then changed = true end
+    end
+    for _ in pairs(previousKeys) do previousKeyCount = previousKeyCount + 1 end
+    if keyCount ~= previousKeyCount then changed = true end
 
     self.members, self.byKey = nextMembers, nextByKey
     self.sourceRevision = tonumber(snapshot.revision) or self.sourceRevision
@@ -148,7 +164,7 @@ function R:SyncFromShared(reason, forceRoles)
     else
         self.ready = false
     end
-    return true
+    return true, nil, changed
 end
 
 function R:RunRoleSlice()

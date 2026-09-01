@@ -2206,12 +2206,42 @@ local function StartUnitLineTask(feature)
     if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(UNIT_LINE_TASK, feature.Id) end
     return true
 end
+local UNIT_LINE_DEFAULT_COLORS = {
+    target = { 1.00, 0.72, 0.12 },
+    targettarget = { 0.94, 0.42, 0.20 },
+    focus = { 0.35, 0.82, 1.00 },
+    focustarget = { 0.67, 0.52, 1.00 },
+}
+local function NormalizeUnitLineColors(value)
+    local out = {}
+    for key, default in pairs(UNIT_LINE_DEFAULT_COLORS) do
+        local entry = type(value) == "table" and value[key] or nil
+        if type(entry) == "table" then
+            out[key] = {
+                math.max(0, math.min(1, tonumber(entry[1]) or default[1])),
+                math.max(0, math.min(1, tonumber(entry[2]) or default[2])),
+                math.max(0, math.min(1, tonumber(entry[3]) or default[3])),
+            }
+        else
+            out[key] = { default[1], default[2], default[3] }
+        end
+    end
+    return out
+end
 local UnitLines = NewFeature("combat_unit_lines", {
     apiDependencies = { "X2Unit:GetUnitScreenPosition", "X2Unit:GetUnitWorldPositionByTarget" },
     state = { pointCount = 24, pointSize = 4, opacity = 0.78, refreshMs = 100,
-        showTarget = true, showTargetTarget = true, showFocusTarget = true, showFocusTargetTarget = true },
+        showTarget = true, showTargetTarget = true, showFocusTarget = true, showFocusTargetTarget = true,
+        colors = Copy(UNIT_LINE_DEFAULT_COLORS),
+        points = {}, sizes = {},
+        pairPoints = Copy({ target = 24, targettarget = 24, focus = 24, focustarget = 24 }),
+        pairSizes = Copy({ target = 4, targettarget = 4, focus = 4, focustarget = 4 }) },
     default = { pointCount = 24, pointSize = 4, opacity = 0.78, refreshMs = 100,
-        showTarget = true, showTargetTarget = true, showFocusTarget = true, showFocusTargetTarget = true },
+        showTarget = true, showTargetTarget = true, showFocusTarget = true, showFocusTargetTarget = true,
+        colors = Copy(UNIT_LINE_DEFAULT_COLORS),
+        points = {}, sizes = {},
+        pairPoints = Copy({ target = 24, targettarget = 24, focus = 24, focustarget = 24 }),
+        pairSizes = Copy({ target = 4, targettarget = 4, focus = 4, focustarget = 4 }) },
     observationContractVersion = 2,
     reconcileDemand = function(feature, before, after)
         local b, a = tonumber(before and before.count) or 0, tonumber(after and after.count) or 0
@@ -2227,14 +2257,23 @@ local UnitLines = NewFeature("combat_unit_lines", {
         for _, pair in ipairs(UNIT_LINE_PAIRS) do
             if feature.State[pair.setting] ~= false then
                 attempted = attempted + 1
-                local x1,y1,_,err1,source1 = projection:ProjectUnitFlexible(pair.from)
-                local x2,y2,_,err2,source2 = projection:ProjectUnitFlexible(pair.to)
-                if x1 ~= nil and y1 ~= nil and x2 ~= nil and y2 ~= nil then
+                local x1,y1,depth1,err1,source1 = projection:ProjectUnitFlexible(pair.from)
+                local x2,y2,depth2,err2,source2 = projection:ProjectUnitFlexible(pair.to)
+                -- Fail closed when either endpoint is behind the camera: a
+                -- negative/zero depth point projects to the mirrored screen
+                -- position (the "line points at the sky" symptom). A unit
+                -- off-screen behind the player simply hides the segment.
+                if x1 ~= nil and y1 ~= nil and x2 ~= nil and y2 ~= nil
+                    and (depth1 == nil or tonumber(depth1) > 0) and (depth2 == nil or tonumber(depth2) > 0) then
                     rows[#rows+1] = { key="unit_line:"..pair.key, pairKey=pair.key, name=pair.label,
                         text=pair.label, statusText="可绘制", tone="green", x1=x1,y1=y1,x2=x2,y2=y2,
                         source1=source1, source2=source2, fromToken=pair.from, toToken=pair.to }
                 else
-                    failed[#failed+1] = pair.label .. "（" .. tostring(err1 or err2 or "当前无单位") .. "）"
+                    local reason = err1 or err2 or "当前无单位"
+                    if (depth1 ~= nil and tonumber(depth1) <= 0) or (depth2 ~= nil and tonumber(depth2) <= 0) then
+                        reason = "单位在角色背后（屏幕外）"
+                    end
+                    failed[#failed+1] = pair.label .. "（" .. tostring(reason) .. "）"
                 end
             end
         end
@@ -2244,7 +2283,9 @@ local UnitLines = NewFeature("combat_unit_lines", {
     end,
     projection = function(feature) return { pointCount=feature.State.pointCount, pointSize=feature.State.pointSize, opacity=feature.State.opacity,
         refreshMs=UnitLineInterval(feature), showTarget=feature.State.showTarget~=false, showTargetTarget=feature.State.showTargetTarget~=false,
-        showFocusTarget=feature.State.showFocusTarget~=false, showFocusTargetTarget=feature.State.showFocusTargetTarget~=false } end,
+        showFocusTarget=feature.State.showFocusTarget~=false, showFocusTargetTarget=feature.State.showFocusTargetTarget~=false,
+        colors=NormalizeUnitLineColors(feature.State.colors),
+        pairPoints=feature.State.pairPoints or {}, pairSizes=feature.State.pairSizes or {} } end,
     commands = {
         SetPointCount = function(feature, value) value=math.max(8,math.min(48,math.floor(tonumber(value) or 24))); return PersistStateMutation(feature,"unit_lines_points",function(state) state.pointCount=value; return true end) end,
         SetPointSize = function(feature, value) value=math.max(2,math.min(10,math.floor(tonumber(value) or 4))); return PersistStateMutation(feature,"unit_lines_size",function(state) state.pointSize=value; return true end) end,
@@ -2260,6 +2301,36 @@ local UnitLines = NewFeature("combat_unit_lines", {
             local map={target="showTarget",targettarget="showTargetTarget",focus="showFocusTarget",focustarget="showFocusTargetTarget"}
             local field=map[tostring(key or "")]; if field==nil then return false,"未知连线类型" end
             return PersistStateMutation(feature,"unit_lines_pair_"..tostring(key),function(state) state[field]=value==true; return true end)
+        end,
+        SetPairColor = function(feature, key, r, g, b)
+            key=tostring(key or "")
+            if UNIT_LINE_DEFAULT_COLORS[key] == nil then return false,"未知连线类型" end
+            r=math.max(0,math.min(1,tonumber(r) or 1)); g=math.max(0,math.min(1,tonumber(g) or 1)); b=math.max(0,math.min(1,tonumber(b) or 1))
+            return PersistStateMutation(feature,"unit_lines_color_"..key,function(state)
+                state.colors = state.colors or {}
+                state.colors[key] = { r, g, b }
+                return true
+            end)
+        end,
+        SetPairPoints = function(feature, key, value)
+            key=tostring(key or "")
+            if UNIT_LINE_DEFAULT_COLORS[key] == nil then return false,"未知连线类型" end
+            value=math.max(8,math.min(48,math.floor(tonumber(value) or 24)))
+            return PersistStateMutation(feature,"unit_lines_pair_points_"..key,function(state)
+                state.pairPoints = state.pairPoints or {}
+                state.pairPoints[key] = value
+                return true
+            end)
+        end,
+        SetPairSize = function(feature, key, value)
+            key=tostring(key or "")
+            if UNIT_LINE_DEFAULT_COLORS[key] == nil then return false,"未知连线类型" end
+            value=math.max(2,math.min(10,math.floor(tonumber(value) or 4)))
+            return PersistStateMutation(feature,"unit_lines_pair_size_"..key,function(state)
+                state.pairSizes = state.pairSizes or {}
+                state.pairSizes[key] = value
+                return true
+            end)
         end,
     },
 })

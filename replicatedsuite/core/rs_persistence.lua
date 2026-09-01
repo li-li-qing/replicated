@@ -622,6 +622,16 @@ function P:LoadStore(id, options)
     store.writeFenced = false
     store.writeFenceReason = nil
     store.lastError = nil
+    -- A previous save that exceeded the then-current budget leaves a permanent
+    -- payload fence. After a store budget upgrade the same payload can fit
+    -- again; revalidate and lift the fence automatically instead of stranding
+    -- the store in write-only mode until a manual RevalidateStore call. Non
+    -- payload fences (metadata/schema/load) stay untouched.
+    if store.writeFenced == true and store.writeFenceReason ~= nil
+        and (store.writeFenceReason:match("^payload_rejected:") ~= nil
+            or store.writeFenceReason:match("^encoded_payload_rejected:") ~= nil) then
+        self:RevalidateStore(id)
+    end
     self.stats.loaded = (tonumber(self.stats.loaded) or 0) + 1
     Count("STORE_LOADED", 1)
     return true, DeepCopy(value), nil

@@ -135,6 +135,40 @@ local function Build(parent, route, id)
             get = function() return (feature:GetProjection() or {}).opacity or 0.78 end, set = function(v) return feature.Commands:SetOpacity(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
         TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_refresh", label = "刷新间隔", min = 1, max = 1000, step = 25, integer = true, unit = "ms", slider = true,
             get = function() return (feature:GetProjection() or {}).refreshMs or 100 end, set = function(v) return feature.Commands:SetRefreshMs(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
+        -- Per-pair appearance: each connection type gets its own point count,
+        -- dot size and RGB color, overriding the global defaults above.
+        local perPairLabel = RSUI:Text({ id = "v3_business_combat_unit_lines_per_pair_title", parent = root, text = "每种连线单独设置（点数 / 大小 / 颜色）", fontSize = 10, tone = "strong", slot = { size = "fixed", height = 20, hAlign = "fill" } })
+        local pairNames = { target = "自己 ↔ 当前目标", targettarget = "当前目标 ↔ 目标的目标", focus = "自己 ↔ 焦点目标", focustarget = "焦点目标 ↔ 焦点的目标" }
+        for _, spec in ipairs(pairSpecs) do
+            local specRef = spec
+            local pairKey = specRef.key
+            local row = RSUI:HorizontalBox({ id = "v3_business_combat_unit_lines_row_" .. pairKey, parent = root, gap = 4, slot = { size = "fixed", height = 28, hAlign = "fill" } })
+            RSUI:Text({ id = "v3_business_combat_unit_lines_row_" .. pairKey .. "_name", parent = row, text = tostring(pairNames[pairKey] or pairKey), fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", width = 128 } })
+            TrackField(D:CompactNumericSetting(row, { id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_points", label = "点数", min = 8, max = 48, step = 1, integer = true, inlineHint = true, hint = "", slider = true,
+                get = function() return (feature:GetProjection() or {}).pairPoints and (feature:GetProjection() or {}).pairPoints[pairKey] or 24 end,
+                set = function(v) return feature.Commands:SetPairPoints(pairKey, v) end, slot = { size = "fixed", width = 118 } }))
+            TrackField(D:CompactNumericSetting(row, { id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_size", label = "大小", min = 2, max = 10, step = 1, integer = true, inlineHint = true, hint = "", slider = true,
+                get = function() return (feature:GetProjection() or {}).pairSizes and (feature:GetProjection() or {}).pairSizes[pairKey] or 4 end,
+                set = function(v) return feature.Commands:SetPairSize(pairKey, v) end, slot = { size = "fixed", width = 118 } }))
+            local function ColorField(label, componentIndex)
+                return D:CompactNumericSetting(row, { id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_c" .. tostring(componentIndex), label = label, min = 0, max = 1, step = 0.05, integer = false, inlineHint = true, hint = "", slider = true,
+                    get = function()
+                        local colors = (feature:GetProjection() or {}).colors
+                        local c = type(colors) == "table" and colors[pairKey] or nil
+                        return type(c) == "table" and (tonumber(c[componentIndex]) or 0) or 0
+                    end,
+                    set = function(v)
+                        local colors = (feature:GetProjection() or {}).colors
+                        local c = type(colors) == "table" and colors[pairKey] or { 1, 1, 1 }
+                        local nextColor = { tonumber(c[1]) or 1, tonumber(c[2]) or 1, tonumber(c[3]) or 1 }
+                        nextColor[componentIndex] = v
+                        return feature.Commands:SetPairColor(pairKey, nextColor[1], nextColor[2], nextColor[3])
+                    end, slot = { size = "fixed", width = 96 } })
+            end
+            TrackField(ColorField("R", 1))
+            TrackField(ColorField("G", 2))
+            TrackField(ColorField("B", 3))
+        end
     elseif id == "combat_range_assist" then
         local grid = RSUI:UniformGrid({ id = "v3_business_combat_range_assist_settings", parent = root, minCellWidth = 190, minCellHeight = 30, maxColumns = 2, gap = 5, slot = { size = "auto", minHeight = 60, hAlign = "fill" } })
         TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_range_assist_radius", label = "半径", min = 1, max = 100, step = 0.5, integer = false, unit = "m", slider = true,

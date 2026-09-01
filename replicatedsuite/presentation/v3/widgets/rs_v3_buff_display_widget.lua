@@ -15,39 +15,80 @@ local function Persist(reason) return Feature.Commands:MarkStoreDirty(250, "widg
 
 local function CreateWidget()
     local instance = { id = ID, owner = OWNER, visible = false, subscribed = false, rows = {} }
-    local surface, err = Floating:Create({ id = "v3_buff_display_widget", owner = OWNER, title = "状态显示", status = "--", footer = true, resizable = true, movable = true, minimizeMode = "compact", boundaryMode = "free", defaultPlacement = "top-right", statePolicy = Policy(), getState = function() return Feature:GetWidgetWindowState() end, setState = function(value, reason) return Feature.Commands:SetWidgetWindowState(value, reason) end, persist = Persist, onClosed = function(_, reason) return Host:NotifyWindowClosed(ID, { source = tostring(reason or "widget_close"), persist = true }) end })
+    local surface, err = Floating:Create({ id = "v3_buff_display_widget", owner = OWNER, title = "状态追踪", status = "--", footer = true, resizable = true, movable = true, minimizeMode = "compact", boundaryMode = "free", defaultPlacement = "top-right", statePolicy = Policy(), getState = function() return Feature:GetWidgetWindowState() end, setState = function(value, reason) return Feature.Commands:SetWidgetWindowState(value, reason) end, persist = Persist, onClosed = function(_, reason) return Host:NotifyWindowClosed(ID, { source = tostring(reason or "widget_close"), persist = true }) end })
     if surface == nil then return nil, err or "状态显示悬浮窗创建失败" end
     instance.surface, instance.shell, instance.window, instance.root, instance.windowController = surface, surface.shell, surface.window, surface.shell.root, surface.windowController
     local content = RSUI:VerticalBox({ id = "v3_buff_display_widget_content", parent = surface:GetContentRoot(), gap = 4, slot = { hAlign = "fill", vAlign = "fill" } })
-    instance.table = RSUI:TableView({ id = "v3_buff_display_widget_table", parent = content, items = {}, rowHeight = 24, headerHeight = 23, desiredRows = 10, overscan = 1, scrollbar = true, selectable = false, headerInteractive = false, columns = {
-        { id = "scope", title = "", field = "scopeText", size = "fixed", width = 34, minWidth = 30, sortable = false },
-        { id = "name", title = "状态", field = "name", size = "fill", minWidth = 100, fill = 1 },
-        { id = "type", title = "类型", field = "effectTypeText", size = "fixed", width = 52, minWidth = 46, sortable = false },
-        { id = "stack", title = "层", field = "stack", size = "fixed", width = 32, minWidth = 28, sortable = false },
-        { id = "time", title = "剩余", field = "timeText", size = "fixed", width = 50, minWidth = 44, sortable = false },
-    }, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
+    -- Quick actions: open the settings panel (the game UI can cover the main
+    -- window, so an in-widget entry keeps tracking config one click away) and
+    -- force a refresh.
+    local actionRow = RSUI:HorizontalBox({ id = "v3_buff_display_widget_actions", parent = content, gap = 4, slot = { size = "fixed", height = 26, hAlign = "fill" } })
+    local settingsButton = RSUI:Button({ id = "v3_buff_display_widget_settings", parent = actionRow, text = "设置", compact = true, slot = { size = "fixed", width = 56 } })
+    local refreshButton = RSUI:Button({ id = "v3_buff_display_widget_refresh", parent = actionRow, text = "刷新", compact = true, slot = { size = "fixed", width = 56 } })
+    local actionHint = RSUI:Text({ id = "v3_buff_display_widget_action_hint", parent = actionRow, text = "点击行取消追踪", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
+    settingsButton.onClick = function()
+        local shell = S.UIV3 and S.UIV3.shell or nil
+        if shell ~= nil and type(shell.Navigate) == "function" then return shell:Navigate("combat.buff_display", { source = "buff_display_widget" }) end
+        return true
+    end
+    refreshButton.onClick = function()
+        if type(Feature.Commands) == "table" and type(Feature.Commands.Refresh) == "function" then Feature.Commands:Refresh("widget_manual") end
+        return instance:Refresh()
+    end
+    if settingsButton ~= nil and settingsButton.root ~= nil then S.UI:SafeHandler(settingsButton.root, "OnClick", settingsButton.onClick, OWNER .. ":settings") end
+    if refreshButton ~= nil and refreshButton.root ~= nil then S.UI:SafeHandler(refreshButton.root, "OnClick", refreshButton.onClick, OWNER .. ":refresh") end
+    -- The floating window is a tracking manager, not a live buff mirror: it
+    -- lists every tracked id with its icon and lets the player untrack by
+    -- clicking a row. Rows use onItemActivated (no selection) so clicking is
+    -- the only interaction and cannot deselect into a dead state.
+    instance.table = RSUI:TableView({ id = "v3_buff_display_widget_table", parent = content, items = {}, rowHeight = 24, headerHeight = 23, desiredRows = 10, overscan = 1, scrollbar = true, selectable = false, headerInteractive = false,
+        onItemActivated = function(item, index, key, view, reason)
+            if type(item) ~= "table" or item.id == nil then return true end
+            local ok, err = Feature.Commands:SetTrackedId(tonumber(item.id), item.category == "debuff" and "debuff" or "buff", false)
+            if ok == true then
+                instance:Refresh()
+            elseif S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarnRateLimited) == "function" then
+                S.DiagnosticsManager:WarnRateLimited("buff_display_widget", "TRACKED_UNTrack_FAILED", 3000,
+                    "取消追踪失败", { id = tonumber(item.id), error = tostring(err or "unknown") })
+            end
+            return ok, err
+        end,
+        columns = {
+            { id = "icon", title = "", field = "iconPath", cellType = "icon", iconSize = 16, fallbackIcon = "ui/icon/icon_unknown_item.dds", size = "fixed", width = 24, minWidth = 22, sortable = false, resizable = false },
+            { id = "name", title = "已追踪状态", field = "name", size = "fill", minWidth = 96, fill = 1 },
+            { id = "type", title = "类型", field = "effectTypeText", size = "fixed", width = 50, minWidth = 44, sortable = false },
+            { id = "status", title = "来源", field = "scopeText", size = "fixed", width = 46, minWidth = 40, sortable = false },
+        }, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
     function instance:Refresh()
-        local rows, revision, coverage = Feature:GetProjection("all", 24)
-        local playerCount, targetCount = 0, 0
-        for _, row in ipairs(rows) do
-            if row.scope == "player" then playerCount = playerCount + 1 else targetCount = targetCount + 1 end
+        local rows, revision = Feature:GetTrackedList()
+        local tracked = type(rows) == "table" and rows or {}
+        self.rows = tracked
+        self.table:SetItems(tracked, revision)
+        local liveCount, vanishedCount = 0, 0
+        for _, row in ipairs(tracked) do
+            if row.vanished == true then vanishedCount = vanishedCount + 1 else liveCount = liveCount + 1 end
         end
-        self.rows = rows
-        self.table:SetItems(rows, revision)
-        local playerAvailable = type(coverage) == "table" and type(coverage.player) == "table" and coverage.player.available == true
-        local targetAvailable = type(coverage) == "table" and type(coverage.target) == "table" and coverage.target.available == true
-        local factsAvailable = playerAvailable or targetAvailable
-        self.table:SetViewState(not factsAvailable and "unavailable" or (#rows > 0 and "ready" or "empty"), {
-            title = not factsAvailable and "状态事实不可用" or "暂无状态",
-            detail = not factsAvailable and "共享 Aura 事实读取失败；这不是“没有 Buff”。" or "Aura 已成功读取，但当前筛选没有可显示行。"
-        })
-        local health = Feature:GetHealth()
-        self.surface:SetStatus("自己 " .. tostring(playerCount) .. " · 目标 " .. tostring(targetCount), factsAvailable and "accent" or "warn")
+        if #tracked > 0 then
+            self.table:SetViewState("ready")
+            self.surface:SetStatus("已追踪 " .. tostring(liveCount) .. (vanishedCount > 0 and (" · 消失 " .. tostring(vanishedCount)) or ""), "accent")
+        else
+            self.table:SetViewState("empty", {
+                title = "尚未追踪任何状态",
+                detail = "点击" .. "状态显示" .. "页面的状态行即可追踪；此窗口用于管理已追踪列表（点击行取消追踪）。",
+            })
+            self.surface:SetStatus("追踪列表为空 · 请先在状态显示页添加追踪", "warn")
+        end
         return true
     end
     function instance:Subscribe()
         if self.subscribed == true then return true end
-        if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then S.Events:SubscribeInternal("v3.buff_display.updated", self, function() if instance.visible then instance:Refresh() end end) end
+        if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
+            S.Events:SubscribeInternal("v3.buff_display.updated", self, function() if instance.visible then instance:Refresh() end end)
+            -- Tracked-id mutations (row click, quick import) also publish the
+            -- settings topic; refresh on it too so the tracking manager always
+            -- mirrors the authoritative list.
+            S.Events:SubscribeInternal("v3.buff_display.settings", self, function() if instance.visible then instance:Refresh() end end)
+        end
         self.subscribed = true
         return true
     end
@@ -65,6 +106,12 @@ local function CreateWidget()
             local acquireOk, acquireErr = Feature:AcquireConsumer("widget:buff_display")
             if acquireOk ~= true then error(acquireErr or "状态显示悬浮窗订阅失败") end
             acquired = true
+            -- Fill the projection synchronously (the aura lane only runs on the
+            -- next Scheduler frame) so live rows carry their name/icon and the
+            -- tracking list is not all-"已消失" placeholders on first open.
+            if type(Feature.Commands) == "table" and type(Feature.Commands.Refresh) == "function" then
+                Feature.Commands:Refresh("widget_show")
+            end
             self:Refresh()
             if self.surface:Show(true) ~= true then error("状态显示悬浮窗显示失败") end
         end, S.SafeTraceback)
