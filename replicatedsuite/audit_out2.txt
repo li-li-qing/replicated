@@ -1,1 +1,0 @@
-FOUNDATION_AUDIT PASS | toc=196 activeLua=196 allLua=353 globals=0 presentation=0 rawNative=0 rawScope=0 detachedWidgetState=0 apiDependency=0 apiCapability=0 businessIds=0 auctionEventOwners=0

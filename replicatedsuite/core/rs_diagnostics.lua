@@ -295,26 +295,9 @@ function D:Snapshot()
         persistence = persistence,
         uiHosts = uiHosts,
         foundation = S.FoundationGate and S.FoundationGate.last or nil,
-        professionalRuntime = {},
         recentErrors = {},
         migration = S.Migration and S.Migration:Describe() or nil,
     }
-    -- Professional modules keep Domain Authority in isolated sandboxes. Read
-    -- only their narrow diagnostic facades; Diagnostics never reaches into
-    -- module-local mutable tables directly.
-    local sandbox = rawget(_G, "ReplicatedSuiteModuleSandbox")
-    if sandbox ~= nil and type(sandbox.GetExport) == "function" then
-        local healerModule = sandbox:GetExport("healer", "ReplicatedHealerModule")
-        if healerModule ~= nil and type(healerModule.GetRuntimeDiagnostics) == "function" then
-            local ok, value = pcall(healerModule.GetRuntimeDiagnostics, healerModule)
-            if ok and type(value) == "table" then snap.professionalRuntime.healer = value end
-        end
-        local platesModule = sandbox:GetExport("plates", "ReplicatedPlatesModule")
-        if platesModule ~= nil and type(platesModule.GetRuntimeDiagnostics) == "function" then
-            local ok, value = pcall(platesModule.GetRuntimeDiagnostics, platesModule)
-            if ok and type(value) == "table" then snap.professionalRuntime.plates = value end
-        end
-    end
     if S.ModuleManager ~= nil then snap.moduleStates = S.ModuleManager:List(true) end
     if S.HudManager ~= nil then snap.hudStates = S.HudManager:List() end
     if S.ApiCapabilities ~= nil and type(S.ApiCapabilities.ProbeGetter) == "function" then
@@ -418,36 +401,6 @@ function D:BuildSummary()
             .. " · Aura " .. tostring(snap.buffDisplay and snap.buffDisplay.auraHeld == true and "held" or "idle")
             .. " · Task " .. tostring(snap.buffDisplay and snap.buffDisplay.taskActive == true and "active" or "idle")
             .. " · Revision " .. tostring(snap.buffDisplay and snap.buffDisplay.revision or 0),
-        snap.professionalRuntime and snap.professionalRuntime.healer and ("Healer Runtime v" .. tostring(snap.professionalRuntime.healer.version or "?")
-            .. "：Roster " .. tostring(snap.professionalRuntime.healer.rosterCount or 0)
-            .. " / Gen " .. tostring(snap.professionalRuntime.healer.roster and snap.professionalRuntime.healer.roster.generation or 0)
-            .. " " .. tostring(snap.professionalRuntime.healer.roster and snap.professionalRuntime.healer.roster.cycle and snap.professionalRuntime.healer.roster.cycle.phase or "idle")
-            .. " · Role读取 " .. tostring(snap.professionalRuntime.healer.api and snap.professionalRuntime.healer.api.roleCalls or 0)
-            .. " · HealthGen " .. tostring(snap.professionalRuntime.healer.healthGeneration or 0)
-            .. " · StatusGen " .. tostring(snap.professionalRuntime.healer.statusGeneration or 0)
-            .. " · 紧急状态刷新 " .. tostring(snap.professionalRuntime.healer.health and snap.professionalRuntime.healer.health.targetedStatusRefreshes or 0)
-            .. " · Roster延期 " .. tostring(snap.professionalRuntime.healer.deferred and snap.professionalRuntime.healer.deferred.roster or 0)
-            .. " · Status延期 " .. tostring(snap.professionalRuntime.healer.deferred and snap.professionalRuntime.healer.deferred.status or 0)
-            .. " · Visual延期 " .. tostring(snap.professionalRuntime.healer.deferred and snap.professionalRuntime.healer.deferred.visual or 0)) or "Healer Runtime：未加载",
-        snap.professionalRuntime and snap.professionalRuntime.plates and ("Plates Runtime v" .. tostring(snap.professionalRuntime.plates.version or "?")
-            .. "：Budget请求 " .. tostring(snap.professionalRuntime.plates.budget and snap.professionalRuntime.plates.budget.requests or 0)
-            .. " · 延期 " .. tostring(snap.professionalRuntime.plates.budget and snap.professionalRuntime.plates.budget.deferred or 0)
-            .. " · 保底 " .. tostring(snap.professionalRuntime.plates.budget and snap.professionalRuntime.plates.budget.starvation or 0)
-            .. " · UI点 " .. tostring(snap.professionalRuntime.plates.ui and snap.professionalRuntime.plates.ui.lines and snap.professionalRuntime.plates.ui.lines.active or 0)
-            .. "/" .. tostring(snap.professionalRuntime.plates.ui and snap.professionalRuntime.plates.ui.circle and snap.professionalRuntime.plates.ui.circle.active or 0)
-            .. " · Watchdog尝试 " .. tostring(snap.professionalRuntime.plates.watchdog and snap.professionalRuntime.plates.watchdog.attempts or 0)
-            .. " · 恢复成功 " .. tostring(snap.professionalRuntime.plates.watchdog and snap.professionalRuntime.plates.watchdog.successes or 0)
-            .. " · Watchdog延期 " .. tostring(snap.professionalRuntime.plates.watchdog and snap.professionalRuntime.plates.watchdog.budgetDeferrals or 0)) or "Plates Runtime：未加载",
-        snap.professionalRuntime and snap.professionalRuntime.plates and snap.professionalRuntime.plates.storage and ("Plates Storage：Schema " .. tostring(snap.professionalRuntime.plates.storage.schemaVersion or "?")
-            .. " · Tracking " .. tostring(snap.professionalRuntime.plates.storage.trackingSharded == true and "sharded" or "legacy")
-            .. " · Aura " .. tostring(snap.professionalRuntime.plates.storage.auraSharded == true and "sharded" or "legacy")
-            .. " · Dirty " .. tostring(snap.professionalRuntime.plates.storage.dirty == true)
-            .. " · Fence " .. tostring(snap.professionalRuntime.plates.storage.writeFence or "none")) or "Plates Storage：未加载",
-        snap.professionalRuntime and snap.professionalRuntime.plates and snap.professionalRuntime.plates.manager and ("Plates Manager：" .. tostring(snap.professionalRuntime.plates.manager.catalogMode or "live")
-            .. " · Catalog " .. tostring(snap.professionalRuntime.plates.manager.catalogEntries or 0)
-            .. " · Discovery " .. tostring(snap.professionalRuntime.plates.manager.discoveryEntries or 0)
-            .. " · Capture " .. tostring(snap.professionalRuntime.plates.manager.captureEntries or 0)
-            .. " · Staged " .. tostring(snap.professionalRuntime.plates.manager.auraImportStaged == true)) or "Plates Manager：未加载",
         "调度任务：" .. tostring(snap.schedulerTasks) .. " · 积压状态：" .. tostring(snap.backlog and snap.backlog.health or "未知") .. "(" .. tostring(snap.backlog and snap.backlog.pending or 0) .. ") · 预算延期 " .. tostring(snap.backlog and snap.backlog.deferredByBudget or 0) .. " · 新版存档：" .. (snap.persistenceError and "写保护" or "正常"),
         snap.frameBudget and ("FrameBudget：" .. tostring(snap.frameBudget.pressure or "Normal") .. " · Credit " .. tostring(snap.frameBudget.creditsRemaining or 0) .. "/" .. tostring(snap.frameBudget.creditsTotal or 0) .. " · 执行 " .. tostring(snap.frameBudget.granted or 0) .. " · 延期 " .. tostring(snap.frameBudget.deferred or 0) .. " · 饥饿保底 " .. tostring(snap.frameBudget.starvationRuns or 0)) or "FrameBudget：未加载",
         snap.performance and ("性能：最近帧 " .. string.format("%.1f", tonumber(snap.performance.lastFrameMs) or 0) .. "ms · 最大 " .. string.format("%.1f", tonumber(snap.performance.maxFrameMs) or 0) .. "ms · 卡顿 " .. tostring(snap.performance.jankCount or 0) .. " · 未归因 " .. tostring(snap.performance.unattributedStalls or 0) .. " · 详细计时 " .. (snap.performance.timerAvailable and "可用" or "不可用")) or "性能：监控尚未加载",
