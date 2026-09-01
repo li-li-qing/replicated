@@ -78,6 +78,7 @@ data/ids/rs_skill_ids.lua
 data/ids/rs_buff_ids.lua
 data/ids/rs_plates_ids.lua
 services/rs_skill_metadata_v3.lua
+services/rs_buff_metadata_v3.lua
 services/rs_status_classification_v3.lua
 services/rs_aura_observation_v3.lua
 services/rs_unit_identity_v3.lua

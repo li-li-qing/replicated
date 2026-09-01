@@ -100,3 +100,15 @@ function U.ParseProgress(text)
     if current ~= nil and total ~= nil and total > 0 then return current, total end
     return nil, nil
 end
+
+-- Canonical unit-name normalizer: trims whitespace, lowercases, and strips the
+-- world-qualified suffix ("Name@World" -> "name") plus any second-@ segment.
+-- Every identity matcher (DPS/plates/roster/healer rebuilds) must use this ONE
+-- implementation instead of rolling private copies that drift apart.
+function U.NormalizeUnitName(name)
+    local text = tostring(name or "")
+    text = text:gsub("^%s+", ""):gsub("%s+$", ""):lower()
+    local at = text:find("@", 1, true)
+    if at ~= nil and at > 1 then text = text:sub(1, at - 1) end
+    return text
+end

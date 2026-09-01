@@ -89,75 +89,16 @@ local function PickString(primary, secondary, keys)
     return Pick(primary) or Pick(secondary)
 end
 
--- Buff-id -> name/icon resolution fallback. The RU client's UnitBuff rows
--- frequently omit the name field entirely (real-machine evidence 2026-09-01:
--- the status list rendered raw effect ids in the name column), so unresolved
--- ids go through the RU-enabled X2Ability:GetBuffTooltip — the same cached
--- chain as the mature Plates module (rp_api GetBuffInfoById) and
--- rs_target_service. Bounded cache; a miss is remembered as false so an
--- unknown id costs at most a few calls per session.
-local buffInfoCache, buffInfoCacheCount = {}, 0
-local BUFF_INFO_CACHE_MAX = 512
-local function FirstIconPath(info)
-    if type(info) ~= "table" then return nil end
-    local path = info.path or info.iconPath or info.icon_path or info.icon
-        or info.skillIcon or info.skill_icon or info.texture
-    return type(path) == "string" and path ~= "" and path or nil
+-- Buff-id -> name/icon resolution is owned by the shared BuffMetadataV3
+-- service (X2Ability:GetBuffTooltip chain with bounded cache + negative
+-- caching). This file keeps only thin accessors so the scan path stays cheap.
+local function BuffMeta()
+    return S.Services ~= nil and S.Services.BuffMetadataV3 or nil
 end
-local function ResolveBuffInfoById(id)
-    local key = tostring(id)
-    if key:match("^%d+$") == nil then return nil end
-    local cached = buffInfoCache[key]
-    if cached ~= nil then return cached ~= false and cached or nil end
-    if buffInfoCacheCount >= BUFF_INFO_CACHE_MAX then
-        buffInfoCache, buffInfoCacheCount = {}, 0
-    end
-    local api = S.Api
-    local gateOpen = type(api) == "table" and type(api.CallCapability) == "function"
-        and X2Ability ~= nil
-        and (type(api.IsCapabilityAllowed) ~= "function"
-            or api:IsCapabilityAllowed("X2Ability:GetBuffTooltip") == true)
-    if gateOpen ~= true then
-        buffInfoCache[key], buffInfoCacheCount = false, buffInfoCacheCount + 1
-        return nil
-    end
-    local numericId = tonumber(key)
-    -- Item level is irrelevant for ordinary combat auras on current RU; try the
-    -- cheap/common values and stop on the first structurally useful tooltip.
-    -- Community docs describe builds where GetBuffTooltip returns tooltip TEXT
-    -- (a string) instead of a table; the first line of a buff tooltip is the
-    -- buff name, so accept that shape too.
-    for _, itemLevel in ipairs({ 0, 1, 55 }) do
-        local ok, info = api:CallCapability("X2Ability:GetBuffTooltip", X2Ability, "GetBuffTooltip", numericId, itemLevel)
-        if ok == true and type(info) == "string" and info ~= "" then
-            local firstLine = string.match(info, "^([^\r\n]+)") or ""
-            firstLine = string.match(firstLine, "^%s*(.-)%s*$") or ""
-            if firstLine ~= "" and string.match(firstLine, "^%d+$") == nil then
-                local resolved = { name = firstLine, iconPath = "" }
-                buffInfoCache[key], buffInfoCacheCount = resolved, buffInfoCacheCount + 1
-                return resolved
-            end
-        end
-        if ok == true and type(info) == "table" then
-            local iconPath = FirstIconPath(info)
-            local name = tostring(info.name or "")
-            if iconPath ~= nil or name ~= "" then
-                local resolved = { name = name, iconPath = iconPath or "" }
-                buffInfoCache[key], buffInfoCacheCount = resolved, buffInfoCacheCount + 1
-                return resolved
-            end
-        end
-    end
-    buffInfoCache[key], buffInfoCacheCount = false, buffInfoCacheCount + 1
-    return nil
-end
-
--- Read-only cache probe for the scan path: returns the cached resolution (or
--- nil for unknown/missed ids) WITHOUT issuing native reads or caching a miss.
 local function PeekBuffInfo(id)
-    local cached = buffInfoCache[tostring(id)]
-    if cached == nil then return nil end
-    return cached ~= false and cached or nil
+    local meta = BuffMeta()
+    if meta == nil or type(meta.GetCached) ~= "function" then return nil end
+    return meta:GetCached(id)
 end
 
 -- Conservative name extraction from trailing native returns (A:Call surfaces
@@ -418,22 +359,21 @@ function A:GetStatusMap(snapshot, options)
                             if extraName ~= nil then name = extraName end
                         end
                         if name == "" or name == tostring(id) or iconPath == "" then
-                            local resolved = ResolveBuffInfoById(id)
+                            local resolved = BuffMeta() ~= nil and BuffMeta():GetInfo(id) or nil
                             if resolved ~= nil then
                                 if name == "" or name == tostring(id) then name = resolved.name end
                                 if iconPath == "" then iconPath = resolved.iconPath end
                             end
                         end
                         if name == "" then name = tostring(id) end
-                        -- Cache positive unit-row/tooltip resolutions so
-                        -- _ScanLane's PeekBuffInfo gate stops re-fetching the
-                        -- tooltip for an id whose name is already known.
-                        if name ~= tostring(id) and buffInfoCache[tostring(id)] == nil
-                            and (PickString(data, nil, STATUS_KEYS.name) == nil) then
-                            buffInfoCache[tostring(id)] = { name = name, iconPath = iconPath }
-                            buffInfoCacheCount = buffInfoCacheCount + 1
-                            if buffInfoCacheCount >= BUFF_INFO_CACHE_MAX then
-                                buffInfoCache, buffInfoCacheCount = {}, 0
+                        -- Positive unit-row/tooltip resolutions are handed back
+                        -- to the shared metadata service (Remember) so the scan
+                        -- path's PeekBuffInfo gate stops re-fetching tooltips
+                        -- for an id whose name is already known.
+                        if name ~= tostring(id) then
+                            local meta = BuffMeta()
+                            if meta ~= nil and meta.Remember ~= nil then
+                                meta:Remember(id, name, iconPath)
                             end
                         end
                         local entry = map[id]

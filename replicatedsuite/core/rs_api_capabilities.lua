@@ -282,6 +282,9 @@ local CAPABILITIES = {
     ["X2Store:GetSellableZoneGroups"] = { OfficialState="Unknown", SideEffectFree=true },
     ["X2Ability:GetAllMyActabilityInfos"] = { OfficialState="Unknown", SideEffectFree=true },
     ["X2Ability:GetBuffTooltip"] = { OfficialState="Unknown", SideEffectFree=true, Risk="expensive", Notes="buff-id -> icon/name resolution fallback, cached" },
+    ["X2Skill:GetCooldown"] = { OfficialState="Unknown", SideEffectFree=true, Notes="skill cooldown query; reserved for cooldown display features" },
+    ["X2Equipment:GetEquippedItemType"] = { OfficialState="Unknown", SideEffectFree=true, Notes="equip slot type query; reserved for gear/plates rebuilds" },
+    ["X2Mate:IsPlayerPetExists"] = { OfficialState="Unknown", SideEffectFree=true, Notes="pet/mate existence; reserved for healer summon handling" },
     ["X2Store:GetSpecialtyRatioBetween"] = { OfficialState="Unknown", Risk="server_query" },
     -- X2House getters (RU 2026-08-19). Candidate registration only: no
     -- business wiring, no auto-probe, no runtime verification until a manual
