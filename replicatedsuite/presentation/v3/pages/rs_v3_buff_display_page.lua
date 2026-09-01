@@ -245,8 +245,6 @@ local function BuildPage(parent, route)
         get = function() return (Feature:GetSettingsProjection() or {}).headIconSize or 24 end, set = function(v) return Feature.Commands:SetSetting("headIconSize", v) end, slot = { size = "fill", fill = 1 } })
     AddHeadField({ id = "v3_buff_display_head_max_icons", label = "最多图标", min = 1, max = 12, step = 1, integer = true, slider = true,
         get = function() return (Feature:GetSettingsProjection() or {}).headMaxIcons or 8 end, set = function(v) return Feature.Commands:SetSetting("headMaxIcons", v) end, slot = { size = "fill", fill = 1 } })
-    AddHeadField({ id = "v3_buff_display_head_offset", label = "上下位置", min = -180, max = 80, step = 2, integer = true, unit = "px", slider = true,
-        get = function() return (Feature:GetSettingsProjection() or {}).headOffsetY or -108 end, set = function(v) return Feature.Commands:SetSetting("headOffsetY", v) end, slot = { size = "fill", fill = 1 } })
     AddHeadField({ id = "v3_buff_display_head_refresh", label = "位置刷新", min = 1, max = 2000, step = 25, integer = true, unit = "ms", slider = true,
         get = function() return (Feature:GetSettingsProjection() or {}).headRefreshMs or 100 end, set = function(v) return Feature.Commands:SetSetting("headRefreshMs", v) end, slot = { size = "fill", fill = 1 } })
 
@@ -400,11 +398,28 @@ local function BuildPage(parent, route)
         end
         return card
     end
-    -- castBar first so the 施法条 settings are immediately visible without
-    -- scrolling past nine other component cards.
-    for _, key in ipairs({ "castBar", "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings" }) do
-        local meta = COMPONENT_META[key] or { title = key, desc = "" }
-        BuildComponentCard(key, meta)
+    -- Grouped layout: components are grouped by their anchor-relative region so
+    -- the player sees Buff / Debuff / 顶部信息 / 左右装备 / 读条 instead of ten
+    -- flat cards. class/gearScore/distance expose only their enable toggle (the
+    -- row position is owned by the top-info section, not per-component).
+    local function CardGroup(title)
+        RSUI:Text({ id = "v3_buff_display_tab_layout_group_" .. tostring(title), parent = layoutScroll,
+            text = "── " .. tostring(title) .. " ──", fontSize = 10, tone = "strong", slot = { size = "auto", hAlign = "fill" } })
+    end
+    local groups = {
+        { "Buff", { "buffs" } },
+        { "Debuff", { "debuffs" } },
+        { "顶部信息", { "class", "gearScore", "distance" } },
+        { "左侧装备", { "mainHand", "offHand" } },
+        { "右侧装备", { "wings", "ranged" } },
+        { "读条", { "castBar" } },
+    }
+    for _, group in ipairs(groups) do
+        CardGroup(group[1])
+        for _, key in ipairs(group[2]) do
+            local meta = COMPONENT_META[key] or { title = key, desc = "" }
+            BuildComponentCard(key, meta)
+        end
     end
 
     ------------------------------------------------------------------

@@ -167,6 +167,26 @@ end
 -- Layout helpers
 ------------------------------------------------------------------------
 
+-- Clamp a whole horizontal group into the logical screen. Members keep their
+-- fixed relative spacing; only the group origin moves. This is the only
+-- horizontal clamp path — individual icons are never clamped separately
+-- (per-icon clamping would pile icons up at the screen edge).
+local function ClampHorizontalGroup(groupLeft, groupWidth, screenWidth)
+    if groupWidth == nil or groupWidth <= 0 then return groupLeft end
+    if groupWidth >= screenWidth - 4 then return math.max(2, groupLeft) end
+    return math.max(2, math.min(math.max(2, screenWidth - groupWidth - 2), groupLeft))
+end
+
+local function LogicalScreenWidth()
+    local screenW = 1024
+    if S.Api ~= nil and type(S.Api.GetUiMetrics) == "function" then
+        local sw, sh, scale, lw, lh = S.Api:GetUiMetrics()
+        scale = tonumber(scale) or 1
+        screenW = tonumber(lw) or ((tonumber(sw) or 1024) / math.max(0.001, scale))
+    end
+    return screenW
+end
+
 local function LayoutIcon(marker, size, showStacks, showTime)
     local cache = marker.layout
     if cache.size == size and cache.showStacks == showStacks and cache.showTime == showTime then return end
@@ -239,16 +259,14 @@ local function ApplyIcon(marker, row, size, cfg, x, y, showStacks, showTime)
     end
     marker.stack:SetText((showStacks and N(row.stack, 1) > 1) and tostring(math.floor(N(row.stack, 1))) or "")
     marker.time:SetText(showTime and tostring(row.timeText or "--") or "")
-    local markerW = size
-    local markerH = size + (showTime and 12 or 0)
-    local clampedX, clampedY = ClampToScreen(x, y, markerW, markerH)
-    S.UI:SetAnchor(marker.root, UIParent, clampedX, clampedY, P.owner)
+    -- Group-level clamping already kept the whole row/group inside the screen;
+    -- each icon is placed at its exact computed slot so members never pile up.
+    S.UI:SetAnchor(marker.root, UIParent, x, y, P.owner)
     S.UI:SetVisible(marker.root, true, P.owner)
 end
 
 -- Render a horizontal icon row for a component; returns how many slots used.
--- rowY overrides cfg.y so the caller can auto-stack rows; explicit size/gap
--- support per-row layout (MaxPerRow / MaxRows) without mutating the store.
+-- The WHOLE row is clamped as one group; individual icons keep exact spacing.
 local function RenderIconRow(scope, pool, rows, cfg, centerX, rowY, showStacks, showTime, slotOffset, size, gap)
     local used = 0
     size = math.max(8, math.floor(tonumber(size) or N(cfg.size, 24)))
@@ -256,18 +274,7 @@ local function RenderIconRow(scope, pool, rows, cfg, centerX, rowY, showStacks, 
     local count = math.min(#rows, 16)
     local totalW = count * size + math.max(0, count - 1) * gap
     local startX = math.floor(centerX + N(cfg.x, 0) - totalW / 2)
-    -- Keep the whole row inside the logical screen: a centered row whose anchor
-    -- sits near a screen edge would otherwise push half the icons off-screen.
-    local rowW = totalW
-    local screenW = 1024
-    if S.Api ~= nil and type(S.Api.GetUiMetrics) == "function" then
-        local sw, sh, scale, lw, lh = S.Api:GetUiMetrics()
-        scale = tonumber(scale) or 1
-        screenW = tonumber(lw) or ((tonumber(sw) or 1024) / math.max(0.001, scale))
-    end
-    if rowW < math.max(40, screenW - 4) then
-        startX = math.floor(math.max(2, math.min(math.max(2, screenW - rowW - 2), startX)))
-    end
+    startX = ClampHorizontalGroup(startX, totalW, LogicalScreenWidth())
     local startY = math.floor(tonumber(rowY) or 0)
     for index = 1, count do
         local marker = pool.icons[slotOffset + index]
@@ -301,8 +308,17 @@ end
 -- Layout geometry (pure)
 ------------------------------------------------------------------------
 
--- Small visual gap between the health-bar proxy and the first buff/debuff row.
-local PROXY_GAP = 2
+-- Default visual spacing (verified defaults; derived from the legacy
+-- Professional Plates section-flow experience, widened for clear layering).
+-- Buff/Debuff/Info/equipment are all computed from the bar rect only.
+local BUFF_TO_BAR = 7        -- first buff row bottom -> bar.top
+local BUFF_ROW_GAP = 3       -- between buff rows (NOT size+spacing)
+local DEBUFF_TO_BAR = 7      -- first debuff row top -> bar.bottom
+local DEBUFF_ROW_GAP = 3     -- between debuff rows
+local INFO_TO_BUFF = 6       -- info bottom -> top-most actual buff row top
+local INFO_TO_BAR = 8        -- info bottom -> bar.top when no buffs
+local EQUIP_TO_BAR = 6       -- equipment inner edge -> bar side
+local EQUIP_GAP = 3          -- between two equipment icons (legacy gap=3)
 
 -- Pure layout computation. No widgets, no native reads, no store mutation.
 -- Inputs are the projected anchor (unit screen position), settings, and the
@@ -321,7 +337,8 @@ function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, 
     local components = type(settings.components) == "table" and settings.components or {}
     local scale = math.max(0.5, math.min(2, tonumber(settings.plateScale) or 1))
 
-    -- NativeBarProxy rectangle: the single geometric anchor.
+    -- NativeBarProxy rectangle: the single geometric anchor. Only plate.x/y
+    -- offset the bar; headOffsetY is legacy-only and never enters this chain.
     local barW = math.max(24, math.floor(N(plateCfg.width, 150) * scale))
     local barH = math.max(8, math.floor(N(plateCfg.height, 20) * scale))
     local centerX = math.floor((tonumber(anchorX) or 0) + N(plateCfg.x, 0) * scale)
@@ -330,48 +347,83 @@ function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, 
     local right = left + barW
     local top = centerY - math.floor(barH / 2)
     local bottom = centerY + math.floor(barH / 2)
-
     local bar = { centerX = centerX, centerY = centerY, left = left, right = right, top = top, bottom = bottom, width = barW, height = barH }
 
-    -- Buff rows: first row's bottom sits `buffGap` above bar.top; extra rows
-    -- stack upward at rowGap (iconSize + spacing). y is a local fine-tune offset.
+    -- Buff rows: row1.bottom = bar.top - BuffToBarGap; extra rows stack upward
+    -- at BuffRowGap. Component y is a local micro offset only.
     local buffCfg = components.buffs or {}
     local buffSize = math.max(8, math.floor(N(buffCfg.size, 24) * scale))
     local buffSpacing = math.max(0, math.floor(N(buffCfg.spacing, 2) * scale))
     local buffMaxPerRow = math.max(1, math.min(16, math.floor(N(buffCfg.maxPerRow, 8))))
     local buffMaxRows = math.max(1, math.min(4, math.floor(N(buffCfg.maxRows, 2))))
-    local buffGap = PROXY_GAP * scale + math.floor(N(buffCfg.y, 0) * scale)
-    local buffRowGap = buffSize + buffSpacing
-    local buffFirstTop = bar.top - buffGap - buffSize
+    local buffGap = BUFF_TO_BAR * scale + math.floor(N(buffCfg.y, 0) * scale)
+    local buffRowGap = BUFF_ROW_GAP * scale
+    local buffFirstTop = bar.top - buffGap - buffSize          -- row1.top
     local buffActualRows = math.min(buffMaxRows, math.ceil(buffCount / buffMaxPerRow))
     local buffTopMostTop = buffFirstTop - (buffActualRows - 1) * buffRowGap
 
-    -- Debuff rows: first row's top sits `debuffGap` below bar.bottom.
+    -- Debuff rows: row1.top = bar.bottom + DebuffToBarGap; extra rows stack
+    -- downward at DebuffRowGap.
     local debuffCfg = components.debuffs or {}
     local debuffSize = math.max(8, math.floor(N(debuffCfg.size, 24) * scale))
     local debuffSpacing = math.max(0, math.floor(N(debuffCfg.spacing, 2) * scale))
     local debuffMaxPerRow = math.max(1, math.min(16, math.floor(N(debuffCfg.maxPerRow, 8))))
     local debuffMaxRows = math.max(1, math.min(4, math.floor(N(debuffCfg.maxRows, 2))))
-    local debuffGap = PROXY_GAP * scale + math.floor(N(debuffCfg.y, 0) * scale)
-    local debuffRowGap = debuffSize + debuffSpacing
+    local debuffGap = DEBUFF_TO_BAR * scale + math.floor(N(debuffCfg.y, 0) * scale)
+    local debuffRowGap = DEBUFF_ROW_GAP * scale
     local debuffFirstTop = bar.bottom + debuffGap
-    local debuffActualRows = math.min(debuffMaxRows, math.ceil(debuffCount / debuffMaxPerRow))
 
-    -- Info row: sits above the actual top-most buff row (0 buff rows -> above
-    -- the bar directly). Never reserves space for non-existent rows.
+    -- Info row: above the top-most ACTUAL buff row; above the bar when no buffs.
     local infoFont = math.max(8, math.floor(N(infoCfg.fontSize, 10) * scale))
     local infoH = infoFont + 4
-    local infoTop = (buffActualRows > 0 and buffTopMostTop or bar.top) - infoH - math.max(3, math.floor(2 * scale))
+    local infoGap = (buffActualRows > 0 and INFO_TO_BUFF or INFO_TO_BAR) * scale
+    local infoTop = (buffActualRows > 0 and buffTopMostTop or bar.top) - infoGap - infoH
     infoTop = infoTop + math.floor(N(infoCfg.y, 0) * scale)
+
+    -- Equipment flanks. Left: offHand closest to bar, mainHand further left.
+    -- Right: wings closest to bar, ranged further right. Component x/y are
+    -- local micro offsets. Slots are returned UNCLAMPED with their absolute
+    -- origin; the renderer clamps each group as a whole (never per-icon).
+    local function EquipSlots(edgeStart, direction, keys)
+        local slots = {}
+        local edge = edgeStart
+        for _, key in ipairs(keys) do
+            local cfg = components[key] or {}
+            local enabled = equip[key] == true
+            if enabled then
+                local size = math.max(8, math.floor(N(cfg.size, 22) * scale))
+                local gap = math.max(1, math.floor(N(cfg.gap or cfg.spacing, EQUIP_GAP) * scale))
+                local x
+                if direction < 0 then x = edge - gap - size else x = edge + gap end
+                x = x + math.floor(N(cfg.x, 0) * scale)
+                local y = bar.centerY - math.floor(size / 2) + math.floor(N(cfg.y, 0) * scale)
+                slots[#slots + 1] = { key = key, x = x, y = y, size = size }
+                edge = direction < 0 and x or (x + size)
+            end
+        end
+        return slots
+    end
+    local leftSlots = EquipSlots(bar.left, -1, { "offHand", "mainHand" })
+    local rightSlots = EquipSlots(bar.right, 1, { "wings", "ranged" })
+    local function GroupRect(slots)
+        if #slots == 0 then return nil end
+        local minX, maxX, maxW = math.huge, -math.huge, 0
+        for _, s in ipairs(slots) do
+            minX = math.min(minX, s.x); maxX = math.max(maxX, s.x + s.size); maxW = math.max(maxW, s.size)
+        end
+        return { left = minX, width = maxX - minX, maxW = maxW }
+    end
 
     return {
         bar = bar,
         buff = { firstTop = buffFirstTop, rowGap = buffRowGap, size = buffSize, spacing = buffSpacing,
                  maxPerRow = buffMaxPerRow, maxRows = buffMaxRows, actualRows = buffActualRows, topMostTop = buffTopMostTop },
         debuff = { firstTop = debuffFirstTop, rowGap = debuffRowGap, size = debuffSize, spacing = debuffSpacing,
-                   maxPerRow = debuffMaxPerRow, maxRows = debuffMaxRows, actualRows = debuffActualRows },
+                   maxPerRow = debuffMaxPerRow, maxRows = debuffMaxRows, actualRows = math.min(debuffMaxRows, math.ceil(debuffCount / debuffMaxPerRow)) },
         info = { top = infoTop, font = infoFont, height = infoH },
         equip = { mainHand = equip.mainHand == true, offHand = equip.offHand == true, ranged = equip.ranged == true, wings = equip.wings == true },
+        leftGroup = { slots = leftSlots, rect = GroupRect(leftSlots) },
+        rightGroup = { slots = rightSlots, rect = GroupRect(rightSlots) },
         scale = scale,
     }
 end
@@ -422,28 +474,27 @@ local function RecordAnchorFailure(scope, reason)
     entry.lastErr = tostring(reason or "anchor_unavailable")
 end
 
--- Render one equipment icon flanking the plate. direction -1 stacks leftward
--- (each new icon further left), +1 stacks rightward. cfg.x/cfg.y are LOCAL
--- fine-tune offsets applied on top of the canonical slot position (they now
--- genuinely move the icon). Returns the new slot count and outward edge.
-local function RenderEquipSlot(scope, pool, item, cfg, edgeX, centerY, direction, slot, scale)
-    if item == nil or item.icon == nil or cfg == nil or cfg.enabled == false then return slot, edgeX end
-    local marker = pool.icons[slot + 1]
-    if marker == nil then return slot, edgeX end
-    local size = math.max(8, math.floor(N(cfg.size, 22) * (scale or 1)))
-    local gap = math.max(1, math.floor(N(cfg.gap or cfg.spacing, 4) * (scale or 1)))
-    local x
-    if direction < 0 then
-        x = edgeX - gap - size
-    else
-        x = edgeX + gap
+-- Apply a pre-computed equipment group (left or right flank). The whole group
+-- is clamped as one unit (only the group origin moves); members keep their
+-- exact relative slots, so icons never pile at a screen edge.
+local function ApplyEquipGroup(scope, pool, plates, components, group, slotStart)
+    local slots = type(group) == "table" and group.slots or nil
+    if slots == nil or #slots == 0 then return 0 end
+    local used = 0
+    local dx = 0
+    local rect = type(group) == "table" and group.rect or nil
+    if rect ~= nil then
+        dx = ClampHorizontalGroup(rect.left, rect.width, LogicalScreenWidth()) - rect.left
     end
-    -- Local offset: cfg.x/cfg.y are relative to the canonical slot origin.
-    x = x + math.floor(N(cfg.x, 0) * (scale or 1))
-    local y = centerY - math.floor(size / 2) + math.floor(N(cfg.y, 0) * (scale or 1))
-    ApplyIcon(marker, { iconPath = item.icon, gradeIconPath = item.gradeIconPath, stack = nil, timeText = nil }, size, cfg, x, y, false, false)
-    local newEdge = direction < 0 and x or (x + size)
-    return slot + 1, newEdge
+    for _, s in ipairs(slots) do
+        local marker = pool.icons[slotStart + used + 1]
+        if marker == nil then break end
+        local item = type(plates) == "table" and plates[s.key] or {}
+        local cfg = type(components) == "table" and components[s.key] or {}
+        ApplyIcon(marker, { iconPath = item.icon, gradeIconPath = item.gradeIconPath, stack = nil, timeText = nil }, s.size, cfg, s.x + dx, s.y, false, false)
+        used = used + 1
+    end
+    return used
 end
 
 -- Info row: class · gear score · distance, dynamically concatenated.
@@ -537,18 +588,9 @@ local function RenderScope(scope, settings)
     if debuffEnabled then
         slot = slot + RenderRows(scope, pool, debuffRows, components.debuffs or {}, bar.centerX, L.debuff.firstTop, showStacks, showTime, slot, L.debuff.size, L.debuff.spacing, L.debuff.maxPerRow, L.debuff.maxRows, L.debuff.rowGap, 1)
     end
-    -- Left flank: offHand closest to bar, mainHand further left.
-    local leftEdge = bar.left
-    for _, key in ipairs({ "offHand", "mainHand" }) do
-        local cfg = components[key] or {}
-        slot, leftEdge = RenderEquipSlot(scope, pool, plates[key], cfg, leftEdge, bar.centerY, -1, slot, scale)
-    end
-    -- Right flank: wings closest to bar; ranged only if the player opts in.
-    local rightEdge = bar.right
-    for _, key in ipairs({ "wings", "ranged" }) do
-        local cfg = components[key] or {}
-        slot, rightEdge = RenderEquipSlot(scope, pool, plates[key], cfg, rightEdge, bar.centerY, 1, slot, scale)
-    end
+    -- Equipment flanks: pre-computed groups applied as whole units (group clamp).
+    slot = slot + ApplyEquipGroup(scope, pool, plates, components, L.leftGroup, slot)
+    slot = slot + ApplyEquipGroup(scope, pool, plates, components, L.rightGroup, slot)
     for index = slot + 1, #pool.icons do HideIcon(pool.icons[index]) end
 
     -- Info row (class name · gear score · distance), auto-placed above actual rows.

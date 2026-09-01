@@ -154,9 +154,9 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     if l1buff.info.top + l1buff.info.height >= l1buff.buff.topMostTop then return false, "case2_info_not_above_actual_row" end
     if l9buff.buff.topMostTop >= l1buff.buff.topMostTop then return false, "case4_rows_not_stacking_upward" end
 
-    -- CASE 5: 1 debuff first row = bar.bottom + small gap (not + full iconSize).
+    -- CASE 5: 1 debuff first row = bar.bottom + DebuffToBarGap(7) (not + iconSize).
     local l1deb = layout(0, 1)
-    local expectedGap = 2 * 1.0  -- PROXY_GAP(2) * scale(1)
+    local expectedGap = 7 * 1.0  -- DEBUFF_TO_BAR(7) * scale(1)
     if math.abs(l1deb.debuff.firstTop - (l1deb.bar.bottom + expectedGap)) > 1 then
         return false, "case5_debuff_gap_wrong:" .. tostring(l1deb.debuff.firstTop - l1deb.bar.bottom)
     end
@@ -169,16 +169,21 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     local lNoWing = layout(0, 0, { mainHand = true, offHand = true, wings = false, ranged = false })
     if lNoWing.equip.wings ~= false then return false, "case8_collapse_wrong" end
 
-    -- CASE 9/10: two flank icons must not overlap (geometry is edge-stacked; the
-    -- contract is that both remain visible and distinct — verified via equip flags).
+    -- CASE 9/10: two flank icons must not overlap — left group has exactly 2
+    -- slots, each 22px, separated by EquipmentGap(3); right group wings+ranged.
     local lBoth = layout(0, 0, { mainHand = true, offHand = true, wings = true, ranged = true })
-    if not (lBoth.equip.mainHand and lBoth.equip.offHand and lBoth.equip.wings and lBoth.equip.ranged) then
-        return false, "case9_10_equip_flags_wrong"
+    if #lBoth.leftGroup.slots ~= 2 or #lBoth.rightGroup.slots ~= 2 then
+        return false, "case9_10_equip_group_slot_count_wrong"
+    end
+    local s0, s1 = lBoth.leftGroup.slots[1], lBoth.leftGroup.slots[2]
+    if s0.key ~= "offHand" or s1.key ~= "mainHand" then return false, "case9_left_order_wrong" end
+    -- offHand.left == 425-6-22 = 397; mainHand.right == offHand.left - 3 = 394
+    if s0.x ~= 397 or s1.x + s1.size ~= 394 then
+        return false, "case9_left_geometry_wrong:" .. tostring(s0.x) .. "," .. tostring(s1.x)
     end
 
     -- CASE 11/12: info concatenation is presentation-side; verify the layout's
-    -- info font/height contract (concatenation tested separately in the page
-    -- acceptance). Info must not reserve space when disabled.
+    -- info font/height contract. Info must not reserve space when disabled.
     local lNoInfo = Compute(500, 400, base({ info = { enabled = false, fontSize = 10 } }), 3, 0, { mainHand = true, offHand = true, wings = true, ranged = false })
     -- info.enabled=false is handled by the renderer; the pure layout still returns
     -- geometry, but bar geometry must remain the stable anchor.
@@ -193,6 +198,29 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     -- ranged is off by default in the new preset; wings is on.
     if comps.ranged.enabled ~= false or comps.wings.enabled ~= true then
         return false, "case13_ranged_wings_default_wrong"
+    end
+
+    -- CASE 14/15: geometry matches the fixed reference coordinates and keeps
+    -- clear vertical separation. anchor(500,300), bar 150x20 -> left 425/right
+    -- 575/top 290/bottom 310. Buff 24px: row1 259..283. Debuff 24px: 317..341.
+    -- Equipment 22px: offHand 397..419, mainHand 372..394, wings 581..603.
+    if l1.bar.left ~= 425 or l1.bar.right ~= 575 or l1.bar.top ~= 290 or l1.bar.bottom ~= 310 then
+        return false, "case14_bar_rect_wrong:" .. tostring(l1.bar.left) .. "," .. tostring(l1.bar.right)
+    end
+    if l1buff.buff.firstTop ~= 259 or l1deb.debuff.firstTop ~= 317 then
+        return false, "case14_row_positions_wrong:" .. tostring(l1buff.buff.firstTop) .. "," .. tostring(l1deb.debuff.firstTop)
+    end
+    local sL = l1.leftGroup.slots[1]
+    local sR = l1.rightGroup.slots[1]
+    if sL.x ~= 397 or sR.x ~= 581 then
+        return false, "case14_equip_positions_wrong:" .. tostring(sL.x) .. "," .. tostring(sR.x)
+    end
+    -- Vertical separation: no two regions overlap (info < buff < bar < debuff).
+    local buffBottom = l1buff.buff.firstTop + 24
+    if l1buff.info.top + l1buff.info.height > l1buff.buff.firstTop - 2
+        or buffBottom > l1.bar.top - 4
+        or l1deb.debuff.firstTop < l1.bar.bottom + 4 then
+        return false, "case15_vertical_separation_failed"
     end
 
     return true

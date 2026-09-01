@@ -228,8 +228,9 @@ local function NormalizeSettings(value)
     local info = type(value.info) == "table" and value.info or {}
     -- y=0 centers the proxy on the unit projection point by default; the
     -- calibrate mode / plate.y slider lets the player land it on the native bar.
+    -- headOffsetY is legacy-only and never feeds the anchor chain.
     if plate.y == nil and value.plate == nil then
-        plate.y = ClampInt(headOffsetY, -500, 500, 0)
+        plate.y = 0
     end
     return {
         showBuffs = value.showBuffs ~= false,
@@ -539,10 +540,10 @@ function F:ApplySettingRaw(key, value)
         if settings.components.buffs then settings.components.buffs.maxPerRow = settings.headMaxIcons end
         if settings.components.debuffs then settings.components.debuffs.maxPerRow = settings.headMaxIcons end
     elseif key == "headOffsetY" then
-        -- Legacy proxy: this slider now offsets the NativeBarProxy anchor
-        -- vertically (buffs/debuffs/equipment follow automatically).
+        -- Legacy compatibility only: this field no longer drives layout. The
+        -- single anchor offset is plate.x/plate.y (NativeBarProxy). Kept so
+        -- older saved values survive migration without re-entering runtime.
         settings.headOffsetY = ClampInt(value, -500, 500, settings.headOffsetY)
-        settings.plate.y = ClampInt(value, -500, 500, settings.plate.y)
     elseif key == "headRefreshMs" then settings.headRefreshMs = ClampInt(value, 1, 2000, settings.headRefreshMs)
     elseif key == "headShowStacks" then settings.headShowStacks = value == true
     elseif key == "headShowTime" then settings.headShowTime = value == true
