@@ -1,0 +1,11 @@
+# Local WorkBuddy project data (not part of the addon source)
+.workbuddy/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Temp files
+*.tmp

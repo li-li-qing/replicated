@@ -1,0 +1,78 @@
+{
+  "audit_round": "R4",
+  "verified_at": "2026-08-27",
+  "trade": {
+    "materials": 74,
+    "recipes": 98,
+    "craft_registry": 161,
+    "primary_craft_ids": 98,
+    "recipe_craft_refs": 127,
+    "alternate_recipe_craft_ids": 29,
+    "fertilizer_craft_ids": 34,
+    "verified_ingredient_signatures": 98,
+    "ingredient_signature_failures": 0,
+    "corrected_recipe_count_cumulative": 4,
+    "corrected_recipe_this_round": null,
+    "pending_product_item_ids": 0,
+    "verified_product_item_ids": 98,
+    "product_item_id_duplicates": 0
+  },
+  "quest": {
+    "total_identities": 214,
+    "database_verified": 214,
+    "curated_pending": 0,
+    "database_verified_source_ids": 214
+  },
+  "instance": {
+    "database_zone_ids": 19,
+    "runtime_instance_ids_verified": 0,
+    "runtime_instance_ids_pending": 19
+  },
+  "checks": {
+    "recipe_name_coverage": true,
+    "craft_id_uniqueness": true,
+    "compact_material_id_range_1_74": true,
+    "verified_signature_coverage_98_of_98": true,
+    "verified_signature_match": true,
+    "quest_verified_ids_are_registered": true,
+    "instance_database_zone_id_uniqueness": true,
+    "database_zone_runtime_namespace_separated": true,
+    "crimson_database_wrapper_not_player_authority": true,
+    "toc_dependency_order": true,
+    "quest_all_database_verified": true,
+    "trade_product_id_coverage_98_of_98": true,
+    "trade_product_id_uniqueness": true,
+    "trade_recipe_product_identity_linked": true,
+    "runtime_observation_conflict_guard": true
+  },
+  "r3": {
+    "tradeProductIds": {
+      "expected": 98,
+      "databaseVerified": 84,
+      "pending": 14,
+      "duplicates": 0
+    },
+    "runtimeInstanceIds": {
+      "staticVerified": 0,
+      "observationMode": "session_only_pending_static_verification"
+    },
+    "validation": "PASS_STATIC"
+  },
+  "current_round": "R4",
+  "r4": {
+    "tradeProductIds": {
+      "expected": 98,
+      "databaseVerified": 98,
+      "pending": 0,
+      "duplicates": 0,
+      "recipeProductIdentityLinked": true
+    },
+    "runtimeInstanceIds": {
+      "staticVerified": 0,
+      "observationMode": "session_only_pending_static_verification",
+      "conflictGuard": true,
+      "automaticAuthorityPromotion": false
+    },
+    "validation": "PASS_STATIC"
+  }
+}

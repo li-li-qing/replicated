@@ -1,0 +1,25 @@
+{
+  "updated": "2026-08-15",
+  "files_modified": [
+    "api_functions.lua",
+    "api_functions2.lua"
+  ],
+  "files_added": [
+    "api_capabilities_ru_20260815.lua",
+    "API_CHANGELOG_20260815.md",
+    "snapshot_before_20260815_update/api_functions.lua",
+    "snapshot_before_20260815_update/api_functions2.lua"
+  ],
+  "files_preserved": [
+    "console_vars.lua",
+    "ui_functions.lua"
+  ],
+  "validation": "passed",
+  "notes": [
+    "api_functions2.lua regenerated from api_functions.lua Allowed sections",
+    "GetBagItemInfo(bagId, slot) retained for current bundled/project compatibility",
+    "ADDON:AddEscMenuButton namespace retained; official namespace wording ambiguity documented",
+    "GetUnitsInSight and UO_* constants added",
+    "UNIT_ENTERED_SIGHT / UNIT_LEAVED_SIGHT removal documented"
+  ]
+}

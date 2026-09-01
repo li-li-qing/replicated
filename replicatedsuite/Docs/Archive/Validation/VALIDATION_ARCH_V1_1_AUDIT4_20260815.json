@@ -1,0 +1,42 @@
+{
+  "version": "1.0.3-architecture-v1.1-audit4",
+  "saveSchemaVersion": 19,
+  "date": "2026-08-15",
+  "suiteLuaCount": 107,
+  "suiteLuaSyntaxFailures": 0,
+  "tocEntries": 111,
+  "tocMissing": 0,
+  "professionalLuaFiles": 41,
+  "sandboxEnterMissing": 0,
+  "architectureDocsMatchFinalV11": true,
+  "unitNameWithWorldCapabilityRegistered": true,
+  "codeSetEllipsisTrue": 0,
+  "userVisibleLiteralEllipsis": 0,
+  "codeCombatBridgeRefs": 0,
+  "codeOldSightProcessJobRefs": 0,
+  "addonTopLevelDirs": [
+    "globals",
+    "replicatedsuite",
+    "z_api_functions"
+  ],
+  "behaviorTests": {
+    "schema18_to_schema19_character_scope": "PASS",
+    "character_scope_account_base_isolation": "PASS",
+    "character_identity_cold_preserves_edits": "PASS",
+    "character_identity_later_normalizes_override": "PASS",
+    "suite_stop_ready_gate_static": "PASS",
+    "plates_disabled_releases_handlers_static": "PASS",
+    "healer_disabled_releases_team_event_handler_static": "PASS",
+    "healer_ranked_hud_not_constructed_embedded_static": "PASS",
+    "all_suite_lua_parse": "PASS"
+  },
+  "powershellPublicReleaseExecution": "NOT_RUN_PWSH_UNAVAILABLE_IN_CONTAINER",
+  "runtimeOnlyBoundaries": [
+    "legacy standalone Addon LoadData namespace compatibility",
+    "UnitNameWithWorld availability timing on live ArcheRage login",
+    "GetUnitsInSight RU runtime return shape",
+    "100/200 player live load and long-combat memory/backlog",
+    "client font metrics and low-resolution UI",
+    "historical DPS/Healer/Plates Domain character-scope migration"
+  ]
+}

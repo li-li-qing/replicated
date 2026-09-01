@@ -1,0 +1,42 @@
+{
+  "version": "1.0.2-architecture-v1.1-audit3",
+  "date": "2026-08-15",
+  "suiteLuaCount": 107,
+  "suiteLuaSyntaxFailures": 0,
+  "tocEntries": 111,
+  "tocMissing": 0,
+  "professionalLuaFiles": 41,
+  "sandboxEnterMissing": 0,
+  "officialApiParsed": 348,
+  "directOfficialCalls": 124,
+  "directOfficialUnique": 26,
+  "directOfficialMissing": 0,
+  "professionalFacadeUnique": 24,
+  "professionalFacadeMissing": 0,
+  "codeSetEllipsisTrue": 0,
+  "codeCombatBridgeRefs": 0,
+  "codeOldSightProcessJobRefs": 0,
+  "codePrivatePathRefs": 0,
+  "addonTopLevelDirs": [
+    "globals",
+    "replicatedsuite",
+    "z_api_functions"
+  ],
+  "behaviorTests": {
+    "module_manager_behavior": "PASS",
+    "runtime_fault_behavior": "PASS",
+    "builtin_lifecycle": "PASS",
+    "scheduler_behavior": "PASS",
+    "profiles_behavior": "PASS",
+    "state_late_hud_restore": "PASS",
+    "hud_register_defaults": "PASS"
+  },
+  "powershellPublicReleaseExecution": "NOT_RUN_PWSH_UNAVAILABLE_IN_CONTAINER",
+  "runtimeOnlyBoundaries": [
+    "legacy standalone Addon LoadData namespace compatibility",
+    "GetUnitsInSight RU runtime return shape",
+    "100/200 player live load and long-combat memory/backlog",
+    "client font metrics and low-resolution UI",
+    "generic historical-domain Account/Character storage migration"
+  ]
+}

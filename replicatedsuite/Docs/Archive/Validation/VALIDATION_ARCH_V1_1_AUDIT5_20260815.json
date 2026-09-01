@@ -1,0 +1,181 @@
+{
+  "audit": "Audit5",
+  "date": "2026-08-15",
+  "checks": {
+    "lua_syntax_all": {
+      "pass": true,
+      "detail": []
+    },
+    "storage_scope_behavior": {
+      "pass": true,
+      "detail": "AUDIT5_STORAGE_SCOPE_TESTS=PASS"
+    },
+    "scheduler_behavior": {
+      "pass": true,
+      "detail": "AUDIT5_SCHEDULER_TEST=PASS"
+    },
+    "runtime_scope_projection_behavior": {
+      "pass": true,
+      "detail": "AUDIT5_RUNTIME_SCOPE_PROJECTION_TEST=PASS"
+    },
+    "module_manager_behavior": {
+      "pass": true,
+      "detail": "AUDIT5_MODULE_MANAGER_TEST=PASS"
+    },
+    "toc_all_entries_exist": {
+      "pass": true,
+      "detail": []
+    },
+    "toc_all_suite_lua_referenced": {
+      "pass": true,
+      "detail": []
+    },
+    "frozen_architecture_exact": {
+      "pass": true,
+      "detail": {
+        "Replicated_Suite_Product_Architecture_v1.md": {
+          "exact": true,
+          "sha256": "ac7bfc8582ed9c8f30f4a3a0ce09f466c597c446e504a8c64cdefb1f6fb3eacc"
+        },
+        "Replicated_Suite_Runtime_Data_API_v1.md": {
+          "exact": true,
+          "sha256": "a0d7e11e00a776383e77789e4e6ea29677a07dbc7895245997f73e713449d7b9"
+        },
+        "Replicated_Suite_UI_HUD_Spec_v1.md": {
+          "exact": true,
+          "sha256": "1e2ac707658844ad909f16fd96df9f88346f387ae10cc74fce75f1d21fde0eb6"
+        },
+        "ARCHITECTURE_CHANGELOG_v1.1.md": {
+          "exact": true,
+          "sha256": "a21043a9c6137a5c696f105ee2ecdbe1fa27a4fef9f479dd55cff689e6a9b5f3"
+        }
+      }
+    },
+    "professional_sandbox_coverage": {
+      "pass": true,
+      "detail": []
+    },
+    "known_dead_files_removed": {
+      "pass": true,
+      "detail": []
+    },
+    "audit5_version": {
+      "pass": true
+    },
+    "save_schema_20": {
+      "pass": true
+    },
+    "quiet_by_default_professional_and_team_utility": {
+      "pass": true
+    },
+    "fresh_hud_widgets_hidden": {
+      "pass": true,
+      "detail": [
+        "false",
+        "false",
+        "false",
+        "false",
+        "false",
+        "false"
+      ]
+    },
+    "no_auto_ellipsis": {
+      "pass": true
+    },
+    "no_private_autopotion_runtime": {
+      "pass": true,
+      "detail": []
+    },
+    "no_active_reloadaddon_call": {
+      "pass": true,
+      "detail": []
+    },
+    "suite_capabilities_registered": {
+      "pass": true,
+      "detail": []
+    },
+    "suite_capabilities_present_in_static_snapshot": {
+      "pass": true,
+      "detail": []
+    },
+    "suite_services_use_capability_boundary": {
+      "pass": true,
+      "detail": []
+    },
+    "character_false_preserved": {
+      "pass": true
+    },
+    "schema19_false_repair": {
+      "pass": true
+    },
+    "cold_identity_merge": {
+      "pass": true
+    },
+    "same_generation_character_switch": {
+      "pass": true
+    },
+    "character_projection_reconcile": {
+      "pass": true
+    },
+    "suite_future_schema_write_fence": {
+      "pass": true
+    },
+    "suite_load_failure_write_fence": {
+      "pass": true
+    },
+    "healer_write_fence": {
+      "pass": true
+    },
+    "healer_no_unconditional_startup_save": {
+      "pass": true
+    },
+    "gear_write_fence": {
+      "pass": true
+    },
+    "plates_write_fence": {
+      "pass": true
+    },
+    "dps_small_domain_write_fences": {
+      "pass": true
+    },
+    "event_stop_releases_handler": {
+      "pass": true
+    },
+    "scheduler_stop_releases_handler": {
+      "pass": true
+    },
+    "professional_disable_cleanup_anchors": {
+      "pass": true
+    },
+    "dps_team_mode_hard_sight_fence": {
+      "pass": true
+    },
+    "scheduler_reuses_due_scratch": {
+      "pass": true
+    },
+    "safe_ui_reload_single_transaction": {
+      "pass": true
+    },
+    "no_professional_cross_domain_refs": {
+      "pass": true,
+      "detail": []
+    }
+  },
+  "metrics": {
+    "suite_lua_files": 104,
+    "lua_syntax_failures": 0,
+    "toc_lua_entries": 111,
+    "toc_missing": 0,
+    "toc_inroot_loaded": 104,
+    "toc_unreferenced": 0,
+    "professional_lua_files": 41,
+    "professional_sandboxed": 41,
+    "set_ellipsis_true": 0,
+    "suite_capabilities_used": 31,
+    "capabilities_registered": 51,
+    "suite_raw_api_call_files": 0
+  },
+  "passed": 39,
+  "failed": 0,
+  "all_pass": true
+}

@@ -1,0 +1,59 @@
+{
+  "hotfix": "Audit5.3",
+  "date": "2026-08-15",
+  "checks": {
+    "lua_syntax_all": {
+      "pass": true,
+      "detail": []
+    },
+    "toc_entries_exist": {
+      "pass": true,
+      "detail": []
+    },
+    "version_5_3": {
+      "pass": true
+    },
+    "no_vsync_reload": {
+      "pass": true
+    },
+    "single_explicit_reloadaddon": {
+      "pass": true,
+      "detail": [
+        "replicatedsuite.lua:336"
+      ]
+    },
+    "reload_quiesces_runtime": {
+      "pass": true
+    },
+    "reload_pending_reset_on_generation": {
+      "pass": true
+    },
+    "r_left_never_reload": {
+      "pass": true
+    },
+    "r_right_explicit_reload": {
+      "pass": true
+    },
+    "title_has_data_and_code_reload": {
+      "pass": true
+    },
+    "settings_has_data_and_code_reload": {
+      "pass": true
+    },
+    "bug2_content_host_preserved": {
+      "pass": true
+    },
+    "code_reload_behavior": {
+      "pass": true,
+      "detail": "AUDIT5_3_CODE_RELOAD_TEST=PASS"
+    }
+  },
+  "metrics": {
+    "suite_lua_files": 104,
+    "toc_lua_entries": 111,
+    "active_reloadaddon_calls": 1
+  },
+  "passed": 13,
+  "failed": 0,
+  "all_pass": true
+}

@@ -1,0 +1,263 @@
+{
+  "audit": "Audit6",
+  "date": "2026-08-15",
+  "version": "1.0.9-architecture-v1.1-audit6",
+  "checks": {
+    "lua_syntax_all": {
+      "pass": true,
+      "detail": []
+    },
+    "behavior_storage_scope": {
+      "pass": true,
+      "detail": "AUDIT5_STORAGE_SCOPE_TESTS=PASS"
+    },
+    "behavior_scheduler": {
+      "pass": true,
+      "detail": "AUDIT5_SCHEDULER_TEST=PASS"
+    },
+    "behavior_runtime_scope_projection": {
+      "pass": true,
+      "detail": "AUDIT5_RUNTIME_SCOPE_PROJECTION_TEST=PASS"
+    },
+    "behavior_module_manager": {
+      "pass": true,
+      "detail": "AUDIT5_MODULE_MANAGER_TEST=PASS"
+    },
+    "behavior_professional_sandbox": {
+      "pass": true,
+      "detail": "PROF_SANDBOX_4_TEST=PASS mode=_ENV"
+    },
+    "behavior_professional_export": {
+      "pass": true,
+      "detail": "PROF_EXPORT_TEST=PASS mode=_ENV"
+    },
+    "behavior_module_lazy_init": {
+      "pass": true,
+      "detail": "MODULE_LAZY_INIT_TEST=PASS"
+    },
+    "behavior_professional_layout_no_edit": {
+      "pass": true,
+      "detail": "AUDIT6_PROF_UI_LAYOUT_TEST=PASS editbox=nil pages=4"
+    },
+    "behavior_professional_layout_edit": {
+      "pass": true,
+      "detail": "AUDIT6_PROF_UI_LAYOUT_TEST=PASS editbox=nil pages=4"
+    },
+    "behavior_suite_pages_layout_no_edit": {
+      "pass": true,
+      "detail": "AUDIT6_SUITE_PAGES_LAYOUT_TEST=PASS editbox=nil pages=6"
+    },
+    "behavior_suite_pages_layout_edit": {
+      "pass": true,
+      "detail": "AUDIT6_SUITE_PAGES_LAYOUT_TEST=PASS editbox=nil pages=6"
+    },
+    "toc_all_exist": {
+      "pass": true,
+      "detail": []
+    },
+    "toc_no_orphan_suite_lua": {
+      "pass": true,
+      "detail": []
+    },
+    "toc_no_duplicates": {
+      "pass": true,
+      "detail": []
+    },
+    "package_top_directories": {
+      "pass": true,
+      "detail": {
+        "actual": [
+          "globals",
+          "replicatedsuite",
+          "z_api_functions"
+        ],
+        "expected": [
+          "globals",
+          "replicatedsuite",
+          "z_api_functions"
+        ]
+      }
+    },
+    "frozen_architecture_exact": {
+      "pass": true,
+      "detail": {
+        "Replicated_Suite_Product_Architecture_v1.md": {
+          "expected": "ac7bfc8582ed9c8f30f4a3a0ce09f466c597c446e504a8c64cdefb1f6fb3eacc",
+          "actual": "ac7bfc8582ed9c8f30f4a3a0ce09f466c597c446e504a8c64cdefb1f6fb3eacc",
+          "exact": true
+        },
+        "Replicated_Suite_Runtime_Data_API_v1.md": {
+          "expected": "a0d7e11e00a776383e77789e4e6ea29677a07dbc7895245997f73e713449d7b9",
+          "actual": "a0d7e11e00a776383e77789e4e6ea29677a07dbc7895245997f73e713449d7b9",
+          "exact": true
+        },
+        "Replicated_Suite_UI_HUD_Spec_v1.md": {
+          "expected": "1e2ac707658844ad909f16fd96df9f88346f387ae10cc74fce75f1d21fde0eb6",
+          "actual": "1e2ac707658844ad909f16fd96df9f88346f387ae10cc74fce75f1d21fde0eb6",
+          "exact": true
+        },
+        "ARCHITECTURE_CHANGELOG_v1.1.md": {
+          "expected": "a21043a9c6137a5c696f105ee2ecdbe1fa27a4fef9f479dd55cff689e6a9b5f3",
+          "actual": "a21043a9c6137a5c696f105ee2ecdbe1fa27a4fef9f479dd55cff689e6a9b5f3",
+          "exact": true
+        }
+      }
+    },
+    "audit6_version": {
+      "pass": true
+    },
+    "save_schema_20": {
+      "pass": true
+    },
+    "professional_sandbox_coverage": {
+      "pass": true,
+      "detail": []
+    },
+    "quiet_by_default": {
+      "pass": true
+    },
+    "fresh_builtin_hud_hidden": {
+      "pass": true,
+      "detail": [
+        "false",
+        "false",
+        "false",
+        "false",
+        "false",
+        "false"
+      ]
+    },
+    "no_private_autopotion": {
+      "pass": true
+    },
+    "no_active_reloadaddon": {
+      "pass": true,
+      "detail": []
+    },
+    "no_code_reload_host": {
+      "pass": true,
+      "detail": []
+    },
+    "explicit_code_reload_uses_vsync": {
+      "pass": true
+    },
+    "no_auto_ellipsis": {
+      "pass": true
+    },
+    "old_combined_combat_page_removed": {
+      "pass": true
+    },
+    "main_nav_dps": {
+      "pass": true
+    },
+    "main_nav_healer": {
+      "pass": true
+    },
+    "main_nav_gear": {
+      "pass": true
+    },
+    "main_nav_plates": {
+      "pass": true
+    },
+    "right_content_host": {
+      "pass": true
+    },
+    "page_layout_fault_isolation": {
+      "pass": true
+    },
+    "editbox_object_type_fallback": {
+      "pass": true
+    },
+    "professional_ui_persistenceMs": {
+      "pass": true
+    },
+    "professional_ui_GetSuiteHeadSize": {
+      "pass": true
+    },
+    "professional_ui_SetSuiteHeadSize": {
+      "pass": true
+    },
+    "professional_ui_trackOffset": {
+      "pass": true
+    },
+    "professional_ui_plates_track_prev": {
+      "pass": true
+    },
+    "professional_ui_observeW": {
+      "pass": true
+    },
+    "professional_ui_持久化周期": {
+      "pass": true
+    },
+    "dps_embedded_launcher_not_created": {
+      "pass": true
+    },
+    "dps_embedded_config_not_created": {
+      "pass": true
+    },
+    "gear_embedded_old_ui_not_created": {
+      "pass": true
+    },
+    "healer_embedded_launcher_not_created": {
+      "pass": true
+    },
+    "suite_capabilities_registered": {
+      "pass": true,
+      "detail": []
+    },
+    "suite_capabilities_static_snapshot": {
+      "pass": true,
+      "detail": []
+    },
+    "suite_services_capability_boundary": {
+      "pass": true,
+      "detail": []
+    },
+    "broad_sight_only_dps": {
+      "pass": true,
+      "detail": [
+        "core/rs_api_capabilities.lua",
+        "modules/professional/dps/rdps_api.lua"
+      ]
+    },
+    "no_professional_cross_domain_refs": {
+      "pass": true,
+      "detail": []
+    },
+    "suite_storage_write_fences": {
+      "pass": true
+    },
+    "healer_write_fences": {
+      "pass": true
+    },
+    "gear_write_fences": {
+      "pass": true
+    },
+    "plates_write_fences": {
+      "pass": true
+    },
+    "dps_write_fences": {
+      "pass": true
+    },
+    "known_dead_files_removed": {
+      "pass": true,
+      "detail": []
+    }
+  },
+  "metrics": {
+    "suite_lua_files": 104,
+    "lua_syntax_failures": 0,
+    "toc_lua_entries": 111,
+    "toc_missing": 0,
+    "toc_unreferenced": 0,
+    "toc_duplicates": 0,
+    "professional_lua_files": 41,
+    "professional_sandboxed": 41,
+    "set_ellipsis_true": 0,
+    "suite_capabilities_used": 31,
+    "capabilities_registered": 51
+  },
+  "passed": 57,
+  "failed": 0,
+  "all_pass": true
+}

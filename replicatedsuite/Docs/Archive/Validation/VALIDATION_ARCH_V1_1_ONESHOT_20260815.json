@@ -1,0 +1,79 @@
+{
+  "date": "2026-08-15",
+  "suiteVersion": "1.0.0-architecture-v1.1",
+  "saveSchemaVersion": 17,
+  "addonTopDirectories": [
+    "globals",
+    "replicatedsuite",
+    "z_api_functions"
+  ],
+  "addonTopDirectoriesExpected": [
+    "globals",
+    "replicatedsuite",
+    "z_api_functions"
+  ],
+  "addonTopDirectoriesMatch": true,
+  "toc": {
+    "entries": 111,
+    "missing": [],
+    "pass": true
+  },
+  "luaSyntax": {
+    "files": 107,
+    "failures": [],
+    "pass": true
+  },
+  "professionalSandbox": {
+    "gear": {
+      "luaFiles": 6,
+      "missing": [],
+      "pass": true
+    },
+    "plates": {
+      "luaFiles": 7,
+      "missing": [],
+      "pass": true
+    },
+    "healer": {
+      "luaFiles": 4,
+      "missing": [],
+      "pass": true
+    },
+    "dps": {
+      "luaFiles": 24,
+      "missing": [],
+      "pass": true
+    }
+  },
+  "forbidden": {
+    "ellipsisTrueCount": 0,
+    "oldCombatBridgeReferences": 0,
+    "oldStandalonePathReferences": 0,
+    "standaloneAddonDirectories": [],
+    "privatePaths": [],
+    "pass": true
+  },
+  "officialApiStaticScan": {
+    "directReferences": 163,
+    "uniqueMethods": 51,
+    "missingFromAllowedIndex": [],
+    "pass": true
+  },
+  "professionalModules": {
+    "registered": [
+      "dps",
+      "gear",
+      "healer",
+      "plates"
+    ],
+    "defaultEnabledFalse": true,
+    "pass": true
+  },
+  "publicReleaseGuard": {
+    "scriptPresent": true,
+    "whitelistPresent": true,
+    "privateBlockTokensPresent": true,
+    "pass": true
+  },
+  "overallStaticPass": true
+}
