@@ -245,7 +245,14 @@ local function NormalizeSettings(value)
         freezeEnabled = value.freezeEnabled == true,
         playerRows = ClampInt(value.playerRows, 1, 64, 24),
         targetRows = ClampInt(value.targetRows, 1, 64, 24),
-        refreshMs = ClampInt(value.refreshMs, 1, 2000, 120),
+        -- Old-default fingerprint migration (2026-09-01 cadence fix): 400/100
+        -- were the only defaults these settings ever had before 120/50, so a
+        -- stored copy of those exact values was written by the old default —
+        -- not by a user choice. Upgraded saves must follow the faster cadence
+        -- or they keep the slow refresh forever (defaults changes don't reach
+        -- existing saves). User-tuned values (anything else) are preserved.
+        refreshMs = (tonumber(value.refreshMs) == 400) and 120
+            or ClampInt(value.refreshMs, 1, 2000, 120),
         components = NormalizeComponents(value.components, layoutPresetVersion),
         layoutPresetVersion = LAYOUT_PRESET_VERSION,
         tracked = {
@@ -260,7 +267,8 @@ local function NormalizeSettings(value)
         headIconSize = ClampInt(value.headIconSize, 8, 64, 24),
         headMaxIcons = ClampInt(value.headMaxIcons, 1, 12, 8),
         headOffsetY = headOffsetY,
-        headRefreshMs = ClampInt(value.headRefreshMs, 1, 2000, 50),
+        headRefreshMs = (tonumber(value.headRefreshMs) == 100) and 50
+            or ClampInt(value.headRefreshMs, 1, 2000, 50),
         headShowStacks = value.headShowStacks ~= false,
         headShowTime = value.headShowTime ~= false,
         -- Global plate scale multiplies every region (health bar, icons, text).

@@ -172,6 +172,7 @@ local function BuildPage(parent, route)
             overscan = 1, scrollbar = true, selectable = false, columnResize = true, headerInteractive = false,
             onItemActivated = ToggleRowTracked,
             columns = {
+                { id = "id", title = "ID", field = "id", size = "fixed", width = 52, minWidth = 44, sortable = false },
                 { id = "icon", title = "", field = "iconPath", cellType = "icon", iconSize = 18, fallbackIcon = "ui/icon/icon_unknown_item.dds", size = "fixed", width = 25, minWidth = 24, sortable = false, resizable = false },
                 { id = "name", title = "状态", field = "name", size = "fill", minWidth = 90, fill = 1, getTone = function(item)
                     if type(item) ~= "table" then return "default" end

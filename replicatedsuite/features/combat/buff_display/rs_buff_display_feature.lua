@@ -52,8 +52,11 @@ F.frozenRows = F.frozenRows or { player = {}, target = {} }
 F.lanes = F.lanes or {
     -- The aura lane intentionally keeps the historical contract task name so
     -- FoundationGate / GetHealth() keep observing the same scheduled task the
-    -- Feature has always advertised.
-    aura      = { active = false, revision = 0, task = "v3_buff_display_refresh",     priority = "P3", cost = 2 },
+    -- Feature has always advertised. P1 (never denied by FrameBudget): tracked
+    -- buff latency is the feature's core correctness contract in PvP — as a
+    -- P3 lane it was deferred indefinitely during combat frames (real-machine
+    -- report 2026-09-01: a self-applied buff took seconds to appear).
+    aura      = { active = false, revision = 0, task = "v3_buff_display_refresh",     priority = "P1", cost = 2 },
     position  = { active = false, revision = 0, task = "v3_buff_display_lane_position",  priority = "P2", cost = 1 },
     distance  = { active = false, revision = 0, task = "v3_buff_display_lane_distance",  priority = "P2", cost = 1 },
     metadata  = { active = false, revision = 0, task = "v3_buff_display_lane_metadata",  priority = "P3", cost = 1 },
@@ -198,8 +201,14 @@ function F:RefreshScope(scope)
         return false, "AuraObservationV3 unavailable"
     end
     local settings = Settings()
+    -- Snapshot TTL is HALF the lane interval: the previous form (ttl = full
+    -- interval) let the observation cache return facts up to one extra interval
+    -- old, doubling worst-case buff latency (lane wait + stale cache). With
+    -- ttl < interval every lane tick rescans fresh facts; other consumers
+    -- calling between ticks still coalesce onto one scan.
+    local snapshotTtlMs = math.max(1, math.floor((tonumber(settings.refreshMs) or 120) / 2))
     local snapshot, snapshotErr = aura:GetSnapshot(scope, {
-        buff = true, debuff = true, hidden = true, limit = 64, ttlMs = math.max(1, tonumber(settings.refreshMs) or 400),
+        buff = true, debuff = true, hidden = true, limit = 64, ttlMs = snapshotTtlMs,
     })
     if type(snapshot) ~= "table" then
         self.projections[scope], self.coverage[scope] = {}, { available = false, complete = false, reliable = false, total = 0, error = snapshotErr }
