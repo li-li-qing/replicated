@@ -1,5 +1,5 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Enhanced Plates Head Renderer (v2)
+-- Replicated Suite V3 - Enhanced Plates Head Renderer (v3)
 --
 -- Ten independent world-space components over the player/target head:
 -- Buffs / Debuffs / Distance / Class / Gear Score / Main Hand / Off Hand /
@@ -18,7 +18,7 @@ if type(Feature) ~= "table" or type(S.UI) ~= "table" or type(S.Events) ~= "table
 S.UIV3 = S.UIV3 or {}
 S.UIV3.BuffHeadMarkersV3 = S.UIV3.BuffHeadMarkersV3 or {}
 local P = S.UIV3.BuffHeadMarkersV3
-P.version = 2
+P.version = 3
 P.owner = "v3:buff_head_markers"
 P.consumerToken = "presentation:buff_head_markers"
 P.running = P.running == true
@@ -32,7 +32,7 @@ local ICON_COMPONENTS = { "buffs", "debuffs", "mainHand", "offHand", "ranged", "
 local TEXT_COMPONENTS = { "distance", "class", "gearScore" }
 -- Every head component; used by the render gate so non-tracked components
 -- (distance/class/gearScore/equipment/castBar) keep rendering even when the
--- user's tracked buff/debuff list is empty (reference-addon "showall" semantics).
+-- user's tracked buff/debuff list is empty.
 local RENDERABLE_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar" }
 local UNKNOWN_ICON = "ui/icon/icon_unknown_item.dds"
 
@@ -47,15 +47,9 @@ end
 local function ScopeEnabled(scope, settings)
     return scope == "player" and settings.headPlayer ~= false or scope == "target" and settings.headTarget ~= false
 end
-local function HasTracked(settings)
-    local tracked = type(settings.tracked) == "table" and settings.tracked or {}
-    return (type(tracked.buff) == "table" and #tracked.buff > 0) or (type(tracked.debuff) == "table" and #tracked.debuff > 0)
-end
--- Render gate: the head display must start as long as headEnabled and at least
--- one component is enabled. HasTracked() is deliberately NOT a gate here --
--- buffs/debuffs rows are bounded by ProjectPlates to tracked rows, so an empty
--- tracked list simply renders zero icons while distance/class/gearScore/
--- equipment/castBar keep working (mirrors the reference addons' show-all mode).
+-- Render gate: the head display starts when headEnabled and at least one
+-- component is enabled. Buff/debuff whitelist decisions stay in ProjectPlates;
+-- presentation never owns or bypasses tracking policy.
 local function HasRenderableComponents(settings)
     local components = type(settings.components) == "table" and settings.components or {}
     for _, key in ipairs(RENDERABLE_KEYS) do
@@ -316,7 +310,9 @@ local function RenderScope(scope, settings)
     end
     for index = slot + 1, #pool.icons do HideIcon(pool.icons[index]) end
 
-    -- text components
+    -- text components. Always hide a label when the current projection has no
+    -- value; otherwise an old distance/class/gear-score value can survive after
+    -- target loss or a capability read failure.
     for _, key in ipairs(TEXT_COMPONENTS) do
         local cfg = components[key] or {}
         local value = plates[key] and plates[key].value or nil
@@ -324,10 +320,11 @@ local function RenderScope(scope, settings)
             RenderTextComponent(scope, key, value, cfg, anchorX, anchorY)
         end
     end
-    for _, label in ipairs(pool.labels) do
-        local key = TEXT_COMPONENTS[_]
+    for index, label in ipairs(pool.labels) do
+        local key = TEXT_COMPONENTS[index]
         local cfg = type(components[key]) == "table" and components[key] or {}
-        if cfg.enabled == false or (plates[key] and plates[key].value == nil) then
+        local projected = type(plates[key]) == "table" and plates[key] or nil
+        if cfg.enabled == false or projected == nil or projected.value == nil then
             S.UI:SetVisible(label.root, false, P.owner)
         end
     end
@@ -362,7 +359,7 @@ function P:Start()
     if acquired ~= true then return false, acquireErr end
     self.consumerHeld = true
     -- The Feature position lane publishes plates.updated at the configured
-    -- cadence (down to 1 ms); the renderer is event-driven, no own task.
+    -- cadence; the renderer is event-driven and owns no periodic scheduler.
     if type(S.Events.SubscribeInternal) == "function" then
         S.Events:UnsubscribeInternalOwner(self)
         S.Events:SubscribeInternal("v3.buff_display.plates.updated", self, function() return P:VisualTick() end)
@@ -375,10 +372,17 @@ end
 
 function P:Stop(reason)
     if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
-    if self.consumerHeld then Feature:ReleaseConsumer(self.consumerToken) end
-    self.consumerHeld, self.running = false, false
+    local releaseOk, releaseErr = true, nil
+    if self.consumerHeld then
+        releaseOk, releaseErr = Feature:ReleaseConsumer(self.consumerToken)
+        if releaseOk == true then self.consumerHeld = false end
+    end
+    self.running = false
     self:HideAll()
     self.metrics.stops = self.metrics.stops + 1
+    -- Keep consumerHeld true on a failed release so diagnostics/reconcile retain
+    -- evidence of the leaked lease and a later Stop can retry the release.
+    if releaseOk ~= true then return false, releaseErr or "状态显示 Consumer 释放失败" end
     return true
 end
 
@@ -426,8 +430,7 @@ if type(S.Events.SubscribeInternal) == "function" then
     S.Events:SubscribeInternal("v3.buff_display.settings", P.lifecycleOwner, function() P:Reconcile("settings_global") end)
 end
 
--- Contract 3: render gate decoupled from the tracked list (HasRenderableComponents
--- replaces HasTracked as the start gate) + GetDiagnostics() triage surface +
--- metrics.anchorFailures trail on hidden scopes.
-Feature.BuffHeadMarkerContractVersion = 3
+-- Contract 4: render gate is decoupled from tracked state, stale text is
+-- fail-closed, and failed Consumer release remains observable/retryable.
+Feature.BuffHeadMarkerContractVersion = 4
 P:Reconcile("load")

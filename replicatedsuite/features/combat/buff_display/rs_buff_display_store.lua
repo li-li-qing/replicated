@@ -11,6 +11,7 @@
 --   * 10 head components (buffs/debuffs/distance/class/gearScore/mainHand/
 --     offHand/ranged/wings/castBar) each with enabled/x/y/size/fontSize/alpha
 --   * refreshMs / headRefreshMs floors lowered to 1 ms (never clamped up)
+--   * headShowAll is explicit opt-in; fresh/default config remains tracked-only
 -- Migration from schema 1/2/3 is lossless: every previously tracked id is
 -- distributed into a category bucket via the shared classification service.
 ------------------------------------------------------------------------
@@ -132,7 +133,7 @@ local function NormalizeSettings(value)
         },
         classification = NormalizeClassification(value.classification),
         headEnabled = value.headEnabled ~= false,
-        headShowAll = value.headShowAll ~= false,
+        headShowAll = value.headShowAll == true,
         headPlayer = value.headPlayer ~= false,
         headTarget = value.headTarget ~= false,
         headIconSize = ClampInt(value.headIconSize, 8, 64, 24),
@@ -374,6 +375,7 @@ function F:ApplySettingRaw(key, value)
     elseif key == "targetRows" then settings.targetRows = ClampInt(value, 1, 64, settings.targetRows)
     elseif key == "refreshMs" then settings.refreshMs = ClampInt(value, 1, 2000, settings.refreshMs)
     elseif key == "headEnabled" then settings.headEnabled = value == true
+    elseif key == "headShowAll" then settings.headShowAll = value == true
     elseif key == "headPlayer" then settings.headPlayer = value == true
     elseif key == "headTarget" then settings.headTarget = value == true
     elseif key == "headIconSize" then

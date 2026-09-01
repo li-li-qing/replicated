@@ -95,22 +95,22 @@ end
 --     cast={casting, spellName, currMs, totalMs} }
 -- Returns only enabled components; tracked rows are bounded per component.
 --
--- show-all semantics (reference-addon "showall"): when settings.headShowAll is
--- true, the tracked index no longer gates the head rows -- every buff/debuff
--- present on the unit is eligible (still bounded by headMaxIcons). This is the
--- "开箱即见" mode: an empty tracked list shows icons immediately instead of
--- rendering zero buff icons with no way to see anything.
+-- show-all semantics: headShowAll is an explicit opt-in. It can show ordinary
+-- untracked Buff/Debuff rows, but a Hidden-sourced status NEVER bypasses the
+-- explicit tracked whitelist. This keeps "observed Hidden" separate from
+-- "displayed Hidden" even when the user enables show-all mode.
 ------------------------------------------------------------------------
 local function BoundedTracked(rows, settings, category, trackedIndex)
     rows = type(rows) == "table" and rows or {}
     trackedIndex = type(trackedIndex) == "table" and trackedIndex or BuildTrackedIndex(settings)
     local maxIcons = math.max(1, math.min(12, math.floor(tonumber(settings.headMaxIcons) or 8)))
     local out = {}
-    local showAll = settings.headShowAll ~= false
+    local showAll = settings.headShowAll == true
     for _, row in ipairs(rows) do
         local idNum = math.floor(tonumber(row.id) or 0)
         local isTracked = trackedIndex[category] ~= nil and trackedIndex[category][idNum] == true
-        if showAll == true or isTracked == true then
+        local hiddenSource = row.detectionSource == "hidden"
+        if isTracked == true or (showAll == true and hiddenSource ~= true) then
             local copy = {}
             for key, value in pairs(row) do copy[key] = value end
             out[#out + 1] = copy
@@ -169,4 +169,4 @@ function F.ProjectPlates(laneData, settings)
     return out
 end
 
-F.ProjectPlatesContractVersion = 1
+F.ProjectPlatesContractVersion = 2

@@ -138,6 +138,8 @@ end
 
 -- Schedule a lane task. Intervals below the background floor (50 ms) go to the
 -- high-frequency lane, which allows down to 1 ms and is never clamped upward.
+-- Reconcile is deliberately idempotent: an unchanged active lane keeps its
+-- existing Scheduler task instead of remove/add churn and runImmediately spikes.
 local function SetLaneActive(laneKey, needed, callback, runImmediately)
     local lane = F.lanes[laneKey]
     if lane == nil then return false end
@@ -145,22 +147,26 @@ local function SetLaneActive(laneKey, needed, callback, runImmediately)
         if lane.active == true then
             if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(lane.task) end
             lane.active = false
+            lane.interval = nil
         end
         return true
     end
     if S.Scheduler == nil then return false end
     local interval = math.max(1, math.floor(tonumber(LaneInterval(laneKey)) or 400))
+    local taskExists = S.Scheduler.tasks ~= nil and S.Scheduler.tasks[lane.task] ~= nil
+    if lane.active == true and lane.interval == interval and taskExists then return true end
     S.Scheduler:RemoveTask(lane.task)
     local ok
     if interval < 50 then
-        if type(S.Scheduler.AddHighFrequencyTask) ~= "function" then lane.active = false; return false end
+        if type(S.Scheduler.AddHighFrequencyTask) ~= "function" then lane.active = false; lane.interval = nil; return false end
         ok = S.Scheduler:AddHighFrequencyTask(lane.task, interval, callback, runImmediately, F, lane.priority, lane.cost)
     else
-        if type(S.Scheduler.AddTask) ~= "function" then lane.active = false; return false end
+        if type(S.Scheduler.AddTask) ~= "function" then lane.active = false; lane.interval = nil; return false end
         ok = S.Scheduler:AddTask(lane.task, interval, callback, runImmediately, F, lane.priority, lane.cost)
     end
     if ok == true and type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(lane.task, F.Id) end
     lane.active = ok == true
+    lane.interval = ok == true and interval or nil
     return ok
 end
 
@@ -573,12 +579,20 @@ function F:_QueueEventRefresh(reason, delayMs)
     if self.enabled ~= true or (tonumber(self.consumerCount) or 0) <= 0 then return true end
     if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return false, "统一调度器 one-shot 不可用" end
     S.Scheduler:RemoveTask(self.eventTaskName)
+    local eventReason = tostring(reason or "event")
     local ok = S.Scheduler:AddOneShot(self.eventTaskName, math.max(80, tonumber(delayMs) or 120), function()
         if F.enabled == true and (tonumber(F.consumerCount) or 0) > 0 then
-            F:Refresh(reason or "event")
-            F:EquipmentTick()
-            F:MetadataTick()
-            F:CastTick()
+            -- Aura events refresh only Aura facts. They must not trigger class,
+            -- equipment or cast Native reads; those lanes own their cadence.
+            F:Refresh(eventReason)
+            if eventReason == "target_changed" then
+                local settings = Settings()
+                if LaneNeeds("position", settings) then F:PositionTick() end
+                if LaneNeeds("distance", settings) then F:DistanceTick() end
+                if LaneNeeds("metadata", settings) then F:MetadataTick() end
+                if LaneNeeds("equipment", settings) then F:EquipmentTick() end
+                if LaneNeeds("cast", settings) then F:CastTick() end
+            end
             return true
         end
         return true
@@ -594,6 +608,10 @@ function F:_StartEvents()
     if S.Events:SubscribeOptional("BUFF_UPDATE", self, function()
         F.eventEdges = (tonumber(F.eventEdges) or 0) + 1
         return F:_QueueEventRefresh("buff_update", 120)
+    end) == true then any = true end
+    if S.Events:SubscribeOptional("DEBUFF_UPDATE", self, function()
+        F.eventEdges = (tonumber(F.eventEdges) or 0) + 1
+        return F:_QueueEventRefresh("debuff_update", 120)
     end) == true then any = true end
     if S.Events:SubscribeOptional("TARGET_CHANGED", self, function()
         F.eventEdges = (tonumber(F.eventEdges) or 0) + 1
@@ -740,32 +758,28 @@ end
 -- Import / Export
 ------------------------------------------------------------------------
 
--- Parse a plain tracked-id text: "101, 102, 103" (commas/newlines/whitespace
--- separators). Returns { ids = {...}, errors = {line}, duplicates = n }.
+-- Parse a plain tracked-id text. Commas, semicolons and whitespace are valid
+-- separators. Invalid entries do not invalidate the valid remainder.
 function F:ParseTrackedText(text)
     text = tostring(text or "")
-    local ids, seen, errors = {}, {}, {}
+    local ids, seen, errors, duplicates = {}, {}, {}, 0
     for _, raw in ipairs(SplitLines(text)) do
-        local line = raw:gsub("%s+", ""):gsub("^[,#%s]*", ""):gsub("[%s]*$", "")
-        if line ~= "" and line:sub(1, 1) ~= "#" then
-            for token in line:gmatch("[^,;]+") do
-                token = token:gsub("%s+", "")
-                if token ~= "" then
-                    local id = tonumber(token)
-                    if id == nil or id ~= math.floor(id) or id <= 0 then
-                        errors[#errors + 1] = "无效 ID：" .. tostring(token)
-                    elseif seen[id] == true then
-                        -- dedupe silently; count only
-                    else
-                        seen[id] = true
-                        ids[#ids + 1] = id
-                    end
-                end
+        local comment = string.find(raw, "#", 1, true)
+        local line = comment ~= nil and string.sub(raw, 1, comment - 1) or raw
+        for token in line:gmatch("[^,%s;]+") do
+            local id = tonumber(token)
+            if id == nil or id ~= math.floor(id) or id <= 0 then
+                errors[#errors + 1] = "无效 ID：" .. tostring(token)
+            elseif seen[id] == true then
+                duplicates = duplicates + 1
+            else
+                seen[id] = true
+                ids[#ids + 1] = id
             end
         end
     end
     table.sort(ids)
-    return { ids = ids, errors = errors, duplicates = 0 }
+    return { ids = ids, errors = errors, duplicates = duplicates }
 end
 
 -- Quick tracked-id import. category: "buff" | "debuff" | "auto".
@@ -773,8 +787,10 @@ end
 function F:ImportTrackedIds(text, category, mode)
     local parsed = self:ParseTrackedText(text)
     if type(parsed) ~= "table" then return false, "追踪 ID 解析失败" end
-    if #parsed.errors > 0 then return false, "解析失败：" .. table.concat(parsed.errors, "；") end
-    if #parsed.ids == 0 then return false, "没有可导入的 Buff ID" end
+    if #parsed.ids == 0 then
+        local suffix = #parsed.errors > 0 and ("；非法 " .. tostring(#parsed.errors) .. " 项") or ""
+        return false, "没有可导入的 Buff ID" .. suffix
+    end
     local before = S.Utils.DeepCopy(self.State.settings)
     local settings = self.State.settings
     local targetCategories = {}
@@ -806,7 +822,10 @@ function F:ImportTrackedIds(text, category, mode)
     if marked ~= true then self.State.settings = before; return false, markErr or "追踪 ID 导入保存失败" end
     self.trackedIndex = self:BuildTrackedIndex(settings)
     Publish("v3.buff_display.settings", "tracked")
-    return true, "已导入 " .. tostring(#parsed.ids) .. " 个状态 ID"
+    local details = { "有效 " .. tostring(#parsed.ids) }
+    if (tonumber(parsed.duplicates) or 0) > 0 then details[#details + 1] = "重复 " .. tostring(parsed.duplicates) end
+    if #parsed.errors > 0 then details[#details + 1] = "非法 " .. tostring(#parsed.errors) end
+    return true, "导入完成：" .. table.concat(details, " · ")
 end
 
 -- Full export: schema version + tracked + components + classification + policy.
@@ -822,7 +841,7 @@ function F:ExportAll()
             showBuffs = settings.showBuffs ~= false, showDebuffs = settings.showDebuffs ~= false,
             playerRows = settings.playerRows, targetRows = settings.targetRows,
             refreshMs = settings.refreshMs, headEnabled = settings.headEnabled ~= false,
-            headShowAll = settings.headShowAll ~= false,
+            headShowAll = settings.headShowAll == true,
             headPlayer = settings.headPlayer ~= false, headTarget = settings.headTarget ~= false,
             headRefreshMs = settings.headRefreshMs, headMaxIcons = settings.headMaxIcons,
             headShowStacks = settings.headShowStacks ~= false, headShowTime = settings.headShowTime ~= false,
