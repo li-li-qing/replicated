@@ -10,10 +10,11 @@
 --       metadata  -> GetTargetAbilityTemplates class (class component)
 --       equipment -> UnitGearScore + equipped slots (gearScore/weapons/wings)
 --       cast      -> UnitCastingInfo (castBar component)
---   * UNIT-SCOPE gate: equipment/gear/class facts for the target lane are only
---     read when the target resolves to a PLAYER unit; NPC/UNKNOWN targets fail
---     closed (purged) so the player's own gear can never leak onto a foreign
---     head plate.
+--   * UNIT-SCOPE gate: gear score for the target lane is only read when the
+--     target resolves to a PLAYER unit; NPC/UNKNOWN targets fail closed
+--     (purged). Equipped icons are player-scope only: the RU client ignores
+--     GetEquippedItemTooltipInfo's targetEquippedItem flag (returns own gear),
+--     so a target read can never be trusted (evidence 2026-09-01).
 --   * O(1) tracked index rebuilt on demand
 --   * freeze list (freezeEnabled): tracked rows keep a session snapshot so
 --     expired/vanish buffs stay in the list until untracked or freeze is off
@@ -420,10 +421,11 @@ function F:DistanceTick()
     return true
 end
 
--- UNIT-SCOPE gate: player-only metadata (equipment/gear score/class templates)
--- must never be read for a non-player target. The RU client can fall back to the
--- player's own gear when asked for an NPC target's equipment, so the lane fails
--- closed (nil + cached-value purge) unless the target resolves to a PLAYER unit.
+-- UNIT-SCOPE gate: player-only metadata (gear score/class templates) must never
+-- be read for a non-player target, so the lane fails closed (nil + purge)
+-- unless the target resolves to a PLAYER unit. Equipped icons go one step
+-- further and are player-scope only (see EquipmentTick: the RU client ignores
+-- the targetEquippedItem flag and returns own gear).
 -- The resolved kind is cached briefly; UnitIdentityV3:GetById additionally keeps
 -- its own 60s kind TTL and a 1.5s miss TTL, so this helper adds no hot-path cost.
 local targetKindCache = { kind = nil, at = 0 }
@@ -508,10 +510,10 @@ local EQUIPMENT_SLOTS = {
     wings = function() local v = Global("ES_BACKPACK"); return type(v) == "number" and v or nil end,
 }
 
--- slotId: numeric equip slot; scope: "player" (own gear) or "target" (target gear).
--- The API's second argument is targetEquippedItem: true only for target reads,
--- matching the rest of the codebase (rg_api/rs_gear_service_v3 pass true for
--- target context, rp_api/rs_character_service pass false for own gear).
+-- slotId: numeric equip slot; scope: "player" (own gear) or "target".
+-- Real-machine evidence 2026-09-01: the client ignores the second argument
+-- (targetEquippedItem) and always returns the player's own equipped item, so
+-- only the player scope may call this; the target scope fails closed upstream.
 local function ReadEquippedIcon(slotId, scope)
     if slotId == nil then return nil end
     local api = Api()
@@ -542,30 +544,40 @@ function F:EquipmentTick()
     for _, scope in ipairs({ "player", "target" }) do
         if ScopeHeadEnabled(scope) then
             local lane = self.laneData[scope] or {}
-            -- UNIT-SCOPE gate: only a PLAYER target carries its own equipment.
-            -- NPC/UNKNOWN targets must fail closed: no gear/weapon Native reads
-            -- AND any previously cached (possibly player-derived) values are
-            -- purged so a stale plate can never survive a target switch.
-            if scope ~= "player" and TargetIsPlayer() ~= true then
-                for _, key in ipairs({ "gearScore", "mainHand", "offHand", "ranged", "wings" }) do
+            -- EQUIP-SCOPE fail-closed (real-machine evidence 2026-09-01): the
+            -- current RU client ignores GetEquippedItemTooltipInfo's
+            -- targetEquippedItem flag and always returns the player's OWN gear,
+            -- so a target-scope read used to paint the player's weapons onto
+            -- the target's plate. The unit-keyed alternates
+            -- (GetEquippedItemInfo/GetEquippedItemTooltipText) are not-allowed,
+            -- so equipped icons are only ever read for the player scope. Any
+            -- cached target values are purged so a stale plate can never
+            -- survive a target switch.
+            if scope ~= "player" then
+                for _, key in ipairs({ "mainHand", "offHand", "ranged", "wings" }) do
                     if lane[key] ~= nil then lane[key], changed = nil, true end
                 end
-                self.laneData[scope] = lane
-            else
-                -- gear score. The second argument mirrors ReadEquippedIcon:
-                -- false for the player's own gear, true only for target reads.
-                if ComponentEnabled("gearScore") then
-                    local score = nil
-                    if api ~= nil and type(api.CallCapability) == "function" and X2Unit ~= nil then
-                        local ok, raw = api:CallCapability("X2Unit:UnitGearScore", X2Unit, "UnitGearScore", scope, scope == "target")
-                        local n = ok and tonumber(raw) or nil
-                        if n ~= nil and n > 0 then score = n end
-                    end
-                    if lane.gearScore ~= score then lane.gearScore, changed = score, true end
+            end
+            -- gear score keeps the unit-keyed X2Unit:UnitGearScore read (the
+            -- same tested form as rs_target_service / legacy plates 目标装等),
+            -- but still fails closed for non-player targets.
+            local isPlayerScope = scope == "player" or TargetIsPlayer() == true
+            if ComponentEnabled("gearScore") and isPlayerScope then
+                local score = nil
+                if api ~= nil and type(api.CallCapability) == "function" and X2Unit ~= nil then
+                    local ok, raw = api:CallCapability("X2Unit:UnitGearScore", X2Unit, "UnitGearScore", scope, scope == "target")
+                    local n = ok and tonumber(raw) or nil
+                    if n ~= nil and n > 0 then score = n end
                 end
-                -- weapon / glider icons. Grade overlay is part of the same tooltip
-                -- fact and therefore adds no Native read; compare it as well so a
-                -- quality change cannot be hidden behind an unchanged base icon.
+                if lane.gearScore ~= score then lane.gearScore, changed = score, true end
+            elseif isPlayerScope ~= true and lane.gearScore ~= nil then
+                lane.gearScore, changed = nil, true
+            end
+            -- weapon / glider icons (player scope only). Grade overlay is part
+            -- of the same tooltip fact and therefore adds no Native read;
+            -- compare it as well so a quality change cannot be hidden behind an
+            -- unchanged base icon.
+            if scope == "player" then
                 for _, key in ipairs({ "mainHand", "offHand", "ranged", "wings" }) do
                     if ComponentEnabled(key) then
                         local slotId = EQUIPMENT_SLOTS[key]()
@@ -573,8 +585,8 @@ function F:EquipmentTick()
                         if not SameEquipmentItem(lane[key], item) then lane[key], changed = item, true end
                     end
                 end
-                self.laneData[scope] = lane
             end
+            self.laneData[scope] = lane
         end
     end
     BumpLane("equipment")
