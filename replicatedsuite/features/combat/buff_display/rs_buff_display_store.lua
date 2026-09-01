@@ -115,10 +115,16 @@ local BROKEN_COMPONENT_DEFAULTS = {
 }
 
 local function NormalizeTrackedIds(value)
+    -- 1024/category: this function runs on EVERY load and save, so its cap is
+    -- the effective tracked-list size. The old hard cap of 32 silently
+    -- truncated any larger list (legacy schema 1-3 saves carry hundreds of
+    -- ids — one live save held 713) on the first save after load: the user's
+    -- additions vanished on every reload. 1024 stays inside the store's
+    -- SaveData budget (maxEntriesPerTable = 2048).
     local out, seen = {}, {}
     for _, raw in ipairs(type(value) == "table" and value or {}) do
         local id = math.floor(tonumber(raw) or 0)
-        if id > 0 and seen[id] ~= true and #out < 32 then
+        if id > 0 and seen[id] ~= true and #out < 1024 then
             seen[id] = true
             out[#out + 1] = id
         end
@@ -372,7 +378,14 @@ if P:GetStore(STORE_ID) == nil then
         id = STORE_ID, owner = "v3.buff_display", scope = P.Scope and P.Scope.Account or "account",
         lifetime = P.Lifetime and P.Lifetime.Permanent or "permanent", schemaVersion = SCHEMA,
         legacySchemaVersion = 1, key = P.V3KeyPrefix and (P.V3KeyPrefix .. "buff_display") or STORE_ID,
-        budget = { maxDepth = 6, maxNodes = 1024, maxStringBytes = 2800, maxEntriesPerTable = 192 },
+        -- Budget sized for REAL payloads (2026-09-01): legacy schema 1-3 saves
+        -- can carry hundreds of tracked ids per category (one live save held
+        -- 713). The old 192-entry / 2800-byte budget rejected every such save
+        -- AND write-fenced the store for the whole session — nothing the user
+        -- changed ever persisted again (edits, tracked toggles, resets).
+        -- Encoded JSON for 713+713 ids plus settings is well under 16KB, which
+        -- the client SaveData has always accepted (the legacy path saved it).
+        budget = { maxDepth = 6, maxNodes = 32768, maxStringBytes = 65536, maxEntriesPerTable = 2048 },
         default = function() return NormalizeState(nil) end,
         get = function() return NormalizeState(F.State) end,
         apply = ApplyState,
@@ -456,7 +469,9 @@ function F:SetTrackedId(id, category, enabled)
     local list, found = NormalizeTrackedIds(settings.tracked[category]), false
     for _, tracked in ipairs(list) do if tracked == id then found = true break end end
     if enabled == true and not found then
-        if #list >= 32 then return false, "最多追踪 32 个状态" end
+        -- 1024/category, matching NormalizeTrackedIds (load/save) and
+        -- ImportTrackedIds so every path agrees and nothing is silently lost.
+        if #list >= 1024 then return false, "最多追踪 1024 个状态" end
         list[#list + 1] = id
         table.sort(list)
     elseif enabled ~= true and found then

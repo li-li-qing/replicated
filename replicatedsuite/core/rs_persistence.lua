@@ -688,6 +688,14 @@ function P:SaveValue(id, value, options)
             depth = payloadInspection.maxDepth, stringBytes = payloadInspection.stringBytes,
             maxTableEntries = payloadInspection.maxTableEntries,
         })
+        -- A rejection silently write-fences the store for the whole session —
+        -- the user must KNOW their edits are no longer being persisted
+        -- (2026-09-01: a 713-id tracked list starved the buff display store
+        -- for its entire lifetime without any visible signal).
+        if S.WarnOnce ~= nil then
+            S.WarnOnce("store_payload_rejected_" .. store.id,
+                "[" .. store.id .. "] 存档超出安全预算，本次会话的所有修改都无法保存！请在诊断页查看 STORE_PAYLOAD_REJECTED 详情。")
+        end
         return false, store.lastError
     end
 
@@ -716,6 +724,10 @@ function P:SaveValue(id, value, options)
             depth = encodedInspection.maxDepth, stringBytes = encodedInspection.stringBytes,
             maxTableEntries = encodedInspection.maxTableEntries,
         })
+        if S.WarnOnce ~= nil then
+            S.WarnOnce("store_encoded_payload_rejected_" .. store.id,
+                "[" .. store.id .. "] 存档编码后超出安全预算，本次会话的所有修改都无法保存！请在诊断页查看 STORE_ENCODED_PAYLOAD_REJECTED 详情。")
+        end
         return false, store.lastError
     end
 

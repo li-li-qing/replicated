@@ -161,7 +161,7 @@ local function BuildPage(parent, route)
             selectedText:SetText((target == true and "已追踪：" or "已取消追踪：") .. tostring(item.name or item.id or "") .. " · ID " .. tostring(item.id))
             root:Refresh()
         else
-            -- Surface command failures (e.g. the 32-id cap or an invalid id)
+            -- Surface command failures (e.g. the 1024-id cap or an invalid id)
             -- instead of a silent dead click, so the user sees why the toggle
             -- did not apply and the failure is diagnosable in the client.
             selectedText:SetText("追踪失败：" .. tostring(item.name or item.id or "") .. " · " .. tostring(err or "未知错误"))
@@ -540,7 +540,7 @@ local function BuildPage(parent, route)
         local tracked = type(settings.tracked) == "table" and settings.tracked or {}
         local buffCount = #(type(tracked.buff) == "table" and tracked.buff or {})
         local debuffCount = #(type(tracked.debuff) == "table" and tracked.debuff or {})
-        transferStatus:SetText("当前追踪：Buff " .. tostring(buffCount) .. " · Debuff " .. tostring(debuffCount) .. "（每类上限 32）。导出文本为 ReplicatedSuite 状态显示格式，可跨存档迁移。")
+        transferStatus:SetText("当前追踪：Buff " .. tostring(buffCount) .. " · Debuff " .. tostring(debuffCount) .. "（每类上限 1024）。导出文本为 ReplicatedSuite 状态显示格式，可跨存档迁移。")
         return true
     end
 

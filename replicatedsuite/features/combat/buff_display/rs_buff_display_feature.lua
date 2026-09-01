@@ -1081,7 +1081,7 @@ function F:ImportTrackedIds(text, category, mode)
                     if kind ~= nil and kind.category == "debuff" then bucketCategory = "debuff" else bucketCategory = "buff" end
                 end
             end
-            if bucketCategory == bucket and seen[id] ~= true and #existing < 32 then
+            if bucketCategory == bucket and seen[id] ~= true and #existing < 1024 then
                 seen[id] = true
                 existing[#existing + 1] = id
             end
