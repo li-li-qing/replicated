@@ -269,7 +269,8 @@ function A:RunMatrix()
     local social = S.Features and S.Features.tools_social or nil
     if type(social) ~= "table" or type(social.Commands) ~= "table"
         or type(social.Commands.Block) ~= "function" or type(social.Commands.Unblock) ~= "function"
-        or type(social.Commands.Mute) ~= "function" or type(social.Commands.Unmute) ~= "function" then
+        or type(social.Commands.Mute) ~= "function" or type(social.Commands.Unmute) ~= "function"
+        or type(social.Commands.IsFriend) ~= "function" then
         failures[#failures + 1] = "social_action_contract"
     end
 

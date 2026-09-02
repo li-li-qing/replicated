@@ -2,6 +2,22 @@
 
 > **⚠️ 架构变更声明（2026-09-01/02）**：旧版（Legacy/Professional）源码已全部物理删除（163 文件、−10.3 万行，commit 09010c0）。本文件是历史变更日志，早期条目（M1.16.0.18.x 及之前）可能引用已删文件（`rp_*`/`rh_*`/`rg_*`/`rdps_*`/`modules/professional/`/`S.State`/`S.Storage`/`rs_state`/`rs_storage`/`rs_module_manager`/`rs_module_sandbox`/`ReplicatedSuiteModuleSandbox`/`ReplicatedHealerModule`/`ReplicatedPlatesModule`/`ReplicatedDps` 等）。这些引用仅作历史记录，不代表当前代码。当前架构以 [`Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md`](Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md) 为准。
 
+## M1.16.0.18.56 — tools_social 社交名单完善：保守归一化 + 诚实状态聚合 + IsFriend 点查（2026-09-02）
+
+- **背景**：`tools_social`（社交名单，registry `migrated_m16_18`、能力门 8 API 全 OfficialEnabled、`RU_RUNTIME_ACCEPTANCE.md` Social 验收路线）此前 read 仅 11 行——`pairs` 直读名单表、无形态守卫、无行数上限、失败与空名单不可区分（三读全败仍报 `empty`，违反 §30 Unknown vs Empty / UI-STATE-001），且 `SetOnClick` 式猜形态渲染会把 table 地址当名字显示。本轮按「Better, not copied」在 V3 框架内补齐（参考工程仅作功能灵感；X2Friend 调用形态以 `api_functions.lua` Allowed functions 为签名权威）。
+- **读侧重构（`rs_business_bridge.lua`）**：
+  - 保守多形态归一化 `NormalizeSocialList`：数组-表（`name`/`characterName`/`memberName`/`charName`）、数组-名字串、名字键表三形态皆收；`count` 等标量哈希字段按元数据跳过；纯键表回退按 key 排序保证确定性；数组段优先（ipairs 语义）。
+  - 无可用名字的条目渲染为显式「未识别条目」行（memberName=nil、muted），绝不伪造名字，并把状态降级 `partial`（RU 契约待实证的诚实信号）。
+  - 每名单有界 `SOCIAL_LIST_MAX_ROWS=200` + 截断显式注记（`SOCIAL_LIST_SCAN_LIMIT=1000` 扫描护栏），超大名单不再冲爆投影。
+  - 诚实状态聚合：单名单失败逐一名单进 error；三读全败 → `unavailable`（0 行不再伪装 empty），部分失败或存在未识别 → `partial`，全 ok 空 → `empty`，否则 `ready`。
+  - 行身份字段：`memberName`/`listKind` + 保守可选事实（`online`/`isOnline`/`loggedIn` 布尔、`level`/`growLevel` 数值；未知显示「在线状态未知」，不猜）。
+  - **native arity 纪律**：`GetFriendList(allMember=true)`（清单签名带布尔）显式传参；`GetBlockList()/GetMuteList()` 零参——旧代码路径存在给零参方法传 nil 改变 native arity 的隐患，已按清单签名修正。
+- **新增 `IsFriend` 命令**：消费已登记但零使用的 `X2Friend:IsMyFriend(charName)` 点查；返回三态文案「是好友/非好友/好友状态未知（返回形态待 RU 实证）」，能力门拒绝/冷却原样透传。
+- **页面（`rs_v3_business_pages.lua`）**：tools_social 列表行可选（行点击载入名字进操作框，未识别行惰性跳过，`SetValue` 签名与拍卖收藏行先例一致）；新增「查好友」按钮（info 命令只报事实、不 Refresh 不脏 Authority）；`socialInput/socialStatus` 提升作用域；提示文案更新（写操作遵守官方 1 秒冷却）。
+- **验收**：`rs_v3_acceptance.lua` `social_action_contract` 增加对 `Commands.IsFriend` 的存在性要求。
+- **验证**：新 harness `social_feature_harness.lua` **31/31 PASS**（加载**真实** bridge、脚本化 S.Api 驱动真实 read/commands 路径：三形态归一化/元数据跳过/确定性 key/未识别 partial/全败 unavailable/部分败 partial/空名单/200 截断/零参 arity 断言/写 false 透传/空名拒绝不入门/IsFriend 三态+门失败）；回归 RSUI **68/68**、price_quote **14/14 + 8/8**；`luac -p` 三改动文件通过；Foundation Audit **PASS**（`toc=199 activeLua=199 allLua=199 globals=0 presentation=0 rawNative=0 rawScope=0 detachedWidgetState=0 apiDependency=0 apiCapability=0 businessIds=0 auctionEventOwners=0`，toc 双向 0 差异）。
+- **未验证项（RU 实机）**：X2Friend 名单真实返回字段（名字/在线/等级字段名）待 Fresh Reload 实证——归一化已把未知字段降级为「未知」展示，实证后仅需补字段名白名单；四写命令 native `false` 的细分语义（名字不存在 vs 已在名单）未区分，按「returned false」原样透传；行点击载入的 TextInput 行为沿用拍卖收藏先例，未单独实机构建。
+
 ## M1.16.0.18.55 — 底层框架可观测性审计：metrics 三件套补齐 + 游离开发目录清理（2026-09-02）
 
 - **背景**：按维护技能流程对底层框架（`ui/framework/` 全部 25 文件 + core）做同型脆弱点扫描——逗号优先级陷阱多值赋值全库复查（**无残留**：现存 `local x, y = tonumber(x) or 0, tonumber(y) or 0` 均为每值独立完整表达式，仅 .53/.54 修过的 CollapsibleGroup/HeaderBodyFooter 属真实陷阱）；`toc.g` ↔ 磁盘双向 0 差异核验（**发现并清理** addon 树内游离 `.workbuddy/tmp/`）。扫描暴露 RSUI 全局 metrics 记账的 **init/snapshot/reset 三件套登记缺口**，本轮补齐。

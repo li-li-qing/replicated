@@ -316,16 +316,18 @@ local function Build(parent, route, id)
             text = "高级整理按背包中实际出现的物品类别建立有界队列；与上方快捷取放互斥，避免同时移动物品。",
             fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2, slot = { size = "auto", minHeight = 26, hAlign = "fill" } })
     end
+    local socialInput, socialStatus = nil, nil
     if id == "tools_social" then
         local socialRow = RSUI:HorizontalBox({ id = "v3_business_tools_social_member_actions", parent = root, gap = 6,
             slot = { size = "fixed", height = 31, hAlign = "fill" } })
-        local socialInput = RSUI:TextInput({ id = "v3_business_tools_social_name", parent = socialRow, value = "", maxLength = 48,
+        socialInput = RSUI:TextInput({ id = "v3_business_tools_social_name", parent = socialRow, value = "", maxLength = 48,
             allowEmpty = false, submitOnLostFocus = false, placeholder = "角色名", slot = { size = "fixed", width = 150 } })
-        local socialStatus = RSUI:Text({ id = "v3_business_tools_social_status", parent = root, text = "输入角色名后执行显式名单操作。",
+        socialStatus = RSUI:Text({ id = "v3_business_tools_social_status", parent = root, text = "输入角色名（或点击下方列表行载入）后执行显式名单操作；写操作遵守官方 1 秒冷却。",
             fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2, slot = { size = "auto", minHeight = 24, hAlign = "fill" } })
         local actions = {
             { command = "Block", text = "屏蔽" }, { command = "Unblock", text = "取消屏蔽" },
             { command = "Mute", text = "静音" }, { command = "Unmute", text = "取消静音" },
+            { command = "IsFriend", text = "查好友", holdRefresh = true },
         }
         local function SocialName()
             local name = socialInput and type(socialInput.GetDraftValue) == "function" and tostring(socialInput:GetDraftValue() or "") or ""
@@ -335,18 +337,24 @@ local function Build(parent, route, id)
         end
         for index, action in ipairs(actions) do
             -- Lua 5.1 generic-for control variables are shared by closures.
-            -- Capture stable locals so all four buttons cannot collapse onto
-            -- the final Unmute command after the loop exits.
-            local commandRef, textRef = action.command, action.text
+            -- Capture stable locals so buttons cannot collapse onto the final
+            -- Unmute command after the loop exits.
+            local commandRef, textRef, actionSpec = action.command, action.text, action
             local button = RSUI:Button({ id = "v3_business_tools_social_action_" .. tostring(index), parent = socialRow, text = textRef, compact = true, slot = { size = "fixed", width = 74 } })
             button.onClick = function()
                 local name, nameErr = SocialName(); if name == nil then socialStatus:SetText("失败：" .. tostring(nameErr)); return false, nameErr end
                 local command = feature.Commands[commandRef]
                 if type(command) ~= "function" then socialStatus:SetText("失败：命令不可用"); return false, "命令不可用" end
-                local ok, actionErr = command(feature.Commands, name)
-                socialStatus:SetText(ok and (textRef .. "已执行") or ("失败：" .. tostring(actionErr or "未执行")))
-                if ok then feature.Commands:Refresh("social_" .. commandRef); root:Refresh() end
-                return ok, actionErr
+                local ok, result = command(feature.Commands, name)
+                if ok ~= true then
+                    socialStatus:SetText("失败：" .. tostring(result or "未执行"))
+                    return false, result
+                end
+                -- Info commands (查好友) report a fact instead of a write
+                -- acknowledgement and do not dirty the authority.
+                socialStatus:SetText(textRef .. "：" .. tostring(result or "已执行"))
+                if actionSpec.holdRefresh ~= true then feature.Commands:Refresh("social_" .. commandRef); root:Refresh() end
+                return true, nil
             end
             if button.root ~= nil then S.UI:SafeHandler(button.root, "OnClick", button.onClick, "v3_business:tools_social:" .. commandRef) end
         end
@@ -596,7 +604,7 @@ local function Build(parent, route, id)
         if teamAutoRoleButton.root ~= nil then S.UI:SafeHandler(teamAutoRoleButton.root, "OnClick", teamAutoRoleButton.onClick, "v3_business:combat_team_tools:auto_role") end
     end
     local tableView
-    tableView = RSUI:TableView({ id = "v3_business_" .. id .. "_table", parent = root, items = {}, rowHeight = 26, headerHeight = 27, desiredRows = 14, scrollbar = true, selectable = id == "tools_auction" or id == "tools_market_analysis", selectionMode = "single", columnResize = true,
+    tableView = RSUI:TableView({ id = "v3_business_" .. id .. "_table", parent = root, items = {}, rowHeight = 26, headerHeight = 27, desiredRows = 14, scrollbar = true, selectable = id == "tools_auction" or id == "tools_market_analysis" or id == "tools_social", selectionMode = "single", columnResize = true,
         columns = {
             { id = "name", title = "项目", field = "name", size = "fixed", width = 180, minWidth = 100 },
             { id = "text", title = "事实 / 说明", field = "text", size = "fill", minWidth = 220 },
@@ -615,6 +623,18 @@ local function Build(parent, route, id)
                 auctionKeywordInput:SetValue(tostring(row.name or ""), false, "auction_favorite_select")
                 if auctionStatus ~= nil then auctionStatus:SetText("已载入收藏关键词，点击“查询当前挂单”即可搜索。") end
             end
+        end
+    end
+    if id == "tools_social" then
+        -- Clicking a list row loads that member name into the action input;
+        -- unrecognized-shape placeholder rows (memberName == nil) are inert.
+        tableView.onSelectionChanged = function(index)
+            local row = tableView:GetItem(index)
+            if row == nil or row.memberName == nil then return end
+            if socialInput ~= nil and type(socialInput.SetValue) == "function" then
+                socialInput:SetValue(tostring(row.memberName), false, "social_row_select")
+            end
+            if socialStatus ~= nil then socialStatus:SetText("已载入 " .. tostring(row.memberName) .. "（" .. tostring(row.listKind or "名单") .. "），可执行显式名单操作。") end
         end
     end
     function root:Refresh()
