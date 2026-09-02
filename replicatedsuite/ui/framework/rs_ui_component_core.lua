@@ -1462,6 +1462,10 @@ function RSUI:GetSnapshot()
         buildTransactionFailures = tonumber(self.metrics.buildTransactionFailures) or 0,
         preflightFailures = tonumber(self.metrics.preflightFailures) or 0,
         strictBuildFailFast = tonumber(self.metrics.strictBuildFailFast) or 0,
+        duplicateTypeRegistrations = tonumber(self.metrics.duplicateTypeRegistrations) or 0,
+        externalLayoutInvalidations = tonumber(self.metrics.externalLayoutInvalidations) or 0,
+        typographyInvalidations = tonumber(self.metrics.typographyInvalidations) or 0,
+        fontScaleApplications = tonumber(self.metrics.fontScaleApplications) or 0,
         strictBuildFailFastContractVersion = tonumber(self.StrictBuildFailFastContractVersion) or 0,
         consumedLogicalIds = (function() local count = 0; for _ in pairs(self.consumedLogicalIds or {}) do count = count + 1 end; return count end)(),
         logicalIdGenerationFenceVersion = tonumber(self.LogicalIdGenerationFenceVersion) or 0,
@@ -1584,6 +1588,13 @@ function RSUI:ResetMetrics()
     self.metrics.focusChanges, self.metrics.playgroundBuilds, self.metrics.playgroundStressRuns = 0, 0, 0
     self.metrics.layoutRootsQueued, self.metrics.layoutFlushes, self.metrics.layoutRootsReflowed = 0, 0, 0
     self.metrics.typographyInvalidations = 0
+    self.metrics.duplicateTypeRegistrations = 0
+    self.metrics.externalLayoutInvalidations = 0
+    self.metrics.fontScaleApplications = 0
+    self.metrics.buildScopesStarted, self.metrics.buildScopesCommitted, self.metrics.buildScopesRolledBack = 0, 0, 0
+    self.metrics.buildScopeComponentsReleased, self.metrics.buildScopeWidgetsHidden, self.metrics.buildScopeCleanupFailures = 0, 0, 0
+    self.metrics.buildScopeCloseOrderRecoveries, self.metrics.buildTransactions, self.metrics.buildTransactionFailures = 0, 0, 0
+    self.metrics.preflightFailures, self.metrics.strictBuildFailFast = 0, 0
     self.metrics.layoutFlushDeferrals, self.metrics.layoutStabilizationPasses, self.metrics.layoutUnstableDeferrals, self.metrics.siblingOverlapIssues = 0, 0, 0, 0
     self.metrics.collapsibleHeaderUnavailable, self.metrics.collapsibleHeaderBindFailed, self.metrics.splitToolbarSpacerClamped = 0, 0, 0
     self.metrics.byType = {}

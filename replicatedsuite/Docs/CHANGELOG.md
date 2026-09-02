@@ -2,6 +2,14 @@
 
 > **⚠️ 架构变更声明（2026-09-01/02）**：旧版（Legacy/Professional）源码已全部物理删除（163 文件、−10.3 万行，commit 09010c0）。本文件是历史变更日志，早期条目（M1.16.0.18.x 及之前）可能引用已删文件（`rp_*`/`rh_*`/`rg_*`/`rdps_*`/`modules/professional/`/`S.State`/`S.Storage`/`rs_state`/`rs_storage`/`rs_module_manager`/`rs_module_sandbox`/`ReplicatedSuiteModuleSandbox`/`ReplicatedHealerModule`/`ReplicatedPlatesModule`/`ReplicatedDps` 等）。这些引用仅作历史记录，不代表当前代码。当前架构以 [`Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md`](Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md) 为准。
 
+## M1.16.0.18.55 — 底层框架可观测性审计：metrics 三件套补齐 + 游离开发目录清理（2026-09-02）
+
+- **背景**：按维护技能流程对底层框架（`ui/framework/` 全部 25 文件 + core）做同型脆弱点扫描——逗号优先级陷阱多值赋值全库复查（**无残留**：现存 `local x, y = tonumber(x) or 0, tonumber(y) or 0` 均为每值独立完整表达式，仅 .53/.54 修过的 CollapsibleGroup/HeaderBodyFooter 属真实陷阱）；`toc.g` ↔ 磁盘双向 0 差异核验（**发现并清理** addon 树内游离 `.workbuddy/tmp/`）。扫描暴露 RSUI 全局 metrics 记账的 **init/snapshot/reset 三件套登记缺口**，本轮补齐。
+- **metrics 三件套缺口（真实可观测性债务）**：机械对账（非目测）发现 4 个字段**有写入 + 有 init 默认但 GetSnapshot 从未读出**（诊断不可见）：`duplicateTypeRegistrations` / `externalLayoutInvalidations` / `typographyInvalidations` / `fontScaleApplications`；14 个字段 **ResetMetrics 未归零**（"重置后观察增量"工作流失真）：buildScope 全家（`buildScopesStarted/Committed/RolledBack`、`buildScopeComponentsReleased/WidgetsHidden/CleanupFailures/CloseOrderRecoveries`）、`buildTransactions/buildTransactionFailures`、`preflightFailures`、`strictBuildFailFast`、以及上述 `duplicateTypeRegistrations/externalLayoutInvalidations/fontScaleApplications`。`byType` 经子索引循环展开属正常豁免。均纯登记补齐，零行为变更。
+- **清理**：删除 addon 树内遗留游离开发目录 `replicatedsuite/.workbuddy/tmp/`（19 个文件：9 个 09-01 历史 bugfix .zip + 10 个旧验证脚本；非 git 跟踪、不属于 toc 加载、违反红线 §12.4「测试/调试脚本一律放项目根 `.workbuddy/tmp/`，绝不放插件树内」）。删除后 toc 对账死文件归零。
+- **验证**：`luac -p` 通过；Foundation Audit **PASS**（`toc=199 activeLua=199 allLua=208 globals=0 presentation=0 rawNative=0 rawScope=0 detachedWidgetState=0 apiDependency=0 apiCapability=0 businessIds=0 auctionEventOwners=0`）；RSUI layout templates harness **68/68 PASS**；toc 双向 0 差异。
+- **未验证项**：无行为变更，无 RU 客户端新增依赖；诊断页展示新字段属下游展示，无需单独实机验证。
+
 ## M1.16.0.18.54 — RSUI 高级布局模版：外部独立审查（P2/P3）收口（2026-09-02）
 
 - **背景**：.53 交付后交由另一 AI 做独立复审，结论「有条件通过」：2 个 bug 修复正确、其余 3 类无 bug、harness/audit 实跑通过；但提出 **3 项 P2 条件 + 5 项 P3 建议**。本轮全部落实（`LayoutTemplates.version` 2 → 3，行为契约有变）。
