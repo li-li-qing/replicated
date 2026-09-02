@@ -14,15 +14,25 @@ if type(RSUI) ~= "table" or type(D) ~= "table" or type(PageHost) ~= "table" or t
 local ROUTE = "combat.gear"
 
 local Trim = S.Utils.Trim
+-- Both edit fields on this page are RSUI TextInput components (WU1 layout
+-- migration). Read/write through the component API first so the layout-owned
+-- control never gets a text value written behind the component's back; the raw
+-- native branch stays as a fallback for any legacy surface.
 local function SetNativeText(widget, text)
     if widget == nil then return false end
+    if type(widget.SetValue) == "function" then return widget:SetValue(tostring(text or "")) end
     if S.UI ~= nil and type(S.UI.SetText) == "function" then
         return S.UI:SetText(widget, tostring(text or ""), widget.rsUiOwner or "v3:gear_page")
     end
     return false
 end
 local function GetNativeText(widget)
-    if widget == nil or type(widget.GetText) ~= "function" then return "" end
+    if widget == nil then return "" end
+    -- GetDraftValue() reads the live native text even before the field commits,
+    -- which is exactly what the Create/Rename actions need when the user clicks
+    -- the button without leaving the edit box.
+    if type(widget.GetDraftValue) == "function" then return tostring(widget:GetDraftValue() or "") end
+    if type(widget.GetText) ~= "function" then return "" end
     local ok, value = pcall(function() return widget:GetText() end)
     return ok and tostring(value or "") or ""
 end
@@ -98,9 +108,16 @@ local function BuildPage(parent, route)
     local leftStack = RSUI:VerticalBox({ id = "v3_gear_left_stack", parent = left, gap = 3 })
     RSUI:Text({ id = "v3_gear_left_title", parent = leftStack, text = "方案库", fontSize = 10, tone = "strong", slot = { size = "fixed", height = 20 } })
 
+    -- WU1: the input/action pair used to be two raw native widgets pinned at
+    -- hand-computed pixels (x=4 / x=138, width 130 / 54) inside the host panel.
+    -- That island was invisible to Measure/Arrange, so any change to the left
+    -- rail width or UI scale pushed the button out of the panel. Both controls
+    -- are now declarative RSUI children: the input absorbs the remaining width
+    -- while the button keeps a fixed 54px.
     local createHost = RSUI:Panel({ id = "v3_gear_create_host", parent = leftStack, variant = "soft", height = 31, slot = { size = "fixed", height = 31, hAlign = "fill" } })
-    local createEdit = S.UI:CreateEditBox(createHost.root, "v3_gear_create_edit", 4, 4, 130, 23, 32)
-    local createButton = S.UI:CreateButton(createHost.root, "v3_gear_create_button", "新建", 138, 4, 54, 23, 8, false, true)
+    local createRow = RSUI:HorizontalBox({ id = "v3_gear_create_row", parent = createHost, gap = 4, padding = 4, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
+    local createEdit = RSUI:TextInput({ id = "v3_gear_create_edit", parent = createRow, maxLength = 32, height = 23, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "center" } })
+    local createButton = RSUI:Button({ id = "v3_gear_create_button", parent = createRow, text = "新建", compact = true, slot = { size = "fixed", width = 54, vAlign = "center" } })
 
     local setTable = RSUI:TableView({
         id = "v3_gear_sets", parent = leftStack, items = {}, rowHeight = 22, headerHeight = 22, desiredRows = 4,
@@ -123,9 +140,12 @@ local function BuildPage(parent, route)
         fontSize = 8, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 18 },
     })
 
+    -- WU1: same migration as the create row - declarative input/fixed button
+    -- instead of pixel-pinned native widgets (x=4 / x=137, width 129 / 55).
     local nameHost = RSUI:Panel({ id = "v3_gear_name_host", parent = leftStack, variant = "soft", height = 30, slot = { size = "fixed", height = 30, hAlign = "fill" } })
-    local nameEdit = S.UI:CreateEditBox(nameHost.root, "v3_gear_name_edit", 4, 4, 129, 22, 36)
-    local saveName = S.UI:CreateButton(nameHost.root, "v3_gear_name_button", "改名", 137, 4, 55, 22, 8, false, true)
+    local nameRow = RSUI:HorizontalBox({ id = "v3_gear_name_row", parent = nameHost, gap = 4, padding = 4, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
+    local nameEdit = RSUI:TextInput({ id = "v3_gear_name_edit", parent = nameRow, maxLength = 36, height = 22, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "center" } })
+    local saveName = RSUI:Button({ id = "v3_gear_name_button", parent = nameRow, text = "改名", compact = true, slot = { size = "fixed", width = 55, vAlign = "center" } })
 
     local action1 = RSUI:HorizontalBox({ id = "v3_gear_actions_1", parent = leftStack, gap = 4, slot = { size = "fixed", height = 25, hAlign = "fill" } })
     local capture = RSUI:Button({ id = "v3_gear_capture", parent = action1, text = "获取当前", compact = true, slot = { size = "fill", fill = 1 } })
@@ -576,7 +596,13 @@ local function BuildPage(parent, route)
         return true
     end
 
-    local function SafeNativeClick(widget, key, fn) if widget ~= nil then S.UI:SafeHandler(widget, "OnClick", fn, key) end end
+    -- WU1: both buttons are RSUI components now, so the native OnClick handler
+    -- must be bound on the component's native root - the same rule the bindings
+    -- loop below already uses for every other button on this page.
+    local function SafeNativeClick(widget, key, fn)
+        local target = widget ~= nil and widget.root or widget
+        if target ~= nil then S.UI:SafeHandler(target, "OnClick", fn, key) end
+    end
     SafeNativeClick(createButton, "v3_gear:create", function() return root:CreateSet() end)
     SafeNativeClick(saveName, "v3_gear:rename", function() return root:RenameOnly() end)
     local bindings = {

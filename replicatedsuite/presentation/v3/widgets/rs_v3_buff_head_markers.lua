@@ -331,7 +331,7 @@ local EQUIP_GAP = 4          -- between two equipment icons
 --   buffCount        : visible buff rows count (already bounded)
 --   debuffCount      : visible debuff rows count
 --   equip            : { mainHand=bool, offHand=bool, ranged=bool, wings=bool }
-function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, equip)
+local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffCount, equip)
     settings = type(settings) == "table" and settings or {}
     local plateCfg = type(settings.plate) == "table" and settings.plate or {}
     local infoCfg = type(settings.info) == "table" and settings.info or {}

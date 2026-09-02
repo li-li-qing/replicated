@@ -224,7 +224,17 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     end
 
     -- Name resolution + compact time format tests.
-    if rows[1].name ~= "A" then return false, "projection_name_valid_passthrough:" .. tostring(rows[1].name) end
+    -- Name passthrough for a buff entry. Self-contained: the statusmap_contract
+    -- case is a separate closure that owns its own `rows`/`map`, so re-project
+    -- here instead of reading an undefined upvalue (would throw at runtime).
+    local nameProbe = F.ProjectStatusMap(
+        { [101] = { id = 101, name = "A", iconPath = "a.dds", stack = 2, timeLeft = 3000, sources = { buff = true } } },
+        { available = true, complete = true, reliable = true, revision = 1 },
+        { showBuffs = true, showDebuffs = true, showHidden = false, classification = { [101] = "buff" } },
+        "player", 8, { buff = { [101] = true }, debuff = {} })
+    if type(nameProbe) ~= "table" or #nameProbe ~= 1 or nameProbe[1].name ~= "A" then
+        return false, "projection_name_valid_passthrough"
+    end
     local nameMap = { [22263] = { id = 22263, name = "测试减益", iconPath = "x.dds", stack = 1, timeLeft = 21000, sources = { debuff = true } } }
     local nameRows = F.ProjectStatusMap(nameMap, { available = true }, { showBuffs = true, showDebuffs = true, classification = {} }, "player", 8)
     if type(nameRows) ~= "table" or #nameRows ~= 1 or nameRows[1].name ~= "测试减益"

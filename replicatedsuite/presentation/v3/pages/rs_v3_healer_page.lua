@@ -124,11 +124,10 @@ local function BuildPage(parent, route)
         text = "数值设置统一使用：名称 + 滑块 + 精确输入框。", fontSize = 8, tone = "muted", overflow = "ellipsis",
         slot = { size = "fill", fill = 1 } })
 
-    local settingsPanel = RSUI:Border({ id = "v3_healer_settings_panel", parent = root, padding = 5, variant = "card",
+    local settingsPanel = RSUI:GroupBox({ id = "v3_healer_settings_panel", parent = root, title = "核心治疗策略",
+        variant = "card", gradient = true, padding = 5,
         slot = { size = "auto", minHeight = 120, hAlign = "fill" } })
     local settingsStack = RSUI:VerticalBox({ id = "v3_healer_settings_stack", parent = settingsPanel, gap = 4 })
-    RSUI:Text({ id = "v3_healer_settings_title", parent = settingsStack, text = "核心治疗策略", fontSize = 9, tone = "strong",
-        slot = { size = "fixed", height = 18 } })
     local settingGrid = RSUI:UniformGrid({ id = "v3_healer_setting_grid", parent = settingsStack,
         minCellWidth = 250, minCellHeight = 32, maxColumns = 2, gap = 5,
         slot = { size = "auto", minHeight = 128, hAlign = "fill" } })
@@ -166,11 +165,10 @@ local function BuildPage(parent, route)
         slot = { size = "fill", fill = 0.8, hAlign = "fill" },
     })
 
-    local visualPanel = RSUI:Border({ id = "v3_healer_visual_panel", parent = root, padding = 5, variant = "card", visible = false,
+    local visualPanel = RSUI:GroupBox({ id = "v3_healer_visual_panel", parent = root, title = "战斗显示层",
+        variant = "card", gradient = true, padding = 5, visible = false,
         slot = { size = "auto", minHeight = 154, hAlign = "fill" } })
     local visualStack = RSUI:VerticalBox({ id = "v3_healer_visual_stack", parent = visualPanel, gap = 4 })
-    RSUI:Text({ id = "v3_healer_visual_title", parent = visualStack, text = "战斗显示层", fontSize = 9, tone = "strong",
-        slot = { size = "fixed", height = 18 } })
     local visualGrid = RSUI:UniformGrid({ id = "v3_healer_visual_grid", parent = visualStack,
         minCellWidth = 205, minCellHeight = 31, maxColumns = 3, gap = 5,
         slot = { size = "auto", minHeight = 155, hAlign = "fill" } })
@@ -242,14 +240,13 @@ local function BuildPage(parent, route)
     local advancedButton = RSUI:Button({ id = "v3_healer_advanced_toggle", parent = actions, text = "高级编辑", compact = true,
         slot = { size = "fixed", width = 88 } })
 
-    local advancedPanel = RSUI:Border({ id = "v3_healer_advanced_panel", parent = root, padding = 5, variant = "card",
+    local advancedPanel = RSUI:GroupBox({ id = "v3_healer_advanced_panel", parent = root, title = "高级治疗策略编辑器",
+        variant = "card", gradient = true, padding = 5,
         slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
     local advancedStack = RSUI:VerticalBox({ id = "v3_healer_advanced_stack", parent = advancedPanel, gap = 4,
         slot = { hAlign = "fill", vAlign = "fill" } })
     local advancedHeader = RSUI:HorizontalBox({ id = "v3_healer_advanced_header", parent = advancedStack, gap = 6,
         slot = { size = "fixed", height = 28, hAlign = "fill" } })
-    RSUI:Text({ id = "v3_healer_advanced_title", parent = advancedHeader, text = "高级治疗策略编辑器", fontSize = 11, tone = "accent",
-        slot = { size = "fill", fill = 1, hAlign = "fill" } })
     local advancedCloseButton = RSUI:Button({ id = "v3_healer_advanced_close", parent = advancedHeader, text = "返回概览", compact = true,
         slot = { size = "fixed", width = 82 } })
     RSUI:Text({ id = "v3_healer_advanced_hint", parent = advancedStack,
@@ -487,11 +484,10 @@ local function BuildPage(parent, route)
     -- aid, not another ranking UI. Keep the recommendation domain because the
     -- Raid Overlay consumes its committed color/priority facts, but do not
     -- allocate a duplicate member list/detail table in Presentation.
-    local body = RSUI:Border({ id = "v3_healer_calibration_panel", parent = root, padding = 8, variant = "card",
+    local body = RSUI:GroupBox({ id = "v3_healer_calibration_panel", parent = root, title = "团队色块校准",
+        variant = "card", gradient = true, padding = 8,
         slot = { size = "fill", fill = 1, minHeight = 150, hAlign = "fill", vAlign = "fill" } })
     local bodyStack = RSUI:VerticalBox({ id = "v3_healer_calibration_stack", parent = body, gap = 6 })
-    RSUI:Text({ id = "v3_healer_calibration_title", parent = bodyStack, text = "团队色块校准",
-        fontSize = 11, tone = "strong", slot = { size = "fixed", height = 22 } })
     local calibrationState = RSUI:Text({ id = "v3_healer_calibration_state", parent = bodyStack,
         text = "点击上方“校准团队色块”后，屏幕会显示四组团队区域。校准模式不启动治疗扫描。",
         fontSize = 9, tone = "accent", overflow = "wrap", maxLines = 3,

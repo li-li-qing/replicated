@@ -700,6 +700,19 @@ local function Build(parent, route, id)
         else
             hint:SetText(enabled and (BusinessStatusText(projection.status) .. " · " .. tostring(#rows) .. " 条数据") or "功能已关闭；启用后才读取对应 API。")
         end
+        -- Table view-state coverage: every sibling V3 table page drives the
+        -- table's empty/loading/unavailable overlay from the same enabled / #rows
+        -- signals used for the hint line above. The business table previously
+        -- never set a view state, so empty/unavailable states had no overlay.
+        local tvState, tvOpts
+        if enabled ~= true then
+            tvState, tvOpts = "unavailable", { title = "功能已关闭", detail = (meta and meta.name or id) .. " 启用后才会读取对应 API 并填充此表。" }
+        elseif #rows == 0 then
+            tvState, tvOpts = "empty", { title = "暂无数据", detail = (meta and meta.name or id) .. " 启用并读取后，结果会显示在这里。" }
+        else
+            tvState = "ready"
+        end
+        tableView:SetViewState(tvState, tvOpts)
         return true
     end
     function root:BindFeatureUpdates()
