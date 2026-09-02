@@ -1548,7 +1548,17 @@ local function CraftQuote(item)
     if item == nil or item.itemType == nil then return nil, "identity_unknown" end
     -- GetLowestPrice is a cooldown-bound server query. A craft graph can contain
     -- many materials, so ordinary Refresh must never fan out one request per row.
-    -- Pricing belongs to a separate explicit, rate-limited quote workflow.
+    -- Pricing belongs to the explicit, rate-limited PriceQuoteQueueV3 service:
+    -- the user triggers QuoteMaterial per material, the queue serializes + paces
+    -- + async-callbacks the result, and the completed price is exposed through
+    -- the shared itemType read model. Here we only READ that read model — never
+    -- issue a server request from a Refresh.
+    local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
+    local price
+    if type(queue) == "table" and type(queue.GetPriceByItemType) == "function" then
+        price = queue:GetPriceByItemType(item.itemType, item.itemGrade)
+    end
+    if price ~= nil then return price, "quoted" end
     return nil, "explicit_quote_required", "最低价需显式询价"
 end
 
@@ -1898,6 +1908,17 @@ local function CraftCommands()
             local doodadId = CraftInteger(value, true); if doodadId == nil then return false, "制作台对象编号必须是非负整数" end
             return CraftPersist(feature, "craft_doodad", function() feature.State.doodadId = doodadId end)
         end,
+        -- Explicit single-material lowest-price quote. Ordinary Refresh never
+        -- fans out GetLowestPrice; the user triggers a quote per material here,
+        -- and the shared PriceQuoteQueueV3 serializes + paces + async-callbacks
+        -- the result (see "explicit + async" quote semantics).
+        QuoteMaterial = function(_, itemType, itemGrade)
+            local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
+            if type(queue) ~= "table" or type(queue.RequestQuote) ~= "function" then return false, "报价服务不可用" end
+            local ok, status = queue:RequestQuote("tools_craft", itemType, itemGrade, nil)
+            if ok ~= true then return false, status or "报价请求失败" end
+            return true, status or "queued"
+        end,
     }
 end
 
@@ -2141,7 +2162,17 @@ local function AuctionSettingsCommands()
     }
 end
 local auctionCommands=AuctionSettingsCommands()
-auctionCommands.Quote=function(_,itemType,grade) return Call("X2Auction:GetLowestPrice",AuctionApi,"GetLowestPrice",itemType,grade) end
+-- Lowest-price quotes are explicit + rate-limited + asynchronous. They are
+-- owned by the shared PriceQuoteQueueV3 service, never issued here via a direct
+-- X2Auction:GetLowestPrice call (which would bypass serialization and the
+-- official 500ms cooldown contract).
+auctionCommands.Quote=function(_,itemType,grade)
+    local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
+    if type(queue) ~= "table" or type(queue.RequestQuote) ~= "function" then return false, "报价服务不可用" end
+    local ok, status = queue:RequestQuote("tools_auction", itemType, grade, nil)
+    if ok ~= true then return false, status or "报价请求失败" end
+    return true, status or "queued"
+end
 auctionCommands.AddFavorite=function(feature,value)
     local keyword=NormalizeAuctionKeyword(value); if keyword==nil then return false,"收藏关键词必须是 1-64 个可见字符" end
     if #feature.State.favorites>=AUCTION_FAVORITE_MAX then return false,"收藏已达到上限" end
