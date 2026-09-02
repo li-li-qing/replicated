@@ -849,3 +849,172 @@ RSUI:RegisterType("Dropdown", function(spec)
     c:Render()
     return c
 end)
+
+------------------------------------------------------------------------
+-- ColorField (color picker control)
+--
+-- A compact color control: a clickable swatch (live color preview) + a hex
+-- input, with a popover holding R/G/B sliders. get/set carry {r,g,b} in 0..1.
+-- This is the missing "line color setting" foundation: unit-lines used to cram
+-- three separate R/G/B CompactNumericSetting sliders into one row (the clutter
+-- the user flagged), and range-assist had no color control at all. One
+-- ColorField replaces the three sliders and adds the missing control.
+------------------------------------------------------------------------
+RSUI:RegisterType("ColorField", function(spec)
+    local parent = spec.parent
+    local trigW = math.max(60, math.min(280, tonumber(spec.width) or 132))
+    local trigH = math.max(22, math.min(40, tonumber(spec.height) or (Token("size.buttonH", 26))))
+    local trigger, triggerErr = UI:CreateButton(parent, spec.id .. "_trigger", "", 0, 0, trigW, trigH, tonumber(spec.fontSize) or Token("font.small", 10), false, spec.gradient ~= false)
+    if trigger == nil then return nil, "colorfield_trigger_create_failed" end
+    local c = RSUI:NewComponent("ColorField", spec, trigger)
+    if c == nil then return nil, "colorfield_component_create_failed" end
+    c.binding = RSUI:Binding(spec)
+    c.open = false
+    c.color = { 1, 1, 1 }
+    c.swatch = nil
+
+    -- Swatch drawable fills the trigger so the current color is always visible.
+    -- Some RU widgets expose CreateColorDrawable; fall back to a flat background
+    -- tint so the control still reads as a color chip when the drawable API is
+    -- unavailable on this client.
+    if type(trigger.CreateColorDrawable) == "function" then
+        local ok, draw = pcall(function() return trigger:CreateColorDrawable(1, 1, 1, 1, "overlay") end)
+        if ok and draw ~= nil then c.swatch = draw end
+    end
+
+    -- Popover: top-level surface so it is never clipped by a ScrollBox/card.
+    local popup, popupErr = UI:CreatePanel(UIParent, spec.id .. "_popup", 0, 0, trigW, 140, "soft", { gradient = true, owner = c.owner })
+    if popup == nil then return nil, "colorfield_popup_create_failed" end
+    c.popup = popup
+    if type(UI.TrySetUILayer) == "function" then UI:TrySetUILayer(popup, "system") end
+    if type(popup.SetDrawPriority) == "function" then pcall(function() popup:SetDrawPriority(10000) end) end
+    UI:SetPickable(popup, true, c.owner)
+    UI:SetEnabled(popup, true, c.owner)
+    UI:SetVisible(popup, false, c.owner)
+
+    local body = RSUI:VerticalBox({ id = spec.id .. "_body", parent = popup, gap = 5, padding = 7 })
+    c.sliders = {}
+    -- Declared BEFORE the slider loop on purpose: the per-channel set closure
+    -- (below) references Clamp01. In Lua a closure defined before a `local
+    -- function' declaration binds that name to a global, not the later local,
+    -- so moving the declaration up keeps the closure capturing the real helper.
+    local function Clamp01(v) v = tonumber(v); if v == nil then return 0 end; if v < 0 then v = 0 end; if v > 1 then v = 1 end; return v end
+    local channels = { { key = "r", label = "R", idx = 1 }, { key = "g", label = "G", idx = 2 }, { key = "b", label = "B", idx = 3 } }
+    for _, ch in ipairs(channels) do
+        local row = RSUI:HorizontalBox({ id = spec.id .. "_" .. ch.key .. "_row", parent = body, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
+        RSUI:Text({ id = spec.id .. "_" .. ch.key .. "_label", parent = row, text = ch.label, fontSize = 9, tone = "muted", slot = { size = "fixed", width = 12 } })
+        -- Each Slider owns its channel via get/set closures over the shared color.
+        -- Slider (not NumericField) is used so ApplyColor can re-sync the slider
+        -- view from c.color via :Render() without re-committing through the
+        -- binding (NumericField has no SetValue; its Apply() would double-write).
+        local slider = RSUI:Slider({
+            id = spec.id .. "_" .. ch.key, parent = row, min = 0, max = 1, step = 0.02, integer = false,
+            get = function() return c.color[ch.idx] end,
+            set = function(v) c.color[ch.idx] = Clamp01(v); c:SyncSwatchAndHex(); c:Commit() end,
+            slot = { size = "fill", fill = 1, hAlign = "fill" },
+        })
+        c.sliders[ch.key] = slider
+    end
+    local hexRow = RSUI:HorizontalBox({ id = spec.id .. "_hex_row", parent = body, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
+    RSUI:Text({ id = spec.id .. "_hex_label", parent = hexRow, text = "#", fontSize = 9, tone = "muted", slot = { size = "fixed", width = 12 } })
+    -- TextInput commits via onSubmit (it exposes no OnCommitted method); the
+    -- guard is dropped because onSubmit is always a safe no-op when absent.
+    local hexInput = RSUI:TextInput({ id = spec.id .. "_hex", parent = hexRow, maxLength = 7, height = 20,
+        onSubmit = function(text) local parsed = c:ParseHex(text); if parsed ~= nil then c:ApplyColor(parsed[1], parsed[2], parsed[3]); c:Commit() end end,
+        slot = { size = "fill", fill = 1, hAlign = "fill" } })
+    c.hexInput = hexInput
+    local doneBtn = RSUI:Button({ id = spec.id .. "_done", parent = body, text = "完成", compact = true, slot = { size = "fixed", height = 24, hAlign = "fill" } })
+
+    function c:SyncSwatchAndHex()
+        if self.swatch ~= nil then UI:SetColor(self.swatch, self.color[1], self.color[2], self.color[3], 1, self.owner) end
+        if self.hexInput ~= nil then self.hexInput:SetValue(self:Hex()) end
+    end
+    function c:Hex()
+        local function hx(x) local v = math.floor(Clamp01(x) * 255 + 0.5); return string.format("%02X", v) end
+        return "#" .. hx(self.color[1]) .. hx(self.color[2]) .. hx(self.color[3])
+    end
+    function c:ParseHex(s)
+        s = tostring(s or ""):gsub("#", ""):gsub("%s+", "")
+        if #s ~= 6 then return nil end
+        local r, g, b = tonumber(s:sub(1, 2), 16), tonumber(s:sub(3, 4), 16), tonumber(s:sub(5, 6), 16)
+        if r == nil or g == nil or b == nil then return nil end
+        return { r / 255, g / 255, b / 255 }
+    end
+    function c:ApplyColor(r, g, b)
+        self.color = { Clamp01(r), Clamp01(g), Clamp01(b) }
+        self:SyncSwatchAndHex()
+        -- Re-sync the channel sliders from the shared color via :Render(); this
+        -- reads the binding (spec.get -> c.color) and never re-commits it.
+        if self.sliders.r ~= nil then self.sliders.r:Render() end
+        if self.sliders.g ~= nil then self.sliders.g:Render() end
+        if self.sliders.b ~= nil then self.sliders.b:Render() end
+    end
+    function c:Commit()
+        local ok = Write(self.binding, { self.color[1], self.color[2], self.color[3] }, true, "colorfield", spec)
+        if ok == true and type(spec.onChanged) == "function" then RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, { self.color[1], self.color[2], self.color[3] }, self) end
+        return ok
+    end
+    function c:GetValue() return Read(self.binding, self.value) end
+    function c:SetValue(color, notify)
+        if type(color) == "table" then self:ApplyColor(color[1], color[2], color[3]) end
+        if notify ~= false and type(spec.onChanged) == "function" then RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, { self.color[1], self.color[2], self.color[3] }, self) end
+        return true
+    end
+    function c:Render()
+        local v = self:GetValue()
+        if type(v) == "table" then self:ApplyColor(v[1], v[2], v[3]) end
+        return v
+    end
+
+    function c:ApplyPopupLayout()
+        local px, py, pw, ph = 0, 0, trigW, trigH
+        if S.Layout ~= nil and type(S.Layout.GetLogicalRect) == "function" then
+            local ok, x, y, w, h = pcall(function() return S.Layout:GetLogicalRect(self.root) end)
+            if ok then px, py, pw, ph = tonumber(x) or 0, tonumber(y) or 0, tonumber(w) or trigW, tonumber(h) or trigH end
+        end
+        local context = S.Layout ~= nil and type(S.Layout.GetContext) == "function" and S.Layout:GetContext() or nil
+        local logicalW = context and tonumber(context.logicalWidth) or 1024
+        local logicalH = context and tonumber(context.logicalHeight) or 768
+        local safeLeft = context and tonumber(context.safeLeft) or 4
+        local safeRight = context and tonumber(context.safeRight) or 4
+        local safeTop = context and tonumber(context.safeTop) or 4
+        local safeBottom = context and tonumber(context.safeBottom) or 4
+        local popupW = math.max(120, math.min(trigW, math.max(120, logicalW - safeLeft - safeRight)))
+        local popupH = 140
+        local x = math.max(safeLeft, math.min(px, math.max(safeLeft, logicalW - safeRight - popupW)))
+        local belowY = py + ph + 2
+        local aboveY = py - popupH - 2
+        local y = belowY
+        if belowY + popupH > logicalH - safeBottom and aboveY >= safeTop then y = aboveY end
+        y = math.max(safeTop, math.min(y, math.max(safeTop, logicalH - safeBottom - popupH)))
+        UI:SetExtent(self.popup, popupW, popupH, self.owner)
+        UI:SetAnchor(self.popup, UIParent, x, y, self.owner)
+        if type(self.popup.Raise) == "function" then pcall(function() self.popup:Raise() end) end
+        return true
+    end
+    function c:Open()
+        if self.enabled == false or self.released == true then return false end
+        if RSUI.DropdownService ~= nil then RSUI.DropdownService:CloseAll(self) end
+        self.open = true
+        self:ApplyPopupLayout()
+        UI:SetVisible(self.popup, true, self.owner)
+        if type(self.popup.SetDrawPriority) == "function" then pcall(function() self.popup:SetDrawPriority(10000) end) end
+        if type(self.popup.Raise) == "function" then pcall(function() self.popup:Raise() end) end
+        return true
+    end
+    function c:Close()
+        if self.open ~= true then return false end
+        self.open = false
+        UI:SetVisible(self.popup, false, self.owner)
+        return true
+    end
+    function c:ToggleOpen() if self.open == true then return self:Close() end; return self:Open() end
+
+    c:On(trigger, "OnClick", function() return c:ToggleOpen() end, "rsui:" .. spec.id .. ":trigger")
+    c:On(doneBtn, "OnClick", function() return c:Close() end, "rsui:" .. spec.id .. ":done")
+    if RSUI.DropdownService ~= nil then RSUI.DropdownService:Register(c) end
+
+    c:SetEnabled(spec.enabled ~= false)
+    c:Render()
+    return c
+end)

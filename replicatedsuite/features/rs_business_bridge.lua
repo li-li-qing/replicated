@@ -2545,12 +2545,16 @@ local RangeAssist = NewFeature("combat_range_assist", {
         if #points < 3 then return {}, "partial", "范围圆投影没有足够可见点；请确认当前 RU 相机投影能力" end
         return {{ key="self_radius", name="自身范围圆", text=string.format("半径 %.1fm · 可见点 %d/%d · %s",radius,#points,count,tostring(batchSource or "projection")), statusText="实时", tone="green", points=points, radius=radius }}, "ready"
     end,
-    projection = function(feature) return { radius=feature.State.radius, pointCount=feature.State.pointCount, pointSize=feature.State.pointSize, opacity=feature.State.opacity } end,
+    projection = function(feature) return { radius=feature.State.radius, pointCount=feature.State.pointCount, pointSize=feature.State.pointSize, opacity=feature.State.opacity, color=feature.State.color } end,
     commands = {
         SetRadius = function(feature,value) value=math.max(1,math.min(100,tonumber(value) or 10)); return PersistStateMutation(feature,"range_radius",function(state) state.radius=value; return true end) end,
         SetPointCount = function(feature,value) value=math.max(12,math.min(48,math.floor(tonumber(value) or 24))); return PersistStateMutation(feature,"range_points",function(state) state.pointCount=value; return true end) end,
         SetPointSize = function(feature,value) value=math.max(2,math.min(10,math.floor(tonumber(value) or 4))); return PersistStateMutation(feature,"range_size",function(state) state.pointSize=value; return true end) end,
         SetOpacity = function(feature,value) value=math.max(0.1,math.min(1,tonumber(value) or 0.68)); return PersistStateMutation(feature,"range_opacity",function(state) state.opacity=value; return true end) end,
+        SetColor = function(feature,r,g,b)
+            r=math.max(0,math.min(1,tonumber(r) or 0.20)); g=math.max(0,math.min(1,tonumber(g) or 0.82)); b=math.max(0,math.min(1,tonumber(b) or 1.00))
+            return PersistStateMutation(feature,"range_color",function(state) state.color={r,g,b}; return true end)
+        end,
     },
 })
 RangeAssist.VisualGuideContractVersion = 2

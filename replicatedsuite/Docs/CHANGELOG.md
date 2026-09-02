@@ -2,6 +2,16 @@
 
 > **⚠️ 架构变更声明（2026-09-01/02）**：旧版（Legacy/Professional）源码已全部物理删除（163 文件、−10.3 万行，commit 09010c0）。本文件是历史变更日志，早期条目（M1.16.0.18.x 及之前）可能引用已删文件（`rp_*`/`rh_*`/`rg_*`/`rdps_*`/`modules/professional/`/`S.State`/`S.Storage`/`rs_state`/`rs_storage`/`rs_module_manager`/`rs_module_sandbox`/`ReplicatedSuiteModuleSandbox`/`ReplicatedHealerModule`/`ReplicatedPlatesModule`/`ReplicatedDps` 等）。这些引用仅作历史记录，不代表当前代码。当前架构以 [`Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md`](Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md) 为准。
 
+## M1.16.0.18.58 — ColorField 基础组件 + 单位连线/范围辅助线条颜色（issue #1+#3，2026-09-02）
+
+- **背景（先查架构后动手）**：用户反馈①单位连线面板设置太杂乱（不像高端 UI 布局）、③范围辅助与单位连线都缺线条颜色设置。按「每个功能前先查底层架构是否支持」原则核查：RSUI 声明式组件库中没有颜色选择器，因此第一步是完善底层基础组件 `RSUI:ColorField`，再以新组件去落地两层线条颜色，而非在页面层硬塞一堆原生滑块。
+- **新基础组件 `RSUI:ColorField`（`ui/framework/rs_ui_controls.lua`）**：点击色块（实时颜色预览）+ 弹层内 R/G/B 三个 Slider + hex 文本输入（提交走 `onSubmit`）。get/set 携带 `{r,g,b}`（0..1），复用 `RSUI:Binding` 的提交链，弹层用 `UIParent` 物理层 + `system` 层级避免被 ScrollBox/卡片裁剪。`c:ApplyColor` 经 `:Render()` 把通道 Slider 视图从 `c.color` 重新同步（不二次提交），hex 输入经 `ParseHex` 解析。
+- **单位连线去杂乱（`presentation/v3/pages/rs_v3_business_pages.lua`）**：四种关系（target/targettarget/focus/focustarget）原来每行内联 3 个 `CompactNumericSetting` R/G/B 滑块（用户指的"杂乱"）→ 各替换为单个 `ColorField`；swatch 默认色取 presenter `UNIT_COLORS` 同款调色板（`UNIT_LINE_PALETTE`），未持久化前即与渲染线条一致。set → `feature.Commands:SetPairColor(pairKey, r, g, b)`。
+- **范围辅助补颜色控件**：范围辅助原**完全没有**线条颜色控件 → 新增 `ColorField` 写入 `feature.Commands:SetColor`。配套在 `features/rs_business_bridge.lua` 补 `SetColor` Command（clamp 0..1，经 `PersistStateMutation` 持久化）并暴露 `color` 投影；presenter `presentation/v3/widgets/rs_v3_combat_visual_guides.lua` 的 `RenderRange` 读 `projection.color` 落点给 `PlaceDot`（缺省回退原 `(0.20, 0.82, 1.00)`）。
+- **录制式 harness 验收发现并修复 1 个真实生产 Bug**：`business_page_color_harness.lua` 加载真实 `rs_ui_controls.lua` 构建真实 ColorField，模拟拖动 R 通道 → 触发 `rs_ui_controls.lua:908 attempt to call a nil value (global 'Clamp01')`。根因：内部每通道 Slider 的 `set` 闭包引用 `Clamp01`，而 `Clamp01` 在 Lua 中声明为 Slider 循环**之后**的 `local function`——Lua 闭包不会捕获晚声明的局部，该名被解析为全局，用户拖动任一颜色通道即崩溃。修复：将 `Clamp01` 声明上移到 Slider 循环之前（同作用域、循环前可见）。经小样本 Lua 复现确认该前向局部引用语义确为全局绑定（非本机工具链之误），即真实 RU 客户端同样会崩。
+- **验证（本轮回测实测数字）**：录制 harness `BUSINESS_PAGE_COLOR_HARNESS_PASS unit=4 range=1 oldSlidersRemoved=true refreshOk=true`（4 个 per-pair ColorField 的 set 确调用 `SetPairColor`、1 个 range ColorField 的 set 确调用 `SetColor`、旧 3×R/G/B 滑块确认移除、两页 `Refresh()` 不崩）；Foundation Audit 全 PASS（`toc=199 activeLua=199 allLua=199 globals=0 presentation=0 rawNative=0 rawScope=0 detachedWidgetState=0 apiDependency=0 apiCapability=0 businessIds=0 auctionEventOwners=0`）。`rawNative=0 rawScope=0` 证明新组件零原生泄漏。BuildTag：`v3-m1.16.0.18.58-colorfield-foundation-unitlines-range-color`。
+- **未验证项（RU 实机）**：ColorField 弹层在真实客户端的位置/层级/鼠标跟随、拖拽手感、hex 输入交互、范围辅助落点颜色实绘——需 Fresh Reload 目测；`Clamp01` 修复为纯作用域移动、已静态确认。
+
 ## M1.16.0.18.57 — V3 页面布局优化（gear/healer 迁 RSUI 模版）+ 底层预存在全局泄漏修复（2026-09-02）
 
 - **背景**：用户要求用新增的底层 UI 框架/模版优化布局。本轮落地两块页面级迁移（WU1/WU2），并在验证门禁（Foundation Audit）中发现并修复两个预存在的全局泄漏（属未动过的旧文件，与布局改动无关，但阻塞门禁变绿）。

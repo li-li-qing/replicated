@@ -139,6 +139,13 @@ local function Build(parent, route, id)
         -- dot size and RGB color, overriding the global defaults above.
         local perPairLabel = RSUI:Text({ id = "v3_business_combat_unit_lines_per_pair_title", parent = root, text = "每种连线单独设置（点数 / 大小 / 颜色）", fontSize = 10, tone = "strong", slot = { size = "fixed", height = 20, hAlign = "fill" } })
         local pairNames = { target = "自己 ↔ 当前目标", targettarget = "当前目标 ↔ 目标的目标", focus = "自己 ↔ 焦点目标", focustarget = "焦点目标 ↔ 焦点的目标" }
+        -- Same per-pair default palette the presenter (rs_v3_combat_visual_guides)
+        -- uses, so the ColorField swatch matches the rendered line before any
+        -- color has been explicitly persisted.
+        local UNIT_LINE_PALETTE = {
+            target = { 1.00, 0.72, 0.12 }, targettarget = { 0.94, 0.42, 0.20 },
+            focus = { 0.35, 0.82, 1.00 }, focustarget = { 0.67, 0.52, 1.00 },
+        }
         for _, spec in ipairs(pairSpecs) do
             local specRef = spec
             local pairKey = specRef.key
@@ -150,24 +157,19 @@ local function Build(parent, route, id)
             TrackField(D:CompactNumericSetting(row, { id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_size", label = "大小", min = 2, max = 10, step = 1, integer = true, inlineHint = true, hint = "", slider = true,
                 get = function() return (feature:GetProjection() or {}).pairSizes and (feature:GetProjection() or {}).pairSizes[pairKey] or 4 end,
                 set = function(v) return feature.Commands:SetPairSize(pairKey, v) end, slot = { size = "fixed", width = 118 } }))
-            local function ColorField(label, componentIndex)
-                return D:CompactNumericSetting(row, { id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_c" .. tostring(componentIndex), label = label, min = 0, max = 1, step = 0.05, integer = false, inlineHint = true, hint = "", slider = true,
-                    get = function()
-                        local colors = (feature:GetProjection() or {}).colors
-                        local c = type(colors) == "table" and colors[pairKey] or nil
-                        return type(c) == "table" and (tonumber(c[componentIndex]) or 0) or 0
-                    end,
-                    set = function(v)
-                        local colors = (feature:GetProjection() or {}).colors
-                        local c = type(colors) == "table" and colors[pairKey] or { 1, 1, 1 }
-                        local nextColor = { tonumber(c[1]) or 1, tonumber(c[2]) or 1, tonumber(c[3]) or 1 }
-                        nextColor[componentIndex] = v
-                        return feature.Commands:SetPairColor(pairKey, nextColor[1], nextColor[2], nextColor[3])
-                    end, slot = { size = "fixed", width = 96 } })
-            end
-            TrackField(ColorField("R", 1))
-            TrackField(ColorField("G", 2))
-            TrackField(ColorField("B", 3))
+            -- One ColorField replaces the three cramped R/G/B sliders that used to
+            -- sit inline in this row. The swatch shows the persisted per-pair color
+            -- (falling back to the presenter palette) and the popover holds R/G/B
+            -- sliders + a hex field. This is the declutter the user flagged.
+            local defaultColor = UNIT_LINE_PALETTE[pairKey] or { 1, 1, 1 }
+            TrackField(RSUI:ColorField({ id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_color", parent = row, label = "颜色",
+                get = function()
+                    local colors = (feature:GetProjection() or {}).colors
+                    local c = type(colors) == "table" and colors[pairKey] or nil
+                    return type(c) == "table" and { tonumber(c[1]) or 1, tonumber(c[2]) or 1, tonumber(c[3]) or 1 } or { defaultColor[1], defaultColor[2], defaultColor[3] }
+                end,
+                set = function(color) return feature.Commands:SetPairColor(pairKey, color[1], color[2], color[3]) end,
+                slot = { size = "fixed", width = 132 } }))
         end
     elseif id == "combat_range_assist" then
         local grid = RSUI:UniformGrid({ id = "v3_business_combat_range_assist_settings", parent = root, minCellWidth = 190, minCellHeight = 30, maxColumns = 2, gap = 5, slot = { size = "auto", minHeight = 60, hAlign = "fill" } })
@@ -179,6 +181,13 @@ local function Build(parent, route, id)
             get = function() return (feature:GetProjection() or {}).pointSize or 4 end, set = function(v) return feature.Commands:SetPointSize(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
         TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_range_assist_opacity", label = "透明度", min = 0.1, max = 1, step = 0.05, integer = false, slider = true,
             get = function() return (feature:GetProjection() or {}).opacity or 0.68 end, set = function(v) return feature.Commands:SetOpacity(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
+        -- Range-assist previously had NO line-color control. The ColorField below
+        -- writes feature.Commands:SetColor; the presenter falls back to the same
+        -- (0.20, 0.82, 1.00) default until a color is persisted.
+        TrackField(RSUI:ColorField({ id = "v3_business_combat_range_assist_color", parent = grid, label = "线条颜色",
+            get = function() return (feature:GetProjection() or {}).color or { 0.20, 0.82, 1.00 } end,
+            set = function(color) return feature.Commands:SetColor(color[1], color[2], color[3]) end,
+            slot = { size = "fill", fill = 1, hAlign = "fill" } }))
     end
     local auctionKeywordInput, auctionStatus, auctionPage = nil, nil, 1
     local auctionPageSize, auctionSelectedIndex = 10, nil

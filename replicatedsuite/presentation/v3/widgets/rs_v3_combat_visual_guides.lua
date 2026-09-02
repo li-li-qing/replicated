@@ -117,7 +117,10 @@ function P:PlaceDot(dot, x, y, size, opacity, kind, pairKey, r, g, b)
     S.UI:SetAnchor(dot.root, kind == "unit" and self.unitHost or self.rangeHost, math.floor((tonumber(x) or 0)-size/2), math.floor((tonumber(y) or 0)-size/2), self.owner)
     S.UI:SetExtent(dot.root, size, size, self.owner)
     S.UI:SetAnchor(dot.drawable, dot.root, 0, 0, self.owner); S.UI:SetExtent(dot.drawable, size, size, self.owner)
-    if kind == "range" then S.UI:SetColor(dot.drawable, 0.20, 0.82, 1.00, math.max(0.1,math.min(1,tonumber(opacity) or 0.68)), self.owner)
+    if kind == "range" then
+        -- r,g,b are passed by RenderRange from the persisted projection color;
+        -- fall back to the original (0.20, 0.82, 1.00) when none is set.
+        S.UI:SetColor(dot.drawable, r or 0.20, g or 0.82, b or 1.00, math.max(0.1,math.min(1,tonumber(opacity) or 0.68)), self.owner)
     else
         local cr, cg, cb = r, g, b
         if cr == nil then
@@ -161,8 +164,12 @@ function P:RenderRange()
     local projection=RangeFeature:GetProjection() or {}; local row=projection.rows and projection.rows[1] or nil
     local points=type(row)=="table" and type(row.points)=="table" and row.points or {}
     if #points<3 then self:HidePool(self.rangePool); return true end
+    -- Range line color is now configurable via the page ColorField; fall back to
+    -- the legacy default when no color has been persisted.
+    local rc=type(projection.color)=="table" and projection.color or nil
+    local rr,rg,rb=rc and (tonumber(rc[1]) or 0.20) or 0.20, rc and (tonumber(rc[2]) or 0.82) or 0.82, rc and (tonumber(rc[3]) or 1.00) or 1.00
     local count=math.min(48,#points); local ok,err=self:EnsurePool("range",count); if ok~=true then return false,err end
-    for i=1,count do self:PlaceDot(self.rangePool[i],points[i].x,points[i].y,projection.pointSize,projection.opacity,"range") end
+    for i=1,count do self:PlaceDot(self.rangePool[i],points[i].x,points[i].y,projection.pointSize,projection.opacity,"range",nil,rr,rg,rb) end
     for i=count+1,#self.rangePool do S.UI:SetVisible(self.rangePool[i].root,false,self.owner) end
     return true
 end
