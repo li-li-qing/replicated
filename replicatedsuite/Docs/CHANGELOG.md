@@ -2,6 +2,16 @@
 
 > **⚠️ 架构变更声明（2026-09-01/02）**：旧版（Legacy/Professional）源码已全部物理删除（163 文件、−10.3 万行，commit 09010c0）。本文件是历史变更日志，早期条目（M1.16.0.18.x 及之前）可能引用已删文件（`rp_*`/`rh_*`/`rg_*`/`rdps_*`/`modules/professional/`/`S.State`/`S.Storage`/`rs_state`/`rs_storage`/`rs_module_manager`/`rs_module_sandbox`/`ReplicatedSuiteModuleSandbox`/`ReplicatedHealerModule`/`ReplicatedPlatesModule`/`ReplicatedDps` 等）。这些引用仅作历史记录，不代表当前代码。当前架构以 [`Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md`](Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md) 为准。
 
+## M1.16.0.18.59 — 截断文字悬浮提示跟随光标（issue #2，2026-09-02）
+
+- **背景（先查架构后动手）**：用户反馈②文字显示不全时悬浮提示窗口不在鼠标位置出现。按「每个功能前先查底层架构是否支持」原则核查 `RSUI.Tooltip`（`ui/framework/rs_ui_interactions.lua`，v3）：其 `Show` 优先走原生 `SetTooltip(text, widget)`（由客户端导出、把提示锚定到所绑定的 widget 单元格、而非光标），命中即 `return`，而**真正读取 `PointerPosition()` 做光标跟随的逻辑只存在于 pooled fallback 分支**（lines 177–194 的 `AnchorRect`+`SetAnchor`）。所以"提示不出现在鼠标位置"的根因是：截断类提示走了原生 `SetTooltip`，被钉在单元格而非跟随光标。底层架构其实已具备光标跟随能力，只是对 hover/overflow 类提示未启用。
+- **修复（`rs_ui_interactions.lua`）**：
+  1. `Show` 在选路前先采样 `local mouseX, mouseY = PointerPosition()`；当 `options.cursorFollow == true` 时，跳过原生 `SetTooltip` 分支，直接进入带光标跟随的 fallback（与下方 fallback 分支一致读取 `PointerPosition` 并在 `mouseX~=nil` 时 `px,py = mouseX+gap, mouseY+gap` 并在越界时翻转）。默认（非 cursorFollow）行为不变，仍优先原生。
+  2. `BindOverflowText`（截断文字路径）在落 binding 时显式 `binding.cursorFollow = true`，使所有 `GetOverflowTooltipText` 类提示强制走光标跟随 fallback，不再钉在单元格。
+- **架构接口核对**：`PointerPosition()` 经 `S.Api:GetMouseLogicalPosition()` 取坐标；已核对真实 `rs_api.lua` 契约——该函数返回 `(x, y, nil)`（坐标取前两个返回值），与 fallback 分支的 `tonumber(x)` 用法对齐；`SetTooltip` 为原生全局导出，在 RU 客户端常态可用，故此前路径恒定命中原生、提示恒钉单元格，与用户观察一致。`RSUI:IsComponent(value)`（`rs_ui_component_core.lua:1155`）检查 `type(value.GetRoot)=="function" and value.kind~=nil`，已据此校正 harness fixture（原 stub 用 `__isComp` 且按位置取参，触发 colon-call 陷阱）。
+- **验证（录制式 harness 实测）**：`tooltip_cursor_follow_harness.lua` 加载真实 `rs_ui_interactions.lua` + 桩 `S.UI/S.RSUI/S.Api`，三用例全 PASS：`TOOLTIP_CURSOR_FOLLOW_HARNESS_PASS cursorFollowSkipNative=true overflowBindsCursorFollow=true`——A) `cursorFollow=true` 跳过原生 `SetTooltip`、fallback 在光标 (110,110) 打开；B) 默认路径仍走原生（返回 `"native"`）；C) `BindOverflowText` 强制 `cursorFollow=true`，进入提示时跳过原生、在光标 (110,110) 打开 fallback。Foundation Audit 全 PASS（`toc=199 activeLua=199 allLua=199 globals=0 presentation=0 rawNative=0 rawScope=0 detachedWidgetState=0 apiDependency=0 apiCapability=0 businessIds=0 auctionEventOwners=0`）。BuildTag：`v3-m1.16.0.18.59-tooltip-cursor-follow-overflow`。
+- **未验证项（RU 实机）**：fallback 提示在真实客户端下弹层位置/层级/鼠标坐标采样是否稳定、OnEnter 一次性采样 vs 拖动跟随手感——需 Fresh Reload 目测（fallback 仅 OnEnter 采样一次，不做 OnUpdate 跟随，符合原生 tooltip 行为）；`SetTooltip` 原生路径在无鼠标坐标的设备上仍作为兜底保留。
+
 ## M1.16.0.18.58 — ColorField 基础组件 + 单位连线/范围辅助线条颜色（issue #1+#3，2026-09-02）
 
 - **背景（先查架构后动手）**：用户反馈①单位连线面板设置太杂乱（不像高端 UI 布局）、③范围辅助与单位连线都缺线条颜色设置。按「每个功能前先查底层架构是否支持」原则核查：RSUI 声明式组件库中没有颜色选择器，因此第一步是完善底层基础组件 `RSUI:ColorField`，再以新组件去落地两层线条颜色，而非在页面层硬塞一堆原生滑块。

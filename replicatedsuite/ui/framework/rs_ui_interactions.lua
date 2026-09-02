@@ -138,7 +138,13 @@ function Tooltip:Show(target, text, options)
     if native == nil or value == "" then return false, "target_or_text_required" end
 
     RSUI.metrics.tooltipShows = (tonumber(RSUI.metrics.tooltipShows) or 0) + 1
-    if type(SetTooltip) == "function" and options.forceFallback ~= true then
+    -- Sample the pointer before choosing a placement path. Hover tooltips that
+    -- opt into cursorFollow (overflow/truncated-text tooltips) must open beside
+    -- the cursor, which only the pooled fallback does (it reads PointerPosition
+    -- below). The native SetTooltip anchors the tooltip to the bound widget, not
+    -- the pointer, so when cursorFollow is requested we skip native entirely.
+    local mouseX, mouseY = PointerPosition()
+    if type(SetTooltip) == "function" and options.forceFallback ~= true and options.cursorFollow ~= true then
         local ok = pcall(function() SetTooltip(value, native) end)
         if ok then return true, "native" end
     end
@@ -254,6 +260,10 @@ function Tooltip:BindOverflowText(textComponent, hitTarget, spec)
     local binding = {}
     for key, value in pairs(spec) do binding[key] = value end
     binding.provider = function() return textComponent:GetOverflowTooltipText() end
+    -- Truncated-text tooltips should follow the cursor, not anchor to the cell
+    -- (native SetTooltip pins to the bound widget). Force the cursor-following
+    -- pooled fallback for this path.
+    binding.cursorFollow = true
     return self:Bind(target, binding)
 end
 
