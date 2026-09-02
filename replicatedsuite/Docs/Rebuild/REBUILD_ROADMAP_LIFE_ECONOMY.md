@@ -42,9 +42,9 @@
 |---|---|
 | 旧实现要点 | TradeService：路线、多货物、实时货率、材料报价与利润计算 |
 | V3 对应物 | `life_trade`（v3.life.trade），状态 `migrated_partial` |
-| V3 已实现 | 路线/区域/服务器货率 + bounded 材料 itemType/数量投影；普通 Refresh 不调用拍卖报价 |
-| 剩余能力 | 建立独立、限速、显式 `GetLowestPrice` 报价队列后才能恢复材料成本/利润 |
-| 重建前置条件 | ① AuctionQueryV3 限速队列（串行 + 冷却） ② 报价失败 fail-closed 策略 ③ 用户显式触发（不自动 fan-out） |
+| V3 已实现 | 路线/区域/服务器货率 + bounded 材料 itemType/数量投影；普通 Refresh 不调用拍卖报价；共享 PriceQuoteQueueV3 已提供显式+异步限速报价（2026-09-02） |
+| 剩余能力 | 恢复材料成本/利润需 Trade Feature 显式触发报价并接回 PriceQuoteQueueV3 异步快照 |
+| 重建前置条件 | ① PriceQuoteQueueV3 限速队列 ✅（已建） ② 报价失败 fail-closed ✅ ③ 用户显式触发（不自动 fan-out）✅ ④ Trade 接回报价快照 |
 
 ### 2. Event（活动）
 
@@ -112,7 +112,7 @@
 |---|---|
 | 旧实现要点 | AuctionFavoritesService：拍卖关键词/收藏、当前挂单查询、分页 |
 | V3 对应物 | `tools_auction`（v3.auction），状态 `migrated_partial` |
-| V3 已实现 | 收藏增删/持久化/分页；AuctionQueryV3 串行拥有 AUCTION_ITEM_SEARCHED；使用已验证 9 参数搜索；Quote 是单次显式 GetLowestPrice |
+| V3 已实现 | 收藏增删/持久化/分页；AuctionQueryV3 串行拥有 AUCTION_ITEM_SEARCHED；使用已验证 9 参数搜索；Quote 走共享 PriceQuoteQueueV3 显式+异步限速报价（2026-09-02） |
 | 剩余能力 | RU 搜索结果的全部字段/排序语义与更丰富筛选仍待实机验证；当前结果不能当成历史成交样本 |
 | 重建前置条件 | ① RU 实机验证搜索结果字段 ② 验证排序语义 ③ 确认筛选参数扩展点 |
 
@@ -122,8 +122,8 @@
 |---|---|
 | 旧实现要点 | FishingService：目标鱼动作 Buff 识别与技能推荐；自动 R |
 | V3 对应物 | `life_fishing`（v3.life.fishing），状态 `migrated_partial` |
-| V3 已实现 | V3 页面 + Demand + TARGET_CHANGED/BUFF_UPDATE 驱动的 bounded 目标 Buff observation 与技能栏推荐；Auto-R 按钮明确禁用 |
-| 剩余能力 | 需要迁移并验证原 R/目标槽位快照、写入回读、异常恢复、Reload 恢复与原键还原事务 |
+| V3 已实现 | V3 页面 + Demand + TARGET_CHANGED/BUFF_UPDATE 驱动的 bounded 目标 Buff observation 与技能栏推荐；Auto-R 可回滚热键事务已迁入（2026-09-02） |
+| 剩余能力 | RU 实机 Fresh Reload 验证写入回读 / Reload 恢复 / 原键还原；确认 GetOptionBinding 返回结构在 RU 一致（钓鱼不进入战斗，战斗保护为旁路兜底） |
 | 重建前置条件 | ① 完整可回滚热键事务设计 ② R 键槽位快照/写入回读契约 ③ 异常恢复 + Reload 恢复 + 原键还原 ④ Fresh Reload 验证 |
 
 ### 10. DamageReview（死亡回顾）
@@ -153,8 +153,8 @@
 | 旧实现要点 | CraftAssistService：制作台上下文的材料、持有量与缺口辅助 |
 | V3 对应物 | `tools_craft`（v3.craft），状态 `migrated_partial` |
 | V3 已实现 | 用户从已核制作物目录选择，不输入 doodadId/craftType；bounded product/material、held/shortage 与 known-record graph；Native 材料不可读时可回退已核静态贸易配方 |
-| 剩余能力 | 非贸易制作目录、制作台上下文事件以及独立限速市场报价仍待验证/实现 |
-| 重建前置条件 | ① RU 实机验证制作台 doodadId/craftType 上下文 ② 非贸易制作目录扩展 ③ 独立限速市场报价队列（与 Trade 共享） |
+| 剩余能力 | 非贸易制作目录、制作台上下文事件以及报价快照接回材料成本投影仍待验证/实现 |
+| 重建前置条件 | ① RU 实机验证制作台 doodadId/craftType 上下文 ② 非贸易制作目录扩展 ③ 独立限速市场报价队列（与 Trade 共享）✅ 已建 PriceQuoteQueueV3 |
 
 ---
 
@@ -164,7 +164,7 @@
 
 | 优先级 | 域 | 原因 |
 |---|---|---|
-| P1 | Fishing | Auto-R 是用户高频需求，但需要完整热键事务（安全风险高） |
+| P1 | Fishing | Auto-R 已迁入可回滚热键事务（2026-09-02），剩余仅 RU 实机 Fresh Reload 验证 |
 | P2 | BagOrganizer | RU Fresh Reload 验证是唯一阻塞，验证后可全量启用 |
 | P2 | AuctionFavorites | RU 搜索结果字段验证是唯一阻塞 |
 | P3 | Trade | 报价队列需要与 AuctionFavorites 共享设计，可一起做 |
@@ -179,6 +179,6 @@
 
 以下能力被多个域依赖，建议优先完成：
 
-1. **AuctionQueryV3 限速报价队列**：Trade + CraftAssist + AuctionFavorites 都需要显式 `GetLowestPrice` 报价，当前都已移除自动 fan-out。设计一个独立、限速、显式触发的报价服务是这三个域的共同前置。
+1. **AuctionQueryV3 限速报价队列**：~~Trade + CraftAssist + AuctionFavorites 都需要显式 `GetLowestPrice` 报价，当前都已移除自动 fan-out。~~ **已落地（2026-09-02）**：新建共享 `PriceQuoteQueueV3`（`services/rs_price_quote_queue_v3.lua`），提供显式+异步限速报价（`RequestQuote` 串行 + 560ms 间隔 + 异步回调 + requester 快照）。CraftAssist 新增 `QuoteMaterial` 命令、AuctionFavorites 的 `Quote` 命令改走共享服务，均不再直接调 `GetLowestPrice`。剩余：各 Feature 将异步报价快照接回材料成本/利润投影。
 2. **RU Fresh Reload 验证基线**：BagOrganizer / Fishing / AuctionFavorites 都需要 RU 实机验证，建议建立统一的 Fresh Reload 验证 checklist。
 3. **热键事务框架**：Fishing 的 Auto-R 需要完整可回滚热键事务。如果未来 hotkey_profiles 从 runtime_blocked 解除，也会复用这个框架。

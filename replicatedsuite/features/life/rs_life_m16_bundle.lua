@@ -19,6 +19,7 @@ local ResidentApi = rawget(_G, "X2Resident")
 local BagApi = rawget(_G, "X2Bag")
 local UnitApi = rawget(_G, "X2Unit")
 local PlayerApi = rawget(_G, "X2Player")
+local HotkeyApi = rawget(_G, "X2Hotkey")
 
 S.Features = S.Features or {}
 
@@ -259,6 +260,7 @@ local function BuildTradeMaterialProjection(name)
         local count = math.max(0, tonumber(ingredient.count) or 0)
         local item = type(meta) == "table" and meta[ingredient.materialKey] or nil
         local itemType = item and tonumber(item.itemType) or nil
+        local itemGrade = item and tonumber(item.itemGrade) or nil
         local unitCost, totalCost, status = nil, nil, "price_pending"
         local includeInCost = not (item and item.includeInCost == false)
 
@@ -269,7 +271,20 @@ local function BuildTradeMaterialProjection(name)
         else
             -- Material identity is a local fact. Price is not: GetLowestPrice is
             -- cooldown-bound and must never fan out from an ordinary route refresh.
-            complete, status = false, "explicit_quote_required"
+            -- Instead read the shared PriceQuoteQueueV3 read model: if a quote has
+            -- already completed for this itemType (via an explicit user quote in
+            -- CraftAssist/AuctionFavorites), resolve the unit cost here; otherwise
+            -- stay "explicit_quote_required" without issuing a server request.
+            local quoteQueue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
+            local quotedPrice
+            if type(quoteQueue) == "table" and type(quoteQueue.GetPriceByItemType) == "function" then
+                quotedPrice = quoteQueue:GetPriceByItemType(itemType, itemGrade)
+            end
+            if quotedPrice ~= nil then
+                unitCost, totalCost, status = quotedPrice, quotedPrice * count, "quoted"
+            else
+                complete, status = false, "explicit_quote_required"
+            end
         end
 
         local row = {
@@ -279,7 +294,7 @@ local function BuildTradeMaterialProjection(name)
             name = BoundedTradeText(materialKey, "?", TRADE_MATERIAL_KEY_MAX_CHARS),
             count = count,
             itemType = itemType,
-            itemGrade = item and tonumber(item.itemGrade) or nil,
+            itemGrade = itemGrade,
             includeInCost = includeInCost,
             unitCostCopper = unitCost,
             totalCostCopper = totalCost,
@@ -871,17 +886,42 @@ ok, err = Runtime:RegisterImplementation(Treasure.Id, Treasure); if ok ~= true t
 ------------------------------------------------------------------------
 -- Fishing (bounded observation plus reversible explicit hotkey action)
 ------------------------------------------------------------------------
-local Fishing = { Id = "life_fishing", storeId = "v3.life.fishing", enabled = false, storeLoaded = false, autoArmed = false }
+local Fishing = { Id = "life_fishing", storeId = "v3.life.fishing", recoveryStoreId = "v3.life.fishing.recovery", enabled = false, storeLoaded = false, autoArmed = false }
 S.Features.Fishing = Fishing
 Fishing.UpdateTopic = "v3.life.fishing.updated"
 Fishing.ObservationContractVersion = 1
+Fishing.HotkeyContractVersion = 1
 Fishing.State = { autoPreference = false, widgetVisible = false, widgetWindow = nil }
 InstallLifeWidgetContract(Fishing, { defaultWidth = 360, defaultHeight = 190, minWidth = 230, minHeight = 110, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 })
-Fishing.Authority = { version = 1, revision = 0, status = "idle", message = "尚未观察目标鱼动作", buffId = nil, slot = nil }
+Fishing.Authority = { version = 1, revision = 0, status = "idle", message = "尚未观察目标鱼动作", buffId = nil, slot = nil, autoArmed = false, autoAvailable = false, autoBlockedReason = "自动 R 尚未启用" }
 local FA = Fishing.Authority
 local FISH_SLOTS = { 2, 3, 4, 5, 6, 7 }
 local FISH_MAP = { [5264] = { slot = 4, text = "向左拉" }, [5265] = { slot = 3, text = "向右拉" }, [5267] = { slot = 5, text = "放线" }, [5266] = { slot = 6, text = "收线" }, [5508] = { slot = 7, text = "提竿" } }
+
+-- Auto-R hotkey transaction state (reversible; see Fishing:ArmAuto/DisarmAuto).
+-- sessionSnapshot holds the pre-fishing binding Authority for the current armed
+-- session; pendingCombatRestore flags that keys must be repaired once out of
+-- combat. The recovery store mirrors this across reloads so an unexpected
+-- addon reload can still restore the original bindings.
+Fishing.hotkey = {
+    sourceSlot = nil,        -- slot that currently holds R (the source)
+    currentSlot = nil,       -- slot R currently occupies during fishing
+    sessionSnapshot = nil,   -- { sourceSlot, sourceBinding, slots = { [slot] = {slot, binding, wasUnbound} }, touched = {} }
+    pendingCombatRestore = false,
+    recoveryLoaded = false,
+}
+local ACTION_BAR = "mode_action_bar_button"
+local ACTION_SCAN_MAX = 12
+local READ_OPTIONS = { false, true, 0, 1 }
 function FA:Refresh()
+    -- Combat guard: fishing itself never puts the player in combat, but if the
+    -- player is attacked (mob aggros / another player attacks) mid-fishing, the
+    -- hotkey writes are combat-restricted. Disarm immediately — DisarmAuto will
+    -- restore the original bindings (or defer to out-of-combat if still in
+    -- combat, where writes are forbidden).
+    if Fishing.autoArmed == true and Fishing:InCombat() then
+        Fishing:DisarmAuto(true)
+    end
     self.buffId, self.slot = nil, nil
     if S.Api:IsCapabilityAllowed("X2Unit:UnitBuffCount") ~= true or S.Api:IsCapabilityAllowed("X2Unit:UnitBuff") ~= true then self.status, self.message = "unavailable", "当前 RU 能力面未证明目标 Buff 读取"; return false end
     local ok, count = Call("X2Unit:UnitBuffCount", UnitApi, "UnitBuffCount", "target")
@@ -893,31 +933,336 @@ function FA:Refresh()
     end
     self.status = self.buffId and "ready" or "waiting"
     self.message = self.buffId and (FISH_MAP[self.buffId].text .. " · 技能栏 " .. tostring(self.slot)) or "等待鱼的动作 Buff"
+    -- A pending combat restore must progress even when only the observation
+    -- path is ticking (widget hidden); resolve it here once out of combat.
+    if Fishing.hotkey and Fishing.hotkey.pendingCombatRestore == true then Fishing:ResolvePendingCombatRestore() end
     self.revision = self.revision + 1
     PublishFeatureUpdate(Fishing, self.revision, "fishing_observation")
     return true
 end
-function FA:GetProjection() return { revision = self.revision, status = self.status, message = self.message, buffId = self.buffId, slot = self.slot, autoArmed = false, autoAvailable = false, autoBlockedReason = "自动 R 事务尚未迁入 Active V3：缺少完整快照/写入回读/异常恢复/原键恢复闭环" } end
+function FA:GetProjection() return { revision = self.revision, status = self.status, message = self.message, buffId = self.buffId, slot = self.slot, autoArmed = self.autoArmed == true, autoAvailable = self.autoAvailable == true, autoBlockedReason = self.autoArmed ~= true and self.autoBlockedReason or nil } end
 function Fishing:InCombat()
     if S.Api:IsCapabilityAllowed("X2Player:PlayerInCombat") ~= true then return true end
     local ok, value = Call("X2Player:PlayerInCombat", PlayerApi, "PlayerInCombat"); return ok ~= true or value == nil or value == true
 end
-function Fishing:ArmAuto()
-    if self:InCombat() then return false, "战斗中不能修改按键" end
-    self.autoArmed = false
-    return false, "自动 R 尚未迁入 Active V3：必须先实现原 R 槽位/目标槽位快照、写入回读、异常恢复与关闭时原键恢复事务"
+
+------------------------------------------------------------------------
+-- Auto-R reversible hotkey transaction (V3 HotkeyContract v1)
+-- 1) snapshot the R source slot + every fishing target slot
+-- 2) moving R restores the previously-occupied target first, then re-seats R
+-- 3) disable/reload/combat restores every touched slot + the R source exactly
+-- 4) a persisted recovery snapshot (v3.life.fishing.recovery) repairs keys
+--    after an unexpected addon reload
+-- All reads cross CallCapability; all writes cross ActionCapability (RU 2026-08-19
+-- combat-restricted). Combat read failure fails closed (treat as in-combat).
+------------------------------------------------------------------------
+local function HotkeyText(value)
+    if type(value) == "string" or type(value) == "number" then return tostring(value) end
+    if type(value) == "table" then
+        for _, key in ipairs({ "key", "binding", "text", "value", "name" }) do
+            if type(value[key]) == "string" or type(value[key]) == "number" then return tostring(value[key]) end
+        end
+    end
+    return nil
 end
-function Fishing:DisarmAuto() self.autoArmed = false; FA.message = "自动 R 当前不可用；技能推荐仍可独立使用"; return true end
-function Fishing:IsAutoArmed() return false end
+local function NormalizeBinding(value)
+    local text = HotkeyText(value)
+    if text == nil then return nil end
+    text = tostring(text):gsub("^%s+", ""):gsub("%s+$", "")
+    if text == "" then return nil end
+    return text
+end
+local function IsR(value)
+    local text = NormalizeBinding(value)
+    if text == nil then return false end
+    text = string.upper((text:gsub("%s+", "")))
+    return text == "R" or text == "KEY_R"
+end
+
+function Fishing:ReadSlotBinding(slot)
+    slot = tonumber(slot)
+    if slot == nil or S.Api:IsCapabilityAllowed("X2Hotkey:GetOptionBinding") ~= true then return nil end
+    for _, option in ipairs(READ_OPTIONS) do
+        local ok, value = Call("X2Hotkey:GetOptionBinding", HotkeyApi, "GetOptionBinding", ACTION_BAR, 1, option, slot)
+        if ok and value ~= nil then
+            local text = NormalizeBinding(value)
+            if text ~= nil then return text end
+        end
+    end
+    return nil
+end
+
+function Fishing:FindSourceSlot()
+    for slot = 1, ACTION_SCAN_MAX do
+        if IsR(self:ReadSlotBinding(slot)) then return slot end
+    end
+    return nil
+end
+
+function Fishing:BeginHotkeyEdit()
+    if self:InCombat() then return false, "战斗中不能修改按键" end
+    if S.Api:IsCapabilityAllowed("X2Hotkey:SetOptionBindingWithIndex") ~= true then return false, "X2Hotkey 写入不可用" end
+    if S.Api:IsCapabilityAllowed("X2Hotkey:BindingToOption") == true then
+        local ok, err = Action("X2Hotkey:BindingToOption", HotkeyApi, "BindingToOption")
+        if not ok then return false, err end
+    end
+    return true
+end
+
+function Fishing:CanRemoveSlotBinding()
+    return S.Api:IsCapabilityAllowed("X2Hotkey:RemoveOptionBinding") == true
+end
+
+function Fishing:SetSlotBindingNoSave(slot, key)
+    slot = tonumber(slot); key = NormalizeBinding(key)
+    if slot == nil then return false, "技能栏位置无效" end
+    if key == nil then return false, "缺少原按键，无法安全恢复" end
+    return Action("X2Hotkey:SetOptionBindingWithIndex", HotkeyApi, "SetOptionBindingWithIndex", ACTION_BAR, key, 1, math.floor(slot))
+end
+
+function Fishing:RemoveSlotBindingNoSave(slot)
+    slot = tonumber(slot)
+    if slot == nil then return false, "技能栏位置无效" end
+    if not self:CanRemoveSlotBinding() then return false, "RemoveOptionBinding 不可用" end
+    return Action("X2Hotkey:RemoveOptionBinding", HotkeyApi, "RemoveOptionBinding", ACTION_BAR, 1, math.floor(slot))
+end
+
+function Fishing:RestoreSlot(item)
+    if type(item) ~= "table" then return true end
+    if item.wasUnbound == true or NormalizeBinding(item.binding) == nil then
+        return self:RemoveSlotBindingNoSave(item.slot)
+    end
+    return self:SetSlotBindingNoSave(item.slot, item.binding)
+end
+
+function Fishing:SaveHotkeys()
+    if S.Api:IsCapabilityAllowed("X2Hotkey:SaveHotKey") == true then
+        local ok, err = Action("X2Hotkey:SaveHotKey", HotkeyApi, "SaveHotKey")
+        if not ok then return false, err end
+    end
+    return true
+end
+
+function Fishing:BuildSessionSnapshot(sourceSlot)
+    sourceSlot = tonumber(sourceSlot)
+    if sourceSlot == nil then return nil, "原 R 槽位无效" end
+    local snapshot = { sourceSlot = math.floor(sourceSlot), sourceBinding = "R", slots = {}, touched = {} }
+    for _, slot in ipairs(FISH_SLOTS) do
+        local binding = self:ReadSlotBinding(slot)
+        snapshot.slots[slot] = { slot = slot, binding = binding, wasUnbound = binding == nil }
+    end
+    if snapshot.slots[snapshot.sourceSlot] == nil then
+        local binding = self:ReadSlotBinding(snapshot.sourceSlot)
+        snapshot.slots[snapshot.sourceSlot] = { slot = snapshot.sourceSlot, binding = binding, wasUnbound = binding == nil }
+    end
+    snapshot.slots[snapshot.sourceSlot].binding = snapshot.slots[snapshot.sourceSlot].binding or "R"
+    return snapshot
+end
+
+-- Recovery snapshot persistence: a dedicated V3 store so an unexpected reload
+-- can restore the pre-fishing bindings. Never writes hotkeys in combat.
+function Fishing:WriteRecovery(snapshot)
+    if type(snapshot) ~= "table" then return false end
+    local ok, err = PersistLifeMutation(self, "fishing_recovery_write", function(state)
+        state.recovery = { pending = true, snapshot = Copy(snapshot) }
+        return true
+    end)
+    return ok == true, err
+end
+function Fishing:ClearRecovery()
+    return PersistLifeMutation(self, "fishing_recovery_clear", function(state)
+        state.recovery = nil
+        return true
+    end)
+end
+function Fishing:LoadRecoverySnapshot()
+    local rec = self.State and self.State.recovery or nil
+    if type(rec) == "table" and rec.pending == true and type(rec.snapshot) == "table" then return rec.snapshot end
+    return nil
+end
+
+function Fishing:RestoreSnapshot(snapshot)
+    if type(snapshot) ~= "table" then return true end
+    local sourceSlot = tonumber(snapshot.sourceSlot)
+    if sourceSlot == nil then return false, "恢复记录缺少原 R 槽位" end
+    local ok, err = self:BeginHotkeyEdit()
+    if not ok then return false, err end
+    local touched = type(snapshot.touched) == "table" and snapshot.touched or {}
+    local slots = type(snapshot.slots) == "table" and snapshot.slots or {}
+    for slotKey, wasTouched in pairs(touched) do
+        local slot = tonumber(slotKey)
+        if wasTouched == true and slot ~= nil and slot ~= sourceSlot then
+            local item = slots[slot] or slots[slotKey]
+            if type(item) ~= "table" then return false, "槽位 " .. tostring(slot) .. " 缺少恢复记录" end
+            item.slot = tonumber(item.slot) or slot
+            ok, err = self:RestoreSlot(item)
+            if not ok then return false, err end
+        end
+    end
+    ok, err = self:SetSlotBindingNoSave(sourceSlot, snapshot.sourceBinding or "R")
+    if not ok then return false, err end
+    ok, err = self:SaveHotkeys()
+    if not ok then return false, err end
+    return true
+end
+
+function Fishing:RecoverPendingOnLoad()
+    local snapshot = self:LoadRecoverySnapshot()
+    if snapshot == nil then return true end
+    if self:InCombat() then
+        self.hotkey.sessionSnapshot = snapshot
+        self.hotkey.pendingCombatRestore = true
+        S.SafeChat("检测到未完成的钓鱼改键，但当前在战斗中，脱战后自动恢复。")
+        return false
+    end
+    local ok, err = self:RestoreSnapshot(snapshot)
+    if ok then
+        self:ClearRecovery()
+        S.SafeChat("检测到上次未完成的钓鱼改键，已恢复原按键。")
+        return true
+    end
+    S.SafeChat("检测到未完成的钓鱼改键，但自动恢复失败：" .. tostring(err))
+    return false
+end
+
+function Fishing:SetRSlot(slot)
+    slot = tonumber(slot)
+    if slot == nil then return false, "技能栏位置无效" end
+    slot = math.floor(slot)
+    local snapshot = self.hotkey.sessionSnapshot
+    if type(snapshot) ~= "table" then return false, "缺少钓鱼改键快照" end
+    if tonumber(self.hotkey.currentSlot) == slot then return true end
+    local sourceSlot = tonumber(snapshot.sourceSlot)
+    local targetItem = snapshot.slots and snapshot.slots[slot] or nil
+    if slot ~= sourceSlot then
+        if targetItem == nil then return false, "槽位 " .. tostring(slot) .. " 没有备份记录" end
+        if NormalizeBinding(targetItem.binding) == nil and not self:CanRemoveSlotBinding() then
+            return false, "槽位 " .. tostring(slot) .. " 原本未绑定按键，且 RemoveOptionBinding 不可用"
+        end
+        if snapshot.touched[slot] ~= true then
+            snapshot.touched[slot] = true
+            local okW, errW = self:WriteRecovery(snapshot)
+            if not okW then snapshot.touched[slot] = nil; return false, errW or "无法保存改键恢复快照，因此拒绝修改按键" end
+        end
+    end
+    local ok, err = self:BeginHotkeyEdit()
+    if not ok then return false, err end
+    local previousSlot = tonumber(self.hotkey.currentSlot)
+    if previousSlot ~= nil and previousSlot ~= sourceSlot then
+        local previousItem = snapshot.slots and snapshot.slots[previousSlot] or nil
+        if type(previousItem) ~= "table" then return false, "上一个槽位缺少恢复记录" end
+        ok, err = self:RestoreSlot(previousItem)
+        if not ok then return false, err end
+    end
+    ok, err = self:SetSlotBindingNoSave(sourceSlot, snapshot.sourceBinding or "R")
+    if not ok then return false, err end
+    if slot ~= sourceSlot then
+        ok, err = self:SetSlotBindingNoSave(slot, "R")
+        if not ok then return false, err end
+    end
+    ok, err = self:SaveHotkeys()
+    if not ok then return false, err end
+    self.hotkey.currentSlot = slot
+    return true
+end
+
+function Fishing:ArmAuto()
+    if self.autoArmed then return true end
+    if self:InCombat() then
+        FA.autoBlockedReason = "战斗中不能修改按键"
+        S.SafeChat("战斗中不能修改按键，自动 R 未启用。")
+        return false, "战斗中不能修改按键"
+    end
+    if type(self.hotkey.sessionSnapshot) == "table" then
+        if not self:DisarmAuto(false) then return false, "上一次改键尚未恢复" end
+    end
+    local source = self:FindSourceSlot()
+    if source == nil then
+        FA.autoBlockedReason = "无法可靠读取当前 R 键所在动作栏位置"
+        S.SafeChat("钓鱼自动R未启用：无法可靠读取当前 R 键所在动作栏位置，因此不会修改键位。")
+        return false, "无法可靠读取 R 键位置"
+    end
+    local snapshot, err = self:BuildSessionSnapshot(source)
+    if snapshot == nil then
+        FA.autoBlockedReason = tostring(err)
+        S.SafeChat("钓鱼自动R未启用：" .. tostring(err))
+        return false, err
+    end
+    self.hotkey.sourceSlot = source
+    self.hotkey.sessionSnapshot = snapshot
+    self.hotkey.currentSlot = nil
+    self.autoArmed = true
+    local okW, errW = self:WriteRecovery(snapshot)
+    if not okW then
+        self.hotkey.sourceSlot = nil
+        self.hotkey.sessionSnapshot = nil
+        self.autoArmed = false
+        FA.autoBlockedReason = "无法保存恢复快照"
+        S.SafeChat("钓鱼自动R未启用：" .. tostring(errW or "无法保存恢复快照"))
+        return false, errW or "无法保存恢复快照"
+    end
+    FA.autoArmed = true
+    FA.autoAvailable = true
+    FA.autoBlockedReason = nil
+    FA.message = "自动R已启用 · 原R槽位 " .. tostring(source)
+    PublishFeatureUpdate(Fishing, FA.revision, "fishing_auto_armed")
+    return true
+end
+
+function Fishing:DisarmAuto(silent)
+    local snapshot = self.hotkey.sessionSnapshot
+    if self.autoArmed ~= true and type(snapshot) ~= "table" then
+        FA.autoArmed = false; FA.autoAvailable = false
+        return true
+    end
+    if self:InCombat() and type(snapshot) == "table" then
+        self.autoArmed = false
+        self.hotkey.pendingCombatRestore = true
+        FA.autoArmed = false
+        FA.message = "战斗中不能改键 · 等待脱战恢复"
+        PublishFeatureUpdate(Fishing, FA.revision, "fishing_auto_combat")
+        if silent ~= true then S.SafeChat("战斗中不能修改按键，原按键将在脱战后自动恢复。") end
+        return false, "战斗中不能改键，等待脱战恢复"
+    end
+    local restored, err = true, nil
+    if type(snapshot) == "table" then restored, err = self:RestoreSnapshot(snapshot) end
+    self.autoArmed = false
+    self.hotkey.pendingCombatRestore = false
+    FA.autoArmed = false
+    FA.autoAvailable = false
+    if restored then
+        self.hotkey.sourceSlot = nil
+        self.hotkey.currentSlot = nil
+        self.hotkey.sessionSnapshot = nil
+        self:ClearRecovery()
+        FA.message = "自动R已关闭 · 已恢复原按键"
+    else
+        FA.message = "自动R已关闭 · 恢复按键失败"
+    end
+    PublishFeatureUpdate(Fishing, FA.revision, "fishing_auto_disarmed")
+    if silent ~= true and not restored then S.SafeChat("钓鱼助手关闭时未能恢复原按键：" .. tostring(err)) end
+    return restored
+end
+
+function Fishing:IsAutoArmed() return self.autoArmed == true end
 RegisterStore(Fishing.storeId, "v3.life.fishing", function() return { autoPreference = false, widgetVisible = false } end, function() return Copy(Fishing.State) end, function(value)
     value = type(value) == "table" and value or {}
     Fishing.State.autoPreference = value.autoPreference == true
     Fishing.State.widgetVisible = value.widgetVisible == true
     Fishing.State.widgetWindow = type(value.widgetWindow) == "table" and Copy(value.widgetWindow) or nil
+    Fishing.State.recovery = type(value.recovery) == "table" and Copy(value.recovery) or nil
 end)
-Fishing.ApiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Player:PlayerInCombat" }
-function Fishing:Initialize() return LoadStore(self) end
+Fishing.ApiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Player:PlayerInCombat", "X2Hotkey:GetOptionBinding", "X2Hotkey:SetOptionBindingWithIndex", "X2Hotkey:RemoveOptionBinding", "X2Hotkey:SaveHotKey", "X2Hotkey:BindingToOption" }
+function Fishing:Initialize()
+    local ok, err = LoadStore(self)
+    if ok ~= true then return ok, err end
+    -- Repair any orphaned hotkey transaction from a previous session (unless
+    -- in combat, where a pending restore is scheduled instead).
+    self:RecoverPendingOnLoad()
+    return true
+end
 local FISHING_OBSERVE_TASK = "v3_life_fishing_observe"
+local FISHING_RESTORE_TASK = "v3_life_fishing_restore"
 function Fishing:ReconcileDemand(_, before, after)
     local beforeCount = tonumber(before and before.count) or 0
     local afterCount = tonumber(after and after.count) or 0
@@ -939,18 +1284,63 @@ function Fishing:ReconcileDemand(_, before, after)
             return true
         end)
         if targetOk ~= true or buffOk ~= true then S.Events:UnsubscribeOwner(self); return false, "钓鱼目标/Buff 事件订阅失败" end
+        -- Persistent low-frequency combat/restore watch: (a) detect entry into
+        -- combat while armed and disarm immediately (attacked mid-fishing), and
+        -- (b) resolve a pending restore once out of combat. AddOneShot self-arms
+        -- so it keeps ticking regardless of buff/target event activity.
+        local function armRestorePoll()
+            if not (Fishing.enabled and Fishing.consumerCount > 0) then return false end
+            if Fishing.autoArmed == true and Fishing:InCombat() then
+                Fishing:DisarmAuto(true)
+            end
+            if Fishing.hotkey.pendingCombatRestore == true then Fishing:ResolvePendingCombatRestore() end
+            S.Scheduler:AddOneShot(FISHING_RESTORE_TASK, 500, function() return armRestorePoll() end, Fishing, "P2", 1)
+            return true
+        end
+        S.Scheduler:AddOneShot(FISHING_RESTORE_TASK, 500, function() return armRestorePoll() end, Fishing, "P2", 1)
         return FA:Refresh()
     elseif beforeCount > 0 and afterCount <= 0 then
         if S.Events ~= nil then S.Events:UnsubscribeOwner(self) end
-        if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(FISHING_OBSERVE_TASK) end
+        if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then
+            S.Scheduler:RemoveTask(FISHING_OBSERVE_TASK)
+            S.Scheduler:RemoveTask(FISHING_RESTORE_TASK)
+        end
     end
     return true
 end
+function Fishing:ResolvePendingCombatRestore()
+    if self.hotkey.pendingCombatRestore ~= true then return true end
+    if self:InCombat() then return true end
+    local snapshot = self.hotkey.sessionSnapshot
+    if type(snapshot) == "table" then
+        local restored, err = self:RestoreSnapshot(snapshot)
+        if restored then
+            self.hotkey.pendingCombatRestore = false
+            self.autoArmed = false
+            self.hotkey.sourceSlot = nil
+            self.hotkey.currentSlot = nil
+            self.hotkey.sessionSnapshot = nil
+            self:ClearRecovery()
+            FA.autoArmed = false
+            FA.autoAvailable = false
+            FA.message = "自动R已关闭 · 脱战后已恢复原按键"
+            PublishFeatureUpdate(Fishing, FA.revision, "fishing_auto_restored")
+            S.SafeChat("脱战后已恢复原按键。")
+        else
+            FA.message = "自动R已关闭 · 脱战恢复失败：" .. tostring(err)
+            PublishFeatureUpdate(Fishing, FA.revision, "fishing_auto_restore_failed")
+        end
+    else
+        self.hotkey.pendingCombatRestore = false
+    end
+    return true
+end
+
 function Fishing:Enable() self.enabled = true; return true end
-function Fishing:Disable(reason) local ok, err = self.Demand:Clear(reason or "fishing_disable"); if ok ~= true then return false, err end; if S.Events then S.Events:UnsubscribeOwner(self) end; if S.Scheduler and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(FISHING_OBSERVE_TASK) end; self:DisarmAuto(); self.enabled = false; return true end
+function Fishing:Disable(reason) local ok, err = self.Demand:Clear(reason or "fishing_disable"); if ok ~= true then return false, err end; if S.Events then S.Events:UnsubscribeOwner(self) end; if S.Scheduler and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(FISHING_OBSERVE_TASK); S.Scheduler:RemoveTask(FISHING_RESTORE_TASK) end; self:DisarmAuto(); self.enabled = false; return true end
 function Fishing:AcquireConsumer(token) if not self.enabled then return false, "钓鱼功能已关闭" end return self.Demand:Acquire(token, {}, "fishing_consumer") end
 function Fishing:ReleaseConsumer(token) return self.Demand:Release(token, "fishing_consumer") end
-function Fishing:Refresh() if not self.enabled or self.consumerCount <= 0 then return true end return FA:Refresh() end
+function Fishing:Refresh() if not self.enabled or self.consumerCount <= 0 then if self.hotkey.pendingCombatRestore == true then self:ResolvePendingCombatRestore() end; return true end return FA:Refresh() end
 function Fishing:GetProjection() return FA:GetProjection() end
 Fishing.Commands = { Refresh = function(_, reason) return Fishing:Refresh(reason) end, ArmAuto = function() local ok, err = Fishing:ArmAuto(); if ok then Save(Fishing.storeId, "fishing_auto") end; return ok, err end, DisarmAuto = function() return Fishing:DisarmAuto() end,
     GetWidgetVisible = function() return Fishing:GetWidgetVisible() end, SetWidgetVisible = function(_, value, reason) return Fishing:SetWidgetVisible(value, reason) end,

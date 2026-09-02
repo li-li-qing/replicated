@@ -213,7 +213,7 @@ Add("life_activities", "life.activities", "活动", "life", 10, "世界活动、
 Add("life_trade", "life.trade", "跑商", "life", 20, "路线、多货物与实时货率；材料身份/数量可读，材料报价与利润改为独立显式询价后再接回。", {
     status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.life.trade", widgetCapable = true, settingsCapable = true,
     apiDependencies = { "X2Store:GetProductionZoneGroups", "X2Store:GetSellableZoneGroups", "X2Store:GetSpecialtyRatioBetween" },
-    apiReadiness = "official_mixed", apiPolicy = "on_demand_server_query", currentImplementation = "路线/区域/服务器货率 + bounded 材料 itemType/数量投影；普通 Refresh 不调用拍卖报价", remainingCapability = "建立独立、限速、显式 GetLowestPrice 报价队列后才能恢复材料成本/利润", evidence = "V3 Trade Authority + SPECIALTY_RATIO_BETWEEN_INFO; quote fan-out removed in M1.16.0.18.39",
+    apiReadiness = "official_mixed", apiPolicy = "on_demand_server_query", currentImplementation = "路线/区域/服务器货率 + bounded 材料 itemType/数量投影；普通 Refresh 不调用拍卖报价；共享 PriceQuoteQueueV3 报价快照已接回材料成本/利润投影（按 itemType 读共享读模型，2026-09-02）", remainingCapability = "Trade Feature 尚无显式 QuoteMaterial 命令，成本依赖用户在 CraftAssist/Auction 先询价；GetLowestPrice 返回形态待 RU 实机验证", evidence = "V3 Trade Authority + SPECIALTY_RATIO_BETWEEN_INFO; quote fan-out removed in M1.16.0.18.39; PriceQuoteQueueV3 read model wired into material cost projection 2026-09-02",
 })
 Add("life_bonds", "life.bonds", "债券 / 居民板", "life", 30, "每日居民板材料、完成状态与背包资源。", {
     status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.life.bonds", widgetCapable = true, settingsCapable = true,
@@ -236,19 +236,19 @@ Add("life_treasure", "life.treasure", "寻宝", "life", 50, "藏宝图坐标、�
     currentImplementation = "有界背包藏宝图扫描 + 500ms Demand-scoped 玩家位置/方向/距离刷新；Consumer=0 立即停任务",
     evidence = "V3 Treasure observation contract v1; bounded bag scan + Scheduler position projection; Legacy Resource/Treasure is not loaded",
 })
-Add("life_fishing", "life.fishing", "钓鱼", "life", 60, "目标鱼动作 Buff 识别与技能推荐；自动 R 在完整可回滚热键事务迁入前不可用。", {
+Add("life_fishing", "life.fishing", "钓鱼", "life", 60, "目标鱼动作 Buff 识别与技能推荐；自动 R 可回滚热键事务已迁入（战斗脱战/重载自动恢复原键位）。", {
   status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.life.fishing", widgetCapable = true, settingsCapable = true,
-  currentImplementation = "V3 页面、Demand、TARGET_CHANGED/BUFF_UPDATE 驱动的 bounded 目标 Buff observation 与技能栏推荐可用；Auto-R 按钮明确禁用",
-  remainingCapability = "需要迁移并验证原 R/目标槽位快照、写入回读、异常恢复、Reload 恢复与原键还原事务",
-  apiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Player:PlayerInCombat" }, apiReadiness = "partial", apiPolicy = "read_only_until_hotkey_transaction_verified",
-  evidence = "Active V3 Fishing observation contract v1; target/buff events refresh detached projection; fake autoArmed completion removed in M1.16.0.18.39",
+  currentImplementation = "V3 页面、Demand、TARGET_CHANGED/BUFF_UPDATE 驱动的 bounded 目标 Buff observation 与技能栏推荐；Auto-R 可回滚热键事务（快照/写入回读/异常恢复/Reload 恢复/原键还原）已实现，pendingCombatRestore 脱战自恢复",
+  remainingCapability = "需要 RU 实机 Fresh Reload 验证热键写入回读、Reload 恢复与原键还原；确认 GetOptionBinding 返回结构在 RU 客户端一致（钓鱼不进入战斗，战斗保护仅为旁路兜底）",
+  apiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Player:PlayerInCombat", "X2Hotkey:GetOptionBinding", "X2Hotkey:SetOptionBindingWithIndex", "X2Hotkey:RemoveOptionBinding", "X2Hotkey:SaveHotKey", "X2Hotkey:BindingToOption" }, apiReadiness = "partial", apiPolicy = "hotkey_writes_combat_restricted_fail_closed",
+  evidence = "Active V3 Fishing observation contract v1 + HotkeyContract v1; reversible hotkey transaction on ActionCapability writes; recovery store v3.life.fishing.recovery for reload repair; fake autoArmed completion removed in M1.16.0.18.39",
 })
 Add("life_craft_planner", "life.craft_planner", "制作规划", "life", 70, "多配方材料、持有量/缺口与已知记录制作链规划；市场成本必须走后续显式限速报价。", {
     status = "migrated_partial", lifecycle = "explicit_query", authority = "v3.craft_planner", widgetCapable = true, settingsCapable = true,
     apiDependencies = { "X2Craft:GetCraftBaseInfo", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo", "X2Craft:GetCraftTypeByItemType", "X2Bag:Capacity", "X2Bag:GetBagItemInfo" },
     apiReadiness = "official_mixed_pending_runtime", verification = "local_contract_verified_pending_ru_runtime", apiPolicy = "on_demand_read_only",
-    currentImplementation = "用户从 98 条已核制作物目录选择配方，内部解析 CraftID；bounded product/material rows、持有量/缺口与 known-record recursive graph；普通 Refresh 不发 Auction 查询",
-    remainingCapability = "非跑商制作目录的用户级检索、RU 原生制作字段一致性，以及独立限速市场报价/完整递归成本仍待完成",
+    currentImplementation = "用户从 98 条已核制作物目录选择配方，内部解析 CraftID；bounded product/material rows、持有量/缺口与 known-record recursive graph；普通 Refresh 不发 Auction 查询；共享 PriceQuoteQueueV3 提供显式 QuoteMaterial 报价命令，报价快照已接回材料 unitCost（2026-09-02）",
+    remainingCapability = "非跑商制作目录的用户级检索、RU 原生制作字段一致性，以及完整递归成本（graph 节点递归累加报价）仍待完成",
     evidence = "Known-record graph and shortage contracts; auction quote fan-out removed in M1.16.0.18.39",
 })
 Add("life_housing", "life.housing", "住宅 / 税务", "life", 80, "住宅名称、类型、所有者与当前税务信息；仅在住宅上下文按需读取。", {
@@ -280,7 +280,7 @@ Add("tools_auction", "tools.auction_favorites", "拍卖收藏", "tools", 20, "�
     status = "migrated_partial", lifecycle = "explicit_query", authority = "v3.auction", settingsCapable = true,
     apiDependencies = { "X2Auction:SearchAuctionArticle", "X2Auction:GetSearchedItemCount", "X2Auction:GetSearchedItemInfo", "X2Auction:GetLowestPrice" },
     apiReadiness = "official_mixed", verification = "local_contract_verified_pending_ru_runtime", apiPolicy = "explicit_server_query",
-    currentImplementation = "收藏增删/持久化/分页可用；AuctionQueryV3 串行拥有无 token 的 AUCTION_ITEM_SEARCHED，使用已验证 9 参数搜索并归一化 bounded 当前挂单；Quote 是单次显式 GetLowestPrice",
+    currentImplementation = "收藏增删/持久化/分页可用；AuctionQueryV3 串行拥有无 token 的 AUCTION_ITEM_SEARCHED，使用已验证 9 参数搜索并归一化 bounded 当前挂单；Quote 走共享 PriceQuoteQueueV3 显式+异步限速报价（2026-09-02）",
     remainingCapability = "RU 搜索结果的全部字段/排序语义与更丰富筛选仍待实机验证；当前结果不能被当成历史成交样本",
     evidence = "Bundled 9-parameter API signature + retained AuctionService proven call shape; AuctionQueryV3 serializes AUCTION_ITEM_SEARCHED and bounds result reads"
 })
@@ -293,8 +293,8 @@ Add("tools_craft", "tools.craft_assist", "制作台助手", "tools", 30, "制作
     status = "migrated_partial", lifecycle = "page_scoped", authority = "v3.craft", settingsCapable = true,
     apiDependencies = { "X2Craft:GetCraftTypeByItemType", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo", "X2Bag:Capacity", "X2Bag:GetBagItemInfo" },
     apiReadiness = "official_mixed_pending_runtime", verification = "local_contract_verified_pending_ru_runtime", apiPolicy = "on_demand_read_only",
-    currentImplementation = "用户从已核制作物目录选择，不输入 doodadId/craftType；bounded product/material、held/shortage 与 known-record graph；Native 材料不可读时可回退已核静态贸易配方",
-    remainingCapability = "非贸易制作目录、制作台上下文事件以及独立限速市场报价仍待验证/实现",
+    currentImplementation = "用户从已核制作物目录选择，不输入 doodadId/craftType；bounded product/material、held/shortage 与 known-record graph；Native 材料不可读时可回退已核静态贸易配方；共享 PriceQuoteQueueV3 提供显式 QuoteMaterial 命令，报价快照已接回材料 unitCost（2026-09-02）",
+    remainingCapability = "非贸易制作目录、制作台上下文事件仍待验证/实现；报价仅覆盖已询价 itemType，未询价材料仍显式询价",
     evidence = "Craft shared read model; auction quote fan-out removed in M1.16.0.18.39",
 })
 Add("tools_instance_browser", "tools.instance_browser", "副本目录", "tools", 40, "浏览客户端当前副本分类、入场次数与运行时副本ID；静态数据库区域ID与运行时副本ID严格分离。", {
