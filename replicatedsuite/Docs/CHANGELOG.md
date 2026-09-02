@@ -2,6 +2,64 @@
 
 > **⚠️ 架构变更声明（2026-09-01/02）**：旧版（Legacy/Professional）源码已全部物理删除（163 文件、−10.3 万行，commit 09010c0）。本文件是历史变更日志，早期条目（M1.16.0.18.x 及之前）可能引用已删文件（`rp_*`/`rh_*`/`rg_*`/`rdps_*`/`modules/professional/`/`S.State`/`S.Storage`/`rs_state`/`rs_storage`/`rs_module_manager`/`rs_module_sandbox`/`ReplicatedSuiteModuleSandbox`/`ReplicatedHealerModule`/`ReplicatedPlatesModule`/`ReplicatedDps` 等）。这些引用仅作历史记录，不代表当前代码。当前架构以 [`Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md`](Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md) 为准。
 
+## M1.16.0.18.54 — RSUI 高级布局模版：外部独立审查（P2/P3）收口（2026-09-02）
+
+- **背景**：.53 交付后交由另一 AI 做独立复审，结论「有条件通过」：2 个 bug 修复正确、其余 3 类无 bug、harness/audit 实跑通过；但提出 **3 项 P2 条件 + 5 项 P3 建议**。本轮全部落实（`LayoutTemplates.version` 2 → 3，行为契约有变）。
+- **P2-1 SplitToolbar 窄窗 spacer 重叠零报告**：`SplitToolbarPolicy:Resolve` 命中 `spacerMinWidth` 钳制分支时 spacer 矩形会真实伸入右组（fail-closed 设计意图），但此前无任何记账。改为**返回第二值 `clamped`**（单返回值调用方不受影响，向后兼容），`Layout` 在 `clamped` 时计入 `RSUI.metrics.splitToolbarSpacerClamped`，注释明示「重叠可见是退化信号」。
+- **P2-2 `SafeHandler` 返回值未检查**：`CollapsibleGroup` headerHit 绑定改为 `local bound = UI:SafeHandler(...)`，绑定失败（widget 不可用 / SetHandler 被拒 / 返回 false）计入 `RSUI.metrics.collapsibleHeaderBindFailed`。绑定丢失在运行时完全不可见（标题条照常渲染、只是点了没反应），不能假定成功。
+- **P2-3 Steps 的 `state` 枚举无消费方**：文件头注释宣称「视觉层只需渲染三种色调」，但 `Layout` 只用 `step.width/x`。确立**可选消费契约**：子项暴露 `SetStepState(state, index)` 即由 `Layout` 调用（`"done"/"active"/"pending"`），按 `rsUiStepState` 做 **diff**（状态未变不重入，重复布局零开销；标记先于调用，抛错消费方不会被反复重试）；无该方法的子项是纯几何容器、零耦合不被触碰。注释同步改写。
+- **P3 低风险项一并收口**：
+  - `HeaderBodyFooter:Measure` 消除首批遗留的同型坑形（`local hw, hh = header and Measure(...) or 0, 0` + 纠正行），改 CollapsibleGroup 同款显式双值，三区高度一次算准（旧写法功能正确但依赖纠正行，脆弱）。
+  - `SetExpanded` 内 `local next` 遮蔽全局 `next()` 迭代器 → 改名 `nextState`。
+  - headerHit 按钮 `titleFontSize` 回退由 `font.small/10` 对齐为 `font.section/13`（与 title Label 同字段一致；按钮文本为空，零行为影响）。
+  - 审查文档行号漂移（Steps 751 → 764 等）与 §2.3 措辞已修正。
+- **metrics 登记补齐**：`rs_ui_component_core.lua` 新增 `collapsibleHeaderUnavailable`（此前被引用但漏登记）/ `collapsibleHeaderBindFailed` / `splitToolbarSpacerClamped` 三字段的**初始化、快照、ResetMetrics** 三处登记，沿用全库 `(tonumber(...) or 0) + 1` 记账惯例。
+- **harness 50 → 68 断言，并修复一处会令断言空转的 mock 缺陷（重要）**：所有 `Create*/Set*` mock 此前是**点号声明但被冒号调用**，`self` 落进 `parent`，参数整体错位一位——widget id 取成了父对象，且所有 `SetExtent`/`SetAnchor` 写都落到 `UI` 表而非 widget 上。即 harness 看着全绿，实际**从未验证任何原生写入**。全部签名补显式 `self` 后（并对非 table 入参返回 false 以暴露错位），新增断言：headerHit 的真实 id/几何 `createArgs`、SafeHandler 标签、主题背景清零调用、绑定失败计数、无 Button 表面 fail-open 计数、Steps 状态交付/diff/变更重投、窄窗 clamp 计数、HeaderBodyFooter 三区高度求和、重展开后 `viewportVisible==true` 与 Measure 回到 106。
+- **验证**：harness **68/68 PASS**；`luac -p` 三个文件语法通过；Foundation Audit **PASS**（`toc=199 activeLua=199 allLua=208 globals=0 presentation=0 rawNative=0 rawScope=0 detachedWidgetState=0 apiDependency=0 apiCapability=0 businessIds=0 auctionEventOwners=0`）。
+- **未验证项**：`SetStepState` 契约尚无首个业务消费方（首个接入者需自带断言）；Button 覆盖层 z-order 与 0-alpha 背景仍需 RU 实机目测；harness 组件核仍是简化重实现，非 dofile 真实组件核。
+
+## M1.16.0.18.53 — RSUI 高级布局模版（第二批：DetailRow / Steps / CollapsibleGroup / SplitToolbar）审查修复收口（2026-09-02）
+
+- **背景**：第二批 4 类模版（CollapsibleGroup/DetailRow/Steps/SplitToolbar，随 Request J 已落盘 `rs_ui_layout_templates.lua` v2、toc.g 已注册）此前处于「未审查、含真实 bug、CHANGELOG/审查文档/memory 仍停留在第一批 .52」的半成品状态。本轮按审查文档 §8 候选清单完成逐行审查 + 修复 + harness 扩展 + 文档收口。
+- **审查结论（其余 3 类）**：`DetailRow`（label 区 + 等宽右对齐 value 列，窄窗先让 label 收缩）几何一致；`Steps`（末格吸收余数，3×94+2×8 余量收敛到 96，末格到行尾零尾缝）正确，Measure 第 751 行 `math.max(0, N(spec.width,0)) or 0` 的 `or 0` 冗余无害；`SplitToolbar` 复用 `ToolbarPolicy:Partition` 三区，左右组距相消正确（`iw-leftUsed-rightUsed`），spacer 失败收敛到 `spacerMinWidth` 为 fail-closed 设计。无同类 bug。
+- **修复 bug 1（CollapsibleGroup:Measure 展开高度恒缺内容）**：`local dw, dh = self.expanded and Measure(...) or 0, 0` 是 Lua 逗号优先级陷阱——`or` 优先级高于 `,`，实际解析为 `dw = (expanded and Measure(...) or 0); dh = 0`，**dh 恒为 0**，展开态测量永远不含内容高度（折叠/展开在同一父容器内切换时容器高度不会随内容伸缩）。改为显式 `if expanded and content ~= nil ... then dw, dh = Measure(...) end` 双值赋值。
+- **修复 bug 2（headerHit 折叠点击在 RU 静默失效）**：旧实现用 `UI:CreateEmptyWidget(..., pickable=true)` + `SetOnClick/OnClick`，但全代码库该二方法零使用、EmptyWidget 面在 RU 客户端收不到 OnClick（权威注释见 `rs_ui_data_views.lua`），真实客户端折叠点击永远不触发。改为框架标准点击绑定：`UI:CreateButton`（空文本、置于 title/chevron Label 之下，Label 不抢点击）+ `UI:SafeHandler(headerHit, "OnClick", ..., "<id>:collapsible_header")`（generation/崩溃保护 + 随 owner 释放）；按钮主题背景经 `S.Theme:SetBackgroundOpacity(headerHit, 0)` 清零（pcall + 存在性守卫，视觉与 GroupBox 头部一致，chevron 承担可点暗示）。CreateButton 失败走 fail-open 降级（记录 `RSUI.metrics.collapsibleHeaderUnavailable`，组件照常渲染、`SetExpanded` API 仍可用）。
+- **验证**：harness 扩展至 **50/50 PASS**（`.workbuddy/tmp/rsui_layout_templates_harness.lua`，不入包）——新增断言覆盖：展开态 Measure 含内容高度（10+28+8+50+10=106）、spec 固定宽保持、headerHit 为 native Button 表面、SafeHandler 绑定存在、header 点击→折叠（Measure 收缩到仅 header+padding=48、content viewport 隐藏）、再次点击→展开，配合 SafeHandler spy + `FireWidgetClick` 走真实绑定路径；`luac -p` 语法通过；Foundation Audit 全 PASS（`toc=199 activeLua=199 allLua=208 globals=0 presentation=0 rawNative=0 rawScope=0 ...`，toc 双向 0 差异）。mock UI 的 `SafeHandler` spy 修正为冒号调用兼容（补收隐式 self）。
+- **未验证项**：Button 覆盖层 + 0-alpha 背景需 RU 实机构建目测（z-order：Button 在底、Label 在上不抢点击；点击热区高度 `headerHeight` 整条）；`CreateButton` 以 border Panel 为父的成功率依赖 Factory `CreateChild(type="button")`，与 data_views 行按钮同一路径（实机先行模式）。
+
+## M1.16.0.18.52 — RSUI 高级布局模版（FormRow / KeyValueRow / Toolbar / HeaderBodyFooter / GroupBox）（2026-09-02）
+
+- **背景**：RSUI 底层已有齐全的 UMG-like 基础积木（HorizontalBox/VerticalBox/Grid/UniformGrid/WrapBox/ScrollBox/SplitView/ScaleBox/SafeZone 等），但缺一层「组合式、跨分辨率稳定」的高级布局模版——每个 Feature 页面仍在手写 label/control 行、工具栏左/右分栏、页头/页体/页脚三区堆叠、带标题分组框等重复模式。
+- **新增 `ui/framework/rs_ui_layout_templates.lua`（5 类注册类型 + 4 个纯策略函数）**：
+  - `FormRow`：label | control | (hint) 单行；label 有 `labelShare` 占比，窄行先压 label 到 `labelMinWidth`、再压 control、最后丢 hint，绝不产生负宽。纯策略 `RSUI.FormRowPolicy:Resolve(...)`。
+  - `KeyValueRow`：label ...... value（value 右对齐、受 `valueMaxShare` 上限）；纯策略 `RSUI.KeyValueRowPolicy:Resolve(...)`。
+  - `Toolbar`：`slot.group = "left" | "right" | "spacer"` 三区；left 靠左、right 靠右、spacer 填中间；每项 auto 宽（不再被 fill 撑满整条）；纯策略 `RSUI.ToolbarPolicy:Partition(...)`。
+  - `HeaderBodyFooter`：页头(auto)/页体(fill)/页脚(auto) 三区堆叠；纯策略 `RSUI.HeaderBodyFooterPolicy:Resolve(...)`。
+  - `GroupBox`：带标题分组框（Border 面 + 标题条 + content + 可选 footer），由 Border 组合而成、继承完整 Measure/Arrange 路径。
+- **设计约定**：全部由现有 primitives 组合，不建第二套布局 Authority；纯策略函数与类型并存（`SplitViewPolicy` 先例），tiny-window/序列测试可零 Native 副作用地跑纯数学；事件/布局驱动，无 Tick/OnUpdate/轮询；Measure 不写 Native 布局，Layout 只走既有 Diff/Anchor 权威。
+- **修复 harness 暴露的 Toolbar 布局 bug**：初版 Toolbar 对每项 `Align(start, iw, dw, slot.hAlign)`，默认 `hAlign="fill"` 导致每个按钮被撑满整条工具栏宽度（left 项 width=400）。改为每项按自身测得宽度 auto 布局（`Align(start, dw, dw, "left")`）。
+- **注册**：`toc.g` 在 `ui/framework/rs_ui_adaptive_panels.lua` 之后新增 `ui/framework/rs_ui_layout_templates.lua`（依赖 `RSUI.LayoutUtil` 与面板类型，需在其后加载）。
+- **验证**：`luac -p` 语法通过（用内置 `luabin/luac.exe`）；Foundation Audit（`toc=199 activeLua=199 allLua=208 globals=0 presentation=0 rawNative=0 rawScope=0 ...`，toc 双向 0 差异；Audit 的 Lua parse FAIL 仅因审计工具未找到 texluac/luac 到 PATH，非代码问题）；自定义 harness `rsui_layout_templates_harness.lua` 20/20 PASS（`.workbuddy/tmp/`，不入包）——4 个纯策略 + 5 类模版的 measure/arrange/responsive/no-overlap/right-align/fill-remainder/Measure-purity 断言。
+- **未验证项**：5 类模版尚未在 RU 客户端实机构建（Factory 注册与 Lua 静态覆盖无法替代真实构建序列）；`GroupBox` 的标题条 Drawable accentStrip 视觉需 RU 实测；纯策略函数依赖 `RSUI.LayoutUtil` 已加载（`rs_ui_panels.lua` 先行）。
+
+## M1.16.0.18.51 — 共享限速报价队列 PriceQuoteQueueV3（共享前置 #1 落地）（2026-09-02）
+
+- **背景**：REBUILD_ROADMAP 共享前置 #1——Trade/CraftAssist/AuctionFavorites 三个域都需要显式 `X2Auction:GetLowestPrice` 报价，但该 API 是 `Cooldown=500ms` 的 server_query，普通 Refresh 绝不能 fan-out。此前三域均已移除自动 fan-out（M1.16.0.18.39），但缺一个统一、限速、显式触发的报价服务。
+- **新增 `services/rs_price_quote_queue_v3.lua`（`S.Services.PriceQuoteQueueV3`）**：
+  - `RequestQuote(requester, itemType, itemGrade, callback)`：显式+异步报价入口。入队后由单一 Scheduler 串行 lane（`intervalMs=560ms ≥ 官方 500ms 冷却`）逐个 drain，一次只发一个原生调用，规避冷却冲突。
+  - 异步回调：每请求完成通过内部事件总线 topic `v3.price_quote.completed` 广播 + 可选 `callback(snapshot)` 回传；requester 级快照（`GetSnapshot`）供投影只读回读，不重复发服务器请求。
+  - fail-closed：能力门拒绝/返回不可读一律产出 `status`（`failed`/`unavailable`/`capability_unavailable`），绝不在 `GetLowestPrice` 返回形态未验证时伪造价格；`NormalizeQuote` 保守接受 number/string/若干常见字段，未验证字段不作为成交样本。
+  - 上限 `maxQueue=64`、去重由 requester 快照覆盖、空队列自动停 lane（`_StopLane`）。
+- **收敛直接调用**：`features/rs_business_bridge.lua` 中两处报价调用收敛到共享服务——`auctionCommands.Quote`（AuctionFavorites，原先直接 `Call GetLowestPrice`）与新增 `CraftCommands().QuoteMaterial`（CraftAssist 显式单材料报价命令）均改走 `PriceQuoteQueueV3:RequestQuote`；`CraftQuote` 桩保持「Refresh 不自动报价」诚实语义（注释指向共享服务）。
+- **注册**：`toc.g` 在 `services/rs_auction_query_v3.lua` 之后新增 `services/rs_price_quote_queue_v3.lua`（双向 0 差异）。
+- **报价快照接回投影 + itemType 索引 + 修复 `_FailPending` 丢弃失败快照 bug**：
+  - 新增 `pricesByItemType[itemType]` 跨 Feature 读模型 + `GetPriceByItemType(itemType, itemGrade)`（grade 软过滤、omit-grade 返回最近价、未知返回 nil 而非 0）；`CompletePending` 仅在 `status=="ready"` 时写入索引（失败/不可读不覆盖好价，fail-closed）。
+  - Trade `BuildTradeMaterialProjection` 材料循环改为读共享读模型：itemType 已有完成报价时填 `unitCostCopper`/`costCopper`（status=`quoted`），否则保持 `explicit_quote_required`；**只读不发服务器请求**。
+  - CraftAssist `CraftQuote` 从「恒返回 explicit_quote_required 桩」改为读共享读模型：有价返回 `price, "quoted"`，无价保持桩语义。
+  - **修复 bug**：`_FailPending` 原先先清 `Q.pending` 再调 `CompletePending`，导致 `CompletePending` 读到 nil 静默丢弃失败快照（第二次报价失败时 `GetSnapshot` 仍返回 `queued`）。改为交 `CompletePending` 单点清空。
+- **验证**：`luac -p` 语法通过；Foundation Audit 全 PASS（`toc=198 activeLua=198 allLua=207 globals=0 ...`）；自定义 harness `price_quote_drain_harness.lua`（14/14）+ `price_quote_read_model_harness.lua`（8/8）全 PASS（`.workbuddy/tmp/`，不入包）。
+- **未验证项**：`GetLowestPrice` 在 RU 客户端的真实返回形态需 RU 实机 Fresh Reload 验证；`pricesByItemType` 为会话级内存索引（重载清空，未做自动重建以避免重载 fan-out）；Trade Feature 尚无 `QuoteMaterial` 命令（成本依赖用户在 CraftAssist/Auction 先询价）。
+
 ## M1.16.0.18.50 — StatusDisplay 头顶全显（headShowAll）+ 勾选即见联动（参考 addon show-all 精华）（2026-08-31）
 
 - **用户报告 Bug（延续）**：.49 修复渲染器 `HasTracked` 总开关后，勾选"头顶显示"且已追踪若干状态时图标仍不出现。深挖发现残留门禁：`ProjectPlates` 的 `BoundedTracked` 在投影层按 tracked 行过滤，tracked 列表为空（或玩家身上的 Buff 不在追踪列表）时 buffs/debuffs lane 产出 0 行——渲染器虽已启动但无行可画，表现为"任何图标都不出现"。对照 GitHub 同类 addon（belovres/ArcheRage-addons，RU 同客户端）精华：`targetdebufftracker/self.lua` 用 `target_buffs[strBuffId] ~= nil or showAllBuffs` 做**全显开关**，空 tracked 列表时用户开箱即可看到全部在场 Buff/Debuff；`buffcaptracker.lua` 单窗口容器 + OnUpdate；`distracker.lua`/`gstracker.lua` nil 时移屏 (5000,5000) + z>0 深度门禁。

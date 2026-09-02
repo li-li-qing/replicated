@@ -44,6 +44,7 @@ ui/framework/rs_ui_primitives.lua
 ui/framework/rs_ui_panels.lua
 ui/framework/rs_ui_scrollbar.lua
 ui/framework/rs_ui_adaptive_panels.lua
+ui/framework/rs_ui_layout_templates.lua
 ui/framework/rs_ui_safety_layout.lua
 ui/framework/rs_ui_layout_debug.lua
 ui/framework/rs_ui_selection.lua
@@ -92,6 +93,7 @@ services/rs_gear_service_v3.lua
 services/rs_alerts_service.lua
 services/rs_screen_projection_v3.lua
 services/rs_auction_query_v3.lua
+services/rs_price_quote_queue_v3.lua
 features/rs_feature_registry.lua
 features/rs_feature_runtime.lua
 features/combat/analytics/rs_combat_metric_common.lua

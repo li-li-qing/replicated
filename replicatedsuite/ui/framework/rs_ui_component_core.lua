@@ -79,6 +79,12 @@ local RSUI = {
         layoutStabilizationPasses = 0,
         layoutUnstableDeferrals = 0,
         siblingOverlapIssues = 0,
+        -- Advanced layout-template degradation counters (rs_ui_layout_templates).
+        -- Non-zero means a template hit a geometry dead end and degraded on
+        -- purpose; these are diagnostic signals, not errors.
+        collapsibleHeaderUnavailable = 0,
+        collapsibleHeaderBindFailed = 0,
+        splitToolbarSpacerClamped = 0,
         externalLayoutInvalidations = 0,
         duplicateTypeRegistrations = 0,
         invalidationCoalesces = 0,
@@ -1441,6 +1447,9 @@ function RSUI:GetSnapshot()
         layoutStabilizationPasses = tonumber(self.metrics.layoutStabilizationPasses) or 0,
         layoutUnstableDeferrals = tonumber(self.metrics.layoutUnstableDeferrals) or 0,
         siblingOverlapIssues = tonumber(self.metrics.siblingOverlapIssues) or 0,
+        collapsibleHeaderUnavailable = tonumber(self.metrics.collapsibleHeaderUnavailable) or 0,
+        collapsibleHeaderBindFailed = tonumber(self.metrics.collapsibleHeaderBindFailed) or 0,
+        splitToolbarSpacerClamped = tonumber(self.metrics.splitToolbarSpacerClamped) or 0,
         activeBuildScopes = #self.buildScopeStack,
         buildScopesStarted = tonumber(self.metrics.buildScopesStarted) or 0,
         buildScopesCommitted = tonumber(self.metrics.buildScopesCommitted) or 0,
@@ -1576,6 +1585,7 @@ function RSUI:ResetMetrics()
     self.metrics.layoutRootsQueued, self.metrics.layoutFlushes, self.metrics.layoutRootsReflowed = 0, 0, 0
     self.metrics.typographyInvalidations = 0
     self.metrics.layoutFlushDeferrals, self.metrics.layoutStabilizationPasses, self.metrics.layoutUnstableDeferrals, self.metrics.siblingOverlapIssues = 0, 0, 0, 0
+    self.metrics.collapsibleHeaderUnavailable, self.metrics.collapsibleHeaderBindFailed, self.metrics.splitToolbarSpacerClamped = 0, 0, 0
     self.metrics.byType = {}
     if self.TextLayout ~= nil and self.TextLayout.metrics ~= nil then
         self.TextLayout.metrics.measures, self.TextLayout.metrics.wraps, self.TextLayout.metrics.fits, self.TextLayout.metrics.overflows = 0, 0, 0, 0
