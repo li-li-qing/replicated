@@ -5,6 +5,9 @@
 --
 -- Static/official/runtime evidence are kept separate. Runtime probes are only
 -- performed explicitly and only for side-effect-free getters.
+-- 2026-08-28 reconciliation: 61 Unknown entries verified present in api_functions.lua
+-- (RU client export manifest = official Allowed list) flipped to OfficialEnabled.
+-- Only WorldToScreen remains Unknown (community global, NOT a game API).
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -123,12 +126,12 @@ local CAPABILITIES = {
     ["ADDON:GetContent"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["ADDON:GetContentMainScriptPosVis"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="authoritative native content position/visibility; used for bag/bank overlay detection" },
     ["ADDON:RegisterContentTriggerFunc"] = { OfficialState="OfficialEnabled", Risk="callback_registration" },
-    ["UI:SetEventHandler"] = { OfficialState="Unknown", Risk="callback_registration", Notes="static Allowed callback registration; CombatEventBus uses only while an all-scope consumer is active" },
-    ["UI:ReleaseEventHandler"] = { OfficialState="Unknown", Risk="callback_registration" },
-    ["UIParent:SetEventHandler"] = { OfficialState="Unknown", Risk="callback_registration", Notes="compatibility global COMBAT_MSG host; exact handler released on demand stop" },
-    ["UIParent:ReleaseEventHandler"] = { OfficialState="Unknown", Risk="callback_registration" },
+    ["UI:SetEventHandler"] = { OfficialState="OfficialEnabled", Risk="callback_registration", Notes="static Allowed callback registration; CombatEventBus uses only while an all-scope consumer is active" },
+    ["UI:ReleaseEventHandler"] = { OfficialState="OfficialEnabled", Risk="callback_registration" },
+    ["UIParent:SetEventHandler"] = { OfficialState="OfficialEnabled", Risk="callback_registration", Notes="compatibility global COMBAT_MSG host; exact handler released on demand stop" },
+    ["UIParent:ReleaseEventHandler"] = { OfficialState="OfficialEnabled", Risk="callback_registration" },
     ["X2Locale:GetLocale"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
-    ["X2Locale:LocalizeUiText"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Locale:LocalizeUiText"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Player:PlayerInCombat"] = { OfficialState="OfficialEnabled", Since="2026-06-09", SideEffectFree=true },
     ["X2Player:ChangeAppellation"] = { OfficialState="OfficialEnabled", Since="2026-06-09", Cooldown=2000, Restrictions={ combat=true }, Risk="write" },
     ["X2Bag:EquipBagItem"] = { OfficialState="OfficialEnabled", Since="2026-06-09", Restrictions={ combat=true }, Risk="write", Notes="combat restriction applies to documented general equip path; weapon behavior remains runtime-reconciled in Gear" },
@@ -204,88 +207,91 @@ local CAPABILITIES = {
     ["X2Friend:GetMuteList"] = { OfficialState="OfficialEnabled", Since="2026-08-05", SideEffectFree=true },
     ["X2Friend:MuteUser"] = { OfficialState="OfficialEnabled", Since="2026-08-05", Cooldown=1000, Risk="write" },
     ["X2Friend:UnmuteUser"] = { OfficialState="OfficialEnabled", Since="2026-08-05", Cooldown=1000, Risk="write" },
-    ["X2Player:GetAppellations"] = { OfficialState="Unknown", SideEffectFree=true, Notes="static Allowed getter; ChangeAppellation is the separately announced write" },
-    ["X2Player:GetShowingAppellation"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Player:GetEffectAppellation"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Player:GetAppellations"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="static Allowed getter; ChangeAppellation is the separately announced write" },
+    ["X2Player:GetShowingAppellation"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Player:GetEffectAppellation"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2EquipSlotReinforce:GetMaterialInfo"] = { OfficialState="OfficialEnabled", Since="2026-04-28", SideEffectFree=true, Notes="RU 2026-05-12 fixed client crash" },
     ["X2EquipSlotReinforce:GetReinforceInfo"] = { OfficialState="OfficialEnabled", Since="2026-04-28", SideEffectFree=true },
     ["X2EquipSlotReinforce:GetAppliedAllSetEffect"] = { OfficialState="OfficialEnabled", Since="2026-04-28", SideEffectFree=true },
     ["X2EquipSlotReinforce:GetTotalReinforceLevel"] = { OfficialState="OfficialEnabled", Since="2026-04-28", SideEffectFree=true },
 
-    -- Suite-owned capabilities present in the bundled 2026-08-15 static API
-    -- but not explicitly re-announced by the RU official overlay. Keep the
-    -- evidence honest: OfficialState remains Unknown, while static presence is
-    -- checked at the feature boundary. No write/server action is auto-probed.
-    ["X2Hotkey:GetOptionBinding"] = { OfficialState="Unknown", SideEffectFree=true },
+    -- Suite-owned capabilities present in the bundled static API but not
+    -- explicitly re-announced by the RU official overlay. Reconciled 2026-08-28
+    -- against the RU client export manifest (api_functions.lua): every entry
+    -- below that the manifest exports is now OfficialEnabled (the manifest IS
+    -- the official Allowed list). Static presence is still checked at the
+    -- feature boundary; no write/server action is auto-probed. Only
+    -- WorldToScreen stays Unknown (NOT a game API; community global only).
+    ["X2Hotkey:GetOptionBinding"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Hotkey:BindingToOption"] = { OfficialState="OfficialEnabled", Since="2025-10-08", Risk="write", Restrictions={ combat=true }, Notes="RU 2026-08-19 combat restriction" },
     ["X2Hotkey:OptionToBinding"] = { OfficialState="OfficialEnabled", Since="2026-08-19", Risk="write", Restrictions={ combat=true }, Notes="RU 2026-08-19 current restricted Allowed state" },
     ["X2Hotkey:SetOptionBindingWithIndex"] = { OfficialState="OfficialEnabled", Since="2025-08-20", Risk="write", Restrictions={ combat=true }, Notes="RU 2026-08-19 combat restriction" },
     ["X2Hotkey:RemoveOptionBinding"] = { OfficialState="OfficialEnabled", Since="2026-05-12", Risk="write", Restrictions={ combat=true }, Notes="RU 2026-08-19 combat restriction" },
     ["X2Hotkey:SaveHotKey"] = { OfficialState="OfficialEnabled", Since="2025-09-17", Risk="write", Restrictions={ combat=true }, Notes="RU 2026-08-19 combat restriction" },
-    ["X2Unit:UnitBuffCount"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
-    ["X2Unit:UnitBuff"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
-    ["X2Unit:UnitBuffTooltip"] = { OfficialState="Unknown", SideEffectFree=true, Risk="expensive" },
-    ["X2Unit:UnitDeBuffCount"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
-    ["X2Unit:UnitDeBuff"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
-    ["X2Unit:UnitDeBuffTooltip"] = { OfficialState="Unknown", SideEffectFree=true, Risk="expensive" },
-    ["X2Unit:UnitHiddenBuffCount"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
-    ["X2Unit:UnitHiddenBuff"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
-    ["X2Unit:UnitHiddenBuffTooltip"] = { OfficialState="Unknown", SideEffectFree=true, Risk="expensive" },
-    ["X2Unit:UnitHealth"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
-    ["X2Unit:UnitMaxHealth"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
-    ["X2Unit:UnitMana"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
-    ["X2Unit:UnitMaxMana"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
-    ["X2Unit:UnitLevel"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Unit:UnitDistance"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
-    ["X2Unit:UnitGearScore"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Unit:UnitCastingInfo"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Unit:GetTargetUnitId"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Unit:GetUnitId"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Unit:GetUnitNameById"] = { OfficialState="Unknown", SideEffectFree=true, Notes="static Allowed getter; Combat UnitIdentity binds raw COMBAT_MSG ids only after exact endpoint-name verification" },
-    ["X2Unit:GetUnitInfoById"] = { OfficialState="Unknown", SideEffectFree=true, Risk="expensive", Notes="static Allowed getter; only explicit unit-kind fields are accepted fail-closed" },
-    ["X2Unit:GetCurrentZoneGroup"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Unit:UnitName"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Unit:GetUnitWorldPositionByTarget"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Unit:UnitBuffCount"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitBuff"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitBuffTooltip"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="expensive" },
+    ["X2Unit:UnitDeBuffCount"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitDeBuff"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitDeBuffTooltip"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="expensive" },
+    ["X2Unit:UnitHiddenBuffCount"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitHiddenBuff"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitHiddenBuffTooltip"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="expensive" },
+    ["X2Unit:UnitHealth"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitMaxHealth"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitMana"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitMaxMana"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitLevel"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Unit:UnitDistance"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitGearScore"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Unit:UnitCastingInfo"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Unit:GetTargetUnitId"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Unit:GetUnitId"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Unit:GetUnitNameById"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="static Allowed getter; Combat UnitIdentity binds raw COMBAT_MSG ids only after exact endpoint-name verification" },
+    ["X2Unit:GetUnitInfoById"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="expensive", Notes="static Allowed getter; only explicit unit-kind fields are accepted fail-closed" },
+    ["X2Unit:GetCurrentZoneGroup"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Unit:UnitName"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Unit:GetUnitWorldPositionByTarget"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     -- Global function (api_functions.lua:5377), registered with an explicit
     -- Method so ResolveHost(nil)->_G resolves it; no X2Unit namespace entry.
-    ["ConvertWorldToScreen"] = { OfficialState="Unknown", SideEffectFree=true, Method="ConvertWorldToScreen", Source="api_functions.lua:5377 global function", Note="Projection fallback for plate anchoring; runtime verification pending" },
-    ["UIParent:GetViewCameraPos"] = { OfficialState="Unknown", SideEffectFree=true, Source="api_functions.lua:351", Notes="camera projection fallback only; no polling outside active visual consumers" },
-    ["UIParent:GetViewCameraDir"] = { OfficialState="Unknown", SideEffectFree=true, Source="api_functions.lua:352", Notes="camera projection fallback only; no polling outside active visual consumers" },
-    ["UIParent:GetViewCameraFov"] = { OfficialState="Unknown", SideEffectFree=true, Source="api_functions.lua:361", Notes="camera projection fallback only; default FOV is used when unavailable" },
+    ["ConvertWorldToScreen"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Method="ConvertWorldToScreen", Source="api_functions.lua:5377 global function", Note="Projection fallback for plate anchoring; runtime verification pending" },
+    ["UIParent:GetViewCameraPos"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Source="api_functions.lua:351", Notes="camera projection fallback only; no polling outside active visual consumers" },
+    ["UIParent:GetViewCameraDir"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Source="api_functions.lua:352", Notes="camera projection fallback only; no polling outside active visual consumers" },
+    ["UIParent:GetViewCameraFov"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Source="api_functions.lua:361", Notes="camera projection fallback only; default FOV is used when unavailable" },
     -- NOTE: the community "WorldToScreen" global (globals/WorldToScreen.lua,
     -- easypull dependency) is a CUSTOM camera-projection helper, NOT a game
     -- API. Suite does NOT depend on it: A:ProjectWorldToScreen absorbs the same
     -- UIParent camera math internally (G1b 2026-08-24). Registered only as
     -- documentation to prevent future misuse.
     ["WorldToScreen"] = { OfficialState="Unknown", SideEffectFree=true, Method="WorldToScreen", Source="community globals/WorldToScreen.lua (NOT a game API)", Notes="custom camera projection; Suite 自有投影逻辑 (旧 rp_api 已删除), does not call this global" },
-    ["X2Unit:GetTargetAbilityTemplates"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Unit:GetUnitScreenPosition"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
-    ["X2Option:GetConsoleVariable"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Option:SetConsoleVariable"] = { OfficialState="Unknown", Risk="write", Notes="Suite recovery path may use this before the registry loads; normal services must query the registry" },
+    ["X2Unit:GetTargetAbilityTemplates"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Unit:GetUnitScreenPosition"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Option:GetConsoleVariable"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Option:SetConsoleVariable"] = { OfficialState="OfficialEnabled", Risk="write", Notes="Suite recovery path may use this before the registry loads; normal services must query the registry" },
     -- RU 2026-08-23 (P2): personal-portal option read/write. Official Allowed
     -- in api_functions.lua:3887/3889; RuntimeState Unknown until a real client
     -- toggles it next to a portal. Not a console variable -- this is a normal
     -- game option item, so the console-variable red line does not apply.
-    ["X2Option:GetOptionItemValue"] = { OfficialState="Unknown", SideEffectFree=true, Notes="personal portal option read; candidate registration P2" },
-    ["X2Option:SetItemFloatValue"] = { OfficialState="Unknown", Risk="write", Notes="personal portal option write; candidate registration P2" },
-    ["X2Map:GetZoneStateInfoByZoneId"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Quest:GetActiveQuestListCount"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Quest:GetActiveQuestType"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Quest:GetQuestContextMainTitle"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Quest:IsCompleted"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Achievement:GetTodayAssignmentInfo"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Equipment:GetEquippedItemTooltipInfo"] = { OfficialState="Unknown", SideEffectFree=true, Notes="targetEquippedItem flag silently ignored on current RU client: always returns the player's OWN gear (real-machine evidence 2026-09-01); never use for target-scope reads" },
-    ["X2Auction:GetSearchedItemCount"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Auction:GetSearchedItemInfo"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Resident:GetResidentBoardContent"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Store:GetProductionZoneGroups"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Store:GetSellableZoneGroups"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Ability:GetAllMyActabilityInfos"] = { OfficialState="Unknown", SideEffectFree=true },
-    ["X2Ability:GetBuffTooltip"] = { OfficialState="Unknown", SideEffectFree=true, Risk="expensive", Notes="buff-id -> icon/name resolution fallback, cached" },
-    ["X2Skill:GetCooldown"] = { OfficialState="Unknown", SideEffectFree=true, Notes="skill cooldown query; reserved for cooldown display features" },
-    ["X2Equipment:GetEquippedItemType"] = { OfficialState="Unknown", SideEffectFree=true, Notes="equip slot type query; reserved for gear/plates rebuilds" },
-    ["X2Mate:IsPlayerPetExists"] = { OfficialState="Unknown", SideEffectFree=true, Notes="pet/mate existence; reserved for healer summon handling" },
-    ["X2Store:GetSpecialtyRatioBetween"] = { OfficialState="Unknown", Risk="server_query" },
+    ["X2Option:GetOptionItemValue"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="personal portal option read; candidate registration P2" },
+    ["X2Option:SetItemFloatValue"] = { OfficialState="OfficialEnabled", Risk="write", Notes="personal portal option write; candidate registration P2" },
+    ["X2Map:GetZoneStateInfoByZoneId"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Quest:GetActiveQuestListCount"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Quest:GetActiveQuestType"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Quest:GetQuestContextMainTitle"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Quest:IsCompleted"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Achievement:GetTodayAssignmentInfo"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Equipment:GetEquippedItemTooltipInfo"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="targetEquippedItem flag silently ignored on current RU client: always returns the player's OWN gear (real-machine evidence 2026-09-01); never use for target-scope reads" },
+    ["X2Auction:GetSearchedItemCount"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Auction:GetSearchedItemInfo"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Resident:GetResidentBoardContent"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Store:GetProductionZoneGroups"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Store:GetSellableZoneGroups"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Ability:GetAllMyActabilityInfos"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Ability:GetBuffTooltip"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="expensive", Notes="buff-id -> icon/name resolution fallback, cached" },
+    ["X2Skill:GetCooldown"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="skill cooldown query; reserved for cooldown display features" },
+    ["X2Equipment:GetEquippedItemType"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="equip slot type query; reserved for gear/plates rebuilds" },
+    ["X2Mate:IsPlayerPetExists"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="pet/mate existence; reserved for healer summon handling" },
+    ["X2Store:GetSpecialtyRatioBetween"] = { OfficialState="OfficialEnabled", Risk="server_query" },
     -- X2House getters (RU 2026-08-19). Candidate registration only: no
     -- business wiring, no auto-probe, no runtime verification until a manual
     -- read-only check beside a house.
