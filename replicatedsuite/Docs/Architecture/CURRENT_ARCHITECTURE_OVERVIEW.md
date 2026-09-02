@@ -187,12 +187,11 @@ esc_register      → 系统菜单入口注册
 ## 13. 验证工作流（每轮改动必做）
 
 1. 改动文件 `lua -e "loadfile(...)"` 语法检查（本机 lua 5.4.5）。
-2. 回归测试 4 套全绿（`.workbuddy/tmp/`）：
-   - `buff_display_persistence_713_test.lua`（13 断言）
-   - `buff_display_refresh_cadence_test.lua`（8 断言）
-   - `aura_name_resolution_test.lua`（11 断言）
-   - `buff_metadata_service_test.lua`（8 断言）
-3. toc.g ↔ 磁盘双向 0 差异对账。
+2. 回归测试按 `.workbuddy/tmp/` **实存 harness** 跑（先 `ls` 确认存在，缺失文件如实标 `NOT EXECUTED`，禁止照抄文件名宣称 PASS）。已知实存：
+   - `rsui_layout_templates_harness.lua`（68 断言，RSUI 布局模版/组件核）
+   - `price_quote_drain_harness.lua` / `price_quote_read_model_harness.lua`（PriceQuoteQueueV3）
+   - （历史 buff/aura 4 套 `buff_display_persistence_713_test.lua` 等为 dev-only、从未入 git；本机不存在时不得虚构其运行）
+3. toc.g ↔ 磁盘双向 0 差异对账（addon 树内 `.workbuddy/` 属红线违规，测试脚本只在项目根 `.workbuddy/tmp/`）。
 4. 提交信息中文一行式，改完即 push。
 
 ## 14. 权威文档索引
