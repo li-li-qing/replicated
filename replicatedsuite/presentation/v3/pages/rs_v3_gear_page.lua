@@ -105,22 +105,45 @@ local function BuildPage(parent, route)
         id = "v3_gear_left", parent = body, padding = 6, variant = "card", gradient = true,
         slot = { size = "fixed", width = 210, vAlign = "fill" },
     })
-    local leftStack = RSUI:VerticalBox({ id = "v3_gear_left_stack", parent = left, gap = 3 })
-    RSUI:Text({ id = "v3_gear_left_title", parent = leftStack, text = "方案库", fontSize = 10, tone = "strong", slot = { size = "fixed", height = 20 } })
+    -- The management rail used to be one flat VerticalBox of 14 controls with no
+    -- visual grouping (the "杂乱/丑陋" the user flagged). It is now a scrollable
+    -- stack of titled GroupBoxes so the rail stays operable at any window height
+    -- and each control cluster reads as a single semantic unit. Priority order:
+    -- data source (方案库) -> edit/commit/apply (当前方案) -> quick participation
+    -- presets (参与范围) -> screen+snap (屏幕快捷与吸附) -> order/delete
+    -- (顺序与删除) -> live feedback (状态与反馈). Lower groups scroll instead of
+    -- clipping on short windows, so the layout never regresses to the old soup.
+    local leftStack = RSUI:ScrollBox({
+        id = "v3_gear_left_scroll", parent = left, orientation = "vertical", gap = 10, padding = 4,
+        scrollbar = true, reserveScrollbar = true, scrollbarWidth = 12, scrollbarGap = 3,
+        slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
+    })
 
+    -- Titled section: a soft GroupBox wrapping a single VerticalBox content. The
+    -- helper exists only so every group shares identical header/surface tokens.
+    local function GearGroup(parent, id, title)
+        local box = RSUI:GroupBox({ id = id, parent = parent, title = title, variant = "soft", gap = 4, padding = 8, slot = { size = "auto", hAlign = "fill" } })
+        local inner = RSUI:VerticalBox({ id = id .. "_inner", parent = box, gap = 4 })
+        return box, inner
+    end
+
+    ------------------------------------------------------------------------
+    -- Group 1: 方案库 (plan data source + identity)
+    ------------------------------------------------------------------------
+    local gLib, gLibInner = GearGroup(leftStack, "v3_gear_group_library", "方案库")
     -- WU1: the input/action pair used to be two raw native widgets pinned at
     -- hand-computed pixels (x=4 / x=138, width 130 / 54) inside the host panel.
     -- That island was invisible to Measure/Arrange, so any change to the left
     -- rail width or UI scale pushed the button out of the panel. Both controls
     -- are now declarative RSUI children: the input absorbs the remaining width
     -- while the button keeps a fixed 54px.
-    local createHost = RSUI:Panel({ id = "v3_gear_create_host", parent = leftStack, variant = "soft", height = 31, slot = { size = "fixed", height = 31, hAlign = "fill" } })
+    local createHost = RSUI:Panel({ id = "v3_gear_create_host", parent = gLibInner, variant = "soft", height = 31, slot = { size = "fixed", height = 31, hAlign = "fill" } })
     local createRow = RSUI:HorizontalBox({ id = "v3_gear_create_row", parent = createHost, gap = 4, padding = 4, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
     local createEdit = RSUI:TextInput({ id = "v3_gear_create_edit", parent = createRow, maxLength = 32, height = 23, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "center" } })
     local createButton = RSUI:Button({ id = "v3_gear_create_button", parent = createRow, text = "新建", compact = true, slot = { size = "fixed", width = 54, vAlign = "center" } })
 
     local setTable = RSUI:TableView({
-        id = "v3_gear_sets", parent = leftStack, items = {}, rowHeight = 22, headerHeight = 22, desiredRows = 4,
+        id = "v3_gear_sets", parent = gLibInner, items = {}, rowHeight = 22, headerHeight = 22, desiredRows = 4,
         scrollbar = true, selectable = true, selectionMode = "single", columnResize = true,
         getKey = function(item) return item and item.id or nil end,
         onSelectionChanged = function(_, _, view)
@@ -136,34 +159,46 @@ local function BuildPage(parent, route)
     })
 
     local leftStats = RSUI:Text({
-        id = "v3_gear_left_stats", parent = leftStack, text = "方案 0 · 已配置 0 · 快捷按钮 0",
+        id = "v3_gear_left_stats", parent = gLibInner, text = "方案 0 · 已配置 0 · 快捷按钮 0",
         fontSize = 8, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 18 },
     })
 
     -- WU1: same migration as the create row - declarative input/fixed button
     -- instead of pixel-pinned native widgets (x=4 / x=137, width 129 / 55).
-    local nameHost = RSUI:Panel({ id = "v3_gear_name_host", parent = leftStack, variant = "soft", height = 30, slot = { size = "fixed", height = 30, hAlign = "fill" } })
+    local nameHost = RSUI:Panel({ id = "v3_gear_name_host", parent = gLibInner, variant = "soft", height = 30, slot = { size = "fixed", height = 30, hAlign = "fill" } })
     local nameRow = RSUI:HorizontalBox({ id = "v3_gear_name_row", parent = nameHost, gap = 4, padding = 4, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
     local nameEdit = RSUI:TextInput({ id = "v3_gear_name_edit", parent = nameRow, maxLength = 36, height = 22, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "center" } })
     local saveName = RSUI:Button({ id = "v3_gear_name_button", parent = nameRow, text = "改名", compact = true, slot = { size = "fixed", width = 55, vAlign = "center" } })
 
-    local action1 = RSUI:HorizontalBox({ id = "v3_gear_actions_1", parent = leftStack, gap = 4, slot = { size = "fixed", height = 25, hAlign = "fill" } })
+    ------------------------------------------------------------------------
+    -- Group 2: 当前方案 (read current -> save -> validate -> apply)
+    ------------------------------------------------------------------------
+    local gCur, gCurInner = GearGroup(leftStack, "v3_gear_group_current", "当前方案")
+    local action1 = RSUI:HorizontalBox({ id = "v3_gear_actions_1", parent = gCurInner, gap = 4, slot = { size = "fixed", height = 25, hAlign = "fill" } })
     local capture = RSUI:Button({ id = "v3_gear_capture", parent = action1, text = "获取当前", compact = true, slot = { size = "fill", fill = 1 } })
     local save = RSUI:Button({ id = "v3_gear_save", parent = action1, text = "保存方案", compact = true, slot = { size = "fill", fill = 1 } })
-    local action2 = RSUI:HorizontalBox({ id = "v3_gear_actions_2", parent = leftStack, gap = 4, slot = { size = "fixed", height = 25, hAlign = "fill" } })
+    local action2 = RSUI:HorizontalBox({ id = "v3_gear_actions_2", parent = gCurInner, gap = 4, slot = { size = "fixed", height = 25, hAlign = "fill" } })
     local validate = RSUI:Button({ id = "v3_gear_validate", parent = action2, text = "检查状态", compact = true, slot = { size = "fill", fill = 1 } })
     local apply = RSUI:Button({ id = "v3_gear_apply", parent = action2, text = "立即换装", compact = true, slot = { size = "fill", fill = 1 } })
 
-    local presets1 = RSUI:HorizontalBox({ id = "v3_gear_presets_1", parent = leftStack, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
+    ------------------------------------------------------------------------
+    -- Group 3: 参与范围 (quick participation presets)
+    ------------------------------------------------------------------------
+    local gPart, gPartInner = GearGroup(leftStack, "v3_gear_group_participation", "参与范围")
+    local presets1 = RSUI:HorizontalBox({ id = "v3_gear_presets_1", parent = gPartInner, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
     local pAll = RSUI:Button({ id = "v3_gear_p_all", parent = presets1, text = "全部", compact = true, slot = { size = "fill", fill = 1 } })
     local pWeapon = RSUI:Button({ id = "v3_gear_p_weapon", parent = presets1, text = "仅武器", compact = true, slot = { size = "fill", fill = 1 } })
     local pArmor = RSUI:Button({ id = "v3_gear_p_armor", parent = presets1, text = "防具饰品", compact = true, slot = { size = "fill", fill = 1 } })
-    local presets2 = RSUI:HorizontalBox({ id = "v3_gear_presets_2", parent = leftStack, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
+    local presets2 = RSUI:HorizontalBox({ id = "v3_gear_presets_2", parent = gPartInner, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
     local pTitle = RSUI:Button({ id = "v3_gear_p_title", parent = presets2, text = "仅称号", compact = true, slot = { size = "fill", fill = 1 } })
     local pNone = RSUI:Button({ id = "v3_gear_p_none", parent = presets2, text = "清空参与", compact = true, slot = { size = "fill", fill = 1 } })
 
-    local screenButton = RSUI:Button({ id = "v3_gear_screen_button", parent = leftStack, text = "屏幕快捷按钮：--", compact = true, slot = { size = "fixed", height = 24, hAlign = "fill" } })
-    local snapActions = RSUI:HorizontalBox({ id = "v3_gear_snap_actions", parent = leftStack, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
+    ------------------------------------------------------------------------
+    -- Group 4: 屏幕快捷与吸附
+    ------------------------------------------------------------------------
+    local gSnap, gSnapInner = GearGroup(leftStack, "v3_gear_group_screen", "屏幕快捷与吸附")
+    local screenButton = RSUI:Button({ id = "v3_gear_screen_button", parent = gSnapInner, text = "屏幕快捷按钮：--", compact = true, slot = { size = "fixed", height = 24, hAlign = "fill" } })
+    local snapActions = RSUI:HorizontalBox({ id = "v3_gear_snap_actions", parent = gSnapInner, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
     local snapToggle = RSUI:Toggle({
         id = "v3_gear_snap_toggle", parent = snapActions, onText = "按钮吸附：开", offText = "按钮吸附：关", compact = true,
         get = function() return Feature:GetQuickSnapSettings().enabled == true end,
@@ -172,20 +207,26 @@ local function BuildPage(parent, route)
         slot = { size = "fill", fill = 1, hAlign = "fill" },
     })
     local snapSettings = RSUI:Button({ id = "v3_gear_snap_settings", parent = snapActions, text = "设置", compact = true, slot = { size = "fixed", width = 58 } })
-    local orderActions = RSUI:HorizontalBox({ id = "v3_gear_order_actions", parent = leftStack, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
+
+    ------------------------------------------------------------------------
+    -- Group 5: 顺序与删除
+    ------------------------------------------------------------------------
+    local gOrder, gOrderInner = GearGroup(leftStack, "v3_gear_group_order", "顺序与删除")
+    local orderActions = RSUI:HorizontalBox({ id = "v3_gear_order_actions", parent = gOrderInner, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
     local moveUp = RSUI:Button({ id = "v3_gear_up", parent = orderActions, text = "上移", compact = true, slot = { size = "fill", fill = 1 } })
     local moveDown = RSUI:Button({ id = "v3_gear_down", parent = orderActions, text = "下移", compact = true, slot = { size = "fill", fill = 1 } })
     local deleteButton = RSUI:Button({ id = "v3_gear_delete", parent = orderActions, text = "删除", compact = true, slot = { size = "fill", fill = 1 } })
 
-    -- Runtime/feedback live in the plan column so the configuration table can
-    -- use essentially the entire right-side height. This is intentional: the
-    -- default shell should show all 19 equipment slots + title in one view.
+    ------------------------------------------------------------------------
+    -- Group 6: 状态与反馈 (live runtime + editor status)
+    ------------------------------------------------------------------------
+    local gStatus, gStatusInner = GearGroup(leftStack, "v3_gear_group_status", "状态与反馈")
     local runtimeStatus = RSUI:Text({
-        id = "v3_gear_runtime_state", parent = leftStack, text = "运行：空闲",
+        id = "v3_gear_runtime_state", parent = gStatusInner, text = "运行：空闲",
         fontSize = 8, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 17 },
     })
     local status = RSUI:Text({
-        id = "v3_gear_editor_state", parent = leftStack, text = "请选择或新建方案。",
+        id = "v3_gear_editor_state", parent = gStatusInner, text = "请选择或新建方案。",
         fontSize = 8, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 18 },
     })
 

@@ -42,6 +42,27 @@ function P:ProjectUnit(unitToken)
         return nil,nil,nil,err or "unit_screen_position_unavailable"
     end
     x, y = NormalizeScreenPoint(x, y)
+    -- Coordinates must survive normalization and fall inside the logical UI
+    -- surface. Some RU builds return (someX, someY, depth=1) for an off-screen
+    -- or stale unit (cached screen position before the entity is destroyed, or
+    -- a token that resolves to a default origin). The depth check alone is not
+    -- enough: consumers that only inspect depth > 0 (Healer head markers) end
+    -- up anchoring their widget at a fixed/stale spot rather than on the
+    -- target — visible as "the marker floats, never moves, not on the player".
+    -- Treat any coordinate outside the logical surface as a projection failure
+    -- so callers naturally hide their visual instead of pinning to a stale
+    -- point. A small slop (-16..logicalW+16, -16..logicalH+16) absorbs
+    -- floating point noise and minor scale mismatches without false negatives.
+    if x == nil or y == nil then
+        self.metrics.failures = (tonumber(self.metrics.failures) or 0) + 1
+        return nil, nil, nil, "screen_position_normalize_failed"
+    end
+    local _,_,_,logicalW,logicalH = S.Api:GetUiMetrics()
+    logicalW, logicalH = N(logicalW) or 1024, N(logicalH) or 768
+    if x < -16 or x > logicalW + 16 or y < -16 or y > logicalH + 16 then
+        self.metrics.failures = (tonumber(self.metrics.failures) or 0) + 1
+        return nil, nil, nil, "screen_position_out_of_bounds"
+    end
     return x, y, depth or 1, nil
 end
 

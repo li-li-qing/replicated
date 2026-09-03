@@ -171,7 +171,20 @@ function H:OnRosterUpdated(reason)
     -- recommendation/health color (the "all colors disappear" symptom).
     if changed == false then return true end
     self.metrics.rosterChanges = (tonumber(self.metrics.rosterChanges) or 0) + 1
-    self:Reset("roster_changed", true)
+    -- A real join/leave must NOT wipe the committed generation either. A full
+    -- Reset(clearDomain=true) publishes an empty generation immediately, so the
+    -- raid overlay/head markers blank for the ~300-600ms it then takes to
+    -- re-scan statuses + health from scratch — the visible "color flash" on
+    -- every team join/leave. Instead keep the committed healthSnapshot/
+    -- statusCache/recommendations alive as the previous generation: consumers
+    -- keep painting the last good colors until the next health cycle publishes
+    -- an atomic replacement. In-flight cycles are aborted because they still
+    -- iterate the stale roster snapshot, and lastHealthStartedAt is primed so
+    -- Step starts a fresh health cycle immediately instead of waiting out
+    -- healthScanMs. statusGeneration stays untouched: the status-only gate in
+    -- Step only exists to protect the *first* generation after start.
+    self:AbortCycles()
+    self.lastHealthStartedAt = -100000
     DiagnosticsCount("ROSTER_GENERATION_CHANGED", 1)
     return true
 end

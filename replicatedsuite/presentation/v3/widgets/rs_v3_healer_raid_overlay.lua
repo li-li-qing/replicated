@@ -71,7 +71,23 @@ local function MakeSection(index)
     local settings = P.settings or Settings()
     local rect = type(settings.sections) == "table" and settings.sections[index] or nil
     rect = type(rect) == "table" and rect or { x=(index>2 and 360 or 0), y=(index%2==0 and 344 or 140), width=340, height=196 }
-    local root, err = S.UI:CreateEmptyWidget(UIParent, "v3_healer_raid_overlay_" .. tostring(index), rect.x, rect.y, rect.width, rect.height, false, P.owner)
+    -- RU exposes SetUILayer only on Window-kind widgets (ui_functions.lua:
+    -- Widgetbase has GetUILayer/Raise/Lower but no SetUILayer). A section root
+    -- created via CreateEmptyWidget (emptywidget kind) can therefore never leave
+    -- the ordinary layer, no matter how often TrySetUILayer is called: the
+    -- native raid frame raises itself above the overlay whenever a member row is
+    -- clicked, and the overlay only pops back on the next data refresh -- the
+    -- visible "flicker on click". Create the root through the V3 native adapter
+    -- (Window kind, SetUILayer("system") applied at creation), matching the
+    -- proven legacy overlay implementation.
+    local root, err
+    local adapter = S.UIV3NativeAdapter
+    if type(adapter) == "table" and type(adapter.CreateRootWindow) == "function" then
+        root, err = adapter:CreateRootWindow("v3_healer_raid_overlay_" .. tostring(index), P.owner)
+    end
+    if root == nil then
+        root, err = S.UI:CreateEmptyWidget(UIParent, "v3_healer_raid_overlay_" .. tostring(index), rect.x, rect.y, rect.width, rect.height, false, P.owner)
+    end
     if root == nil then return nil, err end
     root.rsUiOwner = P.owner
     local calibrationBg = NewColorDrawable(root, "artwork")
@@ -192,7 +208,15 @@ function P:RefreshHighlights(nowMs)
     if self.running ~= true then return false end
     local settings = self.settings or Settings()
     local calibration = settings.calibration == true
-    local useRaidRuntime = self.rosterCount > 5
+    -- Runtime overlay requires at least one teammate. The legacy implementation
+    -- (reference project) shows the overlay whenever rosterMode is "raid" or
+    -- "coraid" - including 5-man dungeon parties - with NO minimum-size gate.
+    -- The previous >5 check regressed that: a 5-man dungeon party (player + 4)
+    -- never satisfied it, so the overlay never appeared inside instances while
+    -- it worked fine in the open world / large raids. Rows are only generated
+    -- for members with valid health and in-range distance, so a 2-man party
+    -- still renders only the members that actually need a color block.
+    local useRaidRuntime = self.rosterCount > 1
     for index, section in ipairs(self.sections) do
         local calibrationVisible = calibration and InCalibrationScope(index, settings.calibrationScope)
         local runtimeHasCandidate = not calibration and useRaidRuntime and self.activeSections[index] == true
