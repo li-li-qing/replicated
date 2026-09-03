@@ -1,18 +1,18 @@
 ------------------------------------------------------------------------
 -- Replicated Suite - Bootstrap
 -- Author: Replicated
--- Version: 1.2 (V3 重构版; build: v3-m1.16.0.18.45-product-usability-recovery)
+-- Version: 1.2 (V3-only; current BuildTag is declared below)
 ------------------------------------------------------------------------
 ReplicatedSuite = ReplicatedSuite or {}
 local S = ReplicatedSuite
 
--- V3 rebuild is now the only active application architecture. Legacy source
--- files remain in the package as migration/reference material but are not part
--- of the normal TOC/runtime path.
+-- V3 rebuild is the only active application architecture. Legacy / Professional
+-- source and the old globals tree have been physically removed; they are not
+-- runtime dependencies and must not be reintroduced through bootstrap.
 S.ArchitectureMode = "v3_rebuild"
 
--- Preserve a lightweight process-time baseline before the TOC starts loading
--- the large professional modules. It is diagnostic-only and never persisted.
+-- Preserve a lightweight process-time baseline before the TOC continues loading
+-- the V3 runtime. It is diagnostic-only and never persisted.
 local bootOs = rawget(_G, "os")
 local bootNow = nil
 if type(bootOs) == "table" and type(bootOs.clock) == "function" then
@@ -69,7 +69,7 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.59-tooltip-cursor-follow-overflow"
+S.BuildTag = "v3-m1.16.0.18.74-ui-layout-editor-workspace-foundation"
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}
 S.SaveKey = tostring(S.Config.SaveKey or "replicated_suite_v1")

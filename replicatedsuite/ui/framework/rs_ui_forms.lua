@@ -792,7 +792,7 @@ end)
 RSUI:RegisterType("FormSection", function(spec)
     local width = math.max(1, N(spec.width, 300))
     local height = math.max(1, N(spec.height, 100))
-    local raw = UI:CreateSectionV2(spec.parent, spec.id, {
+    local raw = RSUI.ContainerSurface and RSUI.ContainerSurface:CreateSection(spec.parent, spec.id, {
         x = N(spec.x, 0), y = N(spec.y, 0), width = width, height = height,
         title = spec.title or "", titleFontSize = spec.titleFontSize,
         headerHeight = spec.headerHeight, padding = spec.padding,

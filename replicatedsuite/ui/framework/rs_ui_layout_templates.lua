@@ -423,9 +423,9 @@ RSUI:RegisterType("GroupBox", function(spec)
 
     local baseAdd = c.AddChild
     function c:AddChild(child, slot)
-        local result = baseAdd(self, child, slot)
-        if self.content == nil then self.content = child end
-        return result
+        local result, ok, attachErr = baseAdd(self, child, slot)
+        if result ~= nil and self.content == nil then self.content = result end
+        return result, ok, attachErr
     end
     function c:SetTitle(text)
         if self.title ~= nil then UI:SetText(self.title, tostring(text or ""), self.owner) end
@@ -546,9 +546,9 @@ RSUI:RegisterType("CollapsibleGroup", function(spec)
 
     local baseAdd = c.AddChild
     function c:AddChild(child, slot)
-        local result = baseAdd(self, child, slot)
-        if self.content == nil then self.content = child end
-        return result
+        local result, ok, attachErr = baseAdd(self, child, slot)
+        if result ~= nil and self.content == nil then self.content = result end
+        return result, ok, attachErr
     end
     function c:SetTitle(text)
         if self.title ~= nil then UI:SetText(self.title, tostring(text or ""), self.owner) end

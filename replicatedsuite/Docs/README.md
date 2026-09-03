@@ -4,7 +4,7 @@
 
 ## 这个项目一句话
 
-Replicated Suite 是 ArcheRage RU 客户端的一个公开 Addon（`globals` + `replicatedsuite` + `z_api_functions`），当前处于 **V3 重建（v3_rebuild）** 阶段：Active TOC 只加载单一 V3 Host；**旧版（Legacy/Professional）源码已于 2026-09-01/02 全部物理删除**（用户持有全量离线备份，插件树内绝不重新引入），在 ArcheAge 有限原生 UI API 之上继续建设 RSUI、共享 Runtime Foundation 与独立 Feature 生命周期。新人上手见 [`Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md`](Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md)。
+Replicated Suite 是 ArcheRage RU 客户端的一个公开 Addon。**运行时 Addon 只有 `replicatedsuite/`**（Active TOC 只加载单一 V3 Host；**旧版（Legacy/Professional）源码已于 2026-09-01/02 全部物理删除**，用户持有全量离线备份，插件树内绝不重新引入）。`z_api_functions/` **仅作开发期 API 参考，不进入运行时、不被 `toc.g` 加载**。在 ArcheAge 有限原生 UI API 之上继续建设 RSUI、共享 Runtime Foundation 与独立 Feature 生命周期。新人上手见 [`CURRENT_ARCHITECTURE.md`](CURRENT_ARCHITECTURE.md)。
 
 ## 文档权威等级（Authority Levels）
 
@@ -40,7 +40,8 @@ Replicated Suite 是 ArcheRage RU 客户端的一个公开 Addon（`globals` + `
 ## 重建方向
 
 - 重建蓝图：[`Rebuild/REBUILD_BLUEPRINT.md`](Rebuild/REBUILD_BLUEPRINT.md)
-- 当前里程碑：[`Rebuild/CURRENT_MILESTONE.md`](Rebuild/CURRENT_MILESTONE.md)
+- 参考能力 + 页面 UI 总路线图：[`Rebuild/REBUILD_REFERENCE_ADDON_CAPABILITY_ROADMAP.md`](Rebuild/REBUILD_REFERENCE_ADDON_CAPABILITY_ROADMAP.md)
+- 重建进度：[`CURRENT_REBUILD_STATUS.md`](CURRENT_REBUILD_STATUS.md)
 
 ## 历史追溯
 

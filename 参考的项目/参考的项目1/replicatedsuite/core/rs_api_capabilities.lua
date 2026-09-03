@@ -1,0 +1,264 @@
+------------------------------------------------------------------------
+-- Replicated Suite - API Capability Registry
+-- Author: Replicated
+-- Static overlay source: z_api_functions/api_capabilities_ru_20260815.lua
+--
+-- Static/official/runtime evidence are kept separate. Runtime probes are only
+-- performed explicitly and only for side-effect-free getters.
+------------------------------------------------------------------------
+if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
+local S = ReplicatedSuite
+
+S.ApiCapabilities = {
+    records = {},
+    aliases = {},
+    updated = "2026-08-15",
+    server = "ArcheRage RU",
+}
+local R = S.ApiCapabilities
+
+local function NormalizeName(value)
+    return tostring(value or ""):gsub("%s+", "")
+end
+
+local function Copy(value)
+    if type(value) ~= "table" then return value end
+    local result = {}
+    for key, child in pairs(value) do result[key] = Copy(child) end
+    return result
+end
+
+local function ResolveHost(namespace)
+    -- Global functions register with no namespace; resolve them against _G.
+    if namespace == nil then return _G end
+    if namespace == "ADDON" then return ADDON end
+    if namespace == "UI" then return UI end
+    if namespace == "UIParent" then return UIParent end
+    return rawget(_G, namespace)
+end
+
+function R:Register(name, info)
+    name = NormalizeName(name)
+    if name == "" then return false end
+    info = type(info) == "table" and Copy(info) or {}
+    local namespace, method = string.match(name, "^([^:]+):(.+)$")
+    info.Name = name
+    info.Namespace = info.Namespace or namespace
+    info.Method = info.Method or method
+    info.StaticState = info.StaticState or "Unknown"
+    info.OfficialState = info.OfficialState or "Unknown"
+    info.RuntimeState = info.RuntimeState or "Unknown"
+    info.LastVerified = info.LastVerified or nil
+    info.Source = info.Source or "z_api_functions + RU official overlay"
+    info.Risk = info.Risk or "normal"
+    self.records[name] = info
+    return true
+end
+
+function R:Get(name)
+    name = NormalizeName(name)
+    local alias = self.aliases[name]
+    return self.records[alias or name]
+end
+
+function R:Describe(name)
+    local info = self:Get(name)
+    return info and Copy(info) or nil
+end
+
+function R:ObserveStaticState(name)
+    local info = self:Get(name)
+    if info == nil then return false, "unregistered capability" end
+    local host = ResolveHost(info.Namespace)
+    local available = host ~= nil and type(host[info.Method]) == "function"
+    info.StaticState = available and "Available" or "Unavailable"
+    return available, info.StaticState
+end
+
+function R:IsAllowed(name)
+    local info = self:Get(name)
+    if info == nil then return false, "unregistered capability" end
+    local official = tostring(info.OfficialState or "Unknown")
+    if official == "Removed" or official == "OfficialDisabled" then return false, official end
+    local available = self:ObserveStaticState(name)
+    if available ~= true then return false, "Unavailable" end
+    if tostring(info.RuntimeState) == "RuntimeFailed" or tostring(info.RuntimeState) == "CrashRisk" then
+        return false, info.RuntimeState
+    end
+    return true, nil
+end
+
+function R:MarkRuntime(name, state, note)
+    local info = self:Get(name)
+    if info == nil then return false end
+    info.RuntimeState = tostring(state or "Unknown")
+    info.LastVerified = "runtime"
+    if note ~= nil then info.RuntimeNote = tostring(note) end
+    return true
+end
+
+function R:ProbeGetter(name, ...)
+    local info = self:Get(name)
+    if info == nil then return false, nil, "unregistered capability" end
+    if info.SideEffectFree ~= true then return false, nil, "probe forbidden: capability is not side-effect-free" end
+    local allowed, reason = self:IsAllowed(name)
+    if not allowed then return false, nil, reason end
+    local host = ResolveHost(info.Namespace)
+    local method = host and host[info.Method] or nil
+    if type(method) ~= "function" then return false, nil, "method unavailable" end
+    local args = { ... }
+    local argCount = select("#", ...)
+    local ok, a, b, c, d = pcall(function() return method(host, unpack(args, 1, argCount)) end)
+    if not ok then
+        self:MarkRuntime(name, "RuntimeFailed", a)
+        return false, nil, tostring(a)
+    end
+    self:MarkRuntime(name, "RuntimeVerified")
+    return true, a, nil, b, c, d
+end
+
+-- Current project-critical capabilities. This is deliberately a curated
+-- registry, not a dump of every function in z_api_functions.
+local CAPABILITIES = {
+    ["ADDON:LoadData"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["ADDON:SaveData"] = { OfficialState="OfficialEnabled", Risk="write" },
+    ["ADDON:ClearData"] = { OfficialState="OfficialEnabled", Risk="destructive" },
+    ["ADDON:AddEscMenuButton"] = { OfficialState="OfficialChanged", Notes="4-arg form remains current project compatibility path" },
+    ["ADDON:UpdateEscMenuButton"] = { OfficialState="OfficialEnabled" },
+    ["ADDON:GetContent"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["ADDON:GetContentMainScriptPosVis"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="authoritative native content position/visibility; used for bag/bank overlay detection" },
+    ["ADDON:RegisterContentTriggerFunc"] = { OfficialState="OfficialEnabled", Risk="callback_registration" },
+    ["X2Locale:GetLocale"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2Locale:LocalizeUiText"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Player:PlayerInCombat"] = { OfficialState="OfficialEnabled", Since="2026-06-09", SideEffectFree=true },
+    ["X2Player:ChangeAppellation"] = { OfficialState="OfficialEnabled", Since="2026-06-09", Cooldown=2000, Restrictions={ combat=true }, Risk="write" },
+    ["X2Bag:EquipBagItem"] = { OfficialState="OfficialEnabled", Since="2026-06-09", Restrictions={ combat=true }, Risk="write", Notes="combat restriction applies to documented general equip path; weapon behavior remains runtime-reconciled in Gear" },
+    ["X2Bag:GetBagItemInfo"] = { OfficialState="OfficialChanged", Since="2026-04-07", SideEffectFree=true, Notes="project keeps tested (bagId, slot) signature" },
+    ["X2Bag:Capacity"] = { OfficialState="OfficialEnabled", Since="2026-05-12", SideEffectFree=true },
+    ["X2Bag:MoveToEmptyBankSlot"] = { OfficialState="OfficialEnabled", Since="2026-05-12", Cooldown=200, Risk="write", Notes="RU fix/cooldown update 2026-05-19; intermittent move fix 2026-06-02" },
+    ["X2Bag:MoveToEmptyCofferSlot"] = { OfficialState="OfficialEnabled", Since="2026-05-12", Cooldown=200, Risk="write", Notes="RU fix/cooldown update 2026-05-19; intermittent move fix 2026-06-02" },
+    ["X2Bank:GetBagItemInfo"] = { OfficialState="OfficialChanged", Since="2026-04-07", SideEffectFree=true },
+    ["X2Bank:Capacity"] = { OfficialState="OfficialEnabled", Since="2026-05-12", SideEffectFree=true },
+    ["X2Bank:MoveToEmptyBagSlot"] = { OfficialState="OfficialEnabled", Since="2026-05-12", Cooldown=200, Risk="write", Notes="RU fix/cooldown update 2026-05-19; intermittent move fix 2026-06-02" },
+    ["X2Coffer:GetBagItemInfo"] = { OfficialState="OfficialChanged", Since="2026-04-07", SideEffectFree=true, Notes="coffer/chest slot read; category_id added 2026-05-26" },
+    ["X2Coffer:Capacity"] = { OfficialState="OfficialEnabled", Since="2026-05-12", SideEffectFree=true },
+    ["X2Coffer:MoveToEmptyBagSlot"] = { OfficialState="OfficialEnabled", Since="2026-05-12", Cooldown=200, Risk="write", Notes="RU fix/cooldown update 2026-05-19; intermittent move fix 2026-06-02" },
+    ["X2Unit:GetUnitsInSight"] = { OfficialState="OfficialDisabled", Since="2026-06-09", StaticState="Removed", Risk="high_frequency", Notes="Disabled by RU update 2026-08-19; static list still lists it but last-write-wins is Disabled. Tombstone kept to block future re-integration." },
+    ["X2Unit:UnitNameWithWorld"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="world-qualified character identity for Character Override storage" },
+    ["X2Unit:UnitInfo"] = { OfficialState="OfficialEnabled", Since="2026-06-02", SideEffectFree=true, Risk="expensive" },
+    ["X2Unit:UnitModifierInfo"] = { OfficialState="OfficialEnabled", Since="2026-06-02", SideEffectFree=true, Risk="expensive" },
+    ["X2Unit:SetOverHeadMarker"] = { OfficialState="OfficialEnabled", Since="2026-03-24", Cooldown=1000, Risk="write" },
+    ["X2Unit:RemoveAllOverHeadMarker"] = { OfficialState="OfficialEnabled", Since="2026-03-24", Cooldown=1000, Risk="write" },
+    ["X2Team:GetTeamRoleType"] = { OfficialState="OfficialEnabled", Since="2026-02-24", SideEffectFree=true },
+    ["X2Team:GetRole"] = { OfficialState="OfficialEnabled", Since="2025-03-04", SideEffectFree=true },
+    ["X2Team:SetRole"] = { OfficialState="OfficialEnabled", Since="2025-03-04", Cooldown=500, Risk="write", Notes="RU official: enabled with 500ms cooldown" },
+    ["X2Team:MoveTeamMember"] = { OfficialState="OfficialEnabled", Since="2026-02-24", Cooldown=1000, Risk="write" },
+    ["X2Team:MoveTeamMemberToParty"] = { OfficialState="OfficialEnabled", Since="2026-02-24", Cooldown=1000, Risk="write" },
+    -- IsTeamOwner sits in the static API's "Available/not allowed" section; the
+    -- live client rejected it through the capability gate (2026-08-22). It is
+    -- permanently fail-closed: probe flips are forbidden, no alternative
+    -- permission getter may substitute, and MoveTeamMember has no reachable
+    -- production path while no legal permission getter exists. Tombstone kept
+    -- to block future re-integration.
+    ["X2Team:IsTeamOwner"] = {
+        OfficialState = "OfficialDisabled",
+        StaticState = "NotAllowed",
+        SideEffectFree = true,
+        Risk = "permission_guard",
+        Notes = "Static not-allowed; live client rejected through capability gate 2026-08-22; substitute permission getters forbidden",
+    },
+    ["X2Craft:GetCraftBaseInfo"] = { OfficialState="OfficialEnabled", Since="2025-04-29", SideEffectFree=true },
+    ["X2Craft:GetCraftMaterialInfo"] = { OfficialState="OfficialEnabled", Since="2025-04-29", SideEffectFree=true, Notes="RU 2026-06-02 fixed the client crash in this getter" },
+    ["X2Craft:GetCraftProductInfo"] = { OfficialState="OfficialEnabled", Since="2025-04-29", SideEffectFree=true },
+    ["X2Craft:GetCraftTypeByItemType"] = { OfficialState="OfficialEnabled", Since="2026-06-09", SideEffectFree=true },
+    ["X2Auction:SearchAuctionArticle"] = { OfficialState="OfficialEnabled", Risk="server_query" },
+    ["X2Auction:GetLowestPrice"] = { OfficialState="OfficialEnabled", Since="2025-08-12", Cooldown=500, Risk="server_query", Notes="stable itemType/itemGrade auction lookup; call only from explicit user quote flow" },
+    ["X2Quest:IsReadyForCompleteQuest"] = { OfficialState="OfficialEnabled", Since="2026-03-31", SideEffectFree=true },
+    -- Instance-entrance UI reads (RU 2026-05-19). These power the instance-raid
+    -- activity rows (红龙巢穴 / 血之使者卡杜姆): the client exposes the per-account
+    -- entry counter ("1/1") through GetDetailInstanceInfo, not through quests.
+    -- All four are side-effect-free getters; instanceType ids are server data,
+    -- so the Suite discovers the raids at runtime by matching the localized
+    -- instance name and caches the resolved ids per session.
+    ["X2BattleField:GetInstanceUiKindList"] = { OfficialState="OfficialEnabled", Since="2026-05-19", SideEffectFree=true },
+    ["X2BattleField:GetInstanceListByKind"] = { OfficialState="OfficialEnabled", Since="2026-05-19", SideEffectFree=true },
+    ["X2BattleField:GetDetailInstanceInfo"] = { OfficialState="OfficialEnabled", Since="2026-05-19", SideEffectFree=true },
+    ["X2BattleField:GetInstanceName"] = { OfficialState="OfficialEnabled", Since="2026-05-19", SideEffectFree=true },
+
+    -- Suite-owned capabilities present in the bundled 2026-08-15 static API
+    -- but not explicitly re-announced by the RU official overlay. Keep the
+    -- evidence honest: OfficialState remains Unknown, while static presence is
+    -- checked at the feature boundary. No write/server action is auto-probed.
+    ["X2Hotkey:GetOptionBinding"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Hotkey:BindingToOption"] = { OfficialState="OfficialEnabled", Since="2025-10-08", Risk="write", Restrictions={ combat=true }, Notes="RU 2026-08-19 combat restriction" },
+    ["X2Hotkey:SetOptionBindingWithIndex"] = { OfficialState="OfficialEnabled", Since="2025-08-20", Risk="write", Restrictions={ combat=true }, Notes="RU 2026-08-19 combat restriction" },
+    ["X2Hotkey:RemoveOptionBinding"] = { OfficialState="OfficialEnabled", Since="2026-05-12", Risk="write", Restrictions={ combat=true }, Notes="RU 2026-08-19 combat restriction" },
+    ["X2Hotkey:SaveHotKey"] = { OfficialState="OfficialEnabled", Since="2025-09-17", Risk="write", Restrictions={ combat=true }, Notes="RU 2026-08-19 combat restriction" },
+    ["X2Unit:UnitBuffCount"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitBuff"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitBuffTooltip"] = { OfficialState="Unknown", SideEffectFree=true, Risk="expensive" },
+    ["X2Unit:UnitDeBuffCount"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitDeBuff"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitDeBuffTooltip"] = { OfficialState="Unknown", SideEffectFree=true, Risk="expensive" },
+    ["X2Unit:UnitHiddenBuffCount"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitHiddenBuff"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitHiddenBuffTooltip"] = { OfficialState="Unknown", SideEffectFree=true, Risk="expensive" },
+    ["X2Unit:UnitHealth"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitMaxHealth"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitMana"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitMaxMana"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitLevel"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Unit:UnitDistance"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Unit:UnitGearScore"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Unit:UnitCastingInfo"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Unit:GetTargetUnitId"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Unit:GetUnitId"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Unit:GetCurrentZoneGroup"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Unit:UnitName"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Unit:GetUnitWorldPositionByTarget"] = { OfficialState="Unknown", SideEffectFree=true },
+    -- Global function (api_functions.lua:5377), registered with an explicit
+    -- Method so ResolveHost(nil)->_G resolves it; no X2Unit namespace entry.
+    ["ConvertWorldToScreen"] = { OfficialState="Unknown", SideEffectFree=true, Method="ConvertWorldToScreen", Source="api_functions.lua:5377 global function", Note="Projection fallback for plate anchoring; runtime verification pending" },
+    -- NOTE: the community "WorldToScreen" global (globals/WorldToScreen.lua,
+    -- easypull dependency) is a CUSTOM camera-projection helper, NOT a game
+    -- API. Suite does NOT depend on it: A:ProjectWorldToScreen absorbs the same
+    -- UIParent camera math internally (G1b 2026-08-24). Registered only as
+    -- documentation to prevent future misuse.
+    ["WorldToScreen"] = { OfficialState="Unknown", SideEffectFree=true, Method="WorldToScreen", Source="community globals/WorldToScreen.lua (NOT a game API)", Notes="custom camera projection; Suite absorbs the logic in rp_api, does not call this global" },
+    ["X2Unit:GetTargetAbilityTemplates"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Unit:GetUnitScreenPosition"] = { OfficialState="Unknown", SideEffectFree=true, Risk="high_frequency" },
+    ["X2Option:GetConsoleVariable"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Option:SetConsoleVariable"] = { OfficialState="Unknown", Risk="write", Notes="Suite recovery path may use this before the registry loads; normal services must query the registry" },
+    -- RU 2026-08-23 (P2): personal-portal option read/write. Official Allowed
+    -- in api_functions.lua:3887/3889; RuntimeState Unknown until a real client
+    -- toggles it next to a portal. Not a console variable -- this is a normal
+    -- game option item, so the console-variable red line does not apply.
+    ["X2Option:GetOptionItemValue"] = { OfficialState="Unknown", SideEffectFree=true, Notes="personal portal option read; candidate registration P2" },
+    ["X2Option:SetItemFloatValue"] = { OfficialState="Unknown", Risk="write", Notes="personal portal option write; candidate registration P2" },
+    ["X2Map:GetZoneStateInfoByZoneId"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Quest:GetActiveQuestListCount"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Quest:GetActiveQuestType"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Quest:GetQuestContextMainTitle"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Quest:IsCompleted"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Achievement:GetTodayAssignmentInfo"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Equipment:GetEquippedItemTooltipInfo"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Auction:GetSearchedItemCount"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Auction:GetSearchedItemInfo"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Resident:GetResidentBoardContent"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Store:GetProductionZoneGroups"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Store:GetSellableZoneGroups"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Ability:GetAllMyActabilityInfos"] = { OfficialState="Unknown", SideEffectFree=true },
+    ["X2Ability:GetBuffTooltip"] = { OfficialState="Unknown", SideEffectFree=true, Risk="expensive", Notes="buff-id -> icon/name resolution fallback, cached" },
+    ["X2Store:GetSpecialtyRatioBetween"] = { OfficialState="Unknown", Risk="server_query" },
+    -- X2House getters (RU 2026-08-19). Candidate registration only: no
+    -- business wiring, no auto-probe, no runtime verification until a manual
+    -- read-only check beside a house.
+    ["X2House:GetCurrentHousingTaxInfo"] = { OfficialState="OfficialEnabled", Since="2026-08-19", SideEffectFree=true, Notes="仅登记,尚未接业务,等待住宅旁真机只读验证" },
+    ["X2House:GetHouseOwnerName"] = { OfficialState="OfficialEnabled", Since="2026-08-19", SideEffectFree=true, Notes="仅登记,尚未接业务,等待住宅旁真机只读验证" },
+    ["X2House:GetHouseName"] = { OfficialState="OfficialEnabled", Since="2026-08-19", SideEffectFree=true, Notes="仅登记,尚未接业务,等待住宅旁真机只读验证" },
+    ["X2House:GetHouseType"] = { OfficialState="OfficialEnabled", Since="2026-08-19", SideEffectFree=true, Notes="仅登记,尚未接业务,等待住宅旁真机只读验证" },
+}
+for name, info in pairs(CAPABILITIES) do R:Register(name, info) end
+
+R:Register("UNIT_ENTERED_SIGHT", { OfficialState="Removed", Since="2026-06-09", StaticState="Removed", Risk="removed_event" })
+R:Register("UNIT_LEAVED_SIGHT", { OfficialState="Removed", Since="2026-06-09", StaticState="Removed", Risk="removed_event" })

@@ -110,66 +110,91 @@ local function Build(parent, route, id)
         TrackField(D:CompactNumericSetting(hudGrid, { id = "v3_business_combat_boss_alerts_duration", label = "显示时长", min = 1000, max = 10000, step = 250, integer = true, unit = "ms", slider = true,
             get = function() return (feature:GetProjection() or {}).hudDurationMs or 3000 end, set = function(v) return feature.Commands:SetHudDurationMs(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
     elseif id == "combat_unit_lines" then
-        local pairRow = RSUI:HorizontalBox({ id = "v3_business_combat_unit_lines_pairs", parent = root, gap = 5,
-            slot = { size = "fixed", height = 30, hAlign = "fill" } })
         local pairSpecs = {
             { key="target", on="当前目标：开", off="当前目标：关", field="showTarget" },
             { key="targettarget", on="目标的目标：开", off="目标的目标：关", field="showTargetTarget" },
             { key="focus", on="焦点目标：开", off="焦点目标：关", field="showFocusTarget" },
             { key="focustarget", on="焦点的目标：开", off="焦点的目标：关", field="showFocusTargetTarget" },
         }
-        for index, spec in ipairs(pairSpecs) do
-            local specRef=spec
-            TrackField(RSUI:Toggle({ id="v3_business_combat_unit_lines_pair_"..specRef.key, parent=pairRow,
+
+        -- The previous page packed four toggles and four numeric settings into
+        -- single horizontal rows. On the normal V3 content width that forced
+        -- controls below their readable minimums. Keep the same bindings, but
+        -- let the layout authority own a stable two-column arrangement.
+        local pairGrid = RSUI:UniformGrid({ id = "v3_business_combat_unit_lines_pairs", parent = root,
+            minCellWidth = 250, minCellHeight = 30, maxColumns = 2, gap = 6,
+            slot = { size = "auto", minHeight = 60, hAlign = "fill" } })
+        for _, spec in ipairs(pairSpecs) do
+            local specRef = spec
+            TrackField(RSUI:Toggle({ id="v3_business_combat_unit_lines_pair_"..specRef.key, parent=pairGrid,
                 onText=specRef.on, offText=specRef.off,
                 get=function() return (feature:GetProjection() or {})[specRef.field] ~= false end,
-                set=function(v) local ok,e=feature.Commands:SetPairEnabled(specRef.key,v==true); if ok then feature.Commands:Refresh("pair_toggle") end; return ok,e end,
-                slot={size="fixed",width=index>=3 and 116 or 112} }))
+                set=function(v)
+                    local ok,e=feature.Commands:SetPairEnabled(specRef.key,v==true)
+                    if ok then feature.Commands:Refresh("pair_toggle") end
+                    return ok,e
+                end,
+                slot={size="fill",fill=1,hAlign="fill"} }))
         end
-        local grid = RSUI:UniformGrid({ id = "v3_business_combat_unit_lines_settings", parent = root, minCellWidth = 190, minCellHeight = 30, maxColumns = 4, gap = 5, slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
-        TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_points", label = "每线点数", min = 8, max = 48, step = 1, integer = true, slider = true,
+
+        local grid = RSUI:UniformGrid({ id = "v3_business_combat_unit_lines_settings", parent = root,
+            minCellWidth = 265, minCellHeight = 30, maxColumns = 2, gap = 6,
+            slot = { size = "auto", minHeight = 60, hAlign = "fill" } })
+        TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_points", label = "默认每线点数", min = 8, max = 48, step = 1, integer = true, slider = true,
             get = function() return (feature:GetProjection() or {}).pointCount or 24 end, set = function(v) return feature.Commands:SetPointCount(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
-        TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_size", label = "点大小", min = 2, max = 10, step = 1, integer = true, slider = true,
+        TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_size", label = "默认点大小", min = 2, max = 10, step = 1, integer = true, slider = true,
             get = function() return (feature:GetProjection() or {}).pointSize or 4 end, set = function(v) return feature.Commands:SetPointSize(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
-        TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_opacity", label = "透明度", min = 0.1, max = 1, step = 0.05, integer = false, slider = true,
+        TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_opacity", label = "整体透明度", min = 0.1, max = 1, step = 0.05, integer = false, slider = true,
             get = function() return (feature:GetProjection() or {}).opacity or 0.78 end, set = function(v) return feature.Commands:SetOpacity(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
         TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_refresh", label = "刷新间隔", min = 1, max = 1000, step = 25, integer = true, unit = "ms", slider = true,
             get = function() return (feature:GetProjection() or {}).refreshMs or 100 end, set = function(v) return feature.Commands:SetRefreshMs(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
-        -- Per-pair appearance: each connection type gets its own point count,
-        -- dot size and RGB color, overriding the global defaults above.
-        local perPairLabel = RSUI:Text({ id = "v3_business_combat_unit_lines_per_pair_title", parent = root, text = "每种连线单独设置（点数 / 大小 / 颜色）", fontSize = 10, tone = "strong", slot = { size = "fixed", height = 20, hAlign = "fill" } })
-        local pairNames = { target = "自己 ↔ 当前目标", targettarget = "当前目标 ↔ 目标的目标", focus = "自己 ↔ 焦点目标", focustarget = "焦点目标 ↔ 焦点的目标" }
-        -- Same per-pair default palette the presenter (rs_v3_combat_visual_guides)
-        -- uses, so the ColorField swatch matches the rendered line before any
-        -- color has been explicitly persisted.
+
+        RSUI:Text({ id = "v3_business_combat_unit_lines_per_pair_title", parent = root,
+            text = "每种连线单独设置", fontSize = 10, tone = "strong",
+            slot = { size = "fixed", height = 20, hAlign = "fill" } })
+        local pairNames = {
+            target = "自己 ↔ 当前目标", targettarget = "当前目标 ↔ 目标的目标",
+            focus = "自己 ↔ 焦点目标", focustarget = "焦点目标 ↔ 焦点的目标",
+        }
         local UNIT_LINE_PALETTE = {
             target = { 1.00, 0.72, 0.12 }, targettarget = { 0.94, 0.42, 0.20 },
             focus = { 0.35, 0.82, 1.00 }, focustarget = { 0.67, 0.52, 1.00 },
         }
+        local appearanceGrid = RSUI:UniformGrid({ id = "v3_business_combat_unit_lines_pair_appearance", parent = root,
+            minCellWidth = 300, minCellHeight = 88, maxColumns = 2, gap = 8,
+            slot = { size = "auto", minHeight = 184, hAlign = "fill" } })
         for _, spec in ipairs(pairSpecs) do
             local specRef = spec
             local pairKey = specRef.key
-            local row = RSUI:HorizontalBox({ id = "v3_business_combat_unit_lines_row_" .. pairKey, parent = root, gap = 4, slot = { size = "fixed", height = 28, hAlign = "fill" } })
-            RSUI:Text({ id = "v3_business_combat_unit_lines_row_" .. pairKey .. "_name", parent = row, text = tostring(pairNames[pairKey] or pairKey), fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", width = 128 } })
-            TrackField(D:CompactNumericSetting(row, { id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_points", label = "点数", min = 8, max = 48, step = 1, integer = true, inlineHint = true, hint = "", slider = true,
+            local card = RSUI:VerticalBox({ id = "v3_business_combat_unit_lines_card_" .. pairKey, parent = appearanceGrid,
+                gap = 4, padding = 3, slot = { size = "fixed", height = 86, hAlign = "fill" } })
+            RSUI:Text({ id = "v3_business_combat_unit_lines_card_" .. pairKey .. "_name", parent = card,
+                text = tostring(pairNames[pairKey] or pairKey), fontSize = 9, tone = "strong", overflow = "ellipsis",
+                slot = { size = "fixed", height = 18, hAlign = "fill" } })
+            local settingRow = RSUI:HorizontalBox({ id = "v3_business_combat_unit_lines_card_" .. pairKey .. "_settings",
+                parent = card, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
+            TrackField(D:CompactNumericSetting(settingRow, { id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_points",
+                label = "点数", min = 8, max = 48, step = 1, integer = true, inlineHint = true, hint = "", slider = true,
                 get = function() return (feature:GetProjection() or {}).pairPoints and (feature:GetProjection() or {}).pairPoints[pairKey] or 24 end,
-                set = function(v) return feature.Commands:SetPairPoints(pairKey, v) end, slot = { size = "fixed", width = 118 } }))
-            TrackField(D:CompactNumericSetting(row, { id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_size", label = "大小", min = 2, max = 10, step = 1, integer = true, inlineHint = true, hint = "", slider = true,
+                set = function(v) return feature.Commands:SetPairPoints(pairKey, v) end,
+                slot = { size = "fill", fill = 1, minWidth = 120, hAlign = "fill" } }))
+            TrackField(D:CompactNumericSetting(settingRow, { id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_size",
+                label = "大小", min = 2, max = 10, step = 1, integer = true, inlineHint = true, hint = "", slider = true,
                 get = function() return (feature:GetProjection() or {}).pairSizes and (feature:GetProjection() or {}).pairSizes[pairKey] or 4 end,
-                set = function(v) return feature.Commands:SetPairSize(pairKey, v) end, slot = { size = "fixed", width = 118 } }))
-            -- One ColorField replaces the three cramped R/G/B sliders that used to
-            -- sit inline in this row. The swatch shows the persisted per-pair color
-            -- (falling back to the presenter palette) and the popover holds R/G/B
-            -- sliders + a hex field. This is the declutter the user flagged.
+                set = function(v) return feature.Commands:SetPairSize(pairKey, v) end,
+                slot = { size = "fill", fill = 1, minWidth = 120, hAlign = "fill" } }))
             local defaultColor = UNIT_LINE_PALETTE[pairKey] or { 1, 1, 1 }
-            TrackField(RSUI:ColorField({ id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_color", parent = row, label = "颜色",
+            TrackField(RSUI:ColorField({ id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_color",
+                parent = card, label = "颜色",
                 get = function()
                     local colors = (feature:GetProjection() or {}).colors
                     local c = type(colors) == "table" and colors[pairKey] or nil
-                    return type(c) == "table" and { tonumber(c[1]) or 1, tonumber(c[2]) or 1, tonumber(c[3]) or 1 } or { defaultColor[1], defaultColor[2], defaultColor[3] }
+                    return type(c) == "table"
+                        and { tonumber(c[1]) or 1, tonumber(c[2]) or 1, tonumber(c[3]) or 1 }
+                        or { defaultColor[1], defaultColor[2], defaultColor[3] }
                 end,
                 set = function(color) return feature.Commands:SetPairColor(pairKey, color[1], color[2], color[3]) end,
-                slot = { size = "fixed", width = 132 } }))
+                slot = { size = "fixed", height = 28, hAlign = "fill" } }))
         end
     elseif id == "combat_range_assist" then
         local grid = RSUI:UniformGrid({ id = "v3_business_combat_range_assist_settings", parent = root, minCellWidth = 190, minCellHeight = 30, maxColumns = 2, gap = 5, slot = { size = "auto", minHeight = 60, hAlign = "fill" } })

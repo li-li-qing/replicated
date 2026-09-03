@@ -223,6 +223,66 @@ local function BuildPage(parent, route)
     AddPresentationNumeric(visualRowC, "v3_healer_raid_effect", "覆盖效果", "1=静态无动画任务，2=呼吸，3=闪烁。", "raid", "effectMode", 1, 3, 1, "")
     AddPresentationToggle(visualRowC, "v3_healer_raid_proximity", "范围底色：开", "范围底色：关", "raid", "proximityMode", 0.9)
 
+    -- Team roster / calibration model (Refactor: RaidTeam != RaidPanel != Calibration).
+    -- Panel A/B are independent screen containers; their bound team can change at
+    -- runtime without moving geometry. Modes: auto (derive from TeamRosterV3),
+    -- single (one list, team follows native/manual), dual (A + B side by side).
+    local raidTeamPanel = RSUI:GroupBox({ id = "v3_healer_raid_team_panel", parent = visualStack, title = "团队名单与校准模式",
+        variant = "card", gradient = true, padding = 5,
+        slot = { size = "auto", minHeight = 120, hAlign = "fill" } })
+    local raidTeamStack = RSUI:VerticalBox({ id = "v3_healer_raid_team_stack", parent = raidTeamPanel, gap = 4 })
+    local raidTeamGrid = RSUI:UniformGrid({ id = "v3_healer_raid_team_grid", parent = raidTeamStack,
+        minCellWidth = 205, minCellHeight = 31, maxColumns = 3, gap = 5,
+        slot = { size = "auto", minHeight = 96, hAlign = "fill" } })
+    local raidTeamRowA, raidTeamRowB, raidTeamRowC = raidTeamGrid, raidTeamGrid, raidTeamGrid
+    local function RaidSetting() return Feature:GetPresentationProjection("raid") or {} end
+    local raidTeamFields = {}
+    local function AddRaidDropdown(parentBox, id, label, items, getter, setter)
+        local field = RSUI:DropdownField({ id = id, parent = parentBox, label = label, items = items,
+            get = getter, set = setter, storeId = STORE_ID, persistDelayMs = 350, persistReason = "healer_" .. id,
+            slot = { size = "fill", fill = 1, hAlign = "fill" } })
+        if field ~= nil then raidTeamFields[#raidTeamFields + 1] = field end
+        return field
+    end
+    local modeField = AddRaidDropdown(raidTeamRowA, "v3_healer_raid_mode", "列表模式",
+        { { value = "auto", text = "自动" }, { value = "single", text = "单列表" }, { value = "dual", text = "双列表" } },
+        function() return RaidSetting().mode or "auto" end,
+        function(v) return Feature.Commands:SetRaidMode(v) end)
+    local singleTeamField = AddRaidDropdown(raidTeamRowA, "v3_healer_raid_single_team", "单列表队伍",
+        { { value = 0, text = "跟随原生" }, { value = 1, text = "队伍1" }, { value = 2, text = "队伍2" } },
+        function() return RaidSetting().singleTeamId or 0 end,
+        function(v) return Feature.Commands:SetRaidSingleTeam(tonumber(v) or 0) end)
+    local panelATeamField = AddRaidDropdown(raidTeamRowB, "v3_healer_raid_panel_a_team", "面板A队伍",
+        { { value = 1, text = "队伍1" }, { value = 2, text = "队伍2" } },
+        function() local p = (RaidSetting().panels or {}).A or {}; return p.team or 1 end,
+        function(v) return Feature.Commands:SetRaidPanelTeam("A", tonumber(v) or 1) end)
+    local panelBTeamField = AddRaidDropdown(raidTeamRowB, "v3_healer_raid_panel_b_team", "面板B队伍",
+        { { value = 1, text = "队伍1" }, { value = 2, text = "队伍2" } },
+        function() local p = (RaidSetting().panels or {}).B or {}; return p.team or 2 end,
+        function(v) return Feature.Commands:SetRaidPanelTeam("B", tonumber(v) or 2) end)
+    local testColorToggle = RSUI:Toggle({ id = "v3_healer_raid_test_colors", parent = raidTeamRowC,
+        onText = "测试色：开", offText = "测试色：关",
+        get = function() return RaidSetting().testColors == true end,
+        set = function(v) return Feature.Commands:SetRaidTestSetting("testColors", v == true) end,
+        storeId = STORE_ID, persistDelayMs = 350, persistReason = "healer_raid_test_colors",
+        slot = { size = "fill", fill = 0.85, hAlign = "fill" } })
+    local slotNumberToggle = RSUI:Toggle({ id = "v3_healer_raid_slot_numbers", parent = raidTeamRowC,
+        onText = "槽位编号：开", offText = "槽位编号：关",
+        get = function() return RaidSetting().slotNumbers ~= false end,
+        set = function(v) return Feature.Commands:SetRaidTestSetting("slotNumbers", v == true) end,
+        storeId = STORE_ID, persistDelayMs = 350, persistReason = "healer_raid_slot_numbers",
+        slot = { size = "fill", fill = 0.85, hAlign = "fill" } })
+    local locateSelfButton = RSUI:Button({ id = "v3_healer_raid_locate_self", parent = raidTeamRowC, text = "定位自己", compact = true,
+        slot = { size = "fill", fill = 0.85, hAlign = "fill" } })
+    local function ApplyRaidTeamVisibility()
+        local mode = RaidSetting().mode or "auto"
+        local single = mode == "single"
+        local dual = mode == "dual"
+        if type(singleTeamField) == "table" and type(singleTeamField.SetVisibility) == "function" then singleTeamField:SetVisibility(single and "visible" or "collapsed") end
+        if type(panelATeamField) == "table" and type(panelATeamField.SetVisibility) == "function" then panelATeamField:SetVisibility(dual and "visible" or "collapsed") end
+        if type(panelBTeamField) == "table" and type(panelBTeamField.SetVisibility) == "function" then panelBTeamField:SetVisibility(dual and "visible" or "collapsed") end
+    end
+
     local function SetSettingsMode(mode)
         settingsMode = mode == "display" and "display" or "strategy"
         settingsPanel:SetVisibility(settingsMode == "strategy" and "visible" or "collapsed")
@@ -489,7 +549,7 @@ local function BuildPage(parent, route)
         slot = { size = "fill", fill = 1, minHeight = 150, hAlign = "fill", vAlign = "fill" } })
     local bodyStack = RSUI:VerticalBox({ id = "v3_healer_calibration_stack", parent = body, gap = 6 })
     local calibrationState = RSUI:Text({ id = "v3_healer_calibration_state", parent = bodyStack,
-        text = "点击上方“校准团队色块”后，屏幕会显示四组团队区域。校准模式不启动治疗扫描。",
+        text = "点击上方“校准团队色块”后，屏幕会按当前列表模式显示面板（单列表=面板A，双列表=面板A+B）。校准模式不启动治疗扫描。",
         fontSize = 9, tone = "accent", overflow = "wrap", maxLines = 3,
         slot = { size = "auto", minHeight = 48, hAlign = "fill" } })
     RSUI:Text({ id = "v3_healer_calibration_help", parent = bodyStack,
@@ -591,6 +651,8 @@ local function BuildPage(parent, route)
             for _, field in ipairs(settingFields) do if type(field.Render) == "function" then field:Render() end end
             roleToggle:Render()
             for _, field in ipairs(presentationFields) do if type(field.Render) == "function" then field:Render() end end
+            for _, field in ipairs(raidTeamFields) do if type(field) == "table" and type(field.Render) == "function" then field:Render() end end
+            ApplyRaidTeamVisibility()
         end
         local raidProjection = Feature:GetPresentationProjection("raid")
         local calibrating = type(raidProjection) == "table" and raidProjection.calibration == true
@@ -661,7 +723,7 @@ local function BuildPage(parent, route)
             local target = not (type(current) == "table" and current.calibration == true)
             local ok, err = Feature.Commands:ApplyPresentationSettingFromBinding("raid", "calibration", target)
             if ok == true then root:Refresh(true) end
-            return ok, err or (target and "团队色块校准已显示；可拖动四个团队区域" or "团队色块校准已结束")
+            return ok, err or (target and "团队色块校准已显示；可拖动团队面板区域" or "团队色块校准已结束")
         end)
     end
     rosterButton.onClick = function()
@@ -677,8 +739,15 @@ local function BuildPage(parent, route)
             return ok, err or "团队覆盖位置已重置"
         end)
     end
+    locateSelfButton.onClick = function()
+        return RunAction("raid_locate_self", locateSelfButton, function()
+            local ok, err = Feature.Commands:LocateSelf()
+            return ok, err or "已在覆盖层高亮你所在的槽位"
+        end)
+    end
     for _, pair in ipairs({
         { featureButton, "feature" }, { calibrationButton, "raid_calibration" }, { rosterButton, "roster" }, { resetRaidButton, "raid_reset" },
+        { locateSelfButton, "raid_locate_self" },
         { advancedButton, "advanced" }, { advancedCloseButton, "advanced_close" }, { ruleModeButton, "rules_mode" },
         { trackedModeButton, "tracked_mode" }, { colorModeButton, "colors_mode" }, { ruleAddButton, "rule_add" },
         { ruleRemoveButton, "rule_remove" }, { trackedAddButton, "tracked_add" }, { trackedRemoveButton, "tracked_remove" },

@@ -561,7 +561,7 @@ S.Features.Bonds = Bonds
 Bonds.UpdateTopic = "v3.life.bonds.updated"
 Bonds.State = { sortMode = "continent", showCompleted = true, q20 = true, q60 = true, q100 = true, auroria = true, excludeSame = false, priority = "west", widgetVisible = false, widgetWindow = nil }
 InstallLifeWidgetContract(Bonds, { defaultWidth = 500, defaultHeight = 330, minWidth = 280, minHeight = 150, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 })
-Bonds.Authority = { version = 1, revision = 0, rows = {}, status = "idle", error = nil }
+Bonds.Authority = { version = 2, revision = 0, rows = {}, status = "idle", error = nil, boardScope = "unknown", faction = nil }
 local BA = Bonds.Authority
 local function BondMaterialKey(itemType)
     for key, value in pairs(S.Constants and S.Constants.BondMaterialItemTypes or {}) do
@@ -635,7 +635,47 @@ local function BondRowText(value)
     if type(value) == "table" then return Text(value.text or value.name or value.title or value[1]) end
     return Text(value)
 end
-local function BondContinent(index) if index >= 5 then return "原大陆" elseif index <= 2 then return "西/东大陆" else return "西/东大陆" end end
+local BOND_BOARD_NAMES = {
+    [1] = "布料", [2] = "皮革", [3] = "木材", [4] = "铁锭",
+    [5] = "王子的物品", [6] = "女王的物品", [7] = "祖先的物品",
+}
+local function NormalizeResidentBoardContents(value)
+    if type(value) == "string" or type(value) == "number" then
+        local text = Text(value)
+        return text ~= "" and { value } or {}
+    end
+    if type(value) ~= "table" then return {} end
+
+    local source = value.contents
+    if source == nil then source = value.content or value.rows or value.items end
+    if source == nil and value[1] ~= nil then source = value end
+    if type(source) == "string" or type(source) == "number" then
+        local text = Text(source)
+        return text ~= "" and { source } or {}
+    end
+    if type(source) ~= "table" then return {} end
+
+    local result = {}
+    for index, entry in ipairs(source) do
+        if BondRowText(entry) ~= "" then result[#result + 1] = entry end
+    end
+    -- Some RU builds may expose sparse numeric indices. Preserve deterministic
+    -- numeric order without treating metadata keys as resident-board rows.
+    if #result == 0 then
+        local numericKeys = {}
+        for key in pairs(source) do
+            local n = tonumber(key)
+            if n ~= nil and n >= 1 and math.floor(n) == n then numericKeys[#numericKeys + 1] = n end
+        end
+        table.sort(numericKeys)
+        for _, key in ipairs(numericKeys) do
+            local entry = source[key]
+            if BondRowText(entry) ~= "" then result[#result + 1] = entry end
+        end
+    end
+    return result
+end
+local function BondContinent(index) if index >= 5 then return "原大陆" else return "西/东大陆" end end
 local function NormalizeBondState(value)
     value = type(value) == "table" and value or {}
     return { sortMode = value.sortMode == "quantity" and "quantity" or "continent", showCompleted = value.showCompleted ~= false,
@@ -654,44 +694,92 @@ local function BondContinentKey(line)
 end
 local BOND_TEXT_MATERIAL = { [1] = "fabric", [2] = "leather", [3] = "lumber", [4] = "iron" }
 function BA:Refresh()
-    local rows, readable = {}, 0
+    local rows, apiReadable, contentCount = {}, 0, 0
     local state = NormalizeBondState(Bonds.State)
     BA.duplicatePriorityUnresolved = nil
+    BA.boardScope, BA.faction = "unknown", nil
     local resources, resourceStatus = ReadBondResources()
+
+    -- Read every board type exactly once. The original RU residentboard addon
+    -- identifies mainland by non-empty 3+4 and Auroria by non-empty 5/6; keep
+    -- that proven shape while normalizing the return defensively.
+    local boards = {}
+    local firstError = nil
     for index = 1, 7 do
         local ok, value, err = Call("X2Resident:GetResidentBoardContent", ResidentApi, "GetResidentBoardContent", index)
-        if ok == true and type(value) == "table" then
-            readable = readable + 1
-            local contents = type(value.contents) == "table" and value.contents or {}
-            if #contents == 0 then rows[#rows + 1] = { key = "board:" .. index, board = index, name = "分类" .. tostring(index), text = "暂无内容", requiredCount = nil, haveCount = nil, shortage = nil, resourceStatus = resourceStatus, resourceText = "?", shortageText = "?", statusText = "--", tone = "muted" }
-            else
-                for lineIndex, line in ipairs(contents) do
-                    local text = BondRowText(line)
-                    local materialKey = type(line) == "table" and (line.materialKey or line.material_key) or BOND_TEXT_MATERIAL[index]
-                    if not materialKey and index >= 5 then materialKey = "auroria_token" end
-                    local quantity = type(line) == "table" and Number(line.quantity or line.requiredCount or line.required_count) or Number(string.match(text, "(%d+)"))
-                    local requiredCount, haveCount = quantity, materialKey and resources[materialKey] or nil
-                    local rowStatus = materialKey and resourceStatus or "unknown"
-                    if resourceStatus == "unknown" or resourceStatus == "partial" then haveCount = nil end
-                    if materialKey == "auroria_token" then haveCount, rowStatus = nil, "unknown" end
-                    local questId, mappedQuantity, auroriaToken = BondQuestEvidence(materialKey, text)
-                    quantity = mappedQuantity or quantity
-                    requiredCount = mappedQuantity or requiredCount
-                    local questStatus = "UNKNOWN"
-                    local progress = S.Services and S.Services.QuestProgressV3
-                    if questId ~= nil and progress and type(progress.QuestState) == "function" then questStatus = tostring(progress:QuestState(questId) or "UNKNOWN") end
-                    local sharedKey = materialKey and quantity and (tostring(materialKey) .. ":" .. tostring(quantity)) or nil
-                    local completed = questStatus == "COMPLETED"
-                    local continentKey = BondContinentKey(line)
-                    if continentKey == nil and index >= 5 then continentKey = "auroria" end
-                    local category = continentKey == "auroria" and "auroria" or (quantity == 20 and "q20" or quantity == 60 and "q60" or quantity == 100 and "q100" or nil)
-                    if category == nil or state[category] then
-                        rows[#rows + 1] = { key = "board:" .. index .. ":" .. lineIndex, board = index, name = "分类" .. tostring(index), continent = BondContinent(index), continentKey = continentKey, text = text, quantity = quantity, materialKey = materialKey, auroriaToken = auroriaToken, requiredCount = requiredCount, haveCount = haveCount, shortage = requiredCount and haveCount and math.max(0, requiredCount - haveCount) or nil, resourceStatus = rowStatus, resourceText = haveCount and tostring(haveCount) or "?", shortageText = requiredCount and haveCount and tostring(math.max(0, requiredCount - haveCount)) or "?", questId = questId, questStatus = questStatus, completed = completed, statusText = completed and "已完成" or (QUEST_STATUS_TEXT[questStatus] or "待确认"), tone = completed and "green" or (QUEST_STATUS_TONE[questStatus] or "muted") }
-                    end
-                end
-            end
-        elseif err ~= nil then self.error = err end
+        if ok == true and value ~= nil then
+            apiReadable = apiReadable + 1
+            local contents = NormalizeResidentBoardContents(value)
+            boards[index] = { raw = value, contents = contents }
+            contentCount = contentCount + #contents
+            if type(value) == "table" and BA.faction == nil and value.faction ~= nil then BA.faction = Text(value.faction) end
+        else
+            boards[index] = { raw = value, contents = {} }
+            if err ~= nil then firstError = firstError or tostring(err) end
+        end
     end
+
+    local function Has(index)
+        return type(boards[index]) == "table" and #(boards[index].contents or {}) > 0
+    end
+
+    local selected = {}
+    if Has(3) and Has(4) then
+        BA.boardScope = "mainland"
+        for index = 1, 4 do selected[#selected + 1] = index end
+    elseif Has(5) or Has(6) then
+        BA.boardScope = "auroria"
+        for index = 5, 7 do selected[#selected + 1] = index end
+    else
+        -- If the current RU client returns only a subset, do not discard valid
+        -- rows just because the historical location heuristic cannot classify
+        -- the zone. Keep those rows and report scope=unknown.
+        for index = 1, 7 do if Has(index) then selected[#selected + 1] = index end end
+    end
+
+    for _, index in ipairs(selected) do
+        local contents = boards[index] and boards[index].contents or {}
+        for lineIndex, line in ipairs(contents) do
+            local textValue = BondRowText(line)
+            local materialKey = type(line) == "table" and (line.materialKey or line.material_key) or BOND_TEXT_MATERIAL[index]
+            if not materialKey and index >= 5 then materialKey = "auroria_token" end
+            local quantity = type(line) == "table" and Number(line.quantity or line.requiredCount or line.required_count)
+                or Number(string.match(textValue, "(%d+)"))
+            local requiredCount, haveCount = quantity, materialKey and resources[materialKey] or nil
+            local rowStatus = materialKey and resourceStatus or "unknown"
+            if resourceStatus == "unknown" or resourceStatus == "partial" then haveCount = nil end
+            if materialKey == "auroria_token" then haveCount, rowStatus = nil, "unknown" end
+            local questId, mappedQuantity, auroriaToken = BondQuestEvidence(materialKey, textValue)
+            quantity = mappedQuantity or quantity
+            requiredCount = mappedQuantity or requiredCount
+            local questStatus = "UNKNOWN"
+            local progress = S.Services and S.Services.QuestProgressV3
+            if questId ~= nil and progress and type(progress.QuestState) == "function" then
+                questStatus = tostring(progress:QuestState(questId) or "UNKNOWN")
+            end
+            local completed = questStatus == "COMPLETED"
+            local continentKey = BondContinentKey(line)
+            if continentKey == nil and index >= 5 then continentKey = "auroria" end
+            local category = continentKey == "auroria" and "auroria"
+                or (quantity == 20 and "q20" or quantity == 60 and "q60" or quantity == 100 and "q100" or nil)
+            if category == nil or state[category] then
+                rows[#rows + 1] = {
+                    key = "board:" .. index .. ":" .. lineIndex,
+                    board = index, name = BOND_BOARD_NAMES[index] or ("分类" .. tostring(index)),
+                    continent = BondContinent(index), continentKey = continentKey,
+                    text = textValue, quantity = quantity, materialKey = materialKey, auroriaToken = auroriaToken,
+                    requiredCount = requiredCount, haveCount = haveCount,
+                    shortage = requiredCount and haveCount and math.max(0, requiredCount - haveCount) or nil,
+                    resourceStatus = rowStatus, resourceText = haveCount and tostring(haveCount) or "?",
+                    shortageText = requiredCount and haveCount and tostring(math.max(0, requiredCount - haveCount)) or "?",
+                    questId = questId, questStatus = questStatus, completed = completed,
+                    statusText = completed and "已完成" or (QUEST_STATUS_TEXT[questStatus] or "待确认"),
+                    tone = completed and "green" or (QUEST_STATUS_TONE[questStatus] or "muted"),
+                }
+            end
+        end
+    end
+
     if state.excludeSame then
         local groups, unresolved = {}, {}
         for _, row in ipairs(rows) do
@@ -707,25 +795,49 @@ function BA:Refresh()
             local total = #group.west + #group.east + #group.other
             if total > 1 then
                 if #group.other > 0 then unresolved[key] = true
-                else winners[key] = (#group[state.priority] > 0 and group[state.priority][1]) or group[state.priority == "west" and "east" or "west"][1] end
+                else winners[key] = (#group[state.priority] > 0 and group[state.priority][1])
+                    or group[state.priority == "west" and "east" or "west"][1] end
             end
         end
         local filtered, emitted = {}, {}
         for _, row in ipairs(rows) do
             local key = row.materialKey and row.quantity and (tostring(row.materialKey) .. ":" .. tostring(row.quantity)) or nil
-            if unresolved[key] then BA.duplicatePriorityUnresolved = "重复债券优先级无法解析：缺少可靠大陆身份，已保留重复行"; filtered[#filtered + 1] = row
-            elseif winners[key] then if emitted[key] ~= true then emitted[key] = true; filtered[#filtered + 1] = winners[key] end
-            else filtered[#filtered + 1] = row end
+            if unresolved[key] then
+                BA.duplicatePriorityUnresolved = "重复债券优先级无法解析：缺少可靠大陆身份，已保留重复行"
+                filtered[#filtered + 1] = row
+            elseif winners[key] then
+                if emitted[key] ~= true then emitted[key] = true; filtered[#filtered + 1] = winners[key] end
+            else
+                filtered[#filtered + 1] = row
+            end
         end
         rows = filtered
     end
-    if state.sortMode == "quantity" then table.sort(rows, function(a, b) return (a.quantity or 999) < (b.quantity or 999) end) end
-    self.rows, self.status, self.resourceStatus, self.error = rows, readable > 0 and "ready" or "unavailable", resourceStatus, readable > 0 and nil or (self.error or "居民板 API 当前不可用")
+
+    if state.sortMode == "quantity" then
+        table.sort(rows, function(a, b) return (a.quantity or 999) < (b.quantity or 999) end)
+    end
+
+    local status, errorText
+    if apiReadable <= 0 then
+        status, errorText = "unavailable", firstError or "居民板 API 当前不可用"
+    elseif contentCount <= 0 then
+        status, errorText = "empty", "当前位置没有可读取的居民债券内容"
+    else
+        status, errorText = "ready", nil
+    end
+    self.rows, self.status, self.resourceStatus, self.error = rows, status, resourceStatus, errorText
     self.revision = self.revision + 1
     PublishFeatureUpdate(Bonds, self.revision, "bonds_refresh")
-    return readable > 0
+    return apiReadable > 0
 end
-function BA:GetProjection() return { revision = self.revision, rows = Copy(self.rows), status = self.status, resourceStatus = self.resourceStatus, error = self.error, duplicatePriorityUnresolved = self.duplicatePriorityUnresolved } end
+function BA:GetProjection()
+    return {
+        revision = self.revision, rows = Copy(self.rows), status = self.status, resourceStatus = self.resourceStatus,
+        error = self.error, duplicatePriorityUnresolved = self.duplicatePriorityUnresolved,
+        boardScope = self.boardScope, faction = self.faction,
+    }
+end
 RegisterStore(Bonds.storeId, "v3.life.bonds", function() return NormalizeBondState(nil) end,
     function() return Copy(Bonds.State) end,
     function(value) Bonds.State = NormalizeBondState(value) end)

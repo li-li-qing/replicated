@@ -4,8 +4,8 @@
 
 ## 统一前置
 
-1. 备份当前 addon 与用户配置；只加载 `globals/`、`replicatedsuite/`、`z_api_functions/`，不加载 Legacy UI/runtime。
-2. 使用当前 `replicatedsuite/replicatedsuite.lua` 的 BuildTag `v3-m1.16.0.18.28-foundation-regression-gate` 启动新客户端，记录 `ArcheRage.log`、`Chat.log` 和崩溃文件。
+1. 备份当前 addon 与用户配置；只加载 `replicatedsuite/`（单一 V3 Host）。`z_api_functions/` 仅作开发期 API 参考，**不进入运行时**；旧 `globals/` 与 Legacy UI/runtime 已于 2026-09-01/02 物理删除，不再随包，绝不重新引入。
+2. 使用当前 `replicatedsuite/replicatedsuite.lua` 的 BuildTag 启动新客户端（见 `S.BuildTag`，当前为 `v3-m1.16.0.18.60-healer-raid-panel-model`），记录 `ArcheRage.log`、`Chat.log` 和崩溃文件。
 3. 在 1024×768、1920×1080、2K 逐路由打开首页、战斗、生活、工具、系统页；记录页面/Widget/Modal 是否构建、文本裁切、列宽、黑边和关闭后资源释放。
 4. 每次测试前后记录 Foundation：`activeBuildScopes`、page/widget quarantine、Authority violation、Presentation boundary、Raw Native、Unexpected Global 和 Scheduler active tasks。
 5. 失败记录格式：时间、BuildTag、路由/动作、API 名、输入、原生返回值（脱敏）、日志错误码、是否可复现、恢复动作。

@@ -250,7 +250,12 @@ local function Build(parent, route, feature, kind)
             if widgetButton then widgetButton:SetEnabled(enabled); widgetButton:SetText(WidgetHost:IsVisible("life.fishing") and "关闭悬浮窗" or "打开悬浮窗") end
         else
             local diagnostic = projection.duplicatePriorityUnresolved and (" · " .. projection.duplicatePriorityUnresolved) or ""
-            status:SetText(enabled and ((projection.status or "--") .. " · " .. tostring(#(projection.rows or {})) .. " 条" .. diagnostic) or "功能已关闭")
+            local scopeText = projection.boardScope == "mainland" and "大陆居民板"
+                or (projection.boardScope == "auroria" and "原大陆居民板" or "区域未判定")
+            local factionText = projection.faction and tostring(projection.faction) ~= "" and (" · 阵营 " .. tostring(projection.faction)) or ""
+            local errorText = projection.error and (" · " .. tostring(projection.error)) or ""
+            status:SetText(enabled and ((projection.status or "--") .. " · " .. scopeText .. factionText
+                .. " · " .. tostring(#(projection.rows or {})) .. " 条" .. diagnostic .. errorText) or "功能已关闭")
             local bondFilter = feature:GetBondFilter()
             if root.bondSortButton then root.bondSortButton:SetText(bondFilter.sortMode == "quantity" and "按大陆排序" or "按数量排序") end
             if root.bondFilterButtons then

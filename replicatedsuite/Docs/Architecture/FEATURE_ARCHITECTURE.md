@@ -2,7 +2,7 @@
 
 > **Authority Level**: ARCHITECTURE
 > **状态**：旧 Plates 模块（`rp_api.lua` / `rp_manager.lua` / `rp_runtime.lua` / `rp_storage.lua` / `rp_ui.lua` / `rp_diagnostics.lua` / `replicatedplates.lua` 等）已于 2026-09-01 随旧版架构全量删除（commit 09010c0），不再随包。本文不再保留旧 Plates 架构描述。
-> 新人上手见 [`CURRENT_ARCHITECTURE_OVERVIEW.md`](CURRENT_ARCHITECTURE_OVERVIEW.md)。
+> 新人上手见 [`../CURRENT_ARCHITECTURE.md`](../CURRENT_ARCHITECTURE.md)。
 
 ## 旧 Plates 能力的 V3 对应物
 

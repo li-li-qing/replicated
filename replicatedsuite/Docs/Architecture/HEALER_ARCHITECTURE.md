@@ -2,7 +2,7 @@
 
 > **Authority Level**: ARCHITECTURE
 > **状态**：旧 Healer 模块（`rh_settings_model.lua` / `rh_settings_migrations.lua` / `rh_settings_bootstrap.lua` / `rh_settings_store.lua` / `rh_settings_presenter.lua` / `rh_roster.lua` / `rh_status_cache.lua` / `rh_recommendation.lua` / `rh_runtime.lua` / `rh_api.lua` / `rh_ui_bridge.lua` / `rh_marker_presenter.lua` / `rh_raid_presenter.lua` / `rh_recommendation_list_presenter.lua` / `rh_buff_observer.lua` / `rh_config.lua` 等，原位于 `modules/professional/healer/`）已于 2026-09-01 随旧版架构全量删除（commit 09010c0），不再随包。本文不再保留旧 Healer 架构描述。
-> 新人上手见 [`CURRENT_ARCHITECTURE_OVERVIEW.md`](CURRENT_ARCHITECTURE_OVERVIEW.md)。
+> 新人上手见 [`../CURRENT_ARCHITECTURE.md`](../CURRENT_ARCHITECTURE.md)。
 
 ## 旧 Healer 能力的 V3 对应物
 

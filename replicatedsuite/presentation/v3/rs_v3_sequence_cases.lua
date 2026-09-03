@@ -1202,3 +1202,415 @@ G:RegisterSequenceCase("v3_38_floating_policy_zero_defaults", function()
     end
     return true
 end)
+
+G:RegisterSequenceCase("v3_40_ui_composite_foundation_pure_contract", function()
+    local rsui = S.RSUI
+    if type(rsui) ~= "table" or (tonumber(rsui.version) or 0) < 27 then return Fail("rsui_v27_missing") end
+    if (tonumber(rsui.StatusChipContractVersion) or 0) < 1 or type(rsui.StatusChip) ~= "function" then return Fail("status_chip_contract") end
+    if (tonumber(rsui.TreeViewContractVersion) or 0) < 1 or type(rsui.TreeModel) ~= "table" or type(rsui.TreeView) ~= "function" then return Fail("tree_view_contract") end
+    if (tonumber(rsui.DropdownDegradedFailClosedContractVersion) or 0) < 1 then return Fail("dropdown_fail_closed_contract") end
+    if (tonumber(rsui.PopupCoordinatorContractVersion) or 0) < 1 or type(rsui.PopupCoordinator) ~= "table"
+        or type(rsui.PopupCoordinator.CloseAll) ~= "function" or rsui.DropdownService ~= rsui.PopupCoordinator then return Fail("popup_coordinator_contract") end
+
+    local model = rsui.TreeModel:New({
+        nodes = {
+            { key = "a", text = "A", children = { { key = "a1", text = "A1" } } },
+            { key = "b", text = "B" },
+        },
+        maxNodes = 16,
+    })
+    if type(model) ~= "table" or model.lastError ~= nil or #model:GetRows() ~= 2 then return Fail("tree_initial_flatten") end
+    local expanded, expandErr = model:SetExpanded("a", true)
+    if expanded ~= true or expandErr ~= nil or #model:GetRows() ~= 3 or model:GetRowIndex("a1") ~= 2 then return Fail("tree_expand") end
+    local collapsed, collapseErr = model:SetExpanded("a", false)
+    if collapsed ~= true or collapseErr ~= nil or #model:GetRows() ~= 2 or model:GetRowIndex("a1") ~= nil then return Fail("tree_collapse") end
+
+    local duplicate = rsui.TreeModel:New({ nodes = { { key = "x" }, { key = "x" } }, maxNodes = 8 })
+    if type(duplicate) ~= "table" or tostring(duplicate.lastError or ""):find("tree_duplicate_key", 1, true) == nil then return Fail("tree_duplicate_key_fence") end
+
+    local bounded = rsui.TreeModel:New({
+        nodes = { { key = "root", children = { { key = "c1" }, { key = "c2" }, { key = "c3" } } } },
+        defaultExpandedDepth = 1,
+        maxNodes = 2,
+    })
+    local snap = bounded:GetSnapshot()
+    if #bounded:GetRows() ~= 2 or snap.truncated ~= true or snap.maxNodes ~= 2 then return Fail("tree_bounded_projection") end
+    return true
+end)
+
+
+G:RegisterSequenceCase("v3_41_ui_model_integrity_contract", function()
+    local rsui = S.RSUI
+    if type(rsui) ~= "table" then return Fail("rsui_missing") end
+    if (tonumber(rsui.PickerModelContractVersion) or 0) < 1 or type(rsui.PickerModel) ~= "table" then return Fail("picker_model_contract") end
+    if (tonumber(rsui.TreeStableIdentityContractVersion) or 0) < 1 then return Fail("tree_identity_contract") end
+    if (tonumber(rsui.TreeMutationTransactionContractVersion) or 0) < 2 then return Fail("tree_transaction_contract") end
+    if (tonumber(rsui.TreeExpansionStateBoundContractVersion) or 0) < 1 then return Fail("tree_expansion_bound_contract") end
+    if (tonumber(rsui.FocusContractVersion) or 0) < 2 or type(rsui.Focus) ~= "table"
+        or type(rsui.Focus.CanSet) ~= "function" or type(rsui.Focus.CanClear) ~= "function" then return Fail("focus_target_capability_contract") end
+
+    local missingKey = rsui.TreeModel:New({ nodes = { { text = "missing" } }, maxNodes = 8 })
+    if tostring(missingKey.lastError or "") ~= "tree_key_required:1" then return Fail("tree_path_identity_fallback") end
+
+    local tx = rsui.TreeModel:New({
+        nodes = { { key = "root", children = { { key = "dup" }, { key = "dup" } } }, { key = "tail" } },
+        maxNodes = 16,
+    })
+    if tx.lastError ~= nil or #tx:GetRows() ~= 2 then return Fail("tree_tx_initial") end
+    local beforeRevision = tonumber(tx.revision) or 0
+    local expanded, expandErr = tx:SetExpanded("root", true)
+    if expanded ~= false or tostring(expandErr or "") ~= "tree_duplicate_key:dup" then return Fail("tree_tx_duplicate_not_rejected") end
+    if tx:IsExpanded("root") == true or #tx:GetRows() ~= 2 or (tonumber(tx.revision) or 0) ~= beforeRevision then return Fail("tree_tx_partial_commit") end
+
+    local defaultTree = rsui.TreeModel:New({
+        nodes = { { key = "r", children = { { key = "c" } } } },
+        defaultExpandedDepth = 1,
+        maxNodes = 8,
+    })
+    if defaultTree:IsExpanded("r") ~= true then return Fail("tree_default_expand") end
+    local collapsed = defaultTree:SetExpanded("r", false)
+    if collapsed ~= true or defaultTree:IsExpanded("r") == true or #defaultTree:GetRows() ~= 1 then return Fail("tree_explicit_collapse") end
+    if defaultTree:Rebuild() ~= true or defaultTree:IsExpanded("r") == true or #defaultTree:GetRows() ~= 1 then return Fail("tree_collapse_not_persistent") end
+
+    local picker = rsui.PickerModel:New({
+        items = {
+            { key = "heal", text = "Healing Light", keywords = { "support", "spell" } },
+            { key = "fire", text = "Fireball", keywords = { "damage", "spell" } },
+            { key = "ice", text = "Ice Lance", keywords = { "damage", "spell" } },
+        },
+        maxScan = 32,
+        maxResults = 16,
+    })
+    if picker.lastError ~= nil then return Fail("picker_initial") end
+    local queryChanged, queryErr = picker:SetQuery("damage spell")
+    if queryChanged ~= true or queryErr ~= nil or #picker:GetResults() ~= 2 then return Fail("picker_query") end
+    if picker:GetResults()[1].key ~= "fire" or picker:GetResults()[2].key ~= "ice" then return Fail("picker_result_order") end
+    return true
+end)
+G:RegisterSequenceCase("v3_42_ui_host_slot_picker_contract", function()
+    local rsui = S.RSUI
+    if type(rsui) ~= "table" or (tonumber(rsui.version) or 0) < 29 then return Fail("rsui_v29_missing") end
+    if (tonumber(rsui.AttachmentContractVersion) or 0) < 1
+        or (tonumber(rsui.ReparentPolicyContractVersion) or 0) < 1
+        or rsui.NativeReparentSupported ~= false then return Fail("attachment_reparent_contract") end
+    if (tonumber(rsui.ResponsiveInspectorContractVersion) or 0) < 1 or type(rsui.ResponsiveInspector) ~= "function" then
+        return Fail("responsive_inspector_contract")
+    end
+    local workspaces = rsui.WorkspaceTemplates
+    if type(workspaces) ~= "table" or (tonumber(workspaces.contractVersion) or 0) < 2
+        or type(rsui.CreateResponsiveInspectorWorkspace) ~= "function" then return Fail("responsive_workspace_contract") end
+    if (tonumber(rsui.SearchablePickerContractVersion) or 0) < 1 or type(rsui.SearchablePicker) ~= "function" then
+        return Fail("searchable_picker_contract")
+    end
+    if (tonumber(rsui.IconPickerContractVersion) or 0) < 1 or type(rsui.IconPicker) ~= "function" then
+        return Fail("icon_picker_contract")
+    end
+    local picker = rsui.PickerModel:New({
+        items = {
+            { key = "a", text = "Alpha", keywords = { "one", "spell" } },
+            { key = "b", text = "Beta", keywords = { "two", "spell" } },
+        },
+        maxScan = 8,
+        maxResults = 8,
+    })
+    local changed, err = picker:SetQuery("two spell")
+    if changed ~= true or err ~= nil or #picker:GetResults() ~= 1 or picker:GetResults()[1].key ~= "b" then
+        return Fail("searchable_picker_model_dependency")
+    end
+    return true
+end)
+G:RegisterSequenceCase("v3_43_ui_geometry_pointer_contract", function()
+    local rsui, layout = S.RSUI, S.Layout
+    if type(rsui) ~= "table" or (tonumber(rsui.version) or 0) < 30 then return Fail("rsui_v30_missing") end
+    if type(layout) ~= "table" or (tonumber(layout.CoordinateSystemContractVersion) or 0) < 1
+        or (tonumber(layout.RectTransformTransactionContractVersion) or 0) < 2 then return Fail("geometry_contract") end
+    local coord = layout:GetCoordinateSystemSnapshot()
+    if type(coord) ~= "table" or coord.origin ~= "top_left" or coord.xPositive ~= "right" or coord.yPositive ~= "down" then
+        return Fail("coordinate_semantics")
+    end
+    local x, y, err = layout:OffsetPoint(100, 100, "up", 12)
+    if err ~= nil or x ~= 100 or y ~= 88 then return Fail("move_up_sign") end
+    x, y, err = layout:OffsetPoint(100, 100, "down", 12)
+    if err ~= nil or x ~= 100 or y ~= 112 then return Fail("move_down_sign") end
+
+    local tx = layout:CreateRectTransformTransaction({ minWidth = 20, minHeight = 20 })
+    local begun = tx:Begin({ x = 100, y = 100, width = 80, height = 60 }, "resize", "top_left")
+    if begun ~= true then return Fail("rect_tx_begin") end
+    local preview, previewErr = tx:PreviewDelta(-10, -15)
+    if previewErr ~= nil or preview.x ~= 90 or preview.y ~= 85 or preview.width ~= 90 or preview.height ~= 75 then
+        return Fail("rect_tx_top_left_semantics")
+    end
+    local overridden, overrideErr = tx:OverridePreview({ x = 92, y = 87, width = 88, height = 73 })
+    if overrideErr ~= nil or overridden.x ~= 92 or overridden.y ~= 87 then return Fail("rect_tx_override") end
+    local committed, commitErr = tx:Commit()
+    if commitErr ~= nil or committed.x ~= 92 or committed.y ~= 87 then return Fail("rect_tx_commit") end
+
+    if (tonumber(rsui.PointerContractVersion) or 0) < 1 or type(rsui.Pointer) ~= "table"
+        or rsui.Pointer.captureSupported ~= false then return Fail("pointer_contract") end
+    local dx, dy, deltaErr = rsui.Pointer:Delta(100, 100, 90, 85)
+    if deltaErr ~= nil or dx ~= -10 or dy ~= -15 then return Fail("pointer_delta_semantics") end
+    return true
+end)
+
+
+G:RegisterSequenceCase("v3_44_ui_selection_geometry_contract", function()
+    local rsui = S.RSUI
+    if type(rsui) ~= "table" or (tonumber(rsui.version) or 0) < 31 then return Fail("rsui_v31_missing") end
+    if (tonumber(rsui.SelectionGeometryContractVersion) or 0) < 1
+        or type(rsui.SelectionGeometry) ~= "table" or type(rsui.CreateSelectionGeometryModel) ~= "function" then
+        return Fail("selection_geometry_contract")
+    end
+    if (tonumber(rsui.LayoutGuideResolverContractVersion) or 0) < 1
+        or type(rsui.LayoutGuideResolver) ~= "table" or type(rsui.LayoutGuideResolver.Resolve) ~= "function" then
+        return Fail("layout_guide_contract")
+    end
+    if (tonumber(rsui.SelectionOverlayContractVersion) or 0) < 1 or type(rsui.SelectionOverlay) ~= "function"
+        or (tonumber(rsui.LayoutGuideOverlayContractVersion) or 0) < 1 or type(rsui.LayoutGuideOverlay) ~= "function" then
+        return Fail("selection_overlay_contract")
+    end
+
+    local selection = rsui:CreateSelectionModel({ id = "__geometry_accept", mode = "multi", selectedKeys = { "a", "b" } })
+    local rects = {
+        a = { x = 100, y = 100, width = 40, height = 20 },
+        b = { x = 160, y = 130, width = 60, height = 30 },
+    }
+    local geometry = rsui:CreateSelectionGeometryModel({
+        id = "__geometry_accept_model", selectionModel = selection,
+        getRect = function(key) return rects[key] end,
+        maxSelected = 8,
+    })
+    local ok, err = geometry:Resolve()
+    if ok ~= true or err ~= nil then return Fail("selection_geometry_resolve") end
+    local bounds = geometry:GetBounds()
+    if bounds == nil or bounds.x ~= 100 or bounds.y ~= 100 or bounds.right ~= 220 or bounds.bottom ~= 160 then
+        return Fail("selection_geometry_bounds")
+    end
+    local handles = geometry:GetHandleRects({ size = 8, hitSlop = 2 })
+    if type(handles) ~= "table" or #handles ~= 8 then return Fail("selection_handle_count") end
+    local hit = rsui.SelectionGeometry:HitTestHandle(100, 100, bounds, { size = 8, hitSlop = 2 })
+    if hit ~= "top_left" then return Fail("selection_handle_hit") end
+
+    local snapped, guides, snapErr = rsui.LayoutGuideResolver:Resolve(
+        { x = 196, y = 100, width = 40, height = 20 }, "move",
+        {
+            threshold = 6,
+            candidates = { { key = "target", rect = { x = 240, y = 100, width = 40, height = 20 } } },
+            gridEnabled = false,
+        })
+    if snapErr ~= nil or snapped == nil or snapped.x ~= 200 then return Fail("alignment_snap_x") end
+    if type(guides) ~= "table" or #guides < 1 or guides[1].axis ~= "x" then return Fail("alignment_guide_x") end
+
+    local gridRect, gridGuides, gridErr = rsui.LayoutGuideResolver:Resolve(
+        { x = 103, y = 117, width = 40, height = 20 }, "move",
+        { threshold = 4, gridEnabled = true, gridSize = 10, candidates = {} })
+    if gridErr ~= nil or gridRect == nil or gridRect.x ~= 100 or gridRect.y ~= 120 then return Fail("grid_snap") end
+    if type(gridGuides) ~= "table" or #gridGuides ~= 2 then return Fail("grid_guides") end
+    return true
+end)
+
+G:RegisterSequenceCase("v3_45_ui_layout_editor_gesture_contract", function()
+    local rsui, layout = S.RSUI, S.Layout
+    if type(rsui) ~= "table" or (tonumber(rsui.version) or 0) < 32 then return Fail("rsui_v32_missing") end
+    if (tonumber(rsui.LayoutEditorGestureContractVersion) or 0) < 1
+        or type(rsui.CreateLayoutEditorGestureController) ~= "function"
+        or type(rsui.LayoutEditorGestureController) ~= "table" then
+        return Fail("layout_editor_gesture_contract")
+    end
+    if type(layout) ~= "table" or (tonumber(layout.RectTransformTransactionContractVersion) or 0) < 2 then
+        return Fail("rect_transform_v2_missing")
+    end
+    if type(rsui.SelectionOverlay) ~= "function" or type(rsui.LayoutGuideOverlay) ~= "function" then
+        return Fail("gesture_overlay_dependencies")
+    end
+    -- Runtime-native gesture capture is RU-widget dependent and is covered by
+    -- the dedicated offline harness; sequence acceptance fences the shared
+    -- contract and the no-generic-capture policy without synthesizing input.
+    if type(rsui.Pointer) ~= "table" or rsui.Pointer.captureSupported ~= false then
+        return Fail("generic_capture_policy")
+    end
+    return true
+end)
+
+
+G:RegisterSequenceCase("v3_46_ui_layout_editor_model_contract", function()
+    local rsui = S.RSUI
+    if type(rsui) ~= "table" or (tonumber(rsui.version) or 0) < 33 then return Fail("rsui_v33_missing") end
+    if (tonumber(rsui.AnchorPivotContractVersion) or 0) < 1 or type(rsui.CreateAnchorPivotModel) ~= "function" then
+        return Fail("anchor_pivot_contract")
+    end
+    if (tonumber(rsui.LayoutEditorSnapSettingsContractVersion) or 0) < 1
+        or type(rsui.CreateLayoutEditorSnapSettingsModel) ~= "function" then return Fail("snap_settings_contract") end
+
+    local model, err = rsui:CreateAnchorPivotModel({
+        id = "__anchor_accept",
+        parentRect = { x = 0, y = 0, width = 1000, height = 800 },
+        rect = { x = 100, y = 100, width = 100, height = 50 },
+        anchorX = 0, anchorY = 0, pivotX = 0, pivotY = 0,
+    })
+    if model == nil or err ~= nil then return Fail("anchor_create") end
+    if model:SetAnchorPreset("center", true, "accept") ~= true then return Fail("anchor_preset") end
+    local rect = model:GetRect()
+    if rect.x ~= 100 or rect.y ~= 100 then return Fail("anchor_preserve_visual") end
+    if model:SetParentRect({ x = 0, y = 0, width = 1200, height = 900 }, false, "accept_resize") ~= true then return Fail("anchor_parent_reflow") end
+    rect = model:GetRect()
+    if rect.x ~= 200 or rect.y ~= 150 then return Fail("anchor_reflow_geometry") end
+    model:MoveUp(8)
+    rect = model:GetRect()
+    if rect.y ~= 142 then return Fail("anchor_move_up_sign") end
+    if model:SetPivot(0.5, 0.5, true, "accept_pivot") ~= true then return Fail("pivot_set") end
+    rect = model:GetRect()
+    if rect.x ~= 200 or rect.y ~= 142 then return Fail("pivot_preserve_visual") end
+
+    local snap = rsui:CreateLayoutEditorSnapSettingsModel({ alignmentEnabled = false, gridEnabled = true, gridSize = 10, threshold = 4 })
+    if snap == nil then return Fail("snap_model_create") end
+    local options = snap:ToResolverOptions({ candidates = { { key = "near", rect = { x = 239, y = 142, width = 40, height = 20 } } } })
+    if options.alignmentEnabled ~= false or options.gridEnabled ~= true or options.gridSize ~= 10 then return Fail("snap_projection") end
+    local resolved, guides, snapErr = rsui.LayoutGuideResolver:Resolve({ x = 203, y = 142, width = 40, height = 20 }, "move", options)
+    if snapErr ~= nil or resolved == nil or resolved.x ~= 200 then return Fail("snap_grid_only") end
+    if type(guides) ~= "table" or #guides < 1 then return Fail("snap_grid_guide") end
+    return true
+end)
+
+G:RegisterSequenceCase("v3_47_ui_transform_inspector_contract", function()
+    local rsui = S.RSUI
+    if type(rsui) ~= "table" or (tonumber(rsui.version) or 0) < 36 then return Fail("rsui_v36_missing") end
+    if (tonumber(rsui.TransformInspectorContractVersion) or 0) < 2
+        or type(rsui.TransformInspector) ~= "function" or type(rsui.types) ~= "table"
+        or rsui.types["TransformInspector"] == nil then return Fail("transform_inspector_contract") end
+    if type(rsui.types["NumericField"]) ~= "function" or type(rsui.types["DropdownField"]) ~= "function"
+        or type(rsui.types["ToggleField"]) ~= "function" or type(rsui.types["FormSection"]) ~= "function" then
+        return Fail("transform_inspector_form_dependencies")
+    end
+    return true
+end)
+
+G:RegisterSequenceCase("v3_48_ui_multi_selection_transform_contract", function()
+    local rsui = S.RSUI
+    if type(rsui) ~= "table" or (tonumber(rsui.version) or 0) < 35 then return Fail("rsui_v35_missing") end
+    if (tonumber(rsui.MultiSelectionTransformContractVersion) or 0) < 1
+        or type(rsui.CreateMultiSelectionTransformModel) ~= "function"
+        or type(rsui.MultiSelectionTransformModel) ~= "table"
+        or type(rsui.MultiSelectionTransformSession) ~= "table" then
+        return Fail("multi_selection_transform_contract")
+    end
+
+    local model, err = rsui:CreateMultiSelectionTransformModel({
+        id = "__multi_transform_accept", minChildWidth = 10, minChildHeight = 10,
+        items = {
+            { key = "a", rect = { x = 100, y = 100, width = 100, height = 50 } },
+            { key = "b", rect = { x = 300, y = 200, width = 200, height = 100 } },
+        },
+    })
+    if model == nil or err ~= nil then return Fail("multi_transform_create") end
+    local bounds = model:GetBounds()
+    if bounds == nil or bounds.x ~= 100 or bounds.y ~= 100 or bounds.width ~= 400 or bounds.height ~= 200 then
+        return Fail("multi_transform_bounds")
+    end
+    local session, sessionErr = model:BeginProjectionSession()
+    if session == nil or sessionErr ~= nil then return Fail("multi_transform_session") end
+    local projected, projectionErr = session:Project({ x = 200, y = 150, width = 800, height = 400 })
+    if projected == nil or projectionErr ~= nil or #projected ~= 2 then return Fail("multi_transform_projection") end
+    if projected[1].rect.x ~= 200 or projected[1].rect.y ~= 150
+        or projected[1].rect.width ~= 200 or projected[1].rect.height ~= 100 then
+        return Fail("multi_transform_child_a")
+    end
+    if projected[2].rect.x ~= 600 or projected[2].rect.y ~= 350
+        or projected[2].rect.width ~= 400 or projected[2].rect.height ~= 200 then
+        return Fail("multi_transform_child_b")
+    end
+    local committed, commitErr = session:Commit(nil, "accept")
+    if committed == nil or commitErr ~= nil then return Fail("multi_transform_commit") end
+    bounds = model:GetBounds()
+    if bounds.x ~= 200 or bounds.y ~= 150 or bounds.width ~= 800 or bounds.height ~= 400 then
+        return Fail("multi_transform_commit_bounds")
+    end
+    local single = rsui:CreateMultiSelectionTransformModel({ items = { { key = "only", rect = { x = 0, y = 0, width = 10, height = 10 } } } })
+    if single ~= nil then return Fail("multi_transform_single_must_reject") end
+    return true
+end)
+
+G:RegisterSequenceCase("v3_49_ui_layout_editor_preview_adapter_contract", function()
+    local rsui = S.RSUI
+    if type(rsui) ~= "table" or (tonumber(rsui.version) or 0) < 36 then return Fail("rsui_v36_missing") end
+    if (tonumber(rsui.LayoutEditorPreviewAdapterContractVersion) or 0) < 1
+        or type(rsui.CreateLayoutEditorPreviewAdapter) ~= "function"
+        or type(rsui.LayoutEditorPreviewAdapter) ~= "table" then
+        return Fail("layout_editor_preview_adapter_contract")
+    end
+    if (tonumber(rsui.LayoutEditorGestureContractVersion) or 0) < 2
+        or (tonumber(rsui.AnchorPivotContractVersion) or 0) < 2
+        or (tonumber(rsui.TransformInspectorContractVersion) or 0) < 2 then
+        return Fail("layout_editor_transaction_dependencies")
+    end
+
+    local selection = rsui:CreateSelectionModel({ id = "__layout_editor_adapter_selection", mode = "multi" })
+    selection:SetSelected("a", true, "accept")
+    selection:SetSelected("b", true, "accept")
+    local source = {
+        a = { x = 0, y = 0, width = 100, height = 50 },
+        b = { x = 200, y = 100, width = 100, height = 50 },
+    }
+    local reject = false
+    local commits = 0
+    local adapter, err = rsui:CreateLayoutEditorPreviewAdapter({
+        id = "__layout_editor_adapter_accept",
+        selectionModel = selection,
+        canvasRect = { x = 0, y = 0, width = 1000, height = 800 },
+        getRect = function(key) return source[key] end,
+        onCommit = function(items)
+            if reject then return false, "accept_reject" end
+            for _, item in ipairs(items or {}) do
+                source[item.key] = { x=item.rect.x, y=item.rect.y, width=item.rect.width, height=item.rect.height }
+            end
+            commits = commits + 1
+            return true
+        end,
+    })
+    if adapter == nil or err ~= nil or adapter:GetMode() ~= "multi" then return Fail("layout_editor_adapter_multi_create") end
+    local bounds = adapter:GetRect()
+    if bounds == nil or bounds.x ~= 0 or bounds.y ~= 0 or bounds.width ~= 300 or bounds.height ~= 150 then
+        return Fail("layout_editor_adapter_multi_bounds")
+    end
+    if adapter:BeginGesture("move", "move") ~= true then return Fail("layout_editor_adapter_begin") end
+    if adapter:PreviewGesture({ x = 10, y = 20, width = 300, height = 150 }, {}) ~= true then return Fail("layout_editor_adapter_preview") end
+    if adapter:CommitGesture({ x = 10, y = 20, width = 300, height = 150 }) ~= true then return Fail("layout_editor_adapter_commit") end
+    if commits ~= 1 or source.a.x ~= 10 or source.a.y ~= 20 or source.b.x ~= 210 or source.b.y ~= 120 then
+        return Fail("layout_editor_adapter_projection_commit")
+    end
+
+    selection:SelectOnly("a", "accept_single")
+    if adapter:SyncSelection("accept_single") ~= true or adapter:GetMode() ~= "single" then return Fail("layout_editor_adapter_single_sync") end
+    local anchor = adapter:GetAnchorModel()
+    if anchor == nil or type(anchor.GetSnapshot) ~= "function" then return Fail("layout_editor_adapter_anchor_model") end
+    local before = anchor:GetSnapshot()
+    reject = true
+    if anchor:SetAnchorPreset("center", true, "accept_anchor") ~= true then return Fail("layout_editor_adapter_anchor_mutate") end
+    local accepted = adapter:CommitSingleAnchorEdit("accept_anchor", before)
+    local after = anchor:GetSnapshot()
+    if accepted ~= false or after.anchorX ~= before.anchorX or after.anchorY ~= before.anchorY
+        or after.pivotX ~= before.pivotX or after.pivotY ~= before.pivotY then
+        return Fail("layout_editor_adapter_anchor_rollback")
+    end
+    return true
+end)
+
+G:RegisterSequenceCase("v3_50_ui_layout_editor_composition_contract", function()
+    local rsui = S.RSUI
+    local templates = rsui and rsui.WorkspaceTemplates or nil
+    if type(rsui) ~= "table" or (tonumber(rsui.version) or 0) < 38 then return Fail("rsui_v38_missing") end
+    if (tonumber(rsui.LayoutEditorOverlayContractVersion) or 0) < 1
+        or type(rsui.LayoutEditorOverlay) ~= "function"
+        or type(rsui.types) ~= "table" or rsui.types["LayoutEditorOverlay"] == nil then
+        return Fail("layout_editor_overlay_contract")
+    end
+    if type(templates) ~= "table" or (tonumber(templates.contractVersion) or 0) < 3
+        or type(rsui.CreateLayoutEditorWorkspace) ~= "function" then
+        return Fail("layout_editor_workspace_contract")
+    end
+    if (tonumber(rsui.LayoutEditorGestureContractVersion) or 0) < 2
+        or (tonumber(rsui.TransformInspectorContractVersion) or 0) < 2
+        or (tonumber(rsui.LayoutEditorPreviewAdapterContractVersion) or 0) < 1 then
+        return Fail("layout_editor_workspace_dependencies")
+    end
+    return true
+end)

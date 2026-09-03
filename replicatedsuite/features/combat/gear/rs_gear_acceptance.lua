@@ -44,12 +44,15 @@ G:RegisterSequenceCase("v3_m4_gear_screen_buttons", function()
     end
 
     local service = S.Services and S.Services.GearV3 or nil
-    if type(service) ~= "table" or type(service.CapturePayload) ~= "function" or type(service.BuildBagSnapshot) ~= "function"
-        or type(service.ValidatePayload) ~= "function" or type(service.Start) ~= "function"
+    if type(service) ~= "table" or (tonumber(service.version) or 0) < 3
+        or type(service.CapturePayload) ~= "function" or type(service.BuildBagSnapshot) ~= "function"
+        or type(service.ValidatePayload) ~= "function" or type(service.ValidateWeaponPayload) ~= "function"
+        or type(service.GetBagScanLimit) ~= "function" or type(service.Start) ~= "function"
         or type(service.CaptureEquippedSnapshot) ~= "function" or type(service.PayloadMatchScore) ~= "function" then
         return Fail("service_contract")
     end
-    if #(service.EquipmentSlots or {}) ~= 19 or tonumber(service.BagSlots) ~= 150 then return Fail("equipment_contract") end
+    if #(service.EquipmentSlots or {}) ~= 19 or tonumber(service.BagSlots) ~= 150
+        or tonumber(service.MaxBagSlots) ~= 240 or tonumber(service.PreferredBagId) ~= 1 then return Fail("equipment_contract") end
 
     -- Regression guard for the M3 save failure: a fully populated 19-slot
     -- loadout must fit AFTER the persistence metadata envelope is attached.

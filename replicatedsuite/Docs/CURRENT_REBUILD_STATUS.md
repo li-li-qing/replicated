@@ -1,174 +1,410 @@
-# Replicated Suite 重建进度（当前状态）
+# Replicated Suite 重建进度（唯一当前状态）
 
-> **Authority Level**: CURRENT
-> 里程碑与“下一步”以本文件为准；逐条变更见 [`CHANGELOG.md`](CHANGELOG.md)。新建里程碑知识请更新此处，不要再开 `M1_xx_*.md`。
+> **Authority: CURRENT**  
+> 本文只保存“现在完成到哪里、现在还缺什么、下一步做什么”。逐版本实现过程见 [`CHANGELOG.md`](CHANGELOG.md)，历史阶段交接与验证记录见 `Archive/`。
 
-## 已落地里程碑
+## 1. 当前基线
 
-| 里程碑 | 日期 | 状态 | 关键交付 |
-|--------|------|------|----------|
-| M1.16.0.18.59 截断文字悬浮提示跟随光标（issue #2） | 2026-09-02 | ✅ 本地代码/三关门禁完成 / RU Fresh Reload 待验收 | 用户反馈②文字显示不全时悬浮提示不在鼠标位置 → 先查底层架构：`RSUI.Tooltip`(`rs_ui_interactions.lua`) 的 `Show` 优先走原生 `SetTooltip(text,widget)`（锚定所绑 widget 单元格、非光标），光标跟随逻辑仅存在于 pooled fallback 分支；故根因为截断类提示走了原生路径被钉单元格。修复：`Show` 选路前先采样 `PointerPosition()`，`options.cursorFollow==true` 时跳过原生直走带光标跟随的 fallback；`BindOverflowText`（截断文字路径）显式置 `binding.cursorFollow=true` 强制光标跟随。已核对真实 `S.Api:GetMouseLogicalPosition` 返回 `(x,y,nil)`（坐标取前两返回值）与 fallback 用法对齐。录制 harness `TOOLTIP_CURSOR_FOLLOW_HARNESS_PASS cursorFollowSkipNative=true overflowBindsCursorFollow=true`（A 跳过原生在光标(110,110)打开 / B 默认仍走原生 / C BindOverflowText 强制光标跟随）；Foundation Audit 全 PASS（`toc=199 activeLua=199 allLua=199 globals=0 presentation=0 rawNative=0 rawScope=0 detachedWidgetState=0 apiDependency=0 apiCapability=0 businessIds=0 auctionEventOwners=0`）。BuildTag 升 `v3-m1.16.0.18.59-tooltip-cursor-follow-overflow` |
-| M1.16.0.18.58 ColorField 基础组件 + 单位连线/范围辅助线条颜色（issue #1+#3） | 2026-09-02 | ✅ 本地代码/三关门禁完成 / RU Fresh Reload 待验收 | 用户反馈①单位连线面板杂乱、③范围辅助与单位连线均缺线条颜色设置 → 先查底层架构：RSUI 此前无颜色选择器，故新建 `RSUI:ColorField`（点击色块 + 弹层 R/G/B Slider + hex 输入，get/set 携带 {r,g,b} 0..1，复用 `RSUI:Binding` 提交链）。单位连线每种关系（target/targettarget/focus/focustarget）原内联 3 个 CompactNumericSetting R/G/B 滑块 → 替换为单个 ColorField（去杂乱），swatch 默认取 presenter `UNIT_COLORS` 同款调色板；范围辅助原无任何颜色控件 → 新增 ColorField 写入 `feature.Commands:SetColor`。配套补 range `SetColor` Command + `color` 投影暴露 + presenter `RenderRange` 读 `projection.color` 落点（缺省回退原 (0.20,0.82,1.00)）。**录制式 harness 验收发现并修复 1 个真实生产 Bug**：`ColorField` 内部每通道 Slider 的 set 闭包引用 `Clamp01`，而 `Clamp01` 在 Lua 中声明为循环之后的 `local function`——Lua 闭包不捕获晚声明的局部，会绑定到全局，用户拖动任一颜色通道即 `attempt to call a nil value (global 'Clamp01')` 崩溃；已将 `Clamp01` 声明上移到 Slider 循环之前修复。Foundation Audit 全 PASS（`toc=199 activeLua=199 allLua=199 globals=0 presentation=0 rawNative=0 rawScope=0 detachedWidgetState=0 apiDependency=0 apiCapability=0 businessIds=0 auctionEventOwners=0`）；录制 harness `BUSINESS_PAGE_COLOR_HARNESS_PASS unit=4 range=1 oldSlidersRemoved=true refreshOk=true`（开发工具不入包）。BuildTag 升 `v3-m1.16.0.18.58-colorfield-foundation-unitlines-range-color` |
-| M1.16.0.18.57 V3 页面布局优化（gear/healer/business 迁 RSUI 模版）+ 底层全局泄漏修复 | 2026-09-02 | ✅ 本地代码/三关门禁完成 / RU Fresh Reload 待验收 | gear_page 4 控件迁 RSUI TextInput/Button（桩 harness 20/20 PASS）；healer_page 4 标题分组框迁 RSUI GroupBox（桩 harness 28/28 PASS）；business_page 表视图补 SetViewState 覆盖（桩 harness 10/10 PASS）；Foundation Audit 修复 2 个预存在全局（ComputePlateLayout 非 local→local、acceptance rows 跨闭包孤儿引用→自包含重投影）后全 PASS（globals=0 presentation=0 rawNative=0 rawScope=0）；BuildTag 升 `v3-m1.16.0.18.57-v3-layout` |
-| M1.16.0.18.50 StatusDisplay 头顶全显（headShowAll）+ 勾选即见联动 | 2026-08-31 | ✅ 本地代码/三关门禁完成 / RU Fresh Reload 待验收 | 延续"头顶图标不出现"：投影层 `BoundedTracked` 仍按 tracked 过滤导致 tracked 为空/未命中时 buffs/debuffs lane 产出 0 行。吸取参考 addon（targetdebufftracker showAllBuffs/showAllDebuffs）精华，新增 `headShowAll` 全显设置（默认开）下沉到投影层：`showAll == true or isTracked == true` 收集行（仍受 headMaxIcons 有界限制），tracked 从"行来源唯一门禁"降级为"可选过滤"；store NormalizeSettings 默认开 + feature Export/Import 白名单同步；页面 Tab2 新增"全部显示"开关 + `headEnabled` 勾选即自动启用 Feature 并 AcquireConsumer（对齐参考 addon 开箱即用）。BuildTag 升 `v3-m1.16.0.18.50-statusdisplay-head-showall`（同步修正此前 BuildTag 停在 .48 的版本一致性）。Foundation Audit 全 PASS（`toc=196 activeLua=196 allLua=353 globals=0 ... apiCapability=0`）；Harness `17/17`；全量 luac 352/352 |
-| M1.16.0.18.49 StatusDisplay 头顶图标门禁修复（参考 addon 精华） | 2026-08-31 | ✅ 本地代码/三关门禁完成 / RU Fresh Reload 待验收 | 修复"勾选头顶显示后玩家身上不出现任何图标"：GitHub 调研 belovres/ArcheRage-addons 6 个头顶实现吸取精华，定位根因为渲染器 `Start/VisualTick/Reconcile` 三处 `HasTracked` 总开关与 Feature 侧 `HeadScopeActive` 门禁不对称——tracked 列表为空时渲染器在 EnsurePools 前被拦死，distance/class/gearScore/装备/cast 连带隐藏。修复：新增 `HasRenderableComponents` 替换总开关（对齐参考 addon show-all 语义），tracked 仅约束 buffs/debuffs 行数；`RenderScope` anchor 失败记录 `metrics.anchorFailures` + 新增 `GetDiagnostics()` + Feature `ProjectScope` 留存 `lane.projectErr` 诊断链。坐标空间保留 logical 归一化（rs_api GetUiMetrics Authority 背书），`NormalizeScreenPoint` 启发式不凭推断改动，以 source/anchor 诊断 + RU 手测验证。Foundation Audit 全 PASS（`toc=196 activeLua=196 allLua=353 globals=0 ... apiCapability=0`）；Harness `72/72`（新增 18 条渲染器断言）；全量 luac 352/352 |
-| M1.16.0.18.48 StatusDisplay 全面重新审计（规范驱动） | 2026-08-31 | ✅ 审计收口 / 代码无新改动 / 待 RU Fresh Reload 验收 | 按 100 步规范对状态显示执行完整重新审计：Phase 1 文档阅读、Phase 2 Authority 逐文件审计（AuraObservationV3/StatusClassificationV3/ScreenProjectionV3/UnitIdentityV3/FeatureRuntime/Scheduler/RefreshCoordinator/Store/Projection/Feature/Page/Widget/HeadMarkers/Acceptance）、Phase 3 Prior-Agent 时间戳交叉核对（基线 10:39 未动 = feature_runtime/refresh_coordinator/aura_observation_v3/unit_identity_v3；Prior-Agent 窗口 17:33–23:35 = screen_projection_v3→feature/store，全部内容已逐行读取，无未审新版本）；确认 HY3 六项修复在位且正确；Foundation 使用情况按规范第 99 节逐项落表（RefreshCoordinator=N/A 因周期位置 lane 归 Scheduler，规范第 29 节；UnitIdentityV3=N/A 不在 StatusDisplay 链；FrameBudget 经 Scheduler 内置集成无需直用；统一 candidate capture 规范 68-69 节尚未实现但无可用能力缺口）；第 100 节最终报告含改动清单/ZIP。Foundation Audit 全 PASS（`toc=196 activeLua=196 allLua=353 globals=0 ... apiCapability=0`）；Harness `44/44` |
-| M1.16.0.18.46 Buff Display Schema 4 / Four-Tab Page | 2026-08-31 | ✅ 本地代码/契约/静态门禁完成 / RU Fresh Reload 待验收 | Scheduler 1ms 高频 Lane；StatusClassificationV3 共享分类服务；BuffDisplay Store schema 4（分类分桶追踪 + 10 组件）；Projection/Plates 分类 + O(1) 索引 + 组件投影；10 组件头顶渲染器 + 焦点修复；Feature Runtime Lane；单位连线 1ms；四页签页面（状态追踪/头顶显示/布局外观/导入导出）+ 行点击 Toggle；SetTrackedId 三参显式分类修复；"只看隐藏"视图过滤；toc.g 补登记分类服务；验收升 schema 4；FoundationGate v62 |
-| M1.16.0.18.45 Product Usability Recovery | 2026-08-31 | ✅ 本地代码/专项契约/静态门禁完成 / RU Fresh Reload 待验收 | Healer 真实校准；Buff 头顶追踪；ScreenProjection v3 + 四类连线/范围逻辑坐标；自动职责；Trade/Treasure/Fishing HUD；Craft 去 raw ID；Bag 取放快捷条/任务互斥；AuctionQueryV3 单一事件 Authority；UIV3Acceptance v35 + FoundationGate v61 |
-| M1.16.0.18.44 DPS Skill Proxy Source Classification | 2026-08-31 | ✅ 本地代码/Domain 故障注入/静态门禁完成 / RU Fresh Combat 待验收 | 治愈之泉技能实体不再成为玩家 Actor；当前无可靠 owner link 因此不猜施放者；代理治疗进入显式未归属诊断；CombatSourceProxyCatalog v1；DPS Domain v7；UIV3Acceptance v33 + FoundationGate v59 |
-| M1.16.0.18.43 Combat / Life Usability Recovery | 2026-08-31 | ✅ 本地代码/专项契约/静态门禁完成 / RU Fresh Reload 待验收 | DPS/DeathReview 信息密度；Healer 推荐 HUD 删除 + standalone 团队色块校准；Buff 事件观察；Boss Alert HUD/测试；当前目标连线/自定义范围圆；Trade/Bonds FloatingSurface；RU Trade zone shape 兼容；UIV3Acceptance v32 + FoundationGate v58 |
-| M1.16.0.18.42 Business Page Logical ID / Strict Build Fail-Fast Recovery | 2026-08-31 | ✅ 本地代码/故障注入/静态门禁完成 / RU Fresh Reload 待验收 | 修复 Social 通用/专用 Row ID 冲突；strict BuildScope required component first-failure fail-fast；Business route-expanded ID 静态门禁；UIV3Acceptance v31 + FoundationGate v57 |
-| M1.16.0.18.41 Bag / Team / Persistence Integrity | 2026-08-31 | ✅ 本地代码/专项行为/静态门禁完成 / RU Fresh Reload 待验收 | Bag 四方向源容器修复与 batch 可释放生命周期；Team 当前玩家 SetRole 语义 + Roster 动态刷新；BuffCap 150ms observation；Activity/Tasks MarkDirty rollback；UIV3Acceptance v30 + FoundationGate v56 |
-| M1.16.0.18.40 Demand Observation / Capability Cooldown Integrity | 2026-08-31 | ✅ 本地代码/专项冷却/静态门禁完成 / RU Fresh Reload 待验收 | 中央 Capability cooldown；4 个专用页面关闭语义；Target/Treasure/Fishing Demand observation；Trade 异步 update；Bonds 真排序刷新；持久化 rollback；UIV3Acceptance v29 + FoundationGate v55 |
-| M1.16.0.18.39 Feature Truth / Lifecycle Recovery | 2026-08-31 | ✅ 本地代码/静态门禁完成 / RU Fresh Reload 待验收 | 修正正常 Layout pending 误报；Feature 关闭语义/Demand 生命周期；Trade/Craft 查询风暴；Auction/Team/Raid/Fishing/Boss/Buff 功能真实性；Social 参数/闭包；UIV3Acceptance v28 + FoundationGate v54 feature truth blocker |
-| M1.16.0.18.38 Life Projection Contract Recovery | 2026-08-31 | ✅ 本地代码/专项契约/静态门禁完成 / RU Fresh Reload 待验收 | 修复 Bonds/Treasure/Fishing 缺公开 GetProjection 导致生活页 line 122 激活失败；页面 Native allocation 前 exact contract preflight；UIV3Acceptance v27 + FoundationGate v53；专项故障注入 4/4、Native allocation 0；Foundation Audit `186/186 + 342/342` PASS |
-| M1.16.0.18.37 Foundation Runtime Import / Authority Recovery | 2026-08-31 | ✅ 本地代码/静态门禁/运行时 Mock 完成 / RU Fresh Reload 待验收 | 修复 method capability→namespace Import 映射、lazy API host、Bag 真实能力名、Feature Import failure 隔离、Gear widget matrix 漂移及 Diff Authority uiScale 双缩放；Foundation Audit `186/186 + 342/342` PASS |
-| M1.16.0.18.36 Craft Recursive Known-Record Graph | 2026-08-31 | ✅ 本地代码/静态门禁/42 Harness 完成 / RU Fresh Reload 待验收 | Active Craft 增加已知 recipe records 的有界递归图、批量产出向上取整及循环/歧义/缺失/上限诊断；不猜测全量目录；Foundation Audit `186/186 + 342/342`、全量 Harness `42/42` |
-| M1.16.0.18.35 Bag Window Context / Embedded Quick Actions | 2026-08-31 | ✅ 本地代码/静态门禁/42 Harness 完成 / RU Fresh Reload 待验收 | Active `tools_bag` 增加四个 Command 驱动的嵌入式快捷动作和受能力治理的窗口诊断；原生跟随保持 fail-closed；Foundation Audit `186/186 + 342/342`、全量 Harness `42/42` |
-| M1.16.0.18.34 Team Actions / Party Movement | 2026-08-31 | ✅ 本地代码/静态门禁/41 Harness 完成 / RU Fresh Reload 待验收 | Active `combat_team_tools` 增加受约束的职责设置、成员互换和移入小队 Command/UI 闭环；严格校验与刷新失败告警；Foundation Audit `186/186 + 342/342`、全量 Harness `41/41` |
-| M1.16.0.18.33 Auction Favorite / Context UX | 2026-08-31 | ✅ 本地代码/静态门禁/40 Harness 完成 / RU Fresh Reload 待验收 | Active V3 `tools_auction` 增加规范化并持久化的关键词/收藏（上限 20）、明确搜索 pending/unknown 状态、稳定索引收藏删除与 8 行分页；Foundation Audit `186/186 + 342/342`、全量 Harness `40/40` |
-| M1.16.0.18.32 Craft Product / Cost / Shortage Projection | 2026-08-31 | ✅ 本地代码/静态门禁/39 Harness 完成 / RU Fresh Reload 待验收 | Active Craft 对有界产品/材料行汇总 Bag 持有量、缺口、grade-aware 最低价与行成本；未知/不完整 fail-closed；页面成本列；Foundation Audit `186/186 + 342/342`、全量 Harness `39/39` |
-| M1.16.0.18.31 Bag Category Batch Deposit | 2026-08-31 | ✅ 本地代码/静态门禁/38 Harness 完成 / RU Fresh Reload 待验收 | Active V3 `tools_bag` 增加精确 category 批量存入 bank/coffer，窗口/容量/空槽验证、黑名单、Scheduler 分步队列、严格验证停止、取消和状态刷新；Foundation Audit `186/186 + 342/342`、全量 Harness `38/38` |
-| M1.16.0.18.30 Bonds Filter / Duplicate Priority | 2026-08-31 | ✅ 本地代码/静态门禁/37 Harness 完成 / RU Fresh Reload 待验收 | Active V3 Bonds 增加 20/60/100/Auroria 过滤、数量/大陆排序、可靠大陆身份下的重复优先级；Commands/Store/Page 刷新闭环；Foundation Audit `186/186 + 342/342`、全量 Harness `37/37` |
-| M1.16.0.18.29 Bonds Completion / Resource Projection | 2026-08-31 | ✅ 本地代码/静态门禁/36 Harness 完成 / RU Fresh Reload 待验收 | Active V3 Bonds 自包含解析受治理的 mainland/Auroria 映射，使用 QuestProgressV3 投影任务状态；按需 240 槽资源汇总、缺口与未知/部分诊断；每日 mainland 重复键持久化；Foundation Audit `186/186 + 342/342`、全量 Harness `36/36` |
-| M1.16.0.18.27 Foundation Gate / BuffDisplay Schema Parity | 2026-08-31 | ✅ 本地代码/静态门禁/24 Harness 完成 / RU Fresh Reload 待验收 | Foundation Gate v51 与 BuffDisplay schema 2 对齐；修复旧 schema 1 检查导致的真实加载后门禁误拒绝；重新执行 Foundation Audit `182/182 + 338/338`、24/24 Harness |
-| M1.16.0.18.26 Detached Floating State / BuffDisplay Persistence Fence | 2026-08-31 | ✅ 本地代码/静态门禁/24 Harness 完成 / RU Fresh Reload 待验收 | FloatingSurface 支持 detached getState + Feature Commands setState、持久化失败回滚；六个 Active Floating Widget 收口状态写回；BuffDisplay Store schema 2 保留锁定/最小化/透明度/字号；Foundation Audit 182/182 + 338/338、全量 Harness 24/24 |
-| M1.16.0.18.25 Active Presentation Command Fence Follow-up | 2026-08-31 | ✅ 本地代码/静态门禁/23 Harness 完成 / RU Fresh Reload 待验收 | 修复 Foundation/ Gear HUD/换装 Snap Modal 的直接 Feature 写方法调用；补齐 Activity/Gear/Instance/Buff Commands facade；Gear QuickHud 改用 detached projection；边界 Harness `34/34`、Foundation Audit `182/182 + 338/338`、全量 Harness `23/23` |
-| M1.16.0.18.24 Presentation Private-Field Fence Follow-up | 2026-08-31 | ✅ 本地代码/静态门禁/23 Harness 完成 / RU Fresh Reload 待验收 | 修复 Foundation 页面对 `Activities.StoreId`、`Gear.IndexStoreId`、`WidgetWindowSizePolicy` 的直接读取；持久化绑定改用稳定本地 Store ID，窗口策略改用公开 getter；静态 Gate 新增 `S.Features.<Feature>.<private>` 检测；Foundation Audit `182/182 + 338/338`、全量 Harness `23/23`、Presentation boundary `34/34` |
-| M1.16.0.18.21 PageHost Navigation Rollback Fence | 2026-08-31 | ✅ 本地代码/静态门禁/22 Harness 完成 / RU Fresh Reload 待验收 | `PageHost:Navigate()` 现在检查 `OnRoute/OnDeactivated` 的显式拒绝；Switcher 拒绝或目标激活失败时恢复旧页面路由、上下文、可见页与激活生命周期，并以旧 route 作为恢复激活来源；新增真实加载 PageHost 源码的 `page_host_navigation_rollback_test.lua` `16/16` |
-| M1.16.0.18.22 WidgetHost Callback Failure Fence | 2026-08-31 | ✅ 本地代码/静态门禁/22 Harness 完成 / RU Fresh Reload 待验收 | `WidgetHost` 对 `preference/enabled` 生命周期回调建立 `xpcall` 隔离；单个坏绑定不再中断同一事件的其它 Widget；新增真实加载 WidgetHost 源码的 `widget_host_callback_fence_test.lua` `13/13` |
-| M1.16.0.18.23 Feature Demand Quiesce Coverage | 2026-08-31 | ✅ 本地代码/静态门禁/23 Harness 完成 / RU Fresh Reload 待验收 | Activity/Task/Instance/Raid Readiness Demand 增加 downstream cleanup `quiesce`；QuestProgress/InstanceCatalog Service 补齐二级 lease/任务清理；Runtime 强制静默成功后同步 implementation/runtime disabled projection，并将残留 Demand 记为 shutdown failure；新增 `feature_demand_quiesce_contract_test.lua` `22/22`、`demand_service_quiesce_contract_test.lua` `9/9`，shutdown harness `14/14` |
-| M1.16.0.18.20 Feature Shutdown Quiesce Fence | 2026-08-31 | ✅ 本地代码/静态门禁/23 Harness 完成 / RU Fresh Reload 待验收 | `FeatureRuntime:DisableAll()` 现在聚合失败、记录 `lastDisableAllFailures`，对残留 Feature Demand 执行 `ForceQuiesce`，将 stale demand 记为失败，并在实现/runtime 状态失配时仍执行 teardown；新增真实加载 Runtime 源码的 `feature_runtime_shutdown_test.lua` `14/14`；原有边界与页面/Widget/Modal 矩阵保持不降级 |
-| M1.16.0.18.19 Presentation Boundary / Housing / Random Shop / Butler Read-only | 2026-08-31 | ✅ 本地代码/静态门禁/19 Harness 完成 / RU Fresh Reload 待验收 | V3 Presentation 内部字段静态围栏与 detached projection 收口；边界 Harness `34/34`；新增 `life.housing`、`life.butler` 与 `tools.random_shop` 窄只读 Feature/Authority/Page；Page/Widget/Modal 构建矩阵已接入；Activity/Task Table 改为 fill + absoluteMinWidth 响应式列；Foundation Audit `182/182 + 338/338`；`tools.reinforce_analysis` 因槽位参数/返回结构缺 RU 证据继续 Runtime Pending |
-| M1.16.0.18.18 Foundation Regression Gate Hardening | 2026-08-31 复核 | ✅ 本地代码/静态门禁/18 Harness 完成 / 待 RU Fresh Reload 验收 | RSUI BuildScope v3 + BuildTransaction/Preflight；迁移路由专用 PageHost/WidgetHost 覆盖门禁 UIV3Acceptance v25；Aura `18/18`、Persistence `12/12`、Floating policy `6/6`、Theme alignment `4/4`；Foundation Audit `170/170 + 326/326`；FoundationGate v50；历史 RU 日志曾报告 `SetAlign` 字符串类型错误，已修共享 Theme，待新鲜客户端复核 |
-| M1.16.0.18.17 Floating Stability / Analytics Recovery | 2026-08-30 | ✅ 代码完成 / 待 RU Fresh Reload 验收 | 修复 Combat Analytics `VALUE_OPTIONS` 边界错误、移除 DPS 重复外观编辑器、NumericInline v3 优先 Slider 空间、Tasks/DeathReview 字体缩放 parity；FoundationGate v49 |
-| Architecture v1.1 一次性重构 | 2026-08-15 | ✅ 完成 | ModuleManager / HUD Manager / API Capabilities / Module Sandbox / World Observation / 统一设置·方案·常用入口 / 左侧导航主 UI；Audits 3–6 + Hotfix Audit 5.1–5.3 + Validation |
-| Hotfix 红龙/卡杜姆 | 2026-08-24 | ✅ 完成 | 副本入场次数判定替代任务判定；受管对话框“一条线”渲染修复 |
-| Foundation Decisions v2 + 底层框架批 | 2026-08-26 | ✅ 完成 | Foundation Decisions v2、RSUI Phase 3–8 + Graduation + M6 审计、Healer/Plates 迁移、UI Framework v1/v2、Persistence Framework v1、Runtime Frame Budget v1、Core v1 规范集 |
-| 重建蓝图 M1.12 | 2026-08-27 | ✅ 发布 | `Rebuild/REBUILD_BLUEPRINT.md`：V3 重建方向总纲 |
-| M1.5 Native Foundation Independence | 2026-08-27 | ✅ 完成 | Native Contract / Object Authority / ESC 集成 / Feature API Import / Foundation Gate / Build-time 审计 |
-| 静态 ID 审计 R2/R3/R4 | 2026-08-27 | ✅ 完成 | Trade Craft 98/98、Ingredient Sig 98/98、Quest 214/214、Instance DB 19、Trade Product 98/98 |
-| M1.14.1 Native Identity / UI Crash Guard | 2026-08-28 | ✅ 完成 | 逻辑↔物理 ID 分离、NativeObjectFactory Fence、Native Write Fence、fail-closed、回归门 v3_28/v3_29 |
-| M1.14.2 Shared Runtime Foundation | 2026-08-28 | ✅ 代码完成 / 待实机验收 | Demand/Consumer Lease 事务回滚；RefreshCoordinator；AuraObservation Phase 12A；Activities/Tasks/Instance 生命周期迁移 |
-| M1.14.3 FloatingSurface / HUD Foundation | 2026-08-28 | ✅ 代码完成 / 待实机验收 | FloatingSurface 状态/持久化绑定；WindowShell collapse 最小化；WidgetHost minimizable；Activities/Tasks 首批迁移；ScreenSnap Drag-only/禁用候选修复 |
-| M1.14.4 View / Action / Settings Foundation | 2026-08-28 | ✅ 代码完成 / 待实机验收 | DataView ViewState；ActionRunner 操作边界；Persistent Setting Binding；Activities/Tasks/Instance/Gear 首批迁移 |
-| M1.14.5 V3 Foundation Adoption / Cleanup | 2026-08-28 | ✅ 代码完成 / 待实机验收 | Active V3 默认复用 ViewState/ActionRunner/Persistent Binding；系统悬浮组件/全局设置消除双 Save Authority；统一 Foundation Diagnostics；安全 helper 收敛 |
-| M1.15.1 Combat Foundation | 2026-08-29 | ✅ 代码完成 / 待实机验收 | CombatEventBus 双传输按需事实入口；UnitIdentityV3 保守身份事实；self/all scope Demand；UI/UIParent 跨 Host 成对去重；不迁 DPS/Healer 业务结论 |
-| M1.15.2 DeathReview V3 Migration | 2026-08-29 | ✅ 代码完成 / 待实机验收 | 第一个 CombatEventBus 业务 Consumer；仅 scope=self；Aura Debuff 事件驱动采样；V3 Page/Floating Widget；独立分片历史 Store；不依赖 DPS |
-| M1.15.2H Framework Hardening | 2026-08-29 | ✅ 代码完成 / 待实机验收 | Combat cold-start Journal/CoverageState/immutable dispatch；DeathReview deferred finalize + Projection/Commands；Demand reverse shutdown/ForceQuiesce；Persistence raw migration/clear 公共边界；Feature preference 写事务 |
-| M1.15.2H1 Floating Close / RU Release Compatibility | 2026-08-29 | ✅ 代码完成 / 待实机验收 | WindowShell fail-open X 关闭；FloatingSurface onClosed；WidgetHost Native close sync；DeathReview 空态去重叠；Combat Event Host 缺失 release API 时隐藏停放兼容 |
-| M1.15.2H2 Framework Verification / Runtime Lifecycle Hardening | 2026-08-29 | ✅ 代码完成 / 待实机验收 | 全量 Framework/Runtime 验证（语法 283/283、TOC 127 无缺失、Runtime Harness 79/79）；CombatEventBus 强制失活 + scope 分发 + 释放 A/B 分类；DeathReview Aura 采样移出 Native 回调；FloatingSurface visible 同步；移除 Activities/Tasks/Gear 的 Domain→Presentation 边 |
-| M1.15.3 DPS V3 Migration | 2026-08-29 | ✅ 代码完成 / 待实机验收 | 首个 CombatEventBus scope=all Consumer；独立 CombatRelationV3；DPS Domain 逐事件 PVP/PVE；设置/Boss 名持久化；V3 悬浮窗/页复用 DeathReview 边界 |
-| M1.15.4 DPS Data / UI / Lifecycle Repair | 2026-08-29 | ✅ 代码完成 / 待实机验收 | 修复首击 UNKNOWN/承伤归属/未决数据丢失/悬浮 Store/错误调度；新增 TeamRosterV3；双排行完整 UI；NumericField 遮挡修复 |
-| M1.15.5 DPS Correctness / Replay / Detail Hardening | 2026-08-29 | ✅ 代码完成 / 待实机验收 | borrowed CombatFact 所有权修复；有界 Replay Ledger；首击 PVE 三元误判修复；治疗共享账本；伤害/承伤/治疗排序与技能/目标明细；TextInput/Boss 添加；停用保留统计；跨服身份防碰撞 |
-| M1.15.6 DPS Evidence / Replay / Observability Hardening | 2026-08-29 | ✅ 代码完成 / 待实机验收 | 可信 SELF/TEAM 阵营锚；relationChanged 驱动安全点 Replay；provisional 不提交活动时钟；detail counter 可回滚；CombatEventBus v4 FIFO 1:1 双 Host 去重；TeamRoster v2 冷启动快照保护；待确认明细/诊断 |
-| M1.15.7 Foundation Event / Scheduler Contract Hardening | 2026-08-29 | ✅ 代码完成 / 待实机验收 | Scheduler transient metadata 回收；Events v2 Native 注册事务；CombatFact 全公开字段 immutable Fence；CombatBus v5 / Relation v4 / TeamRoster v3 订阅回滚；FoundationGate v22 |
-| M1.16.0 Combat Analytics Foundation | 2026-08-29 | ✅ 代码完成 / 待 RU 实机验收 | CombatAnalytics 单 all-scope Consumer；9 个独立 Metric；Events v3 Optional Native；Ability/Mechanic Catalog；Encounter/Timeline/击杀/控制/乐器/Aura/Boss 机制 |
-| M1.16.0.1 Combat Analytics Lifecycle Hardening | 2026-08-29 | ✅ 代码完成 / 待 RU 实机验收 | 空 Metric Consumer 自动释放；公共 ResetMetrics/HasConsumer；Reset 失败事务传播；FoundationGate v24 |
-| M1.16.0.2 Combat Page Activation / Navigation Repair | 2026-08-29 | ✅ 代码完成 / 待 RU 实机验收 | Design Root spec 契约；DPS optional EditBox fail-open；导航失败 Toast/Diagnostics；FoundationGate v25 + 实页导航 Sequence |
-| M1.16.0.3 Native Dropdown / Combat Page Recovery | 2026-08-29 | ✅ 代码完成 / 待 RU 实机验收 | RSUI Dropdown 纯 V3 Native；DPS/DeathReview widget-toggle ID 去冲突；PageHost transient popup 生命周期；FoundationGate v26 关系契约纠正 |
-| M1.16.0.4 Native Build Transaction Hardening | 2026-08-29 | ✅ 代码完成 / 待实机验收 | RSUI BuildScope；Page/Widget/Window/Modal/Main Shell Generation quarantine；Primitive degraded fence；PageRoot fail-fast；FoundationGate v27 |
-| M1.16.0.5 Root Parent / Diagnostics Recovery | 2026-08-29 | ✅ 代码完成 / 待 RU 实机验收 | UIParent root literal 归一化；Primitive root fail-open；Dropdown 单按钮降级；页面生命周期结构化错误；完整自检 Toast；FoundationGate v28 最近故障摘要 |
-| M1.16.0.6 UI Adapter / Selection Contract Repair | 2026-08-29 | ✅ 代码完成 / 待 RU 实机验收 | Active TrySetUILayer；Dropdown capability guard；DataView Selection Contract v2；DeathReview/GetPrimaryKey 回调误用修复；FoundationGate v29 |
-| M1.16.0.7 RSUI Public API / Navigation / Form Layout Hardening | 2026-08-29 | ✅ 代码完成 / 待 RU 实机验收 | RSUI 注册类型自动公开工厂；TextInput nil 修复；同路由导航幂等；真实 Native 字号测量；Form Contract v2 自适应高度；FoundationGate v30 |
-| M1.16.0.8 Floating Content / Wrapped Text Hardening | 2026-08-29 | ✅ 代码完成 / 待 RU 实机验收 | FloatingSurface 逻辑内容树桥接；WrappedText 单行 LABEL 有界池；复合文字透明度；悬浮摘要 auto+minHeight；FoundationGate v31 |
-| M1.16.0.9 DPS Floating Quick Filters | 2026-08-29 | ✅ 代码完成 / 待实机验收 | RSUI SegmentedSelector v1；DPS 悬浮窗 PVE/PVP、友/敌、伤/承/治快捷筛选；与 Feature settings 单 Authority 双向同步；正常状态折叠技术诊断行 |
-| M1.16.0.10 Floating Shell Layout / Local Appearance | 2026-08-29 | ✅ 代码完成 / 待实机验收 | WindowShell 特殊布局所有权；阻止通用 Overlay reflow 覆盖标题栏；局部字体倍率；DPS 背景透明度/字体精确输入；FoundationGate v33 |
-| M1.16.0.11 DPS Sort / Skill Detail / Analytics UX Hardening | 2026-08-29 | ✅ 代码完成 / 待 RU 实机验收 | Dropdown Lua5.1 closure 修复；DPS 可见排序+交互表头；Domain v6 技能ID语义；SkillMetadataV3 懒解析 Icon；CombatAnalytics v3 玩家 Drilldown；FoundationGate v34 |
-| M1.16.0.12 Floating Activity Interaction / Adaptive Viewport | 2026-08-29 | ✅ 代码完成 / 待 RU 实机验收 | Activity/Task X-close 实例捕获；Floating compact chrome；Activity TableView 高度驱动可见行；Floating→Quest Detail 唤醒 Modal Host；FoundationGate v35 |
-| M1.16.0.13 Foundation Lifecycle / Lua5.1 Callback Cleanup | 2026-08-30 | ✅ 代码完成 / 待 RU 实机验收 | Table Header / Resize Handle / V3 Navigation 延迟闭包清理；Events parked registration；Floating/Window no-op 幂等；FoundationGate v36 |
-| M1.16.0.14 Raid Readiness / Aura Phase 12B First Consumer | 2026-08-30 | ✅ 代码完成 / 待 RU 实机验收 | AuraObservation v2 规范化 StatusMap/保守 RequiredEffects；新增按需团队战备检查；TeamRoster+AURA 分权 Lease；TEAM API 懒导入；FoundationGate v37 |
-| M1.16.0.15 Healer Aura Phase 12B Bridge | 2026-08-30 | ✅ 迁移桥代码完成 / Healer V3 尚未接入 | 新增零后台开销 HealerAuraBridge；旧 Healer StatusCache 改为共享 StatusMap 优先、覆盖不完整才直读回退；Aura Lease 与 Healer Runtime 启停事务绑定；Legacy Healer 仍保持 Active TOC 脱离；FoundationGate v38 |
-| M1.16.0.16 Healer V3 Domain Runtime | 2026-08-30 | ✅ Domain 代码完成 / Presentation 与 RU 验收待续 | Active `combat_healer` Feature；V3 Healer Store/Roster/Health/Recommendation；20/8 切片与首次 Status→Recommendation 原子顺序；Aura accurate fallback；事务生命周期；FoundationGate v39 |
-| M1.16.0.17 Healer V3 Presentation | 2026-08-30 | ✅ Presentation 第一阶段代码完成 / Head Marker、Raid Overlay 与 RU 验收待续 | `combat.healer` V3 页面 + 推荐悬浮窗；Projection/Commands 边界；Store schema 2 widgetWindow；设置单写事务；FoundationGate v40 |
-| M1.16.0.17.1 RSUI Windowing Bootstrap Hotfix | 2026-08-30 | ✅ 已并入 M1.16.0.18 / 待 RU 启动确认 | 修复 `LayoutHandles()` 误用未定义全局 `handleDefinition` 导致 V3 Presentation Host 在 `SetResizeEnabled()` 阶段启动失败；同步布局恢复 `definition.key`，延迟拖拽回调继续保留 Lua5.1 稳定局部 |
-| M1.16.0.18 Healer Visual Consumers | 2026-08-30 | ✅ Head Marker / Raid Overlay 代码完成 / RU 实机验收待续 | 独立 Head Marker + Raid Overlay Presentation Consumer；Feature-side ScreenProjection；Store schema 3 visual recovery；显示层事务生命周期；FoundationGate v41 |
-| M1.16.0.18.1 V3 Page / Foundation Recovery | 2026-08-30 | ✅ 代码修复完成 / 待 RU Fresh Reload 验收 | TableView 公共构造阻断、WindowShell BuildScope 泄漏、Strict Visibility 写入、Native Import/Factory 契约、Widget/Event 生命周期门禁收口；FoundationGate v42 |
-| M1.16.0.18.2 Healer Advanced Editors / Native Cache Fence | 2026-08-30 | ✅ 代码完成 / 待 RU Fresh Reload 验收 | `v3.healer` 规则、Tracked Buff、颜色高级编辑器；统一 Normalize/Command/MarkDirty；Native optional negative cache 显式按 Generation 隔离；FoundationGate v43；本地命令回归 18/18 |
-| M1.16.0.18.3 Strict V3 Build Failure Fence | 2026-08-30 | ✅ 代码完成 / 待 RU Fresh Reload 验收 | Page/Widget/Modal/Main Shell 严格 BuildScope 遇非可选组件失败时拒绝 Commit 并回滚；PageHost/WidgetHost 检查 Commit 结果；表单关键控件 fail-fast；FoundationGate v44；严格构建回归 6/6 |
-| M1.16.0.18.4 Buff/Plates StatusMap Consumer | 2026-08-30 | ✅ 代码完成 / 待 RU Fresh Reload 验收 | `combat.buff_display` 接入 AuraObservationV3 StatusMap，完成 player/target Buff/Debuff/Hidden bounded projection、V3 Page、Floating Widget、Demand lifecycle、Diagnostics health 与 acceptance contract；WindowShell 构建失败清理纳入 UI Authority；FoundationGate v45；projection 4/4、Feature lifecycle 8/8、Diagnostics 4/4、WindowShell Authority 5/5 |
-| M1.16.0.18.5 Plates GameData / Diagnostics Relations | 2026-08-30 | ✅ 代码完成 / 待 RU Fresh Reload 验收 | 新增共享 `GameDataRegistry` 语义集合与只读 Manager/Storage/Runtime Diagnostics Facade，收敛重要冷却、魔法阵候选 Buff、目标护甲/武器状态与计时修正；Legacy Runtime/API/Storage 去除对应重复 ID Authority；`plates_game_data_contract_test` 21/21 |
-| M1.16.0.18.6 V3 Visibility Authority Cleanup | 2026-08-30 | ✅ 代码完成 / 待 RU Fresh Reload 验收 | BuildScope rollback、Owner Release、V3 重复注册拒绝与 Primitive degraded 隔离统一走 RSUI Visibility/Interaction Authority；移除 `false` 误判导致的原生 `Show(false)` 兜底；`ui_visibility_authority_test` 8/8；本地 Harness 合计 192/192 |
-| M1.16.0.18.7 Plates Concern Facades | 2026-08-30 | ✅ 代码完成 / 待 RU Fresh Reload 验收 | Storage 细分 Persistence/Tracking/Aura Library，Manager 细分 Catalog/Discovery/Capture/Import Staging，Runtime 输出 `storageConcerns` / `managerConcerns`；`plates_concern_facade_test` 14/14；本地 Harness 合计 206/206 |
-| M1.16.0.18.8 V3 Presentation Read Models | 2026-08-30 | ✅ 代码完成 / 待 RU Fresh Reload 验收 | Active V3 Page/Widget 去除 direct `Feature.State`；窗口几何、Activity/Task 行数/显隐、Task 作用域、Gear 方案计数改走 Feature read model，Activity/Task 写入改走 Commands；`v3_presentation_boundary_test` 12/12；本地 Harness 合计 218/218 |
-| M1.16.0.18.9 Activity/Task Projection Boundary | 2026-08-30 | ✅ 代码完成 / 待 RU Fresh Reload 验收 | Activity/Task Page/Widget 去除 direct `Feature.Authority`；rows/summary/lookup/widget projection 统一走 Feature getter，刷新/隐藏/恢复/展开走 Commands；boundary Harness 14/14；本地 Harness 合计 220/220 |
-| M1.16.0.18.10 Active Presentation Authority Boundary | 2026-08-30 | ✅ 代码完成 / 待 RU Fresh Reload 验收 | Gear/Instance/Raid Readiness Page/Widget 去除 direct `Feature.Authority`；Projection/Commands 代理保留方案操作、实例读取、扫描取消与 Aura 释放；boundary Harness 18/18；本地 Harness 合计 224/224 |
-| M1.16.0.18.11 Factory Reset / Aura Store Contract | 2026-08-30 | ✅ 代码完成 / 待 RU Fresh Reload 验收 | Factory Reset 纳入 Suite persistent keys，清理 Plates Aura manifest 与 `a/b/c × 32` 分片，设置 reset generation fence 并 quiesce 旧 Runtime；`factory_reset_contract_test` 13/13；P0-1 单一 `GetEffectIds`/Alerts full scan；本地 Harness 合计 237/237 |
-| M1.16.0.18.12 Healer Command Authority Boundary | 2026-08-30 | ✅ 代码完成 / 待 RU Fresh Reload 验收 | Healer Page/Widget/Raid Overlay 写入统一经 `Feature.Commands`；Store Normalize/MarkDirty rollback 与 lease 生命周期保持；`v3_presentation_boundary_test` 21/21；Healer direct writes 0；本地 Harness 合计 240/240 |
-| M1.16.0.18.13 Active Presentation Mutation Authority | 2026-08-30 | ✅ 代码完成 / 待 RU Fresh Reload 验收 | DPS/DeathReview/Gear/Raid Readiness/Activity/Task/BuffDisplay 的 Page/Widget Binding 与 dirty 写入统一经 `Feature.Commands`；boundary Harness 25/25（含 Acceptance guard）；本地 Harness 合计 244/244 |
-| M1.16.0.18.14 UX Interaction Polish / Floating Detail | 2026-08-30 | ✅ 代码完成 / 待 RU Fresh Reload 验收 | HUD compact-minimize 小方块；有限范围数值“名称+Slider+精确输入”；Healer 设置重排/Calibration 底色；DeathReview 单条删除；Task/Activity 独立任务详情悬浮窗；Active TOC 170/170，全 Lua 326/326 |
-| M1.16.0.18.15 Floating Chrome / Activity Responsive / Analytics Value Switch | 2026-08-30 | ✅ 代码完成 / 待 RU Fresh Reload 验收 | 所有 FloatingSurface 标题栏统一按需“外观”入口；透明度/字体 Slider+精确输入 lazy 构建；Activity TableView overlay scrollbar + 响应式列压缩；Combat Analytics 排行值改为直接 SegmentedSelector；FoundationGate v47 |
-| M1.16.0.18.16 Floating Appearance Slider Layout | 2026-08-30 | ✅ 代码完成 / 待 RU Fresh Reload 验收 | 修复窄 HUD 外观编辑器标签/输入硬最小宽度挤占 Slider；NumericInline v2 支持可配置 label/input/slider minimum，公共 Floating 外观行把空间优先让给 Slider；WindowShell v18 / FoundationGate v48 |
-| RSUI 交互基线修复 | 2026-08-28 | ✅ 代码完成 / 待实机验收 | 三路透明度；Window/Slider/ScrollBar/SplitView/Table 五类拖动组件实时反馈；活动悬浮窗列缩放；Windowing/SettingsPage/SplitView 去隐式尺寸下限 |
+| 项 | 当前状态 |
+|---|---|
+| Architecture | V3-only / `v3_rebuild` |
+| Runtime Addon | `replicatedsuite/` |
+| Legacy / Professional / `globals/` | 已物理删除，Active dependency = 0 |
+| BuildTag | `v3-m1.16.0.18.74-ui-layout-editor-workspace-foundation` |
+| Active TOC Lua | 207 |
+| Active / All Lua | 207 / 207 |
+| Foundation Audit | PASS |
+| Product Capability Matrix | 125 条：77 IMPLEMENTED / 35 PARTIAL / 2 TODO / 11 SPECIFIC_RUNTIME_BLOCKED |
+| RU Fresh Reload | PENDING |
 
-## 当前状态小结（2026-08-31）
+当前 Foundation 结构指标：
 
-### Product Capability Gate（新增范围锁）
+```text
+toc=207
+activeLua=207
+allLua=207
+globals=0
+presentation=0
+rawNative=0
+rawScope=0
+detachedWidgetState=0
+apiDependency=0
+apiCapability=0
+businessIds=0
+auctionEventOwners=0
+```
 
-- **StatusDisplay 头顶全显 + 勾选即见（M1.16.0.18.50）**：延续"头顶图标不出现"修复链——.49 修掉渲染器 `HasTracked` 总开关后，残留门禁在投影层 `BoundedTracked` 仍按 tracked 行过滤：tracked 列表为空（或玩家在场 Buff 未在追踪列表）时 buffs/debuffs lane 产出 0 行，渲染器启动后无行可画。吸取参考 addon（belovres targetdebufftracker `showAllBuffs/showAllDebuffs` 全显语义）精华，新增 `headShowAll` 设置（默认开，store NormalizeSettings 归一 + feature ExportAll/SerializeExport/ImportAll 白名单同步）下沉到 `BoundedTracked`：`showAll == true or isTracked == true` 收集行（仍受 `headMaxIcons` 有界限制），tracked 从"行来源唯一门禁"降级为"可选过滤"——空追踪列表也能立刻看到全部在场 Buff/Debuff。页面 Tab2 新增"全部显示：开/关"开关；`AddHeadToggle` 联动：`headEnabled` 勾选且 Feature 未启用时自动 `SetPreferredEnabled(true)` + `AcquireConsumer`（对齐参考 addon 开箱即用，用户无需先去总开关启用）。distance/class/gearScore/装备/cast 等非 tracked 组件不受影响。**仍需 RU Fresh Reload 验证**：勾选"头顶显示"后玩家/目标身上直接出现在场 Buff/Debuff 图标、全显开关关闭后回到 tracked 过滤、导入导出往返含 headShowAll、四页签导航与 Demand 释放。
-- **Buff Display Schema 4 重建（M1.16.0.18.46）**：`combat.buff_display` 完成 V3 重建系列收口 —— 共享 `StatusClassificationV3` 成为全项目唯一"效果是什么"Authority（用户分类只有 buff/debuff，hidden/special_rule 为 detection source）；Store 升 schema 4（分类分桶追踪 + 10 头顶组件 x/y/size/fontSize/alpha，schema 1/2/3 无损迁移）；Projection/Plates 走分类 + O(1) 追踪索引 + 只投影启用组件；头顶渲染器重写为 10 组件版并修复 Focus 目标行；Scheduler 新增 1ms 高频 Lane 支撑位置刷新与单位连线 1ms 档；页面重构为四页签（状态追踪/头顶显示/布局外观/导入导出），全部写入经 `Feature.Commands`，`SetTrackedId(id, category, enabled)` 显式分类，行点击先选中后激活实现单击切换追踪；"隐藏"按钮按 schema 4 语义改为"只看隐藏来源"视图过滤器。toc.g 补登记 `rs_status_classification_v3.lua`（此前遗漏会导致游戏内分类服务为 nil）；`rs_buff_display_acceptance.lua` 与 `rs_v3_acceptance.lua` 升到 schema 4 契约；FoundationGate v62。**仍需 RU Fresh Reload 验证**：四页签导航、行点击追踪、组件布局编辑持久化回读、导入导出文本往返、1ms 刷新实际表现与 Demand 释放。
-- **StatusDisplay 全面重新审计（M1.16.0.18.48）**：按 100 步规范执行完整重新审计并收口，**本轮为审计轮，代码无新改动**。Phase 1 阅读 Docs/README、CURRENT_REBUILD_STATUS、SERVICE_ARCHITECTURE、toc.g；Phase 2 对 Authority 分层逐文件审计（AuraObservationV3 / StatusClassificationV3 / ScreenProjectionV3 / UnitIdentityV3 / FeatureRuntime / Scheduler / RefreshCoordinator / Store / Projection / Feature / Page / Widget / HeadMarkers / Acceptance），结论：HY3 六项修复在位且正确，未发现新运行时 Bug。Phase 3 时间戳交叉核对收口：基线 10:39 未动（`rs_feature_runtime.lua`/`rs_refresh_coordinator.lua`/`rs_aura_observation_v3.lua`/`rs_unit_identity_v3.lua`），Prior-Agent 窗口 17:33–23:35（`rs_screen_projection_v3.lua` 17:33 → `rs_buff_display_feature.lua`/`rs_buff_display_store.lua` 23:35），全部文件已逐行读取，无"时间戳新但内容未审"遗漏。Foundation 使用情况按规范第 99 节逐项落表：RefreshCoordinator=N/A（周期位置 lane 归 Scheduler，规范第 29 节明确 RefreshCoordinator 不用于 position loops，feature 六条 lane 均经 `S.Scheduler:AddTask/AddHighFrequencyTask` 驱动，事件路径走一次性 `_QueueEventRefresh`）；UnitIdentityV3=N/A（StatusDisplay 链用 X2Unit API 直接取单位，不引入身份服务）；FrameBudget=经 Scheduler 内置集成（`frameBudget:Request` 由 Scheduler 驱动，feature 不直用）；统一 candidate capture（规范 68-69 节）尚未实现但为文档层概念，无可用能力缺口；Visible Unit Observation（规范第 19 节）当前不适用——StatusDisplay 用 Tracked 集合而非视野扫描。第 100 节最终报告已交付（完成度分类 / 文件变更清单 / Foundation 使用 / 性能与兼容性 / ZIP）。Foundation Audit 全 PASS（`toc=196 activeLua=196 allLua=353 globals=0 ... apiCapability=0`）；Harness `44/44`。仍待 RU Fresh Reload 验证四页签导航、行点击追踪、组件布局编辑持久化回读、导入导出文本往返、1ms 刷新与 Demand 释放。
-- **StatusDisplay HY3 收口修复（M1.16.0.18.47）**：完整检查 HY3 重做的状态显示后修复 6 个真实 Bug —— Feature 缺失 `Initialize()` 导致 FeatureRuntime 注册失败（整个状态显示 Fresh Reload 后报废）；FoundationGate 仍验 schema 3 而 Store 已是 4（每次 Reload 门禁必 FAIL）；Foundation Audit 白名单缺 `X2Locale/UnitDistance`（globals 误报）；schema 3 扁平 tracked 数组迁移丢数据；`ReadEquippedIcon` 硬编码 `targetEquippedItem=false` 使目标装备信息显示成自身装备；`ProjectPlates` 外泄 live components 表（投影边界违规）。非官方 API 面（`COMBINED_ABILITY_NAME_TEXT/ES_*`）改 `Global()` 安全读取，Audit 不再为其登记白名单；`MarkStoreDirty` 成为缓存失效唯一钩子，`GetSettingsProjection` 接入 detached 快照缓存；Widget Refresh 3 次投影调用收敛为 1 次。自定义 Harness `44 passed / 0 failed`；Foundation Audit 全 PASS（`toc=196 activeLua=196 allLua=353 globals=0 ... auctionEventOwners=0`）；真实 `S.Api:Call` 低级原语确认存在于 `core/rs_api.lua:105`（非仅 stub）。仍待 RU Fresh Reload 验证四页签导航、行点击追踪、组件布局编辑持久化回读、导入导出文本往返、1ms 刷新与 Demand 释放。
-- **版本一致性**：`S.BuildTag` 已同步为 `v3-m1.16.0.18.50-statusdisplay-head-showall`；本地 Foundation Audit 静态检查全 PASS，Lua 5.1 `luac` 语法门禁补齐（本机工具链已就位）。产品能力状态仍为 **INCOMPLETE - CONTINUATION REQUIRED**，待 RU Fresh Reload 关闭运行时验收。
+## 2. 已完成的框架级收口
 
-`Docs/Rebuild/PRODUCT_COMPLETION_MATRIX.md` 继续作为产品能力范围锁。`.18.45` 在不恢复已删除“治疗推荐悬浮窗”的前提下，把此前遗漏的 Buff 头顶追踪、Treasure 独立 HUD、Fishing 独立 HUD 三项旧版/用户明确能力重新纳入范围，因此当前为 125 条：77 `IMPLEMENTED`、35 `PARTIAL`、2 `TODO`、11 `SPECIFIC_RUNTIME_BLOCKED`、0 `UNREVIEWED`。Healer 真实校准、Buff Head Marker、四类 Unit Lines、Range Assist 逻辑坐标、Trade/生活 HUD、Bag Quick、Auction current-listing 等新恢复能力在 RU Fresh Reload 前保持 `PARTIAL`；Registry 的页面/implementation 数量仍不能作为产品完成证明，当前产品状态仍为 **INCOMPLETE - CONTINUATION REQUIRED**。
+当前已经完成以下长期架构基础，不再作为“待迁移”事项：
 
-首轮审计确认的高优先级未闭环包括：Craft 采购缺口/成本图与原生配方枚举；Trade 当前/完整货率、技能模式、制作台/叛乱记录与 HUD/detail；Bag Organizer 的自动规划/回滚、分类批量与窗口嵌入；团队自动职责/成员编排/标记；以及 Fishing 完整可回滚 R 按键事务。Trade 全材料身份/数量、Bag 70+ 槽位读取/双向动作/黑名单编辑守卫、Team 全成员职责读取、Craft 结构化材料/产物/持久化上下文、Bonds 完成状态/资源/过滤优先级已分别通过专项 harness。具体实现、入口、投影、持久化、Harness 与 RU 验证证据见矩阵。
+- 单一 V3 Application / Presentation Host；
+- Core / Native / Services / Feature / Presentation 分层；
+- FeatureRegistry + FeatureRuntime 独立生命周期；
+- Demand / Scheduler / RefreshCoordinator / Observation / Events；
+- Persistence Lifetime / Store / Migration / Write Fence；
+- Native Import / Capability / Object Factory / Build Fence；
+- RSUI WindowShell / FloatingSurface / DataView / ViewState / Binding / ActionRunner / Layout Templates；
+- RSUI Workspace Composition v2：MasterDetail / InspectorWorkbench / ResponsiveInspector / SettingsWorkbench / CommandCenter + Breakpoint/Density Policy；
+- RSUI Composite Foundation v4：`StatusChip` + `PickerModel` + `SearchablePicker` + `IconPicker` + transactional/stable/bounded `TreeModel` + virtualized `TreeView`；
+- Host / Slot Attachment Contract v1：Component 单父节点、跨 Parent reparent fail-closed、每次 Attach 校验 Native creation parent；Release/RemoveChild 清理父容器强引用；
+- ResponsiveInspector v1：同一个 Inspector 实例在 wide inline / compact drawer 间切换，只重排 Geometry/Visibility，不重建、不复制、不 reparent；
+- SearchablePicker v1：复用 PickerModel + virtual ListView；只用已验证 Enter/EditEnter 或显式搜索按钮提交 Query，不绑定未经验证的实时 TextChanged/通用 KeyDown；
+- IconPicker v1：复用 PickerModel + virtual TileView + Image Adapter；Icon path 由 Caller Projection 提供，默认只创建 viewport tile pool，并提供选中预览，不在 Foundation 读取 Skill/Buff/Item 元数据；
+- Coordinate System Contract v1：ArcheAge/CryEngine 逻辑 UI 原点固定为左上 `(0,0)`；`+X=右 / -X=左 / +Y=下 / -Y=上`。页面禁止自行解释“向上/向下”的正负号，统一走 Layout semantic helpers；
+- RectTransform Transaction v2：纯数学 staged `Begin → PreviewDelta → OverridePreview → Commit/Cancel`，支持 move + 8-way resize；Snap/Guide 可以覆盖 staged preview 后再 Commit，不拥有 Native capture，不与 Windowing `StartMoving/StartSizing` 竞争 Authority；
+- Selection Geometry Foundation v1：`SelectionModel=Who`、`SelectionGeometryModel=Where` 分离；多选 Bounds、8-way Handle、Move Hit Surface、Grid/Sibling/Canvas Alignment Guide 均下沉共享层，候选 hard cap=1024；
+- Layout Editor Gesture v2：只在实际拖拽期复用 RU 已验证 Native `StartMoving` capture 与 16ms InteractiveTask，Scheduler 不可用时才绑定 gesture-only `OnUpdate`；候选集合 Begin 时冻结，支持动态单/多选尺寸约束与 strict Preview/Commit rejection，停止时 Commit/Cancel 并释放 task/lease，不负责业务 Persistence；
+- Anchor / Pivot Model v1：点锚点（9 presets + custom normalized anchor）与 Pivot/Rect/anchor-relative offset 统一为同一纯数据 Authority；切换 Anchor/Pivot 默认保持视觉 Rect，不让 HUD 元素跳位；父容器 resize 时由 Caller 明确选择 preserve-visual 或 follow-anchor reflow。Stretch Anchor 当前明确不支持，避免重新解释现有 top-left Rect 持久化。
+- Layout Editor Snap Settings Model v1：`enabled / grid / alignment / canvas / guides / gridSize / threshold / maxCandidates` 统一为有界 editor-state；对象对齐关闭时 Gesture Begin 不再调用 candidate provider，grid-only 手势不扫描兄弟组件。
+- Transform Inspector v1：复用 FormSection/NumericField/DropdownField/ToggleField，统一编辑 local X/Y、Width/Height、Anchor/Pivot、anchor-relative offset 与 Snap Settings；`Y（上-/下+）` 等标签直接表达 CryEngine 坐标方向。Inspector 只绑定共享 Model，不复制 Geometry/Persistence Authority；
+- Multi Selection Transform Model v1：专门处理 2+ selection 的 Group Bounds → per-child Rect 投影；稳定 Key、最多 256 默认/1024 hard cap、单 session、原子 Commit/Cancel。Group Rect 的 move/resize/snap 仍归 RectTransform/Gesture，模型只负责按 Group 比例映射 Child，不拥有 Pointer/Native/Persistence；
+- Layout Editor Preview Adapter v1：统一 Single/Multi working projection 与事务；Gesture 开始冻结 Selection revision，Preview 不持久化，外部 Commit 拒绝时恢复 start items；单选 Anchor/Pivot 修改可用完整 Snapshot Restore 回滚元数据。
+- Layout Editor Gesture v2：手势 Begin 动态读取单选/多选 transform constraints；Preview/Commit 可以 strict reject；sampling/capture 失败会同步 Abort Adapter Session，不留半事务。
+- Transform Inspector v2：改为一个 rectModel + 可选 anchorModel；同一个 Inspector 在单选显示 Anchor/Pivot，在多选折叠 Anchor/Pivot，不建立 Group Anchor。
+- LayoutEditorOverlay v1：组合 SelectionOverlay/GuideOverlay/Gesture/PreviewAdapter/SnapModel；不拥有新的 Pointer Capture、RectTransform 或 Snap Resolver，非 viewport 坐标空间必须显式 pointerToLocal。
+- WorkspaceTemplates v3 / LayoutEditorWorkspace v1：PreviewHost 位于 Editor Overlay 下层；Wide inline 与 Compact Drawer 使用同一个 Responsive TransformInspector 实例；Toolbar 明示 `左上(0,0) · X→右 · Y→下`。
+- Pointer Contract v1：只负责事件驱动的逻辑坐标采样与 start→current delta；通用 pointer capture 明确 `false`，Native movement/sizing 继续由 Windowing 负责；
+- Focus Contract v2：Focus 能力按真实 target Native 能力判断，不再把 `setFocus` 硬编码成全局可用；
+- Input Event Fence：未获 RU 证据前，Active Runtime 禁止猜测绑定通用 `OnKeyDown / OnKeyUp / OnTextChanged`；
+- Dropdown degraded path 改为 fail-closed/read-only，禁止弹层失败后偷偷退化成循环切换按钮；
+- PopupCoordinator v1 统一 Dropdown / ColorField / ContextMenu 的互斥弹层生命周期；`DropdownService` 仅保留兼容 alias，不再是第二 registry；
+- UITokens v4 增加统一 `layer.popupPriority`，Popup 不再散落硬编码 Z priority；
+- 历史 `UI.ComponentsV2` 已退出 Active Runtime，Card/Section/FormSection 收敛回 RSUI `ContainerSurface`；
+- Foundation Audit / UIV3 Acceptance / Diagnostics；
+- Shared Static ID Registry；
+- CombatEventBusV3 + CombatAnalyticsV3 单 all-scope 共享入口；
+- TeamRosterV3 / AuraObservationV3 / CombatRelationV3 / ScreenProjectionV3 等共享事实服务；
+- AuctionQueryV3 + PriceQuoteQueueV3 的显式、限速服务器查询路径；
+- Legacy / Professional / `globals/` 物理删除与文档 Authority 收口。
 
-版本一致性当前为 **PASS（代码标识已同步）**：`replicatedsuite/replicatedsuite.lua` 的 `S.BuildTag` 为 `v3-m1.16.0.18.50-statusdisplay-head-showall`，与本文件及 `CHANGELOG.md` 最新记录一致；RU Fresh Reload、Acceptance 以及产品能力未完成项仍阻止最终 Gate。
+## 3. 当前主要业务状态
 
-- **Life Projection Contract Recovery（M1.16.0.18.38）**：RU 日志中的 `rs_v3_life_m16_pages.lua:122 attempt to call method 'GetProjection'` 来自共享页面契约与 Feature facade 漂移，而不是 Native UI 或数据服务故障。Bonds/Treasure/Fishing 已补公开 detached `GetProjection()`；页面构建先做 exact contract preflight，Acceptance/Foundation Gate 同步纳入四个生活 Feature 的方法与 Commands 检查。修复后的专项故障注入确认缺 facade 时 `PageRoot` 分配为 0；仍需 Fresh Reload 逐页验证真实导航、刷新和关闭/重开。
+### 3.1 Combat
 
-- **Foundation Runtime Recovery（M1.16.0.18.37）**：RU Fresh Reload 证明静态门禁遗漏了两个运行时系统性问题：method-level `ApiDependencies` 被错误当成 `ImportAPI` namespace key，以及 strict Diff cache-hit 使用 `addonScale` 二次缩放 Native getter。当前 NativeImports v3 会把 `X2Friend:GetFriendList` 等能力映射到 `FRIEND` namespace 后导入；Feature 文件在 lazy import 前捕获 nil host 时由 `S.Api` 在调用时重新解析；Feature import failure 与 Foundation import failure 分离。`ui_foundation_matrix` 的四个虚构 Bag dependency 与 Gear Quick HUD spec 漂移已修；Authority diagnostics 现在输出 text/visible/extent/anchor 字段分布。**这些修复必须通过 RU Fresh Reload 重新验证，旧 Generation 的 13 import failures / 2999 authority violations 不可作为新版本结果。**
-- **业务 Feature 迁移闭环（持续复核至 M1.16.0.18.45）**：当前 Registry 的 combat/life/tools 业务条目继续按真实能力标记，不以页面存在证明完成。Unit Lines 现只承诺四条已证明 unit-token 关系（self/target/targettarget/watchtarget/watchtargettarget）与用户可调刷新；Range Assist 仍只承诺用户自定义自身半径圆，并通过 ScreenProjectionV3 v3 统一逻辑 UI 坐标。Trade/Bonds/Treasure/Fishing 均有独立 V3 FloatingSurface，Trade HUD 内可选择/循环路线。`tools_bag` 恢复原生背包上方“取同类/放同类/停止”快捷条，并与类别批量 Scheduler 严格互斥。Craft 普通用户只选择已核制作物，内部解析 CraftID/ItemID，市场成本仍显式查询。`combat_team_tools` 新增 86 组合 exact auto-role，只设置**当前玩家职责**；任意成员写入仍 fail-closed。`tools_auction` 与 `tools_market_analysis` 共享 `AuctionQueryV3` 的 9 参数当前挂单查询；后者明确不是历史成交行情。Fishing 完整自动 R 源槽位快照/写入/还原仍未被 RU 契约证明。所有新恢复链仍需 RU Fresh Reload 才能关闭运行时验收。
-- **Detached Floating State（M1.16.0.18.26）**：FloatingSurface 不再要求 Presentation 把可写的 Feature Store 子表交给共享适配器；提供可选 setState 提交回调，Surface/StateAdapter 均在持久化失败时恢复前一份 detached snapshot。Activity/Task/DPS/DeathReview/BuffDisplay 的 Active 悬浮窗已统一通过 Feature.Commands:SetWidgetWindowState() 写回；Healer 历史 widgetWindow 仅保留升级兼容，不再有 Active 推荐悬浮窗，开发审计新增 detachedWidgetState fence；本地 detached/rollback Harness 7/7。
-- **BuffDisplay persistence**：原 Store NormalizeRect() 会静默丢掉 FloatingSurface 的 locked/minimized/opacity/fontScale 等状态；现在复用公共 FloatingSurface:NormalizeState()，schema 2 从 schema 1 迁移，状态显示悬浮窗的公共外观可以被真正保存和恢复。
-- **M1.16.0.18.17 Floating Stability / Analytics Recovery**：实机发现 Combat Analytics Page 在构建排行选择器时直接 `pairs(VALUE_OPTIONS)`，但该表仅存在于 Feature 文件的 local scope，导致 `pairs(nil)` / Page quarantine；现由 Feature 暴露 detached selector models。DPS Widget 旧业务外观区已删除，公共 WindowShell 是唯一 Floating 外观 Authority。NumericInline v3 / WindowShell v19 改善极窄 HUD Slider 可操作面积；Tasks/DeathReview 补齐 fontScale parity。
+- **DPS**：Domain / Store / Projection / Page / Floating Widget 已在 V3；PVP/PVE、伤害、承伤、治疗、技能/目标明细和技能代理 fail-closed 归属已实现。RU 多人 Combat Fact 语义与真实 UI 交互仍需 Fresh Reload / 实战样本。
+- **Combat Analytics**：单 `scope=all` Consumer + 独立 Metric 生命周期已实现；Encounter、Kills、Casts、Performance、Control、Utility、Aura、Mechanics 等已接入。Songcraft 精确持续时间仍取决于 RU START/STOP 覆盖。
+- **Death Review**：独立 `scope=self` 低开销链路、历史分片、单条删除/全部清除、Page/Widget/Modal 已实现；真实死亡事件字段仍需 RU 样本确认。
+- **Healer**：Recommendation、Roster、Health、Aura、Page、Head Marker、Raid Overlay 已迁 V3。当前 Raid Overlay 使用 `RaidTeam ≠ RaidPanel ≠ Calibration` 模型，Panel A/B 几何与团队绑定解耦，并支持 `auto / single / dual`。下一关键点是 RU 50/100 人覆盖层、颜色、坐标、事件刷新与保存回读实测。
+- **Buff Display**：四页签、分类追踪、头顶组件、导入导出与独立 Demand 已实现；StatusClassificationV3 为唯一分类 Authority。RU 图标、时间、目标切换、头顶 anchor / scale 仍需实机确认。
+- **Raid Readiness / Boss Alerts / Team Tools**：安全子集已实现；未验证能力继续保持 Partial / Runtime Blocked，不使用猜测字段或禁止 API 补齐表面功能。
+- **Unit Lines / Range Assist**：`.18.61` 重新整理单位连线设置页为两列卡片，避免每线点数/大小/颜色挤在单行；Range Assist 的颜色进入永久 Store default contract，ColorField 即使客户端无色块 Drawable 也显示“颜色 + HEX”可点击文本。
 
-- **Strict V3 Build Failure Fence（M1.16.0.18.3）**：Page/Widget/Modal/Main Shell 的严格 BuildScope 现在会把非可选组件创建失败提升为 Commit 拒绝，并按逆序回滚已创建的 Component/Native；PageHost/WidgetHost 检查 Commit 结果后执行当前 Generation quarantine。表单关键控件在构造阶段 fail-fast，Healer 高级文本框明确标记为可选降级。严格构建 Harness `6/6`。
-- **V3 页面 / Foundation Recovery（M1.16.0.18.1）**：RU 实机的 Healer / DeathReview / CombatAnalytics / Tasks 页面 nil upvalue 来自同一个 `RSUI:TableView()` 公共构造错误：`NormalizeColumn()` 误用未定义 `columnRef`。已修为当前 `column.align`；项目中 14 个 Active TableView 页面/悬浮面共同受益。Generic WindowShell 成功路径同时补齐遗漏的 BuildScope Commit，解决诊断 `activeBuildScopes=2` 的真实事务泄漏。DataView/Scrollbar 运行期显隐改走 Strict UI Write Fence。NativeImports v2 / NativeObjectFactory v3 / WidgetHost v12 / RSUI v23 与 FoundationGate v42 已重新对齐。旧 Generation 的 `authority violations/page quarantine` 计数不能跨修复判定，必须完整 Reload 后重新验收。
-- **启动阻断 Hotfix（M1.16.0.17.1，已并入 M1.16.0.18）**：`RSUI.Windowing:LayoutHandles()` 同步八向 Handle 布局已恢复使用当前 `definition.key`；仅 Native 延迟拖拽回调继续捕获稳定局部 `handleDefinition = definition`。因此 0.18 覆盖不会把 `presentation_hosts → SetResizeEnabled()` 的启动阻断重新带回来。
-- **运行时**：v3_rebuild 活跃；Active TOC 只加载 V3 Host。已迁移 Activities / Tasks / Instance Browser / Gear / DeathReview / DPS / Combat Analytics / Raid Readiness / BuffDisplay 均由 FeatureRuntime 管理；Legacy/Professional 源码仅作迁移参考。
-- **BuffDisplay 诊断**：Diagnostics Snapshot/BuildSummary 暴露 `buffDisplay` 健康快照；FoundationGate 以 blocker 检查 Registry/Runtime/Store/Page/Widget/StatusMap 合同，以 warning 检查 consumer→Aura lease→refresh task 的一致性；关闭态不允许残留 Aura lease 或调度任务。
-- **Plates GameData / Diagnostics**：`rs_plates_ids.lua` 登记 5 个语义集合并保留 `curated / verified=false`；Legacy Plates 的冷却、魔法阵、目标装备和计时修正读取共享关系，Manager/Runtime/Storage 通过只读 Facade 输出结构化诊断。魔法阵候选与兼容状态仍需 RU 实机确认，不把静态集合当作运行时事实。
-- **V3 Visibility Authority**：BuildScope rollback、Owner Release、重复注册拒绝及 Primitive degraded 隔离均经 RSUI Authority 清理；`UI:SetVisible()` 的缓存无变化/拒绝返回值不再触发原生直写旁路；专项回归 `8/8`，当前 11 个本地 Harness 合计 `206/206`。
-- **Plates Concern Facades**：Storage 暴露 Persistence/Tracking/Aura Library 只读快照，Manager 暴露 Catalog/Discovery/Capture/Import Staging 只读快照；Runtime 通过 `storageConcerns` / `managerConcerns` 输出，Discovery cursor 使用 detached copy；专项回归 `14/14`。
-- **Aura Phase 12B / 团队战备**：`AuraObservationV3 v2` 在既有按需 Snapshot 之上新增纯事实 `GetStatusMap()` 与保守 `EvaluateRequiredEffects()`，不会增加 Native 读取；首个新 Consumer `combat_raid_readiness` 只在页面启用时持有轻量 `TeamRosterV3`，只有用户主动“运行检查”且配置关键 Buff ID 时才临时持有 Aura Consumer。检查完成/取消/离页立即释放 Aura；职责/装分/距离通过只读 Capability 分片读取，未知值只标“待确认”，不伪造失败。
-- **Healer V3 Domain + Presentation（M1.16.0.15–M1.16.0.18.2）**：Phase 12B Bridge 已升级 `ReadAccurate()`；`combat_healer` 为真实 Active V3 Feature，Professional Healer 整包仍不在 TOC。Store/Roster/Health/Recommendation 分权保持不变：Roster 复用 `TeamRosterV3`，Health/Status 维持 20/8 分片和首次完整 Status→Recommendation 发布顺序，Recommendation 保留治疗评分/规则/距离/滞回 Authority；共享 Aura 覆盖不完整才进入准确性 fallback。M1.16.0.17 曾接入 V3 页面与推荐悬浮窗；M1.16.0.18.43 已按用户决定移除推荐悬浮窗并收敛主 Page，Head Marker / Raid Overlay 继续作为独立 Presentation Consumer：Head Marker 50ms 任务只做屏幕投影与 Diff、禁止在视觉任务创建 Native Widget；Raid Overlay 预分配 4×25 槽位，静态模式事件驱动，只有动态效果模式才拥有 100ms 视觉任务。M1.16.0.18.2 已补齐完整 Healing Rule、颜色与 Tracked Buff 高级编辑器；页面只调用 `v3.healer` Feature Commands，命令统一 Normalize + MarkDirty，不建立第二套 Store/Settings Authority。Presentation 只经 Feature Projection/Commands 取数，屏幕坐标由 Feature-side `HealerScreenProjection` 窄桥访问 Native。`v3.healer` 仍为 schema 3，enabled 仍只归 FeatureRuntime。当前 metadata=`migrated_m16_18`，代码链路已闭合；RU Fresh Reload、真实字段与视觉交互仍是运行时验收项。
-- **Active Presentation Mutation Authority（M1.16.0.18.13）**：DPS、DeathReview、Gear、Raid Readiness、Activity、Task、BuffDisplay 的 Page/Widget Binding setter 与 Store dirty 写入统一经 Feature `Commands` facade；Active V3 读取仍经 Projection/getter，生命周期仍经 Feature lease。Acceptance 同时约束这些 facade；`v3_presentation_boundary_test` `25/25`，13 个本地 Harness `244/244`，全项目 Lua `325/325`，Active TOC `169/169`，Active V3 direct State/Authority 与 mutation scan 均为 `0`。
-- **UX Interaction Polish（M1.16.0.18.14）**：HUD FloatingSurface 默认最小化为约 32×32 的 compact restore 方块，标题/控制尺寸进一步收紧；`NumericField inline` + `CompactNumericSetting` 统一有限范围数值为“名称 + Slider + 精确输入框”，Healer/DPS 首批迁移。Healer 设置改为紧凑网格并分“治疗策略/战斗显示”，Raid Calibration 底色恢复可见 artwork layer；DeathReview 支持事务式单条删除；Activity/Task HUD 行点击使用独立 QuestDetailFloatingV3，不再唤起主 Application Modal。代码层全 Lua `326/326`、Active TOC `170/170`，仍需 Fresh Reload 观察实际像素、Slider 手感和校准层级。
-- **Floating Appearance Slider Layout（M1.16.0.18.16）**：修复极窄 HUD 外观面板中两字标签仍被 NumericField 的 44px label floor、54px input floor 强制放大，导致 Slider 只剩最小短轨的问题。`NumericInlineContractVersion=2` 新增 `labelMinWidth/labelMaxShare/inputMinWidth/sliderMinWidth` 可配置约束；公共 WindowShell 外观行使用 26–30px 标签、44–48px 精确输入并保证至少 44px Slider，普通页面仍保持旧默认下限。WindowShell v18 / FoundationGate v48 / UIV3Acceptance v22；RU 仍需实测窄窗拖动手感。
-- **Floating Chrome / Activity Responsive / Analytics Value Switch（M1.16.0.18.15）**：FloatingSurface v9 / WindowShell v17 将整体、背景、文字透明度与局部字号统一收敛到标题栏“外”入口；重型 NumericField 面板仅首次点击时 lazy 构建，关闭/未使用 HUD 不预分配 4 组 Slider/Input。Activity HUD 改为 overlay scrollbar，不再永久预留右侧黑色滚动条槽；列使用更低 absolute minimum + fill 权重随实际窗口宽度重算，关闭手工列宽以保持小窗整洁。Combat Analytics 的“击杀/助攻/死亡”等排行值从二级 Dropdown 改为直接 SegmentedSelector，并由 Store 白名单拒绝无效 value key。FoundationGate v47；代码层仍需 RU Fresh Reload 验证标题栏面板层级、Activity 极窄宽度和战斗分析实际点击。
-- **Native**：M1.14.1 已建立 fail-closed 边界；实机首要验收 = 日志不再出现 `the widget with the same name already exists` 与 `AddAnchor() expect parameter` 类异常。
-- **RSUI 交互**：Windowing 默认不再施加业务最小尺寸；Window Resize / Slider / ScrollBar / SplitView / Table Column Resize 五类拖动组件均要求手势期间实时反馈，并在 Scheduler 不可用/拒绝时使用仅手势期存在的 `OnUpdate` fallback；Table 的 `minWidth` 与 `absoluteMinWidth` 已严格区分；Column Preview 已改为“冻结基线 + 相邻列稳定边界 + 整数像素 + 差分 Native Write”，避免 Fill 列全表重排造成文字抖动。M1.16.0.3 又把 Dropdown 从未加载的 Legacy `S.Dropdown` 中彻底拔出：trigger/popup/options 由 Active V3 NativeObjectFactory 创建，popup 使用 UIParent 物理层 + V3 logical owner，列表刷新保留滚动锚点，路由切换统一关闭，且没有 Tick。 M1.16.0.5 进一步修正 RU root-parent 构造契约：所有 NativeObjectFactory 顶层创建统一把 `UIParent` object/string 归一为字面量 `"UIParent"`；若 popup/option 在特定 RU Build 仍不可创建，Dropdown 降级为事件驱动的 `↻` 单按钮循环选择，不再使整个页面构建失败。M1.14.3 新增 `FloatingSurface` 作为 `WindowShellV3 + Windowing` 上方的公共 HUD 状态/持久化绑定层；M1.14.4 又加入 DataView `ViewState`、`ActionRunner` 与 Persistent Setting Binding；M1.14.5 进一步把这些能力从“首批消费者”提升为 Active V3 默认标准：系统悬浮组件/全局设置使用 Domain-only setter + Persistent Binding，活动/任务悬浮 DataView 与任务详情复用 ViewState，用户可失败操作优先进入 ActionRunner，并把 View/Action/Binding/Floating/Snap 实时状态统一纳入 Diagnostics。
-- **战斗事实基础 / Analytics（M1.16.0 / M1.16.0.1 / M1.16.0.2 / M1.16.0.3）**：`CombatEventBusV3` 当前为 v6；`CombatAnalyticsV3 v3` 作为高级战斗分析唯一 all-scope 汇聚层，并通过有界 `GetMetricActorDetail()` 向 Feature/Presentation 提供玩家明细；DPS Domain 已升 v6，技能明细只保留事件语义可确认的 skill id。`SkillMetadataV3` 只在明细展示路径懒解析技能名称/Icon，禁止进入 CombatFact 热路径。Core `Events v4` 已把 Native RegisterEvent 纳入事务并支持 Optional Native Event，且在 RU 缺少 UnregisterEvent 时使用 parked registration 而不是伪造注销失败：注册失败不会提交 listener，并在 Diagnostics/FoundationGate 暴露失败计数；CombatFact borrowed+immutable Fence 覆盖全部公开标量字段（含 raw/death payload）。私有隐藏 Host 提供 `scope=self`；all-scope 才启用全局 `UI/UIParent` 桥。身份未就绪时进入 256 条/1500ms Pre-Identity Journal；身份就绪后按原顺序重放，溢出/过期与单 Host 覆盖通过 CoverageState 明确降级。Subscriber 稳定顺序分发，CombatFact 为 borrowed+immutable。UI/UIParent 短窗重复使用每 Host FIFO token 做 1:1 成对消费，同 Host 连续相同真实事件不去重；未配对 token 有 TTL/容量/压缩边界并暴露 pending/evicted。
-- **死亡回顾**：M1.15.2H 保持 `scope=self` 独立 Consumer，并把 `UNIT_DEAD_NOTICE` Native callback 收缩为 capture + one-shot queue；强制 Aura、记录构建、分片持久化、Presentation auto-show 全部在 callback 之外完成。Domain 通过 Feature Projection/Commands 暴露，不再直接控制 WidgetHost。完整死亡记录仍使用 31 槽循环分片。
-- **悬浮窗关闭契约**：M1.15.2H1 起，WindowShell 用户 X 默认必须完成视觉关闭；业务资源清理放到 `onClosed`，WidgetHost 统一接收 Native close notification。M1.15.2H2 进一步补上 `surface.visible` 与原生窗口的状态同步，并提供与 X 同一契约的 `surface:Close()`/`Host:RequestClose()` 编程入口。DeathReview/Activities/Tasks 已迁移。RU 若缺少战斗 Host 反注册 API，CombatEventBus 进入隐藏停放兼容模式，并在 Diagnostics 显示 Park 状态。
-- **战斗总线停用语义（M1.15.2H2）**：`ForceQuiesce` 之后即使 Native Host 没能摘除，总线也会立即强制失活（`_MarkInert`），业务回调不会再收到战斗事实；释放结果分两类 —— `releaseApiMissing`（Build 不提供 API，转停放，不算失败）与 `releaseCallFailures`（API 存在但调用失败，按真实事务失败回滚）。
-- **Feature ↔ Presentation 边界（M1.15.2H2）**：`FeatureRuntime` 统一广播 `v3.feature.lifecycle`，Activities / Tasks / Gear 三个 Feature 已不再直接调用 `WidgetHost`；悬浮窗在 Presentation 侧绑定生命周期反应。当前 Active TOC 的 `features/` 下已无 Domain 直接控制 WidgetHost 可见性的代码（仅 `*_acceptance.lua` 校验 Presentation 契约，属诊断范畴）。
-- **静态数据**：Trade Product 98/98、Quest 214/214、Instance DB 19/19 均已核验；Runtime Instance 仍 `verified=0`（session-only 候选，不自动提升为静态）。
-- **伤害统计（DPS，M1.15.6；M1.16 共享入口；M1.16.0.18.44 技能代理归属）**：DPS Domain v7 继续拥有 PVP/PVE、`source.damage / target.taken`、Shared Heal Ledger、Relation/Kind Replay 与技能/目标明细；但 M1.16.0 起不再直接成为第二个 `CombatEventBus scope=all` Consumer，而是注册隐藏 `dps_core` Metric Adapter，通过 `CombatAnalyticsV3` 的唯一 all-scope Lease 接收 borrowed CombatFact。`CombatRelationV3 v4` 与按需 `TeamRosterV3 v4` 仍独立提供关系/团队事实。Disable/Quiesce 释放采集资源但保留 DPS 本次统计，Analytics 公共 Metric 关闭不会清空 DPS Domain。 `.18.44` 进一步规定玩家放置技能实体不能按 sourceName 成为 Actor；由于当前没有可靠 proxy→caster owner link，治愈之泉 family 一律进入显式未归属技能代理统计，绝不按“最近/唯一观察到的施法者”猜归属。
-- **战斗页面实机故障收口（M1.16.0.3）**：本轮定位到两个独立底层问题，而不是 DPS/DeathReview Domain 没启动：其一 Active TOC 没有加载旧 `ui/components/rs_dropdown.lua`，但标准 `RSUI:Dropdown()` 仍硬依赖 `S.Dropdown`，导致 Analytics 的 `metric/value` 与 DPS 的 `metric/boss` 控件返回 nil；其二页面动作按钮与 FloatingSurface 复用了 `v3_dps_widget` / `v3_death_review_widget` 严格 ID。两者均已在 Foundation/Presentation 层修复。由于失败页面在当前 Generation 已创建过部分 Native ID，覆盖文件后必须执行一次完整 Addon/UI 重载，再验收页面；不在同一 Generation 内伪造 unreserve/destroy。
-- **构建事务硬化（M1.16.0.4）**：RSUI 懒构建进入同步事务；PageHost/WidgetHost/WindowShell/ModalHost/Main Shell 在失败后按 Generation 隔离重试，避免“第一次错误后再次点击”演变成 Native ID duplicate/root=nil。已提交 Native 对象只隐藏隔离，不伪造销毁；诊断新增 active build scope / quarantine / degraded primitive 指标。
-- **UI Adapter / Selection 契约修复（M1.16.0.6）**：Active V3 不再引用未加载 Legacy UI helper；`TrySetUILayer` 已进入 Native Primitive Adapter 且 fail-open。List/Tile/Table 选择回调统一，业务页通过 `View:GetSelectedKey()` 读取稳定 Key；死亡回顾原 `GetPrimaryKey` nil 与活动/任务/换装/副本同类潜在耦合一并消除。完整自检发现真实阻断时不再额外制造 `ACTION_FAILED`。
-- **RSUI Public API / Navigation / Form Layout（M1.16.0.7）**：RSUI v18 将类型注册与公开构造入口合并为一个 Authority，修复已注册 `TextInput` 却没有 `RSUI:TextInput()` 的双清单漂移；WidgetSwitcher/PageHost 将重复点击当前路由定义为幂等成功。Theme/TextLayout/Form 已统一“base font → Native scaled font → Measure → DesiredHeight”契约，NumericSetting 不再依赖固定 62px 容器；UI/字体缩放变化通过一次性 Measure invalidation 重排，不增加 Tick。
-- **Floating Content / Wrapped Text（M1.16.0.8）**：确认 DPS 悬浮摘要重叠属于公共 RSUI 问题而非 DPS 数据串行错误。FloatingSurface v4 不再把 Native `body.root` 冒充业务 Component parent，而是经 WindowShell v12 返回逻辑 body，使悬浮子树进入统一 Measure/Arrange/Release；RSUI v19 对 `overflow=wrap` 使用有界单行 LABEL 池，禁止把带换行的字符串直接写入单行 LABEL；TooltipService v3 fallback 同样复用该契约。悬浮摘要采用 auto+minHeight，字体放大/窗口缩放时不再靠固定高度压住文字。
-- **DPS 悬浮快捷筛选（M1.16.0.9）**：RSUI v20 新增 `SegmentedSelector v1`，用于 HUD 中有界、紧凑、可持久化的 one-of-many 选择。DPS Floating Widget 现在可直接切换 PVE/PVP、友方/敌方、伤害/承伤/治疗；全部复用 `v3.dps.settings`，不新增第二份 view state。重复点击当前 segment 为成功 no-op，不触发重复持久化。正常情况下隐藏 Replay/未决技术详情，只有未决数据可能影响排行时才展开警告。
-- **Floating Shell 布局所有权 / 局部外观（M1.16.0.10）**：实机确认 DPS 悬浮窗首次出现时 body 会覆盖 title，而拖动后恢复。根因是 WindowShell 专用 Chrome 布局与通用 RSUI Overlay 自动重排争夺同一 root。WindowShell v13 将特殊 root 排除通用 auto-relayout，并把后代 invalidation 路由到 coalesced Shell compositor；FloatingSurface v5 / WidgetHost v11 增加标准局部 `fontScale` 通道。DPS 快捷栏提供默认折叠的“外观”行，精确输入背景透明度与字体倍率，继续复用 `widgetWindow` 持久化。
-- **DPS 排序 / 技能明细 / Analytics 体验（M1.16.0.11）**：修复 Dropdown option 在 Lua 5.1 下闭包捕获循环末项导致选择看似无反应；DPS metric 改用可见 SegmentedSelector，友/敌排行开启交互表头排序。Domain v6 仅保留语义可信 skill id（MELEE_DAMAGE raw abilityId 是伤害量，故意不显示假 ID）；SkillMetadataV3 只在详情 UI 懒解析 X2Skill Icon/名称并使用 512 有界缓存。CombatAnalyticsV3 v3 增加 bounded actor drilldown，页面改为带用途说明、ActionRunner 操作反馈、中文覆盖说明、A/B 对比与玩家明细的用户工作区。
+### 3.2 Life / Economy
 
-- **Combat Analytics（M1.16.0 / M1.16.0.1 / M1.16.0.11）**：新增 `CombatAbilityCatalog` / `CombatMechanicCatalog`、`CombatAnalyticsV3 v3`、MetricCommon v2 与 9 个公开 Metric（Encounter、Kills、Casts、Performance、Control、Songcraft、Utility、Aura、Mechanics）。所有公开 Metric 共享一个 `scope=all` CombatEventBus Consumer，并按 category/native plan 预编译分发；关闭单 Metric 会释放其 Session 状态。Encounter 当前 Timeline 512、历史 20 条摘要；5 秒爆发使用 100ms/64 桶；Kills/Death/Control/Aura/Song 均有有界去重或 active map。推导击杀/助攻、技能活动与观察 Aura 时长显式区分证据。START 无 STOP 时只能统计演奏开始次数，不产生伪演奏时长。Boss 机制有目标时优先归属受影响单位。Store `v3.combat_analytics` schema 1 只保存永久偏好，不保存 Session 统计。M1.16.0.1 起空 `metrics={}` Consumer 不允许驻留；公开 Metric 全关时 Feature 释放自身 Lease；M1.16.0.11 的 Actor Drilldown 只在用户选择玩家时复制有界 details/opener，Presentation 不直接读取 Metric state。
+- Activities / Tasks / Housing / Butler 已有 V3 垂直切片与对应 Acceptance。
+- **Bonds / Resident Board**：`.18.61` 改为每个 board type 单次读取并归一化 `contents/content/rows/items`；大陆识别遵循 RU 既有插件行为（3+4 非空为大陆，5/6 非空为原大陆），空内容与 API 不可用不再混为同一状态。
+- Trade / Bonds / Treasure / Fishing 通过生活/业务桥接提供独立能力，不要求主页面常驻；服务器查询与普通 Refresh 分离。
+- Trade 材料成本与 Craft 材料报价已接入共享 `PriceQuoteQueueV3` read-model；未询价项保持明确未知，不从列表刷新自动批量请求拍卖行。
+- 静态数据当前基线：Trade Product 98/98、Quest 214/214、Instance Database 19/19；Runtime Instance 仍只作为 session observation，不自动提升为静态 verified ID。
 
-## 下一步
+### 3.3 Tools
 
-1. **执行 M1.16.0.18.46 Buff Display Fresh Reload 验收**：完整 Reload 后打开 `combat.buff_display` 四页签页面，验证状态追踪/行点击 Toggle/关键词搜索/"只看隐藏"过滤、头顶显示开关与数值、布局外观 10 组件编辑持久化回读、导入导出文本往返（含 `ExportAll/SerializeExport/ParseImportText/ImportAll` 链路）、快速 ID 导入 合并/覆盖；确认 1ms 刷新档位实际表现与 Consumer=0 时 Demand/事件/任务全部释放、`StatusClassificationV3` 种子库加载（`seedCount>0`）。
-2. **执行 M1.16.0.18.3–18.13 Fresh Reload Foundation 验收**：完整 Reload 后依次打开 Home / Healer / DeathReview / CombatAnalytics / Tasks / DPS / Activity / Gear / Instance / RaidReadiness / BuffDisplay 以及对应 Floating Widget；确认 TableView 页面不再 nil、`activeBuildScopes=0`、Page/Widget quarantine=0，并重新读取 `v3_authority_clean`。
-3. Fresh Reload 后完成 Healer 高级编辑器、Head Marker、Raid Overlay 与 `combat.buff_display` 的真实字段、图标/时间、目标切换、保存回读、视觉交互及 Demand 释放验收；50/100 人性能只能以 RU 实机证据关闭。
-4. 业务 Feature Registry 当前 `Planned=0`，Registry 层剩 4 个 `runtime_blocked` Feature；产品 Matrix 另有 11 个按能力粒度记录的 Runtime Blocked 条目。后续只凭明确 RU API/返回结构/场景证据关闭，不创建空壳 Feature，也不把 Lua Parse 当作页面完成证据。
+- **Gear**：`.18.61` 修复换装事务回归：GearV3 以 RU 已验证的 `bagId=1` 作为物理槽候选权威，并使用 `X2Bag:Capacity()` 有界扫描；不再因 bagId 0/1 逻辑视图差异整单取消。战斗中只执行主手/副手/远程/乐器武器队列，防具/饰品/称号显式延后，脱战后再次执行补齐。RU 真机仍需验证实际装备写入/cooldown。
+- Instance Browser、Social、Random Shop 等已有 V3 路径。
+- Bag / Auction / Market / Craft / Reinforce Analysis 等按已验证 RU API 提供安全子集。
+- Hotkey Profiles、Portal Profiles、Siege Readiness 等仍有明确 Runtime blocker，保持 fail-closed。
 
-## 风险与未决
+## 4. Product Capability Gate
 
-- 历史独立 Addon 数据（`replicatedgear/plates/healer/dps`）能否被 Suite 自动读到，取决于客户端存储命名空间作用域，需首次实机确认。
-- RU 客户端无经项目验证的通用 `DestroyWidget` API，Release 采用解绑+隐藏+释放 Lua 引用，Hot Reload 靠新 Generation 换物理 ID。
-- 本轮最终 `luac -p`/专项 Harness 使用本机 WinGet Lua 5.4.5 执行；工程目标仍为 **Lua 5.1**，因此只把它作为语法/纯 Lua 逻辑门禁，不能替代 RU 客户端实机。Active 代码仍保留 Lua 5.1 风格 `unpack/setfenv` 兼容策略，不为本地 5.4 测试做猜测性迁移。
-- Activities（1s 刷新 / 5s 区域扫描）与 Tasks 的 Scheduler 任务在 Feature 启用期间常驻，但都带 `consumerCount > 0` 门禁，Disable 时移除。是否进一步改为纯事件驱动属后续性能议题，需先按 §性能原则 补齐 rows/sec、facts/sec 等 Diagnostics 指标再决定。
+[`Rebuild/PRODUCT_COMPLETION_MATRIX.md`](Rebuild/PRODUCT_COMPLETION_MATRIX.md) 是产品能力完成度 Authority。
+
+当前 125 条能力：
+
+| 状态 | 数量 | 含义 |
+|---|---:|---|
+| IMPLEMENTED | 77 | 真实代码路径已存在；仍可能需要 RU 运行时验证 |
+| PARTIAL | 35 | 只实现安全/已验证子集， advertised capability 尚不完整 |
+| TODO | 2 | 产品范围内但暂无安全实现 |
+| SPECIFIC_RUNTIME_BLOCKED | 11 | 缺少具体 RU API / 返回结构 / 权限 / 场景证据 |
+| UNREVIEWED | 0 | 当前没有未审能力 |
+
+Gate 仍为 **INCOMPLETE - CONTINUATION REQUIRED**。不得为了 Gate 变绿删除、降级或合并真实产品能力。
+
+## 5. 本地已验证
+
+本轮文档收口前的最新本地证据已经确认：
+
+- `toc.g ↔ Active Lua`：205 ↔ 205，双向 0 差异；
+- Foundation Audit：PASS，全部结构越界计数为 0；
+- `RSUI_COMPOSITE_MODEL_HARNESS PASS rows=2 treeRebuilds=4`；
+- `RSUI_TREE_TRANSACTION_HARNESS PASS contract=2 stable=1`，隐藏 duplicate 在展开阶段暴露时完整回滚；
+- `RSUI_TREE_DEFAULT_COLLAPSE_HARNESS PASS overrides=2 bounded=3`，显式折叠覆盖默认展开并验证长期 expansion state 有界；
+- `RSUI_TREE_BOUNDED_MEMORY_HARNESS PASS rows=64 siblings=20000 peakFrames=2 exactTruncated=true`；
+- `RSUI_PICKER_MODEL_HARNESS PASS contract=1 scan=10`，稳定 Key、显式 query、AND token、有界 scan/results 与 selection 通过；
+- `RSUI_FOCUS_SERVICE_HARNESS PASS contract=2`，target-aware Set/Clear/IsFocused 能力路径通过；
+- `RSUI_HOST_SLOT_STRICT_HARNESS PASS attachRejects=4 mode=drawer`，跨父节点/循环 Parent 均 fail-closed，Release 能解除父容器强引用，ResponsiveInspector 切换时逻辑与 Native Parent 保持稳定；
+- `RSUI_WORKSPACE_18_65_HARNESS PASS contract=2`，ResponsiveInspectorWorkspace 与既有 Workspace Composition 共存；
+- `RSUI_SEARCHABLE_PICKER_HARNESS PASS results=2 selected=fire`，显式 Query、虚拟结果列表与 stable selection 正常；
+- `RSUI_ICON_PICKER_HARNESS PASS results=2 selected=fire binds=8`，PickerModel 查询、TileView 绑定、图标 Projection、预览与 stable selection 正常；
+- `RSUI_GEOMETRY_POINTER_HARNESS PASS upY=92 resize=90,85,90,75`，Top-Left 坐标方向、语义移动、8-way RectTransform、min-size 对侧边缘固定、Pointer delta 全通过；
+- `RSUI_SELECTION_GEOMETRY_HARNESS PASS handles=8 alignX=200 grid=100,120`，多选 Bounds、8 Handle、Grid/Alignment snap 通过；
+- `RSUI_SELECTION_GEOMETRY_BOUND_HARNESS PASS source=1100 bounded=1024 canvasBound=1024`，候选在建立临时副本之前即 hard-cap，Canvas 加入后总候选仍不超过 1024；
+- `RSUI_SELECTION_OVERLAY_MOVE_HARNESS PASS moveIndex=3 handleIndex=4 upY=92`，整框 Move Hit Surface 在 resize handles 之前创建，边缘 Handle 保持命中优先级；
+- `RSUI_RECT_TRANSFORM_V2_HARNESS PASS upY=92 commit=92,87,88,73`，Snap 后 `OverridePreview` 成为 Commit authority；
+- `RSUI_LAYOUT_EDITOR_GESTURE_HARNESS PASS x=100 y=95 candidates=1 preview=3 leases=1/1`，候选 provider 每手势只调用一次、负 Y 上移、snap commit、geometry lease/task lifecycle 全通过；
+- `RSUI_LAYOUT_EDITOR_FALLBACK_HARNESS PASS x=5 y=12 fallback=1`，Scheduler 拒绝时仅在手势期间绑定 OnUpdate，结束后立即解除；
+- `RSUI_LAYOUT_EDITOR_SAMPLING_FAIL_HARNESS PASS leases=0 begins=0`，Scheduler 与 OnUpdate fallback 都不可用时 Begin fail-closed，Native movement/geometry lease 完整回滚；
+- `RSUI_ANCHOR_SNAP_HARNESS PASS upY=142 gridX=200 scanned=0`，Anchor/Pivot preserve-visual、parent resize follow-anchor、四方向 Nudge 与 alignment-off 零候选扫描通过；
+- `RSUI_TRANSFORM_INSPECTOR_HARNESS PASS fields=19 align=false`，Transform/Anchor/Pivot/Offset/Snap 19 个共享字段全部绑定同一 Anchor/Snap Model；
+- `RSUI_GESTURE_CANDIDATE_SKIP_HARNESS PASS candidateCalls=0`，关闭对象对齐时 Gesture Begin 不执行候选发现；
+- `RSUI_SNAP_STRICT_HARNESS PASS revision=1 grid=12 align=false`，非法 Snap 类型不产生半提交，显式 `false` 不被 Lua truthy/fallback 逻辑吞掉；
+- `RSUI_MULTI_SELECTION_TRANSFORM_HARNESS PASS min=80x40 commit=200,150,800,400`，2-item bounds、比例缩放、child minimum、single/duplicate/cap fail-closed、Commit/Cancel 全通过；
+- 全量 Lua：205/205 Parse PASS；Markdown 相对链接 0 断链；
+- `RSUI_CONTAINER_SURFACE_HARNESS PASS created=7`，旧 `_card/_section` Native identity 保持；
+- `RSUI_POPUP_COORDINATOR_HARNESS PASS closed=b`，单 registry / CloseAll(except) / unregister snapshot 正常；
+- Product Matrix 统计可解析为 77 / 35 / 2 / 11，共 125 条；
+- 当前 BuildTag 与 `replicatedsuite.lua` 一致：`v3-m1.16.0.18.74-ui-layout-editor-workspace-foundation`。
+
+历史专项 harness、每个 M1.x 的逐轮数字与修复详情不再复制到本文，统一查 [`CHANGELOG.md`](CHANGELOG.md)。
+
+## 5.1 当前 UI Foundation 先行状态
+
+`.18.71` 继续保持 **Foundation First / 零业务 Feature 迁移**。`.18.69/.18.70` 已补 Anchor/Pivot、Snap Settings 与 TransformInspector；`.18.71` 正式增加 `MultiSelectionTransformModel v1`，把“Selection Bounds 只是 Group Projection、不能直接写回某一个 Child”变成代码契约。现在单选与多选的 Geometry Authority 已分开，下一层才允许组合 `LayoutEditorOverlay`。
+
+
+### Coordinate / Pointer / RectTransform Contract
+
+ArcheAge/CryEngine 逻辑 UI 统一为左上 `(0,0)`：`+X=右 / -X=左 / +Y=下 / -Y=上`。因此需求“向上移动 8”必须写成 `ΔY=-8`；Foundation 提供 semantic helper，Feature/页面不再自行解释正负号。
+
+`RectTransformTransaction v2` 只做 staged geometry math：`Begin → PreviewDelta → OverridePreview → Commit/Cancel`。`OverridePreview` 专门接收 Snap/Alignment Resolver 的最终 Rect，使“视觉吸附结果”和最终保存坐标保持一致。Pointer capture 仍归既有 Windowing/native `StartMoving/StartSizing`，避免第二拖拽 Authority。`RSUI.Pointer v1` 只提供 absolute logical position + start→current delta，`captureSupported=false`。
+
+### Host / Slot Attachment Contract v1
+
+RU 客户端当前没有项目已验证的通用 Native `RemoveFromParent → AddChild` / Reparent API。因此 RSUI 不允许仅修改 Lua `parentComponent` 来伪造 UMG Reparent。现行契约：
+
+```text
+Create Child under Host A native content root
+                 ↓
+      parentComponent = Host A
+                 ↓
+      ┌──────────┴──────────┐
+      │                     │
+AddChild(Host A)        AddChild(Host B)
+      │                     │
+      PASS              FAIL-CLOSED
+                            │
+                  native_reparent_unverified
+```
+
+每次 `AddChild` 同时验证：
+
+- Parent / Child 都是 live RSUI Component；
+- self-cycle / ancestor-cycle 禁止；
+- Child 已有其它 Parent 时禁止跨 Parent；
+- Child 的 immutable Native creation parent 必须与目标 Host 的 `GetContentRoot()` 一致；
+- `RemoveChild` 是**终止拥有关系 + Release**，不是“摘下来以后可以挂到别处”；
+- Child 单独 `Release()` 会先从 live Parent 的 `children/slots` 中解除引用，避免逻辑对象已死但父容器仍强持有。
+
+Static Foundation Audit 同时 fence Active Runtime 中未经验证的 `RemoveFromParent / Reparent / SetParent` 调用。后续如果 RU/官方证据确认安全 Native Reparent，必须先升级 Reparent Contract，再改变此策略。
+
+### ResponsiveInspector v1：Stable Host，不复制状态
+
+复杂页面常见结构是“主工作区 + 属性 Inspector”。宽屏需要右栏，1024×768 / 窄窗口下需要 Drawer。错误实现是构建两份 Inspector 或运行时把同一个 Native Widget 从右栏搬到 Drawer。现行实现改为：
+
+```text
+ResponsiveInspector（唯一 Native Host）
+├─ content    ← 一次创建
+└─ inspector  ← 一次创建
+
+wide / inline
+┌────────────────────────────┬──────────────┐
+│ Content                    │ Inspector    │
+│ min ≈ 360                  │ 286 default  │
+└────────────────────────────┴──────────────┘
+
+compact / drawer closed
+┌───────────────────────────────────────────┐
+│ Content                                   │
+└───────────────────────────────────────────┘
+
+compact / drawer open
+┌──────────────────────────────┬────────────┐
+│ Content                      │ Inspector  │
+│ 保留至少 drawerMinReveal      │ overlay    │
+└──────────────────────────────┴────────────┘
+```
+
+切换只修改 `Layout + Visibility + Raise`，不做：
+
+- Native Reparent；
+- Inspector 重建；
+- 第二份 Binding / Draft State；
+- 第二份 Scroll / Selection；
+- Feature Store 镜像。
+
+默认 breakpoint 读取 Workspace token（regular≈980），同时检查 `contentMinWidth + gap + inspectorMinWidth`，所以即使窗口宽于 breakpoint，但实际不足以容纳两栏，也会安全切 Drawer。
+
+`WorkspaceTemplates v2` 已提供 `CreateResponsiveInspectorWorkspace()`，未来 Buff Display / Range Assist / Unit Lines / Diagnostics 等页面不得自己手写第二套宽窄屏 Inspector。
+
+### SearchablePicker v1：显式提交 + PickerModel 单 Authority
+
+大量选项选择现在形成完整两层：
+
+```text
+PickerModel v1
+  stable key / query / bounded results / selection
+                 ↓
+SearchablePicker v1
+  TextInput + Search/Clear + StatusChip + virtual ListView
+```
+
+首版交互严格基于当前 RU 已验证输入能力：
+
+```text
+输入关键词
+   ↓
+Enter / EditEnter 或点击“搜索”
+   ↓
+PickerModel:SetQuery()
+   ↓
+Virtual ListView diff/复用结果行
+   ↓
+选择 row.key
+```
+
+明确**不实现**未经验证的 `OnTextChanged` 实时搜索、通用 `OnKeyDown` 上下选择、Esc 关闭等桌面行为。未来获得 RU evidence 后，再升级 Input Contract；页面不得绕过 Foundation 自己猜事件。
+
+SearchablePicker 本身不拥有业务名称解析或元数据：Buff / Skill / Item / Region 等 Caller 只通过 `getKey/getText/getSearchText` 提供 Projection。查询/结果/选择身份仍由 PickerModel 唯一拥有。
+
+### IconPicker v1：PickerModel + Virtual TileView + Preview
+
+IconPicker 也已经在本轮下沉，但只负责**通用图标选择 Presentation**：
+
+```text
+Caller Projection
+ key / text / searchText / iconPath
+             ↓
+        PickerModel
+             ↓
+┌──────────────────────────────────┐
+│ Search / Clear / Status          │
+├──────────────────────────────────┤
+│ Virtual TileView                 │
+│ [icon] [icon] [icon] [icon]      │
+│ [name] [name] [name] [name]      │
+│ ... only viewport pool ...       │
+├──────────────────────────────────┤
+│ [selected icon]  Selected Name   │
+└──────────────────────────────────┘
+```
+
+Foundation 不知道“这是 Buff、Skill 还是 Item”。业务 Caller 通过 `getIcon()` 或 item 的 `icon/iconPath/texture/path` 提供已经解析好的图标路径。这样 SkillMetadataV3/BuffMetadataV3 仍是元数据 Authority，IconPicker 不会在 Tile bind 热路径里调用 Native 元数据查询。
+
+Tile 使用 `TileView` 的有界 pool/overscan；搜索仍为显式提交。默认 tile 约 68×76、图标约 44px，标签 ellipsis；`showLabels=false` 可用于纯图标密集模式。选中项底部预览只更新当前 selected key，不建立第二份 SelectionModel。真实 RU 图标渲染层级仍需 Fresh Reload 验证。
+
+### `.18.67` 最新基线覆盖回流修复
+
+用户提供的最新整包重新读取后，发现 `.18.63` 的一组旧文件在多轮覆盖中回流：`UI.ComponentsV2` 又进入 TOC、PopupCoordinator/Dropdown fail-closed/UITokens v4 局部回退，而 `.18.64~.18.66` 新层仍然存在。当前已按真实调用链恢复自洽基线，而不是拿旧整包覆盖新工程：
+
+- 再次物理移除 `rs_ui_components_v2.lua` 并删除 Active TOC / metrics hooks；
+- 恢复 `ContainerSurface`、Dropdown degraded fail-closed、单一 PopupCoordinator 与 tokenized popup priority；
+- Foundation Audit 新增 **disk Lua ↔ Active TOC 双向 fence**：磁盘上存在但 TOC 未加载的 `.lua` 也直接 FAIL，避免历史源码“躺在目录里等待以后复活”。
+
+该修复不改变任何 Feature Store/业务行为，只修复 Foundation 自身版本分叉。
+
+### 当前下一批 Foundation 依赖顺序
+
+```text
+Host/Slot/Reparent Contract                 ✅
+ResponsiveInspector Stable Host             ✅
+SearchablePicker / IconPicker               ✅
+Coordinate / Pointer / RectTransform v2      ✅
+Selection Geometry / Overlay / Guides        ✅
+LayoutEditor Gesture Transaction             ✅
+              ↓
+Anchor / Pivot / Grid Config Model
+              ↓
+LayoutEditorOverlay（组合现有底层，不再造 Authority）
+              ↓
+Editor Workspace Template / Inspector binding
+              ↓
+状态显示页面 UI_REVIEW
+```
+
+下一轮仍优先检查 Foundation；除非用户明确切换阶段，不应先回到 Healer/Gear/Buff 等业务页面实现。
+
+## 6. 仍待 RU Fresh Reload 的最高优先级验收
+
+### P0 — .18.61 Runtime Recovery
+
+Fresh Reload 后优先验证本轮四项用户回归：
+
+1. Gear：非战斗整套换装；战斗中主手/副手/远程/乐器优先切换；脱战后补齐防具/饰品/称号；同名多件与背包超过 150 格场景。
+2. Unit Lines：1024×768 与 1920×1080 下四类开关、公共设置和四张每线外观卡片无重叠/裁切；颜色弹层可用。
+3. Range Assist：颜色按钮显示 HEX、RGB/HEX 修改即时生效，Reload 后颜色保持；半径圆中心与 UI Scale 无漂移。
+4. Bonds：大陆/原大陆居民板能够读出真实 `contents`，空地区显示“无内容”而非“API 不可用”，材料/数量/任务完成状态继续正确。
+
+### P0 — Healer Raid Panel Model
+
+完整 Reload 后重点验证：
+
+1. `auto / single / dual` 三模式；
+2. Panel A/B 团队绑定切换不重新校准几何；
+3. 1 团 / 2 团 / 仅单团 / 双列表显示时成员落位正确；
+4. 50 / 100 人色块、槽位号、`showMyself`、`locate_self`；
+5. 校准矩形拖动/缩放与真实名单对齐；
+6. 保存、Reload、旧 schema→新 panels 模型迁移回读；
+7. 事件驱动刷新下的 100 人性能与资源释放。
+
+### P0 — Buff Display
+
+验证：
+
+- 状态追踪行 Toggle、关键词搜索、“只看隐藏”；
+- 头顶 Buff/Debuff/距离/职业/装分/装备/施法条等组件；
+- 10 组件位置/大小/字号/透明度持久化；
+- player / target anchor 与 icon/time；
+- 导入导出和快速 ID 合并/覆盖；
+- Consumer=0 后 Aura Demand、事件与 Scheduler 任务释放。
+
+### P0 — V3 Foundation / Presentation
+
+依次打开 Home / Healer / DeathReview / CombatAnalytics / Tasks / DPS / Activity / Gear / Instance / RaidReadiness / BuffDisplay 与对应 Floating Widget，确认：
+
+- 页面/悬浮窗可构建、可关闭、可重新打开；
+- `activeBuildScopes=0`；
+- Page / Widget quarantine = 0；
+- Table/DataView 无 nil；
+- `v3_authority_clean` 无 violation；
+- 拖动、缩放、滚动、Tooltip、ColorField、NumericSetting 在真实 Native UI 下行为正确。
+
+## 7. 当前 Runtime Blocker 原则
+
+任何 Runtime Blocked 能力只有在获得以下证据之一后才能解除：
+
+- 当前 RU 客户端实测 API 参数与返回结构；
+- 官方当前版本 Addon API 文档；
+- 可复现的 Native 事件/字段样本；
+- 明确权限 / cooldown / 场景契约。
+
+禁止：
+
+- 根据旧版 Legacy 能力推测当前 API；
+- 根据字段名、ID 连号或社区描述猜参数；
+- 用当前挂单冒充历史成交；
+- 用聊天文本猜 Boss 机制；
+- 用“最近/唯一候选”猜技能代理 owner；
+- 为了 UI 看起来完整创建不可执行空壳。
+
+## 8. 风险与未决
+
+- RU 客户端缺少项目已验证的通用 `DestroyWidget` 能力；Release 仍采用解绑、隐藏、Lua 引用释放与 Generation 隔离策略。
+- 工程目标是 Lua 5.1；其它 Lua 版本的 `luac -p` 只能作为语法辅助门禁，不能替代 RU Lua 运行时。
+- Activities / Tasks 等仍有 Demand-scoped 周期采样；是否进一步事件化应先补齐 rows/sec、facts/sec、Native calls/sec 等 Diagnostics，再以实测决定，不能仅凭感觉重构。
+- 历史独立 Addon 的持久化命名空间能否被 Suite 自动读取仍需 RU 实机确认；不得把历史旧源码重新接回 Runtime 来解决迁移问题。
+
+## 9. 下一开发顺序
+
+当前用户已明确把阶段目标调整为“先完善强大的底层框架，再逐页 UI_APPROVED，再做业务功能”。`.18.74` 已经把完整 LayoutEditor Workspace 组合出来，因此当前顺序更新为：
+
+1. 新增共享 `LayoutEditHistoryModel / Undo-Redo`：只记录成功 Commit 的可逆 Layout Command，不记录 Drag Pulse；需要 stable selection/key、bounded history、transaction rollback；
+2. 新增 `Editor Command Bar`：Undo / Redo / Revert / Reset / Apply 的状态与可用性由 History/Session Authority 投影，不让页面自己维护按钮状态；
+3. 定义 `Reset / Revert / Apply` 三种语义及 Persistence 边界，避免“恢复默认”“撤销本次编辑”“保存当前布局”互相混淆；
+4. 将 History/Command 能力接回 `LayoutEditorWorkspace`，仍保持 PreviewHost/Overlay/Inspector 单实例结构；
+5. 把新增 Foundation 继续写回 `REBUILD_REFERENCE_ADDON_CAPABILITY_ROADMAP.md`，不新拆一套 UI 文档；
+6. Foundation 稳定后，从状态显示开始把 `UI_DRAFT → UI_REVIEW → UI_APPROVED`；只有 UI_APPROVED 且 Authority/Service/Projection/Performance Contract 完整后，才进入业务页面重构；
+7. RU Fresh Reload 仍是 Native 输入、Z-order、Handle hit、Focus、Icon Drawable、Selection Overlay、100 人等事实的最终验证边界。
+
+当前明确不做：Buff Display / Healer / Gear / Unit Lines / Range / DPS 等业务 Feature 的 UI 迁移。
+

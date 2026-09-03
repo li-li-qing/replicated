@@ -2504,8 +2504,8 @@ UnitLines.VisualGuideContractVersion = 2
 local RANGE_ASSIST_TASK = "v3_business_range_assist_refresh"
 local RangeAssist = NewFeature("combat_range_assist", {
     apiDependencies = { "X2Unit:GetUnitWorldPositionByTarget" },
-    state = { radius = 10, pointCount = 24, pointSize = 4, opacity = 0.68 },
-    default = { radius = 10, pointCount = 24, pointSize = 4, opacity = 0.68 },
+    state = { radius = 10, pointCount = 24, pointSize = 4, opacity = 0.68, color = { 0.20, 0.82, 1.00 } },
+    default = { radius = 10, pointCount = 24, pointSize = 4, opacity = 0.68, color = { 0.20, 0.82, 1.00 } },
     observationContractVersion = 2,
     reconcileDemand = function(feature, before, after)
         local b, a = tonumber(before and before.count) or 0, tonumber(after and after.count) or 0
@@ -2545,7 +2545,17 @@ local RangeAssist = NewFeature("combat_range_assist", {
         if #points < 3 then return {}, "partial", "范围圆投影没有足够可见点；请确认当前 RU 相机投影能力" end
         return {{ key="self_radius", name="自身范围圆", text=string.format("半径 %.1fm · 可见点 %d/%d · %s",radius,#points,count,tostring(batchSource or "projection")), statusText="实时", tone="green", points=points, radius=radius }}, "ready"
     end,
-    projection = function(feature) return { radius=feature.State.radius, pointCount=feature.State.pointCount, pointSize=feature.State.pointSize, opacity=feature.State.opacity, color=feature.State.color } end,
+    projection = function(feature)
+        local color = type(feature.State.color) == "table" and feature.State.color or { 0.20, 0.82, 1.00 }
+        return {
+            radius=feature.State.radius, pointCount=feature.State.pointCount, pointSize=feature.State.pointSize, opacity=feature.State.opacity,
+            color={
+                math.max(0,math.min(1,tonumber(color[1]) or 0.20)),
+                math.max(0,math.min(1,tonumber(color[2]) or 0.82)),
+                math.max(0,math.min(1,tonumber(color[3]) or 1.00)),
+            },
+        }
+    end,
     commands = {
         SetRadius = function(feature,value) value=math.max(1,math.min(100,tonumber(value) or 10)); return PersistStateMutation(feature,"range_radius",function(state) state.radius=value; return true end) end,
         SetPointCount = function(feature,value) value=math.max(12,math.min(48,math.floor(tonumber(value) or 24))); return PersistStateMutation(feature,"range_points",function(state) state.pointCount=value; return true end) end,
@@ -2557,8 +2567,280 @@ local RangeAssist = NewFeature("combat_range_assist", {
         end,
     },
 })
-RangeAssist.VisualGuideContractVersion = 2
+RangeAssist.VisualGuideContractVersion = 3
 NewFeature("combat_siege_readiness", { blocker = "GetEquippedItemTooltipInfo 的槽位/装分字段和攻城上下文未在当前 RU 实机确认；不猜测装备状态" })
 NewFeature("tools_hotkey_profiles", { blocker = "当前 RU API 没有动作名称枚举；GetOptionBinding 只能读取已知 action/index，无法安全导出完整快捷键方案" })
-NewFeature("tools_reinforce_analysis", { blocker = "强化 getter 的 equipSlotIndex 合法范围、返回字段和当前装备上下文仍未在 RU 实机确认" })
+------------------------------------------------------------------------
+-- tools_reinforce_analysis: read-only equipment-reinforcement analysis over
+-- X2EquipSlotReinforce.
+--
+-- Evidence basis (reconciled 2026-09-03 against the RU client export manifest
+-- api_functions.lua, section "X2EquipSlotReinforce", lines 1855-1878): every
+-- getter used below is listed under "Allowed functions". The same section
+-- places all mutators (StartReinforceAddExp / StartReinforceLevelup /
+-- ChangeLevelEffect / EnableLevelUp) under "Available/not allowed", so the
+-- analysis is read-only by construction: no write capability is registered and
+-- no write path exists to misuse.
+--
+-- What remains unproven and is therefore never guessed:
+--   * the legal equipSlotIndex range -- the manifest exports no slot
+--     enumeration API, so slots are discovered by a BOUNDED probe and each
+--     index is classified explicitly (no data / unresolved shape / resolved);
+--   * the exact return field names of GetReinforceInfo and GetMaterialInfo --
+--     a narrow candidate whitelist is used and anything outside it renders as
+--     "待确认" while degrading the whole projection to partial.
+-- A failed read degrades to unavailable/partial, never to an empty table.
+------------------------------------------------------------------------
+-- A single table namespace instead of one local per helper: this file's main
+-- chunk sits at the Lua 5.1 limit of 200 locals per function, so every helper
+-- must live on one table rather than adding its own local.
+local REINFORCE_SLOT_PROBE_MAX = 32
+local Reinforce = {
+    attributes = {
+        { key = "offence", label = "攻击", global = "ESRA_OFFENCE" },
+        { key = "defence", label = "防御", global = "ESRA_DEFENCE" },
+        { key = "support", label = "支援", global = "ESRA_SUPPORT" },
+    },
+}
+-- Attribute labels resolve by EXACT match against the client's own ESRA_*
+-- constants, never by index arithmetic: ESRA_* numbering is not proven to be
+-- 0-based or contiguous, so an off-by-one would silently mislabel a slot.
+function Reinforce:AttributeLabel(value)
+    if value == nil then return nil end
+    for _, attribute in ipairs(self.attributes) do
+        local constant = rawget(_G, attribute.global)
+        if constant ~= nil and constant == value then return attribute.label end
+    end
+    return nil
+end
+function Reinforce:Number(source, fields)
+    if type(source) ~= "table" then return nil end
+    for _, field in ipairs(fields) do
+        local value = tonumber(source[field])
+        if value ~= nil then return value end
+    end
+    return nil
+end
+function Reinforce:Text(source, fields)
+    if type(source) ~= "table" then return nil end
+    for _, field in ipairs(fields) do
+        local value = source[field]
+        if type(value) == "string" then
+            local text = value:match("^%s*(.-)%s*$")
+            if text ~= "" then return text end
+        end
+    end
+    return nil
+end
+-- Returns nil for "no data" and for shapes that cannot be trusted. Callers
+-- distinguish the two by checking whether the raw value was nil.
+function Reinforce:NormalizeInfo(value)
+    if value == nil then return nil end
+    if type(value) == "number" then return { level = math.floor(value) } end
+    if type(value) ~= "table" then return nil end
+    local level = self:Number(value, { "level", "reinforceLevel", "curLevel", "currentLevel" })
+    local name = self:Text(value, { "name", "slotName", "equipSlotName" })
+    if level == nil and name == nil then return nil end
+    return {
+        level = level,
+        maxLevel = self:Number(value, { "maxLevel", "maxReinforceLevel", "limitLevel" }),
+        exp = self:Number(value, { "exp", "curExp", "currentExp" }),
+        maxExp = self:Number(value, { "maxExp", "needExp", "requireExp" }),
+        attributeType = self:Number(value, { "attributeType", "type" }),
+        name = name,
+    }
+end
+function Reinforce:NormalizeMaterial(value)
+    if type(value) ~= "table" then return nil end
+    local name = self:Text(value, { "name", "itemName", "materialName" })
+    local count = self:Number(value, { "count", "needCount", "amount", "itemCount" })
+    if name == nil and count == nil then return nil end
+    return { name = name, count = count }
+end
+function Reinforce:MaterialSummary(slotIndex, level)
+    -- GetMaterialInfo(equipSlotIndex, level) is an official Allowed getter, but
+    -- its payload shape is unverified; a non-normalizable payload is reported as
+    -- "形态待 RU 实证" instead of being silently omitted or rendered as a raw
+    -- table address.
+    local ok, payload, callErr = Call("X2EquipSlotReinforce:GetMaterialInfo", ReinforceApi, "GetMaterialInfo", slotIndex, level)
+    if ok ~= true then return nil, tostring(callErr or "读取失败") end
+    if payload == nil then return nil, nil end
+    if type(payload) ~= "table" then return nil, "返回形态未识别" end
+    local rows = payload
+    if payload[1] == nil and (self:Text(payload, { "name", "itemName", "materialName" }) ~= nil or self:Number(payload, { "count", "needCount", "amount", "itemCount" }) ~= nil) then
+        rows = { payload }
+    end
+    local parts, unresolved, scanned = {}, 0, 0
+    for index = 1, 8 do
+        local entry = rows[index]
+        if entry == nil then break end
+        scanned = scanned + 1
+        local material = self:NormalizeMaterial(entry)
+        if material == nil then
+            unresolved = unresolved + 1
+        else
+            parts[#parts + 1] = (material.name or "材料") .. " ×" .. tostring(material.count or "?")
+        end
+    end
+    if scanned == 0 then return nil, "返回形态未识别" end
+    if unresolved > 0 then parts[#parts + 1] = "另有 " .. tostring(unresolved) .. " 条形态待 RU 实证" end
+    return table.concat(parts, "；"), (unresolved > 0 and "形态待 RU 实证" or nil)
+end
+function Reinforce:AppendFact(rows, key, name, facts, tone, statusText)
+    rows[#rows + 1] = { key = key, name = name, text = table.concat(facts, " · "), statusText = statusText or "已识别", tone = tone or "default" }
+end
+NewFeature("tools_reinforce_analysis", {
+    -- Exactly the capabilities this read path calls -- no speculative entries.
+    apiDependencies = {
+        "X2EquipSlotReinforce:GetReinforceInfo", "X2EquipSlotReinforce:GetMaterialInfo",
+        "X2EquipSlotReinforce:GetTotalReinforceLevel",
+        "X2EquipSlotReinforce:GetAttributeTotalLevel", "X2EquipSlotReinforce:GetNextSetApplyLevel",
+        "X2EquipSlotReinforce:HasNextSetEffect", "X2EquipSlotReinforce:SuitableLevelForEquipSlotReinforce",
+        "X2EquipSlotReinforce:GetBundleEffectTopLevel",
+    },
+    read = function()
+        local rows, failures, unresolved = {}, {}, 0
+        local anyOk = false
+        if ReinforceApi == nil then
+            return rows, "unavailable", "X2EquipSlotReinforce 在当前客户端不可用（未导出）"
+        end
+        -- 1) Aggregate overview. Each getter is independent: one failure must
+        --    not blank the others, and an unknown value is displayed as 待确认.
+        local okTotal, totalLevel, totalErr = Call("X2EquipSlotReinforce:GetTotalReinforceLevel", ReinforceApi, "GetTotalReinforceLevel")
+        if okTotal == true then
+            anyOk = true
+            local total = tonumber(totalLevel)
+            if total == nil then unresolved = unresolved + 1 end
+            Reinforce:AppendFact(rows, "reinforce:total", "总强化等级", { total ~= nil and ("等级 " .. tostring(math.floor(total))) or "返回形态待 RU 实证" },
+                total ~= nil and "green" or "warn", total ~= nil and "已识别" or "待确认")
+        else
+            failures[#failures + 1] = "总强化等级（" .. tostring(totalErr or "读取失败") .. "）"
+        end
+        local okSuit, suitLevel, suitErr = Call("X2EquipSlotReinforce:SuitableLevelForEquipSlotReinforce", ReinforceApi, "SuitableLevelForEquipSlotReinforce")
+        if okSuit == true then
+            anyOk = true
+            local level = tonumber(suitLevel)
+            if level == nil then unresolved = unresolved + 1 end
+            Reinforce:AppendFact(rows, "reinforce:suitable", "装备强化适用等级", { level ~= nil and ("等级 " .. tostring(math.floor(level))) or "返回形态待 RU 实证" },
+                "muted", level ~= nil and "已识别" or "待确认")
+        else
+            failures[#failures + 1] = "适用等级（" .. tostring(suitErr or "读取失败") .. "）"
+        end
+        for _, attribute in ipairs(Reinforce.attributes) do
+            local attributeType = rawget(_G, attribute.global)
+            if attributeType == nil then
+                Reinforce:AppendFact(rows, "reinforce:attr:" .. attribute.key, attribute.label .. "系合计", { "属性类型常量 " .. attribute.global .. " 未导出，无法查询" }, "muted", "未提供")
+            else
+                local okLevel, levelValue, levelErr = Call("X2EquipSlotReinforce:GetAttributeTotalLevel", ReinforceApi, "GetAttributeTotalLevel", attributeType)
+                if okLevel ~= true then
+                    failures[#failures + 1] = attribute.label .. "系合计（" .. tostring(levelErr or "读取失败") .. "）"
+                else
+                    anyOk = true
+                    local facts = {}
+                    local level = tonumber(levelValue)
+                    if level == nil then unresolved = unresolved + 1 end
+                    facts[#facts + 1] = level ~= nil and ("合计等级 " .. tostring(math.floor(level))) or "合计等级待 RU 实证"
+                    local okNext, nextValue = Call("X2EquipSlotReinforce:GetNextSetApplyLevel", ReinforceApi, "GetNextSetApplyLevel", attributeType)
+                    if okNext == true then
+                        local nextLevel = tonumber(nextValue)
+                        if nextLevel == nil then unresolved = unresolved + 1 end
+                        facts[#facts + 1] = nextLevel ~= nil and ("下一套装档位 " .. tostring(math.floor(nextLevel))) or "下一套装档位待 RU 实证"
+                    else
+                        failures[#failures + 1] = attribute.label .. "系下一档位"
+                    end
+                    local okHas, hasValue = Call("X2EquipSlotReinforce:HasNextSetEffect", ReinforceApi, "HasNextSetEffect", attributeType)
+                    if okHas == true then
+                        if hasValue == true then facts[#facts + 1] = "存在下一档套装效果"
+                        elseif hasValue == false then facts[#facts + 1] = "已达当前套装上限"
+                        else
+                            unresolved = unresolved + 1
+                            facts[#facts + 1] = "下一档套装效果状态待 RU 实证"
+                        end
+                    else
+                        failures[#failures + 1] = attribute.label .. "系套装效果状态"
+                    end
+                    Reinforce:AppendFact(rows, "reinforce:attr:" .. attribute.key, attribute.label .. "系合计", facts, "default",
+                        (level ~= nil and "已识别" or "待确认"))
+                end
+            end
+        end
+        local okBundle, bundleTop = Call("X2EquipSlotReinforce:GetBundleEffectTopLevel", ReinforceApi, "GetBundleEffectTopLevel")
+        if okBundle == true then
+            anyOk = true
+            local top = tonumber(bundleTop)
+            if top == nil then unresolved = unresolved + 1 end
+            Reinforce:AppendFact(rows, "reinforce:bundle", "组合效果上限", { top ~= nil and ("最高等级 " .. tostring(math.floor(top))) or "返回形态待 RU 实证" },
+                "muted", top ~= nil and "已识别" or "待确认")
+        else
+            failures[#failures + 1] = "组合效果上限"
+        end
+        -- 2) Bounded per-slot probe. The manifest exports no slot enumeration
+        --    API, so the range is deliberately bounded rather than guessed from
+        --    numbering conventions. Indexes are classified, never assumed:
+        --      ok + nil          -> no data for that index (not an error)
+        --      ok + unusable     -> unresolved shape, counted and disclosed
+        --      not ok            -> read failure, aggregated
+        local slotRows, slotFailures = {}, 0
+        for index = 0, REINFORCE_SLOT_PROBE_MAX - 1 do
+            local ok, info, callErr = Call("X2EquipSlotReinforce:GetReinforceInfo", ReinforceApi, "GetReinforceInfo", index)
+            if ok ~= true then
+                slotFailures = slotFailures + 1
+                -- Record the slot-probe failure once; 32 identical notes would
+                -- bury the real diagnostics.
+                if slotFailures == 1 then
+                    failures[#failures + 1] = "槽位读取（" .. tostring(callErr or "读取失败") .. "）"
+                end
+            elseif info == nil then
+                anyOk = true
+            else
+                anyOk = true
+                local normalized = Reinforce:NormalizeInfo(info)
+                if normalized == nil then
+                    unresolved = unresolved + 1
+                else
+                    local facts = {}
+                    if normalized.level == nil then unresolved = unresolved + 1 end
+                    facts[#facts + 1] = normalized.level ~= nil and ("强化等级 " .. tostring(normalized.level) .. (normalized.maxLevel ~= nil and ("/" .. tostring(normalized.maxLevel)) or "")) or "强化等级待 RU 实证"
+                    if normalized.exp ~= nil then
+                        facts[#facts + 1] = "经验 " .. tostring(normalized.exp) .. (normalized.maxExp ~= nil and ("/" .. tostring(normalized.maxExp)) or "")
+                    end
+                    local attributeLabel = Reinforce:AttributeLabel(normalized.attributeType)
+                    if attributeLabel ~= nil then
+                        facts[#facts + 1] = "属性系 " .. attributeLabel
+                    elseif normalized.attributeType ~= nil then
+                        unresolved = unresolved + 1
+                        facts[#facts + 1] = "属性系编号 " .. tostring(normalized.attributeType) .. "（未匹配 ESRA_* 常量，待 RU 实证）"
+                    end
+                    if normalized.level ~= nil then
+                        local summary, shapeNote = Reinforce:MaterialSummary(index, normalized.level)
+                        if summary ~= nil then
+                            facts[#facts + 1] = "下一级材料：" .. summary
+                            if shapeNote ~= nil then unresolved = unresolved + 1 end
+                        elseif shapeNote ~= nil then
+                            facts[#facts + 1] = "下一级材料：" .. shapeNote
+                            unresolved = unresolved + 1
+                        end
+                    end
+                    slotRows[#slotRows + 1] = {
+                        key = "reinforce:slot:" .. tostring(index),
+                        name = "槽位 " .. tostring(index) .. (normalized.name ~= nil and (" · " .. normalized.name) or ""),
+                        text = table.concat(facts, " · "),
+                        statusText = "已识别",
+                        tone = "default",
+                    }
+                end
+            end
+        end
+        for _, row in ipairs(slotRows) do rows[#rows + 1] = row end
+        local status = "ready"
+        if not anyOk then status = "unavailable"
+        elseif #failures > 0 or unresolved > 0 then status = "partial"
+        elseif #rows == 0 then status = "empty" end
+        local notes = {}
+        if #failures > 0 then notes[#notes + 1] = "读取失败：" .. table.concat(failures, "；") end
+        if unresolved > 0 then notes[#notes + 1] = "返回形态未识别 " .. tostring(unresolved) .. " 处（RU 契约待实证，未伪造数值）" end
+        notes[#notes + 1] = "只读分析：探测 " .. tostring(REINFORCE_SLOT_PROBE_MAX) .. " 个槽位上限，不执行任何强化写入"
+        return rows, status, table.concat(notes, "；")
+    end,
+})
 NewFeature("tools_portal_profiles", { blocker = "X2Option optionType/返回值语义和个人传送候选集合未在当前 RU 客户端验证；禁止执行猜测写入" })

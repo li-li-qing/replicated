@@ -530,8 +530,9 @@ function D:GetRaidDisplayProjection(members, options)
                 if color ~= nil and (type(candidate) == "table" or proximityMode or visualPriority > 1) then
                     local row = {
                         key = key,
-                        raidIndex = tonumber(member.raidIndex) or 0,
+                        teamIndex = tonumber(member.teamIndex) or 0,
                         memberIndex = tonumber(member.memberIndex) or 0,
+                        isSelf = member.isSelf == true,
                         healthPercent = healthPercent,
                         distance = distance,
                         color = CopyColor(color),

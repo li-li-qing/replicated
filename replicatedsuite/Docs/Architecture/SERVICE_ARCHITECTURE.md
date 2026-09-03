@@ -234,7 +234,7 @@ V3 Presentation (Widget/Page) —— FloatingSurface + WidgetHost + PageHost + V
 
 ## 7. 旧版架构（已删除）
 
-`modules/professional/`、旧 `services/`、`ModuleManager`、`rs_state`、`rs_storage`、`rs_module_manager`、`rs_module_sandbox` 等旧版代码已于 2026-09-01/02 全部物理删除（commit 09010c0），不再随包。用户持有全量离线备份，插件树内绝不重新引入。V3 共享服务见 `services/` 目录与 [`CURRENT_ARCHITECTURE_OVERVIEW.md`](CURRENT_ARCHITECTURE_OVERVIEW.md) §9。重建被删功能时必须拆分"共享事实 Service"和"Feature 业务判断"，禁止重新建立超级 Service/Core。
+`modules/professional/`、旧 `services/`、`ModuleManager`、`rs_state`、`rs_storage`、`rs_module_manager`、`rs_module_sandbox` 等旧版代码已于 2026-09-01/02 全部物理删除（commit 09010c0），不再随包。用户持有全量离线备份，插件树内绝不重新引入。V3 共享服务见 `services/` 目录与 [`../CURRENT_ARCHITECTURE.md`](../CURRENT_ARCHITECTURE.md) 附录 §G 共享服务层。重建被删功能时必须拆分"共享事实 Service"和"Feature 业务判断"，禁止重新建立超级 Service/Core。
 
 
 ## CombatEventBus RU Release Compatibility（M1.15.2H1）
@@ -256,3 +256,16 @@ V3 Presentation (Widget/Page) —— FloatingSurface + WidgetHost + PageHost + V
 - `dps_core` 是隐藏 Adapter，不改变 DPS Domain 的业务 Authority；DeathReview 不依赖 Analytics。
 - Session State 必须有界且在 Metric Disable/Analytics Quiesce 时释放。
 - M1.16.0.1：Consumer 必须至少包含 1 个 Metric；Update 到空集合等价于 Release。批量清理必须走公共 `ResetMetrics`，异步 Metric 变化走 `NotifyMetricChanged`；Feature/Presentation/Metric 禁止调用 `_SchedulePublish` 等 Service 私有方法；Reset 失败必须传播，禁止假成功。
+
+---
+
+## 8. Metadata 服务公共缓存基类评估结论（2026-09-02）
+
+`services/rs_buff_metadata_v3.lua` 与 `rs_skill_metadata_v3.lua` 的 cache 框架（`cache/order/orderHead/serial/cacheCount/cacheMax=512/hits/misses/nativeLookups/nativeFailures/evictions` + `_EvictIfNeeded`/`_Store`/`GetHealth` 基础字段）**完全同构（约 57 行重复）**，但二者的 Native 源、解析逻辑、cache 行结构、公开 API 签名、安全策略、探测策略、fallback **全部不同**。
+
+**结论：当前不建议抽公共 `RsLruCache` 基类。**
+- 净去重仅约 54 行，对 197 文件工程是噪音级收益，且引入 metatable 继承 + 子类 override 增加阅读复杂度（YAGNI）。
+- 行为冻结风险高：LRU eviction/compact 顺序在生产环境运行，抽基类要求逐字节不变，但当前无专门测 cache 行为的 Harness。
+- 触发重评估条件：出现第 3 个 metadata 服务且其 cache 框架同构 / 二者 cache 框架出现 bug / 需统一调优 cacheMax。
+
+完整评估见 `../Archive/Evaluations/METADATA_CACHE_EVALUATION_20260902.md`（原 `Architecture/METADATA_CACHE_EVALUATION.md`，2026-09-03 归档）。

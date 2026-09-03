@@ -12,8 +12,69 @@ local function Token(path, fallback)
     return tonumber(fallback) or 0
 end
 
+
+------------------------------------------------------------------------
+-- ContainerSurface Authority v1
+--
+-- Card / Section are RSUI-owned presentation surfaces. This replaces the
+-- retired UI.ComponentsV2 layer while preserving historical native root
+-- identity suffixes (_card / _section) for upgrade-safe ownership.
+------------------------------------------------------------------------
+local ContainerSurface = RSUI.ContainerSurface or { version = 1 }
+RSUI.ContainerSurface = ContainerSurface
+
+function ContainerSurface:CreateCard(parent, id, spec)
+    spec = type(spec) == "table" and spec or {}
+    local width = math.max(1, tonumber(spec.width) or 260)
+    local height = math.max(1, tonumber(spec.height) or 120)
+    local panel = UI:CreatePanel(parent, tostring(id) .. "_card",
+        tonumber(spec.x) or 0, tonumber(spec.y) or 0, width, height, "card",
+        { gradient = spec.gradient ~= false, owner = spec.owner })
+    if panel == nil then return nil, "card_create_failed" end
+    panel.rsCardPadding = tonumber(spec.padding) or Token("component.card.padding", 10)
+    return panel
+end
+
+function ContainerSurface:CreateSection(parent, id, spec)
+    spec = type(spec) == "table" and spec or {}
+    local width = math.max(1, tonumber(spec.width) or 300)
+    local height = math.max(1, tonumber(spec.height) or 140)
+    local headerH = math.max(1, tonumber(spec.headerHeight) or Token("size.sectionHeaderH", 28))
+    local padding = math.max(0, tonumber(spec.padding) or Token("component.card.padding", 10))
+    local root = UI:CreatePanel(parent, tostring(id) .. "_section",
+        tonumber(spec.x) or 0, tonumber(spec.y) or 0, width, height, "card",
+        { gradient = spec.gradient ~= false, owner = spec.owner })
+    if root == nil then return nil, "section_root_create_failed" end
+    local header = UI:CreatePanel(root, tostring(id) .. "_header", 0, 0, width, headerH, "header",
+        { accentStrip = spec.accentStrip ~= false, owner = root.rsUiOwner })
+    if header == nil then return nil, "section_header_create_failed" end
+    local title = UI:CreateLabel(header, tostring(id) .. "_title", tostring(spec.title or ""),
+        padding, 2, math.max(1, width - padding * 2), math.max(1, headerH - 4),
+        tonumber(spec.titleFontSize) or Token("font.section", 13), spec.tone or "default", ALIGN_LEFT, true)
+    if title == nil then return nil, "section_title_create_failed" end
+    local section = {
+        root = root, header = header, title = title, body = root,
+        padding = padding, headerHeight = headerH, owner = root.rsUiOwner,
+    }
+    function section:SetTitle(text)
+        return UI:SetText(self.title, tostring(text or ""), self.owner)
+    end
+    function section:ContentOrigin()
+        return self.padding, self.headerHeight + self.padding
+    end
+    function section:SetExtent(nextWidth, nextHeight)
+        nextWidth = math.max(1, tonumber(nextWidth) or width)
+        nextHeight = math.max(1, tonumber(nextHeight) or height)
+        UI:SetExtent(self.root, nextWidth, nextHeight, self.owner)
+        UI:SetExtent(self.header, nextWidth, self.headerHeight, self.owner)
+        UI:SetExtent(self.title, math.max(1, nextWidth - self.padding * 2), math.max(1, self.headerHeight - 4), self.owner)
+        return true
+    end
+    return section
+end
+
 RSUI:RegisterType("Card", function(spec)
-    local panel = UI:CreateCardV2(spec.parent, spec.id, {
+    local panel = ContainerSurface:CreateCard(spec.parent, spec.id, {
         x = tonumber(spec.x) or 0, y = tonumber(spec.y) or 0,
         width = math.max(1, tonumber(spec.width) or 260), height = math.max(1, tonumber(spec.height) or 120),
         padding = tonumber(spec.padding) or Token("component.card.padding", 10),
@@ -28,7 +89,7 @@ RSUI:RegisterType("Card", function(spec)
 end)
 
 RSUI:RegisterType("Section", function(spec)
-    local raw = UI:CreateSectionV2(spec.parent, spec.id, {
+    local raw = ContainerSurface:CreateSection(spec.parent, spec.id, {
         x = tonumber(spec.x) or 0, y = tonumber(spec.y) or 0,
         width = math.max(1, tonumber(spec.width) or 300), height = math.max(1, tonumber(spec.height) or 140),
         title = spec.title or "", titleFontSize = spec.titleFontSize,

@@ -1,11 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Foundation Acceptance v36
+-- Replicated Suite V3 - Foundation Acceptance v49
 --
 -- Bounded, on-demand checks only. No Native widget creation and no Tick.
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
-S.UIV3Acceptance = { version = 36 }
+S.UIV3Acceptance = { version = 49 }
 local A = S.UIV3Acceptance
 
 local MIGRATED_MODAL_MODULES = {
@@ -326,9 +326,10 @@ function A:RunMatrix()
         or type(unitLines.Commands.SetRefreshMs) ~= "function" or type(unitLines.Commands.SetPairEnabled) ~= "function" then
         failures[#failures + 1] = "unit_lines_visual_contract"
     end
-    if type(rangeAssist) ~= "table" or (tonumber(rangeAssist.VisualGuideContractVersion) or 0) < 2
+    if type(rangeAssist) ~= "table" or (tonumber(rangeAssist.VisualGuideContractVersion) or 0) < 3
         or type(rangeAssist.Commands) ~= "table" or type(rangeAssist.Commands.SetRadius) ~= "function"
-        or type(rangeAssist.Commands.SetPointCount) ~= "function" or type(rangeAssist.Commands.SetOpacity) ~= "function" then
+        or type(rangeAssist.Commands.SetPointCount) ~= "function" or type(rangeAssist.Commands.SetOpacity) ~= "function"
+        or type(rangeAssist.Commands.SetColor) ~= "function" then
         failures[#failures + 1] = "range_assist_visual_contract"
     end
     local lifeWidgets = S.UIV3 and S.UIV3.LifeEconomyWidgetsV3 or nil
@@ -479,7 +480,80 @@ function A:RunMatrix()
         failures[#failures + 1] = "scrollable_compact_numeric_contract"
     end
     local rsui = S.RSUI
-    if rsui == nil or (tonumber(rsui.version) or 0) < 24 or type(rsui.SplitView) ~= "function" or type(rsui.SplitViewPolicy) ~= "table" then failures[#failures + 1] = "split_view_contract" end
+    if rsui == nil or (tonumber(rsui.version) or 0) < 30 or type(rsui.SplitView) ~= "function" or type(rsui.SplitViewPolicy) ~= "table" then failures[#failures + 1] = "split_view_contract" end
+    local workspaceTemplates = rsui and rsui.WorkspaceTemplates or nil
+    if rsui == nil or (tonumber(rsui.AttachmentContractVersion) or 0) < 1
+        or (tonumber(rsui.ReparentPolicyContractVersion) or 0) < 1 or rsui.NativeReparentSupported ~= false
+        or (tonumber(rsui.ResponsiveInspectorContractVersion) or 0) < 1 or type(rsui.ResponsiveInspector) ~= "function"
+        or type(workspaceTemplates) ~= "table" or (tonumber(workspaceTemplates.contractVersion) or 0) < 3
+        or type(rsui.CreateResponsiveInspectorWorkspace) ~= "function" then
+        failures[#failures + 1] = "ui_host_slot_responsive_contract"
+    end
+    local layout = S.Layout
+    if type(layout) ~= "table" or (tonumber(layout.CoordinateSystemContractVersion) or 0) < 1
+        or (tonumber(layout.RectTransformTransactionContractVersion) or 0) < 2
+        or type(layout.GetCoordinateSystemSnapshot) ~= "function" or type(layout.OffsetPoint) ~= "function"
+        or type(layout.CreateRectTransformTransaction) ~= "function"
+        or (tonumber(rsui and rsui.PointerContractVersion) or 0) < 1 or type(rsui.Pointer) ~= "table"
+        or type(rsui.Pointer.GetLogicalPosition) ~= "function" or type(rsui.Pointer.Delta) ~= "function"
+        or rsui.Pointer.captureSupported ~= false then
+        failures[#failures + 1] = "ui_geometry_pointer_contract"
+    end
+    if rsui == nil or (tonumber(rsui.version) or 0) < 31
+        or (tonumber(rsui.SelectionGeometryContractVersion) or 0) < 1
+        or type(rsui.SelectionGeometry) ~= "table" or type(rsui.SelectionGeometry.GetHandleRects) ~= "function"
+        or type(rsui.SelectionGeometry.HitTestHandle) ~= "function" or type(rsui.CreateSelectionGeometryModel) ~= "function"
+        or (tonumber(rsui.LayoutGuideResolverContractVersion) or 0) < 1
+        or type(rsui.LayoutGuideResolver) ~= "table" or type(rsui.LayoutGuideResolver.Resolve) ~= "function"
+        or (tonumber(rsui.SelectionOverlayContractVersion) or 0) < 1 or type(rsui.SelectionOverlay) ~= "function"
+        or (tonumber(rsui.LayoutGuideOverlayContractVersion) or 0) < 1 or type(rsui.LayoutGuideOverlay) ~= "function" then
+        failures[#failures + 1] = "ui_selection_geometry_contract"
+    end
+    if rsui == nil or (tonumber(rsui.version) or 0) < 36
+        or (tonumber(rsui.LayoutEditorGestureContractVersion) or 0) < 2
+        or type(rsui.CreateLayoutEditorGestureController) ~= "function"
+        or type(rsui.LayoutEditorGestureController) ~= "table"
+        or type(layout) ~= "table" or (tonumber(layout.RectTransformTransactionContractVersion) or 0) < 2 then
+        failures[#failures + 1] = "ui_layout_editor_gesture_contract"
+    end
+    if rsui == nil or (tonumber(rsui.version) or 0) < 36
+        or (tonumber(rsui.AnchorPivotContractVersion) or 0) < 2
+        or type(rsui.CreateAnchorPivotModel) ~= "function" or type(rsui.AnchorPivotModel) ~= "table"
+        or (tonumber(rsui.LayoutEditorSnapSettingsContractVersion) or 0) < 1
+        or type(rsui.CreateLayoutEditorSnapSettingsModel) ~= "function"
+        or type(rsui.LayoutEditorSnapSettingsModel) ~= "table" then
+        failures[#failures + 1] = "ui_layout_editor_model_contract"
+    end
+    if rsui == nil or (tonumber(rsui.version) or 0) < 36
+        or (tonumber(rsui.TransformInspectorContractVersion) or 0) < 2
+        or type(rsui.TransformInspector) ~= "function" then
+        failures[#failures + 1] = "ui_transform_inspector_contract"
+    end
+    if rsui == nil or (tonumber(rsui.version) or 0) < 35
+        or (tonumber(rsui.MultiSelectionTransformContractVersion) or 0) < 1
+        or type(rsui.CreateMultiSelectionTransformModel) ~= "function"
+        or type(rsui.MultiSelectionTransformModel) ~= "table"
+        or type(rsui.MultiSelectionTransformSession) ~= "table" then
+        failures[#failures + 1] = "ui_multi_selection_transform_contract"
+    end
+    if rsui == nil or (tonumber(rsui.version) or 0) < 36
+        or (tonumber(rsui.LayoutEditorPreviewAdapterContractVersion) or 0) < 1
+        or type(rsui.CreateLayoutEditorPreviewAdapter) ~= "function"
+        or type(rsui.LayoutEditorPreviewAdapter) ~= "table" then
+        failures[#failures + 1] = "ui_layout_editor_preview_adapter_contract"
+    end
+    if rsui == nil or (tonumber(rsui.version) or 0) < 37
+        or (tonumber(rsui.LayoutEditorOverlayContractVersion) or 0) < 1
+        or type(rsui.LayoutEditorOverlay) ~= "function"
+        or type(rsui.types) ~= "table" or rsui.types["LayoutEditorOverlay"] == nil then
+        failures[#failures + 1] = "ui_layout_editor_overlay_contract"
+    end
+    if rsui == nil or (tonumber(rsui.version) or 0) < 38
+        or type(workspaceTemplates) ~= "table" or (tonumber(workspaceTemplates.contractVersion) or 0) < 3
+        or type(rsui.CreateLayoutEditorWorkspace) ~= "function"
+        or (tonumber(rsui.TransformInspectorContractVersion) or 0) < 2 then
+        failures[#failures + 1] = "ui_layout_editor_workspace_contract"
+    end
     if rsui == nil or (tonumber(rsui.BuildScopeContractVersion) or 0) < 3
         or (tonumber(rsui.BuildTransactionContractVersion) or 0) < 1
         or (tonumber(rsui.PreflightContractVersion) or 0) < 1
@@ -496,6 +570,35 @@ function A:RunMatrix()
     end
     if rsui == nil or (tonumber(rsui.DataViewViewportContractVersion) or 0) < 2 or (tonumber(rsui.DataViewOverlayScrollbarContractVersion) or 0) < 1 then
         failures[#failures + 1] = "dataview_overlay_scrollbar_contract"
+    end
+    local uiTokens = S.UITokens
+    if type(uiTokens) ~= "table" or (tonumber(uiTokens.version) or 0) < 4
+        or type(uiTokens.layer) ~= "table" or (tonumber(uiTokens.layer.popupPriority) or 0) <= 0 then
+        failures[#failures + 1] = "ui_token_layer_contract"
+    end
+    if rsui == nil or (tonumber(rsui.StatusChipContractVersion) or 0) < 1 or type(rsui.StatusChip) ~= "function"
+        or (tonumber(rsui.PickerModelContractVersion) or 0) < 1 or type(rsui.PickerModel) ~= "table"
+        or (tonumber(rsui.SearchablePickerContractVersion) or 0) < 1 or type(rsui.SearchablePicker) ~= "function"
+        or (tonumber(rsui.IconPickerContractVersion) or 0) < 1 or type(rsui.IconPicker) ~= "function"
+        or (tonumber(rsui.TreeViewContractVersion) or 0) < 1 or type(rsui.TreeView) ~= "function"
+        or type(rsui.TreeModel) ~= "table" or type(rsui.CompositeFoundation) ~= "table"
+        or (tonumber(rsui.TreeStableIdentityContractVersion) or 0) < 1
+        or (tonumber(rsui.TreeMutationTransactionContractVersion) or 0) < 2
+        or (tonumber(rsui.TreeExpansionStateBoundContractVersion) or 0) < 1 then
+        failures[#failures + 1] = "ui_composite_foundation_contract"
+    end
+    if rsui == nil or (tonumber(rsui.DropdownDegradedFailClosedContractVersion) or 0) < 1 then
+        failures[#failures + 1] = "dropdown_degraded_fail_closed_contract"
+    end
+    if rsui == nil or (tonumber(rsui.PopupCoordinatorContractVersion) or 0) < 1
+        or type(rsui.PopupCoordinator) ~= "table" or type(rsui.PopupCoordinator.CloseAll) ~= "function"
+        or rsui.DropdownService ~= rsui.PopupCoordinator then
+        failures[#failures + 1] = "popup_coordinator_contract"
+    end
+    if rsui == nil or (tonumber(rsui.FocusContractVersion) or 0) < 2
+        or type(rsui.Focus) ~= "table" or type(rsui.Focus.CanSet) ~= "function"
+        or type(rsui.Focus.CanClear) ~= "function" or type(rsui.Focus.IsFocused) ~= "function" then
+        failures[#failures + 1] = "focus_target_capability_contract"
     end
     local selectionVisual = rsui and rsui.SelectionVisual or nil
     if selectionVisual == nil or (tonumber(selectionVisual.version) or 0) < 1

@@ -266,6 +266,10 @@ def main() -> int:
         failures.extend("Active Lua parse: " + x for x in active_parse_fail[:12])
 
     all_lua = sorted(root.rglob("*.lua"))
+    all_lua_rel = [path.relative_to(root).as_posix() for path in all_lua]
+    dead_lua = sorted(rel for rel in all_lua_rel if rel not in toc)
+    if dead_lua:
+        failures.append("Disk Lua not in Active TOC: " + ", ".join(dead_lua[:12]))
     all_parse_fail: list[str] = []
     for path in all_lua:
         rel = path.relative_to(root).as_posix()
@@ -396,7 +400,312 @@ def main() -> int:
     if auction_event_authority_failures:
         failures.append("Auction un-tokened event Authority violation: " + ", ".join(auction_event_authority_failures[:8]))
 
+    # ------------------------------------------------------------------
+    # Retired Foundation layer fence (`.18.63` ComponentsV2 retirement).
+    #
+    # Historical `UI.ComponentsV2` has been physically removed.  Its return
+    # would recreate a second Presentation Authority and a second component
+    # system competing with RSUI.  Earlier delivery rounds saw the file
+    # silently re-appear through archive overwrite while the docs already
+    # claimed it was gone, so this fence asserts three independent
+    # conditions and refuses every combination:
+    #
+    #   1. the retired file must not exist on disk at all -- any size counts,
+    #      including a zero-byte placeholder that only "fakes" the deletion;
+    #   2. it must not appear in the Active TOC;
+    #   3. active Runtime Lua may not reference the retired surface.
+    #
+    # Comments and string literals are stripped before matching, so historical
+    # architecture notes stay valid documentation instead of tripping the gate.
+    # ------------------------------------------------------------------
+    RETIRED_UI_LAYERS = (
+        {
+            "path": "ui/framework/rs_ui_components_v2.lua",
+            "label": "UI.ComponentsV2",
+            "patterns": (
+                (re.compile(r"\bUI\s*\.\s*ComponentsV2\b"), "UI.ComponentsV2"),
+                (re.compile(r"\bCreate(?:Card|Section|FormRow|ChoiceField|ToggleField|NumericField)V2\b"), "Create*V2 component helper"),
+            ),
+        },
+    )
+    retired_ui_layer_failures: list[str] = []
+    for layer in RETIRED_UI_LAYERS:
+        retired_path = layer["path"]
+        if (root / retired_path).exists():
+            retired_ui_layer_failures.append(
+                f"{retired_path}: retired {layer['label']} file re-appeared on disk"
+            )
+        if retired_path in toc:
+            retired_ui_layer_failures.append(
+                f"{retired_path}: retired {layer['label']} layer re-entered Active TOC"
+            )
+        for rel in active_lua:
+            source = (root / rel).read_text(encoding="utf-8-sig", errors="replace")
+            code = strip_lua_strings(strip_lua_comments(source))
+            for pattern, label in layer["patterns"]:
+                for match in pattern.finditer(code):
+                    retired_ui_layer_failures.append(
+                        f"{rel}:{line_for(code, match.start())}:{label}"
+                    )
+    if retired_ui_layer_failures:
+        failures.append(
+            "Retired UI component layer reflow: "
+            + ", ".join(sorted(set(retired_ui_layer_failures))[:20])
+        )
+
+    composite_entry = "ui/framework/rs_ui_composite_foundation.lua"
+    composite_source = (root / composite_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / composite_entry).is_file() else ""
+    if composite_entry not in toc:
+        failures.append("Composite Foundation missing from Active TOC: " + composite_entry)
+    if not re.search(r"RSUI\.CompositeFoundation\s*=\s*\{\s*version\s*=\s*4", composite_source, re.S):
+        failures.append("Composite Foundation version regression: expected version 4")
+
+    for token in (
+        "StatusChipContractVersion = 1",
+        "PickerModelContractVersion = 1",
+        "SearchablePickerContractVersion = 1",
+        "IconPickerContractVersion = 1",
+        "TreeViewContractVersion = 1",
+        "TreeStableIdentityContractVersion = 1",
+        "TreeMutationTransactionContractVersion = 2",
+        "TreeExpansionStateBoundContractVersion = 1",
+        "RSUI.PickerModel",
+        "RSUI.TreeModel",
+        "RSUI.CompositeFoundation",
+    ):
+        if token not in composite_source:
+            failures.append(f"Composite Foundation contract missing: {token}")
+
+    if 'return tostring(path)' in composite_source:
+        failures.append("Tree stable identity regression: index-path fallback reintroduced")
+
+    layout_source = (root / "core/rs_layout.lua").read_text(encoding="utf-8-sig", errors="replace")
+    interactions_source = (root / "ui/framework/rs_ui_interactions.lua").read_text(encoding="utf-8-sig", errors="replace")
+    for token in (
+        "CoordinateSystemContractVersion = 1",
+        "RectTransformTransactionContractVersion = 2",
+        'origin = "top_left"',
+        'xPositive = "right"',
+        'yPositive = "down"',
+        "function L:OffsetPoint(x, y, direction, distance)",
+        "function L:CreateRectTransformTransaction(spec)",
+        "function tx:OverridePreview(rect)",
+    ):
+        if token not in layout_source:
+            failures.append(f"Layout geometry contract missing: {token}")
+    for token in (
+        "RSUI.PointerContractVersion = 1",
+        "captureSupported = false",
+        "function Pointer:GetLogicalPosition()",
+        "function Pointer:Delta(startX, startY, currentX, currentY)",
+    ):
+        if token not in interactions_source:
+            failures.append(f"RSUI pointer contract missing: {token}")
+
+    selection_geometry_entry = "ui/framework/rs_ui_selection_geometry.lua"
+    selection_geometry_source = (root / selection_geometry_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / selection_geometry_entry).is_file() else ""
+    if selection_geometry_entry not in toc:
+        failures.append("Selection Geometry Foundation missing from Active TOC: " + selection_geometry_entry)
+    for token in (
+        "RSUI.SelectionGeometryContractVersion = 1",
+        "RSUI.LayoutGuideResolverContractVersion = 1",
+        "function SelectionGeometry:GetHandleRects(rect, options)",
+        "function SelectionGeometry:HitTestHandle(x, y, rect, options)",
+        "function RSUI:CreateSelectionGeometryModel(options)",
+        "function GuideResolver:Resolve(proposedRect, handle, options)",
+        "RSUI.SelectionOverlayContractVersion = 1",
+        "RSUI.LayoutGuideOverlayContractVersion = 1",
+        'RSUI:RegisterType("SelectionOverlay"',
+        'RSUI:RegisterType("LayoutGuideOverlay"',
+        "HARD_MAX_CANDIDATES = 1024",
+    ):
+        if token not in selection_geometry_source:
+            failures.append(f"Selection geometry contract missing: {token}")
+
+    layout_editor_gesture_entry = "ui/framework/rs_ui_layout_editor_gesture.lua"
+    layout_editor_gesture_source = (root / layout_editor_gesture_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / layout_editor_gesture_entry).is_file() else ""
+    if layout_editor_gesture_entry not in toc:
+        failures.append("Layout Editor Gesture Foundation missing from Active TOC: " + layout_editor_gesture_entry)
+    for token in (
+        "RSUI.LayoutEditorGestureContractVersion = 2",
+        "function RSUI:CreateLayoutEditorGestureController(options)",
+        "function GestureController:Pulse(force)",
+        "function GestureController:FreezeSnapState(kind, handle, startRect, constraints)",
+        "function GestureController:ResolveTransformConstraints(kind, handle, startRect)",
+        "UI:BeginNativeGeometryLease",
+        "AddInteractiveTask",
+        'coordinateSpace ~= "viewport"',
+        "HARD_MAX_FROZEN_CANDIDATES = 1024",
+    ):
+        if token not in layout_editor_gesture_source:
+            failures.append(f"Layout editor gesture contract missing: {token}")
+    if "getSnapCandidates" in layout_editor_gesture_source and "FreezeSnapState" not in layout_editor_gesture_source:
+        failures.append("Layout editor snap candidates must be frozen at gesture begin")
+
+    layout_editor_models_entry = "ui/framework/rs_ui_layout_editor_models.lua"
+    layout_editor_models_source = (root / layout_editor_models_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / layout_editor_models_entry).is_file() else ""
+    if layout_editor_models_entry not in toc:
+        failures.append("Layout Editor Models Foundation missing from Active TOC: " + layout_editor_models_entry)
+    for token in (
+        "RSUI.AnchorPivotContractVersion = 2",
+        "RSUI.LayoutEditorSnapSettingsContractVersion = 1",
+        "function AnchorPivotModel:ApplySnapshot(snapshot, source)",
+        "function AnchorPivotModel:MoveUp(distance)",
+        "function SnapSettingsModel:SetPatch(patch, source)",
+        "ValidateSnapPatch",
+        "HARD_MAX_CANDIDATES = 1024",
+    ):
+        if token not in layout_editor_models_source:
+            failures.append(f"Layout editor model contract missing: {token}")
+
+    transform_inspector_entry = "ui/framework/rs_ui_transform_inspector.lua"
+    transform_inspector_source = (root / transform_inspector_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / transform_inspector_entry).is_file() else ""
+    if transform_inspector_entry not in toc:
+        failures.append("Transform Inspector Foundation missing from Active TOC: " + transform_inspector_entry)
+    for token in (
+        "RSUI.TransformInspectorContractVersion = 2",
+        'RSUI:RegisterTypeValidator("TransformInspector"',
+        'RSUI:RegisterType("TransformInspector"',
+        'function c:SetModels(nextRectModel, nextAnchorModel)',
+        '"Y（上-/下+）"',
+    ):
+        if token not in transform_inspector_source:
+            failures.append(f"Transform Inspector contract missing: {token}")
+
+    multi_transform_entry = "ui/framework/rs_ui_multi_selection_transform.lua"
+    multi_transform_source = (root / multi_transform_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / multi_transform_entry).is_file() else ""
+    if multi_transform_entry not in toc:
+        failures.append("Multi Selection Transform Foundation missing from Active TOC: " + multi_transform_entry)
+    for token in (
+        "RSUI.MultiSelectionTransformContractVersion = 1",
+        "HARD_MAX_ITEMS = 1024",
+        "multi_transform_requires_multiple_items",
+        "function Model:GetGroupConstraints(options)",
+        "function Model:BeginProjectionSession(options)",
+        "function Session:Project(targetBounds)",
+        "function Session:Commit(targetBounds, source)",
+        "function Session:Cancel()",
+    ):
+        if token not in multi_transform_source:
+            failures.append(f"Multi selection transform contract missing: {token}")
+    layout_editor_adapter_entry = "ui/framework/rs_ui_layout_editor_adapter.lua"
+    layout_editor_adapter_source = (root / layout_editor_adapter_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / layout_editor_adapter_entry).is_file() else ""
+    if layout_editor_adapter_entry not in toc:
+        failures.append("Layout Editor Preview Adapter missing from Active TOC: " + layout_editor_adapter_entry)
+    for token in (
+        "RSUI.LayoutEditorPreviewAdapterContractVersion = 1",
+        "function Adapter:SyncSelection(source)",
+        "function Adapter:BeginGesture(kind, handle)",
+        "function Adapter:CommitGesture(rect)",
+        "function Adapter:CommitSingleAnchorEdit(source, previousSnapshot)",
+        "layout_editor_adapter_selection_revision_changed",
+    ):
+        if token not in layout_editor_adapter_source:
+            failures.append(f"Layout editor preview adapter contract missing: {token}")
+
+    layout_editor_overlay_entry = "ui/framework/rs_ui_layout_editor_overlay.lua"
+    layout_editor_overlay_source = (root / layout_editor_overlay_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / layout_editor_overlay_entry).is_file() else ""
+    if layout_editor_overlay_entry not in toc:
+        failures.append("LayoutEditorOverlay missing from Active TOC: " + layout_editor_overlay_entry)
+    for token in (
+        "RSUI.LayoutEditorOverlayContractVersion = 1",
+        'RSUI:RegisterTypeValidator("LayoutEditorOverlay"',
+        'RSUI:RegisterType("LayoutEditorOverlay"',
+        "previewMustSucceed = true",
+        "commitMustSucceed = true",
+        "HARD_MAX_CANDIDATES = 1024",
+        "function c:RefreshFromSource(source)",
+    ):
+        if token not in layout_editor_overlay_source:
+            failures.append(f"LayoutEditorOverlay contract missing: {token}")
+    overlay_code = strip_lua_strings(strip_lua_comments(layout_editor_overlay_source))
+    if re.search(r"\bStartMoving\s*\(", overlay_code) or re.search(r"\bStartSizing\s*\(", overlay_code):
+        failures.append("LayoutEditorOverlay must not own Native drag capture; GestureController is the sole editor capture authority")
+
+    for rel, source in ((layout_editor_models_entry, layout_editor_models_source), (multi_transform_entry, multi_transform_source), (layout_editor_adapter_entry, layout_editor_adapter_source)):
+        code = strip_lua_strings(strip_lua_comments(source))
+        if re.search(r"\bOnUpdate\b", code) or re.search(r"\bAddInteractiveTask\b", code):
+            failures.append("Pure layout editor model must not own sampling loop: " + rel)
+
     component_core_source = (root / "ui/framework/rs_ui_component_core.lua").read_text(encoding="utf-8-sig", errors="replace")
+    adaptive_source = (root / "ui/framework/rs_ui_adaptive_panels.lua").read_text(encoding="utf-8-sig", errors="replace")
+    workspace_source = (root / "ui/framework/rs_ui_workspace_templates.lua").read_text(encoding="utf-8-sig", errors="replace")
+    for token in (
+        "AttachmentContractVersion = 1",
+        "ReparentPolicyContractVersion = 1",
+        "NativeReparentSupported = false",
+        "function RSUI:ValidateAttachment(parent, component)",
+        "function Base:CanReparentTo(parent)",
+        "function Base:RemoveChild(component)",
+    ):
+        if token not in component_core_source:
+            failures.append(f"RSUI host/slot attachment contract missing: {token}")
+    if "ResponsiveInspectorContractVersion = 1" not in adaptive_source or 'RegisterType("ResponsiveInspector"' not in adaptive_source:
+        failures.append("Stable-host ResponsiveInspector contract missing: ui/framework/rs_ui_adaptive_panels.lua")
+    if (
+        "contractVersion = 3" not in workspace_source
+        or "CreateResponsiveInspectorWorkspace" not in workspace_source
+        or "CreateLayoutEditorWorkspace" not in workspace_source
+        or "function T:LayoutEditor(spec)" not in workspace_source
+    ):
+        failures.append("WorkspaceTemplates v3 layout-editor contract missing")
+
+    # The RU client has no validated generic native reparent API. Active Runtime
+    # must therefore not introduce desktop/UMG-style reparent calls. Logical
+    # attachment is allowed only through RSUI's single-parent contract above.
+    unverified_reparent_patterns = (
+        re.compile(r"\bRemoveFromParent\s*\("),
+        re.compile(r"\bReparent(?:Widget)?\s*\("),
+        re.compile(r"\bSetParent\s*\("),
+    )
+    reparent_refs: list[str] = []
+    for rel in active_lua:
+        source = (root / rel).read_text(encoding="utf-8-sig", errors="replace")
+        code = strip_lua_strings(strip_lua_comments(source))
+        for pattern in unverified_reparent_patterns:
+            for match in pattern.finditer(code):
+                reparent_refs.append(f"{rel}:{line_for(code, match.start())}")
+    if reparent_refs:
+        failures.append("Unverified native UI reparent operation: " + ", ".join(reparent_refs[:20]))
+
+    token_source = (root / "ui/framework/rs_ui_tokens.lua").read_text(encoding="utf-8-sig", errors="replace")
+    if "version = 4" not in token_source or "popupPriority = 10000" not in token_source:
+        failures.append("UI token layer contract missing: ui/framework/rs_ui_tokens.lua")
+
+    controls_source = (root / "ui/framework/rs_ui_controls.lua").read_text(encoding="utf-8-sig", errors="replace")
+    if "DropdownDegradedFailClosedContractVersion = 1" not in controls_source:
+        failures.append("Dropdown degraded fail-closed contract missing: ui/framework/rs_ui_controls.lua")
+    if "PopupCoordinatorContractVersion = 1" not in controls_source or "RSUI.DropdownService = PopupCoordinator" not in controls_source:
+        failures.append("Popup coordinator single-registry contract missing: ui/framework/rs_ui_controls.lua")
+    if "PopupCoordinator:Unregister(self)" not in controls_source:
+        failures.append("Popup component release unregister contract missing: ui/framework/rs_ui_controls.lua")
+    interaction_source = (root / "ui/framework/rs_ui_interactions.lua").read_text(encoding="utf-8-sig", errors="replace")
+    for token in (
+        "FocusContractVersion = 2",
+        "function Focus:CanSet(target)",
+        "function Focus:CanClear(target)",
+        "function Focus:IsFocused(target)",
+    ):
+        if token not in interaction_source:
+            failures.append(f"Focus target-capability contract missing: {token}")
+    if "setFocus = true" in interaction_source:
+        failures.append("Focus capability regression: setFocus hard-coded true")
+
+    # RU input evidence currently covers Enter/EditEnter/LostFocus but not the
+    # generic desktop-style events below. Keep this as a hard fence so future
+    # SearchablePicker/IconPicker work cannot silently invent an event name.
+    unverified_ui_events: list[str] = []
+    unverified_event_re = re.compile(r"[\"'](OnKeyDown|OnKeyUp|OnTextChanged)[\"']")
+    for rel in active_lua:
+        source = (root / rel).read_text(encoding="utf-8-sig", errors="replace")
+        code = strip_lua_comments(source)
+        for match in unverified_event_re.finditer(code):
+            unverified_ui_events.append(f"{rel}:{line_for(code, match.start())}:{match.group(1)}")
+    if unverified_ui_events:
+        failures.append("Unverified RU UI event binding: " + ", ".join(unverified_ui_events[:20]))
+    if "SetDrawPriority(10000" in controls_source or "SetDrawPriority(10000" in interaction_source:
+        failures.append("Popup Z priority literal escaped UITokens.layer.popupPriority")
+
     if "StrictBuildFailFastContractVersion = 1" not in component_core_source or "required_component_build_failed:" not in component_core_source:
         failures.append("Strict BuildScope fail-fast contract missing: ui/framework/rs_ui_component_core.lua")
 
@@ -421,6 +730,7 @@ def main() -> int:
         + f" apiCapability={len(api_capability_failures)}"
         + f" businessIds={len(business_page_id_failures)}"
         + f" auctionEventOwners={len(auction_event_authority_failures)}"
+        + f" retiredUiLayer={len(retired_ui_layer_failures)}"
     )
     for item in failures:
         print("FAIL | " + item)

@@ -214,6 +214,18 @@ local CAPABILITIES = {
     ["X2EquipSlotReinforce:GetReinforceInfo"] = { OfficialState="OfficialEnabled", Since="2026-04-28", SideEffectFree=true },
     ["X2EquipSlotReinforce:GetAppliedAllSetEffect"] = { OfficialState="OfficialEnabled", Since="2026-04-28", SideEffectFree=true },
     ["X2EquipSlotReinforce:GetTotalReinforceLevel"] = { OfficialState="OfficialEnabled", Since="2026-04-28", SideEffectFree=true },
+    -- Remaining X2EquipSlotReinforce getters consumed by the read-only
+    -- reinforcement analysis, reconciled 2026-09-03 against the RU client export
+    -- manifest (api_functions.lua lines 1855-1878, "Allowed functions"). All are
+    -- SideEffectFree queries; the section's mutators (StartReinforceAddExp /
+    -- StartReinforceLevelup / ChangeLevelEffect / EnableLevelUp) sit in
+    -- "Available/not allowed" and are deliberately never registered, so the
+    -- write path is unreachable at the gate rather than by caller convention.
+    ["X2EquipSlotReinforce:GetAttributeTotalLevel"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2EquipSlotReinforce:GetNextSetApplyLevel"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2EquipSlotReinforce:HasNextSetEffect"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["X2EquipSlotReinforce:SuitableLevelForEquipSlotReinforce"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="equipSlotIndex legal range still RU-unverified; read-only analysis probes a bounded range" },
+    ["X2EquipSlotReinforce:GetBundleEffectTopLevel"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
 
     -- Suite-owned capabilities present in the bundled static API but not
     -- explicitly re-announced by the RU official overlay. Reconciled 2026-08-28

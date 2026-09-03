@@ -970,7 +970,6 @@ function UI:ResetFrameworkMetrics()
     if UI.Binding ~= nil and type(UI.Binding.ResetMetrics) == "function" then UI.Binding:ResetMetrics() end
     if UI.WindowShell ~= nil and type(UI.WindowShell.ResetMetrics) == "function" then UI.WindowShell:ResetMetrics() end
     if S.RSUI ~= nil and S.RSUI.FloatingSurface ~= nil and type(S.RSUI.FloatingSurface.ResetMetrics) == "function" then S.RSUI.FloatingSurface:ResetMetrics() end
-    if UI.ComponentsV2 ~= nil and type(UI.ComponentsV2.ResetMetrics) == "function" then UI.ComponentsV2:ResetMetrics() end
     if S.RSUI ~= nil and type(S.RSUI.ResetMetrics) == "function" then S.RSUI:ResetMetrics() end
     return true
 end
@@ -1057,7 +1056,6 @@ function UI:GetFrameworkSnapshot()
             binding = UI.Binding and UI.Binding:GetSnapshot() or nil,
             shell = UI.WindowShell and UI.WindowShell:GetSnapshot() or nil,
             floatingSurface = S.RSUI and S.RSUI.FloatingSurface and S.RSUI.FloatingSurface:GetSnapshot() or nil,
-            components = UI.ComponentsV2 and UI.ComponentsV2:GetSnapshot() or nil,
             rsui = S.RSUI and S.RSUI:GetSnapshot() or nil,
         },
     }

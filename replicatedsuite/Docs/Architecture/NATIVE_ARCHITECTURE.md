@@ -39,11 +39,7 @@
 
 ### 完成结果
 
-Active TOC 已不再加载任何 `../globals/*` 文件。旧目录整体冻结到：
-
-`replicatedsuite/legacy_reference/globals_archive/`
-
-其中仅作为迁移证据保留，不参与运行。
+Active TOC 已不再加载任何 `../globals/*` 文件。旧 `globals/` 目录已于 2026-09-01/02 随旧版代码一并物理删除（用户持有全量离线备份，插件树内绝不重新引入），不再随包；当前 V3 不再有任何根级 `globals/` 运行时依赖。
 
 新的 Native Foundation 位于：
 
@@ -298,6 +294,6 @@ M1.14.1 进入世界后的首要验收条件不是“窗口看起来正常”，
 3. New raw native widget construction goes through `NativeObjectFactory`.
 4. Features declare API dependencies; they do not call `ADDON:ImportAPI` themselves.
 5. Imported APIs are process-global and cannot be unloaded. Runtime disable must still release events, scheduler work, caches and widgets.
-6. Legacy source is migration evidence, never Runtime Authority.
+6. 旧版源码已于 2026-09-01/02 物理删除，不再随包；历史资料见 `Docs/Archive/`。任何历史源码只作迁移证据与思路参考，绝不作为 Runtime Authority，也绝不重新引入插件树。
 
 

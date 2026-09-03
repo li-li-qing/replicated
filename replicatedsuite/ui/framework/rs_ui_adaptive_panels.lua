@@ -14,10 +14,15 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
 if type(UI) ~= "table" or type(RSUI) ~= "table" then return end
+local Tokens = S.UITokens or {}
 local U = RSUI.LayoutUtil
 if type(U) ~= "table" then return end
 
 local N, Clamp, Pad, Slot, Measure, Align, Arrange, Host = U.N, U.Clamp, U.Pad, U.Slot, U.Measure, U.Align, U.Arrange, U.Host
+local function Token(path, fallback)
+    if type(Tokens.Number) == "function" then return Tokens:Number(path, fallback) end
+    return N(fallback, 0)
+end
 
 local function VisibleEntries(panel)
     local out = {}
@@ -299,10 +304,12 @@ RSUI:RegisterType("WidgetSwitcher", function(spec)
 
     local baseAdd = c.AddChild
     function c:AddChild(child, slot)
-        local result = baseAdd(self, child, slot)
-        self.activeIndex = math.max(1, math.min(#self.slots, self.activeIndex))
-        self:ApplyActiveVisibility()
-        return result
+        local result, ok, attachErr = baseAdd(self, child, slot)
+        if result ~= nil then
+            self.activeIndex = math.max(1, math.min(#self.slots, self.activeIndex))
+            self:ApplyActiveVisibility()
+        end
+        return result, ok, attachErr
     end
 
     function c:Measure(availableW, availableH)
@@ -348,6 +355,167 @@ RSUI:RegisterType("WidgetSwitcher", function(spec)
 end)
 
 ------------------------------------------------------------------------
+-- ResponsiveInspector
+--
+-- Stable-host responsive composition. Content and inspector are created once
+-- under the SAME native RSUI host; width changes only alter geometry/viewport
+-- visibility. This deliberately avoids runtime reparenting, which is not a
+-- validated RU native capability and would split logical/native ownership.
+------------------------------------------------------------------------
+RSUI.ResponsiveInspectorContractVersion = 1
+RSUI:RegisterType("ResponsiveInspector", function(spec)
+    local c, err = Host("ResponsiveInspector", spec)
+    if c == nil then return nil, err end
+    c.content = nil
+    c.inspector = nil
+    c.mode = "inline"
+    c.drawerOpen = spec.drawerOpen == true
+    c.breakpoint = math.max(320, N(spec.breakpoint, Token("breakpoint.regular", 980)))
+    c.inspectorWidth = math.max(120, N(spec.inspectorWidth, Token("workspace.inspectorW", 286)))
+    c.inspectorMinWidth = math.max(96, N(spec.inspectorMinWidth, Token("workspace.inspectorMinW", 220)))
+    c.contentMinWidth = math.max(120, N(spec.contentMinWidth, Token("workspace.previewMinW", 360)))
+    c.gap = math.max(0, N(spec.gap, Token("workspace.divider", 6)))
+    c.drawerMaxFraction = math.max(0.50, math.min(1.0, N(spec.drawerMaxFraction, 0.92)))
+    c.drawerMinReveal = math.max(0, N(spec.drawerMinReveal, 64))
+
+    local baseAdd = c.AddChild
+    local function ResolveRole(self, child, slot)
+        local role = type(slot) == "table" and tostring(slot.role or ""):lower() or ""
+        if role == "main" or role == "canvas" or role == "body" then role = "content" end
+        if role == "detail" or role == "properties" then role = "inspector" end
+        if role == "" then
+            if self.content == nil then role = "content"
+            elseif self.inspector == nil then role = "inspector"
+            else return nil, "responsive_inspector_two_children_only" end
+        end
+        if role ~= "content" and role ~= "inspector" then return nil, "responsive_inspector_role_invalid:" .. tostring(role) end
+        local existing = role == "content" and self.content or self.inspector
+        if existing ~= nil and existing ~= child then return nil, "responsive_inspector_role_occupied:" .. role end
+        return role
+    end
+
+    function c:AddChild(child, slot)
+        local role, roleErr = ResolveRole(self, child, slot)
+        if role == nil then return nil, false, roleErr end
+        local attached, ok, attachErr = baseAdd(self, child, slot)
+        if attached == nil then return nil, false, attachErr end
+        if role == "content" then self.content = attached else self.inspector = attached end
+        attached.responsiveInspectorRole = role
+        return attached, ok, attachErr
+    end
+
+    function c:ResolveMode(width)
+        width = math.max(1, N(width, self.width or 1))
+        local required = self.contentMinWidth + self.gap + self.inspectorMinWidth
+        if width <= self.breakpoint or width < required then return "drawer" end
+        return "inline"
+    end
+
+    function c:GetMode() return self.mode end
+    function c:IsDrawerOpen() return self.drawerOpen == true end
+
+    function c:SetDrawerOpen(open, notify)
+        local nextValue = open == true
+        if nextValue == self.drawerOpen then return false end
+        self.drawerOpen = nextValue
+        RSUI.metrics.responsiveInspectorDrawerChanges = (tonumber(RSUI.metrics.responsiveInspectorDrawerChanges) or 0) + 1
+        self:InvalidateLayout("responsive_inspector_drawer")
+        if self.width and self.height then self:Layout(self.x or 0, self.y or 0, self.width, self.height) end
+        if notify ~= false and type(spec.onDrawerChanged) == "function" then
+            RSUI:Callback("rsui:" .. self.id .. ":drawer", spec.onDrawerChanged, nextValue, self)
+        end
+        return true
+    end
+
+    function c:ToggleDrawer(notify) return self:SetDrawerOpen(not self.drawerOpen, notify) end
+
+    function c:SetInspectorWidth(width, notify)
+        local nextWidth = math.max(self.inspectorMinWidth, N(width, self.inspectorWidth))
+        if nextWidth == self.inspectorWidth then return false end
+        self.inspectorWidth = nextWidth
+        self:InvalidateMeasure("responsive_inspector_width")
+        if self.width and self.height then self:Layout(self.x or 0, self.y or 0, self.width, self.height) end
+        if notify ~= false and type(spec.onInspectorWidthChanged) == "function" then
+            RSUI:Callback("rsui:" .. self.id .. ":width", spec.onInspectorWidthChanged, nextWidth, self)
+        end
+        return true
+    end
+
+    function c:Measure(availableW, availableH)
+        local p = Pad(self.spec.padding)
+        local innerW = availableW and math.max(0, N(availableW, 0) - p.left - p.right) or nil
+        local innerH = availableH and math.max(0, N(availableH, 0) - p.top - p.bottom) or nil
+        local contentW, contentH = Measure(self.content, innerW, innerH)
+        local inspectorW, inspectorH = Measure(self.inspector, innerW, innerH)
+        local mode = self:ResolveMode(innerW or (contentW + self.gap + inspectorW))
+        local width, height
+        if mode == "inline" then
+            width = contentW + (self.inspector ~= nil and self.content ~= nil and self.gap or 0) + inspectorW
+            height = math.max(contentH, inspectorH)
+        else
+            width = math.max(contentW, math.min(self.inspectorWidth, inspectorW))
+            height = math.max(contentH, inspectorH)
+        end
+        width, height = width + p.left + p.right, height + p.top + p.bottom
+        if availableW ~= nil and self.spec.allowOverflow ~= true then width = math.min(width, math.max(0, N(availableW, width))) end
+        if availableH ~= nil and self.spec.allowOverflow ~= true then height = math.min(height, math.max(0, N(availableH, height))) end
+        self.desiredWidth, self.desiredHeight, self.measureDirty = width, height, false
+        return width, height
+    end
+
+    function c:Layout(x, y, width, height)
+        width, height = math.max(1, N(width, self.width or 1)), math.max(1, N(height, self.height or 1))
+        self:SetBounds(x, y, width, height)
+        local p = Pad(self.spec.padding)
+        local innerW, innerH = math.max(1, width - p.left - p.right), math.max(1, height - p.top - p.bottom)
+        local nextMode = self:ResolveMode(innerW)
+        if nextMode ~= self.mode then
+            self.mode = nextMode
+            RSUI.metrics.responsiveInspectorModeChanges = (tonumber(RSUI.metrics.responsiveInspectorModeChanges) or 0) + 1
+            if type(spec.onModeChanged) == "function" then RSUI:Callback("rsui:" .. self.id .. ":mode", spec.onModeChanged, nextMode, self) end
+        end
+
+        if self.content ~= nil then SetViewport(self.content, true) end
+        if nextMode == "inline" then
+            if self.inspector ~= nil then SetViewport(self.inspector, true) end
+            local inspectorW = self.inspector ~= nil and math.max(self.inspectorMinWidth, math.min(self.inspectorWidth, math.max(self.inspectorMinWidth, innerW - self.contentMinWidth - self.gap))) or 0
+            local contentW = self.inspector ~= nil and math.max(1, innerW - inspectorW - self.gap) or innerW
+            if self.content ~= nil then Arrange(self.content, p.left, p.top, contentW, innerH) end
+            if self.inspector ~= nil then Arrange(self.inspector, p.left + contentW + self.gap, p.top, inspectorW, innerH) end
+        else
+            if self.content ~= nil then Arrange(self.content, p.left, p.top, innerW, innerH) end
+            local showInspector = self.inspector ~= nil and self.drawerOpen == true
+            if self.inspector ~= nil then
+                SetViewport(self.inspector, showInspector)
+                if showInspector then
+                    local maxDrawer = math.max(1, innerW * self.drawerMaxFraction)
+                    local byReveal = self.drawerMinReveal > 0 and math.max(1, innerW - self.drawerMinReveal) or maxDrawer
+                    local drawerW = math.max(1, math.min(self.inspectorWidth, maxDrawer, byReveal))
+                    drawerW = math.min(innerW, math.max(math.min(self.inspectorMinWidth, innerW), drawerW))
+                    Arrange(self.inspector, p.left + innerW - drawerW, p.top, drawerW, innerH, true)
+                    if self.inspector.root ~= nil and type(self.inspector.root.Raise) == "function" then pcall(function() self.inspector.root:Raise() end) end
+                end
+            end
+        end
+        self.layoutDirty = false
+        return height
+    end
+
+    function c:GetResponsiveSnapshot()
+        return {
+            contractVersion = RSUI.ResponsiveInspectorContractVersion,
+            mode = self.mode,
+            drawerOpen = self.drawerOpen == true,
+            breakpoint = self.breakpoint,
+            inspectorWidth = self.inspectorWidth,
+            nativeReparent = RSUI.NativeReparentSupported == true,
+            stableHost = true,
+        }
+    end
+    return c
+end)
+
+------------------------------------------------------------------------
 -- ScaleBox
 ------------------------------------------------------------------------
 RSUI:RegisterType("ScaleBox", function(spec)
@@ -359,9 +527,11 @@ RSUI:RegisterType("ScaleBox", function(spec)
     c.userScale = math.max(0.01, N(spec.userScale, 1))
     local baseAdd = c.AddChild
     function c:AddChild(child, slot)
-        local result = baseAdd(self, child, slot)
-        if self.content == nil then self.content = child else SetViewport(child, false) end
-        return result
+        local result, ok, attachErr = baseAdd(self, child, slot)
+        if result ~= nil then
+            if self.content == nil then self.content = result else SetViewport(result, false) end
+        end
+        return result, ok, attachErr
     end
 
     local function RestrictScale(self, scale)

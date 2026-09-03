@@ -52,12 +52,12 @@ G:RegisterSequenceCase("v3_m16_18_healer_visual_consumers_contract", function()
         or type(F.Commands.SetRule) ~= "function" or type(F.Commands.AddRule) ~= "function"
         or type(F.Commands.RemoveRule) ~= "function" or type(F.Commands.SetTrackedBuff) ~= "function"
         or type(F.Commands.AddTrackedBuff) ~= "function" or type(F.Commands.RemoveTrackedBuff) ~= "function"
-        or type(F.Commands.SetHealerColor) ~= "function" or type(F.Commands.SetRaidSectionRect) ~= "function"
+        or type(F.Commands.SetHealerColor) ~= "function" or type(F.Commands.SetRaidPanelRect) ~= "function"
         or type(F.Commands.ResetRaidLayout) ~= "function" or type(F.Commands.RequestRosterRefresh) ~= "function"
         or type(F.GetMemberDetail) ~= "function"
         or type(F.GetWidgetWindowState) ~= "function" or type(F:GetWidgetWindowState()) ~= "table"
         or type(F.GetPresentationSettings) ~= "function" or type(F.SetPresentationSetting) ~= "function"
-        or type(F.SetRaidSectionRect) ~= "function" or type(F.GetRosterProjection) ~= "function"
+        or type(F.SetRaidPanelRect) ~= "function" or type(F.GetRosterProjection) ~= "function"
         or type(F.GetRaidOverlayProjection) ~= "function" or type(F.ProjectUnitToScreen) ~= "function"
         or type(F.GetRules) ~= "function" or type(F.SetRule) ~= "function" or type(F.AddRule) ~= "function"
         or type(F.RemoveRule) ~= "function" or type(F.GetTrackedBuffs) ~= "function"
@@ -67,7 +67,7 @@ G:RegisterSequenceCase("v3_m16_18_healer_visual_consumers_contract", function()
     end
     local visual = F:GetPresentationSettings()
     if type(visual) ~= "table" or type(visual.head) ~= "table" or type(visual.raid) ~= "table"
-        or type(visual.raid.sections) ~= "table" or #visual.raid.sections ~= 4 then
+        or type(visual.raid.panels) ~= "table" or type(visual.raid.panels.A) ~= "table" or type(visual.raid.panels.B) ~= "table" then
         return Fail("visual_store_contract")
     end
     local screen = S.Features and S.Features.HealerScreenProjection or nil

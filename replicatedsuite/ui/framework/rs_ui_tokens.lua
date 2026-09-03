@@ -6,7 +6,7 @@ local S = ReplicatedSuite
 local C = S.Constants or {}
 
 local Tokens = {
-    version = 2,
+    version = 4,
     spacing = { xxs = 2, xs = 4, sm = 8, md = 12, lg = 16, xl = 24, xxl = 32 },
     font = { caption = 9, small = 10, body = 11, bodyLarge = 12, section = 13, title = 15, hero = 18 },
     size = {
@@ -16,7 +16,15 @@ local Tokens = {
         formLabelW = 116, formControlW = 180,
     },
     alpha = { disabled = 0.45, muted = 0.68, panel = 0.94, card = 0.92, normal = 1.0 },
+    layer = { popupPriority = 10000 },
     tone = {},
+    breakpoint = { compact = 720, regular = 980, wide = 1180 },
+    workspace = {
+        masterW = 252, masterMinW = 184, detailMinW = 320,
+        railW = 220, railMinW = 168, inspectorW = 286, inspectorMinW = 220,
+        commandQueueW = 300, commandQueueMinW = 236,
+        previewMinW = 360, divider = 6,
+    },
     component = {
         window = { padding = 12, gap = 8, titleBarH = 32, footerH = 30 },
         card = { padding = 10, gap = 6 },
@@ -95,6 +103,7 @@ function Tokens:Snapshot()
         font = self.font,
         size = self.size,
         alpha = self.alpha,
+        layer = self.layer,
     }
 end
 

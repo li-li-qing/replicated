@@ -410,23 +410,30 @@ RSUI:RegisterType("Slider", function(spec)
 end)
 
 RSUI.DropdownContractVersion = 2
-RSUI.DropdownService = RSUI.DropdownService or {
+RSUI.DropdownDegradedFailClosedContractVersion = 1
+RSUI.PopupCoordinatorContractVersion = 1
+
+local PopupCoordinator = RSUI.PopupCoordinator or {
     version = 1,
     instances = setmetatable({}, { __mode = "k" }),
 }
+RSUI.PopupCoordinator = PopupCoordinator
+-- Compatibility alias only. Both names reference the exact same registry;
+-- DropdownService must never become a second popup authority.
+RSUI.DropdownService = PopupCoordinator
 
-function RSUI.DropdownService:Register(component)
+function PopupCoordinator:Register(component)
     if type(component) ~= "table" then return false end
     self.instances[component] = true
     return true
 end
 
-function RSUI.DropdownService:Unregister(component)
+function PopupCoordinator:Unregister(component)
     if type(component) == "table" then self.instances[component] = nil end
     return true
 end
 
-function RSUI.DropdownService:CloseAll(except)
+function PopupCoordinator:CloseAll(except)
     local closed = 0
     for component in pairs(self.instances) do
         if component ~= except and type(component.Close) == "function" then
@@ -446,16 +453,18 @@ local function DropdownFindValue(items, value)
 end
 
 local function InstallDropdownFallback(c, spec, reason)
-    if type(c) ~= "table" then return nil, tostring(reason or "dropdown_fallback_failed") end
+    if type(c) ~= "table" then return nil, tostring(reason or "dropdown_fail_closed") end
     c.rsUiDegraded = true
     c.rsUiDegradedReason = tostring(reason or "dropdown_popup_unavailable")
     c.popup, c.up, c.down = nil, nil, nil
     c.optionButtons = {}
     c.open = false
+    c.requestedEnabled = spec.enabled ~= false
+    c.enabled = false
 
     local diagnostics = S.DiagnosticsManager
     if type(diagnostics) == "table" and type(diagnostics.Error) == "function" then
-        diagnostics:Error("ui", "RSUI_DROPDOWN_DEGRADED", "下拉框弹层不可用，已降级为单按钮循环选择", {
+        diagnostics:Error("ui", "RSUI_DROPDOWN_DEGRADED", "下拉框弹层不可用，控件已安全禁用；当前值保持不变", {
             id = tostring(c.id or spec.id or ""), owner = tostring(c.owner or ""), reason = c.rsUiDegradedReason,
         })
     end
@@ -464,7 +473,7 @@ local function InstallDropdownFallback(c, spec, reason)
         local text = tostring(spec.placeholder or "请选择")
         local item = self.items[self.selectedIndex]
         if type(item) == "table" then text = tostring(item.text or item.value or text) end
-        UI:SetText(self.root, text .. "  ↻", self.owner)
+        UI:SetText(self.root, text .. "  ⚠", self.owner)
         return text
     end
 
@@ -480,31 +489,17 @@ local function InstallDropdownFallback(c, spec, reason)
     end
 
     function c:SetSelectedValue(value, silent, source)
-        if self.enabled == false and source ~= "render" then return false end
-        local ok = true
-        if silent ~= true then ok = Write(self.binding, value, true, source or "dropdown_fallback", spec) end
-        if ok ~= true then return false end
+        -- Rendering may mirror the authoritative bound value into the disabled
+        -- presentation. Any user/API mutation path remains fail-closed.
+        if source ~= "render" and silent ~= true then return false, "dropdown_degraded_fail_closed" end
         self.value = value
         self.selectedIndex = DropdownFindValue(self.items, value) or 0
         self:RefreshText()
-        if silent ~= true and type(spec.onChanged) == "function" then
-            local item = self.items[self.selectedIndex]
-            RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, value, item, self)
-        end
         return true
     end
 
     function c:SetValue(value, notify)
-        local ok = Write(self.binding, value, true, "dropdown_fallback_api", spec)
-        if ok ~= true then return false end
-        self.value = value
-        self.selectedIndex = DropdownFindValue(self.items, value) or 0
-        self:RefreshText()
-        if notify ~= false and type(spec.onChanged) == "function" then
-            local item = self.items[self.selectedIndex]
-            RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, value, item, self)
-        end
-        return true
+        return false, "dropdown_degraded_fail_closed"
     end
 
     function c:Render()
@@ -512,24 +507,10 @@ local function InstallDropdownFallback(c, spec, reason)
         return self:SetSelectedValue(self:GetValue(), true, "render")
     end
 
-    function c:Scroll(delta)
-        if self.enabled == false or #self.items == 0 then return false end
-        local direction = (tonumber(delta) or 0) < 0 and -1 or 1
-        local start = self.selectedIndex
-        if start == nil or start < 1 or start > #self.items then start = direction > 0 and 0 or (#self.items + 1) end
-        for step = 1, #self.items do
-            local index = ((start - 1 + direction * step) % #self.items) + 1
-            local item = self.items[index]
-            if type(item) == "table" and item.selectable ~= false and item.kind ~= "header" then
-                return self:SetSelectedValue(item.value, false, "dropdown_fallback")
-            end
-        end
-        return false
-    end
-
-    function c:Open() return self:Scroll(1) end
+    function c:Scroll() return false, "dropdown_degraded_fail_closed" end
+    function c:Open() return false, "dropdown_degraded_fail_closed" end
     function c:Close() self.open = false return false end
-    function c:ToggleOpen() return self:Scroll(1) end
+    function c:ToggleOpen() return false, "dropdown_degraded_fail_closed" end
     function c:ApplyPopupLayout() return false end
 
     function c:Layout(x, y, nextWidth, nextHeight)
@@ -545,12 +526,13 @@ local function InstallDropdownFallback(c, spec, reason)
     end
 
     function c:SetEnabled(enabled)
-        self.enabled = enabled ~= false
-        UI:SetEnabled(self.root, self.enabled, self.owner)
-        return self.enabled
+        self.requestedEnabled = enabled ~= false
+        self.enabled = false
+        UI:SetEnabled(self.root, false, self.owner)
+        self:RefreshText()
+        return false
     end
 
-    c:On(c.root, "OnClick", function() return c:ToggleOpen() end, "rsui:" .. tostring(spec.id) .. ":fallback")
     c:SetItems(spec.items or spec.options or {})
     c:SetEnabled(spec.enabled ~= false)
     c:Render()
@@ -596,7 +578,7 @@ RSUI:RegisterType("Dropdown", function(spec)
     -- UILayer is an optional RU capability. Never let an absent legacy-only
     -- helper invalidate a successfully created popup/page.
     if type(UI.TrySetUILayer) == "function" then UI:TrySetUILayer(popup, "system") end
-    if type(popup.SetDrawPriority) == "function" then pcall(function() popup:SetDrawPriority(10000) end) end
+    if type(popup.SetDrawPriority) == "function" then pcall(function() popup:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end
     UI:SetPickable(popup, true, c.owner)
     UI:SetEnabled(popup, true, c.owner)
     UI:SetVisible(popup, false, c.owner)
@@ -772,11 +754,11 @@ RSUI:RegisterType("Dropdown", function(spec)
 
     function c:Open()
         if self.enabled == false or self.released == true then return false end
-        if RSUI.DropdownService ~= nil then RSUI.DropdownService:CloseAll(self) end
+        if RSUI.PopupCoordinator ~= nil then RSUI.PopupCoordinator:CloseAll(self) end
         self.open = true
         self:ApplyPopupLayout()
         UI:SetVisible(self.popup, true, self.owner)
-        if type(self.popup.SetDrawPriority) == "function" then pcall(function() self.popup:SetDrawPriority(10000) end) end
+        if type(self.popup.SetDrawPriority) == "function" then pcall(function() self.popup:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end
         if type(self.popup.Raise) == "function" then pcall(function() self.popup:Raise() end) end
         return true
     end
@@ -839,11 +821,11 @@ RSUI:RegisterType("Dropdown", function(spec)
     function c:Release()
         self:Close()
         UI:SetVisible(self.popup, false, self.owner)
-        if RSUI.DropdownService ~= nil then RSUI.DropdownService:Unregister(self) end
+        if RSUI.PopupCoordinator ~= nil then RSUI.PopupCoordinator:Unregister(self) end
         return baseRelease(self)
     end
 
-    RSUI.DropdownService:Register(c)
+    RSUI.PopupCoordinator:Register(c)
     c:SetItems(spec.items or spec.options or {})
     c:SetEnabled(spec.enabled ~= false)
     c:Render()
@@ -872,6 +854,7 @@ RSUI:RegisterType("ColorField", function(spec)
     c.open = false
     c.color = { 1, 1, 1 }
     c.swatch = nil
+    c.label = tostring(spec.label or "颜色")
 
     -- Swatch drawable fills the trigger so the current color is always visible.
     -- Some RU widgets expose CreateColorDrawable; fall back to a flat background
@@ -879,7 +862,13 @@ RSUI:RegisterType("ColorField", function(spec)
     -- unavailable on this client.
     if type(trigger.CreateColorDrawable) == "function" then
         local ok, draw = pcall(function() return trigger:CreateColorDrawable(1, 1, 1, 1, "overlay") end)
-        if ok and draw ~= nil then c.swatch = draw end
+        if ok and draw ~= nil then
+            c.swatch = draw
+            pcall(function()
+                if draw.SetExtent ~= nil then draw:SetExtent(18, math.max(12, trigH - 8)) end
+                if draw.AddAnchor ~= nil then draw:AddAnchor("LEFT", trigger, 6, 0) end
+            end)
+        end
     end
 
     -- Popover: top-level surface so it is never clipped by a ScrollBox/card.
@@ -887,7 +876,7 @@ RSUI:RegisterType("ColorField", function(spec)
     if popup == nil then return nil, "colorfield_popup_create_failed" end
     c.popup = popup
     if type(UI.TrySetUILayer) == "function" then UI:TrySetUILayer(popup, "system") end
-    if type(popup.SetDrawPriority) == "function" then pcall(function() popup:SetDrawPriority(10000) end) end
+    if type(popup.SetDrawPriority) == "function" then pcall(function() popup:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end
     UI:SetPickable(popup, true, c.owner)
     UI:SetEnabled(popup, true, c.owner)
     UI:SetVisible(popup, false, c.owner)
@@ -927,7 +916,12 @@ RSUI:RegisterType("ColorField", function(spec)
 
     function c:SyncSwatchAndHex()
         if self.swatch ~= nil then UI:SetColor(self.swatch, self.color[1], self.color[2], self.color[3], 1, self.owner) end
-        if self.hexInput ~= nil then self.hexInput:SetValue(self:Hex()) end
+        local hex = self:Hex()
+        -- Always keep a textual affordance on the trigger. Some RU widget
+        -- builds do not expose CreateColorDrawable; an empty button made the
+        -- color setting look nonexistent even though the popup binding worked.
+        UI:SetText(self.root, self.label .. "  " .. hex, self.owner)
+        if self.hexInput ~= nil then self.hexInput:SetValue(hex) end
     end
     function c:Hex()
         local function hx(x) local v = math.floor(Clamp01(x) * 255 + 0.5); return string.format("%02X", v) end
@@ -994,11 +988,11 @@ RSUI:RegisterType("ColorField", function(spec)
     end
     function c:Open()
         if self.enabled == false or self.released == true then return false end
-        if RSUI.DropdownService ~= nil then RSUI.DropdownService:CloseAll(self) end
+        if RSUI.PopupCoordinator ~= nil then RSUI.PopupCoordinator:CloseAll(self) end
         self.open = true
         self:ApplyPopupLayout()
         UI:SetVisible(self.popup, true, self.owner)
-        if type(self.popup.SetDrawPriority) == "function" then pcall(function() self.popup:SetDrawPriority(10000) end) end
+        if type(self.popup.SetDrawPriority) == "function" then pcall(function() self.popup:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end
         if type(self.popup.Raise) == "function" then pcall(function() self.popup:Raise() end) end
         return true
     end
@@ -1009,10 +1003,24 @@ RSUI:RegisterType("ColorField", function(spec)
         return true
     end
     function c:ToggleOpen() if self.open == true then return self:Close() end; return self:Open() end
+    function c:SetEnabled(enabled)
+        self.enabled = enabled ~= false
+        UI:SetEnabled(self.root, self.enabled, self.owner)
+        if self.enabled == false then self:Close() end
+        return self.enabled
+    end
+
+    local baseRelease = c.Release
+    function c:Release()
+        self:Close()
+        UI:SetVisible(self.popup, false, self.owner)
+        if RSUI.PopupCoordinator ~= nil then RSUI.PopupCoordinator:Unregister(self) end
+        return baseRelease(self)
+    end
 
     c:On(trigger, "OnClick", function() return c:ToggleOpen() end, "rsui:" .. spec.id .. ":trigger")
     c:On(doneBtn, "OnClick", function() return c:Close() end, "rsui:" .. spec.id .. ":done")
-    if RSUI.DropdownService ~= nil then RSUI.DropdownService:Register(c) end
+    if RSUI.PopupCoordinator ~= nil then RSUI.PopupCoordinator:Register(c) end
 
     c:SetEnabled(spec.enabled ~= false)
     c:Render()

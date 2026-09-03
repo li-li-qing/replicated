@@ -14,11 +14,235 @@ S.Layout = {
 }
 local L = S.Layout
 
+-- ArcheAge / CryEngine UI logical coordinate contract. The logical origin is
+-- the viewport top-left. Positive X travels right; positive Y travels down.
+-- Keep this explicit so feature/layout code never guesses the sign of a
+-- human instruction such as "move this icon upward".
+L.CoordinateSystemContractVersion = 1
+L.RectTransformTransactionContractVersion = 2
+L.coordinateSystem = {
+    origin = "top_left",
+    xPositive = "right",
+    xNegative = "left",
+    yPositive = "down",
+    yNegative = "up",
+}
+L.geometryMetrics = { transformBegins = 0, transformPreviews = 0, transformOverrides = 0, transformCommits = 0, transformCancels = 0, transformRejects = 0 }
+
 local function Clamp(value, minimum, maximum)
     local number = tonumber(value) or 0
     if number < minimum then return minimum end
     if number > maximum then return maximum end
     return number
+end
+
+local function CopyRect(rect)
+    rect = type(rect) == "table" and rect or {}
+    return {
+        x = tonumber(rect.x) or 0,
+        y = tonumber(rect.y) or 0,
+        width = math.max(1, tonumber(rect.width) or 1),
+        height = math.max(1, tonumber(rect.height) or 1),
+    }
+end
+
+local function NormalizeHandle(handle)
+    handle = tostring(handle or ""):lower():gsub("%-", "_")
+    local valid = {
+        top = true, bottom = true, left = true, right = true,
+        top_left = true, top_right = true, bottom_left = true, bottom_right = true,
+    }
+    if valid[handle] then return handle end
+    return nil
+end
+
+function L:GetCoordinateSystemSnapshot()
+    return {
+        contractVersion = tonumber(self.CoordinateSystemContractVersion) or 0,
+        origin = self.coordinateSystem.origin,
+        xPositive = self.coordinateSystem.xPositive,
+        xNegative = self.coordinateSystem.xNegative,
+        yPositive = self.coordinateSystem.yPositive,
+        yNegative = self.coordinateSystem.yNegative,
+    }
+end
+
+-- Semantic point movement. Distance is treated as a magnitude; the helper owns
+-- the sign. In this coordinate system Move Up therefore subtracts Y.
+function L:OffsetPoint(x, y, direction, distance)
+    x, y = tonumber(x) or 0, tonumber(y) or 0
+    local d = math.max(0, tonumber(distance) or 0)
+    direction = tostring(direction or ""):lower()
+    if direction == "up" then return x, y - d end
+    if direction == "down" then return x, y + d end
+    if direction == "left" then return x - d, y end
+    if direction == "right" then return x + d, y end
+    return nil, nil, "coordinate_direction_invalid:" .. tostring(direction)
+end
+
+function L:MoveRect(rect, direction, distance)
+    local out = CopyRect(rect)
+    local x, y, err = self:OffsetPoint(out.x, out.y, direction, distance)
+    if err ~= nil then return nil, err end
+    out.x, out.y = x, y
+    return out, nil
+end
+
+-- Pure RectTransform transaction used by editor-like UI. It owns only math and
+-- rollback semantics; native pointer capture remains Windowing/Input authority.
+-- Delta values are always measured from Begin(), never accumulated frame-to-frame.
+function L:CreateRectTransformTransaction(spec)
+    spec = type(spec) == "table" and spec or {}
+    local tx = {
+        active = false, kind = nil, handle = nil, revision = 0,
+        minWidth = math.max(1, tonumber(spec.minWidth) or 1),
+        minHeight = math.max(1, tonumber(spec.minHeight) or 1),
+        maxWidth = tonumber(spec.maxWidth), maxHeight = tonumber(spec.maxHeight),
+    }
+    if tx.maxWidth ~= nil then tx.maxWidth = math.max(tx.minWidth, tx.maxWidth) end
+    if tx.maxHeight ~= nil then tx.maxHeight = math.max(tx.minHeight, tx.maxHeight) end
+
+    function tx:Begin(rect, kind, handle)
+        if self.active == true then return false, "rect_transform_already_active" end
+        kind = tostring(kind or "move"):lower()
+        if kind ~= "move" and kind ~= "resize" then
+            L.geometryMetrics.transformRejects = (tonumber(L.geometryMetrics.transformRejects) or 0) + 1
+            return false, "rect_transform_kind_invalid:" .. kind
+        end
+        if kind == "resize" then
+            handle = NormalizeHandle(handle)
+            if handle == nil then
+                L.geometryMetrics.transformRejects = (tonumber(L.geometryMetrics.transformRejects) or 0) + 1
+                return false, "rect_transform_handle_invalid"
+            end
+        else
+            handle = nil
+        end
+        self.startRect = CopyRect(rect)
+        self.currentRect = CopyRect(rect)
+        self.kind, self.handle, self.active = kind, handle, true
+        self.revision = self.revision + 1
+        L.geometryMetrics.transformBegins = (tonumber(L.geometryMetrics.transformBegins) or 0) + 1
+        return true, CopyRect(self.currentRect)
+    end
+
+    local function ClampSize(value, minimum, maximum)
+        value = math.max(minimum, tonumber(value) or minimum)
+        if maximum ~= nil then value = math.min(value, maximum) end
+        return value
+    end
+
+    function tx:PreviewDelta(deltaX, deltaY)
+        if self.active ~= true or self.startRect == nil then return nil, "rect_transform_not_active" end
+        local dx, dy = tonumber(deltaX) or 0, tonumber(deltaY) or 0
+        local start = self.startRect
+        local out = CopyRect(start)
+        if self.kind == "move" then
+            out.x, out.y = start.x + dx, start.y + dy
+        else
+            local left, top = start.x, start.y
+            local right, bottom = start.x + start.width, start.y + start.height
+            local h = self.handle or ""
+            local usesLeft = h == "left" or h == "top_left" or h == "bottom_left"
+            local usesRight = h == "right" or h == "top_right" or h == "bottom_right"
+            local usesTop = h == "top" or h == "top_left" or h == "top_right"
+            local usesBottom = h == "bottom" or h == "bottom_left" or h == "bottom_right"
+            if usesLeft then left = left + dx end
+            if usesRight then right = right + dx end
+            if usesTop then top = top + dy end
+            if usesBottom then bottom = bottom + dy end
+
+            local width = ClampSize(right - left, self.minWidth, self.maxWidth)
+            local height = ClampSize(bottom - top, self.minHeight, self.maxHeight)
+            if usesLeft then left = right - width else right = left + width end
+            if usesTop then top = bottom - height else bottom = top + height end
+            out.x, out.y, out.width, out.height = left, top, width, height
+        end
+        self.currentRect = out
+        self.revision = self.revision + 1
+        L.geometryMetrics.transformPreviews = (tonumber(L.geometryMetrics.transformPreviews) or 0) + 1
+        return CopyRect(out), nil
+    end
+
+    function tx:OverridePreview(rect)
+        if self.active ~= true or self.currentRect == nil then return nil, "rect_transform_not_active" end
+        if type(rect) ~= "table" or tonumber(rect.x) == nil or tonumber(rect.y) == nil
+            or tonumber(rect.width) == nil or tonumber(rect.height) == nil then
+            L.geometryMetrics.transformRejects = (tonumber(L.geometryMetrics.transformRejects) or 0) + 1
+            return nil, "rect_transform_override_invalid"
+        end
+        local out = {
+            x = tonumber(rect.x), y = tonumber(rect.y),
+            width = ClampSize(rect.width, self.minWidth, self.maxWidth),
+            height = ClampSize(rect.height, self.minHeight, self.maxHeight),
+        }
+        -- When a snapped resize override is clamped, keep the opposite edge
+        -- fixed just like PreviewDelta(). This prevents the selection frame from
+        -- jumping across the user's stationary edge.
+        if self.kind == "resize" then
+            local h = self.handle or ""
+            local usesLeft = h == "left" or h == "top_left" or h == "bottom_left"
+            local usesTop = h == "top" or h == "top_left" or h == "top_right"
+            if usesLeft then
+                local requestedRight = tonumber(rect.x) + tonumber(rect.width)
+                out.x = requestedRight - out.width
+            end
+            if usesTop then
+                local requestedBottom = tonumber(rect.y) + tonumber(rect.height)
+                out.y = requestedBottom - out.height
+            end
+        end
+        self.currentRect = out
+        self.revision = self.revision + 1
+        L.geometryMetrics.transformOverrides = (tonumber(L.geometryMetrics.transformOverrides) or 0) + 1
+        return CopyRect(out), nil
+    end
+
+    function tx:Commit()
+        if self.active ~= true or self.currentRect == nil then return nil, "rect_transform_not_active" end
+        local result = CopyRect(self.currentRect)
+        self.active = false
+        self.startRect = nil
+        self.currentRect = nil
+        L.geometryMetrics.transformCommits = (tonumber(L.geometryMetrics.transformCommits) or 0) + 1
+        return result, nil
+    end
+
+    function tx:Cancel()
+        if self.active ~= true or self.startRect == nil then return nil, "rect_transform_not_active" end
+        local result = CopyRect(self.startRect)
+        self.active = false
+        self.startRect = nil
+        self.currentRect = nil
+        L.geometryMetrics.transformCancels = (tonumber(L.geometryMetrics.transformCancels) or 0) + 1
+        return result, nil
+    end
+
+    function tx:GetSnapshot()
+        return {
+            contractVersion = tonumber(L.RectTransformTransactionContractVersion) or 0,
+            active = self.active == true,
+            kind = self.kind, handle = self.handle, revision = tonumber(self.revision) or 0,
+            rect = self.currentRect and CopyRect(self.currentRect) or nil,
+            coordinateSystem = L:GetCoordinateSystemSnapshot(),
+        }
+    end
+    return tx
+end
+
+function L:GetGeometryContractSnapshot()
+    return {
+        coordinate = self:GetCoordinateSystemSnapshot(),
+        rectTransformTransactionContractVersion = tonumber(self.RectTransformTransactionContractVersion) or 0,
+        metrics = {
+            transformBegins = tonumber(self.geometryMetrics.transformBegins) or 0,
+            transformPreviews = tonumber(self.geometryMetrics.transformPreviews) or 0,
+            transformOverrides = tonumber(self.geometryMetrics.transformOverrides) or 0,
+            transformCommits = tonumber(self.geometryMetrics.transformCommits) or 0,
+            transformCancels = tonumber(self.geometryMetrics.transformCancels) or 0,
+            transformRejects = tonumber(self.geometryMetrics.transformRejects) or 0,
+        },
+    }
 end
 
 local function ActiveSettings()

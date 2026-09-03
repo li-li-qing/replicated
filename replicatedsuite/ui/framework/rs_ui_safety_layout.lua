@@ -86,9 +86,9 @@ RSUI:RegisterType("ResolutionRoot", function(spec)
     c.breakpoint = "normal"
     local baseAdd = c.AddChild
     function c:AddChild(child, slot)
-        local result = baseAdd(self, child, slot)
-        if self.content == nil then self.content = child end
-        return result
+        local result, ok, attachErr = baseAdd(self, child, slot)
+        if result ~= nil and self.content == nil then self.content = result end
+        return result, ok, attachErr
     end
 
     function c:GetViewportMetrics()
@@ -164,9 +164,9 @@ RSUI:RegisterType("SafeZone", function(spec)
     c.lastSafeRect = nil
     local baseAdd = c.AddChild
     function c:AddChild(child, slot)
-        local result = baseAdd(self, child, slot)
-        if self.content == nil then self.content = child end
-        return result
+        local result, ok, attachErr = baseAdd(self, child, slot)
+        if result ~= nil and self.content == nil then self.content = result end
+        return result, ok, attachErr
     end
 
     function c:GetSafeRect(width, height)
@@ -220,9 +220,9 @@ RSUI:RegisterType("AspectRatioBox", function(spec)
     c.mode = tostring(spec.mode or "fit"):lower()
     local baseAdd = c.AddChild
     function c:AddChild(child, slot)
-        local result = baseAdd(self, child, slot)
-        if self.content == nil then self.content = child end
-        return result
+        local result, ok, attachErr = baseAdd(self, child, slot)
+        if result ~= nil and self.content == nil then self.content = result end
+        return result, ok, attachErr
     end
     function c:SetAspectRatio(value)
         value = math.max(0.01, tonumber(value) or self.aspectRatio)

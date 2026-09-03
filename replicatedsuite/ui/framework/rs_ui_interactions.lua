@@ -19,6 +19,12 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
 if type(UI) ~= "table" or type(RSUI) ~= "table" then return end
+local Tokens = S.UITokens or {}
+
+local function Token(path, fallback)
+    if type(Tokens.Number) == "function" then return Tokens:Number(path, fallback) end
+    return tonumber(fallback) or 0
+end
 
 local function N(v, fallback)
     v = tonumber(v)
@@ -56,11 +62,62 @@ local function AnchorRect(target)
     return 0, 0, 1, 1
 end
 
-local function PointerPosition()
-    if S.Api ~= nil and type(S.Api.GetMouseLogicalPosition) == "function" then
-        local ok, x, y = pcall(function() return S.Api:GetMouseLogicalPosition() end)
-        if ok and tonumber(x) ~= nil and tonumber(y) ~= nil then return tonumber(x), tonumber(y), "mouse" end
+------------------------------------------------------------------------
+-- PointerService
+--
+-- Event-driven pointer sampling only. RU evidence currently provides absolute
+-- mouse position but not a validated generic pointer-capture API. Native
+-- StartMoving/StartSizing remains the capture authority.
+------------------------------------------------------------------------
+local Pointer = {
+    version = 1,
+    captureSupported = false,
+    samples = 0,
+    failures = 0,
+}
+RSUI.Pointer = Pointer
+RSUI.PointerContractVersion = 1
+
+function Pointer:GetLogicalPosition()
+    if S.Api == nil or type(S.Api.GetMouseLogicalPosition) ~= "function" then
+        self.failures = self.failures + 1
+        return nil, nil, "pointer_position_unavailable"
     end
+    local ok, x, y, err = pcall(function() return S.Api:GetMouseLogicalPosition() end)
+    if ok ~= true or tonumber(x) == nil or tonumber(y) == nil then
+        self.failures = self.failures + 1
+        return nil, nil, tostring(err or "pointer_position_unavailable")
+    end
+    self.samples = self.samples + 1
+    return tonumber(x), tonumber(y), nil
+end
+
+function Pointer:Delta(startX, startY, currentX, currentY)
+    startX, startY = tonumber(startX), tonumber(startY)
+    currentX, currentY = tonumber(currentX), tonumber(currentY)
+    if startX == nil or startY == nil or currentX == nil or currentY == nil then
+        return nil, nil, "pointer_delta_coordinates_required"
+    end
+    return currentX - startX, currentY - startY, nil
+end
+
+function Pointer:GetCapabilities()
+    local coordinate = S.Layout and type(S.Layout.GetCoordinateSystemSnapshot) == "function" and S.Layout:GetCoordinateSystemSnapshot() or nil
+    return {
+        version = self.version,
+        contractVersion = tonumber(RSUI.PointerContractVersion) or 0,
+        absolutePosition = S.Api ~= nil and type(S.Api.GetMouseLogicalPosition) == "function",
+        genericCapture = self.captureSupported == true,
+        nativeMoveSizingAuthority = true,
+        samples = tonumber(self.samples) or 0,
+        failures = tonumber(self.failures) or 0,
+        coordinateSystem = coordinate,
+    }
+end
+
+local function PointerPosition()
+    local x, y = Pointer:GetLogicalPosition()
+    if x ~= nil and y ~= nil then return x, y, "mouse" end
     return nil, nil, "target"
 end
 
@@ -300,6 +357,9 @@ local ContextMenu = {
     padding = 4,
 }
 RSUI.ContextMenu = ContextMenu
+if RSUI.PopupCoordinator ~= nil and type(RSUI.PopupCoordinator.Register) == "function" then
+    RSUI.PopupCoordinator:Register(ContextMenu)
+end
 
 function ContextMenu:_EnsureRoot()
     if self.root ~= nil then return self.root end
@@ -307,6 +367,8 @@ function ContextMenu:_EnsureRoot()
     if root == nil then return nil end
     root.rsUiOwner = self.owner
     if type(UI.AdoptWidget) == "function" then UI:AdoptWidget(root, self.owner, "rsui_context_menu") end
+    if type(UI.TrySetUILayer) == "function" then UI:TrySetUILayer(root, "system") end
+    if type(root.SetDrawPriority) == "function" then pcall(function() root:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end
     UI:SetVisible(root, false, self.owner)
     self.root = root
     return root
@@ -361,6 +423,7 @@ end
 function ContextMenu:Open(anchor, items, options)
     options = type(options) == "table" and options or {}
     if self:_EnsureRoot() == nil then return false, "context_menu_unavailable" end
+    if RSUI.PopupCoordinator ~= nil then RSUI.PopupCoordinator:CloseAll(self) end
     local maxRequested = math.max(1, math.min(self.maxItems, N(options.maxItems, self.maxItems)))
     local normalized = NormalizeMenuItems(items, maxRequested)
     if #normalized == 0 then self:Close(); return false, "items_required" end
@@ -450,38 +513,98 @@ end
 -- FocusService
 ------------------------------------------------------------------------
 local Focus = {
-    version = 1,
+    version = 2,
     keyboardNavigationSupported = false,
     keyboardNavigationReason = "ui_functions.lua confirms SetFocus/GetFocusedWidgetId but does not document generic OnKeyDown/OnKeyUp handlers",
 }
 RSUI.Focus = Focus
+RSUI.FocusContractVersion = 2
+
+function Focus:CanSet(target)
+    local native = ResolveNative(target)
+    if native == nil then return false, "focus_target_required" end
+    if type(native.SetFocus) ~= "function" then return false, "set_focus_unavailable" end
+    return true, nil
+end
+
+function Focus:CanClear(target)
+    local native = ResolveNative(target)
+    if native == nil then return false, "focus_target_required" end
+    if type(native.ClearFocus) ~= "function" then return false, "clear_focus_unavailable" end
+    return true, nil
+end
 
 function Focus:Set(target)
+    local supported, reason = self:CanSet(target)
+    if supported ~= true then return false, reason end
     local native = ResolveNative(target)
-    if native == nil or type(native.SetFocus) ~= "function" then return false, "set_focus_unavailable" end
     local ok = pcall(function() native:SetFocus() end)
-    if ok then RSUI.metrics.focusChanges = (tonumber(RSUI.metrics.focusChanges) or 0) + 1 end
-    return ok
+    if ok then
+        RSUI.metrics.focusChanges = (tonumber(RSUI.metrics.focusChanges) or 0) + 1
+        return true, nil
+    end
+    return false, "set_focus_failed"
 end
 
 function Focus:Clear(target)
+    local supported, reason = self:CanClear(target)
+    if supported ~= true then return false, reason end
     local native = ResolveNative(target)
-    if native == nil or type(native.ClearFocus) ~= "function" then return false, "clear_focus_unavailable" end
     local ok = pcall(function() native:ClearFocus() end)
-    if ok then RSUI.metrics.focusChanges = (tonumber(RSUI.metrics.focusChanges) or 0) + 1 end
-    return ok
+    if ok then
+        RSUI.metrics.focusChanges = (tonumber(RSUI.metrics.focusChanges) or 0) + 1
+        return true, nil
+    end
+    return false, "clear_focus_failed"
 end
 
 function Focus:GetFocusedWidgetId()
     if type(GetFocusedWidgetId) ~= "function" then return nil, "get_focus_unavailable" end
     local ok, id = pcall(GetFocusedWidgetId)
     if not ok then return nil, "get_focus_failed" end
-    return id
+    if id == nil or tostring(id) == "" then return nil, nil end
+    return tostring(id), nil
 end
 
-function Focus:GetCapabilities()
+function Focus:GetTargetWidgetId(target)
+    local native = ResolveNative(target)
+    if native == nil then return nil, "focus_target_required" end
+    local physical = native.rsNativePhysicalId
+    if physical ~= nil and tostring(physical) ~= "" then return tostring(physical), nil end
+    -- Some older adopted native widgets carry only the RSUI logical identity.
+    -- It is safe to expose as diagnostic identity, but IsFocused cannot assume
+    -- the global focus API returns that form.
+    local logical = native.rsNativeLogicalId or native.rsUiLogicalId
+    if logical ~= nil and tostring(logical) ~= "" then return tostring(logical), "logical_identity_only" end
+    return nil, "focus_target_identity_unavailable"
+end
+
+function Focus:IsFocused(target)
+    local focusedId, focusErr = self:GetFocusedWidgetId()
+    if focusErr ~= nil then return false, focusErr end
+    if focusedId == nil then return false, nil end
+    local native = ResolveNative(target)
+    if native == nil then return false, "focus_target_required" end
+    local physical = native.rsNativePhysicalId
+    if physical == nil or tostring(physical) == "" then return false, "focus_target_physical_identity_unavailable" end
+    return tostring(physical) == tostring(focusedId), nil
+end
+
+function Focus:GetCapabilities(target)
+    local targetProvided = target ~= nil
+    local canSet = false
+    local canClear = false
+    if targetProvided then
+        canSet = self:CanSet(target) == true
+        canClear = self:CanClear(target) == true
+    end
     return {
-        setFocus = true,
+        version = self.version,
+        contractVersion = tonumber(RSUI.FocusContractVersion) or 0,
+        targetAware = true,
+        targetProvided = targetProvided,
+        setFocus = canSet,
+        clearFocus = canClear,
         getFocusedWidgetId = type(GetFocusedWidgetId) == "function",
         genericKeyboardNavigation = self.keyboardNavigationSupported == true,
         reason = self.keyboardNavigationReason,

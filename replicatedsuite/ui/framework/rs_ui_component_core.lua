@@ -12,8 +12,8 @@ local UI = S.UI
 if type(UI) ~= "table" then return end
 
 local RSUI = {
-    version = 24,
-    apiVersion = "10.9",
+    version = 38,
+    apiVersion = "12.2",
     types = {},
     typeOrder = {},
     metrics = {
@@ -51,6 +51,46 @@ local RSUI = {
         selectionChanges = 0,
         selectionVisualsCreated = 0,
         selectionVisualApplications = 0,
+        selectionGeometryModelsCreated = 0,
+        selectionGeometryResolves = 0,
+        layoutGuideResolves = 0,
+        layoutGuideCandidatesScanned = 0,
+        layoutGuideSnaps = 0,
+        selectionOverlayLayouts = 0,
+        layoutGuideOverlayUpdates = 0,
+        layoutEditorGestureBegins = 0,
+        layoutEditorGesturePulses = 0,
+        layoutEditorGestureCommits = 0,
+        layoutEditorGestureCancels = 0,
+        layoutEditorGestureCaptureFailures = 0,
+        layoutEditorGestureFallbackUpdates = 0,
+        layoutEditorGestureCandidateFreezes = 0,
+        layoutEditorGesturePreviewRejects = 0,
+        layoutEditorGestureCommitRejects = 0,
+        layoutEditorAdaptersCreated = 0,
+        layoutEditorAdapterSyncs = 0,
+        layoutEditorAdapterPreviews = 0,
+        layoutEditorAdapterCommits = 0,
+        layoutEditorAdapterCancels = 0,
+        layoutEditorAdapterGestureBegins = 0,
+        layoutEditorOverlaysCreated = 0,
+        layoutEditorOverlayRefreshes = 0,
+        layoutEditorOverlayCandidateScans = 0,
+        layoutEditorWorkspacesCreated = 0,
+        layoutEditorAnchorPivotModelsCreated = 0,
+        layoutEditorAnchorPivotChanges = 0,
+        layoutEditorSnapSettingsModelsCreated = 0,
+        layoutEditorSnapSettingsChanges = 0,
+        transformInspectorEdits = 0,
+        transformInspectorSnapEdits = 0,
+        transformInspectorRefreshes = 0,
+        transformInspectorLayouts = 0,
+        multiSelectionTransformModelsCreated = 0,
+        multiSelectionTransformSessions = 0,
+        multiSelectionTransformProjections = 0,
+        multiSelectionTransformCommits = 0,
+        multiSelectionTransformCancels = 0,
+        multiSelectionTransformRejects = 0,
         tilePoolItemsCreated = 0,
         tileItemBinds = 0,
         tileItemReuses = 0,
@@ -85,6 +125,23 @@ local RSUI = {
         collapsibleHeaderUnavailable = 0,
         collapsibleHeaderBindFailed = 0,
         splitToolbarSpacerClamped = 0,
+        statusChipUpdates = 0,
+        pickerModelRebuilds = 0,
+        treeModelRebuilds = 0,
+        treeExpansionChanges = 0,
+        treeExpansionStatePrunes = 0,
+        attachmentRejects = 0,
+        attachmentCycleRejects = 0,
+        attachmentParentConflicts = 0,
+        attachmentNativeParentConflicts = 0,
+        childRemovals = 0,
+        responsiveInspectorModeChanges = 0,
+        responsiveInspectorDrawerChanges = 0,
+        searchablePickerQueries = 0,
+        searchablePickerSelections = 0,
+        iconPickerQueries = 0,
+        iconPickerSelections = 0,
+        iconPickerTileBinds = 0,
         externalLayoutInvalidations = 0,
         duplicateTypeRegistrations = 0,
         invalidationCoalesces = 0,
@@ -106,6 +163,9 @@ local RSUI = {
     },
 }
 RSUI.StrictBuildFailFastContractVersion = 1
+RSUI.AttachmentContractVersion = 1
+RSUI.ReparentPolicyContractVersion = 1
+RSUI.NativeReparentSupported = false
 
 -- Event-driven invalidation queue.
 --
@@ -490,13 +550,73 @@ function Base:IsReleased()
     return self.released == true
 end
 
+-- Native RSUI widgets are created under a physical parent and the RU client has
+-- no validated generic reparent operation. Logical parent changes therefore
+-- cannot be treated like UMG RemoveFromParent/AddChild: doing so would create a
+-- split authority where layout believes one parent owns a widget while the
+-- native object remains owned/clipped by another. Attachment is consequently
+-- single-parent and fail-closed for the whole Generation.
+function RSUI:ValidateAttachment(parent, component)
+    if not self:IsComponent(parent) then return false, "attachment_parent_component_required" end
+    if not self:IsComponent(component) then return false, "attachment_child_component_required" end
+    if parent.released == true then return false, "attachment_parent_released" end
+    if component.released == true then return false, "attachment_child_released" end
+    if parent == component then
+        self.metrics.attachmentRejects = (tonumber(self.metrics.attachmentRejects) or 0) + 1
+        self.metrics.attachmentCycleRejects = (tonumber(self.metrics.attachmentCycleRejects) or 0) + 1
+        return false, "attachment_cycle:self"
+    end
+    local existing = component.parentComponent
+    if existing ~= nil and existing ~= parent then
+        self.metrics.attachmentRejects = (tonumber(self.metrics.attachmentRejects) or 0) + 1
+        self.metrics.attachmentParentConflicts = (tonumber(self.metrics.attachmentParentConflicts) or 0) + 1
+        return false, "reparent_not_supported:" .. tostring(component.id or "?")
+    end
+    local ancestor, guard = parent, 0
+    while type(ancestor) == "table" and guard < 64 do
+        if ancestor == component then
+            self.metrics.attachmentRejects = (tonumber(self.metrics.attachmentRejects) or 0) + 1
+            self.metrics.attachmentCycleRejects = (tonumber(self.metrics.attachmentCycleRejects) or 0) + 1
+            return false, "attachment_cycle:" .. tostring(component.id or "?")
+        end
+        ancestor = ancestor.parentComponent
+        guard = guard + 1
+    end
+    if guard >= 64 and ancestor ~= nil then
+        self.metrics.attachmentRejects = (tonumber(self.metrics.attachmentRejects) or 0) + 1
+        self.metrics.attachmentCycleRejects = (tonumber(self.metrics.attachmentCycleRejects) or 0) + 1
+        return false, "attachment_ancestor_guard"
+    end
+
+    -- Native parent identity is immutable for the whole component generation.
+    -- Validate it on every attach path, including normal RSUI:Create().  This
+    -- catches a buggy/custom factory that creates its native root under the
+    -- wrong content host even if the logical parentComponent already points at
+    -- the requested owner.
+    local expectedNative = select(1, self:ResolveParent(parent))
+    if expectedNative ~= nil and component.parent ~= nil and component.parent ~= expectedNative then
+        self.metrics.attachmentRejects = (tonumber(self.metrics.attachmentRejects) or 0) + 1
+        self.metrics.attachmentNativeParentConflicts = (tonumber(self.metrics.attachmentNativeParentConflicts) or 0) + 1
+        return false, "attachment_native_parent_mismatch:" .. tostring(component.id or "?")
+    end
+    return true
+end
+
+function Base:GetParentComponent() return self.parentComponent end
+function Base:CanReparentTo(parent)
+    if self.parentComponent == parent then return true, "same_parent" end
+    return false, "native_reparent_unverified"
+end
+
 function Base:AddChild(component, slot)
-    if self.released == true or type(component) ~= "table" then return component end
+    if self.released == true or type(component) ~= "table" then return nil, false, "attachment_invalid" end
+    local valid, attachErr = RSUI:ValidateAttachment(self, component)
+    if valid ~= true then return nil, false, attachErr end
     for _, child in ipairs(self.children) do
         if child == component then
             if slot ~= nil then component.slot = slot end
             self:InvalidateMeasure("child_slot_update")
-            return component
+            return component, true, "already_attached"
         end
     end
     self.children[#self.children + 1] = component
@@ -529,7 +649,22 @@ function Base:AddChild(component, slot)
     end
 
     self:InvalidateMeasure("child_added")
-    return component
+    return component, true
+end
+
+-- Public child removal is terminal for the current Generation. The physical
+-- widget cannot be safely reparented/recreated under the same identity, so a
+-- removal always releases/hides the subtree instead of returning a detachable
+-- widget that callers could mount elsewhere.
+function Base:RemoveChild(component)
+    if self.released == true or type(component) ~= "table" or component.parentComponent ~= self then
+        return false, "child_not_owned"
+    end
+    RSUI:DetachComponent(component)
+    local released = type(component.Release) == "function" and (tonumber(component:Release()) or 0) or 0
+    RSUI.metrics.childRemovals = (tonumber(RSUI.metrics.childRemovals) or 0) + 1
+    self:InvalidateMeasure("child_removed")
+    return true, released
 end
 
 -- Applies independent drawable/text alpha channels to an RSUI subtree. Whole-
@@ -1104,6 +1239,13 @@ end
 
 function Base:Release()
     if self.released == true then return 0 end
+    -- Standalone child teardown must not leave strong references in a live
+    -- parent's children/slots arrays. During recursive parent teardown the
+    -- parent is already marked released and children are detached from a
+    -- snapshot below, avoiding mutation-while-iterating skips.
+    local parent = self.parentComponent
+    if type(parent) == "table" and parent.released ~= true then RSUI:DetachComponent(self) end
+
     self.released = true
     RSUI.layoutQueue[self] = nil
     RSUI.typographyComponents[self] = nil
@@ -1111,8 +1253,18 @@ function Base:Release()
     -- normally removed on mouse-up, but teardown may happen mid-gesture.
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveOwner) == "function" then S.Scheduler:RemoveOwner(self) end
     local count = 0
-    for _, child in ipairs(self.children) do
-        if type(child) == "table" and type(child.Release) == "function" then count = count + (tonumber(child:Release()) or 0) end
+    local children = self.children
+    self.children = {}
+    if type(self.slots) == "table" then self.slots = {} end
+    if self.content ~= nil and type(self.content) == "table" and self.content.parentComponent == self then self.content = nil end
+    if type(children) == "table" then
+        for index = #children, 1, -1 do
+            local child = children[index]
+            if type(child) == "table" then
+                if child.parentComponent == self then child.parentComponent = nil end
+                if type(child.Release) == "function" then count = count + (tonumber(child:Release()) or 0) end
+            end
+        end
     end
     if self.root ~= nil and type(UI.SetVisible) == "function" then
         UI:SetVisible(self.root, false, self.owner)
@@ -1301,7 +1453,13 @@ function RSUI:Create(name, spec)
         return Fail(err)
     end
     component.parentComponent = componentParent or component.parentComponent
-    if componentParent ~= nil and type(componentParent.AddChild) == "function" then componentParent:AddChild(component, spec.slot) end
+    if componentParent ~= nil and type(componentParent.AddChild) == "function" then
+        local attached, _, attachErr = componentParent:AddChild(component, spec.slot)
+        if attached == nil then
+            self.metrics.errors = self.metrics.errors + 1
+            return Fail("component_attach_failed:" .. tostring(attachErr or "unknown"))
+        end
+    end
     -- Apply Hidden/Collapsed immediately after the factory has created its
     -- native widget. This prevents a one-frame flash during initial build.
     if type(component._ApplyVisibility) == "function" then component:_ApplyVisibility() end
@@ -1419,6 +1577,34 @@ function RSUI:GetSnapshot()
         selectionChanges = tonumber(self.metrics.selectionChanges) or 0,
         selectionVisualsCreated = tonumber(self.metrics.selectionVisualsCreated) or 0,
         selectionVisualApplications = tonumber(self.metrics.selectionVisualApplications) or 0,
+        selectionGeometryModelsCreated = tonumber(self.metrics.selectionGeometryModelsCreated) or 0,
+        selectionGeometryResolves = tonumber(self.metrics.selectionGeometryResolves) or 0,
+        layoutGuideResolves = tonumber(self.metrics.layoutGuideResolves) or 0,
+        layoutGuideCandidatesScanned = tonumber(self.metrics.layoutGuideCandidatesScanned) or 0,
+        layoutGuideSnaps = tonumber(self.metrics.layoutGuideSnaps) or 0,
+        selectionOverlayLayouts = tonumber(self.metrics.selectionOverlayLayouts) or 0,
+        layoutGuideOverlayUpdates = tonumber(self.metrics.layoutGuideOverlayUpdates) or 0,
+        layoutEditorGestureBegins = tonumber(self.metrics.layoutEditorGestureBegins) or 0,
+        layoutEditorGesturePulses = tonumber(self.metrics.layoutEditorGesturePulses) or 0,
+        layoutEditorGestureCommits = tonumber(self.metrics.layoutEditorGestureCommits) or 0,
+        layoutEditorGestureCancels = tonumber(self.metrics.layoutEditorGestureCancels) or 0,
+        layoutEditorGestureCaptureFailures = tonumber(self.metrics.layoutEditorGestureCaptureFailures) or 0,
+        layoutEditorGestureFallbackUpdates = tonumber(self.metrics.layoutEditorGestureFallbackUpdates) or 0,
+        layoutEditorGestureCandidateFreezes = tonumber(self.metrics.layoutEditorGestureCandidateFreezes) or 0,
+        layoutEditorAnchorPivotModelsCreated = tonumber(self.metrics.layoutEditorAnchorPivotModelsCreated) or 0,
+        layoutEditorAnchorPivotChanges = tonumber(self.metrics.layoutEditorAnchorPivotChanges) or 0,
+        layoutEditorSnapSettingsModelsCreated = tonumber(self.metrics.layoutEditorSnapSettingsModelsCreated) or 0,
+        layoutEditorSnapSettingsChanges = tonumber(self.metrics.layoutEditorSnapSettingsChanges) or 0,
+        transformInspectorEdits = tonumber(self.metrics.transformInspectorEdits) or 0,
+        transformInspectorSnapEdits = tonumber(self.metrics.transformInspectorSnapEdits) or 0,
+        transformInspectorRefreshes = tonumber(self.metrics.transformInspectorRefreshes) or 0,
+        transformInspectorLayouts = tonumber(self.metrics.transformInspectorLayouts) or 0,
+        multiSelectionTransformModelsCreated = tonumber(self.metrics.multiSelectionTransformModelsCreated) or 0,
+        multiSelectionTransformSessions = tonumber(self.metrics.multiSelectionTransformSessions) or 0,
+        multiSelectionTransformProjections = tonumber(self.metrics.multiSelectionTransformProjections) or 0,
+        multiSelectionTransformCommits = tonumber(self.metrics.multiSelectionTransformCommits) or 0,
+        multiSelectionTransformCancels = tonumber(self.metrics.multiSelectionTransformCancels) or 0,
+        multiSelectionTransformRejects = tonumber(self.metrics.multiSelectionTransformRejects) or 0,
         tilePoolItemsCreated = tonumber(self.metrics.tilePoolItemsCreated) or 0,
         tileItemBinds = tonumber(self.metrics.tileItemBinds) or 0,
         tileItemReuses = tonumber(self.metrics.tileItemReuses) or 0,
@@ -1450,6 +1636,23 @@ function RSUI:GetSnapshot()
         collapsibleHeaderUnavailable = tonumber(self.metrics.collapsibleHeaderUnavailable) or 0,
         collapsibleHeaderBindFailed = tonumber(self.metrics.collapsibleHeaderBindFailed) or 0,
         splitToolbarSpacerClamped = tonumber(self.metrics.splitToolbarSpacerClamped) or 0,
+        statusChipUpdates = tonumber(self.metrics.statusChipUpdates) or 0,
+        pickerModelRebuilds = tonumber(self.metrics.pickerModelRebuilds) or 0,
+        treeModelRebuilds = tonumber(self.metrics.treeModelRebuilds) or 0,
+        treeExpansionChanges = tonumber(self.metrics.treeExpansionChanges) or 0,
+        treeExpansionStatePrunes = tonumber(self.metrics.treeExpansionStatePrunes) or 0,
+        attachmentRejects = tonumber(self.metrics.attachmentRejects) or 0,
+        attachmentCycleRejects = tonumber(self.metrics.attachmentCycleRejects) or 0,
+        attachmentParentConflicts = tonumber(self.metrics.attachmentParentConflicts) or 0,
+        attachmentNativeParentConflicts = tonumber(self.metrics.attachmentNativeParentConflicts) or 0,
+        childRemovals = tonumber(self.metrics.childRemovals) or 0,
+        responsiveInspectorModeChanges = tonumber(self.metrics.responsiveInspectorModeChanges) or 0,
+        responsiveInspectorDrawerChanges = tonumber(self.metrics.responsiveInspectorDrawerChanges) or 0,
+        searchablePickerQueries = tonumber(self.metrics.searchablePickerQueries) or 0,
+        searchablePickerSelections = tonumber(self.metrics.searchablePickerSelections) or 0,
+        iconPickerQueries = tonumber(self.metrics.iconPickerQueries) or 0,
+        iconPickerSelections = tonumber(self.metrics.iconPickerSelections) or 0,
+        iconPickerTileBinds = tonumber(self.metrics.iconPickerTileBinds) or 0,
         activeBuildScopes = #self.buildScopeStack,
         buildScopesStarted = tonumber(self.metrics.buildScopesStarted) or 0,
         buildScopesCommitted = tonumber(self.metrics.buildScopesCommitted) or 0,
@@ -1467,10 +1670,34 @@ function RSUI:GetSnapshot()
         typographyInvalidations = tonumber(self.metrics.typographyInvalidations) or 0,
         fontScaleApplications = tonumber(self.metrics.fontScaleApplications) or 0,
         strictBuildFailFastContractVersion = tonumber(self.StrictBuildFailFastContractVersion) or 0,
+        attachmentContractVersion = tonumber(self.AttachmentContractVersion) or 0,
+        reparentPolicyContractVersion = tonumber(self.ReparentPolicyContractVersion) or 0,
+        nativeReparentSupported = self.NativeReparentSupported == true,
+        responsiveInspectorContractVersion = tonumber(self.ResponsiveInspectorContractVersion) or 0,
+        searchablePickerContractVersion = tonumber(self.SearchablePickerContractVersion) or 0,
+        iconPickerContractVersion = tonumber(self.IconPickerContractVersion) or 0,
+        pointerContractVersion = tonumber(self.PointerContractVersion) or 0,
+        selectionGeometryContractVersion = tonumber(self.SelectionGeometryContractVersion) or 0,
+        layoutGuideResolverContractVersion = tonumber(self.LayoutGuideResolverContractVersion) or 0,
+        selectionOverlayContractVersion = tonumber(self.SelectionOverlayContractVersion) or 0,
+        layoutGuideOverlayContractVersion = tonumber(self.LayoutGuideOverlayContractVersion) or 0,
+        layoutEditorGestureContractVersion = tonumber(self.LayoutEditorGestureContractVersion) or 0,
+        anchorPivotContractVersion = tonumber(self.AnchorPivotContractVersion) or 0,
+        layoutEditorSnapSettingsContractVersion = tonumber(self.LayoutEditorSnapSettingsContractVersion) or 0,
+        transformInspectorContractVersion = tonumber(self.TransformInspectorContractVersion) or 0,
+        multiSelectionTransformContractVersion = tonumber(self.MultiSelectionTransformContractVersion) or 0,
+        coordinateSystemContractVersion = tonumber(S.Layout and S.Layout.CoordinateSystemContractVersion) or 0,
+        rectTransformTransactionContractVersion = tonumber(S.Layout and S.Layout.RectTransformTransactionContractVersion) or 0,
         consumedLogicalIds = (function() local count = 0; for _ in pairs(self.consumedLogicalIds or {}) do count = count + 1 end; return count end)(),
         logicalIdGenerationFenceVersion = tonumber(self.LogicalIdGenerationFenceVersion) or 0,
         text = self.TextLayout and self.TextLayout:GetSnapshot() or nil,
         viewState = self.ViewState and self.ViewState:GetSnapshot() or nil,
+        compositeFoundation = self.CompositeFoundation and type(self.CompositeFoundation.GetSnapshot) == "function" and self.CompositeFoundation.GetSnapshot() or nil,
+        popupCoordinator = self.PopupCoordinator and type(self.PopupCoordinator.GetSnapshot) == "function" and self.PopupCoordinator:GetSnapshot() or nil,
+        pointer = self.Pointer and type(self.Pointer.GetCapabilities) == "function" and self.Pointer:GetCapabilities() or nil,
+        selectionGeometry = self.SelectionGeometry and type(self.SelectionGeometry.GetSnapshot) == "function" and self.SelectionGeometry:GetSnapshot() or nil,
+        layoutGuideResolver = self.LayoutGuideResolver and type(self.LayoutGuideResolver.GetSnapshot) == "function" and self.LayoutGuideResolver:GetSnapshot() or nil,
+        geometry = S.Layout and type(S.Layout.GetGeometryContractSnapshot) == "function" and S.Layout:GetGeometryContractSnapshot() or nil,
         actionRunner = S.ActionRunner and type(S.ActionRunner.GetSnapshot) == "function" and S.ActionRunner:GetSnapshot() or nil,
         binding = UI.Binding and type(UI.Binding.GetSnapshot) == "function" and UI.Binding:GetSnapshot() or nil,
         byType = byType,
@@ -1579,6 +1806,13 @@ function RSUI:ResetMetrics()
     self.metrics.tableColumnResolves, self.metrics.tableEmergencyClamps = 0, 0
     self.metrics.selectionModelsCreated, self.metrics.selectionChanges = 0, 0
     self.metrics.selectionVisualsCreated, self.metrics.selectionVisualApplications = 0, 0
+    self.metrics.selectionGeometryModelsCreated, self.metrics.selectionGeometryResolves = 0, 0
+    self.metrics.layoutGuideResolves, self.metrics.layoutGuideCandidatesScanned, self.metrics.layoutGuideSnaps = 0, 0, 0
+    self.metrics.selectionOverlayLayouts, self.metrics.layoutGuideOverlayUpdates = 0, 0
+    self.metrics.layoutEditorGestureBegins, self.metrics.layoutEditorGesturePulses = 0, 0
+    self.metrics.layoutEditorGestureCommits, self.metrics.layoutEditorGestureCancels = 0, 0
+    self.metrics.layoutEditorGestureCaptureFailures, self.metrics.layoutEditorGestureFallbackUpdates = 0, 0
+    self.metrics.layoutEditorGestureCandidateFreezes = 0
     self.metrics.tilePoolItemsCreated, self.metrics.tileItemBinds, self.metrics.tileItemReuses = 0, 0, 0
     self.metrics.tileReconciles, self.metrics.tileColumnChanges, self.metrics.tileVisibleItemsPeak = 0, 0, 0
     self.metrics.tableHeaderClicks, self.metrics.tableSortChanges, self.metrics.tableColumnWidthChanges = 0, 0, 0

@@ -3166,12 +3166,12 @@ Domain 不能同时成为 Window Lifecycle Authority。
 后续重构必须明确：
 
 - Native Game State Authority：ArcheAge X2 API；
-- External Proxy / Observation：统一缓存游戏读取；Feature 需要额外 Native 边界时使用能力门治理的 `S.Api:CallCapability`（见 [`CURRENT_ARCHITECTURE_OVERVIEW.md`](CURRENT_ARCHITECTURE_OVERVIEW.md) §6）；
+- External Proxy / Observation：统一缓存游戏读取；Feature 需要额外 Native 边界时使用能力门治理的 `S.Api:CallCapability`（见 [`../CURRENT_ARCHITECTURE.md`](../CURRENT_ARCHITECTURE.md) 附录 §D 能力门）；
 - Domain Authority：各 Feature 自己的 store/authority；
 - Lifecycle Authority：FeatureRuntime（旧 ModuleManager 已删除）；
 - Diagnostics Authority：DiagnosticsManager；
 - Game Identity Authority：GameDataRegistry / `GameIds`；
-- Persistence Policy Authority：Persistence Framework（`P:RegisterV3Store`，见 CURRENT_ARCHITECTURE_OVERVIEW.md §5）；
+- Persistence Policy Authority：Persistence Framework（`P:RegisterV3Store`，见 [`../CURRENT_ARCHITECTURE.md`](../CURRENT_ARCHITECTURE.md) 附录 §C 持久化契约）；
 - Runtime Budget Policy Authority：FrameBudget v1；主动治理 Suite Scheduler，各 Feature 按需接入；
 - UI Lifecycle Authority：RSUI Diff/Lifecycle v1；UI Design/Composition Authority：UI Framework v2；WindowManager 已由 V3 UIHostManager + WindowShell 取代（旧 ManagedWindow / HudManager 已删除）；
 - 旧 `S.State` / `S.Storage` 已删除（replicatedsuite.lua 显式置 nil + foundation_gate 断言）；业务状态只走各自 Feature Store。

@@ -9,7 +9,7 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
 S.FoundationGate = {
-    version = 62,
+    version = 74,
     last = nil,
     sequenceCases = {},
     sequenceOrder = {},
@@ -351,22 +351,218 @@ function G:Run(options)
 
         local rsui = S.RSUI
         local scrollbar = rsui and rsui.ScrollbarBehavior or nil
-        AddCheck(report, "v3_advanced_ui_contract", type(rsui) == "table" and (tonumber(rsui.version) or 0) >= 24
+        local workspaceTemplates = rsui and rsui.WorkspaceTemplates or nil
+        local compositeFoundation = rsui and rsui.CompositeFoundation or nil
+        AddCheck(report, "v3_advanced_ui_contract", type(rsui) == "table" and (tonumber(rsui.version) or 0) >= 30
                 and type(rsui.SplitView) == "function" and type(rsui.types) == "table" and rsui.types["SplitView"] ~= nil
                 and type(rsui.SplitViewPolicy) == "table" and type(rsui.SplitViewPolicy.Resolve) == "function"
-                and type(scrollbar) == "table" and (tonumber(scrollbar.version) or 0) >= 2 and type(scrollbar.ComputeGeometry) == "function",
-            "blocker", "RSUI v24 + BuildTransaction/Preflight + wrapped text + public factory API + SplitView + shared ScrollbarBehavior required")
+                and type(scrollbar) == "table" and (tonumber(scrollbar.version) or 0) >= 2 and type(scrollbar.ComputeGeometry) == "function"
+                and type(workspaceTemplates) == "table" and (tonumber(workspaceTemplates.contractVersion) or 0) >= 2
+                and type(rsui.CreateMasterDetailWorkspace) == "function"
+                and type(rsui.CreateInspectorWorkbench) == "function"
+                and type(rsui.CreateResponsiveInspectorWorkspace) == "function"
+                and type(rsui.CreateSettingsWorkbench) == "function"
+                and (tonumber(rsui.ResponsiveInspectorContractVersion) or 0) >= 1
+                and type(rsui.ResponsiveInspector) == "function"
+                and (tonumber(rsui.AttachmentContractVersion) or 0) >= 1
+                and (tonumber(rsui.ReparentPolicyContractVersion) or 0) >= 1
+                and rsui.NativeReparentSupported == false
+                and type(rsui.CreateCommandCenterWorkspace) == "function"
+                and type(uiTokens) == "table" and (tonumber(uiTokens.version) or 0) >= 4
+                and type(uiTokens.layer) == "table" and (tonumber(uiTokens.layer.popupPriority) or 0) > 0,
+            "blocker", "RSUI v30 + SplitView + stable-host ResponsiveInspector + Attachment/Reparent fence + WorkspaceTemplates v2 + UITokens v4 required")
+        AddCheck(report, "v3_ui_geometry_pointer_contract", type(rsui) == "table"
+                and type(S.Layout) == "table"
+                and (tonumber(S.Layout.CoordinateSystemContractVersion) or 0) >= 1
+                and (tonumber(S.Layout.RectTransformTransactionContractVersion) or 0) >= 2
+                and type(S.Layout.GetCoordinateSystemSnapshot) == "function"
+                and type(S.Layout.OffsetPoint) == "function"
+                and type(S.Layout.CreateRectTransformTransaction) == "function"
+                and (tonumber(rsui.PointerContractVersion) or 0) >= 1
+                and type(rsui.Pointer) == "table"
+                and type(rsui.Pointer.GetLogicalPosition) == "function"
+                and type(rsui.Pointer.Delta) == "function"
+                and rsui.Pointer.captureSupported == false,
+            "blocker", "coordinate=" .. tostring(S.Layout and S.Layout.CoordinateSystemContractVersion or 0)
+                .. "/rectTx=" .. tostring(S.Layout and S.Layout.RectTransformTransactionContractVersion or 0)
+                .. "/pointer=" .. tostring(rsui and rsui.PointerContractVersion or 0)
+                .. "/capture=" .. tostring(rsui and rsui.Pointer and rsui.Pointer.captureSupported))
+
+        AddCheck(report, "v3_ui_selection_geometry_contract", type(rsui) == "table" and (tonumber(rsui.version) or 0) >= 31
+                and (tonumber(rsui.SelectionGeometryContractVersion) or 0) >= 1
+                and type(rsui.SelectionGeometry) == "table"
+                and type(rsui.SelectionGeometry.GetHandleRects) == "function"
+                and type(rsui.SelectionGeometry.HitTestHandle) == "function"
+                and type(rsui.CreateSelectionGeometryModel) == "function"
+                and type(rsui.SelectionGeometryModel) == "table"
+                and (tonumber(rsui.LayoutGuideResolverContractVersion) or 0) >= 1
+                and type(rsui.LayoutGuideResolver) == "table"
+                and type(rsui.LayoutGuideResolver.Resolve) == "function"
+                and (tonumber(rsui.SelectionOverlayContractVersion) or 0) >= 1
+                and type(rsui.SelectionOverlay) == "function"
+                and (tonumber(rsui.LayoutGuideOverlayContractVersion) or 0) >= 1
+                and type(rsui.LayoutGuideOverlay) == "function",
+            "blocker", "selectionGeometry=" .. tostring(rsui and rsui.SelectionGeometryContractVersion or 0)
+                .. "/guideResolver=" .. tostring(rsui and rsui.LayoutGuideResolverContractVersion or 0)
+                .. "/selectionOverlay=" .. tostring(rsui and rsui.SelectionOverlayContractVersion or 0)
+                .. "/guideOverlay=" .. tostring(rsui and rsui.LayoutGuideOverlayContractVersion or 0)
+                .. "/rsui=" .. tostring(rsui and rsui.version or 0))
+
+        AddCheck(report, "v3_ui_layout_editor_gesture_contract", type(rsui) == "table" and (tonumber(rsui.version) or 0) >= 36
+                and (tonumber(rsui.LayoutEditorGestureContractVersion) or 0) >= 2
+                and type(rsui.CreateLayoutEditorGestureController) == "function"
+                and type(rsui.LayoutEditorGestureController) == "table"
+                and type(rsui.SelectionOverlay) == "function"
+                and type(rsui.LayoutGuideOverlay) == "function"
+                and type(S.Layout) == "table"
+                and (tonumber(S.Layout.RectTransformTransactionContractVersion) or 0) >= 2,
+            "blocker", "gesture=" .. tostring(rsui and rsui.LayoutEditorGestureContractVersion or 0)
+                .. "/rectTx=" .. tostring(S.Layout and S.Layout.RectTransformTransactionContractVersion or 0)
+                .. "/rsui=" .. tostring(rsui and rsui.version or 0))
+
+        AddCheck(report, "v3_ui_layout_editor_model_contract", type(rsui) == "table" and (tonumber(rsui.version) or 0) >= 36
+                and (tonumber(rsui.AnchorPivotContractVersion) or 0) >= 2
+                and type(rsui.CreateAnchorPivotModel) == "function"
+                and type(rsui.AnchorPivotModel) == "table"
+                and type(rsui.AnchorPresets) == "table"
+                and (tonumber(rsui.LayoutEditorSnapSettingsContractVersion) or 0) >= 1
+                and type(rsui.CreateLayoutEditorSnapSettingsModel) == "function"
+                and type(rsui.LayoutEditorSnapSettingsModel) == "table",
+            "blocker", "anchorPivot=" .. tostring(rsui and rsui.AnchorPivotContractVersion or 0)
+                .. "/snapSettings=" .. tostring(rsui and rsui.LayoutEditorSnapSettingsContractVersion or 0)
+                .. "/rsui=" .. tostring(rsui and rsui.version or 0))
+
+        AddCheck(report, "v3_ui_transform_inspector_contract", type(rsui) == "table" and (tonumber(rsui.version) or 0) >= 36
+                and (tonumber(rsui.TransformInspectorContractVersion) or 0) >= 2
+                and type(rsui.TransformInspector) == "function"
+                and type(rsui.types) == "table" and rsui.types["TransformInspector"] ~= nil
+                and type(rsui.AnchorPivotModel) == "table"
+                and type(rsui.LayoutEditorSnapSettingsModel) == "table",
+            "blocker", "transformInspector=" .. tostring(rsui and rsui.TransformInspectorContractVersion or 0)
+                .. "/rsui=" .. tostring(rsui and rsui.version or 0))
+
+        AddCheck(report, "v3_ui_multi_selection_transform_contract", type(rsui) == "table" and (tonumber(rsui.version) or 0) >= 35
+                and (tonumber(rsui.MultiSelectionTransformContractVersion) or 0) >= 1
+                and type(rsui.CreateMultiSelectionTransformModel) == "function"
+                and type(rsui.MultiSelectionTransformModel) == "table"
+                and type(rsui.MultiSelectionTransformSession) == "table",
+            "blocker", "multiSelectionTransform=" .. tostring(rsui and rsui.MultiSelectionTransformContractVersion or 0)
+                .. "/rsui=" .. tostring(rsui and rsui.version or 0))
+
+        AddCheck(report, "v3_ui_layout_editor_preview_adapter_contract", type(rsui) == "table" and (tonumber(rsui.version) or 0) >= 36
+                and (tonumber(rsui.LayoutEditorPreviewAdapterContractVersion) or 0) >= 1
+                and type(rsui.CreateLayoutEditorPreviewAdapter) == "function"
+                and type(rsui.LayoutEditorPreviewAdapter) == "table"
+                and (tonumber(rsui.LayoutEditorGestureContractVersion) or 0) >= 2
+                and (tonumber(rsui.AnchorPivotContractVersion) or 0) >= 2
+                and (tonumber(rsui.TransformInspectorContractVersion) or 0) >= 2,
+            "blocker", "previewAdapter=" .. tostring(rsui and rsui.LayoutEditorPreviewAdapterContractVersion or 0)
+                .. "/gesture=" .. tostring(rsui and rsui.LayoutEditorGestureContractVersion or 0)
+                .. "/anchor=" .. tostring(rsui and rsui.AnchorPivotContractVersion or 0)
+                .. "/inspector=" .. tostring(rsui and rsui.TransformInspectorContractVersion or 0)
+                .. "/rsui=" .. tostring(rsui and rsui.version or 0))
+
+        AddCheck(report, "v3_ui_layout_editor_overlay_contract", type(rsui) == "table" and (tonumber(rsui.version) or 0) >= 37
+                and (tonumber(rsui.LayoutEditorOverlayContractVersion) or 0) >= 1
+                and type(rsui.LayoutEditorOverlay) == "function"
+                and type(rsui.types) == "table" and rsui.types["LayoutEditorOverlay"] ~= nil
+                and (tonumber(rsui.LayoutEditorPreviewAdapterContractVersion) or 0) >= 1
+                and (tonumber(rsui.LayoutEditorGestureContractVersion) or 0) >= 2,
+            "blocker", "layoutEditorOverlay=" .. tostring(rsui and rsui.LayoutEditorOverlayContractVersion or 0)
+                .. "/previewAdapter=" .. tostring(rsui and rsui.LayoutEditorPreviewAdapterContractVersion or 0)
+                .. "/gesture=" .. tostring(rsui and rsui.LayoutEditorGestureContractVersion or 0)
+                .. "/rsui=" .. tostring(rsui and rsui.version or 0))
+
+        AddCheck(report, "v3_ui_layout_editor_workspace_contract", type(rsui) == "table" and (tonumber(rsui.version) or 0) >= 38
+                and (tonumber(rsui.WorkspaceTemplateContractVersion) or 0) >= 3
+                and type(rsui.CreateLayoutEditorWorkspace) == "function"
+                and (tonumber(rsui.LayoutEditorOverlayContractVersion) or 0) >= 1
+                and (tonumber(rsui.TransformInspectorContractVersion) or 0) >= 2,
+            "blocker", "workspace=" .. tostring(rsui and rsui.WorkspaceTemplateContractVersion or 0)
+                .. "/overlay=" .. tostring(rsui and rsui.LayoutEditorOverlayContractVersion or 0)
+                .. "/inspector=" .. tostring(rsui and rsui.TransformInspectorContractVersion or 0)
+                .. "/rsui=" .. tostring(rsui and rsui.version or 0))
+
+        AddCheck(report, "v3_ui_composite_foundation_contract", type(rsui) == "table"
+                and type(compositeFoundation) == "table" and (tonumber(compositeFoundation.version) or 0) >= 4
+                and (tonumber(rsui.StatusChipContractVersion) or 0) >= 1 and type(rsui.StatusChip) == "function"
+                and (tonumber(rsui.PickerModelContractVersion) or 0) >= 1 and type(rsui.PickerModel) == "table"
+                and (tonumber(rsui.SearchablePickerContractVersion) or 0) >= 1 and type(rsui.SearchablePicker) == "function"
+                and (tonumber(rsui.IconPickerContractVersion) or 0) >= 1 and type(rsui.IconPicker) == "function"
+                and (tonumber(rsui.TreeViewContractVersion) or 0) >= 1 and type(rsui.TreeModel) == "table"
+                and (tonumber(rsui.TreeStableIdentityContractVersion) or 0) >= 1
+                and (tonumber(rsui.TreeMutationTransactionContractVersion) or 0) >= 2
+                and (tonumber(rsui.TreeExpansionStateBoundContractVersion) or 0) >= 1
+                and type(rsui.TreeView) == "function",
+            "blocker", "statusChip=" .. tostring(rsui and rsui.StatusChipContractVersion or 0)
+                .. "/pickerModel=" .. tostring(rsui and rsui.PickerModelContractVersion or 0)
+                .. "/searchablePicker=" .. tostring(rsui and rsui.SearchablePickerContractVersion or 0)
+                .. "/iconPicker=" .. tostring(rsui and rsui.IconPickerContractVersion or 0)
+                .. "/treeView=" .. tostring(rsui and rsui.TreeViewContractVersion or 0)
+                .. "/treeIdentity=" .. tostring(rsui and rsui.TreeStableIdentityContractVersion or 0)
+                .. "/treeTx=" .. tostring(rsui and rsui.TreeMutationTransactionContractVersion or 0)
+                .. "/treeExpandBound=" .. tostring(rsui and rsui.TreeExpansionStateBoundContractVersion or 0)
+                .. "/composite=" .. tostring(compositeFoundation and compositeFoundation.version or 0))
+
+        -- ---------------------------------------------------------------
+        -- Retired UI layer runtime fence (`.18.63` ComponentsV2 retirement).
+        --
+        -- The static audit proves the file is absent and unreferenced at
+        -- package time. This check covers the case the static gate cannot see:
+        -- a reflow that actually got LOADED into the running client. If the
+        -- retired component surface is reachable at runtime, Presentation
+        -- Authority is split again and the gate must block rather than warn.
+        --
+        -- RSUI is the single UI Authority; there must be exactly one component
+        -- surface, one popup registry and one container-surface owner.
+        -- ---------------------------------------------------------------
+        local retiredUiAdapter = S.UI
+        local retiredNames = { "CreateCardV2", "CreateSectionV2", "CreateFormRowV2",
+                               "CreateChoiceFieldV2", "CreateToggleFieldV2", "CreateNumericFieldV2" }
+        local presentRetired = {}
+        for _, name in ipairs(retiredNames) do
+            if type(retiredUiAdapter) == "table" and retiredUiAdapter[name] ~= nil then
+                presentRetired[#presentRetired + 1] = name
+            end
+        end
+        AddCheck(report, "v3_retired_ui_layer_absent",
+                type(rsui) == "table"
+                and rsui.ComponentsV2 == nil
+                and type(retiredUiAdapter) == "table" and retiredUiAdapter.ComponentsV2 == nil
+                and #presentRetired == 0
+                and type(rsui.ContainerSurface) == "table"
+                and type(rsui.ContainerSurface.CreateCard) == "function"
+                and type(rsui.ContainerSurface.CreateSection) == "function"
+                and (tonumber(rsui.PopupCoordinatorContractVersion) or 0) >= 1
+                and type(rsui.PopupCoordinator) == "table"
+                and rsui.DropdownService == rsui.PopupCoordinator,
+            "blocker", "retiredComponentsV2=" .. tostring((rsui and rsui.ComponentsV2 ~= nil)
+                    or (type(retiredUiAdapter) == "table" and retiredUiAdapter.ComponentsV2 ~= nil))
+                .. "/retiredHelpers=" .. tostring(#presentRetired)
+                .. (presentRetired[1] and (":" .. tostring(presentRetired[1])) or "")
+                .. "/containerSurface=" .. tostring(type(rsui) == "table" and type(rsui.ContainerSurface) == "table")
+                .. "/popupRegistry=" .. tostring(type(rsui) == "table" and rsui.DropdownService == rsui.PopupCoordinator))
+
         local uiAdapter = S.UI
         local selectionType = rsui and rsui.SelectionModel or nil
         AddCheck(report, "v3_ui_adapter_selection_contract", type(uiAdapter) == "table"
                 and type(uiAdapter.TrySetUILayer) == "function"
                 and type(selectionType) == "table" and type(selectionType.GetPrimaryKey) == "function"
                 and (tonumber(rsui.DataViewSelectionContractVersion) or 0) >= 2
-                and (tonumber(rsui.DropdownContractVersion) or 0) >= 2,
+                and (tonumber(rsui.DropdownContractVersion) or 0) >= 2
+                and (tonumber(rsui.DropdownDegradedFailClosedContractVersion) or 0) >= 1
+                and (tonumber(rsui.PopupCoordinatorContractVersion) or 0) >= 1
+                and type(rsui.PopupCoordinator) == "table" and type(rsui.PopupCoordinator.CloseAll) == "function"
+                and (tonumber(rsui.FocusContractVersion) or 0) >= 2
+                and type(rsui.Focus) == "table" and type(rsui.Focus.CanSet) == "function"
+                and type(rsui.Focus.CanClear) == "function" and type(rsui.Focus.IsFocused) == "function",
             "blocker", "adapterLayer=" .. tostring(type(uiAdapter) == "table" and type(uiAdapter.TrySetUILayer) == "function")
                 .. "/selection=" .. tostring(type(selectionType) == "table" and type(selectionType.GetPrimaryKey) == "function")
                 .. "/viewContract=" .. tostring(rsui and rsui.DataViewSelectionContractVersion or 0)
-                .. "/dropdown=" .. tostring(rsui and rsui.DropdownContractVersion or 0))
+                .. "/dropdown=" .. tostring(rsui and rsui.DropdownContractVersion or 0)
+                .. "/dropFailClosed=" .. tostring(rsui and rsui.DropdownDegradedFailClosedContractVersion or 0)
+                .. "/popupCoordinator=" .. tostring(rsui and rsui.PopupCoordinatorContractVersion or 0)
+                .. "/focus=" .. tostring(rsui and rsui.FocusContractVersion or 0))
         local navigationShell = S.UIV3 and S.UIV3.Shell or nil
         AddCheck(report, "v3_lua51_callback_capture_contract", type(windowing) == "table"
                 and (tonumber(windowing.CallbackCaptureContractVersion) or 0) >= 1
@@ -809,7 +1005,7 @@ function G:Run(options)
         and healerWidgetHost.specs["combat.healer"] or nil
     AddCheck(report, "healer_v3_presentation", healerPageRegistered == true and healerWidgetSpec == nil
             and type(healer.GetMemberDetail) == "function" and type(healer.ApplySettingFromBinding) == "function"
-            and healerStore ~= nil and tonumber(healerStore.schemaVersion) == 3,
+            and healerStore ~= nil and tonumber(healerStore.schemaVersion) == 4,
         "blocker", "page=" .. tostring(healerPageRegistered == true)
             .. "/recommendationWidgetRemoved=" .. tostring(healerWidgetSpec == nil)
             .. "/store=" .. tostring(healerStore and healerStore.schemaVersion or "missing"))
@@ -822,7 +1018,7 @@ function G:Run(options)
             and type(healer.Commands.AddRule) == "function" and type(healer.Commands.RemoveRule) == "function"
             and type(healer.Commands.SetTrackedBuff) == "function" and type(healer.Commands.AddTrackedBuff) == "function"
             and type(healer.Commands.RemoveTrackedBuff) == "function" and type(healer.Commands.SetHealerColor) == "function"
-            and type(healer.Commands.SetRaidSectionRect) == "function" and type(healer.Commands.ResetRaidLayout) == "function",
+            and type(healer.Commands.SetRaidPanelRect) == "function" and type(healer.Commands.ResetRaidLayout) == "function",
         "blocker", "v3.healer rule/tracked/color command authority required")
     local healerHead = S.UIV3 and S.UIV3.HealerHeadMarker or nil
     local healerRaid = S.UIV3 and S.UIV3.HealerRaidOverlay or nil

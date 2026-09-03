@@ -17,7 +17,7 @@ local F = S.Features.Healer
 local U = S.Utils
 
 local STORE_ID = "v3.healer"
-local SCHEMA = 3
+local SCHEMA = 4
 local MAX_RULES = 20
 local MAX_ROLE_OVERRIDES = 200
 
@@ -85,12 +85,58 @@ local function DefaultRule()
 end
 
 
-local function DefaultRaidSections()
+local function DefaultRaidPanelGeometry()
+    return { x = 0, y = 140, width = 340, height = 400 }
+end
+
+local function DefaultRaidPanel(team)
     return {
-        { x = 0, y = 140, width = 340, height = 196 },
-        { x = 0, y = 344, width = 340, height = 196 },
-        { x = 360, y = 140, width = 340, height = 196 },
-        { x = 360, y = 344, width = 340, height = 196 },
+        team = (team == 2) and 2 or 1,
+        geometry = DefaultRaidPanelGeometry(),
+    }
+end
+
+local function DefaultRaidPanels()
+    return { A = DefaultRaidPanel(1), B = DefaultRaidPanel(2) }
+end
+
+-- Backward-compatible migration: the legacy model stored 4 team-bound half
+-- sections (team1 = sections 1,2 ; team2 = sections 3,4). Collapse each pair
+-- into a single rectangular panel bounding box so a user's calibrated layout is
+-- preserved as a whole-panel rectangle rather than lost on upgrade.
+local function MigrateSectionsToPanels(sections)
+    local function num(v, f) return tonumber(v) or tonumber(f) or 0 end
+    local function Bound(a, b)
+        local s1 = type(sections[a]) == "table" and sections[a] or {}
+        local s2 = type(sections[b]) == "table" and sections[b] or {}
+        local x1, y1 = num(s1.x), num(s1.y)
+        local x2, y2 = num(s2.x), num(s2.y)
+        local rx1, ry1 = x1 + num(s1.width), y1 + num(s1.height)
+        local rx2, ry2 = x2 + num(s2.width), y2 + num(s2.height)
+        return { x = math.min(x1, x2), y = math.min(y1, y2),
+            width = math.max(1, math.max(rx1, rx2) - math.min(x1, x2)),
+            height = math.max(1, math.max(ry1, ry2) - math.min(y1, y2)) }
+    end
+    return { A = { team = 1, geometry = Bound(1, 2) }, B = { team = 2, geometry = Bound(3, 4) } }
+end
+
+local function NormalizeRect(value, fallback)
+    value = type(value) == "table" and value or {}
+    fallback = type(fallback) == "table" and fallback or {}
+    return {
+        x = Clamp(value.x or value.offsetX, -4000, 4000, fallback.x or 0),
+        y = Clamp(value.y or value.offsetY, -4000, 4000, fallback.y or 0),
+        width = Clamp(value.width, 120, 1200, fallback.width or 340),
+        height = Clamp(value.height, 80, 900, fallback.height or 196),
+    }
+end
+
+local function NormalizeRaidPanel(value, fallback)
+    value = type(value) == "table" and value or {}
+    fallback = type(fallback) == "table" and fallback or DefaultRaidPanel(1)
+    return {
+        team = ClampInt(value.team, 1, 2, fallback.team or 1),
+        geometry = NormalizeRect(value.geometry, fallback.geometry or DefaultRaidPanelGeometry()),
     }
 end
 
@@ -105,20 +151,10 @@ local function DefaultPresentation()
             enabled = false, effectMode = 1, showRanks = true, rankCount = 10,
             rankFontSize = 10, rankAlpha = 1, rankCorner = 2,
             rankOffsetX = 1, rankOffsetY = 1, proximityMode = true,
-            calibration = false, calibrationSection = 1, calibrationScope = 1,
-            sections = DefaultRaidSections(),
+            calibration = false, mode = "auto", singleTeamId = 0,
+            testColors = false, slotNumbers = true, showMyself = false,
+            panels = DefaultRaidPanels(),
         },
-    }
-end
-
-local function NormalizeRect(value, fallback)
-    value = type(value) == "table" and value or {}
-    fallback = type(fallback) == "table" and fallback or {}
-    return {
-        x = Clamp(value.x or value.offsetX, -4000, 4000, fallback.x or 0),
-        y = Clamp(value.y or value.offsetY, -4000, 4000, fallback.y or 0),
-        width = Clamp(value.width, 120, 1200, fallback.width or 340),
-        height = Clamp(value.height, 80, 900, fallback.height or 196),
     }
 end
 
@@ -128,9 +164,9 @@ local function NormalizePresentation(value)
     local head = type(value.head) == "table" and value.head or {}
     local raid = type(value.raid) == "table" and value.raid or {}
     local sizes = type(head.sizes) == "table" and head.sizes or {}
-    local sections = type(raid.sections) == "table" and raid.sections or {}
-    local outSections = {}
-    for index = 1, 4 do outSections[index] = NormalizeRect(sections[index], defaults.raid.sections[index]) end
+    local legacySections = type(raid.sections) == "table" and raid.sections or nil
+    local rawPanels = (type(raid.panels) == "table" and raid.panels)
+        or (legacySections ~= nil and MigrateSectionsToPanels(legacySections)) or nil
     return {
         head = {
             enabled = head.enabled == true,
@@ -160,9 +196,15 @@ local function NormalizePresentation(value)
             rankOffsetY = Clamp(raid.rankOffsetY, -50, 50, defaults.raid.rankOffsetY),
             proximityMode = raid.proximityMode ~= false,
             calibration = raid.calibration == true,
-            calibrationSection = ClampInt(raid.calibrationSection, 1, 4, defaults.raid.calibrationSection),
-            calibrationScope = ClampInt(raid.calibrationScope, 1, 3, defaults.raid.calibrationScope),
-            sections = outSections,
+            mode = (raid.mode == "single" and "single") or (raid.mode == "dual" and "dual") or "auto",
+            singleTeamId = ClampInt(raid.singleTeamId, 0, 2, defaults.raid.singleTeamId),
+            testColors = raid.testColors == true,
+            slotNumbers = raid.slotNumbers ~= false,
+            showMyself = raid.showMyself == true,
+            panels = {
+                A = NormalizeRaidPanel(rawPanels and rawPanels.A, defaults.raid.panels.A),
+                B = NormalizeRaidPanel(rawPanels and rawPanels.B, defaults.raid.panels.B),
+            },
         },
     }
 end
@@ -582,7 +624,8 @@ local RAID_PRESENTATION_KEYS = {
     enabled=true, effectMode=true, showRanks=true, rankCount=true,
     rankFontSize=true, rankAlpha=true, rankCorner=true, rankOffsetX=true,
     rankOffsetY=true, proximityMode=true, calibration=true,
-    calibrationSection=true, calibrationScope=true,
+    mode=true, singleTeamId=true, testColors=true, slotNumbers=true,
+    showMyself=true,
 }
 
 local function PublishPresentationChanged(scope, key)
@@ -620,25 +663,84 @@ function F:SetPresentationSetting(scope, key, value)
     return true
 end
 
-function F:SetRaidSectionRect(index, rect)
-    index = ClampInt(index, 1, 4, 1)
+function F:SetRaidPanelRect(panelId, rect)
+    panelId = tostring(panelId or ""):upper()
+    if panelId ~= "A" and panelId ~= "B" then return false, "invalid raid panel id: " .. tostring(panelId) end
     local before = DeepCopy(self.State.presentation)
     local nextPresentation = DeepCopy(self.State.presentation)
-    nextPresentation.raid.sections[index] = NormalizeRect(rect, nextPresentation.raid.sections[index])
+    local panel = type(nextPresentation.raid.panels[panelId]) == "table" and nextPresentation.raid.panels[panelId] or {}
+    panel.geometry = NormalizeRect(rect, panel.geometry or DefaultRaidPanelGeometry())
+    nextPresentation.raid.panels[panelId] = panel
     self.State.presentation = NormalizePresentation(nextPresentation)
-    local marked, err = self:MarkStoreDirty(200, "healer_raid_rect:" .. tostring(index))
+    local marked, err = self:MarkStoreDirty(200, "healer_raid_panel_rect:" .. panelId)
     if marked ~= true then self.State.presentation = before; return false, err end
-    PublishPresentationChanged("raid", "sections")
+    PublishPresentationChanged("raid", "panels")
+    return true
+end
+
+function F:SetRaidPanelTeam(panelId, team)
+    panelId = tostring(panelId or ""):upper()
+    if panelId ~= "A" and panelId ~= "B" then return false, "invalid raid panel id: " .. tostring(panelId) end
+    team = ClampInt(team, 1, 2, 1)
+    local before = DeepCopy(self.State.presentation)
+    local nextPresentation = DeepCopy(self.State.presentation)
+    local panel = type(nextPresentation.raid.panels[panelId]) == "table" and nextPresentation.raid.panels[panelId] or {}
+    panel.team = team
+    nextPresentation.raid.panels[panelId] = panel
+    self.State.presentation = NormalizePresentation(nextPresentation)
+    local marked, err = self:MarkStoreDirty(200, "healer_raid_panel_team:" .. panelId)
+    if marked ~= true then self.State.presentation = before; return false, err end
+    PublishPresentationChanged("raid", "panels")
+    return true
+end
+
+function F:SetRaidMode(mode)
+    mode = (mode == "single" and "single") or (mode == "dual" and "dual") or "auto"
+    local before = DeepCopy(self.State.presentation)
+    local nextPresentation = DeepCopy(self.State.presentation)
+    nextPresentation.raid.mode = mode
+    self.State.presentation = NormalizePresentation(nextPresentation)
+    local marked, err = self:MarkStoreDirty(200, "healer_raid_mode")
+    if marked ~= true then self.State.presentation = before; return false, err end
+    PublishPresentationChanged("raid", "mode")
+    return true
+end
+
+function F:SetRaidSingleTeam(teamId)
+    teamId = ClampInt(teamId, 0, 2, 0)
+    local before = DeepCopy(self.State.presentation)
+    local nextPresentation = DeepCopy(self.State.presentation)
+    nextPresentation.raid.singleTeamId = teamId
+    self.State.presentation = NormalizePresentation(nextPresentation)
+    local marked, err = self:MarkStoreDirty(200, "healer_raid_single_team")
+    if marked ~= true then self.State.presentation = before; return false, err end
+    PublishPresentationChanged("raid", "singleTeamId")
+    return true
+end
+
+function F:SetRaidTestSetting(key, value)
+    key = tostring(key or "")
+    if key ~= "testColors" and key ~= "slotNumbers" and key ~= "showMyself" then
+        return false, "unsupported raid test setting: " .. key
+    end
+    local before = DeepCopy(self.State.presentation)
+    local nextPresentation = DeepCopy(self.State.presentation)
+    nextPresentation.raid[key] = value == true
+    self.State.presentation = NormalizePresentation(nextPresentation)
+    local marked, err = self:MarkStoreDirty(200, "healer_raid_test:" .. key)
+    if marked ~= true then self.State.presentation = before; return false, err end
+    PublishPresentationChanged("raid", key)
     return true
 end
 
 function F:ResetRaidLayout()
     local before = DeepCopy(self.State.presentation)
-    self.State.presentation.raid.sections = DefaultRaidSections()
-    self.State.presentation = NormalizePresentation(self.State.presentation)
+    local nextPresentation = DeepCopy(self.State.presentation)
+    nextPresentation.raid.panels = DefaultRaidPanels()
+    self.State.presentation = NormalizePresentation(nextPresentation)
     local marked, err = self:MarkStoreDirty(200, "healer_raid_layout_reset")
     if marked ~= true then self.State.presentation = before; return false, err end
-    PublishPresentationChanged("raid", "sections")
+    PublishPresentationChanged("raid", "panels")
     return true
 end
 

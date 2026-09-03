@@ -11,9 +11,11 @@ S.Services = S.Services or {}
 S.Services.GearV3 = S.Services.GearV3 or {}
 local G = S.Services.GearV3
 
-G.version = 2
+G.version = 3
 G.presentationBoundary = "service_only"
 G.BagSlots = 150
+G.MaxBagSlots = 240
+G.PreferredBagId = 1
 G.runtime = G.runtime or { busy = false, pendingSetId = nil, session = nil, stage = "IDLE", index = 0, message = "" }
 G.taskName = "v3_gear_apply"
 G.enabled = false
@@ -140,6 +142,18 @@ function G:GetBagItem(bagId, slot)
     local ok, value, err = S.Api:CallCapability("X2Bag:GetBagItemInfo", X2Bag, "GetBagItemInfo", bagId, slot)
     if ok ~= true then return nil, err end
     return value, nil
+end
+
+function G:GetBagScanLimit()
+    local fallback = tonumber(self.BagSlots) or 150
+    if X2Bag == nil or S.Api == nil or type(S.Api.IsCapabilityAllowed) ~= "function"
+        or S.Api:IsCapabilityAllowed("X2Bag:Capacity") ~= true then
+        return fallback
+    end
+    local ok, value = S.Api:CallCapability("X2Bag:Capacity", X2Bag, "Capacity")
+    local capacity = ok == true and tonumber(value) or nil
+    if capacity == nil or capacity <= 0 then return fallback end
+    return math.max(1, math.min(tonumber(self.MaxBagSlots) or 240, math.floor(capacity)))
 end
 
 function G:CaptureTitle()
@@ -285,6 +299,17 @@ function G:ValidatePayload(payload)
     return #mismatches == 0, mismatches
 end
 
+function G:ValidateWeaponPayload(payload)
+    local mismatches = {}
+    for _, saved in ipairs(type(payload) == "table" and payload.items or {}) do
+        if saved.managed ~= false and saved.empty ~= true and self:IsWeaponSlot(saved.slot)
+            and not self:CurrentItemMatches(saved) then
+            mismatches[#mismatches + 1] = { slot = saved.slot, slotName = saved.slotName, name = saved.name, kind = "武器" }
+        end
+    end
+    return #mismatches == 0, mismatches
+end
+
 function G:BuildBagCandidate(bagId, slot, info)
     if type(info) ~= "table" then return nil end
     return {
@@ -296,7 +321,8 @@ end
 
 function G:BuildBagView(bagId)
     local list, errors, firstError = {}, 0, nil
-    for slot = 1, self.BagSlots do
+    local scanLimit = self:GetBagScanLimit()
+    for slot = 1, scanLimit do
         local info, err = self:GetBagItem(bagId, slot)
         if err ~= nil then errors = errors + 1; firstError = firstError or err
         elseif type(info) == "table" then list[#list + 1] = self:BuildBagCandidate(bagId, slot, info) end
@@ -312,41 +338,36 @@ function G:CandidateFingerprint(candidate)
     }, "|")
 end
 
-function G:SamePhysicalBagView(left, right)
-    left, right = type(left) == "table" and left or {}, type(right) == "table" and right or {}
-    if #(left.items or {}) ~= #(right.items or {}) then return false end
-    local bySlot = {}
-    for _, candidate in ipairs(left.items or {}) do bySlot[tonumber(candidate.slot)] = self:CandidateFingerprint(candidate) end
-    for _, candidate in ipairs(right.items or {}) do
-        if bySlot[tonumber(candidate.slot)] ~= self:CandidateFingerprint(candidate) then return false end
-    end
-    return true
-end
-
--- EquipBagItem accepts only a physical slot, not a bagId. Some RU/community
--- builds expose that physical inventory through bagId 0, bagId 1, or both. If
--- both populated views disagree, fail closed: choosing a candidate from one
--- logical view and passing only its numeric slot could equip an unrelated item.
+-- EquipBagItem consumes only a physical slot. The RU gearswap/fast-swap
+-- implementations that actually equip from the bag use bagId 1 for the
+-- inventory view, so GearV3 treats that view as its transaction authority.
+-- bagId 0 remains a bounded fallback only when bagId 1 is completely unreadable
+-- or empty; comparing both views and cancelling on any disagreement caused a
+-- false-positive hard block on clients where the two logical views legitimately
+-- expose different content.
 function G:BuildBagSnapshot()
-    local view1, view0 = self:BuildBagView(1), self:BuildBagView(0)
-    local count1, count0 = #(view1.items or {}), #(view0.items or {})
-    local selected, conflict = view1, false
-    if count1 == 0 and count0 > 0 then
-        selected = view0
-    elseif count1 > 0 and count0 > 0 and not self:SamePhysicalBagView(view1, view0) then
-        conflict = true
-    elseif count1 == 0 and count0 == 0 and (view1.errors or 0) > (view0.errors or 0) then
-        selected = view0
+    local preferredId = tonumber(self.PreferredBagId) or 1
+    local preferred = self:BuildBagView(preferredId)
+    if #(preferred.items or {}) > 0 then
+        preferred.fallbackUsed = false
+        return preferred
     end
-    return {
-        bagId = selected.bagId,
-        items = selected.items or {},
-        errors = selected.errors or 0,
-        firstError = selected.firstError,
-        viewConflict = conflict,
-        counts = { [0] = count0, [1] = count1 },
-        errorsByBag = { [0] = view0.errors or 0, [1] = view1.errors or 0 },
-    }
+
+    local fallbackId = preferredId == 1 and 0 or 1
+    local fallback = self:BuildBagView(fallbackId)
+    if #(fallback.items or {}) > 0 then
+        fallback.fallbackUsed = true
+        fallback.preferredErrors = preferred.errors or 0
+        fallback.preferredFirstError = preferred.firstError
+        return fallback
+    end
+
+    if (tonumber(fallback.errors) or 0) < (tonumber(preferred.errors) or 0) then
+        fallback.fallbackUsed = true
+        return fallback
+    end
+    preferred.fallbackUsed = false
+    return preferred
 end
 
 function G:CandidateMatches(saved, candidate)
@@ -391,7 +412,8 @@ function G:FindCandidate(saved, snapshot, reserved)
     return top[1], nil
 end
 
-function G:BuildSession(setId, payload, mismatchRows)
+function G:BuildSession(setId, payload, mismatchRows, options)
+    options = type(options) == "table" and options or {}
     local wantedSlots = nil
     if type(mismatchRows) == "table" then
         wantedSlots = {}
@@ -407,7 +429,9 @@ function G:BuildSession(setId, payload, mismatchRows)
             local mismatch
             if wantedSlots ~= nil then mismatch = wantedSlots[tonumber(saved.slot)] == true
             else mismatch = not self:CurrentItemMatches(saved) end
-            if mismatch then pendingSaved[#pendingSaved + 1] = saved end
+            if mismatch and (options.weaponOnly ~= true or self:IsWeaponSlot(saved.slot)) then
+                pendingSaved[#pendingSaved + 1] = saved
+            end
         end
     end
 
@@ -417,18 +441,12 @@ function G:BuildSession(setId, payload, mismatchRows)
         return {
             setId = tostring(setId), payload = payload, queue = {}, blocked = {}, reserved = {},
             startedAt = S.NowMs and S.NowMs() or 0,
-            titlePending = type(payload.title) == "table" and payload.title.apply == true,
+            titlePending = options.weaponOnly ~= true and type(payload.title) == "table" and payload.title.apply == true,
+            weaponOnly = options.weaponOnly == true,
         }
     end
 
     local snapshot = self:BuildBagSnapshot()
-    if snapshot.viewConflict == true then
-        return {
-            setId = tostring(setId), payload = payload, queue = {}, blocked = {}, reserved = {},
-            startedAt = S.NowMs and S.NowMs() or 0, titlePending = type(payload.title) == "table" and payload.title.apply == true,
-            preflightError = "客户端返回的两个背包视图不一致；为避免装备错误物品，本次换装已取消",
-        }
-    end
     local queue, reserved, blocked = {}, {}, {}
     for _, saved in ipairs(pendingSaved) do
         local candidate, reason = self:FindCandidate(saved, snapshot, reserved)
@@ -450,13 +468,14 @@ function G:BuildSession(setId, payload, mismatchRows)
     return {
         setId = tostring(setId), payload = payload, queue = queue, blocked = blocked, reserved = reserved,
         bagId = snapshot.bagId, startedAt = S.NowMs and S.NowMs() or 0,
-        titlePending = type(payload.title) == "table" and payload.title.apply == true,
+        titlePending = options.weaponOnly ~= true and type(payload.title) == "table" and payload.title.apply == true,
+        weaponOnly = options.weaponOnly == true,
+        bagFallbackUsed = snapshot.fallbackUsed == true,
     }
 end
 
 function G:RefreshStepCandidate(step, session)
     local snapshot = self:BuildBagSnapshot()
-    if snapshot.viewConflict == true then return false, "背包视图发生冲突，已停止重试" end
     local candidate, reason = self:FindCandidate(step.saved, snapshot, {})
     if candidate == nil then return false, reason end
     step.bagSlot, step.bagId = candidate.slot, snapshot.bagId
@@ -496,14 +515,26 @@ function G:RuntimeTick()
     local r, session = self.runtime, self.runtime.session
     if r.busy ~= true or type(session) ~= "table" then self:StopRuntime(); return true end
     local inCombat = self:IsInCombat()
-    if inCombat == true then
+    if inCombat == true and session.weaponOnly ~= true then
         r.pendingSetId = session.setId
-        return self:FinishRuntime(true, "战斗开始，剩余换装已暂停；脱战后可再次执行")
+        return self:FinishRuntime(true, "战斗开始，剩余防具/饰品/称号已暂停；脱战后可再次执行")
     end
     if (S.NowMs and S.NowMs() or 0) - (session.startedAt or 0) > 60000 then return self:FinishRuntime(false, "换装总超时，已停止") end
 
     local step = session.queue[r.index]
     if step == nil then
+        if session.weaponOnly == true then
+            local weaponsMatched, weaponMismatches = self:ValidateWeaponPayload(session.payload)
+            if weaponsMatched ~= true then
+                return self:FinishRuntime(false, "战斗换装失败：仍有 " .. tostring(#weaponMismatches) .. " 件武器未达到目标状态")
+            end
+            local allMatched = self:ValidatePayload(session.payload)
+            if allMatched == true then
+                return self:FinishRuntime(true, "战斗中武器切换完成，当前方案已完全匹配")
+            end
+            r.pendingSetId = session.setId
+            return self:FinishRuntime(true, "战斗中武器切换完成；防具/饰品/称号未处理，脱战后再次执行可补齐")
+        end
         local matched = self:ValidatePayload(session.payload)
         if matched == true then return self:FinishRuntime(true, "装备和称号已经达到目标状态") end
         if session.titlePending == true then
@@ -550,23 +581,28 @@ function G:Start(setId, payload)
     if self.runtime.busy == true then return false, "已有换装任务正在执行" end
     local inCombat, combatErr = self:IsInCombat()
     if combatErr ~= nil then return false, "无法确认战斗状态：" .. tostring(combatErr) end
-    if inCombat == true then
-        self.runtime.pendingSetId = tostring(setId)
-        self.runtime.message = "战斗中客户端会拒绝自动装备；已记录方案，脱战后请再次执行"
-        Publish("combat_blocked")
-        return false, self.runtime.message
-    end
     local matched, mismatches = self:ValidatePayload(payload)
     if matched == true then self.runtime.message = "当前已经是目标方案"; Publish("already_matched"); return true end
-    local session = self:BuildSession(setId, payload, mismatches)
+
+    -- RU实机历史已经确认：战斗中防具/饰品通常会被客户端拒绝，
+    -- 但主手/副手/远程/乐器仍允许换装。不要用一个全局战斗门把
+    -- 可用的武器路径一起阻断；战斗模式只构建武器 mismatch 队列。
+    local weaponOnly = inCombat == true
+    local session = self:BuildSession(setId, payload, mismatches, { weaponOnly = weaponOnly })
     if session.preflightError ~= nil then return false, tostring(session.preflightError) end
+    if weaponOnly == true and #session.queue == 0 and #session.blocked == 0 then
+        self.runtime.pendingSetId = tostring(setId)
+        self.runtime.message = "当前方案只有防具/饰品/称号需要切换；战斗中已安全跳过，脱战后再次执行"
+        Publish("combat_non_weapon_deferred")
+        return true
+    end
     if #session.blocked > 0 then
         local first = session.blocked[1]
         return false, tostring(first.slotName or "装备") .. "：" .. tostring(first.reason or "无法定位")
     end
     self.runtime.busy, self.runtime.session, self.runtime.stage, self.runtime.index = true, session, "ACTION", 1
     self.runtime.pendingSetId = nil
-    self.runtime.message = "正在切换“" .. tostring(setId) .. "”"
+    self.runtime.message = weaponOnly and ("战斗中正在优先切换“" .. tostring(setId) .. "”的武器") or ("正在切换“" .. tostring(setId) .. "”")
     if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then self:StopRuntime("调度器不可用"); return false, self.runtime.message end
     S.Scheduler:SetTaskModule(self.taskName, "gear")
     local added = S.Scheduler:AddTask(self.taskName, 220, function() return G:RuntimeTick() end, true, self, "P1", 2)

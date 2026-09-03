@@ -157,8 +157,8 @@ Add("combat_buff_display", "combat.buff_display", "状态显示", "combat", 40, 
 })
 Add("combat_boss_alerts", "combat.boss_alerts", "首领机制 / 战斗警报", "combat", 50, "首领机制静态规则目录 + 可配置/可测试屏幕 HUD；实时施法/Aura 触发仍待验证事实桥。", { status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.boss_alerts + alerts_service", widgetCapable = false, settingsCapable = true, apiReadiness = "static_plus_presenter", apiPolicy = "read_only_push_hud", currentImplementation = "按真实 alert/kind/names/debuffId/style 字段投影机制；HUD 支持中央/顶部、字号、时长以及大字/倒计时测试", remainingCapability = "需要已验证的施法/Aura 事件事实把静态规则接到实时触发；不使用 CHAT_MESSAGE 猜机制", evidence = "V3 static BossAlerts + AlertsService push presenter; CHAT_MESSAGE false-positive matcher removed" })
 Add("combat_target_monitor", "combat.target_monitor", "目标监控", "combat", 60, "按需追踪当前目标身份、名称与距离；不伪造仇恨目标。", { status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.target_monitor", widgetCapable = true, apiDependencies = { "X2Unit:GetTargetUnitId", "X2Unit:UnitName", "X2Unit:UnitDistance" }, apiReadiness = "partial", apiPolicy = "on_demand_read_only", currentImplementation = "TARGET_CHANGED 即时刷新 + 500ms Demand-scoped 距离采样；Consumer=0 时任务和事件全部释放", remainingCapability = "仇恨目标需要独立、已验证的 RU 事实来源后再接入", evidence = "V3 target observation contract v1; event edge + bounded Scheduler distance refresh" })
-Add("combat_unit_lines", "combat.unit_lines", "单位连线", "combat", 70, "当前实现为自己 ↔ 当前目标的独立屏幕连线；不恢复官方禁用的附近单位枚举。", { status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.unit_lines + screen_projection_v3", currentImplementation = "100ms Demand-scoped 当前目标投影 + 有界点线 Presenter；支持点数/大小/透明度", remainingCapability = "全单位关系网络仍需要官方允许的单位集合来源；GetUnitsInSight 保持禁用", widgetCapable = false, settingsCapable = true, apiDependencies = { "X2Unit:GetUnitScreenPosition", "X2Unit:GetUnitWorldPositionByTarget" }, apiReadiness = "partial", apiPolicy = "bounded_current_target_only" })
-Add("combat_range_assist", "combat.range_assist", "范围辅助", "combat", 80, "以玩家为圆心绘制用户指定半径的范围圆；不猜技能/魔法阵真实范围。", { status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.range_assist + screen_projection_v3", currentImplementation = "200ms Demand-scoped 玩家世界坐标 + 12-48 个有界投影点；支持半径/点数/点大小/透明度", remainingCapability = "技能/魔法阵自动半径需要独立已验证的技能范围事实；当前只承诺用户自定义半径", widgetCapable = false, settingsCapable = true, apiDependencies = { "X2Unit:GetUnitWorldPositionByTarget" }, apiReadiness = "partial", apiPolicy = "bounded_user_radius" })
+Add("combat_unit_lines", "combat.unit_lines", "单位连线", "combat", 70, "当前实现为自己 ↔ 当前目标的独立屏幕连线；不恢复官方禁用的附近单位枚举。", { status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.unit_lines + screen_projection_v3", currentImplementation = "50-1000ms Demand-scoped 四类 token 连线 + 有界点线 Presenter；公共参数与每线点数/大小/颜色独立设置；设置页按 2 列卡片布局避免窄屏挤压", remainingCapability = "全单位关系网络仍需要官方允许的单位集合来源；GetUnitsInSight 保持禁用", widgetCapable = false, settingsCapable = true, apiDependencies = { "X2Unit:GetUnitScreenPosition", "X2Unit:GetUnitWorldPositionByTarget" }, apiReadiness = "partial", apiPolicy = "bounded_current_target_only" })
+Add("combat_range_assist", "combat.range_assist", "范围辅助", "combat", 80, "以玩家为圆心绘制用户指定半径的范围圆；不猜技能/魔法阵真实范围。", { status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.range_assist + screen_projection_v3", currentImplementation = "200ms Demand-scoped 玩家世界坐标 + 12-48 个有界投影点；支持半径/点数/点大小/透明度/颜色并持久化", remainingCapability = "技能/魔法阵自动半径需要独立已验证的技能范围事实；当前只承诺用户自定义半径", widgetCapable = false, settingsCapable = true, apiDependencies = { "X2Unit:GetUnitWorldPositionByTarget" }, apiReadiness = "partial", apiPolicy = "bounded_user_radius" })
 Add("combat_buff_cap", "combat.buff_cap", "增益容量监控", "combat", 85, "读取自身普通/隐藏增益数量；RU 容量与顶替阈值未验证前不生成风险告警。", {
     status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.buff_cap", widgetCapable = true, settingsCapable = true,
     apiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitHiddenBuffCount" }, apiReadiness = "partial", apiPolicy = "read_only",
@@ -190,12 +190,13 @@ Add("combat_gear", "combat.gear", "换装 / 称号", "combat", 100,
     status = "migrated_m4", lifecycle = "independent", authority = "v3.gear",
     widgetCapable = true, settingsCapable = true, defaultEnabled = true,
     apiDependencies = {
-        "X2Equipment:GetEquippedItemTooltipInfo", "X2Bag:GetBagItemInfo", "X2Bag:EquipBagItem",
+        "X2Equipment:GetEquippedItemTooltipInfo", "X2Bag:GetBagItemInfo", "X2Bag:Capacity", "X2Bag:EquipBagItem",
         "X2Player:GetShowingAppellation", "X2Player:GetEffectAppellation",
         "X2Player:PlayerInCombat", "X2Player:ChangeAppellation",
     },
     apiReadiness = "official_mixed", apiPolicy = "explicit_user_read_write",
-    evidence = "V3 GearService + legacy Replicated Gear live-tested bag/title contracts; RU write restrictions are enforced fail-closed",
+    currentImplementation = "GearV3 v3 使用 bagId=1 作为换装物理槽权威并以 Capacity 有界扫描；战斗中仅执行 16/17/18/19 武器优先事务，防具/饰品/称号延后；脱战再次执行补齐",
+    evidence = "V3 GearService + RU gearswap/Replicated Gear 已验证的 bagId=1 / EquipBagItem / title 行为；写入继续 fail-closed",
 })
 
 Add("life_activities", "life.activities", "活动", "life", 10, "世界活动、区域阶段、任务/实例参与进度。", {
@@ -218,7 +219,8 @@ Add("life_trade", "life.trade", "跑商", "life", 20, "路线、多货物与实�
 Add("life_bonds", "life.bonds", "债券 / 居民板", "life", 30, "每日居民板材料、完成状态与背包资源。", {
     status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.life.bonds", widgetCapable = true, settingsCapable = true,
     apiDependencies = { "X2Resident:GetResidentBoardContent", "X2Bag:Capacity", "X2Bag:GetBagItemInfo", "X2Quest:IsCompleted", "X2Quest:IsReadyForCompleteQuest" }, apiReadiness = "official_mixed", apiPolicy = "on_demand_read_only",
-    evidence = "V3 Bonds resolves curated/verified constant mappings and projects QuestProgressV3 states plus bounded resource diagnostics; unknown runtime fields remain fail-closed",
+    currentImplementation = "单次读取 1-7 居民板，兼容 contents/content/rows/items 与稀疏数字行；按 RU 已验证的 3+4=大陆、5/6=原大陆规则选择分类，并显式区分 unavailable/empty/ready",
+    evidence = "V3 Bonds + RU residentboard GetResidentBoardContent(index).contents 行为；未知字段继续 fail-closed",
 })
 Add("life_tasks", "life.tasks", "任务追踪", "life", 40, "用户选择的日常与周常任务追踪；支持子任务展开和独立悬浮追踪。", {
     status = "migrated_m1", lifecycle = "independent", authority = "v3.tasks",
@@ -313,9 +315,9 @@ Add("tools_hotkey_profiles", "tools.hotkey_profiles", "快捷键方案", "tools"
     apiReadiness = "official_restricted", apiPolicy = "combat_restricted_write", evidence = "ArcheRage RU official hotkey API + 2026-08-19 combat restrictions",
 })
 Add("tools_reinforce_analysis", "tools.reinforce_analysis", "装备强化分析", "tools", 80, "读取槽位强化等级、材料需求、套装/组合效果，做升级差距与材料规划，不执行强化动作。", {
-    status = "runtime_blocked", runtimeBlocked = true, runtimeBlocker = "强化 getter 的 equipSlotIndex 合法范围、返回字段和当前装备上下文仍未在 RU 实机确认", currentImplementation = "V3 页面显示阻塞原因，不猜槽位或强化等级", remainingCapability = "需要稳定槽位枚举与 GetReinforceInfo/GetMaterialInfo 字段契约", lifecycle = "independent", authority = "v3.reinforce_analysis", settingsCapable = true,
-    apiDependencies = { "X2EquipSlotReinforce:GetMaterialInfo", "X2EquipSlotReinforce:GetReinforceInfo", "X2EquipSlotReinforce:GetAppliedAllSetEffect", "X2EquipSlotReinforce:GetTotalReinforceLevel" },
-    apiReadiness = "official", apiPolicy = "read_only", evidence = "ArcheRage RU official 20 reinforcement getters; crash-prone getters fixed 2026-05-12",
+    status = "migrated_partial", currentImplementation = "V3 只读投影：汇总总量/套装/组合等级，并在 0..31 上界内探测各槽位强化信息，任何未识别字段一律显示「待确认」而不是猜测", remainingCapability = "equipSlotIndex 合法范围与 GetReinforceInfo/GetMaterialInfo 返回字段仍需在 RU 实机抽样确认；写入类强化接口永不注册，写路径在能力门处不可达", lifecycle = "independent", authority = "v3.reinforce_analysis", settingsCapable = true,
+    apiDependencies = { "X2EquipSlotReinforce:GetTotalReinforceLevel", "X2EquipSlotReinforce:GetAttributeTotalLevel", "X2EquipSlotReinforce:GetNextSetApplyLevel", "X2EquipSlotReinforce:HasNextSetEffect", "X2EquipSlotReinforce:SuitableLevelForEquipSlotReinforce", "X2EquipSlotReinforce:GetBundleEffectTopLevel", "X2EquipSlotReinforce:GetReinforceInfo", "X2EquipSlotReinforce:GetMaterialInfo" },
+    apiReadiness = "official", apiPolicy = "read_only", evidence = "ArcheRage RU official 20 reinforcement getters; crash-prone getters fixed 2026-05-12; read path reconciled 2026-09-03 against api_functions.lua allowed list",
 })
 Add("tools_portal_profiles", "tools.portal_profiles", "传送配置", "tools", 90, "预留个人传送偏好/收藏配置；只在 RU 实机验证当前 Option API 后接业务，不使用未授权 X2Warp 写接口。", {
     status = "runtime_blocked", runtimeBlocked = true, runtimeBlocker = "X2Option optionType/返回值语义和个人传送候选集合未在当前 RU 客户端验证", currentImplementation = "V3 页面显示阻塞原因，不执行 Option 写入", remainingCapability = "需要候选枚举、稳定 optionType 和写入回读契约", lifecycle = "independent", authority = "v3.portal_profiles", settingsCapable = true,

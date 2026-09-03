@@ -1,6 +1,166 @@
 # Replicated Suite 变更记录（Changelog）
 
-> **⚠️ 架构变更声明（2026-09-01/02）**：旧版（Legacy/Professional）源码已全部物理删除（163 文件、−10.3 万行，commit 09010c0）。本文件是历史变更日志，早期条目（M1.16.0.18.x 及之前）可能引用已删文件（`rp_*`/`rh_*`/`rg_*`/`rdps_*`/`modules/professional/`/`S.State`/`S.Storage`/`rs_state`/`rs_storage`/`rs_module_manager`/`rs_module_sandbox`/`ReplicatedSuiteModuleSandbox`/`ReplicatedHealerModule`/`ReplicatedPlatesModule`/`ReplicatedDps` 等）。这些引用仅作历史记录，不代表当前代码。当前架构以 [`Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md`](Architecture/CURRENT_ARCHITECTURE_OVERVIEW.md) 为准。
+## M1.16.0.18.74 — UI Layout Editor Workspace Foundation（2026-09-03）
+
+- **执行范围**：继续 Foundation First，零业务 Feature 页面迁移；把 `.18.71` 的独立 Transform 数学层组合成可复用 Editor Transaction / Overlay / Responsive Workspace。
+- **RSUI v38 / API 12.2**：新增 `LayoutEditorPreviewAdapter v1` 与 `LayoutEditorOverlay v1`；`WorkspaceTemplates v3` 新增 `CreateLayoutEditorWorkspace()`。Canvas 统一为 `PreviewHost + EditorOverlay`，Feature Preview 不再负责 Handle/Guide。
+- **Transaction v2**：`LayoutEditorGesture v2` 支持 Gesture Begin 动态尺寸约束、`onBegin/onAbort` 与 strict Preview/Commit rejection；`AnchorPivot v2` 增加完整 Snapshot Restore；`TransformInspector v2` 改为 `rectModel + optional anchorModel`，同一实例覆盖 single/multi。
+- **Single/Multi Adapter**：Selection revision 是手势 fence；single 使用 AnchorPivot，multi 使用 MultiSelection ProjectionSession；Preview 只更新 working projection，Feature/Persistence Commit 拒绝会恢复 start items/anchor snapshot，不允许半事务。
+- **Responsive Workspace**：Wide 右侧 inline Inspector；Compact 使用同一个 Inspector 作为 Drawer，只改变 Geometry/Visibility/Layer，不复制 Binding/Selection/Scroll，不使用未经验证 Native reparent。Toolbar 明示 `左上(0,0) · X→右 · Y→下`。
+- **性能**：正常游戏态 0 editor sampling；candidate 只在 Gesture Begin 有界冻结，alignment 关闭时 candidate discovery=0；Pulse 只做 pointer/rect/snap math；Adapter/Multi projection O(selected) 且有 hard cap。
+- **Gate / Acceptance / Sequence**：新增 PreviewAdapter / Overlay / Workspace Contract 门禁，并把 Gesture/Anchor/TransformInspector 最低契约提升到 v2；Sequence 新增 Adapter transaction/anchor rollback 与 composition contract。
+- **下一层**：先补 `LayoutEditHistory / Undo-Redo + Editor Command Bar + Reset/Revert/Apply` 的共享可恢复编辑语义，再进入状态显示 `UI_REVIEW`。
+- **BuildTag**：`v3-m1.16.0.18.74-ui-layout-editor-workspace-foundation`。
+
+
+## M1.16.0.18.71 — UI Multi Selection Transform Foundation（2026-09-03）
+
+- **执行范围**：继续 Foundation First，零业务 Feature 页面迁移；在 SelectionGeometry/Gesture 与 AnchorPivot 之间补齐 2+ selection 的 Group Bounds → per-child Rect 映射，解决完整 LayoutEditorOverlay 的最后一个核心数学/事务边界。
+- **RSUI v35 / API 11.9 / MultiSelectionTransform Contract v1**：新增 `ui/framework/rs_ui_multi_selection_transform.lua`。模型只接受 2+ stable-key rect，默认 maxItems=256、hard cap=1024；single/duplicate/超上限全部 fail-closed，不静默截断 selection。
+- **Authority 不重叠**：Group Bounds 的 move/resize/snap 仍由 `RectTransformTransaction + LayoutEditorGesture + GuideResolver` 负责；MultiSelectionTransform 不创建第二个 RectTransform，只把最终/snap-resolved Group Rect 投影回每个 Child。Feature/Store 仍只允许在外层 Commit 后持久化。
+- **Projection Session**：`BeginProjectionSession → Project → Commit/Cancel`。Begin 冻结 start child rects/start bounds/base revision；Project 只生成 preview，不改 committed model；Commit 做 revision check 后一次性替换全部 child rect；Cancel 保持 committed model 完全不变。Session 活跃时 SetItems fail-closed，防止手势期间 selection 数据漂移。
+- **比例 Resize**：按 Group `scaleX/scaleY` 映射每个 Child 的相对位置和尺寸；纯 Move 等价 scale=1。Session 根据所有 Child 的 minChildWidth/minChildHeight 反推出 `minGroupWidth/minGroupHeight`，未来 Gesture 从 Group 层限制 resize，而不是逐 child clamp 破坏比例。
+- **Snap/Inspector 收紧**：`.18.70` SnapSettings 增加输入类型预检，非法值在 commit 前拒绝并保留旧 revision；TransformInspector 新增 TypeValidator，且自定义 SetEnabled 保留 Base Component enabled/alpha/revision 语义。
+- **Gate / Acceptance / Audit**：FoundationGate v71、UIV3Acceptance v46；新增 `v3_ui_multi_selection_transform_contract` / `v3_48_ui_multi_selection_transform_contract`；Foundation Audit 门禁 `.18.69~.71` model/inspector/multi source 必须处于 Active TOC，并禁止纯 model 文件拥有 OnUpdate/InteractiveTask。
+- **下一层**：允许开始 `LayoutEditorOverlay`，但只能作为 Coordinator：组合 SelectionOverlay/GuideOverlay/Gesture/Single-Multi Transform Adapter/Inspector，不得再造 Pointer Capture、Snap Resolver 或 Rect 数学。
+- **BuildTag**：`v3-m1.16.0.18.71-ui-multi-selection-transform-foundation`。最终验证数字见本轮交付记录。
+
+## M1.16.0.18.70 — UI Transform Inspector Foundation（2026-09-03）
+
+- **执行范围**：继续 Foundation First，零业务 Feature 页面迁移；把 `.18.69` Anchor/Pivot + Snap Settings 模型接成可复用 Transform Inspector，但仍不组合完整 `LayoutEditorOverlay`，先避免把“单元素变换”误当成未来“多选整体变换”的最终 Authority。
+- **RSUI v34 / API 11.8 / TransformInspector Contract v1**：新增 `ui/framework/rs_ui_transform_inspector.lua`，统一“变换 / 锚点与轴心 / 吸附与参考线”三段 Inspector；默认宽约 286px、两列字段、NumericField 精确输入，X/Y 标签明确 `左-/右+`、`上-/下+`，继续遵守 ArcheAge/CryEngine 左上原点坐标。
+- **单一状态 Authority**：Inspector 不保存独立 Transform/Snap 副本；所有字段直接 Binding 到 `AnchorPivotModel` / `LayoutEditorSnapSettingsModel`。`onTransformChanged/onSnapChanged` 仅作为提交后的通知，不拥有 mutation Authority；通知异常只进 Diagnostics，不把已成功的模型提交伪装成半事务失败。
+- **Preflight / Enabled 语义**：新增 `TransformInspector` TypeValidator，在创建 Native Root 前验证 Anchor/Snap Model 契约；自定义 `SetEnabled` 继续调用 Base Component `SetEnabled`，保持 Root enabledRevision、Native enabled 与 disabled alpha 一致，再递归驱动字段状态。
+- **Snap Settings 输入完整性**：`SetPatch()` 在任何写入前验证布尔/数值字段类型；非法输入 fail-closed 并记录 `lastError`，不会把无效字符串悄悄 Clamp 成 1/0 等合法值。Snapshot 增加 `lastSource/lastError`，成功提交清除错误。
+- **Gate / Acceptance / Sequence**：FoundationGate v70、UIV3Acceptance v45；新增 `v3_ui_transform_inspector_contract` / `v3_47_ui_transform_inspector_contract`，门禁 RSUI v34、TransformInspector v1 与 Anchor/Snap 共享模型依赖。
+- **架构边界**：完整 `LayoutEditorOverlay` 仍刻意延后。下一层先定义 `MultiSelectionTransformModel`：单元素 Anchor/Pivot、Group Bounds、子元素相对变换、Commit/Rollback 必须先有明确 Authority，避免 Overlay 先落地后再返工多选语义。
+- **BuildTag**：`v3-m1.16.0.18.70-ui-transform-inspector-foundation`。最终验证数字见本轮交付记录。
+
+## M1.16.0.18.69 — UI Anchor / Pivot / Snap Settings Model Foundation（2026-09-03）
+
+- **执行范围**：继续 Foundation First；新增纯 Lua editor state model，不创建 Native Widget、不注册 Tick、不修改业务 Store。
+- **AnchorPivot Contract v1**：新增 `ui/framework/rs_ui_layout_editor_models.lua`。v1 只支持 9 个常用 Point Anchor + 自定义 normalized anchor `(0..1)` 与 Pivot `(0..1)`；明确暂不引入 UMG Stretch Min/Max Anchor，避免重新解释当前 top-left Rect 持久化。
+- **视觉位置稳定**：切换 Anchor/Pivot 默认 preserve visual rect，只重新计算 anchor-relative `positionX/positionY`；Parent resize 则由 Caller 显式选择 `preserveVisual=true` 或 follow-anchor。公式统一为 `anchorAbs + position - size*pivot`，防止不同页面自己发明位置换算。
+- **方向语义**：模型提供 `MoveUp/MoveDown/MoveLeft/MoveRight`；其中 `MoveUp(8)` 明确等价 `Y-8`，继续把 CryEngine `+Y=向下` 约束固化到语义 API。
+- **Snap Settings Model v1**：统一 `enabled/gridEnabled/alignmentEnabled/canvasEnabled/showGuides/gridSize/threshold/maxCandidates`；`maxCandidates` hard cap=1024。`ToResolverOptions()` 是 GuideResolver 的唯一 Projection，不让页面散落吸附参数。
+- **Gesture 性能收紧**：当对象对齐关闭时，Gesture Begin 不调用 `getSnapCandidates()`；只启用 Grid Snap 时 candidate discovery 次数为 0。GuideResolver 在 `enabled=false` 时直接返回 unchanged rect / scanned=0。
+- **Gate / Acceptance / Sequence**：FoundationGate v69、UIV3Acceptance v44；新增 `v3_ui_layout_editor_model_contract` / `v3_46_ui_layout_editor_model_contract`，门禁 Anchor/Pivot、Snap Settings、方向语义与 grid-only bounded behavior。
+- **BuildTag 过渡**：`.18.69` 为模型层里程碑；同轮继续收敛到 `.18.70` Transform Inspector 后统一交付。
+
+## M1.16.0.18.68 — UI Layout Editor Gesture Transaction Foundation（2026-09-03）
+
+- **执行范围**：继续 Foundation First，零业务 Feature 页面迁移；把 `.18.67` Selection/Guide Surface 接到项目已验证的 Native drag capture，而不是新建 generic pointer capture。
+- **RSUI v32 / API 11.6 / Gesture Contract v1**：新增 `ui/framework/rs_ui_layout_editor_gesture.lua`。SelectionOverlay 的整框 `moveHit` 与 8 resize handle 统一走 `OnDragStart → StartMoving → gesture-only InteractiveTask/OnUpdate fallback → OnDragStop`；Controller 不拥有 Store/Persistence，只有 Caller `onCommit` 可以进入业务写入。
+- **RectTransform Transaction v2**：增加 `OverridePreview()`；`PreviewDelta → GuideResolver → OverridePreview → Commit` 保证视觉 Snap 与最终提交坐标一致，并继续保持 left/top resize clamp 时 opposite edge 固定。
+- **坐标空间 Fence**：Pointer 固定为 viewport-logical。只有 `coordinateSpace="viewport"` 可以 identity conversion；Canvas/Panel local editor 必须提供 `pointerToLocal`，否则创建 fail-closed。方向仍遵循 top-left：`+Y=下 / -Y=上`。
+- **Bounded Gesture Performance**：Snap options/candidates 只在 Begin 调用一次并冻结，hard cap=1024；16ms pulse 只做 pointer delta + bounded pure math + 现有 overlay diff write；Scheduler 拒绝时才临时绑定 capture-surface `OnUpdate`，Commit/Cancel/Release 立即解除。Native Geometry Lease 防止 DiffRenderer 与 `StartMoving` 抢 capture surface。
+- **Gate / Acceptance / Sequence**：FoundationGate v68、UIV3Acceptance v43；`v3_ui_layout_editor_gesture_contract` / `v3_45_ui_layout_editor_gesture_contract` 门禁 RSUI v32、Gesture v1、RectTransform v2、no-generic-capture；Foundation Audit 同步要求 gesture source 在 Active TOC、candidate freeze/lease/bounded contract 存在。
+- **验证**：全量 `202/202 Lua Parse PASS`；Foundation Audit PASS（`toc=202 activeLua=202 allLua=202`，全部结构越界计数 0）；`RSUI_RECT_TRANSFORM_V2_HARNESS PASS upY=92 commit=92,87,88,73`；`RSUI_LAYOUT_EDITOR_GESTURE_HARNESS PASS x=100 y=95 candidates=1 preview=3 leases=1/1`；`RSUI_LAYOUT_EDITOR_FALLBACK_HARNESS PASS x=5 y=12 fallback=1`；`RSUI_LAYOUT_EDITOR_SAMPLING_FAIL_HARNESS PASS leases=0 begins=0`；`RSUI_SELECTION_OVERLAY_MOVE_HARNESS PASS moveIndex=3 handleIndex=4 upY=92`；`RSUI_SELECTION_GEOMETRY_BOUND_HARNESS PASS source=1100 bounded=1024 canvasBound=1024`。
+- **BuildTag**：`v3-m1.16.0.18.68-ui-layout-editor-gesture-foundation`。
+
+## M1.16.0.18.67 — UI Selection Geometry / Handle / Snap Foundation + Baseline Recovery（2026-09-03）
+
+- **执行范围**：以用户重新上传的最新整包为唯一基线重新读 Docs/TOC/Foundation；继续零业务 Feature 迁移。
+- **覆盖回流修复**：确认 `.18.63` 的历史 UI 文件组在多轮覆盖中局部回流：`UI.ComponentsV2`/旧 TOC、旧 Dropdown degraded behavior、旧 Popup/Z-layer 契约重新出现，而 `.18.64~.18.66` 新层仍存在。按真实调用链恢复 `ComponentsV2 retirement + ContainerSurface + Dropdown fail-closed + PopupCoordinator + UITokens v4`，不使用旧整包覆盖新工程。
+- **更强防回流 Audit**：Foundation Audit 新增 Disk Lua ↔ Active TOC 双向门禁；任何磁盘 `.lua` 未列入 Active TOC 都直接 FAIL，使 retired source 不能以“暂时没加载”的方式残留等待未来复活。
+- **RSUI v31 / API 11.5**：新增 `rs_ui_selection_geometry.lua`，`SelectionGeometryModel` 与 SelectionModel 分权；提供 multi-selection bounds、8-way handle geometry/hit test、`SelectionOverlay`、`LayoutGuideOverlay` 和有界 `LayoutGuideResolver`。
+- **Snap/Guide**：支持 candidate/Grid/Canvas alignment；default candidate budget=256、hard cap=1024；最多 X/Y 各一条 guide；Resolver 不扫描 Widget Tree、不读取业务 metadata。
+- **SelectionOverlay**：Root 使用 handleSize/hitSlop inset，确保 resize hit surface 不伸出物理 Parent；`.18.68` 增加整框 Move Hit Surface，创建顺序位于 resize handles 之前以保持边缘 Handle 命中优先。
+- **Gate / Acceptance / Sequence**：FoundationGate v67、UIV3Acceptance v42；新增 `v3_ui_selection_geometry_contract` / `v3_44_ui_selection_geometry_contract`，静态 Audit 门禁 SelectionGeometry/GuideResolver/Overlay 与 1024 candidate hard cap。
+- **验证**：Selection pure-math harness：`handles=8 alignX=200 grid=100,120 scan=1024`；SelectionOverlay mock：`root=113,83 xGuide=200 yGuide=150`；恢复后 Foundation Audit PASS，并作为 `.18.68` 202/202 全量回归基线继续验证。
+
+## M1.16.0.18.66 — UI Coordinate / Pointer / RectTransform Foundation（2026-09-03）
+
+- **执行范围**：继续 Foundation First，零业务 Feature 页面迁移；先把 ArcheAge/CryEngine 左上原点、Pointer delta 与 editor RectTransform 数学统一成共享 Authority，再进入 Selection/Handle/Snap。
+- **RSUI v30 / API 11.4**：`S.Layout.CoordinateSystemContract v1` 明确 `(0,0)=左上`、`+X=右`、`+Y=下`，因此 `MoveUp(distance)` 语义等价于 `Y-distance`。新增 `OffsetPoint/MoveRect/GetCoordinateSystemSnapshot`，页面不得自行猜方向正负。
+- **RectTransform Transaction v1**：纯数学 `Begin → PreviewDelta → Commit/Cancel`，支持 move + 8-way resize、min/max extent 与完整 rollback；delta 始终相对 Begin rect，避免逐帧累计漂移。它不捕获 Pointer、不直接写 Native Geometry，因此不会成为第二套 Windowing Authority。
+- **Pointer Contract v1**：`RSUI.Pointer` 统一 `GetMouseLogicalPosition` 采样与 start→current delta；`captureSupported=false`，Native `StartMoving/StartSizing` 继续归 Windowing/已有控件。Tooltip 同样复用该 Pointer sampling path。
+- **Overlay 审计**：确认 Application `ModalHost` 已拥有唯一 modal scrim。ResponsiveInspector drawer 默认保持非模态 Stable Host；当前不新增第二 Application Scrim Authority。
+- **Gate / Acceptance / Sequence**：FoundationGate v66、UIV3Acceptance v41；新增 `v3_ui_geometry_pointer_contract` 与 `v3_43_ui_geometry_pointer_contract`，门禁 top-left coordinate、RectTransform transaction、Pointer v1 与 no-generic-capture policy；Foundation Audit 同步检查 source contract。
+- **性能**：无 Tick/常驻 OnUpdate/业务扫描。坐标 helper 为 O(1)；RectTransform 只在显式 editor transaction 内做常数级数学；Pointer 只在事件/手势需要时采样。
+- **兼容**：没有 Store Schema/Feature/页面迁移；只把过去隐含的 CryEngine 坐标方向变成显式共享契约。
+- **验证**：全量 `200/200 Lua Parse PASS`；Foundation Audit PASS（全部结构越界计数 0）；Workspace/Container/Popup/Composite/Tree/Picker/Focus/Host-Slot/SearchablePicker/IconPicker 全部旧 Harness 回归 PASS；新增 `RSUI_GEOMETRY_POINTER_HARNESS PASS upY=92 resize=90,85,90,75`；Markdown 相对链接 `checked=52 bad=0`。
+- **BuildTag**：`v3-m1.16.0.18.66-ui-geometry-pointer-foundation`。
+
+## M1.16.0.18.65 — UI Host / Slot / Responsive Picker Foundation（2026-09-03）
+
+- **执行范围**：继续 Foundation First，零业务 Feature 页面迁移；先审计 Host/Slot/Native Parent/Release 调用链，再补稳定响应式 Inspector 与 SearchablePicker Presentation。
+- **RSUI v29 / API 11.3**：新增 `AttachmentContract v1`、`ReparentPolicyContract v1`，公开 `NativeReparentSupported=false`。Component 只有一个 logical parent；跨 Parent、self/ancestor cycle、Native creation parent mismatch 全部 fail-closed。`RemoveChild` 为 terminal release；Child 独立 Release 会先从 Parent `children/slots` 解除强引用。
+- **Native Reparent Fence**：当前 RU 没有已验证通用 Reparent；`tools/rs_foundation_audit.py` 新增 Active Runtime 静态 fence，禁止未经证据的 `RemoveFromParent / Reparent / SetParent`。每次 attach 都核对 immutable Native Parent 与目标 `GetContentRoot()`，防止 logical/native Authority 分裂。
+- **ResponsiveInspector v1 / WorkspaceTemplates v2**：Content + Inspector 在同一 Stable Host 下一次创建。wide 模式 inline 右栏；compact 模式右侧 drawer，只改 Geometry/Visibility/Raise，不重建、不复制 Binding/Selection/Scroll、不 reparent。新增 `CreateResponsiveInspectorWorkspace()`。
+- **Composite Foundation v4 / SearchablePicker v1 / IconPicker v1**：SearchablePicker 复用 `.18.64` PickerModel，组合 TextInput + Search/Clear + StatusChip + virtual ListView；IconPicker 在同一 Model 上组合 virtual TileView + Image + selected preview。两者都只由 Enter/EditEnter 或显式按钮提交 Query，不绑定未验证 OnTextChanged/OnKeyDown/OnKeyUp，不注册 Tick；Icon bind 只消费 Caller 投影的 icon path，不调用业务 Metadata/Native 查询。
+- **Gate / Acceptance / Sequence**：FoundationGate v65、UIV3Acceptance v40；新增 `v3_42_ui_host_slot_picker_contract`，门禁 RSUI v29、Attachment/Reparent、ResponsiveInspector/Workspace v2、SearchablePicker v1、IconPicker v1。Snapshot 增加 Attachment/Reparent/ResponsiveInspector/SearchablePicker contract 与相关 metrics。
+- **性能**：无业务扫描、无常驻 OnUpdate。ResponsiveInspector 仅 layout/visibility 变化时工作；SearchablePicker/IconPicker 只有显式 Query/Selection 才更新，结果分别使用 ListView/TileView virtual pool；Icon tile bind 只写已投影纹理路径；Host/Slot 校验为有限祖先链（guard 64）+ O(1) Native-parent identity 比较。
+- **验证**：`RSUI_HOST_SLOT_HARNESS PASS attachRejects=3 mode=drawer`；`RSUI_WORKSPACE_18_65_HARNESS PASS contract=2`；`RSUI_SEARCHABLE_PICKER_HARNESS PASS results=2 selected=fire`；`RSUI_ICON_PICKER_HARNESS PASS results=2 selected=fire binds=8`；最终全量 Gate/旧 Harness/Markdown 验证见本轮封包记录。BuildTag：`v3-m1.16.0.18.65-ui-host-slot-picker-foundation`。
+- **RU 实机边界**：没有业务页面迁移，因此主要 Fresh Reload 风险集中于 Native Parent identity、compact drawer 的真实 Z-order/clip、TextInput Enter 事件与 Focus。未经验证 Native Reparent 仍明确禁止。
+
+## M1.16.0.18.64 — UI Model Integrity Foundation：Transactional Tree / PickerModel / Focus Contract v2（2026-09-03）
+
+- **执行范围**：继续 Foundation First，本轮仍不新增或重排业务 Feature。重点反向审计 `.18.63` Tree/Input/Focus 基础，先消除复杂编辑器未来最危险的稳定身份、半事务状态、默认展开语义和能力误报，再为 SearchablePicker/IconPicker 建共享数据模型。
+- **RSUI v27 / API 11.1 / Composite Foundation v2**：`rs_ui_composite_foundation.lua` 升级，新增 `PickerModel v1`，TreeModel 内部升级 v2；`StatusChip v1 / TreeView v1 / PopupCoordinator v1` 保持单一现有 Authority。
+- **Tree Stable Identity Contract v1**：节点必须提供 `key/id` 或 caller `getKey()`；彻底删除 path/index fallback。缺 Key → `tree_key_required:<path>`；`getKey/getChildren` 异常、children 非 table、duplicate key 全部显式 fail-closed，禁止排序/插入后 selection/expanded identity 漂移。
+- **Tree Mutation Transaction Contract v2**：`SetNodes / SetExpanded / ToggleExpanded / ExpandAll / CollapseAll` 统一使用 staged candidate → build/validate → commit；失败完整保留旧 nodes/rows/maps/expansion/revision，只更新错误信息。专项验证覆盖“duplicate key 隐藏在折叠子树，展开后才暴露”场景，确认操作失败不产生半提交。
+- **Tree expansion 三态与长期内存界限**：`true=显式展开 / false=显式折叠 / nil=defaultExpandedDepth`，修复默认展开节点被用户折叠后 Rebuild 又自动展开的问题。新增 `maxExpansionState`（默认 maxNodes×2、hard cap 32768）和 `treeExpansionStatePrunes`，动态树长期切换时旧 key 不无限积累。原 frame-cursor DFS / maxNodes bounded projection 保持。
+- **PickerModel v1**：为 Buff/Skill/Item/Route/Icon 等大量选择场景建立 UI-agnostic shared model：稳定 key、transactional SetItems/SetQuery、显式 query、AND token plain match、caller `getSearchText`、stable selectedKey、duplicate/missing key fail-closed；`maxScan` 8192(default)/32768(hard)、`maxResults` 128(default)/512(hard)、token/query 长度均有界，并在 snapshot 暴露 truncation。SearchablePicker/IconPicker 后续只能消费该 Model，不得各造过滤/选择 Authority。
+- **Focus Contract v2**：`CanSet / CanClear / GetTargetWidgetId / IsFocused` 改为 target-aware；`GetCapabilities(target)` 不再硬编码 `setFocus=true`，Set/Clear 只有目标 Native 真正支持方法时才宣告能力。逻辑 identity 不能冒充物理 focused widget id。
+- **Input Event Fence**：由于 RU 当前仅验证 SetFocus/ClearFocus/GetFocusedWidgetId、Enter/EditEnter/LostFocus，Foundation Audit 新增 Active Runtime fence，禁止在证据不足时绑定 `OnKeyDown / OnKeyUp / OnTextChanged`。未来获得 RU/官方证据后必须升级 Input Contract 再移除 fence，而不是页面 Agent 自行猜事件名。
+- **Gate / Acceptance / Sequence**：FoundationGate v64、UIV3Acceptance v39 要求 RSUI>=27、Composite v2、PickerModel v1、Tree Stable Identity v1、Tree Transaction v2、Tree Expansion Bound v1、Focus v2；新增 `v3_41_ui_model_integrity_contract` 覆盖 missing key、hidden duplicate rollback、default-expanded explicit collapse 与 Picker AND-token 投影。`tools/rs_foundation_audit.py` 同步增加 source contract 与回归 fence。
+- **性能**：没有新增 Tick/OnUpdate/业务扫描。Tree projection 仍按 maxNodes 有界，frame-cursor traversal 临时内存按深度增长；长期 expansion override 有 cap。Picker 仅显式 SetItems/SetQuery 重建，scan/results/query/token 全有硬上限；Focus 为 O(1) capability/read 操作。
+- **验证**：`RSUI_TREE_TRANSACTION_HARNESS PASS contract=2 stable=1`；`RSUI_TREE_DEFAULT_COLLAPSE_HARNESS PASS overrides=2 bounded=3`；`RSUI_PICKER_MODEL_HARNESS PASS contract=1 scan=10`；`RSUI_FOCUS_SERVICE_HARNESS PASS contract=2`；既有 Composite/Tree bounded/Popup/Container/Workspace harness 全部回归通过；全量 **200/200 Lua Parse PASS**；Foundation Audit PASS（`toc=200 activeLua=200 allLua=200 globals=0 presentation=0 rawNative=0 rawScope=0 detachedWidgetState=0 apiDependency=0 apiCapability=0 businessIds=0 auctionEventOwners=0`）；Markdown 相对链接 **0 断链**；Product Matrix 仍为 77/35/2/11，共 125。BuildTag：`v3-m1.16.0.18.64-ui-model-integrity-foundation`。
+- **RU 实机边界**：本轮新 Model 尚未接入生产 Feature，所以无业务配置/页面迁移风险。通用 KeyDown/TextChanged 仍明确视为未验证；SearchablePicker 首版必须使用已证实 Edit/Enter/LostFocus 能力或显式提交模式。
+
+## M1.16.0.18.63 — UI Composite Foundation：TreeView / StatusChip + ComponentsV2 退休 + Dropdown Fail-Closed（2026-09-03）
+
+- **执行范围**：继续 Foundation First，本轮不新增、不重排任何业务 Feature 页面；目标是检查 RSUI 底层真实调用链，优先删除第二套 Presentation surface、补跨 Feature 高复用 Composite，并同步完善统一能力/UI 路线图。
+- **RSUI v26 / API 11.0**：新增 `ui/framework/rs_ui_composite_foundation.lua`。`StatusChip v1` 统一 neutral/info/pending/success/warning/error/blocked/unavailable 状态语义；Feature 只提供 semantic status，不再各页自造红黄绿协议。
+- **TreeModel / TreeView v1**：TreeModel 为 UI-agnostic 纯层级 projection，使用稳定 `key/id`、独立展开态、迭代式 bounded flatten（默认 4096 / hard cap 16384）、duplicate-key fail-fast；宽树审计进一步改为 frame-cursor DFS，不再 push-all-children，临时内存按遍历深度有界。TreeView 复用现有 `ListView` virtual pool、SelectionModel 与 stable key，只为可见行创建/绑定 indent + chevron + label，不注册 Tick/OnUpdate。
+- **Dropdown degraded fail-closed**：Popup 构建失败时保留当前值并显示 `⚠`，Native control 禁用，`Open/ToggleOpen/Scroll/click` 均不改变值；删除旧“弹层失败后单按钮循环切换选项”的隐式交互变形。正常 Popup 路径不变。
+- **PopupCoordinator v1 / UITokens v4**：Dropdown、ColorField、ContextMenu 统一到一个 weak registry；Open 前 `CloseAll(except)`，ColorField Disable/Release 自动关闭并 unregister，ContextMenu 统一 system layer / popup priority。`DropdownService` 仅为同一 coordinator 的兼容 alias。`UITokens.layer.popupPriority=10000` 成为唯一 Popup Z priority token，静态 Audit 禁止当前 popup surface 重新写 magic literal。
+- **Input/Focus 结论**：当前 RU 证据支持 SetFocus/ClearFocus/GetFocusedWidgetId 与 Enter/EditEnter/LostFocus，但未验证 generic OnKeyDown/OnKeyUp 或实时 OnTextChanged；因此 SearchablePicker/IconPicker 暂不伪造桌面键盘交互，后续先做 evidence-safe 的显式搜索提交。
+- **`UI.ComponentsV2` 退休**：调用链确认剩余真实 Consumer 仅为 RSUI 自身 Card/Section/FormSection。Card 改由 RSUI 直接创建，Section/FormSection 收敛到 `RSUI.ContainerSurface:CreateSection()`；同时保留旧 Native root 的 `_card` / `_section` identity 规则，避免清理底层顺带改变物理控件身份。`ui/framework/rs_ui_components_v2.lua` 从 Active TOC 与物理工程删除，`rs_ui_framework.lua` 同步删除 ComponentsV2 metrics/snapshot 钩子。历史文档保留旧接口作为演进证据，但明确标记 SUPERSEDED。
+- **防回流 Gate**：`FoundationGate v63`、`UIV3Acceptance v38` 增加 Composite Foundation / StatusChip / TreeView / Dropdown fail-closed Contract；`tools/rs_foundation_audit.py` 新增 retired UI layer 静态 fence，禁止 `UI.ComponentsV2` / `Create*V2` component helper 或旧文件重新进入 Active Runtime，并要求 composite source 在 TOC。
+- **Sequence / Harness**：新增 `v3_40_ui_composite_foundation_pure_contract`，覆盖 TreeModel 初始折叠、展开/折叠、duplicate key、bounded/truncated projection；开发 harness `RSUI_COMPOSITE_MODEL_HARNESS PASS rows=2 treeRebuilds=4`；`RSUI_TREE_BOUNDED_MEMORY_HARNESS PASS rows=64 siblings=20000 peakFrames=2 exactTruncated=true`；`RSUI_POPUP_COORDINATOR_HARNESS PASS closed=b`；`RSUI_CONTAINER_SURFACE_HARNESS PASS created=7` 验证 Section/Card 物理 ID 兼容、标题更新与 extent/layout 路径。
+- **文档同步**：`CURRENT_ARCHITECTURE`、`CURRENT_REBUILD_STATUS`、`RSUI_ARCHITECTURE`、`CORE_ARCHITECTURE` 与 `REBUILD_REFERENCE_ADDON_CAPABILITY_ROADMAP` 同步更新；路线图将 TreeView/StatusChip 标记为 Foundation v1 已实现，并明确下一批先审计 Input/Focus/Popup 生命周期，再考虑 SearchablePicker/IconPicker、ResponsiveInspector/Drawer、LayoutEditorOverlay。
+- **验证**：全量 **200** 个 Lua `texluac -p` PASS；Foundation Audit PASS（`toc=200 activeLua=200 allLua=200 globals=0 presentation=0 rawNative=0 rawScope=0 detachedWidgetState=0 apiDependency=0 apiCapability=0 businessIds=0 auctionEventOwners=0`）；Markdown 相对链接 **0 断链**。BuildTag：`v3-m1.16.0.18.63-ui-composite-foundation`。
+- **RU 实机边界**：TreeView/StatusChip 尚未接入生产 Feature，业务行为风险低；但 Card/Section/FormSection 的 Native root 创建路径已收敛，Fresh Reload 应遍历现有页面确认几何/标题/Form section 无视觉回归。另需在开发环境故障注入 Dropdown Popup 创建失败，确认只读 `⚠` 路径不误改配置。
+
+## M1.16.0.18.62 — UI Workspace Foundation：页面级组合模板 + 详细页面设计路线图（2026-09-03）
+
+- **执行策略**：正式切换为 Foundation First。现有 RSUI Primitive/Panel/DataView/Form/Windowing 保留为唯一 UI Authority，不推倒重来；先补跨页面重复的 Workspace Composition，再逐页把 UI 从 `UI_DRAFT` 讨论到 `UI_APPROVED`，最后进入业务页面重排。
+- **RSUI v25**：新增 `ui/framework/rs_ui_workspace_templates.lua`，只组合已有 `VerticalBox / HorizontalBox / UniformGrid / SplitView`，不读业务数据、不持久化 Feature 状态、不注册 Tick/OnUpdate。
+- **四个首批 Workspace Template**：`CreateMasterDetailWorkspace`（主从/列表详情）、`CreateInspectorWorkbench`（左 Navigator + 中 Preview + 右 Inspector）、`CreateSettingsWorkbench`（分类设置工作台）、`CreateCommandCenterWorkspace`（Status Strip + Overview/Exception Queue + Evidence）。
+- **统一页面策略**：`UITokens v3` 新增 Breakpoint（720/980/1180）与 Workspace Rail/Inspector/Preview 几何 token；新增 `WorkspaceTemplates.BreakpointPolicy` 与 `DensityPolicy`，页面不再各自发明 compact/wide 决策。
+- **Foundation Gate**：`v3_advanced_ui_contract` 升级为 RSUI v25 + WorkspaceTemplates v1 必须存在，四个公共构建入口缺失即 blocker。
+- **设计文档**：`REBUILD_REFERENCE_ADDON_CAPABILITY_ROADMAP.md` 扩充为能力 + 页面 UI 单一讨论总表；Gear、Buff Display、Unit Lines、Range Assist、Healer/Raid、Boss、DPS/Analytics/Death Review、Activities/Tasks、Bonds、Trade/Craft、Treasure/Fishing、Title/Profile、Diagnostics 均补充组件树、栏宽/行高、对齐、compact 降级和 Foundation 依赖。明确下一批候选 `TreeView/OutlineView / SearchablePicker / IconPicker / ResponsiveInspector/Drawer / StatusChip / LayoutEditorOverlay`，缺组件时优先下沉 Foundation，禁止页面临时复制。
+- **验证**：全量 **200** 个 Lua `texluac -p` PASS；`RSUI_WORKSPACE_TEMPLATE_MOCK PASS`（四模板构造 + Breakpoint Policy）；Foundation Audit PASS（`toc=200 activeLua=200 allLua=200 globals=0 presentation=0 rawNative=0 rawScope=0 detachedWidgetState=0 apiDependency=0 apiCapability=0 businessIds=0 auctionEventOwners=0`）；Docs Markdown 相对链接 0 断链。BuildTag：`v3-m1.16.0.18.62-ui-workspace-foundation`。
+- **RU 实机边界**：本轮没有把四个模板强行替换进现有生产页面，因此不改变 Gear/Healer/DPS 等业务行为；后续实际页面采用模板后仍需要 1024×768 / 1080p 拖动、缩放、Scroll、Split divider 与视觉密度 Fresh Reload 目测。
+
+## M1.16.0.18.61 — Runtime Recovery：换装事务 / 单位连线布局 / 范围颜色 / 居民板识别（2026-09-03）
+
+- **换装**：`GearV3` 升 v3。移除“bagId 0/1 视图不一致即整单取消”的错误安全门，按 RU 已验证 gearswap 行为固定以 `bagId=1` 作为物理槽候选 Authority，`X2Bag:Capacity()` 只决定有界扫描上限（150 fallback / 240 hard cap）。战斗中不再整单拒绝：只构建 16/17/18/19 武器优先队列并逐件重读验证；防具/饰品/称号显式延后，脱战再次执行补齐。
+- **单位连线**：四个关系开关与公共参数改为 2 列 UniformGrid；四类每线外观改为独立卡片（标题 / 点数+大小 / ColorField），不再把标签、两个 NumericSetting 和颜色压进 28px 单行。
+- **范围辅助**：`color` 正式加入 Permanent default/state contract，修复 SetColor 只改内存、Reload 后丢失；`ColorField` 触发器始终显示“标签 + #RRGGBB”，即便 RU Native 未提供 `CreateColorDrawable` 也能发现并操作颜色。`RangeAssist.VisualGuideContractVersion=3`，`UIV3Acceptance v37` 门禁 SetColor。
+- **债券 / 居民板**：Board 1..7 每类只读取一次；归一化 `contents/content/rows/items` 与稀疏数字索引；位置识别恢复 RU 已验证规则（3+4 非空=大陆，5/6 非空=原大陆），只投影真实非空内容；`unavailable` 与“当前位置无内容”明确分离，并把 scope/faction/error 暴露给页面诊断。
+- **验证**：`GEAR_SERVICE_V3_HARNESS PASS`（bagId1/bagId0 内容冲突不再误阻断；战斗仅切武器并留下 pending；脱战补齐防具）；全量 199 个 Active Lua `texluac -p` 通过；Foundation Audit PASS（`toc=199 activeLua=199 allLua=199 globals=0 presentation=0 rawNative=0 rawScope=0 detachedWidgetState=0 apiDependency=0 apiCapability=0 businessIds=0 auctionEventOwners=0`）；`BONDS_BOARD_SHAPE_HARNESS PASS`；`VISUAL_CONFIG_CONTRACT PASS`；Markdown 相对链接 0 断链。BuildTag：`v3-m1.16.0.18.61-runtime-recovery`。
+
+> **⚠️ 架构变更声明（2026-09-01/02）**：旧版（Legacy/Professional）源码已全部物理删除（163 文件、−10.3 万行，commit 09010c0）。本文件是历史变更日志，早期条目（M1.16.0.18.x 及之前）可能引用已删文件（`rp_*`/`rh_*`/`rg_*`/`rdps_*`/`modules/professional/`/`S.State`/`S.Storage`/`rs_state`/`rs_storage`/`rs_module_manager`/`rs_module_sandbox`/`ReplicatedSuiteModuleSandbox`/`ReplicatedHealerModule`/`ReplicatedPlatesModule`/`ReplicatedDps` 等）。这些引用仅作历史记录，不代表当前代码。当前架构以 [`CURRENT_ARCHITECTURE.md`](CURRENT_ARCHITECTURE.md) 为准。
+
+## M1.16.0.18.60 — 治疗辅助 团队名单识别 / 色块覆盖 / 校准 / 设置 重构：RaidTeam≠RaidPanel≠Calibration 解耦（2026-09-03）
+
+- **背景（先查架构后动手）**：原实现把团队身份（`teamIndex`）与屏幕 `sections[4]` 四个固定区域强绑定——即"列表 A 永远等于团队 1"的反模式，且 50 个槽位用固定坐标写死，切换团队必须重新校准。这违背「谁拥有这个事实」原则：`RaidTeam`（数据身份）≠ `RaidPanel`（屏幕列表容器）≠ `Calibration`（面板几何）。
+- **架构解耦（核心）**：引入 `panels{A,B}` 矩形模型。每个 Panel 拥有自己的 `{x,y,width,height}` 整面板包围盒，槽位由几何**派生**（非 50 个固定坐标）；`team` 绑定挂在 Panel 上、可运行时切换而**不触碰几何**。身份权威仍复用 `TeamRosterV3`（成员 `teamIndex` 0/1/2、`memberIndex` 1..50、`isSelf`）。overlay 按 `member.teamIndex` 映射到绑定该团队的 Panel；`team==0 && isOnly` 时归 Panel A（玩家自身）。
+- **三模式**：`auto`（由 TeamRosterV3 实际在场团队派生）、`single`（Panel A 显示 singleTeamId 指定团队、唯一面板、切换不重校准）、`dual`（Panel A/B 显示任意团队组合）；`GetEffectivePanelBindings()` 解析出有序绑定列表 `{id,team,geometry,isOnly}`。
+- **文件改动**：
+  - `features/combat/healer/rs_healer_store.lua`：SCHEMA 3→4；弃用 `sections[4]`/`calibrationSection`/`calibrationScope`，改为 `panels{A,B}` + `mode`/`singleTeamId`/`testColors`/`slotNumbers`/`showMyself`；新增 `DefaultRaidPanel(s)`/`MigrateSectionsToPanels`/`NormalizeRaidPanel` 及 `SetRaidPanelRect/SetRaidPanelTeam/SetRaidMode/SetRaidSingleTeam/SetRaidTestSetting/ResetRaidLayout`。
+  - `features/combat/healer/rs_healer_feature.lua`：`GetEffectivePanelBindings()`（auto/single/dual 解析）、`LocateSelf()`、`Commands` 面板门面。
+  - `features/combat/healer/rs_healer_recommendation_v3.lua`：`GetRaidDisplayProjection` 行身份改为 `teamIndex`/`isSelf`/`memberIndex`（对齐 Healer.Roster 投影）。
+  - `presentation/v3/widgets/rs_v3_healer_raid_overlay.lua`：全量重写——2 面板×50 槽位对象池、矩形 `LayoutPanel` 派生网格、按 team 绑定映射、`v3.healer.updated`/`v3.healer.locate_self` 事件驱动（非逐帧全扫）、测试色模式、`locate_self` 闪烁。
+  - `presentation/v3/pages/rs_v3_healer_page.lua`：新增「团队/面板」组（模式下拉、单团队选择、A/B 团队绑定、测试色/槽位号开关、定位自身按钮），`ApplyRaidTeamVisibility` 按模式显隐对应控件。
+  - `core/rs_foundation_gate.lua` + `features/combat/healer/rs_healer_aura_acceptance.lua`：契约由 `SetRaidSectionRect`→`SetRaidPanelRect`、SCHEMA 3→4、`visual_store_contract` 校验 `raid.panels.A/B`。
+- **配置迁移**：旧 `sections[4]` 在 `NormalizePresentation` 中由 `MigrateSectionsToPanels` 折叠为 `panels{A,B}` 两个整面板包围盒，用户校准布局以矩形整体保留（非丢失）；全新存档走默认 `panels` 矩形。向后兼容、无人工迁移步骤。
+- **验证（本轮回测实测数字）**：面板绑定 harness `.workbuddy/tmp/healer_raid_panel_harness.lua` **55/55 PASS**（默认面板模型 / 旧 sections→panels 迁移 / Set* 命令 / 钳制与非法输入守卫 / Commands 门面委派 / GetEffectivePanelBindings auto·single·dual 11 个子例）；全量 Lua 5.1 `luac -p` 语法门禁 8 文件全 PASS；Foundation Audit **PASS**（`toc=199 activeLua=199 allLua=199 globals=0 presentation=0 rawNative=0 rawScope=0 detachedWidgetState=0 apiDependency=0 apiCapability=0 businessIds=0 auctionEventOwners=0`）。
+- **未验证项（RU 实机）**：覆盖色块实绘与坐标投影精确度、事件驱动 100 人刷新手感、双列布局目测、`locate_self` 闪烁、`testColors`/`slotNumbers` 实际呈现——需 Fresh Reload 目测；矩形校准几何已静态确认（派生网格、非 50 固定坐标）。
+- BuildTag：`v3-m1.16.0.18.60-healer-raid-panel-model`。
 
 ## M1.16.0.18.59 — 截断文字悬浮提示跟随光标（issue #2，2026-09-02）
 

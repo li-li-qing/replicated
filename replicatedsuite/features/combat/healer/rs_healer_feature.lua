@@ -26,6 +26,11 @@ local function TeamRoster() return S.Services and S.Services.TeamRosterV3 or nil
 local function AuraBridge() return S.Features and S.Features.HealerAuraBridge or nil end
 local function HealthRuntime() return F.HealthRuntime end
 local function ScreenProjection() return S.Features and S.Features.HealerScreenProjection or nil end
+local function ClampTeamId(value, fallback)
+    local v = math.floor(tonumber(value) or 0)
+    if v ~= 1 and v ~= 2 then v = (fallback == 2) and 2 or 1 end
+    return v
+end
 
 function F:Initialize()
     local ok, err = self:EnsureStoreLoaded()
@@ -239,6 +244,58 @@ function F:GetRaidOverlayProjection()
     })
 end
 
+-- Resolve which team identity each visible overlay panel currently displays.
+-- RaidTeam (TeamRosterV3 identity) is decoupled from RaidPanel (screen container):
+-- the binding can change (native team switch, manual override) without touching any
+-- geometry. Returns an ordered list of { id="A"|"B", team=1|2, geometry, isOnly }.
+function F:GetEffectivePanelBindings()
+    local raid = type(self.GetPresentationSettings) == "function" and self:GetPresentationSettings("raid") or nil
+    if type(raid) ~= "table" then return {} end
+    local panels = type(raid.panels) == "table" and raid.panels or {}
+    local presentTeams = {}
+    local roster = self:GetRosterProjection()
+    if type(roster) == "table" and type(roster.members) == "table" then
+        for _, member in ipairs(roster.members) do
+            local t = tonumber(member.teamIndex) or 0
+            if t > 0 then presentTeams[t] = true end
+        end
+    end
+    local mode = raid.mode or "auto"
+    local out = {}
+    if mode == "dual" then
+        local A = panels.A or { team = 1 }
+        local B = panels.B or { team = 2 }
+        out[1] = { id = "A", team = ClampTeamId(A.team), geometry = A.geometry, isOnly = false }
+        out[2] = { id = "B", team = ClampTeamId(B.team, 2), geometry = B.geometry, isOnly = false }
+    elseif mode == "single" then
+        local team = tonumber(raid.singleTeamId) or 0
+        if team < 1 then team = next(presentTeams) or 1 end
+        out[1] = { id = "A", team = team, geometry = (panels.A or {}).geometry, isOnly = true }
+    else -- auto: derive from the actual team composition reported by TeamRosterV3
+        local teamList = {}
+        for t in pairs(presentTeams) do teamList[#teamList + 1] = t end
+        table.sort(teamList)
+        if #teamList >= 2 then
+            local A = panels.A or { team = teamList[1] }
+            local B = panels.B or { team = teamList[2] }
+            out[1] = { id = "A", team = teamList[1], geometry = A.geometry, isOnly = false }
+            out[2] = { id = "B", team = teamList[2], geometry = B.geometry, isOnly = false }
+        else
+            local team = teamList[1] or 1
+            out[1] = { id = "A", team = team, geometry = (panels.A or {}).geometry, isOnly = true }
+        end
+    end
+    return out
+end
+
+-- Diagnostic: briefly flash the player's own slot in every active overlay panel.
+-- Presentation owns the transient highlight; this only publishes an internal signal.
+function F:LocateSelf()
+    if S.Events == nil or type(S.Events.Publish) ~= "function" then return false, "internal event bus unavailable" end
+    S.Events:Publish("v3.healer.locate_self")
+    return true
+end
+
 -- Narrow Presentation command. World->screen is a Native observation and must
 -- remain behind Feature/Domain ownership; Head Marker never touches X2Unit.
 function F:ProjectUnitToScreen(unitToken)
@@ -272,8 +329,13 @@ function F.Commands:AddTrackedBuff(id, name, iconPath) return F:AddTrackedBuff(i
 function F.Commands:RemoveTrackedBuff(index) return F:RemoveTrackedBuff(index) end
 function F.Commands:SetHealerColor(key, color) return F:SetHealerColor(key, color) end
 function F.Commands:SetPresentationSetting(scope, key, value) return F:SetPresentationSetting(scope, key, value) end
-function F.Commands:SetRaidSectionRect(index, rect) return F:SetRaidSectionRect(index, rect) end
+function F.Commands:SetRaidPanelRect(panelId, rect) return F:SetRaidPanelRect(panelId, rect) end
+function F.Commands:SetRaidPanelTeam(panelId, team) return F:SetRaidPanelTeam(panelId, team) end
+function F.Commands:SetRaidMode(mode) return F:SetRaidMode(mode) end
+function F.Commands:SetRaidSingleTeam(teamId) return F:SetRaidSingleTeam(teamId) end
+function F.Commands:SetRaidTestSetting(key, value) return F:SetRaidTestSetting(key, value) end
 function F.Commands:ResetRaidLayout() return F:ResetRaidLayout() end
+function F.Commands:LocateSelf() return F:LocateSelf() end
 function F.Commands:RequestRosterRefresh(reason) return F:RequestRosterRefresh(reason) end
 function F.Commands:MarkStoreDirty(delayMs, reason) return F:MarkStoreDirty(delayMs, reason) end
 function F.Commands:SetWidgetWindowState(value, reason) return F:SetWidgetWindowState(value, reason) end

@@ -95,9 +95,10 @@ local function Host(kind, spec, rootFactory)
         return normalized
     end
     function c:AddChild(child, slot)
-        baseAdd(self, child, slot)
-        if type(child)=="table" then self:UpdateChildSlot(child, slot or child.slot) end
-        return child
+        local attached, ok, attachErr = baseAdd(self, child, slot)
+        if attached == nil then return nil, false, attachErr end
+        if type(attached)=="table" then self:UpdateChildSlot(attached, slot or attached.slot) end
+        return attached, ok, attachErr
     end
     function c:GetContentRoot() return self.root end
     return c
@@ -325,7 +326,7 @@ end)
 RSUI:RegisterType("SizeBox", function(spec)
     local c,err=Host("SizeBox",spec); if c==nil then return nil,err end; c.content=nil
     local baseAdd=Base.AddChild
-    function c:AddChild(child,slot) baseAdd(self,child,slot); if self.content==nil then self.content=child end; return child end
+    function c:AddChild(child,slot) local attached,ok,attachErr=baseAdd(self,child,slot); if attached~=nil and self.content==nil then self.content=attached end; return attached,ok,attachErr end
     function c:Measure(aw,ah)
         local dw,dh=Measure(self.content,aw,ah)
         local w=tonumber(self.spec.widthOverride) or dw; local h=tonumber(self.spec.heightOverride) or dh
@@ -345,7 +346,7 @@ RSUI:RegisterType("Border", function(spec)
     local root=UI:CreatePanel(spec.parent,spec.id,N(spec.x,0),N(spec.y,0),math.max(1,N(spec.width,1)),math.max(1,N(spec.height,1)),spec.variant or "card",{gradient=spec.gradient,gradientKind=spec.gradientKind,accentStrip=spec.accentStrip})
     if root==nil then return nil,"border_create_failed" end
     local c=RSUI:NewComponent("Border",spec,root); c.content=nil; c.padding=Pad(spec.padding or Token("component.card.padding",8)); local baseAdd=Base.AddChild
-    function c:AddChild(child,slot) baseAdd(self,child,slot); if self.content==nil then self.content=child end; return child end
+    function c:AddChild(child,slot) local attached,ok,attachErr=baseAdd(self,child,slot); if attached~=nil and self.content==nil then self.content=attached end; return attached,ok,attachErr end
     function c:Measure(aw,ah) local p=self.padding; local dw,dh=Measure(self.content,aw and math.max(0,aw-p.left-p.right),ah and math.max(0,ah-p.top-p.bottom)); local w=dw+p.left+p.right; local h=dh+p.top+p.bottom; if self.spec.width then w=N(self.spec.width,w) end; if self.spec.height then h=N(self.spec.height,h) end; w=Clamp(w,self.spec.minWidth,self.spec.maxWidth); h=Clamp(h,self.spec.minHeight,self.spec.maxHeight); self.desiredWidth,self.desiredHeight=w,h; self.measureDirty=false; return w,h end
     function c:Layout(x,y,width,height) width,height=math.max(1,N(width,self.width or self.spec.width or 1)),math.max(1,N(height,self.height or self.spec.height or 1)); self:SetBounds(x,y,width,height); if self.content~=nil and self.content.visible~=false then local p=self.padding; Arrange(self.content,p.left,p.top,math.max(1,width-p.left-p.right),math.max(1,height-p.top-p.bottom)) end; return height end
     return c

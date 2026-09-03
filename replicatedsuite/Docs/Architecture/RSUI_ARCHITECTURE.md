@@ -56,6 +56,885 @@
 - 低层 WindowShell/MainShell 暂保留 raw BuildScope，是受审计白名单保护的 Foundation builder；任何新 Page/Widget/Modal 不得加入该白名单。
 - 全页面真实构建序列（M1.16.0.18.19 follow-up）：`UIV3Acceptance.migratedPresentation` 是当前已迁移页面/悬浮窗/Modal 关联矩阵；Foundation Sequence `v3_37_migrated_page_build_matrix` 在客户端逐路由调用 `Shell:Navigate()` 实际构建当前迁移页面，并遍历 FeatureRegistry 当前 Active Route（planned 路由使用 fallback），再对已迁移 Widget 调用 `WidgetHost:EnsureInstance()`。`v3_39_modal_build_matrix` 另外实际构建两个已迁移 Modal，并对换装设置 Modal 执行 Open/Close 栈事务。Factory 注册和 Lua Parse 只能证明静态覆盖，不能替代这些序列。
 
+## Workspace Composition Templates v1（2026-09-03 / `.18.62`）
+
+当前 RSUI 从 Primitive/Panel 继续向上补了一层**页面级组合模板**，目的不是增加第二套 Layout Authority，而是把跨页面反复出现的结构收敛到同一套 UMG-like Composition。实现位于 `ui/framework/rs_ui_workspace_templates.lua`。
+
+新增 Contract：
+
+- `RSUI.version = 25`；
+- `RSUI.WorkspaceTemplateContractVersion = 1`；
+- `RSUI:CreateMasterDetailWorkspace(spec)`；
+- `RSUI:CreateInspectorWorkbench(spec)`；
+- `RSUI:CreateSettingsWorkbench(spec)`；
+- `RSUI:CreateCommandCenterWorkspace(spec)`；
+- `WorkspaceTemplates.BreakpointPolicy`；
+- `WorkspaceTemplates.DensityPolicy`。
+
+这些模板内部只组合 `VerticalBox / HorizontalBox / UniformGrid / SplitView`，继续由既有 Measure/Arrange、Diff Native Geometry、BuildScope、Selection、Binding、Windowing 等 Foundation 承担真实 Authority。它们不读取业务数据、不持久化 Feature 状态、不注册 Tick。
+
+标准职责：
+
+```text
+Primitive / Panel 负责“一个组件怎么布局”
+Workspace Template 负责“一个页面区域怎么组合”
+Feature Page 负责“这个产品页面显示什么”
+```
+
+共享逻辑宽度带由 `UITokens.breakpoint` 定义：compact 720、regular 980、wide 1180。页面不得自行发明另一套 breakpoint，除非有明确专项理由并写入架构文档。
+
+`.18.63` 已实现 `StatusChip` 与第一版 `TreeModel/TreeView`；`OutlineView` 不单独制造第二套树 Authority，而是在 TreeView 能力确有编辑器需求后再扩展。下一批候选 Composite 调整为：`SearchablePicker`、`IconPicker`、`ResponsiveInspector/Drawer`、`LayoutEditorOverlay`。它们仍必须在真实至少两处复用需求明确后再进入 Foundation，禁止为了单页好看提前造巨型框架。
+
+## Reusable Composite Foundation v1（2026-09-03 / `.18.63`）
+
+`.18.63` 在 Workspace Template 之上继续补“可跨页面重复使用、但仍不拥有业务 Authority”的 Composite 层，实现位于 `ui/framework/rs_ui_composite_foundation.lua`。该阶段基线为 `RSUI.version = 26`、`apiVersion = 11.0`；当前版本见下方 `.18.64`。
+
+### StatusChip
+
+`StatusChip` 统一以下实时/命令状态的语义视觉：
+
+- neutral / muted；
+- info / pending；
+- success；
+- warning / caution；
+- danger / error；
+- blocked / unavailable。
+
+业务页只传**语义状态**与短文本，不自行决定一套新的颜色体系。组件本身没有 Tick，不读取 Feature，不保存状态；`SetStatus()` 只进行 bounded 的 Diff-style 外观/文本更新。
+
+### TreeModel + TreeView
+
+Tree 被拆成两层：
+
+```text
+TreeModel                 TreeView
+纯层级数据投影       ->   RSUI Presentation
+稳定 key                  ListView virtual pool
+展开状态                  selection model
+bounded flatten           indent/chevron/label
+```
+
+核心契约：
+
+1. 身份必须使用稳定 `key/id`，禁止把可变化的 row index 当节点身份。
+2. 展开/折叠状态与节点身份绑定，刷新排序后仍能保持。
+3. Flatten 使用迭代式、有界 projection；`maxNodes` 默认 4096，最大 16384，超过后明确 `truncated`，不无限构建。遍历使用 **frame-cursor DFS**，不把一个节点的全部 children 预先压栈，因此临时内存按遍历深度而不是 sibling 总量增长；20,000 siblings / maxNodes=64 的 harness 为 `peakTraversalFrames=2`。
+4. 重复 key 直接报 `tree_duplicate_key:<key>`，不静默覆盖。
+5. `TreeView` 复用既有 `ListView` 虚拟池，只为可见行绑定 indent / chevron / label；不为完整树常驻 Native Row，也不注册永久 Tick。
+6. TreeModel 不依赖 Native UI，可单独做 harness / Domain-style 测试。
+
+首批预期 Consumer 是状态显示元素层级、任务 Group→Quest→Subtask、团队/规则树；本轮**没有**提前迁移这些 Feature。
+
+### Dropdown degraded fail-closed
+
+Popup 构建失败属于能力不可用，不属于“换一种交互也算成功”。因此 Dropdown degraded path 现在：
+
+- 保留当前值文本；
+- 显示 `⚠`；
+- Native control disabled；
+- `Open/ToggleOpen/Scroll/click` 均不改变值；
+- 正常 Popup 路径完全不受影响。
+
+禁止再次使用“单按钮每点一次循环到下一个值”作为 Dropdown 失败 fallback。
+
+### PopupCoordinator / Z-Layer Contract
+
+`.18.63` 的 Input/Popup 审计确认 Dropdown、ColorField、ContextMenu 已经是三个真实的 top-level click-open surface，因此“统一 popup 生命周期”已经满足跨 Feature/跨组件下沉条件，不再由 Dropdown 私有服务代管。
+
+现行契约：
+
+```text
+PopupCoordinator (single registry)
+├─ Dropdown
+├─ ColorField
+└─ ContextMenu
+
+Open(A)
+  -> CloseAll(except=A)
+  -> Layout inside Safe Area
+  -> system layer when capability exists
+  -> UITokens.layer.popupPriority
+  -> Raise
+```
+
+- `RSUI.PopupCoordinatorContractVersion = 1`；
+- `RSUI.DropdownService == RSUI.PopupCoordinator` 仅为旧调用兼容，**不是第二个 registry**；
+- ColorField 在 Disable / Release 时必须 Close + Unregister；
+- ContextMenu 使用同一 coordinator，并统一 TrySetUILayer / popup priority；
+- Popup priority 由 `UITokens v4.layer.popupPriority` 提供，禁止散落 `SetDrawPriority(10000)` literal；
+- Tooltip 属于非 Pickable hover surface，不参加 exclusive click-open registry。
+
+当前 RU 已验证 Focus 能力仍有限：可以 `SetFocus/ClearFocus/GetFocusedWidgetId`，但没有证据支持 generic `OnKeyDown/OnKeyUp`，当前 TextInput 也只使用已验证 Enter/EditEnter/LostFocus 提交事件。因此 SearchablePicker / IconPicker 首版不得凭桌面 UI 习惯猜测键盘上下选择、Esc 关闭或实时 OnTextChanged；需要显式 RU 事件证据后再升级。
+
+### `UI.ComponentsV2` retirement / ContainerSurface
+
+历史 `rs_ui_components_v2.lua` 曾承担 Card/Section/Field 等早期过渡能力，同时保留了直接 Native helper 与循环 ChoiceField。`.18.63` 审计确认剩余真实 Consumer 只有当前 RSUI 的 Card / Section / FormSection，因此完成：
+
+- Card 直接由 RSUI Container 创建，并保留旧 `_card` Native root identity；
+- Section / FormSection 统一走 `RSUI.ContainerSurface:CreateSection()`，保留旧 `_section` Native root identity；
+- `rs_ui_components_v2.lua` 从 Active TOC 与物理工程删除；
+- `rs_ui_framework.lua` 删除 ComponentsV2 Metrics/Snapshot 钩子；
+- Foundation Audit 禁止 `UI.ComponentsV2` / `Create*V2` component helper 回流。
+
+这不是删除当前功能，而是删除已经被 RSUI 正式能力取代的第二套底层 Presentation surface。旧阶段文档中的 ComponentsV2 章节仅作为历史记录保留，均视为 **SUPERSEDED by `.18.63`**。
+
+## UI Model Integrity Foundation v2（2026-09-03 / `.18.64`）
+
+`.18.64` 继续保持 Foundation First，不迁移业务页面。当前 `RSUI.version = 27`、`apiVersion = 11.1`。本轮目标不是增加“看起来更多”的组件，而是把后续 Tree / SearchablePicker / IconPicker / Layout Editor 会共同依赖的**身份、事务、搜索、Focus 证据边界**先做正确。
+
+### TreeModel v2：稳定身份是硬契约
+
+Tree 不再允许在缺少 `node.key / node.id / getKey()` 时回退到 `1/2/3` 之类的 index path。路径只是当前视觉结构，不是实体身份；插入、排序或过滤后会把 Selection / Expansion 静默转移到别的节点。
+
+现行 Contract：
+
+```text
+node.key / node.id / getKey()
+           │
+           ├─ 有稳定 key → 继续
+           └─ 无稳定 key → tree_key_required:<path>，fail-closed
+```
+
+`getKey()` 抛错、`getChildren()` 抛错或返回非 table 也不再静默退化为空节点；结构性回调失败必须显式返回 `tree_get_key_failed / tree_get_children_failed / tree_children_must_be_table`。
+
+### Tree Mutation Transaction v2
+
+所有会改变结构投影的操作先构建 candidate projection，成功才 commit：
+
+```text
+Requested mutation
+      ↓
+Candidate nodes / expansion overrides
+      ↓
+BuildTreeProjection()
+      ↓
+Stable-key / duplicate / child-shape / budget validation
+   ↙ Success                 ↘ Failure
+Commit once                  Keep old rows/maps/state/revision
+revision + 1                 lastError only
+```
+
+覆盖：
+
+- `SetNodes()`；
+- `SetExpanded()` / `ToggleExpanded()`；
+- `ExpandAll()`；
+- `CollapseAll()`。
+
+因此“隐藏子树展开后才暴露 duplicate key”的场景也不能形成半事务状态：操作失败时，旧 rows、展开态、nodes 与 revision 完整保留。
+
+### Expansion 三态覆盖 + bounded state
+
+展开状态不再把 `nil` 同时当成“显式折叠”和“没有 override”。现行语义：
+
+```text
+true   = 显式/已解析展开
+false  = 显式折叠
+nil    = 没有 override，可使用 defaultExpandedDepth
+```
+
+这样 `defaultExpandedDepth > 0` 时，用户主动折叠不会在下一次 Rebuild 被默认策略重新展开。
+
+长期数据集还增加 `maxExpansionState`（默认 `maxNodes * 2`、hard cap 32768）。当 Feature 长时间替换树数据导致旧 key 残留时，Foundation 优先保留当前可见节点 override，再有界保留其它状态；超过 cap 会记录 `treeExpansionStatePrunes`，禁止 expansion map 无限制增长。
+
+### PickerModel v1：先统一选择数据模型，再造搜索 UI
+
+`PickerModel` 是 UI-agnostic 的大量选项搜索/选择模型，首批目标 Consumer：
+
+- Buff / Debuff Picker；
+- Skill Picker；
+- Item / Recipe / Region Picker；
+- IconPicker。
+
+它不创建 Native Widget，也不注册 Tick。查询只在调用 `SetQuery()` 时显式执行：
+
+```text
+items
+  ↓ stable key validation
+bounded scan (default 8192 / hard cap 32768)
+  ↓
+explicit query token match
+  ↓
+bounded results (default 128 / hard cap 512)
+  ↓
+key-stable selection
+```
+
+`maxScan / maxResults / maxTokens / maxQueryBytes` 全部硬边界化；duplicate/missing key 或 query 超限时事务失败，不改旧 items/query/revision。`getSearchText` 允许业务提供自己的 RU/中文 normalization；Foundation 不假装 `string.lower()` 能完成完整 Unicode case folding。
+
+**重要**：`PickerModel` 完成不代表 `SearchablePicker` UI 已完成。SearchablePicker/IconPicker 后续只负责 TextInput、结果 List/Tile、状态与 Popup/Drawer，不再自己复制一份过滤/selection Authority。
+
+### Focus Contract v2：target-aware，而不是全局“支持”
+
+旧 `Focus:GetCapabilities()` 曾把 `setFocus=true` 写死，但 `SetFocus/ClearFocus` 实际是具体 Native target 是否暴露方法决定的。`.18.64` 改为：
+
+- `Focus:CanSet(target)`；
+- `Focus:CanClear(target)`；
+- `Focus:GetTargetWidgetId(target)`；
+- `Focus:IsFocused(target)`；
+- `GetCapabilities(target)` 只对传入 target 报真实能力。
+
+物理 Focus identity 优先使用 Native Factory 写入的 `rsNativePhysicalId`。只有 logical identity 时可用于诊断，但 `IsFocused()` 不猜测 global `GetFocusedWidgetId()` 会返回 logical id。
+
+### Unverified Input Event Fence
+
+当前 RU 证据仍只确认 Enter/EditEnter/LostFocus 一类编辑提交事件与 SetFocus/ClearFocus/GetFocusedWidgetId。没有证据支持通用：
+
+```text
+OnKeyDown
+OnKeyUp
+OnTextChanged
+```
+
+因此 `.18.64` 不再只在文档里提醒：`tools/rs_foundation_audit.py` 会直接扫描 Active Lua，一旦出现上述事件的实际字符串绑定就阻断封包。以后只有获得 RU API/实机证据并升级 Contract 后才能移除 Fence。
+
+### 后续 Foundation 顺序
+
+```text
+PickerModel v1 / Focus v2 / TreeModel v2        ← 已完成
+                 ↓
+SearchablePicker Presentation（显式提交搜索）
+                 ↓
+IconPicker（复用 PickerModel + TileView）
+                 ↓
+ResponsiveInspector / Drawer
+                 ↓
+LayoutEditorOverlay
+  Selection / Pointer Capture / Rect Transform / Snap / Guide
+```
+
+`LayoutEditorOverlay` 仍不得提前实现第二套 Drag/Resize Authority；必须继续复用现有 Windowing / Layout / Input evidence，并先确认可复用的 Rect/Pointer transaction contract。
+
+## Host / Slot + Responsive Picker Foundation（2026-09-03 / `.18.65`）
+
+`.18.65` 将 `RSUI.version` 升至 **29**、`apiVersion` 升至 **11.3**，`CompositeFoundation` 升至 **v4**、`WorkspaceTemplates` 升至 **contract v2**。仍不迁移业务 Feature；本轮解决“高级页面组合之前必须先证明 Child Ownership 与 Responsive State 不会分裂”的底层问题。
+
+### 1. Native Reparent 当前视为 Unsupported
+
+当前 RU/API Evidence 没有项目已验证的通用 Native Reparent。RSUI 因而采用 Generation 内 immutable native-parent 模型：
+
+```text
+Native create parent
+      │ immutable
+      ▼
+RSUI Component.parent
+      │ must match
+      ▼
+parentComponent:GetContentRoot()
+```
+
+`AttachmentContractVersion=1` / `ReparentPolicyContractVersion=1`：
+
+- `AddChild` 只允许单 logical parent；
+- self/ancestor cycle fail-closed；
+- 跨 Parent 返回 `reparent_not_supported:<id>`；
+- 每次 attach 都验证 Native creation parent，而不是只信 `parentComponent`；
+- `CanReparentTo()` 只有 same-parent 返回 true；
+- `NativeReparentSupported=false` 是公开 capability；
+- `RemoveChild()` 是 terminal release，不产生 detachable widget；
+- Child 独立 Release 先从 Parent `children/slots` 解除强引用。
+
+Foundation Audit 额外禁止 Active Lua 使用未经验证的 `RemoveFromParent / Reparent / SetParent` native-style 操作。该 fence 只能通过新的 RU evidence + Contract 版本升级解除。
+
+### 2. ResponsiveInspector v1 使用 Stable Host
+
+响应式不能通过“两份 Inspector + 同步状态”实现，因为会制造：
+
+- 两份 Binding Draft；
+- 两份 Scroll/Selection；
+- 两套 Focus；
+- 额外 Native Widget；
+- 页面级同步 Bug。
+
+`ResponsiveInspector` 因此固定拥有两个 role slot：`content` 与 `inspector`。两者只创建一次。
+
+宽模式：
+
+```text
+┌──────────────────────── Content ───────────────────────┬─ Inspector ─┐
+│                                                        │             │
+└────────────────────────────────────────────────────────┴─────────────┘
+```
+
+compact 模式：
+
+```text
+┌──────────────────────── Content ─────────────────────────────────────┐
+│                                                         ┌ Inspector │
+│                                                         │ Drawer    │
+└─────────────────────────────────────────────────────────┴────────────┘
+```
+
+Mode 由可用 width + token breakpoint + min content/inspector width 决定。切换只重新 Arrange/Visibility；Drawer 打开时可 Raise，但不改变 Native Parent。`GetResponsiveSnapshot()` 暴露 mode/drawer/breakpoint/width/stableHost/nativeReparent，供 Diagnostics/Acceptance 读取。
+
+### 3. WorkspaceTemplates v2
+
+新增 `ResponsiveInspectorWorkspace`，将稳定 Host 作为页面级组合模板暴露：
+
+```text
+CreateResponsiveInspectorWorkspace(spec)
+├─ root      : ResponsiveInspector
+├─ content   : VerticalBox(role=content)
+└─ inspector : VerticalBox(role=inspector)
+```
+
+Feature 页面只能在 content/inspector 中继续组合自己的 Projection UI；不得因为 compact 布局再创建另一个 Inspector。
+
+### 4. SearchablePicker v1
+
+`SearchablePickerContractVersion=1`。它是 `PickerModel` 的 Presentation，不是新的数据 Authority：
+
+```text
+PickerModel
+├ stable key
+├ bounded scan/results
+├ query tokens
+└ selectedKey
+       ↓
+SearchablePicker
+├ TextInput
+├ Search / Clear
+├ StatusChip
+└ virtual ListView
+```
+
+Query 只在已验证的 Submit path（Enter/EditEnter）或搜索按钮调用 `SetQuery()`。不使用 Tick，不绑定未验证 `OnTextChanged/OnKeyDown/OnKeyUp`。结果 ListView 使用 stable `row.key`，Selection 写回 Model selectedKey。
+
+首批目标 Consumer：Buff/Skill/Item/Recipe/Region/Route；但 `.18.65` **尚未把任何业务页面接入**。
+
+### 5. IconPicker v1：不复制 Metadata Authority
+
+`IconPickerContractVersion=1`。它在 SearchablePicker/PickerModel 之上增加图标网格，但不是 Skill/Buff/Item Metadata Service：
+
+```text
+Feature/Service Projection
+ key / text / searchText / iconPath
+              ↓
+          PickerModel
+              ↓
+       Virtual TileView
+       ├ bounded pool
+       ├ Image:SetImage
+       └ stable selection
+              ↓
+        selected preview
+```
+
+图像写入只使用现有 `RSUI.Image → UI:SetIconTexture()` Adapter；RU IconDrawable 已验证路径是 `ClearAllTextures/AddTexture` 的 diff-safe 包装，不引入新的 Native texture API 假设。`getIcon()` 只消费 Caller 已提供的路径；禁止 Tile bind 里调用 `SkillMetadataV3/BuffMetadataV3/X2*` fan-out。
+
+默认 TileView 本身有 `maxPoolSize/overscan/maxColumns` 硬边界，因此候选 1000 个图标也不会常驻创建 1000 个 Native Tile。搜索仍显式提交，并继续受未验证 input-event fence 约束。
+
+### 6. Diagnostics / Metrics
+
+新增/正式暴露：
+
+- `attachmentRejects`；
+- `attachmentCycleRejects`；
+- `attachmentParentConflicts`；
+- `attachmentNativeParentConflicts`；
+- `childRemovals`；
+- `responsiveInspectorModeChanges`；
+- `responsiveInspectorDrawerChanges`；
+- `searchablePickerQueries`；
+- `searchablePickerSelections`；
+- `iconPickerQueries` / `iconPickerSelections` / `iconPickerTileBinds`；
+- Snapshot contract versions：Attachment / Reparent / ResponsiveInspector / SearchablePicker / IconPicker。
+
+这些只在事件/显式布局/查询时更新，不引入 permanent Tick。
+
+### 7. 下一层前置
+
+下一步仍不直接进入业务页面。`IconPicker v1` 已复用 `PickerModel + TileView + Image`；后续先判断 Drawer/Scrim 是否有足够跨页面 Consumer，再进入 `LayoutEditorOverlay` 前置审计。Layout Editor 必须先证明 Pointer/Drag Transaction、Selection Geometry、Z-Layer 与 Handle 生命周期能复用现有 Windowing/RSUI，而不是建立第二套拖拽 Authority。
+
+## Coordinate / Pointer / RectTransform Foundation（2026-09-03 / `.18.66`）
+
+`.18.66` 将 RSUI 升至 **v30 / API 11.4**，继续零业务 Feature 迁移。目标不是提前实现 LayoutEditorOverlay，而是先统一所有编辑器都会依赖的二维坐标、Pointer delta 与 RectTransform 事务语义。
+
+### 1. ArcheAge / CryEngine 逻辑坐标是左上原点
+
+当前项目统一采用：
+
+```text
+(0,0) ───────────────→ +X（向右）
+  │
+  │
+  ▼
+ +Y（向下）
+```
+
+因此：
+
+- 向右：`X + distance`；
+- 向左：`X - distance`；
+- 向下：`Y + distance`；
+- **向上：`Y - distance`**。
+
+这不是页面约定，而是 `S.Layout.CoordinateSystemContractVersion=1`。业务/Presentation 不应直接根据自然语言猜正负号；应调用 `OffsetPoint/MoveRect` 或把 Pointer delta 交给共享 RectTransform。
+
+### 2. RectTransformTransaction v1 是纯数学，不是第二拖拽 Authority
+
+```text
+Native Pointer Capture
+   Windowing / StartMoving / StartSizing
+                │
+                │ absolute start/current
+                ▼
+        Pointer Contract v1
+                │ dx / dy
+                ▼
+    RectTransformTransaction v1
+      Begin → Preview → Commit
+                  ↘ Cancel/Rollback
+```
+
+支持 `move` 与 8-way resize：`top / bottom / left / right / top_left / top_right / bottom_left / bottom_right`。Preview delta 始终相对 Begin rect，不做逐帧累计，避免帧率与采样频率改变最终几何。
+
+例如起始 `{x=100,y=100,w=80,h=60}`，拖左上 Handle `dx=-10,dy=-15`：
+
+```text
+x      100 → 90
+y      100 → 85
+width   80 → 90
+height  60 → 75
+```
+
+也就是向左/向上拖时位置数值下降、尺寸增加，符合顶部/左侧边缘保持 Pointer 的直觉。
+
+### 3. Pointer Contract v1 不假设通用 Capture
+
+`RSUI.Pointer` 只提供：
+
+- `GetLogicalPosition()`；
+- `Delta(startX,startY,currentX,currentY)`；
+- capability snapshot。
+
+`captureSupported=false`。当前已经验证的 Native `StartMoving/StartSizing/StopMovingOrSizing` 仍由 Windowing/现有拖拽控件拥有。未来 LayoutEditorOverlay 只能组合这两层，禁止自己再造 `OnUpdate + raw mouse delta + native write` 的第二套拖拽系统。
+
+### 4. Drawer / Scrim 审计结论
+
+V3 Application 已经有单一 `ModalHost`，并拥有全应用 modal scrim/backdrop dismissal。ResponsiveInspector 的 compact drawer 默认是**非模态 stable-host overlay**，不能为了视觉效果再建立第二个 application-level Scrim Authority。只有未来出现至少两个非 ModalHost Consumer、且真实交互需要局部输入阻断时，才讨论新的 scoped overlay policy。
+
+### 5. 下一层依赖
+
+```text
+Coordinate Contract                 ✅
+Pointer absolute/delta              ✅
+RectTransform Transaction           ✅
+Native capture ownership fence      ✅
+        ↓
+Selection Geometry
+        ↓
+8-way Handle Surface
+        ↓
+Snap / Grid / Alignment Guide
+        ↓
+LayoutEditorOverlay
+```
+
+Selection/Handle 层必须继续复用 `S.Layout` 的坐标和事务，不得在 Feature 页面重新写“上/下/左/右”的符号计算。
+
+## Selection Geometry / Layout Guide Foundation（2026-09-03 / `.18.67`）
+
+`.18.67` 将 RSUI 升至 **v31 / API 11.5**，仍然零业务 Feature 迁移。目标是把 Layout Editor 最容易在不同页面重复造轮子的 Selection Rect / Resize Handle / Snap / Guide 先做成共享底层。
+
+### 1. Selection identity 与 Selection geometry 必须分层
+
+```text
+SelectionModel
+= Who is selected
+  selectedKey / selectedKeys / primaryKey
+
+SelectionGeometryModel
+= Where selected objects are
+  rectByKey / aggregate bounds / primaryRect
+```
+
+GeometryModel 只通过 `getRect(key)` 读取 Caller Projection，不保存 Feature 数据，也不改变 SelectionModel。多选 Resolve 有 `maxSelected` hard fence；非法/missing rect fail-closed。
+
+### 2. 8-way Handle + Move Surface
+
+SelectionOverlay 采用一个精确 Selection Frame + 8 个 resize handle。Handle 的可视块比 Hit Surface 小，Root 因 handleSize/hitSlop 向外扩一圈，从而 Hit Surface 始终位于物理 Parent 内，避免父裁剪导致“边角拖不到”。
+
+`.18.68` 前置又补了一个覆盖整个 frame 的 `moveHit`：
+
+```text
+SelectionOverlay Root
+└─ Frame
+   ├─ Move Hit Surface   ← 整框移动
+   └─ 8 Resize Handles  ← 创建更晚，边缘命中优先
+```
+
+Move surface 只提供稳定 Native Hit Target，不拥有拖拽算法。
+
+### 3. GuideResolver 是纯数学且有界
+
+支持：
+
+- sibling/candidate 左/中/右、上/中/下对齐；
+- Grid Snap；
+- Canvas rect 作为可选候选；
+- move + 8-way resize；
+- left/top resize 时保持 opposite edge 固定；
+- 最多输出一条 X guide + 一条 Y guide；
+- `maxCandidates` default 256 / hard 1024。
+
+候选搜索与 Widget Tree 枚举不属于 Resolver；Caller 必须提供候选 Projection。
+
+### 4. 覆盖回流 Fence
+
+重新读取用户最新整包时发现历史 `.18.63` 文件组部分回流。恢复后 Static Foundation Audit 不只检查 TOC 引用了什么，还检查**磁盘上的每个 `.lua` 都必须进入 Active TOC**。因此 retired Lua 即使没有加载，也不能在当前工程目录静默残留。
+
+## Layout Editor Gesture Foundation（2026-09-03 / `.18.68`）
+
+`.18.68` 将 RSUI 升至 **v32 / API 11.6**。它不是完整 LayoutEditorOverlay，而是把 SelectionOverlay 与 RectTransform/Pointer/Native capture 安全接起来的有限手势事务。
+
+### 1. Gesture Authority 链
+
+```text
+SelectionOverlay Move/Handle Native Surface
+          ↓ OnDragStart
+Native StartMoving()            ← RU 已验证 capture
+          ↓
+BeginNativeGeometryLease        ← DiffRenderer 暂停争夺 capture surface
+          ↓
+RSUI.Pointer logical position
+          ↓ dx / dy
+RectTransformTransaction v2
+          ↓ PreviewDelta
+LayoutGuideResolver
+          ↓ snapped rect
+OverridePreview
+          ↓
+SelectionOverlay + GuideOverlay live preview
+          ↓ OnDragStop
+Commit → Caller onCommit
+```
+
+Controller 不调用 Store、不写 Feature state；Persistence 必须留给 Caller `onCommit`。
+
+### 2. Snap candidate 只在 Begin 冻结一次
+
+```text
+OnDragStart
+  ├ getSnapOptions()       1 次
+  └ getSnapCandidates()    1 次
+             ↓ freeze bounded copy
+16ms pulse × N
+  └ 不再发现/扫描页面组件
+```
+
+这保证拖动时每一帧只做 Pointer 采样 + bounded math，不允许 Layout Editor 变成新的高频 Widget Tree scanner。
+
+### 3. RectTransformTransaction v2
+
+v1 的 `PreviewDelta()` 只能保存未吸附 Rect；如果视觉层再做 Snap，就可能出现“屏幕显示 x=100，Commit 却写入 x=97”。v2 增加：
+
+```text
+PreviewDelta(dx,dy)
+     ↓
+GuideResolver.Resolve()
+     ↓
+OverridePreview(snappedRect)
+     ↓
+Commit()
+```
+
+`OverridePreview` 同样遵守 min/max extent，并在 left/top resize clamp 时保持对侧边缘固定。
+
+### 4. 坐标空间必须显式
+
+Pointer Service 返回 **viewport-logical** 坐标。编辑 Rect 可能属于 viewport，也可能属于某个 Canvas/Panel local space。因此 Gesture Controller 的创建规则是：
+
+- `coordinateSpace="viewport"`：允许 identity conversion；
+- 其它局部空间：必须提供 `pointerToLocal(x,y)`；
+- 两者都没有：构建直接 fail-closed。
+
+这与 `+Y=down / -Y=up` 一样属于 Geometry Contract，不能靠页面 Agent 猜。
+
+### 5. 手势期 Scheduler / OnUpdate
+
+优先使用共享 Scheduler `AddInteractiveTask(...,16ms)`；若 Scheduler 不可用/拒绝，才在 capture surface 上临时绑定 `OnUpdate`。两种路径都必须在 Commit/Cancel/Release 时清理。
+
+不存在 permanent Tick，也不创建 generic Pointer Capture。
+
+### 6. 下一层
+
+``.18.69~.18.71` 已完成 Anchor/Pivot、Snap Settings、Transform Inspector 与 MultiSelectionTransformModel；单选 Child Placement 和多选 Group Projection 的变换语义已经分权。当前下一层可以进入 LayoutEditorOverlay，但只能做组合/协调。
+
+```text
+Selection / Guide / Gesture             ✅
+Anchor / Pivot / Snap Settings          ✅
+Transform Inspector                     ✅
+MultiSelectionTransformModel             ✅
+            ↓
+LayoutEditorOverlay Composition
+            ↓
+Editor Workspace Template
+            ↓
+Buff Display / Healer / Range 页面 UI_REVIEW
+```
+
+## Layout Editor Model Foundation（2026-09-03 / `.18.69`）
+
+`.18.69` 将 RSUI 升至 **v33 / API 11.7**。本阶段继续坚持“模型先于漂亮控件”：不创建 Native Widget，不注册 Tick，只把 Anchor/Pivot 与 Snap Settings 的共享语义固定下来。实现位于 `ui/framework/rs_ui_layout_editor_models.lua`。
+
+### 1. AnchorPivotModel v1
+
+当前项目历史 Store 与大量 Runtime 都以 **top-left Rect** 为几何真相，因此 v1 不直接复制 UMG 的 Min/Max Stretch Anchor。当前只实现 point-anchor：
+
+```text
+AnchorPreset
+├─ top_left      (0,0)
+├─ top           (0.5,0)
+├─ top_right     (1,0)
+├─ left          (0,0.5)
+├─ center        (0.5,0.5)
+├─ right         (1,0.5)
+├─ bottom_left   (0,1)
+├─ bottom        (0.5,1)
+└─ bottom_right  (1,1)
+
+custom anchorX/anchorY ∈ [0,1]
+pivotX/pivotY ∈ [0,1]
+```
+
+模型同时持有：
+
+- parentRect；
+- visual rect（local top-left X/Y + width/height）；
+- normalized anchor；
+- normalized pivot；
+- anchor-relative `positionX/positionY`。
+
+转换公式按 CryEngine 左上原点语义：
+
+```text
+anchorAbsX = parent.x + parent.width  * anchorX
+anchorAbsY = parent.y + parent.height * anchorY
+
+positionX = rect.x + rect.width  * pivotX - anchorAbsX
+positionY = rect.y + rect.height * pivotY - anchorAbsY
+
+rect.x = anchorAbsX + positionX - width  * pivotX
+rect.y = anchorAbsY + positionY - height * pivotY
+```
+
+因此 `SetAnchor/SetPivot(..., preserveVisual=true)` 会重算 offset，而不是让元素突然跳位。父容器 resize 时必须由 Caller 明确选择：
+
+- `preserveVisual=true`：屏幕/local Rect 保持不变，只重算 Offset；
+- `preserveVisual=false`：Offset 保持不变，Rect 跟随 Anchor 重排。
+
+没有隐式默认 reparent/reflow 猜测。
+
+### 2. 方向语义下沉
+
+AnchorPivotModel 提供 `MoveUp/MoveDown/MoveLeft/MoveRight`。这不是 UI 糖，而是防止未来 Agent 再把方向符号写反：
+
+```text
+MoveUp(8)    => deltaY = -8
+MoveDown(8)  => deltaY = +8
+MoveLeft(8)  => deltaX = -8
+MoveRight(8) => deltaX = +8
+```
+
+### 3. LayoutEditorSnapSettingsModel v1
+
+Snap 参数不再由每个页面临时拼 table：
+
+```text
+enabled
+gridEnabled
+alignmentEnabled
+canvasEnabled
+showGuides
+gridSize        1..128
+threshold       0..32
+maxCandidates   1..1024
+```
+
+`ToResolverOptions()` 是 `LayoutGuideResolver` 的唯一标准 Projection。关闭 alignment 后，Resolver 不扫描 candidate；Gesture Begin 也不再调用 `getSnapCandidates()`。因此 grid-only 编辑不会因为页面有大量 sibling 就产生一次无意义候选发现。
+
+Stretch Anchor、rotation、scale transform、multi-selection group transform 都不属于 v1；它们必须分别建立清晰 Contract 后再扩展。
+
+## Transform Inspector Foundation（2026-09-03 / `.18.70`）
+
+`.18.70` 将 RSUI 升至 **v34 / API 11.8**。新增 `TransformInspector v1`，实现位于 `ui/framework/rs_ui_transform_inspector.lua`。它是 Editor Presentation，不是新的 Geometry/Store Authority。
+
+### 1. 页面级布局
+
+Inspector 默认按 286px 级别右栏设计，内部使用现有 Form System：
+
+```text
+┌──────────── Transform Inspector ────────────┐
+│ 变换                                         │
+│ ┌ X（左-/右+） ┐ ┌ Y（上-/下+） ┐          │
+│ ┌ 宽度         ┐ ┌ 高度         ┐          │
+├─────────────────────────────────────────────┤
+│ 锚点与轴心                                   │
+│ [锚点预设 ▼]    [锚点 X 0..1]               │
+│ [锚点 Y 0..1]    [Pivot X 0..1]             │
+│ [Pivot Y 0..1]   [锚点偏移 X]               │
+│ [锚点偏移 Y]                                 │
+├─────────────────────────────────────────────┤
+│ 吸附与参考线                                 │
+│ [启用吸附] [网格吸附]                       │
+│ [对象对齐] [画布边界/中心]                  │
+│ [显示参考线] [网格尺寸]                     │
+│ [吸附阈值] [候选上限]                       │
+└─────────────────────────────────────────────┘
+```
+
+所有数值使用 exact `NumericField`；X/Y/Offset 允许负值。Anchor/Pivot 为 0..1。Snap candidate 上限最大 1024。
+
+### 2. 为什么同时显示 Rect X/Y 与 Anchor Offset
+
+玩家和开发者最容易混淆的是“屏幕/局部位置”与“相对锚点 Offset”。因此 Inspector 不隐藏这两种语义：
+
+- `X/Y` = 当前 Parent coordinate space 中的 top-left Rect；
+- `锚点偏移 X/Y` = Anchor absolute point 到 Pivot point 的相对距离。
+
+例如 Center Anchor 的元素可能 visual X=120，但 anchor-relative offset 为负数，这是正常状态，不应被 UI 自动“修正”为正数。
+
+### 3. 单 Authority Binding
+
+```text
+Numeric/Dropdown/Toggle
+       ↓ Binding
+AnchorPivotModel / SnapSettingsModel
+       ↓
+optional onTransformChanged / onSnapChanged notification
+```
+
+Callback 只是 notification，不允许反过来成为 mutation Authority。即使通知回调异常，也不能让已经成功的本地 Model 变成“Binding 报失败但状态已经改了”的半事务。Feature Persistence 后续应在 Editor Session/Commit 层建立明确 Adapter，而不是让每个 NumericField 自己 SaveStore。
+
+### 4. 响应式组合
+
+TransformInspector 自己只负责内容高度与字段布局；wide-inline / compact-drawer 仍交给既有 `ResponsiveInspector` Stable Host。禁止创建 `WideTransformInspector + CompactTransformInspector` 两份实例。
+
+### 5. `.18.70` 当时未决：多选变换（`.18.71` 已解决）
+
+`SelectionGeometryModel` 已能计算多个对象的 Bounds，但单元素 `AnchorPivotModel` 不能直接拿 Group Bounds 当一个真实 Child Rect 写回。`.18.70` 当时因此暂缓完整 LayoutEditorOverlay，并要求先定义：
+
+```text
+Group Bounds start
+    ↓ gesture rect delta/scale
+每个 selected child 的 start rect
+    ↓ relative mapping
+per-child preview rect
+    ↓ transaction commit / cancel
+```
+
+该边界已经由 `.18.71 MultiSelectionTransformModel v1` 完成。现在 Overlay 可以进入实现，但只能消费已存在的 Single/Multi Transform Authority。
+
+## Multi Selection Transform Foundation（2026-09-03 / `.18.71`）
+
+`.18.71` 将 RSUI 升至 **v35 / API 11.9**。新增 `ui/framework/rs_ui_multi_selection_transform.lua`，把此前文档中的多选 Group Transform 边界正式实现为纯模型。
+
+### Authority 分层
+
+```text
+SelectionModel
+= Who
+
+SelectionGeometryModel
+= Group Bounds / Handles
+
+RectTransformTransaction + Gesture
+= Group Bounds 怎样 move / resize / snap
+
+MultiSelectionTransformModel
+= 最终 Group Rect 怎样映射回每一个 Child Rect
+
+Feature / Store
+= Commit 后是否持久化
+```
+
+`MultiSelectionTransformModel` **不会再创建 RectTransformTransaction**，因此不会与 Gesture 形成第二套 Group Geometry Authority。它只接受已经由 Gesture/Snap 解出的 target Group Rect。
+
+### Projection Session
+
+多选编辑采用单 Session：
+
+```text
+Committed child rects
+      ↓ BeginProjectionSession
+冻结 start items + start bounds + base revision
+      ↓
+Project(targetGroupRect)
+      ↓
+只生成 preview child rects，不改 committed model
+      ↓
+Commit
+  ├─ revision 未变化 → 一次性替换全部 child rect
+  └─ revision 改变     → fail-closed
+
+Cancel
+  └─ committed model 完全不变
+```
+
+因此不会出现“第 1~8 个 child 已写入，第 9 个失败”的半提交。Session 活跃时 `SetItems()` 也会被拒绝，防止手势期间 selection data 被外部刷新替换。
+
+### Group → Child 映射
+
+对 start group `G0` 与 target group `G1`：
+
+```text
+scaleX = G1.width  / G0.width
+scaleY = G1.height / G0.height
+
+child.x = G1.x + (child0.x - G0.x) * scaleX
+child.y = G1.y + (child0.y - G0.y) * scaleY
+child.w = child0.w * scaleX
+child.h = child0.h * scaleY
+```
+
+当 Group 只有平移、宽高不变时 `scaleX=scaleY=1`，所有 Child 仅统一 ΔX/ΔY。
+
+### Minimum Child Size 反推 Group Minimum
+
+为避免 Group 缩得很小后某个 Child 变成 0~1px，Session 在 Begin 时按所有 Child 计算：
+
+```text
+minimumScaleX = max(minChildWidth / child.width)
+minimumScaleY = max(minChildHeight / child.height)
+
+minGroupWidth  = startGroupWidth  * minimumScaleX
+minGroupHeight = startGroupHeight * minimumScaleY
+```
+
+未来 `LayoutEditorOverlay` 应把这份 constraint 交给 Gesture 的 RectTransform，而不是等投影完再逐 child clamp；后者会破坏整体比例。
+
+### Stable Identity / Bounded Work
+
+- 只接受 2+ items；单选继续走 AnchorPivotModel；
+- 每项必须有稳定 `key/id`；duplicate key fail-closed；
+- 默认最多 256 项，hard cap 1024；超限直接拒绝，不静默截断 selection；
+- Project 为 O(selected items)，没有 Native、没有 Tick、没有 Metadata、没有 Store。
+
+### TransformInspector 的多选 UI 规则
+
+当前 `TransformInspector v1` 是单元素 Inspector。进入真正多选后，不能显示假的 Anchor/Pivot：
+
+```text
+单选：
+X / Y / W / H
+Anchor / Pivot / Anchor Offset
+Snap Settings
+
+多选：
+Selected: N
+Group X / Y / W / H
+Group Move / Scale
+Snap Settings
+Anchor / Pivot → 隐藏或明确 N/A
+```
+
+多选状态下 Anchor/Pivot 是每个 Child 自己的 placement 属性，不存在一个“Group Anchor”可以安全写回全部 Child。
+
+### 下一层
+
+现在允许进入 `LayoutEditorOverlay`，但该层必须是 **Coordinator/Composition**：复用 SelectionOverlay、GuideOverlay、Gesture、AnchorPivotModel、MultiSelectionTransformModel 与 Transform Inspector；禁止再造 Pointer capture、Snap resolver 或新的 Rect math。
+
 ## 目录
 
 1. [Replicated Suite RSUI UMG-style Primitive & Panel Framework v1](#sec-1)
@@ -2768,7 +3647,9 @@ Mock 结果：
 
 ### 15. Compatibility
 
-以下旧接口继续保留：
+> **SUPERSEDED（`.18.63`）**：以下内容是 Phase 2 当时的兼容策略。当前 `UI.ComponentsV2` 与 `Create*V2` component helpers 已从 Active Runtime 退休；Card / Section / FormSection 已收敛到 RSUI ContainerSurface。此段仅保留历史演进证据。
+
+以下旧接口继续保留（**仅指当时阶段**）：
 
 ```text
 UI.ComponentsV2
@@ -4777,3 +5658,63 @@ V3 页面、悬浮组件、WindowShell、Modal 与 Main Shell 的懒构建必须
 ArcheAge 运行环境按 Lua 5.1 语义处理闭包。任何在 `for ... in ipairs/pairs` 中安装、但在循环结束后才触发的 Native/RSUI 回调，都不得直接捕获 generic-for 控制变量。必须先创建稳定局部引用，例如 `routeRef`、`columnRef`、`handleDefinition`。当前已覆盖 V3 导航、TableView 交互表头与 Windowing 八向缩放 Handle。
 
 Floating 逻辑内容与 Native 内容根必须显式区分：Presentation 使用 `FloatingSurface:GetContentRoot()` 获取逻辑 RSUI Component；只有 Adapter/Native 代码才使用 `GetNativeContentRoot()`。状态 setter 对相同值必须按成功 no-op 处理，不重复 Dirty/Save。
+
+
+## M1.16.0.18.72–18.74：Layout Editor Transaction / Overlay / Workspace Foundation
+
+这一阶段把 `.18.71` 已完成的 Selection/Geometry/Gesture/Anchor/Multi 数学层组合成一个可复用编辑器，但继续坚持**单 Authority、零业务 Store 绑定**。
+
+### Preview Adapter：Single / Multi 的唯一事务桥
+
+```text
+SelectionModel(revision)
+        ↓
+LayoutEditorPreviewAdapter v1
+ ├─ single → AnchorPivotModel v2
+ └─ multi  → MultiSelectionTransformModel / ProjectionSession
+        ↓
+working projection
+        ↓
+Preview / Commit / Cancel callbacks
+        ↓
+Feature-owned Projection / Persistence
+```
+
+- Preview 只更新 working/editor projection；
+- Feature Store 只能在 Commit callback 明确接受后写入；
+- selection revision 在 active gesture 中变化立即 fail-closed；
+- Anchor/Pivot 的拒绝回滚使用完整 Snapshot Restore，不只恢复视觉 Rect；
+- Adapter 自身不注册 Tick、不拥有 Native Widget。
+
+### Gesture v2：动态 Constraints + Strict Transaction
+
+Gesture Begin 才读取 `getTransformConstraints()`；多选可以直接使用 `MultiSelectionTransformModel:GetGroupConstraints()`，单选可以使用 item constraints。`onBegin/onAbort` 将 Native capture 与 Adapter ProjectionSession 绑定成同一生命周期；Preview/Commit callback 明确拒绝时必须 Cancel/rollback。
+
+### LayoutEditorOverlay：只做 Composition
+
+```text
+LayoutGuideOverlay
+SelectionOverlay(move + 8 handles)
+LayoutEditorGesture v2
+LayoutEditorPreviewAdapter v1
+LayoutEditorSnapSettingsModel
+```
+
+Overlay 禁止直接调用 `StartMoving/StartSizing`，也不实现新的 pointer capture、Rect math 或 snap math。候选只在 Begin 发现并有界冻结；alignment 关闭时不发现候选。
+
+### LayoutEditorWorkspace：一个 Inspector、两个响应式形态
+
+`WorkspaceTemplates v3` 新增 `CreateLayoutEditorWorkspace()`：
+
+- Canvas 下层是 caller `PreviewHost`；
+- Canvas 上层是 `LayoutEditorOverlay`；
+- Toolbar 提供 Selection 状态与 CryEngine 坐标提示；
+- 右侧 `TransformInspector v2` 是单一实例；
+- compact breakpoint 只把同一 Inspector 显示为 Drawer，不复制、不 reparent；
+- multi mode 切换 `SetModels(adapter, nil)`，Anchor/Pivot section 折叠；single mode 切回同一 AnchorPivotModel。
+
+坐标语义继续固定：`左上(0,0)；+X=右；+Y=下`。Canvas-local 编辑必须提供 viewport logical pointer → local 的显式转换，禁止页面自行猜 offset。
+
+### 下一层
+
+完整编辑器在进入业务页面前还需要共享可恢复操作：`LayoutEditHistory / Undo-Redo → Editor Command Bar → Reset/Revert/Apply`。这些能力必须记录**成功 Commit**，不能记录每一个 Drag Pulse。
