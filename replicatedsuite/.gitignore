@@ -1,0 +1,14 @@
+# Replicated Suite — local dev / tooling ignores
+# Recording-style harnesses and local scratch live under .workbuddy/ and must
+# never enter the repo (they loadfile real source with stubbed clients).
+.workbuddy/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Local editor / IDE
+.idea/
+.vscode/
