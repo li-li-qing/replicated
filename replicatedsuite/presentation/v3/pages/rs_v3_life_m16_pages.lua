@@ -26,7 +26,7 @@ local function ValidateFeatureContract(feature, kind)
     end
     if kind == "trade" then
         if type(feature.GetRouteSettings) ~= "function" or type(commands.SetFrom) ~= "function" or type(commands.SetTo) ~= "function"
-            or type(commands.CycleFrom) ~= "function" or type(commands.CycleTo) ~= "function"
+            or type(commands.QuotePendingMaterials) ~= "function"
             or type(feature.GetWidgetVisible) ~= "function" or type(commands.SetWidgetVisible) ~= "function" then
             return false, "跑商页面 Feature 契约不完整"
         end
@@ -72,46 +72,33 @@ local function Build(parent, route, feature, kind)
     local actionRow = RSUI:HorizontalBox({ id = "v3_" .. kind .. "_actions", parent = root, gap = 6, slot = { size = "fixed", height = 32, hAlign = "fill" } })
     local featureButton = RSUI:Button({ id = "v3_" .. kind .. "_toggle", parent = actionRow, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
     local widgetButton = RSUI:Button({ id = "v3_" .. kind .. "_widget_toggle", parent = actionRow, text = "打开悬浮窗", compact = true, slot = { size = "fixed", width = 96 } })
-    local status = RSUI:Text({ id = "v3_" .. kind .. "_status", parent = root, text = "尚未读取", fontSize = 9, tone = "muted", overflow = "wrap", slot = { size = "auto", minHeight = 28, hAlign = "fill" } })
+    local status
 
     local tradeFrom, tradeTo
     if kind == "trade" then
-        local tradeRouteRow = RSUI:HorizontalBox({ id = "v3_trade_route_row", parent = root, gap = 5, slot = { size = "fixed", height = 32, hAlign = "fill" } })
-        tradeFrom = RSUI:Dropdown({ id = "v3_trade_from", parent = tradeRouteRow, items = {}, maxVisible = 12, popupWidth = 260,
-            get = function() local state = feature:GetRouteSettings(); return state.fromZone end, set = function(value) return feature.Commands:SetFrom(value) end,
-            slot = { size = "fill", fill = 1, minWidth = 120 } })
-        tradeTo = RSUI:Dropdown({ id = "v3_trade_to", parent = tradeRouteRow, items = {}, maxVisible = 12, popupWidth = 260,
-            get = function() local state = feature:GetRouteSettings(); return state.toZone end, set = function(value) return feature.Commands:SetTo(value) end,
-            slot = { size = "fill", fill = 1, minWidth = 120 } })
+        -- Route selection is dropdown-only.  Keep origin/destination on separate
+        -- rows so the controls remain usable at 1024-wide layouts without the
+        -- old four cycle buttons consuming the entire horizontal budget.
+        local tradeRouteBox = RSUI:VerticalBox({ id = "v3_trade_route_box", parent = root, gap = 4, slot = { size = "fixed", height = 64, hAlign = "fill" } })
+        local fromRow = RSUI:HorizontalBox({ id = "v3_trade_from_row", parent = tradeRouteBox, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
+        RSUI:Text({ id = "v3_trade_from_label", parent = fromRow, text = "起点", fontSize = 10, tone = "muted", slot = { size = "fixed", width = 52, hAlign = "fill" } })
+        tradeFrom = RSUI:Dropdown({ id = "v3_trade_from", parent = fromRow, items = {}, maxVisible = 12, popupWidth = 300,
+            placeholder = "选择起点", get = function() local state = feature:GetRouteSettings(); return state.fromZone end,
+            set = function(value) return feature.Commands:SetFrom(value) end, slot = { size = "fill", fill = 1, minWidth = 160 } })
+
+        local toRow = RSUI:HorizontalBox({ id = "v3_trade_to_row", parent = tradeRouteBox, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
+        RSUI:Text({ id = "v3_trade_to_label", parent = toRow, text = "目的地", fontSize = 10, tone = "muted", slot = { size = "fixed", width = 52, hAlign = "fill" } })
+        tradeTo = RSUI:Dropdown({ id = "v3_trade_to", parent = toRow, items = {}, maxVisible = 12, popupWidth = 300,
+            placeholder = "选择目的地", get = function() local state = feature:GetRouteSettings(); return state.toZone end,
+            set = function(value) return feature.Commands:SetTo(value) end, slot = { size = "fill", fill = 1, minWidth = 160 } })
         if tradeFrom == nil or tradeTo == nil then return nil, "跑商路线下拉框创建失败" end
-        local fromPrev = RSUI:Button({ id = "v3_trade_from_prev", parent = tradeRouteRow, text = "起点◀", compact = true, slot = { size = "fixed", width = 56 } })
-        local fromNext = RSUI:Button({ id = "v3_trade_from_next", parent = tradeRouteRow, text = "起点▶", compact = true, slot = { size = "fixed", width = 56 } })
-        local toPrev = RSUI:Button({ id = "v3_trade_to_prev", parent = tradeRouteRow, text = "终点◀", compact = true, slot = { size = "fixed", width = 56 } })
-        local toNext = RSUI:Button({ id = "v3_trade_to_next", parent = tradeRouteRow, text = "终点▶", compact = true, slot = { size = "fixed", width = 56 } })
-        local function Cycle(command, delta) local ok, cycleErr = command(feature.Commands, delta); if ok == true then root:Refresh() end; return ok, cycleErr end
-        fromPrev.onClick = function() return Cycle(feature.Commands.CycleFrom, -1) end
-        fromNext.onClick = function() return Cycle(feature.Commands.CycleFrom, 1) end
-        toPrev.onClick = function() return Cycle(feature.Commands.CycleTo, -1) end
-        toNext.onClick = function() return Cycle(feature.Commands.CycleTo, 1) end
-        for _, button in ipairs({ fromPrev, fromNext, toPrev, toNext }) do if button.root ~= nil then S.UI:SafeHandler(button.root, "OnClick", button.onClick, "v3_trade:cycle:" .. tostring(button.id)) end end
-        local tradeQuoteButton = RSUI:Button({ id = "v3_trade_quote_materials", parent = actionRow, text = "材料询价", compact = true, slot = { size = "fixed", width = 96 } })
+
+        local tradeQuoteButton = RSUI:Button({ id = "v3_trade_quote_materials", parent = actionRow, text = "材料询价", compact = true, slot = { size = "fixed", width = 108 } })
         tradeQuoteButton.onClick = function()
-            local currentProjection = feature:GetProjection() or {}
-            local seen, requested, skipped = {}, 0, 0
-            for _, row in ipairs(currentProjection.rows or {}) do
-                for _, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
-                    if material.costStatus == "explicit_quote_required" and material.materialKey ~= nil and seen[material.materialKey] ~= true then
-                        seen[material.materialKey] = true
-                        local ok = feature.Commands:QuoteMaterial(material.materialKey)
-                        if ok == true then requested = requested + 1 else skipped = skipped + 1 end
-                    end
-                end
-            end
-            if requested == 0 and skipped == 0 then return false, "没有待询价材料（请先完成一次路线查询）" end
-            root:Refresh()
-            return true, "已提交 " .. tostring(requested) .. " 项询价" .. (skipped > 0 and ("，" .. tostring(skipped) .. " 项缺少已验证身份") or "")
+            local ok, quoteErr = feature.Commands:QuotePendingMaterials()
+            if ok == true then root:Refresh() end
+            return ok, quoteErr
         end
-        if tradeQuoteButton.root ~= nil then S.UI:SafeHandler(tradeQuoteButton.root, "OnClick", tradeQuoteButton.onClick, "v3_trade:quote_materials") end
         root.tradeQuoteButton = tradeQuoteButton
     elseif kind == "bonds" then
         local sortButton = RSUI:Button({ id = "v3_bonds_sort", parent = actionRow, text = "按数量排序", compact = true, slot = { size = "fixed", width = 108 } })
@@ -122,18 +109,15 @@ local function Build(parent, route, feature, kind)
             return ok, commandErr
         end
         sortButton.onClick = function() return runBondCommand(function() return feature.Commands:SetSortMode(feature:GetSortMode() == "quantity" and "continent" or "quantity") end) end
-        if sortButton.root ~= nil then S.UI:SafeHandler(sortButton.root, "OnClick", sortButton.onClick, "v3_bonds:sort") end
         local bondState = function() return feature:GetBondFilter() end
         local bondButton = function(id, text, key)
             local button = RSUI:Button({ id = id, parent = actionRow, text = text, compact = true, slot = { size = "fixed", width = 54 } })
             button.onClick = function() local state = bondState(); return runBondCommand(function() return feature.Commands:SetBondFilterOption(key, not state[key]) end) end
-            if button.root ~= nil then S.UI:SafeHandler(button.root, "OnClick", button.onClick, "v3_bonds:" .. key) end
             return button
         end
         root.bondFilterButtons = { q20 = bondButton("v3_bonds_q20", "20", "q20"), q60 = bondButton("v3_bonds_q60", "60", "q60"), q100 = bondButton("v3_bonds_q100", "100", "q100"), auroria = bondButton("v3_bonds_auroria", "原大陆", "auroria"), excludeSame = bondButton("v3_bonds_exclude", "去重", "excludeSame") }
         local priorityButton = RSUI:Button({ id = "v3_bonds_priority", parent = actionRow, text = "优先西", compact = true, slot = { size = "fixed", width = 64 } })
         priorityButton.onClick = function() local state = bondState(); return runBondCommand(function() return feature.Commands:SetDuplicatePriority(state.priority == "west" and "east" or "west") end) end
-        if priorityButton.root ~= nil then S.UI:SafeHandler(priorityButton.root, "OnClick", priorityButton.onClick, "v3_bonds:priority") end
         root.bondPriorityButton = priorityButton
     elseif kind == "fishing" then
         local autoButton = RSUI:Button({ id = "v3_fishing_auto", parent = actionRow, text = "启用自动 R", compact = true, slot = { size = "fixed", width = 108 } })
@@ -143,9 +127,10 @@ local function Build(parent, route, feature, kind)
             if ok == true then root:Refresh() end
             return ok, actionErr
         end
-        if autoButton.root ~= nil then S.UI:SafeHandler(autoButton.root, "OnClick", autoButton.onClick, "v3_fishing:auto") end
         root.autoButton = autoButton
     end
+
+    status = RSUI:Text({ id = "v3_" .. kind .. "_status", parent = root, text = "尚未读取", fontSize = 9, tone = "muted", overflow = "wrap", slot = { size = "auto", minHeight = 28, hAlign = "fill" } })
 
     featureButton.onClick = function()
         local enabled = S.FeatureRuntime:IsEnabled(feature.Id) == true
@@ -169,7 +154,6 @@ local function Build(parent, route, feature, kind)
         root:Refresh()
         return true
     end
-    if featureButton.root ~= nil then S.UI:SafeHandler(featureButton.root, "OnClick", featureButton.onClick, "v3_" .. kind .. ":toggle") end
     if widgetButton ~= nil then
         widgetButton.onClick = function()
             if S.FeatureRuntime:IsEnabled(feature.Id) ~= true then return false, "请先启用" .. title end
@@ -181,7 +165,6 @@ local function Build(parent, route, feature, kind)
             if ok == true then root:Refresh() end
             return ok, widgetErr
         end
-        if widgetButton.root ~= nil then S.UI:SafeHandler(widgetButton.root, "OnClick", widgetButton.onClick, "v3_" .. kind .. ":widget") end
     end
 
     local tableView = RSUI:TableView({
@@ -245,6 +228,11 @@ local function Build(parent, route, feature, kind)
             local toItems = Items(projection.sellableZones, function(row) return row.displayName or row.name end)
             tradeFrom:SetItems(fromItems); tradeFrom:SetEnabled(enabled and #fromItems > 0); tradeFrom:Render()
             tradeTo:SetItems(toItems); tradeTo:SetEnabled(enabled and #toItems > 0); tradeTo:Render()
+            local pendingQuotes = math.max(0, tonumber(projection.pendingQuoteCount) or 0)
+            if root.tradeQuoteButton then
+                root.tradeQuoteButton:SetEnabled(enabled and pendingQuotes > 0)
+                root.tradeQuoteButton:SetText(pendingQuotes > 0 and ("材料询价 (" .. tostring(pendingQuotes) .. ")") or "材料询价")
+            end
             local dropdownHint = ""
             if enabled then
                 if #fromItems == 0 then dropdownHint = dropdownHint .. " · 起点下拉不可用：地区未读取" end
@@ -252,7 +240,8 @@ local function Build(parent, route, feature, kind)
             end
             local fallback = (projection.zoneFallback == true and " · 起点使用静态候选" or "") .. (projection.sellableFallback == true and " · 目的地使用兼容候选" or "")
             local errorText = projection.error and (" · " .. tostring(projection.error)) or (projection.sellableError and (" · " .. tostring(projection.sellableError)) or "")
-            status:SetText(enabled and ((projection.status or "--") .. " · 地区 " .. tostring(#fromItems) .. "/" .. tostring(#toItems) .. " · " .. tostring(#(projection.rows or {})) .. " 种货物" .. fallback .. dropdownHint .. errorText) or "功能已关闭")
+            local quoteHint = pendingQuotes > 0 and (" · 待询价材料 " .. tostring(pendingQuotes)) or ""
+            status:SetText(enabled and ((projection.status or "--") .. " · 地区 " .. tostring(#fromItems) .. "/" .. tostring(#toItems) .. " · " .. tostring(#(projection.rows or {})) .. " 种货物" .. quoteHint .. fallback .. dropdownHint .. errorText) or "功能已关闭")
             if widgetButton then
                 widgetButton:SetEnabled(enabled)
                 widgetButton:SetText(WidgetHost:IsVisible("life.trade") and "关闭悬浮窗" or "打开悬浮窗")

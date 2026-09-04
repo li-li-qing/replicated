@@ -366,11 +366,12 @@ RSUI:RegisterType("TransformInspector", function(spec)
 
     function c:SetEnabled(enabled)
         local nextEnabled = enabled ~= false
-        if type(BaseSetEnabled) == "function" then BaseSetEnabled(self, nextEnabled) else self.enabled = nextEnabled end
-        if self.form ~= nil then
-            for _, field in ipairs(self.form:GetFields() or {}) do if type(field.SetEnabled) == "function" then field:SetEnabled(self.enabled) end end
-        end
-        return self.enabled
+        if type(BaseSetEnabled) ~= "function" then return self.enabled ~= false, false, "base_enabled_contract_missing" end
+        local state, accepted, detail = BaseSetEnabled(self, nextEnabled)
+        if accepted ~= true then return state, false, detail end
+        local childOk, childErr = self:EnsureChildEnabled(self.form, self.enabled, "transform_form")
+        if childOk ~= true then return state, false, childErr end
+        return self.enabled, true, nil
     end
 
     function c:Layout(x, y, nextWidth, nextHeight)

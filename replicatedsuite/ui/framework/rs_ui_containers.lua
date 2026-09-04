@@ -47,11 +47,17 @@ function ContainerSurface:CreateSection(parent, id, spec)
     if root == nil then return nil, "section_root_create_failed" end
     local header = UI:CreatePanel(root, tostring(id) .. "_header", 0, 0, width, headerH, "header",
         { accentStrip = spec.accentStrip ~= false, owner = root.rsUiOwner })
-    if header == nil then return nil, "section_header_create_failed" end
+    if header == nil then
+        if type(UI.SetVisible) == "function" then UI:SetVisible(root, false, root.rsUiOwner) end
+        return nil, "section_header_create_failed"
+    end
     local title = UI:CreateLabel(header, tostring(id) .. "_title", tostring(spec.title or ""),
         padding, 2, math.max(1, width - padding * 2), math.max(1, headerH - 4),
         tonumber(spec.titleFontSize) or Token("font.section", 13), spec.tone or "default", ALIGN_LEFT, true)
-    if title == nil then return nil, "section_title_create_failed" end
+    if title == nil then
+        if type(UI.SetVisible) == "function" then UI:SetVisible(root, false, root.rsUiOwner) end
+        return nil, "section_title_create_failed"
+    end
     local section = {
         root = root, header = header, title = title, body = root,
         padding = padding, headerHeight = headerH, owner = root.rsUiOwner,

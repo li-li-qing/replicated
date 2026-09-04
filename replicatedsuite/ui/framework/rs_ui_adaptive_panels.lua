@@ -657,12 +657,20 @@ RSUI:RegisterType("SplitView", function(spec)
         local d = dividerVisual:CreateColorDrawable(color[1],color[2],color[3],color[4] or 0.72,"overlay")
         if d and d.AddAnchor then d:AddAnchor("TOPLEFT",dividerVisual,0,0); d:AddAnchor("BOTTOMRIGHT",dividerVisual,0,0) end
     end
-    if dividerDrag ~= nil then
-        if type(dividerDrag.Enable) == "function" then pcall(function() dividerDrag:Enable(true) end) end
-        if type(dividerDrag.EnablePick) == "function" then pcall(function() dividerDrag:EnablePick(true,true) end) end
-        if type(dividerDrag.Clickable) == "function" then pcall(function() dividerDrag:Clickable(true,true) end) end
-        if type(dividerDrag.EnableDrag) == "function" then pcall(function() dividerDrag:EnableDrag(true) end) end
-        if type(dividerDrag.SetDragCondition) == "function" and DC_ALWAYS ~= nil then pcall(function() dividerDrag:SetDragCondition(DC_ALWAYS) end) end
+    if dividerDrag == nil then
+        c.rsUiDegraded, c.rsUiDegradedReason = true, "split_divider_drag_create_failed"
+    elseif type(UI.TryInteractionCall) ~= "function" or type(UI.RequireHandler) ~= "function" then
+        c.rsUiDegraded, c.rsUiDegradedReason = true, "critical_interaction_contract_unavailable"
+    else
+        local dragEnabled, dragErr = UI:TryInteractionCall(dividerDrag, "EnableDrag", true)
+        if dragEnabled ~= true then
+            c.rsUiDegraded, c.rsUiDegradedReason = true, "split_enable_drag_failed:" .. tostring(dragErr or "rejected")
+        elseif type(dividerDrag.SetDragCondition) == "function" and DC_ALWAYS ~= nil then
+            local conditionOk, conditionErr = UI:TryInteractionCall(dividerDrag, "SetDragCondition", DC_ALWAYS)
+            if conditionOk ~= true then
+                c.rsUiDegraded, c.rsUiDegradedReason = true, "split_drag_condition_failed:" .. tostring(conditionErr or "rejected")
+            end
+        end
     end
 
     local function EffectiveAxis(widget, horizontal)
@@ -810,14 +818,15 @@ RSUI:RegisterType("SplitView", function(spec)
     end
 
     if dividerDrag ~= nil then
-        UI:SafeHandler(dividerDrag,"OnDragStart",function()
+        local startBound, startErr = UI:RequireHandler(dividerDrag,"OnDragStart",function()
             local axis=EffectiveAxis(dividerDrag,c.orientation=="horizontal")
-            if axis==nil or type(dividerDrag.StartMoving)~="function" then return false end
+            if axis==nil then return false end
             local p=Pad(c.spec.padding)
             local total=c.orientation=="horizontal" and math.max(0,(tonumber(c.width) or 0)-p.left-p.right) or math.max(0,(tonumber(c.height) or 0)-p.top-p.bottom)
             local primary=c:ResolvePrimary(total)
+            local moving = UI:TryInteractionCall(dividerDrag, "StartMoving")
+            if moving ~= true then return false end
             c.dragging=true; c.dragStartAxis=axis; c.dragStartPrimary=primary
-            dividerDrag:StartMoving()
             StopDragTask()
             local scheduled = false
             if S.Scheduler~=nil and type(S.Scheduler.AddInteractiveTask)=="function" then
@@ -833,13 +842,17 @@ RSUI:RegisterType("SplitView", function(spec)
             SyncDrag(false)
             return true
         end,"rsui:"..c.id..":split_drag_start")
-        UI:SafeHandler(dividerDrag,"OnDragStop",function()
+        local stopBound, stopErr = UI:RequireHandler(dividerDrag,"OnDragStop",function()
             SyncDrag(true); StopDragTask()
             if type(dividerDrag.StopMovingOrSizing)=="function" then pcall(function() dividerDrag:StopMovingOrSizing() end) end
             c.dragging=false; c.dragStartAxis=nil; c.dragStartPrimary=nil
             if c.width and c.height then c:Layout(c.x or 0,c.y or 0,c.width,c.height) end
             return true
         end,"rsui:"..c.id..":split_drag_stop")
+        if startBound ~= true or stopBound ~= true then
+            c.rsUiDegraded = true
+            c.rsUiDegradedReason = tostring(startErr or stopErr or "split_required_handler_failed")
+        end
     end
 
     local baseRelease=c.Release
@@ -878,21 +891,39 @@ RSUI:RegisterType("ScrollBox", function(spec)
     c.scrollbarGap = math.max(2, N(spec.scrollbarGap, 4))
     c.scrollbarMinThumb = math.max(6, N(spec.scrollbarMinThumb, 12))
     c.scrollbar = nil
-    if c.root ~= nil and type(c.root.EnableScroll) == "function" then pcall(function() c.root:EnableScroll(true) end) end
-    if c.root ~= nil and type(UI.SetPickable) == "function" then UI:SetPickable(c.root, true, c.owner) end
 
     function c:BindWheelTarget(componentOrRoot)
         local root = type(componentOrRoot) == "table" and componentOrRoot.root or componentOrRoot
-        if root == nil or self.wheelTargets[root] == true then return false end
-        self.wheelTargets[root] = true
-        if type(root.EnableScroll) == "function" then pcall(function() root:EnableScroll(true) end) end
+        if root == nil then return false, "scrollbox_wheel_target_required" end
+        if self.wheelTargets[root] == true then return true, nil end
+        if type(root.EnableScroll) == "function" then
+            if type(UI.TryInteractionCall) ~= "function" then return self:FailClosedInteraction("scrollbox_interaction_contract_unavailable") end
+            local scrollOk, scrollErr = UI:TryInteractionCall(root, "EnableScroll", true)
+            if scrollOk ~= true then return self:FailClosedInteraction("scrollbox_enable_scroll_failed:" .. tostring(scrollErr or "unknown")) end
+        end
+        -- The viewport itself must be a real hit target. Descendant widgets keep
+        -- their own native hit-test policy; changing it here could steal clicks
+        -- from buttons/inputs nested inside the scroll tree.
+        if root == self.root then
+            if type(UI.EnsurePickable) ~= "function" then return self:FailClosedInteraction("scrollbox_pickable_contract_unavailable") end
+            local pickOk, _, pickErr = UI:EnsurePickable(root, true, self.owner)
+            if pickOk ~= true then return self:FailClosedInteraction("scrollbox_root_pickable_failed:" .. tostring(pickErr or "unknown")) end
+        end
         -- Child buttons/text/cards frequently own the native mouse hit in
         -- ArcheRage RU. Bind the wheel to every descendant and forward it to
         -- the nearest ScrollBox so scrolling is independent of the exact pixel
         -- under the cursor. No polling or focus state is required.
-        self:On(root, "OnWheelUp", function() return self:ScrollBy(-self.scrollStep) end, "rsui:" .. self.id .. ":wheel_up_desc")
-        self:On(root, "OnWheelDown", function() return self:ScrollBy(self.scrollStep) end, "rsui:" .. self.id .. ":wheel_down_desc")
-        return true
+        local upKey = "rsui:" .. self.id .. ":wheel_up_desc"
+        local downKey = "rsui:" .. self.id .. ":wheel_down_desc"
+        local upOk = self:On(root, "OnWheelUp", function() return self:ScrollBy(-self.scrollStep) end, upKey)
+        local downOk = self:On(root, "OnWheelDown", function() return self:ScrollBy(self.scrollStep) end, downKey)
+        if upOk ~= true or downOk ~= true then
+            if upOk == true then self:Off(root, "OnWheelUp", upKey) end
+            if downOk == true then self:Off(root, "OnWheelDown", downKey) end
+            return self:FailClosedInteraction("scrollbox_wheel_handler_pair_failed")
+        end
+        self.wheelTargets[root] = true
+        return true, nil
     end
 
     function c:OnDescendantAdded(component)
@@ -904,7 +935,8 @@ RSUI:RegisterType("ScrollBox", function(spec)
         return true
     end
 
-    c:BindWheelTarget(c.root)
+    local rootWheelOk, rootWheelErr = c:BindWheelTarget(c.root)
+    if rootWheelOk ~= true then return c, rootWheelErr end
 
     function c:GetScrollableEntries()
         return VisibleEntries(self)
@@ -962,7 +994,7 @@ RSUI:RegisterType("ScrollBox", function(spec)
     end
 
     if c.scrollbarEnabled and type(RSUI.ScrollbarBehavior) == "table" and type(RSUI.ScrollbarBehavior.Attach) == "function" then
-        c.scrollbar = RSUI.ScrollbarBehavior:Attach(c, {
+        local scrollbar, scrollbarErr = RSUI.ScrollbarBehavior:Attach(c, {
             id = c.id .. "_scrollbar",
             orientation = c.orientation,
             thickness = c.scrollbarWidth,
@@ -973,6 +1005,11 @@ RSUI:RegisterType("ScrollBox", function(spec)
             getVisibleUnits = function(host) return math.max(1, (tonumber(host.visibleEnd) or 0) - (tonumber(host.visibleStart) or 0) + 1) end,
             getTotalUnits = function(host) return math.max(1, #host:GetScrollableEntries()) end,
         })
+        c.scrollbar = scrollbar
+        if scrollbar == nil then
+            c.rsUiDegraded = true
+            c.rsUiDegradedReason = "scrollbar_attach_failed:" .. tostring(scrollbarErr or "unknown")
+        end
     end
 
     function c:Measure(availableW, availableH)

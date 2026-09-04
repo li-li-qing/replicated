@@ -53,6 +53,8 @@ RSUI:RegisterType("Panel", function(spec)
         gradient = spec.gradient,
         gradientKind = spec.gradientKind,
         accentStrip = spec.accentStrip,
+        pickable = spec.pickable == true,
+        owner = spec.owner,
     })
     if widget == nil then return nil, "panel_create_failed" end
     local c = RSUI:NewComponent("Panel", spec, widget)
@@ -113,6 +115,8 @@ RSUI:RegisterType("Icon", function(spec)
     return c
 end)
 
+RSUI.ButtonActionContractVersion = 2
+
 local function CreateButtonComponent(kind, spec, withIcon)
     CommonSpec(spec, spec.compact == true and 72 or 96, tonumber(spec.height) or Token("size.buttonH", 26))
     local button = UI:CreateButton(spec.parent, spec.id, tostring(spec.text or ""), spec.x, spec.y, spec.width, spec.height,
@@ -139,12 +143,32 @@ local function CreateButtonComponent(kind, spec, withIcon)
         if state.icon ~= nil and type(self.SetIcon) == "function" then self:SetIcon(state.icon) end
         return true
     end
+    -- Button Action Contract v2: the component owns the single Native OnClick
+    -- handler for its entire lifetime.  Presentation may install or replace the
+    -- logical action after construction through SetOnClick()/component.onClick
+    -- without rebinding the Native widget (which would overwrite RSUI's event
+    -- mux, disabled gate and release bookkeeping).
+    c.onClick = type(spec.onClick) == "function" and spec.onClick or nil
+    function c:SetOnClick(fn)
+        if self.released == true then return false, "released" end
+        if fn ~= nil and type(fn) ~= "function" then return false, "invalid_on_click" end
+        self.onClick = fn
+        self.spec.onClick = fn
+        return true
+    end
+    function c:GetOnClick()
+        if type(self.onClick) == "function" then return self.onClick end
+        if type(self.spec) == "table" and type(self.spec.onClick) == "function" then return self.spec.onClick end
+        return nil
+    end
     function c:Click(...)
         if self.enabled == false then return false end
-        local ok, result = RSUI:Callback("rsui:" .. self.id .. ":click", spec.onClick, self, ...)
+        local callback = self:GetOnClick()
+        if type(callback) ~= "function" then return false end
+        local ok, result = RSUI:Callback("rsui:" .. self.id .. ":click", callback, self, ...)
         return ok and result ~= false
     end
-    c:On(button, "OnClick", function(...) return c:Click(...) end, "rsui:" .. spec.id .. ":click")
+    c:RequireOn(button, "OnClick", function(...) return c:Click(...) end, "rsui:" .. spec.id .. ":click")
     if withIcon == true and button.CreateIconDrawable ~= nil then
         local icon = button:CreateIconDrawable("artwork")
         c.icon = icon

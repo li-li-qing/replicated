@@ -96,9 +96,12 @@ function Debug:CreateOverlay(spec)
     end
 
     function overlay:SetVisible(visible)
-        self.visible = visible == true
-        UI:SetVisible(self.root, self.visible, self.owner)
-        return self.visible
+        local desired = visible == true
+        if type(UI.EnsureVisible) ~= "function" then return false, "visibility_transaction_unavailable" end
+        local accepted, _, detail = UI:EnsureVisible(self.root, desired, self.owner)
+        if accepted ~= true then return false, detail or "native_visibility_rejected" end
+        self.visible = desired
+        return true, nil
     end
 
     function overlay:Hide()

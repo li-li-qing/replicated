@@ -27,16 +27,22 @@ function P:EnsureCreated()
     end
     self.root,self.take,self.put,self.stop,self.status=root,take,put,stop,status
     local function bind(widget,name,fn)
-        S.UI:SafeHandler(widget,"OnClick",function()
+        if type(S.UI.RequireHandler) ~= "function" then return false, "critical_interaction_contract_unavailable" end
+        return S.UI:RequireHandler(widget,"OnClick",function()
             local ok,actionErr=fn(feature.Commands)
             if ok~=true then S.UI:SetText(status,tostring(actionErr or "失败"),P.owner) end
             P:Refresh()
             return ok,actionErr
         end,"v3_bag_quick:"..name)
     end
-    bind(take,"take",function(c) return c:QuickWithdraw() end)
-    bind(put,"put",function(c) return c:QuickDeposit() end)
-    bind(stop,"stop",function(c) return c:QuickCancel() end)
+    local takeBound,takeErr=bind(take,"take",function(c) return c:QuickWithdraw() end)
+    local putBound,putErr=bind(put,"put",function(c) return c:QuickDeposit() end)
+    local stopBound,stopErr=bind(stop,"stop",function(c) return c:QuickCancel() end)
+    if takeBound~=true or putBound~=true or stopBound~=true then
+        S.UI:SetVisible(root,false,self.owner); if type(S.UI.ReleaseOwner)=="function" then S.UI:ReleaseOwner(self.owner) end
+        self.root,self.take,self.put,self.stop,self.status=nil,nil,nil,nil,nil
+        return false,tostring(takeErr or putErr or stopErr or "bag_quick_required_handler_failed")
+    end
     S.UI:SetVisible(root,false,self.owner)
     return true
 end

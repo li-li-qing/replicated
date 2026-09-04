@@ -812,12 +812,19 @@ RSUI:RegisterType("SearchablePicker", function(spec)
 
     local baseSetEnabled = c.SetEnabled
     function c:SetEnabled(enabled)
-        local result = baseSetEnabled(self, enabled)
-        self.input:SetEnabled(enabled)
-        self.searchButton:SetEnabled(enabled)
-        if self.clearButton ~= nil then self.clearButton:SetEnabled(enabled) end
-        self.list:SetEnabled(enabled)
-        return result
+        local state, accepted, detail = baseSetEnabled(self, enabled)
+        if accepted ~= true then return state, false, detail end
+        local children = {
+            { self.input, "searchable_input" },
+            { self.searchButton, "searchable_search" },
+            { self.clearButton, "searchable_clear" },
+            { self.list, "searchable_list" },
+        }
+        for _, entry in ipairs(children) do
+            local childOk, childErr = self:EnsureChildEnabled(entry[1], self.enabled, entry[2])
+            if childOk ~= true then return state, false, childErr end
+        end
+        return self.enabled, true, nil
     end
 
     function c:Measure(availableW, availableH)
@@ -1185,12 +1192,19 @@ RSUI:RegisterType("IconPicker", function(spec)
 
     local baseSetEnabled = c.SetEnabled
     function c:SetEnabled(enabled)
-        local result = baseSetEnabled(self, enabled)
-        self.input:SetEnabled(enabled)
-        self.searchButton:SetEnabled(enabled)
-        if self.clearButton ~= nil then self.clearButton:SetEnabled(enabled) end
-        self.tileView:SetEnabled(enabled)
-        return result
+        local state, accepted, detail = baseSetEnabled(self, enabled)
+        if accepted ~= true then return state, false, detail end
+        local children = {
+            { self.input, "icon_picker_input" },
+            { self.searchButton, "icon_picker_search" },
+            { self.clearButton, "icon_picker_clear" },
+            { self.tileView, "icon_picker_tiles" },
+        }
+        for _, entry in ipairs(children) do
+            local childOk, childErr = self:EnsureChildEnabled(entry[1], self.enabled, entry[2])
+            if childOk ~= true then return state, false, childErr end
+        end
+        return self.enabled, true, nil
     end
 
     function c:Measure(availableW, availableH)
@@ -1701,7 +1715,11 @@ RSUI:RegisterType("TreeView", function(spec)
             row.treeChevron.state = row.treeChevron.state or {}
             row.treeChevron.state.treeKey = key
             row.treeChevron:SetText(item.hasChildren and (item.expanded and "−" or "+") or "·")
-            row.treeChevron:SetEnabled(item.hasChildren == true)
+            local _, chevronAccepted, chevronErr = row.treeChevron:SetEnabled(item.hasChildren == true)
+            if chevronAccepted == false then
+                c:FailClosedInteraction("tree_chevron_enabled_failed:" .. tostring(chevronErr or "native_enable_rejected"))
+                return
+            end
             row.treeLabel.state = row.treeLabel.state or {}
             row.treeLabel.state.treeIndex, row.treeLabel.state.treeKey = index, key
             row.treeLabel:SetText(tostring(item.text or key or ""))

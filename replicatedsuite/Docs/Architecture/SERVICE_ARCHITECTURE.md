@@ -77,8 +77,8 @@ Presentation
 
 - Service 自己没有 Tick、Scheduler、事件订阅或跨帧业务 Cache；采样 cadence 完全归调用 Feature 的 Demand 生命周期。
 - `ProjectWorldBatch(points)` 在 native global projector 不可用时，一批点只捕获一次 Camera pos/dir/fov；范围圆不能对每个点重复读取相机 getter。
-- `combat.unit_lines` 当前消费有界的 `player/target/targettarget/watchtarget/watchtargettarget` token，可分别形成 self↔target、target↔targettarget、self↔watchtarget、watchtarget↔watchtargettarget 四条关系；禁止为了“全单位连线”重新调用已被证据阻塞的附近单位枚举。
-- v3 输出统一到 RSUI logical UI space，避免物理屏幕像素与 addonScale 混用；`combat.range_assist` 只投影用户指定半径，不拥有技能/魔法阵半径语义。未来技能范围事实必须来自独立已验证 Domain，不能塞进 ScreenProjectionV3。
+- `combat.unit_lines` 当前消费有界的 `player/target/targettarget/watchtarget/watchtargettarget` token，可分别形成 self↔target、target↔targettarget、self↔watchtarget、watchtarget↔watchtargettarget 四条关系；`.18.87` 的 Presentation 先裁剪 logical viewport 可见段，再以 Store 中旧 `pointCount/pairPoints` 作为基础密度做屏幕空间自适应采样；HighFrequency producer 使用 P1 保持视觉 cadence，帧压力只削减 adaptive extra，Presenter-local Diff 与渐进点池控制 Native 峰值；`.18.88` 的 ScreenProjectionV3 v4 在同一 caller-demand batch 内以 Camera Frame + world position 提供 front-hemisphere 端点事实，behind_camera 在进入 Presentation clipping 前 fail-closed；`.18.96` v5 进一步要求所有 unit world read 使用同一 global 坐标空间，并在同一 batch 已有 camera/world 事实上校验 Native screen point：可证明的 UI-scale 差异先 reconcile，仍严重偏移才 camera consistency fallback。ScreenProjectionV3 不拥有点密度/预算。禁止为了“全单位连线”重新调用已被证据阻塞的附近单位枚举。
+- v5 输出统一到 RSUI logical UI space；Unit Lines batch 可显式启用 Native/Camera consistency gate，避免“数值仍落在 logical bounds 内但实际属于 physical/UI-scale 空间”的歧义；`combat.range_assist` 只投影用户指定半径，不拥有技能/魔法阵半径语义。未来技能范围事实必须来自独立已验证 Domain，不能塞进 ScreenProjectionV3。
 - 投影失败返回 unavailable/partial；Presentation 隐藏点，不猜坐标。
 
 ## 4.6 Auction Query Service（M1.16.0.18.45）
@@ -185,7 +185,7 @@ DPS 启用全局桥后，DeathReview 等低成本 `scope=self` Consumer 不再�
 | `CombatEventBusV3 v5` | Native combat facts | Demand (`self` / `all`) | 私有事件始终按需；全局桥仅 all scope；UI/UIParent FIFO token 1:1 去重且有 TTL/容量边界；已验证端点可附加显式 Kind；无业务结论 |
 | `TeamRosterV3 v4` | 当前本机可见团队成员名字/槽位事实 | Demand | Consumer 持有时才扫描；player 与团队槽位命中同一身份时原位合并为唯一 canonical row（保留 `player` Native token，同时补齐 team/member slot）；瞬时 player-name 失败保留最后有效快照并最多 3 次 one-shot 重试；TEAM_MEMBERS_CHANGED 只做失效信号；无 Tick |
 | `CombatRelationV3 v4` | Unit relation facts (SELF/TEAM/FRIENDLY/OPPONENT/UNKNOWN) | Demand | MANUAL 最高优先；SELF 来自 UnitIdentity，TEAM 来自 TeamRoster；`RecordCombatFact` 返回关系变化元数据供 Consumer 合并重放；Kind 与 Relation 分权；不拥有 DPS 业务结论 |
-| `ScreenProjectionV3 v3` | Native world/screen → RSUI logical projection | Caller Demand | 自身无 Scheduler/cache；支持 unit token 与 batched world projection；失败返回 unavailable，不猜坐标 |
+| `ScreenProjectionV3 v5` | Native world/screen → RSUI logical projection | Caller Demand | 自身无 Scheduler/cache；支持 unit token、batched world projection、front-hemisphere unit batch 与 opt-in Native/Camera consistency reconciliation；Camera Frame 仅在 caller batch 内复用，behind_camera fail-closed |
 | `AuctionQueryV3 v2` | Current auction listing search + un-tokened completion event Authority | Explicit query | 单 pending、9 参数 Search、8s timeout、5–30 bounded rows；只证明当前挂单，不证明历史成交 |
 
 ## 6.5 DeathReview 采样边界（M1.15.2H2）
@@ -220,7 +220,7 @@ CombatRelationV3 ← TeamRosterV3 / UnitIdentityV3
 DPS Domain (rs_dps_domain.lua)  —— 逐事件伤害分类 + shared heal ledger + bounded replay + detail
     ↓ GetProjection / ClearStats / GetHealth
 DPS Feature (rs_dps_feature.lua) —— 生命周期 / 设置 / Commands / Projection 边界
-    ↓ S.Persistence (v3.dps: 设置 + Boss 名 + widgetWindow)
+    ↓ S.Persistence (v3.dps: 设置 + Boss 名 + widgetVisible + widgetWindow)
 V3 Presentation (Widget/Page) —— FloatingSurface + WidgetHost + PageHost + ViewState/ActionRunner
 ```
 
@@ -228,7 +228,7 @@ V3 Presentation (Widget/Page) —— FloatingSurface + WidgetHost + PageHost + V
 - **逐事件贡献与可重放分类**：DPS Domain v5 对伤害按来源×目标返回 PVP/PVE/UNKNOWN；每条伤害事实分别累计 `source.damage` 与 `target.taken`。治疗只写一次 Shared Heal Ledger，PVE/PVP Projection 合并同一份数据。模式/阵营未决时数值进入 `unclassified`/side-unknown 保留桶，同时最多保留 512 条**自有标量快照** Replay；禁止持有 borrowed CombatFact。关系/Kind 更新后在 Scheduler 安全点搬桶。provisional contribution 在最终归类前**不提交 active clock**，因此 PVE→PVP 搬迁不会留下无法回滚的旧活动时间；技能/目标明细与主贡献共用回滚引用，零值 detail row 删除并归还有界计数。账本溢出不删除已累计数值，只计 `pendingEvicted`。
 - **显示上限只截 Projection**：`GetProjection` 的 `displayRows`（默认 12，硬顶 `MAX_RANKING_ROWS=150`）只截断返回行数；`modes[].*.actorCount` 累积永不受限。
 - **统计生命周期独立**：`DPS:ClearStats` 只在用户显式清空时重置 Domain 统计且不停 Consumer；Feature Disable/Quiesce 释放 Consumer/Relation/TeamRoster 与 Replay/Segment 临时状态，但保留本次 Session 已累计统计，重新启用可继续查看。
-- **无持久化运行总量**：`rs_dps_store.lua` schema 3 经 `S.Persistence:RegisterV3Store` 只存设置（含 mode/side/metric/displayRows/alwaysShowSelf）、Boss 名和 FloatingSurface `widgetWindow` 状态（Account/Permanent），不得直接 `LoadData/SaveData/ClearData`。
+- **无持久化运行总量**：`rs_dps_store.lua` schema 4 经 `S.Persistence:RegisterV3Store` 只存设置（含 mode/side/metric/displayRows/alwaysShowSelf）、Boss 名、悬浮窗 `widgetVisible` 偏好和 FloatingSurface `widgetWindow` 状态（Account/Permanent），不得直接 `LoadData/SaveData/ClearData`。
 - **零 Tick**：事实回调只做有界 `OnCombatFact`；Projection 用 400ms `Scheduler:AddOneShot` 合并发布，关系/Kind 证据重放用 160ms one-shot。`TeamRosterV3 v4` 只在 Demand 0→1 / TEAM_MEMBERS_CHANGED 后的安全点扫描；冷启动失败最多追加 3 次约 450ms one-shot 重试并保留最后有效快照，不在 CombatFact 回调扫描单位。
 - **身份键保守性**：DPS 聚合键不再裁掉 `@World`；两个都明确带 World 且 World 不同的名字绝不合并。短名与带 World 名在没有稳定 ID 证据时宁可暂时分行，也不把两个跨服角色错误合并。
 

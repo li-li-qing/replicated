@@ -165,13 +165,12 @@ local function BuildTaskPage(parent, route)
         { noneButton, "none" }, { featureButton, "feature" }, { widgetButton, "widget" },
     }) do
         local button, name = binding[1], binding[2]
-        if button.root ~= nil then
-            S.UI:SafeHandler(button.root, "OnClick", function()
-                if S.ActionRunner ~= nil and (name == "toggle_track" or name == "all" or name == "none" or name == "feature" or name == "widget") then
-                    return S.ActionRunner:Run({ id = "tasks." .. name, button = button, idleText = button.spec and button.spec.text, busyText = "处理中…", notify = false, execute = button.onClick })
-                end
-                return button.onClick()
-            end, "v3_tasks:" .. name)
+        local execute = button.onClick
+        button.onClick = function()
+            if S.ActionRunner ~= nil and (name == "toggle_track" or name == "all" or name == "none" or name == "feature" or name == "widget") then
+                return S.ActionRunner:Run({ id = "tasks." .. name, button = button, idleText = button.spec and button.spec.text, busyText = "处理中…", notify = false, execute = execute })
+            end
+            return execute()
         end
     end
 

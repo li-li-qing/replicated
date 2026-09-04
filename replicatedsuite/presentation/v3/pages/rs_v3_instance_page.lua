@@ -78,7 +78,6 @@ local function BuildPage(parent, route)
         { allButton, "all" }, { availableButton, "available" }, { limitedButton, "limited" }, { unmappedButton, "unmapped" },
     }) do
         local button, label = binding[1], binding[2]
-        if button.root ~= nil then S.UI:SafeHandler(button.root, "OnClick", function() return button.onClick() end, "v3_instances:" .. label) end
     end
 
     function root:FilteredRows()
@@ -184,7 +183,6 @@ local function BuildPage(parent, route)
         root:Refresh()
         return true
     end
-    if toggle.root ~= nil then S.UI:SafeHandler(toggle.root, "OnClick", toggle.onClick, "v3_instances:toggle") end
 
     function root:OnActivated()
         if S.FeatureRuntime == nil then tableView:SetViewState("error", { detail = "FeatureRuntime 不可用" }); return false, "feature runtime unavailable" end

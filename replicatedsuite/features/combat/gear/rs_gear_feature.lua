@@ -205,7 +205,7 @@ function F:Rename(id, name) return self.Authority:Rename(id, name) end
 function F:CaptureDraft(id) return self.Authority:CaptureDraft(id) end
 function F:SaveDraft(draft) return self.Authority:SaveDraft(draft) end
 function F:SetQuick(id, visible) return self.Authority:SetQuick(id, visible == true) end
-function F:SetQuickPosition(id, x, y) return self.Authority:SetQuickPosition(id, x, y) end
+function F:SetQuickPosition(id, x, y, placement) return self.Authority:SetQuickPosition(id, x, y, placement) end
 function F:ResetQuickPositions() return self.Authority:ResetQuickPositions() end
 function F:Validate(id) return self.Authority:Validate(id) end
 function F:Start(id) return self.Authority:Start(id) end
@@ -394,6 +394,7 @@ function F.Commands:SetQuickHudAppearance(key, value, persist, reason) return F:
 function F.Commands:ApplyQuickSnapEnabled(enabled) return F:ApplyQuickSnapEnabled(enabled == true) end
 function F.Commands:ApplyQuickSnapDistance(value) return F:ApplyQuickSnapDistance(value) end
 function F.Commands:ApplyQuickButtonGap(value) return F:ApplyQuickButtonGap(value) end
+function F.Commands:ResetQuickSnapSettings() return F:ResetQuickSnapSettings() end
 function F.Commands:MarkStoreDirty(delayMs, reason) return F:MarkIndexDirty(delayMs, reason) end
 function F.Commands:RefreshProjection(reason) return F:RefreshProjection(reason or "gear_command") end
 function F.Commands:CreateSet(name) return F:CreateSet(name) end
@@ -403,7 +404,7 @@ function F.Commands:Rename(id, name) return F:Rename(id, name) end
 function F.Commands:CaptureDraft(id) return F:CaptureDraft(id) end
 function F.Commands:SaveDraft(draft) return F:SaveDraft(draft) end
 function F.Commands:SetQuick(id, visible) return F:SetQuick(id, visible == true) end
-function F.Commands:SetQuickPosition(id, x, y) return F:SetQuickPosition(id, x, y) end
+function F.Commands:SetQuickPosition(id, x, y, placement) return F:SetQuickPosition(id, x, y, placement) end
 function F.Commands:ResetQuickPositions() return F:ResetQuickPositions() end
 function F.Commands:Validate(id) return F:Validate(id) end
 function F.Commands:Start(id) return F:Start(id) end

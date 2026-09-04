@@ -21,7 +21,7 @@
 
 - 每个 Feature 遵循 `store / authority(or projection) / feature / acceptance` 四件套。
 - Feature 必须实现 `Initialize / Enable / Disable` 三方法契约（缺 Initialize 是静默报废式 bug）。
-- Feature 只输出 `GetProjection()` + `Commands` facade；Presentation 只消费这两个。
+- Feature 只输出 `GetProjection()` + `Commands` facade；Presentation 只消费这两个。`.18.92` 起封包必须通过 `rs_presentation_feature_api_audit.py`：静态命名 Feature consumer 的 `Feature:Method()` / `Feature.Commands:Method()` 必须能从真实 provider 导出面解析到，或有显式 capability guard；禁止再让 Lua-valid 的缺失 Command 等到 RU 交互时才崩。动态 `S.Features[expr]` 仍由对应 BusinessPages/Acceptance 矩阵证明，审计器不得猜表达式值。
 - Demand 驱动：`Acquire(0→1)` 初始读取，`Release(1→0)` 释放事件/任务。
 - Feature Registry（`features/rs_feature_registry.lua`）是 Feature 元数据 Authority。
 

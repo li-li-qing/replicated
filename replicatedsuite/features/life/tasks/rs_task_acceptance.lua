@@ -21,7 +21,8 @@ G:RegisterSequenceCase("v3_m1_tasks", function()
     if type(progress) ~= "table" or type(progress.GetProgress) ~= "function" or type(progress.GetGroupDetail) ~= "function" then return Fail("progress_contract") end
     if S.UIV3 == nil or S.UIV3.PageHost == nil or S.UIV3.PageHost.factories["life.tasks"] == nil then return Fail("page_contract") end
     if S.UIV3.WidgetHost == nil or S.UIV3.WidgetHost:GetSpec("life.tasks") == nil then return Fail("widget_contract") end
-    if type(F.Commands) ~= "table" or type(F.Commands.MarkStoreDirty) ~= "function" then return Fail("presentation_command_contract") end
+    if type(F.Commands) ~= "table" or type(F.Commands.MarkStoreDirty) ~= "function"
+        or type(F.Commands.SetWidgetWindowState) ~= "function" then return Fail("presentation_command_contract") end
 
     if S.FeatureRuntime:IsEnabled("life_tasks") ~= true then return true end
 

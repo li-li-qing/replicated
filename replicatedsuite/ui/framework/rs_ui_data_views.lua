@@ -25,6 +25,8 @@ RSUI.DataViewViewportContractVersion = 2
 RSUI.DataViewOverlayScrollbarContractVersion = 1
 RSUI.DataViewDeferredCallbackContractVersion = 1
 RSUI.DataViewCallbackCaptureContractVersion = 1
+RSUI.DataViewWheelInteractionContractVersion = 2
+RSUI.DataViewEnabledPropagationContractVersion = 1
 local U = RSUI.LayoutUtil
 if type(U) ~= "table" then return end
 local N, Pad, Arrange, Host = U.N, U.Pad, U.Arrange, U.Host
@@ -442,15 +444,30 @@ local function NewVirtualList(kind, spec)
     -- focus polling/Tick is introduced.
     function c:BindWheelTarget(componentOrRoot)
         local root = type(componentOrRoot) == "table" and componentOrRoot.root or componentOrRoot
-        if root == nil or self.wheelTargets[root] == true then return false end
+        if root == nil then return false, "list_wheel_target_required" end
+        if self.wheelTargets[root] == true then return true, nil end
+        if type(root.EnableScroll) == "function" then
+            if type(UI.TryInteractionCall) ~= "function" then return self:FailClosedInteraction("list_scroll_interaction_contract_unavailable") end
+            local scrollOk, scrollErr = UI:TryInteractionCall(root, "EnableScroll", true)
+            if scrollOk ~= true then return self:FailClosedInteraction("list_enable_scroll_failed:" .. tostring(scrollErr or "unknown")) end
+        end
+        if type(UI.EnsurePickable) ~= "function" then return self:FailClosedInteraction("list_pickable_contract_unavailable") end
+        local pickOk, _, pickErr = UI:EnsurePickable(root, true, self.owner)
+        if pickOk ~= true then return self:FailClosedInteraction("list_wheel_target_pickable_failed:" .. tostring(pickErr or "unknown")) end
+        local upKey = "rsui:" .. self.id .. ":wheel_up_target"
+        local downKey = "rsui:" .. self.id .. ":wheel_down_target"
+        local upOk = self:On(root, "OnWheelUp", function() return self:ScrollBy(-self.scrollStep) end, upKey)
+        local downOk = self:On(root, "OnWheelDown", function() return self:ScrollBy(self.scrollStep) end, downKey)
+        if upOk ~= true or downOk ~= true then
+            if upOk == true then self:Off(root, "OnWheelUp", upKey) end
+            if downOk == true then self:Off(root, "OnWheelDown", downKey) end
+            return self:FailClosedInteraction("list_wheel_handler_pair_failed")
+        end
         self.wheelTargets[root] = true
-        if type(root.EnableScroll) == "function" then pcall(function() root:EnableScroll(true) end) end
-        if type(UI.SetPickable) == "function" then UI:SetPickable(root, true, self.owner) end
-        self:On(root, "OnWheelUp", function() return self:ScrollBy(-self.scrollStep) end, "rsui:" .. self.id .. ":wheel_up_target")
-        self:On(root, "OnWheelDown", function() return self:ScrollBy(self.scrollStep) end, "rsui:" .. self.id .. ":wheel_down_target")
-        return true
+        return true, nil
     end
-    c:BindWheelTarget(c.root)
+    local rootWheelOk, rootWheelErr = c:BindWheelTarget(c.root)
+    if rootWheelOk ~= true then return c, rootWheelErr end
 
     c.selectionModel = spec.selectionModel
     if c.selectionModel == nil and c.selectable and type(RSUI.CreateSelectionModel) == "function" then
@@ -477,7 +494,7 @@ local function NewVirtualList(kind, spec)
     end
 
     if c.scrollbarEnabled and type(RSUI.ScrollbarBehavior) == "table" and type(RSUI.ScrollbarBehavior.Attach) == "function" then
-        c.scrollbar = RSUI.ScrollbarBehavior:Attach(c, {
+        local scrollbar, scrollbarErr = RSUI.ScrollbarBehavior:Attach(c, {
             id = c.id .. "_scrollbar",
             orientation = "vertical",
             thickness = c.scrollbarWidth,
@@ -488,6 +505,11 @@ local function NewVirtualList(kind, spec)
             getVisibleUnits = function(host) return math.max(1, tonumber(host.visibleCapacity) or 1) end,
             getTotalUnits = function(host) return math.max(1, host:GetItemCount()) end,
         })
+        c.scrollbar = scrollbar
+        if scrollbar == nil then
+            c.rsUiDegraded = true
+            c.rsUiDegradedReason = "scrollbar_attach_failed:" .. tostring(scrollbarErr or "unknown")
+        end
     end
 
     if spec.viewState ~= false and type(RSUI.CreateViewState) == "function" then
@@ -614,7 +636,16 @@ local function NewVirtualList(kind, spec)
             end
         end
         if row == nil then return nil end
-        self:BindWheelTarget(row)
+        local wheelOk = self:BindWheelTarget(row)
+        if wheelOk ~= true then
+            if type(row.Release) == "function" then row:Release() end
+            return nil
+        end
+        local childOk = self:EnsureChildEnabled(row, self.enabled, "list_row_create_" .. tostring(poolIndex))
+        if childOk ~= true then
+            if type(row.Release) == "function" then row:Release() end
+            return nil
+        end
         local slot = {
             row = row,
             poolIndex = poolIndex,
@@ -631,7 +662,11 @@ local function NewVirtualList(kind, spec)
     function c:_EnsurePool(required)
         required = math.max(0, math.min(self.maxPoolSize, math.floor(tonumber(required) or 0)))
         while #self.pool < required do
-            if self:_CreatePoolRow(#self.pool + 1) == nil then break end
+            local nextIndex = #self.pool + 1
+            if self:_CreatePoolRow(nextIndex) == nil then
+                self:FailClosedInteraction("list_pool_row_create_failed:" .. tostring(nextIndex))
+                break
+            end
         end
         return #self.pool
     end
@@ -898,6 +933,7 @@ local function NewVirtualList(kind, spec)
     end
 
     function c:HandleRowClick(index)
+        if self.enabled == false or self.rsUiDegraded == true then return false end
         index = math.floor(tonumber(index) or 0)
         if index < 1 or index > self:GetItemCount() then return false end
         local selectionChanged = false
@@ -938,7 +974,10 @@ local function NewVirtualList(kind, spec)
         return true
     end
 
-    function c:ScrollBy(delta) return self:SetScrollOffset(self.scrollOffset + math.floor(tonumber(delta) or 0)) end
+    function c:ScrollBy(delta)
+        if self.enabled == false or self.rsUiDegraded == true then return false end
+        return self:SetScrollOffset(self.scrollOffset + math.floor(tonumber(delta) or 0))
+    end
     function c:ScrollToTop() return self:SetScrollOffset(0) end
     function c:ScrollToBottom() return self:SetScrollOffset(self:GetMaxOffset()) end
     function c:ScrollToIndex(index)
@@ -959,6 +998,25 @@ local function NewVirtualList(kind, spec)
             if slot.row ~= nil then fn(slot.row, slot.boundIndex, slot); count = count + 1 end
         end
         return count
+    end
+
+    local BaseSetEnabled = c.SetEnabled
+    function c:SetEnabled(enabled)
+        local state, accepted, detail = BaseSetEnabled(self, enabled)
+        if accepted ~= true then return state, false, detail end
+        for index, slot in ipairs(self.pool) do
+            if slot.row ~= nil then
+                local childOk, childErr = self:EnsureChildEnabled(slot.row, self.enabled, "list_row_" .. tostring(index))
+                if childOk ~= true then return state, false, childErr end
+            end
+        end
+        if self.scrollbar ~= nil and type(self.scrollbar.SetEnabled) == "function" then
+            local scrollOk, scrollErr = self.scrollbar:SetEnabled(self.enabled)
+            if scrollOk ~= true then
+                return state, false, select(2, self:FailClosedInteraction("list_scrollbar_enabled_failed:" .. tostring(scrollErr or "native_enable_rejected")))
+            end
+        end
+        return self.enabled, true, nil
     end
 
     function c:Measure(availableW, availableH)
@@ -1028,6 +1086,8 @@ local function NewVirtualList(kind, spec)
     end
 
     c:_SyncViewState()
+    local _, initialEnabledOk, initialEnabledErr = c:SetEnabled(spec.enabled ~= false)
+    if initialEnabledOk ~= true then return c, initialEnabledErr end
     local baseRelease = c.Release
     function c:Release()
         if self.selectionModel ~= nil and type(self.selectionModel.Unsubscribe) == "function" then self.selectionModel:Unsubscribe(self.id) end
@@ -1091,6 +1151,7 @@ local function NewTileView(kind, spec)
     c.onSelectionChanged = spec.onSelectionChanged
     c.selectable = spec.selectable ~= false and (spec.selectable == true or spec.selectionMode ~= nil or spec.selectionModel ~= nil or spec.selectOnClick == true)
     c.selectionMode = tostring(spec.selectionMode or "single"):lower()
+    c.wheelTargets = setmetatable({}, { __mode = "k" })
     c.selectionModel = spec.selectionModel
     if c.selectionModel == nil and c.selectable and type(RSUI.CreateSelectionModel) == "function" then
         c.selectionModel = RSUI:CreateSelectionModel({ id = c.id .. "_selection", mode = c.selectionMode })
@@ -1120,6 +1181,33 @@ local function NewTileView(kind, spec)
     function c:_SyncViewState()
         if self.viewState ~= nil then self.viewState:AutoFromCount(self:GetItemCount()) end
     end
+
+    function c:BindWheelTarget(componentOrRoot)
+        local root = type(componentOrRoot) == "table" and componentOrRoot.root or componentOrRoot
+        if root == nil then return false, "tile_wheel_target_required" end
+        if self.wheelTargets[root] == true then return true, nil end
+        if type(root.EnableScroll) == "function" then
+            if type(UI.TryInteractionCall) ~= "function" then return self:FailClosedInteraction("tile_scroll_interaction_contract_unavailable") end
+            local scrollOk, scrollErr = UI:TryInteractionCall(root, "EnableScroll", true)
+            if scrollOk ~= true then return self:FailClosedInteraction("tile_enable_scroll_failed:" .. tostring(scrollErr or "unknown")) end
+        end
+        if type(UI.EnsurePickable) ~= "function" then return self:FailClosedInteraction("tile_pickable_contract_unavailable") end
+        local pickOk, _, pickErr = UI:EnsurePickable(root, true, self.owner)
+        if pickOk ~= true then return self:FailClosedInteraction("tile_wheel_target_pickable_failed:" .. tostring(pickErr or "unknown")) end
+        local upKey = "rsui:" .. self.id .. ":tile_wheel_up_target"
+        local downKey = "rsui:" .. self.id .. ":tile_wheel_down_target"
+        local upOk = self:On(root, "OnWheelUp", function() return self:ScrollBy(-self.scrollStep) end, upKey)
+        local downOk = self:On(root, "OnWheelDown", function() return self:ScrollBy(self.scrollStep) end, downKey)
+        if upOk ~= true or downOk ~= true then
+            if upOk == true then self:Off(root, "OnWheelUp", upKey) end
+            if downOk == true then self:Off(root, "OnWheelDown", downKey) end
+            return self:FailClosedInteraction("tile_wheel_handler_pair_failed")
+        end
+        self.wheelTargets[root] = true
+        return true, nil
+    end
+    local rootWheelOk, rootWheelErr = c:BindWheelTarget(c.root)
+    if rootWheelOk ~= true then return c, rootWheelErr end
 
     function c:GetItemCount()
         if type(self.getCount) == "function" then
@@ -1171,7 +1259,7 @@ local function NewTileView(kind, spec)
     end
 
     if c.scrollbarEnabled and type(RSUI.ScrollbarBehavior) == "table" and type(RSUI.ScrollbarBehavior.Attach) == "function" then
-        c.scrollbar = RSUI.ScrollbarBehavior:Attach(c, {
+        local scrollbar, scrollbarErr = RSUI.ScrollbarBehavior:Attach(c, {
             id = c.id .. "_scrollbar",
             orientation = "vertical",
             thickness = c.scrollbarWidth,
@@ -1182,6 +1270,11 @@ local function NewTileView(kind, spec)
             getVisibleUnits = function(host) return math.max(1, tonumber(host.visibleRows) or 1) end,
             getTotalUnits = function(host) return math.max(1, host:_TotalRows()) end,
         })
+        c.scrollbar = scrollbar
+        if scrollbar == nil then
+            c.rsUiDegraded = true
+            c.rsUiDegradedReason = "scrollbar_attach_failed:" .. tostring(scrollbarErr or "unknown")
+        end
     end
 
     function c:GetPoolStats()
@@ -1223,6 +1316,16 @@ local function NewTileView(kind, spec)
             })
         end
         if tile == nil then return nil end
+        local wheelOk = self:BindWheelTarget(tile)
+        if wheelOk ~= true then
+            if type(tile.Release) == "function" then tile:Release() end
+            return nil
+        end
+        local childOk = self:EnsureChildEnabled(tile, self.enabled, "tile_create_" .. tostring(poolIndex))
+        if childOk ~= true then
+            if type(tile.Release) == "function" then tile:Release() end
+            return nil
+        end
         local slot = {
             tile = tile,
             poolIndex = poolIndex,
@@ -1239,7 +1342,11 @@ local function NewTileView(kind, spec)
     function c:_EnsurePool(required)
         required = math.max(0, math.min(self.maxPoolSize, math.floor(tonumber(required) or 0)))
         while #self.pool < required do
-            if self:_CreatePoolTile(#self.pool + 1) == nil then break end
+            local nextIndex = #self.pool + 1
+            if self:_CreatePoolTile(nextIndex) == nil then
+                self:FailClosedInteraction("tile_pool_item_create_failed:" .. tostring(nextIndex))
+                break
+            end
         end
         return #self.pool
     end
@@ -1338,6 +1445,7 @@ local function NewTileView(kind, spec)
     end
 
     function c:HandleTileClick(index)
+        if self.enabled == false or self.rsUiDegraded == true then return false end
         if self.selectionModel == nil then return false end
         if self.selectionModel:GetMode() == "multi" then return self:ToggleSelection(index) end
         return self:SetSelectedIndex(index)
@@ -1353,6 +1461,25 @@ local function NewTileView(kind, spec)
 
     function c:ClearSelection()
         return self.selectionModel ~= nil and self.selectionModel:Clear("view_clear", self) or false
+    end
+
+    local BaseSetEnabled = c.SetEnabled
+    function c:SetEnabled(enabled)
+        local state, accepted, detail = BaseSetEnabled(self, enabled)
+        if accepted ~= true then return state, false, detail end
+        for index, slot in ipairs(self.pool) do
+            if slot.tile ~= nil then
+                local childOk, childErr = self:EnsureChildEnabled(slot.tile, self.enabled, "tile_" .. tostring(index))
+                if childOk ~= true then return state, false, childErr end
+            end
+        end
+        if self.scrollbar ~= nil and type(self.scrollbar.SetEnabled) == "function" then
+            local scrollOk, scrollErr = self.scrollbar:SetEnabled(self.enabled)
+            if scrollOk ~= true then
+                return state, false, select(2, self:FailClosedInteraction("tile_scrollbar_enabled_failed:" .. tostring(scrollErr or "native_enable_rejected")))
+            end
+        end
+        return self.enabled, true, nil
     end
 
     function c:_Reconcile(firstIndex, lastIndex, forceBind)
@@ -1449,7 +1576,10 @@ local function NewTileView(kind, spec)
     end
 
     function c:SetScrollOffset(offset, relayout) return self:SetScrollRow(offset, relayout) end
-    function c:ScrollBy(delta) return self:SetScrollRow(self.scrollRowOffset + math.floor(tonumber(delta) or 0)) end
+    function c:ScrollBy(delta)
+        if self.enabled == false or self.rsUiDegraded == true then return false end
+        return self:SetScrollRow(self.scrollRowOffset + math.floor(tonumber(delta) or 0))
+    end
     function c:ScrollToTop() return self:SetScrollRow(0) end
     function c:ScrollToBottom() return self:SetScrollRow(self:GetMaxScrollRow()) end
     function c:ScrollToIndex(index)
@@ -1578,9 +1708,9 @@ local function NewTileView(kind, spec)
         return height
     end
 
-    c:On(c.root, "OnWheelUp", function() return c:ScrollBy(-c.scrollStep) end, "rsui:" .. c.id .. ":wheel_up")
-    c:On(c.root, "OnWheelDown", function() return c:ScrollBy(c.scrollStep) end, "rsui:" .. c.id .. ":wheel_down")
     c:_SyncViewState()
+    local _, initialEnabledOk, initialEnabledErr = c:SetEnabled(spec.enabled ~= false)
+    if initialEnabledOk ~= true then return c, initialEnabledErr end
     local baseRelease = c.Release
     function c:Release()
         if self.selectionModel ~= nil and type(self.selectionModel.Unsubscribe) == "function" then self.selectionModel:Unsubscribe(self.id) end
@@ -1735,6 +1865,10 @@ local function NewTableRow(kind, spec)
         else
             cell = RSUI:Text(common)
         end
+        if cell == nil then
+            c:Release()
+            return nil, "table_cell_create_failed:" .. tostring(columnIndex)
+        end
         c.cells[columnIndex] = cell
     end
 
@@ -1779,10 +1913,21 @@ local function NewTableRow(kind, spec)
 
     c.onClick = spec.onClick
     if c.header ~= true and type(c.onClick) == "function" and c.root ~= nil then
-        c:On(c.root, "OnClick", function()
+        c:RequireOn(c.root, "OnClick", function()
             local ok, result = SafeCall("rsui:" .. c.id .. ":row_click", c.onClick, c, c.item, c.itemIndex)
             return ok == true and result ~= false
         end, "rsui:" .. c.id .. ":row_click")
+    end
+
+    local BaseSetEnabled = c.SetEnabled
+    function c:SetEnabled(enabled)
+        local state, accepted, detail = BaseSetEnabled(self, enabled)
+        if accepted ~= true then return state, false, detail end
+        for index, cell in ipairs(self.cells or {}) do
+            local childOk, childErr = self:EnsureChildEnabled(cell, self.enabled, "table_cell_" .. tostring(index))
+            if childOk ~= true then return state, false, childErr end
+        end
+        return self.enabled, true, nil
     end
 
     function c:SetSortState(columnId, direction)
@@ -1905,6 +2050,8 @@ local function NewTableRow(kind, spec)
         self.measureDirty, self.layoutDirty = false, false
         return height
     end
+    local _, initialEnabledOk, initialEnabledErr = c:SetEnabled(spec.enabled ~= false)
+    if initialEnabledOk ~= true then return c, initialEnabledErr end
     local baseRelease = c.Release
     function c:Release()
         if self.autoTooltipBound == true and RSUI.Tooltip ~= nil and type(RSUI.Tooltip.Unbind) == "function" then
@@ -2032,6 +2179,10 @@ local function NewTableView(kind, spec)
         end,
         unbindRow = spec.unbindRow or spec.onUnbindRow,
     })
+    if c.header == nil or c.list == nil then
+        c:Release()
+        return nil, "table_required_children_create_failed"
+    end
 
     -- Header separators use a preview/commit transaction.  Preview updates only
     -- header + pooled visible rows and never rebinds table data.  The normalized
@@ -2098,11 +2249,19 @@ local function NewTableView(kind, spec)
             if column ~= nil and column.resizable ~= false then
                 local handle = UI:CreateEmptyWidget(c.root, c.id .. "_col_resize_" .. tostring(index), 0, 0, 14, c.headerHeight, true)
                 if handle ~= nil then
-                    if handle.Enable then pcall(function() handle:Enable(true) end) end
-                    if handle.EnablePick then pcall(function() handle:EnablePick(true,true) end) end
-                    if handle.Clickable then pcall(function() handle:Clickable(true,true) end) end
-                    if handle.EnableDrag then pcall(function() handle:EnableDrag(true) end) end
-                    if handle.SetDragCondition and DC_ALWAYS ~= nil then pcall(function() handle:SetDragCondition(DC_ALWAYS) end) end
+                    if type(UI.TryInteractionCall) ~= "function" or type(UI.RequireHandler) ~= "function" then
+                        c.rsUiDegraded, c.rsUiDegradedReason = true, "critical_interaction_contract_unavailable"
+                    else
+                        local dragOk, dragErr = UI:TryInteractionCall(handle, "EnableDrag", true)
+                        if dragOk ~= true then
+                            c.rsUiDegraded, c.rsUiDegradedReason = true, "table_column_enable_drag_failed:" .. tostring(dragErr or "rejected")
+                        elseif handle.SetDragCondition and DC_ALWAYS ~= nil then
+                            local conditionOk, conditionErr = UI:TryInteractionCall(handle, "SetDragCondition", DC_ALWAYS)
+                            if conditionOk ~= true then
+                                c.rsUiDegraded, c.rsUiDegradedReason = true, "table_column_drag_condition_failed:" .. tostring(conditionErr or "rejected")
+                            end
+                        end
+                    end
                     local line = nil
                     if handle.CreateColorDrawable then
                         local color=(S.VisualTokens and S.VisualTokens:Color("separator")) or {0.08,0.28,0.31,0.58}
@@ -2144,9 +2303,11 @@ local function NewTableView(kind, spec)
                         record.compensationWidth=compensationWidth or record.compensationWidth
                         return record.lastPreviewWidth, record.compensationIndex, record.compensationWidth
                     end
-                    UI:SafeHandler(handle,"OnDragStart",function()
+                    local startBound, startErr = UI:RequireHandler(handle,"OnDragStart",function()
                         local startX=WidgetEffectiveX(handle)
-                        if startX==nil or type(handle.StartMoving)~="function" then return false end
+                        if startX==nil then return false end
+                        local moving = UI:TryInteractionCall(handle, "StartMoving")
+                        if moving ~= true then return false end
                         local currentW=tonumber(c.resolvedWidths[index]) or tonumber(column.width) or tonumber(column.minWidth) or 48
                         record.dragging=true
                         record.startX=startX
@@ -2161,7 +2322,6 @@ local function NewTableView(kind, spec)
                         -- limits after DataViewUtil has already removed them.
                         record.lastRequestedWidth,record.lastPreviewWidth,record.compensationIndex,record.compensationWidth=nil,nil,nil,nil
                         SetLine(true)
-                        handle:StartMoving()
                         StopPreviewTask()
                         local scheduled = false
                         if S.Scheduler~=nil and type(S.Scheduler.AddInteractiveTask)=="function" then
@@ -2176,7 +2336,7 @@ local function NewTableView(kind, spec)
                         PreviewFromHandle()
                         return true
                     end,"rsui:"..c.id..":col_resize_start:"..index)
-                    UI:SafeHandler(handle,"OnDragStop",function()
+                    local stopBound, stopErr = UI:RequireHandler(handle,"OnDragStop",function()
                         local width, compensationIndex, compensationWidth=PreviewFromHandle()
                         width=width or record.startWidth
                         compensationIndex=compensationIndex or record.compensationIndex
@@ -2201,6 +2361,12 @@ local function NewTableView(kind, spec)
                         record.lastRequestedWidth,record.lastPreviewWidth,record.compensationIndex,record.compensationWidth=nil,nil,nil,nil
                         return true
                     end,"rsui:"..c.id..":col_resize_stop:"..index)
+                    if startBound ~= true or stopBound ~= true then
+                        c.rsUiDegraded = true
+                        c.rsUiDegradedReason = tostring(startErr or stopErr or "table_column_required_handler_failed")
+                    end
+                else
+                    c.rsUiDegraded, c.rsUiDegradedReason = true, "table_column_resize_handle_create_failed:" .. tostring(index)
                 end
             end
         end
@@ -2213,6 +2379,17 @@ local function NewTableView(kind, spec)
         self:InvalidateMeasure("header_visibility")
         if self.width and self.height then self:Layout(self.x or 0, self.y or 0, self.width, self.height) end
         return true
+    end
+
+    local BaseSetEnabled = c.SetEnabled
+    function c:SetEnabled(enabled)
+        local state, accepted, detail = BaseSetEnabled(self, enabled)
+        if accepted ~= true then return state, false, detail end
+        local headerOk, headerErr = self:EnsureChildEnabled(self.header, self.enabled, "table_header")
+        if headerOk ~= true then return state, false, headerErr end
+        local listOk, listErr = self:EnsureChildEnabled(self.list, self.enabled, "table_list")
+        if listOk ~= true then return state, false, listErr end
+        return self.enabled, true, nil
     end
 
     function c:GetListView() return self.list end
@@ -2403,6 +2580,8 @@ local function NewTableView(kind, spec)
         return height
     end
 
+    local _, initialEnabledOk, initialEnabledErr = c:SetEnabled(spec.enabled ~= false)
+    if initialEnabledOk ~= true then return c, initialEnabledErr end
     local tableBaseRelease = c.Release
     function c:Release()
         if type(self.columnResizeHandles) == "table" then

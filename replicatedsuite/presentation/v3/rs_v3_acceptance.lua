@@ -1,12 +1,18 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Foundation Acceptance v54
+-- Replicated Suite V3 - Foundation Acceptance v64
 --
 -- Bounded, on-demand checks only. No Native widget creation and no Tick.
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
-S.UIV3Acceptance = { version = 54 }
+S.UIV3Acceptance = { version = 64 }
 local A = S.UIV3Acceptance
+A.TradeDpsFreshReloadPreflightContractVersion = 1
+A.PersistenceReliabilityV3ContractVersion = 1
+A.PersistenceReliabilityV4ContractVersion = 1
+A.PersistenceReliabilityV5ContractVersion = 1
+A.PersistenceReliabilityV6ContractVersion = 1
+A.PersistenceReliabilityV7ContractVersion = 1
 
 local MIGRATED_MODAL_MODULES = {
     ["v3_quest_detail_modal"] = "QuestDetailModalV3",
@@ -217,15 +223,16 @@ function A:RunMatrix()
 
     local bagTools = S.Features and S.Features.tools_bag or nil
     local bagQuickPresenter = S.UIV3 and S.UIV3.BagQuickOverlay or nil
-    if type(bagTools) ~= "table" or (tonumber(bagTools.BagMoveContractVersion) or 0) < 4
-        or (tonumber(bagTools.BatchLifecycleContractVersion) or 0) < 4 or (tonumber(bagTools.NativeWindowQuickContractVersion) or 0) < 2
+    if type(bagTools) ~= "table" or (tonumber(bagTools.BagMoveContractVersion) or 0) < 5
+        or (tonumber(bagTools.BatchLifecycleContractVersion) or 0) < 5 or (tonumber(bagTools.NativeWindowQuickContractVersion) or 0) < 3
+        or (tonumber(bagTools.DynamicSourceResolutionContractVersion) or 0) < 1
         or (tonumber(bagTools.BagTaskMutexContractVersion) or 0) < 1
         or type(bagTools.Commands) ~= "table" or type(bagTools.Commands.QuickWithdraw) ~= "function"
         or type(bagTools.Commands.QuickDeposit) ~= "function" or type(bagTools.Commands.QuickCancel) ~= "function"
         or type(bagTools.Commands.SetBatchCategory) ~= "function" or type(bagTools.Commands.SetBatchTarget) ~= "function"
         or type(bagTools.Commands.SetBatchLimit) ~= "function"
         or type(bagQuickPresenter) ~= "table" or (tonumber(bagQuickPresenter.version) or 0) < 1 then
-        failures[#failures + 1] = "bag_quick_take_put_contract_v4"
+        failures[#failures + 1] = "bag_quick_take_put_contract_v5"
     end
 
     local auctionQuery = S.Services and S.Services.AuctionQueryV3 or nil
@@ -248,9 +255,15 @@ function A:RunMatrix()
     end
 
     local teamTools = S.Features and S.Features.combat_team_tools or nil
+    local teamRoleCatalog = S.Data and S.Data.TeamAutoRoleCatalog or nil
+    local archerRole = type(teamRoleCatalog) == "table" and type(teamRoleCatalog.byClassKey) == "table"
+        and teamRoleCatalog.byClassKey["name_6_8_9"] or nil
     if type(teamTools) ~= "table" or (tonumber(teamTools.TeamRoleContractVersion) or 0) < 2
-        or type(teamTools.Commands) ~= "table" or type(teamTools.Commands.SetRole) ~= "function" then
-        failures[#failures + 1] = "team_role_contract_v2"
+        or (tonumber(teamTools.AutoRoleCatalogContractVersion) or 0) < 1
+        or type(teamTools.Commands) ~= "table" or type(teamTools.Commands.SetRole) ~= "function"
+        or type(teamRoleCatalog) ~= "table" or (tonumber(teamRoleCatalog.version) or 0) < 2
+        or type(archerRole) ~= "table" or tostring(archerRole.role or "") ~= "ranged" then
+        failures[#failures + 1] = "team_role_catalog_contract_v3"
     end
 
     local buffCap = S.Features and S.Features.combat_buff_cap or nil
@@ -297,8 +310,11 @@ function A:RunMatrix()
     -- visible HUD/screen capabilities are real runtime surfaces, not page-only
     -- labels.  Checks are read-only and allocate no Native widgets.
     local screenProjection = S.Services and S.Services.ScreenProjectionV3 or nil
-    if type(screenProjection) ~= "table" or (tonumber(screenProjection.version) or 0) < 3 or tostring(screenProjection.presentationBoundary or "") ~= "service_only"
-        or type(screenProjection.ProjectUnitFlexible) ~= "function" or type(screenProjection.ProjectWorld) ~= "function"
+    if type(screenProjection) ~= "table" or (tonumber(screenProjection.version) or 0) < 5 or tostring(screenProjection.presentationBoundary or "") ~= "service_only"
+        or type(screenProjection.ProjectUnitFlexible) ~= "function" or type(screenProjection.ProjectUnitBatch) ~= "function"
+        or (tonumber(screenProjection.FrontHemisphereBatchContractVersion) or 0) < 1
+        or (tonumber(screenProjection.UnitProjectionConsistencyContractVersion) or 0) < 1
+        or type(screenProjection.ProjectWorld) ~= "function"
         or type(screenProjection.ProjectWorldBatch) ~= "function" or type(screenProjection.GetUnitWorldPosition) ~= "function" then
         failures[#failures + 1] = "screen_projection_v3_contract"
     end
@@ -317,10 +333,20 @@ function A:RunMatrix()
     local visualGuides = S.UIV3 and S.UIV3.CombatVisualGuidesV3 or nil
     local unitLines = S.Features and S.Features.combat_unit_lines or nil
     local rangeAssist = S.Features and S.Features.combat_range_assist or nil
-    if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 3 or type(visualGuides.Describe) ~= "function" then
+    if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 5 or type(visualGuides.Describe) ~= "function"
+        or (tonumber(visualGuides.AdaptiveUnitLineSamplingContractVersion) or 0) < 2
+        or (tonumber(visualGuides.UnitLineVisibleSegmentClippingContractVersion) or 0) < 1
+        or (tonumber(visualGuides.UnitLinePressureBudgetContractVersion) or 0) < 1
+        or (tonumber(visualGuides.UnitLineDiffRenderContractVersion) or 0) < 1
+        or (tonumber(visualGuides.UnitLineProgressivePoolContractVersion) or 0) < 1
+        or type(visualGuides.BuildUnitLineSamplePlan) ~= "function" then
         failures[#failures + 1] = "combat_visual_guides_presenter_contract"
     end
-    if type(unitLines) ~= "table" or (tonumber(unitLines.VisualGuideContractVersion) or 0) < 2
+    if type(unitLines) ~= "table" or (tonumber(unitLines.VisualGuideContractVersion) or 0) < 4
+        or (tonumber(unitLines.AdaptiveDensityContractVersion) or 0) < 2
+        or (tonumber(unitLines.SmoothRefreshContractVersion) or 0) < 1
+        or (tonumber(unitLines.FrontHemisphereContractVersion) or 0) < 1
+        or (tonumber(unitLines.ProjectionConsistencyContractVersion) or 0) < 1
         or type(unitLines.Commands) ~= "table" or type(unitLines.Commands.SetPointCount) ~= "function"
         or type(unitLines.Commands.SetPointSize) ~= "function" or type(unitLines.Commands.SetOpacity) ~= "function"
         or type(unitLines.Commands.SetRefreshMs) ~= "function" or type(unitLines.Commands.SetPairEnabled) ~= "function" then
@@ -407,7 +433,15 @@ function A:RunMatrix()
     if S.Persistence == nil or type(S.Persistence.ClearStore) ~= "function"
         or type(S.Persistence.CanWrite) ~= "function" or type(S.Persistence.PrepareWrite) ~= "function"
         or type(S.Persistence.MutateStore) ~= "function" or type(S.Persistence.IsStoreLoaded) ~= "function"
-        or (tonumber(S.Persistence.ReliabilityContractVersion) or 0) < 2 then
+        or type(S.Persistence.VerifyPersistedValue) ~= "function"
+        or type(S.Persistence.FingerprintEncodedPayload) ~= "function"
+        or type(S.Persistence.FingerprintEnvelopeIntegrity) ~= "function"
+        or type(S.Persistence.Flush) ~= "function"
+        or (tonumber(S.Persistence.ReliabilityContractVersion) or 0) < 7
+        or (tonumber(S.Persistence.MinIntegrityReliabilityContractVersion) or 0) > 4
+        or (tonumber(S.Persistence.IntegrityContractVersion) or 0) < 1
+        or (tonumber(S.Persistence.EnvelopeIntegrityContractVersion) or 0) < 1
+        or (tonumber(S.Persistence.ScopeBindingContractVersion) or 0) < 1 then
         failures[#failures + 1] = "persistence_hardening_contract"
     end
     if S.RefreshCoordinator == nil or (tonumber(S.RefreshCoordinator.version) or 0) < 1
@@ -475,10 +509,49 @@ function A:RunMatrix()
         or S.UIV3.WidgetHost == nil or S.UIV3.WidgetHost:GetSpec("combat.dps") == nil then
         failures[#failures + 1] = "dps_presentation_contract"
     end
+
+    -- .18.94 Fresh Reload preflight: Feature enablement and floating visibility
+    -- are independent authorities.  Calling the lifecycle preference is a
+    -- read-only check; it must resolve to the same durable value exposed by the
+    -- DPS Feature, otherwise a reload can reopen a window the user closed.
+    local dpsStore = S.Persistence and S.Persistence:GetStore("v3.dps") or nil
+    local dpsBinding = S.UIV3 and S.UIV3.WidgetHost and S.UIV3.WidgetHost.featureBindings
+        and S.UIV3.WidgetHost.featureBindings["combat.dps"] or nil
+    local dpsPreferenceOk, dpsPreference = false, nil
+    if type(dpsBinding) == "table" and type(dpsBinding.preference) == "function" then
+        dpsPreferenceOk, dpsPreference = pcall(dpsBinding.preference)
+    end
+    local dpsVisible = type(dpsFeature) == "table" and type(dpsFeature.GetWidgetVisible) == "function"
+        and dpsFeature:GetWidgetVisible() == true or false
+    if type(dpsStore) ~= "table" or tonumber(dpsStore.schemaVersion) ~= 4
+        or type(dpsFeature) ~= "table" or type(dpsFeature.State) ~= "table" or type(dpsFeature.State.widgetVisible) ~= "boolean"
+        or type(dpsFeature.GetWidgetVisible) ~= "function" or type(dpsFeature.Commands) ~= "table"
+        or type(dpsFeature.Commands.SetWidgetVisible) ~= "function"
+        or dpsPreferenceOk ~= true or (dpsPreference == true) ~= dpsVisible then
+        failures[#failures + 1] = "dps_widget_visibility_preference_contract"
+    end
+
+    -- The Trade route UI is dropdown-only.  Runtime acceptance cannot prove a
+    -- Native popup opened without user input, but it can prove the public
+    -- command/projection contract that both the page and floating widget depend
+    -- on before the package reaches RU Fresh Reload.
+    local tradeFeature = S.Features and S.Features.Trade or nil
+    local tradeProjection = type(tradeFeature) == "table" and type(tradeFeature.GetProjection) == "function"
+        and tradeFeature:GetProjection() or nil
+    if type(tradeFeature) ~= "table" or type(tradeFeature.GetRouteSettings) ~= "function"
+        or type(tradeFeature.Commands) ~= "table" or type(tradeFeature.Commands.SetFrom) ~= "function"
+        or type(tradeFeature.Commands.SetTo) ~= "function" or type(tradeFeature.Commands.QuotePendingMaterials) ~= "function"
+        or type(tradeProjection) ~= "table" or type(tradeProjection.zones) ~= "table"
+        or type(tradeProjection.sellableZones) ~= "table" or tradeProjection.pendingQuoteCount == nil
+        or type(S.UIV3 and S.UIV3.LifeEconomyWidgetsV3) ~= "table"
+        or (tonumber(S.UIV3.LifeEconomyWidgetsV3.version) or 0) < 2 then
+        failures[#failures + 1] = "trade_dropdown_quote_preflight_contract"
+    end
     local adapter = S.UIV3NativeAdapter
     if adapter == nil or (tonumber(adapter.version) or 0) < 2 then failures[#failures + 1] = "native_root_policy_contract" end
     if S.UIV3Design == nil or (tonumber(S.UIV3Design.version) or 0) < 6 or type(S.UIV3Design.ScrollablePageRoot) ~= "function"
-        or type(S.UIV3Design.CompactNumericSetting) ~= "function" or (tonumber(S.RSUI and S.RSUI.NumericInlineContractVersion) or 0) < 3 then
+        or type(S.UIV3Design.CompactNumericSetting) ~= "function" or (tonumber(S.RSUI and S.RSUI.NumericInlineContractVersion) or 0) < 4
+        or (tonumber(S.RSUI and S.RSUI.InteractiveDraftContractVersion) or 0) < 1 then
         failures[#failures + 1] = "scrollable_compact_numeric_contract"
     end
     local rsui = S.RSUI
@@ -572,9 +645,11 @@ function A:RunMatrix()
         or type(rsui.types) ~= "table" or rsui.types["LayoutEditorOverlay"] == nil then
         failures[#failures + 1] = "ui_layout_editor_overlay_contract"
     end
-    if rsui == nil or (tonumber(rsui.version) or 0) < 42
-        or type(workspaceTemplates) ~= "table" or (tonumber(workspaceTemplates.contractVersion) or 0) < 4
-        or (tonumber(rsui.LayoutEditorWorkspaceContractVersion) or 0) < 2
+    if rsui == nil or (tonumber(rsui.version) or 0) < 44
+        or (tonumber(rsui.ComponentApiContractVersion) or 0) < 1
+        or type(rsui.RequireComponentMethods) ~= "function"
+        or type(workspaceTemplates) ~= "table" or (tonumber(workspaceTemplates.contractVersion) or 0) < 6
+        or (tonumber(rsui.LayoutEditorWorkspaceContractVersion) or 0) < 4
         or (tonumber(rsui.LayoutEditorWorkspaceSessionBindingContractVersion) or 0) < 1
         or type(workspaceTemplates.ValidateLayoutEditorEditSessionSpec) ~= "function"
         or type(rsui.CreateLayoutEditorWorkspace) ~= "function"

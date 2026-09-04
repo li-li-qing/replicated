@@ -396,6 +396,121 @@ def main() -> int:
     if business_page_id_failures:
         failures.append("Business page logical ID collision: " + ", ".join(business_page_id_failures[:24]))
 
+    # Bag Move Contract v5: slot numbers are transient locators. A move can
+    # compact/reproject the source container, so quick/category plans must keep
+    # stable itemType/category intent and resolve a live slot before each write.
+    # Regressing to a precomputed slot queue recreates the RU symptom where one
+    # click moves exactly one item and the verifier stops on the refilled slot.
+    bag_bridge_path = root / "features/rs_business_bridge.lua"
+    bag_bridge_source = bag_bridge_path.read_text(encoding="utf-8-sig", errors="replace") if bag_bridge_path.is_file() else ""
+    for token in (
+        "local BagMoveRuntime = {}",
+        "function BagMoveRuntime.FindLiveMoveSource(feature, sourceScope, blacklistScope, itemType, category)",
+        "function BagMoveRuntime.CountLiveMatches(scope, itemType, category)",
+        "feature._quickSourceCounts=Copy(sourceCounts)",
+        "feature._batchSourceCount = sourceCategoryCount",
+        "BagTools.DynamicSourceResolutionContractVersion = 1",
+    ):
+        if token not in bag_bridge_source:
+            failures.append("Bag dynamic-source contract missing: " + token)
+    bag_bridge_code = strip_lua_strings(strip_lua_comments(bag_bridge_source))
+    forbidden_slot_queue_patterns = (
+        re.compile(r"queue\s*\[\s*#queue\s*\+\s*1\s*\]\s*=\s*\{\s*slot\s*="),
+        re.compile(r"queue\s*\[\s*#queue\s*\+\s*1\s*\]\s*=\s*slot\b"),
+    )
+    for pattern in forbidden_slot_queue_patterns:
+        if pattern.search(bag_bridge_code):
+            failures.append("Bag move regression: transient slot stored in serial move plan")
+            break
+
+    # ScreenProjectionV3 v5 / Unit Line front-hemisphere + coordinate-consistency contract: RU may
+    # return a positive native screen depth for a unit physically behind the
+    # camera.  Unit Lines must classify camera-forward world position in one
+    # batched Service call before Presentation clipping; never infer "behind"
+    # from a mirrored screen coordinate or depth alone.
+    projection_path = root / "services/rs_screen_projection_v3.lua"
+    projection_source = projection_path.read_text(encoding="utf-8-sig", errors="replace") if projection_path.is_file() else ""
+    for token in (
+        "P.version = 5",
+        "function P:ProjectUnitBatch(unitTokens, options)",
+        "local function CameraForwardDistance(frame, wx, wy, wz)",
+        'reason="behind_camera"',
+        "P.FrontHemisphereBatchContractVersion = 1",
+        "P.UnitProjectionConsistencyContractVersion = 1",
+        "local wx,wy,wz,worldErr=self:GetUnitWorldPosition(token,false)",
+        "native_scale_reconciled",
+        "camera_consistency_fallback",
+    ):
+        if token not in projection_source:
+            failures.append("Screen projection front-hemisphere contract missing: " + token)
+
+    # Unit Line Adaptive/Smooth Rendering Contract v2: fixed final point count
+    # made long-distance lines sparse; whole-task P3 deferral and redundant
+    # Native property touches made crowd scenes pulse/stutter. Keep adaptive
+    # density + clipping in Presentation, keep the high-frequency refresh P1,
+    # and shed only adaptive EXTRA quality under frame pressure.
+    unit_guide_path = root / "presentation/v3/widgets/rs_v3_combat_visual_guides.lua"
+    unit_guide_source = unit_guide_path.read_text(encoding="utf-8-sig", errors="replace") if unit_guide_path.is_file() else ""
+    for token in (
+        "P.version = 5",
+        "local UNIT_LINE_PAIR_HARD_CAP = 160",
+        "local function ClipSegmentToRect(x1, y1, x2, y2, left, top, right, bottom)",
+        "local function UnitLineTotalBudget(refreshMs)",
+        "local function UnitLinePressureBudget(baseBudget, totalBase, pressure)",
+        "local function UnitLinePoolGrowthBudget(pressure)",
+        "local function DesiredUnitLinePointCount(length, baseCount)",
+        "function P:BuildUnitLineSamplePlan(rows, projection, logicalW, logicalH, pressure)",
+        "function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b)",
+        "P.AdaptiveUnitLineSamplingContractVersion = 2",
+        "P.UnitLineVisibleSegmentClippingContractVersion = 1",
+        "P.UnitLinePressureBudgetContractVersion = 1",
+        "P.UnitLineDiffRenderContractVersion = 1",
+        "P.UnitLineProgressivePoolContractVersion = 1",
+    ):
+        if token not in unit_guide_source:
+            failures.append("Unit line adaptive sampling contract missing: " + token)
+    unit_guide_code = strip_lua_strings(strip_lua_comments(unit_guide_source))
+    if re.search(r"function\s+P:RenderUnit\(\).*?local\s+count\s*=\s*math\.max\(8\s*,\s*math\.min\(48", unit_guide_code, re.S):
+        failures.append("Unit line regression: RenderUnit restored fixed final 8..48 point count")
+    for token in (
+        'UnitLines.VisualGuideContractVersion = 4',
+        'UnitLines.AdaptiveDensityContractVersion = 2',
+        'UnitLines.SmoothRefreshContractVersion = 1',
+        'UnitLines.FrontHemisphereContractVersion = 1',
+        'UnitLines.ProjectionConsistencyContractVersion = 1',
+        'projection:ProjectUnitBatch(tokens,{ requireFrontHemisphere=true, worldZOffset=1, validateNativeAgainstCamera=true, reconcileNativeScale=true })',
+        'pointBudgetMode="cadence_pressure_bounded"',
+    ):
+        if token not in bag_bridge_source:
+            failures.append("Unit line smooth-refresh feature contract missing: " + token)
+    unit_line_task = re.search(
+        r'AddHighFrequencyTask\s*\(\s*UNIT_LINE_TASK\s*,\s*UnitLineInterval\(feature\).*?end\s*,\s*false\s*,\s*feature\s*,\s*"(P[0-5])"\s*,\s*1\s*\)',
+        strip_lua_comments(bag_bridge_source), re.S)
+    if unit_line_task is None:
+        failures.append("Unit line smooth-refresh feature contract missing: UNIT_LINE_TASK scheduler registration")
+    elif unit_line_task.group(1) != "P1":
+        failures.append("Unit line regression: high-frequency visual task priority is " + unit_line_task.group(1) + ", expected P1")
+    unit_line_read = re.search(r'local\s+UnitLines\s*=\s*NewFeature\(\"combat_unit_lines\"\s*,\s*\{(.*?)\n\}\)\nUnitLines\.VisualGuideContractVersion', strip_lua_comments(bag_bridge_source), re.S)
+    if unit_line_read is not None and "ProjectUnitFlexible(" in unit_line_read.group(1):
+        failures.append("Unit line regression: per-endpoint ProjectUnitFlexible bypasses front-hemisphere batch")
+
+    # Team auto-role catalog v2: rows explicitly classified as Archer must map
+    # to the dedicated TMROLE_RANGED_DEALER path.  The 6/8/9
+    # (Wild/Shadowplay/Songcraft) regression is the concrete RU report that
+    # exposed the old dealer mapping.
+    team_catalog_path = root / "data/rs_team_auto_role_catalog.lua"
+    team_catalog_source = team_catalog_path.read_text(encoding="utf-8-sig", errors="replace") if team_catalog_path.is_file() else ""
+    for token in (
+        "local C={ version=2, byClassKey={} }",
+        'C.byClassKey["name_6_8_9"]={role="ranged", classType="Archer"}',
+        "TeamTools.AutoRoleCatalogContractVersion = 1",
+    ):
+        source = team_catalog_source if token.startswith("local C=") or token.startswith("C.byClassKey") else bag_bridge_source
+        if token not in source:
+            failures.append("Team auto-role ranged catalog contract missing: " + token)
+    if '{role="dealer", classType="Archer"}' in team_catalog_source:
+        failures.append("Team auto-role regression: Archer row mapped to melee/general dealer")
+
     auction_event_authority_failures = scan_auction_event_authority(root, active_lua)
     if auction_event_authority_failures:
         failures.append("Auction un-tokened event Authority violation: " + ", ".join(auction_event_authority_failures[:8]))
@@ -505,6 +620,7 @@ def main() -> int:
 
     layout_source = (root / "core/rs_layout.lua").read_text(encoding="utf-8-sig", errors="replace")
     interactions_source = (root / "ui/framework/rs_ui_interactions.lua").read_text(encoding="utf-8-sig", errors="replace")
+    layout_templates_source = (root / "ui/framework/rs_ui_layout_templates.lua").read_text(encoding="utf-8-sig", errors="replace")
     for token in (
         "CoordinateSystemContractVersion = 1",
         "RectTransformTransactionContractVersion = 2",
@@ -522,9 +638,23 @@ def main() -> int:
         "captureSupported = false",
         "function Pointer:GetLogicalPosition()",
         "function Pointer:Delta(startX, startY, currentX, currentY)",
+        "RSUI.InteractionServiceContractVersion = 3",
+        "RSUI.InteractionPopupVisibilityContractVersion = 1",
+        "local function EnsureVisible(widget, visible, owner)",
+        "if okA == true and okB == true then",
+        "tooltip_handler_pair_required",
+        "UI:EnsureEnabled(row.button",
+        "local function ApplyFocusInteraction(native, methodName)",
     ):
         if token not in interactions_source:
-            failures.append(f"RSUI pointer contract missing: {token}")
+            failures.append(f"RSUI interaction contract missing: {token}")
+    for token in (
+        "RSUI.CollapsibleGroupInteractionContractVersion = 2",
+        'c:RequireOn(headerHit, "OnClick"',
+        'c.rsUiDegradedReason = "collapsible_header_create_failed"',
+    ):
+        if token not in layout_templates_source:
+            failures.append(f"RSUI CollapsibleGroup interaction contract missing: {token}")
 
     selection_geometry_entry = "ui/framework/rs_ui_selection_geometry.lua"
     selection_geometry_source = (root / selection_geometry_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / selection_geometry_entry).is_file() else ""
@@ -725,6 +855,10 @@ def main() -> int:
     adaptive_source = (root / "ui/framework/rs_ui_adaptive_panels.lua").read_text(encoding="utf-8-sig", errors="replace")
     workspace_source = (root / "ui/framework/rs_ui_workspace_templates.lua").read_text(encoding="utf-8-sig", errors="replace")
     for token in (
+        "RSUI.ComponentApiContractVersion = 1",
+        "function RSUI:RequireComponentMethods(component, methods, context)",
+        "function Base:Show(visible)",
+        "function Base:Hide()",
         "AttachmentContractVersion = 1",
         "ReparentPolicyContractVersion = 1",
         "NativeReparentSupported = false",
@@ -737,8 +871,8 @@ def main() -> int:
     if "ResponsiveInspectorContractVersion = 1" not in adaptive_source or 'RegisterType("ResponsiveInspector"' not in adaptive_source:
         failures.append("Stable-host ResponsiveInspector contract missing: ui/framework/rs_ui_adaptive_panels.lua")
     if (
-        "contractVersion = 4" not in workspace_source
-        or "RSUI.LayoutEditorWorkspaceContractVersion = 2" not in workspace_source
+        "contractVersion = 6" not in workspace_source
+        or "RSUI.LayoutEditorWorkspaceContractVersion = 4" not in workspace_source
         or "RSUI.LayoutEditorWorkspaceSessionBindingContractVersion = 1" not in workspace_source
         or "function T:ValidateLayoutEditorEditSessionSpec(editSessionSpec)" not in workspace_source
         or "CreateResponsiveInspectorWorkspace" not in workspace_source
@@ -753,8 +887,12 @@ def main() -> int:
         or "workspace.ExecuteCommand" not in workspace_source
         or "sessionModel:RefreshWorking" not in workspace_source
         or "workspace.sessionModel, workspace.historyModel = nil, nil" not in workspace_source
+        or 'id = id .. "_inspector_toggle"' not in workspace_source
+        or 'root:ToggleDrawer(true)' not in workspace_source
+        or 'inspectorToggle:SetVisible(drawer)' not in workspace_source
+        or 'RSUI:RequireComponentMethods(inspectorToggle' not in workspace_source
     ):
-        failures.append("WorkspaceTemplates v4 layout-editor integration contract missing")
+        failures.append("WorkspaceTemplates v5 layout-editor integration/drawer-affordance contract missing")
     workspace_code = strip_lua_strings(strip_lua_comments(workspace_source))
     if re.search(r"\bOnUpdate\b", workspace_code) or re.search(r"\bAddInteractiveTask\b", workspace_code):
         failures.append("LayoutEditorWorkspace integration must be authority-event driven; no sampling loop allowed")
@@ -763,6 +901,505 @@ def main() -> int:
             failures.append("LayoutEditorWorkspace crossed Persistence boundary directly: " + forbidden)
     if "historyModel = spec.historyModel" not in layout_editor_overlay_source:
         failures.append("LayoutEditorOverlay must inject Workspace History into PreviewAdapter")
+    if "inspectorToggle:Show(" in workspace_code:
+        failures.append("LayoutEditorWorkspace must use common Component visibility API; inspectorToggle:Show is forbidden")
+
+    # Developer package gate: Presentation variables constructed from a known
+    # RSUI component type may only call Base/public type methods unless the call
+    # is explicitly capability-guarded. This catches Lua-valid runtime failures
+    # such as Button:UnknownMethod() before the page reaches the RU client.
+    component_api_gate_ok = False
+    component_api_audit = root / "tools/rs_rsui_component_api_audit.py"
+    if not component_api_audit.is_file():
+        failures.append("RSUI component API audit missing: tools/rs_rsui_component_api_audit.py")
+    else:
+        proc = subprocess.run(
+            [sys.executable, str(component_api_audit), "--root", str(root)],
+            capture_output=True, text=True, cwd=str(root),
+        )
+        output = (proc.stdout + proc.stderr).strip()
+        if proc.returncode != 0:
+            failures.append("RSUI component API audit failed: " + (output.replace("\n", " | ")[:1200] or "unknown"))
+        elif "RSUI_COMPONENT_API_AUDIT PASS" not in output:
+            failures.append("RSUI component API audit missing PASS marker")
+        else:
+            component_api_gate_ok = True
+
+    # Developer package gate: Presentation must only call Feature/Commands
+    # methods that are actually exported by the corresponding runtime feature.
+    # This catches Lua-valid failures such as Feature.Commands:MissingMethod()
+    # before a page/widget interaction reaches the RU client.
+    presentation_feature_api_gate_ok = False
+    presentation_feature_api_audit = root / "tools/rs_presentation_feature_api_audit.py"
+    if not presentation_feature_api_audit.is_file():
+        failures.append("Presentation Feature API audit missing: tools/rs_presentation_feature_api_audit.py")
+    else:
+        proc = subprocess.run(
+            [sys.executable, str(presentation_feature_api_audit), "--root", str(root)],
+            capture_output=True, text=True, cwd=str(root),
+        )
+        output = (proc.stdout + proc.stderr).strip()
+        if proc.returncode != 0:
+            failures.append("Presentation Feature API audit failed: " + (output.replace("\n", " | ")[:1600] or "unknown"))
+        elif "PRESENTATION_FEATURE_API_AUDIT PASS" not in output:
+            failures.append("Presentation Feature API audit missing PASS marker")
+        else:
+            presentation_feature_api_gate_ok = True
+
+    # RSUI files are loaded by toc.g, and several foundations intentionally
+    # fail closed at top-level when an upstream public constructor/table is not
+    # available. Validate those dependencies against actual TOC order so a
+    # harmless-looking file reorder cannot silently turn a later component into
+    # nil at runtime (the historic TreeView/ListView class of failure).
+    toc_index = {rel: idx for idx, rel in enumerate(toc)}
+    dependency_guard_re = re.compile(
+        r'if[^\n]*type\(RSUI\.([A-Za-z_]\w*)\)\s*~=\s*["\'](function|table)["\'][^\n]*then\s+return\s+end'
+    )
+    rsui_provider_cache = {}
+    def _rsui_provider_before(name, kind, consumer_idx):
+        cache_key = (name, kind, consumer_idx)
+        if cache_key in rsui_provider_cache:
+            return rsui_provider_cache[cache_key]
+        patterns = []
+        if kind == "function":
+            patterns.extend((
+                re.compile(r'RSUI:RegisterType\(\s*["\']' + re.escape(name) + r'["\']'),
+                re.compile(r'RSUI:ReplaceType\(\s*["\']' + re.escape(name) + r'["\']'),
+                re.compile(r'function\s+RSUI:' + re.escape(name) + r'\s*\('),
+            ))
+        else:
+            patterns.append(re.compile(r'RSUI\.' + re.escape(name) + r'\s*='))
+        found = None
+        for provider_idx, provider_rel in enumerate(toc[:consumer_idx]):
+            provider_path = root / provider_rel
+            if not provider_path.is_file() or provider_path.suffix.lower() != ".lua":
+                continue
+            provider_source = provider_path.read_text(encoding="utf-8-sig", errors="replace")
+            if any(pattern.search(provider_source) for pattern in patterns):
+                found = provider_rel
+                break
+        rsui_provider_cache[cache_key] = found
+        return found
+
+    rsui_dependency_checks = 0
+    for consumer_rel in toc:
+        if not consumer_rel.startswith("ui/framework/") or not consumer_rel.endswith(".lua"):
+            continue
+        consumer_path = root / consumer_rel
+        if not consumer_path.is_file():
+            continue
+        consumer_source = consumer_path.read_text(encoding="utf-8-sig", errors="replace")
+        consumer_head = "\n".join(consumer_source.splitlines()[:60])
+        consumer_idx = toc_index[consumer_rel]
+        for dep_name, dep_kind in dependency_guard_re.findall(consumer_head):
+            rsui_dependency_checks += 1
+            provider = _rsui_provider_before(dep_name, dep_kind, consumer_idx)
+            if provider is None:
+                failures.append(
+                    f"RSUI TOC dependency order invalid: {consumer_rel} requires RSUI.{dep_name} ({dep_kind}) before load"
+                )
+
+    # Package-coherence fence: `.18.84` declared the Fresh Reload fingerprint
+    # contract in CURRENT/Gate. All runtime pieces must ship together; otherwise
+    # a later incremental package can accidentally retain the Gate/docs while
+    # dropping the Persistence implementation or diagnostics action.
+    persistence_source = (root / "core/rs_persistence.lua").read_text(encoding="utf-8-sig", errors="replace")
+    foundation_pages_source = (root / "presentation/v3/pages/rs_v3_foundation_pages.lua").read_text(encoding="utf-8-sig", errors="replace")
+    for token in (
+        "RuntimeAcceptanceSnapshotContractVersion = 1",
+        "function P:FingerprintPayload(value, budget)",
+        "function P:BuildRuntimeAcceptanceSnapshot(options)",
+        "runtimeAcceptanceSnapshotContractVersion = self.RuntimeAcceptanceSnapshotContractVersion",
+    ):
+        if token not in persistence_source:
+            failures.append("Persistence Runtime Acceptance Snapshot implementation missing: " + token)
+    for token in (
+        "PERSISTENCE_ACCEPTANCE_STORE_IDS",
+        "local function BuildPersistenceAcceptanceCopyText()",
+        'text = "输出存档验收"',
+        "BuildRuntimeAcceptanceSnapshot",
+    ):
+        if token not in foundation_pages_source:
+            failures.append("Persistence Runtime Acceptance diagnostics UI missing: " + token)
+
+    # Buff Display is currently the first real consumer of LayoutEditorWorkspace.
+    # Its edited rects live in editor-local coordinates while PointerService is
+    # viewport-logical. Never regress to declaring `local` without an explicit
+    # conversion; doing so passes source review but is correctly rejected by the
+    # strict runtime type validator and quarantines the whole page on RU.
+    buff_display_source = (root / "presentation/v3/pages/rs_v3_buff_display_page.lua").read_text(encoding="utf-8-sig", errors="replace")
+    if 'coordinateSpace = "local"' in buff_display_source and "pointerToLocal = ViewportPointerToEditorLocal" not in buff_display_source:
+        failures.append("BuffDisplay LayoutEditorWorkspace local coordinate space missing pointerToLocal conversion")
+    for token in (
+        "local function ViewportPointerToEditorLocal(viewportX, viewportY, controller)",
+        "S.Layout:GetLogicalRect(nativeRoot)",
+        "(viewportX - originX) * editorWidth / liveWidth",
+        "(viewportY - originY) * editorHeight / liveHeight",
+        "autoOpenInspectorOnSelection = true",
+        'if layoutWorkspace:GetMode() == "drawer" then layoutWorkspace:SetDrawerOpen(true, true) end',
+        'if root.activeTab == "track" then root:Refresh() end',
+    ):
+        if token not in buff_display_source:
+            failures.append("BuffDisplay editor interaction contract missing: " + token)
+
+    # .18.94 Trade/DPS Fresh Reload package-coherence preflight.  These are
+    # user-visible regressions that are syntactically valid Lua, so lock the
+    # exact Authority/Presentation shape before a package reaches the RU client.
+    dps_store_source = (root / "features/combat/dps/rs_dps_store.lua").read_text(encoding="utf-8-sig", errors="replace")
+    dps_widget_source = (root / "presentation/v3/widgets/rs_v3_dps_widget.lua").read_text(encoding="utf-8-sig", errors="replace")
+    trade_feature_source = (root / "features/life/rs_life_m16_bundle.lua").read_text(encoding="utf-8-sig", errors="replace")
+    trade_page_source = (root / "presentation/v3/pages/rs_v3_life_m16_pages.lua").read_text(encoding="utf-8-sig", errors="replace")
+    trade_widget_source = (root / "presentation/v3/widgets/rs_v3_life_economy_widgets.lua").read_text(encoding="utf-8-sig", errors="replace")
+    acceptance_source = (root / "presentation/v3/rs_v3_acceptance.lua").read_text(encoding="utf-8-sig", errors="replace")
+
+    for token in (
+        "local SCHEMA = 4",
+        "widgetVisible = value.widgetVisible == true",
+        "function F:GetWidgetVisible()",
+    ):
+        if token not in dps_store_source and token not in (root / "features/combat/dps/rs_dps_feature.lua").read_text(encoding="utf-8-sig", errors="replace"):
+            failures.append("DPS durable widget visibility contract missing: " + token)
+    expected_dps_preference = "preference = function() return Feature:GetWidgetVisible() == true end"
+    if expected_dps_preference not in dps_widget_source:
+        failures.append("DPS lifecycle preference no longer reads durable widget visibility")
+    if re.search(r"preference\s*=\s*function\s*\(\s*\)\s*return\s+true\s+end", strip_lua_comments(dps_widget_source)):
+        failures.append("DPS lifecycle preference regressed to unconditional auto-show")
+
+    for token in (
+        'id = "v3_trade_from"',
+        'id = "v3_trade_to"',
+        "feature.Commands:QuotePendingMaterials()",
+    ):
+        if token not in trade_page_source:
+            failures.append("Trade main-page dropdown/quote contract missing: " + token)
+    for token in (
+        'id = "v3_life_trade_widget_from"',
+        'id = "v3_life_trade_widget_to"',
+        'id = "v3_life_trade_widget_quote"',
+        "Feature.Commands:QuotePendingMaterials()",
+    ):
+        if token not in trade_widget_source:
+            failures.append("Trade floating dropdown/quote contract missing: " + token)
+    for forbidden in ("起点◀", "起点▶", "终点◀", "终点▶"):
+        if forbidden in trade_page_source or forbidden in trade_widget_source:
+            failures.append("Trade redundant cycle-button UI regressed: " + forbidden)
+    if "Commands:CycleFrom" in trade_page_source or "Commands:CycleTo" in trade_page_source \
+            or "Commands:CycleFrom" in trade_widget_source or "Commands:CycleTo" in trade_widget_source:
+        failures.append("Trade Presentation regressed to cycle-button route selection")
+    for token in (
+        "self.zones = NormalizeTradeZones(StaticTradeZones())",
+        'Action("X2Store:GetSpecialtyRatioBetween"',
+        "function Trade:QuotePendingMaterials()",
+        "ApplyTradeMaterialProjectionToRow(row)",
+    ):
+        if token not in trade_feature_source:
+            failures.append("Trade route/quote Authority contract missing: " + token)
+    for token in (
+        "TradeDpsFreshReloadPreflightContractVersion = 1",
+        '"dps_widget_visibility_preference_contract"',
+        '"trade_dropdown_quote_preflight_contract"',
+    ):
+        if token not in acceptance_source:
+            failures.append("Trade/DPS runtime acceptance preflight missing: " + token)
+
+    # .18.95/.18.97/.18.98/.18.99/.18.100 Persistence Reliability v3-v7 + Gear dual-bank journal.
+    # Package coherence must lock both the immediate readback contract and the
+    # persisted cross-reload integrity / verified shard-replacement contract.
+    gear_store_source = (root / "features/combat/gear/rs_gear_store.lua").read_text(encoding="utf-8-sig", errors="replace")
+    gear_authority_source = (root / "features/combat/gear/rs_gear_authority.lua").read_text(encoding="utf-8-sig", errors="replace")
+    gear_acceptance_source = (root / "features/combat/gear/rs_gear_acceptance.lua").read_text(encoding="utf-8-sig", errors="replace")
+    for token in (
+        "ReliabilityContractVersion = 7",
+        "IntegrityContractVersion = 1",
+        "EnvelopeIntegrityContractVersion = 1",
+        "ScopeBindingContractVersion = 1",
+        "function P:FingerprintEncodedPayload(raw, budget)",
+        "function P:FingerprintEnvelopeIntegrity(raw)",
+        "raw.__rsmeta.reliabilityContract = self.ReliabilityContractVersion",
+        "raw.__rsmeta.encodedFingerprint = encodedFingerprint",
+        "function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)",
+        "verifyAfterSave = def.verifyAfterSave == true",
+        "recoverableReplacement = def.recoverableReplacement == true",
+        'store.loadStatus = "integrity_failed"',
+        'store.loadStatus = "envelope_integrity_failed"',
+        'store.loadStatus = "encoded_load_rejected"',
+        'store.loadStatus = "decoded_load_rejected"',
+        "readbackVerifyFailures = 0",
+        "MinIntegrityReliabilityContractVersion = 4",
+        "barrierVerifyAttempts = 0",
+        "clearVerifyAttempts = 0",
+        "durableVerifyAttempts = 0",
+        "scopeBindingMismatches = 0",
+        "unverifiedReloadRejects = 0",
+        "STORE_UNVERIFIED_RELOAD_REJECTED",
+        "deferredLoadResaves = 0",
+        "terminalAutoRetrySuppressions = 0",
+        "needsBarrierVerify = false",
+        "durability_barrier_verify_failed",
+        'store.loadStatus = "clear_verify_failed"',
+    ):
+        if token not in persistence_source:
+            failures.append("Persistence Reliability v7 integrity/barrier/scope contract missing: " + token)
+    for token in (
+        "Foundation Acceptance v64",
+        "A.PersistenceReliabilityV3ContractVersion = 1",
+        "A.PersistenceReliabilityV4ContractVersion = 1",
+        "A.PersistenceReliabilityV5ContractVersion = 1",
+        "A.PersistenceReliabilityV6ContractVersion = 1",
+        "A.PersistenceReliabilityV7ContractVersion = 1",
+        '"persistence_hardening_contract"',
+    ):
+        if token not in acceptance_source:
+            failures.append("Persistence Reliability v7 runtime acceptance contract missing: " + token)
+    for token in (
+        "local PAYLOAD_SCHEMA = 2",
+        "F.PayloadJournalContractVersion = 2",
+        "F.PayloadIntegrityContractVersion = 1",
+        "schemaVersion = 5",
+        "function F:LoadPayloadForSet(set)",
+        "function F:SavePayload(storageId, payload, bank)",
+        "function F:ValidatePayloadStructure(payload)",
+        "budget = INDEX_BUDGET,\n        verifyAfterSave = true",
+        "verifyAfterSave = true",
+        "recoverableReplacement = bankName ~= \"legacy\"",
+        "replaceCorrupt = true",
+        "local function EncodeCompactPayload(value)",
+    ):
+        if token not in gear_store_source:
+            failures.append("Gear dual-bank payload journal contract missing: " + token)
+    for token in (
+        'local nextBank = previousBank == "a" and "b" or "a"',
+        "F:SavePayload(set.storageId, payload, nextBank)",
+        "gear_save_payload_bank_commit",
+        "GEAR_PAYLOAD_REINITIALIZED",
+    ):
+        if token not in gear_authority_source:
+            failures.append("Gear journal commit/recovery contract missing: " + token)
+    for token in (
+        '"gear_payload_journal_contract"',
+        '"gear_compact_payload_roundtrip"',
+        '"gear_payload_structure_corrupt_empty"',
+    ):
+        if token not in gear_acceptance_source:
+            failures.append("Gear runtime acceptance journal guard missing: " + token)
+
+    reliability_v3_harness = root / "tools/rs_persistence_reliability_v3_harness.py"
+    if not reliability_v3_harness.is_file():
+        failures.append("Persistence Reliability v3 fault-injection harness missing")
+    reliability_v4_harness = root / "tools/rs_persistence_reliability_v4_harness.py"
+    if not reliability_v4_harness.is_file():
+        failures.append("Persistence Reliability v4 cross-reload integrity harness missing")
+    reliability_v5_harness = root / "tools/rs_persistence_reliability_v5_harness.py"
+    if not reliability_v5_harness.is_file():
+        failures.append("Persistence Reliability v5 durability-barrier harness missing")
+    reliability_v6_harness = root / "tools/rs_persistence_reliability_v6_harness.py"
+    if not reliability_v6_harness.is_file():
+        failures.append("Persistence Reliability v6 envelope/scope/durable harness missing")
+    reliability_v7_harness = root / "tools/rs_persistence_reliability_v7_harness.py"
+    if not reliability_v7_harness.is_file():
+        failures.append("Persistence Reliability v7 generation-reload fence harness missing")
+
+    controls_entry = "ui/framework/rs_ui_controls.lua"
+    controls_source = (root / controls_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / controls_entry).is_file() else ""
+    forms_entry = "ui/framework/rs_ui_forms.lua"
+    forms_source = (root / forms_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / forms_entry).is_file() else ""
+    for token in (
+        "RSUI.InteractiveDraftContractVersion = 1",
+        "RSUI.ControlTransactionContractVersion = 1",
+        "RSUI.DropdownRuntimeInteractionContractVersion = 1",
+        "function c:FailDropdownInteraction(reason)",
+        "function c:EnsureChildEnabled(widget, desired, role)",
+        "local function IsFocusedDraft(component)",
+        "function c:IsEditing() return IsFocusedDraft(self) end",
+        "function c:IsInteracting() return self.root ~= nil and self.root.rsDragging == true end",
+        "CountDraftSuppression()",
+        'self:Render(value, "interaction")',
+        'self:Render(value, "commit")',
+    ):
+        if token not in controls_source:
+            failures.append("RSUI Interactive Draft contract missing: " + token)
+    for token in (
+        "RSUI.NumericInlineContractVersion = 4",
+        "RSUI.NumericStepPairFallbackContractVersion = 1",
+        "buildOptional = true",
+        "c.minus, c.plus = nil, nil",
+        'SyncControls(Current(), "binding_refresh")',
+        'c.input:Render(value, "interaction")',
+        'SyncControls(actual, "commit")',
+    ):
+        if token not in forms_source:
+            failures.append("RSUI NumericField draft-preservation contract missing: " + token)
+
+    # Native Interaction ABI hard fence. RU WidgetBase documents EnablePick /
+    # Clickable as one-argument calls. Extra arguments were historically hidden
+    # inside pcall(), leaving sliders/scrollbars/editors visibly present but
+    # non-interactive while every static/runtime summary still reported green.
+    native_primitives_source = (root / "ui/rs_ui_native_primitives.lua").read_text(encoding="utf-8-sig", errors="replace")
+    ui_framework_source = (root / "ui/rs_ui_framework.lua").read_text(encoding="utf-8-sig", errors="replace")
+    native_adapter_source = (root / "presentation/v3/rs_v3_native_adapter.lua").read_text(encoding="utf-8-sig", errors="replace")
+    app_shell_source = (root / "presentation/v3/rs_v3_shell.lua").read_text(encoding="utf-8-sig", errors="replace")
+    for token in (
+        "NativeInteractionContractVersion = 4",
+        "CriticalInteractionDeliveryContractVersion = 1",
+        "local NATIVE_BOOLEAN_STATE_SETTERS = {",
+        "if not falseStateSetter then return false",
+        "function UIX:TryInteractionCall(widget, methodName, ...)",
+        "function UIX:RequireHandler(widget, eventName, fn, label)",
+        "if ConfigureNativePickable(edit, true) ~= true then error",
+        'CallNativeAccepted(edit, "EnableKeyboard", true)',
+        'CallNativeAccepted(edit, "SetReadOnly", false)',
+        "slider.rsUiSetEnabledAdapter = ApplySliderEnabled",
+        "local dragStartBound = UIX:SafeHandler",
+        "local dragStopBound = UIX:SafeHandler",
+        "PrimitiveFailureDetail",
+        "return FailPrimitive(",
+    ):
+        if token not in native_primitives_source:
+            failures.append("Native primitive interaction/fail-closed contract missing: " + token)
+    for token in (
+        "NativeBooleanSetterReturnContractVersion = 1",
+        "CompositeEnabledAdapterContractVersion = 2",
+        "local enabledAdapter = widget.rsUiSetEnabledAdapter",
+        "if calls == 0 then",
+    ):
+        if token not in ui_framework_source:
+            failures.append("UI interaction adapter contract missing: " + token)
+    if 'if result == false then return false, tostring(methodName) .. "_rejected" end' in native_primitives_source:
+        failures.append("Native primitive setter return contract regressed: boolean false must not be treated as transport rejection")
+    for function_name in ("SetVisible", "SetPickable"):
+        match = re.search(
+            rf"function UI:{function_name}\b(.*?)(?=\nfunction UI:|\Z)",
+            ui_framework_source,
+            re.S,
+        )
+        if match is None:
+            failures.append("UI boolean setter contract missing function: " + function_name)
+        elif "result == false" in match.group(1):
+            failures.append("UI boolean setter return contract regressed in " + function_name)
+    for token in (
+        "DegradedRootFailClosedContractVersion = 1",
+        "EventBindingContractVersion = 1",
+        "PostFactoryRejectReleaseContractVersion = 1",
+        "local function RejectComponent(reason)",
+        "component_root_unusable:",
+        "if channel.handlers[index] == subscription then table.remove(channel.handlers, index); break end",
+    ):
+        if token not in component_core_source:
+            failures.append("RSUI degraded-root fail-closed contract missing: " + token)
+
+    controls_source = (root / "ui/framework/rs_ui_controls.lua").read_text(encoding="utf-8-sig", errors="replace")
+    for token in (
+        "RSUI.PopupVisibilityTransactionContractVersion = 1",
+        "local function EnsureRawVisible(widget, visible, owner)",
+        'EnsureRawVisible(self.popup, true, self.owner)',
+        'EnsureRawVisible(self.popup, false, self.owner)',
+    ):
+        if token not in controls_source:
+            failures.append("RSUI popup visibility transaction contract missing: " + token)
+
+    primitives_source = (root / "ui/framework/rs_ui_primitives.lua").read_text(encoding="utf-8-sig", errors="replace")
+    for token in (
+        "RSUI.ButtonActionContractVersion = 2",
+        "function c:SetOnClick(fn)",
+        "function c:GetOnClick()",
+        "function c:Click(...)",
+        'c:RequireOn(button, "OnClick", function(...) return c:Click(...) end',
+    ):
+        if token not in primitives_source:
+            failures.append("RSUI Button action ownership contract missing: " + token)
+
+    widget_host_source = (root / "presentation/v3/widgets/rs_v3_widget_host.lua").read_text(encoding="utf-8-sig", errors="replace")
+    for token in (
+        "version = 14",
+        "preferenceInitializationContractVersion = 2",
+        "self.stats.preferenceLoadFailures",
+        "local prepared, prepareErr = EnsurePreferences(spec)",
+        'V3_WIDGET_PREFERENCE_LOAD_FAILED',
+    ):
+        if token not in widget_host_source:
+            failures.append("WidgetHost preference initialization contract missing: " + token)
+
+    windowing_source = (root / "ui/framework/rs_ui_windowing.lua").read_text(encoding="utf-8-sig", errors="replace")
+    scrollbar_source = (root / "ui/framework/rs_ui_scrollbar.lua").read_text(encoding="utf-8-sig", errors="replace")
+    adaptive_source = (root / "ui/framework/rs_ui_adaptive_panels.lua").read_text(encoding="utf-8-sig", errors="replace")
+    data_views_source = (root / "ui/framework/rs_ui_data_views.lua").read_text(encoding="utf-8-sig", errors="replace")
+    for source_name, source, tokens in (
+        ("Windowing", windowing_source, ("CriticalInteractionContractVersion = 1", "StateMutationTransactionContractVersion = 1", "GeometryCallbackTransactionContractVersion = 1", "local function EnsureNativeResizing", "UI:RequireHandler(dragHandle", "UI:TryInteractionCall(window, \"StartMoving\")", "UI:TryInteractionCall(window, \"StartSizing\", handleDefinition.direction)", "geometryCallbackRejects")),
+        ("Scrollbar", scrollbar_source, ("criticalInteractionContractVersion = 1", "UI:RequireHandler(drag", "UI:TryInteractionCall(drag, \"StartMoving\")")),
+        ("SplitView", adaptive_source, ("UI:RequireHandler(dividerDrag", "UI:TryInteractionCall(dividerDrag, \"StartMoving\")", "scrollbar_attach_failed:")),
+        ("DataView", data_views_source, ("UI:RequireHandler(handle,\"OnDragStart\"", "UI:TryInteractionCall(handle, \"StartMoving\")", "table_column_resize_handle_create_failed:", "scrollbar_attach_failed:")),
+    ):
+        for token in tokens:
+            if token not in source:
+                failures.append(source_name + " critical interaction contract missing: " + token)
+
+    window_shell_source = (root / "ui/framework/rs_ui_window_shell_v3.lua").read_text(encoding="utf-8-sig", errors="replace")
+    floating_surface_source = (root / "ui/framework/rs_ui_floating_surface.lua").read_text(encoding="utf-8-sig", errors="replace")
+    modal_host_source = (root / "presentation/v3/shell/rs_v3_modal_host.lua").read_text(encoding="utf-8-sig", errors="replace")
+    ui_framework_source = (root / "ui/rs_ui_framework.lua").read_text(encoding="utf-8-sig", errors="replace")
+    for source_name, source, tokens in (
+        ("UIFacade", ui_framework_source, ("NativeBooleanSetterReturnContractVersion = 1", "GeometryStateTransactionContractVersion = 1", "function UI:EnsureVisible", "function UI:EnsureEnabled", "function UI:EnsurePickable", "function UI:EnsureAlpha", "function UI:EnsureAnchor", "function UI:EnsureExtent")),
+        ("WindowShell", window_shell_source, ("version = 22", "visibilityTransactionContract = 1", "stateMutationTransactionContract = 1", "stateCallbackTransactionContract = 1", "EnsureWindowVisible", "EnsureComponentVisibility", "stateCallbackRejects", "window_lock_native_rejected")),
+        ("FloatingSurface", floating_surface_source, ("StateMutationTransactionContractVersion = 1", "local function CommitState", "rollback")),
+        ("ModalHost", modal_host_source, ("version = 6", "visibilityTransactionContractVersion = 1", "local function SetVisible(instance, visible)")),
+        ("NativeAdapter", native_adapter_source, ("RootInteractionPolicyContractVersion = 2", "UI:EnsureVisible(window, false, owner)", "UI:EnsureAnchor(widget, UIParent", "UI:EnsureExtent(widget")),
+        ("ApplicationShell", app_shell_source, ("Shell.StateMutationTransactionContractVersion = 1", "EnsureComponentVisibility", "local previous = {}", "主窗口几何提交失败")),
+    ):
+        for token in tokens:
+            if token not in source:
+                failures.append(source_name + " state transaction contract missing: " + token)
+
+    # Presentation must never bind native events directly to an RSUI component
+    # root. Doing so overwrites the component-owned event mux and bypasses the
+    # enabled/release/action fences. Native widgets created intentionally by a
+    # specialized Presenter remain allowed; this scan is narrowly scoped to
+    # `.root` escapes from RSUI components.
+    presentation_root_handler_refs: list[str] = []
+    component_root_safe_re = re.compile(r"\bSafeHandler\s*\(\s*(?:[A-Za-z_]\w*\.)+root\s*,")
+    presentation_root_set_re = re.compile(r"\b(?:[A-Za-z_]\w*\.)+root\s*:\s*(SetHandler|ReleaseHandler)\s*\(")
+    for rel in active_lua:
+        source = strip_lua_comments((root / rel).read_text(encoding="utf-8-sig", errors="replace"))
+        for match in component_root_safe_re.finditer(source):
+            presentation_root_handler_refs.append(f"{rel}:{line_for(source, match.start())}:SafeHandler")
+        if rel.startswith("presentation/v3/"):
+            for match in presentation_root_set_re.finditer(source):
+                presentation_root_handler_refs.append(f"{rel}:{line_for(source, match.start())}:{match.group(1)}")
+    if presentation_root_handler_refs:
+        failures.append("Native handler escaped RSUI component root/action ownership: " + ", ".join(presentation_root_handler_refs[:30]))
+
+    ignored_critical_handlers: list[str] = []
+    critical_handler_re = re.compile(r"(?m)^\s*(?!local\s+\w+\s*=|return\s+)(?:S\.)?UI:SafeHandler\s*\([^\n]*[\"'](OnClick|OnDragStart|OnDragStop)[\"']")
+    for rel in active_lua:
+        source = strip_lua_comments((root / rel).read_text(encoding="utf-8-sig", errors="replace"))
+        for match in critical_handler_re.finditer(source):
+            ignored_critical_handlers.append(f"{rel}:{line_for(source, match.start())}:{match.group(1)}")
+    if ignored_critical_handlers:
+        failures.append("Critical native handler binding result ignored: " + ", ".join(ignored_critical_handlers[:30]))
+
+    invalid_interaction_arity: list[str] = []
+    direct_arity_re = re.compile(r":(EnablePick|Clickable|EnableFocus|EnableKeyboard|EnableDrag|SetDragCondition|SetReClickable|SetReadOnly)\s*\([^\n]*,")
+    native_safe_arity_re = re.compile(r"NativeSafe\.Call\s*\([^\n]*[\"'](EnablePick|Clickable|EnableFocus|EnableKeyboard|EnableDrag|SetDragCondition|SetReClickable|SetReadOnly)[\"'][^\n]*,[^\n]*,")
+    for rel in active_lua:
+        source = (root / rel).read_text(encoding="utf-8-sig", errors="replace")
+        code = strip_lua_strings(strip_lua_comments(source))
+        for match in direct_arity_re.finditer(code):
+            invalid_interaction_arity.append(f"{rel}:{line_for(code, match.start())}:{match.group(1)}")
+        # NativeSafe method names are string arguments, so use comment-stripped
+        # source rather than string-stripped code for this narrow pattern.
+        commentless = strip_lua_comments(source)
+        for match in native_safe_arity_re.finditer(commentless):
+            invalid_interaction_arity.append(f"{rel}:{line_for(commentless, match.start())}:NativeSafe.{match.group(1)}")
+    if invalid_interaction_arity:
+        failures.append("Invalid RU WidgetBase interaction call arity: " + ", ".join(invalid_interaction_arity[:20]))
+
+    warn_once_colon_refs: list[str] = []
+    for rel in active_lua:
+        source = (root / rel).read_text(encoding="utf-8-sig", errors="replace")
+        code = strip_lua_strings(strip_lua_comments(source))
+        for match in re.finditer(r"\bS\s*:\s*WarnOnce\s*\(", code):
+            warn_once_colon_refs.append(f"{rel}:{line_for(code, match.start())}")
+    if warn_once_colon_refs:
+        failures.append("WarnOnce dot/colon ABI regression: " + ", ".join(warn_once_colon_refs[:20]))
 
     # The RU client has no validated generic native reparent API. Active Runtime
     # must therefore not introduce desktop/UMG-style reparent calls. Logical
@@ -845,6 +1482,10 @@ def main() -> int:
         + f" businessIds={len(business_page_id_failures)}"
         + f" auctionEventOwners={len(auction_event_authority_failures)}"
         + f" retiredUiLayer={len(retired_ui_layer_failures)}"
+        + f" rsuiComponentApi={1 if component_api_gate_ok else 0}"
+        + f" presentationFeatureApi={1 if presentation_feature_api_gate_ok else 0}"
+        + f" rsuiLoadDeps={rsui_dependency_checks}"
+        + f" presentationRootHandlers={len(presentation_root_handler_refs)}"
     )
     for item in failures:
         print("FAIL | " + item)

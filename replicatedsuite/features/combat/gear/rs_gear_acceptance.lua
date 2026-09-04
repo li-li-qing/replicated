@@ -18,8 +18,18 @@ G:RegisterSequenceCase("v3_m4_gear_screen_buttons", function()
     if indexStore == nil or tostring(indexStore.owner or "") ~= "v3.gear" or tostring(indexStore.scope or "") ~= tostring(S.Persistence.Scope.Character) then
         return Fail("index_store_contract")
     end
-    if tonumber(F.MaxSets) ~= 40 or type(F.EnsurePayloadStore) ~= "function" or type(F.SavePayload) ~= "function" then return Fail("sharded_store_contract") end
-    if tonumber(indexStore.schemaVersion) ~= 4 or type(F.GetQuickHudState) ~= "function" or type(F.SetQuickHudVisible) ~= "function" or type(F.QuickButtonPolicy) ~= "table" then return Fail("quick_button_store_contract") end
+    if tonumber(F.MaxSets) ~= 40 or type(F.EnsurePayloadStore) ~= "function" or type(F.SavePayload) ~= "function" or type(F.LoadPayloadForSet) ~= "function"
+        or type(F.ValidatePayloadStructure) ~= "function" then return Fail("sharded_store_contract") end
+    if tonumber(indexStore.schemaVersion) ~= 5 or tonumber(F.PayloadSchemaVersion) ~= 2 or tonumber(F.PayloadJournalContractVersion) ~= 2
+        or tonumber(F.PayloadIntegrityContractVersion) ~= 1
+        or type(F.PayloadCodec) ~= "table" or type(F.PayloadCodec.Encode) ~= "function" or type(F.PayloadCodec.Decode) ~= "function"
+        or type(F.NormalizePayloadBank) ~= "function" or F.NormalizePayloadBank("a") ~= "a" or F.NormalizePayloadBank("b") ~= "b"
+        or indexStore.verifyAfterSave ~= true
+        or type(S.Persistence.VerifyPersistedValue) ~= "function" or (tonumber(S.Persistence.ReliabilityContractVersion) or 0) < 4
+        or (tonumber(S.Persistence.IntegrityContractVersion) or 0) < 1 then
+        return Fail("gear_payload_journal_contract")
+    end
+    if type(F.GetQuickHudState) ~= "function" or type(F.SetQuickHudVisible) ~= "function" or type(F.QuickButtonPolicy) ~= "table" then return Fail("quick_button_store_contract") end
     if type(F.GetQuickSnapSettings) ~= "function" or type(F.SetQuickSnapEnabled) ~= "function" or type(F.SetQuickSnapDistance) ~= "function"
         or type(F.SetQuickButtonGap) ~= "function" or type(F.ResetQuickSnapSettings) ~= "function" then return Fail("quick_button_snap_settings_contract") end
     local snapSettings = F:GetQuickSnapSettings()
@@ -30,6 +40,7 @@ G:RegisterSequenceCase("v3_m4_gear_screen_buttons", function()
     if snapDisabled.snapEnabled ~= false or tonumber(snapDisabled.snapDistance) ~= 27 or tonumber(snapDisabled.buttonGap) ~= 3 then return Fail("quick_button_snap_settings_roundtrip") end
     if tonumber(F.QuickButtonPolicy.snapDistance) == nil or tonumber(F.QuickButtonPolicy.snapDistance) <= 0
         or S.Layout == nil or type(S.Layout.ResolveSiblingSnap) ~= "function" or type(S.Layout.ResolveScreenSnap) ~= "function"
+        or type(S.Layout.StorePlacement) ~= "function" or type(S.Layout.ResolvePlacement) ~= "function"
         or S.UI == nil or type(S.UI.RegisterScreenSnap) ~= "function" or type(S.UI.ResolveScreenSnap) ~= "function" then
         return Fail("quick_button_snap_contract")
     end
@@ -65,29 +76,43 @@ G:RegisterSequenceCase("v3_m4_gear_screen_buttons", function()
         }
     end
     local synthetic = F.NormalizePayload({
-        configured = true, revision = 1, capturedAt = 1, items = syntheticItems,
+        configured = true, revision = 1, storageId = 7, setId = "set_7", capturedAt = 1, items = syntheticItems,
         title = {
             apply = true, displayName = "安全预算测试称号",
             showing = { values = { 11, "展示称号", true, 4, 5, 6 }, id = 11, name = "展示称号" },
             effect = { values = { 22, "效果称号", true, 4, 5, 6 }, id = 22, name = "效果称号" },
         },
     })
-    local encoded = {
-        payload = synthetic,
-        __rsmeta = { framework = S.Persistence.FrameworkVersion, store = "v3.gear.payload.test", owner = "v3.gear", contractVersion = 3, lifetime = "Permanent", scope = "Character", schema = 1 },
-    }
+    local compact = F.PayloadCodec.Encode(synthetic)
+    if type(compact) ~= "table" or tonumber(compact.v) ~= 2 or type(compact.it) ~= "table" or #compact.it ~= 19 then return Fail("gear_compact_payload_encode") end
+    local decoded, decodeErr = F.PayloadCodec.Decode(compact)
+    if type(decoded) ~= "table" or decodeErr ~= nil or decoded.configured ~= true or #(decoded.items or {}) ~= 19 then return Fail("gear_compact_payload_decode") end
+    local sourceFingerprint = select(1, F:PayloadFingerprint(synthetic))
+    local decodedFingerprint = select(1, F:PayloadFingerprint(decoded))
+    if sourceFingerprint == nil or tostring(sourceFingerprint) ~= tostring(decodedFingerprint) then return Fail("gear_compact_payload_roundtrip") end
+    local structureOk = F:ValidatePayloadStructure(decoded)
+    if structureOk ~= true then return Fail("gear_payload_structure_valid") end
+    local corrupt = F.NormalizePayload({ configured = true, revision = 1, storageId = 7, setId = "set_7", items = {}, title = {} })
+    local corruptOk = F:ValidatePayloadStructure(corrupt)
+    if corruptOk == true then return Fail("gear_payload_structure_corrupt_empty") end
+    local encoded = F.DeepCopy(compact)
+    encoded.__rsmeta = { framework = S.Persistence.FrameworkVersion, store = "v3.gear.payload.test.a", owner = "v3.gear", contractVersion = 3, lifetime = "Permanent", scope = "Character", schema = 2 }
     local budgetProbe = S.Persistence:InspectPayload(encoded, F.PayloadBudget)
     if type(budgetProbe) ~= "table" or budgetProbe.ok ~= true then return Fail("gear_encoded_payload_budget:" .. tostring(budgetProbe and budgetProbe.reason)) end
 
     local syntheticSets = {}
     for index = 1, 40 do
         syntheticSets[index] = { id = "set_" .. tostring(index), name = "换装方案" .. tostring(index), order = index, storageId = index, configured = true, quick = true,
-            quickX = 300 + index * 3, quickY = 100 + index * 2, quickPositionCustomized = true, payloadRevision = 99 }
+            quickX = 300 + index * 3, quickY = 100 + index * 2, quickPositionCustomized = true, payloadRevision = 99,
+            quickCoordinateSpace = "logical-edge-v1", quickAnchorH = index % 2 == 0 and "RIGHT" or "LEFT",
+            quickAnchorV = index % 3 == 0 and "BOTTOM" or "TOP", quickOffsetX = 12 + index, quickOffsetY = 8 + index,
+            payloadBank = index % 2 == 0 and "a" or "b", payloadFingerprint = "ABCDEF01", backupPayloadBank = index % 2 == 0 and "b" or "a",
+            backupPayloadRevision = 98, backupPayloadFingerprint = "ABCDEF00" }
     end
     local indexEncoded = {
         payload = { revision = 99, nextId = 41, nextStorageId = 41, sets = syntheticSets,
             quickHud = F.NormalizeQuickHud({ layoutMode = "buttons-v1", visible = true, locked = true, snapEnabled = true, snapDistance = 16, buttonGap = 0, overallOpacity = 0.9, backgroundOpacity = 0.8, textOpacity = 1 }) },
-        __rsmeta = { framework = S.Persistence.FrameworkVersion, store = "v3.gear.index", owner = "v3.gear", contractVersion = 3, lifetime = "Permanent", scope = "Character", schema = 4 },
+        __rsmeta = { framework = S.Persistence.FrameworkVersion, store = "v3.gear.index", owner = "v3.gear", contractVersion = 3, lifetime = "Permanent", scope = "Character", schema = 5 },
     }
     local indexBudgetProbe = S.Persistence:InspectPayload(indexEncoded, F.IndexBudget)
     if type(indexBudgetProbe) ~= "table" or indexBudgetProbe.ok ~= true then return Fail("gear_encoded_index_budget:" .. tostring(indexBudgetProbe and indexBudgetProbe.reason)) end
@@ -106,7 +131,7 @@ G:RegisterSequenceCase("v3_m4_gear_screen_buttons", function()
     if quickSpec == nil or quickSpec.windowingRequired ~= false then return Fail("quick_button_widget_contract") end
     if type(F.Commands) ~= "table" or type(F.Commands.ApplyQuickSnapEnabled) ~= "function"
         or type(F.Commands.ApplyQuickSnapDistance) ~= "function" or type(F.Commands.ApplyQuickButtonGap) ~= "function"
-        or type(F.Commands.MarkStoreDirty) ~= "function" then return Fail("presentation_command_contract") end
+        or type(F.Commands.ResetQuickSnapSettings) ~= "function" or type(F.Commands.MarkStoreDirty) ~= "function" then return Fail("presentation_command_contract") end
     if type(F.Authority) ~= "table" or type(F.Authority.GetQuickRows) ~= "function" or type(F.Authority.DetectCurrentQuickSet) ~= "function"
         or type(F.Authority.SetQuickPosition) ~= "function" or type(F.Authority.ResetQuickPositions) ~= "function" then return Fail("quick_button_authority_contract") end
 

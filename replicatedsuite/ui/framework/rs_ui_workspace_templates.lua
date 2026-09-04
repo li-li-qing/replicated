@@ -1,5 +1,5 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Workspace Composition Templates v4
+-- Replicated Suite - RSUI Workspace Composition Templates v5
 --
 -- Page-level composition helpers built exclusively from existing RSUI
 -- primitives. These helpers do NOT become a second layout authority: all
@@ -18,8 +18,8 @@ if type(RSUI) ~= "table" then return end
 local Tokens = S.UITokens or {}
 
 local T = {
-    version = 4,
-    contractVersion = 4,
+    version = 6,
+    contractVersion = 6,
 }
 
 local function N(value, fallback)
@@ -319,6 +319,10 @@ function T:LayoutEditor(spec)
         return nil, "layout_editor_workspace_command_bar_foundation_missing"
     end
 
+    if type(RSUI.RequireComponentMethods) ~= "function" or (tonumber(RSUI.ComponentApiContractVersion) or 0) < 1 then
+        return nil, "layout_editor_workspace_component_api_contract_required"
+    end
+
     -- Persistence remains a caller/Feature responsibility. The Workspace only
     -- creates the Session Authority when the caller supplies the complete
     -- durable boundary. Supplying no editSession keeps a valid history-only
@@ -333,7 +337,16 @@ function T:LayoutEditor(spec)
     end
 
     local id = tostring(spec.id)
-    local root = RSUI:ResponsiveInspector({
+    local root = nil
+    local inspectorToggle = nil
+    local function SyncInspectorAffordance()
+        if inspectorToggle == nil or root == nil then return false end
+        local drawer = root:GetMode() == "drawer"
+        inspectorToggle:SetVisible(drawer)
+        inspectorToggle:SetText(root:IsDrawerOpen() and "收起属性" or "属性")
+        return true
+    end
+    root = RSUI:ResponsiveInspector({
         id = id .. "_responsive", parent = spec.parent,
         breakpoint = spec.breakpoint or Token("breakpoint.regular", 980),
         inspectorWidth = spec.inspectorWidth or Token("workspace.inspectorW", 286),
@@ -341,8 +354,20 @@ function T:LayoutEditor(spec)
         contentMinWidth = spec.contentMinWidth or Token("workspace.previewMinW", 360),
         drawerOpen = spec.drawerOpen == true, drawerMaxFraction = spec.drawerMaxFraction,
         drawerMinReveal = spec.drawerMinReveal, gap = spec.gap or Token("workspace.divider", 6),
-        padding = spec.padding, onModeChanged = spec.onResponsiveModeChanged,
-        onDrawerChanged = spec.onDrawerChanged, onInspectorWidthChanged = spec.onInspectorWidthChanged,
+        padding = spec.padding,
+        onModeChanged = function(mode, responsive)
+            SyncInspectorAffordance()
+            if type(spec.onResponsiveModeChanged) == "function" then
+                RSUI:Callback("rsui:layout_editor_workspace:" .. id .. ":responsive_mode", spec.onResponsiveModeChanged, mode, responsive)
+            end
+        end,
+        onDrawerChanged = function(open, responsive)
+            SyncInspectorAffordance()
+            if type(spec.onDrawerChanged) == "function" then
+                RSUI:Callback("rsui:layout_editor_workspace:" .. id .. ":drawer", spec.onDrawerChanged, open, responsive)
+            end
+        end,
+        onInspectorWidthChanged = spec.onInspectorWidthChanged,
         slot = spec.slot,
     })
     if root == nil then return nil, "layout_editor_workspace_root_failed" end
@@ -378,6 +403,11 @@ function T:LayoutEditor(spec)
         ReleaseModels()
         return nil, tostring(reason or "layout_editor_workspace_create_failed")
     end
+
+    local rootApiOk, rootApiErr = RSUI:RequireComponentMethods(root, {
+        "GetMode", "IsDrawerOpen", "SetDrawerOpen", "ToggleDrawer", "GetResponsiveSnapshot", "Release",
+    }, id .. ":responsive")
+    if rootApiOk ~= true then return Fail(rootApiErr) end
 
     local content = RSUI:VerticalBox({
         id = id .. "_content", parent = root, gap = N(spec.contentGap, Token("spacing.xs", 4)),
@@ -421,7 +451,27 @@ function T:LayoutEditor(spec)
         text = "左上(0,0) · X→右 · Y→下", tone = "muted", overflow = "ellipsis",
         slot = { size = "fill", fill = 1, hAlign = "right", vAlign = "center" },
     })
-    if selectionStatus == nil or coordinateHint == nil then return Fail("layout_editor_workspace_toolbar_failed") end
+    inspectorToggle = RSUI:Button({
+        id = id .. "_inspector_toggle", parent = toolbar, text = "属性", compact = true,
+        width = 70, height = 24,
+        onClick = function()
+            if root == nil or root:GetMode() ~= "drawer" then return true end
+            root:ToggleDrawer(true)
+            SyncInspectorAffordance()
+            return true
+        end,
+        slot = { size = "fixed", width = 70, vAlign = "center" },
+    })
+    if selectionStatus == nil or coordinateHint == nil or inspectorToggle == nil then return Fail("layout_editor_workspace_toolbar_failed") end
+    local toggleApiOk, toggleApiErr = RSUI:RequireComponentMethods(inspectorToggle, {
+        "SetVisible", "SetText",
+    }, id .. ":inspector_toggle")
+    if toggleApiOk ~= true then return Fail(toggleApiErr) end
+    local statusApiOk, statusApiErr = RSUI:RequireComponentMethods(selectionStatus, {
+        "SetStatus",
+    }, id .. ":selection_status")
+    if statusApiOk ~= true then return Fail(statusApiErr) end
+    SyncInspectorAffordance()
 
     historyModel, err = RSUI:CreateLayoutEditHistoryModel({
         id = id .. ":history",
@@ -433,6 +483,7 @@ function T:LayoutEditor(spec)
     workspace = {
         kind = "LayoutEditorWorkspace", id = id, root = root, content = content, toolbar = toolbar,
         commandHost = commandHost, canvas = canvas, previewHost = previewHost, inspectorHost = inspectorScroll,
+        inspectorToggle = inspectorToggle,
         selectionStatus = selectionStatus, coordinateHint = coordinateHint, historyModel = historyModel,
         sessionModel = nil, commandBar = nil, released = false,
     }
@@ -473,6 +524,10 @@ function T:LayoutEditor(spec)
         slot = { hAlign = "fill", vAlign = "fill" },
     })
     if editorOverlay == nil then return Fail("layout_editor_workspace_overlay_failed") end
+    local overlayApiOk, overlayApiErr = RSUI:RequireComponentMethods(editorOverlay, {
+        "GetAdapter", "GetSnapModel", "RefreshFromAdapter", "RefreshFromSource", "GetSnapshot",
+    }, id .. ":editor_overlay")
+    if overlayApiOk ~= true then return Fail(overlayApiErr) end
     workspace.editorOverlay = editorOverlay
     workspace.adapter = editorOverlay:GetAdapter()
     workspace.snapModel = editorOverlay:GetSnapModel()
@@ -511,6 +566,10 @@ function T:LayoutEditor(spec)
         slot = { hAlign = "fill", vAlign = "top" },
     })
     if inspector == nil then return Fail("layout_editor_workspace_inspector_failed") end
+    local inspectorApiOk, inspectorApiErr = RSUI:RequireComponentMethods(inspector, {
+        "SetModels", "SetEnabled", "GetSnapshot",
+    }, id .. ":transform_inspector")
+    if inspectorApiOk ~= true then return Fail(inspectorApiErr) end
     workspace.transformInspector = inspector
     inspector:SetModels(workspace.adapter, workspace.adapter:GetAnchorModel())
     inspector:SetEnabled(workspace.adapter:GetMode() ~= "none")
@@ -547,6 +606,10 @@ function T:LayoutEditor(spec)
         slot = { size = "auto", hAlign = "fill", vAlign = "top" },
     })
     if commandBar == nil then return Fail("layout_editor_workspace_command_bar_failed") end
+    local commandApiOk, commandApiErr = RSUI:RequireComponentMethods(commandBar, {
+        "Execute", "GetSnapshot",
+    }, id .. ":command_bar")
+    if commandApiOk ~= true then return Fail(commandApiErr) end
     workspace.commandBar = commandBar
 
     local function RefreshInspectorBinding()
@@ -755,7 +818,7 @@ function T:GetSnapshot()
     }
 end
 
-RSUI.LayoutEditorWorkspaceContractVersion = 2
+RSUI.LayoutEditorWorkspaceContractVersion = 4
 RSUI.LayoutEditorWorkspaceSessionBindingContractVersion = 1
 RSUI.WorkspaceTemplates = T
 RSUI.WorkspaceTemplateContractVersion = T.contractVersion

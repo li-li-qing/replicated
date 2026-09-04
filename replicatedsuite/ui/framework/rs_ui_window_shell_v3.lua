@@ -12,7 +12,10 @@ local UI, RSUI = S.UI, S.RSUI
 if type(UI) ~= "table" or type(RSUI) ~= "table" or type(RSUI.Windowing) ~= "table" then return end
 
 local Shell = {
-    version = 19,
+    version = 22,
+    visibilityTransactionContract = 1,
+    stateMutationTransactionContract = 1,
+    stateCallbackTransactionContract = 1,
     idempotentMutationContract = 1,
     compactMinimizeContract = 1,
     titleAppearanceContract = 3,
@@ -21,6 +24,7 @@ local Shell = {
         created = 0, shown = 0, hidden = 0, minimized = 0, restored = 0, destroyed = 0, layouts = 0, failures = 0,
         closeRequests = 0, closeVetoes = 0, closeCallbackFailures = 0, closedCallbacks = 0, quarantinedRejects = 0,
         layoutInvalidations = 0, layoutInvalidationCoalesces = 0, appearancePanelToggles = 0,
+        visibilityFailures = 0, minimizeRollbacks = 0, stateCallbackRejects = 0,
     },
 }
 UI.WindowShell = Shell
@@ -41,6 +45,34 @@ local function ReadExtent(window, fallbackW, fallbackH)
     -- here caused every parameterless Layout() (SettingsPage does this) to
     -- shrink the window again when addonScale ~= 1.
     return math.max(1, width), math.max(1, height)
+end
+
+local function EnsureWindowVisible(shell, visible, reason)
+    if shell == nil or shell.window == nil then return false, "window_unavailable" end
+    if type(UI.EnsureVisible) ~= "function" then return false, "visibility_transaction_unavailable" end
+    local accepted, _, detail = UI:EnsureVisible(shell.window, visible == true, shell.owner)
+    if accepted ~= true then
+        Shell.metrics.visibilityFailures = (tonumber(Shell.metrics.visibilityFailures) or 0) + 1
+        if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Error) == "function" then
+            S.DiagnosticsManager:Error("ui", "WINDOW_VISIBILITY_TRANSACTION_FAILED", "窗口可见性状态切换失败，已拒绝发布逻辑状态", {
+                id = tostring(shell.id or ""), owner = tostring(shell.owner or ""), visible = tostring(visible == true),
+                reason = tostring(reason or "visibility"), error = tostring(detail or "native_visibility_rejected"),
+            })
+        end
+        return false, tostring(detail or "native_visibility_rejected")
+    end
+    return true, nil
+end
+
+local function EnsureComponentVisibility(component, visibility, role)
+    if component == nil then return true, nil end
+    if type(component.SetVisibility) ~= "function" then return false, tostring(role or "component") .. "_visibility_contract_missing" end
+    local _, accepted, detail = component:SetVisibility(visibility)
+    if accepted ~= true then
+        Shell.metrics.visibilityFailures = (tonumber(Shell.metrics.visibilityFailures) or 0) + 1
+        return false, tostring(detail or (tostring(role or "component") .. "_visibility_rejected"))
+    end
+    return true, nil
 end
 
 local function DefaultRect(spec)
@@ -177,18 +209,26 @@ function Shell:Create(spec)
     end
 
     function shell:NotifyState(reason, geometryKind)
-        if type(self.spec.onStateChanged) == "function" then
-            local x, y, w, h = 0, 0, self.normalWidth, self.normalHeight
-            if S.Layout ~= nil and type(S.Layout.GetLogicalRect) == "function" then pcall(function() x, y, w, h = S.Layout:GetLogicalRect(self.window) end) end
-            pcall(self.spec.onStateChanged, self, {
-                x = tonumber(x) or 0, y = tonumber(y) or 0,
-                width = tonumber(w) or self.normalWidth, height = tonumber(h) or self.normalHeight,
-                normalWidth = tonumber(self.normalWidth) or tonumber(w) or 1, normalHeight = tonumber(self.normalHeight) or tonumber(h) or 1,
-                minimized = self.minimized == true, locked = self.locked == true, opacity = self.opacity,
-                overallOpacity = self.opacity, backgroundOpacity = self.backgroundOpacity, textOpacity = self.textOpacity, fontScale = self.fontScale,
-                reason = tostring(reason or "state"), geometryKind = tostring(geometryKind or ""),
-            })
+        if type(self.spec.onStateChanged) ~= "function" then return true, nil end
+        local x, y, w, h = 0, 0, self.normalWidth, self.normalHeight
+        if S.Layout ~= nil and type(S.Layout.GetLogicalRect) == "function" then pcall(function() x, y, w, h = S.Layout:GetLogicalRect(self.window) end) end
+        local ok, accepted, detail = pcall(self.spec.onStateChanged, self, {
+            x = tonumber(x) or 0, y = tonumber(y) or 0,
+            width = tonumber(w) or self.normalWidth, height = tonumber(h) or self.normalHeight,
+            normalWidth = tonumber(self.normalWidth) or tonumber(w) or 1, normalHeight = tonumber(self.normalHeight) or tonumber(h) or 1,
+            minimized = self.minimized == true, locked = self.locked == true, opacity = self.opacity,
+            overallOpacity = self.opacity, backgroundOpacity = self.backgroundOpacity, textOpacity = self.textOpacity, fontScale = self.fontScale,
+            reason = tostring(reason or "state"), geometryKind = tostring(geometryKind or ""),
+        })
+        if ok ~= true then
+            Shell.metrics.stateCallbackRejects = (tonumber(Shell.metrics.stateCallbackRejects) or 0) + 1
+            return false, tostring(accepted or "state_callback_exception")
         end
+        if accepted == false then
+            Shell.metrics.stateCallbackRejects = (tonumber(Shell.metrics.stateCallbackRejects) or 0) + 1
+            return false, tostring(detail or "state_callback_rejected")
+        end
+        return true, nil
     end
 
 
@@ -198,20 +238,25 @@ function Shell:Create(spec)
 
     local function ApplyMinimizedChrome(self)
         local compact = IsCompactMinimized(self)
-        if self.titleText ~= nil then self.titleText:SetVisibility(compact and "collapsed" or "visible") end
-        if self.appearanceButton ~= nil then self.appearanceButton:SetVisibility(compact and "collapsed" or "visible") end
-        if self.closeButton ~= nil then self.closeButton:SetVisibility(compact and "collapsed" or "visible") end
+        local titleOk, titleErr = EnsureComponentVisibility(self.titleText, compact and "collapsed" or "visible", "title_text")
+        if titleOk ~= true then return false, compact, titleErr end
+        local appearanceOk, appearanceErr = EnsureComponentVisibility(self.appearanceButton, compact and "collapsed" or "visible", "appearance_button")
+        if appearanceOk ~= true then return false, compact, appearanceErr end
+        local closeOk, closeErr = EnsureComponentVisibility(self.closeButton, compact and "collapsed" or "visible", "close_button")
+        if closeOk ~= true then return false, compact, closeErr end
         if self.minimized == true and self.appearanceOpen == true then
+            local panelOk, panelErr = EnsureComponentVisibility(self.appearancePanel, "collapsed", "appearance_panel")
+            if panelOk ~= true then return false, compact, panelErr end
             self.appearanceOpen = false
-            if self.appearancePanel ~= nil then self.appearancePanel:SetVisibility("collapsed") end
         end
-        return compact
+        return true, compact, nil
     end
 
     function shell:LayoutInteractive(width, height)
         if self.destroyed then return false end
         width, height = math.max(1, tonumber(width) or self.normalWidth), math.max(1, tonumber(height) or self.normalHeight)
-        local compact = ApplyMinimizedChrome(self)
+        local chromeOk, compact, chromeErr = ApplyMinimizedChrome(self)
+        if chromeOk ~= true then return false, chromeErr or "window_chrome_visibility_failed" end
         local currentW = compact and self.minimizedSize or width
         local currentH = compact and self.minimizedSize or (self.minimized and titleH or height)
         self.root:Layout(0, 0, currentW, currentH)
@@ -221,24 +266,32 @@ function Shell:Create(spec)
             local panelW = math.max(1, math.min(currentW - 4, tonumber(spec.appearancePanelWidth) or 340))
             local panelH = math.max(1, math.min(self.appearancePanelHeight, math.max(1, currentH - titleH - 2)))
             self.appearancePanel:Layout(math.max(2, currentW - panelW - 2), titleH + 1, panelW, panelH)
-            self.appearancePanel:SetVisibility(self.appearanceOpen == true and not self.minimized and "visible" or "collapsed")
+            local panelOk, panelErr = EnsureComponentVisibility(self.appearancePanel, self.appearanceOpen == true and not self.minimized and "visible" or "collapsed", "appearance_panel")
+            if panelOk ~= true then return false, panelErr end
             if self.appearanceOpen == true and self.appearancePanel.root ~= nil and type(self.appearancePanel.root.Raise) == "function" then pcall(function() self.appearancePanel.root:Raise() end) end
         end
         if self.minimized then
-            self.bodyFrame:SetVisibility("collapsed")
-            if self.footer ~= nil then self.footer:SetVisibility("collapsed") end
+            local bodyOk, bodyErr = EnsureComponentVisibility(self.bodyFrame, "collapsed", "body_frame")
+            if bodyOk ~= true then return false, bodyErr end
+            local footerOk, footerErr = EnsureComponentVisibility(self.footer, "collapsed", "footer")
+            if footerOk ~= true then return false, footerErr end
         else
-            self.bodyFrame:SetVisibility("visible")
+            local bodyOk, bodyErr = EnsureComponentVisibility(self.bodyFrame, "visible", "body_frame")
+            if bodyOk ~= true then return false, bodyErr end
             local bodyBottom = footerH > 0 and (footerH + gap) or 0
             local bodyY = titleH + gap
             local bodyH = math.max(1, height - bodyY - bodyBottom)
             self.bodyFrame:Layout(0, bodyY, width, bodyH)
             if self.footer ~= nil then
-                self.footer:SetVisibility("visible")
+                local footerOk, footerErr = EnsureComponentVisibility(self.footer, "visible", "footer")
+                if footerOk ~= true then return false, footerErr end
                 self.footer:Layout(0, math.max(titleH, height - footerH), width, footerH)
             end
         end
-        if self.windowController ~= nil then self.windowController:LayoutHandles(currentW, currentH) end
+        if self.windowController ~= nil then
+            local handlesOk, handlesErr = self.windowController:LayoutHandles(currentW, currentH)
+            if handlesOk ~= true then return false, handlesErr or "window_handle_layout_failed" end
+        end
         if type(RSUI.FlushLayoutQueue) == "function" then RSUI:FlushLayoutQueue(16) end
         return true
     end
@@ -252,7 +305,8 @@ function Shell:Create(spec)
             local _, _, liveW, liveH = S.Layout:GetLogicalRect(self.window)
             return self:LayoutInteractive(liveW, liveH)
         end
-        local compact = ApplyMinimizedChrome(self)
+        local chromeOk, compact, chromeErr = ApplyMinimizedChrome(self)
+        if chromeOk ~= true then return false, chromeErr or "window_chrome_visibility_failed" end
         local currentW = compact and self.minimizedSize or width
         local currentH = compact and self.minimizedSize or (self.minimized and titleH or height)
         UI:SetExtent(self.window, currentW, currentH, self.owner)
@@ -263,25 +317,33 @@ function Shell:Create(spec)
             local panelW = math.max(1, math.min(currentW - 4, tonumber(spec.appearancePanelWidth) or 340))
             local panelH = math.max(1, math.min(self.appearancePanelHeight, math.max(1, currentH - titleH - 2)))
             self.appearancePanel:Layout(math.max(2, currentW - panelW - 2), titleH + 1, panelW, panelH)
-            self.appearancePanel:SetVisibility(self.appearanceOpen == true and not self.minimized and "visible" or "collapsed")
+            local panelOk, panelErr = EnsureComponentVisibility(self.appearancePanel, self.appearanceOpen == true and not self.minimized and "visible" or "collapsed", "appearance_panel")
+            if panelOk ~= true then return false, panelErr end
             if self.appearanceOpen == true and self.appearancePanel.root ~= nil and type(self.appearancePanel.root.Raise) == "function" then pcall(function() self.appearancePanel.root:Raise() end) end
         end
         if self.minimized then
-            self.bodyFrame:SetVisibility("collapsed")
-            if self.footer ~= nil then self.footer:SetVisibility("collapsed") end
+            local bodyOk, bodyErr = EnsureComponentVisibility(self.bodyFrame, "collapsed", "body_frame")
+            if bodyOk ~= true then return false, bodyErr end
+            local footerOk, footerErr = EnsureComponentVisibility(self.footer, "collapsed", "footer")
+            if footerOk ~= true then return false, footerErr end
         else
-            self.bodyFrame:SetVisibility("visible")
+            local bodyOk, bodyErr = EnsureComponentVisibility(self.bodyFrame, "visible", "body_frame")
+            if bodyOk ~= true then return false, bodyErr end
             local bodyBottom = footerH > 0 and (footerH + gap) or 0
             local bodyY = titleH + gap
             local bodyH = math.max(1, height - bodyY - bodyBottom)
             self.bodyFrame:Layout(0, bodyY, width, bodyH)
             if self.footer ~= nil then
-                self.footer:SetVisibility("visible")
+                local footerOk, footerErr = EnsureComponentVisibility(self.footer, "visible", "footer")
+                if footerOk ~= true then return false, footerErr end
                 self.footer:Layout(0, math.max(titleH, height - footerH), width, footerH)
             end
             self.normalWidth, self.normalHeight = width, height
         end
-        if self.windowController ~= nil then self.windowController:LayoutHandles(currentW, currentH) end
+        if self.windowController ~= nil then
+            local handlesOk, handlesErr = self.windowController:LayoutHandles(currentW, currentH)
+            if handlesOk ~= true then return false, handlesErr or "window_handle_layout_failed" end
+        end
         Shell.metrics.layouts = (tonumber(Shell.metrics.layouts) or 0) + 1
         if type(RSUI.FlushLayoutQueue) == "function" then RSUI:FlushLayoutQueue(16) end
         return true
@@ -318,19 +380,36 @@ function Shell:Create(spec)
     if self.root ~= nil and type(self.root.SetLayoutHost) == "function" then self.root:SetLayoutHost(self) end
 
     function shell:Show(visible)
-        if self.destroyed then return false end
+        if self.destroyed then return false, "window_destroyed" end
         local nextValue = visible ~= false
+        local previousMinimized = self.minimized == true
         if nextValue then
-            if self.minimized == true and self.minimizeMode ~= "collapse" and self.minimizeMode ~= "compact" then self.minimized = false; self.minimizeButton:SetText("—") end
-            self:Layout(self.normalWidth, self.normalHeight)
-            UI:SetVisible(self.window, true, self.owner)
+            if self.minimized == true and self.minimizeMode ~= "collapse" and self.minimizeMode ~= "compact" then
+                self.minimized = false
+                self.minimizeButton:SetText("—")
+            end
+            local layoutOk, layoutErr = self:Layout(self.normalWidth, self.normalHeight)
+            if layoutOk ~= true then
+                self.minimized = previousMinimized
+                self.minimizeButton:SetText(self.minimized and "+" or "—")
+                return false, layoutErr or "window_layout_failed"
+            end
+        end
+        local visibleOk, visibleErr = EnsureWindowVisible(self, nextValue, nextValue and "show" or "hide")
+        if visibleOk ~= true then
+            if nextValue then
+                self.minimized = previousMinimized
+                self.minimizeButton:SetText(self.minimized and "+" or "—")
+            end
+            return false, visibleErr
+        end
+        self.visible = nextValue
+        if nextValue then
             if self.windowController ~= nil then self.windowController:BringToFront() end
             Shell.metrics.shown = (tonumber(Shell.metrics.shown) or 0) + 1
         else
-            UI:SetVisible(self.window, false, self.owner)
             Shell.metrics.hidden = (tonumber(Shell.metrics.hidden) or 0) + 1
         end
-        self.visible = nextValue
         return true
     end
 
@@ -400,56 +479,126 @@ function Shell:Create(spec)
     end
 
     function shell:SetMinimized(minimized, persist)
-        if self.destroyed == true then return false end
+        if self.destroyed == true then return false, "window_destroyed" end
         local nextValue = minimized == true
         if self.minimized == nextValue then return true, false end
-        self.minimized = nextValue
-        self.minimizeButton:SetText(nextValue and "+" or "—")
+        local previous = self.minimized == true
+        local previousVisible = self.visible == true
+
+        -- Establish Native/layout state first. Only after every required step
+        -- succeeds do we publish self.minimized/self.visible and persist it.
         if self.minimizeMode == "collapse" or self.minimizeMode == "compact" then
-            self:Layout(self.normalWidth, self.normalHeight)
-            if self.visible == true then
-                UI:SetVisible(self.window, true, self.owner)
+            self.minimized = nextValue
+            local layoutOk, layoutErr = self:Layout(self.normalWidth, self.normalHeight)
+            if layoutOk ~= true then
+                self.minimized = previous
+                self:Layout(self.normalWidth, self.normalHeight)
+                Shell.metrics.minimizeRollbacks = (tonumber(Shell.metrics.minimizeRollbacks) or 0) + 1
+                return false, layoutErr or "window_minimize_layout_failed"
+            end
+            if previousVisible then
+                local visibleOk, visibleErr = EnsureWindowVisible(self, true, "minimize_compact")
+                if visibleOk ~= true then
+                    self.minimized = previous
+                    self:Layout(self.normalWidth, self.normalHeight)
+                    Shell.metrics.minimizeRollbacks = (tonumber(Shell.metrics.minimizeRollbacks) or 0) + 1
+                    return false, visibleErr
+                end
                 if self.windowController ~= nil then self.windowController:BringToFront() end
             end
-            if nextValue then
-                Shell.metrics.minimized = (tonumber(Shell.metrics.minimized) or 0) + 1
-            else
-                Shell.metrics.restored = (tonumber(Shell.metrics.restored) or 0) + 1
-            end
         elseif nextValue then
-            UI:SetVisible(self.window, false, self.owner)
+            local hiddenOk, hiddenErr = EnsureWindowVisible(self, false, "minimize_hide")
+            if hiddenOk ~= true then return false, hiddenErr end
+            self.minimized = true
             self.visible = false
-            Shell.metrics.minimized = (tonumber(Shell.metrics.minimized) or 0) + 1
         else
-            self:Layout(self.normalWidth, self.normalHeight)
-            UI:SetVisible(self.window, true, self.owner)
-            if self.windowController ~= nil then self.windowController:BringToFront() end
+            self.minimized = false
+            local layoutOk, layoutErr = self:Layout(self.normalWidth, self.normalHeight)
+            if layoutOk ~= true then
+                self.minimized = previous
+                Shell.metrics.minimizeRollbacks = (tonumber(Shell.metrics.minimizeRollbacks) or 0) + 1
+                return false, layoutErr or "window_restore_layout_failed"
+            end
+            local shownOk, shownErr = EnsureWindowVisible(self, true, "minimize_restore")
+            if shownOk ~= true then
+                self.minimized = previous
+                self:Layout(self.normalWidth, self.normalHeight)
+                Shell.metrics.minimizeRollbacks = (tonumber(Shell.metrics.minimizeRollbacks) or 0) + 1
+                return false, shownErr
+            end
             self.visible = true
-            Shell.metrics.restored = (tonumber(Shell.metrics.restored) or 0) + 1
+            if self.windowController ~= nil then self.windowController:BringToFront() end
         end
-        if persist ~= false then self:NotifyState("minimize") end
+
+        self.minimizeButton:SetText(self.minimized and "+" or "—")
+        if persist ~= false then
+            local stateOk, stateErr = self:NotifyState("minimize")
+            if stateOk ~= true then
+                self.minimized = previous
+                self.visible = previousVisible
+                self:Layout(self.normalWidth, self.normalHeight)
+                local visibilityOk = EnsureWindowVisible(self, previousVisible, "minimize_persist_rollback")
+                self.minimizeButton:SetText(self.minimized and "+" or "—")
+                Shell.metrics.minimizeRollbacks = (tonumber(Shell.metrics.minimizeRollbacks) or 0) + 1
+                if visibilityOk ~= true then return false, "minimize_persist_rollback_visibility_failed:" .. tostring(stateErr or "state_rejected") end
+                return false, stateErr or "minimize_state_rejected"
+            end
+        end
+        if nextValue then Shell.metrics.minimized = (tonumber(Shell.metrics.minimized) or 0) + 1
+        else Shell.metrics.restored = (tonumber(Shell.metrics.restored) or 0) + 1 end
         return true, true
     end
 
     function shell:SetLocked(locked, persist)
-        if self.destroyed == true then return false end
+        if self.destroyed == true then return false, "window_destroyed" end
         local nextValue = locked == true
-        if self.locked == nextValue then return true, false end
+        local previous = self.locked == true
+        if previous == nextValue then return true, false end
+        if self.windowController ~= nil then
+            local accepted, _, detail = self.windowController:SetLocked(nextValue)
+            if accepted ~= true then return false, detail or "window_lock_native_rejected" end
+        end
         self.locked = nextValue
-        if self.windowController ~= nil then self.windowController:SetLocked(self.locked) end
         if self.appearanceLock ~= nil then self.appearanceLock:SetText(self.locked and "解锁" or "锁定") end
-        if persist ~= false then self:NotifyState("lock") end
+        if persist ~= false then
+            local stateOk, stateErr = self:NotifyState("lock")
+            if stateOk ~= true then
+                if self.windowController ~= nil then self.windowController:SetLocked(previous) end
+                self.locked = previous
+                if self.appearanceLock ~= nil then self.appearanceLock:SetText(self.locked and "解锁" or "锁定") end
+                return false, stateErr or "window_lock_state_rejected"
+            end
+        end
         return true, true
     end
     function shell:IsLocked() return self.locked == true end
 
     function shell:SetOpacity(value, persist)
-        if self.destroyed == true then return false end
-        local nextValue = Clamp(value, 0.00, 1.00, self.opacity)
-        if math.abs(nextValue - (tonumber(self.opacity) or 1.0)) <= 0.0001 then return true, self.opacity, false end
+        if self.destroyed == true then return false, "window_destroyed" end
+        local previous = tonumber(self.opacity) or 1.0
+        local nextValue = Clamp(value, 0.00, 1.00, previous)
+        if math.abs(nextValue - previous) <= 0.0001 then return true, self.opacity, false end
+        local accepted, detail
+        if self.windowController ~= nil then
+            local ok, _, _, err = self.windowController:SetOpacity(nextValue)
+            accepted, detail = ok == true, err
+        elseif type(UI.EnsureAlpha) == "function" then
+            local ok, _, err = UI:EnsureAlpha(self.window, nextValue, self.owner)
+            accepted, detail = ok == true, err
+        else
+            accepted, detail = false, "alpha_transaction_unavailable"
+        end
+        if accepted ~= true then return false, detail or "window_opacity_native_rejected" end
         self.opacity = nextValue
-        if self.windowController ~= nil then self.windowController:SetOpacity(self.opacity) else UI:SetAlpha(self.window, self.opacity, self.owner) end
-        if persist ~= false then self:NotifyState("opacity") end
+        if persist ~= false then
+            local stateOk, stateErr = self:NotifyState("opacity")
+            if stateOk ~= true then
+                if self.windowController ~= nil then self.windowController:SetOpacity(previous)
+                elseif type(UI.EnsureAlpha) == "function" then UI:EnsureAlpha(self.window, previous, self.owner) end
+                self.opacity = previous
+                return false, stateErr or "window_opacity_state_rejected"
+            end
+        end
         return true, self.opacity, true
     end
     function shell:GetOpacity() return self.opacity end
@@ -457,35 +606,68 @@ function Shell:Create(spec)
     function shell:GetOverallOpacity() return self.opacity end
 
     function shell:SetBackgroundOpacity(value, persist)
-        if self.destroyed == true then return false end
-        local nextValue = Clamp(value, 0.00, 1.00, self.backgroundOpacity)
-        if math.abs(nextValue - (tonumber(self.backgroundOpacity) or 1.0)) <= 0.0001 then return true, self.backgroundOpacity, false end
+        if self.destroyed == true then return false, "window_destroyed" end
+        local previous = tonumber(self.backgroundOpacity) or 1.0
+        local nextValue = Clamp(value, 0.00, 1.00, previous)
+        if math.abs(nextValue - previous) <= 0.0001 then return true, self.backgroundOpacity, false end
+        if RSUI:ApplyOpacityChannels(self.root, nextValue, nil) ~= true then return false, "background_opacity_apply_failed" end
         self.backgroundOpacity = nextValue
-        RSUI:ApplyOpacityChannels(self.root, self.backgroundOpacity, nil)
-        if persist ~= false then self:NotifyState("background_opacity") end
+        if persist ~= false then
+            local stateOk, stateErr = self:NotifyState("background_opacity")
+            if stateOk ~= true then
+                RSUI:ApplyOpacityChannels(self.root, previous, nil)
+                self.backgroundOpacity = previous
+                return false, stateErr or "background_opacity_state_rejected"
+            end
+        end
         return true, self.backgroundOpacity, true
     end
     function shell:GetBackgroundOpacity() return self.backgroundOpacity end
 
     function shell:SetTextOpacity(value, persist)
-        if self.destroyed == true then return false end
-        local nextValue = Clamp(value, 0.00, 1.00, self.textOpacity)
-        if math.abs(nextValue - (tonumber(self.textOpacity) or 1.0)) <= 0.0001 then return true, self.textOpacity, false end
+        if self.destroyed == true then return false, "window_destroyed" end
+        local previous = tonumber(self.textOpacity) or 1.0
+        local nextValue = Clamp(value, 0.00, 1.00, previous)
+        if math.abs(nextValue - previous) <= 0.0001 then return true, self.textOpacity, false end
+        if RSUI:ApplyOpacityChannels(self.root, nil, nextValue) ~= true then return false, "text_opacity_apply_failed" end
         self.textOpacity = nextValue
-        RSUI:ApplyOpacityChannels(self.root, nil, self.textOpacity)
-        if persist ~= false then self:NotifyState("text_opacity") end
+        if persist ~= false then
+            local stateOk, stateErr = self:NotifyState("text_opacity")
+            if stateOk ~= true then
+                RSUI:ApplyOpacityChannels(self.root, nil, previous)
+                self.textOpacity = previous
+                return false, stateErr or "text_opacity_state_rejected"
+            end
+        end
         return true, self.textOpacity, true
     end
     function shell:GetTextOpacity() return self.textOpacity end
 
     function shell:SetFontScale(value, persist)
-        if self.destroyed == true then return false end
-        local nextValue = Clamp(value, 0.50, 2.00, self.fontScale)
-        if nextValue == self.fontScale then return true, self.fontScale end
+        if self.destroyed == true then return false, "window_destroyed" end
+        local previous = tonumber(self.fontScale) or 1.0
+        local nextValue = Clamp(value, 0.50, 2.00, previous)
+        if nextValue == previous then return true, self.fontScale end
+        if type(RSUI.ApplyFontScale) ~= "function" or RSUI:ApplyFontScale(self.root, nextValue) ~= true then
+            return false, "font_scale_apply_failed"
+        end
         self.fontScale = nextValue
-        if type(RSUI.ApplyFontScale) == "function" then RSUI:ApplyFontScale(self.root, self.fontScale) end
-        self:Layout(self.normalWidth, self.normalHeight)
-        if persist ~= false then self:NotifyState("font_scale") end
+        local layoutOk, layoutErr = self:Layout(self.normalWidth, self.normalHeight)
+        if layoutOk ~= true then
+            self.fontScale = previous
+            RSUI:ApplyFontScale(self.root, previous)
+            self:Layout(self.normalWidth, self.normalHeight)
+            return false, layoutErr or "font_scale_layout_failed"
+        end
+        if persist ~= false then
+            local stateOk, stateErr = self:NotifyState("font_scale")
+            if stateOk ~= true then
+                self.fontScale = previous
+                RSUI:ApplyFontScale(self.root, previous)
+                self:Layout(self.normalWidth, self.normalHeight)
+                return false, stateErr or "font_scale_state_rejected"
+            end
+        end
         return true, self.fontScale
     end
     function shell:GetFontScale() return self.fontScale end
@@ -519,13 +701,23 @@ function Shell:Create(spec)
         local function Preview(channel, value)
             value = Clamp((tonumber(value) or 100) / 100, channel == "font" and 0.50 or 0.00, channel == "font" and 2.00 or 1.00, 1.00)
             if channel == "overall" then
-                if self.windowController ~= nil then self.windowController:SetOpacity(value) else UI:SetAlpha(self.window, value, self.owner) end
+                if self.windowController ~= nil then
+                    local accepted, _, _, detail = self.windowController:SetOpacity(value)
+                    if accepted ~= true then return false, detail or "appearance_preview_opacity_rejected" end
+                elseif type(UI.EnsureAlpha) == "function" then
+                    local accepted, _, detail = UI:EnsureAlpha(self.window, value, self.owner)
+                    if accepted ~= true then return false, detail or "appearance_preview_opacity_rejected" end
+                else
+                    return false, "appearance_preview_alpha_transaction_unavailable"
+                end
             elseif channel == "background" then
-                RSUI:ApplyOpacityChannels(self.root, value, nil)
+                if RSUI:ApplyOpacityChannels(self.root, value, nil) ~= true then return false, "appearance_preview_background_rejected" end
             elseif channel == "text" then
-                RSUI:ApplyOpacityChannels(self.root, nil, value)
-            elseif channel == "font" and type(RSUI.ApplyFontScale) == "function" then
-                RSUI:ApplyFontScale(self.root, value)
+                if RSUI:ApplyOpacityChannels(self.root, nil, value) ~= true then return false, "appearance_preview_text_rejected" end
+            elseif channel == "font" then
+                if type(RSUI.ApplyFontScale) ~= "function" or RSUI:ApplyFontScale(self.root, value) ~= true then
+                    return false, "appearance_preview_font_rejected"
+                end
             end
             return true
         end
@@ -565,21 +757,15 @@ function Shell:Create(spec)
         if self.appearanceLock == nil or self.appearanceReset == nil or self.appearanceDone == nil then return Rollback("appearance action button unavailable") end
 
         self.appearancePanel:SetVisibility("collapsed")
-        if self.appearanceLock.root ~= nil then
-            UI:SafeHandler(self.appearanceLock.root, "OnClick", function() return self:SetLocked(not self.locked, true) end, owner .. ":appearance_lock")
+        self.appearanceLock.onClick = function() return self:SetLocked(not self.locked, true) end
+        self.appearanceReset.onClick = function()
+            local ok, err
+            if type(spec.onAppearanceReset) == "function" then ok, err = spec.onAppearanceReset(self)
+            else ok, err = self:ResetLayout(true) end
+            if ok == true then self:RefreshAppearanceControls() end
+            return ok, err
         end
-        if self.appearanceReset.root ~= nil then
-            UI:SafeHandler(self.appearanceReset.root, "OnClick", function()
-                local ok, err
-                if type(spec.onAppearanceReset) == "function" then ok, err = spec.onAppearanceReset(self)
-                else ok, err = self:ResetLayout(true) end
-                if ok == true then self:RefreshAppearanceControls() end
-                return ok, err
-            end, owner .. ":appearance_reset")
-        end
-        if self.appearanceDone.root ~= nil then
-            UI:SafeHandler(self.appearanceDone.root, "OnClick", function() return self:SetAppearanceOpen(false) end, owner .. ":appearance_done")
-        end
+        self.appearanceDone.onClick = function() return self:SetAppearanceOpen(false) end
         if buildScope ~= nil and type(RSUI.EndBuildScope) == "function" then
             local committed, commitErr = RSUI:EndBuildScope(buildScope, true)
             if committed ~= true then return Rollback(commitErr or "appearance build commit failed") end
@@ -603,10 +789,22 @@ function Shell:Create(spec)
         end
         if self.appearancePanel == nil then return nextValue == false, nextValue == false and false or "appearance controls unavailable" end
         if self.appearanceOpen == nextValue then return true, false end
+        local previous = self.appearanceOpen == true
         self.appearanceOpen = nextValue
         if nextValue then self:RefreshAppearanceControls() end
-        self:Layout()
-        self.appearancePanel:SetVisibility(nextValue and "visible" or "collapsed")
+        local layoutOk, layoutErr = self:Layout()
+        if layoutOk ~= true then
+            self.appearanceOpen = previous
+            self:Layout()
+            return false, layoutErr or "appearance_layout_failed"
+        end
+        local _, visibilityAccepted, visibilityErr = self.appearancePanel:SetVisibility(nextValue and "visible" or "collapsed")
+        if visibilityAccepted ~= true then
+            self.appearanceOpen = previous
+            self:Layout()
+            self.appearancePanel:SetVisibility(previous and "visible" or "collapsed")
+            return false, visibilityErr or "appearance_visibility_failed"
+        end
         if nextValue and self.appearancePanel.root ~= nil and type(self.appearancePanel.root.Raise) == "function" then pcall(function() self.appearancePanel.root:Raise() end) end
         Shell.metrics.appearancePanelToggles = (tonumber(Shell.metrics.appearancePanelToggles) or 0) + 1
         return true, true
@@ -644,15 +842,15 @@ function Shell:Create(spec)
         return true
     end
 
-    if shell.appearanceButton ~= nil and shell.appearanceButton.root ~= nil then
-        UI:SafeHandler(shell.appearanceButton.root, "OnClick", function() return shell:ToggleAppearance() end, owner .. ":appearance")
+    if shell.appearanceButton ~= nil then
+        shell.appearanceButton.onClick = function() return shell:ToggleAppearance() end
     end
-    if shell.minimizeButton ~= nil and shell.minimizeButton.root ~= nil then
+    if shell.minimizeButton ~= nil then
         shell.minimizeButton:SetText(shell.minimized and "+" or "—")
-        UI:SafeHandler(shell.minimizeButton.root, "OnClick", function() return shell:SetMinimized(not shell.minimized, true) end, owner .. ":minimize")
+        shell.minimizeButton.onClick = function() return shell:SetMinimized(not shell.minimized, true) end
     end
-    if shell.closeButton ~= nil and shell.closeButton.root ~= nil then
-        UI:SafeHandler(shell.closeButton.root, "OnClick", function() return shell:Close("button") end, owner .. ":close")
+    if shell.closeButton ~= nil then
+        shell.closeButton.onClick = function() return shell:Close("button") end
     end
 
     local x, y, width, height = DefaultRect(spec)
@@ -669,7 +867,8 @@ function Shell:Create(spec)
     UI:SetAnchor(window, UIParent, x, y, owner)
     local initialCompact = shell.minimized == true and shell.minimizeMode == "compact"
     UI:SetExtent(window, initialCompact and shell.minimizedSize or width, initialCompact and shell.minimizedSize or (shell.minimized and titleH or height), owner)
-    UI:SetVisible(window, false, owner)
+    local initialHidden, initialHideErr = EnsureWindowVisible(shell, false, "initial_hide")
+    if initialHidden ~= true then return FailBuild("window initial hide failed:" .. tostring(initialHideErr or "unknown")) end
     shell.windowController = RSUI.Windowing:Attach({
         id = "window_shell:" .. id,
         owner = owner,
@@ -689,9 +888,21 @@ function Shell:Create(spec)
         dragHandleHeight = titleH,
         canResize = function() return shell.minimized ~= true end,
         onGeometryChanged = function(_, _, _, w, h, geometryKind)
+            local previousW, previousH = shell.normalWidth, shell.normalHeight
             if shell.minimized ~= true then shell.normalWidth, shell.normalHeight = w, h end
-            shell:Layout(shell.normalWidth, shell.normalHeight)
-            shell:NotifyState("geometry", geometryKind)
+            local layoutOk, layoutErr = shell:Layout(shell.normalWidth, shell.normalHeight)
+            if layoutOk ~= true then
+                shell.normalWidth, shell.normalHeight = previousW, previousH
+                shell:Layout(previousW, previousH)
+                return false, layoutErr or "geometry_layout_rejected"
+            end
+            local stateOk, stateErr = shell:NotifyState("geometry", geometryKind)
+            if stateOk ~= true then
+                shell.normalWidth, shell.normalHeight = previousW, previousH
+                shell:Layout(previousW, previousH)
+                return false, stateErr or "geometry_state_rejected"
+            end
+            return true
         end,
         onLiveGeometry = function(_, _, _, w, h, kind)
             if tostring(kind or "") == "resize" then return shell:LayoutInteractive(w, h) end
@@ -740,6 +951,10 @@ function Shell:Describe()
         idempotentMutationContract = tonumber(self.idempotentMutationContract) or 0,
         compactMinimizeContract = tonumber(self.compactMinimizeContract) or 0,
         titleAppearanceContract = tonumber(self.titleAppearanceContract) or 0,
+        visibilityTransactionContract = tonumber(self.visibilityTransactionContract) or 0,
+        stateMutationTransactionContract = tonumber(self.stateMutationTransactionContract) or 0,
+        stateCallbackTransactionContract = tonumber(self.stateCallbackTransactionContract) or 0,
+        stateCallbackRejects = tonumber(self.metrics.stateCallbackRejects) or 0,
     }
 end
 

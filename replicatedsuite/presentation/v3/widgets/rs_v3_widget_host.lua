@@ -9,13 +9,13 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.UIV3 = S.UIV3 or {}
 S.UIV3.WidgetHost = {
-    version = 13, buildTransactionContractVersion = 1, specs = {}, instances = {}, order = {}, visible = {},
+    version = 14, buildTransactionContractVersion = 1, preferenceInitializationContractVersion = 2, specs = {}, instances = {}, order = {}, visible = {},
     failedInstances = {}, featureBindings = {}, lifecycleBound = false,
     stats = {
         creates = 0, createFailures = 0, visibilityChanges = 0, lockChanges = 0, layoutResets = 0, opacityChanges = 0, appearanceChanges = 0,
         responsiveReflows = 0, responsiveFailures = 0, nativeCloseNotifications = 0, nativeCloseCleanupFailures = 0,
         lifecycleReactions = 0, lifecycleReactionFailures = 0, lifecycleBindFailures = 0, closeRequests = 0,
-        quarantinedRejects = 0,
+        quarantinedRejects = 0, preferenceLoadFailures = 0,
     },
 }
 local W = S.UIV3.WidgetHost
@@ -109,6 +109,10 @@ function W:SetVisible(id, visible, context)
     id = NormalizeId(id)
     local spec = self.specs[id]
     if spec == nil then return false, "unknown widget" end
+    if visible == true then
+        local prepared, prepareErr = EnsurePreferences(spec)
+        if prepared ~= true then return false, prepareErr end
+    end
     local instance = self.instances[id]
     if visible == true and instance == nil then
         local created, createErr = self:EnsureInstance(id, context)
@@ -230,6 +234,20 @@ function W:_OnFeatureLifecycle(featureId, state, reason)
                     if ok ~= true then self.stats.lifecycleReactionFailures = (tonumber(self.stats.lifecycleReactionFailures) or 0) + 1 end
                 end
             elseif self.visible[id] ~= true then
+                -- Visibility preference is persisted by the owning Feature. Load
+                -- that authority before consulting preference(); otherwise a
+                -- Fresh Reload can briefly read Lua defaults and auto-open a HUD
+                -- that the user previously hid (or miss one they enabled).
+                local spec = self.specs[id]
+                local prepared, prepareErr = EnsurePreferences(spec)
+                if prepared ~= true then
+                    self.stats.lifecycleReactionFailures = (tonumber(self.stats.lifecycleReactionFailures) or 0) + 1
+                    if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Error) == "function" then
+                        S.DiagnosticsManager:Error("ui_v3", "V3_WIDGET_PREFERENCE_LOAD_FAILED", "悬浮组件偏好加载失败，生命周期显示已安全跳过", {
+                            id = id, featureId = featureId, error = tostring(prepareErr or "unknown"),
+                        })
+                    end
+                else
                 -- Lifecycle callbacks are presentation extensions supplied by a
                 -- Feature/widget module. A broken callback must not escape into
                 -- the shared event dispatcher and abort reactions for every
@@ -258,6 +276,7 @@ function W:_OnFeatureLifecycle(featureId, state, reason)
                             if binding.onShowFailed ~= nil then pcall(binding.onShowFailed, tostring(reason or "enable")) end
                         end
                     end
+                end
                 end
             end
         end
@@ -292,7 +311,11 @@ function W:GetState(id)
     id = NormalizeId(id)
     local spec, instance = self.specs[id], self.instances[id]
     if spec == nil then return nil end
-    EnsurePreferences(spec)
+    local prepared, prepareErr = EnsurePreferences(spec)
+    if prepared ~= true then
+        self.stats.preferenceLoadFailures = (tonumber(self.stats.preferenceLoadFailures) or 0) + 1
+        return nil, prepareErr
+    end
     local locked = nil
     if instance ~= nil and type(instance.IsLocked) == "function" then
         local ok, value = pcall(function() return instance:IsLocked() end)

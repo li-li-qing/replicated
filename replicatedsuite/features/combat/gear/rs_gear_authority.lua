@@ -18,6 +18,9 @@ local function FriendlyPersistenceError(err)
     if text:find("max_string_bytes", 1, true) then
         return "方案文本数据超过安全预算，已阻止覆盖旧数据；诊断：" .. text
     end
+    if text:find("readback_verify_failed", 1, true) then
+        return "SaveData 返回成功但立即回读校验失败；为保护上一份换装数据，本次新方案没有提交。诊断：" .. text
+    end
     if text:find("write fenced", 1, true) then
         return "方案存档当前处于写保护状态，请重新加载插件后再尝试；诊断：" .. text
     end
@@ -35,6 +38,9 @@ function A:Refresh(reason)
             id = tostring(set.id), name = tostring(set.name), order = tonumber(set.order) or #rows + 1,
             configured = set.configured == true, quick = set.quick ~= false, storageId = tonumber(set.storageId),
             quickX = tonumber(set.quickX), quickY = tonumber(set.quickY), quickPositionCustomized = set.quickPositionCustomized == true,
+            quickCoordinateSpace = set.quickCoordinateSpace,
+            quickAnchorH = set.quickAnchorH, quickAnchorV = set.quickAnchorV,
+            quickOffsetX = tonumber(set.quickOffsetX), quickOffsetY = tonumber(set.quickOffsetY),
             payloadRevision = tonumber(set.payloadRevision) or 0,
             stateText = set.configured == true and "已配置" or "未配置",
             quickText = set.quick ~= false and "显示" or "隐藏",
@@ -57,10 +63,12 @@ end
 
 function A:GetDraft(id)
     local set = self:FindSet(id); if set == nil then return nil, "换装方案不存在" end
-    local payload, err = F:LoadPayload(set.storageId); if payload == nil then return nil, err end
+    local payload, err, recovery = F:LoadPayloadForSet(set); if payload == nil then return nil, err end
     local draft = F.DeepCopy(set)
     draft.items, draft.title, draft.capturedAt = payload.items, payload.title, payload.capturedAt
     draft.configured, draft.payloadRevision = payload.configured == true, math.max(set.payloadRevision or 0, payload.revision or 0)
+    draft.persistenceBank = recovery and recovery.bank or set.payloadBank
+    draft.persistenceRecovered = recovery and recovery.recovered == true or false
     return draft
 end
 
@@ -71,7 +79,12 @@ function A:CreateSet(name)
     local id = "set_" .. tostring(F.State.nextId or 1)
     local storageId = math.max(1, math.floor(tonumber(F.State.nextStorageId) or 1))
     F.State.nextId, F.State.nextStorageId = (F.State.nextId or 1) + 1, storageId + 1
-    F.State.sets[#F.State.sets + 1] = { id = id, name = name, order = #F.State.sets + 1, storageId = storageId, configured = false, quick = true, quickX = nil, quickY = nil, quickPositionCustomized = false, payloadRevision = 0 }
+    F.State.sets[#F.State.sets + 1] = {
+        id = id, name = name, order = #F.State.sets + 1, storageId = storageId, configured = false, quick = true,
+        quickX = nil, quickY = nil, quickPositionCustomized = false, payloadRevision = 0,
+        quickCoordinateSpace = nil, quickAnchorH = nil, quickAnchorV = nil, quickOffsetX = nil, quickOffsetY = nil,
+        payloadBank = nil, payloadFingerprint = nil, backupPayloadBank = nil, backupPayloadRevision = 0, backupPayloadFingerprint = nil,
+    }
     local ok, err = F:SaveIndexNow("gear_create")
     if ok ~= true then table.remove(F.State.sets); F.State.nextId = F.State.nextId - 1; F.State.nextStorageId = storageId; return nil, err end
 
@@ -97,7 +110,11 @@ function A:DeleteSet(id)
     table.remove(F.State.sets, index); for i, row in ipairs(F.State.sets) do row.order = i end
     local ok, err = F:SaveIndexNow("gear_delete")
     if ok ~= true then table.insert(F.State.sets, index, backup); for i, row in ipairs(F.State.sets) do row.order = i end; return false, err end
-    F:ClearPayload(set.storageId)
+    local cleared, clearErr = F:ClearPayload(set.storageId)
+    if cleared ~= true and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarningRateLimited) == "function" then
+        S.DiagnosticsManager:WarningRateLimited("gear_v3", "GEAR_PAYLOAD_CLEANUP_PARTIAL", 3000,
+            "换装方案索引已删除，但部分历史分片未能物理清理", { setId = id, storageId = tostring(set.storageId), error = tostring(clearErr or "unknown") })
+    end
     self:Refresh("delete")
     return true
 end
@@ -131,7 +148,20 @@ function A:Rename(id, name)
 end
 
 function A:CaptureDraft(id)
-    local previous, err = self:GetDraft(id); if previous == nil then return nil, err end
+    local previous, err = self:GetDraft(id)
+    if previous == nil then
+        -- A historical single-key payload may already have been truncated while
+        -- its lightweight index/name survived. "获取当前" is an explicit user
+        -- recovery action, so allow that action to rebuild the payload instead
+        -- of trapping the named plan in an unrecoverable state. Ordinary Start/
+        -- Validate still fail-closed and never overwrite missing data.
+        local set = self:FindSet(id); if set == nil then return nil, err or "换装方案不存在" end
+        previous = F.DeepCopy(set)
+        previous.items, previous.title, previous.capturedAt = {}, {}, nil
+        previous.configured = false
+        previous.persistenceReinitialize = true
+        previous.persistenceRecoveryReason = tostring(err or "历史方案分片不可用")
+    end
     local payload, captureErr = S.Services.GearV3:CapturePayload(previous); if payload == nil then return nil, captureErr end
     previous.items, previous.title, previous.capturedAt, previous.configured = payload.items, payload.title, payload.capturedAt, true
     return previous
@@ -147,25 +177,64 @@ function A:SaveDraft(draft)
     local titleManaged = type(draft.title) == "table" and draft.title.apply == true
     if draft.configured == true and managed <= 0 and not titleManaged then return false, "请至少选择一个装备或效果称号配置项" end
 
-    -- SaveData has no cross-key transaction. Keep the previous shard and index
-    -- metadata so a failed index commit cannot leave a newly-written payload
-    -- pointing at stale metadata. A best-effort shard rollback is performed
-    -- before returning the failure to the UI.
-    local previousPayload, previousPayloadErr = F:LoadPayload(set.storageId)
-    if previousPayload == nil then return false, previousPayloadErr end
+    -- Reliability v3 Gear journal:
+    --   1) read the currently referenced/last-known-good payload;
+    --   2) write the opposite A/B bank;
+    --   3) Persistence immediately LoadData-readback verifies that bank;
+    --   4) only then commit the lightweight index pointer.
+    -- SaveData has no multi-key transaction, so this ordering is what guarantees
+    -- an index failure never destroys the previously referenced loadout.
+    local previousPayload, previousPayloadErr, previousInfo = F:LoadPayloadForSet(set)
+    if previousPayload == nil then
+        if draft.persistenceReinitialize ~= true then return false, previousPayloadErr end
+        previousPayload = F.NormalizePayload({
+            configured = false, revision = tonumber(set.payloadRevision) or 0, storageId = set.storageId, setId = set.id, items = {}, title = {},
+        })
+        previousInfo = { bank = F.NormalizePayloadBank(set.payloadBank) or "legacy", fingerprint = nil, recovered = false }
+        if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarningRateLimited) == "function" then
+            S.DiagnosticsManager:WarningRateLimited("gear_v3", "GEAR_PAYLOAD_REINITIALIZED", 3000,
+                "历史换装分片不可用，已按用户“获取当前”操作重建该方案", { setId = tostring(set.id), error = tostring(previousPayloadErr or "unknown") })
+        end
+    end
     local previousMeta = F.DeepCopy(set)
-    local payload = { configured = draft.configured == true, items = draft.items or {}, title = draft.title, capturedAt = draft.capturedAt, revision = (tonumber(draft.payloadRevision) or 0) + 1 }
-    local ok, err = F:SavePayload(set.storageId, payload); if ok ~= true then return false, FriendlyPersistenceError(err) end
+    local previousBank = previousInfo and previousInfo.bank or F.NormalizePayloadBank(set.payloadBank) or "legacy"
+    local previousFingerprint = previousInfo and previousInfo.fingerprint or nil
+    if previousFingerprint == nil and previousPayload.configured == true then
+        previousFingerprint = select(1, F:PayloadFingerprint(previousPayload))
+    end
+
+    local nextBank = previousBank == "a" and "b" or "a"
+    local payload = {
+        configured = draft.configured == true,
+        items = draft.items or {},
+        title = draft.title,
+        capturedAt = draft.capturedAt,
+        revision = (tonumber(draft.payloadRevision) or 0) + 1,
+        storageId = set.storageId,
+        setId = set.id,
+    }
+    local payloadOk, payloadErr, newFingerprint = F:SavePayload(set.storageId, payload, nextBank)
+    if payloadOk ~= true then return false, FriendlyPersistenceError(payloadErr) end
+
     set.name, set.quick, set.configured = name, draft.quick ~= false, payload.configured
     set.payloadRevision = payload.revision
-    local indexOk, indexErr = F:SaveIndexNow("gear_save_payload")
+    set.payloadBank = nextBank
+    set.payloadFingerprint = newFingerprint
+    if previousPayload.configured == true then
+        set.backupPayloadBank = previousBank
+        set.backupPayloadRevision = math.max(0, math.floor(tonumber(previousPayload.revision) or 0))
+        set.backupPayloadFingerprint = previousFingerprint
+    else
+        set.backupPayloadBank, set.backupPayloadRevision, set.backupPayloadFingerprint = nil, 0, nil
+    end
+
+    local indexOk, indexErr = F:SaveIndexNow("gear_save_payload_bank_commit")
     if indexOk ~= true then
+        -- Do NOT overwrite either payload bank here. The old index still points
+        -- at the old verified bank; the newly written inactive bank is merely an
+        -- orphan and is safe to overwrite on the next successful save.
         for key in pairs(set) do set[key] = nil end
         for key, value in pairs(previousMeta) do set[key] = value end
-        local rollbackOk, rollbackErr = F:SavePayload(set.storageId, previousPayload)
-        if rollbackOk ~= true then
-            return false, FriendlyPersistenceError(indexErr) .. "；且方案分片回滚失败：" .. FriendlyPersistenceError(rollbackErr)
-        end
         return false, FriendlyPersistenceError(indexErr)
     end
     self:Refresh("save")
@@ -175,7 +244,26 @@ end
 function A:SetQuick(id, visible)
     local set = self:FindSet(id); if set == nil then return false, "换装方案不存在" end
     local nextValue = visible == true
-    if set.quick == nextValue then return true end
+    if set.quick == nextValue then
+        -- A persisted row can already say "显示" while the Presentation widget
+        -- has not been recreated yet (reload, native event downgrade, previous
+        -- build failure). Treat an explicit "显示" request as a reconciliation
+        -- command instead of a no-op so Domain and screen state cannot drift.
+        if nextValue then
+            local warning = nil
+            if type(F.EnsurePersistentQuickRuntime) == "function" then
+                local runtimeOk, runtimeErr = F:EnsurePersistentQuickRuntime("gear_quick_reconcile")
+                if runtimeOk ~= true then warning = runtimeErr end
+            end
+            if type(F.SetQuickHudVisible) == "function" then
+                local visibleOk, visibleErr = F:SetQuickHudVisible(true, "gear_quick_reconcile")
+                if visibleOk ~= true and warning == nil then warning = visibleErr end
+            end
+            self:Refresh(warning == nil and "quick_reconcile" or "quick_reconcile_warning")
+            return true, warning
+        end
+        return true
+    end
     local previous = set.quick ~= false
     set.quick = nextValue
     local ok, err = F:SaveIndexNow("gear_quick_visibility")
@@ -194,16 +282,45 @@ function A:SetQuick(id, visible)
 end
 
 
-function A:SetQuickPosition(id, x, y)
+local function NormalizeQuickPlacement(placement)
+    if type(placement) ~= "table" then return nil end
+    if tostring(placement.coordinateSpace or "") ~= "logical-edge-v1" then return nil end
+    local anchorH, anchorV = tostring(placement.anchorH or ""), tostring(placement.anchorV or "")
+    local offsetX, offsetY = tonumber(placement.offsetX), tonumber(placement.offsetY)
+    if (anchorH ~= "LEFT" and anchorH ~= "RIGHT") or (anchorV ~= "TOP" and anchorV ~= "BOTTOM")
+        or offsetX == nil or offsetY == nil then return nil end
+    return {
+        coordinateSpace = "logical-edge-v1",
+        anchorH = anchorH,
+        anchorV = anchorV,
+        offsetX = math.max(0, math.floor(offsetX + 0.5)),
+        offsetY = math.max(0, math.floor(offsetY + 0.5)),
+    }
+end
+
+function A:SetQuickPosition(id, x, y, placement)
     local set = self:FindSet(id); if set == nil then return false, "换装方案不存在" end
     local nx, ny = tonumber(x), tonumber(y)
     if nx == nil or ny == nil then return false, "按钮位置无效" end
-    local previousX, previousY, previousCustomized = set.quickX, set.quickY, set.quickPositionCustomized == true
+    local responsive = NormalizeQuickPlacement(placement)
+    local previous = {
+        quickX = set.quickX, quickY = set.quickY, quickPositionCustomized = set.quickPositionCustomized == true,
+        quickCoordinateSpace = set.quickCoordinateSpace, quickAnchorH = set.quickAnchorH, quickAnchorV = set.quickAnchorV,
+        quickOffsetX = set.quickOffsetX, quickOffsetY = set.quickOffsetY,
+    }
     set.quickX, set.quickY = math.floor(nx + 0.5), math.floor(ny + 0.5)
     set.quickPositionCustomized = true
+    set.quickCoordinateSpace = responsive and responsive.coordinateSpace or nil
+    set.quickAnchorH = responsive and responsive.anchorH or nil
+    set.quickAnchorV = responsive and responsive.anchorV or nil
+    set.quickOffsetX = responsive and responsive.offsetX or nil
+    set.quickOffsetY = responsive and responsive.offsetY or nil
     local ok, err = F:SaveIndexNow("gear_quick_button_position")
     if ok ~= true then
-        set.quickX, set.quickY, set.quickPositionCustomized = previousX, previousY, previousCustomized
+        set.quickX, set.quickY, set.quickPositionCustomized = previous.quickX, previous.quickY, previous.quickPositionCustomized
+        set.quickCoordinateSpace = previous.quickCoordinateSpace
+        set.quickAnchorH, set.quickAnchorV = previous.quickAnchorH, previous.quickAnchorV
+        set.quickOffsetX, set.quickOffsetY = previous.quickOffsetX, previous.quickOffsetY
         return false, err
     end
     self:Refresh("quick_position")
@@ -214,8 +331,9 @@ function A:ResetQuickPositions()
     local before = F.DeepCopy(F.State.sets)
     local changed = false
     for _, set in ipairs(F.State.sets or {}) do
-        if set.quickPositionCustomized == true or set.quickX ~= nil or set.quickY ~= nil then
+        if set.quickPositionCustomized == true or set.quickX ~= nil or set.quickY ~= nil or set.quickCoordinateSpace ~= nil then
             set.quickPositionCustomized, set.quickX, set.quickY = false, nil, nil
+            set.quickCoordinateSpace, set.quickAnchorH, set.quickAnchorV, set.quickOffsetX, set.quickOffsetY = nil, nil, nil, nil, nil
             changed = true
         end
     end
@@ -241,7 +359,7 @@ function A:DetectCurrentQuickSet(reason)
     local candidates, wantedSlots, needTitle, payloadError = {}, {}, false, nil
     for _, set in ipairs(F.State.sets or {}) do
         if set.quick ~= false and set.configured == true then
-            local payload, loadErr = F:LoadPayload(set.storageId)
+            local payload, loadErr = F:LoadPayloadForSet(set)
             if type(payload) ~= "table" then payloadError = loadErr or "方案分片不可用"; break end
             candidates[#candidates + 1] = { set = set, payload = payload }
             for _, saved in ipairs(payload.items or {}) do

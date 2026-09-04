@@ -391,9 +391,36 @@ local function BuildPage(parent, route)
         return { minWidth = rect.width, maxWidth = rect.width, minHeight = rect.height, maxHeight = rect.height }
     end
 
+    local function ViewportPointerToEditorLocal(viewportX, viewportY, controller)
+        -- LayoutEditorGesture samples viewport-logical coordinates. This page
+        -- edits rectangles in the LayoutEditorOverlay's own local 640x320
+        -- space, so identity conversion is invalid whenever the page/window is
+        -- not at viewport origin. Resolve the live native overlay root on every
+        -- gesture sample; no cached geometry survives responsive reflow/ScaleBox/UI scale.
+        local selectionOverlay = type(controller) == "table" and controller.overlay or nil
+        local editorOverlay = type(selectionOverlay) == "table" and selectionOverlay.parentComponent or nil
+        local nativeRoot = type(editorOverlay) == "table" and editorOverlay.root or nil
+        if nativeRoot == nil or type(S.Layout) ~= "table" or type(S.Layout.GetLogicalRect) ~= "function" then
+            return nil, nil
+        end
+        local ok, originX, originY, liveWidth, liveHeight = pcall(function() return S.Layout:GetLogicalRect(nativeRoot) end)
+        viewportX, viewportY = tonumber(viewportX), tonumber(viewportY)
+        originX, originY = tonumber(originX), tonumber(originY)
+        liveWidth, liveHeight = tonumber(liveWidth), tonumber(liveHeight)
+        local editorWidth, editorHeight = tonumber(EDITOR_CANVAS.width), tonumber(EDITOR_CANVAS.height)
+        if ok ~= true or viewportX == nil or viewportY == nil or originX == nil or originY == nil
+            or liveWidth == nil or liveHeight == nil or liveWidth <= 0 or liveHeight <= 0
+            or editorWidth == nil or editorHeight == nil or editorWidth <= 0 or editorHeight <= 0 then
+            return nil, nil
+        end
+        return (viewportX - originX) * editorWidth / liveWidth,
+            (viewportY - originY) * editorHeight / liveHeight
+    end
+
     layoutWorkspace = RSUI:CreateLayoutEditorWorkspace({
         id = "v3_buff_display_layout_editor", parent = layoutBody, selectionModel = layoutSelection,
-        canvasRect = EDITOR_CANVAS, coordinateSpace = "local", maxSelected = 1,
+        canvasRect = EDITOR_CANVAS, coordinateSpace = "local", pointerToLocal = ViewportPointerToEditorLocal, maxSelected = 1,
+        autoOpenInspectorOnSelection = true,
         minWidth = 4, minHeight = 4, maxWidth = 640, maxHeight = 320,
         getRect = function(key) return RectForKey(key) end,
         getParentRect = function() return EDITOR_CANVAS end,
@@ -622,7 +649,10 @@ local function BuildPage(parent, route)
         if transferEdit ~= nil and type(transferEdit.Show) == "function" then transferEdit:Show(value == "transfer") end
         if value == "layout" then
             self:RefreshLayoutControls()
-            if layoutWorkspace ~= nil then layoutWorkspace:RefreshFromSource("tab_open") end
+            if layoutWorkspace ~= nil then
+                layoutWorkspace:RefreshFromSource("tab_open")
+                if layoutWorkspace:GetMode() == "drawer" then layoutWorkspace:SetDrawerOpen(true, true) end
+            end
         elseif value == "transfer" then self:RefreshTransferStatus() end
         return true
     end
@@ -639,7 +669,7 @@ local function BuildPage(parent, route)
             local acquired, acquireErr = Feature:AcquireConsumer("page:buff_display")
             if acquired ~= true then S.FeatureRuntime:SetPreferredEnabled("combat_buff_display", false, "buff_display_consumer_rollback"); root:Refresh(); return false, acquireErr or "状态显示 Consumer 启动失败" end
             if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" and type(S.Events.SubscribeInternal) == "function" then
-                S.Events:UnsubscribeInternalOwner(root); S.Events:SubscribeInternal("v3.buff_display.updated", root, function() root:Refresh() end)
+                S.Events:UnsubscribeInternalOwner(root); S.Events:SubscribeInternal("v3.buff_display.updated", root, function() if root.activeTab == "track" then root:Refresh() end end)
             end
             Feature.Commands:Refresh("page_enable")
         elseif S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(root) end
@@ -682,10 +712,6 @@ local function BuildPage(parent, route)
     end
     clearTextBtn.onClick = function() WriteNativeText(transferEdit, ""); transferStatus:SetText("文本框已清空。"); return true end
 
-    for _, button in ipairs({ featureButton, widgetButton, buffButton, debuffButton, hiddenButton, searchClear, freezeButton, clearTrackButton, probeButton, quickImport, quickOverwrite, exportBtn, importTextBtn, clearTextBtn }) do
-        if button ~= nil and button.root ~= nil then S.UI:SafeHandler(button.root, "OnClick", button.onClick, "v3_buff_display:" .. tostring(button.id or "action")) end
-    end
-
     ------------------------------------------------------------------
     -- Lifecycle.  Re-activation always rebases the isolated editor from the
     -- durable Store so abandoned page-local edits cannot survive navigation.
@@ -703,7 +729,14 @@ local function BuildPage(parent, route)
         if S.FeatureRuntime:IsEnabled("combat_buff_display") == true then
             local ok, err = Feature:AcquireConsumer("page:buff_display"); if ok ~= true then return false, err end
             if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" and type(S.Events.SubscribeInternal) == "function" then
-                S.Events:UnsubscribeInternalOwner(self); S.Events:SubscribeInternal("v3.buff_display.updated", self, function() root:Refresh() end)
+                S.Events:UnsubscribeInternalOwner(self); S.Events:SubscribeInternal("v3.buff_display.updated", self, function()
+                    -- Aura facts update the tracking table, not the isolated HUD
+                    -- editor Working state.  Do not re-render the editor at Aura
+                    -- cadence; shared controls still protect active drafts, and
+                    -- this boundary also removes needless editor work while the
+                    -- user is dragging/typing in the Layout tab.
+                    if root.activeTab == "track" then root:Refresh() end
+                end)
             end
             Feature.Commands:Refresh("page_activated")
         end

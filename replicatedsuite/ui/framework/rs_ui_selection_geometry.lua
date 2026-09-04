@@ -622,15 +622,31 @@ if type(UI) == "table" and type(RSUI.RegisterType) == "function" then
         end
 
         function c:SetHandlesPickable(enabled)
-            for _, handle in pairs(self.handles) do UI:SetPickable(handle, enabled == true, self.owner) end
-            return enabled == true
+            local desired = enabled == true
+            if type(UI.EnsurePickable) ~= "function" then return false, "selection_pickable_transaction_unavailable" end
+            for key, handle in pairs(self.handles) do
+                local accepted, _, pickErr = UI:EnsurePickable(handle, desired, self.owner)
+                if accepted ~= true then
+                    if type(self.FailClosedInteraction) == "function" then self:FailClosedInteraction("selection_handle_pickable_failed:" .. tostring(key) .. ":" .. tostring(pickErr or "unknown")) end
+                    return false, "selection_handle_pickable_failed:" .. tostring(key) .. ":" .. tostring(pickErr or "unknown")
+                end
+            end
+            return true, nil
         end
 
         function c:SetInteractionPickable(enabled)
-            enabled = enabled == true
-            if self.moveHit ~= nil then UI:SetPickable(self.moveHit, enabled, self.owner) end
-            self:SetHandlesPickable(enabled)
-            return enabled
+            local desired = enabled == true
+            if type(UI.EnsurePickable) ~= "function" then return false, "selection_pickable_transaction_unavailable" end
+            if self.moveHit ~= nil then
+                local accepted, _, pickErr = UI:EnsurePickable(self.moveHit, desired, self.owner)
+                if accepted ~= true then
+                    if type(self.FailClosedInteraction) == "function" then self:FailClosedInteraction("selection_move_pickable_failed:" .. tostring(pickErr or "unknown")) end
+                    return false, "selection_move_pickable_failed:" .. tostring(pickErr or "unknown")
+                end
+            end
+            local handlesOk, handlesErr = self:SetHandlesPickable(desired)
+            if handlesOk ~= true then return false, handlesErr end
+            return true, nil
         end
 
         function c:SetRect(rect)
@@ -671,12 +687,19 @@ if type(UI) == "table" and type(RSUI.RegisterType) == "function" then
         end
 
         function c:SetVisible(visible)
-            self.visible = visible == true
-            UI:SetVisible(self.root, self.visible, self.owner)
-            return self.visible
+            local desired = visible == true
+            if type(UI.EnsureVisible) ~= "function" then return false, false, "visibility_transaction_unavailable" end
+            local accepted, changed, detail = UI:EnsureVisible(self.root, desired, self.owner)
+            if accepted ~= true then
+                if type(self.FailClosedInteraction) == "function" then self:FailClosedInteraction("selection_overlay_visibility_failed:" .. tostring(detail or "native_visibility_rejected")) end
+                return false, false, detail or "native_visibility_rejected"
+            end
+            self.visible = desired
+            return true, changed == true, nil
         end
 
-        c:SetInteractionPickable(spec.handlesPickable ~= false)
+        local pickOk, pickErr = c:SetInteractionPickable(spec.handlesPickable ~= false)
+        if pickOk ~= true then return c, pickErr end
         c:SetRect({ x=N(spec.x, 0), y=N(spec.y, 0), width=width, height=height })
         return c
     end)

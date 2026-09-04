@@ -199,19 +199,29 @@ local function CreateWidget()
         local okShow, showErr = self.surface:Show(true)
         if okShow ~= true then self:Unsubscribe(); self.visible = false; return false, showErr end
         self.visible = true
+        if type(context) ~= "table" or context.persist ~= false then
+            Feature.Commands:SetWidgetVisible(true, "show")
+        end
         return true
     end
 
     function instance:Hide(context)
         local okShow, showErr = self.surface:Show(false)
+        if okShow ~= true then return false, showErr end
         self.visible = false
         self:Unsubscribe()
-        return okShow, showErr
+        if type(context) ~= "table" or context.persist ~= false then
+            Feature.Commands:SetWidgetVisible(false, "hide")
+        end
+        return true
     end
 
     function instance:OnWindowClosed(context)
         self.visible = false
         self:Unsubscribe()
+        if type(context) ~= "table" or context.persist ~= false then
+            Feature.Commands:SetWidgetVisible(false, "native_close")
+        end
         return true
     end
     function instance:Open(context) return self:Show(context) end
@@ -251,10 +261,11 @@ if ok ~= true then error(err) end
 local bindOk, bindErr = Host:BindFeatureLifecycle(WIDGET_ID, {
     featureId = FEATURE_ID,
     enabled = function() return S.FeatureRuntime:IsEnabled(FEATURE_ID) == true end,
-    -- DPS is an active live meter: when a user explicitly enables the feature,
-    -- show the meter. Closing it still hides it for the current enabled session.
-    preference = function() return true end,
+    -- Feature enablement and Presentation visibility are independent.  Only a
+    -- user-persisted visible preference may reopen the meter on reload.
+    preference = function() return Feature:GetWidgetVisible() == true end,
     onShowFailed = function(reason)
+        Feature.Commands:SetWidgetVisible(false, "auto_show_failed")
         if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarningRateLimited) == "function" then
             S.DiagnosticsManager:WarningRateLimited("dps_v3", "DPS_WIDGET_AUTO_SHOW_FAILED", 3000,
                 "DPS 悬浮窗自动显示失败", { error = tostring(reason or "unknown") })

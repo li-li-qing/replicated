@@ -331,6 +331,17 @@ function F:SetWidgetWindowState(value, reason)
     return true
 end
 
+function F:GetWidgetVisible()
+    return type(self.State) == "table" and self.State.widgetVisible == true or false
+end
+
+function F:SetWidgetVisible(value, reason)
+    return self:MutateStore(function()
+        self.State.widgetVisible = value == true
+        return true
+    end, 250, "dps_widget_" .. tostring(reason or "visibility"), true)
+end
+
 function F:Refresh(reason) return true end
 
 ------------------------------------------------------------------------
@@ -352,6 +363,7 @@ function F.Commands:AddBossName(name) return F:AddBossName(name) end
 function F.Commands:RemoveBossName(name) return F:RemoveBossName(name) end
 function F.Commands:GetActorDetail(request) return F:GetActorDetail(request) end
 function F.Commands:SetWidgetWindowState(value, reason) return F:SetWidgetWindowState(value, reason) end
+function F.Commands:SetWidgetVisible(value, reason) return F:SetWidgetVisible(value, reason) end
 
 
 function F:GetActorDetail(request)

@@ -12,10 +12,11 @@ local RSUI, UI = S.RSUI, S.UI
 if type(RSUI) ~= "table" or type(UI) ~= "table" then return end
 
 local A = {
-    version = 1,
+    version = 2,
     active = {},
-    metrics = { runs = 0, succeeded = 0, failed = 0, exceptions = 0, duplicates = 0 },
+    metrics = { runs = 0, succeeded = 0, failed = 0, exceptions = 0, duplicates = 0, buttonStateFailures = 0 },
 }
+RSUI.ActionRunnerEnabledTransactionContractVersion = 1
 S.ActionRunner = A
 RSUI.ActionRunner = A
 
@@ -47,9 +48,16 @@ local function Notify(spec, ok, detail)
 end
 
 local function SetButtonEnabled(button, enabled)
-    if type(button) == "table" and type(button.SetEnabled) == "function" then return button:SetEnabled(enabled) end
-    if button ~= nil then return UI:SetEnabled(button, enabled) end
-    return false
+    if type(button) == "table" and type(button.SetEnabled) == "function" then
+        local state, accepted, detail = button:SetEnabled(enabled)
+        if accepted == false then return false, detail or "component_enable_rejected", state end
+        return true, nil, state
+    end
+    if button ~= nil and type(UI.EnsureEnabled) == "function" then
+        local accepted, _, detail = UI:EnsureEnabled(button, enabled, "action_runner")
+        return accepted == true, detail, enabled ~= false
+    end
+    return false, "button_enable_unavailable", nil
 end
 
 local function SetButtonText(button, text)
@@ -82,7 +90,11 @@ function A:Run(spec)
     self.active[id] = { startedAt = type(S.NowMs) == "function" and S.NowMs() or 0, button = button }
     local busyEnabledRevision, busyTextRevision = nil, nil
     if button ~= nil then
-        SetButtonEnabled(button, false)
+        local stateOk, stateErr = SetButtonEnabled(button, false)
+        if stateOk ~= true then
+            self.metrics.buttonStateFailures = (tonumber(self.metrics.buttonStateFailures) or 0) + 1
+            Report("warning", "ACTION_BUSY_STATE_REJECTED", tostring(stateErr or "button disable rejected"), { action = id })
+        end
         if type(button) == "table" then busyEnabledRevision = tonumber(button.enabledRevision) end
         if spec.busyText ~= nil then
             SetButtonText(button, spec.busyText)
@@ -115,7 +127,13 @@ function A:Run(spec)
             local enabledUntouched = type(button) ~= "table"
                 or busyEnabledRevision == nil
                 or tonumber(button.enabledRevision) == busyEnabledRevision
-            if enabledUntouched then SetButtonEnabled(button, previousEnabled) end
+            if enabledUntouched then
+                local restoreOk, restoreErr = SetButtonEnabled(button, previousEnabled)
+                if restoreOk ~= true then
+                    self.metrics.buttonStateFailures = (tonumber(self.metrics.buttonStateFailures) or 0) + 1
+                    Report("warning", "ACTION_RESTORE_STATE_REJECTED", tostring(restoreErr or "button restore rejected"), { action = id })
+                end
+            end
         end
     end
     if type(spec.onBusyChanged) == "function" then pcall(spec.onBusyChanged, false, id, spec) end
@@ -149,5 +167,6 @@ function A:GetSnapshot()
         failed = tonumber(self.metrics.failed) or 0,
         exceptions = tonumber(self.metrics.exceptions) or 0,
         duplicates = tonumber(self.metrics.duplicates) or 0,
+        buttonStateFailures = tonumber(self.metrics.buttonStateFailures) or 0,
     }
 end

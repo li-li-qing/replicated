@@ -52,6 +52,54 @@ local function Write(binding, value, final, source, spec)
     return true
 end
 
+local function RequireBinding(component, spec, kind)
+    local binding, bindingErr = RSUI:Binding(spec)
+    if binding ~= nil then
+        if type(component) == "table" then component.binding = binding end
+        return binding, nil
+    end
+    if type(component) == "table" and type(component.Release) == "function" then pcall(function() component:Release() end) end
+    return nil, tostring(kind or "control") .. "_binding_failed:" .. tostring(bindingErr or "unknown")
+end
+
+-- Interactive Draft Contract v1
+--
+-- RU text inputs do not expose a verified OnTextChanged event, while Slider
+-- preview intentionally does not commit its binding until drag-stop.  Any
+-- unrelated page/projection refresh that blindly calls Render() during those
+-- active interactions would therefore overwrite the user's draft with the last
+-- committed binding value.  Controls themselves own this fence so every page
+-- gets the same behavior without inventing local "don't refresh while typing"
+-- flags or permanent polling.
+RSUI.InteractiveDraftContractVersion = 1
+RSUI.ControlTransactionContractVersion = 1
+RSUI.PopupVisibilityTransactionContractVersion = 1
+
+local function EnsureRawVisible(widget, visible, owner)
+    if widget == nil then return false, "popup_widget_required" end
+    if type(UI.EnsureVisible) ~= "function" then return false, "visibility_transaction_unavailable" end
+    local accepted, _, detail = UI:EnsureVisible(widget, visible == true, owner)
+    if accepted ~= true then return false, tostring(detail or "native_visibility_rejected") end
+    return true, nil
+end
+
+local function IsFocusedDraft(component)
+    local focus = RSUI.Focus
+    if component == nil or component.root == nil or type(focus) ~= "table" or type(focus.IsFocused) ~= "function" then return false end
+    local ok, focused = pcall(function() return focus:IsFocused(component.root) end)
+    return ok == true and focused == true
+end
+
+local function IsAmbientRenderSource(source)
+    source = tostring(source or "binding_refresh")
+    return source == "binding_refresh" or source == "field_sync" or source == "ambient_refresh"
+        or source == "external_refresh" or source == "refresh"
+end
+
+local function CountDraftSuppression()
+    RSUI.metrics.interactiveDraftRenderSuppressions = (tonumber(RSUI.metrics.interactiveDraftRenderSuppressions) or 0) + 1
+end
+
 RSUI:RegisterType("Toggle", function(spec)
     local width = math.max(56, tonumber(spec.width) or 92)
     local height = math.max(22, tonumber(spec.height) or Token("size.buttonH", 26))
@@ -59,7 +107,8 @@ RSUI:RegisterType("Toggle", function(spec)
         tonumber(spec.fontSize) or Token("font.small", 10), false, spec.gradient ~= false)
     if button == nil then return nil, "toggle_create_failed" end
     local c = RSUI:NewComponent("Toggle", spec, button)
-    c.binding = RSUI:Binding(spec)
+    local binding, bindingErr = RequireBinding(c, spec, "toggle")
+    if binding == nil then return nil, bindingErr end
     c.value = spec.value == true
     function c:GetValue() return Read(self.binding, self.value) == true end
     function c:Render()
@@ -75,11 +124,14 @@ RSUI:RegisterType("Toggle", function(spec)
         value = value == true
         local ok = Write(self.binding, value, true, source or "toggle", spec)
         if ok then self.value = value end
+        -- Always redraw from the authoritative binding.  A rejected write must
+        -- never publish onChanged or leave the control visually claiming that
+        -- an unapplied value succeeded.
         self:Render()
-        if type(spec.onChanged) == "function" then RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, value, self) end
+        if ok and type(spec.onChanged) == "function" then RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, value, self) end
         return ok
     end
-    c:On(button, "OnClick", function() return c:SetValue(not c:GetValue(), "click") end, "rsui:" .. spec.id .. ":toggle")
+    c:RequireOn(button, "OnClick", function() return c:SetValue(not c:GetValue(), "click") end, "rsui:" .. spec.id .. ":toggle")
     c:SetEnabled(spec.enabled ~= false)
     c:Render()
     return c
@@ -118,7 +170,8 @@ RSUI:RegisterType("SegmentedSelector", function(spec)
     local c, err = rowFactory(spec)
     if c == nil then return nil, err or "segmented_host_create_failed" end
     c.kind = "SegmentedSelector"
-    c.binding = RSUI:Binding(spec)
+    local binding, bindingErr = RequireBinding(c, spec, "segmented_selector")
+    if binding == nil then return nil, bindingErr end
     c.items = items
     c.buttons = {}
     c.value = spec.value ~= nil and spec.value or items[1].value
@@ -142,14 +195,15 @@ RSUI:RegisterType("SegmentedSelector", function(spec)
         for index, item in ipairs(self.items) do
             local button = self.buttons[index]
             if button ~= nil then
+                local childOk, childErr = self:EnsureChildEnabled(button, self.enabled ~= false and item.enabled ~= false, "segment_" .. tostring(index))
+                if childOk ~= true then return nil, childErr end
                 button:Render({
                     text = item.text,
                     selected = Equal(item.value, current),
-                    enabled = self.enabled ~= false and item.enabled ~= false,
                 })
             end
         end
-        return current
+        return current, nil
     end
 
     function c:SetValue(value, source)
@@ -175,9 +229,11 @@ RSUI:RegisterType("SegmentedSelector", function(spec)
 
     local baseSetEnabled = c.SetEnabled
     function c:SetEnabled(enabled)
-        local ok = baseSetEnabled(self, enabled)
-        self:Render()
-        return ok
+        local state, accepted, detail = baseSetEnabled(self, enabled)
+        if accepted ~= true then return state, false, detail end
+        local _, renderErr = self:Render()
+        if renderErr ~= nil then return state, false, renderErr end
+        return self.enabled, true, nil
     end
 
     local defaultWidth = math.max(34, tonumber(spec.itemWidth) or 48)
@@ -220,7 +276,8 @@ RSUI:RegisterType("TextInput", function(spec)
     local edit = UI:CreateEditBox(spec.parent, spec.id, tonumber(spec.x) or 0, tonumber(spec.y) or 0, width, height, tonumber(spec.maxLength) or 64)
     if edit == nil then return nil, "editbox_create_failed" end
     local c = RSUI:NewComponent("TextInput", spec, edit)
-    c.binding = RSUI:Binding(spec)
+    local binding, bindingErr = RequireBinding(c, spec, "text_input")
+    if binding == nil then return nil, bindingErr end
     c.value = tostring(spec.value or "")
     local function Normalize(value)
         local text = tostring(value or "")
@@ -235,9 +292,14 @@ RSUI:RegisterType("TextInput", function(spec)
         if self.root ~= nil and type(self.root.GetText) == "function" then return Normalize(self.root:GetText()) end
         return Normalize(self.value)
     end
-    function c:Render(explicitValue)
+    function c:IsEditing() return IsFocusedDraft(self) end
+    function c:Render(explicitValue, source)
         RSUI:_Count(self.kind, "rendered", 1)
         local value = Normalize(explicitValue ~= nil and explicitValue or self:GetValue())
+        if self:IsEditing() and IsAmbientRenderSource(source) then
+            CountDraftSuppression()
+            return self:GetDraftValue()
+        end
         if explicitValue == nil then self.value = value end
         UI:SetText(self.root, value, self.owner)
         return value
@@ -246,8 +308,15 @@ RSUI:RegisterType("TextInput", function(spec)
         if self.enabled == false then return false end
         value = Normalize(value)
         local ok = Write(self.binding, value, true, source or "text_input_api", spec)
-        if ok then self.value = value end
-        self:Render(value)
+        if ok then
+            self.value = value
+            self:Render(value, "commit")
+        else
+            -- Force the committed/bound value back even if the native edit box
+            -- is still focused.  Rejection is an explicit transaction result,
+            -- not an ambient refresh that should preserve the draft.
+            self:Render(nil, "rejected")
+        end
         if ok and notify ~= false and type(spec.onChanged) == "function" then
             RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, value, self)
         end
@@ -275,7 +344,7 @@ RSUI:RegisterType("TextInput", function(spec)
         c:On(edit, "OnLostFocus", function() return c:Submit("blur") end, "rsui:" .. spec.id .. ":OnLostFocus")
     end
     c:SetEnabled(spec.enabled ~= false)
-    c:Render()
+    c:Render(nil, "init")
     return c
 end)
 
@@ -289,9 +358,15 @@ RSUI:RegisterType("NumericInput", function(spec)
     local edit = UI:CreateEditBox(spec.parent, spec.id, tonumber(spec.x) or 0, tonumber(spec.y) or 0, width, height, tonumber(spec.maxLength) or 16)
     if edit == nil then return nil, "editbox_create_failed" end
     local c = RSUI:NewComponent("NumericInput", spec, edit)
-    c.binding = RSUI:Binding(spec)
+    local binding, bindingErr = RequireBinding(c, spec, "numeric_input")
+    if binding == nil then return nil, bindingErr end
     c.value = NormalizeNumber(spec, spec.value)
     function c:GetValue() return NormalizeNumber(spec, Read(self.binding, self.value)) end
+    function c:GetDraftValue()
+        if self.root ~= nil and type(self.root.GetText) == "function" then return tostring(self.root:GetText() or "") end
+        return ""
+    end
+    function c:IsEditing() return IsFocusedDraft(self) end
     function c:Format(value)
         if type(spec.format) == "function" then
             local ok, text = RSUI:Callback("rsui:" .. self.id .. ":format", spec.format, value)
@@ -303,10 +378,14 @@ RSUI:RegisterType("NumericInput", function(spec)
         if decimals > 0 then text = text:gsub("0+$", ""):gsub("%.$", "") end
         return text .. tostring(spec.suffix or spec.unit or "")
     end
-    function c:Render(explicitValue)
+    function c:Render(explicitValue, source)
         RSUI:_Count(self.kind, "rendered", 1)
         local value = NormalizeNumber(spec, explicitValue ~= nil and explicitValue or self:GetValue())
         if value == nil then return false end
+        if self:IsEditing() and IsAmbientRenderSource(source) then
+            CountDraftSuppression()
+            return value
+        end
         if explicitValue == nil then self.value = value end
         UI:SetText(self.root, self:Format(value), self.owner)
         return value
@@ -323,16 +402,20 @@ RSUI:RegisterType("NumericInput", function(spec)
             return false
         end
         local ok = Write(self.binding, value, true, source or "edit", spec)
-        if ok then self.value = value end
-        self:Render()
-        if type(spec.onChanged) == "function" then RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, value, self) end
+        if ok then
+            self.value = value
+            self:Render(value, "commit")
+        else
+            self:Render(nil, "rejected")
+        end
+        if ok and type(spec.onChanged) == "function" then RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, value, self) end
         return ok
     end
     for _, eventName in ipairs({ "OnEnterPressed", "OnEditEnter", "OnLostFocus" }) do
         c:On(edit, eventName, function() return c:Submit("edit") end, "rsui:" .. spec.id .. ":" .. eventName)
     end
     c:SetEnabled(spec.enabled ~= false)
-    c:Render()
+    c:Render(nil, "init")
     return c
 end)
 
@@ -343,15 +426,21 @@ RSUI:RegisterType("Slider", function(spec)
     spec.step = math.abs(tonumber(spec.step) or 1)
     local width = math.max(30, tonumber(spec.width) or 160)
     local height = math.max(14, tonumber(spec.height) or 20)
-    local binding = RSUI:Binding(spec)
+    local binding, bindingErr = RSUI:Binding(spec)
+    if binding == nil then return nil, "slider_binding_failed:" .. tostring(bindingErr or "unknown") end
     local initial = NormalizeNumber(spec, Read(binding, spec.value)) or spec.min
     local slider = UI:CreateSlider(spec.parent, spec.id, tonumber(spec.x) or 0, tonumber(spec.y) or 0, width, height, spec.min, spec.max, spec.step, initial)
     if slider == nil then return nil, "slider_create_failed" end
     local c = RSUI:NewComponent("Slider", spec, slider)
     c.binding, c.value, c.previewValue = binding, initial, initial
     function c:GetValue() return NormalizeNumber(spec, Read(self.binding, self.value)) or self.value end
-    function c:Render(explicit)
+    function c:IsInteracting() return self.root ~= nil and self.root.rsDragging == true end
+    function c:Render(explicit, source)
         RSUI:_Count(self.kind, "rendered", 1)
+        if self:IsInteracting() and IsAmbientRenderSource(source) then
+            CountDraftSuppression()
+            return self.previewValue
+        end
         local value = NormalizeNumber(spec, explicit ~= nil and explicit or self:GetValue())
         if value == nil then return false end
         self.previewValue = value
@@ -363,7 +452,7 @@ RSUI:RegisterType("Slider", function(spec)
         value = NormalizeNumber(spec, value)
         if value == nil then return false end
         self.previewValue = value
-        self:Render(value)
+        self:Render(value, "interaction")
         if type(spec.onPreview) == "function" then RSUI:Callback("rsui:" .. self.id .. ":preview", spec.onPreview, value, self, source or "slider") end
         return true
     end
@@ -372,9 +461,15 @@ RSUI:RegisterType("Slider", function(spec)
         value = NormalizeNumber(spec, value)
         if value == nil then return false end
         local ok = Write(self.binding, value, true, source or "slider", spec)
-        if ok then self.value, self.previewValue = value, value end
-        self:Render(value)
-        if type(spec.onChanged) == "function" then RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, value, self) end
+        if ok then
+            self.value, self.previewValue = value, value
+            self:Render(value, "commit")
+        else
+            local authoritative = self:GetValue()
+            self.previewValue = authoritative
+            self:Render(authoritative, "rejected")
+        end
+        if ok and type(spec.onChanged) == "function" then RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, value, self) end
         return ok
     end
     if type(slider.SetValueChangedHandler) == "function" then
@@ -383,7 +478,7 @@ RSUI:RegisterType("Slider", function(spec)
         end)
     end
     c:SetEnabled(spec.enabled ~= false)
-    c:Render(initial)
+    c:Render(initial, "init")
     local baseRelease = c.Release
     function c:Release()
         local drag = self.root and self.root.rsDragSurface or nil
@@ -411,6 +506,7 @@ end)
 
 RSUI.DropdownContractVersion = 2
 RSUI.DropdownDegradedFailClosedContractVersion = 1
+RSUI.DropdownRuntimeInteractionContractVersion = 1
 RSUI.PopupCoordinatorContractVersion = 1
 
 local PopupCoordinator = RSUI.PopupCoordinator or {
@@ -549,7 +645,8 @@ RSUI:RegisterType("Dropdown", function(spec)
 
     local c = RSUI:NewComponent("Dropdown", spec, trigger)
     if c == nil then return nil, "dropdown_component_create_failed" end
-    c.binding = RSUI:Binding(spec)
+    local binding, bindingErr = RequireBinding(c, spec, "dropdown")
+    if binding == nil then return nil, bindingErr end
     c.value = spec.value
     c.items = {}
     c.selectedIndex = 0
@@ -579,9 +676,20 @@ RSUI:RegisterType("Dropdown", function(spec)
     -- helper invalidate a successfully created popup/page.
     if type(UI.TrySetUILayer) == "function" then UI:TrySetUILayer(popup, "system") end
     if type(popup.SetDrawPriority) == "function" then pcall(function() popup:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end
-    UI:SetPickable(popup, true, c.owner)
-    UI:SetEnabled(popup, true, c.owner)
-    UI:SetVisible(popup, false, c.owner)
+    if type(UI.EnsurePickable) ~= "function" or type(UI.EnsureEnabled) ~= "function" then
+        UI:SetVisible(popup, false, c.owner)
+        return InstallDropdownFallback(c, spec, "dropdown_popup_interaction_contract_unavailable")
+    end
+    local popupPickOk, _, popupPickErr = UI:EnsurePickable(popup, true, c.owner)
+    local popupEnableOk, _, popupEnableErr = UI:EnsureEnabled(popup, true, c.owner)
+    if popupPickOk ~= true or popupEnableOk ~= true then
+        UI:SetVisible(popup, false, c.owner)
+        return InstallDropdownFallback(c, spec, "dropdown_popup_interaction_failed:" .. tostring(popupPickErr or popupEnableErr or "unknown"))
+    end
+    local popupHidden, popupHideErr = EnsureRawVisible(popup, false, c.owner)
+    if popupHidden ~= true then
+        return InstallDropdownFallback(c, spec, "dropdown_popup_initial_hide_failed:" .. tostring(popupHideErr or "unknown"))
+    end
 
     local up, upErr = UI:CreateButton(popup, spec.id .. "_up", "^", 0, 0, 24, height, 9, false, false)
     local down, downErr = UI:CreateButton(popup, spec.id .. "_down", "v", 0, 0, 24, height, 9, false, false)
@@ -613,6 +721,30 @@ RSUI:RegisterType("Dropdown", function(spec)
         return text
     end
 
+    function c:FailDropdownInteraction(reason)
+        local detail = tostring(reason or "dropdown_runtime_interaction_failed")
+        self.open = false
+        if self.popup ~= nil then UI:SetVisible(self.popup, false, self.owner) end
+        if type(self.FailClosedInteraction) == "function" then self:FailClosedInteraction(detail)
+        else
+            self.rsUiDegraded = true
+            self.rsUiDegradedReason = detail
+            UI:SetVisible(self.root, false, self.owner)
+        end
+        return false, detail
+    end
+
+    function c:EnsureChildEnabled(widget, desired, role)
+        if type(UI.EnsureEnabled) ~= "function" then
+            return self:FailDropdownInteraction("dropdown_enabled_contract_unavailable:" .. tostring(role or "child"))
+        end
+        local accepted, _, enableErr = UI:EnsureEnabled(widget, desired == true, self.owner)
+        if accepted ~= true then
+            return self:FailDropdownInteraction("dropdown_child_enable_failed:" .. tostring(role or "child") .. ":" .. tostring(enableErr or "unknown"))
+        end
+        return true, nil
+    end
+
     function c:RefreshButtons()
         local count = #self.items
         local needScroll = count > self.maxVisible
@@ -625,16 +757,22 @@ RSUI:RegisterType("Dropdown", function(spec)
             local visible = type(item) == "table"
             button.rsItemIndex = visible and itemIndex or nil
             button.rsDropdownSelectable = visible and item.selectable ~= false and item.kind ~= "header"
-            UI:SetVisible(button, visible, self.owner)
-            UI:SetEnabled(button, button.rsDropdownSelectable == true, self.owner)
+            local visibleOk, visibleErr = EnsureRawVisible(button, visible, self.owner)
+            if visibleOk ~= true then return self:FailDropdownInteraction("dropdown_option_visibility_failed:" .. tostring(index) .. ":" .. tostring(visibleErr or "unknown")) end
+            local enabledOk, enabledErr = self:EnsureChildEnabled(button, button.rsDropdownSelectable == true, "option_" .. tostring(index))
+            if enabledOk ~= true then return false, enabledErr end
             if visible then UI:SetText(button, tostring(item.text or item.value or "--"), self.owner) end
         end
 
-        UI:SetVisible(self.up, needScroll, self.owner)
-        UI:SetVisible(self.down, needScroll, self.owner)
-        UI:SetEnabled(self.up, needScroll and self.scrollOffset > 0, self.owner)
-        UI:SetEnabled(self.down, needScroll and self.scrollOffset < MaxScrollOffset(), self.owner)
-        return true
+        local upVisibleOk, upVisibleErr = EnsureRawVisible(self.up, needScroll, self.owner)
+        if upVisibleOk ~= true then return self:FailDropdownInteraction("dropdown_scroll_up_visibility_failed:" .. tostring(upVisibleErr or "unknown")) end
+        local downVisibleOk, downVisibleErr = EnsureRawVisible(self.down, needScroll, self.owner)
+        if downVisibleOk ~= true then return self:FailDropdownInteraction("dropdown_scroll_down_visibility_failed:" .. tostring(downVisibleErr or "unknown")) end
+        local upOk, upErr = self:EnsureChildEnabled(self.up, needScroll and self.scrollOffset > 0, "scroll_up")
+        if upOk ~= true then return false, upErr end
+        local downOk, downErr = self:EnsureChildEnabled(self.down, needScroll and self.scrollOffset < MaxScrollOffset(), "scroll_down")
+        if downOk ~= true then return false, downErr end
+        return true, nil
     end
 
     function c:SetItems(items)
@@ -650,8 +788,12 @@ RSUI:RegisterType("Dropdown", function(spec)
 
         self.selectedIndex = DropdownFindValue(self.items, self.value) or 0
         self:RefreshText()
-        self:RefreshButtons()
-        if self.open == true then self:ApplyPopupLayout() end
+        local refreshOk, refreshErr = self:RefreshButtons()
+        if refreshOk ~= true then return false, refreshErr end
+        if self.open == true then
+            local layoutOk, layoutErr = self:ApplyPopupLayout()
+            if layoutOk ~= true then return false, layoutErr end
+        end
         return true
     end
 
@@ -699,8 +841,7 @@ RSUI:RegisterType("Dropdown", function(spec)
         local nextOffset = math.max(0, math.min(MaxScrollOffset(), (tonumber(self.scrollOffset) or 0) + (tonumber(delta) or 0)))
         if nextOffset == self.scrollOffset then return false end
         self.scrollOffset = nextOffset
-        self:RefreshButtons()
-        return true
+        return self:RefreshButtons()
     end
 
     function c:ApplyPopupLayout()
@@ -747,17 +888,20 @@ RSUI:RegisterType("Dropdown", function(spec)
         UI:SetExtent(self.down, math.max(1, scrollW), optionH, self.owner)
         UI:SetAnchor(self.up, self.popup, math.max(0, popupW - scrollW), 0, self.owner)
         UI:SetAnchor(self.down, self.popup, math.max(0, popupW - scrollW), math.max(0, popupH - optionH), self.owner)
-        self:RefreshButtons()
+        local refreshOk, refreshErr = self:RefreshButtons()
+        if refreshOk ~= true then return false, refreshErr end
         if self.open == true and type(self.popup.Raise) == "function" then pcall(function() self.popup:Raise() end) end
         return true
     end
 
     function c:Open()
-        if self.enabled == false or self.released == true then return false end
+        if self.enabled == false or self.released == true or self.rsUiDegraded == true then return false end
         if RSUI.PopupCoordinator ~= nil then RSUI.PopupCoordinator:CloseAll(self) end
+        local layoutOk, layoutErr = self:ApplyPopupLayout()
+        if layoutOk ~= true then return false, layoutErr end
+        local visibleOk, visibleErr = EnsureRawVisible(self.popup, true, self.owner)
+        if visibleOk ~= true then return self:FailDropdownInteraction("dropdown_popup_show_failed:" .. tostring(visibleErr or "unknown")) end
         self.open = true
-        self:ApplyPopupLayout()
-        UI:SetVisible(self.popup, true, self.owner)
         if type(self.popup.SetDrawPriority) == "function" then pcall(function() self.popup:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end
         if type(self.popup.Raise) == "function" then pcall(function() self.popup:Raise() end) end
         return true
@@ -765,8 +909,9 @@ RSUI:RegisterType("Dropdown", function(spec)
 
     function c:Close()
         if self.open ~= true then return false end
+        local visibleOk, visibleErr = EnsureRawVisible(self.popup, false, self.owner)
+        if visibleOk ~= true then return self:FailDropdownInteraction("dropdown_popup_hide_failed:" .. tostring(visibleErr or "unknown")) end
         self.open = false
-        UI:SetVisible(self.popup, false, self.owner)
         return true
     end
 
@@ -783,21 +928,32 @@ RSUI:RegisterType("Dropdown", function(spec)
         UI:SetAnchor(self.root, spec.parent, nextX, nextY, self.owner)
         UI:SetExtent(self.root, nextW, nextH, self.owner)
         self:CommitLayoutState(nextX, nextY, nextW, nextH)
-        if self.open == true then self:ApplyPopupLayout() end
+        if self.open == true then
+            local popupOk, popupErr = self:ApplyPopupLayout()
+            if popupOk ~= true then return false, popupErr end
+        end
         RSUI:_Count(self.kind, "layouts", 1)
         return true
     end
 
     function c:SetEnabled(enabled)
-        self.enabled = enabled ~= false
-        UI:SetEnabled(self.root, self.enabled, self.owner)
+        local desired = enabled ~= false
+        if type(UI.EnsureEnabled) ~= "function" then return self.enabled ~= false, false, "enabled_transaction_unavailable" end
+        local accepted, _, enableErr = UI:EnsureEnabled(self.root, desired, self.owner)
+        if accepted ~= true then
+            local detail = tostring(enableErr or "native_enable_rejected")
+            if self.popup ~= nil then UI:SetVisible(self.popup, false, self.owner) end
+            if type(self.FailClosedInteraction) == "function" then self:FailClosedInteraction("enabled_state_failed:" .. detail) end
+            return self.enabled ~= false, false, detail
+        end
+        self.enabled = desired
         if self.enabled == false then self:Close() end
-        return self.enabled
+        return self.enabled, true, nil
     end
 
-    c:On(trigger, "OnClick", function() return c:ToggleOpen() end, "rsui:" .. spec.id .. ":trigger")
-    c:On(up, "OnClick", function() return c:Scroll(-1) end, "rsui:" .. spec.id .. ":up")
-    c:On(down, "OnClick", function() return c:Scroll(1) end, "rsui:" .. spec.id .. ":down")
+    c:RequireOn(trigger, "OnClick", function() return c:ToggleOpen() end, "rsui:" .. spec.id .. ":trigger")
+    c:RequireOn(up, "OnClick", function() return c:Scroll(-1) end, "rsui:" .. spec.id .. ":up")
+    c:RequireOn(down, "OnClick", function() return c:Scroll(1) end, "rsui:" .. spec.id .. ":down")
     c:On(popup, "OnWheelUp", function() return c:Scroll(-1) end, "rsui:" .. spec.id .. ":wheel_up")
     c:On(popup, "OnWheelDown", function() return c:Scroll(1) end, "rsui:" .. spec.id .. ":wheel_down")
     for index, button in ipairs(c.optionButtons) do
@@ -805,7 +961,7 @@ RSUI:RegisterType("Dropdown", function(spec)
         -- option button explicitly so every row keeps its own click target.
         local optionButton = button
         local optionIndex = index
-        c:On(optionButton, "OnClick", function()
+        c:RequireOn(optionButton, "OnClick", function()
             local itemIndex = optionButton.rsItemIndex
             local item = itemIndex and c.items[itemIndex] or nil
             if type(item) ~= "table" or optionButton.rsDropdownSelectable ~= true then return false end
@@ -826,8 +982,10 @@ RSUI:RegisterType("Dropdown", function(spec)
     end
 
     RSUI.PopupCoordinator:Register(c)
-    c:SetItems(spec.items or spec.options or {})
-    c:SetEnabled(spec.enabled ~= false)
+    local itemsOk, itemsErr = c:SetItems(spec.items or spec.options or {})
+    if itemsOk ~= true then return c, itemsErr end
+    local _, enabledOk, enabledErr = c:SetEnabled(spec.enabled ~= false)
+    if enabledOk ~= true then return c, enabledErr end
     c:Render()
     return c
 end)
@@ -850,7 +1008,8 @@ RSUI:RegisterType("ColorField", function(spec)
     if trigger == nil then return nil, "colorfield_trigger_create_failed" end
     local c = RSUI:NewComponent("ColorField", spec, trigger)
     if c == nil then return nil, "colorfield_component_create_failed" end
-    c.binding = RSUI:Binding(spec)
+    local binding, bindingErr = RequireBinding(c, spec, "colorfield")
+    if binding == nil then return nil, bindingErr end
     c.open = false
     c.color = { 1, 1, 1 }
     c.swatch = nil
@@ -877,11 +1036,26 @@ RSUI:RegisterType("ColorField", function(spec)
     c.popup = popup
     if type(UI.TrySetUILayer) == "function" then UI:TrySetUILayer(popup, "system") end
     if type(popup.SetDrawPriority) == "function" then pcall(function() popup:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end
-    UI:SetPickable(popup, true, c.owner)
-    UI:SetEnabled(popup, true, c.owner)
-    UI:SetVisible(popup, false, c.owner)
+    local function FailColorBuild(reason)
+        reason = tostring(reason or "colorfield_build_failed")
+        UI:SetVisible(popup, false, c.owner)
+        c.rsUiDegraded = true
+        c.rsUiDegradedReason = reason
+        return c, reason
+    end
+    if type(UI.EnsurePickable) ~= "function" or type(UI.EnsureEnabled) ~= "function" then
+        return FailColorBuild("colorfield_popup_interaction_contract_unavailable")
+    end
+    local popupPickOk, _, popupPickErr = UI:EnsurePickable(popup, true, c.owner)
+    local popupEnableOk, _, popupEnableErr = UI:EnsureEnabled(popup, true, c.owner)
+    if popupPickOk ~= true or popupEnableOk ~= true then
+        return FailColorBuild("colorfield_popup_interaction_failed:" .. tostring(popupPickErr or popupEnableErr or "unknown"))
+    end
+    local popupHidden, popupHideErr = EnsureRawVisible(popup, false, c.owner)
+    if popupHidden ~= true then return FailColorBuild("colorfield_popup_initial_hide_failed:" .. tostring(popupHideErr or "unknown")) end
 
     local body = RSUI:VerticalBox({ id = spec.id .. "_body", parent = popup, gap = 5, padding = 7 })
+    if body == nil then return FailColorBuild("colorfield_body_create_failed") end
     c.sliders = {}
     -- Declared BEFORE the slider loop on purpose: the per-channel set closure
     -- (below) references Clamp01. In Lua a closure defined before a `local
@@ -891,7 +1065,9 @@ RSUI:RegisterType("ColorField", function(spec)
     local channels = { { key = "r", label = "R", idx = 1 }, { key = "g", label = "G", idx = 2 }, { key = "b", label = "B", idx = 3 } }
     for _, ch in ipairs(channels) do
         local row = RSUI:HorizontalBox({ id = spec.id .. "_" .. ch.key .. "_row", parent = body, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
-        RSUI:Text({ id = spec.id .. "_" .. ch.key .. "_label", parent = row, text = ch.label, fontSize = 9, tone = "muted", slot = { size = "fixed", width = 12 } })
+        if row == nil then return FailColorBuild("colorfield_channel_row_create_failed:" .. tostring(ch.key)) end
+        local channelLabel = RSUI:Text({ id = spec.id .. "_" .. ch.key .. "_label", parent = row, text = ch.label, fontSize = 9, tone = "muted", slot = { size = "fixed", width = 12 } })
+        if channelLabel == nil then return FailColorBuild("colorfield_channel_label_create_failed:" .. tostring(ch.key)) end
         -- Each Slider owns its channel via get/set closures over the shared color.
         -- Slider (not NumericField) is used so ApplyColor can re-sync the slider
         -- view from c.color via :Render() without re-committing through the
@@ -899,20 +1075,30 @@ RSUI:RegisterType("ColorField", function(spec)
         local slider = RSUI:Slider({
             id = spec.id .. "_" .. ch.key, parent = row, min = 0, max = 1, step = 0.02, integer = false,
             get = function() return c.color[ch.idx] end,
-            set = function(v) c.color[ch.idx] = Clamp01(v); c:SyncSwatchAndHex(); c:Commit() end,
+            set = function(v) c.color[ch.idx] = Clamp01(v); c:SyncSwatchAndHex(); return c:Commit() end,
             slot = { size = "fill", fill = 1, hAlign = "fill" },
         })
+        if slider == nil then return FailColorBuild("colorfield_channel_slider_create_failed:" .. tostring(ch.key)) end
         c.sliders[ch.key] = slider
     end
     local hexRow = RSUI:HorizontalBox({ id = spec.id .. "_hex_row", parent = body, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
-    RSUI:Text({ id = spec.id .. "_hex_label", parent = hexRow, text = "#", fontSize = 9, tone = "muted", slot = { size = "fixed", width = 12 } })
+    if hexRow == nil then return FailColorBuild("colorfield_hex_row_create_failed") end
+    local hexLabel = RSUI:Text({ id = spec.id .. "_hex_label", parent = hexRow, text = "#", fontSize = 9, tone = "muted", slot = { size = "fixed", width = 12 } })
+    if hexLabel == nil then return FailColorBuild("colorfield_hex_label_create_failed") end
     -- TextInput commits via onSubmit (it exposes no OnCommitted method); the
     -- guard is dropped because onSubmit is always a safe no-op when absent.
     local hexInput = RSUI:TextInput({ id = spec.id .. "_hex", parent = hexRow, maxLength = 7, height = 20,
-        onSubmit = function(text) local parsed = c:ParseHex(text); if parsed ~= nil then c:ApplyColor(parsed[1], parsed[2], parsed[3]); c:Commit() end end,
+        onSubmit = function(text)
+            local parsed = c:ParseHex(text)
+            if parsed == nil then return false end
+            c:ApplyColor(parsed[1], parsed[2], parsed[3])
+            return c:Commit()
+        end,
         slot = { size = "fill", fill = 1, hAlign = "fill" } })
+    if hexInput == nil then return FailColorBuild("colorfield_hex_input_create_failed") end
     c.hexInput = hexInput
     local doneBtn = RSUI:Button({ id = spec.id .. "_done", parent = body, text = "完成", compact = true, slot = { size = "fixed", height = 24, hAlign = "fill" } })
+    if doneBtn == nil then return FailColorBuild("colorfield_done_button_create_failed") end
 
     function c:SyncSwatchAndHex()
         if self.swatch ~= nil then UI:SetColor(self.swatch, self.color[1], self.color[2], self.color[3], 1, self.owner) end
@@ -944,15 +1130,35 @@ RSUI:RegisterType("ColorField", function(spec)
         if self.sliders.b ~= nil then self.sliders.b:Render() end
     end
     function c:Commit()
-        local ok = Write(self.binding, { self.color[1], self.color[2], self.color[3] }, true, "colorfield", spec)
-        if ok == true and type(spec.onChanged) == "function" then RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, { self.color[1], self.color[2], self.color[3] }, self) end
-        return ok
+        local nextColor = { self.color[1], self.color[2], self.color[3] }
+        local ok = Write(self.binding, nextColor, true, "colorfield", spec)
+        if ok == true then
+            self.value = { nextColor[1], nextColor[2], nextColor[3] }
+            if type(spec.onChanged) == "function" then RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, nextColor, self) end
+            return true
+        end
+        -- Slider/hex previews mutate the local color before Commit().  If the
+        -- binding/persistence transaction rejects the write, roll the entire
+        -- visual composite back to the authoritative value immediately.
+        local authoritative = Read(self.binding, self.value)
+        if type(authoritative) == "table" then self:ApplyColor(authoritative[1], authoritative[2], authoritative[3]) end
+        return false
     end
     function c:GetValue() return Read(self.binding, self.value) end
     function c:SetValue(color, notify)
-        if type(color) == "table" then self:ApplyColor(color[1], color[2], color[3]) end
-        if notify ~= false and type(spec.onChanged) == "function" then RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, { self.color[1], self.color[2], self.color[3] }, self) end
-        return true
+        if self.enabled == false then return false end
+        if type(color) ~= "table" then return false end
+        local nextColor = { Clamp01(color[1]), Clamp01(color[2]), Clamp01(color[3]) }
+        local ok = Write(self.binding, nextColor, true, "colorfield_api", spec)
+        if ok == true then
+            self.value = { nextColor[1], nextColor[2], nextColor[3] }
+            self:ApplyColor(nextColor[1], nextColor[2], nextColor[3])
+            if notify ~= false and type(spec.onChanged) == "function" then RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, nextColor, self) end
+            return true
+        end
+        local authoritative = Read(self.binding, self.value)
+        if type(authoritative) == "table" then self:ApplyColor(authoritative[1], authoritative[2], authoritative[3]) end
+        return false
     end
     function c:Render()
         local v = self:GetValue()
@@ -987,27 +1193,44 @@ RSUI:RegisterType("ColorField", function(spec)
         return true
     end
     function c:Open()
-        if self.enabled == false or self.released == true then return false end
+        if self.enabled == false or self.released == true or self.rsUiDegraded == true then return false end
         if RSUI.PopupCoordinator ~= nil then RSUI.PopupCoordinator:CloseAll(self) end
+        local layoutOk, layoutErr = self:ApplyPopupLayout()
+        if layoutOk ~= true then return false, layoutErr end
+        local visibleOk, visibleErr = EnsureRawVisible(self.popup, true, self.owner)
+        if visibleOk ~= true then
+            if type(self.FailClosedInteraction) == "function" then self:FailClosedInteraction("colorfield_popup_show_failed:" .. tostring(visibleErr or "unknown")) end
+            return false, visibleErr
+        end
         self.open = true
-        self:ApplyPopupLayout()
-        UI:SetVisible(self.popup, true, self.owner)
         if type(self.popup.SetDrawPriority) == "function" then pcall(function() self.popup:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end
         if type(self.popup.Raise) == "function" then pcall(function() self.popup:Raise() end) end
         return true
     end
     function c:Close()
         if self.open ~= true then return false end
+        local visibleOk, visibleErr = EnsureRawVisible(self.popup, false, self.owner)
+        if visibleOk ~= true then
+            if type(self.FailClosedInteraction) == "function" then self:FailClosedInteraction("colorfield_popup_hide_failed:" .. tostring(visibleErr or "unknown")) end
+            return false, visibleErr
+        end
         self.open = false
-        UI:SetVisible(self.popup, false, self.owner)
         return true
     end
     function c:ToggleOpen() if self.open == true then return self:Close() end; return self:Open() end
     function c:SetEnabled(enabled)
-        self.enabled = enabled ~= false
-        UI:SetEnabled(self.root, self.enabled, self.owner)
+        local desired = enabled ~= false
+        if type(UI.EnsureEnabled) ~= "function" then return self.enabled ~= false, false, "enabled_transaction_unavailable" end
+        local accepted, _, enableErr = UI:EnsureEnabled(self.root, desired, self.owner)
+        if accepted ~= true then
+            local detail = tostring(enableErr or "native_enable_rejected")
+            if self.popup ~= nil then UI:SetVisible(self.popup, false, self.owner) end
+            if type(self.FailClosedInteraction) == "function" then self:FailClosedInteraction("enabled_state_failed:" .. detail) end
+            return self.enabled ~= false, false, detail
+        end
+        self.enabled = desired
         if self.enabled == false then self:Close() end
-        return self.enabled
+        return self.enabled, true, nil
     end
 
     local baseRelease = c.Release
@@ -1018,8 +1241,8 @@ RSUI:RegisterType("ColorField", function(spec)
         return baseRelease(self)
     end
 
-    c:On(trigger, "OnClick", function() return c:ToggleOpen() end, "rsui:" .. spec.id .. ":trigger")
-    c:On(doneBtn, "OnClick", function() return c:Close() end, "rsui:" .. spec.id .. ":done")
+    c:RequireOn(trigger, "OnClick", function() return c:ToggleOpen() end, "rsui:" .. spec.id .. ":trigger")
+    c:RequireOn(doneBtn, "OnClick", function() return c:Close() end, "rsui:" .. spec.id .. ":done")
     if RSUI.PopupCoordinator ~= nil then RSUI.PopupCoordinator:Register(c) end
 
     c:SetEnabled(spec.enabled ~= false)

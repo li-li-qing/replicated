@@ -1603,8 +1603,10 @@ G:RegisterSequenceCase("v3_50_ui_layout_editor_composition_contract", function()
         or type(rsui.types) ~= "table" or rsui.types["LayoutEditorOverlay"] == nil then
         return Fail("layout_editor_overlay_contract")
     end
-    if type(templates) ~= "table" or (tonumber(templates.contractVersion) or 0) < 4
-        or (tonumber(rsui.LayoutEditorWorkspaceContractVersion) or 0) < 2
+    if type(templates) ~= "table" or (tonumber(templates.contractVersion) or 0) < 6
+        or (tonumber(rsui.LayoutEditorWorkspaceContractVersion) or 0) < 4
+        or (tonumber(rsui.ComponentApiContractVersion) or 0) < 1
+        or type(rsui.RequireComponentMethods) ~= "function"
         or (tonumber(rsui.LayoutEditorWorkspaceSessionBindingContractVersion) or 0) < 1
         or type(templates.ValidateLayoutEditorEditSessionSpec) ~= "function"
         or type(rsui.CreateLayoutEditorWorkspace) ~= "function" then
@@ -1944,9 +1946,11 @@ end)
 G:RegisterSequenceCase("v3_54_ui_layout_editor_workspace_integration_contract", function()
     local rsui = S.RSUI
     local templates = rsui and rsui.WorkspaceTemplates or nil
-    if type(rsui) ~= "table" or (tonumber(rsui.version) or 0) < 42 then return Fail("rsui_v42_missing") end
-    if type(templates) ~= "table" or (tonumber(templates.contractVersion) or 0) < 4
-        or (tonumber(rsui.LayoutEditorWorkspaceContractVersion) or 0) < 2
+    if type(rsui) ~= "table" or (tonumber(rsui.version) or 0) < 44 then return Fail("rsui_v44_missing") end
+    if type(templates) ~= "table" or (tonumber(templates.contractVersion) or 0) < 6
+        or (tonumber(rsui.LayoutEditorWorkspaceContractVersion) or 0) < 4
+        or (tonumber(rsui.ComponentApiContractVersion) or 0) < 1
+        or type(rsui.RequireComponentMethods) ~= "function"
         or (tonumber(rsui.LayoutEditorWorkspaceSessionBindingContractVersion) or 0) < 1
         or type(templates.ValidateLayoutEditorEditSessionSpec) ~= "function" then
         return Fail("layout_editor_workspace_integration_contract")
@@ -1977,3 +1981,69 @@ G:RegisterSequenceCase("v3_54_ui_layout_editor_workspace_integration_contract", 
     return true
 end)
 
+G:RegisterSequenceCase("v3_55_unit_line_adaptive_sampling_contract", function()
+    local guides = S.UIV3 and S.UIV3.CombatVisualGuidesV3 or nil
+    if type(guides) ~= "table" or (tonumber(guides.version) or 0) < 5
+        or (tonumber(guides.AdaptiveUnitLineSamplingContractVersion) or 0) < 2
+        or (tonumber(guides.UnitLineVisibleSegmentClippingContractVersion) or 0) < 1
+        or (tonumber(guides.UnitLinePressureBudgetContractVersion) or 0) < 1
+        or (tonumber(guides.UnitLineDiffRenderContractVersion) or 0) < 1
+        or (tonumber(guides.UnitLineProgressivePoolContractVersion) or 0) < 1
+        or type(guides.BuildUnitLineSamplePlan) ~= "function" then
+        return Fail("unit_line_adaptive_contract")
+    end
+    local projection = { pointCount=24, pairPoints={ target=24 }, refreshMs=100 }
+    local near = guides:BuildUnitLineSamplePlan({ { pairKey="target",x1=100,y1=100,x2=200,y2=100 } }, projection, 1024, 768)
+    if type(near) ~= "table" or #near ~= 1 or near[1].count ~= 24 or near[1].clipped ~= false then
+        return Fail("unit_line_near_density_floor")
+    end
+    local long = guides:BuildUnitLineSamplePlan({ { pairKey="target",x1=50,y1=100,x2=950,y2=100 } }, projection, 1024, 768)
+    if type(long) ~= "table" or #long ~= 1 or tonumber(long[1].count) == nil or long[1].count <= 48 then
+        return Fail("unit_line_long_distance_must_add_samples")
+    end
+    local clipped = guides:BuildUnitLineSamplePlan({ { pairKey="target",x1=-10000,y1=384,x2=512,y2=384 } }, projection, 1024, 768)
+    if type(clipped) ~= "table" or #clipped ~= 1 or clipped[1].clipped ~= true
+        or math.abs((tonumber(clipped[1].x1) or -1)-0) > 0.01 or math.abs((tonumber(clipped[1].x2) or -1)-512) > 0.01 then
+        return Fail("unit_line_visible_segment_clipping")
+    end
+    local hidden = guides:BuildUnitLineSamplePlan({ { pairKey="target",x1=-100,y1=-100,x2=-50,y2=-50 } }, projection, 1024, 768)
+    if type(hidden) ~= "table" or #hidden ~= 0 then return Fail("unit_line_offscreen_segment_cull") end
+    local rows = {}
+    for index=1,4 do rows[index]={ pairKey=(index==1 and "target" or ("edge"..index)),x1=0,y1=index*100,x2=1024,y2=index*100 } end
+    local fastProjection = { pointCount=48, pairPoints={ target=48,edge2=48,edge3=48,edge4=48 }, refreshMs=1 }
+    local fast,budget = guides:BuildUnitLineSamplePlan(rows, fastProjection, 1024, 768, "Normal")
+    local total=0; for _,plan in ipairs(fast or {}) do total=total+(tonumber(plan.count) or 0) end
+    if tonumber(budget) ~= 256 or total > 256 then return Fail("unit_line_fast_refresh_budget") end
+    local pressured,criticalBudget = guides:BuildUnitLineSamplePlan(rows, fastProjection, 1024, 768, "Critical")
+    local pressuredTotal=0; for _,plan in ipairs(pressured or {}) do pressuredTotal=pressuredTotal+(tonumber(plan.count) or 0) end
+    -- With four explicit base=48 edges, the configured base floor (192) wins
+    -- over the nominal Critical factor. Pressure may shed only adaptive EXTRA
+    -- density, never the user's persisted base density.
+    if tonumber(criticalBudget) ~= 192 or pressuredTotal ~= 192 then return Fail("unit_line_pressure_budget_base_floor") end
+    return true
+end)
+
+
+
+G:RegisterSequenceCase("v3_56_ui_component_api_contract", function()
+    local rsui = S.RSUI
+    if type(rsui) ~= "table" or (tonumber(rsui.version) or 0) < 44
+        or (tonumber(rsui.ComponentApiContractVersion) or 0) < 1
+        or type(rsui.RequireComponentMethods) ~= "function"
+        or type(rsui.BaseComponent) ~= "table"
+        or type(rsui.BaseComponent.Show) ~= "function"
+        or type(rsui.BaseComponent.Hide) ~= "function" then
+        return Fail("rsui_component_api_contract")
+    end
+    local probe = {
+        SetVisible = function() return true end,
+        SetText = function() return true end,
+    }
+    local ok, err = rsui:RequireComponentMethods(probe, { "SetVisible", "SetText" }, "sequence_probe")
+    if ok ~= true or err ~= nil then return Fail("component_api_positive_probe") end
+    local missingOk, missingErr = rsui:RequireComponentMethods(probe, { "SetVisible", "Show" }, "sequence_probe")
+    if missingOk ~= false or tostring(missingErr) ~= "component_method_required:sequence_probe:Show" then
+        return Fail("component_api_missing_method_probe")
+    end
+    return true
+end)

@@ -20,6 +20,8 @@ local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
 if type(UI) ~= "table" or type(RSUI) ~= "table" then return end
 local Tokens = S.UITokens or {}
+RSUI.InteractionServiceContractVersion = 3
+RSUI.InteractionPopupVisibilityContractVersion = 1
 
 local function Token(path, fallback)
     if type(Tokens.Number) == "function" then return Tokens:Number(path, fallback) end
@@ -41,6 +43,13 @@ local function ResolveNative(target)
     if RSUI:IsComponent(target) then return target:GetRoot(), target end
     if type(target) == "table" then return target, nil end
     return nil, nil
+end
+local function EnsureVisible(widget, visible, owner)
+    if widget == nil then return false, "popup_widget_required" end
+    if type(UI.EnsureVisible) ~= "function" then return false, "visibility_transaction_unavailable" end
+    local accepted, _, detail = UI:EnsureVisible(widget, visible == true, owner)
+    if accepted ~= true then return false, tostring(detail or "native_visibility_rejected") end
+    return true, nil
 end
 local function UiMetrics()
     if S.Api ~= nil and type(S.Api.GetUiMetrics) == "function" then
@@ -166,24 +175,40 @@ function Tooltip:_EnsureFallback()
     -- Fallback tooltips share the same WrappedText contract as normal RSUI
     -- text. ArcheAge LABEL is single-line; never write a TextLayout string that
     -- contains newlines directly into one Native label.
-    local textComponent = RSUI:Text({
+    local textComponent, textErr = RSUI:Text({
         id = "rsui_tooltip_text", parent = root, text = "", x = 8, y = 5, width = 204, height = 18,
         fontSize = 10, tone = "default", overflow = "wrap", maxLines = 8, nativeLineLimit = 8, shadow = true,
     })
     local label = textComponent and textComponent.lineLabels and textComponent.lineLabels[1] or nil
-    if textComponent ~= nil and textComponent.root ~= nil then
+    if textComponent == nil or label == nil then
+        UI:SetVisible(root, false, self.owner)
+        if textComponent ~= nil and type(textComponent.Release) == "function" then pcall(function() textComponent:Release() end) end
+        return nil, "tooltip_text_create_failed:" .. tostring(textErr or "label_unavailable")
+    end
+    if textComponent.root ~= nil then
         textComponent.root.rsUiOwner = self.owner
         if type(UI.AdoptWidget) == "function" then UI:AdoptWidget(textComponent.root, self.owner, "rsui_tooltip_text_host") end
     end
     -- The pooled popup is presentation-only. It must never become a second hit
     -- surface and steal OnLeave/click/wheel from the row that owns the tooltip.
-    if type(UI.SetPickable) == "function" then
-        UI:SetPickable(root, false, self.owner)
-    else
-        if type(root.EnablePick) == "function" then pcall(function() root:EnablePick(false) end) end
-        if type(root.Clickable) == "function" then pcall(function() root:Clickable(false) end) end
+    -- This is a correctness contract, not a cosmetic preference: if hit-test
+    -- disable cannot be established, do not cache or show the popup.
+    if type(UI.EnsurePickable) ~= "function" then
+        UI:SetVisible(root, false, self.owner)
+        textComponent:Release()
+        return nil, "tooltip_pickable_contract_unavailable"
     end
-    UI:SetVisible(root, false, self.owner)
+    local pickOk, _, pickErr = UI:EnsurePickable(root, false, self.owner)
+    if pickOk ~= true then
+        UI:SetVisible(root, false, self.owner)
+        textComponent:Release()
+        return nil, "tooltip_hit_test_disable_failed:" .. tostring(pickErr or "unknown")
+    end
+    local hidden, hideErr = EnsureVisible(root, false, self.owner)
+    if hidden ~= true then
+        textComponent:Release()
+        return nil, "tooltip_initial_hide_failed:" .. tostring(hideErr or "unknown")
+    end
     self.fallback = { root = root, label = label, textComponent = textComponent, text = nil }
     return self.fallback
 end
@@ -249,14 +274,18 @@ function Tooltip:Show(target, text, options)
     px = Clamp(px, 4, math.max(4, vw - width - 4))
     py = Clamp(py, 4, math.max(4, vh - height - 4))
     UI:SetAnchor(popup.root, UIParent, px, py, self.owner)
-    UI:SetVisible(popup.root, true, self.owner)
+    local shown, showErr = EnsureVisible(popup.root, true, self.owner)
+    if shown ~= true then return false, "tooltip_show_failed:" .. tostring(showErr or "unknown") end
     if type(popup.root.Raise) == "function" then pcall(function() popup.root:Raise() end) end
     popup.text = value
     return true, "fallback"
 end
 
 function Tooltip:Hide()
-    if self.fallback ~= nil and self.fallback.root ~= nil then UI:SetVisible(self.fallback.root, false, self.owner) end
+    if self.fallback ~= nil and self.fallback.root ~= nil then
+        local hidden, hideErr = EnsureVisible(self.fallback.root, false, self.owner)
+        if hidden ~= true then return false, "tooltip_hide_failed:" .. tostring(hideErr or "unknown") end
+    end
     RSUI.metrics.tooltipHides = (tonumber(RSUI.metrics.tooltipHides) or 0) + 1
     return true
 end
@@ -296,12 +325,24 @@ function Tooltip:Bind(target, spec)
         okA = UI:SafeHandler(native, "OnEnter", enter, "rsui:tooltip_enter")
         okB = UI:SafeHandler(native, "OnLeave", leave, "rsui:tooltip_leave")
     end
-    if okA or okB then
+    -- Hover semantics are a pair. Enter-only can leave the pooled fallback
+    -- permanently visible; Leave-only reports a binding that can never display.
+    -- Require both handlers and roll back any partial component subscription.
+    if okA == true and okB == true then
         RSUI.metrics.tooltipBindings = (tonumber(RSUI.metrics.tooltipBindings) or 0) + 1
         return true
     end
+    if component ~= nil and type(component.Off) == "function" then
+        if okA == true then component:Off(native, "OnEnter", "rsui:tooltip_enter") end
+        if okB == true then component:Off(native, "OnLeave", "rsui:tooltip_leave") end
+    elseif type(native.ReleaseHandler) == "function" then
+        if okA == true then pcall(function() native:ReleaseHandler("OnEnter") end) end
+        if okB == true then pcall(function() native:ReleaseHandler("OnLeave") end) end
+    end
     self.bindings[native] = nil
-    return false, "handler_unavailable"
+    self:Hide()
+    RSUI.metrics.tooltipBindingPairFailures = (tonumber(RSUI.metrics.tooltipBindingPairFailures) or 0) + 1
+    return false, "tooltip_handler_pair_required"
 end
 
 -- Reusable binding for any RSUI Text component. Callers choose the hit
@@ -369,7 +410,18 @@ function ContextMenu:_EnsureRoot()
     if type(UI.AdoptWidget) == "function" then UI:AdoptWidget(root, self.owner, "rsui_context_menu") end
     if type(UI.TrySetUILayer) == "function" then UI:TrySetUILayer(root, "system") end
     if type(root.SetDrawPriority) == "function" then pcall(function() root:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end
-    UI:SetVisible(root, false, self.owner)
+    if type(UI.EnsurePickable) ~= "function" or type(UI.EnsureEnabled) ~= "function" then
+        UI:SetVisible(root, false, self.owner)
+        return nil, "context_menu_interaction_contract_unavailable"
+    end
+    local pickOk, _, pickErr = UI:EnsurePickable(root, true, self.owner)
+    local enabledOk, _, enabledErr = UI:EnsureEnabled(root, true, self.owner)
+    if pickOk ~= true or enabledOk ~= true then
+        UI:SetVisible(root, false, self.owner)
+        return nil, "context_menu_interaction_failed:" .. tostring(pickErr or enabledErr or "unknown")
+    end
+    local hidden, hideErr = EnsureVisible(root, false, self.owner)
+    if hidden ~= true then return nil, "context_menu_initial_hide_failed:" .. tostring(hideErr or "unknown") end
     self.root = root
     return root
 end
@@ -382,7 +434,7 @@ function ContextMenu:_EnsureRow(index)
     button.rsUiOwner = self.owner
     if type(UI.AdoptWidget) == "function" then UI:AdoptWidget(button, self.owner, "rsui_context_item_" .. tostring(index)) end
     local service = self
-    UI:SafeHandler(button, "OnClick", function()
+    local clickBound, clickErr = UI:RequireHandler(button, "OnClick", function()
         local row = service.rows[index]
         local item = row and row.item
         if item == nil or item.enabled == false or item.separator == true then return false end
@@ -393,6 +445,10 @@ function ContextMenu:_EnsureRow(index)
         if type(callback) == "function" then Callback("rsui:context_menu:" .. tostring(item.id or index), callback, item, index) end
         return true
     end, "rsui:context_menu_click:" .. tostring(index))
+    if clickBound ~= true then
+        UI:SetVisible(button, false, self.owner)
+        return nil, clickErr or "context_menu_click_bind_failed"
+    end
     local row = { button = button, item = nil }
     self.rows[index] = row
     RSUI.metrics.contextMenuRowsCreated = (tonumber(RSUI.metrics.contextMenuRowsCreated) or 0) + 1
@@ -445,7 +501,11 @@ function ContextMenu:Open(anchor, items, options)
     local height = padding * 2 + #normalized * rowHeight
 
     for index, item in ipairs(normalized) do
-        local row = self:_EnsureRow(index)
+        local row, rowErr = self:_EnsureRow(index)
+        if row == nil then
+            self:Close()
+            return false, tostring(rowErr or ("context_menu_row_unavailable:" .. tostring(index)))
+        end
         if row ~= nil then
             row.item = item
             local prefix = item.checked and "✓  " or ""
@@ -453,7 +513,15 @@ function ContextMenu:Open(anchor, items, options)
             UI:SetText(row.button, text, self.owner)
             UI:SetExtent(row.button, math.max(1, width - padding * 2), math.max(1, rowHeight - 1), self.owner)
             UI:SetAnchor(row.button, self.root, padding, padding + (index - 1) * rowHeight, self.owner)
-            UI:SetEnabled(row.button, item.enabled and not item.separator, self.owner)
+            if type(UI.EnsureEnabled) ~= "function" then
+                self:Close()
+                return false, "context_menu_enabled_contract_unavailable"
+            end
+            local enableOk, _, enableErr = UI:EnsureEnabled(row.button, item.enabled and not item.separator, self.owner)
+            if enableOk ~= true then
+                self:Close()
+                return false, "context_menu_row_enable_failed:" .. tostring(index) .. ":" .. tostring(enableErr or "unknown")
+            end
             if type(UI.SetLabelTone) == "function" then UI:SetLabelTone(row.button, item.tone or "default", self.owner) end
             UI:SetVisible(row.button, true, self.owner)
         end
@@ -472,7 +540,8 @@ function ContextMenu:Open(anchor, items, options)
     if py + height > vh - 4 then py = math.max(4, y - height - 4) end
     px, py = Clamp(px, 4, math.max(4, vw - width - 4)), Clamp(py, 4, math.max(4, vh - height - 4))
     UI:SetAnchor(self.root, UIParent, px, py, self.owner)
-    UI:SetVisible(self.root, true, self.owner)
+    local shown, showErr = EnsureVisible(self.root, true, self.owner)
+    if shown ~= true then return false, "context_menu_show_failed:" .. tostring(showErr or "unknown") end
     if type(self.root.Raise) == "function" then pcall(function() self.root:Raise() end) end
     self.open = true
     RSUI.metrics.contextMenuOpens = (tonumber(RSUI.metrics.contextMenuOpens) or 0) + 1
@@ -480,8 +549,11 @@ function ContextMenu:Open(anchor, items, options)
 end
 
 function ContextMenu:Close()
-    if self.root ~= nil then UI:SetVisible(self.root, false, self.owner) end
     local changed = self.open == true
+    if self.root ~= nil then
+        local hidden, hideErr = EnsureVisible(self.root, false, self.owner)
+        if hidden ~= true then return false, "context_menu_hide_failed:" .. tostring(hideErr or "unknown") end
+    end
     self.open = false
     if changed then RSUI.metrics.contextMenuCloses = (tonumber(RSUI.metrics.contextMenuCloses) or 0) + 1 end
     return changed
@@ -534,28 +606,39 @@ function Focus:CanClear(target)
     return true, nil
 end
 
+local function ApplyFocusInteraction(native, methodName)
+    if type(UI.TryInteractionCall) == "function" then
+        local accepted, interactionErr = UI:TryInteractionCall(native, methodName)
+        if accepted == true then return true, nil end
+        return false, tostring(interactionErr or (methodName .. "_failed"))
+    end
+    local ok, result = pcall(function() return native[methodName](native) end)
+    if ok == true and result ~= false then return true, nil end
+    return false, tostring(ok and "native_rejected" or result)
+end
+
 function Focus:Set(target)
     local supported, reason = self:CanSet(target)
     if supported ~= true then return false, reason end
     local native = ResolveNative(target)
-    local ok = pcall(function() native:SetFocus() end)
-    if ok then
+    local accepted, focusErr = ApplyFocusInteraction(native, "SetFocus")
+    if accepted == true then
         RSUI.metrics.focusChanges = (tonumber(RSUI.metrics.focusChanges) or 0) + 1
         return true, nil
     end
-    return false, "set_focus_failed"
+    return false, "set_focus_failed:" .. tostring(focusErr or "unknown")
 end
 
 function Focus:Clear(target)
     local supported, reason = self:CanClear(target)
     if supported ~= true then return false, reason end
     local native = ResolveNative(target)
-    local ok = pcall(function() native:ClearFocus() end)
-    if ok then
+    local accepted, focusErr = ApplyFocusInteraction(native, "ClearFocus")
+    if accepted == true then
         RSUI.metrics.focusChanges = (tonumber(RSUI.metrics.focusChanges) or 0) + 1
         return true, nil
     end
-    return false, "clear_focus_failed"
+    return false, "clear_focus_failed:" .. tostring(focusErr or "unknown")
 end
 
 function Focus:GetFocusedWidgetId()

@@ -762,7 +762,7 @@ local function EnsureSafeDragProxy()
     proxy:AddAnchor("TOPLEFT", "UIParent", 0, 0)
     if proxy.Enable ~= nil then pcall(function() proxy:Enable(true) end) end
     if proxy.Clickable ~= nil then pcall(function() proxy:Clickable(false) end) end
-    if proxy.EnablePick ~= nil then pcall(function() proxy:EnablePick(false, true) end) end
+    if proxy.EnablePick ~= nil then pcall(function() proxy:EnablePick(false) end) end
     proxy:Show(false)
     L.safeDragProxy = proxy
     return proxy

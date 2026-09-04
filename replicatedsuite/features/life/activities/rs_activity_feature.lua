@@ -368,6 +368,7 @@ end
 F.Commands = F.Commands or {}
 function F.Commands:MarkStoreDirty(delayMs, reason) return F:MarkStoreDirty(delayMs, reason) end
 function F.Commands:SetWidgetVisible(visible, source) return F:SetWidgetVisible(visible == true, source or "activity_command") end
+function F.Commands:SetWidgetWindowState(value, reason) return F:SetWidgetWindowState(value, reason or "activity_widget_window_state") end
 function F.Commands:SetWidgetRows(rows, source) return F:SetWidgetRows(rows, source or "activity_command") end
 function F.Commands:SetWidgetSize(width, height, source) return F:SetWidgetSize(width, height, source or "activity_command") end
 function F.Commands:RefreshProjection(reason, scanZones) return F:RefreshProjection(reason or "activity_command", scanZones) end

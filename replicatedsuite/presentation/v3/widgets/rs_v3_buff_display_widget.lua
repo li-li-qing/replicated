@@ -35,8 +35,6 @@ local function CreateWidget()
         if type(Feature.Commands) == "table" and type(Feature.Commands.Refresh) == "function" then Feature.Commands:Refresh("widget_manual") end
         return instance:Refresh()
     end
-    if settingsButton ~= nil and settingsButton.root ~= nil then S.UI:SafeHandler(settingsButton.root, "OnClick", settingsButton.onClick, OWNER .. ":settings") end
-    if refreshButton ~= nil and refreshButton.root ~= nil then S.UI:SafeHandler(refreshButton.root, "OnClick", refreshButton.onClick, OWNER .. ":refresh") end
     -- The floating window is a tracking manager, not a live buff mirror: it
     -- lists every tracked id with its icon and lets the player untrack by
     -- clicking a row. Rows use onItemActivated (no selection) so clicking is
@@ -124,12 +122,15 @@ local function CreateWidget()
         return true
     end
     function instance:Hide(context)
+        local hidden, hideErr = self.surface:Show(false)
+        if hidden ~= true then return false, hideErr end
+        local released, releaseErr = true, nil
         if self.visible == true and S.FeatureRuntime:IsEnabled("combat_buff_display") == true then
-            local ok, hideErr = Feature:ReleaseConsumer("widget:buff_display")
-            if ok ~= true then return false, hideErr end
+            released, releaseErr = Feature:ReleaseConsumer("widget:buff_display")
         end
-        self.visible = false; self:Unsubscribe(); self.surface:Show(false)
+        self.visible = false; self:Unsubscribe()
         if type(context) ~= "table" or context.persist ~= false then Feature.Commands:SetWidgetVisible(false, "hide") end
+        if released ~= true then return false, releaseErr end
         return true
     end
     function instance:OnWindowClosed(context)

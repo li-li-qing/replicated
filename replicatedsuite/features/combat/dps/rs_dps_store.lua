@@ -1,8 +1,8 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - DPS Store
 --
--- Account-scoped permanent storage for DPS settings, manual Boss names and the
--- FloatingSurface window state. No combat statistics are persisted here: the live meter is session-only
+-- Account-scoped permanent storage for DPS settings, manual Boss names, the
+-- FloatingSurface window state, and the user-controlled HUD visibility preference. No combat statistics are persisted here: the live meter is session-only
 -- by design, exactly like the legacy behaviour evidence (the old Professional
 -- DPS kept its running totals in memory and only persisted user preferences).
 --
@@ -20,7 +20,7 @@ local F = S.Features.DPS
 local U = S.Utils
 
 local STORE_ID = "v3.dps"
-local SCHEMA = 3
+local SCHEMA = 4
 local MAX_BOSS_NAMES = 64
 local MAX_DISPLAY_ROWS = 150
 
@@ -85,6 +85,11 @@ local function NormalizeState(value)
     return {
         settings = NormalizeSettings(value.settings),
         bossNames = bossNames,
+        -- Visibility is a durable presentation preference, not an implication of
+        -- the DPS Feature enable state.  Schema <=3 stores do not contain this
+        -- field and therefore migrate fail-closed to hidden instead of reopening
+        -- the meter after every reload.
+        widgetVisible = value.widgetVisible == true,
         -- FloatingSurface owns the concrete schema below this table. Keep the
         -- state opaque here so window geometry/lock/minimize/opacity survives
         -- store normalization and future FloatingSurface migrations.

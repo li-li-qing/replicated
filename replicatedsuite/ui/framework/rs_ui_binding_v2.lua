@@ -7,8 +7,9 @@ local UI = S.UI
 if type(UI) ~= "table" then return end
 
 local Binding = {
-    version = 2.4,
-    metrics = { created = 0, reads = 0, writes = 0, skipped = 0, rejected = 0, commits = 0, errors = 0, persistentCreated = 0, persistenceMarks = 0, persistenceFailures = 0, persistenceAutoLoads = 0, persistenceLoadFailures = 0 },
+    version = 2.5,
+    transactionContractVersion = 2,
+    metrics = { created = 0, reads = 0, writes = 0, skipped = 0, rejected = 0, commits = 0, errors = 0, normalizationFailures = 0, persistentCreated = 0, persistenceMarks = 0, persistenceFailures = 0, persistenceAutoLoads = 0, persistenceLoadFailures = 0, persistenceReadPrepares = 0, persistenceRollbacks = 0, persistenceRollbackFailures = 0 },
     activeBindings = setmetatable({}, { __mode = "k" }),
 }
 UI.Binding = Binding
@@ -66,12 +67,13 @@ function Binding:Create(options)
     end
 
     function binding:Normalize(value, previous, source)
-        if type(options.normalize) ~= "function" then return value end
+        if type(options.normalize) ~= "function" then return value, true end
         local ok, normalized = xpcall(function() return options.normalize(value, previous, source, self) end, S.SafeTraceback)
-        if ok then return normalized end
+        if ok then return normalized, true end
+        Binding.metrics.normalizationFailures = (tonumber(Binding.metrics.normalizationFailures) or 0) + 1
         self:SetError(normalized, source)
         Report("BIND_NORMALIZE_FAILED", normalized, { id = options.id })
-        return previous
+        return previous, false, tostring(normalized or "normalize failed")
     end
 
     function binding:Validate(value, previous, source)
@@ -124,7 +126,11 @@ function Binding:Create(options)
         source = tostring(source or "program")
         self.lastSource = source
         if previous == nil then previous = self:Get() end
-        local nextValue = self:Normalize(value, previous, source)
+        local nextValue, normalizedOk = self:Normalize(value, previous, source)
+        if normalizedOk ~= true then
+            Binding.metrics.rejected = Binding.metrics.rejected + 1
+            return false, self.lastError or "normalize failed"
+        end
         if not self:Validate(nextValue, previous, source) then
             Binding.metrics.rejected = Binding.metrics.rejected + 1
             return false
@@ -200,6 +206,22 @@ function UI:CreatePersistentSettingBinding(options)
     if type(P) ~= "table" or type(P.GetStore) ~= "function" or P:GetStore(storeId) == nil then
         return nil, "persistent binding store unavailable: " .. storeId
     end
+    -- Read-before-render is as important as load-before-write. A page may be
+    -- constructed while its Feature is disabled; exposing a binding before the
+    -- Store has applied would render Lua defaults as persisted truth.
+    if type(P.PrepareRead) ~= "function" then
+        Binding.metrics.persistenceFailures = (tonumber(Binding.metrics.persistenceFailures) or 0) + 1
+        Binding.metrics.persistenceLoadFailures = (tonumber(Binding.metrics.persistenceLoadFailures) or 0) + 1
+        return nil, "persistent PrepareRead unavailable: " .. storeId
+    end
+    local readReady, readErr = P:PrepareRead(storeId)
+    if readReady ~= true then
+        Binding.metrics.persistenceFailures = (tonumber(Binding.metrics.persistenceFailures) or 0) + 1
+        Binding.metrics.persistenceLoadFailures = (tonumber(Binding.metrics.persistenceLoadFailures) or 0) + 1
+        return nil, "persistent read prepare failed: " .. tostring(readErr or storeId)
+    end
+    Binding.metrics.persistenceReadPrepares = (tonumber(Binding.metrics.persistenceReadPrepares) or 0) + 1
+
     local baseOptions = {}
     for key, value in pairs(options) do baseOptions[key] = value end
     baseOptions.storeId, baseOptions.persistenceStore = nil, nil
@@ -229,7 +251,8 @@ function UI:CreatePersistentSettingBinding(options)
         -- binding must make sure the permanent Store has been applied BEFORE it
         -- mutates Domain memory. This closes the old "edit defaults, then erase
         -- the user's saved config" failure mode.
-        if store.loaded ~= true then
+        local ready = type(P.IsStoreLoaded) == "function" and select(1, P:IsStoreLoaded(self.storeId)) or store.loaded == true
+        if ready ~= true then
             local prepared, prepareErr = false, "PrepareWrite unavailable"
             if type(P.PrepareWrite) == "function" then prepared, prepareErr = P:PrepareWrite(self.storeId) end
             if prepared ~= true then
@@ -265,15 +288,35 @@ function UI:CreatePersistentSettingBinding(options)
         local marked, markErr = P:MarkDirty(self.storeId, self.persistDelayMs, self.persistReason .. ":" .. source)
         if marked ~= true then
             Binding.metrics.persistenceFailures = (tonumber(Binding.metrics.persistenceFailures) or 0) + 1
-            -- Best-effort transactional recovery: put the Domain value back and
-            -- restore the binding revision/dirty projection to the effective
-            -- value.  The Persistence Store remains the final dirty authority.
+            Binding.metrics.persistenceRollbacks = (tonumber(Binding.metrics.persistenceRollbacks) or 0) + 1
+            -- MarkDirty is the persistence ownership hand-off. If it fails after
+            -- Domain mutation, restore the previous authoritative value before
+            -- reporting rejection. A Lua pcall succeeding is not enough: Domain
+            -- setters may explicitly return false, and local-value bindings need
+            -- their backing option restored too.
             local rollbackOk, rollbackErr = true, nil
-            if type(self.domainSet) == "function" then rollbackOk, rollbackErr = pcall(self.domainSet, previous, true, "persistence_rollback", value, self) end
+            if type(self.domainSet) == "function" then
+                local callOk, accepted, detail = xpcall(function()
+                    return self.domainSet(previous, false, "persistence_rollback", value, self)
+                end, S.SafeTraceback)
+                rollbackOk = callOk == true and accepted ~= false
+                rollbackErr = callOk == true and detail or accepted
+            else
+                self.options.value = previous
+            end
+            local canVerify = type(self.options.get) == "function" and (type(previous) ~= "table" or type(self.options.equals) == "function")
+            if rollbackOk == true and canVerify then
+                local verifyOk, restored = xpcall(function() return self:Get() end, S.SafeTraceback)
+                rollbackOk = verifyOk == true and self:Equals(restored, previous)
+                if rollbackOk ~= true then rollbackErr = verifyOk == true and "rollback_value_mismatch" or restored end
+            end
             self.revision = beforeRevision
             self:ResetDirty()
             if rollbackOk ~= true then
+                Binding.metrics.persistenceRollbackFailures = (tonumber(Binding.metrics.persistenceRollbackFailures) or 0) + 1
                 Report("BIND_PERSIST_ROLLBACK_FAILED", rollbackErr, { id = options.id, store = self.storeId })
+                self:SetError("mark dirty failed; rollback failed: " .. tostring(rollbackErr or "unknown"), source)
+                return false
             end
             self:SetError(markErr or "mark dirty failed", source)
             return false
@@ -295,7 +338,8 @@ function UI:CreatePersistentSettingBinding(options)
     function binding:Commit(source)
         local store = P:GetStore(self.storeId)
         if store == nil then self:SetError("persistent store unavailable", source); return false end
-        if store.loaded ~= true then
+        local ready = type(P.IsStoreLoaded) == "function" and select(1, P:IsStoreLoaded(self.storeId)) or store.loaded == true
+        if ready ~= true then
             local prepared, prepareErr = false, "PrepareWrite unavailable"
             if type(P.PrepareWrite) == "function" then prepared, prepareErr = P:PrepareWrite(self.storeId) end
             if prepared ~= true then
@@ -323,7 +367,9 @@ function UI:CreatePersistentSettingBinding(options)
         return {
             storeId = self.storeId, dirty = store ~= nil and store.dirty == true,
             writeFenced = store ~= nil and store.writeFenced == true,
-            loaded = store ~= nil and store.loaded == true, loadStatus = store and store.loadStatus or nil,
+            loaded = store ~= nil and (type(P.IsStoreLoaded) ~= "function" or select(1, P:IsStoreLoaded(self.storeId))) == true,
+            terminalLoaded = store ~= nil and store.loaded == true,
+            loadStatus = store and store.loadStatus or nil,
             lastError = store and store.lastError or nil, dueAt = store and store.dueAt or nil,
         }
     end
@@ -349,19 +395,25 @@ function Binding:GetSnapshot()
         rejected = self.metrics.rejected,
         commits = self.metrics.commits,
         errors = self.metrics.errors,
+        normalizationFailures = tonumber(self.metrics.normalizationFailures) or 0,
         persistentCreated = tonumber(self.metrics.persistentCreated) or 0,
         persistenceMarks = tonumber(self.metrics.persistenceMarks) or 0,
         persistenceFailures = tonumber(self.metrics.persistenceFailures) or 0,
         persistenceAutoLoads = tonumber(self.metrics.persistenceAutoLoads) or 0,
         persistenceLoadFailures = tonumber(self.metrics.persistenceLoadFailures) or 0,
+        persistenceReadPrepares = tonumber(self.metrics.persistenceReadPrepares) or 0,
+        persistenceRollbacks = tonumber(self.metrics.persistenceRollbacks) or 0,
+        persistenceRollbackFailures = tonumber(self.metrics.persistenceRollbackFailures) or 0,
+        transactionContractVersion = tonumber(self.transactionContractVersion) or 0,
     }
 end
 
 function Binding:ResetMetrics()
     self.metrics.created, self.metrics.reads, self.metrics.writes = 0, 0, 0
-    self.metrics.skipped, self.metrics.rejected, self.metrics.commits, self.metrics.errors = 0, 0, 0, 0
+    self.metrics.skipped, self.metrics.rejected, self.metrics.commits, self.metrics.errors, self.metrics.normalizationFailures = 0, 0, 0, 0, 0
     self.metrics.persistentCreated, self.metrics.persistenceMarks, self.metrics.persistenceFailures = 0, 0, 0
-    self.metrics.persistenceAutoLoads, self.metrics.persistenceLoadFailures = 0, 0
+    self.metrics.persistenceAutoLoads, self.metrics.persistenceLoadFailures, self.metrics.persistenceReadPrepares = 0, 0, 0
+    self.metrics.persistenceRollbacks, self.metrics.persistenceRollbackFailures = 0, 0
 end
 
 function UI:CreateSettingBinding(options) return Binding:Create(options) end

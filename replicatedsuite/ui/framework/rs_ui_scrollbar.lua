@@ -15,7 +15,7 @@ local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
 if type(UI) ~= "table" or type(RSUI) ~= "table" then return end
 
-local Scrollbar = { version = 3 }
+local Scrollbar = { version = 5, criticalInteractionContractVersion = 1, enabledStateContractVersion = 1 }
 RSUI.ScrollbarBehavior = Scrollbar
 
 local function Clamp(value, lo, hi)
@@ -39,10 +39,16 @@ local function EffectiveOffset(widget)
 end
 
 local function SetPickable(widget)
-    if widget == nil then return end
-    if type(widget.Enable) == "function" then pcall(function() widget:Enable(true) end) end
-    if type(widget.EnablePick) == "function" then pcall(function() widget:EnablePick(true, true) end) end
-    if type(widget.Clickable) == "function" then pcall(function() widget:Clickable(true, true) end) end
+    if widget == nil then return false, "scrollbar_drag_proxy_required" end
+    local owner = widget.rsUiOwner
+    if type(UI.EnsureEnabled) ~= "function" or type(UI.EnsurePickable) ~= "function" then
+        return false, "scrollbar_interaction_transaction_unavailable"
+    end
+    local enabledOk, _, enabledErr = UI:EnsureEnabled(widget, true, owner)
+    if enabledOk ~= true then return false, "scrollbar_enable_failed:" .. tostring(enabledErr or "unknown") end
+    local pickOk, _, pickErr = UI:EnsurePickable(widget, true, owner)
+    if pickOk ~= true then return false, "scrollbar_pickable_failed:" .. tostring(pickErr or "unknown") end
+    return true, nil
 end
 
 local function ReleaseHandler(widget, eventName)
@@ -87,9 +93,22 @@ function Scrollbar:Attach(host, spec)
     local drag = UI:CreateEmptyWidget(track, id .. "_drag_proxy", 0, 0, thickness + hitPadding * 2, minThumb, true)
     if thumb == nil or drag == nil then return nil, "thumb_create_failed" end
 
-    SetPickable(drag)
-    if type(drag.EnableDrag) == "function" then pcall(function() drag:EnableDrag(true) end) end
-    if type(drag.SetDragCondition) == "function" and DC_ALWAYS ~= nil then pcall(function() drag:SetDragCondition(DC_ALWAYS) end) end
+    if type(UI.TryInteractionCall) ~= "function" or type(UI.RequireHandler) ~= "function" then
+        UI:SetVisible(track, false, host.owner); UI:SetVisible(thumb, false, host.owner); UI:SetVisible(drag, false, host.owner)
+        return nil, "critical_interaction_contract_unavailable"
+    end
+    local dragEnabled, dragErr = UI:TryInteractionCall(drag, "EnableDrag", true)
+    if dragEnabled ~= true then
+        UI:SetVisible(track, false, host.owner); UI:SetVisible(thumb, false, host.owner); UI:SetVisible(drag, false, host.owner)
+        return nil, "scrollbar_enable_drag_failed:" .. tostring(dragErr or "rejected")
+    end
+    if type(drag.SetDragCondition) == "function" and DC_ALWAYS ~= nil then
+        local conditionOk, conditionErr = UI:TryInteractionCall(drag, "SetDragCondition", DC_ALWAYS)
+        if conditionOk ~= true then
+            UI:SetVisible(track, false, host.owner); UI:SetVisible(thumb, false, host.owner); UI:SetVisible(drag, false, host.owner)
+            return nil, "scrollbar_drag_condition_failed:" .. tostring(conditionErr or "rejected")
+        end
+    end
 
     if type(track.CreateColorDrawable) == "function" then
         local bg = (S.VisualTokens and S.VisualTokens:Color("cardInset")) or {0.01, 0.03, 0.04, 0.90}
@@ -116,7 +135,7 @@ function Scrollbar:Attach(host, spec)
         version = 3, id = id, host = host, owner = host.owner,
         orientation = orientation, thickness = thickness, minThumb = minThumb,
         hitPadding = hitPadding, track = track, thumb = thumb, dragProxy = drag,
-        dragging = false, travel = 0, maxOffset = 0, offset = 0,
+        dragging = false, enabled = true, travel = 0, maxOffset = 0, offset = 0,
         taskName = "rsui_scrollbar_drag:" .. id,
         getMaxOffset = spec.getMaxOffset,
         getOffset = spec.getOffset,
@@ -152,6 +171,27 @@ function Scrollbar:Attach(host, spec)
         self.updateFallback = false
     end
 
+    function behavior:SetEnabled(enabled)
+        local desired = enabled ~= false
+        if type(UI.EnsureEnabled) ~= "function" or type(UI.EnsurePickable) ~= "function" then
+            return false, "scrollbar_enabled_contract_unavailable"
+        end
+        if desired ~= true and self.dragging == true then
+            self:StopInteractiveTask()
+            if self.dragProxy ~= nil and type(self.dragProxy.StopMovingOrSizing) == "function" then
+                UI:TryInteractionCall(self.dragProxy, "StopMovingOrSizing")
+            end
+            self.dragging = false
+            self.dragStartAxis, self.dragStartOffset = nil, nil
+        end
+        local enabledOk, _, enabledErr = UI:EnsureEnabled(self.dragProxy, desired, self.owner)
+        if enabledOk ~= true then return false, tostring(enabledErr or "scrollbar_drag_enable_rejected") end
+        local pickOk, _, pickErr = UI:EnsurePickable(self.dragProxy, desired, self.owner)
+        if pickOk ~= true then return false, tostring(pickErr or "scrollbar_drag_pick_rejected") end
+        self.enabled = desired
+        return true, nil
+    end
+
     function behavior:SyncFromProxy(final)
         if self.dragging ~= true and final ~= true then return false end
         local x, y = EffectiveOffset(self.dragProxy)
@@ -171,9 +211,20 @@ function Scrollbar:Attach(host, spec)
         local maxOffset = self:GetMaxOffset()
         self.maxOffset = maxOffset
         local visible = maxOffset > 0
-        UI:SetVisible(self.track, visible, self.owner)
-        UI:SetVisible(self.thumb, visible, self.owner)
-        UI:SetVisible(self.dragProxy, visible, self.owner)
+        if type(UI.EnsureVisible) ~= "function" or type(UI.EnsureEnabled) ~= "function" or type(UI.EnsurePickable) ~= "function" then
+            return false, "scrollbar_visibility_transaction_unavailable"
+        end
+        local trackOk, _, trackErr = UI:EnsureVisible(self.track, visible, self.owner)
+        local thumbOk, _, thumbErr = UI:EnsureVisible(self.thumb, visible, self.owner)
+        local dragOk, _, dragErr = UI:EnsureVisible(self.dragProxy, visible, self.owner)
+        local inputEnabled = visible and self.enabled ~= false
+        local enableOk, _, enableErr = UI:EnsureEnabled(self.dragProxy, inputEnabled, self.owner)
+        local pickOk, _, pickErr = UI:EnsurePickable(self.dragProxy, inputEnabled, self.owner)
+        if trackOk ~= true or thumbOk ~= true or dragOk ~= true or enableOk ~= true or pickOk ~= true then
+            UI:EnsureEnabled(self.dragProxy, false, self.owner)
+            UI:EnsurePickable(self.dragProxy, false, self.owner)
+            return false, tostring(trackErr or thumbErr or dragErr or enableErr or pickErr or "scrollbar_visibility_state_rejected")
+        end
         if not visible then self.travel = 0; return false end
 
         if visibleUnits == nil and type(self.getVisibleUnits) == "function" then
@@ -208,16 +259,18 @@ function Scrollbar:Attach(host, spec)
         return true
     end
 
-    UI:SafeHandler(drag, "OnDragStart", function()
+    local startBound, startErr = UI:RequireHandler(drag, "OnDragStart", function()
+        if behavior.enabled ~= true or behavior.host.enabled == false or behavior.host.rsUiDegraded == true then return false end
         local maxOffset = behavior:GetMaxOffset()
-        if maxOffset <= 0 or (tonumber(behavior.travel) or 0) <= 0 or type(drag.StartMoving) ~= "function" then return false end
+        if maxOffset <= 0 or (tonumber(behavior.travel) or 0) <= 0 then return false end
         local x, y = EffectiveOffset(drag)
         local axis = behavior.orientation == "horizontal" and x or y
         if axis == nil then return false end
+        local moving = UI:TryInteractionCall(drag, "StartMoving")
+        if moving ~= true then return false end
         behavior.dragging = true
         behavior.dragStartAxis = axis
         behavior.dragStartOffset = behavior:GetOffset()
-        drag:StartMoving()
         behavior:StopInteractiveTask()
         local scheduler = S.Scheduler
         local scheduled = false
@@ -238,7 +291,7 @@ function Scrollbar:Attach(host, spec)
         return true
     end, "rsui:" .. id .. ":drag_start")
 
-    UI:SafeHandler(drag, "OnDragStop", function()
+    local stopBound, stopErr = UI:RequireHandler(drag, "OnDragStop", function()
         behavior:SyncFromProxy(true)
         behavior:StopInteractiveTask()
         if type(drag.StopMovingOrSizing) == "function" then pcall(function() drag:StopMovingOrSizing() end) end
@@ -252,6 +305,12 @@ function Scrollbar:Attach(host, spec)
         end
         return true
     end, "rsui:" .. id .. ":drag_stop")
+
+    if startBound ~= true or stopBound ~= true then
+        behavior:StopInteractiveTask()
+        UI:SetVisible(track, false, behavior.owner); UI:SetVisible(thumb, false, behavior.owner); UI:SetVisible(drag, false, behavior.owner)
+        return nil, tostring(startErr or stopErr or "scrollbar_required_handler_failed")
+    end
 
     UI:SetVisible(track, false, behavior.owner); UI:SetVisible(thumb, false, behavior.owner); UI:SetVisible(drag, false, behavior.owner)
 

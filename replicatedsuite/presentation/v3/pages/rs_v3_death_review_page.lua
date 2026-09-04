@@ -210,9 +210,6 @@ local function Build(parent, route)
             execute = function() return Feature.Commands:ClearHistory() end, onSuccess = function() root.selectedSerial = nil; root:Refresh() end })
     end
     settingsButton.spec.onClick = function() return root:SetSettingsVisible(not root.settingsVisible) end
-    for _, button in ipairs({ featureToggle, showWidget, deleteSelected, clearHistory, settingsButton }) do
-        if button.root ~= nil then S.UI:SafeHandler(button.root, "OnClick", function() return button.spec.onClick() end, "v3_death_review:" .. tostring(button.id)) end
-    end
 
     function root:Subscribe()
         if self.subscribed then return true end

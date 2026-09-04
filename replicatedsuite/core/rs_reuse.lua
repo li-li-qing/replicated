@@ -159,8 +159,8 @@ function NativeSafe.CreateDriver(id, parent, visible)
     if window == nil then return nil, createErr or "native driver creation failed" end
     NativeSafe.Call(window, "SetExtent", 1, 1)
     NativeSafe.Call(window, "AddAnchor", "TOPLEFT", parent or "UIParent", 0, 0)
-    NativeSafe.Call(window, "EnablePick", false, true)
-    NativeSafe.Call(window, "Clickable", false, true)
+    NativeSafe.Call(window, "EnablePick", false)
+    NativeSafe.Call(window, "Clickable", false)
     NativeSafe.Call(window, "Show", visible == true)
     return window
 end

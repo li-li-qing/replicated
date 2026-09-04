@@ -65,7 +65,6 @@ local function BuildPage(parent, route)
         root:Refresh()
         return true
     end
-    if toggle.root ~= nil then S.UI:SafeHandler(toggle.root, "OnClick", toggle.onClick, "v3_butler:toggle") end
     function root:OnActivated()
         if S.FeatureRuntime:IsEnabled("life_butler") ~= true then self.consumerHeld = false; return self:Refresh() end
         local acquired, acquireErr = Feature:AcquireConsumer("page:butler")

@@ -242,14 +242,6 @@ local function BuildPage(parent, route)
             return ok, "检查已取消"
         end)
     end
-    for _, pair in ipairs({ { featureButton, "feature" }, { scanButton, "scan" }, { rosterButton, "roster" }, { cancelButton, "cancel" } }) do
-        local button, key = pair[1], pair[2]
-        if button.root ~= nil then
-            local buttonRef, keyRef = button, key
-            S.UI:SafeHandler(button.root, "OnClick", function() return buttonRef.onClick() end, "v3_raid_readiness:" .. keyRef)
-        end
-    end
-
     function root:Subscribe()
         if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" or type(S.Events.UnsubscribeInternalOwner) ~= "function" then
             return false, "内部事件总线不可用"

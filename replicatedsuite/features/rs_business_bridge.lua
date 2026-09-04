@@ -464,7 +464,7 @@ end
 
 local function StopBagBatch(feature, status, errorText)
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(BAG_BATCH_TASK) end
-    feature._batchQueue, feature._batchIndex, feature._batchTarget, feature._batchPending = nil, nil, nil, nil
+    feature._batchQueue, feature._batchIndex, feature._batchTarget, feature._batchPending, feature._batchSourceCount = nil, nil, nil, nil, nil
     feature.State.batch = type(feature.State.batch) == "table" and feature.State.batch or { moved = 0, skipped = 0, queued = 0 }
     feature.State.batch.status = status or "stopped"
     feature.State.batch.error = errorText
@@ -479,7 +479,7 @@ end
 
 local function StopBagQuick(feature, status, errorText)
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask)=="function" then S.Scheduler:RemoveTask(BAG_QUICK_MOVE_TASK) end
-    feature._quickQueue, feature._quickIndex, feature._quickPending = nil, nil, nil
+    feature._quickQueue, feature._quickIndex, feature._quickPending, feature._quickSourceCounts = nil, nil, nil, nil
     feature._quickOverlay = type(feature._quickOverlay)=="table" and feature._quickOverlay or {}
     feature._quickOverlay.status = status or "停止"
     feature._quickOverlay.error = errorText
@@ -488,30 +488,100 @@ local function StopBagQuick(feature, status, errorText)
     return true
 end
 
+local BagMoveRuntime = {}
+
+function BagMoveRuntime.ScopeReader(scope)
+    if scope == "bag" then
+        return "X2Bag:Capacity", "X2Bag:GetBagItemInfo", BagApi, "Capacity", "GetBagItemInfo", true
+    elseif scope == "bank" then
+        return "X2Bank:Capacity", "X2Bank:GetBagItemInfo", BankApi, "Capacity", "GetBagItemInfo", false
+    elseif scope == "coffer" then
+        return "X2Coffer:Capacity", "X2Coffer:GetBagItemInfo", CofferApi, "Capacity", "GetBagItemInfo", false
+    end
+    return nil
+end
+
+function BagMoveRuntime.ReadScopeSlot(scope, slot)
+    local _, readCapability, object, _, readMethod, bagFirst = BagMoveRuntime.ScopeReader(scope)
+    if readCapability == nil then return false, nil, "未知容器" end
+    if bagFirst then return Call(readCapability, object, readMethod, 0, slot) end
+    return Call(readCapability, object, readMethod, slot)
+end
+
+function BagMoveRuntime.ReadScopeCapacity(scope)
+    local capCapability, _, object, capMethod = BagMoveRuntime.ScopeReader(scope)
+    if capCapability == nil then return nil, "未知容器" end
+    local ok, capacity, err = Call(capCapability, object, capMethod)
+    capacity = Number(capacity)
+    if ok ~= true or capacity == nil or capacity < 0 then return nil, "容量不可读：" .. tostring(err or scope) end
+    capacity = math.floor(capacity)
+    return math.min(BAG_SCAN_LIMIT, capacity), nil, capacity > BAG_SCAN_LIMIT
+end
+
 local function BagIdentitySet(scope)
-    local set, rows, readErrors = {}, {}, 0
-    local capCapability, readCapability, object, capMethod, readMethod, bagFirst
-    if scope=="bag" then
-        capCapability,readCapability,object,capMethod,readMethod,bagFirst="X2Bag:Capacity","X2Bag:GetBagItemInfo",BagApi,"Capacity","GetBagItemInfo",true
-    elseif scope=="bank" then
-        capCapability,readCapability,object,capMethod,readMethod="X2Bank:Capacity","X2Bank:GetBagItemInfo",BankApi,"Capacity","GetBagItemInfo"
-    elseif scope=="coffer" then
-        capCapability,readCapability,object,capMethod,readMethod="X2Coffer:Capacity","X2Coffer:GetBagItemInfo",CofferApi,"Capacity","GetBagItemInfo"
-    else return nil,nil,1,"未知容器" end
-    local okCap, cap, capErr = Call(capCapability,object,capMethod); cap=Number(cap)
-    if okCap~=true or cap==nil or cap<0 then return nil,nil,1,"容量不可读："..tostring(capErr or scope) end
-    cap=math.min(BAG_SCAN_LIMIT,math.floor(cap))
-    for slot=1,cap do
-        local ok, info
-        if bagFirst then ok,info=Call(readCapability,object,readMethod,0,slot) else ok,info=Call(readCapability,object,readMethod,slot) end
+    local set, rows, readErrors, counts = {}, {}, 0, {}
+    local capacity, capacityErr = BagMoveRuntime.ReadScopeCapacity(scope)
+    if capacity == nil then return nil,nil,1,capacityErr,nil end
+    for slot=1,capacity do
+        local ok, info = BagMoveRuntime.ReadScopeSlot(scope, slot)
         if ok~=true then readErrors=readErrors+1
         elseif type(info)=="table" and next(info)~=nil then
             local itemType=SourceIdentity(info)
-            if itemType~=nil then set[itemType]=true; rows[#rows+1]={slot=slot,itemType=itemType,info=info} end
+            if itemType~=nil then
+                set[itemType]=true
+                counts[itemType]=(tonumber(counts[itemType]) or 0)+1
+                rows[#rows+1]={slot=slot,itemType=itemType,info=info}
+            end
         end
     end
-    if readErrors>0 then return set,rows,readErrors,"有槽位读取失败" end
-    return set,rows,0,nil
+    if readErrors>0 then return set,rows,readErrors,"有槽位读取失败",counts end
+    return set,rows,0,nil,counts
+end
+
+-- MoveToEmpty* can cause the client to compact/reproject bag slots. Slot numbers
+-- are therefore a transient locator, never item identity. Quick/batch plans keep
+-- stable itemType/category intent and resolve the live source slot immediately
+-- before each write. This prevents a successful first move from invalidating the
+-- rest of a precomputed slot queue.
+function BagMoveRuntime.FindLiveMoveSource(feature, sourceScope, blacklistScope, itemType, category)
+    local capacity, capacityErr = BagMoveRuntime.ReadScopeCapacity(sourceScope)
+    if capacity == nil then return nil, nil, capacityErr end
+    local readErrors = 0
+    for slot = 1, capacity do
+        local ok, info = BagMoveRuntime.ReadScopeSlot(sourceScope, slot)
+        if ok ~= true then
+            readErrors = readErrors + 1
+        elseif type(info) == "table" and next(info) ~= nil then
+            local currentType, currentCategory = SourceIdentity(info)
+            local identityMatch = itemType ~= nil and currentType == itemType or itemType == nil and currentCategory == category
+            if identityMatch then
+                local allowed, deny = CheckBlacklist(feature, blacklistScope, info)
+                if allowed == true then return slot, info, nil end
+                if deny ~= nil then -- keep scanning: another same-category row may still be allowed
+                    -- no-op; deny is intentionally row-local
+                end
+            end
+        end
+    end
+    if readErrors > 0 then return nil, nil, "源容器有槽位读取失败，已安全停止" end
+    return nil, nil, "没有剩余可移动的匹配物品"
+end
+
+function BagMoveRuntime.CountLiveMatches(scope, itemType, category)
+    local capacity, capacityErr = BagMoveRuntime.ReadScopeCapacity(scope)
+    if capacity == nil then return nil, capacityErr end
+    local count, readErrors = 0, 0
+    for slot = 1, capacity do
+        local ok, info = BagMoveRuntime.ReadScopeSlot(scope, slot)
+        if ok ~= true then
+            readErrors = readErrors + 1
+        elseif type(info) == "table" and next(info) ~= nil then
+            local currentType, currentCategory = SourceIdentity(info)
+            if (itemType ~= nil and currentType == itemType) or (itemType == nil and currentCategory == category) then count = count + 1 end
+        end
+    end
+    if readErrors > 0 then return nil, "源容器有槽位读取失败，无法确认移动结果" end
+    return count, nil
 end
 
 local function BeginBagQuick(feature, direction)
@@ -521,23 +591,26 @@ local function BeginBagQuick(feature, direction)
     if type(bagWindow)~="table" or bagWindow.status~="ready" or bagWindow.visible~=true then return false,"请先打开背包" end
     if type(storage)~="table" then return false,"请先打开银行或箱子" end
     local target=storage.kind
-    local bagSet,bagRows,bagErrors,bagErr=BagIdentitySet("bag")
-    local storageSet,storageRows,storageErrors,storageErr=BagIdentitySet(target)
+    local bagSet,bagRows,bagErrors,bagErr,bagCounts=BagIdentitySet("bag")
+    local storageSet,storageRows,storageErrors,storageErr,storageCounts=BagIdentitySet(target)
     if bagSet==nil or storageSet==nil then return false,bagErr or storageErr or "容器读取失败" end
     if bagErrors>0 or storageErrors>0 then return false,"物品槽位存在读取失败，已安全拒绝取放" end
     local queue={}
+    local sourceCounts
     if direction=="withdraw" then
+        sourceCounts=storageCounts or {}
         for _,row in ipairs(storageRows) do
             if bagSet[row.itemType] and #queue<BAG_QUICK_LIMIT then
                 local allowed=CheckBlacklist(feature,target,row.info)
-                if allowed==true then queue[#queue+1]={slot=row.slot,itemType=row.itemType,source=target,dest="bag"} end
+                if allowed==true then queue[#queue+1]={itemType=row.itemType,source=target,dest="bag"} end
             end
         end
     elseif direction=="deposit" then
+        sourceCounts=bagCounts or {}
         for _,row in ipairs(bagRows) do
             if storageSet[row.itemType] and #queue<BAG_QUICK_LIMIT then
                 local allowed=CheckBlacklist(feature,target,row.info)
-                if allowed==true then queue[#queue+1]={slot=row.slot,itemType=row.itemType,source="bag",dest=target} end
+                if allowed==true then queue[#queue+1]={itemType=row.itemType,source="bag",dest=target} end
             end
         end
     else return false,"未知快捷动作" end
@@ -545,6 +618,7 @@ local function BeginBagQuick(feature, direction)
     feature._quickOverlay.status=#queue>0 and (direction=="withdraw" and "正在取出" or "正在放入") or "没有可匹配的同类物品"
     feature._quickOverlay.error=nil; feature._quickOverlay.queued=#queue; feature._quickOverlay.moved=0
     feature._quickQueue,feature._quickIndex,feature._quickPending=queue,0,nil
+    feature._quickSourceCounts=Copy(sourceCounts)
     PublishBagOverlay(feature,"bag_quick_start")
     if #queue==0 then return true,0 end
     if S.Scheduler==nil or type(S.Scheduler.AddTask)~="function" then
@@ -557,29 +631,56 @@ local function BeginBagQuick(feature, direction)
         if type(current)~="table" or current.kind~=target then StopBagQuick(feature,"已停止","仓库/箱子已关闭或切换"); return end
         local pending=feature._quickPending
         if pending~=nil then
-            local ok,info
-            if pending.source=="bag" then ok,info=Call("X2Bag:GetBagItemInfo",BagApi,"GetBagItemInfo",0,pending.slot)
-            elseif pending.source=="bank" then ok,info=Call("X2Bank:GetBagItemInfo",BankApi,"GetBagItemInfo",pending.slot)
-            else ok,info=Call("X2Coffer:GetBagItemInfo",CofferApi,"GetBagItemInfo",pending.slot) end
+            local ok,info,readErr=BagMoveRuntime.ReadScopeSlot(pending.source,pending.slot)
+            if ok~=true then StopBagQuick(feature,"已停止","移动后源槽读取失败："..tostring(readErr or "unknown")); return end
             local afterType=SourceIdentity(info)
-            if ok~=true or afterType==pending.itemType then StopBagQuick(feature,"已停止","移动后源槽未发生预期变化，已安全停止"); return end
-            feature._quickOverlay.moved=(tonumber(feature._quickOverlay.moved) or 0)+1; feature._quickPending=nil
+            local moved = type(info)~="table" or next(info)==nil or afterType~=pending.itemType
+            if moved~=true then
+                -- A successful move may compact another identical stack into the
+                -- same slot. Only when the locator remains ambiguous do a bounded
+                -- identity-count verification instead of treating slot equality
+                -- as proof that the write failed.
+                local liveCount,countErr=BagMoveRuntime.CountLiveMatches(pending.source,pending.itemType,nil)
+                if liveCount==nil then StopBagQuick(feature,"已停止",countErr or "移动结果无法确认"); return end
+                moved=liveCount < (tonumber(pending.beforeCount) or 0)
+            end
+            if moved~=true then StopBagQuick(feature,"已停止","移动后源容器数量未减少，已安全停止"); return end
+            local beforeCount=tonumber(pending.beforeCount) or 1
+            feature._quickSourceCounts=type(feature._quickSourceCounts)=="table" and feature._quickSourceCounts or {}
+            feature._quickSourceCounts[pending.itemType]=math.max(0,beforeCount-1)
+            feature._quickOverlay.moved=(tonumber(feature._quickOverlay.moved) or 0)+1
+            feature._quickPending=nil
         end
         local entry=feature._quickQueue[feature._quickIndex+1]
         if entry==nil then StopBagQuick(feature,"已完成",nil); return end
-        local ok,info
-        if entry.source=="bag" then ok,info=Call("X2Bag:GetBagItemInfo",BagApi,"GetBagItemInfo",0,entry.slot)
-        elseif entry.source=="bank" then ok,info=Call("X2Bank:GetBagItemInfo",BankApi,"GetBagItemInfo",entry.slot)
-        else ok,info=Call("X2Coffer:GetBagItemInfo",CofferApi,"GetBagItemInfo",entry.slot) end
-        local itemType=SourceIdentity(info)
-        if ok~=true or itemType~=entry.itemType then feature._quickIndex=feature._quickIndex+1; PublishBagOverlay(feature,"bag_quick_skip"); return end
+        local slot,info,sourceErr=BagMoveRuntime.FindLiveMoveSource(feature,entry.source,target,entry.itemType,nil)
+        if slot==nil then
+            feature._quickIndex=feature._quickIndex+1
+            if sourceErr~="没有剩余可移动的匹配物品" then
+                StopBagQuick(feature,"已停止",sourceErr or "源物品解析失败")
+            else
+                PublishBagOverlay(feature,"bag_quick_skip")
+            end
+            return
+        end
+        local counts=type(feature._quickSourceCounts)=="table" and feature._quickSourceCounts or {}
+        local beforeCount=tonumber(counts[entry.itemType]) or 0
+        if beforeCount<1 then
+            local liveCount,countErr=BagMoveRuntime.CountLiveMatches(entry.source,entry.itemType,nil)
+            if liveCount==nil then StopBagQuick(feature,"已停止",countErr or "源数量不可读"); return end
+            beforeCount=liveCount
+            counts[entry.itemType]=liveCount
+            feature._quickSourceCounts=counts
+        end
         local actionOk,actionErr
-        if entry.source=="bag" and target=="bank" then actionOk,actionErr=Action("X2Bag:MoveToEmptyBankSlot",BagApi,"MoveToEmptyBankSlot",entry.slot)
-        elseif entry.source=="bag" then actionOk,actionErr=Action("X2Bag:MoveToEmptyCofferSlot",BagApi,"MoveToEmptyCofferSlot",entry.slot)
-        elseif entry.source=="bank" then actionOk,actionErr=Action("X2Bank:MoveToEmptyBagSlot",BankApi,"MoveToEmptyBagSlot",entry.slot)
-        else actionOk,actionErr=Action("X2Coffer:MoveToEmptyBagSlot",CofferApi,"MoveToEmptyBagSlot",entry.slot) end
+        if entry.source=="bag" and target=="bank" then actionOk,actionErr=Action("X2Bag:MoveToEmptyBankSlot",BagApi,"MoveToEmptyBankSlot",slot)
+        elseif entry.source=="bag" then actionOk,actionErr=Action("X2Bag:MoveToEmptyCofferSlot",BagApi,"MoveToEmptyCofferSlot",slot)
+        elseif entry.source=="bank" then actionOk,actionErr=Action("X2Bank:MoveToEmptyBagSlot",BankApi,"MoveToEmptyBagSlot",slot)
+        else actionOk,actionErr=Action("X2Coffer:MoveToEmptyBagSlot",CofferApi,"MoveToEmptyBagSlot",slot) end
         if actionOk~=true then StopBagQuick(feature,"已停止",actionErr or "移动失败"); return end
-        feature._quickPending=entry; feature._quickIndex=feature._quickIndex+1; PublishBagOverlay(feature,"bag_quick_step")
+        feature._quickPending={slot=slot,itemType=entry.itemType,source=entry.source,beforeCount=beforeCount}
+        feature._quickIndex=feature._quickIndex+1
+        PublishBagOverlay(feature,"bag_quick_step")
     end,false,feature,"P1")
     if added~=true then StopBagQuick(feature,"已停止","快捷取放任务创建失败"); return false,"快捷取放任务创建失败" end
     if type(S.Scheduler.SetTaskModule)=="function" then S.Scheduler:SetTaskModule(BAG_QUICK_MOVE_TASK,"tools_bag",true) end
@@ -658,25 +759,39 @@ local function BeginBatchMove(feature, target, category, requestedLimit)
     end
     if targetReadErrors > 0 or cap > BAG_SCAN_LIMIT then return false, "目标空槽语义不可完整验证，已安全停止" end
     if free <= 0 then return false, "目标仓储没有可验证的空槽" end
-    local queue, skipped, readErrors = {}, 0, 0
+
+    local queue, skipped, readErrors, sourceCategoryCount = {}, 0, 0, 0
     local okBagCap, bagCap = Call("X2Bag:Capacity", BagApi, "Capacity")
     bagCap = Number(bagCap)
     if okBagCap ~= true or bagCap == nil then return false, "背包容量不可读，无法建立批量队列" end
+    local queueLimit = math.min(requestedLimit, free)
     for slot = 1, math.min(BAG_SCAN_LIMIT, math.floor(bagCap)) do
-        if #queue >= math.min(requestedLimit, free) then break end
         local ok, info = Call("X2Bag:GetBagItemInfo", BagApi, "GetBagItemInfo", 0, slot)
-        if ok ~= true then readErrors = readErrors + 1
+        if ok ~= true then
+            readErrors = readErrors + 1
         elseif type(info) == "table" and next(info) ~= nil then
             local _, itemCategory = SourceIdentity(info)
-            if itemCategory == nil then skipped = skipped + 1
+            if itemCategory == nil then
+                skipped = skipped + 1
             elseif itemCategory == category then
-                local allowed = CheckBlacklist(feature, target, info)
-                if allowed == true then queue[#queue + 1] = slot else skipped = skipped + 1 end
+                sourceCategoryCount = sourceCategoryCount + 1
+                if #queue < queueLimit then
+                    local allowed = CheckBlacklist(feature, target, info)
+                    if allowed == true then
+                        -- Queue stable intent, not a transient slot locator. The
+                        -- live bag slot is resolved again immediately before each
+                        -- write because ArcheAge may compact slots after a move.
+                        queue[#queue + 1] = { category = category }
+                    else
+                        skipped = skipped + 1
+                    end
+                end
             end
         end
     end
     feature.State.batch = { status = #queue == 0 and "empty" or "running", moved = 0, skipped = skipped, queued = #queue, error = readErrors > 0 and "部分源槽位不可读，已跳过" or nil }
     feature._batchQueue, feature._batchIndex, feature._batchTarget, feature._batchPending = queue, 0, target, nil
+    feature._batchSourceCount = sourceCategoryCount
     if #queue == 0 then return true, 0 end
     if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then
         StopBagBatch(feature, "stopped", "批量队列调度器不可用，安全拒绝")
@@ -692,28 +807,72 @@ local function BeginBatchMove(feature, target, category, requestedLimit)
         end
         local pending = feature._batchPending
         if pending ~= nil then
-            local ok, info, readErr = Call("X2Bag:GetBagItemInfo", BagApi, "GetBagItemInfo", 0, pending.slot)
-            local _, cat = SourceIdentity(info)
+            local ok, info, readErr = BagMoveRuntime.ReadScopeSlot("bag", pending.slot)
             if ok ~= true then
                 feature.State.batch.status, feature.State.batch.error = "stopped", "移动后源槽读取失败：" .. tostring(readErr or "unknown read error")
                 S.Scheduler:RemoveTask(BAG_BATCH_TASK); feature.Authority:Refresh("batch_verify_read_stop"); return
-            elseif not IsEmptyBagInfo(info) then
-                feature.State.batch.status, feature.State.batch.error = "stopped", "移动后源槽仍有物品或身份不确定（category=" .. tostring(cat or "unknown") .. "）"
+            end
+            local moved = IsEmptyBagInfo(info)
+            if moved ~= true then
+                -- Slot compaction can put another item into the just-vacated
+                -- locator. Confirm the category population decreased before
+                -- deciding the move failed.
+                local liveCount, countErr = BagMoveRuntime.CountLiveMatches("bag", nil, pending.category)
+                if liveCount == nil then
+                    feature.State.batch.status, feature.State.batch.error = "stopped", countErr or "移动结果无法确认"
+                    S.Scheduler:RemoveTask(BAG_BATCH_TASK); feature.Authority:Refresh("batch_verify_count_stop"); return
+                end
+                moved = liveCount < (tonumber(pending.beforeCount) or 0)
+            end
+            if moved ~= true then
+                feature.State.batch.status, feature.State.batch.error = "stopped", "移动后源类别数量未减少，已安全停止"
                 S.Scheduler:RemoveTask(BAG_BATCH_TASK); feature.Authority:Refresh("batch_verify_stop"); return
             end
-            feature.State.batch.moved = feature.State.batch.moved + 1; feature._batchPending = nil
+            local beforeCount = tonumber(pending.beforeCount) or 1
+            feature._batchSourceCount = math.max(0, beforeCount - 1)
+            feature.State.batch.moved = feature.State.batch.moved + 1
+            feature._batchPending = nil
         end
-        local slot = feature._batchQueue[feature._batchIndex + 1]
-        if slot == nil then feature.State.batch.status = "complete"; S.Scheduler:RemoveTask(BAG_BATCH_TASK); feature.Authority:Refresh("batch_complete"); return end
-        local ok, info = Call("X2Bag:GetBagItemInfo", BagApi, "GetBagItemInfo", 0, slot)
-        local _, cat = SourceIdentity(info)
-        if ok ~= true or cat ~= category then feature.State.batch.skipped = feature.State.batch.skipped + 1; feature._batchIndex = feature._batchIndex + 1; feature.Authority:Refresh("batch_skip"); return end
-        local allowed, deny = CheckBlacklist(feature, target, info)
-        if allowed ~= true then feature.State.batch.skipped = feature.State.batch.skipped + 1; feature._batchIndex = feature._batchIndex + 1; feature.State.batch.error = deny; feature.Authority:Refresh("batch_blacklist_skip"); return end
+
+        local entry = feature._batchQueue[feature._batchIndex + 1]
+        if entry == nil then
+            feature.State.batch.status = "complete"
+            S.Scheduler:RemoveTask(BAG_BATCH_TASK)
+            feature.Authority:Refresh("batch_complete")
+            return
+        end
+        local slot, info, sourceErr = BagMoveRuntime.FindLiveMoveSource(feature, "bag", target, nil, category)
+        if slot == nil then
+            feature.State.batch.skipped = feature.State.batch.skipped + 1
+            feature._batchIndex = feature._batchIndex + 1
+            if sourceErr ~= "没有剩余可移动的匹配物品" then
+                feature.State.batch.status, feature.State.batch.error = "stopped", sourceErr or "源物品解析失败"
+                S.Scheduler:RemoveTask(BAG_BATCH_TASK)
+                feature.Authority:Refresh("batch_source_stop")
+            else
+                feature.Authority:Refresh("batch_skip")
+            end
+            return
+        end
+        local beforeCount = tonumber(feature._batchSourceCount) or 0
+        if beforeCount < 1 then
+            local liveCount, countErr = BagMoveRuntime.CountLiveMatches("bag", nil, category)
+            if liveCount == nil then
+                feature.State.batch.status, feature.State.batch.error = "stopped", countErr or "源类别数量不可读"
+                S.Scheduler:RemoveTask(BAG_BATCH_TASK); feature.Authority:Refresh("batch_count_stop"); return
+            end
+            beforeCount = liveCount
+            feature._batchSourceCount = liveCount
+        end
         local capability = target == "bank" and "X2Bag:MoveToEmptyBankSlot" or "X2Bag:MoveToEmptyCofferSlot"
         local actionOk, actionErr = Action(capability, BagApi, target == "bank" and "MoveToEmptyBankSlot" or "MoveToEmptyCofferSlot", slot)
-        if actionOk ~= true then feature.State.batch.status, feature.State.batch.error = "stopped", actionErr or "移动失败"; S.Scheduler:RemoveTask(BAG_BATCH_TASK); feature.Authority:Refresh("batch_action_stop"); return end
-        feature._batchPending = { slot = slot, category = category }; feature._batchIndex = feature._batchIndex + 1; feature.Authority:Refresh("batch_step")
+        if actionOk ~= true then
+            feature.State.batch.status, feature.State.batch.error = "stopped", actionErr or "移动失败"
+            S.Scheduler:RemoveTask(BAG_BATCH_TASK); feature.Authority:Refresh("batch_action_stop"); return
+        end
+        feature._batchPending = { slot = slot, category = category, beforeCount = beforeCount }
+        feature._batchIndex = feature._batchIndex + 1
+        feature.Authority:Refresh("batch_step")
     end, false, feature, "P1")
     if taskAdded ~= true then
         StopBagBatch(feature, "stopped", "批量队列任务创建失败，已清理运行态")
@@ -953,7 +1112,7 @@ NewFeature("combat_target_monitor", { apiDependencies = { "X2Unit:GetTargetUnitI
             if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then return false, "目标距离刷新 Scheduler 不可用" end
             local added = S.Scheduler:AddTask(TARGET_MONITOR_TASK, 500, function()
                 if feature.enabled == true and (tonumber(feature.consumerCount) or 0) > 0 then feature.Authority:Refresh("target_distance") end
-            end, false, feature, "P3", 1)
+            end, false, feature, "P1", 1)
             if added ~= true then return false, "目标距离刷新任务创建失败" end
             if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(TARGET_MONITOR_TASK, feature.Id, false) end
         elseif beforeCount > 0 and afterCount <= 0 and S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then
@@ -1286,6 +1445,7 @@ local TeamTools = NewFeature("combat_team_tools", { apiDependencies = { "X2Team:
 TeamTools.TeamRoleRosterHeld = false
 TeamTools.TeamRoleRosterSubscribed = false
 TeamTools.TeamRoleContractVersion = 2
+TeamTools.AutoRoleCatalogContractVersion = 1
 
 local TEAM_AUTO_ROLE_TASK="v3_team_auto_role_apply"
 local function TeamAutoRoleCatalog() return S.Data and S.Data.TeamAutoRoleCatalog or nil end
@@ -2081,9 +2241,10 @@ end, commands = {
     WithdrawBank = function(feature, slot) return CheckedMove(feature, "bank", "bank", "X2Bank:MoveToEmptyBagSlot", BankApi, "MoveToEmptyBagSlot", slot) end,
     WithdrawCoffer = function(feature, slot) return CheckedMove(feature, "coffer", "coffer", "X2Coffer:MoveToEmptyBagSlot", CofferApi, "MoveToEmptyBagSlot", slot) end,
 } })
-BagTools.BagMoveContractVersion = 4
-BagTools.BatchLifecycleContractVersion = 4
-BagTools.NativeWindowQuickContractVersion = 2
+BagTools.BagMoveContractVersion = 5
+BagTools.BatchLifecycleContractVersion = 5
+BagTools.NativeWindowQuickContractVersion = 3
+BagTools.DynamicSourceResolutionContractVersion = 1
 BagTools.BagTaskMutexContractVersion = 1
 local AUCTION_FAVORITE_MAX, AUCTION_KEYWORD_MAX = 20, 64
 local AUCTION_RESULT_LIMIT_MAX = 30
@@ -2399,7 +2560,7 @@ local function StartUnitLineTask(feature)
     if S.Scheduler == nil or type(S.Scheduler.AddHighFrequencyTask) ~= "function" then return false, "单位连线 Scheduler 不可用" end
     local added = S.Scheduler:AddHighFrequencyTask(UNIT_LINE_TASK, UnitLineInterval(feature), function()
         if feature.enabled == true and (tonumber(feature.consumerCount) or 0) > 0 then feature.Authority:Refresh("visual_tick") end
-    end, false, feature, "P3", 1)
+    end, false, feature, "P1", 1)
     if added ~= true then return false, "单位连线刷新任务创建失败" end
     if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(UNIT_LINE_TASK, feature.Id) end
     return true
@@ -2450,32 +2611,33 @@ local UnitLines = NewFeature("combat_unit_lines", {
     onDisable = function() if S.Scheduler ~= nil then S.Scheduler:RemoveTask(UNIT_LINE_TASK) end return true end,
     read = function(feature)
         local projection = S.Services and S.Services.ScreenProjectionV3 or nil
-        if type(projection) ~= "table" or type(projection.ProjectUnitFlexible) ~= "function" then return {}, "unavailable", "ScreenProjectionV3 不可用" end
-        local rows, attempted, failed = {}, 0, {}
+        if type(projection) ~= "table" or type(projection.ProjectUnitBatch) ~= "function" then return {}, "unavailable", "ScreenProjectionV3 v5 不可用" end
+        local rows, attempted, failed, tokens = {}, 0, {}, {}
+        local seen = {}
         for _, pair in ipairs(UNIT_LINE_PAIRS) do
             if feature.State[pair.setting] ~= false then
                 attempted = attempted + 1
-                local x1,y1,depth1,err1,source1 = projection:ProjectUnitFlexible(pair.from)
-                local x2,y2,depth2,err2,source2 = projection:ProjectUnitFlexible(pair.to)
-                -- Fail closed when either endpoint is behind the camera: a
-                -- negative/zero depth point projects to the mirrored screen
-                -- position (the "line points at the sky" symptom). A unit
-                -- off-screen behind the player simply hides the segment.
-                if x1 ~= nil and y1 ~= nil and x2 ~= nil and y2 ~= nil
-                    and (depth1 == nil or tonumber(depth1) > 0) and (depth2 == nil or tonumber(depth2) > 0) then
+                if seen[pair.from]~=true then seen[pair.from]=true; tokens[#tokens+1]=pair.from end
+                if seen[pair.to]~=true then seen[pair.to]=true; tokens[#tokens+1]=pair.to end
+            end
+        end
+        if attempted == 0 then return {}, "empty", "所有连线类型均已关闭" end
+        local projected,batchErr = projection:ProjectUnitBatch(tokens,{ requireFrontHemisphere=true, worldZOffset=1, validateNativeAgainstCamera=true, reconcileNativeScale=true })
+        projected=type(projected)=="table" and projected or {}
+        for _, pair in ipairs(UNIT_LINE_PAIRS) do
+            if feature.State[pair.setting] ~= false then
+                local a,b=projected[pair.from],projected[pair.to]
+                if type(a)=="table" and a.visible==true and type(b)=="table" and b.visible==true then
                     rows[#rows+1] = { key="unit_line:"..pair.key, pairKey=pair.key, name=pair.label,
-                        text=pair.label, statusText="可绘制", tone="green", x1=x1,y1=y1,x2=x2,y2=y2,
-                        source1=source1, source2=source2, fromToken=pair.from, toToken=pair.to }
+                        text=pair.label, statusText="可绘制", tone="green", x1=a.x,y1=a.y,x2=b.x,y2=b.y,
+                        source1=a.source, source2=b.source, fromToken=pair.from, toToken=pair.to }
                 else
-                    local reason = err1 or err2 or "当前无单位"
-                    if (depth1 ~= nil and tonumber(depth1) <= 0) or (depth2 ~= nil and tonumber(depth2) <= 0) then
-                        reason = "单位在角色背后（屏幕外）"
-                    end
+                    local reason=(type(a)=="table" and a.reason) or (type(b)=="table" and b.reason) or batchErr or "当前无单位"
+                    if reason=="behind_camera" then reason="单位在相机背后（不绘制）" end
                     failed[#failed+1] = pair.label .. "（" .. tostring(reason) .. "）"
                 end
             end
         end
-        if attempted == 0 then return {}, "empty", "所有连线类型均已关闭" end
         if #rows == 0 then return {}, "empty", table.concat(failed, "；") end
         return rows, (#failed > 0 and "partial" or "ready"), (#failed > 0 and table.concat(failed, "；") or nil)
     end,
@@ -2483,7 +2645,8 @@ local UnitLines = NewFeature("combat_unit_lines", {
         refreshMs=UnitLineInterval(feature), showTarget=feature.State.showTarget~=false, showTargetTarget=feature.State.showTargetTarget~=false,
         showFocusTarget=feature.State.showFocusTarget~=false, showFocusTargetTarget=feature.State.showFocusTargetTarget~=false,
         colors=NormalizeUnitLineColors(feature.State.colors),
-        pairPoints=feature.State.pairPoints or {}, pairSizes=feature.State.pairSizes or {} } end,
+        pairPoints=feature.State.pairPoints or {}, pairSizes=feature.State.pairSizes or {},
+        samplingMode="adaptive_screen_space", pointBudgetMode="cadence_pressure_bounded", refreshPriority="P1_visual" } end,
     commands = {
         SetPointCount = function(feature, value) value=math.max(8,math.min(48,math.floor(tonumber(value) or 24))); return PersistStateMutation(feature,"unit_lines_points",function(state) state.pointCount=value; return true end) end,
         SetPointSize = function(feature, value) value=math.max(2,math.min(10,math.floor(tonumber(value) or 4))); return PersistStateMutation(feature,"unit_lines_size",function(state) state.pointSize=value; return true end) end,
@@ -2532,7 +2695,11 @@ local UnitLines = NewFeature("combat_unit_lines", {
         end,
     },
 })
-UnitLines.VisualGuideContractVersion = 2
+UnitLines.VisualGuideContractVersion = 4
+UnitLines.AdaptiveDensityContractVersion = 2
+UnitLines.SmoothRefreshContractVersion = 1
+UnitLines.FrontHemisphereContractVersion = 1
+UnitLines.ProjectionConsistencyContractVersion = 1
 
 local RANGE_ASSIST_TASK = "v3_business_range_assist_refresh"
 local RangeAssist = NewFeature("combat_range_assist", {

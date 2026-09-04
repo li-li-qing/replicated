@@ -42,9 +42,9 @@
 |---|---|
 | 旧实现要点 | TradeService：路线、多货物、实时货率、材料报价与利润计算 |
 | V3 对应物 | `life_trade`（v3.life.trade），状态 `migrated_partial` |
-| V3 已实现 | 路线/区域/服务器货率 + bounded 材料 itemType/数量投影；普通 Refresh 不调用拍卖报价；共享 PriceQuoteQueueV3 已提供显式+异步限速报价（2026-09-02） |
-| 剩余能力 | 恢复材料成本/利润需 Trade Feature 显式触发报价并接回 PriceQuoteQueueV3 异步快照 |
-| 重建前置条件 | ① PriceQuoteQueueV3 限速队列 ✅（已建） ② 报价失败 fail-closed ✅ ③ 用户显式触发（不自动 fan-out）✅ ④ Trade 接回报价快照 |
+| V3 已实现 | 路线/区域/服务器货率 + bounded 材料 itemType/数量投影；普通 Refresh 不调用拍卖报价；Trade 已提供 QuoteMaterial/QuotePendingMaterials 显式入口并通过共享 PriceQuoteQueueV3 异步限速报价；报价完成只重建受影响路线行的材料成本/利润（`.18.93`） |
+| 剩余能力 | RU 实机核验报价返回/材料成本/利润一致性；current/full ratio 与 commerce skill mode；更完整详情/收藏体验 |
+| 重建前置条件 | ① PriceQuoteQueueV3 限速队列 ✅ ② 报价失败 fail-closed ✅ ③ 用户显式触发（不自动 fan-out）✅ ④ Trade 报价快照→成本/利润重建 ✅ ⑤ RU 价格/地区 payload 验收待完成 |
 
 ### 2. Event（活动）
 

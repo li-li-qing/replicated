@@ -125,7 +125,7 @@ Native Foundation 是所有原生对象、能力导入和写入边界的唯一�
 | `QuestProgressV3` | 任务进度共享读取 |
 | `GearServiceV3` | 装备读取/换装受控能力 |
 | `AlertsService` | 短生命周期 Alert 状态 |
-| `ScreenProjectionV3` | Native world/screen → RSUI logical projection |
+| `ScreenProjectionV3` | Native world/screen → RSUI logical projection；v5 unit batch 同一 global world space + bounded Native/Camera consistency reconciliation |
 | `AuctionQueryV3` | 当前挂单查询、事件所有权、串行化与限速边界 |
 | `PriceQuoteQueueV3` | 共享按需报价队列与 bounded quote read-model |
 
@@ -254,7 +254,7 @@ RSUI 是唯一通用 UI Foundation。页面应优先组合：
 - Session
 - Checkpoint
 
-统一采用 Store Contract、Dirty + Debounce、Schema Migration、Write Fence 和失败 rollback。`.18.81` 当前为 **Persistence Reliability Contract v2**：保留 `.18.80` 的 Load-before-Write、dirty Reload fence、失败重试、损坏 payload fail-closed、Reload/Runtime durability barrier，并新增 Domain Budget 与 Encoded Envelope Budget 分离以及 `MutateStore()` 原子 mutation transaction。公共业务写入优先走 `PrepareWrite → snapshot → mutate → MarkDirty/Save → rollback`；Binding/FloatingSurface 的 `MarkDirty` 仅作为已完成 preflight/rollback 的 commit adapter。Feature 关闭不应清除永久用户配置；版本升级必须通过 Normalize / Migration 保持旧配置兼容。
+统一采用 Store Contract、Dirty + Debounce、Schema Migration、Write Fence 和失败 rollback。`.18.81` 建立 **Persistence Reliability Contract v2**：保留 `.18.80` 的 Load-before-Write、dirty Reload fence、失败重试、损坏 payload fail-closed、Reload/Runtime durability barrier，并新增 Domain Budget 与 Encoded Envelope Budget 分离以及 `MutateStore()` 原子 mutation transaction。`.18.83` 追加 runtime acceptance diagnostics；`.18.84` 增加只读 `Runtime Acceptance Snapshot`。`.18.95` 升级为 **Persistence Reliability Contract v3**：Critical Store 可 opt-in `SaveData → immediate LoadData → metadata/decode/Domain fingerprint` 回读验证，验证只读不 Apply。`.18.97` 升级为 **Reliability v4 + Integrity v1**：所有新持久化 envelope 写入 `reliabilityContract/integrityVersion/encodedFingerprint`；`.18.98` 再升级 **Reliability v5 Durability Barrier**：v4/v5 Integrity v1 save 均先在任何 custom decode/migrate/apply 之前验证 encoded budget + fingerprint，v4 stamped 数据保持向前可读；`.18.99` 升级 **Reliability v6**：在 business fingerprint 之外增加 metadata Envelope Seal，custom decode 与 migration/period transform 后再次按 Domain budget 检查，`durable=true` mutation 必须 immediate readback 成功才提交，并把 Character Store loaded Domain 绑定 exact world-qualified identity fingerprint；角色切换时旧 dirty/barrier 只可写回 bound old key，禁止投影到新角色。`.18.100` 升级 **Reliability v7**：任何 `needsBarrierVerify` persistent Store 在 durability barrier 通过前禁止普通 `LoadStore()` 重新 Apply 磁盘值；migration/period reset 的 dirty intent 只有在最终 budget + Apply 成功后才提交；Tick 对 terminal/write-fenced dirty Store 不再重复触发 Native Save，只保留失败 evidence 并有界延后。v4/v5 stamped 数据继续向前可读；普通 Store SaveData 成功后只标记 `needsBarrierVerify`，显式 Reload/Runtime Stop 的 `Flush()` 必须对本 generation 尚未证明耐久的 key 进行一次 bounded readback，失败则阻止 Reload 并 requeue 当前健康 Domain，Critical `verifyAfterSave` Store 不重复读取。`ClearStore()` 也必须在 Apply defaults 前证明 `ClearData` 后物理 key 已为 nil。`IsStoreLoaded()` 仅对健康状态返回 true，Core/UI 通用写路径统一使用该语义。Gear 继续作为 Critical Journal Consumer：Index schema 5 + Payload schema 2 使用 compact A/B bank，active 损坏时可回退 verified backup；损坏 inactive bank 只有在 `recoverableReplacement + replaceCorrupt + verifyAfterSave` 全满足时才允许 verified full replacement 自愈，future schema/瞬时读取错误禁止覆盖。历史 pre-v4/legacy shard 保持只读兼容，已物理丢失的旧装备明细仍只能由用户显式“获取当前→保存”重建。公共业务写入仍优先走 `PrepareWrite → snapshot → mutate → MarkDirty/Save → rollback`；Binding/FloatingSurface 的 `MarkDirty` 仅作为已完成 preflight/rollback 的 commit adapter。Feature 关闭不应清除永久用户配置；版本升级必须通过 Normalize / Migration 保持旧配置兼容。
 
 详见 [`Architecture/PERSISTENCE_ARCHITECTURE.md`](Architecture/PERSISTENCE_ARCHITECTURE.md)。
 
@@ -274,7 +274,7 @@ RSUI 是唯一通用 UI Foundation。页面应优先组合：
 
 ## 11.1 当前 UI Editor Foundation（`.18.78`）
 
-当前 RSUI 已进入 **v42 / API 12.6**。Editor Foundation 已从“独立数学零件”收敛成一条完整、可由业务页面注入持久化边界但不夺取业务 Store Authority 的共享编辑链：
+当前 RSUI 已进入 **v44 / API 12.8**。Interactive Draft Contract v1 在共享 Control 层保护 focused Text/Numeric draft 与 active Slider preview 不被环境刷新用旧 Binding 回灌；Component API Contract v1 统一所有 RSUI Component 的 `Show/Hide → SetVisible` 可见性 facade，并允许 Composite/Workspace 在构建边界通过 `RequireComponentMethods()` 显式验证真实 Public API，避免 Lua 动态方法缺失直到 RU 才暴露。Editor Foundation 已从“独立数学零件”收敛成一条完整、可由业务页面注入持久化边界但不夺取业务 Store Authority 的共享编辑链：
 
 - `SelectionModel`：只回答 **Who**（选中了谁），stable key + revision 是编辑事务的身份边界；
 - `SelectionGeometry / SelectionOverlay / LayoutGuideResolver`：只回答 **Where**（Bounds、8-way handle、move surface、grid/sibling/canvas guide）；candidate hard cap=1024；
@@ -288,7 +288,7 @@ RSUI 是唯一通用 UI Foundation。页面应优先组合：
 - `EditorCommandBar v2`：统一投影 `Undo / Redo / Revert / Reset / Apply` 五个命令状态。Undo/Redo 只读 History Snapshot；Revert/Reset/Apply 只读 LayoutEditSession Snapshot；Busy/blocked 时全部 disabled；组件不拥有 Store/Persistence/dirty Authority。
 - `TransformInspector v2`：一个 `rectModel` + 可选 `anchorModel`。单选显示 Transform/Anchor/Pivot/Snap，多选复用同一个 Inspector 实例但折叠 Anchor/Pivot；不复制 Geometry/Persistence Authority；
 - `LayoutEditorOverlay v1 + History Binding Contract v1`：只组合 GuideOverlay + SelectionOverlay + Gesture v2 + PreviewAdapter + SnapModel，不创建第二套 Pointer/Rect/Snap/Native capture Authority；Workspace 可把唯一 History 注入 Adapter，Preview/Cancel 不入历史；坐标空间非 viewport 时必须提供 `pointerToLocal`；
-- `WorkspaceTemplates v4 / LayoutEditorWorkspace v2`：`Toolbar + EditorCommandBar + PreviewHost + LayoutEditorOverlay + SAME Responsive TransformInspector`。Workspace 自建唯一 bounded History；当 caller 提供完整 `editSession` 五回调时创建唯一 LayoutEditSession，否则维持 history-only 且持久化命令 fail-closed。Undo/Redo 事件只从 Adapter 刷 Presentation；Reset/Revert 后才从 Feature Working 显式回读；root 生命周期同步释放 CommandBar/Session/History listener。Wide inline 与 Compact Drawer 仍是同一个 Inspector 实例，只改变 Geometry/Visibility/Layer，不 reparent、不复制状态。
+- `WorkspaceTemplates v6 / LayoutEditorWorkspace v4`：`Toolbar + EditorCommandBar + PreviewHost + LayoutEditorOverlay + SAME Responsive TransformInspector`。构建时显式校验 ResponsiveInspector/Toggle/Status/Overlay/Inspector/CommandBar 所需 Component API；Compact `[属性]` Toggle 使用共享 `SetVisible`，不依赖 primitive 私有方法。Workspace 自建唯一 bounded History；当 caller 提供完整 `editSession` 五回调时创建唯一 LayoutEditSession，否则维持 history-only 且持久化命令 fail-closed。Undo/Redo 事件只从 Adapter 刷 Presentation；Reset/Revert 后才从 Feature Working 显式回读；root 生命周期同步释放 CommandBar/Session/History listener。Wide inline 与 Compact Drawer 仍是同一个 Inspector 实例，只改变 Geometry/Visibility/Layer，不 reparent、不复制状态；Compact Toolbar 通过稳定 `[属性]` 按钮显式开关该 SAME Drawer。
 
 当前编辑器页面骨架：
 
@@ -319,7 +319,7 @@ Compact
 └────────────────────────────────────────────┘
 ```
 
-Editor Foundation 目前仍不直接迁移 Healer/Range 等后续业务页面。`LayoutEditHistory / Undo-Redo → Editor Command Bar → LayoutEditSession → LayoutEditorWorkspace v2` 已形成共享闭环；状态显示在 `.18.79` 完成 UI_APPROVED + Authority Cleanup，`.18.80` 完成本地 `UI_IMPLEMENTING` 接入；`.18.81` 修复 RU 首次打开 HUD 布局时 `TreeView=nil` 的 TOC dependency-order 根因，并增加页面依赖 preflight。页面仍为 `追踪管理 / HUD 布局 / 导入导出` 三页签，Tracking 为单虚拟 Table，HUD Working 与 Store getter 隔离，Preview/Undo/Redo/Reset/Revert 均不持久化，只有 Apply 执行 Feature durable callback。Store 仍为 schema 4；真实 SaveData 回读与 Native 编辑体验继续以 RU Fresh Reload 为准。
+Editor Foundation 目前仍不直接迁移 Healer/Range 等后续业务页面。`LayoutEditHistory / Undo-Redo → Editor Command Bar → LayoutEditSession → LayoutEditorWorkspace v4` 已形成共享闭环；状态显示在 `.18.79` 完成 UI_APPROVED + Authority Cleanup，`.18.80` 完成本地 `UI_IMPLEMENTING` 接入，`.18.81` 修复 `TreeView=nil` 依赖顺序，`.18.89` 根据 RU 实机反馈补齐 Compact `[属性]` Drawer 与 RSUI Interactive Draft v1，`.18.90` 再根据真实 `Button:Show(nil)` 堆栈补齐 Component API Contract 与 LayoutEditorWorkspace 真构建 Smoke Gate，并恢复此前漏入用户完整包的 Persistence Fresh Reload Snapshot 实现；`.18.91` 将防线扩到全 Presentation Component API 静态扫描、全部 6 类 Workspace 真构建 Smoke 与 RSUI 顶层依赖 TOC 顺序检查；`.18.92` 再补 Presentation→Feature Public API 封包门禁，从真实 Feature provider 自动核对页面/Widget 的直接方法与 `Commands` 调用，并修复 Tasks/Activities 浮窗窗口状态 Command 与 Gear 快捷设置 Reset Command 的真实漏接。 `.18.94` 继续沿 Fresh Reload Gate 增加 Trade/DPS package-coherence 与 UIV3 runtime preflight：DPS WidgetHost lifecycle preference 必须与 durable `widgetVisible` 一致；Trade 页面/HUD 必须保持 Dropdown-only + 显式材料询价，sealed Zone 只提供候选，服务器 `GetSpecialtyRatioBetween` 仍是最终路线 Authority。页面仍为 `追踪管理 / HUD 布局 / 导入导出` 三页签，Tracking 为单虚拟 Table；Aura facts 更新不再重绘 Layout editor，focused Edit draft / active Slider preview 由共享控件层保护。HUD Working 与 Store getter 隔离，Preview/Undo/Redo/Reset/Revert 均不持久化，只有 Apply 执行 Feature durable callback。Store 仍为 schema 4；真实 SaveData 回读与 Native 编辑体验继续以 RU Fresh Reload 为准。
 
 ## 12. 性能与生命周期基线
 
@@ -331,7 +331,7 @@ Editor Foundation 目前仍不直接迁移 Healer/Range 等后续业务页面。
 
 ## 13. 当前验证基线
 
-当前代码 BuildTag：`v3-m1.16.0.18.81-ru-hotfix-persistence-reliability-v2`。
+当前代码 BuildTag：`v3-m1.16.0.18.96-unit-lines-projection-team-role-hotfix`。
 
 当前本地结构门禁基线：
 

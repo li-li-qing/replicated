@@ -475,6 +475,7 @@ end)
 -- the group never leaves a ghost gap.
 ------------------------------------------------------------------------
 RSUI.CollapsibleGroupPolicy = RSUI.CollapsibleGroupPolicy or { version = 1 }
+RSUI.CollapsibleGroupInteractionContractVersion = 2
 function RSUI.CollapsibleGroupPolicy:Resolve(innerHeight, headerH, gap, expanded)
     innerHeight = math.max(0, tonumber(innerHeight) or 0)
     headerH = math.max(0, tonumber(headerH) or 0)
@@ -507,28 +508,31 @@ RSUI:RegisterType("CollapsibleGroup", function(spec)
     -- carries the click affordance. It is a native child of the border, not a
     -- component, so it does not participate in Measure (laid out in Layout).
     local headerHit = UI:CreateButton(border, spec.id .. "_header_hit", "", 0, 0, math.max(1, N(spec.width, 1)), math.max(1, c.headerHeight), N(spec.titleFontSize, Token("font.section", 13)), false, false)
-    if headerHit ~= nil then
-        headerHit.rsUiOwner = c.owner
-        -- Drop the themed button background (all four state drawables) so the
-        -- strip stays visually identical to a GroupBox header.
-        if type(S.Theme) == "table" and type(S.Theme.SetBackgroundOpacity) == "function" then
-            pcall(function() S.Theme:SetBackgroundOpacity(headerHit, 0) end)
-        end
-        -- SafeHandler reports failure (unusable widget / SetHandler rejected)
-        -- as a false return; a dropped binding is invisible at runtime (the
-        -- strip renders fine, clicks just do nothing), so it must be counted
-        -- rather than assumed bound.
-        local bound = UI:SafeHandler(headerHit, "OnClick", function()
-            if c.released then return nil end
-            return c:SetExpanded(not c.expanded, true)
-        end, tostring(spec.id) .. ":collapsible_header")
-        if not bound then
-            if type(RSUI.metrics) == "table" then RSUI.metrics.collapsibleHeaderBindFailed = (tonumber(RSUI.metrics.collapsibleHeaderBindFailed) or 0) + 1 end
-        end
-    else
-        -- Fail-open degradation: without a native Button the header is inert to
-        -- clicks but the group still renders and SetExpanded() keeps working.
+    if headerHit == nil or headerHit.rsUiDegraded == true then
         if type(RSUI.metrics) == "table" then RSUI.metrics.collapsibleHeaderUnavailable = (tonumber(RSUI.metrics.collapsibleHeaderUnavailable) or 0) + 1 end
+        c.rsUiDegraded = true
+        c.rsUiDegradedReason = "collapsible_header_create_failed"
+        return c, c.rsUiDegradedReason
+    end
+    headerHit.rsUiOwner = c.owner
+    -- Drop the themed button background (all four state drawables) so the
+    -- strip stays visually identical to a GroupBox header.
+    if type(S.Theme) == "table" and type(S.Theme.SetBackgroundOpacity) == "function" then
+        pcall(function() S.Theme:SetBackgroundOpacity(headerHit, 0) end)
+    end
+    -- The header is the defining interaction of a CollapsibleGroup. Returning a
+    -- rendered but inert group recreates the same "green diagnostics / dead UI"
+    -- failure class as the old EditBox bug, so binding is now required and the
+    -- normal component post-factory fence rejects the whole composite on failure.
+    local bound, bindErr = c:RequireOn(headerHit, "OnClick", function()
+        if c.released then return nil end
+        return c:SetExpanded(not c.expanded, true)
+    end, tostring(spec.id) .. ":collapsible_header")
+    if bound ~= true then
+        if type(RSUI.metrics) == "table" then RSUI.metrics.collapsibleHeaderBindFailed = (tonumber(RSUI.metrics.collapsibleHeaderBindFailed) or 0) + 1 end
+        c.rsUiDegraded = true
+        c.rsUiDegradedReason = tostring(bindErr or "collapsible_header_bind_failed")
+        return c, c.rsUiDegradedReason
     end
     c.headerHit = headerHit
 

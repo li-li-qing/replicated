@@ -90,10 +90,20 @@ local function CreateWidget()
     end
     function instance:Show(context)
         if S.FeatureRuntime:IsEnabled(FEATURE_ID) ~= true then return false, "死亡回顾功能已关闭" end
-        self:Subscribe(); self:Refresh(); self.visible = true; return self.surface:Show(true)
+        local subscribed, subscribeErr = self:Subscribe()
+        if subscribed ~= true then return false, subscribeErr end
+        local refreshed, refreshErr = self:Refresh()
+        if refreshed ~= true then self:Unsubscribe(); return false, refreshErr end
+        local shown, showErr = self.surface:Show(true)
+        if shown ~= true then self:Unsubscribe(); self.visible = false; return false, showErr end
+        self.visible = true
+        return true
     end
     function instance:Hide(context)
-        self.visible = false; self:Unsubscribe(); return self.surface:Show(false)
+        local hidden, hideErr = self.surface:Show(false)
+        if hidden ~= true then return false, hideErr end
+        self.visible = false; self:Unsubscribe()
+        return true
     end
     function instance:OnWindowClosed(context)
         self.visible = false

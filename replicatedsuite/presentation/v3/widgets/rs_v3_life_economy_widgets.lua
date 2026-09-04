@@ -142,13 +142,13 @@ local function Register(spec)
             return true
         end
         function instance:Hide(context)
-            if self.visible then
-                local released, releaseErr = ReleaseConsumer()
-                if released ~= true then return false, releaseErr end
-                self.visible = false; self:Unsubscribe()
-            end
-            self.surface:Show(false)
+            local hidden, hideErr = self.surface:Show(false)
+            if hidden ~= true then return false, hideErr end
+            local released, releaseErr = true, nil
+            if self.visible then released, releaseErr = ReleaseConsumer() end
+            self.visible = false; self:Unsubscribe()
             if type(context) ~= "table" or context.persist ~= false then Feature.Commands:SetWidgetVisible(false, "hide") end
+            if released ~= true then return false, releaseErr end
             return true
         end
         function instance:OnWindowClosed(context)
@@ -207,25 +207,37 @@ local ok, err = Register({
     rootId = "v3_life_trade_widget", contentId = "v3_life_trade_widget_content", tableId = "v3_life_trade_widget_table", title = "跑商货率",
     emptyTitle = "暂无货率", emptyDetail = "直接在悬浮窗选择起点和目的地；服务器货率返回后自动更新。",
     buildControls = function(instance, content, Feature)
-        local row = RSUI:HorizontalBox({ id = "v3_life_trade_widget_route", parent = content, gap = 4, slot = { size = "fixed", height = 30, hAlign = "fill" } })
-        instance.fromDropdown = RSUI:Dropdown({ id = "v3_life_trade_widget_from", parent = row, items = {}, maxVisible = 10, popupWidth = 220,
-            get = function() return (Feature:GetRouteSettings() or {}).fromZone end, set = function(v) return Feature.Commands:SetFrom(v) end, slot = { size = "fill", fill = 1, minWidth = 100 } })
-        instance.toDropdown = RSUI:Dropdown({ id = "v3_life_trade_widget_to", parent = row, items = {}, maxVisible = 10, popupWidth = 220,
-            get = function() return (Feature:GetRouteSettings() or {}).toZone end, set = function(v) return Feature.Commands:SetTo(v) end, slot = { size = "fill", fill = 1, minWidth = 100 } })
-        local fp = RSUI:Button({ id = "v3_life_trade_widget_from_prev", parent = row, text = "起◀", compact = true, slot = { size = "fixed", width = 40 } })
-        local fn = RSUI:Button({ id = "v3_life_trade_widget_from_next", parent = row, text = "起▶", compact = true, slot = { size = "fixed", width = 40 } })
-        local tp = RSUI:Button({ id = "v3_life_trade_widget_to_prev", parent = row, text = "终◀", compact = true, slot = { size = "fixed", width = 40 } })
-        local tn = RSUI:Button({ id = "v3_life_trade_widget_to_next", parent = row, text = "终▶", compact = true, slot = { size = "fixed", width = 40 } })
-        local function cycle(command, delta) local ok, err = command(Feature.Commands, delta); if ok then instance:Refresh() end; return ok, err end
-        fp.onClick=function() return cycle(Feature.Commands.CycleFrom,-1) end; fn.onClick=function() return cycle(Feature.Commands.CycleFrom,1) end
-        tp.onClick=function() return cycle(Feature.Commands.CycleTo,-1) end; tn.onClick=function() return cycle(Feature.Commands.CycleTo,1) end
-        for _, b in ipairs({fp,fn,tp,tn}) do if b.root then S.UI:SafeHandler(b.root,"OnClick",b.onClick,"v3_life_trade_widget:"..tostring(b.id)) end end
-        return instance.fromDropdown ~= nil and instance.toDropdown ~= nil, "跑商悬浮窗路线控件创建失败"
+        if type(Feature.Commands.SetFrom) ~= "function" or type(Feature.Commands.SetTo) ~= "function"
+            or type(Feature.Commands.QuotePendingMaterials) ~= "function" then
+            return false, "跑商悬浮窗 Feature 路线/询价命令缺失"
+        end
+        local routeBox = RSUI:VerticalBox({ id = "v3_life_trade_widget_route", parent = content, gap = 4, slot = { size = "fixed", height = 64, hAlign = "fill" } })
+        local fromRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_from_row", parent = routeBox, gap = 5, slot = { size = "fixed", height = 30, hAlign = "fill" } })
+        RSUI:Text({ id = "v3_life_trade_widget_from_label", parent = fromRow, text = "起点", fontSize = 9, tone = "muted", slot = { size = "fixed", width = 42 } })
+        instance.fromDropdown = RSUI:Dropdown({ id = "v3_life_trade_widget_from", parent = fromRow, items = {}, maxVisible = 10, popupWidth = 240, placeholder = "选择起点",
+            get = function() return (Feature:GetRouteSettings() or {}).fromZone end, set = function(v) return Feature.Commands:SetFrom(v) end, slot = { size = "fill", fill = 1, minWidth = 120 } })
+
+        local toRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_to_row", parent = routeBox, gap = 5, slot = { size = "fixed", height = 30, hAlign = "fill" } })
+        RSUI:Text({ id = "v3_life_trade_widget_to_label", parent = toRow, text = "目的地", fontSize = 9, tone = "muted", slot = { size = "fixed", width = 42 } })
+        instance.toDropdown = RSUI:Dropdown({ id = "v3_life_trade_widget_to", parent = toRow, items = {}, maxVisible = 10, popupWidth = 240, placeholder = "选择目的地",
+            get = function() return (Feature:GetRouteSettings() or {}).toZone end, set = function(v) return Feature.Commands:SetTo(v) end, slot = { size = "fill", fill = 1, minWidth = 110 } })
+        instance.quoteButton = RSUI:Button({ id = "v3_life_trade_widget_quote", parent = toRow, text = "材料询价", compact = true, slot = { size = "fixed", width = 88 } })
+        instance.quoteButton.onClick = function()
+            local ok, quoteErr = Feature.Commands:QuotePendingMaterials()
+            if ok == true then instance:Refresh() end
+            return ok, quoteErr
+        end
+        return instance.fromDropdown ~= nil and instance.toDropdown ~= nil and instance.quoteButton ~= nil, "跑商悬浮窗路线控件创建失败"
     end,
     refreshControls = function(instance, projection)
         local fromItems, toItems = ZoneItems(projection.zones), ZoneItems(projection.sellableZones)
-        if instance.fromDropdown then instance.fromDropdown:SetItems(fromItems); instance.fromDropdown:SetEnabled(#fromItems>0); instance.fromDropdown:Render() end
-        if instance.toDropdown then instance.toDropdown:SetItems(toItems); instance.toDropdown:SetEnabled(#toItems>0); instance.toDropdown:Render() end
+        if instance.fromDropdown then instance.fromDropdown:SetItems(fromItems); instance.fromDropdown:SetEnabled(#fromItems > 0); instance.fromDropdown:Render() end
+        if instance.toDropdown then instance.toDropdown:SetItems(toItems); instance.toDropdown:SetEnabled(#toItems > 0); instance.toDropdown:Render() end
+        local pending = math.max(0, tonumber(projection.pendingQuoteCount) or 0)
+        if instance.quoteButton then
+            instance.quoteButton:SetEnabled(pending > 0)
+            instance.quoteButton:SetText(pending > 0 and ("询价(" .. tostring(pending) .. ")") or "材料询价")
+        end
     end,
     columns = {
         { id = "name", title = "货物", field = "name", size = "fill", minWidth = 120, fill = 1 },
@@ -234,7 +246,10 @@ local ok, err = Register({
         { id = "profit", title = "毛利", field = "profit", size = "fixed", width = 90, minWidth = 68 },
     },
     status = function(projection, rows)
+        local pending = math.max(0, tonumber(projection.pendingQuoteCount) or 0)
+        local fallback = projection.zoneFallback == true and " · 静态起点候选" or ""
         return FindZoneName(projection, projection.fromZone) .. " → " .. FindZoneName(projection, projection.toZone) .. " · " .. tostring(#rows) .. " 种"
+            .. (pending > 0 and (" · 待询价 " .. tostring(pending)) or "") .. fallback
     end,
 })
 if ok ~= true then error(err) end

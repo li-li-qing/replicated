@@ -18,7 +18,7 @@ if type(UI) ~= "table" or type(RSUI) ~= "table" or type(UI.CreateWindowShell) ~=
 local generation = tonumber(S.Generation) or 0
 if type(RSUI.FloatingSurface) ~= "table" or tonumber(RSUI.FloatingSurface.generation) ~= generation then
     RSUI.FloatingSurface = {
-        version = 9,
+        version = 10,
         generation = generation,
         instances = setmetatable({}, { __mode = "v" }),
         metrics = {
@@ -29,11 +29,12 @@ if type(RSUI.FloatingSurface) ~= "table" or tonumber(RSUI.FloatingSurface.genera
         },
     }
 end
-RSUI.FloatingSurface.version = 9
+RSUI.FloatingSurface.version = 10
 RSUI.FloatingSurface.IdempotentMutationContractVersion = 1
 RSUI.FloatingSurface.CompactMinimizeContractVersion = 1
 RSUI.FloatingSurface.TitleAppearanceContractVersion = 1
 RSUI.FloatingSurface.DetachedStateContractVersion = 1
+RSUI.FloatingSurface.StateMutationTransactionContractVersion = 1
 RSUI.FloatingSurface.generation = generation
 local F = RSUI.FloatingSurface
 
@@ -294,27 +295,40 @@ function F:Create(spec)
         return normalized
     end
 
-    local function Save(reason, candidate)
-        local previous = CurrentState()
-        local nextState = type(candidate) == "table" and F:NormalizeState(candidate, policy) or CurrentState()
+    local function CommitState(reason, candidate, persist)
+        local rawState = type(spec.getState) == "function" and spec.getState() or spec.state
+        if type(rawState) ~= "table" then return false, "floating surface state unavailable" end
+        local previous = F:NormalizeState(rawState, policy)
+        local nextState = type(candidate) == "table" and F:NormalizeState(candidate, policy) or F:NormalizeState(rawState, policy)
         if type(nextState) ~= "table" then return false, "floating surface state unavailable" end
+
         if type(spec.setState) == "function" then
             local callOk, result, resultErr = xpcall(function()
                 return spec.setState(nextState, tostring(reason or "state"))
             end, S.SafeTraceback)
             if callOk ~= true then return false, tostring(result or "floating state commit failed") end
             if result == false then return false, tostring(resultErr or "floating state commit rejected") end
+        else
+            F:ApplyNormalizedState(rawState, nextState)
         end
-        local ok, err = PersistSpec(spec, reason)
-        if ok ~= true then
-            if type(spec.setState) == "function" and type(previous) == "table" then
-                pcall(spec.setState, previous, tostring(reason or "state") .. ":rollback")
+
+        if persist ~= false then
+            local ok, err = PersistSpec(spec, reason)
+            if ok ~= true then
+                if type(spec.setState) == "function" then
+                    pcall(spec.setState, previous, tostring(reason or "state") .. ":rollback")
+                else
+                    F:ApplyNormalizedState(rawState, previous)
+                end
+                return false, err
             end
-            return false, err
         end
         SafeCall(spec.onStateChanged, surface, CurrentState(), tostring(reason or "state"))
         return true
     end
+
+    local function Save(reason, candidate) return CommitState(reason, candidate, true) end
+    local function Stage(reason, candidate) return CommitState(reason, candidate, false) end
 
     local shell, shellErr = UI:CreateWindowShell({
         id = id,
@@ -376,8 +390,9 @@ function F:Create(spec)
             return true
         end,
         onStateChanged = function(_, snapshot)
-            local target = CurrentState()
-            if target == nil then return false end
+            local current = CurrentState()
+            if current == nil then return false end
+            local target = F:NormalizeState(current, policy)
             local reason = tostring(snapshot and snapshot.reason or "state")
             target.minimized = snapshot.minimized == true
             target.locked = snapshot.locked == true
@@ -412,8 +427,8 @@ function F:Create(spec)
                 target.userMoved = true
                 F.metrics.geometryCommits = (tonumber(F.metrics.geometryCommits) or 0) + 1
             end
-            Save(reason, target)
-            return true
+            local saved = Save(reason, target)
+            return saved == true
         end,
     })
     if shell == nil then
@@ -467,129 +482,181 @@ function F:Create(spec)
         UI:SetAnchor(self.shell.window, UIParent, px, py, owner)
         self.shell.normalWidth, self.shell.normalHeight = w, h
         self.shell:Layout(w, h)
-        self.shell:SetLocked(target.locked == true, false)
-        self.shell:SetOverallOpacity(target.overallOpacity, false)
-        self.shell:SetBackgroundOpacity(target.backgroundOpacity, false)
-        self.shell:SetTextOpacity(target.textOpacity, false)
-        if type(self.shell.SetFontScale) == "function" then self.shell:SetFontScale(target.fontScale, false) end
-        if self.shell.minimized ~= (target.minimized == true) then self.shell:SetMinimized(target.minimized == true, false) end
+        local lockOk, lockErr = self.shell:SetLocked(target.locked == true, false)
+        if lockOk ~= true then return false, lockErr or "floating_lock_apply_failed" end
+        local overallOk, overallErr = self.shell:SetOverallOpacity(target.overallOpacity, false)
+        if overallOk ~= true then return false, overallErr or "floating_overall_opacity_apply_failed" end
+        local backgroundOk, backgroundErr = self.shell:SetBackgroundOpacity(target.backgroundOpacity, false)
+        if backgroundOk ~= true then return false, backgroundErr or "floating_background_opacity_apply_failed" end
+        local textOk, textErr = self.shell:SetTextOpacity(target.textOpacity, false)
+        if textOk ~= true then return false, textErr or "floating_text_opacity_apply_failed" end
+        if type(self.shell.SetFontScale) == "function" then
+            local fontOk, fontErr = self.shell:SetFontScale(target.fontScale, false)
+            if fontOk ~= true then return false, fontErr or "floating_font_scale_apply_failed" end
+        end
+        if self.shell.minimized ~= (target.minimized == true) then
+            local minimizeOk, minimizeErr = self.shell:SetMinimized(target.minimized == true, false)
+            if minimizeOk ~= true then return false, minimizeErr or "floating_minimize_apply_failed" end
+        end
         if fromMetricsChange == true then F.metrics.responsiveLayouts = (tonumber(F.metrics.responsiveLayouts) or 0) + 1 end
         return true
     end
 
     function surface:Show(visible)
-        if visible == false then
-            self.visible = false
-            return self.shell:Show(false)
+        local desired = visible ~= false
+        if desired then
+            local layoutOk, layoutErr = self:ApplyLayout(false)
+            if layoutOk ~= true then return false, layoutErr end
         end
-        self:ApplyLayout(false)
-        self.visible = true
-        return self.shell:Show(true)
+        local shown, showErr = self.shell:Show(desired)
+        if shown ~= true then return false, showErr end
+        self.visible = desired
+        return true
     end
 
     function surface:SetLocked(value, persist)
         local target = CurrentState(); if target == nil then return false end
+        local previous = target.locked == true
         local nextValue = value == true
-        if target.locked == nextValue and self.shell:IsLocked() == nextValue then return true, false end
-        target.locked = nextValue
-        self.shell:SetLocked(target.locked, false)
+        if previous == nextValue and self.shell:IsLocked() == nextValue then return true, false end
+        local shellOk, shellErr = self.shell:SetLocked(nextValue, false)
+        if shellOk ~= true then return false, shellErr end
+        local candidate = F:NormalizeState(target, policy); candidate.locked = nextValue
+        local stateOk, stateErr = persist ~= false and Save("locked", candidate) or Stage("locked", candidate)
+        if stateOk ~= true then self.shell:SetLocked(previous, false); return false, stateErr end
         F.metrics.lockChanges = (tonumber(F.metrics.lockChanges) or 0) + 1
-        if persist ~= false then local ok, err = Save("locked", target); if ok ~= true then return false, err end end
         return true, true
     end
 
     function surface:SetMinimized(value, persist)
         local target = CurrentState(); if target == nil then return false end
+        local previous = target.minimized == true
         local nextValue = value == true
-        if target.minimized == nextValue and self.shell.minimized == nextValue then return true, false end
-        target.minimized = nextValue
-        self.shell:SetMinimized(target.minimized, false)
+        if previous == nextValue and self.shell.minimized == nextValue then return true, false end
+        local shellOk, shellErr = self.shell:SetMinimized(nextValue, false)
+        if shellOk ~= true then return false, shellErr end
+        local candidate = F:NormalizeState(target, policy); candidate.minimized = nextValue
+        local stateOk, stateErr = persist ~= false and Save("minimized", candidate) or Stage("minimized", candidate)
+        if stateOk ~= true then self.shell:SetMinimized(previous, false); return false, stateErr end
         F.metrics.minimizeChanges = (tonumber(F.metrics.minimizeChanges) or 0) + 1
-        if persist ~= false then local ok, err = Save("minimized", target); if ok ~= true then return false, err end end
         return true, true
     end
 
     function surface:SetOverallOpacity(value, persist)
         local target = CurrentState(); if target == nil then return false end
+        local previous = tonumber(target.overallOpacity) or policy.defaultOverallOpacity
         local nextValue = Clamp(value, 0, 1, FirstNonNil(target.overallOpacity, policy.defaultOverallOpacity))
-        if math.abs(nextValue - (tonumber(target.overallOpacity) or policy.defaultOverallOpacity)) <= 0.0001 then return true, nextValue, false end
-        target.overallOpacity = nextValue
-        self.shell:SetOverallOpacity(target.overallOpacity, false)
+        if math.abs(nextValue - previous) <= 0.0001 then return true, nextValue, false end
+        local shellOk, shellErr = self.shell:SetOverallOpacity(nextValue, false)
+        if shellOk ~= true then return false, shellErr end
+        local candidate = F:NormalizeState(target, policy); candidate.overallOpacity = nextValue
+        local stateOk, stateErr = persist ~= false and Save("overall_opacity", candidate) or Stage("overall_opacity", candidate)
+        if stateOk ~= true then self.shell:SetOverallOpacity(previous, false); return false, stateErr end
         F.metrics.appearanceChanges = (tonumber(F.metrics.appearanceChanges) or 0) + 1
-        if persist ~= false then local ok, err = Save("overall_opacity", target); if ok ~= true then return false, err end end
-        return true, target.overallOpacity, true
+        return true, nextValue, true
     end
+
     function surface:GetOverallOpacity() local s = CurrentState(); if s ~= nil and s.overallOpacity ~= nil then return s.overallOpacity end; return policy.defaultOverallOpacity end
     function surface:SetOpacity(value, persist) return self:SetOverallOpacity(value, persist) end
     function surface:GetOpacity() return self:GetOverallOpacity() end
 
     function surface:SetBackgroundOpacity(value, persist)
         local target = CurrentState(); if target == nil then return false end
+        local previous = tonumber(target.backgroundOpacity) or policy.defaultBackgroundOpacity
         local nextValue = Clamp(value, 0, 1, FirstNonNil(target.backgroundOpacity, policy.defaultBackgroundOpacity))
-        if math.abs(nextValue - (tonumber(target.backgroundOpacity) or policy.defaultBackgroundOpacity)) <= 0.0001 then return true, nextValue, false end
-        target.backgroundOpacity = nextValue
-        self.shell:SetBackgroundOpacity(target.backgroundOpacity, false)
+        if math.abs(nextValue - previous) <= 0.0001 then return true, nextValue, false end
+        local shellOk, shellErr = self.shell:SetBackgroundOpacity(nextValue, false)
+        if shellOk ~= true then return false, shellErr end
+        local candidate = F:NormalizeState(target, policy); candidate.backgroundOpacity = nextValue
+        local stateOk, stateErr = persist ~= false and Save("background_opacity", candidate) or Stage("background_opacity", candidate)
+        if stateOk ~= true then self.shell:SetBackgroundOpacity(previous, false); return false, stateErr end
         F.metrics.appearanceChanges = (tonumber(F.metrics.appearanceChanges) or 0) + 1
-        if persist ~= false then local ok, err = Save("background_opacity", target); if ok ~= true then return false, err end end
-        return true, target.backgroundOpacity, true
+        return true, nextValue, true
     end
+
     function surface:GetBackgroundOpacity() local s = CurrentState(); if s ~= nil and s.backgroundOpacity ~= nil then return s.backgroundOpacity end; return policy.defaultBackgroundOpacity end
 
     function surface:SetTextOpacity(value, persist)
         local target = CurrentState(); if target == nil then return false end
+        local previous = tonumber(target.textOpacity) or policy.defaultTextOpacity
         local nextValue = Clamp(value, 0, 1, FirstNonNil(target.textOpacity, policy.defaultTextOpacity))
-        if math.abs(nextValue - (tonumber(target.textOpacity) or policy.defaultTextOpacity)) <= 0.0001 then return true, nextValue, false end
-        target.textOpacity = nextValue
-        self.shell:SetTextOpacity(target.textOpacity, false)
+        if math.abs(nextValue - previous) <= 0.0001 then return true, nextValue, false end
+        local shellOk, shellErr = self.shell:SetTextOpacity(nextValue, false)
+        if shellOk ~= true then return false, shellErr end
+        local candidate = F:NormalizeState(target, policy); candidate.textOpacity = nextValue
+        local stateOk, stateErr = persist ~= false and Save("text_opacity", candidate) or Stage("text_opacity", candidate)
+        if stateOk ~= true then self.shell:SetTextOpacity(previous, false); return false, stateErr end
         F.metrics.appearanceChanges = (tonumber(F.metrics.appearanceChanges) or 0) + 1
-        if persist ~= false then local ok, err = Save("text_opacity", target); if ok ~= true then return false, err end end
-        return true, target.textOpacity, true
+        return true, nextValue, true
     end
+
     function surface:GetTextOpacity() local s = CurrentState(); if s ~= nil and s.textOpacity ~= nil then return s.textOpacity end; return policy.defaultTextOpacity end
 
     function surface:SetFontScale(value, persist)
         local target = CurrentState(); if target == nil then return false end
+        local previous = tonumber(target.fontScale) or policy.defaultFontScale
         local nextValue = Clamp(value, policy.minFontScale, policy.maxFontScale, FirstNonNil(target.fontScale, policy.defaultFontScale))
-        if math.abs(nextValue - (tonumber(target.fontScale) or policy.defaultFontScale)) <= 0.0001 then return true, nextValue, false end
-        target.fontScale = nextValue
-        if type(self.shell.SetFontScale) == "function" then self.shell:SetFontScale(target.fontScale, false) end
+        if math.abs(nextValue - previous) <= 0.0001 then return true, nextValue, false end
+        if type(self.shell.SetFontScale) ~= "function" then return false, "floating_font_scale_contract_unavailable" end
+        local shellOk, shellErr = self.shell:SetFontScale(nextValue, false)
+        if shellOk ~= true then return false, shellErr end
+        local candidate = F:NormalizeState(target, policy); candidate.fontScale = nextValue
+        local stateOk, stateErr = persist ~= false and Save("font_scale", candidate) or Stage("font_scale", candidate)
+        if stateOk ~= true then self.shell:SetFontScale(previous, false); return false, stateErr end
         F.metrics.appearanceChanges = (tonumber(F.metrics.appearanceChanges) or 0) + 1
-        if persist ~= false then local ok, err = Save("font_scale", target); if ok ~= true then return false, err end end
-        return true, target.fontScale, true
+        return true, nextValue, true
     end
+
     function surface:GetFontScale() local s = CurrentState(); if s ~= nil and s.fontScale ~= nil then return s.fontScale end; return policy.defaultFontScale end
 
     function surface:SetSize(designWidth, designHeight, persist)
         local target = CurrentState(); if target == nil then return false end
+        local before = F:NormalizeState(target, policy)
         local nextWidth = Clamp(designWidth, policy.minWidth, policy.maxWidth, target.width or policy.defaultWidth)
         local nextHeight = Clamp(designHeight, policy.minHeight, policy.maxHeight, target.height or policy.defaultHeight)
         local changed = math.abs(nextWidth - (tonumber(target.width) or nextWidth)) > 0.0001
             or math.abs(nextHeight - (tonumber(target.height) or nextHeight)) > 0.0001
             or target.minimized == true or self.shell.minimized == true
         if changed ~= true then return true, target.width, target.height, false end
-        target.width, target.height, target.minimized = nextWidth, nextHeight, false
-        if self.shell.minimized == true then self.shell:SetMinimized(false, false) end
-        self:ApplyLayout(false)
-        if persist ~= false then
-            local ok, err = Save("size", target)
-            if ok ~= true then return false, err end
+
+        local candidate = F:NormalizeState(target, policy)
+        candidate.width, candidate.height, candidate.minimized = nextWidth, nextHeight, false
+        if self.shell.minimized == true then
+            local restoreOk, restoreErr = self.shell:SetMinimized(false, false)
+            if restoreOk ~= true then return false, restoreErr end
         end
-        return true, target.width, target.height, true
+        local stateOk, stateErr = persist ~= false and Save("size", candidate) or Stage("size", candidate)
+        if stateOk ~= true then
+            if before.minimized == true then self.shell:SetMinimized(true, false) end
+            return false, stateErr
+        end
+        local layoutOk, layoutErr = self:ApplyLayout(false)
+        if layoutOk ~= true then
+            if persist ~= false then Save("size_rollback", before) else Stage("size_rollback", before) end
+            self:ApplyLayout(false)
+            return false, layoutErr or "floating_size_layout_failed"
+        end
+        return true, nextWidth, nextHeight, true
     end
 
     function surface:ResetLayout(persist)
         local target = CurrentState(); if target == nil then return false end
-        F:ResetState(target, policy, { preserveLocked = spec.preserveLockedOnReset ~= false })
-        self.shell.minimized = false
-        self.shell.locked = target.locked == true
-        self.shell.opacity = target.overallOpacity
-        self.shell.backgroundOpacity = target.backgroundOpacity
-        self.shell.textOpacity = target.textOpacity
-        self.shell.fontScale = target.fontScale
-        self:ApplyLayout(false)
-        if self.visible == true then self.shell:Show(true) end
+        local before = F:NormalizeState(target, policy)
+        local candidate = F:NormalizeState(target, policy)
+        F:ResetState(candidate, policy, { preserveLocked = spec.preserveLockedOnReset ~= false })
+        local stateOk, stateErr = persist ~= false and Save("layout_reset", candidate) or Stage("layout_reset", candidate)
+        if stateOk ~= true then return false, stateErr end
+        local layoutOk, layoutErr = self:ApplyLayout(false)
+        if layoutOk ~= true then
+            if persist ~= false then Save("layout_reset_rollback", before) else Stage("layout_reset_rollback", before) end
+            self:ApplyLayout(false)
+            return false, layoutErr or "floating_reset_layout_failed"
+        end
+        if self.visible == true then
+            local shown, showErr = self.shell:Show(true)
+            if shown ~= true then return false, showErr end
+        end
         F.metrics.resets = (tonumber(F.metrics.resets) or 0) + 1
-        if persist ~= false then return Save("layout_reset", target) end
         return true
     end
 

@@ -1,4 +1,218 @@
+## 2026-09-04 — `.18.104` RU Native Boolean Setter Return + V3 Startup Hotfix
+
+- **RU 实机 P0 启动回归**：用户 Fresh Reload 后只剩早期恢复入口 `R`，点击无法打开主界面，同时 ESC 插件面板项消失。沿 `toc.g → bootstrap recovery → UIHostManager → V3 NativeAdapter → Runtime Ready → ESC register` 实际调用链确认：`R` 在完整 Runtime 之前创建，而 ESC 注册只发生在 V3 Host 成功建立之后，因此该组合症状指向 Host 创建阶段 fail-closed，而不是单独的 R/ESC 页面问题。
+- **根因**：`.18.103` 为状态事务增加 Native 返回值检查时，把 `result == false` 一律解释成“Native 拒绝”。RU Widget setter 没有可依赖的统一 success-return 契约，布尔 Setter 可能返回**应用后的状态值**。主 V3 root 初始化恰好调用 `EnablePick(false) / Clickable(false) / Show(false) / SetCloseOnEscape(false) / SetWindowModal(false)`；合法的 false-state return 因此被误判为失败，Root 被隔离，Runtime 无法进入 `Ready=true`，最终只留下早期 `R`。
+- **底层修复，不下沉页面**：UI Framework v10 新增 `NativeBooleanSetterReturnContractVersion=1`。Native 布尔 Setter 仅在“请求 false 且返回 false”时把该返回视为**状态值而非拒绝**；请求 true 仍显式返回 false 时继续 fail-closed。`rsUiSetEnabledAdapter` 属于 Lua Composite 事务回调，其 `false` 继续保持明确 veto 语义，不与 Native return 混淆。Primitive Native helper 同样只对白名单 boolean state setter 的 false-state 调用放宽，`StartMoving` 等 Action 方法返回 false 仍是失败。
+- **V3 Root policy 修复**：NativeAdapter Root Interaction Policy 升 v2。`SetCloseOnEscape(false)` / `SetWindowModal(false)` 允许 false-state return；`SetUILayer("system")` 等非布尔 policy 若显式 false 仍拒绝 Root，保留 `.18.103` 的事务/fail-closed 强度。
+- **防回归**：Interactive Draft Harness 增加真实 Lua 启动形态：模拟 RU Setter “返回所应用的 bool”，验证隐藏/禁用命中、Composite false veto 以及完整 V3 root 创建，升为 `110/110`；Foundation Gate 升 v99 并要求 Native boolean setter contract/Interaction v4/Root Policy v2，Foundation Audit 同步增加 boolean setter return fence 与 NativeAdapter policy v2 检查。最终本地验证：TOC Runtime Lua `210/210` Parse、Foundation Audit、RSUI Component API、Presentation Feature API、Workspace Smoke、Persistence v3-v7/Acceptance、Bag Queue、Screen Projection、Unit Line Sampling 全部 PASS；RU 客户端下一 Gate 为 Fresh Reload 后确认主界面和 ESC 项恢复。
+- **BuildTag**：`v3-m1.16.0.18.104-native-bool-setter-startup-hotfix`。
+
+## 2026-09-04 — `.18.103` RSUI State Transaction + Full Feature Interaction Hardening
+
+- **从“可绘制”继续收敛到“状态真实成立”**：在 `.18.102` Native Interaction ABI 修复后继续扫描 Active V3 页面、悬浮窗与共享 Composite，确认另一类共同根因：Native Show/Hide、Enable/Pick、Alpha、UseResizing、Popup/Window 状态改变失败时，部分 Lua Authority 仍可能先发布 `visible/open/locked/minimized/opacity`，导致诊断与屏幕真实状态分叉。本轮把这些低频状态迁移统一改为事务式——先确认 Native/Composite 成功，再发布逻辑状态；失败则回滚或 fail-closed。
+- **UI State / Geometry Transaction Facade**：新增 `UI:EnsureAlpha()`，并补齐 `EnsureAnchor/EnsureExtent`，与既有 `EnsureVisible/EnsureEnabled/EnsurePickable` 统一区分 changed/no-op/rejected。Windowing v16 新增 `StateMutationTransactionContractVersion=1 + GeometryCallbackTransactionContractVersion=1`，`SetLocked/SetResizeEnabled/SetOpacity`、resize handle 的 Geometry/Visible/Enabled/Pickable 以及 geometry commit callback 都必须真实成功；callback 明确拒绝会中止 Commit，不再把失败的 Domain/Persistence 投影当成窗口提交成功。
+- **WindowShell / FloatingSurface**：WindowShell v22 增加 `visibilityTransactionContract=1 + stateMutationTransactionContract=1 + stateCallbackTransactionContract=1`；Show/Hide、Minimize、Lock、Overall/Background/Text opacity、FontScale、Appearance drawer、geometry callback 都改为 Native/Layout/业务 State callback 全部成功后才完成提交。FloatingSurface v10 的 Feature-owned state 写入统一经 `CommitState`；Persistence/Domain callback 失败会反向回滚 Shell Native 状态，修复此前 WindowShell `NotifyState()` 用 `pcall` 吞掉 `false` 的最后一处事务断点。
+- **Popup/Modal/Context 统一**：Dropdown、ColorField、Tooltip fallback、ContextMenu 与 ModalHost 都使用事务式 popup visibility；`open=true` 只在 popup 真正显示后发布，关闭失败不会提前清空逻辑状态。Dropdown/ColorField 子控件半构建继续 fail-closed，Modal Push/Pop 只有在目标/宿主显隐事务全部完成后才提交 stack。
+- **Presentation Visible 状态修复**：Activities、Tasks、Life Economy、Buff Display、Death Review、DPS、Quest Detail 的 Floating Widget 不再在 `surface:Show/Close` 成功前修改 `self.visible`；Hide 先确认视觉关闭，再释放订阅/Consumer，避免窗口实际没关但 Host 已认为关闭。
+- **编辑器/滚动交互安全**：SelectionOverlay 与 Layout Debug 的可见状态改为事务式；Scrollbar 的 track/thumb/dragProxy 显隐改为确认式，隐藏时同时关闭真实 dragProxy 的 Enable/Pick，防止透明/残留命中面继续拦截鼠标。Window resize handles 同样同步 Visible/Enabled/Pickable。
+- **Binding/Persistence/Action/Composite 累计收敛**：本交付同时包含上一轮尚未正式交付的 Button 单一 Native OnClick Authority、动态 Action Contract、Persistent Binding 创建 fail-closed、Read-Before-Render、写入失败回滚、ColorField 嵌套事务、WidgetHost 偏好 Load-before-show、DataView/Scrollbar/SplitView/LayoutEditor 关键事件 fail-closed 等修改。没有新增 Tick 或常驻轮询。
+- **防回归门禁**：Foundation Gate 升 v98；Foundation Audit 增加 Popup/Interaction/WindowShell/FloatingSurface/ModalHost/Windowing state/geometry transaction 静态契约，并检查 Application Shell 几何回滚与 NativeAdapter 初始显隐/几何事务；Interactive Draft Harness 扩展为 104/104。最终本地回归包含 210/210 texluac Parse、Foundation Audit、RSUI Component API、Presentation Feature API、Workspace Smoke、Persistence v3-v7、Acceptance Snapshot、Bag Queue、Screen Projection、Unit Line Sampling。
+- **BuildTag**：`v3-m1.16.0.18.103-rsui-state-transaction-hardening`。RU 客户端仍需 Fresh Reload 执行真实鼠标/窗口/存档矩阵；`SPECIFIC_RUNTIME_BLOCKED` 能力保持证据门禁，不因静态修复擅自解除。
+
+## 2026-09-04 — `.18.102` RSUI Native Interaction ABI + Fail-Closed Hardening
+
+- **系统性底层审计**：在 `.18.101` Gear TextInput 实机问题之后继续扫描全部 Active Lua，确认“诊断全绿”仍漏掉一类 Native Interaction ABI 回归：多个 Slider/Scrollbar/Table 列宽拖动/SplitView Divider/Runtime Host 使用 `EnablePick(value, true)` / `Clickable(value, true)`，而项目本地 RU API Authority 明确为单参数 `EnablePick(enable)` / `Clickable(clickable)`。这些调用位于 `pcall` 内时，严格 Native binding 可以静默拒绝，最终表现为“控件画出来但点不动/拖不动”。本轮统一收敛为已验证的一参数 ABI，并把 UI 层命中状态写入 `UI:SetPickable` Diff Authority。
+- **Edit 原语完整交互契约**：`CreateMultiEditBox()` 与单行 EditBox 对齐，显式开启 `Enable / EnableFocus / EnableKeyboard / EnablePick / Clickable` 并 `SetReadOnly(false)`；Multiline 不调用 RU 参考中未确认的 `SetReClickable`。所有 TextInput/NumericInput/多行编辑 Consumer 继承同一 Native Interaction Contract v2。
+- **Composite Enabled 修复**：自定义横向 Slider 的真实命中面是透明 drag child。旧 `UI:SetEnabled()` 优先调用 Native root `Enable()`，会绕过 Slider 自定义 `SetEnabled()`，造成“视觉禁用但拖动层仍可交互”。新增显式 `rsUiSetEnabledAdapter`，禁用时同步停止当前拖动、释放临时 OnUpdate/Scheduler、关闭 drag child 的 Enable/Pick，恢复未提交 Preview；无常驻 Tick。
+- **Primitive/Build fail-closed**：Native primitive 初始化 pcall 失败后仍会注册物理 identity 以避免同 Generation 重用，但不再把 degraded widget 作为可用控件返回；`RSUI:Create()` 再增加 native root usability fence，custom factory 若返回 degraded/rejected/stale root 会在 attachment 前以 `component_root_unusable` 失败并进入 strict BuildScope rollback，避免“页面构建成功但关键控件死亡”的假绿状态。
+- **事件绑定与错误可观测性**：Slider 的 OnDragStart/OnDragStop 现在属于必需构造能力，绑定失败直接让 Primitive fail-closed；所有 primitive pcall 失败保留有界 Native 错误文本，不再只有泛化 `configuration_failed`。同时修复 `WarnOnce` 的 dot/colon 调用 ABI 错误；RSUI event mux 首次 SetHandler 失败时会移除无法 dispatch 的订阅，后续重试成功不会把失败订阅一起执行造成重复动作。
+- **Diff cache 修复**：`UI:SetPickable()` 在 Native widget 完全没有 `EnablePick/Clickable` 能力时不再提前缓存成功值，防止后续真实 adapter/method 出现后被错误 cache-hit 跳过。
+- **防回归门禁**：Foundation Gate 升 v93，新增 `v3_native_interaction_contract`；Foundation Audit 新增 RU hit-test 方法参数个数扫描、NativeSafe 多参数扫描、Edit/Slider/degraded-root contract coherence；Interactive Draft Harness 扩展为 42/42，并加入真实 Lua 行为用例验证 composite disable、unsupported pickable cache、degraded root 拒绝与 handler 首次绑定失败后的无重复恢复。
+- **BuildTag**：`v3-m1.16.0.18.102-rsui-native-interaction-hardening`。
+
+## 2026-09-04 — RU Gear TextInput Mouse Focus Hotfix
+
+- **RU 实机反馈**：换装/称号页面的“新建方案”和“改名”输入框可以正常绘制，但鼠标点击后无法进入编辑状态。该问题对应 `.18.57` WU1 当时明确标记为“Gear TextInput 交互仍待 RU 实机验证”的未验收项。
+- **根因**：共享 `UIX:CreateEditBox()` 只调用 `EnableFocus(true)`，没有像 Button 原语一样显式开启 `EnablePick(true)` / `Clickable(true)`；同时没有应用 `ui_functions.lua` 已确认的 Edit 专用 `SetReClickable(true)`。RU `CreateChildWidgetByType` 创建出的 EditBox 因而可能处于“可绘制、不可鼠标命中”的状态。
+- **共享底层修复**：单行 EditBox 在 Native Primitive 边界统一启用 `Enable / EnableFocus / EnableKeyboard / EnablePick / Clickable / SetReClickable`，并显式 `SetReadOnly(false)`；Native state cache 同步标记 `enabled=true / pickable=true`。不在 Gear 页面维护第二套点击/Focus 特例。所有 `RSUI:TextInput` 与 `RSUI:NumericInput` 自动继承该修复。
+- **性能/输入边界**：0 Tick / 0 轮询 / 0 新 Scheduler；没有引入未验证的 `OnTextChanged / OnKeyDown / OnKeyUp`。仍由原生 EditBox 负责鼠标命中与 Focus，提交继续只走已验证的 Enter/EditEnter/LostFocus。
+- **防回归**：`rs_interactive_draft_harness.py` 由 13/13 扩展为 17/17，增加 EditBox pickable/clickable/re-clickable + native-state contract。
+- **BuildTag**：`v3-m1.16.0.18.101-rsui-editbox-interaction`。
+
+## 2026-09-04 — `.18.100` Persistence Reliability v7 Generation Reload Fence + Deferred Dirty Commit
+
+- **继续沿保存调用链审计**：确认 v6 仍有三个底层失效窗口：普通 Store `SaveData=true` 后会进入 `needsBarrierVerify`，但在显式 Flush/Reload barrier 前若业务再次直接 `LoadStore()`，旧物理值仍可能覆盖当前较新的健康 Domain；migration/period reset 在最终 Apply 成功前就留下 dirty intent，若 Apply 失败可形成“terminal/write-fenced + dirty”的矛盾状态；Tick 对这类 dirty terminal Store 仍可能周期性重复进入 SaveStore。
+- **Generation Reload Fence**：Reliability Contract 升 v7。Persistent Store 只要 `needsBarrierVerify=true`，普通 `LoadStore()` 一律 fail-closed 为 `unverified store reload rejected`，并记录 `STORE_UNVERIFIED_RELOAD_REJECTED`；只有明确的 destructive recovery 才可使用 `discardUnverified=true`。这保证本 generation 内已经写过但尚未完成 durability proof 的新 Domain 不会被潜在旧磁盘值重新 Apply。
+- **Deferred Dirty Commit**：schema migration 与 Daily/Weekly load-time reset 不再在 business transform 阶段提前 MarkDirty；只有最终 Domain budget 通过且 `ApplyValue(...,"load")` 成功后才提交 dirty metadata，并记录 `deferredLoadResaves`。Apply 失败保持 terminal/write-fenced，但不会留下自动保存义务。
+- **Terminal Auto-Retry Suppression**：Persistence Tick 只对 healthy-ready 且未 write-fenced 的 dirty Store执行原有 debounce SaveStore。terminal/fenced Store 保留 dirty evidence 供诊断/显式 Flush 处理，但 cadence 只把 `dueAt` 有界后移并增加 `terminalAutoRetrySuppressions`，避免失败 Store 每个保存周期持续打 Native SaveData/日志。无新增 Tick、Scheduler 或额外 Native 读取。
+- **门禁/回归**：UIV3 Acceptance v64；Foundation Gate v92 新增 `persistence_reliability_v7`，正常路径要求 `unverifiedReloadRejects=0`。新增真实 Lua `rs_persistence_reliability_v7_harness.py`，覆盖 pending durability write 的 LoadStore 拒绝/Domain 保持、Flush 后正常 reload、migration Apply failure 不遗留 dirty、write-fenced dirty Tick 不重复 Native Save，以及 Contract v7 描述。v3/v4/v5/v6 harness 继续通过。
+- **BuildTag**：`v3-m1.16.0.18.100-persistence-v7-generation-reload-fence`。由于 `.18.99` 未单独形成用户可下载包，本轮交付包相对 `.18.98` 累计包含 v6 + v7 必需修改；NEXT 为 RU Fresh Reload/完整退出重进，任何 `unverifiedReloadRejects>0` 都视为调用链错误证据而不是正常用户路径。
+
+## 2026-09-04 — `.18.99` Persistence Reliability v6 Envelope Seal + Durable Commit + Character Scope Binding
+
+- **继续沿保存底层而非 Gear 单点补丁审计**：确认 v5 仍有四个机械缺口：`durable=true` 的 `MutateStore()` 实际没有强制 immediate readback；v4/v5 `encodedFingerprint` 故意排除 `__rsmeta`，因此 schema/owner/scope 等 metadata-only 截断无法被业务指纹覆盖；custom decoder/migration 可把小型 encoded payload 膨胀为超预算 Domain 后再 Apply；Character Store 的 world-qualified identity 每次 Save 都重新解析，缺少“已加载 Domain 属于哪个角色”的强绑定。
+- **Reliability v6 Envelope Seal**：新写入继续保留 Integrity v1 business fingerprint，并新增 `envelopeIntegrityVersion=1/envelopeFingerprint`。Envelope Seal 覆盖 framework/store/owner/contract/lifetime/scope/schema/period/reliability/integrity/business fingerprint/scope identity；v6 load/readback 在任何 business decoder 前先验证 seal。v4/v5 stamped save 保持向前兼容。
+- **Decoded Domain Budget**：custom decode 后、migration/period transform 后分别按 Store Domain budget 检查；膨胀/循环/非法形状进入 `decoded_load_rejected`，绝不 Apply。Gear recoverable inactive bank 允许在 verified full-replacement 条件下修复该类确认损坏。
+- **Durable Commit 语义修正**：`MutateStore(...,{durable=true})` 现在必定传递 `durable + verifyAfterSave`；SaveData 后同 key readback 未通过则事务回滚 Domain，并保留 durability barrier obligation。新增 `durableVerifyAttempts/Failures`。
+- **Character Scope Binding**：Character Store 保存 v6 exact world-qualified identity fingerprint；loaded Domain 绑定 `resolvedKey + resolvedScopeFingerprint`。当前角色变化后 `IsStoreLoaded` fail-closed，`PrepareWrite` 仅在旧 scope 无 dirty/barrier obligation 时先 Load 当前角色再允许 mutation；debounce/Flush 对旧 dirty Domain 使用 bound old key，禁止跨角色误写。历史物理 key 算法暂不变以避免升级丢档；若两个 exact identity 因历史 lossy normalization 落到同一 key，v6 identity mismatch 直接 fence，绝不覆盖。
+- **门禁/回归**：UIV3 Acceptance v63；Foundation 新增 `persistence_reliability_v6`。新增真实 Lua `rs_persistence_reliability_v6_harness.py`，覆盖 metadata-only truncation pre-decode rejection、decoded expansion budget、durable immediate verify/rollback、v5 compatibility、A/B Character scope rebind 与 lossy-key collision fence。v3/v4/v5 harness 继续兼容 v6。
+- **BuildTag**：`v3-m1.16.0.18.99-persistence-v6-envelope-scope-durable`。NEXT 仍是 RU Fresh Reload/完整退出重进，新增健康要求：`envelopeIntegrityLoadFailures=0 / decodedLoadRejects=0 / durableVerifyFailures=0 / scopeBindingMismatches=0`。
+
+## 2026-09-04 — `.18.98` Persistence Reliability v5 Durability Barrier + Verified Clear
+
+- **继续审计保存底层**：确认 `.18.97` 仍有三个真实机械缺口：普通 Store 在本进程较早时 SaveData 成功后会变 clean，随后用户点 Reload 时旧 `Flush()` 只处理 dirty，因此不会再证明这个已写 key 的物理内容完整；v4 integrity check 的源码顺序实际仍在 custom decoder 之后，损坏表可先进入业务 decode；`ClearStore()` 只信 `ClearData=true`，若物理清理未生效会出现“本进程像是重置成功、Reload 后旧配置复活”。
+- **Reliability v5 durability barrier**：普通 Store 继续保持低开销 `SaveData ×1`，成功后仅记 runtime-only `needsBarrierVerify=true`。显式 Reload/Runtime Stop 的 `Flush()` 现在分两阶段：先保存 dirty，再对本 generation 已触碰但尚未证明耐久的 key 做一次 `LoadData + metadata/integrity/decode/Domain fingerprint` 验证。任何 mismatch 都让 Flush 返回失败并阻止用户主动 Reload；Store 保持/重新进入 dirty，以当前健康 Domain 做 5s bounded retry，不把瞬时 read visibility 问题升级成永久 write fence。Critical `verifyAfterSave` Store 已即时回读成功时不会被 Flush 二次读取。
+- **跨版本 integrity 兼容**：`ReliabilityContractVersion=5`，但 Integrity v1 的读取兼容下限固定为 v4；`.18.97` 已写入的 v4 fingerprint save 在 v5 下继续可读。future reliability contract 仍 fail-closed。encoded fingerprint 校验正式前移到任何 custom decoder/migrate/apply 之前。
+- **Verified Clear**：`ClearData=true` 后必须立即 `LoadData(key)==nil` 才允许把默认值 Apply 到 Domain；fake-success/non-empty 或 read error 进入 `clear_verify_failed`，保留当前 Domain 并 write-fence，避免设置“暂时消失、重载复活”。
+- **健康状态统一**：Persistence Core 的 `CanWrite/PrepareWrite/SaveStore/MarkDirty/period reset/Describe/RuntimeAcceptanceSnapshot` 与 Persistent UI Binding 统一消费健康 `IsStoreLoaded()` 语义；terminal failure 不再被 UI/通用写路径当成 ready。新增 `barrierVerify* / clearVerify* / barrierPending` 诊断。
+- **门禁/回归**：Foundation Gate v91 / UIV3 Acceptance v62；新增 `rs_persistence_reliability_v5_harness.py`，覆盖 v4→v5 兼容、integrity-before-decode、普通 Store barrier 检出静默截断→requeue→恢复、Critical Store 无重复 readback、ClearData fake-success fail-closed。v3 22/22、v4 35/35、Snapshot 19/19 继续通过。
+- **BuildTag**：`v3-m1.16.0.18.98-persistence-v5-durability-barrier`。NEXT 仍是 RU Fresh Reload/完整退出重进，但验收口径升级为 v5：重载前 `barrierPending` 可非 0，真正触发重载时必须 barrier 全部通过；`barrierVerifyFailures/clearVerifyFailures/integrityLoadFailures/readbackVerifyFailures=0`。
+
+## 2026-09-04 — `.18.97` Persistence Reliability v4 Cross-Reload Integrity + Gear Journal Self-Heal
+
+- **继续追查保存底层，不只盯 Gear UI**：审计发现 `.18.95` 的 immediate readback 只能证明“刚写完马上读”一致，无法证明下一次 Reload/完整重启后仍完整；另外 `IsStoreLoaded()` 把 `decode_failed/metadata_mismatch/future_schema` 等终态也暴露成“已加载”，Feature 可能把空缓存当成健康 Domain；Gear A/B active bank 损坏后虽然能回退 backup，但被 Persistence write-fence 的损坏 inactive bank 会阻止下一次 A/B 自愈写回。
+- **Persistence Reliability v4**：所有新持久化写入在 `__rsmeta` 增加 `reliabilityContract=4 / integrityVersion=1 / encodedFingerprint`。Fingerprint 对**编码后的业务 envelope（排除 `__rsmeta`）**计算，而不是对当前 decoder 产物计算，因此既能检测跨 Reload 字段截断，又不会因未来合法 decoder/schema migration 变化产生假损坏。普通 Store 不增加 readback I/O；Critical Store 仍保留 v3 的 immediate decode-only readback。
+- **Load 边界前置完整性**：`LoadStore()` 先按 `encodedBudget` 检查磁盘 envelope，再校验 v4 encoded fingerprint，全部通过后才进入业务 decode/migrate/apply。损坏表进入 `encoded_load_rejected` 或 `integrity_failed` 并 write-fence；pre-v4 未带 reliability marker 的历史存档继续可读，下一次正常保存自然升级。
+- **健康 loaded 语义修复**：`IsStoreLoaded()` 现在只对 `loaded/empty/saved/session` 返回 true；“LoadData 已结束但失败”的内部 terminal state 不再伪装成业务可用状态。该修复直接封住 Gear Payload failed-load 后复用空 cache 的路径。
+- **Gear A/B 自愈补链**：A/B bank 注册为 `recoverableReplacement`。只有 `decode_failed / metadata_mismatch / integrity_failed / encoded_load_rejected` 这类已确认损坏的**完整 journal shard**，且单次写入显式 `replaceCorrupt=true + verifyAfterSave=true` 时，才允许覆盖 fenced inactive bank；必须 SaveData + readback 全通过后才清 fence。`future_schema` 与瞬时 `load_failed` 永远不能用此路径覆盖。
+- **诊断/门禁**：Foundation Gate v90 / UIV3 Acceptance v61 新增 Reliability v4 + Integrity v1 contract；统计 `integrityStampedSaves / integrityLoadChecks / integrityLoadFailures / integrityLegacyLoads / encodedLoadRejects / verifiedReplacementRecoveries`。新增真实 Lua 故障注入 `PERSISTENCE_RELIABILITY_V4_HARNESS PASS 35/35`，覆盖 later-process truncation、legacy unstamped、malformed envelope、failed-load healthy semantics 与 verified replacement recovery；v3 22/22 和 Snapshot 19/19 继续通过。
+- **BuildTag**：`v3-m1.16.0.18.97-persistence-v4-cross-reload-integrity`。NEXT 仍为 RU Fresh Reload；现在首要观察 v4 `integrityLoadChecks` 是否随 Reload 增长且 `integrityLoadFailures/encodedLoadRejects/readbackVerifyFailures=0`。
+
+## 2026-09-04 — `.18.96` Unit Lines Coordinate Consistency + Team Auto-Role Ranged Hotfix
+
+- **RU 实机反馈（P0 回归）**：`.18.88` 已能剔除相机背后的镜像端点，但用户在真实战斗截图中继续确认前方单位连线仍会指向明显不属于单位的位置。重新沿 `UnitLines → ScreenProjectionV3 → X2Unit` 检查后确认两个薄弱点：① batch 对 `player` 单独传 `isLocal=true`、其它 token 传 `false`，Camera Frame 却只在一个世界空间内计算，存在混合空间端点；② `GetUnitScreenPosition` 的坐标即使实际处于 physical/UI-scale 空间，只要数值仍落在 logical viewport 内，旧阈值归一化就会把它误判为合法 logical 坐标。
+- **ScreenProjectionV3 v5**：Unit Line batch 统一用 `GetUnitWorldPositionByTarget(token, false)` 获取同一全局空间坐标；在既有一次 Camera Frame + world read 上增加 bounded Native/Camera consistency gate。Native 点先与 camera-world logical 点比较；UI scale 候选明显更接近时使用 `native_scale_reconciled`，仍超出容差则使用 `camera_consistency_fallback`。behind-camera 仍在 Native screen read 前拒绝；不增加第二次 world/camera 查询，也不改变 Healer/Buff Display 的普通 `ProjectUnit()` 行为。新增 `nativeScaleReconciles/nativeConsistencyFallbacks` 诊断。
+- **Unit Lines 契约**：`combat_unit_lines` 仅在 `ProjectUnitBatch` 调用上启用 `validateNativeAgainstCamera + reconcileNativeScale`，保持 Feature Demand/P1 cadence、`.18.87` adaptive sampling、viewport clipping 与 Presenter diff 不变。新增 `ProjectionConsistencyContractVersion=1`。
+- **团队自动职责修复**：静态职责目录升 v2。`name_6_8_9`（用户报告的 吟游+暗杀+野性）从普通 `dealer` 更正为 `ranged`；同时把目录中所有明确 `classType="Archer"` 的 7 个精确职业组合统一映射到 `TMROLE_RANGED_DEALER`，Gunner 原有 ranged 规则不变。没有按“只要含野性就远程”做模糊推断，Songer/Tank 等既有精确组合不受影响。
+- **防回归**：Foundation Gate v89 / UIV3 Acceptance v60 要求 ScreenProjectionV3 v5 consistency contract 与 TeamAutoRoleCatalog v2；Foundation Audit 禁止 `Archer → dealer` 回归，并锁定 Unit Lines 的 consistency options。`SCREEN_PROJECTION_FRONT_HEMISPHERE_HARNESS PASS 14/14`（新增 same-world、UI-scale reconciliation、valid-but-stale in-bounds fallback）；Team catalog 本地检查 7/7 Archer 全部 ranged。
+- **BuildTag**：`v3-m1.16.0.18.96-unit-lines-projection-team-role-hotfix`。RU Fresh Reload 仍是下一 Gate；本轮是用户实机 blocker 修复，不提前开启新的业务 UI 迁移。
+
+## 2026-09-04 — `.18.95` Persistence Reliability v3 + Gear A/B Payload Journal
+
+- **真实 RU 回归提升为 P0**：用户确认换装方案名称在 Reload 后仍存在，但方案内部装备数据无法继续换装。代码核查确认 Gear 本来就是“轻量 Index + 独立 Payload shard”双层保存：名称/顺序保存在 `v3.gear.index`，19 槽装备身份与称号保存在 `v3.gear.payload.N`。旧路径只信任 `SaveData=true`，没有回读证明，因此“Index 还在、Payload 已截断/损坏”能够形成用户看到的精确症状。RU 客户端是否就是 SaveData 静默截断仍需 Fresh Reload 证据，但该失效模式现在被底层明确封死。
+- **Persistence Reliability Contract v3**：新增 opt-in `verifyAfterSave` / `VerifyPersistedValue()`。Critical Store 在 `SaveData` 返回成功后立即以同一 resolved key `LoadData`，只做 metadata + decode + Domain fingerprint 校验，**不调用 `store.apply()`**，因此不会形成第二 Domain Authority。回读缺失、schema/meta 不匹配或内容指纹不同都记为 `readback_verify_failed`，本次写入不计为可靠 commit；普通 Store 默认不启用，避免所有设置双倍 I/O。
+- **Gear Payload Journal**：Gear Index 升 schema 5，Payload 升 schema 2。每个方案新增 A/B 两个 payload bank；保存时只写当前 active bank 的另一侧，写入成功且回读验证通过后才更新 Index 指针/指纹。Index commit 失败时不再把旧 payload 覆盖回去，旧 Index 仍指向上一份已验证 payload；active bank 异常时可按 Index 保存的 backup bank + fingerprint 回退。Gear Index 自身也启用 readback verification。
+- **Compact Payload**：新 payload 使用短键编码，并从固定的 19 槽 `GearV3.EquipmentSlots` 重新构造 slotName/key/alternative，避免每个装备重复保存静态字段，显著降低 SaveData 节点/字符串压力。旧 schema 1 单 bank key 永久保留只读兼容；读取正常旧 payload 后，下一次用户保存自然迁移到 A/B，不做破坏性批量迁移。
+- **损坏分片 fail-closed + 可重建**：configured payload 若只剩空壳、managed 装备缺 slot/name、或启用称号却缺 effect id，会直接标记为分片不可用，不再把残缺数据交给 Apply/Validate。已经在旧版本中丢失的真实装备明细无法由方案名称反推；用户可选中该方案，执行一次“获取当前”再“保存方案”，显式按当前穿戴重建并进入 A/B journal。Start/Validate 永远不会自动覆盖历史方案。
+- **诊断/测试**：Foundation `persistence_reliability_v3` 追加 `verify success/attempt/fail`；readback failure 进入 incident warning。UIV3 Acceptance 升 v59 并声明 `PersistenceReliabilityV3ContractVersion=1`。新增 `rs_persistence_reliability_v3_harness.py`，真实 Lua 故障注入覆盖成功回读、`SaveData=true` 但 payload 静默缺字段、decode-only 不 Apply、普通 Store 不增加 readback，`22/22 PASS`。Gear Acceptance 同步锁定 schema 5/2、A/B、compact roundtrip、configured-empty corruption rejection。
+- **BuildTag**：`v3-m1.16.0.18.95-persistence-v3-gear-journal`。NEXT 仍是 RU Fresh Reload，但 Gear Persistence v3 现在是首要验收项；通过前不宣告保存系统已完成。
+
+## 2026-09-04 — `.18.94` Trade/DPS Fresh Reload Preflight Contract
+
+- **继续执行 CURRENT §9，而不是跳过 RU Gate**：`.18.93` 已修复 DPS Reload 自动弹窗与 Trade Dropdown/Quote；本轮不新增业务功能，只把这两条实机回归升级为封包前 package-coherence + runtime acceptance preflight，确保下一次 RU Fresh Reload 测到的是完整修复包，而不是“代码已改但某个文件漏包”的状态。
+- **DPS 可见性一致性门禁**：UIV3 Acceptance v58 新增 `TradeDpsFreshReloadPreflightContractVersion=1`。运行时只读检查 `v3.dps` Store schema 4、Feature `widgetVisible`/公开 Command，以及 WidgetHost `combat.dps` lifecycle `preference()` 的真实返回值必须与 `GetWidgetVisible()` 一致；若再次回退成无条件 auto-show，直接报 `dps_widget_visibility_preference_contract`。
+- **Trade Dropdown/Quote 一致性门禁**：运行时 preflight 要求 Trade Feature 暴露 `GetRouteSettings / SetFrom / SetTo / QuotePendingMaterials`，Projection 保持 `zones/sellableZones/pendingQuoteCount`，Life Economy Widget 版本满足当前 Dropdown/Quote Consumer 契约；缺失时报 `trade_dropdown_quote_preflight_contract`。这只证明公开链路与封包一致，Native popup 是否真正展开仍必须由 RU 点击验证。
+- **Foundation package-coherence**：`rs_foundation_audit.py` 新增 `.18.94` 精确检查：DPS schema/visibility/lifecycle 不得漂移；Trade 页面/HUD 必须保持两级 Dropdown + 材料询价；四个起终点循环按钮及 Presentation `CycleFrom/CycleTo` 调用不得回归；静态 Zone 仅作候选，服务器 `GetSpecialtyRatioBetween` 仍为路线 Authority；报价完成必须重建受影响材料投影。
+- **验证**：Foundation Audit PASS；Workspace Smoke 27/27；Presentation→Feature API self-test 5/5；Persistence Snapshot 19/19；Interactive Draft 13/13；Bag 4/4；Unit Lines 11/11；Front-Hemisphere 10/10。
+- **BuildTag**：`v3-m1.16.0.18.94-fresh-reload-preflight`。NEXT 仍是 **RU Fresh Reload + Persistence Reliability v2 Runtime Acceptance**；通过前不进入下一业务 UI Gate。
+
+## 2026-09-04 — `.18.93` DPS Visibility + Trade Dropdown/Quote RU Hotfix
+
+- **DPS reload 自动弹窗根因修复**：`combat.dps` WidgetHost lifecycle 之前把 `preference()` 硬编码为 `true`，因此只要 DPS Feature 偏好启用，每次 reload 都会自动 `Show()`，与用户是否关闭悬浮窗无关。`v3.dps` Store 升 schema 4，新增 durable `widgetVisible`；Show/Hide/Native Close 只在 `persist~=false` 时写入该偏好，auto lifecycle 只读取该字段。旧 schema 1–3 无字段会迁移为 `false`，因此本次升级不会继续继承“永远弹出”的旧行为。
+- **Trade 下拉可用性**：`Trade.Authority:RefreshZones()` 不再在 RU `X2Store:GetProductionZoneGroups` 调用失败时直接 `unavailable + return`；与既有 empty-payload policy 一致，失败时也可使用 sealed 34-zone candidates，并保留 error/fallback 诊断。最终路线仍只由 `GetSpecialtyRatioBetween` 服务器返回判定，静态数据不升级成 Authority。
+- **Trade 页面布局**：删除 `起点◀/起点▶/终点◀/终点▶` 四个冗余按钮及 Presentation 对 `CycleFrom/CycleTo` 的契约依赖。主页面改为“起点 / 目的地”两行 Dropdown-only 布局，状态行移到路线控件之后，降低 1024 宽度下的拥挤。兼容 Feature cycle Commands 保留，不删除旧 API。
+- **Trade HUD 补齐询价**：Floating Widget 同样改成两行 Dropdown-only 路线布局，并在目的地行新增“材料询价”。页面与 HUD 不再各自遍历业务材料，统一调用 `Trade:QuotePendingMaterials()`，批量提交仍受 `PriceQuoteQueueV3.maxQueue` 与显式用户动作约束，普通 Refresh 不产生 Auction fan-out。
+- **材料成本/利润真实回写修复**：修复 `BuildTradeMaterialProjection` 的 `complete` 初始值错误及 quoted/excluded 小计从未累加的问题；报价 callback 不再只加 revision，而是只查找引用该 `materialKey` 的当前路线行并重建其材料投影。所有必需材料完成报价后，`materialCostCopper/profit` 才转为完整值，未完成项继续明确显示未知。
+- **静态门禁**：DPS Acceptance 要求 Store schema 4 + visibility public facade；Presentation→Feature API Audit PASS（calls=358），RSUI Component API Audit PASS（calls=470）。
+- **BuildTag**：`v3-m1.16.0.18.93-trade-dps-runtime-ux-hotfix`。RU NEXT：Fresh Reload 验证 DPS 关闭后不再自弹、Trade 两级下拉 popup、HUD 询价与异步成本/毛利回写。
+
+## 2026-09-04 — `.18.92` Presentation→Feature API Contract Audit + Missing Command Repair
+
+- **继续 Foundation First，不跳过 RU Gate**：CURRENT §9 的 NEXT 仍是 RU Fresh Reload；本轮只完成 Fresh Reload 前还能由本地真实代码证明的 Public API 收口，不提前进入下一业务 UI Gate。
+- **新增 Presentation→Feature Public API 封包门禁**：`tools/rs_presentation_feature_api_audit.py` 从真实 Feature provider 提取公开方法与 `Commands`，覆盖 split Feature、`S.Features.Name = LocalFeature` bundle、以及 `NewFeature("id", spec)` business provider，再扫描 `presentation/v3` 的静态 Feature consumer。Lua 语法合法但 provider 未导出的 `Feature:Method()` / `Feature.Commands:Method()` 现在会直接阻断 Foundation Audit；显式 capability guard 继续允许。动态 `S.Features[expr]` 仅计数，不猜表达式，仍由既有 BusinessPages/Acceptance 证明。
+- **首轮审计直接发现 3 个真实漏接**：Tasks 与 Activities 悬浮窗均把 `setState` 绑定到 `Feature.Commands:SetWidgetWindowState`，但 Commands facade 从未导出该方法；Gear Quick Settings Modal 调用 `Feature.Commands:ResetQuickSnapSettings`，而 Gear Commands 同样缺失。三条都可能在页面已能打开之后，于拖动/缩放悬浮窗或点击 Gear 重置时才报 `attempt to call method ... nil`，因此旧 Lua Parse/Component API Audit 无法覆盖。现分别补齐只转发到既有 Feature Authority 的 Commands，不新增第二状态。
+- **Runtime/package coherence**：Tasks/Activities/Gear 各自 Acceptance 同步要求新 Command；Foundation Gate 升 v88 并新增 `v3_presentation_feature_api_contract[tasksWindow/activitiesWindow/gearReset]`，避免未来增量包漏文件时只靠开发机静态工具发现。
+- **Auditor self-test**：新增 `tools/rs_presentation_feature_api_audit_harness.py`，覆盖 valid static provider、missing command 必须失败、explicit guard 允许、`NewFeature` spec command、bundle export 五类，`5/5 PASS`。当前真实工程扫描：`providers=36 / usedProviders=25 / aliases=45 / calls=353 / dynamicAliases=5`，**0 缺失静态 Feature API**。
+- **验证**：210/210 Active Lua Parse、Foundation Audit PASS（新增 `presentationFeatureApi=1`）、Component API Audit PASS、Presentation Feature API Audit PASS、Workspace 27/27、Persistence 19/19、Interactive Draft 13/13、Bag 4/4、Unit Lines 11/11、Front-Hemisphere 10/10。
+- **BuildTag**：`v3-m1.16.0.18.92-presentation-feature-api-contract-audit`。RU NEXT 不变：Fresh Reload 后重点验证状态显示/Persistence，同时新增 Tasks/Activities 浮窗拖动保存与 Gear Quick Settings Reset 三条 spot-check。
+
+## 2026-09-04 — `.18.91` RSUI Prepackage Contract Audit
+
+- **同类页面崩溃继续扫描**：不是继续给某个页面写 `nil` 特判，而是新增 `tools/rs_rsui_component_api_audit.py` 扫描全部 `presentation/v3` 的已识别 RSUI Component 构造与方法调用；公共 Base API 从运行时代码提取，类型特有 Public API 显式列入 reviewed contract。未知方法若没有 `type(component.Method)=="function"` capability guard，Foundation Audit 直接失败。当前基线：29 个 Presentation 文件 / 501 构造 / 466 方法调用 / 5 guarded，**0 未保护 API 越界**。
+- **Workspace 真构建覆盖扩大**：`RSUI_WORKSPACE_SMOKE_HARNESS` 从 LayoutEditor 单一路径扩展为 MasterDetail / InspectorWorkbench / ResponsiveInspector / LayoutEditor / SettingsWorkbench / CommandCenter 六类公共模板，真实 texlua 构建 `27/27 PASS`；Button mock 继续故意不实现 `Show()`，确保 scaffold 不能依赖未声明 convenience method。
+- **TOC 依赖顺序硬门禁**：Foundation Audit 新增 RSUI top-level fail-closed dependency provider-before-consumer 检查；Framework 若在加载时要求 `RSUI.ListView/Windowing/...` 已存在，则 provider 必须在 toc.g 更早。用于阻止 `.18.81` TreeView/ListView 类“文件都在但顺序使组件未注册”的回归。
+- **发现并修复开发 Gate 自身缺陷**：`rs_unit_line_sampling_harness.py` 与 `rs_screen_projection_front_hemisphere_harness.py` 的默认 `--root=replicatedsuite` 依赖当前工作目录，从工程根执行会错误查找双重 `replicatedsuite/`。现改为脚本文件位置解析工程根；从 `replicatedsuite/` 与其父目录调用均分别通过 `11/11`、`10/10`。
+- **运行时影响**：除 BuildTag 更新外不改变 Feature/Store/TOC/RSUI Runtime 行为；新增检查均为 developer-only prepackage tools。RU Fresh Reload 仍是下一 P0 Gate。
+- **BuildTag**：`v3-m1.16.0.18.91-rsui-prepackage-contract-audit`。
+
+## 2026-09-04 — `.18.90` RSUI Component API + Package Coherence RU Hotfix
+
+- **第六次“页面打不开”根因收口**：RU 堆栈确认 `ui/framework/rs_ui_workspace_templates.lua:341` 对标准 `Button` Component 调用了不存在的 `Show()`。这不是 Native 失败，而是 Lua 动态 method lookup 在语法检查阶段无法发现的 Public API 漂移；BuildTransaction 因异常正确 rollback/quarantine，但用户仍无法进入页面。
+- **RSUI Component API Contract v1**：RSUI 升至 v44 / API 12.8。Base Component 统一提供 `Show/Hide → SetVisible` facade；新增 `RequireComponentMethods()`，Composite/Workspace 在构建边界显式校验真实调用方法。`RSUI:Create()` 同时验证所有组件的公共 `GetRoot/SetVisible/Show/Hide/SetEnabled/Release` 契约，不新增 Tick/Render 扫描。
+- **WorkspaceTemplates v6 / LayoutEditorWorkspace v4**：Inspector Toggle 改用共享 `SetVisible(drawer)`，并对 ResponsiveInspector、Toggle、StatusChip、LayoutEditorOverlay、TransformInspector、EditorCommandBar 做构建期 Public API fence。新增真实 Lua `RSUI_WORKSPACE_SMOKE_HARNESS`，Button mock 故意不实现 `Show()`，因此同类回归会在封包前失败。
+- **Persistence package-coherence 修复**：用户诊断同时暴露 `persistence_runtime_acceptance_snapshot[contract=0/fingerprint=false/snapshot=false]`。检查完整工程确认 `.18.84` 的 Gate/Docs 已存在，但 `core/rs_persistence.lua` 的 `RuntimeAcceptanceSnapshotContractVersion/FingerprintPayload/BuildRuntimeAcceptanceSnapshot` 以及诊断页“输出存档验收”实现未进入当前完整包。`.18.90` 恢复这些运行时实现，并新增 Foundation Audit package-coherence fence + `PERSISTENCE_ACCEPTANCE_SNAPSHOT_HARNESS`，禁止以后再次出现“文档/Gate 已升级但实现漏包”。
+- **验证**：Foundation Gate v87、UIV3 Acceptance v57、Workspace v6、LayoutEditorWorkspace v4。新增 non-destructive Sequence `v3_56_ui_component_api_contract`；封包前必须通过 210/210 Lua Parse、Foundation Audit、Workspace Smoke、Persistence Snapshot、Interactive Draft、Bag/Unit Lines/Front-Hemisphere 回归。
+
+## 2026-09-04 — `.18.89` RSUI Interactive Draft + Compact Layout Inspector RU Hotfix
+
+- **RU 实机反馈**：状态显示 HUD 布局在当前窗口宽度下没有可见的 X/Y/宽高等参数入口；Slider 拖动时每帧在预览值与旧值之间来回跳；Numeric/EditBox 删除或输入字符后会立即恢复旧文本。代码核查确认参数模型并未缺失，而是 Compact ResponsiveInspector 把唯一 TransformInspector 收进 Drawer 后，LayoutEditorWorkspace 漏了打开 Drawer 的用户入口；同时共享 Control `Render()` 会在 Aura/页面环境刷新时把尚未 Commit 的 Slider Preview / focused Edit draft 用旧 Binding 值覆盖。
+- **RSUI Interactive Draft Contract v1**：RSUI 升至 v43 / API 12.7，TextInput/NumericInput 在 Native EditBox 获得焦点期间拒绝 ambient binding refresh 覆盖草稿；Slider 在 active drag 期间拒绝 ambient Render 回灌旧值。显式 API、interaction preview 与 final commit 仍可覆盖。未引入猜测的 `OnTextChanged/OnKeyDown/OnKeyUp`，继续复用已验证 Focus identity 与现有 drag state。
+- **NumericField v4**：`SyncControls(value, source)` 显式传播 `binding_refresh / interaction / commit` 来源；Slider Preview 只同步当前 draft，最终 Commit 才推进 Binding，避免父 Field 刷新重新引入旧值。
+- **LayoutEditorWorkspace v3 / WorkspaceTemplates v5**：Compact/Drawer 模式在稳定 Toolbar 增加 `[属性] / [收起属性]` 按钮，调用 SAME ResponsiveInspector Drawer，不 reparent、不复制 Inspector；状态显示进入 HUD 布局时在 Compact 模式自动打开属性 Drawer，选中元素也允许自动打开，从而恢复 X/Y（左-/右+、上-/下+）、宽高、Anchor/Pivot、Snap 等共享 TransformInspector 参数。
+- **状态显示刷新边界**：`v3.buff_display.updated` 只在 `追踪管理` 页刷新 Aura Table；HUD Layout 的 isolated Working 不再被 Aura cadence 重绘。其他必要页面刷新仍由共享 Interactive Draft fence 保护，因此修复不依赖页面级“正在输入”第二份状态。
+- **防回归/验证**：Foundation Gate v86、UIV3 Acceptance v56、Workspace v5 静态门禁要求 compact inspector affordance；Audit 还要求 BuffDisplay compact auto-open 与 Aura refresh boundary。新增 `RS_INTERACTIVE_DRAFT_HARNESS PASS 13/13`，真实加载 controls 并验证 focused text/numeric draft、slider preview、commit/resync。
+- **BuildTag**：`v3-m1.16.0.18.89-rsui-interactive-draft-layout-inspector`。RU 下一步重点实测 Compact HUD 属性 Drawer、X/Y 精确输入、Slider 连续拖动与 Aura 高频刷新期间的输入草稿稳定性，再继续 Fresh Reload 矩阵。
+
+## 2026-09-04 — `.18.88` Unit Lines Front-Hemisphere Cull RU Hotfix
+
+- **RU 实机反馈**：目标位于玩家视野背后时，单位连线会错误指向屏幕边角。`.18.87` 已解决长线采样与 viewport clipping，但仍信任 `GetUnitScreenPosition` 的正 depth；RU 某些背后角度会返回正 depth + 镜像/边角屏幕点，因此 Presenter 正常裁剪反而把错误端点保留下来。
+- **投影 Authority 修复**：`ScreenProjectionV3` 升至 v4，新增 `ProjectUnitBatch()` / `FrontHemisphereBatchContractVersion=1`。Unit Lines 每次 Demand refresh 只构建一次 Camera Frame，对启用 pair 所需 `player/target/targettarget/watchtarget/watchtargettarget` token 去重后读取世界坐标，并以 `dot(unit-camera, cameraForward)` 判定前半球；`forward<=epsilon` 返回 `behind_camera`，在 Native screen projection 与 Presentation clipping 前 fail-closed。
+- **前方屏外兼容**：若单位在相机前半球但 Native unit screen point 出界，batch 使用同一 Camera Frame 做 logical world fallback，保留真实超屏坐标，继续交给 `.18.87` Liang-Barsky 裁剪。不会用“靠近屏幕边角就隐藏”的启发式误杀正常前方目标。
+- **性能/生命周期**：Camera Pos/Dir/Fov 每 batch 各读取一次，不按 4 条 pair 重复抓取；unit token 去重，最多处理当前四条关系实际涉及的 5 个 token。无新 Tick/Scheduler/Store/schema；HighFrequency P1、adaptive density、pressure budget、Native Diff、progressive pool 全部保持 `.18.87` 契约。
+- **防回归/验证**：Foundation Gate v85、UIV3 Acceptance v55、Foundation Audit 增加 ScreenProjection v4 + front-hemisphere batch fence，并禁止 Unit Lines 回退逐端点 `ProjectUnitFlexible()`。`SCREEN_PROJECTION_FRONT_HEMISPHERE_HARNESS PASS 10/10`，模拟“behind + positive depth + corner coordinate”确认在 Native screen read 前拒绝；`UNIT_LINE_SAMPLING_HARNESS PASS 11/11` 保持通过。
+- **BuildTag**：`v3-m1.16.0.18.88-unit-lines-front-hemisphere-cull`。
+
+## 2026-09-04 — `.18.87` Unit Lines Adaptive Density + Crowd Smooth Refresh RU Hotfix
+
+- **RU 两次连续实机反馈**：①近距离 dots 很密，但距离拉远后固定点数被摊开，某些斜角/屏幕边缘甚至整段看不见；②多人场景线条刷新“一卡一卡”。代码核查确认两个独立根因：旧 Presenter 把 `pointCount` 当最终点数且不先裁 viewport；Unit Line 虽使用 HighFrequency lane，却显式注册成 P3，FrameBudget 在拥挤/低帧时会不规则延后整次刷新。
+- **自适应密度 + 可见段裁剪**：`CombatVisualGuidesV3 v5` 保留旧 `pointCount/pairPoints(8..48)` Store 作为基础密度，不迁移 schema。先用 bounded Liang-Barsky 裁剪 logical viewport 可见段，再按 240 logical px 参考长度换算 spacing；短线保持基础密度，长线自动补点，单 Edge hard cap=160。端点远离屏幕但关系线穿屏时仍绘制；整段确实不经过 viewport 或 depth<=0 才 fail-closed。
+- **Crowd Smooth Refresh**：`UNIT_LINE_TASK` 从 P3 改为 P1 visual cadence，避免压力场景整批 refresh 被 Scheduler 延后。负载控制改到 Presenter 内部：Normal/Busy/Heavy/Critical 对 adaptive extra 使用 100%/82%/68%/55% budget，但永远不低于用户 persisted base density；不会用“整帧不更新”换性能。
+- **Native Diff**：新增 Presenter-local per-dot render cache。稳定几何/外观下不再重复调用 RSUI 的 Extent/Color/Visible/Anchor compatibility path；移动线通常只发生 Anchor 写。这个局部缓存不替代 RSUI Authority，只用于高频 HUD 在调用 RSUI 前判断“值根本没变”，避免几百个 dot 每帧触发 Native getter 验证。
+- **渐进点池**：长线首次出现/距离突然拉长时，不再单帧创建上百个 Native Widget；点池按压力每 Render 最多增长 48/32/24/16，后续帧继续补齐并复用。Feature Disable/Consumer release 仍只隐藏/停止原有 Demand 资源，不新增 Tick/Scheduler。
+- **设置/诊断兼容**：设置页“点数”继续显示为“基础密度”，提示更新为多人压力只削减额外补点。Feature projection 增加 runtime `pointBudgetMode=cadence_pressure_bounded / refreshPriority=P1_visual`；Presenter `Describe()` 暴露 `unitPressure/requestedDots/visibleDots/poolGrowth/anchorWrites/styleWrites/visibilityWrites`，便于 RU 二次定位。Store/schema/key 不变。
+- **防回归**：`UnitLines.VisualGuideContractVersion=4 / AdaptiveDensityContractVersion=2 / SmoothRefreshContractVersion=1`；Presenter `AdaptiveUnitLineSamplingContractVersion=2` + clipping/pressure-budget/diff/progressive-pool contracts；Foundation Gate v84、UIV3 Acceptance、`v3_55_unit_line_adaptive_sampling_contract` 同步升级。Foundation Audit 禁止固定最终 8..48 点和 Unit Line HighFrequency 回退 P3。
+- **验证**：`UNIT_LINE_SAMPLING_HARNESS PASS 11/11`，覆盖 near/long/clipping/offscreen、1ms/100ms budget、Critical extra shedding、Critical progressive growth≤16、Normal growth≤48、稳定帧零冗余属性写、移动帧仅 Anchor 更新；Foundation Audit PASS。
+- **BuildTag**：`v3-m1.16.0.18.87-unit-lines-adaptive-smooth-render`。RU 下一步重点验证 1024×768/1080P/2K 的近远距离与斜角可见性，以及主城/团战多人压力下刷新连续性。
+
+## 2026-09-04 — `.18.86` Bag Dynamic Source Resolution RU Hotfix
+
+- **RU 实机根因修复**：用户确认“存放/放同类每点一次只移动一个物品”。旧 quick/category queue 预存 `slot`，但 `MoveToEmpty*` 成功后客户端会压缩/重投影源容器，导致同类物品补进刚清空的槽；旧 verifier 将“原槽仍有同类物品”误判为移动失败并停止，后续预计算 slot 也失效。
+- **Bag Move Contract v5**：quick queue 只保存稳定 `itemType` 意图，category batch 只保存稳定 `category` 意图；每个 250ms Scheduler step 在 Action 前调用统一 `BagMoveRuntime.FindLiveMoveSource()` 重新解析当前源槽，并在 live row 上再次执行 blacklist。slot 只存在于“本次写入 + 下一拍验证”的 transient pending，不再跨多个队列步骤充当身份。
+- **压缩槽位验证**：正常情况下原槽为空/身份变化即可确认成功；若另一件同类物品补到原槽，才调用 `CountLiveMatches()` 做 bounded source-population decrease 验证。源数量下降则继续队列；数量不变仍 fail-closed，保留 RU 2026-06-02 intermittent move fix 之后的失败防护。Category batch 同样处理非空补位，不再要求原槽绝对为空。
+- **生命周期/性能不变**：Quick/Category 继续互斥；每步最多一条写操作；仍使用 250ms P1 Scheduler、40 次 hard cap、240 槽 scan bound；无 Tick/新 OnUpdate。完整扫描只出现在初始计划或 post-write 槽位歧义路径，常规每步只扫描到首个 live match。窗口关闭/切换、用户取消、Feature Disable 仍释放任务和运行态。
+- **防回归**：`BagMoveContractVersion=5 / BatchLifecycleContractVersion=5 / NativeWindowQuickContractVersion=3 / DynamicSourceResolutionContractVersion=1`；Foundation Gate/UIV3 Acceptance 升级到 bag v5。`rs_foundation_audit.py` 明确禁止 serial plan 再保存 transient slot；新增 `tools/rs_bag_move_queue_harness.py`，quick same-type compaction / mixed type / category+blacklist / failed-write 四类测试 `4/4 PASS`。
+- **BuildTag**：`v3-m1.16.0.18.86-bag-dynamic-source-resolution`。RU 下一步仍为 CURRENT §9.2 Fresh Reload，同时优先复验一次点击“放同类/高级整理”是否能连续处理多件。
+
 # Replicated Suite 变更记录（Changelog）
+
+## 2026-09-04 — `.18.85` Buff Display Coordinate-Space RU Hotfix
+
+- **用户实机阻断**：状态显示无法打开，诊断稳定报告 `layout_editor_overlay_coordinate_space_required`，并触发 Page quarantine / BuildTransaction rollback / preflight fail。
+- **真实根因**：`rs_v3_buff_display_page.lua` 的首个真实 `LayoutEditorWorkspace v2` Consumer 声明 `coordinateSpace="local"`，但遗漏 `pointerToLocal`；PointerService 采样的是 viewport-logical 坐标，因此共享 Overlay Validator 正确 fail-closed。没有放宽 Foundation，也没有把 local 错标为 viewport。
+- **修复**：新增 `ViewportPointerToEditorLocal()`。手势采样时从 Gesture Controller 的 SelectionOverlay 追溯唯一 LayoutEditorOverlay native root，调用 `Layout:GetLogicalRect()` 获取实时 logical origin/extent，再按声明的 640×320 editor canvas 映射 viewport pointer；不缓存 geometry，避免窗口移动、Responsive reflow、ScaleBox、UI Scale 后拖动漂移/比例失真。Native/root 不可用时返回 nil，由 Gesture 契约继续 fail-closed。
+- **回归门禁**：Foundation Audit 新增 Buff Display local coordinate Consumer fence，要求 `coordinateSpace="local"` 与显式 `pointerToLocal` 成对存在，并验证转换仍基于 live editor root logical rect。
+- **兼容性**：不改 Store/schema/TOC/Feature 生命周期/共享 LayoutEditorOverlay Contract；只修 Presentation 坐标适配和静态门禁。
+- **BuildTag**：`v3-m1.16.0.18.85-buff-display-coordinate-space-hotfix`。RU 下一步仍为 CURRENT §9.2 Fresh Reload；重点先验证状态显示页面可打开、Build Transaction 计数清零及 HUD 拖动/缩放方向正确。
+
+## 2026-09-04 — `.18.84` Persistence Fresh Reload Fingerprint
+
+- **Fresh Reload 内容证据**：Persistence 新增 `RuntimeAcceptanceSnapshotContractVersion=1`、`FingerprintPayload()` 与 `BuildRuntimeAcceptanceSnapshot()`。指纹直接基于 Store `get()` 的 Domain save snapshot，先走现有 SaveData budget，再按稳定 key 顺序计算；table 插入顺序不会导致假差异，字段变化会改变指纹。
+- **严格只读边界**：Snapshot 不自动 Load、不 Flush、不 Save、不改 dirty/fence，也不读取 `payload/__rsmeta` 编码 envelope；冷 Store 明确输出 `store_not_loaded`，避免默认值冒充真实回读。Persistence Core 保持业务 ID 无关。
+- **诊断 UI**：`诊断与维护` 新增独立第三行“输出存档验收”。当前验收清单覆盖 Buff Display、Healer、Gear Index、Activities、Tasks、DPS、Trade；已注册的 `v3.gear.payload.*` 动态进入 `ALL` 总指纹，详细 payload 行最多 8 条，剩余只报数量。输出同时包含 loaded/dirty/fence/schema/dirtyRevision/lastSavedRevision。
+- **Gate**：Foundation Gate 升 v82，新增 `persistence_runtime_acceptance_snapshot` blocker contract；没有 Snapshot API 或 contract version 不足时拒绝宣告 Foundation Ready。
+- **兼容性**：没有新增 Store、没有 SaveData key/schema/metadata 变化、没有 TOC 新文件；旧用户配置与升级路径不变。
+- **验证**：`PERSISTENCE_ACCEPTANCE_SNAPSHOT_HARNESS PASS 14/14`；全量 Lua Parse PASS（210/210）；Foundation Audit PASS（`toc=210 activeLua=210 allLua=210 globals=0 presentation=0 rawNative=0 rawScope=0 detachedWidgetState=0 apiDependency=0 apiCapability=0 businessIds=0 auctionEventOwners=0 retiredUiLayer=0`）；Markdown 相对链接 58 条、0 断链。RU Fresh Reload/完整退出重进仍是 §9.2 唯一 NEXT，本轮不把本地指纹工具冒充实机回读通过。
+- **BuildTag**：`v3-m1.16.0.18.84-persistence-fresh-reload-fingerprint`。
+
+## 2026-09-04 — `.18.83` Persistence Runtime Acceptance Diagnostics
+
+- **NEXT 对齐**：继续执行 CURRENT §9.2 的 RU Fresh Reload / Persistence Reliability v2 Runtime Acceptance，不抢跑下一业务 UI Gate。
+- **单一 Reload/Flush Authority**：删除诊断页“重新加载文件”按钮的额外预 `Persistence:Flush()`；页面现在只调用 `ReloadCodeFromDisk()`，避免一次点击双写、双失败计数以及首个失败原因被吞。
+- **可复制 Store 故障证据**：`Persistence:Flush()` 保存最近一次 runtime-only `lastFlush { at, ok, owner, failures }`，`Describe()` 暴露 `RuntimeAcceptanceDiagnosticsContractVersion=1`。该快照不持久化、不参与重试/写策略，Store dirty/fence 仍是唯一 Authority。
+- **Foundation/Diagnostics**：Foundation Gate v81 新增 `persistence_runtime_acceptance_diagnostics`；一键摘要在 Flush/Fence 异常时直接附带最多 3 条 `store id:reason`，Recent Fault 也保留 `context.store/context.failures`；诊断页新增“最近存档落盘”行。
+- **文档收口**：更新 `RU_RUNTIME_ACCEPTANCE.md` 的旧 `.18.60` BuildTag，新增 Buff Display/Healer/Gear/Activities/Tasks/DPS/Trade 的 Persistence Fresh Reload 矩阵，并删除对不存在的 `.workbuddy/tmp` harness 路径依赖。
+- **验证**：changed-file Lua Parse PASS；全量 Lua Parse PASS（210/210）；Foundation Audit PASS（210/210，全部结构越界 0）；`PERSISTENCE_RUNTIME_ACCEPTANCE_HARNESS PASS` 验证失败 Flush 保留 exact store+reason、后续成功 Flush 覆盖失败 evidence；Markdown 相对链接检查 58 条、0 断链。
+- **BuildTag**：`v3-m1.16.0.18.83-persistence-runtime-acceptance-diagnostics`。
 
 ## 2026-09-04 — `.18.82` Persistence 迁移收口 + §9.3 业务回归（本地）
 

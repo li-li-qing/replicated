@@ -144,7 +144,7 @@ S.Features.Trade = Trade
 Trade.UpdateTopic = "v3.life.trade.updated"
 Trade.State = { fromZone = nil, toZone = nil, favorites = {}, sortMode = "ratio", widgetVisible = false, widgetWindow = nil }
 Trade.Authority = { version = 2, revision = 0, zones = {}, sellableZones = {}, rows = {}, status = "idle", error = nil, inFlight = nil, zoneFallback = false, sellableFallback = false, sellableError = nil }
-InstallLifeWidgetContract(Trade, { defaultWidth = 470, defaultHeight = 310, minWidth = 260, minHeight = 140, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 })
+InstallLifeWidgetContract(Trade, { defaultWidth = 470, defaultHeight = 340, minWidth = 320, minHeight = 220, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 })
 local TA = Trade.Authority
 TA.sellableCache = {}
 local TRADE_CONTINENT_ORDER = { west = 1, east = 2, auroria = 3, other = 4 }
@@ -258,7 +258,7 @@ local function BuildTradeMaterialProjection(name)
     end
     result.sourceCount = sourceCount
 
-    local total, complete = 0, false
+    local total, complete = 0, sourceCount > 0
     for index = 1, limit do
         local ingredient = type(ingredients[index]) == "table" and ingredients[index] or {}
         local materialKey = ingredient.materialKey or ingredient.compactId or "?"
@@ -291,6 +291,7 @@ local function BuildTradeMaterialProjection(name)
                 complete, status = false, "explicit_quote_required"
             end
         end
+        if totalCost ~= nil then total = total + totalCost end
 
         local row = {
             index = index,
@@ -353,19 +354,78 @@ local function TradeMaterialCost(name)
     return BuildTradeMaterialProjection(name).costCopper
 end
 
+local function ApplyTradeMaterialProjectionToRow(row)
+    if type(row) ~= "table" then return false end
+    local materialProjection = BuildTradeMaterialProjection(row.sourceName or row.name)
+    local cost = materialProjection.costCopper
+    local price = tonumber(row.priceCopper)
+    local profit = price and cost and (price - cost) or nil
+    row.materials = materialProjection.summary
+    row.text = materialProjection.summary
+    row.materialRows = materialProjection.materialRows
+    row.materialCount = materialProjection.count
+    row.materialSourceCount = materialProjection.sourceCount
+    row.materialLimit = TRADE_MATERIAL_MAX_ROWS
+    row.materialsTruncated = materialProjection.truncated
+    row.materialSummaryTruncated = materialProjection.summaryDisplayTruncated
+    row.materialCostCopper = cost
+    row.materialCostStatus = materialProjection.costStatus
+    row.materialCostComplete = materialProjection.costComplete
+    row.materialSubtotalCopper = materialProjection.subtotalCopper
+    row.profit = profit and Money(profit) or (price and "待材料价格" or "--")
+    return true
+end
+
+local function PendingTradeQuoteCount(rows)
+    local seen, count = {}, 0
+    for _, row in ipairs(type(rows) == "table" and rows or {}) do
+        for _, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
+            local key = material.materialKey
+            if material.costStatus == "explicit_quote_required" and key ~= nil and seen[key] ~= true then
+                seen[key], count = true, count + 1
+            end
+        end
+    end
+    return count
+end
+
+function TA:RefreshQuotedMaterial(materialKey)
+    local changed = false
+    for _, row in ipairs(self.rows or {}) do
+        local affected = false
+        for _, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
+            if material.materialKey == materialKey then affected = true; break end
+        end
+        if affected then ApplyTradeMaterialProjectionToRow(row); changed = true end
+    end
+    self.revision = self.revision + 1
+    PublishFeatureUpdate(Trade, self.revision, changed and "trade_quote_completed" or "trade_quote_completed_unmatched")
+    return changed
+end
+
 function TA:RefreshZones()
     self.sellableCache = {}
     local ok, value, err = Call("X2Store:GetProductionZoneGroups", StoreApi, "GetProductionZoneGroups")
-    if ok ~= true then self.status, self.error = "unavailable", err or "production zones unavailable"; return false, self.error end
-    self.zones = NormalizeTradeZones(value)
+    self.zones = ok == true and NormalizeTradeZones(value) or {}
     self.zoneFallback = false
     if #self.zones == 0 then
+        -- RU builds can transiently reject or shape-shift the production-zone
+        -- getter.  The curated Zone table is already an accepted candidate
+        -- fallback; use it on API failure as well as empty responses so the
+        -- dropdown remains selectable. GetSpecialtyRatioBetween is still the
+        -- server Authority that accepts/rejects the final route.
         self.zones = NormalizeTradeZones(StaticTradeZones())
         self.zoneFallback = #self.zones > 0
     end
     self.sellableZones = {}
     self.sellableFallback, self.sellableError = false, nil
-    self.status, self.error = #self.zones > 0 and "ready" or "empty", (#self.zones > 0 and nil or "生产地区列表为空")
+    if #self.zones > 0 then
+        self.status = "ready"
+        self.error = ok == true and nil or (err or "生产地区 API 不可用，已使用静态候选")
+    else
+        self.status = ok == true and "empty" or "unavailable"
+        self.error = err or "生产地区列表为空"
+    end
     local valid = false
     for _, row in ipairs(self.zones) do if row.id == Number(Trade.State.fromZone) then valid = true end end
     if not valid then Trade.State.fromZone, Trade.State.toZone = nil, nil end
@@ -441,32 +501,15 @@ function TA:OnRatio(info)
             local ratio = Number(value.ratio or value.rate or value.percentage)
             if name ~= nil and ratio ~= nil then
                 local price = TradePrice(flight.to, name, ratio)
-                local materialProjection = BuildTradeMaterialProjection(name)
-                local cost = materialProjection.costCopper
-                local profit = price and cost and (price - cost) or nil
-                rows[#rows + 1] = {
+                local row = {
                     key = tostring(flight.from) .. ":" .. tostring(flight.to) .. ":" .. tostring(name),
                     name = Text(name), sourceName = Text(name), ratio = ratio,
                     rate = tostring(math.floor(ratio + 0.5)) .. "%", priceCopper = price,
                     price = price and Money(price) or "--",
-                    materials = materialProjection.summary,
-                    -- Generic V3 business pages expose row.text as their fact
-                    -- column; keep it wired to the exact same bounded summary
-                    -- used by the dedicated Trade material column.
-                    text = materialProjection.summary,
-                    materialRows = materialProjection.materialRows,
-                    materialCount = materialProjection.count,
-                    materialSourceCount = materialProjection.sourceCount,
-                    materialLimit = TRADE_MATERIAL_MAX_ROWS,
-                    materialsTruncated = materialProjection.truncated,
-                    materialSummaryTruncated = materialProjection.summaryDisplayTruncated,
-                    materialCostCopper = cost,
-                    materialCostStatus = materialProjection.costStatus,
-                    materialCostComplete = materialProjection.costComplete,
-                    materialSubtotalCopper = materialProjection.subtotalCopper,
-                    profit = profit and Money(profit) or (price and "待材料价格" or "--"),
                     tone = ratio >= 125 and "green" or (ratio >= 115 and "yellow" or "red"),
                 }
+                ApplyTradeMaterialProjectionToRow(row)
+                rows[#rows + 1] = row
             end
         end
     end
@@ -481,7 +524,14 @@ function TA:OnRatio(info)
     PublishFeatureUpdate(Trade, self.revision, "ratio_result")
     return #rows > 0
 end
-function TA:GetProjection() return { revision = self.revision, zones = Copy(self.zones), sellableZones = Copy(self.sellableZones), rows = Copy(self.rows), status = self.status, error = self.error, fromZone = Trade.State.fromZone, toZone = Trade.State.toZone, zoneFallback = self.zoneFallback == true, sellableFallback = self.sellableFallback == true, sellableError = self.sellableError } end
+function TA:GetProjection()
+    return {
+        revision = self.revision, zones = Copy(self.zones), sellableZones = Copy(self.sellableZones), rows = Copy(self.rows),
+        status = self.status, error = self.error, fromZone = Trade.State.fromZone, toZone = Trade.State.toZone,
+        zoneFallback = self.zoneFallback == true, sellableFallback = self.sellableFallback == true, sellableError = self.sellableError,
+        pendingQuoteCount = PendingTradeQuoteCount(self.rows),
+    }
+end
 
 RegisterStore(Trade.storeId, "v3.life.trade", function() return { fromZone = nil, toZone = nil, favorites = {}, sortMode = "ratio", widgetVisible = false } end,
     function() return Copy(Trade.State) end,
@@ -567,16 +617,39 @@ function Trade:QuoteMaterial(materialKey)
     if itemType == nil then return false, "该材料没有已验证的拍卖行身份，无法询价" end
     local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
     if type(queue) ~= "table" or type(queue.RequestQuote) ~= "function" then return false, "报价服务不可用" end
+    local quotedMaterialKey = materialKey
     local ok, status = queue:RequestQuote("life_trade", itemType, itemGrade, function()
-        TA.revision = TA.revision + 1
-        PublishFeatureUpdate(Trade, TA.revision, "trade_quote_completed")
+        return TA:RefreshQuotedMaterial(quotedMaterialKey)
     end)
     if ok ~= true then return false, status or "报价请求失败" end
     return true, status or "queued"
 end
 
+function Trade:QuotePendingMaterials()
+    local seen, requested, skipped = {}, 0, 0
+    local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
+    local maxBatch = type(queue) == "table" and math.max(1, tonumber(queue.maxQueue) or 64) or 64
+    for _, row in ipairs(TA.rows or {}) do
+        for _, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
+            local key = material.materialKey
+            if material.costStatus == "explicit_quote_required" and key ~= nil and seen[key] ~= true then
+                seen[key] = true
+                if requested >= maxBatch then
+                    skipped = skipped + 1
+                else
+                    local ok = self:QuoteMaterial(key)
+                    if ok == true then requested = requested + 1 else skipped = skipped + 1 end
+                end
+            end
+        end
+    end
+    if requested == 0 and skipped == 0 then return false, "没有待询价材料（请先完成一次路线查询）", 0, 0 end
+    return true, "已提交 " .. tostring(requested) .. " 项询价" .. (skipped > 0 and ("，" .. tostring(skipped) .. " 项暂未提交") or ""), requested, skipped
+end
+
 Trade.Commands = { Refresh = function(_, reason) return Trade:Refresh(reason) end, SetFrom = function(_, id) return Trade:SetFrom(id) end, SetTo = function(_, id) return Trade:SetTo(id) end,
     QuoteMaterial = function(_, materialKey) return Trade:QuoteMaterial(materialKey) end,
+    QuotePendingMaterials = function() return Trade:QuotePendingMaterials() end,
     CycleFrom = function(_, delta) return Trade:CycleFrom(delta) end, CycleTo = function(_, delta) return Trade:CycleTo(delta) end,
     GetWidgetVisible = function() return Trade:GetWidgetVisible() end, SetWidgetVisible = function(_, value, reason) return Trade:SetWidgetVisible(value, reason) end,
     SetWidgetWindowState = function(_, value, reason) return Trade:SetWidgetWindowState(value, reason) end,

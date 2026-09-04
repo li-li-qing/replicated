@@ -637,15 +637,11 @@ local function BuildPage(parent, route)
         return true
     end
 
-    -- WU1: both buttons are RSUI components now, so the native OnClick handler
-    -- must be bound on the component's native root - the same rule the bindings
-    -- loop below already uses for every other button on this page.
-    local function SafeNativeClick(widget, key, fn)
-        local target = widget ~= nil and widget.root or widget
-        if target ~= nil then S.UI:SafeHandler(target, "OnClick", fn, key) end
-    end
-    SafeNativeClick(createButton, "v3_gear:create", function() return root:CreateSet() end)
-    SafeNativeClick(saveName, "v3_gear:rename", function() return root:RenameOnly() end)
+    -- Buttons keep a single RSUI-owned native OnClick handler. Late-bound page
+    -- actions are assigned to the component action slot so enabled/release/event
+    -- mux fences remain authoritative.
+    createButton.onClick = function() return root:CreateSet() end
+    saveName.onClick = function() return root:RenameOnly() end
     local bindings = {
         { capture, function() return root:Capture() end, "gear.capture", "读取中…" },
         { save, function() return root:Save() end, "gear.save", "保存中…" },
@@ -656,19 +652,18 @@ local function BuildPage(parent, route)
         { screenButton, function() return root:ToggleQuick() end }, { snapSettings, function() return root:OpenQuickSnapSettings() end },
         { moveUp, function() return root:MoveSelected(-1) end }, { moveDown, function() return root:MoveSelected(1) end }, { deleteButton, function() return root:DeleteSelected() end },
     }
-    for index, pair in ipairs(bindings) do
-        if pair[1].root ~= nil then
-            local handler = pair[2]
-            if pair[3] ~= nil and S.ActionRunner ~= nil then
-                handler = function()
-                    return S.ActionRunner:Run({
-                        id = pair[3], button = pair[1], idleText = pair[1].spec and pair[1].spec.text, busyText = pair[4],
-                        notify = false, execute = pair[2],
-                    })
-                end
+    for _, pair in ipairs(bindings) do
+        local button, execute, actionId, busyText = pair[1], pair[2], pair[3], pair[4]
+        local handler = execute
+        if actionId ~= nil and S.ActionRunner ~= nil then
+            handler = function()
+                return S.ActionRunner:Run({
+                    id = actionId, button = button, idleText = button.spec and button.spec.text, busyText = busyText,
+                    notify = false, execute = execute,
+                })
             end
-            S.UI:SafeHandler(pair[1].root, "OnClick", handler, "v3_gear:action:" .. tostring(index))
         end
+        button.onClick = handler
     end
 
     function root:OnActivated()

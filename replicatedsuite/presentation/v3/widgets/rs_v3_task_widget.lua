@@ -116,7 +116,7 @@ local function CreateTaskWidget()
     end
 
     function instance:Show(context)
-        if self.visible == true then self:Refresh(); self.surface:Show(true); return true end
+        if self.visible == true then self:Refresh(); return self.surface:Show(true) end
         local acquired = false
         self.table:SetViewState("loading", { title = "正在读取任务…", detail = "正在建立任务进度 Consumer。" })
         local ok, openErr = xpcall(function()
@@ -155,16 +155,16 @@ local function CreateTaskWidget()
     end
 
     function instance:Hide(context)
-        if self.visible == true then
-            local released, releaseErr = ReleaseWidgetConsumer()
-            if released ~= true then return false, releaseErr end
-            self.visible = false
-            self:Unsubscribe()
-        end
-        self.surface:Show(false)
+        local hidden, hideErr = self.surface:Show(false)
+        if hidden ~= true then return false, hideErr end
+        local released, releaseErr = true, nil
+        if self.visible == true then released, releaseErr = ReleaseWidgetConsumer() end
+        self.visible = false
+        self:Unsubscribe()
         if type(context) ~= "table" or context.persist ~= false then
             Feature.Commands:SetWidgetVisible(false, "task_widget_hide")
         end
+        if released ~= true then return false, releaseErr end
         return true
     end
     function instance:OnWindowClosed(context)

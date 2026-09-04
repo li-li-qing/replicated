@@ -52,6 +52,7 @@ V3.Shell = V3.Shell or {
 local Shell = V3.Shell
 Shell.navigationCallbackContractVersion = 1
 Shell.NavigationCallbackCaptureContractVersion = 1
+Shell.StateMutationTransactionContractVersion = 1
 
 local SCROLL_CATEGORY_ORDER = { "home", "combat", "life", "tools" }
 local SYSTEM_ROUTES = { "system.widgets", "system.features", "system.settings", "system.diagnostics" }
@@ -179,42 +180,79 @@ function Shell:BuildSystemNavigation()
     return true
 end
 
+local function EnsureComponentVisibility(component, visibility, label)
+    if component == nil then return true, nil end
+    if type(component.SetVisibility) ~= "function" then return false, tostring(label or "component") .. "_visibility_contract_missing" end
+    local _, accepted, detail = component:SetVisibility(visibility)
+    if accepted ~= true then return false, detail or (tostring(label or "component") .. "_visibility_rejected") end
+    return true, nil
+end
+
 function Shell:ApplyMinimizedState(persist)
     local state = V3.ShellState or {}
     local minimized = state.minimized == true
     -- The main application minimizes back to the persistent R launcher. It no
     -- longer compresses into a title-only strip, which was visually ambiguous
-    -- and consumed screen space without providing useful content.
-    if self.body ~= nil then self.body:SetVisibility("visible") end
-    if self.footer ~= nil then self.footer:SetVisibility("visible") end
+    -- and consumed screen space without providing useful content. Every Native
+    -- or Component state transition must be accepted before this projection is
+    -- considered applied; callers own the ShellState transaction itself.
+    local bodyOk, bodyErr = EnsureComponentVisibility(self.body, "visible", "shell_body")
+    if bodyOk ~= true then return false, bodyErr end
+    local footerOk, footerErr = EnsureComponentVisibility(self.footer, "visible", "shell_footer")
+    if footerOk ~= true then return false, footerErr end
     if self.minimizeButton ~= nil then self.minimizeButton:SetText("—") end
     if self.windowController ~= nil then
-        self.windowController:SetLocked(state.locked == true)
-        self.windowController:SetResizeEnabled(true)
+        local lockOk, _, lockDetail = self.windowController:SetLocked(state.locked == true)
+        if lockOk ~= true then return false, lockDetail or "主窗口锁定状态应用失败" end
+        local resizeOk, _, _, resizeDetail = self.windowController:SetResizeEnabled(true)
+        if resizeOk ~= true then return false, resizeDetail or "主窗口缩放状态应用失败" end
     end
     if minimized then
         if RSUI.DropdownService ~= nil and type(RSUI.DropdownService.CloseAll) == "function" then
             RSUI.DropdownService:CloseAll()
         end
-        if self.window ~= nil then Adapter:SetVisible(self.window, self.owner, false) end
+        if self.window ~= nil then
+            local hidden, hideErr = Adapter:SetVisible(self.window, self.owner, false)
+            if hidden ~= true then return false, hideErr or "主窗口最小化隐藏失败" end
+        end
     end
     if persist ~= false then MarkDirty("minimized_changed") end
-    return minimized
+    return true, minimized
 end
 
 function Shell:ToggleMinimized()
     local state = V3.ShellState or {}
+    local previous = state.minimized == true
+    if previous then return true end
     state.minimized = true
-    self:ApplyMinimizedState(true)
-    return self:Close("minimized_to_launcher")
+    local applied, applyErr = self:ApplyMinimizedState(false)
+    if applied ~= true then
+        state.minimized = previous
+        self:ApplyMinimizedState(false)
+        return false, applyErr or "主窗口最小化状态应用失败"
+    end
+    local closed, closeErr = self:Close("minimized_to_launcher")
+    if closed ~= true then
+        state.minimized = previous
+        self:ApplyMinimizedState(false)
+        if previous ~= true and self.window ~= nil then Adapter:SetVisible(self.window, self.owner, true) end
+        return false, closeErr or "主窗口最小化关闭失败"
+    end
+    MarkDirty("minimized_changed")
+    return true
 end
 
 function Shell:SetLocked(locked, persist)
     local state = V3.ShellState or {}
-    state.locked = locked == true
-    if self.windowController ~= nil then self.windowController:SetLocked(state.locked) end
+    local nextValue = locked == true
+    if state.locked == nextValue then return true, false end
+    if self.windowController ~= nil then
+        local accepted, _, detail = self.windowController:SetLocked(nextValue)
+        if accepted ~= true then return false, detail or "主窗口锁定状态应用失败" end
+    end
+    state.locked = nextValue
     if persist ~= false then MarkDirty("window_locked") end
-    return true
+    return true, true
 end
 
 function Shell:IsLocked()
@@ -223,6 +261,8 @@ end
 
 function Shell:CommitWindowGeometry(_, x, y, width, height, reason)
     local state = V3.ShellState or {}
+    local previous = {}
+    for key, value in pairs(state) do previous[key] = value end
     local context = S.Layout:GetContext()
     local scale = math.max(0.01, tonumber(context.addonScale) or 1)
     if state.minimized ~= true and tostring(reason or "") == "resize" then
@@ -232,8 +272,14 @@ function Shell:CommitWindowGeometry(_, x, y, width, height, reason)
     end
     if S.Layout ~= nil and type(S.Layout.StorePlacement) == "function" then S.Layout:StorePlacement(state, self.window, { mode = "free" }) end
     state.userMoved = true
+    local layoutOk, layoutErr = self:ApplyLayout(false)
+    if layoutOk ~= true then
+        for key in pairs(state) do state[key] = nil end
+        for key, value in pairs(previous) do state[key] = value end
+        pcall(function() self:ApplyLayout(false) end)
+        return false, layoutErr or "主窗口几何提交失败"
+    end
     MarkDirty("window_" .. tostring(reason or "geometry"))
-    self:ApplyLayout(false)
     return true
 end
 
@@ -347,7 +393,8 @@ function Shell:Create()
     if self.windowController == nil then return FailBuild("主窗口拖动/缩放能力创建失败") end
 
     self.created = true
-    self:ApplyMinimizedState(false)
+    local minimizedOk, minimizedErr = self:ApplyMinimizedState(false)
+    if minimizedOk ~= true then return FailBuild(minimizedErr or "主窗口初始状态应用失败") end
     local ok, layoutErr = self:ApplyLayout(false)
     if ok ~= true then return FailBuild(layoutErr) end
 
@@ -371,7 +418,10 @@ function Shell:ApplyInteractiveGeometry(_, _, width, height, kind)
     if tostring(kind or "") ~= "resize" then return true end
     width, height = math.max(1, tonumber(width) or 1), math.max(1, tonumber(height) or 1)
     self.root:LayoutIfNeeded(0, 0, width, height, true)
-    if self.windowController ~= nil then self.windowController:LayoutHandles(width, height) end
+    if self.windowController ~= nil then
+        local handlesOk, handlesErr = self.windowController:LayoutHandles(width, height)
+        if handlesOk ~= true then return false, handlesErr or "主窗口缩放句柄布局失败" end
+    end
     if type(RSUI.FlushLayoutQueue) == "function" then RSUI:FlushLayoutQueue(24) end
     return true
 end
@@ -388,9 +438,13 @@ function Shell:ApplyLayout(fromMetricsChange, designWidth, designHeight)
         self.lastRect = { x = x, y = y, width = width, height = height, designWidth = dw, designHeight = dh, metricsChange = fromMetricsChange == true, interacting = true }
         return true, self.lastRect
     end
-    Adapter:ApplyRect(self.window, self.owner, x, y, width, height)
+    local rectOk, rectErr = Adapter:ApplyRect(self.window, self.owner, x, y, width, height)
+    if rectOk ~= true then return false, rectErr or "主窗口原生几何应用失败" end
     self.root:LayoutIfNeeded(0, 0, width, height, true)
-    if self.windowController ~= nil then self.windowController:LayoutHandles(width, height) end
+    if self.windowController ~= nil then
+        local handlesOk, handlesErr = self.windowController:LayoutHandles(width, height)
+        if handlesOk ~= true then return false, handlesErr or "主窗口缩放句柄布局失败" end
+    end
     -- Scroll visibility is known only after the first arrangement. Updating the
     -- hint can invalidate text/button measure, so do it BEFORE the final bounded
     -- stabilization flush; otherwise ApplyLayout would return a dirty tree.
@@ -404,12 +458,33 @@ function Shell:Open()
     local created, err = self:Create()
     if created ~= true then return false, err end
     local state = V3.ShellState or {}
-    if state.minimized == true then
+    local wasMinimized = state.minimized == true
+    if wasMinimized then
         state.minimized = false
-        self:ApplyMinimizedState(true)
+        local restored, restoreErr = self:ApplyMinimizedState(false)
+        if restored ~= true then
+            state.minimized = true
+            self:ApplyMinimizedState(false)
+            return false, restoreErr or "主窗口恢复状态应用失败"
+        end
     end
-    self:ApplyLayout(false)
-    Adapter:SetVisible(self.window, self.owner, true)
+    local layoutOk, layoutErr = self:ApplyLayout(false)
+    if layoutOk ~= true then
+        if wasMinimized then
+            state.minimized = true
+            self:ApplyMinimizedState(false)
+        end
+        return false, layoutErr or "主窗口布局应用失败"
+    end
+    local shown, showErr = Adapter:SetVisible(self.window, self.owner, true)
+    if shown ~= true then
+        if wasMinimized then
+            state.minimized = true
+            self:ApplyMinimizedState(false)
+        end
+        return false, showErr or "主窗口显示失败"
+    end
+    if wasMinimized then MarkDirty("minimized_changed") end
     Adapter:Raise(self.window)
     return true
 end
@@ -419,7 +494,8 @@ function Shell:Close(reason)
         RSUI.DropdownService:CloseAll()
     end
     if self.window == nil then return true end
-    Adapter:SetVisible(self.window, self.owner, false)
+    local hidden, hideErr = Adapter:SetVisible(self.window, self.owner, false)
+    if hidden ~= true then return false, hideErr or "主窗口隐藏失败" end
     self.lastCloseReason = tostring(reason or "close")
     if ModalHost ~= nil and type(ModalHost.Clear) == "function" then ModalHost:Clear() end
     if ToastHost ~= nil and type(ToastHost.Clear) == "function" then ToastHost:Clear("shell_close") end

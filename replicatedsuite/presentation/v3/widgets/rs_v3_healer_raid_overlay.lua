@@ -126,17 +126,37 @@ function P:MakePanel(id)
     end
     local panel = { id=id, window=root, calibrationBg=calibrationBg, borders=borders, title=title, slots=slots, ranks=ranks, calibrationLabels=calibrationLabels, moving=false }
     S.UI:SetVisible(root, false, P.owner)
-    S.UI:SetPickable(root, false, P.owner)
+    if type(S.UI.EnsurePickable) ~= "function" then
+        return nil, "healer_raid_pickable_contract_unavailable"
+    end
+    local initialPickOk, _, initialPickErr = S.UI:EnsurePickable(root, false, P.owner)
+    if initialPickOk ~= true then return nil, "healer_raid_initial_pickable_failed:" .. tostring(initialPickErr or "unknown") end
+    if type(S.UI.TryInteractionCall) ~= "function" or type(S.UI.RequireHandler) ~= "function" then
+        S.UI:SetVisible(root, false, P.owner)
+        return nil, "critical_interaction_contract_unavailable"
+    end
+    local dragEnabled, dragErr = S.UI:TryInteractionCall(root, "EnableDrag", false)
+    if dragEnabled ~= true then
+        S.UI:SetVisible(root, false, P.owner)
+        return nil, "healer_raid_enable_drag_failed:" .. tostring(dragErr or "rejected")
+    end
 
-    S.UI:SafeHandler(root, "OnDragStart", function()
+    local startBound, startErr = S.UI:RequireHandler(root, "OnDragStart", function()
         local current = Settings()
         if current.calibration ~= true then return false end
+        if type(S.UI.BeginNativeGeometryLease) == "function" then
+            local leaseOk = S.UI:BeginNativeGeometryLease(root, P.owner, "healer_raid_calibration")
+            if leaseOk ~= true then return false end
+        end
+        local moving = S.UI:TryInteractionCall(root, "StartMoving")
+        if moving ~= true then
+            if type(S.UI.EndNativeGeometryLease) == "function" then S.UI:EndNativeGeometryLease(root, P.owner) end
+            return false
+        end
         panel.moving = true
-        if type(S.UI.BeginNativeGeometryLease) == "function" then S.UI:BeginNativeGeometryLease(root, P.owner, "healer_raid_calibration") end
-        if type(root.StartMoving) == "function" then pcall(function() root:StartMoving() end) end
         return true
     end, "v3_healer_raid_drag_start_" .. tostring(id))
-    S.UI:SafeHandler(root, "OnDragStop", function()
+    local stopBound, stopErr = S.UI:RequireHandler(root, "OnDragStop", function()
         if panel.moving ~= true then return false end
         if type(root.StopMovingOrSizing) == "function" then pcall(function() root:StopMovingOrSizing() end) end
         if type(S.UI.EndNativeGeometryLease) == "function" then S.UI:EndNativeGeometryLease(root, P.owner) end
@@ -149,6 +169,10 @@ function P:MakePanel(id)
         P:LayoutPanel(id)
         return true
     end, "v3_healer_raid_drag_stop_" .. tostring(id))
+    if startBound ~= true or stopBound ~= true then
+        S.UI:SetVisible(root, false, P.owner)
+        return nil, tostring(startErr or stopErr or "healer_raid_required_handler_failed")
+    end
     self.panels[id] = panel
     return panel
 end
@@ -247,7 +271,8 @@ function P:RefreshProjection()
     end
     self.rosterCount = type(projection) == "table" and tonumber(projection.rosterCount) or 0
     self.metrics.refreshes = (tonumber(self.metrics.refreshes) or 0) + 1
-    self:RefreshHighlights()
+    local highlighted, highlightErr = self:RefreshHighlights()
+    if highlighted == false then return false, highlightErr end
     return true
 end
 
@@ -260,8 +285,15 @@ function P:RefreshHighlights(nowMs)
         local isActive = self.activePanels[id] == true or calibration == true
         local show = calibration == true or (useRaidRuntime and self.activePanels[id] == true)
         S.UI:SetVisible(panel.window, show, self.owner)
-        S.UI:SetPickable(panel.window, calibration, self.owner)
-        if type(panel.window.EnableDrag) == "function" then pcall(function() panel.window:EnableDrag(calibration) end) end
+        if type(S.UI.EnsurePickable) ~= "function" then return false, "healer_raid_pickable_contract_unavailable" end
+        local pickOk, _, pickErr = S.UI:EnsurePickable(panel.window, calibration, self.owner)
+        if pickOk ~= true then return false, "healer_raid_pickable_state_failed:" .. tostring(id) .. ":" .. tostring(pickErr or "unknown") end
+        if type(S.UI.TryInteractionCall) == "function" then
+            local dragOk, dragStateErr = S.UI:TryInteractionCall(panel.window, "EnableDrag", calibration)
+            if dragOk ~= true then return false, "healer_raid_drag_state_failed:" .. tostring(id) .. ":" .. tostring(dragStateErr or "rejected") end
+        else
+            return false, "critical_interaction_contract_unavailable"
+        end
         if show then
             S.UI:TrySetUILayer(panel.window, "system")
             if type(panel.window.Raise) == "function" then pcall(function() panel.window:Raise() end) end
@@ -395,7 +427,10 @@ function P:Stop(reason)
     end
     if self.taskActive == true then S.Scheduler:RemoveTask(self.taskName); self.taskActive=false end
     if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self.activeOwner) end
-    for _, panel in pairs(self.panels) do S.UI:SetVisible(panel.window, false, self.owner); S.UI:SetPickable(panel.window, false, self.owner) end
+    for _, panel in pairs(self.panels) do
+        S.UI:SetVisible(panel.window, false, self.owner)
+        if type(S.UI.EnsurePickable) == "function" then S.UI:EnsurePickable(panel.window, false, self.owner) end
+    end
     if self.running == true then self.metrics.stops = (tonumber(self.metrics.stops) or 0) + 1 end
     self.running=false; self.calibrationMode=false; self.candidates={}; self.displayRows={}; self.rosterCount=0; self.selfSlot=nil
     return true

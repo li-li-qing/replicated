@@ -1,5 +1,5 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Outer Window Foundation v13
+-- Replicated Suite - RSUI Outer Window Foundation v16
 --
 -- Every V3 top-level/native window binds its movement and resizing here.
 -- Presentation code supplies policy/persistence callbacks; this layer owns the
@@ -17,10 +17,13 @@ local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
 if type(UI) ~= "table" or type(RSUI) ~= "table" then return end
 
-RSUI.Windowing = RSUI.Windowing or { version = 13, bindings = {}, metrics = { attached = 0, detached = 0, drags = 0, resizes = 0, locks = 0, raises = 0, opacityChanges = 0, resizeHover = 0, liveResizeFrames = 0, interactionBegins = 0, interactionEnds = 0, freePlacementCommits = 0, recoveryClamps = 0 } }
-RSUI.Windowing.version = 13
+RSUI.Windowing = RSUI.Windowing or { version = 16, bindings = {}, metrics = { attached = 0, detached = 0, drags = 0, resizes = 0, locks = 0, raises = 0, opacityChanges = 0, resizeHover = 0, liveResizeFrames = 0, interactionBegins = 0, interactionEnds = 0, freePlacementCommits = 0, recoveryClamps = 0, geometryCallbackRejects = 0 } }
+RSUI.Windowing.version = 16
+RSUI.Windowing.StateMutationTransactionContractVersion = 1
+RSUI.Windowing.GeometryCallbackTransactionContractVersion = 1
 RSUI.Windowing.IdempotentStateContractVersion = 1
 RSUI.Windowing.CallbackCaptureContractVersion = 1
+RSUI.Windowing.CriticalInteractionContractVersion = 1
 RSUI.Windowing.metrics = RSUI.Windowing.metrics or {}
 local W = RSUI.Windowing
 local NATIVE_RESIZE_LIMIT = 16384 -- technical guard only; not a user-facing window cap
@@ -33,6 +36,14 @@ end
 local function Clamp(value, minimum, maximum)
     value = tonumber(value) or minimum
     return math.max(minimum, math.min(maximum, value))
+end
+
+local function EnsureNativeResizing(window, enabled)
+    if window == nil or type(window.UseResizing) ~= "function" then return true, nil end
+    if type(UI.TryInteractionCall) ~= "function" then return false, "interaction_contract_unavailable" end
+    local accepted, detail = UI:TryInteractionCall(window, "UseResizing", enabled == true)
+    if accepted ~= true then return false, tostring(detail or "native_resize_mode_rejected") end
+    return true, nil
 end
 
 local function ReadLogicalRect(window)
@@ -251,7 +262,7 @@ function W:Attach(spec)
     end
 
     function controller:ApplyNativeResizeBounds()
-        if self.window == nil then return false end
+        if self.window == nil then return false, "window_required" end
         local context = S.Layout and S.Layout:GetContext() or { addonScale = 1 }
         local scale = math.max(0.01, tonumber(context.addonScale) or 1)
         local minW = math.max(1, (tonumber(self.minWidth) or 1) * scale)
@@ -261,10 +272,18 @@ function W:Attach(spec)
         -- of silently capping to the current viewport.
         local maxW = math.max(minW, (tonumber(self.maxWidth) or NATIVE_RESIZE_LIMIT) * scale)
         local maxH = math.max(minH, (tonumber(self.maxHeight) or NATIVE_RESIZE_LIMIT) * scale)
-        if type(self.window.UseResizing) == "function" then pcall(function() self.window:UseResizing(self.resizeEnabled == true and self.locked ~= true) end) end
-        if type(self.window.SetMinResizingExtent) == "function" then pcall(function() self.window:SetMinResizingExtent(minW, minH) end) end
-        if type(self.window.SetMaxResizingExtent) == "function" then pcall(function() self.window:SetMaxResizingExtent(maxW, maxH) end) end
-        return true
+        local resizingOk, resizingErr = EnsureNativeResizing(self.window, self.resizeEnabled == true and self.locked ~= true)
+        if resizingOk ~= true then return false, resizingErr end
+        if type(UI.TryInteractionCall) ~= "function" then return false, "interaction_contract_unavailable" end
+        if type(self.window.SetMinResizingExtent) == "function" then
+            local minOk, minErr = UI:TryInteractionCall(self.window, "SetMinResizingExtent", minW, minH)
+            if minOk ~= true then return false, tostring(minErr or "native_min_resize_extent_rejected") end
+        end
+        if type(self.window.SetMaxResizingExtent) == "function" then
+            local maxOk, maxErr = UI:TryInteractionCall(self.window, "SetMaxResizingExtent", maxW, maxH)
+            if maxOk ~= true then return false, tostring(maxErr or "native_max_resize_extent_rejected") end
+        end
+        return true, nil
     end
 
     function controller:CommitGeometry(reason)
@@ -278,14 +297,28 @@ function W:Attach(spec)
         local ok
         ok, x, y, width, height = ReconcileWindow(self, self.window, self.owner, x, y, width, height)
         if ok ~= true then return false end
+        if type(self.onGeometryChanged) == "function" then
+            local callbackOk, accepted, detail = pcall(self.onGeometryChanged, self, x, y, width, height, tostring(reason or "geometry"))
+            if callbackOk ~= true then
+                W.metrics.geometryCallbackRejects = (tonumber(W.metrics.geometryCallbackRejects) or 0) + 1
+                return false, tostring(accepted or "geometry_callback_exception")
+            end
+            if accepted == false then
+                W.metrics.geometryCallbackRejects = (tonumber(W.metrics.geometryCallbackRejects) or 0) + 1
+                return false, tostring(detail or "geometry_callback_rejected")
+            end
+        end
         if self.boundaryMode ~= "strict" then W.metrics.freePlacementCommits = (tonumber(W.metrics.freePlacementCommits) or 0) + 1 end
-        if type(self.onGeometryChanged) == "function" then pcall(self.onGeometryChanged, self, x, y, width, height, tostring(reason or "geometry")) end
         return true, x, y, width, height
     end
 
     function controller:LayoutHandles(width, height)
         width, height = math.max(1, tonumber(width) or 1), math.max(1, tonumber(height) or 1)
         local t = self.handleThickness
+        local interactive = self.resizeEnabled == true and self.locked ~= true and self.enabled ~= false
+        if type(UI.EnsureVisible) ~= "function" or type(UI.EnsureEnabled) ~= "function" or type(UI.EnsurePickable) ~= "function" then
+            return false, "window_handle_state_transaction_unavailable"
+        end
         for _, definition in ipairs(HANDLE_SPECS) do
             local handle = self.handles[definition.key]
             if handle ~= nil then
@@ -293,32 +326,57 @@ function W:Attach(spec)
                 local y = definition.y(width, height, t)
                 local w = definition.w(width, height, t)
                 local h = definition.h(width, height, t)
-                UI:SetAnchor(handle, self.window, x, y, self.owner)
-                UI:SetExtent(handle, w, h, self.owner)
-                UI:SetVisible(handle, self.resizeEnabled == true and self.locked ~= true, self.owner)
+                if type(UI.EnsureAnchor) ~= "function" or type(UI.EnsureExtent) ~= "function" then
+                    return false, "window_handle_geometry_transaction_unavailable"
+                end
+                local anchorOk, _, anchorErr = UI:EnsureAnchor(handle, self.window, x, y, self.owner)
+                if anchorOk ~= true then return false, tostring(anchorErr or "window_handle_anchor_rejected") end
+                local extentOk, _, extentErr = UI:EnsureExtent(handle, w, h, self.owner)
+                if extentOk ~= true then return false, tostring(extentErr or "window_handle_extent_rejected") end
+                local visibleOk, _, visibleErr = UI:EnsureVisible(handle, interactive, self.owner)
+                local enabledOk, _, enabledErr = UI:EnsureEnabled(handle, interactive, self.owner)
+                local pickOk, _, pickErr = UI:EnsurePickable(handle, interactive, self.owner)
+                if visibleOk ~= true or enabledOk ~= true or pickOk ~= true then
+                    return false, tostring(visibleErr or enabledErr or pickErr or "window_handle_state_rejected")
+                end
             end
         end
-        self:ApplyNativeResizeBounds()
-        return true
+        return self:ApplyNativeResizeBounds()
     end
 
     function controller:SetResizeEnabled(enabled)
         local nextValue = enabled == true
         if self.resizeEnabled == nextValue then return true, self.resizeEnabled, false end
+        local resizeOk, resizeErr = EnsureNativeResizing(self.window, nextValue and self.locked ~= true)
+        if resizeOk ~= true then return false, self.resizeEnabled, false, resizeErr end
+        local previous = self.resizeEnabled == true
         self.resizeEnabled = nextValue
-        if type(self.window.UseResizing) == "function" then pcall(function() self.window:UseResizing(self.resizeEnabled and self.locked ~= true) end) end
         local _, _, width, height = ReadLogicalRect(self.window)
-        self:LayoutHandles(width, height)
+        local layoutOk, layoutErr = self:LayoutHandles(width, height)
+        if layoutOk ~= true then
+            self.resizeEnabled = previous
+            EnsureNativeResizing(self.window, previous and self.locked ~= true)
+            self:LayoutHandles(width, height)
+            return false, self.resizeEnabled, false, layoutErr or "window_resize_handle_layout_failed"
+        end
         return true, self.resizeEnabled, true
     end
 
     function controller:SetLocked(locked)
         local nextValue = locked == true
         if self.locked == nextValue then return true, false end
+        local resizeOk, resizeErr = EnsureNativeResizing(self.window, self.resizeEnabled == true and nextValue ~= true)
+        if resizeOk ~= true then return false, false, resizeErr end
+        local previous = self.locked == true
         self.locked = nextValue
-        if type(self.window.UseResizing) == "function" then pcall(function() self.window:UseResizing(self.resizeEnabled == true and self.locked ~= true) end) end
         local _, _, width, height = ReadLogicalRect(self.window)
-        self:LayoutHandles(width, height)
+        local layoutOk, layoutErr = self:LayoutHandles(width, height)
+        if layoutOk ~= true then
+            self.locked = previous
+            EnsureNativeResizing(self.window, self.resizeEnabled == true and previous ~= true)
+            self:LayoutHandles(width, height)
+            return false, false, layoutErr or "window_lock_handle_layout_failed"
+        end
         W.metrics.locks = (tonumber(W.metrics.locks) or 0) + 1
         return true, true
     end
@@ -335,32 +393,54 @@ function W:Attach(spec)
     end
 
     function controller:SetOpacity(value)
-        local nextValue = math.max(0.0, math.min(1.0, tonumber(value) or self.opacity or 1.0))
-        if math.abs(nextValue - (tonumber(self.opacity) or 1.0)) <= 0.0001 then return true, nextValue, false end
+        local previous = tonumber(self.opacity)
+        local nextValue = math.max(0.0, math.min(1.0, tonumber(value) or previous or 1.0))
+        if type(UI.EnsureAlpha) ~= "function" then return false, previous or nextValue, false, "alpha_transaction_unavailable" end
+        local accepted, changed, detail = UI:EnsureAlpha(self.window, nextValue, self.owner)
+        if accepted ~= true then return false, previous or nextValue, false, detail or "native_alpha_rejected" end
+        local logicalChanged = previous == nil or math.abs(nextValue - previous) > 0.0001
         self.opacity = nextValue
-        local changed = UI:SetAlpha(self.window, nextValue, self.owner)
-        if changed then W.metrics.opacityChanges = (tonumber(W.metrics.opacityChanges) or 0) + 1 end
-        return true, nextValue, true
+        if changed == true or logicalChanged then W.metrics.opacityChanges = (tonumber(W.metrics.opacityChanges) or 0) + 1 end
+        return true, nextValue, logicalChanged
     end
 
     function controller:GetOpacity()
         return tonumber(self.opacity) or 1.0
     end
 
-    UI:SetPickable(dragHandle, true, owner)
-    if type(dragHandle.EnableDrag) == "function" then pcall(function() dragHandle:EnableDrag(true) end) end
-    UI:SafeHandler(dragHandle, "OnDragStart", function()
+    local function AbortAttach(detail)
+        local function Release(widget, eventName)
+            if widget ~= nil and type(widget.ReleaseHandler) == "function" then pcall(function() widget:ReleaseHandler(eventName) end) end
+        end
+        Release(dragHandle, "OnDragStart"); Release(dragHandle, "OnDragStop")
+        for _, handle in pairs(controller.handles or {}) do
+            Release(handle, "OnDragStart"); Release(handle, "OnDragStop"); Release(handle, "OnEnter"); Release(handle, "OnLeave"); Release(handle, "OnUpdate")
+            UI:SetVisible(handle, false, owner)
+        end
+        if controller:IsInteracting() == true then
+            if type(UI.TryInteractionCall) == "function" then UI:TryInteractionCall(window, "StopMovingOrSizing") end
+            controller:EndInteraction()
+        end
+        return nil, tostring(detail or "window_interaction_attach_failed")
+    end
+
+    if type(UI.TryInteractionCall) ~= "function" or type(UI.RequireHandler) ~= "function" then
+        return AbortAttach("critical_interaction_contract_unavailable")
+    end
+    local dragEnabled, dragErr = UI:TryInteractionCall(dragHandle, "EnableDrag", true)
+    if dragEnabled ~= true then return AbortAttach("window_enable_drag_failed:" .. tostring(dragErr or "rejected")) end
+    local startBound, startErr = UI:RequireHandler(dragHandle, "OnDragStart", function()
         if controller:IsDragAllowed() ~= true or type(window.StartMoving) ~= "function" then return false end
         controller:BringToFront()
         if controller:BeginInteraction("drag") ~= true then return false end
-        local ok = pcall(function() window:StartMoving() end)
-        controller.dragging = ok == true
+        local moving = UI:TryInteractionCall(window, "StartMoving")
+        controller.dragging = moving == true
         if controller.dragging ~= true then controller:EndInteraction(); return false end
         if type(controller.onDragStart) == "function" then pcall(controller.onDragStart, controller) end
         W.metrics.drags = (tonumber(W.metrics.drags) or 0) + 1
         return true
     end, "v3_window:" .. id .. ":drag_start")
-    UI:SafeHandler(dragHandle, "OnDragStop", function()
+    local stopBound, stopErr = UI:RequireHandler(dragHandle, "OnDragStop", function()
         if controller.dragging == true and type(window.StopMovingOrSizing) == "function" then pcall(function() window:StopMovingOrSizing() end) end
         controller.dragging = false
         controller:EndInteraction()
@@ -368,6 +448,9 @@ function W:Attach(spec)
         if type(controller.onDragStop) == "function" then pcall(controller.onDragStop, controller) end
         return true
     end, "v3_window:" .. id .. ":drag_stop")
+    if startBound ~= true or stopBound ~= true then
+        return AbortAttach(startErr or stopErr or "window_required_drag_handler_failed")
+    end
 
     if controller.resizeEnabled then
         for _, definition in ipairs(HANDLE_SPECS) do
@@ -378,7 +461,8 @@ function W:Attach(spec)
             local handle = UI:CreateEmptyWidget(window, "v3_window_" .. id .. "_resize_" .. handleDefinition.key, 0, 0, 1, 1, true)
             if handle ~= nil then
                 controller.handles[handleDefinition.key] = handle
-                if type(handle.EnableDrag) == "function" then pcall(function() handle:EnableDrag(true) end) end
+                local handleDragOk, handleDragErr = UI:TryInteractionCall(handle, "EnableDrag", true)
+                if handleDragOk ~= true then return AbortAttach("window_resize_enable_drag_failed:" .. tostring(handleDefinition.key) .. ":" .. tostring(handleDragErr or "rejected")) end
                 -- ArcheRage RU exposes X2Cursor:SetCursorImage, but the project
                 -- does not yet contain a verified resize-cursor texture path.
                 -- Until that native asset is verified, provide an immediate
@@ -401,12 +485,12 @@ function W:Attach(spec)
                 end
                 UI:SafeHandler(handle, "OnEnter", function() SetResizeHover(true); return true end, "v3_window:" .. id .. ":resize_enter:" .. handleDefinition.key)
                 UI:SafeHandler(handle, "OnLeave", function() if handle.rsWindowSizing ~= true then SetResizeHover(false) end; return true end, "v3_window:" .. id .. ":resize_leave:" .. handleDefinition.key)
-                UI:SafeHandler(handle, "OnDragStart", function()
+                local resizeStartBound, resizeStartErr = UI:RequireHandler(handle, "OnDragStart", function()
                     if controller:IsResizeAllowed() ~= true or type(window.StartSizing) ~= "function" then return false end
                     controller:BringToFront()
                     if controller:BeginInteraction("resize", handleDefinition.direction) ~= true then return false end
-                    local ok = pcall(function() window:StartSizing(handleDefinition.direction) end)
-                    handle.rsWindowSizing = ok == true
+                    local sizing = UI:TryInteractionCall(window, "StartSizing", handleDefinition.direction)
+                    handle.rsWindowSizing = sizing == true
                     if handle.rsWindowSizing ~= true then controller:EndInteraction(); return false end
                     if type(controller.onResizeStart) == "function" then pcall(controller.onResizeStart, controller, handleDefinition.direction) end
                     controller:PulseLiveGeometry(true)
@@ -415,7 +499,7 @@ function W:Attach(spec)
                     SetResizeHover(true)
                     return true
                 end, "v3_window:" .. id .. ":resize_start:" .. handleDefinition.key)
-                UI:SafeHandler(handle, "OnDragStop", function()
+                local resizeStopBound, resizeStopErr = UI:RequireHandler(handle, "OnDragStop", function()
                     if handle.rsWindowSizing == true and type(window.StopMovingOrSizing) == "function" then pcall(function() window:StopMovingOrSizing() end) end
                     handle.rsWindowSizing = false
                     controller:PulseLiveGeometry(true)
@@ -427,11 +511,20 @@ function W:Attach(spec)
                     if type(controller.onResizeStop) == "function" then pcall(controller.onResizeStop, controller, handleDefinition.direction) end
                     return true
                 end, "v3_window:" .. id .. ":resize_stop:" .. handleDefinition.key)
+                if resizeStartBound ~= true or resizeStopBound ~= true then
+                    return AbortAttach(resizeStartErr or resizeStopErr or ("window_required_resize_handler_failed:" .. tostring(handleDefinition.key)))
+                end
+            else
+                return AbortAttach("window_resize_handle_create_failed:" .. tostring(handleDefinition.key))
             end
         end
     end
 
-    controller:SetOpacity(controller.opacity)
+    local initialOpacityOk, _, _, initialOpacityErr = controller:SetOpacity(controller.opacity)
+    if initialOpacityOk ~= true then return AbortAttach("window_initial_opacity_failed:" .. tostring(initialOpacityErr or "rejected")) end
+    local _, _, initialWidth, initialHeight = ReadLogicalRect(window)
+    local initialLayoutOk, initialLayoutErr = controller:LayoutHandles(initialWidth, initialHeight)
+    if initialLayoutOk ~= true then return AbortAttach("window_initial_handle_layout_failed:" .. tostring(initialLayoutErr or "rejected")) end
     self.bindings[id] = controller
     self.metrics.attached = (tonumber(self.metrics.attached) or 0) + 1
     return controller

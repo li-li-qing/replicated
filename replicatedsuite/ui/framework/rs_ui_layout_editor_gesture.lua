@@ -312,12 +312,12 @@ function GestureController:Begin(kind, handle, captureSurface)
         RSUI.metrics.layoutEditorGestureCaptureFailures = (tonumber(RSUI.metrics.layoutEditorGestureCaptureFailures) or 0) + 1
         return false, "layout_editor_geometry_lease_failed"
     end
-    local started = pcall(function() captureSurface:StartMoving() end)
+    local started, _, startErr = UI:TryInteractionCall(captureSurface, "StartMoving")
     if started ~= true then
         UI:EndNativeGeometryLease(captureSurface, self.owner)
         tx:Cancel()
         RSUI.metrics.layoutEditorGestureCaptureFailures = (tonumber(RSUI.metrics.layoutEditorGestureCaptureFailures) or 0) + 1
-        return false, "layout_editor_native_capture_failed"
+        return false, "layout_editor_native_capture_failed:" .. tostring(startErr or "native_rejected")
     end
 
     self.active = true
@@ -432,22 +432,24 @@ function GestureController:Cancel()
 end
 
 function GestureController:SetEnabled(enabled)
-    enabled = enabled == true
-    if self.enabled == true and enabled == false and self.active == true then self:Cancel() end
-    self.enabled = enabled
+    local desired = enabled == true
+    if self.enabled == true and desired == false and self.active == true then self:Cancel() end
     if self.overlay ~= nil and type(self.overlay.SetInteractionPickable) == "function" then
-        self.overlay:SetInteractionPickable(enabled)
+        local pickOk, pickErr = self.overlay:SetInteractionPickable(desired)
+        if pickOk ~= true then return self.enabled == true, false, tostring(pickErr or "layout_editor_pickable_state_failed") end
     end
-    return self.enabled
+    self.enabled = desired
+    return self.enabled, true, nil
 end
 
 function GestureController:BindSurface(surface, kind, handle, label)
     if surface == nil then return false, "layout_editor_surface_required" end
-    local startOk = UI:SafeHandler(surface, "OnDragStart", function()
+    if type(UI.RequireHandler) ~= "function" then return false, "layout_editor_required_handler_contract_unavailable" end
+    local startOk = UI:RequireHandler(surface, "OnDragStart", function()
         local ok = self:Begin(kind, handle, surface)
         return ok == true
     end, "rsui:" .. self.id .. ":" .. tostring(label) .. ":drag_start") == true
-    local stopOk = UI:SafeHandler(surface, "OnDragStop", function()
+    local stopOk = UI:RequireHandler(surface, "OnDragStop", function()
         if self.active == true and self.captureSurface == surface then self:Commit() end
         return true
     end, "rsui:" .. self.id .. ":" .. tostring(label) .. ":drag_stop") == true

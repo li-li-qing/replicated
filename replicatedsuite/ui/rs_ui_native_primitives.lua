@@ -13,6 +13,13 @@ local S = ReplicatedSuite
 S.UI = {
     controls = {},
     registryMetrics = { duplicates = 0, v3Duplicates = 0, degraded = 0 },
+    -- Native Interaction Contract v4: all hit-test methods use the verified
+    -- one-argument RU WidgetBase ABI; boolean false-state setter returns are
+    -- distinguished from Action rejection; single/multiline edits are
+    -- explicitly enabled for mouse/keyboard focus; degraded primitives fail
+    -- closed to callers instead of masquerading as healthy controls.
+    NativeInteractionContractVersion = 4,
+    CriticalInteractionDeliveryContractVersion = 1,
 }
 local UIX = S.UI
 
@@ -42,6 +49,74 @@ local function MarkPrimitiveDegraded(widget, id, detail)
         })
     end
     return widget
+end
+
+local NATIVE_BOOLEAN_STATE_SETTERS = {
+    Enable = true,
+    EnableFocus = true,
+    EnableKeyboard = true,
+    EnablePick = true,
+    Clickable = true,
+    EnableDrag = true,
+    EnableScroll = true,
+    SetReClickable = true,
+    SetReadOnly = true,
+}
+
+local function CallNativeAccepted(widget, methodName, ...)
+    if widget == nil then return false, "nil_widget" end
+    local method = widget[methodName]
+    if type(method) ~= "function" then return false, tostring(methodName) .. "_unavailable" end
+    local args, count = { ... }, select("#", ...)
+    local ok, result = pcall(function() return method(widget, unpack(args, 1, count)) end)
+    if ok ~= true then return false, tostring(result or methodName .. "_failed") end
+    -- Native Widget setters do not document a success-return value. Boolean
+    -- setters can return the resulting state, making false a valid result for
+    -- calls such as SetReadOnly(false) / EnablePick(false). Only that exact
+    -- false-state setter case is ambiguous and accepted. Action methods (for
+    -- example StartMoving) and true-state setters continue to fail closed on
+    -- an explicit false result.
+    if result == false then
+        local falseStateSetter = NATIVE_BOOLEAN_STATE_SETTERS[tostring(methodName or "")] == true
+            and count >= 1 and args[1] == false
+        if not falseStateSetter then return false, tostring(methodName) .. "_rejected" end
+    end
+    return true, result
+end
+
+local function ConfigureNativePickable(widget, enabled)
+    if widget == nil then return false end
+    local value = enabled == true
+    local calls = 0
+    if type(widget.EnablePick) == "function" then
+        local ok = CallNativeAccepted(widget, "EnablePick", value)
+        if ok ~= true then return false end
+        calls = calls + 1
+    end
+    if type(widget.Clickable) == "function" then
+        local ok = CallNativeAccepted(widget, "Clickable", value)
+        if ok ~= true then return false end
+        calls = calls + 1
+    end
+    return calls > 0
+end
+
+local function PrimitiveFailureDetail(code, err)
+    local prefix = tostring(code or "native_primitive_configuration_failed")
+    local detail = tostring(err or ""):gsub("[\r\n]+", " ")
+    if #detail > 220 then detail = detail:sub(1, 220) .. "..." end
+    if detail == "" then return prefix end
+    return prefix .. ":" .. detail
+end
+
+local function FailPrimitive(widget, id, detail)
+    detail = tostring(detail or "native primitive configuration failed")
+    MarkPrimitiveDegraded(widget, id, detail)
+    -- Keep the native identity/lifecycle registration so the current
+    -- Generation cannot accidentally reuse a C++ widget name that already
+    -- exists, but never return the degraded object as a usable control.
+    UIX:Register(id, widget)
+    return nil, detail
 end
 
 local function IsRootParent(parent)
@@ -118,6 +193,24 @@ function UIX:GetRegistrySnapshot()
     }
 end
 
+function UIX:TryInteractionCall(widget, methodName, ...)
+    return CallNativeAccepted(widget, tostring(methodName or ""), ...)
+end
+
+function UIX:RequireHandler(widget, eventName, fn, label)
+    local bound = self:SafeHandler(widget, eventName, fn, label)
+    if bound == true then return true end
+    local detail = "required_handler_bind_failed:" .. tostring(eventName or "") .. ":" .. tostring(label or "")
+    local diagnostics = S.DiagnosticsManager
+    if type(diagnostics) == "table" and type(diagnostics.Error) == "function" then
+        diagnostics:Error("ui_event", "UI_REQUIRED_HANDLER_BIND_FAILED", "关键界面事件绑定失败，控件已拒绝继续构建", {
+            event = tostring(eventName or ""), label = tostring(label or eventName or ""),
+            logicalId = tostring(widget and (widget.rsUiLogicalId or widget.rsNativeLogicalId) or ""),
+        })
+    end
+    return false, detail
+end
+
 function UIX:SafeHandler(widget, eventName, fn, label)
     if widget == nil or type(widget.SetHandler) ~= "function" or type(fn) ~= "function" then return false end
     -- Handler binding is also a native write.  A rejected/stale widget must not
@@ -183,7 +276,7 @@ function UIX:SafeHandler(widget, eventName, fn, label)
             })
         end
         if type(S.WarnOnce) == "function" then
-            S:WarnOnce("rsui_bind_failed_" .. tostring(label or eventName),
+            S.WarnOnce("rsui_bind_failed_" .. tostring(label or eventName),
                 "界面事件绑定失败：" .. tostring(label or eventName) .. "（" .. tostring(eventName) .. "），该按钮可能无响应，请在诊断页查看详情")
         end
     end
@@ -224,17 +317,19 @@ function UIX:CreateEmptyWidget(parent, id, x, y, width, height, pickable, explic
     widget.rsHudOwner = ownerParent and ownerParent.rsHudOwner or nil
     widget.rsUiOwner = explicitOwner or (ownerParent and (ownerParent.rsUiOwner or (ownerParent.rsHudOwner and ("hud:" .. tostring(ownerParent.rsHudOwner)))) or nil)
     widget.rsUiParent = stateParent
-    local configured = pcall(function()
+    local configured, configureErr = pcall(function()
         widget:SetExtent(math.max(1, tonumber(width) or 1), math.max(1, tonumber(height) or 1))
         widget:AddAnchor("TOPLEFT", anchorParent, tonumber(x) or 0, tonumber(y) or 0)
-        if widget.Enable ~= nil then widget:Enable(true) end
-        if widget.EnablePick ~= nil then widget:EnablePick(pickable == true) end
-        if widget.Clickable ~= nil then widget:Clickable(pickable == true) end
+        if widget.Enable ~= nil then
+            local accepted = CallNativeAccepted(widget, "Enable", true)
+            if accepted ~= true then error("emptywidget Enable rejected") end
+        end
+        local nativePickable = ConfigureNativePickable(widget, pickable == true)
+        if nativePickable ~= true then error("emptywidget hit-test state unavailable") end
         widget:Show(true)
     end)
     if not configured then
-        MarkPrimitiveDegraded(widget, id, "emptywidget_configuration_failed")
-        return self:Register(id, widget)
+        return FailPrimitive(widget, id, PrimitiveFailureDetail("emptywidget_configuration_failed", configureErr))
     end
     if type(self.PrimeNativeState) == "function" then
         self:PrimeNativeState(widget, {
@@ -267,7 +362,7 @@ function UIX:CreatePanel(parent, id, x, y, width, height, kind, opts)
     -- unowned legacy widget.
     panel.rsUiOwner = opts.owner or (ownerParent and (ownerParent.rsUiOwner or (ownerParent.rsHudOwner and ("hud:" .. tostring(ownerParent.rsHudOwner)))) or nil)
     panel.rsUiParent = stateParent
-    local configured = pcall(function()
+    local configured, configureErr = pcall(function()
         panel:AddAnchor("TOPLEFT", anchorParent, x or 0, y or 0)
         panel:SetExtent(math.max(1, width or 1), math.max(1, height or 1))
         S.Theme:AddBorder(panel, kind == "soft")
@@ -303,16 +398,21 @@ function UIX:CreatePanel(parent, id, x, y, width, height, kind, opts)
         if opts.divider ~= nil then
             S.Theme:AddDivider(panel, opts.divider, opts.dividerSoft == true)
         end
+        if type(panel.Enable) == "function" then
+            local accepted = CallNativeAccepted(panel, "Enable", true)
+            if accepted ~= true then error("panel Enable rejected") end
+        end
+        local nativePickable = ConfigureNativePickable(panel, opts.pickable == true)
+        if nativePickable ~= true then error("panel hit-test state unavailable") end
         panel:Show(true)
     end)
     if not configured then
-        MarkPrimitiveDegraded(panel, id, "panel_configuration_failed")
-        return self:Register(id, panel), "panel_configuration_failed"
+        return FailPrimitive(panel, id, PrimitiveFailureDetail("panel_configuration_failed", configureErr))
     end
     if type(self.PrimeNativeState) == "function" then
         self:PrimeNativeState(panel, {
-            width = math.max(1, width or 1), height = math.max(1, height or 1), visible = true,
-            anchorTopLeft = { parent = stateParent, x = x or 0, y = y or 0 },
+            width = math.max(1, width or 1), height = math.max(1, height or 1), visible = true, enabled = true,
+            pickable = opts.pickable == true, anchorTopLeft = { parent = stateParent, x = x or 0, y = y or 0 },
         })
     end
     return self:Register(id, panel)
@@ -338,12 +438,11 @@ function UIX:CreateLabel(parent, id, text, x, y, width, height, fontSize, tone, 
     label.rsUiOwner = ownerParent and (ownerParent.rsUiOwner or (ownerParent.rsHudOwner and ("hud:" .. tostring(ownerParent.rsHudOwner)))) or nil
     label.rsUiParent = stateParent
     label.rsBaseFontSize = tonumber(fontSize)
-    local configured = pcall(function()
+    local configured, configureErr = pcall(function()
         label:AddAnchor("TOPLEFT", anchorParent, x or 0, y or 0)
         if label.SetAutoResize ~= nil then label:SetAutoResize(false) end
         label:SetExtent(math.max(1, width or 1), math.max(1, height or 1))
-        if label.EnablePick ~= nil then label:EnablePick(false) end
-        if label.Clickable ~= nil then label:Clickable(false) end
+        if ConfigureNativePickable(label, false) ~= true then error("label hit-test state unavailable") end
         -- Automatic title shadow: fontSize >= 13 labels get a subtle shadow unless
         -- the master switch is off or the caller passes an explicit false.
         local theme = S.Constants and S.Constants.Theme or {}
@@ -356,8 +455,7 @@ function UIX:CreateLabel(parent, id, text, x, y, width, height, fontSize, tone, 
         label:Show(true)
     end)
     if not configured then
-        MarkPrimitiveDegraded(label, id, "label_configuration_failed")
-        return self:Register(id, label), "label_configuration_failed"
+        return FailPrimitive(label, id, PrimitiveFailureDetail("label_configuration_failed", configureErr))
     end
     if type(self.PrimeNativeState) == "function" then
         self:PrimeNativeState(label, {
@@ -380,10 +478,27 @@ function UIX:CreateEditBox(parent, id, x, y, width, height, maxLength)
     if edit == nil then edit = factory:CreateChildByObject(parent, "EDITBOX", S.PhysicalId(id), 0, true) end
     if edit == nil then return nil end
     TrackNativeBuildWidget(edit)
-    local configured = pcall(function()
+    local configured, configureErr = pcall(function()
         edit:SetExtent(math.max(1, width or 120), math.max(1, height or 26))
         if edit.SetInset ~= nil then edit:SetInset(5,5,5,5) end
-        if edit.EnableFocus ~= nil then edit:EnableFocus(true) end
+        -- RU typed EditBox widgets are not guaranteed to start mouse-interactive.
+        -- Keep hit-testing/focus at the shared native boundary so every
+        -- TextInput/NumericInput inherits the same interaction contract.
+        local accepted = CallNativeAccepted(edit, "Enable", true)
+        if accepted ~= true then error("editbox Enable rejected") end
+        accepted = CallNativeAccepted(edit, "EnableFocus", true)
+        if accepted ~= true then error("editbox focus unavailable") end
+        accepted = CallNativeAccepted(edit, "EnableKeyboard", true)
+        if accepted ~= true then error("editbox keyboard unavailable") end
+        if ConfigureNativePickable(edit, true) ~= true then error("editbox hit-test unavailable") end
+        if edit.SetReClickable ~= nil then
+            accepted = CallNativeAccepted(edit, "SetReClickable", true)
+            if accepted ~= true then error("editbox reclick rejected") end
+        end
+        if edit.SetReadOnly ~= nil then
+            accepted = CallNativeAccepted(edit, "SetReadOnly", false)
+            if accepted ~= true then error("editbox readonly state rejected") end
+        end
         if edit.UseSelectAllWhenFocused ~= nil then edit:UseSelectAllWhenFocused(true) end
         if edit.SetMaxTextLength ~= nil then edit:SetMaxTextLength(math.max(1, tonumber(maxLength) or 64)) end
         if edit.style ~= nil then
@@ -400,12 +515,15 @@ function UIX:CreateEditBox(parent, id, x, y, width, height, maxLength)
         edit:Show(true)
     end)
     if not configured then
-        MarkPrimitiveDegraded(edit, id, "editbox_configuration_failed")
-        return self:Register(id, edit)
+        return FailPrimitive(edit, id, PrimitiveFailureDetail("editbox_configuration_failed", configureErr))
     end
     edit.rsUiOwner = parent and (parent.rsUiOwner or (parent.rsHudOwner and ("hud:" .. tostring(parent.rsHudOwner)))) or nil
     if type(self.PrimeNativeState) == "function" then
-        self:PrimeNativeState(edit, { width = math.max(1, width or 120), height = math.max(1, height or 26), visible = true, anchorTopLeft = { parent = parent, x = x or 0, y = y or 0 } })
+        self:PrimeNativeState(edit, {
+            width = math.max(1, width or 120), height = math.max(1, height or 26),
+            visible = true, enabled = true, pickable = true,
+            anchorTopLeft = { parent = parent, x = x or 0, y = y or 0 },
+        })
     end
     return self:Register(id, edit)
 end
@@ -417,10 +535,23 @@ function UIX:CreateMultiEditBox(parent, id, x, y, width, height, maxLength)
     local edit = factory:CreateChildByObject(parent, "EDITBOX_MULTILINE", S.PhysicalId(id), 0, true)
     if edit == nil then return nil end
     TrackNativeBuildWidget(edit)
-    local configured = pcall(function()
+    local configured, configureErr = pcall(function()
         edit:SetExtent(math.max(1, width or 220), math.max(1, height or 96))
         if edit.SetInset ~= nil then edit:SetInset(8,8,10,8) end
-        if edit.EnableFocus ~= nil then edit:EnableFocus(true) end
+        -- EDITBOX_MULTILINE inherits WidgetBase interaction flags but does not
+        -- expose Edit:SetReClickable in the RU reference. Configure only the
+        -- verified shared WidgetBase/Editmultiline surface here.
+        local accepted = CallNativeAccepted(edit, "Enable", true)
+        if accepted ~= true then error("multieditbox Enable rejected") end
+        accepted = CallNativeAccepted(edit, "EnableFocus", true)
+        if accepted ~= true then error("multieditbox focus unavailable") end
+        accepted = CallNativeAccepted(edit, "EnableKeyboard", true)
+        if accepted ~= true then error("multieditbox keyboard unavailable") end
+        if ConfigureNativePickable(edit, true) ~= true then error("multieditbox hit-test unavailable") end
+        if edit.SetReadOnly ~= nil then
+            accepted = CallNativeAccepted(edit, "SetReadOnly", false)
+            if accepted ~= true then error("multieditbox readonly state rejected") end
+        end
         if edit.UseSelectAllWhenFocused ~= nil then edit:UseSelectAllWhenFocused(true) end
         if edit.SetMaxTextLength ~= nil then edit:SetMaxTextLength(math.max(1, tonumber(maxLength) or 65535)) end
         if edit.style ~= nil then
@@ -440,12 +571,15 @@ function UIX:CreateMultiEditBox(parent, id, x, y, width, height, maxLength)
         edit:Show(true)
     end)
     if not configured then
-        MarkPrimitiveDegraded(edit, id, "multieditbox_configuration_failed")
-        return self:Register(id, edit)
+        return FailPrimitive(edit, id, PrimitiveFailureDetail("multieditbox_configuration_failed", configureErr))
     end
     edit.rsUiOwner = parent and (parent.rsUiOwner or (parent.rsHudOwner and ("hud:" .. tostring(parent.rsHudOwner)))) or nil
     if type(self.PrimeNativeState) == "function" then
-        self:PrimeNativeState(edit, { width = math.max(1, width or 220), height = math.max(1, height or 96), visible = true, anchorTopLeft = { parent = parent, x = x or 0, y = y or 0 } })
+        self:PrimeNativeState(edit, {
+            width = math.max(1, width or 220), height = math.max(1, height or 96),
+            visible = true, enabled = true, pickable = true,
+            anchorTopLeft = { parent = parent, x = x or 0, y = y or 0 },
+        })
     end
     return self:Register(id, edit)
 end
@@ -543,7 +677,7 @@ function UIX:CreateSlider(parent, id, x, y, width, height, minimum, maximum, ste
     if slider == nil then return nil end
     TrackNativeBuildWidget(slider)
 
-    local configured = pcall(function()
+    local configured, configureErr = pcall(function()
         local sliderW = math.max(30, tonumber(width) or 140)
         local sliderH = math.max(14, tonumber(height) or 20)
         slider:SetExtent(sliderW, sliderH)
@@ -570,8 +704,7 @@ function UIX:CreateSlider(parent, id, x, y, width, height, minimum, maximum, ste
         local thumb = S.NativeObjectFactory:CreateChild(slider, "emptywidget", S.PhysicalId(id .. "_thumb"), 0, true)
         if thumb == nil then error("slider thumb creation failed") end
         thumb:SetExtent(slider.rsThumbWidth, slider.rsThumbHeight)
-        if thumb.EnablePick ~= nil then pcall(function() thumb:EnablePick(false, true) end) end
-        if thumb.Clickable ~= nil then pcall(function() thumb:Clickable(false, true) end) end
+        pcall(function() ConfigureNativePickable(thumb, false) end)
         if thumb.CreateColorDrawable ~= nil then
             local outer = thumb:CreateColorDrawable(0.82, 0.68, 0.34, 1.00, "artwork")
             if outer and outer.AddAnchor then outer:AddAnchor("TOPLEFT", thumb, 0, 0); outer:AddAnchor("BOTTOMRIGHT", thumb, 0, 0) end
@@ -589,11 +722,17 @@ function UIX:CreateSlider(parent, id, x, y, width, height, minimum, maximum, ste
         if drag == nil then error("slider drag surface creation failed") end
         drag:SetExtent(sliderW, sliderH)
         drag:AddAnchor("TOPLEFT", slider, 0, 0)
-        if drag.Enable ~= nil then pcall(function() drag:Enable(true) end) end
-        if drag.EnablePick ~= nil then pcall(function() drag:EnablePick(true, true) end) end
-        if drag.Clickable ~= nil then pcall(function() drag:Clickable(true, true) end) end
-        if drag.EnableDrag ~= nil then pcall(function() drag:EnableDrag(true) end) end
-        if drag.SetDragCondition ~= nil and DC_ALWAYS ~= nil then pcall(function() drag:SetDragCondition(DC_ALWAYS) end) end
+        local accepted = CallNativeAccepted(drag, "Enable", true)
+        if accepted ~= true then error("slider drag Enable rejected") end
+        if ConfigureNativePickable(drag, true) ~= true then error("slider drag hit-test unavailable") end
+        accepted = CallNativeAccepted(drag, "EnableDrag", true)
+        if accepted ~= true then error("slider drag EnableDrag rejected") end
+        if type(drag.StartMoving) ~= "function" then error("slider drag StartMoving unavailable") end
+        if type(drag.StopMovingOrSizing) ~= "function" then error("slider drag StopMovingOrSizing unavailable") end
+        if drag.SetDragCondition ~= nil and DC_ALWAYS ~= nil then
+            accepted = CallNativeAccepted(drag, "SetDragCondition", DC_ALWAYS)
+            if accepted ~= true then error("slider drag condition rejected") end
+        end
         if drag.CreateColorDrawable ~= nil then
             local hit = drag:CreateColorDrawable(0, 0, 0, 0.001, "overlay")
             if hit and hit.AddAnchor then hit:AddAnchor("TOPLEFT", drag, 0, 0); hit:AddAnchor("BOTTOMRIGHT", drag, 0, 0) end
@@ -616,18 +755,41 @@ function UIX:CreateSlider(parent, id, x, y, width, height, minimum, maximum, ste
         function slider:SetValueChangedHandler(fn)
             self.rsValueChanged = type(fn) == "function" and fn or nil
         end
-        function slider:SetEnabled(enabled)
-            self.rsEnabled = enabled ~= false
-            if drag.Enable ~= nil then pcall(function() drag:Enable(self.rsEnabled) end) end
-            if drag.EnablePick ~= nil then pcall(function() drag:EnablePick(self.rsEnabled, true) end) end
-            if drag.Clickable ~= nil then pcall(function() drag:Clickable(self.rsEnabled, true) end) end
-            if self.rsTrack ~= nil and type(self.rsTrack.SetColor) == "function" then
-                if self.rsEnabled then self.rsTrack:SetColor(0.26, 0.31, 0.37, 0.95)
-                else self.rsTrack:SetColor(0.16, 0.18, 0.21, 0.55) end
+
+        local dragTaskName = "ui_custom_slider:" .. tostring(id)
+        local function StopSliderInteraction(target, restorePreview)
+            if target == nil then return end
+            if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(dragTaskName) end
+            if type(drag.ReleaseHandler) == "function" then pcall(function() drag:ReleaseHandler("OnUpdate") end) end
+            if target.rsDragging == true and type(drag.StopMovingOrSizing) == "function" then
+                pcall(function() drag:StopMovingOrSizing() end)
             end
-            if self.rsThumbButton ~= nil and self.rsThumbButton.Show ~= nil then self.rsThumbButton:Show(true) end
-            UIX:UpdateSliderVisual(self, self.rsValue)
+            if restorePreview == true and target.rsDragStartValue ~= nil then target.rsValue = target.rsDragStartValue end
+            target.rsDragging = false
+            target.rsDragStartX, target.rsDragStartValue = nil, nil
+            UIX:UpdateSliderVisual(target, target.rsValue)
         end
+
+        local function ApplySliderEnabled(target, enabled)
+            target.rsEnabled = enabled ~= false
+            if target.rsEnabled ~= true then StopSliderInteraction(target, true) end
+            local accepted = CallNativeAccepted(drag, "Enable", target.rsEnabled)
+            if accepted ~= true then error("slider drag Enable rejected") end
+            if ConfigureNativePickable(drag, target.rsEnabled) ~= true then error("slider drag hit-test unavailable") end
+            if target.rsTrack ~= nil and type(target.rsTrack.SetColor) == "function" then
+                if target.rsEnabled then target.rsTrack:SetColor(0.26, 0.31, 0.37, 0.95)
+                else target.rsTrack:SetColor(0.16, 0.18, 0.21, 0.55) end
+            end
+            if target.rsThumbButton ~= nil and target.rsThumbButton.Show ~= nil then target.rsThumbButton:Show(true) end
+            UIX:UpdateSliderVisual(target, target.rsValue)
+            return true, target.rsEnabled
+        end
+        -- UI:SetEnabled normally targets a native root. This composite root has
+        -- a dedicated transparent drag child, so expose an explicit adapter;
+        -- otherwise WidgetBase:Enable(false) would leave the real hit surface
+        -- interactive behind a visually disabled RSUI Slider.
+        slider.rsUiSetEnabledAdapter = ApplySliderEnabled
+        function slider:SetEnabled(enabled) return ApplySliderEnabled(self, enabled) end
 
         local function EffectiveX(widget)
             if widget == nil then return nil end
@@ -665,13 +827,13 @@ function UIX:CreateSlider(parent, id, x, y, width, height, minimum, maximum, ste
             end
         end
 
-        local dragTaskName = "ui_custom_slider:" .. tostring(id)
-        UIX:SafeHandler(drag, "OnDragStart", function()
+        local dragStartBound = UIX:SafeHandler(drag, "OnDragStart", function()
             if slider.rsEnabled == false then return false end
+            local moving = CallNativeAccepted(drag, "StartMoving")
+            if moving ~= true then return false end
             slider.rsDragging = true
             slider.rsDragStartX = EffectiveX(drag)
             slider.rsDragStartValue = slider.rsValue
-            if type(drag.StartMoving) == "function" then drag:StartMoving() end
             -- Interactive sampling borrows the single Suite frame driver only
             -- for the lifetime of this gesture.  Ordinary service tasks retain
             -- their 50 ms floor; sliders can preview at ~16 ms without adding a
@@ -701,26 +863,21 @@ function UIX:CreateSlider(parent, id, x, y, width, height, minimum, maximum, ste
             SyncFromDrag(false)
             return true
         end, "slider:" .. tostring(id) .. ":drag_start")
+        if dragStartBound ~= true then error("slider OnDragStart binding failed") end
 
-        UIX:SafeHandler(drag, "OnDragStop", function()
+        local dragStopBound = UIX:SafeHandler(drag, "OnDragStop", function()
             SyncFromDrag(true)
-            if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(dragTaskName) end
-            if type(drag.ReleaseHandler) == "function" then pcall(function() drag:ReleaseHandler("OnUpdate") end) end
-            if type(drag.StopMovingOrSizing) == "function" then drag:StopMovingOrSizing() end
-            slider.rsDragging = false
-            slider.rsDragStartX = nil
-            slider.rsDragStartValue = nil
-            UIX:UpdateSliderVisual(slider, slider.rsValue)
+            StopSliderInteraction(slider, false)
             return true
         end, "slider:" .. tostring(id) .. ":drag_stop")
+        if dragStopBound ~= true then error("slider OnDragStop binding failed") end
 
         UIX:UpdateSliderVisual(slider, slider.rsValue)
         drag:Show(true)
         slider:Show(true)
     end)
     if not configured then
-        MarkPrimitiveDegraded(slider, id, "slider_configuration_failed")
-        return self:Register(id, slider)
+        return FailPrimitive(slider, id, PrimitiveFailureDetail("slider_configuration_failed", configureErr))
     end
     slider.rsUiOwner = parent and (parent.rsUiOwner or (parent.rsHudOwner and ("hud:" .. tostring(parent.rsHudOwner)))) or nil
     if type(self.PrimeNativeState) == "function" then
@@ -755,18 +912,17 @@ function UIX:CreateButton(parent, id, text, x, y, width, height, fontSize, activ
     button.rsUiOwner = explicitOwner or (ownerParent and (ownerParent.rsUiOwner or (ownerParent.rsHudOwner and ("hud:" .. tostring(ownerParent.rsHudOwner)))) or nil)
     button.rsUiParent = anchorStateParent
     button.rsBaseFontSize = tonumber(fontSize)
-    local configured = pcall(function()
+    local configured, configureErr = pcall(function()
         button:SetText(tostring(text or ""))
         S.Theme:StyleButton(button, width, height or (S.UITokens and S.UITokens:Number("size.buttonH", 26)) or 26, fontSize or (S.UITokens and S.UITokens:Number("font.body", 11)) or 11, active, useGradient)
         button:AddAnchor("TOPLEFT", anchorTarget, x or 0, y or 0)
-        if button.Enable ~= nil then button:Enable(true) end
-        if button.EnablePick ~= nil then button:EnablePick(true) end
-        if button.Clickable ~= nil then button:Clickable(true) end
+        local accepted = CallNativeAccepted(button, "Enable", true)
+        if accepted ~= true then error("button Enable rejected") end
+        if ConfigureNativePickable(button, true) ~= true then error("button hit-test unavailable") end
         button:Show(true)
     end)
     if not configured then
-        MarkPrimitiveDegraded(button, id, "button_configuration_failed")
-        return self:Register(id, button), "button_configuration_failed"
+        return FailPrimitive(button, id, PrimitiveFailureDetail("button_configuration_failed", configureErr))
     end
     if type(self.PrimeNativeState) == "function" then
         self:PrimeNativeState(button, {

@@ -13,6 +13,16 @@ if type(RSUI) ~= "table" or type(D) ~= "table" or type(PageHost) ~= "table" then
 -- fields such as StoreId/IndexStoreId.
 local ACTIVITIES_STORE_ID = "v3.activities"
 local GEAR_INDEX_STORE_ID = "v3.gear.index"
+local PERSISTENCE_ACCEPTANCE_STORE_IDS = {
+    "v3.buff_display",
+    "v3.healer",
+    GEAR_INDEX_STORE_ID,
+    ACTIVITIES_STORE_ID,
+    "v3.tasks",
+    "v3.dps",
+    "v3.life.trade",
+}
+local PERSISTENCE_ACCEPTANCE_STORE_PREFIXES = { "v3.gear.payload." }
 
 S.UIV3.Pages = S.UIV3.Pages or {}
 local Pages = S.UIV3.Pages
@@ -185,9 +195,6 @@ local function BuildFeatures(parent, route)
             root:RefreshSelection()
         end
         return ok
-    end
-    if toggleButton.root ~= nil then
-        S.UI:SafeHandler(toggleButton.root, "OnClick", function() return toggleButton.onClick() end, "v3_features:toggle")
     end
 
     function root:OnActivated()
@@ -633,6 +640,63 @@ local function BuildSettings(parent, route)
     return root
 end
 
+
+local function BuildPersistenceAcceptanceCopyText()
+    local persistence = S.Persistence
+    if type(persistence) ~= "table" or type(persistence.BuildRuntimeAcceptanceSnapshot) ~= "function" then
+        return nil, "存档验收快照能力不可用"
+    end
+    local snapshot = persistence:BuildRuntimeAcceptanceSnapshot({
+        ids = PERSISTENCE_ACCEPTANCE_STORE_IDS,
+        prefixes = PERSISTENCE_ACCEPTANCE_STORE_PREFIXES,
+    })
+    if type(snapshot) ~= "table" then return nil, "存档验收快照未返回结果" end
+
+    local missingCount = #(snapshot.exactMissing or {})
+    local parts = {
+        "存档验收A" .. tostring(snapshot.contractVersion or "?")
+            .. "｜" .. tostring(snapshot.buildTag or S.BuildTag or "?")
+            .. "｜G" .. tostring(snapshot.generation or 0)
+            .. "｜Store " .. tostring(snapshot.total or 0)
+            .. "/FP " .. tostring(snapshot.fingerprinted or 0)
+            .. "/Load " .. tostring(snapshot.loaded or 0)
+            .. "/Dirty " .. tostring(snapshot.dirty or 0)
+            .. "/Fence " .. tostring(snapshot.fenced or 0)
+            .. "/Missing " .. tostring(missingCount)
+            .. "｜ALL=" .. tostring(snapshot.aggregateFingerprint or "?"),
+    }
+
+    if missingCount > 0 then
+        local values = {}
+        for i = 1, math.min(missingCount, 4) do values[#values + 1] = tostring(snapshot.exactMissing[i]) end
+        if missingCount > #values then values[#values + 1] = "+" .. tostring(missingCount - #values) end
+        parts[#parts + 1] = "缺失=" .. table.concat(values, ",")
+    end
+
+    local detail, payloadRows, payloadHidden = {}, 0, 0
+    for _, row in ipairs(snapshot.rows or {}) do
+        local isPayload = tostring(row.id or ""):sub(1, #PERSISTENCE_ACCEPTANCE_STORE_PREFIXES[1]) == PERSISTENCE_ACCEPTANCE_STORE_PREFIXES[1]
+        local include = not isPayload or payloadRows < 8
+        if include then
+            if isPayload then payloadRows = payloadRows + 1 end
+            local state = "L" .. tostring(row.loaded == true and 1 or 0)
+                .. "D" .. tostring(row.dirty == true and 1 or 0)
+                .. "F" .. tostring(row.writeFenced == true and 1 or 0)
+                .. "S" .. tostring(row.schema or "?")
+                .. "R" .. tostring(row.dirtyRevision or 0) .. "/" .. tostring(row.lastSavedRevision or 0)
+            local fingerprint = tostring(row.fingerprint or (row.error and ("ERR:" .. tostring(row.error)) or "?"))
+            fingerprint = fingerprint:gsub("[\r\n]+", " ")
+            if #fingerprint > 72 then fingerprint = fingerprint:sub(1, 72) .. "…" end
+            detail[#detail + 1] = tostring(row.id or "?") .. "=" .. fingerprint .. "[" .. state .. "]"
+        elseif isPayload then
+            payloadHidden = payloadHidden + 1
+        end
+    end
+    if payloadHidden > 0 then detail[#detail + 1] = "v3.gear.payload.*=+" .. tostring(payloadHidden) .. "(ALL已包含)" end
+    if #detail > 0 then parts[#parts + 1] = table.concat(detail, " | ") end
+    return table.concat(parts, " ║ "), nil, snapshot
+end
+
 local function BuildDiagnostics(parent, route)
     local root, rootErr = D:ScrollablePageRoot(parent, "v3_page_system_diagnostics")
     if root == nil then return nil, "页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
@@ -693,7 +757,9 @@ local function BuildDiagnostics(parent, route)
     local actionRow2 = RSUI:HorizontalBox({ id = "v3_diag_actions_2", parent = root, gap = 8, slot = { size = "fixed", height = 34, hAlign = "fill" } })
     RSUI:Button({ id = "v3_diag_reload", parent = actionRow2, text = "重新加载文件", compact = true, slot = { size = "fixed", width = 130 }, onClick = function()
         return RunDiagnosticAction("reload", function()
-            if S.Persistence ~= nil and type(S.Persistence.Flush) == "function" then pcall(function() S.Persistence:Flush() end) end
+            -- ReloadCodeFromDisk is the single reload/Flush Authority. Do not
+            -- pre-Flush here: a swallowed first failure would double-attempt a
+            -- write and hide the exact store id + reason needed for acceptance.
             if type(S.ReloadCodeFromDisk) ~= "function" then return false end
             return S.ReloadCodeFromDisk("v3_diagnostics")
         end)
@@ -705,7 +771,17 @@ local function BuildDiagnostics(parent, route)
             return host:Notify({ title = "测试通知", detail = "通知宿主工作正常；该提示会自动消失。", tone = "green", durationMs = 3200 }) ~= nil
         end)
     end })
-    RSUI:Text({ id = "v3_diag_reload_hint", parent = actionRow2, text = "完整自检只读取快照；不会切页、缩放、隐藏主窗口或执行破坏性序列。", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
+    RSUI:Text({ id = "v3_diag_reload_hint", parent = actionRow2, text = "重载会先执行唯一严格 Flush；失败会取消重载并保留 Store ID + 原因。完整自检只读取快照。", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
+    local actionRow3 = RSUI:HorizontalBox({ id = "v3_diag_actions_3", parent = root, gap = 8, slot = { size = "fixed", height = 34, hAlign = "fill" } })
+    RSUI:Button({ id = "v3_diag_persistence_acceptance", parent = actionRow3, text = "输出存档验收", compact = true, slot = { size = "fixed", width = 130 }, onClick = function()
+        return RunDiagnosticAction("persistence_acceptance", function()
+            local text, err = BuildPersistenceAcceptanceCopyText()
+            if text == nil then return false, err or "存档验收快照失败" end
+            if type(S.SafeChat) == "function" then S.SafeChat(text, "info", "diagnostics") end
+            return true
+        end)
+    end })
+    RSUI:Text({ id = "v3_diag_persistence_acceptance_hint", parent = actionRow3, text = "只读当前 Domain 指纹，不写 SaveData；Fresh Reload 前后各复制一次，ALL 与单 Store 指纹应保持一致。", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
 
     local card = D:InfoCard(root, { id = "v3_diag_gate", title = "基础框架检查", value = "检查中", detail = "尚未运行", slot = { size = "fixed", height = 104, hAlign = "fill" } })
     local hostRow = D:StatusRow(root, "v3_diag_host", "界面宿主", "-", "default")
@@ -715,6 +791,7 @@ local function BuildDiagnostics(parent, route)
     local modalRow = D:StatusRow(root, "v3_diag_modal", "模态窗口宿主", "-", "default")
     local toastRow = D:StatusRow(root, "v3_diag_toast", "通知宿主", "-", "default")
     local persistenceRow = D:StatusRow(root, "v3_diag_persistence", "新版存档", "-", "default")
+    local persistenceIncidentRow = D:StatusRow(root, "v3_diag_persistence_incident", "最近存档落盘", "-", "default")
     local schedulerRow = D:StatusRow(root, "v3_diag_scheduler", "统一调度器", "-", "default")
     local runtimeFoundationRow = D:StatusRow(root, "v3_diag_runtime_foundation", "共享运行基础", "-", "default")
     local combatFoundationRow = D:StatusRow(root, "v3_diag_combat_foundation", "战斗事实基础", "-", "default")
@@ -771,6 +848,25 @@ local function BuildDiagnostics(parent, route)
         modalRow.valueText:SetText((modal.attached == true and "正常" or "未挂载") .. " · 当前 " .. tostring(modal.count or 0))
         toastRow.valueText:SetText((toast.attached == true and "正常" or "未挂载") .. " · 当前 " .. tostring(toast.active or 0) .. " · 自动关闭 " .. tostring(toast.autoDismissals or 0))
         persistenceRow.valueText:SetText("存档 " .. tostring(persistence.total or 0) .. " · 待写 " .. tostring(persistence.dirty or 0) .. " · 写入保护 " .. tostring(persistence.fenced or 0))
+        local lastFlush = type(persistence.lastFlush) == "table" and persistence.lastFlush or nil
+        local flushFailures = lastFlush and type(lastFlush.failures) == "table" and lastFlush.failures or {}
+        if lastFlush ~= nil and lastFlush.ok == false then
+            local first = tostring(flushFailures[1] or "未知 Store:save failed"):gsub("[\r\n]+", " ")
+            persistenceIncidentRow.valueText:SetText("失败 " .. tostring(#flushFailures) .. " 项 · " .. first)
+        elseif (tonumber(persistence.fenced) or 0) > 0 then
+            local first = nil
+            for _, row in ipairs(persistence.rows or {}) do
+                if row.writeFenced == true then
+                    first = tostring(row.id or "?") .. ":" .. tostring(row.writeFenceReason or row.lastError or "write_fenced")
+                    break
+                end
+            end
+            persistenceIncidentRow.valueText:SetText("写保护 " .. tostring(persistence.fenced or 0) .. " 项 · " .. tostring(first or "请输出诊断摘要"))
+        elseif lastFlush ~= nil and lastFlush.ok == true then
+            persistenceIncidentRow.valueText:SetText("成功 · 当前待写 " .. tostring(persistence.dirty or 0))
+        else
+            persistenceIncidentRow.valueText:SetText("尚未执行本进程 Flush · 当前待写 " .. tostring(persistence.dirty or 0))
+        end
         local taskCount, enabledTasks = 0, 0
         for _, task in pairs(type(scheduler.tasks) == "table" and scheduler.tasks or {}) do taskCount = taskCount + 1; if task.enabled == true then enabledTasks = enabledTasks + 1 end end
         local backlog = type(scheduler.DescribeBacklog) == "function" and scheduler:DescribeBacklog() or {}

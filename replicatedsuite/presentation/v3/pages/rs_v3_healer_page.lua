@@ -293,8 +293,6 @@ local function BuildPage(parent, route)
     end
     strategyButton.spec.onClick = function() return SetSettingsMode("strategy") end
     displayButton.spec.onClick = function() return SetSettingsMode("display") end
-    if strategyButton.root ~= nil then S.UI:SafeHandler(strategyButton.root, "OnClick", function() return strategyButton.spec.onClick() end, "v3_healer:strategy_mode") end
-    if displayButton.root ~= nil then S.UI:SafeHandler(displayButton.root, "OnClick", function() return displayButton.spec.onClick() end, "v3_healer:display_mode") end
     SetSettingsMode("strategy")
 
     local advancedButton = RSUI:Button({ id = "v3_healer_advanced_toggle", parent = actions, text = "高级编辑", compact = true,
@@ -745,19 +743,6 @@ local function BuildPage(parent, route)
             return ok, err or "已在覆盖层高亮你所在的槽位"
         end)
     end
-    for _, pair in ipairs({
-        { featureButton, "feature" }, { calibrationButton, "raid_calibration" }, { rosterButton, "roster" }, { resetRaidButton, "raid_reset" },
-        { locateSelfButton, "raid_locate_self" },
-        { advancedButton, "advanced" }, { advancedCloseButton, "advanced_close" }, { ruleModeButton, "rules_mode" },
-        { trackedModeButton, "tracked_mode" }, { colorModeButton, "colors_mode" }, { ruleAddButton, "rule_add" },
-        { ruleRemoveButton, "rule_remove" }, { trackedAddButton, "tracked_add" }, { trackedRemoveButton, "tracked_remove" },
-    }) do
-        local buttonRef, keyRef = pair[1], pair[2]
-        if buttonRef.root ~= nil then
-            S.UI:SafeHandler(buttonRef.root, "OnClick", function() return buttonRef.onClick() end, "v3_healer:" .. keyRef)
-        end
-    end
-
     function root:Subscribe()
         if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" or type(S.Events.UnsubscribeInternalOwner) ~= "function" then
             return false, "内部事件总线不可用"

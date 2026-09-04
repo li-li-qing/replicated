@@ -67,9 +67,6 @@ function T:Attach(root)
             if slot.currentId == nil then return false end
             return T:Dismiss(slot.currentId, "manual")
         end
-        if close.root ~= nil and S.UI ~= nil and type(S.UI.SafeHandler) == "function" then
-            S.UI:SafeHandler(close.root, "OnClick", function() return close.onClick() end, "v3_toast:dismiss:" .. tostring(index))
-        end
         card:SetVisibility("collapsed")
     end
     return true

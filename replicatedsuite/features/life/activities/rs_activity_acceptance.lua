@@ -42,7 +42,8 @@ G:RegisterSequenceCase("v3_m1_activities", function()
     if type(detailModal) ~= "table" or type(detailModal.Open) ~= "function" then
         return Fail("v3_quest_detail_modal_missing")
     end
-    if type(F.Commands) ~= "table" or type(F.Commands.MarkStoreDirty) ~= "function" then
+    if type(F.Commands) ~= "table" or type(F.Commands.MarkStoreDirty) ~= "function"
+        or type(F.Commands.SetWidgetWindowState) ~= "function" then
         return Fail("presentation_command_contract")
     end
 

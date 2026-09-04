@@ -129,13 +129,18 @@ function M:Open(scope, key, sourceRow)
     -- Activating a new row is an explicit request to read the detail; restore
     -- a previously compact-minimized session window instead of leaving only
     -- the tiny square visible.
-    self.surface:SetMinimized(false, false)
+    local restored, restoreErr = self.surface:SetMinimized(false, false)
+    if restored ~= true then return false, restoreErr end
+    local shown, showErr = self.surface:Show(true)
+    if shown ~= true then return false, showErr end
     self.visible = true
-    return self.surface:Show(true)
+    return true
 end
 
 function M:Close(reason)
     if self.surface == nil then return true end
+    local closed, closeErr = self.surface:Close(reason or "quest_detail_close")
+    if closed ~= true then return false, closeErr end
     self.visible = false
-    return self.surface:Close(reason or "quest_detail_close")
+    return true
 end

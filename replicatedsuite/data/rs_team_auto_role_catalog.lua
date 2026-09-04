@@ -8,7 +8,7 @@
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 S.Data=S.Data or {}
-local C={ version=1, byClassKey={} }
+local C={ version=2, byClassKey={} }
 C.byClassKey["name_3_4_5"]={role="tank", classType="Tank"}
 C.byClassKey["name_2_3_4"]={role="tank", classType="Tank"}
 C.byClassKey["name_3_5_8"]={role="tank", classType="Tank"}
@@ -46,13 +46,13 @@ C.byClassKey["name_2_4_7"]={role="none", classType="Mage"}
 C.byClassKey["name_4_5_7"]={role="none", classType="Mage"}
 C.byClassKey["name_2_5_7"]={role="none", classType="Mage"}
 C.byClassKey["name_7_9_14"]={role="none", classType="Mage"}
-C.byClassKey["name_6_8_9"]={role="dealer", classType="Archer"}
-C.byClassKey["name_6_9_10"]={role="dealer", classType="Archer"}
-C.byClassKey["name_2_6_9"]={role="dealer", classType="Archer"}
-C.byClassKey["name_3_6_8"]={role="dealer", classType="Archer"}
-C.byClassKey["name_6_9_12"]={role="dealer", classType="Archer"}
-C.byClassKey["name_4_6_8"]={role="dealer", classType="Archer"}
-C.byClassKey["name_4_6_9"]={role="dealer", classType="Archer"}
+C.byClassKey["name_6_8_9"]={role="ranged", classType="Archer"}
+C.byClassKey["name_6_9_10"]={role="ranged", classType="Archer"}
+C.byClassKey["name_2_6_9"]={role="ranged", classType="Archer"}
+C.byClassKey["name_3_6_8"]={role="ranged", classType="Archer"}
+C.byClassKey["name_6_9_12"]={role="ranged", classType="Archer"}
+C.byClassKey["name_4_6_8"]={role="ranged", classType="Archer"}
+C.byClassKey["name_4_6_9"]={role="ranged", classType="Archer"}
 C.byClassKey["name_4_6_13"]={role="ranged", classType="Gunner"}
 C.byClassKey["name_3_6_13"]={role="ranged", classType="Gunner"}
 C.byClassKey["name_6_9_13"]={role="ranged", classType="Gunner"}

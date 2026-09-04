@@ -21,10 +21,13 @@ G:RegisterSequenceCase("v3_m16_dps_shared_analytics_contract", function()
     local store = S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.dps") or nil
     if store == nil or tostring(store.owner or "") ~= "v3.dps"
         or tostring(store.scope or "") ~= tostring(S.Persistence.Scope.Account)
-        or tonumber(store.schemaVersion) ~= 3 then
+        or tonumber(store.schemaVersion) ~= 4 then
         return Fail("store_contract")
     end
-    if type(F.State) ~= "table" or type(F.State.widgetWindow) ~= "table" then return Fail("widget_state_contract") end
+    if type(F.State) ~= "table" or type(F.State.widgetWindow) ~= "table" or type(F.State.widgetVisible) ~= "boolean"
+        or type(F.GetWidgetVisible) ~= "function" or type(F.SetWidgetVisible) ~= "function" then
+        return Fail("widget_state_contract")
+    end
 
     if F.Demand == nil or type(F.Demand.Acquire) ~= "function" or type(F.ReconcileDemand) ~= "function"
         or type(F.GetSettings) ~= "function" or type(F.ApplySettingFromBinding) ~= "function" or type(F.ClearStats) ~= "function"
@@ -41,7 +44,8 @@ G:RegisterSequenceCase("v3_m16_dps_shared_analytics_contract", function()
         or type(F.Commands.SetEnabled) ~= "function" or type(F.Commands.Clear) ~= "function"
         or type(F.Commands.SetMode) ~= "function" or type(F.Commands.SetSide) ~= "function"
         or type(F.Commands.SetMetric) ~= "function" or type(F.Commands.GetActorDetail) ~= "function"
-        or type(F.Commands.SetDisplayRows) ~= "function" or type(F.Commands.SetAlwaysShowSelf) ~= "function" then
+        or type(F.Commands.SetDisplayRows) ~= "function" or type(F.Commands.SetAlwaysShowSelf) ~= "function"
+        or type(F.Commands.SetWidgetVisible) ~= "function" or type(F.Commands.SetWidgetWindowState) ~= "function" then
         return Fail("domain_contract")
     end
 

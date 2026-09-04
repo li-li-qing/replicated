@@ -69,7 +69,7 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.82-local-continuation-mutation-tx"
+S.BuildTag = "v3-m1.16.0.18.104-native-bool-setter-startup-hotfix"
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}
 S.SaveKey = tostring(S.Config.SaveKey or "replicated_suite_v1")
@@ -487,6 +487,16 @@ local function ReloadCodeFromDisk(source)
 end
 S.ReloadCodeFromDisk = ReloadCodeFromDisk
 
+local function BootstrapNativeAccepted(widget, methodName, ...)
+    local method = widget and widget[methodName] or nil
+    if type(method) ~= "function" then return false, "method_unavailable:" .. tostring(methodName) end
+    local args = { ... }
+    local ok, result = pcall(function() return method(widget, unpack(args)) end)
+    if ok ~= true then return false, tostring(result or "native_call_failed") end
+    if result == false then return false, "native_rejected:" .. tostring(methodName) end
+    return true, nil
+end
+
 local function CreateBootstrapRecoveryEntry()
     local factory = S.NativeObjectFactory
     if type(factory) ~= "table" or type(factory.CreateButton) ~= "function" then return nil end
@@ -501,9 +511,15 @@ local function CreateBootstrapRecoveryEntry()
         if type(button.SetExtent) == "function" then button:SetExtent(42, 42) end
         if type(button.RemoveAllAnchors) == "function" then button:RemoveAllAnchors() end
         button:AddAnchor("TOPLEFT", "UIParent", 300, 100)
-        if type(button.Enable) == "function" then button:Enable(true) end
-        if type(button.EnablePick) == "function" then button:EnablePick(true) end
-        if type(button.Clickable) == "function" then button:Clickable(true) end
+        if type(button.Enable) == "function" then
+            local ok, err = BootstrapNativeAccepted(button, "Enable", true); if ok ~= true then error(err) end
+        end
+        if type(button.EnablePick) == "function" then
+            local ok, err = BootstrapNativeAccepted(button, "EnablePick", true); if ok ~= true then error(err) end
+        end
+        if type(button.Clickable) == "function" then
+            local ok, err = BootstrapNativeAccepted(button, "Clickable", true); if ok ~= true then error(err) end
+        end
         button:Show(true)
     end)
     if configured ~= true then
@@ -538,16 +554,19 @@ end
 
 local function InstallRecoveryHandlers(button)
     if button == nil or type(button.SetHandler) ~= "function" then return false end
-    if type(button.EnableDrag) == "function" then pcall(function() button:EnableDrag(true) end) end
+    if type(button.EnableDrag) == "function" then
+        local dragOk, dragResult = pcall(function() return button:EnableDrag(true) end)
+        if dragOk ~= true or dragResult == false then SafeChat("恢复入口拖动能力启用失败。") end
+    end
     local leftOk, leftResult = pcall(button.SetHandler, button, "OnClick", RecoveryLeftClick)
     local rightOk, rightResult = pcall(button.SetHandler, button, "OnRButtonUp", RecoveryRightClick)
-    local dragStartOk = pcall(button.SetHandler, button, "OnDragStart", function()
+    local dragStartOk, dragStartResult = pcall(button.SetHandler, button, "OnDragStart", function()
         if type(button.StartMoving) ~= "function" then return false end
-        local ok = pcall(function() button:StartMoving() end)
-        button.rsMoving = ok == true
+        local ok, result = pcall(function() return button:StartMoving() end)
+        button.rsMoving = ok == true and result ~= false
         return button.rsMoving
     end)
-    local dragStopOk = pcall(button.SetHandler, button, "OnDragStop", function()
+    local dragStopOk, dragStopResult = pcall(button.SetHandler, button, "OnDragStop", function()
         if button.rsMoving == true and type(button.StopMovingOrSizing) == "function" then pcall(function() button:StopMovingOrSizing() end) end
         button.rsMoving = false
         button.rsIgnoreClick = true
@@ -586,7 +605,9 @@ local function InstallRecoveryHandlers(button)
     local rightBound = rightOk and rightResult ~= false
     if not leftBound then SafeChat("恢复入口左键绑定失败：" .. tostring(leftOk and "回调绑定被客户端拒绝" or leftResult)) end
     if not rightBound then SafeChat("恢复入口右键重载不可用：" .. tostring(rightOk and "回调绑定被客户端拒绝" or rightResult)) end
-    if not dragStartOk or not dragStopOk then SafeChat("恢复入口拖动绑定不可用。") end
+    local dragStartBound = dragStartOk and dragStartResult ~= false
+    local dragStopBound = dragStopOk and dragStopResult ~= false
+    if not dragStartBound or not dragStopBound then SafeChat("恢复入口拖动绑定不可用。") end
     -- Left click is the minimum viable recovery path; right-click reload is an
     -- optional developer convenience and must not make the launcher itself fail.
     return leftBound
@@ -596,13 +617,23 @@ function S.ActivateRecoveryEntry()
     local button = S.RecoveryEntry
     if button == nil then return false end
     local handlerOk = InstallRecoveryHandlers(button)
-    pcall(function()
+    local stateOk, stateErr = pcall(function()
         button:SetText("R")
-        if type(button.Enable) == "function" then button:Enable(true) end
-        if type(button.EnablePick) == "function" then button:EnablePick(true) end
-        if type(button.Clickable) == "function" then button:Clickable(true) end
+        if type(button.Enable) == "function" then
+            local ok, err = BootstrapNativeAccepted(button, "Enable", true); if ok ~= true then error(err) end
+        end
+        if type(button.EnablePick) == "function" then
+            local ok, err = BootstrapNativeAccepted(button, "EnablePick", true); if ok ~= true then error(err) end
+        end
+        if type(button.Clickable) == "function" then
+            local ok, err = BootstrapNativeAccepted(button, "Clickable", true); if ok ~= true then error(err) end
+        end
         button:Show(true)
     end)
+    if stateOk ~= true then
+        SafeChat("恢复入口交互状态恢复失败：" .. tostring(stateErr or "未知错误"))
+        return false
+    end
     return handlerOk
 end
 

@@ -46,6 +46,46 @@ local function IntersectsScreen(x, y, width, height)
     return x + width > 0 and y + height > 0 and x < sw and y < sh
 end
 
+local function PlacementFromMeta(meta)
+    if type(meta) ~= "table" or tostring(meta.quickCoordinateSpace or "") ~= "logical-edge-v1" then return nil end
+    local anchorH, anchorV = tostring(meta.quickAnchorH or ""), tostring(meta.quickAnchorV or "")
+    local offsetX, offsetY = tonumber(meta.quickOffsetX), tonumber(meta.quickOffsetY)
+    if (anchorH ~= "LEFT" and anchorH ~= "RIGHT") or (anchorV ~= "TOP" and anchorV ~= "BOTTOM")
+        or offsetX == nil or offsetY == nil then return nil end
+    return {
+        coordinateSpace = "logical-edge-v1",
+        anchorH = anchorH,
+        anchorV = anchorV,
+        offsetX = math.max(0, offsetX),
+        offsetY = math.max(0, offsetY),
+    }
+end
+
+local function BuildEdgePlacement(x, y, width, height)
+    x, y = tonumber(x), tonumber(y)
+    width, height = math.max(1, tonumber(width) or 104), math.max(1, tonumber(height) or 26)
+    if x == nil or y == nil then return nil end
+    local context = S.Layout and S.Layout:GetContext() or nil
+    local fallbackWidth, fallbackHeight = ScreenContext()
+    local sw = tonumber(context and context.logicalWidth) or fallbackWidth
+    local sh = tonumber(context and context.logicalHeight) or fallbackHeight
+    local safeLeft = tonumber(context and context.safeLeft) or 0
+    local safeTop = tonumber(context and context.safeTop) or 0
+    local safeRight = tonumber(context and context.safeRight) or 0
+    local safeBottom = tonumber(context and context.safeBottom) or 0
+    x = math.max(safeLeft, math.min(math.max(safeLeft, sw - safeRight - width), x))
+    y = math.max(safeTop, math.min(math.max(safeTop, sh - safeBottom - height), y))
+    local anchorH = x + width * 0.5 <= sw * 0.5 and "LEFT" or "RIGHT"
+    local anchorV = y + height * 0.5 <= sh * 0.5 and "TOP" or "BOTTOM"
+    return {
+        coordinateSpace = "logical-edge-v1",
+        anchorH = anchorH,
+        anchorV = anchorV,
+        offsetX = anchorH == "RIGHT" and math.max(0, sw - safeRight - x - width) or math.max(0, x - safeLeft),
+        offsetY = anchorV == "BOTTOM" and math.max(0, sh - safeBottom - y - height) or math.max(0, y - safeTop),
+    }, x, y
+end
+
 local function DefaultPosition(index)
     local policy = type(Feature.GetQuickButtonPolicy) == "function" and Feature:GetQuickButtonPolicy() or {}
     if S.Layout ~= nil and type(S.Layout.GetSafeSpawn) == "function" then
@@ -88,13 +128,20 @@ local function CreateGearQuickWidget()
         end
     end
 
-    function instance:ResolvePosition(meta, index)
+    function instance:ResolvePosition(meta, index, record)
         local policy = type(Feature.GetQuickButtonPolicy) == "function" and Feature:GetQuickButtonPolicy() or {}
         local width, height = tonumber(policy.width) or 104, tonumber(policy.height) or 26
         if meta.quickPositionCustomized == true and tonumber(meta.quickX) ~= nil and tonumber(meta.quickY) ~= nil then
-            -- Keep user coordinates authoritative. On a smaller resolution use
-            -- a non-persistent safe display fallback only when the saved button
-            -- would be completely unreachable.
+            local placement = PlacementFromMeta(meta) or (record and record.legacyPlacement or nil)
+            if placement ~= nil and S.Layout ~= nil and type(S.Layout.ResolvePlacement) == "function" then
+                local ok, x, y = pcall(function()
+                    return S.Layout:ResolvePlacement(placement, width, height, meta.quickX, meta.quickY, { mode = "strict" })
+                end)
+                if ok and tonumber(x) ~= nil and tonumber(y) ~= nil then return x, y, true end
+            end
+            -- Historical quickX/quickY rows had no responsive anchor. Preserve
+            -- their current location on first show; EnsureButton captures an
+            -- in-memory edge anchor so later resolution changes still reflow.
             if IntersectsScreen(meta.quickX, meta.quickY, width, height) then return meta.quickX, meta.quickY, true end
         end
         local x, y = DefaultPosition(index)
@@ -105,7 +152,7 @@ local function CreateGearQuickWidget()
         local button = record and record.button or nil
         if button == nil then return false end
         if record.dragging == true and force ~= true then return true end
-        local x, y, customized = self:ResolvePosition(meta, index)
+        local x, y, customized = self:ResolvePosition(meta, index, record)
         if force == true or record.lastX ~= x or record.lastY ~= y or record.customized ~= customized then
             UI:SetAnchor(button, UIParent, x, y, "v3:gear_quick_buttons")
             record.lastX, record.lastY, record.customized = x, y, customized
@@ -142,7 +189,7 @@ local function CreateGearQuickWidget()
         if record ~= nil then return record end
         local policy = type(Feature.GetQuickButtonPolicy) == "function" and Feature:GetQuickButtonPolicy() or {}
         local physicalKey = tostring(meta.storageId or meta.id or index)
-        local spawnX, spawnY, spawnCustomized = self:ResolvePosition(meta, index)
+        local spawnX, spawnY, spawnCustomized = self:ResolvePosition(meta, index, nil)
         local button = UI:CreateButton("UIParent", "v3_gear_quick_button_" .. physicalKey, tostring(meta.name or "换装"), spawnX, spawnY,
             tonumber(policy.width) or 104, tonumber(policy.height) or 26, 10, false, true, "v3:gear_quick_buttons")
         if button == nil then
@@ -159,21 +206,39 @@ local function CreateGearQuickWidget()
             lastX = spawnX, lastY = spawnY, customized = spawnCustomized,
             snapId = "screen_snap:gear:" .. physicalKey, snapRegistered = false,
         }
+        if spawnCustomized == true and PlacementFromMeta(meta) == nil then
+            record.legacyPlacement = select(1, BuildEdgePlacement(spawnX, spawnY, tonumber(policy.width) or 104, tonumber(policy.height) or 26))
+        end
         self.buttons[id] = record
         button.rsHudOwner = "gear_quick_button"
         self:RegisterSnapRecord(record)
-        if button.EnableDrag ~= nil then pcall(function() button:EnableDrag(self:GetState().locked ~= true) end) end
-        if button.SetDragCondition ~= nil and DC_ALWAYS ~= nil then pcall(function() button:SetDragCondition(DC_ALWAYS) end) end
+        local function FailInteraction(detail)
+            if record.snapRegistered == true and type(UI.UnregisterScreenSnap) == "function" then UI:UnregisterScreenSnap(record.snapId) end
+            record.snapRegistered = false
+            UI:SetVisible(button, false, "v3:gear_quick_buttons")
+            self.buttons[id] = nil
+            return nil, tostring(detail or "gear_quick_interaction_failed")
+        end
+        if type(UI.TryInteractionCall) ~= "function" or type(UI.RequireHandler) ~= "function" then
+            return FailInteraction("critical_interaction_contract_unavailable")
+        end
+        local dragEnabled, dragErr = UI:TryInteractionCall(button, "EnableDrag", self:GetState().locked ~= true)
+        if dragEnabled ~= true then return FailInteraction("gear_quick_enable_drag_failed:" .. tostring(dragErr or "rejected")) end
+        if button.SetDragCondition ~= nil and DC_ALWAYS ~= nil then
+            local conditionOk, conditionErr = UI:TryInteractionCall(button, "SetDragCondition", DC_ALWAYS)
+            if conditionOk ~= true then return FailInteraction("gear_quick_drag_condition_failed:" .. tostring(conditionErr or "rejected")) end
+        end
 
-        UI:SafeHandler(button, "OnDragStart", function()
+        local dragStartBound, dragStartErr = UI:RequireHandler(button, "OnDragStart", function()
             if instance.visible ~= true or instance:GetState().locked == true then return false end
+            local moving = UI:TryInteractionCall(button, "StartMoving")
+            if moving ~= true then return false end
             record.dragging = true
             record.ignoreClick = false
-            if type(button.StartMoving) == "function" then button:StartMoving() end
             return true
         end, "v3_gear_quick:drag_start:" .. physicalKey)
 
-        UI:SafeHandler(button, "OnDragStop", function()
+        local dragStopBound, dragStopErr = UI:RequireHandler(button, "OnDragStop", function()
             if type(button.StopMovingOrSizing) == "function" then pcall(function() button:StopMovingOrSizing() end) end
             record.dragging = false
             record.ignoreClick = true
@@ -197,19 +262,37 @@ local function CreateGearQuickWidget()
                     })
                     if snapped == true then x, y = sx, sy; UI:SetAnchor(button, UIParent, x, y, "v3:gear_quick_buttons") end
                 end
-                local ok = Feature.Commands:SetQuickPosition(record.setId, x, y)
+                local placement = nil
+                if S.Layout ~= nil and type(S.Layout.StorePlacement) == "function" then
+                    local captured = {}
+                    local storedX, storedY = S.Layout:StorePlacement(captured, button, { mode = "strict" })
+                    if tonumber(storedX) ~= nil and tonumber(storedY) ~= nil then
+                        x, y = storedX, storedY
+                        UI:SetAnchor(button, UIParent, x, y, "v3:gear_quick_buttons")
+                    end
+                    if tostring(captured.coordinateSpace or "") == "logical-edge-v1" then placement = captured end
+                end
+                if placement == nil then
+                    placement, x, y = BuildEdgePlacement(x, y, tonumber(policy.width) or 104, tonumber(policy.height) or 26)
+                    if placement ~= nil then UI:SetAnchor(button, UIParent, x, y, "v3:gear_quick_buttons") end
+                end
+                record.legacyPlacement = placement
+                local ok = Feature.Commands:SetQuickPosition(record.setId, x, y, placement)
                 if ok == true then record.lastX, record.lastY, record.customized = math.floor(x + 0.5), math.floor(y + 0.5), true end
             end
             return true
         end, "v3_gear_quick:drag_stop:" .. physicalKey)
 
-        UI:SafeHandler(button, "OnClick", function()
+        local clickBound, clickErr = UI:RequireHandler(button, "OnClick", function()
             if record.dragging == true then return false end
             if record.ignoreClick == true then record.ignoreClick = false; return false end
             local runtime = S.Services.GearV3:GetRuntimeSnapshot()
             if runtime.busy == true or record.configured ~= true then return false end
             return Feature.Commands:Start(record.setId)
         end, "v3_gear_quick:click:" .. physicalKey)
+        if dragStartBound ~= true or dragStopBound ~= true or clickBound ~= true then
+            return FailInteraction(dragStartErr or dragStopErr or clickErr or "gear_quick_required_handler_failed")
+        end
         self:ApplyAppearance(button)
         return record
     end
@@ -239,12 +322,25 @@ local function CreateGearQuickWidget()
                 local isCurrent = record.configured and current and tostring(current.id or "") == id
                 local prefix = running and "▶ " or (isCurrent and "● " or (record.configured and "" or "○ "))
                 UI:SetText(record.button, prefix .. tostring(meta.name or "换装"), "v3:gear_quick_buttons")
-                UI:SetEnabled(record.button, record.configured and (runtime.busy ~= true or running), "v3:gear_quick_buttons")
+                local interactionOk = true
+                if type(UI.EnsureEnabled) == "function" then
+                    local enableOk = select(1, UI:EnsureEnabled(record.button, record.configured and (runtime.busy ~= true or running), "v3:gear_quick_buttons"))
+                    if enableOk ~= true then interactionOk = false; createFailures[#createFailures + 1] = tostring(meta.name or meta.id or index) .. "(启用状态)" end
+                else
+                    interactionOk = false
+                    createFailures[#createFailures + 1] = tostring(meta.name or meta.id or index) .. "(启用契约)"
+                end
                 UI:SetButtonActive(record.button, running or isCurrent, "v3:gear_quick_buttons")
-                if record.button.EnableDrag ~= nil then pcall(function() record.button:EnableDrag(self:GetState().locked ~= true) end) end
+                if type(UI.TryInteractionCall) == "function" then
+                    local dragOk = UI:TryInteractionCall(record.button, "EnableDrag", self:GetState().locked ~= true)
+                    if dragOk ~= true then interactionOk = false; createFailures[#createFailures + 1] = tostring(meta.name or meta.id or index) .. "(拖动状态)" end
+                else
+                    interactionOk = false
+                    createFailures[#createFailures + 1] = tostring(meta.name or meta.id or index) .. "(交互契约)"
+                end
                 self:ApplyAppearance(record.button)
                 self:PlaceButton(record, meta, index, false)
-                UI:SetVisible(record.button, self.visible == true, "v3:gear_quick_buttons")
+                UI:SetVisible(record.button, self.visible == true and interactionOk, "v3:gear_quick_buttons")
                 if self.visible == true and record.button.Raise ~= nil then pcall(function() record.button:Raise() end) end
             end
         end
@@ -274,7 +370,7 @@ local function CreateGearQuickWidget()
 
     function instance:Subscribe()
         if self.subscribed == true then return true end
-        if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" or type(S.Events.Subscribe) ~= "function" then
+        if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then
             return false, "gear quick event bus unavailable"
         end
         local internalOk = S.Events:SubscribeInternal("v3.gear.updated", self, function(_, a, b)
@@ -283,12 +379,18 @@ local function CreateGearQuickWidget()
             instance:Refresh()
             if reason:find("current_", 1, true) == nil then instance:ScheduleCurrentDetection("gear_updated", 180) end
         end)
-        local equipmentOk = internalOk == true and S.Events:Subscribe("UNIT_EQUIPMENT_CHANGED", self, function() instance:ScheduleCurrentDetection("equipment_changed", 260) end) or false
-        local titleOk = equipmentOk == true and S.Events:Subscribe("APPELLATION_CHANGED", self, function() instance:ScheduleCurrentDetection("title_changed", 260) end) or false
-        if internalOk ~= true or equipmentOk ~= true or titleOk ~= true then
+        if internalOk ~= true then
             if type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
             if type(S.Events.UnsubscribeOwner) == "function" then S.Events:UnsubscribeOwner(self) end
             return false, "gear quick event subscription failed"
+        end
+        -- Native change events are accelerators only. ArcheRage RU builds may
+        -- omit one of these names; that must never make the screen buttons fail
+        -- to exist. Optional registration degrades to the existing Gear refresh
+        -- and bounded current-set detection paths.
+        if type(S.Events.SubscribeOptional) == "function" then
+            S.Events:SubscribeOptional("UNIT_EQUIPMENT_CHANGED", self, function() instance:ScheduleCurrentDetection("equipment_changed", 260) end)
+            S.Events:SubscribeOptional("APPELLATION_CHANGED", self, function() instance:ScheduleCurrentDetection("title_changed", 260) end)
         end
         self.subscribed = true
         return true
@@ -340,7 +442,11 @@ local function CreateGearQuickWidget()
         if ok ~= true then return false, err end
         local state = self:GetState()
         for _, record in pairs(self.buttons) do
-            if record.button ~= nil and record.button.EnableDrag ~= nil then pcall(function() record.button:EnableDrag(not state.locked) end) end
+            if record.button ~= nil then
+                if type(UI.TryInteractionCall) ~= "function" then return false, "critical_interaction_contract_unavailable" end
+                local dragOk, dragErr = UI:TryInteractionCall(record.button, "EnableDrag", not state.locked)
+                if dragOk ~= true then return false, "gear_quick_drag_state_failed:" .. tostring(dragErr or "rejected") end
+            end
         end
         return true
     end

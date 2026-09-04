@@ -291,12 +291,14 @@ RSUI:RegisterType("LayoutEditorOverlay", function(spec)
         local mode = self.adapter:GetMode()
         if rect == nil or mode == "none" then
             self.selectionOverlay:SetVisible(false)
-            self.selectionOverlay:SetInteractionPickable(false)
+            local pickOk, pickErr = self.selectionOverlay:SetInteractionPickable(false)
+            if pickOk ~= true then return self:_FailClosedProjection(pickErr, source or "selection_disable_failed") end
             self.guideOverlay:SetGuides({})
         else
             self.selectionOverlay:SetRect(rect)
             self.selectionOverlay:SetVisible(true)
-            self.selectionOverlay:SetInteractionPickable(self.enabled)
+            local pickOk, pickErr = self.selectionOverlay:SetInteractionPickable(self.enabled)
+            if pickOk ~= true then return self:_FailClosedProjection(pickErr, source or "selection_enable_failed") end
         end
         self.lastError = nil
         self.revision = (tonumber(self.revision) or 0) + 1
@@ -311,12 +313,16 @@ RSUI:RegisterType("LayoutEditorOverlay", function(spec)
     end
 
     function c:SetEnabled(enabled)
-        self.enabled = enabled == true
-        if self.gesture ~= nil then self.gesture:SetEnabled(self.enabled) end
-        if self.selectionOverlay ~= nil then
-            self.selectionOverlay:SetInteractionPickable(self.enabled and self.adapter:GetMode() ~= "none")
+        local desired = enabled == true
+        if self.gesture ~= nil then
+            local _, gestureOk, gestureErr = self.gesture:SetEnabled(desired)
+            if gestureOk ~= true then return self.enabled == true, false, tostring(gestureErr or "layout_editor_gesture_enable_failed") end
+        elseif self.selectionOverlay ~= nil then
+            local pickOk, pickErr = self.selectionOverlay:SetInteractionPickable(desired and self.adapter:GetMode() ~= "none")
+            if pickOk ~= true then return self.enabled == true, false, tostring(pickErr or "layout_editor_selection_enable_failed") end
         end
-        return self.enabled
+        self.enabled = desired
+        return self.enabled, true, nil
     end
 
     function c:Layout(x, y, nextWidth, nextHeight)

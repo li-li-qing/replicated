@@ -308,6 +308,7 @@ end
 F.Commands = F.Commands or {}
 function F.Commands:MarkStoreDirty(delayMs, reason) return F:MarkStoreDirty(delayMs, reason) end
 function F.Commands:SetWidgetVisible(visible, source) return F:SetWidgetVisible(visible == true, source or "task_command") end
+function F.Commands:SetWidgetWindowState(value, reason) return F:SetWidgetWindowState(value, reason or "task_widget_window_state") end
 function F.Commands:SetLastScope(scope) return F:SetLastScope(scope) end
 function F.Commands:ToggleTracked(scope, key, source) return F:ToggleTracked(scope, key, source or "task_command") end
 function F.Commands:SetAllTracked(scope, enabled, source) return F:SetAllTracked(scope, enabled == true, source or "task_command") end

@@ -16,6 +16,9 @@
 - **透明度分通道**：顶层 Windowing 拥有 `overallOpacity`；RSUI Component Tree 拥有 `backgroundOpacity` 与 `textOpacity`。最终视觉为整体 Alpha 与局部通道相乘。背景通道只修改 Theme 自有 Drawable，文字通道只修改 styled text；新建/虚拟化子节点继承当前局部通道，不做每帧树扫描。
 - **策略默认值的零值语义**：FloatingSurface 读取 `defaultOverallOpacity`、`defaultBackgroundOpacity`、`defaultTextOpacity` 及兼容 alias 时必须按 `nil` 判定缺省，不能使用会吞掉显式 `0` 的真假值 fallback；归一化仍负责把字体倍率等字段限制在各自合法范围。
 - **持久化边界**：交互 Preview 只改临时 Presentation Geometry；窗口/列宽/外观等需要持久化的状态只能在对应 Domain/Store Authority 中提交，禁止交互高频路径直接 `SaveData`。
+- **Native Interaction ABI / Fail-Closed（M1.16.0.18.102）**：Active RU `WidgetBase` 命中 API 只允许项目已核的一参数 `EnablePick(bool) / Clickable(bool)`；禁止用额外参数并靠 `pcall` 吞掉 Native 拒绝。Edit/Multiline 必须在 Primitive Authority 显式配置 Enable/Focus/Keyboard/Pick/ReadOnly，业务页不得各自补点击特例。Composite 若真实交互面位于子控件，必须通过显式 `rsUiSetEnabledAdapter` 接入 `UI:SetEnabled`，不能假设 root `Enable()` 会级联。Native primitive 初始化失败必须“注册 identity 但返回 nil”，RSUI custom factory 返回 degraded/rejected/stale root 也必须在 BuildScope attachment 前 fail-closed；禁止以“控件存在”冒充“控件可交互”。 Handler binding 也属于该契约：必需 Drag/Click 能力不得把 SetHandler 失败吞进 `pcall` 后继续构建；event mux 的失败订阅不得残留到后续重试，避免一次恢复后重复执行旧回调。
+- **Native/Composite State + Geometry Transaction（M1.16.0.18.103）**：`visible/open/enabled/pickable/locked/minimized/opacity/fontScale` 以及持久化窗口 `anchor/extent` 不得在 Native/Composite 调用成功前发布。低频状态转换使用 `UI:EnsureVisible / EnsureEnabled / EnsurePickable / EnsureAlpha / EnsureAnchor / EnsureExtent` 区分 accepted no-op 与 rejected；Windowing/WindowShell/FloatingSurface/Popup/Modal 必须先建立真实状态，再提交 Lua Authority/Persistence。Windowing geometry callback 与 WindowShell `onStateChanged` 属于事务的一部分：callback exception/显式 `false` 必须向上传播并回滚 Native/Presentation/Domain，禁止 `pcall` 后无条件视为成功。Destroy/rollback 清理允许 best-effort hide，但不能把 cleanup 结果当成业务成功。复合控件真实输入面位于 child 时，父 Enabled/Visibility 必须同步 child 的 Pick/Enable；隐藏的 drag proxy/resize handle 不得继续留可命中面。该事务只用于创建/设置/用户手势边界等事件式路径，禁止为了“验证状态”新增永久 Tick 或每帧 Native 轮询。
+- **Native Boolean Setter 返回语义（M1.16.0.18.104）**：Native Widget setter 的 Lua 返回值不是业务事务 callback。RU API 未给出统一“返回 false = 调用失败”契约，而且布尔 Setter 可能返回应用后的 bool 状态；因此 `EnablePick(false) / Clickable(false) / Show(false) / SetReadOnly(false) / SetCloseOnEscape(false) / SetWindowModal(false)` 的 false return 在**请求值本身为 false**时不得直接判作拒绝。实现层只对白名单 boolean state setter 做该判定；请求 true 却返回 false、`StartMoving` 等 Action 方法返回 false、以及 `rsUiSetEnabledAdapter/onStateChanged` 等 Lua 事务 callback 显式 false，仍必须 fail-closed。禁止再次把 Native Setter transport/状态返回与 Lua Authority veto 混为同一语义。
 - **FloatingSurface / HUD 状态绑定**：`RSUI.FloatingSurface` 只能作为 `WindowShellV3 + Windowing` 上方的薄绑定层，不得成为第二 Window Authority。`Windowing` 继续拥有 Native 拖动/缩放事务，`WindowShellV3` 拥有公共 Chrome，Feature Store 拥有持久化状态；FloatingSurface 只负责 placement/size/minimized/locked/overall/background/text opacity 的标准映射与 StateAdapter。HUD 默认采用 `compact` 最小化：保留 `normalWidth/normalHeight`，视觉只留下约 32×32 恢复方块；`collapse` 仅作兼容模式；可选 ScreenSnap 只允许在 Drag Stop 提交。Activities/Tasks 是首批迁移样例。M1.15.2H2 起 FloatingSurface 额外负责关闭后的 `visible` 三态同步，并暴露 `surface:Close()` 作为与 X 同一契约的编程关闭入口（详见文末 M1.15.2H2 章节）。
 - **DataView ViewState**：ListView / TileView / TableView 的 Loading / Ready / Empty / Error / Unavailable / Stale 必须走 `RSUI.ViewState`；业务层只决定状态与文案，虚拟化 Row/Scrollbar 的显隐由 DataView 统一处理。`SetItems` 只允许自动处理 Empty/Ready，不得覆盖业务显式 Error/Unavailable。
 - **ActionRunner**：用户触发的可失败操作优先通过 `S.ActionRunner` 进入 Busy / 同 ID 重入 / exception fence / Diagnostics 边界。ActionRunner 只拥有 Presentation 临时状态，不拥有业务事务；如果业务在执行期间已经刷新 Button 的最终 text/enabled，runner 必须通过 revision 判定并尊重新状态。
@@ -5861,4 +5864,47 @@ Workspace v2 规则：
 - Wide/Compact 仍使用 SAME TransformInspector，不发生 Native reparent；新增 CommandBar 占固定稳定 host，1024 宽场景采用紧凑按钮宽度，不挤占 Preview Canvas。
 
 性能：仍为事件驱动。无常驻 Tick/OnUpdate/Scheduler；普通 edit commit 只增加一次 bounded History record + Session snapshot refresh，Undo/Redo/Reset/Revert/Apply 才执行相应有界工作。
+## M1.16.0.18.89：Interactive Draft Fence + LayoutEditor Compact Inspector Affordance
 
+RU 真机暴露了共享 Control 与 Responsive Workspace 的两个边界问题：一是 Compact `ResponsiveInspector` 虽保留 SAME `TransformInspector`，但 `LayoutEditorWorkspace v2` 没有给用户一个稳定的 Drawer 打开入口；二是 Text/Numeric 输入与 Slider Preview 尚未 Commit 时，页面/事实刷新调用 `Render()` 会把最后一个 Binding 值重新写回 Native，造成 Slider 新旧值逐帧闪跳、EditBox 删字即恢复。
+
+`.18.89` 将 RSUI 提升为 **v43 / API 12.7**，定义 `InteractiveDraftContractVersion=1`：
+
+- TextInput / NumericInput：Native EditBox 当前拥有焦点时，`binding_refresh / ambient_refresh / external_refresh` 不能覆盖用户 draft；显式 API 与 commit 仍可覆盖；
+- Slider：`rsDragging=true` 的活动手势期间，ambient Render 不得用旧 Binding 覆盖 `previewValue`；interaction preview 与 final commit 继续正常更新；
+- NumericField v4：父 Field 明确传播 `binding_refresh / interaction / commit`，不再把所有同步都当成同一种 Render；
+- 不新增 `OnTextChanged / OnKeyDown / OnKeyUp` 推测能力，不新增 Tick/轮询，也不在页面维护 `isTyping/isDragging` 第二 Authority；焦点与拖拽事实来自已有共享 RSUI/Native 状态。
+
+`WorkspaceTemplates v5 / LayoutEditorWorkspace v3` 在稳定 Toolbar 增加 `[属性] / [收起属性]` 按钮。该按钮只调用 SAME `ResponsiveInspector` 的 Drawer visibility，不创建第二 Inspector、不 reparent Native widget。状态显示 Compact HUD Layout 进入页时自动打开 Drawer，选择元素也可请求打开；X/Y（`X 左-/右+`、`Y 上-/下+`）、Width/Height、Anchor/Pivot、Snap 等仍全部来自共享 TransformInspector Authority。
+
+状态显示同时把 `v3.buff_display.updated` 的 Aura cadence refresh 限定在 Tracking 页。Layout 页只在真实 editor/session/command 边界刷新；即使未来其他环境刷新进入，Interactive Draft fence 仍在共享 Control 层阻止正在进行的用户输入被旧 Binding 回灌。
+
+性能：0 新 Tick / OnUpdate / Scheduler。Draft 判断只发生在已有 Render 调用中，执行 O(1) focus/drag-state 检查；Compact Drawer 仍复用 Stable Host。
+
+
+## M1.16.0.18.90：Component API Contract + LayoutEditor Build Smoke
+
+`.18.90` 将 RSUI 提升为 **v44 / API 12.8**。用户第六次在 RU 真机遇到“页面打不开”，本次堆栈明确落在 `LayoutEditorWorkspace` 新增的 Inspector Toggle：标准 `Button` Component 只保证共享 `SetVisible()`，Workspace 却直接调用了并不存在的 `Show()`。Lua 编译器不会对动态 method lookup 做类型检查，因此旧的 Parse/Audit 均可通过，直到页面真实构建才触发事务回滚。
+
+为消除这一类回归，新增 **Component API Contract v1**：
+
+- 所有 `RSUI:NewComponent()` 产物通过 Base 统一暴露 `Show/Hide`，实现仅委托已有 `SetVisible/SetVisibility` Authority，不建立第二可见性状态；
+- `RSUI:RequireComponentMethods(component, methods, context)` 只在 Composite/Workspace 构建边界做有界 Public API 验证，不进入 Tick/Render 热路径；
+- `RSUI:Create()` 对所有 Component 自动验证公共 `GetRoot/SetVisible/Show/Hide/SetEnabled/Release` 契约；
+- `WorkspaceTemplates v6 / LayoutEditorWorkspace v4` 对 ResponsiveInspector、Inspector Toggle、Selection Status、LayoutEditorOverlay、TransformInspector、EditorCommandBar 分别验证实际调用的方法；
+- Compact `[属性]` Toggle 直接使用 `SetVisible(drawer)`，不再依赖 Button 私有 convenience method；
+- 新增 `RSUI_WORKSPACE_SMOKE_HARNESS`：使用一个**故意没有 `Show()`**、只有 `SetVisible/SetText` 的 Button mock，通过真实 Lua 加载 `rs_ui_workspace_templates.lua` 并完整构建 LayoutEditorWorkspace。以后再次写回 `inspectorToggle:Show()` 会在封包前直接失败，而不是交给 RU 用户发现。
+
+该契约不放宽 Strict BuildTransaction。运行时真实依赖缺失仍 fail-closed，但开发期 Gate 现在必须先证明 Workspace 能用其声明的 Public API 完成构建。
+
+## M1.16.0.18.91：Prepackage Component API / Workspace / TOC Dependency Audit
+
+`.18.90` 解决了已知的 `Button:Show()` 崩溃，但“Lua 动态方法调用可编译、真实组件未必具备该方法”属于一类问题，不能只围绕单一 Toggle 写特判。`.18.91` 因此把防线从 LayoutEditor 单点提升为封包期三层静态/实构建 Gate：
+
+- `tools/rs_rsui_component_api_audit.py` 扫描 `presentation/v3` 中可识别的 `RSUI:<Type>()` 构造与后续 `component:Method()` 调用。Base 公共方法直接从 `rs_ui_component_core.lua` 提取；Presentation 允许使用的类型特有 API 由显式 reviewed manifest 约束。未知方法只有在同一调用边界存在 `type(component.Method) == "function"`/fail-closed capability guard 时才允许。当前基线检查 29 个 Presentation 文件、501 个已识别构造、466 个方法调用、5 个显式 capability guard，未发现剩余未保护 API 越界。
+- `rs_rsui_workspace_smoke_harness.py` 从只构建 LayoutEditor 扩展为真实 Lua 构建 **MasterDetail / InspectorWorkbench / ResponsiveInspector / LayoutEditor / SettingsWorkbench / CommandCenter** 六类公共模板；Button mock 仍故意没有 `Show()`，最终 `27/27 PASS`。Workspace 以后即便未被当前页面立即使用，也必须先证明 scaffold 本身可构建。
+- `rs_foundation_audit.py` 新增 RSUI 顶层 fail-closed 依赖的 **TOC provider-before-consumer** 检查。若 Framework 文件在 top-level 以 `type(RSUI.X) ~= ... then return end` 保护依赖，则 `X` 的 RegisterType/ReplaceType/公共 table provider 必须在 Active TOC 中先加载。该门禁覆盖 `.18.81` 已出现过的 `TreeView/ListView` 类“文件存在但加载顺序使构造器永远未注册”回归。
+
+同轮审计还发现两个开发期专项 Harness（Unit Lines / Front-Hemisphere）默认把 `--root` 写死为相对路径 `replicatedsuite`，导致从项目根执行时会寻找 `replicatedsuite/replicatedsuite/...`。这不会改变游戏 Runtime，但会削弱封包 Gate 的可信度；现统一改为 `Path(__file__).resolve().parents[1]`，并保留显式 `--root` override。工程根与父目录两种调用方式均验证通过。
+
+上述检查全部只在开发/封包阶段运行，不进入 `toc.g`、不产生 Runtime Tick/缓存/Native 调用。运行时 BuildTransaction 仍是最后一道 fail-closed 隔离，而不是替代开发期验证。

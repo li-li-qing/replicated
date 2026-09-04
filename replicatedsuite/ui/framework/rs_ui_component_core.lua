@@ -12,8 +12,8 @@ local UI = S.UI
 if type(UI) ~= "table" then return end
 
 local RSUI = {
-    version = 42,
-    apiVersion = "12.6",
+    version = 44,
+    apiVersion = "12.8",
     types = {},
     typeOrder = {},
     metrics = {
@@ -111,6 +111,11 @@ local RSUI = {
         transformInspectorSnapEdits = 0,
         transformInspectorRefreshes = 0,
         transformInspectorLayouts = 0,
+        interactiveDraftRenderSuppressions = 0,
+        componentApiValidationFailures = 0,
+        componentRootRejects = 0,
+        componentCompositeRejects = 0,
+        bindingCreateFailures = 0,
         multiSelectionTransformModelsCreated = 0,
         multiSelectionTransformSessions = 0,
         multiSelectionTransformProjections = 0,
@@ -189,6 +194,10 @@ local RSUI = {
     },
 }
 RSUI.StrictBuildFailFastContractVersion = 1
+RSUI.ComponentApiContractVersion = 1
+RSUI.DegradedRootFailClosedContractVersion = 1
+RSUI.EventBindingContractVersion = 1
+RSUI.PostFactoryRejectReleaseContractVersion = 1
 RSUI.AttachmentContractVersion = 1
 RSUI.ReparentPolicyContractVersion = 1
 RSUI.NativeReparentSupported = false
@@ -770,11 +779,18 @@ function Base:GetContentRoot()
     return self.root
 end
 
+RSUI.VisibilityStateTransactionContractVersion = 1
 function Base:_ApplyVisibility()
-    if self.released == true or self.root == nil then return false end
+    if self.released == true or self.root == nil then return false, false, "component_released" end
     local final = self.visibility == RSUI.Visibility.Visible and self.viewportVisible ~= false
-    if type(UI.SetVisible) == "function" then UI:SetVisible(self.root, final, self.owner) end
-    return final
+    if type(UI.EnsureVisible) ~= "function" then return final, false, "visibility_transaction_unavailable" end
+    local accepted, _, detail = UI:EnsureVisible(self.root, final, self.owner)
+    if accepted ~= true then
+        local reason = "visibility_state_failed:" .. tostring(detail or "native_visibility_rejected")
+        self:FailClosedInteraction(reason)
+        return final, false, reason
+    end
+    return final, true, nil
 end
 
 function Base:GetVisibility()
@@ -787,27 +803,33 @@ function Base:IsVisible() return self:GetVisibility() == RSUI.Visibility.Visible
 function Base:ParticipatesInLayout() return self:GetVisibility() ~= RSUI.Visibility.Collapsed end
 
 function Base:SetVisibility(visibility)
-    if self.released == true or self.root == nil then return false end
+    if self.released == true or self.root == nil then return false, false, "component_released" end
     local nextValue = NormalizeVisibility(visibility, true)
     local previous = self:GetVisibility()
-    if nextValue == previous then
-        self:_ApplyVisibility()
-        return false
+    local nextViewportVisible = self.viewportVisible ~= false
+    local final = nextValue == RSUI.Visibility.Visible and nextViewportVisible
+    if type(UI.EnsureVisible) ~= "function" then return false, false, "visibility_transaction_unavailable" end
+    local accepted, _, detail = UI:EnsureVisible(self.root, final, self.owner)
+    if accepted ~= true then
+        local reason = "visibility_state_failed:" .. tostring(detail or "native_visibility_rejected")
+        self:FailClosedInteraction(reason)
+        return false, false, reason
     end
+    if nextValue == previous then return false, true, nil end
+
     local previousLayout = previous ~= RSUI.Visibility.Collapsed
     local nextLayout = nextValue ~= RSUI.Visibility.Collapsed
     self.visibility = nextValue
     -- Legacy .visible means layout participation. This preserves every existing
     -- Panel check while adding Hidden without changing old SetVisible(false).
     self.visible = nextLayout
-    self:_ApplyVisibility()
     RSUI.metrics.visibilityChanges = (tonumber(RSUI.metrics.visibilityChanges) or 0) + 1
     if previousLayout ~= nextLayout then
         self:InvalidateMeasure("visibility:" .. nextValue)
     else
         self:InvalidateLayout("visibility:" .. nextValue)
     end
-    return true
+    return true, true, nil
 end
 
 function Base:SetVisible(visible)
@@ -815,28 +837,143 @@ function Base:SetVisible(visible)
     return self:SetVisibility(visible == true and RSUI.Visibility.Visible or RSUI.Visibility.Collapsed)
 end
 
+-- Common component visibility facade. All RSUI Components expose Show/Hide so
+-- higher-level templates never depend on whether an individual primitive chose
+-- to add its own visibility convenience method. Containers/surfaces may
+-- override Show when they own additional shell semantics; the Base contract
+-- remains a safe fallback and delegates to the single SetVisibility Authority.
+function Base:Show(visible)
+    if self.released == true or self.root == nil then return false end
+    if visible == nil then visible = true end
+    local _, accepted, detail = self:SetVisible(visible ~= false)
+    if accepted == false then return false, detail end
+    return true, nil
+end
+
+function Base:Hide()
+    if self.released == true or self.root == nil then return false end
+    local _, accepted, detail = self:SetVisible(false)
+    if accepted == false then return false, detail end
+    return true, nil
+end
+
 -- Viewport visibility is presentation-only. ScrollBox / WidgetSwitcher can
 -- hide a child without mutating its logical visibility, so Measure can still
 -- inspect it on the next layout pass.
 function Base:SetViewportVisible(visible)
-    if self.released == true or self.root == nil then return false end
-    self.viewportVisible = visible ~= false
-    return self:_ApplyVisibility()
+    if self.released == true or self.root == nil then return false, false, "component_released" end
+    local desired = visible ~= false
+    local final = self.visibility == RSUI.Visibility.Visible and desired
+    if type(UI.EnsureVisible) ~= "function" then return false, false, "visibility_transaction_unavailable" end
+    local accepted, _, detail = UI:EnsureVisible(self.root, final, self.owner)
+    if accepted ~= true then
+        local reason = "viewport_visibility_failed:" .. tostring(detail or "native_visibility_rejected")
+        self:FailClosedInteraction(reason)
+        return false, false, reason
+    end
+    local changed = self.viewportVisible ~= desired
+    self.viewportVisible = desired
+    return changed, true, nil
 end
 
+RSUI.InteractionStateFailClosedContractVersion = 1
+function Base:FailClosedInteraction(reason)
+    reason = tostring(reason or "interaction_state_rejected")
+    -- Hide first while the Native root is still considered usable; afterwards
+    -- quarantine both component and root so no later diff write can accidentally
+    -- resurrect a control whose input state is unknown.
+    if self.root ~= nil and type(UI.SetVisible) == "function" then pcall(function() UI:SetVisible(self.root, false, self.owner) end) end
+    self.rsUiDegraded = true
+    self.rsUiDegradedReason = reason
+    if self.root ~= nil then
+        self.root.rsUiDegraded = true
+        self.root.rsUiDegradedReason = reason
+    end
+    local diagnostics = S.DiagnosticsManager
+    if type(diagnostics) == "table" and type(diagnostics.Error) == "function" then
+        diagnostics:Error("ui", "RSUI_INTERACTION_STATE_QUARANTINED", "控件交互状态无法确认，已隐藏并隔离", {
+            id = tostring(self.id or ""), kind = tostring(self.kind or ""), owner = tostring(self.owner or ""), error = reason,
+        })
+    end
+    return false, reason
+end
+
+RSUI.EnabledStateTransactionContractVersion = 1
 function Base:SetEnabled(enabled)
-    if self.released == true then return false end
-    -- Revision is interaction metadata, not Domain state.  ActionRunner uses it
+    if self.released == true then return self.enabled == true, false, "component_released" end
+    local desired = enabled ~= false
+    local previous = self.enabled ~= false
+
+    -- Establish the native state before publishing the logical state. Historically
+    -- this method updated self.enabled first and ignored UI:SetEnabled failure, so
+    -- business/presentation code could believe a button was disabled while the RU
+    -- native hit surface remained clickable (or the reverse). EnsureEnabled keeps
+    -- cache-hit success distinct from a rejected native transition.
+    if self.root ~= nil then
+        if type(UI.EnsureEnabled) ~= "function" then
+            return previous, false, "enabled_transaction_unavailable"
+        end
+        local accepted, _, enableErr = UI:EnsureEnabled(self.root, desired, self.owner)
+        if accepted ~= true then
+            local detail = tostring(enableErr or "native_enable_rejected")
+            self:FailClosedInteraction("enabled_state_failed:" .. detail)
+            return previous, false, detail
+        end
+    end
+
+    -- Revision is interaction metadata, not Domain state. ActionRunner uses it
     -- to distinguish its own temporary Busy disable from a business refresh
     -- that deliberately changed the final enabled state while the action ran.
     self.enabledRevision = (tonumber(self.enabledRevision) or 0) + 1
-    self.enabled = enabled ~= false
-    if self.root ~= nil and type(UI.SetEnabled) == "function" then UI:SetEnabled(self.root, self.enabled, self.owner) end
+    self.enabled = desired
     if self.root ~= nil and type(UI.SetAlpha) == "function" then
         local disabledAlpha = S.UITokens and S.UITokens:Number("alpha.disabled", 0.45) or 0.45
         UI:SetAlpha(self.root, self.enabled and 1 or disabledAlpha, self.owner)
     end
-    return self.enabled
+    return self.enabled, true, nil
+end
+
+-- Composite enabled-state propagation is part of the same transaction. A parent
+-- must not report success while one of its interactive children rejected the
+-- requested native state; that creates a partially live control whose visual
+-- state and hit-test state disagree. Legacy/custom SetEnabled overrides that
+-- return only the resulting state remain compatible: child.enabled is verified
+-- after the call, while an explicit accepted=false is treated as rejection.
+RSUI.CompositeChildEnabledTransactionContractVersion = 1
+function Base:EnsureChildEnabled(child, enabled, role)
+    if child == nil then return true, nil end
+    local desired = enabled ~= false
+    role = tostring(role or (type(child) == "table" and (child.id or child.kind)) or "child")
+    if type(child) ~= "table" or type(child.SetEnabled) ~= "function" then
+        local reason = "child_enabled_contract_missing:" .. role
+        self:FailClosedInteraction(reason)
+        return false, reason
+    end
+
+    local ok, state, accepted, detail = xpcall(function()
+        return child:SetEnabled(desired)
+    end, S.SafeTraceback)
+    if ok ~= true then
+        local reason = "child_enabled_exception:" .. role .. ":" .. tostring(state)
+        self:FailClosedInteraction(reason)
+        return false, reason
+    end
+    if accepted == false then
+        local reason = "child_enabled_rejected:" .. role .. ":" .. tostring(detail or "native_enable_rejected")
+        self:FailClosedInteraction(reason)
+        return false, reason
+    end
+    if child.rsUiDegraded == true then
+        local reason = "child_enabled_degraded:" .. role .. ":" .. tostring(child.rsUiDegradedReason or detail or "interaction_degraded")
+        self:FailClosedInteraction(reason)
+        return false, reason
+    end
+    if child.enabled ~= desired then
+        local reason = "child_enabled_state_mismatch:" .. role
+        self:FailClosedInteraction(reason)
+        return false, reason
+    end
+    return true, nil
 end
 
 function Base:SetSemanticState(state)
@@ -1214,9 +1351,12 @@ function Base:On(widget, eventName, fn, label)
         channel = { handlers = {}, installed = false }
         widgetMux[eventKey] = channel
     end
-    channel.handlers[#channel.handlers + 1] = { fn = fn, label = eventLabel }
-    RSUI.metrics.eventSubscriptions = (tonumber(RSUI.metrics.eventSubscriptions) or 0) + 1
-    if channel.installed == true then return true end
+    local subscription = { fn = fn, label = eventLabel }
+    channel.handlers[#channel.handlers + 1] = subscription
+    if channel.installed == true then
+        RSUI.metrics.eventSubscriptions = (tonumber(RSUI.metrics.eventSubscriptions) or 0) + 1
+        return true
+    end
 
     local bound = UI:SafeHandler(widget, eventKey, function(...)
         if component.released == true or component.enabled == false then return false end
@@ -1244,7 +1384,31 @@ function Base:On(widget, eventName, fn, label)
         return result
     end, "rsui:mux:" .. self.id .. ":" .. eventKey)
     channel.installed = bound == true
-    return channel.installed
+    if channel.installed == true then
+        RSUI.metrics.eventSubscriptions = (tonumber(RSUI.metrics.eventSubscriptions) or 0) + 1
+        return true
+    end
+    -- A failed first native binding cannot ever dispatch this subscription. Do
+    -- not retain it in the mux: a later retry would otherwise append another
+    -- handler and execute both once SetHandler eventually succeeds.
+    for index = #channel.handlers, 1, -1 do
+        if channel.handlers[index] == subscription then table.remove(channel.handlers, index); break end
+    end
+    return false
+end
+
+-- Critical component-event delivery helper. Base:On intentionally remains
+-- available for optional hover/wheel conveniences, but user-action controls
+-- (click/drag) must not survive construction with an unbound Native handler.
+-- Marking the component degraded lets RSUI:Create reject and release the entire
+-- subtree at the post-factory fence instead of returning a visible dead control.
+RSUI.CriticalComponentEventContractVersion = 1
+function Base:RequireOn(widget, eventName, fn, label)
+    local bound = self:On(widget, eventName, fn, label)
+    if bound == true then return true, nil end
+    self.rsUiDegraded = true
+    self.rsUiDegradedReason = "required_component_event_bind_failed:" .. tostring(eventName or "") .. ":" .. tostring(label or self.id or "")
+    return false, self.rsUiDegradedReason
 end
 
 function Base:Off(widget, eventName, labelOrFn)
@@ -1354,6 +1518,26 @@ local function EnsurePublicFactory(self, name)
     if typeName == "" then return false end
     self[typeName] = function(instance, spec) return instance:Create(typeName, spec) end
     return true
+end
+
+-- Runtime public-method fence for composite/workspace builders. Lua's dynamic
+-- method lookup otherwise lets a template compile cleanly and only fail in RU
+-- when it dereferences a method that a concrete component family never
+-- implemented. Keep this check explicit and bounded; callers use it only at
+-- construction boundaries, never from Tick/render hot paths.
+function RSUI:RequireComponentMethods(component, methods, context)
+    if type(component) ~= "table" then
+        self.metrics.componentApiValidationFailures = (tonumber(self.metrics.componentApiValidationFailures) or 0) + 1
+        return false, "component_required:" .. tostring(context or "?")
+    end
+    for _, methodName in ipairs(type(methods) == "table" and methods or {}) do
+        methodName = tostring(methodName or "")
+        if methodName ~= "" and type(component[methodName]) ~= "function" then
+            self.metrics.componentApiValidationFailures = (tonumber(self.metrics.componentApiValidationFailures) or 0) + 1
+            return false, "component_method_required:" .. tostring(context or component.id or "?") .. ":" .. methodName
+        end
+    end
+    return true, nil
 end
 
 function RSUI:RegisterTypeValidator(name, validator)
@@ -1478,12 +1662,55 @@ function RSUI:Create(name, spec)
         self.metrics.errors = self.metrics.errors + 1
         return Fail(err)
     end
+    local function RejectComponent(reason)
+        -- Factories can fail post-construction (API/degraded/root/attachment).
+        -- Outside a strict BuildScope there is no transaction rollback to hide
+        -- the already-created native subtree, so explicitly release it before
+        -- returning failure. Base:Release is idempotent; strict scopes may call
+        -- it again safely during rollback.
+        if type(component.Release) == "function" then pcall(component.Release, component) end
+        return Fail(reason)
+    end
+    local apiOk, apiErr = self:RequireComponentMethods(component, {
+        "GetRoot", "SetVisible", "Show", "Hide", "SetEnabled", "Release",
+    }, name .. ":" .. tostring(spec.id or "?"))
+    if apiOk ~= true then
+        self.metrics.errors = self.metrics.errors + 1
+        return RejectComponent(apiErr)
+    end
+    -- Composite controls can degrade even when their trigger/root primitive is
+    -- individually usable (for example a Dropdown whose popup/option factory
+    -- failed). Treat component-level degradation exactly like primitive-level
+    -- degradation so strict BuildScope cannot commit a visible-but-dead control.
+    if component.rsUiDegraded == true then
+        self.metrics.errors = self.metrics.errors + 1
+        self.metrics.componentCompositeRejects = (tonumber(self.metrics.componentCompositeRejects) or 0) + 1
+        return RejectComponent("component_degraded:" .. tostring(component.rsUiDegradedReason or err or "composite_rejected"))
+    end
+
+    -- A custom factory can technically return a Component even when its native
+    -- primitive was rejected/degraded. Refuse that root before attachment so a
+    -- strict BuildScope sees the original construction failure instead of a
+    -- page that renders with a dead control and still reports a green build.
+    local componentRoot = component.root
+    if componentRoot == nil and type(component.GetRoot) == "function" then
+        local rootOk, rootValue = pcall(function() return component:GetRoot() end)
+        if rootOk then componentRoot = rootValue end
+    end
+    if componentRoot ~= nil and type(UI.IsWidgetUsable) == "function" then
+        local rootUsable, rootReason = UI:IsWidgetUsable(componentRoot)
+        if rootUsable ~= true then
+            self.metrics.errors = self.metrics.errors + 1
+            self.metrics.componentRootRejects = (tonumber(self.metrics.componentRootRejects) or 0) + 1
+            return RejectComponent("component_root_unusable:" .. tostring(rootReason or "native_root_rejected"))
+        end
+    end
     component.parentComponent = componentParent or component.parentComponent
     if componentParent ~= nil and type(componentParent.AddChild) == "function" then
         local attached, _, attachErr = componentParent:AddChild(component, spec.slot)
         if attached == nil then
             self.metrics.errors = self.metrics.errors + 1
-            return Fail("component_attach_failed:" .. tostring(attachErr or "unknown"))
+            return RejectComponent("component_attach_failed:" .. tostring(attachErr or "unknown"))
         end
     end
     -- Apply Hidden/Collapsed immediately after the factory has created its
@@ -1513,13 +1740,21 @@ function RSUI:Build(parent, descriptors)
     return result
 end
 
+RSUI.BindingFailClosedContractVersion = 1
 function RSUI:Binding(spec)
     spec = type(spec) == "table" and spec or {}
     if type(spec.binding) == "table" then return spec.binding end
-    if type(UI.CreateSettingBinding) ~= "function" then return nil end
-    local create = (spec.storeId ~= nil or spec.persistenceStore ~= nil) and UI.CreatePersistentSettingBinding or UI.CreateSettingBinding
-    if type(create) ~= "function" then return nil end
-    return create(UI, {
+    if type(UI.CreateSettingBinding) ~= "function" then
+        self.metrics.bindingCreateFailures = (tonumber(self.metrics.bindingCreateFailures) or 0) + 1
+        return nil, "setting_binding_factory_unavailable"
+    end
+    local persistent = spec.storeId ~= nil or spec.persistenceStore ~= nil
+    local create = persistent and UI.CreatePersistentSettingBinding or UI.CreateSettingBinding
+    if type(create) ~= "function" then
+        self.metrics.bindingCreateFailures = (tonumber(self.metrics.bindingCreateFailures) or 0) + 1
+        return nil, persistent and "persistent_binding_factory_unavailable" or "setting_binding_factory_unavailable"
+    end
+    local binding, bindingErr = create(UI, {
         id = spec.bindingId or spec.id,
         value = spec.value,
         get = spec.get,
@@ -1541,6 +1776,11 @@ function RSUI:Binding(spec)
         persistDelayMs = spec.persistDelayMs or spec.persistenceDelayMs,
         persistReason = spec.persistReason,
     })
+    if binding == nil then
+        self.metrics.bindingCreateFailures = (tonumber(self.metrics.bindingCreateFailures) or 0) + 1
+        return nil, tostring(bindingErr or (persistent and "persistent_binding_create_failed" or "setting_binding_create_failed"))
+    end
+    return binding
 end
 
 function RSUI:Callback(label, fn, ...)
@@ -1699,6 +1939,11 @@ function RSUI:GetSnapshot()
         typographyInvalidations = tonumber(self.metrics.typographyInvalidations) or 0,
         fontScaleApplications = tonumber(self.metrics.fontScaleApplications) or 0,
         strictBuildFailFastContractVersion = tonumber(self.StrictBuildFailFastContractVersion) or 0,
+        degradedRootFailClosedContractVersion = tonumber(self.DegradedRootFailClosedContractVersion) or 0,
+        bindingFailClosedContractVersion = tonumber(self.BindingFailClosedContractVersion) or 0,
+        componentRootRejects = tonumber(self.metrics.componentRootRejects) or 0,
+        componentCompositeRejects = tonumber(self.metrics.componentCompositeRejects) or 0,
+        bindingCreateFailures = tonumber(self.metrics.bindingCreateFailures) or 0,
         attachmentContractVersion = tonumber(self.AttachmentContractVersion) or 0,
         reparentPolicyContractVersion = tonumber(self.ReparentPolicyContractVersion) or 0,
         nativeReparentSupported = self.NativeReparentSupported == true,
@@ -1866,6 +2111,7 @@ function RSUI:ResetMetrics()
     self.metrics.focusChanges, self.metrics.playgroundBuilds, self.metrics.playgroundStressRuns = 0, 0, 0
     self.metrics.layoutRootsQueued, self.metrics.layoutFlushes, self.metrics.layoutRootsReflowed = 0, 0, 0
     self.metrics.typographyInvalidations = 0
+    self.metrics.componentApiValidationFailures = 0
     self.metrics.duplicateTypeRegistrations = 0
     self.metrics.externalLayoutInvalidations = 0
     self.metrics.fontScaleApplications = 0

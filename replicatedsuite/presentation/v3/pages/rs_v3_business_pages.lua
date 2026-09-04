@@ -82,7 +82,6 @@ local function Build(parent, route, id)
         root:Refresh()
         return true
     end
-    if toggle.root ~= nil then S.UI:SafeHandler(toggle.root, "OnClick", toggle.onClick, "v3_business:" .. id) end
     local craftRecipeDropdown, craftActionStatus
     local specialFields = {}
     local function TrackField(field) if field ~= nil then specialFields[#specialFields + 1] = field end return field end
@@ -105,8 +104,6 @@ local function Build(parent, route, id)
         bossTestStatus = RSUI:Text({ id = "v3_business_combat_boss_alerts_test_status", parent = hudRow, text = "实时触发待事实桥", fontSize = 8, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
         testBig.onClick = function() local ok, actionErr = feature.Commands:TestBigText(); bossTestStatus:SetText(ok and "大字 HUD 已触发" or ("测试失败：" .. tostring(actionErr or "未执行"))); return ok, actionErr end
         testCountdown.onClick = function() local ok, actionErr = feature.Commands:TestCountdown(); bossTestStatus:SetText(ok and "倒计时 HUD 已触发" or ("测试失败：" .. tostring(actionErr or "未执行"))); return ok, actionErr end
-        if testBig.root then S.UI:SafeHandler(testBig.root, "OnClick", testBig.onClick, "v3_business:boss:test_big") end
-        if testCountdown.root then S.UI:SafeHandler(testCountdown.root, "OnClick", testCountdown.onClick, "v3_business:boss:test_countdown") end
         local hudGrid = RSUI:UniformGrid({ id = "v3_business_combat_boss_alerts_hud_grid", parent = root, minCellWidth = 260, minCellHeight = 30, maxColumns = 2, gap = 5, slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
         TrackField(D:CompactNumericSetting(hudGrid, { id = "v3_business_combat_boss_alerts_font", label = "HUD 字号", min = 18, max = 56, step = 1, integer = true, unit = "", slider = true,
             get = function() return (feature:GetProjection() or {}).hudFontSize or 34 end, set = function(v) return feature.Commands:SetHudFontSize(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
@@ -143,7 +140,7 @@ local function Build(parent, route, id)
         local grid = RSUI:UniformGrid({ id = "v3_business_combat_unit_lines_settings", parent = root,
             minCellWidth = 265, minCellHeight = 30, maxColumns = 2, gap = 6,
             slot = { size = "auto", minHeight = 60, hAlign = "fill" } })
-        TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_points", label = "默认每线点数", min = 8, max = 48, step = 1, integer = true, slider = true,
+        TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_points", label = "默认基础密度", min = 8, max = 48, step = 1, integer = true, slider = true,
             get = function() return (feature:GetProjection() or {}).pointCount or 24 end, set = function(v) return feature.Commands:SetPointCount(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
         TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_size", label = "默认点大小", min = 2, max = 10, step = 1, integer = true, slider = true,
             get = function() return (feature:GetProjection() or {}).pointSize or 4 end, set = function(v) return feature.Commands:SetPointSize(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
@@ -151,6 +148,9 @@ local function Build(parent, route, id)
             get = function() return (feature:GetProjection() or {}).opacity or 0.78 end, set = function(v) return feature.Commands:SetOpacity(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
         TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_refresh", label = "刷新间隔", min = 1, max = 1000, step = 25, integer = true, unit = "ms", slider = true,
             get = function() return (feature:GetProjection() or {}).refreshMs or 100 end, set = function(v) return feature.Commands:SetRefreshMs(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
+        RSUI:Text({ id = "v3_business_combat_unit_lines_density_hint", parent = root,
+            text = "基础密度保留近距离效果；远距离自动补点。多人/低帧压力下只削减额外补点并保持连续刷新，避免整批跳帧。",
+            fontSize = 9, tone = "muted", wrap = true, slot = { size = "fixed", height = 30, hAlign = "fill" } })
 
         RSUI:Text({ id = "v3_business_combat_unit_lines_per_pair_title", parent = root,
             text = "每种连线单独设置", fontSize = 10, tone = "strong",
@@ -177,7 +177,7 @@ local function Build(parent, route, id)
             local settingRow = RSUI:HorizontalBox({ id = "v3_business_combat_unit_lines_card_" .. pairKey .. "_settings",
                 parent = card, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
             TrackField(D:CompactNumericSetting(settingRow, { id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_points",
-                label = "点数", min = 8, max = 48, step = 1, integer = true, inlineHint = true, hint = "", slider = true,
+                label = "基础密度", min = 8, max = 48, step = 1, integer = true, inlineHint = true, hint = "", slider = true,
                 get = function() return (feature:GetProjection() or {}).pairPoints and (feature:GetProjection() or {}).pairPoints[pairKey] or 24 end,
                 set = function(v) return feature.Commands:SetPairPoints(pairKey, v) end,
                 slot = { size = "fill", fill = 1, minWidth = 120, hAlign = "fill" } }))
@@ -258,8 +258,6 @@ local function Build(parent, route, id)
                 return okQuote,quoteErr
             end
         end
-        if search.root then S.UI:SafeHandler(search.root,"OnClick",search.onClick,"v3_business:"..id..":auction_search") end
-        if add and add.root then S.UI:SafeHandler(add.root,"OnClick",add.onClick,"v3_business:auction:add") end
         local pages=RSUI:HorizontalBox({ id="v3_business_"..id.."_auction_pages",parent=root,gap=6,slot={size="fixed",height=28,hAlign="fill"} })
         local prev=RSUI:Button({ id="v3_business_"..id.."_auction_prev",parent=pages,text="上一页",compact=true,slot={size="fixed",width=64} })
         local next=RSUI:Button({ id="v3_business_"..id.."_auction_next",parent=pages,text="下一页",compact=true,slot={size="fixed",width=64} })
@@ -283,9 +281,6 @@ local function Build(parent, route, id)
             if ok then auctionSelectedIndex=nil; feature.Commands:Refresh("auction_remove"); root:Refresh() else auctionStatus:SetText("删除失败："..tostring(removeErr or "未执行")) end
             return ok,removeErr
         end end
-        if prev.root then S.UI:SafeHandler(prev.root,"OnClick",prev.onClick,"v3_business:"..id..":auction_prev") end
-        if next.root then S.UI:SafeHandler(next.root,"OnClick",next.onClick,"v3_business:"..id..":auction_next") end
-        if remove and remove.root then S.UI:SafeHandler(remove.root,"OnClick",remove.onClick,"v3_business:auction:remove") end
         root.RefreshAuctionPaging=function(self,projection,tableView)
             local source=type(projection.rows)=="table" and projection.rows or {}; local total=#source
             local pagesCount=math.max(1,math.ceil(total/auctionPageSize)); auctionPage=math.min(auctionPage,pagesCount)
@@ -321,7 +316,6 @@ local function Build(parent, route, id)
             elseif craftActionStatus ~= nil then craftActionStatus:SetText("刷新失败：" .. tostring(refreshErr or "未执行")) end
             return ok, refreshErr
         end
-        if refreshButton.root ~= nil then S.UI:SafeHandler(refreshButton.root,"OnClick",refreshButton.onClick,"v3_business:"..id..":refresh") end
     end
     local bagQuickStatus, batchStatus, batchCategoryDropdown, batchTargetToggle, batchLimitField
     if id == "tools_bag" then
@@ -344,7 +338,6 @@ local function Build(parent, route, id)
         quickPut.onClick=function() return Quick("QuickDeposit") end
         quickStop.onClick=function() return Quick("QuickCancel") end
         for name,button in pairs({take=quickTake,put=quickPut,stop=quickStop}) do
-            if button.root~=nil then S.UI:SafeHandler(button.root,"OnClick",button.onClick,"v3_business:tools_bag:quick_"..name) end
         end
 
         local batchRow = RSUI:HorizontalBox({ id="v3_business_tools_bag_batch_row", parent=root, gap=6,
@@ -381,8 +374,6 @@ local function Build(parent, route, id)
             root:Refresh(); return ok,result
         end
         stopBatch.onClick=function() local ok,result=feature.Commands:CancelCategoryBatch(); root:Refresh(); return ok,result end
-        if startBatch.root~=nil then S.UI:SafeHandler(startBatch.root,"OnClick",startBatch.onClick,"v3_business:tools_bag:batch_start") end
-        if stopBatch.root~=nil then S.UI:SafeHandler(stopBatch.root,"OnClick",stopBatch.onClick,"v3_business:tools_bag:batch_stop") end
         batchStatus = RSUI:Text({ id = "v3_business_tools_bag_batch_status", parent = root,
             text = "高级整理按背包中实际出现的物品类别建立有界队列；与上方快捷取放互斥，避免同时移动物品。",
             fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2, slot = { size = "auto", minHeight = 26, hAlign = "fill" } })
@@ -427,7 +418,6 @@ local function Build(parent, route, id)
                 if actionSpec.holdRefresh ~= true then feature.Commands:Refresh("social_" .. commandRef); root:Refresh() end
                 return true, nil
             end
-            if button.root ~= nil then S.UI:SafeHandler(button.root, "OnClick", button.onClick, "v3_business:tools_social:" .. commandRef) end
         end
     end
 
@@ -484,7 +474,6 @@ local function Build(parent, route, id)
             return InvokeBlacklist(command, value, input)
         end
         button.onClick = handler
-        if button.root ~= nil then S.UI:SafeHandler(button.root, "OnClick", handler, "v3_business:tools_bag:" .. command) end
     end
     if id == "tools_bag" then
         blacklistStatus = RSUI:Text({ id = "v3_business_tools_bag_blacklist_status", parent = root,
@@ -524,7 +513,6 @@ local function Build(parent, route, id)
             if button == nil then return end
             local handler = function() return InvokeBlacklist("SetBlacklistScope", scope) end
             button.onClick = handler
-            if button.root ~= nil then S.UI:SafeHandler(button.root, "OnClick", handler, "v3_business:tools_bag:scope:" .. scope) end
         end
         BindScopeButton(bankScopeButton, "bank")
         BindScopeButton(cofferScopeButton, "coffer")
@@ -671,8 +659,6 @@ local function Build(parent, route, id)
         if teamMovePartyMemberInput ~= nil then teamMovePartyMemberInput:SetEnabled(false) end
         if teamToPartyInput ~= nil then teamToPartyInput:SetEnabled(false) end
         SetTeamActionStatus("全队职责只读；仅可设置当前玩家职责。成员移动等待合法队长/权限读取契约", "muted")
-        if setRoleButton.root ~= nil then S.UI:SafeHandler(setRoleButton.root, "OnClick", setRoleButton.onClick, "v3_business:combat_team_tools:set_role") end
-        if teamAutoRoleButton.root ~= nil then S.UI:SafeHandler(teamAutoRoleButton.root, "OnClick", teamAutoRoleButton.onClick, "v3_business:combat_team_tools:auto_role") end
     end
     local tableView
     tableView = RSUI:TableView({ id = "v3_business_" .. id .. "_table", parent = root, items = {}, rowHeight = 26, headerHeight = 27, desiredRows = 14, scrollbar = true, selectable = id == "tools_auction" or id == "tools_market_analysis" or id == "tools_social", selectionMode = "single", columnResize = true,

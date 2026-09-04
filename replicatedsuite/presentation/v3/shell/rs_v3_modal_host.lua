@@ -13,8 +13,9 @@ if type(RSUI) ~= "table" then return end
 
 S.UIV3 = S.UIV3 or {}
 S.UIV3.ModalHost = {
-    version = 5,
+    version = 6,
     buildTransactionContractVersion = 1,
+    visibilityTransactionContractVersion = 1,
     stack = {},
     root = nil,
     scrim = nil,
@@ -27,20 +28,30 @@ S.UIV3.ModalHost = {
 local M = S.UIV3.ModalHost
 
 local function SetVisible(instance, visible)
-    if instance == nil then return false end
+    if instance == nil then return false, "modal_instance_required" end
     if type(instance.SetVisibility) == "function" then
-        instance:SetVisibility(visible and "visible" or "collapsed")
-        return true
+        local ok, changed, accepted, detail = xpcall(function()
+            return instance:SetVisibility(visible and "visible" or "collapsed")
+        end, S.SafeTraceback)
+        if ok ~= true then return false, tostring(changed or "modal_visibility_exception") end
+        if accepted == false then return false, tostring(detail or "modal_visibility_rejected") end
+        return true, nil
     end
     if type(instance.SetVisible) == "function" then
-        instance:SetVisible(visible == true)
-        return true
+        local ok, changed, accepted, detail = xpcall(function()
+            return instance:SetVisible(visible == true)
+        end, S.SafeTraceback)
+        if ok ~= true then return false, tostring(changed or "modal_visibility_exception") end
+        if accepted == false then return false, tostring(detail or "modal_visibility_rejected") end
+        return true, nil
     end
     local native = type(instance) == "table" and instance.root or instance
-    if native ~= nil and S.UI ~= nil and type(S.UI.SetVisible) == "function" then
-        return S.UI:SetVisible(native, visible == true, "v3:modal_host")
+    if native ~= nil and S.UI ~= nil and type(S.UI.EnsureVisible) == "function" then
+        local accepted, _, detail = S.UI:EnsureVisible(native, visible == true, "v3:modal_host")
+        if accepted ~= true then return false, tostring(detail or "modal_native_visibility_rejected") end
+        return true, nil
     end
-    return false
+    return false, "modal_visibility_contract_unavailable"
 end
 
 local function Raise(instance)
@@ -57,7 +68,8 @@ function M:Attach(root)
     end
     self.root = root
     if self.scrim ~= nil and self.contentRoot ~= nil then
-        if type(root.SetVisibility) == "function" then root:SetVisibility("collapsed") end
+        local hidden, hideErr = SetVisible(root, false)
+        if hidden ~= true then return false, hideErr end
         return true
     end
 
@@ -71,16 +83,16 @@ function M:Attach(root)
             slot = { hAlign = "fill", vAlign = "fill" },
         })
         if self.scrim == nil or self.contentRoot == nil then error("modal host component create failed") end
-        if type(self.scrim.On) == "function" then
-            self.scrim:On(self.scrim.root, "OnClick", function()
-                local top = M:GetTop()
-                if top ~= nil and top.options.dismissOnBackdrop == true then
-                    M.stats.backdropDismissals = (tonumber(M.stats.backdropDismissals) or 0) + 1
-                    return M:Pop(top.id, "backdrop") ~= nil
-                end
-                return true
-            end, "v3:modal_host:backdrop")
-        end
+        if type(self.scrim.RequireOn) ~= "function" then error("modal scrim critical event contract unavailable") end
+        local backdropBound, backdropErr = self.scrim:RequireOn(self.scrim.root, "OnClick", function()
+            local top = M:GetTop()
+            if top ~= nil and top.options.dismissOnBackdrop == true then
+                M.stats.backdropDismissals = (tonumber(M.stats.backdropDismissals) or 0) + 1
+                return M:Pop(top.id, "backdrop") ~= nil
+            end
+            return true
+        end, "v3:modal_host:backdrop")
+        if backdropBound ~= true then error(tostring(backdropErr or "modal backdrop bind failed")) end
         return true
     end)
 
@@ -96,7 +108,8 @@ function M:Attach(root)
         end
         return false, self.failedAttachError
     end
-    if type(root.SetVisibility) == "function" then root:SetVisibility("collapsed") end
+    local hidden, hideErr = SetVisible(root, false)
+    if hidden ~= true then return false, hideErr end
     return true
 end
 
@@ -133,31 +146,40 @@ function M:Push(id, instance, options)
     if self.root == nil then return false, "modal root unavailable after host wake" end
     options = type(options) == "table" and options or {}
 
-    -- An id is unique inside the modal stack. Re-pushing it raises the existing
-    -- instance instead of creating duplicate modal authority.
+    local existingIndex = nil
     for index = #self.stack, 1, -1 do
-        if self.stack[index].id == id then
-            local row = table.remove(self.stack, index)
-            row.instance = instance
-            row.options = options
-            self.stack[#self.stack + 1] = row
-            local previous = self.stack[#self.stack - 1]
-            if previous ~= nil then SetVisible(previous.instance, false) end
-            SetVisible(instance, true)
-            if type(self.root.SetVisibility) == "function" then self.root:SetVisibility("visible") end
-            Raise(instance)
-            return true
-        end
+        if self.stack[index].id == id then existingIndex = index; break end
+    end
+    local previous = self:GetTop()
+    local targetRow = existingIndex and self.stack[existingIndex] or { id = id, instance = instance, options = options }
+    local targetInstance = instance
+
+    if previous ~= nil and previous ~= targetRow then
+        local hidden, hideErr = SetVisible(previous.instance, false)
+        if hidden ~= true then return false, "modal_previous_hide_failed:" .. tostring(hideErr or "unknown") end
+    end
+    local shown, showErr = SetVisible(targetInstance, true)
+    if shown ~= true then
+        if previous ~= nil and previous ~= targetRow then SetVisible(previous.instance, true) end
+        return false, "modal_target_show_failed:" .. tostring(showErr or "unknown")
+    end
+    local hostShown, hostShowErr = SetVisible(self.root, true)
+    if hostShown ~= true then
+        SetVisible(targetInstance, false)
+        if previous ~= nil and previous ~= targetRow then SetVisible(previous.instance, true) end
+        return false, "modal_host_show_failed:" .. tostring(hostShowErr or "unknown")
     end
 
-    local previous = self:GetTop()
-    if previous ~= nil then SetVisible(previous.instance, false) end
-    local row = { id = id, instance = instance, options = options }
-    self.stack[#self.stack + 1] = row
-    SetVisible(instance, true)
-    if type(self.root.SetVisibility) == "function" then self.root:SetVisibility("visible") end
+    if existingIndex ~= nil then
+        local row = table.remove(self.stack, existingIndex)
+        row.instance = instance
+        row.options = options
+        self.stack[#self.stack + 1] = row
+    else
+        self.stack[#self.stack + 1] = targetRow
+        self.stats.pushes = (tonumber(self.stats.pushes) or 0) + 1
+    end
     Raise(instance)
-    self.stats.pushes = (tonumber(self.stats.pushes) or 0) + 1
     if type(options.onOpened) == "function" then pcall(options.onOpened, instance, id) end
     if type(RSUI.FlushLayoutQueue) == "function" then RSUI:FlushLayoutQueue(12) end
     return true
@@ -169,17 +191,29 @@ function M:Pop(id, reason)
     for index = #self.stack, 1, -1 do
         local row = self.stack[index]
         if target == nil or row.id == target then
+            local nextTop = nil
+            for probe = #self.stack, 1, -1 do
+                if probe ~= index then nextTop = self.stack[probe]; break end
+            end
+            local hidden, hideErr = SetVisible(row.instance, false)
+            if hidden ~= true then return nil, "modal_pop_hide_failed:" .. tostring(hideErr or "unknown") end
+            if nextTop ~= nil then
+                local shown, showErr = SetVisible(nextTop.instance, true)
+                if shown ~= true then
+                    SetVisible(row.instance, true)
+                    return nil, "modal_restore_top_failed:" .. tostring(showErr or "unknown")
+                end
+            else
+                local hostHidden, hostHideErr = SetVisible(self.root, false)
+                if hostHidden ~= true then
+                    SetVisible(row.instance, true)
+                    return nil, "modal_host_hide_failed:" .. tostring(hostHideErr or "unknown")
+                end
+            end
             table.remove(self.stack, index)
-            SetVisible(row.instance, false)
             self.stats.pops = (tonumber(self.stats.pops) or 0) + 1
             if type(row.options.onClosed) == "function" then pcall(row.options.onClosed, row.instance, tostring(reason or "pop")) end
-            local top = self:GetTop()
-            if top ~= nil then
-                SetVisible(top.instance, true)
-                Raise(top.instance)
-            elseif self.root ~= nil and type(self.root.SetVisibility) == "function" then
-                self.root:SetVisibility("collapsed")
-            end
+            if nextTop ~= nil then Raise(nextTop.instance) end
             if type(RSUI.FlushLayoutQueue) == "function" then RSUI:FlushLayoutQueue(12) end
             return row.instance
         end
@@ -194,8 +228,14 @@ function M:DismissTop(reason)
 end
 
 function M:Clear(reason)
-    while #self.stack > 0 do self:Pop(nil, reason or "clear") end
-    if self.root ~= nil and type(self.root.SetVisibility) == "function" then self.root:SetVisibility("collapsed") end
+    while #self.stack > 0 do
+        local popped, popErr = self:Pop(nil, reason or "clear")
+        if popped == nil then return false, popErr or "modal_clear_failed" end
+    end
+    if self.root ~= nil then
+        local hidden, hideErr = SetVisible(self.root, false)
+        if hidden ~= true then return false, hideErr end
+    end
     self.stats.clears = (tonumber(self.stats.clears) or 0) + 1
     return true
 end
@@ -205,6 +245,7 @@ function M:Describe()
     return {
         version = self.version,
         buildTransactionContractVersion = self.buildTransactionContractVersion,
+        visibilityTransactionContractVersion = self.visibilityTransactionContractVersion,
         count = #self.stack,
         attached = self.root ~= nil and self.scrim ~= nil and self.contentRoot ~= nil,
         topId = top and top.id or nil,

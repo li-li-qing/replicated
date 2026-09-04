@@ -244,7 +244,7 @@ function C:_StartPrivateHost()
         return false, "combat event host methods unavailable"
     end
     if type(host.SetExtent) == "function" then pcall(function() host:SetExtent(1, 1) end) end
-    if type(host.EnablePick) == "function" then pcall(function() host:EnablePick(false, true) end) end
+    if type(host.EnablePick) == "function" then pcall(function() host:EnablePick(false) end) end
     if self.privateHandlerAttached ~= true then
         local generation = S.Generation
         local ok, result = pcall(host.SetHandler, host, "OnEvent", function(_, eventName,

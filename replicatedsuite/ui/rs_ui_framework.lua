@@ -18,7 +18,7 @@ local S = ReplicatedSuite
 local UI = S.UI
 if type(UI) ~= "table" then return end
 
-local FRAMEWORK_VERSION = 8
+local FRAMEWORK_VERSION = 10
 local MAX_OWNER_METRICS = 48
 
 local stateCache = setmetatable({}, { __mode = "k" })
@@ -50,12 +50,30 @@ local metrics = {
 }
 
 UI.FrameworkVersion = FRAMEWORK_VERSION
+UI.CompositeEnabledAdapterContractVersion = 2
+UI.EnabledStateTransactionContractVersion = 1
+UI.PickableStateTransactionContractVersion = 1
+-- RU Native Widget setters have no documented success-return contract. A
+-- boolean setter may return the resulting state, so applying false may itself
+-- return false and must not be globally classified as rejection. False while
+-- requesting true still fails closed; explicit Lua callback false=veto
+-- semantics remain owned by their higher-level transaction boundaries.
+UI.NativeBooleanSetterReturnContractVersion = 1
 UI.Tokens = S.UITokens
 UI.NativeStateCache = stateCache
 UI.NativeAuthorityClaims = authorityClaims
 UI.NativeGeometryLeases = geometryLeases
 UI.Lifecycle = lifecycle
 UI.FrameworkMetrics = metrics
+
+local function NativeBooleanSetterAccepted(ok, result, requested)
+    if ok ~= true then return false, result end
+    -- RU may return the resulting boolean state instead of a success flag.
+    -- Therefore false is only ambiguous/valid when false was requested. A
+    -- false result while requesting true still fails closed.
+    if result == false and requested ~= false then return false, "native_rejected" end
+    return true, nil
+end
 
 local function NormalizeOwner(value)
     local owner = tostring(value or "")
@@ -439,19 +457,50 @@ function UI:SetVisible(widget, visible, owner)
     end
 
     local nativeCalls = math.max(1, math.floor(tonumber(widget.rsUiVisibilityNativeCalls) or 1))
-    local ok, err = pcall(function()
+    local ok, result = pcall(function()
         if preferSetVisible and hasSetVisible then
-            widget:SetVisible(value)
+            return widget:SetVisible(value)
         elseif hasShow then
-            widget:Show(value)
+            return widget:Show(value)
         else
-            widget:SetVisible(value)
+            return widget:SetVisible(value)
         end
     end)
-    if ok ~= true then RecordNativeSafetyFailure("SHOW", widget, err, owner); return false end
+    local accepted, acceptErr = NativeBooleanSetterAccepted(ok, result, value)
+    if accepted ~= true then
+        RecordNativeSafetyFailure("SHOW", widget, acceptErr, owner)
+        return false
+    end
     row.visible = value
     RecordAttempt("SHOW", widget, true, nativeCalls, owner)
     return true
+end
+
+-- Transactional visibility facade. SetVisible keeps its historical "changed"
+-- return contract, while EnsureVisible distinguishes a cache-hit/no-op from a
+-- rejected Native transition. Component visibility publishes logical state only
+-- after this method confirms that the requested presentation state is cached by
+-- an accepted Native call.
+function UI:EnsureVisible(widget, visible, owner)
+    local usable, usableErr = WidgetUsable(widget)
+    if usable ~= true then return false, false, tostring(usableErr or "widget_unusable") end
+    local value = visible == true
+    local row = GetState(widget)
+    if row.visible == value then
+        local nativeVisible, known = TryNativeVisible(widget)
+        if known == true and nativeVisible ~= value then
+            RepairCachedField(row, "visible", nativeVisible)
+            RecordCacheRepair("visible", widget, owner)
+        else
+            RecordAttempt("SHOW_ENSURE", widget, false, 0, owner)
+            return true, false, nil
+        end
+    end
+    local changed = self:SetVisible(widget, value, owner)
+    if changed == true then return true, true, nil end
+    row = GetState(widget)
+    if row.visible == value then return true, false, nil end
+    return false, false, "native_visibility_rejected"
 end
 
 -- Generic color diff for native drawables, text styles and small composite
@@ -624,6 +673,44 @@ function UI:SetExtent(widget, width, height, owner)
     return true
 end
 
+UI.GeometryStateTransactionContractVersion = 1
+
+-- Geometry writes historically returned only "changed", making cache-hit/no-op
+-- indistinguishable from a rejected Native write to callers that need to commit
+-- persistent placement. EnsureExtent/EnsureAnchor provide accepted/changed/error
+-- semantics for low-frequency window/layout transactions without changing the
+-- hot-path SetExtent/SetAnchor contract used by diff renderers.
+function UI:EnsureExtent(widget, width, height, owner)
+    local usable, usableErr = WidgetUsable(widget)
+    if usable ~= true then return false, false, tostring(usableErr or "widget_unusable") end
+    if type(widget.SetExtent) ~= "function" then return false, false, "native_extent_unavailable" end
+    local w = math.max(1, tonumber(width) or 1)
+    local h = math.max(1, tonumber(height) or 1)
+    local row = GetState(widget)
+    if row.width == w and row.height == h then
+        local nativeW, nativeH, known = TryNativeExtent(widget)
+        if known ~= true then
+            RecordAttempt("SET_EXTENT_ENSURE", widget, false, 0, owner)
+            return true, false, nil
+        end
+        local scale = 1
+        if S.Layout ~= nil and type(S.Layout.GetContext) == "function" then
+            local ok, context = pcall(function() return S.Layout:GetContext() end)
+            if ok and type(context) == "table" then scale = math.max(0.01, tonumber(context.uiScale) or 1) end
+        end
+        local epsilon = math.max(0.75, scale)
+        local rawMatch = math.abs(nativeW - w) <= epsilon and math.abs(nativeH - h) <= epsilon
+        local scaledMatch = math.abs(nativeW - w * scale) <= epsilon and math.abs(nativeH - h * scale) <= epsilon
+        if rawMatch or scaledMatch then
+            RecordAttempt("SET_EXTENT_ENSURE", widget, false, 0, owner)
+            return true, false, nil
+        end
+    end
+    local changed = self:SetExtent(widget, w, h, owner)
+    if changed == true then return true, true, nil end
+    return false, false, "native_extent_rejected"
+end
+
 function UI:SetAnchor(widget, parent, x, y, owner)
     local usable = WidgetUsable(widget)
     if usable ~= true or type(widget.AddAnchor) ~= "function" then return false end
@@ -657,6 +744,26 @@ function UI:SetAnchor(widget, parent, x, y, owner)
     row.anchorTopLeft = nil
     RecordAttempt("SET_ANCHOR", widget, true, nativeCalls, owner)
     return true
+end
+
+function UI:EnsureAnchor(widget, parent, x, y, owner)
+    local usable, usableErr = WidgetUsable(widget)
+    if usable ~= true then return false, false, tostring(usableErr or "widget_unusable") end
+    if type(widget.AddAnchor) ~= "function" then return false, false, "native_anchor_unavailable" end
+    local nativeParent, logicalParent = self:ResolveNativeAnchorTarget(parent)
+    if logicalParent == nil or nativeParent == nil then return false, false, "parent_required" end
+    local ax, ay = tonumber(x) or 0, tonumber(y) or 0
+    local row = GetState(widget)
+    if SameAnchor(row, logicalParent, ax, ay) then
+        local nativeMatches, known = TryNativeAnchorMatches(widget, logicalParent, ax, ay)
+        if known ~= true or nativeMatches == true then
+            RecordAttempt("SET_ANCHOR_ENSURE", widget, false, 0, owner)
+            return true, false, nil
+        end
+    end
+    local changed = self:SetAnchor(widget, logicalParent, ax, ay, owner)
+    if changed == true then return true, true, nil end
+    return false, false, "native_anchor_rejected"
 end
 
 -- Screen Snap Adapter -------------------------------------------------------
@@ -708,17 +815,63 @@ end
 function UI:SetEnabled(widget, enabled, owner)
     local usable = WidgetUsable(widget)
     if usable ~= true then return false end
+    -- Composite controls may own their actual hit surface on a child widget.
+    -- A native WidgetBase:Enable() on the root is therefore insufficient. Only
+    -- controls that explicitly publish this adapter bypass the native root path.
+    local enabledAdapter = widget.rsUiSetEnabledAdapter
+    local hasAdapter = type(enabledAdapter) == "function"
     local hasEnable = type(widget.Enable) == "function"
     local hasSetEnabled = type(widget.SetEnabled) == "function"
-    if not hasEnable and not hasSetEnabled then return false end
+    if not hasAdapter and not hasEnable and not hasSetEnabled then return false end
     local value = enabled ~= false
     local row = GetState(widget)
     if row.enabled == value then RecordAttempt("ENABLE", widget, false, 0, owner); return false end
-    local ok, err = pcall(function() if hasEnable then widget:Enable(value) else widget:SetEnabled(value) end end)
-    if ok ~= true then RecordNativeSafetyFailure("ENABLE", widget, err, owner); return false end
+    local ok, result
+    if hasAdapter then
+        ok, result = pcall(function() return enabledAdapter(widget, value) end)
+        -- Composite adapters are Lua transaction callbacks, not opaque Native
+        -- setters. Their explicit false remains an authoritative veto.
+        if ok ~= true or result == false then
+            RecordNativeSafetyFailure("ENABLE_ADAPTER", widget, ok and "adapter_rejected" or result, owner)
+            return false
+        end
+    else
+        ok, result = pcall(function()
+            if hasEnable then return widget:Enable(value) end
+            return widget:SetEnabled(value)
+        end)
+        local accepted, acceptErr = NativeBooleanSetterAccepted(ok, result, value)
+        if accepted ~= true then
+            RecordNativeSafetyFailure("ENABLE", widget, acceptErr, owner)
+            return false
+        end
+    end
     row.enabled = value
     RecordAttempt("ENABLE", widget, true, 1, owner)
     return true
+end
+
+-- Transactional facade for component/runtime callers that need to know whether
+-- the requested native enabled state is actually established. SetEnabled keeps
+-- its historical "changed" return contract (false also means cache hit), while
+-- EnsureEnabled disambiguates cache-hit success from native rejection. This is
+-- deliberately cold/event-driven; it never polls native state.
+function UI:EnsureEnabled(widget, enabled, owner)
+    local usable, usableErr = WidgetUsable(widget)
+    if usable ~= true then return false, false, tostring(usableErr or "widget_unusable") end
+    local value = enabled ~= false
+    local row = GetState(widget)
+    if row.enabled == value then
+        RecordAttempt("ENABLE_ENSURE", widget, false, 0, owner)
+        return true, false, nil
+    end
+    local changed = self:SetEnabled(widget, value, owner)
+    if changed == true then return true, true, nil end
+    -- SetEnabled only updates the cache after an accepted native write. If the
+    -- desired value is still absent here, the native transition was rejected.
+    row = GetState(widget)
+    if row.enabled == value then return true, false, nil end
+    return false, false, "native_enable_rejected"
 end
 
 function UI:SetPickable(widget, enabled, owner)
@@ -730,18 +883,46 @@ function UI:SetPickable(widget, enabled, owner)
 
     local calls = 0
     if type(widget.EnablePick) == "function" then
-        local ok, err = pcall(function() widget:EnablePick(value) end)
-        if ok ~= true then RecordNativeSafetyFailure("ENABLE_PICK", widget, err, owner); return false end
+        local ok, result = pcall(function() return widget:EnablePick(value) end)
+        local accepted, acceptErr = NativeBooleanSetterAccepted(ok, result, value)
+        if accepted ~= true then RecordNativeSafetyFailure("ENABLE_PICK", widget, acceptErr, owner); return false end
         calls = calls + 1
     end
     if type(widget.Clickable) == "function" then
-        local ok, err = pcall(function() widget:Clickable(value) end)
-        if ok ~= true then RecordNativeSafetyFailure("CLICKABLE", widget, err, owner); return false end
+        local ok, result = pcall(function() return widget:Clickable(value) end)
+        local accepted, acceptErr = NativeBooleanSetterAccepted(ok, result, value)
+        if accepted ~= true then RecordNativeSafetyFailure("CLICKABLE", widget, acceptErr, owner); return false end
         calls = calls + 1
+    end
+    -- Do not cache a successful presentation state when the native widget does
+    -- not expose any hit-test method. Otherwise a later real adapter/method can
+    -- be skipped forever because the cache already claims the value was applied.
+    if calls == 0 then
+        RecordAttempt("PICKABLE", widget, false, 0, owner)
+        return false
     end
     row.pickable = value
     RecordAttempt("PICKABLE", widget, true, calls, owner)
-    return calls > 0
+    return true
+end
+
+-- Same disambiguation contract as EnsureEnabled for hit-test state. This is
+-- useful for runtime calibration/lock transitions where a silent pickable-state
+-- mismatch would leave a visible control behaving opposite to its logical state.
+function UI:EnsurePickable(widget, enabled, owner)
+    local usable, usableErr = WidgetUsable(widget)
+    if usable ~= true then return false, false, tostring(usableErr or "widget_unusable") end
+    local value = enabled == true
+    local row = GetState(widget)
+    if row.pickable == value then
+        RecordAttempt("PICKABLE_ENSURE", widget, false, 0, owner)
+        return true, false, nil
+    end
+    local changed = self:SetPickable(widget, value, owner)
+    if changed == true then return true, true, nil end
+    row = GetState(widget)
+    if row.pickable == value then return true, false, nil end
+    return false, false, "native_pickable_rejected"
 end
 
 function UI:SetFontSize(widget, size, owner)
@@ -770,6 +951,27 @@ function UI:SetAlpha(widget, alpha, owner)
     row.alpha = value
     RecordAttempt("SET_ALPHA", widget, true, 1, owner)
     return true
+end
+
+-- Transactional alpha facade for low-frequency settings/window state changes.
+-- SetAlpha retains the historical changed/no-op return value, while EnsureAlpha
+-- tells callers whether the requested native state is established before they
+-- publish an Authority-side opacity value.
+function UI:EnsureAlpha(widget, alpha, owner)
+    local usable, usableErr = WidgetUsable(widget)
+    if usable ~= true then return false, false, tostring(usableErr or "widget_unusable") end
+    if type(widget.SetAlpha) ~= "function" then return false, false, "native_alpha_unavailable" end
+    local value = math.max(0, math.min(1, tonumber(alpha) or 1))
+    local row = GetState(widget)
+    if row.alpha == value then
+        RecordAttempt("SET_ALPHA_ENSURE", widget, false, 0, owner)
+        return true, false, nil
+    end
+    local changed = self:SetAlpha(widget, value, owner)
+    if changed == true then return true, true, nil end
+    row = GetState(widget)
+    if row.alpha == value then return true, false, nil end
+    return false, false, "native_alpha_rejected"
 end
 
 -- ScaleBox is event/layout driven; cache native SetScale so repeated layout at

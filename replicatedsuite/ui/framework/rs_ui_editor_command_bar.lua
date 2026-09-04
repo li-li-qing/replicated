@@ -179,14 +179,28 @@ RSUI:RegisterType("EditorCommandBar", function(spec)
         return true, projected
     end
 
+    function c:_SetCommandEnabled(button, enabled, role)
+        local childOk, childErr = self:EnsureChildEnabled(button, enabled, role)
+        if childOk ~= true then
+            self.lastError = childErr
+            RSUI.metrics.editorCommandBarRejects = (tonumber(RSUI.metrics.editorCommandBarRejects) or 0) + 1
+            return false, childErr
+        end
+        return true, nil
+    end
+
     function c:Refresh(source)
         local ok, projected = self:_Project(source)
         if ok ~= true then
-            self.undoButton:SetEnabled(false)
-            self.redoButton:SetEnabled(false)
-            self.revertButton:SetEnabled(false)
-            self.resetButton:SetEnabled(false)
-            self.applyButton:SetEnabled(false)
+            local disabled = {
+                { self.undoButton, "undo" }, { self.redoButton, "redo" },
+                { self.revertButton, "revert" }, { self.resetButton, "reset" },
+                { self.applyButton, "apply" },
+            }
+            for _, entry in ipairs(disabled) do
+                local stateOk, stateErr = self:_SetCommandEnabled(entry[1], false, "command_" .. entry[2])
+                if stateOk ~= true then return false, stateErr end
+            end
             self.statusChip:SetStatus("error", "命令状态不可用")
             RSUI.metrics.editorCommandBarRejects = (tonumber(RSUI.metrics.editorCommandBarRejects) or 0) + 1
             return false, projected
@@ -196,11 +210,17 @@ RSUI:RegisterType("EditorCommandBar", function(spec)
             projected.canUndo, projected.canRedo = false, false
             projected.canRevert, projected.canReset, projected.canApply = false, false, false
         end
-        self.undoButton:SetEnabled(projected.canUndo)
-        self.redoButton:SetEnabled(projected.canRedo)
-        self.revertButton:SetEnabled(projected.canRevert)
-        self.resetButton:SetEnabled(projected.canReset)
-        self.applyButton:SetEnabled(projected.canApply)
+        local commandStates = {
+            { self.undoButton, projected.canUndo, "undo" },
+            { self.redoButton, projected.canRedo, "redo" },
+            { self.revertButton, projected.canRevert, "revert" },
+            { self.resetButton, projected.canReset, "reset" },
+            { self.applyButton, projected.canApply, "apply" },
+        }
+        for _, entry in ipairs(commandStates) do
+            local stateOk, stateErr = self:_SetCommandEnabled(entry[1], entry[2], "command_" .. entry[3])
+            if stateOk ~= true then return false, stateErr end
+        end
         if projected.blocked then
             self.statusChip:SetStatus("error", projected.statusText or "编辑会话已阻断")
         elseif projected.busy then
@@ -264,9 +284,14 @@ RSUI:RegisterType("EditorCommandBar", function(spec)
 
     function c:SetEnabled(enabled)
         local nextEnabled = enabled ~= false
-        if type(BaseSetEnabled) == "function" then BaseSetEnabled(self, nextEnabled) else self.enabled = nextEnabled end
-        if self.projected ~= nil then self:Refresh("enabled_changed") end
-        return self.enabled
+        if type(BaseSetEnabled) ~= "function" then return self.enabled ~= false, false, "base_enabled_contract_missing" end
+        local state, accepted, detail = BaseSetEnabled(self, nextEnabled)
+        if accepted ~= true then return state, false, detail end
+        if self.projected ~= nil then
+            local refreshOk, refreshErr = self:Refresh("enabled_changed")
+            if refreshOk ~= true then return state, false, refreshErr end
+        end
+        return self.enabled, true, nil
     end
 
     function c:GetSnapshot()

@@ -12,7 +12,9 @@ if type(UI) ~= "table" or type(RSUI) ~= "table" then return end
 local Tokens = S.UITokens or {}
 local Layout = UI.LayoutV2
 RSUI.FormLayoutContractVersion = 2
-RSUI.NumericInlineContractVersion = 3
+RSUI.NumericInlineContractVersion = 4
+RSUI.NumericStepPairFallbackContractVersion = 1
+RSUI.FormCompositeFailClosedContractVersion = 1
 
 local function Token(path, fallback)
     if type(Tokens.Number) == "function" then return Tokens:Number(path, fallback) end
@@ -147,7 +149,12 @@ local function CreateFieldFrame(kind, spec)
         if root ~= nil and type(UI.SetVisible) == "function" then UI:SetVisible(root, false, root.rsUiOwner) end
         return nil, "field_component_create_failed"
     end
-    c.binding = RSUI:Binding(spec)
+    local binding, bindingErr = RSUI:Binding(spec)
+    if binding == nil then
+        c:Release()
+        return nil, "field_binding_failed:" .. tostring(bindingErr or "unknown")
+    end
+    c.binding = binding
     c.padding = N(spec.padding, Token("spacing.sm", 8))
     c.headerHeight = N(spec.headerHeight, 18)
     c.controlTop = N(spec.controlTop, 24)
@@ -282,9 +289,11 @@ local function CreateFieldFrame(kind, spec)
 
     local BaseSetEnabled = c.SetEnabled
     function c:SetEnabled(enabled)
-        BaseSetEnabled(self, enabled)
-        if self.control ~= nil and type(self.control.SetEnabled) == "function" then self.control:SetEnabled(self.enabled) end
-        return self.enabled
+        local state, accepted, detail = BaseSetEnabled(self, enabled)
+        if accepted ~= true then return state, false, detail end
+        local childOk, childErr = self:EnsureChildEnabled(self.control, self.enabled, "field_control")
+        if childOk ~= true then return state, false, childErr end
+        return self.enabled, true, nil
     end
 
     function c:Render()
@@ -358,7 +367,6 @@ end)
 RSUI:RegisterType("ToggleField", function(spec)
     local c, err = CreateFieldFrame("ToggleField", spec)
     if c == nil then return nil, err end
-    if c.binding == nil then c:SetFeedback("Binding 缺失", "danger"); return c end
 
     local control = RSUI:Toggle({
         id = spec.id .. "_control",
@@ -406,7 +414,6 @@ end)
 RSUI:RegisterType("NumericField", function(spec)
     local c, err = CreateFieldFrame("NumericField", spec)
     if c == nil then return nil, err end
-    if c.binding == nil then c:SetFeedback("Binding 缺失", "danger"); return c end
 
     c.useSlider = spec.slider ~= false
     c.useStepButtons = spec.stepButtons == true
@@ -437,22 +444,23 @@ RSUI:RegisterType("NumericField", function(spec)
         return Normalize(BindingValue(c.binding, c.minimum)) or c.minimum
     end
 
-    local function SyncControls(value)
+    local function SyncControls(value, source)
         value = Normalize(value) or Current()
-        if c.slider ~= nil then c.slider:Render(value) end
-        if c.input ~= nil then c.input:Render(value) end
+        source = tostring(source or "binding_refresh")
+        if c.slider ~= nil then c.slider:Render(value, source) end
+        if c.input ~= nil then c.input:Render(value, source) end
         return value
     end
 
     local function Applied(value)
         c.transientFeedback, c.transientTone, c.localError = nil, nil, nil
-        SyncControls(value)
+        SyncControls(value, "commit")
         c:SyncFeedback()
         NotifyField(spec, "onApplied", c:IsValid(), value, c)
     end
 
     if c.useStepButtons then
-        c.minus = RSUI:Button({ id = spec.id .. "_minus", parent = c, text = "-", compact = true, width = 26, height = Token("size.buttonH", 26) })
+        c.minus = RSUI:Button({ id = spec.id .. "_minus", parent = c, text = "-", compact = true, width = 26, height = Token("size.buttonH", 26), buildOptional = true })
     end
     if c.useSlider then
         c.slider = RSUI:Slider({
@@ -460,7 +468,7 @@ RSUI:RegisterType("NumericField", function(spec)
             min = c.minimum, max = c.maximum, step = c.step, integer = c.integer,
             binding = c.binding,
             onPreview = function(value)
-                if c.input ~= nil then c.input:Render(value) end
+                if c.input ~= nil then c.input:Render(value, "interaction") end
                 c:SetFeedback(spec.previewText or "预览", spec.previewTone or "info", true)
                 NotifyField(spec, "onPreview", value, c)
             end,
@@ -487,7 +495,15 @@ RSUI:RegisterType("NumericField", function(spec)
         return nil, "numeric_field_input_create_failed"
     end
     if c.useStepButtons then
-        c.plus = RSUI:Button({ id = spec.id .. "_plus", parent = c, text = "+", compact = true, width = 26, height = Token("size.buttonH", 26) })
+        c.plus = RSUI:Button({ id = spec.id .. "_plus", parent = c, text = "+", compact = true, width = 26, height = Token("size.buttonH", 26), buildOptional = true })
+    end
+    -- +/- are a convenience pair. If one optional native button cannot be
+    -- created, hide/release the survivor instead of exposing a one-sided dead or
+    -- misleading control; exact NumericInput remains the authoritative path.
+    if c.useStepButtons and (c.minus == nil or c.plus == nil) then
+        if c.minus ~= nil and type(c.minus.Release) == "function" then c.minus:Release() end
+        if c.plus ~= nil and type(c.plus.Release) == "function" then c.plus:Release() end
+        c.minus, c.plus = nil, nil
     end
     c:SetControl(c.input)
     c.controlPreferredHeight = math.max(c.controlMinHeight, N(spec.controlHeight, Token("size.inputH", 24)))
@@ -511,7 +527,7 @@ RSUI:RegisterType("NumericField", function(spec)
         if ok and spec.commitOnFinal == true and type(self.binding.Commit) == "function" then ok = self.binding:Commit(source or "numeric_field") end
         if ok then self.transientFeedback, self.transientTone, self.localError = nil, nil, nil end
         local actual = Current()
-        SyncControls(actual)
+        SyncControls(actual, "commit")
         self:SyncFeedback()
         NotifyField(spec, "onApplied", ok, actual, self)
         return ok
@@ -542,17 +558,24 @@ RSUI:RegisterType("NumericField", function(spec)
 
     local BaseSetEnabled = c.SetEnabled
     function c:SetEnabled(enabled)
-        BaseSetEnabled(self, enabled)
-        if self.minus ~= nil then self.minus:SetEnabled(self.enabled) end
-        if self.slider ~= nil then self.slider:SetEnabled(self.enabled) end
-        if self.input ~= nil then self.input:SetEnabled(self.enabled) end
-        if self.plus ~= nil then self.plus:SetEnabled(self.enabled) end
-        return self.enabled
+        local state, accepted, detail = BaseSetEnabled(self, enabled)
+        if accepted ~= true then return state, false, detail end
+        local children = {
+            { self.minus, "numeric_minus" },
+            { self.slider, "numeric_slider" },
+            { self.input, "numeric_input" },
+            { self.plus, "numeric_plus" },
+        }
+        for _, entry in ipairs(children) do
+            local childOk, childErr = self:EnsureChildEnabled(entry[1], self.enabled, entry[2])
+            if childOk ~= true then return state, false, childErr end
+        end
+        return self.enabled, true, nil
     end
 
     function c:Render()
         RSUI:_Count(self.kind, "rendered", 1)
-        local value = SyncControls(Current())
+        local value = SyncControls(Current(), "binding_refresh")
         self:SyncFeedback()
         return value
     end
@@ -646,7 +669,6 @@ end)
 RSUI:RegisterType("DropdownField", function(spec)
     local c, err = CreateFieldFrame("DropdownField", spec)
     if c == nil then return nil, err end
-    if c.binding == nil then c:SetFeedback("Binding 缺失", "danger"); return c end
 
     local control = RSUI:Dropdown({
         id = spec.id .. "_control",
@@ -743,6 +765,17 @@ RSUI:RegisterType("FieldGroup", function(spec)
         return self.fieldById[tostring(id or "")]
     end
 
+    local BaseSetEnabled = c.SetEnabled
+    function c:SetEnabled(enabled)
+        local state, accepted, detail = BaseSetEnabled(self, enabled)
+        if accepted ~= true then return state, false, detail end
+        for index, field in ipairs(self.fields) do
+            local childOk, childErr = self:EnsureChildEnabled(field, self.enabled, "field_group_" .. tostring(index))
+            if childOk ~= true then return state, false, childErr end
+        end
+        return self.enabled, true, nil
+    end
+
     function c:Render()
         RSUI:_Count(self.kind, "rendered", 1)
         for _, field in ipairs(self.fields) do if type(field.Render) == "function" then field:Render() end end
@@ -782,7 +815,13 @@ RSUI:RegisterType("FieldGroup", function(spec)
         return self.usedHeight
     end
 
-    for _, fieldSpec in ipairs(type(spec.fields) == "table" and spec.fields or {}) do c:AddField(fieldSpec) end
+    for index, fieldSpec in ipairs(type(spec.fields) == "table" and spec.fields or {}) do
+        local field = c:AddField(fieldSpec)
+        if field == nil then
+            c:Release()
+            return nil, "field_group_initial_field_create_failed:" .. tostring(index)
+        end
+    end
     return c
 end)
 
@@ -812,6 +851,10 @@ RSUI:RegisterType("FormSection", function(spec)
         fieldHeight = N(spec.fieldHeight, Token("component.form.fieldH", 52)),
         gapX = spec.gapX, gapY = spec.gapY,
     })
+    if c.group == nil then
+        c:Release()
+        return nil, "form_section_field_group_create_failed"
+    end
 
     function c:SetTitle(text)
         return self.raw:SetTitle(text)
@@ -840,6 +883,15 @@ RSUI:RegisterType("FormSection", function(spec)
         return self.group and self.group:FindField(id) or nil
     end
 
+    local BaseSetEnabled = c.SetEnabled
+    function c:SetEnabled(enabled)
+        local state, accepted, detail = BaseSetEnabled(self, enabled)
+        if accepted ~= true then return state, false, detail end
+        local childOk, childErr = self:EnsureChildEnabled(self.group, self.enabled, "form_section_group")
+        if childOk ~= true then return state, false, childErr end
+        return self.enabled, true, nil
+    end
+
     function c:Render()
         RSUI:_Count(self.kind, "rendered", 1)
         if self.group ~= nil then self.group:Render() end
@@ -859,7 +911,13 @@ RSUI:RegisterType("FormSection", function(spec)
         return desired
     end
 
-    for _, fieldSpec in ipairs(type(spec.fields) == "table" and spec.fields or {}) do c:AddField(fieldSpec) end
+    for index, fieldSpec in ipairs(type(spec.fields) == "table" and spec.fields or {}) do
+        local field = c:AddField(fieldSpec)
+        if field == nil then
+            c:Release()
+            return nil, "form_section_initial_field_create_failed:" .. tostring(index)
+        end
+    end
     return c
 end)
 
@@ -944,6 +1002,17 @@ RSUI:RegisterType("Form", function(spec)
         return self:RefreshState(false).errors == 0
     end
 
+    local BaseSetEnabled = c.SetEnabled
+    function c:SetEnabled(enabled)
+        local state, accepted, detail = BaseSetEnabled(self, enabled)
+        if accepted ~= true then return state, false, detail end
+        for index, section in ipairs(self.sections) do
+            local childOk, childErr = self:EnsureChildEnabled(section, self.enabled, "form_section_" .. tostring(index))
+            if childOk ~= true then return state, false, childErr end
+        end
+        return self.enabled, true, nil
+    end
+
     function c:Render()
         RSUI:_Count(self.kind, "rendered", 1)
         for _, section in ipairs(self.sections) do if type(section.Render) == "function" then section:Render() end end
@@ -981,7 +1050,13 @@ RSUI:RegisterType("Form", function(spec)
         return usedHeight
     end
 
-    for _, sectionSpec in ipairs(type(spec.sections) == "table" and spec.sections or {}) do c:AddSection(sectionSpec) end
+    for index, sectionSpec in ipairs(type(spec.sections) == "table" and spec.sections or {}) do
+        local section = c:AddSection(sectionSpec)
+        if section == nil then
+            c:Release()
+            return nil, "form_initial_section_create_failed:" .. tostring(index)
+        end
+    end
     c:RefreshState(false)
     return c
 end)

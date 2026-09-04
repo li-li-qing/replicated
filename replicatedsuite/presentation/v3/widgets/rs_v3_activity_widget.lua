@@ -134,8 +134,7 @@ local function CreateActivityWidget()
     function instance:Show(context)
         if self.visible == true then
             self:Refresh()
-            self.surface:Show(true)
-            return true
+            return self.surface:Show(true)
         end
         local acquired = false
         self.table:SetViewState("loading", { title = "正在读取活动…", detail = "正在建立活动 Consumer。" })
@@ -175,16 +174,16 @@ local function CreateActivityWidget()
     end
 
     function instance:Hide(context)
-        if self.visible == true then
-            local released, releaseErr = ReleaseWidgetConsumer()
-            if released ~= true then return false, releaseErr end
-            self.visible = false
-            self:Unsubscribe()
-        end
-        self.surface:Show(false)
+        local hidden, hideErr = self.surface:Show(false)
+        if hidden ~= true then return false, hideErr end
+        local released, releaseErr = true, nil
+        if self.visible == true then released, releaseErr = ReleaseWidgetConsumer() end
+        self.visible = false
+        self:Unsubscribe()
         if type(context) ~= "table" or context.persist ~= false then
             Feature.Commands:SetWidgetVisible(false, "widget_hide")
         end
+        if released ~= true then return false, releaseErr end
         return true
     end
     function instance:OnWindowClosed(context)

@@ -82,13 +82,9 @@ local function BuildActivityPage(parent, route)
         root:Refresh()
         return true
     end
-    if featureButton.root ~= nil then
-        S.UI:SafeHandler(featureButton.root, "OnClick", function()
-            return RunAction("feature_toggle", featureButton, featureButton.onClick)
-        end, "v3_activity:feature_toggle")
-    end
-    if widgetButton.root ~= nil then
-        S.UI:SafeHandler(widgetButton.root, "OnClick", widgetButton.onClick, "v3_activity:widget_toggle")
+    local featureExecute = featureButton.onClick
+    featureButton.onClick = function()
+        return RunAction("feature_toggle", featureButton, featureExecute)
     end
     local hideButton = RSUI:Button({
         id = "v3_activity_hide_selected", parent = actionRow, text = "隐藏所选", compact = true, enabled = false, slot = { size = "fixed", width = 96 },
@@ -113,11 +109,8 @@ local function BuildActivityPage(parent, route)
             return ok ~= false, err
         end)
     end
-    if restoreButton.root ~= nil then S.UI:SafeHandler(restoreButton.root, "OnClick", restoreButton.onClick, "v3_activity:restore_hidden") end
-    if hideButton.root ~= nil then
-        local hideExecute = hideButton.onClick
-        S.UI:SafeHandler(hideButton.root, "OnClick", function() return RunAction("hide_selected", hideButton, hideExecute) end, "v3_activity:hide_selected")
-    end
+    local hideExecute = hideButton.onClick
+    hideButton.onClick = function() return RunAction("hide_selected", hideButton, hideExecute) end
     local progressHint = RSUI:Text({ id = "v3_activity_progress_hint", parent = root, text = "任务进度：共享数据源按需启动 · 点击活动行查看任务详情 · 鼠标滚轮可浏览全部活动", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 20, hAlign = "fill" } })
 
     tableView = RSUI:TableView({
