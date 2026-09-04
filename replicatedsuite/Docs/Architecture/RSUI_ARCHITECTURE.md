@@ -102,6 +102,13 @@ Feature Page 负责“这个产品页面显示什么”
 
 业务页只传**语义状态**与短文本，不自行决定一套新的颜色体系。组件本身没有 Tick，不读取 Feature，不保存状态；`SetStatus()` 只进行 bounded 的 Diff-style 外观/文本更新。
 
+`.18.82` 起 status→tone/默认文案的映射收敛为唯一语义 Authority：`RSUI:ResolveStatusSemantic(status)`（`StatusSemanticsContractVersion 1`），并在其上新增两个标准 Composite（Composite Foundation v5）：
+
+- `StateNotice`（`StateNoticeContractVersion 1`）：Empty / Loading / Error / Blocked 组合态的统一视觉（StatusChip + message + 可选 hint），`SetState()` bounded 更新；未知状态被 validator fail-closed 拒绝。design_system 的静态 `EmptyState` 占位卡不承担状态语义。
+- `DetailHeader`（`DetailHeaderContractVersion 1`）：Breadcrumb（`crumb={"A","B"}` → `A › B`）+ 标题 + 可选右侧 StatusChip；`SetCrumb / SetTitle / SetStatus`。
+
+验收：`RSUI_COMPOSITE_STATE_HARNESS`（真实加载 Composite 依赖链，24 项断言）。
+
 ### TreeModel + TreeView
 
 Tree 被拆成两层：
@@ -5715,6 +5722,143 @@ Overlay 禁止直接调用 `StartMoving/StartSizing`，也不实现新的 pointe
 
 坐标语义继续固定：`左上(0,0)；+X=右；+Y=下`。Canvas-local 编辑必须提供 viewport logical pointer → local 的显式转换，禁止页面自行猜 offset。
 
+## M1.16.0.18.75：Layout Edit History / Undo-Redo Foundation
+
+`LayoutEditHistoryModel v1` 已成为 Layout Editor 的共享可恢复命令 Authority，但仍**不拥有 Feature Store / Native UI / Tick**。
+
+```text
+成功 Editor Commit
+      ↓
+LayoutEditHistoryModel
+  before stable-key items/state
+  after  stable-key items/state
+      ↓
+Undo / Redo
+      ↓
+Caller apply transaction
+      ├─ accepted → cursor 前进/后退
+      └─ rejected → cursor 不动 + best-effort rollback
+```
+
+关键契约：
+
+- 只记录成功 Commit；`PreviewGesture`、16ms Drag Pulse、Cancel 都不产生 History Entry；
+- before/after 必须拥有完全一致的 stable key set；duplicate/missing key fail-closed；
+- 默认 64 条、hard cap 256；超限只淘汰最旧可逆命令，不形成无界 Session 内存；
+- Undo/Redo 不直接改 Feature Store。`apply/rollback` callback 是 Feature Projection/Persistence 的边界；apply 被拒绝时 History cursor 不移动；
+- Anchor/Pivot preserve-visual 修改可能 Rect 完全相同，因此 History 保存 `parentRect + rect + anchorX/Y + pivotX/Y` 的最小恢复快照，不记录 revision/lastSource 等瞬态字段；
+- `LayoutEditorPreviewAdapter` 可通过 `historyEnabled/historyModel` 接入 History；Gesture Commit、Inspector Rect Commit、Single Anchor Commit 都在外部 Commit 成功后才调用 Record；History replay 不再次 Record，避免 Undo 产生新的 Undo。
+
+性能：正常游戏态与 Preview 热路径没有新增轮询；Record/Undo/Redo 只在显式操作时执行 O(selected) 有界复制。
+
 ### 下一层
 
-完整编辑器在进入业务页面前还需要共享可恢复操作：`LayoutEditHistory / Undo-Redo → Editor Command Bar → Reset/Revert/Apply`。这些能力必须记录**成功 Commit**，不能记录每一个 Drag Pulse。
+该阶段的后续链路现已完成：`Editor Command Bar → LayoutEditSession → LayoutEditorWorkspace v2`。Command Bar 的按钮状态始终由 History/Session Authority 投影，页面不能各自维护 `canUndo/canRedo/dirty` 第二份状态。
+
+## M1.16.0.18.76：Editor Command Bar Foundation
+
+`EditorCommandBar v2` 是 Layout Editor 的共享命令**投影层**，不是新的编辑/持久化 Authority。
+
+```text
+LayoutEditHistoryModel ──observable──┐
+                                    ├─> EditorCommandBar
+LayoutEditSession Authority (next) ─┘      Undo / Redo / Revert / Reset / Apply
+```
+
+契约：
+
+- Undo/Redo 状态只来自 History Snapshot；页面不能保存第二份 `canUndo/canRedo`；
+- Revert/Reset/Apply 只来自 Session Snapshot；Session 未接入时三者强制 disabled；
+- History 增加 `Subscribe/Unsubscribe` observable extension，成功 Record/Undo/Redo/Clear 才通知，Preview/Drag Pulse 仍无事件；
+- Command Bar 通过 Authority 事件刷新，不使用 Tick、OnUpdate、InteractiveTask；
+- Session/History 任一 busy 时五个命令统一 fail-closed；
+- `ProjectEditorCommandState()` 是纯 Projection，可脱离 Native Widget 做 Sequence/Gate 验证；
+- Command Bar 不定义 Reset/Revert/Apply 的含义，也不写 Feature Store。下一层必须先明确 Session baseline/working/default/persisted 的四态边界，再允许这三个按钮真正执行。
+
+性能：正常游戏态 0 polling；只有 Authority revision 变化或显式点击时做 O(1) 投影与有限 Button 状态更新。
+
+## M1.16.0.18.77：Layout Edit Session / Reset-Revert-Apply Persistence Boundary
+
+`LayoutEditSessionModel v1` 是 Layout Editor 的 Session Authority，用四个**不同含义**的快照消除“还原 / 重置 / 应用”歧义：
+
+```text
+Persisted
+   ↑ durable Apply only
+SessionBaseline
+   ↑↓ Revert boundary
+Working
+   ↑ Reset stages Defaults here (no persistence)
+Defaults
+```
+
+定义：
+
+- `Persisted`：caller 最后一次明确确认已经 durable 保存成功的布局；
+- `SessionBaseline`：进入本次编辑会话时接受的 Working，或最近一次成功 Apply 后的新基线；它可以与 Persisted 不同；
+- `Working`：当前 Domain/PreviewAdapter/History 实际正在编辑的布局；
+- `Defaults`：本次 Session 冻结的默认布局快照，避免编辑过程中默认值来源漂移。
+
+命令语义：
+
+- `Revert`：`Working <- SessionBaseline`，**不保存、不清 Store**；
+- `Reset`：`Working <- Defaults`，只是 staged reset，**不保存、不调用 Factory Reset/ClearStore**；玩家仍可 Revert；
+- `Apply`：把当前 Working 交给 `persistSnapshot(snapshot, context)`；只有 callback 明确返回 `true`（代表 durable write 已确认）时，才执行 `Persisted <- Working` 与 `SessionBaseline <- Working`；`MarkDirty`/debounce 本身不能宣称 Apply 成功。
+
+History 边界：
+
+- Session 可观察同一个 `LayoutEditHistoryModel`；Record/Undo/Redo 事件触发 bounded Working refresh，不用页面维护第二份 dirty flag；
+- 成功 `Revert / Reset / Apply` 都是 semantic barrier，清空 History，禁止 Undo 穿越已经改变含义的 Session 基线；
+- Reset/Revert 的 History barrier 若失败，会 best-effort 恢复命令前 Working；恢复也失败则 Session blocked；
+- Durable Apply 已成功但 History barrier 异常时不能假装“保存失败并回滚”，因为持久化事实已经发生。此时保持新 Persisted/Baseline 并进入 integrity blocked，五个 Command Bar 命令 fail-closed，`Rebase()` 是显式恢复入口。
+
+Persistence Authority：
+
+`LayoutEditSessionModel` 自身**不调用 `S.Persistence`、`S.Api`、SaveData/ClearData/MarkDirty/SaveStore**。`LayoutEditorWorkspace v2` 只接收 caller/Feature 提供的 `persistSnapshot` durable callback，并不自行访问 Store；因此 Foundation 不夺取业务 Store Authority，也不会让 Reset 变成隐式出厂重置。
+
+Dirty 语义：
+
+- `dirty = Working != Persisted`：表示是否存在尚未 durable Apply 的状态；
+- `sessionChanged = Working != SessionBaseline`：只决定 Revert 是否有意义；
+- `canReset = Working != Defaults`；
+- `canApply = dirty && persistence writable`；
+- `canRevert = sessionChanged`。
+
+性能：无 Tick / OnUpdate / Scheduler；创建、History 事件、显式命令、Rebase 时才做有界 snapshot copy/equality。默认最大 2048 nodes、hard cap 8192、最大深度 8。
+
+## M1.16.0.18.78：LayoutEditorWorkspace v2 Integration
+
+`WorkspaceTemplates v4 / LayoutEditorWorkspace v2` 把前三层恢复语义真正接回同一个编辑器宿主，但仍不把 Workspace 提升为 Store Authority。
+
+```text
+Feature Working / Store callbacks
+          │
+          ├─ onPreview / onCommit / onCancel
+          │              │
+          │        LayoutEditorPreviewAdapter
+          │              │ successful commit only
+          │              v
+          │        LayoutEditHistoryModel ──────> EditorCommandBar
+          │              │ observable                    │
+          │              v                               │
+          └──────> LayoutEditSessionModel <──────────────┘
+                         │ Reset/Revert only
+                         v
+                explicit source refresh
+                         │
+                 Overlay + SAME Inspector
+```
+
+Workspace v2 规则：
+
+- Workspace 创建**唯一 bounded History**并注入 PreviewAdapter；页面不再自己创建第二个 Undo stack；
+- `editSession=nil` 合法：形成 history-only 编辑器，Undo/Redo 可用，Revert/Reset/Apply fail-closed；
+- 一旦提供 `editSession`，必须同时提供 `getWorkingSnapshot / getPersistedSnapshot / getDefaultSnapshot / applyWorkingSnapshot / persistSnapshot`；partial contract 在 Native widget 创建前 fail-closed；
+- `persistSnapshot` 仍由业务 Feature 实现，Workspace/Session 不直接调用 `S.Persistence / SaveStore / MarkDirty`；
+- History `record/undo/redo` 发生时 Adapter 已经是最新 Working，因此只 `RefreshFromAdapter(false)`，避免重新读取来源或生成新 History；
+- Reset/Revert 通过 Session 的 `applyWorkingSnapshot` 绕过 Adapter 修改完整 Working，因此只有这些显式 Session 命令完成/回滚以及 `Rebase` 时才 `RefreshFromSource()`；
+- caller 主动调用 `workspace:RefreshFromSource()` 时同时 `Session:RefreshWorking()`，避免外部 Working 已变化但 dirty 投影仍停留旧 revision；
+- CommandBar/Session/History 全部通过 Subscribe/Unsubscribe 连接；root Release 先释放 UI 子组件，再释放 Session/History listener/model，避免隐藏窗口留下可达引用；
+- Wide/Compact 仍使用 SAME TransformInspector，不发生 Native reparent；新增 CommandBar 占固定稳定 host，1024 宽场景采用紧凑按钮宽度，不挤占 Preview Canvas。
+
+性能：仍为事件驱动。无常驻 Tick/OnUpdate/Scheduler；普通 edit commit 只增加一次 bounded History record + Session snapshot refresh，Undo/Redo/Reset/Revert/Apply 才执行相应有界工作。
+

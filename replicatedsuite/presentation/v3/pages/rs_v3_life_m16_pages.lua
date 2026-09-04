@@ -94,6 +94,25 @@ local function Build(parent, route, feature, kind)
         toPrev.onClick = function() return Cycle(feature.Commands.CycleTo, -1) end
         toNext.onClick = function() return Cycle(feature.Commands.CycleTo, 1) end
         for _, button in ipairs({ fromPrev, fromNext, toPrev, toNext }) do if button.root ~= nil then S.UI:SafeHandler(button.root, "OnClick", button.onClick, "v3_trade:cycle:" .. tostring(button.id)) end end
+        local tradeQuoteButton = RSUI:Button({ id = "v3_trade_quote_materials", parent = actionRow, text = "材料询价", compact = true, slot = { size = "fixed", width = 96 } })
+        tradeQuoteButton.onClick = function()
+            local currentProjection = feature:GetProjection() or {}
+            local seen, requested, skipped = {}, 0, 0
+            for _, row in ipairs(currentProjection.rows or {}) do
+                for _, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
+                    if material.costStatus == "explicit_quote_required" and material.materialKey ~= nil and seen[material.materialKey] ~= true then
+                        seen[material.materialKey] = true
+                        local ok = feature.Commands:QuoteMaterial(material.materialKey)
+                        if ok == true then requested = requested + 1 else skipped = skipped + 1 end
+                    end
+                end
+            end
+            if requested == 0 and skipped == 0 then return false, "没有待询价材料（请先完成一次路线查询）" end
+            root:Refresh()
+            return true, "已提交 " .. tostring(requested) .. " 项询价" .. (skipped > 0 and ("，" .. tostring(skipped) .. " 项缺少已验证身份") or "")
+        end
+        if tradeQuoteButton.root ~= nil then S.UI:SafeHandler(tradeQuoteButton.root, "OnClick", tradeQuoteButton.onClick, "v3_trade:quote_materials") end
+        root.tradeQuoteButton = tradeQuoteButton
     elseif kind == "bonds" then
         local sortButton = RSUI:Button({ id = "v3_bonds_sort", parent = actionRow, text = "按数量排序", compact = true, slot = { size = "fixed", width = 108 } })
         root.bondSortButton = sortButton
@@ -226,9 +245,14 @@ local function Build(parent, route, feature, kind)
             local toItems = Items(projection.sellableZones, function(row) return row.displayName or row.name end)
             tradeFrom:SetItems(fromItems); tradeFrom:SetEnabled(enabled and #fromItems > 0); tradeFrom:Render()
             tradeTo:SetItems(toItems); tradeTo:SetEnabled(enabled and #toItems > 0); tradeTo:Render()
+            local dropdownHint = ""
+            if enabled then
+                if #fromItems == 0 then dropdownHint = dropdownHint .. " · 起点下拉不可用：地区未读取" end
+                if #toItems == 0 and #fromItems > 0 then dropdownHint = dropdownHint .. " · 终点下拉不可用：请先选择起点" end
+            end
             local fallback = (projection.zoneFallback == true and " · 起点使用静态候选" or "") .. (projection.sellableFallback == true and " · 目的地使用兼容候选" or "")
             local errorText = projection.error and (" · " .. tostring(projection.error)) or (projection.sellableError and (" · " .. tostring(projection.sellableError)) or "")
-            status:SetText(enabled and ((projection.status or "--") .. " · 地区 " .. tostring(#fromItems) .. "/" .. tostring(#toItems) .. " · " .. tostring(#(projection.rows or {})) .. " 种货物" .. fallback .. errorText) or "功能已关闭")
+            status:SetText(enabled and ((projection.status or "--") .. " · 地区 " .. tostring(#fromItems) .. "/" .. tostring(#toItems) .. " · " .. tostring(#(projection.rows or {})) .. " 种货物" .. fallback .. dropdownHint .. errorText) or "功能已关闭")
             if widgetButton then
                 widgetButton:SetEnabled(enabled)
                 widgetButton:SetText(WidgetHost:IsVisible("life.trade") and "关闭悬浮窗" or "打开悬浮窗")

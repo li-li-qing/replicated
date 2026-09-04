@@ -296,8 +296,8 @@ Density 统一为：
 6. `IconPicker`：**`.18.65` 已完成 v1 Presentation**；复用 `PickerModel + virtual TileView + Image + selected preview`，Gear、Buff、技能 CD、Profile 共用；业务只投影稳定 key、搜索文本与已解析 icon path，Foundation 不复制 Metadata/过滤/选择 Authority。
 7. `Focus Contract`：`.18.64` 已升级 v2；Set/Clear/IsFocused 都按具体 target Native 能力判断。Foundation Audit 同时 fence 未验证 `OnKeyDown / OnKeyUp / OnTextChanged`。
 8. `Drawer / ResponsiveInspector`：**`.18.65` 已完成第一版 Stable-Host Foundation**；compact 页面把右 Inspector 收为同实例抽屉，不复制详情组件、不做 Native reparent。后续若多个页面需要模态遮罩/点空白关闭，再下沉共享 Scrim/Drawer Surface。
-9. `Breadcrumb / DetailHeader`：待设计；深层详情页统一导航与上下文。
-10. `Empty/Loading/Error/Blocked` 组合态模板：已有 ViewState，仍需要更标准的视觉 Composite。
+9. `Breadcrumb / DetailHeader`：**`.18.82` Foundation v5 已落地 `DetailHeader` Composite**（`crumb={"A","B"}` 渲染 `A › B` + 标题 + 可选 StatusChip；`SetCrumb/SetTitle/SetStatus`）；深层详情页接入仍等具体页面迁移。
+10. `Empty/Loading/Error/Blocked` 组合态模板：**`.18.82` 已落地 `StateNotice` Composite**（chip + message + 可选 hint；`ResolveStatusSemantic` 是 status→tone/默认文案唯一 Authority；未知状态 fail-closed 拒绝）。design_system `EmptyState` 保留为静态"尚未迁移"占位，不承担状态语义。
 11. `LayoutEditorOverlay v1`：共享 Foundation 已完成；统一拖拽框、8 向 Handle、锚点/轴心、吸附、对齐线与事务 Preview/Commit；Buff/Healer/Range 只接 Projection/Persistence，不能各写一套。
 
 ### 3.3.4 页面布局统一栅格
@@ -559,171 +559,249 @@ Unit HUD Composition
 
 ---
 
-## 5.1 状态显示页面 UI 蓝图
+## 5.1 状态显示页面 UI_APPROVED v3
 
-**页面目标**：让玩家在目标头顶只看到真正有用的信息，同时能像编辑 HUD 一样自由配置组件。  
+**页面目标**：让玩家在战斗中只看到真正有用的单位信息；配置页负责“发现/追踪状态”和“编辑 HUD 布局”，Gameplay HUD 本身保持低干扰。  
 **Surface**：Gameplay HUD + Configuration + Layout Edit Mode。  
-**UI 状态**：`UI_DRAFT`。
+**UI 状态**：`UI_IMPLEMENTING`（2026-09-03，本地实现完成 / RU Fresh Reload 待验）。`.18.79` 完成 Authority Cleanup；`.18.80` 已落地三页签、单虚拟 Tracking Table 与 `LayoutEditorWorkspace v2 + LayoutEditSession`，并把 HUD Working 与 Persistence getter 隔离。
 
-### 正常 Gameplay View
+### 5.1.1 本轮先以真实现有代码为边界
+
+本轮不是按旧截图或参考 Addon 猜页面，而是实际审查当前：
+
+- `features/combat/buff_display/rs_buff_display_store.lua`（Store schema 4）；
+- `features/combat/buff_display/rs_buff_display_feature.lua`（Demand / Projection / Commands）；
+- `presentation/v3/pages/rs_v3_buff_display_page.lua`（当前四页签设置页）；
+- `presentation/v3/widgets/rs_v3_buff_head_markers.lua`（真实头顶 HUD Renderer）；
+- `services/rs_aura_observation_v3.lua` / `rs_buff_metadata_v3.lua` / `rs_status_classification_v3.lua`；
+- `.18.75~.18.78` 的 `LayoutEditHistory / EditorCommandBar / LayoutEditSession / LayoutEditorWorkspace`。
+
+因此当前 UI_REVIEW 固定以下**事实边界**：
+
+| 当前事实 | UI_REVIEW 决定 |
+|---|---|
+| Store schema 4 只有 `player / target` 显示范围开关 | 本轮只设计“自己 / 当前目标”；`watchtarget` 不进入当前 UI，不因为参考插件存在就虚构能力 |
+| `components` 几何当前是**一套共享 HUD 模板**，不是 player/target 两份布局 | Scope 只决定“渲染到哪里 / Preview 看谁”，**不复制两份几何 Store**；避免迁移成本、设置分叉与双 Authority |
+| `plate` 是“原生血条代理矩形”，Renderer **不会画血条** | UI 改名为“对齐基准（原生血条）”；Preview 可以画辅助框，但 Gameplay HUD 不新增假血条 |
+| `info` 已经统一负责“职业 · 装分 · 距离”的几何 | 删除页面上 `info.*` 与 `components.class/gearScore/distance` 的重复位置语义；三个子项只拥有显隐，位置/字号归 `顶部信息` 根节点 |
+| `headIconSize / headMaxIcons` 实际只是 Buff/Debuff component 的代理写入 | UI 不再同时暴露“全局图标大小/最多图标”与 Buff/Debuff 卡片同名设置；只保留一套可解释字段 |
+| `plate.enabled / opacity / showName` 当前为兼容字段，Renderer 不消费 | 不在普通 Inspector 暴露无效设置；只保留真实生效字段 |
+| 当前目标装备图标因 RU `GetEquippedItemTooltipInfo` 作用域证据不足而 fail-closed；玩家自己装备可读 | Preview/Inspector 必须显示能力提示，**不能承诺目标武器/背部图标已可用**；取得 RU 证据前不伪造 |
+| 当前 Tracking/Component 改动普遍立即 `MarkDirty` | 状态追踪操作可继续即时保存；**布局编辑必须改用 LayoutEditSession staged Working，只有 Apply 才持久化** |
+| 当前页面“恢复默认”会同时清布局、追踪 ID、分类 | UI_REVIEW 禁止继续使用这个危险的混合按钮；Layout `Reset` 只恢复布局默认，追踪页“清空追踪”只清 tracked list |
+| Cooldown / WatchTarget / Name HUD 不在当前实现 | 不放入当前一级 Tab/Element Tree；未来能力通过独立设计决策进入，禁止先造空壳 |
+
+### 5.1.2 Gameplay HUD 的唯一默认几何
+
+用户已明确希望以原生血条为视觉中心，因此 Review 采用**固定语义区域 + 可微调 Offset**，而不是让每个元素完全自由漂移后互相重叠：
 
 ```text
-              [Buff][Buff][Buff]
-        职业 · 装分 · 距离
-[主手][副手]  █████ 血条 █████  [远程][背部]
-             [Debuff][Debuff]
+             职业 · 装分 · 距离
+          [Buff][Buff][Buff][Buff]
+ [主手][副手]   ┌ 原生血条 ┐   [背部]
+                └─────────┘
+        [Debuff][Debuff][Debuff]
                  施法条
 ```
 
-- 每一层都可独立开关；
-- 默认只显示用户追踪 Aura，不把所有 Buff 堆在头顶；
-- 距离、装分、装备等属于辅助层，不应压过血条和关键 Debuff；
-- Cooldown 追踪建议作为血条外侧独立区域，不和 Aura 混成一排。
+规则：
 
-### 设置 / 编辑布局页
+1. 原生血条只作为**不可见运行时基准**；Preview 中显示虚线/辅助框帮助校准。
+2. 顶部信息永远在“实际 Buff 最上行”之上；没有 Buff 时自动贴近血条上方，不为 MaxRows 预留空洞。
+3. Buff 从血条上缘向上增长；Debuff 从血条下缘向下增长。
+4. 主手 / 副手位于血条左侧；背部位于右侧。
+5. 远程装备保留为可选组件：Fresh Default **关闭**；启用后位于左侧装备组外层，不挤占主手/副手靠血条的核心位置。`.18.79` 已统一 Runtime/Acceptance。
+6. 施法条位于 Debuff 实际占用区域下方；不允许与 Debuff 最大行数按空白预留拉开巨大距离。
+7. 所有位置遵守左上原点：`+X=右 / -X=左 / +Y=下 / -Y=上`；Inspector 标签必须继续显示方向语义。
+8. 每个可见组件都可独立关闭；关闭后相邻布局应**折叠空位**，不得留下“看不见但占位”的洞。
 
-```text
-┌ 元素 / Scope ───────┬ 实时预览画布 ──────────────────┬ Inspector ─────────┐
-│ Target              │                                │ 显示：✓            │
-│ ├ 血条              │        模拟目标                │ Anchor             │
-│ ├ 名字/职业/装分    │                                │ X / Y Offset       │
-│ ├ 主手/副手         │    [可拖拽组件边框]            │ Width / Height     │
-│ ├ Buff              │                                │ Font / Scale       │
-│ ├ Debuff            │                                │ RGBA               │
-│ └ CastBar           │                                │ Flow / Spacing     │
-│ WatchTarget         │                                │                    │
-└─────────────────────┴────────────────────────────────┴────────────────────┘
-```
+### 5.1.3 一级页面收敛为 3 个用户任务
 
-### Aura 追踪管理
-
-单独作为此页面的二级标签：
+当前四页签：
 
 ```text
-[已追踪] [当前目标发现] [导入/导出]
-搜索...   Buff / Debuff / Hidden   [只显示追踪]
-图标 | 名称 | ID | Scope | 追踪状态
+状态追踪 | 头顶显示 | 布局外观 | 导入导出
 ```
 
-点击状态行直接切换追踪，不弹二次确认。
-
-### 1024×768
-
-- 元素树保持左侧窄栏；
-- Inspector 收进右侧抽屉；
-- Preview 优先保留面积；
-- Aura 管理改为独立全页，不与 Layout Editor 同屏。
-
-
-## 5.2 状态显示页面详细布局规格 v2
-
-状态显示是最适合采用 **InspectorWorkbench** 的页面，也是后续 LayoutEditorOverlay 的第一验收页面。
-
-#### A. 页面一级 Tab
+Review 后收敛为：
 
 ```text
-[追踪状态] [头顶显示] [布局编辑] [技能CD] [导入导出]
+[追踪管理] [HUD 布局] [导入 / 导出]
 ```
 
-不要把所有功能塞进一个长滚动页。每个 Tab 只完成一个用户任务。
+- **追踪管理**：发现状态、搜索、过滤、点击追踪/取消、冻结列表、清理追踪。
+- **HUD 布局**：显示范围 + 元素树 + 实时 Preview + Inspector + Undo/Redo/Revert/Reset/Apply。
+- **导入/导出**：快速 ID + 完整 Profile 文本迁移。
 
-#### B. 布局编辑工作台
+`头顶显示` 与 `布局外观` 不再分成两套设置，因为它们实际修改的是同一个 HUD Template；分开只会产生重复开关和重复 NumericField。
+
+### 5.1.4 追踪管理：单表 Authority Projection
+
+当前页面把“自己”和“目标”强行做成两张并排 Table；1024×768 下信息密度差，而且同一状态可能让用户来回找。现有 Feature 已提供 `GetProjection("all")` 与 `GetTrackedList()`，因此 Review 采用**一个虚拟 Table + 来源筛选**：
 
 ```text
-InspectorWorkbench
-├─ Navigator  180~220
-│  ├─ Scope Selector: Target / WatchTarget / Self
-│  ├─ Element Tree
-│  └─ Visibility quick toggles
-├─ Canvas     Fill / >= 360
-│  ├─ Preview Toolbar
-│  ├─ Live Preview Surface
-│  └─ Alignment / Zoom status
-└─ Inspector  260~310
-   ├─ Transform
-   ├─ Size / Scale
-   ├─ Appearance
-   ├─ Flow / Spacing
-   └─ Advanced
+┌──────────────────────────────────────────────────────────────┐
+│ [全部] [自己] [当前目标] [已追踪]  [Buff] [Debuff] [隐藏] │
+│ 搜索名称 / ID ...                         [冻结列表]        │
+├────┬──────────────────┬────────┬──────┬────┬──────┬────────┤
+│图标│ 名称             │ 类型   │ 来源 │ 层 │ 剩余 │ 追踪   │
+├────┼──────────────────┼────────┼──────┼────┼──────┼────────┤
+│    │ ...              │ Buff   │ 自己 │ 2  │ 8.4  │ 已追踪 │
+└────┴──────────────────┴────────┴──────┴────┴──────┴────────┘
 ```
 
-中间 Preview 的视觉面积始终最大。左右栏不能一起无限增宽挤压 Canvas。
+交互：
 
-#### C. Element Tree
+- 点击状态行 = 一次追踪；再次点击 = 取消追踪，不弹二次确认；
+- `ID` 默认不占主列宽，可通过 Tooltip / Advanced Detail 查看；搜索仍支持 ID；
+- `只看隐藏` 不再伪装成永久显示策略，而是 Tracking Browser 的来源/筛选条件；Hidden detection source 与 Buff/Debuff category 继续分离；
+- `清空追踪` 只影响 tracked IDs，不触碰布局、分类、Widget Window；
+- `冻结列表` 只控制浏览器观察体验，不改变头顶白名单语义；
+- Table 继续使用有界/虚拟列表，刷新只 Diff 当前 projection，不按状态数量创建永久 Native Row。
 
-目标结构：
+### 5.1.5 HUD 布局：Element Tree + LayoutEditorWorkspace
+
+Review 不再让页面自己手拼 10 张 Numeric Card，而是消费已经完成的 `.18.78 LayoutEditorWorkspace v2`。
 
 ```text
-▼ Target HUD
-  ✓ Identity
-    ✓ Name
-    ✓ Class
-    ✓ GearScore
-    ✓ Distance
-  ✓ HealthBar
-  ✓ Equipment
-    ✓ MainHand
-    ✓ OffHand
-    ○ Ranged
-    ✓ Back
-  ✓ Aura
-    ✓ Buff
-    ✓ Debuff
-  ✓ CastBar
-  ○ CooldownRegion
+┌ 元素树 ───────────┬ LayoutEditorWorkspace ───────────────────────────────┐
+│ Unit HUD          │ [撤销][重做][还原][重置][应用]  Preview Scope:自己 │
+│ ├ 对齐基准        │ ┌──────────────────────────────────────────────────┐ │
+│ ├ 顶部信息        │ │              职业 · 装分 · 距离                │ │
+│ │ ├ 职业          │ │           [Buff][Buff][Buff]                   │ │
+│ │ ├ 装分          │ │ [主手][副手]  - - 原生血条 - -   [背部]        │ │
+│ │ └ 距离          │ │          [Debuff][Debuff]                      │ │
+│ ├ Buff            │ │                 施法条                         │ │
+│ ├ 装备            │ └──────────────────────────────────────────────────┘ │
+│ │ ├ 主手          │                         Inspector → wide inline     │
+│ │ ├ 副手          │                         / compact drawer           │
+│ │ ├ 远程          │                                                    │
+│ │ └ 背部          │                                                    │
+│ ├ Debuff          │                                                    │
+│ └ 施法条          │                                                    │
+└───────────────────┴────────────────────────────────────────────────────┘
 ```
 
-`.18.64` 当前已有正式 `TreeModel v2 / TreeView v1`，这里不再以 VirtualList 模拟为最终方案。点击元素只改变 Selection，不立即开关；勾选框才改变 Visibility。状态显示首次接入时必须沿用稳定 Element Key 保存 selection/expanded，不得以视觉 row index 保存状态。
+**Element Tree 规则**：
 
-#### D. Inspector 对齐
+- Tree 使用稳定 Element Key：`anchor/info/class/gearScore/distance/buffs/equipment/mainHand/offHand/ranged/wings/debuffs/castBar`；
+- 展开/选择属于 Session UI state，不写 Feature Store；
+- 点击节点只选择 Inspector 目标；显隐操作走明确 Toggle，不把“选中”当“开关”；
+- `对齐基准` 不提供显隐开关，因为 Gameplay 不绘制它；只编辑 proxy width/height/x/y；
+- `顶部信息` 根节点拥有 X/Y/Font，职业/装分/距离子节点只拥有 enabled；
+- `装备` group 只用于导航，不建立第二份 group Store；孩子继续映射现有 component keys；
+- 不出现 `HealthBar / Name / CooldownRegion / WatchTarget` 等当前没有真实 Runtime owner 的节点。
 
-属性按 FormSection 分组，每个 Label 固定列宽：
+**Inspector 分组**：
+
+- `对齐基准`：Width / Height / X / Y / Global Scale；
+- `顶部信息`：Enabled / X / Y / Font Size；子节点只显示 Enabled + 当前能力状态；
+- `Buff / Debuff`：Enabled / X / Y / Icon Size / Alpha / Spacing / Max Per Row / Max Rows；
+- `主手 / 副手 / 远程 / 背部`：Enabled / X / Y / Icon Size / Alpha；
+- `施法条`：Enabled / X / Y / Width / Height / Font Size / Alpha / Show Spell Name；
+- `全局 Aura 文本`：Stack / Remaining Time 两个真实全局开关放到 Aura section，不再和组件卡片重复；
+- 刷新周期等性能参数进入 `Advanced`，明确单位与合法范围，不占主操作区。
+
+### 5.1.6 Layout Edit Session / Persistence
+
+HUD 布局是 `.18.78` Foundation 的第一个正式业务 Consumer，必须严格使用：
 
 ```text
-位置
-Anchor        [血条中心 ▼]
-X Offset      [ -24.0 ]
-Y Offset      [  12.0 ]
-
-尺寸
-Width         [ 180 ]
-Height        [  18 ]
-Scale         [1.00]
-
-外观
-Opacity       [====|----] [80]
-Color         [■] #RRGGBBAA
+Persisted
+   ↓ open editor
+SessionBaseline
+   ↓ drag / numeric / toggle
+Working  ── Preview only
+   │
+   ├─ Undo / Redo   → History only
+   ├─ Revert        → SessionBaseline，不写 Store
+   ├─ Reset         → Layout Defaults staged，不写 Store
+   └─ Apply         → 唯一 durable persistence crossing
 ```
 
-高频调整项直接显示；很少用的 ID/调试字段折叠到 Advanced。
+禁止继续沿用当前“每动一个 Slider 就 `MarkDirty`”的布局编辑路径。Tracking/Classification 属于独立产品操作，可以继续即时持久化；**Layout Working 与 Tracking Store Mutation 不得混成一个事务**。
 
-#### E. Preview
+`Reset` 的作用域只包含 HUD 布局/外观/显示范围；**绝不清 tracked IDs / classification / floating-window state**。全量 Feature Factory Reset 若未来需要，应进入全局设置/维护工具，不放在 Layout Command Bar。
 
-Preview 不是装饰图片，而是**真实组件树的设计态投影**。应支持：
+### 5.1.7 Preview 场景
 
-- 选中框；
-- 8 向 Resize Handle；
-- Anchor 指示；
-- 对齐线；
-- 当前位置/尺寸读数；
-- `100% / 125% / Fit` 预览缩放；
-- 预设场景：普通玩家 / Boss / 多 Buff / 长名字 / 俄文名字。
+Preview 是设计态投影，不调用高频 Native Metadata，也不为了“看起来真实”反复扫描 Aura。编辑器打开时使用有界样例数据：
 
-这部分最终应下沉 `LayoutEditorOverlay`，Healer 校准和 Range Shape Editor 复用同一基础交互。
+- 普通：2 Buff / 1 Debuff；
+- 多状态：8+ Buff / 6+ Debuff，验证多行与折叠；
+- 长名字 / 俄文名字；
+- 施法中；
+- 装备槽缺失；
+- 自己 / 当前目标 Scope 切换。
 
-#### F. Aura 追踪页
+Preview Scope 只改变样例/当前事实来源，不改变共享几何 Authority。
 
-主结构使用 `MasterDetailWorkspace`：左侧筛选/来源，右侧 TableView。
+### 5.1.8 1024×768 / 1080p / 2K
 
-Table 固定列建议：`Icon | 名称 | 类型 | Scope | 剩余/层数示例 | 追踪`。ID 默认隐藏，可在列设置或 Inspector 打开。
+- **1024×768**：元素树约 170~190；Canvas 优先；Inspector 使用 `ResponsiveInspector` 同实例 Drawer；Tracking 为单 Table，不再并排两表；
+- **1080p**：元素树 + Preview + Inline Inspector；Preview 占最大宽度；
+- **2K/宽屏**：不无限增宽 Inspector，额外空间优先给 Preview/Table；
+- 不通过整体缩小字体解决拥挤；高级设置折叠/抽屉化；
+- Native popup / tooltip 继续走 PopupCoordinator / Safe Area，不让 Inspector Drawer 与 Popup 竞争第二 Z Authority。
 
-#### G. Compact
+### 5.1.9 实现前阻断项（`.18.79` 已收口）
 
-`compact` 下不做三栏硬挤：Navigator 保留，Canvas 主导，右 Inspector 直接采用 `.18.65` `ResponsiveInspector` 的 Stable-Host Drawer；同一 Inspector 实例只切换 Geometry/Visibility，不复制 Binding/Selection/Scroll。
+UI_REVIEW 期间发现现有代码已有“设计 / Runtime / Acceptance”分叉，**进入 UI_IMPLEMENTING 前必须一次收口**：
 
-#### H. Foundation 依赖
+1. `rs_v3_buff_head_markers.lua` 当前装备分组为：左 `offHand/mainHand`，右 `wings/ranged`；
+2. `rs_buff_display_acceptance.lua` 当前却断言：左 `ranged/offHand/mainHand`，右 `wings`；
+3. Store 注释仍写“ranged 默认 OFF”，实际 `COMPONENT_DEFAULTS.ranged.enabled = true`；
+4. Page 注释出现“Schema 5”，真实 Store 仍是 schema 4；
+5. `headIconSize/headMaxIcons` 与 `components.buffs/debuffs` 形成重复可写入口；
+6. 当前 `ResetAllSettings` 会把 tracked/classification 一起清掉，不符合 `.18.77` Layout Reset 语义。
 
-`InspectorWorkbench + SettingsWorkbench + TableView + SelectionModel + FormSection + ColorField + NumericField + Tooltip + TreeView(v1 已有) + LayoutEditorOverlay(v1 已有，共享 Foundation；页面待接入)`。
+`.18.79` 已按上述清单完成代码收口：装备布局/默认值/字段 Authority/Reset scope 已统一；额外修复 Full Import 32-ID 截断与组件专属字段 round-trip。Store 保持 schema 4，下一步才接 Workspace。
+
+### 5.1.10 UI_APPROVED 产品决策（已确认）
+
+其它 Authority/性能/响应式边界已经可以从真实代码与 Foundation 确定；进入实现前只剩以下产品视觉决策需要显式确认：
+
+1. **确认**：一级页面采用 `追踪管理 / HUD 布局 / 导入导出` 三页签，取消独立“头顶显示”页；
+2. **确认**：`自己 / 当前目标` 共用一套 HUD 几何模板，只分别控制显示与 Preview Scope；
+3. **确认**：主手+副手在左、背部在右；远程 Fresh Default 关闭，启用后位于左侧外层；
+4. **确认**：Layout `Reset` 只恢复 HUD 布局默认，不清 tracked/classification。
+
+`.18.79` 已完成上述决策对应的 Authority Cleanup；`.18.80` 已完成页面 `UI_IMPLEMENTING` 的本地代码接入，下一 Gate 是 RU Fresh Reload，而不是再复制第二套页面实现。
+
+---
+
+## 5.2 状态显示实现映射（UI_APPROVED → UI_IMPLEMENTING）
+
+`.18.80` 的 UI_IMPLEMENTING 已按下面 Authority 映射落地；后续维护不得重新创建页面副本：
+
+| UI 区域 | Authority / Projection | Persistence | 高频规则 |
+|---|---|---|---|
+| 观察/追踪 Table | `BuffDisplay:GetProjection("all")` / `GetTrackedList()` | tracked/classification 继续 Feature Commands 即时持久化 | Aura facts 来自 `AuraObservationV3`；Table virtual/diff |
+| 分类 | `StatusClassificationV3` | override 仍归 BuffDisplay Store | 页面不自行判断 hidden=buff/debuff |
+| HUD Preview 数据 | bounded design/sample projection + 当前 detached projection | Session only | 不在 Preview bind 中调用 Native Metadata |
+| Element Selection | RSUI `TreeModel/TreeView + SelectionModel` | Session UI state | stable key，不存 row index |
+| Transform | `LayoutEditorWorkspace → PreviewAdapter/AnchorPivot/MultiSelection` | Working only | Gesture pulse 不持久化 |
+| Undo/Redo | `LayoutEditHistoryModel` | Session only | 只记录成功 Commit |
+| Reset/Revert/Apply | `LayoutEditSessionModel` | Apply 唯一写 Permanent Store | 页面不得直接 `MarkDirty` 模拟 Apply |
+| Gameplay HUD | `BuffHeadMarkersV3` | 只读 Settings Projection | Demand-scoped、bounded icon pool、Consumer=0 释放 |
+| 屏幕坐标 | `ScreenProjectionV3` | Session facts | 左上原点，严禁页面另算坐标系 |
+
+**性能预算**：
+
+- Tracking Table：O(visible/projected rows)，继续 bounded；
+- Editor：正常游戏态 0 sampling，只有 Gesture Active 才 16ms InteractiveTask；
+- Preview：固定样例集 / detached projection，不扫描完整 Buff Metadata Catalog；
+- Gameplay HUD：继续复用现有 icon pool，不为每个 Aura 创建永久 Widget；
+- Layout Apply：单次 bounded snapshot normalize + Store write，不进入 Tick；
+- Feature 关闭/Consumer=0：Aura Demand、事件、Scheduler、HeadMarkers 必须继续释放。
+
+**兼容原则**：
+
+- 现有 Store schema 4 的 tracked/classification 必须原样保留；
+- 若 Layout Session 需要新 schema，只允许新增/规范化布局字段，不得重置追踪 ID；
+- 老用户现有 component 值必须迁移为新 Working/Persisted Snapshot；
+- 任何默认布局变化只作用于 fresh/default Reset，不能静默覆盖老用户已保存位置；
+- `.18.80` 仍不改 schema；兼容旧用户存档。页面构造前先 Load Store；HUD 编辑只在 Apply 时跨 durable persistence boundary。
 
 ---
 
@@ -3256,6 +3334,30 @@ Reset / Revert / Apply semantics
 
 这样玩家调整几十个 HUD 元素时才不会因为一次误拖就只能手工找回原值。
 
+#### K. `.18.75` LayoutEditHistory / Undo-Redo
+
+`.18.75` 已完成第一层可恢复编辑 Foundation：
+
+- `LayoutEditHistoryModel v1` 只记录**成功 Commit**，Preview/Drag Pulse/Cancel 不入历史；
+- stable-key before/after 必须同集合；默认 64、hard cap 256；
+- Undo/Redo 只有在 caller apply transaction 接受后才移动 cursor；拒绝时保持 cursor 并 best-effort rollback；
+- Anchor/Pivot 使用最小完整恢复状态，不把 revision/lastSource 等瞬态值写进 History；
+- `LayoutEditorPreviewAdapter` 已提供可选 History 集成，单选、多选、Inspector Rect、Anchor/Pivot Commit 均可生成可逆命令；History replay 本身不会二次 Record。
+
+因此路线推进为：
+
+```text
+LayoutEditHistory / Undo-Redo          ✅ .18.75
+        ↓
+Editor Command Bar                    ✅ .18.76
+        ↓
+Reset / Revert / Apply semantics      ✅ .18.77
+        ↓
+LayoutEditorWorkspace 接入            ✅ .18.78
+        ↓
+状态显示 UI_REVIEW                    NEXT
+```
+
 Persistence Lifetime：
 - Foundation 只维护 Session/working projection；
 - Permanent Feature Store 只允许 Commit 后写入；
@@ -3358,4 +3460,58 @@ UI_DRAFT → UI_REVIEW → UI_APPROVED
 
 当前实际开发阶段仍是 **Foundation First**：Workspace、Tree/Picker、ResponsiveInspector、Selection/Guide/Gesture、Anchor/Pivot/Snap、Single/Multi Preview Adapter、TransformInspector、LayoutEditorOverlay 与 LayoutEditorWorkspace 已形成同一条共享编辑器链，但没有因为这些底层能力而提前把任何参考功能自动批准进入产品范围。
 
-下一步先补 `LayoutEditHistory / Undo-Redo → Editor Command Bar → Reset/Revert/Apply` 的共享可恢复编辑能力；完成后再从状态显示开始逐页把 `UI_DRAFT → UI_REVIEW → UI_APPROVED`。
+共享可恢复编辑语义 `LayoutEditHistory / Undo-Redo → Editor Command Bar → LayoutEditSession` 已完成；下一步先把三者接回 `LayoutEditorWorkspace`，随后再从状态显示开始逐页把 `UI_DRAFT → UI_REVIEW → UI_APPROVED`。
+
+#### L. `.18.76` Editor Command Bar
+
+`.18.76` 完成共享命令投影层，但**仍不定义 Reset/Revert/Apply 的持久化语义**：
+
+- `LayoutEditHistoryModel` 增加 Observable Contract：成功 `Record / Undo / Redo / Clear` 事件驱动通知 Consumer；无 Tick/OnUpdate；
+- `EditorCommandBar v1` 固定五命令入口 `Undo / Redo / Revert / Reset / Apply`；按钮状态完全由 History/Session Snapshot 投影；
+- 没有 Session Authority 时 `Revert / Reset / Apply` 全部 fail-closed，避免页面以 callback/布尔变量临时模拟会话状态；
+- Session busy 或 History busy 时五个命令统一 disabled，防止并发编辑事务；
+- 新增纯 `ProjectEditorCommandState()`，便于 Gate/Sequence 在不创建 Native Widget 的情况下验证投影规则；
+- 下一层才建立 Session Authority，并明确 Baseline / Working / Defaults / Persisted 四个状态边界。
+
+性能：Authority 变化时 O(1) 状态投影 + 最多五个 Button enabled 写入；正常游戏态 0 polling。
+
+#### M. `.18.77` LayoutEditSession / Persistence Boundary
+
+`.18.77` 完成第三层编辑恢复语义：
+
+- 四态固定为 `Persisted / SessionBaseline / Working / Defaults`，不再用一个模糊 dirty snapshot 同时承担“存档”“本次编辑起点”“当前预览”“默认值”；
+- `Revert` 只恢复 SessionBaseline，`Reset` 只把 Defaults staged 到 Working，两者均不写 Store；
+- `Apply` 是唯一 durable persistence crossing；callback 明确成功后才推进 Persisted/Baseline；
+- `dirty` 对比 Working/Persisted，`sessionChanged` 对比 Working/SessionBaseline，因此“会话没改但当前 Working 尚未保存”的场景仍能 Apply，而不会错误开放 Revert；
+- Revert/Reset/Apply 建立 History barrier；异常时优先 rollback 或 integrity block，禁止 stale Undo 穿过新基线；
+- Session 只依赖 caller callback，不直接调用 Persistence/SaveData，所以具体 Feature Store 仍拥有持久化 Authority。
+
+路线更新：
+
+```text
+LayoutEditHistory / Undo-Redo          ✅ .18.75
+        ↓
+Editor Command Bar                    ✅ .18.76
+        ↓
+LayoutEditSession semantics           ✅ .18.77
+        ↓
+LayoutEditorWorkspace 接入            ✅ .18.78
+        ↓
+状态显示 UI_REVIEW                    NEXT
+```
+
+#### N. `.18.78` LayoutEditorWorkspace v2 Integration
+
+`.18.78` 完成共享编辑器恢复链的最终 Foundation 接线：
+
+- `WorkspaceTemplates v4 / LayoutEditorWorkspace v2` 创建唯一 bounded History 并注入 PreviewAdapter，页面不再维护第二 Undo stack；
+- `EditorCommandBar v2` 固定置于稳定 Command Host；History-only 模式仍兼容，但 Revert/Reset/Apply fail-closed；
+- 完整 Session 模式要求 caller 一次性提供 `getWorkingSnapshot / getPersistedSnapshot / getDefaultSnapshot / applyWorkingSnapshot / persistSnapshot`，partial callback contract preflight 直接拒绝；
+- History `record/undo/redo` 只刷新 Adapter→Overlay/Inspector；Reset/Revert/Rebase 才显式从 Feature Working 回读，避免把普通 Undo 重走 Source/Store；
+- caller 主动 Source Refresh 会同步 `LayoutEditSession:RefreshWorking()`，避免外部布局刷新后 dirty/canApply 投影滞后；
+- Workspace 不出现 `S.Persistence / SaveStore / MarkDirty`，durable Apply 仍必须由 Feature callback 明确确认；
+- root teardown 负责释放 CommandBar UI 后再释放 Session/History listener/model，隐藏/关闭页面不遗留活动编辑状态；
+- 仍无常驻 editor sampling；1024 宽内容区使用紧凑 CommandBar 尺寸，PreviewHost/Overlay/Inspector 单实例结构不变。
+
+因此 Foundation 路线从“建立编辑能力”切换为“逐页 UI_REVIEW”。第一目标固定为**状态显示**，先验证页面布局、设置分组、Preview/Inspector 使用方式与交互密度，不因参考插件能力直接扩大业务范围。
+

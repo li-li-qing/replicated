@@ -112,20 +112,31 @@ function F:SetPreferredEnabled(id, enabled, reason)
 
     local target = enabled == true
     local previousEnabled = self:IsEnabled(id)
-    local previousExplicit = self.preferences[id]
     local ok, err
     if target then ok, err = self:Enable(id, reason or "user_enable")
     else ok, err = self:Disable(id, reason or "user_disable") end
     if ok ~= true then return false, err end
 
-    self.preferences[id] = target
-    local marked, markErr = P:MarkDirty(self.preferenceStoreId, 350, "feature_preference:" .. id)
-    if marked == true then return true end
+    -- Preference table mutation is transactional (MutateStore snapshot/rollback
+    -- covers the explicit-preference write); the lifecycle transition above is
+    -- rolled back manually below because Enable/Disable side effects cannot be
+    -- captured by a persistence snapshot.
+    local persisted, persistErr
+    if type(P.MutateStore) == "function" then
+        persisted, persistErr = P:MutateStore(self.preferenceStoreId, function()
+            self.preferences[id] = target
+            return true
+        end, { delayMs = 350, reason = "feature_preference:" .. id })
+    else
+        self.preferences[id] = target
+        persisted, persistErr = P:MarkDirty(self.preferenceStoreId, 350, "feature_preference:" .. id)
+    end
+    if persisted == true then return true end
 
-    -- Persistence intent failed after the lifecycle transition. Restore the
-    -- explicit preference and runtime state so UI can never report success for
-    -- a setting that will silently revert on ReloadAddon.
-    if previousExplicit == nil then self.preferences[id] = nil else self.preferences[id] = previousExplicit end
+    -- Persistence intent failed after the lifecycle transition. MutateStore has
+    -- already restored the explicit preference; restore runtime state so UI can
+    -- never report success for a setting that will silently revert on
+    -- ReloadAddon.
     local rollbackOk, rollbackErr = true, nil
     if previousEnabled ~= target then
         if previousEnabled then rollbackOk, rollbackErr = self:Enable(id, "preference_persist_rollback")
@@ -133,11 +144,11 @@ function F:SetPreferredEnabled(id, enabled, reason)
     end
     if rollbackOk ~= true then
         Emit("error", "FEATURE_PREF_ROLLBACK_FAILED", "功能开关持久化失败且生命周期回滚失败", {
-            feature = id, error = tostring(markErr or "mark dirty failed"), rollbackError = tostring(rollbackErr or "unknown"),
+            feature = id, error = tostring(persistErr or "mark dirty failed"), rollbackError = tostring(rollbackErr or "unknown"),
         })
-        return false, tostring(markErr or "feature preference persistence failed") .. "; rollback failed: " .. tostring(rollbackErr or "unknown")
+        return false, tostring(persistErr or "feature preference persistence failed") .. "; rollback failed: " .. tostring(rollbackErr or "unknown")
     end
-    return false, markErr or "feature preference persistence failed"
+    return false, persistErr or "feature preference persistence failed"
 end
 
 local function Invoke(id, impl, method, ...)

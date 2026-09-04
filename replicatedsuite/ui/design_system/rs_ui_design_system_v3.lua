@@ -105,6 +105,9 @@ function D:StatusRow(parent, id, label, value, tone)
     return row
 end
 
+-- Static "not migrated yet" placeholder only. Stateful empty/loading/error/
+-- blocked notices belong to RSUI StateNotice (composite foundation), which owns
+-- the shared status semantics; do not grow this placeholder into a second one.
 function D:EmptyState(parent, id, title, detail)
     local card = RSUI:Border({ id = id, parent = parent, variant = "soft", padding = 14, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
     local stack = RSUI:VerticalBox({ id = id .. "_stack", parent = card, gap = 6, slot = { hAlign = "fill", vAlign = "fill" } })

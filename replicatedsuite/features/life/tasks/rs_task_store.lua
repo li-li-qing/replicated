@@ -102,7 +102,7 @@ F.StoreId = STORE_ID
 F.StoreLoaded = F.StoreLoaded == true
 
 function F:EnsureStoreLoaded()
-    if self.StoreLoaded == true then return true end
+    if type(P.IsStoreLoaded) == "function" and P:IsStoreLoaded(STORE_ID) == true then self.StoreLoaded = true; return true end
     if P:GetStore(STORE_ID) == nil then return false, "任务追踪存档不可用" end
     local status, _, err = P:LoadStore(STORE_ID)
     if status == true or status == "empty" then
@@ -115,4 +115,13 @@ end
 
 function F:MarkStoreDirty(delayMs, reason)
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 350, reason or "task_tracking_changed")
+end
+
+function F:MutateStore(mutator, delayMs, reason, durable)
+    if type(P.MutateStore) ~= "function" then return false, "任务追踪持久化事务不可用" end
+    return P:MutateStore(STORE_ID, function() return mutator() end, {
+        delayMs = tonumber(delayMs) or 350,
+        reason = tostring(reason or "task_tracking_changed"),
+        durable = durable == true,
+    })
 end

@@ -1,5 +1,5 @@
 ------------------------------------------------------------------------
--- Replicated Suite - RSUI Workspace Composition Templates v3
+-- Replicated Suite - RSUI Workspace Composition Templates v4
 --
 -- Page-level composition helpers built exclusively from existing RSUI
 -- primitives. These helpers do NOT become a second layout authority: all
@@ -18,8 +18,8 @@ if type(RSUI) ~= "table" then return end
 local Tokens = S.UITokens or {}
 
 local T = {
-    version = 3,
-    contractVersion = 3,
+    version = 4,
+    contractVersion = 4,
 }
 
 local function N(value, fallback)
@@ -267,6 +267,27 @@ end
 
 -- SettingsWorkbench is a semantic MasterDetail preset. The rail is intended for
 -- categories/element lists; the detail pane is the sole property editor.
+
+-- Pure preflight for the optional durable edit-session boundary. Keeping this
+-- validation outside widget construction lets Acceptance/Sequence verify the
+-- contract without creating Native widgets.
+function T:ValidateLayoutEditorEditSessionSpec(editSessionSpec)
+    if editSessionSpec == nil then return true, nil end
+    if type(editSessionSpec) ~= "table" then return false, "layout_editor_workspace_edit_session_invalid" end
+    for _, callbackName in ipairs({
+        "getWorkingSnapshot", "getPersistedSnapshot", "getDefaultSnapshot",
+        "applyWorkingSnapshot", "persistSnapshot",
+    }) do
+        if type(editSessionSpec[callbackName]) ~= "function" then
+            return false, "layout_editor_workspace_edit_session_callback_required:" .. callbackName
+        end
+    end
+    if editSessionSpec.canPersist ~= nil and type(editSessionSpec.canPersist) ~= "function" then
+        return false, "layout_editor_workspace_edit_session_can_persist_invalid"
+    end
+    return true, nil
+end
+
 -- LayoutEditorWorkspace
 --
 -- Stable-host editor composition:
@@ -291,6 +312,25 @@ function T:LayoutEditor(spec)
     if type(RSUI.TransformInspector) ~= "function" or (tonumber(RSUI.TransformInspectorContractVersion) or 0) < 2 then
         return nil, "layout_editor_transform_inspector_v2_required"
     end
+    if type(RSUI.CreateLayoutEditHistoryModel) ~= "function" or (tonumber(RSUI.LayoutEditHistoryContractVersion) or 0) < 1 then
+        return nil, "layout_editor_workspace_history_foundation_missing"
+    end
+    if type(RSUI.EditorCommandBar) ~= "function" or (tonumber(RSUI.EditorCommandBarContractVersion) or 0) < 2 then
+        return nil, "layout_editor_workspace_command_bar_foundation_missing"
+    end
+
+    -- Persistence remains a caller/Feature responsibility. The Workspace only
+    -- creates the Session Authority when the caller supplies the complete
+    -- durable boundary. Supplying no editSession keeps a valid history-only
+    -- editor (Revert/Reset/Apply fail closed); supplying a partial contract is a
+    -- hard error so no page can accidentally invent half-persistent semantics.
+    local editSessionSpec = spec.editSession
+    local editSessionOk, editSessionErr = self:ValidateLayoutEditorEditSessionSpec(editSessionSpec)
+    if editSessionOk ~= true then return nil, editSessionErr end
+    if editSessionSpec ~= nil and (type(RSUI.CreateLayoutEditSessionModel) ~= "function"
+        or (tonumber(RSUI.LayoutEditSessionContractVersion) or 0) < 1) then
+        return nil, "layout_editor_workspace_session_foundation_missing"
+    end
 
     local id = tostring(spec.id)
     local root = RSUI:ResponsiveInspector({
@@ -307,6 +347,38 @@ function T:LayoutEditor(spec)
     })
     if root == nil then return nil, "layout_editor_workspace_root_failed" end
 
+    local historyModel = nil
+    local sessionModel = nil
+    local workspace = nil
+    local released = false
+    local historyToken = "layout_editor_workspace:" .. id .. ":history"
+    local sessionToken = "layout_editor_workspace:" .. id .. ":session"
+
+    local function ReleaseModels()
+        if released == true then return false end
+        released = true
+        if historyModel ~= nil and type(historyModel.Unsubscribe) == "function" then
+            pcall(function() historyModel:Unsubscribe(historyToken) end)
+        end
+        if sessionModel ~= nil and type(sessionModel.Unsubscribe) == "function" then
+            pcall(function() sessionModel:Unsubscribe(sessionToken) end)
+        end
+        if sessionModel ~= nil and type(sessionModel.Release) == "function" then pcall(function() sessionModel:Release() end) end
+        if historyModel ~= nil and type(historyModel.Release) == "function" then pcall(function() historyModel:Release() end) end
+        sessionModel, historyModel = nil, nil
+        if workspace ~= nil then
+            workspace.sessionModel, workspace.historyModel = nil, nil
+            workspace.commandBar = nil
+        end
+        return true
+    end
+
+    local function Fail(reason)
+        if root ~= nil and type(root.Release) == "function" and root.released ~= true then pcall(function() root:Release() end) end
+        ReleaseModels()
+        return nil, tostring(reason or "layout_editor_workspace_create_failed")
+    end
+
     local content = RSUI:VerticalBox({
         id = id .. "_content", parent = root, gap = N(spec.contentGap, Token("spacing.xs", 4)),
         padding = spec.contentPadding, slot = { role = "content", hAlign = "fill", vAlign = "fill" },
@@ -314,6 +386,13 @@ function T:LayoutEditor(spec)
     local toolbar = RSUI:HorizontalBox({
         id = id .. "_toolbar", parent = content, gap = N(spec.toolbarGap, Token("spacing.sm", 8)),
         padding = spec.toolbarPadding or { left = 6, top = 4, right = 6, bottom = 4 },
+        slot = { size = "auto", hAlign = "fill", vAlign = "top" },
+    })
+    -- The host is created before the canvas so the command bar keeps a stable
+    -- vertical slot without reparenting when the Workspace changes breakpoint.
+    local commandHost = RSUI:VerticalBox({
+        id = id .. "_command_host", parent = content, gap = 0,
+        padding = spec.commandPadding or { left = 6, top = 0, right = 6, bottom = 2 },
         slot = { size = "auto", hAlign = "fill", vAlign = "top" },
     })
     local canvas = RSUI:Overlay({
@@ -329,8 +408,8 @@ function T:LayoutEditor(spec)
         scrollbar = true, padding = spec.inspectorPadding or { left = 6, top = 6, right = 6, bottom = 6 },
         slot = { role = "inspector", hAlign = "fill", vAlign = "fill" },
     })
-    if content == nil or toolbar == nil or canvas == nil or previewHost == nil or inspectorScroll == nil then
-        return nil, "layout_editor_workspace_zone_failed"
+    if content == nil or toolbar == nil or commandHost == nil or canvas == nil or previewHost == nil or inspectorScroll == nil then
+        return Fail("layout_editor_workspace_zone_failed")
     end
 
     local selectionStatus = RSUI:StatusChip({
@@ -342,12 +421,20 @@ function T:LayoutEditor(spec)
         text = "左上(0,0) · X→右 · Y→下", tone = "muted", overflow = "ellipsis",
         slot = { size = "fill", fill = 1, hAlign = "right", vAlign = "center" },
     })
-    if selectionStatus == nil or coordinateHint == nil then return nil, "layout_editor_workspace_toolbar_failed" end
+    if selectionStatus == nil or coordinateHint == nil then return Fail("layout_editor_workspace_toolbar_failed") end
 
-    local workspace = {
+    historyModel, err = RSUI:CreateLayoutEditHistoryModel({
+        id = id .. ":history",
+        maxCommands = type(spec.historyOptions) == "table" and spec.historyOptions.maxCommands or nil,
+        maxItems = type(spec.historyOptions) == "table" and spec.historyOptions.maxItems or spec.maxSelected,
+    })
+    if historyModel == nil then return Fail(err or "layout_editor_workspace_history_failed") end
+
+    workspace = {
         kind = "LayoutEditorWorkspace", id = id, root = root, content = content, toolbar = toolbar,
-        canvas = canvas, previewHost = previewHost, inspectorHost = inspectorScroll,
-        selectionStatus = selectionStatus, coordinateHint = coordinateHint,
+        commandHost = commandHost, canvas = canvas, previewHost = previewHost, inspectorHost = inspectorScroll,
+        selectionStatus = selectionStatus, coordinateHint = coordinateHint, historyModel = historyModel,
+        sessionModel = nil, commandBar = nil, released = false,
     }
 
     local editorOverlay = RSUI:LayoutEditorOverlay({
@@ -362,6 +449,7 @@ function T:LayoutEditor(spec)
         minChildWidth = spec.minChildWidth, minChildHeight = spec.minChildHeight,
         handleSize = spec.handleSize, handleHitSlop = spec.handleHitSlop, enabled = spec.editorEnabled ~= false,
         onPreview = spec.onPreview, onCommit = spec.onCommit, onCancel = spec.onCancel,
+        historyModel = historyModel,
         onTransformCommitted = spec.onTransformCommitted,
         onModeChanged = function(mode, count, anchorModel, adapter, overlay)
             if selectionStatus ~= nil then
@@ -369,7 +457,7 @@ function T:LayoutEditor(spec)
                 elseif mode == "single" then selectionStatus:SetStatus("info", "单选 · 1 项")
                 else selectionStatus:SetStatus("info", "多选 · " .. tostring(count) .. " 项") end
             end
-            if workspace.transformInspector ~= nil then
+            if workspace ~= nil and workspace.transformInspector ~= nil then
                 workspace.transformInspector:SetModels(adapter, anchorModel)
                 workspace.transformInspector:SetEnabled(mode ~= "none")
             end
@@ -384,10 +472,13 @@ function T:LayoutEditor(spec)
         end,
         slot = { hAlign = "fill", vAlign = "fill" },
     })
-    if editorOverlay == nil then return nil, "layout_editor_workspace_overlay_failed" end
+    if editorOverlay == nil then return Fail("layout_editor_workspace_overlay_failed") end
     workspace.editorOverlay = editorOverlay
     workspace.adapter = editorOverlay:GetAdapter()
     workspace.snapModel = editorOverlay:GetSnapModel()
+    if workspace.adapter == nil or workspace.adapter:GetHistoryModel() ~= historyModel then
+        return Fail("layout_editor_workspace_history_adapter_binding_failed")
+    end
 
     local inspector = RSUI:TransformInspector({
         id = id .. "_transform_inspector", parent = inspectorScroll,
@@ -419,29 +510,148 @@ function T:LayoutEditor(spec)
         end,
         slot = { hAlign = "fill", vAlign = "top" },
     })
-    if inspector == nil then return nil, "layout_editor_workspace_inspector_failed" end
+    if inspector == nil then return Fail("layout_editor_workspace_inspector_failed") end
     workspace.transformInspector = inspector
     inspector:SetModels(workspace.adapter, workspace.adapter:GetAnchorModel())
     inspector:SetEnabled(workspace.adapter:GetMode() ~= "none")
 
+    if editSessionSpec ~= nil then
+        sessionModel, err = RSUI:CreateLayoutEditSessionModel({
+            id = id .. ":session",
+            historyModel = historyModel,
+            maxSnapshotNodes = editSessionSpec.maxSnapshotNodes,
+            getWorkingSnapshot = editSessionSpec.getWorkingSnapshot,
+            getPersistedSnapshot = editSessionSpec.getPersistedSnapshot,
+            getDefaultSnapshot = editSessionSpec.getDefaultSnapshot,
+            applyWorkingSnapshot = editSessionSpec.applyWorkingSnapshot,
+            persistSnapshot = editSessionSpec.persistSnapshot,
+            canPersist = editSessionSpec.canPersist,
+        })
+        if sessionModel == nil then return Fail(err or "layout_editor_workspace_session_failed") end
+        workspace.sessionModel = sessionModel
+    end
+
+    local commandBar = RSUI:EditorCommandBar({
+        id = id .. "_commands", parent = commandHost,
+        historyModel = historyModel, sessionModel = sessionModel,
+        width = spec.commandWidth, height = spec.commandHeight or 28,
+        buttonWidth = spec.commandButtonWidth or 46, gap = spec.commandGap or 4,
+        statusMinWidth = spec.commandStatusMinWidth or 84, statusMaxWidth = spec.commandStatusMaxWidth or 180,
+        enabled = spec.editorEnabled ~= false,
+        onCommand = function(command, accepted, detail, snapshot, bar)
+            if type(spec.onEditorCommand) == "function" then
+                RSUI:Callback("rsui:layout_editor_workspace:" .. id .. ":command",
+                    spec.onEditorCommand, command, accepted, detail, snapshot, bar, workspace)
+            end
+        end,
+        slot = { size = "auto", hAlign = "fill", vAlign = "top" },
+    })
+    if commandBar == nil then return Fail("layout_editor_workspace_command_bar_failed") end
+    workspace.commandBar = commandBar
+
+    local function RefreshInspectorBinding()
+        if workspace == nil or workspace.released == true then return false end
+        inspector:SetModels(workspace.adapter, workspace.adapter:GetAnchorModel())
+        inspector:SetEnabled(workspace.adapter:GetMode() ~= "none")
+        return true
+    end
+
+    -- History replay already passes through Adapter:ApplyHistoryState, so the
+    -- Adapter is current by the time this event fires. Refresh presentation from
+    -- Adapter only; do not re-read Feature state or create another history entry.
+    local historySubscribed = historyModel:Subscribe(historyToken, function(_, reason)
+        if workspace == nil or workspace.released == true then return end
+        reason = tostring(reason or "changed")
+        if reason == "record" or reason == "undo" or reason == "redo" then
+            editorOverlay:RefreshFromAdapter(false, "workspace_history:" .. reason)
+            RefreshInspectorBinding()
+        end
+    end)
+    if historySubscribed ~= true then return Fail("layout_editor_workspace_history_subscribe_failed") end
+
+    if sessionModel ~= nil then
+        local sessionSubscribed = sessionModel:Subscribe(sessionToken, function(_, reason, snapshot, detail)
+            if workspace == nil or workspace.released == true then return end
+            reason = tostring(reason or "changed")
+            -- Reset/Revert (and their rollback/failure paths) mutate Feature
+            -- Working through the caller callback, bypassing the Adapter by
+            -- design. Re-read source exactly at those explicit command edges.
+            if reason == "command:revert" or reason == "command:reset"
+                or reason == "command_failed:revert" or reason == "command_failed:reset"
+                or reason == "rebase" then
+                local refreshed, refreshErr = editorOverlay:RefreshFromSource("workspace_session:" .. reason)
+                if refreshed == true then RefreshInspectorBinding() end
+                if refreshed ~= true and type(S.DiagnosticsManager) == "table" and type(S.DiagnosticsManager.Warn) == "function" then
+                    pcall(function()
+                        S.DiagnosticsManager:Warn("ui", "LAYOUT_EDITOR_WORKSPACE_SESSION_REFRESH_FAILED",
+                            "Layout Editor Session 回放后刷新失败", { workspace = id, reason = reason, error = tostring(refreshErr) })
+                    end)
+                end
+            end
+            if type(spec.onEditSessionChanged) == "function" then
+                RSUI:Callback("rsui:layout_editor_workspace:" .. id .. ":session",
+                    spec.onEditSessionChanged, reason, snapshot, detail, sessionModel, workspace)
+            end
+        end)
+        if sessionSubscribed ~= true then return Fail("layout_editor_workspace_session_subscribe_failed") end
+    end
+
     workspace.SetDrawerOpen = function(_, open, notify) return root:SetDrawerOpen(open, notify) end
     workspace.ToggleDrawer = function(_, notify) return root:ToggleDrawer(notify) end
     workspace.GetMode = function() return root:GetMode() end
+    workspace.GetHistoryModel = function() return historyModel end
+    workspace.GetSessionModel = function() return sessionModel end
+    workspace.GetCommandBar = function() return commandBar end
+    workspace.ExecuteCommand = function(_, command) return commandBar:Execute(command) end
+    workspace.RebaseEditSession = function(_, source)
+        if sessionModel == nil then return false, "layout_editor_workspace_session_not_attached" end
+        return sessionModel:Rebase(source or "workspace_rebase")
+    end
     workspace.RefreshFromSource = function(_, source)
-        local refreshed, refreshErr = editorOverlay:RefreshFromSource(source or "workspace_refresh")
-        if refreshed == true then
-            inspector:SetModels(workspace.adapter, workspace.adapter:GetAnchorModel())
-            inspector:SetEnabled(workspace.adapter:GetMode() ~= "none")
+        source = tostring(source or "workspace_refresh")
+        local refreshed, refreshErr = editorOverlay:RefreshFromSource(source)
+        if refreshed ~= true then return false, refreshErr end
+        RefreshInspectorBinding()
+        if sessionModel ~= nil then
+            local sessionOk, sessionErr = sessionModel:RefreshWorking("workspace_source:" .. source)
+            if sessionOk ~= true then return false, sessionErr end
         end
-        return refreshed, refreshErr
+        return true, nil
     end
     workspace.GetSnapshot = function()
         return {
-            kind = workspace.kind, id = id, responsive = root:GetResponsiveSnapshot(),
-            editor = editorOverlay:GetSnapshot(), inspector = inspector:GetSnapshot(),
+            kind = workspace.kind, id = id, contractVersion = tonumber(RSUI.LayoutEditorWorkspaceContractVersion) or 0,
+            responsive = root:GetResponsiveSnapshot(), editor = editorOverlay:GetSnapshot(), inspector = inspector:GetSnapshot(),
+            history = historyModel and historyModel:GetSnapshot() or nil,
+            session = sessionModel and sessionModel:GetCommandSnapshot() or nil,
+            commands = commandBar and commandBar:GetSnapshot() or nil,
         }
     end
+    workspace.Release = function()
+        if workspace.released == true then return false end
+        workspace.released = true
+        if root ~= nil and type(root.Release) == "function" and root.released ~= true then root:Release() end
+        ReleaseModels()
+        return true
+    end
+
+    -- The returned workspace is a semantic facade, while root is the actual
+    -- component lifetime owner. Hook root teardown so callers that release only
+    -- the component tree cannot leak Session/History listeners or model state.
+    local BaseRootRelease = root.Release
+    function root:Release()
+        if self.released == true then return 0 end
+        local count = BaseRootRelease(self)
+        if workspace ~= nil then workspace.released = true end
+        ReleaseModels()
+        return count
+    end
+
     RSUI.metrics.layoutEditorWorkspacesCreated = (tonumber(RSUI.metrics.layoutEditorWorkspacesCreated) or 0) + 1
+    RSUI.metrics.layoutEditorWorkspaceHistoryBindings = (tonumber(RSUI.metrics.layoutEditorWorkspaceHistoryBindings) or 0) + 1
+    if sessionModel ~= nil then
+        RSUI.metrics.layoutEditorWorkspaceSessionBindings = (tonumber(RSUI.metrics.layoutEditorWorkspaceSessionBindings) or 0) + 1
+    end
     return workspace
 end
 
@@ -545,6 +755,8 @@ function T:GetSnapshot()
     }
 end
 
+RSUI.LayoutEditorWorkspaceContractVersion = 2
+RSUI.LayoutEditorWorkspaceSessionBindingContractVersion = 1
 RSUI.WorkspaceTemplates = T
 RSUI.WorkspaceTemplateContractVersion = T.contractVersion
 

@@ -274,17 +274,14 @@ local function BlacklistEntryCount(config)
 end
 
 local function MutateBlacklist(feature, reason, mutator)
-    local before = Copy(feature.State.blacklist)
-    local callOk, result, changedOrError = pcall(mutator, feature.State.blacklist)
-    if callOk ~= true then return false, tostring(result) end
-    if result ~= true then return false, tostring(changedOrError or "黑名单修改失败") end
-    if changedOrError ~= true then return true end
-    local markCallOk, marked, markErr = pcall(P.MarkDirty, P, feature.storeId, 300, reason)
-    if markCallOk ~= true or marked ~= true then
-        feature.State.blacklist = before
-        return false, "黑名单未保存，已回滚：" .. tostring(markCallOk and (markErr or "store write rejected") or marked)
-    end
-    return true
+    if type(P.MutateStore) ~= "function" then return false, "黑名单持久化事务不可用" end
+    local marked, mutationErr, changed = P:MutateStore(feature.storeId, function()
+        local result, changedOrError = mutator(feature.State.blacklist)
+        if result ~= true then return false, tostring(changedOrError or "黑名单修改失败") end
+        return true, nil, changedOrError == true
+    end, { delayMs = 300, reason = tostring(reason or "blacklist_changed") })
+    if marked ~= true then return false, tostring(mutationErr or "黑名单未保存，已回滚") end
+    return true, nil, changed
 end
 
 local function ReadItemField(info, keys, normalizer)
@@ -314,10 +311,6 @@ local function ReadMoveSource(scope, slot)
         firstArg = slot
     end
     return Call(capability, object, method, firstArg)
-end
-
-local function ReadDepositSource(slot)
-    return Call("X2Bag:GetBagItemInfo", BagApi, "GetBagItemInfo", 0, slot)
 end
 
 local function MapContains(map, key)
@@ -350,7 +343,7 @@ local function GuardedMove(feature, sourceScope, blacklistScope, capability, obj
     if sourceSlot == nil then return false, slotErr end
     local callOk, item, readErr
     if sourceScope == "bag" then
-        callOk, item, readErr = ReadDepositSource(sourceSlot)
+        callOk, item, readErr = Call("X2Bag:GetBagItemInfo", BagApi, "GetBagItemInfo", 0, sourceSlot)
     elseif sourceScope == "bank" or sourceScope == "coffer" then
         callOk, item, readErr = ReadMoveSource(sourceScope, sourceSlot)
     else
@@ -394,14 +387,10 @@ local function NormalizeBatchLimit(value)
     return math.min(BATCH_MAX_MOVES, math.floor(n))
 end
 
-local function NormalizeBatchCategory(value)
-    return NormalizeCategory(value)
-end
-
 local function ApplyBagState(value, state)
     ApplyBlacklistState(value, state)
     local source = type(value) == "table" and value or {}
-    state.batchCategory = NormalizeBatchCategory(source.batchCategory)
+    state.batchCategory = NormalizeCategory(source.batchCategory)
     state.batchTarget = NormalizeScope(source.batchTarget) or "bank"
     state.batchLimit = NormalizeBatchLimit(source.batchLimit) or BATCH_DEFAULT_LIMIT
     state.batch = { status = "idle", moved = 0, skipped = 0, queued = 0, error = nil }
@@ -444,7 +433,7 @@ end
 local PersistStateMutation
 
 local function SetBatchConfig(feature, category, target, limit)
-    category, target, limit = NormalizeBatchCategory(category), NormalizeScope(target), NormalizeBatchLimit(limit)
+    category, target, limit = NormalizeCategory(category), NormalizeScope(target), NormalizeBatchLimit(limit)
     if category == nil or target == nil or limit == nil then return false, "批量设置无效" end
     return PersistStateMutation(feature, "bag_category_batch_settings", function(state)
         state.batchCategory, state.batchTarget, state.batchLimit = category, target, limit
@@ -453,7 +442,7 @@ local function SetBatchConfig(feature, category, target, limit)
 end
 
 local function SetBatchCategory(feature, category)
-    category = NormalizeBatchCategory(category)
+    category = NormalizeCategory(category)
     if category == nil then return false, "请选择有效的物品类别" end
     return PersistStateMutation(feature, "bag_category_batch_category", function(state) state.batchCategory = category; return true end)
 end
@@ -525,7 +514,7 @@ local function BagIdentitySet(scope)
     return set,rows,0,nil
 end
 
-local function StartBagQuick(feature, direction)
+local function BeginBagQuick(feature, direction)
     if BagBatchRunning(feature) then return false,"类别批量整理正在运行，请先停止" end
     if BagQuickRunning(feature) then return false,"快捷取放已经在运行，请先停止" end
     local bagWindow=ReadBagWindowContext(); local storage=CurrentStorageContext()
@@ -613,6 +602,21 @@ local function RefreshBagQuickOverlay(feature)
     return true
 end
 
+local function StartBagQuick(feature, direction)
+    if BagBatchRunning(feature) then return false,"类别批量整理正在运行，请先停止" end
+    if BagQuickRunning(feature) then return false,"快捷取放已经在运行，请先停止" end
+    local ok, err = BeginBagQuick(feature, direction)
+    if ok ~= true then
+        -- Same visibility contract as BatchMove: overlay/status text must show
+        -- why the quick action refused to start instead of failing silently.
+        feature._quickOverlay = type(feature._quickOverlay) == "table" and feature._quickOverlay or {}
+        feature._quickOverlay.status = tostring(err or "失败")
+        feature._quickOverlay.error = tostring(err or "失败")
+        if type(PublishBagOverlay) == "function" then PublishBagOverlay(feature, "bag_quick_preflight_stop") end
+    end
+    return ok, err
+end
+
 local function StartBagQuickObserver(feature)
     feature._quickOverlay=feature._quickOverlay or { visible=false,status="等待仓库/箱子",moved=0,queued=0 }
     RefreshBagQuickOverlay(feature)
@@ -632,10 +636,8 @@ local function StopBagQuickAll(feature, reason)
     return true
 end
 
-local function BatchMove(feature, target, category, requestedLimit)
-    if BagQuickRunning(feature) then return false, "快捷取放正在运行，请先停止" end
-    if BagBatchRunning(feature) then return false, "类别批量整理已经在运行，请先停止" end
-    category, requestedLimit = NormalizeBatchCategory(category), NormalizeBatchLimit(requestedLimit)
+local function BeginBatchMove(feature, target, category, requestedLimit)
+    category, requestedLimit = NormalizeCategory(category), NormalizeBatchLimit(requestedLimit)
     if category == nil then return false, "请选择有效的物品类别" end
     if requestedLimit == nil then return false, "批量上限必须是 1-40 的整数" end
     local targetObject, targetCapMethod, targetReadCapability, targetApi
@@ -721,6 +723,22 @@ local function BatchMove(feature, target, category, requestedLimit)
     return true, #queue
 end
 
+local function BatchMove(feature, target, category, requestedLimit)
+    if BagQuickRunning(feature) then return false, "快捷取放正在运行，请先停止" end
+    if BagBatchRunning(feature) then return false, "类别批量整理已经在运行，请先停止" end
+    local ok, err = BeginBatchMove(feature, target, category, requestedLimit)
+    if ok ~= true then
+        -- Preflight rejections must stay visible: without this record the page
+        -- status text kept showing the idle "等待操作" line, which read as a
+        -- dead button (CURRENT_REBUILD_STATUS §9.3 bag regression).
+        feature.State.batch = { status = "stopped", moved = 0, skipped = 0, queued = 0, error = err }
+        if type(feature.Authority) == "table" and type(feature.Authority.Refresh) == "function" then
+            feature.Authority:Refresh("batch_preflight_stop")
+        end
+    end
+    return ok, err
+end
+
 local function RestoreState(state, snapshot)
     for key in pairs(state) do state[key] = nil end
     for key, value in pairs(type(snapshot) == "table" and snapshot or {}) do state[key] = Copy(value) end
@@ -728,13 +746,10 @@ end
 
 PersistStateMutation = function(feature, reason, mutator)
     if type(feature) ~= "table" or type(feature.State) ~= "table" or type(mutator) ~= "function" then return false, "持久化事务参数无效" end
-    local before = Copy(feature.State)
-    local callOk, mutationOk, mutationErr = pcall(mutator, feature.State)
-    if callOk ~= true then RestoreState(feature.State, before); return false, tostring(mutationOk) end
-    if mutationOk == false then RestoreState(feature.State, before); return false, mutationErr or "状态修改被拒绝" end
-    local marked, markErr = P:MarkDirty(feature.storeId, 300, tostring(reason or "feature_mutation"))
-    if marked ~= true then RestoreState(feature.State, before); return false, markErr or "配置保存意图登记失败" end
-    return true, mutationErr
+    if type(P.MutateStore) ~= "function" then return false, "Persistence mutation transaction unavailable" end
+    return P:MutateStore(feature.storeId, function()
+        return mutator(feature.State)
+    end, { delayMs = 300, reason = tostring(reason or "feature_mutation") })
 end
 
 local function PersistentState(state, defaults)
@@ -1870,15 +1885,12 @@ local function CraftProjection(feature)
 end
 
 local function CraftPersist(feature, reason, mutator)
-    local before = Copy(feature.State)
-    local ok, err = pcall(mutator)
-    local function restore()
-        for key in pairs(feature.State) do feature.State[key] = nil end
-        for key, value in pairs(before) do feature.State[key] = value end
-    end
-    if ok ~= true then restore(); return false, tostring(err) end
-    local markCallOk, marked, markError = pcall(P.MarkDirty, P, feature.storeId, 300, reason)
-    if markCallOk ~= true or marked ~= true then restore(); return false, "制作上下文未保存，已回滚：" .. tostring(markCallOk and (markError or marked) or marked) end
+    if type(P.MutateStore) ~= "function" then return false, "制作上下文持久化事务不可用" end
+    local marked, markErr = P:MutateStore(feature.storeId, function()
+        mutator()
+        return true
+    end, { delayMs = 300, reason = tostring(reason or "craft_changed") })
+    if marked ~= true then return false, "制作上下文未保存，已回滚：" .. tostring(markErr or "store write rejected") end
     return feature:Refresh(reason)
 end
 
@@ -2113,9 +2125,22 @@ local function AuctionQueryReconcile(feature,before,after)
             end
         end)
         if ok~=true then return false,"拍卖查询结果订阅失败" end
+        if type(S.Events.SubscribeInternal)=="function" then
+            -- Lowest-price quotes complete asynchronously on the shared queue;
+            -- without this edge the result would never reach the projection.
+            S.Events:SubscribeInternal("v3.price_quote.completed",feature,function()
+                if feature.enabled==true and (tonumber(feature.consumerCount) or 0)>0 then
+                    return feature.Authority:Refresh("price_quote_completed")
+                end
+            end)
+            feature.PriceQuoteSubscribed=true
+        end
         feature.AuctionQuerySubscribed=true
-    elseif a>0 and b<=0 and feature.AuctionQuerySubscribed==true and S.Events~=nil and type(S.Events.UnsubscribeInternal)=="function" then
+    elseif a>0 and b<=0 and feature.AuctionQuerySubscribed==true and S.Events~=nil then
         S.Events:UnsubscribeInternal("v3.auction_query.updated",feature); feature.AuctionQuerySubscribed=false
+        if feature.PriceQuoteSubscribed==true and type(S.Events.UnsubscribeInternal)=="function" then
+            S.Events:UnsubscribeInternal("v3.price_quote.completed",feature); feature.PriceQuoteSubscribed=false
+        end
     end
     return true
 end
@@ -2148,10 +2173,18 @@ local function AuctionRows(feature,includeFavorites)
 end
 local function AuctionProjection(feature)
     local snapshot=AuctionSnapshot(feature)
+    -- Lowest-price quote result (explicit + async via PriceQuoteQueueV3). The
+    -- queue is the single authority; this only mirrors its snapshot for the
+    -- page, never issues server queries.
+    local quote=S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
+    local quoteSnapshot=type(quote)=="table" and type(quote.GetSnapshot)=="function" and quote:GetSnapshot(feature.Id) or nil
     return { keyword=feature.State.keyword,favoriteCount=#(feature.State.favorites or {}),favoriteMax=AUCTION_FAVORITE_MAX,
         exactMatch=feature.State.exactMatch==true,resultLimit=feature.State.resultLimit,
         searchStatus=snapshot.status or feature.State.searchStatus or "idle",resultStatus=snapshot.status or "idle",
-        resultCount=tonumber(snapshot.count) or 0,queryError=snapshot.error,queryContract=snapshot.contract }
+        resultCount=tonumber(snapshot.count) or 0,queryError=snapshot.error,queryContract=snapshot.contract,
+        quoteStatus=quoteSnapshot and quoteSnapshot.status or "idle",
+        quotePrice=quoteSnapshot and tonumber(quoteSnapshot.price) or nil,
+        quoteError=quoteSnapshot and quoteSnapshot.error or nil }
 end
 local function AuctionSettingsCommands()
     return {

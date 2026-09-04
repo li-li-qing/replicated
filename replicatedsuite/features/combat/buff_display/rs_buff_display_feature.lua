@@ -727,7 +727,11 @@ function F:GetTrackedHeadProjection(scope)
     scope = tostring(scope or "player")
     if scope ~= "player" and scope ~= "target" then return {} end
     local settings = Settings()
-    local maxIcons = math.max(1, math.min(12, math.floor(tonumber(settings.headMaxIcons) or 8)))
+    local buffs = type(settings.components) == "table" and settings.components.buffs or nil
+    buffs = type(buffs) == "table" and buffs or {}
+    local perRow = math.max(1, math.min(16, math.floor(tonumber(buffs.maxPerRow) or 8)))
+    local maxRows = math.max(1, math.min(4, math.floor(tonumber(buffs.maxRows) or 2)))
+    local maxIcons = math.min(64, perRow * maxRows)
     local out = {}
     for _, row in ipairs(self.projections[scope] or {}) do
         if row.tracked == true and row.category ~= "debuff" then
@@ -1009,6 +1013,13 @@ function F:GetWidgetWindowState()
 end
 function F:SetWidgetWindowState(value, reason)
     if type(value) ~= "table" or type(self.State) ~= "table" then return false, "buff display widget window state unavailable" end
+    -- FloatingSurface persists in a second callback after setState(). Preflight
+    -- here guarantees that callback can never be the first operation against a
+    -- cold Store, avoiding mutate-before-load state loss.
+    if S.Persistence ~= nil and type(S.Persistence.PrepareWrite) == "function" then
+        local prepared, prepareErr = S.Persistence:PrepareWrite(self.StoreId)
+        if prepared ~= true then return false, prepareErr or "状态显示悬浮窗配置尚未安全读取" end
+    end
     local floating = S.RSUI and S.RSUI.FloatingSurface or nil
     local policy = { defaultWidth = 430, defaultHeight = 300, minWidth = 180, minHeight = 100,
         defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 }
@@ -1018,10 +1029,11 @@ function F:SetWidgetWindowState(value, reason)
 end
 function F:SetWidgetVisible(value, reason)
     if self.State == nil then return false, "状态显示设置不可用" end
-    local before = self.State.widgetVisible == true
-    self.State.widgetVisible = value == true
-    local ok, err = self:MarkStoreDirty(250, "widget_" .. tostring(reason or "visibility"))
-    if ok ~= true then self.State.widgetVisible = before; return false, err or "状态显示显隐保存失败" end
+    local ok, err = self:MutateStore(function()
+        self.State.widgetVisible = value == true
+        return true
+    end, 250, "widget_" .. tostring(reason or "visibility"))
+    if ok ~= true then return false, err or "状态显示显隐保存失败" end
     return true
 end
 
@@ -1062,35 +1074,37 @@ function F:ImportTrackedIds(text, category, mode)
         local suffix = #parsed.errors > 0 and ("；非法 " .. tostring(#parsed.errors) .. " 项") or ""
         return false, "没有可导入的 Buff ID" .. suffix
     end
-    local before = S.Utils.DeepCopy(self.State.settings)
-    local settings = self.State.settings
-    local targetCategories = {}
-    if category == "debuff" then targetCategories[1] = "debuff"
-    elseif category == "buff" then targetCategories[1] = "buff"
-    else targetCategories[1], targetCategories[2] = "buff", "debuff" end
-    for _, bucket in ipairs(targetCategories) do
-        local existing = mode == "overwrite" and {} or S.Utils.DeepCopy(settings.tracked[bucket] or {})
-        local seen = {}
-        for _, id in ipairs(existing) do seen[id] = true end
-        for _, id in ipairs(parsed.ids) do
-            local bucketCategory = bucket
-            if category == "auto" or category == nil then
-                local classification = Classification()
-                if classification ~= nil and type(classification.ClassifyId) == "function" then
-                    local kind = classification:ClassifyId(id, settings.classification)
-                    if kind ~= nil and kind.category == "debuff" then bucketCategory = "debuff" else bucketCategory = "buff" end
+    local marked, markErr = self:MutateStore(function()
+        local settings = self.State.settings
+        local targetCategories = {}
+        if category == "debuff" then targetCategories[1] = "debuff"
+        elseif category == "buff" then targetCategories[1] = "buff"
+        else targetCategories[1], targetCategories[2] = "buff", "debuff" end
+        for _, bucket in ipairs(targetCategories) do
+            local existing = mode == "overwrite" and {} or S.Utils.DeepCopy(settings.tracked[bucket] or {})
+            local seen = {}
+            for _, id in ipairs(existing) do seen[id] = true end
+            for _, id in ipairs(parsed.ids) do
+                local bucketCategory = bucket
+                if category == "auto" or category == nil then
+                    local classification = Classification()
+                    if classification ~= nil and type(classification.ClassifyId) == "function" then
+                        local kind = classification:ClassifyId(id, settings.classification)
+                        if kind ~= nil and kind.category == "debuff" then bucketCategory = "debuff" else bucketCategory = "buff" end
+                    end
+                end
+                if bucketCategory == bucket and seen[id] ~= true and #existing < 1024 then
+                    seen[id] = true
+                    existing[#existing + 1] = id
                 end
             end
-            if bucketCategory == bucket and seen[id] ~= true and #existing < 1024 then
-                seen[id] = true
-                existing[#existing + 1] = id
-            end
+            table.sort(existing)
+            settings.tracked[bucket] = existing
         end
-        table.sort(existing)
-        settings.tracked[bucket] = existing
-    end
-    local marked, markErr = self:MarkStoreDirty(250, "import_tracked")
-    if marked ~= true then self.State.settings = before; return false, markErr or "追踪 ID 导入保存失败" end
+        return true
+    end, 250, "import_tracked")
+    if marked ~= true then return false, markErr or "追踪 ID 导入保存失败" end
+    local settings = self.State.settings
     self.trackedIndex = self:BuildTrackedIndex(settings)
     self:SyncTrackedProjectionFlags()
     Publish("v3.buff_display.settings", "tracked")
@@ -1116,7 +1130,7 @@ function F:ExportAll()
             refreshMs = settings.refreshMs, headEnabled = settings.headEnabled ~= false,
             headShowAll = settings.headShowAll == true,
             headPlayer = settings.headPlayer ~= false, headTarget = settings.headTarget ~= false,
-            headRefreshMs = settings.headRefreshMs, headMaxIcons = settings.headMaxIcons,
+            headRefreshMs = settings.headRefreshMs,
             headShowStacks = settings.headShowStacks ~= false, headShowTime = settings.headShowTime ~= false,
         },
     }
@@ -1145,10 +1159,21 @@ function F:SerializeExport(data)
             lines[#lines + 1] = "COMPONENT=" .. key .. ":size:" .. tostring(component.size or 0)
             lines[#lines + 1] = "COMPONENT=" .. key .. ":fontSize:" .. tostring(component.fontSize or 0)
             lines[#lines + 1] = "COMPONENT=" .. key .. ":alpha:" .. tostring(component.alpha or 1)
+            -- Serialize component-specific geometry too. Without these fields a
+            -- full export/import silently lost row capacity/spacing and cast-bar
+            -- width/text settings even though the UI exposed them.
+            if key == "buffs" or key == "debuffs" then
+                lines[#lines + 1] = "COMPONENT=" .. key .. ":spacing:" .. tostring(component.spacing or 2)
+                lines[#lines + 1] = "COMPONENT=" .. key .. ":maxPerRow:" .. tostring(component.maxPerRow or 8)
+                lines[#lines + 1] = "COMPONENT=" .. key .. ":maxRows:" .. tostring(component.maxRows or 2)
+            elseif key == "castBar" then
+                lines[#lines + 1] = "COMPONENT=" .. key .. ":width:" .. tostring(component.width or 120)
+                lines[#lines + 1] = "COMPONENT=" .. key .. ":showText:" .. (component.showText ~= false and "1" or "0")
+            end
         end
     end
     local policy = type(data.settings) == "table" and data.settings or {}
-    for _, key in ipairs({ "refreshMs", "headRefreshMs", "headMaxIcons", "playerRows", "targetRows", "showBuffs", "showDebuffs", "showHidden", "freezeEnabled", "headEnabled", "headShowAll", "headPlayer", "headTarget", "headShowStacks", "headShowTime" }) do
+    for _, key in ipairs({ "refreshMs", "headRefreshMs", "playerRows", "targetRows", "showBuffs", "showDebuffs", "showHidden", "freezeEnabled", "headEnabled", "headShowAll", "headPlayer", "headTarget", "headShowStacks", "headShowTime" }) do
         if policy[key] ~= nil then lines[#lines + 1] = "SETTING=" .. key .. ":" .. tostring(policy[key]) end
     end
     return table.concat(lines, "\n")
@@ -1179,8 +1204,8 @@ function F:ParseImportText(text)
                         if id ~= nil and id == math.floor(id) and id > 0 then
                             if seenTracked[id] ~= true then
                                 seenTracked[id] = true
-                                if #data.tracked[bucket] < 32 then data.tracked[bucket][#data.tracked[bucket] + 1] = id
-                                else warnings[#warnings + 1] = "第 " .. tostring(index) .. " 行：单类最多 32 个，已截断" end
+                                if #data.tracked[bucket] < 1024 then data.tracked[bucket][#data.tracked[bucket] + 1] = id
+                                else warnings[#warnings + 1] = "第 " .. tostring(index) .. " 行：单类最多 1024 个，已截断" end
                             end
                         else
                             errors[#errors + 1] = "第 " .. tostring(index) .. " 行：无效 ID " .. tostring(token)
@@ -1206,8 +1231,9 @@ function F:ParseImportText(text)
                         for _, ck in ipairs(COMPONENT_KEYS) do if ck == componentKey then known = true break end end
                         if not known then errors[#errors + 1] = "第 " .. tostring(index) .. " 行：未知组件 " .. tostring(componentKey) else
                             local component = data.components[componentKey] or {}
-                            if field == "enabled" then component.enabled = rawValue == "1" or rawValue == "true"
-                            elseif field == "x" or field == "y" or field == "size" or field == "fontSize" then
+                            if field == "enabled" or field == "showText" then component[field] = rawValue == "1" or rawValue == "true"
+                            elseif field == "x" or field == "y" or field == "size" or field == "fontSize"
+                                or field == "spacing" or field == "maxPerRow" or field == "maxRows" or field == "width" then
                                 local n = tonumber(rawValue)
                                 if n == nil then errors[#errors + 1] = "第 " .. tostring(index) .. " 行：无效数值 " .. tostring(rawValue)
                                 else component[field] = math.floor(n) end
@@ -1240,62 +1266,79 @@ end
 -- replaces tracked lists entirely (policy fields always overwrite when present).
 function F:ImportAll(data, mode)
     if type(data) ~= "table" then return false, "导入数据无效" end
-    local before = S.Utils.DeepCopy(self.State.settings)
-    local settings = self.State.settings
-    local classification = Classification()
-
-    if type(data.tracked) == "table" then
-        for _, category in ipairs({ "buff", "debuff" }) do
-            local ids = type(data.tracked[category]) == "table" and data.tracked[category] or {}
-            local existing = mode == "overwrite" and {} or S.Utils.DeepCopy(settings.tracked[category] or {})
-            local seen = {}
-            for _, id in ipairs(existing) do seen[id] = true end
-            for _, id in ipairs(ids) do
-                id = math.floor(tonumber(id) or 0)
-                if id > 0 and seen[id] ~= true and #existing < 32 then seen[id] = true; existing[#existing + 1] = id end
+    local nextClassification = nil
+    local marked, markErr = self:MutateStore(function()
+        local settings = self.State.settings
+        if type(data.tracked) == "table" then
+            for _, category in ipairs({ "buff", "debuff" }) do
+                local ids = type(data.tracked[category]) == "table" and data.tracked[category] or {}
+                local existing = mode == "overwrite" and {} or S.Utils.DeepCopy(settings.tracked[category] or {})
+                local seen = {}
+                for _, id in ipairs(existing) do seen[id] = true end
+                for _, id in ipairs(ids) do
+                    id = math.floor(tonumber(id) or 0)
+                    if id > 0 and seen[id] ~= true and #existing < 1024 then seen[id] = true; existing[#existing + 1] = id end
+                end
+                table.sort(existing)
+                settings.tracked[category] = existing
             end
-            table.sort(existing)
-            settings.tracked[category] = existing
         end
-    end
-    if type(data.classification) == "table" and next(data.classification) ~= nil then
-        local merged = S.Utils.DeepCopy(settings.classification or {})
-        for id, category in pairs(data.classification) do
-            local numeric = math.floor(tonumber(id) or 0)
-            if numeric > 0 and (category == "buff" or category == "debuff") then merged[numeric] = category end
+        if type(data.classification) == "table" and next(data.classification) ~= nil then
+            local merged = S.Utils.DeepCopy(settings.classification or {})
+            for id, itemCategory in pairs(data.classification) do
+                local numeric = math.floor(tonumber(id) or 0)
+                if numeric > 0 and (itemCategory == "buff" or itemCategory == "debuff") then merged[numeric] = itemCategory end
+            end
+            settings.classification = merged
+            nextClassification = S.Utils.DeepCopy(merged)
         end
-        settings.classification = merged
-        if classification ~= nil and type(classification.ApplyOverrides) == "function" then classification:ApplyOverrides(merged) end
-    end
-    if type(data.components) == "table" then
-        for _, key in ipairs(COMPONENT_KEYS) do
-            local component = data.components[key]
-            if type(component) == "table" and next(component) ~= nil then
-                local target = settings.components[key]
-                if target ~= nil then
+        if type(data.components) == "table" then
+            for _, key in ipairs({ "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar" }) do
+                local component = data.components[key]
+                if type(component) == "table" and next(component) ~= nil then
                     for field, value in pairs(component) do
-                        if field == "enabled" then target.enabled = value ~= false
-                        elseif field == "x" or field == "y" then target[field] = math.max(-400, math.min(400, math.floor(tonumber(value) or target[field])))
-                        elseif field == "size" then target.size = math.max(0, math.min(64, math.floor(tonumber(value) or target.size)))
-                        elseif field == "fontSize" then target.fontSize = math.max(0, math.min(32, math.floor(tonumber(value) or target.fontSize)))
-                        elseif field == "alpha" then target.alpha = math.max(0.1, math.min(1, tonumber(value) or target.alpha)) end
+                        -- Import runs inside one persistence transaction. Keep
+                        -- component writes Domain-only until the transaction
+                        -- commits; publishing per-field events here would expose
+                        -- uncommitted preview state to consumers.
+                        local ok, err = self:ApplySettingRaw("components." .. key .. "." .. tostring(field), value)
+                        if ok ~= true then return false, err end
                     end
                 end
             end
         end
-    end
-    local policy = type(data.settings) == "table" and data.settings or {}
-    for key, value in pairs(policy) do
-        if key == "refreshMs" or key == "headRefreshMs" then settings[key] = math.max(1, math.min(2000, math.floor(tonumber(value) or settings[key])))
-        elseif key == "headMaxIcons" then settings.headMaxIcons = math.max(1, math.min(12, math.floor(tonumber(value) or settings.headMaxIcons)))
-        elseif key == "playerRows" or key == "targetRows" then settings[key] = math.max(1, math.min(64, math.floor(tonumber(value) or settings[key])))
-        elseif key == "showBuffs" or key == "showDebuffs" or key == "showHidden" or key == "freezeEnabled" or key == "headEnabled" or key == "headShowAll" or key == "headPlayer" or key == "headTarget" or key == "headShowStacks" or key == "headShowTime" then
-            local raw = tostring(value):lower()
-            settings[key] = raw == "1" or raw == "true"
+        local policy = type(data.settings) == "table" and data.settings or {}
+        for key, value in pairs(policy) do
+            if key == "headIconSize" then
+                local n = math.max(8, math.min(64, math.floor(tonumber(value) or 24)))
+                local okA, errA = self:ApplySettingRaw("components.buffs.size", n); if okA ~= true then return false, errA end
+                local okB, errB = self:ApplySettingRaw("components.debuffs.size", n); if okB ~= true then return false, errB end
+            elseif key == "headMaxIcons" then
+                local n = math.max(1, math.min(16, math.floor(tonumber(value) or 8)))
+                local okA, errA = self:ApplySettingRaw("components.buffs.maxPerRow", n); if okA ~= true then return false, errA end
+                local okB, errB = self:ApplySettingRaw("components.debuffs.maxPerRow", n); if okB ~= true then return false, errB end
+            else
+                local normalized = value
+                if key == "showBuffs" or key == "showDebuffs" or key == "showHidden"
+                    or key == "freezeEnabled" or key == "headEnabled" or key == "headShowAll"
+                    or key == "headPlayer" or key == "headTarget" or key == "headShowStacks"
+                    or key == "headShowTime" then
+                    local raw = tostring(value):lower()
+                    normalized = raw == "1" or raw == "true"
+                end
+                local ok, err = self:ApplySettingRaw(key, normalized)
+                if ok ~= true and tostring(err or ""):find("unknown buff display setting", 1, true) == nil then return false, err end
+            end
         end
+        return true
+    end, 250, "import_all")
+    if marked ~= true then return false, markErr or "完整导入保存失败" end
+
+    local classification = Classification()
+    if nextClassification ~= nil and classification ~= nil and type(classification.ApplyOverrides) == "function" then
+        classification:ApplyOverrides(nextClassification)
     end
-    local marked, markErr = self:MarkStoreDirty(250, "import_all")
-    if marked ~= true then self.State.settings = before; return false, markErr or "完整导入保存失败" end
+    local settings = self.State.settings
     self.trackedIndex = self:BuildTrackedIndex(settings)
     self:SyncTrackedProjectionFlags()
     self:ReconcileLanes()
@@ -1363,18 +1406,29 @@ F.Commands = {
         end
         return true, table.concat(lines, " | ")
     end,
-    ResetAllSettings = function()
-        if type(F.ResetSettings) ~= "function" then return false, "重置入口不可用" end
-        F:ResetSettings()
-        F.trackedIndex = F:BuildTrackedIndex(Settings())
-        F:ClearFrozenRows()
+    ResetLayoutSettings = function()
+        if type(F.ResetLayoutSettings) ~= "function" then return false, "布局重置入口不可用" end
+        local marked, markErr = F:MutateStore(function()
+            local ok, err = F:ResetLayoutSettings()
+            if ok ~= true then return false, err or "布局重置失败" end
+            return true
+        end, 250, "reset_layout_settings")
+        if marked ~= true then
+            F:ReconcileLanes()
+            F:RefreshScope("player")
+            F:RefreshScope("target")
+            return false, markErr or "布局重置保存失败"
+        end
         F:ReconcileLanes()
         F:RefreshScope("player")
         F:RefreshScope("target")
-        -- Persist immediately so a reload cannot resurrect the old layout.
-        local marked, markErr = F:MarkStoreDirty(250, "reset_settings")
-        if marked ~= true then return false, markErr or "重置已生效但保存失败" end
+        Publish("v3.buff_display.settings", "layout_reset")
         return true
+    end,
+    -- Backward-compatible command name; semantics are intentionally narrowed to
+    -- Layout Reset so old UI/callers can no longer erase tracked/classification.
+    ResetAllSettings = function()
+        return F.Commands:ResetLayoutSettings()
     end,
     SetSetting = function(_, key, value)
         local ok, err = F:SetSettingValue(key, value)
@@ -1416,6 +1470,20 @@ F.Commands = {
     end,
     SetComponentField = function(_, componentKey, field, value)
         return F:SetComponentField(componentKey, field, value)
+    end,
+    GetLayoutSettingsSnapshot = function()
+        return type(F.GetLayoutSettingsSnapshot) == "function" and F:GetLayoutSettingsSnapshot() or {}
+    end,
+    GetDefaultLayoutSettingsSnapshot = function()
+        return type(F.GetDefaultLayoutSettingsSnapshot) == "function" and F:GetDefaultLayoutSettingsSnapshot() or {}
+    end,
+    CanPersistLayoutSettings = function()
+        if type(F.CanPersistLayoutSettings) ~= "function" then return false, "HUD 布局持久化入口不可用" end
+        return F:CanPersistLayoutSettings()
+    end,
+    PersistLayoutSettingsSnapshot = function(_, snapshot, reason)
+        if type(F.PersistLayoutSettingsSnapshot) ~= "function" then return false, "HUD 布局持久化入口不可用" end
+        return F:PersistLayoutSettingsSnapshot(snapshot, reason)
     end,
     SetClassification = function(_, id, category)
         local ok, err = F:SetClassification(id, category)

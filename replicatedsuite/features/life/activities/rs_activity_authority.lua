@@ -498,23 +498,20 @@ function A:HideEvent(key)
     if row == nil or row.zoneState == true then return false, "live zone rows cannot be hidden" end
     local hiddenKey = HiddenKey(row)
     if hiddenKey == "" then return false, "event key unavailable" end
-    Feature.State.hiddenEvents = type(Feature.State.hiddenEvents) == "table" and Feature.State.hiddenEvents or {}
-    local previous = Feature.State.hiddenEvents[hiddenKey]
-    Feature.State.hiddenEvents[hiddenKey] = true
-    if type(Feature.MarkStoreDirty) == "function" then
-        local marked, markErr = Feature:MarkStoreDirty(200, "hide_event")
-        if marked ~= true then Feature.State.hiddenEvents[hiddenKey] = previous; return false, markErr or "隐藏活动未保存，已回滚" end
-    end
+    if type(Feature.MutateStore) ~= "function" then return false, "activity persistence transaction unavailable" end
+    local marked, markErr = Feature:MutateStore(function()
+        Feature.State.hiddenEvents = type(Feature.State.hiddenEvents) == "table" and Feature.State.hiddenEvents or {}
+        Feature.State.hiddenEvents[hiddenKey] = true
+        return true
+    end, 200, "hide_event")
+    if marked ~= true then return false, markErr or "隐藏活动未保存，已回滚" end
     return self:Refresh("hide_event")
 end
 
 function A:RestoreHiddenEvents()
-    local previous = S.Utils.DeepCopy(type(Feature.State.hiddenEvents) == "table" and Feature.State.hiddenEvents or {})
-    Feature.State.hiddenEvents = {}
-    if type(Feature.MarkStoreDirty) == "function" then
-        local marked, markErr = Feature:MarkStoreDirty(200, "restore_events")
-        if marked ~= true then Feature.State.hiddenEvents = previous; return false, markErr or "恢复活动未保存，已回滚" end
-    end
+    if type(Feature.MutateStore) ~= "function" then return false, "activity persistence transaction unavailable" end
+    local marked, markErr = Feature:MutateStore(function() Feature.State.hiddenEvents = {}; return true end, 200, "restore_events")
+    if marked ~= true then return false, markErr or "恢复活动未保存，已回滚" end
     return self:Refresh("restore_hidden")
 end
 

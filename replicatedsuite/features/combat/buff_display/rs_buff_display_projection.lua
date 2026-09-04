@@ -127,7 +127,13 @@ end
 local function BoundedTracked(rows, settings, category, trackedIndex)
     rows = type(rows) == "table" and rows or {}
     trackedIndex = type(trackedIndex) == "table" and trackedIndex or BuildTrackedIndex(settings)
-    local maxIcons = math.max(1, math.min(12, math.floor(tonumber(settings.headMaxIcons) or 8)))
+    local component = type(settings.components) == "table" and settings.components[category == "debuff" and "debuffs" or "buffs"] or nil
+    component = type(component) == "table" and component or {}
+    -- Canonical capacity = the visible component's row geometry. No parallel
+    -- headMaxIcons authority: renderer and projection now consume the same data.
+    local perRow = math.max(1, math.min(16, math.floor(tonumber(component.maxPerRow) or 8)))
+    local maxRows = math.max(1, math.min(4, math.floor(tonumber(component.maxRows) or 2)))
+    local maxIcons = math.min(64, perRow * maxRows)
     local out = {}
     local showAll = settings.headShowAll == true
     for _, row in ipairs(rows) do
@@ -202,4 +208,4 @@ function F.ProjectPlates(laneData, settings)
     return out
 end
 
-F.ProjectPlatesContractVersion = 3
+F.ProjectPlatesContractVersion = 4

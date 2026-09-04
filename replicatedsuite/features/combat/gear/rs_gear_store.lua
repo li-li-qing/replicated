@@ -258,7 +258,7 @@ function F:SavePayload(storageId, payload)
     if id == nil then return false, regErr end
     local previous = DeepCopy(self.Payloads[storageId])
     self.Payloads[storageId] = NormalizePayload(payload)
-    local ok, err = P:SaveStore(id, { consumeDirty = true })
+    local ok, err = P:SaveStore(id, { consumeDirty = true, allowUnloadedWrite = true, reason = "gear_payload_replace" })
     if ok ~= true then self.Payloads[storageId] = previous; return false, err end
     return true
 end
@@ -272,7 +272,7 @@ function F:ClearPayload(storageId)
 end
 
 function F:EnsureStoreLoaded()
-    if self.StoreLoaded == true then return true end
+    if type(P.IsStoreLoaded) == "function" and P:IsStoreLoaded(INDEX_STORE) == true then self.StoreLoaded = true; return true end
     local status, _, err = P:LoadStore(INDEX_STORE)
     if status ~= true and status ~= "empty" then return false, err or tostring(status or "读取换装索引失败") end
     if status == "empty" then ApplyIndex(nil) end
@@ -281,11 +281,25 @@ function F:EnsureStoreLoaded()
 end
 
 function F:MarkIndexDirty(delayMs, reason)
-    self.State.revision = math.max(0, math.floor(tonumber(self.State.revision) or 0)) + 1
-    return P:MarkDirty(INDEX_STORE, tonumber(delayMs) or 300, reason or "gear_index_changed")
+    local previousRevision = math.max(0, math.floor(tonumber(self.State.revision) or 0))
+    self.State.revision = previousRevision + 1
+    local marked, markErr = P:MarkDirty(INDEX_STORE, tonumber(delayMs) or 300, reason or "gear_index_changed")
+    if marked ~= true then self.State.revision = previousRevision end
+    return marked, markErr
+end
+
+function F:MutateIndex(mutator, delayMs, reason, durable)
+    return P:MutateStore(INDEX_STORE, function()
+        local ok, err = mutator()
+        if ok == false then return false, err end
+        self.State.revision = math.max(0, math.floor(tonumber(self.State.revision) or 0)) + 1
+        return true
+    end, { delayMs = tonumber(delayMs) or 300, reason = tostring(reason or "gear_index_changed"), durable = durable == true })
 end
 
 function F:SaveIndexNow(reason)
+    local loaded, loadErr = self:EnsureStoreLoaded()
+    if loaded ~= true then return false, loadErr or "读取换装索引失败" end
     local previous = math.max(0, math.floor(tonumber(self.State.revision) or 0))
     self.State.revision = previous + 1
     local ok, err = P:SaveStore(INDEX_STORE, { consumeDirty = true, reason = reason })

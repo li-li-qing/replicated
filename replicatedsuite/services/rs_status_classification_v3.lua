@@ -24,6 +24,10 @@ S.Services = S.Services or {}
 
 local Classification = {
     version = 1,
+    -- Presentation-free shared service. Consumers receive pure data only; the
+    -- service never creates widgets or owns UI state. FoundationGate requires
+    -- every registered Service to declare this boundary explicitly.
+    presentationBoundary = "service_only",
     registry = {},      -- [id] = { category, detectionSource, name, source }
     overrides = {},     -- [id] = "buff"|"debuff"   (user manual corrections)
     seedCount = 0,

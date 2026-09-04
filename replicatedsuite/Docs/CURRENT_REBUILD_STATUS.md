@@ -10,19 +10,20 @@
 | Architecture | V3-only / `v3_rebuild` |
 | Runtime Addon | `replicatedsuite/` |
 | Legacy / Professional / `globals/` | 已物理删除，Active dependency = 0 |
-| BuildTag | `v3-m1.16.0.18.74-ui-layout-editor-workspace-foundation` |
-| Active TOC Lua | 207 |
-| Active / All Lua | 207 / 207 |
+| BuildTag | `v3-m1.16.0.18.82-local-continuation-mutation-tx` |
+| Active TOC Lua | 210 |
+| Active / All Lua | 210 / 210 |
 | Foundation Audit | PASS |
 | Product Capability Matrix | 125 条：77 IMPLEMENTED / 35 PARTIAL / 2 TODO / 11 SPECIFIC_RUNTIME_BLOCKED |
 | RU Fresh Reload | PENDING |
+| Current UI Gate | Buff Display `UI_IMPLEMENTING` · `.18.80` RU 打开页崩溃已定位并热修，需 Fresh Reload 复验；Persistence Reliability v2 Foundation 已落地 |
 
 当前 Foundation 结构指标：
 
 ```text
-toc=207
-activeLua=207
-allLua=207
+toc=210
+activeLua=210
+allLua=210
 globals=0
 presentation=0
 rawNative=0
@@ -63,7 +64,10 @@ auctionEventOwners=0
 - Layout Editor Gesture v2：手势 Begin 动态读取单选/多选 transform constraints；Preview/Commit 可以 strict reject；sampling/capture 失败会同步 Abort Adapter Session，不留半事务。
 - Transform Inspector v2：改为一个 rectModel + 可选 anchorModel；同一个 Inspector 在单选显示 Anchor/Pivot，在多选折叠 Anchor/Pivot，不建立 Group Anchor。
 - LayoutEditorOverlay v1：组合 SelectionOverlay/GuideOverlay/Gesture/PreviewAdapter/SnapModel；不拥有新的 Pointer Capture、RectTransform 或 Snap Resolver，非 viewport 坐标空间必须显式 pointerToLocal。
-- WorkspaceTemplates v3 / LayoutEditorWorkspace v1：PreviewHost 位于 Editor Overlay 下层；Wide inline 与 Compact Drawer 使用同一个 Responsive TransformInspector 实例；Toolbar 明示 `左上(0,0) · X→右 · Y→下`。
+- WorkspaceTemplates v4 / LayoutEditorWorkspace v2：在原 `PreviewHost + LayoutEditorOverlay + SAME TransformInspector` 稳定宿主上接入 Workspace-owned History、可选完整 LayoutEditSession 与 EditorCommandBar；Toolbar 继续明示 `左上(0,0) · X→右 · Y→下`。History replay 只从 Adapter 刷 Presentation；Reset/Revert 只在显式 Session 命令边界重新读取 Feature Working；无第二份 dirty/can* 状态。
+- LayoutEditHistoryModel v1 + Observable Contract v1：stable-key 可逆命令只在成功 Commit 后记录；Preview/Drag Pulse 不入历史；默认 64 / hard cap 256；Undo/Redo 外部 apply 被拒绝时 cursor 不移动并执行 best-effort rollback；Anchor/Pivot 使用最小完整状态快照而非仅 Rect；成功 Record/Undo/Redo/Clear 通过 Subscribe/Unsubscribe 事件通知消费者，不新增轮询。
+- LayoutEditSessionModel v1：统一四态 `Persisted / SessionBaseline / Working / Defaults`。`Revert` 只把 Working 恢复到 SessionBaseline；`Reset` 只把 Defaults 暂存到 Working；二者都禁止跨越 Persistence Boundary。只有 `Apply` 可以调用 caller 提供的 durable persistence callback，明确成功后才推进 Persisted/SessionBaseline；History 在 Revert/Reset/Apply 成功时形成 barrier，避免 Undo 跨语义基线。
+- EditorCommandBar v2：五个编辑命令只消费 History/Session Authority Projection；Undo/Redo 来自 History Snapshot，Revert/Reset/Apply 来自 LayoutEditSession；Busy 或 Session integrity blocked 时五个命令统一 fail-closed。Command Bar 不保存 dirty/canUndo/canApply 第二份状态，也不直接写 Persistence。
 - Pointer Contract v1：只负责事件驱动的逻辑坐标采样与 start→current delta；通用 pointer capture 明确 `false`，Native movement/sizing 继续由 Windowing 负责；
 - Focus Contract v2：Focus 能力按真实 target Native 能力判断，不再把 `setFocus` 硬编码成全局可用；
 - Input Event Fence：未获 RU 证据前，Active Runtime 禁止猜测绑定通用 `OnKeyDown / OnKeyUp / OnTextChanged`；
@@ -86,7 +90,7 @@ auctionEventOwners=0
 - **Combat Analytics**：单 `scope=all` Consumer + 独立 Metric 生命周期已实现；Encounter、Kills、Casts、Performance、Control、Utility、Aura、Mechanics 等已接入。Songcraft 精确持续时间仍取决于 RU START/STOP 覆盖。
 - **Death Review**：独立 `scope=self` 低开销链路、历史分片、单条删除/全部清除、Page/Widget/Modal 已实现；真实死亡事件字段仍需 RU 样本确认。
 - **Healer**：Recommendation、Roster、Health、Aura、Page、Head Marker、Raid Overlay 已迁 V3。当前 Raid Overlay 使用 `RaidTeam ≠ RaidPanel ≠ Calibration` 模型，Panel A/B 几何与团队绑定解耦，并支持 `auto / single / dual`。下一关键点是 RU 50/100 人覆盖层、颜色、坐标、事件刷新与保存回读实测。
-- **Buff Display**：四页签、分类追踪、头顶组件、导入导出与独立 Demand 已实现；StatusClassificationV3 为唯一分类 Authority。RU 图标、时间、目标切换、头顶 anchor / scale 仍需实机确认。
+- **Buff Display**：`.18.80` 已把兼容四页签收敛为 `追踪管理 / HUD 布局 / 导入导出` 三页签；Tracking 使用单虚拟 Table，HUD Layout 接入共享 `Element Tree + LayoutEditorWorkspace v2 + LayoutEditSession`。Working/Undo/Redo/Reset/Revert 不进入 Persistence getter，只有 Apply 才执行 durable layout write。StatusClassificationV3 仍是唯一分类 Authority。RU 图标、时间、目标切换、头顶 anchor / scale 与真实 SaveData 回读仍需 Fresh Reload。
 - **Raid Readiness / Boss Alerts / Team Tools**：安全子集已实现；未验证能力继续保持 Partial / Runtime Blocked，不使用猜测字段或禁止 API 补齐表面功能。
 - **Unit Lines / Range Assist**：`.18.61` 重新整理单位连线设置页为两列卡片，避免每线点数/大小/颜色挤在单行；Range Assist 的颜色进入永久 Store default contract，ColorField 即使客户端无色块 Drawable 也显示“颜色 + HEX”可点击文本。
 
@@ -125,7 +129,7 @@ Gate 仍为 **INCOMPLETE - CONTINUATION REQUIRED**。不得为了 Gate 变绿删
 
 本轮文档收口前的最新本地证据已经确认：
 
-- `toc.g ↔ Active Lua`：205 ↔ 205，双向 0 差异；
+- `toc.g ↔ Active Lua`：210 ↔ 210，双向 0 差异；
 - Foundation Audit：PASS，全部结构越界计数为 0；
 - `RSUI_COMPOSITE_MODEL_HARNESS PASS rows=2 treeRebuilds=4`；
 - `RSUI_TREE_TRANSACTION_HARNESS PASS contract=2 stable=1`，隐藏 duplicate 在展开阶段暴露时完整回滚；
@@ -150,17 +154,29 @@ Gate 仍为 **INCOMPLETE - CONTINUATION REQUIRED**。不得为了 Gate 变绿删
 - `RSUI_GESTURE_CANDIDATE_SKIP_HARNESS PASS candidateCalls=0`，关闭对象对齐时 Gesture Begin 不执行候选发现；
 - `RSUI_SNAP_STRICT_HARNESS PASS revision=1 grid=12 align=false`，非法 Snap 类型不产生半提交，显式 `false` 不被 Lua truthy/fallback 逻辑吞掉；
 - `RSUI_MULTI_SELECTION_TRANSFORM_HARNESS PASS min=80x40 commit=200,150,800,400`，2-item bounds、比例缩放、child minimum、single/duplicate/cap fail-closed、Commit/Cancel 全通过；
-- 全量 Lua：205/205 Parse PASS；Markdown 相对链接 0 断链；
+- `RSUI_LAYOUT_EDIT_HISTORY_HARNESS PASS cursor=1 x=1`，验证 bounded history、Undo/Redo 与失败 apply 的 rollback/cursor fence；
+- `RSUI_LAYOUT_EDITOR_HISTORY_ADAPTER_HARNESS PASS count=2 cursor=1 x=10 anchor=0`，验证 Preview/Cancel 不入历史、成功 Gesture Commit 入历史、Anchor/Pivot 可逆；
+- `RSUI_LAYOUT_EDITOR_MULTI_HISTORY_HARNESS PASS cursor=1 a=10 b=210`，验证多选 Group Commit 的 stable-key Undo/Redo；
+- `.18.76` 的 `v3_52_ui_editor_command_bar_contract` 继续验证 History observable、无 Session fail-closed、Session Projection 与 Busy/blocked fence；
+- `.18.77` 新增 `v3_53_ui_layout_edit_session_contract`：验证 Reset/Revert 不持久化、Apply durable boundary、Persistence write fence、Apply 失败不推进 Baseline、成功 Apply 建立 History barrier，以及 `SessionBaseline ≠ Persisted` 的四态投影；
+- `.18.78` 新增 `v3_54_ui_layout_editor_workspace_integration_contract`：验证 Workspace v2/v4 契约、完整/空 Session preflight 与 partial Session fail-closed；静态 Audit 同时验证 History→Adapter、Session→source refresh、Release 清理与 no-sampling/no-direct-persistence boundary；
+- `.18.78` 非 Native Workspace 集成 harness：`LAYOUT_EDITOR_WORKSPACE_HARNESS PASS adapterRefresh=3 sourceRefresh=3 persist=1 historyOnly=true partialRejected=true`，真实加载 History/Session/WorkspaceTemplates，验证 Record→Session dirty、Undo→Adapter replay、Reset/Revert 零持久化、外部 source refresh→Session dirty、Apply 唯一持久化以及 root Release 清理；
+- `LAYOUT_EDIT_SESSION_HARNESS PASS 2 30 1 2`；`LAYOUT_EDIT_SESSION_FOUR_STATE PASS 1 50`；`LAYOUT_EDIT_SESSION_FAILURE_HARNESS PASS 3 3 true`；
+- 全量 Lua：210/210 Parse PASS；Foundation Audit PASS；Markdown 相对链接 0 断链；
 - `RSUI_CONTAINER_SURFACE_HARNESS PASS created=7`，旧 `_card/_section` Native identity 保持；
 - `RSUI_POPUP_COORDINATOR_HARNESS PASS closed=b`，单 registry / CloseAll(except) / unregister snapshot 正常；
 - Product Matrix 统计可解析为 77 / 35 / 2 / 11，共 125 条；
-- 当前 BuildTag 与 `replicatedsuite.lua` 一致：`v3-m1.16.0.18.74-ui-layout-editor-workspace-foundation`。
+- 当前 BuildTag 与 `replicatedsuite.lua` 一致：`v3-m1.16.0.18.82-local-continuation-mutation-tx`。
 
 历史专项 harness、每个 M1.x 的逐轮数字与修复详情不再复制到本文，统一查 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 5.1 当前 UI Foundation 先行状态
 
-`.18.71` 继续保持 **Foundation First / 零业务 Feature 迁移**。`.18.69/.18.70` 已补 Anchor/Pivot、Snap Settings 与 TransformInspector；`.18.71` 正式增加 `MultiSelectionTransformModel v1`，把“Selection Bounds 只是 Group Projection、不能直接写回某一个 Child”变成代码契约。现在单选与多选的 Geometry Authority 已分开，下一层才允许组合 `LayoutEditorOverlay`。
+`.18.79` 已由用户“按照文档继续”确认状态显示 UI_REVIEW 的产品方向，状态正式进入 **UI_APPROVED**。本轮先执行文档规定的实现前 Authority Cleanup：统一装备左右分组与 Acceptance、Fresh Default 的 ranged=OFF、移除 `headIconSize/headMaxIcons` 双重 live Authority、把 Layout Reset 收窄为仅 HUD 布局并保留 tracked/classification，同时修复完整导入仍截断 32 个追踪 ID 与组件专属字段无法完整 round-trip 的兼容问题。Store 继续保持 schema 4；三页签 + `LayoutEditorWorkspace v2` 的完整页面迁移进入下一步 `UI_IMPLEMENTING`。
+
+`.18.80` 已完成该 `UI_IMPLEMENTING` 的本地代码接入，并同步把用户最新反馈的 Persistence 数据丢失问题提升为 P0 Foundation：页面构造前确保 Buff Display Store 已读取；HUD Layout 使用隔离 Working Snapshot，只有 `Apply` 跨 durable boundary；底层 Persistence Reliability v1 负责 Load-before-Write、dirty reload fence、失败重试、损坏 payload 保护和 Reload durability barrier。当前 UI 仍保持 `UI_IMPLEMENTING` 而非宣告最终完成，因为 RU Fresh Reload 尚未验证真实 SaveData/Native 行为。
+
+`.18.81` 根据 RU 实机失败日志完成针对性热修：`rs_v3_buff_display_page.lua:273` 的 `TreeView=nil` 根因是 Composite Foundation 在 `ListView/Controls` 之前加载并 fail-closed return，已修正 TOC 顺序并加入静态顺序 Gate；页面同时增加 Selection/Tree 依赖显式 preflight，避免再以 nil method 形式污染 Build Transaction。`UITokens` Gate 未绑定 Authority 与 `StatusClassificationV3` 缺 `service_only` 声明也已修正。Persistence Reliability 提升到 v2：Domain budget 与框架编码 envelope budget 分离，避免合法配置因 `payload/__rsmeta` 外壳被误判超预算后进入 Write Fence；新增 `MutateStore()` 统一 `PrepareWrite → snapshot → mutate → MarkDirty/Save → rollback`，并已迁移 Buff Display、Healer、DPS、Combat Analytics、Raid Readiness、Tasks、Activities、Gear 关键 Quick HUD、Death Review 关键索引以及 Life/Business 的高风险命令路径。当前仍不把保存系统标记为“RU 已完成”，跨进程 SaveData/LoadData 回读必须以 Fresh Reload/重新登录验证为准。
 
 
 ### Coordinate / Pointer / RectTransform Contract
@@ -303,26 +319,33 @@ Tile 使用 `TileView` 的有界 pool/overscan；搜索仍为显式提交。默�
 
 该修复不改变任何 Feature Store/业务行为，只修复 Foundation 自身版本分叉。
 
-### 当前下一批 Foundation 依赖顺序
+### Foundation 依赖状态（非独立 ToDo）
+
+本段只描述依赖是否已经具备，**不再维护第二份“下一批顺序”**；实际施工顺序统一看 §9.2。
 
 ```text
-Host/Slot/Reparent Contract                 ✅
-ResponsiveInspector Stable Host             ✅
-SearchablePicker / IconPicker               ✅
-Coordinate / Pointer / RectTransform v2      ✅
-Selection Geometry / Overlay / Guides        ✅
-LayoutEditor Gesture Transaction             ✅
+Host/Slot/Reparent Contract                  ✅
+ResponsiveInspector Stable Host              ✅
+SearchablePicker / IconPicker                ✅
+Coordinate / Pointer / RectTransform v2       ✅
+Selection Geometry / Overlay / Guides         ✅
+LayoutEditor Gesture Transaction              ✅
+Anchor / Pivot / Grid Config Model            ✅
+LayoutEditorOverlay / PreviewAdapter          ✅
+LayoutEditorWorkspace / Inspector binding     ✅
               ↓
-Anchor / Pivot / Grid Config Model
+LayoutEditHistory / Undo-Redo                 ✅ `.18.75`
               ↓
-LayoutEditorOverlay（组合现有底层，不再造 Authority）
+Editor Command Bar                            ✅ `.18.76`
               ↓
-Editor Workspace Template / Inspector binding
+Reset / Revert / Apply Session Semantics      ✅ `.18.77`
+              ↓
+LayoutEditorWorkspace Integration             ✅ `.18.78`
               ↓
 状态显示页面 UI_REVIEW
 ```
 
-下一轮仍优先检查 Foundation；除非用户明确切换阶段，不应先回到 Healer/Gear/Buff 等业务页面实现。
+Foundation First 阶段仍有效；任何用户新回归、RU 验收结果或业务 backlog 的抢占规则统一由 §9 管理。
 
 ## 6. 仍待 RU Fresh Reload 的最高优先级验收
 
@@ -394,17 +417,73 @@ Fresh Reload 后优先验证本轮四项用户回归：
 - Activities / Tasks 等仍有 Demand-scoped 周期采样；是否进一步事件化应先补齐 rows/sec、facts/sec、Native calls/sec 等 Diagnostics，再以实测决定，不能仅凭感觉重构。
 - 历史独立 Addon 的持久化命名空间能否被 Suite 自动读取仍需 RU 实机确认；不得把历史旧源码重新接回 Runtime 来解决迁移问题。
 
-## 9. 下一开发顺序
+## 9. 统一 ToDo Authority 与下一开发顺序
 
-当前用户已明确把阶段目标调整为“先完善强大的底层框架，再逐页 UI_APPROVED，再做业务功能”。`.18.74` 已经把完整 LayoutEditor Workspace 组合出来，因此当前顺序更新为：
+本节是 **Replicated Suite 唯一活动 ToDo / 当前施工队列 Authority**。其它文档只能提供能力库存、专项设计或历史证据，不能再维护第二套“下一步顺序”。
 
-1. 新增共享 `LayoutEditHistoryModel / Undo-Redo`：只记录成功 Commit 的可逆 Layout Command，不记录 Drag Pulse；需要 stable selection/key、bounded history、transaction rollback；
-2. 新增 `Editor Command Bar`：Undo / Redo / Revert / Reset / Apply 的状态与可用性由 History/Session Authority 投影，不让页面自己维护按钮状态；
-3. 定义 `Reset / Revert / Apply` 三种语义及 Persistence 边界，避免“恢复默认”“撤销本次编辑”“保存当前布局”互相混淆；
-4. 将 History/Command 能力接回 `LayoutEditorWorkspace`，仍保持 PreviewHost/Overlay/Inspector 单实例结构；
-5. 把新增 Foundation 继续写回 `REBUILD_REFERENCE_ADDON_CAPABILITY_ROADMAP.md`，不新拆一套 UI 文档；
-6. Foundation 稳定后，从状态显示开始把 `UI_DRAFT → UI_REVIEW → UI_APPROVED`；只有 UI_APPROVED 且 Authority/Service/Projection/Performance Contract 完整后，才进入业务页面重构；
-7. RU Fresh Reload 仍是 Native 输入、Z-order、Handle hit、Focus、Icon Drawable、Selection Overlay、100 人等事实的最终验证边界。
+### 9.1 Authority 分工
 
-当前明确不做：Buff Display / Healer / Gear / Unit Lines / Range / DPS 等业务 Feature 的 UI 迁移。
+| 文档 | 职责 | 是否决定当前施工顺序 |
+|---|---|---|
+| `CURRENT_REBUILD_STATUS.md` §9 | 当前施工队列、用户新反馈入口、阶段优先级、延期理由 | **是，唯一 Authority** |
+| `Rebuild/PRODUCT_COMPLETION_MATRIX.md` | 125 项产品能力库存与完成状态 | 否，只提供 backlog 候选与证据 |
+| `Rebuild/REBUILD_REFERENCE_ADDON_CAPABILITY_ROADMAP.md` | Foundation / UI / 参考能力方向 | 否 |
+| `Archive/Handoff/*` | 历史交接、旧阶段记录 | 否 |
 
+规则：
+
+- 用户新反馈先进入本节，再判断属于 Foundation、RU 验收还是业务能力；
+- `PARTIAL / TODO / SPECIFIC_RUNTIME_BLOCKED` **不等于立即开工**，必须服从当前阶段目标与依赖顺序；
+- 业务能力状态仍只在 Product Matrix 中维护，避免 CURRENT 复制 125 行形成双 Authority；
+- 临时 Handoff 中仍有效的事项必须收拢到这里后再归档，禁止长期留在 `Docs/Handoff/` 形成隐形待办。
+
+### 9.2 当前阶段：Foundation First
+
+当前用户已明确把阶段目标调整为“先完善强大的底层框架，再逐页 UI_APPROVED，再做业务功能”。`.18.78` 已把 History / Session / Command Bar 接回共享 LayoutEditorWorkspace，因此当前执行顺序为：
+
+1. **已完成 `.18.75`**：共享 `LayoutEditHistoryModel / Undo-Redo` 只记录成功 Commit 的可逆 Layout Command，不记录 Drag Pulse；stable selection/key、bounded history、transaction rollback 已落地；
+2. **已完成 `.18.76`**：`Editor Command Bar` 统一投影 Undo / Redo / Revert / Reset / Apply 可用性；History 增加事件订阅，页面不再需要 Tick 或自存 `canUndo/canRedo/dirty`；Session 未接入时持久化类命令 fail-closed；
+3. **已完成 `.18.77`**：`LayoutEditSessionModel` 定义 `Persisted / SessionBaseline / Working / Defaults` 四态；`Reset` 仅暂存 Defaults、`Revert` 仅回到 SessionBaseline、二者绝不写 Store；只有 `Apply` 在 durable persistence callback 明确成功后推进 Persisted/Baseline，并建立 History barrier；
+4. **已完成 `.18.78`**：History / LayoutEditSession / EditorCommandBar 已接回 `LayoutEditorWorkspace v2`；Workspace 自建有界 History，完整 `editSession` callback 才创建 Session，partial contract 创建前拒绝；History replay 从 Adapter 刷新 Overlay/Inspector，Reset/Revert 从 Feature Working 显式回读；root Release 同步释放 Session/History listener；
+5. **已完成 `.18.78`**：新增 Workspace Integration 已回写 `REBUILD_REFERENCE_ADDON_CAPABILITY_ROADMAP.md` 与 RSUI/CURRENT Architecture，不新拆第二套 UI 文档；
+6. **已完成 UI_REVIEW（2026-09-03）**：状态显示真实代码已逐项审查；Review 收敛为 `追踪管理 / HUD 布局 / 导入导出` 三个用户任务，HUD 布局指定 `Element Tree + LayoutEditorWorkspace v2`，player/target 共用一套几何模板，原生血条只作不可见对齐基准；同时记录现有 Runtime/Acceptance 装备分组分叉、重复设置 Authority 与 Reset 作用域冲突；
+7. **已完成 `.18.79` — UI_APPROVED + Authority Cleanup**：用户已允许按 Review 继续；确认三页签、player/target 共用单一几何模板、主手+副手在左/背部在右、Layout Reset 不清追踪。远程采用保守产品默认：Fresh Default `OFF`，启用时归左侧外层且不挤占主/副手靠血条位置。Runtime/Acceptance 已统一；`headIconSize/headMaxIcons` 只保留旧存档/旧导入兼容映射，不再作为 live writable Authority；完整导入上限与 Store 统一到 1024/category；Store schema 仍为 4。
+8. **已完成 `.18.80` — Persistence Reliability v1 + Buff Display UI_IMPLEMENTING**：用户补充“配置经常在下次进游戏/重载后丢失”后，Persistence 提升为 P0 Foundation 事项。Runtime Stop 改为 Feature teardown 前 durability barrier；Persistent Store 强制 Load-before-Write；dirty Store 禁止普通 reload；SaveData 临时失败保留 dirty 并进入有界重试；非空损坏 payload 不再按空存档处理；显式 ReloadCodeFromDisk 必须 Flush 全成功才允许继续；Persistent Binding 在 Domain mutation 前 PrepareWrite，并在 MarkDirty 失败时 best-effort rollback。状态显示同轮完成三页签、单虚拟 Tracking Table 与 `LayoutEditorWorkspace v2 + LayoutEditSession` 接入，未 Apply 的 HUD Working 不进入 Store getter。
+9. **已完成 `.18.81` — RU Hotfix + Persistence Reliability v2 Foundation**：修复 Buff Display `TreeView=nil` 的真实 TOC dependency-order 根因、UITokens Gate 与 StatusClassification boundary；Persistence 增加 Domain/Envelope 双预算与 `MutateStore()` 原子业务 mutation 契约，并迁移一批高风险保存路径。故障注入验证合法 Domain 不再被框架 envelope 误拒绝，冷 Store mutation 必须先回读磁盘，durable SaveData 失败会恢复 Domain/dirty metadata。
+10. **已完成 `.18.82` — Persistence mutation 收口 + §9.3 本地回归修复**：剩余 mutation→MarkDirty 路径（FeatureRuntime 偏好、Trade 起点、Fishing ArmAuto）收敛到 `MutateStore`；Bag 整理/快捷取放前置失败可见化（feature 侧写 stopped+error，页面写状态文本，`SafeHandler` 绑定失败进 Diagnostics）；Trade 金银铜格式、可售地区会话缓存、`QuoteMaterial` 显式接入 PriceQuoteQueueV3 与"材料询价"按钮；Auction 报价快照进 projection + `v3.price_quote.completed` 自动刷新 + "结果询价"按钮 + 删除收藏两击确认。新增 `PERSISTENCE_V2_MIGRATION_TEST`（20/20）、`BUSINESS_BRIDGE_BAG_TRADE_TEST`（9/9）、`RSUI_COMPOSITE_STATE_HARNESS`（24/24）与 `LAYOUT_EDIT_SESSION_MODEL_HARNESS`（24/24）harness。同轮完成 RSUI Composite 收尾：`ResolveStatusSemantic` 唯一状态语义 Authority、`StateNotice`（Empty/Loading/Error/Blocked 组合态）、`DetailHeader`（Breadcrumb+标题+StatusChip），Composite Foundation 升 v5。
+11. **NEXT — RU Fresh Reload + Persistence Reliability v2 Runtime Acceptance**：使用 `.18.82` 新进程启动，先确认 `combat.buff_display` 页面可打开且 Composite/Build Transaction Gate 归零；再执行"修改多类配置 → Flush/重载 → 退出重进 → 回读"矩阵，重点覆盖 Buff Display、Healer、Gear Quick HUD、Activities/Tasks、DPS、Trade 路线/收藏。若任何 Store 出现 Fence/FlushFail，保留诊断中的 store id + reason，不得用清空配置规避。Fresh Reload 通过后再继续下一业务 UI Gate。
+12. RU Fresh Reload 与 §9.3 业务回归并行：重点验证 SaveData 真实回读、连续 Slider/拖动后立即重载、Feature Disabled 状态编辑、HUD Apply/Reset/Revert，以及 Native 输入、Z-order、Handle hit、Focus、Icon Drawable、Selection Overlay、100 人等事实。
+
+### 9.3 已收拢的用户遗留事项
+
+以下事项原记录于 `Docs/Handoff/2026-09-03-pending-handoff.md`，现已进入 CURRENT Authority。它们**不会丢失**，但在 Foundation First 阶段暂不抢占 §9.2 的执行顺序。
+
+`.18.82` 已在本地完成其中的三项本地可解决部分（实机复验仍属 §6 P0 验收）：
+
+- **Bag 整理按钮"没反应"**：真实断点是全链静默失败（前置校验/未启用/绑定失败均无反馈），已按 `OnClick → Feature Command → Consumer/Lifecycle → Action Result` 逐层补齐反馈与状态呈现，未动互斥与限速；OnClick 绑定是否被当前 RU widget 接受仍需实机看 `UI_HANDLER_BIND_FAILED` 诊断。
+- **Trade 下拉/格式/材料入口**：金银铜格式化、可售地区会话缓存、`QuoteMaterial` + "材料询价"按钮、下拉禁用原因提示已落地；Trade route / 材料成本 / live ratio 在 Matrix 中保持 PARTIAL（仍需 RU 数据回读），但"显式限速报价工作流"本地环节已闭合。
+- **Auction 收藏 UX + lowest-price projection**：报价快照进 projection、询价完成自动刷新、"结果询价"按钮、删除两击确认、结果行回填关键词已落地；interactive search 的 RU 结果语义仍为 PARTIAL。
+
+| 队列项 | 当前归类 | 进入业务阶段后的动作 | Product Matrix 对应 |
+|---|---|---|---|
+| Gear 换装/称号“设置位置 UI”与高密度双栏体验 | UI_REVIEW 候选 | 先基于真实截图/实机布局确认问题，再从共享 Workspace/Inspector 能力改，不猜测重构 | Gear 多项能力已 IMPLEMENTED/PARTIAL；此项主要是 Presentation UX |
+| Trade 下拉框不弹、按钮切换笨重、金银铜格式、识别材料入口 | Life/Economy 业务 backlog | 查 Dropdown/Popup Contract、Feature Commands 与 Trade Projection 后逐项修；不得普通刷新隐式扇出 Auction Query | Trade route=PARTIAL；材料/成本=PARTIAL；current/full mode=TODO |
+| Bag 整理按钮点击没反应 | Tools 业务回归 | 先验证 `OnClick → Feature Command → Consumer/Lifecycle → Action Result` 全链，修真实断点；保留批处理互斥与限速 | Bag 主能力已 IMPLEMENTED，native-window quick overlay=PARTIAL |
+| Auction 收藏 UX | Tools/Market UI_REVIEW 候选 | 保留现有 Favorite Store Authority，优化选择/删除/分页/上下文，不复制第二份收藏状态 | favorite add/remove=IMPLEMENTED；paging/context=IMPLEMENTED；interactive search=PARTIAL |
+
+### 9.4 Product Matrix 后续入口
+
+当 §9.2 Foundation + UI_REVIEW 阶段允许重新进入业务功能后，按以下规则从 [`Rebuild/PRODUCT_COMPLETION_MATRIX.md`](Rebuild/PRODUCT_COMPLETION_MATRIX.md) 取下一项：
+
+1. 优先用户当前真实回归问题；
+2. 然后选择**非 Runtime Blocked**、依赖已满足、代码 owner 清晰的 `PARTIAL / TODO`；
+3. 高消耗模块必须继续保持独立 Demand / Consumer / Cache / Lifecycle，关闭后释放资源；
+4. 每项完成真实调用链、Persistence、Acceptance Harness 后才允许更新 Matrix 状态；
+5. `SPECIFIC_RUNTIME_BLOCKED` 只有获得 RU 客户端/官方 API/可复现字段证据后才能解除，禁止猜字段、猜 ID、猜行为；
+6. 每轮修改后继续执行 Foundation Audit、Active/All Lua Parse、TOC/Boundary 扫描和对应专项 Harness。
+
+### 9.5 RU Fresh Reload 验收队列
+
+§6 中列出的 P0 验收仍然有效，并与开发队列并行存在：**本地 Harness PASS 不替代 RU 真机证据**。当用户提供 Fresh Reload 结果时，应优先处理明确的真实运行时回归，并将结论回填到 CURRENT / Product Matrix 对应项。
+
+当前阶段明确不做：在 §9.2 Foundation 收口前，直接开始 Buff Display / Healer / Gear / Unit Lines / Range / DPS 等业务 Feature 的大规模 UI 迁移。

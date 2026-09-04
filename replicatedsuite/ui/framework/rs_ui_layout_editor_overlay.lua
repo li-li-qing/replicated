@@ -28,6 +28,7 @@ local UI = S.UI
 if type(RSUI) ~= "table" or type(UI) ~= "table" then return end
 
 RSUI.LayoutEditorOverlayContractVersion = 1
+RSUI.LayoutEditorOverlayHistoryBindingContractVersion = 1
 
 local HARD_MAX_CANDIDATES = 1024
 
@@ -125,6 +126,10 @@ RSUI:RegisterType("LayoutEditorOverlay", function(spec)
         onPreview = spec.onPreview,
         onCommit = spec.onCommit,
         onCancel = spec.onCancel,
+        -- Workspace-owned History is injected here so successful Adapter
+        -- commits become the only edit-history write path. Preview/cancel never
+        -- touch History, and the Overlay never owns a second command stack.
+        historyModel = spec.historyModel,
     })
     if adapter == nil then c:Release(); return nil, adapterErr end
     c.adapter = adapter

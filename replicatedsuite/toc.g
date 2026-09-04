@@ -38,7 +38,6 @@ ui/rs_ui_framework.lua
 ui/framework/rs_ui_layout_v2.lua
 ui/framework/rs_ui_binding_v2.lua
 ui/framework/rs_ui_component_core.lua
-ui/framework/rs_ui_composite_foundation.lua
 ui/framework/rs_ui_text_layout.lua
 ui/framework/rs_ui_primitives.lua
 ui/framework/rs_ui_panels.lua
@@ -51,6 +50,9 @@ ui/framework/rs_ui_layout_debug.lua
 ui/framework/rs_ui_selection.lua
 ui/framework/rs_ui_selection_geometry.lua
 ui/framework/rs_ui_layout_editor_models.lua
+ui/framework/rs_ui_layout_edit_history.lua
+ui/framework/rs_ui_layout_edit_session.lua
+ui/framework/rs_ui_editor_command_bar.lua
 ui/framework/rs_ui_multi_selection_transform.lua
 ui/framework/rs_ui_layout_editor_adapter.lua
 ui/framework/rs_ui_layout_editor_overlay.lua
@@ -58,6 +60,7 @@ ui/framework/rs_ui_layout_editor_gesture.lua
 ui/framework/rs_ui_view_state.lua
 ui/framework/rs_ui_data_views.lua
 ui/framework/rs_ui_controls.lua
+ui/framework/rs_ui_composite_foundation.lua
 ui/framework/rs_ui_containers.lua
 ui/framework/rs_ui_forms.lua
 ui/framework/rs_ui_transform_inspector.lua

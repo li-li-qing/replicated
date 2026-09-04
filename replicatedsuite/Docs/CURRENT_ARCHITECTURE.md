@@ -254,7 +254,7 @@ RSUI 是唯一通用 UI Foundation。页面应优先组合：
 - Session
 - Checkpoint
 
-统一采用 Store Contract、Dirty + Debounce、Schema Migration、Write Fence 和失败 rollback。Feature 关闭不应清除永久用户配置；版本升级必须通过 Normalize / Migration 保持旧配置兼容。
+统一采用 Store Contract、Dirty + Debounce、Schema Migration、Write Fence 和失败 rollback。`.18.81` 当前为 **Persistence Reliability Contract v2**：保留 `.18.80` 的 Load-before-Write、dirty Reload fence、失败重试、损坏 payload fail-closed、Reload/Runtime durability barrier，并新增 Domain Budget 与 Encoded Envelope Budget 分离以及 `MutateStore()` 原子 mutation transaction。公共业务写入优先走 `PrepareWrite → snapshot → mutate → MarkDirty/Save → rollback`；Binding/FloatingSurface 的 `MarkDirty` 仅作为已完成 preflight/rollback 的 commit adapter。Feature 关闭不应清除永久用户配置；版本升级必须通过 Normalize / Migration 保持旧配置兼容。
 
 详见 [`Architecture/PERSISTENCE_ARCHITECTURE.md`](Architecture/PERSISTENCE_ARCHITECTURE.md)。
 
@@ -272,9 +272,9 @@ RSUI 是唯一通用 UI Foundation。页面应优先组合：
 
 详见 [`STATIC_DATA.md`](STATIC_DATA.md)。
 
-## 11.1 当前 UI Editor Foundation（`.18.74`）
+## 11.1 当前 UI Editor Foundation（`.18.78`）
 
-当前 RSUI 已进入 **v38 / API 12.2**。Editor Foundation 已从“独立数学零件”收敛成一条完整但仍不绑定业务 Store 的共享编辑链：
+当前 RSUI 已进入 **v42 / API 12.6**。Editor Foundation 已从“独立数学零件”收敛成一条完整、可由业务页面注入持久化边界但不夺取业务 Store Authority 的共享编辑链：
 
 - `SelectionModel`：只回答 **Who**（选中了谁），stable key + revision 是编辑事务的身份边界；
 - `SelectionGeometry / SelectionOverlay / LayoutGuideResolver`：只回答 **Where**（Bounds、8-way handle、move surface、grid/sibling/canvas guide）；candidate hard cap=1024；
@@ -283,9 +283,12 @@ RSUI 是唯一通用 UI Foundation。页面应优先组合：
 - `LayoutEditorSnapSettingsModel v1`：共享 enabled/grid/alignment/canvas/guides/gridSize/threshold/maxCandidates；alignment 关闭时 candidate provider 调用次数为 0；
 - `MultiSelectionTransformModel v1`：2+ stable-key selection 的 Group Bounds → per-child Rect 投影；ProjectionSession 原子 Commit/Cancel，按 Group scale 映射 Child，并反推出 group min constraints；
 - `LayoutEditorPreviewAdapter v1`：Single/Multi 统一事务桥。单选接 AnchorPivot，多选接 MultiSelection Session；selection revision 在手势中变化时 fail-closed；Preview 不写 Feature Store，外部 Commit 明确接受后才 finalize；
+- `LayoutEditHistoryModel v1 + Observable Contract v1`：只在成功 Commit 后记录 stable-key before/after command；Preview/Drag Pulse 不入历史；默认 64、hard cap 256；Undo/Redo 的外部 apply 失败时 cursor 不移动并 best-effort rollback；Anchor/Pivot 保存可恢复最小状态快照；成功状态变化通过 Subscribe/Unsubscribe 事件通知 Consumer，无轮询；
+- `LayoutEditSessionModel v1`：四态 `Persisted / SessionBaseline / Working / Defaults` 的唯一 Session Authority。`Revert` 只回 SessionBaseline，`Reset` 只把 Defaults staged 到 Working，二者不写 Store；只有 `Apply` 可跨 Persistence Boundary，且 caller 必须在 durable write 明确成功后返回 true。成功 Revert/Reset/Apply 均建立 History barrier；若 durable Apply 后 History barrier 异常则 Session integrity blocked，编辑命令 fail-closed。
+- `EditorCommandBar v2`：统一投影 `Undo / Redo / Revert / Reset / Apply` 五个命令状态。Undo/Redo 只读 History Snapshot；Revert/Reset/Apply 只读 LayoutEditSession Snapshot；Busy/blocked 时全部 disabled；组件不拥有 Store/Persistence/dirty Authority。
 - `TransformInspector v2`：一个 `rectModel` + 可选 `anchorModel`。单选显示 Transform/Anchor/Pivot/Snap，多选复用同一个 Inspector 实例但折叠 Anchor/Pivot；不复制 Geometry/Persistence Authority；
-- `LayoutEditorOverlay v1`：只组合 GuideOverlay + SelectionOverlay + Gesture v2 + PreviewAdapter + SnapModel，不创建第二套 Pointer/Rect/Snap/Native capture Authority；坐标空间非 viewport 时必须提供 `pointerToLocal`；
-- `WorkspaceTemplates v3 / LayoutEditorWorkspace v1`：`PreviewHost + LayoutEditorOverlay + SAME Responsive TransformInspector + Toolbar`。Wide inline Inspector 与 Compact Drawer 是同一个实例，只改变 Geometry/Visibility/Layer，不 reparent、不复制状态。
+- `LayoutEditorOverlay v1 + History Binding Contract v1`：只组合 GuideOverlay + SelectionOverlay + Gesture v2 + PreviewAdapter + SnapModel，不创建第二套 Pointer/Rect/Snap/Native capture Authority；Workspace 可把唯一 History 注入 Adapter，Preview/Cancel 不入历史；坐标空间非 viewport 时必须提供 `pointerToLocal`；
+- `WorkspaceTemplates v4 / LayoutEditorWorkspace v2`：`Toolbar + EditorCommandBar + PreviewHost + LayoutEditorOverlay + SAME Responsive TransformInspector`。Workspace 自建唯一 bounded History；当 caller 提供完整 `editSession` 五回调时创建唯一 LayoutEditSession，否则维持 history-only 且持久化命令 fail-closed。Undo/Redo 事件只从 Adapter 刷 Presentation；Reset/Revert 后才从 Feature Working 显式回读；root 生命周期同步释放 CommandBar/Session/History listener。Wide inline 与 Compact Drawer 仍是同一个 Inspector 实例，只改变 Geometry/Visibility/Layer，不 reparent、不复制状态。
 
 当前编辑器页面骨架：
 
@@ -293,18 +296,20 @@ RSUI 是唯一通用 UI Foundation。页面应优先组合：
 Wide / Regular
 ┌──────────────────────── Toolbar ─────────────────────────┬──────────────┐
 │ Selection Status      左上(0,0) · X→右 · Y→下           │              │
-├───────────────────────────────────────────────────────────┤ Transform    │
-│                                                           │ Inspector    │
-│                    PreviewHost                            │              │
-│                         +                                 │ single:      │
-│                 LayoutEditorOverlay                       │ Anchor/Pivot │
-│                                                           │ multi:       │
+├──────────────────── Editor Command Bar ──────────────────┤ Transform    │
+│ 撤销 · 重做 · 还原 · 重置 · 应用 · Session Status      │ Inspector    │
+├───────────────────────────────────────────────────────────┤              │
+│                    PreviewHost                            │ single:      │
+│                         +                                 │ Anchor/Pivot │
+│                 LayoutEditorOverlay                       │ multi:       │
 │                                                           │ Group Rect   │
 └───────────────────────────────────────────────────────────┴──────────────┘
 
 Compact
 ┌────────────────────────────────────────────┐
 │ Toolbar                                    │
+├────────────────────────────────────────────┤
+│ Editor Command Bar                         │
 ├────────────────────────────────────────────┤
 │ Preview + Overlay             ┌──────────┐ │
 │                               │ SAME     │ │
@@ -314,7 +319,7 @@ Compact
 └────────────────────────────────────────────┘
 ```
 
-Editor Foundation 目前仍不直接迁移 Buff/Healer/Range 等业务页面。下一层优先补共享 `LayoutEditHistory / Undo-Redo + Editor Command Bar + Reset/Revert/Apply`，再进入状态显示 `UI_REVIEW`。
+Editor Foundation 目前仍不直接迁移 Healer/Range 等后续业务页面。`LayoutEditHistory / Undo-Redo → Editor Command Bar → LayoutEditSession → LayoutEditorWorkspace v2` 已形成共享闭环；状态显示在 `.18.79` 完成 UI_APPROVED + Authority Cleanup，`.18.80` 完成本地 `UI_IMPLEMENTING` 接入；`.18.81` 修复 RU 首次打开 HUD 布局时 `TreeView=nil` 的 TOC dependency-order 根因，并增加页面依赖 preflight。页面仍为 `追踪管理 / HUD 布局 / 导入导出` 三页签，Tracking 为单虚拟 Table，HUD Working 与 Store getter 隔离，Preview/Undo/Redo/Reset/Revert 均不持久化，只有 Apply 执行 Feature durable callback。Store 仍为 schema 4；真实 SaveData 回读与 Native 编辑体验继续以 RU Fresh Reload 为准。
 
 ## 12. 性能与生命周期基线
 
@@ -326,15 +331,15 @@ Editor Foundation 目前仍不直接迁移 Buff/Healer/Range 等业务页面。�
 
 ## 13. 当前验证基线
 
-当前代码 BuildTag：`v3-m1.16.0.18.74-ui-layout-editor-workspace-foundation`。
+当前代码 BuildTag：`v3-m1.16.0.18.81-ru-hotfix-persistence-reliability-v2`。
 
 当前本地结构门禁基线：
 
 ```text
 FOUNDATION_AUDIT PASS
-toc=207
-activeLua=207
-allLua=207
+toc=210
+activeLua=210
+allLua=210
 globals=0
 presentation=0
 rawNative=0

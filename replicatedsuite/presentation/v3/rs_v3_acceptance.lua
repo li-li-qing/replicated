@@ -1,11 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Foundation Acceptance v49
+-- Replicated Suite V3 - Foundation Acceptance v54
 --
 -- Bounded, on-demand checks only. No Native widget creation and no Tick.
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
-S.UIV3Acceptance = { version = 49 }
+S.UIV3Acceptance = { version = 54 }
 local A = S.UIV3Acceptance
 
 local MIGRATED_MODAL_MODULES = {
@@ -404,8 +404,10 @@ function A:RunMatrix()
         or S.Demand:Describe().quiesceFailures == nil then
         failures[#failures + 1] = "demand_foundation_contract"
     end
-    if S.Persistence == nil or type(S.Persistence.ReadLegacy) ~= "function" or type(S.Persistence.ClearStore) ~= "function"
-        or type(S.Persistence.CanWrite) ~= "function" or type(S.Persistence.IsStoreLoaded) ~= "function" then
+    if S.Persistence == nil or type(S.Persistence.ClearStore) ~= "function"
+        or type(S.Persistence.CanWrite) ~= "function" or type(S.Persistence.PrepareWrite) ~= "function"
+        or type(S.Persistence.MutateStore) ~= "function" or type(S.Persistence.IsStoreLoaded) ~= "function"
+        or (tonumber(S.Persistence.ReliabilityContractVersion) or 0) < 2 then
         failures[#failures + 1] = "persistence_hardening_contract"
     end
     if S.RefreshCoordinator == nil or (tonumber(S.RefreshCoordinator.version) or 0) < 1
@@ -542,15 +544,44 @@ function A:RunMatrix()
         or type(rsui.LayoutEditorPreviewAdapter) ~= "table" then
         failures[#failures + 1] = "ui_layout_editor_preview_adapter_contract"
     end
+    if rsui == nil or (tonumber(rsui.version) or 0) < 39
+        or (tonumber(rsui.LayoutEditHistoryContractVersion) or 0) < 1
+        or type(rsui.CreateLayoutEditHistoryModel) ~= "function"
+        or type(rsui.LayoutEditHistoryModel) ~= "table" then
+        failures[#failures + 1] = "ui_layout_edit_history_contract"
+    end
+    if rsui == nil or (tonumber(rsui.version) or 0) < 41
+        or (tonumber(rsui.LayoutEditSessionContractVersion) or 0) < 1
+        or (tonumber(rsui.LayoutEditSessionPersistenceBoundaryContractVersion) or 0) < 1
+        or type(rsui.CreateLayoutEditSessionModel) ~= "function"
+        or type(rsui.LayoutEditSessionModel) ~= "table" then
+        failures[#failures + 1] = "ui_layout_edit_session_contract"
+    end
+    if rsui == nil or (tonumber(rsui.version) or 0) < 41
+        or (tonumber(rsui.LayoutEditHistoryObservableContractVersion) or 0) < 1
+        or (tonumber(rsui.EditorCommandBarContractVersion) or 0) < 2
+        or (tonumber(rsui.EditorCommandSessionProjectionContractVersion) or 0) < 2
+        or type(rsui.ProjectEditorCommandState) ~= "function"
+        or type(rsui.EditorCommandBar) ~= "function"
+        or type(rsui.types) ~= "table" or rsui.types["EditorCommandBar"] == nil then
+        failures[#failures + 1] = "ui_editor_command_bar_contract"
+    end
     if rsui == nil or (tonumber(rsui.version) or 0) < 37
         or (tonumber(rsui.LayoutEditorOverlayContractVersion) or 0) < 1
         or type(rsui.LayoutEditorOverlay) ~= "function"
         or type(rsui.types) ~= "table" or rsui.types["LayoutEditorOverlay"] == nil then
         failures[#failures + 1] = "ui_layout_editor_overlay_contract"
     end
-    if rsui == nil or (tonumber(rsui.version) or 0) < 38
-        or type(workspaceTemplates) ~= "table" or (tonumber(workspaceTemplates.contractVersion) or 0) < 3
+    if rsui == nil or (tonumber(rsui.version) or 0) < 42
+        or type(workspaceTemplates) ~= "table" or (tonumber(workspaceTemplates.contractVersion) or 0) < 4
+        or (tonumber(rsui.LayoutEditorWorkspaceContractVersion) or 0) < 2
+        or (tonumber(rsui.LayoutEditorWorkspaceSessionBindingContractVersion) or 0) < 1
+        or type(workspaceTemplates.ValidateLayoutEditorEditSessionSpec) ~= "function"
         or type(rsui.CreateLayoutEditorWorkspace) ~= "function"
+        or (tonumber(rsui.LayoutEditorOverlayHistoryBindingContractVersion) or 0) < 1
+        or (tonumber(rsui.LayoutEditHistoryContractVersion) or 0) < 1
+        or (tonumber(rsui.LayoutEditSessionContractVersion) or 0) < 1
+        or (tonumber(rsui.EditorCommandBarContractVersion) or 0) < 2
         or (tonumber(rsui.TransformInspectorContractVersion) or 0) < 2 then
         failures[#failures + 1] = "ui_layout_editor_workspace_contract"
     end

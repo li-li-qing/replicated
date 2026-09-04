@@ -62,7 +62,10 @@ local function Build(parent, route, id)
         local enabled = S.FeatureRuntime:IsEnabled(id) == true
         local target = not enabled
         local ok, enableErr = S.FeatureRuntime:SetPreferredEnabled(id, target, "business_page_toggle")
-        if ok ~= true then return false, enableErr end
+        if ok ~= true then
+            if hint ~= nil then hint:SetText("启用失败：" .. tostring(enableErr or "未知原因")) end
+            return false, enableErr
+        end
         if target then
             local acquired, acquireErr = feature:AcquireConsumer("page:" .. id)
             if acquired ~= true then
@@ -216,12 +219,16 @@ local function Build(parent, route, id)
     end
     local auctionKeywordInput, auctionStatus, auctionPage = nil, nil, 1
     local auctionPageSize, auctionSelectedIndex = 10, nil
+    local auctionQuoteRow, auctionRemoveArm = nil, nil
+    local auctionQuoteButton, auctionRemoveButton = nil, nil
     local auctionExactField, auctionLimitField = nil, nil
     if id == "tools_auction" or id == "tools_market_analysis" then
         local row = RSUI:HorizontalBox({ id = "v3_business_" .. id .. "_auction_context", parent = root, gap = 6, slot = { size = "fixed", height = 31, hAlign = "fill" } })
         auctionKeywordInput = RSUI:TextInput({ id = "v3_business_" .. id .. "_auction_keyword", parent = row, value = "", maxLength = 64, allowEmpty = false, placeholder = "物品名称", slot = { size = "fill", fill = 1, minWidth = 160 } })
         local search = RSUI:Button({ id = "v3_business_" .. id .. "_auction_search", parent = row, text = "查询当前挂单", compact = true, slot = { size = "fixed", width = 96 } })
         local add = id == "tools_auction" and RSUI:Button({ id = "v3_business_tools_auction_add", parent = row, text = "加入收藏", compact = true, slot = { size = "fixed", width = 72 } }) or nil
+        local quote = id == "tools_auction" and RSUI:Button({ id = "v3_business_tools_auction_quote", parent = row, text = "结果询价", compact = true, slot = { size = "fixed", width = 72 } }) or nil
+        auctionQuoteButton = quote
         auctionStatus = RSUI:Text({ id = "v3_business_" .. id .. "_auction_status", parent = root,
             text = id == "tools_auction" and "收藏与当前挂单查询已接入；服务器搜索按 9 参数契约显式执行。" or "这里只展示当前拍卖挂单，不把搜索结果伪装成历史成交行情。",
             fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2, slot = { size = "auto", minHeight = 26, hAlign = "fill" } })
@@ -242,17 +249,36 @@ local function Build(parent, route, id)
             if ok then feature.Commands:Refresh("auction_add_favorite"); root:Refresh() end
             return ok,addErr
         end end
+        if quote~=nil then
+            quote:SetEnabled(false)
+            quote.onClick=function()
+                if auctionQuoteRow==nil or auctionQuoteRow.itemType==nil then auctionStatus:SetText("请先在结果中选择一条带物品身份的行"); return false end
+                local okQuote,quoteErr=feature.Commands:Quote(auctionQuoteRow.itemType,auctionQuoteRow.itemGrade)
+                auctionStatus:SetText(okQuote and "已提交最低价询价，完成后自动刷新。" or ("询价失败："..tostring(quoteErr or "未执行")))
+                return okQuote,quoteErr
+            end
+        end
         if search.root then S.UI:SafeHandler(search.root,"OnClick",search.onClick,"v3_business:"..id..":auction_search") end
         if add and add.root then S.UI:SafeHandler(add.root,"OnClick",add.onClick,"v3_business:auction:add") end
         local pages=RSUI:HorizontalBox({ id="v3_business_"..id.."_auction_pages",parent=root,gap=6,slot={size="fixed",height=28,hAlign="fill"} })
         local prev=RSUI:Button({ id="v3_business_"..id.."_auction_prev",parent=pages,text="上一页",compact=true,slot={size="fixed",width=64} })
         local next=RSUI:Button({ id="v3_business_"..id.."_auction_next",parent=pages,text="下一页",compact=true,slot={size="fixed",width=64} })
         local remove=id=="tools_auction" and RSUI:Button({ id="v3_business_tools_auction_remove",parent=pages,text="删除收藏",compact=true,slot={size="fixed",width=76} }) or nil
+        auctionRemoveButton = remove
         local pageText=RSUI:Text({ id="v3_business_"..id.."_auction_page_text",parent=pages,text="第 1 页",fontSize=8,tone="muted",slot={size="fill",hAlign="fill"} })
         prev.onClick=function() auctionPage=math.max(1,auctionPage-1); root:Refresh(); return true end
         next.onClick=function() auctionPage=auctionPage+1; root:Refresh(); return true end
         if remove~=nil then remove.onClick=function()
-            if auctionSelectedIndex==nil then auctionStatus:SetText("请先选择一条收藏关键词"); return false end
+            if auctionSelectedIndex==nil then auctionRemoveArm=nil; remove:SetText("删除收藏"); auctionStatus:SetText("请先选择一条收藏关键词"); return false end
+            -- Two-click confirm: favorites are not recoverable, and an accidental
+            -- click used to delete immediately with no undo.
+            if auctionRemoveArm~=auctionSelectedIndex then
+                auctionRemoveArm=auctionSelectedIndex
+                remove:SetText("确认删除?")
+                auctionStatus:SetText("再点一次“确认删除?”才会删除该收藏。")
+                return true
+            end
+            auctionRemoveArm=nil; remove:SetText("删除收藏")
             local ok,removeErr=feature.Commands:RemoveFavorite(auctionSelectedIndex)
             if ok then auctionSelectedIndex=nil; feature.Commands:Refresh("auction_remove"); root:Refresh() else auctionStatus:SetText("删除失败："..tostring(removeErr or "未执行")) end
             return ok,removeErr
@@ -310,7 +336,9 @@ local function Build(parent, route, id)
             slot={size="auto",minHeight=26,hAlign="fill"} })
         local function Quick(command)
             local fn=feature.Commands[command]; if type(fn)~="function" then return false,"快捷取放命令不可用" end
-            local ok,result=fn(feature.Commands); root:Refresh(); return ok,result
+            local ok,result=fn(feature.Commands)
+            if ok~=true and bagQuickStatus~=nil then bagQuickStatus:SetText("取放失败："..tostring(result or "未执行")) end
+            root:Refresh(); return ok,result
         end
         quickTake.onClick=function() return Quick("QuickWithdraw") end
         quickPut.onClick=function() return Quick("QuickDeposit") end
@@ -338,10 +366,19 @@ local function Build(parent, route, id)
             get=function() return (feature:GetProjection() or {}).batchLimit or 20 end,set=function(v) return feature.Commands:SetBatchLimit(v) end,slot={size="fill",fill=1,hAlign="fill"} }))
         startBatch.onClick=function()
             local projection=feature:GetProjection() or {}; local category=projection.batchCategory
-            if category==nil or tostring(category)=="" then return false,"请先从下拉列表选择物品类别" end
+            local function fail(message)
+                if batchStatus~=nil then batchStatus:SetText("整理失败："..message) end
+                return false,message
+            end
+            if S.FeatureRuntime~=nil and S.FeatureRuntime.IsEnabled~=nil and S.FeatureRuntime:IsEnabled("tools_bag")~=true then
+                return fail("整理功能未启用，请先点击上方按钮启用")
+            end
+            if category==nil or tostring(category)=="" then return fail("请先从下拉列表选择物品类别") end
             local command=projection.batchTarget=="coffer" and feature.Commands.DepositCategoryCoffer or feature.Commands.DepositCategoryBank
-            if type(command)~="function" then return false,"类别整理命令不可用" end
-            local ok,result=command(feature.Commands,category,projection.batchLimit or 20); root:Refresh(); return ok,result
+            if type(command)~="function" then return fail("类别整理命令不可用") end
+            local ok,result=command(feature.Commands,category,projection.batchLimit or 20)
+            if ok~=true then return fail(tostring(result or "未执行")) end
+            root:Refresh(); return ok,result
         end
         stopBatch.onClick=function() local ok,result=feature.Commands:CancelCategoryBatch(); root:Refresh(); return ok,result end
         if startBatch.root~=nil then S.UI:SafeHandler(startBatch.root,"OnClick",startBatch.onClick,"v3_business:tools_bag:batch_start") end
@@ -653,9 +690,18 @@ local function Build(parent, route, id)
         tableView.onSelectionChanged = function(index)
             local row = tableView:GetItem(index)
             auctionSelectedIndex = row and row.favoriteIndex or nil
+            auctionRemoveArm = nil
+            if auctionRemoveButton ~= nil then auctionRemoveButton:SetText("删除收藏") end
+            auctionQuoteRow = (row ~= nil and row.kind == "result") and row or nil
+            if auctionQuoteButton ~= nil and type(auctionQuoteButton.SetEnabled) == "function" then
+                auctionQuoteButton:SetEnabled(auctionQuoteRow ~= nil and auctionQuoteRow.itemType ~= nil)
+            end
             if row ~= nil and row.kind == "favorite" and auctionKeywordInput ~= nil and type(auctionKeywordInput.SetValue) == "function" then
                 auctionKeywordInput:SetValue(tostring(row.name or ""), false, "auction_favorite_select")
                 if auctionStatus ~= nil then auctionStatus:SetText("已载入收藏关键词，点击“查询当前挂单”即可搜索。") end
+            elseif row ~= nil and row.kind == "result" and row.name ~= nil and auctionKeywordInput ~= nil and type(auctionKeywordInput.SetValue) == "function" then
+                auctionKeywordInput:SetValue(tostring(row.name), false, "auction_result_select")
+                if auctionStatus ~= nil then auctionStatus:SetText("已载入结果名称，可直接“加入收藏”或“结果询价”。") end
             end
         end
     end
@@ -678,7 +724,20 @@ local function Build(parent, route, id)
         if (id == "tools_auction" or id == "tools_market_analysis") and self.RefreshAuctionPaging then self:RefreshAuctionPaging(projection, tableView) else tableView:SetItems(rows, projection.revision or 0) end
         if (id == "tools_auction" or id == "tools_market_analysis") and auctionStatus ~= nil then
             local statusZh=({idle="等待查询",waiting="等待服务器",ready="查询完成",partial="部分结果",empty="没有结果",failed="查询失败",unavailable="不可用"})[tostring(projection.searchStatus or "idle")] or tostring(projection.searchStatus or "idle")
-            auctionStatus:SetText(statusZh .. " · 当前结果 " .. tostring(projection.resultCount or 0) .. (projection.queryError and (" · " .. tostring(projection.queryError)) or "") .. (id=="tools_market_analysis" and " · 非历史成交价" or ""))
+            local quotePart = ""
+            if id == "tools_auction" then
+                if projection.quotePrice ~= nil and S.Utils ~= nil and type(S.Utils.FormatMoney) == "function" then
+                    local okMoney, moneyText = pcall(S.Utils.FormatMoney, projection.quotePrice)
+                    quotePart = " · 最低价：" .. (okMoney and tostring(moneyText) or tostring(projection.quotePrice))
+                elseif projection.quoteStatus == "queued" or projection.quoteStatus == "waiting" then
+                    quotePart = " · 最低价：询价排队中"
+                elseif projection.quoteError ~= nil then
+                    quotePart = " · 最低价：询价失败"
+                else
+                    quotePart = " · 最低价：未询价"
+                end
+            end
+            auctionStatus:SetText(statusZh .. " · 当前结果 " .. tostring(projection.resultCount or 0) .. quotePart .. (projection.queryError and (" · " .. tostring(projection.queryError)) or "") .. (id=="tools_market_analysis" and " · 非历史成交价" or ""))
         end
         if id == "life_craft_planner" or id == "tools_craft" then
             local craft = type(projection.craft) == "table" and projection.craft or {}

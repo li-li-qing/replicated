@@ -81,7 +81,7 @@ if P:GetStore(STORE_ID)==nil then
 end
 
 function F:EnsureStoreLoaded()
-    if self.StoreLoaded==true then return true end
+    if type(P.IsStoreLoaded)=="function" and P:IsStoreLoaded(STORE_ID)==true then self.StoreLoaded=true; return true end
     if P:GetStore(STORE_ID)==nil then return false,"战斗分析设置存档不可用" end
     local status,_,err=P:LoadStore(STORE_ID)
     if status~=true and status~="empty" then return false,err or tostring(status or "读取失败") end
@@ -110,4 +110,6 @@ function F:ApplyStoreRaw(kind,id,value)
     end
     return false,"unknown analytics setting"
 end
-function F:MarkAnalyticsStoreDirty(delayMs,reason) return P:MarkDirty(STORE_ID,tonumber(delayMs) or 300,reason or "combat_analytics_changed") end
+function F:MutateAnalyticsStore(mutator,delayMs,reason,durable)
+    return P:MutateStore(STORE_ID,function() return mutator() end,{delayMs=tonumber(delayMs) or 300,reason=tostring(reason or "combat_analytics_changed"),durable=durable==true})
+end

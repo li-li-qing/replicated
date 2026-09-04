@@ -32,11 +32,39 @@ function R:Stop()
     -- Idempotent quiescence fence for hot reload and normal teardown.
     S.Ready = false
     self.started = false
-    if S.FeatureRuntime ~= nil and type(S.FeatureRuntime.DisableAll) == "function" then
-        pcall(function() S.FeatureRuntime:DisableAll("shutdown") end)
-    end
+
+    -- Durability barrier MUST precede Feature teardown. Feature Disable/Stop is
+    -- allowed to release caches and reset transient Domain state; flushing only
+    -- after that lifecycle step could serialize teardown/default state and
+    -- overwrite the user's last good configuration. Never perform a second
+    -- persistence flush after DisableAll for the same reason.
+    local persistenceOk, persistenceErr = true, nil
     if S.Persistence ~= nil and type(S.Persistence.Flush) == "function" then
-        pcall(function() S.Persistence:Flush() end)
+        local callOk, flushed, failures = pcall(function() return S.Persistence:Flush() end)
+        if callOk ~= true or flushed ~= true then
+            persistenceOk = false
+            if callOk ~= true then
+                persistenceErr = tostring(flushed or "persistence flush exception")
+            elseif type(failures) == "table" then
+                persistenceErr = table.concat(failures, ";")
+            else
+                persistenceErr = tostring(failures or "persistence flush failed")
+            end
+            if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Emit) == "function" then
+                S.DiagnosticsManager:Emit("error", "runtime", "RUNTIME_STOP_PERSISTENCE_FAILED",
+                    "Runtime 关闭前配置未能全部安全落盘；已继续静默资源但未再次写入 teardown 状态",
+                    { error = persistenceErr })
+            end
+        end
+    end
+
+    local featureOk, featureErr = true, nil
+    if S.FeatureRuntime ~= nil and type(S.FeatureRuntime.DisableAll) == "function" then
+        local callOk, disabled, disableErr = pcall(function() return S.FeatureRuntime:DisableAll("shutdown") end)
+        if callOk ~= true or disabled ~= true then
+            featureOk = false
+            featureErr = callOk == true and tostring(disableErr or "feature disable failed") or tostring(disabled)
+        end
     end
     if S.RefreshCoordinator ~= nil and type(S.RefreshCoordinator.ClearAll) == "function" then
         pcall(function() S.RefreshCoordinator:ClearAll() end)
@@ -49,6 +77,8 @@ function R:Stop()
     if S.UIHostManager ~= nil and type(S.UIHostManager.HideAll) == "function" then
         pcall(function() S.UIHostManager:HideAll(false) end)
     end
+    if persistenceOk ~= true then return false, persistenceErr end
+    if featureOk ~= true then return false, featureErr end
     return true
 end
 
@@ -245,6 +275,13 @@ function R:Start()
         S.Ready = false
         S.BootError = "runtime/" .. tostring(S.BootStage or "unknown") .. ": " .. tostring(failure)
         S.SafeChat("初始化失败 [" .. tostring(S.BootStage or "unknown") .. "]：" .. tostring(failure))
+        -- Startup rollback follows the same durability ordering as normal Stop:
+        -- persist any already-loaded/migrated dirty Stores before Feature
+        -- cleanup is allowed to release Domain state. Failure here is recorded
+        -- by Persistence; teardown must still continue to leave native state safe.
+        if S.Persistence ~= nil and type(S.Persistence.Flush) == "function" then
+            pcall(function() S.Persistence:Flush() end)
+        end
         if S.FeatureRuntime ~= nil then pcall(function() S.FeatureRuntime:DisableAll("startup_failure") end) end
         if S.RefreshCoordinator ~= nil and type(S.RefreshCoordinator.ClearAll) == "function" then pcall(function() S.RefreshCoordinator:ClearAll() end) end
         if S.Demand ~= nil and type(S.Demand.ClearAll) == "function" then pcall(function() S.Demand:ClearAll("startup_failure") end) end

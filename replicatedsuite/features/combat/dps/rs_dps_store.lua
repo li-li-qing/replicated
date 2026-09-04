@@ -147,31 +147,30 @@ function F:GetBossNames() return DeepCopy(self.State.bossNames) end
 function F:SetBossName(name)
     name = NormalizeName(name)
     if name == "" then return false, "boss name required" end
-    if self:IsBossName(name) == true then return true end
-    if #self.State.bossNames >= MAX_BOSS_NAMES then return false, "boss name limit reached" end
-    self.State.bossNames[#self.State.bossNames + 1] = name
-    local ok, err = P:SaveStore(STORE_ID, { consumeDirty = true, reason = "dps_boss_name" })
-    if ok ~= true then table.remove(self.State.bossNames); return false, err end
-    return true
+    local ok, err = P:MutateStore(STORE_ID, function()
+        if self:IsBossName(name) == true then return true end
+        if #self.State.bossNames >= MAX_BOSS_NAMES then return false, "boss name limit reached" end
+        self.State.bossNames[#self.State.bossNames + 1] = name
+        return true
+    end, { durable = true, reason = "dps_boss_name" })
+    return ok, err
 end
 
 function F:DeleteBossName(name)
     name = NormalizeName(name)
-    local removed = false
-    local next = {}
-    for _, row in ipairs(self.State.bossNames) do
-        if row == name then removed = true else next[#next + 1] = row end
-    end
-    if removed ~= true then return true end
-    local previous = DeepCopy(self.State.bossNames)
-    self.State.bossNames = next
-    local ok, err = P:SaveStore(STORE_ID, { consumeDirty = true, reason = "dps_boss_name_remove" })
-    if ok ~= true then self.State.bossNames = previous; return false, err end
-    return true
+    return P:MutateStore(STORE_ID, function()
+        local removed = false
+        local nextNames = {}
+        for _, row in ipairs(self.State.bossNames) do
+            if row == name then removed = true else nextNames[#nextNames + 1] = row end
+        end
+        if removed == true then self.State.bossNames = nextNames end
+        return true
+    end, { durable = true, reason = "dps_boss_name_remove" })
 end
 
 function F:EnsureStoreLoaded()
-    if self.StoreLoaded == true then return true end
+    if type(P.IsStoreLoaded) == "function" and P:IsStoreLoaded(STORE_ID) == true then self.StoreLoaded = true; return true end
     local store = P:GetStore(STORE_ID)
     if store == nil then return false, "DPS 设置存档不可用" end
     local status, _, err = P:LoadStore(STORE_ID)
@@ -183,4 +182,10 @@ end
 
 function F:MarkStoreDirty(delayMs, reason)
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 300, reason or "dps_changed")
+end
+
+function F:MutateStore(mutator, delayMs, reason, durable)
+    return P:MutateStore(STORE_ID, function() return mutator() end, {
+        delayMs = tonumber(delayMs) or 300, reason = tostring(reason or "dps_changed"), durable = durable == true,
+    })
 end

@@ -1,4 +1,6 @@
-# 待办交接文档（Working Handoff）— 2026-09-03
+# 历史交接：待办交接文档（Working Handoff）— 2026-09-03
+
+> **Authority 已退役（2026-09-03）**：本文件中的仍有效待办已全部收拢到 [`../../CURRENT_REBUILD_STATUS.md`](../../CURRENT_REBUILD_STATUS.md) §9。后续不要继续在本文件追加活动 ToDo。本文只保留历史交接证据，本副本已位于 `Docs/Archive/Handoff/`，仅作历史追溯；活动 ToDo 统一以 CURRENT §9 为准。
 
 > 用途：本机（家里）收尾，用户带去公司机器 `git pull` 后继续改。
 > 仓库：`github.com/li-li-qing/replicated`（本地路径 `replicatedsuite/`）。

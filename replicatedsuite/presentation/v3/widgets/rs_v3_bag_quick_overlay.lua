@@ -29,7 +29,7 @@ function P:EnsureCreated()
     local function bind(widget,name,fn)
         S.UI:SafeHandler(widget,"OnClick",function()
             local ok,actionErr=fn(feature.Commands)
-            if ok~=true then S.UI:SetText(status,"失败",P.owner) end
+            if ok~=true then S.UI:SetText(status,tostring(actionErr or "失败"),P.owner) end
             P:Refresh()
             return ok,actionErr
         end,"v3_bag_quick:"..name)

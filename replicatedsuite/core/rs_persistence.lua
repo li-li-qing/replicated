@@ -41,13 +41,20 @@ local SCOPE = {
 
 S.Persistence = {
     FrameworkVersion = 2,
+    ReliabilityContractVersion = 2,
     Lifetime = LIFETIME,
     Scope = SCOPE,
     DefaultBudget = { maxDepth = 12, maxNodes = 4096, maxStringBytes = 65536, maxEntriesPerTable = 1024 },
+    -- Domain payload and framework envelope are deliberately budgeted
+    -- separately. The old code validated {payload,__rsmeta} against the exact
+    -- business budget, so a payload at its legal maxDepth could be rejected
+    -- only because Persistence added one wrapper table of its own.
+    DefaultEnvelopeOverhead = { maxDepth = 2, maxNodes = 64, maxStringBytes = 4096, maxEntriesPerTable = 16 },
     stores = {},
     order = {},
     keyOwners = {},
     defaultDelayMs = 750,
+    maxDebounceMs = 5000,
     periodCheckMs = 15000,
     nextPeriodCheckAt = 0,
     stats = {
@@ -64,6 +71,17 @@ S.Persistence = {
         keyCollisions = 0,
         clears = 0,
         clearFailures = 0,
+        unloadedWriteRejects = 0,
+        dirtyReloadRejects = 0,
+        flushFailures = 0,
+        retryQueued = 0,
+        corruptEmptyRejects = 0,
+        mutationAttempts = 0,
+        mutationPrepareRejects = 0,
+        mutationFailures = 0,
+        mutationCommitFailures = 0,
+        mutationRollbacks = 0,
+        mutationRollbackFailures = 0,
     },
 }
 local P = S.Persistence
@@ -108,6 +126,29 @@ local function NormalizeBudget(value)
         maxNodes = math.max(16, math.floor(tonumber(value.maxNodes) or tonumber(defaults.maxNodes) or 4096)),
         maxStringBytes = math.max(256, math.floor(tonumber(value.maxStringBytes) or tonumber(defaults.maxStringBytes) or 65536)),
         maxEntriesPerTable = math.max(8, math.floor(tonumber(value.maxEntriesPerTable) or tonumber(defaults.maxEntriesPerTable) or 1024)),
+    }
+end
+
+local function NormalizeEnvelopeBudget(domainBudget, explicitBudget)
+    domainBudget = NormalizeBudget(domainBudget)
+    if type(explicitBudget) == "table" then
+        local explicit = NormalizeBudget(explicitBudget)
+        -- An encoded envelope can never be allowed to be smaller than the
+        -- already-approved Domain payload. This keeps custom encoders bounded
+        -- while ensuring framework metadata cannot make a legal payload illegal.
+        return {
+            maxDepth = math.max(domainBudget.maxDepth, explicit.maxDepth),
+            maxNodes = math.max(domainBudget.maxNodes, explicit.maxNodes),
+            maxStringBytes = math.max(domainBudget.maxStringBytes, explicit.maxStringBytes),
+            maxEntriesPerTable = math.max(domainBudget.maxEntriesPerTable, explicit.maxEntriesPerTable),
+        }
+    end
+    local overhead = P.DefaultEnvelopeOverhead or {}
+    return {
+        maxDepth = domainBudget.maxDepth + math.max(1, math.floor(tonumber(overhead.maxDepth) or 2)),
+        maxNodes = domainBudget.maxNodes + math.max(8, math.floor(tonumber(overhead.maxNodes) or 64)),
+        maxStringBytes = domainBudget.maxStringBytes + math.max(256, math.floor(tonumber(overhead.maxStringBytes) or 4096)),
+        maxEntriesPerTable = math.max(domainBudget.maxEntriesPerTable, math.max(8, math.floor(tonumber(overhead.maxEntriesPerTable) or 16))),
     }
 end
 
@@ -306,6 +347,8 @@ function P:ResolveStoreKey(storeOrId)
     return nil, "unsupported scope: " .. tostring(store.scope)
 end
 
+local EncodeValue
+
 local function ValidateDefinition(def)
     if type(def) ~= "table" then return nil, "definition must be table" end
     local id = NormalizeId(def.id)
@@ -380,8 +423,16 @@ function P:RegisterStore(def)
         autoReset = def.autoReset == true,
         periodIdFromValue = def.periodIdFromValue,
         budget = NormalizeBudget(def.budget),
+        encodedBudget = NormalizeEnvelopeBudget(def.budget, def.encodedBudget),
+        registrationBudgetOk = true,
         dirty = false,
         dueAt = 0,
+        firstDirtyAt = 0,
+        lastDirtyAt = 0,
+        lastDirtyReason = nil,
+        dirtyRevision = 0,
+        lastSavedRevision = 0,
+        consecutiveSaveFailures = 0,
         loaded = false,
         loadStatus = "not_loaded",
         writeFenced = false,
@@ -407,14 +458,38 @@ function P:RegisterStore(def)
         local okDefault, defaultPayload = pcall(state.default)
         if okDefault then
             local inspection = self:InspectPayload(defaultPayload, state.budget)
+            state.lastPayloadInspection = inspection
             if inspection.ok ~= true then
+                state.registrationBudgetOk = false
                 state.lastError = "default_payload_rejected:" .. tostring(inspection.reason or "unknown")
                 Emit("error", "STORE_DEFAULT_BUDGET_EXCEEDED",
-                    "注册即超预算：store 默认 payload 无法通过自身 SaveData 预算检查，所有保存都将被拒绝", {
+                    "注册即超预算：store 默认 Domain payload 无法通过自身 SaveData 预算检查，所有保存都将被拒绝", {
                         store = id, reason = inspection.reason, nodes = inspection.nodes,
                         stringBytes = inspection.stringBytes, maxTableEntries = inspection.maxTableEntries,
                     })
+            elseif type(EncodeValue) == "function" then
+                local raw, encodeErr = EncodeValue(state, DeepCopy(defaultPayload), nil)
+                if raw == nil then
+                    state.registrationBudgetOk = false
+                    state.lastError = "default_encode_failed:" .. tostring(encodeErr or "unknown")
+                    Emit("error", "STORE_DEFAULT_ENCODE_FAILED", "注册期默认 payload 编码失败", { store = id, error = encodeErr })
+                else
+                    local encodedInspection = self:InspectPayload(raw, state.encodedBudget)
+                    state.lastEncodedInspection = encodedInspection
+                    if encodedInspection.ok ~= true then
+                        state.registrationBudgetOk = false
+                        state.lastError = "default_encoded_payload_rejected:" .. tostring(encodedInspection.reason or "unknown")
+                        Emit("error", "STORE_DEFAULT_ENVELOPE_BUDGET_EXCEEDED",
+                            "注册即超预算：Persistence 编码外壳无法通过独立 envelope 预算检查", {
+                                store = id, reason = encodedInspection.reason, nodes = encodedInspection.nodes,
+                                stringBytes = encodedInspection.stringBytes, maxTableEntries = encodedInspection.maxTableEntries,
+                            })
+                    end
+                end
             end
+        else
+            state.registrationBudgetOk = false
+            state.lastError = "default_exception:" .. tostring(defaultPayload)
         end
     end
     return state
@@ -443,7 +518,7 @@ local function DecodeValue(store, raw)
     return raw, nil
 end
 
-local function EncodeValue(store, value, periodId)
+EncodeValue = function(store, value, periodId)
     local raw
     if type(store.encode) == "function" then
         local ok, result, err = pcall(store.encode, value)
@@ -483,6 +558,18 @@ function P:LoadStore(id, options)
     options = type(options) == "table" and options or {}
     local store = self:GetStore(id)
     if store == nil then return false, nil, "unknown store" end
+    -- Never re-apply disk state over unsaved in-memory mutations. A caller that
+    -- truly wants to discard dirty working data must say so explicitly. This is
+    -- the persistence-side reload fence; Feature/page code must not be trusted
+    -- to remember it independently.
+    if store.lifetime ~= LIFETIME.Session and store.dirty == true and options.discardDirty ~= true then
+        self.stats.dirtyReloadRejects = (tonumber(self.stats.dirtyReloadRejects) or 0) + 1
+        Count("STORE_DIRTY_RELOAD_REJECTED", 1)
+        Emit("warning", "STORE_DIRTY_RELOAD_REJECTED", "存档仍有未落盘修改，已拒绝重新读取以避免覆盖当前配置", {
+            store = store.id, owner = store.owner, reason = store.lastDirtyReason, revision = store.dirtyRevision,
+        })
+        return false, nil, "dirty store reload rejected"
+    end
     if store.lifetime == LIFETIME.Session then
         if store.memory == nil then store.memory = select(1, DefaultValue(store)) end
         store.loaded, store.loadStatus, store.lastLoadAt = true, "session", NowMs()
@@ -510,13 +597,49 @@ function P:LoadStore(id, options)
         Emit("error", "STORE_LOAD_FAILED", "读取独立存档失败，已启用写保护", { store = store.id, owner = store.owner, error = loadErr })
         return false, nil, tostring(loadErr)
     end
-    if type(raw) ~= "table" then
+    if raw == nil then
+        local fresh, defaultErr = DefaultValue(store)
+        if defaultErr ~= nil then
+            store.loaded = true
+            store.loadStatus = "default_failed"
+            store.writeFenced = true
+            store.writeFenceReason = "default_failed"
+            store.lastError = tostring(defaultErr)
+            return false, nil, tostring(defaultErr)
+        end
+        if options.apply ~= false then
+            local applied, applyErr = ApplyValue(store, fresh, "empty")
+            if applied ~= true then
+                store.loaded = true
+                store.loadStatus = "apply_failed"
+                store.writeFenced = true
+                store.writeFenceReason = "apply_failed"
+                store.lastError = tostring(applyErr)
+                Emit("error", "STORE_APPLY_FAILED", "空存档默认值应用失败，已启用写保护", { store = store.id, error = applyErr })
+                return false, nil, tostring(applyErr)
+            end
+        end
         store.loaded = true
         store.loadStatus = "empty"
         store.lastError = nil
         store.writeFenced = false
         store.writeFenceReason = nil
-        return "empty", nil, nil
+        store.dirty, store.dueAt, store.firstDirtyAt = false, 0, 0
+        store.lastDirtyAt, store.lastDirtyReason = 0, nil
+        return "empty", DeepCopy(fresh), nil
+    end
+    if type(raw) ~= "table" then
+        store.loaded = true
+        store.loadStatus = "decode_failed"
+        store.lastError = "unexpected raw type: " .. tostring(type(raw))
+        store.writeFenced = true
+        store.writeFenceReason = "decode_failed"
+        self.stats.corruptEmptyRejects = (tonumber(self.stats.corruptEmptyRejects) or 0) + 1
+        self.stats.loadFailures = (tonumber(self.stats.loadFailures) or 0) + 1
+        Emit("error", "STORE_DECODE_FAILED", "存档返回了非表且非空的数据，禁止按空存档处理以避免覆盖旧配置", {
+            store = store.id, rawType = type(raw),
+        })
+        return false, nil, store.lastError
     end
 
     local meta = type(raw.__rsmeta) == "table" and raw.__rsmeta or nil
@@ -594,8 +717,13 @@ function P:LoadStore(id, options)
             end
             value = migrated
             self.stats.migrations = (tonumber(self.stats.migrations) or 0) + 1
+            local dirtyNow = NowMs()
             store.dirty = true
-            store.dueAt = NowMs() + self.defaultDelayMs
+            store.firstDirtyAt = dirtyNow
+            store.lastDirtyAt = dirtyNow
+            store.lastDirtyReason = "migration"
+            store.dirtyRevision = math.max(0, math.floor(tonumber(store.dirtyRevision) or 0)) + 1
+            store.dueAt = dirtyNow + self.defaultDelayMs
         end
     end
 
@@ -619,8 +747,13 @@ function P:LoadStore(id, options)
         end
         value = fresh
         store.periodId = currentPeriod
+        local dirtyNow = NowMs()
         store.dirty = true
-        store.dueAt = NowMs()
+        store.firstDirtyAt = dirtyNow
+        store.lastDirtyAt = dirtyNow
+        store.lastDirtyReason = "period_reset_load"
+        store.dirtyRevision = math.max(0, math.floor(tonumber(store.dirtyRevision) or 0)) + 1
+        store.dueAt = dirtyNow
         self.stats.periodResets = (tonumber(self.stats.periodResets) or 0) + 1
         Emit("info", "STORE_PERIOD_RESET", "独立存档跨周期重置", { store = store.id, oldPeriod = storedPeriod, newPeriod = currentPeriod })
     end
@@ -728,7 +861,7 @@ function P:SaveValue(id, value, options)
     -- Inspect the FINAL serialized table too. A custom encode() is allowed to
     -- reshape data, so validating only the Domain snapshot would leave a path
     -- for an encoder to exceed the RU SaveData serializer's safe envelope.
-    local encodedInspection = self:InspectPayload(raw, store.budget)
+    local encodedInspection = self:InspectPayload(raw, store.encodedBudget)
     store.lastEncodedInspection = encodedInspection
     if encodedInspection.ok ~= true then
         store.lastError = "encoded_payload_rejected:" .. tostring(encodedInspection.reason or "unknown")
@@ -771,18 +904,33 @@ function P:SaveValue(id, value, options)
             S.WarnOnce("store_save_failed_" .. store.id,
                 "[" .. store.id .. "] 存档保存失败，本次修改可能无法保留：" .. tostring(saveErr or "unknown"))
         end
-        if options.consumeDirty ~= true then
-            store.dirty = true
+        store.consecutiveSaveFailures = (tonumber(store.consecutiveSaveFailures) or 0) + 1
+        -- Dirty writes are retried at a bounded cadence regardless of whether
+        -- the caller used an explicit Commit path. Without this, a failed
+        -- consumeDirty commit could be retried every Storage tick or simply be
+        -- forgotten by a caller that proceeds to reload. Direct transactional
+        -- writes that were never dirty remain caller-owned and are not queued.
+        if store.dirty == true then
             store.dueAt = NowMs() + math.min(30000, math.max(2000, tonumber(options.retryMs) or 5000))
+            self.stats.retryQueued = (tonumber(self.stats.retryQueued) or 0) + 1
         end
         return false, store.lastError
     end
 
     store.periodId = periodId
+    store.loaded = true
+    if store.loadStatus == nil or store.loadStatus == "not_loaded" or store.loadStatus == "scope_pending" then
+        store.loadStatus = "saved"
+    end
     store.lastSaveAt = NowMs()
     store.lastError = nil
+    store.lastSavedRevision = math.max(tonumber(store.lastSavedRevision) or 0, tonumber(store.dirtyRevision) or 0)
+    store.consecutiveSaveFailures = 0
     store.dirty = false
     store.dueAt = 0
+    store.firstDirtyAt = 0
+    store.lastDirtyAt = 0
+    store.lastDirtyReason = nil
     self.stats.saves = (tonumber(self.stats.saves) or 0) + 1
     Count("STORE_SAVED", 1)
     return true
@@ -798,14 +946,44 @@ function P:CanWrite(id)
     local store = self:GetStore(id)
     if store == nil then return false, "unknown store" end
     if store.lifetime == LIFETIME.Session then return true end
+    if store.loaded ~= true then return false, "store_not_loaded:" .. tostring(store.loadStatus or "not_loaded") end
     if store.writeFenced == true then return false, store.writeFenceReason or store.lastError or "store write-fenced" end
     return true
 end
 
+-- Pre-mutation helper for shared UI bindings and other generic callers. It is
+-- intentionally called BEFORE Domain mutation; MarkDirty itself will never
+-- auto-load because doing so after a mutation could re-apply disk state over the
+-- very value the caller is trying to persist.
+function P:PrepareWrite(id)
+    local store = self:GetStore(id)
+    if store == nil then return false, "unknown store" end
+    if store.lifetime == LIFETIME.Session then return true end
+    if store.loaded ~= true then
+        local status, _, loadErr = self:LoadStore(id)
+        if status ~= true and status ~= "empty" then return false, loadErr or tostring(status or "load failed") end
+    end
+    return self:CanWrite(id)
+end
+
 function P:SaveStore(id, options)
+    options = type(options) == "table" and options or {}
     local store = self:GetStore(id)
     if store == nil then return false, "unknown store" end
     if store.lifetime == LIFETIME.Session then return self:SaveValue(id, store.memory, options) end
+    -- Direct SaveStore used to bypass the load-before-write fence entirely.
+    -- That allowed a Feature command to serialize default Domain memory over a
+    -- perfectly valid older Store when the Feature had not been enabled/loaded
+    -- yet. Full-replacement transactional shard writers may opt in explicitly;
+    -- ordinary settings/index stores must always be loaded first.
+    if store.loaded ~= true and options.allowUnloadedWrite ~= true then
+        self.stats.unloadedWriteRejects = (tonumber(self.stats.unloadedWriteRejects) or 0) + 1
+        Count("STORE_WRITE_BEFORE_LOAD_REJECTED", 1)
+        Emit("error", "STORE_WRITE_BEFORE_LOAD_REJECTED", "配置尚未完成读取，已拒绝直接保存以避免默认值覆盖旧存档", {
+            store = store.id, owner = store.owner, loadStatus = store.loadStatus, reason = tostring(options.reason or "direct_save"),
+        })
+        return false, "store_not_loaded:" .. tostring(store.loadStatus or "not_loaded")
+    end
     local ok, value = pcall(store.get)
     if not ok then
         store.lastError = tostring(value)
@@ -818,6 +996,95 @@ end
 -- NOTE: the old ReadLegacy bridge (arbitrary SaveData key reads for old-plugin
 -- migration) was removed on 2026-09-01 by directive: the old plugin generation
 -- is reference-only and its data is never migrated into V3 stores.
+
+-- Reliability v2 mutation transaction. Public business mutations should prefer
+-- this over "mutate Domain -> MarkDirty". The disk value is loaded before the
+-- mutation, the registered Domain getter is snapshotted, and any mutation/commit
+-- failure restores both Domain state and Persistence dirty metadata.
+function P:MutateStore(id, mutate, options)
+    options = type(options) == "table" and options or {}
+    if type(mutate) ~= "function" then return false, "mutation callback required" end
+    local store = self:GetStore(id)
+    if store == nil then return false, "unknown store" end
+    self.stats.mutationAttempts = (tonumber(self.stats.mutationAttempts) or 0) + 1
+
+    local prepared, prepareErr = self:PrepareWrite(id)
+    if prepared ~= true then
+        self.stats.mutationPrepareRejects = (tonumber(self.stats.mutationPrepareRejects) or 0) + 1
+        return false, prepareErr or "store prepare failed"
+    end
+
+    local beforeValue
+    if store.lifetime == LIFETIME.Session then
+        beforeValue = DeepCopy(store.memory)
+    else
+        local got, snapshot = pcall(store.get)
+        if got ~= true then return false, "pre-mutation snapshot failed: " .. tostring(snapshot) end
+        beforeValue = DeepCopy(snapshot)
+    end
+    local beforeMeta = {
+        dirty = store.dirty == true, dueAt = tonumber(store.dueAt) or 0,
+        firstDirtyAt = tonumber(store.firstDirtyAt) or 0, lastDirtyAt = tonumber(store.lastDirtyAt) or 0,
+        lastDirtyReason = store.lastDirtyReason, dirtyRevision = tonumber(store.dirtyRevision) or 0,
+        lastSavedRevision = tonumber(store.lastSavedRevision) or 0,
+        consecutiveSaveFailures = tonumber(store.consecutiveSaveFailures) or 0,
+    }
+
+    local function Rollback(reason)
+        local rollbackOk, rollbackErr
+        if store.lifetime == LIFETIME.Session then
+            store.memory = DeepCopy(beforeValue)
+            rollbackOk = true
+        else
+            rollbackOk, rollbackErr = ApplyValue(store, beforeValue, "mutation_rollback:" .. tostring(reason or "failed"))
+        end
+        if rollbackOk == true then
+            store.dirty = beforeMeta.dirty
+            store.dueAt = beforeMeta.dueAt
+            store.firstDirtyAt = beforeMeta.firstDirtyAt
+            store.lastDirtyAt = beforeMeta.lastDirtyAt
+            store.lastDirtyReason = beforeMeta.lastDirtyReason
+            store.dirtyRevision = beforeMeta.dirtyRevision
+            store.lastSavedRevision = beforeMeta.lastSavedRevision
+            store.consecutiveSaveFailures = beforeMeta.consecutiveSaveFailures
+            self.stats.mutationRollbacks = (tonumber(self.stats.mutationRollbacks) or 0) + 1
+            return true
+        end
+        store.writeFenced = true
+        store.writeFenceReason = "mutation_rollback_failed"
+        store.lastError = tostring(rollbackErr or "mutation rollback failed")
+        self.stats.mutationRollbackFailures = (tonumber(self.stats.mutationRollbackFailures) or 0) + 1
+        Emit("error", "STORE_MUTATION_ROLLBACK_FAILED", "持久化事务回滚失败，已对 Store 启用写保护", {
+            store = store.id, reason = tostring(reason or "failed"), error = store.lastError,
+        })
+        return false, store.lastError
+    end
+
+    local callOk, result, mutationErr, extra = pcall(mutate, store)
+    if callOk ~= true or result == false then
+        self.stats.mutationFailures = (tonumber(self.stats.mutationFailures) or 0) + 1
+        local reason = callOk == true and tostring(mutationErr or "mutation rejected") or tostring(result)
+        Rollback(reason)
+        return false, reason
+    end
+
+    local committed, commitErr
+    if options.durable == true then
+        committed, commitErr = self:SaveStore(id, {
+            consumeDirty = true,
+            reason = tostring(options.reason or "mutation_durable"),
+            retryMs = options.retryMs,
+        })
+    else
+        committed, commitErr = self:MarkDirty(id, tonumber(options.delayMs) or self.defaultDelayMs, tostring(options.reason or "mutation"))
+    end
+    if committed ~= true then
+        self.stats.mutationCommitFailures = (tonumber(self.stats.mutationCommitFailures) or 0) + 1
+        Rollback(commitErr or "mutation commit failed")
+        return false, commitErr or "mutation commit failed"
+    end
+    return true, mutationErr, extra
+end
 
 function P:ClearStore(id, options)
     options = type(options) == "table" and options or {}
@@ -853,6 +1120,8 @@ function P:ClearStore(id, options)
     end
     store.loaded, store.loadStatus = true, "empty"
     store.dirty, store.dueAt, store.periodId = false, 0, nil
+    store.firstDirtyAt, store.lastDirtyAt, store.lastDirtyReason = 0, 0, nil
+    store.consecutiveSaveFailures = 0
     store.writeFenced, store.writeFenceReason, store.lastError = false, nil, nil
     store.lastLoadAt = NowMs()
     self.stats.clears = (tonumber(self.stats.clears) or 0) + 1
@@ -864,10 +1133,33 @@ function P:MarkDirty(id, delayMs, reason)
     local store = self:GetStore(id)
     if store == nil then return false, "unknown store" end
     if store.lifetime == LIFETIME.Session then return true end
+    if store.loaded ~= true then
+        self.stats.unloadedWriteRejects = (tonumber(self.stats.unloadedWriteRejects) or 0) + 1
+        Count("STORE_WRITE_BEFORE_LOAD_REJECTED", 1)
+        Emit("error", "STORE_WRITE_BEFORE_LOAD_REJECTED", "配置尚未完成读取，已拒绝保存意图以避免默认值覆盖旧存档", {
+            store = store.id, owner = store.owner, loadStatus = store.loadStatus, reason = tostring(reason or ""),
+        })
+        return false, "store_not_loaded:" .. tostring(store.loadStatus or "not_loaded")
+    end
     if store.writeFenced == true then return false, store.writeFenceReason or store.lastError or "store write-fenced" end
+    local now = NowMs()
+    local delay = math.max(0, tonumber(delayMs) or self.defaultDelayMs)
+    if store.dirty ~= true then
+        store.firstDirtyAt = now
+    end
     store.dirty = true
-    local due = NowMs() + math.max(0, tonumber(delayMs) or self.defaultDelayMs)
-    if store.dueAt == 0 or due < store.dueAt then store.dueAt = due end
+    store.lastDirtyAt = now
+    store.lastDirtyReason = tostring(reason or "changed")
+    store.dirtyRevision = math.max(0, math.floor(tonumber(store.dirtyRevision) or 0)) + 1
+    if delay <= 0 then
+        store.dueAt = now
+    else
+        -- True debounce: save after the latest edit, but bound continuous input
+        -- so a long slider drag cannot postpone persistence forever.
+        local requested = now + delay
+        local absoluteCap = (tonumber(store.firstDirtyAt) or now) + math.max(delay, tonumber(self.maxDebounceMs) or 5000)
+        store.dueAt = math.min(requested, absoluteCap)
+    end
     Count("STORE_DIRTY", 1)
     return true
 end
@@ -891,6 +1183,10 @@ end
 function P:RevalidateStore(id)
     local store = self:GetStore(id)
     if store == nil then return false, "unknown store" end
+    if store.lifetime ~= LIFETIME.Session and store.loaded ~= true then
+        local status, _, loadErr = self:LoadStore(id)
+        if status ~= true and status ~= "empty" then return false, loadErr or tostring(status or "load failed") end
+    end
     local fence = tostring(store.writeFenceReason or "")
     if fence:match("^payload_rejected:") == nil and fence:match("^encoded_payload_rejected:") == nil then
         return false, "store is not payload-fenced"
@@ -908,28 +1204,39 @@ function P:RevalidateStore(id)
     if periodId == nil then periodId = select(1, self:GetPeriodId(store.lifetime, store.resetPolicy)) end
     local raw, encodeErr = EncodeValue(store, DeepCopy(value), periodId)
     if raw == nil then return false, encodeErr end
-    local encodedInspection = self:InspectPayload(raw, store.budget)
+    local encodedInspection = self:InspectPayload(raw, store.encodedBudget)
     store.lastEncodedInspection = encodedInspection
     if encodedInspection.ok ~= true then return false, encodedInspection.reason end
     store.writeFenced = false
     store.writeFenceReason = nil
     store.lastError = nil
     store.dirty = true
-    store.dueAt = NowMs()
+    store.firstDirtyAt = NowMs()
+    store.lastDirtyAt = store.firstDirtyAt
+    store.lastDirtyReason = "revalidate"
+    store.dirtyRevision = math.max(0, math.floor(tonumber(store.dirtyRevision) or 0)) + 1
+    store.dueAt = store.firstDirtyAt
     return true
 end
 
 function P:Flush(owner)
-    local allOk = true
+    local allOk, failures = true, {}
     owner = NonEmptyText(owner)
     for _, id in ipairs(self.order) do
         local store = self.stores[id]
         if store ~= nil and store.dirty == true and (owner == nil or store.owner == owner) then
-            local ok = self:SaveStore(id)
-            if ok ~= true then allOk = false end
+            local ok, err = self:SaveStore(id, { reason = "flush", retryMs = 5000 })
+            if ok ~= true then
+                allOk = false
+                failures[#failures + 1] = tostring(id) .. ":" .. tostring(err or store.lastError or "save failed")
+            end
         end
     end
-    return allOk
+    if allOk ~= true then
+        self.stats.flushFailures = (tonumber(self.stats.flushFailures) or 0) + 1
+        Emit("error", "STORE_FLUSH_FAILED", "持久化 Flush 未能安全落盘全部修改", { owner = owner, failures = failures })
+    end
+    return allOk, failures
 end
 
 function P:Tick()
@@ -954,6 +1261,10 @@ function P:Tick()
                         local old = store.periodId
                         store.periodId = current
                         store.dirty = true
+                        store.firstDirtyAt = now
+                        store.lastDirtyAt = now
+                        store.lastDirtyReason = "period_reset"
+                        store.dirtyRevision = math.max(0, math.floor(tonumber(store.dirtyRevision) or 0)) + 1
                         store.dueAt = now
                         self.stats.periodResets = (tonumber(self.stats.periodResets) or 0) + 1
                         Emit("info", "STORE_PERIOD_RESET", "在线跨周期重置", { store = store.id, oldPeriod = old, newPeriod = current })
@@ -987,15 +1298,20 @@ end
 
 function P:Describe()
     local rows = {}
-    local dirty, fenced, contractV2, contractV3, scopePending, budgetProtected = 0, 0, 0, 0, 0, 0
+    local dirty, fenced, contractV2, contractV3, scopePending, budgetProtected, envelopeBudgetProtected, unloadedDirty, registrationBudgetFailed = 0, 0, 0, 0, 0, 0, 0, 0, 0
     for _, id in ipairs(self.order) do
         local store = self.stores[id]
         if store ~= nil then
-            if store.dirty == true then dirty = dirty + 1 end
+            if store.dirty == true then
+                dirty = dirty + 1
+                if store.loaded ~= true then unloadedDirty = unloadedDirty + 1 end
+            end
             if store.writeFenced == true then fenced = fenced + 1 end
             if tonumber(store.contractVersion) and tonumber(store.contractVersion) >= 2 then contractV2 = contractV2 + 1 end
             if tonumber(store.contractVersion) and tonumber(store.contractVersion) >= 3 then contractV3 = contractV3 + 1 end
             if type(store.budget) == "table" then budgetProtected = budgetProtected + 1 end
+            if type(store.encodedBudget) == "table" then envelopeBudgetProtected = envelopeBudgetProtected + 1 end
+            if store.registrationBudgetOk ~= true then registrationBudgetFailed = registrationBudgetFailed + 1 end
             if store.loadStatus == "scope_pending" then scopePending = scopePending + 1 end
             rows[#rows + 1] = {
                 id = store.id,
@@ -1014,7 +1330,15 @@ function P:Describe()
                 resolvedKey = store.resolvedKey,
                 lastError = store.lastError,
                 lastSaveAt = store.lastSaveAt,
+                firstDirtyAt = store.firstDirtyAt,
+                lastDirtyAt = store.lastDirtyAt,
+                lastDirtyReason = store.lastDirtyReason,
+                dirtyRevision = store.dirtyRevision,
+                lastSavedRevision = store.lastSavedRevision,
+                consecutiveSaveFailures = store.consecutiveSaveFailures,
                 budget = DeepCopy(store.budget),
+                encodedBudget = DeepCopy(store.encodedBudget),
+                registrationBudgetOk = store.registrationBudgetOk == true,
                 lastPayloadInspection = DeepCopy(store.lastPayloadInspection),
                 lastEncodedInspection = DeepCopy(store.lastEncodedInspection),
             }
@@ -1029,6 +1353,10 @@ function P:Describe()
         legacyContracts = #rows - contractV2,
         scopePending = scopePending,
         budgetProtected = budgetProtected,
+        envelopeBudgetProtected = envelopeBudgetProtected,
+        registrationBudgetFailed = registrationBudgetFailed,
+        unloadedDirty = unloadedDirty,
+        reliabilityContractVersion = self.ReliabilityContractVersion,
         rows = rows,
         stats = DeepCopy(self.stats),
     }

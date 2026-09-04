@@ -223,15 +223,8 @@ end
 -- double-marking the Store from normal UI controls.
 function F:SetSettingValue(key, value)
     key = tostring(key or "")
-    local settings = self:GetSettings()
-    local previous = type(settings) == "table" and settings[key] or nil
-    local ok, err = self:ApplySettingRaw(key, value)
-    if ok ~= true then return false, err end
-    local dirtyOk, dirtyErr = self:MarkStoreDirty(300, "setting_" .. key)
-    if dirtyOk ~= true then
-        self:ApplySettingRaw(key, previous)
-        return false, dirtyErr or "DPS 设置保存排队失败"
-    end
+    local dirtyOk, dirtyErr = self:MutateStore(function() return self:ApplySettingRaw(key, value) end, 300, "setting_" .. key)
+    if dirtyOk ~= true then return false, dirtyErr or "DPS 设置保存排队失败" end
     PublishSettingChanged(key)
     return true
 end

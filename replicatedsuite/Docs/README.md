@@ -26,6 +26,14 @@ Replicated Suite 是 ArcheRage RU 客户端的一个公开 Addon。**运行时 A
 - **工程与文档规则**：[`ENGINEERING_RULES.md`](ENGINEERING_RULES.md)
 - **静态 ID 权威**：[`STATIC_DATA.md`](STATIC_DATA.md)
 
+### ToDo / 开发队列只认这一套
+
+- **当前施工队列 / 下一步**：只看 [`CURRENT_REBUILD_STATUS.md`](CURRENT_REBUILD_STATUS.md) 的 **§9「统一 ToDo Authority 与下一开发顺序」**。这里负责决定“现在先做什么”。
+- **全产品能力库存 / 完成度**：[`Rebuild/PRODUCT_COMPLETION_MATRIX.md`](Rebuild/PRODUCT_COMPLETION_MATRIX.md) 只负责记录能力是否 `IMPLEMENTED / PARTIAL / TODO / SPECIFIC_RUNTIME_BLOCKED`，**不再拥有独立施工优先级**。
+- **历史交接 / 临时待办**：完成收口后统一进入 `Archive/Handoff/`；任何仍有效的事项必须先回填到 `CURRENT_REBUILD_STATUS.md` §9，不能继续形成第二份活动 ToDo。
+
+冲突时：**CURRENT §9 的施工顺序 > Product Matrix 的能力状态 > Archive/Handoff 的历史记录**。
+
 ## 架构细节（按域查）
 
 - Core（产品/UI/HUD/Runtime/API/Foundation/Engineering）：[`Architecture/CORE_ARCHITECTURE.md`](Architecture/CORE_ARCHITECTURE.md)

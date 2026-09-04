@@ -69,7 +69,7 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.74-ui-layout-editor-workspace-foundation"
+S.BuildTag = "v3-m1.16.0.18.82-local-continuation-mutation-tx"
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}
 S.SaveKey = tostring(S.Config.SaveKey or "replicated_suite_v1")
@@ -440,7 +440,20 @@ local function ReloadCodeFromDisk(source)
     -- authority; window geometry, feature preferences and floating-window state
     -- all persist through this single V3 persistence boundary.
     if S.Persistence ~= nil and type(S.Persistence.Flush) == "function" then
-        pcall(function() S.Persistence:Flush() end)
+        local callOk, flushed, failures = pcall(function() return S.Persistence:Flush() end)
+        if callOk ~= true or flushed ~= true then
+            local detail = nil
+            if callOk ~= true then
+                detail = tostring(flushed or "Flush exception")
+            elseif type(failures) == "table" and #failures > 0 then
+                detail = table.concat(failures, "；", 1, math.min(#failures, 2))
+                if #failures > 2 then detail = detail .. "；另有 " .. tostring(#failures - 2) .. " 项" end
+            else
+                detail = tostring(failures or "存在未保存配置")
+            end
+            SafeChat("重载已取消：配置尚未全部安全保存。" .. (detail ~= "" and (" " .. detail) or ""))
+            return false
+        end
     end
 
     local current = nil

@@ -253,7 +253,7 @@ function F:SaveRecord(storageId, record)
     if id == nil then return false, regErr end
     local previous = self.Records[storageId] ~= nil and DeepCopy(self.Records[storageId]) or nil
     self.Records[storageId] = NormalizeRecord(record)
-    local ok, err = P:SaveStore(id, { consumeDirty = true, reason = "death_review_record" })
+    local ok, err = P:SaveStore(id, { consumeDirty = true, allowUnloadedWrite = true, reason = "death_review_record" })
     if ok ~= true then self.Records[storageId] = previous; return false, err end
     return true
 end
@@ -276,6 +276,8 @@ function F:ChooseFreeRecordSlot()
 end
 
 function F:CommitDeathRecord(record)
+    local loaded, loadErr = self:EnsureStoreLoaded()
+    if loaded ~= true then return false, loadErr or "死亡回顾设置读取失败" end
     local previousIndex = DeepCopy(self.State.history)
     local serial = math.max(0, tonumber(previousIndex.serial) or 0) + 1
     record = NormalizeRecord(record, serial)
@@ -301,8 +303,14 @@ function F:MarkStoreDirty(delayMs, reason)
     return P:MarkDirty(INDEX_STORE, tonumber(delayMs) or 350, reason or "death_review_changed")
 end
 
+function F:MutateStore(mutator, delayMs, reason, durable)
+    return P:MutateStore(INDEX_STORE, function() return mutator() end, {
+        delayMs = tonumber(delayMs) or 350, reason = tostring(reason or "death_review_changed"), durable = durable == true,
+    })
+end
+
 function F:EnsureStoreLoaded()
-    if self.StoreLoaded == true then return true end
+    if type(P.IsStoreLoaded) == "function" and P:IsStoreLoaded(INDEX_STORE) == true then self.StoreLoaded = true; return true end
     local store = P:GetStore(INDEX_STORE)
     if store == nil then return false, "死亡回顾索引存档不可用" end
     local status, _, err = P:LoadStore(INDEX_STORE)
@@ -327,20 +335,16 @@ function F:ApplySettingRaw(key, value)
 end
 
 function F:SetMaxHistoryPersistent(value)
-    local previousHistory = DeepCopy(self.State.history)
-    local previousValue = self.State.settings.maxHistory
-    self.State.settings.maxHistory = ClampInt(value, 1, MAX_HISTORY, 10)
-    while #self.State.history.entries > self.State.settings.maxHistory do table.remove(self.State.history.entries, 1) end
-    local ok, err = P:SaveStore(INDEX_STORE, { consumeDirty = true, reason = "death_review_max_history" })
-    if ok ~= true then
-        self.State.settings.maxHistory = previousValue
-        self.State.history = previousHistory
-        return false, err
-    end
-    return true
+    return self:MutateStore(function()
+        self.State.settings.maxHistory = ClampInt(value, 1, MAX_HISTORY, 10)
+        while #self.State.history.entries > self.State.settings.maxHistory do table.remove(self.State.history.entries, 1) end
+        return true
+    end, 0, "death_review_max_history", true)
 end
 
 function F:DeleteHistoryRecord(serial)
+    local loaded, loadErr = self:EnsureStoreLoaded()
+    if loaded ~= true then return false, loadErr or "死亡回顾设置读取失败" end
     serial = tonumber(serial)
     if serial == nil then return false, "死亡回顾记录编号无效" end
     local entries = self.State.history.entries
@@ -355,10 +359,11 @@ function F:DeleteHistoryRecord(serial)
 
     -- The lightweight index is the logical authority. Remove from that index
     -- transactionally first; a stale physical shard can never resurrect a row.
-    local previous = DeepCopy(self.State.history)
-    table.remove(self.State.history.entries, removeIndex)
-    local ok, err = P:SaveStore(INDEX_STORE, { consumeDirty = true, reason = "death_review_delete_record" })
-    if ok ~= true then self.State.history = previous; return false, err end
+    local ok, err = self:MutateStore(function()
+        table.remove(self.State.history.entries, removeIndex)
+        return true
+    end, 0, "death_review_delete_record", true)
+    if ok ~= true then return false, err end
 
     local storageId = tonumber(meta.storageId)
     if storageId ~= nil then
@@ -376,6 +381,8 @@ function F:DeleteHistoryRecord(serial)
 end
 
 function F:ClearHistoryStore()
+    local loaded, loadErr = self:EnsureStoreLoaded()
+    if loaded ~= true then return false, loadErr or "死亡回顾设置读取失败" end
     local previous = DeepCopy(self.State.history)
     self.State.history = { serial = math.max(0, tonumber(previous and previous.serial) or 0), entries = {} }
     local ok, err = P:SaveStore(INDEX_STORE, { consumeDirty = true, reason = "death_review_clear_history" })

@@ -46,24 +46,11 @@ local function Action(capability, object, method, ...)
     return S.Api:ActionCapability(capability, object, method, ...)
 end
 
-local function Save(storeId, reason)
-    if P and type(P.MarkDirty) == "function" then return P:MarkDirty(storeId, 300, reason or "life_feature_changed") end
-    return false, "persistence unavailable"
-end
-
-local function RestoreTable(target, snapshot)
-    for key in pairs(target) do target[key] = nil end
-    for key, value in pairs(type(snapshot) == "table" and snapshot or {}) do target[key] = Copy(value) end
-end
-
 local function PersistLifeMutation(feature, reason, mutator)
-    local before = Copy(feature.State)
-    local callOk, mutationOk, mutationErr = pcall(mutator, feature.State)
-    if callOk ~= true then RestoreTable(feature.State, before); return false, tostring(mutationOk) end
-    if mutationOk == false then RestoreTable(feature.State, before); return false, mutationErr or "状态修改被拒绝" end
-    local marked, markErr = Save(feature.storeId, reason)
-    if marked ~= true then RestoreTable(feature.State, before); return false, markErr or "配置保存意图登记失败" end
-    return true, mutationErr
+    if type(P.MutateStore) ~= "function" then return false, "Persistence mutation transaction unavailable" end
+    return P:MutateStore(feature.storeId, function()
+        return mutator(feature.State)
+    end, { delayMs = 300, reason = reason or "life_feature_changed" })
 end
 
 local function InstallLifeWidgetContract(feature, policy)
@@ -80,6 +67,10 @@ local function InstallLifeWidgetContract(feature, policy)
     end
     function feature:SetWidgetWindowState(value, reason)
         if type(value) ~= "table" or type(self.State) ~= "table" then return false, "生活悬浮窗状态不可用" end
+        if type(P.PrepareWrite) == "function" then
+            local prepared, prepareErr = P:PrepareWrite(self.storeId)
+            if prepared ~= true then return false, prepareErr or "生活悬浮窗配置尚未安全读取" end
+        end
         local floating = S.RSUI and S.RSUI.FloatingSurface or nil
         self.State.widgetWindow = type(floating) == "table" and type(floating.NormalizeState) == "function"
             and floating:NormalizeState(value, self:GetWidgetWindowPolicy()) or Copy(value)
@@ -132,6 +123,19 @@ local function Text(v, fallback)
     return tostring(v)
 end
 
+local function Money(v, fallback)
+    if v == nil then return fallback or "--" end
+    local utils = S.Utils
+    if type(utils) == "table" and type(utils.FormatMoney) == "function" then
+        local n = tonumber(v)
+        if n ~= nil then
+            local ok, text = pcall(utils.FormatMoney, n)
+            if ok and type(text) == "string" and text ~= "" then return text end
+        end
+    end
+    return tostring(v)
+end
+
 ------------------------------------------------------------------------
 -- Trade
 ------------------------------------------------------------------------
@@ -142,6 +146,7 @@ Trade.State = { fromZone = nil, toZone = nil, favorites = {}, sortMode = "ratio"
 Trade.Authority = { version = 2, revision = 0, zones = {}, sellableZones = {}, rows = {}, status = "idle", error = nil, inFlight = nil, zoneFallback = false, sellableFallback = false, sellableError = nil }
 InstallLifeWidgetContract(Trade, { defaultWidth = 470, defaultHeight = 310, minWidth = 260, minHeight = 140, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 })
 local TA = Trade.Authority
+TA.sellableCache = {}
 local TRADE_CONTINENT_ORDER = { west = 1, east = 2, auroria = 3, other = 4 }
 local TRADE_ANCHORS_W = { [1] = true, [5] = true, [8] = true, [20] = true }
 local TRADE_ANCHORS_E = { [4] = true, [12] = true, [17] = true }
@@ -305,7 +310,7 @@ local function BuildTradeMaterialProjection(name)
         if status == "excluded" then
             detail = detail .. "（不计成本）"
         elseif unitCost ~= nil and totalCost ~= nil then
-            detail = detail .. "（单价 " .. tostring(unitCost) .. " / 小计 " .. tostring(totalCost) .. "）"
+            detail = detail .. "（单价 " .. Money(unitCost) .. " / 小计 " .. Money(totalCost) .. "）"
         else
             detail = detail .. (status == "explicit_quote_required" and "（价格需显式询价）" or "（单价待确认）")
         end
@@ -349,6 +354,7 @@ local function TradeMaterialCost(name)
 end
 
 function TA:RefreshZones()
+    self.sellableCache = {}
     local ok, value, err = Call("X2Store:GetProductionZoneGroups", StoreApi, "GetProductionZoneGroups")
     if ok ~= true then self.status, self.error = "unavailable", err or "production zones unavailable"; return false, self.error end
     self.zones = NormalizeTradeZones(value)
@@ -369,9 +375,22 @@ function TA:RefreshZones()
     return true
 end
 
-function TA:RefreshSellable()
+function TA:RefreshSellable(force)
     local from = Number(Trade.State.fromZone)
     if from == nil then self.sellableZones, Trade.State.toZone = {}, nil; return true end
+    -- Session cache: cycling routes re-reads the same small zone list many
+    -- times; skip the per-click GetSellableZoneGroups round trip unless the
+    -- caller explicitly forces a refresh.
+    local cached = force ~= true and self.sellableCache[from] or nil
+    if cached ~= nil then
+        self.sellableZones, self.sellableFallback, self.sellableError = cached.list, cached.fallback, cached.error
+        local found = false
+        for _, row in ipairs(self.sellableZones or {}) do if row.id == Number(Trade.State.toZone) then found = true end end
+        if not found then Trade.State.toZone = nil end
+        self.revision = self.revision + 1
+        PublishFeatureUpdate(Trade, self.revision, "sellable_cached")
+        return true
+    end
     local ok, value, sellableErr = Call("X2Store:GetSellableZoneGroups", StoreApi, "GetSellableZoneGroups", from)
     local list = ok and NormalizeTradeZones(value) or {}
     self.sellableFallback, self.sellableError = false, nil
@@ -385,6 +404,7 @@ function TA:RefreshSellable()
         self.sellableError = sellableErr or (ok and "可售地区列表为空，已使用生产地区候选" or "可售地区 API 不可用，已使用生产地区候选")
     end
     self.sellableZones = list
+    self.sellableCache[from] = { list = list, fallback = self.sellableFallback, error = self.sellableError }
     local found = false
     for _, row in ipairs(list) do if row.id == Number(Trade.State.toZone) then found = true end end
     if not found then Trade.State.toZone = nil; self.rows = {}; self.status = "idle" end
@@ -428,7 +448,7 @@ function TA:OnRatio(info)
                     key = tostring(flight.from) .. ":" .. tostring(flight.to) .. ":" .. tostring(name),
                     name = Text(name), sourceName = Text(name), ratio = ratio,
                     rate = tostring(math.floor(ratio + 0.5)) .. "%", priceCopper = price,
-                    price = price and tostring(price) or "--",
+                    price = price and Money(price) or "--",
                     materials = materialProjection.summary,
                     -- Generic V3 business pages expose row.text as their fact
                     -- column; keep it wired to the exact same bounded summary
@@ -444,7 +464,7 @@ function TA:OnRatio(info)
                     materialCostStatus = materialProjection.costStatus,
                     materialCostComplete = materialProjection.costComplete,
                     materialSubtotalCopper = materialProjection.subtotalCopper,
-                    profit = profit and tostring(profit) or (price and "待材料价格" or "--"),
+                    profit = profit and Money(profit) or (price and "待材料价格" or "--"),
                     tone = ratio >= 125 and "green" or (ratio >= 115 and "yellow" or "red"),
                 }
             end
@@ -503,15 +523,12 @@ function Trade:Refresh() if not self.enabled or self.consumerCount <= 0 then ret
 function Trade:GetProjection() return TA:GetProjection() end
 function Trade:GetRouteSettings() return { fromZone = Trade.State.fromZone, toZone = Trade.State.toZone, sortMode = Trade.State.sortMode } end
 function Trade:SetFrom(id)
-    local beforeState, beforeSellable, beforeRows, beforeStatus, beforeError = Copy(Trade.State), Copy(TA.sellableZones), Copy(TA.rows), TA.status, TA.error
-    Trade.State.fromZone = Number(id)
+    local persisted, persistErr = PersistLifeMutation(self, "trade_from", function(state)
+        state.fromZone = Number(id)
+        return true
+    end)
+    if persisted ~= true then return false, persistErr or "起点保存失败" end
     TA:RefreshSellable()
-    local marked, markErr = Save(self.storeId, "trade_from")
-    if marked ~= true then
-        RestoreTable(Trade.State, beforeState); TA.sellableZones, TA.rows, TA.status, TA.error = beforeSellable, beforeRows, beforeStatus, beforeError
-        TA.revision = TA.revision + 1; PublishFeatureUpdate(Trade, TA.revision, "trade_from_rollback")
-        return false, markErr or "起点保存失败"
-    end
     return true
 end
 function Trade:SetTo(id)
@@ -543,7 +560,23 @@ function Trade:CycleTo(delta)
     if id == nil then return false, "没有可用目的地" end
     return self:SetTo(id)
 end
+function Trade:QuoteMaterial(materialKey)
+    local metaTable = S.Data and S.Data.TradeMaterialAuctionMeta or nil
+    local item = type(metaTable) == "table" and metaTable[materialKey] or nil
+    local itemType, itemGrade = item and tonumber(item.itemType) or nil, item and tonumber(item.itemGrade) or nil
+    if itemType == nil then return false, "该材料没有已验证的拍卖行身份，无法询价" end
+    local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
+    if type(queue) ~= "table" or type(queue.RequestQuote) ~= "function" then return false, "报价服务不可用" end
+    local ok, status = queue:RequestQuote("life_trade", itemType, itemGrade, function()
+        TA.revision = TA.revision + 1
+        PublishFeatureUpdate(Trade, TA.revision, "trade_quote_completed")
+    end)
+    if ok ~= true then return false, status or "报价请求失败" end
+    return true, status or "queued"
+end
+
 Trade.Commands = { Refresh = function(_, reason) return Trade:Refresh(reason) end, SetFrom = function(_, id) return Trade:SetFrom(id) end, SetTo = function(_, id) return Trade:SetTo(id) end,
+    QuoteMaterial = function(_, materialKey) return Trade:QuoteMaterial(materialKey) end,
     CycleFrom = function(_, delta) return Trade:CycleFrom(delta) end, CycleTo = function(_, delta) return Trade:CycleTo(delta) end,
     GetWidgetVisible = function() return Trade:GetWidgetVisible() end, SetWidgetVisible = function(_, value, reason) return Trade:SetWidgetVisible(value, reason) end,
     SetWidgetWindowState = function(_, value, reason) return Trade:SetWidgetWindowState(value, reason) end,
@@ -1454,7 +1487,19 @@ function Fishing:AcquireConsumer(token) if not self.enabled then return false, "
 function Fishing:ReleaseConsumer(token) return self.Demand:Release(token, "fishing_consumer") end
 function Fishing:Refresh() if not self.enabled or self.consumerCount <= 0 then if self.hotkey.pendingCombatRestore == true then self:ResolvePendingCombatRestore() end; return true end return FA:Refresh() end
 function Fishing:GetProjection() return FA:GetProjection() end
-Fishing.Commands = { Refresh = function(_, reason) return Fishing:Refresh(reason) end, ArmAuto = function() local ok, err = Fishing:ArmAuto(); if ok then Save(Fishing.storeId, "fishing_auto") end; return ok, err end, DisarmAuto = function() return Fishing:DisarmAuto() end,
+Fishing.Commands = { Refresh = function(_, reason) return Fishing:Refresh(reason) end, ArmAuto = function()
+        local ok, err = Fishing:ArmAuto()
+        if not ok then return ok, err end
+        -- Fail-closed: the main-store save must succeed through the unified
+        -- transaction; on failure roll back the armed hotkey session so the
+        -- visible state never reports armed without a persisted intent.
+        local persisted, persistErr = PersistLifeMutation(Fishing, "fishing_auto", function() return true end)
+        if persisted ~= true then
+            Fishing:DisarmAuto(true)
+            return false, persistErr or "自动R保存失败"
+        end
+        return true, nil
+    end, DisarmAuto = function() return Fishing:DisarmAuto() end,
     GetWidgetVisible = function() return Fishing:GetWidgetVisible() end, SetWidgetVisible = function(_, value, reason) return Fishing:SetWidgetVisible(value, reason) end,
     SetWidgetWindowState = function(_, value, reason) return Fishing:SetWidgetWindowState(value, reason) end, MarkStoreDirty = function(_, delayMs, reason) return Fishing:MarkStoreDirty(delayMs, reason) end }
 local fishingDemand, fishingErr = Demand:Create({ id = "feature:" .. Fishing.Id, owner = Fishing, projectionOwner = Fishing, projectionConsumersField = "consumers", projectionCountField = "consumerCount", reconcile = function(lease, before, after) return Fishing:ReconcileDemand(lease, before, after) end })

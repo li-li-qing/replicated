@@ -171,6 +171,22 @@ function UIX:SafeHandler(widget, eventName, fn, label)
     -- continue to the next supported event name.
     local bound = ok == true and bindResult ~= false
     if bound and type(self.RegisterHandlerBinding) == "function" then self:RegisterHandlerBinding(widget, eventName) end
+    if not bound then
+        -- A silently unbound OnClick reads to the user as a dead button (§9.3
+        -- bag regression candidate). Surface it once per label instead of
+        -- returning a flag every caller ignores.
+        local diagnostics = S.DiagnosticsManager
+        if type(diagnostics) == "table" and type(diagnostics.Warn) == "function" then
+            diagnostics:Warn("ui_event", "UI_HANDLER_BIND_FAILED", "原生界面事件绑定失败，该控件点击将无响应", {
+                event = tostring(eventName or ""), label = tostring(label or eventName or ""),
+                logicalId = tostring(widget and (widget.rsUiLogicalId or widget.rsNativeLogicalId) or ""),
+            })
+        end
+        if type(S.WarnOnce) == "function" then
+            S:WarnOnce("rsui_bind_failed_" .. tostring(label or eventName),
+                "界面事件绑定失败：" .. tostring(label or eventName) .. "（" .. tostring(eventName) .. "），该按钮可能无响应，请在诊断页查看详情")
+        end
+    end
     return bound
 end
 

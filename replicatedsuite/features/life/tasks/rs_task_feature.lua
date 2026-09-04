@@ -63,11 +63,12 @@ function F:SetTracked(scope, key, enabled, source)
     local known = false
     for _, candidate in ipairs(self.Authority:GetGroupKeys(scope)) do if candidate == key then known = true break end end
     if known ~= true then return false end
-    local before = S.Utils.DeepCopy(self:GetTracking(scope))
-    local bucket = self:EnsureTrackingConfigured(scope)
-    if enabled == true then bucket.keys[key] = true else bucket.keys[key] = nil end
-    local marked, markErr = self:MarkStoreDirty(300, source or "task_tracking")
-    if marked ~= true then self.State.tracking[scope] = before; return false, markErr or "任务追踪设置未保存，已回滚" end
+    local marked, markErr = self:MutateStore(function()
+        local bucket = self:EnsureTrackingConfigured(scope)
+        if enabled == true then bucket.keys[key] = true else bucket.keys[key] = nil end
+        return true
+    end, 300, source or "task_tracking")
+    if marked ~= true then return false, markErr or "任务追踪设置未保存，已回滚" end
     local refreshed, refreshErr = self.Authority:Refresh("tracking_changed")
     if refreshed == false then return false, "任务追踪已保存，但投影刷新失败：" .. tostring(refreshErr or "unknown") end
     return true
@@ -80,14 +81,15 @@ end
 function F:SetAllTracked(scope, enabled, source)
     scope = tostring(scope or "")
     if VALID_SCOPE[scope] ~= true then return false end
-    local before = S.Utils.DeepCopy(self:GetTracking(scope))
-    local bucket = self:GetTracking(scope)
-    bucket.configured, bucket.keys = true, {}
-    if enabled == true then
-        for _, key in ipairs(self.Authority:GetGroupKeys(scope)) do bucket.keys[key] = true end
-    end
-    local marked, markErr = self:MarkStoreDirty(300, source or "task_tracking_all")
-    if marked ~= true then self.State.tracking[scope] = before; return false, markErr or "任务批量追踪设置未保存，已回滚" end
+    local marked, markErr = self:MutateStore(function()
+        local bucket = self:GetTracking(scope)
+        bucket.configured, bucket.keys = true, {}
+        if enabled == true then
+            for _, key in ipairs(self.Authority:GetGroupKeys(scope)) do bucket.keys[key] = true end
+        end
+        return true
+    end, 300, source or "task_tracking_all")
+    if marked ~= true then return false, markErr or "任务批量追踪设置未保存，已回滚" end
     local refreshed, refreshErr = self.Authority:Refresh("tracking_all_changed")
     if refreshed == false then return false, "任务追踪已保存，但投影刷新失败：" .. tostring(refreshErr or "unknown") end
     return true
@@ -96,10 +98,8 @@ end
 function F:SetLastScope(scope)
     scope = tostring(scope or "")
     if VALID_SCOPE[scope] ~= true or self.State.lastScope == scope then return false end
-    local previous = self.State.lastScope
-    self.State.lastScope = scope
-    local marked, markErr = self:MarkStoreDirty(400, "task_scope")
-    if marked ~= true then self.State.lastScope = previous; return false, markErr or "任务页签设置未保存，已回滚" end
+    local marked, markErr = self:MutateStore(function() self.State.lastScope = scope; return true end, 400, "task_scope")
+    if marked ~= true then return false, markErr or "任务页签设置未保存，已回滚" end
     return true
 end
 
@@ -121,6 +121,10 @@ end
 function F:SetWidgetWindowState(value, reason)
     if type(value) ~= "table" or type(self.State) ~= "table" then return false, "task widget window state unavailable" end
     local floating = S.RSUI and S.RSUI.FloatingSurface or nil
+    local persistence = S.Persistence
+    if type(persistence) ~= "table" or type(persistence.PrepareWrite) ~= "function" then return false, "task persistence unavailable" end
+    local ready, readyErr = persistence:PrepareWrite(self.StoreId)
+    if ready ~= true then return false, readyErr or "任务窗口状态写入前读取失败" end
     local normalized = type(floating) == "table" and type(floating.NormalizeState) == "function"
         and floating:NormalizeState(value, self:GetWidgetWindowPolicy()) or S.Utils.DeepCopy(value)
     self.State.widgetWindow = normalized
@@ -275,14 +279,10 @@ end
 
 function F:SetWidgetVisible(visible, source)
     if self.enabled ~= true then return false, "task feature disabled" end
-    -- Persist the Domain preference before publishing the Presentation fact so
-    -- a rejected store write can never leave the window and saved state split.
     local nextValue = visible == true
-    local previous = self.State.widgetVisible == true
-    if previous ~= nextValue then
-        self.State.widgetVisible = nextValue
-        local marked, markErr = self:MarkStoreDirty(250, "task_widget_visibility")
-        if marked ~= true then self.State.widgetVisible = previous; return false, markErr or "任务悬浮窗可见性未保存，已回滚" end
+    if (self.State.widgetVisible == true) ~= nextValue then
+        local marked, markErr = self:MutateStore(function() self.State.widgetVisible = nextValue; return true end, 250, "task_widget_visibility")
+        if marked ~= true then return false, markErr or "任务悬浮窗可见性未保存，已回滚" end
     end
     if S.Events ~= nil and type(S.Events.Publish) == "function" then
         S.Events:Publish("v3.tasks.widget_visibility", nextValue, tostring(source or "task_page"))
@@ -315,10 +315,8 @@ function F.Commands:RefreshProjection(reason) return F:RefreshProjection(reason 
 function F.Commands:ToggleExpanded(scope, key) return F:ToggleExpanded(scope, key) end
 function F.Commands:ResetWidgetVisibility(source)
     if F.State.widgetVisible ~= false then
-        local previous = F.State.widgetVisible
-        F.State.widgetVisible = false
-        local marked, markErr = F:MarkStoreDirty(250, tostring(source or "widget_visibility_reset"))
-        if marked ~= true then F.State.widgetVisible = previous; return false, markErr or "任务悬浮窗复位未保存，已回滚" end
+        local marked, markErr = F:MutateStore(function() F.State.widgetVisible = false; return true end, 250, tostring(source or "widget_visibility_reset"))
+        if marked ~= true then return false, markErr or "任务悬浮窗复位未保存，已回滚" end
     end
     return true
 end

@@ -7,23 +7,76 @@
 # Replicated Suite Persistence Framework v1
 
 日期：2026-08-26  
-状态：**基础框架已落地，业务数据分阶段迁移**
+状态：**基础框架已落地；`.18.81` Persistence Reliability v2 Foundation 已启用，RU 跨进程回读仍待 Fresh Reload 验收**
 
 当前本地回归已补齐 empty/N-1/future schema/metadata mismatch/显式空表/cyclic payload 六类边界，共 `12/12`；RU SaveData 真实序列化、账号/角色作用域回读仍需客户端数据验证。
 
 ## 当前 UI Setting Binding 边界（M1.14.4–M1.14.5）
 
 - Persistence Store 是“能否写、何时写、是否 dirty”的唯一 Authority；UI Binding 不得绕过 Store write fence。
-- `CreatePersistentSettingBinding` 在调用 Domain setter 前检查 `writeFenced`，fail-closed；Domain mutation 成功后只 `MarkDirty`，默认延迟合并保存，不在输入热路径直接 `SaveData`。
+- `CreatePersistentSettingBinding` 在调用 Domain setter 前执行 `PrepareWrite()`：Store 冷态先 Load+Apply，再检查 write fence；Domain mutation 成功后只 `MarkDirty`，默认延迟合并保存，不在输入热路径直接 `SaveData`。
 - `Commit` 只通过 `Persistence:SaveStore`；MarkDirty 失败时 Binding best-effort 回滚 Domain 值与自身 revision/dirty 投影。
 - 业务 Feature 的兼容公共 setter 可以继续提供“立即保存”语义，但 RSUI Settings Page 应优先使用 Domain-only setter + Persistent Binding，避免一套设置出现双重 Save Authority。
 - M1.14.5 已把该边界扩展到系统“悬浮组件”与全局设置：WidgetHost/FloatingSurface 允许 `persist=false` 只应用 Domain/Presentation 状态，绑定层随后统一 `MarkDirty`；主窗口尺寸、UI 缩放/字体缩放、活动 Widget 行数/尺寸、Activity/Gear Widget 外观成为首批更广泛消费者。
 - **绑定字段与一次性命令严格区分**：连续输入型字段（Numeric/Toggle/Appearance）不得在 setter 内再次 Save；“恢复默认布局/主窗口居中/重置全部位置”等一次性事务命令可以由自身 Domain Transaction 显式持久化，但必须检查失败并通过 ActionRunner/Diagnostics 暴露，不要伪装成 Setting Binding。
-- **M1.15.2H raw API 边界**：业务 Store 不再直接 `S.Api:LoadData/ClearData` 或修改 `store.loaded/dirty/loadStatus`。历史迁移统一走 `Persistence:ReadLegacy()`，物理清理统一走 `Persistence:ClearStore()`，写入前可用 `CanWrite()`，缓存读取只查询 `IsStoreLoaded()`。Persistence 是这些存储机械状态的唯一 Authority。
+- **M1.15.2H raw API 边界**：业务 Store 不再直接 `S.Api:LoadData/ClearData` 或修改 `store.loaded/dirty/loadStatus`。旧插件迁移桥已退出 Active Runtime；物理清理统一走 `Persistence:ClearStore()`，写入前用 `PrepareWrite()/CanWrite()`，缓存读取只查询 `IsStoreLoaded()`。Persistence 是这些存储机械状态的唯一 Authority。
 - `FeatureRuntime:SetPreferredEnabled()` 同样属于持久化事务：生命周期切换前先 `CanWrite(v3.features)`；MarkDirty 失败时恢复显式 preference，并把 Feature lifecycle 回滚到原状态，禁止“本次看起来启用成功、Reload 后又消失”。
 
 ---
 
+## 0. `.18.80` Persistence Reliability Contract v1（当前生产约束）
+
+用户实测暴露的最高风险不是“少保存一次”，而是**未读取旧 Store 就写、Feature teardown 后再 Flush、dirty Working 被 Reload 覆盖、SaveData 临时失败后修改被遗忘、损坏 payload 被误判为空存档**。这些路径都会表现为“当下设置正常，下一次进游戏/重载后全部丢失”。`.18.80` 将以下规则提升为 Foundation 强制契约：
+
+1. **Load-before-Write**：Persistent Store `loaded ~= true` 时，`CanWrite / MarkDirty / 普通 SaveStore` 均 fail-closed。通用 UI Binding 必须在 Domain mutation **之前**调用 `PrepareWrite()`，由 Persistence 完成 Load + Apply，再允许修改。
+2. **Dirty Reload Fence**：Store 仍有未落盘修改时，普通 `LoadStore()` 被拒绝；只有明确声明 `discardDirty=true` 的恢复/诊断路径才允许丢弃 Working。
+3. **Durability before Teardown**：`Runtime:Stop()` 必须先 `Persistence:Flush()`，再 `FeatureRuntime:DisableAll()`；禁止 Feature 释放/重置 Domain 后又用 Store getter 把 teardown/default 状态写回磁盘。
+4. **Explicit Reload Barrier**：`ReloadCodeFromDisk()` 在触发原生 UI reload 前必须 Flush 全部 dirty Store；任一失败直接取消用户主动重载并显示原因。
+5. **Retry on SaveData Failure**：dirty Store 保存失败后继续保持 dirty，并设置 2–30s 有界 retry cadence；不得把失败写视为已消费。
+6. **Corrupt ≠ Empty**：SaveData 返回非空但类型/结构不可解码时进入 Store write fence；绝不套 default 再覆盖旧 key。
+7. **True Debounce + Max Delay**：连续 Slider/拖动以最后一次修改重新计算 dueAt，但由 `maxDebounceMs` 限制最长延期，避免长时间交互无限不落盘。
+8. **Binding rollback**：Persistent Setting Binding 在 mutation 后 `MarkDirty` 被拒绝时，best-effort 恢复旧 Domain value 与 binding revision；不能让 UI 报告“已改成功”但 Reload 必然回退。
+9. **Full-replacement Exception**：DeathReview Record Slot / Gear Payload 这类“完整独立分片替换”可显式使用 `allowUnloadedWrite=true`，但普通设置/index Store 禁止使用该逃生口。
+
+该段是 `.18.80` Reliability v1 的历史边界说明；其所列 v2 工作已在下方 `.18.81` 开始收口：审计业务 public mutation，消除“先改 Domain、后裸 MarkDirty、失败无 rollback”的高风险路径，并统一为 `PrepareWrite → mutate → MarkDirty/Save → rollback`。仍未迁移的历史调用者继续按 fail-closed 处理，因此不能把 v2 Foundation 误写成“所有业务保存问题已经完成 RU 实机验证”。
+
+### 本地故障注入证据
+
+开发 harness 当前覆盖：未加载写入拒绝、Persistent Binding 自动 Load、dirty reload 拒绝、SaveData 一次失败后保留 dirty+retry、非表非空 payload 损坏保护、允许的完整分片替换。结果：
+
+```text
+PERSISTENCE_RELIABILITY_HARNESS PASS
+```
+
+RU 客户端 `SaveData / LoadData` 的真实账号/角色作用域、退出游戏时机与跨进程回读仍必须通过 Fresh Reload/重新登录验证。
+
+---
+
+
+## 0.1 `.18.81` Persistence Reliability Contract v2（当前生产约束）
+
+`.18.80` RU 实机出现 `persistence_v2[encoded=1/fenced=1] → FlushFail=1`。真实根因不是业务配置天然过大，而是旧实现先用业务 Domain budget 验证 Domain，随后又拿**同一个 budget**验证 `{ payload = Domain, __rsmeta = ... }`。当 Domain 已接近合法 `maxDepth/maxNodes/stringBytes` 时，Persistence 自己追加的 wrapper/metadata 会把合法数据挤出预算并永久写保护。`.18.81` 将此类机械错误从业务 Store 中移除：
+
+1. **Domain Budget ≠ Encoded Envelope Budget**：`store.budget` 只约束业务 Domain；`store.encodedBudget` 在 Domain budget 上增加固定、有界的 framework overhead。自定义 `encodedBudget` 也不得小于 Domain budget。
+2. **Registration Envelope Preflight**：Store 注册时同时验证 default Domain 与编码后的 default envelope；预算配置错误在 Boot Gate 即可见，不再等用户第一次保存才触发 Fence。
+3. **Atomic `MutateStore()`**：公共业务 mutation 优先走 `PrepareWrite → snapshot Domain + dirty metadata → mutate → MarkDirty/SaveStore → rollback on any failure`。durable command 只有 SaveData 明确成功才提交。
+4. **Rollback Fence**：普通 mutation/commit 失败只恢复 Working；只有 rollback 本身失败才设置 `mutation_rollback_failed` Write Fence，避免一次临时 SaveData 故障把 Store 永久锁死。
+5. **Incident ≠ Structural Blocker**：历史 `payloadRejected/encodedPayloadRejected` 计数保留在 diagnostics warning；当前 Store `fenced=0`、预算/metadata/key contract 正常才是结构 blocker。这样已安全处理的历史拒绝不会让整个 session 永久红灯。
+6. **TOC/UI 故障不污染 Persistence 判断**：`.18.81` 同轮修复 Composite Foundation 依赖顺序，避免页面 build failure 与保存故障同时出现后被误当成一个问题。
+
+当前已迁移到 v2 transaction 的高风险路径包括：Buff Display tracking/classification/components/full import/HUD Apply、Healer scalar/rules/tracked/presentation/raid layout、DPS scalar/Boss list、Combat Analytics selectors/metric enable、Raid Readiness setting、Tasks tracking/scope/widget、Activities rows/size/visibility/hidden events、Gear Quick HUD 的关键持久化命令、Death Review 关键 index mutation、Life M16 通用 mutation 与 Business Bridge blacklist/craft context。`MarkDirty` 仍允许作为 **Persistent Binding/FloatingSurface 已完成 preflight + rollback 的 commit adapter**，不能仅凭源码出现 `MarkDirty` 判定为第二 Authority。
+
+### Reliability v2 本地故障注入
+
+```text
+PERSISTENCE_RELIABILITY_V2_HARNESS PASS
+```
+
+覆盖：合法 Domain 达到业务深度边界时 framework envelope 仍可保存；cold Store mutation 会先 LoadData/Apply；durable SaveData 注入失败后 Domain 与 dirty metadata 恢复；mutation callback 主动拒绝也不会留下半状态。
+
+> RU 客户端的真实 `SaveData / LoadData` 生命周期、客户端退出时序、跨进程/跨重新登录回读仍必须以 Fresh Reload 作为最终证据。
+
+---
 ## 1. 目的
 
 Replicated Suite 已经是大型工程，不能继续让每个模块自己决定：
@@ -262,7 +315,7 @@ SaveStore
 
 Persistence 不新建 OnUpdate。`Persistence:Tick()` 已接入现有 `Storage` Scheduler lane，因此不会为了保存系统再增加一套 Runtime。
 
-Reload / Runtime Stop 会 `Flush()` dirty Store。
+显式 Reload 会在触发原生界面重载前要求 `Flush()` 全成功；Runtime Stop 在任何 Feature teardown 前先执行 durability barrier。保存失败的 dirty Store 保留并进入有界重试。
 
 ---
 

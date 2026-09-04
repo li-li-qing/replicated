@@ -158,6 +158,265 @@ RSUI:RegisterType("StatusChip", function(spec)
 end)
 
 ------------------------------------------------------------------------
+-- Status semantics authority + combined-state / detail-header composites (v5)
+--
+-- Resolves the long-standing "StatusChip 语义统一" contract item: Pending /
+-- Success / Warning / Blocked and the Empty/Loading/Error/Blocked combined
+-- states have ONE semantic authority here. Pages and features resolve their
+-- status through RSUI:ResolveStatusSemantic instead of hardcoding tones or
+-- building one-off label stacks. StateNotice and DetailHeader are the two
+-- standard visual composites named by the RSUI/roadmap contracts; both stay
+-- free of business facts, persistence and Tick work.
+------------------------------------------------------------------------
+RSUI.StatusSemanticsContractVersion = 1
+
+local STATE_SEMANTICS = {
+    empty = { tone = "muted", text = "暂无数据" },
+    loading = { tone = "accent", text = "读取中" },
+    pending = { tone = "accent", text = "处理中" },
+    error = { tone = "danger", text = "读取失败" },
+    blocked = { tone = "danger", text = "已阻断" },
+    unavailable = { tone = "muted", text = "不可用" },
+}
+
+-- Single authority for status -> {tone, default text}. Unknown statuses
+-- resolve to nil so callers can fail visible instead of guessing a color.
+function RSUI:ResolveStatusSemantic(status)
+    status = tostring(status or ""):lower()
+    local row = STATE_SEMANTICS[status] or STATUS[status]
+    if row == nil then return nil end
+    return { status = status, tone = tostring(row.tone), text = tostring(row.text) }
+end
+
+RSUI.StateNoticeContractVersion = 1
+
+-- StateNotice states are a superset of StatusChip statuses; project the state
+-- onto the closest chip-legal status while keeping the notice tone.
+local function ChipStatusForState(state)
+    if state == "loading" or state == "pending" then return "pending" end
+    if state == "error" or state == "blocked" then return "blocked" end
+    return "neutral"
+end
+
+RSUI:RegisterTypeValidator("StateNotice", function(spec)
+    if STATE_SEMANTICS[tostring(spec.state or "empty"):lower()] == nil then
+        return false, "state_notice_unknown_state:" .. tostring(spec.state or "")
+    end
+    return true
+end)
+
+RSUI:RegisterType("StateNotice", function(spec)
+    local c, err = Host("StateNotice", spec)
+    if c == nil then return nil, err end
+    c.gap = Token("spacing.sm", 6)
+    c.state = tostring(spec.state or "empty"):lower()
+    local semantic = STATE_SEMANTICS[c.state]
+
+    c.chip = nil
+    if spec.showChip ~= false then
+        local chip, chipErr = RSUI:StatusChip({
+            id = tostring(spec.id) .. "_chip",
+            parent = c,
+            status = ChipStatusForState(c.state),
+            text = spec.statusText or semantic.text,
+            tone = semantic.tone,
+            fontSize = tonumber(spec.fontSize) or Token("font.caption", 9),
+            slot = { size = "auto" },
+        })
+        if chip == nil then return nil, "state_notice_chip_failed: " .. tostring(chipErr) end
+        c.chip = chip
+    end
+
+    local message, messageErr = RSUI:Text({
+        id = tostring(spec.id) .. "_message",
+        parent = c,
+        text = spec.message ~= nil and tostring(spec.message) or semantic.text,
+        tone = spec.messageTone or (c.state == "error" or c.state == "blocked") and "danger" or "default",
+        fontSize = tonumber(spec.messageFontSize) or Token("font.body", 11),
+        overflow = "ellipsis",
+        slot = { hAlign = "fill" },
+    })
+    if message == nil then return nil, "state_notice_message_failed: " .. tostring(messageErr) end
+    c.message = message
+
+    c.hint = nil
+    if spec.hint ~= nil then
+        local hintText, hintErr = RSUI:Text({
+            id = tostring(spec.id) .. "_hint",
+            parent = c,
+            text = tostring(spec.hint),
+            tone = "muted",
+            fontSize = Token("font.caption", 9),
+            overflow = "wrap",
+            maxLines = 2,
+            slot = { hAlign = "fill" },
+        })
+        if hintText == nil then return nil, "state_notice_hint_failed: " .. tostring(hintErr) end
+        c.hint = hintText
+    end
+
+    function c:SetState(state, message, hint)
+        state = tostring(state or "empty"):lower()
+        local nextSemantic = STATE_SEMANTICS[state]
+        if nextSemantic == nil then return false, "state_notice_unknown_state:" .. state end
+        self.state = state
+        if self.chip ~= nil then
+            self.chip:SetStatus(ChipStatusForState(state), nextSemantic.text, nextSemantic.tone)
+        end
+        self.message:SetText(message ~= nil and tostring(message) or nextSemantic.text)
+        if self.hint ~= nil then
+            if hint ~= nil then self.hint:SetText(tostring(hint)); self.hint:SetVisible(true)
+            else self.hint:SetText(""); self.hint:SetVisible(false) end
+        end
+        self:InvalidateMeasure("state_notice_state")
+        return true
+    end
+
+    function c:Measure(availableW, availableH)
+        local chipW, chipH = 0, 0
+        if self.chip ~= nil then chipW, chipH = Measure(self.chip, availableW, nil) end
+        local msgW, msgH = Measure(self.message, availableW, nil)
+        local hintW, hintH = 0, 0
+        if self.hint ~= nil and self.hint.visible ~= false then hintW, hintH = Measure(self.hint, availableW, nil) end
+        local rows = 1 + (self.hint ~= nil and self.hint.visible ~= false and 1 or 0)
+        local w = math.max(chipW, msgW, hintW)
+        local h = chipH + msgH + hintH + self.gap * (rows - 1) + (self.chip ~= nil and self.gap or 0)
+        self.desiredWidth, self.desiredHeight = math.max(1, w), math.max(1, h)
+        self.measureDirty = false
+        return self.desiredWidth, self.desiredHeight
+    end
+
+    function c:Layout(x, y, width, height)
+        width, height = math.max(1, N(width, self.desiredWidth or 1)), math.max(1, N(height, self.desiredHeight or 1))
+        self:SetBounds(x, y, width, height)
+        local cursor = y
+        if self.chip ~= nil then
+            local chipW, chipH = Measure(self.chip, width, nil)
+            Arrange(self.chip, x, cursor, math.max(chipW, 1), math.max(chipH, 1))
+            cursor = cursor + chipH + self.gap
+        end
+        local _, msgH = Measure(self.message, width, nil)
+        Arrange(self.message, x, cursor, width, math.max(msgH, 1))
+        cursor = cursor + msgH
+        if self.hint ~= nil and self.hint.visible ~= false then
+            local _, hintH = Measure(self.hint, width, nil)
+            Arrange(self.hint, x, cursor + self.gap, width, math.max(hintH, 1))
+        end
+        return height
+    end
+
+    return c
+end)
+
+RSUI.DetailHeaderContractVersion = 1
+
+RSUI:RegisterTypeValidator("DetailHeader", function(spec)
+    local crumb = spec.crumb
+    if crumb ~= nil and type(crumb) ~= "table" then return false, "detail_header_crumb_must_be_table" end
+    if spec.title == nil and crumb == nil then return false, "detail_header_requires_title_or_crumb" end
+    return true
+end)
+
+RSUI:RegisterType("DetailHeader", function(spec)
+    local c, err = Host("DetailHeader", spec)
+    if c == nil then return nil, err end
+    c.gap = Token("spacing.sm", 6)
+    local CRUMB_SEPARATOR = " › "
+    local function JoinCrumb(crumb)
+        local parts = {}
+        for _, entry in ipairs(type(crumb) == "table" and crumb or {}) do
+            parts[#parts + 1] = tostring(entry)
+        end
+        return table.concat(parts, CRUMB_SEPARATOR)
+    end
+
+    local crumbText, crumbErr = RSUI:Text({
+        id = tostring(spec.id) .. "_crumb",
+        parent = c,
+        text = JoinCrumb(spec.crumb),
+        tone = "muted",
+        fontSize = Token("font.caption", 9),
+        overflow = "ellipsis",
+        slot = { hAlign = "fill" },
+    })
+    if crumbText == nil then return nil, "detail_header_crumb_failed: " .. tostring(crumbErr) end
+    c.crumbText = crumbText
+
+    c.titleText = RSUI:Text({
+        id = tostring(spec.id) .. "_title",
+        parent = c,
+        text = tostring(spec.title or ""),
+        tone = "strong",
+        fontSize = tonumber(spec.titleFontSize) or 13,
+        overflow = "ellipsis",
+        slot = { hAlign = "fill" },
+    })
+    if c.titleText == nil then return nil, "detail_header_title_failed" end
+
+    c.chip = nil
+    if type(spec.status) == "table" then
+        local chip, chipErr = RSUI:StatusChip({
+            id = tostring(spec.id) .. "_status",
+            parent = c,
+            status = spec.status.status or "neutral",
+            text = spec.status.text,
+            tone = spec.status.tone,
+            fontSize = Token("font.caption", 9),
+            slot = { size = "auto" },
+        })
+        if chip == nil then return nil, "detail_header_chip_failed: " .. tostring(chipErr) end
+        c.chip = chip
+    end
+
+    function c:SetCrumb(crumb)
+        self.crumbText:SetText(JoinCrumb(crumb))
+        self:InvalidateMeasure("detail_header_crumb")
+        return true
+    end
+
+    function c:SetTitle(title)
+        self.titleText:SetText(tostring(title or ""))
+        self:InvalidateMeasure("detail_header_title")
+        return true
+    end
+
+    function c:SetStatus(status, text, tone)
+        if self.chip == nil then return false, "detail_header_no_status_chip" end
+        return self.chip:SetStatus(status, text, tone)
+    end
+
+    function c:Measure(availableW, availableH)
+        local crumbW, crumbH = Measure(self.crumbText, availableW, nil)
+        local titleW, titleH = Measure(self.titleText, availableW, nil)
+        local chipW, chipH = 0, 0
+        if self.chip ~= nil then chipW, chipH = Measure(self.chip, availableW, nil) end
+        local w = math.max(crumbW, titleW + (self.chip ~= nil and (chipW + self.gap) or 0))
+        local h = crumbH + self.gap + math.max(titleH, chipH)
+        self.desiredWidth, self.desiredHeight = math.max(1, w), math.max(1, h)
+        self.measureDirty = false
+        return self.desiredWidth, self.desiredHeight
+    end
+
+    function c:Layout(x, y, width, height)
+        width, height = math.max(1, N(width, self.desiredWidth or 1)), math.max(1, N(height, self.desiredHeight or 1))
+        self:SetBounds(x, y, width, height)
+        local _, crumbH = Measure(self.crumbText, width, nil)
+        Arrange(self.crumbText, x, y, width, math.max(crumbH, 1))
+        local rowY = y + crumbH + self.gap
+        local titleW, titleH = Measure(self.titleText, width, nil)
+        local chipW, chipH = 0, 0
+        if self.chip ~= nil then
+            chipW, chipH = Measure(self.chip, width, nil)
+            Arrange(self.chip, x + math.max(0, width - chipW), rowY + math.max(0, titleH - chipH) / 2, chipW, math.max(chipH, 1))
+        end
+        Arrange(self.titleText, x, rowY, math.max(1, width - (self.chip ~= nil and (chipW + self.gap) or 0)), math.max(titleH, 1))
+        return height
+    end
+
+    return c
+end)
+
+------------------------------------------------------------------------
 -- PickerModel: explicit-query, stable-key and bounded option projection.
 --
 -- SearchablePicker / IconPicker / domain pickers may share this model without
@@ -1549,8 +1808,11 @@ RSUI:RegisterType("TreeView", function(spec)
 end)
 
 RSUI.CompositeFoundation = {
-    version = 4,
+    version = 5,
     statusChipContractVersion = RSUI.StatusChipContractVersion,
+    statusSemanticsContractVersion = RSUI.StatusSemanticsContractVersion,
+    stateNoticeContractVersion = RSUI.StateNoticeContractVersion,
+    detailHeaderContractVersion = RSUI.DetailHeaderContractVersion,
     pickerModelContractVersion = RSUI.PickerModelContractVersion,
     searchablePickerContractVersion = RSUI.SearchablePickerContractVersion,
     iconPickerContractVersion = RSUI.IconPickerContractVersion,
@@ -1560,8 +1822,11 @@ RSUI.CompositeFoundation = {
     treeExpansionStateBoundContractVersion = RSUI.TreeExpansionStateBoundContractVersion,
     GetSnapshot = function()
         return {
-            version = 4,
+            version = 5,
             statusChip = tonumber(RSUI.StatusChipContractVersion) or 0,
+            statusSemantics = tonumber(RSUI.StatusSemanticsContractVersion) or 0,
+            stateNotice = tonumber(RSUI.StateNoticeContractVersion) or 0,
+            detailHeader = tonumber(RSUI.DetailHeaderContractVersion) or 0,
             pickerModel = tonumber(RSUI.PickerModelContractVersion) or 0,
             searchablePicker = tonumber(RSUI.SearchablePickerContractVersion) or 0,
             iconPicker = tonumber(RSUI.IconPickerContractVersion) or 0,

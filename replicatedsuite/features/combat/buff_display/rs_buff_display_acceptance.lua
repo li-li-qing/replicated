@@ -41,16 +41,23 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or type(F.GetProjection) ~= "function" or type(F.GetSettingsProjection) ~= "function"
         or type(F.RefreshScope) ~= "function" or type(F.Refresh) ~= "function"
         or type(F.AcquireConsumer) ~= "function" or type(F.ReleaseConsumer) ~= "function"
-        or tonumber(F.SchemaVersion) ~= 4 or (tonumber(F.ProjectPlatesContractVersion) or 0) < 3
+        or tonumber(F.SchemaVersion) ~= 4 or (tonumber(F.ProjectPlatesContractVersion) or 0) < 4
+        or (tonumber(F.LayoutAuthorityContractVersion) or 0) < 1
+        or type(F.GetDefaultSettingsSnapshot) ~= "function"
         or type(F.SyncTrackedProjectionFlags) ~= "function"
         or type(F.Commands) ~= "table" or type(F.Commands.SetSetting) ~= "function"
         or type(F.Commands.ApplySettingFromBinding) ~= "function" or type(F.Commands.MarkStoreDirty) ~= "function"
         or type(F.Commands.GetWidgetVisible) ~= "function" or type(F.Commands.SetWidgetVisible) ~= "function"
         or type(F.Commands.SetTrackedId) ~= "function" or type(F.Commands.ClearTrackedIds) ~= "function"
+        or type(F.Commands.ResetLayoutSettings) ~= "function"
         or type(F.Commands.SetComponentField) ~= "function" or type(F.Commands.ImportTrackedIds) ~= "function"
+        or type(F.Commands.GetLayoutSettingsSnapshot) ~= "function"
+        or type(F.Commands.GetDefaultLayoutSettingsSnapshot) ~= "function"
+        or type(F.Commands.CanPersistLayoutSettings) ~= "function"
+        or type(F.Commands.PersistLayoutSettingsSnapshot) ~= "function"
         or type(F.Commands.ExportAll) ~= "function" or type(F.Commands.SerializeExport) ~= "function"
         or type(F.Commands.ParseImportText) ~= "function" or type(F.Commands.ImportAll) ~= "function"
-        or (tonumber(F.BuffHeadMarkerContractVersion) or 0) < 5 then return false, "feature_contract" end
+        or (tonumber(F.BuffHeadMarkerContractVersion) or 0) < 6 then return false, "feature_contract" end
     -- Head renderer gate contract: tracked-independent start (HasRenderableComponents
     -- gate) + GetDiagnostics triage surface + anchorFailure trail on hidden scopes.
     local headMarkers = S.UIV3 and S.UIV3.BuffHeadMarkersV3 or nil
@@ -84,6 +91,20 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     if type(hiddenOnlyRows) ~= "table" or #hiddenOnlyRows ~= 2 or hiddenOnlyRows[1].id ~= 101
         or hiddenOnlyRows[2].id ~= 303 or hiddenOnlyRows[2].detectionSource ~= "hidden" then return false, "hidden_source_not_suppressed_by_category_toggle" end
     -- Settings projection exposes all 10 head components + category-keyed tracked.
+    if (tonumber(F.LayoutAuthorityContractVersion) or 0) < 2
+        or (tonumber(F.LayoutPersistenceBoundaryContractVersion) or 0) < 1 then
+        return false, "layout_persistence_boundary_contract_missing"
+    end
+    local layoutSnapshot = F.Commands:GetLayoutSettingsSnapshot()
+    local defaultLayoutSnapshot = F.Commands:GetDefaultLayoutSettingsSnapshot()
+    if type(layoutSnapshot) ~= "table" or type(layoutSnapshot.components) ~= "table"
+        or type(defaultLayoutSnapshot) ~= "table" or type(defaultLayoutSnapshot.components) ~= "table" then
+        return false, "layout_snapshot_projection_missing"
+    end
+    if layoutSnapshot.tracked ~= nil or layoutSnapshot.classification ~= nil then
+        return false, "layout_snapshot_leaks_tracking_authority"
+    end
+
     local settingsProjection = type(F.GetSettingsProjection) == "function" and F:GetSettingsProjection() or {}
     local components = type(settingsProjection.components) == "table" and settingsProjection.components or {}
     local tracked = type(settingsProjection.tracked) == "table" and settingsProjection.tracked or {}
@@ -103,11 +124,27 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or type(plates.gearScore) ~= "table" or plates.gearScore.value ~= "12345"
         or type(plates.mainHand) ~= "table" or plates.mainHand.icon ~= "weapon.dds"
         or plates.mainHand.gradeIconPath ~= "grade.dds" then return false, "plates_projection_contract" end
+    -- Pure compatibility checks: import must match the Store's 1024/category
+    -- budget, and component-specific fields exposed by the UI must round-trip.
+    local ids = {}
+    for i = 1, 40 do ids[#ids + 1] = tostring(70000 + i) end
+    local parsed40 = F:ParseImportText("BUFF=" .. table.concat(ids, ","))
+    if type(parsed40) ~= "table" or type(parsed40.data) ~= "table"
+        or #(parsed40.data.tracked.buff or {}) ~= 40 then return false, "import_tracking_cap_regression" end
+    local serialized = F:SerializeExport({ schemaVersion = 4, tracked = { buff = {}, debuff = {} }, classification = {},
+        components = { buffs = { enabled = true, x = 0, y = 0, size = 29, fontSize = 11, alpha = 1, spacing = 5, maxPerRow = 11, maxRows = 3 },
+            castBar = { enabled = true, x = 0, y = 0, size = 7, fontSize = 12, alpha = 1, width = 177, showText = false } }, settings = {} })
+    local roundTrip = F:ParseImportText(serialized)
+    local rtComponents = roundTrip and roundTrip.data and roundTrip.data.components or {}
+    if type(rtComponents.buffs) ~= "table" or rtComponents.buffs.spacing ~= 5
+        or rtComponents.buffs.maxPerRow ~= 11 or rtComponents.buffs.maxRows ~= 3
+        or type(rtComponents.castBar) ~= "table" or rtComponents.castBar.width ~= 177
+        or rtComponents.castBar.showText ~= false then return false, "component_export_roundtrip_regression" end
     return true
 end)
 
 ------------------------------------------------------------------------
--- v5: HealthBarProxy anchor layout geometry (pure function contract).
+-- v6: HealthBarProxy anchor layout geometry (pure function contract).
 -- Covers the 15 acceptance geometry cases from the plate-layout task. All
 -- assertions run against ComputePlateLayout without touching widgets/native.
 ------------------------------------------------------------------------
@@ -172,46 +209,51 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     local lNoWing = layout(0, 0, { mainHand = true, offHand = true, wings = false, ranged = false })
     if lNoWing.equip.wings ~= false then return false, "case8_collapse_wrong" end
 
-    -- CASE 9/10: Left = [mainHand][offHand][ranged], Right = [wings].
+    -- CASE 9/10: left flank is offHand (closest) -> mainHand -> ranged;
+    -- right flank contains wings/back only.
     local lBoth = layout(0, 0, { mainHand = true, offHand = true, wings = true, ranged = true })
     if #lBoth.leftGroup.slots ~= 3 or #lBoth.rightGroup.slots ~= 1 then
         return false, "case9_10_equip_group_slot_count_wrong:left=" .. tostring(#lBoth.leftGroup.slots) .. ",right=" .. tostring(#lBoth.rightGroup.slots)
     end
     local sl = lBoth.leftGroup.slots
-    if sl[1].key ~= "ranged" or sl[2].key ~= "offHand" or sl[3].key ~= "mainHand" then
+    if sl[1].key ~= "offHand" or sl[2].key ~= "mainHand" or sl[3].key ~= "ranged" then
         return false, "case9_left_order_wrong:" .. tostring(sl[1].key) .. "," .. tostring(sl[2].key) .. "," .. tostring(sl[3].key)
     end
     if lBoth.rightGroup.slots[1].key ~= "wings" then return false, "case9_right_order_wrong" end
-    -- ranged closest to bar: x = bar.left - gap - size = 410-7-26 = 377.
-    if sl[1].x ~= 377 then return false, "case9_ranged_position_wrong:" .. tostring(sl[1].x) end
+    -- offHand remains closest to bar: x = 410-7-26 = 377.
+    if sl[1].x ~= 377 then return false, "case9_offhand_position_wrong:" .. tostring(sl[1].x) end
+    if sl[3].x >= sl[2].x then return false, "case9_ranged_not_outermost" end
 
     -- CASE 11/12: bar geometry stable regardless of info toggle.
     local lNoInfo = Compute(500, 400, base({ info = { enabled = false, fontSize = 12 } }), 3, 0, { mainHand = true, offHand = true, wings = true, ranged = true })
     if lNoInfo.bar.top >= lNoInfo.bar.bottom then return false, "case11_bar_geometry_wrong" end
 
     -- CASE 13: fresh config defaults are anchor-relative (component y == 0).
-    local settingsProjection = type(F.GetSettingsProjection) == "function" and F:GetSettingsProjection() or {}
-    local comps = type(settingsProjection.components) == "table" and settingsProjection.components or {}
+    local defaultSettings = F:GetDefaultSettingsSnapshot()
+    local comps = type(defaultSettings.components) == "table" and defaultSettings.components or {}
     if type(comps.buffs) ~= "table" or comps.buffs.y ~= 0 or comps.debuffs.y ~= 0 then
         return false, "case13_fresh_defaults_not_anchor_relative"
     end
-    -- ranged is ON by default (left-side slot); wings is on (right-side slot).
-    if comps.ranged.enabled ~= true or comps.wings.enabled ~= true then
+    -- ranged is opt-in by default; wings/back remains the default right slot.
+    if comps.ranged.enabled ~= false or comps.wings.enabled ~= true then
         return false, "case13_ranged_wings_default_wrong"
+    end
+    if defaultSettings.headIconSize ~= nil or defaultSettings.headMaxIcons ~= nil then
+        return false, "case13_duplicate_icon_authority_present"
     end
 
     -- CASE 14/15: geometry with 1.2× sizes. anchor(500,400), bar 180x24 ->
     -- left 410/right 590/top 388/bottom 412. Buff 29px: firstTop=388-8-29=351.
-    -- Debuff: firstTop=412+8=420. Equip 26px: ranged at 410-7-26=377, wings at 590+7=597.
+    -- Debuff: firstTop=412+8=420. Equip 26px: offHand at 410-7-26=377, wings at 590+7=597.
     if l1.bar.left ~= 410 or l1.bar.right ~= 590 or l1.bar.top ~= 388 or l1.bar.bottom ~= 412 then
         return false, "case14_bar_rect_wrong:" .. tostring(l1.bar.left) .. "," .. tostring(l1.bar.right)
     end
     if l1buff.buff.firstTop ~= 351 or l1deb.debuff.firstTop ~= 420 then
         return false, "case14_row_positions_wrong:" .. tostring(l1buff.buff.firstTop) .. "," .. tostring(l1deb.debuff.firstTop)
     end
-    local sL = l1.leftGroup.slots[1]  -- ranged (closest to bar)
+    local sL = l1.leftGroup.slots[1]  -- offHand (closest to bar)
     local sR = l1.rightGroup.slots[1] -- wings
-    if sL.key ~= "ranged" then return false, "case14_left_first_key_wrong:" .. tostring(sL.key) end
+    if sL.key ~= "offHand" then return false, "case14_left_first_key_wrong:" .. tostring(sL.key) end
     if sL.x ~= 377 or sR.x ~= 597 then
         return false, "case14_equip_positions_wrong:" .. tostring(sL.x) .. "," .. tostring(sR.x)
     end

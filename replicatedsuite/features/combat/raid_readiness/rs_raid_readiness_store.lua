@@ -110,7 +110,7 @@ function F:ApplySettingRaw(key, value)
 end
 
 function F:EnsureStoreLoaded()
-    if self.StoreLoaded == true then return true end
+    if type(P.IsStoreLoaded) == "function" and P:IsStoreLoaded(STORE_ID) == true then self.StoreLoaded = true; return true end
     local store = P:GetStore(STORE_ID)
     if store == nil then return false, "团队战备检查设置存档不可用" end
     local status, _, err = P:LoadStore(STORE_ID)
@@ -122,6 +122,12 @@ end
 
 function F:MarkStoreDirty(delayMs, reason)
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 300, reason or "raid_readiness_changed")
+end
+
+function F:MutateStore(mutator, delayMs, reason, durable)
+    return P:MutateStore(STORE_ID, function() return mutator() end, {
+        delayMs = tonumber(delayMs) or 300, reason = tostring(reason or "raid_readiness_changed"), durable = durable == true,
+    })
 end
 
 local function PublishSettingChanged(key)
@@ -142,11 +148,8 @@ end
 -- Non-RSUI callers have no persistent binding around them, so queue the Store
 -- write here and restore the previous settings atomically if the write is fenced.
 function F:SetSettingValue(key, value)
-    local before = DeepCopy(self.State.settings)
-    local ok, err = self:ApplySettingRaw(key, value)
-    if ok ~= true then return false, err end
-    local marked, markErr = self:MarkStoreDirty(300, "raid_readiness_setting:" .. tostring(key))
-    if marked ~= true then self.State.settings = before; return false, markErr end
+    local marked, markErr = self:MutateStore(function() return self:ApplySettingRaw(key, value) end, 300, "raid_readiness_setting:" .. tostring(key))
+    if marked ~= true then return false, markErr end
     PublishSettingChanged(key)
     return true
 end

@@ -7,8 +7,8 @@ local UI = S.UI
 if type(UI) ~= "table" then return end
 
 local Binding = {
-    version = 2.3,
-    metrics = { created = 0, reads = 0, writes = 0, skipped = 0, rejected = 0, commits = 0, errors = 0, persistentCreated = 0, persistenceMarks = 0, persistenceFailures = 0 },
+    version = 2.4,
+    metrics = { created = 0, reads = 0, writes = 0, skipped = 0, rejected = 0, commits = 0, errors = 0, persistentCreated = 0, persistenceMarks = 0, persistenceFailures = 0, persistenceAutoLoads = 0, persistenceLoadFailures = 0 },
     activeBindings = setmetatable({}, { __mode = "k" }),
 }
 UI.Binding = Binding
@@ -224,9 +224,28 @@ function UI:CreatePersistentSettingBinding(options)
             self:SetError("persistent store unavailable", source)
             return false
         end
-        -- Persistence is the write authority.  Refuse the Domain mutation before
-        -- touching in-memory state when the store is fenced; otherwise the UI
-        -- could show a value that cannot legally survive reload.
+        -- Load-before-write is a hard persistence invariant. Settings pages can
+        -- remain available while their Feature runtime is disabled, so the UI
+        -- binding must make sure the permanent Store has been applied BEFORE it
+        -- mutates Domain memory. This closes the old "edit defaults, then erase
+        -- the user's saved config" failure mode.
+        if store.loaded ~= true then
+            local prepared, prepareErr = false, "PrepareWrite unavailable"
+            if type(P.PrepareWrite) == "function" then prepared, prepareErr = P:PrepareWrite(self.storeId) end
+            if prepared ~= true then
+                Binding.metrics.persistenceFailures = (tonumber(Binding.metrics.persistenceFailures) or 0) + 1
+                Binding.metrics.persistenceLoadFailures = (tonumber(Binding.metrics.persistenceLoadFailures) or 0) + 1
+                self:SetError(prepareErr or "store load failed", source)
+                return false
+            end
+            Binding.metrics.persistenceAutoLoads = (tonumber(Binding.metrics.persistenceAutoLoads) or 0) + 1
+            store = P:GetStore(self.storeId)
+            -- Any previous value captured by a control before the Store load is
+            -- stale by definition; re-read the now-authoritative Domain value.
+            previous = nil
+        end
+        -- Persistence is the write authority. Refuse the Domain mutation before
+        -- touching in-memory state when the store is fenced.
         if store.writeFenced == true then
             Binding.metrics.persistenceFailures = (tonumber(Binding.metrics.persistenceFailures) or 0) + 1
             self:SetError(store.writeFenceReason or "write fenced", source)
@@ -276,6 +295,18 @@ function UI:CreatePersistentSettingBinding(options)
     function binding:Commit(source)
         local store = P:GetStore(self.storeId)
         if store == nil then self:SetError("persistent store unavailable", source); return false end
+        if store.loaded ~= true then
+            local prepared, prepareErr = false, "PrepareWrite unavailable"
+            if type(P.PrepareWrite) == "function" then prepared, prepareErr = P:PrepareWrite(self.storeId) end
+            if prepared ~= true then
+                Binding.metrics.persistenceFailures = (tonumber(Binding.metrics.persistenceFailures) or 0) + 1
+                Binding.metrics.persistenceLoadFailures = (tonumber(Binding.metrics.persistenceLoadFailures) or 0) + 1
+                self:SetError(prepareErr or "store load failed", source)
+                return false
+            end
+            Binding.metrics.persistenceAutoLoads = (tonumber(Binding.metrics.persistenceAutoLoads) or 0) + 1
+            store = P:GetStore(self.storeId)
+        end
         if store.dirty == true then
             local ok, err = P:SaveStore(self.storeId, { consumeDirty = true, reason = tostring(source or self.persistReason) })
             if ok ~= true then
@@ -292,6 +323,7 @@ function UI:CreatePersistentSettingBinding(options)
         return {
             storeId = self.storeId, dirty = store ~= nil and store.dirty == true,
             writeFenced = store ~= nil and store.writeFenced == true,
+            loaded = store ~= nil and store.loaded == true, loadStatus = store and store.loadStatus or nil,
             lastError = store and store.lastError or nil, dueAt = store and store.dueAt or nil,
         }
     end
@@ -320,6 +352,8 @@ function Binding:GetSnapshot()
         persistentCreated = tonumber(self.metrics.persistentCreated) or 0,
         persistenceMarks = tonumber(self.metrics.persistenceMarks) or 0,
         persistenceFailures = tonumber(self.metrics.persistenceFailures) or 0,
+        persistenceAutoLoads = tonumber(self.metrics.persistenceAutoLoads) or 0,
+        persistenceLoadFailures = tonumber(self.metrics.persistenceLoadFailures) or 0,
     }
 end
 
@@ -327,6 +361,7 @@ function Binding:ResetMetrics()
     self.metrics.created, self.metrics.reads, self.metrics.writes = 0, 0, 0
     self.metrics.skipped, self.metrics.rejected, self.metrics.commits, self.metrics.errors = 0, 0, 0, 0
     self.metrics.persistentCreated, self.metrics.persistenceMarks, self.metrics.persistenceFailures = 0, 0, 0
+    self.metrics.persistenceAutoLoads, self.metrics.persistenceLoadFailures = 0, 0
 end
 
 function UI:CreateSettingBinding(options) return Binding:Create(options) end

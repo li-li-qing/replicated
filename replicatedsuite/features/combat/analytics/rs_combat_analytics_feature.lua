@@ -73,37 +73,36 @@ function F:Disable(reason)
     self.enabled=false;EmitUpdated("disabled");return true
 end
 
-local function PersistTransaction(apply,rollback,reason)
-    local ok,err=apply();if ok~=true then return false,err end
-    local dirty,dirtyErr=F:MarkAnalyticsStoreDirty(300,reason)
-    if dirty==true then return true end
-    rollback();return false,dirtyErr or "战斗分析设置保存排队失败"
+local function PersistTransaction(apply,reason)
+    return F:MutateAnalyticsStore(function() return apply() end,300,reason)
 end
 function F:SetSelectedMetric(id)
-    id=ValidMetric(id);local old=self.State.selectedMetric
-    return PersistTransaction(function() return self:ApplyStoreRaw("selectedMetric",nil,id) end,function() self.State.selectedMetric=old end,"analytics_selected_metric")
+    id=ValidMetric(id)
+    return PersistTransaction(function() return self:ApplyStoreRaw("selectedMetric",nil,id) end,"analytics_selected_metric")
 end
 function F:SetSelectedValueKey(id,key)
-    id=ValidMetric(id);local old=self.State.selectedValues[id]
-    return PersistTransaction(function() return self:ApplyStoreRaw("selectedValue",id,key) end,function() self.State.selectedValues[id]=old end,"analytics_value:"..id)
+    id=ValidMetric(id)
+    return PersistTransaction(function() return self:ApplyStoreRaw("selectedValue",id,key) end,"analytics_value:"..id)
 end
 function F:SetMetricEnabled(id,enabled)
     id=ValidMetric(id);local old=self.State.metricEnabled[id];local target=enabled==true
     if old==target then return true end
-    local ok,err=self:ApplyStoreRaw("metricEnabled",id,target);if ok~=true then return false,err end
-    if self.enabled==true then
-        local runtimeOk,runtimeErr=self:_AcquireOrUpdate("metric_toggle:"..id)
-        if runtimeOk~=true then self.State.metricEnabled[id]=old;return false,runtimeErr end
-    end
-    local dirty,dirtyErr=self:MarkAnalyticsStoreDirty(300,"analytics_metric:"..id)
-    if dirty==true then EmitUpdated("metric:"..id);return true end
-    self.State.metricEnabled[id]=old
+    local mutationOk,mutationErr=self:MutateAnalyticsStore(function()
+        local ok,err=self:ApplyStoreRaw("metricEnabled",id,target);if ok~=true then return false,err end
+        if self.enabled==true then
+            local runtimeOk,runtimeErr=self:_AcquireOrUpdate("metric_toggle:"..id)
+            if runtimeOk~=true then return false,runtimeErr end
+        end
+        return true
+    end,300,"analytics_metric:"..id)
+    if mutationOk==true then EmitUpdated("metric:"..id);return true end
     if self.enabled==true then
         local rollbackOk,rollbackErr=self:_AcquireOrUpdate("metric_persist_rollback:"..id)
-        if rollbackOk~=true then return false,tostring(dirtyErr or "persist failed").."; runtime rollback failed: "..tostring(rollbackErr) end
+        if rollbackOk~=true then return false,tostring(mutationErr or "persist failed").."; runtime rollback failed: "..tostring(rollbackErr) end
     end
-    return false,dirtyErr or "指标设置保存排队失败"
+    return false,mutationErr or "指标设置保存排队失败"
 end
+
 function F:ClearMetric(id)
     id=ValidMetric(id);local a=Analytics();if type(a)~="table" then return false,"Combat Analytics unavailable" end
     return a:ResetMetric(id,"user_clear")

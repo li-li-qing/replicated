@@ -457,11 +457,35 @@ def main() -> int:
     composite_source = (root / composite_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / composite_entry).is_file() else ""
     if composite_entry not in toc:
         failures.append("Composite Foundation missing from Active TOC: " + composite_entry)
-    if not re.search(r"RSUI\.CompositeFoundation\s*=\s*\{\s*version\s*=\s*4", composite_source, re.S):
-        failures.append("Composite Foundation version regression: expected version 4")
+    else:
+        # Composite Foundation is intentionally fail-closed when its base
+        # controls are not registered yet. A wrong TOC order therefore looks
+        # like a perfectly valid file that silently exports zero contracts at
+        # runtime (RU .18.80: TreeView nil on Buff Display open). Keep the
+        # dependency order as a static package gate instead of relying on a
+        # page crash to reveal it.
+        composite_index = toc.index(composite_entry)
+        for prerequisite in (
+            "ui/framework/rs_ui_component_core.lua",
+            "ui/framework/rs_ui_primitives.lua",
+            "ui/framework/rs_ui_selection.lua",
+            "ui/framework/rs_ui_data_views.lua",
+            "ui/framework/rs_ui_controls.lua",
+        ):
+            if prerequisite not in toc:
+                failures.append("Composite Foundation prerequisite missing from Active TOC: " + prerequisite)
+            elif toc.index(prerequisite) >= composite_index:
+                failures.append(
+                    f"Composite Foundation TOC order regression: {prerequisite} must load before {composite_entry}"
+                )
+    if not re.search(r"RSUI\.CompositeFoundation\s*=\s*\{\s*version\s*=\s*5", composite_source, re.S):
+        failures.append("Composite Foundation version regression: expected version 5")
 
     for token in (
         "StatusChipContractVersion = 1",
+        "StatusSemanticsContractVersion = 1",
+        "StateNoticeContractVersion = 1",
+        "DetailHeaderContractVersion = 1",
         "PickerModelContractVersion = 1",
         "SearchablePickerContractVersion = 1",
         "IconPickerContractVersion = 1",
@@ -588,6 +612,75 @@ def main() -> int:
     ):
         if token not in multi_transform_source:
             failures.append(f"Multi selection transform contract missing: {token}")
+    layout_edit_history_entry = "ui/framework/rs_ui_layout_edit_history.lua"
+    layout_edit_history_source = (root / layout_edit_history_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / layout_edit_history_entry).is_file() else ""
+    if layout_edit_history_entry not in toc:
+        failures.append("Layout Edit History Foundation missing from Active TOC: " + layout_edit_history_entry)
+    for token in (
+        "RSUI.LayoutEditHistoryContractVersion = 1",
+        "RSUI.LayoutEditHistoryObservableContractVersion = 1",
+        "DEFAULT_MAX_COMMANDS = 64",
+        "HARD_MAX_COMMANDS = 256",
+        "function Model:Record(change)",
+        "function Model:Subscribe(token, listener)",
+        "function Model:Unsubscribe(token)",
+        "function Model:Undo()",
+        "function Model:Redo()",
+        "function Model:_Rollback(command, state, items, direction, primaryError)",
+        "layout_edit_history_key_set_changed",
+    ):
+        if token not in layout_edit_history_source:
+            failures.append(f"Layout edit history contract missing: {token}")
+
+    layout_edit_session_entry = "ui/framework/rs_ui_layout_edit_session.lua"
+    layout_edit_session_source = (root / layout_edit_session_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / layout_edit_session_entry).is_file() else ""
+    if layout_edit_session_entry not in toc:
+        failures.append("Layout Edit Session Foundation missing from Active TOC: " + layout_edit_session_entry)
+    for token in (
+        "RSUI.LayoutEditSessionContractVersion = 1",
+        "RSUI.LayoutEditSessionPersistenceBoundaryContractVersion = 1",
+        "RSUI.LayoutEditSessionLimits = {",
+        "function Model:GetCommandSnapshot()",
+        "function Model:GetStateSnapshot()",
+        "function Model:RefreshWorking(source)",
+        "function Model:ExecuteCommand(command, context)",
+        "function Model:Rebase(source)",
+        "function RSUI:CreateLayoutEditSessionModel(options)",
+        'command ~= "revert" and command ~= "reset" and command ~= "apply"',
+        'persist = false',
+        'durable = true',
+        'session_barrier:',
+    ):
+        if token not in layout_edit_session_source:
+            failures.append(f"Layout Edit Session contract missing: {token}")
+    layout_edit_session_code = strip_lua_strings(strip_lua_comments(layout_edit_session_source))
+    if re.search(r"\bOnUpdate\b", layout_edit_session_code) or re.search(r"\bAddInteractiveTask\b", layout_edit_session_code):
+        failures.append("Layout Edit Session must be event/command driven; no sampling loop allowed")
+    for forbidden in ("S.Persistence", "S.Api", "SaveData", "ClearData", "SaveStore", "MarkDirty"):
+        if forbidden in layout_edit_session_code:
+            failures.append("Layout Edit Session crossed Persistence boundary directly: " + forbidden)
+
+    editor_command_bar_entry = "ui/framework/rs_ui_editor_command_bar.lua"
+    editor_command_bar_source = (root / editor_command_bar_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / editor_command_bar_entry).is_file() else ""
+    if editor_command_bar_entry not in toc:
+        failures.append("Editor Command Bar missing from Active TOC: " + editor_command_bar_entry)
+    for token in (
+        "RSUI.EditorCommandBarContractVersion = 2",
+        "RSUI.EditorCommandSessionProjectionContractVersion = 2",
+        "blocked = blocked",
+        "function RSUI.ProjectEditorCommandState(history, session)",
+        'RSUI:RegisterTypeValidator("EditorCommandBar"',
+        'RSUI:RegisterType("EditorCommandBar"',
+        'self.historyModel:Unsubscribe(self.historyToken)',
+        'self.sessionModel:Unsubscribe(self.sessionToken)',
+        'self.sessionModel:ExecuteCommand(command',
+    ):
+        if token not in editor_command_bar_source:
+            failures.append(f"Editor Command Bar contract missing: {token}")
+    editor_command_bar_code = strip_lua_strings(strip_lua_comments(editor_command_bar_source))
+    if re.search(r"\bOnUpdate\b", editor_command_bar_code) or re.search(r"\bAddInteractiveTask\b", editor_command_bar_code):
+        failures.append("Editor Command Bar must be authority-event driven; no sampling loop allowed")
+
     layout_editor_adapter_entry = "ui/framework/rs_ui_layout_editor_adapter.lua"
     layout_editor_adapter_source = (root / layout_editor_adapter_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / layout_editor_adapter_entry).is_file() else ""
     if layout_editor_adapter_entry not in toc:
@@ -609,6 +702,7 @@ def main() -> int:
         failures.append("LayoutEditorOverlay missing from Active TOC: " + layout_editor_overlay_entry)
     for token in (
         "RSUI.LayoutEditorOverlayContractVersion = 1",
+        "RSUI.LayoutEditorOverlayHistoryBindingContractVersion = 1",
         'RSUI:RegisterTypeValidator("LayoutEditorOverlay"',
         'RSUI:RegisterType("LayoutEditorOverlay"',
         "previewMustSucceed = true",
@@ -622,7 +716,7 @@ def main() -> int:
     if re.search(r"\bStartMoving\s*\(", overlay_code) or re.search(r"\bStartSizing\s*\(", overlay_code):
         failures.append("LayoutEditorOverlay must not own Native drag capture; GestureController is the sole editor capture authority")
 
-    for rel, source in ((layout_editor_models_entry, layout_editor_models_source), (multi_transform_entry, multi_transform_source), (layout_editor_adapter_entry, layout_editor_adapter_source)):
+    for rel, source in ((layout_editor_models_entry, layout_editor_models_source), (multi_transform_entry, multi_transform_source), (layout_edit_history_entry, layout_edit_history_source), (layout_editor_adapter_entry, layout_editor_adapter_source)):
         code = strip_lua_strings(strip_lua_comments(source))
         if re.search(r"\bOnUpdate\b", code) or re.search(r"\bAddInteractiveTask\b", code):
             failures.append("Pure layout editor model must not own sampling loop: " + rel)
@@ -643,12 +737,32 @@ def main() -> int:
     if "ResponsiveInspectorContractVersion = 1" not in adaptive_source or 'RegisterType("ResponsiveInspector"' not in adaptive_source:
         failures.append("Stable-host ResponsiveInspector contract missing: ui/framework/rs_ui_adaptive_panels.lua")
     if (
-        "contractVersion = 3" not in workspace_source
+        "contractVersion = 4" not in workspace_source
+        or "RSUI.LayoutEditorWorkspaceContractVersion = 2" not in workspace_source
+        or "RSUI.LayoutEditorWorkspaceSessionBindingContractVersion = 1" not in workspace_source
+        or "function T:ValidateLayoutEditorEditSessionSpec(editSessionSpec)" not in workspace_source
         or "CreateResponsiveInspectorWorkspace" not in workspace_source
         or "CreateLayoutEditorWorkspace" not in workspace_source
         or "function T:LayoutEditor(spec)" not in workspace_source
+        or "historyModel = historyModel" not in workspace_source
+        or "RSUI:CreateLayoutEditSessionModel" not in workspace_source
+        or "RSUI:EditorCommandBar" not in workspace_source
+        or "workspace_history:" not in workspace_source
+        or "workspace_session:" not in workspace_source
+        or "workspace.RebaseEditSession" not in workspace_source
+        or "workspace.ExecuteCommand" not in workspace_source
+        or "sessionModel:RefreshWorking" not in workspace_source
+        or "workspace.sessionModel, workspace.historyModel = nil, nil" not in workspace_source
     ):
-        failures.append("WorkspaceTemplates v3 layout-editor contract missing")
+        failures.append("WorkspaceTemplates v4 layout-editor integration contract missing")
+    workspace_code = strip_lua_strings(strip_lua_comments(workspace_source))
+    if re.search(r"\bOnUpdate\b", workspace_code) or re.search(r"\bAddInteractiveTask\b", workspace_code):
+        failures.append("LayoutEditorWorkspace integration must be authority-event driven; no sampling loop allowed")
+    for forbidden in ("S.Persistence", "SaveData", "ClearData", "SaveStore", "MarkDirty"):
+        if forbidden in workspace_code:
+            failures.append("LayoutEditorWorkspace crossed Persistence boundary directly: " + forbidden)
+    if "historyModel = spec.historyModel" not in layout_editor_overlay_source:
+        failures.append("LayoutEditorOverlay must inject Workspace History into PreviewAdapter")
 
     # The RU client has no validated generic native reparent API. Active Runtime
     # must therefore not introduce desktop/UMG-style reparent calls. Logical

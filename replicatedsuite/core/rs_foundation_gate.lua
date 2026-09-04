@@ -9,7 +9,7 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
 S.FoundationGate = {
-    version = 74,
+    version = 80,
     last = nil,
     sequenceCases = {},
     sequenceOrder = {},
@@ -251,7 +251,7 @@ function G:Run(options)
 
         local binding = S.UI and S.UI.Binding or nil
         local bindingInfo = binding and type(binding.GetSnapshot) == "function" and binding:GetSnapshot() or nil
-        AddCheck(report, "v3_persistent_setting_binding", bindingInfo ~= nil and (tonumber(bindingInfo.version) or 0) >= 2.3
+        AddCheck(report, "v3_persistent_setting_binding", bindingInfo ~= nil and (tonumber(bindingInfo.version) or 0) >= 2.4
                 and type(S.UI.CreatePersistentSettingBinding) == "function",
             "blocker", bindingInfo and ("version=" .. tostring(bindingInfo.version) .. "/active=" .. tostring(bindingInfo.active or 0)
                 .. "/persistent=" .. tostring(bindingInfo.persistentActive or 0) .. "/dirty=" .. tostring(bindingInfo.dirty or 0)
@@ -350,6 +350,7 @@ function G:Run(options)
                 .. "/realFail=" .. tostring(eventHealth.unregisterFailures or 0)) or "missing")
 
         local rsui = S.RSUI
+        local uiTokens = S.UITokens
         local scrollbar = rsui and rsui.ScrollbarBehavior or nil
         local workspaceTemplates = rsui and rsui.WorkspaceTemplates or nil
         local compositeFoundation = rsui and rsui.CompositeFoundation or nil
@@ -462,6 +463,36 @@ function G:Run(options)
                 .. "/inspector=" .. tostring(rsui and rsui.TransformInspectorContractVersion or 0)
                 .. "/rsui=" .. tostring(rsui and rsui.version or 0))
 
+        AddCheck(report, "v3_ui_layout_edit_history_contract", type(rsui) == "table" and (tonumber(rsui.version) or 0) >= 39
+                and (tonumber(rsui.LayoutEditHistoryContractVersion) or 0) >= 1
+                and type(rsui.CreateLayoutEditHistoryModel) == "function"
+                and type(rsui.LayoutEditHistoryModel) == "table"
+                and type(rsui.LayoutEditHistoryLimits) == "table",
+            "blocker", "layoutEditHistory=" .. tostring(rsui and rsui.LayoutEditHistoryContractVersion or 0)
+                .. "/rsui=" .. tostring(rsui and rsui.version or 0))
+
+        AddCheck(report, "v3_ui_layout_edit_session_contract", type(rsui) == "table" and (tonumber(rsui.version) or 0) >= 41
+                and (tonumber(rsui.LayoutEditSessionContractVersion) or 0) >= 1
+                and (tonumber(rsui.LayoutEditSessionPersistenceBoundaryContractVersion) or 0) >= 1
+                and type(rsui.CreateLayoutEditSessionModel) == "function"
+                and type(rsui.LayoutEditSessionModel) == "table"
+                and type(rsui.LayoutEditSessionLimits) == "table",
+            "blocker", "layoutEditSession=" .. tostring(rsui and rsui.LayoutEditSessionContractVersion or 0)
+                .. "/persistenceBoundary=" .. tostring(rsui and rsui.LayoutEditSessionPersistenceBoundaryContractVersion or 0)
+                .. "/rsui=" .. tostring(rsui and rsui.version or 0))
+
+        AddCheck(report, "v3_ui_editor_command_bar_contract", type(rsui) == "table" and (tonumber(rsui.version) or 0) >= 41
+                and (tonumber(rsui.LayoutEditHistoryObservableContractVersion) or 0) >= 1
+                and (tonumber(rsui.EditorCommandBarContractVersion) or 0) >= 2
+                and (tonumber(rsui.EditorCommandSessionProjectionContractVersion) or 0) >= 2
+                and type(rsui.ProjectEditorCommandState) == "function"
+                and type(rsui.EditorCommandBar) == "function"
+                and type(rsui.types) == "table" and rsui.types["EditorCommandBar"] ~= nil,
+            "blocker", "commandBar=" .. tostring(rsui and rsui.EditorCommandBarContractVersion or 0)
+                .. "/historyObservable=" .. tostring(rsui and rsui.LayoutEditHistoryObservableContractVersion or 0)
+                .. "/sessionProjection=" .. tostring(rsui and rsui.EditorCommandSessionProjectionContractVersion or 0)
+                .. "/rsui=" .. tostring(rsui and rsui.version or 0))
+
         AddCheck(report, "v3_ui_layout_editor_overlay_contract", type(rsui) == "table" and (tonumber(rsui.version) or 0) >= 37
                 and (tonumber(rsui.LayoutEditorOverlayContractVersion) or 0) >= 1
                 and type(rsui.LayoutEditorOverlay) == "function"
@@ -473,14 +504,26 @@ function G:Run(options)
                 .. "/gesture=" .. tostring(rsui and rsui.LayoutEditorGestureContractVersion or 0)
                 .. "/rsui=" .. tostring(rsui and rsui.version or 0))
 
-        AddCheck(report, "v3_ui_layout_editor_workspace_contract", type(rsui) == "table" and (tonumber(rsui.version) or 0) >= 38
-                and (tonumber(rsui.WorkspaceTemplateContractVersion) or 0) >= 3
+        AddCheck(report, "v3_ui_layout_editor_workspace_contract", type(rsui) == "table" and (tonumber(rsui.version) or 0) >= 42
+                and (tonumber(rsui.WorkspaceTemplateContractVersion) or 0) >= 4
+                and (tonumber(rsui.LayoutEditorWorkspaceContractVersion) or 0) >= 2
+                and (tonumber(rsui.LayoutEditorWorkspaceSessionBindingContractVersion) or 0) >= 1
                 and type(rsui.CreateLayoutEditorWorkspace) == "function"
+                and type(rsui.WorkspaceTemplates) == "table"
+                and type(rsui.WorkspaceTemplates.ValidateLayoutEditorEditSessionSpec) == "function"
                 and (tonumber(rsui.LayoutEditorOverlayContractVersion) or 0) >= 1
+                and (tonumber(rsui.LayoutEditorOverlayHistoryBindingContractVersion) or 0) >= 1
+                and (tonumber(rsui.LayoutEditHistoryContractVersion) or 0) >= 1
+                and (tonumber(rsui.LayoutEditSessionContractVersion) or 0) >= 1
+                and (tonumber(rsui.EditorCommandBarContractVersion) or 0) >= 2
                 and (tonumber(rsui.TransformInspectorContractVersion) or 0) >= 2,
             "blocker", "workspace=" .. tostring(rsui and rsui.WorkspaceTemplateContractVersion or 0)
-                .. "/overlay=" .. tostring(rsui and rsui.LayoutEditorOverlayContractVersion or 0)
-                .. "/inspector=" .. tostring(rsui and rsui.TransformInspectorContractVersion or 0)
+                .. "/layoutEditor=" .. tostring(rsui and rsui.LayoutEditorWorkspaceContractVersion or 0)
+                .. "/sessionBinding=" .. tostring(rsui and rsui.LayoutEditorWorkspaceSessionBindingContractVersion or 0)
+                .. "/overlayHistory=" .. tostring(rsui and rsui.LayoutEditorOverlayHistoryBindingContractVersion or 0)
+                .. "/history=" .. tostring(rsui and rsui.LayoutEditHistoryContractVersion or 0)
+                .. "/session=" .. tostring(rsui and rsui.LayoutEditSessionContractVersion or 0)
+                .. "/commands=" .. tostring(rsui and rsui.EditorCommandBarContractVersion or 0)
                 .. "/rsui=" .. tostring(rsui and rsui.version or 0))
 
         AddCheck(report, "v3_ui_composite_foundation_contract", type(rsui) == "table"
@@ -1246,9 +1289,12 @@ function G:Run(options)
         S.Persistence ~= nil and type(S.Persistence.RegisterV3Store) == "function"
             and type(S.Persistence.InspectPayload) == "function"
             and type(S.Persistence.ClearStore) == "function"
-            and type(S.Persistence.CanWrite) == "function" and type(S.Persistence.IsStoreLoaded) == "function"
+            and type(S.Persistence.CanWrite) == "function" and type(S.Persistence.PrepareWrite) == "function"
+            and type(S.Persistence.MutateStore) == "function"
+            and type(S.Persistence.IsStoreLoaded) == "function"
+            and (tonumber(S.Persistence.ReliabilityContractVersion) or 0) >= 2
             and type(S.Persistence.V3KeyPrefix) == "string",
-        "blocker", "explicit v3 owner/scope/key/budget contract")
+        "blocker", "v3 owner/scope/domain+envelope budgets + transactional load-before-write reliability contract")
     local payloadSafe, payloadCycleRejected = false, false
     if S.Persistence ~= nil and type(S.Persistence.InspectPayload) == "function" then
         local safe = S.Persistence:InspectPayload({ probe = true, nested = { value = 1 } })
@@ -1264,19 +1310,45 @@ function G:Run(options)
             and (tonumber(persistence.fenced) or 0) == 0
             and (tonumber(persistence.legacyContracts) or 0) == 0
             and (tonumber(persistence.budgetProtected) or 0) == (tonumber(persistence.total) or 0)
-            and (tonumber(persistenceStats.payloadRejected) or 0) == 0
-            and (tonumber(persistenceStats.encodedPayloadRejected) or 0) == 0
+            and (tonumber(persistence.envelopeBudgetProtected) or 0) == (tonumber(persistence.total) or 0)
+            and (tonumber(persistence.registrationBudgetFailed) or 0) == 0
             and (tonumber(persistenceStats.metadataMismatches) or 0) == 0
             and (tonumber(persistenceStats.keyCollisions) or 0) == 0,
         "blocker", persistence and ("stores=" .. tostring(persistence.total or 0)
             .. "/v2=" .. tostring(persistence.contractV2 or 0)
             .. "/budget=" .. tostring(persistence.budgetProtected or 0)
+            .. "/envelope=" .. tostring(persistence.envelopeBudgetProtected or 0)
+            .. "/registrationBudgetFail=" .. tostring(persistence.registrationBudgetFailed or 0)
             .. "/legacy=" .. tostring(persistence.legacyContracts or 0)
             .. "/fenced=" .. tostring(persistence.fenced or 0)
             .. "/reject=" .. tostring(persistenceStats.payloadRejected or 0)
             .. "/encoded=" .. tostring(persistenceStats.encodedPayloadRejected or 0)
             .. "/keyCollision=" .. tostring(persistenceStats.keyCollisions or 0)
             .. "/meta=" .. tostring(persistenceStats.metadataMismatches or 0)) or "missing")
+
+
+    AddCheck(report, "persistence_reliability_v2", persistence ~= nil
+            and (tonumber(persistence.reliabilityContractVersion) or 0) >= 2
+            and type(S.Persistence.MutateStore) == "function"
+            and (tonumber(persistence.unloadedDirty) or 0) == 0,
+        "blocker", persistence and ("contract=" .. tostring(persistence.reliabilityContractVersion or 0)
+            .. "/dirty=" .. tostring(persistence.dirty or 0)
+            .. "/unloadedDirty=" .. tostring(persistence.unloadedDirty or 0)
+            .. "/writeBeforeLoadReject=" .. tostring(persistenceStats.unloadedWriteRejects or 0)
+            .. "/dirtyReloadReject=" .. tostring(persistenceStats.dirtyReloadRejects or 0)
+            .. "/flushFail=" .. tostring(persistenceStats.flushFailures or 0)
+            .. "/retry=" .. tostring(persistenceStats.retryQueued or 0)) or "missing")
+
+    AddCheck(report, "persistence_reliability_incidents",
+        (tonumber(persistenceStats.flushFailures) or 0) == 0
+            and (tonumber(persistenceStats.corruptEmptyRejects) or 0) == 0,
+        "warning", "flushFail=" .. tostring(persistenceStats.flushFailures or 0)
+            .. "/payloadReject=" .. tostring(persistenceStats.payloadRejected or 0)
+            .. "/encodedReject=" .. tostring(persistenceStats.encodedPayloadRejected or 0)
+            .. "/corruptReject=" .. tostring(persistenceStats.corruptEmptyRejects or 0)
+            .. "/writeBeforeLoadReject=" .. tostring(persistenceStats.unloadedWriteRejects or 0)
+            .. "/dirtyReloadReject=" .. tostring(persistenceStats.dirtyReloadRejects or 0)
+            .. "/retry=" .. tostring(persistenceStats.retryQueued or 0))
 
     if v3HostRegistered then
         AddCheck(report, "persistence_v3_store",
@@ -1534,7 +1606,7 @@ function G:BuildCopyText(runNow)
         .. "/观察" .. tostring(instance and instance.runtimeObserved or 0)
         .. "/冲突" .. tostring(instance and instance.runtimeObservedConflicts or 0)
         .. "/待核" .. tostring(instance and instance.runtimePending or 0)
-    parts[#parts+1] = "存档 " .. tostring(persistence and persistence.total or 0) .. "/V2 " .. tostring(persistence and persistence.contractV2 or 0) .. "/V3 " .. tostring(persistence and persistence.contractV3 or 0) .. "/Budget " .. tostring(persistence and persistence.budgetProtected or 0) .. "/Fence " .. tostring(persistence and persistence.fenced or 0)
+    parts[#parts+1] = "存档 " .. tostring(persistence and persistence.total or 0) .. "/V2 " .. tostring(persistence and persistence.contractV2 or 0) .. "/V3 " .. tostring(persistence and persistence.contractV3 or 0) .. "/Budget " .. tostring(persistence and persistence.budgetProtected or 0) .. "/Fence " .. tostring(persistence and persistence.fenced or 0) .. "/Dirty " .. tostring(persistence and persistence.dirty or 0) .. "/UnloadedDirty " .. tostring(persistence and persistence.unloadedDirty or 0) .. "/FlushFail " .. tostring(persistence and persistence.stats and persistence.stats.flushFailures or 0)
     parts[#parts+1] = "界面所有权 违规 " .. tostring(authority and authority.violations or 0) .. "/冲突 " .. tostring(authority and authority.conflicts or 0) .. "/编号重复 " .. tostring(uiRegistry and uiRegistry.v3Duplicates or 0)
     local pageInfo = S.UIV3 and S.UIV3.PageHost and type(S.UIV3.PageHost.Describe) == "function" and S.UIV3.PageHost:Describe() or nil
     local factoryInfo = S.NativeObjectFactory and type(S.NativeObjectFactory.Describe) == "function" and S.NativeObjectFactory:Describe() or nil

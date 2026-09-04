@@ -1,5 +1,127 @@
 # Replicated Suite 变更记录（Changelog）
 
+## 2026-09-04 — `.18.82` Persistence 迁移收口 + §9.3 业务回归（本地）
+
+- **Persistence 剩余 mutation→MarkDirty 收敛**（`.18.80` NEXT 的延续）：
+  - `rs_feature_runtime.lua SetPreferredEnabled`：显式偏好写入改走 `MutateStore`（快照/回滚覆盖偏好表），Enable/Disable 生命周期副作用保留手动回滚；
+  - `rs_life_m16_bundle Trade:SetFrom`：起点选择改走统一事务，删除手写 `RestoreTable` 回滚；`Fishing ArmAuto` 命令持久化失败时 fail-closed（自动回滚已装备的热键会话），删除遗留裸 `Save()` helper；
+  - 删除死代码 `MarkAnalyticsStoreDirty`（唯一真实写入已走 `MutateAnalyticsStore`）。
+- **§9.3 Bag 整理"点击没反应"根因修复**：整条链所有 `return false, err` 均为静默。修复：`BatchMove`/`StartBagQuick` 前置失败现在写入 `State.batch`/overlay 状态（stopped + 原因）并发布刷新；页面 `开始整理`/`取放` 失败直接写状态文本，未启用时提示"功能未启用"；`SafeHandler` 绑定失败不再静默——写 Diagnostics `UI_HANDLER_BIND_FAILED` + WarnOnce 提示（该控件点击将无响应）。互斥与 200ms 冷却逻辑未改动。
+- **§9.3 Trade 回归**：金额列（预计售价/毛利/材料单价/小计）全部接入 `S.Utils.FormatMoney` 金银铜格式；`RefreshSellable` 增加会话级 per-zone 缓存（◀▶ 循环不再每次点击重发 `GetSellableZoneGroups`，`RefreshZones` 时失效）；新增 `Trade:QuoteMaterial(materialKey)` 显式接入 `PriceQuoteQueueV3`，页面新增"材料询价"按钮（按当前路线行的 `explicit_quote_required` 材料去重提交）；下拉因地区未读取被禁用时状态行给出原因提示。
+- **§9.3 Auction 收藏/报价**：`AuctionProjection` 暴露 `PriceQuoteQueueV3` 快照（`quoteStatus/quotePrice/quoteError`），demand 0→1 时订阅 `v3.price_quote.completed` 实现询价完成自动刷新；页面新增"结果询价"按钮（选中带 `itemType` 的结果行启用）；删除收藏改为两击确认；选中结果行回填关键词输入框；状态行显示"最低价：…/未询价"。
+- **RSUI Composite 收尾（Foundation v5）**：落地 ROADMAP 三个本地 Contract。①`RSUI:ResolveStatusSemantic` 成为 Pending/Success/Warning/Blocked 等 status→tone/默认文案的唯一语义 Authority（`StatusSemanticsContractVersion 1`）；②`StateNotice` 统一 Empty/Loading/Error/Blocked 组合态视觉（chip + message + 可选 hint，fail-closed validator 拒绝未知状态）；③`DetailHeader` 提供 Breadcrumb（`A › B`）+ 标题 + 可选 StatusChip 的标准详情头。design_system `EmptyState` 保持静态"尚未迁移"占位职责并注释防第二 Authority 分叉。Foundation Audit 的 Composite version Gate 同步升至 5。
+- **验证**：`RSUI_COMPOSITE_STATE_HARNESS PASS 24/24`（真实加载 component_core→primitives→panels→data_views→controls→composite_foundation 全链，mock 原生 widget）；`LAYOUT_EDIT_SESSION_MODEL_HARNESS PASS 24/24`（真实加载 History/Session 模型：partial contract 拒绝、Reset/Revert 零持久化、Apply 唯一持久化边界、失败不推进 Baseline、History Undo/Redo 回放）；`PERSISTENCE_V2_MIGRATION_TEST PASS 20/20`（MutateStore 提交/拒绝回滚/durable 失败回滚/冷库 corrupt payload 拒绝并 fence/dirty reload 拒绝/rollback 失败 fence，全部针对真实 `rs_persistence.lua`）；`BUSINESS_BRIDGE_BAG_TRADE_TEST PASS 9/9`（批量前置失败可见化、Trade SetFrom 事务、Flush 失败保留 dirty 重试、QuoteMaterial 拒绝未验证身份）；Foundation Audit PASS（210/210，全部结构计数 0）。
+- **BuildTag**：`v3-m1.16.0.18.82-local-continuation-mutation-tx`。
+
+## 2026-09-04 — `.18.81` RU Hotfix + Persistence Reliability v2
+
+- **状态显示页面崩溃根因**：RU 日志 `rs_v3_buff_display_page.lua:273 attempt to call method '?'` 精确对应 `RSUI:TreeView()`。`rs_ui_composite_foundation.lua` 原在 `rs_ui_data_views.lua / rs_ui_controls.lua` 之前加载，而 Composite 顶部要求 `RSUI.ListView` 已存在，否则静默 return；因此 `StatusChip/Picker/TreeView` 全部未注册。已调整 Active TOC 依赖顺序，并在 Foundation Audit 增加 prerequisite-order Gate；Buff Display 页面增加 SelectionModel/TreeView preflight，依赖异常改为明确 build error，不再 nil method。
+- **Foundation Gate 修复**：`v3_advanced_ui_contract` 正确绑定 `S.UITokens`；`StatusClassificationV3.presentationBoundary = service_only`；UI Acceptance 删除早已退役的 `Persistence.ReadLegacy` 假契约，改为 Reliability v2 API。
+- **Persistence v2 根因修复**：业务 Domain `budget` 与 Persistence 编码 `encodedBudget` 正式分离。`payload/__rsmeta` 的框架固定外壳拥有独立 bounded overhead，合法业务数据不会再因框架自己追加 metadata 触发 `encoded_payload_rejected → WriteFence → FlushFail`。注册期同时检查 default Domain + default envelope。
+- **事务契约**：新增 `Persistence:MutateStore()`，统一 `PrepareWrite → snapshot → mutate → MarkDirty/Save → rollback`；mutation、commit 或 durable SaveData 失败均恢复 Domain 与 dirty metadata，只有 rollback 本身失败才 write-fence。Foundation `persistence_v2` 只看当前结构健康/fence，历史 reject 计数移入 incident warning。
+- **业务迁移**：Buff Display、Healer、DPS、Combat Analytics、Raid Readiness、Tasks、Activities、Gear Quick HUD 关键命令、Death Review 关键 index、Life M16 通用 mutation、Business Bridge blacklist/craft context 已接入 v2 transaction；Buff Display full import 保留 bool/数字兼容并禁止事务内逐字段 publish。
+- **验证**：`PERSISTENCE_RELIABILITY_V2_HARNESS PASS`；Foundation Audit PASS：`toc=210 activeLua=210 allLua=210 globals=0 presentation=0 rawNative=0 rawScope=0 detachedWidgetState=0 apiDependency=0 apiCapability=0 businessIds=0 auctionEventOwners=0`；210/210 Lua `texluac -p` PASS。RU Fresh Reload / 退出重进 SaveData 回读仍为下一硬验收。
+- **BuildTag**：`v3-m1.16.0.18.81-ru-hotfix-persistence-reliability-v2`。
+
+## M1.16.0.18.80 — Persistence Reliability v1 + Buff Display UI_IMPLEMENTING（2026-09-03）
+
+- **用户 P0 反馈**：配置经常在重载/下一次进入游戏后丢失。审计确认至少两类底层危险链真实存在：Runtime Stop 过去可能在 Feature teardown 后才 Flush；Persistent Store 过去允许未 Load 就进入写意图。两者都会把 default/teardown 状态覆盖旧 SaveData。
+- **Persistence Reliability Contract v1**：新增 `ReliabilityContractVersion=1`、`PrepareWrite()`、Load-before-Write fence、dirty reload fence、corrupt-nonempty protection、true debounce + max delay、SaveData failure dirty retention + bounded retry，以及对应 Diagnostics/Stats。普通 `SaveStore` 不再绕过 loaded/write fence；只有完整分片替换可显式 `allowUnloadedWrite=true`。
+- **Runtime/Reload durability**：`Runtime:Stop()` 改为 `Flush → Feature Disable → Resource Quiescence`，且不会 teardown 后二次 Flush；用户主动 `ReloadCodeFromDisk()` 只有全部 dirty Store 安全保存后才触发原生 UI reload，否则明确取消。
+- **Persistent Binding transaction**：设置控件在 Domain mutation 前 `PrepareWrite`，Store 冷态会先 Load+Apply；`MarkDirty` 失败时 best-effort 回滚 Domain value/revision，避免“页面看似成功、Reload 必回退”。
+- **Direct-store call audit**：DPS boss list、Gear index/payload、DeathReview index/record 等立即保存路径补齐 load preflight；Gear Payload 与 DeathReview Record Slot 仅作为完整独立分片替换使用 `allowUnloadedWrite=true`。
+- **Buff Display UI_IMPLEMENTING**：兼容四页签正式收敛为 `追踪管理 / HUD 布局 / 导入导出`；player+target 使用单一虚拟 Tracking Table；HUD 使用 `Element Tree + LayoutEditorWorkspace v2 + LayoutEditSession`。页面构造前读 Store，HUD Working Snapshot 与 Persistence getter 隔离；Preview/Undo/Redo/Reset/Revert 零持久化，只有 Apply 才 synchronous durable SaveStore。
+- **Acceptance 修复**：最终 Foundation Audit 发现新增 BuffDisplay Acceptance 误用了未定义全局 `Fail()`；已改为标准 `return false, reason`，恢复 `globals=0`。
+- **验证**：`PERSISTENCE_RELIABILITY_HARNESS PASS contract=1 unsafeReject=2 dirtyReload=1 retry=1 corrupt=1 autoLoads=1`；Foundation Audit PASS：`toc=210 activeLua=210 allLua=210 globals=0`；210/210 Lua `texluac -p` PASS。真实 SaveData 跨 Reload/重新登录仍需 RU Fresh Reload。
+- **NEXT**：Persistence Reliability v2 / Mutation Transaction Audit，继续把剩余 public mutation 统一为 `PrepareWrite → mutate → MarkDirty/Save → rollback`；业务 UI 大规模迁移暂不抢占。
+- **BuildTag**：`v3-m1.16.0.18.80-persistence-reliability-buff-display-ui-implementing`。
+
+## M1.16.0.18.79 — Buff Display UI_APPROVED / Authority Cleanup（2026-09-03）
+
+- **Gate**：用户确认“按照文档继续”，状态显示由 `UI_REVIEW → UI_APPROVED`。产品方向固定为 `追踪管理 / HUD 布局 / 导入导出` 三个任务；player/target 共用同一 HUD 几何模板；主手+副手在左、背部在右；远程 Fresh Default 为 OFF，启用时放左侧外层；Layout Reset 不清追踪。
+- **装备布局 Authority**：`BuffHeadMarkersV3` 升 Contract 6，左侧顺序按“靠血条→外侧”为 `offHand → mainHand → ranged(optional)`，右侧只保留 `wings/back`；Acceptance 同步，不再与 Renderer 分叉。
+- **默认值修复**：`COMPONENT_DEFAULTS.ranged.enabled=false`；`NormalizeComponent` 改为缺字段继承组件自己的 default，修复旧 `value.enabled ~= false` 会把所有缺失组件强制开启的问题。明确保存过的旧用户值继续保留。
+- **字段 Authority 收口**：`headIconSize/headMaxIcons` 从 normalized live settings、页面控件、Projection/legacy accessor、导出策略中移除；旧 schema-4 存档和旧导入文本仍可兼容映射到 `components.buffs/debuffs.size/maxPerRow`。图标容量统一由 `maxPerRow × maxRows`（hard cap 64）决定。
+- **Reset 语义**：新增 `ResetLayoutSettings`，只恢复 HUD components/head policy/plate/info 默认；tracked、classification、Tracking filters/rows、floating window 均保留。旧 `ResetAllSettings` 命令保留为同语义兼容 alias，禁止再执行破坏性清空。
+- **导入导出兼容**：修复完整导入仍以 32/category 截断追踪 ID 的旧限制，统一为 Store 的 1024/category；完整导出/导入新增 Buff/Debuff `spacing/maxPerRow/maxRows` 与 CastBar `width/showText` round-trip，避免“导出后再导入”丢布局细节。
+- **Store/Schema**：仍为 schema 4，无 schema bump；新增 `LayoutAuthorityContractVersion=1` 与默认设置 detached snapshot，供 Acceptance 和下一阶段 LayoutEditSession 使用。
+- **验证**：Foundation Audit PASS：`toc=210 activeLua=210 allLua=210`，全部结构越界计数 0；BuffDisplay Acceptance 增加 40-ID import cap regression、component-specific export round-trip 与 fresh-default single-authority checks。
+- **NEXT**：进入 `UI_IMPLEMENTING`，迁移三页签、单虚拟 Tracking Table，并把 HUD 布局接入 `Element Tree + LayoutEditorWorkspace v2 + LayoutEditSession`；本轮不抢跑大规模页面迁移。
+- **BuildTag**：`v3-m1.16.0.18.79-buff-display-ui-approved-authority-cleanup`。
+
+## UI REVIEW — Buff Display / 状态显示 v3（2026-09-03）
+
+- **执行范围**：按 CURRENT §9.2 从 Foundation 进入第一个业务页面评审；只做真实代码审查 + 产品 UI_REVIEW，**不修改 Runtime / TOC / Store schema / 用户配置 / BuildTag**。Runtime 基线仍为 `.18.78`。
+- **真实代码审查**：读取 Store schema 4、BuffDisplay Feature/Projection/Commands、当前四页签页面、BuffHeadMarkers Renderer、Aura/Metadata/Classification Services 与 `.18.75~.18.78` Layout Editor Foundation。
+- **页面收敛**：当前 `状态追踪 / 头顶显示 / 布局外观 / 导入导出` 四页签评审为 `追踪管理 / HUD 布局 / 导入导出` 三个用户任务；头顶显示与布局外观合并，避免同一 HUD Template 的重复设置入口。
+- **Tracking Review**：利用已有 `GetProjection("all") / GetTrackedList()`，设计为单一虚拟 Table + 来源筛选，不再在 1024×768 下并排“自己/目标”两张表；行点击仍是一键追踪/取消。
+- **Layout Review**：指定 `Element Tree + LayoutEditorWorkspace v2`；player/target 共用一套 HUD 几何模板，只分别控制显示/Preview Scope；原生血条只作为不可见对齐基准，不虚构 Gameplay HealthBar Widget。
+- **Persistence Review**：Tracking/Classification 仍可作为明确业务操作即时持久化；布局编辑必须 staged Working，Undo/Redo/Revert/Reset 不写 Store，只有 Apply 跨越 durable persistence boundary；Layout Reset 不得清 tracked/classification/window state。
+- **运行时事实边界**：当前只批准 `player / target`；WatchTarget/Cooldown/Name 不因参考插件存在而进入当前 UI。目标装备图标因 RU scope API 证据不足继续 fail-closed，页面必须显示能力状态而非伪造可用。
+- **发现的实现分叉**：Renderer 当前装备分组为左 `offHand/mainHand`、右 `wings/ranged`；Acceptance 却断言左 `ranged/offHand/mainHand`、右 `wings`；Store 注释“ranged 默认 OFF”与实际默认 `true` 冲突；Page 注释出现 schema 5 而真实 Store 仍为 schema 4；`headIconSize/headMaxIcons` 与 component 字段重复；现有 `ResetAllSettings` 作用域过大。
+- **当前 Gate**：状态显示已从 `UI_DRAFT → UI_REVIEW`；下一步必须由用户确认 Review 中 4 个产品决策后进入 `UI_APPROVED`，再开始代码迁移。
+
+## M1.16.0.18.78 — UI LayoutEditorWorkspace Integration（2026-09-03）
+
+- **执行范围**：继续 Foundation First，零业务 Feature 页面迁移；完成 CURRENT §9.2 第 4/5 项，把 `.18.75~.18.77` 的 History / CommandBar / Session 正式接回共享 Workspace，并同步回写 Roadmap/Architecture。
+- **RSUI v42 / API 12.6 / WorkspaceTemplates v4 / LayoutEditorWorkspace v2**：Workspace 创建唯一 bounded `LayoutEditHistoryModel` 并注入 PreviewAdapter；新增稳定 Command Host + `EditorCommandBar v2`，不再要求页面自己拼接 Undo/Redo/Reset/Revert/Apply。
+- **Session Preflight**：`editSession=nil` 保留 history-only 兼容模式；一旦传入 Session 边界，必须同时提供 `getWorkingSnapshot / getPersistedSnapshot / getDefaultSnapshot / applyWorkingSnapshot / persistSnapshot`，partial contract 在构造 Native editor 前 fail-closed。
+- **Authority Refresh Chain**：History `record/undo/redo` 只从 Adapter 刷新 Overlay/Inspector；Reset/Revert/Rebase 才从 Feature Working 显式 `RefreshFromSource`；caller 主动 Source Refresh 同步 `Session:RefreshWorking()`，不维护第二份 dirty/can* 状态。
+- **Persistence Boundary**：Workspace 静态门禁禁止直接出现 `S.Persistence / SaveData / ClearData / SaveStore / MarkDirty`；durable Apply 仍只由 Feature callback 确认，Workspace 只负责绑定。
+- **Lifecycle**：CommandBar/Session/History 全部事件订阅；root Release 先释放 UI 子组件，再解绑/释放 Session 与 History，避免关闭编辑器后残留监听或有界历史对象。
+- **Compact UI**：CommandBar 默认 46px 紧凑按钮 + 84px 状态区，保持 1024 宽内容区可用；PreviewHost/Overlay/SAME TransformInspector 的 wide/drawer 单实例结构不变。
+- **Gate / Acceptance / Sequence / Audit**：FoundationGate v78、UIV3Acceptance v53；新增 `LayoutEditorOverlayHistoryBindingContract v1`、`LayoutEditorWorkspaceContract v2`、`WorkspaceSessionBindingContract v1` 与 `v3_54_ui_layout_editor_workspace_integration_contract`；Audit 增加 no-sampling、no-direct-persistence、History injection、Session source refresh、lifecycle cleanup fence。
+- **验证**：`LAYOUT_EDITOR_WORKSPACE_HARNESS PASS adapterRefresh=3 sourceRefresh=3 persist=1 historyOnly=true partialRejected=true`（非 Native 模拟，真实加载 History/Session/WorkspaceTemplates，覆盖 Record/Undo/Reset/Revert/外部刷新/Apply/Release）；210 个 Active Lua 额外使用 LuaTeX Lua 5.3 `texluac -p` 全量编译 PASS；Foundation Audit PASS（`toc=210 activeLua=210 allLua=210`，全部结构越界 0）；Sequence 的 pure Session preflight 已写入 Gate。Lua 5.3 编译仅为辅助语法证据，项目目标仍为 RU Lua 5.1；Workspace 实际按钮/输入/Z-order 仍以 RU Fresh Reload 为最终证据。
+- **下一层**：CURRENT §9.2 进入**状态显示 UI_REVIEW**；先审 UI/交互/设置组织，再决定业务 Feature 重构，不跳过 UI_APPROVED Gate。
+- **BuildTag**：`v3-m1.16.0.18.78-ui-layout-editor-workspace-integration`。
+
+## M1.16.0.18.77 — UI Layout Edit Session / Reset-Revert-Apply Persistence Boundary（2026-09-03）
+
+- **执行范围**：继续 Foundation First，零业务 Feature 页面迁移；完成 CURRENT §9.2 第 3 项 `Reset / Revert / Apply Session Semantics + Persistence Boundary`。
+- **RSUI v41 / API 12.5 / LayoutEditSession Contract v1**：新增 `ui/framework/rs_ui_layout_edit_session.lua`，建立 `Persisted / SessionBaseline / Working / Defaults` 四态。SessionBaseline 是本次编辑起点/最近 Apply 基线，允许与 Persisted 不同。
+- **命令语义**：`Revert` 只恢复 SessionBaseline；`Reset` 只把 Defaults staged 到 Working；二者都不调用 Store/ClearData。只有 `Apply` 调 caller `persistSnapshot`，且必须在 durable write 明确返回 true 后才推进 Persisted/Baseline。
+- **Dirty 分离**：`dirty = Working != Persisted`；`sessionChanged = Working != SessionBaseline`。因此当前 Working 尚未持久化但本次 Session 未产生额外编辑时，Apply 可用而 Revert 仍禁用。
+- **History Barrier / Integrity Fence**：Session 观察 History Record/Undo/Redo 事件刷新 Working；成功 Revert/Reset/Apply 清 History。Reset/Revert barrier 异常会 best-effort 回滚；durable Apply 后 barrier 异常不伪装回滚 Persistence，而进入 blocked，CommandBar v2 五命令 fail-closed。
+- **Persistence Authority**：Session 文件静态门禁禁止直接出现 Runtime `S.Persistence / S.Api / SaveData / ClearData / SaveStore / MarkDirty` 调用；未来 Workspace/Feature Adapter 负责 durable callback。
+- **Gate / Acceptance / Sequence**：FoundationGate v77、UIV3Acceptance v52；新增 `v3_ui_layout_edit_session_contract` 与 `v3_53_ui_layout_edit_session_contract`；EditorCommandBar Contract/Session Projection 升 v2 支持 blocked fence。
+- **验证**：`LAYOUT_EDIT_SESSION_HARNESS PASS 2 30 1 2`；`LAYOUT_EDIT_SESSION_FOUR_STATE PASS 1 50`；`LAYOUT_EDIT_SESSION_FAILURE_HARNESS PASS 3 3 true`；Foundation Audit PASS（`toc=210 activeLua=210 allLua=210`，全部结构越界 0）。
+- **下一层**：CURRENT §9.2 第 4 项 `LayoutEditorWorkspace Integration`，把 History/Session/CommandBar 接入同一 Workspace，不提前迁移业务 Feature。
+- **BuildTag**：`v3-m1.16.0.18.77-ui-layout-edit-session-foundation`。
+
+## M1.16.0.18.76 — UI Editor Command Bar Foundation（2026-09-03）
+
+- **执行范围**：继续 Foundation First，零业务 Feature 页面迁移；完成 CURRENT §9.2 第 2 项 `Editor Command Bar`。
+- **RSUI v40 / API 12.4 / Command Bar Contract v1**：新增 `ui/framework/rs_ui_editor_command_bar.lua`，固定 `Undo / Redo / Revert / Reset / Apply` 五命令入口。组件只做 Authority Projection，不拥有 Feature Store、Persistence 或 dirty/can* 第二份状态。
+- **History Observable Extension v1**：`LayoutEditHistoryModel` 新增 `Subscribe/Unsubscribe`；成功 Record/Undo/Redo/Clear 才事件通知，Preview/Drag Pulse/Cancel 仍不产生 History/CommandBar 更新事件；无 Tick/OnUpdate。
+- **Session Fail-Closed**：本轮刻意不定义 Reset/Revert/Apply 语义。Session Authority 未接入时三按钮全部 disabled；未来 Session 必须提供 `GetCommandSnapshot / ExecuteCommand / Subscribe / Unsubscribe`。
+- **Busy Fence**：History 或 Session 任一 busy，五命令统一不可执行，避免 Undo 与 Apply/Reset 并发导致半事务。
+- **Pure Projection**：新增 `ProjectEditorCommandState()`，允许 Gate/Sequence 不构造 Native Widget 就验证无 Session、Dirty Session 与 Busy 状态。
+- **Gate / Acceptance / Audit**：FoundationGate v76、UIV3Acceptance v51；新增 `v3_ui_editor_command_bar_contract` 与 `v3_52_ui_editor_command_bar_contract`；Foundation Audit 增加 Active TOC、observable、no-sampling 与 session-command contract fence。
+- **验证**：Foundation Audit PASS（`toc=209 activeLua=209 allLua=209`，全部结构越界 0）；当前容器无独立 Lua runtime，因此新 Sequence 已写入 Gate，最终运行结果继续以 RU/on-demand Gate 为准。
+- **下一层**：CURRENT §9.2 第 3 项 `Reset / Revert / Apply Session Semantics + Persistence Boundary`，随后才接回 `LayoutEditorWorkspace`。
+- **BuildTag**：`v3-m1.16.0.18.76-ui-editor-command-bar-foundation`。
+
+## M1.16.0.18.75 — UI Layout Edit History / Undo-Redo Foundation（2026-09-03）
+
+- **执行范围**：继续 Foundation First，零业务 Feature 页面迁移；完成 CURRENT §9.2 第 1 项共享 `LayoutEditHistoryModel / Undo-Redo`。
+- **RSUI v39 / API 12.3 / History Contract v1**：新增 `ui/framework/rs_ui_layout_edit_history.lua`。History 只记录成功 Commit，Preview/Drag Pulse/Cancel 不入历史；before/after 以 stable key set 为身份边界，duplicate/missing/key-set drift 全部 fail-closed。
+- **Bounded Session Memory**：默认 64 条命令、hard cap 256；每条 item 默认 128、hard cap 512；可选非 Rect state 使用 depth/node bound 深拷贝，避免 History 持有 live table 或无限增长。
+- **Undo/Redo Transaction**：外部 `apply` 接受后才移动 cursor；异常/拒绝时 cursor 保持不变，并调用 rollback callback（未提供时复用 apply）恢复当前 side；rollback 失败单独计指标，不把半失败伪装成成功。
+- **Anchor/Pivot 可逆性**：preserve-visual 锚点修改可能 before/after Rect 相同，因此 Adapter 只记录 `parentRect + rect + anchorX/Y + pivotX/Y` 的最小恢复快照；revision/lastSource 等瞬态字段不进入 History，避免伪 command。
+- **PreviewAdapter 集成**：新增 `historyEnabled/historyModel`、`EnableHistory/GetHistoryModel/ApplyHistoryState`；Gesture Commit、Inspector Rect Commit、Single Anchor Commit 在外部 Commit 成功后才 Record；History replay 走受控 Commit 但不再次 Record。多选仍按 stable-key group projection 原子恢复。
+- **Gate / Acceptance / Sequence**：FoundationGate v75、UIV3Acceptance v50；新增 `v3_ui_layout_edit_history_contract` 与 `v3_51_ui_layout_edit_history_contract`，Foundation Audit 增加 History Active TOC / bounded / rollback / no-sampling source fence。
+- **验证**：`HISTORY_HARNESS PASS 1 1`；`ADAPTER_HISTORY_HARNESS PASS 2 1 10 0`；`MULTI_HISTORY_HARNESS PASS 1 10 210`；Foundation Audit PASS（`toc=208 activeLua=208 allLua=208`，全部结构越界 0）。
+- **下一层**：CURRENT §9.2 第 2 项 `Editor Command Bar`，随后定义 `Reset / Revert / Apply` 的 Session/Persistence 语义并接回 `LayoutEditorWorkspace`。
+- **BuildTag**：`v3-m1.16.0.18.75-ui-layout-edit-history-foundation`。
+
+## Documentation Authority Consolidation — ToDo 单一入口（2026-09-03）
+
+- 将 `CURRENT_REBUILD_STATUS.md` §9 明确为唯一活动 ToDo / 当前施工队列 Authority；Foundation、用户遗留事项、Product Matrix 后续入口与 RU Fresh Reload 验收统一在同一节管理。
+- `PRODUCT_COMPLETION_MATRIX.md` 保留 125 项产品能力库存/完成度 Authority，但移除独立施工优先级，避免与 CURRENT 双 Authority；当前 Foundation Audit 证据同步为 `207/207`。
+- `README.md` 新增 ToDo 权威导航和冲突优先级。
+- `2026-09-03-pending-handoff.md` 的 #4–#7 已收拢进入 CURRENT §9；生成 `Archive/Handoff/WORKING_HANDOFF_20260903.md` 历史副本。旧 `Docs/Handoff/2026-09-03-pending-handoff.md` 路径应在覆盖后手动删除。
+- 本轮仅文档治理，不修改 Runtime/TOC/Store/Schema/Feature 行为，不变更 BuildTag。
+
 ## M1.16.0.18.74 — UI Layout Editor Workspace Foundation（2026-09-03）
 
 - **执行范围**：继续 Foundation First，零业务 Feature 页面迁移；把 `.18.71` 的独立 Transform 数学层组合成可复用 Editor Transaction / Overlay / Responsive Workspace。

@@ -426,7 +426,7 @@ end
 -- never migrated into the V3 store. New-framework stores read their own keys.)
 
 function F:EnsureStoreLoaded()
-    if self.StoreLoaded == true then return true end
+    if type(P.IsStoreLoaded) == "function" and P:IsStoreLoaded(STORE_ID) == true then self.StoreLoaded = true; return true end
     local store = P:GetStore(STORE_ID)
     if store == nil then return false, "治疗辅助设置存档不可用" end
     local status, _, err = P:LoadStore(STORE_ID)
@@ -456,12 +456,20 @@ function F:SetWidgetWindowState(value, reason)
     local floating = S.RSUI and S.RSUI.FloatingSurface or nil
     local policy = { defaultWidth = 430, defaultHeight = 300, minWidth = 280, minHeight = 150,
         defaultOverallOpacity = 0.96, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 }
+    local prepared, prepareErr = P:PrepareWrite(STORE_ID)
+    if prepared ~= true then return false, prepareErr or "治疗辅助窗口配置尚未安全读取" end
     self.State.widgetWindow = type(floating) == "table" and type(floating.NormalizeState) == "function"
         and floating:NormalizeState(value, policy) or DeepCopy(value)
     return true
 end
 function F:MarkStoreDirty(delayMs, reason)
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 350, reason or "healer_setting_changed")
+end
+
+function F:MutateStore(mutator, delayMs, reason, durable)
+    return P:MutateStore(STORE_ID, function() return mutator() end, {
+        delayMs = tonumber(delayMs) or 350, reason = tostring(reason or "healer_setting_changed"), durable = durable == true,
+    })
 end
 
 local HEALER_SCALAR_SETTINGS = {
@@ -503,11 +511,8 @@ end
 -- from the authoritative permanent Store.
 function F:SetScalarSetting(key, value)
     key = tostring(key or "")
-    local before = DeepCopy(self.State.settings)
-    local ok, err = self:ApplyScalarSettingRaw(key, value)
-    if ok ~= true then return false, err end
-    local marked, markErr = self:MarkStoreDirty(350, "healer_scalar:" .. key)
-    if marked ~= true then self.State.settings = before; return false, markErr end
+    local marked, markErr = self:MutateStore(function() return self:ApplyScalarSettingRaw(key, value) end, 350, "healer_scalar:" .. key)
+    if marked ~= true then return false, markErr end
     PublishSettingChanged(key)
     return true
 end
@@ -526,16 +531,14 @@ local HEALER_COLOR_KEYS = { proximityColor=true, lowHealthColor=true, emergencyC
 
 local function MutateSettings(self, reason, mutator, topic)
     if type(mutator) ~= "function" then return false, "healer settings mutation required" end
-    local before = DeepCopy(self.State.settings)
-    local nextSettings = DeepCopy(self.State.settings)
-    local ok, err = pcall(mutator, nextSettings)
-    if ok ~= true then return false, tostring(err) end
-    self.State.settings = NormalizeSettings(nextSettings)
-    local marked, markErr = self:MarkStoreDirty(350, reason or "healer_settings_command")
-    if marked ~= true then
-        self.State.settings = before
-        return false, markErr or "治疗设置存档写入排队失败"
-    end
+    local marked, markErr = self:MutateStore(function()
+        local nextSettings = DeepCopy(self.State.settings)
+        local ok, err = pcall(mutator, nextSettings)
+        if ok ~= true then return false, tostring(err) end
+        self.State.settings = NormalizeSettings(nextSettings)
+        return true
+    end, 350, reason or "healer_settings_command")
+    if marked ~= true then return false, markErr or "治疗设置存档写入排队失败" end
     PublishSettingChanged(topic or "advanced")
     return true
 end
@@ -654,94 +657,64 @@ function F:ApplyPresentationSettingFromBinding(scope, key, value)
 end
 
 function F:SetPresentationSetting(scope, key, value)
-    local before = DeepCopy(self.State.presentation)
-    local ok, err = self:ApplyPresentationSettingRaw(scope, key, value)
-    if ok ~= true then return false, err end
-    local marked, markErr = self:MarkStoreDirty(350, "healer_presentation:" .. tostring(scope) .. ":" .. tostring(key))
-    if marked ~= true then self.State.presentation = before; return false, markErr end
+    local marked, markErr = self:MutateStore(function() return self:ApplyPresentationSettingRaw(scope, key, value) end, 350, "healer_presentation:" .. tostring(scope) .. ":" .. tostring(key))
+    if marked ~= true then return false, markErr end
     PublishPresentationChanged(scope, key)
+    return true
+end
+
+local function MutateRaidPresentation(self, reason, topic, mutator)
+    local marked, markErr = self:MutateStore(function()
+        local nextPresentation = DeepCopy(self.State.presentation)
+        local ok, err = pcall(mutator, nextPresentation)
+        if ok ~= true then return false, tostring(err) end
+        self.State.presentation = NormalizePresentation(nextPresentation)
+        return true
+    end, 200, reason)
+    if marked ~= true then return false, markErr end
+    PublishPresentationChanged("raid", topic)
     return true
 end
 
 function F:SetRaidPanelRect(panelId, rect)
     panelId = tostring(panelId or ""):upper()
     if panelId ~= "A" and panelId ~= "B" then return false, "invalid raid panel id: " .. tostring(panelId) end
-    local before = DeepCopy(self.State.presentation)
-    local nextPresentation = DeepCopy(self.State.presentation)
-    local panel = type(nextPresentation.raid.panels[panelId]) == "table" and nextPresentation.raid.panels[panelId] or {}
-    panel.geometry = NormalizeRect(rect, panel.geometry or DefaultRaidPanelGeometry())
-    nextPresentation.raid.panels[panelId] = panel
-    self.State.presentation = NormalizePresentation(nextPresentation)
-    local marked, err = self:MarkStoreDirty(200, "healer_raid_panel_rect:" .. panelId)
-    if marked ~= true then self.State.presentation = before; return false, err end
-    PublishPresentationChanged("raid", "panels")
-    return true
+    return MutateRaidPresentation(self, "healer_raid_panel_rect:" .. panelId, "panels", function(nextPresentation)
+        local panel = type(nextPresentation.raid.panels[panelId]) == "table" and nextPresentation.raid.panels[panelId] or {}
+        panel.geometry = NormalizeRect(rect, panel.geometry or DefaultRaidPanelGeometry())
+        nextPresentation.raid.panels[panelId] = panel
+    end)
 end
 
 function F:SetRaidPanelTeam(panelId, team)
     panelId = tostring(panelId or ""):upper()
     if panelId ~= "A" and panelId ~= "B" then return false, "invalid raid panel id: " .. tostring(panelId) end
     team = ClampInt(team, 1, 2, 1)
-    local before = DeepCopy(self.State.presentation)
-    local nextPresentation = DeepCopy(self.State.presentation)
-    local panel = type(nextPresentation.raid.panels[panelId]) == "table" and nextPresentation.raid.panels[panelId] or {}
-    panel.team = team
-    nextPresentation.raid.panels[panelId] = panel
-    self.State.presentation = NormalizePresentation(nextPresentation)
-    local marked, err = self:MarkStoreDirty(200, "healer_raid_panel_team:" .. panelId)
-    if marked ~= true then self.State.presentation = before; return false, err end
-    PublishPresentationChanged("raid", "panels")
-    return true
+    return MutateRaidPresentation(self, "healer_raid_panel_team:" .. panelId, "panels", function(nextPresentation)
+        local panel = type(nextPresentation.raid.panels[panelId]) == "table" and nextPresentation.raid.panels[panelId] or {}
+        panel.team = team
+        nextPresentation.raid.panels[panelId] = panel
+    end)
 end
 
 function F:SetRaidMode(mode)
     mode = (mode == "single" and "single") or (mode == "dual" and "dual") or "auto"
-    local before = DeepCopy(self.State.presentation)
-    local nextPresentation = DeepCopy(self.State.presentation)
-    nextPresentation.raid.mode = mode
-    self.State.presentation = NormalizePresentation(nextPresentation)
-    local marked, err = self:MarkStoreDirty(200, "healer_raid_mode")
-    if marked ~= true then self.State.presentation = before; return false, err end
-    PublishPresentationChanged("raid", "mode")
-    return true
+    return MutateRaidPresentation(self, "healer_raid_mode", "mode", function(nextPresentation) nextPresentation.raid.mode = mode end)
 end
 
 function F:SetRaidSingleTeam(teamId)
     teamId = ClampInt(teamId, 0, 2, 0)
-    local before = DeepCopy(self.State.presentation)
-    local nextPresentation = DeepCopy(self.State.presentation)
-    nextPresentation.raid.singleTeamId = teamId
-    self.State.presentation = NormalizePresentation(nextPresentation)
-    local marked, err = self:MarkStoreDirty(200, "healer_raid_single_team")
-    if marked ~= true then self.State.presentation = before; return false, err end
-    PublishPresentationChanged("raid", "singleTeamId")
-    return true
+    return MutateRaidPresentation(self, "healer_raid_single_team", "singleTeamId", function(nextPresentation) nextPresentation.raid.singleTeamId = teamId end)
 end
 
 function F:SetRaidTestSetting(key, value)
     key = tostring(key or "")
-    if key ~= "testColors" and key ~= "slotNumbers" and key ~= "showMyself" then
-        return false, "unsupported raid test setting: " .. key
-    end
-    local before = DeepCopy(self.State.presentation)
-    local nextPresentation = DeepCopy(self.State.presentation)
-    nextPresentation.raid[key] = value == true
-    self.State.presentation = NormalizePresentation(nextPresentation)
-    local marked, err = self:MarkStoreDirty(200, "healer_raid_test:" .. key)
-    if marked ~= true then self.State.presentation = before; return false, err end
-    PublishPresentationChanged("raid", key)
-    return true
+    if key ~= "testColors" and key ~= "slotNumbers" and key ~= "showMyself" then return false, "unsupported raid test setting: " .. key end
+    return MutateRaidPresentation(self, "healer_raid_test:" .. key, key, function(nextPresentation) nextPresentation.raid[key] = value == true end)
 end
 
 function F:ResetRaidLayout()
-    local before = DeepCopy(self.State.presentation)
-    local nextPresentation = DeepCopy(self.State.presentation)
-    nextPresentation.raid.panels = DefaultRaidPanels()
-    self.State.presentation = NormalizePresentation(nextPresentation)
-    local marked, err = self:MarkStoreDirty(200, "healer_raid_layout_reset")
-    if marked ~= true then self.State.presentation = before; return false, err end
-    PublishPresentationChanged("raid", "panels")
-    return true
+    return MutateRaidPresentation(self, "healer_raid_layout_reset", "panels", function(nextPresentation) nextPresentation.raid.panels = DefaultRaidPanels() end)
 end
 
 function F:GetStoreHealth()

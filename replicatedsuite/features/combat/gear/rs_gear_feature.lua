@@ -297,13 +297,12 @@ function F:SyncQuickButtonsHost(reason)
 end
 
 function F:SetQuickHudVisible(visible, source)
+    local nextValue = visible == true
     local loaded, loadErr = self:EnsureStoreLoaded()
     if loaded ~= true then return false, loadErr end
-    local state = self:GetQuickHudState()
-    local nextValue = visible == true
-    if state.visible ~= nextValue then
-        state.visible = nextValue
-        self:SaveQuickHudState(250, "gear_quick_buttons_visibility")
+    if (self:GetQuickHudState().visible ~= false) ~= nextValue then
+        local saved, saveErr = self:MutateIndex(function() self:GetQuickHudState().visible = nextValue; return true end, 250, "gear_quick_buttons_visibility")
+        if saved ~= true then return false, saveErr or "换装快捷按钮可见性未保存" end
     end
     if nextValue and Runtime:IsEnabled(self.Id) ~= true and self:HasQuickSets() then
         local ok, err = self:AcquireTransient("hud:gear_quick")
@@ -332,17 +331,9 @@ end
 
 function F:SetQuickHudAppearance(key, value, persist, reason)
     local normalizedKey = tostring(key or "")
-    local state = self:GetQuickHudState()
-    local previous = state[normalizedKey]
-    local ok, err = self:ApplyQuickHudAppearance(normalizedKey, value)
-    if ok ~= true then return false, err end
-    if persist ~= false then
-        local saved, saveErr = self:SaveQuickHudState(250, reason or ("gear_quick_" .. normalizedKey))
-        if saved ~= true then
-            self:ApplyQuickHudAppearance(normalizedKey, previous)
-            return false, saveErr
-        end
-    end
+    if persist == false then return self:ApplyQuickHudAppearance(normalizedKey, value) end
+    local saved, saveErr = self:MutateIndex(function() return self:ApplyQuickHudAppearance(normalizedKey, value) end, 250, reason or ("gear_quick_" .. normalizedKey))
+    if saved ~= true then return false, saveErr end
     return true
 end
 
@@ -403,7 +394,7 @@ function F.Commands:SetQuickHudAppearance(key, value, persist, reason) return F:
 function F.Commands:ApplyQuickSnapEnabled(enabled) return F:ApplyQuickSnapEnabled(enabled == true) end
 function F.Commands:ApplyQuickSnapDistance(value) return F:ApplyQuickSnapDistance(value) end
 function F.Commands:ApplyQuickButtonGap(value) return F:ApplyQuickButtonGap(value) end
-function F.Commands:MarkStoreDirty(delayMs, reason) return F:MarkStoreDirty(delayMs, reason) end
+function F.Commands:MarkStoreDirty(delayMs, reason) return F:MarkIndexDirty(delayMs, reason) end
 function F.Commands:RefreshProjection(reason) return F:RefreshProjection(reason or "gear_command") end
 function F.Commands:CreateSet(name) return F:CreateSet(name) end
 function F.Commands:DeleteSet(id) return F:DeleteSet(id) end

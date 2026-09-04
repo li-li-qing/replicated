@@ -75,7 +75,7 @@ local COMPONENT_DEFAULTS = {
     gearScore = { enabled = true,  x = 0, y = 0, size = 0,  fontSize = 12, alpha = 1.0 },
     mainHand  = { enabled = true,  x = 0, y = 0, size = 26, fontSize = 0,  alpha = 1.0 },
     offHand   = { enabled = true,  x = 0, y = 0, size = 26, fontSize = 0,  alpha = 1.0 },
-    ranged    = { enabled = true,  x = 0, y = 0, size = 26, fontSize = 0,  alpha = 1.0 },
+    ranged    = { enabled = false, x = 0, y = 0, size = 26, fontSize = 0,  alpha = 1.0 },
     wings     = { enabled = true,  x = 0, y = 0, size = 26, fontSize = 0,  alpha = 1.0 },
     castBar   = { enabled = true,  x = 0, y = 0, size = 7,  fontSize = 12, alpha = 1.0 },
 }
@@ -108,8 +108,13 @@ end
 
 local function NormalizeComponent(value, defaults)
     value = type(value) == "table" and value or {}
+    local enabled = defaults.enabled ~= false
+    if value.enabled ~= nil then enabled = value.enabled == true end
     return {
-        enabled = value.enabled ~= false,
+        -- Missing fields inherit the component-specific default. This matters
+        -- for opt-in components such as ranged; the old generic ~= false rule
+        -- accidentally forced every missing component ON.
+        enabled = enabled,
         x = ClampInt(value.x, -400, 400, defaults.x),
         y = ClampInt(value.y, -400, 400, defaults.y),
         size = ClampInt(value.size, 0, 64, defaults.size),
@@ -159,6 +164,26 @@ local function NormalizeSettings(value)
     -- for layout geometry (left/right/top/bottom/center) — nothing is drawn.
     local plate = type(value.plate) == "table" and value.plate or {}
     local info = type(value.info) == "table" and value.info or {}
+    -- Compatibility-only bridge for schema-4 saves written before .18.79.
+    -- headIconSize/headMaxIcons used to be duplicate writable authorities for
+    -- buffs/debuffs. Fold them into the canonical component fields only when
+    -- those component fields are absent; normalized state no longer retains the
+    -- aliases, so every live consumer has one field authority.
+    local rawComponents = Copy(type(value.components) == "table" and value.components or {})
+    local legacyIconSize = tonumber(value.headIconSize)
+    local legacyMaxIcons = tonumber(value.headMaxIcons)
+    if legacyIconSize ~= nil then
+        rawComponents.buffs = type(rawComponents.buffs) == "table" and rawComponents.buffs or {}
+        rawComponents.debuffs = type(rawComponents.debuffs) == "table" and rawComponents.debuffs or {}
+        if rawComponents.buffs.size == nil then rawComponents.buffs.size = legacyIconSize end
+        if rawComponents.debuffs.size == nil then rawComponents.debuffs.size = legacyIconSize end
+    end
+    if legacyMaxIcons ~= nil then
+        rawComponents.buffs = type(rawComponents.buffs) == "table" and rawComponents.buffs or {}
+        rawComponents.debuffs = type(rawComponents.debuffs) == "table" and rawComponents.debuffs or {}
+        if rawComponents.buffs.maxPerRow == nil then rawComponents.buffs.maxPerRow = legacyMaxIcons end
+        if rawComponents.debuffs.maxPerRow == nil then rawComponents.debuffs.maxPerRow = legacyMaxIcons end
+    end
     -- y=0 centers the proxy on the unit projection point by default; the
     -- calibrate mode / plate.y slider lets the player land it on the native bar.
     -- Default plate.y = 22 (up 4px from the original 26 to better align with
@@ -184,7 +209,7 @@ local function NormalizeSettings(value)
         -- existing saves). User-tuned values (anything else) are preserved.
         refreshMs = (tonumber(value.refreshMs) == 400) and 120
             or ClampInt(value.refreshMs, 1, 2000, 120),
-        components = NormalizeComponents(value.components),
+        components = NormalizeComponents(rawComponents),
         layoutPresetVersion = LAYOUT_PRESET_VERSION,
         tracked = {
             buff = NormalizeTrackedIds(tracked.buff),
@@ -195,8 +220,6 @@ local function NormalizeSettings(value)
         headShowAll = value.headShowAll == true,
         headPlayer = value.headPlayer ~= false,
         headTarget = value.headTarget ~= false,
-        headIconSize = ClampInt(value.headIconSize, 8, 64, 24),
-        headMaxIcons = ClampInt(value.headMaxIcons, 1, 12, 8),
         headRefreshMs = (tonumber(value.headRefreshMs) == 100) and 50
             or ClampInt(value.headRefreshMs, 1, 2000, 50),
         headShowStacks = value.headShowStacks ~= false,
@@ -280,6 +303,8 @@ local function MigrateState(value, fromSchema)
 end
 
 F.StoreId, F.SchemaVersion = STORE_ID, SCHEMA
+F.LayoutAuthorityContractVersion = 2
+F.LayoutPersistenceBoundaryContractVersion = 1
 F.State = NormalizeState(F.State)
 F.StoreLoaded = F.StoreLoaded == true
 
@@ -308,19 +333,139 @@ if P:GetStore(STORE_ID) == nil then
 end
 
 function F:GetSettings() return self.State.settings end
+function F:GetDefaultSettingsSnapshot() return Copy(NormalizeSettings(nil)) end
 
--- Restore every display/layout setting to current defaults. The floating
--- window's visibility is preserved (a reset should not close the user's open
--- window); tracked ids and classification are intentionally included in the
--- reset scope — the page labels the button 恢复默认 and documents the sweep.
+-- HUD layout persistence boundary ------------------------------------------------
+--
+-- The page editor owns an isolated Working snapshot.  Preview/Undo/Redo/Reset
+-- never mutate F.State, because F.State is the registered Persistence getter and
+-- may be flushed for an unrelated dirty setting at any time.  Only Apply crosses
+-- this boundary through PersistLayoutSnapshot(), which writes the full Store
+-- synchronously and rolls the in-memory layout back if the durable write fails.
+-- This prevents an un-applied editor preview from leaking into the next reload.
+local LAYOUT_SETTING_KEYS = {
+    "layoutPresetVersion", "headEnabled", "headShowAll", "headPlayer", "headTarget",
+    "headRefreshMs", "headShowStacks", "headShowTime", "plateScale",
+}
+
+local function NormalizeLayoutSnapshot(value)
+    value = type(value) == "table" and value or {}
+    local defaults = NormalizeSettings(nil)
+    local plate = type(value.plate) == "table" and value.plate or {}
+    local info = type(value.info) == "table" and value.info or {}
+    return {
+        layoutPresetVersion = LAYOUT_PRESET_VERSION,
+        headEnabled = value.headEnabled ~= false,
+        headShowAll = value.headShowAll == true,
+        headPlayer = value.headPlayer ~= false,
+        headTarget = value.headTarget ~= false,
+        -- Do NOT reuse NormalizeSettings' historical 100->50 fingerprint here:
+        -- LayoutEditor snapshots are already schema-4 values, not legacy input.
+        headRefreshMs = ClampInt(value.headRefreshMs, 1, 2000, defaults.headRefreshMs),
+        headShowStacks = value.headShowStacks ~= false,
+        headShowTime = value.headShowTime ~= false,
+        plateScale = ClampFloat(value.plateScale, 0.5, 2.0, defaults.plateScale),
+        plate = {
+            enabled = plate.enabled ~= false,
+            width = ClampInt(plate.width, 80, 320, defaults.plate.width),
+            height = ClampInt(plate.height, 8, 40, defaults.plate.height),
+            x = ClampInt(plate.x, -400, 400, defaults.plate.x),
+            y = ClampInt(plate.y, -500, 500, defaults.plate.y),
+            opacity = ClampFloat(plate.opacity, 0.2, 1.0, defaults.plate.opacity),
+            showName = plate.showName ~= false,
+        },
+        info = {
+            enabled = info.enabled ~= false,
+            x = ClampInt(info.x, -400, 400, defaults.info.x),
+            y = ClampInt(info.y, -120, 120, defaults.info.y),
+            fontSize = ClampInt(info.fontSize, 8, 24, defaults.info.fontSize),
+            showClass = info.showClass ~= false,
+            showGear = info.showGear ~= false,
+            showDistance = info.showDistance ~= false,
+        },
+        components = NormalizeComponents(value.components),
+    }
+end
+
+local function LayoutSnapshotFromSettings(settings)
+    return Copy(NormalizeLayoutSnapshot(settings))
+end
+
+local function ApplyLayoutSnapshotToSettings(settings, snapshot)
+    local normalized = NormalizeLayoutSnapshot(snapshot)
+    for _, key in ipairs(LAYOUT_SETTING_KEYS) do settings[key] = Copy(normalized[key]) end
+    settings.plate = Copy(normalized.plate)
+    settings.info = Copy(normalized.info)
+    settings.components = Copy(normalized.components)
+    return normalized
+end
+
+function F:GetLayoutSettingsSnapshot()
+    return LayoutSnapshotFromSettings(self.State.settings)
+end
+
+function F:GetDefaultLayoutSettingsSnapshot()
+    return LayoutSnapshotFromSettings(NormalizeSettings(nil))
+end
+
+function F:CanPersistLayoutSettings()
+    local loaded, loadErr = self:EnsureStoreLoaded()
+    if loaded ~= true then return false, loadErr or "状态显示设置尚未读取" end
+    return P:CanWrite(STORE_ID)
+end
+
+function F:PersistLayoutSettingsSnapshot(snapshot, reason)
+    -- Apply is the only LayoutEditor command allowed to cross the durable
+    -- boundary. Persistence v2 owns preflight, snapshot and rollback atomically.
+    local saved, saveErr = self:MutateStore(function()
+        ApplyLayoutSnapshotToSettings(self.State.settings, snapshot)
+        return true
+    end, 0, tostring(reason or "buff_display_layout_apply"), true)
+    if saved ~= true then return false, saveErr or "HUD 布局持久化失败" end
+
+    if type(F.ReconcileLanes) == "function" then F:ReconcileLanes() end
+    if type(F.RefreshScope) == "function" then
+        F:RefreshScope("player")
+        F:RefreshScope("target")
+    end
+    if S.Events ~= nil and type(S.Events.Publish) == "function" then
+        S.Events:Publish("v3.buff_display.settings", "layout_apply")
+    end
+    return true, nil
+end
+
+-- Layout Reset is intentionally narrow. It restores HUD presentation defaults
+-- while preserving tracking-manager state, classification overrides, browser
+-- filters/row counts, floating-window state, and feature lifecycle preference.
+-- A destructive factory reset belongs to the future global settings surface.
+function F:ResetLayoutSettings()
+    local settings = self.State.settings
+    local defaults = NormalizeSettings(nil)
+    local before = Copy(settings)
+
+    settings.components = Copy(defaults.components)
+    settings.layoutPresetVersion = defaults.layoutPresetVersion
+    settings.headEnabled = defaults.headEnabled
+    settings.headShowAll = defaults.headShowAll
+    settings.headPlayer = defaults.headPlayer
+    settings.headTarget = defaults.headTarget
+    settings.headRefreshMs = defaults.headRefreshMs
+    settings.headShowStacks = defaults.headShowStacks
+    settings.headShowTime = defaults.headShowTime
+    settings.plateScale = defaults.plateScale
+    settings.plate = Copy(defaults.plate)
+    settings.info = Copy(defaults.info)
+    return true, before
+end
+
+-- Compatibility alias for any old caller. Since .18.79 this is deliberately
+-- NON-destructive and has the same scoped semantics as Layout Reset.
 function F:ResetSettings()
-    local keepVisible = self.State ~= nil and self.State.widgetVisible == true
-    self.State = NormalizeState(nil)
-    if keepVisible then self.State.widgetVisible = true end
-    return true
+    return self:ResetLayoutSettings()
 end
 function F:EnsureStoreLoaded()
-    if self.StoreLoaded == true then return true end
+    local loaded = type(P.IsStoreLoaded) == "function" and select(1, P:IsStoreLoaded(STORE_ID)) == true
+    if loaded == true then self.StoreLoaded = true; return true end
     local store = P:GetStore(STORE_ID)
     if store == nil then return false, "状态显示设置存档不可用" end
     local status, _, err = P:LoadStore(STORE_ID)
@@ -331,10 +476,22 @@ function F:EnsureStoreLoaded()
 end
 
 function F:MarkStoreDirty(delayMs, reason)
-    -- Every settings mutation persists through this path, so it is the single
-    -- invalidation hook for the feature's detached settings-snapshot cache.
+    -- Compatibility entry for callers whose Domain mutation is already guarded
+    -- by a PersistentBinding/FloatingSurface preflight. New public business
+    -- mutations should use MutateStore() so rollback is owned by Persistence v2.
     if type(F.InvalidateSettingsCache) == "function" then F:InvalidateSettingsCache() end
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 300, reason or "buff_display_changed")
+end
+
+function F:MutateStore(mutator, delayMs, reason, durable)
+    if type(P.MutateStore) ~= "function" then return false, "Persistence mutation transaction unavailable" end
+    local ok, err, extra = P:MutateStore(STORE_ID, function()
+        return mutator()
+    end, { delayMs = tonumber(delayMs) or 300, reason = reason or "buff_display_changed", durable = durable == true })
+    -- Whether the transaction committed or rolled back, any detached settings
+    -- projection may now reference an old table generation. Rebuild lazily.
+    if type(F.InvalidateSettingsCache) == "function" then F:InvalidateSettingsCache() end
+    return ok, err, extra
 end
 
 function F:GetComponent(key)
@@ -376,47 +533,49 @@ function F:SetTrackedId(id, category, enabled)
             if kind ~= nil and kind.category == "debuff" then category = "debuff" end
         end
     end
-    local before = Copy(self.State)
     local list, found = NormalizeTrackedIds(settings.tracked[category]), false
     for _, tracked in ipairs(list) do if tracked == id then found = true break end end
-    if enabled == true and not found then
-        -- 1024/category, matching NormalizeTrackedIds (load/save) and
-        -- ImportTrackedIds so every path agrees and nothing is silently lost.
-        if #list >= 1024 then return false, "最多追踪 1024 个状态" end
-        list[#list + 1] = id
-        table.sort(list)
-    elseif enabled ~= true and found then
-        local nextList = {}
-        for _, tracked in ipairs(list) do if tracked ~= id then nextList[#nextList + 1] = tracked end end
-        list = nextList
-    else
+    if enabled == true and found then return true end
+    if enabled ~= true and not found then return true end
+    if enabled == true and #list >= 1024 then return false, "最多追踪 1024 个状态" end
+    local marked, markErr = self:MutateStore(function()
+        local current = self.State.settings
+        local nextList = NormalizeTrackedIds(current.tracked[category])
+        if enabled == true then
+            local exists = false
+            for _, tracked in ipairs(nextList) do if tracked == id then exists = true break end end
+            if not exists then nextList[#nextList + 1] = id; table.sort(nextList) end
+        else
+            local filtered = {}
+            for _, tracked in ipairs(nextList) do if tracked ~= id then filtered[#filtered + 1] = tracked end end
+            nextList = filtered
+        end
+        current.tracked[category] = nextList
         return true
-    end
-    settings.tracked[category] = list
-    local marked, markErr = self:MarkStoreDirty(200, "tracked_" .. category .. "_" .. tostring(id))
-    if marked ~= true then self.State = before; return false, markErr or "追踪状态保存失败" end
+    end, 200, "tracked_" .. category .. "_" .. tostring(id))
+    if marked ~= true then return false, markErr or "追踪状态保存失败" end
     if S.Events ~= nil and type(S.Events.Publish) == "function" then S.Events:Publish("v3.buff_display.settings", "tracked") end
     return true
 end
 
 function F:ClearTrackedIds(category)
-    local before = Copy(self.State)
-    local settings = self.State.settings
-    if category == "buff" then settings.tracked.buff = {}
-    elseif category == "debuff" then settings.tracked.debuff = {}
-    else settings.tracked = { buff = {}, debuff = {} } end
-    local marked, markErr = self:MarkStoreDirty(200, "tracked_clear")
-    if marked ~= true then self.State = before; return false, markErr or "清空追踪状态保存失败" end
+    local marked, markErr = self:MutateStore(function()
+        local settings = self.State.settings
+        if category == "buff" then settings.tracked.buff = {}
+        elseif category == "debuff" then settings.tracked.debuff = {}
+        else settings.tracked = { buff = {}, debuff = {} } end
+        return true
+    end, 200, "tracked_clear")
+    if marked ~= true then return false, markErr or "清空追踪状态保存失败" end
     if S.Events ~= nil and type(S.Events.Publish) == "function" then S.Events:Publish("v3.buff_display.settings", "tracked") end
     return true
 end
 
-function F:SetComponentField(componentKey, field, value)
+function F:ApplyComponentFieldRaw(componentKey, field, value)
     componentKey, field = tostring(componentKey or ""), tostring(field or "")
     local component = self.State.settings.components[componentKey]
     if component == nil then return false, "未知显示组件：" .. tostring(componentKey) end
     local defaults = COMPONENT_DEFAULTS[componentKey]
-    local before = Copy(self.State.settings)
     if field == "enabled" then component.enabled = value == true
     elseif field == "x" then component.x = ClampInt(value, -400, 400, defaults.x)
     elseif field == "y" then component.y = ClampInt(value, -400, 400, defaults.y)
@@ -429,8 +588,15 @@ function F:SetComponentField(componentKey, field, value)
     elseif field == "maxPerRow" then component.maxPerRow = ClampInt(value, 1, 16, defaults.maxPerRow or 8)
     elseif field == "maxRows" then component.maxRows = ClampInt(value, 1, 4, defaults.maxRows or 2)
     else return false, "未知组件字段：" .. tostring(field) end
-    local marked, markErr = self:MarkStoreDirty(250, "component_" .. componentKey .. "_" .. field)
-    if marked ~= true then self.State.settings = before; return false, markErr or "组件设置保存失败" end
+    return true
+end
+
+function F:SetComponentField(componentKey, field, value)
+    componentKey, field = tostring(componentKey or ""), tostring(field or "")
+    local marked, markErr = self:MutateStore(function()
+        return self:ApplyComponentFieldRaw(componentKey, field, value)
+    end, 250, "component_" .. componentKey .. "_" .. field)
+    if marked ~= true then return false, markErr or "组件设置保存失败" end
     if S.Events ~= nil and type(S.Events.Publish) == "function" then S.Events:Publish("v3.buff_display.settings", "components") end
     return true
 end
@@ -439,12 +605,13 @@ function F:SetClassification(id, category)
     id = math.floor(tonumber(id) or 0)
     if id <= 0 then return false, "Buff ID 无效" end
     if category ~= "buff" and category ~= "debuff" then return false, "分类必须是 buff 或 debuff" end
-    local before = Copy(self.State.settings)
-    local classification = self.State.settings.classification or {}
-    classification[id] = category
-    self.State.settings.classification = classification
-    local marked, markErr = self:MarkStoreDirty(250, "classification_" .. tostring(id))
-    if marked ~= true then self.State.settings = before; return false, markErr or "人工分类保存失败" end
+    local marked, markErr = self:MutateStore(function()
+        local classification = self.State.settings.classification or {}
+        classification[id] = category
+        self.State.settings.classification = classification
+        return true
+    end, 250, "classification_" .. tostring(id))
+    if marked ~= true then return false, markErr or "人工分类保存失败" end
     if S.Events ~= nil and type(S.Events.Publish) == "function" then S.Events:Publish("v3.buff_display.settings", "classification") end
     return true
 end
@@ -452,12 +619,13 @@ end
 function F:ClearClassification(id)
     id = math.floor(tonumber(id) or 0)
     if id <= 0 then return false, "Buff ID 无效" end
-    local before = Copy(self.State.settings)
-    local classification = self.State.settings.classification or {}
-    classification[id] = nil
-    self.State.settings.classification = classification
-    local marked, markErr = self:MarkStoreDirty(250, "classification_clear_" .. tostring(id))
-    if marked ~= true then self.State.settings = before; return false, markErr or "人工分类清除保存失败" end
+    local marked, markErr = self:MutateStore(function()
+        local classification = self.State.settings.classification or {}
+        classification[id] = nil
+        self.State.settings.classification = classification
+        return true
+    end, 250, "classification_clear_" .. tostring(id))
+    if marked ~= true then return false, markErr or "人工分类清除保存失败" end
     if S.Events ~= nil and type(S.Events.Publish) == "function" then S.Events:Publish("v3.buff_display.settings", "classification") end
     return true
 end
@@ -476,17 +644,6 @@ function F:ApplySettingRaw(key, value)
     elseif key == "headShowAll" then settings.headShowAll = value == true
     elseif key == "headPlayer" then settings.headPlayer = value == true
     elseif key == "headTarget" then settings.headTarget = value == true
-    elseif key == "headIconSize" then
-        -- Proxy write: the "图标大小" slider is the global size for the buffs/
-        -- debuffs icon rows; the head renderer only reads components.*.size.
-        settings.headIconSize = ClampInt(value, 8, 64, settings.headIconSize)
-        if settings.components.buffs then settings.components.buffs.size = settings.headIconSize end
-        if settings.components.debuffs then settings.components.debuffs.size = settings.headIconSize end
-    elseif key == "headMaxIcons" then
-        -- Proxy write: per-row cap for buffs/debuffs (schema 5 row layout).
-        settings.headMaxIcons = ClampInt(value, 1, 12, settings.headMaxIcons)
-        if settings.components.buffs then settings.components.buffs.maxPerRow = settings.headMaxIcons end
-        if settings.components.debuffs then settings.components.debuffs.maxPerRow = settings.headMaxIcons end
     elseif key == "headRefreshMs" then settings.headRefreshMs = ClampInt(value, 1, 2000, settings.headRefreshMs)
     elseif key == "headShowStacks" then settings.headShowStacks = value == true
     elseif key == "headShowTime" then settings.headShowTime = value == true
@@ -517,7 +674,7 @@ function F:ApplySettingRaw(key, value)
         local rest = string.sub(key, 12)
         local dot = string.find(rest, ".", 1, true)
         if dot == nil then return false, "组件字段格式无效：" .. tostring(key) end
-        return self:SetComponentField(string.sub(rest, 1, dot - 1), string.sub(rest, dot + 1), value)
+        return self:ApplyComponentFieldRaw(string.sub(rest, 1, dot - 1), string.sub(rest, dot + 1), value)
     else return false, "unknown buff display setting: " .. key end
     return true
 end
@@ -530,11 +687,10 @@ function F:ApplySettingFromBinding(key, value)
 end
 
 function F:SetSettingValue(key, value)
-    local before = Copy(self.State.settings)
-    local ok, err = self:ApplySettingRaw(key, value)
-    if ok ~= true then return false, err end
-    local marked, markErr = self:MarkStoreDirty(300, "setting_" .. tostring(key))
-    if marked ~= true then self.State.settings = before; return false, markErr or "状态显示设置保存失败" end
+    local marked, markErr = self:MutateStore(function()
+        return self:ApplySettingRaw(key, value)
+    end, 300, "setting_" .. tostring(key))
+    if marked ~= true then return false, markErr or "状态显示设置保存失败" end
     if S.Events ~= nil and type(S.Events.Publish) == "function" then S.Events:Publish("v3.buff_display.settings", tostring(key or "")) end
     return true
 end

@@ -1603,7 +1603,10 @@ G:RegisterSequenceCase("v3_50_ui_layout_editor_composition_contract", function()
         or type(rsui.types) ~= "table" or rsui.types["LayoutEditorOverlay"] == nil then
         return Fail("layout_editor_overlay_contract")
     end
-    if type(templates) ~= "table" or (tonumber(templates.contractVersion) or 0) < 3
+    if type(templates) ~= "table" or (tonumber(templates.contractVersion) or 0) < 4
+        or (tonumber(rsui.LayoutEditorWorkspaceContractVersion) or 0) < 2
+        or (tonumber(rsui.LayoutEditorWorkspaceSessionBindingContractVersion) or 0) < 1
+        or type(templates.ValidateLayoutEditorEditSessionSpec) ~= "function"
         or type(rsui.CreateLayoutEditorWorkspace) ~= "function" then
         return Fail("layout_editor_workspace_contract")
     end
@@ -1614,3 +1617,363 @@ G:RegisterSequenceCase("v3_50_ui_layout_editor_composition_contract", function()
     end
     return true
 end)
+
+G:RegisterSequenceCase("v3_51_ui_layout_edit_history_contract", function()
+    local rsui = S.RSUI
+    if type(rsui) ~= "table" or (tonumber(rsui.version) or 0) < 39 then return Fail("rsui_v39_missing") end
+    if (tonumber(rsui.LayoutEditHistoryContractVersion) or 0) < 1
+        or type(rsui.CreateLayoutEditHistoryModel) ~= "function"
+        or type(rsui.LayoutEditHistoryModel) ~= "table" then
+        return Fail("layout_edit_history_contract")
+    end
+
+    -- Standalone transaction semantics: cursor changes only after accepted
+    -- apply; a partially-mutating rejected apply is restored by rollback.
+    local external = { a = { x = 0, y = 0, width = 100, height = 50 } }
+    local rejectApply = false
+    local history, historyErr = rsui:CreateLayoutEditHistoryModel({
+        id = "__layout_history_accept", maxCommands = 4,
+        apply = function(items, context)
+            for _, item in ipairs(items or {}) do
+                external[item.key] = { x=item.rect.x, y=item.rect.y, width=item.rect.width, height=item.rect.height }
+            end
+            if rejectApply == true and not (context and context.rollback == true) then return false, "accept_reject" end
+            return true
+        end,
+    })
+    if history == nil or historyErr ~= nil then return Fail("layout_history_create") end
+    if history:Record({
+        source = "accept_move_1", beforeItems = { { key="a", rect={ x=0,y=0,width=100,height=50 } } },
+        afterItems = { { key="a", rect={ x=10,y=0,width=100,height=50 } } },
+    }) ~= true then return Fail("layout_history_record_1") end
+    external.a.x = 10
+    if history:Record({
+        source = "accept_move_2", beforeItems = { { key="a", rect={ x=10,y=0,width=100,height=50 } } },
+        afterItems = { { key="a", rect={ x=20,y=0,width=100,height=50 } } },
+    }) ~= true then return Fail("layout_history_record_2") end
+    external.a.x = 20
+    if history:Undo() ~= true or external.a.x ~= 10 then return Fail("layout_history_undo") end
+    rejectApply = true
+    local rejected = history:Undo()
+    local rejectedSnapshot = history:GetSnapshot()
+    if rejected ~= false or external.a.x ~= 10 or rejectedSnapshot.cursor ~= 1 then
+        return Fail("layout_history_reject_rollback")
+    end
+    rejectApply = false
+    if history:Undo() ~= true or external.a.x ~= 0 then return Fail("layout_history_undo_to_origin") end
+    if history:Redo() ~= true or external.a.x ~= 10 then return Fail("layout_history_redo") end
+
+    local bounded = rsui:CreateLayoutEditHistoryModel({ id = "__layout_history_bounded", maxCommands = 2 })
+    if bounded == nil then return Fail("layout_history_bounded_create") end
+    for index = 1, 3 do
+        local beforeX, afterX = index - 1, index
+        if bounded:Record({
+            source = "bounded_" .. tostring(index),
+            beforeItems = { { key="a", rect={ x=beforeX,y=0,width=100,height=50 } } },
+            afterItems = { { key="a", rect={ x=afterX,y=0,width=100,height=50 } } },
+        }) ~= true then return Fail("layout_history_bounded_record") end
+    end
+    local boundedSnapshot = bounded:GetSnapshot()
+    if boundedSnapshot.count ~= 2 or boundedSnapshot.cursor ~= 2 or boundedSnapshot.trims ~= 1 then
+        return Fail("layout_history_bounded_trim")
+    end
+
+    -- Adapter integration: preview/cancel creates no command; successful commit
+    -- does. Anchor/Pivot state is reversible even when visual rect is unchanged.
+    local selection = rsui:CreateSelectionModel({ id = "__layout_history_adapter_selection", mode = "single", selectedKeys = { "a" } })
+    local source = { a = { x = 0, y = 0, width = 100, height = 50 } }
+    local anchorState = { anchorX = 0, anchorY = 0, pivotX = 0, pivotY = 0 }
+    local adapter, adapterErr = rsui:CreateLayoutEditorPreviewAdapter({
+        id = "__layout_history_adapter", selectionModel = selection,
+        canvasRect = { x=0, y=0, width=1000, height=800 }, historyEnabled = true,
+        getRect = function(key) return source[key] end,
+        getAnchorSpec = function()
+            return { parentRect={ x=0,y=0,width=1000,height=800 }, anchorX=anchorState.anchorX, anchorY=anchorState.anchorY,
+                pivotX=anchorState.pivotX, pivotY=anchorState.pivotY }
+        end,
+        onCommit = function(items, context)
+            for _, item in ipairs(items or {}) do
+                source[item.key] = { x=item.rect.x, y=item.rect.y, width=item.rect.width, height=item.rect.height }
+            end
+            local anchor = context and context.metadata and context.metadata.anchor or nil
+            if type(anchor) == "table" then
+                anchorState.anchorX, anchorState.anchorY = anchor.anchorX, anchor.anchorY
+                anchorState.pivotX, anchorState.pivotY = anchor.pivotX, anchor.pivotY
+            end
+            return true
+        end,
+    })
+    if adapter == nil or adapterErr ~= nil then return Fail("layout_history_adapter_create") end
+    local adapterHistory = adapter:GetHistoryModel()
+    if adapterHistory == nil then return Fail("layout_history_adapter_history_missing") end
+    if adapter:BeginGesture("move", "move") ~= true then return Fail("layout_history_adapter_preview_begin") end
+    if adapter:PreviewGesture({ x=5,y=0,width=100,height=50 }, {}) ~= true then return Fail("layout_history_adapter_preview") end
+    if adapter:CancelGesture("accept_cancel") ~= true then return Fail("layout_history_adapter_cancel") end
+    if adapterHistory:GetSnapshot().count ~= 0 then return Fail("layout_history_preview_must_not_record") end
+
+    if adapter:BeginGesture("move", "move") ~= true then return Fail("layout_history_adapter_commit_begin") end
+    if adapter:PreviewGesture({ x=10,y=0,width=100,height=50 }, {}) ~= true then return Fail("layout_history_adapter_commit_preview") end
+    if adapter:CommitGesture({ x=10,y=0,width=100,height=50 }) ~= true then return Fail("layout_history_adapter_commit") end
+    if adapterHistory:GetSnapshot().count ~= 1 or source.a.x ~= 10 then return Fail("layout_history_adapter_commit_record") end
+
+    local anchorModel = adapter:GetAnchorModel()
+    local beforeAnchor = anchorModel and anchorModel:GetSnapshot() or nil
+    if beforeAnchor == nil or anchorModel:SetAnchorPreset("center", true, "accept_anchor") ~= true then
+        return Fail("layout_history_anchor_change")
+    end
+    if adapter:CommitSingleAnchorEdit("accept_anchor", beforeAnchor) ~= true then return Fail("layout_history_anchor_commit") end
+    if adapterHistory:GetSnapshot().count ~= 2 or anchorState.anchorX ~= 0.5 or source.a.x ~= 10 then
+        return Fail("layout_history_anchor_record")
+    end
+    if adapterHistory:Undo() ~= true or anchorState.anchorX ~= 0 or adapter:GetAnchorModel():GetSnapshot().anchorX ~= 0 then
+        return Fail("layout_history_anchor_undo")
+    end
+    if adapterHistory:Undo() ~= true or source.a.x ~= 0 then return Fail("layout_history_adapter_move_undo") end
+    if adapterHistory:Redo() ~= true or source.a.x ~= 10 then return Fail("layout_history_adapter_move_redo") end
+    return true
+end)
+
+G:RegisterSequenceCase("v3_52_ui_editor_command_bar_contract", function()
+    local rsui = S.RSUI
+    if type(rsui) ~= "table" or (tonumber(rsui.version) or 0) < 41 then return Fail("rsui_v41_missing") end
+    if (tonumber(rsui.LayoutEditHistoryObservableContractVersion) or 0) < 1
+        or (tonumber(rsui.EditorCommandBarContractVersion) or 0) < 2
+        or (tonumber(rsui.EditorCommandSessionProjectionContractVersion) or 0) < 2
+        or type(rsui.ProjectEditorCommandState) ~= "function" then
+        return Fail("editor_command_bar_contract")
+    end
+
+    local history = rsui:CreateLayoutEditHistoryModel({ id = "__command_bar_history", maxCommands = 4 })
+    if history == nil or type(history.Subscribe) ~= "function" or type(history.Unsubscribe) ~= "function" then
+        return Fail("editor_command_history_observable")
+    end
+    local notifications = 0
+    if history:Subscribe("__command_bar_case", function() notifications = notifications + 1 end) ~= true then
+        return Fail("editor_command_history_subscribe")
+    end
+    if history:Record({
+        source = "command_bar_case",
+        beforeItems = { { key="a", rect={ x=0,y=0,width=10,height=10 } } },
+        afterItems = { { key="a", rect={ x=1,y=0,width=10,height=10 } } },
+    }) ~= true or notifications ~= 1 then
+        return Fail("editor_command_history_notification")
+    end
+
+    local noSession = rsui.ProjectEditorCommandState(history:GetSnapshot(), nil)
+    if type(noSession) ~= "table" or noSession.canUndo ~= true or noSession.canRedo ~= false
+        or noSession.canRevert ~= false or noSession.canReset ~= false or noSession.canApply ~= false then
+        return Fail("editor_command_projection_no_session")
+    end
+    local session = { revision=3, dirty=true, busy=false, canRevert=true, canReset=true, canApply=true, statusText="dirty" }
+    local withSession = rsui.ProjectEditorCommandState(history:GetSnapshot(), session)
+    if type(withSession) ~= "table" or withSession.canUndo ~= true or withSession.canRevert ~= true
+        or withSession.canReset ~= true or withSession.canApply ~= true or withSession.dirty ~= true then
+        return Fail("editor_command_projection_session")
+    end
+    session.busy = true
+    local busy = rsui.ProjectEditorCommandState(history:GetSnapshot(), session)
+    if busy.canUndo ~= false or busy.canRedo ~= false or busy.canRevert ~= false
+        or busy.canReset ~= false or busy.canApply ~= false or busy.busy ~= true then
+        return Fail("editor_command_projection_busy_fence")
+    end
+    if history:Unsubscribe("__command_bar_case") ~= true then return Fail("editor_command_history_unsubscribe") end
+    if history:Clear("command_bar_case_clear") ~= true or notifications ~= 1 then
+        return Fail("editor_command_history_unsubscribe_fence")
+    end
+    return true
+end)
+
+
+G:RegisterSequenceCase("v3_53_ui_layout_edit_session_contract", function()
+    local rsui = S.RSUI
+    if type(rsui) ~= "table" or (tonumber(rsui.version) or 0) < 41 then return Fail("rsui_v41_missing") end
+    if (tonumber(rsui.LayoutEditSessionContractVersion) or 0) < 1
+        or (tonumber(rsui.LayoutEditSessionPersistenceBoundaryContractVersion) or 0) < 1
+        or type(rsui.CreateLayoutEditSessionModel) ~= "function" then
+        return Fail("layout_edit_session_contract")
+    end
+
+    local working = { layout = { x = 10, y = 20, width = 100, height = 50 } }
+    local persisted = { layout = { x = 10, y = 20, width = 100, height = 50 } }
+    local defaults = { layout = { x = 0, y = 0, width = 100, height = 50 } }
+    local persistCalls = 0
+    local rejectPersist = false
+    local allowPersist = true
+
+    local history = rsui:CreateLayoutEditHistoryModel({ id = "__layout_session_history", maxCommands = 8 })
+    if history == nil then return Fail("layout_edit_session_history_create") end
+
+    local session, sessionErr = rsui:CreateLayoutEditSessionModel({
+        id = "__layout_session",
+        historyModel = history,
+        getWorkingSnapshot = function() return working end,
+        getPersistedSnapshot = function() return persisted end,
+        getDefaultSnapshot = function() return defaults end,
+        applyWorkingSnapshot = function(snapshot, context)
+            if type(snapshot) ~= "table" or type(snapshot.layout) ~= "table" then return false, "snapshot_invalid" end
+            if type(context) ~= "table" or context.persist == true then return false, "working_boundary_invalid" end
+            working = { layout = {
+                x = snapshot.layout.x, y = snapshot.layout.y,
+                width = snapshot.layout.width, height = snapshot.layout.height,
+            } }
+            return true
+        end,
+        persistSnapshot = function(snapshot, context)
+            persistCalls = persistCalls + 1
+            if type(context) ~= "table" or context.persist ~= true or context.durable ~= true then
+                return false, "persist_boundary_invalid"
+            end
+            if rejectPersist == true then return false, "persist_rejected" end
+            persisted = { layout = {
+                x = snapshot.layout.x, y = snapshot.layout.y,
+                width = snapshot.layout.width, height = snapshot.layout.height,
+            } }
+            return true
+        end,
+        canPersist = function()
+            if allowPersist ~= true then return false, "write_fenced" end
+            return true
+        end,
+    })
+    if session == nil or sessionErr ~= nil then return Fail("layout_edit_session_create") end
+
+    local initial = session:GetCommandSnapshot()
+    if initial.dirty ~= false or initial.canRevert ~= false or initial.canApply ~= false
+        or initial.canReset ~= true or initial.workingAtDefaults ~= false then
+        return Fail("layout_edit_session_initial_projection")
+    end
+
+    -- Simulate a successful editor commit: Domain changes first, History Record
+    -- then notifies Session. No polling/explicit page dirty flag is needed.
+    working.layout.x = 25
+    if history:Record({
+        source = "session_edit_1",
+        beforeItems = { { key="a", rect={ x=10,y=20,width=100,height=50 } } },
+        afterItems = { { key="a", rect={ x=25,y=20,width=100,height=50 } } },
+    }) ~= true then return Fail("layout_edit_session_history_record") end
+    local edited = session:GetCommandSnapshot()
+    if edited.dirty ~= true or edited.canRevert ~= true or edited.canApply ~= true then
+        return Fail("layout_edit_session_history_refresh")
+    end
+
+    -- Reset is staging only: Working <- Defaults, no persistence, history barrier.
+    if session:ExecuteCommand("reset", { source = "sequence" }) ~= true then return Fail("layout_edit_session_reset") end
+    if working.layout.x ~= 0 or persistCalls ~= 0 or history:GetSnapshot().count ~= 0 then
+        return Fail("layout_edit_session_reset_boundary")
+    end
+    local resetState = session:GetCommandSnapshot()
+    if resetState.dirty ~= true or resetState.canReset ~= false or resetState.canRevert ~= true or resetState.canApply ~= true then
+        return Fail("layout_edit_session_reset_projection")
+    end
+
+    -- Revert returns to SessionBaseline and still never persists.
+    if session:ExecuteCommand("revert", { source = "sequence" }) ~= true then return Fail("layout_edit_session_revert") end
+    if working.layout.x ~= 10 or persistCalls ~= 0 then return Fail("layout_edit_session_revert_boundary") end
+    if session:GetCommandSnapshot().dirty ~= false then return Fail("layout_edit_session_revert_dirty") end
+
+    working.layout.x = 30
+    if history:Record({
+        source = "session_edit_2",
+        beforeItems = { { key="a", rect={ x=10,y=20,width=100,height=50 } } },
+        afterItems = { { key="a", rect={ x=30,y=20,width=100,height=50 } } },
+    }) ~= true then return Fail("layout_edit_session_history_record_2") end
+
+    allowPersist = false
+    local fenced = session:GetCommandSnapshot()
+    if fenced.dirty ~= true or fenced.canApply ~= false or fenced.canRevert ~= true then
+        return Fail("layout_edit_session_persistence_fence")
+    end
+    allowPersist = true
+    rejectPersist = true
+    if session:ExecuteCommand("apply", { source = "sequence" }) ~= false then return Fail("layout_edit_session_apply_reject") end
+    local afterReject = session:GetStateSnapshot()
+    if persistCalls ~= 1 or working.layout.x ~= 30 or afterReject.command.dirty ~= true
+        or afterReject.baseline.layout.x ~= 10 or history:GetSnapshot().count ~= 1 then
+        return Fail("layout_edit_session_apply_reject_boundary")
+    end
+
+    rejectPersist = false
+    if session:ExecuteCommand("apply", { source = "sequence" }) ~= true then return Fail("layout_edit_session_apply") end
+    local applied = session:GetStateSnapshot()
+    if persistCalls ~= 2 or persisted.layout.x ~= 30 or applied.persisted.layout.x ~= 30
+        or applied.baseline.layout.x ~= 30 or applied.working.layout.x ~= 30
+        or applied.command.dirty ~= false or applied.command.canRevert ~= false
+        or history:GetSnapshot().count ~= 0 then
+        return Fail("layout_edit_session_apply_boundary")
+    end
+
+    -- SessionBaseline and Persisted are intentionally distinct states. An
+    -- editor may open on a valid runtime Working snapshot that differs from the
+    -- last durable snapshot; Apply must be available without inventing Revert.
+    local working2 = { layout = { x=50,y=0,width=10,height=10 } }
+    local persisted2 = { layout = { x=40,y=0,width=10,height=10 } }
+    local session2 = rsui:CreateLayoutEditSessionModel({
+        id = "__layout_session_four_state",
+        getWorkingSnapshot = function() return working2 end,
+        getPersistedSnapshot = function() return persisted2 end,
+        getDefaultSnapshot = function() return { layout={ x=0,y=0,width=10,height=10 } } end,
+        applyWorkingSnapshot = function(snapshot) working2 = snapshot; return true end,
+        persistSnapshot = function(snapshot) persisted2 = snapshot; return true end,
+    })
+    if session2 == nil then return Fail("layout_edit_session_four_state_create") end
+    local fourState = session2:GetCommandSnapshot()
+    if fourState.dirty ~= true or fourState.sessionChanged ~= false
+        or fourState.canApply ~= true or fourState.canRevert ~= false then
+        return Fail("layout_edit_session_four_state_projection")
+    end
+    if session2:ExecuteCommand("apply", { source="sequence" }) ~= true
+        or session2:GetCommandSnapshot().dirty ~= false then
+        return Fail("layout_edit_session_four_state_apply")
+    end
+    session2:Release()
+
+    local projectedBlocked = rsui.ProjectEditorCommandState(
+        { revision=1, busy=false, canUndo=true, canRedo=true, count=2, cursor=1 },
+        { revision=1, busy=false, blocked=true, dirty=true, canRevert=true, canReset=true, canApply=true, statusText="blocked" })
+    if type(projectedBlocked) ~= "table" or projectedBlocked.blocked ~= true
+        or projectedBlocked.canUndo ~= false or projectedBlocked.canRedo ~= false
+        or projectedBlocked.canRevert ~= false or projectedBlocked.canReset ~= false or projectedBlocked.canApply ~= false then
+        return Fail("layout_edit_session_blocked_projection")
+    end
+
+    session:Release()
+    history:Release()
+    return true
+end)
+
+G:RegisterSequenceCase("v3_54_ui_layout_editor_workspace_integration_contract", function()
+    local rsui = S.RSUI
+    local templates = rsui and rsui.WorkspaceTemplates or nil
+    if type(rsui) ~= "table" or (tonumber(rsui.version) or 0) < 42 then return Fail("rsui_v42_missing") end
+    if type(templates) ~= "table" or (tonumber(templates.contractVersion) or 0) < 4
+        or (tonumber(rsui.LayoutEditorWorkspaceContractVersion) or 0) < 2
+        or (tonumber(rsui.LayoutEditorWorkspaceSessionBindingContractVersion) or 0) < 1
+        or type(templates.ValidateLayoutEditorEditSessionSpec) ~= "function" then
+        return Fail("layout_editor_workspace_integration_contract")
+    end
+    local valid, validErr = templates:ValidateLayoutEditorEditSessionSpec({
+        getWorkingSnapshot = function() return { layout = {} } end,
+        getPersistedSnapshot = function() return { layout = {} } end,
+        getDefaultSnapshot = function() return { layout = {} } end,
+        applyWorkingSnapshot = function() return true end,
+        persistSnapshot = function() return true end,
+        canPersist = function() return true end,
+    })
+    if valid ~= true or validErr ~= nil then return Fail("layout_editor_workspace_session_preflight") end
+    local transientOk = templates:ValidateLayoutEditorEditSessionSpec(nil)
+    if transientOk ~= true then return Fail("layout_editor_workspace_transient_preflight") end
+    local partialOk, partialErr = templates:ValidateLayoutEditorEditSessionSpec({
+        getWorkingSnapshot = function() return {} end,
+    })
+    if partialOk ~= false or tostring(partialErr) ~= "layout_editor_workspace_edit_session_callback_required:getPersistedSnapshot" then
+        return Fail("layout_editor_workspace_partial_session_must_reject")
+    end
+    if (tonumber(rsui.LayoutEditorOverlayHistoryBindingContractVersion) or 0) < 1
+        or (tonumber(rsui.LayoutEditHistoryContractVersion) or 0) < 1
+        or (tonumber(rsui.LayoutEditSessionContractVersion) or 0) < 1
+        or (tonumber(rsui.EditorCommandBarContractVersion) or 0) < 2 then
+        return Fail("layout_editor_workspace_authority_dependencies")
+    end
+    return true
+end)
+

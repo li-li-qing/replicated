@@ -235,6 +235,10 @@ end
 function F:SetWidgetWindowState(value, reason)
     if type(value) ~= "table" or type(self.State) ~= "table" then return false, "activity widget window state unavailable" end
     local floating = S.RSUI and S.RSUI.FloatingSurface or nil
+    local persistence = S.Persistence
+    if type(persistence) ~= "table" or type(persistence.PrepareWrite) ~= "function" then return false, "activity persistence unavailable" end
+    local ready, readyErr = persistence:PrepareWrite(self.StoreId)
+    if ready ~= true then return false, readyErr or "活动窗口状态写入前读取失败" end
     local normalized = type(floating) == "table" and type(floating.NormalizeState) == "function"
         and floating:NormalizeState(value, self:GetWidgetWindowPolicy()) or S.Utils.DeepCopy(value)
     self.State.widgetWindow = normalized
@@ -291,13 +295,11 @@ function F:ApplyWidgetRows(rows, source)
 end
 
 function F:SetWidgetRows(rows, source)
-    local before = tonumber(self.State.widgetRows) or 8
-    local ok, err = self:ApplyWidgetRows(rows, source)
-    if ok ~= true then return false, err end
-    if tonumber(self.State.widgetRows) ~= before then
-        local marked, markErr = self:MarkStoreDirty(250, source or "widget_rows")
-        if marked ~= true then self.State.widgetRows = before; self:PublishWidgetProjection("rows_rollback"); return false, markErr or "活动行数未保存，已回滚" end
-    end
+    rows = math.max(3, math.min(16, math.floor(tonumber(rows) or self.State.widgetRows or 8)))
+    if self.State.widgetRows == rows then return true end
+    local marked, markErr = self:MutateStore(function() self.State.widgetRows = rows; return true end, 250, source or "widget_rows")
+    if marked ~= true then return false, markErr or "活动行数未保存，已回滚" end
+    self:PublishWidgetProjection("rows")
     return true
 end
 
@@ -316,32 +318,28 @@ function F:ApplyWidgetSize(width, height, source)
 end
 
 function F:SetWidgetSize(width, height, source)
-    local state = type(self.State.widgetWindow) == "table" and self.State.widgetWindow or nil
-    local beforeW, beforeH, beforeMinimized = state and state.width, state and state.height, state and state.minimized
-    local ok, err = self:ApplyWidgetSize(width, height, source)
-    if ok ~= true then return false, err end
-    state = type(self.State.widgetWindow) == "table" and self.State.widgetWindow or nil
-    if state ~= nil and (tonumber(state.width) ~= tonumber(beforeW) or tonumber(state.height) ~= tonumber(beforeH) or state.minimized ~= beforeMinimized) then
-        local marked, markErr = self:MarkStoreDirty(250, source or "widget_size")
-        if marked ~= true then
-            state.width, state.height, state.minimized = beforeW, beforeH, beforeMinimized
-            self:PublishWidgetProjection("size_rollback")
-            return false, markErr or "活动悬浮窗尺寸未保存，已回滚"
-        end
-    end
+    local size = self.WidgetWindowSizePolicy or { defaultWidth = 430, defaultHeight = 276, minWidth = 1, minHeight = 1 }
+    local current = type(self.State.widgetWindow) == "table" and self.State.widgetWindow or nil
+    if current == nil then return false, "activity widget window state unavailable" end
+    local nextWidth = math.max(size.minWidth, tonumber(width) or tonumber(current.width) or size.defaultWidth)
+    local nextHeight = math.max(size.minHeight, tonumber(height) or tonumber(current.height) or size.defaultHeight)
+    if tonumber(current.width) == nextWidth and tonumber(current.height) == nextHeight and current.minimized ~= true then return true end
+    local marked, markErr = self:MutateStore(function()
+        local state = self.State.widgetWindow
+        state.width, state.height, state.minimized = nextWidth, nextHeight, false
+        return true
+    end, 250, source or "widget_size")
+    if marked ~= true then return false, markErr or "活动悬浮窗尺寸未保存，已回滚" end
+    self:PublishWidgetProjection("size")
     return true
 end
 
 function F:SetWidgetVisible(visible, source)
     if self.enabled ~= true then return false, "activity feature disabled" end
-    -- Persist the preference before publishing the Presentation reaction. A
-    -- failed store queue therefore cannot show a window that reload will forget.
     local nextValue = visible == true
-    local previousValue = self.State.widgetVisible == true
-    if previousValue ~= nextValue then
-        self.State.widgetVisible = nextValue
-        local marked, markErr = self:MarkStoreDirty(250, "widget_visibility")
-        if marked ~= true then self.State.widgetVisible = previousValue; return false, markErr or "活动悬浮窗可见性未保存，已回滚" end
+    if (self.State.widgetVisible == true) ~= nextValue then
+        local marked, markErr = self:MutateStore(function() self.State.widgetVisible = nextValue; return true end, 250, "widget_visibility")
+        if marked ~= true then return false, markErr or "活动悬浮窗可见性未保存，已回滚" end
     end
     if S.Events ~= nil and type(S.Events.Publish) == "function" then
         S.Events:Publish("v3.activities.widget_visibility", nextValue, tostring(source or "activity_page"))
@@ -379,10 +377,8 @@ function F.Commands:ResetWidgetVisibility(source)
     -- Presentation calls this when a lifecycle auto-show fails so the persisted
     -- preference cannot claim a window that is not on screen.
     if F.State.widgetVisible ~= false then
-        local previous = F.State.widgetVisible
-        F.State.widgetVisible = false
-        local marked, markErr = F:MarkStoreDirty(250, tostring(source or "widget_visibility_reset"))
-        if marked ~= true then F.State.widgetVisible = previous; return false, markErr or "活动悬浮窗复位未保存，已回滚" end
+        local marked, markErr = F:MutateStore(function() F.State.widgetVisible = false; return true end, 250, tostring(source or "widget_visibility_reset"))
+        if marked ~= true then return false, markErr or "活动悬浮窗复位未保存，已回滚" end
     end
     return true
 end

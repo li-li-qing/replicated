@@ -85,11 +85,17 @@ end
 
 function A:Set(key, value, persist)
     key = tostring(key or "")
-    if key == "addonScale" then self.settings.addonScale = Clamp(value, 0.75, 1.25, 1.0)
-    elseif key == "fontScale" then self.settings.fontScale = Clamp(value, 0.75, 1.50, 1.0)
-    elseif key == "appearance" then self.settings.appearance = "dark"
-    else return false, "unknown app setting" end
-    if persist ~= false then P:MarkDirty(STORE_ID, 500, "app_setting:" .. key) end
+    local function ApplyMutation()
+        if key == "addonScale" then self.settings.addonScale = Clamp(value, 0.75, 1.25, 1.0)
+        elseif key == "fontScale" then self.settings.fontScale = Clamp(value, 0.75, 1.50, 1.0)
+        elseif key == "appearance" then self.settings.appearance = "dark"
+        else return false, "unknown app setting" end
+        return true
+    end
+    if persist == false then return ApplyMutation() end
+    if type(P.MutateStore) ~= "function" then return false, "persistence transaction unavailable" end
+    local ok, err = P:MutateStore(STORE_ID, ApplyMutation, { delayMs = 500, reason = "app_setting:" .. key })
+    if ok ~= true then return false, err or "v3 app setting transaction failed" end
     return true
 end
 

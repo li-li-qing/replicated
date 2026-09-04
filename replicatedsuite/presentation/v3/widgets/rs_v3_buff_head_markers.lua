@@ -20,7 +20,7 @@ if type(Feature) ~= "table" or type(S.UI) ~= "table" or type(S.Events) ~= "table
 S.UIV3 = S.UIV3 or {}
 S.UIV3.BuffHeadMarkersV3 = S.UIV3.BuffHeadMarkersV3 or {}
 local P = S.UIV3.BuffHeadMarkersV3
-P.version = 5
+P.version = 6
 P.owner = "v3:buff_head_markers"
 P.consumerToken = "presentation:buff_head_markers"
 P.running = P.running == true
@@ -381,8 +381,8 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
     local infoTop = (buffActualRows > 0 and buffTopMostTop or bar.top) - infoGap - infoH
     infoTop = infoTop + math.floor(N(infoCfg.y, 0) * scale)
 
-    -- Equipment flanks. Left: offHand closest to bar, mainHand further left.
-    -- Right: wings closest to bar, ranged further right. Component x/y are
+    -- Equipment flanks. Left: offHand closest to bar, mainHand next, optional
+    -- ranged outermost. Right: wings/back only. Component x/y are
     -- local micro offsets. Slots are returned UNCLAMPED with their absolute
     -- origin; the renderer clamps each group as a whole (never per-icon).
     local function EquipSlots(edgeStart, direction, keys)
@@ -404,8 +404,8 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
         end
         return slots
     end
-    local leftSlots = EquipSlots(bar.left, -1, { "offHand", "mainHand" })
-    local rightSlots = EquipSlots(bar.right, 1, { "wings", "ranged" })
+    local leftSlots = EquipSlots(bar.left, -1, { "offHand", "mainHand", "ranged" })
+    local rightSlots = EquipSlots(bar.right, 1, { "wings" })
     local function GroupRect(slots)
         if #slots == 0 then return nil end
         local minX, maxX, maxW = math.huge, -math.huge, 0
@@ -704,8 +704,9 @@ if type(S.Events.SubscribeInternal) == "function" then
     S.Events:SubscribeInternal("v3.buff_display.settings", P.lifecycleOwner, function() P:Reconcile("settings_global") end)
 end
 
--- Contract 5: health-bar proxy anchor layout via pure ComputePlateLayout;
+-- Contract 6: health-bar proxy anchor layout via pure ComputePlateLayout;
 -- class contributes name text only (no role icon); equipment collapses when
--- absent; right flank defaults to wings (ranged opt-in); x/y are local offsets.
-Feature.BuffHeadMarkerContractVersion = 5
+-- absent; main/off + optional ranged share the left flank, wings/back owns the
+-- right flank; x/y are local offsets.
+Feature.BuffHeadMarkerContractVersion = 6
 P:Reconcile("load")
