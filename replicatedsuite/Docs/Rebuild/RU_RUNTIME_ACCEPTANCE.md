@@ -20,7 +20,7 @@
 
 ## `.18.129` 真实故障收口 Fresh Reload 专项（当前第一 P0）
 
-1. **单位连线**：选中远距离目标应出现**一排连续点**（≥8 个，`UnitLines:` 行 uniquePositions ≈ visibleDots）；制造一次渲染失败（切屏）后自动恢复。
+1. **单位连线（.18.129d label 点模型）**：选中远距离目标应出现**一排清晰可见的彩色句点**（15px 起，≥8 个，`UnitLines:` 行 uniquePositions ≈ visibleDots）；制造一次渲染失败（切屏）后自动恢复。若仍不可见，此轮已排除点模型问题，剩余嫌疑集中在引擎宿主层级——`UnitLines:` 行必发。
 2. **Boss 机制（黑龙 3 天一刷，改为三段式无 Boss 验证；RU 名称以 wbdebuff 数据为事实源，实机名称证据到位前不再盲改）**：
    ① **事实管道**：开启首领机制 → 打任意会读条的普通怪并选中 → `Boss:` 行 `ticks` 增长且 `casting=` 显示该怪的技能名、`seenCast=` 记录真实 RU 名称（这证明四 scope UnitCastingInfo 读取在实机可用）；身上随便中一个可显示 debuff 后 `debuff=/source=player_debuff` 应有反应。
    ② **规则→弹窗链路**：设置页点「仿真读条」→ 应弹出"大地强击"类倒计时；点「仿真Debuff」→ 弹"撞鬼"大字（两者走真实 BossCastIndex 匹配 + AlertsService 推送，与实况同一条管线）。
@@ -46,14 +46,14 @@
 9. **状态显示 HUD Inspector**：进入 `状态显示 → HUD布局`，依次选 Buff、Debuff、职业、装备等元素；右侧 Transform/Anchor/吸附设置必须按真实 Measure 向下布局，不能再出现控件互相覆盖。Compact Drawer、滚动、Apply/Reload 均需验证。
 10. **门禁**：Fresh Reload 记录 Foundation v119 / UIV3 Acceptance v74；当前本地基线为 Active/All Lua 221/221 Parse PASS、Foundation Audit PASS、30/30 Python Harness PASS。
 
-## `.18.126` Range Assist Global Projection Fresh Reload 专项（第二 P0，继续执行）
+## `.18.126` Range Assist Global Projection Fresh Reload 专项（历史；范围辅助当前验收走 `.18.129` §1 与 `.18.129d` label 点模型）
 
 1. **圆心/世界空间**：打开 战斗→范围辅助，保持自身移动并依次朝东/西/南/北方向转动相机。范围圆必须持续以自身脚下/角色位置为中心，不得随镜头方向产生固定偏移或漂移。重点对比非 1.0 UI scale。
 2. **360° 相机 + 稠密索引**：缓慢旋转相机 360°。圆周位于相机背后的采样点可以隐藏，但后续重新进入前半球的点必须继续显示；不得因为第一个不可见点导致整圆消失或只剩固定短弧。正常视角至少应有 3 个可见点。
 3. **分辨率矩阵**：分别在 1024×768、1920×1080、2K 验证半径、点大小、透明度、颜色以及 Apply/Reload；视觉圆心与半径变化方向应一致。
 4. **生命周期/诊断**：打开 Range Assist 时才允许存在其 200ms Demand task；关闭页面 Consumer/Feature 后对应任务必须释放。若投影不足，记录 `ScreenProjectionV3:GetHealth()` 与页面 `partial/unavailable` 原因，不允许回退到 local-space 或稀疏 batch。
 
-## `.18.125` Integrity v3 Canonical + UnitLine 自愈 Fresh Reload 专项（第二 P0，继续执行）
+## `.18.125` Integrity v3 Canonical Fresh Reload 专项（历史；Integrity 部分已被 .18.129a 的 v4 契约取代——以最新横幅 `integrity=4` 与 v3Upgrade 计数为准）
 
 1. **禁止清 `v3.tasks` / `v3.death_review`**：直接覆盖 `.18.125` 后 Fresh Reload。旧 v2 档应出现一次 `v3Upgrade>=1/1`（`integrity_upgrade_recovery` → `integrity_v3_upgrade` 重盖）且 `integrityFail=0 / Fence=0`；第二次 Reload 起应为 `verified_canonical`，不再重复 upgrade recovery。诊断页 Store 行可复制 `完整性 verified_canonical`。
 2. **默认恢复范围（2026-09-05 第二份横幅后翻转）**：所有 v2 旧档 mismatch（含 bonds / gear.payload / death_review.record 分片）都应出现一次 `v3Upgrade` 增长并恢复，第二次 Reload 起为 `verified_canonical`；只有显式 `allowIntegrityUpgrade=false` 的 Store 才保持 fail-closed。真实内容损坏（decode/budget/schema 不过）在任何策略下都继续 `STORE_INTEGRITY_FAILED`。

@@ -36,6 +36,17 @@ local function NewWidget()
   function w:CreateColorDrawable() return {{}} end
   return w
 end
+-- Label mock (2026-09-06): dots are reference-model labels ('.' glyph);
+-- style carries font size and color like the real engine.
+local function NewLabel()
+  local w=NewWidget()
+  w.text="."
+  w.style={{ SetFontSize=function(_,size) w.fontSize=size; return true end,
+    SetColor=function(_,r,g,b,a) w.r,w.g,w.b,w.a=r,g,b,a; return true end,
+    SetAlign=function() return true end, SetOutline=function() return true end }}
+  function w:SetText(text) w.text=tostring(text or ""); return true end
+  return w
+end
 local UnitFeature={{}}
 function UnitFeature:GetProjection() return projectionState end
 function UnitFeature:AcquireConsumer() return true end
@@ -44,6 +55,8 @@ local RangeFeature={{GetProjection=function() return {{rows={{}}}} end,AcquireCo
 ReplicatedSuite = {{
   UI = {{
     CreateEmptyWidget=function(_,parent,id,x,y,w,h,visible,owner) uiCalls.create=uiCalls.create+1; return NewWidget() end,
+    CreateLabel=function(_,parent,id,text,x,y,w,h,fontSize,tone,align,shadow) uiCalls.create=uiCalls.create+1; return NewLabel() end,
+    SetFontSize=function(...) uiCalls.extent=uiCalls.extent+1; return true end,
     SetAnchor=function(...) uiCalls.anchor=uiCalls.anchor+1; return true end,
     SetExtent=function(...) uiCalls.extent=uiCalls.extent+1; return true end,
     SetColor=function(...) uiCalls.color=uiCalls.color+1; return true end,

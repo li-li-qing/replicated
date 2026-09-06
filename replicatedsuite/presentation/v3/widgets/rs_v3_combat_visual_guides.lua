@@ -29,6 +29,12 @@ P.rangePool = P.rangePool or {}
 P.eventOwner = P.eventOwner or {}
 P.hostMetrics = P.hostMetrics or {}
 
+-- RETIRED 2026-09-06: emptywidget + CreateColorDrawable("overlay") 4x4 dots
+-- had no working-reference precedent and were invisible on the real client.
+-- Both reference implementations (easypull, plates) draw overlay dots as
+-- LABEL widgets containing a '.' glyph; EnsureUnitPairPool/EnsurePool now do
+-- the same via S.UI:CreateLabel. Kept here so the audit token trail and any
+-- external caller survive one generation.
 local function NewColorDrawable(parent)
     if parent == nil or type(parent.CreateColorDrawable) ~= "function" then return nil end
     local ok, drawable = pcall(function() return parent:CreateColorDrawable(0.96, 0.78, 0.18, 0.8, "overlay") end)
@@ -213,11 +219,17 @@ function P:EnsureUnitPairPool(pairKey, count, growthLimit)
     local target=math.min(count,#pool+growthLimit)
     local created=0
     for index=#pool+1,target do
-        local dot,dotErr=S.UI:CreateEmptyWidget(host,"v3_visual_unit_"..pairKey.."_dot_"..tostring(index),0,0,4,4,false,self.owner)
+        -- DOT MODEL (2026-09-06, reference-aligned): the previous emptywidget +
+        -- 4x4 CreateColorDrawable("overlay") dot has NO working-reference
+        -- precedent and 4px is near-invisible at 1080p+. Every reference that
+        -- actually works on live RU draws dots as a LABEL containing a single
+        -- '.' character (easypull.lua:262-280 label '.' SetFontSize(22)
+        -- SetOutline; plates rp_ui.lua:2341-2354 label '.' 15px pools). Use the
+        -- same model through the project's own S.UI:CreateLabel primitive.
+        local dot,dotErr=S.UI:CreateLabel(host,"v3_visual_unit_"..pairKey.."_dot_"..tostring(index),".",0,0,12,12,15,"strong","CENTER",false)
         if dot==nil then return nil,dotErr end
-        local row={root=dot,drawable=NewColorDrawable(dot),renderState={visible=false}}; pool[index]=row
-        if row.drawable==nil then return nil,"visual_unit_dot_drawable_failed" end
-        S.UI:SetAnchor(row.drawable,dot,0,0,self.owner); S.UI:SetExtent(row.drawable,4,4,self.owner); S.UI:SetVisible(dot,false,self.owner)
+        local row={root=dot,drawable=nil,label=true,renderState={visible=false}}; pool[index]=row
+        S.UI:SetVisible(dot,false,self.owner)
         created=created+1
     end
     return pool,nil,created,#pool>=count
@@ -251,15 +263,12 @@ function P:EnsurePool(kind, count)
     for index=1,count do
         local row=pool[index]
         if type(row)~="table" or row.root==nil then
-            local dot, dotErr = S.UI:CreateEmptyWidget(host, "v3_visual_" .. kind .. "_dot_" .. tostring(index), 0, 0, 4, 4, false, self.owner)
+            -- Reference-aligned label dot (same rationale as
+            -- EnsureUnitPairPool; easypull/rp_ui both draw '.' labels).
+            local dot, dotErr = S.UI:CreateLabel(host, "v3_visual_" .. kind .. "_dot_" .. tostring(index), ".", 0, 0, 12, 12, 15, "strong", "CENTER", false)
             if dot == nil then return false, dotErr end
-            row={root=dot,drawable=nil}; pool[index]=row
+            row={root=dot,drawable=nil,label=true}; pool[index]=row
             S.UI:SetVisible(dot, false, self.owner)
-        end
-        if row.drawable==nil then
-            row.drawable=NewColorDrawable(row.root)
-            if row.drawable==nil then S.UI:SetVisible(row.root,false,self.owner); return false,"visual_dot_drawable_failed" end
-            S.UI:SetAnchor(row.drawable,row.root,0,0,self.owner); S.UI:SetExtent(row.drawable,4,4,self.owner)
         end
     end
     return true
@@ -270,8 +279,10 @@ function P:HidePool(pool)
 end
 
 function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b)
-    if type(dot)~="table" or dot.root==nil or dot.drawable==nil then return 0,0,0 end
-    size=math.max(2,math.min(10,math.floor(tonumber(size) or 4)))
+    -- LABEL dots: color/size ride the label style, not a drawable (see
+    -- EnsureUnitPairPool for why the drawable model was replaced).
+    if type(dot)~="table" or dot.root==nil then return 0,0,0 end
+    size=math.max(8,math.min(40,math.floor(tonumber(size) or 14)))
     local alpha=math.max(0.1,math.min(1,tonumber(opacity) or 0.78))
     local cr,cg,cb=r,g,b
     if cr==nil then
@@ -294,13 +305,14 @@ function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b)
         state.x,state.y=px,py; anchorWrites=1
     end
     if state.size~=size then
-        local rootOk=S.UI:SetExtent(dot.root,size,size,self.owner)
-        local drawOk=S.UI:SetExtent(dot.drawable,size,size,self.owner)
-        if rootOk~=true or drawOk~=true then return anchorWrites,0,0 end
-        state.size=size; styleWrites=styleWrites+2
+        -- Label dots scale through font size (reference model: rp_ui.lua
+        -- fontScaled = dotFontSize * addonScale); SetExtent alone cannot make
+        -- a '.' glyph bigger.
+        if S.UI:SetFontSize(dot.root,size,self.owner)~=true then return anchorWrites,0,0 end
+        state.size=size; styleWrites=styleWrites+1
     end
     if state.r~=cr or state.g~=cg or state.b~=cb or state.a~=alpha then
-        if S.UI:SetColor(dot.drawable,cr,cg,cb,alpha,self.owner)~=true then return anchorWrites,styleWrites,0 end
+        if S.UI:SetColor(dot.root,cr,cg,cb,alpha,self.owner)~=true then return anchorWrites,styleWrites,0 end
         state.r,state.g,state.b,state.a=cr,cg,cb,alpha; styleWrites=styleWrites+1
     end
     if self:SetUnitDotVisible(dot,true) then visibilityWrites=1 end
@@ -308,21 +320,22 @@ function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b)
 end
 
 function P:PlaceDot(dot, x, y, size, opacity, kind, pairKey, r, g, b)
-    size=math.max(2,math.min(10,math.floor(tonumber(size) or 4)))
+    -- Label-dot placement (reference model). Color rides the label style;
+    -- glyph size comes from the point size clamped into the readable band.
+    size=math.max(8,math.min(40,math.floor(tonumber(size) or 4)))
     S.UI:SetAnchor(dot.root, kind == "unit" and self.unitHost or self.rangeHost, math.floor((tonumber(x) or 0)-size/2), math.floor((tonumber(y) or 0)-size/2), self.owner)
-    S.UI:SetExtent(dot.root, size, size, self.owner)
-    S.UI:SetAnchor(dot.drawable, dot.root, 0, 0, self.owner); S.UI:SetExtent(dot.drawable, size, size, self.owner)
+    S.UI:SetFontSize(dot.root, size, self.owner)
     if kind == "range" then
         -- r,g,b are passed by RenderRange from the persisted projection color;
         -- fall back to the original (0.20, 0.82, 1.00) when none is set.
-        S.UI:SetColor(dot.drawable, r or 0.20, g or 0.82, b or 1.00, math.max(0.1,math.min(1,tonumber(opacity) or 0.68)), self.owner)
+        S.UI:SetColor(dot.root, r or 0.20, g or 0.82, b or 1.00, math.max(0.1,math.min(1,tonumber(opacity) or 0.68)), self.owner)
     else
         local cr, cg, cb = r, g, b
         if cr == nil then
             local c = UNIT_COLORS[tostring(pairKey or "target")] or UNIT_COLORS.target
             cr, cg, cb = c[1], c[2], c[3]
         end
-        S.UI:SetColor(dot.drawable, cr, cg, cb, math.max(0.1,math.min(1,tonumber(opacity) or 0.78)),self.owner)
+        S.UI:SetColor(dot.root, cr, cg, cb, math.max(0.1,math.min(1,tonumber(opacity) or 0.78)),self.owner)
     end
     S.UI:SetVisible(dot.root, true, self.owner)
 end

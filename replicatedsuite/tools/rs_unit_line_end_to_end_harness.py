@@ -262,6 +262,22 @@ local function NewWidget(parent)
   function w:GetHeight() return self.height end
   return w
 end
+local function NewLabel(parent)
+  -- LABEL mock: the presenter's reference-aligned dots are labels ('.' glyph).
+  -- Text/font/color ride widget.style like the real engine.
+  widgetCounter = widgetCounter + 1
+  local w = NewWidget(parent)
+  w.__label = true
+  w.text = "."
+  w.style = {
+    SetFontSize = function(_, size) w.fontSize = tonumber(size) or 15; return true end,
+    SetColor = function(_, r, g, b, a) w.r, w.g, w.b, w.a = r, g, b, a; return true end,
+    SetAlign = function() return true end,
+    SetOutline = function() return true end,
+  }
+  function w:SetText(text) w.text = tostring(text or ""); return true end
+  return w
+end
 S.NativeObjectFactory = {{ CreateEmptyWidget = function(self, id, parent) return NewWidget(parent) end }}
 -- Presenter surface: hosts and dots are created through S.UI:CreateEmptyWidget
 -- (combat_visual_guides.lua:43/:216), so S.UI must route into the SAME widget
@@ -270,6 +286,13 @@ S.UI = {{ controls = {{}} }}
 function S.UI:CreateEmptyWidget(parent, name, x, y, w, h)
   local widget = NewWidget(parent)
   widget.x, widget.y, widget.width, widget.height = x or 0, y or 0, w or 0, h or 0
+  return widget
+end
+function S.UI:CreateLabel(parent, name, text, x, y, w, h, fontSize, tone, align, shadow)
+  local widget = NewLabel(parent)
+  widget.text = tostring(text or "")
+  widget.x, widget.y, widget.width, widget.height = x or 0, y or 0, w or 0, h or 0
+  widget.fontSize = tonumber(fontSize) or 15
   return widget
 end
 function S.UI:SetVisible(widget, value) if widget ~= nil then widget:SetVisible(value) end; return true end
@@ -352,10 +375,11 @@ Check("diag_consumer", dia ~= nil and (tonumber(dia.consumerCount) or 0) >= 1)
 -- 3b. REAL placement evidence: the presenter created real dot widgets through
 -- the mocked native surface and anchored them along the line. Count visible
 -- dots and DISTINCT positions on the widget records themselves.
--- Dot widgets are 4x4 children of the unit host (PlaceUnitDot SetExtent 4,4).
+-- Dot widgets are LABELS ('.' glyph, reference model). Visibility rides the
+-- widget record; size rides fontSize (PlaceUnitDot SetFontSize).
 local visibleDots, seenPositions = 0, {}
 for _, w in pairs(widgets) do
-  if w.visible == true and w.__widget == true and w.width == 4 and w.height == 4 then
+  if w.visible == true and w.__label == true and w.text == "." and (tonumber(w.fontSize) or 0) >= 8 then
     visibleDots = visibleDots + 1
     seenPositions[tostring(w.x) .. "," .. tostring(w.y)] = true
   end

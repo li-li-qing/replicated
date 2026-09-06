@@ -1,3 +1,10 @@
+## M1.16.0.18.129d — 连线/画圈参考对齐：label 句点模型（2026-09-07）
+
+- **参考研究结论**：通读真实可用的 easypull（画圈，`easypull.lua:245-284/:655-687`）与 plates 旧版连线（`rp_ui.lua:2328-2454`/`rp_api.lua:90-203`）：所有实机可用的点阵都是 **LABEL + '.' 字形**（easypull 22px+SetOutline；plates 15px 池），投影双路（原生 `ConvertWorldToScreen` depth>0 → 相机手算），`isLocal=true` 在 easypull:655 有画圈场景实证。
+- **新版不可见根因**：旧实现是 emptywidget + `CreateColorDrawable("overlay")` 4×4 色块——参考生态零先例、4px 在 1080p 近乎不可见、`"overlay"` 层名无画点用法。
+- **修复**：`EnsureUnitPairPool`/`EnsurePool` 改用 `S.UI:CreateLabel(... '.' ...)`（15px 起）；`PlaceUnitDot`/`PlaceDot` 改 style 字号缩放 + 着色；`NewColorDrawable` 标记 RETIRED 并注明原因。投影路径不动（两参考各证明一条可用）。端到端 harness 断言更新为 label 模型（text=='.' 且 fontSize>=8）后 15/15；采样 harness 补 label mock 后 11/11。
+- **BuildTag**：`v3-m1.16.0.18.129d-unitline-label-dots`。
+
 ## M1.16.0.18.129a — Integrity v4：内容盲 canonical 根因收口（2026-09-06 复盘）
 
 - **根因定案（三份横幅链）**：bonds/trade 的 fingerprint_mismatch 来自 Integrity v3 世代的**内容盲 canonical**——life bundle 注册助手 `migrate = default` 把"恒返回全新默认表"的函数当规范化器，盖章哈希的是默认表形状而非内容；`.18.127/.18.128` 改默认形状、`.18.129` 换真规范化函数，两次都把旧盖章判成失配。修复 migrate 后 actual 指纹变化（1EC94F52→1FA5386F）正是 canonical 函数变更的直接证据。
@@ -47,20 +54,6 @@
 - **门禁补洞**：Foundation Gate v117 / UIV3 Acceptance v72 要求 ScreenProjection v7、WorldBatch index contract、Range global-world contract；Foundation Audit 新增静态检查，禁止 Range Assist 重新使用 player local-space 或 sparse `ipairs` 消费。投影专项 Harness 从 21/21 扩为 **25/25**，覆盖 front/behind/invalid 混合 batch 的稠密索引。
 - **当前本地基线复核**：本次用户上传工程的 Foundation Audit PASS（toc/active/all=220/220/220），当前 **28/28 Python Harness 文件全部 PASS**。`.18.125` Changelog 中记载的 3 个历史 Harness 失败保留为当时事实，但在本次 supplied baseline 已无法复现；RU Fresh Reload 仍是 P0，不能用本地绿灯代替真机视觉/Native 证据。
 - **BuildTag**：`v3-m1.16.0.18.126-range-global-indexed-projection`。
-
-## M1.16.0.18.129 — 真实故障收口（单位连线单点 / Boss 事实模型 / 治疗生命周期 / 全域修复）（2026-09-06）
-
-- **单位连线"只有一个点"（P0-1）**：三处真实根因同时收口——①端点重合过滤从"两轴各 ≤1px"改为**线段长度 ≤ max(4, 2×点径)**：2–4px 近重合段此前漏过过滤，渲染层把 ~24 个点堆进几个像素，视觉上就是"一个点"（`rs_business_bridge.lua` read()）；②presenter 点位/可见性缓存**只在底层 Native 写入成功后提交**（`rs_v3_combat_visual_guides.lua`）：无条件提交曾让一次被拒的 Show/Anchor 造成永久失同步，所有点卡死在 (0,0) 叠成一个黄点；③多对连线的 pool 增长预算改按剩余 pair 均分（首对独占曾让其余对连续多帧 0 点）。`_ProjectWithCameraFrame` 路径补逻辑视口边界（`viewportRejects` 计数），ReconcileOne 渲染失败不再同拍释放 Consumer（保留自动重试，历史行为导致一次瞬时失败永久隐藏）。诊断新增 `uniquePositions`。
-- **Boss/首领机制（P0-2）**：与 wbdebuff 完整对比后确认其可用性来自"player/target/targettarget/watchtarget 四单位施法名轮询 + player debuff 数值 id 轮询"，零事件注册。新版此前施法只看 target 且被未验证的 `showTargetCastingTime` 门静默杀死——本轮 CastingObservationV3 升 v2（四 scope），Boss 观察按 wbdebuff 顺序消费四 scope（每 scope 独立边沿签名）、去掉 showTargetCastingTime 门、施法名索引/查找大小写归一、AuraObservation 的 effectId 提取优先 `buff_id`（唯一有实机证据的字段，wbdebuff/buffblackdragon.lua:46）。新增 Boss 诊断行（ticks/source/casting/debuff/rule）。
-- **Persistence（P0-3）**：升级恢复事件携带 canonical 差异诊断（`DescribeCanonicalDivergence`：磁盘域 vs 规范形的第一个不同字段，写入 store.lastIntegrityDivergence），落实验收 §8.4。GearV3 分片加**旧序指纹桥**：旧数字序盖章的存档经 `LegacyPayloadFingerprint` 证明内容完好即接受一次并在下次保存重盖，避免定义序修复把旧方案判成损坏。
-- **治疗辅助（P0-4 + P1-5）**：校准模式改为只持 Preview 租约（`previewHeld`），`consumerHeld=false`——此前校准必违反 gate 1292 与 acceptance 的 `enabled_calibration_contract`，是 healer_v3_visual_lifecycle 误报的真因；head/raid overlay 的 Reconcile 失败不再静默（WarnRateLimited 带错误码）。布局常量对齐旧版实测值（outerPad4/titlePad22/groupGap4/rowGap1/sectionGap8 → 默认 340×400 下 sectionH196/cellW63/slotHeight33）。
-- **Gear（P1-2）**：定义序修复（工作区既有）+ 旧序桥由 `GEAR_SLOT_ORDER_HARNESS` 行为级锁定：捕获→保存→读取→再保存顺序与指纹全稳定，旧档桥迁移，损坏仍拒绝。
-- **Trade（P1-3）**：`SetFrom` 保留 latest-route（修复"A→B 在飞 → 选C → 换起点D 后 UI 永久空列表"死角）；Request 失败自动重启 pending 路线；无主回调（超时后迟到）计数暴露（无 request-id 不可安全归属，保持丢弃）。新增 `TA:DescribeRequestState` 诊断。
-- **Bonds（P1-4）**：widgetWindow 经 FloatingSurface 归一（此前为唯一透传字段、指纹漂移首候选）；boardReads/每日缓存状态诊断（`DescribeDailyCache`）。去重（材料+数量）与每日一次读取逻辑经代码复核确认已符合规则，本轮补齐可观察性。
-- **HUD 布局重叠（P1-6）**：根因 = `Form` 无 `Measure`，TransformInspector 测到的是上次 Layout 的陈旧高度，展开锚点节后下一节叠上来。实现 FieldGroup/FormSection/Form 三级纯测量（FieldGroup 高度 = 响应式网格数学的无副作用复制）。
-- **Activity Tooltip（P2-2）**：Pointer 增加最后成功采样缓存；退化矩形（0,0,1,1）不再作为锚点；最终回退为视口居中而非左上角。
-- **整理背包（P2-3）**：不确定错误（pcall/能力异常文本）同样跳过该 identity 继续——此前只有 "returned false" 才跳过，一次异常文本终止整个队列。取/放/停 tooltip 经复核已走统一 TooltipService（cursorFollow）。
-- **门禁**：Foundation Audit PASS（toc 221/221）；31 个 harness 28 全绿（3 个失败为 .18.104 遗留、已在 HEAD 复现）；新增 `GEAR_SLOT_ORDER_HARNESS`；`.18.128` 契约 harness 随四 scope/归一化更新。BuildTag：`v3-m1.16.0.18.129-real-failure-closeout`。
 
 ## M1.16.0.18.125 — Integrity v3 Canonical + UnitLine 自愈 + Buff 装备诊断（2026-09-05）
 

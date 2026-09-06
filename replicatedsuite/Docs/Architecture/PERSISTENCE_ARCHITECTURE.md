@@ -7,7 +7,7 @@
 # Replicated Suite Persistence Framework v1
 
 日期：2026-08-26  
-状态：**基础框架已落地；2026-09-05 起为 Persistence Reliability v8 + Integrity v3 Canonical Fingerprint（v2 为受识别旧世代，opt-in 受控升级；见 §0.11），保留 v7 Generation Reload Fence、v6 Envelope Seal/Decoded Budget/True Durable/Scope Binding 与 Gear A/B verified self-heal；RU 跨进程回读仍需客户端验收**
+状态：**基础框架已落地；2026-09-06 起为 Persistence Reliability v8 + Integrity v4 Canonical Fingerprint（v3 内容盲世代与 v2/v1 均为受识别旧世代，走封印+全量业务校验的一次代受控升级；见 §0.11/§0.12），保留 v7 Generation Reload Fence、v6 Envelope Seal/Decoded Budget/True Durable/Scope Binding 与 Gear A/B verified self-heal；RU 跨进程回读仍需客户端验收**
 
 当前本地回归已补齐 empty/N-1/future schema/metadata mismatch/显式空表/cyclic payload 六类边界，共 `12/12`；RU SaveData 真实序列化、账号/角色作用域回读仍需客户端数据验证。
 
