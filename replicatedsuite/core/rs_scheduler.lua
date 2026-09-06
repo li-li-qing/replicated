@@ -218,12 +218,44 @@ function Scheduler:RunTask(name)
     task.failureCount = (tonumber(task.failureCount) or 0) + 1
     S.LastSchedulerError = { task = tostring(name), error = tostring(err or "unknown"), failures = task.failureCount }
     if task.failureCount >= 3 then
+        -- Trip the breaker but keep a bounded automatic recovery path. A
+        -- permanently disabled task is invisible to its owners: a transient
+        -- native error once froze visual tasks for the rest of the session
+        -- with no signal beyond a single chat warning. Backoff resumes at 2s
+        -- and doubles to a 60s cap, so a persistently broken task costs at
+        -- most one attempt per minute while any transient cause self-heals.
         task.enabled = false
         task.pending = false
         task.dueSinceMs = nil
-        S.WarnOnce("scheduler_fault:" .. tostring(name), "后台任务已安全暂停：" .. tostring(name))
+        task.faultedAtMs = (S.NowMs and S.NowMs() or 0)
+        task.resumeCount = (tonumber(task.resumeCount) or 0) + 1
+        S.WarnOnce("scheduler_fault:" .. tostring(name), "后台任务连续异常已暂停，将自动退避重启：" .. tostring(name))
     end
     return false
+end
+
+local function FaultResumeDelayMs(resumeCount)
+    -- First recovery window opens at 2s, then doubles (4s/8s/16s/32s) to a 60s cap.
+    local shift = math.max(0, math.min((tonumber(resumeCount) or 1) - 1, 5))
+    return math.min(60000, 2000 * (2 ^ shift))
+end
+
+function Scheduler:RecoverFaultedTasks(now)
+    local recovered = 0
+    for _, task in pairs(self.tasks) do
+        if task.enabled ~= true and task.faultedAtMs ~= nil
+            and (tonumber(now) or 0) - task.faultedAtMs >= FaultResumeDelayMs(task.resumeCount) then
+            task.enabled = true
+            task.faultedAtMs = nil
+            task.failureCount = 0
+            task.elapsedMs = 0
+            recovered = recovered + 1
+        end
+    end
+    if recovered > 0 then
+        self.faultResumes = (tonumber(self.faultResumes) or 0) + recovered
+    end
+    return recovered
 end
 
 function Scheduler:DescribeBacklog()
@@ -246,6 +278,7 @@ function Scheduler:GetHealth()
     end
     return {
         version = self.version, running = self.running == true, activeTasks = activeTasks,
+        faultResumes = tonumber(self.faultResumes) or 0,
         moduleMappings = moduleMappings, transientMappings = transientMappings, transientOrphans = transientOrphans,
     }
 end
@@ -289,6 +322,7 @@ function Scheduler:Start()
         -- fresh table/comparator closure when no task is due.
         local dueNames = Scheduler.dueScratch
         for index = #dueNames, 1, -1 do dueNames[index] = nil end
+        Scheduler:RecoverFaultedTasks(now)
         local pendingCount, maxLateMs, maxLateRatio = 0, 0, 0
         for name, task in pairs(Scheduler.tasks) do
             if task.enabled == true then

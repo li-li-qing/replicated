@@ -4,6 +4,11 @@
 > **状态**：旧 Plates 模块（`rp_api.lua` / `rp_manager.lua` / `rp_runtime.lua` / `rp_storage.lua` / `rp_ui.lua` / `rp_diagnostics.lua` / `replicatedplates.lua` 等）已于 2026-09-01 随旧版架构全量删除（commit 09010c0），不再随包。本文不再保留旧 Plates 架构描述。
 > 新人上手见 [`../CURRENT_ARCHITECTURE.md`](../CURRENT_ARCHITECTURE.md)。
 
+## Startup Fault Isolation（.18.107）
+
+Feature Module 是 Foundation 的 Consumer，不是 Runtime Ready 的前置 Authority。`FeatureRuntime:EnableDefaults()` 中任意 Feature 因 API import、独立 Store、Initialize/Enable 失败时，该 Feature 必须保持 faulted/disabled 并进入 Diagnostics，但不得让 `Runtime:Start()` 整体失败。Core 仍需提供主 Shell、诊断页与功能开关，使用户可以定位或关闭故障模块。只有 EventBus、Scheduler、Layout、UI Host 等 Foundation 本身失败才允许阻断 Ready。
+
+
 ## 旧 Plates 能力的 V3 对应物
 
 | 旧 Plates 职责 | V3 对应物 | 文件 |

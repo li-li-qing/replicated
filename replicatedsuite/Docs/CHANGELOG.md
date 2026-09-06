@@ -1,3 +1,259 @@
+## M1.16.0.18.129a — Integrity v4：内容盲 canonical 根因收口（2026-09-06 复盘）
+
+- **根因定案（三份横幅链）**：bonds/trade 的 fingerprint_mismatch 来自 Integrity v3 世代的**内容盲 canonical**——life bundle 注册助手 `migrate = default` 把"恒返回全新默认表"的函数当规范化器，盖章哈希的是默认表形状而非内容；`.18.127/.18.128` 改默认形状、`.18.129` 换真规范化函数，两次都把旧盖章判成失配。修复 migrate 后 actual 指纹变化（1EC94F52→1FA5386F）正是 canonical 函数变更的直接证据。
+- **IntegrityContractVersion 3→4**：v4 canonical = 修复后的 per-store 纯规范化（内容敏感 + 漂移吸收）；v3 盖章（`ContentBlindCanonicalContractVersion = 3` 登记）不构成完整性证据，走封印+全量业务校验的一次代受控升级并重盖 v4；`integrity_contract_upgrade_recovery` 状态 + 计数。四个 life store 显式传入真 migrate，bonds 预算加深（快照域 21 面板中文文本）。
+- **门禁/回归**：v9 harness 新增内容盲恢复用例（含内容完整保留断言）；v3-v9 + task codec + 快照 harness 全绿；Foundation Audit PASS（toc 221/221）。
+
+## M1.16.0.18.129 — 真实故障收口（单位连线单点 / Boss 事实模型 / 治疗生命周期 / 全域修复）（2026-09-06）
+
+- **单位连线"只有一个点"（P0-1）**：三处真实根因同时收口——①端点重合过滤从"两轴各 ≤1px"改为**线段长度 ≤ max(4, 2×点径)**（`rs_business_bridge.lua` read()）：2–4px 近重合段此前漏过过滤，渲染层把 ~24 个点堆进几个像素，视觉上就是"一个点"；②presenter 点位/可见性缓存**只在底层 Native 写入成功后提交**（`rs_v3_combat_visual_guides.lua`）：无条件提交曾让一次被拒的 Show/Anchor 造成永久失同步，所有点卡死在 (0,0) 叠成一个黄点；③多对连线的 pool 增长预算改按剩余 pair 均分（首对独占曾让其余对连续多帧 0 点）。`_ProjectWithCameraFrame` 路径补逻辑视口边界（`viewportRejects` 计数），ReconcileOne 渲染失败不再同拍释放 Consumer（保留自动重试）。诊断新增 `uniquePositions`。
+- **Boss/首领机制（P0-2）**：与 wbdebuff 完整对比后确认其可用性来自"player/target/targettarget/watchtarget 四单位施法名轮询 + player debuff 数值 id 轮询"，零事件注册。新版此前施法只看 target 且被未验证的 `showTargetCastingTime` 门静默杀死——本轮 CastingObservationV3 升 v2（四 scope），Boss 观察按 wbdebuff 顺序消费四 scope（每 scope 独立边沿签名）、去掉 showTargetCastingTime 门、施法名索引/查找大小写归一、AuraObservation 的 effectId 提取优先 `buff_id`（唯一实机证据字段，wbdebuff/buffblackdragon.lua:46）。新增 Boss 诊断行（ticks/source/casting/debuff/rule）。**数据事实（23474/25846 + 3 组 RU 技能名）仍全部来自 wbdebuff，未做实机复核**。
+- **Persistence（P0-3）**：升级恢复事件携带 canonical 差异诊断（`DescribeCanonicalDivergence`：磁盘域 vs 规范形的第一个不同字段，写入 store.lastIntegrityDivergence），落实验收 §8.4。GearV3 分片加**旧序指纹桥**：旧数字序盖章的存档经 `LegacyPayloadFingerprint` 证明内容完好即接受一次并在下次保存重盖，避免定义序修复把旧方案判成损坏。
+- **治疗辅助（P0-4 + P1-5）**：校准模式改为只持 Preview 租约（`previewHeld`），`consumerHeld=false`——此前校准必违反 gate 与 acceptance 的 `enabled_calibration_contract`，是 healer_v3_visual_lifecycle 误报的真因；head/raid overlay 的 Reconcile 失败不再静默（WarnRateLimited 带错误码）。布局常量对齐旧版实测值（outerPad4/titlePad22/groupGap4/rowGap1/sectionGap8 → 默认 340×400 下 sectionH196/cellW63/slotHeight33）。
+- **Trade（P1-3）**：`SetFrom` 保留 latest-route（修复"A→B 在飞 → 选C → 换起点D 后 UI 永久空列表"死角）；Request 失败自动重启 pending 路线；无主回调（超时后迟到）计数暴露（无 request-id 不可安全归属，保持丢弃）。新增 `TA:DescribeRequestState` 诊断。
+- **Bonds（P1-4）**：widgetWindow 经 FloatingSurface 归一（此前为唯一透传字段、指纹漂移首候选）；boardReads/每日缓存状态诊断（`DescribeDailyCache`）。去重（材料+数量）与每日一次读取逻辑经代码复核确认已符合规则，本轮补齐可观察性。
+- **HUD 布局重叠（P1-6）**：根因 = `Form` 无 `Measure`，TransformInspector 测到的是上次 Layout 的陈旧高度，展开锚点节后下一节叠上来。实现 FieldGroup/FormSection/Form 三级纯测量（FieldGroup 高度 = 响应式网格数学的无副作用复制）。
+- **Activity Tooltip（P2-2）**：Pointer 增加最后成功采样缓存；退化矩形（0,0,1,1）不再作为锚点；最终回退为视口居中而非左上角。
+- **整理背包（P2-3）**：不确定错误（pcall/能力异常文本）同样跳过该 identity 继续——此前只有 "returned false" 才跳过，一次异常文本终止整个队列。取/放/停 tooltip 经复核已走统一 TooltipService（cursorFollow）。
+- **Boss 无 Boss 验证路径（黑龙 3 天一刷，用户无法当场验收）**：新增 `SimulateCast`/`SimulateDebuff` 命令与页面按钮（仿真读条/仿真Debuff）——把目录规则注入真实 BossCastIndex 匹配 + AlertsService 推送链（旧参考项目 SimulateAlert 的已验证模式）；`Boss:` 诊断行增加 `seenCast=` 施法名捕获环（最近 8 个去重真名），任意读条怪/未来任意 Boss 战斗都能自动取证 RU 名称，命中 wbdebuff 表即完成验收。
+- **门禁**：Foundation Audit PASS（toc 221/221）；luacheck 0 errors；31 个 harness 28 全绿（3 个失败为 .18.104 遗留、已在 HEAD 复现）；新增 `GEAR_SLOT_ORDER_HARNESS`；`.18.128` 契约 harness 随四 scope/归一化更新。BuildTag：`v3-m1.16.0.18.129-real-failure-closeout`。
+
+## M1.16.0.18.128 — Runtime Follow-up + Shared Facts + Layout Repair（2026-09-06）
+
+- **换装顺序稳定**：`Gear Store` 统一使用 `GearV3.EquipmentSlots` 的权威语义顺序归一方案，`获取当前 → 保存方案 → Reload` 不再因 Native slot 数值排序反复变序；`.18.127` 的单槽 `not_found` 跳过/继续契约保持不变。
+- **治疗辅助回归真实 50 人团队几何**：撤销 `.18.127` 错误的 10×5/670×180 模型；schema 6 + Raid Overlay v4 固化“单团 50 人 = 上 25 + 下 25，每半区 5×5，约 340×400”。Auto 面板跟随原生团队 1/2 标签当前页；额外友军列表可显式承载另一完整团队。上一版生成的 670×180 自动迁移回 340×400 并保留 x/y。TeamRoster v6 同时修复“成员身份未变但原生团队页切换”不发布的问题。
+- **Unit Lines / Range Assist 共同投影自愈**：`ScreenProjectionV3 v8` 在 Camera Frame 暂时不可取得时，对当前有界批次启用 Native Projection fallback；Camera Frame 恢复后仍回到 global-world + front-hemisphere 严格校验。无跨帧坐标缓存、无新 Tick。
+- **跑商快速切路线**：由于 `SPECIALTY_RATIO_BETWEEN_INFO` 没有 request-id，路线请求改为 `single-flight + latest-route`。旧请求执行期间只保存最后一次起点/目的地；旧回调不会写入已切换路线，释放单飞通道后立即查询最后选择。6.5s timeout 保留。极晚的“超时后旧回调”仍属于 Native 协议无法完全归因的 RU 实机风险。
+- **债券每日快照与正确去重**：居民板按服务器日期 + 大陆持久化 compact snapshot；同日 Reload/筛选/排序不再重复读取已缓存大陆。大陆任务身份改为 `材料 + 数量`：西/东“皮革20”互斥去重，而 20/60/100 保持三个独立每日任务；完成 latch 跨西/东共享。
+- **Bag / Activity UX**：整理背包 `取 / 放 / 停` 接入统一 Cursor Tooltip；虚拟表格/活动行自动 Tooltip 改为跟随真实鼠标，避免 pooled row 的旧坐标把说明弹到窗口远端。
+- **首领机制真正接入运行时事实**：新增共享只读 `CastingObservationV3`，与既有 `AuraObservationV3` 一起成为 Boss 实时事实源；Boss 模块仅在启用且 HUD 开启时持有 Demand，目标施法 100ms、自身 Debuff 300ms，均走预建精确索引，不在高频路径做模糊 Tag/字符串扫描。`BuffDisplay` 也改复用同一 Casting Service，并修复双 lease 释放时单一失败提前 return 可能残留另一 lease 的生命周期问题。
+- **状态显示 HUD Inspector 布局修复**：`TransformInspector Contract v3` 新增真实 `Measure()`，父 Scroll/Layout 能取得展开后的完整高度，修复截图中 Transform/Anchor/吸附设置区域互相覆盖的严重排版错误。
+- **门禁/回归**：Foundation Gate v119、UIV3 Acceptance v74；Active/All Lua `221/221` Parse PASS，Foundation Audit PASS，30/30 Python Harness PASS；新增 `.18.128` 专项 Harness，ScreenProjection 25/25、Bag Move v8 11/11、Team Visual 34/34、Trade/Craft 22/22 等既有套件继续通过。
+- **BuildTag**：`v3-m1.16.0.18.128-runtime-followup-shared-facts-layout`。
+
+## M1.16.0.18.127 — Runtime Continuation + Native Raid Geometry（2026-09-06）
+
+- **换装继续执行**：`GearV3 v4 / PartialApplyContract v1` 将“背包未找到目标装备”降为单槽可跳过结果；其它可定位装备与称号继续执行。`read_error/ambiguous` 仍 fail-closed，运行中目标消失同样只跳过该槽，最终以“部分完成 + 跳过数量”报告。
+- **跑商刷新恢复**：`Trade.Authority v5` 为路线请求增加 6.5s one-shot 超时护栏；手动“刷新”会对当前完整路线显式重发 `GetSpecialtyRatioBetween`，不再只刷新地区列表。关闭 Demand/Feature 时同步撤销 timeout。
+- **整理背包满仓继续**：`BagMoveContract v8 / FullStorageContinuation v1` 移除“仓库无空槽=全局拒绝”的错误前置条件。`MoveToEmpty*` 对某一稳定 identity 返回 false 或连续无进展时，仅屏蔽该 identity，继续后续物品；API 缺失、读失败、无稳定 identity 仍立即停止。快捷取放与类别批量均记录 skipped。
+- **治疗辅助对齐原生团队名单**：Healer Store schema 5 将旧不可缩放默认 `340x400` 迁移为 full-grid `670x180`（保留 x/y）；Raid Overlay v3 使用原生 5 人/队的列优先映射（1–5 第一列，6–10 第二列），根据 TeamRoster 实际最高 memberIndex 动态裁剪可见列。20 人时逻辑宽约 267px，与实机截图约 268px 对齐。拖动只提交 x/y，不把动态裁剪宽度写回 full-grid geometry。
+- **门禁/回归**：Foundation Gate v118、UIV3 Acceptance v73；新增 `.18.127` 四项专项 Harness。220/220 Active Lua parse、Foundation Audit、29/29 Python Harness 全 PASS。
+- **BuildTag**：`v3-m1.16.0.18.127-runtime-continuation-native-roster`。
+
+## M1.16.0.18.126 — Range Assist Global World + Dense Batch Projection（2026-09-06）
+
+- **Range Assist 世界坐标空间修复**：审计发现范围辅助仍使用 `ScreenProjectionV3:GetUnitWorldPosition("player", true)` 获取本地空间自身坐标，却把生成的圆周点交给以 `UIParent` 全局 Camera Frame 为基准的 `ProjectWorldBatch`。这与 `.18.96` 已修复的 Unit Lines 混合坐标空间问题同源；本轮统一改为 `isLocal=false`，范围圆中心与 Camera Projection 使用同一全局世界空间。
+- **ScreenProjectionV3 v7 稠密批量索引契约**：旧 `ProjectWorldBatch` 只为投影成功点写 `out[index]`，behind-camera/无效点会形成稀疏 Lua 数组；Range Assist 使用 `ipairs` 时会在首个 `nil` 停止，导致整圆消失或只剩短弧。v7 对每个输入索引都返回 `{visible=true,...}` 或 `{visible=false,reason=...}`，并新增 `WorldBatchIndexContractVersion=1`。Range Assist 同时改为 `1..count` 显式索引遍历，双重防止稀疏数组截断回归。
+- **门禁补洞**：Foundation Gate v117 / UIV3 Acceptance v72 要求 ScreenProjection v7、WorldBatch index contract、Range global-world contract；Foundation Audit 新增静态检查，禁止 Range Assist 重新使用 player local-space 或 sparse `ipairs` 消费。投影专项 Harness 从 21/21 扩为 **25/25**，覆盖 front/behind/invalid 混合 batch 的稠密索引。
+- **当前本地基线复核**：本次用户上传工程的 Foundation Audit PASS（toc/active/all=220/220/220），当前 **28/28 Python Harness 文件全部 PASS**。`.18.125` Changelog 中记载的 3 个历史 Harness 失败保留为当时事实，但在本次 supplied baseline 已无法复现；RU Fresh Reload 仍是 P0，不能用本地绿灯代替真机视觉/Native 证据。
+- **BuildTag**：`v3-m1.16.0.18.126-range-global-indexed-projection`。
+
+## M1.16.0.18.129 — 真实故障收口（单位连线单点 / Boss 事实模型 / 治疗生命周期 / 全域修复）（2026-09-06）
+
+- **单位连线"只有一个点"（P0-1）**：三处真实根因同时收口——①端点重合过滤从"两轴各 ≤1px"改为**线段长度 ≤ max(4, 2×点径)**：2–4px 近重合段此前漏过过滤，渲染层把 ~24 个点堆进几个像素，视觉上就是"一个点"（`rs_business_bridge.lua` read()）；②presenter 点位/可见性缓存**只在底层 Native 写入成功后提交**（`rs_v3_combat_visual_guides.lua`）：无条件提交曾让一次被拒的 Show/Anchor 造成永久失同步，所有点卡死在 (0,0) 叠成一个黄点；③多对连线的 pool 增长预算改按剩余 pair 均分（首对独占曾让其余对连续多帧 0 点）。`_ProjectWithCameraFrame` 路径补逻辑视口边界（`viewportRejects` 计数），ReconcileOne 渲染失败不再同拍释放 Consumer（保留自动重试，历史行为导致一次瞬时失败永久隐藏）。诊断新增 `uniquePositions`。
+- **Boss/首领机制（P0-2）**：与 wbdebuff 完整对比后确认其可用性来自"player/target/targettarget/watchtarget 四单位施法名轮询 + player debuff 数值 id 轮询"，零事件注册。新版此前施法只看 target 且被未验证的 `showTargetCastingTime` 门静默杀死——本轮 CastingObservationV3 升 v2（四 scope），Boss 观察按 wbdebuff 顺序消费四 scope（每 scope 独立边沿签名）、去掉 showTargetCastingTime 门、施法名索引/查找大小写归一、AuraObservation 的 effectId 提取优先 `buff_id`（唯一有实机证据的字段，wbdebuff/buffblackdragon.lua:46）。新增 Boss 诊断行（ticks/source/casting/debuff/rule）。
+- **Persistence（P0-3）**：升级恢复事件携带 canonical 差异诊断（`DescribeCanonicalDivergence`：磁盘域 vs 规范形的第一个不同字段，写入 store.lastIntegrityDivergence），落实验收 §8.4。GearV3 分片加**旧序指纹桥**：旧数字序盖章的存档经 `LegacyPayloadFingerprint` 证明内容完好即接受一次并在下次保存重盖，避免定义序修复把旧方案判成损坏。
+- **治疗辅助（P0-4 + P1-5）**：校准模式改为只持 Preview 租约（`previewHeld`），`consumerHeld=false`——此前校准必违反 gate 1292 与 acceptance 的 `enabled_calibration_contract`，是 healer_v3_visual_lifecycle 误报的真因；head/raid overlay 的 Reconcile 失败不再静默（WarnRateLimited 带错误码）。布局常量对齐旧版实测值（outerPad4/titlePad22/groupGap4/rowGap1/sectionGap8 → 默认 340×400 下 sectionH196/cellW63/slotHeight33）。
+- **Gear（P1-2）**：定义序修复（工作区既有）+ 旧序桥由 `GEAR_SLOT_ORDER_HARNESS` 行为级锁定：捕获→保存→读取→再保存顺序与指纹全稳定，旧档桥迁移，损坏仍拒绝。
+- **Trade（P1-3）**：`SetFrom` 保留 latest-route（修复"A→B 在飞 → 选C → 换起点D 后 UI 永久空列表"死角）；Request 失败自动重启 pending 路线；无主回调（超时后迟到）计数暴露（无 request-id 不可安全归属，保持丢弃）。新增 `TA:DescribeRequestState` 诊断。
+- **Bonds（P1-4）**：widgetWindow 经 FloatingSurface 归一（此前为唯一透传字段、指纹漂移首候选）；boardReads/每日缓存状态诊断（`DescribeDailyCache`）。去重（材料+数量）与每日一次读取逻辑经代码复核确认已符合规则，本轮补齐可观察性。
+- **HUD 布局重叠（P1-6）**：根因 = `Form` 无 `Measure`，TransformInspector 测到的是上次 Layout 的陈旧高度，展开锚点节后下一节叠上来。实现 FieldGroup/FormSection/Form 三级纯测量（FieldGroup 高度 = 响应式网格数学的无副作用复制）。
+- **Activity Tooltip（P2-2）**：Pointer 增加最后成功采样缓存；退化矩形（0,0,1,1）不再作为锚点；最终回退为视口居中而非左上角。
+- **整理背包（P2-3）**：不确定错误（pcall/能力异常文本）同样跳过该 identity 继续——此前只有 "returned false" 才跳过，一次异常文本终止整个队列。取/放/停 tooltip 经复核已走统一 TooltipService（cursorFollow）。
+- **门禁**：Foundation Audit PASS（toc 221/221）；31 个 harness 28 全绿（3 个失败为 .18.104 遗留、已在 HEAD 复现）；新增 `GEAR_SLOT_ORDER_HARNESS`；`.18.128` 契约 harness 随四 scope/归一化更新。BuildTag：`v3-m1.16.0.18.129-real-failure-closeout`。
+
+## M1.16.0.18.125 — Integrity v3 Canonical + UnitLine 自愈 + Buff 装备诊断（2026-09-05）
+
+- **Persistence Integrity v3（canonical）**：`.18.124` 的 strict shape-repair 在 RU 实机仍被拒绝（`v3.tasks` / `v3.death_review` Envelope Seal 健康、指纹却无法被任何重建候选复现）——根因是 v2 原始包封指纹对结构级表示漂移（map→sequence、空表丢失、版本形状漂移）本质脆弱，而"候选必须逐字复现旧 stamp"与"旧 stamp 属于旧代码形状"互相矛盾。本轮按 §14 canonical 管线重做：保存与加载两侧都以 `CanonicalIntegrityValue`（codec encode / migrate 固定形状 normalize）计算指纹（`integrityVersion=3`），逻辑等价的表示漂移被吸收，内容变化仍 fail-closed；v3 加载管线为 Decode → Normalize → Verify → Apply。
+- **受控旧档升级通道（默认开启，实机复核后从 opt-in 翻转）**：`integrityVersion=2` 的旧档 mismatch 时，在 Envelope Seal + decode + budget + schema 全部通过后按 `integrity_upgrade_recovery` 接受一代并立即重盖 v3。第一份 `.18.125` 实机横幅证明漂移是序列化器普遍行为（bonds / gear.payload 分片 / death_review.record 分片同轮全部 mismatch，`v3Upgrade=0/1` 证明白名单只救回 1 个健康重盖），逐 Store opt-in 只会逐批封存用户数据，故翻转为默认；journal 分片（gear.payload 等）同样纳入——优于替代的 `replaceCorrupt` 破坏性覆盖；Domain 可显式 `allowIntegrityUpgrade=false` 退出。`rebuildEncodedForIntegrity` 升级为多历史形态候选（pre-codec 裸 Domain 形 + 中间包装形），`DecodeTaskState` 兼容三种历史形态——旧用户数据无需重置。
+- **decoder 契约收窄（显式）**：v2 的"损坏数据不进 decoder"收窄为"**损坏数据不进 apply/Domain**"（decode/encode 钩子均为纯规范化 + pcall + 预算检查）；`VerifyPersistedValue` 对 v3 盖章改比 canonical，屏障回读不再因表示漂移假失败。
+- **Unit Lines 偶发永久失效根因收口**：除 `.18.124` 的 World Alias Guard 外，本轮闭合残余坍缩路径——alias 候选的 camera 一致性 oracle / camera fallback 是把端点锚到玩家身上的最后通道，现在 alias 候选 native 屏幕证据成功即直接采信（`native_alias_candidate`），native 失败则 fail-closed（`aliasNativeKept/aliasNativeRejects` 计数）；read() 对两端点 ≤1px 重合的 pair 输出 ENDPOINT_COLLAPSED 拒绝而非画点团。**真正"永久失效"的载体是 Scheduler 熔断**：3 连败即永久禁用且无自愈，现在改为指数退避自动恢复（2s→60s 封顶，持续故障每分钟至多一次尝试），`faultResumes` 进入 GetHealth。
+- **Buff Display 自身装备可观察化**：`.18.124` 改走 GearV3 后实机图标仍空白，剩余未知（RU tooltip 的 icon 字段名 / lane 是否 tick / 读取是否报错）只能实机回答。`ReadEquippedIcon`/`EquipmentTick` 全链计数（reads/icons/empty/errors/unresolvedSlots/iconField/lastError/sampleItemKeys），诊断面新增 `BuffGear:` 与 `UnitLines:` 单行可复制诊断、Store 行追加完整性状态。背部槽位维持"仅运行时 `ES_BACKPACK`、缺失即跳过并计 unresolvedSlots"，不猜测数值。
+- **门禁/回归**：Foundation Audit PASS（toc=220）；持久化 v3-v9 + 任务 codec + 投影 21/21 + Scheduler 恢复 + Buff 装备数据层全部 PASS；`rs_*_harness` 中 25/28 全绿，`rs_interactive_draft_harness` / `rs_recovery_launcher_harness` / `rs_runtime_entry_lifecycle_harness` 为 `.18.104` 遗留失败（HEAD 复现相同，与本轮无关，另开工单）。
+- **BuildTag**：`v3-m1.16.0.18.125-integrity-v3-canonical-unitline-recovery`。
+
+## M1.16.0.18.124 — RU Integrity / UnitLine Alias / Buff Equipment Hotfix（2026-09-05）
+
+- **RU 启动阻断修复**：`AuctionSurfaceV3` / `CraftSurfaceV3` 明确声明 `presentationBoundary = service_only`，保持 Native 窗口只读观察在 Service、Sidecar 渲染在 Presentation；UIV3 Acceptance 与 Foundation Audit 同时锁住该边界，避免以后新增 Service 再次因为漏声明把 `service_presentation_boundary` 打成 Blocker。
+- **`v3.tasks` 稳定持久化编码**：Task Domain 继续使用 O(1) membership map，但 SaveData 改用 codec v2 的排序字符串序列；不让 RU serializer 自行决定动态 map 的物理表示。已有 pre-codec 存档若发生已观测的 map→sequence 形态变化，只能通过 Store 专属 `rebuildEncodedForIntegrity` 重建候选，而且 Persistence 必须在 Envelope 已验证、非 Critical/Journal 的前提下证明候选**精确复现原 stamped fingerprint**才允许加载；任何业务值变化仍 `integrity_failed` + write fence。成功恢复后立即改写 codec v2。
+- **Unit Lines 偶发端点重合**：`ScreenProjectionV3 v6` 增加 batch-local World Alias Guard。不同 Unit Token 若瞬时拿到近乎相同 world fact，但同 batch 的 Native screen point 明确分离，则把该 world fact 判为 stale alias，仅本批次使用 `native_world_alias_guard`，不再让错误 camera consistency fallback 把目标端点覆盖到玩家自身。无新 Tick、无跨帧缓存、仍为 bounded token batch。
+- **Buff Display 自身装备**：主手/副手/远程改由共享 `GearV3:GetEquipped()` 读取，消除 Feature 内重复 Native 语义；HUD Layout 增加显式 `主手 / 副手 / 远程 / 背部` 快捷开关，并继续写同一 Layout Working/Apply Authority。背部仍只接受运行时 `ES_BACKPACK`，没有把 `EST_BACKPACK` 或猜测数字当 slot。
+- **门禁/回归**：Foundation Gate v116、UIV3 Acceptance v71；Active/All Lua `220/220`。新增 `TASK_PERSISTENCE_CODEC_HARNESS PASS`，`SCREEN_PROJECTION_FRONT_HEMISPHERE_HARNESS 18/18`；25 个 Python Harness 文件全部 PASS，Foundation Audit PASS。
+- **BuildTag**：`v3-m1.16.0.18.124-ru-integrity-unitline-buff-equipment-hotfix`。
+
+## M1.16.0.18.123 — Inventory Snapshot V3 + Bag Move Queue v7（2026-09-05）
+
+- **参考项目边界正式固化**：参考旧项目只作为“用户应该能做什么”的行为证据，不迁移旧 Service/全局状态/重复扫描/事件模型。新增架构规则写入 `CURRENT_ARCHITECTURE.md`，后续所有参考功能都必须重新落在 Active V3 Authority/Service/Demand/RSUI 上。
+- **InventorySnapshotV3**：新增共享只读背包/银行/箱子快照 Service。物理背包统一沿用 GearV3 已验证 `bagId=1`，仅在首选视图没有可读行时有界回退 `bagId=0`；Native item table 立即归一为 detached primitives，一次遍历同步建立 identity/category count/stack indexes，不拥有黑名单或 Move 业务。
+- **Bag Move Queue v7**：Quick 取/放同类由“每个槽一条 queue record”改成 grouped stable identity intent；Category Batch 同样只有一个 `{category, remaining, slotHint}` intent。`slotHint` 只是下一步快速定位，写前必须 live revalidate，失效才绕容器一圈；只有写后同槽仍为同 identity/category 的歧义情况才做 bounded population count，并支持 `stopAt` 提前确认 no-progress。保持 250ms、单队列、单 Native write、最多 2 次 no-op retry、Feature/窗口退出立即释放。
+- **bagId 硬编码收敛**：Bag 页面读取与直接移动前黑名单检查均复用 `InventorySnapshotV3`，不再在整理背包路径硬编码 `GetBagItemInfo(0, slot)`；UI 诊断显示当前物理 bagId 与兼容回退状态。
+- **门禁/回归**：Foundation Gate v115、UIV3 Acceptance v70；Active/All Lua `220/220`，Foundation Audit PASS。`BAG_MOVE_QUEUE_V7_HARNESS 10/10`；24 个 Python Harness 文件全部通过。Product Matrix 仍为 `80 IMPLEMENTED / 35 PARTIAL / 0 TODO / 11 SPECIFIC_RUNTIME_BLOCKED`，`RU-BAG-01` 在 RU 多堆连续移动证明前保持打开。
+- **BuildTag**：`v3-m1.16.0.18.123-inventory-snapshot-bag-queue-v7`。
+
+## M1.16.0.18.122 — Team Sac Highlight + Verified Marker Snapshot（2026-09-05）
+
+- **团队中心继续迁移参考旧版能力**：在既有 `combat_team_tools` 单一 Feature Authority 上新增 `TeamVisuals` 扩展，不新建第二个团队 Runtime/Store 入口。牺牲之舞候选仅在 TeamRoster 变化与 10s safety scan 时读取职业模板，精确沿用参考项目已存在的 Spelldance ability index 14 与 Sac Buff IDs `30098/30137/30141/30142`。
+- **共享 Aura / 独立视觉生命周期**：Sac Buff 事实统一复用 `AuraObservationV3`，候选存在时才持有 Aura Consumer，并以 1200ms bounded safety scan + 可选 `BUFF_UPDATE` 120ms coalesced edge 加速；Presentation 才使用 `ScreenProjectionV3:ProjectUnitBatch`，只有真实 active Sac 行存在时创建/运行 50ms visual task，最多 16 个 marker，Domain 无 Tick/屏幕投影。
+- **团队头标快照/恢复**：通过已登记的 `X2Unit:GetOverHeadMarker` 保存当前团队已存在的非零头标，最多 16 条、按角色名+markerIndex 去重；显式保存/清空使用 durable Store mutation。恢复不调用旧版 `RemoveAllOverHeadMarker`，而是 1100ms 串行队列；每次写前必须先读当前值，已正确则零写跳过，发生写入后下一拍必须 `GetOverHeadMarker` 回读一致才继续。任何读取/写入/回读失败立即 fail-closed。
+- **生命周期事务加固**：TeamRoster/Aura Demand acquire/release 都验证返回；Aura 成功释放后若 Roster release 失败会尝试重新 Acquire Aura 回滚，Feature Disable 只有扩展资源全部释放成功才继续 Base Disable。Sac 开关的 runtime lease 与持久 intent 也做双向 rollback，避免 UI/Store/Service demand 分叉。
+- **仍不越过 Runtime Blocker**：`MoveTeamMember/MoveTeamMemberToParty` 继续等待合法队长/权限 getter；本轮没有自动清空头标、没有猜 Skullknight 自动标记索引，也没有把参考旧版权限推断迁入 V3。
+- **门禁/回归**：Foundation Gate v114、UIV3 Acceptance v69；Active/All Lua `219/219`。新增 `TEAM_VISUAL_MARKER_HARNESS 34/34`，Foundation Audit / Presentation→Feature API / RSUI Component API 全部 PASS；Product Matrix 仍为 `80 IMPLEMENTED / 35 PARTIAL / 0 TODO / 11 SPECIFIC_RUNTIME_BLOCKED`，团队组合能力保持 PARTIAL，直到 RU 验证 Sac 视觉/头标权限与成员整理契约。
+- **BuildTag**：`v3-m1.16.0.18.122-team-sac-marker-snapshot`。
+
+## M1.16.0.18.121 — Craft Multi-Plan + Native Craft Sidecar（2026-09-05）
+
+- **制作规划多配方**：新增 `CraftPlanContract v1`；最多 12 项、每项 1–999，永久 Store 只保存稳定 `recipeKey + quantity`。多个配方的已核材料统一聚合，并复用现有 bounded Bag held facts 计算缺口。
+- **计划成本**：新增显式 `QuotePlanMaterials`，仅经 `PriceQuoteQueueV3` 去重/限速询价；投影区分总需求报价与当前缺口报价。普通刷新仍为只读，不后台访问拍卖服务器。
+- **制作台 Sidecar**：新增 `CraftSurfaceV3` / `tools.craft_sidecar`，只读观察三种已导出的 Native Craft UIC；400ms 观察只在 `tools_craft` 启用且自动侧窗打开时存在。四值 MainScript 返回必须由 `ADDON:GetContent` 父链可见性补强，否则 fail-closed。
+- **生命周期**：Sidecar 复用 `tools_craft` 单 Authority，显示期独立持有 Consumer，关闭/原生窗口退出即释放；用户手动关闭后本次 Native session 不重弹。无未验证 Craft Event、无第二 Store、无隐式 Auction 查询。
+- **门禁/回归**：Foundation Gate v113、UIV3 Acceptance v68；Active/All Lua `217/217`。新增 `CRAFT_PLAN_HARNESS 25/25`、`CRAFT_SIDECAR_HARNESS 28/28`；23 个 Python Harness 文件全部 PASS，Foundation Audit PASS。Product Matrix 更新为 `80 IMPLEMENTED / 35 PARTIAL / 0 TODO / 11 SPECIFIC_RUNTIME_BLOCKED`。
+
+## 2026-09-05 — v3-m1.16.0.18.120-trade-detail-favorites-workflow
+
+- **路线收藏恢复（V3 Authority）**：对照旧版 `rs_trade_service.lua` / `rs_trade_widget.lua` 的用户行为，只迁移无需新 Native API 的部分。`life.trade` Store 统一持有数值 `from:to` 路线收藏，去重且最多 12 条；主 Trade 页面与 `life.trade` HUD 共用 `ToggleCurrentFavorite / SelectFavorite / SetSortMode`，没有第二份 Presentation 状态。
+- **共享 Trade Detail Floating**：新增 `TradeDetailFloatingV3`。主页面与 HUD 选中贸易品行都会打开同一悬浮详情，展示路线、当前/满货率投影、材料数量/单价/小计/状态；详情几何与 row selection 仅 Session，显示时独立 `AcquireConsumer("floating:trade_detail")`，关闭/失效时释放 Consumer 与内部订阅，不把 HUD 生命周期绑到详情。
+- **显式选中行材料询价**：新增 `QuoteRowMaterials(rowKey)`，只遍历当前行 `explicit_quote_required` 材料，去重并受共享 `PriceQuoteQueueV3.maxQueue` 限制，最终仍调用既有 `QuoteMaterial`。普通 Trade Refresh、收藏切换、排序都不会隐式触发 Auction 查询。
+- **路线持久化一致性修复**：Origin 真正改变时，在写 Store 之前同步清除旧 Destination，避免 runtime 已清空但 Durable Store 仍保存旧目的地的分叉状态。
+- **Product Truth 不越界**：没有恢复旧版猜测的经商熟练度价格倍率，也没有实现缺事件证据的自动制作台刷新/叛乱记录；Fishing Auto-R 与 Reinforcement slot probing 继续 blocked。
+- **门禁/回归**：Foundation Gate v112、UIV3 Acceptance v67、`Trade.Authority v4`、`LifeEconomyWidgetsV3 v3`；Active/All Lua `213/213`。新增 `TRADE_DETAIL_FAVORITES_HARNESS 35/35`，全工程 21 个 Python Harness 文件 0 failures，Foundation Audit PASS。
+- **BuildTag**：`v3-m1.16.0.18.120-trade-detail-favorites-workflow`。
+
+## 2026-09-05 — v3-m1.16.0.18.119-trade-craft-user-workflow
+
+- **Trade current/full 模式**：`life_trade` Store 新增 `ratioMode=current/full`，保留服务器 `currentRatio` 事实；full 仅以 130% 需求上限做本地价格/毛利对比，不重发服务器货率查询。主页面与悬浮窗均可切换并持久化。
+- **Commerce proficiency 只读观察**：Demand 0→1 / 显式刷新时通过已注册 capability `X2Ability:GetAllMyActabilityInfos` 读取 Commerce/经商/贸易/Торговля 的 `point+modifyPoint`。Projection 明确 `priceIncludesCommerce=false / commercePriceFormulaStatus=unverified`，禁止把参考旧版 `5%/10000` 公式当成当前 RU 事实。
+- **Craft 显式批量材料询价**：制作规划与制作台助手新增“材料询价”；仅扫描当前已投影材料，按 itemType/grade 去重，最多提交 `PriceQuoteQueueV3.maxQueue`，普通 Refresh 继续零 Auction fan-out。批次回调只在最后一项完成后重建一次 Feature，避免每 560ms 对 Craft+Bag 做全量重扫；材料文本新增单价/小计，页面显示已报价材料数、当前小计和待询价数。
+- **Task 自定义追踪可发现性**：父任务投影从空白/勾号改为 `＋ 可添加 / ✓ 已追踪`，追踪列固定 78px；Header、摘要和健康提示明确“选中父任务 → 加入/取消追踪 → 悬浮窗只显示选择项”。不新增第二份追踪状态。
+- **Lua 5.1 local budget**：业务 mega-bridge 新逻辑全部复用/嵌套 helper，顶层 locals 保持 200/200；Foundation Audit 新增上限 fence，避免后续 Agent 使整个 chunk 因 local 数超限无法加载。
+- **回归**：新增 `rs_trade_craft_modes_harness.py`，22/22 PASS；Foundation Audit PASS（212 Active/All Lua，serviceUpward/productTruth/rawNative/presentation violation 均 0）。
+- **BuildTag**：`v3-m1.16.0.18.119-trade-craft-user-workflow`。
+
+## 2026-09-05 — v3-m1.16.0.18.118-top-level-layer-popup-foundation
+
+- **修复共享 Dropdown/Popup 不可见根因**：RU 的 UIParent 级 `emptywidget` 即使尝试 `SetUILayer("system")` 也不能可靠跨过 V3 根 Window；Dropdown/ColorField/ContextMenu 的交互弹层现仅在 root transient 场景创建真实 Native `window`，默认 hidden + unpickable，打开后仍由既有 PopupCoordinator/事务控制。普通页面内 Panel 不受影响。
+- **Top-Level Layer Contract v1**：UITokens v5 固定 `Shell(100) < Floating(1000) < Popup(10000) < Modal(12000)`；WindowShell v24 统一进入 `system` layer、关闭 Native modal/ESC ownership，并按 `layerRole` 应用 priority。FloatingSurface 只声明 `floating` role，Feature 不直接控制 Native Z-order。
+- **修复“悬浮窗其实打开了但在主菜单后面”**：应用主 Shell 固定 shell priority，独立 HUD/FloatingSurface 使用更高 floating priority，重新显示仍由 WindowShell `BringToFront()` 作为同角色 recency tie-break。
+- **任务详情复用收敛**：Activity 主页面与 Activity/Task 悬浮组件统一调用 `QuestDetailFloatingV3`；主菜单不再独占 Modal 子窗口，因此关闭主菜单后详情窗口可继续按独立 Floating 生命周期工作。
+- **任务追踪 UX 收敛**：Task 主页面也切到同一 `QuestDetailFloatingV3`；“启用/关闭 + 打开悬浮窗”调整到第一操作位，日常/周常/仅追踪随后，既有逐任务“加入追踪/取消追踪” Store Authority 保持不变。
+- **债券悬浮窗可独立操作**：增加紧凑排序、20/60/100、原大陆、去重、东/西优先 Toolbar，全部复用 `life_bonds` 现有 Commands/Store，不复制业务状态。背包材料扫描不再因为无关的未堆叠物品缺少 stackCount 就把所有“有/缺”降为 `?`；只有相关材料自身不可计数或槽位/身份读取失败才保持 partial。
+- **债券完成状态防误判**：参考旧版已验证的“同日 mainland material+quantity 正向完成锁存”行为，在 V3 Bonds Store 内新增 server-date completion latch；仅 `COMPLETED` 正向证据可写入，日期未知时不清空，可靠日期跨日才清空。未锁存的 `NOT_ACCEPTED` 对居民日常显示“待确认”，不再把“已交后退出活动列表”错误宣称为“未接”。
+- **整理背包 Bag Move Queue v6**：Quick 与 Category Batch 仍保持 250ms 串行与 live source re-resolve；同类识别优先 `itemType`，RU 槽位行缺失 itemType 时只对已读事实保守回退到 `name + grade + category`，解决槽位压缩/同类换槽后队列错误认为“没有同物品”。对 Action true/no-op 仍最多 2 次同节拍有界重试，连续无变化 fail-closed；不引入 Tick/并发写。专项 Harness **6/6 PASS**。
+- **团队中心信息架构**：左侧导航将“团队管理 / 战备检查 / 招募助手 / 攻城战备”收敛为一个“团队中心”入口；四条 semantic route 仍保留，并在页面顶部用共享 Tab 互相切换。切换仍由 PageHost 释放旧页 Consumer、进入新页再 Acquire，**没有合并四个 Feature 的 Demand/Cache/生命周期**；攻城战备 Runtime Blocker 原样保留。
+- **目标监控产品入口退役**：按用户实机价值评估移除“目标监控”独立左侧导航项，但保留 `combat.target_monitor` route、Feature 和 Demand-scoped 目标事实能力，避免状态显示/单位连线等未来 Consumer 因 UI 去留而断链；没有删除 Store/Service。
+- **Auction Sidecar V2（参考旧版行为恢复）**：新增只读 `AuctionSurfaceV3 v2`，观察原生 `UIC_AUCTION` 可见性/几何；兼容 RU `GetContentMainScriptPosVis` 只返回四值，并用 `ADDON:GetContent` 的短父链 `IsVisible`/几何作更强事实。`tools.auction_sidecar` 跟随原生拍卖行左右安全停靠，复用现有 Favorite Store + `AuctionQueryV3`，不建立第二份收藏/搜索状态、不在观察刷新中发服务器查询；手动关闭后只抑制当前拍卖会话。专项 Harness **23/23 PASS**。
+- **门禁**：Foundation Gate **v111** / UIV3 Acceptance **v66** 要求 UITokens v5 层级单调性、WindowShell Top-Level Layer、Bag Move Queue v6 与 Auction Sidecar v2 合同；Foundation Audit 当前 `toc=212 / activeLua=212 / allLua=212` PASS，19 个 Python Harness 文件全部 PASS。RU 实机仍需验证下拉、Floating Z-order、Bag 连续移动、Auction Sidecar 与 Bonds 真实数据后才关闭对应 TODO。
+- **BuildTag**：`v3-m1.16.0.18.118-top-level-layer-popup-foundation`。
+
+## 2026-09-05 — v3-m1.16.0.18.117-deferred-keyboard-activation
+
+- **修复 DPS 页面打开后整个游戏键盘失效**：真实根因不是 DPS 统计 Authority，而是 `CreateEditBox/CreateMultiEditBox` 在 Native 构造阶段立即 `EnableKeyboard(true)`。ArcheRage RU 可在输入框尚未真实编辑时把 WASD/技能/聊天键盘所有权交给该 EditBox；DPS 的隐藏“首领名称”输入框只是最先触发该底层缺陷的 Consumer。
+- **Deferred Keyboard Activation Contract v1**：所有 Suite 单行、数字与多行输入默认 `EnableKeyboard(false)`，仅在用户明确点击输入控件后由 UI Lifecycle `ArmInputWidget -> SetFocus` 临时武装；`OnLostFocus`、隐藏、禁用、失去 Pick、切页、Runtime Quiesce、Component/Owner Release 全部解除 Keyboard。不存在 Tick/键盘轮询。
+- **Authority/Fail-closed**：新增 `ArmInputWidget / DisarmInputWidget / ActivateInputWidget / DisarmInputWithin / BindDeferredInputActivation`；只操作已登记的 Suite input。Raw multiline 仍只存在状态显示导入框一个调用点，通过公共 lifecycle helper 接入，Presentation 不直接绑定 Native handler。若点击/失焦事件无法建立，则输入框直接禁用并隐藏，宁可降级也不抢游戏键盘。
+- **门禁**：Native Interaction v6、UI Framework v12、Input Focus Lifecycle v2、Hidden Input Isolation v2、Foundation Gate v109；专项 `rs_input_focus_drag_harness.py` 扩为 **88/88 PASS**，Interactive Draft **110/110 PASS**，Foundation Audit 与全部现有 Harness 继续 PASS。
+- **BuildTag**：`v3-m1.16.0.18.117-deferred-keyboard-activation`。
+
+## 2026-09-05 — v3-m1.16.0.18.116-product-truth-runtime-block-hardening
+
+- **Fishing Auto-R 收回 Runtime Blocked**：保留 TARGET_CHANGED/BUFF_UPDATE 的 bounded 鱼动作识别与技能栏推荐；删除 Active V3 中全部 `X2Hotkey` 读取/写入链。此前实验性 `State.recovery` 只读隔离，不再把读取失败误判为空绑定并执行 Remove。UI 明确显示 Auto-R 已阻塞，直到 RU Fresh Reload 证明完整源槽位、bound/unbound/read-failed 三态、Durable recovery、写入回读与逐写点故障回滚。
+- **强化分析停止猜槽位**：删除 `0..31` `equipSlotIndex` 探测及 `GetReinforceInfo/GetMaterialInfo` 调用；保留无需猜槽位的聚合 Getter（总强化等级、属性系合计、下一套装档位、套装状态、组合效果上限），逐槽位详情显示 Runtime Blocked。
+- **Product Truth Gate**：Developer Foundation Audit 新增 locked Product Matrix fence，要求上述 3 条 Matrix 能力继续保持 `SPECIFIC_RUNTIME_BLOCKED`，并静态禁止 Active Runtime 重新引入 Hotkey 写链或 Reinforce guessed slot probe；Runtime Foundation Gate v108 同时校验 `HotkeyRuntimeBlocked` / `SlotProbeRuntimeBlocked` 标记。
+- **Service 依赖方向收敛**：`GearServiceV3` 移除 `S.Features.Gear` 反向依赖和 Feature-owned DeepCopy；运行完成只发布 `v3.gear.updated`。Gear Feature 通过 Internal EventBus 自己处理 transient idle lifecycle。Foundation Audit 新增通用 `services/ -> S.Features` 反向依赖门禁。
+- **BuildTag**：`v3-m1.16.0.18.116-product-truth-runtime-block-hardening`。
+
+## 2026-09-05 — v3-m1.16.0.18.115-border-click-action-popup-hit-test-quiescence
+
+夜间自主执行（P0 同类问题全工程扫描 + 加固）：
+
+- **`.18.114` 同类扫描结论**：presentation/native/core 层全部事件绑定调用点逐一核验，未发现"Composite 被当 Native Widget 二次 RequireOn"同类真违规；Composite 内部无重复绑定；无 OnUpdate/Tick 键盘轮询；拖动/缩放仍唯一走 Native `StartMoving/StartSizing`。
+- **Border Click Action Contract v1**（`BorderClickActionContractVersion=1`）：`RSUI:Border` 现在提供 `SetOnClick/GetOnClick/Click` Public Action（`pickable=true` 时在 factory 内部一次性 `RequireOn` 绑定，模式与 Button action v2 一致）。Modal Host 的 scrim 点击从直接 `RequireOn(scrim.root,"OnClick",...)` 改为走 `SetOnClick`，消除最后一处 Presentation 触碰 Composite 内部 native root 的事件绑定。
+- **Popup Hit-Test Quiescence Contract v1**（`PopupHitTestQuiescenceContractVersion=1`）：Dropdown / ColorField popup 关闭时显式 `EnsurePickable(false)`（unpick），`Open()` 时先 re-pick 再显示；ContextMenu 同样 `Open` re-pick、`Close` unpick。隐藏 popup 不再只依赖 native"隐藏即不参与命中"的隐式语义，未来引擎行为变化也不会留下隐形拦截面。失败均 fail-closed 走既有降级事务。
+- **静态门禁扩展**：`rs_rsui_component_api_audit.py` 新增 composite-internal bind 规则——presentation 层出现 `:RequireOn(` 即 FAIL（当前 0 处）；`Border` 公共面登记 `SetOnClick/GetOnClick/Click`。`rs_input_focus_drag_harness.py` 扩为 **72/72**：新增 border click action（6 项）+ popup re-pick/unpick（7 项）断言。
+- **Diagnostics Snapshot 扩展（Dev Inspector 方向，只读）**：`D:Snapshot()` 补挂 `CombatRelationV3 / TeamRosterV3 / ScreenProjectionV3` 的既有 `GetHealth()` 输出（此前只有 UnitIdentity/CombatEventBus/Aura 等），为 RU 诊断提供 projection/roster/relation facts，无新系统、无写路径。
+- **P1 审计结论（记录，不动代码）**：Bag Quick 与 Bag Batch 是 `rs_business_bridge.lua` 内两套高度重复的 move-transaction 状态机，为共享提炼候选；但属高危写路径（250ms 串行/live row 再验证），本轮不动，留待专项。Unit Relation / World Projection / Raid Grid / Rule Registry 均已有共享层且被正确复用，不新建。Healer 50ms health tick 在 200 人团的 native 调用量列为 RU 实测观察项。
+- **BuildTag**：`v3-m1.16.0.18.115-border-click-action-popup-hit-test-quiescence`。
+
+## 2026-09-04 — v3-m1.16.0.18.114-colorfield-event-rollback-input-quiescence
+
+- 修复 `ColorField` 将嵌套 RSUI Button Component 作为 Native Widget 重绑 `OnClick`，导致 `required_component_event_bind_failed:*:done` 与页面事务回滚。
+- ColorField 隐藏 Popup 移除预创建键盘 TextInput，HEX 改为只读显示，避免隐藏 EditBox 在 RU 客户端抢占游戏键盘。
+- BuildScope v4 / BuildTransaction v2：Rollback 对半构建 Native 输入执行 `RetireInputWidget`，并统一关闭 Pick/Enable/Visible，防止失败页面残留输入/命中所有权。Foundation Gate v107，V3 Acceptance v65。
+
+## 2026-09-04 — `.18.113` Persistence Integrity v2 + Serializer Recovery
+
+- **按 RU 实机诊断修复而非清 Store**：用户 Fresh Runtime 报告 `v3.death_review / v3.healer / v3.launcher` 出现 `integrity_failed:fingerprint_mismatch`，同时 `fenced=4 / integrityFail=14 / writeBeforeLoadReject=41 / pageQ=4 / txFail=4 / startupDegraded=1`。调用链确认：旧 Integrity v1 用 Lua `%.17g` 精确二进制 number 表示做跨重载 business hash；包含窗口几何、透明度、缩放等非整数值的普通设置 Store 在 RU SaveData/LoadData 数值表示归一化后可能业务等价但 hash 不同，随后 write fence 又向页面构建与启动降级扩散。
+- **Persistence Reliability v8 / Integrity v2**：新 save 的 encoded-business integrity 对整数继续精确（ID/计数/时间戳不降精度），仅对非整数使用 serializer-stable 6 significant digit token；`FingerprintPayload()` 仍保持原 exact Domain 语义，避免改变 Gear A/B journal 自己的业务 fingerprint contract。Critical readback 的 Domain proof 也改用同一 durable numeric fingerprint，避免 `SaveData=true` 后因表示漂移误报 readback mismatch。
+- **有界 v1 升级桥**：v6/v7 的 Integrity v1 Store 继续读取。若 v1 普通设置 Store 的 metadata Envelope Seal 完整、encoded budget/metadata/schema 均通过，但旧 exact business fingerprint 发生 representation mismatch，则允许一次 compatibility load，随后必须继续通过 decode → Domain budget → migration/reset → final budget → apply，成功后才排队 `integrity_v2_upgrade` restamp。`verifyAfterSave` / `recoverableReplacement` Critical/Journal Store 不走该桥，仍 fail-closed。真实整数/结构损坏在 v2 继续触发 integrity fence。
+- **验收指纹同步收口**：`RuntimeAcceptanceSnapshotContractVersion=2`，Fresh Reload 验收快照改用同一 serializer-stable durable fingerprint；Gear A/B 的 exact business fingerprint 仍不变，避免“Store 已正常兼容读取但人工验收 ALL fingerprint 因微小 float 表示差异又误报变化”。
+- **启动 fallback 不再反向写物理 Store**：`v3.app / v3.shell / v3.launcher` 一旦进入 `sessionFallback`，本会话仍可改 UI 状态，但 `Set/MarkDirty` 不再触发 Persistence 写意图；因此 Shell 导航不会把一次保护性 load failure 放大成几十次 `STORE_WRITE_BEFORE_LOAD_REJECTED`。原 Store/fence/evidence 不被清除。
+- **Build Transaction 不打业务特例**：`death_review/healer/...` 页面构建失败来自 `EnsureStoreLoaded()` 被 integrity fence 拒绝后的下游 transaction rollback；没有给页面绕过 Store Authority。新 generation 中 Store 通过 v8 compatibility/normal load 后，页面继续按原事务契约构建。
+- **启动降级诊断补全**：`runtime_startup_degradation` 现在直接带首条 `stage:detail`（有界 180 字符）。如果 v8 清掉 Store 假 fence 后仍有 `degraded=true`，下一份复制诊断可直接定位真实默认 Feature，而不再只有 `warnings=1`。
+- **门禁与故障注入**：Foundation Gate v106，新增 `persistence_reliability_v8`；新增 `rs_persistence_reliability_v8_harness.py`，真实 Lua 模拟 Native 非整数表示漂移，覆盖 v2 durable save/readback、v1 ordinary compatibility + v2 restamp、Critical v1 mismatch 继续 fence、整数真实损坏继续拒绝。Startup Fault Isolation 扩为 `17/17`，覆盖 App/Launcher/Shell fallback no-persist。
+- **BuildTag**：`v3-m1.16.0.18.113-persistence-integrity-v2-serializer-recovery`。
+
+## 2026-09-04 — `.18.112` Input Lifecycle + Drag Hit-Test Foundation
+
+- **确认 `.18.111` 只是缓解，不是根因闭环**：继续沿 `Bootstrap → Runtime → RSUI Host → Primitive → Component → Windowing → Modal/Popup` 审计后，定位到同一类底层缺陷——Native Widget 的“可命中 / Focus / Keyboard / teardown”状态缺少统一生命周期 Authority。
+- **主菜单拖动真实根因**：`rs_v3_shell.lua` 已声明 `topBar pickable=true`，但 `RSUI:Border` 下沉到 `UI:CreatePanel()` 时没有透传 `pickable/owner`，导致 Native title bar 实际 `EnablePick(false)`；后续即使绑定 `EnableDrag + DC_ALWAYS + OnDragStart` 也收不到鼠标。Border 现在显式透传交互参数；Generic WindowShell title bar 也显式 `pickable=true`；Windowing v18 自己在 Attach 时确认 drag handle `Enabled + Pickable` 后才建立 Native drag gesture，调用者遗漏不再静默形成死控件。该修复同时恢复 Modal Scrim 等依赖 `Border(pickable=true)` 的命中契约。
+- **键盘真实根因**：所有 `CreateEditBox/CreateMultiEditBox` 都会启用 Focus/Keyboard，但过去隐藏、禁用、SetPickable(false)、Component/Owner Release 与 hot reload 没有统一释放当前 Suite focus。隐藏输入框因此可能在 RU 保留键盘所有权，表现为进入游戏后 WASD/技能/聊天键盘无响应。UI Framework v11 新增 tracked physical-focus lifecycle：只登记 Suite 自己的 keyboard input physical id；子树隐藏/禁用/失去 pick 时在 cache no-op 之前先检查并只清理该子树内已登记的 Suite focus；Release/old generation 永久 `EnableKeyboard(false)+EnableFocus(false)` 并注销。不会对无法证明属于 Suite 的游戏聊天框/其他原生输入执行 ClearFocus。
+- **启动/热重载隔离**：Runtime Ready/Stop 做 generation-local keyboard quiescence；bootstrap 替换旧 generation 前永久退休旧输入对象。Recovery Command Bar 继续保持 `.18.111` 的默认 inert 语义，仅真实 Startup Failure 时临时启用。
+- **性能边界**：无 Tick/OnUpdate/键盘轮询。Focus cleanup 只发生在 hide/disable/pick-loss/release/runtime boundary；先由 `rsUiKeyboardInputSubtreeCount` 快速拒绝无输入子树，祖先证明上限 32，且计数在 `UIParent` 根边界停止。Windowing 只在 Attach 时多做一次 Enabled/Pickable 确认。
+- **门禁**：Native Interaction v5、UI Framework v11、Runtime v5、Windowing v18、WindowShell v23、Foundation Gate v105；新增 `InputFocusLifecycleContractVersion=1`、`HiddenInputFocusIsolationContractVersion=1`、`BorderInteractionForwardingContractVersion=1`、`DragSurfaceHitTestContractVersion=1`、`InputLifecycleBridgeContractVersion=1`、`inputQuiescenceContractVersion=1`。新增 `rs_input_focus_drag_harness.py`，当前 `48/48 PASS`，并静态禁止 Active Lua 引入未验证 generic `OnKeyDown/OnKeyUp/OnTextChanged/OnChar`。
+- **BuildTag**：`v3-m1.16.0.18.112-input-lifecycle-hit-test-foundation`。
+
+## 2026-09-04 — `.18.111` Keyboard Focus Isolation + Main Window Drag Recovery
+
+- **修复进入游戏后键盘疑似被插件吞掉**：Recovery Command Bar 过去在 bootstrap 阶段先创建并 `EnableFocus(true) + EnableKeyboard(true)`，随后 Runtime Ready 再隐藏；RU 客户端存在隐藏 EditBox 仍保留键盘所有权的风险。现在恢复输入框创建时即 `EnableFocus(false) + EnableKeyboard(false)`，正常 bootstrap / hot-reload / Runtime Stop 全程保持 inert；只有真实 Startup Failure 显式调用恢复命令栏时才允许临时启用，隐藏时再次 ClearFocus + 禁用 Keyboard/Focus。
+- **修复主菜单标题栏拖不动**：Windowing v17 把顶层窗口标题栏和 8 个 resize handle 统一到项目已验证的 `EnableDrag(true) + SetDragCondition(DC_ALWAYS)` 原生手势契约。RU 某些 WidgetBase 仅 EnableDrag 不会稳定产生 OnDragStart；现在不再依赖该不完整状态。R 启动入口拖动也同步补齐 DC_ALWAYS。
+- **Authority 不变**：Native `StartMoving/StartSizing` 仍是鼠标捕获与实际几何移动 Authority；Windowing 只负责建立 gesture、结束 lease、提交一次持久化几何，不新增 Tick 或鼠标轮询。
+- **门禁**：新增 `RecoveryInputIsolationContractVersion=1`、`Windowing.ExplicitDragConditionContractVersion=1`，Recovery Command 升 v2，Windowing Critical Interaction 升 v2；Foundation Gate 同步要求新契约。
+- **回归**：Foundation Audit PASS；Recovery Command `26/26`、Recovery Launcher `15/15`、Runtime Entry `20/20`、Startup Fault Isolation `14/14`、RSUI Workspace `27/27`。
+- **BuildTag**：`v3-m1.16.0.18.111-input-focus-drag-recovery`。
+
+## 2026-09-04 — `.18.110` Recovery Reload / Persistence Save Decoupling
+
+- **修复恢复死锁**：过去 `ReloadCodeFromDisk()` 把 `Persistence:Flush()` 当成硬门禁；任意 Store 保存/耐久验证失败都会直接取消重载，导致“配置保存代码本身出 Bug → 无法覆盖文件后重新加载修复”的闭环死锁。
+- **恢复重载改为 best-effort durability**：仍只由 `ReloadCodeFromDisk()` 执行一次 Flush，成功时行为不变；失败时保留 `Persistence.lastFlush` 与 `LastReloadFlushFailure` 的 Store ID/原因，明确提示“未保存修改可能丢失”，随后继续触发经过验证的 `r_VSync` UI generation reload。故障 Store 保持自身 dirty/fence/retry evidence，不在重载前清空或伪造成功。
+- **严格模式仍保留**：`ReloadCodeFromDisk(source, { requireDurable = true })` 可继续要求 Flush 全成功才放行，供需要强耐久语义的调用链使用；Runtime Stop 的独立 durability barrier 规则不变。
+- **恢复入口一致性**：诊断页“重新加载文件”、R 右键与 `RS> reload` 继续共用同一 Reload Authority，因此主 UI、ESC 或 Persistence 任一局部故障都不能再把文件热修复入口锁死。
+- **门禁/可观测性**：新增 `RecoveryReloadContractVersion=1`；Foundation Gate 升 v104，并把 recovery contract 纳入 `v3_reload_authority`。诊断页提示同步改为“保存失败仍继续加载新文件”。
+- **BuildTag**：`v3-m1.16.0.18.110-recovery-reload-save-decoupling`。
+
+## 2026-09-04 — `.18.108` Bootstrap Recovery Command Bar
+
+- **命令式恢复入口，但不伪造 Slash API**：RU 当前允许的 Addon API 提供 `ReloadAddon` 等能力，但没有经过验证的“插件注册聊天 Slash 命令”接口；客户端脚本中 EditBox 的 `OnEnterPressed` 有明确使用证据。因此没有引入 WoW `SlashCmdList`、`X2Chat:GetChatCommands()` 或聊天轮询/劫持，而是在 Native Foundation 后立即安装独立 `RS>` Recovery Command Bar。
+- **独立于主 Host / ESC / Feature Runtime**：Recovery Command Bar 与 R 分开安装。Runtime 未 Ready、Stop 或 Startup Failure 时显示；正常 Ready 后自动隐藏，避免长期占用输入焦点。即使主菜单/ESC/Feature 生命周期失败，只要 Native Window + EditBox 可用，玩家仍可在游戏内输入恢复命令。
+- **命令 Authority**：`reload / rsreload / rs reload`（也接受前导 `/`）统一路由到既有 `ReloadCodeFromDisk("recovery_command")`，保持 Persistence Flush + 已验证 UI Refresh Authority，不在 EditBox 回调中调用 `ADDON:ReloadAddon()`；`diag` 输出 BootStage/R/CMD/BootError，`open` 只在 Runtime Ready 时打开主 Host，`help` 输出最小帮助。
+- **Native 输入契约**：只绑定客户端脚本已验证的 `OnEnterPressed`；提交前先清空输入，避免双派发重入。Command Bar 固定 `174×30`，不使用 Tick/OnUpdate/聊天事件轮询。Foundation Gate 升 v103，新增 `bootstrap_recovery_command + recovery_command_contract`，复制诊断增加 `/CMD`。
+- **防回归**：新增 `rs_recovery_command_harness.py`，覆盖命令归一化、reload Authority、Enter 提交、输入预清空、未知命令 fail-closed、Show(false) false-state 语义、Runtime show/hide 契约以及禁止 SlashCmdList/GetChatCommands/OnUpdate，`17/17 PASS`；Recovery Launcher `15/15`、Runtime Entry `20/20`、Startup Fault Isolation `14/14`、Interactive Draft `110/110`、Foundation Audit 继续 PASS。
+- **BuildTag**：`v3-m1.16.0.18.108-bootstrap-recovery-command-bar`。
+
+## 2026-09-04 — `.18.107` Startup Fault Isolation + Session-Safe Foundation Stores
+
+- **继续自检而非立即要求 RU 重启测试**：在 `.18.106` Recovery Launcher 修复后，重新从 `R → Runtime:Start → App/Shell/Launcher Persistence → Feature defaults → Ready` 做多轮故障注入。确认现有 Recovery/ESC/Native boolean transaction 回归均为绿，但发现两个仍可把可选故障升级为整插件不可用的底层耦合：① `FeatureRuntime:EnableDefaults()` 任意一个默认 Feature（当前包括换装、活动、任务追踪）初始化/API/Store 失败时，Runtime 直接 `error()`；② `v3.app / v3.shell / v3.launcher` 读取异常会阻断主 Host 创建。两者都可表现为 `Ready=false + 只剩 R + ESC 无入口`。
+- **Feature 启动故障隔离**：默认 Feature 仍保持各自 fail-closed/faulted 语义，但其失败不再阻断 Core Runtime。Runtime 记录 `startupDegraded/startupWarnings` 并发 Diagnostics `RUNTIME_STARTUP_DEGRADED`，继续进入主界面，让用户可从诊断/功能页查看或关闭故障模块。EventBus/Scheduler/Layout/Host 等 Foundation 失败仍保持 blocker，不把真正核心错误误降级。
+- **启动关键 Store 会话降级**：`v3.app`、`v3.shell`、`v3.launcher` 在 Store 缺失、解析/完整性/读取失败时使用**本次会话安全默认值**继续启动，并记录 `sessionFallback + lastLoadError`/对应 Diagnostics。Persistence 自身原有 load-failure write fence 继续保护原物理存档，因此降级启动不会主动用默认值覆盖损坏/未验证数据；后续显式保存仍受 `CanWrite/MutateStore/MarkDirty` 原契约限制。
+- **可观测性**：Runtime Describe/复制诊断增加 `startupWarningCount` 与“入口 … /降级N”；Foundation Gate 升 v102，新增 `runtime_startup_degradation` warning。新增 `rs_startup_fault_isolation_harness.py`，真实 Lua 故障注入覆盖 App/Launcher/Shell Store 失败仍有安全默认状态、默认 Feature 故障仍 `Ready=true` 且 BootError 为空，`14/14 PASS`。
+- **完整自检**：Startup Fault Isolation `14/14`、Recovery Launcher `15/15`、Runtime Entry `20/20`、Interactive Draft `110/110`、Workspace `27/27`、Persistence Acceptance `19/19`、Persistence v3 `22/22`、v4 `35/35`、v5 `42/42`、v6/v7 PASS、Presentation API、RSUI Component API、Bag、Projection、Unit Lines、Foundation Audit 全部 PASS；TOC Lua Parse `210/210`。
+- **BuildTag**：`v3-m1.16.0.18.107-startup-fault-isolation`。
+
+## 2026-09-04 — `.18.106` Recovery Launcher Input + Compact Sizing Hotfix
+
+- **RU 实机继续回归**：`.18.104/.18.105` 后用户仍反馈屏幕 `R` 左键打不开主菜单，且 `R` 变得明显过大。沿真实 bootstrap handler 与 launcher placement 调用链确认两个独立 Foundation 问题，而非业务页面故障。
+- **R 点击被拖动抑制误吞**：旧 `OnDragStop` 无条件执行 `rsIgnoreClick=true`。RU 若对普通点击也发出 `OnDragStart/OnDragStop`，后续 `OnClick` 永远只清抑制标记，不进入 `UIHostManager:Toggle()`。现在 DragStart 记录起点，DragStop 只在几何位移超过 2 逻辑/有效像素时认定为真实拖动；零位移 drag 回调不再吞点击。真实拖动仍只抑制紧随其后的那一次 synthetic click。
+- **零位移不再污染 Persistence**：只有确认发生真实位移才执行 screen snap / `StorePlacement` / `MarkLauncherStoreDirty`。普通点击即便触发 DragStop 也不写 `v3.launcher` Store，不产生无意义保存。
+- **R 尺寸修复**：bootstrap launcher 固定为 `30×30` 逻辑单位，并显式 `SetAutoResize(false)` + `SetExtent/SetWidth/SetHeight`，避免 RU `text_default` 自动尺寸重新撑大。V3 LauncherStore 同样固定 30×30，不再把 Suite content scale 再乘一次到屏幕入口；客户端自身 UI scale 仍由 Native 负责。
+- **防回归**：新增 `rs_recovery_launcher_harness.py`，真实 Lua 覆盖“零位移 Drag 回调后点击仍 Toggle”“真实拖动只抑制一次点击”“零位移不写 Store”“addonScale=4 时仍保持 30×30”，`15/15 PASS`。Foundation Gate 升 v101，新增 `recovery_launcher_input_contract`；Foundation Audit 增加拖动阈值、AutoResize、固定尺寸和禁止二次 Suite scale 的硬门禁。原 Runtime Entry `20/20`、Interactive `110/110`、Persistence v3-v7、Workspace、Bag、Projection、Unit Lines 全部继续通过，TOC Lua Parse `210/210`。
+- **BuildTag**：`v3-m1.16.0.18.106-recovery-launcher-input-sizing-hotfix`。
+
+## 2026-09-04 — `.18.105` Runtime Entry Lifecycle + ESC Registration Hardening
+
+- **继续检查启动链而非停在 `.18.104` 单点修复**：静态 Foundation、Persistence v3-v7、Workspace、Projection 等既有回归均为绿后，继续沿 `R → Runtime Start → V3 Host → ESC bridge → Ready/Stop` 检查故障边界，确认两个真实底层漏洞：① `Runtime:Start()` 在 `esc_register` 阶段完全忽略 `RegisterEscMenu()` 的失败返回，导致 Runtime 可以宣称 `Ready=true` 但 ESC 中永久没有插件入口；② Runtime 启动失败后，bootstrap 的 `R` 左键与内部 Refresh 会调用 `RevealExistingSuiteShell()`，把已创建但 Events/Scheduler/Features 尚未完整启动的半初始化 V3 Host 暴露给用户，破坏 fail-closed 生命周期。
+- **NativeEscBridge v2**：从无状态调用薄层升级为**generation-local 幂等注册 Proxy**，只记录当前 generation 的注册 transport 状态，不接管界面可见性 Authority。`RegisterContentWidget`、`RegisterContentTriggerFunc`、`AddEscMenuButton` 分阶段记录完成度；部分成功后重试只补缺失阶段，不重复注册已经成功的 content；同一 contentId 若尝试绑定另一 Native widget/按钮 identity 直接拒绝。完整注册再次调用零 Native 写，提供 `IsContentRegistered/IsButtonRegistered/IsReady/Describe` 诊断。
+- **Runtime v4 入口健康状态**：记录 `escRegistered / escRegistrationAttempts / escRetryScheduled / lastEscError`。首次 ESC 注册失败**不阻断整个插件**（早期 `R` 仍是安全主入口），但会进入 Diagnostics，并在 Runtime 真正 `Ready` 后仅通过共享 Scheduler 安排一次 750ms bounded one-shot 重试；不新增 Tick、轮询或第二调度器。若仍失败，后续用户主动点击 `R` 时可再做一次低频机会性注册，但无论 ESC 是否恢复都不阻塞主窗口 Toggle。
+- **半初始化 Host fail-closed**：删除 bootstrap `RevealExistingSuiteShell()`。`Ready ~= true` 时，R 左键和内部刷新只报告 `BootStage/BootError`，绝不打开已经创建但生命周期未完成的 Host；右键显式代码刷新/恢复路径保持原安全边界。继续检查 R 自身又发现同类返回值漏洞：`rs_native_recovery.lua` 过去只看 `pcall` 是否抛异常，`InstallBootstrapRecoveryEntry()` 业务返回 `false`（例如左键 handler 被客户端拒绝）会被静默当成功。现已同时检查 transport + logical result，并维护 `RecoveryEntryHealthy/RecoveryEntryError`；恢复入口 `Show(true)` 也改走确认式 Native 调用。恢复入口失效会进入诊断但**不会设置 BootError 阻断完整 Runtime**，避免 ESC 原本可用时反而把插件整体封死。
+- **可观测性与 Gate**：Foundation Gate 升 v100，新增 `native_esc_bridge_contract`、`runtime_entry_lifecycle_contract`、`native_esc_menu_runtime` 与 `bootstrap_recovery_entry`；复制诊断新增 `入口 Ready/Runtime/R/ESC/尝试/重试`，以后 R 或 ESC 单边失效不再被“框架正常”掩盖。Foundation Audit 加入幂等注册、有限重试、Recovery logical-false 与“不得暴露 partial shell”硬门禁。新增 `rs_runtime_entry_lifecycle_harness.py`，真实 Lua 覆盖 content 部分失败→补偿重试、按钮双 ABI 首次失败→重试恢复、完成后幂等零 Native 调用、同 generation identity 冲突拒绝，以及 Recovery installer `false` 必须可见但不得 poison Runtime，`20/20`。
+- **BuildTag**：`v3-m1.16.0.18.105-runtime-entry-lifecycle-hardening`。RU 下一步仍需 Fresh Reload，重点观察复制诊断中 `Readytrue/Runtimetrue/Rtrue/ESCtrue`；若 ESC 首次瞬态失败，应看到尝试数增加后恢复而不是 Runtime 假绿。
+
 ## 2026-09-04 — `.18.104` RU Native Boolean Setter Return + V3 Startup Hotfix
 
 - **RU 实机 P0 启动回归**：用户 Fresh Reload 后只剩早期恢复入口 `R`，点击无法打开主界面，同时 ESC 插件面板项消失。沿 `toc.g → bootstrap recovery → UIHostManager → V3 NativeAdapter → Runtime Ready → ESC register` 实际调用链确认：`R` 在完整 Runtime 之前创建，而 ESC 注册只发生在 V3 Host 成功建立之后，因此该组合症状指向 Host 创建阶段 fail-closed，而不是单独的 R/ESC 页面问题。

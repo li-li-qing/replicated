@@ -758,8 +758,9 @@ local function BuildDiagnostics(parent, route)
     RSUI:Button({ id = "v3_diag_reload", parent = actionRow2, text = "重新加载文件", compact = true, slot = { size = "fixed", width = 130 }, onClick = function()
         return RunDiagnosticAction("reload", function()
             -- ReloadCodeFromDisk is the single reload/Flush Authority. Do not
-            -- pre-Flush here: a swallowed first failure would double-attempt a
-            -- write and hide the exact store id + reason needed for acceptance.
+            -- pre-Flush here. Recovery reload performs one best-effort barrier,
+            -- preserves the exact failure evidence, and still reloads disk code
+            -- when a broken Store is itself the reason recovery is required.
             if type(S.ReloadCodeFromDisk) ~= "function" then return false end
             return S.ReloadCodeFromDisk("v3_diagnostics")
         end)
@@ -771,7 +772,7 @@ local function BuildDiagnostics(parent, route)
             return host:Notify({ title = "测试通知", detail = "通知宿主工作正常；该提示会自动消失。", tone = "green", durationMs = 3200 }) ~= nil
         end)
     end })
-    RSUI:Text({ id = "v3_diag_reload_hint", parent = actionRow2, text = "重载会先执行唯一严格 Flush；失败会取消重载并保留 Store ID + 原因。完整自检只读取快照。", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
+    RSUI:Text({ id = "v3_diag_reload_hint", parent = actionRow2, text = "重载会先尽力保存；若 Store 保存失败会保留 ID + 原因并继续加载新文件，未保存修改可能丢失。完整自检只读取快照。", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
     local actionRow3 = RSUI:HorizontalBox({ id = "v3_diag_actions_3", parent = root, gap = 8, slot = { size = "fixed", height = 34, hAlign = "fill" } })
     RSUI:Button({ id = "v3_diag_persistence_acceptance", parent = actionRow3, text = "输出存档验收", compact = true, slot = { size = "fixed", width = 130 }, onClick = function()
         return RunDiagnosticAction("persistence_acceptance", function()
@@ -802,6 +803,26 @@ local function BuildDiagnostics(parent, route)
     local authorityRow = D:StatusRow(root, "v3_diag_authority", "界面所有权", "-", "default")
     local sequenceRow = D:StatusRow(root, "v3_diag_sequence", "自动验收", "-", "default")
     local bootRow = D:StatusRow(root, "v3_diag_boot", "启动状态", "-", "default")
+
+    -- 功能状态分区 (2026-09-06): one live verdict line per feature. The
+    -- aggregate counters above say "something moved"; these rows say WHICH
+    -- feature is broken, at which layer, and what to do next.
+    local featureStatusCard = D:InfoCard(root, { id = "v3_diag_feature_status", title = "功能状态", value = "读取中", detail = "实时判定：✓工作 △降级 ✗故障 ○关闭", slot = { size = "fixed", height = 84, hAlign = "fill" } })
+    local featureStatusRows = {}
+    for index, spec in ipairs({
+        { id = "unit_lines", label = "单位连线" },
+        { id = "range_assist", label = "范围辅助" },
+        { id = "boss_alerts", label = "首领机制" },
+        { id = "buff_display", label = "状态显示" },
+        { id = "healer", label = "治疗辅助" },
+        { id = "gear", label = "一键换装" },
+        { id = "trade", label = "跑商" },
+        { id = "bonds", label = "债券" },
+    }) do
+        local row = D:StatusRow(root, "v3_diag_feature_" .. spec.id, spec.label, "-", "default")
+        featureStatusRows[spec.id] = row
+    end
+    local repairRow = D:StatusRow(root, "v3_diag_repair_guidance", "修复引导", "-", "default")
 
     local function CountTable(tbl)
         local count = 0
@@ -905,6 +926,33 @@ local function BuildDiagnostics(parent, route)
         end
         local rawStage = tostring(S.BootStage or "unknown")
         bootRow.valueText:SetText((S.Ready == true and "已就绪" or "未就绪") .. " · 阶段 " .. tostring(BOOT_STAGE_NAMES[rawStage] or "未知"))
+        -- 功能状态行：verdict + evidence + per-row hint (same source the copy
+        -- text uses, so the page and the chat banner never disagree).
+        local diag = S.DiagnosticsManager
+        if type(diag) == "table" and type(diag.BuildFeatureStatusRows) == "function" then
+            local okRows, statusRows = pcall(function() return diag:BuildFeatureStatusRows() end)
+            if okRows == true and type(statusRows) == "table" then
+                local verdictTone = { ok = "green", degraded = "yellow", down = "red", off = "muted" }
+                local okCount = 0
+                for _, row in ipairs(statusRows) do
+                    local widgetRow = featureStatusRows[row.id]
+                    if widgetRow ~= nil then
+                        widgetRow.valueText:SetText(tostring(row.text or "") .. (row.hint and (" ｜ " .. tostring(row.hint)) or ""))
+                        if type(widgetRow.valueText.SetColor) == "function" then
+                            widgetRow.valueText:SetColor(verdictTone[row.verdict] or "default")
+                        end
+                    end
+                    if row.verdict == "ok" then okCount = okCount + 1 end
+                end
+                if featureStatusCard.SetData ~= nil then
+                    featureStatusCard:SetData({ value = tostring(okCount) .. "/" .. tostring(#statusRows) .. " 正常",
+                        detail = "✓工作 △降级 ✗故障 ○关闭 · 与复制文本同源" })
+                end
+                if repairRow ~= nil and repairRow.valueText ~= nil then
+                    repairRow.valueText:SetText(diag:BuildRepairGuidance(statusRows))
+                end
+            end
+        end
         return true
     end
     function root:OnActivated() return self:Refresh() end

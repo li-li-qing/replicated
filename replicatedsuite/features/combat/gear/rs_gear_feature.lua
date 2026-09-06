@@ -344,10 +344,23 @@ function F:Initialize()
     return true
 end
 
+local function OnGearServiceUpdated(feature, reason)
+    if tostring(reason or "") ~= "runtime_finished" then return true end
+    if feature.disableWhenIdle == true then
+        feature.disableWhenIdle = false
+        return feature:MaybeDisableTransient("gear_transient_idle")
+    end
+    return true
+end
+
 function F:Enable(reason)
     self.enabled = true
     self.disableWhenIdle = false
     S.Services.GearV3:SetEnabled(true)
+    if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
+        S.Events:UnsubscribeInternal("v3.gear.updated", self)
+        S.Events:SubscribeInternal("v3.gear.updated", self, OnGearServiceUpdated)
+    end
     self.Authority:Refresh("enable")
     self:SyncQuickButtonsHost(reason or "gear_enable")
     return true
@@ -356,6 +369,7 @@ end
 function F:Disable(reason)
     self.enabled = false
     self.disableWhenIdle = false
+    if S.Events ~= nil and type(S.Events.UnsubscribeInternal) == "function" then S.Events:UnsubscribeInternal("v3.gear.updated", self) end
     self.transientConsumers = {}
     self.transientAutoEnabled = false
     -- Presentation hides the screen buttons from `v3.feature.lifecycle`.

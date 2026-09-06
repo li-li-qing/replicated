@@ -74,6 +74,10 @@ end
 RSUI.InteractiveDraftContractVersion = 1
 RSUI.ControlTransactionContractVersion = 1
 RSUI.PopupVisibilityTransactionContractVersion = 1
+-- Popup hit-test quiescence: Close() unpicks the popup surface and every
+-- Open()/Show() must re-pick before the surface can receive input again.
+RSUI.PopupHitTestQuiescenceContractVersion = 1
+RSUI.PopupNativeWindowContractVersion = 1
 
 local function EnsureRawVisible(widget, visible, owner)
     if widget == nil then return false, "popup_widget_required" end
@@ -98,6 +102,25 @@ end
 
 local function CountDraftSuppression()
     RSUI.metrics.interactiveDraftRenderSuppressions = (tonumber(RSUI.metrics.interactiveDraftRenderSuppressions) or 0) + 1
+end
+
+-- Deferred EditBox keyboard ownership. RU can capture movement/skill keys when
+-- EnableKeyboard(true) is applied during construction, even before a real text
+-- edit begins. Every input therefore starts inert and arms only on explicit
+-- click; LostFocus always disarms again. No Tick/polling is introduced.
+RSUI.DeferredKeyboardActivationContractVersion = 1
+
+local function BeginEditInteraction(component, source)
+    if component == nil or component.root == nil or component.enabled == false then return false, "input_unavailable" end
+    if type(UI.ActivateInputWidget) ~= "function" then return false, "input_activation_contract_unavailable" end
+    return UI:ActivateInputWidget(component.root, component.owner, tostring(source or "input_click"))
+end
+
+local function EndEditInteraction(component, source)
+    if component == nil or component.root == nil then return true end
+    if type(UI.DisarmInputWidget) ~= "function" then return false, "input_disarm_contract_unavailable" end
+    local ok = UI:DisarmInputWidget(component.root, component.owner, tostring(source or "input_lost_focus"))
+    return ok == true
 end
 
 RSUI:RegisterType("Toggle", function(spec)
@@ -337,12 +360,20 @@ RSUI:RegisterType("TextInput", function(spec)
         end
         return ok
     end
+    function c:BeginEditing(source) return BeginEditInteraction(self, source or ("text_input:" .. tostring(self.id))) end
+    function c:EndEditing(source) return EndEditInteraction(self, source or ("text_input:" .. tostring(self.id) .. ":lost_focus")) end
+    local activationBound = c:RequireOn(edit, "OnClick", function() return c:BeginEditing("text_input_click") end,
+        "rsui:" .. spec.id .. ":activate")
+    if activationBound ~= true then return c end
     for _, eventName in ipairs({ "OnEnterPressed", "OnEditEnter" }) do
         c:On(edit, eventName, function() return c:Submit("enter") end, "rsui:" .. spec.id .. ":" .. eventName)
     end
-    if spec.submitOnLostFocus ~= false then
-        c:On(edit, "OnLostFocus", function() return c:Submit("blur") end, "rsui:" .. spec.id .. ":OnLostFocus")
-    end
+    c:On(edit, "OnLostFocus", function()
+        local result = true
+        if spec.submitOnLostFocus ~= false then result = c:Submit("blur") end
+        c:EndEditing("text_input_lost_focus")
+        return result
+    end, "rsui:" .. spec.id .. ":OnLostFocus")
     c:SetEnabled(spec.enabled ~= false)
     c:Render(nil, "init")
     return c
@@ -411,9 +442,19 @@ RSUI:RegisterType("NumericInput", function(spec)
         if ok and type(spec.onChanged) == "function" then RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, value, self) end
         return ok
     end
-    for _, eventName in ipairs({ "OnEnterPressed", "OnEditEnter", "OnLostFocus" }) do
+    function c:BeginEditing(source) return BeginEditInteraction(self, source or ("numeric_input:" .. tostring(self.id))) end
+    function c:EndEditing(source) return EndEditInteraction(self, source or ("numeric_input:" .. tostring(self.id) .. ":lost_focus")) end
+    local activationBound = c:RequireOn(edit, "OnClick", function() return c:BeginEditing("numeric_input_click") end,
+        "rsui:" .. spec.id .. ":activate")
+    if activationBound ~= true then return c end
+    for _, eventName in ipairs({ "OnEnterPressed", "OnEditEnter" }) do
         c:On(edit, eventName, function() return c:Submit("edit") end, "rsui:" .. spec.id .. ":" .. eventName)
     end
+    c:On(edit, "OnLostFocus", function()
+        local result = c:Submit("edit")
+        c:EndEditing("numeric_input_lost_focus")
+        return result
+    end, "rsui:" .. spec.id .. ":OnLostFocus")
     c:SetEnabled(spec.enabled ~= false)
     c:Render(nil, "init")
     return c
@@ -667,6 +708,10 @@ RSUI:RegisterType("Dropdown", function(spec)
     local popup, popupErr = UI:CreatePanel(UIParent, spec.id .. "_popup", 0, 0, width, height, "soft", {
         gradient = true,
         owner = c.owner,
+        transientWindow = true,
+        visible = false,
+        pickable = false,
+        drawPriority = Token("layer.popupPriority", 10000),
     })
     if popup == nil or popup.rsUiDegraded == true then
         return InstallDropdownFallback(c, spec, "dropdown_popup_create_failed:" .. tostring(popupErr or (popup and popup.rsUiDegradedReason) or "unknown"))
@@ -680,7 +725,10 @@ RSUI:RegisterType("Dropdown", function(spec)
         UI:SetVisible(popup, false, c.owner)
         return InstallDropdownFallback(c, spec, "dropdown_popup_interaction_contract_unavailable")
     end
-    local popupPickOk, _, popupPickErr = UI:EnsurePickable(popup, true, c.owner)
+    -- Hidden top-level surfaces start explicitly unpickable. The old build
+    -- armed hit-testing before the initial hide, which left a hidden native
+    -- surface able to intercept clicks on some RU clients.
+    local popupPickOk, _, popupPickErr = UI:EnsurePickable(popup, false, c.owner)
     local popupEnableOk, _, popupEnableErr = UI:EnsureEnabled(popup, true, c.owner)
     if popupPickOk ~= true or popupEnableOk ~= true then
         UI:SetVisible(popup, false, c.owner)
@@ -899,6 +947,10 @@ RSUI:RegisterType("Dropdown", function(spec)
         if RSUI.PopupCoordinator ~= nil then RSUI.PopupCoordinator:CloseAll(self) end
         local layoutOk, layoutErr = self:ApplyPopupLayout()
         if layoutOk ~= true then return false, layoutErr end
+        -- Popup hit-test quiescence contract: Close() unpicks the popup, so
+        -- every Open must re-establish pickable before it can receive input.
+        local repickOk, _, repickErr = UI:EnsurePickable(self.popup, true, self.owner)
+        if repickOk ~= true then return self:FailDropdownInteraction("dropdown_popup_repick_failed:" .. tostring(repickErr or "unknown")) end
         local visibleOk, visibleErr = EnsureRawVisible(self.popup, true, self.owner)
         if visibleOk ~= true then return self:FailDropdownInteraction("dropdown_popup_show_failed:" .. tostring(visibleErr or "unknown")) end
         self.open = true
@@ -911,6 +963,11 @@ RSUI:RegisterType("Dropdown", function(spec)
         if self.open ~= true then return false end
         local visibleOk, visibleErr = EnsureRawVisible(self.popup, false, self.owner)
         if visibleOk ~= true then return self:FailDropdownInteraction("dropdown_popup_hide_failed:" .. tostring(visibleErr or "unknown")) end
+        -- Hidden popups must not rely on native "hidden skips hit-test" alone:
+        -- explicitly unpick so a future engine change can never leave an
+        -- invisible intercepting surface behind.
+        local unpickOk, _, unpickErr = UI:EnsurePickable(self.popup, false, self.owner)
+        if unpickOk ~= true then return self:FailDropdownInteraction("dropdown_popup_unpick_failed:" .. tostring(unpickErr or "unknown")) end
         self.open = false
         return true
     end
@@ -1031,7 +1088,10 @@ RSUI:RegisterType("ColorField", function(spec)
     end
 
     -- Popover: top-level surface so it is never clipped by a ScrollBox/card.
-    local popup, popupErr = UI:CreatePanel(UIParent, spec.id .. "_popup", 0, 0, trigW, 140, "soft", { gradient = true, owner = c.owner })
+    local popup, popupErr = UI:CreatePanel(UIParent, spec.id .. "_popup", 0, 0, trigW, 140, "soft", {
+        gradient = true, owner = c.owner, transientWindow = true, visible = false, pickable = false,
+        drawPriority = Token("layer.popupPriority", 10000),
+    })
     if popup == nil then return nil, "colorfield_popup_create_failed" end
     c.popup = popup
     if type(UI.TrySetUILayer) == "function" then UI:TrySetUILayer(popup, "system") end
@@ -1046,7 +1106,7 @@ RSUI:RegisterType("ColorField", function(spec)
     if type(UI.EnsurePickable) ~= "function" or type(UI.EnsureEnabled) ~= "function" then
         return FailColorBuild("colorfield_popup_interaction_contract_unavailable")
     end
-    local popupPickOk, _, popupPickErr = UI:EnsurePickable(popup, true, c.owner)
+    local popupPickOk, _, popupPickErr = UI:EnsurePickable(popup, false, c.owner)
     local popupEnableOk, _, popupEnableErr = UI:EnsureEnabled(popup, true, c.owner)
     if popupPickOk ~= true or popupEnableOk ~= true then
         return FailColorBuild("colorfield_popup_interaction_failed:" .. tostring(popupPickErr or popupEnableErr or "unknown"))
@@ -1083,21 +1143,19 @@ RSUI:RegisterType("ColorField", function(spec)
     end
     local hexRow = RSUI:HorizontalBox({ id = spec.id .. "_hex_row", parent = body, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
     if hexRow == nil then return FailColorBuild("colorfield_hex_row_create_failed") end
-    local hexLabel = RSUI:Text({ id = spec.id .. "_hex_label", parent = hexRow, text = "#", fontSize = 9, tone = "muted", slot = { size = "fixed", width = 12 } })
+    local hexLabel = RSUI:Text({ id = spec.id .. "_hex_label", parent = hexRow, text = "HEX", fontSize = 9, tone = "muted", slot = { size = "fixed", width = 28 } })
     if hexLabel == nil then return FailColorBuild("colorfield_hex_label_create_failed") end
-    -- TextInput commits via onSubmit (it exposes no OnCommitted method); the
-    -- guard is dropped because onSubmit is always a safe no-op when absent.
-    local hexInput = RSUI:TextInput({ id = spec.id .. "_hex", parent = hexRow, maxLength = 7, height = 20,
-        onSubmit = function(text)
-            local parsed = c:ParseHex(text)
-            if parsed == nil then return false end
-            c:ApplyColor(parsed[1], parsed[2], parsed[3])
-            return c:Commit()
-        end,
-        slot = { size = "fill", fill = 1, hAlign = "fill" } })
-    if hexInput == nil then return FailColorBuild("colorfield_hex_input_create_failed") end
-    c.hexInput = hexInput
-    local doneBtn = RSUI:Button({ id = spec.id .. "_done", parent = body, text = "完成", compact = true, slot = { size = "fixed", height = 24, hAlign = "fill" } })
+    -- ColorField is intentionally mouse-only.  A hidden top-level popup must
+    -- never construct an armed EditBox before the user opens it: RU may keep
+    -- keyboard ownership even while an ancestor is hidden.  The exact HEX value
+    -- remains visible for copy/reference, while RGB sliders are the write path.
+    local hexValue = RSUI:Text({ id = spec.id .. "_hex_value", parent = hexRow, text = "#FFFFFF", fontSize = 9,
+        tone = "strong", overflow = "ellipsis", slot = { size = "fill", fill = 1, hAlign = "fill" } })
+    if hexValue == nil then return FailColorBuild("colorfield_hex_value_create_failed") end
+    c.hexValue = hexValue
+    local doneBtn = RSUI:Button({ id = spec.id .. "_done", parent = body, text = "完成", compact = true,
+        onClick = function() return c:Close() end,
+        slot = { size = "fixed", height = 24, hAlign = "fill" } })
     if doneBtn == nil then return FailColorBuild("colorfield_done_button_create_failed") end
 
     function c:SyncSwatchAndHex()
@@ -1107,7 +1165,7 @@ RSUI:RegisterType("ColorField", function(spec)
         -- builds do not expose CreateColorDrawable; an empty button made the
         -- color setting look nonexistent even though the popup binding worked.
         UI:SetText(self.root, self.label .. "  " .. hex, self.owner)
-        if self.hexInput ~= nil then self.hexInput:SetValue(hex) end
+        if self.hexValue ~= nil then self.hexValue:SetText(hex) end
     end
     function c:Hex()
         local function hx(x) local v = math.floor(Clamp01(x) * 255 + 0.5); return string.format("%02X", v) end
@@ -1197,6 +1255,13 @@ RSUI:RegisterType("ColorField", function(spec)
         if RSUI.PopupCoordinator ~= nil then RSUI.PopupCoordinator:CloseAll(self) end
         local layoutOk, layoutErr = self:ApplyPopupLayout()
         if layoutOk ~= true then return false, layoutErr end
+        -- Popup hit-test quiescence contract (mirrors Dropdown): re-pick on
+        -- open because Close() unpicks the popup surface.
+        local repickOk, _, repickErr = UI:EnsurePickable(self.popup, true, self.owner)
+        if repickOk ~= true then
+            if type(self.FailClosedInteraction) == "function" then self:FailClosedInteraction("colorfield_popup_repick_failed:" .. tostring(repickErr or "unknown")) end
+            return false, repickErr
+        end
         local visibleOk, visibleErr = EnsureRawVisible(self.popup, true, self.owner)
         if visibleOk ~= true then
             if type(self.FailClosedInteraction) == "function" then self:FailClosedInteraction("colorfield_popup_show_failed:" .. tostring(visibleErr or "unknown")) end
@@ -1213,6 +1278,12 @@ RSUI:RegisterType("ColorField", function(spec)
         if visibleOk ~= true then
             if type(self.FailClosedInteraction) == "function" then self:FailClosedInteraction("colorfield_popup_hide_failed:" .. tostring(visibleErr or "unknown")) end
             return false, visibleErr
+        end
+        -- Hidden popups must not rely on native "hidden skips hit-test" alone.
+        local unpickOk, _, unpickErr = UI:EnsurePickable(self.popup, false, self.owner)
+        if unpickOk ~= true then
+            if type(self.FailClosedInteraction) == "function" then self:FailClosedInteraction("colorfield_popup_unpick_failed:" .. tostring(unpickErr or "unknown")) end
+            return false, unpickErr
         end
         self.open = false
         return true
@@ -1242,7 +1313,8 @@ RSUI:RegisterType("ColorField", function(spec)
     end
 
     c:RequireOn(trigger, "OnClick", function() return c:ToggleOpen() end, "rsui:" .. spec.id .. ":trigger")
-    c:RequireOn(doneBtn, "OnClick", function() return c:Close() end, "rsui:" .. spec.id .. ":done")
+    -- doneBtn owns its one Native OnClick through ButtonActionContract v2; do
+    -- not bind a second handler by passing the Component to RequireOn().
     if RSUI.PopupCoordinator ~= nil then RSUI.PopupCoordinator:Register(c) end
 
     c:SetEnabled(spec.enabled ~= false)

@@ -19,7 +19,7 @@ local RSUI = S.RSUI
 local UI = S.UI
 if type(RSUI) ~= "table" or type(UI) ~= "table" then return end
 
-RSUI.TransformInspectorContractVersion = 2
+RSUI.TransformInspectorContractVersion = 3
 
 local function N(value, fallback)
     local result = tonumber(value)
@@ -372,6 +372,15 @@ RSUI:RegisterType("TransformInspector", function(spec)
         local childOk, childErr = self:EnsureChildEnabled(self.form, self.enabled, "transform_form")
         if childOk ~= true then return state, false, childErr end
         return self.enabled, true, nil
+    end
+
+    function c:Measure(availableWidth, availableHeight)
+        local w = math.max(220, N(availableWidth, self.width or width))
+        local measuredW, measuredH = self.form:Measure(w, availableHeight)
+        self.desiredWidth = math.max(w, N(measuredW, w))
+        self.desiredHeight = math.max(1, N(measuredH, 1))
+        self.measureDirty = false
+        return self.desiredWidth, self.desiredHeight
     end
 
     function c:Layout(x, y, nextWidth, nextHeight)

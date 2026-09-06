@@ -240,6 +240,75 @@ def scan_business_page_component_ids(root: Path) -> list[str]:
                 )
     return sorted(set(failures))
 
+
+
+def scan_service_upward_dependencies(root: Path, active_lua: list[str]) -> list[str]:
+    """Services may publish facts/events, but must never reach upward into Feature consumers."""
+    failures: list[str] = []
+    patterns = (
+        re.compile(r"\bS\s*\.\s*Features\b"),
+        re.compile(r"\bReplicatedSuite\s*\.\s*Features\b"),
+    )
+    for rel in active_lua:
+        if not rel.startswith("services/"):
+            continue
+        source = (root / rel).read_text(encoding="utf-8-sig", errors="replace")
+        code = strip_lua_strings(strip_lua_comments(source))
+        for pattern in patterns:
+            for match in pattern.finditer(code):
+                failures.append(f"{rel}:{line_for(code, match.start())}")
+    return sorted(set(failures))
+
+
+def scan_locked_product_truth(root: Path) -> list[str]:
+    """Fence concrete Runtime Blockers whose RU contracts are still unverified.
+
+    The Product Matrix is the locked capability evidence. These high-risk rows
+    must remain SPECIFIC_RUNTIME_BLOCKED until the matrix itself is changed with
+    RU evidence; Active implementation must not silently reintroduce the blocked
+    Native calls in the meantime.
+    """
+    failures: list[str] = []
+    matrix_path = root / "Docs/Rebuild/PRODUCT_COMPLETION_MATRIX.md"
+    matrix = matrix_path.read_text(encoding="utf-8-sig", errors="replace") if matrix_path.is_file() else ""
+    locked_rows = (
+        "Fishing full R source-slot enumeration/snapshot",
+        "Fishing R write/restore/error recovery",
+        "Reinforcement slot levels/materials/set effects",
+    )
+    for label in locked_rows:
+        row = re.search(r"^\|\s*" + re.escape(label) + r"\s*\|\s*([^|]+)\|", matrix, re.M)
+        status = row.group(1).strip() if row else "missing"
+        if status != "SPECIFIC_RUNTIME_BLOCKED":
+            failures.append(f"matrix:{label}:status={status}")
+
+    life_path = root / "features/life/rs_life_m16_bundle.lua"
+    life = strip_lua_comments(life_path.read_text(encoding="utf-8-sig", errors="replace")) if life_path.is_file() else ""
+    if "Fishing.HotkeyRuntimeBlocked = true" not in life or "Fishing.HotkeyContractVersion = 2" not in life:
+        failures.append("fishing:runtime-block marker missing")
+    for token in (
+        'Call("X2Hotkey:GetOptionBinding"',
+        'Action("X2Hotkey:BindingToOption"',
+        'Action("X2Hotkey:SetOptionBindingWithIndex"',
+        'Action("X2Hotkey:RemoveOptionBinding"',
+        'Action("X2Hotkey:SaveHotKey"',
+    ):
+        if token in life:
+            failures.append("fishing:blocked hotkey Native path active:" + token)
+
+    bridge_path = root / "features/rs_business_bridge.lua"
+    bridge = strip_lua_comments(bridge_path.read_text(encoding="utf-8-sig", errors="replace")) if bridge_path.is_file() else ""
+    if "S.Features.tools_reinforce_analysis.SlotProbeRuntimeBlocked = true" not in bridge:
+        failures.append("reinforce:runtime-block marker missing")
+    for token in (
+        'Call("X2EquipSlotReinforce:GetReinforceInfo"',
+        'Call("X2EquipSlotReinforce:GetMaterialInfo"',
+        "REINFORCE_SLOT_PROBE_MAX",
+    ):
+        if token in bridge:
+            failures.append("reinforce:blocked slot probe active:" + token)
+    return failures
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=None, help="replicatedsuite directory")
@@ -396,23 +465,58 @@ def main() -> int:
     if business_page_id_failures:
         failures.append("Business page logical ID collision: " + ", ".join(business_page_id_failures[:24]))
 
-    # Bag Move Contract v5: slot numbers are transient locators. A move can
-    # compact/reproject the source container, so quick/category plans must keep
-    # stable itemType/category intent and resolve a live slot before each write.
-    # Regressing to a precomputed slot queue recreates the RU symptom where one
-    # click moves exactly one item and the verifier stops on the refilled slot.
+    service_upward_failures = scan_service_upward_dependencies(root, active_lua)
+    if service_upward_failures:
+        failures.append("Service -> Feature upward dependency: " + ", ".join(service_upward_failures[:24]))
+
+    product_truth_failures = scan_locked_product_truth(root)
+    if product_truth_failures:
+        failures.append("Locked Product Truth violation: " + ", ".join(product_truth_failures[:24]))
+
+    # Bag Move Contract v8 + InventorySnapshotV3: old/reference product behavior
+    # may define the user goal, but Active V3 owns observation, physical bagId
+    # authority and indexed planning.  Plans keep grouped stable intent rather
+    # than physical slots; slots are revalidated immediately before each write.
+    inventory_path = root / "services/rs_inventory_snapshot_v3.lua"
+    inventory_source = inventory_path.read_text(encoding="utf-8-sig", errors="replace") if inventory_path.is_file() else ""
+    for token in (
+        'Id = "v3.inventory_snapshot"',
+        "SnapshotContractVersion = 1",
+        "PhysicalBagAuthorityContractVersion = 1",
+        "IndexContractVersion = 1",
+        "PreferredBagId = 1",
+        "FallbackBagId = 0",
+        "function I:BuildSnapshot(scope, options)",
+        "function I:FindLiveRow(scope, matcher, options)",
+        "function I:CountLive(scope, matcher, options)",
+        "function I:ReadPhysicalBagSlot(slot, bagIdHint)",
+        "stopAt",
+    ):
+        if token not in inventory_source:
+            failures.append("Inventory snapshot contract missing: " + token)
+
     bag_bridge_path = root / "features/rs_business_bridge.lua"
     bag_bridge_source = bag_bridge_path.read_text(encoding="utf-8-sig", errors="replace") if bag_bridge_path.is_file() else ""
     for token in (
         "local BagMoveRuntime = {}",
-        "function BagMoveRuntime.FindLiveMoveSource(feature, sourceScope, blacklistScope, itemType, category)",
-        "function BagMoveRuntime.CountLiveMatches(scope, itemType, category)",
-        "feature._quickSourceCounts=Copy(sourceCounts)",
-        "feature._batchSourceCount = sourceCategoryCount",
-        "BagTools.DynamicSourceResolutionContractVersion = 1",
+        "local function StableItemIdentity(info)",
+        "function BagMoveRuntime.FindLiveMoveSource(feature, sourceScope, blacklistScope, identity, category, bagId, startSlot, blockedIdentities)",
+        "function BagMoveRuntime.CountLiveMatches(scope, identity, category, bagId, stopAt)",
+        "queueByIdentity",
+        "remaining = 0, slotHint = row.slot",
+        "feature._quickBagId = bagId",
+        "feature._batchBagId = bagSnapshot.bagId",
+        "BagTools.BagMoveContractVersion = 8",
+        "BagTools.DynamicSourceResolutionContractVersion = 3",
+        "BagTools.QuickIdentityFallbackContractVersion = 1",
+        "BagTools.InventorySnapshotContractVersion = 1",
+        "BagTools.GroupedIntentQueueContractVersion = 1",
+        "BagTools.FullStorageContinuationContractVersion = 1",
+        "function BagMoveRuntime.IsNativeMoveRejected(err)",
+        "function BagMoveRuntime.BlockBatchIdentity(feature, entry, identity, reason)",
     ):
         if token not in bag_bridge_source:
-            failures.append("Bag dynamic-source contract missing: " + token)
+            failures.append("Bag v8 grouped-intent/full-storage contract missing: " + token)
     bag_bridge_code = strip_lua_strings(strip_lua_comments(bag_bridge_source))
     forbidden_slot_queue_patterns = (
         re.compile(r"queue\s*\[\s*#queue\s*\+\s*1\s*\]\s*=\s*\{\s*slot\s*="),
@@ -422,8 +526,53 @@ def main() -> int:
         if pattern.search(bag_bridge_code):
             failures.append("Bag move regression: transient slot stored in serial move plan")
             break
+    if 'GetBagItemInfo", BagApi, "GetBagItemInfo", 0, sourceSlot' in bag_bridge_source:
+        failures.append("Bag physical authority regression: direct move blacklist read hardcodes bagId=0")
 
-    # ScreenProjectionV3 v5 / Unit Line front-hemisphere + coordinate-consistency contract: RU may
+    # Auction Sidecar v2: native Auction House remains Authority.  The sidecar
+    # must observe verified geometry/visibility only, reuse tools_auction state,
+    # and tolerate the RU build that omits the final MainScript visibility bool.
+    auction_surface_path = root / "services/rs_auction_surface_v3.lua"
+    auction_sidecar_path = root / "presentation/v3/widgets/rs_v3_auction_sidecar.lua"
+    auction_surface_source = auction_surface_path.read_text(encoding="utf-8-sig", errors="replace") if auction_surface_path.is_file() else ""
+    auction_sidecar_source = auction_sidecar_path.read_text(encoding="utf-8-sig", errors="replace") if auction_sidecar_path.is_file() else ""
+    for token in (
+        'V.presentationBoundary = "service_only"',
+        "VisibilityContractVersion = 2",
+        'IsCapabilityAllowed("ADDON:GetContent")',
+        "ReadContentChainVisible",
+        "ResolveContentRect",
+        "main-script-geometry",
+    ):
+        if token not in auction_surface_source:
+            failures.append("Auction surface v2 contract missing: " + token)
+    for token in (
+        'Feature:AcquireConsumer("widget:auction_sidecar")',
+        'Feature:ReleaseConsumer("widget:auction_sidecar")',
+        "Feature:GetProjection()",
+        "Controller.dismissed = true",
+    ):
+        if token not in auction_sidecar_source:
+            failures.append("Auction sidecar reuse contract missing: " + token)
+    if "SearchAuctionArticle" in auction_surface_source or "GetLowestPrice" in auction_surface_source:
+        failures.append("Auction surface regression: observer must not issue server auction queries")
+
+    # Craft Sidecar has the same Service/Presentation boundary as Auction:
+    # observe verified native visibility/geometry in Service, render in UIV3.
+    craft_surface_path = root / "services/rs_craft_surface_v3.lua"
+    craft_surface_source = craft_surface_path.read_text(encoding="utf-8-sig", errors="replace") if craft_surface_path.is_file() else ""
+    for token in (
+        'V.presentationBoundary = "service_only"',
+        "VisibilityContractVersion = 1",
+        "function V:GetSnapshot()",
+        "function V:Start()",
+        "function V:Stop(reason)",
+    ):
+        if token not in craft_surface_source:
+            failures.append("Craft surface service-boundary contract missing: " + token)
+
+    # ScreenProjectionV3 v8 / Unit Line front-hemisphere + coordinate-consistency + world-alias +
+    # index-stable world batch contract: RU may
     # return a positive native screen depth for a unit physically behind the
     # camera.  Unit Lines must classify camera-forward world position in one
     # batched Service call before Presentation clipping; never infer "behind"
@@ -431,12 +580,17 @@ def main() -> int:
     projection_path = root / "services/rs_screen_projection_v3.lua"
     projection_source = projection_path.read_text(encoding="utf-8-sig", errors="replace") if projection_path.is_file() else ""
     for token in (
-        "P.version = 5",
+        "P.version = 8",
         "function P:ProjectUnitBatch(unitTokens, options)",
         "local function CameraForwardDistance(frame, wx, wy, wz)",
         'reason="behind_camera"',
         "P.FrontHemisphereBatchContractVersion = 1",
         "P.UnitProjectionConsistencyContractVersion = 1",
+        "P.UnitWorldAliasGuardContractVersion = 1",
+        "P.WorldBatchIndexContractVersion = 1",
+        "P.CameraUnavailableNativeFallbackContractVersion = 1",
+        "aliasCandidate=false, worldAliased=false",
+        "native_world_alias_guard",
         "local wx,wy,wz,worldErr=self:GetUnitWorldPosition(token,false)",
         "native_scale_reconciled",
         "camera_consistency_fallback",
@@ -493,6 +647,33 @@ def main() -> int:
     unit_line_read = re.search(r'local\s+UnitLines\s*=\s*NewFeature\(\"combat_unit_lines\"\s*,\s*\{(.*?)\n\}\)\nUnitLines\.VisualGuideContractVersion', strip_lua_comments(bag_bridge_source), re.S)
     if unit_line_read is not None and "ProjectUnitFlexible(" in unit_line_read.group(1):
         failures.append("Unit line regression: per-endpoint ProjectUnitFlexible bypasses front-hemisphere batch")
+
+    # Range Assist must stay in the same GLOBAL world space as the camera frame
+    # and must consume every requested batch index. A circle naturally has
+    # behind-camera points; ipairs() over a sparse numeric batch truncates at the
+    # first hole and can make the guide disappear or render only a short arc.
+    range_read = re.search(r'local\s+RangeAssist\s*=\s*NewFeature\("combat_range_assist"\s*,\s*\{(.*?)\n\}\)\nRangeAssist\.VisualGuideContractVersion', strip_lua_comments(bag_bridge_source), re.S)
+    if range_read is None:
+        failures.append("Range Assist contract missing: feature block unavailable")
+    else:
+        range_source = range_read.group(1)
+        for token in (
+            'projection:GetUnitWorldPosition("player", false)',
+            'for index=1,count do',
+            'local screenPoint=projected[index]',
+        ):
+            if token not in range_source:
+                failures.append("Range Assist global/index-stable projection contract missing: " + token)
+        if 'projection:GetUnitWorldPosition("player", true)' in range_source:
+            failures.append("Range Assist regression: local player world position mixed with global camera frame")
+        if re.search(r'ipairs\s*\(\s*type\s*\(\s*projected\s*\)', range_source):
+            failures.append("Range Assist regression: sparse world projection consumed with ipairs")
+    for token in (
+        'RangeAssist.VisualGuideContractVersion = 4',
+        'RangeAssist.WorldSpaceContractVersion = 1',
+    ):
+        if token not in bag_bridge_source:
+            failures.append("Range Assist projection contract missing: " + token)
 
     # Team auto-role catalog v2: rows explicitly classified as Archer must map
     # to the dedicated TMROLE_RANGED_DEALER path.  The 6/8/9
@@ -717,10 +898,11 @@ def main() -> int:
     if transform_inspector_entry not in toc:
         failures.append("Transform Inspector Foundation missing from Active TOC: " + transform_inspector_entry)
     for token in (
-        "RSUI.TransformInspectorContractVersion = 2",
+        "RSUI.TransformInspectorContractVersion = 3",
         'RSUI:RegisterTypeValidator("TransformInspector"',
         'RSUI:RegisterType("TransformInspector"',
         'function c:SetModels(nextRectModel, nextAnchorModel)',
+        'function c:Measure(availableWidth, availableHeight)',
         '"Y（上-/下+）"',
     ):
         if token not in transform_inspector_source:
@@ -1006,7 +1188,7 @@ def main() -> int:
     persistence_source = (root / "core/rs_persistence.lua").read_text(encoding="utf-8-sig", errors="replace")
     foundation_pages_source = (root / "presentation/v3/pages/rs_v3_foundation_pages.lua").read_text(encoding="utf-8-sig", errors="replace")
     for token in (
-        "RuntimeAcceptanceSnapshotContractVersion = 1",
+        "RuntimeAcceptanceSnapshotContractVersion = 2",
         "function P:FingerprintPayload(value, budget)",
         "function P:BuildRuntimeAcceptanceSnapshot(options)",
         "runtimeAcceptanceSnapshotContractVersion = self.RuntimeAcceptanceSnapshotContractVersion",
@@ -1042,6 +1224,43 @@ def main() -> int:
         if token not in buff_display_source:
             failures.append("BuffDisplay editor interaction contract missing: " + token)
 
+    buff_feature_source = (root / "features/combat/buff_display/rs_buff_display_feature.lua").read_text(encoding="utf-8-sig", errors="replace")
+    for token in (
+        'id = "v3_buff_display_equipment_toggles"',
+        'id = "v3_buff_display_equipment_toggle_" .. componentKey',
+        '{ key = "mainHand", label = "主手" }',
+        '{ key = "offHand", label = "副手" }',
+        '{ key = "ranged", label = "远程" }',
+        '{ key = "wings", label = "背部" }',
+    ):
+        if token not in buff_display_source:
+            failures.append("BuffDisplay self-equipment quick toggle contract missing: " + token)
+    for token in (
+        "F.EquipmentReadContractVersion = 1",
+        "local gear = S.Services and S.Services.GearV3 or nil",
+        "item, readErr = gear:GetEquipped(slotId)",
+    ):
+        if token not in buff_feature_source:
+            failures.append("BuffDisplay GearV3 read authority contract missing: " + token)
+
+    task_store_source = (root / "features/life/tasks/rs_task_store.lua").read_text(encoding="utf-8-sig", errors="replace")
+    for token in (
+        "local TASK_CODEC_VERSION = 2",
+        "local function SortedKeyArray(value)",
+        "local function EncodeTaskState(value)",
+        "local function RebuildLegacyEncodedForIntegrity(raw)",
+        "rebuildEncodedForIntegrity = RebuildLegacyEncodedForIntegrity",
+    ):
+        if token not in task_store_source:
+            failures.append("Task persistence stable-codec contract missing: " + token)
+    for token in (
+        "rebuildEncodedForIntegrity = def.rebuildEncodedForIntegrity",
+        'store.lastIntegrityStatus = "serializer_repair_verified"',
+        'deferredSaveReason = "integrity_serializer_repair"',
+    ):
+        if token not in persistence_source:
+            failures.append("Persistence proven serializer-repair contract missing: " + token)
+
     # .18.94 Trade/DPS Fresh Reload package-coherence preflight.  These are
     # user-visible regressions that are syntactically valid Lua, so lock the
     # exact Authority/Presentation shape before a package reaches the RU client.
@@ -1050,6 +1269,11 @@ def main() -> int:
     trade_feature_source = (root / "features/life/rs_life_m16_bundle.lua").read_text(encoding="utf-8-sig", errors="replace")
     trade_page_source = (root / "presentation/v3/pages/rs_v3_life_m16_pages.lua").read_text(encoding="utf-8-sig", errors="replace")
     trade_widget_source = (root / "presentation/v3/widgets/rs_v3_life_economy_widgets.lua").read_text(encoding="utf-8-sig", errors="replace")
+    trade_detail_source = (root / "presentation/v3/widgets/rs_v3_trade_detail_floating.lua").read_text(encoding="utf-8-sig", errors="replace")
+    business_feature_source = (root / "features/rs_business_bridge.lua").read_text(encoding="utf-8-sig", errors="replace")
+    business_page_source = (root / "presentation/v3/pages/rs_v3_business_pages.lua").read_text(encoding="utf-8-sig", errors="replace")
+    task_authority_source = (root / "features/life/tasks/rs_task_authority.lua").read_text(encoding="utf-8-sig", errors="replace")
+    task_page_source = (root / "presentation/v3/pages/rs_v3_task_page.lua").read_text(encoding="utf-8-sig", errors="replace")
     acceptance_source = (root / "presentation/v3/rs_v3_acceptance.lua").read_text(encoding="utf-8-sig", errors="replace")
 
     for token in (
@@ -1068,6 +1292,8 @@ def main() -> int:
     for token in (
         'id = "v3_trade_from"',
         'id = "v3_trade_to"',
+        'id = "v3_trade_ratio_mode"',
+        'id = "v3_trade_commerce_mode"',
         "feature.Commands:QuotePendingMaterials()",
     ):
         if token not in trade_page_source:
@@ -1075,6 +1301,8 @@ def main() -> int:
     for token in (
         'id = "v3_life_trade_widget_from"',
         'id = "v3_life_trade_widget_to"',
+        'id = "v3_life_trade_widget_ratio_mode"',
+        'id = "v3_life_trade_widget_commerce_mode"',
         'id = "v3_life_trade_widget_quote"',
         "Feature.Commands:QuotePendingMaterials()",
     ):
@@ -1091,6 +1319,11 @@ def main() -> int:
         'Action("X2Store:GetSpecialtyRatioBetween"',
         "function Trade:QuotePendingMaterials()",
         "ApplyTradeMaterialProjectionToRow(row)",
+        "local TRADE_FULL_RATIO = 130",
+        "function TA:RefreshCommerceSkill()",
+        "function Trade:SetRatioMode(mode)",
+        "function Trade:SetCommerceMode(mode)",
+        'commercePriceFormulaStatus = "unverified"',
     ):
         if token not in trade_feature_source:
             failures.append("Trade route/quote Authority contract missing: " + token)
@@ -1102,24 +1335,123 @@ def main() -> int:
         if token not in acceptance_source:
             failures.append("Trade/DPS runtime acceptance preflight missing: " + token)
 
-    # .18.95/.18.97/.18.98/.18.99/.18.100 Persistence Reliability v3-v7 + Gear dual-bank journal.
+    # .18.119 Trade/Craft/Task local continuation.  Explicit market queries
+    # stay user-triggered; current/full comparison is local-only; commerce skill
+    # remains observation-only until the exact RU payout formula is proven.
+    for token in (
+        "local function CraftProjection(feature)",
+        "QuotePendingMaterials = function(feature)",
+        'feature.Id .. ":craft"',
+        'feature:Refresh("craft_quote_batch_completed")',
+        'quote = " · 未询价"',
+    ):
+        if token not in business_feature_source:
+            failures.append("Craft explicit batch quote contract missing: " + token)
+    for token in (
+        'id = "v3_business_" .. id .. "_material_quote"',
+        "feature.Commands:QuotePendingMaterials()",
+        "projection.pendingQuoteCount",
+        "projection.quotedMaterialCostCopper",
+    ):
+        if token not in business_page_source:
+            failures.append("Craft batch quote Presentation contract missing: " + token)
+    for token in ('trackedText = tracked and "✓ 已追踪" or "＋ 可添加"',):
+        if token not in task_authority_source:
+            failures.append("Task custom tracking discoverability projection missing: " + token)
+    for token in ('先选中父任务，再点“加入追踪/取消追踪”', 'width = 78'):
+        if token not in task_page_source:
+            failures.append("Task custom tracking discoverability UI missing: " + token)
+
+    # .18.120 restores the safe/local portion of the old Trade workflow without
+    # importing Legacy services: bounded persisted route favorites, explicit
+    # sort selection, row detail and selected-row material quote all stay under
+    # life_trade + PriceQuoteQueueV3 ownership.
+    for token in (
+        "function Trade:NormalizeFavorites(value)",
+        "if #result >= 12 then break end",
+        "function Trade:ToggleCurrentFavorite()",
+        "function Trade:SelectFavorite(key)",
+        "function Trade:SetSortMode(mode)",
+        "function Trade:QuoteRowMaterials(rowKey)",
+        "function Trade:GetRow(key)",
+        "selectedKey = nil",
+    ):
+        if token not in trade_feature_source:
+            failures.append("Trade detail/favorites Authority contract missing: " + token)
+    for token in (
+        'id = "v3_trade_favorite_dropdown"',
+        'id = "v3_trade_favorite_toggle"',
+        'id = "v3_trade_sort_mode"',
+        "TradeDetailFloatingV3",
+    ):
+        if token not in trade_page_source:
+            failures.append("Trade detail/favorites page contract missing: " + token)
+    for token in (
+        'id = "v3_life_trade_widget_favorite"',
+        'id = "v3_life_trade_widget_favorite_toggle"',
+        'id = "v3_life_trade_widget_sort"',
+        "selectable = true",
+        "TradeDetailFloatingV3",
+    ):
+        if token not in trade_widget_source:
+            failures.append("Trade detail/favorites widget contract missing: " + token)
+    for token in (
+        "TradeDetailContractVersion = 1",
+        'feature:AcquireConsumer("floating:trade_detail")',
+        'feature.Commands:QuoteRowMaterials(M.rowKey)',
+        'feature.Commands:ToggleCurrentFavorite()',
+        "S.Events:SubscribeInternal",
+    ):
+        if token not in trade_detail_source:
+            failures.append("Trade floating detail contract missing: " + token)
+    for forbidden in ("X2Store", "X2Auction", "GetLowestPrice", "RequestQuote("):
+        code = strip_lua_comments(trade_detail_source)
+        if forbidden in code:
+            failures.append("Trade floating detail bypasses Feature/Quote ownership: " + forbidden)
+
+    # rs_business_bridge.lua intentionally sits on the Lua 5.1 top-level-local
+    # ceiling. New business helpers must be nested/reused rather than pushing the
+    # chunk past 200 active locals (which can make the whole addon fail to load).
+    top_level_locals = 0
+    for line in business_feature_source.splitlines():
+        if not line.startswith("local "):
+            continue
+        declaration = line[6:]
+        if declaration.startswith("function "):
+            top_level_locals += 1
+        else:
+            lhs = declaration.split("=", 1)[0]
+            top_level_locals += len([part for part in lhs.split(",") if part.strip()])
+    if top_level_locals > 200:
+        failures.append("Lua 5.1 business bridge top-level local budget exceeded: " + str(top_level_locals) + "/200")
+
+    # .18.95-.18.100 + .18.113 Persistence Reliability v3-v8 + Gear dual-bank journal.
     # Package coherence must lock both the immediate readback contract and the
     # persisted cross-reload integrity / verified shard-replacement contract.
     gear_store_source = (root / "features/combat/gear/rs_gear_store.lua").read_text(encoding="utf-8-sig", errors="replace")
     gear_authority_source = (root / "features/combat/gear/rs_gear_authority.lua").read_text(encoding="utf-8-sig", errors="replace")
     gear_acceptance_source = (root / "features/combat/gear/rs_gear_acceptance.lua").read_text(encoding="utf-8-sig", errors="replace")
     for token in (
-        "ReliabilityContractVersion = 7",
-        "IntegrityContractVersion = 1",
+        "ReliabilityContractVersion = 8",
+        "IntegrityContractVersion = 4",
+        "ContentBlindCanonicalContractVersion = 3",
+        "PreCanonicalIntegrityContractVersion = 2",
+        "LegacyIntegrityContractVersion = 1",
+        "SerializerNumericFingerprintContractVersion = 1",
         "EnvelopeIntegrityContractVersion = 1",
         "ScopeBindingContractVersion = 1",
+        "function P:CanonicalIntegrityValue(store, domainValue)",
+        "function P:FingerprintCanonicalValue(store, canonical, budget)",
         "function P:FingerprintEncodedPayload(raw, budget)",
+        "function P:FingerprintEncodedPayloadV1(raw, budget)",
+        "function P:FingerprintDurablePayload(value, budget)",
         "function P:FingerprintEnvelopeIntegrity(raw)",
         "raw.__rsmeta.reliabilityContract = self.ReliabilityContractVersion",
         "raw.__rsmeta.encodedFingerprint = encodedFingerprint",
         "function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)",
         "verifyAfterSave = def.verifyAfterSave == true",
         "recoverableReplacement = def.recoverableReplacement == true",
+        "allowIntegrityUpgrade = def.allowIntegrityUpgrade ~= false",
         'store.loadStatus = "integrity_failed"',
         'store.loadStatus = "envelope_integrity_failed"',
         'store.loadStatus = "encoded_load_rejected"',
@@ -1134,14 +1466,23 @@ def main() -> int:
         "STORE_UNVERIFIED_RELOAD_REJECTED",
         "deferredLoadResaves = 0",
         "terminalAutoRetrySuppressions = 0",
+        "integrityCompatibilityLoads = 0",
+        "integrityUpgradeRecoveries = 0",
+        "integrityUpgradeValidationFailures = 0",
+        "integrityUpgradeResaves = 0",
+        "integrityCompatibilityResaves = 0",
+        'store.lastIntegrityStatus = "legacy_v1_compatibility"',
+        'deferredSaveReason = "integrity_v2_upgrade"',
         "needsBarrierVerify = false",
         "durability_barrier_verify_failed",
         'store.loadStatus = "clear_verify_failed"',
     ):
         if token not in persistence_source:
-            failures.append("Persistence Reliability v7 integrity/barrier/scope contract missing: " + token)
+            failures.append("Persistence Reliability v8 integrity/barrier/scope contract missing: " + token)
+    acceptance_version = re.search(r"S\.UIV3Acceptance\s*=\s*\{\s*version\s*=\s*(\d+)", acceptance_source, re.S)
+    if acceptance_version is None or int(acceptance_version.group(1)) < 68:
+        failures.append("Persistence Reliability runtime acceptance requires Foundation Acceptance >=68")
     for token in (
-        "Foundation Acceptance v64",
         "A.PersistenceReliabilityV3ContractVersion = 1",
         "A.PersistenceReliabilityV4ContractVersion = 1",
         "A.PersistenceReliabilityV5ContractVersion = 1",
@@ -1238,15 +1579,22 @@ def main() -> int:
     ui_framework_source = (root / "ui/rs_ui_framework.lua").read_text(encoding="utf-8-sig", errors="replace")
     native_adapter_source = (root / "presentation/v3/rs_v3_native_adapter.lua").read_text(encoding="utf-8-sig", errors="replace")
     app_shell_source = (root / "presentation/v3/rs_v3_shell.lua").read_text(encoding="utf-8-sig", errors="replace")
+    esc_bridge_source = (root / "native/rs_native_esc_bridge.lua").read_text(encoding="utf-8-sig", errors="replace")
+    native_recovery_source = (root / "native/rs_native_recovery.lua").read_text(encoding="utf-8-sig", errors="replace")
+    runtime_source = (root / "core/rs_runtime.lua").read_text(encoding="utf-8-sig", errors="replace")
+    bootstrap_source = (root / "replicatedsuite.lua").read_text(encoding="utf-8-sig", errors="replace")
+    foundation_gate_source = (root / "core/rs_foundation_gate.lua").read_text(encoding="utf-8-sig", errors="replace")
     for token in (
-        "NativeInteractionContractVersion = 4",
+        "NativeInteractionContractVersion = 6",
         "CriticalInteractionDeliveryContractVersion = 1",
         "local NATIVE_BOOLEAN_STATE_SETTERS = {",
         "if not falseStateSetter then return false",
         "function UIX:TryInteractionCall(widget, methodName, ...)",
         "function UIX:RequireHandler(widget, eventName, fn, label)",
         "if ConfigureNativePickable(edit, true) ~= true then error",
-        'CallNativeAccepted(edit, "EnableKeyboard", true)',
+        'CallNativeAccepted(edit, "EnableKeyboard", false)',
+        "edit.rsUiKeyboardInput = true",
+        "edit.rsUiParent = stateParent",
         'CallNativeAccepted(edit, "SetReadOnly", false)',
         "slider.rsUiSetEnabledAdapter = ApplySliderEnabled",
         "local dragStartBound = UIX:SafeHandler",
@@ -1258,6 +1606,19 @@ def main() -> int:
             failures.append("Native primitive interaction/fail-closed contract missing: " + token)
     for token in (
         "NativeBooleanSetterReturnContractVersion = 1",
+        "InputFocusLifecycleContractVersion = 2",
+        "HiddenInputFocusIsolationContractVersion = 2",
+        "function UI:ReleaseFocusWithin(widget, owner, reason)",
+        "function UI:RetireInputWidget(widget, owner, reason)",
+        "function UI:QuiesceKeyboardInput(reason, retire)",
+        "DeferredKeyboardActivationContractVersion = 1",
+        "function UI:ArmInputWidget(widget, owner, reason)",
+        "function UI:DisarmInputWidget(widget, owner, reason)",
+        "function UI:ActivateInputWidget(widget, owner, reason)",
+        "function UI:DisarmInputWithin(widget, owner, reason)",
+        "function UI:BindDeferredInputActivation(widget, owner, label)",
+        "rsUiKeyboardInputSubtreeCount",
+        "RegisterInputTarget(widget)",
         "CompositeEnabledAdapterContractVersion = 2",
         "local enabledAdapter = widget.rsUiSetEnabledAdapter",
         "if calls == 0 then",
@@ -1276,6 +1637,111 @@ def main() -> int:
             failures.append("UI boolean setter contract missing function: " + function_name)
         elif "result == false" in match.group(1):
             failures.append("UI boolean setter return contract regressed in " + function_name)
+    for token in (
+        "S.NativeEscBridge = {",
+        "version = 2",
+        "IdempotentRegistrationContractVersion = 1",
+        "function E:IsReady(contentId)",
+        "content id already bound to another widget this generation",
+    ):
+        if token not in esc_bridge_source:
+            failures.append("Native ESC idempotent registration contract missing: " + token)
+    for token in (
+        "local callOk, installed, installErr = pcall",
+        "if callOk ~= true or installed ~= true then",
+        "S.RecoveryEntryHealthy = false",
+        "S.RecoveryEntryError = detail",
+    ):
+        if token not in native_recovery_source:
+            failures.append("Native recovery result contract missing: " + token)
+    for token in (
+        "version = 5",
+        "function R:RegisterEscMenu(reason)",
+        "function R:ScheduleEscRegistrationRetry(delayMs)",
+        "function R:Describe()",
+        'self:RegisterEscMenu("startup")',
+        'self:ScheduleEscRegistrationRetry(750)',
+        'S.Runtime:RegisterEscMenu("recovery_click")',
+        'BootstrapNativeAccepted(button, "Show", true)',
+        'S.RecoveryEntryHealthy = true',
+    ):
+        source = bootstrap_source if ("recovery_click" in token or "BootstrapNativeAccepted" in token or "RecoveryEntryHealthy" in token) else runtime_source
+        if token not in source:
+            failures.append("Runtime entry lifecycle contract missing: " + token)
+    if "RevealExistingSuiteShell" in bootstrap_source:
+        failures.append("Runtime fail-closed regression: bootstrap may reveal a partially initialized Suite shell")
+    for token in (
+        "S.RecoveryLauncherContractVersion = 2",
+        "S.RecoveryLauncherLogicalSize = RECOVERY_BUTTON_SIZE",
+        "button:SetAutoResize(false)",
+        "button:SetWidth(RECOVERY_BUTTON_SIZE)",
+        "button:SetHeight(RECOVERY_BUTTON_SIZE)",
+        "button.rsIgnoreClick = moved == true",
+        'if moved == true and S.Layout ~= nil and type(S.Layout.StorePlacement) == "function"',
+        "math.abs(endX - startX) > RECOVERY_DRAG_MOVE_EPSILON",
+    ):
+        if token not in bootstrap_source:
+            failures.append("Recovery launcher input contract missing: " + token)
+    for token in (
+        "S.RecoveryCommandContractVersion = 2",
+        "S.RecoveryInputIsolationContractVersion = 1",
+        "function S.ExecuteRecoveryCommand(text)",
+        'command == "reload" or command == "rsreload" or command == "rs reload"',
+        'return ReloadCodeFromDisk("recovery_command")',
+        "S.RecoveryReloadContractVersion = 1",
+        "local requireDurable = options.requireDurable == true",
+        "reload continuing after persistence flush failure",
+        "function S.InstallRecoveryCommandBar()",
+        'edit.SetHandler, edit, "OnEnterPressed", SubmitRecoveryCommand',
+        "function S.SetRecoveryCommandBarVisible(visible)",
+    ):
+        if token not in bootstrap_source:
+            failures.append("Recovery command contract missing: " + token)
+    for forbidden in ("SlashCmdList", "GetChatCommands", 'SetHandler("OnUpdate"'):
+        if forbidden in bootstrap_source[bootstrap_source.find("function S.InstallRecoveryCommandBar()"):bootstrap_source.find("local function ReadRecoveryPosition")]:
+            failures.append("Recovery command bar must not depend on unverified chat/polling ABI: " + forbidden)
+    if 'S.InstallRecoveryCommandBar()' not in native_recovery_source:
+        failures.append("Native recovery installer missing independent command bar install")
+    for token in (
+        'S.SetRecoveryCommandBarVisible(true)',
+        'S.SetRecoveryCommandBarVisible(false)',
+    ):
+        if token not in runtime_source:
+            failures.append("Runtime recovery command visibility contract missing: " + token)
+    app_state_source = (root / "core/rs_app_state_v3.lua").read_text(encoding="utf-8-sig", errors="replace")
+    shell_store_source = (root / "presentation/v3/rs_v3_shell_store.lua").read_text(encoding="utf-8-sig", errors="replace")
+    launcher_store_source = (root / "presentation/v3/rs_v3_launcher_store.lua").read_text(encoding="utf-8-sig", errors="replace")
+    for source_name, source_text, token in (
+        ("app", app_state_source, "if self.sessionFallback == true then return ApplyMutation() end"),
+        ("shell", shell_store_source, 'if self.ShellStoreSessionFallback == true then return true, "session_fallback_no_persist" end'),
+        ("launcher", launcher_store_source, 'if self.LauncherStoreSessionFallback == true then return true, "session_fallback_no_persist" end'),
+    ):
+        if token not in source_text:
+            failures.append("Startup session-fallback no-persist contract missing: " + source_name)
+    for token in (
+        "local LAUNCHER_LOGICAL_SIZE = 30",
+        "local size = LAUNCHER_LOGICAL_SIZE",
+        "LAUNCHER_LOGICAL_SIZE, LAUNCHER_LOGICAL_SIZE",
+    ):
+        if token not in launcher_store_source:
+            failures.append("Recovery launcher sizing contract missing: " + token)
+    apply_launcher = launcher_store_source[launcher_store_source.find("function V3:ApplyLauncherPlacement"):launcher_store_source.find("function V3:ResetLauncherPlacement")]
+    if "addonScale" in apply_launcher:
+        failures.append("Recovery launcher sizing regression: ApplyLauncherPlacement must not multiply by addonScale")
+    foundation_gate_version = re.search(r"S\.FoundationGate\s*=\s*\{\s*version\s*=\s*(\d+)", foundation_gate_source, re.S)
+    if foundation_gate_version is None or int(foundation_gate_version.group(1)) < 113:
+        failures.append("Foundation ESC lifecycle gate requires version >=113")
+    for token in (
+        '"native_esc_bridge_contract"',
+        '"runtime_entry_lifecycle_contract"',
+        '"native_esc_menu_runtime"',
+        '"bootstrap_recovery_entry"',
+        '"recovery_launcher_input_contract"',
+        '"runtime_startup_degradation"',
+    ):
+        if token not in foundation_gate_source:
+            failures.append("Foundation ESC lifecycle gate missing: " + token)
+
     for token in (
         "DegradedRootFailClosedContractVersion = 1",
         "EventBindingContractVersion = 1",
@@ -1324,7 +1790,7 @@ def main() -> int:
     adaptive_source = (root / "ui/framework/rs_ui_adaptive_panels.lua").read_text(encoding="utf-8-sig", errors="replace")
     data_views_source = (root / "ui/framework/rs_ui_data_views.lua").read_text(encoding="utf-8-sig", errors="replace")
     for source_name, source, tokens in (
-        ("Windowing", windowing_source, ("CriticalInteractionContractVersion = 1", "StateMutationTransactionContractVersion = 1", "GeometryCallbackTransactionContractVersion = 1", "local function EnsureNativeResizing", "UI:RequireHandler(dragHandle", "UI:TryInteractionCall(window, \"StartMoving\")", "UI:TryInteractionCall(window, \"StartSizing\", handleDefinition.direction)", "geometryCallbackRejects")),
+        ("Windowing", windowing_source, ("CriticalInteractionContractVersion = 3", "DragSurfaceHitTestContractVersion = 1", "ExplicitDragConditionContractVersion = 1", "StateMutationTransactionContractVersion = 1", "GeometryCallbackTransactionContractVersion = 1", "local function EnsureNativeResizing", "UI:EnsureEnabled(dragHandle, true, owner)", "UI:EnsurePickable(dragHandle, true, owner)", "UI:RequireHandler(dragHandle", "UI:TryInteractionCall(window, \"StartMoving\")", "UI:TryInteractionCall(window, \"StartSizing\", handleDefinition.direction)", "geometryCallbackRejects")),
         ("Scrollbar", scrollbar_source, ("criticalInteractionContractVersion = 1", "UI:RequireHandler(drag", "UI:TryInteractionCall(drag, \"StartMoving\")")),
         ("SplitView", adaptive_source, ("UI:RequireHandler(dividerDrag", "UI:TryInteractionCall(dividerDrag, \"StartMoving\")", "scrollbar_attach_failed:")),
         ("DataView", data_views_source, ("UI:RequireHandler(handle,\"OnDragStart\"", "UI:TryInteractionCall(handle, \"StartMoving\")", "table_column_resize_handle_create_failed:", "scrollbar_attach_failed:")),
@@ -1336,10 +1802,23 @@ def main() -> int:
     window_shell_source = (root / "ui/framework/rs_ui_window_shell_v3.lua").read_text(encoding="utf-8-sig", errors="replace")
     floating_surface_source = (root / "ui/framework/rs_ui_floating_surface.lua").read_text(encoding="utf-8-sig", errors="replace")
     modal_host_source = (root / "presentation/v3/shell/rs_v3_modal_host.lua").read_text(encoding="utf-8-sig", errors="replace")
+    panels_source = (root / "ui/framework/rs_ui_panels.lua").read_text(encoding="utf-8-sig", errors="replace")
+    component_core_source = (root / "ui/framework/rs_ui_component_core.lua").read_text(encoding="utf-8-sig", errors="replace")
     ui_framework_source = (root / "ui/rs_ui_framework.lua").read_text(encoding="utf-8-sig", errors="replace")
+    for token in ("BorderInteractionForwardingContractVersion = 1", "pickable=spec.pickable == true", "owner=spec.owner"):
+        if token not in panels_source:
+            failures.append("Border interaction forwarding contract missing: " + token)
+    for token in ("InputLifecycleBridgeContractVersion = 1", "UI:RetireInputWidget(self.root"):
+        if token not in component_core_source:
+            failures.append("RSUI input lifecycle bridge missing: " + token)
+    for token in ('inputQuiescenceContractVersion = 1', 'S.UI:QuiesceKeyboardInput("runtime_stop", false)', 'S.UI:QuiesceKeyboardInput("runtime_ready", false)'):
+        if token not in runtime_source:
+            failures.append("Runtime input quiescence contract missing: " + token)
+    if 'previousUI:QuiesceKeyboardInput("bootstrap_hot_reload", true)' not in bootstrap_source:
+        failures.append("Bootstrap old-generation input retirement missing")
     for source_name, source, tokens in (
-        ("UIFacade", ui_framework_source, ("NativeBooleanSetterReturnContractVersion = 1", "GeometryStateTransactionContractVersion = 1", "function UI:EnsureVisible", "function UI:EnsureEnabled", "function UI:EnsurePickable", "function UI:EnsureAlpha", "function UI:EnsureAnchor", "function UI:EnsureExtent")),
-        ("WindowShell", window_shell_source, ("version = 22", "visibilityTransactionContract = 1", "stateMutationTransactionContract = 1", "stateCallbackTransactionContract = 1", "EnsureWindowVisible", "EnsureComponentVisibility", "stateCallbackRejects", "window_lock_native_rejected")),
+        ("UIFacade", ui_framework_source, ("NativeBooleanSetterReturnContractVersion = 1", "InputFocusLifecycleContractVersion = 2", "HiddenInputFocusIsolationContractVersion = 2", "GeometryStateTransactionContractVersion = 1", "function UI:EnsureVisible", "function UI:EnsureEnabled", "function UI:EnsurePickable", "function UI:EnsureAlpha", "function UI:EnsureAnchor", "function UI:EnsureExtent")),
+        ("WindowShell", window_shell_source, ("version = 24", "titleBarInteractionContract = 1", "pickable = true", "visibilityTransactionContract = 1", "stateMutationTransactionContract = 1", "stateCallbackTransactionContract = 1", "topLevelLayerContractVersion = 1", "EnsureWindowVisible", "EnsureComponentVisibility", "stateCallbackRejects", "window_lock_native_rejected")),
         ("FloatingSurface", floating_surface_source, ("StateMutationTransactionContractVersion = 1", "local function CommitState", "rollback")),
         ("ModalHost", modal_host_source, ("version = 6", "visibilityTransactionContractVersion = 1", "local function SetVisible(instance, visible)")),
         ("NativeAdapter", native_adapter_source, ("RootInteractionPolicyContractVersion = 2", "UI:EnsureVisible(window, false, owner)", "UI:EnsureAnchor(widget, UIParent", "UI:EnsureExtent(widget")),
@@ -1420,8 +1899,11 @@ def main() -> int:
         failures.append("Unverified native UI reparent operation: " + ", ".join(reparent_refs[:20]))
 
     token_source = (root / "ui/framework/rs_ui_tokens.lua").read_text(encoding="utf-8-sig", errors="replace")
-    if "version = 4" not in token_source or "popupPriority = 10000" not in token_source:
-        failures.append("UI token layer contract missing: ui/framework/rs_ui_tokens.lua")
+    if any(token not in token_source for token in (
+        "version = 5", "shellPriority = 100", "floatingPriority = 1000",
+        "popupPriority = 10000", "modalPriority = 12000",
+    )):
+        failures.append("UI token top-level layer contract missing: ui/framework/rs_ui_tokens.lua")
 
     controls_source = (root / "ui/framework/rs_ui_controls.lua").read_text(encoding="utf-8-sig", errors="replace")
     if "DropdownDegradedFailClosedContractVersion = 1" not in controls_source:
@@ -1430,6 +1912,32 @@ def main() -> int:
         failures.append("Popup coordinator single-registry contract missing: ui/framework/rs_ui_controls.lua")
     if "PopupCoordinator:Unregister(self)" not in controls_source:
         failures.append("Popup component release unregister contract missing: ui/framework/rs_ui_controls.lua")
+
+    native_primitives_source = (root / "ui/rs_ui_native_primitives.lua").read_text(encoding="utf-8-sig", errors="replace")
+    window_shell_source = (root / "ui/framework/rs_ui_window_shell_v3.lua").read_text(encoding="utf-8-sig", errors="replace")
+    floating_surface_source = (root / "ui/framework/rs_ui_floating_surface.lua").read_text(encoding="utf-8-sig", errors="replace")
+    app_shell_source = (root / "presentation/v3/rs_v3_shell.lua").read_text(encoding="utf-8-sig", errors="replace")
+    interaction_source_for_popup = (root / "ui/framework/rs_ui_interactions.lua").read_text(encoding="utf-8-sig", errors="replace")
+    top_level_tokens = (
+        "TopLevelTransientWindowContractVersion = 1",
+        "opts.transientWindow == true",
+        "factory:CreateWindow",
+        'SetUILayer(tostring(opts.uiLayer or "system"))',
+        "panel.rsUiTransientWindow = transientWindow == true",
+    )
+    for token in top_level_tokens:
+        if token not in native_primitives_source:
+            failures.append("Top-level transient native window contract missing: " + token)
+    for source_name, source_text, tokens in (
+        ("Dropdown/ColorField", controls_source, ("PopupNativeWindowContractVersion = 1", "transientWindow = true", "visible = false", "pickable = false")),
+        ("ContextMenu", interaction_source_for_popup, ("transientWindow = true", "visible = false", "pickable = false")),
+        ("WindowShell layer", window_shell_source, ("topLevelLayerContractVersion = 1", 'window:SetUILayer("system")', 'layerRole or "window"', 'layer.floatingPriority')),
+        ("FloatingSurface layer", floating_surface_source, ('layerRole = "floating"',)),
+        ("Application Shell layer", app_shell_source, ('layer.shellPriority', 'window.rsUiLayerRole = "shell"')),
+    ):
+        for token in tokens:
+            if token not in source_text:
+                failures.append(source_name + " top-level layer contract missing: " + token)
     interaction_source = (root / "ui/framework/rs_ui_interactions.lua").read_text(encoding="utf-8-sig", errors="replace")
     for token in (
         "FocusContractVersion = 2",
@@ -1480,6 +1988,8 @@ def main() -> int:
         + f" apiDependency={len(api_dependency_failures)}"
         + f" apiCapability={len(api_capability_failures)}"
         + f" businessIds={len(business_page_id_failures)}"
+        + f" serviceUpward={len(service_upward_failures)}"
+        + f" productTruth={len(product_truth_failures)}"
         + f" auctionEventOwners={len(auction_event_authority_failures)}"
         + f" retiredUiLayer={len(retired_ui_layer_failures)}"
         + f" rsuiComponentApi={1 if component_api_gate_ok else 0}"

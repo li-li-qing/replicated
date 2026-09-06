@@ -294,8 +294,26 @@ local function ReadItemField(info, keys, normalizer)
 end
 
 local function SourceIdentity(info)
-    return ReadItemField(info, { "itemType", "itemTypeId", "typeId", "item_type" }, NormalizeItemType),
-        ReadItemField(info, { "category_id", "categoryId", "categoryID", "category" }, NormalizeCategory)
+    local inventory = S.Services and S.Services.InventorySnapshotV3 or nil
+    if type(inventory) == "table" and type(inventory.ExtractItemType) == "function" and type(inventory.ExtractCategory) == "function" then
+        return inventory:ExtractItemType(info), inventory:ExtractCategory(info)
+    end
+    return nil, nil
+end
+
+-- Same-item quick take/put must survive RU builds that occasionally omit
+-- itemType on bag-like container rows.  The preferred identity remains the
+-- numeric itemType.  Only when that field is absent do we fall back to the
+-- client-provided localized name + grade + category tuple that the previous
+-- production implementation already used.  This fallback is used only to
+-- compare two read-only slot records; it never invents an itemType and never
+-- bypasses the per-storage blacklist check before a native write.
+local function StableItemIdentity(info)
+    local inventory = S.Services and S.Services.InventorySnapshotV3 or nil
+    if type(inventory) == "table" and type(inventory.StableIdentity) == "function" then
+        return inventory:StableIdentity(info)
+    end
+    return nil, nil, nil, nil
 end
 
 local function ReadMoveSource(scope, slot)
@@ -343,7 +361,11 @@ local function GuardedMove(feature, sourceScope, blacklistScope, capability, obj
     if sourceSlot == nil then return false, slotErr end
     local callOk, item, readErr
     if sourceScope == "bag" then
-        callOk, item, readErr = Call("X2Bag:GetBagItemInfo", BagApi, "GetBagItemInfo", 0, sourceSlot)
+        local inventory = S.Services and S.Services.InventorySnapshotV3 or nil
+        if type(inventory) ~= "table" or type(inventory.ReadPhysicalBagSlot) ~= "function" then
+            return false, "黑名单检查失败：InventorySnapshotV3 不可用"
+        end
+        callOk, item, readErr = inventory:ReadPhysicalBagSlot(sourceSlot)
     elseif sourceScope == "bank" or sourceScope == "coffer" then
         callOk, item, readErr = ReadMoveSource(sourceScope, sourceSlot)
     else
@@ -423,7 +445,7 @@ local function BatchProjection(feature)
         batchTarget = feature.State.batchTarget, batchLimit = feature.State.batchLimit,
         batch = feature.State.batch, batchCategoryOptions = categoryOptions,
         windowContext = windowContext,
-        quickOverlay = Copy(feature._quickOverlay or { visible=false, storageKind=nil, status="等待仓库/箱子", moved=0, queued=0 }),
+        quickOverlay = Copy(feature._quickOverlay or { visible=false, storageKind=nil, status="等待仓库/箱子", moved=0, skipped=0, queued=0 }),
         quickButtons = {
             mode = "native_window_follow_v3", status = "ready", requiresSourceSlot = false,
             reason = "打开银行/箱子时在背包上方提供取/放；显式点击才扫描物品",
@@ -464,7 +486,8 @@ end
 
 local function StopBagBatch(feature, status, errorText)
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(BAG_BATCH_TASK) end
-    feature._batchQueue, feature._batchIndex, feature._batchTarget, feature._batchPending, feature._batchSourceCount = nil, nil, nil, nil, nil
+    feature._batchQueue, feature._batchIndex, feature._batchTarget, feature._batchPending, feature._batchSourceCount, feature._batchBagId = nil, nil, nil, nil, nil, nil
+    feature._batchBlockedIdentities = nil
     feature.State.batch = type(feature.State.batch) == "table" and feature.State.batch or { moved = 0, skipped = 0, queued = 0 }
     feature.State.batch.status = status or "stopped"
     feature.State.batch.error = errorText
@@ -479,7 +502,7 @@ end
 
 local function StopBagQuick(feature, status, errorText)
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask)=="function" then S.Scheduler:RemoveTask(BAG_QUICK_MOVE_TASK) end
-    feature._quickQueue, feature._quickIndex, feature._quickPending, feature._quickSourceCounts = nil, nil, nil, nil
+    feature._quickQueue, feature._quickIndex, feature._quickPending, feature._quickSourceCounts, feature._quickBagId = nil, nil, nil, nil, nil
     feature._quickOverlay = type(feature._quickOverlay)=="table" and feature._quickOverlay or {}
     feature._quickOverlay.status = status or "停止"
     feature._quickOverlay.error = errorText
@@ -490,201 +513,327 @@ end
 
 local BagMoveRuntime = {}
 
-function BagMoveRuntime.ScopeReader(scope)
-    if scope == "bag" then
-        return "X2Bag:Capacity", "X2Bag:GetBagItemInfo", BagApi, "Capacity", "GetBagItemInfo", true
-    elseif scope == "bank" then
-        return "X2Bank:Capacity", "X2Bank:GetBagItemInfo", BankApi, "Capacity", "GetBagItemInfo", false
-    elseif scope == "coffer" then
-        return "X2Coffer:Capacity", "X2Coffer:GetBagItemInfo", CofferApi, "Capacity", "GetBagItemInfo", false
+function BagMoveRuntime.ReadScopeSlot(scope, slot, bagId)
+    local inventory = S.Services and S.Services.InventorySnapshotV3 or nil
+    if type(inventory) ~= "table" or type(inventory.ReadSlot) ~= "function" then
+        return false, nil, "InventorySnapshotV3 unavailable"
     end
-    return nil
-end
-
-function BagMoveRuntime.ReadScopeSlot(scope, slot)
-    local _, readCapability, object, _, readMethod, bagFirst = BagMoveRuntime.ScopeReader(scope)
-    if readCapability == nil then return false, nil, "未知容器" end
-    if bagFirst then return Call(readCapability, object, readMethod, 0, slot) end
-    return Call(readCapability, object, readMethod, slot)
+    return inventory:ReadSlot(scope, slot, bagId)
 end
 
 function BagMoveRuntime.ReadScopeCapacity(scope)
-    local capCapability, _, object, capMethod = BagMoveRuntime.ScopeReader(scope)
-    if capCapability == nil then return nil, "未知容器" end
-    local ok, capacity, err = Call(capCapability, object, capMethod)
-    capacity = Number(capacity)
-    if ok ~= true or capacity == nil or capacity < 0 then return nil, "容量不可读：" .. tostring(err or scope) end
-    capacity = math.floor(capacity)
-    return math.min(BAG_SCAN_LIMIT, capacity), nil, capacity > BAG_SCAN_LIMIT
+    local inventory = S.Services and S.Services.InventorySnapshotV3 or nil
+    if type(inventory) ~= "table" or type(inventory.ReadCapacity) ~= "function" then
+        return nil, "InventorySnapshotV3 unavailable"
+    end
+    local scanSlots, err, truncated = inventory:ReadCapacity(scope, BAG_SCAN_LIMIT)
+    return scanSlots, err, truncated
 end
 
 local function BagIdentitySet(scope)
-    local set, rows, readErrors, counts = {}, {}, 0, {}
-    local capacity, capacityErr = BagMoveRuntime.ReadScopeCapacity(scope)
-    if capacity == nil then return nil,nil,1,capacityErr,nil end
-    for slot=1,capacity do
-        local ok, info = BagMoveRuntime.ReadScopeSlot(scope, slot)
-        if ok~=true then readErrors=readErrors+1
-        elseif type(info)=="table" and next(info)~=nil then
-            local itemType=SourceIdentity(info)
-            if itemType~=nil then
-                set[itemType]=true
-                counts[itemType]=(tonumber(counts[itemType]) or 0)+1
-                rows[#rows+1]={slot=slot,itemType=itemType,info=info}
-            end
-        end
+    local inventory = S.Services and S.Services.InventorySnapshotV3 or nil
+    if type(inventory) ~= "table" or type(inventory.BuildSnapshot) ~= "function" then
+        return nil, nil, 1, "InventorySnapshotV3 unavailable", nil, nil, nil
     end
-    if readErrors>0 then return set,rows,readErrors,"有槽位读取失败",counts end
-    return set,rows,0,nil,counts
+    local snapshot, snapshotErr = inventory:BuildSnapshot(scope, { maxSlots = BAG_SCAN_LIMIT })
+    if type(snapshot) ~= "table" then
+        return nil, nil, 1, snapshotErr or "容器快照读取失败", nil, nil, nil
+    end
+    local rows = {}
+    for _, row in ipairs(snapshot.rows or {}) do
+        rows[#rows + 1] = {
+            slot = row.slot, identity = row.identity, identityMode = row.identityMode,
+            itemType = row.itemType, category = row.category, info = row,
+        }
+    end
+    local readErrors = tonumber(snapshot.readErrors) or 0
+    local err = readErrors > 0 and "有槽位读取失败" or nil
+    if snapshot.truncated == true then
+        readErrors = readErrors + 1
+        err = "容器容量超过安全扫描上限，已安全拒绝"
+    end
+    return Copy(snapshot.identitySet or {}), rows, readErrors, err, Copy(snapshot.identityCount or {}), snapshot.bagId, snapshot
 end
 
--- MoveToEmpty* can cause the client to compact/reproject bag slots. Slot numbers
--- are therefore a transient locator, never item identity. Quick/batch plans keep
--- stable itemType/category intent and resolve the live source slot immediately
--- before each write. This prevents a successful first move from invalidating the
--- rest of a precomputed slot queue.
-function BagMoveRuntime.FindLiveMoveSource(feature, sourceScope, blacklistScope, itemType, category)
-    local capacity, capacityErr = BagMoveRuntime.ReadScopeCapacity(sourceScope)
-    if capacity == nil then return nil, nil, capacityErr end
-    local readErrors = 0
-    for slot = 1, capacity do
-        local ok, info = BagMoveRuntime.ReadScopeSlot(sourceScope, slot)
-        if ok ~= true then
-            readErrors = readErrors + 1
-        elseif type(info) == "table" and next(info) ~= nil then
-            local currentType, currentCategory = SourceIdentity(info)
-            local identityMatch = itemType ~= nil and currentType == itemType or itemType == nil and currentCategory == category
-            if identityMatch then
-                local allowed, deny = CheckBlacklist(feature, blacklistScope, info)
-                if allowed == true then return slot, info, nil end
-                if deny ~= nil then -- keep scanning: another same-category row may still be allowed
-                    -- no-op; deny is intentionally row-local
-                end
-            end
-        end
+-- MoveToEmpty* can compact/reproject slots.  The plan therefore keeps only
+-- stable identity/category intent plus a scan hint.  InventorySnapshotV3 checks
+-- the hinted slot first and wraps through the bounded container only when the
+-- hint is stale; slot numbers never become persistent identity.
+function BagMoveRuntime.FindLiveMoveSource(feature, sourceScope, blacklistScope, identity, category, bagId, startSlot, blockedIdentities)
+    local inventory = S.Services and S.Services.InventorySnapshotV3 or nil
+    if type(inventory) ~= "table" or type(inventory.FindLiveRow) ~= "function" then
+        return nil, nil, "InventorySnapshotV3 unavailable"
     end
-    if readErrors > 0 then return nil, nil, "源容器有槽位读取失败，已安全停止" end
-    return nil, nil, "没有剩余可移动的匹配物品"
+    local row, _, err = inventory:FindLiveRow(sourceScope, function(candidate)
+        if type(blockedIdentities) == "table" and candidate.identity ~= nil and blockedIdentities[candidate.identity] == true then return false end
+        local identityMatch = identity ~= nil and candidate.identity == identity or identity == nil and candidate.category == category
+        if identityMatch ~= true then return false end
+        local allowed = CheckBlacklist(feature, blacklistScope, candidate)
+        return allowed == true
+    end, { bagId = bagId, startSlot = startSlot, maxSlots = BAG_SCAN_LIMIT })
+    if type(row) ~= "table" then return nil, nil, err end
+    return row.slot, row, nil
 end
 
-function BagMoveRuntime.CountLiveMatches(scope, itemType, category)
-    local capacity, capacityErr = BagMoveRuntime.ReadScopeCapacity(scope)
-    if capacity == nil then return nil, capacityErr end
-    local count, readErrors = 0, 0
-    for slot = 1, capacity do
-        local ok, info = BagMoveRuntime.ReadScopeSlot(scope, slot)
-        if ok ~= true then
-            readErrors = readErrors + 1
-        elseif type(info) == "table" and next(info) ~= nil then
-            local currentType, currentCategory = SourceIdentity(info)
-            if (itemType ~= nil and currentType == itemType) or (itemType == nil and currentCategory == category) then count = count + 1 end
-        end
+-- A false return from an existing native MoveToEmpty* method is a per-item
+-- rejection (most commonly: no empty slot and the destination stack for this
+-- identity cannot accept more). Missing capability/API errors remain fatal.
+function BagMoveRuntime.IsNativeMoveRejected(err)
+    return type(err) == "string" and string.find(err, " returned false", 1, true) ~= nil
+end
+
+function BagMoveRuntime.SkipQuickIdentity(feature, entry, reason)
+    if type(entry) ~= "table" then return false end
+    local skipped = math.max(1, tonumber(entry.remaining) or 1)
+    feature._quickOverlay = type(feature._quickOverlay) == "table" and feature._quickOverlay or {}
+    feature._quickOverlay.skipped = (tonumber(feature._quickOverlay.skipped) or 0) + skipped
+    entry.remaining = 0
+    feature._quickPending = nil
+    feature._quickIndex = math.max(tonumber(feature._quickIndex) or 0, tonumber(entry.queueIndex) or 0)
+    feature._quickOverlay.error = reason
+    PublishBagOverlay(feature, "bag_quick_identity_skipped")
+    return true
+end
+
+function BagMoveRuntime.BlockBatchIdentity(feature, entry, identity, reason)
+    if type(entry) ~= "table" or identity == nil then return false, "无法安全识别被拒绝的物品" end
+    local count, countErr = BagMoveRuntime.CountLiveMatches("bag", identity, nil, feature._batchBagId, nil)
+    if count == nil then return false, countErr or "被拒绝物品数量不可读" end
+    local skipCount = math.min(math.max(1, tonumber(count) or 1), math.max(1, tonumber(entry.remaining) or 1))
+    feature._batchBlockedIdentities = type(feature._batchBlockedIdentities) == "table" and feature._batchBlockedIdentities or {}
+    feature._batchBlockedIdentities[identity] = true
+    entry.remaining = math.max(0, (tonumber(entry.remaining) or 0) - skipCount)
+    -- The rejected stacks remain in the bag; do not decrement the actual
+    -- category source count. They are excluded only by identity for this run.
+    feature.State.batch.skipped = (tonumber(feature.State.batch.skipped) or 0) + skipCount
+    feature.State.batch.error = reason
+    feature._batchPending = nil
+    return true, skipCount
+end
+
+function BagMoveRuntime.CountLiveMatches(scope, identity, category, bagId, stopAt)
+    local inventory = S.Services and S.Services.InventorySnapshotV3 or nil
+    if type(inventory) ~= "table" or type(inventory.CountLive) ~= "function" then
+        return nil, "InventorySnapshotV3 unavailable"
     end
-    if readErrors > 0 then return nil, "源容器有槽位读取失败，无法确认移动结果" end
-    return count, nil
+    return inventory:CountLive(scope, function(row)
+        return (identity ~= nil and row.identity == identity) or (identity == nil and row.category == category)
+    end, { bagId = bagId, stopAt = stopAt, maxSlots = BAG_SCAN_LIMIT })
+end
+
+function BagMoveRuntime.IssueQuickMove(entry, target, slot)
+    if entry.source == "bag" and target == "bank" then return Action("X2Bag:MoveToEmptyBankSlot", BagApi, "MoveToEmptyBankSlot", slot) end
+    if entry.source == "bag" then return Action("X2Bag:MoveToEmptyCofferSlot", BagApi, "MoveToEmptyCofferSlot", slot) end
+    if entry.source == "bank" then return Action("X2Bank:MoveToEmptyBagSlot", BankApi, "MoveToEmptyBagSlot", slot) end
+    return Action("X2Coffer:MoveToEmptyBagSlot", CofferApi, "MoveToEmptyBagSlot", slot)
 end
 
 local function BeginBagQuick(feature, direction)
-    if BagBatchRunning(feature) then return false,"类别批量整理正在运行，请先停止" end
-    if BagQuickRunning(feature) then return false,"快捷取放已经在运行，请先停止" end
-    local bagWindow=ReadBagWindowContext(); local storage=CurrentStorageContext()
-    if type(bagWindow)~="table" or bagWindow.status~="ready" or bagWindow.visible~=true then return false,"请先打开背包" end
-    if type(storage)~="table" then return false,"请先打开银行或箱子" end
-    local target=storage.kind
-    local bagSet,bagRows,bagErrors,bagErr,bagCounts=BagIdentitySet("bag")
-    local storageSet,storageRows,storageErrors,storageErr,storageCounts=BagIdentitySet(target)
-    if bagSet==nil or storageSet==nil then return false,bagErr or storageErr or "容器读取失败" end
-    if bagErrors>0 or storageErrors>0 then return false,"物品槽位存在读取失败，已安全拒绝取放" end
-    local queue={}
-    local sourceCounts
-    if direction=="withdraw" then
-        sourceCounts=storageCounts or {}
-        for _,row in ipairs(storageRows) do
-            if bagSet[row.itemType] and #queue<BAG_QUICK_LIMIT then
-                local allowed=CheckBlacklist(feature,target,row.info)
-                if allowed==true then queue[#queue+1]={itemType=row.itemType,source=target,dest="bag"} end
-            end
+    if BagBatchRunning(feature) then return false, "类别批量整理正在运行，请先停止" end
+    if BagQuickRunning(feature) then return false, "快捷取放已经在运行，请先停止" end
+    local bagWindow = ReadBagWindowContext()
+    local storage = CurrentStorageContext()
+    if type(bagWindow) ~= "table" or bagWindow.status ~= "ready" or bagWindow.visible ~= true then return false, "请先打开背包" end
+    if type(storage) ~= "table" then return false, "请先打开银行或箱子" end
+
+    local target = storage.kind
+    local bagSet, bagRows, bagErrors, bagErr, bagCounts, bagId = BagIdentitySet("bag")
+    local storageSet, storageRows, storageErrors, storageErr, storageCounts = BagIdentitySet(target)
+    if bagSet == nil or storageSet == nil then return false, bagErr or storageErr or "容器读取失败" end
+    if bagErrors > 0 or storageErrors > 0 then return false, bagErr or storageErr or "物品槽位存在读取失败，已安全拒绝取放" end
+
+    -- One-click transfer plan v7: group by stable identity instead of storing one
+    -- queue record per physical slot.  The `remaining` count is the business
+    -- intent; `slotHint` is only an optimization and is revalidated before every
+    -- write.  This survives slot compaction and avoids a large duplicate queue.
+    local queue, queueByIdentity, sourceCounts, plannedMoves = {}, {}, nil, 0
+    local function AddIntent(row, source, dest)
+        if plannedMoves >= BAG_QUICK_LIMIT or type(row) ~= "table" or row.identity == nil then return end
+        local allowed = CheckBlacklist(feature, target, row.info)
+        if allowed ~= true then return end
+        local index = queueByIdentity[row.identity]
+        local entry = index ~= nil and queue[index] or nil
+        if entry == nil then
+            entry = {
+                identity = row.identity, identityMode = row.identityMode, itemType = row.itemType,
+                source = source, dest = dest, remaining = 0, slotHint = row.slot,
+            }
+            queue[#queue + 1] = entry
+            queueByIdentity[row.identity] = #queue
         end
-    elseif direction=="deposit" then
-        sourceCounts=bagCounts or {}
-        for _,row in ipairs(bagRows) do
-            if storageSet[row.itemType] and #queue<BAG_QUICK_LIMIT then
-                local allowed=CheckBlacklist(feature,target,row.info)
-                if allowed==true then queue[#queue+1]={itemType=row.itemType,source="bag",dest=target} end
-            end
-        end
-    else return false,"未知快捷动作" end
-    feature._quickOverlay=type(feature._quickOverlay)=="table" and feature._quickOverlay or {}
-    feature._quickOverlay.status=#queue>0 and (direction=="withdraw" and "正在取出" or "正在放入") or "没有可匹配的同类物品"
-    feature._quickOverlay.error=nil; feature._quickOverlay.queued=#queue; feature._quickOverlay.moved=0
-    feature._quickQueue,feature._quickIndex,feature._quickPending=queue,0,nil
-    feature._quickSourceCounts=Copy(sourceCounts)
-    PublishBagOverlay(feature,"bag_quick_start")
-    if #queue==0 then return true,0 end
-    if S.Scheduler==nil or type(S.Scheduler.AddTask)~="function" then
-        StopBagQuick(feature,"已停止","调度器不可用")
-        return false,"调度器不可用"
+        entry.remaining = (tonumber(entry.remaining) or 0) + 1
+        plannedMoves = plannedMoves + 1
     end
-    S.Scheduler:RemoveTask(BAG_QUICK_MOVE_TASK)
-    local added=S.Scheduler:AddTask(BAG_QUICK_MOVE_TASK,250,function()
-        local current=CurrentStorageContext()
-        if type(current)~="table" or current.kind~=target then StopBagQuick(feature,"已停止","仓库/箱子已关闭或切换"); return end
-        local pending=feature._quickPending
-        if pending~=nil then
-            local ok,info,readErr=BagMoveRuntime.ReadScopeSlot(pending.source,pending.slot)
-            if ok~=true then StopBagQuick(feature,"已停止","移动后源槽读取失败："..tostring(readErr or "unknown")); return end
-            local afterType=SourceIdentity(info)
-            local moved = type(info)~="table" or next(info)==nil or afterType~=pending.itemType
-            if moved~=true then
-                -- A successful move may compact another identical stack into the
-                -- same slot. Only when the locator remains ambiguous do a bounded
-                -- identity-count verification instead of treating slot equality
-                -- as proof that the write failed.
-                local liveCount,countErr=BagMoveRuntime.CountLiveMatches(pending.source,pending.itemType,nil)
-                if liveCount==nil then StopBagQuick(feature,"已停止",countErr or "移动结果无法确认"); return end
-                moved=liveCount < (tonumber(pending.beforeCount) or 0)
-            end
-            if moved~=true then StopBagQuick(feature,"已停止","移动后源容器数量未减少，已安全停止"); return end
-            local beforeCount=tonumber(pending.beforeCount) or 1
-            feature._quickSourceCounts=type(feature._quickSourceCounts)=="table" and feature._quickSourceCounts or {}
-            feature._quickSourceCounts[pending.itemType]=math.max(0,beforeCount-1)
-            feature._quickOverlay.moved=(tonumber(feature._quickOverlay.moved) or 0)+1
-            feature._quickPending=nil
+
+    if direction == "withdraw" then
+        sourceCounts = storageCounts or {}
+        for _, row in ipairs(storageRows) do
+            if row.identity ~= nil and bagSet[row.identity] == true then AddIntent(row, target, "bag") end
+            if plannedMoves >= BAG_QUICK_LIMIT then break end
         end
-        local entry=feature._quickQueue[feature._quickIndex+1]
-        if entry==nil then StopBagQuick(feature,"已完成",nil); return end
-        local slot,info,sourceErr=BagMoveRuntime.FindLiveMoveSource(feature,entry.source,target,entry.itemType,nil)
-        if slot==nil then
-            feature._quickIndex=feature._quickIndex+1
-            if sourceErr~="没有剩余可移动的匹配物品" then
-                StopBagQuick(feature,"已停止",sourceErr or "源物品解析失败")
+    elseif direction == "deposit" then
+        sourceCounts = bagCounts or {}
+        for _, row in ipairs(bagRows) do
+            if row.identity ~= nil and storageSet[row.identity] == true then AddIntent(row, "bag", target) end
+            if plannedMoves >= BAG_QUICK_LIMIT then break end
+        end
+    else
+        return false, "未知快捷动作"
+    end
+
+    feature._quickOverlay = type(feature._quickOverlay) == "table" and feature._quickOverlay or {}
+    feature._quickOverlay.status = plannedMoves > 0 and (direction == "withdraw" and "正在取出" or "正在放入") or "没有可匹配的同类物品"
+    feature._quickOverlay.error = nil
+    feature._quickOverlay.queued = plannedMoves
+    feature._quickOverlay.moved = 0
+    feature._quickOverlay.skipped = 0
+    feature._quickQueue, feature._quickIndex, feature._quickPending = queue, 0, nil
+    feature._quickSourceCounts = Copy(sourceCounts)
+    feature._quickBagId = bagId
+    PublishBagOverlay(feature, "bag_quick_start")
+    if plannedMoves == 0 then return true, 0 end
+    if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then
+        StopBagQuick(feature, "已停止", "调度器不可用")
+        return false, "调度器不可用"
+    end
+
+    S.Scheduler:RemoveTask(BAG_QUICK_MOVE_TASK)
+    local added = S.Scheduler:AddTask(BAG_QUICK_MOVE_TASK, 250, function()
+        local current = CurrentStorageContext()
+        if type(current) ~= "table" or current.kind ~= target then
+            StopBagQuick(feature, "已停止", "仓库/箱子已关闭或切换")
+            return
+        end
+
+        local pending = feature._quickPending
+        if pending ~= nil then
+            local ok, info, readErr = BagMoveRuntime.ReadScopeSlot(pending.source, pending.slot, pending.bagId)
+            if ok ~= true then
+                StopBagQuick(feature, "已停止", "移动后源槽读取失败：" .. tostring(readErr or "unknown"))
+                return
+            end
+            local afterIdentity = StableItemIdentity(info)
+            local moved = type(info) ~= "table" or next(info) == nil or afterIdentity ~= pending.identity
+            if moved ~= true then
+                -- Ambiguous same-slot/same-item state occurs when RU compacts a
+                -- later identical stack into the just-vacated slot. Count only
+                -- in this ambiguous branch and stop as soon as the old count is
+                -- reached in the no-progress case.
+                local liveCount, countErr = BagMoveRuntime.CountLiveMatches(
+                    pending.source, pending.identity, nil, pending.bagId, pending.beforeCount)
+                if liveCount == nil then
+                    StopBagQuick(feature, "已停止", countErr or "移动结果无法确认")
+                    return
+                end
+                moved = liveCount < (tonumber(pending.beforeCount) or 0)
+            end
+            if moved ~= true then
+                local retries = tonumber(pending.retries) or 0
+                if retries < 2 then
+                    local retryOk, retryErr = BagMoveRuntime.IssueQuickMove({ source = pending.source }, target, pending.slot)
+                    if retryOk ~= true then
+                        local group = type(feature._quickQueue) == "table" and feature._quickQueue[pending.queueIndex] or nil
+                        if group ~= nil then
+                            group.queueIndex = pending.queueIndex
+                            if BagMoveRuntime.IsNativeMoveRejected(retryErr) then
+                                BagMoveRuntime.SkipQuickIdentity(feature, group, "该类物品目标堆已满，已跳过并继续后续物品")
+                            else
+                                BagMoveRuntime.SkipQuickIdentity(feature, group, "移动重试异常，已跳过该类物品并继续：" .. tostring(retryErr or "unknown"))
+                            end
+                            return
+                        end
+                        StopBagQuick(feature, "已停止", "移动重试失败：" .. tostring(retryErr or "unknown"))
+                        return
+                    end
+                    pending.retries = retries + 1
+                    PublishBagOverlay(feature, "bag_quick_retry")
+                    return
+                end
+                local group = type(feature._quickQueue) == "table" and feature._quickQueue[pending.queueIndex] or nil
+                if type(group) ~= "table" then
+                    StopBagQuick(feature, "已停止", "移动后源容器数量连续未减少且队列身份丢失")
+                    return
+                end
+                group.queueIndex = pending.queueIndex
+                BagMoveRuntime.SkipQuickIdentity(feature, group, "该类物品当前无法继续堆叠，已跳过并继续后续物品")
+                return
+            end
+
+            local beforeCount = tonumber(pending.beforeCount) or 1
+            feature._quickSourceCounts = type(feature._quickSourceCounts) == "table" and feature._quickSourceCounts or {}
+            feature._quickSourceCounts[pending.identity] = math.max(0, beforeCount - 1)
+            feature._quickOverlay.moved = (tonumber(feature._quickOverlay.moved) or 0) + 1
+            local group = type(feature._quickQueue) == "table" and feature._quickQueue[pending.queueIndex] or nil
+            if type(group) == "table" then
+                group.remaining = math.max(0, (tonumber(group.remaining) or 1) - 1)
+                -- After compaction the same physical locator is the best next
+                -- hint; if it no longer matches FindLiveRow wraps safely.
+                group.slotHint = pending.slot
+                if group.remaining <= 0 then feature._quickIndex = pending.queueIndex end
             else
-                PublishBagOverlay(feature,"bag_quick_skip")
+                feature._quickIndex = math.max(feature._quickIndex or 0, pending.queueIndex or 0)
+            end
+            feature._quickPending = nil
+        end
+
+        local entry = feature._quickQueue[feature._quickIndex + 1]
+        if entry == nil then StopBagQuick(feature, "已完成", nil); return end
+        if (tonumber(entry.remaining) or 0) <= 0 then
+            feature._quickIndex = feature._quickIndex + 1
+            PublishBagOverlay(feature, "bag_quick_group_complete")
+            return
+        end
+
+        local sourceBagId = entry.source == "bag" and feature._quickBagId or nil
+        local slot, _, sourceErr = BagMoveRuntime.FindLiveMoveSource(
+            feature, entry.source, target, entry.identity, nil, sourceBagId, entry.slotHint)
+        if slot == nil then
+            entry.remaining = 0
+            feature._quickIndex = feature._quickIndex + 1
+            if sourceErr ~= "没有剩余可移动的匹配物品" then
+                StopBagQuick(feature, "已停止", sourceErr or "源物品解析失败")
+            else
+                PublishBagOverlay(feature, "bag_quick_skip")
             end
             return
         end
-        local counts=type(feature._quickSourceCounts)=="table" and feature._quickSourceCounts or {}
-        local beforeCount=tonumber(counts[entry.itemType]) or 0
-        if beforeCount<1 then
-            local liveCount,countErr=BagMoveRuntime.CountLiveMatches(entry.source,entry.itemType,nil)
-            if liveCount==nil then StopBagQuick(feature,"已停止",countErr or "源数量不可读"); return end
-            beforeCount=liveCount
-            counts[entry.itemType]=liveCount
-            feature._quickSourceCounts=counts
+
+        local counts = type(feature._quickSourceCounts) == "table" and feature._quickSourceCounts or {}
+        local beforeCount = tonumber(counts[entry.identity]) or 0
+        if beforeCount < 1 then
+            local liveCount, countErr = BagMoveRuntime.CountLiveMatches(entry.source, entry.identity, nil, sourceBagId, nil)
+            if liveCount == nil then StopBagQuick(feature, "已停止", countErr or "源数量不可读"); return end
+            beforeCount = liveCount
+            counts[entry.identity] = liveCount
+            feature._quickSourceCounts = counts
         end
-        local actionOk,actionErr
-        if entry.source=="bag" and target=="bank" then actionOk,actionErr=Action("X2Bag:MoveToEmptyBankSlot",BagApi,"MoveToEmptyBankSlot",slot)
-        elseif entry.source=="bag" then actionOk,actionErr=Action("X2Bag:MoveToEmptyCofferSlot",BagApi,"MoveToEmptyCofferSlot",slot)
-        elseif entry.source=="bank" then actionOk,actionErr=Action("X2Bank:MoveToEmptyBagSlot",BankApi,"MoveToEmptyBagSlot",slot)
-        else actionOk,actionErr=Action("X2Coffer:MoveToEmptyBagSlot",CofferApi,"MoveToEmptyBagSlot",slot) end
-        if actionOk~=true then StopBagQuick(feature,"已停止",actionErr or "移动失败"); return end
-        feature._quickPending={slot=slot,itemType=entry.itemType,source=entry.source,beforeCount=beforeCount}
-        feature._quickIndex=feature._quickIndex+1
-        PublishBagOverlay(feature,"bag_quick_step")
-    end,false,feature,"P1")
-    if added~=true then StopBagQuick(feature,"已停止","快捷取放任务创建失败"); return false,"快捷取放任务创建失败" end
-    if type(S.Scheduler.SetTaskModule)=="function" then S.Scheduler:SetTaskModule(BAG_QUICK_MOVE_TASK,"tools_bag",true) end
-    return true,#queue
+        local actionOk, actionErr = BagMoveRuntime.IssueQuickMove(entry, target, slot)
+        if actionOk ~= true then
+            entry.queueIndex = feature._quickIndex + 1
+            if BagMoveRuntime.IsNativeMoveRejected(actionErr) then
+                BagMoveRuntime.SkipQuickIdentity(feature, entry, "该类物品目标堆已满，已跳过并继续后续物品")
+                return
+            end
+            -- Uncertain dispatch failure (pcall/capability error text): the
+            -- post-write verification of every later step re-reads live state,
+            -- so skipping THIS identity is safe. Stopping the whole queue made
+            -- one bad call end the entire run.
+            BagMoveRuntime.SkipQuickIdentity(feature, entry, "移动调用异常，已跳过该类物品并继续：" .. tostring(actionErr or "unknown"))
+            return
+        end
+        feature._quickPending = {
+            slot = slot, identity = entry.identity, identityMode = entry.identityMode, itemType = entry.itemType,
+            source = entry.source, beforeCount = beforeCount, retries = 0, bagId = sourceBagId,
+            queueIndex = feature._quickIndex + 1,
+        }
+        PublishBagOverlay(feature, "bag_quick_step")
+    end, false, feature, "P1")
+    if added ~= true then
+        StopBagQuick(feature, "已停止", "快捷取放任务创建失败")
+        return false, "快捷取放任务创建失败"
+    end
+    if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(BAG_QUICK_MOVE_TASK, "tools_bag", true) end
+    return true, plannedMoves
 end
 
 local function RefreshBagQuickOverlay(feature)
@@ -719,7 +868,7 @@ local function StartBagQuick(feature, direction)
 end
 
 local function StartBagQuickObserver(feature)
-    feature._quickOverlay=feature._quickOverlay or { visible=false,status="等待仓库/箱子",moved=0,queued=0 }
+    feature._quickOverlay=feature._quickOverlay or { visible=false,status="等待仓库/箱子",moved=0,skipped=0,queued=0 }
     RefreshBagQuickOverlay(feature)
     if S.Scheduler==nil or type(S.Scheduler.AddTask)~="function" then return false,"背包窗口观察调度器不可用" end
     S.Scheduler:RemoveTask(BAG_QUICK_OBSERVE_TASK)
@@ -741,145 +890,201 @@ local function BeginBatchMove(feature, target, category, requestedLimit)
     category, requestedLimit = NormalizeCategory(category), NormalizeBatchLimit(requestedLimit)
     if category == nil then return false, "请选择有效的物品类别" end
     if requestedLimit == nil then return false, "批量上限必须是 1-40 的整数" end
-    local targetObject, targetCapMethod, targetReadCapability, targetApi
-    if target == "bank" then targetApi, targetObject, targetCapMethod, targetReadCapability = BankApi, BankApi, "Capacity", "X2Bank:GetBagItemInfo"
-    elseif target == "coffer" then targetApi, targetObject, targetCapMethod, targetReadCapability = CofferApi, CofferApi, "Capacity", "X2Coffer:GetBagItemInfo"
-    else return false, "目标仓储必须是银行或箱子" end
+    if target ~= "bank" and target ~= "coffer" then return false, "目标仓储必须是银行或箱子" end
     local windowOk, windowErr = RequireStorageWindow(target)
     if windowOk ~= true then return false, windowErr end
-    local okCap, cap, capErr = Call("X2" .. (target == "bank" and "Bank" or "Coffer") .. ":Capacity", targetObject, targetCapMethod)
-    cap = Number(cap)
-    if okCap ~= true or cap == nil or cap < 0 then return false, "目标容量不可读：" .. Text(capErr, "容量读取失败") end
-    cap = math.floor(cap)
-    local free, targetReadErrors = cap, 0
-    for slot = 1, math.min(cap, BAG_SCAN_LIMIT) do
-        local ok, info = Call(targetReadCapability, targetApi, "GetBagItemInfo", slot)
-        if ok ~= true then targetReadErrors = targetReadErrors + 1
-        elseif type(info) == "table" and next(info) ~= nil then free = free - 1 end
-    end
-    if targetReadErrors > 0 or cap > BAG_SCAN_LIMIT then return false, "目标空槽语义不可完整验证，已安全停止" end
-    if free <= 0 then return false, "目标仓储没有可验证的空槽" end
 
-    local queue, skipped, readErrors, sourceCategoryCount = {}, 0, 0, 0
-    local okBagCap, bagCap = Call("X2Bag:Capacity", BagApi, "Capacity")
-    bagCap = Number(bagCap)
-    if okBagCap ~= true or bagCap == nil then return false, "背包容量不可读，无法建立批量队列" end
-    local queueLimit = math.min(requestedLimit, free)
-    for slot = 1, math.min(BAG_SCAN_LIMIT, math.floor(bagCap)) do
-        local ok, info = Call("X2Bag:GetBagItemInfo", BagApi, "GetBagItemInfo", 0, slot)
-        if ok ~= true then
-            readErrors = readErrors + 1
-        elseif type(info) == "table" and next(info) ~= nil then
-            local _, itemCategory = SourceIdentity(info)
-            if itemCategory == nil then
+    local inventory = S.Services and S.Services.InventorySnapshotV3 or nil
+    if type(inventory) ~= "table" or type(inventory.BuildSnapshot) ~= "function" then
+        return false, "InventorySnapshotV3 unavailable"
+    end
+    local targetSnapshot, targetErr = inventory:BuildSnapshot(target, { maxSlots = BAG_SCAN_LIMIT })
+    if type(targetSnapshot) ~= "table" then return false, targetErr or "目标仓储读取失败" end
+    if targetSnapshot.truncated == true or (tonumber(targetSnapshot.readErrors) or 0) > 0 then
+        return false, "目标空槽语义不可完整验证，已安全停止"
+    end
+    -- A full container can still accept items into existing partial stacks.
+    -- Capacity is therefore not a valid global preflight rejection. Each
+    -- identity is attempted independently and a rejected identity is skipped.
+
+    local bagSnapshot, bagErr = inventory:BuildSnapshot("bag", { maxSlots = BAG_SCAN_LIMIT })
+    if type(bagSnapshot) ~= "table" then return false, bagErr or "背包快照读取失败" end
+    if bagSnapshot.truncated == true or (tonumber(bagSnapshot.readErrors) or 0) > 0 then
+        return false, "背包槽位存在读取失败或被截断，无法建立安全批量计划"
+    end
+
+    local queueLimit = requestedLimit
+    local skipped, plannedMoves, firstSlot = 0, 0, nil
+    local sourceCategoryCount = tonumber((bagSnapshot.categoryCount or {})[category]) or 0
+    for _, row in ipairs(bagSnapshot.rows or {}) do
+        if row.category == nil then
+            skipped = skipped + 1
+        elseif row.category == category then
+            local allowed = CheckBlacklist(feature, target, row)
+            if allowed == true and plannedMoves < queueLimit then
+                plannedMoves = plannedMoves + 1
+                firstSlot = firstSlot or row.slot
+            elseif allowed ~= true then
                 skipped = skipped + 1
-            elseif itemCategory == category then
-                sourceCategoryCount = sourceCategoryCount + 1
-                if #queue < queueLimit then
-                    local allowed = CheckBlacklist(feature, target, info)
-                    if allowed == true then
-                        -- Queue stable intent, not a transient slot locator. The
-                        -- live bag slot is resolved again immediately before each
-                        -- write because ArcheAge may compact slots after a move.
-                        queue[#queue + 1] = { category = category }
-                    else
-                        skipped = skipped + 1
-                    end
-                end
             end
         end
     end
-    feature.State.batch = { status = #queue == 0 and "empty" or "running", moved = 0, skipped = skipped, queued = #queue, error = readErrors > 0 and "部分源槽位不可读，已跳过" or nil }
+
+    local queue = plannedMoves > 0 and { { category = category, remaining = plannedMoves, slotHint = firstSlot or 1 } } or {}
+    feature.State.batch = {
+        status = plannedMoves == 0 and "empty" or "running",
+        moved = 0, skipped = skipped, queued = plannedMoves, error = nil,
+    }
     feature._batchQueue, feature._batchIndex, feature._batchTarget, feature._batchPending = queue, 0, target, nil
     feature._batchSourceCount = sourceCategoryCount
-    if #queue == 0 then return true, 0 end
+    feature._batchBagId = bagSnapshot.bagId
+    feature._batchBlockedIdentities = {}
+    if plannedMoves == 0 then return true, 0 end
     if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then
         StopBagBatch(feature, "stopped", "批量队列调度器不可用，安全拒绝")
         return false, "批量队列调度器不可用，安全拒绝"
     end
+
     S.Scheduler:RemoveTask(BAG_BATCH_TASK)
     local taskAdded = S.Scheduler:AddTask(BAG_BATCH_TASK, 250, function()
         if feature.State.batch.status ~= "running" then S.Scheduler:RemoveTask(BAG_BATCH_TASK); return end
         local schedulerWindowOk, schedulerWindowErr = RequireStorageWindow(feature._batchTarget)
         if schedulerWindowOk ~= true then
-            feature.State.batch.status, feature.State.batch.error = "stopped", schedulerWindowErr or "仓储窗口已关闭或目标改变"
-            S.Scheduler:RemoveTask(BAG_BATCH_TASK); feature.Authority:Refresh("batch_window_stop"); return
+            StopBagBatch(feature, "stopped", schedulerWindowErr or "仓储窗口已关闭或目标改变")
+            feature.Authority:Refresh("batch_window_stop")
+            return
         end
+
         local pending = feature._batchPending
         if pending ~= nil then
-            local ok, info, readErr = BagMoveRuntime.ReadScopeSlot("bag", pending.slot)
+            local ok, info, readErr = BagMoveRuntime.ReadScopeSlot("bag", pending.slot, pending.bagId)
             if ok ~= true then
-                feature.State.batch.status, feature.State.batch.error = "stopped", "移动后源槽读取失败：" .. tostring(readErr or "unknown read error")
-                S.Scheduler:RemoveTask(BAG_BATCH_TASK); feature.Authority:Refresh("batch_verify_read_stop"); return
+                StopBagBatch(feature, "stopped", "移动后源槽读取失败：" .. tostring(readErr or "unknown read error"))
+                feature.Authority:Refresh("batch_verify_read_stop")
+                return
             end
-            local moved = IsEmptyBagInfo(info)
+            local _, afterCategory = SourceIdentity(info)
+            local moved = IsEmptyBagInfo(info) or afterCategory ~= pending.category
             if moved ~= true then
-                -- Slot compaction can put another item into the just-vacated
-                -- locator. Confirm the category population decreased before
-                -- deciding the move failed.
-                local liveCount, countErr = BagMoveRuntime.CountLiveMatches("bag", nil, pending.category)
+                local liveCount, countErr = BagMoveRuntime.CountLiveMatches(
+                    "bag", pending.identity, nil, pending.bagId, pending.beforeCount)
                 if liveCount == nil then
-                    feature.State.batch.status, feature.State.batch.error = "stopped", countErr or "移动结果无法确认"
-                    S.Scheduler:RemoveTask(BAG_BATCH_TASK); feature.Authority:Refresh("batch_verify_count_stop"); return
+                    StopBagBatch(feature, "stopped", countErr or "移动结果无法确认")
+                    feature.Authority:Refresh("batch_verify_count_stop")
+                    return
                 end
                 moved = liveCount < (tonumber(pending.beforeCount) or 0)
             end
             if moved ~= true then
-                feature.State.batch.status, feature.State.batch.error = "stopped", "移动后源类别数量未减少，已安全停止"
-                S.Scheduler:RemoveTask(BAG_BATCH_TASK); feature.Authority:Refresh("batch_verify_stop"); return
+                local retries = tonumber(pending.retries) or 0
+                if retries < 2 then
+                    local capability = target == "bank" and "X2Bag:MoveToEmptyBankSlot" or "X2Bag:MoveToEmptyCofferSlot"
+                    local retryOk, retryErr = Action(capability, BagApi, target == "bank" and "MoveToEmptyBankSlot" or "MoveToEmptyCofferSlot", pending.slot)
+                    if retryOk ~= true then
+                        if BagMoveRuntime.IsNativeMoveRejected(retryErr) then
+                            local group = type(feature._batchQueue) == "table" and feature._batchQueue[pending.queueIndex] or nil
+                            local skippedOk, skippedErr = BagMoveRuntime.BlockBatchIdentity(feature, group, pending.identity, "该类物品目标堆已满，已跳过并继续")
+                            if skippedOk == true then feature.Authority:Refresh("batch_identity_skipped"); return end
+                            StopBagBatch(feature, "stopped", skippedErr or "无法安全跳过被拒绝物品")
+                            feature.Authority:Refresh("batch_retry_skip_failed")
+                            return
+                        end
+                        StopBagBatch(feature, "stopped", "移动重试失败：" .. tostring(retryErr or "unknown"))
+                        feature.Authority:Refresh("batch_retry_failed")
+                        return
+                    end
+                    pending.retries = retries + 1
+                    feature.Authority:Refresh("batch_retry")
+                    return
+                end
+                local group = type(feature._batchQueue) == "table" and feature._batchQueue[pending.queueIndex] or nil
+                local skippedOk, skippedErr = BagMoveRuntime.BlockBatchIdentity(feature, group, pending.identity, "该类物品当前无法继续堆叠，已跳过并继续")
+                if skippedOk == true then feature.Authority:Refresh("batch_verify_identity_skipped"); return end
+                StopBagBatch(feature, "stopped", skippedErr or "移动后源类别数量连续未减少，且无法安全跳过")
+                feature.Authority:Refresh("batch_verify_stop")
+                return
             end
+
             local beforeCount = tonumber(pending.beforeCount) or 1
             feature._batchSourceCount = math.max(0, beforeCount - 1)
-            feature.State.batch.moved = feature.State.batch.moved + 1
+            feature.State.batch.moved = (tonumber(feature.State.batch.moved) or 0) + 1
+            local group = type(feature._batchQueue) == "table" and feature._batchQueue[pending.queueIndex] or nil
+            if type(group) == "table" then
+                group.remaining = math.max(0, (tonumber(group.remaining) or 1) - 1)
+                group.slotHint = pending.slot
+                if group.remaining <= 0 then feature._batchIndex = pending.queueIndex end
+            else
+                feature._batchIndex = math.max(feature._batchIndex or 0, pending.queueIndex or 0)
+            end
             feature._batchPending = nil
         end
 
         local entry = feature._batchQueue[feature._batchIndex + 1]
         if entry == nil then
-            feature.State.batch.status = "complete"
-            S.Scheduler:RemoveTask(BAG_BATCH_TASK)
+            StopBagBatch(feature, "complete", nil)
             feature.Authority:Refresh("batch_complete")
             return
         end
-        local slot, info, sourceErr = BagMoveRuntime.FindLiveMoveSource(feature, "bag", target, nil, category)
+        if (tonumber(entry.remaining) or 0) <= 0 then
+            feature._batchIndex = feature._batchIndex + 1
+            feature.Authority:Refresh("batch_group_complete")
+            return
+        end
+
+        local slot, sourceRow, sourceErr = BagMoveRuntime.FindLiveMoveSource(
+            feature, "bag", target, nil, category, feature._batchBagId, entry.slotHint, feature._batchBlockedIdentities)
         if slot == nil then
-            feature.State.batch.skipped = feature.State.batch.skipped + 1
+            entry.remaining = 0
             feature._batchIndex = feature._batchIndex + 1
             if sourceErr ~= "没有剩余可移动的匹配物品" then
-                feature.State.batch.status, feature.State.batch.error = "stopped", sourceErr or "源物品解析失败"
-                S.Scheduler:RemoveTask(BAG_BATCH_TASK)
+                StopBagBatch(feature, "stopped", sourceErr or "源物品解析失败")
                 feature.Authority:Refresh("batch_source_stop")
             else
+                feature.State.batch.skipped = (tonumber(feature.State.batch.skipped) or 0) + 1
                 feature.Authority:Refresh("batch_skip")
             end
             return
         end
-        local beforeCount = tonumber(feature._batchSourceCount) or 0
-        if beforeCount < 1 then
-            local liveCount, countErr = BagMoveRuntime.CountLiveMatches("bag", nil, category)
-            if liveCount == nil then
-                feature.State.batch.status, feature.State.batch.error = "stopped", countErr or "源类别数量不可读"
-                S.Scheduler:RemoveTask(BAG_BATCH_TASK); feature.Authority:Refresh("batch_count_stop"); return
-            end
-            beforeCount = liveCount
-            feature._batchSourceCount = liveCount
+
+        local sourceIdentity = sourceRow and sourceRow.identity or nil
+        if sourceIdentity == nil then
+            StopBagBatch(feature, "stopped", "源物品缺少稳定身份，无法安全验证批量移动")
+            feature.Authority:Refresh("batch_identity_missing_stop")
+            return
+        end
+        local beforeCount, countErr = BagMoveRuntime.CountLiveMatches("bag", sourceIdentity, nil, feature._batchBagId, nil)
+        if beforeCount == nil then
+            StopBagBatch(feature, "stopped", countErr or "源物品数量不可读")
+            feature.Authority:Refresh("batch_count_stop")
+            return
         end
         local capability = target == "bank" and "X2Bag:MoveToEmptyBankSlot" or "X2Bag:MoveToEmptyCofferSlot"
         local actionOk, actionErr = Action(capability, BagApi, target == "bank" and "MoveToEmptyBankSlot" or "MoveToEmptyCofferSlot", slot)
         if actionOk ~= true then
-            feature.State.batch.status, feature.State.batch.error = "stopped", actionErr or "移动失败"
-            S.Scheduler:RemoveTask(BAG_BATCH_TASK); feature.Authority:Refresh("batch_action_stop"); return
+            local skipReason = BagMoveRuntime.IsNativeMoveRejected(actionErr)
+                and "该类物品目标堆已满，已跳过并继续"
+                or "移动调用异常，已跳过该类物品并继续：" .. tostring(actionErr or "unknown")
+            local skippedOk, skippedErr = BagMoveRuntime.BlockBatchIdentity(feature, entry, sourceRow and sourceRow.identity or nil, skipReason)
+            if skippedOk == true then feature.Authority:Refresh("batch_action_identity_skipped"); return end
+            StopBagBatch(feature, "stopped", skippedErr or "无法安全跳过被拒绝物品")
+            feature.Authority:Refresh("batch_action_skip_failed")
+            return
         end
-        feature._batchPending = { slot = slot, category = category, beforeCount = beforeCount }
-        feature._batchIndex = feature._batchIndex + 1
+        feature._batchPending = {
+            slot = slot, identity = sourceIdentity, category = category, beforeCount = beforeCount, retries = 0,
+            bagId = feature._batchBagId, queueIndex = feature._batchIndex + 1,
+        }
         feature.Authority:Refresh("batch_step")
     end, false, feature, "P1")
     if taskAdded ~= true then
         StopBagBatch(feature, "stopped", "批量队列任务创建失败，已清理运行态")
         return false, "批量队列任务创建失败，安全拒绝"
     end
-    if type(S.Scheduler.SetTaskModule) == "function" then local transient = true; S.Scheduler:SetTaskModule(BAG_BATCH_TASK, "tools_bag", transient) end
-    return true, #queue
+    if type(S.Scheduler.SetTaskModule) == "function" then
+        local transient = true
+        S.Scheduler:SetTaskModule(BAG_BATCH_TASK, "tools_bag", transient)
+    end
+    return true, plannedMoves
 end
 
 local function BatchMove(feature, target, category, requestedLimit)
@@ -1008,6 +1213,7 @@ local function NewFeature(id, spec)
     end
     function feature:AcquireConsumer(token) if not self.enabled then return false, "功能已关闭" end return self.Demand:Acquire(token, {}, "business_consumer") end
     function feature:ReleaseConsumer(token) return self.Demand:Release(token, "business_consumer") end
+    function feature:HasConsumer(token) return self.Demand ~= nil and type(self.Demand.Has) == "function" and self.Demand:Has(token) == true end
     function feature:Refresh(reason) local consumerCount = tonumber(self.consumerCount) or tonumber(self.Demand and self.Demand.count) or 0; if not self.enabled or consumerCount <= 0 then return true end return self.Authority:Refresh(reason or "manual") end
     function feature:GetProjection()
         local projection = { revision = authority.revision, rows = Copy(authority.rows), status = authority.status, error = authority.error }
@@ -1026,81 +1232,320 @@ local function NewFeature(id, spec)
     return feature
 end
 
--- Boss mechanics: static catalog is verified data; realtime trigger facts remain
--- partial. HUD display itself is real and testable through the shared Alerts
--- service, so users can validate placement/size without inventing combat facts.
-local BossAlerts = NewFeature("combat_boss_alerts", {
-    apiDependencies = {},
-    state = { hudEnabled = true, hudAnchor = "center", hudFontSize = 34, hudDurationMs = 3000 },
-    default = { hudEnabled = true, hudAnchor = "center", hudFontSize = 34, hudDurationMs = 3000 },
-    read = function()
-        local rows = {}
-        for index, value in ipairs(S.Data and S.Data.BossAlerts or {}) do
-            local row = type(value) == "table" and value or {}
-            local key = tostring(row.key or index)
-            local kind = tostring(row.kind or "unknown")
-            local triggerText
-            if kind == "cast" then
-                local names = {}
-                for nameIndex = 1, math.min(3, #(type(row.names) == "table" and row.names or {})) do
-                    names[#names + 1] = tostring(row.names[nameIndex])
-                end
-                triggerText = "施法识别：" .. (#names > 0 and table.concat(names, " / ") or "名称待补")
-            elseif kind == "debuff" then
-                triggerText = "Debuff ID：" .. tostring(row.debuffId or "--")
-            else
-                triggerText = "触发事实：待确认"
+do
+    -- Boss mechanics: business meaning stays here; Native casting/Aura facts are
+    -- shared Services. Exact catalog lookups are built once at load time so the
+    -- 100 ms observation loop never performs fuzzy/tag matching.
+    local BOSS_OBSERVE_TASK = "v3_business_boss_alert_observe"
+    local BOSS_AURA_INTERVAL_MS = 300
+    -- wbdebuff matches the RU client's localized spellName; its exact case on
+    -- the wire is unproven, so both index and lookup normalize case/whitespace
+    -- once (O(1) afterwards, no per-tick fuzzy scanning).
+    local function NormalizeCastKey(value)
+        local text = tostring(value or ""):gsub("^%s*(.-)%s*$", "%1")
+        return string.lower(text)
+    end
+    -- Proven fact-source priority from wbdebuff (jumpblackdragon.lua:123-131):
+    -- target first, then target's target, then the player, then the focus
+    -- target. Casting facts for all four scopes come from the shared
+    -- CastingObservationV3 (v2, four-unit polling).
+    local BOSS_CAST_SCOPES = { "target", "targettarget", "watchtarget", "player" }
+    local BossCastIndex, BossDebuffIndex = {}, {}
+    for index, value in ipairs(S.Data and S.Data.BossAlerts or {}) do
+        local row = type(value) == "table" and value or {}
+        row._index = index
+        if tostring(row.kind or "") == "cast" then
+            for _, rawName in ipairs(type(row.names) == "table" and row.names or {}) do
+                local name = NormalizeCastKey(rawName)
+                if name ~= "" then BossCastIndex[name] = row end
             end
-            rows[#rows + 1] = {
-                key = "boss:" .. key,
-                name = tostring(row.alert or key),
-                text = triggerText,
-                statusText = tostring(row.style) == "countdown" and "倒计时 HUD" or "大字 HUD",
-                tone = tostring(row.style) == "countdown" and "yellow" or "orange",
-                mechanicKey = key, kind = kind, style = tostring(row.style or "bigtext"), debuffId = tonumber(row.debuffId),
-            }
+        elseif tostring(row.kind or "") == "debuff" then
+            local id = tonumber(row.debuffId)
+            if id ~= nil and id > 0 then BossDebuffIndex[id] = row end
         end
-        return rows, #rows > 0 and "partial" or "empty",
-            #rows > 0 and "规则目录与 HUD 可测试；实时触发仍等待已验证的施法/Aura 事实桥" or "BossAlerts 静态目录为空"
-    end,
-    projection = function(feature)
-        return { hudEnabled = feature.State.hudEnabled == true, hudAnchor = feature.State.hudAnchor,
-            hudFontSize = tonumber(feature.State.hudFontSize) or 34, hudDurationMs = tonumber(feature.State.hudDurationMs) or 3000 }
-    end,
-    commands = {
-        SetHudEnabled = function(feature, value)
-            return PersistStateMutation(feature, "boss_hud_enabled", function(state) state.hudEnabled = value == true; return true end)
+    end
+
+    local function BossPush(feature, rule, remainingMs)
+        if feature.State.hudEnabled ~= true or type(rule) ~= "table" then return true end
+        local alerts = S.Services and S.Services.Alerts or nil
+        if type(alerts) ~= "table" or type(alerts.Push) ~= "function" then return false, "AlertsService 不可用" end
+        local style = tostring(rule.style or "bigtext")
+        local configuredDuration = math.max(1000, math.min(10000, math.floor(tonumber(feature.State.hudDurationMs) or 3000)))
+        local remaining = math.max(0, math.floor(tonumber(remainingMs) or 0))
+        local duration = style == "countdown" and remaining > 0 and math.max(500, math.min(configuredDuration, remaining)) or configuredDuration
+        return alerts:Push({
+            text = tostring(rule.alert or rule.key or "首领机制"), style = style, durationMs = duration,
+            remainingMs = style == "countdown" and remaining or 0,
+            presentationConfig = { anchorMode = feature.State.hudAnchor, fontSize = feature.State.hudFontSize },
+        }) == true
+    end
+
+    local function BossObserve(feature)
+        if feature.enabled ~= true or (tonumber(feature.consumerCount) or 0) <= 0 or feature.State.hudEnabled ~= true then return true end
+        local dia = feature._bossDiag
+        if dia == nil then
+            dia = { observeTicks = 0, lastFactSource = "none", castingSkill = "", playerDebuff = "", matchedRule = "", lastMechanicAt = 0 }
+            feature._bossDiag = dia
+        end
+        dia.observeTicks = (tonumber(dia.observeTicks) or 0) + 1
+        local casting = S.Services and S.Services.CastingObservationV3 or nil
+        if type(casting) == "table" and type(casting.Get) == "function" then
+            -- Edge-detect every requested scope independently; the first scope
+            -- currently casting wins (wbdebuff order). A per-scope signature
+            -- keeps re-triggers working after a cast ends on that scope.
+            local signatures = type(feature._bossCastSignatures) == "table" and feature._bossCastSignatures or {}
+            feature._bossCastSignatures = signatures
+            for _, scope in ipairs(BOSS_CAST_SCOPES) do
+                local cast = casting:Get(scope)
+                local active = type(cast) == "table" and cast.casting == true and tostring(cast.spellName or "") ~= ""
+                local signature = nil
+                if active == true then
+                    signature = tostring(cast.spellName) .. "|" .. tostring(math.floor(tonumber(cast.totalMs) or 0))
+                    local rule = BossCastIndex[NormalizeCastKey(cast.spellName)]
+                    dia.lastFactSource = scope
+                    dia.castingSkill = tostring(cast.spellName)
+                    -- Evidence ring: the wbdebuff RU spell names cannot be
+                    -- verified against a 3-day world boss on demand. Capture
+                    -- the REAL localized names the client returns (bounded,
+                    -- distinct) so any cast-bar mob -- including the boss when
+                    -- finally available -- proves or corrects the name table
+                    -- without another blind patch round.
+                    local ring = type(dia.castNames) == "table" and dia.castNames or {}
+                    if ring[tostring(cast.spellName)] ~= true then
+                        ring[tostring(cast.spellName)] = true
+                        ring[#ring + 1] = tostring(cast.spellName)
+                        while #ring > 8 do
+                            local oldest = ring[1]
+                            ring[oldest] = nil
+                            table.remove(ring, 1)
+                        end
+                    end
+                    dia.castNames = ring
+                    if signature ~= signatures[scope] then
+                        signatures[scope] = signature
+                        if rule ~= nil then
+                            dia.matchedRule = tostring(rule.key or "?")
+                            dia.lastMechanicAt = math.max(0, tonumber(S.NowMs and S.NowMs()) or 0)
+                            BossPush(feature, rule, cast.remainingMs)
+                        end
+                    end
+                else
+                    -- A cast end is a real edge; clearing the scope signature
+                    -- lets the same mechanic trigger again on its next cast.
+                    signatures[scope] = nil
+                end
+            end
+        end
+
+        local now = math.max(0, tonumber(S.NowMs and S.NowMs()) or 0)
+        if now < (tonumber(feature._bossNextAuraAt) or 0) then return true end
+        feature._bossNextAuraAt = now + BOSS_AURA_INTERVAL_MS
+        local aura = S.Services and S.Services.AuraObservationV3 or nil
+        if type(aura) ~= "table" or type(aura.GetSnapshot) ~= "function" or type(aura.GetStatusMap) ~= "function" then return true end
+        local snapshot = aura:GetSnapshot("player", { buff = false, debuff = true, hidden = false, debuffLimit = 64, ttlMs = 250 })
+        if type(snapshot) ~= "table" then return true end
+        local statusMap, meta = aura:GetStatusMap(snapshot, { buff = false, debuff = true, hidden = false })
+        statusMap = type(statusMap) == "table" and statusMap or {}
+        feature._bossActiveDebuffs = type(feature._bossActiveDebuffs) == "table" and feature._bossActiveDebuffs or {}
+        for id, rule in pairs(BossDebuffIndex) do
+            local present = statusMap[id] ~= nil
+            if present and feature._bossActiveDebuffs[id] ~= true then
+                feature._bossActiveDebuffs[id] = true
+                dia.lastFactSource = "player_debuff"
+                dia.playerDebuff = tostring(id)
+                dia.matchedRule = tostring(rule.key or "?")
+                dia.lastMechanicAt = math.max(0, tonumber(S.NowMs and S.NowMs()) or 0)
+                BossPush(feature, rule, 0)
+            elseif not present and type(meta) == "table" and meta.available == true and meta.complete == true and meta.reliable == true then
+                feature._bossActiveDebuffs[id] = nil
+            end
+        end
+        return true
+    end
+
+    local function BossStartObservation(feature)
+        if feature._bossObservationStarted == true then return true end
+        local casting = S.Services and S.Services.CastingObservationV3 or nil
+        local aura = S.Services and S.Services.AuraObservationV3 or nil
+        if type(casting) ~= "table" or type(casting.AcquireConsumer) ~= "function" then return false, "CastingObservationV3 不可用" end
+        if type(aura) ~= "table" or type(aura.AcquireConsumer) ~= "function" then return false, "AuraObservationV3 不可用" end
+        local castOk, castErr = casting:AcquireConsumer("boss_alerts:casting",
+            { player = true, target = true, targettarget = true, watchtarget = true, intervalMs = 100, purpose = "boss_alerts" })
+        if castOk ~= true then return false, castErr end
+        feature._bossCastingHeld = true
+        local auraOk, auraErr = aura:AcquireConsumer("boss_alerts:aura", { purpose = "boss_alerts" })
+        if auraOk ~= true then
+            casting:ReleaseConsumer("boss_alerts:casting")
+            feature._bossCastingHeld = false
+            return false, auraErr
+        end
+        feature._bossAuraHeld = true
+        if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then
+            aura:ReleaseConsumer("boss_alerts:aura"); casting:ReleaseConsumer("boss_alerts:casting")
+            feature._bossAuraHeld, feature._bossCastingHeld = false, false
+            return false, "首领机制 Scheduler 不可用"
+        end
+        local added = S.Scheduler:AddTask(BOSS_OBSERVE_TASK, 100, function() return BossObserve(feature) end, false, feature, "P2", 1)
+        if added ~= true then
+            aura:ReleaseConsumer("boss_alerts:aura"); casting:ReleaseConsumer("boss_alerts:casting")
+            feature._bossAuraHeld, feature._bossCastingHeld = false, false
+            return false, "首领机制观察任务创建失败"
+        end
+        if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(BOSS_OBSERVE_TASK, feature.Id, false) end
+        feature._bossObservationStarted = true
+        feature._bossLastCastSignature = nil
+        feature._bossCastSignatures = {}
+        feature._bossActiveDebuffs = {}
+        feature._bossNextAuraAt = 0
+        BossObserve(feature)
+        return true
+    end
+
+    local function BossStopObservation(feature)
+        if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(BOSS_OBSERVE_TASK) end
+        local firstErr = nil
+        local aura = S.Services and S.Services.AuraObservationV3 or nil
+        local casting = S.Services and S.Services.CastingObservationV3 or nil
+        if feature._bossAuraHeld == true and type(aura) == "table" and type(aura.ReleaseConsumer) == "function" then
+            local ok, err = aura:ReleaseConsumer("boss_alerts:aura")
+            if ok ~= true then firstErr = firstErr or err else feature._bossAuraHeld = false end
+        end
+        if feature._bossCastingHeld == true and type(casting) == "table" and type(casting.ReleaseConsumer) == "function" then
+            local ok, err = casting:ReleaseConsumer("boss_alerts:casting")
+            if ok ~= true then firstErr = firstErr or err else feature._bossCastingHeld = false end
+        end
+        feature._bossObservationStarted = false
+        feature._bossLastCastSignature = nil
+        feature._bossCastSignatures = {}
+        feature._bossActiveDebuffs = {}
+        feature._bossNextAuraAt = 0
+        return firstErr == nil, firstErr
+    end
+
+    local BossAlerts = NewFeature("combat_boss_alerts", {
+        apiDependencies = { "X2Unit:UnitCastingInfo", "X2Unit:UnitDeBuffCount", "X2Unit:UnitDeBuff", "X2Unit:UnitDeBuffTooltip" },
+        observationContractVersion = 2,
+        onEnable = function(feature)
+            -- HUD alerts are a feature lifecycle, not a page lifecycle. Holding
+            -- one runtime consumer keeps observation alive after the main window
+            -- closes; disabling the module clears the lease and all resources.
+            if feature.Demand:Has("boss_alerts:runtime") == true then return true end
+            return feature.Demand:Acquire("boss_alerts:runtime", {}, "boss_alert_runtime")
         end,
-        SetHudAnchor = function(feature, value)
-            value = value == "top" and "top" or "center"
-            return PersistStateMutation(feature, "boss_hud_anchor", function(state) state.hudAnchor = value; return true end)
+        state = { hudEnabled = true, hudAnchor = "center", hudFontSize = 34, hudDurationMs = 3000 },
+        default = { hudEnabled = true, hudAnchor = "center", hudFontSize = 34, hudDurationMs = 3000 },
+        reconcileDemand = function(feature, before, after)
+            local beforeCount = tonumber(before and before.count) or 0
+            local afterCount = tonumber(after and after.count) or 0
+            if beforeCount <= 0 and afterCount > 0 and feature.State.hudEnabled == true then return BossStartObservation(feature) end
+            if beforeCount > 0 and afterCount <= 0 then return BossStopObservation(feature) end
+            return true
         end,
-        SetHudFontSize = function(feature, value)
-            value = math.max(18, math.min(56, math.floor(tonumber(value) or 34)))
-            return PersistStateMutation(feature, "boss_hud_font", function(state) state.hudFontSize = value; return true end)
+        onDisable = function(feature) return BossStopObservation(feature) end,
+        read = function()
+            local rows = {}
+            for index, value in ipairs(S.Data and S.Data.BossAlerts or {}) do
+                local row = type(value) == "table" and value or {}
+                local key = tostring(row.key or index)
+                local kind = tostring(row.kind or "unknown")
+                local triggerText
+                if kind == "cast" then
+                    local names = {}
+                    for nameIndex = 1, math.min(3, #(type(row.names) == "table" and row.names or {})) do names[#names + 1] = tostring(row.names[nameIndex]) end
+                    triggerText = "目标施法：" .. (#names > 0 and table.concat(names, " / ") or "名称待补")
+                elseif kind == "debuff" then triggerText = "自身 Debuff ID：" .. tostring(row.debuffId or "--")
+                else triggerText = "触发事实：待确认" end
+                rows[#rows + 1] = {
+                    key = "boss:" .. key, name = tostring(row.alert or key), text = triggerText,
+                    statusText = tostring(row.style) == "countdown" and "实时倒计时" or "实时大字",
+                    tone = tostring(row.style) == "countdown" and "yellow" or "orange",
+                    mechanicKey = key, kind = kind, style = tostring(row.style or "bigtext"), debuffId = tonumber(row.debuffId),
+                }
+            end
+            return rows, #rows > 0 and "ready" or "empty", #rows > 0 and nil or "BossAlerts 静态目录为空"
         end,
-        SetHudDurationMs = function(feature, value)
-            value = math.max(1000, math.min(10000, math.floor(tonumber(value) or 3000)))
-            return PersistStateMutation(feature, "boss_hud_duration", function(state) state.hudDurationMs = value; return true end)
+        projection = function(feature)
+            return { hudEnabled = feature.State.hudEnabled == true, hudAnchor = feature.State.hudAnchor,
+                hudFontSize = tonumber(feature.State.hudFontSize) or 34, hudDurationMs = tonumber(feature.State.hudDurationMs) or 3000,
+                realtime = feature._bossObservationStarted == true,
+                diag = feature._bossDiag }
         end,
-        TestBigText = function(feature)
-            if feature.State.hudEnabled ~= true then return false, "请先启用首领机制 HUD" end
-            local alerts = S.Services and S.Services.Alerts or nil
-            if type(alerts) ~= "table" or type(alerts.Push) ~= "function" then return false, "AlertsService 不可用" end
-            return alerts:Push({ text = "首领机制 HUD 测试", style = "bigtext", durationMs = feature.State.hudDurationMs,
-                presentationConfig = { anchorMode = feature.State.hudAnchor, fontSize = feature.State.hudFontSize } }) == true
-        end,
-        TestCountdown = function(feature)
-            if feature.State.hudEnabled ~= true then return false, "请先启用首领机制 HUD" end
-            local alerts = S.Services and S.Services.Alerts or nil
-            if type(alerts) ~= "table" or type(alerts.Push) ~= "function" then return false, "AlertsService 不可用" end
-            local duration = math.max(3000, tonumber(feature.State.hudDurationMs) or 3000)
-            return alerts:Push({ text = "机制倒计时", style = "countdown", durationMs = duration, remainingMs = duration,
-                presentationConfig = { anchorMode = feature.State.hudAnchor, fontSize = feature.State.hudFontSize } }) == true
-        end,
-    },
-})
-BossAlerts.HudContractVersion = 1
+        commands = {
+            SetHudEnabled = function(feature, value)
+                local enabled = value == true
+                local ok, err = PersistStateMutation(feature, "boss_hud_enabled", function(state) state.hudEnabled = enabled; return true end)
+                if ok ~= true then return false, err end
+                if (tonumber(feature.consumerCount) or 0) > 0 then
+                    if enabled then return BossStartObservation(feature) else return BossStopObservation(feature) end
+                end
+                return true
+            end,
+            SetHudAnchor = function(feature, value)
+                value = value == "top" and "top" or "center"
+                return PersistStateMutation(feature, "boss_hud_anchor", function(state) state.hudAnchor = value; return true end)
+            end,
+            SetHudFontSize = function(feature, value)
+                value = math.max(18, math.min(56, math.floor(tonumber(value) or 34)))
+                return PersistStateMutation(feature, "boss_hud_font", function(state) state.hudFontSize = value; return true end)
+            end,
+            SetHudDurationMs = function(feature, value)
+                value = math.max(1000, math.min(10000, math.floor(tonumber(value) or 3000)))
+                return PersistStateMutation(feature, "boss_hud_duration", function(state) state.hudDurationMs = value; return true end)
+            end,
+            TestBigText = function(feature)
+                if feature.State.hudEnabled ~= true then return false, "请先启用首领机制 HUD" end
+                local alerts = S.Services and S.Services.Alerts or nil
+                if type(alerts) ~= "table" or type(alerts.Push) ~= "function" then return false, "AlertsService 不可用" end
+                return alerts:Push({ text = "首领机制 HUD 测试", style = "bigtext", durationMs = feature.State.hudDurationMs,
+                    presentationConfig = { anchorMode = feature.State.hudAnchor, fontSize = feature.State.hudFontSize } }) == true
+            end,
+            TestCountdown = function(feature)
+                if feature.State.hudEnabled ~= true then return false, "请先启用首领机制 HUD" end
+                local alerts = S.Services and S.Services.Alerts or nil
+                if type(alerts) ~= "table" or type(alerts.Push) ~= "function" then return false, "AlertsService 不可用" end
+                local duration = math.max(3000, tonumber(feature.State.hudDurationMs) or 3000)
+                return alerts:Push({ text = "机制倒计时", style = "countdown", durationMs = duration, remainingMs = duration,
+                    presentationConfig = { anchorMode = feature.State.hudAnchor, fontSize = feature.State.hudFontSize } }) == true
+            end,
+            -- No-boss verification path (the referenced world boss spawns once
+            -- every 3 days): inject the CATALOGED fact through the real rule
+            -- lookup and push chain -- the same pipeline the live observer
+            -- uses -- so matching + HUD can be proven on demand. Facts from
+            -- the four-scope observer are proven separately by the Boss:
+            -- diagnostics line on any cast-bar mob.
+            SimulateCast = function(feature, key)
+                if feature.State.hudEnabled ~= true then return false, "请先启用首领机制 HUD" end
+                local rule = nil
+                if key ~= nil and BossDebuffIndex == nil then return false, "规则索引不可用" end
+                for _, candidate in ipairs(S.Data and S.Data.BossAlerts or {}) do
+                    local row = type(candidate) == "table" and candidate or {}
+                    if tostring(row.kind or "") == "cast" and (key == nil or tostring(row.key or "") == tostring(key)) then
+                        rule = row
+                        if key ~= nil then break end
+                    end
+                end
+                if rule == nil then return false, "施法规则不存在：" .. tostring(key or "(第一个)") end
+                return BossPush(feature, rule, 6000), nil
+            end,
+            SimulateDebuff = function(feature, key)
+                if feature.State.hudEnabled ~= true then return false, "请先启用首领机制 HUD" end
+                local rule = nil
+                for _, candidate in ipairs(S.Data and S.Data.BossAlerts or {}) do
+                    local row = type(candidate) == "table" and candidate or {}
+                    if tostring(row.kind or "") == "debuff" and (key == nil or tostring(row.key or "") == tostring(key)) then
+                        rule = row
+                        if key ~= nil then break end
+                    end
+                end
+                if rule == nil then return false, "Debuff 规则不存在：" .. tostring(key or "(第一个)") end
+                return BossPush(feature, rule, 0), nil
+            end,
+        },
+    })
+    BossAlerts.HudContractVersion = 2
+    BossAlerts.RealtimeFactBridgeContractVersion = 1
+end
+
 local TARGET_MONITOR_TASK = "v3_business_target_monitor_distance"
 NewFeature("combat_target_monitor", { apiDependencies = { "X2Unit:GetTargetUnitId", "X2Unit:UnitName", "X2Unit:UnitDistance" },
     observationContractVersion = 1,
@@ -1716,7 +2161,24 @@ local function CraftItemText(item)
     local count = item and item.count ~= nil and tostring(item.count) or "数量待核"
     local held = item and item.held ~= nil and (" · 持有 " .. tostring(item.held)) or ""
     local shortage = item and item.shortage ~= nil and (" · 缺口 " .. tostring(item.shortage)) or ""
-    return name .. " × " .. count .. held .. shortage
+    local quote = ""
+    if item and item.unitCost ~= nil then
+        local unitText = tostring(math.floor((tonumber(item.unitCost) or 0) + 0.5))
+        local lineText = item.lineCost ~= nil and tostring(math.floor((tonumber(item.lineCost) or 0) + 0.5)) or nil
+        if S.Utils ~= nil and type(S.Utils.FormatMoney) == "function" then
+            local okUnit, formattedUnit = pcall(S.Utils.FormatMoney, tonumber(item.unitCost) or 0)
+            if okUnit == true and type(formattedUnit) == "string" and formattedUnit ~= "" then unitText = formattedUnit end
+            if item.lineCost ~= nil then
+                local okLine, formattedLine = pcall(S.Utils.FormatMoney, tonumber(item.lineCost) or 0)
+                if okLine == true and type(formattedLine) == "string" and formattedLine ~= "" then lineText = formattedLine end
+            end
+        end
+        quote = " · 单价 " .. unitText
+        if lineText ~= nil then quote = quote .. " · 小计 " .. lineText end
+    elseif item and item.costStatus == "explicit_quote_required" and item.itemType ~= nil then
+        quote = " · 未询价"
+    end
+    return name .. " × " .. count .. held .. shortage .. quote
 end
 
 local function CraftQuote(item)
@@ -1977,6 +2439,21 @@ end
 
 local function CraftRead(feature)
     local rows, recipes = {}, {}
+    local function RefreshSectionText(section)
+        if type(section) ~= "table" or type(section.items) ~= "table" or #section.items == 0 or section.status ~= "ready" then return false end
+        local parts = {}
+        for index, item in ipairs(section.items) do parts[index] = CraftItemText(item) end
+        local label = section.kind == "product" and "产物：" or "材料："
+        if section.truncated then
+            local suffix = "已截断，原始记录 " .. tostring(section.sourceCount or #section.items) .. " 条"
+            local prefixLimit = math.max(32, CRAFT_TEXT_LIMIT - #suffix - #label - 6)
+            section.text = (label .. table.concat(parts, "；")):sub(1, prefixLimit) .. "… " .. suffix
+            section.textTruncated = true
+        else
+            section.text, section.textTruncated = CraftText(label .. table.concat(parts, "；"), nil)
+        end
+        return true
+    end
     local selectedRecipe = SelectedCraftRecipe(feature)
     if selectedRecipe ~= nil and tonumber(selectedRecipe.craftId) ~= nil then
         feature.State.craftType = math.floor(tonumber(selectedRecipe.craftId))
@@ -2012,6 +2489,8 @@ local function CraftRead(feature)
         end
         recipe.product.incomplete = CraftEnrichItems(recipe.product.items, held, bagDiagnostics)
         recipe.materials.incomplete = CraftEnrichItems(recipe.materials.items, held, bagDiagnostics)
+        RefreshSectionText(recipe.product)
+        RefreshSectionText(recipe.materials)
         recipes[#recipes + 1] = recipe
         for _, section in ipairs({ recipe.base, recipe.product, recipe.materials }) do
             if section.failed then errors[#errors + 1] = section.kind .. "(" .. tostring(craftType) .. "): " .. tostring(section.error) else anyReadable = true end
@@ -2037,13 +2516,27 @@ local function CraftRead(feature)
 end
 
 local function CraftProjection(feature)
+    local seen, pending, priced, quotedCost = {}, 0, 0, 0
+    local craft = type(feature.CraftProjection) == "table" and feature.CraftProjection or nil
+    for _, recipe in ipairs(craft and type(craft.recipes) == "table" and craft.recipes or {}) do
+        local materials = type(recipe.materials) == "table" and recipe.materials.items or nil
+        for _, item in ipairs(type(materials) == "table" and materials or {}) do
+            local itemType = CraftInteger(item.itemType, false)
+            local itemGrade = CraftInteger(item.itemGrade, false)
+            local key = itemType and (tostring(itemType) .. ":" .. tostring(itemGrade or 0)) or nil
+            if item.costStatus == "explicit_quote_required" and key ~= nil and seen[key] ~= true then
+                seen[key], pending = true, pending + 1
+            end
+            if item.lineCost ~= nil then priced, quotedCost = priced + 1, quotedCost + math.max(0, tonumber(item.lineCost) or 0) end
+        end
+    end
     return {
         craft = Copy(feature.CraftProjection or { context = { status = "idle" }, recipes = {} }),
         recipeOptions = Copy(CraftRecipeOptions()),
         selectedRecipeKey = feature.State.selectedRecipeKey,
+        pendingQuoteCount = pending, pricedMaterialCount = priced, quotedMaterialCostCopper = math.floor(quotedCost + 0.5),
     }
 end
-
 local function CraftPersist(feature, reason, mutator)
     if type(P.MutateStore) ~= "function" then return false, "制作上下文持久化事务不可用" end
     local marked, markErr = P:MutateStore(feature.storeId, function()
@@ -2081,22 +2574,65 @@ local function CraftCommands()
             return CraftPersist(feature, "craft_doodad", function() feature.State.doodadId = doodadId end)
         end,
         -- Explicit single-material lowest-price quote. Ordinary Refresh never
-        -- fans out GetLowestPrice; the user triggers a quote per material here,
-        -- and the shared PriceQuoteQueueV3 serializes + paces + async-callbacks
-        -- the result (see "explicit + async" quote semantics).
-        QuoteMaterial = function(_, itemType, itemGrade)
+        -- fans out GetLowestPrice; the user triggers a quote here and the shared
+        -- queue owns pacing. Completion rebuilds this Feature once so the visible
+        -- material unit/subtotal values update without another user refresh.
+        QuoteMaterial = function(feature, itemType, itemGrade)
             local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
             if type(queue) ~= "table" or type(queue.RequestQuote) ~= "function" then return false, "报价服务不可用" end
-            local ok, status = queue:RequestQuote("tools_craft", itemType, itemGrade, nil)
+            local ok, status = queue:RequestQuote(feature.Id .. ":craft", itemType, itemGrade, function()
+                if feature.enabled == true and (tonumber(feature.consumerCount) or 0) > 0 then feature:Refresh("craft_quote_completed") end
+            end)
             if ok ~= true then return false, status or "报价请求失败" end
             return true, status or "queued"
+        end,
+        -- Explicit batch quote for the currently projected recipe only. Targets
+        -- are deduplicated and bounded by the shared queue capacity. To avoid a
+        -- full Bag/Craft rescan every 560ms, callbacks coalesce to ONE refresh
+        -- after the last successfully queued quote completes.
+        QuotePendingMaterials = function(feature)
+            local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
+            if type(queue) ~= "table" or type(queue.RequestQuote) ~= "function" then return false, "报价服务不可用" end
+            local targets, seen = {}, {}
+            local craft = type(feature.CraftProjection) == "table" and feature.CraftProjection or nil
+            for _, recipe in ipairs(craft and type(craft.recipes) == "table" and craft.recipes or {}) do
+                local materials = type(recipe.materials) == "table" and recipe.materials.items or nil
+                for _, item in ipairs(type(materials) == "table" and materials or {}) do
+                    local itemType = CraftInteger(item.itemType, false)
+                    local itemGrade = CraftInteger(item.itemGrade, false)
+                    local key = itemType and (tostring(itemType) .. ":" .. tostring(itemGrade or 0)) or nil
+                    if item.costStatus == "explicit_quote_required" and key ~= nil and seen[key] ~= true then
+                        seen[key] = true
+                        targets[#targets + 1] = { itemType = itemType, itemGrade = itemGrade }
+                    end
+                end
+            end
+            if #targets == 0 then return false, "当前制作物没有待询价材料" end
+            local limit = math.max(1, tonumber(queue.maxQueue) or 64)
+            local requested, skipped, completed = 0, 0, 0
+            local function OnComplete()
+                completed = completed + 1
+                if completed >= requested and requested > 0 and feature.enabled == true and (tonumber(feature.consumerCount) or 0) > 0 then
+                    feature:Refresh("craft_quote_batch_completed")
+                end
+            end
+            for index, target in ipairs(targets) do
+                if index > limit then
+                    skipped = skipped + 1
+                else
+                    local ok = queue:RequestQuote(feature.Id .. ":craft", target.itemType, target.itemGrade, OnComplete)
+                    if ok == true then requested = requested + 1 else skipped = skipped + 1 end
+                end
+            end
+            if requested == 0 then return false, "待询价材料未能进入报价队列", 0, skipped end
+            return true, "已提交 " .. tostring(requested) .. " 项材料询价" .. (skipped > 0 and ("，" .. tostring(skipped) .. " 项暂未提交") or ""), requested, skipped
         end,
     }
 end
 
 local CRAFT_API_DEPENDENCIES = { "X2Craft:GetCraftBaseInfo", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo", "X2Craft:GetCraftTypeByItemType", "X2Bag:Capacity", "X2Bag:GetBagItemInfo" }
-local CraftPlanner = NewFeature("life_craft_planner", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0 }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0 }, read = CraftRead, projection = CraftProjection, commands = CraftCommands() })
-local CraftAssistant = NewFeature("tools_craft", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0 }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0 }, read = CraftRead, projection = CraftProjection, commands = CraftCommands() })
+local CraftPlanner = NewFeature("life_craft_planner", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, planItems = {} }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, planItems = {} }, read = CraftRead, projection = CraftProjection, commands = CraftCommands() })
+local CraftAssistant = NewFeature("tools_craft", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, read = CraftRead, projection = CraftProjection, commands = CraftCommands() })
 CraftPlanner.CraftUserSelectionContractVersion = 1
 CraftAssistant.CraftUserSelectionContractVersion = 1
 
@@ -2171,52 +2707,50 @@ local BagTools = NewFeature("tools_bag", { apiDependencies = {
 onEnable = function(feature) return StartBagQuickObserver(feature) end,
 onDisable = function(feature) StopBagBatch(feature, "stopped", "功能关闭，批量任务已释放"); return StopBagQuickAll(feature, "功能关闭，快捷取放已释放") end,
 projection = BatchProjection, read = function()
-    -- Demand/Refresh is the only entry point for this snapshot.  Keep the
-    -- full read bounded by the live bag capacity and a fixed product limit;
-    -- do not turn this into an OnUpdate poller.
-    local okCap, cap, capErr = Call("X2Bag:Capacity", BagApi, "Capacity")
-    local capacity = Number(cap)
-    if not okCap or capacity == nil or capacity < 0 then
+    -- Demand/Refresh is the only entry point for this snapshot.  Reuse the
+    -- shared physical-bag Authority so the page and write workflows cannot
+    -- disagree on bagId.  InventorySnapshotV3 builds all row indexes in the
+    -- same bounded pass and never polls in the background.
+    local inventory = S.Services and S.Services.InventorySnapshotV3 or nil
+    if type(inventory) ~= "table" or type(inventory.BuildSnapshot) ~= "function" then
         return {
-            { key = "bag:scan", name = "背包扫描", text = "容量读取失败，未读取槽位", statusText = "读取失败", tone = "warn" },
-        }, "unavailable", "背包容量不可读：" .. Text(capErr, "Capacity failed")
+            { key = "bag:scan", name = "背包扫描", text = "共享背包快照服务不可用", statusText = "读取失败", tone = "warn" },
+        }, "unavailable", "InventorySnapshotV3 unavailable"
+    end
+    local snapshot, snapshotErr = inventory:BuildSnapshot("bag", { maxSlots = BAG_SCAN_LIMIT })
+    if type(snapshot) ~= "table" then
+        return {
+            { key = "bag:scan", name = "背包扫描", text = "容量/槽位读取失败", statusText = "读取失败", tone = "warn" },
+        }, "unavailable", tostring(snapshotErr or "背包快照不可读")
     end
 
-    capacity = math.floor(capacity)
-    local maxSlot = math.min(BAG_SCAN_LIMIT, capacity)
-    local rows, readCount, readErrors = {}, 0, 0
-    for slot = 1, maxSlot do
-        local ok, item = Call("X2Bag:GetBagItemInfo", BagApi, "GetBagItemInfo", 0, slot)
-        if ok then
-            readCount = readCount + 1
-            if type(item) == "table" and next(item) ~= nil then
-                local itemType, category = SourceIdentity(item)
-                local categoryText = category ~= nil and (BagCategoryLabel(category) .. "（" .. tostring(category) .. "）") or "类别未知"
-                rows[#rows + 1] = {
-                    key = "bag:" .. slot, name = Text(item.name or item.itemName, "槽位 " .. slot),
-                    text = "物品编号：" .. Text(itemType or item.itemType or item.itemTypeId, "--") .. " · " .. categoryText,
-                    statusText = "数量 " .. Text(item.stackCount or item.count, "--"), tone = "default",
-                    itemType = itemType, category = category, slot = slot,
-                }
-            end
-        else
-            readErrors = readErrors + 1
-        end
+    local rows = {}
+    for _, item in ipairs(snapshot.rows or {}) do
+        local categoryText = item.category ~= nil and (BagCategoryLabel(item.category) .. "（" .. tostring(item.category) .. "）") or "类别未知"
+        rows[#rows + 1] = {
+            key = "bag:" .. tostring(item.slot), name = Text(item.name, "槽位 " .. tostring(item.slot)),
+            text = "物品编号：" .. Text(item.itemType, "--") .. " · " .. categoryText,
+            statusText = "数量 " .. Text(item.stack, "--"), tone = "default",
+            itemType = item.itemType, category = item.category, slot = item.slot, bagId = snapshot.bagId,
+        }
     end
 
-    local truncated = capacity > BAG_SCAN_LIMIT
-    local scanText = "已读槽位 " .. tostring(readCount) .. "/" .. tostring(capacity)
-    if truncated then scanText = scanText .. "（上限 " .. tostring(BAG_SCAN_LIMIT) .. "，已截断）" end
+    local capacity = math.max(0, math.floor(tonumber(snapshot.capacity) or 0))
+    local scanned = math.max(0, math.floor(tonumber(snapshot.scannedSlots) or 0))
+    local readErrors = math.max(0, math.floor(tonumber(snapshot.readErrors) or 0))
+    local scanText = "已读槽位 " .. tostring(scanned) .. "/" .. tostring(capacity) .. " · 物理背包视图 " .. tostring(snapshot.bagId or "--")
+    if snapshot.fallbackUsed == true then scanText = scanText .. "（兼容回退）" end
+    if snapshot.truncated == true then scanText = scanText .. "（上限 " .. tostring(BAG_SCAN_LIMIT) .. "，已截断）" end
     if readErrors > 0 then scanText = scanText .. "；读取失败 " .. tostring(readErrors) .. " 槽" end
     table.insert(rows, 1, {
         key = "bag:scan", name = "背包扫描", text = scanText,
-        statusText = truncated and "已截断" or (readErrors > 0 and "部分失败" or "完整读取"),
-        tone = (truncated or readErrors > 0) and "warn" or "default",
-        capacity = capacity, scannedSlots = maxSlot, readCount = readCount,
-        readErrors = readErrors, truncated = truncated,
+        statusText = snapshot.truncated == true and "已截断" or (readErrors > 0 and "部分失败" or "完整读取"),
+        tone = (snapshot.truncated == true or readErrors > 0) and "warn" or "default",
+        capacity = capacity, scannedSlots = scanned, readCount = scanned - readErrors,
+        readErrors = readErrors, truncated = snapshot.truncated == true, bagId = snapshot.bagId,
     })
-    if maxSlot == 0 then return rows, "empty", nil end
-    if readCount == 0 then return rows, "unavailable", "背包槽位当前不可读" end
+    if capacity == 0 then return rows, "empty", nil end
+    if readErrors > 0 and #(snapshot.rows or {}) == 0 then return rows, "unavailable", "背包槽位当前不可读" end
     local diagnostic = readErrors > 0 and ("背包有 " .. tostring(readErrors) .. " 个槽位读取失败") or nil
     return rows, "ready", diagnostic
 end, commands = {
@@ -2241,11 +2775,15 @@ end, commands = {
     WithdrawBank = function(feature, slot) return CheckedMove(feature, "bank", "bank", "X2Bank:MoveToEmptyBagSlot", BankApi, "MoveToEmptyBagSlot", slot) end,
     WithdrawCoffer = function(feature, slot) return CheckedMove(feature, "coffer", "coffer", "X2Coffer:MoveToEmptyBagSlot", CofferApi, "MoveToEmptyBagSlot", slot) end,
 } })
-BagTools.BagMoveContractVersion = 5
+BagTools.BagMoveContractVersion = 8
+BagTools.FullStorageContinuationContractVersion = 1
 BagTools.BatchLifecycleContractVersion = 5
-BagTools.NativeWindowQuickContractVersion = 3
-BagTools.DynamicSourceResolutionContractVersion = 1
+BagTools.NativeWindowQuickContractVersion = 4
+BagTools.DynamicSourceResolutionContractVersion = 3
+BagTools.QuickIdentityFallbackContractVersion = 1
 BagTools.BagTaskMutexContractVersion = 1
+BagTools.InventorySnapshotContractVersion = 1
+BagTools.GroupedIntentQueueContractVersion = 1
 local AUCTION_FAVORITE_MAX, AUCTION_KEYWORD_MAX = 20, 64
 local AUCTION_RESULT_LIMIT_MAX = 30
 local function NormalizeAuctionKeyword(value)
@@ -2377,10 +2915,29 @@ auctionCommands.RemoveFavorite=function(feature,index)
     index=tonumber(index); if index==nil or index~=math.floor(index) or index<1 or index>#feature.State.favorites then return false,"收藏索引无效" end
     return PersistStateMutation(feature,"auction_favorite_remove",function(state) table.remove(state.favorites,index); return true end)
 end
-local AUCTION_API_DEPENDENCIES={"X2Auction:SearchAuctionArticle","X2Auction:GetSearchedItemCount","X2Auction:GetSearchedItemInfo","X2Auction:GetLowestPrice"}
+local AUCTION_API_DEPENDENCIES={"X2Auction:SearchAuctionArticle","X2Auction:GetSearchedItemCount","X2Auction:GetSearchedItemInfo","X2Auction:GetLowestPrice","ADDON:GetContent","ADDON:GetContentMainScriptPosVis"}
 local AuctionFavorites = NewFeature("tools_auction",{apiDependencies=AUCTION_API_DEPENDENCIES,state={keyword="",favorites={},exactMatch=false,resultLimit=20,searchStatus="idle"},default=AuctionDefault(),apply=ApplyAuctionState,
+    onEnable=function()
+        local surface=S.Services and S.Services.AuctionSurfaceV3 or nil
+        if type(surface)=="table" and type(surface.Start)=="function" then
+            local started,startErr=surface:Start()
+            if started~=true and S.DiagnosticsManager~=nil and type(S.DiagnosticsManager.Warn)=="function" then
+                S.DiagnosticsManager:Warn("auction","AUCTION_SIDECAR_OBSERVER_UNAVAILABLE","拍卖收藏侧窗观察未启动；主页面功能保持可用",{error=tostring(startErr or "unknown")})
+            end
+        end
+        return true
+    end,
+    onDisable=function()
+        local surface=S.Services and S.Services.AuctionSurfaceV3 or nil
+        if type(surface)=="table" and type(surface.Stop)=="function" then surface:Stop("feature_disabled") end
+        return true
+    end,
     reconcileDemand=AuctionQueryReconcile,read=function(feature) local rows,snapshot=AuctionRows(feature,true); local status=snapshot.status=="failed" and (#rows>0 and "partial" or "unavailable") or (#rows>0 and "ready" or "empty"); return rows,status,snapshot.error end,
     projection=AuctionProjection,commands=auctionCommands})
+function AuctionFavorites:Search(value) return self.Commands:Search(value) end
+function AuctionFavorites:AddFavorite(value) return self.Commands:AddFavorite(value) end
+function AuctionFavorites:RemoveFavorite(index) return self.Commands:RemoveFavorite(index) end
+function AuctionFavorites:HasConsumer(token) return self.Demand ~= nil and type(self.Demand.Has) == "function" and self.Demand:Has(token) == true end
 
 local marketCommands=AuctionSettingsCommands()
 local MarketAnalysis = NewFeature("tools_market_analysis",{apiDependencies={"X2Auction:SearchAuctionArticle","X2Auction:GetSearchedItemCount","X2Auction:GetSearchedItemInfo"},state={keyword="",exactMatch=false,resultLimit=20},default={keyword="",exactMatch=false,resultLimit=20},
@@ -2553,6 +3110,7 @@ local UNIT_LINE_PAIRS = {
 -- to follow the target at frame cadence. The high-frequency scheduler lane
 -- still respects the user-selected cadence and only enables sub-16 ms when the
 -- user actually asks for it.
+
 local function UnitLineInterval(feature)
     return math.max(1, math.min(1000, math.floor(tonumber(feature.State.refreshMs) or 100)))
 end
@@ -2610,8 +3168,28 @@ local UnitLines = NewFeature("combat_unit_lines", {
     end,
     onDisable = function() if S.Scheduler ~= nil then S.Scheduler:RemoveTask(UNIT_LINE_TASK) end return true end,
     read = function(feature)
+        -- Bounded runtime diagnostics for the RU acceptance workflow; lives on
+        -- the Feature object, never persisted, never printed per frame.
+        local dia = feature.Diagnostics
+        if dia == nil then
+            dia = { enabled = false, consumerCount = 0, attemptedPairs = 0, drawnRows = 0,
+                lastStatus = "idle", lastFailureReason = nil, lastReadAt = 0, lastSuccessAt = 0,
+                endpointCollapsed = 0, projection = nil }
+            feature.Diagnostics = dia
+        end
+        dia.enabled = feature.enabled == true
+        dia.consumerCount = tonumber(feature.consumerCount) or 0
+        dia.lastReadAt = (S.NowMs and S.NowMs() or 0)
+        dia.attemptedPairs = 0
+        dia.drawnRows = 0
+        dia.endpointCollapsed = 0
         local projection = S.Services and S.Services.ScreenProjectionV3 or nil
-        if type(projection) ~= "table" or type(projection.ProjectUnitBatch) ~= "function" then return {}, "unavailable", "ScreenProjectionV3 v5 不可用" end
+        if type(projection) ~= "table" or type(projection.ProjectUnitBatch) ~= "function" then
+            dia.lastStatus = "unavailable"
+            dia.lastFailureReason = "SCREEN_PROJECTION_UNAVAILABLE"
+            return {}, "unavailable", "ScreenProjectionV3 v7 不可用"
+        end
+        dia.projection = projection.GetHealth ~= nil and projection:GetHealth() or nil
         local rows, attempted, failed, tokens = {}, 0, {}, {}
         local seen = {}
         for _, pair in ipairs(UNIT_LINE_PAIRS) do
@@ -2621,16 +3199,35 @@ local UnitLines = NewFeature("combat_unit_lines", {
                 if seen[pair.to]~=true then seen[pair.to]=true; tokens[#tokens+1]=pair.to end
             end
         end
-        if attempted == 0 then return {}, "empty", "所有连线类型均已关闭" end
+        dia.attemptedPairs = attempted
+        if attempted == 0 then
+            dia.lastStatus = "empty"
+            dia.lastFailureReason = "ALL_PAIRS_DISABLED"
+            return {}, "empty", "所有连线类型均已关闭"
+        end
         local projected,batchErr = projection:ProjectUnitBatch(tokens,{ requireFrontHemisphere=true, worldZOffset=1, validateNativeAgainstCamera=true, reconcileNativeScale=true })
         projected=type(projected)=="table" and projected or {}
         for _, pair in ipairs(UNIT_LINE_PAIRS) do
             if feature.State[pair.setting] ~= false then
                 local a,b=projected[pair.from],projected[pair.to]
                 if type(a)=="table" and a.visible==true and type(b)=="table" and b.visible==true then
-                    rows[#rows+1] = { key="unit_line:"..pair.key, pairKey=pair.key, name=pair.label,
-                        text=pair.label, statusText="可绘制", tone="green", x1=a.x,y1=a.y,x2=b.x,y2=b.y,
-                        source1=a.source, source2=b.source, fromToken=pair.from, toToken=pair.to }
+                    -- Collapse guard uses SEGMENT LENGTH, not per-axis deltas:
+                    -- a 2-4px near-coincident segment passed the old <=1px
+                    -- filter and the renderer then stacked ~24 dots inside
+                    -- those few pixels -- visually "the whole line is one
+                    -- dot". Anything shorter than two dot widths is invisible
+                    -- anyway.
+                    local collapseLimit = math.max(4, (tonumber(feature.State.pointSize) or 4) * 2)
+                    local segDx = (tonumber(a.x) or 0) - (tonumber(b.x) or 0)
+                    local segDy = (tonumber(a.y) or 0) - (tonumber(b.y) or 0)
+                    if (segDx * segDx + segDy * segDy) <= collapseLimit * collapseLimit then
+                        dia.endpointCollapsed = (tonumber(dia.endpointCollapsed) or 0) + 1
+                        failed[#failed+1] = pair.label .. "（端点重合，跳过绘制）"
+                    else
+                        rows[#rows+1] = { key="unit_line:"..pair.key, pairKey=pair.key, name=pair.label,
+                            text=pair.label, statusText="可绘制", tone="green", x1=a.x,y1=a.y,x2=b.x,y2=b.y,
+                            source1=a.source, source2=b.source, fromToken=pair.from, toToken=pair.to }
+                    end
                 else
                     local reason=(type(a)=="table" and a.reason) or (type(b)=="table" and b.reason) or batchErr or "当前无单位"
                     if reason=="behind_camera" then reason="单位在相机背后（不绘制）" end
@@ -2638,7 +3235,15 @@ local UnitLines = NewFeature("combat_unit_lines", {
                 end
             end
         end
-        if #rows == 0 then return {}, "empty", table.concat(failed, "；") end
+        dia.drawnRows = #rows
+        if #rows == 0 then
+            dia.lastStatus = "empty"
+            dia.lastFailureReason = failed[1] and tostring(failed[1]) or tostring(batchErr or "EMPTY")
+            return {}, "empty", table.concat(failed, "；")
+        end
+        dia.lastStatus = (#failed > 0 and "partial" or "ready")
+        dia.lastFailureReason = (#failed > 0 and tostring(failed[1]) or nil)
+        dia.lastSuccessAt = dia.lastReadAt
         return rows, (#failed > 0 and "partial" or "ready"), (#failed > 0 and table.concat(failed, "；") or nil)
     end,
     projection = function(feature) return { pointCount=feature.State.pointCount, pointSize=feature.State.pointSize, opacity=feature.State.opacity,
@@ -2700,6 +3305,7 @@ UnitLines.AdaptiveDensityContractVersion = 2
 UnitLines.SmoothRefreshContractVersion = 1
 UnitLines.FrontHemisphereContractVersion = 1
 UnitLines.ProjectionConsistencyContractVersion = 1
+-- UnitLines.Diagnostics is attached lazily by read() (Lua 5.1 main-chunk local budget)
 
 local RANGE_ASSIST_TASK = "v3_business_range_assist_refresh"
 local RangeAssist = NewFeature("combat_range_assist", {
@@ -2723,7 +3329,11 @@ local RangeAssist = NewFeature("combat_range_assist", {
     read = function(feature)
         local projection = S.Services and S.Services.ScreenProjectionV3 or nil
         if type(projection) ~= "table" or type(projection.GetUnitWorldPosition) ~= "function" or type(projection.ProjectWorldBatch) ~= "function" then return {}, "unavailable", "ScreenProjectionV3 不可用" end
-        local px,py,pz,posErr = projection:GetUnitWorldPosition("player", true)
+        -- ProjectWorldBatch uses the camera's global world frame.  The player
+        -- center must therefore come from the same global coordinate space;
+        -- `isLocal=true` reproduces the mixed-space endpoint bug already fixed
+        -- for Unit Lines in .18.96 and makes the circle drift away from self.
+        local px,py,pz,posErr = projection:GetUnitWorldPosition("player", false)
         if px == nil then return {}, "unavailable", "自身世界坐标不可读：" .. tostring(posErr or "unknown") end
         local count=math.max(12,math.min(48,math.floor(tonumber(feature.State.pointCount) or 24)))
         local radius=math.max(1,math.min(100,tonumber(feature.State.radius) or 10))
@@ -2736,9 +3346,15 @@ local RangeAssist = NewFeature("combat_range_assist", {
         -- the circle center cannot drift with physical-pixel/UI-scale mismatch.
         local projected, batchSource = projection:ProjectWorldBatch(worldPoints,{preferLogicalCamera=true})
         local points={}
-        for _,screenPoint in ipairs(type(projected)=="table" and projected or {}) do
+        -- WorldBatch v7 is index-stable, but keep explicit source-index
+        -- iteration here as a second fence.  A range circle naturally contains
+        -- behind-camera points; Lua 5.1 ipairs() over a sparse projection used
+        -- to stop at the first hole and discard every later visible point.
+        projected = type(projected)=="table" and projected or {}
+        for index=1,count do
+            local screenPoint=projected[index]
             if type(screenPoint)=="table" and tonumber(screenPoint.x)~=nil and tonumber(screenPoint.y)~=nil
-                and (tonumber(screenPoint.depth)==nil or tonumber(screenPoint.depth)>0) then
+                and screenPoint.visible~=false and (tonumber(screenPoint.depth)==nil or tonumber(screenPoint.depth)>0) then
                 points[#points+1]={x=screenPoint.x,y=screenPoint.y}
             end
         end
@@ -2767,34 +3383,19 @@ local RangeAssist = NewFeature("combat_range_assist", {
         end,
     },
 })
-RangeAssist.VisualGuideContractVersion = 3
+RangeAssist.VisualGuideContractVersion = 4
+RangeAssist.WorldSpaceContractVersion = 1
 NewFeature("combat_siege_readiness", { blocker = "GetEquippedItemTooltipInfo 的槽位/装分字段和攻城上下文未在当前 RU 实机确认；不猜测装备状态" })
 NewFeature("tools_hotkey_profiles", { blocker = "当前 RU API 没有动作名称枚举；GetOptionBinding 只能读取已知 action/index，无法安全导出完整快捷键方案" })
 ------------------------------------------------------------------------
--- tools_reinforce_analysis: read-only equipment-reinforcement analysis over
--- X2EquipSlotReinforce.
+-- tools_reinforce_analysis: safe aggregate-only read projection.
 --
--- Evidence basis (reconciled 2026-09-03 against the RU client export manifest
--- api_functions.lua, section "X2EquipSlotReinforce", lines 1855-1878): every
--- getter used below is listed under "Allowed functions". The same section
--- places all mutators (StartReinforceAddExp / StartReinforceLevelup /
--- ChangeLevelEffect / EnableLevelUp) under "Available/not allowed", so the
--- analysis is read-only by construction: no write capability is registered and
--- no write path exists to misuse.
---
--- What remains unproven and is therefore never guessed:
---   * the legal equipSlotIndex range -- the manifest exports no slot
---     enumeration API, so slots are discovered by a BOUNDED probe and each
---     index is classified explicitly (no data / unresolved shape / resolved);
---   * the exact return field names of GetReinforceInfo and GetMaterialInfo --
---     a narrow candidate whitelist is used and anything outside it renders as
---     "待确认" while degrading the whole projection to partial.
--- A failed read degrades to unavailable/partial, never to an empty table.
+-- PRODUCT_COMPLETION_MATRIX keeps per-slot reinforcement details runtime
+-- blocked because the RU client exposes no verified equipSlotIndex enumerator
+-- and the GetReinforceInfo/GetMaterialInfo payload contract is still unknown.
+-- Never probe guessed integer ranges. Only parameter-free getters and getters
+-- whose argument is an exported ESRA_* attribute constant are allowed here.
 ------------------------------------------------------------------------
--- A single table namespace instead of one local per helper: this file's main
--- chunk sits at the Lua 5.1 limit of 200 locals per function, so every helper
--- must live on one table rather than adding its own local.
-local REINFORCE_SLOT_PROBE_MAX = 32
 local Reinforce = {
     attributes = {
         { key = "offence", label = "攻击", global = "ESRA_OFFENCE" },
@@ -2802,97 +3403,11 @@ local Reinforce = {
         { key = "support", label = "支援", global = "ESRA_SUPPORT" },
     },
 }
--- Attribute labels resolve by EXACT match against the client's own ESRA_*
--- constants, never by index arithmetic: ESRA_* numbering is not proven to be
--- 0-based or contiguous, so an off-by-one would silently mislabel a slot.
-function Reinforce:AttributeLabel(value)
-    if value == nil then return nil end
-    for _, attribute in ipairs(self.attributes) do
-        local constant = rawget(_G, attribute.global)
-        if constant ~= nil and constant == value then return attribute.label end
-    end
-    return nil
-end
-function Reinforce:Number(source, fields)
-    if type(source) ~= "table" then return nil end
-    for _, field in ipairs(fields) do
-        local value = tonumber(source[field])
-        if value ~= nil then return value end
-    end
-    return nil
-end
-function Reinforce:Text(source, fields)
-    if type(source) ~= "table" then return nil end
-    for _, field in ipairs(fields) do
-        local value = source[field]
-        if type(value) == "string" then
-            local text = value:match("^%s*(.-)%s*$")
-            if text ~= "" then return text end
-        end
-    end
-    return nil
-end
--- Returns nil for "no data" and for shapes that cannot be trusted. Callers
--- distinguish the two by checking whether the raw value was nil.
-function Reinforce:NormalizeInfo(value)
-    if value == nil then return nil end
-    if type(value) == "number" then return { level = math.floor(value) } end
-    if type(value) ~= "table" then return nil end
-    local level = self:Number(value, { "level", "reinforceLevel", "curLevel", "currentLevel" })
-    local name = self:Text(value, { "name", "slotName", "equipSlotName" })
-    if level == nil and name == nil then return nil end
-    return {
-        level = level,
-        maxLevel = self:Number(value, { "maxLevel", "maxReinforceLevel", "limitLevel" }),
-        exp = self:Number(value, { "exp", "curExp", "currentExp" }),
-        maxExp = self:Number(value, { "maxExp", "needExp", "requireExp" }),
-        attributeType = self:Number(value, { "attributeType", "type" }),
-        name = name,
-    }
-end
-function Reinforce:NormalizeMaterial(value)
-    if type(value) ~= "table" then return nil end
-    local name = self:Text(value, { "name", "itemName", "materialName" })
-    local count = self:Number(value, { "count", "needCount", "amount", "itemCount" })
-    if name == nil and count == nil then return nil end
-    return { name = name, count = count }
-end
-function Reinforce:MaterialSummary(slotIndex, level)
-    -- GetMaterialInfo(equipSlotIndex, level) is an official Allowed getter, but
-    -- its payload shape is unverified; a non-normalizable payload is reported as
-    -- "形态待 RU 实证" instead of being silently omitted or rendered as a raw
-    -- table address.
-    local ok, payload, callErr = Call("X2EquipSlotReinforce:GetMaterialInfo", ReinforceApi, "GetMaterialInfo", slotIndex, level)
-    if ok ~= true then return nil, tostring(callErr or "读取失败") end
-    if payload == nil then return nil, nil end
-    if type(payload) ~= "table" then return nil, "返回形态未识别" end
-    local rows = payload
-    if payload[1] == nil and (self:Text(payload, { "name", "itemName", "materialName" }) ~= nil or self:Number(payload, { "count", "needCount", "amount", "itemCount" }) ~= nil) then
-        rows = { payload }
-    end
-    local parts, unresolved, scanned = {}, 0, 0
-    for index = 1, 8 do
-        local entry = rows[index]
-        if entry == nil then break end
-        scanned = scanned + 1
-        local material = self:NormalizeMaterial(entry)
-        if material == nil then
-            unresolved = unresolved + 1
-        else
-            parts[#parts + 1] = (material.name or "材料") .. " ×" .. tostring(material.count or "?")
-        end
-    end
-    if scanned == 0 then return nil, "返回形态未识别" end
-    if unresolved > 0 then parts[#parts + 1] = "另有 " .. tostring(unresolved) .. " 条形态待 RU 实证" end
-    return table.concat(parts, "；"), (unresolved > 0 and "形态待 RU 实证" or nil)
-end
 function Reinforce:AppendFact(rows, key, name, facts, tone, statusText)
     rows[#rows + 1] = { key = key, name = name, text = table.concat(facts, " · "), statusText = statusText or "已识别", tone = tone or "default" }
 end
 NewFeature("tools_reinforce_analysis", {
-    -- Exactly the capabilities this read path calls -- no speculative entries.
     apiDependencies = {
-        "X2EquipSlotReinforce:GetReinforceInfo", "X2EquipSlotReinforce:GetMaterialInfo",
         "X2EquipSlotReinforce:GetTotalReinforceLevel",
         "X2EquipSlotReinforce:GetAttributeTotalLevel", "X2EquipSlotReinforce:GetNextSetApplyLevel",
         "X2EquipSlotReinforce:HasNextSetEffect", "X2EquipSlotReinforce:SuitableLevelForEquipSlotReinforce",
@@ -2904,8 +3419,7 @@ NewFeature("tools_reinforce_analysis", {
         if ReinforceApi == nil then
             return rows, "unavailable", "X2EquipSlotReinforce 在当前客户端不可用（未导出）"
         end
-        -- 1) Aggregate overview. Each getter is independent: one failure must
-        --    not blank the others, and an unknown value is displayed as 待确认.
+
         local okTotal, totalLevel, totalErr = Call("X2EquipSlotReinforce:GetTotalReinforceLevel", ReinforceApi, "GetTotalReinforceLevel")
         if okTotal == true then
             anyOk = true
@@ -2916,6 +3430,7 @@ NewFeature("tools_reinforce_analysis", {
         else
             failures[#failures + 1] = "总强化等级（" .. tostring(totalErr or "读取失败") .. "）"
         end
+
         local okSuit, suitLevel, suitErr = Call("X2EquipSlotReinforce:SuitableLevelForEquipSlotReinforce", ReinforceApi, "SuitableLevelForEquipSlotReinforce")
         if okSuit == true then
             anyOk = true
@@ -2926,10 +3441,12 @@ NewFeature("tools_reinforce_analysis", {
         else
             failures[#failures + 1] = "适用等级（" .. tostring(suitErr or "读取失败") .. "）"
         end
+
         for _, attribute in ipairs(Reinforce.attributes) do
             local attributeType = rawget(_G, attribute.global)
             if attributeType == nil then
-                Reinforce:AppendFact(rows, "reinforce:attr:" .. attribute.key, attribute.label .. "系合计", { "属性类型常量 " .. attribute.global .. " 未导出，无法查询" }, "muted", "未提供")
+                Reinforce:AppendFact(rows, "reinforce:attr:" .. attribute.key, attribute.label .. "系合计",
+                    { "属性类型常量 " .. attribute.global .. " 未导出，无法查询" }, "muted", "未提供")
             else
                 local okLevel, levelValue, levelErr = Call("X2EquipSlotReinforce:GetAttributeTotalLevel", ReinforceApi, "GetAttributeTotalLevel", attributeType)
                 if okLevel ~= true then
@@ -2952,18 +3469,16 @@ NewFeature("tools_reinforce_analysis", {
                     if okHas == true then
                         if hasValue == true then facts[#facts + 1] = "存在下一档套装效果"
                         elseif hasValue == false then facts[#facts + 1] = "已达当前套装上限"
-                        else
-                            unresolved = unresolved + 1
-                            facts[#facts + 1] = "下一档套装效果状态待 RU 实证"
-                        end
+                        else unresolved = unresolved + 1; facts[#facts + 1] = "下一档套装效果状态待 RU 实证" end
                     else
                         failures[#failures + 1] = attribute.label .. "系套装效果状态"
                     end
                     Reinforce:AppendFact(rows, "reinforce:attr:" .. attribute.key, attribute.label .. "系合计", facts, "default",
-                        (level ~= nil and "已识别" or "待确认"))
+                        level ~= nil and "已识别" or "待确认")
                 end
             end
         end
+
         local okBundle, bundleTop = Call("X2EquipSlotReinforce:GetBundleEffectTopLevel", ReinforceApi, "GetBundleEffectTopLevel")
         if okBundle == true then
             anyOk = true
@@ -2974,73 +3489,20 @@ NewFeature("tools_reinforce_analysis", {
         else
             failures[#failures + 1] = "组合效果上限"
         end
-        -- 2) Bounded per-slot probe. The manifest exports no slot enumeration
-        --    API, so the range is deliberately bounded rather than guessed from
-        --    numbering conventions. Indexes are classified, never assumed:
-        --      ok + nil          -> no data for that index (not an error)
-        --      ok + unusable     -> unresolved shape, counted and disclosed
-        --      not ok            -> read failure, aggregated
-        local slotRows, slotFailures = {}, 0
-        for index = 0, REINFORCE_SLOT_PROBE_MAX - 1 do
-            local ok, info, callErr = Call("X2EquipSlotReinforce:GetReinforceInfo", ReinforceApi, "GetReinforceInfo", index)
-            if ok ~= true then
-                slotFailures = slotFailures + 1
-                -- Record the slot-probe failure once; 32 identical notes would
-                -- bury the real diagnostics.
-                if slotFailures == 1 then
-                    failures[#failures + 1] = "槽位读取（" .. tostring(callErr or "读取失败") .. "）"
-                end
-            elseif info == nil then
-                anyOk = true
-            else
-                anyOk = true
-                local normalized = Reinforce:NormalizeInfo(info)
-                if normalized == nil then
-                    unresolved = unresolved + 1
-                else
-                    local facts = {}
-                    if normalized.level == nil then unresolved = unresolved + 1 end
-                    facts[#facts + 1] = normalized.level ~= nil and ("强化等级 " .. tostring(normalized.level) .. (normalized.maxLevel ~= nil and ("/" .. tostring(normalized.maxLevel)) or "")) or "强化等级待 RU 实证"
-                    if normalized.exp ~= nil then
-                        facts[#facts + 1] = "经验 " .. tostring(normalized.exp) .. (normalized.maxExp ~= nil and ("/" .. tostring(normalized.maxExp)) or "")
-                    end
-                    local attributeLabel = Reinforce:AttributeLabel(normalized.attributeType)
-                    if attributeLabel ~= nil then
-                        facts[#facts + 1] = "属性系 " .. attributeLabel
-                    elseif normalized.attributeType ~= nil then
-                        unresolved = unresolved + 1
-                        facts[#facts + 1] = "属性系编号 " .. tostring(normalized.attributeType) .. "（未匹配 ESRA_* 常量，待 RU 实证）"
-                    end
-                    if normalized.level ~= nil then
-                        local summary, shapeNote = Reinforce:MaterialSummary(index, normalized.level)
-                        if summary ~= nil then
-                            facts[#facts + 1] = "下一级材料：" .. summary
-                            if shapeNote ~= nil then unresolved = unresolved + 1 end
-                        elseif shapeNote ~= nil then
-                            facts[#facts + 1] = "下一级材料：" .. shapeNote
-                            unresolved = unresolved + 1
-                        end
-                    end
-                    slotRows[#slotRows + 1] = {
-                        key = "reinforce:slot:" .. tostring(index),
-                        name = "槽位 " .. tostring(index) .. (normalized.name ~= nil and (" · " .. normalized.name) or ""),
-                        text = table.concat(facts, " · "),
-                        statusText = "已识别",
-                        tone = "default",
-                    }
-                end
-            end
-        end
-        for _, row in ipairs(slotRows) do rows[#rows + 1] = row end
+
+        Reinforce:AppendFact(rows, "reinforce:slot_blocked", "逐槽位强化详情",
+            { "Runtime Blocked：合法 equipSlotIndex 范围与 GetReinforceInfo/GetMaterialInfo 返回结构尚未通过 RU 实机验证；不会枚举或猜测槽位。" },
+            "warn", "Runtime Blocked")
+
         local status = "ready"
         if not anyOk then status = "unavailable"
-        elseif #failures > 0 or unresolved > 0 then status = "partial"
-        elseif #rows == 0 then status = "empty" end
+        elseif #failures > 0 or unresolved > 0 then status = "partial" end
         local notes = {}
         if #failures > 0 then notes[#notes + 1] = "读取失败：" .. table.concat(failures, "；") end
-        if unresolved > 0 then notes[#notes + 1] = "返回形态未识别 " .. tostring(unresolved) .. " 处（RU 契约待实证，未伪造数值）" end
-        notes[#notes + 1] = "只读分析：探测 " .. tostring(REINFORCE_SLOT_PROBE_MAX) .. " 个槽位上限，不执行任何强化写入"
+        if unresolved > 0 then notes[#notes + 1] = "聚合返回形态未识别 " .. tostring(unresolved) .. " 处（未伪造数值）" end
+        notes[#notes + 1] = "逐槽位强化详情保持 Runtime Blocked；未执行任何 equipSlotIndex 探测或强化写入"
         return rows, status, table.concat(notes, "；")
     end,
 })
+S.Features.tools_reinforce_analysis.SlotProbeRuntimeBlocked = true
 NewFeature("tools_portal_profiles", { blocker = "X2Option optionType/返回值语义和个人传送候选集合未在当前 RU 客户端验证；禁止执行猜测写入" })

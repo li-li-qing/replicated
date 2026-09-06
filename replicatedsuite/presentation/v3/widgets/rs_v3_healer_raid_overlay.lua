@@ -25,7 +25,10 @@ S.UIV3 = S.UIV3 or {}
 S.UIV3.HealerRaidOverlay = S.UIV3.HealerRaidOverlay or {}
 local P = S.UIV3.HealerRaidOverlay
 
-P.version = 2
+P.version = 4
+P.NativeRosterGeometryContractVersion = 2
+P.ColumnMajorSlotContractVersion = 2
+P.StackedHalfRosterContractVersion = 1
 P.owner = "v3:healer_raid_overlay"
 P.consumerToken = "presentation:healer_raid_overlay"
 P.taskName = "v3_healer_raid_overlay_effect"
@@ -45,7 +48,8 @@ P.metrics = P.metrics or { starts=0, stops=0, refreshes=0, effectTicks=0, alloca
 P.activeOwner = P.activeOwner or {}
 
 local SLOTS_PER_PANEL = 50
-local COLS, ROWS = 10, 5
+local HALF_COLS, HALF_ROWS, HALF_SLOTS = 5, 5, 25
+local DEFAULT_PANEL_WIDTH, DEFAULT_PANEL_HEIGHT = 340, 400
 local function N(value, fallback) return tonumber(value) or tonumber(fallback) or 0 end
 local function FeatureEnabled() return S.FeatureRuntime ~= nil and S.FeatureRuntime:IsEnabled(FEATURE_ID) == true end
 local function Settings()
@@ -99,7 +103,7 @@ function P:MakePanel(id)
     for _, b in ipairs(bindings) do if b.id == id then geometry = b.geometry; break end end
     if geometry == nil then
         local raid = type(settings.panels) == "table" and settings.panels[id] or nil
-        geometry = type(raid) == "table" and raid.geometry or { x=0, y=140, width=340, height=400 }
+        geometry = type(raid) == "table" and raid.geometry or { x=(id == "B") and 360 or 0, y=140, width=DEFAULT_PANEL_WIDTH, height=DEFAULT_PANEL_HEIGHT }
     end
     local root, err
     local adapter = S.UIV3NativeAdapter
@@ -107,7 +111,7 @@ function P:MakePanel(id)
         root, err = adapter:CreateRootWindow("v3_healer_raid_panel_" .. tostring(id), P.owner)
     end
     if root == nil then
-        root, err = S.UI:CreateEmptyWidget(UIParent, "v3_healer_raid_panel_" .. tostring(id), N(geometry.x), N(geometry.y), N(geometry.width,340), N(geometry.height,400), false, P.owner)
+        root, err = S.UI:CreateEmptyWidget(UIParent, "v3_healer_raid_panel_" .. tostring(id), N(geometry.x), N(geometry.y), N(geometry.width,DEFAULT_PANEL_WIDTH), N(geometry.height,DEFAULT_PANEL_HEIGHT), false, P.owner)
     end
     if root == nil then return nil, err end
     root.rsUiOwner = P.owner
@@ -162,8 +166,15 @@ function P:MakePanel(id)
         if type(S.UI.EndNativeGeometryLease) == "function" then S.UI:EndNativeGeometryLease(root, P.owner) end
         panel.moving = false
         if S.Layout ~= nil and type(S.Layout.GetLogicalRect) == "function" then
-            local x, y, width, height = S.Layout:GetLogicalRect(root)
-            local ok = Feature.Commands:SetRaidPanelRect(id, { x=x, y=y, width=width, height=height })
+            local x, y = S.Layout:GetLogicalRect(root)
+            local current = Settings()
+            local saved = type(current.panels) == "table" and current.panels[id] or nil
+            local geometryNow = type(saved) == "table" and saved.geometry or nil
+            local ok = Feature.Commands:SetRaidPanelRect(id, {
+                x=x, y=y,
+                width=N(geometryNow and geometryNow.width, DEFAULT_PANEL_WIDTH),
+                height=N(geometryNow and geometryNow.height, DEFAULT_PANEL_HEIGHT),
+            })
             if ok == true then P.metrics.dragCommits = (tonumber(P.metrics.dragCommits) or 0) + 1 end
         end
         P:LayoutPanel(id)
@@ -199,10 +210,21 @@ function P:LayoutPanel(id)
     for _, b in ipairs(self.bindings) do if b.id == id then geometry = b.geometry; break end end
     if geometry == nil then
         local raid = type(settings.panels) == "table" and settings.panels[id] or nil
-        geometry = type(raid) == "table" and raid.geometry or { x=0, y=140, width=340, height=400 }
+        geometry = type(raid) == "table" and raid.geometry or { x=(id == "B") and 360 or 0, y=140, width=DEFAULT_PANEL_WIDTH, height=DEFAULT_PANEL_HEIGHT }
     end
     if type(geometry) ~= "table" then return false end
-    local width, height = math.max(120, N(geometry.width, 340)), math.max(80, N(geometry.height, 400))
+    local width, height = math.max(120, N(geometry.width, DEFAULT_PANEL_WIDTH)), math.max(160, N(geometry.height, DEFAULT_PANEL_HEIGHT))
+    -- Geometry constants aligned with the proven legacy healer overlay
+    -- (参考的项目1 replicatedhealer_core2.lua:453-458 / rh_config.lua:95-98):
+    -- outerPad 4, title pad 22 (legacy reserved a title line inside each
+    -- section), group (column) gap 4, row gap 1, section gap 8. With the
+    -- default 340x400 panel this reproduces the legacy per-slot geometry
+    -- exactly: sectionH 196, cellW 63, slotHeight 33 -- instead of the first
+    -- draft 5px grid (192/63/34) that visually compressed rows.
+    local outerPadX, outerPadY, cellGapX, cellGapY, sectionGapY, titlePadY = 4, 0, 4, 1, 8, 22
+    local sectionH = math.max(60, math.floor((height - outerPadY * 2 - sectionGapY) / 2))
+    local cellW = math.max(6, math.floor((width - outerPadX * 2 - (HALF_COLS - 1) * cellGapX) / HALF_COLS))
+    local cellH = math.max(6, math.floor((sectionH - titlePadY - (HALF_ROWS - 1) * cellGapY) / HALF_ROWS))
     S.UI:SetAnchor(panel.window, "UIParent", N(geometry.x), N(geometry.y), self.owner)
     S.UI:SetExtent(panel.window, width, height, self.owner)
     if panel.calibrationBg ~= nil then
@@ -212,16 +234,15 @@ function P:LayoutPanel(id)
     S.UI:SetAnchor(panel.borders[2], panel.window, 0, height - 2, self.owner); S.UI:SetExtent(panel.borders[2], width, 2, self.owner)
     S.UI:SetAnchor(panel.borders[3], panel.window, 0, 0, self.owner); S.UI:SetExtent(panel.borders[3], 2, height, self.owner)
     S.UI:SetAnchor(panel.borders[4], panel.window, width - 2, 0, self.owner); S.UI:SetExtent(panel.borders[4], 2, height, self.owner)
-    S.UI:SetAnchor(panel.title, panel.window, 5, 2, self.owner)
-
-    local outerPad, topPad, cellGapX, cellGapY = 4, 22, 1, 1
-    local cellW = math.max(6, math.floor((width - outerPad * 2 - (COLS - 1) * cellGapX) / COLS))
-    local cellH = math.max(6, math.floor((height - topPad - outerPad - (ROWS - 1) * cellGapY) / ROWS))
+    -- One native raid is NOT 10 columns x 5 rows.  It is two stacked 25-slot
+    -- sections: 1..25 above and 26..50 below.  Each half is column-major 5x5.
     for i = 1, SLOTS_PER_PANEL do
-        local col = (i - 1) % COLS
-        local row = math.floor((i - 1) / COLS)
-        local x = outerPad + col * (cellW + cellGapX)
-        local y = topPad + row * (cellH + cellGapY)
+        local half = i > HALF_SLOTS and 1 or 0
+        local within = ((i - 1) % HALF_SLOTS) + 1
+        local col = math.floor((within - 1) / HALF_ROWS)
+        local row = (within - 1) % HALF_ROWS
+        local x = outerPadX + col * (cellW + cellGapX)
+        local y = outerPadY + half * (sectionH + sectionGapY) + titlePadY + row * (cellH + cellGapY)
         S.UI:SetAnchor(panel.slots[i], panel.window, x, y, self.owner)
         S.UI:SetExtent(panel.slots[i], cellW, cellH, self.owner)
         S.UI:SetAnchor(panel.calibrationLabels[i], panel.window, x, y, self.owner)
@@ -263,14 +284,26 @@ function P:RefreshProjection()
     self.candidates = {}
     self.activePanels = {}
     self.selfSlot = nil
+    for _, panel in pairs(self.panels) do panel.maxMemberIndex = 0 end
+    -- Geometry follows the native roster population, not the recommendation
+    -- projection. Out-of-range/dead members may be absent from displayRows but
+    -- still occupy a native party cell and must keep the overlay width stable.
+    local roster = type(Feature.GetRosterProjection) == "function" and Feature:GetRosterProjection() or nil
+    for _, member in ipairs(type(roster) == "table" and type(roster.members) == "table" and roster.members or {}) do
+        local panel = self:GetOverlaySlot(member)
+        if panel ~= nil then
+            self.activePanels[panel.id] = true
+            panel.maxMemberIndex = math.max(tonumber(panel.maxMemberIndex) or 0, tonumber(member.memberIndex) or 0)
+        end
+    end
     for _, row in ipairs(self.displayRows) do
         local panel = self:GetOverlaySlot(row)
-        if panel ~= nil then self.activePanels[panel.id] = true end
         if row.isCandidate == true then self.candidates[#self.candidates + 1] = row end
         if row.isSelf == true then self.selfSlot = panel ~= nil and { id = panel.id, index = tonumber(row.memberIndex) or 0 } or nil end
     end
     self.rosterCount = type(projection) == "table" and tonumber(projection.rosterCount) or 0
     self.metrics.refreshes = (tonumber(self.metrics.refreshes) or 0) + 1
+    self:LayoutAll()
     local highlighted, highlightErr = self:RefreshHighlights()
     if highlighted == false then return false, highlightErr end
     return true
@@ -300,16 +333,18 @@ function P:RefreshHighlights(nowMs)
         end
         S.UI:SetVisible(panel.calibrationBg, calibration, self.owner)
         if panel.calibrationBg ~= nil then S.UI:SetColor(panel.calibrationBg, 0.04, 0.30, 0.58, 0.52, self.owner) end
-        S.UI:SetVisible(panel.title, calibration, self.owner)
+        S.UI:SetVisible(panel.title, false, self.owner)
         for _, border in ipairs(panel.borders) do
             S.UI:SetVisible(border, calibration, self.owner)
             S.UI:SetColor(border, 0.18, 0.82, 1.00, 0.92, self.owner)
         end
+        local calibrationSlots = SLOTS_PER_PANEL
         for i = 1, SLOTS_PER_PANEL do
+            local calibrationCell = calibration and i <= calibrationSlots
             S.UI:SetVisible(panel.ranks[i], false, self.owner)
-            S.UI:SetVisible(panel.calibrationLabels[i], calibration, self.owner)
-            S.UI:SetVisible(panel.slots[i], calibration, self.owner)
-            if calibration then S.UI:SetColor(panel.slots[i], 0.18, 0.72, 1.00, 0.16, self.owner) end
+            S.UI:SetVisible(panel.calibrationLabels[i], calibrationCell, self.owner)
+            S.UI:SetVisible(panel.slots[i], calibrationCell, self.owner)
+            if calibrationCell then S.UI:SetColor(panel.slots[i], 0.18, 0.72, 1.00, 0.16, self.owner) end
         end
     end
     if not useRaidRuntime and not calibration then return true end
@@ -402,16 +437,27 @@ function P:Start(reason)
     self.calibrationMode = calibration
     if calibration == true then
         ok, err = Feature:AcquirePreviewConsumer(self.consumerToken)
+        if ok ~= true then return false, err end
+        -- Calibration holds ONLY the preview lease. The gate and the aura
+        -- acceptance both require consumerHeld == false while calibrating;
+        -- tracking the preview under consumerHeld made every healthy
+        -- calibration run report healer_v3_visual_lifecycle failure.
+        self.previewHeld = true
+        self.consumerHeld = false
     else
         ok, err = Feature:AcquireConsumer(self.consumerToken)
+        if ok ~= true then return false, err end
+        self.consumerHeld = true
     end
-    if ok ~= true then return false, err end
-    self.consumerHeld = true
-    if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then Feature:ReleaseConsumer(self.consumerToken); self.consumerHeld=false; return false,"event bus unavailable" end
+    local releaseLease = function()
+        if self.consumerHeld == true then Feature:ReleaseConsumer(self.consumerToken); self.consumerHeld=false end
+        if self.previewHeld == true then Feature:ReleaseConsumer(self.consumerToken); self.previewHeld=false end
+    end
+    if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then releaseLease(); return false,"event bus unavailable" end
     ok = S.Events:SubscribeInternal("v3.healer.updated", self.activeOwner, function() self:RefreshProjection() end)
-    if ok ~= true then Feature:ReleaseConsumer(self.consumerToken); self.consumerHeld=false; return false,"raid overlay event subscribe failed" end
+    if ok ~= true then releaseLease(); return false,"raid overlay event subscribe failed" end
     ok = S.Events:SubscribeInternal("v3.healer.locate_self", self.activeOwner, function() self.locateUntil = (S.NowMs and S.NowMs() or 0) + 2500; self:RefreshHighlights() end)
-    if ok ~= true then Feature:ReleaseConsumer(self.consumerToken); self.consumerHeld=false; return false,"raid overlay locate event subscribe failed" end
+    if ok ~= true then releaseLease(); return false,"raid overlay locate event subscribe failed" end
     self.running = true
     self.metrics.starts = (tonumber(self.metrics.starts) or 0) + 1
     self:RefreshProjection()
@@ -424,6 +470,11 @@ function P:Stop(reason)
         local ok, err = Feature:ReleaseConsumer(self.consumerToken)
         if ok ~= true and FeatureEnabled() then return false, err end
         self.consumerHeld=false
+    end
+    if self.previewHeld == true then
+        local ok, err = Feature:ReleaseConsumer(self.consumerToken)
+        if ok ~= true then return false, err end
+        self.previewHeld=false
     end
     if self.taskActive == true then S.Scheduler:RemoveTask(self.taskName); self.taskActive=false end
     if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self.activeOwner) end
@@ -456,7 +507,7 @@ function P:Reconcile(reason)
         if calibration == true and type(Feature.HasConsumer) == "function" and Feature:HasConsumer(self.consumerToken) ~= true then
             ok, err = Feature:AcquirePreviewConsumer(self.consumerToken)
             if ok ~= true then return false, err end
-            self.consumerHeld = true
+            self.previewHeld = true
             if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
                 S.Events:SubscribeInternal("v3.healer.updated", self.activeOwner, function() self:RefreshProjection() end)
                 S.Events:SubscribeInternal("v3.healer.locate_self", self.activeOwner, function() self.locateUntil = (S.NowMs and S.NowMs() or 0) + 2500; self:RefreshHighlights() end)
@@ -469,8 +520,8 @@ end
 
 function P:Describe()
     return {
-        version=self.version, running=self.running==true, calibrationMode=self.calibrationMode==true, consumerHeld=self.consumerHeld==true,
-        taskActive=self.taskActive==true, allocatedPanels=self.metrics.allocatedPanels, rosterCount=tonumber(self.rosterCount) or 0,
+        version=self.version, nativeRosterGeometryContractVersion=self.NativeRosterGeometryContractVersion, columnMajorSlotContractVersion=self.ColumnMajorSlotContractVersion, running=self.running==true, calibrationMode=self.calibrationMode==true, consumerHeld=self.consumerHeld==true,
+        taskActive=self.taskActive==true, previewHeld=self.previewHeld==true, allocatedPanels=self.metrics.allocatedPanels, rosterCount=tonumber(self.rosterCount) or 0,
         refreshes=tonumber(self.metrics.refreshes) or 0, effectTicks=tonumber(self.metrics.effectTicks) or 0,
         dragCommits=tonumber(self.metrics.dragCommits) or 0, bindings=#self.bindings,
     }
@@ -478,8 +529,22 @@ end
 
 if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
     S.Events:SubscribeInternal((S.FeatureRuntime and S.FeatureRuntime.LifecycleTopic) or "v3.feature.lifecycle", P,
-        function(_, featureId) if tostring(featureId or "") == FEATURE_ID then P:Reconcile("feature_lifecycle") end end)
+        function(_, featureId)
+            if tostring(featureId or "") ~= FEATURE_ID then return end
+            local ok, err = P:Reconcile("feature_lifecycle")
+            if ok ~= true and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarnRateLimited) == "function" then
+                S.DiagnosticsManager:WarnRateLimited("healer_raid_overlay", "RAID_RECONCILE_FAILED", 5000,
+                    "治疗团队能量条 overlay 启动失败", { error = tostring(err or "unknown") })
+            end
+        end)
     S.Events:SubscribeInternal("v3.healer.presentation", P,
-        function(_, scope) if tostring(scope or "") == "raid" then P:Reconcile("raid_settings") end end)
+        function(_, scope)
+            if tostring(scope or "") ~= "raid" then return end
+            local ok, err = P:Reconcile("raid_settings")
+            if ok ~= true and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarnRateLimited) == "function" then
+                S.DiagnosticsManager:WarnRateLimited("healer_raid_overlay", "RAID_RECONCILE_FAILED", 5000,
+                    "治疗团队能量条 overlay 重建失败", { error = tostring(err or "unknown") })
+            end
+        end)
 end
 P:Reconcile("bootstrap")

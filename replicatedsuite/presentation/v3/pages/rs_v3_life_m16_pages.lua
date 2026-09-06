@@ -26,6 +26,7 @@ local function ValidateFeatureContract(feature, kind)
     end
     if kind == "trade" then
         if type(feature.GetRouteSettings) ~= "function" or type(commands.SetFrom) ~= "function" or type(commands.SetTo) ~= "function"
+            or type(commands.SetRatioMode) ~= "function" or type(commands.SetCommerceMode) ~= "function"
             or type(commands.QuotePendingMaterials) ~= "function"
             or type(feature.GetWidgetVisible) ~= "function" or type(commands.SetWidgetVisible) ~= "function" then
             return false, "跑商页面 Feature 契约不完整"
@@ -60,10 +61,10 @@ local function Build(parent, route, feature, kind)
     if root == nil then return nil, err end
     root.consumerHeld = false
     local title, subtitle = "", ""
-    if kind == "trade" then title, subtitle = "跑商", "直接读取 X2Store 生产地、可售地和服务器货率；价格只在本地静态数据能精确匹配时显示。"
+    if kind == "trade" then title, subtitle = "跑商", "实时货率来自服务器；可切换满货率 130% 做本地对比。经商熟练度只读显示，精确 RU 售价倍率未验证前不计入估价。"
     elseif kind == "bonds" then title, subtitle = "债券 / 居民板", "读取居民板内容、QuestProgressV3 任务状态和有限背包材料总量；明确显示未知与部分可读诊断。"
     elseif kind == "treasure" then title, subtitle = "寻宝", "直接扫描有限背包槽位中的藏宝图坐标，并在单位世界坐标可用时计算方向与距离。"
-    else title, subtitle = "钓鱼", "按需观察目标鱼动作 Buff；自动 R 只有在热键读取和战斗保护都通过时才允许显式启用。" end
+    else title, subtitle = "钓鱼", "按需观察目标鱼动作 Buff 并给出技能栏推荐；自动 R 热键写入在 RU 完整回滚契约验证前保持 Runtime Blocked。" end
     D:PageHeader(root, "v3_" .. kind .. "_header", title, subtitle, "刷新", function()
         local ok, refreshErr = feature.Commands:Refresh("page_manual")
         if ok == true then root:Refresh() end
@@ -74,7 +75,7 @@ local function Build(parent, route, feature, kind)
     local widgetButton = RSUI:Button({ id = "v3_" .. kind .. "_widget_toggle", parent = actionRow, text = "打开悬浮窗", compact = true, slot = { size = "fixed", width = 96 } })
     local status
 
-    local tradeFrom, tradeTo
+    local tradeFrom, tradeTo, tradeFavoriteDropdown
     if kind == "trade" then
         -- Route selection is dropdown-only.  Keep origin/destination on separate
         -- rows so the controls remain usable at 1024-wide layouts without the
@@ -93,13 +94,47 @@ local function Build(parent, route, feature, kind)
             set = function(value) return feature.Commands:SetTo(value) end, slot = { size = "fill", fill = 1, minWidth = 160 } })
         if tradeFrom == nil or tradeTo == nil then return nil, "跑商路线下拉框创建失败" end
 
+        local favoriteRow = RSUI:HorizontalBox({ id = "v3_trade_favorite_row", parent = root, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
+        RSUI:Text({ id = "v3_trade_favorite_label", parent = favoriteRow, text = "收藏", fontSize = 10, tone = "muted", slot = { size = "fixed", width = 52 } })
+        tradeFavoriteDropdown = RSUI:Dropdown({ id = "v3_trade_favorite_dropdown", parent = favoriteRow, items = {}, maxVisible = 12, popupWidth = 360,
+            placeholder = "选择已收藏路线", get = function() local projection = feature:GetProjection() or {}; return projection.currentRouteFavorite and projection.currentFavoriteKey or nil end,
+            set = function(value) return feature.Commands:SelectFavorite(value) end, slot = { size = "fill", fill = 1, minWidth = 180 } })
+        local tradeFavoriteButton = RSUI:Button({ id = "v3_trade_favorite_toggle", parent = favoriteRow, text = "收藏路线", compact = true, slot = { size = "fixed", width = 94 } })
+        tradeFavoriteButton.onClick = function()
+            local ok, favoriteErr = feature.Commands:ToggleCurrentFavorite()
+            if ok == true then root:Refresh() end
+            return ok, favoriteErr
+        end
+        local tradeSortButton = RSUI:Button({ id = "v3_trade_sort_mode", parent = favoriteRow, text = "排序：货率", compact = true, slot = { size = "fixed", width = 94 } })
+        tradeSortButton.onClick = function()
+            local projection = feature:GetProjection() or {}
+            local ok, sortErr = feature.Commands:SetSortMode(projection.sortMode == "price" and "ratio" or "price")
+            if ok == true then root:Refresh() end
+            return ok, sortErr
+        end
+        root.tradeFavoriteButton, root.tradeSortButton = tradeFavoriteButton, tradeSortButton
+
+        local tradeRatioModeButton = RSUI:Button({ id = "v3_trade_ratio_mode", parent = actionRow, text = "货率：实时", compact = true, slot = { size = "fixed", width = 94 } })
+        tradeRatioModeButton.onClick = function()
+            local projection = feature:GetProjection() or {}
+            local ok, modeErr = feature.Commands:SetRatioMode(projection.ratioMode == "full" and "current" or "full")
+            if ok == true then root:Refresh() end
+            return ok, modeErr
+        end
+        local tradeCommerceModeButton = RSUI:Button({ id = "v3_trade_commerce_mode", parent = actionRow, text = "熟练：读取", compact = true, slot = { size = "fixed", width = 94 } })
+        tradeCommerceModeButton.onClick = function()
+            local projection = feature:GetProjection() or {}
+            local ok, modeErr = feature.Commands:SetCommerceMode(projection.commerceMode == "off" and "observe" or "off")
+            if ok == true then root:Refresh() end
+            return ok, modeErr
+        end
         local tradeQuoteButton = RSUI:Button({ id = "v3_trade_quote_materials", parent = actionRow, text = "材料询价", compact = true, slot = { size = "fixed", width = 108 } })
         tradeQuoteButton.onClick = function()
             local ok, quoteErr = feature.Commands:QuotePendingMaterials()
             if ok == true then root:Refresh() end
             return ok, quoteErr
         end
-        root.tradeQuoteButton = tradeQuoteButton
+        root.tradeRatioModeButton, root.tradeCommerceModeButton, root.tradeQuoteButton = tradeRatioModeButton, tradeCommerceModeButton, tradeQuoteButton
     elseif kind == "bonds" then
         local sortButton = RSUI:Button({ id = "v3_bonds_sort", parent = actionRow, text = "按数量排序", compact = true, slot = { size = "fixed", width = 108 } })
         root.bondSortButton = sortButton
@@ -120,7 +155,7 @@ local function Build(parent, route, feature, kind)
         priorityButton.onClick = function() local state = bondState(); return runBondCommand(function() return feature.Commands:SetDuplicatePriority(state.priority == "west" and "east" or "west") end) end
         root.bondPriorityButton = priorityButton
     elseif kind == "fishing" then
-        local autoButton = RSUI:Button({ id = "v3_fishing_auto", parent = actionRow, text = "启用自动 R", compact = true, slot = { size = "fixed", width = 108 } })
+        local autoButton = RSUI:Button({ id = "v3_fishing_auto", parent = actionRow, text = "自动 R 已阻塞", compact = true, slot = { size = "fixed", width = 118 } })
         autoButton.onClick = function()
             local ok, actionErr
             if feature:IsAutoArmed() then ok, actionErr = feature.Commands:DisarmAuto() else ok, actionErr = feature.Commands:ArmAuto() end
@@ -169,7 +204,7 @@ local function Build(parent, route, feature, kind)
 
     local tableView = RSUI:TableView({
         id = "v3_" .. kind .. "_table", parent = root, items = {}, rowHeight = 26, headerHeight = 27, desiredRows = 12,
-        scrollbar = true, selectable = kind == "treasure", selectionMode = "single", columnResize = true, headerInteractive = false,
+        scrollbar = true, selectable = kind == "treasure" or kind == "trade", selectionMode = "single", columnResize = true, headerInteractive = false,
         columns = kind == "trade" and {
             { id = "name", title = "货物", field = "name", size = "fill", minWidth = 150 },
             { id = "rate", title = "货率", field = "rate", size = "fixed", width = 70, minWidth = 60, getTone = function(item) return item and item.tone or "muted" end },
@@ -196,7 +231,17 @@ local function Build(parent, route, feature, kind)
         slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
     })
 
-    if kind == "treasure" then
+    if kind == "trade" then
+        tableView.onSelectionChanged = function(index)
+            local row = tableView:GetItem(index)
+            if row == nil or row.key == nil then return false end
+            local ok, selectErr = feature.Commands:SelectRow(row.key)
+            if ok ~= true then return false, selectErr end
+            local detail = S.UIV3 and S.UIV3.TradeDetailFloatingV3 or nil
+            if type(detail) ~= "table" or type(detail.Open) ~= "function" then return false, "贸易品详情悬浮窗不可用" end
+            return detail:Open(row.key)
+        end
+    elseif kind == "treasure" then
         tableView.onSelectionChanged = function(index)
             local row = tableView:GetItem(index)
             if row == nil or row.key == nil then return false end
@@ -228,7 +273,30 @@ local function Build(parent, route, feature, kind)
             local toItems = Items(projection.sellableZones, function(row) return row.displayName or row.name end)
             tradeFrom:SetItems(fromItems); tradeFrom:SetEnabled(enabled and #fromItems > 0); tradeFrom:Render()
             tradeTo:SetItems(toItems); tradeTo:SetEnabled(enabled and #toItems > 0); tradeTo:Render()
+            local favoriteItems = type(projection.favoriteItems) == "table" and projection.favoriteItems or {}
+            if tradeFavoriteDropdown then
+                tradeFavoriteDropdown:SetItems(favoriteItems)
+                tradeFavoriteDropdown:SetEnabled(enabled and #favoriteItems > 0)
+                tradeFavoriteDropdown:Render()
+            end
+            if root.tradeFavoriteButton then
+                local canFavorite = enabled and projection.fromZone ~= nil and projection.toZone ~= nil
+                root.tradeFavoriteButton:SetEnabled(canFavorite)
+                root.tradeFavoriteButton:SetText(projection.currentRouteFavorite == true and "取消收藏" or "收藏路线")
+            end
+            if root.tradeSortButton then
+                root.tradeSortButton:SetEnabled(enabled and #(projection.rows or {}) > 0)
+                root.tradeSortButton:SetText(projection.sortMode == "price" and "排序：售价" or "排序：货率")
+            end
             local pendingQuotes = math.max(0, tonumber(projection.pendingQuoteCount) or 0)
+            if root.tradeRatioModeButton then
+                root.tradeRatioModeButton:SetEnabled(enabled)
+                root.tradeRatioModeButton:SetText(projection.ratioMode == "full" and ("货率：满" .. tostring(projection.fullRatio or 130) .. "%") or "货率：实时")
+            end
+            if root.tradeCommerceModeButton then
+                root.tradeCommerceModeButton:SetEnabled(enabled)
+                root.tradeCommerceModeButton:SetText(projection.commerceMode == "off" and "熟练：忽略" or "熟练：读取")
+            end
             if root.tradeQuoteButton then
                 root.tradeQuoteButton:SetEnabled(enabled and pendingQuotes > 0)
                 root.tradeQuoteButton:SetText(pendingQuotes > 0 and ("材料询价 (" .. tostring(pendingQuotes) .. ")") or "材料询价")
@@ -241,7 +309,20 @@ local function Build(parent, route, feature, kind)
             local fallback = (projection.zoneFallback == true and " · 起点使用静态候选" or "") .. (projection.sellableFallback == true and " · 目的地使用兼容候选" or "")
             local errorText = projection.error and (" · " .. tostring(projection.error)) or (projection.sellableError and (" · " .. tostring(projection.sellableError)) or "")
             local quoteHint = pendingQuotes > 0 and (" · 待询价材料 " .. tostring(pendingQuotes)) or ""
-            status:SetText(enabled and ((projection.status or "--") .. " · 地区 " .. tostring(#fromItems) .. "/" .. tostring(#toItems) .. " · " .. tostring(#(projection.rows or {})) .. " 种货物" .. quoteHint .. fallback .. dropdownHint .. errorText) or "功能已关闭")
+            local ratioHint = projection.ratioMode == "full" and (" · 满货率 " .. tostring(projection.fullRatio or 130) .. "% 对比") or " · 实时货率"
+            local commerceHint = ""
+            if projection.commerceMode == "observe" then
+                if projection.commerceStatus == "ready" and projection.commerceSkill ~= nil then
+                    commerceHint = " · 经商 " .. tostring(math.floor((tonumber(projection.commerceSkill) or 0) + 0.5)) .. "（只读，估价未计倍率）"
+                else
+                    commerceHint = " · 经商熟练度待确认" .. (projection.commerceError and ("：" .. tostring(projection.commerceError)) or "")
+                end
+            else
+                commerceHint = " · 熟练度忽略"
+            end
+            local favoriteHint = " · 收藏 " .. tostring(#favoriteItems) .. "/12" .. (projection.currentRouteFavorite == true and "（当前）" or "")
+            local sortHint = projection.sortMode == "price" and " · 按售价排序" or " · 按货率排序"
+            status:SetText(enabled and ((projection.status or "--") .. " · 地区 " .. tostring(#fromItems) .. "/" .. tostring(#toItems) .. " · " .. tostring(#(projection.rows or {})) .. " 种货物" .. ratioHint .. commerceHint .. quoteHint .. favoriteHint .. sortHint .. fallback .. dropdownHint .. errorText) or "功能已关闭")
             if widgetButton then
                 widgetButton:SetEnabled(enabled)
                 widgetButton:SetText(WidgetHost:IsVisible("life.trade") and "关闭悬浮窗" or "打开悬浮窗")
@@ -258,7 +339,7 @@ local function Build(parent, route, feature, kind)
             if root.autoButton then
                 local autoAvailable = enabled and projection.autoAvailable == true
                 root.autoButton:SetEnabled(autoAvailable)
-                root.autoButton:SetText(autoAvailable and (feature:IsAutoArmed() and "关闭自动 R" or "启用自动 R") or "自动 R 待迁移")
+                root.autoButton:SetText(autoAvailable and (feature:IsAutoArmed() and "关闭自动 R" or "启用自动 R") or "自动 R 已阻塞")
             end
             if widgetButton then widgetButton:SetEnabled(enabled); widgetButton:SetText(WidgetHost:IsVisible("life.fishing") and "关闭悬浮窗" or "打开悬浮窗") end
         else

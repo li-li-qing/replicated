@@ -10,11 +10,11 @@ local S = ReplicatedSuite
 S.Services = S.Services or {}
 S.Services.ScreenProjectionV3 = S.Services.ScreenProjectionV3 or {}
 local P = S.Services.ScreenProjectionV3
-P.version = 5
+P.version = 8
 P.presentationBoundary = "service_only"
 P.presentationDebt = nil
 P.metrics = P.metrics or { unitReads=0, worldReads=0, nativeProjects=0, cameraProjects=0, cameraBatches=0, failures=0,
-    unitBatches=0, behindCameraRejects=0, nativeScaleReconciles=0, nativeConsistencyFallbacks=0 }
+    unitBatches=0, behindCameraRejects=0, nativeScaleReconciles=0, nativeConsistencyFallbacks=0, worldAliasGuards=0, nativeCameraFallbacks=0 }
 
 local function N(v) v=tonumber(v); if v==nil or v~=v or v==math.huge or v==-math.huge then return nil end; return v end
 local function NormalizeScreenPoint(x, y)
@@ -149,7 +149,7 @@ function P:ProjectWorldBatch(points, options)
             sx,sy,depth=N(sx),N(sy),N(depth)
             if ok==true and sx~=nil and sy~=nil then
                 nativeUsable=true; sx,sy=NormalizeScreenPoint(sx,sy)
-                out[1]={x=sx,y=sy,depth=depth or 1}
+                out[1]={visible=true,x=sx,y=sy,depth=depth or 1}
                 self.metrics.nativeProjects=(tonumber(self.metrics.nativeProjects) or 0)+1
             end
         end
@@ -161,23 +161,66 @@ function P:ProjectWorldBatch(points, options)
                 local ok,sx,_,sy,depth=S.Api:CallGlobalCapability("ConvertWorldToScreen",wx,wy,wz)
                 sx,sy,depth=N(sx),N(sy),N(depth)
                 if ok==true and sx~=nil and sy~=nil then
-                    sx,sy=NormalizeScreenPoint(sx,sy); out[index]={x=sx,y=sy,depth=depth or 1}
+                    sx,sy=NormalizeScreenPoint(sx,sy); out[index]={visible=true,x=sx,y=sy,depth=depth or 1}
                     self.metrics.nativeProjects=(tonumber(self.metrics.nativeProjects) or 0)+1
+                else
+                    out[index]={visible=false,reason="native_projection_unavailable"}
                 end
+            else
+                out[index]={visible=false,reason="invalid_world_point"}
             end
         end
         return out,"native"
     end
     local frame,frameErr=self:_BuildCameraFrame(); if frame==nil then
+        -- Camera basis can be transiently unavailable during zone/UI transitions.
+        -- Failing the whole batch made Range Assist disappear until the next
+        -- lucky camera read. Use the bounded native projector as a recovery path
+        -- for this call only; no cross-frame cache is introduced.
+        local nativeAvailable = S.Api~=nil and type(S.Api.CallGlobalCapability)=="function"
+        local anyVisible = false
+        for index=1,#source do
+            local point=source[index]; local wx,wy,wz=N(point and point.x),N(point and point.y),N(point and point.z)
+            if nativeAvailable and wx~=nil and wy~=nil and wz~=nil then
+                local ok,sx,_,sy,depth=S.Api:CallGlobalCapability("ConvertWorldToScreen",wx,wy,wz)
+                sx,sy,depth=N(sx),N(sy),N(depth)
+                if ok==true and sx~=nil and sy~=nil then
+                    sx,sy=NormalizeScreenPoint(sx,sy)
+                    out[index]={visible=true,x=sx,y=sy,depth=depth or 1,source="native_camera_unavailable"}
+                    anyVisible=true
+                    self.metrics.nativeProjects=(tonumber(self.metrics.nativeProjects) or 0)+1
+                    self.metrics.nativeCameraFallbacks=(tonumber(self.metrics.nativeCameraFallbacks) or 0)+1
+                else out[index]={visible=false,reason=frameErr or "camera_basis_unavailable"} end
+            else out[index]={visible=false,reason=frameErr or "camera_basis_unavailable"} end
+        end
+        if anyVisible then return out,"native_camera_unavailable" end
         self.metrics.failures=(tonumber(self.metrics.failures) or 0)+1
         return out,frameErr or "world_projection_unavailable"
     end
     self.metrics.cameraBatches=(tonumber(self.metrics.cameraBatches) or 0)+1
+    -- Logical viewport bound (same tolerance the native unit path uses). A
+    -- camera-frame projection has no native bounds check of its own; without
+    -- this, range circles fully behind the camera projected thousands of
+    -- pixels outside the viewport and the renderer happily drew them all
+    -- off-screen while the feature reported "可见点 24/24".
+    local viewW,viewH=N(frame.screenW) or 1024,N(frame.screenH) or 768
     for index,point in ipairs(source) do
         local wx,wy,wz=N(point and point.x),N(point and point.y),N(point and point.z)
         if wx~=nil and wy~=nil and wz~=nil then
             local sx,sy,depth=self:_ProjectWithCameraFrame(frame,wx,wy,wz)
-            if sx~=nil and sy~=nil then out[index]={x=sx,y=sy,depth=depth or 1}; self.metrics.cameraProjects=(tonumber(self.metrics.cameraProjects) or 0)+1 end
+            if sx~=nil and sy~=nil then
+                if sx>=-16 and sx<=viewW+16 and sy>=-16 and sy<=viewH+16 then
+                    out[index]={visible=true,x=sx,y=sy,depth=depth or 1}
+                    self.metrics.cameraProjects=(tonumber(self.metrics.cameraProjects) or 0)+1
+                else
+                    out[index]={visible=false,reason="projected_outside_viewport",x=sx,y=sy}
+                    self.metrics.viewportRejects=(tonumber(self.metrics.viewportRejects) or 0)+1
+                end
+            else
+                out[index]={visible=false,reason="camera_projection_unavailable"}
+            end
+        else
+            out[index]={visible=false,reason="invalid_world_point"}
         end
     end
     return out,"camera"
@@ -238,41 +281,163 @@ function P:ProjectUnitBatch(unitTokens, options)
         if token~="" and seen[token]~=true then seen[token]=true; ordered[#ordered+1]=token end
     end
     if #ordered==0 then return out,"empty" end
+
     local requireFront = options.requireFrontHemisphere == true
     local worldZOffset = tonumber(options.worldZOffset) or 1
     local frontEpsilon = math.max(0.001, tonumber(options.frontEpsilon) or 0.05)
     local validateNative = options.validateNativeAgainstCamera == true
     local reconcileNativeScale = options.reconcileNativeScale == true
+    -- Exact/near-exact duplicated world coordinates across DIFFERENT unit
+    -- tokens are suspicious on RU. During target transitions the native world
+    -- getter can briefly alias the target to the player while the native screen
+    -- getter already points at the real target. A 0.15-world-unit threshold is
+    -- intentionally tiny: ordinary nearby players are not treated as aliases.
+    local aliasWorldDistance = math.max(0.001, tonumber(options.worldAliasDistance) or 0.15)
+    local aliasWorldDistanceSq = aliasWorldDistance * aliasWorldDistance
+    local aliasScreenSeparation = math.max(24, tonumber(options.worldAliasScreenSeparation) or 48)
+    local aliasScreenSeparationSq = aliasScreenSeparation * aliasScreenSeparation
+
     local frame, frameErr = nil, nil
     if requireFront or options.preferCameraFallback == true or validateNative then frame,frameErr=self:_BuildCameraFrame() end
     if requireFront and frame==nil then
+        -- Front-hemisphere classification is preferred, but a transient camera
+        -- basis failure must not permanently blank Unit Lines. Native unit
+        -- projection is already normalized + bounds checked; use it as a
+        -- call-local recovery path and resume strict camera validation as soon
+        -- as the next batch can build a frame.
+        local anyVisible = false
+        for _,token in ipairs(ordered) do
+            local x,y,depth,err=self:ProjectUnit(token)
+            if x~=nil and y~=nil then
+                out[token]={visible=true,x=x,y=y,depth=depth or 1,source="native_camera_unavailable"}
+                anyVisible=true
+                self.metrics.nativeCameraFallbacks=(tonumber(self.metrics.nativeCameraFallbacks) or 0)+1
+            else out[token]={visible=false,reason=err or frameErr or "camera_visibility_unavailable"} end
+        end
+        if anyVisible then
+            self.metrics.unitBatches=(tonumber(self.metrics.unitBatches) or 0)+1
+            return out,"native_camera_unavailable"
+        end
         self.metrics.failures=(tonumber(self.metrics.failures) or 0)+1
-        for _,token in ipairs(ordered) do out[token]={visible=false,reason=frameErr or "camera_visibility_unavailable"} end
         return out,frameErr or "camera_visibility_unavailable"
     end
     self.metrics.unitBatches=(tonumber(self.metrics.unitBatches) or 0)+1
+
+    -- Pass 1: read every world fact exactly once and derive camera facts. This
+    -- is still O(unitCount) Native work; Unit Lines currently have at most five
+    -- distinct tokens. We keep these facts in a call-local batch only — no
+    -- cross-frame cache can make a stale target survive a target switch.
+    local facts = {}
     for _,token in ipairs(ordered) do
-        -- Camera basis and every unit world position must live in the same world
-        -- coordinate space.  `isLocal=true` for only the player created a mixed
-        -- space edge: the player endpoint could be interpreted relative to the
-        -- local origin while target/watchtarget remained global, producing a
-        -- stable but visibly wrong line direction.  Unit-line batching therefore
-        -- always requests global/world coordinates for every token.
         local wx,wy,wz,worldErr=self:GetUnitWorldPosition(token,false)
         local forward=frame~=nil and CameraForwardDistance(frame,wx,wy,wz) or nil
+        local cameraX,cameraY,cameraDepth=nil,nil,nil
+        if frame~=nil and wx~=nil then
+            cameraX,cameraY,cameraDepth=self:_ProjectWithCameraFrame(frame,wx,wy,wz+worldZOffset)
+        end
+        facts[token]={ token=token, wx=wx, wy=wy, wz=wz, worldErr=worldErr, forward=forward,
+            cameraX=cameraX, cameraY=cameraY, cameraDepth=cameraDepth,
+            aliasCandidate=false, worldAliased=false }
+    end
+
+    -- Detect only candidate duplicates first. A duplicate world coordinate is
+    -- not enough to override anything: two units may genuinely overlap. It only
+    -- authorizes a Native-screen read even if that world fact says "behind",
+    -- so we can gather independent evidence before deciding.
+    for i=1,#ordered-1 do
+        local a=facts[ordered[i]]
+        if a.wx~=nil then
+            for j=i+1,#ordered do
+                local b=facts[ordered[j]]
+                if b.wx~=nil then
+                    local dx,dy,dz=a.wx-b.wx,a.wy-b.wy,a.wz-b.wz
+                    if dx*dx+dy*dy+dz*dz<=aliasWorldDistanceSq then
+                        a.aliasCandidate,b.aliasCandidate=true,true
+                    end
+                end
+            end
+        end
+    end
+
+    -- Pass 2: native screen fact. Unique, definite-behind units keep the old
+    -- optimization and are rejected without a screen read. Alias candidates are
+    -- the only exception because their world-forward fact itself is suspect.
+    for _,token in ipairs(ordered) do
+        local fact=facts[token]
+        local worldAvailable=fact.wx~=nil and (not requireFront or fact.forward~=nil)
+        local definitelyBehind=requireFront and worldAvailable and fact.forward<=frontEpsilon
+        if worldAvailable and (not definitelyBehind or fact.aliasCandidate==true) then
+            local x,y,depth,err=self:ProjectUnit(token)
+            fact.nativeX,fact.nativeY,fact.nativeDepth,fact.nativeErr=x,y,depth,err
+        end
+    end
+
+    -- Confirm aliases only when the independent native screen facts clearly
+    -- disagree with the duplicated world fact. This is the proof that lets the
+    -- screen fact outrank world/camera consistency for THIS batch only.
+    for i=1,#ordered-1 do
+        local a=facts[ordered[i]]
+        if a.aliasCandidate==true and a.nativeX~=nil then
+            for j=i+1,#ordered do
+                local b=facts[ordered[j]]
+                if b.aliasCandidate==true and b.nativeX~=nil and a.wx~=nil and b.wx~=nil then
+                    local wdx,wdy,wdz=a.wx-b.wx,a.wy-b.wy,a.wz-b.wz
+                    if wdx*wdx+wdy*wdy+wdz*wdz<=aliasWorldDistanceSq then
+                        local sdx,sdy=a.nativeX-b.nativeX,a.nativeY-b.nativeY
+                        if sdx*sdx+sdy*sdy>=aliasScreenSeparationSq then
+                            a.worldAliased,b.worldAliased=true,true
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    for _,token in ipairs(ordered) do
+        local fact=facts[token]
+        local wx,forward=fact.wx,fact.forward
         if requireFront and (wx==nil or forward==nil) then
-            out[token]={visible=false,reason=worldErr or "unit_world_position_unavailable"}
-        elseif requireFront and forward<=frontEpsilon then
+            out[token]={visible=false,reason=fact.worldErr or "unit_world_position_unavailable"}
+        elseif requireFront and forward<=frontEpsilon and fact.worldAliased~=true then
             self.metrics.behindCameraRejects=(tonumber(self.metrics.behindCameraRejects) or 0)+1
             out[token]={visible=false,reason="behind_camera",forward=forward}
-        else
-            local cameraX,cameraY,cameraDepth=nil,nil,nil
-            if frame~=nil and wx~=nil then
-                cameraX,cameraY,cameraDepth=self:_ProjectWithCameraFrame(frame,wx,wy,wz+worldZOffset)
+        elseif fact.worldAliased==true then
+            -- Do NOT use the camera projection here: it was derived from the
+            -- very world fact we just proved inconsistent. Native endpoints are
+            -- call-local and already normalized/bounds-checked by ProjectUnit.
+            if fact.nativeX~=nil and fact.nativeY~=nil then
+                self.metrics.worldAliasGuards=(tonumber(self.metrics.worldAliasGuards) or 0)+1
+                out[token]={visible=true,x=fact.nativeX,y=fact.nativeY,depth=fact.nativeDepth or 1,
+                    source="native_world_alias_guard",forward=forward,worldAliased=true}
+            else
+                out[token]={visible=false,reason=fact.nativeErr or "world_alias_native_unavailable",forward=forward,worldAliased=true}
             end
-
-            local x,y,depth,err=self:ProjectUnit(token)
+        else
+            local cameraX,cameraY,cameraDepth=fact.cameraX,fact.cameraY,fact.cameraDepth
+            local x,y,depth,err=fact.nativeX,fact.nativeY,fact.nativeDepth,fact.nativeErr
             local sourceName="native_unit"
+
+            if fact.aliasCandidate==true then
+                -- The world fact of an alias candidate is suspect (another unit
+                -- reported near-identical world coordinates), and the camera
+                -- projection was derived from exactly that suspect fact. When
+                -- the alias could not be CONFIRMED (the paired native screen
+                -- read failed or the two native points coincide), accepting the
+                -- consistency oracle or the camera fallback here would anchor
+                -- the endpoint onto the aliased position -- the reported
+                -- "line collapses onto my own character" failure. Native screen
+                -- evidence is independent and bounds-checked, so it is accepted
+                -- as-is; without it the endpoint fails closed.
+                if x~=nil and y~=nil then
+                    self.metrics.aliasNativeKept=(tonumber(self.metrics.aliasNativeKept) or 0)+1
+                    out[token]={visible=true,x=x,y=y,depth=depth or 1,
+                        source="native_alias_candidate",forward=forward,aliasCandidate=true}
+                else
+                    self.metrics.aliasNativeRejects=(tonumber(self.metrics.aliasNativeRejects) or 0)+1
+                    out[token]={visible=false,reason=err or "alias_candidate_native_unavailable",
+                        forward=forward,aliasCandidate=true}
+                end
+            else
 
             -- `GetUnitScreenPosition` is known to vary by UI-scale/client path.
             -- A value may still fall inside the logical viewport and therefore
@@ -286,17 +451,12 @@ function P:ProjectUnitBatch(unitTokens, options)
                 local bestDistance=math.sqrt(dx*dx+dy*dy)
 
                 if reconcileNativeScale and frame~=nil then
-                    -- Reuse the metrics captured by the single Camera Frame.
-                    -- Unit Lines may run at high cadence; never re-enter
-                    -- GetUiMetrics once per token in this loop.
                     local uiScale=N(frame.uiScale) or 1
                     local logicalW,logicalH=N(frame.screenW) or 1024,N(frame.screenH) or 768
                     if uiScale>0 and math.abs(uiScale-1)>0.001 then
                         local sx,sy=x/uiScale,y/uiScale
                         local sdx,sdy=sx-cameraX,sy-cameraY
                         local scaledDistance=math.sqrt(sdx*sdx+sdy*sdy)
-                        -- Do not switch spaces for tiny/noisy improvements.  The
-                        -- candidate must also remain close to the logical surface.
                         if sx>=-16 and sx<=logicalW+16 and sy>=-16 and sy<=logicalH+16
                             and scaledDistance+8<bestDistance then
                             bestX,bestY,bestDistance=sx,sy,scaledDistance
@@ -325,10 +485,10 @@ function P:ProjectUnitBatch(unitTokens, options)
                     x,y,depth=cameraX,cameraY,cameraDepth
                     sourceName="camera_world"
                 elseif frame~=nil then
-                    x,y,depth=self:_ProjectWithCameraFrame(frame,wx,wy,wz+worldZOffset)
+                    x,y,depth=self:_ProjectWithCameraFrame(frame,wx,fact.wy,fact.wz+worldZOffset)
                     sourceName="camera_world"
                 else
-                    x,y,depth,err=self:ProjectWorld(wx,wy,wz+worldZOffset)
+                    x,y,depth,err=self:ProjectWorld(wx,fact.wy,fact.wz+worldZOffset)
                     sourceName="world_fallback"
                 end
             end
@@ -337,6 +497,7 @@ function P:ProjectUnitBatch(unitTokens, options)
             else
                 out[token]={visible=false,reason=err or "unit_projection_unavailable",forward=forward}
             end
+            end
         end
     end
     return out,"ready"
@@ -344,6 +505,9 @@ end
 
 P.FrontHemisphereBatchContractVersion = 1
 P.UnitProjectionConsistencyContractVersion = 1
+P.UnitWorldAliasGuardContractVersion = 1
+P.WorldBatchIndexContractVersion = 1
+P.CameraUnavailableNativeFallbackContractVersion = 1
 
 function P:GetHealth()
     return { version=self.version, unitReads=tonumber(self.metrics.unitReads) or 0, worldReads=tonumber(self.metrics.worldReads) or 0,
@@ -351,5 +515,10 @@ function P:GetHealth()
         cameraBatches=tonumber(self.metrics.cameraBatches) or 0, failures=tonumber(self.metrics.failures) or 0,
         unitBatches=tonumber(self.metrics.unitBatches) or 0, behindCameraRejects=tonumber(self.metrics.behindCameraRejects) or 0,
         nativeScaleReconciles=tonumber(self.metrics.nativeScaleReconciles) or 0,
-        nativeConsistencyFallbacks=tonumber(self.metrics.nativeConsistencyFallbacks) or 0 }
+        nativeConsistencyFallbacks=tonumber(self.metrics.nativeConsistencyFallbacks) or 0,
+        worldAliasGuards=tonumber(self.metrics.worldAliasGuards) or 0,
+        aliasNativeKept=tonumber(self.metrics.aliasNativeKept) or 0,
+        aliasNativeRejects=tonumber(self.metrics.aliasNativeRejects) or 0,
+        nativeCameraFallbacks=tonumber(self.metrics.nativeCameraFallbacks) or 0,
+        viewportRejects=tonumber(self.metrics.viewportRejects) or 0 }
 end

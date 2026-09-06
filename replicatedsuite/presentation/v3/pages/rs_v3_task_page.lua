@@ -12,16 +12,16 @@ local ROUTE = "life.tasks"
 
 local function OpenDetail(row)
     if type(row) ~= "table" then return false end
-    local modal = S.UIV3 and S.UIV3.QuestDetailModalV3 or nil
-    if type(modal) ~= "table" or type(modal.Open) ~= "function" then return false end
-    return modal:Open(row.scope or "daily", row.groupKey or row.key, row)
+    local detail = S.UIV3 and S.UIV3.QuestDetailFloatingV3 or nil
+    if type(detail) ~= "table" or type(detail.Open) ~= "function" then return false end
+    return detail:Open(row.scope or "daily", row.groupKey or row.key, row)
 end
 
 local function BuildTaskPage(parent, route)
     local root, rootErr = D:PageRoot(parent, "v3_page_tasks")
     if root == nil then return nil, "页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
     D:PageHeader(root, "v3_tasks_header", "任务追踪",
-        "日常 / 周常共享同一份只读任务进度；这里只保存你想追踪哪些任务。点击任务行展开子任务，悬浮窗只显示已追踪项目。",
+        "日常 / 周常共享同一份只读任务进度；先选中父任务，再点“加入追踪/取消追踪”自定义悬浮窗内容。点击父任务展开，点击子任务看详情。",
         "刷新", function()
             local progress = S.Services and S.Services.QuestProgressV3 or nil
             if type(progress) == "table" and type(progress.Refresh) == "function" then progress:Refresh("task_page_manual", false) end
@@ -40,11 +40,13 @@ local function BuildTaskPage(parent, route)
     local tableView = nil
 
     local row1 = RSUI:HorizontalBox({ id = "v3_tasks_actions_scope", parent = root, gap = 7, slot = { size = "fixed", height = 30, hAlign = "fill" } })
+    -- Primary lifecycle actions stay first, matching the other V3 feature pages.
+    -- Scope/filter actions follow them so users never have to hunt for Enable.
+    local featureButton = RSUI:Button({ id = "v3_tasks_feature_toggle", parent = row1, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
+    local widgetButton = RSUI:Button({ id = "v3_tasks_widget_toggle", parent = row1, text = "打开悬浮窗", compact = true, slot = { size = "fixed", width = 116 } })
     local dailyButton = RSUI:Button({ id = "v3_tasks_daily", parent = row1, text = "日常", compact = true, slot = { size = "fixed", width = 76 } })
     local weeklyButton = RSUI:Button({ id = "v3_tasks_weekly", parent = row1, text = "周常", compact = true, slot = { size = "fixed", width = 76 } })
     local trackedOnlyButton = RSUI:Button({ id = "v3_tasks_tracked_only", parent = row1, text = "仅追踪：关", compact = true, slot = { size = "fixed", width = 108 } })
-    local featureButton = RSUI:Button({ id = "v3_tasks_feature_toggle", parent = row1, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
-    local widgetButton = RSUI:Button({ id = "v3_tasks_widget_toggle", parent = row1, text = "打开悬浮窗", compact = true, slot = { size = "fixed", width = 116 } })
 
     local row2 = RSUI:HorizontalBox({ id = "v3_tasks_actions_tracking", parent = root, gap = 7, slot = { size = "fixed", height = 30, hAlign = "fill" } })
     local toggleTrackButton = RSUI:Button({ id = "v3_tasks_toggle_track", parent = row2, text = "追踪 / 取消", compact = true, enabled = false, slot = { size = "fixed", width = 112 } })
@@ -85,7 +87,7 @@ local function BuildTaskPage(parent, route)
             if row ~= nil then toggleTrackButton:SetText(row.tracked and "取消追踪" or "加入追踪") else toggleTrackButton:SetText("追踪 / 取消") end
         end,
         columns = {
-            { id = "tracked", title = "追踪", field = "trackedText", size = "fill", minWidth = 42, absoluteMinWidth = 28, fill = 0.5,
+            { id = "tracked", title = "追踪", field = "trackedText", size = "fixed", width = 78, minWidth = 68, absoluteMinWidth = 58,
                 getTone = function(item) return item and item.tracked and "green" or "muted" end },
             { id = "cycle", title = "周期", field = "cycleText", size = "fill", minWidth = 46, absoluteMinWidth = 32, fill = 0.6, tone = "muted" },
             { id = "name", title = "任务", field = "name", size = "fill", minWidth = 210, absoluteMinWidth = 100, fill = 1.6,
@@ -209,7 +211,7 @@ local function BuildTaskPage(parent, route)
         local health = type(progress) == "table" and type(progress.GetHealth) == "function" and progress:GetHealth(currentScope) or nil
         if enabled and type(health) == "table" then
             hint:SetText((currentScope == "daily" and "日常" or "周常") .. "进度：可用 " .. tostring(health.available or 0) .. "/" .. tostring(health.projections or 0)
-                .. " · 共享版本 " .. tostring(health.revision or 0) .. " · 鼠标滚轮可浏览全部任务")
+                .. " · 共享版本 " .. tostring(health.revision or 0) .. " · 选中父任务后可单独加入/取消追踪 · 滚轮浏览")
         else
             hint:SetText(enabled and "任务进度数据暂不可用" or "任务追踪功能已关闭")
         end

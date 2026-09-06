@@ -271,19 +271,17 @@ function F:GetEffectivePanelBindings()
         local team = tonumber(raid.singleTeamId) or 0
         if team < 1 then team = next(presentTeams) or 1 end
         out[1] = { id = "A", team = team, geometry = (panels.A or {}).geometry, isOnly = true }
-    else -- auto: derive from the actual team composition reported by TeamRosterV3
-        local teamList = {}
-        for t in pairs(presentTeams) do teamList[#teamList + 1] = t end
-        table.sort(teamList)
-        if #teamList >= 2 then
-            local A = panels.A or { team = teamList[1] }
-            local B = panels.B or { team = teamList[2] }
-            out[1] = { id = "A", team = teamList[1], geometry = A.geometry, isOnly = false }
-            out[2] = { id = "B", team = teamList[2], geometry = B.geometry, isOnly = false }
-        else
-            local team = teamList[1] or 1
-            out[1] = { id = "A", team = team, geometry = (panels.A or {}).geometry, isOnly = true }
+    else -- auto: follow the ONE native raid list's currently visible 1/2 tab.
+        -- TeamRoster can discover both 50-player teams even when the client only
+        -- renders one native roster window.  Therefore “two teams exist” must
+        -- never imply “two native panels are visible”.  Dual overlay is explicit
+        -- and corresponds to the optional extra friendly-roster UI.
+        local detected = tonumber(roster and roster.visibleTeamIndex)
+        local team = (detected == 1 or detected == 2) and detected or tonumber(raid.singleTeamId) or 0
+        if team < 1 then
+            if presentTeams[1] then team = 1 elseif presentTeams[2] then team = 2 else team = 1 end
         end
+        out[1] = { id = "A", team = team, geometry = (panels.A or {}).geometry, isOnly = true }
     end
     return out
 end

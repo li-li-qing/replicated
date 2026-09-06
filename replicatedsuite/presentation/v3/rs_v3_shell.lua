@@ -310,6 +310,13 @@ function Shell:Create()
     local window, createErr = Adapter:CreateRootWindow(self.logicalId, self.owner)
     if window == nil then return FailBuild(createErr) end
     self.window = window
+    -- Explicit layer role keeps the full-screen application below independent
+    -- FloatingSurface windows while both remain in the native system layer.
+    local shellPriority = (S.UITokens and type(S.UITokens.Number) == "function"
+        and S.UITokens:Number("layer.shellPriority", 100)) or 100
+    if type(window.SetDrawPriority) == "function" then pcall(function() window:SetDrawPriority(shellPriority) end) end
+    window.rsUiLayerRole = "shell"
+    window.rsUiLayerPriority = shellPriority
 
     local root, rootErr = RSUI:Overlay({ id = "v3_shell_overlay", parent = window, width = 1, height = 1 })
     self.root = root

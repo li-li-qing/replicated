@@ -41,13 +41,28 @@ local SCOPE = {
 
 S.Persistence = {
     FrameworkVersion = 2,
-    ReliabilityContractVersion = 7,
+    ReliabilityContractVersion = 8,
     MinIntegrityReliabilityContractVersion = 4,
-    IntegrityContractVersion = 1,
+    -- Integrity v3 verifies the CANONICAL store value (decode -> store
+    -- normalize/encode) instead of the raw encoded envelope, so a logical-
+    -- preserving RU SaveData/LoadData representation change (map<->sequence,
+    -- dropped empty tables, float renormalization) can no longer create a
+    -- false corruption fence. v2 raw-envelope verification is retained as a
+    -- recognized legacy generation and upgraded to v3 at the next save.
+    -- v4: the per-store canonical functions are real normalizers. v3 stamps
+    -- were produced while four life-bundle stores had a CONTENT-BLIND migrate
+    -- (`migrate = default` hashed the default table shape, not the content) --
+    -- those stamps are meaningless as integrity evidence and are recovered
+    -- through the gated one-generation upgrade below.
+    IntegrityContractVersion = 4,
+    ContentBlindCanonicalContractVersion = 3,
+    PreCanonicalIntegrityContractVersion = 2,
+    LegacyIntegrityContractVersion = 1,
+    SerializerNumericFingerprintContractVersion = 1,
     EnvelopeIntegrityContractVersion = 1,
     ScopeBindingContractVersion = 1,
     RuntimeAcceptanceDiagnosticsContractVersion = 1,
-    RuntimeAcceptanceSnapshotContractVersion = 1,
+    RuntimeAcceptanceSnapshotContractVersion = 2,
     ReadinessContractVersion = 1,
     Lifetime = LIFETIME,
     Scope = SCOPE,
@@ -102,6 +117,14 @@ S.Persistence = {
         integrityLoadChecks = 0,
         integrityLoadFailures = 0,
         integrityLegacyLoads = 0,
+        integrityCompatibilityLoads = 0,
+        integrityCompatibilityResaves = 0,
+        integritySerializerRepairLoads = 0,
+        integritySerializerRepairFailures = 0,
+        integritySerializerRepairResaves = 0,
+        integrityUpgradeRecoveries = 0,
+        integrityUpgradeResaves = 0,
+        integrityUpgradeValidationFailures = 0,
         encodedLoadRejects = 0,
         verifiedReplacementRecoveries = 0,
         barrierVerifyAttempts = 0,
@@ -507,6 +530,26 @@ function P:RegisterStore(def)
         default = type(def.default) == "function" and def.default or function() return {} end,
         encode = def.encode,
         decode = def.decode,
+        -- Optional, opt-in recovery hook for a very narrow class of RU
+        -- serializer representation changes. It may reconstruct the exact
+        -- pre-serializer encoded BUSINESS shape, but Persistence will accept
+        -- it only when that candidate reproduces the already-stamped integrity
+        -- fingerprint while the independent metadata envelope seal is valid.
+        -- This is not a corruption bypass and is never enabled implicitly.
+        rebuildEncodedForIntegrity = def.rebuildEncodedForIntegrity,
+        -- One-generation recovery for legacy (v2 raw-envelope) stamped Stores
+        -- whose fingerprint no longer verifies because the RU serializer changed
+        -- the on-disk representation. Default ON: the .18.125 real-machine run
+        -- proved the drift is a serializer-general behavior (v3.life.bonds,
+        -- v3.gear.payload shards, v3.death_review.record shards all mismatched
+        -- on their first cross-reload), so a per-store opt-in whitelist only
+        -- defers each user's fenced data to a future build. The gate itself is
+        -- unchanged: valid metadata envelope seal, reliability>=6, non-
+        -- verifyAfterSave/non-recoverableReplacement at the flag level below,
+        -- full decode + budget + schema pass, immediate canonical v3 restamp.
+        -- Domains that genuinely need absolute fail-closed legacy handling may
+        -- explicitly opt OUT with allowIntegrityUpgrade = false.
+        allowIntegrityUpgrade = def.allowIntegrityUpgrade ~= false,
         save = def.save,
         migrate = def.migrate,
         resetPolicy = def.resetPolicy,
@@ -724,22 +767,29 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
     if tonumber(meta.schema) ~= tonumber(store.schemaVersion) then return Fail("readback_metadata_schema") end
     if tonumber(meta.contractVersion) ~= tonumber(store.contractVersion) then return Fail("readback_metadata_contract") end
 
-    local expectedFingerprint, expectedErr = self:FingerprintPayload(expectedValue, store.budget)
-    if expectedFingerprint == nil then return Fail("expected_fingerprint_failed:" .. tostring(expectedErr)) end
-    if tonumber(meta.reliabilityContract) ~= tonumber(self.ReliabilityContractVersion) then
-        return Fail("readback_metadata_reliability_contract")
-    end
-    if tonumber(meta.integrityVersion) ~= tonumber(self.IntegrityContractVersion) then
-        return Fail("readback_metadata_integrity_version")
+    local readbackIntegrityVersion = tonumber(meta.integrityVersion)
+    local canonicalReadback = readbackIntegrityVersion == tonumber(self.IntegrityContractVersion)
+    if readbackIntegrityVersion ~= tonumber(self.IntegrityContractVersion)
+        and readbackIntegrityVersion ~= tonumber(self.PreCanonicalIntegrityContractVersion) then
+        return Fail("readback_metadata_integrity_version:" .. tostring(readbackIntegrityVersion))
     end
     local stampedEncodedFingerprint = NonEmptyText(meta.encodedFingerprint or meta.payloadFingerprint)
     if stampedEncodedFingerprint == nil then return Fail("readback_metadata_fingerprint_missing") end
-    local actualEncodedFingerprint, encodedFingerprintErr = self:FingerprintEncodedPayload(raw, store.encodedBudget)
-    if actualEncodedFingerprint == nil then
-        return Fail("readback_encoded_fingerprint_failed:" .. tostring(encodedFingerprintErr or "unknown"))
+    if tonumber(meta.reliabilityContract) ~= tonumber(self.ReliabilityContractVersion) then
+        return Fail("readback_metadata_reliability_contract")
     end
-    if tostring(stampedEncodedFingerprint) ~= tostring(actualEncodedFingerprint) then
-        return Fail("readback_encoded_fingerprint_mismatch:" .. tostring(stampedEncodedFingerprint) .. ">" .. tostring(actualEncodedFingerprint))
+    if canonicalReadback ~= true then
+        -- Legacy v2 raw-envelope comparison. Only reached by stores still
+        -- stamped by the pre-canonical contract; v3 stamps verify the
+        -- canonical value after decode below, because a raw comparison would
+        -- false-fail exactly on the RU representation changes v3 exists for.
+        local actualEncodedFingerprint, encodedFingerprintErr = self:FingerprintEncodedPayload(raw, store.encodedBudget)
+        if actualEncodedFingerprint == nil then
+            return Fail("readback_encoded_fingerprint_failed:" .. tostring(encodedFingerprintErr or "unknown"))
+        end
+        if tostring(stampedEncodedFingerprint) ~= tostring(actualEncodedFingerprint) then
+            return Fail("readback_encoded_fingerprint_mismatch:" .. tostring(stampedEncodedFingerprint) .. ">" .. tostring(actualEncodedFingerprint))
+        end
     end
 
     -- Reliability v6 seals the metadata envelope as well as the encoded
@@ -774,7 +824,27 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
     if actualValue == nil then return Fail("readback_payload_missing") end
 
     if type(self.FingerprintPayload) ~= "function" then return Fail("fingerprint_unavailable") end
-    local actualFingerprint, actualErr = self:FingerprintPayload(actualValue, store.budget)
+    local expectedFingerprint, expectedErr
+    local actualFingerprint, actualErr
+    if canonicalReadback == true then
+        -- v3: compare canonical store values on both sides so the readback
+        -- proof survives the same representation changes the load-side
+        -- verification absorbs.
+        local canonicalExpected, canonicalExpectedErr = self:CanonicalIntegrityValue(store, expectedValue)
+        if canonicalExpected == nil then
+            return Fail(tostring(canonicalExpectedErr or "canonical_value_missing"))
+        end
+        local canonicalActual, canonicalActualErr = self:CanonicalIntegrityValue(store, actualValue)
+        if canonicalActual == nil then
+            return Fail("readback_canonical_failed:" .. tostring(canonicalActualErr or "unknown"))
+        end
+        expectedFingerprint, expectedErr = self:FingerprintCanonicalValue(store, canonicalExpected)
+        actualFingerprint, actualErr = self:FingerprintCanonicalValue(store, canonicalActual)
+    else
+        expectedFingerprint, expectedErr = self:FingerprintDurablePayload(expectedValue, store.budget)
+        actualFingerprint, actualErr = self:FingerprintDurablePayload(actualValue, store.budget)
+    end
+    if expectedFingerprint == nil then return Fail("expected_fingerprint_failed:" .. tostring(expectedErr)) end
     if actualFingerprint == nil then return Fail("readback_fingerprint_failed:" .. tostring(actualErr)) end
     if tostring(actualFingerprint) ~= tostring(expectedFingerprint) then
         return Fail("readback_fingerprint_mismatch:" .. tostring(expectedFingerprint) .. ">" .. tostring(actualFingerprint))
@@ -1036,39 +1106,323 @@ function P:LoadStore(id, options)
         return false, nil, store.writeFenceReason
     end
 
-    -- Cross-reload business integrity check. Reliability v6 keeps the v4 encoded
-    -- fingerprint format, but performs verification BEFORE any custom decoder,
-    -- migration or Domain apply callback. A corrupt/truncated table therefore
-    -- cannot execute business normalization code before the persistence boundary
-    -- has decided the bytes are trustworthy. v4-stamped saves remain readable;
-    -- only a future contract newer than this runtime is rejected.
+    -- Cross-reload business integrity check. Integrity v2 canonicalizes only
+    -- non-integral numeric representation so RU SaveData float normalization
+    -- cannot create false corruption fences. Integrity v1 remains readable. If
+    -- a v1 non-critical settings Store has a business hash mismatch while its
+    -- v6+ metadata envelope seal is intact, treat it as a one-generation
+    -- compatibility load and immediately queue a v2 restamp after decode,
+    -- budget, migration and apply all succeed. Critical/journal Stores remain
+    -- fail-closed and never use this compatibility escape hatch.
     local stampedFingerprint = meta and NonEmptyText(meta.encodedFingerprint or meta.payloadFingerprint) or nil
     local stampedIntegrityVersion = meta and tonumber(meta.integrityVersion) or nil
     local stampedReliabilityContract = meta and tonumber(meta.reliabilityContract) or nil
     local minIntegrityReliability = tonumber(self.MinIntegrityReliabilityContractVersion) or 4
     local currentReliability = tonumber(self.ReliabilityContractVersion) or minIntegrityReliability
+    local currentIntegrity = tonumber(self.IntegrityContractVersion) or 4
+    local contentBlindIntegrity = tonumber(self.ContentBlindCanonicalContractVersion) or 3
+    local preCanonicalIntegrity = tonumber(self.PreCanonicalIntegrityContractVersion) or 2
+    local legacyIntegrity = tonumber(self.LegacyIntegrityContractVersion) or 1
     local integrityAdvertised = stampedFingerprint ~= nil or stampedIntegrityVersion ~= nil
         or (stampedReliabilityContract ~= nil and stampedReliabilityContract >= minIntegrityReliability)
+    local legacyIntegrityUpgradeNeeded = false
+    local integrityUpgradeNeeded = false
+    local preDecodedValue = nil
+    local serializerRepairNeeded = false
+    local serializerRepairedRaw = nil
     if integrityAdvertised then
         self.stats.integrityLoadChecks = (tonumber(self.stats.integrityLoadChecks) or 0) + 1
         local integrityErr = nil
         if stampedReliabilityContract == nil or stampedReliabilityContract < minIntegrityReliability
             or stampedReliabilityContract > currentReliability then
             integrityErr = "reliability_contract:" .. tostring(stampedReliabilityContract)
-        elseif stampedIntegrityVersion ~= tonumber(self.IntegrityContractVersion) then
+        elseif stampedIntegrityVersion == contentBlindIntegrity then
+            -- Integrity v3 stamps came from the content-blind canonical era
+            -- (see ContentBlindCanonicalContractVersion): the stamped hash was
+            -- derived from the store's DEFAULT table shape, not its content,
+            -- so there is no meaningful fingerprint to re-verify here. Treat
+            -- the stamp as absent and recover through the same gated
+            -- one-generation path as v2 (seal + decode + budget + apply must
+            -- all pass), then re-stamp with the repaired v4 canonical.
+            local decoded, decodeErr = DecodeValue(store, raw)
+            local upgradedInspection = nil
+            if decoded ~= nil then upgradedInspection = self:InspectPayload(decoded, store.budget) end
+            if store.allowIntegrityUpgrade == true
+                and (tonumber(stampedReliabilityContract) or 0) >= minIntegrityReliability
+                and envelopeAdvertised == true
+                and decoded ~= nil
+                and type(upgradedInspection) == "table" and upgradedInspection.ok == true then
+                integrityUpgradeNeeded = true
+                local canonical, canonicalErr = self:CanonicalIntegrityValue(store, decoded)
+                if type(canonical) == "table"
+                    and not (type(store.encode) == "function" and type(store.decode) == "function") then
+                    decoded = canonical
+                end
+                preDecodedValue = decoded
+                store.lastIntegrityStatus = "integrity_contract_upgrade_recovery"
+                store.lastIntegrityFingerprint = stampedFingerprint
+                store.lastIntegrityError = "content_blind_canonical_stamp"
+                self.stats.integrityUpgradeRecoveries = (tonumber(self.stats.integrityUpgradeRecoveries) or 0) + 1
+                Emit("info", "STORE_INTEGRITY_CONTRACT_UPGRADE_RECOVERY",
+                    "v3 内容盲盖章无法作为完整性证据；元数据封印与业务校验全部通过，按契约升级加载并在保存时重盖 v4 canonical 指纹", {
+                        store = store.id, oldFingerprint = stampedFingerprint,
+                    })
+            else
+                integrityErr = "fingerprint_mismatch:" .. tostring(stampedFingerprint)
+                    .. "|contract_upgrade_gate=reliability:" .. tostring(stampedReliabilityContract)
+                    .. "/optOut:" .. tostring(store.allowIntegrityUpgrade == false)
+                    .. "/decode:" .. tostring(decoded ~= nil)
+                    .. "/budget:" .. tostring(type(upgradedInspection) == "table" and upgradedInspection.ok == true)
+            end
+        elseif stampedIntegrityVersion == currentIntegrity then
+            -- Integrity v4: verify the CANONICAL value instead of the raw
+            -- encoded envelope. The metadata envelope seal and the raw budget
+            -- inspection have already passed, so decoding here exposes the
+            -- decoder to exactly the input it would have received after a
+            -- successful legacy check; decode hooks in this codebase are pure
+            -- normalizers. A logical-preserving RU representation change is
+            -- absorbed by re-canonicalization; content corruption is not.
+            local decoded, decodeErr = DecodeValue(store, raw)
+            if decoded == nil then
+                integrityErr = "decode_failed:" .. tostring(decodeErr or "decoded payload missing")
+            else
+                local canonical, canonicalErr = self:CanonicalIntegrityValue(store, decoded)
+                if canonical == nil then
+                    integrityErr = "fingerprint_failed:" .. tostring(canonicalErr or "canonical_value_missing")
+                else
+                    local actualFingerprint, actualErr = self:FingerprintCanonicalValue(store, canonical)
+                    if actualFingerprint == nil then
+                        integrityErr = "fingerprint_failed:" .. tostring(actualErr or "unknown")
+                    elseif tostring(actualFingerprint) ~= tostring(stampedFingerprint) then
+                        -- v3 mismatches are final: the stamp and the verification
+                        -- target are both canonical, so a mismatch means the
+                        -- logical content changed across reloads.
+                        integrityErr = "fingerprint_mismatch:" .. tostring(stampedFingerprint) .. ">" .. tostring(actualFingerprint)
+                    else
+                        store.lastIntegrityStatus = "verified_canonical"
+                        store.lastIntegrityFingerprint = actualFingerprint
+                        store.lastIntegrityError = nil
+                        -- v4 pipeline: Decode -> Normalize -> Verify -> Apply.
+                        -- Plain stores apply the canonical (normalized) value so
+                        -- the Domain receives the fixed shape even without a
+                        -- schema migration; typed-codec stores apply the decoded
+                        -- Domain, whose normalize is performed by decode().
+                        if type(store.encode) == "function" and type(store.decode) == "function" then
+                            preDecodedValue = decoded
+                        else
+                            preDecodedValue = canonical
+                        end
+                    end
+                end
+            end
+        elseif stampedIntegrityVersion ~= preCanonicalIntegrity and stampedIntegrityVersion ~= legacyIntegrity then
             integrityErr = "integrity_version:" .. tostring(stampedIntegrityVersion)
         elseif stampedFingerprint == nil then
             integrityErr = "fingerprint_missing"
         else
-            local actualFingerprint, actualErr = self:FingerprintEncodedPayload(raw, store.encodedBudget)
+            local actualFingerprint, actualErr
+            if stampedIntegrityVersion == legacyIntegrity then
+                actualFingerprint, actualErr = self:FingerprintEncodedPayloadV1(raw, store.encodedBudget)
+            else
+                actualFingerprint, actualErr = self:FingerprintEncodedPayload(raw, store.encodedBudget)
+            end
             if actualFingerprint == nil then
                 integrityErr = "fingerprint_failed:" .. tostring(actualErr or "unknown")
             elseif tostring(actualFingerprint) ~= tostring(stampedFingerprint) then
-                integrityErr = "fingerprint_mismatch:" .. tostring(stampedFingerprint) .. ">" .. tostring(actualFingerprint)
+                local compatibilityAllowed = stampedIntegrityVersion == legacyIntegrity
+                    and (tonumber(stampedReliabilityContract) or 0) >= 6
+                    and envelopeAdvertised == true
+                    and store.verifyAfterSave ~= true
+                    and store.recoverableReplacement ~= true
+                if compatibilityAllowed then
+                    legacyIntegrityUpgradeNeeded = true
+                    store.lastIntegrityStatus = "legacy_v1_compatibility"
+                    store.lastIntegrityFingerprint = actualFingerprint
+                    store.lastIntegrityError = "fingerprint_mismatch:" .. tostring(stampedFingerprint) .. ">" .. tostring(actualFingerprint)
+                    self.stats.integrityCompatibilityLoads = (tonumber(self.stats.integrityCompatibilityLoads) or 0) + 1
+                    Emit("info", "STORE_INTEGRITY_V1_COMPATIBILITY_LOAD",
+                        "旧版完整性指纹与 RU 序列化后的数值表示不一致；元数据封印有效，完成业务校验后将升级为 v2 指纹", {
+                            store = store.id, oldFingerprint = stampedFingerprint, loadedFingerprint = actualFingerprint,
+                        })
+                else
+                    -- Integrity v2 remains fail-closed by default. A Store may
+                    -- opt in to one narrowly-proven serializer-shape repair: the
+                    -- metadata envelope must already have verified, the Store
+                    -- must be non-critical/non-journal, and its hook must rebuild
+                    -- a candidate whose CURRENT integrity hash is EXACTLY the
+                    -- previously stamped hash. Any lost/changed business value
+                    -- therefore still fails and keeps the Store fenced.
+                    local repairAllowed = stampedIntegrityVersion == preCanonicalIntegrity
+                        and (tonumber(stampedReliabilityContract) or 0) >= 6
+                        and envelopeAdvertised == true
+                        and store.verifyAfterSave ~= true
+                        and store.recoverableReplacement ~= true
+                        and type(store.rebuildEncodedForIntegrity) == "function"
+                    local repaired = false
+                    if repairAllowed then
+                        local okRepair, candidate, repairReason = pcall(store.rebuildEncodedForIntegrity, DeepCopy(raw), {
+                            store = store.id, stampedFingerprint = stampedFingerprint, loadedFingerprint = actualFingerprint,
+                        })
+                        -- A hook may return one candidate table or { candidates =
+                        -- { ... } } when several historical encoded shapes existed
+                        -- (e.g. a pre-codec Domain form and an intermediate wrapped
+                        -- form). Persistence hashes each candidate and accepts only
+                        -- an exact stamp reproduction.
+                        local candidateList = nil
+                        if okRepair == true and type(candidate) == "table" and type(candidate.candidates) == "table" then
+                            candidateList = candidate.candidates
+                        elseif okRepair == true and type(candidate) == "table" then
+                            candidateList = { candidate }
+                        end
+                        if type(candidateList) == "table" then
+                            for candidateIndex = 1, #candidateList do
+                                local candidateValue = candidateList[candidateIndex]
+                                if type(candidateValue) ~= "table" then
+                                    self.stats.integritySerializerRepairFailures = (tonumber(self.stats.integritySerializerRepairFailures) or 0) + 1
+                                else
+                                    local candidateInspection = self:InspectPayload(candidateValue, store.encodedBudget)
+                                    local candidateFingerprint, candidateErr = nil, nil
+                                    if type(candidateInspection) == "table" and candidateInspection.ok == true then
+                                        candidateFingerprint, candidateErr = self:FingerprintEncodedPayload(candidateValue, store.encodedBudget)
+                                    else
+                                        candidateErr = "candidate_rejected:" .. tostring(candidateInspection and candidateInspection.reason or "unknown")
+                                    end
+                                    if candidateFingerprint ~= nil and tostring(candidateFingerprint) == tostring(stampedFingerprint) then
+                                        repaired = true
+                                        serializerRepairNeeded = true
+                                        serializerRepairedRaw = candidateValue
+                                        store.lastIntegrityStatus = "serializer_repair_verified"
+                                        store.lastIntegrityFingerprint = candidateFingerprint
+                                        store.lastIntegrityError = "fingerprint_mismatch:" .. tostring(stampedFingerprint) .. ">" .. tostring(actualFingerprint)
+                                        self.stats.integritySerializerRepairLoads = (tonumber(self.stats.integritySerializerRepairLoads) or 0) + 1
+                                        Emit("info", "STORE_INTEGRITY_SERIALIZER_REPAIR",
+                                            "RU 序列化改变了已知 Store 的编码表示；重建候选精确复现原完整性指纹，允许加载并立即改写为稳定编码", {
+                                                store = store.id, oldFingerprint = stampedFingerprint, loadedFingerprint = actualFingerprint,
+                                                candidate = candidateIndex, reason = tostring(repairReason or "verified_reconstruction"),
+                                            })
+                                        break
+                                    end
+                                end
+                            end
+                            if repaired ~= true then
+                                self.stats.integritySerializerRepairFailures = (tonumber(self.stats.integritySerializerRepairFailures) or 0) + 1
+                                Emit("warning", "STORE_INTEGRITY_SERIALIZER_REPAIR_REJECTED",
+                                    "Store 提供的序列化修复候选无法复现原完整性指纹，继续按真实损坏 Fail Closed", {
+                                        store = store.id, oldFingerprint = stampedFingerprint,
+                                        error = tostring(repairReason or "fingerprint_not_reproduced"),
+                                    })
+                            end
+                        elseif repairAllowed then
+                            self.stats.integritySerializerRepairFailures = (tonumber(self.stats.integritySerializerRepairFailures) or 0) + 1
+                        end
+                    end
+                    if repaired ~= true then
+                        -- One-generation upgrade escape for legacy v2 raw-envelope
+                        -- stamps: the RU serializer changed the on-disk business
+                        -- representation of the pre-canonical era. Real-machine
+                        -- evidence 2026-09-05 shows this drift is serializer-
+                        -- GENERAL (life.bonds / gear payload journal shards /
+                        -- death_review record shards), so recovery is the default
+                        -- for every v2 stamp unless the domain explicitly opts
+                        -- out. Accept ONLY when the independent metadata envelope
+                        -- seal is valid AND the full business path (decode +
+                        -- budget) still passes; the store is then re-stamped with
+                        -- the canonical v3 contract at the deferred upgrade save,
+                        -- which re-arms strict fail-closed verification. For
+                        -- verifyAfterSave/recoverableReplacement journal shards
+                        -- this is strictly LESS destructive than the alternative
+                        -- replaceCorrupt recovery, which overwrites the shard.
+                        -- Real-machine 2026-09-06: a v2-stamped store whose
+                        -- envelope predates reliability v6 stayed fenced with
+                        -- v3Upgrade=0/0 because BOTH the v1-compat path and this
+                        -- gate demanded reliability>=6. The seal + full business
+                        -- validation is the actual evidence; the floor only has
+                        -- to prove the envelope IS integrity-era. One unified
+                        -- gated recovery now covers v1 AND v2 stamps.
+                        local upgradeAllowed = store.allowIntegrityUpgrade == true
+                            and stampedIntegrityVersion == preCanonicalIntegrity
+                            and (tonumber(stampedReliabilityContract) or 0) >= minIntegrityReliability
+                            and envelopeAdvertised == true
+                        local upgraded = false
+                        if upgradeAllowed then
+                            local okDecode, upgradedValue, upgradeDecodeErr = pcall(DecodeValue, store, raw)
+                            local upgradedInspection = nil
+                            if okDecode == true and upgradedValue ~= nil then
+                                upgradedInspection = self:InspectPayload(upgradedValue, store.budget)
+                            end
+                            if okDecode ~= true or upgradedValue == nil
+                                or type(upgradedInspection) ~= "table" or upgradedInspection.ok ~= true then
+                                -- Silent rejection here made the real machine
+                                -- unfalsifiable (v3Upgrade=0/0 with no clue why).
+                                self.stats.integrityUpgradeValidationFailures = (tonumber(self.stats.integrityUpgradeValidationFailures) or 0) + 1
+                                Emit("warning", "STORE_INTEGRITY_UPGRADE_VALIDATION_FAILED",
+                                    "受控升级的解码/预算校验未通过，继续按真实损坏 Fail Closed", {
+                                        store = store.id,
+                                        decodeOk = okDecode == true,
+                                        decodeError = tostring(okDecode == true and (upgradeDecodeErr or "none") or upgradeDecodeErr or "decode exception"),
+                                        budgetReason = type(upgradedInspection) == "table" and tostring(upgradedInspection.reason or "unknown") or "inspection_failed",
+                                    })
+                            end
+                            if okDecode == true and upgradedValue ~= nil then
+                                if type(upgradedInspection) == "table" and upgradedInspection.ok == true then
+                                    upgraded = true
+                                    integrityUpgradeNeeded = true
+                                    local canonicalValue = self:CanonicalIntegrityValue(store, upgradedValue)
+                                    local divergence = nil
+                                    local applyValue = upgradedValue
+                                    if type(canonicalValue) == "table"
+                                        and not (type(store.encode) == "function" and type(store.decode) == "function") then
+                                        -- Plain stores: apply the normalized canonical form and
+                                        -- name the exact field the serializer/normalize gap changed.
+                                        applyValue = canonicalValue
+                                        divergence = self:DescribeCanonicalDivergence(upgradedValue, canonicalValue)
+                                    end
+                                    preDecodedValue = applyValue
+                                    store.lastIntegrityStatus = "integrity_upgrade_recovery"
+                                    store.lastIntegrityFingerprint = actualFingerprint
+                                    store.lastIntegrityError = "fingerprint_mismatch:" .. tostring(stampedFingerprint) .. ">" .. tostring(actualFingerprint)
+                                    store.lastIntegrityDivergence = divergence
+                                    self.stats.integrityUpgradeRecoveries = (tonumber(self.stats.integrityUpgradeRecoveries) or 0) + 1
+                                    Emit("info", "STORE_INTEGRITY_UPGRADE_RECOVERY",
+                                        "旧版完整性指纹与磁盘表示不一致，但元数据封印与业务校验全部通过；按契约升级加载并将在保存时改盖 canonical 指纹", {
+                                            store = store.id, oldFingerprint = stampedFingerprint, loadedFingerprint = actualFingerprint,
+                                            divergence = divergence,
+                                        })
+                                end
+                            end
+                        end
+                        if upgraded ~= true then
+                            -- Make the fence DECISIVE on the real machine: the
+                            -- 2026-09-06 banner showed v3Upgrade=0/0 with no way
+                            -- to tell WHICH gate condition refused the recovery.
+                            integrityErr = "fingerprint_mismatch:" .. tostring(stampedFingerprint) .. ">" .. tostring(actualFingerprint)
+                                .. "|upgrade_gate=reliability:" .. tostring(stampedReliabilityContract)
+                                .. "/version:" .. tostring(stampedIntegrityVersion)
+                                .. "/optOut:" .. tostring(store.allowIntegrityUpgrade == false)
+                        end
+                    end
+                end
             else
-                store.lastIntegrityStatus = "verified"
+                store.lastIntegrityStatus = stampedIntegrityVersion == legacyIntegrity and "verified_v1" or "verified_v2"
                 store.lastIntegrityFingerprint = actualFingerprint
                 store.lastIntegrityError = nil
+                if stampedIntegrityVersion == legacyIntegrity and (tonumber(stampedReliabilityContract) or 0) >= 6
+                    and store.verifyAfterSave ~= true and store.recoverableReplacement ~= true then
+                    -- Exact v1 loads are healthy, but restamping them with v2
+                    -- prevents the next native round-trip from re-entering the
+                    -- representation-sensitive legacy contract.
+                    legacyIntegrityUpgradeNeeded = true
+                elseif stampedIntegrityVersion == preCanonicalIntegrity
+                    and (tonumber(stampedReliabilityContract) or 0) >= 6
+                    and store.allowIntegrityUpgrade == true then
+                    -- Exact v2 loads are healthy today, but the raw-envelope
+                    -- contract is representation-fragile (serializer-general
+                    -- drift, 2026-09-05 real-machine evidence). Restamping with
+                    -- the canonical v3 contract at the deferred save removes the
+                    -- false-fence class entirely for this Store, including
+                    -- journal shards whose next drift would otherwise fence.
+                    integrityUpgradeNeeded = true
+                end
             end
         end
         if integrityErr ~= nil then
@@ -1115,8 +1469,17 @@ function P:LoadStore(id, options)
         return false, nil, store.lastError
     end
 
-    local value, decodeErr = DecodeValue(store, raw)
-    if decodeErr == nil and value == nil then decodeErr = "decoded payload missing" end
+    local decodeRaw = serializerRepairedRaw or raw
+    local value, decodeErr
+    if preDecodedValue ~= nil then
+        -- v3 canonical verification and the gated upgrade recovery already
+        -- decoded this payload successfully; reuse that exact value so the
+        -- business path sees the same object that was verified.
+        value = preDecodedValue
+    else
+        value, decodeErr = DecodeValue(store, decodeRaw)
+        if decodeErr == nil and value == nil then decodeErr = "decoded payload missing" end
+    end
     if decodeErr ~= nil then
         store.loaded = true
         store.loadStatus = "decode_failed"
@@ -1143,6 +1506,16 @@ function P:LoadStore(id, options)
     -- dirty and make the debounce loop repeatedly attempt an unsafe save.
     local deferredSaveReason = nil
     local deferredSaveDelayMs = nil
+    if legacyIntegrityUpgradeNeeded == true then
+        deferredSaveReason = "integrity_v2_upgrade"
+        deferredSaveDelayMs = 0
+    elseif serializerRepairNeeded == true then
+        deferredSaveReason = "integrity_serializer_repair"
+        deferredSaveDelayMs = 0
+    elseif integrityUpgradeNeeded == true then
+        deferredSaveReason = "integrity_v4_upgrade"
+        deferredSaveDelayMs = 0
+    end
 
     if storedSchema < store.schemaVersion then
         if type(store.migrate) ~= "function" then
@@ -1226,6 +1599,13 @@ function P:LoadStore(id, options)
             store.dirtyRevision = math.max(0, math.floor(tonumber(store.dirtyRevision) or 0)) + 1
             store.dueAt = dirtyNow + math.max(0, tonumber(deferredSaveDelayMs) or 0)
             self.stats.deferredLoadResaves = (tonumber(self.stats.deferredLoadResaves) or 0) + 1
+            if deferredSaveReason == "integrity_v2_upgrade" then
+                self.stats.integrityCompatibilityResaves = (tonumber(self.stats.integrityCompatibilityResaves) or 0) + 1
+            elseif deferredSaveReason == "integrity_serializer_repair" then
+                self.stats.integritySerializerRepairResaves = (tonumber(self.stats.integritySerializerRepairResaves) or 0) + 1
+            elseif deferredSaveReason == "integrity_v4_upgrade" then
+                self.stats.integrityUpgradeResaves = (tonumber(self.stats.integrityUpgradeResaves) or 0) + 1
+            end
         end
     end
     store.loaded = true
@@ -1348,19 +1728,24 @@ function P:SaveValue(id, value, options)
         return false, store.lastError
     end
 
-    -- Reliability v6 retains the v4 canonical business fingerprint format for the encoded business
-    -- envelope. The fingerprint deliberately excludes __rsmeta, so its own
-    -- integrity fields do not create a recursive hash and later decoder/schema
-    -- evolution cannot invalidate an otherwise intact older save.
-    local raw, encodeErr = EncodeValue(store, DeepCopy(value), periodId, scopeFingerprint)
-    if raw == nil then
-        store.lastError = encodeErr
+    -- Reliability v8 stamps Integrity v4 over the CANONICAL store value (the
+    -- store's own deterministic encode/normalize of the Domain), not over the
+    -- raw envelope. The fingerprint deliberately excludes __rsmeta, so its own
+    -- integrity fields do not create a recursive hash; non-integral numbers use
+    -- the serializer-stable token while exact Domain/business fingerprints
+    -- remain unchanged. For typed-codec stores the canonical value equals the
+    -- encoded business payload; for plain stores it is the store's fixed-shape
+    -- normalize of the Domain.
+    local canonicalValue, canonicalErr = self:CanonicalIntegrityValue(store, value)
+    if canonicalValue == nil then
+        store.lastError = tostring(canonicalErr or "canonical_value_missing")
         self.stats.saveFailures = (tonumber(self.stats.saveFailures) or 0) + 1
-        Emit("error", "STORE_ENCODE_FAILED", "独立存档编码失败", { store = store.id, error = encodeErr })
-        return false, encodeErr
+        Emit("error", "STORE_CANONICAL_FAILED", "独立存档 canonical 值计算失败，已阻止写入", {
+            store = store.id, error = store.lastError,
+        })
+        return false, store.lastError
     end
-
-    local encodedFingerprint, fingerprintErr = self:FingerprintEncodedPayload(raw, store.encodedBudget)
+    local encodedFingerprint, fingerprintErr = self:FingerprintCanonicalValue(store, canonicalValue)
     if encodedFingerprint == nil then
         store.lastError = "encoded_fingerprint_failed:" .. tostring(fingerprintErr or "unknown")
         self.stats.saveFailures = (tonumber(self.stats.saveFailures) or 0) + 1
@@ -1368,6 +1753,14 @@ function P:SaveValue(id, value, options)
             store = store.id, error = tostring(fingerprintErr or "unknown"),
         })
         return false, store.lastError
+    end
+
+    local raw, encodeErr = EncodeValue(store, DeepCopy(value), periodId, scopeFingerprint)
+    if raw == nil then
+        store.lastError = encodeErr
+        self.stats.saveFailures = (tonumber(self.stats.saveFailures) or 0) + 1
+        Emit("error", "STORE_ENCODE_FAILED", "独立存档编码失败", { store = store.id, error = encodeErr })
+        return false, encodeErr
     end
     raw.__rsmeta.reliabilityContract = self.ReliabilityContractVersion
     raw.__rsmeta.integrityVersion = self.IntegrityContractVersion
@@ -2115,17 +2508,36 @@ local function NumberToken(value)
     return string.format("%.17g", value)
 end
 
-local function KeyToken(value)
+-- Persistence Integrity v2 deliberately uses a serializer-stable numeric token
+-- for non-integral values. RU SaveData/LoadData may normalize floating-point
+-- representation even when the business value is unchanged; hashing the full
+-- 17-digit binary representation therefore created false cross-reload
+-- corruption fences for UI geometry/opacity/color settings. Integral values
+-- remain exact so item/skill ids, counters and timestamps do not lose entropy.
+local function DurableNumberToken(value)
+    value = tonumber(value) or 0
+    if value == 0 then return "0" end
+    if value == math.floor(value) and math.abs(value) <= 9007199254740991 then
+        return string.format("%.0f", value)
+    end
+    -- Six significant decimal digits stay safely inside single-precision
+    -- serializer round-trip accuracy while exceeding the precision required by
+    -- Suite UI scale/opacity/color/geometry settings. This token is used only
+    -- by the persistence integrity layer, never by business-domain fingerprints.
+    return string.format("%.6g", value)
+end
+
+local function KeyToken(value, numberToken)
     local kind = type(value)
-    if kind == "number" then return "n:" .. NumberToken(value) end
+    if kind == "number" then return "n:" .. (numberToken or NumberToken)(value) end
     return "s:" .. tostring(value)
 end
 
-local function FingerprintValue(value, hash, seen)
+local function FingerprintValue(value, hash, seen, numberToken)
     local kind = type(value)
     if kind == "nil" then return HashText(hash, "N;") end
     if kind == "boolean" then return HashText(hash, value and "B1;" or "B0;") end
-    if kind == "number" then return HashText(hash, "D" .. NumberToken(value) .. ";") end
+    if kind == "number" then return HashText(hash, "D" .. (numberToken or NumberToken)(value) .. ";") end
     if kind == "string" then
         hash = HashText(hash, "S" .. tostring(#value) .. ":")
         hash = HashText(hash, value)
@@ -2138,7 +2550,7 @@ local function FingerprintValue(value, hash, seen)
     local keys = {}
     for key in pairs(value) do keys[#keys + 1] = key end
     table.sort(keys, function(a, b)
-        local at, bt = KeyToken(a), KeyToken(b)
+        local at, bt = KeyToken(a, numberToken), KeyToken(b, numberToken)
         if at ~= bt then return at < bt end
         return tostring(type(a)) < tostring(type(b))
     end)
@@ -2146,11 +2558,11 @@ local function FingerprintValue(value, hash, seen)
     hash = HashText(hash, "T" .. tostring(#keys) .. "{")
     for _, key in ipairs(keys) do
         hash = HashText(hash, "K")
-        local nextHash, keyErr = FingerprintValue(key, hash, seen)
+        local nextHash, keyErr = FingerprintValue(key, hash, seen, numberToken)
         if nextHash == nil then seen[value] = nil; return nil, keyErr end
         hash = nextHash
         hash = HashText(hash, "V")
-        local valueHash, valueErr = FingerprintValue(value[key], hash, seen)
+        local valueHash, valueErr = FingerprintValue(value[key], hash, seen, numberToken)
         if valueHash == nil then seen[value] = nil; return nil, valueErr end
         hash = valueHash
     end
@@ -2158,12 +2570,26 @@ local function FingerprintValue(value, hash, seen)
     return HashText(hash, "};")
 end
 
-function P:FingerprintPayload(value, budget)
+local function FingerprintPayloadWithNumberToken(self, value, budget, numberToken)
     local inspection = self:InspectPayload(value, budget)
     if inspection.ok ~= true then return nil, tostring(inspection.reason or "payload_rejected"), inspection end
-    local hash, err = FingerprintValue(value, 146959810, {})
+    local hash, err = FingerprintValue(value, 146959810, {}, numberToken)
     if hash == nil then return nil, err, inspection end
     return string.format("%08X", math.floor(hash)), nil, inspection
+end
+
+-- Exact Domain fingerprint remains intentionally unchanged because Gear's A/B
+-- journal stores this business fingerprint in its own index contract. Do not
+-- silently change that contract when evolving persistence-integrity hashing.
+function P:FingerprintPayload(value, budget)
+    return FingerprintPayloadWithNumberToken(self, value, budget, NumberToken)
+end
+
+-- Readback/durability proof is allowed to canonicalize non-integral numbers: it
+-- verifies business equivalence across the native SaveData serializer rather
+-- than Lua's in-memory binary representation.
+function P:FingerprintDurablePayload(value, budget)
+    return FingerprintPayloadWithNumberToken(self, value, budget, DurableNumberToken)
 end
 
 -- Fingerprint only the encoded business fields. Framework metadata is excluded
@@ -2171,13 +2597,96 @@ end
 -- top-level projection is sufficient: FingerprintPayload recursively walks the
 -- referenced nested tables without mutating them, and InspectPayload rejects
 -- cycles/over-budget shapes before hashing.
-function P:FingerprintEncodedPayload(raw, budget)
+local function EncodedBusinessProjection(raw)
     if type(raw) ~= "table" then return nil, "encoded payload must be table" end
     local business = {}
     for key, value in pairs(raw) do
         if key ~= "__rsmeta" then business[key] = value end
     end
+    return business, nil
+end
+
+-- Integrity v2: serializer-stable numeric canonicalization.
+function P:FingerprintEncodedPayload(raw, budget)
+    local business, err = EncodedBusinessProjection(raw)
+    if business == nil then return nil, err end
+    return self:FingerprintDurablePayload(business, budget)
+end
+
+-- Integrity v1 compatibility only. New saves must never stamp this form.
+function P:FingerprintEncodedPayloadV1(raw, budget)
+    local business, err = EncodedBusinessProjection(raw)
+    if business == nil then return nil, err end
     return self:FingerprintPayload(business, budget)
+end
+
+-- Integrity v3: the canonical store value is a pure function of the logical
+-- Domain state, computed through the Store's own typed codec (encode) or its
+-- fixed-shape domain normalizer (migrate). RU SaveData/LoadData may change the
+-- on-disk representation of order-sensitive maps, empty tables or floats; as
+-- long as the decoded value is logically equivalent, re-canonicalizing it on
+-- both sides yields the same fingerprint. Content corruption survives decode
+-- and changes the canonical value, so verification still fails closed.
+function P:CanonicalIntegrityValue(store, domainValue)
+    if type(store.encode) == "function" and type(store.decode) == "function" then
+        local ok, encoded = pcall(store.encode, domainValue)
+        if ok and type(encoded) == "table" then return encoded, nil end
+        return nil, "canonical_encode_failed:" .. tostring(ok and type(encoded) or encoded)
+    end
+    if type(store.migrate) == "function" then
+        local ok, normalized = pcall(store.migrate, domainValue)
+        if ok and type(normalized) == "table" then return normalized, nil end
+        if ok then return domainValue, nil end
+        return nil, "canonical_normalize_failed:" .. tostring(normalized)
+    end
+    return domainValue, nil
+end
+
+-- Acceptance brief §8.4: a fingerprint mismatch alone ("A>B") is not
+-- actionable. This walks the DISK domain and its canonical reconstruction in
+-- the same deterministic key order the fingerprint uses and returns the FIRST
+-- path where they differ, so one real-machine run names the exact field the
+-- RU serializer (or a normalize gap) changed.
+local function DescribeValueDivergence(expected, actual, path, depth, budget)
+    if depth > 8 or budget.used >= budget.max then return nil end
+    local expectedKind, actualKind = type(expected), type(actual)
+    if expectedKind ~= actualKind then
+        return tostring(path) .. ": type " .. expectedKind .. " vs " .. actualKind
+    end
+    if expectedKind ~= "table" then
+        if expected ~= actual then
+            return tostring(path) .. ": " .. tostring(expected) .. " vs " .. tostring(actual)
+        end
+        return nil
+    end
+    local keys = {}
+    for key in pairs(expected) do keys[#keys + 1] = key end
+    for key in pairs(actual) do keys[#keys + 1] = key end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+    local previous = nil
+    for _, key in ipairs(keys) do
+        if key ~= previous then
+            previous = key
+            budget.used = budget.used + 1
+            local childPath = tostring(path) .. "." .. tostring(key)
+            local found = DescribeValueDivergence(expected[key], actual[key], childPath, depth + 1, budget)
+            if found ~= nil then return found end
+        end
+    end
+    return nil
+end
+
+function P:DescribeCanonicalDivergence(expected, actual)
+    if type(expected) ~= "table" or type(actual) ~= "table" then return nil end
+    local budget = { used = 0, max = 512 }
+    return DescribeValueDivergence(expected, actual, "$", 0, budget)
+end
+
+-- Fingerprint the canonical v3 value. Canonical values never contain __rsmeta,
+-- so the durable (serializer-stable numeric token) hash applies directly.
+function P:FingerprintCanonicalValue(store, canonical, budget)
+    if canonical == nil then return nil, "canonical_value_missing" end
+    return self:FingerprintDurablePayload(canonical, budget or store.encodedBudget)
 end
 
 local ENVELOPE_SEAL_BUDGET = { maxDepth = 4, maxNodes = 96, maxStringBytes = 4096, maxEntriesPerTable = 32 }
@@ -2269,7 +2778,7 @@ function P:BuildRuntimeAcceptanceSnapshot(options)
             if ok ~= true then
                 row.error = "store_get_exception:" .. tostring(payload)
             else
-                local fingerprint, fingerprintErr, inspection = self:FingerprintPayload(payload, store.budget)
+                local fingerprint, fingerprintErr, inspection = self:FingerprintDurablePayload(payload, store.budget)
                 row.fingerprint = fingerprint
                 row.error = fingerprintErr
                 row.nodes = inspection and inspection.nodes or nil
@@ -2287,6 +2796,7 @@ function P:BuildRuntimeAcceptanceSnapshot(options)
     for _, id in ipairs(missing) do aggregate = HashText(aggregate, "MISSING=" .. id .. ";") end
     return {
         contractVersion = self.RuntimeAcceptanceSnapshotContractVersion,
+        fingerprintMode = "serializer_stable_numeric_v2",
         at = NowMs(),
         buildTag = tostring(S.BuildTag or ""),
         generation = tonumber(S.Generation) or 0,
@@ -2370,6 +2880,7 @@ function P:Describe()
                 lastIntegrityStatus = store.lastIntegrityStatus,
                 lastIntegrityFingerprint = store.lastIntegrityFingerprint,
                 lastIntegrityError = store.lastIntegrityError,
+                lastIntegrityDivergence = store.lastIntegrityDivergence,
                 needsBarrierVerify = store.needsBarrierVerify == true,
                 lastBarrierVerifyAt = store.lastBarrierVerifyAt,
                 lastBarrierVerifyOk = store.lastBarrierVerifyOk,
@@ -2396,6 +2907,8 @@ function P:Describe()
         barrierPending = barrierPending,
         reliabilityContractVersion = self.ReliabilityContractVersion,
         integrityContractVersion = self.IntegrityContractVersion,
+        legacyIntegrityContractVersion = self.LegacyIntegrityContractVersion,
+        serializerNumericFingerprintContractVersion = self.SerializerNumericFingerprintContractVersion,
         envelopeIntegrityContractVersion = self.EnvelopeIntegrityContractVersion,
         scopeBindingContractVersion = self.ScopeBindingContractVersion,
         runtimeAcceptanceDiagnosticsContractVersion = self.RuntimeAcceptanceDiagnosticsContractVersion,

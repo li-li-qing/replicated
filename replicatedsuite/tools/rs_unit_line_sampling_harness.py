@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from rs_lua_runner import RUNNER
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -17,7 +18,7 @@ def main() -> int:
     args = parser.parse_args()
     root = Path(args.root).resolve() if args.root else DEFAULT_ROOT
     module = root / "presentation/v3/widgets/rs_v3_combat_visual_guides.lua"
-    texlua = shutil.which("texlua")
+    texlua = RUNNER
     if texlua is None:
         print("UNIT_LINE_SAMPLING_HARNESS SKIP | texlua unavailable")
         return 2

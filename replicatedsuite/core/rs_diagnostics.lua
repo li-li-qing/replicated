@@ -243,6 +243,294 @@ function D:GetCounters(limit)
     return rows
 end
 
+-- User-copyable single-line diagnostics for the two P0 observability targets
+-- (acceptance brief §19). Bounded, no per-frame chat output; both read only
+-- Feature-owned runtime diagnostic tables.
+function D.BuffGearLine(snap)
+    local dia = snap.buffDisplay and snap.buffDisplay.equipmentDiagnostics or nil
+    if dia == nil then return "BuffGear：装备诊断不可用（功能未加载）" end
+    return "BuffGear：lane=" .. tostring(dia.laneTicks or 0) .. "次"
+        .. " · reads=" .. tostring(dia.reads or 0)
+        .. " · icons=" .. tostring(dia.validIcons or 0)
+        .. " · empty=" .. tostring(dia.emptySlots or 0)
+        .. " · errors=" .. tostring(dia.readErrors or 0)
+        .. " · unresolvedSlots=" .. tostring(dia.unresolvedSlots or 0)
+        .. " · source=" .. tostring(dia.lastReadSource or "none")
+        .. " · iconField=" .. tostring(dia.iconField or "none")
+        .. (dia.lastError and (" · lastError=" .. tostring(dia.lastError)) or "")
+        .. (dia.sampleItemKeys and (" · itemKeys=" .. tostring(dia.sampleItemKeys)) or "")
+end
+
+function D.UnitLineLine(snap)
+    local feature = S.Features and S.Features.combat_unit_lines or nil
+    local dia = feature and feature.Diagnostics or nil
+    if dia == nil then return "UnitLines：诊断不可用（功能未加载）" end
+    local projection = snap.screenProjection or {}
+    return "UnitLines：enabled=" .. tostring(dia.enabled == true)
+        .. " · consumer=" .. tostring(dia.consumerCount or 0)
+        .. " · pairs=" .. tostring(dia.attemptedPairs or 0)
+        .. " · rows=" .. tostring(dia.drawnRows or 0)
+        .. " · status=" .. tostring(dia.lastStatus or "idle")
+        .. " · collapsed=" .. tostring(dia.endpointCollapsed or 0)
+        .. " · projFail=" .. tostring(projection.failures or 0)
+        .. " · aliasGuard=" .. tostring(projection.worldAliasGuards or 0)
+        .. " · aliasKept=" .. tostring(projection.aliasNativeKept or 0)
+        .. " · aliasReject=" .. tostring(projection.aliasNativeRejects or 0)
+        .. (dia.lastFailureReason and (" · lastFailure=" .. tostring(dia.lastFailureReason)) or " · lastFailure=none")
+end
+
+function D.BossLine(snap)
+    local dia = snap.bossAlerts
+    if dia == nil then return "Boss：诊断不可用（功能未启用或未加载）" end
+    local names = type(dia.castNames) == "table" and dia.castNames or {}
+    local sample = {}
+    for index = #names, math.max(1, #names - 2), -1 do sample[#sample + 1] = tostring(names[index]) end
+    return "Boss：ticks=" .. tostring(dia.observeTicks or 0)
+        .. " · source=" .. tostring(dia.lastFactSource or "none")
+        .. " · casting=" .. tostring(dia.castingSkill or "-")
+        .. " · debuff=" .. tostring(dia.playerDebuff or "-")
+        .. " · rule=" .. tostring(dia.matchedRule or "-")
+        .. ((tonumber(dia.lastMechanicAt) or 0) > 0 and (" · lastAt=" .. tostring(dia.lastMechanicAt)) or "")
+        .. (#sample > 0 and (" · seenCast=" .. table.concat(sample, " | ")) or "")
+end
+
+------------------------------------------------------------------------
+-- Per-feature status rows (2026-09-06 diagnostics overhaul).
+--
+-- The old summary only carried aggregate health counters, so a broken
+-- feature surfaced as "everything green but it does not work" with no way
+-- to tell WHICH layer failed. Each row answers three questions in order:
+--   verdict   -- is this feature working right now (not "enabled")
+--   evidence  -- the live numbers that prove the verdict
+--   guidance  -- the next concrete action for the user when it is broken
+-- The same rows feed the diagnostics page AND BuildCopyText, so what the
+-- user sees on the page is exactly what they copy to chat.
+------------------------------------------------------------------------
+
+-- One feature row: { id, label, verdict="ok"|"degraded"|"down"|"off", text, hint }
+local function FeatureRow(id, label, verdict, text, hint)
+    return { id = id, label = label, verdict = verdict, text = text, hint = hint }
+end
+
+local function RuntimeEnabled(featureId)
+    local runtime = S.FeatureRuntime
+    if type(runtime) == "table" and type(runtime.IsEnabled) == "function" then
+        return runtime:IsEnabled(featureId) == true
+    end
+    local feature = S.Features and S.Features[featureId] or nil
+    return feature ~= nil and feature.enabled == true
+end
+
+local function ConsumerCount(feature)
+    return tonumber(feature and feature.consumerCount) or 0
+end
+
+local function TaskActive(taskName)
+    return S.Scheduler ~= nil and type(S.Scheduler.tasks) == "table"
+        and S.Scheduler.tasks[taskName] ~= nil and S.Scheduler.tasks[taskName].enabled == true
+end
+
+function D:BuildFeatureStatusRows()
+    local rows = {}
+    local features = S.Features or {}
+
+    -- 单位连线: verdict needs consumer>0 AND rows drawn recently.
+    do
+        local feature = features.combat_unit_lines
+        local dia = feature and feature.Diagnostics or nil
+        local projection = S.Services and S.Services.ScreenProjectionV3 and S.Services.ScreenProjectionV3.GetHealth and S.Services.ScreenProjectionV3:GetHealth() or {}
+        local enabled = RuntimeEnabled("combat_unit_lines")
+        -- NOTE: `rows` here is the OUTPUT array declared above; the drawn-row
+        -- count is `drawn`. Do not shadow the output array with a local of the
+        -- same name (that bug crashed this very function on first use).
+        local drawn = tonumber(dia and dia.drawnRows) or 0
+        local lastFailure = dia and dia.lastFailureReason or nil
+        if not enabled then
+            rows[#rows + 1] = FeatureRow("unit_lines", "单位连线", "off",
+                "关闭 · 打开 设置→功能 或 连线设置页开关", "开启后选中目标即可看到连线")
+        elseif ConsumerCount(feature) <= 0 then
+            rows[#rows + 1] = FeatureRow("unit_lines", "单位连线", "down",
+                "已开启但无消费者 · 悬浮组件层没有获取渲染租约", "重开连线开关；若仍为 0 复制此行给维护者（presenter 接管失败）")
+        elseif drawn > 0 then
+            rows[#rows + 1] = FeatureRow("unit_lines", "单位连线", "ok",
+                "工作中 · rows=" .. tostring(drawn) .. "/" .. tostring(dia.attemptedPairs or 0)
+                .. " · 状态=" .. tostring(dia.lastStatus or "?")
+                .. " · proj失败=" .. tostring(projection.failures or 0),
+                lastFailure and ("部分未绘制：" .. tostring(lastFailure)) or nil)
+        else
+            rows[#rows + 1] = FeatureRow("unit_lines", "单位连线", "down",
+                "已开启有消费者但没有产出任何行 · lastFailure=" .. tostring(lastFailure or "none")
+                .. " · 投影失败=" .. tostring(projection.failures or 0),
+                lastFailure == "ALL_PAIRS_DISABLED" and "在连线设置里至少开启一种连线"
+                    or "选中一个目标后刷新诊断；仍有此行请复制给维护者")
+        end
+    end
+
+    -- 范围辅助: needs circle points projected; renderer hides below 3.
+    do
+        local feature = features.combat_range_assist
+        local enabled = RuntimeEnabled("combat_range_assist")
+        local projection = feature and feature.GetProjection and feature:GetProjection() or {}
+        local row = type(projection.rows) == "table" and projection.rows[1] or nil
+        local points = type(row) == "table" and type(row.points) == "table" and #row.points or 0
+        local visible = tonumber(row and row.visibleCount) or points
+        if not enabled then
+            rows[#rows + 1] = FeatureRow("range_assist", "范围辅助", "off", "关闭 · 在范围辅助页开启", "开启后在角色脚下显示范围圆")
+        elseif ConsumerCount(feature) <= 0 then
+            rows[#rows + 1] = FeatureRow("range_assist", "范围辅助", "down", "已开启但无消费者", "重开范围辅助开关；仍为 0 请复制此行")
+        elseif points >= 3 then
+            rows[#rows + 1] = FeatureRow("range_assist", "范围辅助", "ok",
+                "工作中 · 圆周点 " .. tostring(points) .. " · 半径 " .. tostring(projection.radius or "?"),
+                points < 8 and "点数偏少：检查投影失败计数" or nil)
+        else
+            rows[#rows + 1] = FeatureRow("range_assist", "范围辅助", "down",
+                "可见点不足(" .. tostring(points) .. "/3 以下不绘制) · 世界位置或投影失败",
+                "刷新一次；仍复现请复制此行与 UnitLines 行")
+        end
+    end
+
+    -- Boss alerts
+    do
+        local feature = features.combat_boss_alerts
+        local dia = feature and feature._bossDiag or nil
+        local enabled = RuntimeEnabled("combat_boss_alerts")
+        local hud = feature and feature.State and feature.State.hudEnabled
+        if not enabled then
+            rows[#rows + 1] = FeatureRow("boss_alerts", "首领机制", "off", "关闭 · 在首领机制页开启 HUD", "开启后点「仿真读条」即可验证弹窗")
+        elseif not hud then
+            rows[#rows + 1] = FeatureRow("boss_alerts", "首领机制", "down", "HUD 未开启 · 开关在首领机制页", "打开「机制 HUD」开关")
+        elseif dia == nil or (tonumber(dia.observeTicks) or 0) <= 0 then
+            rows[#rows + 1] = FeatureRow("boss_alerts", "首领机制", "down", "观察循环未运行", "点页面「仿真读条」验证 HUD；若仍无 ticks 复制此行")
+        else
+            rows[#rows + 1] = FeatureRow("boss_alerts", "首领机制", "ok",
+                "工作中 · ticks=" .. tostring(dia.observeTicks or 0)
+                .. " · 最近事实=" .. tostring(dia.lastFactSource or "none")
+                .. " · 命中规则=" .. tostring(dia.matchedRule or "-"),
+                "对读条怪应看到 casting=技能名；Boss 真名靠 seenCast 自动取证")
+        end
+    end
+
+    -- Buff display
+    do
+        local feature = features.BuffDisplay
+        local health = feature and feature.GetHealth and feature:GetHealth() or {}
+        local dia = health.equipmentDiagnostics
+        if health.ok ~= true then
+            rows[#rows + 1] = FeatureRow("buff_display", "状态显示", "off", "关闭 · 在状态显示页开启", "开启后配置头部显示组件")
+        elseif (tonumber(health.consumers) or 0) <= 0 then
+            rows[#rows + 1] = FeatureRow("buff_display", "状态显示", "down", "已开启但无消费者", "打开状态显示窗口或悬浮组件")
+        else
+            rows[#rows + 1] = FeatureRow("buff_display", "状态显示", "ok",
+                "工作中 · lanes=" .. tostring(#(health.activeLanes or {})) .. "/6"
+                .. " · 装备读取=" .. tostring(dia and dia.validIcons or 0) .. "图标/" .. tostring(dia and dia.readErrors or 0) .. "错",
+                (tonumber(dia and dia.readErrors or 0)) > 0 and ("装备读取报错：" .. tostring(dia.lastError)) or nil)
+        end
+    end
+
+    -- 治疗辅助 (visual lifecycle is the gate-visible part)
+    do
+        local feature = features.Healer
+        local health = feature and feature.GetHealth and feature:GetHealth() or {}
+        local enabled = RuntimeEnabled("combat_healer")
+        if not enabled then
+            rows[#rows + 1] = FeatureRow("healer", "治疗辅助", "off", "关闭 · 在治疗辅助页开启", "开启后校准/实况由设置驱动")
+        elseif health.enabled ~= true then
+            rows[#rows + 1] = FeatureRow("healer", "治疗辅助", "down", "Runtime 开启但 Domain 未启用", "复制此行给维护者（生命周期分叉）")
+        else
+            local raid = S.UIV3 and S.UIV3.HealerRaidOverlay and S.UIV3.HealerRaidOverlay:Describe() or {}
+            rows[#rows + 1] = FeatureRow("healer", "治疗辅助", (raid.running == true or raid.calibrationMode == true) and "ok" or "degraded",
+                "Domain ON · overlay running=" .. tostring(raid.running == true)
+                .. " · 校准=" .. tostring(raid.calibrationMode == true)
+                .. " · 消费者=" .. tostring(raid.consumerHeld == true and 1 or 0) .. "(preview " .. tostring(raid.previewHeld == true and 1 or 0) .. ")",
+                raid.running ~= true and "开启设置里的实况开关或校准；失败会有 RAID_RECONCILE_FAILED 告警" or nil)
+        end
+    end
+
+    -- 一键换装: bank health is the load-time evidence.
+    do
+        local feature = features.Gear
+        local enabled = RuntimeEnabled("combat_gear")
+        local storeOk = S.Persistence and S.Persistence.IsStoreLoaded and S.Persistence:IsStoreLoaded("v3.gear.index") or false
+        if not enabled then
+            rows[#rows + 1] = FeatureRow("gear", "一键换装", "off", "关闭 · 在换装页开启", "开启后配置方案")
+        elseif storeOk ~= true then
+            local index = S.Persistence and S.Persistence.GetStore and S.Persistence:GetStore("v3.gear.index") or {}
+            rows[#rows + 1] = FeatureRow("gear", "一键换装", "down",
+                "方案索引未就绪 · " .. tostring(index.loadStatus or "?") .. (index.writeFenced and " · 写保护:" .. tostring(index.writeFenceReason) or ""),
+                "按存档故障指引处理；不要清空方案")
+        else
+            rows[#rows + 1] = FeatureRow("gear", "一键换装", "ok", "工作中 · 方案索引已加载", nil)
+        end
+    end
+
+    -- 跑商 (trade quote state machine)
+    do
+        local feature = features.Trade
+        local enabled = RuntimeEnabled("life_trade")
+        local describe = feature and feature.DescribeRequestState and feature:DescribeRequestState() or nil
+        if not enabled then
+            rows[#rows + 1] = FeatureRow("trade", "跑商", "off", "关闭 · 在跑商页开启", "开启后选择路线查询货率")
+        elseif describe == nil then
+            rows[#rows + 1] = FeatureRow("trade", "跑商", "down", "状态机诊断不可用", "复制此行给维护者")
+        else
+            local ok = describe.status == "ready" or describe.status == "loading"
+            rows[#rows + 1] = FeatureRow("trade", "跑商", ok and "ok" or "degraded",
+                "状态=" .. tostring(describe.status)
+                .. " · 选择=" .. tostring(describe.selectedRoute)
+                .. " · 在飞=" .. tostring(describe.activeRoute)
+                .. " · 排队=" .. tostring(describe.pendingRoute)
+                .. " · 丢弃回调=" .. tostring(describe.droppedCallbacks or 0),
+                describe.status == "idle" and "选择起点与目的地后查询" or nil)
+        end
+    end
+
+    -- 债券
+    do
+        local feature = features.Bonds
+        local enabled = RuntimeEnabled("life_bonds")
+        local cache = feature and feature.DescribeDailyCache and feature:DescribeDailyCache() or nil
+        if not enabled then
+            rows[#rows + 1] = FeatureRow("bonds", "债券", "off", "关闭 · 在债券页开启", "开启后当天首次读取居民板")
+        elseif cache == nil then
+            rows[#rows + 1] = FeatureRow("bonds", "债券", "down", "每日缓存诊断不可用", "复制此行给维护者")
+        else
+            local ok = (tonumber(cache.snapshotCount) or 0) > 0
+            rows[#rows + 1] = FeatureRow("bonds", "债券", ok and "ok" or "degraded",
+                "日期=" .. tostring(cache.dayKey)
+                .. " · 已读大陆=" .. tostring(cache.snapshotCount) .. "/3"
+                .. " · 板读取=" .. tostring(cache.boardReads or 0)
+                .. " · 完成=" .. tostring(cache.completedCount or 0),
+                ok == false and "进入西/东大陆可读居民板区域后点刷新；同一天不重复读" or nil)
+        end
+    end
+
+    return rows
+end
+
+-- Render the rows as compact copy text (shared with BuildCopyText).
+function D:FormatFeatureStatusRows(rows)
+    rows = type(rows) == "table" and rows or self:BuildFeatureStatusRows()
+    local marks = { ok = "✓", degraded = "△", down = "✗", off = "○" }
+    local parts = {}
+    for _, row in ipairs(rows) do
+        parts[#parts + 1] = (marks[row.verdict] or "·") .. row.label .. " " .. row.text
+    end
+    return table.concat(parts, " ║ ")
+end
+
+-- Repair guidance lines: for every non-ok row, one actionable hint.
+function D:BuildRepairGuidance(rows)
+    rows = type(rows) == "table" and rows or self:BuildFeatureStatusRows()
+    local hints = {}
+    for _, row in ipairs(rows) do
+        if row.verdict == "down" or row.verdict == "degraded" then
+            hints[#hints + 1] = row.label .. "：" .. tostring(row.hint or "复制该行给维护者")
+        end
+    end
+    if #hints == 0 then return "全部功能状态正常" end
+    return table.concat(hints, "；")
+end
+
 function D:Snapshot()
     local registry = S.GameDataRegistry
     local gameData = registry and type(registry.Describe) == "function" and registry:Describe() or nil
@@ -263,7 +551,12 @@ function D:Snapshot()
         refreshCoordinator = S.RefreshCoordinator and type(S.RefreshCoordinator.Describe)=="function" and S.RefreshCoordinator:Describe() or nil,
         auraObservation = S.Services and S.Services.AuraObservationV3 and type(S.Services.AuraObservationV3.GetHealth)=="function" and S.Services.AuraObservationV3:GetHealth() or nil,
         buffDisplay = S.Features and S.Features.BuffDisplay and type(S.Features.BuffDisplay.GetHealth)=="function" and S.Features.BuffDisplay:GetHealth() or nil,
+        unitLines = S.Features and S.Features.combat_unit_lines and type(S.Features.combat_unit_lines.Diagnostics)=="table" and S.Features.combat_unit_lines.Diagnostics or nil,
+        bossAlerts = S.Features and S.Features.combat_boss_alerts and type(S.Features.combat_boss_alerts._bossDiag)=="table" and S.Features.combat_boss_alerts._bossDiag or nil,
         unitIdentity = S.Services and S.Services.UnitIdentityV3 and type(S.Services.UnitIdentityV3.GetHealth)=="function" and S.Services.UnitIdentityV3:GetHealth() or nil,
+        combatRelation = S.Services and S.Services.CombatRelationV3 and type(S.Services.CombatRelationV3.GetHealth)=="function" and S.Services.CombatRelationV3:GetHealth() or nil,
+        teamRoster = S.Services and S.Services.TeamRosterV3 and type(S.Services.TeamRosterV3.GetHealth)=="function" and S.Services.TeamRosterV3:GetHealth() or nil,
+        screenProjection = S.Services and S.Services.ScreenProjectionV3 and type(S.Services.ScreenProjectionV3.GetHealth)=="function" and S.Services.ScreenProjectionV3:GetHealth() or nil,
         combatEventBus = S.Services and S.Services.CombatEventBusV3 and type(S.Services.CombatEventBusV3.GetHealth)=="function" and S.Services.CombatEventBusV3:GetHealth() or nil,
         deathReview = S.Features and S.Features.DeathReview and type(S.Features.DeathReview.GetHealth)=="function" and S.Features.DeathReview:GetHealth() or nil,
         ui = S.UI and type(S.UI.GetFrameworkSnapshot)=="function" and S.UI:GetFrameworkSnapshot() or nil,
@@ -401,6 +694,9 @@ function D:BuildSummary()
             .. " · Aura " .. tostring(snap.buffDisplay and snap.buffDisplay.auraHeld == true and "held" or "idle")
             .. " · Task " .. tostring(snap.buffDisplay and snap.buffDisplay.taskActive == true and "active" or "idle")
             .. " · Revision " .. tostring(snap.buffDisplay and snap.buffDisplay.revision or 0),
+        D.BuffGearLine(snap),
+        D.UnitLineLine(snap),
+        D.BossLine(snap),
         "调度任务：" .. tostring(snap.schedulerTasks) .. " · 积压状态：" .. tostring(snap.backlog and snap.backlog.health or "未知") .. "(" .. tostring(snap.backlog and snap.backlog.pending or 0) .. ") · 预算延期 " .. tostring(snap.backlog and snap.backlog.deferredByBudget or 0) .. " · 新版存档：" .. (snap.persistenceError and "写保护" or "正常"),
         snap.frameBudget and ("FrameBudget：" .. tostring(snap.frameBudget.pressure or "Normal") .. " · Credit " .. tostring(snap.frameBudget.creditsRemaining or 0) .. "/" .. tostring(snap.frameBudget.creditsTotal or 0) .. " · 执行 " .. tostring(snap.frameBudget.granted or 0) .. " · 延期 " .. tostring(snap.frameBudget.deferred or 0) .. " · 饥饿保底 " .. tostring(snap.frameBudget.starvationRuns or 0)) or "FrameBudget：未加载",
         snap.performance and ("性能：最近帧 " .. string.format("%.1f", tonumber(snap.performance.lastFrameMs) or 0) .. "ms · 最大 " .. string.format("%.1f", tonumber(snap.performance.maxFrameMs) or 0) .. "ms · 卡顿 " .. tostring(snap.performance.jankCount or 0) .. " · 未归因 " .. tostring(snap.performance.unattributedStalls or 0) .. " · 详细计时 " .. (snap.performance.timerAvailable and "可用" or "不可用")) or "性能：监控尚未加载",
@@ -553,10 +849,12 @@ function D:BuildAllLogs()
             tonumber(persistence.stats and persistence.stats.loadFailures) or 0, tonumber(persistence.stats and persistence.stats.saveFailures) or 0,
             tonumber(persistence.stats and persistence.stats.migrations) or 0, tonumber(persistence.stats and persistence.stats.periodResets) or 0)
         for _, row in ipairs(persistence.rows or {}) do
-            sections[#sections + 1] = string.format("Store %s｜%s/%s · Schema %s · %s%s%s",
+            sections[#sections + 1] = string.format("Store %s｜%s/%s · Schema %s · %s%s%s%s",
                 tostring(row.id), tostring(row.owner), tostring(row.lifetime), tostring(row.schema), tostring(row.loadStatus or "unknown"),
                 row.periodId and (" · Period " .. tostring(row.periodId)) or "",
-                row.writeFenced and (" · 写保护 " .. tostring(row.writeFenceReason or "unknown")) or (row.dirty and " · Dirty" or ""))
+                row.writeFenced and (" · 写保护 " .. tostring(row.writeFenceReason or "unknown")) or (row.dirty and " · Dirty" or ""),
+                row.lastIntegrityStatus ~= nil and (" · 完整性 " .. tostring(row.lastIntegrityStatus)
+                    .. (row.lastIntegrityError and ("（" .. tostring(row.lastIntegrityError) .. "）") or "")) or "")
         end
     end
     local ui = snap.ui

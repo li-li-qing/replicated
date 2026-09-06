@@ -12,9 +12,12 @@ local ROUTE = "life.activities"
 
 local function OpenActivityDetail(row)
     if type(row) ~= "table" then return false end
-    local modal = S.UIV3 and S.UIV3.QuestDetailModalV3 or nil
-    if type(modal) ~= "table" or type(modal.Open) ~= "function" then return false end
-    return modal:Open(row.questScope or "event", row.questKey, row)
+    -- Main page and floating activity/task widgets share one independent detail
+    -- surface. This keeps task details reusable after the application shell is
+    -- closed and prevents a second modal-only presentation authority.
+    local detail = S.UIV3 and S.UIV3.QuestDetailFloatingV3 or nil
+    if type(detail) ~= "table" or type(detail.Open) ~= "function" then return false end
+    return detail:Open(row.questScope or "event", row.questKey, row)
 end
 
 local function BuildActivityPage(parent, route)

@@ -782,6 +782,42 @@ RSUI:RegisterType("FieldGroup", function(spec)
         return true
     end
 
+    -- Measure-only height computation. UsedHeight in Grid depends solely on
+    -- the placed span index, cell height and gap, so the natural height can be
+    -- derived without any native write. Without this, containers above (Scroll
+    -- Box / TransformInspector) measured the STALE post-layout height and
+    -- stacked the next section on top of newly-expanded content.
+    function c:Measure(availableWidth, availableHeight)
+        local w = math.max(1, N(availableWidth, self.width or width))
+        local resolvedFieldHeight = self.fieldHeight
+        for _, field in ipairs(self.fields) do
+            if field.visible ~= false and type(field.Measure) == "function" then
+                local ok, _, desiredH = pcall(function() return field:Measure(w, nil) end)
+                if ok and tonumber(desiredH) ~= nil then resolvedFieldHeight = math.max(resolvedFieldHeight, tonumber(desiredH)) end
+            end
+        end
+        if Layout == nil or type(Layout.ResolveResponsiveColumns) ~= "function" then
+            self.desiredWidth, self.desiredHeight, self.measureDirty = w, math.max(1, self.usedHeight or 1), false
+            return w, math.max(1, self.usedHeight or 1)
+        end
+        local columns = Layout:ResolveResponsiveColumns(w, {
+            minCellWidth = self.minCellWidth, gapX = self.gapX,
+            minColumns = self.minColumns, maxColumns = self.maxColumns,
+        })
+        local index = 0
+        for _, field in ipairs(self.fields) do
+            if field.visible ~= false then
+                local span = math.max(1, math.min(columns, math.floor(N(field.spec and field.spec.colSpan, 1))))
+                local col = index % columns
+                index = index + math.max(1, math.min(columns - col, span))
+            end
+        end
+        local rows = math.ceil(index / columns)
+        local usedHeight = rows > 0 and (rows * resolvedFieldHeight + (rows - 1) * self.gapY) or 0
+        self.desiredWidth, self.desiredHeight, self.measureDirty = w, math.max(1, usedHeight), false
+        return w, math.max(1, usedHeight)
+    end
+
     function c:Layout(x, y, nextWidth, nextHeight)
         local w = math.max(1, N(nextWidth, self.width or width))
         UI:SetAnchor(self.root, self.parent, N(x, 0), N(y, 0), self.owner)
@@ -896,6 +932,18 @@ RSUI:RegisterType("FormSection", function(spec)
         RSUI:_Count(self.kind, "rendered", 1)
         if self.group ~= nil then self.group:Render() end
         return true
+    end
+
+    -- Pure content-height measurement (no native writes): mirrors Layout's
+    -- content origin + group height + padding exactly.
+    function c:Measure(availableWidth, availableHeight)
+        local w = math.max(1, N(availableWidth, self.width or width))
+        local contentX, contentY = self.raw:ContentOrigin()
+        local contentW = math.max(1, w - contentX * 2)
+        local _, groupH = self.group:Measure(contentW, nil)
+        local desired = math.max(N(spec.minHeight, 0), contentY + N(groupH, 0) + self.padding)
+        self.desiredWidth, self.desiredHeight, self.measureDirty = w, desired, false
+        return w, desired
     end
 
     function c:Layout(x, y, nextWidth, nextHeight)
@@ -1035,6 +1083,24 @@ RSUI:RegisterType("Form", function(spec)
         end
         self:RefreshState(true)
         return committed
+    end
+
+    -- Real content measurement: the TransformInspector inside the HUD-layout
+    -- ScrollBox measured its stale post-layout height before this existed, so
+    -- expanding the anchor section pushed the NEXT section on top of it.
+    function c:Measure(availableWidth, availableHeight)
+        local w = math.max(1, N(availableWidth, self.width or width))
+        local cursor, sections = 0, 0
+        for _, section in ipairs(self.sections) do
+            if section.visible ~= false then
+                local _, h = section:Measure(w, nil)
+                cursor = cursor + N(h, 0) + self.gap
+                sections = sections + 1
+            end
+        end
+        local usedHeight = math.max(1, cursor - (sections > 0 and self.gap or 0))
+        self.desiredWidth, self.desiredHeight, self.measureDirty = w, usedHeight, false
+        return w, usedHeight
     end
 
     function c:Layout(x, y, nextWidth, nextHeight)

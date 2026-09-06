@@ -10,7 +10,7 @@ local S = ReplicatedSuite
 local feature = S.Features and S.Features.tools_bag or nil
 if type(feature) ~= "table" or type(S.UI) ~= "table" then return end
 S.UIV3 = S.UIV3 or {}
-local P = { version=1, owner="v3:bag_quick_overlay", root=nil, take=nil, put=nil, stop=nil, status=nil }
+local P = { version=2, owner="v3:bag_quick_overlay", root=nil, take=nil, put=nil, stop=nil, status=nil }
 S.UIV3.BagQuickOverlay = P
 
 function P:EnsureCreated()
@@ -38,6 +38,12 @@ function P:EnsureCreated()
     local takeBound,takeErr=bind(take,"take",function(c) return c:QuickWithdraw() end)
     local putBound,putErr=bind(put,"put",function(c) return c:QuickDeposit() end)
     local stopBound,stopErr=bind(stop,"stop",function(c) return c:QuickCancel() end)
+    local tooltip=S.RSUI and S.RSUI.Tooltip or nil
+    if type(tooltip)=="table" and type(tooltip.Bind)=="function" then
+        tooltip:Bind(take,{ text="取：从当前打开的银行/箱子连续取出与当前选中物品同类的堆叠。", allowRaw=true, cursorFollow=true, maxWidth=360 })
+        tooltip:Bind(put,{ text="放：把背包中的同类物品连续存入当前银行/箱子；仓库没有空格时仍会尝试已有的未满堆叠。", allowRaw=true, cursorFollow=true, maxWidth=390 })
+        tooltip:Bind(stop,{ text="停：立即停止当前批量取出/存入队列。", allowRaw=true, cursorFollow=true, maxWidth=320 })
+    end
     if takeBound~=true or putBound~=true or stopBound~=true then
         S.UI:SetVisible(root,false,self.owner); if type(S.UI.ReleaseOwner)=="function" then S.UI:ReleaseOwner(self.owner) end
         self.root,self.take,self.put,self.stop,self.status=nil,nil,nil,nil,nil

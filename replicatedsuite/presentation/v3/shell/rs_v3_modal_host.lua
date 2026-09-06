@@ -83,15 +83,17 @@ function M:Attach(root)
             slot = { hAlign = "fill", vAlign = "fill" },
         })
         if self.scrim == nil or self.contentRoot == nil then error("modal host component create failed") end
-        if type(self.scrim.RequireOn) ~= "function" then error("modal scrim critical event contract unavailable") end
-        local backdropBound, backdropErr = self.scrim:RequireOn(self.scrim.root, "OnClick", function()
+        -- Border click action contract v1: bind via the composite's public
+        -- SetOnClick action, never via a raw RequireOn on its native root.
+        if type(self.scrim.SetOnClick) ~= "function" then error("modal scrim click action contract unavailable") end
+        local backdropBound, backdropErr = self.scrim:SetOnClick(function()
             local top = M:GetTop()
             if top ~= nil and top.options.dismissOnBackdrop == true then
                 M.stats.backdropDismissals = (tonumber(M.stats.backdropDismissals) or 0) + 1
                 return M:Pop(top.id, "backdrop") ~= nil
             end
             return true
-        end, "v3:modal_host:backdrop")
+        end)
         if backdropBound ~= true then error(tostring(backdropErr or "modal backdrop bind failed")) end
         return true
     end)

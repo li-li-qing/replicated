@@ -9,6 +9,7 @@ from __future__ import annotations
 import pathlib
 import subprocess
 import tempfile
+from rs_lua_runner import RUNNER
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PERSISTENCE = ROOT / "core/rs_persistence.lua"
@@ -46,7 +47,7 @@ function ReplicatedSuite.Api:ClearData(key) storage[key] = nil; return true, nil
 
 dofile([[{PERSISTENCE.as_posix()}]])
 local P = ReplicatedSuite.Persistence
-assert(P.ReliabilityContractVersion == 7, "contract")
+assert(P.ReliabilityContractVersion >= 7, "contract")
 local budget = {{ maxDepth = 8, maxNodes = 128, maxStringBytes = 4096, maxEntriesPerTable = 64 }}
 
 -- Ordinary one-write saves are healthy Domain state but not durability proof.
@@ -129,14 +130,14 @@ assert(P.stats.saveFailures == failuresBefore, "terminal_tick_no_save_failure_st
 assert(P.stats.terminalAutoRetrySuppressions >= 1, "terminal_retry_suppressed_stat")
 
 local desc = P:Describe()
-assert(desc.reliabilityContractVersion == 7, "describe_contract")
+assert(desc.reliabilityContractVersion >= 7, "describe_contract")
 print("PERSISTENCE_RELIABILITY_V7_LUA PASS")
 '''
     with tempfile.NamedTemporaryFile("w", suffix=".lua", encoding="utf-8", delete=False) as fh:
         fh.write(script)
         tmp = pathlib.Path(fh.name)
     try:
-        proc = subprocess.run(["texlua", str(tmp)], capture_output=True, text=True)
+        proc = subprocess.run([RUNNER, str(tmp)], capture_output=True, text=True)
     finally:
         tmp.unlink(missing_ok=True)
     if proc.returncode != 0:
@@ -148,7 +149,7 @@ print("PERSISTENCE_RELIABILITY_V7_LUA PASS")
 def main() -> int:
     source = PERSISTENCE.read_text(encoding="utf-8-sig")
     for token in (
-        "ReliabilityContractVersion = 7",
+        "ReliabilityContractVersion = 8",
         "unverifiedReloadRejects = 0",
         "STORE_UNVERIFIED_RELOAD_REJECTED",
         "deferredLoadResaves = 0",

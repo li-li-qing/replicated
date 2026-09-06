@@ -13,13 +13,17 @@ local S = ReplicatedSuite
 S.UI = {
     controls = {},
     registryMetrics = { duplicates = 0, v3Duplicates = 0, degraded = 0 },
-    -- Native Interaction Contract v4: all hit-test methods use the verified
+    -- Native Interaction Contract v6: all hit-test methods use the verified
     -- one-argument RU WidgetBase ABI; boolean false-state setter returns are
     -- distinguished from Action rejection; single/multiline edits are
     -- explicitly enabled for mouse/keyboard focus; degraded primitives fail
     -- closed to callers instead of masquerading as healthy controls.
-    NativeInteractionContractVersion = 4,
+    NativeInteractionContractVersion = 6,
     CriticalInteractionDeliveryContractVersion = 1,
+    -- Root transient popup/menu surfaces use a real native window; ordinary
+    -- in-tree Panel remains an emptywidget. This prevents RU cross-root
+    -- z-order loss without changing normal component allocation.
+    TopLevelTransientWindowContractVersion = 1,
 }
 local UIX = S.UI
 
@@ -34,6 +38,11 @@ local function MarkPrimitiveDegraded(widget, id, detail)
     UIX.registryMetrics.degraded = (tonumber(UIX.registryMetrics.degraded) or 0) + 1
     pcall(function()
         local owner = widget.rsUiOwner
+        if widget.rsUiKeyboardInput == true then
+            if type(widget.ClearFocus) == "function" then pcall(function() widget:ClearFocus() end) end
+            if type(widget.EnableKeyboard) == "function" then pcall(function() widget:EnableKeyboard(false) end) end
+            if type(widget.EnableFocus) == "function" then pcall(function() widget:EnableFocus(false) end) end
+        end
         -- Apply the final defensive state before marking the widget degraded;
         -- the Diff Authority intentionally rejects already-degraded widgets.
         if type(UIX.SetEnabled) == "function" then UIX:SetEnabled(widget, false, owner) end
@@ -349,8 +358,19 @@ function UIX:CreatePanel(parent, id, x, y, width, height, kind, opts)
     local nativeParent = RootNativeParent(parent)
     local anchorParent = RootAnchorParent(parent)
     local stateParent = RootStateParent(parent)
-    local panel, nativeErr = factory:CreateEmptyWidget(S.PhysicalId(id), nativeParent)
-    if panel == nil then return nil, nativeErr or "panel_create_failed" end
+    -- Interactive top-level transient surfaces must be real native windows.
+    -- RU clients do not reliably put root emptywidgets into the "system" layer,
+    -- so a dropdown/menu can be alive but rendered behind the V3 application
+    -- window. Ordinary in-tree panels remain emptywidgets.
+    local transientWindow = rootParent == true and opts.transientWindow == true
+    local panel, nativeErr
+    if transientWindow then
+        if type(factory.CreateWindow) ~= "function" then return nil, "transient_window_factory_unavailable" end
+        panel, nativeErr = factory:CreateWindow(S.PhysicalId(id), "UIParent", "")
+    else
+        panel, nativeErr = factory:CreateEmptyWidget(S.PhysicalId(id), nativeParent)
+    end
+    if panel == nil then return nil, nativeErr or (transientWindow and "transient_window_create_failed" or "panel_create_failed") end
     TrackNativeBuildWidget(panel)
     local ownerParent = rootParent and nil or parent
     panel.rsHudOwner = ownerParent and ownerParent.rsHudOwner or nil
@@ -362,6 +382,37 @@ function UIX:CreatePanel(parent, id, x, y, width, height, kind, opts)
     -- unowned legacy widget.
     panel.rsUiOwner = opts.owner or (ownerParent and (ownerParent.rsUiOwner or (ownerParent.rsHudOwner and ("hud:" .. tostring(ownerParent.rsHudOwner)))) or nil)
     panel.rsUiParent = stateParent
+    panel.rsUiTransientWindow = transientWindow == true
+
+    local function ApplyTransientWindowPolicy()
+        if transientWindow ~= true then return true end
+        -- Window policy mirrors the application root: never become modal and
+        -- never let Native Escape close behind V3 lifecycle/persistence.
+        if type(panel.SetUILayer) == "function" then
+            local ok, result = pcall(function() return panel:SetUILayer(tostring(opts.uiLayer or "system")) end)
+            if ok ~= true or result == false then return false, "transient_window_layer_rejected" end
+        end
+        for _, row in ipairs({
+            { method = "SetCloseOnEscape", value = false },
+            { method = "SetWindowModal", value = false },
+        }) do
+            if type(panel[row.method]) == "function" then
+                local ok = pcall(function() panel[row.method](panel, row.value) end)
+                if ok ~= true then return false, "transient_window_policy_failed:" .. tostring(row.method) end
+            end
+        end
+        local priority = tonumber(opts.drawPriority)
+            or (S.UITokens and type(S.UITokens.Number) == "function" and S.UITokens:Number("layer.popupPriority", 10000))
+            or 10000
+        if type(panel.SetDrawPriority) == "function" then pcall(function() panel:SetDrawPriority(priority) end) end
+        return true
+    end
+
+    local policyOk, policyErr = ApplyTransientWindowPolicy()
+    if policyOk ~= true then
+        return FailPrimitive(panel, id, tostring(policyErr or "transient_window_policy_failed"))
+    end
+
     local configured, configureErr = pcall(function()
         panel:AddAnchor("TOPLEFT", anchorParent, x or 0, y or 0)
         panel:SetExtent(math.max(1, width or 1), math.max(1, height or 1))
@@ -404,14 +455,14 @@ function UIX:CreatePanel(parent, id, x, y, width, height, kind, opts)
         end
         local nativePickable = ConfigureNativePickable(panel, opts.pickable == true)
         if nativePickable ~= true then error("panel hit-test state unavailable") end
-        panel:Show(true)
+        panel:Show(opts.visible ~= false)
     end)
     if not configured then
         return FailPrimitive(panel, id, PrimitiveFailureDetail("panel_configuration_failed", configureErr))
     end
     if type(self.PrimeNativeState) == "function" then
         self:PrimeNativeState(panel, {
-            width = math.max(1, width or 1), height = math.max(1, height or 1), visible = true, enabled = true,
+            width = math.max(1, width or 1), height = math.max(1, height or 1), visible = opts.visible ~= false, enabled = true,
             pickable = opts.pickable == true, anchorTopLeft = { parent = stateParent, x = x or 0, y = y or 0 },
         })
     end
@@ -478,6 +529,11 @@ function UIX:CreateEditBox(parent, id, x, y, width, height, maxLength)
     if edit == nil then edit = factory:CreateChildByObject(parent, "EDITBOX", S.PhysicalId(id), 0, true) end
     if edit == nil then return nil end
     TrackNativeBuildWidget(edit)
+    local anchorParent = RootAnchorParent(parent)
+    local stateParent = RootStateParent(parent)
+    edit.rsUiParent = stateParent
+    edit.rsUiKeyboardInput = true
+    edit.rsUiOwner = parent and (parent.rsUiOwner or (parent.rsHudOwner and ("hud:" .. tostring(parent.rsHudOwner)))) or nil
     local configured, configureErr = pcall(function()
         edit:SetExtent(math.max(1, width or 120), math.max(1, height or 26))
         if edit.SetInset ~= nil then edit:SetInset(5,5,5,5) end
@@ -488,8 +544,12 @@ function UIX:CreateEditBox(parent, id, x, y, width, height, maxLength)
         if accepted ~= true then error("editbox Enable rejected") end
         accepted = CallNativeAccepted(edit, "EnableFocus", true)
         if accepted ~= true then error("editbox focus unavailable") end
-        accepted = CallNativeAccepted(edit, "EnableKeyboard", true)
-        if accepted ~= true then error("editbox keyboard unavailable") end
+        -- Deferred keyboard activation: merely constructing an EditBox must not
+        -- take ArcheAge movement/skill keyboard ownership. Keyboard input is
+        -- armed only after an explicit user click through RSUI input lifecycle.
+        accepted = CallNativeAccepted(edit, "EnableKeyboard", false)
+        if accepted ~= true then error("editbox keyboard inert state unavailable") end
+        edit.rsUiKeyboardArmed = false
         if ConfigureNativePickable(edit, true) ~= true then error("editbox hit-test unavailable") end
         if edit.SetReClickable ~= nil then
             accepted = CallNativeAccepted(edit, "SetReClickable", true)
@@ -511,18 +571,17 @@ function UIX:CreateEditBox(parent, id, x, y, width, height, maxLength)
             local bg=edit:CreateColorDrawable(0.015,0.022,0.032,0.995,"background")
             if bg and bg.AddAnchor then bg:AddAnchor("TOPLEFT",edit,1,1); bg:AddAnchor("BOTTOMRIGHT",edit,-1,-1) end
         end
-        edit:AddAnchor("TOPLEFT", parent, x or 0, y or 0)
+        edit:AddAnchor("TOPLEFT", anchorParent, x or 0, y or 0)
         edit:Show(true)
     end)
     if not configured then
         return FailPrimitive(edit, id, PrimitiveFailureDetail("editbox_configuration_failed", configureErr))
     end
-    edit.rsUiOwner = parent and (parent.rsUiOwner or (parent.rsHudOwner and ("hud:" .. tostring(parent.rsHudOwner)))) or nil
     if type(self.PrimeNativeState) == "function" then
         self:PrimeNativeState(edit, {
             width = math.max(1, width or 120), height = math.max(1, height or 26),
             visible = true, enabled = true, pickable = true,
-            anchorTopLeft = { parent = parent, x = x or 0, y = y or 0 },
+            anchorTopLeft = { parent = stateParent, x = x or 0, y = y or 0 },
         })
     end
     return self:Register(id, edit)
@@ -535,6 +594,11 @@ function UIX:CreateMultiEditBox(parent, id, x, y, width, height, maxLength)
     local edit = factory:CreateChildByObject(parent, "EDITBOX_MULTILINE", S.PhysicalId(id), 0, true)
     if edit == nil then return nil end
     TrackNativeBuildWidget(edit)
+    local anchorParent = RootAnchorParent(parent)
+    local stateParent = RootStateParent(parent)
+    edit.rsUiParent = stateParent
+    edit.rsUiKeyboardInput = true
+    edit.rsUiOwner = parent and (parent.rsUiOwner or (parent.rsHudOwner and ("hud:" .. tostring(parent.rsHudOwner)))) or nil
     local configured, configureErr = pcall(function()
         edit:SetExtent(math.max(1, width or 220), math.max(1, height or 96))
         if edit.SetInset ~= nil then edit:SetInset(8,8,10,8) end
@@ -545,8 +609,11 @@ function UIX:CreateMultiEditBox(parent, id, x, y, width, height, maxLength)
         if accepted ~= true then error("multieditbox Enable rejected") end
         accepted = CallNativeAccepted(edit, "EnableFocus", true)
         if accepted ~= true then error("multieditbox focus unavailable") end
-        accepted = CallNativeAccepted(edit, "EnableKeyboard", true)
-        if accepted ~= true then error("multieditbox keyboard unavailable") end
+        -- Same deferred keyboard contract as single-line EditBox. Hidden tab
+        -- content must remain keyboard-inert until the user explicitly clicks it.
+        accepted = CallNativeAccepted(edit, "EnableKeyboard", false)
+        if accepted ~= true then error("multieditbox keyboard inert state unavailable") end
+        edit.rsUiKeyboardArmed = false
         if ConfigureNativePickable(edit, true) ~= true then error("multieditbox hit-test unavailable") end
         if edit.SetReadOnly ~= nil then
             accepted = CallNativeAccepted(edit, "SetReadOnly", false)
@@ -567,18 +634,17 @@ function UIX:CreateMultiEditBox(parent, id, x, y, width, height, maxLength)
             local bg=edit:CreateColorDrawable(0.015,0.022,0.032,0.995,"background")
             if bg and bg.AddAnchor then bg:AddAnchor("TOPLEFT",edit,1,1); bg:AddAnchor("BOTTOMRIGHT",edit,-1,-1) end
         end
-        edit:AddAnchor("TOPLEFT", parent, x or 0, y or 0)
+        edit:AddAnchor("TOPLEFT", anchorParent, x or 0, y or 0)
         edit:Show(true)
     end)
     if not configured then
         return FailPrimitive(edit, id, PrimitiveFailureDetail("multieditbox_configuration_failed", configureErr))
     end
-    edit.rsUiOwner = parent and (parent.rsUiOwner or (parent.rsHudOwner and ("hud:" .. tostring(parent.rsHudOwner)))) or nil
     if type(self.PrimeNativeState) == "function" then
         self:PrimeNativeState(edit, {
             width = math.max(1, width or 220), height = math.max(1, height or 96),
             visible = true, enabled = true, pickable = true,
-            anchorTopLeft = { parent = parent, x = x or 0, y = y or 0 },
+            anchorTopLeft = { parent = stateParent, x = x or 0, y = y or 0 },
         })
     end
     return self:Register(id, edit)

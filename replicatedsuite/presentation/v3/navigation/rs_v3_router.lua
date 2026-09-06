@@ -75,6 +75,7 @@ for _, feature in ipairs(Features:List()) do
         group = feature.group,
         groupOrder = feature.groupOrder,
         groupItemOrder = feature.groupItemOrder,
+        visible = feature.navigationVisible ~= false,
     })
     if row == nil then error(err) end
 end

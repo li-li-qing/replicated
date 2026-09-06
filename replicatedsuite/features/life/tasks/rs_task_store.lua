@@ -22,15 +22,38 @@ F.WidgetWindowSizePolicy = {
 }
 local WINDOW_SIZE = F.WidgetWindowSizePolicy
 local STORE_ID = "v3.tasks"
+local TASK_CODEC_VERSION = 2
 local VALID_SCOPE = { daily = true, weekly = true }
 
+-- Domain code keeps O(1) membership maps. SaveData does not need that shape:
+-- RU has now produced a real cross-reload fingerprint mismatch on this Store
+-- while the independent metadata envelope remained healthy. The only dynamic
+-- associative tables here are tracked group sets, so the persistence codec
+-- writes them as sorted arrays. This removes serializer-dependent map shape
+-- without changing the Feature's in-memory Authority or lookup complexity.
 local function NormalizeKeys(value)
     local result = {}
     for key, enabled in pairs(type(value) == "table" and value or {}) do
-        key = tostring(key or "")
-        if key ~= "" and enabled == true then result[key] = true end
+        local candidate = nil
+        if enabled == true then
+            candidate = key
+        elseif type(key) == "number" and type(enabled) == "string" then
+            -- Codec v2 / RU-normalized sequence form: { "guild", "pack20" }.
+            candidate = enabled
+        end
+        candidate = tostring(candidate or "")
+        if candidate ~= "" then result[candidate] = true end
     end
     return result
+end
+
+local function SortedKeyArray(value)
+    local out = {}
+    for key, enabled in pairs(NormalizeKeys(value)) do
+        if enabled == true then out[#out + 1] = tostring(key) end
+    end
+    table.sort(out)
+    return out
 end
 
 local function NormalizeTracking(value)
@@ -67,6 +90,54 @@ local function Normalize(value)
     }
 end
 
+local function EncodeTaskState(value)
+    local normalized = Normalize(value)
+    return {
+        codec = TASK_CODEC_VERSION,
+        payload = {
+            tracking = {
+                daily = { configured = normalized.tracking.daily.configured == true, keys = SortedKeyArray(normalized.tracking.daily.keys) },
+                weekly = { configured = normalized.tracking.weekly.configured == true, keys = SortedKeyArray(normalized.tracking.weekly.keys) },
+            },
+            lastScope = normalized.lastScope,
+            widgetVisible = normalized.widgetVisible == true,
+            widgetRows = normalized.widgetRows,
+            widgetWindow = normalized.widgetWindow,
+        },
+    }
+end
+
+-- Migration-safe decode (§ old-user upgrade): accepts the current codec
+-- envelope, the intermediate { payload = ... } wrapper build, and the original
+-- pre-codec bare-Domain shape. Normalize() is strict about content, so shape
+-- tolerance here cannot smuggle corrupted values into the Domain.
+local function DecodeTaskState(raw)
+    if type(raw) ~= "table" then return nil, "task_encoded_payload_required" end
+    local payload = raw
+    if raw.codec ~= nil or type(raw.payload) == "table" then
+        payload = type(raw.payload) == "table" and raw.payload or nil
+        if payload == nil then return nil, "task_payload_missing" end
+    end
+    return Normalize(payload), nil
+end
+
+-- This hook exists only to recover an already-written pre-canonical Store from
+-- a proven RU representation change. Persistence does NOT trust the result: it
+-- hashes each reconstructed candidate and accepts it only if it exactly equals
+-- the fingerprint stamped before the native serializer round-trip. Current
+-- codec payloads are never eligible, so future corruption cannot use this path.
+-- Two historical on-disk shapes existed before the typed codec: the bare
+-- normalized Domain (the original no-encode contract) and an intermediate
+-- { payload = ... } wrapper build; each was stamped over its own shape, so both
+-- reconstructions are offered and only an exact stamp match wins.
+local function RebuildLegacyEncodedForIntegrity(raw)
+    if type(raw) ~= "table" then return nil, "not_pre_codec_task_payload" end
+    if raw.codec ~= nil then return nil, "codec_payload_not_eligible" end
+    local source = type(raw.payload) == "table" and raw.payload or raw
+    return { candidates = { Normalize(source), { payload = Normalize(source) } } },
+        "task_tracking_set_map_reconstruction"
+end
+
 F.State = Normalize(F.State)
 
 local function Apply(value)
@@ -91,6 +162,10 @@ if P:GetStore(STORE_ID) == nil then
         default = function() return Normalize(nil) end,
         get = function() return Normalize(F.State) end,
         apply = Apply,
+        encode = EncodeTaskState,
+        decode = DecodeTaskState,
+        rebuildEncodedForIntegrity = RebuildLegacyEncodedForIntegrity,
+        allowIntegrityUpgrade = true,
         migrate = function(value) return Normalize(value) end,
     })
     if store == nil and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Error) == "function" then
@@ -99,6 +174,7 @@ if P:GetStore(STORE_ID) == nil then
 end
 
 F.StoreId = STORE_ID
+F.PersistenceCodecVersion = TASK_CODEC_VERSION
 F.StoreLoaded = F.StoreLoaded == true
 
 function F:EnsureStoreLoaded()

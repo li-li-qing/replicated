@@ -245,7 +245,7 @@ local function BuildPage(parent, route)
         return field
     end
     local modeField = AddRaidDropdown(raidTeamRowA, "v3_healer_raid_mode", "列表模式",
-        { { value = "auto", text = "自动" }, { value = "single", text = "单列表" }, { value = "dual", text = "双列表" } },
+        { { value = "auto", text = "自动跟随原生标签" }, { value = "single", text = "单列表" }, { value = "dual", text = "双列表" } },
         function() return RaidSetting().mode or "auto" end,
         function(v) return Feature.Commands:SetRaidMode(v) end)
     local singleTeamField = AddRaidDropdown(raidTeamRowA, "v3_healer_raid_single_team", "单列表队伍",
@@ -547,7 +547,7 @@ local function BuildPage(parent, route)
         slot = { size = "fill", fill = 1, minHeight = 150, hAlign = "fill", vAlign = "fill" } })
     local bodyStack = RSUI:VerticalBox({ id = "v3_healer_calibration_stack", parent = body, gap = 6 })
     local calibrationState = RSUI:Text({ id = "v3_healer_calibration_state", parent = bodyStack,
-        text = "点击上方“校准团队色块”后，屏幕会按当前列表模式显示面板（单列表=面板A，双列表=面板A+B）。校准模式不启动治疗扫描。",
+        text = "点击上方“校准团队色块”后，单个团队按“上方1-25 + 下方26-50”两个5×5区域校准。自动模式跟随游戏原生1团/2团标签；只有启用额外友军团队列表时才使用双列表(A+B)。校准模式不启动治疗扫描。",
         fontSize = 9, tone = "accent", overflow = "wrap", maxLines = 3,
         slot = { size = "auto", minHeight = 48, hAlign = "fill" } })
     RSUI:Text({ id = "v3_healer_calibration_help", parent = bodyStack,

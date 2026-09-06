@@ -33,9 +33,11 @@ local F = S.Features.BuffDisplay
 if type(Runtime) ~= "table" then return end
 
 F.Id = "combat_buff_display"
+F.EquipmentReadContractVersion = 1 -- player equipped icons read through shared GearV3 authority
 F.enabled = F.enabled == true
 F.consumers, F.consumerCount = {}, 0
 F.auraHeld = false
+F.castingHeld = false
 F.taskName = "v3_buff_display_refresh"          -- aura lane task (contract kept)
 F.eventTaskName = "v3_buff_display_event_refresh"
 F.eventSubscribed = false
@@ -67,7 +69,17 @@ F.lanes = F.lanes or {
 -- name; the contract name is the single source of truth.
 F.lanes.aura.task = F.taskName
 
+-- Bounded equipment-lane diagnostics (RU acceptance workflow §BuffGear).
+-- Never persisted, never printed per frame; exposed through GetHealth().
+F.EquipmentDiagnostics = F.EquipmentDiagnostics or {
+    laneTicks = 0, reads = 0, readErrors = 0, emptySlots = 0, validIcons = 0,
+    nameOnlyTooltips = 0, unresolvedSlots = 0,
+    lastError = nil, lastReadSource = nil, iconField = nil, lastIcon = nil,
+    sampleItemKeys = nil, lastTickAt = 0,
+}
+
 local function Aura() return S.Services and S.Services.AuraObservationV3 or nil end
+local function Casting() return S.Services and S.Services.CastingObservationV3 or nil end
 local function Settings() return F.State and F.State.settings or {} end
 local function Classification() return S.Services and S.Services.StatusClassificationV3 or nil end
 local function Projection() return S.Services and S.Services.ScreenProjectionV3 or nil end
@@ -524,17 +536,73 @@ local EQUIPMENT_SLOTS = {
 -- Real-machine evidence 2026-09-01: the client ignores the second argument
 -- (targetEquippedItem) and always returns the player's own equipped item, so
 -- only the player scope may call this; the target scope fails closed upstream.
+-- Every outcome is recorded into F.EquipmentDiagnostics (bounded, never
+-- printed per frame): reads / readErrors / emptySlots / validIcons /
+-- iconField / lastError / sampleItemKeys. The 2026-09-01 fix routed the read
+-- through GearV3 yet real-machine icons stayed blank -- the remaining unknowns
+-- (which icon field the RU tooltip actually carries, whether the lane ticks,
+-- whether reads error) must be observable on the client instead of guessed.
 local function ReadEquippedIcon(slotId, scope)
-    if slotId == nil then return nil end
-    local api = Api()
-    local equipment = Global("X2Equipment")
-    if api == nil or type(api.CallCapability) ~= "function" or equipment == nil then return nil end
-    local ok, item = api:CallCapability("X2Equipment:GetEquippedItemTooltipInfo", equipment, "GetEquippedItemTooltipInfo", slotId, scope == "target")
-    if ok ~= true or type(item) ~= "table" then return nil end
+    if slotId == nil or scope ~= "player" then
+        if slotId == nil then
+            local dia = F.EquipmentDiagnostics
+            if dia ~= nil then dia.unresolvedSlots = (tonumber(dia.unresolvedSlots) or 0) + 1 end
+        end
+        return nil
+    end
+
+    local dia = F.EquipmentDiagnostics
+    local item, readErr = nil, nil
+    local gear = S.Services and S.Services.GearV3 or nil
+    local readSource = "direct"
+    if type(gear) == "table" and type(gear.GetEquipped) == "function" then
+        item, readErr = gear:GetEquipped(slotId)
+        readSource = "gear_v3"
+    else
+        -- Fail-soft bootstrap fallback only. Services load before Features in
+        -- toc.g, so normal runtime always takes GearV3 above.
+        local api = Api()
+        local equipment = Global("X2Equipment")
+        if api ~= nil and type(api.CallCapability) == "function" and equipment ~= nil then
+            local ok, value, err = api:CallCapability("X2Equipment:GetEquippedItemTooltipInfo", equipment, "GetEquippedItemTooltipInfo", slotId, true)
+            if ok == true then item = value else readErr = err end
+        else
+            readErr = "api_unavailable"
+        end
+    end
+    if dia ~= nil then
+        dia.reads = (tonumber(dia.reads) or 0) + 1
+        dia.lastReadSource = readSource
+        if readErr ~= nil then
+            dia.readErrors = (tonumber(dia.readErrors) or 0) + 1
+            dia.lastError = tostring(readErr)
+        elseif type(item) ~= "table" then
+            dia.emptySlots = (tonumber(dia.emptySlots) or 0) + 1
+        end
+    end
+    if readErr ~= nil or type(item) ~= "table" then return nil end
     local icon = tostring(item.icon or item.iconPath or item.path or "")
     local rawGradeIcon = item.gradeIcon or item.grade_icon
     local gradeIconPath = type(rawGradeIcon) == "string" and rawGradeIcon or ""
     local name = tostring(item.name or item.itemName or "")
+    if dia ~= nil then
+        if icon ~= "" then
+            dia.validIcons = (tonumber(dia.validIcons) or 0) + 1
+            dia.iconField = item.icon ~= nil and "icon" or (item.iconPath ~= nil and "iconPath" or "path")
+            dia.lastIcon = icon ~= "" and tostring(icon) or dia.lastIcon
+        elseif name ~= "" then
+            -- Tooltip without any known icon field: capture the shape ONCE so
+            -- the client run reveals the actual field names instead of another
+            -- blind fix round.
+            dia.nameOnlyTooltips = (tonumber(dia.nameOnlyTooltips) or 0) + 1
+            if dia.sampleItemKeys == nil then
+                local keys = {}
+                for key in pairs(item) do keys[#keys + 1] = tostring(key) end
+                table.sort(keys)
+                dia.sampleItemKeys = table.concat(keys, ",")
+            end
+        end
+    end
     if icon == "" and name == "" then return nil end
     return { icon = icon, gradeIconPath = gradeIconPath, name = name }
 end
@@ -549,6 +617,11 @@ end
 
 function F:EquipmentTick()
     if (tonumber(self.consumerCount) or 0) <= 0 then return true end
+    local dia = F.EquipmentDiagnostics
+    if dia ~= nil then
+        dia.laneTicks = (tonumber(dia.laneTicks) or 0) + 1
+        dia.lastTickAt = S.NowMs and S.NowMs() or 0
+    end
     local changed = false
     local api = Api()
     for _, scope in ipairs({ "player", "target" }) do
@@ -606,28 +679,16 @@ end
 
 function F:CastTick()
     if (tonumber(self.consumerCount) or 0) <= 0 then return true end
-    local api = Api()
+    local casting = Casting()
     local changed = false
     for _, scope in ipairs({ "player", "target" }) do
         if ScopeHeadEnabled(scope) and ComponentEnabled("castBar") then
             local lane = self.laneData[scope] or {}
-            local cast = nil
-            if api ~= nil and type(api.CallCapability) == "function" and X2Unit ~= nil then
-                local ok, info = api:CallCapability("X2Unit:UnitCastingInfo", X2Unit, "UnitCastingInfo", scope)
-                if ok == true and type(info) == "table" and info.showTargetCastingTime ~= false
-                    and info.spellName ~= nil and tostring(info.spellName) ~= "" then
-                    cast = {
-                        casting = true,
-                        spellName = tostring(info.spellName),
-                        currMs = math.max(0, math.floor(tonumber(info.currCastingTime) or 0)),
-                        totalMs = math.max(1, math.floor(tonumber(info.castingTime) or 1)),
-                    }
-                end
-            end
+            local cast = type(casting) == "table" and type(casting.Get) == "function" and casting:Get(scope) or nil
             local old = lane.cast
-            local same = type(old) == "table" and type(cast) == "table"
+            local same = (old == nil and cast == nil) or (type(old) == "table" and type(cast) == "table"
                 and old.spellName == cast.spellName and old.totalMs == cast.totalMs
-                and math.abs((old.currMs or 0) - (cast.currMs or 0)) < 50
+                and math.abs((old.currMs or 0) - (cast.currMs or 0)) < 50)
             if same ~= true then lane.cast, changed = cast, true end
             self.laneData[scope] = lane
         end
@@ -661,16 +722,25 @@ end
 function F:ReconcileLanes()
     if self.enabled ~= true or (tonumber(self.consumerCount) or 0) <= 0 then
         for laneKey in pairs(self.lanes) do SetLaneActive(laneKey, false, nil) end
+        local releaseOk, releaseErr = self:_ReleaseCasting()
         self.laneData = { player = {}, target = {} }
-        return true
+        return releaseOk, releaseErr
     end
     local settings = Settings()
+    local castNeeded = LaneNeeds("cast", settings)
+    if castNeeded then
+        local castOk, castErr = self:_AcquireCasting()
+        if castOk ~= true then return false, castErr end
+    else
+        local castOk, castErr = self:_ReleaseCasting()
+        if castOk ~= true then return false, castErr end
+    end
     SetLaneActive("aura", LaneNeeds("aura", settings), function() return F:Refresh("aura_lane") end, true)
     SetLaneActive("position", LaneNeeds("position", settings), function() return F:PositionTick() end, true)
     SetLaneActive("distance", LaneNeeds("distance", settings), function() return F:DistanceTick() end, true)
     SetLaneActive("metadata", LaneNeeds("metadata", settings), function() return F:MetadataTick() end, true)
     SetLaneActive("equipment", LaneNeeds("equipment", settings), function() return F:EquipmentTick() end, true)
-    SetLaneActive("cast", LaneNeeds("cast", settings), function() return F:CastTick() end, true)
+    SetLaneActive("cast", castNeeded, function() return F:CastTick() end, true)
     return true
 end
 
@@ -823,6 +893,26 @@ function F:_ReleaseAura()
     return true
 end
 
+function F:_AcquireCasting()
+    if self.castingHeld == true then return true end
+    local casting = Casting()
+    if type(casting) ~= "table" or type(casting.AcquireConsumer) ~= "function" then return false, "共享 Casting 服务不可用" end
+    local ok, err = casting:AcquireConsumer("buff_display:casting", { player = true, target = true, intervalMs = LaneInterval("cast"), purpose = "buff_display" })
+    if ok ~= true then return false, err end
+    self.castingHeld = true
+    return true
+end
+
+function F:_ReleaseCasting()
+    if self.castingHeld ~= true then return true end
+    local casting = Casting()
+    if type(casting) ~= "table" or type(casting.ReleaseConsumer) ~= "function" then return false, "共享 Casting 服务释放不可用" end
+    local ok, err = casting:ReleaseConsumer("buff_display:casting")
+    if ok ~= true then return false, err end
+    self.castingHeld = false
+    return true
+end
+
 -- Contract-compatible aura task wrappers (the aura lane is the periodic task).
 function F:_StartTask()
     return SetLaneActive("aura", true, function() return F:Refresh("scheduled") end, true)
@@ -919,12 +1009,21 @@ function F:ReconcileDemand(before, after)
         ok, err = self:_StartTask()
         if ok ~= true then self:_ReleaseAura(); return false, err end
         self:_StartEvents()
-        self:ReconcileLanes()
+        local laneOk, laneErr = self:ReconcileLanes()
+        if laneOk ~= true then
+            self:_StopEvents()
+            for laneKey in pairs(self.lanes) do SetLaneActive(laneKey, false, nil) end
+            self:_ReleaseCasting()
+            self:_ReleaseAura()
+            return false, laneErr
+        end
     elseif beforeCount > 0 and afterCount <= 0 then
         self:_StopEvents()
         for laneKey in pairs(self.lanes) do SetLaneActive(laneKey, false, nil) end
-        local ok, err = self:_ReleaseAura()
-        if ok ~= true then return false, err end
+        local castOk, castErr = self:_ReleaseCasting()
+        local auraOk, auraErr = self:_ReleaseAura()
+        if castOk ~= true then return false, castErr end
+        if auraOk ~= true then return false, auraErr end
         self.projections = { player = {}, target = {} }
         self.coverage = { player = {}, target = {} }
         self.laneData = { player = {}, target = {} }
@@ -941,6 +1040,7 @@ local demand, demandErr = S.Demand:Create({
     quiesce = function()
         F:_StopEvents()
         for laneKey in pairs(F.lanes) do SetLaneActive(laneKey, false, nil) end
+        F:_ReleaseCasting()
         F:_ReleaseAura()
         F.laneData = { player = {}, target = {} }
         F.frozenRows = { player = {}, target = {} }
@@ -991,11 +1091,12 @@ function F:GetHealth()
     local activeLanes = {}
     for laneKey, lane in pairs(self.lanes) do if lane.active == true then activeLanes[#activeLanes + 1] = laneKey end end
     table.sort(activeLanes)
-    return { ok = self.enabled == true, consumers = self.consumerCount, auraHeld = self.auraHeld == true,
+    return { ok = self.enabled == true, consumers = self.consumerCount, auraHeld = self.auraHeld == true, castingHeld = self.castingHeld == true,
         revision = self.revision, player = self.coverage.player, target = self.coverage.target,
         eventSubscribed = self.eventSubscribed == true, eventEdges = tonumber(self.eventEdges) or 0,
         eventRefreshPending = S.Scheduler ~= nil and S.Scheduler.tasks and S.Scheduler.tasks[self.eventTaskName] ~= nil,
         observationContractVersion = 2,
+        equipmentDiagnostics = S.Utils ~= nil and type(S.Utils.DeepCopy) == "function" and S.Utils.DeepCopy(F.EquipmentDiagnostics) or F.EquipmentDiagnostics,
         activeLanes = activeLanes,
         auraConsumers = tonumber(ah.consumers) or 0, taskActive = S.Scheduler ~= nil and S.Scheduler.tasks and S.Scheduler.tasks[self.taskName] ~= nil }
 end

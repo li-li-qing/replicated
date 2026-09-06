@@ -335,6 +335,7 @@ function F:Create(spec)
         owner = owner,
         title = tostring(spec.title or id),
         status = tostring(spec.status or ""),
+        layerRole = "floating",
         width = width,
         height = height,
         minWidth = policy.minWidth,

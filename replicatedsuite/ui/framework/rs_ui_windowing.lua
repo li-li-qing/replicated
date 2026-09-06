@@ -17,13 +17,15 @@ local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
 if type(UI) ~= "table" or type(RSUI) ~= "table" then return end
 
-RSUI.Windowing = RSUI.Windowing or { version = 16, bindings = {}, metrics = { attached = 0, detached = 0, drags = 0, resizes = 0, locks = 0, raises = 0, opacityChanges = 0, resizeHover = 0, liveResizeFrames = 0, interactionBegins = 0, interactionEnds = 0, freePlacementCommits = 0, recoveryClamps = 0, geometryCallbackRejects = 0 } }
-RSUI.Windowing.version = 16
+RSUI.Windowing = RSUI.Windowing or { version = 18, bindings = {}, metrics = { attached = 0, detached = 0, drags = 0, resizes = 0, locks = 0, raises = 0, opacityChanges = 0, resizeHover = 0, liveResizeFrames = 0, interactionBegins = 0, interactionEnds = 0, freePlacementCommits = 0, recoveryClamps = 0, geometryCallbackRejects = 0 } }
+RSUI.Windowing.version = 18
 RSUI.Windowing.StateMutationTransactionContractVersion = 1
 RSUI.Windowing.GeometryCallbackTransactionContractVersion = 1
 RSUI.Windowing.IdempotentStateContractVersion = 1
 RSUI.Windowing.CallbackCaptureContractVersion = 1
-RSUI.Windowing.CriticalInteractionContractVersion = 1
+RSUI.Windowing.CriticalInteractionContractVersion = 3
+RSUI.Windowing.DragSurfaceHitTestContractVersion = 1
+RSUI.Windowing.ExplicitDragConditionContractVersion = 1
 RSUI.Windowing.metrics = RSUI.Windowing.metrics or {}
 local W = RSUI.Windowing
 local NATIVE_RESIZE_LIMIT = 16384 -- technical guard only; not a user-facing window cap
@@ -424,11 +426,26 @@ function W:Attach(spec)
         return nil, tostring(detail or "window_interaction_attach_failed")
     end
 
-    if type(UI.TryInteractionCall) ~= "function" or type(UI.RequireHandler) ~= "function" then
+    if type(UI.TryInteractionCall) ~= "function" or type(UI.RequireHandler) ~= "function"
+        or type(UI.EnsureEnabled) ~= "function" or type(UI.EnsurePickable) ~= "function" then
         return AbortAttach("critical_interaction_contract_unavailable")
     end
+    -- Windowing is the Authority for its drag surface. Do not assume the caller
+    -- happened to create a pickable Border/EmptyWidget: establish hit-testing
+    -- before enabling native drag, otherwise OnDragStart can never be delivered.
+    local handleEnabled, _, handleEnableErr = UI:EnsureEnabled(dragHandle, true, owner)
+    if handleEnabled ~= true then return AbortAttach("window_drag_handle_enable_failed:" .. tostring(handleEnableErr or "rejected")) end
+    local handlePickable, _, handlePickErr = UI:EnsurePickable(dragHandle, true, owner)
+    if handlePickable ~= true then return AbortAttach("window_drag_handle_pickable_failed:" .. tostring(handlePickErr or "rejected")) end
     local dragEnabled, dragErr = UI:TryInteractionCall(dragHandle, "EnableDrag", true)
     if dragEnabled ~= true then return AbortAttach("window_enable_drag_failed:" .. tostring(dragErr or "rejected")) end
+    -- ArcheRage RU does not consistently emit OnDragStart from WidgetBase
+    -- after EnableDrag(true) alone. Every window drag surface therefore uses
+    -- the same verified DC_ALWAYS contract as sliders/splitters/gear buttons.
+    if type(dragHandle.SetDragCondition) == "function" and DC_ALWAYS ~= nil then
+        local conditionOk, conditionErr = UI:TryInteractionCall(dragHandle, "SetDragCondition", DC_ALWAYS)
+        if conditionOk ~= true then return AbortAttach("window_drag_condition_failed:" .. tostring(conditionErr or "rejected")) end
+    end
     local startBound, startErr = UI:RequireHandler(dragHandle, "OnDragStart", function()
         if controller:IsDragAllowed() ~= true or type(window.StartMoving) ~= "function" then return false end
         controller:BringToFront()
@@ -463,6 +480,10 @@ function W:Attach(spec)
                 controller.handles[handleDefinition.key] = handle
                 local handleDragOk, handleDragErr = UI:TryInteractionCall(handle, "EnableDrag", true)
                 if handleDragOk ~= true then return AbortAttach("window_resize_enable_drag_failed:" .. tostring(handleDefinition.key) .. ":" .. tostring(handleDragErr or "rejected")) end
+                if type(handle.SetDragCondition) == "function" and DC_ALWAYS ~= nil then
+                    local conditionOk, conditionErr = UI:TryInteractionCall(handle, "SetDragCondition", DC_ALWAYS)
+                    if conditionOk ~= true then return AbortAttach("window_resize_drag_condition_failed:" .. tostring(handleDefinition.key) .. ":" .. tostring(conditionErr or "rejected")) end
+                end
                 -- ArcheRage RU exposes X2Cursor:SetCursorImage, but the project
                 -- does not yet contain a verified resize-cursor texture path.
                 -- Until that native asset is verified, provide an immediate

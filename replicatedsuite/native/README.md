@@ -7,9 +7,9 @@
 - `rs_native_contract.lua` — curated API/Object/Event identity contract. Add entries only when a migrated Feature actually needs them and the client contract is verified.
 - `rs_native_imports.lua` — sole Authority for `ADDON:ImportAPI` / `ADDON:ImportObject`; Foundation imports the minimum set, Features acquire business APIs lazily.
 - `rs_native_object_factory.lua` — sole active raw widget construction boundary (`UIParent:CreateWidget`, child widget constructors).
-- `rs_native_esc_bridge.lua` — stateless Proxy for the documented ADDON ESC/content integration.
+- `rs_native_esc_bridge.lua` — generation-local idempotent Proxy for documented ADDON ESC/content registration; it owns transport/retry state only, never feature/window visibility state.
 - `rs_native_capabilities.lua` — readiness/diagnostic surface consumed by Foundation Gate.
-- `rs_native_recovery.lua` — installs the minimal recovery launcher immediately after the Native Foundation.
+- `rs_native_recovery.lua` — installs two independent bootstrap recovery surfaces immediately after the Native Foundation: the compact `R` launcher and the `RS>` Recovery Command Bar. The command bar uses only verified EditBox `OnEnterPressed`; it does not register/invent chat Slash APIs. Both installers surface thrown errors and logical `false` results without poisoning the full Runtime boot.
 
 ## Hard rules
 

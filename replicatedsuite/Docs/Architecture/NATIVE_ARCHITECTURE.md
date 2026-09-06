@@ -93,9 +93,10 @@ Active V3 的原生 Widget 创建统一收敛到 `rs_native_object_factory.lua`�
 - RegisterContentWidget
 - RegisterContentTriggerFunc
 - AddEscMenuButton
+- 当前 generation 内的幂等注册/部分成功补偿状态
 - 请求可见性的兼容归一化
 
-窗口是否显示仍由 V3 UIHostManager 负责，NativeEscBridge 只是 Proxy。
+窗口是否显示仍由 V3 UIHostManager 负责，NativeEscBridge 只是 registration transport Proxy。它可以记住“这一 generation 的某个 contentId 哪一步已经注册成功”以避免补偿重试时重复 Native 写，但不得保存业务页状态、窗口 visible Authority 或跨 generation 注册状态。
 
 ### Feature API Import
 
@@ -283,9 +284,12 @@ M1.14.1 进入世界后的首要验收条件不是“窗口看起来正常”，
 - `rs_native_contract.lua` — curated API/Object/Event identity contract. Add entries only when a migrated Feature actually needs them and the client contract is verified.
 - `rs_native_imports.lua` — sole Authority for `ADDON:ImportAPI` / `ADDON:ImportObject`; Foundation imports the minimum set, Features acquire business APIs lazily.
 - `rs_native_object_factory.lua` — sole active raw widget construction boundary (`UIParent:CreateWidget`, child widget constructors).
-- `rs_native_esc_bridge.lua` — stateless Proxy for the documented ADDON ESC/content integration.
+- `rs_native_esc_bridge.lua` — generation-local idempotent Proxy for documented ADDON ESC/content registration; visibility Authority remains UIHostManager.
 - `rs_native_capabilities.lua` — readiness/diagnostic surface consumed by Foundation Gate.
-- `rs_native_recovery.lua` — installs the minimal recovery launcher immediately after the Native Foundation.
+- `rs_native_recovery.lua` — installs the minimal recovery launcher immediately after the Native Foundation; transport exception and logical `false` are both diagnostic failures, but recovery failure does not become Runtime `BootError`. The launcher is a fixed 30×30 logical screen affordance with Native auto-resize disabled. Drag suppression is geometry-delta based: zero-delta RU DragStart/DragStop sequences remain normal clicks, while a real drag suppresses only the immediate synthetic click and is the only path allowed to persist launcher placement.
+- **`.18.112` Native input lifecycle boundary** — Native EditBox creation may enable the verified RU Focus/Keyboard capability, but long-lived ownership is not left to individual pages. `UI Framework` registers Suite input by physical widget id and releases focus only after proving the globally focused id belongs to the Suite subtree being hidden/disabled/released. Generation teardown permanently disarms old EditBoxes; `UIParent` is a hard ancestry/accounting boundary. Generic keyboard event hooks remain unverified and forbidden.
+- **`.18.112` Native drag hit-test boundary** — `Windowing` owns readiness of its drag surface (`Enabled + Pickable`) before it enables Native Drag/DC_ALWAYS; actual capture and geometry continue through the verified `StartMoving/StartSizing/StopMovingOrSizing` API. Presentation callers cannot substitute raw mouse polling.
+- `.18.108` Recovery Command Contract v1 adds a second, independently installed bootstrap surface: fixed `174×30` `RS>` + EditBox. It exists specifically for the state where the V3 Host/ESC/R click path cannot be trusted. The client codebase provides verified EditBox `OnEnterPressed`, but current RU addon API exposes no verified third-party Slash-command registration Authority; therefore `SlashCmdList`, `X2Chat:GetChatCommands()` and chat-input polling/hijacking are prohibited. `reload`/`/rsreload` route to the same `ReloadCodeFromDisk` Authority as recovery reload, so Persistence Flush and UI-generation replacement remain single-authority. Since `.18.110`, this recovery path treats Flush as best-effort: exact persistence failure evidence is retained and surfaced, but a broken Store cannot block loading the repaired addon files; callers that explicitly require durability may still request strict fail-closed behavior. The bar is visible only while Runtime is not Ready and has no Tick/OnUpdate.
 
 ### Hard rules
 

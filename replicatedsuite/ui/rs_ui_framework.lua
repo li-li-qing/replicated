@@ -1,5 +1,5 @@
 ------------------------------------------------------------------------
--- Replicated Suite - UI Framework v8
+-- Replicated Suite - UI Framework v12
 --
 -- Incremental upper layer over the limited ArcheAge/RU native UI API.
 --
@@ -18,13 +18,23 @@ local S = ReplicatedSuite
 local UI = S.UI
 if type(UI) ~= "table" then return end
 
-local FRAMEWORK_VERSION = 10
+local FRAMEWORK_VERSION = 12
 local MAX_OWNER_METRICS = 48
 
 local stateCache = setmetatable({}, { __mode = "k" })
 local authorityClaims = setmetatable({}, { __mode = "k" })
 local geometryLeases = setmetatable({}, { __mode = "k" })
-local lifecycle = { owners = {} }
+local lifecycle = {
+    owners = {},
+    -- Physical-id keyed weak values let focus cleanup prove that the currently
+    -- focused native widget belongs to Suite before touching it. Never clear an
+    -- external game/chat focus merely because a Suite window is hiding.
+    focusTargetsByPhysicalId = setmetatable({}, { __mode = "v" }),
+    -- Deferred keyboard activation keeps edit boxes inert until an explicit
+    -- user click arms them. Weak keys prevent released Native widgets from
+    -- being retained by the lifecycle authority.
+    armedInputs = setmetatable({}, { __mode = "k" }),
+}
 
 local metrics = {
     attempts = 0,
@@ -46,6 +56,13 @@ local metrics = {
         releasedOwners = 0,
         releasedHandlers = 0,
         hiddenOnRelease = 0,
+        inputTargets = 0,
+        focusClears = 0,
+        focusClearFailures = 0,
+        inputRetires = 0,
+        keyboardArms = 0,
+        keyboardDisarms = 0,
+        keyboardArmFailures = 0,
     },
 }
 
@@ -59,6 +76,13 @@ UI.PickableStateTransactionContractVersion = 1
 -- requesting true still fails closed; explicit Lua callback false=veto
 -- semantics remain owned by their higher-level transaction boundaries.
 UI.NativeBooleanSetterReturnContractVersion = 1
+-- Keyboard focus is a Native-lifecycle resource. Hidden/disabled/released
+-- Suite subtrees must relinquish focus, while unrelated game/chat focus is
+-- never touched. Input widgets register once at adoption; ancestors carry a
+-- small subtree count so ordinary non-input visibility writes stay O(1).
+UI.InputFocusLifecycleContractVersion = 2
+UI.HiddenInputFocusIsolationContractVersion = 2
+UI.DeferredKeyboardActivationContractVersion = 1
 UI.Tokens = S.UITokens
 UI.NativeStateCache = stateCache
 UI.NativeAuthorityClaims = authorityClaims
@@ -165,6 +189,266 @@ end
 
 function UI:IsWidgetUsable(widget)
     return WidgetUsable(widget)
+end
+
+
+local MAX_INPUT_ANCESTRY_DEPTH = 32
+
+local function PhysicalIdOf(widget)
+    if widget == nil then return nil end
+    local value = widget.rsNativePhysicalId
+    if value == nil or tostring(value) == "" then return nil end
+    return tostring(value)
+end
+
+local function IsInputTarget(widget)
+    return widget ~= nil and widget.rsUiKeyboardInput == true
+end
+
+local function BumpInputSubtree(widget, delta)
+    delta = tonumber(delta) or 0
+    if widget == nil or delta == 0 then return end
+    local current, guard = widget, 0
+    while current ~= nil and current ~= UIParent and current ~= "UIParent" and guard < MAX_INPUT_ANCESTRY_DEPTH do
+        guard = guard + 1
+        local nextValue = math.max(0, (tonumber(current.rsUiKeyboardInputSubtreeCount) or 0) + delta)
+        current.rsUiKeyboardInputSubtreeCount = nextValue
+        local parent = current.rsUiParent
+        if parent == nil or parent == current then break end
+        current = parent
+    end
+end
+
+local function RegisterInputTarget(widget)
+    if not IsInputTarget(widget) or widget.rsUiInputLifecycleTracked == true then return false end
+    widget.rsUiInputLifecycleRetired = false
+    widget.rsUiInputLifecycleTracked = true
+    widget.rsUiKeyboardArmed = widget.rsUiKeyboardArmed == true
+    local physicalId = PhysicalIdOf(widget)
+    if physicalId ~= nil then lifecycle.focusTargetsByPhysicalId[physicalId] = widget end
+    if widget.rsUiKeyboardArmed == true then lifecycle.armedInputs[widget] = true end
+    BumpInputSubtree(widget, 1)
+    metrics.lifecycle.inputTargets = (tonumber(metrics.lifecycle.inputTargets) or 0) + 1
+    return true
+end
+
+local function UnregisterInputTarget(widget)
+    if widget == nil or widget.rsUiInputLifecycleTracked ~= true then return false end
+    widget.rsUiInputLifecycleTracked = false
+    lifecycle.armedInputs[widget] = nil
+    widget.rsUiKeyboardArmed = false
+    local physicalId = PhysicalIdOf(widget)
+    if physicalId ~= nil and lifecycle.focusTargetsByPhysicalId[physicalId] == widget then
+        lifecycle.focusTargetsByPhysicalId[physicalId] = nil
+    end
+    BumpInputSubtree(widget, -1)
+    return true
+end
+
+local function SetInputKeyboardState(widget, armed, owner, reason)
+    if not IsInputTarget(widget) then return false, false, "input_target_required" end
+    if armed == true and widget.rsUiInputLifecycleRetired == true then return false, false, "input_retired" end
+    if type(widget.EnableKeyboard) ~= "function" then return false, false, "keyboard_toggle_unavailable" end
+    armed = armed == true
+    if (widget.rsUiKeyboardArmed == true) == armed then return true, false, nil end
+    local ok, result = pcall(function() return widget:EnableKeyboard(armed) end)
+    local accepted, acceptErr = NativeBooleanSetterAccepted(ok, result, armed)
+    if accepted ~= true then
+        metrics.lifecycle.keyboardArmFailures = (tonumber(metrics.lifecycle.keyboardArmFailures) or 0) + 1
+        RecordNativeSafetyFailure(armed and "INPUT_KEYBOARD_ARM" or "INPUT_KEYBOARD_DISARM", widget, acceptErr, owner)
+        return false, false, tostring(acceptErr or "keyboard_toggle_rejected")
+    end
+    widget.rsUiKeyboardArmed = armed
+    if armed then
+        lifecycle.armedInputs[widget] = true
+        metrics.lifecycle.keyboardArms = (tonumber(metrics.lifecycle.keyboardArms) or 0) + 1
+    else
+        lifecycle.armedInputs[widget] = nil
+        metrics.lifecycle.keyboardDisarms = (tonumber(metrics.lifecycle.keyboardDisarms) or 0) + 1
+    end
+    return true, true, nil
+end
+
+function UI:ArmInputWidget(widget, owner, reason)
+    return SetInputKeyboardState(widget, true, owner, reason or "explicit_input_activation")
+end
+
+function UI:DisarmInputWidget(widget, owner, reason)
+    return SetInputKeyboardState(widget, false, owner, reason or "input_deactivation")
+end
+
+function UI:ActivateInputWidget(widget, owner, reason)
+    local armed, _, armErr = self:ArmInputWidget(widget, owner, reason or "input_click")
+    if armed ~= true then return false, tostring(armErr or "keyboard_arm_failed") end
+    if type(self.TryInteractionCall) ~= "function" then
+        self:DisarmInputWidget(widget, owner, "focus_contract_unavailable")
+        return false, "focus_contract_unavailable"
+    end
+    local focused, focusErr = self:TryInteractionCall(widget, "SetFocus")
+    if focused ~= true then
+        self:DisarmInputWidget(widget, owner, "focus_failed")
+        return false, tostring(focusErr or "set_focus_failed")
+    end
+    return true, nil
+end
+
+local function FocusedInputDescendsFrom(focused, root, focusedId)
+    if focused == nil or root == nil then return false end
+    if focused == root then return true end
+    local current, guard = focused.rsUiParent, 0
+    while current ~= nil and guard < MAX_INPUT_ANCESTRY_DEPTH do
+        guard = guard + 1
+        if current == root then return true end
+        local parent = current.rsUiParent
+        if parent == nil or parent == current then break end
+        current = parent
+    end
+    -- rsUiParent is the cheap/authoritative path for Suite primitives. The
+    -- verified Native ancestry API is only a fallback for adopted widgets whose
+    -- historical constructor did not publish the Lua parent chain.
+    if focusedId ~= nil and type(root.IsDescendantWidget) == "function" then
+        local ok, result = pcall(function() return root:IsDescendantWidget(focusedId) end)
+        if ok == true and result == true then return true end
+    end
+    return false
+end
+
+function UI:DisarmInputWithin(widget, owner, reason)
+    if widget == nil then return true, 0, nil end
+    local snapshot = {}
+    for input in pairs(lifecycle.armedInputs) do
+        if input ~= nil then snapshot[#snapshot + 1] = input end
+    end
+    local count, failed = 0, nil
+    local allSuiteInputs = widget == UIParent or widget == "UIParent"
+    for _, input in ipairs(snapshot) do
+        local inputId = PhysicalIdOf(input)
+        if allSuiteInputs or input == widget or FocusedInputDescendsFrom(input, widget, inputId) == true then
+            local ok, changed, err = self:DisarmInputWidget(input, owner or OwnerOf(input), reason or "subtree_deactivate")
+            if ok ~= true then failed = failed or err elseif changed == true then count = count + 1 end
+        end
+    end
+    return failed == nil, count, failed
+end
+
+-- Raw multiline inputs are rare and intentionally stay outside the generic
+-- Component factory. This helper gives them the same explicit-click activation
+-- contract without allowing Presentation to bind Native handlers directly.
+function UI:BindDeferredInputActivation(widget, owner, label)
+    if not IsInputTarget(widget) then return false, "input_target_required" end
+    if type(self.SafeHandler) ~= "function" then return false, "handler_contract_unavailable" end
+    local eventLabel = tostring(label or widget.rsUiLogicalId or widget.rsNativeLogicalId or "input")
+    local clickBound = self:SafeHandler(widget, "OnClick", function()
+        local ok = self:ActivateInputWidget(widget, owner, eventLabel .. ":click")
+        return ok == true
+    end, eventLabel .. ":activate")
+    if clickBound ~= true then return false, "input_click_activation_bind_failed" end
+    local lostBound = self:SafeHandler(widget, "OnLostFocus", function()
+        self:DisarmInputWidget(widget, owner, eventLabel .. ":lost_focus")
+        return true
+    end, eventLabel .. ":lost_focus")
+    if lostBound ~= true then
+        self:DisarmInputWidget(widget, owner, eventLabel .. ":lost_focus_bind_failed")
+        return false, "input_lost_focus_bind_failed"
+    end
+    return true, nil
+end
+
+local function ReadFocusedWidgetId()
+    if type(GetFocusedWidgetId) ~= "function" then return nil, "get_focus_unavailable" end
+    local ok, value = pcall(GetFocusedWidgetId)
+    if ok ~= true then return nil, "get_focus_failed" end
+    if value == nil or tostring(value) == "" then return nil, nil end
+    return tostring(value), nil
+end
+
+-- Clear focus only when the global focus id resolves to a registered Suite
+-- EditBox and that EditBox is proven to be inside the subtree becoming
+-- inactive. This is the core fence that prevents Suite cleanup from stealing
+-- focus from ArcheAge chat or another game window.
+function UI:ReleaseFocusWithin(widget, owner, reason)
+    if widget == nil then return true, false, nil end
+    local subtreeInputs = tonumber(widget.rsUiKeyboardInputSubtreeCount) or 0
+    if subtreeInputs <= 0 and not IsInputTarget(widget) then return true, false, nil end
+
+    local focusedId, focusErr = ReadFocusedWidgetId()
+    if focusErr ~= nil then return true, false, focusErr end
+    if focusedId == nil then return true, false, nil end
+    local focused = lifecycle.focusTargetsByPhysicalId[focusedId]
+    if focused == nil or FocusedInputDescendsFrom(focused, widget, focusedId) ~= true then
+        return true, false, nil
+    end
+    if type(focused.ClearFocus) ~= "function" then
+        metrics.lifecycle.focusClearFailures = (tonumber(metrics.lifecycle.focusClearFailures) or 0) + 1
+        return false, false, "clear_focus_unavailable"
+    end
+
+    local ok, result = pcall(function() return focused:ClearFocus() end)
+    if ok ~= true then
+        metrics.lifecycle.focusClearFailures = (tonumber(metrics.lifecycle.focusClearFailures) or 0) + 1
+        RecordNativeSafetyFailure("CLEAR_FOCUS", focused, result, owner)
+        return false, false, "clear_focus_failed"
+    end
+    -- ClearFocus has no documented success-return ABI. Verify the observable
+    -- focus identity instead of interpreting false/nil as failure.
+    local afterId = select(1, ReadFocusedWidgetId())
+    if afterId ~= nil and tostring(afterId) == focusedId then
+        metrics.lifecycle.focusClearFailures = (tonumber(metrics.lifecycle.focusClearFailures) or 0) + 1
+        RecordNativeSafetyFailure("CLEAR_FOCUS_VERIFY", focused, tostring(reason or "focus_retained"), owner)
+        return false, false, "focus_retained"
+    end
+    metrics.lifecycle.focusClears = (tonumber(metrics.lifecycle.focusClears) or 0) + 1
+    self:DisarmInputWidget(focused, owner or OwnerOf(focused), reason or "focus_released")
+    return true, true, nil
+end
+
+-- Permanent input retirement is reserved for component/owner teardown and old
+-- hot-reload generations. Live hide/disable paths only disarm Keyboard; a later
+-- explicit user click can arm the surviving input again without re-registering it.
+function UI:RetireInputWidget(widget, owner, reason)
+    if not IsInputTarget(widget) then return true end
+    if widget.rsUiInputLifecycleRetired == true then return true end
+    self:ReleaseFocusWithin(widget, owner, reason or "input_retire")
+    local failures = {}
+    local disarmed, _, disarmErr = self:DisarmInputWidget(widget, owner, reason or "input_retire")
+    if disarmed ~= true then failures[#failures + 1] = "EnableKeyboard:" .. tostring(disarmErr or "rejected") end
+    if type(widget.EnableFocus) == "function" then
+        local ok, result = pcall(function() return widget:EnableFocus(false) end)
+        local accepted, acceptErr = NativeBooleanSetterAccepted(ok, result, false)
+        if accepted ~= true then failures[#failures + 1] = "EnableFocus:" .. tostring(acceptErr or "rejected") end
+    end
+    UnregisterInputTarget(widget)
+    widget.rsUiInputLifecycleRetired = true
+    metrics.lifecycle.inputRetires = (tonumber(metrics.lifecycle.inputRetires) or 0) + 1
+    if #failures > 0 then
+        RecordNativeSafetyFailure("INPUT_RETIRE", widget, table.concat(failures, ","), owner)
+        return false
+    end
+    return true
+end
+
+-- Runtime/bootstrap quiescence fence. With retire=false it clears current Suite
+-- focus when provable and disarms every armed Suite input. With retire=true it
+-- also permanently retires all tracked edits from the replaced generation.
+function UI:QuiesceKeyboardInput(reason, retire)
+    local focusedId = select(1, ReadFocusedWidgetId())
+    if focusedId ~= nil then
+        local focused = lifecycle.focusTargetsByPhysicalId[focusedId]
+        if focused ~= nil then self:ReleaseFocusWithin(focused, OwnerOf(focused), reason or "input_quiesce") end
+    end
+    if retire ~= true then
+        self:DisarmInputWithin(UIParent, "rsui:runtime", reason or "input_quiesce")
+        return true
+    end
+    local snapshot = {}
+    for _, widget in pairs(lifecycle.focusTargetsByPhysicalId) do
+        if widget ~= nil then snapshot[#snapshot + 1] = widget end
+    end
+    local ok = true
+    for _, widget in ipairs(snapshot) do
+        if self:RetireInputWidget(widget, OwnerOf(widget), reason or "generation_retire") ~= true then ok = false end
+    end
+    return ok
 end
 
 local function TouchOwnerMetric(owner)
@@ -445,6 +729,7 @@ function UI:SetVisible(widget, visible, owner)
     if not hasShow and not hasSetVisible then return false end
 
     local value = visible == true
+    if value == false then self:ReleaseFocusWithin(widget, owner, "visibility_hide"); self:DisarmInputWithin(widget, owner, "visibility_hide") end
     local row = GetState(widget)
     if row.visible == value then
         local nativeVisible, known = TryNativeVisible(widget)
@@ -485,6 +770,7 @@ function UI:EnsureVisible(widget, visible, owner)
     local usable, usableErr = WidgetUsable(widget)
     if usable ~= true then return false, false, tostring(usableErr or "widget_unusable") end
     local value = visible == true
+    if value == false then self:ReleaseFocusWithin(widget, owner, "visibility_hide_ensure"); self:DisarmInputWithin(widget, owner, "visibility_hide_ensure") end
     local row = GetState(widget)
     if row.visible == value then
         local nativeVisible, known = TryNativeVisible(widget)
@@ -824,6 +1110,7 @@ function UI:SetEnabled(widget, enabled, owner)
     local hasSetEnabled = type(widget.SetEnabled) == "function"
     if not hasAdapter and not hasEnable and not hasSetEnabled then return false end
     local value = enabled ~= false
+    if value == false then self:ReleaseFocusWithin(widget, owner, "enabled_false"); self:DisarmInputWithin(widget, owner, "enabled_false") end
     local row = GetState(widget)
     if row.enabled == value then RecordAttempt("ENABLE", widget, false, 0, owner); return false end
     local ok, result
@@ -860,6 +1147,7 @@ function UI:EnsureEnabled(widget, enabled, owner)
     local usable, usableErr = WidgetUsable(widget)
     if usable ~= true then return false, false, tostring(usableErr or "widget_unusable") end
     local value = enabled ~= false
+    if value == false then self:ReleaseFocusWithin(widget, owner, "enabled_false_ensure"); self:DisarmInputWithin(widget, owner, "enabled_false_ensure") end
     local row = GetState(widget)
     if row.enabled == value then
         RecordAttempt("ENABLE_ENSURE", widget, false, 0, owner)
@@ -878,6 +1166,7 @@ function UI:SetPickable(widget, enabled, owner)
     local usable = WidgetUsable(widget)
     if usable ~= true then return false end
     local value = enabled == true
+    if value == false then self:ReleaseFocusWithin(widget, owner, "pickable_false"); self:DisarmInputWithin(widget, owner, "pickable_false") end
     local row = GetState(widget)
     if row.pickable == value then RecordAttempt("PICKABLE", widget, false, 0, owner); return false end
 
@@ -913,6 +1202,7 @@ function UI:EnsurePickable(widget, enabled, owner)
     local usable, usableErr = WidgetUsable(widget)
     if usable ~= true then return false, false, tostring(usableErr or "widget_unusable") end
     local value = enabled == true
+    if value == false then self:ReleaseFocusWithin(widget, owner, "pickable_false_ensure"); self:DisarmInputWithin(widget, owner, "pickable_false_ensure") end
     local row = GetState(widget)
     if row.pickable == value then
         RecordAttempt("PICKABLE_ENSURE", widget, false, 0, owner)
@@ -1046,6 +1336,7 @@ function UI:AdoptWidget(widget, ownerId, logicalId)
     if logicalId ~= nil then widget.rsUiLogicalId = tostring(logicalId) end
 
     local owner = EnsureOwner(ownerId)
+    RegisterInputTarget(widget)
     if owner.widgetSet[widget] == true then return true end
     owner.widgetSet[widget] = true
     owner.widgets[#owner.widgets + 1] = widget
@@ -1084,6 +1375,7 @@ function UI:ReleaseOwner(ownerId)
 
     for _, widget in ipairs(owner.widgets) do
         if widget ~= nil then
+            if IsInputTarget(widget) then self:RetireInputWidget(widget, ownerId, "owner_release") end
             widget.rsUiReleased = true
             if type(UI.SetVisible) == "function" then
                 local ok = pcall(function() UI:SetVisible(widget, false, ownerId) end)
@@ -1163,6 +1455,10 @@ function UI:ResetFrameworkMetrics()
     metrics.lifecycle.releasedOwners = 0
     metrics.lifecycle.releasedHandlers = 0
     metrics.lifecycle.hiddenOnRelease = 0
+    metrics.lifecycle.inputTargets = 0
+    metrics.lifecycle.focusClears = 0
+    metrics.lifecycle.focusClearFailures = 0
+    metrics.lifecycle.inputRetires = 0
     metrics.nativeSafety.staleRejects = 0
     metrics.nativeSafety.registrationRejects = 0
     metrics.nativeSafety.degradedRejects = 0
@@ -1243,6 +1539,11 @@ function UI:GetFrameworkSnapshot()
             releasedOwners = metrics.lifecycle.releasedOwners,
             releasedHandlers = metrics.lifecycle.releasedHandlers,
             hiddenOnRelease = metrics.lifecycle.hiddenOnRelease,
+            inputTargets = metrics.lifecycle.inputTargets,
+            focusClears = metrics.lifecycle.focusClears,
+            focusClearFailures = metrics.lifecycle.focusClearFailures,
+            inputRetires = metrics.lifecycle.inputRetires,
+            trackedFocusTargets = CountWeakKeys(lifecycle.focusTargetsByPhysicalId),
         },
         nativeSafety = {
             staleRejects = tonumber(metrics.nativeSafety.staleRejects) or 0,

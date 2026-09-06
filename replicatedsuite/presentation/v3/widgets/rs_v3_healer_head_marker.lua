@@ -279,7 +279,14 @@ end
 -- independent consumer without a Domain->Presentation direct call.
 if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
     S.Events:SubscribeInternal((S.FeatureRuntime and S.FeatureRuntime.LifecycleTopic) or "v3.feature.lifecycle", P,
-        function(_, featureId) if tostring(featureId or "") == FEATURE_ID then P:Reconcile("feature_lifecycle") end end)
+        function(_, featureId)
+            if tostring(featureId or "") ~= FEATURE_ID then return end
+            local ok, err = P:Reconcile("feature_lifecycle")
+            if ok ~= true and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarnRateLimited) == "function" then
+                S.DiagnosticsManager:WarnRateLimited("healer_head_marker", "HEAD_RECONCILE_FAILED", 5000,
+                    "治疗头标 overlay 启动失败", { error = tostring(err or "unknown") })
+            end
+        end)
     S.Events:SubscribeInternal("v3.healer.presentation", P,
         function(_, scope) if tostring(scope or "") == "head" then P:Reconcile("head_settings") end end)
 end

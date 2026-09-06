@@ -114,7 +114,7 @@ function A:ProjectParent(scope, group)
         status = status,
         tone = tone,
         tracked = tracked,
-        trackedText = tracked and "✓" or "",
+        trackedText = tracked and "✓ 已追踪" or "＋ 可添加",
         expanded = expanded,
         parent = true,
         child = false,

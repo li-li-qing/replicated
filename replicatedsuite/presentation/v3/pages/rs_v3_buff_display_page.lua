@@ -235,6 +235,40 @@ local function BuildPage(parent, route)
         if toggle ~= nil then globalLayoutControls[#globalLayoutControls + 1] = toggle end
     end
 
+    -- Equipment visibility used to be discoverable only by selecting a leaf in
+    -- the element tree and then finding Inspector.enabled. Keep the Inspector as
+    -- the advanced editor, but expose the four self-equipment switches directly
+    -- in the HUD layout workflow. They edit the SAME isolated Working snapshot
+    -- and therefore preserve the page's Apply/Revert persistence contract.
+    local equipmentToggleRow = RSUI:HorizontalBox({ id = "v3_buff_display_equipment_toggles", parent = tabLayout, gap = 5, slot = { size = "fixed", height = 28, hAlign = "fill" } })
+    RSUI:Text({ id = "v3_buff_display_equipment_toggle_label", parent = equipmentToggleRow, text = "自身装备", fontSize = 9, tone = "muted", slot = { size = "fixed", width = 58, vAlign = "center" } })
+    for _, equipmentSpec in ipairs({
+        { key = "mainHand", label = "主手" }, { key = "offHand", label = "副手" },
+        { key = "ranged", label = "远程" }, { key = "wings", label = "背部" },
+    }) do
+        local componentKey, label = equipmentSpec.key, equipmentSpec.label
+        local toggle = RSUI:Toggle({
+            id = "v3_buff_display_equipment_toggle_" .. componentKey, parent = equipmentToggleRow, width = 82, height = 24,
+            onText = label .. "：开", offText = label .. "：关",
+            get = function()
+                local component = WorkingComponent(componentKey)
+                return type(component) == "table" and component.enabled ~= false
+            end,
+            set = function(value)
+                local component = WorkingComponent(componentKey)
+                if type(component) ~= "table" then return false, "HUD 组件不存在：" .. tostring(componentKey) end
+                component.enabled = value == true
+                local ok, err = NotifyWorking("layout_equipment_" .. componentKey, true)
+                if ok == false then return false, err end
+                if type(root.RefreshLayoutControls) == "function" then root:RefreshLayoutControls() end
+                return true
+            end,
+            slot = { size = "fixed", width = 82 },
+        })
+        if toggle ~= nil then globalLayoutControls[#globalLayoutControls + 1] = toggle end
+    end
+    RSUI:Text({ id = "v3_buff_display_equipment_toggle_hint", parent = equipmentToggleRow, text = "修改后点“应用”保存", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1, hAlign = "right", vAlign = "center" } })
+
     local globalGrid = RSUI:UniformGrid({ id = "v3_buff_display_layout_global_grid", parent = tabLayout, minCellWidth = 220, minCellHeight = 30, maxColumns = 3, gap = 4, slot = { size = "auto", hAlign = "fill" } })
     local refreshField = D:CompactNumericSetting(globalGrid, {
         id = "v3_buff_display_layout_refresh", label = "位置刷新", min = 25, max = 2000, step = 25, integer = true, unit = "ms", slider = true,
@@ -589,6 +623,22 @@ local function BuildPage(parent, route)
         transferEdit = S.UI:CreateMultiEditBox(transferEditHost.root, "v3_buff_display_transfer_edit", 4, 4, 560, 158, 65535)
         if transferEdit ~= nil and transferEdit.AddAnchor ~= nil then pcall(transferEdit.AddAnchor, transferEdit, "BOTTOMRIGHT", transferEditHost.root, -4, -4) end
         transferEditAvailable = transferEdit ~= nil
+        if transferEditAvailable == true then
+            local activationOk, activationErr = S.UI:BindDeferredInputActivation(transferEdit, transferEditHost.owner,
+                "v3_buff_display_transfer_edit")
+            if activationOk ~= true then
+                if type(S.UI.RetireInputWidget) == "function" then
+                    pcall(function() S.UI:RetireInputWidget(transferEdit, transferEditHost.owner, "multiline_activation_unavailable") end)
+                end
+                if type(S.UI.SetVisible) == "function" then pcall(function() S.UI:SetVisible(transferEdit, false, transferEditHost.owner) end) end
+                transferEditAvailable = false
+                if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarningRateLimited) == "function" then
+                    S.DiagnosticsManager:WarningRateLimited("buff_display_v3", "BUFF_MULTILINE_INPUT_ACTIVATION_UNAVAILABLE", 5000,
+                        "状态显示多行输入框无法建立安全键盘激活契约，已禁用以避免吞掉游戏按键",
+                        { error = tostring(activationErr or "activation bind failed") })
+                end
+            end
+        end
     end
     local transferBtnRow = RSUI:HorizontalBox({ id = "v3_buff_display_transfer_buttons", parent = tabTransfer, gap = 6, slot = { size = "fixed", height = 28, hAlign = "fill" } })
     local exportBtn = RSUI:Button({ id = "v3_buff_display_transfer_export", parent = transferBtnRow, text = "导出到文本框", compact = true, slot = { size = "fixed", width = 110 } })

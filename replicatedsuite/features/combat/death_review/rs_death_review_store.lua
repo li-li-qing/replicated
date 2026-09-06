@@ -198,6 +198,13 @@ if P:GetStore(INDEX_STORE) == nil then
         get = function() return NormalizeIndex(F.State) end,
         apply = ApplyIndex,
         migrate = function(value) return NormalizeIndex(value) end,
+        -- The index Domain is a fixed-shape normalize output, so the canonical
+        -- v3 fingerprint is stable across RU representation changes. This opt-in
+        -- additionally allows the one-generation gated recovery for stores
+        -- stamped by the legacy v2 raw-envelope contract (envelope seal +
+        -- full decode/budget validation still required; re-stamped v3 at the
+        -- upgrade save).
+        allowIntegrityUpgrade = true,
     })
     if store == nil and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Error) == "function" then
         S.DiagnosticsManager:Error("death_review_v3", "DEATH_REVIEW_INDEX_STORE_REGISTER_FAILED", "死亡回顾索引存档注册失败", { error = tostring(err) })

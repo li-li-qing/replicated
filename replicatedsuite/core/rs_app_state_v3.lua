@@ -11,8 +11,10 @@ local P = S.Persistence
 if type(P) ~= "table" or type(P.RegisterV3Store) ~= "function" then return end
 
 S.AppState = {
-    version = 1,
+    version = 2,
     loaded = false,
+    sessionFallback = false,
+    lastLoadError = nil,
     settings = {
         addonScale = 1.0,
         fontScale = 1.0,
@@ -66,17 +68,32 @@ end
 
 A.storeId = STORE_ID
 
+function A:UseSessionDefaults(reason)
+    Apply(nil)
+    self.loaded = true
+    self.sessionFallback = true
+    self.lastLoadError = tostring(reason or "v3 app store load failed")
+    if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Warn) == "function" then
+        S.DiagnosticsManager:Warn("app_v3", "APP_STORE_SESSION_FALLBACK",
+            "V3 App Store 读取失败；本次会话使用安全默认设置，原存档不会因降级启动被主动覆盖",
+            { error = self.lastLoadError })
+    end
+    return true
+end
+
 function A:EnsureLoaded()
     if self.loaded == true then return true end
     local store = P:GetStore(STORE_ID)
-    if store == nil then return false, "v3 app store unavailable" end
+    if store == nil then return self:UseSessionDefaults("v3 app store unavailable") end
     local status, _, err = P:LoadStore(STORE_ID)
     if status == true or status == "empty" then
         if status == "empty" then Apply(nil) end
         self.loaded = true
+        self.sessionFallback = false
+        self.lastLoadError = nil
         return true
     end
-    return false, err or tostring(status or "load failed")
+    return self:UseSessionDefaults(err or tostring(status or "load failed"))
 end
 
 function A:GetSettings()
@@ -93,6 +110,10 @@ function A:Set(key, value, persist)
         return true
     end
     if persist == false then return ApplyMutation() end
+    -- A startup fallback is a session-only safety state. Keep settings usable
+    -- for the current session without attempting a write against the fenced or
+    -- not-yet-loaded physical Store.
+    if self.sessionFallback == true then return ApplyMutation() end
     if type(P.MutateStore) ~= "function" then return false, "persistence transaction unavailable" end
     local ok, err = P:MutateStore(STORE_ID, ApplyMutation, { delayMs = 500, reason = "app_setting:" .. key })
     if ok ~= true then return false, err or "v3 app setting transaction failed" end
@@ -103,6 +124,8 @@ function A:Describe()
     return {
         version = self.version,
         loaded = self.loaded == true,
+        sessionFallback = self.sessionFallback == true,
+        lastLoadError = self.lastLoadError,
         storeId = self.storeId,
         addonScale = self.settings.addonScale,
         fontScale = self.settings.fontScale,

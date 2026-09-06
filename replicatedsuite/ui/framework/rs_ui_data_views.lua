@@ -1906,6 +1906,10 @@ local function NewTableRow(kind, spec)
         local ok = tooltip:Bind(self, {
             provider = function(row) return row:GetTruncatedTooltipText() end,
             maxWidth = 440,
+            -- Virtualized rows are pooled/re-anchored. Native anchored tooltips
+            -- can therefore appear at a stale row position; cursor-following
+            -- keeps the hint beside the item the user is actually hovering.
+            cursorFollow = true,
         })
         self.autoTooltipBound = ok == true
         return self.autoTooltipBound

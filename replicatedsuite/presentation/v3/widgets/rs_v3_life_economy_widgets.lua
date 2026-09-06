@@ -208,10 +208,12 @@ local ok, err = Register({
     emptyTitle = "暂无货率", emptyDetail = "直接在悬浮窗选择起点和目的地；服务器货率返回后自动更新。",
     buildControls = function(instance, content, Feature)
         if type(Feature.Commands.SetFrom) ~= "function" or type(Feature.Commands.SetTo) ~= "function"
-            or type(Feature.Commands.QuotePendingMaterials) ~= "function" then
-            return false, "跑商悬浮窗 Feature 路线/询价命令缺失"
+            or type(Feature.Commands.SetRatioMode) ~= "function" or type(Feature.Commands.SetCommerceMode) ~= "function"
+            or type(Feature.Commands.QuotePendingMaterials) ~= "function" or type(Feature.Commands.ToggleCurrentFavorite) ~= "function"
+            or type(Feature.Commands.SelectFavorite) ~= "function" or type(Feature.Commands.SetSortMode) ~= "function" then
+            return false, "跑商悬浮窗 Feature 路线/收藏/询价命令缺失"
         end
-        local routeBox = RSUI:VerticalBox({ id = "v3_life_trade_widget_route", parent = content, gap = 4, slot = { size = "fixed", height = 64, hAlign = "fill" } })
+        local routeBox = RSUI:VerticalBox({ id = "v3_life_trade_widget_route", parent = content, gap = 4, slot = { size = "fixed", height = 128, hAlign = "fill" } })
         local fromRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_from_row", parent = routeBox, gap = 5, slot = { size = "fixed", height = 30, hAlign = "fill" } })
         RSUI:Text({ id = "v3_life_trade_widget_from_label", parent = fromRow, text = "起点", fontSize = 9, tone = "muted", slot = { size = "fixed", width = 42 } })
         instance.fromDropdown = RSUI:Dropdown({ id = "v3_life_trade_widget_from", parent = fromRow, items = {}, maxVisible = 10, popupWidth = 240, placeholder = "选择起点",
@@ -221,23 +223,82 @@ local ok, err = Register({
         RSUI:Text({ id = "v3_life_trade_widget_to_label", parent = toRow, text = "目的地", fontSize = 9, tone = "muted", slot = { size = "fixed", width = 42 } })
         instance.toDropdown = RSUI:Dropdown({ id = "v3_life_trade_widget_to", parent = toRow, items = {}, maxVisible = 10, popupWidth = 240, placeholder = "选择目的地",
             get = function() return (Feature:GetRouteSettings() or {}).toZone end, set = function(v) return Feature.Commands:SetTo(v) end, slot = { size = "fill", fill = 1, minWidth = 110 } })
-        instance.quoteButton = RSUI:Button({ id = "v3_life_trade_widget_quote", parent = toRow, text = "材料询价", compact = true, slot = { size = "fixed", width = 88 } })
+
+        local modeRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_mode_row", parent = routeBox, gap = 5, slot = { size = "fixed", height = 30, hAlign = "fill" } })
+        instance.ratioButton = RSUI:Button({ id = "v3_life_trade_widget_ratio_mode", parent = modeRow, text = "货率：实时", compact = true, slot = { size = "fixed", width = 96 } })
+        instance.ratioButton.onClick = function()
+            local projection = Feature:GetProjection() or {}
+            local ok, modeErr = Feature.Commands:SetRatioMode(projection.ratioMode == "full" and "current" or "full")
+            if ok == true then instance:Refresh() end
+            return ok, modeErr
+        end
+        instance.commerceButton = RSUI:Button({ id = "v3_life_trade_widget_commerce_mode", parent = modeRow, text = "熟练：读取", compact = true, slot = { size = "fixed", width = 96 } })
+        instance.commerceButton.onClick = function()
+            local projection = Feature:GetProjection() or {}
+            local ok, modeErr = Feature.Commands:SetCommerceMode(projection.commerceMode == "off" and "observe" or "off")
+            if ok == true then instance:Refresh() end
+            return ok, modeErr
+        end
+        instance.quoteButton = RSUI:Button({ id = "v3_life_trade_widget_quote", parent = modeRow, text = "材料询价", compact = true, slot = { size = "fixed", width = 88 } })
         instance.quoteButton.onClick = function()
             local ok, quoteErr = Feature.Commands:QuotePendingMaterials()
             if ok == true then instance:Refresh() end
             return ok, quoteErr
         end
-        return instance.fromDropdown ~= nil and instance.toDropdown ~= nil and instance.quoteButton ~= nil, "跑商悬浮窗路线控件创建失败"
+
+        local favoriteRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_favorite_row", parent = routeBox, gap = 5, slot = { size = "fixed", height = 30, hAlign = "fill" } })
+        instance.favoriteDropdown = RSUI:Dropdown({ id = "v3_life_trade_widget_favorite", parent = favoriteRow, items = {}, maxVisible = 10, popupWidth = 290, placeholder = "收藏路线",
+            get = function() local projection = Feature:GetProjection() or {}; return projection.currentRouteFavorite and projection.currentFavoriteKey or nil end,
+            set = function(value) return Feature.Commands:SelectFavorite(value) end, slot = { size = "fill", fill = 1, minWidth = 120 } })
+        instance.favoriteButton = RSUI:Button({ id = "v3_life_trade_widget_favorite_toggle", parent = favoriteRow, text = "收藏", compact = true, slot = { size = "fixed", width = 64 } })
+        instance.favoriteButton.onClick = function()
+            local ok, favoriteErr = Feature.Commands:ToggleCurrentFavorite()
+            if ok == true then instance:Refresh() end
+            return ok, favoriteErr
+        end
+        instance.sortButton = RSUI:Button({ id = "v3_life_trade_widget_sort", parent = favoriteRow, text = "货率序", compact = true, slot = { size = "fixed", width = 64 } })
+        instance.sortButton.onClick = function()
+            local projection = Feature:GetProjection() or {}
+            local ok, sortErr = Feature.Commands:SetSortMode(projection.sortMode == "price" and "ratio" or "price")
+            if ok == true then instance:Refresh() end
+            return ok, sortErr
+        end
+        return instance.fromDropdown ~= nil and instance.toDropdown ~= nil and instance.ratioButton ~= nil
+            and instance.commerceButton ~= nil and instance.quoteButton ~= nil and instance.favoriteDropdown ~= nil
+            and instance.favoriteButton ~= nil and instance.sortButton ~= nil, "跑商悬浮窗路线/模式/收藏控件创建失败"
     end,
     refreshControls = function(instance, projection)
         local fromItems, toItems = ZoneItems(projection.zones), ZoneItems(projection.sellableZones)
         if instance.fromDropdown then instance.fromDropdown:SetItems(fromItems); instance.fromDropdown:SetEnabled(#fromItems > 0); instance.fromDropdown:Render() end
         if instance.toDropdown then instance.toDropdown:SetItems(toItems); instance.toDropdown:SetEnabled(#toItems > 0); instance.toDropdown:Render() end
         local pending = math.max(0, tonumber(projection.pendingQuoteCount) or 0)
+        if instance.ratioButton then instance.ratioButton:SetText(projection.ratioMode == "full" and ("满货率 " .. tostring(projection.fullRatio or 130) .. "%") or "货率：实时") end
+        if instance.commerceButton then instance.commerceButton:SetText(projection.commerceMode == "off" and "熟练：忽略" or "熟练：读取") end
         if instance.quoteButton then
             instance.quoteButton:SetEnabled(pending > 0)
             instance.quoteButton:SetText(pending > 0 and ("询价(" .. tostring(pending) .. ")") or "材料询价")
         end
+        local favoriteItems = type(projection.favoriteItems) == "table" and projection.favoriteItems or {}
+        if instance.favoriteDropdown then instance.favoriteDropdown:SetItems(favoriteItems); instance.favoriteDropdown:SetEnabled(#favoriteItems > 0); instance.favoriteDropdown:Render() end
+        if instance.favoriteButton then
+            instance.favoriteButton:SetEnabled(projection.fromZone ~= nil and projection.toZone ~= nil)
+            instance.favoriteButton:SetText(projection.currentRouteFavorite == true and "取消收藏" or "收藏")
+        end
+        if instance.sortButton then
+            instance.sortButton:SetEnabled(#(projection.rows or {}) > 0)
+            instance.sortButton:SetText(projection.sortMode == "price" and "售价序" or "货率序")
+        end
+    end,
+    selectable = true,
+    onSelection = function(instance, row, Feature)
+        if type(row) ~= "table" or row.key == nil then return false end
+        if type(Feature.Commands.SelectRow) == "function" then
+            local ok, selectErr = Feature.Commands:SelectRow(row.key)
+            if ok ~= true then return false, selectErr end
+        end
+        local detail = S.UIV3 and S.UIV3.TradeDetailFloatingV3 or nil
+        if type(detail) ~= "table" or type(detail.Open) ~= "function" then return false, "贸易品详情悬浮窗不可用" end
+        return detail:Open(row.key)
     end,
     columns = {
         { id = "name", title = "货物", field = "name", size = "fill", minWidth = 120, fill = 1 },
@@ -248,8 +309,16 @@ local ok, err = Register({
     status = function(projection, rows)
         local pending = math.max(0, tonumber(projection.pendingQuoteCount) or 0)
         local fallback = projection.zoneFallback == true and " · 静态起点候选" or ""
+        local ratio = projection.ratioMode == "full" and (" · 满" .. tostring(projection.fullRatio or 130) .. "%") or " · 实时"
+        local commerce = ""
+        if projection.commerceMode == "observe" then
+            commerce = projection.commerceStatus == "ready" and projection.commerceSkill ~= nil
+                and (" · 经商 " .. tostring(math.floor((tonumber(projection.commerceSkill) or 0) + 0.5)) .. "※") or " · 经商待确认"
+        end
+        local favorites = type(projection.favoriteItems) == "table" and #projection.favoriteItems or 0
+        local sort = projection.sortMode == "price" and " · 售价序" or " · 货率序"
         return FindZoneName(projection, projection.fromZone) .. " → " .. FindZoneName(projection, projection.toZone) .. " · " .. tostring(#rows) .. " 种"
-            .. (pending > 0 and (" · 待询价 " .. tostring(pending)) or "") .. fallback
+            .. ratio .. commerce .. (pending > 0 and (" · 待询价 " .. tostring(pending)) or "") .. " · 收藏 " .. tostring(favorites) .. sort .. fallback
     end,
 })
 if ok ~= true then error(err) end
@@ -258,6 +327,53 @@ ok, err = Register({
     featureName = "Bonds", featureId = "life_bonds", widgetId = "life.bonds", token = "life_bonds", owner = "v3:widget:life_bonds",
     rootId = "v3_life_bonds_widget", contentId = "v3_life_bonds_widget_content", tableId = "v3_life_bonds_widget_table", title = "债券 / 居民板",
     emptyTitle = "暂无居民板条目", emptyDetail = "居民板事实不可用或当前筛选没有条目。",
+    buildControls = function(instance, content, Feature)
+        if type(Feature.GetBondFilter) ~= "function" or type(Feature.Commands.SetSortMode) ~= "function"
+            or type(Feature.Commands.SetBondFilterOption) ~= "function" or type(Feature.Commands.SetDuplicatePriority) ~= "function" then
+            return false, "债券悬浮窗筛选命令缺失"
+        end
+        local bar = RSUI:HorizontalBox({ id = "v3_life_bonds_widget_toolbar", parent = content, gap = 4, slot = { size = "fixed", height = 28, hAlign = "fill" } })
+        local function Apply(command)
+            local ok, commandErr = command()
+            if ok == true then instance:Refresh() end
+            return ok, commandErr
+        end
+        instance.bondSortButton = RSUI:Button({ id = "v3_life_bonds_widget_sort", parent = bar, text = "数量序", compact = true, slot = { size = "fixed", width = 62 } })
+        instance.bondSortButton.onClick = function()
+            local state = Feature:GetBondFilter()
+            return Apply(function() return Feature.Commands:SetSortMode(state.sortMode == "quantity" and "continent" or "quantity") end)
+        end
+        instance.bondFilterButtons = {}
+        local function Toggle(id, label, key, width)
+            local button = RSUI:Button({ id = id, parent = bar, text = label, compact = true, slot = { size = "fixed", width = width or 44 } })
+            button.onClick = function()
+                local state = Feature:GetBondFilter()
+                return Apply(function() return Feature.Commands:SetBondFilterOption(key, not state[key]) end)
+            end
+            instance.bondFilterButtons[key] = button
+            return button
+        end
+        Toggle("v3_life_bonds_widget_q20", "20", "q20", 38)
+        Toggle("v3_life_bonds_widget_q60", "60", "q60", 38)
+        Toggle("v3_life_bonds_widget_q100", "100", "q100", 42)
+        Toggle("v3_life_bonds_widget_auroria", "原陆", "auroria", 48)
+        Toggle("v3_life_bonds_widget_dedupe", "去重", "excludeSame", 48)
+        instance.bondPriorityButton = RSUI:Button({ id = "v3_life_bonds_widget_priority", parent = bar, text = "优先西", compact = true, slot = { size = "fixed", width = 58 } })
+        instance.bondPriorityButton.onClick = function()
+            local state = Feature:GetBondFilter()
+            return Apply(function() return Feature.Commands:SetDuplicatePriority(state.priority == "west" and "east" or "west") end)
+        end
+        return true
+    end,
+    refreshControls = function(instance, _, _, Feature)
+        local state = Feature:GetBondFilter()
+        if instance.bondSortButton then instance.bondSortButton:SetText(state.sortMode == "quantity" and "大陆序" or "数量序") end
+        for key, button in pairs(instance.bondFilterButtons or {}) do
+            local label = ({ q20 = "20", q60 = "60", q100 = "100", auroria = "原陆", excludeSame = "去重" })[key] or key
+            button:SetText(label .. (state[key] and "✓" or "×"))
+        end
+        if instance.bondPriorityButton then instance.bondPriorityButton:SetText(state.priority == "east" and "优先东" or "优先西") end
+    end,
     columns = {
         { id = "text", title = "居民板", field = "text", size = "fill", minWidth = 150, fill = 1 },
         { id = "quantity", title = "需", field = "quantity", size = "fixed", width = 42, minWidth = 36 },
@@ -311,4 +427,4 @@ ok, err = Register({
 if ok ~= true then error(err) end
 
 S.UIV3 = S.UIV3 or {}
-S.UIV3.LifeEconomyWidgetsV3 = { version = 2, widgetIds = { "life.trade", "life.bonds", "life.treasure", "life.fishing" } }
+S.UIV3.LifeEconomyWidgetsV3 = { version = 3, widgetIds = { "life.trade", "life.bonds", "life.treasure", "life.fishing" } }

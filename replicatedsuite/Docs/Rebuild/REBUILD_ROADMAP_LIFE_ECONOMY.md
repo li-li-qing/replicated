@@ -42,8 +42,8 @@
 |---|---|
 | 旧实现要点 | TradeService：路线、多货物、实时货率、材料报价与利润计算 |
 | V3 对应物 | `life_trade`（v3.life.trade），状态 `migrated_partial` |
-| V3 已实现 | 路线/区域/服务器货率 + bounded 材料 itemType/数量投影；普通 Refresh 不调用拍卖报价；Trade 已提供 QuoteMaterial/QuotePendingMaterials 显式入口并通过共享 PriceQuoteQueueV3 异步限速报价；报价完成只重建受影响路线行的材料成本/利润（`.18.93`） |
-| 剩余能力 | RU 实机核验报价返回/材料成本/利润一致性；current/full ratio 与 commerce skill mode；更完整详情/收藏体验 |
+| V3 已实现 | 路线/区域/服务器实时货率 + bounded 材料 itemType/数量投影；普通 Refresh 不调用拍卖报价；Trade 已提供 QuoteMaterial/QuotePendingMaterials 显式限速报价。`.18.119` 新增持久化 `current/full` 模式（full=130% 本地对比）与 `X2Ability:GetAllMyActabilityInfos` 经商熟练度只读观察；精确熟练度收益倍率未验证前明确不进入估价 |
+| 剩余能力 | RU 实机核验报价返回/材料成本/利润一致性；验证本地化 Commerce 项与 point/modifyPoint；取得精确 RU commerce payout 公式后才允许熟练度影响售价；更完整详情/收藏体验 |
 | 重建前置条件 | ① PriceQuoteQueueV3 限速队列 ✅ ② 报价失败 fail-closed ✅ ③ 用户显式触发（不自动 fan-out）✅ ④ Trade 报价快照→成本/利润重建 ✅ ⑤ RU 价格/地区 payload 验收待完成 |
 
 ### 2. Event（活动）
@@ -122,8 +122,8 @@
 |---|---|
 | 旧实现要点 | FishingService：目标鱼动作 Buff 识别与技能推荐；自动 R |
 | V3 对应物 | `life_fishing`（v3.life.fishing），状态 `migrated_partial` |
-| V3 已实现 | V3 页面 + Demand + TARGET_CHANGED/BUFF_UPDATE 驱动的 bounded 目标 Buff observation 与技能栏推荐；Auto-R 可回滚热键事务已迁入（2026-09-02） |
-| 剩余能力 | RU 实机 Fresh Reload 验证写入回读 / Reload 恢复 / 原键还原；确认 GetOptionBinding 返回结构在 RU 一致（钓鱼不进入战斗，战斗保护为旁路兜底） |
+| V3 已实现 | V3 页面 + Demand + TARGET_CHANGED/BUFF_UPDATE 驱动的 bounded 目标 Buff observation 与技能栏推荐；2026-09-05 起 Auto-R 热键写入重新收回 Runtime Blocked，当前运行时不读写任何 X2Hotkey 键位 |
+| 剩余能力 | 需要 RU 实机证明 GetOptionBinding 的完整 R 源槽位集合、明确区分 bound/unbound/read-failed、Durable recovery barrier、写入回读、Reload 恢复与每个写入点故障注入回滚；证据齐全前 Auto-R 不解除 Runtime Blocked |
 | 重建前置条件 | ① 完整可回滚热键事务设计 ② R 键槽位快照/写入回读契约 ③ 异常恢复 + Reload 恢复 + 原键还原 ④ Fresh Reload 验证 |
 
 ### 10. DamageReview（死亡回顾）
@@ -152,8 +152,8 @@
 |---|---|
 | 旧实现要点 | CraftAssistService：制作台上下文的材料、持有量与缺口辅助 |
 | V3 对应物 | `tools_craft`（v3.craft），状态 `migrated_partial` |
-| V3 已实现 | 用户从已核制作物目录选择，不输入 doodadId/craftType；bounded product/material、held/shortage 与 known-record graph；Native 材料不可读时可回退已核静态贸易配方 |
-| 剩余能力 | 非贸易制作目录、制作台上下文事件以及报价快照接回材料成本投影仍待验证/实现 |
+| V3 已实现 | 用户从已核制作物目录选择，不输入 doodadId/craftType；bounded product/material、held/shortage 与 known-record graph；Native 材料不可读时可回退已核静态贸易配方；`.18.119` 增加显式批量“材料询价”，去重/限速后整批完成只刷新一次，材料行显示单价/小计并汇总当前已报价材料成本 |
+| 剩余能力 | 非贸易制作目录、制作台上下文事件；完整递归成本仍需在 graph 节点身份/配方覆盖完整后继续 |
 | 重建前置条件 | ① RU 实机验证制作台 doodadId/craftType 上下文 ② 非贸易制作目录扩展 ③ 独立限速市场报价队列（与 Trade 共享）✅ 已建 PriceQuoteQueueV3 |
 
 ---

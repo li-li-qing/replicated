@@ -17,7 +17,7 @@ local F = S.Features.Healer
 local U = S.Utils
 
 local STORE_ID = "v3.healer"
-local SCHEMA = 4
+local SCHEMA = 6
 local MAX_RULES = 20
 local MAX_ROLE_OVERRIDES = 200
 
@@ -85,14 +85,19 @@ local function DefaultRule()
 end
 
 
-local function DefaultRaidPanelGeometry()
-    return { x = 0, y = 140, width = 340, height = 400 }
+local function DefaultRaidPanelGeometry(team)
+    -- Native raid geometry: one 50-player team is two stacked 25-player
+    -- sections (1-25 above, 26-50 below), each section 5 columns x 5 rows.
+    -- The second visible team list sits to the right when the client exposes
+    -- the optional extra friendly-roster window.
+    return { x = (team == 2) and 360 or 0, y = 140, width = 340, height = 400 }
 end
 
 local function DefaultRaidPanel(team)
+    team = (team == 2) and 2 or 1
     return {
-        team = (team == 2) and 2 or 1,
-        geometry = DefaultRaidPanelGeometry(),
+        team = team,
+        geometry = DefaultRaidPanelGeometry(team),
     }
 end
 
@@ -127,16 +132,26 @@ local function NormalizeRect(value, fallback)
         x = Clamp(value.x or value.offsetX, -4000, 4000, fallback.x or 0),
         y = Clamp(value.y or value.offsetY, -4000, 4000, fallback.y or 0),
         width = Clamp(value.width, 120, 1200, fallback.width or 340),
-        height = Clamp(value.height, 80, 900, fallback.height or 196),
+        height = Clamp(value.height, 80, 900, fallback.height or 400),
     }
 end
 
 local function NormalizeRaidPanel(value, fallback)
     value = type(value) == "table" and value or {}
     fallback = type(fallback) == "table" and fallback or DefaultRaidPanel(1)
+    local geometry = type(value.geometry) == "table" and DeepCopy(value.geometry) or nil
+    -- Schema 5 (.18.127) temporarily used a 10x5 / 670x180 interpretation of
+    -- one 50-player team.  RU + the reference addon prove the native layout is
+    -- two stacked 25-player sections instead. Repair only that generated size
+    -- while preserving the user's calibrated x/y. Other custom rectangles are
+    -- never rewritten.
+    if type(geometry) == "table" and math.floor(tonumber(geometry.width) or 0) == 670
+        and math.floor(tonumber(geometry.height) or 0) == 180 then
+        geometry.width, geometry.height = 340, 400
+    end
     return {
         team = ClampInt(value.team, 1, 2, fallback.team or 1),
-        geometry = NormalizeRect(value.geometry, fallback.geometry or DefaultRaidPanelGeometry()),
+        geometry = NormalizeRect(geometry, fallback.geometry or DefaultRaidPanelGeometry(fallback.team)),
     }
 end
 

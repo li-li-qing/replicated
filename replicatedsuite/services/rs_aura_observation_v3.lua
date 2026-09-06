@@ -56,9 +56,13 @@ local function CopyShallow(value)
 end
 
 local function ExtractEffectId(data, tooltip)
+    -- buff_id first: it is the ONLY field with real-machine proof
+    -- (wbdebuff/buffblackdragon.lua:46 reads UnitDeBuff(...)["buff_id"] and
+    -- matches 23474/25846). If a row carries a different-valued effectId, keying
+    -- the status map on it would make every numeric-id rule silently miss.
     local function Pick(row)
         if type(row) ~= "table" then return nil end
-        return tonumber(row.effectId or row.effect_id or row.buff_id or row.buffId or row.buffID or row.id or row.buffType or row.buff_type or row.type)
+        return tonumber(row.buff_id or row.buffId or row.buffID or row.effectId or row.effect_id or row.id or row.buffType or row.buff_type or row.type)
     end
     return Pick(data) or Pick(tooltip)
 end

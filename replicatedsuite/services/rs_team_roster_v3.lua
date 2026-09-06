@@ -12,7 +12,7 @@ S.Services = S.Services or {}
 
 local T = {
     Id = "v3.team_roster",
-    version = 4,
+    version = 6,
     members = {},
     ordered = {},
     revision = 0,
@@ -26,6 +26,8 @@ local T = {
     subscribed = false,
     refreshTask = "v3_team_roster_refresh",
     retryTask = "v3_team_roster_retry",
+    visibleTeamIndex = nil,
+    visibleTeamDetectionAvailable = false,
 }
 T.presentationBoundary = "service_only"
 S.Services.TeamRosterV3 = T
@@ -124,6 +126,28 @@ local function ReadCo(teamIndex, memberIndex)
     })
 end
 
+local function DetectVisibleTeamIndex()
+    local scores, comparisons = { [1] = 0, [2] = 0 }, 0
+    -- In co-raid mode the unqualified teamN aliases mirror whichever native
+    -- raid tab is currently visible. Compare at most ten aliases against the
+    -- explicit team_1_N / team_2_N identities. This is bounded and only runs
+    -- on roster refresh edges, never per frame.
+    for memberIndex = 1, 10 do
+        local _, aliasName = ReadSingle(memberIndex)
+        if aliasName ~= nil then
+            comparisons = comparisons + 1
+            local _, team1Name = ReadCo(1, memberIndex)
+            local _, team2Name = ReadCo(2, memberIndex)
+            if team1Name ~= nil and aliasName == team1Name then scores[1] = scores[1] + 1 end
+            if team2Name ~= nil and aliasName == team2Name then scores[2] = scores[2] + 1 end
+        end
+    end
+    if comparisons > 0 and scores[1] ~= scores[2] and math.max(scores[1], scores[2]) >= 2 then
+        return scores[1] > scores[2] and 1 or 2, true
+    end
+    return nil, false
+end
+
 function T:ScheduleRetry(delayMs, reason)
     if self.consumerCount <= 0 or self.retryStreak > self.retryMax then return false end
     if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return false end
@@ -157,6 +181,7 @@ end
 
 function T:Refresh(reason)
     if self.consumerCount <= 0 then return true, 0 end
+    local previousVisibleTeamIndex = self.visibleTeamIndex
     local nextMembers, nextOrdered = {}, {}
     local playerName = ReadUnitName("player")
     if playerName == nil then
@@ -178,6 +203,7 @@ function T:Refresh(reason)
     -- demand start / roster edges, never on combat callbacks.
     local coToken = ReadCo(1, 1)
     if coToken ~= nil then
+        self.visibleTeamIndex, self.visibleTeamDetectionAvailable = DetectVisibleTeamIndex()
         for teamIndex = 1, 2 do
             for memberIndex = 1, 50 do
                 local token, name = ReadCo(teamIndex, memberIndex)
@@ -187,6 +213,7 @@ function T:Refresh(reason)
             end
         end
     else
+        self.visibleTeamIndex, self.visibleTeamDetectionAvailable = 1, true
         for memberIndex = 1, 50 do
             local token, name = ReadSingle(memberIndex)
             if token ~= nil and name ~= nil then AddName(nextMembers, nextOrdered, name, token, 1, memberIndex) end
@@ -194,6 +221,7 @@ function T:Refresh(reason)
     end
 
     local changed = not SameRosterSnapshot(nextOrdered, self.ordered)
+        or tonumber(previousVisibleTeamIndex) ~= tonumber(self.visibleTeamIndex)
     self.members, self.ordered = nextMembers, nextOrdered
     self.lastRefreshAt = NowMs()
     -- Identity unchanged: keep the snapshot warm but do not churn consumers
@@ -236,6 +264,8 @@ function T:GetSnapshot()
         members = U and U.DeepCopy and U.DeepCopy(self.ordered) or self.ordered,
         count = #self.ordered,
         lastRefreshAt = self.lastRefreshAt,
+        visibleTeamIndex = self.visibleTeamIndex,
+        visibleTeamDetectionAvailable = self.visibleTeamDetectionAvailable == true,
     }
 end
 
@@ -262,6 +292,7 @@ function T:_Stop()
     self.subscribed = false
     self.retryStreak = 0
     self.members, self.ordered = {}, {}
+    self.visibleTeamIndex, self.visibleTeamDetectionAvailable = nil, false
     self.revision = self.revision + 1
     return true
 end
@@ -303,5 +334,7 @@ function T:GetHealth()
         retryStreak = self.retryStreak,
         lastRefreshAt = self.lastRefreshAt,
         subscribed = self.subscribed == true,
+        visibleTeamIndex = self.visibleTeamIndex,
+        visibleTeamDetectionAvailable = self.visibleTeamDetectionAvailable == true,
     }
 end

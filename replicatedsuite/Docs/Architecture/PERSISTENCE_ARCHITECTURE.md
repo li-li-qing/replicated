@@ -7,9 +7,16 @@
 # Replicated Suite Persistence Framework v1
 
 日期：2026-08-26  
-状态：**基础框架已落地；`.18.99` 已升级为 Persistence Reliability v6 Envelope Seal + Decoded Budget + True Durable Commit + Character Scope Binding，并保留 v5 Durability Barrier、v4 Integrity v1 与 Gear A/B verified self-heal；RU 跨进程回读仍待客户端验收**
+状态：**基础框架已落地；2026-09-05 起为 Persistence Reliability v8 + Integrity v3 Canonical Fingerprint（v2 为受识别旧世代，opt-in 受控升级；见 §0.11），保留 v7 Generation Reload Fence、v6 Envelope Seal/Decoded Budget/True Durable/Scope Binding 与 Gear A/B verified self-heal；RU 跨进程回读仍需客户端验收**
 
 当前本地回归已补齐 empty/N-1/future schema/metadata mismatch/显式空表/cyclic payload 六类边界，共 `12/12`；RU SaveData 真实序列化、账号/角色作用域回读仍需客户端数据验证。
+
+## Startup-critical Store Session Fallback（.18.107）
+
+`v3.app`、`v3.shell`、`v3.launcher` 属于“进入主界面所需的展示/基础状态”，其物理 Store 不得成为主界面的单点故障。LoadStore 若因完整性、解码、迁移、作用域或底层读取失败而返回失败，Domain 在**本次会话**使用 Normalize(default) 继续运行，并记录 `sessionFallback/lastLoadError`。Persistence Authority 原有 `writeFenced/writeFenceReason` 继续保护失败 Store；降级逻辑不得清除 fence，也不得主动 MarkDirty 默认值；`.18.113` 起 session fallback 内的 App mutation / Shell route+geometry / Launcher placement mutation 全部 memory-only，避免“为了能打开 UI 而覆盖最后一份可恢复存档”以及反复 `WRITE_BEFORE_LOAD_REJECTED`。
+
+Feature 业务 Store 不统一自动降级：其失败应隔离对应 Feature，而不是伪造业务数据。
+
 
 ## 当前 UI Setting Binding 边界（M1.14.4–M1.14.5）
 
@@ -31,7 +38,7 @@
 1. **Load-before-Write**：Persistent Store `loaded ~= true` 时，`CanWrite / MarkDirty / 普通 SaveStore` 均 fail-closed。通用 UI Binding 必须在 Domain mutation **之前**调用 `PrepareWrite()`，由 Persistence 完成 Load + Apply，再允许修改。
 2. **Dirty Reload Fence**：Store 仍有未落盘修改时，普通 `LoadStore()` 被拒绝；只有明确声明 `discardDirty=true` 的恢复/诊断路径才允许丢弃 Working。
 3. **Durability before Teardown**：`Runtime:Stop()` 必须先 `Persistence:Flush()`，再 `FeatureRuntime:DisableAll()`；禁止 Feature 释放/重置 Domain 后又用 Store getter 把 teardown/default 状态写回磁盘。
-4. **Explicit Reload Barrier**：`ReloadCodeFromDisk()` 在触发原生 UI reload 前必须 Flush 全部 dirty Store；任一失败直接取消用户主动重载并显示原因。
+4. **Explicit Reload Recovery Barrier**：`ReloadCodeFromDisk()` 在触发原生 UI reload 前先执行一次 best-effort Flush。成功时正常进入 reload；失败时必须保留 exact Store ID/原因并明确提示未保存修改可能丢失，但**恢复/开发重载仍继续**，避免“Persistence 故障阻断加载修复文件”的恢复死锁。只有显式 `requireDurable=true` 的调用方才允许把 Flush 失败作为重载硬门禁。
 5. **Retry on SaveData Failure**：dirty Store 保存失败后继续保持 dirty，并设置 2–30s 有界 retry cadence；不得把失败写视为已消费。
 6. **Corrupt ≠ Empty**：SaveData 返回非空但类型/结构不可解码时进入 Store write fence；绝不套 default 再覆盖旧 key。
 7. **True Debounce + Max Delay**：连续 Slider/拖动以最后一次修改重新计算 dueAt，但由 `maxDebounceMs` 限制最长延期，避免长时间交互无限不落盘。
@@ -85,7 +92,7 @@ PERSISTENCE_RELIABILITY_V2_HARNESS PASS
 1. `Persistence:Flush()` 每次结束后保存最近一次 runtime-only `lastFlush = { at, ok, owner, failures }`；`failures` 内容直接沿用 `store id:reason`，不持久化、不驱动写策略。
 2. `Persistence:Describe()` 暴露 `RuntimeAcceptanceDiagnosticsContractVersion=1` 与 `lastFlush`，Foundation/Diagnostics 只读消费。Store `loaded/dirty/writeFenced` 仍是唯一机械状态 Authority。
 3. Foundation Gate 一键摘要在 Flush/Fence 异常时附带最多 3 条 `store id:reason`；Recent Fault 同时保留 `context.store` 与 bounded `context.failures`，避免只看到 `FlushFail=1` 却不知道是哪一个 Store。
-4. Diagnostics 页面显示“最近存档落盘”具体失败项；用户点击“重新加载文件”时**不再由页面预先 Flush**，只调用 `ReloadCodeFromDisk()`。后者继续负责唯一一次严格 Flush，并在失败时取消原生重载。
+4. Diagnostics 页面显示“最近存档落盘”具体失败项；用户点击“重新加载文件”时**不再由页面预先 Flush**，只调用 `ReloadCodeFromDisk()`。后者继续负责唯一一次 Flush Authority；恢复重载在 Flush 失败时保留故障证据并继续加载磁盘新文件，严格耐久调用方可显式 `requireDurable=true` 取消重载。
 5. 该诊断快照不是重试队列、不是历史账本、不是第二份 Store 状态；下一次 Flush 会覆盖上一条 evidence，避免无界增长。
 
 本轮仍不能代替 RU 真机；该 Runtime Acceptance 现已由 `.18.95` Reliability v3 继续承接，只有 Fresh Reload/退出重进后的 `SaveData → LoadData` 回读一致才能关闭。
@@ -161,7 +168,7 @@ v4 本地可模拟“保存时完整、下一进程字段被裁掉”、malforme
 继续沿真实 `SaveStore → Flush → ReloadCodeFromDisk/Runtime:Stop` 调用链审计后发现，v4 仍不能覆盖“普通 Store 较早已经 SaveData=true 并变 clean，但物理内容被静默裁掉”的窗口：用户之后点 Reload 时，旧 Flush 只扫描 dirty Store，因此不会再读这个 key。v5 把 Flush 从“只把 dirty 写出去”提升为**显式 generation durability barrier**，但不把额外 I/O 放进输入热路径。
 
 1. **普通 Store 延迟证明**：非 Critical Store SaveData 成功后保留 `needsBarrierVerify=true`。正常 debounce/Tick 不额外 LoadData；只有显式 `Flush()`（Reload/Stop）才验证。
-2. **Flush 两阶段**：Phase 1 保存 dirty；Phase 2 对本 generation 所有 pending key 运行 `VerifyPersistedValue()`。验证包括 metadata、encoded fingerprint、decode 与 Domain fingerprint，但不 Apply。任一失败都使 Flush 返回 false，因此 `ReloadCodeFromDisk()` 取消原生重载。
+2. **Flush 两阶段**：Phase 1 保存 dirty；Phase 2 对本 generation 所有 pending key 运行 `VerifyPersistedValue()`。验证包括 metadata、encoded fingerprint、decode 与 Domain fingerprint，但不 Apply。任一失败都使 Flush 返回 false，并保留 dirty/retry/故障 evidence；Recovery Reload 记录该失败后继续重新加载磁盘代码，只有显式 strict durability 调用才阻止 reload。
 3. **Barrier Failure 可恢复而非永久 Fence**：readback mismatch 可能来自 RU 即时可见性差异，故不直接设置结构性 write fence；只保留 `needsBarrierVerify`，把当前健康 Domain requeue 为 dirty，5 秒后可再次写入/验证。下一次 barrier 未通过前仍禁止用户主动 Reload。
 4. **Critical 不重复 I/O**：Gear Index/Payload 等 `verifyAfterSave=true` Store 成功 immediate readback 后 `needsBarrierVerify=false`；后续 Flush 不做第二次 LoadData。
 5. **v4→v5 向前兼容**：Integrity 格式仍为 v1，`MinIntegrityReliabilityContractVersion=4`。v5 读取 v4/v5 stamped save；future contract `> current` 继续 fail-closed。encoded integrity 的执行顺序严格为 `raw/encodedBudget → metadata/future → integrity → decode → migrate → apply`。
@@ -224,6 +231,52 @@ PERSISTENCE_RELIABILITY_V7_HARNESS PASS
 覆盖 pending ordinary save 的 reload 拒绝与 Domain 保持、Flush 后恢复正常 load、migration Apply failure 不遗留 dirty、write-fenced dirty Tick 不重复 Native Save，以及 Contract v7 描述。RU 客户端真实 durability 仍必须用 Fresh Reload/完整退出重进证明。
 
 ---
+
+## 0.9 `.18.113` Persistence Reliability Contract v8 — Integrity v2 Serializer Recovery
+
+1. **Integrity v1 根因**：旧 business fingerprint 用 `%.17g` 对 Lua number 做 exact token。RU SaveData/LoadData 对窗口坐标、透明度、缩放等非整数值发生表示归一化时，业务值仍处于同一可接受精度，但 exact hash 会变化，造成 `fingerprint_mismatch → write fence → Feature/Page build rollback` 的级联。
+2. **Integrity v2 数值规则**：整数（绝对值 ≤ 2^53-1）继续 exact；非整数仅在 Persistence integrity 层使用 6 significant digit serializer-stable token。该规则不改变 Domain、Store Normalize、业务计算或 UI 几何精度。
+3. **业务 fingerprint 不变**：`FingerprintPayload()` 保持 v1 exact number 语义，因为 Gear A/B journal index 使用它作为业务 payload identity。新增 `FingerprintDurablePayload()` 仅用于 Native serializer 跨边界的 encoded integrity/readback proof。
+4. **历史 v1 compatibility**：只允许 `reliabilityContract>=6 + Envelope Seal 完整 + 非 verifyAfterSave + 非 recoverableReplacement` 的 ordinary Store 进入 compatibility。之后仍必须通过 encoded budget、metadata/schema、decode、Domain budget、migration/reset、final budget 与 apply；任何一步失败继续 fence。Critical/Journal mismatch 永远 fail-closed。
+5. **升级写入时机**：健康/compatibility v1 ordinary Store 仅在 Apply 成功后排队 `integrity_v2_upgrade`，由正常 Persistence debounce/Tick 写成 v8/v2；不会在 decode 前盲目覆盖旧物理 Store。
+6. **真实损坏仍可检测**：结构/类型/budget/metadata/envelope 破坏继续由既有 fence 检出；v2 对 item/skill id、revision、计数等整数值仍逐值 exact，因此真实整数业务字段变化不会被非整数 canonicalization 隐藏。
+7. **Session fallback no-persist**：App/Shell/Launcher fallback 是纯会话安全状态。用户仍可导航/拖动/调整本会话 UI，但不向 failed/not-loaded Store 发送 MarkDirty/MutateStore。下一 generation 重新从物理 Store 按正常 Authority 尝试读取。
+8. **Runtime Acceptance Snapshot v2**：Fresh Reload 的只读验收快照改用 `FingerprintDurablePayload()`，避免相同 Native 数值表示归一化再次污染人工跨重载对比；Gear/业务 exact fingerprint 不受影响。
+9. **性能边界**：无 Tick 新扫描、无额外常驻 SaveData/LoadData。Fingerprint 仍只在 persistence load/save/readback/显式验收边界执行有界遍历；compatibility restamp 每个旧普通 Store 最多在升级 generation 产生一次正常保存。
+
+
+## 0.10 `.18.124` Store-specific Serializer Shape Repair + Stable Task Codec
+
+1. **不是新的通用容错开关**：Integrity v2 `fingerprint_mismatch` 仍默认 `integrity_failed + write fence`。只有 Store 显式注册 `rebuildEncodedForIntegrity` 才进入候选重建，而且该能力不得用于 `verifyAfterSave` Critical Store 或 `recoverableReplacement` Journal shard。
+2. **双重证明边界**：只有 reliability `>=6` 且独立 Envelope Seal 已完整验证的 v2 Store 才允许尝试；hook 只生成候选，Persistence 自己再次执行 encoded budget，并用当前 `FingerprintEncodedPayload()` 计算候选哈希。候选必须**逐字等于原 stamped encoded fingerprint**才可加载。也就是说 hook 不能“解释成差不多”，更不能把未知损坏 normalize 掉。
+3. **真实业务变化继续被拒绝**：只要任一 tracking key、布尔值、窗口状态或其它业务字段真的变化，重建候选就无法复现原 fingerprint，流程回到原有 `STORE_INTEGRITY_FAILED`。Harness 必须同时包含“已知序列化形态变化可恢复”和“业务字段变化不可恢复”两组样本。
+4. **Tasks codec v2**：`v3.tasks` Domain 为了高频 membership 判定继续使用 `{[key]=true}` map；Persistence encode 时把 daily/weekly key set 转成排序字符串 array，decode 再恢复 map。这样业务查询仍 O(1)，而 SaveData 物理 representation 是确定性的。
+5. **一次性升级**：已写入的 pre-codec Tasks 若通过 exact-fingerprint reconstruction 成功加载，会立即以 `integrity_serializer_repair` 标记 dirty，并在正常 Persistence 机制中重写 codec2；下一 Reload 不应再次走 shape repair。
+6. **性能**：重建只发生在 Load 边界已经出现 fingerprint mismatch 时；没有 Tick、没有 Feature 扫描、没有额外常驻 LoadData。Tasks 的排序只发生在保存 encode，tracking 集合有现有 Store budget 上限。
+
+## 0.11 `2026-09-05` Integrity v3 — Canonical Fingerprint 与受控旧档升级通道
+
+RU 实机（横幅证据）确认 v2 原始包封指纹对**结构级**表示漂移仍然脆弱：`v3.tasks`(7776FEE0>2981E9D5) 与 `v3.death_review`(4AEAFC3B>161B2763) 在 Envelope Seal 健康的前提下跨重载 mismatch 并被写保护。v2 的 `%.6g` 数值 token 只吸收浮点精度漂移，无法吸收字符串键 map→序列、空表丢失、版本形状漂移等结构类漂移。本轮以 §14 的 canonical 管线收口：
+
+1. **Integrity v3 = canonical fingerprint**：保存时对 `CanonicalIntegrityValue(store, domain)` 计算 `FingerprintDurablePayload` 并盖章 `integrityVersion=3`；加载时在 Envelope Seal + 原始预算检查通过后 **decode → store normalize/encode（canonical）→ hash → 比对**。磁盘表示漂移只要不改变规范化后的逻辑内容即被吸收；真实内容变化仍 fail-closed。canonical 的定义：有类型化 codec 的 Store 取 `encode(decode(raw))`，无 codec 的 Store 取 `migrate(domain)`（固定形状 normalize），都没有则原样 Domain。
+2. **v3 管线 = Decode → Normalize → Verify → Apply**：v3 校验通过后，无 codec Store 直接 apply 规范化 canonical 值（不再只依赖 schema bump 才 normalize）；有 codec Store apply decode 输出（decode 自身规范化）。
+3. **v2 世代仍可读**：`integrityVersion=2` 继续按 v2 原始包封语义校验；校验通过的 v2 Store 在 Apply 成功后排队 `integrity_v3_upgrade`（deferred save 重盖 v3 canonical），防止下一次表示漂移再次误伤。
+4. **受控升级恢复（allowIntegrityUpgrade，默认开启、可显式退出）**：v2 盖章 + mismatch 时，若 Envelope Seal 有效、reliability>=6、decode + Domain budget 全部通过，则按 `integrity_upgrade_recovery` 接受加载并立即以 `integrity_v3_upgrade` 重盖——一次性、重新武装 strict 校验。**2026-09-05 实机复核（第二份横幅）证明该漂移是序列化器普遍行为**：`v3.life.bonds`、`v3.gear.payload.1/3`、`v3.death_review.record.9` 等上一代会话首次落盘的 v2 Store 在首次跨重载即全部 mismatch，逐 Store 白名单只会把用户数据逐批封存到后续版本，因此策略翻转为默认开启；`verifyAfterSave`/`recoverableReplacement` journal 分片同样纳入——对它们而言本路径严格优于替代的 `replaceCorrupt` 破坏性覆盖恢复。确需绝对 fail-closed 旧档语义的 Domain 可显式 `allowIntegrityUpgrade=false` 退出（v9 harness 同时锁定默认恢复与显式退出两个方向）。
+5. **修复钩子保留并强化**：`rebuildEncodedForIntegrity` 现支持 `{candidates={...}}` 多历史形态候选（pre-codec 裸 Domain 形与中间包装形），仍要求候选哈希**逐字等于**原 stamp；修复失败才落入第 4 条的受控升级。`DecodeTaskState` 同时兼容 codec 包封、中间包装形与裸 Domain 形，旧用户数据无需重置。
+6. **decoder 契约收窄（显式记录）**：v2 时代"损坏数据永不进入自定义 decoder"的保证，在 v3 下收窄为"**损坏数据永不进入 apply/Domain**"。前提：所有 decode/encode 钩子为纯规范化函数且 `DecodeValue` pcall 包裹 + 前后预算检查；v5 harness 的对应断言已更新为该不变量。
+7. **回读/耐久口径统一**：`VerifyPersistedValue` 对 v3 盖章比较 canonical 值（期望=盖章时 canonical(Domain)，实际=canonical(decode(readback))），屏障回读不再因表示漂移假失败；v2 盖章保留原始比较分支。
+8. **可观察性**：`Describe()` 行本就携带 `lastIntegrityStatus/lastIntegrityError`；诊断页 per-store 行追加完整性状态；门禁 persistence_reliability 行新增 `v3Upgrade=<recoveries>/<resaves>`。新增 harness：`rs_persistence_reliability_v9_harness.py`（canonical 吸收 / 未 opt-in fail-closed / v3 损坏拒绝）、`rs_task_persistence_codec_harness.py` 重写（严格修复、版本漂移受控升级、v3 漂移吸收、损坏 fail-closed、耐久回读）。
+9. **已知残余风险（如实记录）**：受控升级一次性接受旧档时，真实损坏若恰好通过 Envelope Seal + decode + normalize + budget + schema 全链（即业务等价的损坏），会被接受一代；重盖 v3 后恢复 strict。这是"用户数据可恢复"与"绝对 fail-closed"之间的显式取舍；2026-09-05 起默认对所有 v2 旧档生效，Domain 可显式退出。
+
+## 0.12 `2026-09-06` Integrity v4 — 内容盲 canonical 修复与契约升版
+
+实机横幅链（172E3CEB>1EC94F52 → 172E3CEB>1FA5386F，trade 新增 1D5E8884>04762FCF，`v3UpgradeFail=0` 且 fence 无 upgrade_gate 后缀）完整揭示了 v3 世代的缺陷：life bundle 的 store 注册助手把 `migrate = default`（一个忽略输入、恒返回全新默认表的函数）传给了 canonical 管线，导致：
+
+1. **内容盲盖章**：v3 盖章哈希的是 store 的**默认表形状**，不是实际内容——真实损坏会被"验证通过"（比 drift 更严重的完整性漏洞）；
+2. **默认形状变更即假损坏**：`.18.127/.18.128` 调整 bonds 默认形状后，旧盖章（旧默认形状哈希）与验证（新默认形状哈希）必然失配 → fence；
+3. **修复 canonical 即再失配**：换上真规范化函数后，验证目标从"默认形状哈希"变为"内容哈希"，与旧盖章再次失配。
+
+处置：`IntegrityContractVersion = 4`（canonical = 修复后的 per-store 纯规范化）；`ContentBlindCanonicalContractVersion = 3` 登记 v3 世代。v3 盖章的哈希不构成完整性证据，因此该世代跳过指纹比对、直接走受控一代升级（Envelope Seal + decode + Domain budget + apply 全链通过 → `integrity_contract_upgrade_recovery` → 重盖 v4）。v4 验证 = Decode → Normalize → Verify → Apply，内容敏感且吸收表示漂移。四个 life store 已显式传入真 migrate；注册助手支持自定义 migrate/budget。v9 harness 新增内容盲恢复用例（含"内容在恢复后完整保留"断言——旧路径会把内容重置为默认）。
 
 ## 1. 目的
 
@@ -470,7 +523,7 @@ SaveStore
 
 Persistence 不新建 OnUpdate。`Persistence:Tick()` 已接入现有 `Storage` Scheduler lane，因此不会为了保存系统再增加一套 Runtime。
 
-显式 Reload 会在触发原生界面重载前要求 `Flush()` 全成功；Runtime Stop 在任何 Feature teardown 前先执行 durability barrier。保存失败的 dirty Store 保留并进入有界重试。
+显式 Recovery Reload 会在触发原生界面重载前先尝试 `Flush()`；Flush 失败保留 dirty Store、故障 evidence 与有界重试，但不会阻断加载修复文件。显式 strict durability 调用仍可要求 `Flush()` 全成功；Runtime Stop 在任何 Feature teardown 前继续执行独立 durability barrier。
 
 ---
 

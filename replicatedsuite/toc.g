@@ -93,6 +93,7 @@ services/rs_skill_metadata_v3.lua
 services/rs_buff_metadata_v3.lua
 services/rs_status_classification_v3.lua
 services/rs_aura_observation_v3.lua
+services/rs_casting_observation_v3.lua
 services/rs_unit_identity_v3.lua
 services/rs_combat_event_bus_v3.lua
 services/rs_combat_analytics_v3.lua
@@ -101,10 +102,13 @@ services/rs_combat_relation_v3.lua
 services/rs_instance_catalog_v3.lua
 services/rs_quest_progress_v3.lua
 services/rs_gear_service_v3.lua
+services/rs_inventory_snapshot_v3.lua
 services/rs_alerts_service.lua
 services/rs_screen_projection_v3.lua
 services/rs_auction_query_v3.lua
 services/rs_price_quote_queue_v3.lua
+services/rs_auction_surface_v3.lua
+services/rs_craft_surface_v3.lua
 features/rs_feature_registry.lua
 features/rs_feature_runtime.lua
 features/combat/analytics/rs_combat_metric_common.lua
@@ -146,6 +150,9 @@ features/life/tasks/rs_task_authority.lua
 features/life/tasks/rs_task_feature.lua
 features/life/rs_life_m16_bundle.lua
 features/rs_business_bridge.lua
+features/combat/team_tools/rs_team_tools_visuals.lua
+features/life/craft/rs_craft_planner_extension_v3.lua
+features/life/craft/rs_craft_assistant_surface_extension_v3.lua
 features/tools/instances/rs_instance_authority.lua
 features/tools/instances/rs_instance_feature.lua
 features/tools/random_shop/rs_random_shop_authority.lua
@@ -158,7 +165,10 @@ presentation/v3/widgets/rs_v3_widget_host.lua
 presentation/v3/widgets/rs_v3_alert_hud.lua
 presentation/v3/widgets/rs_v3_combat_visual_guides.lua
 presentation/v3/widgets/rs_v3_life_economy_widgets.lua
+presentation/v3/widgets/rs_v3_trade_detail_floating.lua
 presentation/v3/widgets/rs_v3_bag_quick_overlay.lua
+presentation/v3/widgets/rs_v3_auction_sidecar.lua
+presentation/v3/widgets/rs_v3_craft_sidecar.lua
 presentation/v3/widgets/rs_v3_quest_detail_floating.lua
 presentation/v3/widgets/rs_v3_activity_widget.lua
 presentation/v3/widgets/rs_v3_task_widget.lua
@@ -169,6 +179,7 @@ presentation/v3/widgets/rs_v3_buff_display_widget.lua
 presentation/v3/widgets/rs_v3_buff_head_markers.lua
 presentation/v3/widgets/rs_v3_healer_head_marker.lua
 presentation/v3/widgets/rs_v3_healer_raid_overlay.lua
+presentation/v3/widgets/rs_v3_team_sac_overlay.lua
 presentation/v3/shell/rs_v3_modal_host.lua
 presentation/v3/modals/rs_v3_quest_detail_modal.lua
 presentation/v3/modals/rs_v3_gear_quick_settings_modal.lua

@@ -198,6 +198,7 @@ RSUI.ComponentApiContractVersion = 1
 RSUI.DegradedRootFailClosedContractVersion = 1
 RSUI.EventBindingContractVersion = 1
 RSUI.PostFactoryRejectReleaseContractVersion = 1
+RSUI.InputLifecycleBridgeContractVersion = 1
 RSUI.AttachmentContractVersion = 1
 RSUI.ReparentPolicyContractVersion = 1
 RSUI.NativeReparentSupported = false
@@ -227,8 +228,9 @@ RSUI.typographyComponents = setmetatable({}, { __mode = "k" })
 -- normal rendering has zero per-frame cost.
 RSUI.buildScopeStack = {}
 RSUI.buildScopeSerial = 0
-RSUI.BuildScopeContractVersion = 3
-RSUI.BuildTransactionContractVersion = 1
+RSUI.BuildScopeContractVersion = 4
+RSUI.BuildTransactionContractVersion = 2
+RSUI.BuildRollbackInputQuiescenceContractVersion = 1
 RSUI.PreflightContractVersion = 1
 RSUI.LogicalIdGenerationFenceVersion = 1
 RSUI.typeValidators = {}
@@ -337,6 +339,21 @@ local function RollbackBuildScope(self, scope)
         if widget ~= nil then
             local owner = nil
             pcall(function() owner = widget.rsUiOwner end)
+            -- Rollback is a hard interaction boundary, not merely a visual hide.
+            -- A factory can fail after creating a top-level popup/EditBox that is
+            -- not yet attached to a healthy Component.  RU can retain keyboard or
+            -- hit-test ownership from such half-built Native widgets even after an
+            -- ancestor is hidden.  Quiesce every tracked primitive independently;
+            -- input retirement is idempotent and therefore safe after Component
+            -- Release already retired the same EditBox.
+            if widget.rsUiKeyboardInput == true and type(UI.RetireInputWidget) == "function" then
+                local ok, retired = pcall(function() return UI:RetireInputWidget(widget, owner, "build_scope_rollback") end)
+                if ok ~= true or retired == false then
+                    self.metrics.buildScopeCleanupFailures = (tonumber(self.metrics.buildScopeCleanupFailures) or 0) + 1
+                end
+            end
+            if type(UI.SetPickable) == "function" then UI:SetPickable(widget, false, owner) end
+            if type(UI.SetEnabled) == "function" then UI:SetEnabled(widget, false, owner) end
             -- UI:SetVisible() is the only V3 visibility Authority. A cache-hit
             -- no-op must never be interpreted as permission to raw Show(false).
             if type(UI.SetVisible) == "function" then UI:SetVisible(widget, false, owner) end
@@ -1455,6 +1472,9 @@ function Base:Release()
                 if type(child.Release) == "function" then count = count + (tonumber(child:Release()) or 0) end
             end
         end
+    end
+    if self.root ~= nil and type(UI.RetireInputWidget) == "function" and self.root.rsUiKeyboardInput == true then
+        UI:RetireInputWidget(self.root, self.owner, "component_release")
     end
     if self.root ~= nil and type(UI.SetVisible) == "function" then
         UI:SetVisible(self.root, false, self.owner)

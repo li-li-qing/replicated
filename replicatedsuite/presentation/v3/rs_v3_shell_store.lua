@@ -90,21 +90,42 @@ end
 
 V3.ShellStoreId = STORE_ID
 V3.ShellStoreLoaded = V3.ShellStoreLoaded == true
+V3.ShellStoreSessionFallback = V3.ShellStoreSessionFallback == true
+V3.ShellStoreLoadError = V3.ShellStoreLoadError
+
+function V3:UseShellSessionDefaults(reason)
+    Apply(nil)
+    self.ShellStoreLoaded = true
+    self.ShellStoreSessionFallback = true
+    self.ShellStoreLoadError = tostring(reason or "shell store load failed")
+    if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Warn) == "function" then
+        S.DiagnosticsManager:Warn("ui_v3", "SHELL_STORE_SESSION_FALLBACK",
+            "主窗口存档读取失败；本次会话使用默认窗口状态，原存档不会因降级启动被主动覆盖",
+            { error = self.ShellStoreLoadError })
+    end
+    return true
+end
 
 function V3:EnsureShellStoreLoaded()
     if self.ShellStoreLoaded == true then return true end
     local store = P:GetStore(STORE_ID)
-    if store == nil then return false, "新版主窗口存档不可用" end
+    if store == nil then return self:UseShellSessionDefaults("新版主窗口存档不可用") end
     local status, _, err = P:LoadStore(STORE_ID)
     if status == true or status == "empty" then
         if status == "empty" then Apply(nil) end
         self.ShellStoreLoaded = true
+        self.ShellStoreSessionFallback = false
+        self.ShellStoreLoadError = nil
         return true
     end
-    return false, err or tostring(status or "读取失败")
+    return self:UseShellSessionDefaults(err or tostring(status or "读取失败"))
 end
 
 function V3:MarkShellStoreDirty(delayMs, reason)
     if P:GetStore(STORE_ID) == nil then return false, "新版主窗口存档不可用" end
+    -- Session fallback is intentionally memory-only. Navigation/geometry may
+    -- continue to change for usability, but must not turn a protected failed
+    -- load into WRITE_BEFORE_LOAD noise or overwrite the last recoverable save.
+    if self.ShellStoreSessionFallback == true then return true, "session_fallback_no_persist" end
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 750, reason or "shell_changed")
 end

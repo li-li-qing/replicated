@@ -6,8 +6,8 @@
 --   key        stable id used for the per-alert enable switch (items[key])
 --   kind       "cast" (match a unit's current cast name) or
 --              "debuff" (match an active debuff by numeric id)
---   names      multilingual cast names (string.find plain match on the
---              client-localized spell name; at least EN/RU/ZH)
+--   names      multilingual exact cast names. Runtime builds a one-time lookup
+--              table; the observation loop performs no fuzzy string matching.
 --   debuffId   numeric debuff id for kind="debuff"
 --   alert      the alert text pushed to the screen
 --   style      "countdown" (big text + remaining seconds) or "bigtext"
@@ -16,7 +16,7 @@
 --   jumpblackdragon.lua castMessages :30-51 (EN/RU/DE/FR/ZH cast names)
 --   buffblackdragon.lua :46 (撞鬼 debuff 23474)
 --   buffcharybdis.lua   :46 (下水 debuff 25846)
--- Names are matched with string.find(plain) so partial/UTF-8 names match.
+-- Runtime performs exact localized-name lookup; add observed RU aliases here when verified.
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite

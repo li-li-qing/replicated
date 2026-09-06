@@ -5,7 +5,7 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D, Host = S.RSUI, S.UIV3Design, S.UIV3 and S.UIV3.PageHost or nil
 if type(RSUI) ~= "table" or type(D) ~= "table" or type(Host) ~= "table" then return end
-S.UIV3.BusinessPagesContract = { version = 2, componentIdContractVersion = 1, bagProductUxContractVersion = 1, auctionCurrentListingUxContractVersion = 1 }
+S.UIV3.BusinessPagesContract = { version = 3, componentIdContractVersion = 1, bagProductUxContractVersion = 1, auctionCurrentListingUxContractVersion = 1, craftPlanUxContractVersion = 1, craftSidecarUxContractVersion = 1 }
 
 local ROUTES = {
     { route = "combat.boss_alerts", id = "combat_boss_alerts" }, { route = "combat.target_monitor", id = "combat_target_monitor" },
@@ -55,6 +55,29 @@ local function Build(parent, route, id)
             if ok == true then root:Refresh() end
             return ok, refreshErr
         end)
+
+    local teamCenterIds = {
+        combat_team_tools = { route = "combat.team_tools", text = "团队管理" },
+        combat_raid_readiness = { route = "combat.raid_readiness", text = "战备检查" },
+        combat_raid_recruitment = { route = "combat.raid_recruitment", text = "招募助手" },
+        combat_siege_readiness = { route = "combat.siege_readiness", text = "攻城战备" },
+    }
+    if teamCenterIds[id] ~= nil then
+        local tabs = RSUI:HorizontalBox({ id = "v3_team_center_tabs_" .. id, parent = root, gap = 5, slot = { size = "fixed", height = 31, hAlign = "fill" } })
+        for _, teamId in ipairs({ "combat_team_tools", "combat_raid_readiness", "combat_raid_recruitment", "combat_siege_readiness" }) do
+            local tab = teamCenterIds[teamId]
+            local tabRef = tab
+            local button = RSUI:Button({ id = "v3_team_center_tab_" .. id .. "_" .. teamId, parent = tabs,
+                text = (teamId == id and "● " or "") .. tabRef.text, compact = true,
+                slot = { size = "fixed", width = teamId == "combat_raid_recruitment" and 96 or 88 } })
+            button.onClick = function()
+                local shell = S.UIV3 and S.UIV3.Shell or nil
+                if type(shell) ~= "table" or type(shell.Navigate) ~= "function" then return false, "团队中心导航不可用" end
+                return shell:Navigate(tabRef.route, { source = "team_center_tab" })
+            end
+        end
+    end
+
     local actionRow = RSUI:HorizontalBox({ id = "v3_business_" .. id .. "_actions", parent = root, gap = 6, slot = { size = "fixed", height = 31, hAlign = "fill" } })
     local toggle = RSUI:Button({ id = "v3_business_" .. id .. "_toggle", parent = actionRow, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
     local hint = RSUI:Text({ id = "v3_business_" .. id .. "_hint", parent = root, text = "", fontSize = 9, tone = "muted", overflow = "wrap", slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
@@ -82,7 +105,8 @@ local function Build(parent, route, id)
         root:Refresh()
         return true
     end
-    local craftRecipeDropdown, craftActionStatus
+    local craftRecipeDropdown, craftActionStatus, craftQuoteButton
+    local craftPlanTable, craftPlanQtyInput, craftPlanRemoveButton, craftPlanQuoteButton, craftPlanStatus, craftPlanSelectedIndex
     local specialFields = {}
     local function TrackField(field) if field ~= nil then specialFields[#specialFields + 1] = field end return field end
     local bossTestStatus = nil
@@ -101,9 +125,16 @@ local function Build(parent, route, id)
             slot = { size = "fixed", width = 120 } }))
         local testBig = RSUI:Button({ id = "v3_business_combat_boss_alerts_test_big", parent = hudRow, text = "测试大字", compact = true, slot = { size = "fixed", width = 82 } })
         local testCountdown = RSUI:Button({ id = "v3_business_combat_boss_alerts_test_countdown", parent = hudRow, text = "测试倒计时", compact = true, slot = { size = "fixed", width = 92 } })
-        bossTestStatus = RSUI:Text({ id = "v3_business_combat_boss_alerts_test_status", parent = hudRow, text = "实时触发待事实桥", fontSize = 8, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
+        -- World-boss-independent verification: inject a CATALOGED rule through
+        -- the real lookup+push chain (no boss encounter required). Fact-source
+        -- truth stays with the Boss: diagnostics line on any cast-bar mob.
+        local simCast = RSUI:Button({ id = "v3_business_combat_boss_alerts_sim_cast", parent = hudRow, text = "仿真读条", compact = true, slot = { size = "fixed", width = 82 } })
+        local simDebuff = RSUI:Button({ id = "v3_business_combat_boss_alerts_sim_debuff", parent = hudRow, text = "仿真Debuff", compact = true, slot = { size = "fixed", width = 92 } })
+        bossTestStatus = RSUI:Text({ id = "v3_business_combat_boss_alerts_test_status", parent = hudRow, text = "实时：目标施法 + 自身Debuff", fontSize = 8, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
         testBig.onClick = function() local ok, actionErr = feature.Commands:TestBigText(); bossTestStatus:SetText(ok and "大字 HUD 已触发" or ("测试失败：" .. tostring(actionErr or "未执行"))); return ok, actionErr end
         testCountdown.onClick = function() local ok, actionErr = feature.Commands:TestCountdown(); bossTestStatus:SetText(ok and "倒计时 HUD 已触发" or ("测试失败：" .. tostring(actionErr or "未执行"))); return ok, actionErr end
+        simCast.onClick = function() local ok, actionErr = feature.Commands:SimulateCast(); bossTestStatus:SetText(ok and "仿真读条：规则匹配+HUD 已触发" or ("仿真失败：" .. tostring(actionErr or "未执行"))); return ok, actionErr end
+        simDebuff.onClick = function() local ok, actionErr = feature.Commands:SimulateDebuff(); bossTestStatus:SetText(ok and "仿真Debuff：规则匹配+HUD 已触发" or ("仿真失败：" .. tostring(actionErr or "未执行"))); return ok, actionErr end
         local hudGrid = RSUI:UniformGrid({ id = "v3_business_combat_boss_alerts_hud_grid", parent = root, minCellWidth = 260, minCellHeight = 30, maxColumns = 2, gap = 5, slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
         TrackField(D:CompactNumericSetting(hudGrid, { id = "v3_business_combat_boss_alerts_font", label = "HUD 字号", min = 18, max = 56, step = 1, integer = true, unit = "", slider = true,
             get = function() return (feature:GetProjection() or {}).hudFontSize or 34 end, set = function(v) return feature.Commands:SetHudFontSize(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
@@ -307,6 +338,8 @@ local function Build(parent, route, id)
             end, placeholder = "选择已核制作物", slot = { size = "fill", fill = 1, minWidth = 220 } })
         local refreshButton = RSUI:Button({ id = "v3_business_" .. id .. "_recipe_refresh", parent = craftRow, text = "刷新材料", compact = true,
             slot = { size = "fixed", width = 78 } })
+        craftQuoteButton = RSUI:Button({ id = "v3_business_" .. id .. "_material_quote", parent = craftRow, text = "材料询价", compact = true, enabled = false,
+            slot = { size = "fixed", width = 92 } })
         craftActionStatus = RSUI:Text({ id = "v3_business_" .. id .. "_context_status", parent = root,
             text = "从制作物列表选择配方；内部配方编号和物品编号只用于诊断，不要求用户输入。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
             slot = { size = "auto", minHeight = 26, hAlign = "fill" } })
@@ -315,6 +348,94 @@ local function Build(parent, route, id)
             if ok == true then root:Refresh()
             elseif craftActionStatus ~= nil then craftActionStatus:SetText("刷新失败：" .. tostring(refreshErr or "未执行")) end
             return ok, refreshErr
+        end
+        craftQuoteButton.onClick = function()
+            if type(feature.Commands.QuotePendingMaterials) ~= "function" then return false, "材料批量询价命令不可用" end
+            local ok, quoteMessage = feature.Commands:QuotePendingMaterials()
+            if craftActionStatus ~= nil then craftActionStatus:SetText(ok == true and tostring(quoteMessage or "询价已提交") or ("询价失败：" .. tostring(quoteMessage or "未执行"))) end
+            if ok == true then root:Refresh() end
+            return ok, quoteMessage
+        end
+        if id == "life_craft_planner" then
+            local planQtyValue = 1
+            local planActions = RSUI:HorizontalBox({ id = "v3_business_life_craft_planner_plan_actions", parent = root, gap = 5,
+                slot = { size = "fixed", height = 31, hAlign = "fill" } })
+            RSUI:Text({ id = "v3_business_life_craft_planner_plan_label", parent = planActions, text = "制作计划", fontSize = 9, tone = "strong",
+                slot = { size = "fixed", width = 58 } })
+            craftPlanQtyInput = TrackField(RSUI:NumericInput({ id = "v3_business_life_craft_planner_plan_qty", parent = planActions,
+                value = 1, min = 1, max = 999, step = 1, integer = true, width = 64,
+                get = function() return planQtyValue end,
+                set = function(value) planQtyValue = math.max(1, math.min(999, math.floor((tonumber(value) or 1) + 0.5))); return true end,
+                slot = { size = "fixed", width = 64 } }))
+            local addPlan = RSUI:Button({ id = "v3_business_life_craft_planner_plan_add", parent = planActions, text = "加入计划", compact = true,
+                slot = { size = "fixed", width = 72 } })
+            craftPlanRemoveButton = RSUI:Button({ id = "v3_business_life_craft_planner_plan_remove", parent = planActions, text = "移除选中", compact = true, enabled = false,
+                slot = { size = "fixed", width = 78 } })
+            local clearPlan = RSUI:Button({ id = "v3_business_life_craft_planner_plan_clear", parent = planActions, text = "清空", compact = true,
+                slot = { size = "fixed", width = 52 } })
+            craftPlanQuoteButton = RSUI:Button({ id = "v3_business_life_craft_planner_plan_quote", parent = planActions, text = "计划询价", compact = true, enabled = false,
+                slot = { size = "fixed", width = 76 } })
+            craftPlanStatus = RSUI:Text({ id = "v3_business_life_craft_planner_plan_status", parent = root,
+                text = "从上方选择制作物，设置数量后加入计划；同一制作物会合并数量。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
+                slot = { size = "fixed", height = 28, hAlign = "fill" } })
+            craftPlanTable = RSUI:TableView({ id = "v3_business_life_craft_planner_plan_table", parent = root, items = {},
+                rowHeight = 26, headerHeight = 25, desiredRows = 5, overscan = 1, scrollbar = true, selectable = true,
+                columnResize = false, headerInteractive = false,
+                getKey = function(item) return item and item.key or nil end,
+                onSelectionChanged = function(index)
+                    craftPlanSelectedIndex = tonumber(index)
+                    if craftPlanRemoveButton ~= nil then craftPlanRemoveButton:SetEnabled(craftPlanSelectedIndex ~= nil) end
+                end,
+                columns = {
+                    { id = "name", title = "计划制作物", field = "name", size = "fill", minWidth = 180, fill = 1.7 },
+                    { id = "quantity", title = "数量", field = "quantity", size = "fixed", width = 58, minWidth = 48 },
+                    { id = "materialCount", title = "材料项", field = "materialCount", size = "fixed", width = 62, minWidth = 54 },
+                },
+                slot = { size = "fixed", height = 158, hAlign = "fill" },
+            })
+            addPlan.onClick = function()
+                if type(feature.Commands.AddPlanRecipe) ~= "function" then return false, "多配方计划命令不可用" end
+                local projection = feature:GetProjection() or {}
+                local key = projection.selectedRecipeKey
+                local quantity = craftPlanQtyInput ~= nil and craftPlanQtyInput:GetValue() or planQtyValue
+                local ok, addErr = feature.Commands:AddPlanRecipe(key, quantity)
+                if craftPlanStatus ~= nil then craftPlanStatus:SetText(ok == true and "已加入制作计划" or ("加入失败：" .. tostring(addErr or "未执行"))) end
+                if ok == true then root:Refresh() end
+                return ok, addErr
+            end
+            craftPlanRemoveButton.onClick = function()
+                local projection = feature:GetProjection() or {}
+                local row = type(projection.planRecipeRows) == "table" and projection.planRecipeRows[tonumber(craftPlanSelectedIndex) or 0] or nil
+                if type(row) ~= "table" or row.recipeKey == nil then return false, "请先选择计划中的制作物" end
+                local ok, removeErr = feature.Commands:RemovePlanRecipe(row.recipeKey)
+                if ok == true then craftPlanSelectedIndex = nil; root:Refresh() end
+                if craftPlanStatus ~= nil then craftPlanStatus:SetText(ok == true and "已从计划移除" or ("移除失败：" .. tostring(removeErr or "未执行"))) end
+                return ok, removeErr
+            end
+            clearPlan.onClick = function()
+                local ok, clearErr = feature.Commands:ClearPlan()
+                if ok == true then craftPlanSelectedIndex = nil; root:Refresh() end
+                if craftPlanStatus ~= nil then craftPlanStatus:SetText(ok == true and "制作计划已清空" or ("清空失败：" .. tostring(clearErr or "未执行"))) end
+                return ok, clearErr
+            end
+            craftPlanQuoteButton.onClick = function()
+                if type(feature.Commands.QuotePlanMaterials) ~= "function" then return false, "计划材料询价命令不可用" end
+                local ok, message = feature.Commands:QuotePlanMaterials()
+                if craftPlanStatus ~= nil then craftPlanStatus:SetText(ok == true and tostring(message or "计划询价已提交") or ("计划询价失败：" .. tostring(message or "未执行"))) end
+                if ok == true then root:Refresh() end
+                return ok, message
+            end
+        elseif id == "tools_craft" and type(feature.Commands.SetAutoSidecar) == "function" then
+            local sidecarRow = RSUI:HorizontalBox({ id = "v3_business_tools_craft_sidecar_row", parent = root, gap = 6,
+                slot = { size = "fixed", height = 31, hAlign = "fill" } })
+            TrackField(RSUI:Toggle({ id = "v3_business_tools_craft_auto_sidecar", parent = sidecarRow,
+                onText = "制作台侧窗：自动", offText = "制作台侧窗：关闭",
+                get = function() return (feature:GetProjection() or {}).autoSidecar ~= false end,
+                set = function(value) return feature.Commands:SetAutoSidecar(value == true) end,
+                slot = { size = "fixed", width = 142 } }))
+            RSUI:Text({ id = "v3_business_tools_craft_sidecar_hint", parent = sidecarRow,
+                text = "只观察原生制作窗口；打开时显示材料侧窗，普通刷新不会后台询价。", fontSize = 8, tone = "muted", overflow = "ellipsis",
+                slot = { size = "fill", fill = 1 } })
         end
     end
     local bagQuickStatus, batchStatus, batchCategoryDropdown, batchTargetToggle, batchLimitField
@@ -537,7 +658,7 @@ local function Build(parent, route, id)
                 .. " · 物品编号 " .. tostring(itemCount) .. " · 类别编号 " .. tostring(categoryCount), "muted")
         end
     end
-    local teamRoleInput, teamFromMemberInput, teamToMemberInput, teamMovePartyMemberInput, teamToPartyInput, teamActionStatus, teamAutoRoleButton
+    local teamRoleInput, teamFromMemberInput, teamToMemberInput, teamMovePartyMemberInput, teamToPartyInput, teamActionStatus, teamAutoRoleButton, teamExtra
     if id == "combat_team_tools" then
         local roleRow = RSUI:HorizontalBox({ id = "v3_business_combat_team_tools_role_row", parent = root, gap = 6,
             slot = { size = "fixed", height = 31, hAlign = "fill" } })
@@ -582,6 +703,24 @@ local function Build(parent, route, id)
             allowEmpty = false, submitOnLostFocus = false, placeholder = "小队1-50", slot = { size = "fixed", width = 68 } })
         local movePartyButton = RSUI:Button({ id = "v3_business_combat_team_tools_move_member_to_party", parent = movePartyRow, text = "移入小队", compact = true,
             slot = { size = "fixed", width = 78 } })
+
+        teamExtra = {}
+        local visualRow = RSUI:HorizontalBox({ id = "v3_business_combat_team_tools_visual_row", parent = root, gap = 6,
+            slot = { size = "fixed", height = 31, hAlign = "fill" } })
+        RSUI:Text({ id = "v3_business_combat_team_tools_visual_label", parent = visualRow, text = "团队辅助", fontSize = 9, tone = "strong",
+            overflow = "ellipsis", slot = { size = "fixed", width = 58 } })
+        teamExtra.sacButton = RSUI:Button({ id = "v3_business_combat_team_tools_sac_toggle", parent = visualRow, text = "牺牲之舞：关", compact = true,
+            slot = { size = "fixed", width = 96 } })
+        teamExtra.saveMarks = RSUI:Button({ id = "v3_business_combat_team_tools_mark_save", parent = visualRow, text = "保存头标", compact = true,
+            slot = { size = "fixed", width = 70 } })
+        teamExtra.restoreMarks = RSUI:Button({ id = "v3_business_combat_team_tools_mark_restore", parent = visualRow, text = "恢复头标", compact = true,
+            slot = { size = "fixed", width = 70 } })
+        teamExtra.clearMarks = RSUI:Button({ id = "v3_business_combat_team_tools_mark_clear", parent = visualRow, text = "清空保存", compact = true,
+            slot = { size = "fixed", width = 70 } })
+        teamExtra.status = RSUI:Text({ id = "v3_business_combat_team_tools_visual_status", parent = root,
+            text = "牺牲之舞高亮关闭 · 尚未保存团队头标", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
+            slot = { size = "auto", minHeight = 26, hAlign = "fill" } })
+
         teamActionStatus = RSUI:Text({ id = "v3_business_combat_team_tools_action_status", parent = root,
             text = "全队职责为只读；职责写入只作用于当前玩家。成员移动当前安全停用。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
             slot = { size = "auto", minHeight = 26, hAlign = "fill" } })
@@ -647,6 +786,30 @@ local function Build(parent, route, id)
             local refreshed, refreshErr = RefreshTeamAction("team_tools_move_member_to_party")
             if refreshed ~= true then SetTeamActionStatus(refreshErr, "warn"); return false, refreshErr end
             SetTeamActionStatus("成员移入小队成功", "success"); return true
+        end
+        teamExtra.sacButton.onClick = function()
+            local projection = feature:GetProjection() or {}
+            local nextValue = projection.sacEnabled ~= true
+            local ok, err = feature.Commands:SetSacHighlightEnabled(nextValue)
+            if ok ~= true then SetTeamActionStatus("牺牲之舞高亮设置失败：" .. tostring(err or "未执行"), "warn"); return false, err end
+            root:Refresh()
+            SetTeamActionStatus(nextValue and "牺牲之舞高亮已开启；仅扫描舞乐候选成员" or "牺牲之舞高亮已关闭并释放团队/Aura观察", nextValue and "success" or "muted")
+            return true
+        end
+        teamExtra.saveMarks.onClick = function()
+            local ok, countOrErr = feature.Commands:SaveRaidMarkers()
+            if ok ~= true then SetTeamActionStatus("保存头标失败：" .. tostring(countOrErr or "未执行"), "warn"); return false, countOrErr end
+            root:Refresh(); SetTeamActionStatus("已保存当前团队头标：" .. tostring(countOrErr or 0) .. " 个", "success"); return true
+        end
+        teamExtra.restoreMarks.onClick = function()
+            local ok, countOrErr = feature.Commands:RestoreRaidMarkers()
+            if ok ~= true then SetTeamActionStatus("恢复头标失败：" .. tostring(countOrErr or "未执行"), "warn"); return false, countOrErr end
+            root:Refresh(); SetTeamActionStatus("头标恢复队列已启动：" .. tostring(countOrErr or 0) .. " 个；按官方 1 秒冷却串行执行", "success"); return true
+        end
+        teamExtra.clearMarks.onClick = function()
+            local ok, err = feature.Commands:ClearSavedRaidMarkers()
+            if ok ~= true then SetTeamActionStatus("清空保存失败：" .. tostring(err or "未执行"), "warn"); return false, err end
+            root:Refresh(); SetTeamActionStatus("已清空插件保存的头标方案；不会清除当前游戏头标", "muted"); return true
         end
         if #roleItems <= 0 then teamRoleInput:SetEnabled(false); setRoleButton:SetEnabled(false) end
         -- Native move APIs are write-capable, but the only known ownership getter
@@ -734,9 +897,56 @@ local function Build(parent, route, id)
                 if type(craftRecipeDropdown.Render)=="function" then craftRecipeDropdown:Render() end
             end
             local statusZh = ({ ready="可用", partial="部分可用", empty="等待选择", unavailable="不可用", failed="读取失败", idle="等待选择" })[craftStatus] or craftStatus
+            local pendingQuotes = math.max(0, tonumber(projection.pendingQuoteCount) or 0)
+            if craftQuoteButton ~= nil then
+                craftQuoteButton:SetEnabled(S.FeatureRuntime:IsEnabled(id) == true and pendingQuotes > 0)
+                craftQuoteButton:SetText(pendingQuotes > 0 and ("询价(" .. tostring(pendingQuotes) .. ")") or "材料询价")
+            end
+            local costText = ""
+            if (tonumber(projection.pricedMaterialCount) or 0) > 0 then
+                local rawCost = tonumber(projection.quotedMaterialCostCopper) or 0
+                local cost = tostring(math.floor(rawCost + 0.5))
+                if S.Utils ~= nil and type(S.Utils.FormatMoney) == "function" then
+                    local okMoney, moneyText = pcall(S.Utils.FormatMoney, rawCost)
+                    if okMoney == true and type(moneyText) == "string" and moneyText ~= "" then cost = moneyText end
+                end
+                costText = " · 已报价材料 " .. tostring(projection.pricedMaterialCount) .. " 项 / 当前小计 " .. cost
+            end
+            if pendingQuotes > 0 then costText = costText .. " · 待询价 " .. tostring(pendingQuotes) .. " 项" end
             if craftActionStatus ~= nil then
-                craftActionStatus:SetText(craftError and (statusZh .. "：" .. tostring(craftError)) or (statusZh .. " · " .. tostring(#rows) .. " 条材料/产物信息"))
+                craftActionStatus:SetText(craftError and (statusZh .. "：" .. tostring(craftError)) or (statusZh .. " · " .. tostring(#rows) .. " 条材料/产物信息" .. costText))
                 if S.Theme ~= nil and type(S.Theme.SetLabelTone) == "function" then S.Theme:SetLabelTone(craftActionStatus, craftError and "warn" or "muted") end
+            end
+            if id == "life_craft_planner" and craftPlanTable ~= nil then
+                local planRows = type(projection.planRecipeRows) == "table" and projection.planRecipeRows or {}
+                craftPlanTable:SetItems(planRows, "craft-plan:" .. tostring(projection.revision or 0) .. ":" .. tostring(#planRows))
+                if #planRows == 0 then
+                    craftPlanTable:SetViewState("empty", { title = "制作计划为空", detail = "选择制作物和数量后点击“加入计划”。" })
+                    craftPlanSelectedIndex = nil
+                else
+                    craftPlanTable:SetViewState("ready")
+                    if craftPlanSelectedIndex ~= nil and planRows[craftPlanSelectedIndex] == nil then craftPlanSelectedIndex = nil end
+                end
+                if craftPlanRemoveButton ~= nil then craftPlanRemoveButton:SetEnabled(craftPlanSelectedIndex ~= nil) end
+                local planPending = math.max(0, tonumber(projection.planPendingQuoteCount) or 0)
+                if craftPlanQuoteButton ~= nil then
+                    craftPlanQuoteButton:SetEnabled(S.FeatureRuntime:IsEnabled(id) == true and planPending > 0)
+                    craftPlanQuoteButton:SetText(planPending > 0 and ("计划询价(" .. tostring(planPending) .. ")") or "计划询价")
+                end
+                if craftPlanStatus ~= nil then
+                    local planCost = tonumber(projection.planQuotedRequiredCostCopper) or 0
+                    local shortageCost = tonumber(projection.planQuotedShortageCostCopper) or 0
+                    local costLabel, shortageLabel = tostring(math.floor(planCost + 0.5)), tostring(math.floor(shortageCost + 0.5))
+                    if S.Utils ~= nil and type(S.Utils.FormatMoney) == "function" then
+                        local okTotal, totalText = pcall(S.Utils.FormatMoney, planCost)
+                        local okShort, shortText = pcall(S.Utils.FormatMoney, shortageCost)
+                        if okTotal == true and type(totalText) == "string" and totalText ~= "" then costLabel = totalText end
+                        if okShort == true and type(shortText) == "string" and shortText ~= "" then shortageLabel = shortText end
+                    end
+                    craftPlanStatus:SetText("计划 " .. tostring(projection.planRecipeCount or 0) .. " 项 · 聚合材料 " .. tostring(projection.planMaterialCount or 0)
+                        .. " · 待询价 " .. tostring(planPending)
+                        .. ((tonumber(projection.planPricedMaterialCount) or 0) > 0 and (" · 总需求 " .. costLabel .. " · 当前缺口 " .. shortageLabel) or ""))
+                end
             end
         end
         if id == "tools_bag" and type(self.RefreshBlacklistEditor) == "function" then self:RefreshBlacklistEditor(projection) end
@@ -761,12 +971,32 @@ local function Build(parent, route, id)
             local overlay = type(projection.quickOverlay)=="table" and projection.quickOverlay or {}
             local storage = overlay.storageKind=="coffer" and "箱子" or overlay.storageKind=="bank" and "银行" or "仓储"
             bagQuickStatus:SetText((overlay.visible==true and (storage .. "已打开 · " .. tostring(overlay.status or "可快捷取放")) or windowText)
-                .. " · 已移动 " .. tostring(overlay.moved or 0) .. " · 队列 " .. tostring(overlay.queued or 0))
+                .. " · 已移动 " .. tostring(overlay.moved or 0) .. " · 跳过 " .. tostring(overlay.skipped or 0) .. " · 队列 " .. tostring(overlay.queued or 0))
         end
         if id == "combat_team_tools" and teamAutoRoleButton ~= nil then
             teamAutoRoleButton:SetText(projection.autoRoleEnabled == false and "自动职责：关" or "自动职责：开")
             if projection.autoRoleStatus and teamActionStatus ~= nil then
                 teamActionStatus:SetText(tostring(projection.autoRoleStatus) .. (projection.autoRoleLabel and (" · 识别：" .. tostring(projection.autoRoleLabel)) or "") .. "；手动职责仍可覆盖当前结果。")
+            end
+            if type(teamExtra) == "table" and teamExtra.sacButton ~= nil then
+                teamExtra.sacButton:SetText(projection.sacEnabled == true and "牺牲之舞：开" or "牺牲之舞：关")
+                local enabledNow = S.FeatureRuntime:IsEnabled(id) == true
+                local restoring = projection.markerRestoreRunning == true
+                teamExtra.sacButton:SetEnabled(enabledNow)
+                teamExtra.saveMarks:SetEnabled(enabledNow and not restoring)
+                teamExtra.restoreMarks:SetEnabled(enabledNow and not restoring and (tonumber(projection.savedMarkerCount) or 0) > 0)
+                teamExtra.clearMarks:SetEnabled(not restoring and (tonumber(projection.savedMarkerCount) or 0) > 0)
+                local markerStatus = ({idle="待保存",saved="已保存",empty="当前无头标",restoring="恢复中",complete="恢复完成",failed="恢复失败",stopped="已停止"})[tostring(projection.markerStatus or "idle")] or tostring(projection.markerStatus or "idle")
+                local text = "牺牲之舞：候选 " .. tostring(projection.sacCandidateCount or 0) .. " / 激活 " .. tostring(projection.sacActiveCount or 0)
+                    .. " · 头标保存 " .. tostring(projection.savedMarkerCount or 0) .. " · " .. markerStatus
+                if restoring or (tonumber(projection.markerApplied) or 0) > 0 then
+                    text = text .. " " .. tostring(projection.markerApplied or 0) .. "/" .. tostring(projection.markerQueued or 0)
+                    if (tonumber(projection.markerSkipped) or 0) > 0 then text = text .. " · 跳过 " .. tostring(projection.markerSkipped) end
+                end
+                local detail = projection.markerError or projection.sacError
+                if detail ~= nil then text = text .. " · " .. tostring(detail) end
+                teamExtra.status:SetText(text)
+                if S.Theme ~= nil and type(S.Theme.SetLabelTone) == "function" then S.Theme:SetLabelTone(teamExtra.status, detail ~= nil and "warn" or "muted") end
             end
         end
         local enabled = S.FeatureRuntime:IsEnabled(id) == true

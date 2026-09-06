@@ -10,6 +10,7 @@ from __future__ import annotations
 import pathlib
 import subprocess
 import tempfile
+from rs_lua_runner import RUNNER
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PERSISTENCE = ROOT / "core/rs_persistence.lua"
@@ -62,7 +63,7 @@ end
 dofile([[{PERSISTENCE.as_posix()}]])
 local P = ReplicatedSuite.Persistence
 assert(P.ReliabilityContractVersion >= 6, "contract")
-assert(P.IntegrityContractVersion == 1, "business_integrity")
+assert(P.IntegrityContractVersion == 4, "business_integrity")
 assert(P.EnvelopeIntegrityContractVersion == 1, "envelope_integrity")
 assert(P.ScopeBindingContractVersion == 1, "scope_binding")
 local budget = {{ maxDepth = 8, maxNodes = 128, maxStringBytes = 4096, maxEntriesPerTable = 64 }}
@@ -85,7 +86,7 @@ assert(P:SaveStore("v3.v6.seal", {{ durable = true }}) == true, "seal_save")
 local sealKey = P.V3KeyPrefix .. "seal"
 local sealMeta = storage[sealKey].__rsmeta
 assert(sealMeta.reliabilityContract == P.ReliabilityContractVersion, "seal_reliability")
-assert(sealMeta.integrityVersion == 1 and type(sealMeta.encodedFingerprint) == "string", "seal_business_stamp")
+assert(sealMeta.integrityVersion == P.IntegrityContractVersion and type(sealMeta.encodedFingerprint) == "string", "seal_business_stamp")
 assert(sealMeta.envelopeIntegrityVersion == 1 and type(sealMeta.envelopeFingerprint) == "string", "seal_envelope_stamp")
 
 -- Metadata-only truncation must fail before the custom business decoder runs.
@@ -248,7 +249,7 @@ print("PERSISTENCE_RELIABILITY_V6_LUA PASS")
         fh.write(script)
         tmp = pathlib.Path(fh.name)
     try:
-        proc = subprocess.run(["texlua", str(tmp)], capture_output=True, text=True)
+        proc = subprocess.run([RUNNER, str(tmp)], capture_output=True, text=True)
     finally:
         tmp.unlink(missing_ok=True)
     if proc.returncode != 0:
@@ -260,7 +261,7 @@ print("PERSISTENCE_RELIABILITY_V6_LUA PASS")
 def main() -> int:
     source = PERSISTENCE.read_text(encoding="utf-8-sig")
     for token in (
-        "ReliabilityContractVersion = 7",
+        "ReliabilityContractVersion = 8",
         "EnvelopeIntegrityContractVersion = 1",
         "ScopeBindingContractVersion = 1",
         "function P:FingerprintEnvelopeIntegrity(raw)",

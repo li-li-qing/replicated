@@ -4,6 +4,7 @@ from __future__ import annotations
 import pathlib
 import subprocess
 import tempfile
+from rs_lua_runner import RUNNER
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CONTROLS = ROOT / "ui/framework/rs_ui_controls.lua"
@@ -153,7 +154,7 @@ print("INTERACTIVE_DRAFT_LUA PASS 12/12")
     with tempfile.NamedTemporaryFile("w", suffix=".lua", encoding="utf-8", delete=False) as fh:
         fh.write(lua)
         script = fh.name
-    proc = subprocess.run(["texlua", script], capture_output=True, text=True)
+    proc = subprocess.run([RUNNER, script], capture_output=True, text=True)
     pathlib.Path(script).unlink(missing_ok=True)
     if proc.returncode != 0:
         raise AssertionError((proc.stdout + proc.stderr).strip())
@@ -283,7 +284,7 @@ print("FOUNDATION_INTERACTION_LUA PASS 14/14")
     with tempfile.NamedTemporaryFile("w", suffix=".lua", encoding="utf-8", delete=False) as fh:
         fh.write(lua)
         script = fh.name
-    proc = subprocess.run(["texlua", script], capture_output=True, text=True)
+    proc = subprocess.run([RUNNER, script], capture_output=True, text=True)
     pathlib.Path(script).unlink(missing_ok=True)
     if proc.returncode != 0:
         raise AssertionError((proc.stdout + proc.stderr).strip())
@@ -342,7 +343,7 @@ print("WIDGET_HOST_PREFERENCE_LUA PASS 8/8")
     with tempfile.NamedTemporaryFile("w", suffix=".lua", encoding="utf-8", delete=False) as fh:
         fh.write(lua)
         script = fh.name
-    proc = subprocess.run(["texlua", script], capture_output=True, text=True)
+    proc = subprocess.run([RUNNER, script], capture_output=True, text=True)
     pathlib.Path(script).unlink(missing_ok=True)
     if proc.returncode != 0:
         raise AssertionError((proc.stdout + proc.stderr).strip())
@@ -376,14 +377,14 @@ def main() -> int:
         'if root.activeTab == "track" then root:Refresh() end',
     ))
     require_source(PRIMITIVES, (
-        "NativeInteractionContractVersion = 4",
+        "NativeInteractionContractVersion = 6",
         "CriticalInteractionDeliveryContractVersion = 1",
         "local NATIVE_BOOLEAN_STATE_SETTERS = {",
         "if not falseStateSetter then return false",
         "function UIX:TryInteractionCall(widget, methodName, ...)",
         "function UIX:RequireHandler(widget, eventName, fn, label)",
         "if ConfigureNativePickable(edit, true) ~= true then error",
-        'CallNativeAccepted(edit, "EnableKeyboard", true)',
+        'CallNativeAccepted(edit, "EnableKeyboard", false)',
         "EDITBOX_MULTILINE inherits WidgetBase interaction flags",
         'CallNativeAccepted(edit, "SetReadOnly", false)',
         "slider.rsUiSetEnabledAdapter = ApplySliderEnabled",
@@ -469,7 +470,8 @@ def main() -> int:
         "geometryCallbackRejects",
     ))
     require_source(WINDOW_SHELL, (
-        "version = 22",
+        "version = 24",
+        "topLevelLayerContractVersion = 1",
         "visibilityTransactionContract = 1",
         "stateMutationTransactionContract = 1",
         "stateCallbackTransactionContract = 1",
@@ -488,7 +490,7 @@ def main() -> int:
         "version = 6",
         "visibilityTransactionContractVersion = 1",
     ))
-    print("INTERACTIVE_DRAFT_HARNESS PASS 110/110")
+    print("INTERACTIVE_DRAFT_HARNESS PASS 111/111")
     return 0
 
 

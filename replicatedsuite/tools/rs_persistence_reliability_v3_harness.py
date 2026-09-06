@@ -11,6 +11,7 @@ from __future__ import annotations
 import pathlib
 import subprocess
 import tempfile
+from rs_lua_runner import RUNNER
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PERSISTENCE = ROOT / "core/rs_persistence.lua"
@@ -116,7 +117,7 @@ print("PERSISTENCE_RELIABILITY_V3_LUA PASS 15/15")
         fh.write(script)
         tmp = pathlib.Path(fh.name)
     try:
-        proc = subprocess.run(["texlua", str(tmp)], capture_output=True, text=True)
+        proc = subprocess.run([RUNNER, str(tmp)], capture_output=True, text=True)
     finally:
         tmp.unlink(missing_ok=True)
     if proc.returncode != 0:
@@ -128,7 +129,7 @@ print("PERSISTENCE_RELIABILITY_V3_LUA PASS 15/15")
 def main() -> int:
     source = PERSISTENCE.read_text(encoding="utf-8-sig")
     for token in (
-        "ReliabilityContractVersion = 7",
+        "ReliabilityContractVersion = 8",
         "function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)",
         "readbackVerifyAttempts = 0",
         "readbackVerifySuccesses = 0",

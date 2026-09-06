@@ -1,4 +1,4 @@
-------------------------------------------------------------------------
+﻿------------------------------------------------------------------------
 -- Replicated Suite - Bootstrap
 -- Author: Replicated
 -- Version: 1.2 (V3-only; current BuildTag is declared below)
@@ -27,6 +27,9 @@ local previousUI = rawget(S, "UI")
 if type(previousRuntime) == "table" and type(previousRuntime.Stop) == "function" then
     pcall(function() previousRuntime:Stop() end)
 end
+if type(previousUI) == "table" and type(previousUI.QuiesceKeyboardInput) == "function" then
+    pcall(function() previousUI:QuiesceKeyboardInput("bootstrap_hot_reload", true) end)
+end
 if type(previousUI) == "table" and type(previousUI.HideAll) == "function" then
     pcall(function() previousUI:HideAll() end)
 end
@@ -34,7 +37,29 @@ local previousRecoveryEntry = rawget(S, "RecoveryEntry")
 if previousRecoveryEntry ~= nil and type(previousRecoveryEntry.Show) == "function" then
     pcall(function() previousRecoveryEntry:Show(false) end)
 end
+local previousRecoveryCommandBar = rawget(S, "RecoveryCommandBar")
+if previousRecoveryCommandBar ~= nil then
+    local edit = previousRecoveryCommandBar.edit
+    if edit ~= nil then
+        -- A hidden RU EditBox may retain keyboard focus across addon reloads.
+        -- Always return focus before releasing handlers/hiding the old generation.
+        if type(edit.ClearFocus) == "function" then pcall(function() edit:ClearFocus() end) end
+        if type(edit.EnableKeyboard) == "function" then pcall(function() edit:EnableKeyboard(false) end) end
+        if type(edit.EnableFocus) == "function" then pcall(function() edit:EnableFocus(false) end) end
+        if type(edit.ReleaseHandler) == "function" then
+            pcall(function() edit:ReleaseHandler("OnEnterPressed") end)
+        end
+    end
+    if type(previousRecoveryCommandBar.Show) == "function" then
+        pcall(function() previousRecoveryCommandBar:Show(false) end)
+    end
+end
 S.RecoveryEntry = nil
+S.RecoveryEntryHealthy = false
+S.RecoveryEntryError = nil
+S.RecoveryCommandBar = nil
+S.RecoveryCommandHealthy = false
+S.RecoveryCommandError = nil
 -- A successful ReloadAddon may preserve the global ReplicatedSuite table while
 -- re-executing bootstrap. Never inherit the previous generation's pending gate
 -- or detached reload host, otherwise the next developer reload could stay
@@ -69,7 +94,7 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.104-native-bool-setter-startup-hotfix"
+S.BuildTag = "v3-m1.16.0.18.129-real-failure-closeout"
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}
 S.SaveKey = tostring(S.Config.SaveKey or "replicated_suite_v1")
@@ -370,15 +395,10 @@ ReplicatedSuiteRecovery = nil
 local function BootStatusText()
     local stage = tostring(S.BootStage or "bootstrap")
     local err = S.BootError ~= nil and tostring(S.BootError) or "插件尚未完成初始化"
-    return "阶段=" .. stage .. "；" .. err
-end
-
-local function RevealExistingSuiteShell()
-    if S.UIHostManager ~= nil and type(S.UIHostManager.Open) == "function" and S.UIHostManager:GetActive() ~= nil then
-        local ok = S.UIHostManager:Open()
-        return ok == true
-    end
-    return false
+    return "阶段=" .. stage
+        .. "；R=" .. tostring(S.RecoveryEntryHealthy == true)
+        .. "；CMD=" .. tostring(S.RecoveryCommandHealthy == true)
+        .. "；" .. err
 end
 
 -- Backward-compatible function name retained because the settings page in older
@@ -387,7 +407,6 @@ end
 -- data/layout refresh only.
 local function SafeSuiteRefresh(source)
     if S.Ready ~= true or S.Runtime == nil or S.Runtime.started ~= true then
-        RevealExistingSuiteShell()
         SafeChat("刷新未执行：插件尚未就绪；" .. BootStatusText())
         return false
     end
@@ -429,16 +448,26 @@ S.ForceUiReload = SafeSuiteRefresh
 -- rereads addon files without constructing a self-destructing callback owner.
 -- This function is therefore the single explicit "载" Authority.
 ------------------------------------------------------------------------
-local function ReloadCodeFromDisk(source)
+S.RecoveryReloadContractVersion = 1
+S.LastReloadFlushFailure = nil
+
+local function ReloadCodeFromDisk(source, options)
+    options = type(options) == "table" and options or {}
+    local requireDurable = options.requireDurable == true
+
     if X2Option == nil or type(X2Option.SetConsoleVariable) ~= "function" then
         SafeChat("重载失败：游戏界面刷新接口不可用。")
         return false
     end
 
-    -- Flush the independent V3 stores before the native UI generation is
-    -- replaced. The rebuild runtime intentionally has no legacy Storage
-    -- authority; window geometry, feature preferences and floating-window state
-    -- all persist through this single V3 persistence boundary.
+    -- Reload is first and foremost the developer/recovery escape hatch used
+    -- after files on disk have been replaced. Persistence therefore performs a
+    -- best-effort durability barrier, but a broken Store must never deadlock the
+    -- only path capable of loading the fix for that Store. Strict durability is
+    -- still available to callers that explicitly set requireDurable=true (for
+    -- example shutdown/transactional flows); recovery reload records the exact
+    -- failure evidence and continues with a loud data-loss warning.
+    S.LastReloadFlushFailure = nil
     if S.Persistence ~= nil and type(S.Persistence.Flush) == "function" then
         local callOk, flushed, failures = pcall(function() return S.Persistence:Flush() end)
         if callOk ~= true or flushed ~= true then
@@ -451,8 +480,20 @@ local function ReloadCodeFromDisk(source)
             else
                 detail = tostring(failures or "存在未保存配置")
             end
-            SafeChat("重载已取消：配置尚未全部安全保存。" .. (detail ~= "" and (" " .. detail) or ""))
-            return false
+            S.LastReloadFlushFailure = {
+                source = tostring(source or "unknown"),
+                detail = tostring(detail or "flush_failed"),
+                requireDurable = requireDurable,
+            }
+            if requireDurable then
+                SafeChat("重载已取消：调用方要求全部配置安全落盘。" .. (detail ~= "" and (" " .. detail) or ""))
+                return false
+            end
+            SafeChat("警告：部分配置保存失败，但将继续重新加载文件以便修复故障；本次未保存修改可能丢失。"
+                .. (detail ~= "" and (" " .. detail) or ""))
+            if type(S.RecordLog) == "function" then
+                S.RecordLog("warning", "recovery", "reload continuing after persistence flush failure: " .. tostring(detail or "flush_failed"))
+            end
         end
     end
 
@@ -497,6 +538,233 @@ local function BootstrapNativeAccepted(widget, methodName, ...)
     return true, nil
 end
 
+local RECOVERY_BUTTON_SIZE = 30
+local RECOVERY_DRAG_MOVE_EPSILON = 2
+local RECOVERY_COMMAND_WIDTH = 174
+local RECOVERY_COMMAND_HEIGHT = 30
+S.RecoveryLauncherContractVersion = 2
+S.RecoveryLauncherLogicalSize = RECOVERY_BUTTON_SIZE
+S.RecoveryLauncherDragThreshold = RECOVERY_DRAG_MOVE_EPSILON
+S.RecoveryCommandContractVersion = 2
+S.RecoveryInputIsolationContractVersion = 1
+
+local RecoveryLeftClick
+
+local function NormalizeRecoveryCommand(text)
+    text = tostring(text or "")
+    text = text:gsub("^%s+", ""):gsub("%s+$", "")
+    text = text:gsub("^/+", "")
+    return string.lower(text)
+end
+
+function S.ExecuteRecoveryCommand(text)
+    local command = NormalizeRecoveryCommand(text)
+    if command == "" then return false, "empty_command" end
+
+    if command == "reload" or command == "rsreload" or command == "rs reload" then
+        return ReloadCodeFromDisk("recovery_command")
+    end
+    if command == "diag" or command == "rsdiag" or command == "rs diag" then
+        SafeChat(BootStatusText())
+        return true
+    end
+    if command == "open" or command == "rsopen" or command == "rs open" then
+        return RecoveryLeftClick()
+    end
+    if command == "help" or command == "rshelp" or command == "rs help" then
+        SafeChat("RS恢复命令：reload=重载界面/插件，diag=启动诊断，open=打开主界面。")
+        return true
+    end
+
+    SafeChat("未知RS恢复命令：" .. tostring(command) .. "。可用：reload / diag / open / help")
+    return false, "unknown_command"
+end
+
+function S.SetRecoveryCommandBarVisible(visible)
+    local bar = S.RecoveryCommandBar
+    if bar == nil or type(bar.Show) ~= "function" then return false end
+    local edit = bar.edit
+    local wantVisible = visible == true
+
+    -- Recovery input is a break-glass surface, never a keyboard Authority.
+    -- RU may keep focus on a hidden EditBox, so every visibility transition
+    -- explicitly returns focus. Hidden state also disables keyboard/focus input.
+    if edit ~= nil and type(edit.ClearFocus) == "function" then
+        pcall(function() edit:ClearFocus() end)
+    end
+    if edit ~= nil and wantVisible then
+        if type(edit.EnableFocus) == "function" then pcall(function() edit:EnableFocus(true) end) end
+        if type(edit.EnableKeyboard) == "function" then pcall(function() edit:EnableKeyboard(true) end) end
+    end
+
+    -- ArcheAge boolean native setters may return the state being applied.
+    -- Therefore Show(false) returning false is not a transport failure.
+    local ok = pcall(function() bar:Show(wantVisible) end)
+
+    if edit ~= nil then
+        if type(edit.ClearFocus) == "function" then pcall(function() edit:ClearFocus() end) end
+        if not wantVisible then
+            if type(edit.EnableKeyboard) == "function" then pcall(function() edit:EnableKeyboard(false) end) end
+            if type(edit.EnableFocus) == "function" then pcall(function() edit:EnableFocus(false) end) end
+        end
+    end
+    return ok == true
+end
+
+function S.InstallRecoveryCommandBar()
+    S.RecoveryCommandHealthy = false
+    S.RecoveryCommandError = nil
+    local factory = S.NativeObjectFactory
+    if type(factory) ~= "table" or type(factory.CreateWindow) ~= "function" or type(factory.CreateChildByObject) ~= "function" then
+        S.RecoveryCommandError = "native factory unavailable"
+        return false, S.RecoveryCommandError
+    end
+
+    local bar, createErr = factory:CreateWindow(S.PhysicalId("recovery_command_bar"), "UIParent", "")
+    if bar == nil then
+        S.RecoveryCommandError = tostring(createErr or "recovery command bar create failed")
+        return false, S.RecoveryCommandError
+    end
+    bar.rsUiOwner = "bootstrap:recovery_command"
+    bar.rsUiLogicalId = "recovery_command_bar"
+    local configured, configureErr = pcall(function()
+        if type(bar.SetCloseOnEscape) == "function" then pcall(function() bar:SetCloseOnEscape(false) end) end
+        if type(bar.SetWindowModal) == "function" then pcall(function() bar:SetWindowModal(false) end) end
+        if type(bar.SetUILayer) == "function" then pcall(function() bar:SetUILayer("system") end) end
+        bar:SetExtent(RECOVERY_COMMAND_WIDTH, RECOVERY_COMMAND_HEIGHT)
+        if type(bar.RemoveAllAnchors) == "function" then bar:RemoveAllAnchors() end
+        bar:AddAnchor("TOPLEFT", "UIParent", 334, 100)
+        if type(bar.Enable) == "function" then pcall(function() bar:Enable(true) end) end
+        if type(bar.EnablePick) == "function" then pcall(function() bar:EnablePick(true) end) end
+        if type(bar.CreateColorDrawable) == "function" then
+            local bg = bar:CreateColorDrawable(0.015, 0.022, 0.032, 0.94, "background")
+            if bg ~= nil and type(bg.AddAnchor) == "function" then
+                bg:AddAnchor("TOPLEFT", bar, 0, 0)
+                bg:AddAnchor("BOTTOMRIGHT", bar, 0, 0)
+            end
+        end
+    end)
+    if configured ~= true then
+        pcall(function() bar:Show(false) end)
+        S.RecoveryCommandError = tostring(configureErr or "recovery command bar configure failed")
+        return false, S.RecoveryCommandError
+    end
+
+    local label = factory:CreateChildByObject(bar, "LABEL", S.PhysicalId("recovery_command_label"), 0, true)
+    if label ~= nil then
+        pcall(function()
+            label:SetExtent(28, 24)
+            label:SetText("RS>")
+            label:AddAnchor("LEFT", bar, 4, 0)
+            label:Show(true)
+        end)
+        bar.label = label
+    end
+
+    local edit = factory:CreateChildByObject(bar, "X2_EDITBOX", S.PhysicalId("recovery_command_edit"), 0, true)
+    if edit == nil then edit = factory:CreateChildByObject(bar, "EDITBOX", S.PhysicalId("recovery_command_edit_fallback"), 0, true) end
+    if edit == nil then
+        pcall(function() bar:Show(false) end)
+        S.RecoveryCommandError = "recovery command edit unavailable"
+        return false, S.RecoveryCommandError
+    end
+    if type(edit.ClearFocus) ~= "function" then
+        pcall(function() bar:Show(false) end)
+        S.RecoveryCommandError = "recovery command ClearFocus unavailable"
+        return false, S.RecoveryCommandError
+    end
+    bar.edit = edit
+    local editOk, editErr = pcall(function()
+        edit:SetExtent(136, 24)
+        if type(edit.SetInset) == "function" then edit:SetInset(5, 5, 5, 5) end
+        if type(edit.Enable) == "function" then edit:Enable(true) end
+        -- Recovery input must be born inert. RU can retain keyboard ownership
+        -- from an EditBox that was keyboard-enabled even if it is hidden a few
+        -- frames later, so bootstrap must never briefly enable keyboard/focus.
+        -- SetRecoveryCommandBarVisible(true) is the only authority that arms it.
+        if type(edit.EnableFocus) == "function" then edit:EnableFocus(false) end
+        if type(edit.EnableKeyboard) == "function" then edit:EnableKeyboard(false) end
+        if type(edit.EnablePick) == "function" then edit:EnablePick(true) end
+        if type(edit.Clickable) == "function" then edit:Clickable(true) end
+        if type(edit.SetReClickable) == "function" then edit:SetReClickable(true) end
+        if type(edit.SetReadOnly) == "function" then edit:SetReadOnly(false) end
+        if type(edit.UseSelectAllWhenFocused) == "function" then edit:UseSelectAllWhenFocused(true) end
+        if type(edit.SetMaxTextLength) == "function" then edit:SetMaxTextLength(32) end
+        edit:SetText("")
+        edit:AddAnchor("LEFT", bar, 32, 0)
+        edit:Show(true)
+        edit:ClearFocus()
+    end)
+    if editOk ~= true then
+        pcall(function() bar:Show(false) end)
+        S.RecoveryCommandError = tostring(editErr or "recovery command edit configure failed")
+        return false, S.RecoveryCommandError
+    end
+
+    local function SubmitRecoveryCommand()
+        local text = ""
+        if type(edit.GetText) == "function" then
+            local ok, value = pcall(function() return edit:GetText() end)
+            if ok == true then text = tostring(value or "") end
+        end
+        if type(edit.SetText) == "function" then pcall(function() edit:SetText("") end) end
+        if type(edit.ClearFocus) == "function" then pcall(function() edit:ClearFocus() end) end
+        if NormalizeRecoveryCommand(text) == "" then return true end
+        local ok, result, err = pcall(function() return S.ExecuteRecoveryCommand(text) end)
+        if ok ~= true then
+            SafeChat("RS恢复命令执行失败：" .. tostring(result or "未知错误"))
+            return false
+        end
+        if result ~= true and err ~= "unknown_command" then
+            SafeChat("RS恢复命令未完成：" .. tostring(err or "未知原因"))
+        end
+        return result == true
+    end
+
+    -- OnEnterPressed is verified in the ArcheAge client scripts for editboxes.
+    -- Do not invent/fallback to WoW-style slash registries or unverified edit
+    -- events: this bootstrap recovery surface must remain inside known RU ABI.
+    local enterBound = false
+    if type(edit.SetHandler) == "function" then
+        local ok, result = pcall(edit.SetHandler, edit, "OnEnterPressed", SubmitRecoveryCommand)
+        enterBound = ok == true and result ~= false
+    end
+    if enterBound ~= true then
+        pcall(function() bar:Show(false) end)
+        S.RecoveryCommandError = "recovery command enter handler unavailable"
+        return false, S.RecoveryCommandError
+    end
+
+    S.RecoveryCommandBar = bar
+    S.RecoveryCommandHealthy = true
+    S.RecoveryCommandError = nil
+    -- Normal bootstrap is intentionally keyboard-inert. Runtime failure may
+    -- explicitly reveal this break-glass input later, but successful startup
+    -- must never expose even a transient keyboard-enabled EditBox.
+    S.SetRecoveryCommandBarVisible(false)
+    return true
+end
+
+local function ReadRecoveryPosition(button)
+    if button == nil then return nil, nil end
+    if S.Layout ~= nil and type(S.Layout.GetLogicalRect) == "function" then
+        local ok, x, y = pcall(function()
+            local px, py = S.Layout:GetLogicalRect(button)
+            return px, py
+        end)
+        if ok == true and tonumber(x) ~= nil and tonumber(y) ~= nil then return tonumber(x), tonumber(y) end
+    end
+    if type(button.GetEffectiveOffset) == "function" then
+        local ok, x, y = pcall(function() return button:GetEffectiveOffset() end)
+        if ok == true and tonumber(x) ~= nil and tonumber(y) ~= nil then return tonumber(x), tonumber(y) end
+    end
+    if type(button.GetOffset) == "function" then
+        local ok, x, y = pcall(function() return button:GetOffset() end)
+        if ok == true and tonumber(x) ~= nil and tonumber(y) ~= nil then return tonumber(x), tonumber(y) end
+    end
+    return nil, nil
+end
+
 local function CreateBootstrapRecoveryEntry()
     local factory = S.NativeObjectFactory
     if type(factory) ~= "table" or type(factory.CreateButton) ~= "function" then return nil end
@@ -508,7 +776,13 @@ local function CreateBootstrapRecoveryEntry()
     local configured, configureErr = pcall(function()
         button:SetText("R")
         if type(button.SetStyle) == "function" then pcall(function() button:SetStyle("text_default") end) end
-        if type(button.SetExtent) == "function" then button:SetExtent(42, 42) end
+        -- Native Button auto-resize can re-expand a one-letter launcher to the
+        -- style's minimum text footprint on RU. Disable it before forcing the
+        -- compact recovery extent, matching Theme:StyleButton's size discipline.
+        if type(button.SetAutoResize) == "function" then pcall(function() button:SetAutoResize(false) end) end
+        if type(button.SetExtent) == "function" then button:SetExtent(RECOVERY_BUTTON_SIZE, RECOVERY_BUTTON_SIZE) end
+        if type(button.SetWidth) == "function" then pcall(function() button:SetWidth(RECOVERY_BUTTON_SIZE) end) end
+        if type(button.SetHeight) == "function" then pcall(function() button:SetHeight(RECOVERY_BUTTON_SIZE) end) end
         if type(button.RemoveAllAnchors) == "function" then button:RemoveAllAnchors() end
         button:AddAnchor("TOPLEFT", "UIParent", 300, 100)
         if type(button.Enable) == "function" then
@@ -520,7 +794,7 @@ local function CreateBootstrapRecoveryEntry()
         if type(button.Clickable) == "function" then
             local ok, err = BootstrapNativeAccepted(button, "Clickable", true); if ok ~= true then error(err) end
         end
-        button:Show(true)
+        local showOk, showErr = BootstrapNativeAccepted(button, "Show", true); if showOk ~= true then error(showErr) end
     end)
     if configured ~= true then
         SafeChat("恢复入口配置失败：" .. tostring(configureErr or "未知错误"))
@@ -530,19 +804,21 @@ local function CreateBootstrapRecoveryEntry()
     return button
 end
 
-local function RecoveryLeftClick()
+RecoveryLeftClick = function()
     local button = S.RecoveryEntry
     if button ~= nil and button.rsIgnoreClick == true then
         button.rsIgnoreClick = false
         return true
     end
     if S.Ready == true and S.UIHostManager ~= nil and type(S.UIHostManager.Toggle) == "function" then
+        if S.Runtime ~= nil and S.Runtime.escRegistered ~= true and type(S.Runtime.RegisterEscMenu) == "function" then
+            pcall(function() S.Runtime:RegisterEscMenu("recovery_click") end)
+        end
         local ok, err = S.UIHostManager:Toggle()
         if ok == true then return true end
         SafeChat("新版主界面打开失败：" .. tostring(err or "未知错误"))
         return false
     end
-    RevealExistingSuiteShell()
     SafeChat("插件尚未就绪；" .. BootStatusText())
     return false
 end
@@ -557,20 +833,35 @@ local function InstallRecoveryHandlers(button)
     if type(button.EnableDrag) == "function" then
         local dragOk, dragResult = pcall(function() return button:EnableDrag(true) end)
         if dragOk ~= true or dragResult == false then SafeChat("恢复入口拖动能力启用失败。") end
+        -- RU requires an explicit drag condition on some WidgetBase/Button
+        -- implementations; EnableDrag alone can leave OnDragStart unreachable.
+        if dragOk == true and dragResult ~= false and type(button.SetDragCondition) == "function" and DC_ALWAYS ~= nil then
+            local conditionOk, conditionResult = pcall(function() return button:SetDragCondition(DC_ALWAYS) end)
+            if conditionOk ~= true or conditionResult == false then SafeChat("恢复入口拖动条件启用失败。") end
+        end
     end
     local leftOk, leftResult = pcall(button.SetHandler, button, "OnClick", RecoveryLeftClick)
     local rightOk, rightResult = pcall(button.SetHandler, button, "OnRButtonUp", RecoveryRightClick)
     local dragStartOk, dragStartResult = pcall(button.SetHandler, button, "OnDragStart", function()
         if type(button.StartMoving) ~= "function" then return false end
+        button.rsDragStartX, button.rsDragStartY = ReadRecoveryPosition(button)
         local ok, result = pcall(function() return button:StartMoving() end)
         button.rsMoving = ok == true and result ~= false
         return button.rsMoving
     end)
     local dragStopOk, dragStopResult = pcall(button.SetHandler, button, "OnDragStop", function()
         if button.rsMoving == true and type(button.StopMovingOrSizing) == "function" then pcall(function() button:StopMovingOrSizing() end) end
+        local endX, endY = ReadRecoveryPosition(button)
+        local startX, startY = tonumber(button.rsDragStartX), tonumber(button.rsDragStartY)
+        local moved = startX ~= nil and startY ~= nil and endX ~= nil and endY ~= nil
+            and (math.abs(endX - startX) > RECOVERY_DRAG_MOVE_EPSILON or math.abs(endY - startY) > RECOVERY_DRAG_MOVE_EPSILON)
         button.rsMoving = false
-        button.rsIgnoreClick = true
-        if S.Layout ~= nil and type(S.Layout.StorePlacement) == "function" and S.UIV3 ~= nil and type(S.UIV3.LauncherState) == "table" then
+        button.rsDragStartX, button.rsDragStartY = nil, nil
+        -- Some RU builds emit DragStart/DragStop even for a normal click. Suppress
+        -- the following OnClick only when geometry actually moved; otherwise the
+        -- recovery launcher would consume every click forever.
+        button.rsIgnoreClick = moved == true
+        if moved == true and S.Layout ~= nil and type(S.Layout.StorePlacement) == "function" and S.UIV3 ~= nil and type(S.UIV3.LauncherState) == "table" then
             -- The launcher participates in the same framework-owned screen-button
             -- snap group as Gear and future floating buttons.  Snap is resolved
             -- once at drag stop; there is no Tick/mouse polling.
@@ -628,20 +919,40 @@ function S.ActivateRecoveryEntry()
         if type(button.Clickable) == "function" then
             local ok, err = BootstrapNativeAccepted(button, "Clickable", true); if ok ~= true then error(err) end
         end
-        button:Show(true)
+        local showOk, showErr = BootstrapNativeAccepted(button, "Show", true); if showOk ~= true then error(showErr) end
     end)
     if stateOk ~= true then
+        S.RecoveryEntryHealthy = false
+        S.RecoveryEntryError = tostring(stateErr or "recovery state restore failed")
         SafeChat("恢复入口交互状态恢复失败：" .. tostring(stateErr or "未知错误"))
         return false
     end
-    return handlerOk
+    if handlerOk ~= true then
+        S.RecoveryEntryHealthy = false
+        S.RecoveryEntryError = "recovery left-click binding unavailable"
+        return false
+    end
+    S.RecoveryEntryHealthy = true
+    S.RecoveryEntryError = nil
+    return true
 end
 
 function S.InstallBootstrapRecoveryEntry()
+    S.RecoveryEntryHealthy = false
+    S.RecoveryEntryError = nil
     if S.RecoveryEntry ~= nil and type(S.RecoveryEntry.Show) == "function" then
         pcall(function() S.RecoveryEntry:Show(false) end)
     end
     S.RecoveryEntry = CreateBootstrapRecoveryEntry()
-    if S.RecoveryEntry == nil then return false, "recovery entry unavailable" end
-    return InstallRecoveryHandlers(S.RecoveryEntry)
+    if S.RecoveryEntry == nil then
+        S.RecoveryEntryError = "recovery entry unavailable"
+        return false, S.RecoveryEntryError
+    end
+    local handlerOk = InstallRecoveryHandlers(S.RecoveryEntry)
+    if handlerOk ~= true then
+        S.RecoveryEntryError = "recovery left-click binding unavailable"
+        return false, S.RecoveryEntryError
+    end
+    S.RecoveryEntryHealthy = true
+    return true
 end

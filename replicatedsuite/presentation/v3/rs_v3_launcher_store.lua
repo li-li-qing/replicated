@@ -18,6 +18,7 @@ V3.LauncherState = type(V3.LauncherState) == "table" and V3.LauncherState or {
 }
 
 local STORE_ID = "v3.launcher"
+local LAUNCHER_LOGICAL_SIZE = 30
 local function Normalize(value)
     value = type(value) == "table" and value or {}
     local moved = value.userMoved == true
@@ -61,37 +62,55 @@ end
 
 V3.LauncherStoreId = STORE_ID
 V3.LauncherStoreLoaded = V3.LauncherStoreLoaded == true
+V3.LauncherStoreSessionFallback = V3.LauncherStoreSessionFallback == true
+V3.LauncherStoreLoadError = V3.LauncherStoreLoadError
+
+function V3:UseLauncherSessionDefaults(reason)
+    Apply(nil)
+    self.LauncherStoreLoaded = true
+    self.LauncherStoreSessionFallback = true
+    self.LauncherStoreLoadError = tostring(reason or "launcher store load failed")
+    if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Warn) == "function" then
+        S.DiagnosticsManager:Warn("ui_v3", "LAUNCHER_STORE_SESSION_FALLBACK",
+            "启动按钮存档读取失败；本次会话使用默认位置，不以降级值主动覆盖原存档",
+            { error = self.LauncherStoreLoadError })
+    end
+    return true
+end
 
 function V3:EnsureLauncherStoreLoaded()
     if self.LauncherStoreLoaded == true then return true end
     local store = P:GetStore(STORE_ID)
-    if store == nil then return false, "启动按钮存档不可用" end
+    if store == nil then return self:UseLauncherSessionDefaults("启动按钮存档不可用") end
     local status, _, err = P:LoadStore(STORE_ID)
     if status == true or status == "empty" then
         if status == "empty" then Apply(nil) end
         self.LauncherStoreLoaded = true
+        self.LauncherStoreSessionFallback = false
+        self.LauncherStoreLoadError = nil
         return true
     end
-    return false, err or tostring(status or "读取失败")
+    return self:UseLauncherSessionDefaults(err or tostring(status or "读取失败"))
 end
 
 function V3:MarkLauncherStoreDirty(delayMs, reason)
+    if self.LauncherStoreSessionFallback == true then return true, "session_fallback_no_persist" end
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 250, reason or "launcher_changed")
 end
 
 function V3:ApplyLauncherPlacement()
     local button = S.RecoveryEntry
     if button == nil or S.Layout == nil then return false end
-    local context = S.Layout:GetContext()
-    local size = math.max(36, 42 * (tonumber(context.addonScale) or 1))
+    -- Launcher is a screen affordance, not Suite content. SetExtent receives
+    -- logical UI coordinates already affected by the client's UI scale; applying
+    -- Suite content scale here again double-scaled R on low-resolution / high-scale setups.
+    local size = LAUNCHER_LOGICAL_SIZE
     S.Layout:ApplyPlacement(button, self.LauncherState, size, size, 300, 100, { mode = "free" })
     if type(S.Layout.RegisterFloating) == "function" then
         S.Layout:RegisterFloating("v3_launcher", button, {
             onlyWhenVisible = true,
             onMetricsChanged = function()
-                local c = S.Layout:GetContext()
-                local nextSize = math.max(36, 42 * (tonumber(c.addonScale) or 1))
-                S.Layout:ApplyPlacement(button, V3.LauncherState, nextSize, nextSize, 300, 100, { mode = "free" })
+                S.Layout:ApplyPlacement(button, V3.LauncherState, LAUNCHER_LOGICAL_SIZE, LAUNCHER_LOGICAL_SIZE, 300, 100, { mode = "free" })
             end,
         })
     end

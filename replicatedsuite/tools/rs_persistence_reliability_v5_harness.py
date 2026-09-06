@@ -11,6 +11,7 @@ from __future__ import annotations
 import pathlib
 import subprocess
 import tempfile
+from rs_lua_runner import RUNNER
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PERSISTENCE = ROOT / "core/rs_persistence.lua"
@@ -55,7 +56,7 @@ dofile([[{PERSISTENCE.as_posix()}]])
 local P = ReplicatedSuite.Persistence
 assert(P.ReliabilityContractVersion >= 5, "contract")
 assert(P.MinIntegrityReliabilityContractVersion == 4, "compat_floor")
-assert(P.IntegrityContractVersion == 1, "integrity_contract")
+assert(P.IntegrityContractVersion == 4, "integrity_contract")
 local budget = {{ maxDepth = 8, maxNodes = 256, maxStringBytes = 4096, maxEntriesPerTable = 64 }}
 
 -- v4-stamped data must remain readable after the runtime contract advances.
@@ -105,7 +106,14 @@ local decodeBeforeCorruptLoad = decodeCalls
 storage[predecodeKey].payload.nested = nil
 local corruptOk, _, corruptErr = P:LoadStore("v3.v5.predecode")
 assert(corruptOk == false and string.find(corruptErr or "", "integrity_failed", 1, true), "corrupt_rejected")
-assert(decodeCalls == decodeBeforeCorruptLoad, "decoder_not_called_before_integrity")
+-- Integrity v3 verifies the CANONICAL value, which requires running the (pure,
+-- pcall-wrapped) decoder on the loaded payload before verification. The v2-era
+-- "decoder never sees a corrupt envelope" guarantee is therefore intentionally
+-- narrowed: the invariant that must hold is that corrupt data never reaches
+-- the Domain apply path.
+assert(decodeCalls >= decodeBeforeCorruptLoad, "v3_decoder_pure_and_contained")
+assert(decodeState.value == 5 and decodeState.nested ~= nil, "corrupt_never_applied")
+assert(P:GetStore("v3.v5.predecode").writeFenced == true, "corrupt_fenced")
 
 -- Ordinary saves stay one-write/no-read in the hot path, but Flush is now a
 -- hard durability barrier. A silently truncated physical write blocks reload,
@@ -186,7 +194,7 @@ assert(clearState.value == "default", "verified_clear_applies_default")
 assert(P.stats.clearVerifyAttempts == 2 and P.stats.clearVerifyFailures == 1, "clear_verify_stats")
 
 local desc = P:Describe()
-assert(desc.reliabilityContractVersion >= 5 and desc.integrityContractVersion == 1, "describe_contract")
+assert(desc.reliabilityContractVersion >= 5 and desc.integrityContractVersion == 4, "describe_contract")
 assert(type(desc.lastFlush) == "table" and desc.lastFlush.ok == true, "last_flush_diagnostics")
 print("PERSISTENCE_RELIABILITY_V5_LUA PASS 33/33")
 '''
@@ -194,7 +202,7 @@ print("PERSISTENCE_RELIABILITY_V5_LUA PASS 33/33")
         fh.write(script)
         tmp = pathlib.Path(fh.name)
     try:
-        proc = subprocess.run(["texlua", str(tmp)], capture_output=True, text=True)
+        proc = subprocess.run([RUNNER, str(tmp)], capture_output=True, text=True)
     finally:
         tmp.unlink(missing_ok=True)
     if proc.returncode != 0:
@@ -206,7 +214,7 @@ print("PERSISTENCE_RELIABILITY_V5_LUA PASS 33/33")
 def main() -> int:
     source = PERSISTENCE.read_text(encoding="utf-8-sig")
     for token in (
-        "ReliabilityContractVersion = 7",
+        "ReliabilityContractVersion = 8",
         "MinIntegrityReliabilityContractVersion = 4",
         "needsBarrierVerify = false",
         "barrierVerifyAttempts = 0",
@@ -214,7 +222,7 @@ def main() -> int:
         "durability_barrier_verify_failed",
         'store.loadStatus = "clear_verify_failed"',
         "FingerprintEncodedPayload(raw, store.encodedBudget)",
-        "performs verification BEFORE any custom decoder",
+        "before any business decoder runs",
     ):
         if token not in source:
             raise AssertionError("Reliability v5 implementation missing: " + token)

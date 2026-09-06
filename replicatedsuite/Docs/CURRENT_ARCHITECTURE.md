@@ -9,6 +9,7 @@
 - **运行时 Addon 只有 `replicatedsuite/`**；`z_api_functions/` 是开发期 API Reference / Evidence，不进入 `toc.g`，不进入运行时。
 - 当前架构模式为 `v3_rebuild`，Active TOC 只加载新版 V3 Framework。
 - 旧版 Legacy / Professional / `globals/` 已物理删除，不再随包、不作为当前迁移依赖，也不得重新接回 Active Runtime。
+- **参考项目只提供产品行为证据**：只参考功能目标、用户流程、交互结果与必要数据语义；禁止复制旧版 Service/遍历/缓存/事件/全局状态/强耦合实现。任何参考功能必须重新落到当前 V3 Authority → Service/EventBus → Demand-scoped Feature → RSUI/Presentation 架构，并以更少重复扫描、更明确生命周期和 fail-closed 契约为目标。
 - 当前目录遵循长期分层：**Core + Services + Feature Modules + Presentation / RSUI**。
 - Feature 必须独立启停、独立持有生命周期资源；“页面打开”“悬浮窗可见”“Feature Enabled”不是同一个状态。
 
@@ -108,7 +109,7 @@ Native Foundation 是所有原生对象、能力导入和写入边界的唯一�
 
 ## 6. Shared Services
 
-当前 `services/` 有 16 个 Active Service：
+当前 `services/` 有 19 个 Active Service：
 
 | 服务 | 当前责任 |
 |---|---|
@@ -124,10 +125,13 @@ Native Foundation 是所有原生对象、能力导入和写入边界的唯一�
 | `InstanceCatalogV3` | 运行时副本目录事实 |
 | `QuestProgressV3` | 任务进度共享读取 |
 | `GearServiceV3` | 装备读取/换装受控能力 |
+| `InventorySnapshotV3` | 背包/银行/箱子的显式有界只读快照、物理 bagId Authority、单遍 identity/category 索引与 live slot revalidation；不拥有业务规则或写动作 |
 | `AlertsService` | 短生命周期 Alert 状态 |
 | `ScreenProjectionV3` | Native world/screen → RSUI logical projection；v5 unit batch 同一 global world space + bounded Native/Camera consistency reconciliation |
 | `AuctionQueryV3` | 当前挂单查询、事件所有权、串行化与限速边界 |
 | `PriceQuoteQueueV3` | 共享按需报价队列与 bounded quote read-model |
+| `AuctionSurfaceV3` | 只读观察原生 `UIC_AUCTION` 可见性/几何；Demand-scoped 250ms，兼容 RU 四值 MainScript 返回，不拥有收藏/查询/UI 状态 |
+| `CraftSurfaceV3` | 只读观察原生制作窗口可见性/几何；Demand-scoped bounded watcher，不拥有制作业务/报价状态 |
 
 Service 只提供共享事实/基础操作，不拥有 Consumer 的业务判定和 Presentation。
 
@@ -230,6 +234,9 @@ RSUI 是唯一通用 UI Foundation。页面应优先组合：
 - Container Surface Authority：Card / Section / FormSection 均由 RSUI 直接拥有；历史 `UI.ComponentsV2` 已退休，不允许重新进入 Active TOC。
 - 选择控件降级必须 fail-closed；Dropdown Popup 不可构建时只读显示当前值与明确警告，不允许偷偷改变为循环切换交互。大量选项的共享搜索/选择状态先进入 `PickerModel`，SearchablePicker/IconPicker 只做 Presentation，不复制筛选 Authority。
 - Focus 使用 target-aware capability：是否可 `SetFocus/ClearFocus` 由具体 Native target 决定，禁止全局硬编码“支持”。RU 尚未验证 generic `OnKeyDown/OnKeyUp/OnTextChanged`，Foundation Audit 当前直接禁止 Active Runtime 绑定这三类事件。
+- **Input Focus Lifecycle Authority（`.18.112`，`.18.117` 升级）**：所有 Suite keyboard input 由 UI Framework 按 Native physical id 登记；父子关系通过 `rsUiParent` 做 bounded ancestry。`.18.117` 起 EditBox 构造保持 `EnableKeyboard(false)`，只有明确用户点击后才 `ArmInputWidget -> SetFocus`；LostFocus、隐藏/禁用/失去 pickability、Runtime quiesce 与 teardown 都必须 disarm。`ClearFocus` 仍只有在“global focused id → 已登记 Suite input → 属于正在停用子树”三条成立时才允许执行，因此不得误清 ArcheAge chat/其他游戏输入。
+- **Top-Level Layer Authority（`.18.118`）**：跨 root 可交互 UI 不再依赖 `emptywidget` 的隐式层级。Application Shell、FloatingSurface、Popup/ContextMenu 统一在 Native `system` layer，角色 priority 由 UITokens v5 唯一定义为 `Shell < Floating < Popup < Modal`；Feature/页面只声明角色，不直接争抢 Native Z-order。
+- **Drag Hit-Test Authority（`.18.112`）**：可拖窗口的 hit-test surface 由 Windowing 自己保证 `Enabled + Pickable`，再建立 `EnableDrag + DC_ALWAYS`；`Border` 必须透传 `pickable/owner`，WindowShell title bar 显式 pickable。Native `StartMoving/StartSizing/StopMovingOrSizing` 仍是实际 capture/geometry Authority，不允许页面用 Tick/raw mouse delta 建第二套。
 - Exclusive Popup Authority：`RSUI.PopupCoordinator` 统一 Dropdown / ColorField / ContextMenu 的 Register/CloseAll/Unregister；历史 `DropdownService` 只作为同一对象的兼容 alias。
 - Popup Z Priority 由 `UITokens v4.layer.popupPriority` 统一提供，页面/组件不得继续硬编码独立 priority。
 - Focus/Keyboard 能力必须按 RU 已验证事件 fail-closed；当前不假设 generic OnKeyDown/OnKeyUp 或实时文本变化事件。
@@ -254,7 +261,7 @@ RSUI 是唯一通用 UI Foundation。页面应优先组合：
 - Session
 - Checkpoint
 
-统一采用 Store Contract、Dirty + Debounce、Schema Migration、Write Fence 和失败 rollback。`.18.81` 建立 **Persistence Reliability Contract v2**：保留 `.18.80` 的 Load-before-Write、dirty Reload fence、失败重试、损坏 payload fail-closed、Reload/Runtime durability barrier，并新增 Domain Budget 与 Encoded Envelope Budget 分离以及 `MutateStore()` 原子 mutation transaction。`.18.83` 追加 runtime acceptance diagnostics；`.18.84` 增加只读 `Runtime Acceptance Snapshot`。`.18.95` 升级为 **Persistence Reliability Contract v3**：Critical Store 可 opt-in `SaveData → immediate LoadData → metadata/decode/Domain fingerprint` 回读验证，验证只读不 Apply。`.18.97` 升级为 **Reliability v4 + Integrity v1**：所有新持久化 envelope 写入 `reliabilityContract/integrityVersion/encodedFingerprint`；`.18.98` 再升级 **Reliability v5 Durability Barrier**：v4/v5 Integrity v1 save 均先在任何 custom decode/migrate/apply 之前验证 encoded budget + fingerprint，v4 stamped 数据保持向前可读；`.18.99` 升级 **Reliability v6**：在 business fingerprint 之外增加 metadata Envelope Seal，custom decode 与 migration/period transform 后再次按 Domain budget 检查，`durable=true` mutation 必须 immediate readback 成功才提交，并把 Character Store loaded Domain 绑定 exact world-qualified identity fingerprint；角色切换时旧 dirty/barrier 只可写回 bound old key，禁止投影到新角色。`.18.100` 升级 **Reliability v7**：任何 `needsBarrierVerify` persistent Store 在 durability barrier 通过前禁止普通 `LoadStore()` 重新 Apply 磁盘值；migration/period reset 的 dirty intent 只有在最终 budget + Apply 成功后才提交；Tick 对 terminal/write-fenced dirty Store 不再重复触发 Native Save，只保留失败 evidence 并有界延后。v4/v5 stamped 数据继续向前可读；普通 Store SaveData 成功后只标记 `needsBarrierVerify`，显式 Reload/Runtime Stop 的 `Flush()` 必须对本 generation 尚未证明耐久的 key 进行一次 bounded readback，失败则阻止 Reload 并 requeue 当前健康 Domain，Critical `verifyAfterSave` Store 不重复读取。`ClearStore()` 也必须在 Apply defaults 前证明 `ClearData` 后物理 key 已为 nil。`IsStoreLoaded()` 仅对健康状态返回 true，Core/UI 通用写路径统一使用该语义。Gear 继续作为 Critical Journal Consumer：Index schema 5 + Payload schema 2 使用 compact A/B bank，active 损坏时可回退 verified backup；损坏 inactive bank 只有在 `recoverableReplacement + replaceCorrupt + verifyAfterSave` 全满足时才允许 verified full replacement 自愈，future schema/瞬时读取错误禁止覆盖。历史 pre-v4/legacy shard 保持只读兼容，已物理丢失的旧装备明细仍只能由用户显式“获取当前→保存”重建。公共业务写入仍优先走 `PrepareWrite → snapshot → mutate → MarkDirty/Save → rollback`；Binding/FloatingSurface 的 `MarkDirty` 仅作为已完成 preflight/rollback 的 commit adapter。Feature 关闭不应清除永久用户配置；版本升级必须通过 Normalize / Migration 保持旧配置兼容。
+统一采用 Store Contract、Dirty + Debounce、Schema Migration、Write Fence 和失败 rollback。`.18.81` 建立 **Persistence Reliability Contract v2**：保留 `.18.80` 的 Load-before-Write、dirty Reload fence、失败重试、损坏 payload fail-closed、Reload/Runtime durability barrier，并新增 Domain Budget 与 Encoded Envelope Budget 分离以及 `MutateStore()` 原子 mutation transaction。`.18.83` 追加 runtime acceptance diagnostics；`.18.84` 增加只读 `Runtime Acceptance Snapshot`。`.18.95` 升级为 **Persistence Reliability Contract v3**：Critical Store 可 opt-in `SaveData → immediate LoadData → metadata/decode/Domain fingerprint` 回读验证，验证只读不 Apply。`.18.97` 升级为 **Reliability v4 + Integrity v1**：所有新持久化 envelope 写入 `reliabilityContract/integrityVersion/encodedFingerprint`；`.18.98` 再升级 **Reliability v5 Durability Barrier**：v4/v5 Integrity v1 save 均先在任何 custom decode/migrate/apply 之前验证 encoded budget + fingerprint，v4 stamped 数据保持向前可读；`.18.99` 升级 **Reliability v6**：在 business fingerprint 之外增加 metadata Envelope Seal，custom decode 与 migration/period transform 后再次按 Domain budget 检查，`durable=true` mutation 必须 immediate readback 成功才提交，并把 Character Store loaded Domain 绑定 exact world-qualified identity fingerprint；角色切换时旧 dirty/barrier 只可写回 bound old key，禁止投影到新角色。`.18.100` 升级 **Reliability v7**：任何 `needsBarrierVerify` persistent Store 在 durability barrier 通过前禁止普通 `LoadStore()` 重新 Apply 磁盘值；migration/period reset 的 dirty intent 只有在最终 budget + Apply 成功后才提交；Tick 对 terminal/write-fenced dirty Store 不再重复触发 Native Save，只保留失败 evidence 并有界延后。 `.18.113` 再升级 **Reliability v8 / Integrity v2**：Persistence encoded/readback integrity 对非整数使用 serializer-stable canonicalization、整数保持 exact；历史 v1 普通设置只有在 v6+ Envelope Seal 完整且非 Critical/Journal 时才允许 compatibility load，并且必须经过 decode/budget/migration/final-budget/apply 后才可 restamp v2。Gear A/B 自己使用的 exact `FingerprintPayload()` 不改变。启动关键 App/Shell/Launcher 进入 session fallback 后所有 mutation 只留在内存，不向未就绪/写保护 Store 提交 MarkDirty/MutateStore。v4/v5 stamped 数据继续向前可读；普通 Store SaveData 成功后只标记 `needsBarrierVerify`，显式 Reload/Runtime Stop 的 `Flush()` 必须对本 generation 尚未证明耐久的 key 进行一次 bounded readback，失败时 requeue 当前健康 Domain；`.18.110` 起 Recovery Reload 记录故障后继续加载修复文件，只有 Runtime Stop/显式 strict durability 保持硬门禁，Critical `verifyAfterSave` Store 不重复读取。`ClearStore()` 也必须在 Apply defaults 前证明 `ClearData` 后物理 key 已为 nil。`IsStoreLoaded()` 仅对健康状态返回 true，Core/UI 通用写路径统一使用该语义。Gear 继续作为 Critical Journal Consumer：Index schema 5 + Payload schema 2 使用 compact A/B bank，active 损坏时可回退 verified backup；损坏 inactive bank 只有在 `recoverableReplacement + replaceCorrupt + verifyAfterSave` 全满足时才允许 verified full replacement 自愈，future schema/瞬时读取错误禁止覆盖。历史 pre-v4/legacy shard 保持只读兼容，已物理丢失的旧装备明细仍只能由用户显式“获取当前→保存”重建。公共业务写入仍优先走 `PrepareWrite → snapshot → mutate → MarkDirty/Save → rollback`；Binding/FloatingSurface 的 `MarkDirty` 仅作为已完成 preflight/rollback 的 commit adapter。Feature 关闭不应清除永久用户配置；版本升级必须通过 Normalize / Migration 保持旧配置兼容。
 
 详见 [`Architecture/PERSISTENCE_ARCHITECTURE.md`](Architecture/PERSISTENCE_ARCHITECTURE.md)。
 
@@ -331,15 +338,15 @@ Editor Foundation 目前仍不直接迁移 Healer/Range 等后续业务页面。
 
 ## 13. 当前验证基线
 
-当前代码 BuildTag：`v3-m1.16.0.18.96-unit-lines-projection-team-role-hotfix`。
+当前代码 BuildTag：`v3-m1.16.0.18.128-runtime-followup-shared-facts-layout`。
 
 当前本地结构门禁基线：
 
 ```text
 FOUNDATION_AUDIT PASS
-toc=210
-activeLua=210
-allLua=210
+toc=220
+activeLua=220
+allLua=220
 globals=0
 presentation=0
 rawNative=0
@@ -348,8 +355,21 @@ detachedWidgetState=0
 apiDependency=0
 apiCapability=0
 businessIds=0
+serviceUpward=0
+productTruth=0
 auctionEventOwners=0
+retiredUiLayer=0
+rsuiComponentApi=1
+presentationFeatureApi=1
+rsuiLoadDeps=2
+presentationRootHandlers=0
 ```
+
+当前 Runtime Gate 为 Foundation v119 / UIV3 Acceptance v74。`ScreenProjectionV3 v8` 继续要求 global world、front-hemisphere 与批量索引稳定；仅当 Camera Frame 暂时不可取得时允许当前有界批次使用 Native Projection fallback，禁止跨帧缓存或绕过恢复后的前半球校验。
+
+运行时只读事实继续收敛到共享 Service：`CastingObservationV3` 统一目标/自身施法快照，`AuraObservationV3` 统一 Buff/Debuff 快照。Boss 与 BuffDisplay 只持有 Demand lease，不得各自创建重复 Native polling；Boss exact mechanic lookup 在 Catalog 建表时完成，高频路径禁止模糊字符串扫描。
+
+治疗名单权威几何为“每团队 50 人 = 上 25 + 下 25，每半区 5×5”；Auto 只跟随当前原生团队页，额外友军名单通过独立 Panel 显示另一个完整团队。`TransformInspector v3` 必须向父布局暴露真实 `Measure()`，展开设置不得依赖硬编码占位高度。
 
 本地静态/纯 Lua 门禁不能替代 RU 客户端 Fresh Reload、Native 构造、字段语义、视觉与多人性能验证。
 

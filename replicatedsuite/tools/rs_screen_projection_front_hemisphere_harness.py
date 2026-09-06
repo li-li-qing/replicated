@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute ScreenProjectionV3 v5 front/coordinate-consistency batching with texlua."""
+"""Execute ScreenProjectionV3 v8 front/coordinate-consistency/index-stable batching with texlua."""
 from __future__ import annotations
 
 import argparse
@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from rs_lua_runner import RUNNER
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -17,7 +18,7 @@ def main() -> int:
     args = parser.parse_args()
     root = Path(args.root).resolve() if args.root else DEFAULT_ROOT
     module = root / "services/rs_screen_projection_v3.lua"
-    texlua = shutil.which("texlua")
+    texlua = RUNNER
     if texlua is None:
         print("SCREEN_PROJECTION_FRONT_HEMISPHERE_HARNESS SKIP | texlua unavailable")
         return 2
@@ -29,7 +30,8 @@ def main() -> int:
     script = f"""
 local calls={{camPos=0,camDir=0,camFov=0,screen=0,world=0,worldLocalTrue=0}}
 local world={{
-  player={{10,0,0}}, front={{20,5,0}}, behind={{-20,0,0}}, edge={{20,100,0}}, drift={{20,-2,0}},
+  player={{10,0,0}}, front={{20,5,0}}, behind={{-20,0,0}}, edge={{20,100,0}}, drift={{20,-2,0}}, alias_target={{10,0,0}},
+  alias_kept={{10,0,0}}, alias_rej={{10,0,0}},
 }}
 -- Simulate a RU/UI-scale path where otherwise-valid native points arrive in
 -- physical pixels.  Because most of those values are still < logicalW/H, the
@@ -39,7 +41,7 @@ local screen={{
   -- Deliberately wrong mirrored result: positive depth at a corner.
   behind={{1272,955,1}}, edge={{5000,480,1}},
   -- Deliberately stale but still on-screen native point.
-  drift={{900,700,1}},
+  drift={{900,700,1}}, alias_target={{900,480,1}}, alias_kept={{642,481,1}},
 }}
 UIParent={{}}
 X2Unit={{}}
@@ -77,7 +79,7 @@ local function Check(name,ok)
   total=total+1
   if ok then passed=passed+1 else print('FAIL | '..name) end
 end
-Check('contract_version',P.version==5 and P.FrontHemisphereBatchContractVersion==1 and P.UnitProjectionConsistencyContractVersion==1 and type(P.ProjectUnitBatch)=='function')
+Check('contract_version',P.version==8 and P.FrontHemisphereBatchContractVersion==1 and P.CameraUnavailableNativeFallbackContractVersion==1 and P.UnitProjectionConsistencyContractVersion==1 and P.UnitWorldAliasGuardContractVersion==1 and P.WorldBatchIndexContractVersion==1 and type(P.ProjectUnitBatch)=='function' and type(P.ProjectWorldBatch)=='function')
 local result,status=P:ProjectUnitBatch({{'player','front','behind','behind','edge','drift'}},{{requireFrontHemisphere=true,worldZOffset=1,validateNativeAgainstCamera=true,reconcileNativeScale=true}})
 Check('batch_ready',status=='ready' and type(result)=='table')
 Check('camera_frame_once',calls.camPos==1 and calls.camDir==1 and calls.camFov==1)
@@ -91,6 +93,40 @@ Check('front_offscreen_preserved_for_presenter_clip',result.edge.visible==true a
 local health=P:GetHealth()
 Check('behind_diagnostic',health.behindCameraRejects==1 and health.unitBatches==1)
 Check('coordinate_consistency_diagnostics',health.nativeScaleReconciles>=2 and health.nativeConsistencyFallbacks==1)
+-- Real RU failure: target world fact transiently aliases the player's world
+-- position while the native screen getter already points at the actual target.
+-- Camera consistency must NOT collapse both endpoints back onto the player.
+local aliasResult=P:ProjectUnitBatch({{'player','alias_target'}},{{requireFrontHemisphere=true,worldZOffset=1,validateNativeAgainstCamera=true,reconcileNativeScale=true}})
+Check('world_alias_player_keeps_native',aliasResult.player.visible==true and aliasResult.player.source=='native_world_alias_guard')
+Check('world_alias_target_keeps_native',aliasResult.alias_target.visible==true and aliasResult.alias_target.source=='native_world_alias_guard')
+Check('world_alias_endpoints_remain_separate',math.abs((aliasResult.alias_target.x or 0)-(aliasResult.player.x or 0))>=48)
+local aliasHealth=P:GetHealth()
+Check('world_alias_diagnostic',aliasHealth.worldAliasGuards>=2)
+-- Residual collapse paths closed in v6.1: an alias CANDIDATE whose alias could
+-- NOT be confirmed (paired native read failed or native points coincide) must
+-- never fall back to the camera projection derived from the suspect world fact
+-- -- that fallback was the remaining route to the "line anchored on my own
+-- character" failure. Native evidence is kept as-is; without it, fail closed.
+local unconfirmed=P:ProjectUnitBatch({{'player','alias_kept','alias_rej'}},{{requireFrontHemisphere=true,worldZOffset=1,validateNativeAgainstCamera=true,reconcileNativeScale=true}})
+Check('alias_candidate_keeps_native',unconfirmed.alias_kept.visible==true and unconfirmed.alias_kept.source=='native_alias_candidate' and math.abs((unconfirmed.alias_kept.x or 0)-642)<0.01)
+Check('alias_candidate_native_missing_fails_closed',unconfirmed.alias_rej.visible==false and unconfirmed.alias_rej.reason~=nil)
+local unconfirmedHealth=P:GetHealth()
+Check('alias_candidate_diagnostics',unconfirmedHealth.aliasNativeKept>=1 and unconfirmedHealth.aliasNativeRejects>=1)
+-- v7 contract: ProjectWorldBatch must preserve every source index. Sparse Lua
+-- arrays are unsafe because ipairs/# stop at the first nil; Range Assist circles
+-- naturally include behind-camera samples, so a hole used to truncate the arc.
+local worldBatch,worldBatchStatus=P:ProjectWorldBatch({{
+  {{x=20,y=0,z=0}},
+  {{x=-20,y=0,z=0}},
+  {{x='bad',y=0,z=0}},
+  {{x=20,y=2,z=0}},
+}},{{preferLogicalCamera=true}})
+Check('world_batch_camera_ready',worldBatchStatus=='camera')
+Check('world_batch_dense_index_contract',#worldBatch==4 and type(worldBatch[1])=='table' and type(worldBatch[2])=='table' and type(worldBatch[3])=='table' and type(worldBatch[4])=='table')
+Check('world_batch_visible_sentinel',worldBatch[1].visible==true and worldBatch[2].visible==false and worldBatch[3].visible==false and worldBatch[4].visible==true)
+local denseCount=0
+for _ in ipairs(worldBatch) do denseCount=denseCount+1 end
+Check('world_batch_ipairs_crosses_hidden_samples',denseCount==4)
 -- Flip the camera so the former "behind" target is now in front. It must be
 -- eligible again; this proves the cull follows the camera, not character token.
 ReplicatedSuite.Api.CallCapability=function(self,capability,host,method,...)

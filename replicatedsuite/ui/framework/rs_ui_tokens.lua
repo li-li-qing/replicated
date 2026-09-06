@@ -6,7 +6,7 @@ local S = ReplicatedSuite
 local C = S.Constants or {}
 
 local Tokens = {
-    version = 4,
+    version = 5,
     spacing = { xxs = 2, xs = 4, sm = 8, md = 12, lg = 16, xl = 24, xxl = 32 },
     font = { caption = 9, small = 10, body = 11, bodyLarge = 12, section = 13, title = 15, hero = 18 },
     size = {
@@ -16,7 +16,16 @@ local Tokens = {
         formLabelW = 116, formControlW = 180,
     },
     alpha = { disabled = 0.45, muted = 0.68, panel = 0.94, card = 0.92, normal = 1.0 },
-    layer = { popupPriority = 10000 },
+    -- Top-level z-order is explicit. All values are within the shared "system"
+    -- UI layer; native Raise() remains the recency tiebreaker inside each role.
+    -- Main application shell must stay below independent HUD windows, while
+    -- transient popup/menu surfaces must stay above both.
+    layer = {
+        shellPriority = 100,
+        floatingPriority = 1000,
+        popupPriority = 10000,
+        modalPriority = 12000,
+    },
     tone = {},
     breakpoint = { compact = 720, regular = 980, wide = 1180 },
     workspace = {

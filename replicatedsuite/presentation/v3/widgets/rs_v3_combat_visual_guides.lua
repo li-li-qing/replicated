@@ -228,7 +228,13 @@ function P:SetUnitDotVisible(dot, visible)
     local state=type(dot.renderState)=="table" and dot.renderState or {}; dot.renderState=state
     local value=visible==true
     if state.visible==value then return false end
-    S.UI:SetVisible(dot.root,value,self.owner); state.visible=value
+    -- Commit the presenter cache ONLY after RSUI accepted the native write.
+    -- Committing unconditionally turned one rejected Show() into a permanent
+    -- desync: every later frame believed the dot was already hidden/shown and
+    -- never retried, leaving pool widgets stuck visible at (0,0) -- the
+    -- reported "screen shows a single dot" failure shape.
+    if S.UI:SetVisible(dot.root,value,self.owner)~=true then return false end
+    state.visible=value
     return true
 end
 
@@ -281,16 +287,20 @@ function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b)
     -- getters on RU builds; hundreds of dots doing that every frame was a real
     -- crowd hitch even when no property changed.
     if state.x~=px or state.y~=py then
-        S.UI:SetAnchor(dot.root,self.unitHost,px,py,self.owner)
+        -- Same commit-on-accept rule as visibility: a rejected anchor write
+        -- must leave the cache dirty so the next frame retries instead of
+        -- believing the dot already sits at the new position.
+        if S.UI:SetAnchor(dot.root,self.unitHost,px,py,self.owner)~=true then return 0,0,0 end
         state.x,state.y=px,py; anchorWrites=1
     end
     if state.size~=size then
-        S.UI:SetExtent(dot.root,size,size,self.owner)
-        S.UI:SetExtent(dot.drawable,size,size,self.owner)
+        local rootOk=S.UI:SetExtent(dot.root,size,size,self.owner)
+        local drawOk=S.UI:SetExtent(dot.drawable,size,size,self.owner)
+        if rootOk~=true or drawOk~=true then return anchorWrites,0,0 end
         state.size=size; styleWrites=styleWrites+2
     end
     if state.r~=cr or state.g~=cg or state.b~=cb or state.a~=alpha then
-        S.UI:SetColor(dot.drawable,cr,cg,cb,alpha,self.owner)
+        if S.UI:SetColor(dot.drawable,cr,cg,cb,alpha,self.owner)~=true then return anchorWrites,styleWrites,0 end
         state.r,state.g,state.b,state.a=cr,cg,cb,alpha; styleWrites=styleWrites+1
     end
     if self:SetUnitDotVisible(dot,true) then visibilityWrites=1 end
@@ -328,23 +338,36 @@ function P:RenderUnit()
     local plans,budget=self:BuildUnitLineSamplePlan(rows,projection,logicalW,logicalH,pressure)
     local active,visibleDots,requestedDots,clippedEdges={},0,0,0
     local anchorWrites,styleWrites,visibilityWrites,poolGrowth=0,0,0,0
+    local uniqueSeen={}
+    local uniquePositions=0
     local growthRemaining=UnitLinePoolGrowthBudget(pressure)
-    for _,plan in ipairs(plans) do
+    local remainingPlans=#plans
+    for planIndex,plan in ipairs(plans) do
         local row=plan.row
         local key=tostring(row.pairKey or row.key or "target"):gsub("[^%w_]","_")
         local requested=math.max(2,math.min(UNIT_LINE_PAIR_HARD_CAP,math.floor(tonumber(plan.count) or 2)))
         requestedDots=requestedDots+requested
         local size=math.max(2,math.min(10,math.floor(tonumber(pairSizes[row.pairKey]) or tonumber(projection.pointSize) or 4)))
         local cr,cg,cb=UnitLineColor(projection,row.pairKey)
-        local pool,err,created=self:EnsureUnitPairPool(key,requested,growthRemaining); if pool==nil then return false,err end
+        -- Split the frame growth budget across the remaining pairs instead of
+        -- letting the first pool consume it all: with four pairs enabled the
+        -- old first-come loop starved pools 2..4 for many frames (up to ten
+        -- under Critical pressure), rendering as "only one line has dots".
+        local growthShare=math.max(8,math.floor(growthRemaining/math.max(1,remainingPlans)))
+        local pool,err,created=self:EnsureUnitPairPool(key,requested,math.min(growthRemaining,growthShare)); if pool==nil then return false,err end
         created=math.max(0,tonumber(created) or 0); growthRemaining=math.max(0,growthRemaining-created); poolGrowth=poolGrowth+created
+        remainingPlans=math.max(0,remainingPlans-1)
         local count=math.min(requested,#pool)
         active[key]=true; visibleDots=visibleDots+count
         if plan.clipped==true then clippedEdges=clippedEdges+1 end
         for i=1,count do
             local t=(i-1)/math.max(1,count-1)
-            local aw,sw,vw=self:PlaceUnitDot(pool[i],plan.x1+(plan.x2-plan.x1)*t,plan.y1+(plan.y2-plan.y1)*t,size,projection.opacity,key,cr,cg,cb)
+            local px=math.floor(plan.x1+(plan.x2-plan.x1)*t)
+            local py=math.floor(plan.y1+(plan.y2-plan.y1)*t)
+            local aw,sw,vw=self:PlaceUnitDot(pool[i],px,py,size,projection.opacity,key,cr,cg,cb)
             anchorWrites=anchorWrites+(tonumber(aw) or 0); styleWrites=styleWrites+(tonumber(sw) or 0); visibilityWrites=visibilityWrites+(tonumber(vw) or 0)
+            local uk=tostring(px)..","..tostring(py)
+            if uniqueSeen[uk]~=true then uniqueSeen[uk]=true; uniquePositions=uniquePositions+1 end
         end
         for i=count+1,#pool do if self:SetUnitDotVisible(pool[i],false) then visibilityWrites=visibilityWrites+1 end end
     end
@@ -352,7 +375,8 @@ function P:RenderUnit()
         if active[key]~=true then for _,dot in ipairs(pool) do if self:SetUnitDotVisible(dot,false) then visibilityWrites=visibilityWrites+1 end end end
     end
     self.lastUnitSampling={budget=budget,pressure=pressure,visibleEdges=#plans,clippedEdges=clippedEdges,requestedDots=requestedDots,
-        visibleDots=visibleDots,poolGrowth=poolGrowth,anchorWrites=anchorWrites,styleWrites=styleWrites,visibilityWrites=visibilityWrites}
+        visibleDots=visibleDots,poolGrowth=poolGrowth,anchorWrites=anchorWrites,styleWrites=styleWrites,visibilityWrites=visibilityWrites,
+        uniquePositions=uniquePositions}
     return true
 end
 
@@ -389,7 +413,17 @@ function P:ReconcileOne(feature,id,token,heldField,kind)
     local rendered,renderErr
     if kind=="unit" then rendered,renderErr=self:RenderUnit() else rendered,renderErr=self:RenderRange() end
     if rendered~=true and acquiredNow then
-        feature:ReleaseConsumer(token); self[heldField]=false
+        -- Historical behavior released the consumer on the SAME tick the
+        -- render failed. That quiesced the demand, removed the refresh task
+        -- and left the presenter with no retry path (Reconcile only listens to
+        -- lifecycle events), so one transient pool/anchor failure permanently
+        -- hid the overlay until the user toggled the feature. Keep the
+        -- consumer instead: Authority ticks keep publishing UpdateTopic, so
+        -- the render retries automatically and self-heals.
+        if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarnRateLimited) == "function" then
+            S.DiagnosticsManager:WarnRateLimited("combat_visual_guides", kind == "unit" and "UNIT_RENDER_RETRY_KEPT" or "RANGE_RENDER_RETRY_KEPT",
+                5000, "渲染失败但保留 Consumer 自动重试", { error = tostring(renderErr or "unknown") })
+        end
     end
     return rendered,renderErr
 end

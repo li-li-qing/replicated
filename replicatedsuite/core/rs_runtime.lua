@@ -10,10 +10,17 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
 S.Runtime = {
-    version = 3,
+    version = 5,
     started = false,
     firstOpenRefreshDone = false,
     lastOpenRefreshMs = -1,
+    escRegistered = false,
+    escRegistrationAttempts = 0,
+    escRetryScheduled = false,
+    lastEscError = nil,
+    startupDegraded = false,
+    startupWarnings = {},
+    inputQuiescenceContractVersion = 1,
 }
 local R = S.Runtime
 
@@ -28,10 +35,31 @@ local function EnterStage(name)
     end
 end
 
+local function RecordStartupDegradation(stage, detail)
+    local row = { stage = tostring(stage or "unknown"), detail = tostring(detail or "degraded") }
+    R.startupDegraded = true
+    R.startupWarnings = type(R.startupWarnings) == "table" and R.startupWarnings or {}
+    if #R.startupWarnings < 8 then R.startupWarnings[#R.startupWarnings + 1] = row end
+    local diagnostics = S.DiagnosticsManager
+    if type(diagnostics) == "table" and type(diagnostics.Emit) == "function" then
+        diagnostics:Emit("warning", "runtime", "RUNTIME_STARTUP_DEGRADED",
+            "Runtime 已隔离非核心启动故障并继续提供主界面", { stage = row.stage, error = row.detail })
+    end
+end
+
 function R:Stop()
     -- Idempotent quiescence fence for hot reload and normal teardown.
     S.Ready = false
     self.started = false
+    if type(S.UI) == "table" and type(S.UI.QuiesceKeyboardInput) == "function" then
+        pcall(function() S.UI:QuiesceKeyboardInput("runtime_stop", false) end)
+    end
+    -- Teardown/hot-reload must never arm an EditBox keyboard owner. The R
+    -- launcher remains the bootstrap recovery path; only an actual startup
+    -- failure explicitly reveals the command input further below.
+    if type(S.SetRecoveryCommandBarVisible) == "function" then
+        pcall(function() S.SetRecoveryCommandBarVisible(false) end)
+    end
 
     -- Durability barrier MUST precede Feature teardown. Feature Disable/Stop is
     -- allowed to release caches and reset transient Domain state; flushing only
@@ -74,6 +102,7 @@ function R:Stop()
     end
     if S.Events ~= nil and type(S.Events.Stop) == "function" then pcall(function() S.Events:Stop() end) end
     if S.Scheduler ~= nil and type(S.Scheduler.Stop) == "function" then pcall(function() S.Scheduler:Stop() end) end
+    self.escRetryScheduled = false
     if S.UIHostManager ~= nil and type(S.UIHostManager.HideAll) == "function" then
         pcall(function() S.UIHostManager:HideAll(false) end)
     end
@@ -124,33 +153,124 @@ function R:RegisterPresentationHosts()
 end
 
 local SUITE_CONTENT_ID = 91730
-function R:RegisterEscMenu()
+local ESC_RETRY_TASK = "runtime_esc_registration_retry"
+
+local function EmitEsc(level, code, message, context)
+    local diagnostics = S.DiagnosticsManager
+    if type(diagnostics) == "table" and type(diagnostics.Emit) == "function" then
+        diagnostics:Emit(level, "runtime", code, message, context)
+    end
+end
+
+function R:RegisterEscMenu(reason)
     local manager = S.UIHostManager
-    if manager == nil or type(manager.GetWindow) ~= "function" then return false end
-    local window = manager:GetWindow()
     local esc = S.NativeEscBridge
-    if window == nil or type(esc) ~= "table" then return false end
+    if type(esc) == "table" and type(esc.IsReady) == "function" and esc:IsReady(SUITE_CONTENT_ID) == true then
+        self.escRegistered = true
+        self.lastEscError = nil
+        return true
+    end
+
+    self.escRegistrationAttempts = (tonumber(self.escRegistrationAttempts) or 0) + 1
+    local function Fail(detail)
+        self.escRegistered = false
+        self.lastEscError = tostring(detail or "unknown")
+        EmitEsc("warning", "ESC_REGISTRATION_FAILED", "系统菜单入口注册失败；R 恢复入口仍可使用", {
+            reason = tostring(reason or "runtime"),
+            attempt = tonumber(self.escRegistrationAttempts) or 0,
+            error = self.lastEscError,
+        })
+        return false, self.lastEscError
+    end
+
+    if manager == nil or type(manager.GetWindow) ~= "function" then return Fail("UIHostManager unavailable") end
+    if type(esc) ~= "table" or type(esc.RegisterContent) ~= "function" or type(esc.RegisterButton) ~= "function" then
+        return Fail("NativeEscBridge unavailable")
+    end
+    local window = manager:GetWindow("v3")
+    if window == nil then return Fail("V3 host window unavailable") end
 
     local contentOk, contentErr = esc:RegisterContent(SUITE_CONTENT_ID, window, function(show)
         if S.Ready ~= true or R.started ~= true then return end
-        local currentVisible = type(window.IsVisible) == "function" and window:IsVisible() == true or false
+        local currentVisible = false
+        if type(window.IsVisible) == "function" then
+            local visibleOk, visible = pcall(function() return window:IsVisible() end)
+            if visibleOk == true then
+                currentVisible = visible == true
+            else
+                EmitEsc("warning", "ESC_VISIBILITY_READ_FAILED", "系统菜单读取主界面可见性失败", { error = tostring(visible) })
+            end
+        end
         local desiredVisible = esc:ResolveVisibility(show, currentVisible)
         if desiredVisible ~= currentVisible then
-            manager:Toggle("v3")
+            local toggleOk, toggleErr = manager:Toggle("v3")
+            if toggleOk ~= true then
+                EmitEsc("error", "ESC_HOST_TOGGLE_FAILED", "系统菜单切换主界面失败", { error = tostring(toggleErr or "unknown") })
+            end
         elseif desiredVisible and type(window.Raise) == "function" then
-            window:Raise()
+            local raiseOk, raiseErr = pcall(function() return window:Raise() end)
+            if raiseOk ~= true then
+                EmitEsc("warning", "ESC_HOST_RAISE_FAILED", "系统菜单提升主界面层级失败", { error = tostring(raiseErr or "unknown") })
+            end
         end
     end)
     if contentOk ~= true then
         S.WarnOnce("esc_content", "系统菜单内容入口注册失败：" .. tostring(contentErr or "unknown"))
-        return false
+        return Fail(contentErr or "content registration failed")
     end
+
     local buttonOk, buttonErr = esc:RegisterButton(3, SUITE_CONTENT_ID, "info", "上古世纪综合辅助")
     if buttonOk ~= true then
         S.WarnOnce("esc_button", "系统菜单按钮注册失败：" .. tostring(buttonErr or "unknown"))
-        return false
+        return Fail(buttonErr or "button registration failed")
+    end
+
+    self.escRegistered = true
+    self.lastEscError = nil
+    if (tonumber(self.escRegistrationAttempts) or 0) > 1 then
+        EmitEsc("info", "ESC_REGISTRATION_RECOVERED", "系统菜单入口已在有限重试后恢复", {
+            reason = tostring(reason or "runtime"), attempt = tonumber(self.escRegistrationAttempts) or 0,
+        })
     end
     return true
+end
+
+function R:ScheduleEscRegistrationRetry(delayMs)
+    if self.escRegistered == true or self.escRetryScheduled == true then return true end
+    local scheduler = S.Scheduler
+    if type(scheduler) ~= "table" or type(scheduler.AddOneShot) ~= "function" then
+        return false, "scheduler one-shot unavailable"
+    end
+    self.escRetryScheduled = true
+    local added = scheduler:AddOneShot(ESC_RETRY_TASK, math.max(250, tonumber(delayMs) or 750), function()
+        R.escRetryScheduled = false
+        if S.Ready ~= true or R.started ~= true then return false end
+        return R:RegisterEscMenu("bounded_retry")
+    end, self, "P4", 1)
+    if added ~= true then
+        self.escRetryScheduled = false
+        return false, "ESC retry task registration failed"
+    end
+    return true
+end
+
+function R:Describe()
+    local bridge = S.NativeEscBridge
+    local bridgeInfo = type(bridge) == "table" and type(bridge.Describe) == "function" and bridge:Describe(SUITE_CONTENT_ID) or nil
+    local registered = self.escRegistered == true
+    if type(bridge) == "table" and type(bridge.IsReady) == "function" then registered = bridge:IsReady(SUITE_CONTENT_ID) == true end
+    return {
+        version = self.version,
+        started = self.started == true,
+        escRegistered = registered,
+        escRegistrationAttempts = tonumber(self.escRegistrationAttempts) or 0,
+        escRetryScheduled = self.escRetryScheduled == true,
+        lastEscError = self.lastEscError,
+        startupDegraded = self.startupDegraded == true,
+        startupWarnings = self.startupWarnings,
+        startupWarningCount = #(type(self.startupWarnings) == "table" and self.startupWarnings or {}),
+        escBridge = bridgeInfo,
+    }
 end
 
 function R:RefreshAll(_, flushNow)
@@ -209,6 +329,8 @@ function R:Start()
     if self.started == true then return true end
     S.Ready = false
     S.BootError = nil
+    self.startupDegraded = false
+    self.startupWarnings = {}
 
     local success, failure = xpcall(function()
         EnterStage("api_validate")
@@ -256,7 +378,12 @@ function R:Start()
         EnterStage("feature_defaults")
         if S.FeatureRuntime ~= nil and type(S.FeatureRuntime.EnableDefaults) == "function" then
             local featureOk, featureErr = S.FeatureRuntime:EnableDefaults("runtime_start")
-            if featureOk ~= true then error("default feature enable failed: " .. tostring(featureErr or "unknown")) end
+            -- Feature modules are optional consumers of the Foundation. One
+            -- broken preference/API/store must never make the application shell
+            -- disappear. The failed Feature remains faulted/disabled and is
+            -- surfaced in Diagnostics; Core continues to Ready so the user can
+            -- inspect or disable it from the main menu.
+            if featureOk ~= true then RecordStartupDegradation("feature_defaults", featureErr or "default feature enable failed") end
         end
 
         EnterStage("foundation_refresh")
@@ -267,7 +394,7 @@ function R:Start()
         if layoutOk ~= true then error("V3 layout failed: " .. tostring(layoutErr or "unknown")) end
 
         EnterStage("esc_register")
-        self:RegisterEscMenu()
+        self:RegisterEscMenu("startup")
     end, S.SafeTraceback)
 
     if success ~= true then
@@ -289,6 +416,9 @@ function R:Start()
         if S.Scheduler ~= nil then pcall(function() S.Scheduler:Stop() end) end
         if S.UIHostManager ~= nil then pcall(function() S.UIHostManager:HideAll(true) end) end
         if type(S.ActivateRecoveryEntry) == "function" then pcall(function() S.ActivateRecoveryEntry() end) end
+        if type(S.SetRecoveryCommandBarVisible) == "function" then
+            pcall(function() S.SetRecoveryCommandBarVisible(true) end)
+        end
         return false
     end
 
@@ -296,6 +426,24 @@ function R:Start()
     S.Ready = true
     S.BootStage = "ready"
     S.BootError = nil
+    -- Normal UI is healthy: hide the emergency editbox so it never competes
+    -- with chat/input focus during ordinary gameplay. The R launcher remains.
+    if type(S.SetRecoveryCommandBarVisible) == "function" then
+        pcall(function() S.SetRecoveryCommandBarVisible(false) end)
+    end
+    -- Host construction may have created visible native EditBoxes underneath a
+    -- logically hidden shell. Clear only a focus proven to belong to Suite
+    -- before handing normal gameplay input back to the client.
+    if type(S.UI) == "table" and type(S.UI.QuiesceKeyboardInput) == "function" then
+        pcall(function() S.UI:QuiesceKeyboardInput("runtime_ready", false) end)
+    end
+    if self.escRegistered ~= true then
+        local retryOk, retryErr = self:ScheduleEscRegistrationRetry(750)
+        if retryOk ~= true then
+            self.lastEscError = tostring(retryErr or self.lastEscError or "ESC retry unavailable")
+            EmitEsc("warning", "ESC_RETRY_UNAVAILABLE", "系统菜单入口首次注册失败且有限重试无法调度", { error = self.lastEscError })
+        end
+    end
     if S.PerformanceMonitor ~= nil and type(S.PerformanceMonitor.MarkStartup) == "function" then
         S.PerformanceMonitor:MarkStartup("ready")
     end

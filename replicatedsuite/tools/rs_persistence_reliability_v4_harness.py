@@ -10,6 +10,7 @@ from __future__ import annotations
 import pathlib
 import subprocess
 import tempfile
+from rs_lua_runner import RUNNER
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PERSISTENCE = ROOT / "core/rs_persistence.lua"
@@ -52,7 +53,7 @@ end
 dofile([[{PERSISTENCE.as_posix()}]])
 local P = ReplicatedSuite.Persistence
 assert(P.ReliabilityContractVersion >= 4, "contract")
-assert(P.IntegrityContractVersion == 1, "integrity_contract")
+assert(P.IntegrityContractVersion == 4, "integrity_contract")
 local budget = {{ maxDepth = 8, maxNodes = 256, maxStringBytes = 4096, maxEntriesPerTable = 64 }}
 
 -- Ordinary stores get a persisted integrity stamp without opt-in readback I/O.
@@ -72,7 +73,7 @@ assert(P:SaveStore("v3.harness.ordinary") == true, "ordinary_save")
 assert(loadCalls == beforeSaveLoads, "ordinary_no_readback")
 local ordinaryKey = P.V3KeyPrefix .. "ordinary"
 assert(type(storage[ordinaryKey].__rsmeta) == "table", "ordinary_meta")
-assert(storage[ordinaryKey].__rsmeta.integrityVersion == 1, "ordinary_integrity_version")
+assert(storage[ordinaryKey].__rsmeta.integrityVersion == P.IntegrityContractVersion, "ordinary_integrity_version")
 assert(storage[ordinaryKey].__rsmeta.reliabilityContract == P.ReliabilityContractVersion, "ordinary_reliability_contract")
 assert(type(storage[ordinaryKey].__rsmeta.encodedFingerprint) == "string", "ordinary_fingerprint")
 assert(P:Flush() == true, "ordinary_barrier_before_cross_reload")
@@ -154,14 +155,14 @@ assert(shardReady == true, "replacement_ready")
 assert(P.stats.verifiedReplacementRecoveries == 1, "replacement_stat")
 
 local desc = P:Describe()
-assert(desc.reliabilityContractVersion >= 4 and desc.integrityContractVersion == 1, "describe_contract")
+assert(desc.reliabilityContractVersion >= 4 and desc.integrityContractVersion == 4, "describe_contract")
 print("PERSISTENCE_RELIABILITY_V4_LUA PASS 25/25")
 '''
     with tempfile.NamedTemporaryFile("w", suffix=".lua", encoding="utf-8", delete=False) as fh:
         fh.write(script)
         tmp = pathlib.Path(fh.name)
     try:
-        proc = subprocess.run(["texlua", str(tmp)], capture_output=True, text=True)
+        proc = subprocess.run([RUNNER, str(tmp)], capture_output=True, text=True)
     finally:
         tmp.unlink(missing_ok=True)
     if proc.returncode != 0:
@@ -173,8 +174,8 @@ print("PERSISTENCE_RELIABILITY_V4_LUA PASS 25/25")
 def main() -> int:
     source = PERSISTENCE.read_text(encoding="utf-8-sig")
     for token in (
-        "ReliabilityContractVersion = 7",
-        "IntegrityContractVersion = 1",
+        "ReliabilityContractVersion = 8",
+        "IntegrityContractVersion = 2",
         "raw.__rsmeta.reliabilityContract = self.ReliabilityContractVersion",
         "raw.__rsmeta.encodedFingerprint = encodedFingerprint",
         "FingerprintEncodedPayload",

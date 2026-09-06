@@ -57,9 +57,18 @@ local function NormalizeBank(value)
 end
 
 local SLOT_DEFS = {}
-for _, def in ipairs(S.Services and S.Services.GearV3 and S.Services.GearV3.EquipmentSlots or {}) do
+local SLOT_ORDER = {}
+for index, def in ipairs(S.Services and S.Services.GearV3 and S.Services.GearV3.EquipmentSlots or {}) do
     local slot = tonumber(def.slot)
-    if slot ~= nil then SLOT_DEFS[slot] = def end
+    if slot ~= nil then
+        SLOT_DEFS[slot] = def
+        SLOT_ORDER[slot] = index
+    end
+end
+
+local function EquipmentOrder(slot)
+    slot = tonumber(slot)
+    return slot ~= nil and (SLOT_ORDER[slot] or (1000 + slot)) or 9999
 end
 
 local function NormalizeItem(item)
@@ -117,7 +126,15 @@ local function NormalizePayload(value)
         local normalized = NormalizeItem(item)
         if normalized.slot ~= nil then items[#items + 1] = normalized end
     end
-    table.sort(items, function(a, b) return (tonumber(a.slot) or 0) < (tonumber(b.slot) or 0) end)
+    -- Saved payload order is presentation/business semantic order, not the
+    -- sparse Native equipment-slot numeric id.  Capture already follows
+    -- GearV3.EquipmentSlots; preserving that order prevents the visible list
+    -- from reshuffling after “获取当前 → 保存方案 → Reload”.
+    table.sort(items, function(a, b)
+        local ao, bo = EquipmentOrder(a and a.slot), EquipmentOrder(b and b.slot)
+        if ao ~= bo then return ao < bo end
+        return (tonumber(a and a.slot) or 0) < (tonumber(b and b.slot) or 0)
+    end)
     local setId = Trim(value.setId or value.set)
     if setId == "" then setId = nil end
     local storageId = tonumber(value.storageId or value.sid)
@@ -337,6 +354,28 @@ function F:PayloadFingerprint(payload)
     return P:FingerprintPayload(NormalizePayload(payload), PAYLOAD_BUDGET)
 end
 
+-- Legacy (pre-2026-09-05) shards were normalized and fingerprinted under the
+-- plain slot-digit order. The stable display-order fix re-sorts items into
+-- EquipmentSlots definition order, which changes the normalized array and
+-- therefore the fingerprint: without this bridge every pre-existing saved
+-- loadout would fail Try() and fall through the whole recovery chain into
+-- "分片不可用". The bridge re-fingerprints a digit-order copy; a match proves
+-- the content is intact and the shard is accepted once -- the next SavePayload
+-- re-normalizes under the new order and re-stamps the index fingerprint.
+local function LegacyDigitOrderPayload(payload)
+    local normalized = NormalizePayload(payload)
+    local items = {}
+    for _, item in ipairs(type(normalized.items) == "table" and normalized.items or {}) do items[#items + 1] = item end
+    table.sort(items, function(a, b) return (tonumber(a.slot) or 0) < (tonumber(b.slot) or 0) end)
+    normalized.items = items
+    return normalized
+end
+
+function F:LegacyPayloadFingerprint(payload)
+    if type(P.FingerprintPayload) ~= "function" then return nil, "persistence fingerprint unavailable" end
+    return P:FingerprintPayload(LegacyDigitOrderPayload(payload), PAYLOAD_BUDGET)
+end
+
 -- A configured loadout is never legitimately an empty shell. SaveDraft already
 -- enforces the same business rule before writing; repeating the invariant here
 -- turns a partially truncated historical shard into an explicit recovery case
@@ -446,13 +485,24 @@ function F:LoadPayloadForSet(set)
         local fingerprint, fingerprintErr = self:PayloadFingerprint(payload)
         if fingerprint == nil then return nil, nil, fingerprintErr end
         if expectedFingerprint ~= nil and tostring(fingerprint) ~= tostring(expectedFingerprint) then
+            -- Legacy order bridge: a digit-order fingerprint match proves the
+            -- shard content is intact and only predates the stable display
+            -- order. Accept it; the deferred re-save migrates the index stamp.
+            local legacyFingerprint, legacyErr = self:LegacyPayloadFingerprint(payload)
+            if legacyFingerprint ~= nil and tostring(legacyFingerprint) == tostring(expectedFingerprint) then
+                return payload, fingerprint, nil, "legacy_slot_order_migrated"
+            end
             return nil, nil, "payload fingerprint mismatch:" .. tostring(expectedFingerprint) .. ">" .. tostring(fingerprint)
+                .. (legacyErr ~= nil and ("; legacy=" .. tostring(legacyErr)) or "")
         end
         return payload, fingerprint, nil
     end
 
-    local payload, fingerprint, activeErr = Try(activeBank, activeFingerprint)
-    if payload ~= nil then return payload, nil, { bank = activeBank, fingerprint = fingerprint, recovered = false } end
+    local payload, fingerprint, activeErr, migrated = Try(activeBank, activeFingerprint)
+    if payload ~= nil then
+        if migrated ~= nil then EmitRecovery(set, activeBank, activeBank .. "(legacy slot order)", "payload fingerprint order migration") end
+        return payload, nil, { bank = activeBank, fingerprint = fingerprint, recovered = migrated ~= nil }
+    end
 
     local backupBank = NormalizeBank(set.backupPayloadBank)
     local backupFingerprint = NormalizeFingerprint(set.backupPayloadFingerprint)

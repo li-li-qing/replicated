@@ -11,7 +11,8 @@ S.Services = S.Services or {}
 S.Services.GearV3 = S.Services.GearV3 or {}
 local G = S.Services.GearV3
 
-G.version = 3
+G.version = 4
+G.PartialApplyContractVersion = 1
 G.presentationBoundary = "service_only"
 G.BagSlots = 150
 G.MaxBagSlots = 240
@@ -55,7 +56,10 @@ local function MeaningfulId(value)
     local text = tostring(value); if text == "" or text == "0" or text == "nil" or text == "false" then return nil end
     return value
 end
-local function DeepCopy(value) return S.Features.Gear and S.Features.Gear.DeepCopy and S.Features.Gear.DeepCopy(value) or value end
+local function DeepCopy(value)
+    if S.Utils ~= nil and type(S.Utils.DeepCopy) == "function" then return S.Utils.DeepCopy(value) end
+    return value
+end
 local function Publish(reason)
     if S.Events ~= nil and type(S.Events.Publish) == "function" then
         S.Events:Publish("v3.gear.updated", tostring(reason or "refresh"))
@@ -398,18 +402,18 @@ function G:FindCandidate(saved, snapshot, reserved)
         end
     end
     if #top == 0 then
-        if type(snapshot) == "table" and (tonumber(snapshot.errors) or 0) > 0 then return nil, "读取背包时发生错误" end
-        return nil, "背包中未找到目标装备"
+        if type(snapshot) == "table" and (tonumber(snapshot.errors) or 0) > 0 then return nil, "读取背包时发生错误", "read_error" end
+        return nil, "背包中未找到目标装备", "not_found"
     end
-    if #top == 1 then return top[1], nil end
+    if #top == 1 then return top[1], nil, nil end
     local fingerprint = self:CandidateFingerprint(top[1])
     for index = 2, #top do
-        if self:CandidateFingerprint(top[index]) ~= fingerprint then return nil, "存在多个不同候选，无法安全判断" end
+        if self:CandidateFingerprint(top[index]) ~= fingerprint then return nil, "存在多个不同候选，无法安全判断", "ambiguous" end
     end
     -- Exact-identical copies are interchangeable for the saved fingerprint.
     -- Pick the lowest physical slot deterministically and reserve it.
     table.sort(top, function(a, b) return tonumber(a.slot) < tonumber(b.slot) end)
-    return top[1], nil
+    return top[1], nil, nil
 end
 
 function G:BuildSession(setId, payload, mismatchRows, options)
@@ -449,8 +453,8 @@ function G:BuildSession(setId, payload, mismatchRows, options)
     local snapshot = self:BuildBagSnapshot()
     local queue, reserved, blocked = {}, {}, {}
     for _, saved in ipairs(pendingSaved) do
-        local candidate, reason = self:FindCandidate(saved, snapshot, reserved)
-        if candidate == nil then blocked[#blocked + 1] = { slotName = saved.slotName, name = saved.name, reason = reason }
+        local candidate, reason, reasonCode = self:FindCandidate(saved, snapshot, reserved)
+        if candidate == nil then blocked[#blocked + 1] = { slot = saved.slot, slotName = saved.slotName, name = saved.name, reason = reason, code = reasonCode }
         else
             reserved[tonumber(candidate.slot)] = true
             queue[#queue + 1] = { saved = saved, bagSlot = candidate.slot, bagId = snapshot.bagId, alternative = saved.alternative == true, attempts = 0, verifyPolls = 0 }
@@ -476,10 +480,58 @@ end
 
 function G:RefreshStepCandidate(step, session)
     local snapshot = self:BuildBagSnapshot()
-    local candidate, reason = self:FindCandidate(step.saved, snapshot, {})
-    if candidate == nil then return false, reason end
+    local candidate, reason, reasonCode = self:FindCandidate(step.saved, snapshot, {})
+    if candidate == nil then return false, reason, reasonCode end
     step.bagSlot, step.bagId = candidate.slot, snapshot.bagId
     return true
+end
+
+function G:AddSkippedStep(session, saved, reason, reasonCode)
+    if type(session) ~= "table" or type(saved) ~= "table" then return false end
+    session.blocked = type(session.blocked) == "table" and session.blocked or {}
+    local slot = tonumber(saved.slot)
+    for _, row in ipairs(session.blocked) do
+        if tonumber(row and row.slot) == slot then return true end
+    end
+    session.blocked[#session.blocked + 1] = {
+        slot = slot, slotName = saved.slotName, name = saved.name,
+        reason = tostring(reason or "背包中未找到目标装备"), code = tostring(reasonCode or "not_found"),
+    }
+    return true
+end
+
+function G:BlockedSlotSet(session)
+    local result = {}
+    for _, row in ipairs(type(session) == "table" and session.blocked or {}) do
+        local slot = tonumber(row and row.slot)
+        if slot ~= nil then result[slot] = true end
+    end
+    return result
+end
+
+function G:ValidateReachableSession(session)
+    if type(session) ~= "table" or type(session.payload) ~= "table" then return false, { { slotName = "方案", kind = "invalid_session" } } end
+    local blocked, mismatches = self:BlockedSlotSet(session), {}
+    for _, saved in ipairs(session.payload.items or {}) do
+        local slot = tonumber(saved and saved.slot)
+        if saved.managed ~= false and saved.empty ~= true and blocked[slot] ~= true
+            and (session.weaponOnly ~= true or self:IsWeaponSlot(slot)) and not self:CurrentItemMatches(saved) then
+            mismatches[#mismatches + 1] = { slot = slot, slotName = saved.slotName, name = saved.name, kind = "装备" }
+        end
+    end
+    if session.weaponOnly ~= true and type(session.payload.title) == "table" and session.payload.title.apply == true then
+        local titleMatched, titleReason = self:CurrentTitleMatches(session.payload)
+        if titleMatched ~= true then mismatches[#mismatches + 1] = { slotName = "称号", name = self:TitleText(session.payload.title), kind = tostring(titleReason or "未匹配") } end
+    end
+    return #mismatches == 0, mismatches
+end
+
+function G:PartialSummary(session, prefix)
+    local blocked = type(session) == "table" and session.blocked or {}
+    if #blocked <= 0 then return tostring(prefix or "换装完成") end
+    local first = blocked[1]
+    return tostring(prefix or "换装部分完成") .. "；跳过 " .. tostring(#blocked) .. " 件未找到装备"
+        .. (first and ("（首项：" .. tostring(first.slotName or first.name or "装备") .. "）") or "")
 end
 
 function G:StopRuntime(reason)
@@ -500,14 +552,9 @@ function G:FinishRuntime(ok, message)
     self.runtime.session = nil
     Publish("runtime_finished")
 
-    -- A page may have transiently enabled Gear solely for this explicit user
-    -- action. If the player closed that page mid-transaction, finish the
-    -- transaction first and then return the Feature to its previous idle state.
-    local feature = S.Features and S.Features.Gear or nil
-    if type(feature) == "table" and feature.disableWhenIdle == true then
-        feature.disableWhenIdle = false
-        if type(feature.MaybeDisableTransient) == "function" then feature:MaybeDisableTransient("gear_transient_idle") end
-    end
+    -- Service publishes completion only. The Feature owns its own transient
+    -- lifecycle and may react through EventBus; Service must never reach upward
+    -- into S.Features or invoke Feature methods directly.
     return ok
 end
 
@@ -524,15 +571,18 @@ function G:RuntimeTick()
     local step = session.queue[r.index]
     if step == nil then
         if session.weaponOnly == true then
-            local weaponsMatched, weaponMismatches = self:ValidateWeaponPayload(session.payload)
-            if weaponsMatched ~= true then
-                return self:FinishRuntime(false, "战斗换装失败：仍有 " .. tostring(#weaponMismatches) .. " 件武器未达到目标状态")
+            local reachableMatched, reachableMismatches = self:ValidateReachableSession(session)
+            if reachableMatched ~= true then
+                return self:FinishRuntime(false, "战斗换装失败：可执行武器中仍有 " .. tostring(#reachableMismatches) .. " 件未达到目标状态")
             end
             local allMatched = self:ValidatePayload(session.payload)
             if allMatched == true then
                 return self:FinishRuntime(true, "战斗中武器切换完成，当前方案已完全匹配")
             end
             r.pendingSetId = session.setId
+            if #(session.blocked or {}) > 0 then
+                return self:FinishRuntime(true, self:PartialSummary(session, "战斗中可用武器已切换") .. "；其余防具/饰品/称号仍按战斗规则延后")
+            end
             return self:FinishRuntime(true, "战斗中武器切换完成；防具/饰品/称号未处理，脱战后再次执行可补齐")
         end
         local matched = self:ValidatePayload(session.payload)
@@ -552,8 +602,9 @@ function G:RuntimeTick()
             if session.titleVerifyPolls <= 5 then return true end
             return self:FinishRuntime(false, "称号验证失败：" .. tostring(titleReason or "未切换"))
         end
-        local gearMatched, mismatches = self:ValidatePayload(session.payload)
-        if gearMatched ~= true then return self:FinishRuntime(false, "仍有 " .. tostring(#mismatches) .. " 项未达到目标状态") end
+        local reachableMatched, reachableMismatches = self:ValidateReachableSession(session)
+        if reachableMatched ~= true then return self:FinishRuntime(false, "可执行项目中仍有 " .. tostring(#reachableMismatches) .. " 项未达到目标状态") end
+        if #(session.blocked or {}) > 0 then return self:FinishRuntime(true, self:PartialSummary(session, "换装部分完成")) end
         return self:FinishRuntime(true, "换装 / 称号完成")
     end
 
@@ -562,8 +613,19 @@ function G:RuntimeTick()
         step.verifyPolls = (step.verifyPolls or 0) + 1
         if step.verifyPolls <= 7 then return true end
         if step.attempts >= 3 then return self:FinishRuntime(false, tostring(step.saved.slotName) .. "连续多次未生效") end
-        local found, reason = self:RefreshStepCandidate(step, session)
-        if found ~= true then return self:FinishRuntime(false, tostring(step.saved.slotName) .. "重试查找失败：" .. tostring(reason)) end
+        local found, reason, reasonCode = self:RefreshStepCandidate(step, session)
+        if found ~= true then
+            if reasonCode == "not_found" then
+                self:AddSkippedStep(session, step.saved, reason, reasonCode)
+                r.index = r.index + 1
+                r.stage = "ACTION"
+                step.verifyPolls = 0
+                r.message = self:PartialSummary(session, "继续换装")
+                Publish("step_missing_skipped")
+                return true
+            end
+            return self:FinishRuntime(false, tostring(step.saved.slotName) .. "重试查找失败：" .. tostring(reason))
+        end
         r.stage = "ACTION"; step.verifyPolls = 0; return true
     end
 
@@ -596,13 +658,21 @@ function G:Start(setId, payload)
         Publish("combat_non_weapon_deferred")
         return true
     end
-    if #session.blocked > 0 then
+    for _, blocked in ipairs(session.blocked or {}) do
+        if blocked.code ~= "not_found" then
+            return false, tostring(blocked.slotName or "装备") .. "：" .. tostring(blocked.reason or "无法安全定位")
+        end
+    end
+    if #session.queue == 0 and session.titlePending ~= true then
         local first = session.blocked[1]
-        return false, tostring(first.slotName or "装备") .. "：" .. tostring(first.reason or "无法定位")
+        self.runtime.message = first and ("未找到 " .. tostring(#session.blocked) .. " 件目标装备；无其它可执行项目") or "没有需要执行的换装项目"
+        Publish("nothing_reachable")
+        return false, self.runtime.message
     end
     self.runtime.busy, self.runtime.session, self.runtime.stage, self.runtime.index = true, session, "ACTION", 1
     self.runtime.pendingSetId = nil
     self.runtime.message = weaponOnly and ("战斗中正在优先切换“" .. tostring(setId) .. "”的武器") or ("正在切换“" .. tostring(setId) .. "”")
+    if #session.blocked > 0 then self.runtime.message = self.runtime.message .. "；" .. tostring(#session.blocked) .. " 件未找到将跳过" end
     if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then self:StopRuntime("调度器不可用"); return false, self.runtime.message end
     S.Scheduler:SetTaskModule(self.taskName, "gear")
     local added = S.Scheduler:AddTask(self.taskName, 220, function() return G:RuntimeTick() end, true, self, "P1", 2)

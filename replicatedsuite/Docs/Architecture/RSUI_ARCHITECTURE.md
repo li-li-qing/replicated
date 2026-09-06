@@ -176,6 +176,28 @@ Open(A)
 
 当前 RU 已验证 Focus 能力仍有限：可以 `SetFocus/ClearFocus/GetFocusedWidgetId`，但没有证据支持 generic `OnKeyDown/OnKeyUp`，当前 TextInput 也只使用已验证 Enter/EditEnter/LostFocus 提交事件。因此 SearchablePicker / IconPicker 首版不得凭桌面 UI 习惯猜测键盘上下选择、Esc 关闭或实时 OnTextChanged；需要显式 RU 事件证据后再升级。
 
+### `.18.112` Input Lifecycle / Drag Hit-Test Foundation
+
+`.18.112` 将“输入控件是否仍拥有键盘”和“拖动面是否真的能被鼠标命中”从页面约定提升为 Foundation 契约：
+
+- `CreateEditBox/CreateMultiEditBox` 在 Adopt 前发布 `rsUiKeyboardInput + rsUiParent + physical id`；UI Framework 维护弱引用 physical-focus registry 与每个祖先的 bounded input-subtree count。祖先计数最大深度 32，并在 `UIParent` 根边界停止，禁止向客户端根对象写 Suite 状态。
+- `EnsureVisible(false) / EnsureEnabled(false) / EnsurePickable(false)` 即使 logical cache 已是 false，也必须先执行 focus release fence；否则 Native focus 与 logical state 可以在“无写入优化”中永久分叉。
+- Focus cleanup 只接受 `GetFocusedWidgetId()` 可映射到已登记 Suite input，并能证明该 input 属于正在停用的 subtree；无法证明时不做任何全局 ClearFocus。
+- `.18.117` 后 live page 的 Keyboard eligibility 改为**显式点击临时武装**：EditBox 创建时 `EnableKeyboard(false)`；用户点击后 `ArmInputWidget -> SetFocus`，LostFocus/隐藏/禁用/失去 Pick/Runtime quiesce 统一 `DisarmInputWidget`。Component/Owner Release 和 old-generation hot reload 仍额外永久 `EnableFocus(false)` 并注销，retirement 幂等。该设计避免 RU 在“已 EnableKeyboard 但未真正编辑”时吞掉 WASD/技能键。
+- **Top-Level Layer Contract v1（`.18.118`）**：应用 Shell、独立 FloatingSurface 与交互 Popup 都属于不同 top-level root。UITokens v5 固定 `Shell < Floating < Popup < Modal`；WindowShell/FloatingSurface 必须使用 Native `window` + `system` layer，UIParent 级 Dropdown/ColorField/ContextMenu transient popup 也必须是 Native `window`。禁止退回 root `emptywidget + SetUILayer`，因为 RU 已实证该组合可能渲染在主窗口后方。关闭态 popup 必须同时 hidden + unpickable。
+- `Border(pickable=true)` 必须下沉到 Native Panel；Windowing Attach 不再相信 caller 已正确创建 hit surface，而是先 `EnsureEnabled/EnsurePickable`，随后才 `EnableDrag(true) + SetDragCondition(DC_ALWAYS)`。Generic WindowShell title bar 同样显式 pickable。
+- Modal Scrim 等现有 `Border(pickable=true)` Consumer 由同一参数透传修复，不在 ModalHost 另写点击特例。
+- 不新增 Tick/OnUpdate/OnKeyDown/OnKeyUp/OnTextChanged。实际窗口移动仍使用 Native `StartMoving/StartSizing`，这里只修正 gesture/hit-test/lifecycle ownership。
+
+### `.18.115` Border Click Action + Popup Hit-Test Quiescence
+
+`.18.114` 同类问题全工程扫描（全部事件绑定调用点逐一核验）未发现新的"Composite 当 Native Widget 二次 RequireOn"违规后，把剩余两处契约缺口收进 Foundation：
+
+- **Border Click Action Contract v1**（`BorderClickActionContractVersion=1`）：`RSUI:Border` 提供 `SetOnClick / GetOnClick / Click` Public Action；`pickable=true` 时由 factory 内部一次性 `RequireOn(root,"OnClick")`（与 Button action v2 同一模式）。Presentation 必须走 `SetOnClick` / `onClick` spec 槽位，禁止对 `border.root` 直接绑定 Native 事件。Modal Host scrim 已迁移；`rs_rsui_component_api_audit.py` 对 presentation 层 `:RequireOn(` 实行静态零容忍。
+- **Popup Hit-Test Quiescence Contract v1**（`PopupHitTestQuiescenceContractVersion=1`）：Dropdown / ColorField popup 在 `Close()` 时显式 `EnsurePickable(false)`，`Open()` 时先 re-pick 再显示；ContextMenu 同一契约。隐藏 popup 的"不拦截鼠标"不再依赖 Native 隐式语义；unpick/repick 失败一律 fail-closed 进入既有降级事务。
+- Diagnostics `Snapshot()` 补挂 `CombatRelationV3 / TeamRosterV3 / ScreenProjectionV3` 的 `GetHealth()` 只读 facts。
+- `rs_input_focus_drag_harness.py` 扩为 72/72，静态断言上述两契约与 presentation 零 `:RequireOn(`。
+
 ### `UI.ComponentsV2` retirement / ContainerSurface
 
 历史 `rs_ui_components_v2.lua` 曾承担 Card/Section/Field 等早期过渡能力，同时保留了直接 Native helper 与循环 ChoiceField。`.18.63` 审计确认剩余真实 Consumer 只有当前 RSUI 的 Card / Section / FormSection，因此完成：

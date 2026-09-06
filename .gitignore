@@ -16,3 +16,5 @@ Thumbs.db
 # External reference projects (read-only inspiration, ~56M, never part of the addon
 # source and must never be copied from — see project rules: "better, not copied")
 供参考的项目/
+__pycache__/
+*.pyc

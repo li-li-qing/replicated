@@ -12,13 +12,15 @@ local UI, RSUI = S.UI, S.RSUI
 if type(UI) ~= "table" or type(RSUI) ~= "table" or type(RSUI.Windowing) ~= "table" then return end
 
 local Shell = {
-    version = 22,
+    version = 24,
     visibilityTransactionContract = 1,
     stateMutationTransactionContract = 1,
     stateCallbackTransactionContract = 1,
     idempotentMutationContract = 1,
     compactMinimizeContract = 1,
     titleAppearanceContract = 3,
+    titleBarInteractionContract = 1,
+    topLevelLayerContractVersion = 1,
     consumedById = {},
     metrics = {
         created = 0, shown = 0, hidden = 0, minimized = 0, restored = 0, destroyed = 0, layouts = 0, failures = 0,
@@ -129,6 +131,36 @@ function Shell:Create(spec)
     window.rsUiOwner = owner
     if type(UI.ClaimNativeAuthority) == "function" then UI:ClaimNativeAuthority(window, owner, "strict") end
 
+    -- Every independent WindowShell is a real top-level V3 surface. Keep it in
+    -- the same native system layer as the application shell so Raise() works
+    -- across roots; use role priority to guarantee Shell < Floating < Popup.
+    local function ApplyRootWindowPolicy()
+        if type(window.SetUILayer) == "function" then
+            local ok, result = pcall(function() return window:SetUILayer("system") end)
+            if ok ~= true or result == false then return false, "window_shell_system_layer_rejected" end
+        end
+        for _, row in ipairs({
+            { method = "SetCloseOnEscape", value = false },
+            { method = "SetWindowModal", value = false },
+        }) do
+            if type(window[row.method]) == "function" then
+                local ok = pcall(function() window[row.method](window, row.value) end)
+                if ok ~= true then return false, "window_shell_policy_failed:" .. tostring(row.method) end
+            end
+        end
+        local priorityPath = tostring(spec.layerRole or "window") == "floating"
+            and "layer.floatingPriority" or "layer.shellPriority"
+        local fallbackPriority = tostring(spec.layerRole or "window") == "floating" and 1000 or 100
+        local priority = (S.UITokens and type(S.UITokens.Number) == "function"
+            and S.UITokens:Number(priorityPath, fallbackPriority)) or fallbackPriority
+        if type(window.SetDrawPriority) == "function" then pcall(function() window:SetDrawPriority(priority) end) end
+        window.rsUiLayerRole = tostring(spec.layerRole or "window")
+        window.rsUiLayerPriority = priority
+        return true
+    end
+    local policyOk, policyErr = ApplyRootWindowPolicy()
+    if policyOk ~= true then return FailBuild(policyErr) end
+
     local shell = {
         id = id,
         owner = owner,
@@ -169,7 +201,7 @@ function Shell:Create(spec)
     -- can stretch bodyFrame over the title bar until the next drag/resize.
     shell.root = RSUI:Overlay({ id = id .. "_window_root", parent = window, autoRelayout = false, slot = { hAlign = "fill", vAlign = "fill" } })
     shell.chrome = RSUI:Border({ id = id .. "_window_chrome", parent = shell.root, variant = "card", padding = 0, slot = { hAlign = "fill", vAlign = "fill" } })
-    shell.titleBar = RSUI:Border({ id = id .. "_title_bar", parent = shell.root, variant = "header", padding = titlePadding,
+    shell.titleBar = RSUI:Border({ id = id .. "_title_bar", parent = shell.root, variant = "header", padding = titlePadding, pickable = true,
         slot = { size = "fixed", height = titleH, hAlign = "fill", vAlign = "top" } })
     shell.titleRow = RSUI:HorizontalBox({ id = id .. "_title_row", parent = shell.titleBar, gap = titleGap, slot = { hAlign = "fill", vAlign = "fill" } })
     shell.titleText = RSUI:Text({ id = id .. "_title", parent = shell.titleRow, text = shell.title, fontSize = tonumber(spec.titleFontSize) or 13,
@@ -954,6 +986,7 @@ function Shell:Describe()
         visibilityTransactionContract = tonumber(self.visibilityTransactionContract) or 0,
         stateMutationTransactionContract = tonumber(self.stateMutationTransactionContract) or 0,
         stateCallbackTransactionContract = tonumber(self.stateCallbackTransactionContract) or 0,
+        topLevelLayerContractVersion = tonumber(self.topLevelLayerContractVersion) or 0,
         stateCallbackRejects = tonumber(self.metrics.stateCallbackRejects) or 0,
     }
 end

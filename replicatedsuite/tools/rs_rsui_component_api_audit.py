@@ -70,7 +70,7 @@ TYPE_METHODS: dict[str, set[str]] = {
     "HorizontalBox": set(),
     "VerticalBox": set(),
     "Overlay": set(),
-    "Border": set(),
+    "Border": {"SetOnClick", "GetOnClick", "Click"},
     "GroupBox": set(),
     "UniformGrid": set(),
     "SplitView": set(),
@@ -128,6 +128,22 @@ def audit(root: Path) -> tuple[list[str], dict[str, int]]:
         failures.append("common Base API missing: " + ",".join(missing_base))
 
     files = sorted((root / "presentation/v3").rglob("*.lua"))
+    # Composite-internal event binding contract: RequireOn is how a component
+    # factory binds its OWN native widgets (Button action v2, Border click
+    # action v1). Presentation pages must consume public component actions
+    # (SetOnClick / onClick spec slot / Click) instead of re-binding native
+    # events — the .18.114 ColorField regression class.
+    require_on_re = re.compile(r":\s*RequireOn\s*\(")
+    require_on_hits = 0
+    for path in files:
+        rel = path.relative_to(root).as_posix()
+        text = strip_comments_preserve_lines(path.read_text(encoding="utf-8-sig", errors="replace"))
+        for match in require_on_re.finditer(text):
+            require_on_hits += 1
+            failures.append(
+                f"composite-internal native event bind in presentation {rel}:{line_for(text, match.start())} "
+                "RequireOn (use the component public action API instead)"
+            )
     files_scanned = assignments_seen = calls_checked = guarded_calls = 0
     for path in files:
         original = path.read_text(encoding="utf-8-sig", errors="replace")
@@ -175,6 +191,7 @@ def audit(root: Path) -> tuple[list[str], dict[str, int]]:
         "calls": calls_checked,
         "guarded": guarded_calls,
         "baseMethods": len(base_methods),
+        "requireOnPresentation": require_on_hits,
     }
     return failures, metrics
 

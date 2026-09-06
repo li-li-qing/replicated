@@ -150,6 +150,8 @@ local CAPABILITIES = {
     ["X2Unit:UnitInfo"] = { OfficialState="OfficialEnabled", Since="2026-06-02", SideEffectFree=true, Risk="expensive" },
     ["X2Unit:UnitModifierInfo"] = { OfficialState="OfficialEnabled", Since="2026-06-02", SideEffectFree=true, Risk="expensive" },
     ["X2Unit:SetOverHeadMarker"] = { OfficialState="OfficialEnabled", Since="2026-03-24", Cooldown=1000, Risk="write" },
+    ["X2Unit:GetOverHeadMarker"] = { OfficialState="OfficialEnabled", Since="2026-03-24", SideEffectFree=true },
+    ["X2Unit:GetOverHeadMarkerUnitId"] = { OfficialState="OfficialEnabled", Since="2026-03-24", SideEffectFree=true },
     ["X2Unit:RemoveAllOverHeadMarker"] = { OfficialState="OfficialEnabled", Since="2026-03-24", Cooldown=1000, Risk="write" },
     ["X2Team:GetTeamRoleType"] = { OfficialState="OfficialEnabled", Since="2026-02-24", SideEffectFree=true },
     ["X2Team:GetRole"] = { OfficialState="OfficialEnabled", Since="2025-03-04", SideEffectFree=true },

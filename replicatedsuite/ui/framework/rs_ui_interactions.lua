@@ -95,8 +95,15 @@ function Pointer:GetLogicalPosition()
     local ok, x, y, err = pcall(function() return S.Api:GetMouseLogicalPosition() end)
     if ok ~= true or tonumber(x) == nil or tonumber(y) == nil then
         self.failures = self.failures + 1
+        -- Fall back to the last good sample: the activity widget's pooled rows
+        -- re-anchor freely, so the row-rectangle path can point far away from
+        -- the cursor; the previous cursor position is strictly better.
+        if self.lastX ~= nil and self.lastY ~= nil then
+            return self.lastX, self.lastY, nil
+        end
         return nil, nil, tostring(err or "pointer_position_unavailable")
     end
+    self.lastX, self.lastY = tonumber(x), tonumber(y)
     self.samples = self.samples + 1
     return tonumber(x), tonumber(y), nil
 end
@@ -259,6 +266,11 @@ function Tooltip:Show(target, text, options)
     local x, y, w, h = AnchorRect(target)
     local gap = N(options.gap, 10)
     local mouseX, mouseY = PointerPosition()
+    -- A pooled virtualized row can report a stale or degenerate rectangle
+    -- (AnchorRect falls back to 0,0,1,1 when both absolute-rect queries
+    -- fail). Treat that as "no anchor" so the fallback never lands the popup
+    -- at the screen's far left.
+    if w ~= nil and w <= 2 and h ~= nil and h <= 2 then x, y = nil, nil end
     local px, py
     if mouseX ~= nil and mouseY ~= nil then
         -- Match native-tooltip behaviour: open beside the cursor, not at a fixed
@@ -267,9 +279,13 @@ function Tooltip:Show(target, text, options)
         px, py = mouseX + gap, mouseY + gap
         if px + width > vw - 4 then px = mouseX - width - gap end
         if py + height > vh - 4 then py = mouseY - height - gap end
-    else
+    elseif x ~= nil and y ~= nil then
         px, py = x + w + gap, y
         if px + width > vw - 4 then px = x - width - gap end
+    else
+        -- Last resort: viewport-centered horizontally, near the top, clamped
+        -- below -- never the raw (0,0) corner.
+        px, py = (vw - width) / 2, math.min(40, math.max(4, vh - height - 4))
     end
     px = Clamp(px, 4, math.max(4, vw - width - 4))
     py = Clamp(py, 4, math.max(4, vh - height - 4))
@@ -404,7 +420,10 @@ end
 
 function ContextMenu:_EnsureRoot()
     if self.root ~= nil then return self.root end
-    local root = UI:CreatePanel(UIParent, "rsui_context_menu", 0, 0, 180, 30, "card", { gradient = true })
+    local root = UI:CreatePanel(UIParent, "rsui_context_menu", 0, 0, 180, 30, "card", {
+        gradient = true, owner = self.owner, transientWindow = true, visible = false, pickable = false,
+        drawPriority = Token("layer.popupPriority", 10000),
+    })
     if root == nil then return nil end
     root.rsUiOwner = self.owner
     if type(UI.AdoptWidget) == "function" then UI:AdoptWidget(root, self.owner, "rsui_context_menu") end
@@ -414,7 +433,7 @@ function ContextMenu:_EnsureRoot()
         UI:SetVisible(root, false, self.owner)
         return nil, "context_menu_interaction_contract_unavailable"
     end
-    local pickOk, _, pickErr = UI:EnsurePickable(root, true, self.owner)
+    local pickOk, _, pickErr = UI:EnsurePickable(root, false, self.owner)
     local enabledOk, _, enabledErr = UI:EnsureEnabled(root, true, self.owner)
     if pickOk ~= true or enabledOk ~= true then
         UI:SetVisible(root, false, self.owner)
@@ -540,6 +559,10 @@ function ContextMenu:Open(anchor, items, options)
     if py + height > vh - 4 then py = math.max(4, y - height - 4) end
     px, py = Clamp(px, 4, math.max(4, vw - width - 4)), Clamp(py, 4, math.max(4, vh - height - 4))
     UI:SetAnchor(self.root, UIParent, px, py, self.owner)
+    -- Popup hit-test quiescence contract (mirrors Dropdown/ColorField):
+    -- Close() unpicks the menu surface, so Show must re-pick first.
+    local repickOk, _, repickErr = UI:EnsurePickable(self.root, true, self.owner)
+    if repickOk ~= true then return false, "context_menu_repick_failed:" .. tostring(repickErr or "unknown") end
     local shown, showErr = EnsureVisible(self.root, true, self.owner)
     if shown ~= true then return false, "context_menu_show_failed:" .. tostring(showErr or "unknown") end
     if type(self.root.Raise) == "function" then pcall(function() self.root:Raise() end) end
@@ -553,6 +576,9 @@ function ContextMenu:Close()
     if self.root ~= nil then
         local hidden, hideErr = EnsureVisible(self.root, false, self.owner)
         if hidden ~= true then return false, "context_menu_hide_failed:" .. tostring(hideErr or "unknown") end
+        -- Hidden menus must not rely on native "hidden skips hit-test" alone.
+        local unpickOk, _, unpickErr = UI:EnsurePickable(self.root, false, self.owner)
+        if unpickOk ~= true then return false, "context_menu_unpick_failed:" .. tostring(unpickErr or "unknown") end
     end
     self.open = false
     if changed then RSUI.metrics.contextMenuCloses = (tonumber(RSUI.metrics.contextMenuCloses) or 0) + 1 end
