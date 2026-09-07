@@ -330,9 +330,35 @@ local function TaskActive(taskName)
         and S.Scheduler.tasks[taskName] ~= nil and S.Scheduler.tasks[taskName].enabled == true
 end
 
+local function TaskEvidence(taskName)
+    if S.Scheduler == nil or type(S.Scheduler.GetTaskState) ~= "function" then return "任务=遥测不可用", nil end
+    local state = S.Scheduler:GetTaskState(taskName)
+    if type(state) ~= "table" or state.registered ~= true then return "任务=未登记", nil end
+    local mode = state.enabled == true and "开" or (state.faultedAtMs ~= nil and "熔断" or "停")
+    local text = "任务=" .. mode .. "/run" .. tostring(tonumber(state.runCount) or 0)
+        .. "/失" .. tostring(tonumber(state.failureTotal) or 0)
+        .. "/连续" .. tostring(tonumber(state.failureCount) or 0)
+        .. "/恢复" .. tostring(tonumber(state.resumeCount) or 0)
+    local err = state.lastError
+    if err ~= nil and tostring(err) ~= "" then
+        err = CompactLogText(err)
+        if #err > 96 then err = err:sub(1, 96) .. "…" end
+    else err = nil end
+    return text, err
+end
+
 function D:BuildFeatureStatusRows()
     local rows = {}
     local features = S.Features or {}
+
+    -- Presenter handshake evidence shared by the unit_lines/range_assist rows
+    -- (v6 watchdog telemetry): without it a dead lease reported only "无消费
+    -- 者" with no way to tell a missed lifecycle event from a failed acquire.
+    local guides = S.UIV3 and S.UIV3.CombatVisualGuidesV3 or nil
+    local lifecycleSeen = type(guides) == "table" and guides.lastLifecycle or nil
+    local lifecycleText = lifecycleSeen ~= nil
+        and ("已收:" .. tostring(lifecycleSeen.id) .. "/" .. tostring(lifecycleSeen.state))
+        or "未收到"
 
     -- 单位连线: verdict needs consumer>0 AND rows drawn recently.
     do
@@ -345,15 +371,49 @@ function D:BuildFeatureStatusRows()
         -- same name (that bug crashed this very function on first use).
         local drawn = tonumber(dia and dia.drawnRows) or 0
         local lastFailure = dia and dia.lastFailureReason or nil
+        -- Presenter-side render evidence. drawnRows only proves the PROJECTION
+        -- produced rows; the .18.129d label-write failure kept this verdict
+        -- green while zero dots reached the screen. lastUnitSampling is
+        -- refreshed by every RenderUnit pass that ran with a held consumer.
+        local sampling = type(guides) == "table" and type(guides.lastUnitSampling) == "table" and guides.lastUnitSampling or nil
+        local visibleDots = tonumber(sampling and sampling.visibleDots) or 0
+        local uniquePositions = tonumber(sampling and sampling.uniquePositions) or 0
+        local renderedZero = sampling ~= nil and uniquePositions <= 0
         if not enabled then
             rows[#rows + 1] = FeatureRow("unit_lines", "单位连线", "off",
                 "关闭 · 打开 设置→功能 或 连线设置页开关", "开启后选中目标即可看到连线")
         elseif ConsumerCount(feature) <= 0 then
-            rows[#rows + 1] = FeatureRow("unit_lines", "单位连线", "down",
-                "已开启但无消费者 · 悬浮组件层没有获取渲染租约", "重开连线开关；若仍为 0 复制此行给维护者（presenter 接管失败）")
+            local attempts = type(guides) == "table" and tonumber(guides.acquireAttempts and guides.acquireAttempts.unit) or 0
+            local acqErr = type(guides) == "table" and type(guides.lastAcquireError) == "table" and guides.lastAcquireError.unit or nil
+            local heldDesync = type(guides) == "table" and guides.unitHeld == true
+            local parts = { "已开启但无消费者", "生命周期=" .. lifecycleText, "接管尝试=" .. tostring(attempts) }
+            if acqErr ~= nil then parts[#parts + 1] = "失败原因=" .. tostring(acqErr.error) end
+            if heldDesync == true then parts[#parts + 1] = "失同步=presenter仍持有" end
+            rows[#rows + 1] = FeatureRow("unit_lines", "单位连线", "down", table.concat(parts, " · "),
+                acqErr ~= nil and ("重开连线开关；仍失败复制此行（" .. tostring(acqErr.error) .. "）")
+                    or (heldDesync == true and "租约被外部清空，1 秒内自动重取；不恢复复制此行"
+                    or (lifecycleSeen == nil and "重开连线开关；若生命周期仍=未收到 复制此行给维护者（事件未达渲染层）"
+                    or "重开连线开关；仍为 0 复制此行给维护者")))
+        elseif drawn > 0 and renderedZero then
+            local sampling0 = sampling or {}
+            local firstRow = tostring(sampling0.firstRow or "?")
+            local projReasons = type(projection.failuresByReason) == "table" and projection.failuresByReason or {}
+            local reasonText = nil
+            local reasonKeys = {}
+            for reason, count in pairs(projReasons) do reasonKeys[#reasonKeys + 1] = tostring(reason) .. "=" .. tostring(count) end
+            table.sort(reasonKeys)
+            if #reasonKeys > 0 then reasonText = table.concat(reasonKeys, ",", 1, math.min(3, #reasonKeys)) end
+            rows[#rows + 1] = FeatureRow("unit_lines", "单位连线", "degraded",
+                "投影有 " .. tostring(drawn) .. " 行但渲染层 0 个可见点 · 行=" .. firstRow
+                .. " · UI=" .. tostring(math.floor(tonumber(sampling0.addonScale) or 1)) .. "x"
+                .. " · proj失败=" .. tostring(projection.failures or 0)
+                .. (reasonText ~= nil and (" · 原因:" .. reasonText) or ""),
+                "渲染层没有产出任何点；若行=?? 为坐标缺失，否则为宿主/坐标空间问题——复制此行给维护者")
         elseif drawn > 0 then
             rows[#rows + 1] = FeatureRow("unit_lines", "单位连线", "ok",
                 "工作中 · rows=" .. tostring(drawn) .. "/" .. tostring(dia.attemptedPairs or 0)
+                .. " · 点=" .. tostring(visibleDots) .. "(唯一" .. tostring(uniquePositions) .. ")"
+                .. " · 行=" .. tostring(sampling and sampling.firstRow or "?")
                 .. " · 状态=" .. tostring(dia.lastStatus or "?")
                 .. " · proj失败=" .. tostring(projection.failures or 0),
                 lastFailure and ("部分未绘制：" .. tostring(lastFailure)) or nil)
@@ -374,17 +434,74 @@ function D:BuildFeatureStatusRows()
         local row = type(projection.rows) == "table" and projection.rows[1] or nil
         local points = type(row) == "table" and type(row.points) == "table" and #row.points or 0
         local visible = tonumber(row and row.visibleCount) or points
+        local rangeTaskText, rangeTaskError = TaskEvidence("v3_business_range_assist_refresh")
+        local refreshHealth = type(feature) == "table" and type(feature.RangeRefreshHealth) == "table" and feature.RangeRefreshHealth or {}
+        local rangeRefreshText = "刷新=尝试" .. tostring(tonumber(refreshHealth.attempts) or 0)
+            .. "/失" .. tostring(tonumber(refreshHealth.failures) or 0)
+            .. "/连续" .. tostring(tonumber(refreshHealth.consecutiveFailures) or 0)
+        local rangeRefreshError = refreshHealth.lastError
+        if rangeRefreshError ~= nil and tostring(rangeRefreshError) ~= "" then
+            rangeRefreshError = CompactLogText(rangeRefreshError)
+            if #rangeRefreshError > 96 then rangeRefreshError = rangeRefreshError:sub(1, 96) .. "…" end
+        else rangeRefreshError = nil end
         if not enabled then
             rows[#rows + 1] = FeatureRow("range_assist", "范围辅助", "off", "关闭 · 在范围辅助页开启", "开启后在角色脚下显示范围圆")
         elseif ConsumerCount(feature) <= 0 then
-            rows[#rows + 1] = FeatureRow("range_assist", "范围辅助", "down", "已开启但无消费者", "重开范围辅助开关；仍为 0 请复制此行")
+            local attempts = type(guides) == "table" and tonumber(guides.acquireAttempts and guides.acquireAttempts.range) or 0
+            local acqErr = type(guides) == "table" and type(guides.lastAcquireError) == "table" and guides.lastAcquireError.range or nil
+            local heldDesync = type(guides) == "table" and guides.rangeHeld == true
+            local parts = { "已开启但无消费者", "生命周期=" .. lifecycleText, "接管尝试=" .. tostring(attempts) }
+            if acqErr ~= nil then parts[#parts + 1] = "失败原因=" .. tostring(acqErr.error) end
+            if heldDesync == true then parts[#parts + 1] = "失同步=presenter仍持有" end
+            rows[#rows + 1] = FeatureRow("range_assist", "范围辅助", "down", table.concat(parts, " · "),
+                acqErr ~= nil and ("重开范围辅助开关；仍失败复制此行（" .. tostring(acqErr.error) .. "）")
+                    or (heldDesync == true and "租约被外部清空，1 秒内自动重取；不恢复复制此行"
+                    or "重开范围辅助开关；仍为 0 复制此行"))
         elseif points >= 3 then
+            local rangeSampling = type(guides) == "table" and guides.lastRangeSampling or nil
+            local calibration = type(row) == "table" and tostring(row.calibration or "-") or "-"
+            local projFacts = type(row) == "table" and tostring(row.projFacts or "") or ""
+            local rangeEvidence = ""
+            if type(rangeSampling) == "table" then
+                rangeEvidence = " · 首点=" .. tostring(rangeSampling.first)
+                    .. " · 宿主=" .. tostring(rangeSampling.hostVisible)
+                    .. " · 缩放=" .. tostring(math.floor((tonumber(rangeSampling.addonScale) or 1) * 100) / 100) .. "x"
+            end
             rows[#rows + 1] = FeatureRow("range_assist", "范围辅助", "ok",
-                "工作中 · 圆周点 " .. tostring(points) .. " · 半径 " .. tostring(projection.radius or "?"),
-                points < 8 and "点数偏少：检查投影失败计数" or nil)
+                "工作中 · 圆周点 " .. tostring(points) .. " · 半径 " .. tostring(projection.radius or "?")
+                .. " · 校准=" .. calibration
+                .. (projFacts ~= "" and (" · " .. projFacts) or "")
+                .. " · rev=" .. tostring(tonumber(projection.revision) or 0)
+                .. " · " .. rangeTaskText .. " · " .. rangeRefreshText .. rangeEvidence
+                .. (rangeTaskError ~= nil and (" · taskErr=" .. rangeTaskError) or "")
+                .. (rangeRefreshError ~= nil and (" · refreshErr=" .. rangeRefreshError) or ""),
+                (rangeTaskError ~= nil or rangeRefreshError ~= nil)
+                    and "范围刷新曾出现异常；run/尝试继续增长且连续=0 表示已恢复，若连续失败增长请复制此行"
+                    or (points < 8 and "点数偏少：检查投影失败计数" or nil))
         else
+            local reasonText = nil
+            local projHealth = S.Services and S.Services.ScreenProjectionV3 and S.Services.ScreenProjectionV3.GetHealth and S.Services.ScreenProjectionV3:GetHealth() or {}
+            local projReasons = type(projHealth.failuresByReason) == "table" and projHealth.failuresByReason or {}
+            local reasonKeys = {}
+            for reason, count in pairs(projReasons) do reasonKeys[#reasonKeys + 1] = tostring(reason) .. "=" .. tostring(count) end
+            table.sort(reasonKeys)
+            if #reasonKeys > 0 then reasonText = table.concat(reasonKeys, ",", 1, math.min(3, #reasonKeys)) end
+            local batch = S.Services and S.Services.ScreenProjectionV3 and S.Services.ScreenProjectionV3.lastWorldBatch or nil
+            local batchText = ""
+            if type(batch) == "table" then
+                batchText = " · 批次=" .. tostring(batch.mode or "?")
+                    .. "/原" .. tostring(tonumber(batch.native) or 0)
+                    .. "/相" .. tostring(tonumber(batch.camera) or 0)
+                    .. "/原拒" .. tostring(tonumber(batch.nativeRejected) or 0)
+                    .. "/相拒" .. tostring(tonumber(batch.cameraRejected) or 0)
+                if batch.frameErr ~= nil then batchText = batchText .. "/相机错=" .. CompactLogText(batch.frameErr) end
+            end
             rows[#rows + 1] = FeatureRow("range_assist", "范围辅助", "down",
-                "可见点不足(" .. tostring(points) .. "/3 以下不绘制) · 世界位置或投影失败",
+                "可见点不足(" .. tostring(points) .. "/3 以下不绘制) · 世界位置或投影失败"
+                .. " · " .. rangeTaskText .. " · " .. rangeRefreshText .. batchText
+                .. (reasonText ~= nil and (" · 原因:" .. reasonText) or "")
+                .. (rangeTaskError ~= nil and (" · taskErr=" .. rangeTaskError) or "")
+                .. (rangeRefreshError ~= nil and (" · refreshErr=" .. rangeRefreshError) or ""),
                 "刷新一次；仍复现请复制此行与 UnitLines 行")
         end
     end

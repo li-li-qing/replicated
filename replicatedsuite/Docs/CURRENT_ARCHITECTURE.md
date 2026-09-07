@@ -127,7 +127,7 @@ Native Foundation 是所有原生对象、能力导入和写入边界的唯一�
 | `GearServiceV3` | 装备读取/换装受控能力 |
 | `InventorySnapshotV3` | 背包/银行/箱子的显式有界只读快照、物理 bagId Authority、单遍 identity/category 索引与 live slot revalidation；不拥有业务规则或写动作 |
 | `AlertsService` | 短生命周期 Alert 状态 |
-| `ScreenProjectionV3` | Native world/screen → RSUI logical projection；v5 unit batch 同一 global world space + bounded Native/Camera consistency reconciliation |
+| `ScreenProjectionV3` | Native world/screen → 屏幕投影 Authority；Unit Lines 优先原生单位屏幕事实，Range 走 EasyPull local-world Native→WorldToScreen Camera fallback，并在纯 Camera 批次用原生玩家屏幕锚点做一次整批刚性 `(dx,dy)` 校准以适配分辨率/UI Scale |
 | `AuctionQueryV3` | 当前挂单查询、事件所有权、串行化与限速边界 |
 | `PriceQuoteQueueV3` | 共享按需报价队列与 bounded quote read-model |
 | `AuctionSurfaceV3` | 只读观察原生 `UIC_AUCTION` 可见性/几何；Demand-scoped 250ms，兼容 RU 四值 MainScript 返回，不拥有收藏/查询/UI 状态 |
@@ -281,7 +281,7 @@ RSUI 是唯一通用 UI Foundation。页面应优先组合：
 
 ## 11.1 当前 UI Editor Foundation（`.18.78`）
 
-当前 RSUI 已进入 **v44 / API 12.8**。Interactive Draft Contract v1 在共享 Control 层保护 focused Text/Numeric draft 与 active Slider preview 不被环境刷新用旧 Binding 回灌；Component API Contract v1 统一所有 RSUI Component 的 `Show/Hide → SetVisible` 可见性 facade，并允许 Composite/Workspace 在构建边界通过 `RequireComponentMethods()` 显式验证真实 Public API，避免 Lua 动态方法缺失直到 RU 才暴露。Editor Foundation 已从“独立数学零件”收敛成一条完整、可由业务页面注入持久化边界但不夺取业务 Store Authority 的共享编辑链：
+当前 RSUI 已进入 **v45 / API 12.9**。Interactive Draft Contract v2 在共享 Control 层同时使用 component-local editing ownership + Native Focus 保护 Text/Numeric draft，并继续保护 active Slider preview，环境刷新不得把旧 Binding 回灌；Stable Button Hover Contract v2 先把 Native NORMAL/HIGHLIGHT 抖动收敛成同一 hover 视觉，再用 120ms one-shot leave grace + `IsMouseOver()` 物理复核拒绝父级 Refresh/Layout 产生的假 `OnLeave`；UnitLines/RangeAssist 的世界视觉高频更新与设置页 Presentation 刷新分离，后者仅 160ms 合并 `visual_tick`；Numeric Adaptive Range Contract v1 把 Slider 默认显示范围与 Feature/Domain 业务 Authority 分离，精确输入经业务 Setter 接受后才允许向外扩展端点，展示端点由 `v3.rsui.numeric_ranges` Account/Permanent V3 Store 独立保存，业务数值仍只归原 Feature Store。Component API Contract v1 继续统一所有 RSUI Component 的 `Show/Hide → SetVisible` 可见性 facade，并允许 Composite/Workspace 在构建边界通过 `RequireComponentMethods()` 显式验证真实 Public API，避免 Lua 动态方法缺失直到 RU 才暴露。Editor Foundation 已从“独立数学零件”收敛成一条完整、可由业务页面注入持久化边界但不夺取业务 Store Authority 的共享编辑链：
 
 - `SelectionModel`：只回答 **Who**（选中了谁），stable key + revision 是编辑事务的身份边界；
 - `SelectionGeometry / SelectionOverlay / LayoutGuideResolver`：只回答 **Where**（Bounds、8-way handle、move surface、grid/sibling/canvas guide）；candidate hard cap=1024；
@@ -328,6 +328,8 @@ Compact
 
 Editor Foundation 目前仍不直接迁移 Healer/Range 等后续业务页面。`LayoutEditHistory / Undo-Redo → Editor Command Bar → LayoutEditSession → LayoutEditorWorkspace v4` 已形成共享闭环；状态显示在 `.18.79` 完成 UI_APPROVED + Authority Cleanup，`.18.80` 完成本地 `UI_IMPLEMENTING` 接入，`.18.81` 修复 `TreeView=nil` 依赖顺序，`.18.89` 根据 RU 实机反馈补齐 Compact `[属性]` Drawer 与 RSUI Interactive Draft v1，`.18.90` 再根据真实 `Button:Show(nil)` 堆栈补齐 Component API Contract 与 LayoutEditorWorkspace 真构建 Smoke Gate，并恢复此前漏入用户完整包的 Persistence Fresh Reload Snapshot 实现；`.18.91` 将防线扩到全 Presentation Component API 静态扫描、全部 6 类 Workspace 真构建 Smoke 与 RSUI 顶层依赖 TOC 顺序检查；`.18.92` 再补 Presentation→Feature Public API 封包门禁，从真实 Feature provider 自动核对页面/Widget 的直接方法与 `Commands` 调用，并修复 Tasks/Activities 浮窗窗口状态 Command 与 Gear 快捷设置 Reset Command 的真实漏接。 `.18.94` 继续沿 Fresh Reload Gate 增加 Trade/DPS package-coherence 与 UIV3 runtime preflight：DPS WidgetHost lifecycle preference 必须与 durable `widgetVisible` 一致；Trade 页面/HUD 必须保持 Dropdown-only + 显式材料询价，sealed Zone 只提供候选，服务器 `GetSpecialtyRatioBetween` 仍是最终路线 Authority。页面仍为 `追踪管理 / HUD 布局 / 导入导出` 三页签，Tracking 为单虚拟 Table；Aura facts 更新不再重绘 Layout editor，focused Edit draft / active Slider preview 由共享控件层保护。HUD Working 与 Store getter 隔离，Preview/Undo/Redo/Reset/Revert 均不持久化，只有 Apply 执行 Feature durable callback。Store 仍为 schema 4；真实 SaveData 回读与 Native 编辑体验继续以 RU Fresh Reload 为准。
 
+`.18.142–.18.145` 继续把 RU 实机交互回归收敛到共享 RSUI Foundation：Interactive Draft v3 明确把“草稿编辑 → Commit/校验 → Focus/Keyboard 释放”视为单一事务，单行 EditBox 禁止 Native Enter 先清文本；切换输入框时旧输入必须先结束生命周期。由于 RU EditBox 的 Enter 提交事件仍没有已验证 API，`.18.145` 的 Compact Numeric Setting 默认增加显式“应用”动作；Apply 读取 draft 后仍只走 Binding→Domain→Persistence，不建立第二 Authority。Numeric Adaptive Range 继续把代码 `min/max` 视为默认展示范围，只有 Domain 接受超出端点的精确值后才向外扩展并保存展示端点。DataView Resize Preview v1 则规定拖动列边界期间 `previewResolvedWidths` 是唯一 Geometry Authority，普通 Layout/虚拟行重绑只能消费 Preview，松手后才提交 committed widths。上述路径均事件驱动，不新增常驻 Tick/OnUpdate。
+
 ## 12. 性能与生命周期基线
 
 - 禁止无必要 Tick / OnUpdate 常驻；优先事件驱动、Demand-scoped Scheduler、one-shot coalesce。
@@ -338,15 +340,15 @@ Editor Foundation 目前仍不直接迁移 Healer/Range 等后续业务页面。
 
 ## 13. 当前验证基线
 
-当前代码 BuildTag：`v3-m1.16.0.18.128-runtime-followup-shared-facts-layout`。
+当前代码 BuildTag：`v3-m1.16.0.18.145-numeric-apply-adaptive-point-size`。
 
 当前本地结构门禁基线：
 
 ```text
 FOUNDATION_AUDIT PASS
-toc=220
-activeLua=220
-allLua=220
+toc=222
+activeLua=222
+allLua=222
 globals=0
 presentation=0
 rawNative=0
@@ -365,7 +367,7 @@ rsuiLoadDeps=2
 presentationRootHandlers=0
 ```
 
-当前 Runtime Gate 为 Foundation v119 / UIV3 Acceptance v74。`ScreenProjectionV3 v8` 继续要求 global world、front-hemisphere 与批量索引稳定；仅当 Camera Frame 暂时不可取得时允许当前有界批次使用 Native Projection fallback，禁止跨帧缓存或绕过恢复后的前半球校验。
+当前 Runtime Gate 为 Foundation v121 / UIV3 Acceptance v76；RSUI 为 v47 / API 13.1。`ScreenProjectionV3 v8` 继续要求 global world、front-hemisphere 与批量索引稳定；仅当 Camera Frame 暂时不可取得时允许当前有界批次使用 Native Projection fallback，禁止跨帧缓存或绕过恢复后的前半球校验。
 
 运行时只读事实继续收敛到共享 Service：`CastingObservationV3` 统一目标/自身施法快照，`AuraObservationV3` 统一 Buff/Debuff 快照。Boss 与 BuffDisplay 只持有 Demand lease，不得各自创建重复 Native polling；Boss exact mechanic lookup 在 Catalog 建表时完成，高频路径禁止模糊字符串扫描。
 

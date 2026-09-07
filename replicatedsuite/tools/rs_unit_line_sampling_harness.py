@@ -55,11 +55,22 @@ local RangeFeature={{GetProjection=function() return {{rows={{}}}} end,AcquireCo
 ReplicatedSuite = {{
   UI = {{
     CreateEmptyWidget=function(_,parent,id,x,y,w,h,visible,owner) uiCalls.create=uiCalls.create+1; return NewWidget() end,
+    CreateOverlayWindow=function(_,id,owner) uiCalls.create=uiCalls.create+1; return NewWidget() end,
     CreateLabel=function(_,parent,id,text,x,y,w,h,fontSize,tone,align,shadow) uiCalls.create=uiCalls.create+1; return NewLabel() end,
-    SetFontSize=function(...) uiCalls.extent=uiCalls.extent+1; return true end,
+    SetFontSize=function(self,widget,size) uiCalls.extent=uiCalls.extent+1;
+      if widget~=nil and widget.style~=nil and widget.style.SetFontSize~=nil then return widget.style:SetFontSize(size) end; return false end,
     SetAnchor=function(...) uiCalls.anchor=uiCalls.anchor+1; return true end,
     SetExtent=function(...) uiCalls.extent=uiCalls.extent+1; return true end,
-    SetColor=function(...) uiCalls.color=uiCalls.color+1; return true end,
+    -- Real contract (rs_ui_framework v13): widget-level SetColor first, then
+    -- LABEL style fallback, else reject. A blanket `return true` hides the
+    -- .18.130 label-color gate bug class.
+    SetColor=function(self,widget,r,g,b,a) uiCalls.color=uiCalls.color+1;
+      if widget~=nil then
+        if widget.SetColor~=nil then return widget:SetColor(r,g,b,a) end
+        local st=widget.style
+        if st~=nil and st.SetColor~=nil then return st:SetColor(r,g,b,a) end
+      end
+      return false end,
     SetVisible=function(...) uiCalls.visible=uiCalls.visible+1; return true end,
     TrySetUILayer=function() return true end,
   }},
@@ -78,13 +89,15 @@ local function Check(name, ok)
 end
 local projection={{pointCount=24,pairPoints={{target=24}},refreshMs=100}}
 local near=P:BuildUnitLineSamplePlan({{{{pairKey='target',x1=100,y1=100,x2=200,y2=100}}}},projection,1024,768,'Normal')
-Check('near_density_floor', type(near)=='table' and #near==1 and near[1].count==24 and near[1].clipped==false)
+Check('near_density_floor', type(near)=='table' and #near==1 and near[1].count==24)
 local long=P:BuildUnitLineSamplePlan({{{{pairKey='target',x1=50,y1=100,x2=950,y2=100}}}},projection,1024,768,'Normal')
 Check('long_adds_samples', type(long)=='table' and #long==1 and long[1].count>48)
 local clipped=P:BuildUnitLineSamplePlan({{{{pairKey='target',x1=-10000,y1=384,x2=512,y2=384}}}},projection,1024,768,'Normal')
-Check('visible_segment_clip', type(clipped)=='table' and #clipped==1 and clipped[1].clipped==true and math.abs(clipped[1].x1)<0.01 and math.abs(clipped[1].x2-512)<0.01)
+Check('offscreen_segment_still_sampled', type(clipped)=='table' and #clipped==1 and clipped[1].count>=8,
+  'v7 reference model: no clipping — raw coords are sampled as-is; off-screen dots are harmless')
 local hidden=P:BuildUnitLineSamplePlan({{{{pairKey='target',x1=-100,y1=-100,x2=-50,y2=-50}}}},projection,1024,768,'Normal')
-Check('fully_offscreen_cull', type(hidden)=='table' and #hidden==0)
+Check('offscreen_short_segment_planned', type(hidden)=='table' and #hidden==1,
+  'v7 reference model: plans exist for any numeric segment; pool bounds cap the cost')
 local rows={{{{pairKey='target',x1=0,y1=100,x2=1024,y2=100}},{{pairKey='edge2',x1=0,y1=200,x2=1024,y2=200}},{{pairKey='edge3',x1=0,y1=300,x2=1024,y2=300}},{{pairKey='edge4',x1=0,y1=400,x2=1024,y2=400}}}}
 local fast,budget=P:BuildUnitLineSamplePlan(rows,{{pointCount=48,pairPoints={{target=48,edge2=48,edge3=48,edge4=48}},refreshMs=1}},1024,768,'Normal')
 local totalDots=0; for _,plan in ipairs(fast or {{}}) do totalDots=totalDots+(plan.count or 0) end

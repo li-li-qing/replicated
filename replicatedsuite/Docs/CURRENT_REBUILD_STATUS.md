@@ -10,23 +10,23 @@
 | Architecture | V3-only / `v3_rebuild` |
 | Runtime Addon | `replicatedsuite/` |
 | Legacy / Professional / `globals/` | 已物理删除，Active dependency = 0 |
-| BuildTag | `v3-m1.16.0.18.128-runtime-followup-shared-facts-layout` |
-| Active TOC Lua | 221 |
-| Active / All Lua | 221 / 221 |
+| BuildTag | `v3-m1.16.0.18.145-numeric-apply-adaptive-point-size` |
+| Active TOC Lua | 222 |
+| Active / All Lua | 222 / 222 |
 | Foundation Audit | PASS |
-| Python Harness | 30 / 30 PASS |
+| Python Harness | 35 / 35 PASS |
 | Product Capability Matrix | 126 条：80 IMPLEMENTED / 35 PARTIAL / 0 TODO / 11 SPECIFIC_RUNTIME_BLOCKED |
 | RU Fresh Reload | PENDING |
-| Current UI Gate | **Fresh Reload/真实回归仍为 P0**：`.18.128` 优先复测换装顺序、Healer 单团 25+25/双团、Unit Lines/Range fallback、Trade 快速切路线、债券日快照/去重、Boss 实时事实与 Status HUD Inspector；`.18.127` 满仓继续与 `.18.125` Integrity/BuffGear 同时保留。当前本地 30/30 Harness PASS 不替代 RU 证据。 |
+| Current UI Gate | **Fresh Reload/真实回归仍为 P0**：`.18.145` 首先验证范围辅助“点大小 2..10 → 输入 15 → 点应用 → Authority 15 / Slider 2..15 / 实际圆点明显变大”，并抽查其它 Compact Numeric 的“应用”按钮在窄布局下无重叠；`.18.144` 已由实机确认 TableView 拖列通过且 EditBox 不再卡游戏输入，继续保留焦点回归。`.18.143` Hover Fence、`.18.141` Range 锚点与此前换装/Healer/Trade/Bonds/Boss 回归继续保留。当前本地 35/35 Harness PASS 不替代 RU 证据。 |
 
 `.18.112` 已把本轮两个表面回归收敛到底层 Interaction Lifecycle：主菜单拖动不再依赖调用者恰好把 Border 创建成 pickable，Windowing 在建立 Drag Gesture 前自己验证 hit-test surface；所有 Suite EditBox/MultiEditBox 进入 tracked physical-focus 生命周期，隐藏/禁用/释放/Runtime Stop/hot reload 都只对可证明属于 Suite 的输入对象清理 Focus。`.18.110` 的 Recovery Reload 与 Persistence 保存解耦继续保留：保存失败只保留证据并警告潜在未保存数据丢失，不阻断覆盖修复文件后的 recovery reload；strict durability 模式仍可 fail-closed.
 
 当前 Foundation 结构指标：
 
 ```text
-toc=221
-activeLua=221
-allLua=221
+toc=222
+activeLua=222
+allLua=222
 globals=0
 presentation=0
 rawNative=0
@@ -183,7 +183,7 @@ Gate 仍为 **INCOMPLETE - CONTINUATION REQUIRED**。不得为了 Gate 变绿删
 - `.18.96` `SCREEN_PROJECTION_FRONT_HEMISPHERE_HARNESS PASS 14/14`：真实加载 `rs_screen_projection_v3.lua`，模拟 RU 对背后目标仍返回正 depth + 边角屏幕点以及“in-bounds 但处于 physical/UI-scale 或 stale”的 Native 点；验证 Camera Frame 每 batch 只读取一次、token 去重、所有 world read 均为 global、behind 在 Native screen read 前拒绝、UI-scale reconcile、严重偏移 camera fallback、前方出屏端点仍交给 Presenter clipping、旋转相机后原 behind 目标重新可见。
 - `.18.89` `INTERACTIVE_DRAFT_HARNESS PASS 13/13`：真实加载 `rs_ui_controls.lua`，验证 focused Text/Numeric draft 在 ambient refresh 中保持、失焦后可重新同步；Slider active preview 不被旧 Binding 回灌，final commit 可明确覆盖；`.18.90` 再增加 `RSUI_WORKSPACE_SMOKE_HARNESS` 与 `PERSISTENCE_ACCEPTANCE_SNAPSHOT_HARNESS`；`.18.91` 将 Workspace Smoke 扩至全部 6 类公共模板并新增全 Presentation Component API + RSUI TOC dependency-order 静态 Gate；`.18.92` 新增 Presentation→Feature API Audit 与 5/5 self-test，并修复 Tasks/Activities/Gear 三条真实缺失 Command。
 - `.18.94` Fresh Reload preflight：Foundation Audit 新增 DPS schema/`widgetVisible`/WidgetHost lifecycle 一致性以及 Trade Dropdown-only/Quote/Server route Authority package-coherence；UIV3 Acceptance v58 同步增加 `dps_widget_visibility_preference_contract` 与 `trade_dropdown_quote_preflight_contract`。本地回归：Workspace 27/27、Presentation→Feature 5/5、Persistence 19/19、Interactive Draft 13/13、Bag 4/4、Unit Lines 11/11、Front-Hemisphere 10/10。
-- 当前 BuildTag 与 `replicatedsuite.lua` 一致：`v3-m1.16.0.18.128-runtime-followup-shared-facts-layout`。
+- 当前 BuildTag 与 `replicatedsuite.lua` 一致：`v3-m1.16.0.18.145-numeric-apply-adaptive-point-size`。
 
 历史专项 harness、每个 M1.x 的逐轮数字与修复详情不再复制到本文，统一查 [`CHANGELOG.md`](CHANGELOG.md)。
 
@@ -627,3 +627,12 @@ Fresh Reload 后优先验证本轮四项用户回归：
 60. **已完成 `.18.128` — Runtime Follow-up / Shared Facts / Layout Repair**：换装方案按 EquipmentSlots 语义顺序稳定；Healer 恢复单团 50=上25+下25；ScreenProjection v8 加 Camera-unavailable bounded Native fallback；Trade 改 single-flight/latest-route；Bonds 增加服务器日大陆快照并按材料+数量跨大陆去重；Bag/Activity Tooltip 修复；新增共享 CastingObservationV3 并让 Boss/BuffDisplay 复用；TransformInspector v3 通过 Measure 修复 HUD 设置重叠。Foundation v119 / Acceptance v74 / 221 Lua / 30 Harness 全绿。
 61. **已完成 `.18.126` — Range Assist Global World / Dense Projection**：修复 Range Assist 的 player local-space 与 global Camera Frame 混用；ScreenProjectionV3 v7 为每个批量输入返回稳定索引（不可见点用 sentinel），Range consumer 改显式 `1..count` 遍历；Foundation Audit/Runtime Gate/UI Acceptance 同步加 fence，投影专项 25/25。
 62. **NEXT — RU `.18.128` Fresh Reload Regression**：先按本轮十项真实复现路径逐项验证；特别记录 Boss 的 RU 本地化施法名/预警时机、Trade timeout 后是否存在极晚旧回调、Bonds 实际居民板文本、Healer 原生 1/2 团切页以及 Unit Lines/Range Camera Frame fallback。随后继续 `.18.125` Integrity/BuffGear 与 `.18.123` Bag 多堆实机矩阵。
+63. **已完成 `.18.141` — Range Assist 1280×768 Anchor Calibration**：`.18.140` 已能稳定显示完整圆，但 RU 1280×768 实机反馈圆心偏离玩家。恢复 `.18.136/.18.137` 已有实机正证据并下沉到 `ScreenProjectionV3 v12`：仅纯 EasyPull Camera fallback 批次用同一 Camera Frame 投影世界圆心，再与原生 `GetUnitScreenPosition("player")` 求单一 `(dx,dy)`，整批刚性平移；mixed native/camera 明确跳过，异常 delta 有边界保护。Range 与 PVP 50ms 不回退。ScreenProjection 29/29、UnitLine/Range 30/30、EasyPull/PVP50 19/19，完整 34/34 Harness + Foundation Audit PASS。
+64. **NEXT — RU `.18.141` Resolution Matrix**：Fresh Reload 后优先验证 1280×768 圆心是否钉在玩家；再切 1024×768、1920×1080 与常用 2K 分辨率，分别执行旋转镜头、拉近/拉远、移动角色。范围诊断应出现 `校准=dx,dy` 且 `锚校applied`；若为 `unavailable/rejected/mixed_source_skipped`，复制整行作为下一轮唯一实机证据。
+65. **已完成 `.18.142` — RSUI Hover / Numeric Draft / Adaptive Range Foundation**：修复按钮停留时 NORMAL/HIGHLIGHT 来回闪烁；Button/Toggle/Dropdown/ColorField 统一逻辑 Hover，hover 期间两张 Native 背景视觉幂等。Interactive Draft 升 v2，以 component-local editing ownership 解决 NumericInput 删除/输入时被父级 Refresh 立即回灌旧值。NumericField 升 Inline v5 / AdaptiveRange v1：精确输入经 Domain 接受后可把默认 Slider 端点向外扩展，`v3.rsui.numeric_ranges` 单独保存展示范围，Fresh Reload 恢复且不复制业务数值；真实 Domain clamp/拒绝仍是最终 Authority。RSUI v45/API12.9；`UI_INTERACTION_RANGE_HARNESS 34/34`、Interactive Draft 115/115、Foundation Audit PASS。
+66. **历史 `.18.142` UI Interaction Regression（由 `.18.143` Hover v2 取代）**：Numeric Draft / Adaptive Range 验收仍有效；按钮悬停部分因 UnitLines/RangeAssist 高频 Projection 触发 RU 假 `OnLeave -> OnEnter` 已由 `.18.143` 新的 leave fence + 设置页刷新隔离重新定义，当前只执行 §68 的 `.18.143` Hover Regression。
+67. **已完成 `.18.143` — Hover Leave Fence / 高频设置页隔离**：`.18.142` 实机证明 UnitLines/RangeAssist 仍会因高频 Projection 刷新触发 RU 假 `OnLeave -> OnEnter`。Stable Button Hover 升 v2：120ms one-shot leave grace、重入取消、`IsMouseOver()` 物理复核；禁用/释放清理待提交任务，无 Tick。UnitLines/RangeAssist 世界视觉刷新保持原高频，但 Business Settings 的 `visual_tick` 只 160ms 合并刷新，直接设置操作仍即时。UI Interaction Harness 44/44、Foundation Audit PASS。
+68. **已完成 `.18.144` — Edit Commit Focus Fence / Table Preview Authority**：单行 EditBox 显式关闭 Native clear-on-enter；Text/Numeric Enter、失焦与输入切换统一进入 Draft→Commit/rollback→tracked Focus release→Keyboard disarm 生命周期，绝不全局清游戏/聊天 Focus。DataView 拖列期间 Preview 成为唯一 Geometry Authority，普通 Layout 与虚拟行重绑不得重新发布旧 committed widths；DragStop 后才成对 Commit。RSUI v46 / API 13.0、Foundation v120 / Acceptance v75；35/35 Harness + Foundation Audit PASS，仍等待 RU Fresh Reload 实机关闭回归。
+69. **已完成 `.18.145` — Numeric Explicit Apply / Adaptive Visual Point Size**：Compact Numeric Setting 默认在 Exact EditBox 右侧提供“应用”，不再把未验证的 RU Enter 事件作为唯一提交入口；Apply 仍沿 Binding→Domain→Persistence 单 Authority，并对 LostFocus-before-OnClick 做相同值去重。RangeAssist/UnitLines 点大小的旧 Domain 10 上限与 Presenter 40px flatten 同步移除，统一由 `Constants.VisualGuide` 约束 2..24；默认 Slider 仍 2..10，输入 15 并应用后 Authority=15、Slider 展示端点扩为 2..15 且持久化，Presenter 显示为 55px。RSUI v47 / API 13.1、Foundation v121 / Acceptance v76；35/35 Harness + Foundation Audit PASS，等待 RU Fresh Reload 验证实际视觉与多分辨率紧凑布局。
+68. **NEXT — RU `.18.143` Hover Regression**：Fresh Reload 后分别在“单位连线”四个 Pair Toggle、颜色按钮、顶部启停按钮，以及“范围辅助”启停/颜色按钮上连续悬停 10 秒；视觉不得在默认/高亮之间闪烁。随后快速移入/移出确认 hover 最迟约 120ms 清除且点击不受影响。PVP/Range 世界视觉刷新频率不得下降。
+

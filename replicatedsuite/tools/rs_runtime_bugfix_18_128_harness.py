@@ -38,7 +38,7 @@ def static_contracts() -> None:
     require(ROSTER, "version = 6", "local function DetectVisibleTeamIndex()", "previousVisibleTeamIndex",
             "or tonumber(previousVisibleTeamIndex) ~= tonumber(self.visibleTeamIndex)")
 
-    require(PROJECTION, "P.version = 8", "P.CameraUnavailableNativeFallbackContractVersion = 1",
+    require(PROJECTION, "P.version = 12", "P.CameraUnavailableNativeFallbackContractVersion = 1",
             'source="native_camera_unavailable"')
     require(LIFE, "TA.RouteRefreshRetryContractVersion = 2", "TA.SingleFlightLatestRouteContractVersion = 1",
             "self.pendingRoute = { from = from, to = to }", '"route_result_superseded"')
@@ -65,8 +65,12 @@ def static_contracts() -> None:
             "targettarget = true, watchtarget = true")
     assert "string.find(cast.spellName" not in BUSINESS
 
-    require(GATE, "version = 119", "CameraUnavailableNativeFallbackContractVersion", "RealtimeFactBridgeContractVersion")
-    require(ACCEPTANCE, "S.UIV3Acceptance = { version = 74 }", "RealtimeFactBridgeContractVersion")
+    require(GATE, "CameraUnavailableNativeFallbackContractVersion", "RealtimeFactBridgeContractVersion")
+    gate_version = re.search(r"S\.FoundationGate\s*=\s*\{\s*version\s*=\s*(\d+)", GATE)
+    assert gate_version and int(gate_version.group(1)) >= 119
+    require(ACCEPTANCE, "RealtimeFactBridgeContractVersion")
+    acceptance_version = re.search(r"S\.UIV3Acceptance\s*=\s*\{\s*version\s*=\s*(\d+)", ACCEPTANCE)
+    assert acceptance_version and int(acceptance_version.group(1)) >= 74
 
 
 def healer_model() -> None:

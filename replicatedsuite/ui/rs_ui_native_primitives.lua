@@ -469,6 +469,63 @@ function UIX:CreatePanel(parent, id, x, y, width, height, kind, opts)
     return self:Register(id, panel)
 end
 
+-- Non-interactive screen-space overlay host for world-anchored visuals (unit
+-- line / range circle dot pools). MUST be a real native WINDOW: this exact
+-- primitive previously used a root emptywidget + "system" UILayer, and our own
+-- CreatePanel documentation already records that RU clients do not reliably
+-- render that combination (rs_ui_native_primitives CreatePanel comment) — the
+-- .18.130b field report "投影有行但渲染层 0 个可见点". Both working references
+-- build these hosts as top-level windows (rp_ui.lua EnsureLinesHost
+-- CreateEmptyWindow; easypull.lua:257 CreateEmptyWindow on UIParent).
+function UIX:CreateOverlayWindow(id, explicitOwner)
+    local factory = S.NativeObjectFactory
+    if type(factory) ~= "table" or type(factory.CreateWindow) ~= "function" then return nil, "overlay_window_factory_unavailable" end
+    local window, nativeErr = factory:CreateWindow(S.PhysicalId(id), "UIParent", "")
+    if window == nil then return nil, nativeErr or "overlay_window_create_failed" end
+    TrackNativeBuildWidget(window)
+    window.rsHudOwner = nil
+    window.rsUiOwner = explicitOwner ~= nil and tostring(explicitOwner) or nil
+    window.rsUiParent = UIParent
+    window.rsUiTransientWindow = true
+    local configured, configureErr = pcall(function()
+        if type(window.SetUILayer) == "function" then
+            local ok, result = pcall(function() return window:SetUILayer("system") end)
+            if ok ~= true or result == false then error("overlay window layer rejected") end
+        end
+        for _, row in ipairs({
+            { method = "SetCloseOnEscape", value = false },
+            { method = "SetWindowModal", value = false },
+        }) do
+            if type(window[row.method]) == "function" then
+                local ok = pcall(function() window[row.method](window, row.value) end)
+                if ok ~= true then error("overlay window policy failed:" .. tostring(row.method)) end
+            end
+        end
+        -- Draw priority is part of the PROVEN transient-window policy
+        -- (CreatePanel/popup): without it the window can sit below the
+        -- application/world and every child dot renders invisible.
+        local priority = S.UITokens and type(S.UITokens.Number) == "function" and S.UITokens:Number("layer.popupPriority", 10000) or 10000
+        if type(window.SetDrawPriority) == "function" then pcall(function() window:SetDrawPriority(priority) end) end
+        if window.AddAnchor ~= nil then window:AddAnchor("TOPLEFT", UIParent, 0, 0) end
+        -- Reference hosts stay small; child dot anchors overflow the extent
+        -- freely (rp_ui.lua EnsureLinesHost SetExtent(200,200)).
+        if window.SetExtent ~= nil then window:SetExtent(200, 200) end
+        if ConfigureNativePickable(window, false) ~= true then error("overlay window hit-test unavailable") end
+        if window.CorrectOffsetByScreen ~= nil then pcall(function() window:CorrectOffsetByScreen() end) end
+        window:Show(false)
+    end)
+    if not configured then
+        return FailPrimitive(window, id, PrimitiveFailureDetail("overlay_window_configure_failed", configureErr))
+    end
+    if type(self.PrimeNativeState) == "function" then
+        self:PrimeNativeState(window, {
+            width = 200, height = 200, visible = false, enabled = true, pickable = false,
+            anchorTopLeft = { parent = UIParent, x = 0, y = 0 },
+        })
+    end
+    return self:Register(id, window)
+end
+
 function UIX:CreateLabel(parent, id, text, x, y, width, height, fontSize, tone, align, shadow)
     local factory = S.NativeObjectFactory
     if type(factory) ~= "table" or parent == nil then return nil, "native_factory_or_parent_unavailable" end
@@ -560,6 +617,13 @@ function UIX:CreateEditBox(parent, id, x, y, width, height, maxLength)
             if accepted ~= true then error("editbox readonly state rejected") end
         end
         if edit.UseSelectAllWhenFocused ~= nil then edit:UseSelectAllWhenFocused(true) end
+        -- RSUI owns the Draft -> Commit transaction.  Some RU EditBox variants
+        -- clear their native text on Enter before the submit handler can read it
+        -- unless this verified flag is disabled.
+        if edit.ClearTextOnEnter ~= nil then
+            accepted = CallNativeAccepted(edit, "ClearTextOnEnter", false)
+            if accepted ~= true then error("editbox clear-on-enter state rejected") end
+        end
         if edit.SetMaxTextLength ~= nil then edit:SetMaxTextLength(math.max(1, tonumber(maxLength) or 64)) end
         if edit.style ~= nil then
             if edit.style.SetAlign ~= nil then edit.style:SetAlign(ALIGN_LEFT) end
@@ -817,6 +881,25 @@ function UIX:CreateSlider(parent, id, x, y, width, height, minimum, maximum, ste
                 self.rsValueChanged(nv, false)
             end
             return nv
+        end
+        -- Adaptive range updates are event-driven (NumericInput commit only).
+        -- Never rebuild the Native slider just to expand an endpoint: the same
+        -- drag surface/thumb remain attached, preventing hover/drag state churn.
+        function slider:SetRange(minimumValue, maximumValue, stepValue)
+            local minimumNext = tonumber(minimumValue)
+            local maximumNext = tonumber(maximumValue)
+            if minimumNext == nil or maximumNext == nil then return false, "invalid_slider_range" end
+            if maximumNext < minimumNext then minimumNext, maximumNext = maximumNext, minimumNext end
+            if self.rsDragging == true then return false, "slider_drag_active" end
+            local stepNext = math.abs(tonumber(stepValue) or tonumber(self.rsStep) or 1)
+            local changed = tonumber(self.rsMinimum) ~= minimumNext or tonumber(self.rsMaximum) ~= maximumNext or tonumber(self.rsStep) ~= stepNext
+            self.rsMinimum, self.rsMaximum, self.rsStep = minimumNext, maximumNext, stepNext
+            self.rsValue = ClampSliderValue(self, self.rsValue)
+            UIX:UpdateSliderVisual(self, self.rsValue)
+            return true, changed
+        end
+        function slider:GetRange()
+            return tonumber(self.rsMinimum), tonumber(self.rsMaximum), tonumber(self.rsStep)
         end
         function slider:SetValueChangedHandler(fn)
             self.rsValueChanged = type(fn) == "function" and fn or nil

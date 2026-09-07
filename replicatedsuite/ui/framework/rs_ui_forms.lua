@@ -12,9 +12,11 @@ if type(UI) ~= "table" or type(RSUI) ~= "table" then return end
 local Tokens = S.UITokens or {}
 local Layout = UI.LayoutV2
 RSUI.FormLayoutContractVersion = 2
-RSUI.NumericInlineContractVersion = 4
+RSUI.NumericInlineContractVersion = 6
+RSUI.NumericExplicitApplyContractVersion = 1
 RSUI.NumericStepPairFallbackContractVersion = 1
 RSUI.FormCompositeFailClosedContractVersion = 1
+RSUI.NumericAdaptiveRangeContractVersion = 1
 
 local function Token(path, fallback)
     if type(Tokens.Number) == "function" then return Tokens:Number(path, fallback) end
@@ -417,46 +419,115 @@ RSUI:RegisterType("NumericField", function(spec)
 
     c.useSlider = spec.slider ~= false
     c.useStepButtons = spec.stepButtons == true
+    c.useApplyButton = spec.applyButton == true
     -- Inline numeric rows are the compact settings contract used by dense V3
     -- pages/HUD appearance editors: Name + Slider + exact NumericInput.  The
-    -- same Binding remains the only mutation/persistence authority.
+    -- same Binding remains the only business mutation/persistence authority.
     c.inline = spec.inline == true
-    c.minimum = tonumber(spec.min) or 0
-    c.maximum = tonumber(spec.max)
-    -- Sliders require a finite range. Exact-entry-only fields deliberately may
-    -- omit max, which is used by freely resizable window dimensions.
-    if c.maximum == nil and c.useSlider then c.maximum = 100 end
-    if c.maximum ~= nil and c.maximum < c.minimum then c.minimum, c.maximum = c.maximum, c.minimum end
+    c.baseMinimum = tonumber(spec.min) or 0
+    c.baseMaximum = tonumber(spec.max)
+    -- Sliders require a finite presentation range. Exact-entry-only fields may
+    -- omit max (for example free window dimensions).
+    if c.baseMaximum == nil and c.useSlider then c.baseMaximum = 100 end
+    if c.baseMaximum ~= nil and c.baseMaximum < c.baseMinimum then c.baseMinimum, c.baseMaximum = c.baseMaximum, c.baseMinimum end
+    c.minimum, c.maximum = c.baseMinimum, c.baseMaximum
     c.step = math.abs(tonumber(spec.step) or 1)
+    c.stepOrigin = tonumber(spec.stepOrigin) or c.baseMinimum
     c.integer = spec.integer == true
     c.unit = tostring(spec.unit or spec.suffix or "")
+    -- Adaptive range changes only the slider's presentation endpoints.  Domain
+    -- setters remain authoritative for real business constraints: if a Feature
+    -- clamps/rejects an out-of-range edit, we read that authoritative value back
+    -- and do not expand the slider to the rejected request.
+    c.adaptiveRange = c.useSlider and spec.adaptiveRange ~= false and spec.fixedRange ~= true
+    c.hardMinimum = tonumber(spec.hardMin)
+    c.hardMaximum = tonumber(spec.hardMax)
+    if c.adaptiveRange ~= true then
+        c.hardMinimum, c.hardMaximum = c.baseMinimum, c.baseMaximum
+    elseif c.hardMinimum ~= nil and c.hardMaximum ~= nil and c.hardMaximum < c.hardMinimum then
+        c.hardMinimum, c.hardMaximum = c.hardMaximum, c.hardMinimum
+    end
+    c.rangeKey = tostring(spec.rangeKey or spec.id or "")
+    c.rangeStore = type(RSUI.NumericRangeStore) == "table" and RSUI.NumericRangeStore or nil
 
     local function Normalize(value)
         value = tonumber(value)
         if value == nil then return nil end
-        value = RoundStep(value, c.minimum, c.step)
-        value = Clamp(value, c.minimum, c.maximum)
+        value = RoundStep(value, c.stepOrigin, c.step)
+        value = Clamp(value, c.hardMinimum, c.hardMaximum)
         if c.integer then value = math.floor(value + 0.5) end
         return value
     end
 
     local function Current()
-        return Normalize(BindingValue(c.binding, c.minimum)) or c.minimum
+        return Normalize(BindingValue(c.binding, c.baseMinimum)) or c.baseMinimum
     end
 
-    local function SyncControls(value, source)
+    -- Restore only outward expansion. Saved metadata can never shrink a newer
+    -- code-defined base range after an addon update.
+    if c.adaptiveRange == true and c.rangeStore ~= nil and type(c.rangeStore.Get) == "function" and c.rangeKey ~= "" then
+        local savedMin, savedMax = c.rangeStore:Get(c.rangeKey)
+        if tonumber(savedMin) ~= nil then c.minimum = math.min(c.minimum, tonumber(savedMin)) end
+        if tonumber(savedMax) ~= nil and c.maximum ~= nil then c.maximum = math.max(c.maximum, tonumber(savedMax)) end
+    end
+    local initialCurrent = Current()
+    if c.adaptiveRange == true then
+        if initialCurrent < c.minimum then c.minimum = initialCurrent end
+        if c.maximum ~= nil and initialCurrent > c.maximum then c.maximum = initialCurrent end
+    end
+
+    local function PersistRange(reason)
+        if c.adaptiveRange ~= true or c.rangeStore == nil or type(c.rangeStore.Set) ~= "function" or c.rangeKey == "" then return true end
+        local ok, rangeErr = c.rangeStore:Set(c.rangeKey, c.minimum, c.maximum, reason or ("numeric_range:" .. c.rangeKey))
+        if ok ~= true and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Warn) == "function" then
+            S.DiagnosticsManager:Warn("rsui", "NUMERIC_RANGE_PERSIST_FAILED", "滑块动态范围保存失败，业务数值仍保持已提交状态", {
+                id = c.rangeKey, minimum = c.minimum, maximum = c.maximum, error = tostring(rangeErr or "unknown"),
+            })
+        end
+        return ok == true
+    end
+
+    local function EnsureRangeFor(value, persist, source)
+        value = Normalize(value)
+        if value == nil or c.adaptiveRange ~= true or c.maximum == nil then return false end
+        local nextMin, nextMax = c.minimum, c.maximum
+        if value < nextMin then nextMin = value end
+        if value > nextMax then nextMax = value end
+        if nextMin == c.minimum and nextMax == c.maximum then return false end
+        if c.slider ~= nil then
+            local rangeOk, rangeErr = c.slider:SetRange(nextMin, nextMax, c.step)
+            if rangeOk ~= true then
+                if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Warn) == "function" then
+                    S.DiagnosticsManager:Warn("rsui", "NUMERIC_RANGE_NATIVE_UPDATE_FAILED", "滑块动态范围更新失败", {
+                        id = c.rangeKey, minimum = nextMin, maximum = nextMax, error = tostring(rangeErr or "unknown"),
+                    })
+                end
+                return false
+            end
+        end
+        c.minimum, c.maximum = nextMin, nextMax
+        if persist == true then PersistRange(source or "numeric_range_expand") end
+        RSUI.metrics.numericRangeExpansions = (tonumber(RSUI.metrics.numericRangeExpansions) or 0) + 1
+        return true
+    end
+
+    local function SyncControls(value, source, persistRange)
         value = Normalize(value) or Current()
+        EnsureRangeFor(value, persistRange == true, source)
         source = tostring(source or "binding_refresh")
         if c.slider ~= nil then c.slider:Render(value, source) end
         if c.input ~= nil then c.input:Render(value, source) end
         return value
     end
 
-    local function Applied(value)
+    local function Applied(_, source)
         c.transientFeedback, c.transientTone, c.localError = nil, nil, nil
-        SyncControls(value, "commit")
+        -- A Feature setter may clamp the submitted draft. Always read back the
+        -- authoritative Domain value before deciding whether the slider expands.
+        local actual = Current()
+        SyncControls(actual, "commit", source == "input" or source == "numeric_field" or source == "minus" or source == "plus")
         c:SyncFeedback()
-        NotifyField(spec, "onApplied", c:IsValid(), value, c)
+        NotifyField(spec, "onApplied", c:IsValid(), actual, c)
     end
 
     if c.useStepButtons then
@@ -465,26 +536,26 @@ RSUI:RegisterType("NumericField", function(spec)
     if c.useSlider then
         c.slider = RSUI:Slider({
             id = spec.id .. "_slider", parent = c,
-            min = c.minimum, max = c.maximum, step = c.step, integer = c.integer,
+            min = c.minimum, max = c.maximum, step = c.step, stepOrigin = c.stepOrigin, integer = c.integer,
             binding = c.binding,
             onPreview = function(value)
                 if c.input ~= nil then c.input:Render(value, "interaction") end
                 c:SetFeedback(spec.previewText or "预览", spec.previewTone or "info", true)
                 NotifyField(spec, "onPreview", value, c)
             end,
-            onChanged = function(value) Applied(value) end,
+            onChanged = function(value) Applied(value, "slider") end,
             enabled = spec.enabled ~= false,
             commitOnFinal = spec.commitOnFinal == true,
         })
     end
     c.input = RSUI:NumericInput({
         id = spec.id .. "_input", parent = c,
-        min = c.minimum, max = c.maximum, step = c.step, integer = c.integer,
+        min = c.hardMinimum, max = c.hardMaximum, step = c.step, stepOrigin = c.stepOrigin, integer = c.integer,
         suffix = c.unit, maxLength = tonumber(spec.maxLength) or 14,
         binding = c.binding, enabled = spec.enabled ~= false,
         commitOnFinal = spec.commitOnFinal == true,
         format = spec.format,
-        onChanged = function(value) Applied(value) end,
+        onChanged = function(value) Applied(value, "input") end,
         onInvalid = function()
             c:SetFeedback(spec.invalidText or "请输入有效数字", "danger", true)
             NotifyField(spec, "onInvalid", c)
@@ -493,6 +564,43 @@ RSUI:RegisterType("NumericField", function(spec)
     if c.input == nil then
         c:Release()
         return nil, "numeric_field_input_create_failed"
+    end
+    function c:ApplyDraft(source)
+        if self.enabled == false or self.input == nil then return false end
+        local actionSource = tostring(source or "apply_button")
+        local draft = type(self.input.GetDraftNumber) == "function" and self.input:GetDraftNumber() or nil
+        local actual = Current()
+        -- On RU a button click can deliver EditBox LostFocus before Button
+        -- OnClick. LostFocus already committed the same value in that ordering;
+        -- avoid a duplicate Domain/Persistence write. If focus is still owned by
+        -- the EditBox, CommitAndEndEditing is the authoritative path.
+        if self.input:IsEditing() ~= true and draft ~= nil and tonumber(draft) == tonumber(actual) then
+            if type(self.input.EndEditing) == "function" then self.input:EndEditing(actionSource .. ":already_committed") end
+            SyncControls(actual, "commit", true)
+            return true
+        end
+        if type(self.input.CommitAndEndEditing) == "function" then
+            return self.input:CommitAndEndEditing(actionSource)
+        end
+        if type(self.input.Submit) == "function" then return self.input:Submit(actionSource) end
+        return false
+    end
+    if c.useApplyButton then
+        c.apply = RSUI:Button({
+            id = spec.id .. "_apply", parent = c, text = tostring(spec.applyText or "应用"), compact = true,
+            width = math.max(34, N(spec.applyButtonWidth, 40)), height = N(spec.controlHeight, Token("size.buttonH", 24)),
+            enabled = spec.enabled ~= false,
+            onClick = function()
+                -- Explicit Apply is the reliable RU commit affordance. Enter is
+                -- still accepted when the client emits it, but business commit
+                -- never depends on an unverified key event.
+                return c:ApplyDraft("apply_button")
+            end,
+        })
+        if c.apply == nil then
+            c:Release()
+            return nil, "numeric_field_apply_create_failed"
+        end
     end
     if c.useStepButtons then
         c.plus = RSUI:Button({ id = spec.id .. "_plus", parent = c, text = "+", compact = true, width = 26, height = Token("size.buttonH", 26), buildOptional = true })
@@ -510,6 +618,7 @@ RSUI:RegisterType("NumericField", function(spec)
     if c.minus ~= nil then c:AddChild(c.minus) end
     if c.slider ~= nil then c:AddChild(c.slider) end
     if c.plus ~= nil then c:AddChild(c.plus) end
+    if c.apply ~= nil then c:AddChild(c.apply) end
     if c.inline then
         -- Validation remains available through the Binding state, but compact
         -- rows deliberately do not reserve a second text line.  This prevents
@@ -523,14 +632,20 @@ RSUI:RegisterType("NumericField", function(spec)
         local normalized = Normalize(value)
         if normalized == nil then self:SetFeedback(spec.invalidText or "请输入有效数字", "danger", true); return false end
         local previous = BindingValue(self.binding, normalized)
-        local ok = self.binding:Set(normalized, true, tostring(source or "numeric_field"), previous)
-        if ok and spec.commitOnFinal == true and type(self.binding.Commit) == "function" then ok = self.binding:Commit(source or "numeric_field") end
+        local actionSource = tostring(source or "numeric_field")
+        local ok = self.binding:Set(normalized, true, actionSource, previous)
+        if ok and spec.commitOnFinal == true and type(self.binding.Commit) == "function" then ok = self.binding:Commit(actionSource) end
         if ok then self.transientFeedback, self.transientTone, self.localError = nil, nil, nil end
         local actual = Current()
-        SyncControls(actual, "commit")
+        SyncControls(actual, "commit", ok == true)
         self:SyncFeedback()
         NotifyField(spec, "onApplied", ok, actual, self)
         return ok
+    end
+
+    function c:GetRange() return self.minimum, self.maximum end
+    function c:ExpandRangeTo(value, persist)
+        return EnsureRangeFor(value, persist == true, "numeric_field_api")
     end
 
     if c.minus ~= nil and c.plus ~= nil then
@@ -565,6 +680,7 @@ RSUI:RegisterType("NumericField", function(spec)
             { self.slider, "numeric_slider" },
             { self.input, "numeric_input" },
             { self.plus, "numeric_plus" },
+            { self.apply, "numeric_apply" },
         }
         for _, entry in ipairs(children) do
             local childOk, childErr = self:EnsureChildEnabled(entry[1], self.enabled, entry[2])
@@ -575,7 +691,7 @@ RSUI:RegisterType("NumericField", function(spec)
 
     function c:Render()
         RSUI:_Count(self.kind, "rendered", 1)
-        local value = SyncControls(Current(), "binding_refresh")
+        local value = SyncControls(Current(), "binding_refresh", false)
         self:SyncFeedback()
         return value
     end
@@ -588,29 +704,40 @@ RSUI:RegisterType("NumericField", function(spec)
             local naturalH = math.max(labelH, controlH) + self.padding * 2
             local h = math.max(1, N(nextHeight, self.height or naturalH))
             self:SetBounds(x, y, w, h)
-            local gap = N(spec.controlGap, Token("spacing.xs", 5))
-            -- Compact numeric rows must remain useful inside very narrow HUDs.
-            -- Historically the hard 44px label + 54px input floors could consume
-            -- almost the entire row, leaving a 24px token slider.  Consumers may
-            -- now declare smaller safe floors without changing the default page
-            -- form contract.  The slider keeps an explicit minimum and the exact
-            -- input yields first when the row becomes extremely narrow.
-            local labelMinW = math.max(1, N(spec.labelMinWidth, 44))
-            local labelShare = math.max(0.10, math.min(0.70, N(spec.labelMaxShare, 0.34)))
-            local labelW = math.max(labelMinW, math.min(N(spec.labelWidth, 78), w * labelShare))
+            local gap = math.max(2, N(spec.controlGap, Token("spacing.xs", 5)))
+            -- Compact numeric rows now reserve an explicit Apply action to the
+            -- right of the exact editor.  Width allocation remains single-row
+            -- and responsive: on narrow pair cards the label/input/apply floors
+            -- shrink first, while the slider keeps a usable drag target.  This
+            -- avoids forcing every consumer into a new two-line layout.
+            local hasApply = self.apply ~= nil
+            local narrow = hasApply and w < N(spec.compactApplyNarrowWidth, 220)
+            if narrow then gap = math.min(gap, 3) end
+            local labelMinW = math.max(1, N(spec.labelMinWidth, narrow and 28 or 44))
+            local labelShare = math.max(0.10, math.min(0.70, N(spec.labelMaxShare, narrow and 0.25 or 0.34)))
+            local labelW = math.max(labelMinW, math.min(N(spec.labelWidth, narrow and 48 or 78), w * labelShare))
             local buttonW = N(spec.stepButtonWidth, 24)
-            local inputMinW = math.max(1, N(spec.inputMinWidth, 54))
-            local desiredInputW = math.max(inputMinW, N(spec.inputWidth, 76))
-            local sliderMinW = math.max(1, N(spec.sliderMinWidth, 24))
+            local inputMinW = math.max(42, N(spec.inputMinWidth, narrow and 42 or 54))
+            local desiredInputW = math.max(inputMinW, N(spec.inputWidth, narrow and 48 or 76))
+            local sliderMinW = math.max(16, N(spec.sliderMinWidth, narrow and 18 or 24))
             local sliderPreferredShare = math.max(0, math.min(0.80, N(spec.sliderPreferredShare, 0)))
+            local applyW = hasApply and math.max(34, N(spec.applyButtonWidth, narrow and 36 or 40)) or 0
             local innerW = math.max(1, w - self.padding * 2)
             local stepButtonsW = self.useStepButtons and (buttonW * 2 + gap * 2) or 0
             local sliderGapW = self.slider ~= nil and gap or 0
-            local afterLabel = math.max(1, innerW - labelW - gap - stepButtonsW - sliderGapW)
+            local applyGapW = hasApply and gap or 0
+            local afterLabel = math.max(1, innerW - labelW - gap - stepButtonsW - sliderGapW - applyW - applyGapW)
             local desiredSliderW = self.slider ~= nil and math.max(sliderMinW, math.floor(innerW * sliderPreferredShare + 0.5)) or 0
-            -- The exact editor yields before the slider in compact rows. Native
-            -- NumericInput has a 42px technical floor, so consumers may safely
-            -- request that minimum while preserving a large drag target.
+            -- Exact editor yields before the slider, but never below the Native
+            -- NumericInput 42px technical floor.  If a consumer is pathologically
+            -- narrow, clamp label width before allowing sibling overlap.
+            local minimumControlsW = (self.slider ~= nil and sliderMinW or 0) + inputMinW
+            if afterLabel < minimumControlsW then
+                local deficit = minimumControlsW - afterLabel
+                local reducedLabel = math.max(18, labelW - deficit)
+                afterLabel = afterLabel + (labelW - reducedLabel)
+                labelW = reducedLabel
+            end
             local maxSliderW = self.slider ~= nil and math.max(1, afterLabel - inputMinW) or 0
             local sliderW = self.slider ~= nil and math.max(1, math.min(math.max(sliderMinW, desiredSliderW, afterLabel - desiredInputW), maxSliderW)) or 0
             local inputW = math.max(1, math.min(desiredInputW, afterLabel - sliderW))
@@ -621,8 +748,9 @@ RSUI:RegisterType("NumericField", function(spec)
             xx = xx + labelW + gap
             if self.minus ~= nil then self.minus:Layout(xx, controlY, buttonW, controlH); xx = xx + buttonW + gap end
             if self.slider ~= nil then self.slider:Layout(xx, controlY + 2, sliderW, math.max(14, controlH - 4)); xx = xx + sliderW + gap end
-            self.input:Layout(xx, controlY, inputW, controlH); xx = xx + inputW + gap
-            if self.plus ~= nil then self.plus:Layout(xx, controlY, buttonW, controlH) end
+            self.input:Layout(xx, controlY, inputW, controlH); xx = xx + inputW
+            if self.plus ~= nil then xx = xx + gap; self.plus:Layout(xx, controlY, buttonW, controlH); xx = xx + buttonW end
+            if self.apply ~= nil then xx = xx + gap; self.apply:Layout(xx, controlY, applyW, controlH) end
             return h
         end
         local metrics = self:ResolveFieldMetrics(self.controlPreferredHeight)
@@ -635,15 +763,18 @@ RSUI:RegisterType("NumericField", function(spec)
         local controlH = metrics.controlHeight
         local stepButtonsW = self.useStepButtons and (buttonW * 2 + gap * 2) or 0
         local betweenSliderInput = self.slider ~= nil and gap or 0
-        local usable = math.max(1, available - stepButtonsW - betweenSliderInput)
+        local applyW = self.apply ~= nil and math.max(34, N(spec.applyButtonWidth, 40)) or 0
+        local applyGapW = self.apply ~= nil and gap or 0
+        local usable = math.max(1, available - stepButtonsW - betweenSliderInput - applyW - applyGapW)
         local desiredInputW = math.max(48, N(spec.inputWidth, 84))
         local inputW = math.max(1, math.min(desiredInputW, usable))
         local sliderW = self.slider ~= nil and math.max(1, usable - inputW) or 0
         local xx = self.padding
         if self.minus ~= nil then self.minus:Layout(xx, metrics.controlTop, buttonW, controlH); xx = xx + buttonW + gap end
         if self.slider ~= nil then self.slider:Layout(xx, metrics.controlTop + 2, sliderW, math.max(14, controlH - 4)); xx = xx + sliderW + gap end
-        self.input:Layout(xx, metrics.controlTop, inputW, controlH); xx = xx + inputW + gap
-        if self.plus ~= nil then self.plus:Layout(xx, metrics.controlTop, buttonW, controlH) end
+        self.input:Layout(xx, metrics.controlTop, inputW, controlH); xx = xx + inputW
+        if self.plus ~= nil then xx = xx + gap; self.plus:Layout(xx, metrics.controlTop, buttonW, controlH); xx = xx + buttonW end
+        if self.apply ~= nil then xx = xx + gap; self.apply:Layout(xx, metrics.controlTop, applyW, controlH) end
         if self.hint ~= nil then
             self.hint:Layout(self.padding, metrics.controlTop + controlH + metrics.hintGap, math.max(1, w - self.padding * 2), metrics.hintHeight)
         end

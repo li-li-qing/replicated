@@ -44,6 +44,8 @@ local screen={{
   drift={{900,700,1}}, alias_target={{900,480,1}}, alias_kept={{642,481,1}},
 }}
 UIParent={{}}
+function UIParent:GetScreenWidth() return 1280 end
+function UIParent:GetScreenHeight() return 960 end
 X2Unit={{}}
 ReplicatedSuite={{
   Services={{}},
@@ -79,20 +81,20 @@ local function Check(name,ok)
   total=total+1
   if ok then passed=passed+1 else print('FAIL | '..name) end
 end
-Check('contract_version',P.version==8 and P.FrontHemisphereBatchContractVersion==1 and P.CameraUnavailableNativeFallbackContractVersion==1 and P.UnitProjectionConsistencyContractVersion==1 and P.UnitWorldAliasGuardContractVersion==1 and P.WorldBatchIndexContractVersion==1 and type(P.ProjectUnitBatch)=='function' and type(P.ProjectWorldBatch)=='function')
+Check('contract_version',P.version==12 and P.FrontHemisphereBatchContractVersion==1 and P.CameraUnavailableNativeFallbackContractVersion==1 and P.UnitProjectionConsistencyContractVersion==1 and P.UnitWorldAliasGuardContractVersion==1 and P.WorldBatchIndexContractVersion==1 and P.WorldBatchFactsContractVersion==2 and P.WorldBatchAnchorCalibrationContractVersion==1 and type(P.ProjectUnitBatch)=='function' and type(P.ProjectWorldBatch)=='function')
 local result,status=P:ProjectUnitBatch({{'player','front','behind','behind','edge','drift'}},{{requireFrontHemisphere=true,worldZOffset=1,validateNativeAgainstCamera=true,reconcileNativeScale=true}})
 Check('batch_ready',status=='ready' and type(result)=='table')
 Check('camera_frame_once',calls.camPos==1 and calls.camDir==1 and calls.camFov==1)
 Check('deduplicated_world_reads',calls.world==5)
 Check('all_world_reads_global',calls.worldLocalTrue==0)
 Check('behind_rejected_before_native_screen',type(result.behind)=='table' and result.behind.visible==false and result.behind.reason=='behind_camera' and calls.screen==4)
-Check('front_scale_reconciled',result.front.visible==true and result.front.source=='native_scale_reconciled' and math.abs(result.front.x-416)<3)
-Check('player_scale_reconciled',result.player.visible==true and result.player.source=='native_scale_reconciled' and result.player.forward>0)
-Check('stale_inbounds_native_falls_back',result.drift.visible==true and result.drift.source=='camera_consistency_fallback' and result.drift.x<700)
-Check('front_offscreen_preserved_for_presenter_clip',result.edge.visible==true and result.edge.source=='camera_world' and (result.edge.x<0 or result.edge.x>1024 or result.edge.y<0 or result.edge.y>768))
+Check('front_keeps_native_raw',result.front.visible==true and result.front.source=='native_unit' and math.abs(result.front.x-520)<0.01)
+Check('player_keeps_native_raw',result.player.visible==true and result.player.source=='native_unit' and result.player.forward>0 and math.abs(result.player.x-640)<0.01)
+Check('drift_keeps_native_raw',result.drift.visible==true and result.drift.source=='native_unit' and math.abs(result.drift.x-900)<0.01)
+Check('edge_keeps_native_raw',result.edge.visible==true and result.edge.source=='native_unit' and math.abs(result.edge.x-5000)<0.01)
 local health=P:GetHealth()
 Check('behind_diagnostic',health.behindCameraRejects==1 and health.unitBatches==1)
-Check('coordinate_consistency_diagnostics',health.nativeScaleReconciles>=2 and health.nativeConsistencyFallbacks==1)
+Check('native_raw_diagnostics',health.nativeScaleReconciles==0 and health.nativeConsistencyFallbacks==0 and type(health.failuresByReason)=='table' and health.unitReads>=4)
 -- Real RU failure: target world fact transiently aliases the player's world
 -- position while the native screen getter already points at the actual target.
 -- Camera consistency must NOT collapse both endpoints back onto the player.
@@ -115,18 +117,30 @@ Check('alias_candidate_diagnostics',unconfirmedHealth.aliasNativeKept>=1 and unc
 -- v7 contract: ProjectWorldBatch must preserve every source index. Sparse Lua
 -- arrays are unsafe because ipairs/# stop at the first nil; Range Assist circles
 -- naturally include behind-camera samples, so a hole used to truncate the arc.
-local worldBatch,worldBatchStatus=P:ProjectWorldBatch({{
+local worldBatch,worldBatchStatus,worldBatchFacts=P:ProjectWorldBatch({{
   {{x=20,y=0,z=0}},
   {{x=-20,y=0,z=0}},
   {{x='bad',y=0,z=0}},
   {{x=20,y=2,z=0}},
 }},{{preferLogicalCamera=true}})
 Check('world_batch_camera_ready',worldBatchStatus=='camera')
+Check('world_batch_facts_match_call',type(worldBatchFacts)=='table' and worldBatchFacts.total==4 and worldBatchFacts.native==0 and worldBatchFacts.camera==2)
 Check('world_batch_dense_index_contract',#worldBatch==4 and type(worldBatch[1])=='table' and type(worldBatch[2])=='table' and type(worldBatch[3])=='table' and type(worldBatch[4])=='table')
 Check('world_batch_visible_sentinel',worldBatch[1].visible==true and worldBatch[2].visible==false and worldBatch[3].visible==false and worldBatch[4].visible==true)
 local denseCount=0
 for _ in ipairs(worldBatch) do denseCount=denseCount+1 end
 Check('world_batch_ipairs_crosses_hidden_samples',denseCount==4)
+-- Resolution/UI-scale anchor calibration: with a 1280x960 camera frame and
+-- a native player anchor at 640,480 this first case is already aligned. Replace
+-- the native player anchor with 512,384 (logical 1024x768 centre) and require
+-- the EasyPull camera batch to translate rigidly to that native truth.
+screen.player={{512,384,1}}
+local anchored,anchoredStatus,anchoredFacts=P:ProjectWorldBatch({{
+  {{x=20,y=0,z=0.25}}, {{x=20,y=2,z=0.25}}, {{x=20,y=-2,z=0.25}},
+}},{{easyPullCompat=true,anchorUnit='player',anchorWorld={{x=10,y=0,z=0.25}}}})
+Check('world_batch_anchor_calibration_ready',anchoredStatus=='easypull_camera' and type(anchoredFacts)=='table')
+Check('world_batch_anchor_calibration_applied',anchoredFacts.calibrationStatus=='applied' and anchoredFacts.calibrationDx~=nil and anchoredFacts.calibrationDy~=nil)
+Check('world_batch_anchor_calibration_translates_points',type(anchored[1])=='table' and anchored[1].visible==true and anchored[1].source=='easypull_camera')
 -- Flip the camera so the former "behind" target is now in front. It must be
 -- eligible again; this proves the cull follows the camera, not character token.
 ReplicatedSuite.Api.CallCapability=function(self,capability,host,method,...)

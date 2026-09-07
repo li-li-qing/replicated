@@ -3129,6 +3129,10 @@ local UNIT_LINE_DEFAULT_COLORS = {
     focus = { 0.35, 0.82, 1.00 },
     focustarget = { 0.67, 0.52, 1.00 },
 }
+S.VisualGuideLimits = S.VisualGuideLimits or (S.Constants and S.Constants.VisualGuide) or {
+    pointSizeMin = 2, pointSizeDefaultMax = 10, pointSizeHardMax = 24,
+}
+
 local function NormalizeUnitLineColors(value)
     local out = {}
     for key, default in pairs(UNIT_LINE_DEFAULT_COLORS) do
@@ -3205,7 +3209,14 @@ local UnitLines = NewFeature("combat_unit_lines", {
             dia.lastFailureReason = "ALL_PAIRS_DISABLED"
             return {}, "empty", "所有连线类型均已关闭"
         end
-        local projected,batchErr = projection:ProjectUnitBatch(tokens,{ requireFrontHemisphere=true, worldZOffset=1, validateNativeAgainstCamera=true, reconcileNativeScale=true })
+        -- .18.131b reference alignment (rp_api.lua UnitScreenPoint): the
+        -- working references draw lines from RAW native screen positions and
+        -- cull only depth<=0 — there is NO world-vs-camera front-hemisphere
+        -- gate. That gate classified the PLAYER endpoint as "相机背后" on the
+        -- live client (self↔target died with 单位在相机背后), because the
+        -- GetViewCameraPos basis and GetUnitWorldPositionByTarget(false) world
+        -- space do not agree on RU. Native depth is the proven behind-cull.
+        local projected,batchErr = projection:ProjectUnitBatch(tokens,{ worldZOffset=1 })
         projected=type(projected)=="table" and projected or {}
         for _, pair in ipairs(UNIT_LINE_PAIRS) do
             if feature.State[pair.setting] ~= false then
@@ -3247,6 +3258,7 @@ local UnitLines = NewFeature("combat_unit_lines", {
         return rows, (#failed > 0 and "partial" or "ready"), (#failed > 0 and table.concat(failed, "；") or nil)
     end,
     projection = function(feature) return { pointCount=feature.State.pointCount, pointSize=feature.State.pointSize, opacity=feature.State.opacity,
+        pointSizeMin=S.VisualGuideLimits.pointSizeMin, pointSizeDefaultMax=S.VisualGuideLimits.pointSizeDefaultMax, pointSizeHardMax=S.VisualGuideLimits.pointSizeHardMax,
         refreshMs=UnitLineInterval(feature), showTarget=feature.State.showTarget~=false, showTargetTarget=feature.State.showTargetTarget~=false,
         showFocusTarget=feature.State.showFocusTarget~=false, showFocusTargetTarget=feature.State.showFocusTargetTarget~=false,
         colors=NormalizeUnitLineColors(feature.State.colors),
@@ -3254,7 +3266,7 @@ local UnitLines = NewFeature("combat_unit_lines", {
         samplingMode="adaptive_screen_space", pointBudgetMode="cadence_pressure_bounded", refreshPriority="P1_visual" } end,
     commands = {
         SetPointCount = function(feature, value) value=math.max(8,math.min(48,math.floor(tonumber(value) or 24))); return PersistStateMutation(feature,"unit_lines_points",function(state) state.pointCount=value; return true end) end,
-        SetPointSize = function(feature, value) value=math.max(2,math.min(10,math.floor(tonumber(value) or 4))); return PersistStateMutation(feature,"unit_lines_size",function(state) state.pointSize=value; return true end) end,
+        SetPointSize = function(feature, value) value=math.max(S.VisualGuideLimits.pointSizeMin,math.min(S.VisualGuideLimits.pointSizeHardMax,math.floor(tonumber(value) or 4))); return PersistStateMutation(feature,"unit_lines_size",function(state) state.pointSize=value; return true end) end,
         SetOpacity = function(feature, value) value=math.max(0.1,math.min(1,tonumber(value) or 0.78)); return PersistStateMutation(feature,"unit_lines_opacity",function(state) state.opacity=value; return true end) end,
         SetRefreshMs = function(feature, value)
             value=math.max(1,math.min(1000,math.floor(tonumber(value) or 100)))
@@ -3291,7 +3303,7 @@ local UnitLines = NewFeature("combat_unit_lines", {
         SetPairSize = function(feature, key, value)
             key=tostring(key or "")
             if UNIT_LINE_DEFAULT_COLORS[key] == nil then return false,"未知连线类型" end
-            value=math.max(2,math.min(10,math.floor(tonumber(value) or 4)))
+            value=math.max(S.VisualGuideLimits.pointSizeMin,math.min(S.VisualGuideLimits.pointSizeHardMax,math.floor(tonumber(value) or 4)))
             return PersistStateMutation(feature,"unit_lines_pair_size_"..key,function(state)
                 state.pairSizes = state.pairSizes or {}
                 state.pairSizes[key] = value
@@ -3300,7 +3312,7 @@ local UnitLines = NewFeature("combat_unit_lines", {
         end,
     },
 })
-UnitLines.VisualGuideContractVersion = 4
+UnitLines.VisualGuideContractVersion = 5
 UnitLines.AdaptiveDensityContractVersion = 2
 UnitLines.SmoothRefreshContractVersion = 1
 UnitLines.FrontHemisphereContractVersion = 1
@@ -3308,18 +3320,55 @@ UnitLines.ProjectionConsistencyContractVersion = 1
 -- UnitLines.Diagnostics is attached lazily by read() (Lua 5.1 main-chunk local budget)
 
 local RANGE_ASSIST_TASK = "v3_business_range_assist_refresh"
+local RANGE_ASSIST_REFRESH_MS = 50
 local RangeAssist = NewFeature("combat_range_assist", {
-    apiDependencies = { "X2Unit:GetUnitWorldPositionByTarget" },
+    apiDependencies = { "X2Unit:GetUnitWorldPositionByTarget", "X2Unit:GetUnitScreenPosition" },
     state = { radius = 10, pointCount = 24, pointSize = 4, opacity = 0.68, color = { 0.20, 0.82, 1.00 } },
     default = { radius = 10, pointCount = 24, pointSize = 4, opacity = 0.68, color = { 0.20, 0.82, 1.00 } },
-    observationContractVersion = 2,
+    observationContractVersion = 3,
     reconcileDemand = function(feature, before, after)
         local b, a = tonumber(before and before.count) or 0, tonumber(after and after.count) or 0
         if b <= 0 and a > 0 then
-            if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then return false, "范围辅助 Scheduler 不可用" end
-            local added = S.Scheduler:AddTask(RANGE_ASSIST_TASK, 200, function()
-                if feature.enabled == true and (tonumber(feature.consumerCount) or 0) > 0 then feature.Authority:Refresh("visual_tick") end
-            end, false, feature, "P4", 1)
+            if S.Scheduler == nil or type(S.Scheduler.AddHighFrequencyTask) ~= "function" then return false, "范围辅助高频 Scheduler 不可用" end
+            local added = S.Scheduler:AddHighFrequencyTask(RANGE_ASSIST_TASK, RANGE_ASSIST_REFRESH_MS, function()
+                if feature.enabled ~= true or (tonumber(feature.consumerCount) or 0) <= 0 then return true end
+                feature.RangeRefreshHealth = type(feature.RangeRefreshHealth) == "table" and feature.RangeRefreshHealth
+                    or { attempts=0, successes=0, failures=0, consecutiveFailures=0 }
+                local health=feature.RangeRefreshHealth
+                health.attempts=(tonumber(health.attempts) or 0)+1
+                local callOk, refreshResult = xpcall(function()
+                    return feature.Authority:Refresh("visual_tick")
+                end, S.SafeTraceback)
+                if callOk==true then
+                    health.successes=(tonumber(health.successes) or 0)+1
+                    health.consecutiveFailures=0
+                    health.lastSuccessAtMs=S.NowMs and S.NowMs() or 0
+                    return refreshResult
+                end
+
+                health.failures=(tonumber(health.failures) or 0)+1
+                health.consecutiveFailures=(tonumber(health.consecutiveFailures) or 0)+1
+                health.lastErrorAtMs=S.NowMs and S.NowMs() or 0
+                health.lastError=tostring(refreshResult or "unknown")
+                -- Do not freeze the previous screen-space ring after one native
+                -- projection exception. Clear once, publish the empty authority
+                -- state, then continue bounded 50 ms retries without tripping the
+                -- shared scheduler's three-error breaker.
+                if health.consecutiveFailures==1 then
+                    feature.Authority.rows={}
+                    feature.Authority.status="unavailable"
+                    feature.Authority.error="范围辅助刷新异常："..health.lastError
+                    feature.Authority.revision=(tonumber(feature.Authority.revision) or 0)+1
+                    if S.Events~=nil and type(S.Events.Publish)=="function" then
+                        pcall(S.Events.Publish,S.Events,feature.UpdateTopic,feature.Authority.revision,"visual_tick_error")
+                    end
+                end
+                if S.DiagnosticsManager~=nil and type(S.DiagnosticsManager.WarnRateLimited)=="function" then
+                    S.DiagnosticsManager:WarnRateLimited("range_assist","REFRESH_EXCEPTION",10000,
+                        "范围辅助刷新异常，已隐藏旧圆并保持 50ms 重试",{error=health.lastError})
+                end
+                return true
+            end, false, feature, "P1", 1)
             if added ~= true then return false, "范围辅助刷新任务创建失败" end
             if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(RANGE_ASSIST_TASK, feature.Id) end
         elseif b > 0 and a <= 0 and S.Scheduler ~= nil then S.Scheduler:RemoveTask(RANGE_ASSIST_TASK) end
@@ -3329,42 +3378,66 @@ local RangeAssist = NewFeature("combat_range_assist", {
     read = function(feature)
         local projection = S.Services and S.Services.ScreenProjectionV3 or nil
         if type(projection) ~= "table" or type(projection.GetUnitWorldPosition) ~= "function" or type(projection.ProjectWorldBatch) ~= "function" then return {}, "unavailable", "ScreenProjectionV3 不可用" end
-        -- ProjectWorldBatch uses the camera's global world frame.  The player
-        -- center must therefore come from the same global coordinate space;
-        -- `isLocal=true` reproduces the mixed-space endpoint bug already fixed
-        -- for Unit Lines in .18.96 and makes the circle drift away from self.
-        local px,py,pz,posErr = projection:GetUnitWorldPosition("player", false)
+        -- EasyPull's verified circle path uses isLocal=true and sends those
+        -- local-world points directly to ConvertWorldToScreen. Keep that exact
+        -- coordinate contract; do not substitute the unrelated global-world
+        -- convention used by movement-distance helpers or camera-space lines.
+        local px,py,pz,posErr = projection:GetUnitWorldPosition("player", true)
         if px == nil then return {}, "unavailable", "自身世界坐标不可读：" .. tostring(posErr or "unknown") end
         local count=math.max(12,math.min(48,math.floor(tonumber(feature.State.pointCount) or 24)))
         local radius=math.max(1,math.min(100,tonumber(feature.State.radius) or 10))
         local worldPoints={}
         for index=1,count do
             local angle=((index-1)/count)*math.pi*2
-            worldPoints[index]={x=px+math.cos(angle)*radius,y=py+math.sin(angle)*radius,z=pz+0.1}
+            worldPoints[index]={x=px+math.cos(angle)*radius,y=py+math.sin(angle)*radius,z=pz+0.25}
         end
-        -- Range geometry is an RSUI overlay; force logical camera projection so
-        -- the circle center cannot drift with physical-pixel/UI-scale mismatch.
-        local projected, batchSource = projection:ProjectWorldBatch(worldPoints,{preferLogicalCamera=true})
+
+        -- Exact EasyPull-style projector policy for the ring: one coordinate
+        -- source for the entire shape, native ConvertWorldToScreen only, strict
+        -- numeric depth > 0. Per-point camera fallback is intentionally disabled
+        -- here because mixing two projection spaces can bend one logical circle.
+        local projected, batchSource, ringBatch = projection:ProjectWorldBatch(worldPoints,{
+            easyPullCompat=true,
+            -- Resolution/UI-scale calibration: the 3D camera fallback keeps the
+            -- EasyPull shape, while ScreenProjectionV3 rigidly translates the
+            -- entire camera batch so its projected centre matches the native
+            -- player screen anchor.  No per-point calibration lives in Feature.
+            anchorUnit="player", anchorWorld={x=px,y=py,z=pz+0.25},
+        })
         local points={}
-        -- WorldBatch v7 is index-stable, but keep explicit source-index
-        -- iteration here as a second fence.  A range circle naturally contains
-        -- behind-camera points; Lua 5.1 ipairs() over a sparse projection used
-        -- to stop at the first hole and discard every later visible point.
         projected = type(projected)=="table" and projected or {}
         for index=1,count do
             local screenPoint=projected[index]
             if type(screenPoint)=="table" and tonumber(screenPoint.x)~=nil and tonumber(screenPoint.y)~=nil
-                and screenPoint.visible~=false and (tonumber(screenPoint.depth)==nil or tonumber(screenPoint.depth)>0) then
+                and screenPoint.visible~=false and tonumber(screenPoint.depth)~=nil and tonumber(screenPoint.depth)>0 then
                 points[#points+1]={x=screenPoint.x,y=screenPoint.y}
             end
         end
-        if #points < 3 then return {}, "partial", "范围圆投影没有足够可见点；请确认当前 RU 相机投影能力" end
-        return {{ key="self_radius", name="自身范围圆", text=string.format("半径 %.1fm · 可见点 %d/%d · %s",radius,#points,count,tostring(batchSource or "projection")), statusText="实时", tone="green", points=points, radius=radius }}, "ready"
+        if #points < 3 then return {}, "partial", "EasyPull 投影没有足够可见点；原生与 WorldToScreen fallback 均不可用或点在相机后方" end
+
+        local batch=type(ringBatch)=="table" and ringBatch or {}
+        local depthBand=(batch.depthMin~=nil) and string.format("%.0f..%.0f",batch.depthMin,batch.depthMax) or "-"
+        local refresh=type(feature.RangeRefreshHealth)=="table" and feature.RangeRefreshHealth or {}
+        local calibration="-"
+        if tostring(batch.calibrationStatus or "")=="applied" then
+            calibration=string.format("%d,%d",math.floor((tonumber(batch.calibrationDx) or 0)+0.5),math.floor((tonumber(batch.calibrationDy) or 0)+0.5))
+        elseif batch.calibrationStatus~=nil then
+            calibration=tostring(batch.calibrationStatus)
+            if batch.calibrationErr~=nil then calibration=calibration..":"..tostring(batch.calibrationErr) end
+        end
+        local projFacts=string.format("EasyPull原生%d/相机%d/原拒%d/相拒%d 深度%s · 锚校%s · 50ms尝试%d/失%d/连续%d · 样本%s",
+            tonumber(batch.native) or 0,tonumber(batch.camera) or 0,tonumber(batch.nativeRejected) or 0,tonumber(batch.cameraRejected) or 0,depthBand,
+            tostring(batch.calibrationStatus or "-"),tonumber(refresh.attempts) or 0,tonumber(refresh.failures) or 0,tonumber(refresh.consecutiveFailures) or 0,
+            tostring(batch.sample or "-"))
+        return {{ key="self_radius", name="自身范围圆",
+            text=string.format("半径 %.1fm · 可见点 %d/%d · %s",radius,#points,count,tostring(batchSource or "projection")),
+            statusText="实时", tone="green", points=points, radius=radius, calibration=calibration, projFacts=projFacts }}, "ready"
     end,
     projection = function(feature)
         local color = type(feature.State.color) == "table" and feature.State.color or { 0.20, 0.82, 1.00 }
         return {
             radius=feature.State.radius, pointCount=feature.State.pointCount, pointSize=feature.State.pointSize, opacity=feature.State.opacity,
+            pointSizeMin=S.VisualGuideLimits.pointSizeMin, pointSizeDefaultMax=S.VisualGuideLimits.pointSizeDefaultMax, pointSizeHardMax=S.VisualGuideLimits.pointSizeHardMax,
             color={
                 math.max(0,math.min(1,tonumber(color[1]) or 0.20)),
                 math.max(0,math.min(1,tonumber(color[2]) or 0.82)),
@@ -3375,7 +3448,7 @@ local RangeAssist = NewFeature("combat_range_assist", {
     commands = {
         SetRadius = function(feature,value) value=math.max(1,math.min(100,tonumber(value) or 10)); return PersistStateMutation(feature,"range_radius",function(state) state.radius=value; return true end) end,
         SetPointCount = function(feature,value) value=math.max(12,math.min(48,math.floor(tonumber(value) or 24))); return PersistStateMutation(feature,"range_points",function(state) state.pointCount=value; return true end) end,
-        SetPointSize = function(feature,value) value=math.max(2,math.min(10,math.floor(tonumber(value) or 4))); return PersistStateMutation(feature,"range_size",function(state) state.pointSize=value; return true end) end,
+        SetPointSize = function(feature,value) value=math.max(S.VisualGuideLimits.pointSizeMin,math.min(S.VisualGuideLimits.pointSizeHardMax,math.floor(tonumber(value) or 4))); return PersistStateMutation(feature,"range_size",function(state) state.pointSize=value; return true end) end,
         SetOpacity = function(feature,value) value=math.max(0.1,math.min(1,tonumber(value) or 0.68)); return PersistStateMutation(feature,"range_opacity",function(state) state.opacity=value; return true end) end,
         SetColor = function(feature,r,g,b)
             r=math.max(0,math.min(1,tonumber(r) or 0.20)); g=math.max(0,math.min(1,tonumber(g) or 0.82)); b=math.max(0,math.min(1,tonumber(b) or 1.00))
@@ -3383,8 +3456,12 @@ local RangeAssist = NewFeature("combat_range_assist", {
         end,
     },
 })
-RangeAssist.VisualGuideContractVersion = 4
-RangeAssist.WorldSpaceContractVersion = 1
+RangeAssist.VisualGuideContractVersion = 7
+RangeAssist.WorldSpaceContractVersion = 2
+RangeAssist.ProjectionFactsContractVersion = 5
+RangeAssist.RefreshCadenceContractVersion = 1
+RangeAssist.AnchorCalibrationContractVersion = 1
+
 NewFeature("combat_siege_readiness", { blocker = "GetEquippedItemTooltipInfo 的槽位/装分字段和攻城上下文未在当前 RU 实机确认；不猜测装备状态" })
 NewFeature("tools_hotkey_profiles", { blocker = "当前 RU API 没有动作名称枚举；GetOptionBinding 只能读取已知 action/index，无法安全导出完整快捷键方案" })
 ------------------------------------------------------------------------

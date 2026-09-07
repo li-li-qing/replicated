@@ -34,6 +34,22 @@ local function Analytics() return S.Services and S.Services.CombatAnalyticsV3 or
 local function Relation() return S.Services and S.Services.CombatRelationV3 or nil end
 local function Domain() return F.Domain end
 
+local PVP_REFRESH_MS = 50
+local PVE_PROJECTION_REFRESH_MS = 400
+local PVE_PENDING_REPLAY_MS = 160
+
+local function IsPvpMode()
+    return type(F.State)=="table" and string.upper(tostring(F.State.mode or ""))=="PVP"
+end
+
+local function ProjectionPublishDelayMs()
+    return IsPvpMode() and PVP_REFRESH_MS or PVE_PROJECTION_REFRESH_MS
+end
+
+local function PendingReplayDelayMs()
+    return IsPvpMode() and PVP_REFRESH_MS or PVE_PENDING_REPLAY_MS
+end
+
 function F:_EnsureAnalyticsMetric()
     if self.analyticsMetricRegistered == true then return true end
     local analytics = Analytics()
@@ -272,7 +288,10 @@ function F:ScheduleProjectionPublish()
         return true
     end
     self.projectionPublishScheduled = true
-    local ok = S.Scheduler:AddOneShot(self.projectionPublishToken, 400, function()
+    local delayMs=ProjectionPublishDelayMs()
+    local addOneShot=(IsPvpMode() and type(S.Scheduler.AddHighFrequencyOneShot)=="function")
+        and S.Scheduler.AddHighFrequencyOneShot or S.Scheduler.AddOneShot
+    local ok = addOneShot(S.Scheduler,self.projectionPublishToken,delayMs,function()
         F.projectionPublishScheduled = false
         if S.Events ~= nil and type(S.Events.Publish) == "function" then S.Events:Publish("v3.dps.updated", "fact") end
         return true
@@ -293,7 +312,10 @@ function F:SchedulePendingReplay(reason)
     if type(d) ~= "table" or type(d.ReplayPending) ~= "function" then return false end
     if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return false, "scheduler unavailable" end
     self.pendingReplayScheduled = true
-    local ok = S.Scheduler:AddOneShot(self.pendingReplayToken, 160, function()
+    local delayMs=PendingReplayDelayMs()
+    local addOneShot=(IsPvpMode() and type(S.Scheduler.AddHighFrequencyOneShot)=="function")
+        and S.Scheduler.AddHighFrequencyOneShot or S.Scheduler.AddOneShot
+    local ok = addOneShot(S.Scheduler,self.pendingReplayToken,delayMs,function()
         F.pendingReplayScheduled = false
         local replayOk = d:ReplayPending(reason or "evidence")
         if replayOk == true then F:ScheduleProjectionPublish() end

@@ -1,11 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Foundation Acceptance v74
+-- Replicated Suite V3 - Foundation Acceptance v76
 --
 -- Bounded, on-demand checks only. No Native widget creation and no Tick.
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
-S.UIV3Acceptance = { version = 74 }
+S.UIV3Acceptance = { version = 76 }
 local A = S.UIV3Acceptance
 A.TradeDpsFreshReloadPreflightContractVersion = 1
 A.TradeDetailFavoritesContractVersion = 1
@@ -372,6 +372,7 @@ function A:RunMatrix()
         or (tonumber(screenProjection.UnitProjectionConsistencyContractVersion) or 0) < 1
         or (tonumber(screenProjection.UnitWorldAliasGuardContractVersion) or 0) < 1
         or (tonumber(screenProjection.WorldBatchIndexContractVersion) or 0) < 1
+        or (tonumber(screenProjection.WorldBatchFactsContractVersion) or 0) < 1
         or (tonumber(screenProjection.CameraUnavailableNativeFallbackContractVersion) or 0) < 1
         or type(screenProjection.ProjectWorld) ~= "function"
         or type(screenProjection.ProjectWorldBatch) ~= "function" or type(screenProjection.GetUnitWorldPosition) ~= "function" then
@@ -403,7 +404,7 @@ function A:RunMatrix()
         or type(visualGuides.BuildUnitLineSamplePlan) ~= "function" then
         failures[#failures + 1] = "combat_visual_guides_presenter_contract"
     end
-    if type(unitLines) ~= "table" or (tonumber(unitLines.VisualGuideContractVersion) or 0) < 4
+    if type(unitLines) ~= "table" or (tonumber(unitLines.VisualGuideContractVersion) or 0) < 5
         or (tonumber(unitLines.AdaptiveDensityContractVersion) or 0) < 2
         or (tonumber(unitLines.SmoothRefreshContractVersion) or 0) < 1
         or (tonumber(unitLines.FrontHemisphereContractVersion) or 0) < 1
@@ -413,8 +414,10 @@ function A:RunMatrix()
         or type(unitLines.Commands.SetRefreshMs) ~= "function" or type(unitLines.Commands.SetPairEnabled) ~= "function" then
         failures[#failures + 1] = "unit_lines_visual_contract"
     end
-    if type(rangeAssist) ~= "table" or (tonumber(rangeAssist.VisualGuideContractVersion) or 0) < 4
-        or (tonumber(rangeAssist.WorldSpaceContractVersion) or 0) < 1
+    if type(rangeAssist) ~= "table" or (tonumber(rangeAssist.VisualGuideContractVersion) or 0) < 7
+        or (tonumber(rangeAssist.WorldSpaceContractVersion) or 0) < 2
+        or (tonumber(rangeAssist.ProjectionFactsContractVersion) or 0) < 5
+        or (tonumber(rangeAssist.AnchorCalibrationContractVersion) or 0) < 1
         or type(rangeAssist.Commands) ~= "table" or type(rangeAssist.Commands.SetRadius) ~= "function"
         or type(rangeAssist.Commands.SetPointCount) ~= "function" or type(rangeAssist.Commands.SetOpacity) ~= "function"
         or type(rangeAssist.Commands.SetColor) ~= "function" then
@@ -636,9 +639,15 @@ function A:RunMatrix()
     end
     local adapter = S.UIV3NativeAdapter
     if adapter == nil or (tonumber(adapter.version) or 0) < 2 then failures[#failures + 1] = "native_root_policy_contract" end
-    if S.UIV3Design == nil or (tonumber(S.UIV3Design.version) or 0) < 6 or type(S.UIV3Design.ScrollablePageRoot) ~= "function"
-        or type(S.UIV3Design.CompactNumericSetting) ~= "function" or (tonumber(S.RSUI and S.RSUI.NumericInlineContractVersion) or 0) < 4
-        or (tonumber(S.RSUI and S.RSUI.InteractiveDraftContractVersion) or 0) < 1 then
+    if S.UIV3Design == nil or (tonumber(S.UIV3Design.version) or 0) < 7 or type(S.UIV3Design.ScrollablePageRoot) ~= "function"
+        or type(S.UIV3Design.CompactNumericSetting) ~= "function" or (tonumber(S.RSUI and S.RSUI.NumericInlineContractVersion) or 0) < 6
+        or (tonumber(S.RSUI and S.RSUI.NumericAdaptiveRangeContractVersion) or 0) < 1
+        or (tonumber(S.RSUI and S.RSUI.NumericExplicitApplyContractVersion) or 0) < 1
+        or (tonumber(S.RSUI and S.RSUI.NumericRangePersistenceContractVersion) or 0) < 1
+        or (tonumber(S.RSUI and S.RSUI.InteractiveDraftContractVersion) or 0) < 3
+        or (tonumber(S.RSUI and S.RSUI.InputDraftCommitContractVersion) or 0) < 1
+        or (tonumber(S.RSUI and S.RSUI.NumericInputDraftReadContractVersion) or 0) < 1
+        or (tonumber(S.RSUI and S.RSUI.StableButtonHoverContractVersion) or 0) < 2 then
         failures[#failures + 1] = "scrollable_compact_numeric_contract"
     end
     local rsui = S.RSUI
@@ -762,7 +771,9 @@ function A:RunMatrix()
         or type(validators.NumericField) ~= "function" then
         failures[#failures + 1] = "component_preflight_validator_contract"
     end
-    if rsui == nil or (tonumber(rsui.DataViewViewportContractVersion) or 0) < 2 or (tonumber(rsui.DataViewOverlayScrollbarContractVersion) or 0) < 1 then
+    if rsui == nil or (tonumber(rsui.DataViewViewportContractVersion) or 0) < 2
+        or (tonumber(rsui.DataViewOverlayScrollbarContractVersion) or 0) < 1
+        or (tonumber(rsui.DataViewResizePreviewAuthorityContractVersion) or 0) < 1 then
         failures[#failures + 1] = "dataview_overlay_scrollbar_contract"
     end
     local uiTokens = S.UITokens

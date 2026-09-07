@@ -665,10 +665,13 @@ function F:ApplyPresentationSettingRaw(scope, key, value)
 end
 
 function F:ApplyPresentationSettingFromBinding(scope, key, value)
-    local ok, err = self:ApplyPresentationSettingRaw(scope, key, value)
-    if ok ~= true then return false, err end
-    PublishPresentationChanged(scope, key)
-    return true
+    -- .18.131 bugfix: this command mutated State in memory only and NEVER
+    -- marked the store dirty, while SetPresentationSetting persisted. The two
+    -- entry paths (page button vs bound toggle) therefore had different
+    -- durability: a calibration turned OFF through the non-persisting path
+    -- came back after every reload from the stale persisted value ("每次重载
+    -- 都会自动打开校准团队色块"). Both paths now share identical durability.
+    return F:SetPresentationSetting(scope, key, value)
 end
 
 function F:SetPresentationSetting(scope, key, value)

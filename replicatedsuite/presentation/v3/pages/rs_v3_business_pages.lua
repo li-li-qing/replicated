@@ -173,7 +173,7 @@ local function Build(parent, route, id)
             slot = { size = "auto", minHeight = 60, hAlign = "fill" } })
         TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_points", label = "默认基础密度", min = 8, max = 48, step = 1, integer = true, slider = true,
             get = function() return (feature:GetProjection() or {}).pointCount or 24 end, set = function(v) return feature.Commands:SetPointCount(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
-        TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_size", label = "默认点大小", min = 2, max = 10, step = 1, integer = true, slider = true,
+        TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_size", label = "默认点大小", min = 2, max = 10, hardMin = 2, hardMax = 24, step = 1, integer = true, slider = true,
             get = function() return (feature:GetProjection() or {}).pointSize or 4 end, set = function(v) return feature.Commands:SetPointSize(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
         TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_opacity", label = "整体透明度", min = 0.1, max = 1, step = 0.05, integer = false, slider = true,
             get = function() return (feature:GetProjection() or {}).opacity or 0.78 end, set = function(v) return feature.Commands:SetOpacity(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
@@ -213,7 +213,7 @@ local function Build(parent, route, id)
                 set = function(v) return feature.Commands:SetPairPoints(pairKey, v) end,
                 slot = { size = "fill", fill = 1, minWidth = 120, hAlign = "fill" } }))
             TrackField(D:CompactNumericSetting(settingRow, { id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_size",
-                label = "大小", min = 2, max = 10, step = 1, integer = true, inlineHint = true, hint = "", slider = true,
+                label = "大小", min = 2, max = 10, hardMin = 2, hardMax = 24, step = 1, integer = true, inlineHint = true, hint = "", slider = true,
                 get = function() return (feature:GetProjection() or {}).pairSizes and (feature:GetProjection() or {}).pairSizes[pairKey] or 4 end,
                 set = function(v) return feature.Commands:SetPairSize(pairKey, v) end,
                 slot = { size = "fill", fill = 1, minWidth = 120, hAlign = "fill" } }))
@@ -231,12 +231,12 @@ local function Build(parent, route, id)
                 slot = { size = "fixed", height = 28, hAlign = "fill" } }))
         end
     elseif id == "combat_range_assist" then
-        local grid = RSUI:UniformGrid({ id = "v3_business_combat_range_assist_settings", parent = root, minCellWidth = 190, minCellHeight = 30, maxColumns = 2, gap = 5, slot = { size = "auto", minHeight = 60, hAlign = "fill" } })
+        local grid = RSUI:UniformGrid({ id = "v3_business_combat_range_assist_settings", parent = root, minCellWidth = 230, minCellHeight = 30, maxColumns = 2, gap = 5, slot = { size = "auto", minHeight = 60, hAlign = "fill" } })
         TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_range_assist_radius", label = "半径", min = 1, max = 100, step = 0.5, integer = false, unit = "m", slider = true,
             get = function() return (feature:GetProjection() or {}).radius or 10 end, set = function(v) return feature.Commands:SetRadius(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
         TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_range_assist_points", label = "圆点数量", min = 12, max = 48, step = 1, integer = true, slider = true,
             get = function() return (feature:GetProjection() or {}).pointCount or 24 end, set = function(v) return feature.Commands:SetPointCount(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
-        TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_range_assist_size", label = "点大小", min = 2, max = 10, step = 1, integer = true, slider = true,
+        TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_range_assist_size", label = "点大小", min = 2, max = 10, hardMin = 2, hardMax = 24, step = 1, integer = true, slider = true,
             get = function() return (feature:GetProjection() or {}).pointSize or 4 end, set = function(v) return feature.Commands:SetPointSize(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
         TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_range_assist_opacity", label = "透明度", min = 0.1, max = 1, step = 0.05, integer = false, slider = true,
             get = function() return (feature:GetProjection() or {}).opacity or 0.68 end, set = function(v) return feature.Commands:SetOpacity(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
@@ -1024,12 +1024,48 @@ local function Build(parent, route, id)
         tableView:SetViewState(tvState, tvOpts)
         return true
     end
+    -- World-visual authorities may publish at 20 Hz (RangeAssist) or even a
+    -- user-selected 1 ms UnitLines cadence.  The settings page is not part of
+    -- that render path: redrawing RSUI controls at the same cadence wastes UI
+    -- work and, on RU, can synthesize false button leave/enter transitions.
+    -- Coalesce visual-tick presentation updates while keeping direct commands
+    -- and non-visual authority updates immediate.
+    local visualSettingsPage = id == "combat_unit_lines" or id == "combat_range_assist"
+    local visualPageRefreshTask = "v3_business_visual_page_refresh:" .. tostring(id)
+    local visualPageRefreshMs = 160
+
+    function root:RequestFeatureRefresh(reason)
+        reason = tostring(reason or "update")
+        if visualSettingsPage ~= true or (reason ~= "visual_tick" and reason ~= "visual_tick_error") then
+            return self:Refresh()
+        end
+        if self.visualPageRefreshPending == true then return true end
+        if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return self:Refresh() end
+        self.visualPageRefreshPending = true
+        local added = S.Scheduler:AddOneShot(visualPageRefreshTask, visualPageRefreshMs, function()
+            self.visualPageRefreshPending = false
+            if self.featureUpdatesBound ~= true then return true end
+            return self:Refresh()
+        end, self, "P3", 1)
+        if added ~= true then
+            self.visualPageRefreshPending = false
+            return self:Refresh()
+        end
+        if type(S.Scheduler.SetTaskModule) == "function" then
+            S.Scheduler:SetTaskModule(visualPageRefreshTask, "presentation", true)
+        end
+        return true
+    end
     function root:BindFeatureUpdates()
         if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" or type(feature.UpdateTopic) ~= "string" then return true end
         if type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
-        return S.Events:SubscribeInternal(feature.UpdateTopic, self, function() root:Refresh() end)
+        self.featureUpdatesBound = true
+        return S.Events:SubscribeInternal(feature.UpdateTopic, self, function(_, _, reason) return root:RequestFeatureRefresh(reason) end)
     end
     function root:UnbindFeatureUpdates()
+        self.featureUpdatesBound = false
+        self.visualPageRefreshPending = false
+        if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(visualPageRefreshTask) end
         if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
         return true
     end

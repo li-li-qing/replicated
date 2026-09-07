@@ -453,6 +453,14 @@ def main() -> int:
         body = match.group(0) if match else ""
         if "context.uiScale" not in body or "context.addonScale" in body:
             failures.append(f"Strict authority scale contract regression: {label}")
+    # .18.133 post-mortem guard: the ambiguous-false bail class. The framework
+    # must keep the disambiguating facade AND the presenter must stay
+    # best-effort (never gate visibility on a style write).
+    if "function UI:EnsureFontSize(widget, size, owner)" not in framework_source:
+        failures.append("UI:SetFontSize disambiguation contract missing: EnsureFontSize")
+    guides_source = (root / "presentation/v3/widgets/rs_v3_combat_visual_guides.lua").read_text(encoding="utf-8-sig", errors="replace")
+    if "S.UI:SetFontSize(dot.root,size,self.owner)\n        state.size=size" not in guides_source:
+        failures.append("Unit-line dot style writes must stay best-effort (.18.133 no-op bail class)")
 
     api_dependency_failures = scan_feature_api_dependencies(root, active_lua)
     if api_dependency_failures:
@@ -580,7 +588,7 @@ def main() -> int:
     projection_path = root / "services/rs_screen_projection_v3.lua"
     projection_source = projection_path.read_text(encoding="utf-8-sig", errors="replace") if projection_path.is_file() else ""
     for token in (
-        "P.version = 8",
+        "P.version = 12",
         "function P:ProjectUnitBatch(unitTokens, options)",
         "local function CameraForwardDistance(frame, wx, wy, wz)",
         'reason="behind_camera"',
@@ -588,12 +596,14 @@ def main() -> int:
         "P.UnitProjectionConsistencyContractVersion = 1",
         "P.UnitWorldAliasGuardContractVersion = 1",
         "P.WorldBatchIndexContractVersion = 1",
+        "P.WorldBatchFactsContractVersion = 2",
+        "P.WorldBatchAnchorCalibrationContractVersion = 1",
         "P.CameraUnavailableNativeFallbackContractVersion = 1",
         "aliasCandidate=false, worldAliased=false",
         "native_world_alias_guard",
         "local wx,wy,wz,worldErr=self:GetUnitWorldPosition(token,false)",
-        "native_scale_reconciled",
-        "camera_consistency_fallback",
+        "RecordFailure",
+        "failuresByReason",
     ):
         if token not in projection_source:
             failures.append("Screen projection front-hemisphere contract missing: " + token)
@@ -606,9 +616,12 @@ def main() -> int:
     unit_guide_path = root / "presentation/v3/widgets/rs_v3_combat_visual_guides.lua"
     unit_guide_source = unit_guide_path.read_text(encoding="utf-8-sig", errors="replace") if unit_guide_path.is_file() else ""
     for token in (
-        "P.version = 5",
+        "P.version = 8",
+        "P.watchdogTask = P.watchdogTask or \"v3_visual_guides_lifecycle_watchdog\"",
+        "function P:ConvergeTick()",
+        "function P:AddonScale()",
+        "S.UI:CreateOverlayWindow(\"v3_visual_\" .. kind .. \"_host\", self.owner)",
         "local UNIT_LINE_PAIR_HARD_CAP = 160",
-        "local function ClipSegmentToRect(x1, y1, x2, y2, left, top, right, bottom)",
         "local function UnitLineTotalBudget(refreshMs)",
         "local function UnitLinePressureBudget(baseBudget, totalBase, pressure)",
         "local function UnitLinePoolGrowthBudget(pressure)",
@@ -627,12 +640,12 @@ def main() -> int:
     if re.search(r"function\s+P:RenderUnit\(\).*?local\s+count\s*=\s*math\.max\(8\s*,\s*math\.min\(48", unit_guide_code, re.S):
         failures.append("Unit line regression: RenderUnit restored fixed final 8..48 point count")
     for token in (
-        'UnitLines.VisualGuideContractVersion = 4',
+        'UnitLines.VisualGuideContractVersion = 5',
         'UnitLines.AdaptiveDensityContractVersion = 2',
         'UnitLines.SmoothRefreshContractVersion = 1',
         'UnitLines.FrontHemisphereContractVersion = 1',
         'UnitLines.ProjectionConsistencyContractVersion = 1',
-        'projection:ProjectUnitBatch(tokens,{ requireFrontHemisphere=true, worldZOffset=1, validateNativeAgainstCamera=true, reconcileNativeScale=true })',
+        'projection:ProjectUnitBatch(tokens,{ worldZOffset=1 })',
         'pointBudgetMode="cadence_pressure_bounded"',
     ):
         if token not in bag_bridge_source:
@@ -648,29 +661,51 @@ def main() -> int:
     if unit_line_read is not None and "ProjectUnitFlexible(" in unit_line_read.group(1):
         failures.append("Unit line regression: per-endpoint ProjectUnitFlexible bypasses front-hemisphere batch")
 
-    # Range Assist must stay in the same GLOBAL world space as the camera frame
-    # and must consume every requested batch index. A circle naturally has
-    # behind-camera points; ipairs() over a sparse numeric batch truncates at the
-    # first hole and can make the guide disappear or render only a short arc.
+    # Range Assist follows the verified EasyPull circle contract: local-world
+    # player coordinates (isLocal=true) feed EasyPull's ProjectWorldToScreen policy:
+    # native ConvertWorldToScreen first, then its WorldToScreen camera fallback. The unrelated magiccircle movement
+    # sample uses global coordinates for distance tracking and must not override
+    # this projection-specific contract. The ring is also 50 ms demand-scoped
+    # high-frequency work. Camera fallback batches MUST be calibrated once
+    # against the native player screen anchor so non-default resolution/UI-scale
+    # principal-point offsets do not move the entire circle away from the player.
     range_read = re.search(r'local\s+RangeAssist\s*=\s*NewFeature\("combat_range_assist"\s*,\s*\{(.*?)\n\}\)\nRangeAssist\.VisualGuideContractVersion', strip_lua_comments(bag_bridge_source), re.S)
     if range_read is None:
         failures.append("Range Assist contract missing: feature block unavailable")
     else:
         range_source = range_read.group(1)
         for token in (
-            'projection:GetUnitWorldPosition("player", false)',
+            'projection:GetUnitWorldPosition("player", true)',
             'for index=1,count do',
             'local screenPoint=projected[index]',
+            'anchorUnit="player", anchorWorld={x=px,y=py,z=pz+0.25}',
+            'local batch=type(ringBatch)=="table" and ringBatch or {}',
+            'xpcall(function()',
+            'feature.RangeRefreshHealth',
+            'AddHighFrequencyTask(RANGE_ASSIST_TASK, RANGE_ASSIST_REFRESH_MS',
         ):
             if token not in range_source:
-                failures.append("Range Assist global/index-stable projection contract missing: " + token)
-        if 'projection:GetUnitWorldPosition("player", true)' in range_source:
-            failures.append("Range Assist regression: local player world position mixed with global camera frame")
+                failures.append("Range Assist EasyPull/index-stable projection contract missing: " + token)
+        if 'projection:GetUnitWorldPosition("player", false)' in range_source:
+            failures.append("Range Assist regression: global-world circle centre replaced EasyPull local-space contract")
         if re.search(r'ipairs\s*\(\s*type\s*\(\s*projected\s*\)', range_source):
             failures.append("Range Assist regression: sparse world projection consumed with ipairs")
+    if 'local RANGE_ASSIST_REFRESH_MS = 50' not in bag_bridge_source:
+        failures.append("Range Assist refresh cadence contract missing: 50ms")
     for token in (
-        'RangeAssist.VisualGuideContractVersion = 4',
-        'RangeAssist.WorldSpaceContractVersion = 1',
+        'P.WorldBatchAnchorCalibrationContractVersion = 1',
+        'calibrationStatus="applied"',
+        'anchorX-projectedX',
+        'row.x=row.x+dx; row.y=row.y+dy',
+    ):
+        if token not in projection_source:
+            failures.append("ScreenProjection range-anchor calibration contract missing: " + token)
+    for token in (
+        'RangeAssist.VisualGuideContractVersion = 7',
+        'RangeAssist.WorldSpaceContractVersion = 2',
+        'RangeAssist.ProjectionFactsContractVersion = 5',
+        'RangeAssist.RefreshCadenceContractVersion = 1',
+        'RangeAssist.AnchorCalibrationContractVersion = 1',
     ):
         if token not in bag_bridge_source:
             failures.append("Range Assist projection contract missing: " + token)
@@ -1540,18 +1575,30 @@ def main() -> int:
     if not reliability_v7_harness.is_file():
         failures.append("Persistence Reliability v7 generation-reload fence harness missing")
 
+    range_store_entry = "ui/framework/rs_ui_numeric_range_store.lua"
+    range_store_source = (root / range_store_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / range_store_entry).is_file() else ""
+    for token in (
+        "RSUI.NumericRangePersistenceContractVersion = 1",
+        'storeId = "v3.rsui.numeric_ranges"',
+        "P:RegisterV3Store({",
+        "P:MutateStore(STORE_ID, ApplyMutation",
+    ):
+        if token not in range_store_source:
+            failures.append("RSUI Numeric range persistence contract missing: " + token)
+
     controls_entry = "ui/framework/rs_ui_controls.lua"
     controls_source = (root / controls_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / controls_entry).is_file() else ""
     forms_entry = "ui/framework/rs_ui_forms.lua"
     forms_source = (root / forms_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / forms_entry).is_file() else ""
     for token in (
-        "RSUI.InteractiveDraftContractVersion = 1",
+        "RSUI.InteractiveDraftContractVersion = 3",
+        "RSUI.NumericInputDraftReadContractVersion = 1",
         "RSUI.ControlTransactionContractVersion = 1",
         "RSUI.DropdownRuntimeInteractionContractVersion = 1",
         "function c:FailDropdownInteraction(reason)",
         "function c:EnsureChildEnabled(widget, desired, role)",
         "local function IsFocusedDraft(component)",
-        "function c:IsEditing() return IsFocusedDraft(self) end",
+        "function c:IsEditing() return self.editing == true or IsFocusedDraft(self) end",
         "function c:IsInteracting() return self.root ~= nil and self.root.rsDragging == true end",
         "CountDraftSuppression()",
         'self:Render(value, "interaction")',
@@ -1560,13 +1607,18 @@ def main() -> int:
         if token not in controls_source:
             failures.append("RSUI Interactive Draft contract missing: " + token)
     for token in (
-        "RSUI.NumericInlineContractVersion = 4",
+        "RSUI.NumericInlineContractVersion = 6",
+        "RSUI.NumericAdaptiveRangeContractVersion = 1",
+        "RSUI.NumericExplicitApplyContractVersion = 1",
         "RSUI.NumericStepPairFallbackContractVersion = 1",
         "buildOptional = true",
         "c.minus, c.plus = nil, nil",
-        'SyncControls(Current(), "binding_refresh")',
+        'SyncControls(Current(), "binding_refresh", false)',
         'c.input:Render(value, "interaction")',
-        'SyncControls(actual, "commit")',
+        'function c:ApplyDraft(source)',
+        'text = tostring(spec.applyText or "应用")',
+        'SyncControls(actual, "commit", source == "input"',
+        'c.rangeStore:Set(c.rangeKey, c.minimum, c.maximum',
     ):
         if token not in forms_source:
             failures.append("RSUI NumericField draft-preservation contract missing: " + token)
@@ -1612,6 +1664,8 @@ def main() -> int:
         "function UI:RetireInputWidget(widget, owner, reason)",
         "function UI:QuiesceKeyboardInput(reason, retire)",
         "DeferredKeyboardActivationContractVersion = 1",
+        "ExplicitInputCommitFocusContractVersion = 1",
+        "function UI:DeactivateInputWidget",
         "function UI:ArmInputWidget(widget, owner, reason)",
         "function UI:DisarmInputWidget(widget, owner, reason)",
         "function UI:ActivateInputWidget(widget, owner, reason)",
@@ -1766,6 +1820,8 @@ def main() -> int:
     primitives_source = (root / "ui/framework/rs_ui_primitives.lua").read_text(encoding="utf-8-sig", errors="replace")
     for token in (
         "RSUI.ButtonActionContractVersion = 2",
+        "RSUI.StableButtonHoverContractVersion = 2",
+        "function RSUI:BindStableButtonHover(component, native)",
         "function c:SetOnClick(fn)",
         "function c:GetOnClick()",
         "function c:Click(...)",

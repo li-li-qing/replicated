@@ -52,6 +52,17 @@ S.Constants = {
     MinAddonScale = 0.80,
     MaxAddonScale = 1.20,
 
+    -- Shared bounded visual-guide control limits. The slider presentation may
+    -- start narrower (for example 2..10), while exact numeric input may expand
+    -- that presentation range only after the Domain accepts a value inside this
+    -- hard safety envelope. Keep this single-source so Feature and Renderer do
+    -- not drift into different effective point-size caps.
+    VisualGuide = {
+        pointSizeMin = 2,
+        pointSizeDefaultMax = 10,
+        pointSizeHardMax = 24,
+    },
+
     -- Modern dark theme master switch. When enabled, card/header/soft panels
     -- created through the UI factory automatically get the vertical gradient
     -- skin (plus accent strip for headers). Set to false to restore the old

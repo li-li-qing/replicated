@@ -53,6 +53,7 @@ foundation_gate = read("core/rs_foundation_gate.lua")
 controls = read("ui/framework/rs_ui_controls.lua")
 acceptance = read("presentation/v3/rs_v3_acceptance.lua")
 buff_page = read("presentation/v3/pages/rs_v3_buff_display_page.lua")
+data_views = read("ui/framework/rs_ui_data_views.lua")
 
 # Primitive identity / registration.
 check("native_contract_v6", "NativeInteractionContractVersion = 6" in primitives)
@@ -67,10 +68,14 @@ for fn in ("CreateEditBox", "CreateMultiEditBox"):
     check(fn + "_keyboard_starts_inert", 'CallNativeAccepted(edit, "EnableKeyboard", false)' in body)
     check(fn + "_publishes_inert_state", "edit.rsUiKeyboardArmed = false" in body)
 
+editbox_body = block(primitives, "function UIX:CreateEditBox", "\nfunction UIX:")
+check("editbox_preserves_enter_draft", 'CallNativeAccepted(edit, "ClearTextOnEnter", false)' in editbox_body)
+
 # Lifecycle focus fence.
 check("focus_contract_v2", "InputFocusLifecycleContractVersion = 2" in framework)
 check("hidden_focus_contract_v2", "HiddenInputFocusIsolationContractVersion = 2" in framework)
 check("deferred_keyboard_contract", "DeferredKeyboardActivationContractVersion = 1" in framework)
+check("explicit_commit_focus_contract", "ExplicitInputCommitFocusContractVersion = 1" in framework)
 check("tracked_physical_focus_map", "focusTargetsByPhysicalId" in framework)
 check("bounded_ancestry", "MAX_INPUT_ANCESTRY_DEPTH = 32" in framework)
 check("ancestry_stops_before_uiparent", 'current ~= UIParent and current ~= "UIParent"' in framework)
@@ -85,6 +90,9 @@ release_focus = block(framework, "function UI:ReleaseFocusWithin", "\nfunction U
 check("focus_only_tracked_suite_target", "lifecycle.focusTargetsByPhysicalId[focusedId]" in release_focus)
 check("focus_descendant_proof", "FocusedInputDescendsFrom" in release_focus)
 check("focus_clear_verified", "afterId" in release_focus and "focus_retained" in release_focus)
+deactivate_input = block(framework, "function UI:DeactivateInputWidget", "\nfunction UI:")
+check("explicit_commit_releases_tracked_focus", "self:ReleaseFocusWithin(widget" in deactivate_input)
+check("explicit_commit_disarms_keyboard", "self:DisarmInputWidget(widget" in deactivate_input)
 
 # Critical regression: cleanup must run before Ensure* cache early-return.
 for fn, token in (
@@ -109,8 +117,11 @@ check("subtree_disarm_api", "function UI:DisarmInputWithin(widget, owner, reason
 check("raw_multiline_activation_api", "function UI:BindDeferredInputActivation(widget, owner, label)" in framework)
 check("text_input_activates_on_click", 'c:RequireOn(edit, "OnClick", function() return c:BeginEditing("text_input_click") end' in controls)
 check("text_input_disarms_on_lost_focus", 'c:EndEditing("text_input_lost_focus")' in controls)
+check("interactive_draft_v3", "InteractiveDraftContractVersion = 3" in controls and "InputDraftCommitContractVersion = 1" in controls)
+check("text_enter_commits_and_ends", 'return c:CommitAndEndEditing("enter")' in block(controls, 'RSUI:RegisterType("TextInput"', 'RSUI:RegisterType("NumericInput"'))
 check("numeric_input_activates_on_click", 'c:RequireOn(edit, "OnClick", function() return c:BeginEditing("numeric_input_click") end' in controls)
 check("numeric_input_disarms_on_lost_focus", 'c:EndEditing("numeric_input_lost_focus")' in controls)
+check("numeric_enter_commits_and_ends", 'return c:CommitAndEndEditing("enter")' in block(controls, 'RSUI:RegisterType("NumericInput"', 'RSUI:RegisterType("Slider"'))
 check("multiline_uses_deferred_activation", "BindDeferredInputActivation(transferEdit" in buff_page)
 check("multiline_fails_closed_on_activation_error", "RetireInputWidget(transferEdit" in buff_page and "transferEditAvailable = false" in buff_page)
 check("runtime_stop_quiesces", 'S.UI:QuiesceKeyboardInput("runtime_stop", false)' in runtime)
@@ -139,6 +150,14 @@ condition = attach.find('UI:TryInteractionCall(dragHandle, "SetDragCondition", D
 check("windowing_ensures_enabled", "UI:EnsureEnabled(dragHandle, true, owner)" in attach)
 check("windowing_pickable_before_drag", handle_pick >= 0 and enable_drag > handle_pick)
 check("windowing_drag_condition_after_enable", condition > enable_drag >= 0)
+
+# Table resize preview must remain the only visible geometry Authority while a
+# drag is active; ambient Layout cannot repaint committed widths in between the
+# 16ms interactive samples. Newly rebound pooled rows inherit that same preview.
+check("table_resize_preview_authority_contract", "DataViewResizePreviewAuthorityContractVersion = 1" in data_views)
+check("table_layout_prefers_preview", 'local previewActive = type(self.previewResolvedWidths) == "table"' in data_views and 'widths = self.previewResolvedWidths' in data_views)
+check("table_layout_solver_only_when_not_preview", re.search(r'if previewActive then\s+widths = self\.previewResolvedWidths\s+else\s+widths, resolvedOverflow, compressed, emergencyClamp = ResolveColumnWidths\(self\.columns, columnW, self\.columnGap\)', data_views) is not None)
+check("table_rows_keep_preview_during_rebind", 'row:SetResolvedWidths(c.previewResolvedWidths or c.resolvedWidths, c.previewResolvedWidths ~= nil)' in data_views)
 
 # Foundation gate must reject future regressions.
 gate_match = re.search(r"S\.FoundationGate\s*=\s*\{\s*version\s*=\s*(\d+)", foundation_gate, re.S)

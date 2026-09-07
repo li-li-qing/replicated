@@ -73,11 +73,13 @@ def check_static_contracts() -> None:
     for token in healer_tokens:
         assert token in combined, f"missing Healer native roster contract: {token}"
 
-    assert "version = 119" in GATE
+    gate_version = re.search(r"S\.FoundationGate\s*=\s*\{\s*version\s*=\s*(\d+)", GATE)
+    assert gate_version and int(gate_version.group(1)) >= 119
     assert "gear_partial_apply_contract" in GATE
     assert "BagMoveContractVersion) or 0) >= 8" in GATE
     assert "schemaVersion) == 6" in GATE
-    assert "S.UIV3Acceptance = { version = 74 }" in ACCEPTANCE
+    acceptance_version = re.search(r"S\.UIV3Acceptance\s*=\s*\{\s*version\s*=\s*(\d+)", ACCEPTANCE)
+    assert acceptance_version and int(acceptance_version.group(1)) >= 74
     assert "bag_quick_take_put_contract_v8" in ACCEPTANCE
     assert "healer_native_roster_geometry_contract" in ACCEPTANCE
 

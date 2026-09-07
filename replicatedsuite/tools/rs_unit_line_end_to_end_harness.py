@@ -31,6 +31,7 @@ PERSISTENCE = ROOT / "core/rs_persistence.lua"
 PROJECTION = ROOT / "services/rs_screen_projection_v3.lua"
 BRIDGE = ROOT / "features/rs_business_bridge.lua"
 GUIDES = ROOT / "presentation/v3/widgets/rs_v3_combat_visual_guides.lua"
+FRAMEWORK = ROOT / "ui/rs_ui_framework.lua"
 
 LUA = r'''
 -- Deterministic deep copy (mock for S.Utils.DeepCopy).
@@ -202,11 +203,15 @@ S.PerformanceMonitor = nil
 -- target ON the axis projects both endpoints to the exact screen center --
 -- the degenerate geometry this harness must not mistake for a code failure.
 local world = {{ player = {{ 10, 0, 0 }}, target = {{ 30, 4, 0 }} }}
+local worldLocalTrueReads = 0
 local screen = {{ player = {{ 512, 384, 1 }}, target = {{ 300, 350, 1 }} }}
 X2Unit = {{}}
 X2Player = {{ GetEffectAppellation = function() return nil end }}
 X2Store, X2Bag, X2Resident, X2Ability = {{}}, {{}}, {{}}, {{}}
 UIParent = {{}}
+function UIParent:GetScreenWidth() return 1280 end
+function UIParent:GetScreenHeight() return 960 end
+local nativeProjectionEnabled = true
 function S.Api:GetUiMetrics() return 1280, 960, 1.25, 1024, 768 end
 function S.Api:IsCapabilityAllowed() return true, "mock" end
 function S.Api:CallCapability(capability, host, method, ...)
@@ -215,6 +220,8 @@ function S.Api:CallCapability(capability, host, method, ...)
   if capability == "UIParent:GetViewCameraDir" then return true, {{ x = 1, y = 0, z = 0 }} end
   if capability == "UIParent:GetViewCameraFov" then return true, 1.57 end
   if capability == "X2Unit:GetUnitWorldPositionByTarget" then
+    local _, isLocal = ...
+    if isLocal == true then worldLocalTrueReads = worldLocalTrueReads + 1 end
     local p = world[tostring(arg or "")]
     if p == nil then return false, nil, "missing_world" end
     return true, p[1], nil, p[2], p[3]
@@ -232,7 +239,15 @@ function S.Api:CallCapability(capability, host, method, ...)
   if capability == "X2Unit:UnitName" then return true, "TargetName" end
   return false, nil, "unsupported:" .. tostring(capability)
 end
-function S.Api:CallGlobalCapability() return false, nil, "disabled" end
+function S.Api:CallGlobalCapability(capability, wx, wy, wz)
+  if capability == "ConvertWorldToScreen" then
+    if nativeProjectionEnabled ~= true then return false, nil, "native_unavailable" end
+    wx, wy, wz = tonumber(wx), tonumber(wy), tonumber(wz)
+    if wx == nil or wy == nil or wz == nil then return false, nil, "invalid_world" end
+    return true, 512 + wy * 10, nil, 384 + (wx - 10) * 5, 1
+  end
+  return false, nil, "disabled"
+end
 function S.Api:SaveData(key, raw) storage[key] = copy(raw); return true, nil end
 function S.Api:LoadData(key) return copy(storage[key]), nil end
 function S.Api:ClearData(key) storage[key] = nil; return true, nil end
@@ -250,7 +265,9 @@ local function NewWidget(parent)
   function w:Show(v) self.visible = v == true; return true end
   function w:SetVisible(v) self.visible = v == true; return true end
   function w:Raise() return true end
-  function w:SetColor() return true end
+  -- No widget-level SetColor here on purpose: real RU widgets only carry it on
+  -- drawables and LABEL style objects (TextStyle API). Adding one to the mock
+  -- would hide exactly the label-color gate bug fixed in .18.130.
   function w:SetHandler() return true end
   function w:ReleaseHandler() return true end
   function w:CreateDrawable() return true end
@@ -288,6 +305,13 @@ function S.UI:CreateEmptyWidget(parent, name, x, y, w, h)
   widget.x, widget.y, widget.width, widget.height = x or 0, y or 0, w or 0, h or 0
   return widget
 end
+-- v7 reference-aligned host: a top-level WINDOW (rp_ui/easypull model). The
+-- mock routes into the same widget records the assertions inspect.
+function S.UI:CreateOverlayWindow(name, owner)
+  local widget = NewWidget(nil)
+  widget.x, widget.y, widget.width, widget.height = 0, 0, 200, 200
+  return widget
+end
 function S.UI:CreateLabel(parent, name, text, x, y, w, h, fontSize, tone, align, shadow)
   local widget = NewLabel(parent)
   widget.text = tostring(text or "")
@@ -298,11 +322,27 @@ end
 function S.UI:SetVisible(widget, value) if widget ~= nil then widget:SetVisible(value) end; return true end
 function S.UI:SetAnchor(widget, parent, x, y) if widget ~= nil then widget:AddAnchor("TOPLEFT", parent, x, y) end; return true end
 function S.UI:SetExtent(widget, w, h) if widget ~= nil then widget:SetExtent(w, h) end; return true end
-function S.UI:SetColor(drawable, r, g, b, a) if drawable ~= nil and drawable.SetColor ~= nil then return drawable:SetColor(r, g, b, a) end; return true end
+-- Mirror the REAL UI:SetColor contract (rs_ui_framework v13): widget-level
+-- SetColor (drawables) first, then LABEL style fallback, otherwise reject --
+-- a plain `return true` here would re-hide the .18.130 label-color gate bug.
+function S.UI:SetColor(widget, r, g, b, a)
+  if widget == nil then return false end
+  if widget.SetColor ~= nil then return widget:SetColor(r, g, b, a) end
+  local style = widget.style
+  if style ~= nil and style.SetColor ~= nil then return style:SetColor(r, g, b, a) end
+  return false
+end
 function S.UI:SetAlpha() return true end
-function S.UI:SetFontSize() return true end
+-- Mirror the real contract: font size rides widget.style (TextStyle); a widget
+-- without style.SetFontSize is rejected like the framework does.
+function S.UI:SetFontSize(widget, size)
+  if widget == nil or widget.style == nil or widget.style.SetFontSize == nil then return false end
+  return widget.style:SetFontSize(size)
+end
 function S.UI:TrySetUILayer(widget) if widget ~= nil and widget.Raise ~= nil then widget:Raise() end; return true end
 UIParent = {{}}
+function UIParent:GetScreenWidth() return 1280 end
+function UIParent:GetScreenHeight() return 960 end
 
 -- Load order mirrors toc.g (:107 projection -> :152 bridge -> :166 guides);
 -- the presenter file returns early unless the feature objects already exist.
@@ -389,16 +429,72 @@ for _ in pairs(seenPositions) do uniquePositions = uniquePositions + 1 end
 Check("dots_visible_on_widgets", visibleDots >= 8, visibleDots)
 Check("dot_positions_unique", uniquePositions >= 8, uniquePositions)
 
--- 4. Range assist: circle around the player yields multiple visible points.
+-- 4. Range assist: exact EasyPull fallback must work when the RU native
+-- ConvertWorldToScreen global is unavailable.
+nativeProjectionEnabled = false
 local rangeEnabled = S.FeatureRuntime:Enable("combat_range_assist", "e2e")
 Check("range_enable_ok", rangeEnabled == true)
 local rangeAcquired = RangeFeature:AcquireConsumer("e2e:harness_range")
 Check("range_consumer_acquired", rangeAcquired == true)
-Pump("v3_business_range_assist_refresh", 3)
-local rangeProjection = RangeFeature:GetProjection()
-local rangeRow = type(rangeProjection.rows) == "table" and rangeProjection.rows[1] or nil
-local rangePoints = type(rangeRow) == "table" and type(rangeRow.points) == "table" and #rangeRow.points or 0
-Check("range_points_generated", rangePoints >= 8, rangePoints)
+local rangeSizeAccepted = RangeFeature.Commands:SetPointSize(15)
+Check("range_point_size_15_accepted", rangeSizeAccepted == true, rangeSizeAccepted)
+local rangeSizeProjection = RangeFeature:GetProjection()
+Check("range_point_size_15_authoritative", tonumber(rangeSizeProjection.pointSize) == 15 and tonumber(rangeSizeProjection.pointSizeHardMax) == 24, tostring(rangeSizeProjection.pointSize) .. "/" .. tostring(rangeSizeProjection.pointSizeHardMax))
+if rangeEnabled == true then
+  local rangeRevisionBefore = tonumber(RangeFeature.Authority.revision) or 0
+  Pump("v3_business_range_assist_refresh", 3)
+  local rangeProjection = RangeFeature:GetProjection()
+  local rangeRow = type(rangeProjection.rows) == "table" and rangeProjection.rows[1] or nil
+  local rangePoints = type(rangeRow) == "table" and type(rangeRow.points) == "table" and #rangeRow.points or 0
+  Check("range_points_generated", rangePoints >= 8, rangePoints)
+  Check("range_refresh_revision_advances", (tonumber(rangeProjection.revision) or 0) >= rangeRevisionBefore + 3, rangeProjection.revision)
+  Check("range_world_space_easypull_local", worldLocalTrueReads >= 1, worldLocalTrueReads)
+  local facts = type(rangeRow) == "table" and tostring(rangeRow.projFacts or "") or ""
+  Check("range_facts_are_ring_not_center", string.find(facts, "EasyPull原生0/相机", 1, true) ~= nil and string.find(facts, "easypull_camera", 1, true) ~= nil, facts)
+  local calibration = type(rangeRow) == "table" and tostring(rangeRow.calibration or "") or ""
+  Check("range_camera_anchor_calibration_applied", calibration ~= "" and calibration ~= "-" and string.find(facts, "锚校applied", 1, true) ~= nil, calibration .. " | " .. facts)
+
+  -- A transient projection/read exception must never trip the shared scheduler
+  -- breaker and leave the last valid ring frozen in screen space. The Range
+  -- task isolates that read, publishes an empty projection once, then retries
+  -- at the bounded 50ms cadence until it recovers.
+  local realRangeRefresh = RangeFeature.Authority.Refresh
+  local injectRangeFailure = true
+  RangeFeature.Authority.Refresh = function(self, reason)
+    if injectRangeFailure then injectRangeFailure = false; error("simulated range projection exception") end
+    return realRangeRefresh(self, reason)
+  end
+  Pump("v3_business_range_assist_refresh", 1)
+  local failedRangeProjection = RangeFeature:GetProjection()
+  local failedRows = type(failedRangeProjection.rows) == "table" and #failedRangeProjection.rows or -1
+  Check("range_transient_fault_hides_stale_geometry", failedRows == 0, failedRows)
+  Check("range_transient_fault_does_not_escape_scheduler", tasks["v3_business_range_assist_refresh"].failures == 0, tasks["v3_business_range_assist_refresh"].failures)
+  Check("range_transient_fault_recorded", type(RangeFeature.RangeRefreshHealth) == "table" and (tonumber(RangeFeature.RangeRefreshHealth.failures) or 0) >= 1, RangeFeature.RangeRefreshHealth and RangeFeature.RangeRefreshHealth.failures)
+  Pump("v3_business_range_assist_refresh", 1)
+  local recoveredRangeProjection = RangeFeature:GetProjection()
+  local recoveredRangeRow = type(recoveredRangeProjection.rows) == "table" and recoveredRangeProjection.rows[1] or nil
+  Check("range_transient_fault_recovers_next_tick", type(recoveredRangeRow) == "table" and #(recoveredRangeRow.points or {{}}) >= 8 and (tonumber(RangeFeature.RangeRefreshHealth.consecutiveFailures) or 0) == 0, RangeFeature.RangeRefreshHealth and RangeFeature.RangeRefreshHealth.consecutiveFailures)
+  RangeFeature.Authority.Refresh = realRangeRefresh
+end
+nativeProjectionEnabled = true
+
+-- 5. Lifecycle-watchdog self-heal (v6): a lease cleared UNDERNEATH the
+-- presenter (runtime Demand:ClearAll publishes no lifecycle event) used to be
+-- permanently fatal and silent. The 1 s watchdog must re-acquire without any
+-- user action. Both tokens (presenter + harness probe) must go for a true
+-- empty-lease state.
+local desyncReleased = UnitFeature.Demand:Release("presentation:unit_lines", "e2e:desync_sim")
+Check("desync_release_ok", desyncReleased == true, desyncReleased)
+local harnessReleased = UnitFeature:ReleaseConsumer("e2e:harness")
+Check("desync_harness_release_ok", harnessReleased == true, harnessReleased)
+Check("desync_consumer_zero", (tonumber(UnitFeature.consumerCount) or 0) == 0, UnitFeature.consumerCount)
+Check("desync_watchdog_registered", tasks["v3_visual_guides_lifecycle_watchdog"] ~= nil)
+Pump("v3_visual_guides_lifecycle_watchdog", 1)
+Check("desync_healed_consumer", (tonumber(UnitFeature.consumerCount) or 0) >= 1, UnitFeature.consumerCount)
+Check("desync_healed_task", tasks["v3_business_unit_lines_refresh"] ~= nil)
+local presenter = ReplicatedSuite.UIV3 and ReplicatedSuite.UIV3.CombatVisualGuidesV3 or nil
+Check("desync_watchdog_ticked", presenter ~= nil and (tonumber(presenter.watchdogTicks) or 0) >= 1,
+  presenter and presenter.watchdogTicks)
 
 if passed ~= total then os.exit(1) end
 print("UNIT_LINE_END_TO_END_HARNESS PASS " .. tostring(passed) .. "/" .. tostring(total))
@@ -421,6 +517,17 @@ def main() -> int:
             raise AssertionError("bridge contract missing: " + token)
     if "BuildUnitLineSamplePlan" not in GUIDES.read_text(encoding="utf-8-sig"):
         raise AssertionError("presenter contract missing: BuildUnitLineSamplePlan")
+    # The mock below encodes the UI:SetColor v13 label-style contract, but it
+    # never LOADS the real framework file. .18.129d shipped because the mock
+    # and the real SetColor semantics diverged (mock accepted any target).
+    # Pin the real source to the same contract so removing the style fallback
+    # fails here instead of on a client.
+    framework_source = FRAMEWORK.read_text(encoding="utf-8-sig")
+    for token in ('type(target.SetColor) ~= "function"', "local style = target.style"):
+        if token not in framework_source:
+            raise AssertionError(
+                "UI:SetColor label style fallback missing from rs_ui_framework.lua "
+                "(v13 contract; .18.130): " + token)
     with tempfile.NamedTemporaryFile("w", suffix=".lua", encoding="utf-8", delete=False) as fh:
         fh.write(LUA)
         tmp = pathlib.Path(fh.name)

@@ -9,7 +9,7 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
 S.FoundationGate = {
-    version = 119,
+    version = 121,
     last = nil,
     sequenceCases = {},
     sequenceOrder = {},
@@ -720,7 +720,9 @@ function G:Run(options)
                 and (tonumber(uiAdapter.InputFocusLifecycleContractVersion) or 0) >= 2
                 and (tonumber(uiAdapter.HiddenInputFocusIsolationContractVersion) or 0) >= 2
                 and (tonumber(uiAdapter.DeferredKeyboardActivationContractVersion) or 0) >= 1
+                and (tonumber(uiAdapter.ExplicitInputCommitFocusContractVersion) or 0) >= 1
                 and type(uiAdapter.ReleaseFocusWithin) == "function"
+                and type(uiAdapter.DeactivateInputWidget) == "function"
                 and type(uiAdapter.RetireInputWidget) == "function"
                 and type(uiAdapter.QuiesceKeyboardInput) == "function"
                 and type(uiAdapter.ArmInputWidget) == "function"
@@ -741,6 +743,7 @@ function G:Run(options)
                 and type(rsui.ScrollbarBehavior) == "table" and (tonumber(rsui.ScrollbarBehavior.criticalInteractionContractVersion) or 0) >= 1
                 and (tonumber(rsui.ButtonActionContractVersion) or 0) >= 2
                 and (tonumber(rsui.ControlTransactionContractVersion) or 0) >= 1
+                and (tonumber(rsui.InputDraftCommitContractVersion) or 0) >= 1
                 and (tonumber(rsui.InteractionServiceContractVersion) or 0) >= 2
                 and (tonumber(rsui.CollapsibleGroupInteractionContractVersion) or 0) >= 2,
             "blocker", "nativeInteraction=" .. tostring(uiAdapter and uiAdapter.NativeInteractionContractVersion or 0)
@@ -750,6 +753,7 @@ function G:Run(options)
                 .. "/inputFocus=" .. tostring(uiAdapter and uiAdapter.InputFocusLifecycleContractVersion or 0)
                 .. "/hiddenInput=" .. tostring(uiAdapter and uiAdapter.HiddenInputFocusIsolationContractVersion or 0)
                 .. "/deferredKeyboard=" .. tostring(uiAdapter and uiAdapter.DeferredKeyboardActivationContractVersion or 0)
+                .. "/commitFocus=" .. tostring(uiAdapter and uiAdapter.ExplicitInputCommitFocusContractVersion or 0)
                 .. "/degradedRoot=" .. tostring(rsui and rsui.DegradedRootFailClosedContractVersion or 0)
                 .. "/eventBinding=" .. tostring(rsui and rsui.EventBindingContractVersion or 0)
                 .. "/rejectRelease=" .. tostring(rsui and rsui.PostFactoryRejectReleaseContractVersion or 0)
@@ -760,6 +764,7 @@ function G:Run(options)
                 .. "/scrollCritical=" .. tostring(rsui and rsui.ScrollbarBehavior and rsui.ScrollbarBehavior.criticalInteractionContractVersion or 0)
                 .. "/buttonAction=" .. tostring(rsui and rsui.ButtonActionContractVersion or 0)
                 .. "/controlTx=" .. tostring(rsui and rsui.ControlTransactionContractVersion or 0)
+                .. "/draftCommit=" .. tostring(rsui and rsui.InputDraftCommitContractVersion or 0)
                 .. "/interactionSvc=" .. tostring(rsui and rsui.InteractionServiceContractVersion or 0)
                 .. "/collapseCritical=" .. tostring(rsui and rsui.CollapsibleGroupInteractionContractVersion or 0))
         local runtime = S.Runtime
@@ -826,17 +831,29 @@ function G:Run(options)
         AddCheck(report, "v3_typography_form_layout_contract", type(S.Theme) == "table" and type(S.Theme.ResolveFontSize) == "function"
                 and type(textLayout) == "table" and (tonumber(textLayout.version) or 0) >= 3
                 and (tonumber(rsui.FormLayoutContractVersion) or 0) >= 2
-                and (tonumber(rsui.NumericInlineContractVersion) or 0) >= 4
+                and (tonumber(rsui.NumericInlineContractVersion) or 0) >= 6
                 and (tonumber(rsui.NumericStepPairFallbackContractVersion) or 0) >= 1
-                and (tonumber(rsui.InteractiveDraftContractVersion) or 0) >= 1
+                and (tonumber(rsui.NumericAdaptiveRangeContractVersion) or 0) >= 1
+                and (tonumber(rsui.NumericExplicitApplyContractVersion) or 0) >= 1
+                and (tonumber(rsui.NumericRangePersistenceContractVersion) or 0) >= 1
+                and (tonumber(rsui.InteractiveDraftContractVersion) or 0) >= 3
+                and (tonumber(rsui.InputDraftCommitContractVersion) or 0) >= 1
+                and (tonumber(rsui.NumericInputDraftReadContractVersion) or 0) >= 1
+                and (tonumber(rsui.StableButtonHoverContractVersion) or 0) >= 2
                 and (tonumber(rsui.WidgetSwitcherContractVersion) or 0) >= 2
-                and type(designContract) == "table" and (tonumber(designContract.version) or 0) >= 6
+                and type(designContract) == "table" and (tonumber(designContract.version) or 0) >= 7
                 and type(designContract.CompactNumericSetting) == "function",
             "blocker", "text=" .. tostring(textLayout and textLayout.version or 0)
                 .. "/form=" .. tostring(rsui and rsui.FormLayoutContractVersion or 0)
                 .. "/numericInline=" .. tostring(rsui and rsui.NumericInlineContractVersion or 0)
                 .. "/stepPair=" .. tostring(rsui and rsui.NumericStepPairFallbackContractVersion or 0)
+                .. "/adaptiveRange=" .. tostring(rsui and rsui.NumericAdaptiveRangeContractVersion or 0)
+                .. "/explicitApply=" .. tostring(rsui and rsui.NumericExplicitApplyContractVersion or 0)
+                .. "/rangeStore=" .. tostring(rsui and rsui.NumericRangePersistenceContractVersion or 0)
                 .. "/draft=" .. tostring(rsui and rsui.InteractiveDraftContractVersion or 0)
+                .. "/draftCommit=" .. tostring(rsui and rsui.InputDraftCommitContractVersion or 0)
+                .. "/draftRead=" .. tostring(rsui and rsui.NumericInputDraftReadContractVersion or 0)
+                .. "/hover=" .. tostring(rsui and rsui.StableButtonHoverContractVersion or 0)
                 .. "/switch=" .. tostring(rsui and rsui.WidgetSwitcherContractVersion or 0)
                 .. "/design=" .. tostring(designContract and designContract.version or 0))
         local tooltipService = rsui and rsui.Tooltip or nil
@@ -892,12 +909,14 @@ function G:Run(options)
         AddCheck(report, "v3_floating_interaction_contract", type(rsui) == "table"
                 and (tonumber(rsui.DataViewViewportContractVersion) or 0) >= 2
                 and (tonumber(rsui.DataViewOverlayScrollbarContractVersion) or 0) >= 1
+                and (tonumber(rsui.DataViewResizePreviewAuthorityContractVersion) or 0) >= 1
                 and genericShellInfo ~= nil and (tonumber(genericShellInfo.version) or 0) >= 17
                 and floatingInfo ~= nil and (tonumber(floatingInfo.version) or 0) >= 7
                 and modalInfo ~= nil and (tonumber(modalInfo.version) or 0) >= 4
                 and type(modalHost.EnsureApplicationVisible) == "function",
             "blocker", "viewport=" .. tostring(rsui and rsui.DataViewViewportContractVersion or 0)
                 .. "/overlayScroll=" .. tostring(rsui and rsui.DataViewOverlayScrollbarContractVersion or 0)
+                .. "/resizePreview=" .. tostring(rsui and rsui.DataViewResizePreviewAuthorityContractVersion or 0)
                 .. "/shell=" .. tostring(genericShellInfo and genericShellInfo.version or 0)
                 .. "/floating=" .. tostring(floatingInfo and floatingInfo.version or 0)
                 .. "/modal=" .. tostring(modalInfo and modalInfo.version or 0))
@@ -1801,6 +1820,8 @@ function G:Run(options)
         or (tonumber(screenProjection.UnitProjectionConsistencyContractVersion) or 0) < 1
         or (tonumber(screenProjection.UnitWorldAliasGuardContractVersion) or 0) < 1
         or (tonumber(screenProjection.WorldBatchIndexContractVersion) or 0) < 1
+        or (tonumber(screenProjection.WorldBatchFactsContractVersion) or 0) < 2
+        or (tonumber(screenProjection.WorldBatchAnchorCalibrationContractVersion) or 0) < 1
         or (tonumber(screenProjection.CameraUnavailableNativeFallbackContractVersion) or 0) < 1
         or type(screenProjection.ProjectWorld) ~= "function" or type(screenProjection.ProjectWorldBatch) ~= "function" then usabilityFailures[#usabilityFailures + 1] = "screen_projection" end
     if type(alerts) ~= "table" or type(alerts.Push) ~= "function" or type(alertHud) ~= "table" or (tonumber(alertHud.version) or 0) < 1
@@ -1814,13 +1835,15 @@ function G:Run(options)
         or (tonumber(visualGuides.UnitLineDiffRenderContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLineProgressivePoolContractVersion) or 0) < 1
         or type(visualGuides.BuildUnitLineSamplePlan) ~= "function"
-        or type(unitLines) ~= "table" or (tonumber(unitLines.VisualGuideContractVersion) or 0) < 4
+        or type(unitLines) ~= "table" or (tonumber(unitLines.VisualGuideContractVersion) or 0) < 5
         or (tonumber(unitLines.AdaptiveDensityContractVersion) or 0) < 2
         or (tonumber(unitLines.SmoothRefreshContractVersion) or 0) < 1
         or (tonumber(unitLines.FrontHemisphereContractVersion) or 0) < 1
         or (tonumber(unitLines.ProjectionConsistencyContractVersion) or 0) < 1
-        or type(rangeAssist) ~= "table" or (tonumber(rangeAssist.VisualGuideContractVersion) or 0) < 4
-        or (tonumber(rangeAssist.WorldSpaceContractVersion) or 0) < 1 then usabilityFailures[#usabilityFailures + 1] = "visual_guides" end
+        or type(rangeAssist) ~= "table" or (tonumber(rangeAssist.VisualGuideContractVersion) or 0) < 7
+        or (tonumber(rangeAssist.WorldSpaceContractVersion) or 0) < 2
+        or (tonumber(rangeAssist.ProjectionFactsContractVersion) or 0) < 5
+        or (tonumber(rangeAssist.AnchorCalibrationContractVersion) or 0) < 1 then usabilityFailures[#usabilityFailures + 1] = "visual_guides" end
     local tradeWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.trade") or nil
     local bondsWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.bonds") or nil
     if type(lifeWidgets) ~= "table" or (tonumber(lifeWidgets.version) or 0) < 3 or type(tradeWidget) ~= "table" or type(bondsWidget) ~= "table" then usabilityFailures[#usabilityFailures + 1] = "life_widgets" end
@@ -2012,7 +2035,11 @@ function G:BuildCopyText(runNow)
     local r = runNow ~= false and self:Run({ skipSequences = true }) or self.last
     if type(r) ~= "table" then return "新版基础框架｜未运行" end
     local statusText = tostring(r.status) == "READY" and "正常" or "阻断"
-    local parts = { "新版基础框架｜" .. statusText .. " · 阻断 " .. tostring(r.blockers) .. " · 警告 " .. tostring(r.warnings) }
+    -- BuildTag rides the banner (v6 diagnostics round, .18.130b): every pasted
+    -- line must identify the build that produced it, or "修复失败" reports can
+    -- silently compare two different client builds.
+    local parts = { "新版基础框架｜" .. statusText .. " · 阻断 " .. tostring(r.blockers) .. " · 警告 " .. tostring(r.warnings)
+        .. " · " .. tostring(S.BuildTag or "BuildTag未知") }
     local failed = {}
     for _, row in ipairs(r.checks or {}) do
         if not row.ok then failed[#failed+1] = row.id .. "[" .. row.detail .. "]" end

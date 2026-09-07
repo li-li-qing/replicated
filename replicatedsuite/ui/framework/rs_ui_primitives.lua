@@ -116,6 +116,126 @@ RSUI:RegisterType("Icon", function(spec)
 end)
 
 RSUI.ButtonActionContractVersion = 2
+RSUI.StableButtonHoverContractVersion = 2
+
+-- Native RU buttons may briefly emit a false OnLeave -> OnEnter pair while the
+-- cursor has not physically left the control (parent Refresh/Layout is enough
+-- to trigger it on high-frequency settings pages).  v1 only made the native
+-- NORMAL/HIGHLIGHT drawables visually identical while hover=true; it still
+-- cleared hover immediately on that false OnLeave, so the control could flash.
+--
+-- v2 keeps the event-driven model but fences leave with a short one-shot grace
+-- window.  Re-entry cancels the pending leave.  At commit time IsMouseOver() is
+-- used when the widget exposes the verified RU method; a still-hovered control
+-- remains highlighted.  No Tick/polling is introduced and Component Release
+-- already removes scheduler work through owner lifetime.
+local STABLE_HOVER_LEAVE_GRACE_MS = 120
+
+local function StableHoverTaskName(component, native)
+    return "rsui_hover_leave:" .. tostring(component and component.id or "button") .. ":"
+        .. tostring(native and (native.rsUiLogicalId or native.rsNativeLogicalId) or "native")
+end
+
+local function CancelStableHoverLeave(component, native)
+    if native == nil then return end
+    native.rsStableHoverEpoch = (tonumber(native.rsStableHoverEpoch) or 0) + 1
+    local taskName = native.rsStableHoverLeaveTask
+    native.rsStableHoverLeaveTask = nil
+    if taskName ~= nil and S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then
+        S.Scheduler:RemoveTask(taskName)
+    end
+end
+
+local function RecomputeComponentHover(component)
+    local anyHovered = false
+    for hoverNative in pairs(component._stableHoverNatives or {}) do
+        if hoverNative ~= nil and hoverNative.rsStableHover == true then anyHovered = true; break end
+    end
+    component.state.hovered = anyHovered
+    return anyHovered
+end
+
+function RSUI:BindStableButtonHover(component, native)
+    if type(component) ~= "table" or native == nil or type(component.On) ~= "function" then return false end
+    component.state = type(component.state) == "table" and component.state or {}
+    component._stableHoverNatives = component._stableHoverNatives or setmetatable({}, { __mode = "k" })
+    if component._stableHoverNatives[native] == true then return true end
+    component._stableHoverNatives[native] = true
+    native.rsStableHover = false
+    native.rsStableHoverEpoch = 0
+
+    local entered = component:On(native, "OnEnter", function()
+        CancelStableHoverLeave(component, native)
+        native.rsStableHover = true
+        component.state.hovered = true
+        if type(UI.SetButtonHovered) == "function" then UI:SetButtonHovered(native, true, component.owner) end
+        return true
+    end, "rsui:" .. tostring(component.id or "button") .. ":stable_hover_enter:" .. tostring(native.rsUiLogicalId or native.rsNativeLogicalId or "native"))
+    local left = component:On(native, "OnLeave", function()
+        CancelStableHoverLeave(component, native)
+        local leaveEpoch = tonumber(native.rsStableHoverEpoch) or 0
+        local function CommitLeave()
+            native.rsStableHoverLeaveTask = nil
+            if tonumber(native.rsStableHoverEpoch) ~= leaveEpoch then return true end
+
+            -- RU exposes IsMouseOver on Widget.  A layout-induced false leave can
+            -- therefore be rejected at the safe point instead of repainting the
+            -- button to normal for a single frame.
+            if type(native.IsMouseOver) == "function" then
+                local ok, stillOver = pcall(function() return native:IsMouseOver() end)
+                if ok == true and stillOver == true then
+                    native.rsStableHover = true
+                    component.state.hovered = true
+                    if type(UI.SetButtonHovered) == "function" then UI:SetButtonHovered(native, true, component.owner) end
+                    return true
+                end
+            end
+
+            native.rsStableHover = false
+            RecomputeComponentHover(component)
+            if type(UI.SetButtonHovered) == "function" then UI:SetButtonHovered(native, false, component.owner) end
+            return true
+        end
+
+        local scheduler = S.Scheduler
+        if scheduler ~= nil and type(scheduler.AddHighFrequencyOneShot) == "function" then
+            local taskName = StableHoverTaskName(component, native)
+            native.rsStableHoverLeaveTask = taskName
+            local added = scheduler:AddHighFrequencyOneShot(taskName, STABLE_HOVER_LEAVE_GRACE_MS, CommitLeave, component, "P2", 1)
+            if added == true then return true end
+            native.rsStableHoverLeaveTask = nil
+        elseif scheduler ~= nil and type(scheduler.AddOneShot) == "function" then
+            local taskName = StableHoverTaskName(component, native)
+            native.rsStableHoverLeaveTask = taskName
+            local added = scheduler:AddOneShot(taskName, STABLE_HOVER_LEAVE_GRACE_MS, CommitLeave, component, "P2", 1)
+            if added == true then return true end
+            native.rsStableHoverLeaveTask = nil
+        end
+        return CommitLeave()
+    end, "rsui:" .. tostring(component.id or "button") .. ":stable_hover_leave:" .. tostring(native.rsUiLogicalId or native.rsNativeLogicalId or "native"))
+
+    if component._stableHoverEnabledWrapped ~= true then
+        local BaseSetEnabled = component.SetEnabled
+        if type(BaseSetEnabled) == "function" then
+            component._stableHoverEnabledWrapped = true
+            function component:SetEnabled(enabled)
+                local state, accepted, detail = BaseSetEnabled(self, enabled)
+                if enabled == false then
+                    self.state.hovered = false
+                    for hoverNative in pairs(self._stableHoverNatives or {}) do
+                        if hoverNative ~= nil then
+                            CancelStableHoverLeave(self, hoverNative)
+                            hoverNative.rsStableHover = false
+                            if type(UI.SetButtonHovered) == "function" then UI:SetButtonHovered(hoverNative, false, self.owner) end
+                        end
+                    end
+                end
+                return state, accepted, detail
+            end
+        end
+    end
+    return entered == true and left == true
+end
 
 local function CreateButtonComponent(kind, spec, withIcon)
     CommonSpec(spec, spec.compact == true and 72 or 96, tonumber(spec.height) or Token("size.buttonH", 26))
@@ -124,6 +244,7 @@ local function CreateButtonComponent(kind, spec, withIcon)
     if button == nil then return nil, "button_create_failed" end
     local c = RSUI:NewComponent(kind, spec, button)
     c.state.selected = spec.selected == true or spec.active == true
+    RSUI:BindStableButtonHover(c, button)
     c.text = tostring(spec.text or "")
     function c:SetText(text)
         local value = tostring(text or "")

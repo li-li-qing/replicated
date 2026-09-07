@@ -38,6 +38,7 @@ ui/rs_ui_framework.lua
 ui/framework/rs_ui_layout_v2.lua
 ui/framework/rs_ui_binding_v2.lua
 ui/framework/rs_ui_component_core.lua
+ui/framework/rs_ui_numeric_range_store.lua
 ui/framework/rs_ui_text_layout.lua
 ui/framework/rs_ui_primitives.lua
 ui/framework/rs_ui_panels.lua

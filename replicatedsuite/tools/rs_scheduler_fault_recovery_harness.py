@@ -74,6 +74,10 @@ end
 Advance(400)
 assert(runs >= 3, "breaker_tripped")
 assert(Scheduler.tasks["v3_harness_faulty"].enabled == false, "task_disabled")
+local firstState = Scheduler:GetTaskState("v3_harness_faulty")
+assert(firstState.registered == true and firstState.enabled == false, "task_state_registered_faulted")
+assert((tonumber(firstState.runCount) or 0) >= 3 and (tonumber(firstState.failureTotal) or 0) >= 3, "task_state_counts_failures")
+assert(type(firstState.lastError) == "string" and string.find(firstState.lastError, "simulated transient native failure", 1, true) ~= nil, "task_state_last_error")
 
 -- Backoff: the task resumes automatically and heals once the callback stops
 -- throwing. First resume window opens ~2s after the fault.
@@ -82,6 +86,8 @@ Advance(3000)
 assert(Scheduler.tasks["v3_harness_faulty"].enabled == true, "task_resumed")
 Advance(500)
 assert(runs >= 4 and runs < 400, "callback_healthy_after_recovery")
+local healedState = Scheduler:GetTaskState("v3_harness_faulty")
+assert(healedState.enabled == true and (tonumber(healedState.lastSuccessAtMs) or 0) > 0, "task_state_success_after_recovery")
 local resumedRuns = runs
 
 -- A second fault episode opens a longer window (backoff doubles).
@@ -115,6 +121,8 @@ def main() -> int:
         "function Scheduler:RecoverFaultedTasks(now)",
         "task.faultedAtMs = (S.NowMs and S.NowMs() or 0)",
         "faultResumes = tonumber(self.faultResumes) or 0",
+        "function Scheduler:GetTaskState(name)",
+        "Scheduler.TaskStateDiagnosticsContractVersion = 1",
     ):
         if token not in SCHEDULER.read_text(encoding="utf-8-sig"):
             raise AssertionError("Scheduler fault recovery implementation missing: " + token)

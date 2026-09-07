@@ -27,6 +27,7 @@ RSUI.DataViewDeferredCallbackContractVersion = 1
 RSUI.DataViewCallbackCaptureContractVersion = 1
 RSUI.DataViewWheelInteractionContractVersion = 2
 RSUI.DataViewEnabledPropagationContractVersion = 1
+RSUI.DataViewResizePreviewAuthorityContractVersion = 1
 local U = RSUI.LayoutUtil
 if type(U) ~= "table" then return end
 local N, Pad, Arrange, Host = U.N, U.Pad, U.Arrange, U.Host
@@ -2177,7 +2178,7 @@ local function NewTableView(kind, spec)
             })
         end,
         bindRow = function(row, item, index, key, list)
-            if type(row.SetResolvedWidths) == "function" then row:SetResolvedWidths(c.resolvedWidths) end
+            if type(row.SetResolvedWidths) == "function" then row:SetResolvedWidths(c.previewResolvedWidths or c.resolvedWidths, c.previewResolvedWidths ~= nil) end
             if type(row.SetItem) == "function" then row:SetItem(item, index) end
             if type(userBind) == "function" then SafeCall("rsui:" .. c.id .. ":table_bind", userBind, row, item, index, key, list, c) end
         end,
@@ -2564,20 +2565,30 @@ local function NewTableView(kind, spec)
         local scrollbarReserve = self.list ~= nil and type(self.list.GetScrollbarReserve)=="function" and self.list:GetScrollbarReserve(listH) or 0
         local columnW = math.max(1, innerW - scrollbarReserve)
         self.lastColumnAvailableWidth = columnW
-        local widths, _, compressed, emergencyClamp = ResolveColumnWidths(self.columns, columnW, self.columnGap)
-        self.resolvedWidths = widths
-        if compressed then RSUI.metrics.layoutCompressionEvents = (tonumber(RSUI.metrics.layoutCompressionEvents) or 0) + 1 end
-        if emergencyClamp then RSUI.metrics.tableEmergencyClamps = (tonumber(RSUI.metrics.tableEmergencyClamps) or 0) + 1 end
-        RSUI.metrics.tableColumnResolves = (tonumber(RSUI.metrics.tableColumnResolves) or 0) + 1
+        -- While a separator is moving, previewResolvedWidths is the sole geometry
+        -- authority. Ambient page/layout refreshes must not re-run the committed
+        -- Fill solver and repaint the old widths between 16ms preview samples; that
+        -- ownership fight is the visible left/right flashing reported on RU.
+        local previewActive = type(self.previewResolvedWidths) == "table"
+        local widths, resolvedOverflow, compressed, emergencyClamp
+        if previewActive then
+            widths = self.previewResolvedWidths
+        else
+            widths, resolvedOverflow, compressed, emergencyClamp = ResolveColumnWidths(self.columns, columnW, self.columnGap)
+            self.resolvedWidths = widths
+            if compressed then RSUI.metrics.layoutCompressionEvents = (tonumber(RSUI.metrics.layoutCompressionEvents) or 0) + 1 end
+            if emergencyClamp then RSUI.metrics.tableEmergencyClamps = (tonumber(RSUI.metrics.tableEmergencyClamps) or 0) + 1 end
+            RSUI.metrics.tableColumnResolves = (tonumber(RSUI.metrics.tableColumnResolves) or 0) + 1
+        end
 
         if self.header ~= nil then
             self.header:SetViewportVisible(self.headerVisible)
-            self.header:SetResolvedWidths(widths)
+            self.header:SetResolvedWidths(widths, previewActive)
             if self.headerVisible then Arrange(self.header, p.left, p.top, columnW, self.headerHeight) end
         end
         self:LayoutColumnResizeHandles(widths)
         self.list:ForEachPooledRow(function(row)
-            if type(row.SetResolvedWidths) == "function" then row:SetResolvedWidths(widths) end
+            if type(row.SetResolvedWidths) == "function" then row:SetResolvedWidths(widths, previewActive) end
         end)
         Arrange(self.list, p.left, listY, innerW, listH)
         self.measureDirty, self.layoutDirty = false, false

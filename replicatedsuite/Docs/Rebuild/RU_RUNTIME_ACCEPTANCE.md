@@ -5,7 +5,7 @@
 ## 统一前置
 
 1. 备份当前 addon 与用户配置；只加载 `replicatedsuite/`（单一 V3 Host）。`z_api_functions/` 仅作开发期 API 参考，**不进入运行时**；旧 `globals/` 与 Legacy UI/runtime 已于 2026-09-01/02 物理删除，不再随包，绝不重新引入。
-2. 使用当前 `replicatedsuite/replicatedsuite.lua` 的 BuildTag 启动新客户端（见 `S.BuildTag`，当前为 `v3-m1.16.0.18.128-runtime-followup-shared-facts-layout`），记录 `ArcheRage.log`、`Chat.log` 和崩溃文件。
+2. 使用当前 `replicatedsuite/replicatedsuite.lua` 的 BuildTag 启动新客户端（见 `S.BuildTag`，当前为 `v3-m1.16.0.18.145-numeric-apply-adaptive-point-size`），记录 `ArcheRage.log`、`Chat.log` 和崩溃文件。
 3. 在 1024×768、1920×1080、2K 逐路由打开首页、战斗、生活、工具、系统页；记录页面/Widget/Modal 是否构建、文本裁切、列宽、黑边和关闭后资源释放。
 4. 每次测试前后记录 Foundation：`activeBuildScopes`、page/widget quarantine、Authority violation、Presentation boundary、Raw Native、Unexpected Global 和 Scheduler active tasks。
 5. 失败记录格式：时间、BuildTag、路由/动作、API 名、输入、原生返回值（脱敏）、日志错误码、是否可复现、恢复动作。
@@ -95,6 +95,10 @@
 使用 `.18.100` **新进程**执行，禁止用同一热重载世代的旧状态冒充跨进程回读。**第一步执行下方 `.18.100 Gear Critical Journal + Persistence v7 专项`**，确认换装 Payload 能保存、Reload、完整退出重进并再次应用；通过后再继续状态显示及 `.18.94` Trade/DPS 回归。进入 `combat.buff_display` 时页面必须成功构建，`v3_build_transaction_contract` 的 Page failure/quarantine/transaction/preflight 计数在新 Generation 中保持 0；进入“HUD 布局”后拖动/缩放 Selection Overlay，指针移动与元素变化方向必须一致（左上原点：X+ 向右，Y+ 向下）。当前截图宽度属于 Compact 模式时，Toolbar 必须出现 `[属性]`/`[收起属性]`，进入 HUD 布局后属性 Drawer 应自动打开；选中元素后必须能看到并编辑 X/Y/宽度/高度以及适用的 Anchor/Pivot/Snap 参数。
 
 **`.18.89` Interactive Draft 专项**：保持状态显示功能开启并让 Aura 事实持续更新。① 连续拖动 HUD 页任意 NumericField Slider，滑块必须稳定跟随鼠标，不能一帧预览值、一帧旧值来回闪跳；② 点击同一字段的精确 NumericInput，删除/输入部分字符后停留至少 1 秒，文本必须保持当前 draft，不能被旧 Binding 回灌；按 Enter/EditEnter 或失焦后才按既有规则 Commit/校验并格式化；③ 在 Compact Drawer 开/关、切换选择元素、普通 Refresh 后重复测试。
+
+**`.18.144` Edit Commit / Focus / Table Resize 专项**：① 在任意 NumericInput 输入一个 Domain 可接受的新值（优先用范围辅助/单位连线设置），按 Enter 后数值必须保持为新 Authority 值，不能先变空再回旧值；② Enter 后不点击聊天框或其他控件，立即测试 WASD、技能键和正常聊天输入，Suite EditBox 不得继续吃键盘；③ 连续点击两个输入框，前一个必须完成 Commit/rollback 并释放 ownership，第二个可正常输入；④ 输入非法值并 Enter，允许按业务规则回滚，但游戏键盘仍必须立即恢复；⑤ 在有持续视觉刷新/列表刷新时按住 TableView 列分隔条左右拖动至少 3 秒，Header 与可见 Rows 必须只跟随鼠标 Preview，不得在鼠标位置与旧 committed 位置之间往返闪烁；松手后列宽与最后 Preview 一致。
+
+**`.18.145` Numeric Apply / Dynamic Point Size 专项**：① 打开“范围辅助”，确认“点大小”Slider Fresh base 仍为 2..10；② 点击精确输入框，输入 `15`，不要依赖 Enter，直接点击右侧“应用”；③ 提交后输入框保持 15，Slider 最大端点必须立即扩成 15（最小仍 2），圆点必须明显大于旧 10 档；当前映射 10≈40px、15≈55px；④ Reload 后再次进入同一页面，业务点大小仍为 15，展示 Slider 端点至少覆盖 2..15；⑤ 输入超过硬安全上限的值（当前 24）时 Authority 不得越界，UI 必须按 Domain 回读值重绘；⑥ 在单位连线和其它 Compact Numeric Setting 抽查“应用”按钮，特别是窄卡片/低分辨率，Label/Slider/EditBox/应用不得相互覆盖；⑦ 点击应用或切换输入框后立即测试 WASD/技能/聊天，`.18.144` Focus Fence 不得回归。
 
 | 域 | 重点 Store | 操作 | 必须通过 |
 |---|---|---|---|

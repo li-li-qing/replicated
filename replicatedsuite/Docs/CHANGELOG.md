@@ -1,3 +1,180 @@
+## M1.16.0.18.145 — Numeric Explicit Apply + Adaptive Visual Point Size（2026-09-07）
+
+- **Range Assist 点大小“输入成功但实际无效”根因**：RSUI `.18.142` 的 Adaptive Range 已能在 Domain 接受后扩展 Slider，但 `combat_range_assist` / `combat_unit_lines` Feature Setter 仍把 `pointSize` 强制 clamp 到 10，Presenter 又把所有 >10 的字号压回 40px。现在统一由 `Constants.VisualGuide` 定义 2..24 安全 envelope；默认 Slider 仍为 2..10，精确输入 15 被 Domain 接受后 Authority 保持 15，Presenter 延续既有 2→16px、10→40px 映射并单调扩展到 15→55px，不再视觉扁平化。
+- **显式“应用”提交契约**：RU EditBox 没有已验证的 Enter 提交 API，因此 Compact Numeric Setting 默认在精确编辑框右侧显示“应用”。`NumericExplicitApplyContractVersion=1` / `NumericInputDraftReadContractVersion=1` 让 Apply 直接读取当前 draft 并走原 Binding→Domain→Persistence Authority；Enter/LostFocus 保留兼容路径，但业务提交不再依赖 Enter 是否由客户端派发。
+- **RU LostFocus→OnClick 顺序防重写**：若点击“应用”时 Native 先触发 LostFocus 并已提交相同 Authority 值，后续 Button OnClick 只结束输入态/同步控件，不再重复执行 Domain/Persistence 写入。焦点释放继续沿 `.18.144` 的 tracked Focus fence，游戏 WASD/技能/聊天输入不会被 Suite EditBox 长期占用。
+- **自适应 Slider 端点**：例如范围辅助点大小初始 2..10，输入 15 后点击“应用”→ Domain=15 → Slider 展示范围自动变为 2..15，并通过既有 `v3.rsui.numeric_ranges` Account/Permanent Store 保存端点。硬安全上限 24；UI 不得绕过 Domain Clamp。
+- **布局**：Design System v7 的 `CompactNumericSetting` 默认开启 Apply；Numeric Inline v6 在同一行按宽度响应式分配 Label / Slider / Exact Input / Apply，窄卡片优先收缩 Label/Input floor 而不是产生控件重叠。Range Assist 双列 Grid 的最小单元宽度从 190 调整到 230；不新增第二行或常驻布局 Tick。
+- **共享限制单源**：点大小 envelope 收敛到 `core/rs_constants.lua -> Constants.VisualGuide`，Feature/Projection/Presenter 共享同一上限；`rs_business_bridge.lua` 不增加 main-chunk local，保持现有 Lua 200/200 local 上限可编译。
+- **RSUI / Gate**：RSUI v47 / API 13.1；Foundation Gate v121，UIV3 Acceptance v76；UnitLines VisualGuide v5、RangeAssist VisualGuide v7。
+- **回归**：35 / 35 Python Harness PASS；`UI_INTERACTION_RANGE_HARNESS 61/61`（含 Apply→15→2..15 + LostFocus-before-OnClick 防重复写）、`UNIT_LINE_END_TO_END_HARNESS 32/32`（真实 RangeAssist Command 接受/投影 15）、`INPUT_FOCUS_DRAG_HARNESS 99/99`、`INTERACTIVE_DRAFT_HARNESS 115/115`、`RSUI_WORKSPACE_SMOKE_HARNESS 27/27`；Foundation Audit PASS（`toc=222 / activeLua=222 / allLua=222`）。
+- **BuildTag**：`v3-m1.16.0.18.145-numeric-apply-adaptive-point-size`。
+
+## M1.16.0.18.144 — EditBox Commit/Focus Fence + Table Resize Preview Authority（2026-09-07）
+
+- **EditBox 数值回弹根因**：`.18.142` 已阻止 ambient Binding Refresh 覆盖正在编辑的 draft，但 RU 单行 EditBox 在 Enter 路径仍可能先执行 Native `clear-on-enter`，导致 `Submit()` 读取到空文本并按旧 Authority 回滚。`CreateEditBox` 现在显式使用已验证的 `ClearTextOnEnter(false)`；TextInput/NumericInput 的 Enter/EditEnter 改为统一 `CommitAndEndEditing()` 事务。
+- **游戏键盘被编辑框长期占用根因**：此前 Enter 只 Commit，不结束 Native 输入生命周期；`EndEditing()` 也只 `EnableKeyboard(false)`，没有释放仍属于 Suite EditBox 的 Focus。UI Framework 新增 `ExplicitInputCommitFocusContractVersion=1` / `DeactivateInputWidget()`：只在 physical focus id 能证明属于当前 Suite 子树时调用现有 `ReleaseFocusWithin()`，随后无条件 Disarm Keyboard；绝不清理聊天框或其他游戏输入焦点。ClearFocus 同步触发 LostFocus 时由 `_endingEdit` fence 阻止二次提交。
+- **输入切换生命周期**：Interactive Draft 升 v3 / `InputDraftCommitContractVersion=1`。新增弱引用、纯事件驱动的 DraftCoordinator；点击另一个 Suite 输入框时，前一个输入先 Commit/rollback 并释放 Focus/Keyboard，再让新输入取得所有权。无 Tick、无常驻 OnUpdate、无猜测 OnTextChanged/KeyDown。
+- **表格列宽拖拽闪烁根因**：拖拽 Preview 每 16ms 发布鼠标几何，但页面普通 `Layout()` 同时用旧 committed widths 重跑 Fill solver，形成“鼠标位置 ↔ 原位置”争夺。`DataViewResizePreviewAuthorityContractVersion=1` 后，`previewResolvedWidths` 在 gesture 期间是 Header、可见 Row、新绑定 Row 和分隔条的**唯一几何 Authority**；松手后才一次 Commit 成对列宽并恢复普通 Layout。
+- **RSUI / Gate**：RSUI 升 v46 / API 13.0；Foundation Gate v120，UIV3 Acceptance v75。历史 Harness 对 Gate/BuildTag 的检查改为最低契约版本/版本族，避免后续正常版本递增造成假失败。
+- **回归**：35 / 35 Python Harness 全部 PASS；`INPUT_FOCUS_DRAG_HARNESS 99/99`、`INTERACTIVE_DRAFT_HARNESS 115/115`、`UI_INTERACTION_RANGE_HARNESS 44/44`；Foundation Audit PASS（`toc=222 / activeLua=222 / allLua=222`）。RU Fresh Reload 仍需验证 Enter 提交后数值保持、WASD/技能/聊天立即恢复，以及高频列表刷新时列宽拖拽无双位置闪烁。
+- **BuildTag**：`v3-m1.16.0.18.144-input-focus-table-drag-stability`。
+
+## M1.16.0.18.143 — Button Hover 假离开 Fence + 高频设置页刷新隔离（2026-09-07）
+
+- **实机回归根因**：`.18.142` 只解决 Native NORMAL/HIGHLIGHT 内部状态抖动，但 UnitLines / RangeAssist 高频投影刷新会在 RU 上制造假的 `OnLeave -> OnEnter`；v1 在假 `OnLeave` 到达时仍立即清除逻辑 hover，因此这两页继续闪烁。
+- **Stable Button Hover Contract v2**：共享 Button-like Component 对 `OnLeave` 使用 120ms one-shot grace；同控件 `OnEnter` 会取消待提交 leave。grace 到期后若 Native Widget 提供已验证 `IsMouseOver()`，再次确认物理指针仍在控件上则拒绝假离开。Component Release/Disable 通过 owner lifetime/显式取消清理任务；无 Tick、无轮询。
+- **高频视觉与设置 Presentation 解耦**：`combat_unit_lines` / `combat_range_assist` 仍保持各自世界视觉高频任务（Range 50ms，UnitLines 继续尊重 1-1000ms 用户设置），但 Business Settings Page 对 `visual_tick/visual_tick_error` 只做 160ms bounded one-shot 合并刷新。直接设置命令和非视觉 Authority 更新仍即时刷新。避免高频世界投影强迫 RSUI 控件同频重绘。
+- **门禁/回归**：Foundation Gate / UI Acceptance 提升为 Hover v2；`UI_INTERACTION_RANGE_HARNESS 44/44` 覆盖 leave grace、IsMouseOver recheck、高频设置页合并与 deactivation task cleanup。
+- **BuildTag**：`v3-m1.16.0.18.143-hover-leave-fence`。
+
+## M1.16.0.18.142 — RSUI 稳定 Hover + 可编辑 Numeric Draft + 自适应滑块范围（2026-09-07）
+
+- **按钮 Hover 闪烁根因收敛**：RU Native `BUTTON` 在父级 Refresh/Layout 期间可能在 NORMAL/HIGHLIGHT 背景间抖动。RSUI 新增 `StableButtonHoverContractVersion=1`，组件通过事件 mux 持有逻辑 hover；hover 期间 Theme 同时把 Native normal/highlight 两张背景绘制成同一 hover 视觉，Native 内部状态抖动因此视觉幂等。Button/Toggle/Dropdown（trigger、滚动、option）/ColorField trigger 共用同一契约，不新增 Tick。
+- **编辑框“删掉立即变回原值”修复**：Interactive Draft Contract 升 v2。TextInput/NumericInput 不再只依赖 RU 原生 Focus 回读，而是在明确点击成功后持有 component-local `editing` 生命周期；页面/Projection 的 `binding_refresh/field_sync` 在编辑期间不得把旧 Binding 回灌。Enter/LostFocus 才提交；提交拒绝/非法输入仍显式回滚到业务 Authority。
+- **滑块范围由精确输入动态扩展**：NumericField Inline 升 v5，新增 `NumericAdaptiveRangeContractVersion=1`。`min/max` 作为默认**显示范围**；精确输入提交后先由 Feature/Domain Setter 决定是否接受，随后读取真实 Authority 值。若真实值超出当前显示端点，Slider 原地 `SetRange()` 向外扩展（例如 1..10 输入 20 → 1..20；输入 -4 → -4..20），不重建控件、不打断拖动。Domain 明确 Clamp/拒绝的硬边界不会被 UI 绕过；可用 `hardMin/hardMax` 或 `fixedRange=true` 显式声明硬范围。
+- **动态范围持久化**：新增 Account/Permanent V3 Store `v3.rsui.numeric_ranges`（`NumericRangePersistenceContractVersion=1`），只保存 stable field id 的展示端点，不复制业务数值。扩展 400ms debounce 保存；Fresh Reload 恢复时只允许向外合并，旧存档永远不能缩小新版本代码定义的 base range；读取失败进入 session-only fallback，禁止覆盖 fenced/失败物理存档。
+- **RSUI 版本**：v45 / API 12.9。Foundation Gate/UI Acceptance 同步要求 Draft v2 + Adaptive Range + Range Store + Stable Hover，新增 `UI_INTERACTION_RANGE_HARNESS 34/34`；Interactive Draft Harness 115/115。
+- **BuildTag**：`v3-m1.16.0.18.142-ui-hover-adaptive-range`。
+
+## M1.16.0.18.141 — 范围圆 1280×768 圆心自适应校准（2026-09-07）
+
+- **实机反馈复现**：`.18.140` 已恢复完整圆形，但 1280×768 等分辨率下圆心与玩家屏幕锚点错位。历史 `.18.136/.18.137` 已有实机正证据：使用 `GetUnitScreenPosition("player")` 作为屏幕真值后，圆心能够钉在玩家身上；后续因错误归因把该层删除。
+- **校准职责下沉 ScreenProjectionV3 v12**：`ProjectWorldBatch` 新增调用级 `anchorUnit + anchorWorld`。仅当 EasyPull 整批落在 Camera fallback（native=0/camera>0）时，用同一 Camera Frame 投影世界圆心，再与原生玩家屏幕锚点求一次 `(dx,dy)`，对整批 camera 点做同一刚性平移。禁止逐点混合、禁止硬编码分辨率常数；mixed native/camera 批次明确跳过校准并记录遥测。
+- **1280×768 / UI Scale 自适应**：校准每 50ms 随范围任务更新，分辨率、UI Scale、窗口/相机变化自动重算；异常 delta 有视口级边界保护，坏读不会把圆甩飞。圆的 EasyPull 透视/FOV/半径算法不改。
+- **遥测**：范围状态继续显示 `校准=dx,dy`，`projFacts` 新增 `锚校applied/unavailable/rejected/mixed_source_skipped`，可直接判断中心真值是否生效。
+- **PVP 50ms 保持**：范围辅助与 PVP 战斗高频策略不回退，生活/PVE 低频策略不变。
+- **BuildTag**：`v3-m1.16.0.18.141-range-anchor-calibration`。
+
+## M1.16.0.18.140 — EasyPull WorldToScreen 实机回退 + 范围契约修复（2026-09-07）
+
+- **范围辅助 0 点根因修复**：`.18.139` 错误把 EasyPull 简化成 `ConvertWorldToScreen native-only`。真实 EasyPull 源码是 `ConvertWorldToScreen` 可用则优先，否则回退自带 `WorldToScreen` 相机投影；RU 实机状态已证明原生全局投影不可用，因此 native-only 必然 0 点。范围辅助改为 `ProjectWorldBatch(...,{easyPullCompat=true})`，保持 `player,true` 本地世界空间与 50ms Demand-scoped 高频刷新。
+- **逐字对齐 EasyPull Camera 数学**：新增独立 `_BuildEasyPullCameraFrame/_ProjectWithEasyPullCameraFrame`，不复用普通 Camera Frame 的 `camDir` 归一化与 FOV clamp；使用 `UIParent:GetScreenWidth/GetScreenHeight`、原始 camera direction、right-only normalization，与公开 `globals/WorldToScreen.lua` 算法一致。
+- **圆周参数对齐**：圆周 Z Offset 调整为 EasyPull 的 `+0.25`；原生返回完整点但 depth<=0 时直接裁剪，不错误切换第二投影器；仅原生点缺失时才进入 WorldToScreen fallback。
+- **启动阻断修复**：`RangeAssist.WorldSpaceContractVersion` 从 1 修正为 2，`ProjectionFactsContractVersion` 提升到 4，解除 `.18.139` 引入的 `range_assist_visual_contract` / `visual_guides` 两个自相矛盾验收阻断。
+- **失败遥测增强**：范围 0 点时状态行附 `批次=模式/原N/相M/原拒K/相拒J/相机错...`，下一轮可直接判断是世界位置、Native、Camera basis 还是相机后方裁剪。
+- **PVP 50ms 保持**：`.18.139` 的 PVP Projection/Pending Replay 50ms 高频策略不回退，PVE/生活仍保持低频。
+- **BuildTag**：`v3-m1.16.0.18.140-easypull-worldtoscreen`。
+
+## M1.16.0.18.139 — EasyPull 范围投影对齐 + PVP 50ms（2026-09-07）
+
+- **范围辅助回退纠正**：撤销 `.18.138` 将圆心切到 `isLocal=false` 的错误方向。项目保存的 EasyPull 源码审计明确记录 `easypull.lua:657` 使用 `GetUnitWorldPositionByTarget("player", true)`；范围圆继续使用本地世界空间。
+- **EasyPull 投影路径收敛**：范围圆整批使用原生 `ConvertWorldToScreen`，严格 `depth > 0`，不再逐点混入 Camera 手算坐标；移除 `.18.136` 的 `GetUnitScreenPosition` 圆心二次校准，避免把两个屏幕坐标来源叠加。`ProjectWorldBatch` 增加 `nativeOnly` 与调用级 batch facts，其他消费者的历史 fallback 行为不变。
+- **范围辅助刷新 200ms → 50ms**：迁移到 demand-scoped HighFrequency P1；只在功能有消费者时运行。投影异常由功能本地隔离，立即清除旧圆并保持 50ms 重试，不再因三连异常让旧点冻结。
+- **PVP 战斗读模型刷新 50ms**：CombatEventBus/CombatAnalytics 的事实采集仍是即时事件驱动；DPS 在 PVP 模式下 Projection 发布 debounce 与 pending relation replay 改为 50ms 高频一次性任务。PVE 保持原 400ms/160ms，生活模块完全不提频。
+- **BuildTag**：`v3-m1.16.0.18.139-easypull-pvp50`。
+
+## M1.16.0.18.138 — 范围圆 global world 回归修复 + 刷新自愈 + 真实 batch 遥测（2026-09-07）
+
+- **实机反馈复核**：`.18.137` 状态行显示范围圆呈半圆、镜头变化后点位像冻结；但旧遥测存在两个误导：① `tick` 是 `Authority.revision` 在 `read()` 内递增前的旧值，不等价于 Scheduler 执行次数；② Range 在整圈投影后又单独投影 1 个圆心做校准，后者覆盖 `ScreenProjectionV3.lastWorldBatch`，所以 `源原生0/相机1/拒1` 实际描述的是**校准圆心**，不是 35 个圆周点。
+- **世界坐标空间回归修复**：撤回 `.18.135` 的 `isLocal=true`。工程自身 `.18.126`、`CURRENT_ARCHITECTURE` 与实际收集到的 ArcheRage `magiccircle` 用法均指向 `GetUnitWorldPositionByTarget("player", false)`；Range 圆周点与 `UIParent` Camera Frame 重新统一到 **global world space**。`RangeAssist.WorldSpaceContractVersion=2`，Foundation Audit 明确禁止再次切回 local-space。
+- **ScreenProjectionV3 v11 / batch facts**：`ProjectWorldBatch` 新增第三返回值 `batchFacts`，每次调用把 `total/native/camera/nativeRejected/depth/sample` 作为**调用本地快照**返回；`lastWorldBatch` 仅保留兼容用途。Range 立即保留整圈的 `ringBatch`，后续圆心校准再投影也不会覆盖整圈证据。新增 `WorldBatchFactsContractVersion=1`、`RangeAssist.ProjectionFactsContractVersion=2`。
+- **范围刷新自愈**：200ms Demand 任务对 Range 的 Native/Camera read 做 feature-local `pcall` 隔离。瞬时投影异常不再触发共享 Scheduler 的 3 连败熔断/指数退避；发生异常时立即发布空 projection 隐藏旧圆，避免旧点冻结在屏幕坐标上，并继续按 200ms 有界重试，成功后自动恢复。错误 10s 限频进入诊断。
+- **Scheduler 可观测性**：新增只读 `GetTaskState()` / `TaskStateDiagnosticsContractVersion=1`，记录每任务 `runCount/failureTotal/consecutive failure/resume/lastSuccess/lastError`；范围状态行改为同时显示 `rev`、`任务=.../run.../失...`、`刷新=尝试.../失.../连续...`，以后可以机械区分“任务没跑 / Scheduler 熔断 / Range read 异常 / 投影几何异常”。
+- **回归证据**：ScreenProjection Harness **26/26**（新增 batch facts）；Unit Line/Range e2e **29/29**（新增 global-world、整圈遥测不被圆心覆盖、3 次刷新 revision 增长、注入一次 Range 异常后旧圆隐藏且下一 tick 恢复）；Scheduler Fault Recovery Harness 新增 per-task telemetry 断言。
+- **BuildTag**：`v3-m1.16.0.18.138-range-global-refresh-resilience`。
+
+## M1.16.0.18.137 — 投影判定参考对齐 + 投影事实遥测（2026-09-07）
+
+- **实机反馈**：圆心已被校准钉在玩家身上，但呈现为**半圆**且**不随镜头刷新/缩放响应异常**——投影层还有一层事实未知（原生 `ConvertWorldToScreen` 是否可用、深度约定、相机兜底帧尺寸源）。
+- **投影判定对齐参考（ScreenProjectionV3 v11）**：
+  1. 原生点接受条件改为 easypull.lua:680/旧版 ProjectCirclePoints 的**精确判定**——深度必须是数字且 >0（撤回 v10 的 nil 容忍：nil 深度的原生结果是实机半圆/冻结的候选元凶）；
+  2. 相机兜底帧尺寸源改为 `UIParent:GetScreenWidth/GetScreenHeight`（rp_api ProjectWorldToScreen 唯一实机验证过的来源；GetUiMetrics 物理宽高作为回退）——uiScale≠1 时两个来源不同，用错会让圆环整体比例错误。
+- **投影事实遥测**：`lastWorldBatch` 记录每批 原生N/相机M/拒K、接受深度带、首点原始坐标与来源；范围辅助 ok 行携带 `源原生/相机/拒 · 深度 · tick · 样本`——半圆来自哪个投影器、刷新 tick 是否在走，下一份状态行直接读出。
+- **BuildTag**：`v3-m1.16.0.18.137-projection-facts`。
+
+## M1.16.0.18.136 — 范围圆分辨率自适应（锚点校准）（2026-09-07）
+
+- **实机反馈**：圆圈已渲染，但 1280×768 下圆心偏离玩家——`ConvertWorldToScreen` 的输出空间随分辨率/UI 缩放变化，硬编码换算不可行（`.18.96` 时代的启发式换算正是前期灾难的一部分）。
+- **修复：每刷新周期实时锚点校准（read()）**。用全链路唯一已被实机证明落在玩家身上的事实——原生 `GetUnitScreenPosition("player")`（单位连线正确锚定正是靠它）——作为真值：把圆心（本地空间 pz+0.1）经与圆周点**完全相同的投影路径**单独投影一次，差值 `(dx,dy)` 即该客户端此分辨率下的空间偏移，平移全部圆周点。**不硬编码任何分辨率常数**；偏移量超逻辑视口则判定异常并跳过校准（防单次坏读把圆甩飞）。随 200ms 刷新持续重校准，分辨率/UI 缩放/窗口大小变化自动跟随。
+- **诊断**：范围辅助 ok 行新增 `校准=dx,dy`——各分辨率下空间偏移量一目了然，也作为空间错配的长期遥测。
+- **BuildTag**：`v3-m1.16.0.18.136-circle-anchor-calibration`。
+
+## M1.16.0.18.135 — 画圈坐标空间对齐 + 点大小设置修复（2026-09-07）
+
+- **范围辅助圆不出现（根因实锤）**：两个权威参考一致证明画圈圆心必须用 **`isLocal=true`** 读取——easypull.lua:657 `GetUnitWorldPositionByTarget("player", true)`；旧版可用套件 rp_runtime UpdateCircle 同样 `isLocal=true` 并注释 "easypull-verified space"（即 `ConvertWorldToScreen` 期望的坐标空间）。此前实现用 `isLocal=false`（全局空间），其注释引用的是 .18.96 **单位连线**端点的混合空间 bug——把另一条管线的结论错误套用到画圈上，投影器吃进错配坐标，圆永远画不出来。修复：圆心改 `isLocal=true`；`.18.134` 的逐点原生→相机回退保持（同为本地空间内的自洽双路）。
+- **单位连线"设置没有用"（点大小滑条无效）**：设置滑条范围 2–10，`.132b` 的 15px 字号下限把 2–10 全部钳成 15——拖动毫无视觉变化。修复：设置值**单调映射**为字号（2→16px、4→22、6→28、8→34、10→40），连线点与范围圆点同规则；其余设置（密度/颜色/透明度/刷新/分对开关）经链路复核均有效。
+- **BuildTag**：`v3-m1.16.0.18.135-circle-local-space`。
+
+## M1.16.0.18.134 — 范围辅助逐点回退 + 探针移除 + 渲染层契约固化（2026-09-07）
+
+- **连线实机确认可用**（用户验证）。本轮收尾三件事：修范围辅助、删测试探针、把这几轮的架构教训固化进框架契约。
+- **范围辅助（ScreenProjectionV3 v9→v10）**：`ProjectWorldBatch` 从"第 1 点探测原生、整批二选一"改为**参考架构的逐点双路回退**（rp_api `A:ProjectWorldToScreen` 本就是每点"原生→相机"）：原生 `ConvertWorldToScreen` 逐点尝试（x/y 为数字且深度 nil-或-正 才接受——背后点的原生结果是镜像坐标，不得绘制），失败点立即用**每批一次懒构建**的相机基计算。单一投影器的任何抖动/约定差异不再是整圆消失的来源（"可见点不足 0/3"的架构根因）。
+- **测试探针移除**：`StartRenderProbe`/`ProbeTick`/`ProbeActive` 与 `#/S/T` 标记全部删除（用户要求；使命已完成——管线已证明、坐标已校准）。`NativeVisibleReadback` 助手保留（被动诊断，供宿主回读）。
+- **渲染层契约固化（防复发）**：
+  1. `UI:EnsureFontSize` 新增（与 EnsureVisible/EnsureAnchor 同款 ok/changed/err 三元组），`SetFontSize` 处写明"false 兼具无操作与被拒"的返回契约——.18.133 事故的机制性防再发；
+  2. Foundation Audit 新增两条守卫：框架必须有 EnsureFontSize、连线点样式写入必须保持 best-effort（检测到 `~=true then return` 模式即 FAIL）；
+  3. 范围辅助 down 行携带投影失败原因 top3（`failuresByReason`）。
+- **事后复盘（.18.129→.18.133 五轮连锁的三个结构性根因）**：
+  ①**歧义返回值当致命失败**——RSUI setter 的 false 兼具"无操作/被拒"，commit-on-accept 链把无操作当失败，在 SetColor（.129d）和 SetFontSize（.133）两次引爆；修复=样式写入 best-effort + Ensure* 去歧义 API。
+  ②**发明的坐标空间对抗原生空间**——逻辑视口换算/一致性 oracle/前置半球门禁都在"纠正"实机本来就正确的原生坐标，proj失败 2831 次全是自伤；修复=原值直用 + 参考对齐。
+  ③**单发生命周期无自愈**——事件驱动的租约握手错过一次即永久死局且零告警；修复=1s watchdog + 失败遥测进诊断行。
+  过程性教训：**仓库内旧版可用实现（参考的项目1）是最高优先级参考**，外部参考次之；每轮"全绿但不可见"暴露的遥测盲区（尝试计数≠显示事实）已由回读/原因遥测补齐。
+- **BuildTag**：`v3-m1.16.0.18.134-range-perpoint-fallback`。
+
+## M1.16.0.18.133 — 连线点 SetFontSize 无操作 bail 修复（根因实锤）（2026-09-07）
+
+- **实机证据链闭合（S 可见但连线点不可见）**：探针 `#`/`S` 标记与连线点走同一宿主/label 管线，唯一差别是连线点经过 `PlaceUnitDot` 的样式写入链。逐环比对旧版可用实现（`参考的项目1/replicatedsuite` rp_runtime/rp_ui——用户指出的权威参考）后定位：
+  1. `CreateLabel` 构造时 `PrimeNativeState` 把字号 **15 直接写入 RSUI 缓存**（row.fontSize=15，rs_ui_framework.lua:623）；
+  2. `.132b` 把点字号下限提到 15px → `PlaceUnitDot` 首次调用 `SetFontSize(dot,15)`；
+  3. `UI:SetFontSize` 发现缓存已是 15 → 返回 **false（无操作，非失败）**（rs_ui_framework.lua:1224）；
+  4. `.18.129` 引入的 commit-on-accept 检查把 false 当失败 → **提前 return，`SetUnitDotVisible(true)` 永不执行**；state.size 不提交 → 每 100ms 重复同样的 bail → 24 个点永远隐藏在 (0,0)。
+- **为什么之前没暴露**：`.129d`–`.132` 期间点字号钳制后是 8（≠构造时的 15），SetFontSize 真实生效返回 true；`.132b` 提下限到 15 恰好与构造字号相等，触发无操作路径。`点=24(唯一24)` 是**尝试放置**计数（在 bail 之前累计），`回读=6/6` 只覆盖探针——两处遥测都看不到这个 bail，这就是连续几轮"全绿但不可见"的原因。
+- **修复**：`PlaceUnitDot` 的 anchor/fontSize/color 写入改为 best-effort（对齐旧版参考的 pcall-从不-bail 模型）；presenter 本地缓存语义保持（同一帧仍然零冗余写入）。RSUI setter 返回 false 兼具"无操作"与"被拒"两种含义，对样式写入而言两者都不该阻止显示。
+- **BuildTag**：`v3-m1.16.0.18.133-unitline-noop-bail-fix`。
+
+## M1.16.0.18.132b — 点字号下限 15px + 探针窗口 120s（2026-09-07）
+
+- **实机反馈解读**：探针 `#` 可见（渲染管线确认通过），但 S 缺失——探针 10 秒窗口从**文件加载瞬间**起算，加载动画还没结束就过期了，用户不可能在那 10 秒内选中目标。这是探针设计缺陷，不是新故障。
+- **更关键的嫌疑（可能是"看不见"的最后一环）**：真实点的字号链是 点大小设置默认 4 → `max(8,…)` → **8px 字号的 '.' 字形只有 1–2 个像素的墨点**——技术上画了，视觉上在游戏背景里不可见。参考 rp_ui 的默认就是 **15px**（clamp 8..40）。
+- **修复**：`PlaceUnitDot`/`PlaceDot` 字号下限 8→**15px**（rp_ui 参考默认）；探针窗口 10s→**120s**（加载完进游戏、选中目标后 S 必然有机会出现），到期自动隐藏。
+- **BuildTag**：`v3-m1.16.0.18.132b-visible-dot-floor`。
+
+## M1.16.0.18.132 — 渲染自检探针 + 宿主绘制优先级（2026-09-07）
+
+- **现状**：诊断全绿（消费者持有/投影成功/写入被接受）但屏幕无点。写入成功≠屏幕可见，远程无法继续二分——本轮把"再猜一次"换成"让客户端自己回答"。
+- **渲染自检探针（CombatVisualGuidesV3 v7→v8）**：每次加载后 10 秒，经与真实点阵完全相同的宿主/label 管线在屏幕中部横排画 6 个 32px 绿色 `#`：P1-P3 取**物理分辨率** 25/50/75%、L1-L3 取**逻辑分辨率**同比例。两种候选锚定空间一次重载即可肉眼区分——看到部分绿点=渲染管线通（问题在坐标空间，且能看到是哪种空间被渲染）；全部看不到=宿主窗口本身不渲染。聊天栏同步提示。watchdog 每秒重申可见并回读引擎 `IsVisible()`（新增 `UI:NativeVisibleReadback`），结果写入状态行 `自检=N点/回读=…`。
+- **宿主策略对齐已验证弹窗模式**：`CreateOverlayWindow` 补 `SetDrawPriority`（CreatePanel/popup 同款）——缺少绘制优先级的窗口可能被压在世界/主窗口之后，是"写入成功但不可见"的具体嫌疑。
+- **范围辅助补渲染遥测**：`lastRangeSampling`（首点坐标/缩放/宿主回读）进入范围辅助 ok 行——此前该行只统计投影点数，完全看不到渲染层。
+- **BuildTag**：`v3-m1.16.0.18.132-render-selfprobe`。
+
+## M1.16.0.18.131b — 连线去除世界坐标前置门禁（参考对齐收尾）（2026-09-07）
+
+- **实机证据（.18.131 状态行）**：范围辅助已修复（工作中·35 点——v9 原生投影 + 窗口宿主生效）；连线有消费者，但 `自己 ↔ 当前目标（单位在相机背后）` 零行——**玩家自己被 front-hemisphere 门禁判成相机背后**。玩家永远不该在相机背后，说明 `GetViewCameraPos` 基与 `GetUnitWorldPositionByTarget(false)` 世界空间在实机上不一致，世界坐标前置分类不可用。
+- **参考事实**：rp_api.lua UnitScreenPoint 画线只用原生 `GetUnitScreenPosition` + `depth>0` 剔除，**不存在任何世界坐标 vs 相机基的前置分类**。v9 已有的原生 depth 剔除就是参考的 behind-cull。
+- **修复**：连线 read() 去掉 `requireFrontHemisphere`（服务能力保留，front-hemisphere 专项 harness 继续直接覆盖该路径）；世界坐标别名守卫（.18.129 的 target 切换别名防护）不受影响——它比较的是 token 间世界距离，与相机基无关。`世界→屏幕` 兜底链（原生缺失时 ProjectWorld(wz+1)）与 rp_api UnitScreenPoint 的 fallback 完全同构。
+- **BuildTag**：`v3-m1.16.0.18.131b-unitline-native-depth-cull`。
+
+## M1.16.0.18.131 — 连线/画圈对齐参考实现 + 校准持久化修复（2026-09-07）
+
+- **实机证据定案（.18.130b 状态行）**：watchdog 生效（连线有消费者了）、投影产出 1 行，但 `渲染层 0 个可见点` 且 **`proj失败=2831`**——投影服务在实机几乎 100% 失败。本轮按用户要求通读参考项目，确认新版与实机可用参考在三个层级全部相悖：
+  1. **宿主**：rp_ui.lua EnsureLinesHost / easypull.lua:257 都用 `CreateEmptyWindow(...,"UIParent")` 顶层窗口（200×200、`CorrectOffsetByScreen`）；新版用根 emptywidget + "system" 层——我们自己的 `CreatePanel` 注释（rs_ui_native_primitives.lua:361）早已记录 **"RU clients do not reliably put root emptywidgets into the system layer"**。宿主不可靠渲染=所有子点不可见。
+  2. **坐标**：参考对原生 `GetUnitScreenPosition`/`ConvertWorldToScreen` **原值直用**（仅乘 addonScale、depth>0 剔除背后）；新版有逻辑坐标启发式换算 + 出界拒绝 + "原生 vs 逻辑相机一致性 oracle 不一致就替换成相机坐标"——失败计数全部来自这套与实机坐标空间相悖的门禁。
+  3. **相机兜底**：参考用物理 `GetScreenWidth/Height`；新版用逻辑视口，算出的点渲染器无法锚定。
+- **ScreenProjectionV3 v8→v9**：原生坐标获胜（一致性 oracle/缩放重整退役，选项保留但忽略）；删除 NormalizeScreenPoint 启发式与出界拒绝；ProjectWorldBatch 原生 ConvertWorldToScreen 优先、相机兜底改物理分辨率；全部拒绝路径带 `failuresByReason/lastFailure` 原因遥测。
+- **CombatVisualGuidesV3 v6→v7**：宿主改 `S.UI:CreateOverlayWindow`（新 primitive：真窗口 + system 层 + 免击中 + CorrectOffsetByScreen）；点模型 extent 1×1（rp_ui 模型，字号即点径）；**删除 Liang-Barsky 裁剪**（原始坐标采样，屏外点无害且有池上限）；渲染时宿主 Show（rp_ui 模型）；坐标 ×`S.Layout` addonScale（参考同款）；`lastUnitSampling` 带 `firstRow` 坐标与 addonScale 证据。
+- **诊断行**：degraded 分支显示 `行=x,y->x,y · UI=缩放 · 原因:top3` ——下一份粘贴即可定位坐标空间/宿主问题。
+- **治疗辅助校准重载复开（用户报告 bug1，根因实锤）**：`ApplyPresentationSettingFromBinding` 只改内存**从不 MarkDirty**，与 `SetPresentationSetting`（走 MutateStore）持久化不对称——经按钮关掉的校准不落盘，重载后 store 里的旧 true 恢复，色块每次重载都回来。两条入口统一走 `SetPresentationSetting`。**注意**：装上本版后需手动关一次校准（这次才会真正落盘），之后不再复现。
+- **Harness**：e2e 加 `CreateOverlayWindow` mock；sampling 裁剪断言改为参考模型断言（屏外线段照常采样）；audit 契约 token 同步（v7/AddOnScale/CreateOverlayWindow、移除 ClipSegmentToRect）。
+- **BuildTag**：`v3-m1.16.0.18.131-reference-aligned-projection`。
+
+## M1.16.0.18.130b — 渲染租约握手 watchdog + 状态行 BuildTag（2026-09-07）
+
+- **第二轮实机报告**：`.18.130` 后单位连线与范围辅助**同时**"已开启但无消费者"，且横幅**零告警**。全链静态复核（Demand 事务、reconcileDemand、Authority:Refresh→read、Events 派发逐 handler xpcall、CallCapability pcall）证明 acquire 事务不可能失败——剩余两类静默死局都是**握手层**的：①presenter 靠订阅 lifecycle 事件拿渲染租约，错过一次事件即永久 0 且无人告警；②runtime stop/start 的 `Demand:ClearAll` 不发 lifecycle，之后 `F:Enable` 因 row.enabled 已 true 直接返回（无事件），presenter 永远持着死租约（失同步）。boss 功能同一客户端正常，正是因为它的租约在自己的 onEnable 内获取，不依赖跨模块事件。
+- **修复（CombatVisualGuidesV3 v5→v6）**：新增 1s P3 lifecycle watchdog（健康时每秒只做几次表读取）：启用但未持有→重试 acquire；持有但 `HasConsumer=false`（外部清空）→失同步自愈重取；acquire 失败不再静默（`UNIT/RANGE_ACQUIRE_FAILED` 限频告警 + `lastAcquireError` 遥测）。lifecycle 处理器记录 `lastLifecycle` 回执。
+- **诊断诚实性**：单位连线/范围辅助 consumer=0 行改为携带决定性证据——`生命周期=已收:xx/enabled|未收到 · 接管尝试=N · 失败原因=… · 失同步=presenter仍持有`，四种死因一眼可辨。
+- **状态行加 BuildTag**：横幅首段追加当前 `S.BuildTag`——杜绝"两份粘贴各来自不同构建却互相比较"的排查黑洞（本轮两份采样的服务器时间倒退正是这类混乱）。
+- **Harness**：e2e 新增失同步自愈用例（租约清空→Pump watchdog→消费者与刷新任务恢复）；`desync_watchdog_ticked` 锁定 watchdog 真实注册并运转。
+- **BuildTag**：`v3-m1.16.0.18.130b-unitline-acquire-telemetry`。
+
+## M1.16.0.18.130 — 连线/画圈 label 着色门禁修复 + 诊断诚实性（2026-09-07）
+
+- **根因（.18.129d 遗留，连线实机仍会 0 点）**：`PlaceUnitDot` 把可见化排在 `S.UI:SetColor(dot.root,...)` 成功之后（commit-on-accept 语义），而 **LABEL 没有 widget 级 `SetColor`**——RU 的文字颜色在 TextStyle 上（`ui_functions.lua:1387`），widget 级 `SetColor` 只存在于 drawable。`UI:SetColor` 旧守卫 `type(widget.SetColor)~="function" → false` 使每次着色必然失败 → 提前 return → `SetUnitDotVisible(true)` 永不执行，pool/consumer 全部正常但屏幕 0 点。三处参考证据一致：easypull.lua:267、plates rp_ui.lua:2348、本工程 `ApplyTextColor`（rs_theme.lua:75）均走 `style:SetColor`。
+- **修复（UI Framework v12→v13）**：`UI:SetColor` 增加 style 回退——widget 无 `SetColor` 时改写 `widget.style`（与 healer_raid_overlay:375 既有用法一致）；无 style 可写时维持拒绝。drawables/复合组件路径零行为变化。连线四色（含用户自定义 `colors[pairKey]`）与画圈颜色随之生效。
+- **诊断诚实性**：单位连线 FeatureRow 接入 presenter 侧 `lastUnitSampling`——投影有行但 `uniquePositions<=0` 时降级为 `degraded`（"投影有 N 行但渲染层 0 个可见点"），不再假绿；ok 行补 `点=X(唯一Y)` 证据。
+- **Harness mock 收口**：e2e/sampling 两个 harness 的 `S.UI:SetColor` mock 从"无方法也返回 true"改为与 v13 真实语义一致（widget → style → false），并移除 mock widget 上的非法 widget 级 `SetColor`/无条件 `SetFontSize`——此前的 mock 语义正好掩盖了本 bug（15/15 假绿的来源）。
+- **BuildTag**：`v3-m1.16.0.18.130-unitline-label-color-fix`。
+
 ## M1.16.0.18.129d — 连线/画圈参考对齐：label 句点模型（2026-09-07）
 
 - **参考研究结论**：通读真实可用的 easypull（画圈，`easypull.lua:245-284/:655-687`）与 plates 旧版连线（`rp_ui.lua:2328-2454`/`rp_api.lua:90-203`）：所有实机可用的点阵都是 **LABEL + '.' 字形**（easypull 22px+SetOutline；plates 15px 池），投影双路（原生 `ConvertWorldToScreen` depth>0 → 相机手算），`isLocal=true` 在 easypull:655 有画圈场景实证。

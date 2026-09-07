@@ -5930,3 +5930,31 @@ RU 真机暴露了共享 Control 与 Responsive Workspace 的两个边界问题�
 同轮审计还发现两个开发期专项 Harness（Unit Lines / Front-Hemisphere）默认把 `--root` 写死为相对路径 `replicatedsuite`，导致从项目根执行时会寻找 `replicatedsuite/replicatedsuite/...`。这不会改变游戏 Runtime，但会削弱封包 Gate 的可信度；现统一改为 `Path(__file__).resolve().parents[1]`，并保留显式 `--root` override。工程根与父目录两种调用方式均验证通过。
 
 上述检查全部只在开发/封包阶段运行，不进入 `toc.g`、不产生 Runtime Tick/缓存/Native 调用。运行时 BuildTransaction 仍是最后一道 fail-closed 隔离，而不是替代开发期验证。
+
+## v45 / API 12.9 — Stable Hover + Interactive Draft v2 + Adaptive Numeric Range（2026-09-07）
+
+- `StableButtonHoverContractVersion=2`：Button-like Component 通过 Base event mux 维护逻辑 hover；Theme 在 hover 期间把 Native NORMAL/HIGHLIGHT 两背景同步成相同视觉。RU 父级 Refresh/Layout 产生的假 `OnLeave` 不再即时清 hover，而是进入 120ms one-shot grace；同控件重入取消 leave，提交时优先用 Native `IsMouseOver()` 再确认物理指针。无 Tick/轮询，任务归 Component owner 生命周期。
+- `InteractiveDraftContractVersion=2`：TextInput/NumericInput 明确点击后拥有 component-local editing flag；Native Focus 仅作为附加事实，任何 ambient binding refresh 在编辑期间不得覆盖草稿。
+- `NumericAdaptiveRangeContractVersion=1`：NumericField 的代码 `min/max` 是默认显示端点，`hardMin/hardMax/fixedRange` 才是 UI 明确硬边界；提交必须先经过原 Feature/Domain Binding，再读取 Authority 实值决定是否扩展 Slider。
+- `NumericRangePersistenceContractVersion=1`：`v3.rsui.numeric_ranges` 只保存 stable field id → `{min,max}` 展示偏好，Account/Permanent、400ms debounce；恢复只向外 merge，旧偏好不得缩窄新 base range。
+- 禁止通过 Adaptive Range 扩权：若 Domain Setter clamp/reject，NumericField 必须以读取回来的 Authority 值重绘，不能按用户原始 draft 扩展。
+
+## v46 / API 13.0 — Edit Commit Focus Fence + DataView Resize Preview Authority（2026-09-07）
+
+- `InteractiveDraftContractVersion=3` / `InputDraftCommitContractVersion=1`：TextInput/NumericInput 的 Enter/EditEnter 不再只是写 Binding，而是统一执行 `CommitAndEndEditing()`。Commit 无论成功或被 Domain 拒绝，都必须结束这一次 Native 输入所有权；拒绝时只允许重绘业务 Authority，不允许把 Keyboard capture 留给已结束的 EditBox。
+- `ExplicitInputCommitFocusContractVersion=1`：`UI:DeactivateInputWidget()` 只能复用 tracked physical focus 的 `ReleaseFocusWithin()` 证明当前 Focus 属于 Suite 子树后清理；随后始终 `DisarmInputWidget()`。禁止业务页直接 `ClearFocus()`，禁止为了恢复 WASD/技能键而清除未知的聊天/游戏焦点。
+- 单行 Native EditBox 必须设置 `ClearTextOnEnter(false)`；草稿清理与格式化由 RSUI Commit Authority 负责，避免 Native Enter 在 Submit handler 读取前先把文本清空。
+- `InputDraftCoordinator` 是弱引用、事件驱动的输入所有权协调器：新输入 Begin 时先结束其他仍 active 的 Suite draft；released component 自动移除。它不使用 Tick、常驻 OnUpdate 或未经 RU 验证的 OnTextChanged/通用 KeyDown。
+- `DataViewResizePreviewAuthorityContractVersion=1`：列分隔条 DragStart 后，`previewResolvedWidths` 是 Header、所有 pooled visible rows、拖动中新增/重绑 rows 和 resize handle siblings 的唯一 Geometry Authority。任何 ambient `TableView:Layout()` 在 Preview 存在时都禁止重新求 committed Fill widths。
+- DragStop 仅有两个终点：有有效变化时 `CommitColumnResizePair()` 一次提交 Preview 中实际显示的相邻列对；回到原边界时 `ClearColumnResizePreview()`，保持原 size mode。Preview 期间不 rebind 数据、不持久化、不创建第二份业务列宽 Authority。
+- 高频预览沿用 gesture-only 16ms InteractiveTask；Scheduler 不可用才使用仅拖动期 OnUpdate，DragStop/Release 立即清理。该契约修复的是 Geometry Authority 争用，不通过提高刷新频率掩盖闪烁。
+## v47 / API 13.1 — Explicit Numeric Apply + Adaptive Visual Range（2026-09-07）
+
+- `NumericExplicitApplyContractVersion=1`：Compact Numeric Setting 默认在精确 NumericInput 右侧显示“应用”。这是 RU 的主提交 affordance；Enter/EditEnter 只有客户端真实派发时才作为兼容入口，不再承担唯一提交职责。
+- `NumericInputDraftReadContractVersion=1`：NumericInput 暴露只读 draft 解析接口；Apply 不复制 Normalize 逻辑，不直接写 Feature/Store，只调用既有 NumericInput/Binding 提交事务。
+- Apply 必须处理 Native `LostFocus → Button OnClick` 顺序：若 LostFocus 已把同一 draft 提交为当前 Authority，OnClick 禁止再次执行 Domain/Persistence 写；若尚未提交，则 `CommitAndEndEditing()` 是唯一提交路径。
+- Numeric Inline v6：单行顺序固定为 `Label → Slider → Exact Input → Apply`（有 step pair 时保持现有按钮语义）。窄宽度下先缩 Label/Input 到技术 floor，并保留 Slider 最低 drag target；禁止为了加 Apply 在所有业务页面复制一套手工布局。
+- Adaptive Range 仍遵守“Domain 先行”：base `min/max` 只是初始 Slider 展示端点，`hardMin/hardMax` 是精确输入 envelope。只有 Domain 回读的真实值超出当前展示端点时才向外扩展，并继续由 `NumericRangeStore` 保存。
+- RangeAssist / UnitLines 点大小采用共享 `Constants.VisualGuide`：base 2..10、hard 2..24。Presenter 保留旧 2→16px / 10→40px 视觉比例并允许 >10 单调增长，避免 Domain 已接受但 Renderer 又把视觉压回旧上限。
+- 全链路事件驱动；Apply 不增加 Tick/OnUpdate，动态范围持久化继续走既有 debounce。
+

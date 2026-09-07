@@ -32,7 +32,8 @@ end
 local function NormalizeNumber(spec, value)
     value = tonumber(value)
     if value == nil then return nil end
-    value = RoundStep(value, spec.min, spec.step)
+    local stepOrigin = spec.stepOrigin ~= nil and spec.stepOrigin or spec.min
+    value = RoundStep(value, stepOrigin, spec.step)
     value = Clamp(value, spec.min, spec.max)
     if spec.integer == true then value = math.floor(value + 0.5) end
     return value
@@ -71,7 +72,9 @@ end
 -- committed binding value.  Controls themselves own this fence so every page
 -- gets the same behavior without inventing local "don't refresh while typing"
 -- flags or permanent polling.
-RSUI.InteractiveDraftContractVersion = 1
+RSUI.InteractiveDraftContractVersion = 3
+RSUI.InputDraftCommitContractVersion = 1
+RSUI.NumericInputDraftReadContractVersion = 1
 RSUI.ControlTransactionContractVersion = 1
 RSUI.PopupVisibilityTransactionContractVersion = 1
 -- Popup hit-test quiescence: Close() unpicks the popup surface and every
@@ -118,9 +121,49 @@ end
 
 local function EndEditInteraction(component, source)
     if component == nil or component.root == nil then return true end
-    if type(UI.DisarmInputWidget) ~= "function" then return false, "input_disarm_contract_unavailable" end
-    local ok = UI:DisarmInputWidget(component.root, component.owner, tostring(source or "input_lost_focus"))
-    return ok == true
+    if type(UI.DeactivateInputWidget) ~= "function" then return false, "input_deactivation_contract_unavailable" end
+    local ok, _, detail = UI:DeactivateInputWidget(component.root, component.owner, tostring(source or "input_end_edit"))
+    return ok == true, detail
+end
+
+-- Component-local edit ownership is the authoritative draft lifetime.  The
+-- coordinator is intentionally event-driven and weak: it lets a newly clicked
+-- input finalize another still-active Suite input without retaining released
+-- components or adding polling.
+local DraftCoordinator = type(RSUI.InputDraftCoordinator) == "table" and RSUI.InputDraftCoordinator or {}
+DraftCoordinator.active = type(DraftCoordinator.active) == "table" and DraftCoordinator.active or setmetatable({}, { __mode = "k" })
+RSUI.InputDraftCoordinator = DraftCoordinator
+
+function DraftCoordinator:Forget(component)
+    if component ~= nil then self.active[component] = nil end
+end
+
+function DraftCoordinator:FinalizeOthers(component, reason)
+    local snapshot = {}
+    for active in pairs(self.active) do
+        if active ~= nil and active ~= component then snapshot[#snapshot + 1] = active end
+    end
+    for _, active in ipairs(snapshot) do
+        if active.released == true then
+            self.active[active] = nil
+        elseif type(active.CommitAndEndEditing) == "function" then
+            -- Switching fields must never leave the previous Native EditBox
+            -- armed. A rejected draft rolls back to its own Authority and the
+            -- new field may still acquire focus afterwards.
+            active:CommitAndEndEditing(reason or "input_switch")
+        elseif type(active.EndEditing) == "function" then
+            active:EndEditing(reason or "input_switch")
+        else
+            self.active[active] = nil
+        end
+    end
+    return true
+end
+
+function DraftCoordinator:Begin(component)
+    self:FinalizeOthers(component, "input_switch")
+    if component ~= nil then self.active[component] = true end
+    return true
 end
 
 RSUI:RegisterType("Toggle", function(spec)
@@ -130,6 +173,7 @@ RSUI:RegisterType("Toggle", function(spec)
         tonumber(spec.fontSize) or Token("font.small", 10), false, spec.gradient ~= false)
     if button == nil then return nil, "toggle_create_failed" end
     local c = RSUI:NewComponent("Toggle", spec, button)
+    if type(RSUI.BindStableButtonHover) == "function" then RSUI:BindStableButtonHover(c, button) end
     local binding, bindingErr = RequireBinding(c, spec, "toggle")
     if binding == nil then return nil, bindingErr end
     c.value = spec.value == true
@@ -302,6 +346,7 @@ RSUI:RegisterType("TextInput", function(spec)
     local binding, bindingErr = RequireBinding(c, spec, "text_input")
     if binding == nil then return nil, bindingErr end
     c.value = tostring(spec.value or "")
+    c.editing = false
     local function Normalize(value)
         local text = tostring(value or "")
         if spec.trim ~= false then text = text:match("^%s*(.-)%s*$") or "" end
@@ -315,7 +360,7 @@ RSUI:RegisterType("TextInput", function(spec)
         if self.root ~= nil and type(self.root.GetText) == "function" then return Normalize(self.root:GetText()) end
         return Normalize(self.value)
     end
-    function c:IsEditing() return IsFocusedDraft(self) end
+    function c:IsEditing() return self.editing == true or IsFocusedDraft(self) end
     function c:Render(explicitValue, source)
         RSUI:_Count(self.kind, "rendered", 1)
         local value = Normalize(explicitValue ~= nil and explicitValue or self:GetValue())
@@ -349,7 +394,7 @@ RSUI:RegisterType("TextInput", function(spec)
         if self.enabled == false then return false end
         local value = self:GetDraftValue()
         if spec.allowEmpty == false and value == "" then
-            self:Render()
+            self:Render(nil, "rejected")
             if type(spec.onInvalid) == "function" then RSUI:Callback("rsui:" .. self.id .. ":invalid", spec.onInvalid, value, self) end
             return false
         end
@@ -360,15 +405,52 @@ RSUI:RegisterType("TextInput", function(spec)
         end
         return ok
     end
-    function c:BeginEditing(source) return BeginEditInteraction(self, source or ("text_input:" .. tostring(self.id))) end
-    function c:EndEditing(source) return EndEditInteraction(self, source or ("text_input:" .. tostring(self.id) .. ":lost_focus")) end
+    function c:BeginEditing(source)
+        DraftCoordinator:Begin(self)
+        local ok, err = BeginEditInteraction(self, source or ("text_input:" .. tostring(self.id)))
+        if ok == true then
+            self.editing = true
+        else
+            DraftCoordinator:Forget(self)
+        end
+        return ok, err
+    end
+    function c:EndEditing(source)
+        local nested = self._endingEdit == true
+        self._endingEdit = true
+        self.editing = false
+        DraftCoordinator:Forget(self)
+        local ok, err = EndEditInteraction(self, source or ("text_input:" .. tostring(self.id) .. ":end"))
+        self._endingEdit = nested
+        return ok, err
+    end
+    function c:CommitAndEndEditing(source)
+        local nested = self._endingEdit == true
+        self._endingEdit = true
+        local committed = self:Submit(source or "edit_commit")
+        self.editing = false
+        DraftCoordinator:Forget(self)
+        local ended, endErr = EndEditInteraction(self, tostring(source or "edit_commit") .. ":end")
+        self._endingEdit = nested
+        if committed ~= true then return false, "commit_rejected" end
+        return ended == true, endErr
+    end
     local activationBound = c:RequireOn(edit, "OnClick", function() return c:BeginEditing("text_input_click") end,
         "rsui:" .. spec.id .. ":activate")
     if activationBound ~= true then return c end
     for _, eventName in ipairs({ "OnEnterPressed", "OnEditEnter" }) do
-        c:On(edit, eventName, function() return c:Submit("enter") end, "rsui:" .. spec.id .. ":" .. eventName)
+        c:On(edit, eventName, function()
+            if c.editing ~= true then return true end
+            return c:CommitAndEndEditing("enter")
+        end, "rsui:" .. spec.id .. ":" .. eventName)
     end
     c:On(edit, "OnLostFocus", function()
+        if c._endingEdit == true then return true end
+        if c.editing ~= true then
+            DraftCoordinator:Forget(c)
+            EndEditInteraction(c, "text_input_lost_focus_inert")
+            return true
+        end
         local result = true
         if spec.submitOnLostFocus ~= false then result = c:Submit("blur") end
         c:EndEditing("text_input_lost_focus")
@@ -392,12 +474,19 @@ RSUI:RegisterType("NumericInput", function(spec)
     local binding, bindingErr = RequireBinding(c, spec, "numeric_input")
     if binding == nil then return nil, bindingErr end
     c.value = NormalizeNumber(spec, spec.value)
+    c.editing = false
     function c:GetValue() return NormalizeNumber(spec, Read(self.binding, self.value)) end
     function c:GetDraftValue()
         if self.root ~= nil and type(self.root.GetText) == "function" then return tostring(self.root:GetText() or "") end
         return ""
     end
-    function c:IsEditing() return IsFocusedDraft(self) end
+    function c:GetDraftNumber()
+        local text = self:GetDraftValue()
+        local suffix = tostring(spec.suffix or spec.unit or "")
+        if suffix ~= "" and #text >= #suffix and text:sub(-#suffix) == suffix then text = text:sub(1, #text - #suffix) end
+        return NormalizeNumber(spec, text)
+    end
+    function c:IsEditing() return self.editing == true or IsFocusedDraft(self) end
     function c:Format(value)
         if type(spec.format) == "function" then
             local ok, text = RSUI:Callback("rsui:" .. self.id .. ":format", spec.format, value)
@@ -423,13 +512,11 @@ RSUI:RegisterType("NumericInput", function(spec)
     end
     function c:Submit(source)
         if self.enabled == false then return false end
-        local text = type(self.root.GetText) == "function" and tostring(self.root:GetText() or "") or ""
-        local suffix = tostring(spec.suffix or spec.unit or "")
-        if suffix ~= "" and #text >= #suffix and text:sub(-#suffix) == suffix then text = text:sub(1, #text - #suffix) end
-        local value = NormalizeNumber(spec, text)
+        local text = self:GetDraftValue()
+        local value = self:GetDraftNumber()
         if value == nil then
             if type(spec.onInvalid) == "function" then RSUI:Callback("rsui:" .. self.id .. ":invalid", spec.onInvalid, text, self) end
-            self:Render()
+            self:Render(nil, "rejected")
             return false
         end
         local ok = Write(self.binding, value, true, source or "edit", spec)
@@ -442,16 +529,53 @@ RSUI:RegisterType("NumericInput", function(spec)
         if ok and type(spec.onChanged) == "function" then RSUI:Callback("rsui:" .. self.id .. ":changed", spec.onChanged, value, self) end
         return ok
     end
-    function c:BeginEditing(source) return BeginEditInteraction(self, source or ("numeric_input:" .. tostring(self.id))) end
-    function c:EndEditing(source) return EndEditInteraction(self, source or ("numeric_input:" .. tostring(self.id) .. ":lost_focus")) end
+    function c:BeginEditing(source)
+        DraftCoordinator:Begin(self)
+        local ok, err = BeginEditInteraction(self, source or ("numeric_input:" .. tostring(self.id)))
+        if ok == true then
+            self.editing = true
+        else
+            DraftCoordinator:Forget(self)
+        end
+        return ok, err
+    end
+    function c:EndEditing(source)
+        local nested = self._endingEdit == true
+        self._endingEdit = true
+        self.editing = false
+        DraftCoordinator:Forget(self)
+        local ok, err = EndEditInteraction(self, source or ("numeric_input:" .. tostring(self.id) .. ":end"))
+        self._endingEdit = nested
+        return ok, err
+    end
+    function c:CommitAndEndEditing(source)
+        local nested = self._endingEdit == true
+        self._endingEdit = true
+        local committed = self:Submit(source or "edit_commit")
+        self.editing = false
+        DraftCoordinator:Forget(self)
+        local ended, endErr = EndEditInteraction(self, tostring(source or "edit_commit") .. ":end")
+        self._endingEdit = nested
+        if committed ~= true then return false, "commit_rejected" end
+        return ended == true, endErr
+    end
     local activationBound = c:RequireOn(edit, "OnClick", function() return c:BeginEditing("numeric_input_click") end,
         "rsui:" .. spec.id .. ":activate")
     if activationBound ~= true then return c end
     for _, eventName in ipairs({ "OnEnterPressed", "OnEditEnter" }) do
-        c:On(edit, eventName, function() return c:Submit("edit") end, "rsui:" .. spec.id .. ":" .. eventName)
+        c:On(edit, eventName, function()
+            if c.editing ~= true then return true end
+            return c:CommitAndEndEditing("enter")
+        end, "rsui:" .. spec.id .. ":" .. eventName)
     end
     c:On(edit, "OnLostFocus", function()
-        local result = c:Submit("edit")
+        if c._endingEdit == true then return true end
+        if c.editing ~= true then
+            DraftCoordinator:Forget(c)
+            EndEditInteraction(c, "numeric_input_lost_focus_inert")
+            return true
+        end
+        local result = c:Submit("blur")
         c:EndEditing("numeric_input_lost_focus")
         return result
     end, "rsui:" .. spec.id .. ":OnLostFocus")
@@ -476,6 +600,22 @@ RSUI:RegisterType("Slider", function(spec)
     c.binding, c.value, c.previewValue = binding, initial, initial
     function c:GetValue() return NormalizeNumber(spec, Read(self.binding, self.value)) or self.value end
     function c:IsInteracting() return self.root ~= nil and self.root.rsDragging == true end
+    function c:GetRange() return tonumber(spec.min), tonumber(spec.max), tonumber(spec.step) end
+    function c:SetRange(minimum, maximum, step)
+        minimum, maximum = tonumber(minimum), tonumber(maximum)
+        if minimum == nil or maximum == nil then return false, "invalid_slider_range" end
+        if maximum < minimum then minimum, maximum = maximum, minimum end
+        if self:IsInteracting() then return false, "slider_drag_active" end
+        local nextStep = math.abs(tonumber(step) or tonumber(spec.step) or 1)
+        if self.root == nil or type(self.root.SetRange) ~= "function" then return false, "native_slider_range_unavailable" end
+        local ok, changedOrErr = self.root:SetRange(minimum, maximum, nextStep)
+        if ok ~= true then return false, changedOrErr or "native_slider_range_rejected" end
+        spec.min, spec.max, spec.step = minimum, maximum, nextStep
+        self.value = NormalizeNumber(spec, self.value) or minimum
+        self.previewValue = NormalizeNumber(spec, self.previewValue) or self.value
+        self:Render(self.previewValue, "range_change")
+        return true, changedOrErr == true
+    end
     function c:Render(explicit, source)
         RSUI:_Count(self.kind, "rendered", 1)
         if self:IsInteracting() and IsAmbientRenderSource(source) then
@@ -746,7 +886,6 @@ RSUI:RegisterType("Dropdown", function(spec)
         return InstallDropdownFallback(c, spec, "dropdown_scroll_button_create_failed:" .. tostring(upErr or downErr or "degraded"))
     end
     c.up, c.down = up, down
-
     for index = 1, maxVisible do
         local button, buttonErr = UI:CreateButton(popup, spec.id .. "_option_" .. tostring(index), "", 0, 0, width, height,
             tonumber(spec.fontSize) or Token("font.small", 10), false, true)
@@ -1006,6 +1145,13 @@ RSUI:RegisterType("Dropdown", function(spec)
         self.enabled = desired
         if self.enabled == false then self:Close() end
         return self.enabled, true, nil
+    end
+
+    if type(RSUI.BindStableButtonHover) == "function" then
+        RSUI:BindStableButtonHover(c, trigger)
+        RSUI:BindStableButtonHover(c, up)
+        RSUI:BindStableButtonHover(c, down)
+        for _, optionButton in ipairs(c.optionButtons) do RSUI:BindStableButtonHover(c, optionButton) end
     end
 
     c:RequireOn(trigger, "OnClick", function() return c:ToggleOpen() end, "rsui:" .. spec.id .. ":trigger")
@@ -1303,6 +1449,8 @@ RSUI:RegisterType("ColorField", function(spec)
         if self.enabled == false then self:Close() end
         return self.enabled, true, nil
     end
+
+    if type(RSUI.BindStableButtonHover) == "function" then RSUI:BindStableButtonHover(c, trigger) end
 
     local baseRelease = c.Release
     function c:Release()

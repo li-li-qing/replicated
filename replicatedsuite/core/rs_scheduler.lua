@@ -92,8 +92,9 @@ local function AddTaskInternal(self, name, intervalMs, callback, runImmediately,
     self.tasks[name] = {
         intervalMs = interval, callback = callback, lane = lane,
         elapsedMs = runImmediately == true and interval or 0, enabled = true,
-        owner = owner, failureCount = 0, priority = NormalizePriority(priority),
+        owner = owner, failureCount = 0, failureTotal = 0, runCount = 0, priority = NormalizePriority(priority),
         costUnits = NormalizeCost(costUnits), deferCount = 0,
+        lastRunAtMs = nil, lastSuccessAtMs = nil, lastErrorAtMs = nil, lastError = nil,
         budgetOwner = tostring(moduleId) .. ":" .. tostring(name),
         pending = runImmediately == true, dueSinceMs = runImmediately == true and (S.NowMs and S.NowMs() or 0) or nil,
     }
@@ -210,13 +211,23 @@ end
 function Scheduler:RunTask(name)
     local task = self.tasks[name]
     if task == nil or task.enabled ~= true then return false end
+    local now = S.NowMs and S.NowMs() or 0
+    task.runCount = (tonumber(task.runCount) or 0) + 1
+    task.lastRunAtMs = now
     local moduleId = self.taskModules[tostring(name)] or "suite"
     local token = S.PerformanceMonitor and S.PerformanceMonitor:Begin("task:" .. tostring(name), moduleId) or nil
     local ok, err = xpcall(task.callback, S.SafeTraceback)
     if S.PerformanceMonitor ~= nil then S.PerformanceMonitor:End(token) end
-    if ok then task.failureCount = 0; return true end
+    if ok then
+        task.failureCount = 0
+        task.lastSuccessAtMs = now
+        return true
+    end
     task.failureCount = (tonumber(task.failureCount) or 0) + 1
-    S.LastSchedulerError = { task = tostring(name), error = tostring(err or "unknown"), failures = task.failureCount }
+    task.failureTotal = (tonumber(task.failureTotal) or 0) + 1
+    task.lastErrorAtMs = now
+    task.lastError = tostring(err or "unknown")
+    S.LastSchedulerError = { task = tostring(name), error = task.lastError, failures = task.failureCount }
     if task.failureCount >= 3 then
         -- Trip the breaker but keep a bounded automatic recovery path. A
         -- permanently disabled task is invisible to its owners: a transient
@@ -257,6 +268,25 @@ function Scheduler:RecoverFaultedTasks(now)
     end
     return recovered
 end
+
+-- Public, read-only per-task telemetry. Diagnostics must not reach into the
+-- callback/owner fields of the scheduler task table: this snapshot exposes
+-- only lifecycle/performance facts and keeps the execution authority private.
+function Scheduler:GetTaskState(name)
+    name = tostring(name or "")
+    local task = self.tasks[name]
+    if task == nil then return { name=name, registered=false } end
+    return {
+        name=name, registered=true, enabled=task.enabled == true, lane=tostring(task.lane or "background"),
+        intervalMs=tonumber(task.intervalMs) or 0, priority=tonumber(task.priority) or 3,
+        pending=task.pending == true, runCount=tonumber(task.runCount) or 0,
+        failureCount=tonumber(task.failureCount) or 0, failureTotal=tonumber(task.failureTotal) or 0,
+        faultedAtMs=tonumber(task.faultedAtMs), resumeCount=tonumber(task.resumeCount) or 0,
+        lastRunAtMs=tonumber(task.lastRunAtMs), lastSuccessAtMs=tonumber(task.lastSuccessAtMs),
+        lastErrorAtMs=tonumber(task.lastErrorAtMs), lastError=task.lastError,
+    }
+end
+Scheduler.TaskStateDiagnosticsContractVersion = 1
 
 function Scheduler:DescribeBacklog()
     local b = self.backlog or {}

@@ -83,6 +83,12 @@ local function editbox()
 end
 function UI:CreateEditBox() return editbox() end
 function UI:SetText(native, text) native:SetText(text); return true end
+function UI:ActivateInputWidget(native) native.armed=true; native.focused=true; return true end
+function UI:DisarmInputWidget(native) native.armed=false; return true end
+function UI:DeactivateInputWidget(native)
+    native.focused=false; native.armed=false; native.deactivations=(native.deactivations or 0)+1
+    return true, true, nil
+end
 function UI:CreateSlider(_, id, x, y, w, h, minv, maxv, step, initial)
     local n={{ value=initial, rsDragging=false, handlers={{}} }}
     function n:GetValue() return self.value end
@@ -105,13 +111,28 @@ t.root.focused=true; t.root.text="abcde"; t:Render(nil, "binding_refresh")
 assert(t.root.text=="abcde", "TextInput ambient refresh clobbered focused draft")
 t.root.focused=false; t:Render(nil, "binding_refresh")
 assert(t.root.text=="abcdef", "TextInput did not resync after focus ended")
+-- RU focus telemetry can lag behind the click. Local edit ownership must fence
+-- ambient Refresh even while Focus:IsFocused still reports false.
+assert(t:BeginEditing("harness") == true and t:IsEditing() == true, "TextInput local edit ownership did not arm")
+t.root.focused=false; t.root.text="abcd"; t:Render(nil, "binding_refresh")
+assert(t.root.text=="abcd", "TextInput local draft was clobbered when native focus lagged")
+assert(t:EndEditing("harness") == true and t:IsEditing() == false, "TextInput local edit ownership did not disarm")
+assert(t:BeginEditing("harness_enter") == true, "TextInput Enter test did not arm")
+t.root.text="entered"
+assert(t.root.handlers.OnEditEnter() == true, "TextInput Enter commit rejected")
+assert(committedText=="entered" and t.editing==false and t.root.armed==false and t.root.focused==false, "TextInput Enter did not commit and release keyboard focus")
 
 local committedNumber = 100
 local n = assert(factories.NumericInput({{id="n", parent={{}}, min=0, max=2000, step=1, integer=true, unit="ms", value=100, get=function() return committedNumber end, set=function(v) committedNumber=v; return true end}}))
 n.root.focused=true; n.root.text="10"; n:Render(100, "binding_refresh")
 assert(n.root.text=="10", "NumericInput ambient refresh clobbered focused draft")
-n:Submit("edit")
-assert(committedNumber==10 and n.root.text=="10ms", "NumericInput commit did not own final render")
+n.root.focused=false; assert(n:BeginEditing("harness") == true, "NumericInput local edit ownership did not arm")
+n.root.text=""; n:Render(100, "binding_refresh")
+assert(n.root.text=="", "NumericInput empty draft was repainted during local edit")
+n.root.text="10"
+assert(n.root.handlers.OnEditEnter() == true, "NumericInput Enter commit rejected")
+assert(committedNumber==10 and n.root.text=="10ms" and n.editing==false, "NumericInput Enter did not own final render")
+assert(n.root.armed==false and n.root.focused==false and (n.root.deactivations or 0)>=1, "NumericInput Enter left native keyboard focus armed")
 
 local committedSlider = 100
 local s = assert(factories.Slider({{id="s", parent={{}}, min=0, max=2000, step=25, value=100, get=function() return committedSlider end, set=function(v) committedSlider=v; return true end}}))
@@ -149,7 +170,7 @@ local rs = assert(factories.Slider({{id="rs", parent={{}}, min=0,max=1000,step=2
 rs.root.rsDragging=true; assert(rs:Preview(500, "harness") == true)
 assert(rs:CommitValue(500, "harness") == false, "Slider rejected write reported success")
 assert(rs.root.value==100 and rejectSlider==100 and sliderChanged==0, "Slider rejection did not restore authoritative state")
-print("INTERACTIVE_DRAFT_LUA PASS 12/12")
+print("INTERACTIVE_DRAFT_LUA PASS 20/20")
 '''
     with tempfile.NamedTemporaryFile("w", suffix=".lua", encoding="utf-8", delete=False) as fh:
         fh.write(lua)
@@ -158,7 +179,7 @@ print("INTERACTIVE_DRAFT_LUA PASS 12/12")
     pathlib.Path(script).unlink(missing_ok=True)
     if proc.returncode != 0:
         raise AssertionError((proc.stdout + proc.stderr).strip())
-    if "INTERACTIVE_DRAFT_LUA PASS 12/12" not in proc.stdout:
+    if "INTERACTIVE_DRAFT_LUA PASS 20/20" not in proc.stdout:
         raise AssertionError(proc.stdout.strip() or "lua harness produced no PASS marker")
 
 
@@ -355,14 +376,34 @@ def main() -> int:
     run_lua()
     run_foundation_interaction_lua()
     run_widget_host_lua()
+    require_source(CONTROLS, (
+        "RSUI.InteractiveDraftContractVersion = 3",
+        "RSUI.InputDraftCommitContractVersion = 1",
+        "RSUI.NumericInputDraftReadContractVersion = 1",
+        "function c:CommitAndEndEditing(source)",
+        "DraftCoordinator:Forget(self)",
+        "c.editing = false",
+        "function c:IsEditing() return self.editing == true or IsFocusedDraft(self) end",
+        "self.editing = true",
+    ))
+    require_source(PRIMITIVE_COMPONENTS, (
+        "RSUI.StableButtonHoverContractVersion = 2",
+        "function RSUI:BindStableButtonHover(component, native)",
+        'component:On(native, "OnEnter"',
+        'component:On(native, "OnLeave"',
+    ))
     require_source(FORMS, (
-        "RSUI.NumericInlineContractVersion = 4",
+        "RSUI.NumericInlineContractVersion = 6",
+        "RSUI.NumericAdaptiveRangeContractVersion = 1",
+        "RSUI.NumericExplicitApplyContractVersion = 1",
         "RSUI.NumericStepPairFallbackContractVersion = 1",
         "buildOptional = true",
         "c.minus, c.plus = nil, nil",
-        'SyncControls(Current(), "binding_refresh")',
+        'SyncControls(Current(), "binding_refresh", false)',
         'c.input:Render(value, "interaction")',
-        'SyncControls(actual, "commit")',
+        'function c:ApplyDraft(source)',
+        'SyncControls(actual, "commit", source == "input"',
+        'c.rangeStore:Set(c.rangeKey, c.minimum, c.maximum',
     ))
     require_source(WORKSPACE, (
         "contractVersion = 6",
@@ -385,6 +426,7 @@ def main() -> int:
         "function UIX:RequireHandler(widget, eventName, fn, label)",
         "if ConfigureNativePickable(edit, true) ~= true then error",
         'CallNativeAccepted(edit, "EnableKeyboard", false)',
+        'CallNativeAccepted(edit, "ClearTextOnEnter", false)',
         "EDITBOX_MULTILINE inherits WidgetBase interaction flags",
         'CallNativeAccepted(edit, "SetReadOnly", false)',
         "slider.rsUiSetEnabledAdapter = ApplySliderEnabled",
@@ -398,6 +440,8 @@ def main() -> int:
     require_source(UI_FRAMEWORK, (
         "NativeBooleanSetterReturnContractVersion = 1",
         "CompositeEnabledAdapterContractVersion = 2",
+        "ExplicitInputCommitFocusContractVersion = 1",
+        "function UI:DeactivateInputWidget",
         "local enabledAdapter = widget.rsUiSetEnabledAdapter",
         "if calls == 0 then",
     ))
@@ -490,7 +534,7 @@ def main() -> int:
         "version = 6",
         "visibilityTransactionContractVersion = 1",
     ))
-    print("INTERACTIVE_DRAFT_HARNESS PASS 111/111")
+    print("INTERACTIVE_DRAFT_HARNESS PASS 115/115")
     return 0
 
 

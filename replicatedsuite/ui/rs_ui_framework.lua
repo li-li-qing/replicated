@@ -1,5 +1,5 @@
 ------------------------------------------------------------------------
--- Replicated Suite - UI Framework v12
+-- Replicated Suite - UI Framework v13
 --
 -- Incremental upper layer over the limited ArcheAge/RU native UI API.
 --
@@ -18,7 +18,7 @@ local S = ReplicatedSuite
 local UI = S.UI
 if type(UI) ~= "table" then return end
 
-local FRAMEWORK_VERSION = 12
+local FRAMEWORK_VERSION = 13
 local MAX_OWNER_METRICS = 48
 
 local stateCache = setmetatable({}, { __mode = "k" })
@@ -83,6 +83,7 @@ UI.NativeBooleanSetterReturnContractVersion = 1
 UI.InputFocusLifecycleContractVersion = 2
 UI.HiddenInputFocusIsolationContractVersion = 2
 UI.DeferredKeyboardActivationContractVersion = 1
+UI.ExplicitInputCommitFocusContractVersion = 1
 UI.Tokens = S.UITokens
 UI.NativeStateCache = stateCache
 UI.NativeAuthorityClaims = authorityClaims
@@ -402,6 +403,20 @@ function UI:ReleaseFocusWithin(widget, owner, reason)
     return true, true, nil
 end
 
+-- Explicit edit completion is a single lifecycle transaction: first release
+-- Native focus only when the focused physical id proves it belongs to this
+-- Suite input, then disable its keyboard capture regardless of whether focus
+-- telemetry was available.  This keeps ArcheAge chat/game focus isolated while
+-- preventing a committed EditBox from continuing to consume movement/skill keys.
+function UI:DeactivateInputWidget(widget, owner, reason)
+    if widget == nil then return true, false, nil end
+    local focusOk, focusChanged, focusErr = self:ReleaseFocusWithin(widget, owner, reason or "input_commit")
+    local disarmOk, disarmChanged, disarmErr = self:DisarmInputWidget(widget, owner, reason or "input_commit")
+    if focusOk ~= true then return false, focusChanged == true or disarmChanged == true, tostring(focusErr or "focus_release_failed") end
+    if disarmOk ~= true then return false, focusChanged == true or disarmChanged == true, tostring(disarmErr or "keyboard_disarm_failed") end
+    return true, focusChanged == true or disarmChanged == true, focusErr
+end
+
 -- Permanent input retirement is reserved for component/owner teardown and old
 -- hot-reload generations. Live hide/disable paths only disarm Keyboard; a later
 -- explicit user click can arm the surviving input again without re-registering it.
@@ -533,6 +548,14 @@ local function TryNativeVisible(widget)
     -- false strict-authority violation. Geometry remains fully verifiable.
     if value ~= true and HasKnownHiddenAncestor(widget) then return nil, false end
     return value == true, true
+end
+
+-- Public readback for render diagnostics (v13): the overlay presenters report
+-- what the engine THINKS a dot's visibility is, so "API 写入成功但屏幕无点"
+-- can be separated from "坐标落到屏外" in one paste.
+function UI:NativeVisibleReadback(widget)
+    local value, known = TryNativeVisible(widget)
+    return value, known == true
 end
 
 local function TryNativeAnchorMatches(widget, parent, x, y)
@@ -796,7 +819,7 @@ end
 -- writes after the first application.
 function UI:SetColor(widget, red, green, blue, alpha, owner)
     local usable = WidgetUsable(widget)
-    if usable ~= true or type(widget.SetColor) ~= "function" then return false end
+    if usable ~= true then return false end
     local r = tonumber(red) or 0
     local g = tonumber(green) or 0
     local b = tonumber(blue) or 0
@@ -812,7 +835,23 @@ function UI:SetColor(widget, red, green, blue, alpha, owner)
         RecordAttempt("SET_COLOR", widget, false, 0, owner)
         return false
     end
-    local ok, err = pcall(function() widget:SetColor(r, g, b, a) end)
+    -- v13: LABEL widgets carry text color on their style object (RU TextStyle
+    -- SetColor(r,g,b,a)); the widget itself has none -- widget-level SetColor
+    -- only exists on drawables. Every working reference colors labels via
+    -- style (easypull.lua:267, plates rp_ui.lua:2348, theme ApplyTextColor),
+    -- so callers that pass the label widget directly (combat visual guide
+    -- dots) must resolve to the style here, or they gate visibility behind a
+    -- write that can never succeed.
+    local target = widget
+    if type(target.SetColor) ~= "function" then
+        local style = target.style
+        if style == nil or type(style.SetColor) ~= "function" then
+            RecordAttempt("SET_COLOR", widget, false, 0, owner)
+            return false
+        end
+        target = style
+    end
+    local ok, err = pcall(function() target:SetColor(r, g, b, a) end)
     if ok ~= true then RecordNativeSafetyFailure("SET_COLOR", widget, err, owner); return false end
     row.colorR, row.colorG, row.colorB, row.colorA = r, g, b, a
     row.color = nil
@@ -1215,6 +1254,12 @@ function UI:EnsurePickable(widget, enabled, owner)
     return false, false, "native_pickable_rejected"
 end
 
+-- RETURN CONTRACT (v13): SetFontSize returns false BOTH for a REJECTED native
+-- write AND for a cached no-op ("already at this size"). Visibility-critical
+-- render chains must NOT treat that ambiguous false as fatal — the .18.133
+-- unit-line outage was exactly PlaceUnitDot bailing on a no-op false before
+-- showing the dot. Use EnsureFontSize when the distinction matters; style
+-- writers should stay best-effort.
 function UI:SetFontSize(widget, size, owner)
     local usable = WidgetUsable(widget)
     if usable ~= true or widget.style == nil or type(widget.style.SetFontSize) ~= "function" then return false end
@@ -1228,6 +1273,30 @@ function UI:SetFontSize(widget, size, owner)
     widget.rsAppliedFontSize = value
     RecordAttempt("FONT_SIZE", widget, true, 1, owner)
     return true
+end
+
+-- Disambiguating facade for SetFontSize (same (ok, changed, err) contract as
+-- EnsureVisible/EnsureAnchor/EnsurePickable). "ok=true, changed=false" is a
+-- cached no-op; "ok=false" is a genuine rejection. Added after the .18.133
+-- unit-line outage: CreateLabel primes row.fontSize via PrimeNativeState, so
+-- the first SetFontSize(sameValue) legitimately returns false and a caller
+-- that conflated the two meanings hid every dot in the pool.
+function UI:EnsureFontSize(widget, size, owner)
+    local usable, usableErr = WidgetUsable(widget)
+    if usable ~= true then return false, false, tostring(usableErr or "widget_unusable") end
+    local value = tonumber(size)
+    if value == nil then return false, false, "font_size_required" end
+    if widget.style == nil or type(widget.style.SetFontSize) ~= "function" then return false, false, "native_font_size_unavailable" end
+    local row = GetState(widget)
+    if row.fontSize == value then
+        RecordAttempt("FONT_SIZE_ENSURE", widget, false, 0, owner)
+        return true, false, nil
+    end
+    local changed = self:SetFontSize(widget, value, owner)
+    if changed == true then return true, true, nil end
+    row = GetState(widget)
+    if row.fontSize == value then return true, false, nil end
+    return false, false, "native_font_size_rejected"
 end
 
 function UI:SetAlpha(widget, alpha, owner)
@@ -1299,6 +1368,14 @@ function UI:SetButtonActive(widget, active, owner)
     -- expose one logical style write here; Theme remains the detailed native
     -- styling Authority.
     RecordAttempt("BUTTON_ACTIVE", widget, changed, changed and 1 or 0, owner)
+    return changed
+end
+
+function UI:SetButtonHovered(widget, hovered, owner)
+    if WidgetUsable(widget) ~= true then return false end
+    if S.Theme == nil or type(S.Theme.SetButtonHovered) ~= "function" then return false end
+    local changed = S.Theme:SetButtonHovered(widget, hovered == true) == true
+    RecordAttempt("BUTTON_HOVER", widget, changed, changed and 1 or 0, owner)
     return changed
 end
 

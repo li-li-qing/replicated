@@ -334,48 +334,87 @@ function T:StyleButton(button, width, height, fontSize, active, useGradient)
         if button.style.SetEllipsis ~= nil then pcall(function() button.style:SetEllipsis(false) end); button.rsEllipsis = false end
     end
     button.rsButtonActive = active == true
+    button.rsButtonHovered = false
 end
 
 -- Live active/inactive repaint for gradient buttons (tabs etc.).
 -- For gradient skins it swaps the normal/highlight band tables via
 -- ChangeColor1/2/3; for solid skins it falls back to SetColor.
+local function ApplyGradientBand(drawable, band)
+    if drawable == nil or type(band) ~= "table" or type(drawable.ChangeColor1) ~= "function" then return false end
+    local ok = pcall(function()
+        drawable:ChangeColor1(band[1][1], band[1][2], band[1][3])
+        drawable:ChangeColor2(band[2][1], band[2][2], band[2][3])
+        drawable:ChangeColor3(band[3][1], band[3][2], band[3][3])
+    end)
+    return ok == true
+end
+
+local function ApplySolidButtonColor(button, index, color)
+    local drawable = button and button.rsButtonBgs and button.rsButtonBgs[index] or nil
+    if drawable == nil or type(color) ~= "table" or type(drawable.SetColor) ~= "function" then return false end
+    local alpha = (tonumber(color[4]) or 1) * math.max(0.0, math.min(1.0, tonumber(button.rsBackgroundOpacity) or 1.0))
+    local ok = pcall(function() drawable:SetColor(color[1], color[2], color[3], alpha) end)
+    if ok == true and type(button.rsButtonBgColors) == "table" then
+        button.rsButtonBgColors[index] = { color[1], color[2], color[3], color[4] }
+    end
+    return ok == true
+end
+
+-- RU can oscillate the Native BUTTON internal normal/highlight state while the
+-- cursor remains physically over the same logical control (especially when a
+-- parent refresh/layout pass happens).  While RSUI says the pointer is inside,
+-- paint BOTH native normal/highlight backgrounds with the same hover visual so
+-- that internal state oscillation is visually idempotent instead of flashing.
+local function RepaintButtonInteractiveState(button)
+    if button == nil or type(button.rsButtonBgs) ~= "table" then return false end
+    local active = button.rsButtonActive == true
+    local hovered = button.rsButtonHovered == true
+    if type(button.rsGradientBands) == "table" and button.rsButtonBgs[1] ~= nil and button.rsButtonBgs[2] ~= nil then
+        local normalBand
+        if hovered or active then normalBand = C.Color.Gradient.buttonHover else normalBand = C.Color.Gradient.button end
+        local highlightBand = hovered and normalBand or C.Color.Gradient.buttonHover
+        local changedA = ApplyGradientBand(button.rsButtonBgs[1], normalBand)
+        local changedB = ApplyGradientBand(button.rsButtonBgs[2], highlightBand)
+        return changedA or changedB
+    end
+
+    local buttonTokens = (S.UITokens and S.UITokens.button) or {}
+    local normalColor
+    if hovered then
+        normalColor = buttonTokens.hover or { 0.14, 0.19, 0.24, 0.99 }
+    elseif active then
+        normalColor = buttonTokens.active or { 0.035, 0.145, 0.170, 0.99 }
+    else
+        normalColor = buttonTokens.normal or { 0.025, 0.065, 0.080, 0.97 }
+    end
+    local highlightColor
+    if hovered then
+        highlightColor = normalColor
+    elseif active then
+        highlightColor = buttonTokens.activeHover or buttonTokens.hover or normalColor
+    else
+        highlightColor = buttonTokens.hover or { 0.14, 0.19, 0.24, 0.99 }
+    end
+    local changedA = ApplySolidButtonColor(button, 1, normalColor)
+    local changedB = ApplySolidButtonColor(button, 2, highlightColor)
+    return changedA or changedB
+end
+
 function T:SetButtonActive(button, active)
     if button == nil or type(button.rsButtonBgs) ~= "table" then return false end
     active = active == true
     if button.rsButtonActive == active then return false end
-    if type(button.rsGradientBands) == "table" and button.rsButtonBgs[1] ~= nil and button.rsButtonBgs[2] ~= nil then
-        local activeBand = active and C.Color.Gradient.buttonHover or C.Color.Gradient.button
-        local hoverBand = C.Color.Gradient.buttonHover
-        pcall(function()
-            local n = button.rsButtonBgs[1]
-            if n.ChangeColor1 ~= nil then
-                n:ChangeColor1(activeBand[1][1], activeBand[1][2], activeBand[1][3])
-                n:ChangeColor2(activeBand[2][1], activeBand[2][2], activeBand[2][3])
-                n:ChangeColor3(activeBand[3][1], activeBand[3][2], activeBand[3][3])
-            end
-            local h = button.rsButtonBgs[2]
-            if h.ChangeColor1 ~= nil then
-                h:ChangeColor1(hoverBand[1][1], hoverBand[1][2], hoverBand[1][3])
-                h:ChangeColor2(hoverBand[2][1], hoverBand[2][2], hoverBand[2][3])
-                h:ChangeColor3(hoverBand[3][1], hoverBand[3][2], hoverBand[3][3])
-            end
-        end)
-        button.rsButtonActive = active
-        return true
-    end
-    if button.rsButtonBgColors == nil then return false end
-    local buttonTokens = (S.UITokens and S.UITokens.button) or {}
-    local c = active and (buttonTokens.active or { 0.035, 0.145, 0.170, 0.99 }) or (buttonTokens.normal or { 0.025, 0.065, 0.080, 0.97 })
-    if button.rsButtonBgs[1] ~= nil then
-        button.rsButtonBgColors[1] = { c[1], c[2], c[3], c[4] }
-        -- Preserve the independent background-opacity channel when a solid
-        -- button changes active state; otherwise SetColor would silently reset
-        -- that drawable to its base alpha.
-        local alpha = (tonumber(c[4]) or 1) * math.max(0.0, math.min(1.0, tonumber(button.rsBackgroundOpacity) or 1.0))
-        pcall(function() button.rsButtonBgs[1]:SetColor(c[1], c[2], c[3], alpha) end)
-    end
     button.rsButtonActive = active
-    return true
+    return RepaintButtonInteractiveState(button)
+end
+
+function T:SetButtonHovered(button, hovered)
+    if button == nil or type(button.rsButtonBgs) ~= "table" then return false end
+    hovered = hovered == true
+    if button.rsButtonHovered == hovered then return false end
+    button.rsButtonHovered = hovered
+    return RepaintButtonInteractiveState(button)
 end
 
 function T:SetOpacity(widget, opacity)

@@ -274,8 +274,8 @@ local CAPABILITIES = {
     ["UIParent:GetViewCameraFov"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Source="api_functions.lua:361", Notes="camera projection fallback only; default FOV is used when unavailable" },
     -- NOTE: the community "WorldToScreen" global (globals/WorldToScreen.lua,
     -- easypull dependency) is a CUSTOM camera-projection helper, NOT a game
-    -- API. Suite does NOT depend on it: A:ProjectWorldToScreen absorbs the same
-    -- UIParent camera math internally (G1b 2026-08-24). Registered only as
+    -- API. Suite does NOT depend on the global symbol: ScreenProjectionV3 contains an
+    -- EasyPull-compatible private fallback using the same UIParent camera math. Registered only as
     -- documentation to prevent future misuse.
     ["WorldToScreen"] = { OfficialState="Unknown", SideEffectFree=true, Method="WorldToScreen", Source="community globals/WorldToScreen.lua (NOT a game API)", Notes="custom camera projection; Suite 自有投影逻辑 (旧 rp_api 已删除), does not call this global" },
     ["X2Unit:GetTargetAbilityTemplates"] = { OfficialState="OfficialEnabled", SideEffectFree=true },

@@ -1,4 +1,4 @@
-﻿------------------------------------------------------------------------
+------------------------------------------------------------------------
 -- Replicated Suite - Bootstrap
 -- Author: Replicated
 -- Version: 1.2 (V3-only; current BuildTag is declared below)
@@ -94,7 +94,7 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.129d-unitline-label-dots"
+S.BuildTag = "v3-m1.16.0.18.145-numeric-apply-adaptive-point-size"
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}
 S.SaveKey = tostring(S.Config.SaveKey or "replicated_suite_v1")

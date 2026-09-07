@@ -9,7 +9,7 @@ local S = ReplicatedSuite
 local RSUI = S.RSUI
 if type(RSUI) ~= "table" then return end
 
-S.UIV3Design = { version = 6 }
+S.UIV3Design = { version = 7 }
 local D = S.UIV3Design
 
 local function Text(parent, id, text, size, tone, slot, overflow)
@@ -158,6 +158,12 @@ function D:CompactNumericSetting(parent, spec)
     nextSpec.inline = true
     nextSpec.slider = spec.slider ~= false
     nextSpec.stepButtons = spec.stepButtons == true
+    -- RU EditBox Enter delivery is not a verified capability.  Compact numeric
+    -- settings therefore expose a visible Apply action by default; Enter/blur
+    -- remain compatibility conveniences, not the only commit path.
+    nextSpec.applyButton = spec.applyButton ~= false
+    nextSpec.applyText = tostring(spec.applyText or "应用")
+    nextSpec.applyButtonWidth = tonumber(spec.applyButtonWidth) or 40
     nextSpec.hint = spec.inlineHint == true and spec.hint or nil
     nextSpec.padding = tonumber(spec.padding) or 4
     nextSpec.labelFontSize = tonumber(spec.labelFontSize) or 9

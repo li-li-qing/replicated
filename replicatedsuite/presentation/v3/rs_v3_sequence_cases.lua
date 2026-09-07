@@ -685,6 +685,7 @@ end)
 G:RegisterSequenceCase("v3_26_table_resize_contract", function()
     local util = S.RSUI and S.RSUI.DataViewUtil or nil
     if util == nil or type(util.ColumnResizeBounds) ~= "function" or type(util.ClampColumnResizeWidth) ~= "function" or type(util.ResolveColumnWidths) ~= "function" then return Fail("table_resize_util") end
+    if (tonumber(S.RSUI and S.RSUI.DataViewResizePreviewAuthorityContractVersion) or 0) < 1 then return Fail("table_resize_preview_authority_contract") end
     local minBound, maxBound = util.ColumnResizeBounds({ minWidth=80, maxWidth=120, absoluteMinWidth=1 })
     if minBound ~= 1 or maxBound ~= nil then return Fail("table_native_drag_reused_layout_max") end
     local hardMin, hardMax = util.ColumnResizeBounds({ minWidth=80, maxWidth=120, absoluteMinWidth=2, absoluteMaxWidth=333 })
