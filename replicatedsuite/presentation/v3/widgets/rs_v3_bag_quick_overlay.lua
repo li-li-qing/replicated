@@ -10,7 +10,7 @@ local S = ReplicatedSuite
 local feature = S.Features and S.Features.tools_bag or nil
 if type(feature) ~= "table" or type(S.UI) ~= "table" then return end
 S.UIV3 = S.UIV3 or {}
-local P = { version=2, owner="v3:bag_quick_overlay", root=nil, take=nil, put=nil, stop=nil, status=nil }
+local P = { version=3, ReloadVisibilityContractVersion=1, owner="v3:bag_quick_overlay", root=nil, take=nil, put=nil, stop=nil, status=nil }
 S.UIV3.BagQuickOverlay = P
 
 function P:EnsureCreated()

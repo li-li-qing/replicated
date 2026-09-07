@@ -12,7 +12,7 @@ local P = S.Persistence
 if type(Registry) ~= "table" or type(P) ~= "table" then return end
 
 S.FeatureRuntime = {
-    version = 3,
+    version = 4,
     implementations = {},
     state = {},
     order = {},
@@ -23,6 +23,7 @@ S.FeatureRuntime = {
     lastDisableAllFailures = {},
 }
 local F = S.FeatureRuntime
+F.StartupEnableIntentContractVersion = 1
 
 local function Emit(level, code, message, context)
     local d = S.DiagnosticsManager
@@ -312,9 +313,45 @@ function F:EnableDefaults(reason)
     if loaded ~= true then return false, loadErr end
     local failures = {}
     for _, id in ipairs(self.order) do
-        if self.implementations[id] ~= nil then
-            local preferred = self:GetPreferredEnabled(id)
-            if preferred == true then
+        local impl = self.implementations[id]
+        if impl ~= nil then
+            local preferred, explicit = self:GetPreferredEnabled(id)
+
+            -- Some persistent screen surfaces predate the Feature preference
+            -- linkage contract. A Feature may expose a bounded, store-backed
+            -- one-time startup intent repair. The generic Runtime owns the
+            -- preference transaction; the Feature only proves whether a
+            -- historical persistent intent exists. No Feature may silently
+            -- override an already-linked explicit user disable on later reloads.
+            if preferred ~= true and type(impl.GetStartupEnableIntent) == "function" then
+                local intentOk, wanted, intentReason = xpcall(function()
+                    return impl:GetStartupEnableIntent(preferred, explicit)
+                end, S.SafeTraceback)
+                if intentOk ~= true then
+                    failures[#failures + 1] = id .. ":startup_intent:" .. tostring(wanted or "failed")
+                elseif wanted == true then
+                    local repaired, repairErr = self:SetPreferredEnabled(id, true,
+                        "startup_intent:" .. tostring(intentReason or "persistent_surface"))
+                    if repaired ~= true then
+                        failures[#failures + 1] = id .. ":startup_intent_repair:" .. tostring(repairErr or "failed")
+                    else
+                        preferred = true
+                        if type(impl.OnStartupEnableIntentCommitted) == "function" then
+                            local linkedCallOk, linkedResult, linkedErr = xpcall(function()
+                                return impl:OnStartupEnableIntentCommitted(intentReason or "persistent_surface")
+                            end, S.SafeTraceback)
+                            if linkedCallOk ~= true or linkedResult ~= true then
+                                Emit("warning", "FEATURE_STARTUP_INTENT_LINK_FAILED",
+                                    "持久界面启动意图已恢复，但 Feature 链接标记保存失败", {
+                                        feature = id, error = tostring(linkedCallOk == true and (linkedErr or "returned_false") or linkedResult),
+                                    })
+                            end
+                        end
+                    end
+                end
+            end
+
+            if preferred == true and self:IsEnabled(id) ~= true then
                 local ok, err = self:Enable(id, reason or "default_enable")
                 if ok ~= true then failures[#failures + 1] = id .. ":" .. tostring(err or "failed") end
             end

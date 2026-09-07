@@ -966,11 +966,15 @@ local function Build(parent, route, id)
             local window = type(projection.windowContext) == "table" and projection.windowContext or {}
             local actionCount = type(quick.actions) == "table" and #quick.actions or 0
             local windowText = window.status == "ready"
-                and (window.visible == true and "背包窗口可见" or "背包窗口关闭")
-                or ("原生窗口状态未知：" .. tostring(window.reason or "安全拒绝"))
+                and (window.visible == true and ("背包窗口可见/" .. tostring(window.source or "unknown")) or ("背包窗口关闭/" .. tostring(window.source or "unknown")))
+                or ("背包窗口未知：" .. tostring(window.reason or "安全拒绝"))
             local overlay = type(projection.quickOverlay)=="table" and projection.quickOverlay or {}
             local storage = overlay.storageKind=="coffer" and "箱子" or overlay.storageKind=="bank" and "银行" or "仓储"
-            bagQuickStatus:SetText((overlay.visible==true and (storage .. "已打开 · " .. tostring(overlay.status or "可快捷取放")) or windowText)
+            local storageFacts = "银行=" .. tostring(overlay.bankStatus or "unknown") .. "/" .. tostring(overlay.bankVisible==true) .. "/" .. tostring(overlay.bankSource or "none")
+                .. " 箱子=" .. tostring(overlay.cofferStatus or "unknown") .. "/" .. tostring(overlay.cofferVisible==true) .. "/" .. tostring(overlay.cofferSource or "none")
+            bagQuickStatus:SetText((overlay.visible==true and (storage .. "已打开 · " .. tostring(overlay.status or "可快捷取放")
+                    .. " · 背包=" .. tostring(overlay.bagSource or window.source or "unknown") .. " · 仓储=" .. tostring((overlay.storageKind=="bank" and overlay.bankSource) or (overlay.storageKind=="coffer" and overlay.cofferSource) or "unknown"))
+                or (windowText .. " · " .. storageFacts))
                 .. " · 已移动 " .. tostring(overlay.moved or 0) .. " · 跳过 " .. tostring(overlay.skipped or 0) .. " · 队列 " .. tostring(overlay.queued or 0))
         end
         if id == "combat_team_tools" and teamAutoRoleButton ~= nil then

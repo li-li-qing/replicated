@@ -56,7 +56,7 @@ buff_page = read("presentation/v3/pages/rs_v3_buff_display_page.lua")
 data_views = read("ui/framework/rs_ui_data_views.lua")
 
 # Primitive identity / registration.
-check("native_contract_v6", "NativeInteractionContractVersion = 6" in primitives)
+check("native_contract_v7", "NativeInteractionContractVersion = 7" in primitives)
 for fn in ("CreateEditBox", "CreateMultiEditBox"):
     body = block(primitives, f"function UIX:{fn}", "\nfunction UIX:")
     check(fn + "_marks_keyboard_input", "edit.rsUiKeyboardInput = true" in body)
@@ -72,11 +72,18 @@ editbox_body = block(primitives, "function UIX:CreateEditBox", "\nfunction UIX:"
 check("editbox_preserves_enter_draft", 'CallNativeAccepted(edit, "ClearTextOnEnter", false)' in editbox_body)
 
 # Lifecycle focus fence.
-check("focus_contract_v2", "InputFocusLifecycleContractVersion = 2" in framework)
-check("hidden_focus_contract_v2", "HiddenInputFocusIsolationContractVersion = 2" in framework)
+check("focus_contract_v3", "InputFocusLifecycleContractVersion = 3" in framework)
+check("hidden_focus_contract_v3", "HiddenInputFocusIsolationContractVersion = 2" in framework)
 check("deferred_keyboard_contract", "DeferredKeyboardActivationContractVersion = 1" in framework)
 check("explicit_commit_focus_contract", "ExplicitInputCommitFocusContractVersion = 1" in framework)
 check("tracked_physical_focus_map", "focusTargetsByPhysicalId" in framework)
+check("tracked_focus_identity_map", "focusTargetsByIdentity" in framework)
+check("focus_identity_contract", "InputFocusIdentityCompatibilityContractVersion = 1" in framework)
+activate_body = block(framework, "function UI:ActivateInputWidget", "\nlocal function FocusedInputDescendsFrom")
+check("native_caret_placement_contract_v2", "NativeCaretPlacementPreservationContractVersion = 2" in framework and "keyboardChanged ~= true" in activate_body and "alreadyFocused" in activate_body)
+check("input_activation_diagnostics_contract", "InputActivationDiagnosticsContractVersion = 1" in framework and "postArmFocusPromotions" in framework and "inputActivationFailures" in framework)
+check("post_arm_focus_promotion_contract", "PostArmFocusPromotionContractVersion = 1" in framework and "local armed, keyboardChanged" in activate_body and activate_body.find("keyboardChanged ~= true") < activate_body.find('self:TryInteractionCall(widget, "SetFocus")'))
+check("focus_query_api", "function UI:IsInputWidgetFocused(widget)" in framework)
 check("bounded_ancestry", "MAX_INPUT_ANCESTRY_DEPTH = 32" in framework)
 check("ancestry_stops_before_uiparent", 'current ~= UIParent and current ~= "UIParent"' in framework)
 check("subtree_fast_gate", "rsUiKeyboardInputSubtreeCount" in framework)
@@ -87,7 +94,7 @@ check("release_owner_retires_input", "self:RetireInputWidget(widget" in block(fr
 check("component_release_bridge", "InputLifecycleBridgeContractVersion = 1" in component_core and "UI:RetireInputWidget(self.root" in component_core)
 
 release_focus = block(framework, "function UI:ReleaseFocusWithin", "\nfunction UI:")
-check("focus_only_tracked_suite_target", "lifecycle.focusTargetsByPhysicalId[focusedId]" in release_focus)
+check("focus_only_tracked_suite_target", "ResolveTrackedFocusedInput(focusedId)" in release_focus)
 check("focus_descendant_proof", "FocusedInputDescendsFrom" in release_focus)
 check("focus_clear_verified", "afterId" in release_focus and "focus_retained" in release_focus)
 deactivate_input = block(framework, "function UI:DeactivateInputWidget", "\nfunction UI:")
@@ -117,7 +124,12 @@ check("subtree_disarm_api", "function UI:DisarmInputWithin(widget, owner, reason
 check("raw_multiline_activation_api", "function UI:BindDeferredInputActivation(widget, owner, label)" in framework)
 check("text_input_activates_on_click", 'c:RequireOn(edit, "OnClick", function() return c:BeginEditing("text_input_click") end' in controls)
 check("text_input_disarms_on_lost_focus", 'c:EndEditing("text_input_lost_focus")' in controls)
-check("interactive_draft_v3", "InteractiveDraftContractVersion = 3" in controls and "InputDraftCommitContractVersion = 1" in controls)
+check("interactive_draft_v4", "InteractiveDraftContractVersion = 4" in controls and "InputDraftCommitContractVersion = 2" in controls)
+check("draft_unknown_source_fence", "CanOverrideActiveDraft" in controls and "restore_authority" in controls)
+check("edit_focus_visual_contract", "InputFocusVisualContractVersion = 1" in controls and "SetEditBoxFocusVisual" in controls)
+check("edit_disable_cleanup_contract", "InputDisableDraftCleanupContractVersion = 1" in controls and "CancelEditing" in controls)
+check("edit_normal_selection", "UseSelectAllWhenFocused(false)" in primitives)
+check("edit_caret_visible", "SetCursorColor" in primitives and "SetCursorHeight" in primitives)
 check("text_enter_commits_and_ends", 'return c:CommitAndEndEditing("enter")' in block(controls, 'RSUI:RegisterType("TextInput"', 'RSUI:RegisterType("NumericInput"'))
 check("numeric_input_activates_on_click", 'c:RequireOn(edit, "OnClick", function() return c:BeginEditing("numeric_input_click") end' in controls)
 check("numeric_input_disarms_on_lost_focus", 'c:EndEditing("numeric_input_lost_focus")' in controls)
@@ -163,7 +175,7 @@ check("table_rows_keep_preview_during_rebind", 'row:SetResolvedWidths(c.previewR
 gate_match = re.search(r"S\.FoundationGate\s*=\s*\{\s*version\s*=\s*(\d+)", foundation_gate, re.S)
 check("gate_v113_plus", gate_match is not None and int(gate_match.group(1)) >= 113)
 check("gate_input_focus_drag", '"v3_input_focus_drag_foundation_contract"' in foundation_gate)
-check("gate_native_v6", "NativeInteractionContractVersion) or 0) >= 6" in foundation_gate)
+check("gate_native_v7", "NativeInteractionContractVersion) or 0) >= 7" in foundation_gate)
 check("gate_drag_hit_test", "DragSurfaceHitTestContractVersion) or 0) >= 1" in foundation_gate)
 
 # Unsupported generic key handlers remain forbidden in active Lua. Comments are

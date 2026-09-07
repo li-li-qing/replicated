@@ -1,3 +1,60 @@
+## M1.16.0.18.156 — EditBox Post-Arm Focus Promotion（2026-09-08）
+
+- **RU 实机根因确认**：`.18.155` 为保护鼠标确定的 caret 位置，`ActivateInputWidget()` 在 `GetFocusedWidgetId()` 已指向当前 EditBox 时跳过 `SetFocus()`。但 RU 的鼠标事件顺序允许“Native 先发布 Focus ID，Lua OnClick 后执行”，此时 EditBox 仍处于 `EnableKeyboard(false)`。随后 Lua 仅把 Keyboard 升为 true，却因“already focused”误判跳过 `SetFocus`，最终形成**外观/Focus ID 都像已选中，但 Native 文本输入通道没有进入键盘编辑模式**的假 Focus。
+- **Post-Arm Focus Promotion Contract v1**：`ArmInputWidget()` 的 `changed` 返回值现在参与激活事务。只要本次点击确实发生 `EnableKeyboard(false -> true)`，无论 Global Focus ID 是否已经指向当前 EditBox，都必须在 Keyboard promotion 之后执行一次 `SetFocus()`。只有“Keyboard 已 armed + Focus 已证明属于当前 EditBox”的重复点击才允许跳过 `SetFocus`，继续保护 caret。
+- **输入诊断闭环**：UI Framework Snapshot 新增 activation attempt/success/failure、post-arm promotion、focused fast-path、当前 armed input、Keyboard arm/disarm/失败计数；“打印全部日志”增加 `UI输入` 行，若 RU 仍有特殊 Focus 形态可以直接判断失败发生在 Keyboard admission 还是 Focus admission。
+- **不回退 Deferred Keyboard 安全边界**：EditBox 构造仍保持 `EnableKeyboard(false)`，不会重新引入 `.18.117` 之前“页面一打开就吞 WASD/技能/聊天键盘”的故障；LostFocus/隐藏/禁用/失去 Pick/Runtime Stop/Release 仍统一 ClearFocus + Disarm。
+- **回归**：运行时 Harness 新增“鼠标 Focus 已先成立但 Keyboard 尚未 armed”的真实 RU 时序；第一击必须恰好一次 post-arm `SetFocus`，第二次已 armed 重复点击不得增加 `SetFocus`。UI Framework v15，NativeCaretPlacement v2，PostArmFocusPromotion v1，InputActivationDiagnostics v1，UIV3 Acceptance v84，Foundation Gate v130；Input Focus/Drag 110/110、222/222 Lua parse、Foundation Audit PASS。本地实测 35 / 38 Harness：`interactive_draft`（本轮已扩至 115 断言，仍在失败）/ `recovery_launcher` / `runtime_entry_lifecycle` 三个 Lua 5.4 语义敏感运行时 harness 在本机唯一可用的 Lua 5.4.5 下失败，与 `.18.145` 基线同类环境失败、非本轮引入，按 TEST-001 如实记录；上述三者的通过声明须待统一解释器或 5.4 兼容改造后复验。
+- **BuildTag**：`v3-m1.16.0.18.156-editbox-post-arm-focus-promotion`。
+
+## M1.16.0.18.155 — EditBox Foundation Draft / Caret / Focus（2026-09-07）
+
+- **可见编辑状态**：Native EditBox/MultiEditBox 显式配置已验证的 `SetCursorColor/SetCursorHeight`，保留 Native 自己的闪烁；输入获得所有权时共享边框切换为高亮，LostFocus/Commit/Disable/Release 统一恢复。
+- **普通编辑体验**：取消全局 `UseSelectAllWhenFocused(true)`，改为 `false`；用户点击具体字符时不再强制全选。`ActivateInputWidget` 若已证明 Native 已聚焦，则不重复 `SetFocus`，避免 RU skin 把刚由鼠标确定的 caret 位置重置。
+- **Draft 防回灌 v4**：TextInput/NumericInput 编辑期间改为“只有 `commit/rejected/restore_authority` 可以覆盖”的显式 allowlist；未知未来 refresh source 默认视为 ambient，不能再把删除/修改后的 Native draft 刷回旧 Binding。Slider preview 保留独立的 interaction override。
+- **Focus Identity 兼容**：UI Framework v14 同时登记 physical/logical Suite input identity；`GetFocusedWidgetId()` 返回任一种已登记身份都能证明 Focus，但仍绝不触碰无法解析为 Suite input 的游戏/聊天焦点。Focus Contract v3。
+- **生命周期清理**：TextInput/NumericInput Disable/Release 新增 CancelEditing，清理 component-local editing、DraftCoordinator、Keyboard/Focus 和 focus visual，并回画业务 Authority，防止隐藏页留下幽灵草稿。
+- **输入细节**：TextInput/NumericInput 的 `placeholder` 现在落到 Native `SetGuideText`。Raw multiline 通过 `BindDeferredInputActivation` 继承同一 focus visual。
+- **版本**：RSUI v48 / API 13.2，Native Interaction v7，InteractiveDraft v4，InputDraftCommit v2，Foundation Gate v129。
+- **BuildTag**：`v3-m1.16.0.18.155-editbox-foundation-draft-caret-focus`。
+
+## M1.16.0.18.154 — Unit Lines Raw Projected Head Anchor（2026-09-07）
+
+- **RU 实机反馈**：单位连线已经能稳定绘制，但整条线相对角色头顶中心有轻微统一偏移。沿 `UnitLines read → ScreenProjectionV3 → CombatVisualGuidesV3` 对账确认投影层返回的原生 `GetUnitScreenPosition` 坐标没有二次缩放；偏移产生在最终 Label 点放置。
+- **根因**：Unit Lines 使用 `1×1` 的 `'.'` Label，字号只属于 TextStyle；旧版可用 `rp_ui` 参考直接把这个 1×1 Label 锚在投影 `(x,y)`。当前 `PlaceUnitDot` 却再次执行 `x-size/2, y-size/2`，把**字体大小误当成 Widget extent**。默认点大小 4 → 约 22px 字号，因此全部点统一向左上偏约 11px；点越大偏移越明显。
+- **修复**：Unit Lines 的 Label anchor 改为投影坐标 1:1 整数落点，字号只改变字形墨迹，不再改变路径几何。`ScreenProjectionV3`、Native depth、World Alias Guard、采样密度、颜色、刷新节拍均不修改；Range Assist 保持 `.18.141` 已实机通过的独立校准/点放置链，避免无关回归。
+- **防复发**：`CombatVisualGuidesV3 v10` 新增 `UnitLineRawProjectedAnchorContractVersion=1`；E2E Harness 从原先允许 ±64px 的宽松范围收紧为首尾点必须与 raw projected endpoints 在 ±1px 内一致，并在 Foundation Audit 禁止 `PlaceUnitDot` 再引入 `size/2` 坐标补偿。
+- **BuildTag**：`v3-m1.16.0.18.154-unitline-raw-projected-head-anchor`。
+
+## M1.16.0.18.153 — Bag Native Window Visibility Recovery（2026-09-07）
+
+- **整理背包快捷按钮真实根因**：`.18.152` 解决了默认生命周期，但 `ReadBagWindowContext/ReadStorageWindowContext/RequireStorageWindow` 仍把 `ADDON:GetContentMainScriptPosVis()` 的第 5 返回值 `visible` 强制要求为 boolean。项目内 AuctionSurfaceV3 已有 RU 实机证据：部分 Native Content 只返回 `x/y/width/height` 四值，导致背包/银行/箱子明明已打开仍被 Bag Observer 判为 unknown/hidden，`quickOverlay.visible` 永远无法成立。
+- **统一 Native 窗口事实**：Bag/Bank/Coffer 现在优先使用显式 boolean；缺失时读取 `ADDON:GetContent` 的短父链 `IsVisible` 作为更强事实；若内容可见性完全不可得但 MainScript 四值矩形合法，则采用已验证的 RU geometry-open compatibility path。背包 MainScript 几何不可用时还允许从 Content/Parent 的 `Layout:GetLogicalRect` 找到最近合法锚点。未知/非法矩形继续 fail-closed。
+- **写动作同源**：`RequireStorageWindow()` 改为复用 `ReadStorageWindowContext()`，观察 Overlay 与实际取/放动作不再使用两套不同 visible 判定。关闭/未知窗口仍拒绝原生移动。
+- **诊断**：`quickOverlay` 记录 bag/bank/coffer 的 `status/visible/source/reason`；整理背包页直接显示 `main-script / main-script+content-vis / main-script-geometry / content-hidden` 等来源，若 RU 仍有特殊窗口形态可直接定位。
+- **兼容边界**：没有新增 Bag 自动 preference 迁移。`FeatureRuntime:GetPreferredEnabled()` 对显式 `v3.features.tools_bag=false` 仍保持用户设置 Authority；`.18.153` 不会为了显示快捷按钮偷偷重开用户明确关闭的功能。
+- **性能**：350ms Observer 仍只读 3 个 Native Window 的几何/可见性；不调用 `InventorySnapshotV3`、不扫描物品、不执行移动。
+- **BuildTag**：`v3-m1.16.0.18.153-bag-native-window-visibility-recovery`。
+
+## M1.16.0.18.152 — Quick Surface Reload Reconcile（2026-09-07）
+
+- **`.18.151` RU 复验通过**：Foundation `阻断0/警告0`，`v3.death_review` 已通过 known-stamp migration 并解除 Fence；页面构建失败/隔离/事务回滚/事务失败均为 0。当前新问题与 Persistence 无关，收敛到 Reload 后两个快捷 Surface 生命周期。
+- **整理背包 Reload 根因**：`tools_bag` Registry 之前 `defaultEnabled=false`，而 `StartBagQuickObserver()` 只在 Feature Enable 时启动；因此 Fresh Reload 后没有任何 Authority 观察 `UIC_BAG/UIC_BANK/UIC_COFFER`，打开箱子不会发布 `quickOverlay.visible`。`.18.152` 将该 Feature 定位为 `independent_low_cost + defaultEnabled=true`：默认只运行 350ms 的有界 Native 窗口几何/可见性观察，InventorySnapshot/Move 队列仍只在用户显式点击“取/放/整理”后创建；用户显式关闭 Feature 后观察任务立即释放。
+- **换装 Reload 根因**：真实诊断为 `一键换装 关闭`。旧版本允许“`quick=true/quickHud.visible=true` 已持久化，但 `v3.features.combat_gear=false`”的历史分叉；页面 `AcquireTransient(page:gear)` 临时启用 Gear 后会触发 `SyncQuickButtonsHost()`，于是表现为“Reload 没按钮，手动换一次后才出现”。FeatureRuntime v4 新增 `StartupEnableIntentContractVersion=1`：Feature 只能提供 store-backed 的一次性启动意图证明，Runtime 自己执行 preference 事务。Gear 对**尚未链接**且已有可见 quick plan 的历史状态执行一次 `false -> true` 修复，并用可选 numeric sentinel `runtimePreferenceLink=1` 标记完成；以后用户再次显式关闭 Gear，Startup 不会偷偷重开。
+- **Authority/Proxy 收口**：`ShouldShowQuickButtons()` 现在同时要求 Feature Enabled **和** persistent preference=true；页面临时租约不再能复活被用户关闭的屏幕按钮。`SetQuickHudVisible(true)` 改走 `EnsurePersistentQuickRuntime()`，显示快捷按钮本身即持久运行意图，不再使用 page-like transient lease。Presentation 仍只响应 `v3.gear.quick.visibility`，不直接改 Feature preference。
+- **回归/门禁**：新增 `rs_quick_surface_reload_harness.py`，覆盖 legacy Gear split 一次修复、linked 后显式 false 不被覆盖、页面 transient 不复活按钮、Bag idle observer 不扫描/不移动物品。Foundation Gate v128 / UIV3 Acceptance v83；38/38 Python Harness PASS；222/222 Lua parse PASS；Foundation Audit PASS。
+- **BuildTag**：`v3-m1.16.0.18.152-quick-surface-reload-reconcile`。
+
+## M1.16.0.18.151 — Death Review Known Legacy Stamp Migration（2026-09-07）
+
+- **`.18.150` RU 复验结论**：`v3.death_review` 仍稳定为旧盖章 `770CB0B8` 对当前 canonical `368335F2`；UI 页面事务继续无新增故障。上传的 `.150` 完整工程确认 `historical_probe` 已在 Store 生成，但 Foundation 的 startup/detail 文本分别被 180/130 字符上限截断，因此用户复制行看不到 probe，不能据此认为 hook 未执行。
+- **停止继续无限枚举历史表形**：`.146-.150` 五轮都保持同一个真实旧 v4 stamp，说明它是可识别的历史迁移身份，而不是当前随机损坏 Hash。Persistence Historical Canonical Recovery 升 v3，新增 Store-owned `recoverKnownLegacyCanonical` 最后一级迁移桥；只在当前 v4 校验失败、exact historical reconstruction 也失败、且 Envelope Seal/metadata/schema/decode/budget 已全部通过后才可调用。
+- **Death Review 只认一个实机旧盖章**：`KNOWN_LEGACY_V4_INDEX_FINGERPRINTS` 当前只有 `770CB0B8`。Store 对 pre-codec raw payload 再做严格白名单 shape 校验（top/settings/history/summary/widgetWindow 字段、类型、30 条上限、serial/storageId 唯一性）；通过后保留所有仍存在的 history/settings/window，归一成当前 Domain 并立即写成 codec v1。任意其它 stamp（回归用 `770CB0B9`）继续 `integrity_failed + write fence`。
+- **Integrity 不是全局放宽**：generic v4 mismatch 默认策略不变；没有显式 Store hook 的 Store 完全不受影响。已知 stamp 迁移仍依赖独立 Envelope Seal，且当前 canonical/budget 在 Apply 前再次验证；恢复后必须 `integrity_v4_upgrade` 重盖，第二次 Reload 必须 `verified_canonical`。
+- **诊断闭环**：`v3.death_review` 加入“存档验收 A2”固定覆盖；Snapshot 暴露 runtime-only `historicalRecoveryProbe`，A2 在存在时输出 `DRProbe=`，避免主 Foundation 长横幅截断关键证据。
+- **回归**：37/37 Python Harness PASS；Death Review Harness 同时覆盖 exact historical recovery、`770CB0B8` known-stamp recovery→codec restamp→第二次 strict verify、未知 `770CB0B9` 必须 Fence；Foundation Audit PASS；222/222 Lua `loadfile` parse PASS。Foundation Gate v127 / UIV3 Acceptance v82。
+- **BuildTag**：`v3-m1.16.0.18.151-death-review-known-stamp-migration`。
+
 ## M1.16.0.18.150 — Death Review Historical Sequence Recovery + Shape Probe（2026-09-07）
 
 - **`.18.149` RU 复验已完成故障隔离**：页面构建链已恢复为 `页面失败0/隔离0/事务回滚0/事务失败0`，证明此前 `v3_build_transaction_contract` 红灯是 Death Review Store Fence 的下游级联；本轮不再修改页面/Binding/事务代码。唯一剩余阻断为 `v3.death_review:770CB0B8>368335F2`。`368335F2` 变化同时证明 `.18.149` stable codec 已成为当前 canonical。

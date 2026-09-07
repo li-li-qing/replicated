@@ -44,7 +44,7 @@ if type(Floating) ~= "table" or type(Floating.NormalizeState) ~= "function" then
     error("FloatingSurface unavailable for DeathReview store")
 end
 
-F.PersistenceCanonicalWindowContractVersion = 5
+F.PersistenceCanonicalWindowContractVersion = 6
 F.PersistenceIndexCodecVersion = INDEX_CODEC_VERSION
 F.WidgetWindowSizePolicy = {
     defaultWidth = 470,
@@ -436,6 +436,149 @@ local function RebuildV18_145Canonical(value, stampedFingerprint, currentCanonic
     return strictHistorical
 end
 
+-- .18.151 one-time known-stamp bridge. The user's RU client has carried the
+-- SAME legacy v4 index stamp (770CB0B8) unchanged across .18.146-.18.150 while
+-- current canonicalization changed and every exact historical-shape solver
+-- remained unable to invert the native representation loss. Treating that
+-- exact stamp as a migration identifier is safer than continuing to grow an
+-- unbounded shape brute-force search. Unknown hashes still fail closed.
+--
+-- The bridge is reached only after Persistence has already verified the v6+
+-- envelope seal + metadata/schema + encoded/decode budgets and after exact
+-- historical reconstruction failed. This Store then performs a second strict
+-- legacy-Domain shape validation before returning a CURRENT normalized Domain
+-- for immediate codec-v1 restamp. It never clears the Store and never accepts a
+-- different fingerprint.
+local KNOWN_LEGACY_V4_INDEX_FINGERPRINTS = {
+    ["770CB0B8"] = "ru_2026_09_07_precodec_v4_index",
+}
+
+local LEGACY_INDEX_TOP_KEYS = { settings=true, history=true, widgetWindow=true }
+local LEGACY_SETTINGS_KEYS = { autoShow=true, windowMs=true, maxHistory=true, minDamage=true, showDebuffs=true }
+local LEGACY_HISTORY_KEYS = { serial=true, entries=true }
+local LEGACY_SUMMARY_KEYS = {
+    serial=true, storageId=true, time=true, clock=true, windowMs=true, totalDamage=true,
+    lethalSource=true, lethalAbility=true, lethalAmount=true, eventCount=true, debuffCount=true,
+}
+local LEGACY_WINDOW_KEYS = { opacity=true }
+for _, key in ipairs(LEGACY_WINDOW_RECOVERABLE_KEYS) do LEGACY_WINDOW_KEYS[key] = true end
+
+local function HasOnlyKeys(value, allowed)
+    if type(value) ~= "table" then return false, "table_required" end
+    for key in pairs(value) do
+        if allowed[key] ~= true then return false, "unknown_key:" .. tostring(key) end
+    end
+    return true
+end
+
+local function ValidateLegacyIndexPayload(value)
+    if type(value) ~= "table" then return false, "payload_required" end
+    local ok, err = HasOnlyKeys(value, LEGACY_INDEX_TOP_KEYS)
+    if ok ~= true then return false, "top:" .. tostring(err) end
+
+    if type(value.settings) ~= "table" then return false, "settings_required" end
+    ok, err = HasOnlyKeys(value.settings, LEGACY_SETTINGS_KEYS)
+    if ok ~= true then return false, "settings:" .. tostring(err) end
+    for _, key in ipairs({ "autoShow", "showDebuffs" }) do
+        if value.settings[key] ~= nil and type(value.settings[key]) ~= "boolean" then
+            return false, "settings_type:" .. key
+        end
+    end
+    for _, key in ipairs({ "windowMs", "maxHistory", "minDamage" }) do
+        if value.settings[key] ~= nil and tonumber(value.settings[key]) == nil then
+            return false, "settings_number:" .. key
+        end
+    end
+
+    if value.history ~= nil then
+        if type(value.history) ~= "table" then return false, "history_type" end
+        ok, err = HasOnlyKeys(value.history, LEGACY_HISTORY_KEYS)
+        if ok ~= true then return false, "history:" .. tostring(err) end
+        if value.history.serial ~= nil and tonumber(value.history.serial) == nil then return false, "history_serial" end
+        if value.history.entries ~= nil then
+            if type(value.history.entries) ~= "table" then return false, "entries_type" end
+            local count, serialSeen, storageSeen = 0, {}, {}
+            for _, row in pairs(value.history.entries) do
+                count = count + 1
+                if count > MAX_HISTORY then return false, "entries_overflow" end
+                if type(row) ~= "table" then return false, "entry_type" end
+                ok, err = HasOnlyKeys(row, LEGACY_SUMMARY_KEYS)
+                if ok ~= true then return false, "entry:" .. tostring(err) end
+                local serial = tonumber(row.serial)
+                local storageId = tonumber(row.storageId)
+                if serial == nil or serial < 1 then return false, "entry_serial" end
+                if storageId == nil or storageId < 1 or storageId > RECORD_SLOTS then return false, "entry_storage" end
+                serial = math.floor(serial); storageId = math.floor(storageId)
+                if serialSeen[serial] == true then return false, "entry_serial_duplicate" end
+                if storageSeen[storageId] == true then return false, "entry_storage_duplicate" end
+                serialSeen[serial], storageSeen[storageId] = true, true
+                for _, key in ipairs({ "time", "windowMs", "totalDamage", "lethalAmount", "eventCount", "debuffCount" }) do
+                    if row[key] ~= nil and tonumber(row[key]) == nil then return false, "entry_number:" .. key end
+                end
+                for _, key in ipairs({ "clock", "lethalSource", "lethalAbility" }) do
+                    if row[key] ~= nil and type(row[key]) ~= "string" then return false, "entry_text:" .. key end
+                end
+            end
+        end
+    end
+
+    if value.widgetWindow ~= nil then
+        if type(value.widgetWindow) ~= "table" then return false, "window_type" end
+        ok, err = HasOnlyKeys(value.widgetWindow, LEGACY_WINDOW_KEYS)
+        if ok ~= true then return false, "window:" .. tostring(err) end
+        for _, key in ipairs({ "minimized", "locked", "userMoved" }) do
+            if value.widgetWindow[key] ~= nil and type(value.widgetWindow[key]) ~= "boolean" then
+                return false, "window_bool:" .. key
+            end
+        end
+        for _, key in ipairs({ "width", "height", "opacity", "overallOpacity", "backgroundOpacity", "textOpacity",
+            "fontScale", "x", "y", "offsetX", "offsetY", "savedUiScale" }) do
+            if value.widgetWindow[key] ~= nil and tonumber(value.widgetWindow[key]) == nil then
+                return false, "window_number:" .. key
+            end
+        end
+        for _, key in ipairs({ "anchorH", "anchorV", "coordinateSpace" }) do
+            if value.widgetWindow[key] ~= nil and type(value.widgetWindow[key]) ~= "string" then
+                return false, "window_text:" .. key
+            end
+        end
+    end
+    return true
+end
+
+local function RecoverKnownLegacyV4Index(decoded, stampedFingerprint, currentCanonical, rawEnvelope)
+    local stamp = tostring(stampedFingerprint or "")
+    local label = KNOWN_LEGACY_V4_INDEX_FINGERPRINTS[stamp]
+    if label == nil then return nil end
+    if type(rawEnvelope) ~= "table" or rawEnvelope.codec ~= nil or type(rawEnvelope.payload) ~= "table" then
+        return nil
+    end
+    local source = rawEnvelope.payload
+    local valid, reason = ValidateLegacyIndexPayload(source)
+    local store = P:GetStore(INDEX_STORE)
+    if valid ~= true then
+        if store ~= nil then
+            store.lastHistoricalRecoveryProbe = tostring(store.lastHistoricalRecoveryProbe or "")
+                .. "/knownStamp=" .. stamp .. "/knownShape=reject:" .. tostring(reason)
+        end
+        return nil
+    end
+
+    -- Preserve every still-present summary row even if native changed sequence
+    -- keys into map keys; normalize all remaining settings/window values through
+    -- the CURRENT Domain contract, then the existing codec writes a stable v1
+    -- representation. Missing values that the native serializer irreversibly
+    -- removed cannot be guessed; current Domain defaults apply only after the
+    -- exact known legacy stamp + strict shape gate identifies this migration.
+    local recovered = NormalizeHistoricalIndexWithRecoveredEntries(source)
+    recovered = NormalizeIndex(recovered)
+    if store ~= nil then
+        store.lastHistoricalRecoveryProbe = tostring(store.lastHistoricalRecoveryProbe or "")
+            .. "/knownStamp=" .. stamp .. "/knownShape=ok"
+    end
+    return recovered, label
+end
+
 F.StoreId = INDEX_STORE
 F.IndexBudget = INDEX_BUDGET
 F.RecordBudget = RECORD_BUDGET
@@ -471,6 +614,7 @@ if P:GetStore(INDEX_STORE) == nil then
         -- historical logical value is then normalized by the current Store and
         -- immediately re-stamped.
         rebuildCanonicalForIntegrity = RebuildV18_145Canonical,
+        recoverKnownLegacyCanonical = RecoverKnownLegacyV4Index,
         -- The index Domain is a fixed-shape normalize output, so the canonical
         -- v3 fingerprint is stable across RU representation changes. This opt-in
         -- additionally allows the one-generation gated recovery for stores

@@ -5,7 +5,7 @@
 ## 统一前置
 
 1. 备份当前 addon 与用户配置；只加载 `replicatedsuite/`（单一 V3 Host）。`z_api_functions/` 仅作开发期 API 参考，**不进入运行时**；旧 `globals/` 与 Legacy UI/runtime 已于 2026-09-01/02 物理删除，不再随包，绝不重新引入。
-2. 使用当前 `replicatedsuite/replicatedsuite.lua` 的 BuildTag 启动新客户端（见 `S.BuildTag`，当前为 `v3-m1.16.0.18.150-death-review-history-sequence-recovery`），记录 `ArcheRage.log`、`Chat.log` 和崩溃文件。
+2. 使用当前 `replicatedsuite/replicatedsuite.lua` 的 BuildTag 启动新客户端（见 `S.BuildTag`，当前为 `v3-m1.16.0.18.156-editbox-post-arm-focus-promotion`），记录 `ArcheRage.log`、`Chat.log` 和崩溃文件。
 3. 在 1024×768、1920×1080、2K 逐路由打开首页、战斗、生活、工具、系统页；记录页面/Widget/Modal 是否构建、文本裁切、列宽、黑边和关闭后资源释放。
 4. 每次测试前后记录 Foundation：`activeBuildScopes`、page/widget quarantine、Authority violation、Presentation boundary、Raw Native、Unexpected Global 和 Scheduler active tasks。
 5. 失败记录格式：时间、BuildTag、路由/动作、API 名、输入、原生返回值（脱敏）、日志错误码、是否可复现、恢复动作。
@@ -17,6 +17,14 @@
 - 写操作只经 Feature Commands/API capability，尊重权限和至少 200ms 冷却；失败停止并显示结果，不继续盲发。
 - 关闭页面/Feature 后无残留 Scheduler、Event、Demand lease 或隐藏窗口；重新打开能恢复投影和持久化设置。
 - 所有 TableView/浮窗在三种分辨率可读，长中文/俄文/英文不重叠、不把数值列裁成省略号。
+
+## `.18.151` Fresh Reload P0 — Death Review `770CB0B8` 单次迁移
+
+1. **继续禁止 Reset/Clear**：直接覆盖 `.18.151`，保留当前真实 `770CB0B8>368335F2`。首轮目标 `integrityFail=0 / Fence=0`；Persistence 诊断应出现 `knownRecover>=1` 或 Store `known_legacy_canonical_recovery`，随后立即 `integrity_v4_upgrade` 重盖。
+2. **A2 覆盖变化**：输出“存档验收”时 Store 总数应从 7 增至至少 8，并包含 `v3.death_review`。若 migration hook 被执行，A2 可出现 `DRProbe=.../knownStamp=770CB0B8/knownShape=ok`；若 shape 被拒，必须看到 `knownShape=reject:<reason>`，不要再依赖被主横幅截断的长错误。
+3. **数据核对**：打开死亡回顾，核对历史条目数量/最新记录、windowMs/maxHistory/minDamage、窗口几何。对 Native 已不可逆省略且 exact old-hash solver 无法反演的缺失布尔，`.151` 不伪造旧值；迁移后请按当前 UI 明确设置一次并保存，之后 codec sentinel 必须稳定跨重载。
+4. **第二次 Fresh Reload 是硬门**：必须 `verified_canonical`，`knownRecover` 不应再次增长；不得重复 `770CB0B8`，不得出现 `readbackVerifyFail/barrierFail/durableFail`。
+5. **未知 Hash 仍 fail-closed**：任何不是 `770CB0B8` 的 v4 mismatch 不应进入 known-stamp bridge。若出现新 fingerprint，不扩白名单，先按新证据分析。
 
 ## `.18.150` Fresh Reload P0 — Death Review 历史 sequence/map 精确恢复
 
@@ -63,6 +71,9 @@
 ## `.18.128` 用户复现回归（历史）
 
 1. **换装顺序 + 缺件继续**：同一方案连续执行 `获取当前 → 保存方案 → 获取当前 → 保存 → Reload`，槽位顺序必须稳定；再移走中间一件目标装备，只有该槽记为跳过，其余可证明候选继续换上。`ambiguous/read_error` 仍必须 fail-closed。
+2. **`.18.152` Gear 快捷按钮 Fresh Reload**：准备至少 1 个 `quick=显示` 的已配置方案并确认快捷按钮全局可见；Fresh Reload 后**不要先进入换装页、不要手动换装**，按钮应直接出现。若历史 `v3.features.combat_gear=false`，本次允许一次 startup intent repair；随后诊断应显示一键换装工作中。再在功能管理器显式关闭 Gear、Reload，按钮必须继续保持关闭（证明 `runtimePreferenceLink=1` 后不会覆盖用户 disable）。
+3. **`.18.153` 整理背包快捷按钮 Fresh Reload**：Fresh Reload 后无需先进入整理背包页，直接打开背包 + 银行或箱子；`取/放/停` overlay 应在 ≤350ms 内出现并跟随背包。分别验证银行与箱子。整理背包页状态应显示 Bag/Bank/Coffer 的 source；RU 四返回值客户端允许 `main-script-geometry`，存在 Content 可见性时优先 `main-script+content-vis`。关闭仓储窗口应隐藏。仅打开窗口不得触发 InventorySnapshot 扫描/移动；只有显式点击 `取/放` 才允许建立有界队列。若用户在功能管理中显式关闭 `tools_bag`，Reload 后 overlay 必须保持关闭。
+4. **`.18.154` Unit Lines 头顶中心锚点**：选中目标后分别测试默认点大小 4、较大点大小 10/15；线的首尾必须始终落在 player/target 原生头顶投影中心，改变点大小只改变 glyph 粗细/可见性，不得让整条线随字号向左上或右下漂移。至少在 1280×768 与一个 1080p/2K 分辨率验证；Range Assist 圆心/校准不得发生变化。
 2. **治疗辅助真实团队结构**：单团 50 人必须呈现“上 1–25 / 下 26–50”，两个半区均 5×5，整体对齐约 340×400 原生名单。切原生“团队1/团队2”标签时 Auto Panel 必须跟随；启用额外友军团队 UI 后，用 A/B 同时对齐两个完整 50 人团队。Reload 后位置保持，`.18.127` 生成的 670×180 应自动迁回正确尺寸。
 3. **Unit Lines + Range Assist 投影恢复**：连续切换 target/focus、360°转镜头、进出室内/副本；Camera Frame 短暂无效后两个功能必须能自行恢复点/线。Camera Frame 正常时背后目标仍应被 front-hemisphere fence 隐藏，禁止永久 Native-only 绕过。
 4. **跑商快速切路线**：快速连续切起点 A→B→C 与终点 1→2→3，最终只能显示 C→3。请求期间不得并发发出不可区分的 Native ratio 请求；6.5s timeout 后可继续。若测试环境能观察到 timeout 后极晚旧回调，必须记录时间线，因为 Native 事件无 request-id，Lua 无法完全归因。
@@ -232,3 +243,19 @@ Fresh Reload 新进程还需验证三条本轮真实漏接链：① 打开 `life
 3. Foundation Gate 的 `persistence_runtime_acceptance_snapshot` 必须恢复通过：`contract>=1/fingerprint=true/snapshot=true`。诊断页必须存在“输出存档验收”按钮。
 4. 点击“输出存档验收”只读当前已 Load Domain，不得触发 Flush/Save/Load；Fresh Reload 前后按既有矩阵比较单 Store 与 ALL 指纹。
 5. 如果以上任意一项失败，保留完整一键诊断与首个 PAGE_NAVIGATION_FAILED；不要清配置或重置 Store 来规避。
+
+
+### `.18.156` EditBox Post-Arm Focus Promotion 验收
+
+1. Fresh Reload 后打开任一 TextInput/NumericInput，第一次单击编辑框后直接输入字符；不得出现“边框/Focus 看似已选中但键盘字符不进入 EditBox”。
+2. 第一次点击允许 Native caret 因 post-arm `SetFocus` 发生一次定位；随后在同一个仍处于编辑态的输入框内再次点击不同字符位置，必须允许 Native caret 保持鼠标位置，不能每次重复 SetFocus 跳回开头/结尾。
+3. 输入后等待页面刷新，Draft 不得被旧 Binding 回灌；Enter/LostFocus 后按既有 Draft Commit 契约提交。
+4. 离开输入框、切页、关闭主界面后，WASD/技能/聊天键盘必须恢复；不得为了修复可输入而重新在构造阶段常驻 `EnableKeyboard(true)`。
+5. Foundation `v3_native_interaction_contract` 必须包含 `postArmFocus=1`、`inputDiag=1` 且 `caretPlacement>=2`。如仍无法输入，复制“打印全部日志”中的 `UI输入：激活 成功/尝试 · 失败 · PostArmFocus · FocusFast · ArmedNow · Keyboard ...` 行。
+
+### `.18.155` EditBox 基础验收
+1. 任意 TextInput/NumericInput 点击后必须看到明显 focus 边框与 Native 闪烁 caret；再次点击字符串中部，caret 不应因 Lua 重复 SetFocus 跳走。
+2. 输入已有文本后删除 1 个字符，保持编辑状态至少跨过页面自身刷新周期；字符不得恢复。对状态显示/治疗/DPS/换装/工具页至少各测一个输入框。
+3. NumericInput 清空后等待刷新，空 draft 不得被旧数值立刻刷回；点击“应用”或失焦时再按当前校验规则提交/回滚。
+4. 切换到另一输入框，前一个必须 Commit/rollback 并释放 Keyboard；关闭/禁用页面后 WASD、技能、聊天不得被隐藏 EditBox 捕获。
+5. 不允许出现 Active Runtime `OnTextChanged/OnKeyDown/OnKeyUp` 或新增 Tick/轮询。

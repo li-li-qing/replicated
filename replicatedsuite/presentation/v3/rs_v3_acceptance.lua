@@ -1,11 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Foundation Acceptance v80
+-- Replicated Suite V3 - Foundation Acceptance v83
 --
 -- Bounded, on-demand checks only. No Native widget creation and no Tick.
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
-S.UIV3Acceptance = { version = 81 }
+S.UIV3Acceptance = { version = 84 }
 local A = S.UIV3Acceptance
 A.TradeDpsFreshReloadPreflightContractVersion = 1
 A.TradeDetailFavoritesContractVersion = 1
@@ -15,10 +15,11 @@ A.PersistenceReliabilityV5ContractVersion = 1
 A.PersistenceReliabilityV6ContractVersion = 1
 A.PersistenceReliabilityV7ContractVersion = 1
 A.PersistenceTerminalLoadMemoizationContractVersion = 1
-A.DeathReviewCanonicalWindowContractVersion = 5
+A.DeathReviewCanonicalWindowContractVersion = 6
 A.PersistenceTaskStableCodecContractVersion = 1
 A.BuffDisplayEquipmentReadContractVersion = 1
 A.SidecarServiceBoundaryContractVersion = 1
+A.QuickSurfaceReloadReconcileContractVersion = 2
 
 local MIGRATED_MODAL_MODULES = {
     ["v3_quest_detail_modal"] = "QuestDetailModalV3",
@@ -235,7 +236,9 @@ function A:RunMatrix()
         or tonumber(inventorySnapshot.PreferredBagId) ~= 1 or tonumber(inventorySnapshot.FallbackBagId) ~= 0
         or type(inventorySnapshot.BuildSnapshot) ~= "function" or type(inventorySnapshot.FindLiveRow) ~= "function"
         or type(bagTools) ~= "table" or (tonumber(bagTools.BagMoveContractVersion) or 0) < 8
-        or (tonumber(bagTools.BatchLifecycleContractVersion) or 0) < 5 or (tonumber(bagTools.NativeWindowQuickContractVersion) or 0) < 4
+        or (tonumber(bagTools.BatchLifecycleContractVersion) or 0) < 5 or (tonumber(bagTools.NativeWindowQuickContractVersion) or 0) < 6
+        or (tonumber(bagTools.ReloadQuickObserverContractVersion) or 0) < 2
+        or (tonumber(bagTools.RUFourValueWindowVisibilityContractVersion) or 0) < 1
         or (tonumber(bagTools.DynamicSourceResolutionContractVersion) or 0) < 3
         or (tonumber(bagTools.QuickIdentityFallbackContractVersion) or 0) < 1
         or (tonumber(bagTools.BagTaskMutexContractVersion) or 0) < 1
@@ -246,8 +249,17 @@ function A:RunMatrix()
         or type(bagTools.Commands.QuickDeposit) ~= "function" or type(bagTools.Commands.QuickCancel) ~= "function"
         or type(bagTools.Commands.SetBatchCategory) ~= "function" or type(bagTools.Commands.SetBatchTarget) ~= "function"
         or type(bagTools.Commands.SetBatchLimit) ~= "function"
-        or type(bagQuickPresenter) ~= "table" or (tonumber(bagQuickPresenter.version) or 0) < 1 then
+        or type(bagQuickPresenter) ~= "table" or (tonumber(bagQuickPresenter.version) or 0) < 3
+        or (tonumber(bagQuickPresenter.ReloadVisibilityContractVersion) or 0) < 1 then
         failures[#failures + 1] = "bag_quick_take_put_contract_v8"
+    end
+
+    local gearFeature = S.Features and S.Features.Gear or nil
+    if type(S.FeatureRuntime) ~= "table" or (tonumber(S.FeatureRuntime.StartupEnableIntentContractVersion) or 0) < 1
+        or type(gearFeature) ~= "table" or (tonumber(gearFeature.QuickStartupIntentContractVersion) or 0) < 1
+        or type(gearFeature.GetStartupEnableIntent) ~= "function" or type(gearFeature.OnStartupEnableIntentCommitted) ~= "function"
+        or type(gearFeature.ShouldShowQuickButtons) ~= "function" then
+        failures[#failures + 1] = "quick_surface_reload_reconcile_contract_v2"
     end
 
     local auctionQuery = S.Services and S.Services.AuctionQueryV3 or nil
@@ -398,12 +410,13 @@ function A:RunMatrix()
     local visualGuides = S.UIV3 and S.UIV3.CombatVisualGuidesV3 or nil
     local unitLines = S.Features and S.Features.combat_unit_lines or nil
     local rangeAssist = S.Features and S.Features.combat_range_assist or nil
-    if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 5 or type(visualGuides.Describe) ~= "function"
+    if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 10 or type(visualGuides.Describe) ~= "function"
         or (tonumber(visualGuides.AdaptiveUnitLineSamplingContractVersion) or 0) < 2
         or (tonumber(visualGuides.UnitLineVisibleSegmentClippingContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLinePressureBudgetContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLineDiffRenderContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLineProgressivePoolContractVersion) or 0) < 1
+        or (tonumber(visualGuides.UnitLineRawProjectedAnchorContractVersion) or 0) < 1
         or type(visualGuides.BuildUnitLineSamplePlan) ~= "function" then
         failures[#failures + 1] = "combat_visual_guides_presenter_contract"
     end
@@ -649,9 +662,14 @@ function A:RunMatrix()
         or (tonumber(S.RSUI and S.RSUI.NumericExplicitApplyContractVersion) or 0) < 1
         or (tonumber(S.RSUI and S.RSUI.NumericRangePersistenceContractVersion) or 0) < 1
         or type(numericRangeStore) ~= "table" or tostring(numericRangeStore.owner or "") ~= "v3.rsui.numeric_ranges"
-        or (tonumber(S.RSUI and S.RSUI.InteractiveDraftContractVersion) or 0) < 3
-        or (tonumber(S.RSUI and S.RSUI.InputDraftCommitContractVersion) or 0) < 1
+        or (tonumber(S.RSUI and S.RSUI.InteractiveDraftContractVersion) or 0) < 4
+        or (tonumber(S.RSUI and S.RSUI.InputDraftCommitContractVersion) or 0) < 2
         or (tonumber(S.RSUI and S.RSUI.NumericInputDraftReadContractVersion) or 0) < 1
+        or (tonumber(S.RSUI and S.RSUI.InputFocusVisualContractVersion) or 0) < 1
+        or (tonumber(S.RSUI and S.RSUI.InputDisableDraftCleanupContractVersion) or 0) < 1
+        or (tonumber(S.UI and S.UI.NativeCaretPlacementPreservationContractVersion) or 0) < 2
+        or (tonumber(S.UI and S.UI.PostArmFocusPromotionContractVersion) or 0) < 1
+        or (tonumber(S.UI and S.UI.InputActivationDiagnosticsContractVersion) or 0) < 1
         or (tonumber(S.RSUI and S.RSUI.StableButtonHoverContractVersion) or 0) < 2 then
         failures[#failures + 1] = "scrollable_compact_numeric_contract"
     end

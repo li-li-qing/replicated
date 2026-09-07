@@ -21,6 +21,7 @@ local PERSISTENCE_ACCEPTANCE_STORE_IDS = {
     "v3.tasks",
     "v3.dps",
     "v3.life.trade",
+    "v3.death_review",
 }
 local PERSISTENCE_ACCEPTANCE_STORE_PREFIXES = { "v3.gear.payload." }
 
@@ -673,7 +674,7 @@ local function BuildPersistenceAcceptanceCopyText()
         parts[#parts + 1] = "缺失=" .. table.concat(values, ",")
     end
 
-    local detail, payloadRows, payloadHidden = {}, 0, 0
+    local detail, payloadRows, payloadHidden, deathProbe = {}, 0, 0, nil
     for _, row in ipairs(snapshot.rows or {}) do
         local isPayload = tostring(row.id or ""):sub(1, #PERSISTENCE_ACCEPTANCE_STORE_PREFIXES[1]) == PERSISTENCE_ACCEPTANCE_STORE_PREFIXES[1]
         local include = not isPayload or payloadRows < 8
@@ -688,11 +689,17 @@ local function BuildPersistenceAcceptanceCopyText()
             fingerprint = fingerprint:gsub("[\r\n]+", " ")
             if #fingerprint > 72 then fingerprint = fingerprint:sub(1, 72) .. "…" end
             detail[#detail + 1] = tostring(row.id or "?") .. "=" .. fingerprint .. "[" .. state .. "]"
+            if tostring(row.id or "") == "v3.death_review" and type(row.historicalRecoveryProbe) == "string"
+                and row.historicalRecoveryProbe ~= "" then
+                deathProbe = row.historicalRecoveryProbe:gsub("[\r\n]+", " ")
+                if #deathProbe > 180 then deathProbe = deathProbe:sub(1, 180) .. "…" end
+            end
         elseif isPayload then
             payloadHidden = payloadHidden + 1
         end
     end
     if payloadHidden > 0 then detail[#detail + 1] = "v3.gear.payload.*=+" .. tostring(payloadHidden) .. "(ALL已包含)" end
+    if deathProbe ~= nil then parts[#parts + 1] = "DRProbe=" .. deathProbe end
     if #detail > 0 then parts[#parts + 1] = table.concat(detail, " | ") end
     return table.concat(parts, " ║ "), nil, snapshot
 end

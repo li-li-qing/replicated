@@ -617,10 +617,11 @@ def main() -> int:
     unit_guide_path = root / "presentation/v3/widgets/rs_v3_combat_visual_guides.lua"
     unit_guide_source = unit_guide_path.read_text(encoding="utf-8-sig", errors="replace") if unit_guide_path.is_file() else ""
     for token in (
-        "P.version = 9",
+        "P.version = 10",
         "P.watchdogTask = P.watchdogTask or \"v3_visual_guides_lifecycle_watchdog\"",
         "function P:ConvergeTick()",
         "P.ScreenCoordinateAuthorityContractVersion = 1",
+        "P.UnitLineRawProjectedAnchorContractVersion = 1",
         "coordinateSpace=\"ui_parent_screen\"",
         "S.UI:CreateOverlayWindow(\"v3_visual_\" .. kind .. \"_host\", self.owner)",
         "local UNIT_LINE_PAIR_HARD_CAP = 160",
@@ -641,6 +642,10 @@ def main() -> int:
     if "function P:AddonScale()" in unit_guide_source or "*addonScale" in unit_guide_source:
         failures.append("Visual guide must not multiply ScreenProjection coordinates by Suite addonScale")
     unit_guide_code = strip_lua_strings(strip_lua_comments(unit_guide_source))
+    place_unit_match = re.search(r"function\s+P:PlaceUnitDot\(.*?\nend", unit_guide_code, re.S)
+    place_unit_code = place_unit_match.group(0) if place_unit_match else ""
+    if re.search(r"(?:x|y)\s*\)\s*or\s*0\s*\)\s*-\s*size\s*/\s*2", place_unit_code):
+        failures.append("Unit line regression: 1x1 label anchor subtracts half font size from projected coordinate")
     if re.search(r"function\s+P:RenderUnit\(\).*?local\s+count\s*=\s*math\.max\(8\s*,\s*math\.min\(48", unit_guide_code, re.S):
         failures.append("Unit line regression: RenderUnit restored fixed final 8..48 point count")
     for token in (
@@ -1595,14 +1600,18 @@ def main() -> int:
     forms_entry = "ui/framework/rs_ui_forms.lua"
     forms_source = (root / forms_entry).read_text(encoding="utf-8-sig", errors="replace") if (root / forms_entry).is_file() else ""
     for token in (
-        "RSUI.InteractiveDraftContractVersion = 3",
+        "RSUI.InteractiveDraftContractVersion = 4",
+        "RSUI.InputDraftCommitContractVersion = 2",
+        "RSUI.InputFocusVisualContractVersion = 1",
+        "RSUI.InputDisableDraftCleanupContractVersion = 1",
+        "CanOverrideActiveDraft",
         "RSUI.NumericInputDraftReadContractVersion = 1",
         "RSUI.ControlTransactionContractVersion = 1",
         "RSUI.DropdownRuntimeInteractionContractVersion = 1",
         "function c:FailDropdownInteraction(reason)",
         "function c:EnsureChildEnabled(widget, desired, role)",
         "local function IsFocusedDraft(component)",
-        "function c:IsEditing() return self.editing == true or IsFocusedDraft(self) end",
+        "rsUiKeyboardArmed == true",
         "function c:IsInteracting() return self.root ~= nil and self.root.rsDragging == true end",
         "CountDraftSuppression()",
         'self:Render(value, "interaction")',
@@ -1641,7 +1650,12 @@ def main() -> int:
     bootstrap_source = (root / "replicatedsuite.lua").read_text(encoding="utf-8-sig", errors="replace")
     foundation_gate_source = (root / "core/rs_foundation_gate.lua").read_text(encoding="utf-8-sig", errors="replace")
     for token in (
-        "NativeInteractionContractVersion = 6",
+        "NativeInteractionContractVersion = 7",
+        "EditBoxCaretVisualContractVersion = 1",
+        "EditBoxNormalSelectionContractVersion = 1",
+        "UseSelectAllWhenFocused(false)",
+        "SetCursorColor",
+        "SetCursorHeight",
         "CriticalInteractionDeliveryContractVersion = 1",
         "local NATIVE_BOOLEAN_STATE_SETTERS = {",
         "if not falseStateSetter then return false",
@@ -1662,7 +1676,12 @@ def main() -> int:
             failures.append("Native primitive interaction/fail-closed contract missing: " + token)
     for token in (
         "NativeBooleanSetterReturnContractVersion = 1",
-        "InputFocusLifecycleContractVersion = 2",
+        "InputFocusLifecycleContractVersion = 3",
+        "InputFocusIdentityCompatibilityContractVersion = 1",
+        "NativeCaretPlacementPreservationContractVersion = 2",
+        "PostArmFocusPromotionContractVersion = 1",
+        "InputActivationDiagnosticsContractVersion = 1",
+        "function UI:IsInputWidgetFocused(widget)",
         "HiddenInputFocusIsolationContractVersion = 2",
         "function UI:ReleaseFocusWithin(widget, owner, reason)",
         "function UI:RetireInputWidget(widget, owner, reason)",
@@ -1877,7 +1896,8 @@ def main() -> int:
     if 'previousUI:QuiesceKeyboardInput("bootstrap_hot_reload", true)' not in bootstrap_source:
         failures.append("Bootstrap old-generation input retirement missing")
     for source_name, source, tokens in (
-        ("UIFacade", ui_framework_source, ("NativeBooleanSetterReturnContractVersion = 1", "InputFocusLifecycleContractVersion = 2", "HiddenInputFocusIsolationContractVersion = 2", "GeometryStateTransactionContractVersion = 1", "function UI:EnsureVisible", "function UI:EnsureEnabled", "function UI:EnsurePickable", "function UI:EnsureAlpha", "function UI:EnsureAnchor", "function UI:EnsureExtent")),
+        ("UIFacade", ui_framework_source, ("NativeBooleanSetterReturnContractVersion = 1", "InputFocusLifecycleContractVersion = 3", "HiddenInputFocusIsolationContractVersion = 2", "PostArmFocusPromotionContractVersion = 1",
+        "InputActivationDiagnosticsContractVersion = 1", "GeometryStateTransactionContractVersion = 1", "function UI:EnsureVisible", "function UI:EnsureEnabled", "function UI:EnsurePickable", "function UI:EnsureAlpha", "function UI:EnsureAnchor", "function UI:EnsureExtent")),
         ("WindowShell", window_shell_source, ("version = 24", "titleBarInteractionContract = 1", "pickable = true", "visibilityTransactionContract = 1", "stateMutationTransactionContract = 1", "stateCallbackTransactionContract = 1", "topLevelLayerContractVersion = 1", "EnsureWindowVisible", "EnsureComponentVisibility", "stateCallbackRejects", "window_lock_native_rejected")),
         ("FloatingSurface", floating_surface_source, ("StateMutationTransactionContractVersion = 1", "local function CommitState", "rollback")),
         ("ModalHost", modal_host_source, ("version = 6", "visibilityTransactionContractVersion = 1", "local function SetVisible(instance, visible)")),
@@ -2000,7 +2020,7 @@ def main() -> int:
                 failures.append(source_name + " top-level layer contract missing: " + token)
     interaction_source = (root / "ui/framework/rs_ui_interactions.lua").read_text(encoding="utf-8-sig", errors="replace")
     for token in (
-        "FocusContractVersion = 2",
+        "FocusContractVersion = 3",
         "function Focus:CanSet(target)",
         "function Focus:CanClear(target)",
         "function Focus:IsFocused(target)",

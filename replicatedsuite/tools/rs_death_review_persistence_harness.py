@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real-Lua harness for DeathReview historical index persistence (.18.150).
+"""Real-Lua harness for DeathReview historical index persistence (.18.151).
 
 Locks the RU regression reported on 2026-09-07:
 - .18.143-.18.145 partial opaque widgetWindow v4 stamps recover only by exact historical hash match;
@@ -127,11 +127,13 @@ local id = "v3.death_review"
 local key = P.V3KeyPrefix .. "death_review_index"
 
 assert(type(F.WidgetWindowSizePolicy) == "table", "window_policy_owned_by_store")
-assert(F.PersistenceCanonicalWindowContractVersion == 5, "historical_index_canonical_v5")
+assert(F.PersistenceCanonicalWindowContractVersion == 6, "historical_index_canonical_v6")
 assert(P.TerminalLoadMemoizationContractVersion == 1, "terminal_memo_contract")
-assert(P.HistoricalCanonicalRecoveryContractVersion == 2, "historical_canonical_contract")
+assert(P.HistoricalCanonicalRecoveryContractVersion == 3, "historical_canonical_contract")
+assert(P.KnownLegacyCanonicalRecoveryContractVersion == 1, "known_legacy_canonical_contract")
 local deathStore = assert(P:GetStore(id))
 assert(type(deathStore.rebuildCanonicalForIntegrity) == "function", "historical_canonical_hook_registered")
+assert(type(deathStore.recoverKnownLegacyCanonical) == "function", "known_legacy_hook_registered")
 
 -- Exact .18.143-.18.145 compatibility probe.  Old Store canonicalization
 -- passed widgetWindow through opaquely.  A real historical in-memory state can
@@ -218,6 +220,73 @@ assert(storage[key].codec == 1, "serializer_stable_codec_written")
 assert(storage[key].payload.settings.autoShowDisabled == 1 and storage[key].payload.settings.showDebuffsDisabled == 1, "false_business_settings_use_numeric_sentinels")
 assert(P:GetStore(id).dirty ~= true, "current_codec_does_not_loop_restamp")
 
+-- Real-machine known-stamp migration bridge. 770CB0B8 is intentionally NOT the
+-- hash of this synthetic payload: exact historical reconstruction must fail,
+-- then the Store-owned exact stamp allowlist + strict legacy shape validator may
+-- recover the still-present Domain and immediately restamp it. Any other stamp
+-- remains fenced by the generic integrity path.
+local knownLegacyPayload = {
+  settings = { windowMs = 11100, maxHistory = 10, minDamage = 25 },
+  history = { serial = 4, entries = {
+    ["1"] = { serial = 4, storageId = 7, time = 4444, clock = "04:44:44", windowMs = 11100,
+      totalDamage = 8888, lethalSource = "KnownSource", lethalAbility = "KnownAbility",
+      lethalAmount = 2222, eventCount = 2, debuffCount = 0 },
+  } },
+  widgetWindow = { width = 470, height = 330, overallOpacity = 0.96 },
+}
+local knownRaw = {
+  payload = copy(knownLegacyPayload),
+  __rsmeta = {
+    framework = P.FrameworkVersion, store = id, owner = "v3.death_review", contractVersion = deathStore.contractVersion,
+    lifetime = P.Lifetime.Permanent, scope = P.Scope.Account, schema = 1, periodId = "permanent",
+    reliabilityContract = P.ReliabilityContractVersion, integrityVersion = P.IntegrityContractVersion,
+  },
+}
+knownRaw.__rsmeta.encodedFingerprint = "770CB0B8"
+knownRaw.__rsmeta.envelopeIntegrityVersion = P.EnvelopeIntegrityContractVersion
+knownRaw.__rsmeta.envelopeFingerprint = assert(P:FingerprintEnvelopeIntegrity(knownRaw))
+storage[key] = knownRaw
+local knownBefore = P.stats.knownLegacyCanonicalRecoveries
+local knownOk, _, knownErr = P:LoadStore(id)
+assert(knownOk == true, "known_legacy_stamp_recovers:" .. tostring(knownErr))
+assert(P:GetStore(id).lastIntegrityStatus == "known_legacy_canonical_recovery", "known_legacy_status")
+assert(P.stats.knownLegacyCanonicalRecoveries == knownBefore + 1, "known_legacy_counted")
+assert(F.State.history.serial == 4 and #F.State.history.entries == 1 and F.State.history.entries[1].storageId == 7, "known_legacy_history_preserved")
+assert(F.State.settings.windowMs == 11100 and F.State.settings.minDamage == 25, "known_legacy_settings_preserved")
+assert(P:GetStore(id).dirty == true and P:GetStore(id).lastDirtyReason == "integrity_v4_upgrade", "known_legacy_restamp_queued")
+assert(P:Flush() == true, "known_legacy_restamp_flush")
+assert(storage[key].codec == 1 and storage[key].__rsmeta.encodedFingerprint ~= "770CB0B8", "known_legacy_rewritten_codec")
+assert(P:LoadStore(id) == true and P:GetStore(id).lastIntegrityStatus == "verified_canonical", "known_legacy_second_reload_strict")
+
+-- Unknown v4 stamp MUST NOT use the migration bridge.
+local unknownRaw = copy(knownRaw)
+unknownRaw.__rsmeta.encodedFingerprint = "770CB0B9"
+unknownRaw.__rsmeta.envelopeFingerprint = assert(P:FingerprintEnvelopeIntegrity(unknownRaw))
+storage[key] = unknownRaw
+P:GetStore(id).loaded = false
+P:GetStore(id).loadStatus = "not_loaded"
+P:GetStore(id).writeFenced = false
+P:GetStore(id).writeFenceReason = nil
+P:GetStore(id).lastError = nil
+local unknownOk = P:LoadStore(id)
+assert(unknownOk == false, "unknown_legacy_stamp_stays_fenced")
+assert(P:GetStore(id).writeFenced == true, "unknown_legacy_stamp_write_fence")
+
+-- Restore a healthy current codec for the remaining ordinary canonical-window
+-- path. The failed unknown probe is intentionally revalidated destructively only
+-- inside this harness; production code never performs this reset.
+storage[key] = copy(knownRaw)
+storage[key].__rsmeta.encodedFingerprint = "770CB0B8"
+storage[key].__rsmeta.envelopeFingerprint = assert(P:FingerprintEnvelopeIntegrity(storage[key]))
+P:GetStore(id).loaded = false
+P:GetStore(id).loadStatus = "not_loaded"
+P:GetStore(id).writeFenced = false
+P:GetStore(id).writeFenceReason = nil
+P:GetStore(id).lastError = nil
+assert(P:LoadStore(id) == true, "known_legacy_recover_again_for_test_reset")
+assert(P:Flush() == true, "known_legacy_test_reset_flush")
+local integrityFailuresAfterKnownStampTests = P.stats.integrityLoadFailures
+
 -- Return to default-true business settings so the ordinary canonical-window
 -- path below can still prove that representation-only false window omissions
 -- verify directly without historical recovery.
@@ -245,7 +314,7 @@ assert(storage[key].payload.widgetWindow.userMoved == nil, "serializer_dropped_f
 -- Barrier readback must canonicalize the drifted disk representation back to
 -- the same logical window state instead of declaring corruption.
 assert(P:Flush() == true, "barrier_verifies_drift")
-assert(P.stats.integrityLoadFailures == 0, "no_integrity_failure_at_barrier")
+assert(P.stats.integrityLoadFailures == integrityFailuresAfterKnownStampTests, "no_integrity_failure_at_barrier")
 
 now = now + 10
 local ok, _, err = P:LoadStore(id)
@@ -316,6 +385,8 @@ def main() -> int:
         "LEGACY_WINDOW_RECOVERABLE_KEYS = {",
         "LEGACY_DEFAULT_TRUE_SETTING_KEYS = {",
         "MAX_HISTORICAL_RECOVERY_MUTATIONS = 12",
+        "KNOWN_LEGACY_V4_INDEX_FINGERPRINTS",
+        "recoverKnownLegacyCanonical = RecoverKnownLegacyV4Index",
         "NormalizeHistoricalIndexWithRecoveredEntries",
         "lastHistoricalRecoveryProbe",
         "rebuildCanonicalForIntegrity = RebuildV18_145Canonical",
@@ -324,10 +395,13 @@ def main() -> int:
             raise AssertionError("DeathReview canonical window implementation missing: " + token)
     for token in (
         "TerminalLoadMemoizationContractVersion = 1",
-        "HistoricalCanonicalRecoveryContractVersion = 2",
+        "HistoricalCanonicalRecoveryContractVersion = 3",
+        "KnownLegacyCanonicalRecoveryContractVersion = 1",
         "rebuildCanonicalForIntegrity = def.rebuildCanonicalForIntegrity",
         "STORE_HISTORICAL_CANONICAL_RECOVERY",
         "historical_probe=",
+        "recoverKnownLegacyCanonical = def.recoverKnownLegacyCanonical",
+        "STORE_KNOWN_LEGACY_CANONICAL_RECOVERY",
         "terminalLoadShortCircuits = 0",
         "options.revalidateTerminal ~= true",
     ):

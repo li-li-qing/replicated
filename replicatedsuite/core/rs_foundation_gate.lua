@@ -9,7 +9,7 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
 S.FoundationGate = {
-    version = 126,
+    version = 130,
     last = nil,
     sequenceCases = {},
     sequenceOrder = {},
@@ -701,7 +701,7 @@ function G:Run(options)
                 and (tonumber(rsui.DropdownRuntimeInteractionContractVersion) or 0) >= 1
                 and (tonumber(rsui.PopupCoordinatorContractVersion) or 0) >= 1
                 and type(rsui.PopupCoordinator) == "table" and type(rsui.PopupCoordinator.CloseAll) == "function"
-                and (tonumber(rsui.FocusContractVersion) or 0) >= 2
+                and (tonumber(rsui.FocusContractVersion) or 0) >= 3
                 and type(rsui.Focus) == "table" and type(rsui.Focus.CanSet) == "function"
                 and type(rsui.Focus.CanClear) == "function" and type(rsui.Focus.IsFocused) == "function",
             "blocker", "adapterLayer=" .. tostring(type(uiAdapter) == "table" and type(uiAdapter.TrySetUILayer) == "function")
@@ -713,14 +713,22 @@ function G:Run(options)
                 .. "/popupCoordinator=" .. tostring(rsui and rsui.PopupCoordinatorContractVersion or 0)
                 .. "/focus=" .. tostring(rsui and rsui.FocusContractVersion or 0))
         AddCheck(report, "v3_native_interaction_contract", type(uiAdapter) == "table"
-                and (tonumber(uiAdapter.NativeInteractionContractVersion) or 0) >= 6
+                and (tonumber(uiAdapter.NativeInteractionContractVersion) or 0) >= 7
                 and (tonumber(uiAdapter.NativeBooleanSetterReturnContractVersion) or 0) >= 1
                 and (tonumber(uiAdapter.CriticalInteractionDeliveryContractVersion) or 0) >= 1
                 and (tonumber(uiAdapter.CompositeEnabledAdapterContractVersion) or 0) >= 2
-                and (tonumber(uiAdapter.InputFocusLifecycleContractVersion) or 0) >= 2
+                and (tonumber(uiAdapter.InputFocusLifecycleContractVersion) or 0) >= 3
                 and (tonumber(uiAdapter.HiddenInputFocusIsolationContractVersion) or 0) >= 2
                 and (tonumber(uiAdapter.DeferredKeyboardActivationContractVersion) or 0) >= 1
                 and (tonumber(uiAdapter.ExplicitInputCommitFocusContractVersion) or 0) >= 1
+                and (tonumber(uiAdapter.InputFocusIdentityCompatibilityContractVersion) or 0) >= 1
+                and (tonumber(uiAdapter.NativeCaretPlacementPreservationContractVersion) or 0) >= 2
+                and (tonumber(uiAdapter.PostArmFocusPromotionContractVersion) or 0) >= 1
+                and (tonumber(uiAdapter.InputActivationDiagnosticsContractVersion) or 0) >= 1
+                and (tonumber(uiAdapter.EditBoxCaretVisualContractVersion) or 0) >= 1
+                and (tonumber(uiAdapter.EditBoxNormalSelectionContractVersion) or 0) >= 1
+                and type(uiAdapter.IsInputWidgetFocused) == "function"
+                and type(uiAdapter.SetEditBoxFocusVisual) == "function"
                 and type(uiAdapter.ReleaseFocusWithin) == "function"
                 and type(uiAdapter.DeactivateInputWidget) == "function"
                 and type(uiAdapter.RetireInputWidget) == "function"
@@ -743,7 +751,10 @@ function G:Run(options)
                 and type(rsui.ScrollbarBehavior) == "table" and (tonumber(rsui.ScrollbarBehavior.criticalInteractionContractVersion) or 0) >= 1
                 and (tonumber(rsui.ButtonActionContractVersion) or 0) >= 2
                 and (tonumber(rsui.ControlTransactionContractVersion) or 0) >= 1
-                and (tonumber(rsui.InputDraftCommitContractVersion) or 0) >= 1
+                and (tonumber(rsui.InputDraftCommitContractVersion) or 0) >= 2
+                and (tonumber(rsui.InteractiveDraftContractVersion) or 0) >= 4
+                and (tonumber(rsui.InputFocusVisualContractVersion) or 0) >= 1
+                and (tonumber(rsui.InputDisableDraftCleanupContractVersion) or 0) >= 1
                 and (tonumber(rsui.InteractionServiceContractVersion) or 0) >= 2
                 and (tonumber(rsui.CollapsibleGroupInteractionContractVersion) or 0) >= 2,
             "blocker", "nativeInteraction=" .. tostring(uiAdapter and uiAdapter.NativeInteractionContractVersion or 0)
@@ -754,6 +765,11 @@ function G:Run(options)
                 .. "/hiddenInput=" .. tostring(uiAdapter and uiAdapter.HiddenInputFocusIsolationContractVersion or 0)
                 .. "/deferredKeyboard=" .. tostring(uiAdapter and uiAdapter.DeferredKeyboardActivationContractVersion or 0)
                 .. "/commitFocus=" .. tostring(uiAdapter and uiAdapter.ExplicitInputCommitFocusContractVersion or 0)
+                .. "/focusIdentity=" .. tostring(uiAdapter and uiAdapter.InputFocusIdentityCompatibilityContractVersion or 0)
+                .. "/caretPlacement=" .. tostring(uiAdapter and uiAdapter.NativeCaretPlacementPreservationContractVersion or 0)
+                .. "/postArmFocus=" .. tostring(uiAdapter and uiAdapter.PostArmFocusPromotionContractVersion or 0)
+                .. "/inputDiag=" .. tostring(uiAdapter and uiAdapter.InputActivationDiagnosticsContractVersion or 0)
+                .. "/caret=" .. tostring(uiAdapter and uiAdapter.EditBoxCaretVisualContractVersion or 0)
                 .. "/degradedRoot=" .. tostring(rsui and rsui.DegradedRootFailClosedContractVersion or 0)
                 .. "/eventBinding=" .. tostring(rsui and rsui.EventBindingContractVersion or 0)
                 .. "/rejectRelease=" .. tostring(rsui and rsui.PostFactoryRejectReleaseContractVersion or 0)
@@ -765,6 +781,8 @@ function G:Run(options)
                 .. "/buttonAction=" .. tostring(rsui and rsui.ButtonActionContractVersion or 0)
                 .. "/controlTx=" .. tostring(rsui and rsui.ControlTransactionContractVersion or 0)
                 .. "/draftCommit=" .. tostring(rsui and rsui.InputDraftCommitContractVersion or 0)
+                .. "/draft=" .. tostring(rsui and rsui.InteractiveDraftContractVersion or 0)
+                .. "/focusVisual=" .. tostring(rsui and rsui.InputFocusVisualContractVersion or 0)
                 .. "/interactionSvc=" .. tostring(rsui and rsui.InteractionServiceContractVersion or 0)
                 .. "/collapseCritical=" .. tostring(rsui and rsui.CollapsibleGroupInteractionContractVersion or 0))
         local runtime = S.Runtime
@@ -838,8 +856,8 @@ function G:Run(options)
                 and (tonumber(rsui.NumericExplicitApplyContractVersion) or 0) >= 1
                 and (tonumber(rsui.NumericRangePersistenceContractVersion) or 0) >= 1
                 and type(numericRangeStore) == "table" and tostring(numericRangeStore.owner or "") == "v3.rsui.numeric_ranges"
-                and (tonumber(rsui.InteractiveDraftContractVersion) or 0) >= 3
-                and (tonumber(rsui.InputDraftCommitContractVersion) or 0) >= 1
+                and (tonumber(rsui.InteractiveDraftContractVersion) or 0) >= 4
+                and (tonumber(rsui.InputDraftCommitContractVersion) or 0) >= 2
                 and (tonumber(rsui.NumericInputDraftReadContractVersion) or 0) >= 1
                 and (tonumber(rsui.StableButtonHoverContractVersion) or 0) >= 2
                 and (tonumber(rsui.WidgetSwitcherContractVersion) or 0) >= 2
@@ -1348,11 +1366,15 @@ function G:Run(options)
             and type(deathReview.Commands.ApplyWindowMs) == "function" and type(deathReview.Commands.ApplyMinDamage) == "function"
             and type(deathReview.Commands.SetMaxHistory) == "function" and type(deathReview.Commands.MarkStoreDirty) == "function"
             and type(deathReview.Commands.SetEnabled) == "function" and type(deathReview.Commands.ClearHistory) == "function"
-            and (tonumber(deathReview.PersistenceCanonicalWindowContractVersion) or 0) >= 5
+            and (tonumber(deathReview.PersistenceCanonicalWindowContractVersion) or 0) >= 6
             and (tonumber(deathReview.PersistenceIndexCodecVersion) or 0) >= 1
-            and (tonumber(S.Persistence.HistoricalCanonicalRecoveryContractVersion) or 0) >= 2
+            and (tonumber(S.Persistence.HistoricalCanonicalRecoveryContractVersion) or 0) >= 3
             and type(deathReview.WidgetWindowSizePolicy) == "table" and deathReview.Demand ~= nil
-            and deathStore ~= nil and type(deathStore.migrate) == "function" and type(deathStore.rebuildCanonicalForIntegrity) == "function" and deathPage ~= nil and deathWidget ~= nil
+            and deathStore ~= nil and type(deathStore.migrate) == "function"
+            and type(deathStore.rebuildCanonicalForIntegrity) == "function"
+            and type(deathStore.recoverKnownLegacyCanonical) == "function"
+            and (tonumber(S.Persistence.KnownLegacyCanonicalRecoveryContractVersion) or 0) >= 1
+            and deathPage ~= nil and deathWidget ~= nil
             and deathMeta ~= nil and tostring(deathMeta.status) == "migrated_m15_2" and tostring(deathMeta.authority) == "v3.death_review",
         "blocker", deathHealth and ("enabled=" .. tostring(deathReview.enabled == true)
             .. "/consumer=" .. tostring(deathHealth.consumers or 0)
@@ -1578,12 +1600,16 @@ function G:Run(options)
     AddCheck(report, "persistence_reliability_v4", persistence ~= nil
             and (tonumber(persistence.reliabilityContractVersion) or 0) >= 4
             and (tonumber(persistence.integrityContractVersion) or 0) >= 1
-            and (tonumber(persistence.historicalCanonicalRecoveryContractVersion) or 0) >= 1
+            and (tonumber(persistence.historicalCanonicalRecoveryContractVersion) or 0) >= 3
+            and (tonumber(persistence.knownLegacyCanonicalRecoveryContractVersion) or 0) >= 1
             and (tonumber(persistenceStats.integrityLoadFailures) or 0) == 0
             and (tonumber(persistenceStats.encodedLoadRejects) or 0) == 0,
         "blocker", persistence and ("contract=" .. tostring(persistence.reliabilityContractVersion or 0)
             .. "/integrity=" .. tostring(persistence.integrityContractVersion or 0)
             .. "/historicalCanonical=" .. tostring(persistence.historicalCanonicalRecoveryContractVersion or 0)
+            .. "/knownLegacy=" .. tostring(persistence.knownLegacyCanonicalRecoveryContractVersion or 0)
+            .. "/knownRecover=" .. tostring(persistenceStats.knownLegacyCanonicalRecoveries or 0)
+            .. "/knownReject=" .. tostring(persistenceStats.knownLegacyCanonicalRecoveryRejects or 0)
             .. "/stamped=" .. tostring(persistenceStats.integrityStampedSaves or 0)
             .. "/loadCheck=" .. tostring(persistenceStats.integrityLoadChecks or 0)
             .. "/legacy=" .. tostring(persistenceStats.integrityLegacyLoads or 0)
@@ -1840,13 +1866,14 @@ function G:Run(options)
         or type(bossAlerts) ~= "table" or (tonumber(bossAlerts.HudContractVersion) or 0) < 2
         or (tonumber(bossAlerts.RealtimeFactBridgeContractVersion) or 0) < 1
         or type(S.Services and S.Services.CastingObservationV3) ~= "table" then usabilityFailures[#usabilityFailures + 1] = "boss_hud" end
-    if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 5
+    if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 10
         or (tonumber(visualGuides.AdaptiveUnitLineSamplingContractVersion) or 0) < 2
         or (tonumber(visualGuides.UnitLineVisibleSegmentClippingContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLinePressureBudgetContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLineDiffRenderContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLineProgressivePoolContractVersion) or 0) < 1
         or (tonumber(visualGuides.ScreenCoordinateAuthorityContractVersion) or 0) < 1
+        or (tonumber(visualGuides.UnitLineRawProjectedAnchorContractVersion) or 0) < 1
         or type(visualGuides.BuildUnitLineSamplePlan) ~= "function"
         or type(unitLines) ~= "table" or (tonumber(unitLines.VisualGuideContractVersion) or 0) < 5
         or (tonumber(unitLines.AdaptiveDensityContractVersion) or 0) < 2
@@ -1890,7 +1917,9 @@ function G:Run(options)
         and type(inventorySnapshot.BuildSnapshot) == "function" and type(inventorySnapshot.FindLiveRow) == "function"
         and type(inventorySnapshot.CountLive) == "function" and type(inventorySnapshot.ReadPhysicalBagSlot) == "function"
         and type(bagTools) == "table" and (tonumber(bagTools.BagMoveContractVersion) or 0) >= 8
-        and (tonumber(bagTools.BatchLifecycleContractVersion) or 0) >= 5 and (tonumber(bagTools.NativeWindowQuickContractVersion) or 0) >= 4
+        and (tonumber(bagTools.BatchLifecycleContractVersion) or 0) >= 5 and (tonumber(bagTools.NativeWindowQuickContractVersion) or 0) >= 6
+        and (tonumber(bagTools.ReloadQuickObserverContractVersion) or 0) >= 2
+        and (tonumber(bagTools.RUFourValueWindowVisibilityContractVersion) or 0) >= 1
         and (tonumber(bagTools.DynamicSourceResolutionContractVersion) or 0) >= 3
         and (tonumber(bagTools.QuickIdentityFallbackContractVersion) or 0) >= 1
         and (tonumber(bagTools.BagTaskMutexContractVersion) or 0) >= 1
@@ -1901,9 +1930,18 @@ function G:Run(options)
         and type(bagTools.Commands.QuickDeposit) == "function" and type(bagTools.Commands.QuickCancel) == "function"
         and type(bagTools.Commands.SetBatchCategory) == "function" and type(bagTools.Commands.SetBatchTarget) == "function"
         and type(bagTools.Commands.SetBatchLimit) == "function"
-        and type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.version) or 0) >= 1
+        and type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.version) or 0) >= 3
+        and (tonumber(bagQuickPresenter.ReloadVisibilityContractVersion) or 0) >= 1
     AddCheck(report, "v3_bag_action_contract", bagContractOk, "blocker",
         bagContractOk and "shared physical-bag snapshot + grouped-intent quick/category queues + live slot revalidation + mutually-exclusive serial move tasks present" or "bag action contract v8 / InventorySnapshotV3 unavailable")
+    local gearFeature = S.Features and S.Features.Gear or nil
+    local startupIntentOk = type(S.FeatureRuntime) == "table" and (tonumber(S.FeatureRuntime.StartupEnableIntentContractVersion) or 0) >= 1
+        and type(gearFeature) == "table" and (tonumber(gearFeature.QuickStartupIntentContractVersion) or 0) >= 1
+        and type(gearFeature.GetStartupEnableIntent) == "function" and type(gearFeature.OnStartupEnableIntentCommitted) == "function"
+        and type(gearFeature.ShouldShowQuickButtons) == "function"
+    AddCheck(report, "v3_quick_surface_reload_reconcile_contract", startupIntentOk, "blocker",
+        startupIntentOk and "Gear legacy quick intent is one-time repaired and persistent quick visibility remains preference-authoritative"
+            or "quick-surface reload reconcile contract unavailable")
 
     local auctionQuery = S.Services and S.Services.AuctionQueryV3 or nil
     local auction = S.Features and S.Features.tools_auction or nil

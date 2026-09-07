@@ -979,6 +979,13 @@ function D:BuildAllLogs()
         sections[#sections + 1] = string.format("UI Framework v%s：缓存Widget %d · Owner %d · Diff尝试 %d · 实际写 %d · 跳过 %d（%.1f%%）· Native调用 %d",
             tostring(ui.version or "?"), tonumber(ui.cachedWidgets) or 0, tonumber(ui.owners) or 0, tonumber(ui.attempts) or 0,
             tonumber(ui.writes) or 0, tonumber(ui.skips) or 0, (tonumber(ui.skipRatio) or 0) * 100, tonumber(ui.nativeCalls) or 0)
+        local inputLife = ui.lifecycle or {}
+        sections[#sections + 1] = string.format("UI输入：激活 %d/%d · 失败 %d · PostArmFocus %d · FocusFast %d · ArmedNow %d · Keyboard %d/%d · ArmFail %d · FocusClearFail %d",
+            tonumber(inputLife.inputActivationSuccesses) or 0, tonumber(inputLife.inputActivationAttempts) or 0,
+            tonumber(inputLife.inputActivationFailures) or 0, tonumber(inputLife.postArmFocusPromotions) or 0,
+            tonumber(inputLife.focusedFastPathHits) or 0, tonumber(inputLife.armedInputs) or 0,
+            tonumber(inputLife.keyboardArms) or 0, tonumber(inputLife.keyboardDisarms) or 0,
+            tonumber(inputLife.keyboardArmFailures) or 0, tonumber(inputLife.focusClearFailures) or 0)
         local design = ui.design or {}
         local lm, bm, sm, cm, rm = design.layout or {}, design.binding or {}, design.shell or {}, design.components or {}, design.rsui or {}
         sections[#sections + 1] = string.format("UI Design v%s：Layout %d次/%d放置/%d响应 · Binding %d写/%d拒绝/%d提交 · Field %d创建/%d渲染/%d校验错 · RSUI %d创建/%d类/%d错 · 压缩%d/越界%d/失效%d/滚动%d · Shell %d创建/%d布局",

@@ -27,9 +27,11 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function()
     end
     local normalizedWindow = type(store.migrate) == "function" and store.migrate({ widgetWindow = { width = 470, height = 330 } }) or nil
     normalizedWindow = type(normalizedWindow) == "table" and normalizedWindow.widgetWindow or nil
-    if (tonumber(F.PersistenceCanonicalWindowContractVersion) or 0) < 5
+    if (tonumber(F.PersistenceCanonicalWindowContractVersion) or 0) < 6
         or (tonumber(F.PersistenceIndexCodecVersion) or 0) < 1
-        or (tonumber(S.Persistence.HistoricalCanonicalRecoveryContractVersion) or 0) < 2
+        or (tonumber(S.Persistence.HistoricalCanonicalRecoveryContractVersion) or 0) < 3
+        or (tonumber(S.Persistence.KnownLegacyCanonicalRecoveryContractVersion) or 0) < 1
+        or type(store.recoverKnownLegacyCanonical) ~= "function"
         or type(F.WidgetWindowSizePolicy) ~= "table" or type(normalizedWindow) ~= "table"
         or normalizedWindow.width ~= 470 or normalizedWindow.height ~= 330
         or normalizedWindow.minimized ~= false or normalizedWindow.locked ~= false

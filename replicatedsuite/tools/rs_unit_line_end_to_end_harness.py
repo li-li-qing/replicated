@@ -438,10 +438,11 @@ Check("dot_positions_unique", uniquePositions >= 8, uniquePositions)
 if firstUnitRow ~= nil and maxUnitDotX ~= nil and minUnitDotX ~= nil then
   local expectedMin = math.min(tonumber(firstUnitRow.x1) or 0, tonumber(firstUnitRow.x2) or 0)
   local expectedMax = math.max(tonumber(firstUnitRow.x1) or 0, tonumber(firstUnitRow.x2) or 0)
-  -- Glyph anchors subtract half the font size, so allow a small style margin.
-  -- Multiplying these 2560x1440 coordinates by addonScale=1.25 would miss this
-  -- bound by hundreds of pixels and reproduce the real high-resolution offset.
-  Check("screen_coordinates_ignore_addon_scale_2560", minUnitDotX >= expectedMin - 64 and maxUnitDotX <= expectedMax + 64,
+  -- 1x1 label anchors must land on the RAW projected endpoints. Font size is
+  -- visual ink only; subtracting half the font size reproduces the live
+  -- "line slightly misses the head center" regression. The +/-1 tolerance is
+  -- only for integer rounding. addonScale=1.25 must likewise not alter anchors.
+  Check("unit_dot_raw_projected_anchor", math.abs(minUnitDotX - expectedMin) <= 1 and math.abs(maxUnitDotX - expectedMax) <= 1,
     tostring(minUnitDotX) .. ".." .. tostring(maxUnitDotX) .. " expected " .. tostring(expectedMin) .. ".." .. tostring(expectedMax))
 end
 

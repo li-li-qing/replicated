@@ -1,5 +1,5 @@
 ------------------------------------------------------------------------
--- Replicated Suite - UI Framework v13
+-- Replicated Suite - UI Framework v14
 --
 -- Incremental upper layer over the limited ArcheAge/RU native UI API.
 --
@@ -18,7 +18,7 @@ local S = ReplicatedSuite
 local UI = S.UI
 if type(UI) ~= "table" then return end
 
-local FRAMEWORK_VERSION = 13
+local FRAMEWORK_VERSION = 15
 local MAX_OWNER_METRICS = 48
 
 local stateCache = setmetatable({}, { __mode = "k" })
@@ -30,6 +30,10 @@ local lifecycle = {
     -- focused native widget belongs to Suite before touching it. Never clear an
     -- external game/chat focus merely because a Suite window is hiding.
     focusTargetsByPhysicalId = setmetatable({}, { __mode = "v" }),
+    -- RU GetFocusedWidgetId has returned both generated physical ids and logical
+    -- ids across client/UI paths. Keep a second weak identity index so focus
+    -- ownership can be proven without guessing or scanning the whole UI tree.
+    focusTargetsByIdentity = setmetatable({}, { __mode = "v" }),
     -- Deferred keyboard activation keeps edit boxes inert until an explicit
     -- user click arms them. Weak keys prevent released Native widgets from
     -- being retained by the lifecycle authority.
@@ -63,6 +67,11 @@ local metrics = {
         keyboardArms = 0,
         keyboardDisarms = 0,
         keyboardArmFailures = 0,
+        inputActivationAttempts = 0,
+        inputActivationSuccesses = 0,
+        inputActivationFailures = 0,
+        postArmFocusPromotions = 0,
+        focusedFastPathHits = 0,
     },
 }
 
@@ -80,8 +89,12 @@ UI.NativeBooleanSetterReturnContractVersion = 1
 -- Suite subtrees must relinquish focus, while unrelated game/chat focus is
 -- never touched. Input widgets register once at adoption; ancestors carry a
 -- small subtree count so ordinary non-input visibility writes stay O(1).
-UI.InputFocusLifecycleContractVersion = 2
+UI.InputFocusLifecycleContractVersion = 3
 UI.HiddenInputFocusIsolationContractVersion = 2
+UI.InputFocusIdentityCompatibilityContractVersion = 1
+UI.NativeCaretPlacementPreservationContractVersion = 2
+UI.PostArmFocusPromotionContractVersion = 1
+UI.InputActivationDiagnosticsContractVersion = 1
 UI.DeferredKeyboardActivationContractVersion = 1
 UI.ExplicitInputCommitFocusContractVersion = 1
 UI.Tokens = S.UITokens
@@ -220,6 +233,13 @@ local function BumpInputSubtree(widget, delta)
     end
 end
 
+local function RegisterFocusIdentity(identity, widget)
+    if identity == nil or widget == nil then return end
+    local key = tostring(identity)
+    if key == "" then return end
+    lifecycle.focusTargetsByIdentity[key] = widget
+end
+
 local function RegisterInputTarget(widget)
     if not IsInputTarget(widget) or widget.rsUiInputLifecycleTracked == true then return false end
     widget.rsUiInputLifecycleRetired = false
@@ -227,10 +247,19 @@ local function RegisterInputTarget(widget)
     widget.rsUiKeyboardArmed = widget.rsUiKeyboardArmed == true
     local physicalId = PhysicalIdOf(widget)
     if physicalId ~= nil then lifecycle.focusTargetsByPhysicalId[physicalId] = widget end
+    RegisterFocusIdentity(physicalId, widget)
+    RegisterFocusIdentity(widget.rsNativeLogicalId, widget)
+    RegisterFocusIdentity(widget.rsUiLogicalId, widget)
     if widget.rsUiKeyboardArmed == true then lifecycle.armedInputs[widget] = true end
     BumpInputSubtree(widget, 1)
     metrics.lifecycle.inputTargets = (tonumber(metrics.lifecycle.inputTargets) or 0) + 1
     return true
+end
+
+local function UnregisterFocusIdentity(identity, widget)
+    if identity == nil then return end
+    local key = tostring(identity)
+    if key ~= "" and lifecycle.focusTargetsByIdentity[key] == widget then lifecycle.focusTargetsByIdentity[key] = nil end
 end
 
 local function UnregisterInputTarget(widget)
@@ -242,6 +271,9 @@ local function UnregisterInputTarget(widget)
     if physicalId ~= nil and lifecycle.focusTargetsByPhysicalId[physicalId] == widget then
         lifecycle.focusTargetsByPhysicalId[physicalId] = nil
     end
+    UnregisterFocusIdentity(physicalId, widget)
+    UnregisterFocusIdentity(widget.rsNativeLogicalId, widget)
+    UnregisterFocusIdentity(widget.rsUiLogicalId, widget)
     BumpInputSubtree(widget, -1)
     return true
 end
@@ -279,17 +311,44 @@ function UI:DisarmInputWidget(widget, owner, reason)
 end
 
 function UI:ActivateInputWidget(widget, owner, reason)
-    local armed, _, armErr = self:ArmInputWidget(widget, owner, reason or "input_click")
-    if armed ~= true then return false, tostring(armErr or "keyboard_arm_failed") end
+    metrics.lifecycle.inputActivationAttempts = (tonumber(metrics.lifecycle.inputActivationAttempts) or 0) + 1
+    local armed, keyboardChanged, armErr = self:ArmInputWidget(widget, owner, reason or "input_click")
+    if armed ~= true then
+        metrics.lifecycle.inputActivationFailures = (tonumber(metrics.lifecycle.inputActivationFailures) or 0) + 1
+        return false, tostring(armErr or "keyboard_arm_failed")
+    end
+
+    -- RU dispatch order matters here. A mouse click can publish this EditBox as
+    -- the global focused widget while it is still keyboard-inert. OnClick then
+    -- runs, arms EnableKeyboard(true), and a naive "already focused" fast path
+    -- would incorrectly skip SetFocus. The result looks focused but accepts no
+    -- text. Whenever this activation actually promoted Keyboard false -> true,
+    -- force one SetFocus AFTER the promotion so Native enters text-edit mode.
+    -- Only a repeat click on an already-armed + already-focused input may keep
+    -- the native caret placement without another SetFocus.
+    if keyboardChanged ~= true and type(self.IsInputWidgetFocused) == "function" then
+        local alreadyFocused = self:IsInputWidgetFocused(widget)
+        if alreadyFocused == true then
+            metrics.lifecycle.focusedFastPathHits = (tonumber(metrics.lifecycle.focusedFastPathHits) or 0) + 1
+            metrics.lifecycle.inputActivationSuccesses = (tonumber(metrics.lifecycle.inputActivationSuccesses) or 0) + 1
+            return true, nil
+        end
+    end
     if type(self.TryInteractionCall) ~= "function" then
         self:DisarmInputWidget(widget, owner, "focus_contract_unavailable")
+        metrics.lifecycle.inputActivationFailures = (tonumber(metrics.lifecycle.inputActivationFailures) or 0) + 1
         return false, "focus_contract_unavailable"
     end
     local focused, focusErr = self:TryInteractionCall(widget, "SetFocus")
     if focused ~= true then
         self:DisarmInputWidget(widget, owner, "focus_failed")
+        metrics.lifecycle.inputActivationFailures = (tonumber(metrics.lifecycle.inputActivationFailures) or 0) + 1
         return false, tostring(focusErr or "set_focus_failed")
     end
+    if keyboardChanged == true then
+        metrics.lifecycle.postArmFocusPromotions = (tonumber(metrics.lifecycle.postArmFocusPromotions) or 0) + 1
+    end
+    metrics.lifecycle.inputActivationSuccesses = (tonumber(metrics.lifecycle.inputActivationSuccesses) or 0) + 1
     return true, nil
 end
 
@@ -341,11 +400,13 @@ function UI:BindDeferredInputActivation(widget, owner, label)
     local eventLabel = tostring(label or widget.rsUiLogicalId or widget.rsNativeLogicalId or "input")
     local clickBound = self:SafeHandler(widget, "OnClick", function()
         local ok = self:ActivateInputWidget(widget, owner, eventLabel .. ":click")
+        if type(self.SetEditBoxFocusVisual) == "function" then self:SetEditBoxFocusVisual(widget, ok == true) end
         return ok == true
     end, eventLabel .. ":activate")
     if clickBound ~= true then return false, "input_click_activation_bind_failed" end
     local lostBound = self:SafeHandler(widget, "OnLostFocus", function()
         self:DisarmInputWidget(widget, owner, eventLabel .. ":lost_focus")
+        if type(self.SetEditBoxFocusVisual) == "function" then self:SetEditBoxFocusVisual(widget, false) end
         return true
     end, eventLabel .. ":lost_focus")
     if lostBound ~= true then
@@ -363,6 +424,28 @@ local function ReadFocusedWidgetId()
     return tostring(value), nil
 end
 
+local function ResolveTrackedFocusedInput(focusedId)
+    if focusedId == nil then return nil end
+    local key = tostring(focusedId)
+    local direct = lifecycle.focusTargetsByIdentity[key] or lifecycle.focusTargetsByPhysicalId[key]
+    if direct ~= nil then return direct end
+    -- NativeIdentity is an identity registry, not a focus Authority. It is only
+    -- used to translate a known Suite logical id into the exact generated id.
+    local identities = S.NativeIdentity
+    local physical = type(identities) == "table" and type(identities.logicalToPhysical) == "table"
+        and identities.logicalToPhysical[key] or nil
+    if physical ~= nil then return lifecycle.focusTargetsByPhysicalId[tostring(physical)] end
+    return nil
+end
+
+function UI:IsInputWidgetFocused(widget)
+    if not IsInputTarget(widget) then return false, "input_target_required" end
+    local focusedId, focusErr = ReadFocusedWidgetId()
+    if focusErr ~= nil then return false, focusErr end
+    if focusedId == nil then return false, nil end
+    return ResolveTrackedFocusedInput(focusedId) == widget, nil
+end
+
 -- Clear focus only when the global focus id resolves to a registered Suite
 -- EditBox and that EditBox is proven to be inside the subtree becoming
 -- inactive. This is the core fence that prevents Suite cleanup from stealing
@@ -375,7 +458,7 @@ function UI:ReleaseFocusWithin(widget, owner, reason)
     local focusedId, focusErr = ReadFocusedWidgetId()
     if focusErr ~= nil then return true, false, focusErr end
     if focusedId == nil then return true, false, nil end
-    local focused = lifecycle.focusTargetsByPhysicalId[focusedId]
+    local focused = ResolveTrackedFocusedInput(focusedId)
     if focused == nil or FocusedInputDescendsFrom(focused, widget, focusedId) ~= true then
         return true, false, nil
     end
@@ -412,6 +495,7 @@ function UI:DeactivateInputWidget(widget, owner, reason)
     if widget == nil then return true, false, nil end
     local focusOk, focusChanged, focusErr = self:ReleaseFocusWithin(widget, owner, reason or "input_commit")
     local disarmOk, disarmChanged, disarmErr = self:DisarmInputWidget(widget, owner, reason or "input_commit")
+    if type(self.SetEditBoxFocusVisual) == "function" then self:SetEditBoxFocusVisual(widget, false) end
     if focusOk ~= true then return false, focusChanged == true or disarmChanged == true, tostring(focusErr or "focus_release_failed") end
     if disarmOk ~= true then return false, focusChanged == true or disarmChanged == true, tostring(disarmErr or "keyboard_disarm_failed") end
     return true, focusChanged == true or disarmChanged == true, focusErr
@@ -448,7 +532,7 @@ end
 function UI:QuiesceKeyboardInput(reason, retire)
     local focusedId = select(1, ReadFocusedWidgetId())
     if focusedId ~= nil then
-        local focused = lifecycle.focusTargetsByPhysicalId[focusedId]
+        local focused = ResolveTrackedFocusedInput(focusedId)
         if focused ~= nil then self:ReleaseFocusWithin(focused, OwnerOf(focused), reason or "input_quiesce") end
     end
     if retire ~= true then
@@ -1620,7 +1704,17 @@ function UI:GetFrameworkSnapshot()
             focusClears = metrics.lifecycle.focusClears,
             focusClearFailures = metrics.lifecycle.focusClearFailures,
             inputRetires = metrics.lifecycle.inputRetires,
+            keyboardArms = metrics.lifecycle.keyboardArms,
+            keyboardDisarms = metrics.lifecycle.keyboardDisarms,
+            keyboardArmFailures = metrics.lifecycle.keyboardArmFailures,
+            inputActivationAttempts = metrics.lifecycle.inputActivationAttempts,
+            inputActivationSuccesses = metrics.lifecycle.inputActivationSuccesses,
+            inputActivationFailures = metrics.lifecycle.inputActivationFailures,
+            postArmFocusPromotions = metrics.lifecycle.postArmFocusPromotions,
+            focusedFastPathHits = metrics.lifecycle.focusedFastPathHits,
+            armedInputs = CountWeakKeys(lifecycle.armedInputs),
             trackedFocusTargets = CountWeakKeys(lifecycle.focusTargetsByPhysicalId),
+            trackedFocusIdentities = CountWeakKeys(lifecycle.focusTargetsByIdentity),
         },
         nativeSafety = {
             staleRejects = tonumber(metrics.nativeSafety.staleRejects) or 0,

@@ -43,6 +43,44 @@ function F:SaveQuickHudState(delayMs, reason)
     return self:MarkIndexDirty(tonumber(delayMs) or 300, reason or "gear_quick_buttons")
 end
 
+F.QuickStartupIntentContractVersion = 1
+
+function F:IsQuickRuntimePreferenceLinked()
+    return tonumber(self:GetQuickHudState().runtimePreferenceLink) == 1
+end
+
+function F:MarkQuickRuntimePreferenceLinked(reason)
+    if self:IsQuickRuntimePreferenceLinked() then return true end
+    return self:MutateIndex(function()
+        self:GetQuickHudState().runtimePreferenceLink = 1
+        return true
+    end, 0, reason or "gear_quick_runtime_preference_link", true)
+end
+
+-- `.18.152` one-time compatibility repair. Older builds could persist a quick
+-- button plan while `v3.features.combat_gear=false`; the page's transient lease
+-- then made buttons appear only after a manual gear action. Existing visible
+-- quick plans are explicit persistent screen-surface intent. Repair that stale
+-- preference exactly once; after the link sentinel exists, an explicit false
+-- preference is authoritative and will never be overridden on startup.
+function F:GetStartupEnableIntent(preferred, explicit)
+    if preferred == true or explicit ~= true then return false end
+    local loaded, loadErr = self:EnsureStoreLoaded()
+    if loaded ~= true then error(loadErr or "gear index startup intent load failed") end
+    if self:IsQuickRuntimePreferenceLinked() then return false end
+    local state = self:GetQuickHudState()
+    if state.visible ~= false and self:HasQuickSets() then
+        return true, "legacy_quick_buttons"
+    end
+    return false
+end
+
+function F:OnStartupEnableIntentCommitted(reason)
+    local linked, linkErr = self:MarkQuickRuntimePreferenceLinked("gear_startup_intent_link:" .. tostring(reason or "legacy_quick_buttons"))
+    if linked ~= true then return false, linkErr end
+    return self:SyncQuickButtonsHost("gear_startup_intent_committed")
+end
+
 local function ClampInteger(value, fallback, minimum, maximum)
     value = math.floor((tonumber(value) or tonumber(fallback) or 0) + 0.5)
     if minimum ~= nil then value = math.max(tonumber(minimum) or value, value) end
@@ -216,14 +254,19 @@ function F:EnsurePersistentQuickRuntime(reason)
     local loaded, loadErr = Runtime:EnsurePreferencesLoaded()
     if loaded ~= true then return false, loadErr end
     local preferred = Runtime:GetPreferredEnabled(self.Id)
+    local runtimeOk, runtimeErr = true, nil
     if preferred == true then
-        if Runtime:IsEnabled(self.Id) ~= true then return Runtime:Enable(self.Id, reason or "gear_quick_runtime") end
-        return true
+        if Runtime:IsEnabled(self.Id) ~= true then runtimeOk, runtimeErr = Runtime:Enable(self.Id, reason or "gear_quick_runtime") end
+    else
+        -- Creating/showing a per-plan screen button is explicit persistent user
+        -- intent. Persist the Gear runtime preference so the button survives page
+        -- close and the next UI reload instead of existing only during page scope.
+        runtimeOk, runtimeErr = Runtime:SetPreferredEnabled(self.Id, true, reason or "gear_quick_runtime")
     end
-    -- Creating/showing a per-plan screen button is explicit persistent user
-    -- intent. Persist the Gear runtime preference so the button survives page
-    -- close and the next UI reload instead of existing only during page scope.
-    return Runtime:SetPreferredEnabled(self.Id, true, reason or "gear_quick_runtime")
+    if runtimeOk ~= true then return false, runtimeErr end
+    local linked, linkErr = self:MarkQuickRuntimePreferenceLinked("gear_quick_runtime_link")
+    if linked ~= true then return false, linkErr or "gear quick runtime preference link failed" end
+    return true
 end
 
 function F:HasTransientConsumers()
@@ -274,6 +317,11 @@ end
 -- show/hide is a Presentation reaction to `v3.gear.quick.visibility`.
 function F:ShouldShowQuickButtons()
     if self.enabled ~= true then return false end
+    -- A page-scoped transient lease may temporarily enable Gear even when the
+    -- user explicitly disabled the persistent feature. Screen buttons must not
+    -- resurrect from that transient enable; persistent preference is the
+    -- Authority for persistent screen-surface visibility.
+    if Runtime:GetPreferredEnabled(self.Id) ~= true then return false end
     local state = self:GetQuickHudState()
     return state.visible ~= false and self:HasQuickSets()
 end
@@ -304,8 +352,8 @@ function F:SetQuickHudVisible(visible, source)
         local saved, saveErr = self:MutateIndex(function() self:GetQuickHudState().visible = nextValue; return true end, 250, "gear_quick_buttons_visibility")
         if saved ~= true then return false, saveErr or "换装快捷按钮可见性未保存" end
     end
-    if nextValue and Runtime:IsEnabled(self.Id) ~= true and self:HasQuickSets() then
-        local ok, err = self:AcquireTransient("hud:gear_quick")
+    if nextValue and self:HasQuickSets() then
+        local ok, err = self:EnsurePersistentQuickRuntime("gear_quick_hud_visible")
         if ok ~= true then return false, err end
     end
     return self:SyncQuickButtonsHost(source or "gear_page")

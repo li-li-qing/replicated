@@ -83,12 +83,13 @@ local function editbox()
 end
 function UI:CreateEditBox() return editbox() end
 function UI:SetText(native, text) native:SetText(text); return true end
-function UI:ActivateInputWidget(native) native.armed=true; native.focused=true; return true end
-function UI:DisarmInputWidget(native) native.armed=false; return true end
+function UI:ActivateInputWidget(native) native.armed=true; native.rsUiKeyboardArmed=true; native.focused=true; return true end
+function UI:DisarmInputWidget(native) native.armed=false; native.rsUiKeyboardArmed=false; return true end
 function UI:DeactivateInputWidget(native)
-    native.focused=false; native.armed=false; native.deactivations=(native.deactivations or 0)+1
+    native.focused=false; native.armed=false; native.rsUiKeyboardArmed=false; native.deactivations=(native.deactivations or 0)+1
     return true, true, nil
 end
+function UI:SetEditBoxFocusVisual(native, focused) native.focusVisual=focused == true; return true end
 function UI:CreateSlider(_, id, x, y, w, h, minv, maxv, step, initial)
     local n={{ value=initial, rsDragging=false, handlers={{}} }}
     function n:GetValue() return self.value end
@@ -116,7 +117,15 @@ assert(t.root.text=="abcdef", "TextInput did not resync after focus ended")
 assert(t:BeginEditing("harness") == true and t:IsEditing() == true, "TextInput local edit ownership did not arm")
 t.root.focused=false; t.root.text="abcd"; t:Render(nil, "binding_refresh")
 assert(t.root.text=="abcd", "TextInput local draft was clobbered when native focus lagged")
-assert(t:EndEditing("harness") == true and t:IsEditing() == false, "TextInput local edit ownership did not disarm")
+t.root.text="abc"; t:Render(nil, "future_projection_refresh")
+assert(t.root.text=="abc", "TextInput unknown refresh source resurrected committed text")
+assert(t.root.focusVisual==true, "TextInput active focus visual missing")
+assert(t:EndEditing("harness") == true and t:IsEditing() == false and t.root.focusVisual==false, "TextInput local edit ownership did not disarm")
+assert(t:BeginEditing("disable") == true, "TextInput disable test did not arm")
+t.root.text="temporary"
+t:SetEnabled(false)
+assert(t.editing==false and t.root.armed==false and t.root.text==committedText and t.root.focusVisual==false, "TextInput disable left ghost draft/focus")
+t:SetEnabled(true)
 assert(t:BeginEditing("harness_enter") == true, "TextInput Enter test did not arm")
 t.root.text="entered"
 assert(t.root.handlers.OnEditEnter() == true, "TextInput Enter commit rejected")
@@ -129,6 +138,8 @@ assert(n.root.text=="10", "NumericInput ambient refresh clobbered focused draft"
 n.root.focused=false; assert(n:BeginEditing("harness") == true, "NumericInput local edit ownership did not arm")
 n.root.text=""; n:Render(100, "binding_refresh")
 assert(n.root.text=="", "NumericInput empty draft was repainted during local edit")
+n.root.text="7"; n:Render(100, "future_numeric_sync")
+assert(n.root.text=="7", "NumericInput unknown refresh source resurrected committed value")
 n.root.text="10"
 assert(n.root.handlers.OnEditEnter() == true, "NumericInput Enter commit rejected")
 assert(committedNumber==10 and n.root.text=="10ms" and n.editing==false, "NumericInput Enter did not own final render")
@@ -170,7 +181,7 @@ local rs = assert(factories.Slider({{id="rs", parent={{}}, min=0,max=1000,step=2
 rs.root.rsDragging=true; assert(rs:Preview(500, "harness") == true)
 assert(rs:CommitValue(500, "harness") == false, "Slider rejected write reported success")
 assert(rs.root.value==100 and rejectSlider==100 and sliderChanged==0, "Slider rejection did not restore authoritative state")
-print("INTERACTIVE_DRAFT_LUA PASS 20/20")
+print("INTERACTIVE_DRAFT_LUA PASS 25/25")
 '''
     with tempfile.NamedTemporaryFile("w", suffix=".lua", encoding="utf-8", delete=False) as fh:
         fh.write(lua)
@@ -179,7 +190,7 @@ print("INTERACTIVE_DRAFT_LUA PASS 20/20")
     pathlib.Path(script).unlink(missing_ok=True)
     if proc.returncode != 0:
         raise AssertionError((proc.stdout + proc.stderr).strip())
-    if "INTERACTIVE_DRAFT_LUA PASS 20/20" not in proc.stdout:
+    if "INTERACTIVE_DRAFT_LUA PASS 25/25" not in proc.stdout:
         raise AssertionError(proc.stdout.strip() or "lua harness produced no PASS marker")
 
 
@@ -195,6 +206,13 @@ ReplicatedSuite = {{
     SafeTraceback = function(err) return tostring(err) end,
 }}
 assert(loadfile([[{framework}]]))()
+function UI:TryInteractionCall(widget, methodName, ...)
+    local method = widget and widget[methodName]
+    if type(method) ~= "function" then return false, tostring(methodName) .. "_unavailable" end
+    local ok, result = pcall(method, widget, ...)
+    if ok ~= true or result == false then return false, tostring(ok and (methodName .. "_rejected") or result) end
+    return true, result
+end
 
 local rootNativeCalls, adapterCalls = 0, 0
 local composite = {{}}
@@ -218,6 +236,31 @@ local picked = {{ calls = 0 }}
 function picked:EnablePick(value) self.calls = self.calls + 1; self.last = value end
 assert(UI:SetPickable(picked, true, "harness") == true, "supported pickable widget did not write")
 assert(picked.calls == 1 and picked.last == true, "pickable native write mismatch")
+
+-- Focus identity is accepted only when it resolves to a tracked Suite input.
+-- RU may expose either the generated physical id or the logical Native id.
+local focusedIdentity = "logical_focus"
+GetFocusedWidgetId = function() return focusedIdentity end
+local inputFocus = {{ rsUiKeyboardInput=true, rsNativePhysicalId="physical_focus", rsNativeLogicalId="logical_focus", setFocusCalls=0 }}
+function inputFocus:EnableKeyboard(value) self.keyboard=value; return value end
+function inputFocus:SetFocus() self.setFocusCalls=self.setFocusCalls+1; return true end
+function inputFocus:ClearFocus() focusedIdentity=nil end
+assert(UI:AdoptWidget(inputFocus, "harness", "ui_focus") == true, "input focus adoption failed")
+assert(UI:IsInputWidgetFocused(inputFocus) == true, "logical focus identity did not resolve to tracked input")
+-- First click can make the Native focus id point at the EditBox BEFORE Lua
+-- promotes EnableKeyboard(false)->true. That is not yet a usable text-edit
+-- focus; the post-arm path must SetFocus once after keyboard promotion.
+assert(UI:ActivateInputWidget(inputFocus, "harness", "click") == true, "post-arm input activation failed")
+assert(inputFocus.keyboard == true and inputFocus.setFocusCalls == 1,
+    "newly keyboard-armed focused input did not receive post-arm SetFocus promotion")
+-- A repeat click while already keyboard-armed + focused may preserve Native
+-- caret placement and must not add another SetFocus.
+assert(UI:ActivateInputWidget(inputFocus, "harness", "repeat_click") == true, "repeat focused activation failed")
+assert(inputFocus.setFocusCalls == 1, "already-armed repeat click re-applied SetFocus and may reset native caret")
+focusedIdentity = "physical_focus"
+assert(UI:IsInputWidgetFocused(inputFocus) == true, "physical focus identity did not resolve to tracked input")
+focusedIdentity = nil
+UI:DisarmInputWidget(inputFocus, "harness", "cleanup")
 
 -- RU Native boolean setters may return the applied state rather than a
 -- success flag. A false return while applying false must not be classified as
@@ -300,7 +343,7 @@ assert(eventComponent:On(eventWidget, "OnClick", function() secondCalls = second
     "handler retry did not recover")
 eventWidget.handler()
 assert(firstCalls == 0 and secondCalls == 1, "failed subscription leaked into successful retry")
-print("FOUNDATION_INTERACTION_LUA PASS 14/14")
+print("FOUNDATION_INTERACTION_LUA PASS 18/18")
 '''
     with tempfile.NamedTemporaryFile("w", suffix=".lua", encoding="utf-8", delete=False) as fh:
         fh.write(lua)
@@ -309,7 +352,7 @@ print("FOUNDATION_INTERACTION_LUA PASS 14/14")
     pathlib.Path(script).unlink(missing_ok=True)
     if proc.returncode != 0:
         raise AssertionError((proc.stdout + proc.stderr).strip())
-    if "FOUNDATION_INTERACTION_LUA PASS 14/14" not in proc.stdout:
+    if "FOUNDATION_INTERACTION_LUA PASS 18/18" not in proc.stdout:
         raise AssertionError(proc.stdout.strip() or "foundation interaction lua harness produced no PASS marker")
 
 
@@ -377,13 +420,17 @@ def main() -> int:
     run_foundation_interaction_lua()
     run_widget_host_lua()
     require_source(CONTROLS, (
-        "RSUI.InteractiveDraftContractVersion = 3",
-        "RSUI.InputDraftCommitContractVersion = 1",
+        "RSUI.InteractiveDraftContractVersion = 4",
+        "RSUI.InputDraftCommitContractVersion = 2",
         "RSUI.NumericInputDraftReadContractVersion = 1",
         "function c:CommitAndEndEditing(source)",
         "DraftCoordinator:Forget(self)",
         "c.editing = false",
-        "function c:IsEditing() return self.editing == true or IsFocusedDraft(self) end",
+        "InputFocusVisualContractVersion = 1",
+        "InputDisableDraftCleanupContractVersion = 1",
+        "CanOverrideActiveDraft",
+        "restore_authority",
+        "rsUiKeyboardArmed == true",
         "self.editing = true",
     ))
     require_source(PRIMITIVE_COMPONENTS, (
@@ -418,7 +465,7 @@ def main() -> int:
         'if root.activeTab == "track" then root:Refresh() end',
     ))
     require_source(PRIMITIVES, (
-        "NativeInteractionContractVersion = 6",
+        "NativeInteractionContractVersion = 7",
         "CriticalInteractionDeliveryContractVersion = 1",
         "local NATIVE_BOOLEAN_STATE_SETTERS = {",
         "if not falseStateSetter then return false",
@@ -427,6 +474,10 @@ def main() -> int:
         "if ConfigureNativePickable(edit, true) ~= true then error",
         'CallNativeAccepted(edit, "EnableKeyboard", false)',
         'CallNativeAccepted(edit, "ClearTextOnEnter", false)',
+        'edit:UseSelectAllWhenFocused(false)',
+        'edit:SetCursorColor(1.00, 0.82, 0.36, 1.00)',
+        'edit:SetCursorHeight(',
+        'function UIX:SetEditBoxFocusVisual(edit, focused)',
         "EDITBOX_MULTILINE inherits WidgetBase interaction flags",
         'CallNativeAccepted(edit, "SetReadOnly", false)',
         "slider.rsUiSetEnabledAdapter = ApplySliderEnabled",
@@ -441,6 +492,13 @@ def main() -> int:
         "NativeBooleanSetterReturnContractVersion = 1",
         "CompositeEnabledAdapterContractVersion = 2",
         "ExplicitInputCommitFocusContractVersion = 1",
+        "InputFocusLifecycleContractVersion = 3",
+        "InputFocusIdentityCompatibilityContractVersion = 1",
+        "PostArmFocusPromotionContractVersion = 1",
+        "InputActivationDiagnosticsContractVersion = 1",
+        "NativeCaretPlacementPreservationContractVersion = 2",
+        "focusTargetsByIdentity",
+        "function UI:IsInputWidgetFocused(widget)",
         "function UI:DeactivateInputWidget",
         "local enabledAdapter = widget.rsUiSetEnabledAdapter",
         "if calls == 0 then",

@@ -268,6 +268,10 @@ local function NormalizeQuickHud(value)
         overallOpacity = math.max(0, math.min(1, tonumber(value.overallOpacity) or 0.94)),
         backgroundOpacity = math.max(0, math.min(1, tonumber(value.backgroundOpacity) or 1.0)),
         textOpacity = math.max(0, math.min(1, tonumber(value.textOpacity) or 1.0)),
+        -- Optional numeric sentinel. Historical rows omit it entirely, so adding
+        -- the contract does not perturb existing canonical fingerprints until a
+        -- one-time startup intent repair is actually committed.
+        runtimePreferenceLink = tonumber(value.runtimePreferenceLink) == 1 and 1 or nil,
     }
 end
 

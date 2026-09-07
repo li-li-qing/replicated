@@ -65,7 +65,8 @@ S.Persistence = {
     RuntimeAcceptanceSnapshotContractVersion = 2,
     ReadinessContractVersion = 1,
     TerminalLoadMemoizationContractVersion = 1,
-    HistoricalCanonicalRecoveryContractVersion = 2,
+    HistoricalCanonicalRecoveryContractVersion = 3,
+    KnownLegacyCanonicalRecoveryContractVersion = 1,
     Lifetime = LIFETIME,
     Scope = SCOPE,
     DefaultBudget = { maxDepth = 12, maxNodes = 4096, maxStringBytes = 65536, maxEntriesPerTable = 1024 },
@@ -149,6 +150,8 @@ S.Persistence = {
         readPrepareLoads = 0,
         terminalAutoRetrySuppressions = 0,
         terminalLoadShortCircuits = 0,
+        knownLegacyCanonicalRecoveries = 0,
+        knownLegacyCanonicalRecoveryRejects = 0,
     },
 }
 local P = S.Persistence
@@ -552,6 +555,16 @@ function P:RegisterStore(def)
         -- replaced by the current default. Typed-codec Stores retain decode-owned
         -- Domain application. Successful recovery queues an immediate restamp.
         rebuildCanonicalForIntegrity = def.rebuildCanonicalForIntegrity,
+        -- Optional STORE-OWNED one-time migration bridge for a known historical
+        -- canonical stamp that is no longer invertible after a native serializer
+        -- representation loss. This is intentionally stronger-gated than the
+        -- exact reconstruction hook above: it is called only after current-v4
+        -- verification and exact historical reconstruction both fail, while the
+        -- independent envelope seal + metadata/schema + decoded budget already
+        -- passed. The hook itself MUST whitelist exact historical fingerprints
+        -- and validate the legacy Domain shape before returning a recovered
+        -- current Domain. Unknown fingerprints continue fail-closed.
+        recoverKnownLegacyCanonical = def.recoverKnownLegacyCanonical,
         -- One-generation recovery for legacy (v2 raw-envelope) stamped Stores
         -- whose fingerprint no longer verifies because the RU serializer changed
         -- the on-disk representation. Default ON: the .18.125 real-machine run
@@ -1300,6 +1313,53 @@ function P:LoadStore(id, options)
                                         end
                                     end
                                 end
+                            end
+                        end
+                        -- Contract v3: after exact historical reconstruction has
+                        -- exhausted all deterministic candidates, a Store may opt
+                        -- into a ONE-TIME known-stamp migration. This is not a
+                        -- generic mismatch bypass. The hook receives the exact old
+                        -- stamp and raw envelope, and is responsible for whitelisting
+                        -- that stamp + validating its own legacy payload shape. Core
+                        -- still enforces envelope integrity (already passed above),
+                        -- decoded/current-domain budgets, current canonicalization and
+                        -- immediate restamp before the Store can return to normal use.
+                        if recoveredHistoricalCanonical ~= true and envelopeAdvertised == true
+                            and store.allowIntegrityUpgrade == true
+                            and type(store.recoverKnownLegacyCanonical) == "function" then
+                            local knownOk, knownDomain, knownReason = pcall(
+                                store.recoverKnownLegacyCanonical, DeepCopy(decoded), stampedFingerprint, canonical, DeepCopy(raw))
+                            if knownOk == true and type(knownDomain) == "table" then
+                                local knownInspection = self:InspectPayload(knownDomain, store.budget)
+                                local knownCanonical = nil
+                                local knownCanonicalInspection = nil
+                                if type(knownInspection) == "table" and knownInspection.ok == true then
+                                    knownCanonical = self:CanonicalIntegrityValue(store, knownDomain)
+                                    knownCanonicalInspection = knownCanonical ~= nil
+                                        and self:InspectPayload(knownCanonical, store.encodedBudget) or nil
+                                end
+                                if type(knownCanonicalInspection) == "table" and knownCanonicalInspection.ok == true then
+                                    local knownCurrentFingerprint = self:FingerprintCanonicalValue(store, knownCanonical)
+                                    if knownCurrentFingerprint ~= nil then
+                                        recoveredHistoricalCanonical = true
+                                        integrityUpgradeNeeded = true
+                                        preDecodedValue = knownDomain
+                                        store.lastIntegrityStatus = "known_legacy_canonical_recovery"
+                                        store.lastIntegrityFingerprint = tostring(stampedFingerprint)
+                                        store.lastIntegrityError = tostring(knownReason or "known_legacy_stamp")
+                                        self.stats.integrityUpgradeRecoveries = (tonumber(self.stats.integrityUpgradeRecoveries) or 0) + 1
+                                        self.stats.knownLegacyCanonicalRecoveries = (tonumber(self.stats.knownLegacyCanonicalRecoveries) or 0) + 1
+                                        Emit("warning", "STORE_KNOWN_LEGACY_CANONICAL_RECOVERY",
+                                            "已识别并验证 Store 专属历史盖章；保留现存业务数据并立即按当前 canonical 重盖章", {
+                                                store = store.id, oldFingerprint = stampedFingerprint,
+                                                newFingerprint = knownCurrentFingerprint, reason = knownReason,
+                                            })
+                                    end
+                                else
+                                    self.stats.knownLegacyCanonicalRecoveryRejects = (tonumber(self.stats.knownLegacyCanonicalRecoveryRejects) or 0) + 1
+                                end
+                            elseif knownOk ~= true or knownDomain ~= nil then
+                                self.stats.knownLegacyCanonicalRecoveryRejects = (tonumber(self.stats.knownLegacyCanonicalRecoveryRejects) or 0) + 1
                             end
                         end
                         if recoveredHistoricalCanonical ~= true then
@@ -2875,6 +2935,9 @@ function P:BuildRuntimeAcceptanceSnapshot(options)
             resolvedKey = store.resolvedKey,
             resolvedScopeFingerprint = store.resolvedScopeFingerprint,
             lastScopeBindingError = store.lastScopeBindingError,
+            lastIntegrityStatus = store.lastIntegrityStatus,
+            lastIntegrityError = store.lastIntegrityError,
+            historicalRecoveryProbe = store.lastHistoricalRecoveryProbe,
         }
         if row.loaded then loaded = loaded + 1 end
         if row.dirty then dirty = dirty + 1 end
@@ -2972,6 +3035,9 @@ function P:Describe()
                 resolvedKey = store.resolvedKey,
                 resolvedScopeFingerprint = store.resolvedScopeFingerprint,
                 lastScopeBindingError = store.lastScopeBindingError,
+            lastIntegrityStatus = store.lastIntegrityStatus,
+            lastIntegrityError = store.lastIntegrityError,
+            historicalRecoveryProbe = store.lastHistoricalRecoveryProbe,
                 lastError = store.lastError,
                 lastSaveAt = store.lastSaveAt,
                 firstDirtyAt = store.firstDirtyAt,
@@ -3027,6 +3093,7 @@ function P:Describe()
         readinessContractVersion = self.ReadinessContractVersion,
         terminalLoadMemoizationContractVersion = self.TerminalLoadMemoizationContractVersion,
         historicalCanonicalRecoveryContractVersion = self.HistoricalCanonicalRecoveryContractVersion,
+        knownLegacyCanonicalRecoveryContractVersion = self.KnownLegacyCanonicalRecoveryContractVersion,
         lastFlush = DeepCopy(self.lastFlush),
         rows = rows,
         stats = DeepCopy(self.stats),

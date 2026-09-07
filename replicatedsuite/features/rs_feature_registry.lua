@@ -270,15 +270,16 @@ Add("life_butler", "life.butler", "管家助手", "life", 90, "预留管家充�
 })
 
 Add("tools_bag", "tools.bag_organizer", "整理背包", "tools", 10, "背包/仓库整理、黑名单与按类别有界批量移动。", {
-    status = "migrated_partial", lifecycle = "explicit_action", authority = "v3.bag", settingsCapable = true,
+    status = "migrated_partial", lifecycle = "independent_low_cost", authority = "v3.bag", settingsCapable = true, defaultEnabled = true,
     capabilities = { "category_batch", "scheduler_queue", "window_commands", "native_window_quick_take_put", "blacklist_filter", "read_verify_stop", "dynamic_source_resolution", "ru_identity_fallback", "shared_inventory_snapshot", "physical_bag_authority", "grouped_intent_queue" },
     scheduler = "InventorySnapshotV3 builds one bounded read/index snapshot per explicit plan (bagId=1 physical Authority with bounded bagId=0 fallback); Shared Scheduler serializes grouped same-item/category intent at 250ms; slotHint is revalidated before every write and quick/category tasks remain mutually exclusive; no per-frame polling",
-    window = "打开银行/箱子时 V3 Presenter 跟随背包显示“取/放/停”；显式点击才建立同类物品移动计划，页面保留高级整理入口",
+    window = "默认启用的低成本窗口观察只读取背包/银行/箱子的几何与可见性；兼容 RU GetContentMainScriptPosVis 仅返回 x/y/w/h 的四值构建，并以 ADDON:GetContent 短父链 IsVisible 为更强事实；打开银行/箱子时 V3 Presenter 跟随背包显示“取/放/停”。物品扫描/移动仍只在显式点击后执行；用户显式关闭整理背包后观察任务立即释放。",
     blacklist = "Per-bank/coffer itemType/category rules are applied before every move; blacklist or source-read failure fails closed",
     apiDependencies = {
         "X2Bag:Capacity", "X2Bag:GetBagItemInfo", "X2Bank:GetBagItemInfo", "X2Coffer:GetBagItemInfo",
         "X2Bag:MoveToEmptyBankSlot", "X2Bag:MoveToEmptyCofferSlot",
         "X2Bank:MoveToEmptyBagSlot", "X2Coffer:MoveToEmptyBagSlot",
+        "ADDON:GetContent", "ADDON:GetContentMainScriptPosVis",
     },
     apiReadiness = "local_contract_verified_pending_native_runtime", verification = "v3_native_window_follow_contract_pending_ru_visual_runtime",
     apiPolicy = "read_plus_explicit_move", evidence = ".18.123 keeps the reference project as behavior evidence only and replaces its scan/queue mechanics with shared InventorySnapshotV3. The service normalizes native rows into detached primitives, prefers verified physical bagId=1 with bounded bagId=0 fallback, and builds identity/category indexes in the same pass. Quick take/put and category batch queue grouped stable intent rather than one record per transient slot, use live slot hints + wraparound revalidation before every write, and only run a bounded population count when the post-write source slot is ambiguous. The old production name+grade+category tuple remains a conservative fallback only when RU omits itemType. All writes stay explicit, 250ms serialized, mutually exclusive and fail-closed on read/verify/window changes. RU visual anchoring and long move timing still require Fresh Reload proof.",

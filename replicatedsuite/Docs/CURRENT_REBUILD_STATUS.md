@@ -10,14 +10,17 @@
 | Architecture | V3-only / `v3_rebuild` |
 | Runtime Addon | `replicatedsuite/` |
 | Legacy / Professional / `globals/` | 已物理删除，Active dependency = 0 |
-| BuildTag | `v3-m1.16.0.18.150-death-review-history-sequence-recovery` |
+| BuildTag | `v3-m1.16.0.18.153-bag-native-window-visibility-recovery` |
 | Active TOC Lua | 222 |
 | Active / All Lua | 222 / 222 |
 | Foundation Audit | PASS |
-| Python Harness | 37 / 37 PASS |
+| Python Harness | 35 / 38 PASS（3 个 Lua 5.4 语义敏感运行时 harness——interactive_draft / recovery_launcher / runtime_entry_lifecycle——在本机唯一可用的 Lua 5.4.5 下失败、与 `.18.145` 基线同类环境失败，见 CHANGELOG `.18.146`，TEST-001） |
 | Product Capability Matrix | 126 条：80 IMPLEMENTED / 35 PARTIAL / 0 TODO / 11 SPECIFIC_RUNTIME_BLOCKED |
-| RU Fresh Reload | PENDING |
-| Current UI Gate | **Fresh Reload/真实回归仍为 P0**：`.18.149` 实机已证明 UI Build 级联全部恢复（页面失败/隔离/回滚/txFail 均 0），唯一剩余阻断收敛为 `v3.death_review 770CB0B8>368335F2`。`.18.150` 保留 stable codec，并只扩展 exact historical recovery：历史 `history.entries` 增加 sequence/map 表形候选，仍要求完整旧 Hash 精确命中；失败时横幅附 `historical_probe` 形状计数。必须保留真实旧 Store Fresh Reload，首轮目标 `Fence=0 / integrityFail=0`，第二次必须 `verified_canonical`。 |
+| RU Fresh Reload | `.18.151` Foundation/Persistence PASS；`.18.152` Gear Quick Surface 已修；`.18.153` Bag Native 四返回值可见性待实机复验 |
+| Current UI Gate | **当前 P0 是 Bag Native Window Fact 实机复验**：`.18.151` Foundation/Persistence 已 `阻断0/警告0/Fence0/页面事务0`；`.18.152` Gear Quick Surface 生命周期已修。`.18.153` 只验证整理背包：Reload 后直接打开银行/箱子，`UIC_BAG/UIC_BANK/UIC_COFFER` 允许 RU 四返回值，`取/放/停` 应在 ≤350ms 出现在背包上方；设置页状态必须给出三窗口 `status/visible/source`。显式 `tools_bag=false` 继续是用户 Authority，不自动覆盖。 |
+
+- `RU-BAG-WINDOW-153`：`.18.152` 后实机仍无仓库/箱子快捷按钮。真实代码确认 Bag 仍严格要求 `GetContentMainScriptPosVis` 第 5 返回值为 boolean，而 AuctionSurfaceV3 已证明 RU 存在四返回值窗口。`.18.153` 将 UIC_BAG/UIC_BANK/UIC_COFFER 统一到 boolean → Content parent-chain visibility → legal geometry fallback 的事实优先级，并让写动作复用同一判定；设置页输出三窗口 source/reason。待 Fresh Reload：直接打开银行/箱子，≤350ms 在背包上方出现取/放/停。
+
 
 `.18.112` 已把本轮两个表面回归收敛到底层 Interaction Lifecycle：主菜单拖动不再依赖调用者恰好把 Border 创建成 pickable，Windowing 在建立 Drag Gesture 前自己验证 hit-test surface；所有 Suite EditBox/MultiEditBox 进入 tracked physical-focus 生命周期，隐藏/禁用/释放/Runtime Stop/hot reload 都只对可证明属于 Suite 的输入对象清理 Focus。`.18.110` 的 Recovery Reload 与 Persistence 保存解耦继续保留：保存失败只保留证据并警告潜在未保存数据丢失，不阻断覆盖修复文件后的 recovery reload；strict durability 模式仍可 fail-closed.
 
@@ -589,6 +592,7 @@ Fresh Reload 后优先验证本轮四项用户回归：
 
 73. **已完成 `.18.149` — Death Review Index Stable Codec + Historical Business-State Recovery（本地，待 RU）**：`.18.148` 真实 Fresh Reload 仍为同一 `770CB0B8>20692C15`。真实代码复核确认旧 opaque canonical 不只受 `widgetWindow` false 省略影响：`autoShow/showDebuffs` 是 default-TRUE 业务布尔，RU 若省略显式 false，Normalize 会把 nil 重新解释为 true，窗口-only subset 永远无法命中旧 stamp。现将这两个业务歧义与窗口缺失键统一放进最多 12 位 exact-match 搜索；Persistence Historical Canonical Recovery 升 v2，可在旧 Hash 已认证后应用 recovered Domain；Index codec v1 用 numeric disabled sentinel 持久化两个默认真开关，首次恢复后不再形成 false→nil→重盖循环。Store key/schema 不变。Foundation v125 / Acceptance v80。
 74. **已完成 `.18.150` — Death Review Historical Sequence Recovery + Shape Probe（本地，待 RU）**：`.18.149` 实机已将页面事务红灯全部清零，剩余唯一 Fence 为旧 Index `770CB0B8`。本轮 normal Domain/codec 不放宽，只在 current-v4 mismatch 的 historical hook 内增加 bounded `pairs()` history collector，用旧 stamp 对完整候选做精确认证；若仍失败，`historical_probe` 只输出结构计数以结束后续盲猜。Foundation v126 / Acceptance v81。
+75. **已完成 `.18.151` — Death Review Known Legacy Stamp Migration（本地，待 RU）**：`.18.150` 同一真实 Store 仍为 `770CB0B8>368335F2`，且主横幅字符上限会截掉已有 probe。连续五轮固定旧 stamp 已足以作为 Store 专属迁移身份；新增 `recoverKnownLegacyCanonical` 最终桥，只对白名单 `770CB0B8` + pre-codec schema1 + Envelope Seal 已通过 + 严格 legacy Index shape 通过的 payload 生效，保留现存 settings/history/window 后立即写 stable codec。未知 Hash 回归继续 Fence。A2 增加 Death Review/DRProbe。Foundation v127 / Acceptance v82；37/37 Harness + Audit + 222/222 Parse PASS。
 72. **已完成 `.18.148` — Death Review Historical Window Subset Recovery（本地，待 RU）**：`.18.147` 真实 Fresh Reload 证明单一 opaque 历史候选仍不足；旧 partial FloatingSurface 状态在 RU 省略 false 字段后，既不等于磁盘形状也不等于当前完整 canonical。Store v3 仅对 17 个已知 FloatingSurface 键中的“磁盘缺失且当前 pure normalizer 可确定”的字段做最多 12 位 bounded subset 搜索（≤4096，一次性 mismatch 路径），每个候选必须精确命中旧 stamped fingerprint 才允许恢复并重盖；真实损坏继续 Fence。Foundation v124 / Acceptance v79。
 
 ### 9.4 Product Matrix 后续入口
@@ -642,4 +646,8 @@ Fresh Reload 后优先验证本轮四项用户回归：
 69. **已完成 `.18.145` — Numeric Explicit Apply / Adaptive Visual Point Size**：Compact Numeric Setting 默认在 Exact EditBox 右侧提供“应用”，不再把未验证的 RU Enter 事件作为唯一提交入口；Apply 仍沿 Binding→Domain→Persistence 单 Authority，并对 LostFocus-before-OnClick 做相同值去重。RangeAssist/UnitLines 点大小的旧 Domain 10 上限与 Presenter 40px flatten 同步移除，统一由 `Constants.VisualGuide` 约束 2..24；默认 Slider 仍 2..10，输入 15 并应用后 Authority=15、Slider 展示端点扩为 2..15 且持久化，Presenter 显示为 55px。RSUI v47 / API 13.1、Foundation v121 / Acceptance v76；35/35 Harness + Foundation Audit PASS，等待 RU Fresh Reload 验证实际视觉与多分辨率紧凑布局。
 70. **已完成 `.18.146` — Death Review Canonical Window / Terminal Load Memoization**：RU Fresh Reload 报 `v3.death_review fingerprint_mismatch:770CB0B8>20692C15`。真实调用链确认 Feature 用 FloatingSurface 固定形状保存窗口，而 Store canonical 原样透传 widgetWindow，导致 RU 省略 false/default 字段后逻辑等价却 hash 变化。DeathReview Store/Feature 现共享唯一 Window Policy，并在 Index canonical 中统一 NormalizeState；不清存档、不降完整性。Persistence 同时 memoize 同 generation 的 terminal fenced load，避免一个真实故障被 startup defaults 重复读取/记录成 `integrityFail=10`。新增 real-Lua drift harness；36/36 Harness + Foundation Audit PASS，TOC Lua 222/222 Parse PASS；Foundation v122 / Acceptance v77。
 68. **NEXT — RU `.18.143` Hover Regression**：Fresh Reload 后分别在“单位连线”四个 Pair Toggle、颜色按钮、顶部启停按钮，以及“范围辅助”启停/颜色按钮上连续悬停 10 秒；视觉不得在默认/高亮之间闪烁。随后快速移入/移出确认 hover 最迟约 120ms 清除且点击不受影响。PVP/Range 世界视觉刷新频率不得下降。
+71. **已完成 `.18.154` — Unit Lines Raw Projected Head Anchor**：RU 实机反馈连线相对角色头顶中心存在轻微统一偏移。根因不在 ScreenProjection，而在 1×1 `'.'` Label 的 Presenter 放置：`PlaceUnitDot` 错把字号当 extent，再减 `size/2`，默认约造成 11px 左上偏移。现改为 raw projected `(x,y)` 直接锚点，font size 只影响 glyph；Range Assist 不改。E2E 首尾锚点门禁收紧到 ±1px，Foundation Audit 禁止回归半字号坐标补偿。
 
+
+72. **已完成 `.18.155` — EditBox Foundation Draft/Caret/Focus**：统一修复所有 RSUI TextInput/NumericInput 的光标不可见、强制全选、未知刷新源回灌旧 Binding、physical/logical focus identity 差异、重复 SetFocus 重置 caret、Disable/Release 幽灵 draft；Native caret 仍由 RU 原生闪烁，未新增 Tick/OnTextChanged/KeyDown。
+73. **已完成 `.18.156` — EditBox Post-Arm Focus Promotion**：RU 实机确认“Focus ID 已指向 EditBox”不等于 Keyboard text-edit admission。首次点击若 `EnableKeyboard(false→true)`，必须在 promotion 后补一次 `SetFocus`；仅已 armed+focused 的重复点击可跳过，兼顾可输入与 caret 稳定。Deferred Keyboard 的隐藏/禁用/Release 安全边界保持不变；新增 InputActivationDiagnostics v1 与 `UI输入` 运行时证据行。

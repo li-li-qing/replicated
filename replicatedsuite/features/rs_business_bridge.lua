@@ -80,7 +80,7 @@ local BAG_QUICK_LIMIT = 40
 -- diagnostic read-only and fail closed when any part of the getter contract
 -- is unavailable or malformed.
 local function ReadBagWindowContext()
-    local context = { status = "unknown", visible = nil, follow = "diagnostic_only", embed = "fail_closed", reason = nil }
+    local context = { status = "unknown", visible = nil, follow = "diagnostic_only", embed = "fail_closed", source = "none", reason = nil }
     local addonApi = AddonApi or rawget(_G, "ADDON")
     local bagContentId = rawget(_G, "UIC_BAG")
     if addonApi == nil or bagContentId == nil then context.reason = "ADDON/UIC_BAG 不可用"; return context end
@@ -91,61 +91,176 @@ local function ReadBagWindowContext()
     if type(addonApi.GetContentMainScriptPosVis) ~= "function" then
         context.reason = "原生窗口可见性 getter 不可用"; return context
     end
+
+    local layoutContext = S.Layout ~= nil and type(S.Layout.GetContext) == "function" and S.Layout:GetContext() or {}
+    local logicalWidth = math.max(320, tonumber(layoutContext.logicalWidth) or 1024)
+    local logicalHeight = math.max(240, tonumber(layoutContext.logicalHeight) or 768)
+    local function PlausibleRect(x, y, width, height)
+        x, y, width, height = Number(x), Number(y), Number(width), Number(height)
+        if x == nil or y == nil or width == nil or height == nil or width <= 0 or height <= 0 then return false end
+        if width > logicalWidth * 2 or height > logicalHeight * 2 then return false end
+        if x < -width or y < -height or x > logicalWidth + width or y > logicalHeight + height then return false end
+        return true
+    end
+    local function Content()
+        if S.Api:IsCapabilityAllowed("ADDON:GetContent") ~= true or type(addonApi.GetContent) ~= "function" then return nil end
+        local ok, value = S.Api:CallCapability("ADDON:GetContent", addonApi, "GetContent", bagContentId)
+        return ok == true and value or nil
+    end
+    local function ChainVisible(content)
+        local node, anyKnown = content, false
+        for _ = 0, 8 do
+            if node == nil then break end
+            if type(node.IsVisible) == "function" then
+                local ok, isVisible = pcall(function() return node:IsVisible() end)
+                if ok == true then
+                    anyKnown = true
+                    if isVisible == true then return true, true end
+                end
+            end
+            if type(node.GetParent) ~= "function" then break end
+            local ok, parent = pcall(function() return node:GetParent() end)
+            if ok ~= true or parent == nil or parent == node then break end
+            node = parent
+        end
+        return anyKnown, false
+    end
+    local function ContentRect(content)
+        local node = content
+        for depth = 0, 8 do
+            if node == nil then break end
+            if S.Layout ~= nil and type(S.Layout.GetLogicalRect) == "function" then
+                local ok, x, y, width, height = pcall(function() return S.Layout:GetLogicalRect(node) end)
+                if ok == true and PlausibleRect(x, y, width, height) then
+                    return Number(x), Number(y), Number(width), Number(height), depth == 0 and "bag-content" or ("bag-parent-" .. tostring(depth))
+                end
+            end
+            if type(node.GetParent) ~= "function" then break end
+            local ok, parent = pcall(function() return node:GetParent() end)
+            if ok ~= true or parent == nil or parent == node then break end
+            node = parent
+        end
+        return nil
+    end
+
+    local content = Content()
+    local contentKnown, contentVisible = ChainVisible(content)
     local ok, x, y, width, height, visible = pcall(function()
         return addonApi:GetContentMainScriptPosVis(bagContentId)
     end)
     x, y, width, height = Number(x), Number(y), Number(width), Number(height)
-    if ok ~= true or x == nil or y == nil or width == nil or height == nil or type(visible) ~= "boolean" then
-        context.reason = "原生窗口几何/可见性返回值未知"; return context
+    local mainRect = ok == true and PlausibleRect(x, y, width, height)
+    local resolvedVisible
+    if type(visible) == "boolean" then
+        resolvedVisible = visible == true
+    elseif contentKnown == true then
+        -- RU builds can omit the fifth return value.  When the native content
+        -- tree exposes visibility, it is a stronger fact than stale geometry.
+        resolvedVisible = contentVisible == true
+    elseif mainRect == true then
+        -- Proven RU compatibility path shared with AuctionSurfaceV3: a valid
+        -- four-value MainScript rectangle is an open signal only when no
+        -- stronger content-visibility fact exists.
+        resolvedVisible = true
+    else
+        resolvedVisible = false
     end
-    local layoutContext = S.Layout ~= nil and type(S.Layout.GetContext) == "function" and S.Layout:GetContext() or {}
-    local logicalWidth = tonumber(layoutContext.logicalWidth) or 1024
-    local logicalHeight = tonumber(layoutContext.logicalHeight) or 768
-    if width <= 0 or height <= 0 or width > logicalWidth * 2 or height > logicalHeight * 2
-        or x < -width or y < -height or x > logicalWidth + width or y > logicalHeight + height then
-        context.reason = "原生窗口几何超出安全范围"; return context
+    if mainRect == true then
+        context.status, context.visible = "ready", resolvedVisible
+        context.x, context.y, context.width, context.height = x, y, width, height
+        context.source = type(visible) == "boolean" and "main-script" or (contentKnown and "main-script+content-vis" or "main-script-geometry")
+        return context
     end
-    context.status, context.visible = "ready", visible
-    context.x, context.y, context.width, context.height = x, y, width, height
+
+    local px, py, pw, ph, source = ContentRect(content)
+    if px ~= nil then
+        context.status, context.visible = "ready", contentKnown == true and contentVisible == true
+        context.x, context.y, context.width, context.height, context.source = px, py, pw, ph, source
+        return context
+    end
+    if contentKnown == true and contentVisible ~= true then
+        context.status, context.visible, context.source, context.reason = "ready", false, "content-hidden", nil
+        return context
+    end
+    context.reason = ok ~= true and "原生窗口几何读取失败" or "原生窗口几何/可见性返回值未知"
     return context
 end
 
 local function ReadStorageWindowContext(target)
     local addonApi = AddonApi or rawget(_G, "ADDON")
     local contentId = target == "bank" and rawget(_G, "UIC_BANK") or target == "coffer" and rawget(_G, "UIC_COFFER") or nil
-    if addonApi == nil or contentId == nil or type(addonApi.GetContentMainScriptPosVis) ~= "function" then return nil end
-    if S.Api == nil or type(S.Api.IsCapabilityAllowed) ~= "function" or S.Api:IsCapabilityAllowed("ADDON:GetContentMainScriptPosVis") ~= true then return nil end
+    local result = { kind = target, status = "unknown", visible = false, source = "none", reason = nil }
+    if addonApi == nil or contentId == nil then result.reason = "仓储窗口标识不可用"; return result end
+    if S.Api == nil or type(S.Api.IsCapabilityAllowed) ~= "function"
+        or S.Api:IsCapabilityAllowed("ADDON:GetContentMainScriptPosVis") ~= true
+        or type(addonApi.GetContentMainScriptPosVis) ~= "function" then
+        result.reason = "仓储窗口几何 API 不可用"; return result
+    end
+
+    local content
+    if S.Api:IsCapabilityAllowed("ADDON:GetContent") == true and type(addonApi.GetContent) == "function" then
+        local contentOk, value = S.Api:CallCapability("ADDON:GetContent", addonApi, "GetContent", contentId)
+        if contentOk == true then content = value end
+    end
+    local contentKnown, contentVisible = false, false
+    local node = content
+    for _ = 0, 8 do
+        if node == nil then break end
+        if type(node.IsVisible) == "function" then
+            local visOk, isVisible = pcall(function() return node:IsVisible() end)
+            if visOk == true then
+                contentKnown = true
+                if isVisible == true then contentVisible = true; break end
+            end
+        end
+        if type(node.GetParent) ~= "function" then break end
+        local parentOk, parent = pcall(function() return node:GetParent() end)
+        if parentOk ~= true or parent == nil or parent == node then break end
+        node = parent
+    end
+
     local ok, x, y, width, height, visible = pcall(function() return addonApi:GetContentMainScriptPosVis(contentId) end)
-    x,y,width,height = Number(x),Number(y),Number(width),Number(height)
-    if ok~=true or x==nil or y==nil or width==nil or height==nil or type(visible)~="boolean" or width<=0 or height<=0 then return nil end
-    return { kind=target, x=x, y=y, width=width, height=height, visible=visible }
+    x, y, width, height = Number(x), Number(y), Number(width), Number(height)
+    local layoutContext = S.Layout ~= nil and type(S.Layout.GetContext) == "function" and S.Layout:GetContext() or {}
+    local logicalWidth = math.max(320, tonumber(layoutContext.logicalWidth) or 1024)
+    local logicalHeight = math.max(240, tonumber(layoutContext.logicalHeight) or 768)
+    local mainRect = ok == true and x ~= nil and y ~= nil and width ~= nil and height ~= nil and width > 0 and height > 0
+        and width <= logicalWidth * 2 and height <= logicalHeight * 2
+        and x >= -width and y >= -height and x <= logicalWidth + width and y <= logicalHeight + height
+    local resolvedVisible
+    if type(visible) == "boolean" then resolvedVisible = visible == true
+    elseif contentKnown == true then resolvedVisible = contentVisible == true
+    elseif mainRect == true then resolvedVisible = true
+    else resolvedVisible = false end
+
+    if mainRect == true then
+        result.status, result.visible = "ready", resolvedVisible
+        result.x, result.y, result.width, result.height = x, y, width, height
+        result.source = type(visible) == "boolean" and "main-script" or (contentKnown and "main-script+content-vis" or "main-script-geometry")
+        return result
+    end
+    if contentKnown == true then
+        result.status, result.visible, result.source, result.reason = "ready", contentVisible == true, contentVisible and "content-visible" or "content-hidden", nil
+        return result
+    end
+    result.reason = ok ~= true and "仓储窗口几何读取失败" or "仓储窗口几何/可见性返回值未知"
+    return result
 end
 
 local function CurrentStorageContext()
     local bank = ReadStorageWindowContext("bank")
-    if type(bank)=="table" and bank.visible==true then return bank end
+    if type(bank)=="table" and bank.status=="ready" and bank.visible==true then return bank end
     local coffer = ReadStorageWindowContext("coffer")
-    if type(coffer)=="table" and coffer.visible==true then return coffer end
+    if type(coffer)=="table" and coffer.status=="ready" and coffer.visible==true then return coffer end
     return nil
 end
 
 local function RequireStorageWindow(target)
-    local addonApi = AddonApi or rawget(_G, "ADDON")
-    local contentId = target == "bank" and rawget(_G, "UIC_BANK") or target == "coffer" and rawget(_G, "UIC_COFFER") or nil
-    if addonApi == nil or contentId == nil then return false, "仓储窗口标识不可用，已安全拒绝" end
-    if S.Api == nil or type(S.Api.IsCapabilityAllowed) ~= "function"
-        or S.Api:IsCapabilityAllowed("ADDON:GetContentMainScriptPosVis") ~= true then
-        return false, "仓储窗口可见性 API 未获能力许可，已安全拒绝"
+    local context = ReadStorageWindowContext(target)
+    if type(context) ~= "table" or context.status ~= "ready" then
+        return false, tostring(context and context.reason or "仓储窗口可见性/几何返回值未知") .. "，已安全拒绝"
     end
-    if type(addonApi.GetContentMainScriptPosVis) ~= "function" then return false, "仓储窗口可见性 getter 不可用，已安全拒绝" end
-    local ok, _, _, width, height, visible = pcall(function()
-        return addonApi:GetContentMainScriptPosVis(contentId)
-    end)
-    width, height = Number(width), Number(height)
-    if ok ~= true or width == nil or height == nil or width <= 0 or height <= 0 or type(visible) ~= "boolean" then
-        return false, "仓储窗口可见性/几何返回值未知，已安全拒绝"
-    end
-    if visible ~= true then return false, "请先打开对应的银行/箱子窗口；窗口状态无法确认时安全拒绝" end
+    if context.visible ~= true then return false, "请先打开对应的银行/箱子窗口；窗口状态无法确认时安全拒绝" end
     return true
 end
 
@@ -837,16 +952,35 @@ local function BeginBagQuick(feature, direction)
 end
 
 local function RefreshBagQuickOverlay(feature)
-    local bag=ReadBagWindowContext(); local storage=CurrentStorageContext()
+    local bag=ReadBagWindowContext()
+    local bank=ReadStorageWindowContext("bank")
+    local coffer=ReadStorageWindowContext("coffer")
+    local storage=type(bank)=="table" and bank.status=="ready" and bank.visible==true and bank
+        or type(coffer)=="table" and coffer.status=="ready" and coffer.visible==true and coffer or nil
     local visible=type(bag)=="table" and bag.status=="ready" and bag.visible==true and type(storage)=="table"
     local old=feature._quickOverlay or {}
     local nextState=Copy(old)
     nextState.visible=visible==true; nextState.storageKind=storage and storage.kind or nil
+    nextState.bagStatus=bag and bag.status or "unknown"
+    nextState.bagVisible=bag and bag.visible==true or false
+    nextState.bagSource=bag and bag.source or "none"
+    nextState.bagReason=bag and bag.reason or nil
+    nextState.bankStatus=bank and bank.status or "unknown"
+    nextState.bankVisible=bank and bank.visible==true or false
+    nextState.bankSource=bank and bank.source or "none"
+    nextState.bankReason=bank and bank.reason or nil
+    nextState.cofferStatus=coffer and coffer.status or "unknown"
+    nextState.cofferVisible=coffer and coffer.visible==true or false
+    nextState.cofferSource=coffer and coffer.source or "none"
+    nextState.cofferReason=coffer and coffer.reason or nil
     if visible then
         nextState.x=bag.x; nextState.y=math.max(0,(tonumber(bag.y) or 0)-36); nextState.width=math.max(190,math.min(260,tonumber(bag.width) or 220)); nextState.height=32
         if nextState.status==nil or nextState.status=="等待仓库/箱子" then nextState.status="可快捷取放" end
     elseif nextState.status~="正在取出" and nextState.status~="正在放入" then nextState.status="等待仓库/箱子" end
     local changed = old.visible~=nextState.visible or old.storageKind~=nextState.storageKind or old.x~=nextState.x or old.y~=nextState.y or old.width~=nextState.width
+        or old.bagStatus~=nextState.bagStatus or old.bagVisible~=nextState.bagVisible or old.bagSource~=nextState.bagSource or old.bagReason~=nextState.bagReason
+        or old.bankStatus~=nextState.bankStatus or old.bankVisible~=nextState.bankVisible or old.bankSource~=nextState.bankSource or old.bankReason~=nextState.bankReason
+        or old.cofferStatus~=nextState.cofferStatus or old.cofferVisible~=nextState.cofferVisible or old.cofferSource~=nextState.cofferSource or old.cofferReason~=nextState.cofferReason
     feature._quickOverlay=nextState
     if changed then PublishBagOverlay(feature,"bag_quick_window") end
     return true
@@ -872,7 +1006,7 @@ local function StartBagQuickObserver(feature)
     RefreshBagQuickOverlay(feature)
     if S.Scheduler==nil or type(S.Scheduler.AddTask)~="function" then return false,"背包窗口观察调度器不可用" end
     S.Scheduler:RemoveTask(BAG_QUICK_OBSERVE_TASK)
-    local added=S.Scheduler:AddTask(BAG_QUICK_OBSERVE_TASK,200,function() return RefreshBagQuickOverlay(feature) end,false,feature,"P3")
+    local added=S.Scheduler:AddTask(BAG_QUICK_OBSERVE_TASK,350,function() return RefreshBagQuickOverlay(feature) end,false,feature,"P3")
     if added~=true then return false,"背包窗口观察任务创建失败" end
     if type(S.Scheduler.SetTaskModule)=="function" then S.Scheduler:SetTaskModule(BAG_QUICK_OBSERVE_TASK,"tools_bag",true) end
     return true
@@ -2702,7 +2836,7 @@ local BagTools = NewFeature("tools_bag", { apiDependencies = {
     "X2Bag:MoveToEmptyBankSlot", "X2Bag:MoveToEmptyCofferSlot",
     "X2Bank:GetBagItemInfo", "X2Bank:Capacity", "X2Bank:MoveToEmptyBagSlot",
     "X2Coffer:GetBagItemInfo", "X2Coffer:Capacity", "X2Coffer:MoveToEmptyBagSlot",
-    "ADDON:GetContentMainScriptPosVis",
+    "ADDON:GetContent", "ADDON:GetContentMainScriptPosVis",
 }, state = { blacklist = BlacklistDefault(), batchCategory = nil, batchTarget = "bank", batchLimit = BATCH_DEFAULT_LIMIT }, default = { blacklist = BlacklistDefault(), batchCategory = nil, batchTarget = "bank", batchLimit = BATCH_DEFAULT_LIMIT }, apply = ApplyBagState,
 onEnable = function(feature) return StartBagQuickObserver(feature) end,
 onDisable = function(feature) StopBagBatch(feature, "stopped", "功能关闭，批量任务已释放"); return StopBagQuickAll(feature, "功能关闭，快捷取放已释放") end,
@@ -2778,7 +2912,9 @@ end, commands = {
 BagTools.BagMoveContractVersion = 8
 BagTools.FullStorageContinuationContractVersion = 1
 BagTools.BatchLifecycleContractVersion = 5
-BagTools.NativeWindowQuickContractVersion = 4
+BagTools.NativeWindowQuickContractVersion = 6
+BagTools.ReloadQuickObserverContractVersion = 2
+BagTools.RUFourValueWindowVisibilityContractVersion = 1
 BagTools.DynamicSourceResolutionContractVersion = 3
 BagTools.QuickIdentityFallbackContractVersion = 1
 BagTools.BagTaskMutexContractVersion = 1

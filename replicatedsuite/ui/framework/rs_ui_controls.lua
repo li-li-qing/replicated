@@ -72,9 +72,11 @@ end
 -- committed binding value.  Controls themselves own this fence so every page
 -- gets the same behavior without inventing local "don't refresh while typing"
 -- flags or permanent polling.
-RSUI.InteractiveDraftContractVersion = 3
-RSUI.InputDraftCommitContractVersion = 1
+RSUI.InteractiveDraftContractVersion = 4
+RSUI.InputDraftCommitContractVersion = 2
 RSUI.NumericInputDraftReadContractVersion = 1
+RSUI.InputFocusVisualContractVersion = 1
+RSUI.InputDisableDraftCleanupContractVersion = 1
 RSUI.ControlTransactionContractVersion = 1
 RSUI.PopupVisibilityTransactionContractVersion = 1
 -- Popup hit-test quiescence: Close() unpicks the popup surface and every
@@ -91,16 +93,39 @@ local function EnsureRawVisible(widget, visible, owner)
 end
 
 local function IsFocusedDraft(component)
+    if component == nil or component.root == nil then return false end
+    if type(UI.IsInputWidgetFocused) == "function" then
+        local ok, focused = pcall(function() return UI:IsInputWidgetFocused(component.root) end)
+        if ok == true and focused == true then return true end
+    end
     local focus = RSUI.Focus
-    if component == nil or component.root == nil or type(focus) ~= "table" or type(focus.IsFocused) ~= "function" then return false end
+    if type(focus) ~= "table" or type(focus.IsFocused) ~= "function" then return false end
     local ok, focused = pcall(function() return focus:IsFocused(component.root) end)
     return ok == true and focused == true
 end
 
-local function IsAmbientRenderSource(source)
+-- While a user owns a draft, every Render source is treated as ambient unless
+-- it is the final result of this input's own transaction. This is deliberately
+-- an allow-list for overrides rather than a deny-list for refresh names: new
+-- page/projection refresh sources can therefore never resurrect old Binding
+-- text just because their source label was not known when the control shipped.
+local function CanOverrideActiveDraft(source)
     source = tostring(source or "binding_refresh")
-    return source == "binding_refresh" or source == "field_sync" or source == "ambient_refresh"
-        or source == "external_refresh" or source == "refresh"
+    return source == "commit" or source == "rejected" or source == "restore_authority"
+end
+
+local function CanOverrideActiveSliderPreview(source)
+    source = tostring(source or "binding_refresh")
+    return CanOverrideActiveDraft(source) or source == "interaction" or source == "range_change"
+end
+
+local function ShouldPreserveDraft(component, source)
+    return component ~= nil and component:IsEditing() == true and CanOverrideActiveDraft(source) ~= true
+end
+
+local function SetInputFocusVisual(component, focused)
+    if component == nil or component.root == nil or type(UI.SetEditBoxFocusVisual) ~= "function" then return false end
+    return UI:SetEditBoxFocusVisual(component.root, focused == true) == true
 end
 
 local function CountDraftSuppression()
@@ -165,6 +190,7 @@ function DraftCoordinator:Begin(component)
     if component ~= nil then self.active[component] = true end
     return true
 end
+
 
 RSUI:RegisterType("Toggle", function(spec)
     local width = math.max(56, tonumber(spec.width) or 92)
@@ -345,6 +371,9 @@ RSUI:RegisterType("TextInput", function(spec)
     local c = RSUI:NewComponent("TextInput", spec, edit)
     local binding, bindingErr = RequireBinding(c, spec, "text_input")
     if binding == nil then return nil, bindingErr end
+    if spec.placeholder ~= nil and type(edit.SetGuideText) == "function" then
+        pcall(function() edit:SetGuideText(tostring(spec.placeholder or "")) end)
+    end
     c.value = tostring(spec.value or "")
     c.editing = false
     local function Normalize(value)
@@ -360,16 +389,18 @@ RSUI:RegisterType("TextInput", function(spec)
         if self.root ~= nil and type(self.root.GetText) == "function" then return Normalize(self.root:GetText()) end
         return Normalize(self.value)
     end
-    function c:IsEditing() return self.editing == true or IsFocusedDraft(self) end
+    function c:IsEditing() return self.editing == true or (self.root ~= nil and self.root.rsUiKeyboardArmed == true) or IsFocusedDraft(self) end
     function c:Render(explicitValue, source)
         RSUI:_Count(self.kind, "rendered", 1)
         local value = Normalize(explicitValue ~= nil and explicitValue or self:GetValue())
-        if self:IsEditing() and IsAmbientRenderSource(source) then
+        if ShouldPreserveDraft(self, source) then
+            SetInputFocusVisual(self, true)
             CountDraftSuppression()
             return self:GetDraftValue()
         end
         if explicitValue == nil then self.value = value end
         UI:SetText(self.root, value, self.owner)
+        self.lastRenderedText = value
         return value
     end
     function c:SetValue(value, notify, source)
@@ -410,8 +441,10 @@ RSUI:RegisterType("TextInput", function(spec)
         local ok, err = BeginEditInteraction(self, source or ("text_input:" .. tostring(self.id)))
         if ok == true then
             self.editing = true
+            SetInputFocusVisual(self, true)
         else
             DraftCoordinator:Forget(self)
+            SetInputFocusVisual(self, false)
         end
         return ok, err
     end
@@ -421,8 +454,20 @@ RSUI:RegisterType("TextInput", function(spec)
         self.editing = false
         DraftCoordinator:Forget(self)
         local ok, err = EndEditInteraction(self, source or ("text_input:" .. tostring(self.id) .. ":end"))
+        SetInputFocusVisual(self, false)
         self._endingEdit = nested
         return ok, err
+    end
+    function c:CancelEditing(source)
+        local nested = self._endingEdit == true
+        self._endingEdit = true
+        self.editing = false
+        DraftCoordinator:Forget(self)
+        EndEditInteraction(self, tostring(source or "text_input_cancel"))
+        SetInputFocusVisual(self, false)
+        self:Render(nil, "restore_authority")
+        self._endingEdit = nested
+        return true
     end
     function c:CommitAndEndEditing(source)
         local nested = self._endingEdit == true
@@ -431,32 +476,51 @@ RSUI:RegisterType("TextInput", function(spec)
         self.editing = false
         DraftCoordinator:Forget(self)
         local ended, endErr = EndEditInteraction(self, tostring(source or "edit_commit") .. ":end")
+        SetInputFocusVisual(self, false)
         self._endingEdit = nested
         if committed ~= true then return false, "commit_rejected" end
         return ended == true, endErr
+    end
+    local BaseSetEnabled = c.SetEnabled
+    function c:SetEnabled(enabled)
+        if enabled == false and self:IsEditing() then self:CancelEditing("text_input_disabled") end
+        return BaseSetEnabled(self, enabled)
+    end
+    local BaseRelease = c.Release
+    function c:Release()
+        if self.released == true then return 0 end
+        if self:IsEditing() then self:CancelEditing("text_input_release") else DraftCoordinator:Forget(self); SetInputFocusVisual(self, false) end
+        return BaseRelease(self)
     end
     local activationBound = c:RequireOn(edit, "OnClick", function() return c:BeginEditing("text_input_click") end,
         "rsui:" .. spec.id .. ":activate")
     if activationBound ~= true then return c end
     for _, eventName in ipairs({ "OnEnterPressed", "OnEditEnter" }) do
         c:On(edit, eventName, function()
-            if c.editing ~= true then return true end
+            if c:IsEditing() ~= true then return true end
             return c:CommitAndEndEditing("enter")
         end, "rsui:" .. spec.id .. ":" .. eventName)
     end
     c:On(edit, "OnLostFocus", function()
         if c._endingEdit == true then return true end
-        if c.editing ~= true then
+        if c:IsEditing() ~= true then
             DraftCoordinator:Forget(c)
             EndEditInteraction(c, "text_input_lost_focus_inert")
+            SetInputFocusVisual(c, false)
             return true
         end
         local result = true
-        if spec.submitOnLostFocus ~= false then result = c:Submit("blur") end
+        if spec.submitOnLostFocus ~= false then
+            result = c:Submit("blur")
+        else
+            c.editing = false
+            c:Render(nil, "restore_authority")
+        end
         c:EndEditing("text_input_lost_focus")
         return result
     end, "rsui:" .. spec.id .. ":OnLostFocus")
     c:SetEnabled(spec.enabled ~= false)
+    SetInputFocusVisual(c, false)
     c:Render(nil, "init")
     return c
 end)
@@ -473,6 +537,9 @@ RSUI:RegisterType("NumericInput", function(spec)
     local c = RSUI:NewComponent("NumericInput", spec, edit)
     local binding, bindingErr = RequireBinding(c, spec, "numeric_input")
     if binding == nil then return nil, bindingErr end
+    if spec.placeholder ~= nil and type(edit.SetGuideText) == "function" then
+        pcall(function() edit:SetGuideText(tostring(spec.placeholder or "")) end)
+    end
     c.value = NormalizeNumber(spec, spec.value)
     c.editing = false
     function c:GetValue() return NormalizeNumber(spec, Read(self.binding, self.value)) end
@@ -486,7 +553,7 @@ RSUI:RegisterType("NumericInput", function(spec)
         if suffix ~= "" and #text >= #suffix and text:sub(-#suffix) == suffix then text = text:sub(1, #text - #suffix) end
         return NormalizeNumber(spec, text)
     end
-    function c:IsEditing() return self.editing == true or IsFocusedDraft(self) end
+    function c:IsEditing() return self.editing == true or (self.root ~= nil and self.root.rsUiKeyboardArmed == true) or IsFocusedDraft(self) end
     function c:Format(value)
         if type(spec.format) == "function" then
             local ok, text = RSUI:Callback("rsui:" .. self.id .. ":format", spec.format, value)
@@ -502,12 +569,15 @@ RSUI:RegisterType("NumericInput", function(spec)
         RSUI:_Count(self.kind, "rendered", 1)
         local value = NormalizeNumber(spec, explicitValue ~= nil and explicitValue or self:GetValue())
         if value == nil then return false end
-        if self:IsEditing() and IsAmbientRenderSource(source) then
+        if ShouldPreserveDraft(self, source) then
+            SetInputFocusVisual(self, true)
             CountDraftSuppression()
             return value
         end
         if explicitValue == nil then self.value = value end
-        UI:SetText(self.root, self:Format(value), self.owner)
+        local rendered = self:Format(value)
+        UI:SetText(self.root, rendered, self.owner)
+        self.lastRenderedText = rendered
         return value
     end
     function c:Submit(source)
@@ -534,8 +604,10 @@ RSUI:RegisterType("NumericInput", function(spec)
         local ok, err = BeginEditInteraction(self, source or ("numeric_input:" .. tostring(self.id)))
         if ok == true then
             self.editing = true
+            SetInputFocusVisual(self, true)
         else
             DraftCoordinator:Forget(self)
+            SetInputFocusVisual(self, false)
         end
         return ok, err
     end
@@ -545,8 +617,20 @@ RSUI:RegisterType("NumericInput", function(spec)
         self.editing = false
         DraftCoordinator:Forget(self)
         local ok, err = EndEditInteraction(self, source or ("numeric_input:" .. tostring(self.id) .. ":end"))
+        SetInputFocusVisual(self, false)
         self._endingEdit = nested
         return ok, err
+    end
+    function c:CancelEditing(source)
+        local nested = self._endingEdit == true
+        self._endingEdit = true
+        self.editing = false
+        DraftCoordinator:Forget(self)
+        EndEditInteraction(self, tostring(source or "numeric_input_cancel"))
+        SetInputFocusVisual(self, false)
+        self:Render(nil, "restore_authority")
+        self._endingEdit = nested
+        return true
     end
     function c:CommitAndEndEditing(source)
         local nested = self._endingEdit == true
@@ -555,24 +639,37 @@ RSUI:RegisterType("NumericInput", function(spec)
         self.editing = false
         DraftCoordinator:Forget(self)
         local ended, endErr = EndEditInteraction(self, tostring(source or "edit_commit") .. ":end")
+        SetInputFocusVisual(self, false)
         self._endingEdit = nested
         if committed ~= true then return false, "commit_rejected" end
         return ended == true, endErr
+    end
+    local BaseSetEnabled = c.SetEnabled
+    function c:SetEnabled(enabled)
+        if enabled == false and self:IsEditing() then self:CancelEditing("numeric_input_disabled") end
+        return BaseSetEnabled(self, enabled)
+    end
+    local BaseRelease = c.Release
+    function c:Release()
+        if self.released == true then return 0 end
+        if self:IsEditing() then self:CancelEditing("numeric_input_release") else DraftCoordinator:Forget(self); SetInputFocusVisual(self, false) end
+        return BaseRelease(self)
     end
     local activationBound = c:RequireOn(edit, "OnClick", function() return c:BeginEditing("numeric_input_click") end,
         "rsui:" .. spec.id .. ":activate")
     if activationBound ~= true then return c end
     for _, eventName in ipairs({ "OnEnterPressed", "OnEditEnter" }) do
         c:On(edit, eventName, function()
-            if c.editing ~= true then return true end
+            if c:IsEditing() ~= true then return true end
             return c:CommitAndEndEditing("enter")
         end, "rsui:" .. spec.id .. ":" .. eventName)
     end
     c:On(edit, "OnLostFocus", function()
         if c._endingEdit == true then return true end
-        if c.editing ~= true then
+        if c:IsEditing() ~= true then
             DraftCoordinator:Forget(c)
             EndEditInteraction(c, "numeric_input_lost_focus_inert")
+            SetInputFocusVisual(c, false)
             return true
         end
         local result = c:Submit("blur")
@@ -580,6 +677,7 @@ RSUI:RegisterType("NumericInput", function(spec)
         return result
     end, "rsui:" .. spec.id .. ":OnLostFocus")
     c:SetEnabled(spec.enabled ~= false)
+    SetInputFocusVisual(c, false)
     c:Render(nil, "init")
     return c
 end)
@@ -618,7 +716,7 @@ RSUI:RegisterType("Slider", function(spec)
     end
     function c:Render(explicit, source)
         RSUI:_Count(self.kind, "rendered", 1)
-        if self:IsInteracting() and IsAmbientRenderSource(source) then
+        if self:IsInteracting() and CanOverrideActiveSliderPreview(source) ~= true then
             CountDraftSuppression()
             return self.previewValue
         end

@@ -301,6 +301,16 @@ Persistence 增加 `HistoricalCanonicalRecoveryContractVersion=1`，并允许单
 
 `.18.146` 的 terminal-load memoization 保留：同 generation terminal+fenced failure 仍只产生一次物理 Load/incident；历史精确恢复成功不是 terminal failure，会进入正常 apply + restamp 路径。
 
+## 0.17 `.18.151` Death Review Known Legacy Canonical Stamp Migration
+
+`.18.150` RU Fresh Reload 仍稳定报告 `v3.death_review:770CB0B8>368335F2`。连续 `.18.146-.18.150` 五轮旧 stamp 完全不变，而 current canonical 随修复已稳定到 `368335F2`；继续扩大表形子集搜索会把一次性兼容逻辑变成不可维护的 brute force。`.18.151` 因此把 `770CB0B8` 视为**该 Store 的已知历史迁移身份**，而不是放宽通用 Integrity。
+
+1. `HistoricalCanonicalRecoveryContractVersion=3` / `KnownLegacyCanonicalRecoveryContractVersion=1`：current-v4 mismatch 先执行既有 exact historical reconstruction；只有 exact 路径失败后，且 Envelope Seal、metadata/store/owner/scope/schema、decode 与 Domain budget 已全部通过，才允许调用 Store 显式 `recoverKnownLegacyCanonical`。
+2. Death Review allowlist 当前只有 `770CB0B8`。hook 额外验证 pre-codec schema1 Index 的字段白名单、标量类型、history≤30、summary serial/storageId 合法且唯一、widgetWindow 仅允许历史 FloatingSurface 字段/opacity alias。其它 fingerprint 或 shape 失败继续原样 Fence。
+3. 该迁移无法恢复 Native 已不可逆删除且旧 Hash solver 也无法反演的单个字段；它只保留磁盘仍存在的 settings/history/window，并通过当前 Normalize + codec v1 形成长期稳定表示。这里的安全边界与历史 Integrity v3 content-blind 一代升级类似：承认旧世代证明不可再完整重放，但不允许未知 stamp 借此通过。
+4. 成功后 `preDecodedValue` 仍经 Core budget + current canonical 检查，设置 `integrity_v4_upgrade` 立即重盖；下一 Fresh Reload 必须 `verified_canonical`。该桥不进入 Save/Tick/Feature 热路径。
+5. Diagnostics Snapshot 暴露 runtime-only `historicalRecoveryProbe`；A2 固定纳入 `v3.death_review` 并在存在时输出 `DRProbe`，避免 Foundation 长摘要 180/130 字符截断导致关键 shape evidence 丢失。
+
 ## 0.16 `.18.150` Death Review Historical Sequence/Map Recovery + Shape-Only Probe
 
 `.18.149` RU Fresh Reload 后，页面 Build 事务已全部恢复为 0 故障，唯一剩余 Store Fence 为 `v3.death_review:770CB0B8>368335F2`。因此 `.18.150` 不改变正常 Integrity v4/codec 管线，只扩展 Death Review 的 **Store-owned historical reconstruction hook**。

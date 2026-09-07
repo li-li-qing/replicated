@@ -15,8 +15,9 @@ if type(UnitFeature) ~= "table" or type(RangeFeature) ~= "table" then return end
 S.UIV3 = S.UIV3 or {}
 S.UIV3.CombatVisualGuidesV3 = S.UIV3.CombatVisualGuidesV3 or {}
 local P = S.UIV3.CombatVisualGuidesV3
-P.version = 9
+P.version = 10
 P.ScreenCoordinateAuthorityContractVersion = 1
+P.UnitLineRawProjectedAnchorContractVersion = 1
 P.owner = "v3:combat_visual_guides"
 P.unitToken = "presentation:unit_lines"
 P.rangeToken = "presentation:range_assist"
@@ -295,10 +296,16 @@ function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b)
         cr,cg,cb=c[1],c[2],c[3]
     end
     local state=type(dot.renderState)=="table" and dot.renderState or {}; dot.renderState=state
-    local px=math.floor((tonumber(x) or 0)-size/2)
-    local py=math.floor((tonumber(y) or 0)-size/2)
+    -- .18.154: Unit-line dots are 1x1 LABEL anchors whose glyph size is carried
+    -- by TextStyle. The proven rp_ui renderer anchors that 1x1 label directly
+    -- at the projected unit point. Subtracting half the FONT size here shifted
+    -- every sampled point up-left by ~8..41px even though the projection itself
+    -- was correct, so endpoints missed the unit-head center. Keep raw projected
+    -- coordinates authoritative; font size changes visual ink only.
+    local px=math.floor((tonumber(x) or 0)+0.5)
+    local py=math.floor((tonumber(y) or 0)+0.5)
     local anchorWrites,styleWrites,visibilityWrites=0,0,0
-    -- v10 ROOT-CAUSE FIX (the "S visible but no dots" report): RSUI setters
+    -- .18.133 ROOT-CAUSE FIX (the "S visible but no dots" report): RSUI setters
     -- return false BOTH for "rejected" AND for "no change needed". CreateLabel
     -- primes row.fontSize=15 via PrimeNativeState, so with the 15px floor the
     -- first SetFontSize(15) returned false (no-op), the old commit-on-accept

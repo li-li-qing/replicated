@@ -12,8 +12,8 @@ local UI = S.UI
 if type(UI) ~= "table" then return end
 
 local RSUI = {
-    version = 47,
-    apiVersion = "13.1",
+    version = 48,
+    apiVersion = "13.2",
     types = {},
     typeOrder = {},
     metrics = {

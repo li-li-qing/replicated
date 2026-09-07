@@ -168,6 +168,8 @@ Demand / Consumer lifecycle
 - 高消耗模块必须独立监听、独立缓存、独立生命周期，关闭后释放资源；
 - 低消耗模块不得依赖 DPS 等高性能模块才能运行；
 - `Feature Enabled ≠ Presentation Visible`；隐藏窗口不代表关闭 Feature，关闭 Feature 也不等于删除永久配置；
+- **持久 Surface 启动意图**：FeatureRuntime v4 允许 Feature 提供一次性的 `GetStartupEnableIntent()` 证明，但 Preference 写入/Enable 事务仍只由 FeatureRuntime 执行。该钩子只能修复有明确持久业务证据的历史分叉，并必须有 Store sentinel 阻止后续覆盖用户显式 disable；Presentation/页面 transient consumer 不得作为持久 Surface 的启用 Authority。
+- **低成本独立观察**：`tools_bag` 的 Native bag/bank/coffer 几何可见性观察属于低成本独立生命周期，默认可运行；它只读窗口状态，不扫描物品。InventorySnapshot 与移动队列仍只在显式动作后创建，Feature disable 立即释放观察任务。
 - Runtime Blocked / Partial 必须保留真实 blocker，不允许用空壳页面冒充完成。
 
 ## 8. Combat 共享架构
@@ -234,7 +236,7 @@ RSUI 是唯一通用 UI Foundation。页面应优先组合：
 - Container Surface Authority：Card / Section / FormSection 均由 RSUI 直接拥有；历史 `UI.ComponentsV2` 已退休，不允许重新进入 Active TOC。
 - 选择控件降级必须 fail-closed；Dropdown Popup 不可构建时只读显示当前值与明确警告，不允许偷偷改变为循环切换交互。大量选项的共享搜索/选择状态先进入 `PickerModel`，SearchablePicker/IconPicker 只做 Presentation，不复制筛选 Authority。
 - Focus 使用 target-aware capability：是否可 `SetFocus/ClearFocus` 由具体 Native target 决定，禁止全局硬编码“支持”。RU 尚未验证 generic `OnKeyDown/OnKeyUp/OnTextChanged`，Foundation Audit 当前直接禁止 Active Runtime 绑定这三类事件。
-- **Input Focus Lifecycle Authority（`.18.112`，`.18.117` 升级）**：所有 Suite keyboard input 由 UI Framework 按 Native physical id 登记；父子关系通过 `rsUiParent` 做 bounded ancestry。`.18.117` 起 EditBox 构造保持 `EnableKeyboard(false)`，只有明确用户点击后才 `ArmInputWidget -> SetFocus`；LostFocus、隐藏/禁用/失去 pickability、Runtime quiesce 与 teardown 都必须 disarm。`ClearFocus` 仍只有在“global focused id → 已登记 Suite input → 属于正在停用子树”三条成立时才允许执行，因此不得误清 ArcheAge chat/其他游戏输入。
+- **Input Focus Lifecycle Authority（`.18.112`，`.18.117` / `.18.156` 升级）**：所有 Suite keyboard input 由 UI Framework 按 Native physical id 登记；父子关系通过 `rsUiParent` 做 bounded ancestry。`.18.117` 起 EditBox 构造保持 `EnableKeyboard(false)`；`.18.156` 明确激活事务为 `ArmInputWidget -> 若 Keyboard 本次 false→true 则强制 post-arm SetFocus，否则已 armed+focused 的重复点击可保留 Native caret`；LostFocus、隐藏/禁用/失去 pickability、Runtime quiesce 与 teardown 都必须 disarm。`ClearFocus` 仍只有在“global focused id → 已登记 Suite input → 属于正在停用子树”三条成立时才允许执行，因此不得误清 ArcheAge chat/其他游戏输入。
 - **Top-Level Layer Authority（`.18.118`）**：跨 root 可交互 UI 不再依赖 `emptywidget` 的隐式层级。Application Shell、FloatingSurface、Popup/ContextMenu 统一在 Native `system` layer，角色 priority 由 UITokens v5 唯一定义为 `Shell < Floating < Popup < Modal`；Feature/页面只声明角色，不直接争抢 Native Z-order。
 - **Drag Hit-Test Authority（`.18.112`）**：可拖窗口的 hit-test surface 由 Windowing 自己保证 `Enabled + Pickable`，再建立 `EnableDrag + DC_ALWAYS`；`Border` 必须透传 `pickable/owner`，WindowShell title bar 显式 pickable。Native `StartMoving/StartSizing/StopMovingOrSizing` 仍是实际 capture/geometry Authority，不允许页面用 Tick/raw mouse delta 建第二套。
 - Exclusive Popup Authority：`RSUI.PopupCoordinator` 统一 Dropdown / ColorField / ContextMenu 的 Register/CloseAll/Unregister；历史 `DropdownService` 只作为同一对象的兼容 alias。
@@ -378,7 +380,7 @@ presentationRootHandlers=0
 
 ### `.18.150` Death Review 历史恢复边界
 
-Death Review 正常 Index Authority 仍是 Feature Store + stable codec；`history.entries` 的 `pairs()` 扫描只存在于一次性 Integrity mismatch historical recovery 中，不进入正常 Load/Save/Feature 生命周期。它只能生成待验证候选，完整旧 stamped fingerprint 精确命中才可恢复。最终不命中时只暴露结构计数 `historical_probe`，不泄漏死亡记录内容。
+Death Review 正常 Index Authority 仍是 Feature Store + stable codec；`history.entries` 的 `pairs()` 扫描只存在于一次性 Integrity mismatch historical recovery 中，不进入正常 Load/Save/Feature 生命周期。`.18.151` 对连续五轮实机确认的旧 v4 stamp `770CB0B8` 增加 Store 专属最终迁移桥：exact historical reconstruction 先执行；仅在它失败、Envelope Seal/metadata/schema/decode/budget/legacy-shape 全部通过且 fingerprint 精确在 Store allowlist 中时，才保留现存 Domain 并立即重盖 current codec。未知 fingerprint 继续 fail-closed。Snapshot 的 `historicalRecoveryProbe` 仅是 runtime 诊断，不是第二 Authority。 `.18.152` 把 Reload 后快捷界面状态纳入同一生命周期原则：Bag quick overlay 的低成本窗口观察独立默认启用，而重型 InventorySnapshot 仍显式按需；Gear quick buttons 的 persistent preference 与 page transient lease 严格分离，旧的“quick plan 已存在但 Feature preference=false”只执行一次 store-backed 启动意图修复，之后用户 disable 保持最终 Authority。 `.18.153` 进一步修正 Bag Native Window Fact：UIC_BAG/UIC_BANK/UIC_COFFER 不再假设 GetContentMainScriptPosVis 必有第 5 boolean；沿用 AuctionSurfaceV3 已验证的优先级（显式 boolean > ADDON:GetContent 短父链 IsVisible > 无更强事实时的合法四值 geometry），并让 RequireStorageWindow 与 Overlay 共享同一窗口事实。该观察仍是低频只读 Surface，不读取物品。显式 tools_bag=false 继续由 FeatureRuntime preference 保持最终 Authority，不做猜测式自动迁移。 `.18.154` 收口 Unit Lines 最终 Presentation 坐标边界：`GetUnitScreenPosition` 的 raw `(x,y)` 是端点 Authority，1×1 label dot 必须直接锚在该点；font size 仅改变 glyph，不得再用 `size/2` 改写路径几何。Range Assist 保留独立 calibration Authority。
 
 ## 14. 权威文档索引
 
@@ -399,3 +401,11 @@ Death Review 正常 Index Authority 仍是 Feature Store + stable codec；`histo
 | Static Data / IDs | [`STATIC_DATA.md`](STATIC_DATA.md) |
 | 产品能力完成度 | [`Rebuild/PRODUCT_COMPLETION_MATRIX.md`](Rebuild/PRODUCT_COMPLETION_MATRIX.md) |
 | RU 实机验收 | [`Rebuild/RU_RUNTIME_ACCEPTANCE.md`](Rebuild/RU_RUNTIME_ACCEPTANCE.md) |
+
+
+### `.18.156` EditBox Post-Arm Focus Promotion
+
+RU Native 鼠标点击可能在 Lua `OnClick` 前先把 `GetFocusedWidgetId()` 指向 EditBox；该 Focus 事实不能单独证明文本输入已激活，因为构造态 Keyboard 仍为 false。UI Framework v15 将 `ArmInputWidget()` 的 `changed` 结果纳入激活 Authority：本次 Keyboard promotion 必须随后执行一次 `SetFocus()` 完成 Native text-edit admission；只有已经 armed 且 focused 的重复点击才可跳过，避免 caret 重置。禁止以“Global Focus ID 已命中”替代 Keyboard admission 证明。 Snapshot 同时记录 activation attempts/success/failure、post-arm promotions、focused fast-path 和 Keyboard arm/disarm，Diagnostics 的 `UI输入` 行直接消费这些运行时证据。
+
+### `.18.155` EditBox Foundation
+RSUI TextInput/NumericInput 的草稿 Authority 只在显式 Commit/Reject/Cancel 边界回写 Native；任何未知 ambient Render source 在输入 ownership 期间不得覆盖草稿。Native EditBox 的 caret 使用已验证 `SetCursorColor/SetCursorHeight`，不再全局 select-all；Focus lifecycle 同时识别已登记 physical/logical identity，且重复点击已聚焦输入不重复 `SetFocus`，避免破坏 Native caret 位置。Disable/Release 必须 Cancel draft 并释放 Keyboard/Focus。该契约无 Tick、无 OnTextChanged/OnKeyDown/OnKeyUp。

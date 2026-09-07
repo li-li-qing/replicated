@@ -13,12 +13,12 @@ local S = ReplicatedSuite
 S.UI = {
     controls = {},
     registryMetrics = { duplicates = 0, v3Duplicates = 0, degraded = 0 },
-    -- Native Interaction Contract v6: all hit-test methods use the verified
+    -- Native Interaction Contract v7: all hit-test methods use the verified
     -- one-argument RU WidgetBase ABI; boolean false-state setter returns are
     -- distinguished from Action rejection; single/multiline edits are
     -- explicitly enabled for mouse/keyboard focus; degraded primitives fail
     -- closed to callers instead of masquerading as healthy controls.
-    NativeInteractionContractVersion = 6,
+    NativeInteractionContractVersion = 7,
     CriticalInteractionDeliveryContractVersion = 1,
     -- Root transient popup/menu surfaces use a real native window; ordinary
     -- in-tree Panel remains an emptywidget. This prevents RU cross-root
@@ -575,6 +575,34 @@ function UIX:CreateLabel(parent, id, text, x, y, width, height, fontSize, tone, 
     return self:Register(id, label)
 end
 
+UIX.EditBoxCaretVisualContractVersion = 1
+UIX.EditBoxNormalSelectionContractVersion = 1
+
+local EDIT_BORDER_IDLE = { 0.34, 0.43, 0.52, 0.98 }
+local EDIT_BORDER_FOCUS = { 0.88, 0.68, 0.28, 1.00 }
+
+function UIX:SetEditBoxFocusVisual(edit, focused)
+    if edit == nil then return false end
+    focused = focused == true
+    edit.rsUiInputFocusVisual = focused
+    local border = edit.rsUiEditBorderDrawable
+    if border ~= nil and type(border.SetColor) == "function" then
+        local c = focused and EDIT_BORDER_FOCUS or EDIT_BORDER_IDLE
+        local ok = pcall(function() border:SetColor(c[1], c[2], c[3], c[4]) end)
+        if ok ~= true then return false end
+    end
+    return true
+end
+
+local function ConfigureEditCaret(edit, height)
+    if edit == nil then return end
+    -- RU exposes caret styling but several EditBox skins default to a caret that
+    -- is extremely short or effectively invisible. Native still owns blinking;
+    -- Suite only makes that native caret visible and readable.
+    if type(edit.SetCursorColor) == "function" then edit:SetCursorColor(1.00, 0.82, 0.36, 1.00) end
+    if type(edit.SetCursorHeight) == "function" then edit:SetCursorHeight(math.max(10, math.min(20, math.floor((tonumber(height) or 24) - 8)))) end
+end
+
 function UIX:CreateEditBox(parent, id, x, y, width, height, maxLength)
     if parent == nil or type(parent.CreateChildWidgetByType) ~= "function" then return nil end
     -- RU clients are inconsistent about which single-line editbox token is
@@ -616,7 +644,8 @@ function UIX:CreateEditBox(parent, id, x, y, width, height, maxLength)
             accepted = CallNativeAccepted(edit, "SetReadOnly", false)
             if accepted ~= true then error("editbox readonly state rejected") end
         end
-        if edit.UseSelectAllWhenFocused ~= nil then edit:UseSelectAllWhenFocused(true) end
+        if edit.UseSelectAllWhenFocused ~= nil then edit:UseSelectAllWhenFocused(false) end
+        ConfigureEditCaret(edit, height)
         -- RSUI owns the Draft -> Commit transaction.  Some RU EditBox variants
         -- clear their native text on Enter before the submit handler can read it
         -- unless this verified flag is disabled.
@@ -630,13 +659,15 @@ function UIX:CreateEditBox(parent, id, x, y, width, height, maxLength)
             if edit.style.SetColor ~= nil then edit.style:SetColor(1.00,0.96,0.84,1.00) end
         end
         if edit.CreateColorDrawable ~= nil then
-            local border=edit:CreateColorDrawable(0.34,0.43,0.52,0.98,"background")
+            local border=edit:CreateColorDrawable(EDIT_BORDER_IDLE[1],EDIT_BORDER_IDLE[2],EDIT_BORDER_IDLE[3],EDIT_BORDER_IDLE[4],"background")
+            edit.rsUiEditBorderDrawable = border
             if border and border.AddAnchor then border:AddAnchor("TOPLEFT",edit,0,0); border:AddAnchor("BOTTOMRIGHT",edit,0,0) end
             local bg=edit:CreateColorDrawable(0.015,0.022,0.032,0.995,"background")
             if bg and bg.AddAnchor then bg:AddAnchor("TOPLEFT",edit,1,1); bg:AddAnchor("BOTTOMRIGHT",edit,-1,-1) end
         end
         edit:AddAnchor("TOPLEFT", anchorParent, x or 0, y or 0)
         edit:Show(true)
+        UIX:SetEditBoxFocusVisual(edit, false)
     end)
     if not configured then
         return FailPrimitive(edit, id, PrimitiveFailureDetail("editbox_configuration_failed", configureErr))
@@ -683,7 +714,8 @@ function UIX:CreateMultiEditBox(parent, id, x, y, width, height, maxLength)
             accepted = CallNativeAccepted(edit, "SetReadOnly", false)
             if accepted ~= true then error("multieditbox readonly state rejected") end
         end
-        if edit.UseSelectAllWhenFocused ~= nil then edit:UseSelectAllWhenFocused(true) end
+        if edit.UseSelectAllWhenFocused ~= nil then edit:UseSelectAllWhenFocused(false) end
+        ConfigureEditCaret(edit, height)
         if edit.SetMaxTextLength ~= nil then edit:SetMaxTextLength(math.max(1, tonumber(maxLength) or 65535)) end
         if edit.style ~= nil then
             if edit.style.SetAlign ~= nil then edit.style:SetAlign(ALIGN_TOP_LEFT or ALIGN_LEFT) end
@@ -693,13 +725,15 @@ function UIX:CreateMultiEditBox(parent, id, x, y, width, height, maxLength)
             edit.guideTextStyle:SetAlign(ALIGN_TOP_LEFT or ALIGN_LEFT)
         end
         if edit.CreateColorDrawable ~= nil then
-            local border=edit:CreateColorDrawable(0.34,0.43,0.52,0.98,"background")
+            local border=edit:CreateColorDrawable(EDIT_BORDER_IDLE[1],EDIT_BORDER_IDLE[2],EDIT_BORDER_IDLE[3],EDIT_BORDER_IDLE[4],"background")
+            edit.rsUiEditBorderDrawable = border
             if border and border.AddAnchor then border:AddAnchor("TOPLEFT",edit,0,0); border:AddAnchor("BOTTOMRIGHT",edit,0,0) end
             local bg=edit:CreateColorDrawable(0.015,0.022,0.032,0.995,"background")
             if bg and bg.AddAnchor then bg:AddAnchor("TOPLEFT",edit,1,1); bg:AddAnchor("BOTTOMRIGHT",edit,-1,-1) end
         end
         edit:AddAnchor("TOPLEFT", anchorParent, x or 0, y or 0)
         edit:Show(true)
+        UIX:SetEditBoxFocusVisual(edit, false)
     end)
     if not configured then
         return FailPrimitive(edit, id, PrimitiveFailureDetail("multieditbox_configuration_failed", configureErr))

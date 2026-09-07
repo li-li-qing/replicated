@@ -611,12 +611,12 @@ end
 -- FocusService
 ------------------------------------------------------------------------
 local Focus = {
-    version = 2,
+    version = 3,
     keyboardNavigationSupported = false,
     keyboardNavigationReason = "ui_functions.lua confirms SetFocus/GetFocusedWidgetId but does not document generic OnKeyDown/OnKeyUp handlers",
 }
 RSUI.Focus = Focus
-RSUI.FocusContractVersion = 2
+RSUI.FocusContractVersion = 3
 
 function Focus:CanSet(target)
     local native = ResolveNative(target)
@@ -689,11 +689,16 @@ function Focus:GetTargetWidgetId(target)
 end
 
 function Focus:IsFocused(target)
+    local native = ResolveNative(target)
+    if native == nil then return false, "focus_target_required" end
+    -- Input widgets use the UI lifecycle's identity-compatible proof. RU focus
+    -- telemetry can expose either generated physical ids or Suite logical ids.
+    if native.rsUiKeyboardInput == true and type(UI.IsInputWidgetFocused) == "function" then
+        return UI:IsInputWidgetFocused(native)
+    end
     local focusedId, focusErr = self:GetFocusedWidgetId()
     if focusErr ~= nil then return false, focusErr end
     if focusedId == nil then return false, nil end
-    local native = ResolveNative(target)
-    if native == nil then return false, "focus_target_required" end
     local physical = native.rsNativePhysicalId
     if physical == nil or tostring(physical) == "" then return false, "focus_target_physical_identity_unavailable" end
     return tostring(physical) == tostring(focusedId), nil
