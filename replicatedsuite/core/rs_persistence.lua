@@ -64,6 +64,8 @@ S.Persistence = {
     RuntimeAcceptanceDiagnosticsContractVersion = 1,
     RuntimeAcceptanceSnapshotContractVersion = 2,
     ReadinessContractVersion = 1,
+    TerminalLoadMemoizationContractVersion = 1,
+    HistoricalCanonicalRecoveryContractVersion = 2,
     Lifetime = LIFETIME,
     Scope = SCOPE,
     DefaultBudget = { maxDepth = 12, maxNodes = 4096, maxStringBytes = 65536, maxEntriesPerTable = 1024 },
@@ -146,6 +148,7 @@ S.Persistence = {
         readPrepareFailures = 0,
         readPrepareLoads = 0,
         terminalAutoRetrySuppressions = 0,
+        terminalLoadShortCircuits = 0,
     },
 }
 local P = S.Persistence
@@ -537,6 +540,18 @@ function P:RegisterStore(def)
         -- fingerprint while the independent metadata envelope seal is valid.
         -- This is not a corruption bypass and is never enabled implicitly.
         rebuildEncodedForIntegrity = def.rebuildEncodedForIntegrity,
+        -- Optional exact historical-canonical recovery for a current-integrity
+        -- stamp produced by an older Store normalizer / a serializer omission
+        -- whose lost logical value can be reconstructed from the existing stamp.
+        -- This hook is considered ONLY after the independent envelope seal,
+        -- decode and current canonical construction succeed. Its candidate is
+        -- accepted only when it exactly reproduces the already-stamped fingerprint.
+        -- For plain Stores, Persistence then re-runs the CURRENT canonicalizer on
+        -- that exact historical logical candidate before Apply, so a recovered
+        -- default-sensitive value (for example false vs omitted) is not silently
+        -- replaced by the current default. Typed-codec Stores retain decode-owned
+        -- Domain application. Successful recovery queues an immediate restamp.
+        rebuildCanonicalForIntegrity = def.rebuildCanonicalForIntegrity,
         -- One-generation recovery for legacy (v2 raw-envelope) stamped Stores
         -- whose fingerprint no longer verifies because the RU serializer changed
         -- the on-disk representation. Default ON: the .18.125 real-machine run
@@ -887,6 +902,18 @@ function P:LoadStore(id, options)
         })
         return false, nil, "unverified store reload rejected"
     end
+    -- Terminal structural failures are immutable inside one Lua generation.
+    -- Re-reading the same fenced key cannot repair an integrity/metadata/schema
+    -- failure, but Feature defaults may call EnsureStoreLoaded repeatedly during
+    -- startup. Memoize that terminal result so one physical failure produces one
+    -- incident instead of N LoadData calls / duplicate diagnostics. A new addon
+    -- generation naturally rebuilds the Store object; explicit recovery paths
+    -- (ClearStore / verified replacement) reset the state themselves.
+    if store.lifetime ~= LIFETIME.Session and store.loaded == true and store.writeFenced == true
+        and options.revalidateTerminal ~= true then
+        self.stats.terminalLoadShortCircuits = (tonumber(self.stats.terminalLoadShortCircuits) or 0) + 1
+        return false, nil, tostring(store.lastError or store.writeFenceReason or store.loadStatus or "terminal store load failure")
+    end
     if store.lifetime == LIFETIME.Session then
         if store.memory == nil then store.memory = select(1, DefaultValue(store)) end
         store.loaded, store.loadStatus, store.lastLoadAt = true, "session", NowMs()
@@ -1194,10 +1221,94 @@ function P:LoadStore(id, options)
                     if actualFingerprint == nil then
                         integrityErr = "fingerprint_failed:" .. tostring(actualErr or "unknown")
                     elseif tostring(actualFingerprint) ~= tostring(stampedFingerprint) then
-                        -- v3 mismatches are final: the stamp and the verification
-                        -- target are both canonical, so a mismatch means the
-                        -- logical content changed across reloads.
-                        integrityErr = "fingerprint_mismatch:" .. tostring(stampedFingerprint) .. ">" .. tostring(actualFingerprint)
+                        -- A current-v4 mismatch normally remains fail-closed. One
+                        -- narrow exception exists for Stores that can deterministically
+                        -- rebuild the exact historical logical candidate after their
+                        -- own canonicalizer changed or RU omitted a representational
+                        -- field. We accept it only when that candidate reproduces the
+                        -- stamped fingerprint byte-for-byte and the independent v6+
+                        -- envelope seal already verified above.
+                        local recoveredHistoricalCanonical = false
+                        if envelopeAdvertised == true and store.allowIntegrityUpgrade == true
+                            and type(store.rebuildCanonicalForIntegrity) == "function" then
+                            local decodedInspection = self:InspectPayload(decoded, store.budget)
+                            if type(decodedInspection) == "table" and decodedInspection.ok == true then
+                                -- Contract v2 passes the original raw envelope as a fourth argument. Existing
+                                -- hooks remain source-compatible (Lua ignores extra args). A hook may optionally
+                                -- return a second table: the recovered CURRENT Domain value. This is necessary when
+                                -- decode() cannot distinguish an RU-omitted false from a missing default-true field.
+                                local rebuiltOk, historicalCanonical, recoveredDomain = pcall(
+                                    store.rebuildCanonicalForIntegrity, DeepCopy(decoded), stampedFingerprint, canonical, DeepCopy(raw))
+                                if rebuiltOk == true and type(historicalCanonical) == "table" then
+                                    local historicalFingerprint = self:FingerprintCanonicalValue(store, historicalCanonical)
+                                    if historicalFingerprint ~= nil and tostring(historicalFingerprint) == tostring(stampedFingerprint) then
+                                        -- The historical candidate is now integrity-authenticated by the OLD stamp.
+                                        -- Apply must be derived from that recovered logical value, not blindly from
+                                        -- canonical(decoded), or default-sensitive data could be silently changed.
+                                        local recoveredApplyValue = decoded
+                                        local recoveredApplyOk = true
+                                        if type(recoveredDomain) == "table" then
+                                            local recoveredDomainInspection = self:InspectPayload(recoveredDomain, store.budget)
+                                            if type(recoveredDomainInspection) ~= "table" or recoveredDomainInspection.ok ~= true then
+                                                recoveredApplyOk = false
+                                            else
+                                                recoveredApplyValue = recoveredDomain
+                                            end
+                                        elseif not (type(store.encode) == "function" and type(store.decode) == "function") then
+                                            local recoveredCanonical = self:CanonicalIntegrityValue(store, historicalCanonical)
+                                            if recoveredCanonical == nil then
+                                                recoveredApplyOk = false
+                                            else
+                                                local recoveredInspection = self:InspectPayload(recoveredCanonical, store.budget)
+                                                if type(recoveredInspection) ~= "table" or recoveredInspection.ok ~= true then
+                                                    recoveredApplyOk = false
+                                                else
+                                                    recoveredApplyValue = recoveredCanonical
+                                                end
+                                            end
+                                        end
+                                        local recoveredCurrentCanonical = nil
+                                        if recoveredApplyOk == true then
+                                            recoveredCurrentCanonical = self:CanonicalIntegrityValue(store, recoveredApplyValue)
+                                            local recoveredCanonicalInspection = recoveredCurrentCanonical ~= nil
+                                                and self:InspectPayload(recoveredCurrentCanonical, store.encodedBudget) or nil
+                                            if type(recoveredCanonicalInspection) ~= "table" or recoveredCanonicalInspection.ok ~= true then
+                                                recoveredApplyOk = false
+                                            end
+                                        end
+                                        if recoveredApplyOk == true then
+                                            local recoveredCurrentFingerprint = self:FingerprintCanonicalValue(store, recoveredCurrentCanonical)
+                                            local needsRestamp = recoveredCurrentFingerprint == nil
+                                                or tostring(recoveredCurrentFingerprint) ~= tostring(stampedFingerprint)
+                                            recoveredHistoricalCanonical = true
+                                            integrityUpgradeNeeded = needsRestamp
+                                            preDecodedValue = recoveredApplyValue
+                                            store.lastIntegrityStatus = needsRestamp
+                                                and "historical_canonical_recovery" or "verified_canonical_recovered_representation"
+                                            store.lastIntegrityFingerprint = historicalFingerprint
+                                            store.lastIntegrityError = needsRestamp
+                                                and "canonicalizer_changed" or "serializer_omission_recovered"
+                                            self.stats.integrityUpgradeRecoveries = (tonumber(self.stats.integrityUpgradeRecoveries) or 0) + 1
+                                            Emit("info", "STORE_HISTORICAL_CANONICAL_RECOVERY",
+                                                needsRestamp
+                                                    and "旧版 Store canonical 精确复原已匹配原指纹；按当前 canonical 重新归一该历史逻辑值并排队重盖章"
+                                                    or "Store canonical 精确复原已匹配原指纹；已恢复 RU 省略的逻辑值，无需改写现有盖章", {
+                                                        store = store.id, oldFingerprint = stampedFingerprint,
+                                                        newFingerprint = recoveredCurrentFingerprint or actualFingerprint,
+                                                        restamp = needsRestamp,
+                                                    })
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                        if recoveredHistoricalCanonical ~= true then
+                            integrityErr = "fingerprint_mismatch:" .. tostring(stampedFingerprint) .. ">" .. tostring(actualFingerprint)
+                            local historicalProbe = NonEmptyText(store.lastHistoricalRecoveryProbe)
+                            if historicalProbe ~= nil then
+                                integrityErr = integrityErr .. "|historical_probe=" .. historicalProbe
+                            end
+                        end
                     else
                         store.lastIntegrityStatus = "verified_canonical"
                         store.lastIntegrityFingerprint = actualFingerprint
@@ -2914,6 +3025,8 @@ function P:Describe()
         runtimeAcceptanceDiagnosticsContractVersion = self.RuntimeAcceptanceDiagnosticsContractVersion,
         runtimeAcceptanceSnapshotContractVersion = self.RuntimeAcceptanceSnapshotContractVersion,
         readinessContractVersion = self.ReadinessContractVersion,
+        terminalLoadMemoizationContractVersion = self.TerminalLoadMemoizationContractVersion,
+        historicalCanonicalRecoveryContractVersion = self.HistoricalCanonicalRecoveryContractVersion,
         lastFlush = DeepCopy(self.lastFlush),
         rows = rows,
         stats = DeepCopy(self.stats),

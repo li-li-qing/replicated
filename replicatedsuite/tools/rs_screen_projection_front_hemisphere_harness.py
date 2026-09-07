@@ -81,7 +81,7 @@ local function Check(name,ok)
   total=total+1
   if ok then passed=passed+1 else print('FAIL | '..name) end
 end
-Check('contract_version',P.version==12 and P.FrontHemisphereBatchContractVersion==1 and P.CameraUnavailableNativeFallbackContractVersion==1 and P.UnitProjectionConsistencyContractVersion==1 and P.UnitWorldAliasGuardContractVersion==1 and P.WorldBatchIndexContractVersion==1 and P.WorldBatchFactsContractVersion==2 and P.WorldBatchAnchorCalibrationContractVersion==1 and type(P.ProjectUnitBatch)=='function' and type(P.ProjectWorldBatch)=='function')
+Check('contract_version',P.version==13 and P.UiParentScreenCoordinateContractVersion==1 and P.FrontHemisphereBatchContractVersion==1 and P.CameraUnavailableNativeFallbackContractVersion==1 and P.UnitProjectionConsistencyContractVersion==1 and P.UnitWorldAliasGuardContractVersion==1 and P.WorldBatchIndexContractVersion==1 and P.WorldBatchFactsContractVersion==2 and P.WorldBatchAnchorCalibrationContractVersion==1 and type(P.ProjectUnitBatch)=='function' and type(P.ProjectWorldBatch)=='function')
 local result,status=P:ProjectUnitBatch({{'player','front','behind','behind','edge','drift'}},{{requireFrontHemisphere=true,worldZOffset=1,validateNativeAgainstCamera=true,reconcileNativeScale=true}})
 Check('batch_ready',status=='ready' and type(result)=='table')
 Check('camera_frame_once',calls.camPos==1 and calls.camDir==1 and calls.camFov==1)

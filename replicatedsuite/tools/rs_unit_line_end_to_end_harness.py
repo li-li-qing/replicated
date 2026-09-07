@@ -195,6 +195,9 @@ S.Demand = {
 
 -- ---- FrameBudget / PerformanceMonitor mocks (absent is fine too) ---------
 S.FrameBudget = {{ current = {{ pressure = "Normal" }} }}
+-- Deliberately non-1 Suite layout scale: world/screen projection coordinates
+-- must remain invariant because addonScale sizes Suite layouts, not screen positions.
+S.Layout = {{ GetContext = function() return {{ addonScale = 1.25, uiScale = 1.25 }} end }}
 S.PerformanceMonitor = nil
 
 -- ---- Native API surface ---------------------------------------------------
@@ -204,15 +207,15 @@ S.PerformanceMonitor = nil
 -- the degenerate geometry this harness must not mistake for a code failure.
 local world = {{ player = {{ 10, 0, 0 }}, target = {{ 30, 4, 0 }} }}
 local worldLocalTrueReads = 0
-local screen = {{ player = {{ 512, 384, 1 }}, target = {{ 300, 350, 1 }} }}
+local screen = {{ player = {{ 1280, 720, 1 }}, target = {{ 1500, 680, 1 }} }}
 X2Unit = {{}}
 X2Player = {{ GetEffectAppellation = function() return nil end }}
 X2Store, X2Bag, X2Resident, X2Ability = {{}}, {{}}, {{}}, {{}}
 UIParent = {{}}
-function UIParent:GetScreenWidth() return 1280 end
-function UIParent:GetScreenHeight() return 960 end
+function UIParent:GetScreenWidth() return 2560 end
+function UIParent:GetScreenHeight() return 1440 end
 local nativeProjectionEnabled = true
-function S.Api:GetUiMetrics() return 1280, 960, 1.25, 1024, 768 end
+function S.Api:GetUiMetrics() return 2560, 1440, 1.25, 2048, 1152 end
 function S.Api:IsCapabilityAllowed() return true, "mock" end
 function S.Api:CallCapability(capability, host, method, ...)
   local arg = (...)
@@ -244,7 +247,7 @@ function S.Api:CallGlobalCapability(capability, wx, wy, wz)
     if nativeProjectionEnabled ~= true then return false, nil, "native_unavailable" end
     wx, wy, wz = tonumber(wx), tonumber(wy), tonumber(wz)
     if wx == nil or wy == nil or wz == nil then return false, nil, "invalid_world" end
-    return true, 512 + wy * 10, nil, 384 + (wx - 10) * 5, 1
+    return true, 1280 + wy * 10, nil, 720 + (wx - 10) * 5, 1
   end
   return false, nil, "disabled"
 end
@@ -341,8 +344,8 @@ function S.UI:SetFontSize(widget, size)
 end
 function S.UI:TrySetUILayer(widget) if widget ~= nil and widget.Raise ~= nil then widget:Raise() end; return true end
 UIParent = {{}}
-function UIParent:GetScreenWidth() return 1280 end
-function UIParent:GetScreenHeight() return 960 end
+function UIParent:GetScreenWidth() return 2560 end
+function UIParent:GetScreenHeight() return 1440 end
 
 -- Load order mirrors toc.g (:107 projection -> :152 bridge -> :166 guides);
 -- the presenter file returns early unless the feature objects already exist.
@@ -394,8 +397,9 @@ Pump("v3_business_unit_lines_refresh", 3)
 local projection = UnitFeature:GetProjection()
 Check("rows_emitted", type(projection.rows) == "table" and #projection.rows >= 1,
   projection.rows and #projection.rows or "nil")
-if type(projection.rows) == "table" and projection.rows[1] ~= nil then
-  local row = projection.rows[1]
+local firstUnitRow = type(projection.rows) == "table" and projection.rows[1] or nil
+if firstUnitRow ~= nil then
+  local row = firstUnitRow
   Check("row_span_far", math.abs((row.x2 or 0) - (row.x1 or 0)) > 8, tostring(row.x1) .. "->" .. tostring(row.x2))
 end
 
@@ -418,16 +422,28 @@ Check("diag_consumer", dia ~= nil and (tonumber(dia.consumerCount) or 0) >= 1)
 -- Dot widgets are LABELS ('.' glyph, reference model). Visibility rides the
 -- widget record; size rides fontSize (PlaceUnitDot SetFontSize).
 local visibleDots, seenPositions = 0, {}
+local minUnitDotX, maxUnitDotX = nil, nil
 for _, w in pairs(widgets) do
   if w.visible == true and w.__label == true and w.text == "." and (tonumber(w.fontSize) or 0) >= 8 then
     visibleDots = visibleDots + 1
     seenPositions[tostring(w.x) .. "," .. tostring(w.y)] = true
+    local wx = tonumber(w.x)
+    if wx ~= nil then minUnitDotX = minUnitDotX == nil and wx or math.min(minUnitDotX, wx); maxUnitDotX = maxUnitDotX == nil and wx or math.max(maxUnitDotX, wx) end
   end
 end
 local uniquePositions = 0
 for _ in pairs(seenPositions) do uniquePositions = uniquePositions + 1 end
 Check("dots_visible_on_widgets", visibleDots >= 8, visibleDots)
 Check("dot_positions_unique", uniquePositions >= 8, uniquePositions)
+if firstUnitRow ~= nil and maxUnitDotX ~= nil and minUnitDotX ~= nil then
+  local expectedMin = math.min(tonumber(firstUnitRow.x1) or 0, tonumber(firstUnitRow.x2) or 0)
+  local expectedMax = math.max(tonumber(firstUnitRow.x1) or 0, tonumber(firstUnitRow.x2) or 0)
+  -- Glyph anchors subtract half the font size, so allow a small style margin.
+  -- Multiplying these 2560x1440 coordinates by addonScale=1.25 would miss this
+  -- bound by hundreds of pixels and reproduce the real high-resolution offset.
+  Check("screen_coordinates_ignore_addon_scale_2560", minUnitDotX >= expectedMin - 64 and maxUnitDotX <= expectedMax + 64,
+    tostring(minUnitDotX) .. ".." .. tostring(maxUnitDotX) .. " expected " .. tostring(expectedMin) .. ".." .. tostring(expectedMax))
+end
 
 -- 4. Range assist: exact EasyPull fallback must work when the RU native
 -- ConvertWorldToScreen global is unavailable.
@@ -453,6 +469,10 @@ if rangeEnabled == true then
   Check("range_facts_are_ring_not_center", string.find(facts, "EasyPull原生0/相机", 1, true) ~= nil and string.find(facts, "easypull_camera", 1, true) ~= nil, facts)
   local calibration = type(rangeRow) == "table" and tostring(rangeRow.calibration or "") or ""
   Check("range_camera_anchor_calibration_applied", calibration ~= "" and calibration ~= "-" and string.find(facts, "锚校applied", 1, true) ~= nil, calibration .. " | " .. facts)
+  local visualPresenter = ReplicatedSuite.UIV3 and ReplicatedSuite.UIV3.CombatVisualGuidesV3 or nil
+  Check("range_screen_coordinate_authority", visualPresenter ~= nil and visualPresenter.ScreenCoordinateAuthorityContractVersion == 1
+      and type(visualPresenter.lastRangeSampling) == "table" and visualPresenter.lastRangeSampling.coordinateSpace == "ui_parent_screen",
+      visualPresenter and visualPresenter.lastRangeSampling and visualPresenter.lastRangeSampling.coordinateSpace)
 
   -- A transient projection/read exception must never trip the shared scheduler
   -- breaker and leave the last valid ring frozen in screen space. The Range

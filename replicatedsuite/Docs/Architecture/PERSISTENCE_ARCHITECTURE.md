@@ -278,6 +278,51 @@ RU 实机（横幅证据）确认 v2 原始包封指纹对**结构级**表示漂
 
 处置：`IntegrityContractVersion = 4`（canonical = 修复后的 per-store 纯规范化）；`ContentBlindCanonicalContractVersion = 3` 登记 v3 世代。v3 盖章的哈希不构成完整性证据，因此该世代跳过指纹比对、直接走受控一代升级（Envelope Seal + decode + Domain budget + apply 全链通过 → `integrity_contract_upgrade_recovery` → 重盖 v4）。v4 验证 = Decode → Normalize → Verify → Apply，内容敏感且吸收表示漂移。四个 life store 已显式传入真 migrate；注册助手支持自定义 migrate/budget。v9 harness 新增内容盲恢复用例（含"内容在恢复后完整保留"断言——旧路径会把内容重置为默认）。
 
+## 0.13 `.18.146` Death Review Canonical Window + Terminal Load Memoization
+
+2026-09-07 RU Fresh Reload 再次出现 `v3.death_review:integrity_failed:fingerprint_mismatch:770CB0B8>20692C15`。这次不是 Integrity v1/v2 数值规则，也不是 v3 内容盲 canonical，而是 **Store 自己的 canonical 仍含 Presentation 状态 passthrough**：Feature 写入 `widgetWindow` 前使用 `FloatingSurface:NormalizeState()`，但 DeathReview `NormalizeIndex()` 原样保留该表。Native SaveData 若省略 `false/default/空字段`，逻辑窗口状态等价，但 v4 canonical hash 变化。
+
+1. DeathReview Store 现在拥有唯一 `WidgetWindowSizePolicy`，`NormalizeIndex()` 对 `widgetWindow` 始终调用共享 FloatingSurface 纯 normalizer；Feature Get/Set 复用同一 policy。
+2. 不新增 Store key/schema，不清旧档，不关闭 integrity。`.18.145` 及之前近期版本在 Feature mutation 边界写入的本来就是完整 FloatingSurface logical shape，所以加载侧重建被 Native 省略的默认字段后，可直接验证旧 v4 stamp。真实业务字段变化仍 fail-closed。
+3. Persistence 新增 terminal-load memoization：同 generation 已经 terminal + write-fenced 的结构性 Load failure，再次 LoadStore 直接返回首个错误，不重复 Native LoadData/故障计数。它只去除重复 incident，不把 terminal Store 暴露为 ready，也不修改 ClearStore / verified replacement 的恢复 Authority。
+4. 性能：canonical normalize 只发生在原有 persistence save/load/readback 边界；terminal memoization 减少失败状态下重复 Native I/O。无新增 Tick/Scheduler。
+
+## 0.14 `.18.147` Historical Canonical Exact Recovery
+
+`.18.146` 在 RU Fresh Reload 后仍返回同一个 `770CB0B8>20692C15`，因此必须撤销“`.18.145` 旧 Death Review stamp 来自完整 FloatingSurface logical shape”的假设。实际 `.18.145` Store `NormalizeIndex()` 对 `widgetWindow` 是 opaque passthrough：Feature/Native 往返可能留下 `{}`、partial 表或省略 false/default 字段，旧 v4 stamp 因而合法地对应**历史 opaque canonical**，不能靠当前 normalizer 直接复现。
+
+Persistence 增加 `HistoricalCanonicalRecoveryContractVersion=1`，并允许单个 Store 显式提供 `rebuildCanonicalForIntegrity(decoded, stampedFingerprint, currentCanonical)`。该能力不是通用“忽略 mismatch”，而是受以下边界约束：
+
+1. Envelope/Seal 必须先通过；decode 必须成功；Domain budget 必须通过；Store 必须显式 `allowIntegrityUpgrade=true`。
+2. 当前 canonical fingerprint 正常不匹配后，才允许构造一个**历史 canonical 候选**；Core 仍使用当前确定性 `FingerprintCanonicalValue()` 计算候选 hash。
+3. 只有候选 hash **精确等于 envelope 中已经 stamped 的 fingerprint** 才允许恢复；否则继续 `integrity_failed`、write fence，真实内容损坏不会被吞掉。
+4. Death Review 的 opt-in hook 只复原 `.18.145` 的 opaque `widgetWindow` canonical；成功后实际应用的是当前 `FloatingSurface:NormalizeState()` canonical，并立即以既有 `integrity_v4_upgrade` 流程重盖当前 stamp。下一次 Reload 必须走普通 `verified_canonical`，不应每代重复兼容。
+5. 该路径只发生在 Load 边界，无 Tick/轮询；错误 Store 不提供 hook 就完全不受影响。
+
+`.18.146` 的 terminal-load memoization 保留：同 generation terminal+fenced failure 仍只产生一次物理 Load/incident；历史精确恢复成功不是 terminal failure，会进入正常 apply + restamp 路径。
+
+## 0.16 `.18.150` Death Review Historical Sequence/Map Recovery + Shape-Only Probe
+
+`.18.149` RU Fresh Reload 后，页面 Build 事务已全部恢复为 0 故障，唯一剩余 Store Fence 为 `v3.death_review:770CB0B8>368335F2`。因此 `.18.150` 不改变正常 Integrity v4/codec 管线，只扩展 Death Review 的 **Store-owned historical reconstruction hook**。
+
+1. 正常 `NormalizeIndex/DecodeIndex/EncodeIndex` 仍以 sequence 为业务结构，不使用 `pairs()` 代替 Authority 语义。
+2. 仅当 Envelope Seal 已通过、当前 Integrity v4 canonical mismatch、Store 显式存在 historical hook 时，额外把 `history.entries` 通过 bounded `pairs()` 收集为第二个历史候选基底；最多 30 条，按 `serial/storageId` 稳定排序。
+3. 该候选没有信任权。只有完整 historical canonical fingerprint 与磁盘原 stamped fingerprint **逐字相等**时，Persistence 才把 recovered Domain 交给当前 codec 重新 canonicalize/Apply，并立即排队重盖当前 stamp。
+4. `.149` 的 default-TRUE boolean false 恢复与 opaque window subset 仍然是同一 bounded mutation（≤12 位/基底），current codec envelope 禁止进入旧形恢复。
+5. 最终仍 mismatch 时，错误串可附 `historical_probe=histIpairs=.../histPairs=.../rawEntryKeys=.../winKeys=.../defaultTrueMissing=.../winRecoverable=.../bases=...`。这是 runtime-only 形状证据，不包含玩家、技能、伤害或死亡记录内容。
+
+该机制是兼容性恢复器，不是第二套 History Authority，也不在 Tick/事件热路径执行。
+
+## 0.15 `.18.149` Death Review Serializer-Stable Index Codec / Historical Domain Recovery
+
+`.18.148` 在同一真实旧 Store 上仍复现 `770CB0B8>20692C15`。窗口 subset 搜索本身保持 exact-match，但遗漏了 Store 内两个 default-TRUE 业务布尔：`autoShow` 与 `showDebuffs`。历史盖章若包含显式 `false`，RU 落盘省略该字段后，当前 Normalize 会把 `nil` 解释为默认 `true`，因此仅重建窗口永远无法命中旧 Hash。
+
+1. `HistoricalCanonicalRecoveryContractVersion=2`：hook 仍必须先精确复现旧 stamped fingerprint；v2 额外允许返回 recovered Domain，并接收只读 raw envelope。Core 只在旧 Hash 精确匹配后，预算检查 recovered Domain，再对它运行当前 canonical，最后 Apply；禁止从已丢信息的 `canonical(decoded)` 猜业务值。
+2. Death Review 将缺失 `autoShow/showDebuffs` 的 `false` 候选与 legacy opaque-window 缺失字段放进同一 bounded mutation set，最多 12 位/4096 候选；候选不精确命中旧 stamp 就继续 Fence。
+3. Index codec v1 将 default-TRUE 布尔改为稳定负向数值 sentinel：`autoShowDisabled=1`、`showDebuffsDisabled=1`。未出现 sentinel 明确表示 true，因此 Native 省略 Lua `false` 不再造成业务歧义。Store id/key/schema 不变；Decode 同时接受 pre-codec V3 plain envelope，用户无需清配置。
+4. FloatingSurface `minimized/locked/userMoved` 等默认 false 字段继续使用共享 NormalizeState；这类 false 被 Native 省略时语义仍可由默认值唯一恢复。
+5. 首次从 `.18.145` opaque canonical 恢复时会以当前 codec 重盖；随后 Save/Barrier/Reload 均按 codec canonical 验证。该兼容搜索只位于 mismatch load 路径，无 Tick/OnUpdate。
+
 ## 1. 目的
 
 Replicated Suite 已经是大型工程，不能继续让每个模块自己决定：

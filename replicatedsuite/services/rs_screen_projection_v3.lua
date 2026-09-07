@@ -16,12 +16,14 @@ local P = S.Services.ScreenProjectionV3
 -- consistency oracle) fought the REAL client's coordinate space. Both working
 -- references use raw native coordinates with zero conversion and zero bounds
 -- rejection (rp_api.lua UnitScreenPoint/ProjectWorldToScreen, easypull.lua
--- ConvertWorldToScreen), anchoring dots at raw values times addonScale.
--- v9 returns raw coordinates, culls camera-behind via depth, and records the
+-- ConvertWorldToScreen), anchoring projected values directly in UIParent screen
+-- space. Suite addonScale is deliberately excluded from this coordinate path.
+-- v9+ returns raw coordinates, culls camera-behind via depth, and records the
 -- exact failure reason for every rejected read.
-P.version = 12
+P.version = 13
 P.presentationBoundary = "service_only"
 P.EasyPullWorldToScreenContractVersion = 2
+P.UiParentScreenCoordinateContractVersion = 1
 P.presentationDebt = nil
 P.metrics = P.metrics or { unitReads=0, worldReads=0, nativeProjects=0, cameraProjects=0, cameraBatches=0, failures=0,
     unitBatches=0, behindCameraRejects=0, nativeScaleReconciles=0, nativeConsistencyFallbacks=0, worldAliasGuards=0, nativeCameraFallbacks=0 }

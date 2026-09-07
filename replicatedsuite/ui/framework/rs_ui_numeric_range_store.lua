@@ -66,7 +66,7 @@ end
 if P:GetStore(STORE_ID) == nil then
     local registered, registerErr = P:RegisterV3Store({
         id = STORE_ID,
-        owner = "rsui.numeric_ranges",
+        owner = "v3.rsui.numeric_ranges",
         scope = P.Scope and P.Scope.Account or "account",
         lifetime = P.Lifetime and P.Lifetime.Permanent or "permanent",
         schemaVersion = 1,

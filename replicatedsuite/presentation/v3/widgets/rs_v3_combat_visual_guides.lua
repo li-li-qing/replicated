@@ -15,7 +15,8 @@ if type(UnitFeature) ~= "table" or type(RangeFeature) ~= "table" then return end
 S.UIV3 = S.UIV3 or {}
 S.UIV3.CombatVisualGuidesV3 = S.UIV3.CombatVisualGuidesV3 or {}
 local P = S.UIV3.CombatVisualGuidesV3
-P.version = 8
+P.version = 9
+P.ScreenCoordinateAuthorityContractVersion = 1
 P.owner = "v3:combat_visual_guides"
 P.unitToken = "presentation:unit_lines"
 P.rangeToken = "presentation:range_assist"
@@ -344,15 +345,12 @@ function P:PlaceDot(dot, x, y, size, opacity, kind, pairKey, r, g, b)
     S.UI:SetVisible(dot.root, true, self.owner)
 end
 
--- Reference-aligned screen scale (rp_ui.lua UpdateLinesView: pt.x * scale,
--- addonScale defaults to 1). Presentation never derives a second coordinate
--- space; it multiplies raw projected coords by the layout scale only.
-function P:AddonScale()
-    local context = S.Layout ~= nil and type(S.Layout.GetContext) == "function" and S.Layout:GetContext() or nil
-    local scale = tonumber(context and context.addonScale) or 1
-    if scale <= 0 then return 1 end
-    return scale
-end
+-- ScreenProjectionV3 already returns coordinates in the same top-left
+-- UIParent screen space used by OverlayWindow child anchors. Suite addonScale is
+-- a layout-size preference, NOT a world/screen coordinate conversion. Applying
+-- it here scales positions away from the top-left origin and creates a larger
+-- absolute offset at 2560x1440. Presentation therefore consumes projected x/y
+-- 1:1; all projection/calibration authority remains in ScreenProjectionV3.
 
 function P:RenderUnit()
     if self.unitHeld ~= true then self:HideUnitPools(); return true end
@@ -366,7 +364,6 @@ function P:RenderUnit()
     local pressure="Normal"
     if type(S.FrameBudget)=="table" and type(S.FrameBudget.current)=="table" then pressure=tostring(S.FrameBudget.current.pressure or "Normal") end
     local plans,budget=self:BuildUnitLineSamplePlan(rows,projection,nil,nil,pressure)
-    local addonScale=self:AddonScale()
     local active={}
     local visibleDots,requestedDots=0,0
     local anchorWrites,styleWrites,visibilityWrites,poolGrowth=0,0,0,0
@@ -393,8 +390,8 @@ function P:RenderUnit()
         active[key]=true; visibleDots=visibleDots+count
         for i=1,count do
             local t=(i-1)/math.max(1,count-1)
-            local px=math.floor((plan.x1+(plan.x2-plan.x1)*t)*addonScale+0.5)
-            local py=math.floor((plan.y1+(plan.y2-plan.y1)*t)*addonScale+0.5)
+            local px=math.floor((plan.x1+(plan.x2-plan.x1)*t)+0.5)
+            local py=math.floor((plan.y1+(plan.y2-plan.y1)*t)+0.5)
             local aw,sw,vw=self:PlaceUnitDot(pool[i],px,py,size,projection.opacity,key,cr,cg,cb)
             anchorWrites=anchorWrites+(tonumber(aw) or 0); styleWrites=styleWrites+(tonumber(sw) or 0); visibilityWrites=visibilityWrites+(tonumber(vw) or 0)
             local uk=tostring(px)..","..tostring(py)
@@ -410,7 +407,7 @@ function P:RenderUnit()
     S.UI:SetVisible(self.unitHost,#plans>0,self.owner)
     self.lastUnitSampling={budget=budget,pressure=pressure,visibleEdges=#plans,requestedDots=requestedDots,
         visibleDots=visibleDots,poolGrowth=poolGrowth,anchorWrites=anchorWrites,styleWrites=styleWrites,visibilityWrites=visibilityWrites,
-        uniquePositions=uniquePositions,addonScale=addonScale,
+        uniquePositions=uniquePositions,coordinateSpace="ui_parent_screen",
         firstRow=(plans[1]~=nil) and (tostring(math.floor(plans[1].x1))..","..tostring(math.floor(plans[1].y1)).."->"..tostring(math.floor(plans[1].x2))..","..tostring(math.floor(plans[1].y2))) or nil}
     return true
 end
@@ -425,16 +422,15 @@ function P:RenderRange()
     local rc=type(projection.color)=="table" and projection.color or nil
     local rr,rg,rb=rc and (tonumber(rc[1]) or 0.20) or 0.20, rc and (tonumber(rc[2]) or 0.82) or 0.82, rc and (tonumber(rc[3]) or 1.00) or 1.00
     local count=math.min(48,#points); local ok,err=self:EnsurePool("range",count); if ok~=true then return false,err end
-    local addonScale=self:AddonScale()
     for i=1,count do
-        self:PlaceDot(self.rangePool[i],points[i].x*addonScale,points[i].y*addonScale,projection.pointSize,projection.opacity,"range",nil,rr,rg,rb)
+        self:PlaceDot(self.rangePool[i],points[i].x,points[i].y,projection.pointSize,projection.opacity,"range",nil,rr,rg,rb)
     end
     for i=count+1,#self.rangePool do S.UI:SetVisible(self.rangePool[i].root,false,self.owner) end
     S.UI:SetVisible(self.rangeHost,true,self.owner)
     local hostVisible, hostKnown = nil, false
     if type(S.UI.NativeVisibleReadback) == "function" then hostVisible, hostKnown = S.UI:NativeVisibleReadback(self.rangeHost) end
-    self.lastRangeSampling = { points = count, addonScale = addonScale,
-        first = (count > 0 and points[1] ~= nil) and (tostring(math.floor((tonumber(points[1].x) or 0) * addonScale)) .. "," .. tostring(math.floor((tonumber(points[1].y) or 0) * addonScale))) or "?",
+    self.lastRangeSampling = { points = count, coordinateSpace = "ui_parent_screen",
+        first = (count > 0 and points[1] ~= nil) and (tostring(math.floor(tonumber(points[1].x) or 0)) .. "," .. tostring(math.floor(tonumber(points[1].y) or 0))) or "?",
         hostVisible = hostKnown == true and tostring(hostVisible == true) or "未知" }
     return true
 end

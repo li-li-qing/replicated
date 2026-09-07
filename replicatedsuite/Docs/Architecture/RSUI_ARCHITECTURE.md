@@ -5957,4 +5957,5 @@ RU 真机暴露了共享 Control 与 Responsive Workspace 的两个边界问题�
 - Adaptive Range 仍遵守“Domain 先行”：base `min/max` 只是初始 Slider 展示端点，`hardMin/hardMax` 是精确输入 envelope。只有 Domain 回读的真实值超出当前展示端点时才向外扩展，并继续由 `NumericRangeStore` 保存。
 - RangeAssist / UnitLines 点大小采用共享 `Constants.VisualGuide`：base 2..10、hard 2..24。Presenter 保留旧 2→16px / 10→40px 视觉比例并允许 >10 单调增长，避免 Domain 已接受但 Renderer 又把视觉压回旧上限。
 - 全链路事件驱动；Apply 不增加 Tick/OnUpdate，动态范围持久化继续走既有 debounce。
+- **`.18.147` registration correction**：`v3.rsui.numeric_ranges` 的 Store owner 必须同样位于 V3 namespace，固定为 `v3.rsui.numeric_ranges`。此前 `owner=rsui.numeric_ranges` 会被 `RegisterV3Store` 正确拒绝并产生 `NUMERIC_RANGE_STORE_REGISTER_FAILED / STORE_REGISTER_INVALID`；Foundation/Acceptance 现对 Store ID 与 owner 做精确门禁。该修复不改变 RSUI v47/API 13.1，也不改变业务数值 Authority。
 

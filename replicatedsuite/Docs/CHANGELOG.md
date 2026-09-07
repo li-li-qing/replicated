@@ -1,3 +1,52 @@
+## M1.16.0.18.150 — Death Review Historical Sequence Recovery + Shape Probe（2026-09-07）
+
+- **`.18.149` RU 复验已完成故障隔离**：页面构建链已恢复为 `页面失败0/隔离0/事务回滚0/事务失败0`，证明此前 `v3_build_transaction_contract` 红灯是 Death Review Store Fence 的下游级联；本轮不再修改页面/Binding/事务代码。唯一剩余阻断为 `v3.death_review:770CB0B8>368335F2`。`368335F2` 变化同时证明 `.18.149` stable codec 已成为当前 canonical。
+- **历史 Hash/算法对账**：本轮只以你上传的完整工程 `Addon.zip`（`.148`）叠加上一轮 `.149` 修改包重建当前实机代码，不再引用 GitHub 作为当前版本依据。当前真实代码确认 `770CB0B8` 仍来自旧 v4 canonical stamp；恢复继续要求候选完整 Hash 精确命中，禁止关闭 Integrity 或近似接受。
+- **补齐已观测的 Native 表形漂移类别**：旧 Index 的 `history.entries` 是最多 30 行的 sequence；正常 Domain 继续严格使用 `ipairs()`。Historical recovery 新增只在 mismatch 路径启用的 `pairs()` collector，用于覆盖 RU 已有实机证据中的 sequence/map 表示漂移。collector 按 `serial/storageId` 重新归一排序；恢复出的行**不直接可信**，仍必须连同旧业务设置和 opaque window 组成完整候选，并使完整 fingerprint 精确等于旧 stamp 才允许 Apply。
+- **双历史基底、统一 exact search**：先尝试严格 `ipairs` 历史基底；仅当 `pairs` 找到更多有效 summary 行时才增加第二个 recovered-history 基底。每个基底继续复用 `.149` 的 default-TRUE false + legacy window 缺失字段 bounded mutation，单基底最多 12 位/4096 候选。当前 codec envelope 永不进入该历史分支。
+- **失败不再盲查**：Store 增加 runtime-only `lastHistoricalRecoveryProbe`，仅记录 `histIpairs/histPairs/rawEntryKeys/winKeys/defaultTrueMissing/winRecoverable/bases` 等形状计数；Core 在最终 mismatch 文本追加 `historical_probe=...`。不输出玩家名、伤害、技能、死亡时间或记录内容。若真实 `770CB0B8` 仍未命中，下一份横幅可直接判断剩余结构类别。
+- **回归**：Death Review real-Lua Harness 构造“旧 canonical 有 1 条历史摘要 → Native 将 `entries[1]` 变为 `["1"]` map + 同时省略两个业务 false 与窗口 false → strict `ipairs=0` / historical `pairs=1` → 只有第二基底完整旧 Hash 精确命中 → recovered Domain 保留 history/false → codec 重盖 → 第二次 `verified_canonical`”。Foundation Gate v126 / UIV3 Acceptance v81。
+- **BuildTag**：`v3-m1.16.0.18.150-death-review-history-sequence-recovery`。
+
+## M1.16.0.18.149 — Death Review Index Stable Codec + Historical Business-State Recovery（2026-09-07）
+
+- **`.18.148` RU 复验结果**：真实旧 Store 仍稳定复现 `v3.death_review:integrity_failed:fingerprint_mismatch:770CB0B8>20692C15`，并继续级联 `runtime_startup_degradation`、Death Review Persistent Binding prepare 失败与 Page Build rollback/quarantine。由此确认 `.18.148` 的窗口字段 subset 仍不是完整历史形态。
+- **遗漏的业务歧义**：`settings.autoShow` / `settings.showDebuffs` 都是“缺失 => true”的默认真布尔值。RU SaveData 若省略旧盖章中的显式 `false`，磁盘 `nil` 经 `NormalizeSettings()` 会被解释为 `true`；`.18.148` 只枚举 `widgetWindow` 缺失字段，因此无论窗口组合是否正确，都无法复现包含这些 `false` 的旧 stamped fingerprint。
+- **统一 bounded exact recovery**：Death Review 历史恢复把“缺失 default-TRUE setting 可能为 false”与“缺失 opaque FloatingSurface 字段可由当前 pure normalizer 确定”合并为同一 mutation 集，仍限制最多 12 位（≤4096 候选），每个候选必须完整 Hash **精确等于**既有 stamp 才可恢复。无法命中继续原样 fail-closed + Fence；不清 Store、不关闭 Integrity。
+- **恢复值不再丢业务语义**：Persistence `HistoricalCanonicalRecoveryContractVersion=2`。历史 hook 可返回第二个 recovered Domain；Core 在旧 Hash 已认证后，对该 recovered Domain 再跑当前 canonical + budget 后才 Apply。这样 `false` 不会因为 decoded disk 中字段缺失而被当前默认 `true` 静默覆盖。旧 hook 仍兼容；第四参数新增 raw envelope，供 Store 在 decoder 归一化前读取真实历史磁盘形态。
+- **稳定持久化而非无限重盖**：Death Review Index 新增 codec v1。默认真布尔值不再直接持久化 `false`，而用 `autoShowDisabled=1 / showDebuffsDisabled=1` 数值 sentinel 表示禁用；missing sentinel 明确等于启用。窗口仍走唯一 `FloatingSurface:NormalizeState()`。旧 V3 key/schema 不变，首次精确恢复后重写为 codec；之后即使 Native 继续省略 Lua `false`，Readback Barrier 与 Fresh Reload 都能稳定验证，不进入反复 restamp。
+- **回归**：Death Review real-Lua Harness 新增“旧 partial window + 两个 false 业务设置同时被 RU 省略 → 精确恢复旧 stamp → recovered Domain 保留 false → codec 重盖 → 第二次 verified_canonical”链路，并模拟整个业务 payload 省略 false。Persistence v7/v8/v9、Acceptance Snapshot、Runtime Entry、Startup Isolation、Foundation Audit 均通过；完整全量 Harness 结果以本轮封包记录为准。Foundation Gate v125 / UIV3 Acceptance v80。
+- **RU 下一步**：必须继续保留当前真实 `770CB0B8` Store，直接覆盖 `.18.149` Fresh Reload；首轮目标 `integrityFail=0 / Fence=0 / pageQ=0 / txFail=0`，允许一次 `historical_canonical_recovery` + codec restamp；第二次 Reload 必须 `verified_canonical`。禁止 Reset/Clear 后声称通过。
+- **BuildTag**：`v3-m1.16.0.18.149-death-review-index-stable-codec-recovery`。
+
+## M1.16.0.18.148 — Death Review Historical Window Subset Recovery（2026-09-07）
+
+- **`.18.147` RU 复验结果**：NumericRange V3 owner 已恢复（Store 总数从 35 增至 40，未再出现 `NUMERIC_RANGE_STORE_REGISTER_FAILED / STORE_REGISTER_INVALID`），但 `v3.death_review` 仍精确复现 `770CB0B8>20692C15`。`historicalCanonical=1` 只证明恢复契约已启用，不代表单一 opaque 候选命中了旧盖章；该 Store 的 Fence 进一步让 `combat.death_review` Persistent Binding prepare 失败，触发 Page Build rollback/quarantine，因此本轮 `v3_build_transaction_contract` 红灯是同一根因的级联结果。
+- **真实历史形态补全**：`.18.143-.18.145` Store 对 `widgetWindow` 是 opaque passthrough，而 Feature/FloatingSurface 在不同用户交互阶段可能留下 partial state。RU 跨重载又可能省略 `false` 成员，因此旧盖章形状可能处于“磁盘 partial”与“当前完整 NormalizeState”之间。`PersistenceCanonicalWindowContractVersion=3` 只对 FloatingSurface 已知键做 bounded subset reconstruction：从磁盘 opaque 状态出发，仅补回当前纯 normalizer 可确定的缺失标量字段，最多 12 个（≤4096 候选），并且**每个候选仍必须精确复现现有 stamped fingerprint 才能恢复**。无法命中时继续原样 fail-closed + write fence；不清 Store、不关闭 Integrity、不接受近似 Hash。
+- **恢复后的 Authority**：命中历史盖章后仍只应用当前 `NormalizeWidgetWindow` canonical，并走既有 `integrity_v4_upgrade` dirty/restamp；下一次 Reload 必须进入 `verified_canonical`，历史搜索不会成为长期热路径。
+- **回归**：Death Review Harness 新增“旧内存 partial window 含 false 字段 → RU 落盘省略 false → raw opaque 与 full current canonical 均不匹配 → subset 精确命中旧 stamp → 重盖 → 第二次 verified”用例；Persistence v7/v8/v9、Acceptance Snapshot、Runtime Entry/Startup Isolation、Range/UnitLine/ScreenProjection 专项均通过。Foundation Gate v124 / UIV3 Acceptance v79。
+- **RU 状态**：仍需保留当前真实 `770CB0B8` Store 验证 `.18.148`；禁止 Reset/Clear 后再声称通过。
+- **BuildTag**：`v3-m1.16.0.18.148-death-review-historical-window-subset-recovery`。
+
+## M1.16.0.18.147 — Historical Canonical Recovery + NumericRange Namespace + Screen Coordinate Authority（2026-09-07）
+
+- **Death Review `.18.146` 复验失败纠正**：RU Fresh Reload 仍精确复现 `v3.death_review:integrity_failed:fingerprint_mismatch:770CB0B8>20692C15`，证明 `.18.146` 关于“.18.145 旧盖章来自完整 FloatingSurface logical shape”的假设不成立。真实 `.18.145` `NormalizeIndex()` 对 `widgetWindow` 是 opaque passthrough，可能把 `{}`/partial/default-omitted 子树直接参与 Integrity v4 hash。
+- **窄口 Historical Canonical Recovery**：Persistence 新增 `HistoricalCanonicalRecoveryContractVersion=1` 与 Store opt-in `rebuildCanonicalForIntegrity`。只有 Envelope Seal、decode、budget、当前 canonical 均已通过，且 Store 显式允许 upgrade 时，才允许重建一个历史 canonical 候选；候选使用当前确定性 fingerprint **精确等于旧 stamped fingerprint** 才接受。Death Review 只重建 `.18.145` 的 opaque-window canonical，成功后实际应用当前 FloatingSurface canonical 并立即走既有 `integrity_v4_upgrade` 重盖；错误 hash/真实内容损坏继续 fail-closed + fence。没有清 Store、关闭 integrity 或无条件吞 mismatch。
+- **NumericRange Store 注册修复**：`v3.rsui.numeric_ranges` 的 owner 从非法 `rsui.numeric_ranges` 修正为 `v3.rsui.numeric_ranges`，满足 V3 Store namespace 契约；Foundation/Acceptance 增加精确 owner 门禁，新增真实 Lua registration/roundtrip Harness，防止再次出现 `NUMERIC_RANGE_STORE_REGISTER_FAILED / STORE_REGISTER_INVALID`。
+- **2560×1440 视觉偏移根因**：`ScreenProjectionV3` 输出已经是 UIParent 屏幕坐标，而 Visual Guides Presentation 又把 x/y 乘 Suite `addonScale`，形成相对左上原点的二次比例缩放；分辨率/Scale 越高偏移越明显。`ScreenProjectionV3 v13` 新增 `UiParentScreenCoordinateContractVersion=1`，VisualGuides v9 新增 `ScreenCoordinateAuthorityContractVersion=1`，Unit Lines 与 Range Assist 直接 1:1 消费投影 x/y，Suite `addonScale` 只影响 UI 尺寸，禁止再参与世界→屏幕位置换算。Range 的 EasyPull Camera + player anchor rigid calibration 保留。
+- **回归**：新增 NumericRange 注册 Harness，并扩展 Death Review/Unit Line/ScreenProjection 专项；2560×1440 模拟中故意设置 `addonScale=1.25`，Unit Line/Range 坐标仍严格落在原投影端点。完整本地回归 `37 / 37 Python Harness PASS`、Foundation Audit PASS、TOC Lua `222 / 222` texluac Parse PASS；`rs_business_bridge.lua` 保持 Lua main-chunk `200/200` local。Foundation Gate v123 / UIV3 Acceptance v78。
+- **RU 状态**：本地修复完成，**仍待真实 `.18.147` Fresh Reload**。首轮必须保留现有 `.18.145/.18.146` Death Review Store 证明一次性恢复/重盖；不得通过 Reset/Clear 让 Gate 变绿。
+- **BuildTag**：`v3-m1.16.0.18.147-integrity-range-store-screen-coordinate`。
+
+## M1.16.0.18.146 — Death Review Persistence Canonical Window + Terminal Load Memoization（2026-09-07）
+
+- **RU Fresh Reload 阻断根因**：实机横幅 `v3.death_review:integrity_failed:fingerprint_mismatch:770CB0B8>20692C15` 来自 DeathReview Index 的 `widgetWindow` canonical 漏洞。Feature 在写入前已经使用 `FloatingSurface:NormalizeState()` 生成固定逻辑状态，但 Store 的 `NormalizeIndex()` 却把该子表原样透传参与 Integrity v4 hash；RU SaveData/LoadData 只要省略 `false/default/空字段`，窗口业务含义不变，canonical 指纹仍会变化并触发 write fence。
+- **单一窗口状态 Authority**：DeathReview Store 新增 `PersistenceCanonicalWindowContractVersion=1` 与唯一 `WidgetWindowSizePolicy`，`NormalizeIndex()` 保存/加载两侧统一调用共享 `FloatingSurface:NormalizeState()`；Feature 的 Get/SetWidgetWindowState 复用同一个 Store-owned policy，禁止 Presentation 与 Persistence 各维护一份 470×330/opacity 默认值。没有清 Store、没有关闭 integrity、没有无条件接受 mismatch。
+- **旧 `.18.145` 档兼容逻辑**：旧版本盖章时，Feature 写入 Store 的窗口状态本身已经是 FloatingSurface 固定形状；本轮只是让加载侧在 hash 前重建同一逻辑形状。因此 RU 若仅省略 false/default 表示，旧 v4 stamped fingerprint 可直接重新验证为 `verified_canonical`，无需迁移 key/schema 或破坏性 reset。真实业务字段变化仍继续 `integrity_failed`。
+- **重复故障去噪**：Persistence 增加 `TerminalLoadMemoizationContractVersion=1`。同一 Lua generation 内，已经 terminal + write-fenced 的结构性失败再次 `LoadStore()` 时直接返回首个错误，不重复触发 Native LoadData、incident 和 `integrityLoadFailures`。新 generation 会自然重新验证；Clear/verified replacement 等显式恢复路径仍拥有自己的状态重置。解决本次一次实际故障被 Feature Defaults 多次尝试放大成 `integrityFail=10` 的诊断噪声。
+- **回归**：新增 `rs_death_review_persistence_harness.py`，真实 Lua 模拟 SaveData 省略 `minimized=false/locked=false/userMoved=false` 后，Flush barrier 与再次 LoadStore 均通过 canonical verification，设置/几何保留；另故障注入证明 terminal Store 只产生一次物理读取/一次 integrity incident。完整本地回归 `36 / 36 Python Harness PASS`、Foundation Audit PASS、TOC Lua `222 / 222` texluac Parse PASS；Foundation Gate v122 / UIV3 Acceptance v77。
+- **BuildTag**：`v3-m1.16.0.18.146-death-review-persistence-canonical`。
+
 ## M1.16.0.18.145 — Numeric Explicit Apply + Adaptive Visual Point Size（2026-09-07）
 
 - **Range Assist 点大小“输入成功但实际无效”根因**：RSUI `.18.142` 的 Adaptive Range 已能在 Domain 接受后扩展 Slider，但 `combat_range_assist` / `combat_unit_lines` Feature Setter 仍把 `pointSize` 强制 clamp 到 10，Presenter 又把所有 >10 的字号压回 40px。现在统一由 `Constants.VisualGuide` 定义 2..24 安全 envelope；默认 Slider 仍为 2..10，精确输入 15 被 Domain 接受后 Authority 保持 15，Presenter 延续既有 2→16px、10→40px 映射并单调扩展到 15→55px，不再视觉扁平化。

@@ -588,7 +588,7 @@ def main() -> int:
     projection_path = root / "services/rs_screen_projection_v3.lua"
     projection_source = projection_path.read_text(encoding="utf-8-sig", errors="replace") if projection_path.is_file() else ""
     for token in (
-        "P.version = 12",
+        "P.version = 13",
         "function P:ProjectUnitBatch(unitTokens, options)",
         "local function CameraForwardDistance(frame, wx, wy, wz)",
         'reason="behind_camera"',
@@ -599,6 +599,7 @@ def main() -> int:
         "P.WorldBatchFactsContractVersion = 2",
         "P.WorldBatchAnchorCalibrationContractVersion = 1",
         "P.CameraUnavailableNativeFallbackContractVersion = 1",
+        "P.UiParentScreenCoordinateContractVersion = 1",
         "aliasCandidate=false, worldAliased=false",
         "native_world_alias_guard",
         "local wx,wy,wz,worldErr=self:GetUnitWorldPosition(token,false)",
@@ -616,10 +617,11 @@ def main() -> int:
     unit_guide_path = root / "presentation/v3/widgets/rs_v3_combat_visual_guides.lua"
     unit_guide_source = unit_guide_path.read_text(encoding="utf-8-sig", errors="replace") if unit_guide_path.is_file() else ""
     for token in (
-        "P.version = 8",
+        "P.version = 9",
         "P.watchdogTask = P.watchdogTask or \"v3_visual_guides_lifecycle_watchdog\"",
         "function P:ConvergeTick()",
-        "function P:AddonScale()",
+        "P.ScreenCoordinateAuthorityContractVersion = 1",
+        "coordinateSpace=\"ui_parent_screen\"",
         "S.UI:CreateOverlayWindow(\"v3_visual_\" .. kind .. \"_host\", self.owner)",
         "local UNIT_LINE_PAIR_HARD_CAP = 160",
         "local function UnitLineTotalBudget(refreshMs)",
@@ -636,6 +638,8 @@ def main() -> int:
     ):
         if token not in unit_guide_source:
             failures.append("Unit line adaptive sampling contract missing: " + token)
+    if "function P:AddonScale()" in unit_guide_source or "*addonScale" in unit_guide_source:
+        failures.append("Visual guide must not multiply ScreenProjection coordinates by Suite addonScale")
     unit_guide_code = strip_lua_strings(strip_lua_comments(unit_guide_source))
     if re.search(r"function\s+P:RenderUnit\(\).*?local\s+count\s*=\s*math\.max\(8\s*,\s*math\.min\(48", unit_guide_code, re.S):
         failures.append("Unit line regression: RenderUnit restored fixed final 8..48 point count")

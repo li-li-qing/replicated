@@ -5,7 +5,7 @@
 ## 统一前置
 
 1. 备份当前 addon 与用户配置；只加载 `replicatedsuite/`（单一 V3 Host）。`z_api_functions/` 仅作开发期 API 参考，**不进入运行时**；旧 `globals/` 与 Legacy UI/runtime 已于 2026-09-01/02 物理删除，不再随包，绝不重新引入。
-2. 使用当前 `replicatedsuite/replicatedsuite.lua` 的 BuildTag 启动新客户端（见 `S.BuildTag`，当前为 `v3-m1.16.0.18.145-numeric-apply-adaptive-point-size`），记录 `ArcheRage.log`、`Chat.log` 和崩溃文件。
+2. 使用当前 `replicatedsuite/replicatedsuite.lua` 的 BuildTag 启动新客户端（见 `S.BuildTag`，当前为 `v3-m1.16.0.18.150-death-review-history-sequence-recovery`），记录 `ArcheRage.log`、`Chat.log` 和崩溃文件。
 3. 在 1024×768、1920×1080、2K 逐路由打开首页、战斗、生活、工具、系统页；记录页面/Widget/Modal 是否构建、文本裁切、列宽、黑边和关闭后资源释放。
 4. 每次测试前后记录 Foundation：`activeBuildScopes`、page/widget quarantine、Authority violation、Presentation boundary、Raw Native、Unexpected Global 和 Scheduler active tasks。
 5. 失败记录格式：时间、BuildTag、路由/动作、API 名、输入、原生返回值（脱敏）、日志错误码、是否可复现、恢复动作。
@@ -17,6 +17,33 @@
 - 写操作只经 Feature Commands/API capability，尊重权限和至少 200ms 冷却；失败停止并显示结果，不继续盲发。
 - 关闭页面/Feature 后无残留 Scheduler、Event、Demand lease 或隐藏窗口；重新打开能恢复投影和持久化设置。
 - 所有 TableView/浮窗在三种分辨率可读，长中文/俄文/英文不重叠、不把数值列裁成省略号。
+
+## `.18.150` Fresh Reload P0 — Death Review 历史 sequence/map 精确恢复
+
+1. **禁止 Reset/Clear `v3.death_review`**：必须保留 `.149` 仍报 `770CB0B8>368335F2` 的真实 Store，直接覆盖 `.150` 后 Fresh Reload。页面 Build 事务在 `.149` 已全绿，本轮验收只看 Store：目标 `integrityFail=0 / Fence=0`，并保持 `页面失败0/隔离0/事务回滚0/事务失败0`。
+2. **首轮允许一次 historical recovery**：若旧 `history.entries` 确实发生 sequence/map 表形漂移，首轮应出现一次 `historical_canonical_recovery`，旧历史摘要/两个业务开关/窗口状态全部保留，然后写成 `.149+` codec。不得通过清空历史来让 Hash 改变。
+3. **第二轮必须普通验证**：再次 Fresh Reload 后 `v3.death_review` 应为 `verified_canonical`，不得重复 historical recovery，不得出现 `barrierFail/readbackVerifyFail/durableFail`。
+4. **若仍 mismatch，复制完整错误**：`.150` 会在 `fingerprint_mismatch` 后附 `historical_probe=...`。必须原样复制其中 `histIpairs/histPairs/rawEntryKeys/winKeys/defaultTrueMissing/winRecoverable/bases`；该诊断不含死亡内容，可以直接用于下一轮精确定位。
+5. **不要回头修改 UI**：只要页面构建计数继续为 0，就不得为 Death Review 页面增加绕过 Persistence 的 prepare/save 逻辑；Store Fence 是唯一当前 P0。
+
+## `.18.149` Fresh Reload P0 — Death Review 真实旧档恢复 / Stable Codec
+
+1. **禁止 Reset/Clear `v3.death_review`**：直接覆盖 `.18.149`，必须保留刚刚仍报 `770CB0B8>20692C15` 的真实 Store。首轮 Fresh Reload 允许一次 `historical_canonical_recovery`，但最终必须 `integrityFail=0 / Fence=0`；Death Review 页面随后应自然恢复，要求 `pageQ=0 / txFail=0 / 页面失败=0 / 事务回滚=0`。不要给页面绕过 Persistence prepare。
+2. **业务设置保真**：进入死亡回顾设置核对“自动显示/显示 Debuff”等当前值，尤其是此前关闭过的开关不得在恢复后自行变回开启。修改两个开关各一次并保存，再 Reload，状态必须一致。
+3. **Codec 重盖**：首轮恢复后允许 Store dirty reason `integrity_v4_upgrade` 并立即重盖当前 codec；第二次 Fresh Reload 必须进入普通 `verified_canonical`，不得再次出现同一个 `770CB0B8` historical recovery/fence。
+4. **耐久回读**：两个默认真开关分别置 false 后触发一次正常 Flush/Reload；不得出现 `readback_fingerprint_mismatch`、`barrierFail`、`durableFail`。这条验证 numeric disabled sentinel 已消除 Native false omission。
+5. **历史/窗口不丢**：旧死亡记录索引、窗口尺寸/位置/透明度继续保留。单条删除/清空历史仍走原事务，不允许因 codec 升级改变 31-slot record shard 结构。
+6. **失败证据**：若仍 mismatch，复制完整 Store 行、`old>new fingerprint`、`lastIntegrityStatus/lastIntegrityError` 和当前两个业务开关状态；继续保留原 Store，不要清配置。
+
+## `.18.147` Fresh Reload P0 — Death Review 历史盖章 / NumericRange 注册 / 2560 坐标
+
+1. **禁止清 Death Review Store**：直接覆盖 `.18.147`，保留当前已经报 `770CB0B8>20692C15` 的 `v3.death_review`。第一次 Fresh Reload 目标是 `integrityFail=0 / Fence=0`；允许出现一次 `historical_canonical_recovery`/对应 `v3Upgrade` 后立即重盖。Death Review 设置、窗口状态、历史必须保留。第二次 Reload 应直接验证当前 canonical，不得再次走同一历史恢复。若候选不能精确复现旧 stamped fingerprint，系统仍应 fail-closed；禁止 Reset/Clear 伪造通过。
+2. **NumericRange V3 注册**：诊断中不得再出现 `NUMERIC_RANGE_STORE_REGISTER_FAILED` 或 `STORE_REGISTER_INVALID:V3 store owner must use v3.* namespace`。打开范围辅助，把点大小 base 2..10 输入 `15` 后点“应用”，要求 Authority=15、Slider=2..15；Reload 后数值与展示端点仍保留。
+3. **2560×1440 UIParent 坐标**：在 2560×1440 打开范围辅助，圆心必须钉在玩家屏幕中心/脚下投影锚点，不能随 `addonScale` 产生向右下或其它按比例放大的偏移；Unit Lines 两端必须落在真实 self/target/focus 屏幕位置。改变 Suite UI/Addon Scale 后，控件尺寸可以变化，但世界视觉的屏幕端点不得因为该 Scale 再次平移。
+4. **分辨率矩阵**：在 1024×768、1280×768、1920×1080、2560×1440 至少抽测 Range 圆心与 Unit Lines；Range 原有 EasyPull Camera + player anchor rigid calibration 必须继续生效，不得用新的硬编码分辨率 offset 修补。
+5. **交互回归**：TableView 列拖拽继续无双位置闪烁；Numeric“应用”后立即测试 WASD、技能和聊天输入，`.18.144` Focus Fence 不得回归。
+6. **本地基线仅作门禁**：当前本地 `37/37 Python Harness PASS`、Foundation Audit PASS、TOC Lua `222/222` Parse PASS。**这些不能替代 RU 实机结论**；完成上述 Fresh Reload 后再更新 CURRENT 状态。
+
 
 ## `.18.129` 真实故障收口 Fresh Reload 专项（当前第一 P0）
 

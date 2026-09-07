@@ -9,7 +9,7 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
 S.FoundationGate = {
-    version = 121,
+    version = 126,
     last = nil,
     sequenceCases = {},
     sequenceOrder = {},
@@ -828,6 +828,7 @@ function G:Run(options)
                 .. "/numeric=" .. tostring(type(preflightValidators) == "table" and type(preflightValidators.NumericField) == "function"))
         local textLayout = rsui and rsui.TextLayout or nil
         local designContract = S.UIV3Design
+        local numericRangeStore = S.Persistence and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.rsui.numeric_ranges") or nil
         AddCheck(report, "v3_typography_form_layout_contract", type(S.Theme) == "table" and type(S.Theme.ResolveFontSize) == "function"
                 and type(textLayout) == "table" and (tonumber(textLayout.version) or 0) >= 3
                 and (tonumber(rsui.FormLayoutContractVersion) or 0) >= 2
@@ -836,6 +837,7 @@ function G:Run(options)
                 and (tonumber(rsui.NumericAdaptiveRangeContractVersion) or 0) >= 1
                 and (tonumber(rsui.NumericExplicitApplyContractVersion) or 0) >= 1
                 and (tonumber(rsui.NumericRangePersistenceContractVersion) or 0) >= 1
+                and type(numericRangeStore) == "table" and tostring(numericRangeStore.owner or "") == "v3.rsui.numeric_ranges"
                 and (tonumber(rsui.InteractiveDraftContractVersion) or 0) >= 3
                 and (tonumber(rsui.InputDraftCommitContractVersion) or 0) >= 1
                 and (tonumber(rsui.NumericInputDraftReadContractVersion) or 0) >= 1
@@ -850,6 +852,7 @@ function G:Run(options)
                 .. "/adaptiveRange=" .. tostring(rsui and rsui.NumericAdaptiveRangeContractVersion or 0)
                 .. "/explicitApply=" .. tostring(rsui and rsui.NumericExplicitApplyContractVersion or 0)
                 .. "/rangeStore=" .. tostring(rsui and rsui.NumericRangePersistenceContractVersion or 0)
+                .. "/rangeOwner=" .. tostring(numericRangeStore and numericRangeStore.owner or "missing")
                 .. "/draft=" .. tostring(rsui and rsui.InteractiveDraftContractVersion or 0)
                 .. "/draftCommit=" .. tostring(rsui and rsui.InputDraftCommitContractVersion or 0)
                 .. "/draftRead=" .. tostring(rsui and rsui.NumericInputDraftReadContractVersion or 0)
@@ -1345,7 +1348,11 @@ function G:Run(options)
             and type(deathReview.Commands.ApplyWindowMs) == "function" and type(deathReview.Commands.ApplyMinDamage) == "function"
             and type(deathReview.Commands.SetMaxHistory) == "function" and type(deathReview.Commands.MarkStoreDirty) == "function"
             and type(deathReview.Commands.SetEnabled) == "function" and type(deathReview.Commands.ClearHistory) == "function"
-            and deathReview.Demand ~= nil and deathStore ~= nil and deathPage ~= nil and deathWidget ~= nil
+            and (tonumber(deathReview.PersistenceCanonicalWindowContractVersion) or 0) >= 5
+            and (tonumber(deathReview.PersistenceIndexCodecVersion) or 0) >= 1
+            and (tonumber(S.Persistence.HistoricalCanonicalRecoveryContractVersion) or 0) >= 2
+            and type(deathReview.WidgetWindowSizePolicy) == "table" and deathReview.Demand ~= nil
+            and deathStore ~= nil and type(deathStore.migrate) == "function" and type(deathStore.rebuildCanonicalForIntegrity) == "function" and deathPage ~= nil and deathWidget ~= nil
             and deathMeta ~= nil and tostring(deathMeta.status) == "migrated_m15_2" and tostring(deathMeta.authority) == "v3.death_review",
         "blocker", deathHealth and ("enabled=" .. tostring(deathReview.enabled == true)
             .. "/consumer=" .. tostring(deathHealth.consumers or 0)
@@ -1571,10 +1578,12 @@ function G:Run(options)
     AddCheck(report, "persistence_reliability_v4", persistence ~= nil
             and (tonumber(persistence.reliabilityContractVersion) or 0) >= 4
             and (tonumber(persistence.integrityContractVersion) or 0) >= 1
+            and (tonumber(persistence.historicalCanonicalRecoveryContractVersion) or 0) >= 1
             and (tonumber(persistenceStats.integrityLoadFailures) or 0) == 0
             and (tonumber(persistenceStats.encodedLoadRejects) or 0) == 0,
         "blocker", persistence and ("contract=" .. tostring(persistence.reliabilityContractVersion or 0)
             .. "/integrity=" .. tostring(persistence.integrityContractVersion or 0)
+            .. "/historicalCanonical=" .. tostring(persistence.historicalCanonicalRecoveryContractVersion or 0)
             .. "/stamped=" .. tostring(persistenceStats.integrityStampedSaves or 0)
             .. "/loadCheck=" .. tostring(persistenceStats.integrityLoadChecks or 0)
             .. "/legacy=" .. tostring(persistenceStats.integrityLegacyLoads or 0)
@@ -1643,7 +1652,8 @@ function G:Run(options)
             and type(S.Persistence.FingerprintDurablePayload) == "function"
             and type(S.Persistence.FingerprintEncodedPayloadV1) == "function"
             and type(S.Persistence.CanonicalIntegrityValue) == "function"
-            and type(S.Persistence.FingerprintCanonicalValue) == "function",
+            and type(S.Persistence.FingerprintCanonicalValue) == "function"
+            and (tonumber(S.Persistence.TerminalLoadMemoizationContractVersion) or 0) >= 1,
         "blocker", persistence and ("contract=" .. tostring(persistence.reliabilityContractVersion or 0)
             .. "/integrity=" .. tostring(persistence.integrityContractVersion or 0)
             .. "/numeric=" .. tostring(persistence.serializerNumericFingerprintContractVersion or 0)
@@ -1653,7 +1663,8 @@ function G:Run(options)
             .. "/shapeRepairFail=" .. tostring(persistenceStats.integritySerializerRepairFailures or 0)
             .. "/shapeResave=" .. tostring(persistenceStats.integritySerializerRepairResaves or 0)
             .. "/v3Upgrade=" .. tostring(persistenceStats.integrityUpgradeRecoveries or 0)
-            .. "/" .. tostring(persistenceStats.integrityUpgradeResaves or 0)) or "missing")
+            .. "/" .. tostring(persistenceStats.integrityUpgradeResaves or 0)
+            .. "/terminalMemo=" .. tostring(persistenceStats.terminalLoadShortCircuits or 0)) or "missing")
 
     AddCheck(report, "persistence_reliability_incidents",
         (tonumber(persistenceStats.flushFailures) or 0) == 0
@@ -1814,7 +1825,7 @@ function G:Run(options)
     local rangeAssist = S.Features and S.Features.combat_range_assist or nil
     local buffDisplay2 = S.Features and S.Features.BuffDisplay or nil
     local buffHealth2 = type(buffDisplay2) == "table" and type(buffDisplay2.GetHealth) == "function" and buffDisplay2:GetHealth() or nil
-    if type(screenProjection) ~= "table" or (tonumber(screenProjection.version) or 0) < 8 or tostring(screenProjection.presentationBoundary or "") ~= "service_only"
+    if type(screenProjection) ~= "table" or (tonumber(screenProjection.version) or 0) < 13 or tostring(screenProjection.presentationBoundary or "") ~= "service_only"
         or type(screenProjection.ProjectUnitFlexible) ~= "function" or type(screenProjection.ProjectUnitBatch) ~= "function"
         or (tonumber(screenProjection.FrontHemisphereBatchContractVersion) or 0) < 1
         or (tonumber(screenProjection.UnitProjectionConsistencyContractVersion) or 0) < 1
@@ -1823,6 +1834,7 @@ function G:Run(options)
         or (tonumber(screenProjection.WorldBatchFactsContractVersion) or 0) < 2
         or (tonumber(screenProjection.WorldBatchAnchorCalibrationContractVersion) or 0) < 1
         or (tonumber(screenProjection.CameraUnavailableNativeFallbackContractVersion) or 0) < 1
+        or (tonumber(screenProjection.UiParentScreenCoordinateContractVersion) or 0) < 1
         or type(screenProjection.ProjectWorld) ~= "function" or type(screenProjection.ProjectWorldBatch) ~= "function" then usabilityFailures[#usabilityFailures + 1] = "screen_projection" end
     if type(alerts) ~= "table" or type(alerts.Push) ~= "function" or type(alertHud) ~= "table" or (tonumber(alertHud.version) or 0) < 1
         or type(bossAlerts) ~= "table" or (tonumber(bossAlerts.HudContractVersion) or 0) < 2
@@ -1834,6 +1846,7 @@ function G:Run(options)
         or (tonumber(visualGuides.UnitLinePressureBudgetContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLineDiffRenderContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLineProgressivePoolContractVersion) or 0) < 1
+        or (tonumber(visualGuides.ScreenCoordinateAuthorityContractVersion) or 0) < 1
         or type(visualGuides.BuildUnitLineSamplePlan) ~= "function"
         or type(unitLines) ~= "table" or (tonumber(unitLines.VisualGuideContractVersion) or 0) < 5
         or (tonumber(unitLines.AdaptiveDensityContractVersion) or 0) < 2

@@ -10,14 +10,14 @@
 | Architecture | V3-only / `v3_rebuild` |
 | Runtime Addon | `replicatedsuite/` |
 | Legacy / Professional / `globals/` | 已物理删除，Active dependency = 0 |
-| BuildTag | `v3-m1.16.0.18.145-numeric-apply-adaptive-point-size` |
+| BuildTag | `v3-m1.16.0.18.150-death-review-history-sequence-recovery` |
 | Active TOC Lua | 222 |
 | Active / All Lua | 222 / 222 |
 | Foundation Audit | PASS |
-| Python Harness | 35 / 35 PASS |
+| Python Harness | 37 / 37 PASS |
 | Product Capability Matrix | 126 条：80 IMPLEMENTED / 35 PARTIAL / 0 TODO / 11 SPECIFIC_RUNTIME_BLOCKED |
 | RU Fresh Reload | PENDING |
-| Current UI Gate | **Fresh Reload/真实回归仍为 P0**：`.18.145` 首先验证范围辅助“点大小 2..10 → 输入 15 → 点应用 → Authority 15 / Slider 2..15 / 实际圆点明显变大”，并抽查其它 Compact Numeric 的“应用”按钮在窄布局下无重叠；`.18.144` 已由实机确认 TableView 拖列通过且 EditBox 不再卡游戏输入，继续保留焦点回归。`.18.143` Hover Fence、`.18.141` Range 锚点与此前换装/Healer/Trade/Bonds/Boss 回归继续保留。当前本地 35/35 Harness PASS 不替代 RU 证据。 |
+| Current UI Gate | **Fresh Reload/真实回归仍为 P0**：`.18.149` 实机已证明 UI Build 级联全部恢复（页面失败/隔离/回滚/txFail 均 0），唯一剩余阻断收敛为 `v3.death_review 770CB0B8>368335F2`。`.18.150` 保留 stable codec，并只扩展 exact historical recovery：历史 `history.entries` 增加 sequence/map 表形候选，仍要求完整旧 Hash 精确命中；失败时横幅附 `historical_probe` 形状计数。必须保留真实旧 Store Fresh Reload，首轮目标 `Fence=0 / integrityFail=0`，第二次必须 `verified_canonical`。 |
 
 `.18.112` 已把本轮两个表面回归收敛到底层 Interaction Lifecycle：主菜单拖动不再依赖调用者恰好把 Border 创建成 pickable，Windowing 在建立 Drag Gesture 前自己验证 hit-test surface；所有 Suite EditBox/MultiEditBox 进入 tracked physical-focus 生命周期，隐藏/禁用/释放/Runtime Stop/hot reload 都只对可证明属于 Suite 的输入对象清理 Focus。`.18.110` 的 Recovery Reload 与 Persistence 保存解耦继续保留：保存失败只保留证据并警告潜在未保存数据丢失，不阻断覆盖修复文件后的 recovery reload；strict durability 模式仍可 fail-closed.
 
@@ -183,7 +183,7 @@ Gate 仍为 **INCOMPLETE - CONTINUATION REQUIRED**。不得为了 Gate 变绿删
 - `.18.96` `SCREEN_PROJECTION_FRONT_HEMISPHERE_HARNESS PASS 14/14`：真实加载 `rs_screen_projection_v3.lua`，模拟 RU 对背后目标仍返回正 depth + 边角屏幕点以及“in-bounds 但处于 physical/UI-scale 或 stale”的 Native 点；验证 Camera Frame 每 batch 只读取一次、token 去重、所有 world read 均为 global、behind 在 Native screen read 前拒绝、UI-scale reconcile、严重偏移 camera fallback、前方出屏端点仍交给 Presenter clipping、旋转相机后原 behind 目标重新可见。
 - `.18.89` `INTERACTIVE_DRAFT_HARNESS PASS 13/13`：真实加载 `rs_ui_controls.lua`，验证 focused Text/Numeric draft 在 ambient refresh 中保持、失焦后可重新同步；Slider active preview 不被旧 Binding 回灌，final commit 可明确覆盖；`.18.90` 再增加 `RSUI_WORKSPACE_SMOKE_HARNESS` 与 `PERSISTENCE_ACCEPTANCE_SNAPSHOT_HARNESS`；`.18.91` 将 Workspace Smoke 扩至全部 6 类公共模板并新增全 Presentation Component API + RSUI TOC dependency-order 静态 Gate；`.18.92` 新增 Presentation→Feature API Audit 与 5/5 self-test，并修复 Tasks/Activities/Gear 三条真实缺失 Command。
 - `.18.94` Fresh Reload preflight：Foundation Audit 新增 DPS schema/`widgetVisible`/WidgetHost lifecycle 一致性以及 Trade Dropdown-only/Quote/Server route Authority package-coherence；UIV3 Acceptance v58 同步增加 `dps_widget_visibility_preference_contract` 与 `trade_dropdown_quote_preflight_contract`。本地回归：Workspace 27/27、Presentation→Feature 5/5、Persistence 19/19、Interactive Draft 13/13、Bag 4/4、Unit Lines 11/11、Front-Hemisphere 10/10。
-- 当前 BuildTag 与 `replicatedsuite.lua` 一致：`v3-m1.16.0.18.145-numeric-apply-adaptive-point-size`。
+- 当前 BuildTag 与 `replicatedsuite.lua` 一致：`v3-m1.16.0.18.150-death-review-history-sequence-recovery`。
 
 历史专项 harness、每个 M1.x 的逐轮数字与修复详情不再复制到本文，统一查 [`CHANGELOG.md`](CHANGELOG.md)。
 
@@ -585,6 +585,12 @@ Fresh Reload 后优先验证本轮四项用户回归：
 - `RU-BUFF-EQUIP-01`：BuffDisplay 自身装备读取收敛到 `GearV3`；HUD Layout 增加主手/副手/远程/背部四快捷开关。背部没有合法 slot 事实时继续 fail-closed。
 - 全量本地回归：Active/All Lua `220/220` Parse PASS；Foundation Audit PASS；25 个 Python Harness 文件全部 PASS。
 
+71. **已完成 `.18.147` — Historical Canonical / NumericRange Namespace / UIParent Screen Coordinate 修复（本地，待 RU）**：RU 实机证明 `.18.146` 对 Death Review 旧 canonical 的假设仍不完整，现改为 Store opt-in 的 exact historical-canonical reconstruction：只有重建候选 fingerprint 精确等于已盖章值才允许恢复，随后应用当前 canonical 并一次性重盖；NumericRange Store owner 修正为 `v3.rsui.numeric_ranges`；ScreenProjection v13 明确 UIParent screen-coordinate Authority，Visual Guides 不再把已投影 x/y 乘 Suite `addonScale`，修复 2560×1440 Range/Unit Lines 比例偏移。Foundation v123 / Acceptance v78；37/37 Harness、Foundation Audit、222/222 Lua Parse 全绿。**不能据此宣称 RU 已通过，必须保留旧存档做 Fresh Reload 证明。**
+
+73. **已完成 `.18.149` — Death Review Index Stable Codec + Historical Business-State Recovery（本地，待 RU）**：`.18.148` 真实 Fresh Reload 仍为同一 `770CB0B8>20692C15`。真实代码复核确认旧 opaque canonical 不只受 `widgetWindow` false 省略影响：`autoShow/showDebuffs` 是 default-TRUE 业务布尔，RU 若省略显式 false，Normalize 会把 nil 重新解释为 true，窗口-only subset 永远无法命中旧 stamp。现将这两个业务歧义与窗口缺失键统一放进最多 12 位 exact-match 搜索；Persistence Historical Canonical Recovery 升 v2，可在旧 Hash 已认证后应用 recovered Domain；Index codec v1 用 numeric disabled sentinel 持久化两个默认真开关，首次恢复后不再形成 false→nil→重盖循环。Store key/schema 不变。Foundation v125 / Acceptance v80。
+74. **已完成 `.18.150` — Death Review Historical Sequence Recovery + Shape Probe（本地，待 RU）**：`.18.149` 实机已将页面事务红灯全部清零，剩余唯一 Fence 为旧 Index `770CB0B8`。本轮 normal Domain/codec 不放宽，只在 current-v4 mismatch 的 historical hook 内增加 bounded `pairs()` history collector，用旧 stamp 对完整候选做精确认证；若仍失败，`historical_probe` 只输出结构计数以结束后续盲猜。Foundation v126 / Acceptance v81。
+72. **已完成 `.18.148` — Death Review Historical Window Subset Recovery（本地，待 RU）**：`.18.147` 真实 Fresh Reload 证明单一 opaque 历史候选仍不足；旧 partial FloatingSurface 状态在 RU 省略 false 字段后，既不等于磁盘形状也不等于当前完整 canonical。Store v3 仅对 17 个已知 FloatingSurface 键中的“磁盘缺失且当前 pure normalizer 可确定”的字段做最多 12 位 bounded subset 搜索（≤4096，一次性 mismatch 路径），每个候选必须精确命中旧 stamped fingerprint 才允许恢复并重盖；真实损坏继续 Fence。Foundation v124 / Acceptance v79。
+
 ### 9.4 Product Matrix 后续入口
 
 当 §9.2 Foundation + UI_REVIEW 阶段允许重新进入业务功能后，按以下规则从 [`Rebuild/PRODUCT_COMPLETION_MATRIX.md`](Rebuild/PRODUCT_COMPLETION_MATRIX.md) 取下一项：
@@ -634,5 +640,6 @@ Fresh Reload 后优先验证本轮四项用户回归：
 67. **已完成 `.18.143` — Hover Leave Fence / 高频设置页隔离**：`.18.142` 实机证明 UnitLines/RangeAssist 仍会因高频 Projection 刷新触发 RU 假 `OnLeave -> OnEnter`。Stable Button Hover 升 v2：120ms one-shot leave grace、重入取消、`IsMouseOver()` 物理复核；禁用/释放清理待提交任务，无 Tick。UnitLines/RangeAssist 世界视觉刷新保持原高频，但 Business Settings 的 `visual_tick` 只 160ms 合并刷新，直接设置操作仍即时。UI Interaction Harness 44/44、Foundation Audit PASS。
 68. **已完成 `.18.144` — Edit Commit Focus Fence / Table Preview Authority**：单行 EditBox 显式关闭 Native clear-on-enter；Text/Numeric Enter、失焦与输入切换统一进入 Draft→Commit/rollback→tracked Focus release→Keyboard disarm 生命周期，绝不全局清游戏/聊天 Focus。DataView 拖列期间 Preview 成为唯一 Geometry Authority，普通 Layout 与虚拟行重绑不得重新发布旧 committed widths；DragStop 后才成对 Commit。RSUI v46 / API 13.0、Foundation v120 / Acceptance v75；35/35 Harness + Foundation Audit PASS，仍等待 RU Fresh Reload 实机关闭回归。
 69. **已完成 `.18.145` — Numeric Explicit Apply / Adaptive Visual Point Size**：Compact Numeric Setting 默认在 Exact EditBox 右侧提供“应用”，不再把未验证的 RU Enter 事件作为唯一提交入口；Apply 仍沿 Binding→Domain→Persistence 单 Authority，并对 LostFocus-before-OnClick 做相同值去重。RangeAssist/UnitLines 点大小的旧 Domain 10 上限与 Presenter 40px flatten 同步移除，统一由 `Constants.VisualGuide` 约束 2..24；默认 Slider 仍 2..10，输入 15 并应用后 Authority=15、Slider 展示端点扩为 2..15 且持久化，Presenter 显示为 55px。RSUI v47 / API 13.1、Foundation v121 / Acceptance v76；35/35 Harness + Foundation Audit PASS，等待 RU Fresh Reload 验证实际视觉与多分辨率紧凑布局。
+70. **已完成 `.18.146` — Death Review Canonical Window / Terminal Load Memoization**：RU Fresh Reload 报 `v3.death_review fingerprint_mismatch:770CB0B8>20692C15`。真实调用链确认 Feature 用 FloatingSurface 固定形状保存窗口，而 Store canonical 原样透传 widgetWindow，导致 RU 省略 false/default 字段后逻辑等价却 hash 变化。DeathReview Store/Feature 现共享唯一 Window Policy，并在 Index canonical 中统一 NormalizeState；不清存档、不降完整性。Persistence 同时 memoize 同 generation 的 terminal fenced load，避免一个真实故障被 startup defaults 重复读取/记录成 `integrityFail=10`。新增 real-Lua drift harness；36/36 Harness + Foundation Audit PASS，TOC Lua 222/222 Parse PASS；Foundation v122 / Acceptance v77。
 68. **NEXT — RU `.18.143` Hover Regression**：Fresh Reload 后分别在“单位连线”四个 Pair Toggle、颜色按钮、顶部启停按钮，以及“范围辅助”启停/颜色按钮上连续悬停 10 秒；视觉不得在默认/高亮之间闪烁。随后快速移入/移出确认 hover 最迟约 120ms 清除且点击不受影响。PVP/Range 世界视觉刷新频率不得下降。
 

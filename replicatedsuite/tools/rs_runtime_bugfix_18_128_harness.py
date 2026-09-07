@@ -38,7 +38,7 @@ def static_contracts() -> None:
     require(ROSTER, "version = 6", "local function DetectVisibleTeamIndex()", "previousVisibleTeamIndex",
             "or tonumber(previousVisibleTeamIndex) ~= tonumber(self.visibleTeamIndex)")
 
-    require(PROJECTION, "P.version = 12", "P.CameraUnavailableNativeFallbackContractVersion = 1",
+    require(PROJECTION, "P.version = 13", "P.CameraUnavailableNativeFallbackContractVersion = 1", "P.UiParentScreenCoordinateContractVersion = 1",
             'source="native_camera_unavailable"')
     require(LIFE, "TA.RouteRefreshRetryContractVersion = 2", "TA.SingleFlightLatestRouteContractVersion = 1",
             "self.pendingRoute = { from = from, to = to }", '"route_result_superseded"')

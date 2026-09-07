@@ -21,6 +21,7 @@ local U = S.Utils
 
 local INDEX_STORE = "v3.death_review"
 local INDEX_SCHEMA = 1
+local INDEX_CODEC_VERSION = 1
 local RECORD_SCHEMA = 1
 local RECORD_PREFIX = P.V3KeyPrefix .. "death_review_record_"
 local MAX_HISTORY = 30
@@ -32,6 +33,32 @@ local MAX_DEBUFFS = 10
 -- record is independently bounded so no setting can create an unbounded write.
 local INDEX_BUDGET = { maxDepth = 6, maxNodes = 1800, maxStringBytes = 24000, maxEntriesPerTable = 128 }
 local RECORD_BUDGET = { maxDepth = 7, maxNodes = 1800, maxStringBytes = 14000, maxEntriesPerTable = 128 }
+
+-- The death-review index persists shared FloatingSurface state.  This state
+-- MUST be canonicalized by the same pure Foundation normalizer on every
+-- save/load. Keeping widgetWindow as an opaque table made Integrity v4 hash
+-- serializer representation (for example omitted false/default fields) instead
+-- of the logical window state, which produced a real RU cross-reload fence.
+local Floating = S.RSUI and S.RSUI.FloatingSurface or nil
+if type(Floating) ~= "table" or type(Floating.NormalizeState) ~= "function" then
+    error("FloatingSurface unavailable for DeathReview store")
+end
+
+F.PersistenceCanonicalWindowContractVersion = 5
+F.PersistenceIndexCodecVersion = INDEX_CODEC_VERSION
+F.WidgetWindowSizePolicy = {
+    defaultWidth = 470,
+    defaultHeight = 330,
+    minWidth = 1,
+    minHeight = 1,
+    defaultOverallOpacity = 0.96,
+    defaultBackgroundOpacity = 1.0,
+    defaultTextOpacity = 1.0,
+}
+
+local function NormalizeWidgetWindow(value)
+    return Floating:NormalizeState(value, F.WidgetWindowSizePolicy)
+end
 
 local function DeepCopy(value)
     if U ~= nil and type(U.DeepCopy) == "function" then return U.DeepCopy(value) end
@@ -149,7 +176,7 @@ local function SummaryFromRecord(record, storageId)
     }, record.serial, storageId)
 end
 
-local function NormalizeIndex(value)
+local function NormalizeIndexWithWindow(value, windowMode)
     value = type(value) == "table" and value or {}
     local settings = NormalizeSettings(value.settings)
     local sourceHistory = type(value.history) == "table" and value.history or {}
@@ -165,11 +192,248 @@ local function NormalizeIndex(value)
     end
     table.sort(entries, function(a, b) return (tonumber(a.serial) or 0) < (tonumber(b.serial) or 0) end)
     while #entries > settings.maxHistory do table.remove(entries, 1) end
+    local widgetWindow
+    if windowMode == "legacy_opaque_18_145" then
+        -- .18.145 and earlier deliberately treated this Presentation subtree as
+        -- opaque. Preserve that exact historical canonical SHAPE only for the
+        -- persistence recovery hook; current Domain state never uses this path.
+        widgetWindow = type(value.widgetWindow) == "table" and DeepCopy(value.widgetWindow) or {}
+    else
+        widgetWindow = NormalizeWidgetWindow(value.widgetWindow)
+    end
     return {
         settings = settings,
         history = { serial = serial, entries = entries },
-        widgetWindow = type(value.widgetWindow) == "table" and value.widgetWindow or {},
+        widgetWindow = widgetWindow,
     }
+end
+
+local function NormalizeIndex(value)
+    return NormalizeIndexWithWindow(value, "current")
+end
+
+-- Serializer-stable index codec (.18.149). The RU serializer may omit false,
+-- so default-TRUE business flags must never rely on a literal false surviving
+-- the native round-trip. Persist their NEGATED state as numeric sentinel 1;
+-- missing sentinel then unambiguously means the default true. FloatingSurface
+-- booleans remain safe because their semantic default is false and the shared
+-- normalizer reconstructs omitted false members deterministically.
+local function EncodeIndex(value)
+    local normalized = NormalizeIndex(value)
+    local settings = {
+        windowMs = normalized.settings.windowMs,
+        maxHistory = normalized.settings.maxHistory,
+        minDamage = normalized.settings.minDamage,
+    }
+    if normalized.settings.autoShow == false then settings.autoShowDisabled = 1 end
+    if normalized.settings.showDebuffs == false then settings.showDebuffsDisabled = 1 end
+    return {
+        codec = INDEX_CODEC_VERSION,
+        payload = {
+            settings = settings,
+            history = DeepCopy(normalized.history),
+            widgetWindow = DeepCopy(normalized.widgetWindow),
+        },
+    }
+end
+
+local function DecodeIndex(raw)
+    if type(raw) ~= "table" then return nil, "death_review_index_payload_required" end
+    if raw.codec ~= nil then
+        if tonumber(raw.codec) ~= INDEX_CODEC_VERSION then
+            return nil, "death_review_index_codec_version:" .. tostring(raw.codec)
+        end
+        local payload = type(raw.payload) == "table" and raw.payload or nil
+        if payload == nil then return nil, "death_review_index_codec_payload_missing" end
+        local encodedSettings = type(payload.settings) == "table" and payload.settings or {}
+        local domain = {
+            settings = {
+                autoShow = tonumber(encodedSettings.autoShowDisabled) ~= 1,
+                windowMs = encodedSettings.windowMs,
+                maxHistory = encodedSettings.maxHistory,
+                minDamage = encodedSettings.minDamage,
+                showDebuffs = tonumber(encodedSettings.showDebuffsDisabled) ~= 1,
+            },
+            history = DeepCopy(payload.history),
+            widgetWindow = DeepCopy(payload.widgetWindow),
+        }
+        return NormalizeIndex(domain), nil
+    end
+
+    -- Pre-.18.149 plain stores were persisted as { payload = Domain, __rsmeta }.
+    -- The fallback also accepts a bare Domain for developer harness/migration
+    -- probes. No old addon key is read; this is only the same V3 Store key.
+    local source = type(raw.__rsmeta) == "table" and type(raw.payload) == "table" and raw.payload or raw
+    return NormalizeIndex(source), nil
+end
+
+-- .18.143-.18.145 persisted widgetWindow as an opaque table. RU SaveData may
+-- also omit false-valued members. .18.148 covered only missing FloatingSurface
+-- fields, but a default-TRUE business flag (autoShow/showDebuffs) that was false
+-- at stamp time can likewise disappear on disk; NormalizeSettings(nil) then turns
+-- it back into true and makes the old v4 stamp impossible to reproduce.
+--
+-- Recovery remains fail-closed. We enumerate ONE bounded mutation set containing
+-- only deterministic serializer ambiguities:
+--   1) missing default-TRUE DeathReview booleans may historically have been false;
+--   2) missing legacy opaque widgetWindow members may be restored from the current
+--      pure FloatingSurface normalizer.
+-- A candidate is returned only when its full canonical fingerprint EXACTLY equals
+-- the already-stamped fingerprint. At most 12 mutations => 4096 candidates, only
+-- on this one-time fenced historical-load path; there is no Tick/runtime cost.
+local LEGACY_WINDOW_RECOVERABLE_KEYS = {
+    "width", "height", "minimized", "locked",
+    "overallOpacity", "backgroundOpacity", "textOpacity", "fontScale", "userMoved",
+    "x", "y", "anchorH", "anchorV", "offsetX", "offsetY",
+    "coordinateSpace", "savedUiScale",
+}
+local LEGACY_DEFAULT_TRUE_SETTING_KEYS = { "autoShow", "showDebuffs" }
+local MAX_HISTORICAL_RECOVERY_MUTATIONS = 12
+
+local function CountTableEntries(value)
+    if type(value) ~= "table" then return 0 end
+    local count = 0
+    for _ in pairs(value) do count = count + 1 end
+    return count
+end
+
+-- Historical-only collector for RU table-shape drift. Normal Domain/codec reads
+-- intentionally retain the strict sequence contract above. Previous RU
+-- persistence incidents proved that Lua table representation can cross a native
+-- round-trip with a different sequence/map shape; when that happens ipairs()
+-- may expose fewer rows than pairs(). Recovery may collect those rows only to
+-- reconstruct an OLD canonical candidate, and the candidate is never trusted
+-- unless its full fingerprint exactly equals the existing integrity stamp.
+local function NormalizeHistoricalIndexWithRecoveredEntries(value)
+    value = type(value) == "table" and value or {}
+    local settings = NormalizeSettings(value.settings)
+    local sourceHistory = type(value.history) == "table" and value.history or {}
+    local sourceEntries = type(sourceHistory.entries) == "table" and sourceHistory.entries or {}
+    local entries = {}
+    local serial = math.max(0, math.floor(tonumber(sourceHistory.serial) or tonumber(value.serial) or 0))
+    for _, row in pairs(sourceEntries) do
+        if type(row) == "table" and tonumber(row.storageId) ~= nil then
+            local normalized = NormalizeSummary(row, #entries + 1, row.storageId)
+            serial = math.max(serial, normalized.serial)
+            entries[#entries + 1] = normalized
+            if #entries >= MAX_HISTORY then break end
+        end
+    end
+    table.sort(entries, function(a, b)
+        local aSerial, bSerial = tonumber(a.serial) or 0, tonumber(b.serial) or 0
+        if aSerial ~= bSerial then return aSerial < bSerial end
+        return (tonumber(a.storageId) or 0) < (tonumber(b.storageId) or 0)
+    end)
+    while #entries > settings.maxHistory do table.remove(entries, 1) end
+    return {
+        settings = settings,
+        history = { serial = serial, entries = entries },
+        widgetWindow = type(value.widgetWindow) == "table" and DeepCopy(value.widgetWindow) or {},
+    }
+end
+
+local function RebuildV18_145Canonical(value, stampedFingerprint, currentCanonical, rawEnvelope)
+    value = type(value) == "table" and value or {}
+    local source = value
+    if type(rawEnvelope) == "table" then
+        -- Current codec data must verify through the current codec. Never let a
+        -- malformed current envelope fall back into historical-shape recovery.
+        if rawEnvelope.codec ~= nil then return nil end
+        if type(rawEnvelope.payload) == "table" then source = rawEnvelope.payload end
+    end
+    source = type(source) == "table" and source or {}
+    local strictHistorical = NormalizeIndexWithWindow(source, "legacy_opaque_18_145")
+    local recoveredEntriesHistorical = NormalizeHistoricalIndexWithRecoveredEntries(source)
+    local store = P:GetStore(INDEX_STORE)
+    if store == nil or stampedFingerprint == nil then return strictHistorical, NormalizeIndex(strictHistorical) end
+
+    -- Runtime-only, shape-only evidence for the next RU Fresh Reload if the old
+    -- fingerprint still cannot be reconstructed. No player names, damage values,
+    -- serials, or death payload contents are exposed.
+    local sourceHistory = type(source.history) == "table" and source.history or {}
+    local sourceEntries = type(sourceHistory.entries) == "table" and sourceHistory.entries or {}
+    local sourceSettings = type(source.settings) == "table" and source.settings or {}
+    local sourceWindowRaw = type(source.widgetWindow) == "table" and source.widgetWindow or {}
+    local strictCount = #strictHistorical.history.entries
+    local recoveredCount = #recoveredEntriesHistorical.history.entries
+    local missingDefaultTrue = 0
+    for _, key in ipairs(LEGACY_DEFAULT_TRUE_SETTING_KEYS) do
+        if sourceSettings[key] == nil and strictHistorical.settings[key] == true then
+            missingDefaultTrue = missingDefaultTrue + 1
+        end
+    end
+
+    local normalizedWindow = NormalizeWidgetWindow(source.widgetWindow)
+    local missingWindowFields = 0
+    for _, key in ipairs(LEGACY_WINDOW_RECOVERABLE_KEYS) do
+        if sourceWindowRaw[key] == nil and normalizedWindow[key] ~= nil then
+            missingWindowFields = missingWindowFields + 1
+        end
+    end
+
+    local bases = { strictHistorical }
+    if recoveredCount > strictCount then bases[#bases + 1] = recoveredEntriesHistorical end
+    store.lastHistoricalRecoveryProbe = string.format(
+        "histIpairs=%d/histPairs=%d/rawEntryKeys=%d/winKeys=%d/defaultTrueMissing=%d/winRecoverable=%d/bases=%d",
+        strictCount, recoveredCount, CountTableEntries(sourceEntries), CountTableEntries(sourceWindowRaw),
+        missingDefaultTrue, missingWindowFields, #bases)
+
+    local function Matches(candidate)
+        local fingerprint = P:FingerprintCanonicalValue(store, candidate)
+        return fingerprint ~= nil and tostring(fingerprint) == tostring(stampedFingerprint)
+    end
+
+    local function TryBase(historical, baseIndex)
+        if Matches(historical) then
+            store.lastHistoricalRecoveryProbe = store.lastHistoricalRecoveryProbe .. "/matchBase=" .. tostring(baseIndex) .. "/mask=0"
+            return historical, NormalizeIndex(historical)
+        end
+
+        local mutations = {}
+        for _, key in ipairs(LEGACY_DEFAULT_TRUE_SETTING_KEYS) do
+            if sourceSettings[key] == nil and historical.settings[key] == true then
+                mutations[#mutations + 1] = { kind = "setting_false", key = key }
+            end
+        end
+
+        local sourceWindow = type(historical.widgetWindow) == "table" and historical.widgetWindow or {}
+        for _, key in ipairs(LEGACY_WINDOW_RECOVERABLE_KEYS) do
+            if sourceWindow[key] == nil and normalizedWindow[key] ~= nil then
+                mutations[#mutations + 1] = { kind = "window_restore", key = key, value = normalizedWindow[key] }
+            end
+        end
+
+        if #mutations == 0 or #mutations > MAX_HISTORICAL_RECOVERY_MUTATIONS then return nil end
+        local combinations = 2 ^ #mutations
+        for mask = 1, combinations - 1 do
+            local candidate = DeepCopy(historical)
+            candidate.widgetWindow = DeepCopy(sourceWindow)
+            local bits = mask
+            for index = 1, #mutations do
+                if bits % 2 == 1 then
+                    local mutation = mutations[index]
+                    if mutation.kind == "setting_false" then
+                        candidate.settings[mutation.key] = false
+                    else
+                        candidate.widgetWindow[mutation.key] = mutation.value
+                    end
+                end
+                bits = math.floor(bits / 2)
+            end
+            if Matches(candidate) then
+                store.lastHistoricalRecoveryProbe = store.lastHistoricalRecoveryProbe
+                    .. "/matchBase=" .. tostring(baseIndex) .. "/mask=" .. tostring(mask)
+                return candidate, NormalizeIndex(candidate)
+            end
+        end
+        return nil
+    end
+
+    for baseIndex, historical in ipairs(bases) do
+        local candidate, recoveredDomain = TryBase(historical, baseIndex)
+        if candidate ~= nil then return candidate, recoveredDomain end
+    end
+    return strictHistorical
 end
 
 F.StoreId = INDEX_STORE
@@ -197,7 +461,16 @@ if P:GetStore(INDEX_STORE) == nil then
         default = function() return NormalizeIndex(nil) end,
         get = function() return NormalizeIndex(F.State) end,
         apply = ApplyIndex,
+        encode = EncodeIndex,
+        decode = DecodeIndex,
         migrate = function(value) return NormalizeIndex(value) end,
+        -- .18.145 stamped an opaque widgetWindow and RU may omit false-valued
+        -- business/window members on disk. Persistence may test this bounded
+        -- historical candidate only after the envelope seal succeeds. It is
+        -- accepted only when it EXACTLY reproduces the existing stamp; the exact
+        -- historical logical value is then normalized by the current Store and
+        -- immediately re-stamped.
+        rebuildCanonicalForIntegrity = RebuildV18_145Canonical,
         -- The index Domain is a fixed-shape normalize output, so the canonical
         -- v3 fingerprint is stable across RU representation changes. This opt-in
         -- additionally allows the one-generation gated recovery for stores

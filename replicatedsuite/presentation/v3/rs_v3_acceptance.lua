@@ -1,11 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Foundation Acceptance v76
+-- Replicated Suite V3 - Foundation Acceptance v80
 --
 -- Bounded, on-demand checks only. No Native widget creation and no Tick.
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
-S.UIV3Acceptance = { version = 76 }
+S.UIV3Acceptance = { version = 81 }
 local A = S.UIV3Acceptance
 A.TradeDpsFreshReloadPreflightContractVersion = 1
 A.TradeDetailFavoritesContractVersion = 1
@@ -14,6 +14,8 @@ A.PersistenceReliabilityV4ContractVersion = 1
 A.PersistenceReliabilityV5ContractVersion = 1
 A.PersistenceReliabilityV6ContractVersion = 1
 A.PersistenceReliabilityV7ContractVersion = 1
+A.PersistenceTerminalLoadMemoizationContractVersion = 1
+A.DeathReviewCanonicalWindowContractVersion = 5
 A.PersistenceTaskStableCodecContractVersion = 1
 A.BuffDisplayEquipmentReadContractVersion = 1
 A.SidecarServiceBoundaryContractVersion = 1
@@ -366,7 +368,7 @@ function A:RunMatrix()
     -- visible HUD/screen capabilities are real runtime surfaces, not page-only
     -- labels.  Checks are read-only and allocate no Native widgets.
     local screenProjection = S.Services and S.Services.ScreenProjectionV3 or nil
-    if type(screenProjection) ~= "table" or (tonumber(screenProjection.version) or 0) < 8 or tostring(screenProjection.presentationBoundary or "") ~= "service_only"
+    if type(screenProjection) ~= "table" or (tonumber(screenProjection.version) or 0) < 13 or tostring(screenProjection.presentationBoundary or "") ~= "service_only"
         or type(screenProjection.ProjectUnitFlexible) ~= "function" or type(screenProjection.ProjectUnitBatch) ~= "function"
         or (tonumber(screenProjection.FrontHemisphereBatchContractVersion) or 0) < 1
         or (tonumber(screenProjection.UnitProjectionConsistencyContractVersion) or 0) < 1
@@ -374,6 +376,7 @@ function A:RunMatrix()
         or (tonumber(screenProjection.WorldBatchIndexContractVersion) or 0) < 1
         or (tonumber(screenProjection.WorldBatchFactsContractVersion) or 0) < 1
         or (tonumber(screenProjection.CameraUnavailableNativeFallbackContractVersion) or 0) < 1
+        or (tonumber(screenProjection.UiParentScreenCoordinateContractVersion) or 0) < 1
         or type(screenProjection.ProjectWorld) ~= "function"
         or type(screenProjection.ProjectWorldBatch) ~= "function" or type(screenProjection.GetUnitWorldPosition) ~= "function" then
         failures[#failures + 1] = "screen_projection_v3_contract"
@@ -639,11 +642,13 @@ function A:RunMatrix()
     end
     local adapter = S.UIV3NativeAdapter
     if adapter == nil or (tonumber(adapter.version) or 0) < 2 then failures[#failures + 1] = "native_root_policy_contract" end
+    local numericRangeStore = S.Persistence and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.rsui.numeric_ranges") or nil
     if S.UIV3Design == nil or (tonumber(S.UIV3Design.version) or 0) < 7 or type(S.UIV3Design.ScrollablePageRoot) ~= "function"
         or type(S.UIV3Design.CompactNumericSetting) ~= "function" or (tonumber(S.RSUI and S.RSUI.NumericInlineContractVersion) or 0) < 6
         or (tonumber(S.RSUI and S.RSUI.NumericAdaptiveRangeContractVersion) or 0) < 1
         or (tonumber(S.RSUI and S.RSUI.NumericExplicitApplyContractVersion) or 0) < 1
         or (tonumber(S.RSUI and S.RSUI.NumericRangePersistenceContractVersion) or 0) < 1
+        or type(numericRangeStore) ~= "table" or tostring(numericRangeStore.owner or "") ~= "v3.rsui.numeric_ranges"
         or (tonumber(S.RSUI and S.RSUI.InteractiveDraftContractVersion) or 0) < 3
         or (tonumber(S.RSUI and S.RSUI.InputDraftCommitContractVersion) or 0) < 1
         or (tonumber(S.RSUI and S.RSUI.NumericInputDraftReadContractVersion) or 0) < 1

@@ -127,7 +127,7 @@ Native Foundation 是所有原生对象、能力导入和写入边界的唯一�
 | `GearServiceV3` | 装备读取/换装受控能力 |
 | `InventorySnapshotV3` | 背包/银行/箱子的显式有界只读快照、物理 bagId Authority、单遍 identity/category 索引与 live slot revalidation；不拥有业务规则或写动作 |
 | `AlertsService` | 短生命周期 Alert 状态 |
-| `ScreenProjectionV3` | Native world/screen → 屏幕投影 Authority；Unit Lines 优先原生单位屏幕事实，Range 走 EasyPull local-world Native→WorldToScreen Camera fallback，并在纯 Camera 批次用原生玩家屏幕锚点做一次整批刚性 `(dx,dy)` 校准以适配分辨率/UI Scale |
+| `ScreenProjectionV3` | Native world/screen → **UIParent 屏幕坐标 Authority**；Unit Lines 优先原生单位屏幕事实，Range 走 EasyPull local-world Native→WorldToScreen Camera fallback，并在纯 Camera 批次用原生玩家屏幕锚点做一次整批刚性 `(dx,dy)` 校准。Service 输出 x/y 由 Presentation 1:1 锚定到 UIParent，Suite `addonScale` 只影响控件尺寸，禁止再次乘到世界投影位置 |
 | `AuctionQueryV3` | 当前挂单查询、事件所有权、串行化与限速边界 |
 | `PriceQuoteQueueV3` | 共享按需报价队列与 bounded quote read-model |
 | `AuctionSurfaceV3` | 只读观察原生 `UIC_AUCTION` 可见性/几何；Demand-scoped 250ms，兼容 RU 四值 MainScript 返回，不拥有收藏/查询/UI 状态 |
@@ -328,7 +328,7 @@ Compact
 
 Editor Foundation 目前仍不直接迁移 Healer/Range 等后续业务页面。`LayoutEditHistory / Undo-Redo → Editor Command Bar → LayoutEditSession → LayoutEditorWorkspace v4` 已形成共享闭环；状态显示在 `.18.79` 完成 UI_APPROVED + Authority Cleanup，`.18.80` 完成本地 `UI_IMPLEMENTING` 接入，`.18.81` 修复 `TreeView=nil` 依赖顺序，`.18.89` 根据 RU 实机反馈补齐 Compact `[属性]` Drawer 与 RSUI Interactive Draft v1，`.18.90` 再根据真实 `Button:Show(nil)` 堆栈补齐 Component API Contract 与 LayoutEditorWorkspace 真构建 Smoke Gate，并恢复此前漏入用户完整包的 Persistence Fresh Reload Snapshot 实现；`.18.91` 将防线扩到全 Presentation Component API 静态扫描、全部 6 类 Workspace 真构建 Smoke 与 RSUI 顶层依赖 TOC 顺序检查；`.18.92` 再补 Presentation→Feature Public API 封包门禁，从真实 Feature provider 自动核对页面/Widget 的直接方法与 `Commands` 调用，并修复 Tasks/Activities 浮窗窗口状态 Command 与 Gear 快捷设置 Reset Command 的真实漏接。 `.18.94` 继续沿 Fresh Reload Gate 增加 Trade/DPS package-coherence 与 UIV3 runtime preflight：DPS WidgetHost lifecycle preference 必须与 durable `widgetVisible` 一致；Trade 页面/HUD 必须保持 Dropdown-only + 显式材料询价，sealed Zone 只提供候选，服务器 `GetSpecialtyRatioBetween` 仍是最终路线 Authority。页面仍为 `追踪管理 / HUD 布局 / 导入导出` 三页签，Tracking 为单虚拟 Table；Aura facts 更新不再重绘 Layout editor，focused Edit draft / active Slider preview 由共享控件层保护。HUD Working 与 Store getter 隔离，Preview/Undo/Redo/Reset/Revert 均不持久化，只有 Apply 执行 Feature durable callback。Store 仍为 schema 4；真实 SaveData 回读与 Native 编辑体验继续以 RU Fresh Reload 为准。
 
-`.18.142–.18.145` 继续把 RU 实机交互回归收敛到共享 RSUI Foundation：Interactive Draft v3 明确把“草稿编辑 → Commit/校验 → Focus/Keyboard 释放”视为单一事务，单行 EditBox 禁止 Native Enter 先清文本；切换输入框时旧输入必须先结束生命周期。由于 RU EditBox 的 Enter 提交事件仍没有已验证 API，`.18.145` 的 Compact Numeric Setting 默认增加显式“应用”动作；Apply 读取 draft 后仍只走 Binding→Domain→Persistence，不建立第二 Authority。Numeric Adaptive Range 继续把代码 `min/max` 视为默认展示范围，只有 Domain 接受超出端点的精确值后才向外扩展并保存展示端点。DataView Resize Preview v1 则规定拖动列边界期间 `previewResolvedWidths` 是唯一 Geometry Authority，普通 Layout/虚拟行重绑只能消费 Preview，松手后才提交 committed widths。上述路径均事件驱动，不新增常驻 Tick/OnUpdate。
+`.18.142–.18.149` 继续把 RU 实机交互回归收敛到共享 RSUI Foundation：Interactive Draft v3 明确把“草稿编辑 → Commit/校验 → Focus/Keyboard 释放”视为单一事务，单行 EditBox 禁止 Native Enter 先清文本；切换输入框时旧输入必须先结束生命周期。由于 RU EditBox 的 Enter 提交事件仍没有已验证 API，`.18.145` 的 Compact Numeric Setting 默认增加显式“应用”动作；Apply 读取 draft 后仍只走 Binding→Domain→Persistence，不建立第二 Authority。Numeric Adaptive Range 继续把代码 `min/max` 视为默认展示范围，只有 Domain 接受超出端点的精确值后才向外扩展并保存展示端点。DataView Resize Preview v1 则规定拖动列边界期间 `previewResolvedWidths` 是唯一 Geometry Authority，普通 Layout/虚拟行重绑只能消费 Preview，松手后才提交 committed widths。上述路径均事件驱动，不新增常驻 Tick/OnUpdate。`.18.147` 同时修正 `v3.rsui.numeric_ranges` 的 V3 owner namespace，并把视觉坐标边界写死为 `ScreenProjectionV3(UIParent screen) → VisualGuides 1:1 anchor`；任何 Suite `addonScale` 只能参与 UI 尺寸，不得再次缩放投影 x/y。 `.18.148` 同时把 Death Review 的历史 opaque-window 恢复升级为 bounded subset exact-match。`.18.149` 在实机继续失败后补齐 default-TRUE 业务布尔的历史歧义，并为 Death Review Index 增加 serializer-stable codec：两个默认真开关以 numeric disabled sentinel 持久化；历史候选仍必须逐字命中旧 stamp，恢复后由当前 canonical 归一 recovered Domain。该路径不构成新的持久化 Authority，也不放宽真实损坏 Fence。
 
 ## 12. 性能与生命周期基线
 
@@ -340,7 +340,7 @@ Editor Foundation 目前仍不直接迁移 Healer/Range 等后续业务页面。
 
 ## 13. 当前验证基线
 
-当前代码 BuildTag：`v3-m1.16.0.18.145-numeric-apply-adaptive-point-size`。
+当前代码 BuildTag：`v3-m1.16.0.18.149-death-review-index-stable-codec-recovery`。
 
 当前本地结构门禁基线：
 
@@ -367,13 +367,18 @@ rsuiLoadDeps=2
 presentationRootHandlers=0
 ```
 
-当前 Runtime Gate 为 Foundation v121 / UIV3 Acceptance v76；RSUI 为 v47 / API 13.1。`ScreenProjectionV3 v8` 继续要求 global world、front-hemisphere 与批量索引稳定；仅当 Camera Frame 暂时不可取得时允许当前有界批次使用 Native Projection fallback，禁止跨帧缓存或绕过恢复后的前半球校验。
+当前 Runtime Gate 为 Foundation v126 / UIV3 Acceptance v81；RSUI 为 v47 / API 13.1。`ScreenProjectionV3 v13` 要求 global world、front-hemisphere、批量索引稳定与 `UiParentScreenCoordinateContractVersion=1`；VisualGuides 必须 1:1 消费该屏幕坐标，不得乘 Suite `addonScale`。仅当 Camera Frame 暂时不可取得时允许当前有界批次使用 Native Projection fallback，禁止跨帧缓存或绕过恢复后的前半球校验。
 
 运行时只读事实继续收敛到共享 Service：`CastingObservationV3` 统一目标/自身施法快照，`AuraObservationV3` 统一 Buff/Debuff 快照。Boss 与 BuffDisplay 只持有 Demand lease，不得各自创建重复 Native polling；Boss exact mechanic lookup 在 Catalog 建表时完成，高频路径禁止模糊字符串扫描。
 
 治疗名单权威几何为“每团队 50 人 = 上 25 + 下 25，每半区 5×5”；Auto 只跟随当前原生团队页，额外友军名单通过独立 Panel 显示另一个完整团队。`TransformInspector v3` 必须向父布局暴露真实 `Measure()`，展开设置不得依赖硬编码占位高度。
 
 本地静态/纯 Lua 门禁不能替代 RU 客户端 Fresh Reload、Native 构造、字段语义、视觉与多人性能验证。
+
+
+### `.18.150` Death Review 历史恢复边界
+
+Death Review 正常 Index Authority 仍是 Feature Store + stable codec；`history.entries` 的 `pairs()` 扫描只存在于一次性 Integrity mismatch historical recovery 中，不进入正常 Load/Save/Feature 生命周期。它只能生成待验证候选，完整旧 stamped fingerprint 精确命中才可恢复。最终不命中时只暴露结构计数 `historical_probe`，不泄漏死亡记录内容。
 
 ## 14. 权威文档索引
 
