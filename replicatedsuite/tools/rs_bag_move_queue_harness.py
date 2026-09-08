@@ -54,9 +54,36 @@ def require_source_contract() -> None:
         "BagTools.FullStorageContinuationContractVersion = 1",
         "function BagMoveRuntime.IsNativeMoveRejected(err)",
         "function BagMoveRuntime.BlockBatchIdentity(feature, entry, identity, reason)",
+        # .18.183 quick-run lifecycle (v2 mutex): empty plans release, orphaned
+        # runs self-heal, and the UI keeps exactly two buttons.
+        "BagTools.BagTaskMutexContractVersion = 2",
+        "BagTools.QuickRunSelfHealContractVersion = 1",
+        "BagTools.QuickTwoButtonContractVersion = 1",
+        "BagTools.QuickReasonVisibilityContractVersion = 1",
+        "function BagMoveRuntime.QuickQueueActive(feature)",
+        "function BagMoveRuntime.ReclaimStaleBagQuickRun(feature)",
+        "feature._quickDirection = direction",
+        # .18.183: category batch targets the storage window that is actually open.
+        "BagTools.BatchTargetAutoContractVersion = 1",
+        "function BagMoveRuntime.ResolveBatchTarget()",
+        "DepositCategoryCurrent = function(feature, category, limit) return BatchMove(feature, nil, category, limit) end",
+        "batchTargetResolved = resolvedTarget",
+        "batchTargetMode = \"auto_open_storage\"",
     )
     for token in bridge_required:
         assert token in SOURCE, f"missing Bag v8 contract: {token}"
+    # `BatchMove(feature, nil, ...)` is the auto lane, and it must resolve *before*
+    # BeginBatchMove validates the target, otherwise the page gets a generic error.
+    batch = SOURCE[SOURCE.index("local function BatchMove(feature, target, category, requestedLimit)"):]
+    batch = batch[: batch.index("local function CancelCategoryBatch") if "local function CancelCategoryBatch" in batch else len(batch)]
+    assert "if target == nil then" in batch, "BatchMove must accept the auto-target lane"
+    assert batch.index("BagMoveRuntime.ResolveBatchTarget()") < batch.index("BeginBatchMove(feature, target"), \
+        "target must be resolved before BeginBatchMove validates it"
+    assert 'feature.State.batch = { status = "stopped"' in batch, "an unresolvable target must stay visible in the status line"
+    page = (ROOT / "presentation/v3/pages/rs_v3_business_pages.lua").read_text(encoding="utf-8-sig")
+    assert "onText=\"目标：箱子\"" not in page and "offText=\"目标：银行\"" not in page, \
+        "the bank/coffer target toggle must not come back: both cannot be open at once"
+    assert "v3_business_tools_bag_batch_target_auto" in page and "DepositCategoryCurrent" in page
 
     code = re.sub(r"--\[\[.*?\]\]", "", SOURCE, flags=re.S)
     code = re.sub(r"--[^\n]*", "", code)
@@ -222,6 +249,38 @@ def test_full_storage_is_not_global_preflight_rejection() -> None:
     assert "local queueLimit = requestedLimit" in SOURCE
 
 
+def quick_running(queue, pending, status: str) -> bool:
+    """Model of QuickQueueActive + BagQuickRunning (v2 mutex semantics)."""
+    if pending is not None:
+        return True
+    if queue:
+        return True
+    return status in {"正在取出", "正在放入"}
+
+
+def test_quick_mutex_lifecycle_model() -> None:
+    # The v1 rule ("any installed table means running") plus the unconditional
+    # install made one no-match click lock the whole Feature permanently.
+    assert quick_running([], None, "没有同类物品") is False
+    assert quick_running([], {"identity": "type:7"}, "正在取出") is True
+    assert quick_running([{"identity": "type:7", "remaining": 3}], None, "正在放入") is True
+    assert quick_running(None, None, "已完成") is False
+    # The queue is only installed when there is real work, and the empty branch
+    # runs before it, so no code path can leave an empty table behind.
+    begin = SOURCE[SOURCE.index("local function BeginBagQuick(feature, direction)"):]
+    begin = begin[: begin.index("local function RefreshBagQuickOverlay")]
+    assert begin.index('feature._quickOverlay.status = "没有同类物品"') < begin.index("feature._quickQueue, feature._quickIndex, feature._quickPending = queue, 0, nil")
+    assert "if plannedMoves <= 0 then" in begin
+
+
+def test_quick_surface_is_two_buttons() -> None:
+    presenter = (ROOT / "presentation/v3/widgets/rs_v3_bag_quick_overlay.lua").read_text(encoding="utf-8-sig")
+    assert presenter.count('S.UI:CreateButton(root,"v3_bag_quick_') == 2
+    assert "v3_bag_quick_stop" not in presenter
+    assert '"QuickWithdraw", "QuickDeposit" }' in SOURCE
+    assert "QuickCancel" not in SOURCE[SOURCE.index("quickButtons = {"):SOURCE.index("quickButtons = {") + 600]
+
+
 def test_no_tick_or_onupdate_inventory_service() -> None:
     code = re.sub(r"--\[\[.*?\]\]", "", INVENTORY, flags=re.S)
     code = re.sub(r"--[^\n]*", "", code).lower()
@@ -243,6 +302,8 @@ def main() -> int:
         test_category_batch_blacklist,
         test_no_progress_skips_identity_and_continues,
         test_full_storage_is_not_global_preflight_rejection,
+        test_quick_mutex_lifecycle_model,
+        test_quick_surface_is_two_buttons,
         test_no_tick_or_onupdate_inventory_service,
     )
     for test in tests:

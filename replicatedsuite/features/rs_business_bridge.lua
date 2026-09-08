@@ -544,12 +544,107 @@ SourceSlot = function(value)
     if slot == nil or slot < 1 or slot ~= math.floor(slot) then return nil, "源槽位必须是正整数" end
     return slot
 end
+-- NOTE: the declaration of `BagMoveRuntime` moved here from further down.  This
+-- chunk is one function scope and Lua allows 200 locals per function; the file
+-- already sits at that ceiling (195 top-level declarations).  Every quick-run
+-- helper below therefore lives as a BagMoveRuntime *field* instead of a new
+-- file-scope local, which is also why CheckedMove/BatchMove/Refresh can reach
+-- the reclaim without a forward-declared local.
+local BagMoveRuntime = {}
+
+-- An installed queue table is NOT proof of a running move: BeginBagQuick used to
+-- assign the (empty) queue table before its `plannedMoves == 0` early return, so
+-- one click that matched nothing held the quick mutex for the rest of the
+-- session.  Every later 取/放 click, direct move and category batch was then
+-- refused with "已经在运行" while the refused click still reported success -
+-- exactly the reported "sometimes 取/放 does nothing, it must be stuck".
+function BagMoveRuntime.QuickQueueActive(feature)
+    if type(feature) ~= "table" then return false end
+    if feature._quickPending ~= nil then return true end
+    return type(feature._quickQueue) == "table" and #feature._quickQueue > 0
+end
+
 local function BagQuickRunning(feature)
     if type(feature) ~= "table" then return false end
-    if feature._quickQueue ~= nil or feature._quickPending ~= nil then return true end
+    if BagMoveRuntime.QuickQueueActive(feature) == true then return true end
     local overlay = feature._quickOverlay
     local status = type(overlay) == "table" and tostring(overlay.status or "") or ""
     return status == "正在取出" or status == "正在放入"
+end
+
+-- Evidence window for the serialized 250 ms queue.  A healthy step touches the
+-- task every 250 ms, so eight seconds of silence can only mean the queue stopped
+-- progressing.  Reclaiming loses nothing: no item is dropped, only the mutex is
+-- released and the reason published; the next click rebuilds the plan from live
+-- container state, which is how every single step already works.
+BagMoveRuntime.QuickRunStaleMs = 8000
+BagMoveRuntime.QuickDirectionLabel = { withdraw = "取出", deposit = "存入" }
+
+function BagMoveRuntime.QuickRunEvidence(feature)
+    local state = (S.Scheduler ~= nil and type(S.Scheduler.GetTaskState) == "function")
+        and S.Scheduler:GetTaskState(BAG_QUICK_MOVE_TASK) or nil
+    local telemetry = type(state) == "table"
+    -- `registered ~= true` is an immediate orphan: AddTask happens synchronously
+    -- with acquiring the mutex, so a missing task can only mean a reload/owner
+    -- cleanup removed it while the queue state survived.
+    if telemetry == true and state.registered ~= true then return false, "移动任务未注册（已被重载或关闭清理）" end
+    local now = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0
+    -- Without scheduler telemetry the queue's own step stamp is the only honest
+    -- evidence.  "no data" must never mean "reclaim": that would kill every
+    -- healthy run on a scheduler build that stops exposing GetTaskState.
+    local anchor = math.max(tonumber(telemetry and state.lastRunAtMs) or 0, tonumber(feature._quickLastStepAt) or 0)
+    if anchor <= 0 then return false, "没有任何执行证据" end
+    local idle = now - anchor
+    if idle < (tonumber(BagMoveRuntime.QuickRunStaleMs) or 8000) then return true, nil end
+    local reason = "移动任务已 " .. tostring(math.floor(idle / 1000)) .. " 秒未推进"
+    if telemetry == true and state.enabled ~= true then reason = reason .. "（连续异常已暂停）" end
+    if telemetry == true and type(state.lastError) == "string" and state.lastError ~= "" then
+        reason = reason .. "：" .. state.lastError
+    end
+    return false, reason
+end
+
+-- 高级整理目标 = 当前真正开着的那个仓储窗口。银行与箱子在 RU 里不会同时打开，
+-- 让用户在「目标：银行 / 目标：箱子」之间二选一只会制造歧义（用户原话：用户看不
+-- 懂这个）。快捷取放早已用同一个 CurrentStorageContext 事实，这里不再另立一套。
+function BagMoveRuntime.ResolveBatchTarget()
+    local storage = CurrentStorageContext()
+    if type(storage) ~= "table" then
+        return nil, "请先打开银行或箱子；两者不会同时开着，整理目标就是当前打开的那个"
+    end
+    return storage.kind, nil
+end
+
+-- The floating bar status label is at least 132 px wide (240 - 104 - 4), i.e.
+-- roughly twelve 9 px CJK glyphs.  Long technical detail stays in
+-- `overlay.error` (page status line + diagnostics); the bar shows one short,
+-- still meaningful clause.
+BagMoveRuntime.QuickStatusSeparators = { "（", "，", ",", "；", ";", "。", ":", "：" }
+function BagMoveRuntime.QuickStatusText(reason)
+    local text = tostring(reason or "失败")
+    -- Split on the first separator with plain (whole-string) find.  A negated
+    -- byte class like `[^（，。]` looks equivalent but is not: Lua patterns work
+    -- on bytes, so every CJK character that happens to contain one of those
+    -- bytes (刻 = E5 88 BB shares 0x88 with 「（」) gets cut in half and the
+    -- label renders mojibake.  Proven by the behaviour simulator.
+    local head, headAt = text, nil
+    for _, separator in ipairs(BagMoveRuntime.QuickStatusSeparators) do
+        local at = string.find(text, separator, 1, true)
+        if at ~= nil and (headAt == nil or at < headAt) then headAt, head = at, string.sub(text, 1, at - 1) end
+    end
+    if head == nil or head == "" then head = text end
+    local out, count = "", 0
+    -- One UTF-8 codepoint per iteration: an ASCII byte, or a lead byte 192-244
+    -- plus its continuation bytes.  A "[\1-\127]" class alone silently skips
+    -- every CJK glyph, which made the first version of this counter report
+    -- length 0 for Chinese text (caught by the behaviour simulator, not by the
+    -- eye -- the truncated label looked "short" and passed).
+    for glyph in string.gmatch(head, "[\1-\127\192-\244][\128-\191]*") do
+        count = count + 1
+        if count > 11 then return out .. "…" end
+        out = out .. glyph
+    end
+    return out
 end
 
 local function BagBatchRunning(feature)
@@ -558,7 +653,8 @@ local function BagBatchRunning(feature)
 end
 
 local function CheckedMove(feature, sourceScope, blacklistScope, capability, object, method, slot)
-    if BagQuickRunning(feature) then return false, "快捷取放正在运行，请先停止" end
+    BagMoveRuntime.ReclaimStaleBagQuickRun(feature)
+    if BagQuickRunning(feature) then return false, "快捷取放正在运行，再点一次「取」或「放」可停止" end
     if BagBatchRunning(feature) then return false, "类别批量整理正在运行，请先停止" end
     return GuardedMove(feature, sourceScope, blacklistScope, capability, object, method, slot)
 end
@@ -601,15 +697,27 @@ local function BatchProjection(feature)
         end
     end
     table.sort(categoryOptions, function(a, b) return tostring(a.text or "") < tostring(b.text or "") end)
+    local openStorage = CurrentStorageContext()
+    local resolvedTarget = type(openStorage) == "table" and openStorage.kind or nil
+    local quickOverlay = Copy(feature._quickOverlay or { visible=false, storageKind=nil, status="等待仓库/箱子", moved=0, skipped=0, queued=0 })
+    -- running/direction are derived facts, never stored state: an orphaned queue
+    -- must not keep advertising itself as running to the presentation layer.
+    quickOverlay.running = BagQuickRunning(feature) == true
+    quickOverlay.direction = feature._quickDirection
     return { blacklist = feature.State.blacklist, batchCategory = feature.State.batchCategory,
-        batchTarget = feature.State.batchTarget, batchLimit = feature.State.batchLimit,
+        -- Legacy choice, kept readable for old stores/diagnostics only: the UI no
+        -- longer asks for it. The live target is `batchTargetResolved` (derived).
+        batchTarget = feature.State.batchTarget, batchTargetMode = "auto_open_storage",
+        batchTargetResolved = resolvedTarget,
+        batchTargetLabel = resolvedTarget == "coffer" and "箱子" or (resolvedTarget == "bank" and "银行" or nil),
+        batchLimit = feature.State.batchLimit,
         batch = feature.State.batch, batchCategoryOptions = categoryOptions,
         windowContext = windowContext,
-        quickOverlay = Copy(feature._quickOverlay or { visible=false, storageKind=nil, status="等待仓库/箱子", moved=0, skipped=0, queued=0 }),
+        quickOverlay = quickOverlay,
         quickButtons = {
             mode = "native_window_follow_v3", status = "ready", requiresSourceSlot = false,
-            reason = "打开银行/箱子时在背包上方提供取/放；显式点击才扫描物品",
-            actions = { "QuickWithdraw", "QuickDeposit", "QuickCancel" },
+            reason = "打开银行/箱子时在背包上方只提供「取 / 放」两个按钮：空闲=开始，运行中点同一个=停止，点另一个=切换方向；显式点击才扫描物品",
+            actions = { "QuickWithdraw", "QuickDeposit" },
         }, }
 end
 local PersistStateMutation
@@ -663,15 +771,34 @@ end
 local function StopBagQuick(feature, status, errorText)
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask)=="function" then S.Scheduler:RemoveTask(BAG_QUICK_MOVE_TASK) end
     feature._quickQueue, feature._quickIndex, feature._quickPending, feature._quickSourceCounts, feature._quickBagId = nil, nil, nil, nil, nil
+    feature._quickDirection, feature._quickLastStepAt = nil, nil
     feature._quickOverlay = type(feature._quickOverlay)=="table" and feature._quickOverlay or {}
     feature._quickOverlay.status = status or "停止"
     feature._quickOverlay.error = errorText
     feature._quickOverlay.queued = 0
+    -- Timestamp every status write: the floating bar shows a refusal/stop line
+    -- for a bounded window and then goes quiet again (quiet-by-default surface).
+    feature._quickOverlay.statusAt = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0
     PublishBagOverlay(feature,"bag_quick_stop")
     return true
 end
 
-local BagMoveRuntime = {}
+-- Self-heal: a quick queue that lost its executor (reload, owner cleanup, a
+-- permanently faulted scheduler task) used to block the whole Feature until a
+-- reload, because the only unlock was the third 停 button the user reports as
+-- useless.  With two buttons the state machine has to recover on its own, so
+-- this runs from the 350 ms window observer and from every click.
+function BagMoveRuntime.ReclaimStaleBagQuickRun(feature)
+    if BagQuickRunning(feature) ~= true then return false end
+    local alive, evidence = BagMoveRuntime.QuickRunEvidence(feature)
+    if alive == true then return false end
+    local overlay = type(feature._quickOverlay) == "table" and feature._quickOverlay or {}
+    local moved = tonumber(overlay.moved) or 0
+    StopBagQuick(feature, "已自动停止", "取放队列失去执行证据（" .. tostring(evidence or "unknown")
+        .. "），已自动释放；本轮已移动 " .. tostring(moved) .. " 个，可再点一次「取」或「放」继续")
+    return true
+end
+
 
 function BagMoveRuntime.ReadScopeSlot(scope, slot, bagId)
     local inventory = S.Services and S.Services.InventorySnapshotV3 or nil
@@ -789,8 +916,10 @@ function BagMoveRuntime.IssueQuickMove(entry, target, slot)
 end
 
 local function BeginBagQuick(feature, direction)
-    if BagBatchRunning(feature) then return false, "类别批量整理正在运行，请先停止" end
-    if BagQuickRunning(feature) then return false, "快捷取放已经在运行，请先停止" end
+    if BagBatchRunning(feature) then return false, "高级整理正在运行，请先停止批量" end
+    -- Last-resort guard: StartBagQuick resolves a live run by stop/switch before
+    -- reaching here, so hitting this means a caller bypassed the two-button path.
+    if BagQuickRunning(feature) then return false, "快捷取放正在运行，再点一次「取」或「放」可停止" end
     local bagWindow = ReadBagWindowContext()
     local storage = CurrentStorageContext()
     if type(bagWindow) ~= "table" or bagWindow.status ~= "ready" or bagWindow.visible ~= true then return false, "请先打开背包" end
@@ -842,16 +971,32 @@ local function BeginBagQuick(feature, direction)
     end
 
     feature._quickOverlay = type(feature._quickOverlay) == "table" and feature._quickOverlay or {}
-    feature._quickOverlay.status = plannedMoves > 0 and (direction == "withdraw" and "正在取出" or "正在放入") or "没有可匹配的同类物品"
     feature._quickOverlay.error = nil
     feature._quickOverlay.queued = plannedMoves
     feature._quickOverlay.moved = 0
     feature._quickOverlay.skipped = 0
+    if plannedMoves <= 0 then
+        -- Empty plan == no business work == no mutex.  Installing the empty queue
+        -- table here (the old behaviour) locked 取/放/direct-move/category-batch for
+        -- the rest of the session while the click reported success.
+        feature._quickQueue, feature._quickIndex, feature._quickPending = nil, nil, nil
+        feature._quickSourceCounts, feature._quickBagId = nil, nil
+        feature._quickDirection, feature._quickLastStepAt = nil, nil
+        feature._quickOverlay.status = "没有同类物品"
+        feature._quickOverlay.statusAt = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0
+        feature._quickOverlay.error = "背包与" .. (target == "coffer" and "箱子" or "银行")
+            .. "没有共同的同类物品；快捷取放只移动两边都存在的同类，整类收纳请用下方「高级整理」"
+        PublishBagOverlay(feature, "bag_quick_empty_plan")
+        return true, 0
+    end
+    feature._quickOverlay.status = direction == "withdraw" and "正在取出" or "正在放入"
+    feature._quickOverlay.statusAt = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0
     feature._quickQueue, feature._quickIndex, feature._quickPending = queue, 0, nil
     feature._quickSourceCounts = Copy(sourceCounts)
     feature._quickBagId = bagId
+    feature._quickDirection = direction
+    feature._quickLastStepAt = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0
     PublishBagOverlay(feature, "bag_quick_start")
-    if plannedMoves == 0 then return true, 0 end
     if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then
         StopBagQuick(feature, "已停止", "调度器不可用")
         return false, "调度器不可用"
@@ -859,6 +1004,7 @@ local function BeginBagQuick(feature, direction)
 
     S.Scheduler:RemoveTask(BAG_QUICK_MOVE_TASK)
     local added = S.Scheduler:AddTask(BAG_QUICK_MOVE_TASK, 250, function()
+        feature._quickLastStepAt = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0
         local current = CurrentStorageContext()
         if type(current) ~= "table" or current.kind ~= target then
             StopBagQuick(feature, "已停止", "仓库/箱子已关闭或切换")
@@ -997,6 +1143,10 @@ local function BeginBagQuick(feature, direction)
 end
 
 local function RefreshBagQuickOverlay(feature)
+    -- The 350 ms window observer doubles as the quick-run watchdog: no new Tick
+    -- and no new scheduler task, and an orphaned mutex can never outlive its
+    -- task (see BagMoveRuntime.ReclaimStaleBagQuickRun).
+    BagMoveRuntime.ReclaimStaleBagQuickRun(feature)
     local bag=ReadBagWindowContext()
     local bank=ReadStorageWindowContext("bank")
     local coffer=ReadStorageWindowContext("coffer")
@@ -1022,7 +1172,7 @@ local function RefreshBagQuickOverlay(feature)
     nextState.cofferSource=coffer and coffer.source or "none"
     nextState.cofferReason=coffer and coffer.reason or nil
     if visible then
-        nextState.x=bag.x; nextState.y=math.max(0,(tonumber(bag.y) or 0)-36); nextState.width=math.max(190,math.min(260,tonumber(bag.width) or 220)); nextState.height=32
+        nextState.x=bag.x; nextState.y=math.max(0,(tonumber(bag.y) or 0)-36); nextState.width=math.max(240,math.min(300,tonumber(bag.width) or 240)); nextState.height=32
         if nextState.status==nil or nextState.status=="等待仓库/箱子" then nextState.status="可快捷取放" end
     elseif nextState.status~="正在取出" and nextState.status~="正在放入" then nextState.status="等待仓库/箱子" end
     local changed = old.visible~=nextState.visible or old.storageKind~=nextState.storageKind or old.x~=nextState.x or old.y~=nextState.y or old.width~=nextState.width
@@ -1039,17 +1189,44 @@ local function RefreshBagQuickOverlay(feature)
     return true
 end
 
+-- Two-button contract: the floating bar (and the page row) only ever offer
+-- 「取」 and 「放」.  A click therefore means *start* when idle, *stop* when this
+-- same direction is running, *switch* when the other one is running.  The old
+-- refusal ("已经在运行，请先停止") is what made a click look dead, and the third
+-- 停 button was reported as useless; both go away while cancel stays reachable.
 local function StartBagQuick(feature, direction)
-    if BagBatchRunning(feature) then return false,"类别批量整理正在运行，请先停止" end
-    if BagQuickRunning(feature) then return false,"快捷取放已经在运行，请先停止" end
+    if direction ~= "withdraw" and direction ~= "deposit" then return false,"未知快捷动作" end
+    BagMoveRuntime.ReclaimStaleBagQuickRun(feature)
+    if BagBatchRunning(feature) then return false,"高级整理正在运行，请先停止批量" end
+    local switchNote = nil
+    if BagQuickRunning(feature) then
+        local running = tostring(feature._quickDirection or "")
+        local overlay = type(feature._quickOverlay) == "table" and feature._quickOverlay or {}
+        local moved = tonumber(overlay.moved) or 0
+        local labels = BagMoveRuntime.QuickDirectionLabel
+        local runningLabel = labels[running] or "取放"
+        local wantedLabel = labels[direction] or direction
+        if running == direction then
+            StopBagQuick(feature, "已停止", "已停止" .. runningLabel .. "（本轮已移动 " .. tostring(moved) .. " 个）")
+            return true, moved
+        end
+        StopBagQuick(feature, "已停止", "已停止" .. runningLabel .. "，改为" .. wantedLabel)
+        switchNote = "已切换为" .. wantedLabel .. "（上一次" .. runningLabel .. "移动 " .. tostring(moved) .. " 个）"
+    end
     local ok, err = BeginBagQuick(feature, direction)
     if ok ~= true then
         -- Same visibility contract as BatchMove: overlay/status text must show
         -- why the quick action refused to start instead of failing silently.
+        -- `status` stays short enough for the floating bar; the full reason lives
+        -- in `error` for the page status line and diagnostics.
         feature._quickOverlay = type(feature._quickOverlay) == "table" and feature._quickOverlay or {}
-        feature._quickOverlay.status = tostring(err or "失败")
+        feature._quickOverlay.status = BagMoveRuntime.QuickStatusText(err)
+        feature._quickOverlay.statusAt = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0
         feature._quickOverlay.error = tostring(err or "失败")
         if type(PublishBagOverlay) == "function" then PublishBagOverlay(feature, "bag_quick_preflight_stop") end
+    elseif switchNote ~= nil then
+        feature._quickOverlay.error = switchNote
+        PublishBagOverlay(feature, "bag_quick_switched")
     end
     return ok, err
 end
@@ -1274,9 +1451,26 @@ local function BeginBatchMove(feature, target, category, requestedLimit)
     return true, plannedMoves
 end
 
+-- `target == nil` means "use whatever storage window is actually open"; the page
+-- entry point relies on that, while the explicit DepositCategoryBank/Coffer
+-- commands stay for callers that really do know which one they mean.
 local function BatchMove(feature, target, category, requestedLimit)
-    if BagQuickRunning(feature) then return false, "快捷取放正在运行，请先停止" end
+    BagMoveRuntime.ReclaimStaleBagQuickRun(feature)
+    if BagQuickRunning(feature) then return false, "快捷取放正在运行，再点一次「取」或「放」可停止" end
     if BagBatchRunning(feature) then return false, "类别批量整理已经在运行，请先停止" end
+    if target == nil then
+        local resolved, resolveErr = BagMoveRuntime.ResolveBatchTarget()
+        if resolved == nil then
+            -- A refused batch must be visible in the status line, exactly like the
+            -- other preflight rejections (CURRENT_REBUILD_STATUS §9.3 lesson).
+            feature.State.batch = { status = "stopped", moved = 0, skipped = 0, queued = 0, error = resolveErr }
+            if type(feature.Authority) == "table" and type(feature.Authority.Refresh) == "function" then
+                feature.Authority:Refresh("batch_target_unresolved")
+            end
+            return false, resolveErr
+        end
+        target = resolved
+    end
     local ok, err = BeginBatchMove(feature, target, category, requestedLimit)
     if ok ~= true then
         -- Preflight rejections must stay visible: without this record the page
@@ -2947,6 +3141,8 @@ end, commands = {
     RemoveBlacklistItem = function(feature, scope, value) return RemoveBlacklistValue(feature, scope, "itemType", value, NormalizeItemType, "bag_blacklist_item_remove") end,
     AddBlacklistCategory = function(feature, scope, value) return AddBlacklistValue(feature, scope, "category", value, NormalizeCategory, "bag_blacklist_category_add") end,
     RemoveBlacklistCategory = function(feature, scope, value) return RemoveBlacklistValue(feature, scope, "category", value, NormalizeCategory, "bag_blacklist_category_remove") end,
+    -- The page entry point: target is the open storage window, not a user guess.
+    DepositCategoryCurrent = function(feature, category, limit) return BatchMove(feature, nil, category, limit) end,
     DepositCategoryBank = function(feature, category, limit) return BatchMove(feature, "bank", category, limit) end,
     DepositCategoryCoffer = function(feature, category, limit) return BatchMove(feature, "coffer", category, limit) end,
     CancelCategoryBatch = function(feature) return StopBagBatch(feature, "cancelled", "用户取消") end,
@@ -2972,7 +3168,21 @@ BagTools.NativeVisibilityShapeContractVersion = 1
 BagTools.VisiblePresenterRetryContractVersion = 1
 BagTools.DynamicSourceResolutionContractVersion = 3
 BagTools.QuickIdentityFallbackContractVersion = 1
-BagTools.BagTaskMutexContractVersion = 1
+-- Mutex v2: an empty plan never holds the mutex, and a queue that lost its
+-- executor is reclaimed by the observer / next click instead of blocking the
+-- whole Feature until reload.
+BagTools.BagTaskMutexContractVersion = 2
+BagTools.QuickRunSelfHealContractVersion = 1
+BagTools.QuickTwoButtonContractVersion = 1
+-- Refusal text is split into a short overlay `status` plus a long diagnostic
+-- `error`; a click is never a silent no-op.
+BagTools.QuickReasonVisibilityContractVersion = 1
+-- Status writes carry their own timestamp so the bar can expire a message
+-- instead of wearing it for the rest of the session.
+BagTools.QuickStatusTimestampContractVersion = 1
+-- Category batch targets the storage window that is actually open; the old
+-- bank/coffer toggle is removed from the page (ambiguous: both cannot be open).
+BagTools.BatchTargetAutoContractVersion = 1
 BagTools.InventorySnapshotContractVersion = 1
 BagTools.GroupedIntentQueueContractVersion = 1
 local AUCTION_FAVORITE_MAX, AUCTION_KEYWORD_MAX = 20, 64

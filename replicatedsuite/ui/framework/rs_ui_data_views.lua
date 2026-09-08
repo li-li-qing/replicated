@@ -1874,6 +1874,11 @@ local function NewTableRow(kind, spec)
     end
 
     function c:GetTruncatedTooltipText()
+        -- A pooled row can still be hovered while the native visibility diff
+        -- has not run (scroll/resize rebinding is asynchronous at RU cadence).
+        -- Tooltip:Bind already refuses to show an invisible target; enforce the
+        -- same rule here so a stale pool row cannot contribute text.
+        if self.visible ~= true or self.viewportVisible == false then return "" end
         local clipped = {}
         for index, cell in ipairs(self.cells or {}) do
             local full = ""

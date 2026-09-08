@@ -153,7 +153,20 @@ end
 -- pooled RSUI fallback is used. Binding and placement are event-driven only.
 ------------------------------------------------------------------------
 local Tooltip = {
-    version = 3,
+    version = 6,
+    -- v4: the pooled fallback root is now a real transient WINDOW on the system
+    -- layer with popup draw priority. A root emptywidget cannot win z-order
+    -- against native game windows (bank/bag/inventory tooltips), which made
+    -- overflow hints render behind them. Mirrors ContextMenu's proven policy.
+    TransientLayerContractVersion = 1,
+    -- v5: the pooled box is never shorter than an honest glyph estimate, so a
+    -- measurement authority that is missing or disagrees with the native LABEL
+    -- cannot render a clipped hint (RU bag quick tooltip report, .18.183).
+    LineEstimateContractVersion = 1,
+    -- v6: periodic surfaces must be able to ask whether a hint is currently up.
+    -- The bag quick bar re-raised itself every 350ms and pushed the hint back
+    -- under the game window within a second (RU report, same session).
+    IsShowingContractVersion = 1,
     bindings = setmetatable({}, { __mode = "k" }),
     fallback = nil,
     owner = "rsui:tooltip_service",
@@ -173,12 +186,42 @@ local function ResolveTooltipText(binding, component)
     return tostring(value or "")
 end
 
+-- `RSUI.TextLayout` is the measurement Authority, but it can be unavailable on a
+-- given RU build, and the native LABEL wraps text on its own. When the measured
+-- height under-reports, the pooled box ends up shorter than the text and the
+-- hint renders cut off -- which is what the user screenshotted. This estimate is
+-- a FLOOR, never a ceiling: it assumes full-width glyphs, the pessimistic case
+-- for Chinese text, so it can only make the box taller, never crop it.
+function Tooltip:EstimateWrappedLines(text, contentWidth, fontSize)
+    -- Width units, not characters: an ASCII byte costs ~0.6 of a CJK glyph. The
+    -- single-byte branch below only ever sees bytes 1-127 because the iterator
+    -- consumes a multi-byte sequence as one glyph.
+    local units = 0
+    for glyph in string.gmatch(tostring(text or ""), "[\1-\127\192-\244][\128-\191]*") do
+        if #glyph == 1 then units = units + 0.6 else units = units + 1 end
+    end
+    local perLine = math.floor(math.max(1, N(contentWidth, 1)) / math.max(6, N(fontSize, 10) * 1.05))
+    if perLine < 1 then perLine = 1 end
+    return math.max(1, math.ceil(units / perLine))
+end
+
 function Tooltip:_EnsureFallback()
     if self.fallback ~= nil then return self.fallback end
-    local root = UI:CreatePanel(UIParent, "rsui_tooltip_popup", 0, 0, 220, 28, "card", { gradient = true })
+    -- The fallback must be a top-level transient WINDOW on the system layer,
+    -- not a root emptywidget. RU clients do not reliably z-order root
+    -- emptywidgets above native game surfaces, so the hint rendered behind the
+    -- very windows (bank/coffer tooltips) users hover over. This mirrors the
+    -- proven ContextMenu policy: transientWindow + uiLayer "system" + popup
+    -- draw priority, and pickable=false is established BEFORE caching/showing.
+    local root = UI:CreatePanel(UIParent, "rsui_tooltip_popup", 0, 0, 220, 28, "card", {
+        gradient = true, owner = self.owner, transientWindow = true, visible = false, pickable = false,
+        drawPriority = Token("layer.popupPriority", 10000),
+    })
     if root == nil then return nil end
     root.rsUiOwner = self.owner
     if type(UI.AdoptWidget) == "function" then UI:AdoptWidget(root, self.owner, "rsui_tooltip_popup") end
+    if type(UI.TrySetUILayer) == "function" then UI:TrySetUILayer(root, "system") end
+    if type(root.SetDrawPriority) == "function" then pcall(function() root:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end
     -- Fallback tooltips share the same WrappedText contract as normal RSUI
     -- text. ArcheAge LABEL is single-line; never write a TextLayout string that
     -- contains newlines directly into one Native label.
@@ -259,6 +302,15 @@ function Tooltip:Show(target, text, options)
     textComponent:SetText(value)
     local _, desiredTextHeight = textComponent:Measure(math.max(1, width - 16), math.max(1, maxHeight - 10))
     local lines = math.max(1, math.ceil((tonumber(desiredTextHeight) or lineHeight) / math.max(1, lineHeight)))
+    -- Floor the measured line count (see EstimateWrappedLines) and re-derive the
+    -- component limit from it: the box must be sized for exactly the lines the
+    -- component is allowed to draw, never fewer (crop) and never more (empty
+    -- band).  nativeLineLimit is the pooled label count, so it caps both.
+    local nativeLimit = tonumber(textComponent.nativeLineLimit) or 8
+    lines = math.max(1, math.min(nativeLimit, math.max(lines,
+        self:EstimateWrappedLines(value, width - 16, fontSize))))
+    textComponent.maxLines = math.max(1, math.min(textComponent.maxLines or 1, nativeLimit))
+    if textComponent.maxLines < lines then textComponent.maxLines = lines end
     local height = Clamp(lines * lineHeight + 10, 24, maxHeight)
     textComponent:Layout(8, 5, math.max(1, width - 16), math.max(1, height - 10))
     UI:SetExtent(popup.root, width, height, self.owner)
@@ -292,15 +344,28 @@ function Tooltip:Show(target, text, options)
     UI:SetAnchor(popup.root, UIParent, px, py, self.owner)
     local shown, showErr = EnsureVisible(popup.root, true, self.owner)
     if shown ~= true then return false, "tooltip_show_failed:" .. tostring(showErr or "unknown") end
+    -- Raise after Show: a transient window's z-slot can be reset by the native
+    -- visibility transition itself, so raising before Show does not stick.
     if type(popup.root.Raise) == "function" then pcall(function() popup.root:Raise() end) end
     popup.text = value
+    popup.visible = true
+    RSUI.metrics.tooltipRaises = (tonumber(RSUI.metrics.tooltipRaises) or 0) + 1
     return true, "fallback"
+end
+
+-- Read-only fact for periodic presenters: a surface that keeps itself on top
+-- must yield while the user is reading a hint, otherwise the hint is buried on
+-- the next beat. This is a query, not a lock -- the tooltip stays the only
+-- writer of its own visibility.
+function Tooltip:IsShowing()
+    return self.fallback ~= nil and self.fallback.visible == true
 end
 
 function Tooltip:Hide()
     if self.fallback ~= nil and self.fallback.root ~= nil then
         local hidden, hideErr = EnsureVisible(self.fallback.root, false, self.owner)
         if hidden ~= true then return false, "tooltip_hide_failed:" .. tostring(hideErr or "unknown") end
+        self.fallback.visible = false
     end
     RSUI.metrics.tooltipHides = (tonumber(RSUI.metrics.tooltipHides) or 0) + 1
     return true

@@ -10,10 +10,16 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-trade = (ROOT / "features/life/rs_life_m16_bundle.lua").read_text(encoding="utf-8-sig")
-page = (ROOT / "presentation/v3/pages/rs_v3_life_m16_pages.lua").read_text(encoding="utf-8-sig")
-widget = (ROOT / "presentation/v3/widgets/rs_v3_life_economy_widgets.lua").read_text(encoding="utf-8-sig")
-detail = (ROOT / "presentation/v3/widgets/rs_v3_trade_detail_floating.lua").read_text(encoding="utf-8-sig")
+
+# Multi-line literals below are newline-sensitive: this checkout is CRLF on
+# Windows (git core.autocrlf=true), so every source read normalizes to \n.
+def read_lua(rel):
+    return (ROOT / rel).read_text(encoding="utf-8-sig").replace("\r\n", "\n")
+
+trade = read_lua("features/life/rs_life_m16_bundle.lua")
+page = read_lua("presentation/v3/pages/rs_v3_life_m16_pages.lua")
+widget = read_lua("presentation/v3/widgets/rs_v3_life_economy_widgets.lua")
+detail = read_lua("presentation/v3/widgets/rs_v3_trade_detail_floating.lua")
 toc = (ROOT / "toc.g").read_text(encoding="utf-8-sig")
 gate = (ROOT / "core/rs_foundation_gate.lua").read_text(encoding="utf-8-sig")
 acceptance = (ROOT / "presentation/v3/rs_v3_acceptance.lua").read_text(encoding="utf-8-sig")
@@ -33,6 +39,14 @@ require("favorite_toggle", "function Trade:ToggleCurrentFavorite()" in trade)
 require("favorite_select", "function Trade:SelectFavorite(key)" in trade)
 require("favorite_projection", "favoriteItems = Trade:GetFavoriteItems()" in trade and "currentRouteFavorite = Trade:IsFavorite" in trade)
 require("sort_persisted", "function Trade:SetSortMode(mode)" in trade and 'PersistLifeMutation(self, "trade_sort_mode"' in trade)
+# .18.181: sort is a closed three-mode set (ratio/price/name) and name mode
+# must float bracket-prefixed goods before everything else (byte compare alone
+# would sink "[黄金]…" behind CJK names on this client).
+require("sort_modes_closed_set", 'local TRADE_SORT_MODES = { ratio = true, price = true, name = true }' in trade
+        and "mode = TRADE_SORT_MODES[mode] and mode or nil" in trade)
+require("sort_name_bracket_first", 'return (name:find("^%[") ~= nil) and 1 or 0, name' in trade
+        and "if ap ~= bp then return ap > bp end" in trade)
+require("sort_store_normalized", "Trade.State.sortMode = TRADE_SORT_MODES[value.sortMode] and value.sortMode or \"ratio\"" in trade)
 require("origin_change_clears_destination", "if Number(state.fromZone) ~= nextFrom then state.toZone = nil end" in trade)
 require("row_session_selection", "function Trade:SelectRow(key)" in trade and "selectedKey = nil" in trade)
 require("row_quote_explicit", "function Trade:QuoteRowMaterials(rowKey)" in trade and "self:QuoteMaterial(key)" in trade)
@@ -45,11 +59,17 @@ require("commands_public", all(token in trade for token in (
 require("page_favorite_dropdown", 'id = "v3_trade_favorite_dropdown"' in page)
 require("page_favorite_toggle", 'id = "v3_trade_favorite_toggle"' in page)
 require("page_sort", 'id = "v3_trade_sort_mode"' in page)
+# Both surfaces render sort as a one-of-many segmented selector with the same
+# three values; a regression back to a cycle button must fail here.
+require("page_sort_segmented", 'RSUI:SegmentedSelector({\n            id = "v3_trade_sort_mode"' in page
+        and '{ value = "name", text = "名字" }' in page)
 require("page_trade_selectable", 'selectable = kind == "treasure" or kind == "trade"' in page)
 require("page_opens_shared_detail", "S.UIV3.TradeDetailFloatingV3" in page and "detail:Open(row.key)" in page)
 require("widget_favorite_dropdown", 'id = "v3_life_trade_widget_favorite"' in widget)
 require("widget_favorite_toggle", 'id = "v3_life_trade_widget_favorite_toggle"' in widget)
 require("widget_sort", 'id = "v3_life_trade_widget_sort"' in widget)
+require("widget_sort_segmented", 'RSUI:SegmentedSelector({\n            id = "v3_life_trade_widget_sort"' in widget
+        and '{ value = "name", text = "名字" }' in widget)
 require("widget_selectable", "selectable = true" in widget and "onSelection = function(instance, row, Feature)" in widget)
 require("widget_opens_shared_detail", "S.UIV3.TradeDetailFloatingV3" in widget and "detail:Open(row.key)" in widget)
 require("widget_contract_v3", "S.UIV3.LifeEconomyWidgetsV3 = { version = 3" in widget)

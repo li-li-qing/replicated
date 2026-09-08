@@ -213,7 +213,7 @@ Panel A/B 保存整面板矩形，50 个槽位由几何派生；`auto / single /
 - 世界投影：`ScreenProjectionV3` 输出 UIParent Screen Coordinate；若最终 Widget 是顶层 Overlay Window 的 child，必须经 `Layout:ScreenPointToWidgetLocal` 转为 Host Local。转换使用 `(Host EffectiveOrigin - UIParent EffectiveOrigin)`，禁止把 UIParent 修正量重复扣除。
 - 自由悬浮窗口：持久化 exact logical x/y + source logical viewport + normalized center intent；同分辨率精确恢复，跨分辨率按意图重投影并保证顶部拖动区可找回。
 - 小型屏幕按钮：优先 `logical-edge-v1` 保存最近边缘/边距；Gear 已使用该契约，R launcher 的 legacy free 坐标先由 recoverable safety 承接，下一次用户拖动提交时升级为 edge intent。
-- 动态附着按钮：例如 Bag `取/放/停` 以当前 Native 背包窗口几何为 Authority，不把某次分辨率下的物理像素持久化。
+- 动态附着按钮：例如 Bag `取 / 放` 两按钮（`.18.183` 起无 `停`，停止＝再点同一个按钮）以当前 Native 背包窗口几何为 Authority，不把某次分辨率下的物理像素持久化。
 - `UI Scale / Addon Scale / Screen Projection` 是不同概念：Addon Scale 不得乘世界坐标；Native EffectiveOffset 由 Layout 统一归一到 logical UIParent。
 
 支持新分辨率不需要改业务代码；只要 Native UIParent metrics 可读，同一套转换自动适用 4:3、5:4、5:3、16:10、16:9 与其它尺寸。

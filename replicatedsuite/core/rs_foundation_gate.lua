@@ -936,7 +936,11 @@ function G:Run(options)
                 and genericShellInfo ~= nil and (tonumber(genericShellInfo.version) or 0) >= 15
                 and floatingInfo ~= nil and (tonumber(floatingInfo.version) or 0) >= 7
                 and type(floatingSurface.GetSnapshot) == "function"
-                and type(tooltipService) == "table" and (tonumber(tooltipService.version) or 0) >= 3,
+                and type(tooltipService) == "table" and (tonumber(tooltipService.version) or 0) >= 6
+                and (tonumber(tooltipService.TransientLayerContractVersion) or 0) >= 1
+                and (tonumber(tooltipService.LineEstimateContractVersion) or 0) >= 1
+                and (tonumber(tooltipService.IsShowingContractVersion) or 0) >= 1
+                and type(tooltipService.IsShowing) == "function",
             "blocker", "wrapped=" .. tostring(rsui and rsui.WrappedTextContractVersion or 0)
                 .. "/shell=" .. tostring(genericShellInfo and genericShellInfo.version or 0)
                 .. "/floating=" .. tostring(floatingInfo and floatingInfo.version or 0)
@@ -1984,7 +1988,11 @@ function G:Run(options)
         and (tonumber(bagTools.VisiblePresenterRetryContractVersion) or 0) >= 1
         and (tonumber(bagTools.DynamicSourceResolutionContractVersion) or 0) >= 3
         and (tonumber(bagTools.QuickIdentityFallbackContractVersion) or 0) >= 1
-        and (tonumber(bagTools.BagTaskMutexContractVersion) or 0) >= 1
+        and (tonumber(bagTools.BagTaskMutexContractVersion) or 0) >= 2
+        and (tonumber(bagTools.QuickRunSelfHealContractVersion) or 0) >= 1
+        and (tonumber(bagTools.QuickTwoButtonContractVersion) or 0) >= 1
+        and (tonumber(bagTools.QuickReasonVisibilityContractVersion) or 0) >= 1
+        and (tonumber(bagTools.QuickStatusTimestampContractVersion) or 0) >= 1
         and (tonumber(bagTools.InventorySnapshotContractVersion) or 0) >= 1
         and (tonumber(bagTools.GroupedIntentQueueContractVersion) or 0) >= 1
         and (tonumber(bagTools.FullStorageContinuationContractVersion) or 0) >= 1
@@ -1992,12 +2000,18 @@ function G:Run(options)
         and type(bagTools.Commands.QuickDeposit) == "function" and type(bagTools.Commands.QuickCancel) == "function"
         and type(bagTools.Commands.SetBatchCategory) == "function" and type(bagTools.Commands.SetBatchTarget) == "function"
         and type(bagTools.Commands.SetBatchLimit) == "function"
-        and type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.version) or 0) >= 4
+        and type(bagTools.Commands.DepositCategoryCurrent) == "function"
+        and (tonumber(bagTools.BatchTargetAutoContractVersion) or 0) >= 1
+        and type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.version) or 0) >= 8
         and (tonumber(bagQuickPresenter.ReloadVisibilityContractVersion) or 0) >= 2
         and (tonumber(bagQuickPresenter.NativeTransientHostContractVersion) or 0) >= 1
         and (tonumber(bagQuickPresenter.VisibleRetryContractVersion) or 0) >= 1
+        and (tonumber(bagQuickPresenter.TwoButtonContractVersion) or 0) >= 1
+        and (tonumber(bagQuickPresenter.DiffRenderContractVersion) or 0) >= 1
+        and (tonumber(bagQuickPresenter.HintYieldContractVersion) or 0) >= 1
+        and (tonumber(bagQuickPresenter.QuietByDefaultContractVersion) or 0) >= 1
     AddCheck(report, "v3_bag_action_contract", bagContractOk, "blocker",
-        bagContractOk and "shared physical-bag snapshot + grouped-intent quick/category queues + live slot revalidation + mutually-exclusive serial move tasks present" or "bag action contract v8 / quick-window host v4 / InventorySnapshotV3 unavailable")
+        bagContractOk and "shared physical-bag snapshot + grouped-intent quick/category queues + live slot revalidation + empty-plan/self-heal mutex release + two-button start/stop/switch present" or "bag action contract v8 / mutex v2 / quick-window host v6 / InventorySnapshotV3 unavailable")
     local gearFeature = S.Features and S.Features.Gear or nil
     local startupIntentOk = type(S.FeatureRuntime) == "table" and (tonumber(S.FeatureRuntime.StartupEnableIntentContractVersion) or 0) >= 1
         and type(gearFeature) == "table" and (tonumber(gearFeature.QuickStartupIntentContractVersion) or 0) >= 1

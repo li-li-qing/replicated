@@ -551,28 +551,32 @@ local function Build(parent, route, id)
                 slot = { size = "fill", fill = 1 } })
         end
     end
-    local bagQuickStatus, batchStatus, batchCategoryDropdown, batchTargetToggle, batchLimitField
+    local bagQuickStatus, batchStatus, batchCategoryDropdown, batchTargetLabel, batchLimitField
     if id == "tools_bag" then
         local quickRow = RSUI:HorizontalBox({ id="v3_business_tools_bag_quick_row", parent=root, gap=6,
             slot={ size="fixed",height=31,hAlign="fill" } })
         RSUI:Text({ id="v3_business_tools_bag_quick_label", parent=quickRow, text="日常整理", fontSize=9, tone="strong", slot={size="fixed",width=60} })
-        local quickTake=RSUI:Button({ id="v3_business_tools_bag_quick_take", parent=quickRow, text="取同类", compact=true, slot={size="fixed",width=70} })
-        local quickPut=RSUI:Button({ id="v3_business_tools_bag_quick_put", parent=quickRow, text="放同类", compact=true, slot={size="fixed",width=70} })
-        local quickStop=RSUI:Button({ id="v3_business_tools_bag_quick_stop", parent=quickRow, text="停止", compact=true, slot={size="fixed",width=58} })
+        -- Two buttons only, same contract as the floating bar (.18.183): the user
+        -- reported the third 停 as useless, and the "已经在运行，请先停止" refusal it
+        -- existed for is exactly what made a 取/放 click look dead.  tools_bag now
+        -- resolves a click as start / stop (same button) / switch (other button).
+        local quickTake=RSUI:Button({ id="v3_business_tools_bag_quick_take", parent=quickRow, text="取同类", compact=true, slot={size="fixed",width=88} })
+        local quickPut=RSUI:Button({ id="v3_business_tools_bag_quick_put", parent=quickRow, text="放同类", compact=true, slot={size="fixed",width=88} })
         bagQuickStatus=RSUI:Text({ id="v3_business_tools_bag_quick_status", parent=root,
-            text="打开银行或箱子后，背包上方会自动出现“取 / 放”；只移动两边已经存在的同类物品。", fontSize=8, tone="muted", overflow="wrap", maxLines=2,
+            text="打开银行或箱子后，背包上方会自动出现「取 / 放」两个按钮；只移动两边都存在的同类物品。运行中再点同一个按钮＝停止，点另一个＝切换方向。",
+            fontSize=8, tone="muted", overflow="wrap", maxLines=2,
             slot={size="auto",minHeight=26,hAlign="fill"} })
         local function Quick(command)
             local fn=feature.Commands[command]; if type(fn)~="function" then return false,"快捷取放命令不可用" end
             local ok,result=fn(feature.Commands)
+            -- root:Refresh() repaints this line from the projection, which already
+            -- carries the short status plus the full reason; painting it here too
+            -- would only race with that (and the old direct write was overwritten).
             if ok~=true and bagQuickStatus~=nil then bagQuickStatus:SetText("取放失败："..tostring(result or "未执行")) end
             root:Refresh(); return ok,result
         end
         quickTake.onClick=function() return Quick("QuickWithdraw") end
         quickPut.onClick=function() return Quick("QuickDeposit") end
-        quickStop.onClick=function() return Quick("QuickCancel") end
-        for name,button in pairs({take=quickTake,put=quickPut,stop=quickStop}) do
-        end
 
         local batchRow = RSUI:HorizontalBox({ id="v3_business_tools_bag_batch_row", parent=root, gap=6,
             slot={ size="fixed",height=31,hAlign="fill" } })
@@ -583,9 +587,13 @@ local function Build(parent, route, id)
             get=function() return (feature:GetProjection() or {}).batchCategory end,
             set=function(value) return feature.Commands:SetBatchCategory(value) end, placeholder="选择背包内物品类别",
             slot={size="fill",fill=1,minWidth=180} })
-        batchTargetToggle = TrackField(RSUI:Toggle({ id="v3_business_tools_bag_batch_target", parent=batchRow,
-            onText="目标：箱子", offText="目标：银行", get=function() return (feature:GetProjection() or {}).batchTarget=="coffer" end,
-            set=function(v) return feature.Commands:SetBatchTarget(v and "coffer" or "bank") end, slot={size="fixed",width=104} }))
+        -- Read-only fact instead of a choice: 银行 and 箱子 cannot be open at the same
+        -- time, so asking the user to pick a target only produced "用户看不懂这个".
+        -- The Feature resolves the target from the open window (ResolveBatchTarget),
+        -- and this label mirrors that same fact. New widget id on purpose: swapping
+        -- the component kind under the old Toggle id would leave stale layout state.
+        batchTargetLabel = RSUI:Text({ id="v3_business_tools_bag_batch_target_auto", parent=batchRow,
+            text="目标：请先打开银行或箱子", fontSize=8, tone="muted", overflow="ellipsis", slot={size="fixed",width=126} })
         local startBatch=RSUI:Button({ id="v3_business_tools_bag_batch_start", parent=batchRow, text="开始整理", compact=true, slot={size="fixed",width=72} })
         local stopBatch=RSUI:Button({ id="v3_business_tools_bag_batch_stop", parent=batchRow, text="停止批量", compact=true, slot={size="fixed",width=72} })
         local batchLimitRow=RSUI:HorizontalBox({ id="v3_business_tools_bag_batch_limit_row", parent=root, gap=6, slot={size="fixed",height=31,hAlign="fill"} })
@@ -601,7 +609,8 @@ local function Build(parent, route, id)
                 return fail("整理功能未启用，请先点击上方按钮启用")
             end
             if category==nil or tostring(category)=="" then return fail("请先从下拉列表选择物品类别") end
-            local command=projection.batchTarget=="coffer" and feature.Commands.DepositCategoryCoffer or feature.Commands.DepositCategoryBank
+            -- No target argument: the open storage window *is* the target.
+            local command=feature.Commands.DepositCategoryCurrent
             if type(command)~="function" then return fail("类别整理命令不可用") end
             local ok,result=command(feature.Commands,category,projection.batchLimit or 20)
             if ok~=true then return fail(tostring(result or "未执行")) end
@@ -609,7 +618,7 @@ local function Build(parent, route, id)
         end
         stopBatch.onClick=function() local ok,result=feature.Commands:CancelCategoryBatch(); root:Refresh(); return ok,result end
         batchStatus = RSUI:Text({ id = "v3_business_tools_bag_batch_status", parent = root,
-            text = "高级整理按背包中实际出现的物品类别建立有界队列；与上方快捷取放互斥，避免同时移动物品。",
+            text = "高级整理把背包里选定类别的物品存入**当前打开的**银行或箱子（两者不会同时开，所以不用再选目标）；与上方快捷取放互斥。",
             fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2, slot = { size = "auto", minHeight = 26, hAlign = "fill" } })
     end
     local socialInput, socialStatus = nil, nil
@@ -1072,6 +1081,11 @@ local function Build(parent, route, id)
             batchCategoryDropdown.items = type(projection.batchCategoryOptions)=="table" and projection.batchCategoryOptions or {}
             if type(batchCategoryDropdown.Render)=="function" then batchCategoryDropdown:Render() end
         end
+        if id == "tools_bag" and batchTargetLabel ~= nil then
+            local resolved = projection.batchTargetResolved
+            batchTargetLabel:SetText(resolved == "coffer" and "目标：箱子（当前打开）"
+                or (resolved == "bank" and "目标：银行（当前打开）" or "目标：请先打开银行或箱子"))
+        end
         if id == "tools_bag" and projection.batch ~= nil and batchStatus ~= nil then
             local batch = projection.batch
             local statusZh=({idle="等待操作",running="整理中",empty="没有匹配物品",complete="已完成",stopped="已停止",cancelled="已取消"})[tostring(batch.status or "idle")] or "状态未知"
@@ -1090,10 +1104,17 @@ local function Build(parent, route, id)
             local storage = overlay.storageKind=="coffer" and "箱子" or overlay.storageKind=="bank" and "银行" or "仓储"
             local storageFacts = "银行=" .. tostring(overlay.bankStatus or "unknown") .. "/" .. tostring(overlay.bankVisible==true) .. "/" .. tostring(overlay.bankSource or "none")
                 .. " 箱子=" .. tostring(overlay.cofferStatus or "unknown") .. "/" .. tostring(overlay.cofferVisible==true) .. "/" .. tostring(overlay.cofferSource or "none")
+            -- `running` is derived by the Feature (queue + executor evidence), so a
+            -- lost executor can never keep the page claiming work is in progress.
+            local runningNote = overlay.running==true
+                and (" · 运行中，再点一次「" .. (overlay.direction=="withdraw" and "取同类" or "放同类") .. "」可停止") or ""
             bagQuickStatus:SetText((overlay.visible==true and (storage .. "已打开 · " .. tostring(overlay.status or "可快捷取放")
                     .. " · 背包=" .. tostring(overlay.bagSource or window.source or "unknown") .. " · 仓储=" .. tostring((overlay.storageKind=="bank" and overlay.bankSource) or (overlay.storageKind=="coffer" and overlay.cofferSource) or "unknown"))
                 or (windowText .. " · " .. storageFacts))
-                .. " · 已移动 " .. tostring(overlay.moved or 0) .. " · 跳过 " .. tostring(overlay.skipped or 0) .. " · 队列 " .. tostring(overlay.queued or 0))
+                .. runningNote
+                .. " · 已移动 " .. tostring(overlay.moved or 0) .. " · 跳过 " .. tostring(overlay.skipped or 0) .. " · 队列 " .. tostring(overlay.queued or 0)
+                .. " · 悬浮按钮 " .. tostring(actionCount) .. " 个"
+                .. (overlay.error and (" · " .. tostring(overlay.error)) or ""))
         end
         if id == "combat_team_tools" and teamAutoRoleButton ~= nil then
             teamAutoRoleButton:SetText(projection.autoRoleEnabled == false and "自动职责：关" or "自动职责：开")

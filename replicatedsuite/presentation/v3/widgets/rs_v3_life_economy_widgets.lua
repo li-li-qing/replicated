@@ -213,7 +213,7 @@ local ok, err = Register({
             or type(Feature.Commands.SelectFavorite) ~= "function" or type(Feature.Commands.SetSortMode) ~= "function" then
             return false, "跑商悬浮窗 Feature 路线/收藏/询价命令缺失"
         end
-        local routeBox = RSUI:VerticalBox({ id = "v3_life_trade_widget_route", parent = content, gap = 4, slot = { size = "fixed", height = 128, hAlign = "fill" } })
+        local routeBox = RSUI:VerticalBox({ id = "v3_life_trade_widget_route", parent = content, gap = 4, slot = { size = "fixed", height = 158, hAlign = "fill" } })
         local fromRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_from_row", parent = routeBox, gap = 5, slot = { size = "fixed", height = 30, hAlign = "fill" } })
         RSUI:Text({ id = "v3_life_trade_widget_from_label", parent = fromRow, text = "起点", fontSize = 9, tone = "muted", slot = { size = "fixed", width = 42 } })
         instance.fromDropdown = RSUI:Dropdown({ id = "v3_life_trade_widget_from", parent = fromRow, items = {}, maxVisible = 10, popupWidth = 240, placeholder = "选择起点",
@@ -256,16 +256,27 @@ local ok, err = Register({
             if ok == true then instance:Refresh() end
             return ok, favoriteErr
         end
-        instance.sortButton = RSUI:Button({ id = "v3_life_trade_widget_sort", parent = favoriteRow, text = "货率序", compact = true, slot = { size = "fixed", width = 64 } })
-        instance.sortButton.onClick = function()
-            local projection = Feature:GetProjection() or {}
-            local ok, sortErr = Feature.Commands:SetSortMode(projection.sortMode == "price" and "ratio" or "price")
-            if ok == true then instance:Refresh() end
-            return ok, sortErr
-        end
+        -- Same one-of-many sort contract as the Trade page; the id stays
+        -- "v3_life_trade_widget_sort" for binding/fence continuity.  The old
+        -- cycle button lived on the favorite row, which had no room for three
+        -- segments, so the selector got its own row and routeBox grew by one
+        -- 30px row (the Feature widget policy raises defaultHeight to match).
+        local sortRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_sort_row", parent = routeBox, gap = 5, slot = { size = "fixed", height = 30, hAlign = "fill" } })
+        RSUI:Text({ id = "v3_life_trade_widget_sort_label", parent = sortRow, text = "排序", fontSize = 9, tone = "muted", slot = { size = "fixed", width = 42 } })
+        instance.sortSelector = RSUI:SegmentedSelector({
+            id = "v3_life_trade_widget_sort", parent = sortRow, itemWidth = 36, gap = 2, height = 24, fontSize = 9,
+            items = {
+                { value = "ratio", text = "货率" },
+                { value = "price", text = "售价" },
+                { value = "name", text = "名字" },
+            },
+            get = function() return (Feature:GetProjection() or {}).sortMode or "ratio" end,
+            set = function(value) return Feature.Commands:SetSortMode(value) end,
+            slot = { size = "auto", hAlign = "left", vAlign = "fill" },
+        })
         return instance.fromDropdown ~= nil and instance.toDropdown ~= nil and instance.ratioButton ~= nil
             and instance.commerceButton ~= nil and instance.quoteButton ~= nil and instance.favoriteDropdown ~= nil
-            and instance.favoriteButton ~= nil and instance.sortButton ~= nil, "跑商悬浮窗路线/模式/收藏控件创建失败"
+            and instance.favoriteButton ~= nil and instance.sortSelector ~= nil, "跑商悬浮窗路线/模式/收藏控件创建失败"
     end,
     refreshControls = function(instance, projection)
         local fromItems, toItems = ZoneItems(projection.zones), ZoneItems(projection.sellableZones)
@@ -284,9 +295,9 @@ local ok, err = Register({
             instance.favoriteButton:SetEnabled(projection.fromZone ~= nil and projection.toZone ~= nil)
             instance.favoriteButton:SetText(projection.currentRouteFavorite == true and "取消收藏" or "收藏")
         end
-        if instance.sortButton then
-            instance.sortButton:SetEnabled(#(projection.rows or {}) > 0)
-            instance.sortButton:SetText(projection.sortMode == "price" and "售价序" or "货率序")
+        if instance.sortSelector then
+            instance.sortSelector:SetEnabled(#(projection.rows or {}) > 0)
+            instance.sortSelector:Render()
         end
     end,
     selectable = true,
@@ -323,7 +334,9 @@ local ok, err = Register({
             commerce = " · 熟练忽略"
         end
         local favorites = type(projection.favoriteItems) == "table" and #projection.favoriteItems or 0
-        local sort = projection.sortMode == "price" and " · 售价序" or " · 货率序"
+        local sort = (projection.sortMode == "price" and " · 售价序")
+            or (projection.sortMode == "name" and " · 名字序（[]优先）")
+            or " · 货率序"
         local inFlight = math.max(0, tonumber(projection.quoteInFlightCount) or 0)
         local unresolvedIdentity = math.max(0, tonumber(projection.unresolvedIdentityCount) or 0)
         return FindZoneName(projection, projection.fromZone) .. " → " .. FindZoneName(projection, projection.toZone) .. " · " .. tostring(#rows) .. " 种"

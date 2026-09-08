@@ -98,21 +98,30 @@ local function Build(parent, route, feature, kind)
         RSUI:Text({ id = "v3_trade_favorite_label", parent = favoriteRow, text = "收藏", fontSize = 10, tone = "muted", slot = { size = "fixed", width = 52 } })
         tradeFavoriteDropdown = RSUI:Dropdown({ id = "v3_trade_favorite_dropdown", parent = favoriteRow, items = {}, maxVisible = 12, popupWidth = 360,
             placeholder = "选择已收藏路线", get = function() local projection = feature:GetProjection() or {}; return projection.currentRouteFavorite and projection.currentFavoriteKey or nil end,
-            set = function(value) return feature.Commands:SelectFavorite(value) end, slot = { size = "fill", fill = 1, minWidth = 180 } })
+            set = function(value) return feature.Commands:SelectFavorite(value) end, slot = { size = "fill", fill = 1, minWidth = 150 } })
         local tradeFavoriteButton = RSUI:Button({ id = "v3_trade_favorite_toggle", parent = favoriteRow, text = "收藏路线", compact = true, slot = { size = "fixed", width = 94 } })
         tradeFavoriteButton.onClick = function()
             local ok, favoriteErr = feature.Commands:ToggleCurrentFavorite()
             if ok == true then root:Refresh() end
             return ok, favoriteErr
         end
-        local tradeSortButton = RSUI:Button({ id = "v3_trade_sort_mode", parent = favoriteRow, text = "排序：货率", compact = true, slot = { size = "fixed", width = 94 } })
-        tradeSortButton.onClick = function()
-            local projection = feature:GetProjection() or {}
-            local ok, sortErr = feature.Commands:SetSortMode(projection.sortMode == "price" and "ratio" or "price")
-            if ok == true then root:Refresh() end
-            return ok, sortErr
-        end
-        root.tradeFavoriteButton, root.tradeSortButton = tradeFavoriteButton, tradeSortButton
+        -- Sort is one-of-many, not a two-state cycle: three segments share the
+        -- same selected-state contract as DPS/HUD selectors.  The row has no
+        -- fill headroom at 1024 logical width, so the selector reserves fixed
+        -- space and the favorite dropdown fills the rest (minWidth 150).
+        local tradeSortSelector = RSUI:SegmentedSelector({
+            id = "v3_trade_sort_mode", parent = favoriteRow, itemWidth = 40, gap = 2, height = 26, fontSize = 9,
+            items = {
+                { value = "ratio", text = "货率" },
+                { value = "price", text = "售价" },
+                { value = "name", text = "名字" },
+            },
+            get = function() local projection = feature:GetProjection() or {}; return projection.sortMode or "ratio" end,
+            set = function(value) return feature.Commands:SetSortMode(value) end,
+            slot = { size = "fixed", width = 132, vAlign = "fill" },
+        })
+        if tradeSortSelector == nil then return nil, "跑商排序选择器创建失败" end
+        root.tradeFavoriteButton, root.tradeSortSelector = tradeFavoriteButton, tradeSortSelector
 
         local tradeRatioModeButton = RSUI:Button({ id = "v3_trade_ratio_mode", parent = actionRow, text = "货率：实时", compact = true, slot = { size = "fixed", width = 94 } })
         tradeRatioModeButton.onClick = function()
@@ -290,9 +299,9 @@ local function Build(parent, route, feature, kind)
                 root.tradeFavoriteButton:SetEnabled(canFavorite)
                 root.tradeFavoriteButton:SetText(projection.currentRouteFavorite == true and "取消收藏" or "收藏路线")
             end
-            if root.tradeSortButton then
-                root.tradeSortButton:SetEnabled(enabled and #(projection.rows or {}) > 0)
-                root.tradeSortButton:SetText(projection.sortMode == "price" and "排序：售价" or "排序：货率")
+            if root.tradeSortSelector then
+                root.tradeSortSelector:SetEnabled(enabled and #(projection.rows or {}) > 0)
+                root.tradeSortSelector:Render()
             end
             local pendingQuotes = math.max(0, tonumber(projection.pendingQuoteCount) or 0)
             if root.tradeRatioModeButton then
@@ -334,7 +343,9 @@ local function Build(parent, route, feature, kind)
                 commerceHint = " · 熟练度忽略（对比模式）"
             end
             local favoriteHint = " · 收藏 " .. tostring(#favoriteItems) .. "/12" .. (projection.currentRouteFavorite == true and "（当前）" or "")
-            local sortHint = projection.sortMode == "price" and " · 按售价排序" or " · 按货率排序"
+            local sortHint = (projection.sortMode == "price" and " · 按售价排序")
+                or (projection.sortMode == "name" and " · 按名字排序（[]优先）")
+                or " · 按货率排序"
             status:SetText(enabled and ((projection.status or "--") .. " · 地区 " .. tostring(#fromItems) .. "/" .. tostring(#toItems) .. " · " .. tostring(#(projection.rows or {})) .. " 种货物" .. ratioHint .. commerceHint .. quoteHint .. favoriteHint .. sortHint .. fallback .. dropdownHint .. errorText) or "功能已关闭")
             if widgetButton then
                 widgetButton:SetEnabled(enabled)

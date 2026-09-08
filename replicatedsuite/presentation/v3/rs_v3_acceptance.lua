@@ -5,7 +5,7 @@
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
-S.UIV3Acceptance = { version = 89 }
+S.UIV3Acceptance = { version = 90 }
 local A = S.UIV3Acceptance
 A.TradeDpsFreshReloadPreflightContractVersion = 2
 A.TradeDetailFavoritesContractVersion = 1
@@ -247,7 +247,13 @@ function A:RunMatrix()
         or (tonumber(bagTools.VisiblePresenterRetryContractVersion) or 0) < 1
         or (tonumber(bagTools.DynamicSourceResolutionContractVersion) or 0) < 3
         or (tonumber(bagTools.QuickIdentityFallbackContractVersion) or 0) < 1
-        or (tonumber(bagTools.BagTaskMutexContractVersion) or 0) < 1
+        -- Mutex v2: an empty plan must never hold the quick mutex, and a queue
+        -- that lost its executor must be reclaimed (.18.183 "click does nothing").
+        or (tonumber(bagTools.BagTaskMutexContractVersion) or 0) < 2
+        or (tonumber(bagTools.QuickRunSelfHealContractVersion) or 0) < 1
+        or (tonumber(bagTools.QuickTwoButtonContractVersion) or 0) < 1
+        or (tonumber(bagTools.QuickReasonVisibilityContractVersion) or 0) < 1
+        or (tonumber(bagTools.QuickStatusTimestampContractVersion) or 0) < 1
         or (tonumber(bagTools.InventorySnapshotContractVersion) or 0) < 1
         or (tonumber(bagTools.GroupedIntentQueueContractVersion) or 0) < 1
         or (tonumber(bagTools.FullStorageContinuationContractVersion) or 0) < 1
@@ -255,10 +261,18 @@ function A:RunMatrix()
         or type(bagTools.Commands.QuickDeposit) ~= "function" or type(bagTools.Commands.QuickCancel) ~= "function"
         or type(bagTools.Commands.SetBatchCategory) ~= "function" or type(bagTools.Commands.SetBatchTarget) ~= "function"
         or type(bagTools.Commands.SetBatchLimit) ~= "function"
-        or type(bagQuickPresenter) ~= "table" or (tonumber(bagQuickPresenter.version) or 0) < 4
+        -- Category batch resolves its target from the open storage window; the old
+        -- bank/coffer choice is gone from the page (.18.183 user report).
+        or type(bagTools.Commands.DepositCategoryCurrent) ~= "function"
+        or (tonumber(bagTools.BatchTargetAutoContractVersion) or 0) < 1
+        or type(bagQuickPresenter) ~= "table" or (tonumber(bagQuickPresenter.version) or 0) < 8
         or (tonumber(bagQuickPresenter.ReloadVisibilityContractVersion) or 0) < 2
-        or (tonumber(bagQuickPresenter.NativeTransientHostContractVersion) or 0) < 1
-        or (tonumber(bagQuickPresenter.VisibleRetryContractVersion) or 0) < 1 then
+        or (tonumber(bagQuickPresenter.NativeTransientHostContractVersion) or 0) < 2
+        or (tonumber(bagQuickPresenter.VisibleRetryContractVersion) or 0) < 2
+        or (tonumber(bagQuickPresenter.TwoButtonContractVersion) or 0) < 1
+        or (tonumber(bagQuickPresenter.DiffRenderContractVersion) or 0) < 1
+        or (tonumber(bagQuickPresenter.HintYieldContractVersion) or 0) < 1
+        or (tonumber(bagQuickPresenter.QuietByDefaultContractVersion) or 0) < 1 then
         failures[#failures + 1] = "bag_quick_take_put_contract_v9"
     end
 
@@ -888,8 +902,13 @@ function A:RunMatrix()
         failures[#failures + 1] = "selection_visual_contract"
     end
     local tooltip = rsui and rsui.Tooltip or nil
-    if tooltip == nil or (tonumber(tooltip.version) or 0) < 2 or type(tooltip.Bind) ~= "function"
-        or type(tooltip.Unbind) ~= "function" or type(tooltip.BindOverflowText) ~= "function" then
+    if tooltip == nil or (tonumber(tooltip.version) or 0) < 6 or type(tooltip.Bind) ~= "function"
+        or type(tooltip.Unbind) ~= "function" or type(tooltip.BindOverflowText) ~= "function"
+        or (tonumber(tooltip.TransientLayerContractVersion) or 0) < 1
+        or (tonumber(tooltip.LineEstimateContractVersion) or 0) < 1
+        or (tonumber(tooltip.IsShowingContractVersion) or 0) < 1
+        or type(tooltip.EstimateWrappedLines) ~= "function"
+        or type(tooltip.IsShowing) ~= "function" then
         failures[#failures + 1] = "tooltip_contract"
     end
     if S.Api == nil or type(S.Api.GetMouseLogicalPosition) ~= "function" then failures[#failures + 1] = "tooltip_mouse_boundary" end

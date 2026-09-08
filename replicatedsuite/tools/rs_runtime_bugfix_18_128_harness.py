@@ -15,6 +15,7 @@ PROJECTION = read("services/rs_screen_projection_v3.lua")
 LIFE = read("features/life/rs_life_m16_bundle.lua")
 BAG_UI = read("presentation/v3/widgets/rs_v3_bag_quick_overlay.lua")
 DATA_VIEWS = read("ui/framework/rs_ui_data_views.lua")
+INTERACTIONS = read("ui/framework/rs_ui_interactions.lua")
 TRANSFORM = read("ui/framework/rs_ui_transform_inspector.lua")
 CASTING = read("services/rs_casting_observation_v3.lua")
 BUFF = read("features/combat/buff_display/rs_buff_display_feature.lua")
@@ -46,11 +47,42 @@ def static_contracts() -> None:
             "local function BondCompletionKey(materialKey, quantity, continentKey)",
             "Capture at most once per continent/server day", "tostring(row.materialKey) .. \":\" .. tostring(row.quantity)")
 
-    require(BAG_UI, "取：从当前打开的银行/箱子", "放：把背包中的同类物品", "停：立即停止当前批量",
-            "allowRaw=true, cursorFollow=true")
+    require(BAG_UI, "取：取出与背包同类的物品", "放：存入与仓库同类的物品",
+            "再点一次＝停止", "allowRaw=true, cursorFollow=true")
+    # .18.183: the 停 button is gone by user request; a stale tooltip for a widget
+    # that no longer exists would be the first thing a reviewer trusts and the last
+    # thing a test catches.
+    assert "停：立即停止当前批量" not in BAG_UI, "removed 停 button must not keep a tooltip binding"
+    assert BAG_UI.count("allowRaw=true, cursorFollow=true") == 2, "one hover contract per remaining quick button"
+    # .18.183 RU evidence: a long sentence overflowed the pooled hint box. Bag
+    # tooltips stay short; the wrapped explanation belongs to the page hint line.
+    payloads = re.findall(r'text="([^"]+)"', BAG_UI)
+    assert len(payloads) == 2, f"two quick tooltips expected, got {len(payloads)}"
+    for payload in payloads:
+        assert len(payload) <= 34, f"bag tooltip grew long again ({len(payload)} glyphs): {payload}"
+    require(BAG_UI, "maxWidth=320")
+    assert "maxWidth=360" not in BAG_UI and "maxWidth=390" not in BAG_UI
+    # Tooltip v5: the pooled box is floored by a glyph estimate (clipped-hint fix).
+    require(INTERACTIONS, "version = 6", "LineEstimateContractVersion = 1", "IsShowingContractVersion = 1",
+            "function Tooltip:EstimateWrappedLines(text, contentWidth, fontSize)",
+            "[\\1-\\127\\192-\\244][\\128-\\191]*",
+            "self:EstimateWrappedLines(value, width - 16, fontSize)",
+            "function Tooltip:IsShowing()",
+            "popup.visible = true",
+            "self.fallback.visible = false")
+    # Visibility bookkeeping must stay paired: Show marks visible, Hide clears it.
+    show_body = INTERACTIONS[INTERACTIONS.index("function Tooltip:Show(target, text, options)"):]
+    show_body = show_body[: show_body.index("function Tooltip:Hide()")]
+    assert "popup.visible = true" in show_body, "Show must publish the visible fact the bar yields to"
+    assert "self.fallback.visible = false" in INTERACTIONS[INTERACTIONS.index("function Tooltip:Hide()"):]
     tip_start = DATA_VIEWS.index("function c:EnsureAutoTooltip()")
     tip_end = DATA_VIEWS.index("c.onClick = spec.onClick", tip_start)
     assert "cursorFollow = true" in DATA_VIEWS[tip_start:tip_end]
+    # .18.182: pooled rows can be hovered before the async visibility diff;
+    # truncated-text collection must fail closed on invisible slots.
+    gt_start = DATA_VIEWS.index("function c:GetTruncatedTooltipText()")
+    gt_end = DATA_VIEWS.index("function c:EnsureAutoTooltip()", gt_start)
+    assert "if self.visible ~= true or self.viewportVisible == false then return \"\" end" in DATA_VIEWS[gt_start:gt_end]
     require(TRANSFORM, "RSUI.TransformInspectorContractVersion = 3", "function c:Measure(availableWidth, availableHeight)",
             "self.form:Measure(w, availableHeight)")
 

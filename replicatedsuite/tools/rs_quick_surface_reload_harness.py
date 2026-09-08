@@ -63,7 +63,31 @@ def static_contracts() -> None:
         'BagTools.VisiblePresenterRetryContractVersion = 1',
         'local bank=ReadStorageWindowContext("bank")',
         'local coffer=ReadStorageWindowContext("coffer")',
+        # .18.183 quick-run lifecycle: evidence-based self-heal + two-button
+        # start/stop/switch + short overlay status vs long diagnostic error.
+        'BagTools.BagTaskMutexContractVersion = 2',
+        'BagTools.QuickRunSelfHealContractVersion = 1',
+        'BagTools.QuickTwoButtonContractVersion = 1',
+        'BagTools.QuickReasonVisibilityContractVersion = 1',
+        'function BagMoveRuntime.QuickQueueActive(feature)',
+        'return type(feature._quickQueue) == "table" and #feature._quickQueue > 0',
+        'function BagMoveRuntime.QuickRunEvidence(feature)',
+        'BagMoveRuntime.QuickRunStaleMs = 8000',
+        'function BagMoveRuntime.ReclaimStaleBagQuickRun(feature)',
+        'function BagMoveRuntime.QuickStatusText(reason)',
+        r'[\1-\127\192-\244][\128-\191]*',
+        # The short status is built by splitting on whole separator strings.  A
+        # negated byte class (`[^（，。]`) looks the same but cuts Chinese text in
+        # half: 刻 = E5 88 BB shares 0x88 with 「（」.
+        'string.find(text, separator, 1, true)',
+        'bag_quick_empty_plan',
+        'actions = { "QuickWithdraw", "QuickDeposit" },',
+        # Message expiry is only honest if every status write carries a timestamp.
+        'BagTools.QuickStatusTimestampContractVersion = 1',
+        'feature._quickOverlay.statusAt = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0',
     )
+    stamps = BUSINESS.count('feature._quickOverlay.statusAt = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0')
+    assert stamps >= 4, f"quick status writes must be timestamped (found {stamps}, need >= 4)"
     observer_start = BUSINESS.index("local function StartBagQuickObserver(feature)")
     observer_end = BUSINESS.index("local function StopBagQuickAll", observer_start)
     observer = BUSINESS[observer_start:observer_end]
@@ -71,16 +95,59 @@ def static_contracts() -> None:
     assert "MoveToEmpty" not in observer, "idle bag observer must not move inventory"
 
     require(BAG_UI,
-        "version=4",
+        "version=8",
         "ReloadVisibilityContractVersion=2",
-        "NativeTransientHostContractVersion=1",
-        "VisibleRetryContractVersion=1",
+        "NativeTransientHostContractVersion=2",
+        "VisibleRetryContractVersion=2",
+        # .18.183 (user report): the floating bar offers 取/放 only.  The third
+        # 停 button had no visible effect, and the refusal it existed for is what
+        # made a click look dead; stop/switch now ride on the same two buttons.
+        "TwoButtonContractVersion=1",
         'CreatePanel(UIParent,"v3_bag_quick_overlay_root"',
         "transientWindow=true",
         "P:EnsureCreated()",
+        # .18.182: a failed host build while storage is visible must self-heal
+        # on frame cadence instead of waiting for the next 350ms heartbeat.
+        # The re-arm path passes freshCampaign=false so the cap counter survives
+        # (a reset-on-rearm would retry forever; proven by the Lua simulator).
+        "function P:ScheduleCreateRetry(freshCampaign)",
+        "AddHighFrequencyOneShot(CREATE_RETRY_TASK, 64",
+        "self:ScheduleCreateRetry()",
+        "if P.retryCount < 8 then return P:ScheduleCreateRetry(false) end",
+        # Progress text is the replacement affordance for 停.
+        "if overlay.running == true then",
+        # .18.183 RU report: the 350ms heartbeat used to rewrite geometry/label and
+        # Raise the bar every beat, which buried the hover hint under the game
+        # window within a second. Writes are diffed and the raise yields to a hint.
+        "DiffRenderContractVersion=1",
+        "HintYieldContractVersion=1",
+        "local function HintIsShowing()",
+        'if HintIsShowing()~=true and type(self.root.Raise)=="function" then',
+        "if self.appliedStatus~=statusText then",
+        "local geometryChanged=self.appliedGeometry~=geometryKey",
+        # .18.183 user report (3rd): the idle "银行 · 可快捷取放" sentence is noise.
+        # The bar is two buttons; a message appears only while it matters and then
+        # expires, and the bar shrinks back to buttons-only width.
+        "QuietByDefaultContractVersion=1",
+        "COMPACT_WIDTH = 102",
+        "MESSAGE_TTL_MS = 6000",
+        'local width=statusText=="" and COMPACT_WIDTH',
+        'if status == "" or status == "可快捷取放" or status == "等待仓库/箱子" then return "" end',
+        "S.UI:SetVisible(self.status,statusText~=\"\" and true or false,self.owner)",
     )
+    # The idle sentence must not come back as a permanent label.
+    assert 'return storage .. " · " .. status' not in BAG_UI, "quiet-by-default regressed to an always-on label"
+    assert BAG_UI.count("local function OverlayStatusText(overlay, now)") == 1
+    # A tooltip service that cannot answer the query must not be out-raised blind.
+    assert 'if ok ~= true then return true end' in BAG_UI, "HintIsShowing fails safe toward 'do not raise'"
+    assert BAG_UI.count("self.root:Raise()") == 2, "one raise on apply, one guarded steady-beat raise"
     assert 'CreateEmptyWidget(UIParent,"v3_bag_quick_overlay_root"' not in BAG_UI, "bag quick root must not regress to top-level emptywidget"
-    require(PAGE, "背包窗口可见/", "overlay.bankSource", "overlay.cofferSource")
+    assert BAG_UI.count('S.UI:CreateButton(root,"v3_bag_quick_') == 2, "bag quick overlay must stay at exactly two buttons"
+    assert "v3_bag_quick_stop" not in BAG_UI, "the 停 button must not come back: it was reported as useless"
+    assert BAG_UI.count("tooltip:Bind(") == 2, "both remaining buttons keep their stop/switch hover contract"
+    require(PAGE, "背包窗口可见/", "overlay.bankSource", "overlay.cofferSource",
+        "运行中再点同一个按钮＝停止", "悬浮按钮")
+    assert "v3_business_tools_bag_quick_stop" not in PAGE, "page must not keep a third quick-stop button"
 
     require(GEAR_STORE, "runtimePreferenceLink = tonumber(value.runtimePreferenceLink) == 1 and 1 or nil")
     require(
@@ -175,6 +242,76 @@ def test_bag_idle_observer_is_low_cost_surface_only() -> None:
     assert "bag_quick_visible_heartbeat" in refresh
 
 
+def quick_running(queue, pending, status: str) -> bool:
+    """Model of BagMoveRuntime.QuickQueueActive + BagQuickRunning.
+
+    The .18.182 build treated *any* installed queue table as "running", while
+    BeginBagQuick installed the empty queue table before its plannedMoves == 0
+    early return -> one click with nothing to match locked 取/放, direct moves and
+    the category batch for the rest of the session, and the locked click still
+    reported success.  That is the user-reported "sometimes nothing happens".
+    """
+    if pending is not None:
+        return True
+    if queue:  # non-nil AND non-empty
+        return True
+    return status in {"正在取出", "正在放入"}
+
+
+def test_empty_plan_never_holds_the_quick_mutex() -> None:
+    assert quick_running([], None, "没有同类物品") is False
+    assert quick_running([{"remaining": 2}], None, "正在放入") is True
+    assert quick_running([], {"identity": "type:1"}, "正在放入") is True
+    # Control flow, not just text (the .179 lesson): inside BeginBagQuick the
+    # empty-plan branch must clear the mutex *before* the queue is installed.
+    begin = BUSINESS[BUSINESS.index("local function BeginBagQuick(feature, direction)"):]
+    begin = begin[: begin.index("local function RefreshBagQuickOverlay")]
+    clear = begin.index("feature._quickQueue, feature._quickIndex, feature._quickPending = nil, nil, nil")
+    install = begin.index("feature._quickQueue, feature._quickIndex, feature._quickPending = queue, 0, nil")
+    assert clear < install, "empty plan must release the mutex before any queue exists"
+    assert 'if plannedMoves == 0 then return true, 0 end' not in begin, "the old unconditional install + bare return is the locked-state bug"
+    assert begin.count("bag_quick_empty_plan") == 1
+
+
+def test_stale_quick_run_is_reclaimed_without_new_tick() -> None:
+    # The 350 ms window observer is the watchdog: no new task, no Tick, and an
+    # orphaned mutex can never outlive its scheduler task.
+    refresh = BUSINESS[BUSINESS.index("local function RefreshBagQuickOverlay(feature)"):BUSINESS.index("local function StartBagQuick(feature, direction)")]
+    assert "BagMoveRuntime.ReclaimStaleBagQuickRun(feature)" in refresh
+    watchdog = refresh.index("BagMoveRuntime.ReclaimStaleBagQuickRun(feature)")
+    assert watchdog < refresh.index("local bag=ReadBagWindowContext()"), "reclaim must run before the state is copied for this beat"
+    assert "AddTask" not in refresh, "the watchdog must not create a scheduler task"
+    # Evidence must never be inverted: missing telemetry falls back to the queue's
+    # own step stamp instead of declaring the run stale.
+    evidence = BUSINESS[BUSINESS.index("function BagMoveRuntime.QuickRunEvidence(feature)"):]
+    evidence = evidence[: evidence.index("function BagMoveRuntime.QuickStatusText")]
+    assert '"调度器无任务遥测"' not in evidence, "no-telemetry must not equal stale"
+    assert "feature._quickLastStepAt" in evidence
+
+
+def test_quick_click_stops_or_switches_instead_of_refusing() -> None:
+    start = BUSINESS[BUSINESS.index("local function StartBagQuick(feature, direction)"):]
+    start = start[: start.index("local function StartBagQuickObserver")]
+    assert 'if running == direction then' in start, "same button must stop the running direction"
+    assert 'return false,"快捷取放已经在运行，请先停止"' not in start, "the silent-refusal path is the reported dead click"
+    assert start.count("StopBagQuick(feature") == 2
+    # Player-facing split: short label for the status bar, full reason in error.
+    assert "BagMoveRuntime.QuickStatusText(err)" in start
+    assert 'feature._quickOverlay.error = tostring(err' in start
+
+
+def test_quick_status_text_is_character_safe() -> None:
+    status_fn = BUSINESS[BUSINESS.index("function BagMoveRuntime.QuickStatusText(reason)"):]
+    status_fn = status_fn[: status_fn.index("local function BagBatchRunning(feature)")]
+    # Comments may legitimately *name* the rejected pattern (the fix explains
+    # why), so this fence reads code only.
+    status_code = "\n".join(line.split("--")[0] for line in status_fn.split("\n"))
+    assert "[^（" not in status_code, "negated byte class splits CJK mid-character"
+    assert "string.find(text, separator, 1, true)" in status_code
+    assert r"[\1-\127\192-\244][\128-\191]*" in status_code, "glyph counter must count CJK, not only ASCII"
+    assert '"…"' in status_code, "overflow must stay inside the label budget"
+
+
 def main() -> int:
     static_contracts()
     tests = (
@@ -184,6 +321,10 @@ def main() -> int:
         test_legacy_gear_split_repairs_once,
         test_bag_explicit_disable_is_not_overridden,
         test_bag_idle_observer_is_low_cost_surface_only,
+        test_empty_plan_never_holds_the_quick_mutex,
+        test_stale_quick_run_is_reclaimed_without_new_tick,
+        test_quick_click_stops_or_switches_instead_of_refusing,
+        test_quick_status_text_is_character_safe,
     )
     for test in tests:
         test()

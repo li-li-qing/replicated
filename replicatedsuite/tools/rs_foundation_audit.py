@@ -522,9 +522,25 @@ def main() -> int:
         "BagTools.FullStorageContinuationContractVersion = 1",
         "function BagMoveRuntime.IsNativeMoveRejected(err)",
         "function BagMoveRuntime.BlockBatchIdentity(feature, entry, identity, reason)",
+        # Bag quick lifecycle v2 (.18.183): empty plans must not hold the mutex,
+        # orphaned runs must self-heal, and the surface stays at two buttons.
+        "BagTools.BagTaskMutexContractVersion = 2",
+        "BagTools.QuickRunSelfHealContractVersion = 1",
+        "BagTools.QuickTwoButtonContractVersion = 1",
+        "BagTools.QuickReasonVisibilityContractVersion = 1",
+        "function BagMoveRuntime.QuickQueueActive(feature)",
+        "function BagMoveRuntime.QuickRunEvidence(feature)",
+        "function BagMoveRuntime.ReclaimStaleBagQuickRun(feature)",
+        "bag_quick_empty_plan",
     ):
         if token not in bag_bridge_source:
             failures.append("Bag v8 grouped-intent/full-storage contract missing: " + token)
+    bag_overlay_source = (
+        (root / "presentation/v3/widgets/rs_v3_bag_quick_overlay.lua")
+        .read_text(encoding="utf-8-sig", errors="replace")
+    )
+    if bag_overlay_source.count('S.UI:CreateButton(root,"v3_bag_quick_') != 2 or "v3_bag_quick_stop" in bag_overlay_source:
+        failures.append("Bag quick overlay must expose exactly the 取/放 pair (停 was removed by user request)")
     bag_bridge_code = strip_lua_strings(strip_lua_comments(bag_bridge_source))
     forbidden_slot_queue_patterns = (
         re.compile(r"queue\s*\[\s*#queue\s*\+\s*1\s*\]\s*=\s*\{\s*slot\s*="),
@@ -1471,6 +1487,8 @@ def main() -> int:
         "function Trade:ToggleCurrentFavorite()",
         "function Trade:SelectFavorite(key)",
         "function Trade:SetSortMode(mode)",
+        'local TRADE_SORT_MODES = { ratio = true, price = true, name = true }',
+        'return (name:find("^%[") ~= nil) and 1 or 0, name',
         "function Trade:QuoteRowMaterials(rowKey)",
         "function Trade:GetRow(key)",
         "selectedKey = nil",
@@ -1481,6 +1499,7 @@ def main() -> int:
         'id = "v3_trade_favorite_dropdown"',
         'id = "v3_trade_favorite_toggle"',
         'id = "v3_trade_sort_mode"',
+        '{ value = "name", text = "名字" }',
         "TradeDetailFloatingV3",
     ):
         if token not in trade_page_source:
@@ -1489,6 +1508,7 @@ def main() -> int:
         'id = "v3_life_trade_widget_favorite"',
         'id = "v3_life_trade_widget_favorite_toggle"',
         'id = "v3_life_trade_widget_sort"',
+        '{ value = "name", text = "名字" }',
         "selectable = true",
         "TradeDetailFloatingV3",
     ):

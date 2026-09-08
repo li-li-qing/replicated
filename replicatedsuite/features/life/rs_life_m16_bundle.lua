@@ -148,7 +148,7 @@ S.Features.Trade = Trade
 Trade.UpdateTopic = "v3.life.trade.updated"
 Trade.State = { fromZone = nil, toZone = nil, favorites = {}, sortMode = "ratio", ratioMode = "current", commerceMode = "observe", widgetVisible = false, widgetWindow = nil }
 Trade.Authority = { version = 6, revision = 0, zones = {}, sellableZones = {}, rows = {}, selectedKey = nil, status = "idle", error = nil, inFlight = nil, zoneFallback = false, sellableFallback = false, sellableError = nil, commerceSkill = nil, commerceStatus = "idle", commerceName = nil, commerceError = nil }
-InstallLifeWidgetContract(Trade, { defaultWidth = 470, defaultHeight = 340, minWidth = 320, minHeight = 220, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 })
+InstallLifeWidgetContract(Trade, { defaultWidth = 470, defaultHeight = 374, minWidth = 320, minHeight = 254, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 })
 local TA = Trade.Authority
 TA.RouteRefreshRetryContractVersion = 2
 TA.SingleFlightLatestRouteContractVersion = 1
@@ -168,6 +168,9 @@ local TRADE_ANCHORS_E = { [4] = true, [12] = true, [17] = true }
 local TRADE_FULL_RATIO = 130
 local TRADE_RATIO_MODES = { current = true, full = true }
 local TRADE_COMMERCE_MODES = { observe = true, off = true }
+-- Sort modes are a closed set shared by Authority normalization and the
+-- page/widget selectors: ratio (default), price, name ([]-prefixed first).
+local TRADE_SORT_MODES = { ratio = true, price = true, name = true }
 local TRADE_COMMERCE_NAMES = { ["Commerce"] = true, ["经商"] = true, ["贸易"] = true, ["Торговля"] = true }
 
 local function StaticTradeZones()
@@ -654,10 +657,31 @@ local function UnresolvedTradeIdentityCount(rows)
     return count
 end
 
+-- Name sort puts bracket-prefixed goods ("[xxx]…") first, then orders by the
+-- localized display name.  The byte order of "[" (0x5B) is above digits and
+-- ASCII letters but below CJK UTF-8 lead bytes, so a plain byte compare would
+-- sink [黄金] rows behind Chinese names on this client; the prefix flag is
+-- therefore compared explicitly.  Tie-break falls back to ratio so two rows
+-- with an identical name never swap between rebuilds.
+local function TradeNameSortKey(row)
+    local name = tostring(row.name or row.sourceName or "")
+    return (name:find("^%[") ~= nil) and 1 or 0, name
+end
+
 local function SortTradeRows(rows)
+    local mode = Trade.State.sortMode
     table.sort(rows, function(a, b)
-        local av = Trade.State.sortMode == "price" and (a.priceCopper or -1) or (a.ratio or -1)
-        local bv = Trade.State.sortMode == "price" and (b.priceCopper or -1) or (b.ratio or -1)
+        if mode == "name" then
+            local ap, an = TradeNameSortKey(a)
+            local bp, bn = TradeNameSortKey(b)
+            if ap ~= bp then return ap > bp end
+            if an ~= bn then return an < bn end
+            local ar, br = a.ratio or -1, b.ratio or -1
+            if ar ~= br then return ar > br end
+            return tostring(a.key or "") < tostring(b.key or "")
+        end
+        local av = mode == "price" and (a.priceCopper or -1) or (a.ratio or -1)
+        local bv = mode == "price" and (b.priceCopper or -1) or (b.ratio or -1)
         if av ~= bv then return av > bv end
         return tostring(a.key or "") < tostring(b.key or "")
     end)
@@ -1121,7 +1145,7 @@ local function NormalizeTradeState(value)
     return {
         fromZone = Number(value.fromZone), toZone = Number(value.toZone),
         favorites = favorites,
-        sortMode = value.sortMode == "price" and "price" or "ratio",
+        sortMode = TRADE_SORT_MODES[value.sortMode] and value.sortMode or "ratio",
         ratioMode = TRADE_RATIO_MODES[value.ratioMode] and value.ratioMode or "current",
         commerceMode = TRADE_COMMERCE_MODES[value.commerceMode] and value.commerceMode or "observe",
         widgetVisible = value.widgetVisible == true,
@@ -1134,7 +1158,7 @@ RegisterStore(Trade.storeId, "v3.life.trade", function() return NormalizeTradeSt
         value = type(value) == "table" and value or {}
         Trade.State.fromZone, Trade.State.toZone = Number(value.fromZone), Number(value.toZone)
         Trade.State.favorites = Trade:NormalizeFavorites(value.favorites)
-        Trade.State.sortMode = value.sortMode == "price" and "price" or "ratio"
+        Trade.State.sortMode = TRADE_SORT_MODES[value.sortMode] and value.sortMode or "ratio"
         Trade.State.ratioMode = TRADE_RATIO_MODES[value.ratioMode] and value.ratioMode or "current"
         Trade.State.commerceMode = TRADE_COMMERCE_MODES[value.commerceMode] and value.commerceMode or "observe"
         Trade.State.widgetVisible = value.widgetVisible == true
@@ -1193,8 +1217,8 @@ end
 function Trade:GetProjection() return TA:GetProjection() end
 function Trade:GetRouteSettings() return { fromZone = Trade.State.fromZone, toZone = Trade.State.toZone, sortMode = Trade.State.sortMode, ratioMode = Trade.State.ratioMode, commerceMode = Trade.State.commerceMode } end
 function Trade:SetSortMode(mode)
-    mode = mode == "price" and "price" or (mode == "ratio" and "ratio" or nil)
-    if mode == nil then return false, "排序模式必须是 ratio 或 price" end
+    mode = TRADE_SORT_MODES[mode] and mode or nil
+    if mode == nil then return false, "排序模式必须是 ratio、price 或 name" end
     local persisted, persistErr = PersistLifeMutation(self, "trade_sort_mode", function(state) state.sortMode = mode; return true end)
     if persisted ~= true then return false, persistErr or "排序模式保存失败" end
     return TA:RebuildDisplayRows("trade_sort_mode")
