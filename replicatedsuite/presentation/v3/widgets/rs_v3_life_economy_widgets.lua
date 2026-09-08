@@ -232,7 +232,7 @@ local ok, err = Register({
             if ok == true then instance:Refresh() end
             return ok, modeErr
         end
-        instance.commerceButton = RSUI:Button({ id = "v3_life_trade_widget_commerce_mode", parent = modeRow, text = "熟练：读取", compact = true, slot = { size = "fixed", width = 96 } })
+        instance.commerceButton = RSUI:Button({ id = "v3_life_trade_widget_commerce_mode", parent = modeRow, text = "熟练：计入", compact = true, slot = { size = "fixed", width = 96 } })
         instance.commerceButton.onClick = function()
             local projection = Feature:GetProjection() or {}
             local ok, modeErr = Feature.Commands:SetCommerceMode(projection.commerceMode == "off" and "observe" or "off")
@@ -273,7 +273,7 @@ local ok, err = Register({
         if instance.toDropdown then instance.toDropdown:SetItems(toItems); instance.toDropdown:SetEnabled(#toItems > 0); instance.toDropdown:Render() end
         local pending = math.max(0, tonumber(projection.pendingQuoteCount) or 0)
         if instance.ratioButton then instance.ratioButton:SetText(projection.ratioMode == "full" and ("满货率 " .. tostring(projection.fullRatio or 130) .. "%") or "货率：实时") end
-        if instance.commerceButton then instance.commerceButton:SetText(projection.commerceMode == "off" and "熟练：忽略" or "熟练：读取") end
+        if instance.commerceButton then instance.commerceButton:SetText(projection.commerceMode == "off" and "熟练：忽略" or "熟练：计入") end
         if instance.quoteButton then
             instance.quoteButton:SetEnabled(pending > 0)
             instance.quoteButton:SetText(pending > 0 and ("询价(" .. tostring(pending) .. ")") or "材料询价")
@@ -312,13 +312,25 @@ local ok, err = Register({
         local ratio = projection.ratioMode == "full" and (" · 满" .. tostring(projection.fullRatio or 130) .. "%") or " · 实时"
         local commerce = ""
         if projection.commerceMode == "observe" then
-            commerce = projection.commerceStatus == "ready" and projection.commerceSkill ~= nil
-                and (" · 经商 " .. tostring(math.floor((tonumber(projection.commerceSkill) or 0) + 0.5)) .. "※") or " · 经商待确认"
+            if projection.commerceStatus == "ready" and projection.commerceSkill ~= nil then
+                local skill = math.max(0, tonumber(projection.commerceSkill) or 0)
+                commerce = " · 经商 " .. tostring(math.floor(skill + 0.5))
+                    .. "×" .. string.format("%.3f", 1 + (skill / 10000 * 0.05))
+            else
+                commerce = " · 经商不可读"
+            end
+        else
+            commerce = " · 熟练忽略"
         end
         local favorites = type(projection.favoriteItems) == "table" and #projection.favoriteItems or 0
         local sort = projection.sortMode == "price" and " · 售价序" or " · 货率序"
+        local inFlight = math.max(0, tonumber(projection.quoteInFlightCount) or 0)
+        local unresolvedIdentity = math.max(0, tonumber(projection.unresolvedIdentityCount) or 0)
         return FindZoneName(projection, projection.fromZone) .. " → " .. FindZoneName(projection, projection.toZone) .. " · " .. tostring(#rows) .. " 种"
-            .. ratio .. commerce .. (pending > 0 and (" · 待询价 " .. tostring(pending)) or "") .. " · 收藏 " .. tostring(favorites) .. sort .. fallback
+            .. ratio .. commerce .. (pending > 0 and (" · 待询价 " .. tostring(pending)) or "")
+            .. (inFlight > 0 and (" · 询价中 " .. tostring(inFlight)) or "")
+            .. (unresolvedIdentity > 0 and (" · 配方待解析 " .. tostring(unresolvedIdentity)) or "")
+            .. " · 收藏 " .. tostring(favorites) .. sort .. fallback
     end,
 })
 if ok ~= true then error(err) end

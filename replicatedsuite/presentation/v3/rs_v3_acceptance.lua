@@ -1,13 +1,13 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Foundation Acceptance v83
+-- Replicated Suite V3 - Foundation Acceptance v89
 --
 -- Bounded, on-demand checks only. No Native widget creation and no Tick.
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
-S.UIV3Acceptance = { version = 84 }
+S.UIV3Acceptance = { version = 89 }
 local A = S.UIV3Acceptance
-A.TradeDpsFreshReloadPreflightContractVersion = 1
+A.TradeDpsFreshReloadPreflightContractVersion = 2
 A.TradeDetailFavoritesContractVersion = 1
 A.PersistenceReliabilityV3ContractVersion = 1
 A.PersistenceReliabilityV4ContractVersion = 1
@@ -19,7 +19,7 @@ A.DeathReviewCanonicalWindowContractVersion = 6
 A.PersistenceTaskStableCodecContractVersion = 1
 A.BuffDisplayEquipmentReadContractVersion = 1
 A.SidecarServiceBoundaryContractVersion = 1
-A.QuickSurfaceReloadReconcileContractVersion = 2
+A.QuickSurfaceReloadReconcileContractVersion = 3
 
 local MIGRATED_MODAL_MODULES = {
     ["v3_quest_detail_modal"] = "QuestDetailModalV3",
@@ -132,6 +132,10 @@ function A:RunMatrix()
             or (tonumber(businessPagesContract.componentIdContractVersion) or 0) < 1 then
         failures[#failures + 1] = "business_page_component_id_contract"
     end
+    if type(businessPagesContract) ~= "table" or (tonumber(businessPagesContract.version) or 0) < 5
+            or (tonumber(businessPagesContract.unitLineSettingsFoundationConsumerContractVersion) or 0) < 2 then
+        failures[#failures + 1] = "unit_line_settings_page_contract"
+    end
     if S.RSUI == nil or (tonumber(S.RSUI.StrictBuildFailFastContractVersion) or 0) < 1 then
         failures[#failures + 1] = "strict_build_fail_fast_contract"
     end
@@ -236,9 +240,11 @@ function A:RunMatrix()
         or tonumber(inventorySnapshot.PreferredBagId) ~= 1 or tonumber(inventorySnapshot.FallbackBagId) ~= 0
         or type(inventorySnapshot.BuildSnapshot) ~= "function" or type(inventorySnapshot.FindLiveRow) ~= "function"
         or type(bagTools) ~= "table" or (tonumber(bagTools.BagMoveContractVersion) or 0) < 8
-        or (tonumber(bagTools.BatchLifecycleContractVersion) or 0) < 5 or (tonumber(bagTools.NativeWindowQuickContractVersion) or 0) < 6
-        or (tonumber(bagTools.ReloadQuickObserverContractVersion) or 0) < 2
-        or (tonumber(bagTools.RUFourValueWindowVisibilityContractVersion) or 0) < 1
+        or (tonumber(bagTools.BatchLifecycleContractVersion) or 0) < 5 or (tonumber(bagTools.NativeWindowQuickContractVersion) or 0) < 7
+        or (tonumber(bagTools.ReloadQuickObserverContractVersion) or 0) < 3
+        or (tonumber(bagTools.RUFourValueWindowVisibilityContractVersion) or 0) < 2
+        or (tonumber(bagTools.NativeVisibilityShapeContractVersion) or 0) < 1
+        or (tonumber(bagTools.VisiblePresenterRetryContractVersion) or 0) < 1
         or (tonumber(bagTools.DynamicSourceResolutionContractVersion) or 0) < 3
         or (tonumber(bagTools.QuickIdentityFallbackContractVersion) or 0) < 1
         or (tonumber(bagTools.BagTaskMutexContractVersion) or 0) < 1
@@ -249,9 +255,11 @@ function A:RunMatrix()
         or type(bagTools.Commands.QuickDeposit) ~= "function" or type(bagTools.Commands.QuickCancel) ~= "function"
         or type(bagTools.Commands.SetBatchCategory) ~= "function" or type(bagTools.Commands.SetBatchTarget) ~= "function"
         or type(bagTools.Commands.SetBatchLimit) ~= "function"
-        or type(bagQuickPresenter) ~= "table" or (tonumber(bagQuickPresenter.version) or 0) < 3
-        or (tonumber(bagQuickPresenter.ReloadVisibilityContractVersion) or 0) < 1 then
-        failures[#failures + 1] = "bag_quick_take_put_contract_v8"
+        or type(bagQuickPresenter) ~= "table" or (tonumber(bagQuickPresenter.version) or 0) < 4
+        or (tonumber(bagQuickPresenter.ReloadVisibilityContractVersion) or 0) < 2
+        or (tonumber(bagQuickPresenter.NativeTransientHostContractVersion) or 0) < 1
+        or (tonumber(bagQuickPresenter.VisibleRetryContractVersion) or 0) < 1 then
+        failures[#failures + 1] = "bag_quick_take_put_contract_v9"
     end
 
     local gearFeature = S.Features and S.Features.Gear or nil
@@ -259,7 +267,7 @@ function A:RunMatrix()
         or type(gearFeature) ~= "table" or (tonumber(gearFeature.QuickStartupIntentContractVersion) or 0) < 1
         or type(gearFeature.GetStartupEnableIntent) ~= "function" or type(gearFeature.OnStartupEnableIntentCommitted) ~= "function"
         or type(gearFeature.ShouldShowQuickButtons) ~= "function" then
-        failures[#failures + 1] = "quick_surface_reload_reconcile_contract_v2"
+        failures[#failures + 1] = "quick_surface_reload_reconcile_contract_v3"
     end
 
     local auctionQuery = S.Services and S.Services.AuctionQueryV3 or nil
@@ -410,13 +418,15 @@ function A:RunMatrix()
     local visualGuides = S.UIV3 and S.UIV3.CombatVisualGuidesV3 or nil
     local unitLines = S.Features and S.Features.combat_unit_lines or nil
     local rangeAssist = S.Features and S.Features.combat_range_assist or nil
-    if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 10 or type(visualGuides.Describe) ~= "function"
+    if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 11 or type(visualGuides.Describe) ~= "function"
         or (tonumber(visualGuides.AdaptiveUnitLineSamplingContractVersion) or 0) < 2
         or (tonumber(visualGuides.UnitLineVisibleSegmentClippingContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLinePressureBudgetContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLineDiffRenderContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLineProgressivePoolContractVersion) or 0) < 1
-        or (tonumber(visualGuides.UnitLineRawProjectedAnchorContractVersion) or 0) < 1
+        or (tonumber(visualGuides.UnitLineRawProjectedAnchorContractVersion) or 0) < 2
+        or (tonumber(visualGuides.ScreenToOverlayHostContractVersion) or 0) < 1
+        or (tonumber(visualGuides.ResolutionIndependentOverlayContractVersion) or 0) < 1
         or type(visualGuides.BuildUnitLineSamplePlan) ~= "function" then
         failures[#failures + 1] = "combat_visual_guides_presenter_contract"
     end
@@ -487,10 +497,11 @@ function A:RunMatrix()
         failures[#failures + 1] = "window_shell_compact_contract"
     end
     local floatingSurface = S.RSUI and S.RSUI.FloatingSurface or nil
-    if floatingSurface == nil or (tonumber(floatingSurface.version) or 0) < 9
+    if floatingSurface == nil or (tonumber(floatingSurface.version) or 0) < 11
         or (tonumber(floatingSurface.CompactMinimizeContractVersion) or 0) < 1
         or (tonumber(floatingSurface.TitleAppearanceContractVersion) or 0) < 1
         or (tonumber(floatingSurface.DetachedStateContractVersion) or 0) < 1
+        or (tonumber(floatingSurface.ResponsivePlacementIntentContractVersion) or 0) < 1
         or tonumber(floatingSurface.generation) ~= tonumber(S.Generation)
         or type(floatingSurface.Create) ~= "function" or type(floatingSurface.NormalizeState) ~= "function"
         or type(floatingSurface.CreateStateAdapter) ~= "function" then
@@ -630,14 +641,22 @@ function A:RunMatrix()
     local tradeFeature = S.Features and S.Features.Trade or nil
     local tradeProjection = type(tradeFeature) == "table" and type(tradeFeature.GetProjection) == "function"
         and tradeFeature:GetProjection() or nil
+    local tradePayout = S.Services and S.Services.TradePayoutV3 or nil
     if type(tradeFeature) ~= "table" or type(tradeFeature.GetRouteSettings) ~= "function"
-        or type(tradeFeature.Authority) ~= "table" or (tonumber(tradeFeature.Authority.version) or 0) < 5
+        or type(tradeFeature.Authority) ~= "table" or (tonumber(tradeFeature.Authority.version) or 0) < 6
+        or (tonumber(tradeFeature.Authority.TradePayoutProjectionContractVersion) or 0) < 1
+        or type(tradePayout) ~= "table" or (tonumber(tradePayout.PriceFormulaContractVersion) or 0) < 1
+        or (tonumber(tradePayout.StaticPriceKeyResolverContractVersion) or 0) < 2
+        or (tonumber(tradePayout.CommerceMultiplierContractVersion) or 0) < 1
+        or (tonumber(tradePayout.PackCategoryMultiplierContractVersion) or 0) < 1
         or (tonumber(tradeFeature.Authority.RouteRefreshRetryContractVersion) or 0) < 1
         or (tonumber(tradeFeature.Authority.RequestTimeoutContractVersion) or 0) < 1
         or type(tradeFeature.Commands) ~= "table" or type(tradeFeature.Commands.SetFrom) ~= "function"
         or type(tradeFeature.Commands.SetTo) ~= "function" or type(tradeFeature.Commands.QuotePendingMaterials) ~= "function"
         or type(tradeProjection) ~= "table" or type(tradeProjection.zones) ~= "table"
         or type(tradeProjection.sellableZones) ~= "table" or tradeProjection.pendingQuoteCount == nil
+        or tostring(tradeProjection.commercePriceFormulaStatus or "") ~= "supplied_working_v1"
+        or tostring(tradeProjection.packPriceMultiplierStatus or "") ~= "supplied_working_v1"
         or type(S.UIV3 and S.UIV3.LifeEconomyWidgetsV3) ~= "table"
         or (tonumber(S.UIV3.LifeEconomyWidgetsV3.version) or 0) < 3 then
         failures[#failures + 1] = "trade_dropdown_quote_preflight_contract"
@@ -649,7 +668,7 @@ function A:RunMatrix()
         or type(tradeFeature.Commands.QuoteRowMaterials) ~= "function" or type(tradeFeature.GetFavoriteItems) ~= "function"
         or type(tradeFeature.GetRow) ~= "function" or type(tradeProjection.favoriteItems) ~= "table"
         or tradeProjection.currentRouteFavorite == nil or tradeProjection.sortMode == nil
-        or type(tradeDetail) ~= "table" or (tonumber(tradeDetail.TradeDetailContractVersion) or 0) < 1
+        or type(tradeDetail) ~= "table" or (tonumber(tradeDetail.TradeDetailContractVersion) or 0) < 2
         or type(tradeDetail.Open) ~= "function" or type(tradeDetail.Close) ~= "function" then
         failures[#failures + 1] = "trade_detail_favorites_contract"
     end
@@ -686,7 +705,10 @@ function A:RunMatrix()
     local layout = S.Layout
     if type(layout) ~= "table" or (tonumber(layout.CoordinateSystemContractVersion) or 0) < 1
         or (tonumber(layout.RectTransformTransactionContractVersion) or 0) < 2
+        or (tonumber(layout.ScreenToWidgetLocalContractVersion) or 0) < 1
+        or (tonumber(layout.ResponsivePlacementIntentContractVersion) or 0) < 1
         or type(layout.GetCoordinateSystemSnapshot) ~= "function" or type(layout.OffsetPoint) ~= "function"
+        or type(layout.GetUiParentLocalOrigin) ~= "function" or type(layout.ScreenPointToWidgetLocal) ~= "function"
         or type(layout.CreateRectTransformTransaction) ~= "function"
         or (tonumber(rsui and rsui.PointerContractVersion) or 0) < 1 or type(rsui.Pointer) ~= "table"
         or type(rsui.Pointer.GetLogicalPosition) ~= "function" or type(rsui.Pointer.Delta) ~= "function"
@@ -796,17 +818,45 @@ function A:RunMatrix()
     end
     if rsui == nil or (tonumber(rsui.DataViewViewportContractVersion) or 0) < 2
         or (tonumber(rsui.DataViewOverlayScrollbarContractVersion) or 0) < 1
-        or (tonumber(rsui.DataViewResizePreviewAuthorityContractVersion) or 0) < 1 then
+        or (tonumber(rsui.DataViewResizePreviewAuthorityContractVersion) or 0) < 2 then
         failures[#failures + 1] = "dataview_overlay_scrollbar_contract"
     end
     local uiTokens = S.UITokens
-    if type(uiTokens) ~= "table" or (tonumber(uiTokens.version) or 0) < 5
+    if type(uiTokens) ~= "table" or (tonumber(uiTokens.version) or 0) < 8
         or type(uiTokens.layer) ~= "table"
         or (tonumber(uiTokens.layer.shellPriority) or 0) <= 0
         or (tonumber(uiTokens.layer.floatingPriority) or 0) <= (tonumber(uiTokens.layer.shellPriority) or 0)
         or (tonumber(uiTokens.layer.popupPriority) or 0) <= (tonumber(uiTokens.layer.floatingPriority) or 0)
         or (tonumber(uiTokens.layer.modalPriority) or 0) < (tonumber(uiTokens.layer.popupPriority) or 0) then
         failures[#failures + 1] = "ui_token_layer_contract"
+    end
+    local settingsFoundation = rsui and rsui.SettingsFoundation or nil
+    local settingsDesign = S.UIV3Design
+    if type(settingsFoundation) ~= "table" or (tonumber(settingsFoundation.contractVersion) or 0) < 3
+        or (tonumber(rsui.SettingsResponsiveContractVersion) or 0) < 2
+        or (tonumber(rsui.SettingsDiagnosticsDisclosureContractVersion) or 0) < 1
+        or (tonumber(rsui.SettingsStyleCardContractVersion) or 0) < 3
+        or (tonumber(rsui.SettingsCompactToggleContractVersion) or 0) < 1
+        or (tonumber(rsui.SettingsScrollSafeCardContractVersion) or 0) < 2
+        or (tonumber(rsui.SettingsSectionHierarchyContractVersion) or 0) < 1
+        or (tonumber(rsui.SettingsNumericSliderContractVersion) or 0) < 1
+        or (tonumber(rsui.FormRowResponsiveContractVersion) or 0) < 1
+        or (tonumber(rsui.NumericResponsiveStackContractVersion) or 0) < 1
+        or type(rsui.CreateFeatureSettingsHeader) ~= "function"
+        or type(rsui.CreateSettingsToggleGrid) ~= "function"
+        or type(rsui.CreateSettingsStyleCardGrid) ~= "function"
+        or type(rsui.CreateSettingsDiagnosticsDisclosure) ~= "function"
+        or type(rsui.CreateResponsiveSettingRow) ~= "function"
+        or type(rsui.CreateResponsiveNumericSetting) ~= "function"
+        or type(rsui.CreateSettingsNumericSlider) ~= "function"
+        or type(settingsDesign) ~= "table" or (tonumber(settingsDesign.version) or 0) < 10
+        or type(settingsDesign.FeatureSettingsHeader) ~= "function"
+        or type(settingsDesign.SettingsToggleGrid) ~= "function"
+        or type(settingsDesign.SettingsStyleCard) ~= "function"
+        or type(settingsDesign.SettingsDiagnostics) ~= "function"
+        or type(settingsDesign.ResponsiveNumericSetting) ~= "function"
+        or type(settingsDesign.SettingsNumericSlider) ~= "function" then
+        failures[#failures + 1] = "settings_page_foundation_contract"
     end
     if rsui == nil or (tonumber(rsui.StatusChipContractVersion) or 0) < 1 or type(rsui.StatusChip) ~= "function"
         or (tonumber(rsui.PickerModelContractVersion) or 0) < 1 or type(rsui.PickerModel) ~= "table"

@@ -10,20 +10,53 @@ local S = ReplicatedSuite
 local feature = S.Features and S.Features.tools_bag or nil
 if type(feature) ~= "table" or type(S.UI) ~= "table" then return end
 S.UIV3 = S.UIV3 or {}
-local P = { version=3, ReloadVisibilityContractVersion=1, owner="v3:bag_quick_overlay", root=nil, take=nil, put=nil, stop=nil, status=nil }
+local P = {
+    version=4, ReloadVisibilityContractVersion=2, NativeTransientHostContractVersion=1,
+    VisibleRetryContractVersion=1, owner="v3:bag_quick_overlay",
+    root=nil, take=nil, put=nil, stop=nil, status=nil, shown=false,
+    createAttempts=0, createFailures=0, refreshes=0, visibleRefreshes=0, lastError=nil,
+}
 S.UIV3.BagQuickOverlay = P
 
 function P:EnsureCreated()
     if self.root ~= nil then return true end
-    local root,err=S.UI:CreateEmptyWidget(UIParent,"v3_bag_quick_overlay_root",0,0,220,32,false,self.owner)
-    if root==nil then return false,err or "bag_quick_overlay_root_failed" end
+    self.createAttempts=(tonumber(self.createAttempts) or 0)+1
+    -- Top-level emptywidgets are not a reliable RU system-layer host. The UI
+    -- primitive contract already records the same failure class that once made
+    -- Unit Lines have valid projection but zero visible dots. Quick actions are
+    -- interactive screen presentation, so use the proven transient WINDOW path
+    -- used by Dropdown/ColorField/ContextMenu instead of a root emptywidget.
+    local root,err=S.UI:CreatePanel(UIParent,"v3_bag_quick_overlay_root",0,0,220,32,"soft",{
+        transientWindow=true, visible=false, pickable=false, gradient=false,
+        accentStrip=false, owner=self.owner,
+        drawPriority=S.UITokens and type(S.UITokens.Number)=="function" and S.UITokens:Number("layer.popupPriority",10000) or 10000,
+    })
+    if root==nil or root.rsUiDegraded==true then
+        self.createFailures=(tonumber(self.createFailures) or 0)+1
+        self.lastError=tostring(err or (root and root.rsUiDegradedReason) or "bag_quick_overlay_root_failed")
+        return false,self.lastError
+    end
+    if type(S.UI.EnsurePickable)~="function" or type(S.UI.EnsureEnabled)~="function" then
+        S.UI:SetVisible(root,false,self.owner); if type(S.UI.ReleaseOwner)=="function" then S.UI:ReleaseOwner(self.owner) end
+        self.createFailures=(tonumber(self.createFailures) or 0)+1; self.lastError="bag_quick_overlay_interaction_contract_unavailable"
+        return false,self.lastError
+    end
+    local pickOk,_,pickErr=S.UI:EnsurePickable(root,false,self.owner)
+    local enabledOk,_,enabledErr=S.UI:EnsureEnabled(root,true,self.owner)
+    if pickOk~=true or enabledOk~=true then
+        S.UI:SetVisible(root,false,self.owner); if type(S.UI.ReleaseOwner)=="function" then S.UI:ReleaseOwner(self.owner) end
+        self.createFailures=(tonumber(self.createFailures) or 0)+1
+        self.lastError="bag_quick_overlay_interaction_failed:"..tostring(pickErr or enabledErr or "unknown")
+        return false,self.lastError
+    end
     local take=S.UI:CreateButton(root,"v3_bag_quick_take","取",4,4,42,24,10,true,true,self.owner)
     local put=S.UI:CreateButton(root,"v3_bag_quick_put","放",50,4,42,24,10,true,true,self.owner)
     local stop=S.UI:CreateButton(root,"v3_bag_quick_stop","停",96,4,42,24,10,true,true,self.owner)
     local status=S.UI:CreateLabel(root,"v3_bag_quick_status","",142,4,74,24,9,"muted","LEFT",true,self.owner)
     if take==nil or put==nil or stop==nil or status==nil then
         S.UI:SetVisible(root,false,self.owner); if type(S.UI.ReleaseOwner)=="function" then S.UI:ReleaseOwner(self.owner) end
-        self.root=nil; return false,"bag_quick_overlay_child_failed"
+        self.root=nil; self.createFailures=(tonumber(self.createFailures) or 0)+1; self.lastError="bag_quick_overlay_child_failed"
+        return false,self.lastError
     end
     self.root,self.take,self.put,self.stop,self.status=root,take,put,stop,status
     local function bind(widget,name,fn)
@@ -47,17 +80,22 @@ function P:EnsureCreated()
     if takeBound~=true or putBound~=true or stopBound~=true then
         S.UI:SetVisible(root,false,self.owner); if type(S.UI.ReleaseOwner)=="function" then S.UI:ReleaseOwner(self.owner) end
         self.root,self.take,self.put,self.stop,self.status=nil,nil,nil,nil,nil
-        return false,tostring(takeErr or putErr or stopErr or "bag_quick_required_handler_failed")
+        self.createFailures=(tonumber(self.createFailures) or 0)+1
+        self.lastError=tostring(takeErr or putErr or stopErr or "bag_quick_required_handler_failed")
+        return false,self.lastError
     end
     S.UI:SetVisible(root,false,self.owner)
+    self.lastError=nil
     return true
 end
 
 function P:Refresh()
+    self.refreshes=(tonumber(self.refreshes) or 0)+1
     local projection=feature:GetProjection() or {}
     local overlay=type(projection.quickOverlay)=="table" and projection.quickOverlay or {}
-    if overlay.visible~=true then if self.root~=nil then S.UI:SetVisible(self.root,false,self.owner) end; return true end
-    local ok,err=self:EnsureCreated(); if ok~=true then return false,err end
+    if overlay.visible~=true then if self.root~=nil then S.UI:SetVisible(self.root,false,self.owner) end; self.shown=false; return true end
+    self.visibleRefreshes=(tonumber(self.visibleRefreshes) or 0)+1
+    local ok,err=self:EnsureCreated(); if ok~=true then self.lastError=tostring(err or "bag_quick_overlay_create_failed"); return false,err end
     local x,y=tonumber(overlay.x) or 0,tonumber(overlay.y) or 0
     local width=math.max(190,math.min(300,tonumber(overlay.width) or 220))
     S.UI:SetAnchor(self.root,UIParent,math.floor(x),math.floor(y),self.owner)
@@ -67,9 +105,18 @@ function P:Refresh()
     local statusText=tostring(overlay.status or "可快捷取放")
     if tonumber(overlay.moved or 0)>0 then statusText=statusText.." "..tostring(overlay.moved) end
     S.UI:SetText(self.status,storage.." · "..statusText,self.owner)
-    S.UI:SetVisible(self.root,true,self.owner); S.UI:TrySetUILayer(self.root,"system")
+    S.UI:SetVisible(self.root,true,self.owner); self.shown=true; S.UI:TrySetUILayer(self.root,"system")
     if type(self.root.Raise)=="function" then pcall(function() self.root:Raise() end) end
     return true
+end
+
+
+function P:GetHealth()
+    return {
+        version=tonumber(self.version) or 0, created=self.root~=nil, visible=self.shown==true,
+        createAttempts=tonumber(self.createAttempts) or 0, createFailures=tonumber(self.createFailures) or 0,
+        refreshes=tonumber(self.refreshes) or 0, visibleRefreshes=tonumber(self.visibleRefreshes) or 0, lastError=self.lastError,
+    }
 end
 
 if S.Events ~= nil and type(S.Events.SubscribeInternal)=="function" then
@@ -78,4 +125,8 @@ if S.Events ~= nil and type(S.Events.SubscribeInternal)=="function" then
         if tostring(featureId or "")=="tools_bag" then return P:Refresh() end
     end)
 end
+-- Build the hidden transient host during module admission. This removes the old
+-- first-open race: if the first visible event arrives during a transient native
+-- creation failure, later visible heartbeats still retry through Refresh().
+P:EnsureCreated()
 P:Refresh()

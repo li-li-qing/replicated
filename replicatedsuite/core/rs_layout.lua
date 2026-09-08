@@ -20,6 +20,8 @@ local L = S.Layout
 -- human instruction such as "move this icon upward".
 L.CoordinateSystemContractVersion = 1
 L.RectTransformTransactionContractVersion = 2
+L.ScreenToWidgetLocalContractVersion = 1
+L.ResponsivePlacementIntentContractVersion = 1
 L.coordinateSystem = {
     origin = "top_left",
     xPositive = "right",
@@ -445,6 +447,55 @@ function L:GetLogicalRect(widget)
     return x, y, width, height
 end
 
+
+-- Screen/Overlay coordinate adapter v1. ScreenProjectionV3 owns projected
+-- UIParent screen coordinates; a Presentation host may still have a non-zero
+-- effective origin after Native CorrectOffsetByScreen/resolution handling.
+-- Child anchors are host-local, so subtract the live host origin once per
+-- render batch instead of accumulating per-resolution magic offsets.
+function L:GetUiParentLocalOrigin(widget)
+    if widget == nil then return 0, 0, false, "widget_missing" end
+    local widgetX, widgetY = self:GetLogicalRect(widget)
+    widgetX, widgetY = tonumber(widgetX), tonumber(widgetY)
+    if widgetX == nil or widgetY == nil then return 0, 0, false, "origin_unavailable" end
+
+    -- GetEffectiveOffset is screen-relative on the verified RU WidgetBase.
+    -- ScreenProjectionV3 points, however, are UIParent-local.  UIParent is
+    -- normally (0,0), but resolution/UI-scale correction is precisely the
+    -- boundary where assuming that forever becomes unsafe.  Normalize both
+    -- sides into the same logical space, then remove UIParent's own live
+    -- effective origin before exposing the child-host origin.
+    local parentX, parentY = 0, 0
+    if UIParent ~= nil and widget ~= UIParent then
+        local context = self:GetContext()
+        if type(UIParent.GetEffectiveOffset) == "function" then
+            local ok, px, py = pcall(function() return UIParent:GetEffectiveOffset() end)
+            if ok == true and tonumber(px) ~= nil and tonumber(py) ~= nil then
+                local scale = math.max(0.001, tonumber(context.uiScale) or 1)
+                parentX, parentY = tonumber(px) / scale, tonumber(py) / scale
+            end
+        elseif type(UIParent.GetOffset) == "function" then
+            local ok, px, py = pcall(function() return UIParent:GetOffset() end)
+            if ok == true then parentX, parentY = tonumber(px) or 0, tonumber(py) or 0 end
+        end
+    end
+    return widgetX - parentX, widgetY - parentY, true, nil, parentX, parentY
+end
+
+function L:ScreenPointToWidgetLocal(widget, screenX, screenY)
+    screenX, screenY = tonumber(screenX), tonumber(screenY)
+    if screenX == nil or screenY == nil then return nil, nil, nil, "screen_point_invalid" end
+    local ox, oy, known, err, parentX, parentY = self:GetUiParentLocalOrigin(widget)
+    if known ~= true then
+        return screenX, screenY, { originX = 0, originY = 0, uiParentOriginX = 0, uiParentOriginY = 0, fallback = true }, err
+    end
+    return screenX - ox, screenY - oy, {
+        originX = ox, originY = oy,
+        uiParentOriginX = tonumber(parentX) or 0, uiParentOriginY = tonumber(parentY) or 0,
+        fallback = false,
+    }, nil
+end
+
 ------------------------------------------------------------------------
 -- Resolution Safety Authority
 --
@@ -856,6 +907,24 @@ function L:StorePlacement(target, widget, options)
         target.offsetY = nil
         target.coordinateSpace = "logical-free-v2"
         target.savedUiScale = context.uiScale
+        -- Resolution-independent placement intent v3. Keep the authoritative
+        -- logical x/y for exact same-viewport restores, but also persist the
+        -- window center as a ratio of the current logical UIParent. When the
+        -- player changes resolution this ratio reprojects the surface into the
+        -- new viewport instead of treating an old absolute pixel coordinate as
+        -- if it belonged to the new canvas. No resolution lookup table is used.
+        target.savedLogicalWidth = tonumber(context.logicalWidth)
+        target.savedLogicalHeight = tonumber(context.logicalHeight)
+        if tonumber(context.logicalWidth) ~= nil and tonumber(context.logicalWidth) > 0 then
+            target.normalizedCenterX = Clamp((target.x + width * 0.5) / context.logicalWidth, -2, 3)
+        else
+            target.normalizedCenterX = nil
+        end
+        if tonumber(context.logicalHeight) ~= nil and tonumber(context.logicalHeight) > 0 then
+            target.normalizedCenterY = Clamp((target.y + height * 0.5) / context.logicalHeight, -2, 3)
+        else
+            target.normalizedCenterY = nil
+        end
         return target.x, target.y, width, height
     end
 
@@ -879,6 +948,11 @@ function L:StorePlacement(target, widget, options)
     target.x, target.y = nil, nil
     target.coordinateSpace = "logical-edge-v1"
     target.savedUiScale = context.uiScale
+    -- Edge intent is self-contained. Drop free-surface viewport metadata so a
+    -- screen button cannot carry two competing placement Authorities in the
+    -- same working table after switching from legacy free placement.
+    target.savedLogicalWidth, target.savedLogicalHeight = nil, nil
+    target.normalizedCenterX, target.normalizedCenterY = nil, nil
     return x, y, width, height
 end
 
@@ -899,10 +973,32 @@ function L:ResolvePlacement(placement, width, height, defaultX, defaultY, option
         and tonumber(placement.x) ~= nil and tonumber(placement.y) ~= nil then
         x = tonumber(placement.x)
         y = tonumber(placement.y)
+
+        -- Responsive placement v3: exact x/y remain authoritative while the
+        -- viewport matches the one that produced them. Across a real logical
+        -- resolution change, reproject the saved center ratio into the current
+        -- UIParent. This makes free floating windows resolution-independent
+        -- without forcing them into edge-anchored button semantics.
+        local savedW, savedH = tonumber(placement.savedLogicalWidth), tonumber(placement.savedLogicalHeight)
+        local ratioX, ratioY = tonumber(placement.normalizedCenterX), tonumber(placement.normalizedCenterY)
+        local viewportChanged = savedW ~= nil and savedH ~= nil
+            and (math.abs(savedW - context.logicalWidth) >= 0.5 or math.abs(savedH - context.logicalHeight) >= 0.5)
+        if viewportChanged and ratioX ~= nil and ratioY ~= nil then
+            x = ratioX * context.logicalWidth - width * 0.5
+            y = ratioY * context.logicalHeight - height * 0.5
+        end
+
         if mode == "recoverable" then
             x, y = self:ClampRecoverableTopLeft(x, y, width, height, options)
         elseif mode == "strict" then
             x, y = self:ClampTopLeft(x, y, width, height, options)
+        elseif mode == "free" and (viewportChanged or savedW == nil or savedH == nil) then
+            -- Legacy free-v2 rows have no source viewport. We cannot infer a
+            -- mathematically exact cross-resolution location, but we can keep
+            -- the control recoverable rather than allowing a high-resolution
+            -- absolute coordinate to strand it completely off-screen. This is
+            -- a live safety fallback only; persistence changes only on user drag.
+            x, y = self:ClampRecoverableTopLeft(x, y, width, height, options)
         end
         return x, y, width, height
     end

@@ -10,16 +10,17 @@
 | Architecture | V3-only / `v3_rebuild` |
 | Runtime Addon | `replicatedsuite/` |
 | Legacy / Professional / `globals/` | 已物理删除，Active dependency = 0 |
-| BuildTag | `v3-m1.16.0.18.153-bag-native-window-visibility-recovery` |
-| Active TOC Lua | 222 |
-| Active / All Lua | 222 / 222 |
+| BuildTag | `v3-m1.16.0.18.163-trade-payout-formula-recovery` |
+| Active TOC Lua | 223 |
+| Active / All Lua | 223 / 223 |
 | Foundation Audit | PASS |
-| Python Harness | 35 / 38 PASS（3 个 Lua 5.4 语义敏感运行时 harness——interactive_draft / recovery_launcher / runtime_entry_lifecycle——在本机唯一可用的 Lua 5.4.5 下失败、与 `.18.145` 基线同类环境失败，见 CHANGELOG `.18.146`，TEST-001） |
+| Python Harness | 41 / 41 PASS（Bag Quick Surface 6/6；Bag Move Queue v8 11/11；全量封包回归已完成） |
 | Product Capability Matrix | 126 条：80 IMPLEMENTED / 35 PARTIAL / 0 TODO / 11 SPECIFIC_RUNTIME_BLOCKED |
-| RU Fresh Reload | `.18.151` Foundation/Persistence PASS；`.18.152` Gear Quick Surface 已修；`.18.153` Bag Native 四返回值可见性待实机复验 |
-| Current UI Gate | **当前 P0 是 Bag Native Window Fact 实机复验**：`.18.151` Foundation/Persistence 已 `阻断0/警告0/Fence0/页面事务0`；`.18.152` Gear Quick Surface 生命周期已修。`.18.153` 只验证整理背包：Reload 后直接打开银行/箱子，`UIC_BAG/UIC_BANK/UIC_COFFER` 允许 RU 四返回值，`取/放/停` 应在 ≤350ms 出现在背包上方；设置页状态必须给出三窗口 `status/visible/source`。显式 `tools_bag=false` 继续是用户 Authority，不自动覆盖。 |
+| RU Fresh Reload | `.18.151` Foundation/Persistence PASS；`.18.154` Unit Lines 头顶锚点 PASS；`.18.162` Bag Quick transient WINDOW 修复待银行/箱子 Fresh Reload；`.18.157` Resolution/Coordinate Foundation 仍待多分辨率矩阵复验 |
+| Current UI Gate | **`.18.161` Unit Lines SettingsFoundation v3 已纠正 `.160` 的交互降级**：卡内重新完整使用 Slider + 可编辑 NumericInput + Apply + 动态范围；Section 改 flat hierarchy，StyleCard 使用 soft surface，删除黄框嵌套与双 Numeric 横向挤压。下一步 RU 实机重点验收 1280×768 下 2 列卡片控件宽度、点大小输入 20 后 Slider max 自适应，以及 1024×768 自动单列；通过后再迁移 Range Assist 等设置页。`.18.157` 多分辨率世界视觉/悬浮位置矩阵仍并行待 RU 复验。 |
 
-- `RU-BAG-WINDOW-153`：`.18.152` 后实机仍无仓库/箱子快捷按钮。真实代码确认 Bag 仍严格要求 `GetContentMainScriptPosVis` 第 5 返回值为 boolean，而 AuctionSurfaceV3 已证明 RU 存在四返回值窗口。`.18.153` 将 UIC_BAG/UIC_BANK/UIC_COFFER 统一到 boolean → Content parent-chain visibility → legal geometry fallback 的事实优先级，并让写动作复用同一判定；设置页输出三窗口 source/reason。待 Fresh Reload：直接打开银行/箱子，≤350ms 在背包上方出现取/放/停。
+- `RU-TRADE-PAYOUT-163`：旧版/当前静态底价表一致；真实回退来自新版遗漏经商倍率、TradeNameMultipliers 品类倍率与 larder/alias price-key resolver。`.18.163` 新增纯数据 TradePayoutV3 恢复完整链；计入熟练度但读不到熟练度时 fail-closed，不再输出不完整售价。待 RU 用至少 3 类货物（普通/新鲜/发酵）和当前经商熟练度实售复核。
+- `RU-BAG-WINDOW-162`：`.18.153` 的四返回值兼容仍不足以让实机快捷条显示。`.18.162` 真实追踪确认两层根因：① Quick Overlay 仍是已知不可靠的 `UIParent` 顶层 `emptywidget + system layer`，现迁为真实 transient WINDOW Host；② hidden `ADDON:GetContent` proxy 会错误否决合法 MainScript geometry，现改为“显式 Native visible/hidden > 正向 Content visible > 合法 MainScript geometry”，并兼容 boolean/0-1/string visible 形态。可见期间既有 350ms observer 提供 bounded Presenter retry；不扫描物品。待 RU Fresh Reload：无需进入整理背包页，直接打开银行/箱子，≤350ms 在背包上方出现取/放/停。
 
 
 `.18.112` 已把本轮两个表面回归收敛到底层 Interaction Lifecycle：主菜单拖动不再依赖调用者恰好把 Border 创建成 pickable，Windowing 在建立 Drag Gesture 前自己验证 hit-test surface；所有 Suite EditBox/MultiEditBox 进入 tracked physical-focus 生命周期，隐藏/禁用/释放/Runtime Stop/hot reload 都只对可证明属于 Suite 的输入对象清理 Focus。`.18.110` 的 Recovery Reload 与 Persistence 保存解耦继续保留：保存失败只保留证据并警告潜在未保存数据丢失，不阻断覆盖修复文件后的 recovery reload；strict durability 模式仍可 fail-closed.
@@ -27,9 +28,9 @@
 当前 Foundation 结构指标：
 
 ```text
-toc=222
-activeLua=222
-allLua=222
+toc=223
+activeLua=223
+allLua=223
 globals=0
 presentation=0
 rawNative=0
@@ -44,7 +45,7 @@ auctionEventOwners=0
 retiredUiLayer=0
 rsuiComponentApi=1
 presentationFeatureApi=1
-rsuiLoadDeps=2
+rsuiLoadDeps=3
 presentationRootHandlers=0
 ```
 
@@ -514,6 +515,12 @@ Fresh Reload 后优先验证本轮四项用户回归：
 39. **已完成 `.18.112` — Input Lifecycle + Drag Hit-Test Foundation**：`Border` 恢复 `pickable/owner` 透传，Generic WindowShell title bar 显式 pickable；Windowing v18 在 Attach 时自己确保 drag handle `Enabled+Pickable` 后才 `EnableDrag/DC_ALWAYS`。UI Framework v11 对 Suite EditBox/MultiEditBox 建立 physical-id tracked focus lifecycle：hide/disable/pickfalse 在 cache early-return 前先释放所属 Suite focus，Owner/Component teardown 与 old-generation hot reload 永久 disarm，Runtime Ready/Stop quiesce；绝不对无法证明属于 Suite 的游戏输入执行 ClearFocus。专项静态 Contract Harness `48/48 PASS`。
 40. **已完成 `.18.113` — Persistence Reliability v8 / Integrity v2 Serializer Recovery**：RU 实机出现 `death_review/healer/launcher fingerprint_mismatch` 后，确认旧 v1 exact number hash 会把 Native 非整数表示归一化误判为跨重载损坏。v8 保留 exact `FingerprintPayload` 给 Gear 等业务 fingerprint，只把 Persistence encoded/readback integrity 升为 serializer-stable non-integral token；v6/v7 普通设置在 envelope 完整时可一次兼容读取并在完整 decode/budget/apply 后 restamp v2，Critical/Journal 仍 fail-closed。App/Shell/Launcher session fallback 改为 memory-only mutation，杜绝保护性 load failure 后的 write-before-load 噪声。v8 harness PASS，Startup Fault Isolation `17/17`。
 41. **NEXT — RU Fresh Reload + Persistence v8 / Input / Drag / Recovery Matrix**：使用 `.18.113` 累计修改文件启动**新进程**。第一步不要打开插件，直接验证 WASD/技能键/聊天输入；再打开主菜单拖标题栏、打开任一 Generic WindowShell 拖动/缩放；把焦点放进 TextInput/NumericInput 后切页、关闭主窗口、执行 hot reload，随后立即验证游戏键盘已归还。Modal backdrop 必须能点击命中。若主 Runtime 未 Ready，则用小型 `R/RS>` 取 `BootStage/R/CMD/BootError` 并验证保存失败时 `reload` 仍能加载新文件。之后再确认 `Readytrue/Runtimetrue/Rtrue/CMDtrue/ESCtrue` 与 Gear/Persistence 矩阵；正常保存路径继续要求 integrity/readback/durable/barrier/scope/unverified reload failures 为 0。任何“可见但点不动/键盘被吞/关闭后仍占输入”一律继续按 Foundation Regression 处理，不下沉业务页打特例。
+42. **已完成 `.18.164` — Trade 材料询价状态可观测（本地收口，等 RU 实机）**：材料询价本地链路自 `.18.82/.18.93/.18.120` 已完整，但失败路径完全不可见（队列 fail-closed 后材料永远"待询价"，用户感知即"功能没落地"）。本轮 `PriceQuoteQueueV3` 新增按 itemType 共享报价生命周期 `quoteStateByItemType`（queued/inflight/ready/failed）+ 有界 `lastCompleted`；Trade 材料行携带 `quoteState/quoteError`，区分 询价排队中/询价中/询价失败(原因)；失败材料可重试、排队项不重复入队；诊断页新增"报价队列"可复制功能行。`GetLowestPrice` 在 RU 的真实返回形态仍需按诊断行实机核对，未验证前 NormalizeQuote 保持已知形态列表、不猜字段。
+43. **已完成 `.18.165` — Trade 材料身份实机根因修复（RU 截图证据）**：用户实机截图证明所有货率行"材料待确认"且询价按钮禁用。根因有二：RU 返回本地化中文货物名而配方表按英文 legacy 名索引；静态配方材料键 `material.xxx` 与英文名键的拍卖元数据表命名空间错位。修复：新增共享 `TradeMaterialIdentityV3`（共享家族关键字 / originZone Authority+中文尾词 / live X2Craft 产品 itemType 三层解析，语义自旧版可证实现恢复，本地化文本永不决定地区）；货率行捕获产品 itemType；材料解析改走 curated record；未解析行诚实显示 配方未匹配/解析中 并计入投影与诊断行。RU 待验证：静态层命中率（诊断行 `配方 X/Y`）、货率行是否携带 itemType（live 层激活前提）、live 材料返回形态。
+44. **已完成 `.18.166` — 服务边界 + 跑商诊断 Hotfix（RU 横幅证据）**：实机横幅暴露两项。① `service_presentation_boundary[invalid=TradePayoutV3:missing]` 阻断：`.18.163` 引入 TradePayoutV3 漏声明边界，已补 `service_only`，并在 identity harness 固化「全部 S.Services 注册必须声明 presentationBoundary」类级 fence（修复前该 fence 对现状为红）。② 跑商诊断行 `状态机诊断不可用`：诊断读 Feature 表方法而 `DescribeRequestState/DescribeIdentityState` 只在 Authority 表，该行历史上从未渲染过；补 Feature 表委托并 fence 锁定（对照组：债券的 `DescribeDailyCache` 在 Feature 表所以一直正常）。
+45. **已完成 `.18.167` — Trade 身份门面表修复（RU 实机"全部解析中"证据）**：用户实机确认所有行卡"解析中"、按钮禁用。根因：`.18.165` 服务把访问器门面 `S.Data.TradeStaticV2` 误捕获为注册表 `S.StaticDataV2`，`ResolveStatic` 守卫直接返回 nil，静态层从未运行。修复门面捕获 + live 终局状态机（失败/空结果 → 配方未匹配，不再永久解析中）。**实机副产物证据：RU 货率行携带产品 itemType（live 层激活前提成立）**。新增 Real-Lua harness 真加载服务与真配方数据断言 8 组解析语义（封包机执行），静态 fence 升 43/43。RU 复验：材料列应直接显示材料与单价、按钮可点、诊断行 `配方 X/Y` 应接近 Y=0。
+46. **进行中 `.18.168` — Trade 专属诊断面板（与用户共建调试循环）**：用户实机反馈"很多询价失败"，按 §13 先诊断原则建跑商专属调试面。跑商页新增"诊断"按钮打开只读浮窗：三层汇总、最近 12 条询价逐条记录（含 `ShapeOf` 有界**原始返回形态**）、一键复制有界报告（SafeChat 多行，含 live 失败与逐行材料首错）。报价队列新增 尝试/成功/失败 统计与最近完成环形记录；诊断页报价队列行同步追加统计与形态。**调试协议：用户每次复现"询价失败"后点"复制诊断报告"整段回传**，报告中的原始返回形态直接决定 `NormalizeQuote` 是否/如何扩形态（todolist #4）。identity harness 57/57。
+47. **进行中 `.18.169~.18.173` — 诊断报告驱动的五轮修复（本地收口，等 RU 实机）**：首份报告确认静态身份层实机打通（配方 7/8、尾词映射验证正确），并暴露 live 层 `X2Craft 不可用`（加载时捕获全局表、客户端建全局时机晚于插件加载）——`.18.169` 改为调用时惰性解析（ResolveCapabilityHost）。`.18.170` 增加 Trade 初始化里程碑追踪（store/Consumer/地区/熟练度/路线/事件订阅）进诊断面板与报告。`.18.171` 修复询价失败根因：报告实锤 15/15 返回 `nil:nil`，证实 `GetLowestPrice` 按品质查询、单档 nil=该品质无挂单——恢复旧版品质探测协议（显式 grade→offset→1..6→0 阶梯逐档探测、`ScanPrice` 扫全部返回值、全部档位无挂单才 unavailable），身份车道 P3→P2（`队列=1 读=0` 饿死证据）。`.18.172` 接力收口其未完成项：补齐旧版完整金额语义（逗号分组字符串 / gold·silver·copper 复合表 / directPrice·bidPrice 等字段键，统一走 `ToMoney`，此前裸 `tonumber` 会把真实挂单误判为该档无货）、接入名称搜索兜底（阶梯全空后一次有界搜索取首行 bidPrice 作参考价，来源标记 `name_search_bid`；`AUCTION_ITEM_SEARCHED` 仍由 AuctionQueryV3 独占，本服务不订阅原生事件；保留首行 itemType 身份守卫）、新增会话级 TTL 缓存与被动入口 `PeekCached`（仅 direct 成交入缓存，估计价不入，显式询价绕过）。兜底等待复用既有 drain lane 不建第二车道（曾误加看门狗任务被 `service_single_lane` fence 拦下，门禁正确、实现错误）。同时修掉接力期三处真实缺陷：`NormalizeQuote` 前向引用未定义 `ToMoney`（运行必崩）、重复定义两份 `ToMoney`、重复注释块——教训固化为「连续编辑必须回读文件实跑校验」。X2Auction host 亦改为调用时惰性解析（同 .169 X2Craft 教训）。**仍未证实**：`GetLowestPrice` 在 RU 的真实返回形态依旧无实机证据，本轮形态支持全部来自旧版可证实现。待 RU 复验：诊断报告 成功数应显著>0，priceSource=grade:N 或 name_search_bid；若仍全 nil，则 `形态=` 段现在会显示 `call_failed:...` 或带字段名的 `table(n){...}`，可直接区分"调用被拒 / 真无挂单 / 返回了未识别形态"。`.18.173` 已拿到该证据并**证伪 .172 形态假设**：报告显示 `grade 6/7: nil:nil,nil:nil,nil:nil,nil:nil` 且调用成功（非 call_failed），即四槽皆真 nil——没有值需要解析，问题在调用协议而非返回字段。同轮报告另暴露 live 层 `能力未放行：GetCraftTypeByItemType`（登记表为 OfficialEnabled，真实 reason 被服务自造标签吞掉）。据此两步：A 透传能力拒绝原因＋宿主事实（`host_global_missing` vs `method_missing_on_host`）；B 新增有界协议鉴别探针 `RunProtocolProbe`，对必在售控制项（燕麦/稻草捆/鸡蛋）各发一次 grade=0 查询并记入复制报告"协议探针:"段，用以区分 H1 参数语义 / H2 需拍卖行或搜索预热 / H3 真无挂单。探针复用既有 drain lane 不建第二车道，且绝不写入价格读模型。harness：identity 66/66、quote_state 65/65，并对三处新 fence 做反向破坏测试确认非假绿。**下一份实机报告的协议探针段决定方向**：控制项也全 nil→改查调用前置条件；控制项有价→转产品回落（静态底价/TradePayoutV3 估算并标注来源）。
 **并行验收说明**：RU Fresh Reload 与 §9.3 业务回归并行：重点验证 SaveData 真实回读、连续 Slider/拖动后立即重载、Feature Disabled 状态编辑、HUD Apply/Reset/Revert，以及 Native 输入、Z-order、Handle hit、Focus、Icon Drawable、Selection Overlay、100 人等事实。
 
 ### 9.3 已收拢的用户遗留事项
@@ -529,7 +536,7 @@ Fresh Reload 后优先验证本轮四项用户回归：
 | 队列项 | 当前归类 | 进入业务阶段后的动作 | Product Matrix 对应 |
 |---|---|---|---|
 | Gear 换装/称号“设置位置 UI”与高密度双栏体验 | UI_REVIEW 候选 | 先基于真实截图/实机布局确认问题，再从共享 Workspace/Inspector 能力改，不猜测重构 | Gear 多项能力已 IMPLEMENTED/PARTIAL；此项主要是 Presentation UX |
-| Trade 下拉框不弹、按钮切换笨重、悬浮询价缺失 | `.18.93` 已做本地代码修复，待 RU Fresh Reload | 验证 popup 真展开、API-failure fallback、两行布局、HUD 询价异步回写；不得普通刷新隐式扇出 Auction Query | Trade route=PARTIAL；材料/成本=PARTIAL；current/full mode=TODO |
+| Trade 下拉框不弹、按钮切换笨重、悬浮询价缺失 | `.18.93` 下拉/布局本地修复；`.18.164` 报价状态可观测；`.18.165` 材料身份实机根因修复（中文货物名→配方三层解析），待 RU Fresh Reload | 验证 popup 真展开、两行布局、材料列出现真实材料与单价、配方待解析计数、询价后成本/毛利回写；诊断"报价队列"行与跑商行 `配方 X/Y · live读N` 直接回传；不得普通刷新隐式扇出 Auction/Craft 查询 | Trade route=PARTIAL；材料/成本=PARTIAL；current/full mode=TODO |
 | Bag 整理按钮点击没反应 | Tools 业务回归 | 先验证 `OnClick → Feature Command → Consumer/Lifecycle → Action Result` 全链，修真实断点；保留批处理互斥与限速 | Bag 主能力已 IMPLEMENTED，native-window quick overlay=PARTIAL |
 | Auction 收藏 UX | Tools/Market UI_REVIEW 候选 | 保留现有 Favorite Store Authority，优化选择/删除/分页/上下文，不复制第二份收藏状态 | favorite add/remove=IMPLEMENTED；paging/context=IMPLEMENTED；interactive search=PARTIAL |
 
@@ -651,3 +658,4 @@ Fresh Reload 后优先验证本轮四项用户回归：
 
 72. **已完成 `.18.155` — EditBox Foundation Draft/Caret/Focus**：统一修复所有 RSUI TextInput/NumericInput 的光标不可见、强制全选、未知刷新源回灌旧 Binding、physical/logical focus identity 差异、重复 SetFocus 重置 caret、Disable/Release 幽灵 draft；Native caret 仍由 RU 原生闪烁，未新增 Tick/OnTextChanged/KeyDown。
 73. **已完成 `.18.156` — EditBox Post-Arm Focus Promotion**：RU 实机确认“Focus ID 已指向 EditBox”不等于 Keyboard text-edit admission。首次点击若 `EnableKeyboard(false→true)`，必须在 promotion 后补一次 `SetFocus`；仅已 armed+focused 的重复点击可跳过，兼顾可输入与 caret 稳定。Deferred Keyboard 的隐藏/禁用/Release 安全边界保持不变；新增 InputActivationDiagnostics v1 与 `UI输入` 运行时证据行。
+74. **已完成 `.18.157` — Resolution / Coordinate Foundation（本地，待 RU）**：不再对 1280×768/2560×1440 等分辨率分别加补偿。Layout 新增 Screen→OverlayHost Local Adapter；CombatVisualGuides 每批次读取一次真实 host origin，Unit Lines/Range 共用，Range 同时删除残留 font-size/2 几何偏移。Free FloatingSurface 持久化 source logical viewport + normalized center intent，跨分辨率自动重投影且保持拖动区可找回；Gear 等小按钮继续 edge-anchor，Launcher/主 Shell 兼容旧 free-v2 并在下一次拖动补齐响应式元数据。新增 20 组截图分辨率矩阵 `46/46` harness；全量 39/39、Audit、222/222 Parse PASS。

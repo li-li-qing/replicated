@@ -9,7 +9,7 @@ local S = ReplicatedSuite
 local RSUI = S.RSUI
 if type(RSUI) ~= "table" then return end
 
-S.UIV3Design = { version = 7 }
+S.UIV3Design = { version = 10 }
 local D = S.UIV3Design
 
 local function Text(parent, id, text, size, tone, slot, overflow)
@@ -116,6 +116,54 @@ function D:EmptyState(parent, id, title, detail)
     Text(stack, id .. "_detail", detail or "", 10, "muted", { size = "auto", hAlign = "fill" }, "wrap")
     RSUI:Spacer({ id = id .. "_bottom", parent = stack, slot = { size = "fill", fill = 1 } })
     return card
+end
+
+-- Standard settings-page composition. These are thin Design-System entrypoints
+-- over RSUI.SettingsFoundation; geometry remains owned by the existing RSUI
+-- panels/templates and business state remains in Feature bindings.
+function D:FeatureSettingsHeader(parent, spec)
+    spec = RootSpec(parent, spec, {})
+    return RSUI:CreateFeatureSettingsHeader(spec)
+end
+
+function D:SettingsToggleGrid(parent, spec)
+    spec = RootSpec(parent, spec, {})
+    return RSUI:CreateSettingsToggleGrid(spec)
+end
+
+function D:SettingsSection(parent, spec)
+    spec = RootSpec(parent, spec, {})
+    return RSUI:CreateSettingsSection(spec)
+end
+
+function D:SettingsStyleCardGrid(parent, spec)
+    spec = RootSpec(parent, spec, {})
+    return RSUI:CreateSettingsStyleCardGrid(spec)
+end
+
+function D:SettingsStyleCard(parent, spec)
+    spec = RootSpec(parent, spec, {})
+    return RSUI:CreateSettingsStyleCard(spec)
+end
+
+function D:SettingsDiagnostics(parent, spec)
+    spec = RootSpec(parent, spec, {})
+    return RSUI:CreateSettingsDiagnosticsDisclosure(spec)
+end
+
+function D:ResponsiveSettingRow(parent, spec)
+    spec = RootSpec(parent, spec, {})
+    return RSUI:CreateResponsiveSettingRow(spec)
+end
+
+function D:ResponsiveNumericSetting(parent, spec)
+    spec = RootSpec(parent, spec, {})
+    return RSUI:CreateResponsiveNumericSetting(spec)
+end
+
+function D:SettingsNumericSlider(parent, spec)
+    spec = RootSpec(parent, spec, {})
+    return RSUI:CreateSettingsNumericSlider(spec)
 end
 
 -- Exact numeric-setting contract. V3 numeric preferences always expose a real

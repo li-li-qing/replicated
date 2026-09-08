@@ -59,6 +59,10 @@ local function NormalizeState(value)
         offsetY = nil,
         coordinateSpace = moved and "logical-free-v2" or nil,
         savedUiScale = moved and tonumber(value.savedUiScale) or nil,
+        savedLogicalWidth = moved and tonumber(value.savedLogicalWidth) or nil,
+        savedLogicalHeight = moved and tonumber(value.savedLogicalHeight) or nil,
+        normalizedCenterX = moved and tonumber(value.normalizedCenterX) or nil,
+        normalizedCenterY = moved and tonumber(value.normalizedCenterY) or nil,
     }
 end
 

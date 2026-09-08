@@ -1,11 +1,54 @@
+## `.18.161` Unit Lines Full Numeric Slider / Card Hierarchy — RU 实机验收
+
+BuildTag：`v3-m1.16.0.18.161-settings-numeric-slider-card-layout`。
+
+1. 1280×768 打开单位连线：`显示哪些连线 / 全局显示 / 每条连线样式` 不再出现黄框套黄框；4 张 StyleCard 为 soft surface，宽度足够时 2 列。
+2. 每张 StyleCard 的“密度”“点大小”必须各自显示完整 `Slider + 编辑框 + 应用`，不允许只剩 EditBox。
+3. 点大小默认 Slider 最大值 10；在编辑框输入 20 并应用后，Slider 最大值应扩展到至少 20，Reload 后仍保留扩展范围；业务值不得超过 hard max 24。
+4. 1024×768 若双列不足，应自动变成单列；不得压缩 Slider 到不可操作，也不得出现控件重叠。
+5. Toggle 文本使用 `当前目标：开/关` 等 RU 字体安全文本；卡标题使用“自己 与 当前目标”等，不依赖缺失的箭头/勾叉 glyph。
+6. `高级 / 诊断` 默认折叠；展开/关闭不得改变 Unit Lines Demand/Scheduler。
+
+## `.18.160` Unit Lines Dense Settings Layout — RU 实机验收
+
+目标：验证 `.159` 截图暴露的两个真实布局问题已关闭，而不是只验证组件创建成功。
+
+1. 1280×768 打开“单位连线”：4 个连线开关必须是紧凑控件，不能再铺满两整列。
+2. “全局显示”下方不应出现大面积无内容空白；“每条连线样式”应在当前 viewport 直接可见，或在最小宽度下通过一次正常滚动进入，不允许因单个超高 Section 被整项吸附而看似消失。
+3. 每张 Style Card：密度与点大小同一紧凑行，使用精确编辑框+应用；卡内不再重复 Slider。全局显示保留 4 个 Slider。
+4. 1024×768：Style Cards 可降为单列并正常滚动；不得控件重叠、截断或丢失应用按钮。
+5. 1920×1080 / 2560×1440：Style Cards 保持 2 列，不应横向无限拉伸。
+6. 高级/诊断默认折叠；展开后原始 projection error 仍可见。
+7. Foundation 摘要要求页面失败/事务失败/ID 冲突均为 0。
+
+BuildTag：`v3-m1.16.0.18.160-unit-lines-dense-settings-layout`。
+
+## `.18.159` Unit Lines SettingsFoundation Consumer — RU 页面布局验收
+
+1. **首个 Consumer 验收**：打开“战斗 → 单位连线”，页头应只有标题/状态、功能开关与刷新；四个连线开关为紧凑网格；“全局显示”“每条连线样式”“高级 / 诊断”层级清晰。不得再看到旧版四个巨型开关块与底部常驻大表格。
+2. **1024×768 / 1280×768**：不允许 Slider、精确编辑框、应用按钮互相挤压或裁切；Style Card 可根据实际内容宽度从 2 列自动降 1 列。滚动页面可完整访问全部 4 张卡；不按具体分辨率写补偿。
+3. **1920×1080 / 2560×1440**：有足够宽度时 Style Card 保持 2 列，不应拉成四个超宽整行卡；全局设置最多 2 列，视觉密度保持稳定。
+4. **输入链保持原 Authority**：删除/修改 Numeric EditBox draft 后等待高频 visual refresh，文本不得被旧 Projection 回灌；点击“应用”后才提交 Feature Command。Slider、EditBox、Apply 与 `.18.156` Keyboard/Focus contract 同时复验。
+5. **诊断默认折叠**：无目标或某端点 `unit_projection_unavailable` 时，主摘要只显示“等待目标/部分可用/投影不可用 + 见高级诊断”；展开后才看到 raw failure、尝试/可绘制/端点重合/投影失败与最多 5 行 facts Table。折叠/展开不能改变 UnitLines consumerCount 或高频视觉 Scheduler。
+6. **业务行为不变**：四个 Toggle、全局透明度/刷新、每线密度/点大小/颜色修改后 Reload 保持；Unit Lines 头顶位置、刷新节拍、Demand 与 ScreenProjection 不应因为页面重排发生变化。
+
 # Replicated Suite RU Runtime Acceptance Plan
+
+## `.18.158` Settings Page Foundation — 本地门禁 / 下一轮 Unit Lines Consumer
+
+1. `.18.158` 本轮只补底层，不以“单位连线页面已经变漂亮”作为通过条件；首个业务迁移留到下一轮。
+2. `FormRow layout=auto`：宽容器保持 label/control 同行；窄容器自动竖排，label/control/hint 不得重叠。
+3. 标准 NumericSetting 在窄宽度启用 responsive stack，Slider、exact EditBox、Apply 都必须保持可点击且不越界；Binding/保存链保持单 Authority。
+4. DiagnosticsDisclosure 默认折叠，不得常驻占据主设置页面；展开/折叠只改变 Presentation state，不启动业务 Consumer。
+5. 禁止新增 Tick/OnUpdate 或分辨率名单；响应式只根据当前 available width。下一轮迁移 `combat.unit_lines` 后再做 1024×768 / 1280×768 / 2K 页面实机验收。
+
 
 状态：计划文件，不是实机通过证明。执行目标是 ArcheRage RU 中文客户端；每项结果必须在修改后重新 Fresh Reload 采集，不得沿用旧日志。
 
 ## 统一前置
 
 1. 备份当前 addon 与用户配置；只加载 `replicatedsuite/`（单一 V3 Host）。`z_api_functions/` 仅作开发期 API 参考，**不进入运行时**；旧 `globals/` 与 Legacy UI/runtime 已于 2026-09-01/02 物理删除，不再随包，绝不重新引入。
-2. 使用当前 `replicatedsuite/replicatedsuite.lua` 的 BuildTag 启动新客户端（见 `S.BuildTag`，当前为 `v3-m1.16.0.18.156-editbox-post-arm-focus-promotion`），记录 `ArcheRage.log`、`Chat.log` 和崩溃文件。
+2. 使用当前 `replicatedsuite/replicatedsuite.lua` 的 BuildTag 启动新客户端（见 `S.BuildTag`，当前为 `v3-m1.16.0.18.160-unit-lines-dense-settings-layout`），记录 `ArcheRage.log`、`Chat.log` 和崩溃文件。
 3. 在 1024×768、1920×1080、2K 逐路由打开首页、战斗、生活、工具、系统页；记录页面/Widget/Modal 是否构建、文本裁切、列宽、黑边和关闭后资源释放。
 4. 每次测试前后记录 Foundation：`activeBuildScopes`、page/widget quarantine、Authority violation、Presentation boundary、Raw Native、Unexpected Global 和 Scheduler active tasks。
 5. 失败记录格式：时间、BuildTag、路由/动作、API 名、输入、原生返回值（脱敏）、日志错误码、是否可复现、恢复动作。
@@ -17,6 +60,17 @@
 - 写操作只经 Feature Commands/API capability，尊重权限和至少 200ms 冷却；失败停止并显示结果，不继续盲发。
 - 关闭页面/Feature 后无残留 Scheduler、Event、Demand lease 或隐藏窗口；重新打开能恢复投影和持久化设置。
 - 所有 TableView/浮窗在三种分辨率可读，长中文/俄文/英文不重叠、不把数值列裁成省略号。
+
+
+## `.18.157` Fresh Reload P0 — Resolution / Coordinate Matrix
+
+1. **禁止分辨率补偿表式验收**：任何单一分辨率通过都不代表完成；本轮代码没有 `1280×768 +N` 之类表。先在 2560×1440 记录 Unit Lines/Range 诊断的 `Host=x,y / 视口 / UIScale`，再切 1280×768 对比。若 Host origin 改变，最终视觉仍必须保持头顶/脚下中心。
+2. **世界视觉**：至少测试 1024×768、1280×720、1280×768、1280×800、1280×1024、1366×768、1440×1080、1600×900、1680×1050、1920×1080、1920×1200、2560×1440。Unit Lines 点大小 4/15 都不得改变端点；Range 点大小变化不得移动圆心/圆周几何。
+3. **悬浮窗口跨分辨率**：在 2560×1440 将 DPS、死亡回顾、状态显示、活动/任务任意三个窗口分别拖到左上/中间/右下；切 1280×768 后窗口应保持相同屏幕区域意图，标题栏仍可拖动，不允许整窗丢到屏外。再切回 2560×1440，同 viewport 的已保存 exact logical 坐标应可稳定恢复。
+4. **主 Shell 与 R 按钮**：主菜单自由拖动后切换 4:3/16:10/16:9，至少有顶部拖动区可达；R 不得跑出屏幕。下一次用户拖动后 Store 应携带 responsive placement metadata，但旧 `logical-free-v2` 不要求清档。
+5. **Gear 快捷按钮**：把按钮拖到右下，依次切 1280×768、1920×1200、2560×1440；必须保持 RIGHT/BOTTOM 用户边距语义，不按旧绝对 x/y 漂移。
+6. **Bag 快捷按钮**：打开银行/箱子，`取/放/停` 应继续跟随当前背包 Native 窗口，切分辨率后重新开窗口仍正确；它不保存物理像素，因此不应受旧分辨率位置污染。
+7. **失败证据**：若任一世界视觉仍偏，把整条 Unit Lines/Range 功能诊断复制出来，必须包含 `Host`、`视口`、`UIScale`；若窗口/按钮跑位，记录原分辨率、目标分辨率、控件名、切换前后位置，不添加业务层 magic offset。
 
 ## `.18.151` Fresh Reload P0 — Death Review `770CB0B8` 单次迁移
 
@@ -72,7 +126,7 @@
 
 1. **换装顺序 + 缺件继续**：同一方案连续执行 `获取当前 → 保存方案 → 获取当前 → 保存 → Reload`，槽位顺序必须稳定；再移走中间一件目标装备，只有该槽记为跳过，其余可证明候选继续换上。`ambiguous/read_error` 仍必须 fail-closed。
 2. **`.18.152` Gear 快捷按钮 Fresh Reload**：准备至少 1 个 `quick=显示` 的已配置方案并确认快捷按钮全局可见；Fresh Reload 后**不要先进入换装页、不要手动换装**，按钮应直接出现。若历史 `v3.features.combat_gear=false`，本次允许一次 startup intent repair；随后诊断应显示一键换装工作中。再在功能管理器显式关闭 Gear、Reload，按钮必须继续保持关闭（证明 `runtimePreferenceLink=1` 后不会覆盖用户 disable）。
-3. **`.18.153` 整理背包快捷按钮 Fresh Reload**：Fresh Reload 后无需先进入整理背包页，直接打开背包 + 银行或箱子；`取/放/停` overlay 应在 ≤350ms 内出现并跟随背包。分别验证银行与箱子。整理背包页状态应显示 Bag/Bank/Coffer 的 source；RU 四返回值客户端允许 `main-script-geometry`，存在 Content 可见性时优先 `main-script+content-vis`。关闭仓储窗口应隐藏。仅打开窗口不得触发 InventorySnapshot 扫描/移动；只有显式点击 `取/放` 才允许建立有界队列。若用户在功能管理中显式关闭 `tools_bag`，Reload 后 overlay 必须保持关闭。
+3. **`.18.162` 整理背包快捷按钮 Fresh Reload（P0）**：Fresh Reload 后不要先进入整理背包页，直接打开背包 + 银行，再单独测试背包 + 箱子；真实 transient WINDOW Host 上的 `取/放/停` 应在 ≤350ms 内出现并跟随背包，关闭仓储窗口后隐藏。窗口事实允许 boolean/0-1/string visible 与四返回值形态；显式 Native hidden 必须关闭，hidden Content proxy + 合法 MainScript geometry 必须仍判 visible（source 可为 `main-script-geometry-over-proxy`）。实际可见期间允许 350ms bounded Presenter retry，但仅打开窗口不得触发 InventorySnapshot 扫描/移动；只有显式点击 `取/放` 才允许建立有界 Move Queue。若用户在功能管理中显式关闭 `tools_bag`，Reload 后 overlay 必须保持关闭。
 4. **`.18.154` Unit Lines 头顶中心锚点**：选中目标后分别测试默认点大小 4、较大点大小 10/15；线的首尾必须始终落在 player/target 原生头顶投影中心，改变点大小只改变 glyph 粗细/可见性，不得让整条线随字号向左上或右下漂移。至少在 1280×768 与一个 1080p/2K 分辨率验证；Range Assist 圆心/校准不得发生变化。
 2. **治疗辅助真实团队结构**：单团 50 人必须呈现“上 1–25 / 下 26–50”，两个半区均 5×5，整体对齐约 340×400 原生名单。切原生“团队1/团队2”标签时 Auto Panel 必须跟随；启用额外友军团队 UI 后，用 A/B 同时对齐两个完整 50 人团队。Reload 后位置保持，`.18.127` 生成的 670×180 应自动迁回正确尺寸。
 3. **Unit Lines + Range Assist 投影恢复**：连续切换 target/focus、360°转镜头、进出室内/副本；Camera Frame 短暂无效后两个功能必须能自行恢复点/线。Camera Frame 正常时背后目标仍应被 front-hemisphere fence 隐藏，禁止永久 Native-only 绕过。
@@ -84,6 +138,8 @@
 9. **状态显示 HUD Inspector**：进入 `状态显示 → HUD布局`，依次选 Buff、Debuff、职业、装备等元素；右侧 Transform/Anchor/吸附设置必须按真实 Measure 向下布局，不能再出现控件互相覆盖。Compact Drawer、滚动、Apply/Reload 均需验证。
 10. **门禁**：Fresh Reload 记录 Foundation v119 / UIV3 Acceptance v74；当前本地基线为 Active/All Lua 221/221 Parse PASS、Foundation Audit PASS、30/30 Python Harness PASS。
 
+
+4. **`.18.163` 跑商预计售价实售校准（P0）**：保持“货率：实时 / 熟练：计入”，记录当前经商熟练度，至少选择普通、新鲜/特供、发酵/larder 各 1 个货物，对比插件 `预计售价` 与 NPC 实际出售值；详情悬浮窗必须显示 `熟练×N / 品类×N`。若熟练度 API 不可读，预计售价必须为 `--` 而不能退回少乘熟练倍率的数字。再切“熟练：忽略”确认仅去除熟练倍率、品类倍率仍保留；切“满130%”只改变货率因子。
 ## `.18.126` Range Assist Global Projection Fresh Reload 专项（历史；范围辅助当前验收走 `.18.129` §1 与 `.18.129d` label 点模型）
 
 1. **圆心/世界空间**：打开 战斗→范围辅助，保持自身移动并依次朝东/西/南/北方向转动相机。范围圆必须持续以自身脚下/角色位置为中心，不得随镜头方向产生固定偏移或漂移。重点对比非 1.0 UI scale。
@@ -175,8 +231,9 @@ Fresh Reload 新进程还需验证三条本轮真实漏接链：① 打开 `life
 ### `.18.93/.18.94` DPS + Trade Fresh Reload 专项
 
 1. **DPS 可见性**：先打开伤害统计悬浮窗，再通过正常关闭按钮关闭；保持 DPS Feature 本身仍启用。执行“重新加载文件”，随后完整退出客户端再进入各测试一次。两种情况下悬浮窗都不得仅因 Feature Enabled 自动重新出现；只有用户显式打开时才显示。Foundation Acceptance 的 `dps_widget_visibility_preference_contract` 必须通过。
-2. **Trade 主页面**：进入主菜单→跑商并启用 Feature。点击“起点”必须真正展开 Native Dropdown；选定起点后“目的地”必须真正展开并列出候选；页面不得再出现 `起点◀/起点▶/终点◀/终点▶`。若 `GetProductionZoneGroups` 在 RU 失败，sealed Zone 只能保证候选可选，最终路线仍必须等 `GetSpecialtyRatioBetween` 服务器事实。
-3. **Trade HUD**：打开悬浮窗，必须是稳定的起点/目的地两行 Dropdown 布局并存在“材料询价”。选择一条有效路线后点击询价；普通 Refresh 不得自动扇出 Auction Query，显式询价完成后仅受影响路线行的材料成本/毛利应异步更新，未完成报价继续显示 unknown。Foundation Acceptance 的 `trade_dropdown_quote_preflight_contract` 必须通过。
+2. **Trade 主页面**：进入主菜单→跑商并启用 Feature。点击“起点”必须真正展开 Native Dropdown；选定起点后“目的地”必须真正展开并列出候选；页面不得再出现 `起点◀/起点▶/终点◀/终点▶`。若 `GetProductionZoneGroups` 在 RU 失败，sealed Zone 只能保证候选可选，最终路线仍必须等 `GetSpecialtyRatioBetween` 服务器事实。`.18.165` 新增：查询一条真实路线后，材料列必须出现真实材料（静态层命中时立即显示，含单价/小计文本），不得整列停留在 `材料待确认`；状态行出现 `· 配方 X/Y`（诊断行同源），未命中行显示 `配方待解析 N`；材料询价按钮在存在待询价材料时必须可点。
+3. **Trade HUD**：打开悬浮窗，必须是稳定的起点/目的地两行 Dropdown 布局并存在“材料询价”。选择一条有效路线后点击询价；普通 Refresh 不得自动扇出 Auction Query，显式询价完成后仅受影响路线行的材料成本/毛利应异步更新，未完成报价继续显示 unknown。`.18.164` 新增：询价进行中材料行显示 询价排队中/询价中，页面/HUD 状态行出现“· 询价中 N”；若报价失败，材料行显示 询价失败、详情悬浮窗提示区给出真实原因（如“最低价返回不可读（当前 RU 字段待核）”），且诊断页“报价队列”行可直接复制 `最近=life_trade#<itemType> <status> src=…（错误）`——该行是核对 `GetLowestPrice` 真实返回形态的第一手证据，请在首次实机询价后粘贴回传。Foundation Acceptance 的 `trade_dropdown_quote_preflight_contract` 必须通过。
+3b. **Trade 材料身份回传（`.18.165`）**：首次真实路线查询后，把诊断页跑商行整行复制回传，重点三段：`配方 X/Y`（静态层命中数）、`解析中 N`（live 队列是否被触发）、`live读N 缓存a/b`（`X2Craft` 链是否真的读到了材料——`live读>0 且 缓存a>0` 说明货率行携带 itemType 且 live 材料形态可读；`live读>0 且 缓存b>0` 时把 `lastError` 一并回传）。若 `配方 Y` 持续大于 0 且无 `解析中`，说明货率行未携带可读 itemType，此时只能依赖静态层命中，不得猜测 itemType 字段名，需先采集 `GetSpecialtyRatioBetween` 原始返回证据。
 4. 若 Native Dropdown 仍不展开，记录点击前后 `Feature:GetProjection().zones/sellableZones` 数量、Dropdown enabled/open 状态、首个 Popup/BuildTransaction 失败原因；不得恢复四个循环按钮作为降级方案。
 
 ## 逐域验收

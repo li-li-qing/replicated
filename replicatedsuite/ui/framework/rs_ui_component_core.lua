@@ -12,8 +12,8 @@ local UI = S.UI
 if type(UI) ~= "table" then return end
 
 local RSUI = {
-    version = 48,
-    apiVersion = "13.2",
+    version = 50,
+    apiVersion = "13.4",
     types = {},
     typeOrder = {},
     metrics = {
@@ -157,6 +157,9 @@ local RSUI = {
         collapsibleHeaderUnavailable = 0,
         collapsibleHeaderBindFailed = 0,
         splitToolbarSpacerClamped = 0,
+        settingsResponsiveModeChanges = 0,
+        settingsDiagnosticsDisclosuresCreated = 0,
+        numericResponsiveModeChanges = 0,
         statusChipUpdates = 0,
         pickerModelRebuilds = 0,
         treeModelRebuilds = 0,
@@ -2142,6 +2145,7 @@ function RSUI:ResetMetrics()
     self.metrics.preflightFailures, self.metrics.strictBuildFailFast = 0, 0
     self.metrics.layoutFlushDeferrals, self.metrics.layoutStabilizationPasses, self.metrics.layoutUnstableDeferrals, self.metrics.siblingOverlapIssues = 0, 0, 0, 0
     self.metrics.collapsibleHeaderUnavailable, self.metrics.collapsibleHeaderBindFailed, self.metrics.splitToolbarSpacerClamped = 0, 0, 0
+    self.metrics.settingsResponsiveModeChanges, self.metrics.settingsDiagnosticsDisclosuresCreated, self.metrics.numericResponsiveModeChanges = 0, 0, 0
     self.metrics.byType = {}
     if self.TextLayout ~= nil and self.TextLayout.metrics ~= nil then
         self.TextLayout.metrics.measures, self.TextLayout.metrics.wraps, self.TextLayout.metrics.fits, self.TextLayout.metrics.overflows = 0, 0, 0, 0

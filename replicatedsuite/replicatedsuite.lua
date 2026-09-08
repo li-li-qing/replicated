@@ -94,7 +94,7 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.156-editbox-post-arm-focus-promotion"
+S.BuildTag = "v3-m1.16.0.18.180-persistent-reference-prices"
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}
 S.SaveKey = tostring(S.Config.SaveKey or "replicated_suite_v1")
@@ -880,8 +880,11 @@ local function InstallRecoveryHandlers(button)
                 end
             end
             local _, _, width, height = S.Layout:GetLogicalRect(button)
+            -- Screen buttons persist nearest-edge intent, not a monitor-specific
+            -- absolute pixel. This keeps the R launcher in the same screen
+            -- region when the user switches 4:3/16:10/16:9 resolutions.
             local x, y = S.Layout:StorePlacement(S.UIV3.LauncherState, button, {
-                mode = "free",
+                mode = "strict",
             })
             S.UIV3.LauncherState.userMoved = true
             if tonumber(x) ~= nil and tonumber(y) ~= nil then

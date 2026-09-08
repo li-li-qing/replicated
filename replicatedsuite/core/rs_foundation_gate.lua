@@ -9,7 +9,7 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
 S.FoundationGate = {
-    version = 130,
+    version = 135,
     last = nil,
     sequenceCases = {},
     sequenceOrder = {},
@@ -316,6 +316,7 @@ function G:Run(options)
                 and (tonumber(floatingSurface.TitleAppearanceContractVersion) or 0) >= 1
                 and (tonumber(floatingSurface.DetachedStateContractVersion) or 0) >= 1
                 and (tonumber(floatingSurface.StateMutationTransactionContractVersion) or 0) >= 1
+                and (tonumber(floatingSurface.ResponsivePlacementIntentContractVersion) or 0) >= 1
                 and type(floatingSurface.Create) == "function" and type(floatingSurface.NormalizeState) == "function"
                 and type(floatingSurface.CreateStateAdapter) == "function",
             "blocker", floatingInfo and ("version=" .. tostring(floatingInfo.version) .. "/active=" .. tostring(floatingInfo.active or 0)
@@ -324,6 +325,7 @@ function G:Run(options)
                 .. "/appearance=" .. tostring(floatingSurface and floatingSurface.TitleAppearanceContractVersion or 0)
                 .. "/detached=" .. tostring(floatingSurface and floatingSurface.DetachedStateContractVersion or 0)
                 .. "/stateTx=" .. tostring(floatingSurface and floatingSurface.StateMutationTransactionContractVersion or 0)
+                .. "/responsivePlacement=" .. tostring(floatingSurface and floatingSurface.ResponsivePlacementIntentContractVersion or 0)
                 .. "/close=" .. tostring(floatingInfo.closeRequests or 0)
                 .. "/veto=" .. tostring(floatingInfo.closeVetoes or 0)
                 .. "/fail=" .. tostring(floatingInfo.failures or 0)) or "missing")
@@ -466,18 +468,66 @@ function G:Run(options)
                 and (tonumber(rsui.ReparentPolicyContractVersion) or 0) >= 1
                 and rsui.NativeReparentSupported == false
                 and type(rsui.CreateCommandCenterWorkspace) == "function"
-                and type(uiTokens) == "table" and (tonumber(uiTokens.version) or 0) >= 5
+                and type(uiTokens) == "table" and (tonumber(uiTokens.version) or 0) >= 8
                 and type(uiTokens.layer) == "table"
                 and (tonumber(uiTokens.layer.shellPriority) or 0) > 0
                 and (tonumber(uiTokens.layer.floatingPriority) or 0) > (tonumber(uiTokens.layer.shellPriority) or 0)
                 and (tonumber(uiTokens.layer.popupPriority) or 0) > (tonumber(uiTokens.layer.floatingPriority) or 0)
                 and (tonumber(uiTokens.layer.modalPriority) or 0) >= (tonumber(uiTokens.layer.popupPriority) or 0),
-            "blocker", "RSUI v30 + SplitView + stable-host ResponsiveInspector + Attachment/Reparent fence + WorkspaceTemplates v2 + UITokens v5 top-level layer hierarchy required")
+            "blocker", "RSUI v30 + SplitView + stable-host ResponsiveInspector + Attachment/Reparent fence + WorkspaceTemplates v2 + UITokens v8 settings/layer hierarchy required")
+        local settingsFoundation = rsui and rsui.SettingsFoundation or nil
+        local settingsDesign = S.UIV3Design
+        AddCheck(report, "v3_settings_page_foundation_contract", type(settingsFoundation) == "table"
+                and (tonumber(settingsFoundation.contractVersion) or 0) >= 3
+                and (tonumber(rsui.SettingsFoundationContractVersion) or 0) >= 3
+                and (tonumber(rsui.SettingsResponsiveContractVersion) or 0) >= 2
+                and (tonumber(rsui.SettingsDiagnosticsDisclosureContractVersion) or 0) >= 1
+                and (tonumber(rsui.SettingsStyleCardContractVersion) or 0) >= 3
+                and (tonumber(rsui.SettingsCompactToggleContractVersion) or 0) >= 1
+                and (tonumber(rsui.SettingsScrollSafeCardContractVersion) or 0) >= 2
+                and (tonumber(rsui.SettingsSectionHierarchyContractVersion) or 0) >= 1
+                and (tonumber(rsui.SettingsNumericSliderContractVersion) or 0) >= 1
+                and (tonumber(rsui.FormRowResponsiveContractVersion) or 0) >= 1
+                and (tonumber(rsui.NumericResponsiveStackContractVersion) or 0) >= 1
+                and type(rsui.CreateFeatureSettingsHeader) == "function"
+                and type(rsui.CreateSettingsToggleGrid) == "function"
+                and type(rsui.CreateSettingsStyleCardGrid) == "function"
+                and type(rsui.CreateSettingsStyleCard) == "function"
+                and type(rsui.CreateSettingsDiagnosticsDisclosure) == "function"
+                and type(rsui.CreateResponsiveSettingRow) == "function"
+                and type(rsui.CreateResponsiveNumericSetting) == "function"
+                and type(rsui.CreateSettingsNumericSlider) == "function"
+                and type(settingsDesign) == "table" and (tonumber(settingsDesign.version) or 0) >= 10
+                and type(settingsDesign.FeatureSettingsHeader) == "function"
+                and type(settingsDesign.SettingsToggleGrid) == "function"
+                and type(settingsDesign.SettingsStyleCard) == "function"
+                and type(settingsDesign.SettingsDiagnostics) == "function"
+                and type(settingsDesign.ResponsiveNumericSetting) == "function"
+                and type(settingsDesign.SettingsNumericSlider) == "function"
+                and type(uiTokens) == "table" and type(uiTokens.settings) == "table",
+            "blocker", "settings=" .. tostring(settingsFoundation and settingsFoundation.contractVersion or 0)
+                .. "/responsive=" .. tostring(rsui and rsui.SettingsResponsiveContractVersion or 0)
+                .. "/formRow=" .. tostring(rsui and rsui.FormRowResponsiveContractVersion or 0)
+                .. "/numericStack=" .. tostring(rsui and rsui.NumericResponsiveStackContractVersion or 0)
+                .. "/design=" .. tostring(settingsDesign and settingsDesign.version or 0)
+                .. "/tokens=" .. tostring(uiTokens and uiTokens.version or 0))
+        local settingsBusinessContract = S.UIV3 and S.UIV3.BusinessPagesContract or nil
+        AddCheck(report, "v3_unit_line_settings_page_contract", type(settingsBusinessContract) == "table"
+                and (tonumber(settingsBusinessContract.version) or 0) >= 6
+                and (tonumber(settingsBusinessContract.unitLineSettingsFoundationConsumerContractVersion) or 0) >= 3,
+            "blocker", "businessPages=" .. tostring(settingsBusinessContract and settingsBusinessContract.version or 0)
+                .. "/unitLinesSettings=" .. tostring(settingsBusinessContract and settingsBusinessContract.unitLineSettingsFoundationConsumerContractVersion or 0))
+
+
         AddCheck(report, "v3_ui_geometry_pointer_contract", type(rsui) == "table"
                 and type(S.Layout) == "table"
                 and (tonumber(S.Layout.CoordinateSystemContractVersion) or 0) >= 1
                 and (tonumber(S.Layout.RectTransformTransactionContractVersion) or 0) >= 2
+                and (tonumber(S.Layout.ScreenToWidgetLocalContractVersion) or 0) >= 1
+                and (tonumber(S.Layout.ResponsivePlacementIntentContractVersion) or 0) >= 1
                 and type(S.Layout.GetCoordinateSystemSnapshot) == "function"
+                and type(S.Layout.GetUiParentLocalOrigin) == "function"
+                and type(S.Layout.ScreenPointToWidgetLocal) == "function"
                 and type(S.Layout.OffsetPoint) == "function"
                 and type(S.Layout.CreateRectTransformTransaction) == "function"
                 and (tonumber(rsui.PointerContractVersion) or 0) >= 1
@@ -487,6 +537,8 @@ function G:Run(options)
                 and rsui.Pointer.captureSupported == false,
             "blocker", "coordinate=" .. tostring(S.Layout and S.Layout.CoordinateSystemContractVersion or 0)
                 .. "/rectTx=" .. tostring(S.Layout and S.Layout.RectTransformTransactionContractVersion or 0)
+                .. "/screenLocal=" .. tostring(S.Layout and S.Layout.ScreenToWidgetLocalContractVersion or 0)
+                .. "/responsivePlacement=" .. tostring(S.Layout and S.Layout.ResponsivePlacementIntentContractVersion or 0)
                 .. "/pointer=" .. tostring(rsui and rsui.PointerContractVersion or 0)
                 .. "/capture=" .. tostring(rsui and rsui.Pointer and rsui.Pointer.captureSupported))
 
@@ -930,7 +982,7 @@ function G:Run(options)
         AddCheck(report, "v3_floating_interaction_contract", type(rsui) == "table"
                 and (tonumber(rsui.DataViewViewportContractVersion) or 0) >= 2
                 and (tonumber(rsui.DataViewOverlayScrollbarContractVersion) or 0) >= 1
-                and (tonumber(rsui.DataViewResizePreviewAuthorityContractVersion) or 0) >= 1
+                and (tonumber(rsui.DataViewResizePreviewAuthorityContractVersion) or 0) >= 2
                 and genericShellInfo ~= nil and (tonumber(genericShellInfo.version) or 0) >= 17
                 and floatingInfo ~= nil and (tonumber(floatingInfo.version) or 0) >= 7
                 and modalInfo ~= nil and (tonumber(modalInfo.version) or 0) >= 4
@@ -1866,14 +1918,16 @@ function G:Run(options)
         or type(bossAlerts) ~= "table" or (tonumber(bossAlerts.HudContractVersion) or 0) < 2
         or (tonumber(bossAlerts.RealtimeFactBridgeContractVersion) or 0) < 1
         or type(S.Services and S.Services.CastingObservationV3) ~= "table" then usabilityFailures[#usabilityFailures + 1] = "boss_hud" end
-    if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 10
+    if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 11
         or (tonumber(visualGuides.AdaptiveUnitLineSamplingContractVersion) or 0) < 2
         or (tonumber(visualGuides.UnitLineVisibleSegmentClippingContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLinePressureBudgetContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLineDiffRenderContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLineProgressivePoolContractVersion) or 0) < 1
         or (tonumber(visualGuides.ScreenCoordinateAuthorityContractVersion) or 0) < 1
-        or (tonumber(visualGuides.UnitLineRawProjectedAnchorContractVersion) or 0) < 1
+        or (tonumber(visualGuides.UnitLineRawProjectedAnchorContractVersion) or 0) < 2
+        or (tonumber(visualGuides.ScreenToOverlayHostContractVersion) or 0) < 1
+        or (tonumber(visualGuides.ResolutionIndependentOverlayContractVersion) or 0) < 1
         or type(visualGuides.BuildUnitLineSamplePlan) ~= "function"
         or type(unitLines) ~= "table" or (tonumber(unitLines.VisualGuideContractVersion) or 0) < 5
         or (tonumber(unitLines.AdaptiveDensityContractVersion) or 0) < 2
@@ -1888,8 +1942,14 @@ function G:Run(options)
     local bondsWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.bonds") or nil
     if type(lifeWidgets) ~= "table" or (tonumber(lifeWidgets.version) or 0) < 3 or type(tradeWidget) ~= "table" or type(bondsWidget) ~= "table" then usabilityFailures[#usabilityFailures + 1] = "life_widgets" end
     local tradeFeature = S.Features and S.Features.Trade or nil
+    local tradePayout = S.Services and S.Services.TradePayoutV3 or nil
     local tradeDetail = S.UIV3 and S.UIV3.TradeDetailFloatingV3 or nil
-    local tradeDetailOk = type(tradeFeature) == "table" and type(tradeFeature.Authority) == "table" and (tonumber(tradeFeature.Authority.version) or 0) >= 5
+    local tradeDetailOk = type(tradeFeature) == "table" and type(tradeFeature.Authority) == "table" and (tonumber(tradeFeature.Authority.version) or 0) >= 6
+        and (tonumber(tradeFeature.Authority.TradePayoutProjectionContractVersion) or 0) >= 1
+        and type(tradePayout) == "table" and (tonumber(tradePayout.PriceFormulaContractVersion) or 0) >= 1
+        and (tonumber(tradePayout.StaticPriceKeyResolverContractVersion) or 0) >= 2
+        and (tonumber(tradePayout.CommerceMultiplierContractVersion) or 0) >= 1
+        and (tonumber(tradePayout.PackCategoryMultiplierContractVersion) or 0) >= 1
         and (tonumber(tradeFeature.Authority.RouteRefreshRetryContractVersion) or 0) >= 2
         and (tonumber(tradeFeature.Authority.SingleFlightLatestRouteContractVersion) or 0) >= 1
         and (tonumber(tradeFeature.Authority.RequestTimeoutContractVersion) or 0) >= 1
@@ -1897,10 +1957,10 @@ function G:Run(options)
         and type(tradeFeature.Commands.SelectFavorite) == "function" and type(tradeFeature.Commands.SetSortMode) == "function"
         and type(tradeFeature.Commands.SelectRow) == "function" and type(tradeFeature.Commands.QuoteRowMaterials) == "function"
         and type(tradeFeature.GetFavoriteItems) == "function" and type(tradeFeature.GetRow) == "function"
-        and type(tradeDetail) == "table" and (tonumber(tradeDetail.TradeDetailContractVersion) or 0) >= 1
+        and type(tradeDetail) == "table" and (tonumber(tradeDetail.TradeDetailContractVersion) or 0) >= 2
         and type(tradeDetail.Open) == "function" and type(tradeDetail.Close) == "function"
     AddCheck(report, "v3_trade_detail_favorites_contract", tradeDetailOk, "blocker",
-        tradeDetailOk and "bounded persisted route favorites + explicit row detail/quote floating workflow present" or "trade detail/favorites contract unavailable")
+        tradeDetailOk and "TradePayoutV3 formula/key resolver + bounded favorites + explicit row detail/quote workflow present" or "trade payout/detail/favorites contract unavailable")
     if type(buffHealth2) ~= "table" or (tonumber(buffHealth2.observationContractVersion) or 0) < 2 then usabilityFailures[#usabilityFailures + 1] = "buff_observation" end
     local healerFloatingSpec = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("combat.healer") or nil
     if healerFloatingSpec ~= nil then usabilityFailures[#usabilityFailures + 1] = "healer_recommendation_widget" end
@@ -1917,9 +1977,11 @@ function G:Run(options)
         and type(inventorySnapshot.BuildSnapshot) == "function" and type(inventorySnapshot.FindLiveRow) == "function"
         and type(inventorySnapshot.CountLive) == "function" and type(inventorySnapshot.ReadPhysicalBagSlot) == "function"
         and type(bagTools) == "table" and (tonumber(bagTools.BagMoveContractVersion) or 0) >= 8
-        and (tonumber(bagTools.BatchLifecycleContractVersion) or 0) >= 5 and (tonumber(bagTools.NativeWindowQuickContractVersion) or 0) >= 6
-        and (tonumber(bagTools.ReloadQuickObserverContractVersion) or 0) >= 2
-        and (tonumber(bagTools.RUFourValueWindowVisibilityContractVersion) or 0) >= 1
+        and (tonumber(bagTools.BatchLifecycleContractVersion) or 0) >= 5 and (tonumber(bagTools.NativeWindowQuickContractVersion) or 0) >= 7
+        and (tonumber(bagTools.ReloadQuickObserverContractVersion) or 0) >= 3
+        and (tonumber(bagTools.RUFourValueWindowVisibilityContractVersion) or 0) >= 2
+        and (tonumber(bagTools.NativeVisibilityShapeContractVersion) or 0) >= 1
+        and (tonumber(bagTools.VisiblePresenterRetryContractVersion) or 0) >= 1
         and (tonumber(bagTools.DynamicSourceResolutionContractVersion) or 0) >= 3
         and (tonumber(bagTools.QuickIdentityFallbackContractVersion) or 0) >= 1
         and (tonumber(bagTools.BagTaskMutexContractVersion) or 0) >= 1
@@ -1930,10 +1992,12 @@ function G:Run(options)
         and type(bagTools.Commands.QuickDeposit) == "function" and type(bagTools.Commands.QuickCancel) == "function"
         and type(bagTools.Commands.SetBatchCategory) == "function" and type(bagTools.Commands.SetBatchTarget) == "function"
         and type(bagTools.Commands.SetBatchLimit) == "function"
-        and type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.version) or 0) >= 3
-        and (tonumber(bagQuickPresenter.ReloadVisibilityContractVersion) or 0) >= 1
+        and type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.version) or 0) >= 4
+        and (tonumber(bagQuickPresenter.ReloadVisibilityContractVersion) or 0) >= 2
+        and (tonumber(bagQuickPresenter.NativeTransientHostContractVersion) or 0) >= 1
+        and (tonumber(bagQuickPresenter.VisibleRetryContractVersion) or 0) >= 1
     AddCheck(report, "v3_bag_action_contract", bagContractOk, "blocker",
-        bagContractOk and "shared physical-bag snapshot + grouped-intent quick/category queues + live slot revalidation + mutually-exclusive serial move tasks present" or "bag action contract v8 / InventorySnapshotV3 unavailable")
+        bagContractOk and "shared physical-bag snapshot + grouped-intent quick/category queues + live slot revalidation + mutually-exclusive serial move tasks present" or "bag action contract v8 / quick-window host v4 / InventorySnapshotV3 unavailable")
     local gearFeature = S.Features and S.Features.Gear or nil
     local startupIntentOk = type(S.FeatureRuntime) == "table" and (tonumber(S.FeatureRuntime.StartupEnableIntentContractVersion) or 0) >= 1
         and type(gearFeature) == "table" and (tonumber(gearFeature.QuickStartupIntentContractVersion) or 0) >= 1

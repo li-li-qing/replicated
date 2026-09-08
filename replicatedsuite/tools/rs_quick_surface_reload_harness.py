@@ -52,14 +52,15 @@ def static_contracts() -> None:
         BUSINESS,
         "StartBagQuickObserver(feature)",
         "BAG_QUICK_OBSERVE_TASK,350,function() return RefreshBagQuickOverlay(feature)",
-        "BagTools.NativeWindowQuickContractVersion = 6",
-        "BagTools.ReloadQuickObserverContractVersion = 2",
-        "BagTools.RUFourValueWindowVisibilityContractVersion = 1",
+        "BagTools.NativeWindowQuickContractVersion = 7",
+        "BagTools.ReloadQuickObserverContractVersion = 3",
+        "BagTools.RUFourValueWindowVisibilityContractVersion = 2",
         'S.Api:IsCapabilityAllowed("ADDON:GetContent")',
         'S.Api:CallCapability("ADDON:GetContent"',
-        'type(visible) == "boolean"',
-        '"main-script+content-vis"',
-        '"main-script-geometry"',
+        '"main-script+content-visible"',
+        '"main-script-geometry-over-proxy"',
+        'BagTools.NativeVisibilityShapeContractVersion = 1',
+        'BagTools.VisiblePresenterRetryContractVersion = 1',
         'local bank=ReadStorageWindowContext("bank")',
         'local coffer=ReadStorageWindowContext("coffer")',
     )
@@ -69,7 +70,16 @@ def static_contracts() -> None:
     assert "BuildSnapshot" not in observer, "idle bag observer must not scan inventory"
     assert "MoveToEmpty" not in observer, "idle bag observer must not move inventory"
 
-    require(BAG_UI, "ReloadVisibilityContractVersion=1")
+    require(BAG_UI,
+        "version=4",
+        "ReloadVisibilityContractVersion=2",
+        "NativeTransientHostContractVersion=1",
+        "VisibleRetryContractVersion=1",
+        'CreatePanel(UIParent,"v3_bag_quick_overlay_root"',
+        "transientWindow=true",
+        "P:EnsureCreated()",
+    )
+    assert 'CreateEmptyWidget(UIParent,"v3_bag_quick_overlay_root"' not in BAG_UI, "bag quick root must not regress to top-level emptywidget"
     require(PAGE, "背包窗口可见/", "overlay.bankSource", "overlay.cofferSource")
 
     require(GEAR_STORE, "runtimePreferenceLink = tonumber(value.runtimePreferenceLink) == 1 and 1 or nil")
@@ -83,16 +93,34 @@ def static_contracts() -> None:
     )
 
     require(GATE, '"v3_quick_surface_reload_reconcile_contract"')
-    require(ACCEPTANCE, "QuickSurfaceReloadReconcileContractVersion = 2", '"quick_surface_reload_reconcile_contract_v2"')
+    require(ACCEPTANCE, "QuickSurfaceReloadReconcileContractVersion = 3", '"quick_surface_reload_reconcile_contract_v3"')
+
+
+def native_flag(value):
+    if isinstance(value, bool):
+        return True, value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return True, value == 1
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "on", "show", "visible"}:
+            return True, True
+        if text in {"0", "false", "off", "hide", "hidden"}:
+            return True, False
+    return False, False
 
 
 def resolve_visible(native_visible, content_known: bool, content_visible: bool, main_rect: bool) -> bool:
-    if isinstance(native_visible, bool):
-        return native_visible
+    known, value = native_flag(native_visible)
+    if known:
+        return value
+    if content_visible:
+        return True
+    if main_rect:
+        return True
     if content_known:
-        return content_visible
-    return main_rect
-
+        return False
+    return False
 
 def test_ru_four_value_main_script_is_open_signal() -> None:
     # RU may omit the fifth return value entirely. Valid geometry must not be
@@ -101,14 +129,21 @@ def test_ru_four_value_main_script_is_open_signal() -> None:
 
 
 def test_content_visibility_overrides_geometry_fallback() -> None:
-    # A known hidden native content chain is stronger than stale geometry.
-    assert resolve_visible(None, True, False, True) is False
+    # GetContent may be a hidden proxy even while the MainScript window is open.
+    # Valid MainScript geometry therefore remains positive evidence unless an
+    # explicit native visibility value says the window is closed.
+    assert resolve_visible(None, True, False, True) is True
     assert resolve_visible(None, True, True, True) is True
+    assert resolve_visible(None, True, False, False) is False
 
 
 def test_explicit_native_boolean_remains_authoritative() -> None:
     assert resolve_visible(False, False, False, True) is False
     assert resolve_visible(True, True, False, True) is True
+    assert resolve_visible(0, False, False, True) is False
+    assert resolve_visible(1, True, False, False) is True
+    assert resolve_visible("0", False, False, True) is False
+    assert resolve_visible("visible", True, False, False) is True
 
 
 def gear_startup_model(preferred: bool, explicit: bool, linked: bool, quick_rows: int, visible: bool) -> bool:
@@ -137,6 +172,7 @@ def test_bag_idle_observer_is_low_cost_surface_only() -> None:
     refresh = BUSINESS[BUSINESS.index("local function RefreshBagQuickOverlay(feature)"):BUSINESS.index("local function StartBagQuick(feature, direction)")]
     assert "BuildSnapshot" not in refresh
     assert "MoveToEmpty" not in refresh
+    assert "bag_quick_visible_heartbeat" in refresh
 
 
 def main() -> int:

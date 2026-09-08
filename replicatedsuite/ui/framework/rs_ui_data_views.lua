@@ -27,7 +27,7 @@ RSUI.DataViewDeferredCallbackContractVersion = 1
 RSUI.DataViewCallbackCaptureContractVersion = 1
 RSUI.DataViewWheelInteractionContractVersion = 2
 RSUI.DataViewEnabledPropagationContractVersion = 1
-RSUI.DataViewResizePreviewAuthorityContractVersion = 1
+RSUI.DataViewResizePreviewAuthorityContractVersion = 2
 local U = RSUI.LayoutUtil
 if type(U) ~= "table" then return end
 local N, Pad, Arrange, Host = U.N, U.Pad, U.Arrange, U.Host
@@ -2274,7 +2274,7 @@ local function NewTableView(kind, spec)
                         if line and line.SetWidth then line:SetWidth(1) end
                         if line and line.AddAnchor then line:AddAnchor("TOP",handle,0,2);line:AddAnchor("BOTTOM",handle,0,-2) end
                     end
-                    local record={root=handle,line=line,index=index,column=column,dragging=false}
+                    local record={root=handle,line=line,index=index,column=column,dragging=false,geometryLeased=false}
                     c.columnResizeHandles[#c.columnResizeHandles+1]=record
                     local function SetLine(active)
                         if line and line.SetColor then
@@ -2282,8 +2282,20 @@ local function NewTableView(kind, spec)
                             pcall(function() line:SetColor(color[1],color[2],color[3],color[4] or 1) end)
                         end
                     end
-                    UI:SafeHandler(handle,"OnEnter",function() SetLine(true) end,"rsui:"..c.id..":col_resize_enter:"..index)
-                    UI:SafeHandler(handle,"OnLeave",function() if not record.dragging then SetLine(false) end end,"rsui:"..c.id..":col_resize_leave:"..index)
+                    -- Record whether the hover handlers actually attached. The
+                    -- player-facing symptom ("some separators highlight, some do
+                    -- not, but every one still drags") is undiagnosable from static
+                    -- reading because SafeHandler's result was discarded; a failed
+                    -- OnEnter registration looks identical to a z-order problem.
+                    -- Bounded per-table record, diagnostics only.
+                    local enterOk = UI:SafeHandler(handle,"OnEnter",function() SetLine(true) end,"rsui:"..c.id..":col_resize_enter:"..index)
+                    local leaveOk = UI:SafeHandler(handle,"OnLeave",function() if not record.dragging then SetLine(false) end end,"rsui:"..c.id..":col_resize_leave:"..index)
+                    record.hoverHandlersBound = (enterOk == true and leaveOk == true)
+                    if record.hoverHandlersBound ~= true then
+                        c.resizeHoverDegraded = true
+                        c.resizeHoverDegradedReason = tostring(enterOk ~= true and "on_enter_rejected" or "on_leave_rejected")
+                            .. ":column=" .. tostring(index)
+                    end
                     local taskName="rsui_table_col_drag:"..c.id..":"..tostring(index)
                     record.taskName = taskName
                     local function StopPreviewTask()
@@ -2311,8 +2323,18 @@ local function NewTableView(kind, spec)
                     local startBound, startErr = UI:RequireHandler(handle,"OnDragStart",function()
                         local startX=WidgetEffectiveX(handle)
                         if startX==nil then return false end
+                        local leased = false
+                        if type(UI.BeginNativeGeometryLease) == "function" then
+                            local leaseOk = UI:BeginNativeGeometryLease(handle, c.owner, "table_column_resize:" .. tostring(index))
+                            if leaseOk ~= true then return false end
+                            leased = true
+                        end
                         local moving = UI:TryInteractionCall(handle, "StartMoving")
-                        if moving ~= true then return false end
+                        if moving ~= true then
+                            if leased and type(UI.EndNativeGeometryLease) == "function" then UI:EndNativeGeometryLease(handle, c.owner) end
+                            return false
+                        end
+                        record.geometryLeased = leased
                         local currentW=tonumber(c.resolvedWidths[index]) or tonumber(column.width) or tonumber(column.minWidth) or 48
                         record.dragging=true
                         record.startX=startX
@@ -2348,6 +2370,15 @@ local function NewTableView(kind, spec)
                         compensationWidth=compensationWidth or record.compensationWidth
                         StopPreviewTask()
                         if type(handle.StopMovingOrSizing)=="function" then pcall(function() handle:StopMovingOrSizing() end) end
+                        if record.geometryLeased == true and type(UI.EndNativeGeometryLease) == "function" then
+                            UI:EndNativeGeometryLease(handle, c.owner)
+                        elseif type(UI.InvalidateNativeState) == "function" then
+                            -- Compatibility fallback: StartMoving mutates Native
+                            -- anchors behind DiffRenderer. Force the next layout to
+                            -- physically restore the hit surface to the boundary.
+                            UI:InvalidateNativeState(handle)
+                        end
+                        record.geometryLeased=false
                         local startWidth=record.startWidth
                         record.dragging=false
                         SetLine(false)
@@ -2479,10 +2510,54 @@ local function NewTableView(kind, spec)
         compensationIndex = math.floor(tonumber(compensationIndex) or 0)
         local leftColumn, rightColumn = self.columns[index], self.columns[compensationIndex]
         if leftColumn == nil or rightColumn == nil or index == compensationIndex then return false end
+
+        -- Preview is the geometry the user actually saw. Seed every column with
+        -- that resolved snapshot before committing the edited pair. Without this,
+        -- an untouched Fill column falls back to minWidth on the next solver pass,
+        -- receives redistributed slack, and pulls the just-dragged boundary away
+        -- from the mouse on DragStop (Trade's 货物/货率 boundary is the canonical
+        -- Fill + Fixed + later-Fill case). Preserve each column's declared size
+        -- mode here; only the explicitly edited pair goes through the historical
+        -- CommitColumnResizeWidth semantics below.
+        local previewWidths = type(self.previewResolvedWidths) == "table" and self.previewResolvedWidths or self.resolvedWidths
+        local committedSnapshot = {}
+        local snapshotChanged = false
+        if type(previewWidths) == "table" and #previewWidths == #self.columns then
+            for widthIndex, snapshotColumn in ipairs(self.columns) do
+                local previewWidth = tonumber(previewWidths[widthIndex])
+                if previewWidth ~= nil then
+                    local nextWidth = math.floor(ClampColumnResizeWidth(snapshotColumn, previewWidth) + 0.5)
+                    if tonumber(snapshotColumn.manualWidth) == nil or math.abs((tonumber(snapshotColumn.manualWidth) or 0) - nextWidth) > 0.01 then
+                        snapshotChanged = true
+                    end
+                    snapshotColumn.manualWidth = nextWidth
+                    committedSnapshot[widthIndex] = nextWidth
+                end
+            end
+        end
+
         local leftChanged = CommitColumnResizeWidth(leftColumn, leftWidth)
         local rightChanged = CommitColumnResizeWidth(rightColumn, compensationWidth)
-        if leftChanged ~= true and rightChanged ~= true then return false end
+        if #committedSnapshot == #self.columns then
+            committedSnapshot[index] = math.floor(ClampColumnResizeWidth(leftColumn, leftWidth) + 0.5)
+            committedSnapshot[compensationIndex] = math.floor(ClampColumnResizeWidth(rightColumn, compensationWidth) + 0.5)
+        end
+        if snapshotChanged ~= true and leftChanged ~= true and rightChanged ~= true then return false end
+
+        -- Keep the exact DragStop snapshot authoritative while the viewport width
+        -- is unchanged. This prevents an immediate second Fill solve (including
+        -- compressed/emergency layouts) from producing a one-frame or persistent
+        -- jump. Any real viewport-width change invalidates this snapshot and
+        -- resumes the responsive solver from the committed manual baselines.
         self.previewResolvedWidths = nil
+        if #committedSnapshot == #self.columns then
+            self.committedResolvedWidths = committedSnapshot
+            self.committedResolvedAvailableWidth = tonumber(self.lastColumnAvailableWidth)
+            self.resolvedWidths = committedSnapshot
+        else
+            self.committedResolvedWidths = nil
+            self.committedResolvedAvailableWidth = nil
+        end
         RSUI.metrics.tableColumnWidthChanges = (tonumber(RSUI.metrics.tableColumnWidthChanges) or 0) + 1
         self:InvalidateLayout("column_resize_pair:" .. tostring(leftColumn.id))
         if self.width and self.height then self:Layout(self.x or 0, self.y or 0, self.width, self.height) end
@@ -2498,6 +2573,8 @@ local function NewTableView(kind, spec)
                 column.width = nextWidth
                 column.size = "fixed"
                 column.manualWidth = nextWidth
+                self.committedResolvedWidths = nil
+                self.committedResolvedAvailableWidth = nil
                 RSUI.metrics.tableColumnWidthChanges = (tonumber(RSUI.metrics.tableColumnWidthChanges) or 0) + 1
                 self:InvalidateLayout("column_width:" .. id)
                 if self.width and self.height then self:Layout(self.x or 0, self.y or 0, self.width, self.height) end
@@ -2531,6 +2608,8 @@ local function NewTableView(kind, spec)
                 -- baseline; the next layout starts from the newly declared mode.
                 if changed or value ~= nil then column.manualWidth = nil end
                 if not changed and value == nil then return false end
+                self.committedResolvedWidths = nil
+                self.committedResolvedAvailableWidth = nil
                 RSUI.metrics.tableColumnWidthChanges = (tonumber(RSUI.metrics.tableColumnWidthChanges) or 0) + 1
                 self:InvalidateLayout("column_mode:" .. id)
                 if self.width and self.height then self:Layout(self.x or 0, self.y or 0, self.width, self.height) end
@@ -2570,10 +2649,18 @@ local function NewTableView(kind, spec)
         -- Fill solver and repaint the old widths between 16ms preview samples; that
         -- ownership fight is the visible left/right flashing reported on RU.
         local previewActive = type(self.previewResolvedWidths) == "table"
+        local committedActive = type(self.committedResolvedWidths) == "table"
+            and tonumber(self.committedResolvedAvailableWidth) ~= nil
+            and math.abs((tonumber(self.committedResolvedAvailableWidth) or 0) - columnW) <= 0.01
         local widths, resolvedOverflow, compressed, emergencyClamp
         if previewActive then
             widths = self.previewResolvedWidths
+        elseif committedActive then
+            widths = self.committedResolvedWidths
+            self.resolvedWidths = widths
         else
+            self.committedResolvedWidths = nil
+            self.committedResolvedAvailableWidth = nil
             widths, resolvedOverflow, compressed, emergencyClamp = ResolveColumnWidths(self.columns, columnW, self.columnGap)
             self.resolvedWidths = widths
             if compressed then RSUI.metrics.layoutCompressionEvents = (tonumber(RSUI.metrics.layoutCompressionEvents) or 0) + 1 end
@@ -2606,12 +2693,18 @@ local function NewTableView(kind, spec)
                 end
                 record.dragging = false
                 if record.root ~= nil and type(record.root.StopMovingOrSizing) == "function" then pcall(function() record.root:StopMovingOrSizing() end) end
+                if record.geometryLeased == true and record.root ~= nil and type(UI.EndNativeGeometryLease) == "function" then
+                    UI:EndNativeGeometryLease(record.root, self.owner)
+                end
+                record.geometryLeased = false
                 if record.root ~= nil and type(record.root.ReleaseHandler) == "function" then
                     for _, eventName in ipairs({ "OnEnter", "OnLeave", "OnDragStart", "OnDragStop", "OnUpdate" }) do pcall(function() record.root:ReleaseHandler(eventName) end) end
                 end
             end
         end
         self.previewResolvedWidths = nil
+        self.committedResolvedWidths = nil
+        self.committedResolvedAvailableWidth = nil
         return tableBaseRelease(self)
     end
 

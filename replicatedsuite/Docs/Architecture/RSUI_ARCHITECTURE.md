@@ -1,5 +1,8 @@
 # Replicated Suite RSUI 架构（统一权威）
 
+> `.18.157` Resolution Placement Contract：FloatingSurface v11 的自由位置同时保留 exact logical x/y 与 `savedLogicalWidth/Height + normalizedCenterX/Y`。同 viewport exact restore；跨 viewport 由 Layout 重投影并应用 recoverable safety。小型按钮使用 edge-anchor（R launcher 下一次拖动从 legacy free 升级为 edge）；世界投影 child 必须经 Screen→Host Local Adapter，adapter 以 Host 与 UIParent 的 live EffectiveOrigin 差值为唯一原点事实。禁止 Feature 写分辨率特例。
+
+
 > **Authority Level**: ARCHITECTURE
 > **范围**: RSUI（Replicated Suite UI）—— ArcheAge 有限原生 UI API 之上的 UMG 风格 Widget 基础层。
 > 本文由 9 个阶段性框架文档（Phase 3–8 + M6 审计）收敛而成，保留全部原始知识，仅做结构归一。
@@ -5945,8 +5948,8 @@ RU 真机暴露了共享 Control 与 Responsive Workspace 的两个边界问题�
 - `ExplicitInputCommitFocusContractVersion=1`：`UI:DeactivateInputWidget()` 只能复用 tracked physical focus 的 `ReleaseFocusWithin()` 证明当前 Focus 属于 Suite 子树后清理；随后始终 `DisarmInputWidget()`。禁止业务页直接 `ClearFocus()`，禁止为了恢复 WASD/技能键而清除未知的聊天/游戏焦点。
 - 单行 Native EditBox 必须设置 `ClearTextOnEnter(false)`；草稿清理与格式化由 RSUI Commit Authority 负责，避免 Native Enter 在 Submit handler 读取前先把文本清空。
 - `InputDraftCoordinator` 是弱引用、事件驱动的输入所有权协调器：新输入 Begin 时先结束其他仍 active 的 Suite draft；released component 自动移除。它不使用 Tick、常驻 OnUpdate 或未经 RU 验证的 OnTextChanged/通用 KeyDown。
-- `DataViewResizePreviewAuthorityContractVersion=1`：列分隔条 DragStart 后，`previewResolvedWidths` 是 Header、所有 pooled visible rows、拖动中新增/重绑 rows 和 resize handle siblings 的唯一 Geometry Authority。任何 ambient `TableView:Layout()` 在 Preview 存在时都禁止重新求 committed Fill widths。
-- DragStop 仅有两个终点：有有效变化时 `CommitColumnResizePair()` 一次提交 Preview 中实际显示的相邻列对；回到原边界时 `ClearColumnResizePreview()`，保持原 size mode。Preview 期间不 rebind 数据、不持久化、不创建第二份业务列宽 Authority。
+- `DataViewResizePreviewAuthorityContractVersion=2`：列分隔条 DragStart 后，`previewResolvedWidths` 是 Header、所有 pooled visible rows、拖动中新增/重绑 rows 和 resize handle siblings 的唯一 Geometry Authority。任何 ambient `TableView:Layout()` 在 Preview 存在时都禁止重新求 committed Fill widths。
+- DragStop 仅有两个终点：有有效变化时 `CommitColumnResizePair()` 以最后 Preview 为全列 resolved baseline，再提交实际编辑的相邻列对；同一 viewport 宽度下 committed snapshot 保持几何不变，避免后续 Fill 列重新分配造成松手跳变。viewport 宽度真实变化后 snapshot 自动失效，重新进入响应式 `ResolveColumnWidths()`。回到原边界时 `ClearColumnResizePreview()`，保持原 size mode。Native resize handle 的 `StartMoving` 必须持有短生命周期 Geometry Lease，Stop 后失效 Diff cache 并重新锚定命中面，禁止连续拖动积累 Native/逻辑位置漂移。Preview 期间不 rebind 数据、不持久化、不创建第二份业务列宽 Authority。
 - 高频预览沿用 gesture-only 16ms InteractiveTask；Scheduler 不可用才使用仅拖动期 OnUpdate，DragStop/Release 立即清理。该契约修复的是 Geometry Authority 争用，不通过提高刷新频率掩盖闪烁。
 ## v47 / API 13.1 — Explicit Numeric Apply + Adaptive Visual Range（2026-09-07）
 
@@ -5959,3 +5962,32 @@ RU 真机暴露了共享 Control 与 Responsive Workspace 的两个边界问题�
 - 全链路事件驱动；Apply 不增加 Tick/OnUpdate，动态范围持久化继续走既有 debounce。
 - **`.18.147` registration correction**：`v3.rsui.numeric_ranges` 的 Store owner 必须同样位于 V3 namespace，固定为 `v3.rsui.numeric_ranges`。此前 `owner=rsui.numeric_ranges` 会被 `RegisterV3Store` 正确拒绝并产生 `NUMERIC_RANGE_STORE_REGISTER_FAILED / STORE_REGISTER_INVALID`；Foundation/Acceptance 现对 Store ID 与 owner 做精确门禁。该修复不改变 RSUI v47/API 13.1，也不改变业务数值 Authority。
 
+
+## Settings Page Foundation v1（`.18.158`）
+
+设置页不再允许每个 Feature 自己手写“巨型 Toggle + 两列数字框 + 常驻诊断表”的布局。`RSUI.SettingsFoundation` 只组合现有 `VerticalBox / HorizontalBox / UniformGrid / FormRow / GroupBox / CollapsibleGroup / NumericField`，因此 Measure/Arrange、BuildScope、Attachment 与输入生命周期仍由原 Foundation 拥有。
+
+标准结构为：`FeatureHeader → ToggleGrid → SettingsSection(s) → StyleCardGrid → DiagnosticsDisclosure`。诊断默认折叠；StyleCard/Grid 由当前可用宽度自动 1/2 列。`FormRow layout=auto` 在宽度不足时切 vertical，并修复旧 vertical Measure 把 width 当 height 的 bug。NumericField v7 的 `responsiveStack` 是 opt-in；标准 Settings numeric 默认开启，在窄宽度下 label 独占第一行，Slider + exact input + Apply 在第二行，Binding/持久化 Authority 不变。
+
+UITokens v6 的 `settings.*` 是统一密度来源；禁止业务页复制一组新的 `minCellWidth/gap/collapseWidth` 魔法值。Design System v8 只提供薄代理，不保存页面状态。
+
+
+### Settings Page Foundation v2（`.18.160`）
+
+`.18.159` 的首个真实 Consumer 揭示了一个组合层问题：`ScrollBox` 在 RU 中为避免未验证的任意裁剪，使用 direct-child 整项吸附；若一个 SettingsSection 自身高于当前剩余 viewport，它会整体进入下一滚动位置而不是画半截。这会让用户看到大面积空白。v2 因此明确：
+
+- `SettingsToggleGrid` 默认 `compact=true`，Toggle 保持 desired width，禁止默认 `fill` 成巨型横条；
+- `SettingsSection` / `SettingsStyleCard` 支持统一 headerHeight token；
+- `SettingsStyleCard` 默认更紧凑的 padding/gap/header；卡内重复 Slider 应优先改为 input-first 精确数值行，全局 Slider 作为快速调节入口；
+- Consumer 必须为 768p 提供可验证的 section-height budget，而不是只断言组件“已经创建”；
+- 所有变化仍只属于 Measure/Arrange Presentation，不拥有业务状态，也不新增 Tick/OnUpdate。
+
+契约：`SettingsFoundationContractVersion=2`、`SettingsCompactToggleContractVersion=1`、`SettingsScrollSafeCardContractVersion=1`、`SettingsStyleCardContractVersion=2`。
+
+### Settings Page Foundation v3（`.18.161`）
+
+`.18.160` 的 768p 压缩策略暴露出一个原则性错误：**不能通过删除 Slider 来解决布局问题**。`SettingsNumericSlider` 现在作为标准策略入口，强制复用 `NumericField` 的 Slider + exact NumericInput + Apply；`NumericField/NumericRangeStore` 继续唯一拥有 preview/commit/draft/adaptive-range。
+
+视觉层级同步收敛：`SettingsSection` 是 flat title + soft Divider 的信息架构容器，不再创建嵌套 Card Surface；`SettingsStyleCard` 才是实际分组 Surface，默认 `soft`、无 accent strip、无 gradient。响应式策略仍只基于 available width，禁止任何分辨率名称/尺寸分支。
+
+契约：`SettingsFoundationContractVersion=3`、`SettingsResponsiveContractVersion=2`、`SettingsStyleCardContractVersion=3`、`SettingsScrollSafeCardContractVersion=2`、`SettingsSectionHierarchyContractVersion=1`、`SettingsNumericSliderContractVersion=1`；Design System v10、UITokens v8。

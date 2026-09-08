@@ -127,7 +127,7 @@ Native Foundation 是所有原生对象、能力导入和写入边界的唯一�
 | `GearServiceV3` | 装备读取/换装受控能力 |
 | `InventorySnapshotV3` | 背包/银行/箱子的显式有界只读快照、物理 bagId Authority、单遍 identity/category 索引与 live slot revalidation；不拥有业务规则或写动作 |
 | `AlertsService` | 短生命周期 Alert 状态 |
-| `ScreenProjectionV3` | Native world/screen → **UIParent 屏幕坐标 Authority**；Unit Lines 优先原生单位屏幕事实，Range 走 EasyPull local-world Native→WorldToScreen Camera fallback，并在纯 Camera 批次用原生玩家屏幕锚点做一次整批刚性 `(dx,dy)` 校准。Service 输出 x/y 由 Presentation 1:1 锚定到 UIParent，Suite `addonScale` 只影响控件尺寸，禁止再次乘到世界投影位置 |
+| `ScreenProjectionV3` | Native world/screen → **UIParent 屏幕坐标 Authority**；Unit Lines 优先原生单位屏幕事实，Range 走 EasyPull local-world Native→WorldToScreen Camera fallback，并在纯 Camera 批次用原生玩家屏幕锚点做一次整批刚性 `(dx,dy)` 校准。Service 不知道 Presentation Host；最终 Child Anchor 由 Layout 的 Screen→Host Local Adapter 减去当前 Native Overlay Host 实际原点。Suite `addonScale` 只影响控件尺寸，禁止再次乘到世界投影位置 |
 | `AuctionQueryV3` | 当前挂单查询、事件所有权、串行化与限速边界 |
 | `PriceQuoteQueueV3` | 共享按需报价队列与 bounded quote read-model |
 | `AuctionSurfaceV3` | 只读观察原生 `UIC_AUCTION` 可见性/几何；Demand-scoped 250ms，兼容 RU 四值 MainScript 返回，不拥有收藏/查询/UI 状态 |
@@ -205,6 +205,18 @@ Panel A/B 保存整面板矩形，50 个槽位由几何派生；`auto / single /
 `StatusClassificationV3` 是“效果是什么”的唯一分类 Authority。Buff Display Store 使用分类分桶追踪，并保存头顶组件布局；Presentation 只消费 bounded detached projection。Aura 事件按需订阅并合并刷新，Consumer=0 时释放事件和任务。
 
 ## 9. Presentation / RSUI
+
+### 9.1 Resolution / Coordinate Foundation
+
+所有屏幕位置必须先声明坐标语义，禁止 Feature 自己维护分辨率补偿表：
+
+- 世界投影：`ScreenProjectionV3` 输出 UIParent Screen Coordinate；若最终 Widget 是顶层 Overlay Window 的 child，必须经 `Layout:ScreenPointToWidgetLocal` 转为 Host Local。转换使用 `(Host EffectiveOrigin - UIParent EffectiveOrigin)`，禁止把 UIParent 修正量重复扣除。
+- 自由悬浮窗口：持久化 exact logical x/y + source logical viewport + normalized center intent；同分辨率精确恢复，跨分辨率按意图重投影并保证顶部拖动区可找回。
+- 小型屏幕按钮：优先 `logical-edge-v1` 保存最近边缘/边距；Gear 已使用该契约，R launcher 的 legacy free 坐标先由 recoverable safety 承接，下一次用户拖动提交时升级为 edge intent。
+- 动态附着按钮：例如 Bag `取/放/停` 以当前 Native 背包窗口几何为 Authority，不把某次分辨率下的物理像素持久化。
+- `UI Scale / Addon Scale / Screen Projection` 是不同概念：Addon Scale 不得乘世界坐标；Native EffectiveOffset 由 Layout 统一归一到 logical UIParent。
+
+支持新分辨率不需要改业务代码；只要 Native UIParent metrics 可读，同一套转换自动适用 4:3、5:4、5:3、16:10、16:9 与其它尺寸。
 
 当前 UI 只有 V3 Presentation Host：
 
@@ -332,6 +344,27 @@ Editor Foundation 目前仍不直接迁移 Healer/Range 等后续业务页面。
 
 `.18.142–.18.149` 继续把 RU 实机交互回归收敛到共享 RSUI Foundation：Interactive Draft v3 明确把“草稿编辑 → Commit/校验 → Focus/Keyboard 释放”视为单一事务，单行 EditBox 禁止 Native Enter 先清文本；切换输入框时旧输入必须先结束生命周期。由于 RU EditBox 的 Enter 提交事件仍没有已验证 API，`.18.145` 的 Compact Numeric Setting 默认增加显式“应用”动作；Apply 读取 draft 后仍只走 Binding→Domain→Persistence，不建立第二 Authority。Numeric Adaptive Range 继续把代码 `min/max` 视为默认展示范围，只有 Domain 接受超出端点的精确值后才向外扩展并保存展示端点。DataView Resize Preview v1 则规定拖动列边界期间 `previewResolvedWidths` 是唯一 Geometry Authority，普通 Layout/虚拟行重绑只能消费 Preview，松手后才提交 committed widths。上述路径均事件驱动，不新增常驻 Tick/OnUpdate。`.18.147` 同时修正 `v3.rsui.numeric_ranges` 的 V3 owner namespace，并把视觉坐标边界写死为 `ScreenProjectionV3(UIParent screen) → VisualGuides 1:1 anchor`；任何 Suite `addonScale` 只能参与 UI 尺寸，不得再次缩放投影 x/y。 `.18.148` 同时把 Death Review 的历史 opaque-window 恢复升级为 bounded subset exact-match。`.18.149` 在实机继续失败后补齐 default-TRUE 业务布尔的历史歧义，并为 Death Review Index 增加 serializer-stable codec：两个默认真开关以 numeric disabled sentinel 持久化；历史候选仍必须逐字命中旧 stamp，恢复后由当前 canonical 归一 recovered Domain。该路径不构成新的持久化 Authority，也不放宽真实损坏 Fence。
 
+## 11.2 Settings Page Foundation（`.18.158–.18.161`）
+
+设置页不再允许各 Feature 自己手写一套“标题 + 大按钮 + 横向 Slider/EditBox + 调试表格”几何。`RSUI.SettingsFoundation v2` 只做 Presentation Composition，不拥有业务状态或第二套 Layout Authority：
+
+```text
+Feature Settings Page
+├── FeatureSettingsHeader        状态 / 功能开关 / 显式刷新
+├── SettingsSection
+│   ├── SettingsToggleGrid       boolean 选择
+│   └── ResponsiveNumericSetting Slider + Exact EditBox + Apply
+├── SettingsStyleCardGrid        available-width 驱动 2→1 列
+│   └── SettingsStyleCard        每类样式独立配置
+└── SettingsDiagnostics          默认折叠，仅承载运行时/开发诊断
+```
+
+响应式布局只消费当前容器 `availableWidth` 与 UITokens；禁止按 1024/1280/1920/2560 分辨率名称写分支。`FormRow layout=auto` 与 `NumericField responsiveStack` 负责窄宽度换行，Binding/Draft/Persistence Authority 不随 Presentation 重排而改变。Diagnostics 折叠只改变可见/Measure 状态，不 Acquire 新 Consumer、不启动 Scheduler。
+
+`.18.159` 的 `combat.unit_lines` 是首个正式 Consumer；`.18.160` 根据 RU 1280×768 实机截图修正 ToggleGrid 与 ScrollBox 组合，但为了压高度错误地把单线卡 Numeric 改成 `slider=false`。`.18.161` 撤销这种交互降级：SettingsFoundation v3 新增 `SettingsNumericSlider` 薄策略，所有 Unit Lines 数值设置重新统一到完整 `NumericField`（Slider + exact NumericInput + Apply + adaptive range）；Section 改为 flat title/divider，只让 StyleCard 承担分组 Surface，避免黄框嵌套。单线卡改为纵向两条完整 NumericSlider + ColorField，宽度驱动 2→1 列；不通过缩短 Slider 或删除控件来适配 768p。
+
+页面仍只调用 `feature:GetProjection()` 与 `feature.Commands:*`，不读取 `Feature.State`，不修改 UnitLines Store/Demand/ScreenProjection/Presenter Authority。`BusinessPagesContract.unitLineSettingsFoundationConsumerContractVersion=2` 与 Foundation/Audit/Harness 共同防止回退到旧手写布局。
+
 ## 12. 性能与生命周期基线
 
 - 禁止无必要 Tick / OnUpdate 常驻；优先事件驱动、Demand-scoped Scheduler、one-shot coalesce。
@@ -342,15 +375,15 @@ Editor Foundation 目前仍不直接迁移 Healer/Range 等后续业务页面。
 
 ## 13. 当前验证基线
 
-当前代码 BuildTag：`v3-m1.16.0.18.149-death-review-index-stable-codec-recovery`。
+当前代码 BuildTag：`v3-m1.16.0.18.158-settings-page-foundation`。
 
 当前本地结构门禁基线：
 
 ```text
 FOUNDATION_AUDIT PASS
-toc=222
-activeLua=222
-allLua=222
+toc=223
+activeLua=223
+allLua=223
 globals=0
 presentation=0
 rawNative=0
@@ -365,7 +398,7 @@ auctionEventOwners=0
 retiredUiLayer=0
 rsuiComponentApi=1
 presentationFeatureApi=1
-rsuiLoadDeps=2
+rsuiLoadDeps=3
 presentationRootHandlers=0
 ```
 
@@ -380,7 +413,7 @@ presentationRootHandlers=0
 
 ### `.18.150` Death Review 历史恢复边界
 
-Death Review 正常 Index Authority 仍是 Feature Store + stable codec；`history.entries` 的 `pairs()` 扫描只存在于一次性 Integrity mismatch historical recovery 中，不进入正常 Load/Save/Feature 生命周期。`.18.151` 对连续五轮实机确认的旧 v4 stamp `770CB0B8` 增加 Store 专属最终迁移桥：exact historical reconstruction 先执行；仅在它失败、Envelope Seal/metadata/schema/decode/budget/legacy-shape 全部通过且 fingerprint 精确在 Store allowlist 中时，才保留现存 Domain 并立即重盖 current codec。未知 fingerprint 继续 fail-closed。Snapshot 的 `historicalRecoveryProbe` 仅是 runtime 诊断，不是第二 Authority。 `.18.152` 把 Reload 后快捷界面状态纳入同一生命周期原则：Bag quick overlay 的低成本窗口观察独立默认启用，而重型 InventorySnapshot 仍显式按需；Gear quick buttons 的 persistent preference 与 page transient lease 严格分离，旧的“quick plan 已存在但 Feature preference=false”只执行一次 store-backed 启动意图修复，之后用户 disable 保持最终 Authority。 `.18.153` 进一步修正 Bag Native Window Fact：UIC_BAG/UIC_BANK/UIC_COFFER 不再假设 GetContentMainScriptPosVis 必有第 5 boolean；沿用 AuctionSurfaceV3 已验证的优先级（显式 boolean > ADDON:GetContent 短父链 IsVisible > 无更强事实时的合法四值 geometry），并让 RequireStorageWindow 与 Overlay 共享同一窗口事实。该观察仍是低频只读 Surface，不读取物品。显式 tools_bag=false 继续由 FeatureRuntime preference 保持最终 Authority，不做猜测式自动迁移。 `.18.154` 收口 Unit Lines 最终 Presentation 坐标边界：`GetUnitScreenPosition` 的 raw `(x,y)` 是端点 Authority，1×1 label dot 必须直接锚在该点；font size 仅改变 glyph，不得再用 `size/2` 改写路径几何。Range Assist 保留独立 calibration Authority。
+Death Review 正常 Index Authority 仍是 Feature Store + stable codec；`history.entries` 的 `pairs()` 扫描只存在于一次性 Integrity mismatch historical recovery 中，不进入正常 Load/Save/Feature 生命周期。`.18.151` 对连续五轮实机确认的旧 v4 stamp `770CB0B8` 增加 Store 专属最终迁移桥：exact historical reconstruction 先执行；仅在它失败、Envelope Seal/metadata/schema/decode/budget/legacy-shape 全部通过且 fingerprint 精确在 Store allowlist 中时，才保留现存 Domain 并立即重盖 current codec。未知 fingerprint 继续 fail-closed。Snapshot 的 `historicalRecoveryProbe` 仅是 runtime 诊断，不是第二 Authority。 `.18.152` 把 Reload 后快捷界面状态纳入同一生命周期原则：Bag quick overlay 的低成本窗口观察独立默认启用，而重型 InventorySnapshot 仍显式按需；Gear quick buttons 的 persistent preference 与 page transient lease 严格分离，旧的“quick plan 已存在但 Feature preference=false”只执行一次 store-backed 启动意图修复，之后用户 disable 保持最终 Authority。 `.18.153` 进一步修正 Bag Native Window Fact：UIC_BAG/UIC_BANK/UIC_COFFER 不再假设 GetContentMainScriptPosVis 必有第 5 boolean，并让 RequireStorageWindow 与 Overlay 共享同一窗口事实。`.18.162` 根据后续 RU 实机继续收口该契约：第 5 visible 接受 boolean/0-1/常见 string 形态；显式 Native visible/hidden 为最高 Authority，ADDON:GetContent 短父链只提供正向 visible 证据，hidden proxy 不得否决已经存在的合法 MainScript geometry。Bag Quick Presenter 也不再使用顶层 emptywidget/system layer，而是统一走真实 transient WINDOW Host；首次 admission 预创建 hidden Host，窗口实际可见期间由既有 350ms observer 发布 bounded visible heartbeat 允许 Presenter 临时创建失败后重试。该观察仍是低频只读 Surface，不读取物品、不建立 InventorySnapshot；显式 tools_bag=false 继续由 FeatureRuntime preference 保持最终 Authority，不做猜测式自动迁移。 `.18.154` 收口 Unit Lines 最终 Presentation 坐标边界：`GetUnitScreenPosition` 的 raw `(x,y)` 是端点 Authority，1×1 label dot 必须直接锚在该点；font size 仅改变 glyph，不得再用 `size/2` 改写路径几何。Range Assist 保留独立 calibration Authority。
 
 ## 14. 权威文档索引
 
@@ -409,3 +442,7 @@ RU Native 鼠标点击可能在 Lua `OnClick` 前先把 `GetFocusedWidgetId()` �
 
 ### `.18.155` EditBox Foundation
 RSUI TextInput/NumericInput 的草稿 Authority 只在显式 Commit/Reject/Cancel 边界回写 Native；任何未知 ambient Render source 在输入 ownership 期间不得覆盖草稿。Native EditBox 的 caret 使用已验证 `SetCursorColor/SetCursorHeight`，不再全局 select-all；Focus lifecycle 同时识别已登记 physical/logical identity，且重复点击已聚焦输入不重复 `SetFocus`，避免破坏 Native caret 位置。Disable/Release 必须 Cancel draft 并释放 Keyboard/Focus。该契约无 Tick、无 OnTextChanged/OnKeyDown/OnKeyUp。
+
+### Trade payout Authority boundary（.18.163）
+
+`life_trade` 继续拥有路线、模式、列表与用户配置；`X2Store:GetSpecialtyRatioBetween` 是实时货率唯一 Authority，`X2Ability:GetAllMyActabilityInfos` 是经商熟练度事实来源。`Services.TradePayoutV3` 是纯计算 Service：只读取 `TradePrices/TradeNameMultipliers`，负责 static price-key alias/larder canonical resolver 以及 `base × ratio × commerce × packCategory`，不调用 Native API、不持有 Consumer、不建 Scheduler。Presentation 只消费行上的 breakdown，不重算售价。

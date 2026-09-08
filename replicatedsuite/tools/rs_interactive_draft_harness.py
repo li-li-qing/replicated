@@ -440,7 +440,7 @@ def main() -> int:
         'component:On(native, "OnLeave"',
     ))
     require_source(FORMS, (
-        "RSUI.NumericInlineContractVersion = 6",
+        "RSUI.NumericInlineContractVersion = 7",
         "RSUI.NumericAdaptiveRangeContractVersion = 1",
         "RSUI.NumericExplicitApplyContractVersion = 1",
         "RSUI.NumericStepPairFallbackContractVersion = 1",

@@ -64,6 +64,7 @@ ui/framework/rs_ui_controls.lua
 ui/framework/rs_ui_composite_foundation.lua
 ui/framework/rs_ui_containers.lua
 ui/framework/rs_ui_forms.lua
+ui/framework/rs_ui_settings_foundation.lua
 ui/framework/rs_ui_transform_inspector.lua
 ui/framework/rs_ui_action_runner.lua
 ui/framework/rs_ui_interactions.lua
@@ -110,6 +111,8 @@ services/rs_auction_query_v3.lua
 services/rs_price_quote_queue_v3.lua
 services/rs_auction_surface_v3.lua
 services/rs_craft_surface_v3.lua
+services/rs_trade_payout_v3.lua
+services/rs_trade_material_identity_v3.lua
 features/rs_feature_registry.lua
 features/rs_feature_runtime.lua
 features/combat/analytics/rs_combat_metric_common.lua
@@ -167,6 +170,7 @@ presentation/v3/widgets/rs_v3_alert_hud.lua
 presentation/v3/widgets/rs_v3_combat_visual_guides.lua
 presentation/v3/widgets/rs_v3_life_economy_widgets.lua
 presentation/v3/widgets/rs_v3_trade_detail_floating.lua
+presentation/v3/widgets/rs_v3_trade_diagnostics.lua
 presentation/v3/widgets/rs_v3_bag_quick_overlay.lua
 presentation/v3/widgets/rs_v3_auction_sidecar.lua
 presentation/v3/widgets/rs_v3_craft_sidecar.lua

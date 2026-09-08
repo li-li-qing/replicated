@@ -12,7 +12,8 @@ if type(UI) ~= "table" or type(RSUI) ~= "table" then return end
 local Tokens = S.UITokens or {}
 local Layout = UI.LayoutV2
 RSUI.FormLayoutContractVersion = 2
-RSUI.NumericInlineContractVersion = 6
+RSUI.NumericInlineContractVersion = 7
+RSUI.NumericResponsiveStackContractVersion = 1
 RSUI.NumericExplicitApplyContractVersion = 1
 RSUI.NumericStepPairFallbackContractVersion = 1
 RSUI.FormCompositeFailClosedContractVersion = 1
@@ -424,6 +425,9 @@ RSUI:RegisterType("NumericField", function(spec)
     -- pages/HUD appearance editors: Name + Slider + exact NumericInput.  The
     -- same Binding remains the only business mutation/persistence authority.
     c.inline = spec.inline == true
+    c.inlineResponsiveStack = c.inline and spec.responsiveStack == true
+    c.inlineStackBelow = math.max(120, N(spec.stackBelow, Token("settings.numericStackBelow", 250)))
+    c.lastInlineLayoutMode = nil
     c.baseMinimum = tonumber(spec.min) or 0
     c.baseMaximum = tonumber(spec.max)
     -- Sliders require a finite presentation range. Exact-entry-only fields may
@@ -658,12 +662,32 @@ RSUI:RegisterType("NumericField", function(spec)
     end
 
     local BaseMeasure = c.Measure
+    function c:ResolveInlineLayoutMode(width)
+        local mode = (self.inlineResponsiveStack and tonumber(width) ~= nil and tonumber(width) < self.inlineStackBelow) and "stacked" or "inline"
+        if self.lastInlineLayoutMode ~= nil and self.lastInlineLayoutMode ~= mode then
+            RSUI.metrics.numericResponsiveModeChanges = (tonumber(RSUI.metrics.numericResponsiveModeChanges) or 0) + 1
+        end
+        self.lastInlineLayoutMode = mode
+        return mode
+    end
+    function c:GetInlineLayoutMode()
+        if not self.inline then return "field" end
+        return self.lastInlineLayoutMode or self:ResolveInlineLayoutMode(self.width or self.spec.width)
+    end
     function c:Measure(availableWidth, availableHeight)
         if not self.inline then return BaseMeasure(self, availableWidth, availableHeight) end
         local desiredW = tonumber(self.spec.desiredWidth) or tonumber(self.spec.width) or 300
         if tonumber(availableWidth) ~= nil and self.spec.allowOverflow ~= true then desiredW = math.min(desiredW, math.max(1, tonumber(availableWidth))) end
         local labelH = TextMetricHeight(self.label, 16)
-        local desiredH = math.max(labelH, self.controlPreferredHeight) + self.padding * 2
+        local controlH = math.max(self.controlMinHeight, self.controlPreferredHeight)
+        local mode = self:ResolveInlineLayoutMode(availableWidth or desiredW)
+        local gap = math.max(2, N(spec.controlGap, Token("spacing.xs", 5)))
+        local desiredH
+        if mode == "stacked" then
+            desiredH = labelH + gap + controlH + self.padding * 2
+        else
+            desiredH = math.max(labelH, controlH) + self.padding * 2
+        end
         if tonumber(self.spec.minHeight) ~= nil then desiredH = math.max(desiredH, tonumber(self.spec.minHeight)) end
         if tonumber(self.spec.maxHeight) ~= nil then desiredH = math.min(desiredH, tonumber(self.spec.maxHeight)) end
         self.desiredWidth, self.desiredHeight = desiredW, math.max(1, desiredH)
@@ -701,21 +725,20 @@ RSUI:RegisterType("NumericField", function(spec)
         if self.inline then
             local labelH = TextMetricHeight(self.label, 16)
             local controlH = math.max(self.controlMinHeight, self.controlPreferredHeight)
-            local naturalH = math.max(labelH, controlH) + self.padding * 2
+            local mode = self:ResolveInlineLayoutMode(w)
+            local gap = math.max(2, N(spec.controlGap, Token("spacing.xs", 5)))
+            local naturalH = mode == "stacked"
+                and (labelH + gap + controlH + self.padding * 2)
+                or (math.max(labelH, controlH) + self.padding * 2)
             local h = math.max(1, N(nextHeight, self.height or naturalH))
             self:SetBounds(x, y, w, h)
-            local gap = math.max(2, N(spec.controlGap, Token("spacing.xs", 5)))
-            -- Compact numeric rows now reserve an explicit Apply action to the
-            -- right of the exact editor.  Width allocation remains single-row
-            -- and responsive: on narrow pair cards the label/input/apply floors
-            -- shrink first, while the slider keeps a usable drag target.  This
-            -- avoids forcing every consumer into a new two-line layout.
+            -- Both modes use the same control-row width allocator. Stacked mode
+            -- removes the label from the horizontal budget before arranging the
+            -- slider/exact input/apply action, so narrow cards preserve usable
+            -- controls instead of compressing every element into unreadable slivers.
             local hasApply = self.apply ~= nil
             local narrow = hasApply and w < N(spec.compactApplyNarrowWidth, 220)
             if narrow then gap = math.min(gap, 3) end
-            local labelMinW = math.max(1, N(spec.labelMinWidth, narrow and 28 or 44))
-            local labelShare = math.max(0.10, math.min(0.70, N(spec.labelMaxShare, narrow and 0.25 or 0.34)))
-            local labelW = math.max(labelMinW, math.min(N(spec.labelWidth, narrow and 48 or 78), w * labelShare))
             local buttonW = N(spec.stepButtonWidth, 24)
             local inputMinW = math.max(42, N(spec.inputMinWidth, narrow and 42 or 54))
             local desiredInputW = math.max(inputMinW, N(spec.inputWidth, narrow and 48 or 76))
@@ -726,26 +749,35 @@ RSUI:RegisterType("NumericField", function(spec)
             local stepButtonsW = self.useStepButtons and (buttonW * 2 + gap * 2) or 0
             local sliderGapW = self.slider ~= nil and gap or 0
             local applyGapW = hasApply and gap or 0
-            local afterLabel = math.max(1, innerW - labelW - gap - stepButtonsW - sliderGapW - applyW - applyGapW)
+            local labelW = 0
+            local afterLabel = innerW
+            local controlY
+            if mode == "stacked" then
+                if self.label ~= nil then self.label:Layout(self.padding, self.padding, innerW, labelH) end
+                controlY = self.padding + labelH + gap
+            else
+                local labelMinW = math.max(1, N(spec.labelMinWidth, narrow and 28 or 44))
+                local labelShare = math.max(0.10, math.min(0.70, N(spec.labelMaxShare, narrow and 0.25 or 0.34)))
+                labelW = math.max(labelMinW, math.min(N(spec.labelWidth, narrow and 48 or 78), w * labelShare))
+                afterLabel = math.max(1, innerW - labelW - gap)
+                local labelY = math.max(0, math.floor((h - labelH) * 0.5))
+                if self.label ~= nil then self.label:Layout(self.padding, labelY, labelW, labelH) end
+                controlY = math.max(0, math.floor((h - controlH) * 0.5))
+            end
+            afterLabel = math.max(1, afterLabel - stepButtonsW - sliderGapW - applyW - applyGapW)
             local desiredSliderW = self.slider ~= nil and math.max(sliderMinW, math.floor(innerW * sliderPreferredShare + 0.5)) or 0
-            -- Exact editor yields before the slider, but never below the Native
-            -- NumericInput 42px technical floor.  If a consumer is pathologically
-            -- narrow, clamp label width before allowing sibling overlap.
             local minimumControlsW = (self.slider ~= nil and sliderMinW or 0) + inputMinW
-            if afterLabel < minimumControlsW then
+            if mode ~= "stacked" and afterLabel < minimumControlsW then
                 local deficit = minimumControlsW - afterLabel
                 local reducedLabel = math.max(18, labelW - deficit)
                 afterLabel = afterLabel + (labelW - reducedLabel)
                 labelW = reducedLabel
+                if self.label ~= nil then self.label:Layout(self.padding, math.max(0, math.floor((h - labelH) * 0.5)), labelW, labelH) end
             end
             local maxSliderW = self.slider ~= nil and math.max(1, afterLabel - inputMinW) or 0
             local sliderW = self.slider ~= nil and math.max(1, math.min(math.max(sliderMinW, desiredSliderW, afterLabel - desiredInputW), maxSliderW)) or 0
             local inputW = math.max(1, math.min(desiredInputW, afterLabel - sliderW))
-            local labelY = math.max(0, math.floor((h - labelH) * 0.5))
-            local controlY = math.max(0, math.floor((h - controlH) * 0.5))
-            local xx = self.padding
-            if self.label ~= nil then self.label:Layout(xx, labelY, labelW, labelH) end
-            xx = xx + labelW + gap
+            local xx = self.padding + (mode == "stacked" and 0 or (labelW + gap))
             if self.minus ~= nil then self.minus:Layout(xx, controlY, buttonW, controlH); xx = xx + buttonW + gap end
             if self.slider ~= nil then self.slider:Layout(xx, controlY + 2, sliderW, math.max(14, controlH - 4)); xx = xx + sliderW + gap end
             self.input:Layout(xx, controlY, inputW, controlH); xx = xx + inputW

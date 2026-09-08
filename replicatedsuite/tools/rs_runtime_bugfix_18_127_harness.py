@@ -32,7 +32,7 @@ def check_static_contracts() -> None:
     assert "if #session.blocked > 0 then\n        local first" not in GEAR
 
     trade_tokens = (
-        "Trade.Authority = { version = 5",
+        "Trade.Authority = { version = 6",
         "TA.RouteRefreshRetryContractVersion = 2",
         "TA.RequestTimeoutContractVersion = 1",
         "function TA:ArmRequestTimeout(serial)",
@@ -80,7 +80,7 @@ def check_static_contracts() -> None:
     assert "schemaVersion) == 6" in GATE
     acceptance_version = re.search(r"S\.UIV3Acceptance\s*=\s*\{\s*version\s*=\s*(\d+)", ACCEPTANCE)
     assert acceptance_version and int(acceptance_version.group(1)) >= 74
-    assert "bag_quick_take_put_contract_v8" in ACCEPTANCE
+    assert "bag_quick_take_put_contract_v9" in ACCEPTANCE
     assert "healer_native_roster_geometry_contract" in ACCEPTANCE
 
 

@@ -102,6 +102,19 @@ local function ReadBagWindowContext()
         if x < -width or y < -height or x > logicalWidth + width or y > logicalHeight + height then return false end
         return true
     end
+    -- RU native getters are inconsistent about boolean shape.  Treat only
+    -- explicit boolean-like values as authoritative; unknown values remain
+    -- unknown instead of being collapsed to false.
+    local function NativeFlag(value)
+        if type(value) == "boolean" then return true, value == true end
+        if type(value) == "number" and (value == 0 or value == 1) then return true, value == 1 end
+        if type(value) == "string" then
+            local text = value:lower():gsub("^%s+", ""):gsub("%s+$", "")
+            if text == "1" or text == "true" or text == "on" or text == "show" or text == "visible" then return true, true end
+            if text == "0" or text == "false" or text == "off" or text == "hide" or text == "hidden" then return true, false end
+        end
+        return false, false
+    end
     local function Content()
         if S.Api:IsCapabilityAllowed("ADDON:GetContent") ~= true or type(addonApi.GetContent) ~= "function" then return nil end
         local ok, value = S.Api:CallCapability("ADDON:GetContent", addonApi, "GetContent", bagContentId)
@@ -112,10 +125,13 @@ local function ReadBagWindowContext()
         for _ = 0, 8 do
             if node == nil then break end
             if type(node.IsVisible) == "function" then
-                local ok, isVisible = pcall(function() return node:IsVisible() end)
+                local ok, rawVisible = pcall(function() return node:IsVisible() end)
                 if ok == true then
-                    anyKnown = true
-                    if isVisible == true then return true, true end
+                    local known, isVisible = NativeFlag(rawVisible)
+                    if known == true then
+                        anyKnown = true
+                        if isVisible == true then return true, true end
+                    end
                 end
             end
             if type(node.GetParent) ~= "function" then break end
@@ -150,31 +166,33 @@ local function ReadBagWindowContext()
     end)
     x, y, width, height = Number(x), Number(y), Number(width), Number(height)
     local mainRect = ok == true and PlausibleRect(x, y, width, height)
+    local nativeKnown, nativeVisible = NativeFlag(visible)
     local resolvedVisible
-    if type(visible) == "boolean" then
-        resolvedVisible = visible == true
-    elseif contentKnown == true then
-        -- RU builds can omit the fifth return value.  When the native content
-        -- tree exposes visibility, it is a stronger fact than stale geometry.
-        resolvedVisible = contentVisible == true
-    elseif mainRect == true then
-        -- Proven RU compatibility path shared with AuctionSurfaceV3: a valid
-        -- four-value MainScript rectangle is an open signal only when no
-        -- stronger content-visibility fact exists.
+    if nativeKnown == true then
+        resolvedVisible = nativeVisible == true
+    elseif contentVisible == true then
         resolvedVisible = true
+    elseif mainRect == true then
+        -- A hidden/non-visual ADDON content proxy must not veto a valid native
+        -- MainScript rectangle.  This was the remaining RU bag/bank failure:
+        -- GetContent() could expose a proxy whose IsVisible=false while the
+        -- actual MainScript window was open and returned valid geometry.
+        resolvedVisible = true
+    elseif contentKnown == true then
+        resolvedVisible = false
     else
         resolvedVisible = false
     end
     if mainRect == true then
         context.status, context.visible = "ready", resolvedVisible
         context.x, context.y, context.width, context.height = x, y, width, height
-        context.source = type(visible) == "boolean" and "main-script" or (contentKnown and "main-script+content-vis" or "main-script-geometry")
+        context.source = nativeKnown and "main-script" or (contentVisible and "main-script+content-visible" or (contentKnown and "main-script-geometry-over-proxy" or "main-script-geometry"))
         return context
     end
 
     local px, py, pw, ph, source = ContentRect(content)
     if px ~= nil then
-        context.status, context.visible = "ready", contentKnown == true and contentVisible == true
+        context.status, context.visible = "ready", contentVisible == true
         context.x, context.y, context.width, context.height, context.source = px, py, pw, ph, source
         return context
     end
@@ -197,6 +215,26 @@ local function ReadStorageWindowContext(target)
         result.reason = "仓储窗口几何 API 不可用"; return result
     end
 
+    local layoutContext = S.Layout ~= nil and type(S.Layout.GetContext) == "function" and S.Layout:GetContext() or {}
+    local logicalWidth = math.max(320, tonumber(layoutContext.logicalWidth) or 1024)
+    local logicalHeight = math.max(240, tonumber(layoutContext.logicalHeight) or 768)
+    local function PlausibleRect(x, y, width, height)
+        x, y, width, height = Number(x), Number(y), Number(width), Number(height)
+        return x ~= nil and y ~= nil and width ~= nil and height ~= nil and width > 0 and height > 0
+            and width <= logicalWidth * 2 and height <= logicalHeight * 2
+            and x >= -width and y >= -height and x <= logicalWidth + width and y <= logicalHeight + height
+    end
+    local function NativeFlag(value)
+        if type(value) == "boolean" then return true, value == true end
+        if type(value) == "number" and (value == 0 or value == 1) then return true, value == 1 end
+        if type(value) == "string" then
+            local text = value:lower():gsub("^%s+", ""):gsub("%s+$", "")
+            if text == "1" or text == "true" or text == "on" or text == "show" or text == "visible" then return true, true end
+            if text == "0" or text == "false" or text == "off" or text == "hide" or text == "hidden" then return true, false end
+        end
+        return false, false
+    end
+
     local content
     if S.Api:IsCapabilityAllowed("ADDON:GetContent") == true and type(addonApi.GetContent) == "function" then
         local contentOk, value = S.Api:CallCapability("ADDON:GetContent", addonApi, "GetContent", contentId)
@@ -207,10 +245,13 @@ local function ReadStorageWindowContext(target)
     for _ = 0, 8 do
         if node == nil then break end
         if type(node.IsVisible) == "function" then
-            local visOk, isVisible = pcall(function() return node:IsVisible() end)
+            local visOk, rawVisible = pcall(function() return node:IsVisible() end)
             if visOk == true then
-                contentKnown = true
-                if isVisible == true then contentVisible = true; break end
+                local known, isVisible = NativeFlag(rawVisible)
+                if known == true then
+                    contentKnown = true
+                    if isVisible == true then contentVisible = true; break end
+                end
             end
         end
         if type(node.GetParent) ~= "function" then break end
@@ -221,26 +262,30 @@ local function ReadStorageWindowContext(target)
 
     local ok, x, y, width, height, visible = pcall(function() return addonApi:GetContentMainScriptPosVis(contentId) end)
     x, y, width, height = Number(x), Number(y), Number(width), Number(height)
-    local layoutContext = S.Layout ~= nil and type(S.Layout.GetContext) == "function" and S.Layout:GetContext() or {}
-    local logicalWidth = math.max(320, tonumber(layoutContext.logicalWidth) or 1024)
-    local logicalHeight = math.max(240, tonumber(layoutContext.logicalHeight) or 768)
-    local mainRect = ok == true and x ~= nil and y ~= nil and width ~= nil and height ~= nil and width > 0 and height > 0
-        and width <= logicalWidth * 2 and height <= logicalHeight * 2
-        and x >= -width and y >= -height and x <= logicalWidth + width and y <= logicalHeight + height
+    local mainRect = ok == true and PlausibleRect(x, y, width, height)
+    local nativeKnown, nativeVisible = NativeFlag(visible)
     local resolvedVisible
-    if type(visible) == "boolean" then resolvedVisible = visible == true
-    elseif contentKnown == true then resolvedVisible = contentVisible == true
+    if nativeKnown == true then resolvedVisible = nativeVisible == true
+    elseif contentVisible == true then resolvedVisible = true
     elseif mainRect == true then resolvedVisible = true
+    elseif contentKnown == true then resolvedVisible = false
     else resolvedVisible = false end
 
     if mainRect == true then
         result.status, result.visible = "ready", resolvedVisible
         result.x, result.y, result.width, result.height = x, y, width, height
-        result.source = type(visible) == "boolean" and "main-script" or (contentKnown and "main-script+content-vis" or "main-script-geometry")
+        result.source = nativeKnown and "main-script" or (contentVisible and "main-script+content-visible" or (contentKnown and "main-script-geometry-over-proxy" or "main-script-geometry"))
+        return result
+    end
+    -- Storage geometry is not required to anchor the quick bar; the bag owns
+    -- presentation geometry. A positively visible content chain is sufficient
+    -- to prove that bank/coffer actions are currently meaningful.
+    if contentVisible == true then
+        result.status, result.visible, result.source = "ready", true, "content-visible"
         return result
     end
     if contentKnown == true then
-        result.status, result.visible, result.source, result.reason = "ready", contentVisible == true, contentVisible and "content-visible" or "content-hidden", nil
+        result.status, result.visible, result.source, result.reason = "ready", false, "content-hidden", nil
         return result
     end
     result.reason = ok ~= true and "仓储窗口几何读取失败" or "仓储窗口几何/可见性返回值未知"
@@ -960,6 +1005,9 @@ local function RefreshBagQuickOverlay(feature)
     local visible=type(bag)=="table" and bag.status=="ready" and bag.visible==true and type(storage)=="table"
     local old=feature._quickOverlay or {}
     local nextState=Copy(old)
+    nextState.observerRuns=(tonumber(old.observerRuns) or 0)+1
+    nextState.lastObserverAt=type(S.NowMs)=="function" and tonumber(S.NowMs()) or 0
+    nextState.featureEnabled=feature.enabled==true
     nextState.visible=visible==true; nextState.storageKind=storage and storage.kind or nil
     nextState.bagStatus=bag and bag.status or "unknown"
     nextState.bagVisible=bag and bag.visible==true or false
@@ -982,7 +1030,12 @@ local function RefreshBagQuickOverlay(feature)
         or old.bankStatus~=nextState.bankStatus or old.bankVisible~=nextState.bankVisible or old.bankSource~=nextState.bankSource or old.bankReason~=nextState.bankReason
         or old.cofferStatus~=nextState.cofferStatus or old.cofferVisible~=nextState.cofferVisible or old.cofferSource~=nextState.cofferSource or old.cofferReason~=nextState.cofferReason
     feature._quickOverlay=nextState
-    if changed then PublishBagOverlay(feature,"bag_quick_window") end
+    -- While the native storage surface is visible, emit a low-rate heartbeat
+    -- even when geometry is unchanged. Presentation creation is a different
+    -- failure domain from native-window observation; if the first WINDOW build
+    -- is transiently rejected, the next 350 ms observation must get a chance to
+    -- retry instead of waiting for the user to close/reopen the warehouse.
+    if changed or visible==true then PublishBagOverlay(feature,changed and "bag_quick_window" or "bag_quick_visible_heartbeat") end
     return true
 end
 
@@ -2912,9 +2965,11 @@ end, commands = {
 BagTools.BagMoveContractVersion = 8
 BagTools.FullStorageContinuationContractVersion = 1
 BagTools.BatchLifecycleContractVersion = 5
-BagTools.NativeWindowQuickContractVersion = 6
-BagTools.ReloadQuickObserverContractVersion = 2
-BagTools.RUFourValueWindowVisibilityContractVersion = 1
+BagTools.NativeWindowQuickContractVersion = 7
+BagTools.ReloadQuickObserverContractVersion = 3
+BagTools.RUFourValueWindowVisibilityContractVersion = 2
+BagTools.NativeVisibilityShapeContractVersion = 1
+BagTools.VisiblePresenterRetryContractVersion = 1
 BagTools.DynamicSourceResolutionContractVersion = 3
 BagTools.QuickIdentityFallbackContractVersion = 1
 BagTools.BagTaskMutexContractVersion = 1

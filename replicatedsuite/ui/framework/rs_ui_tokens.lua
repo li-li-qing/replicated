@@ -6,7 +6,7 @@ local S = ReplicatedSuite
 local C = S.Constants or {}
 
 local Tokens = {
-    version = 5,
+    version = 8,
     spacing = { xxs = 2, xs = 4, sm = 8, md = 12, lg = 16, xl = 24, xxl = 32 },
     font = { caption = 9, small = 10, body = 11, bodyLarge = 12, section = 13, title = 15, hero = 18 },
     size = {
@@ -39,6 +39,16 @@ local Tokens = {
         card = { padding = 10, gap = 6 },
         form = { rowH = 28, fieldH = 52, compactFieldH = 46, gap = 6, labelW = 116, controlW = 180, feedbackW = 96 },
         grid = { gapX = 8, gapY = 8 },
+    },
+    settings = {
+        pagePadding = 0, sectionGap = 8, sectionPadding = 6, sectionFlatPadding = 0, sectionInnerGap = 4, itemGap = 5, gridGap = 6,
+        headerGap = 4, headerMinHeight = 28, sectionHeaderHeight = 20,
+        toggleMinWidth = 150, toggleMinHeight = 26, toggleCompactWidth = 142,
+        styleCardMinWidth = 300, styleCardMinHeight = 116, styleCardPadding = 5, styleCardHeaderHeight = 20, cardItemGap = 3,
+        settingRowCollapseWidth = 360, settingRowGap = 8, labelShare = 0.30, labelMinWidth = 92, controlMinWidth = 140,
+        diagnosticsPadding = 10, diagnosticsItemGap = 5,
+        numericStackBelow = 250, numericPadding = 4, numericLabelWidth = 92, numericInputWidth = 72,
+        numericMinHeight = 32, applyButtonWidth = 42,
     },
 }
 

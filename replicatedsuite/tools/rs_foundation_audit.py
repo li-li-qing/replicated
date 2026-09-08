@@ -617,12 +617,14 @@ def main() -> int:
     unit_guide_path = root / "presentation/v3/widgets/rs_v3_combat_visual_guides.lua"
     unit_guide_source = unit_guide_path.read_text(encoding="utf-8-sig", errors="replace") if unit_guide_path.is_file() else ""
     for token in (
-        "P.version = 10",
+        "P.version = 11",
         "P.watchdogTask = P.watchdogTask or \"v3_visual_guides_lifecycle_watchdog\"",
         "function P:ConvergeTick()",
         "P.ScreenCoordinateAuthorityContractVersion = 1",
-        "P.UnitLineRawProjectedAnchorContractVersion = 1",
-        "coordinateSpace=\"ui_parent_screen\"",
+        "P.UnitLineRawProjectedAnchorContractVersion = 2",
+        "P.ScreenToOverlayHostContractVersion = 1",
+        "P.ResolutionIndependentOverlayContractVersion = 1",
+        "coordinateSpace=\"ui_parent_screen_to_host_local\"",
         "S.UI:CreateOverlayWindow(\"v3_visual_\" .. kind .. \"_host\", self.owner)",
         "local UNIT_LINE_PAIR_HARD_CAP = 160",
         "local function UnitLineTotalBudget(refreshMs)",
@@ -630,7 +632,9 @@ def main() -> int:
         "local function UnitLinePoolGrowthBudget(pressure)",
         "local function DesiredUnitLinePointCount(length, baseCount)",
         "function P:BuildUnitLineSamplePlan(rows, projection, logicalW, logicalH, pressure)",
-        "function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b)",
+        "function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b, hostTransform)",
+        "function P:ResolveHostTransform(host)",
+        "local function HostLocalPoint(transform, x, y)",
         "P.AdaptiveUnitLineSamplingContractVersion = 2",
         "P.UnitLineVisibleSegmentClippingContractVersion = 1",
         "P.UnitLinePressureBudgetContractVersion = 1",
@@ -646,6 +650,10 @@ def main() -> int:
     place_unit_code = place_unit_match.group(0) if place_unit_match else ""
     if re.search(r"(?:x|y)\s*\)\s*or\s*0\s*\)\s*-\s*size\s*/\s*2", place_unit_code):
         failures.append("Unit line regression: 1x1 label anchor subtracts half font size from projected coordinate")
+    place_range_match = re.search(r"function\s+P:PlaceDot\(.*?\nend", unit_guide_code, re.S)
+    place_range_code = place_range_match.group(0) if place_range_match else ""
+    if re.search(r"(?:x|y)\s*\)\s*or\s*0\s*\)\s*-\s*size\s*/\s*2", place_range_code):
+        failures.append("Range regression: 1x1 label anchor subtracts half font size from projected coordinate")
     if re.search(r"function\s+P:RenderUnit\(\).*?local\s+count\s*=\s*math\.max\(8\s*,\s*math\.min\(48", unit_guide_code, re.S):
         failures.append("Unit line regression: RenderUnit restored fixed final 8..48 point count")
     for token in (
@@ -1151,6 +1159,35 @@ def main() -> int:
         else:
             component_api_gate_ok = True
 
+    # Developer package gate: a `local function X` used above its own definition
+    # line is valid Lua syntax but explodes at runtime as "attempt to call a nil
+    # value" (Lua locals are not hoisted). This bit twice in consecutive rounds
+    # (.18.172 NormalizeQuote->ToMoney, .18.173 RunProtocolProbe->ScanPrice and
+    # _CheckFallback->CompletePending) and neither luaparser nor a text fence
+    # caught it, so it becomes a standing gate instead of a lesson learned once.
+    local_order_gate_ok = False
+    local_order_audit = root / "tools/rs_lua_local_order_audit.py"
+    if not local_order_audit.is_file():
+        failures.append("Lua local order audit missing: tools/rs_lua_local_order_audit.py")
+    else:
+        scan_dirs = [d for d in ("services", "features", "presentation", "core", "ui", "data")
+                     if (root / d).is_dir()]
+        proc = subprocess.run(
+            [sys.executable, str(local_order_audit)] + [
+                str(f.relative_to(root)).replace("\\", "/")
+                for d in scan_dirs for f in sorted((root / d).rglob("*.lua"))
+            ],
+            capture_output=True, text=True, cwd=str(root),
+        )
+        output = (proc.stdout + proc.stderr).strip()
+        if proc.returncode != 0:
+            failures.append("Lua local order audit failed: "
+                            + " | ".join(x for x in output.splitlines() if "FAIL" in x)[:1200])
+        elif "LUA_LOCAL_ORDER_AUDIT PASS" not in output:
+            failures.append("Lua local order audit missing PASS marker")
+        else:
+            local_order_gate_ok = True
+
     # Developer package gate: Presentation must only call Feature/Commands
     # methods that are actually exported by the corresponding runtime feature.
     # This catches Lua-valid failures such as Feature.Commands:MissingMethod()
@@ -1311,6 +1348,7 @@ def main() -> int:
     dps_store_source = (root / "features/combat/dps/rs_dps_store.lua").read_text(encoding="utf-8-sig", errors="replace")
     dps_widget_source = (root / "presentation/v3/widgets/rs_v3_dps_widget.lua").read_text(encoding="utf-8-sig", errors="replace")
     trade_feature_source = (root / "features/life/rs_life_m16_bundle.lua").read_text(encoding="utf-8-sig", errors="replace")
+    trade_payout_source = (root / "services/rs_trade_payout_v3.lua").read_text(encoding="utf-8-sig", errors="replace")
     trade_page_source = (root / "presentation/v3/pages/rs_v3_life_m16_pages.lua").read_text(encoding="utf-8-sig", errors="replace")
     trade_widget_source = (root / "presentation/v3/widgets/rs_v3_life_economy_widgets.lua").read_text(encoding="utf-8-sig", errors="replace")
     trade_detail_source = (root / "presentation/v3/widgets/rs_v3_trade_detail_floating.lua").read_text(encoding="utf-8-sig", errors="replace")
@@ -1367,21 +1405,38 @@ def main() -> int:
         "function TA:RefreshCommerceSkill()",
         "function Trade:SetRatioMode(mode)",
         "function Trade:SetCommerceMode(mode)",
-        'commercePriceFormulaStatus = "unverified"',
+        'commercePriceFormulaStatus = "supplied_working_v1"',
+        'packPriceMultiplierStatus = "supplied_working_v1"',
     ):
         if token not in trade_feature_source:
             failures.append("Trade route/quote Authority contract missing: " + token)
     for token in (
-        "TradeDpsFreshReloadPreflightContractVersion = 1",
+        "TradeDpsFreshReloadPreflightContractVersion = 2",
         '"dps_widget_visibility_preference_contract"',
         '"trade_dropdown_quote_preflight_contract"',
     ):
         if token not in acceptance_source:
             failures.append("Trade/DPS runtime acceptance preflight missing: " + token)
 
-    # .18.119 Trade/Craft/Task local continuation.  Explicit market queries
-    # stay user-triggered; current/full comparison is local-only; commerce skill
-    # remains observation-only until the exact RU payout formula is proven.
+    # Trade/Craft/Task continuation. Explicit market queries stay user-triggered;
+    # Trade payout math is isolated in TradePayoutV3 and may only combine the live
+    # X2Store ratio / X2Ability skill facts with bounded static payout data.
+    for token in (
+        "PriceFormulaContractVersion = 1",
+        "StaticPriceKeyResolverContractVersion = 2",
+        "CommerceMultiplierContractVersion = 1",
+        "PackCategoryMultiplierContractVersion = 1",
+        "1 + (skill / 10000 * 0.05)",
+        "S.Data and S.Data.TradeNameMultipliers",
+        "function P:ResolvePriceKey(destination, itemName, originZoneName)",
+        "function P:Estimate(spec)",
+    ):
+        if token not in trade_payout_source:
+            failures.append("Trade payout calculator contract missing: " + token)
+    for forbidden in ("X2Store", "X2Ability", "Scheduler", "AddTask", "Tick", "OnUpdate"):
+        code = strip_lua_comments(trade_payout_source)
+        if forbidden in code:
+            failures.append("Trade payout calculator crossed pure-service boundary: " + forbidden)
     for token in (
         "local function CraftProjection(feature)",
         "QuotePendingMaterials = function(feature)",
@@ -1440,7 +1495,7 @@ def main() -> int:
         if token not in trade_widget_source:
             failures.append("Trade detail/favorites widget contract missing: " + token)
     for token in (
-        "TradeDetailContractVersion = 1",
+        "TradeDetailContractVersion = 2",
         'feature:AcquireConsumer("floating:trade_detail")',
         'feature.Commands:QuoteRowMaterials(M.rowKey)',
         'feature.Commands:ToggleCurrentFavorite()',
@@ -1620,7 +1675,8 @@ def main() -> int:
         if token not in controls_source:
             failures.append("RSUI Interactive Draft contract missing: " + token)
     for token in (
-        "RSUI.NumericInlineContractVersion = 6",
+        "RSUI.NumericInlineContractVersion = 7",
+        "RSUI.NumericResponsiveStackContractVersion = 1",
         "RSUI.NumericAdaptiveRangeContractVersion = 1",
         "RSUI.NumericExplicitApplyContractVersion = 1",
         "RSUI.NumericStepPairFallbackContractVersion = 1",
@@ -1799,9 +1855,12 @@ def main() -> int:
         "local LAUNCHER_LOGICAL_SIZE = 30",
         "local size = LAUNCHER_LOGICAL_SIZE",
         "LAUNCHER_LOGICAL_SIZE, LAUNCHER_LOGICAL_SIZE",
+        '{ mode = "strict" }',
     ):
         if token not in launcher_store_source:
-            failures.append("Recovery launcher sizing contract missing: " + token)
+            failures.append("Recovery launcher sizing/responsive-edge contract missing: " + token)
+    if 'mode = "strict"' not in bootstrap_source[bootstrap_source.find('if moved == true and S.Layout ~= nil'):bootstrap_source.find('return true', bootstrap_source.find('if moved == true and S.Layout ~= nil'))]:
+        failures.append("Recovery launcher placement regression: drag commit must persist strict edge intent")
     apply_launcher = launcher_store_source[launcher_store_source.find("function V3:ApplyLauncherPlacement"):launcher_store_source.find("function V3:ResetLauncherPlacement")]
     if "addonScale" in apply_launcher:
         failures.append("Recovery launcher sizing regression: ApplyLauncherPlacement must not multiply by addonScale")
@@ -1829,6 +1888,66 @@ def main() -> int:
     ):
         if token not in component_core_source:
             failures.append("RSUI degraded-root fail-closed contract missing: " + token)
+
+    settings_foundation_source = (root / "ui/framework/rs_ui_settings_foundation.lua").read_text(encoding="utf-8-sig", errors="replace")
+    settings_design_source = (root / "ui/design_system/rs_ui_design_system_v3.lua").read_text(encoding="utf-8-sig", errors="replace")
+    for token in (
+        "F.contractVersion = 3",
+        "F.responsiveContractVersion = 2",
+        "F.diagnosticsDisclosureContractVersion = 1",
+        "F.styleCardContractVersion = 3",
+        "F.compactToggleContractVersion = 1",
+        "F.scrollSafeCardContractVersion = 2",
+        "function F:CreateHeader(spec)",
+        "function F:CreateToggleGrid(spec)",
+        "function F:CreateStyleCardGrid(spec)",
+        "function F:CreateStyleCard(spec)",
+        "function F:CreateDiagnosticsDisclosure(spec)",
+        "function F:CreateSettingRow(spec)",
+        "function F:CreateNumericSetting(spec)",
+        "F.sectionHierarchyContractVersion = 1",
+        "F.numericSliderContractVersion = 1",
+        "function F:CreateNumericSliderSetting(spec)",
+        "responsiveStack = spec.responsiveStack ~= false",
+    ):
+        if token not in settings_foundation_source:
+            failures.append("RSUI settings foundation contract missing: " + token)
+    for token in (
+        "S.UIV3Design = { version = 10 }",
+        "function D:FeatureSettingsHeader(parent, spec)",
+        "function D:SettingsToggleGrid(parent, spec)",
+        "function D:SettingsStyleCard(parent, spec)",
+        "function D:SettingsDiagnostics(parent, spec)",
+        "function D:ResponsiveNumericSetting(parent, spec)",
+        "function D:SettingsNumericSlider(parent, spec)",
+    ):
+        if token not in settings_design_source:
+            failures.append("V3 settings design-system contract missing: " + token)
+
+    business_pages_source = (root / "presentation/v3/pages/rs_v3_business_pages.lua").read_text(encoding="utf-8-sig", errors="replace")
+    unit_line_start = business_pages_source.find('elseif id == "combat_unit_lines" then')
+    unit_line_end = business_pages_source.find('elseif id == "combat_range_assist" then', unit_line_start)
+    unit_line_settings_source = business_pages_source[unit_line_start:unit_line_end] if unit_line_start >= 0 and unit_line_end > unit_line_start else ""
+    for token in (
+        "unitLineSettingsFoundationConsumerContractVersion = 3",
+        'D:FeatureSettingsHeader(root, {',
+        'D:SettingsSection(root, {',
+        'D:SettingsToggleGrid(',
+        'D:SettingsNumericSlider(',
+        'D:SettingsStyleCardGrid(',
+        'D:SettingsStyleCard(',
+        'D:SettingsDiagnostics(root, {',
+        'expanded = false',
+        'compact = true, toggleWidth = 142',
+        'minHeight = 116',
+        'hardMax = 24',
+    ):
+        haystack = business_pages_source if token in ("unitLineSettingsFoundationConsumerContractVersion = 3", 'D:FeatureSettingsHeader(root, {') else unit_line_settings_source
+        if token not in haystack:
+            failures.append("Unit Lines settings-foundation consumer contract missing: " + token)
+    for token in ('D:CompactNumericSetting(', 'D:ResponsiveNumericSetting(', 'slider = false', 'v3_business_combat_unit_lines_pair_appearance', '1280', '1920', '2560'):
+        if token in unit_line_settings_source:
+            failures.append("Unit Lines settings-foundation consumer regressed to legacy/resolution-specific layout: " + token)
 
     controls_source = (root / "ui/framework/rs_ui_controls.lua").read_text(encoding="utf-8-sig", errors="replace")
     for token in (
@@ -1979,8 +2098,10 @@ def main() -> int:
         failures.append("Unverified native UI reparent operation: " + ", ".join(reparent_refs[:20]))
 
     token_source = (root / "ui/framework/rs_ui_tokens.lua").read_text(encoding="utf-8-sig", errors="replace")
+    if "settings = {" not in token_source or "settingRowCollapseWidth = 360" not in token_source or "numericStackBelow = 250" not in token_source or "toggleCompactWidth = 142" not in token_source or "styleCardHeaderHeight = 20" not in token_source:
+        failures.append("UI settings token contract missing: ui/framework/rs_ui_tokens.lua")
     if any(token not in token_source for token in (
-        "version = 5", "shellPriority = 100", "floatingPriority = 1000",
+        "version = 8", "shellPriority = 100", "floatingPriority = 1000",
         "popupPriority = 10000", "modalPriority = 12000",
     )):
         failures.append("UI token top-level layer contract missing: ui/framework/rs_ui_tokens.lua")
@@ -2072,7 +2193,7 @@ def main() -> int:
         + f" productTruth={len(product_truth_failures)}"
         + f" auctionEventOwners={len(auction_event_authority_failures)}"
         + f" retiredUiLayer={len(retired_ui_layer_failures)}"
-        + f" rsuiComponentApi={1 if component_api_gate_ok else 0}"
+        + f" rsuiComponentApi={1 if component_api_gate_ok else 0} luaLocalOrder={1 if local_order_gate_ok else 0}"
         + f" presentationFeatureApi={1 if presentation_feature_api_gate_ok else 0}"
         + f" rsuiLoadDeps={rsui_dependency_checks}"
         + f" presentationRootHandlers={len(presentation_root_handler_refs)}"

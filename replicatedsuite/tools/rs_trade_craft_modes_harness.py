@@ -12,6 +12,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 trade = (ROOT / "features/life/rs_life_m16_bundle.lua").read_text(encoding="utf-8-sig")
+payout = (ROOT / "services/rs_trade_payout_v3.lua").read_text(encoding="utf-8-sig")
 business = (ROOT / "features/rs_business_bridge.lua").read_text(encoding="utf-8-sig")
 trade_page = (ROOT / "presentation/v3/pages/rs_v3_life_m16_pages.lua").read_text(encoding="utf-8-sig")
 trade_widget = (ROOT / "presentation/v3/widgets/rs_v3_life_economy_widgets.lua").read_text(encoding="utf-8-sig")
@@ -28,13 +29,15 @@ require("trade_full_ratio_130", "local TRADE_FULL_RATIO = 130" in trade)
 require("trade_persisted_ratio_mode", 'ratioMode = "current"' in trade and '"trade_ratio_mode"' in trade)
 require("trade_persisted_commerce_mode", 'commerceMode = "observe"' in trade and '"trade_commerce_mode"' in trade)
 require("trade_commerce_official_getter", 'Call("X2Ability:GetAllMyActabilityInfos"' in trade)
-require("trade_commerce_projection_unverified_formula", 'commercePriceFormulaStatus = "unverified"' in trade and 'priceIncludesCommerce = false' in trade)
+require("trade_commerce_projection_working_formula", 'commercePriceFormulaStatus = "supplied_working_v1"' in trade and 'packPriceMultiplierStatus = "supplied_working_v1"' in trade)
 require("trade_keeps_current_ratio_fact", "currentRatio = ratio" in trade and "row.currentRatio = current" in trade)
 require("trade_local_rebuild", "function TA:RebuildDisplayRows(reason)" in trade)
 require("trade_main_mode_controls", 'id = "v3_trade_ratio_mode"' in trade_page and 'id = "v3_trade_commerce_mode"' in trade_page)
 require("trade_widget_mode_controls", 'id = "v3_life_trade_widget_ratio_mode"' in trade_widget and 'id = "v3_life_trade_widget_commerce_mode"' in trade_widget)
-# Do not resurrect the legacy guessed commerce payout formula.
-require("trade_no_legacy_skill_multiplier", not re.search(r"commerceSkill\s*[*/+-]|skill\s*/\s*10000|0\.05\s*\*\s*.*skill", trade, re.I))
+require("trade_payout_isolated_service", 'function P:Estimate(spec)' in payout and '1 + (skill / 10000 * 0.05)' in payout)
+require("trade_pack_multiplier_restored", 'S.Data and S.Data.TradeNameMultipliers' in payout)
+require("trade_larder_key_resolver_restored", 'function P:ResolvePriceKey(destination, itemName, originZoneName)' in payout)
+require("trade_bundle_uses_payout_service", 'S.Services and S.Services.TradePayoutV3' in trade and 'row.priceBreakdown' in trade)
 
 craft_read_start = business.find("local function CraftRead(feature)")
 craft_commands_start = business.find("local function CraftCommands()")

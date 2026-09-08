@@ -74,6 +74,7 @@ function RSUI:NewComponent(kind,spec,root)
   function c:SetBounds(x,y,w,h) self.x=x;self.y=y;self.width=w;self.height=h;return true end
   function c:Layout(x,y,w,h) self.layout={x=x,y=y,w=w,h=h}; self:SetBounds(x,y,w,h); return h end
   function c:Measure() return self.width,self.height end
+  function c:SetVisibility(v) self.visibility=v; return true end
   function c:Release() self.released=true; return 1 end
   return c
 end
@@ -82,7 +83,7 @@ local function textStub(spec)
   function c:SetText(v) self.text=tostring(v or "");return true end
   function c:SetTone() return true end
   function c:SetVisibility() return true end
-  function c:Layout() return true end
+  function c:Layout(x,y,w,h) self.layout={x=x,y=y,w=w,h=h}; return true end
   function c:Measure() return spec.width or 80,spec.height or 18 end
   return c
 end
@@ -197,9 +198,17 @@ assert(fa.apply.layout and (fa.apply.layout.x+fa.apply.layout.w)<=147,"narrow Ap
 assert(fa.slider.layout and fa.slider.layout.w>=1 and fa.input.layout and fa.input.layout.w>=1,"narrow controls collapsed invalidly")
 assert((RSUI.metrics.numericRangeExpansions or 0)>=3,"range expansion metric missing")
 assert(saves>=3,"range persistence was not exercised")
-print("UI_ADAPTIVE_RANGE_LUA PASS 26/26")
+-- Opt-in responsive compact row: wide remains one-line, narrow stacks the label
+-- above the control row without changing the Binding/commit authority.
+local fs=assert(factories.NumericField({id="field.stack",parent={},min=1,max=10,step=1,integer=true,slider=true,stepButtons=false,applyButton=true,inline=true,responsiveStack=true,stackBelow=200,
+  get=function() return domain.main end,set=function(v) domain.main=v; return true end}))
+fs:Layout(0,0,300,32); assert(fs:GetInlineLayoutMode()=="inline","wide responsive numeric unexpectedly stacked")
+fs:Layout(0,0,160,60); assert(fs:GetInlineLayoutMode()=="stacked","narrow responsive numeric did not stack")
+assert(fs.label.layout and fs.input.layout and fs.input.layout.y>fs.label.layout.y,"stacked label/control geometry did not separate vertically")
+assert(fs.apply.layout and (fs.apply.layout.x+fs.apply.layout.w)<=160,"stacked Apply overflowed narrow row")
+print("UI_ADAPTIVE_RANGE_LUA PASS 30/30")
 '''.replace("@@FORMS@@", forms)
-    run_lua(lua, "UI_ADAPTIVE_RANGE_LUA PASS 26/26")
+    run_lua(lua, "UI_ADAPTIVE_RANGE_LUA PASS 30/30")
 
 
 def store_harness() -> None:

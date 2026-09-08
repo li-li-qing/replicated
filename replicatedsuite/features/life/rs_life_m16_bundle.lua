@@ -147,7 +147,7 @@ local Trade = { Id = "life_trade", storeId = "v3.life.trade", enabled = false, s
 S.Features.Trade = Trade
 Trade.UpdateTopic = "v3.life.trade.updated"
 Trade.State = { fromZone = nil, toZone = nil, favorites = {}, sortMode = "ratio", ratioMode = "current", commerceMode = "observe", widgetVisible = false, widgetWindow = nil }
-Trade.Authority = { version = 5, revision = 0, zones = {}, sellableZones = {}, rows = {}, selectedKey = nil, status = "idle", error = nil, inFlight = nil, zoneFallback = false, sellableFallback = false, sellableError = nil, commerceSkill = nil, commerceStatus = "idle", commerceName = nil, commerceError = nil }
+Trade.Authority = { version = 6, revision = 0, zones = {}, sellableZones = {}, rows = {}, selectedKey = nil, status = "idle", error = nil, inFlight = nil, zoneFallback = false, sellableFallback = false, sellableError = nil, commerceSkill = nil, commerceStatus = "idle", commerceName = nil, commerceError = nil }
 InstallLifeWidgetContract(Trade, { defaultWidth = 470, defaultHeight = 340, minWidth = 320, minHeight = 220, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 })
 local TA = Trade.Authority
 TA.RouteRefreshRetryContractVersion = 2
@@ -157,13 +157,14 @@ TA.requestTimeoutTask = "v3_trade_route_timeout"
 TA.requestSerial = tonumber(TA.requestSerial) or 0
 TA.pendingRoute = nil
 TA.sellableCache = {}
+TA.TradePayoutProjectionContractVersion = 1
 local TRADE_CONTINENT_ORDER = { west = 1, east = 2, auroria = 3, other = 4 }
 local TRADE_ANCHORS_W = { [1] = true, [5] = true, [8] = true, [20] = true }
 local TRADE_ANCHORS_E = { [4] = true, [12] = true, [17] = true }
--- Official ArcheAge trade-pack demand caps at 130%.  The live RU commerce
--- proficiency payout multiplier is deliberately NOT guessed here: current/full
--- ratio comparison is local math, while commerce proficiency is observation-only
--- until the exact payout formula has RU evidence.
+-- Official ArcheAge trade-pack demand caps at 130%. Current/full ratio remains
+-- a local comparison mode. Commerce proficiency and pack-category multipliers
+-- are now restored through TradePayoutV3 from the supplied working implementation;
+-- X2Store/X2Ability remain the live fact Authorities.
 local TRADE_FULL_RATIO = 130
 local TRADE_RATIO_MODES = { current = true, full = true }
 local TRADE_COMMERCE_MODES = { observe = true, off = true }
@@ -286,12 +287,16 @@ function Trade:GetFavoriteItems()
     return result
 end
 
-local function TradePrice(destination, name, ratio)
-    local tableForZone = S.Data and S.Data.TradePrices and S.Data.TradePrices[Number(destination)]
-    local raw = type(tableForZone) == "table" and tableForZone[Text(name)] or nil
-    local base = type(raw) == "table" and Number(raw[1]) or Number(raw)
-    if base == nil then return nil end
-    return math.floor(base * (Number(ratio) or 0) + 0.5)
+local function TradePrice(destination, name, ratio, commerceSkill, originZoneName, includeCommerce)
+    local payout = S.Services and S.Services.TradePayoutV3 or nil
+    if type(payout) ~= "table" or type(payout.Estimate) ~= "function" then
+        return nil, { status = "trade_payout_service_unavailable" }
+    end
+    return payout:Estimate({
+        destination = destination, itemName = name, ratio = ratio,
+        commerceSkill = commerceSkill, originZoneName = originZoneName,
+        includeCommerce = includeCommerce == true,
+    })
 end
 
 -- Trade material projection is deliberately bounded because the route event is
@@ -300,7 +305,27 @@ end
 -- and total cost; a truncated recipe never reports its subtotal as a complete
 -- cost.
 local TRADE_MATERIAL_MAX_ROWS = 32
+-- Player-facing Chinese name for an itemType, via the shared Localization
+-- Authority. Internal identifiers (English data keys, compact ids, craftType
+-- numbers, English legacy recipe names) must never be rendered as a row label:
+-- the Suite's users are players on a Chinese RU client. Returns nil only when
+-- no localized fact exists, so callers can choose an honest generic wording.
+function LocalizedTradeItemName(itemType, fallbackText)
+    local id = tonumber(itemType)
+    if id ~= nil and S.Localization ~= nil and type(S.Localization.GetName) == "function" then
+        local name = S.Localization:GetName("item", math.floor(id), nil)
+        if type(name) == "string" and name ~= "" and not name:match("^ID%s+%d+$") then return name end
+    end
+    local text = tostring(fallbackText or "")
+    -- Reject ASCII-only leftovers ("Ground Grain", "Halcyona Preserved Specialty",
+    -- "3") which are internal identifiers rather than player-readable names.
+    if text ~= "" and not text:match("^[A-Za-z0-9_ .%-%+%%:/]+$") then return text end
+    return nil
+end
+
 local TRADE_MATERIAL_KEY_MAX_CHARS = 48
+-- Table cells hold "name×count" only; keep the bound tight so four materials fit.
+local TRADE_MATERIAL_CELL_MAX_CHARS = 26
 local TRADE_MATERIAL_SUMMARY_ROW_MAX_CHARS = 120
 local TRADE_MATERIAL_SUMMARY_MAX_CHARS = 4096
 
@@ -311,16 +336,86 @@ local function BoundedTradeText(value, fallback, maxChars)
     return text
 end
 
-local function BuildTradeMaterialProjection(name)
+-- Ingredient identity comes from the curated trade_material record (resolved by
+-- EN key or compactId), falling back to what the ingredient row itself carries
+-- (live craft rows). The legacy recipe tables store "material.xxx" registry
+-- keys while the auction meta table is EN-name keyed — resolve through the
+-- record instead of trusting the raw key.
+local function ResolveTradeIngredient(static, meta, ingredient)
+    local record = nil
+    if type(static) == "table" then
+        if type(static.GetMaterialByLegacyName) == "function" and ingredient.materialKey ~= nil then
+            record = static:GetMaterialByLegacyName(ingredient.materialKey)
+        end
+        if record == nil and type(static.GetMaterialByCompactId) == "function" and tonumber(ingredient.compactId) ~= nil then
+            record = static:GetMaterialByCompactId(ingredient.compactId)
+        end
+    end
+    local item = (record == nil and type(meta) == "table") and meta[ingredient.materialKey] or nil
+    local itemType = (record and tonumber(record.itemId)) or (item and tonumber(item.itemType)) or tonumber(ingredient.itemType)
+    local itemGrade = (record and tonumber(record.itemGrade)) or (item and tonumber(item.itemGrade)) or tonumber(ingredient.itemGrade)
+    local includeInCost = not (record and record.includeInCost == false) and not (item and item.includeInCost == false)
+    if ingredient.includeInCost == false then includeInCost = false end
+    local materialKey = tostring((record and record.nameEn) or ingredient.materialKey or ingredient.compactId or "?")
+    return materialKey, itemType, itemGrade, includeInCost
+end
+
+local function BuildTradeMaterialProjection(row)
+    row = type(row) == "table" and row or {}
+    local name = tostring(row.sourceName or row.name or "")
     local static = S.Data and S.Data.TradeStaticV2
+    local identity = S.Services and S.Services.TradeMaterialIdentityV3 or nil
     local recipe = static and type(static.GetRecipeByLegacyName) == "function" and static:GetRecipeByLegacyName(name) or nil
     local ingredients = type(recipe) == "table" and recipe.ingredients or nil
+    local recipeLabel = type(recipe) == "table" and tostring(recipe.legacyName or name) or nil
+    -- Diagnostics-only trace (source ids / craftType). Kept off every rendered
+    -- row so pages show Chinese product wording and nothing else.
+    local identityDetail = nil
+    local identitySource = type(recipe) == "table" and "static_recipe" or nil
     local result = {
         rows = {}, materialRows = {}, summary = "材料待确认", sourceCount = 0,
         truncated = false, costCopper = nil, subtotalCopper = 0,
         costComplete = false, costStatus = "unavailable",
+        identityStatus = "unresolved", recipeLabel = nil, identitySource = nil,
     }
-    if type(ingredients) ~= "table" then return result end
+    -- Layer 2/3 of the identity chain: shared static families and the
+    -- originZone Authority + localized family tail (pure data, no native calls),
+    -- then the live craft cache (read-only peek; native reads run only in the
+    -- identity service's bounded queue).
+    if type(ingredients) ~= "table" and type(identity) == "table" and type(identity.ResolveStatic) == "function" then
+        local resolved = identity:ResolveStatic(name, row.originZone)
+        if type(resolved) == "table" and type(resolved.rows) == "table" and #resolved.rows > 0 then
+            ingredients = resolved.rows
+            recipeLabel, identitySource = tostring(resolved.label or "?"), tostring(resolved.source or "static")
+            identityDetail = tostring(resolved.source or "static") .. ":" .. tostring(resolved.label or "?")
+            -- The static table is keyed by English legacy recipe names ("Halcyona
+            -- Preserved Specialty"). Prefer the localized product name for display.
+            recipeLabel = LocalizedTradeItemName(row.itemType, recipeLabel) or recipeLabel
+        end
+    end
+    if type(ingredients) ~= "table" and row.itemType ~= nil and type(identity) == "table" and type(identity.GetCachedLive) == "function" then
+        local live = identity:GetCachedLive(row.itemType)
+        if type(live) == "table" and type(live.rows) == "table" and #live.rows > 0 then
+            ingredients = live.rows
+            -- A craftType number is an internal identifier, never a label. The
+            -- product's own localized name is the only honest player-facing text;
+            -- craftType stays on the diagnostics-only identityDetail field.
+            recipeLabel = LocalizedTradeItemName(row.itemType, nil) or "配方已识别"
+            identitySource = "live"
+            identityDetail = "live craftType=" .. tostring(live.craftType or "?")
+        end
+    end
+    if type(ingredients) ~= "table" then
+        -- "解析中" only while the live attempt is still queued/in flight; once
+        -- the attempt terminated (ready-but-empty or failed), say 未匹配.
+        local liveAttempted = row.itemType ~= nil and type(identity) == "table"
+            and type(identity.HasLiveAttempt) == "function" and identity:HasLiveAttempt(row.itemType) or false
+        result.identityStatus = (row.itemType ~= nil and not liveAttempted) and "live_pending" or "unresolved"
+        result.summary = result.identityStatus == "live_pending" and "配方解析中…" or "配方未匹配"
+        return result
+    end
+    result.identityStatus, result.recipeLabel, result.identitySource = "resolved", recipeLabel, identitySource
+    result.identityDetail = identityDetail
 
     local meta = S.Data and S.Data.TradeMaterialAuctionMeta
     local sourceCount = #ingredients
@@ -334,13 +429,10 @@ local function BuildTradeMaterialProjection(name)
     local total, complete = 0, sourceCount > 0
     for index = 1, limit do
         local ingredient = type(ingredients[index]) == "table" and ingredients[index] or {}
-        local materialKey = ingredient.materialKey or ingredient.compactId or "?"
         local count = math.max(0, tonumber(ingredient.count) or 0)
-        local item = type(meta) == "table" and meta[ingredient.materialKey] or nil
-        local itemType = item and tonumber(item.itemType) or nil
-        local itemGrade = item and tonumber(item.itemGrade) or nil
+        local materialKey, itemType, itemGrade, includeInCost = ResolveTradeIngredient(static, meta, ingredient)
         local unitCost, totalCost, status = nil, nil, "price_pending"
-        local includeInCost = not (item and item.includeInCost == false)
+        local quoteState, quoteError = nil, nil
 
         if not includeInCost then
             totalCost, status = 0, "excluded"
@@ -349,28 +441,89 @@ local function BuildTradeMaterialProjection(name)
         else
             -- Material identity is a local fact. Price is not: GetLowestPrice is
             -- cooldown-bound and must never fan out from an ordinary route refresh.
-            -- Instead read the shared PriceQuoteQueueV3 read model: if a quote has
-            -- already completed for this itemType (via an explicit user quote in
-            -- CraftAssist/AuctionFavorites), resolve the unit cost here; otherwise
-            -- stay "explicit_quote_required" without issuing a server request.
+            -- Instead read the shared PriceQuoteQueueV3 read model: a completed
+            -- quote resolves the unit cost here; an in-flight request renders
+            -- quote_pending; a failed one renders quote_failed with its real
+            -- error instead of an endless 待询价. No server request is issued.
+            -- Three-tier price resolution (user-requested design):
+            --   1. a live quote completed this session        -> "quoted"
+            --   2. otherwise the persisted reference table    -> "quoted_reference"
+            --   3. otherwise pending / failed / never queried -> honest states
+            -- A reference value still costs into the margin (the player asked for a
+            -- usable number immediately), but it is labelled separately everywhere:
+            -- auction listings are manipulable, so an old sample must never be
+            -- presented as current market data.
             local quoteQueue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
-            local quotedPrice
-            if type(quoteQueue) == "table" and type(quoteQueue.GetPriceByItemType) == "function" then
-                quotedPrice = quoteQueue:GetPriceByItemType(itemType, itemGrade)
+            local quotedPrice, priceProvenance
+            if type(quoteQueue) == "table" and type(quoteQueue.GetQuoteStateByItemType) == "function" then
+                quoteState = quoteQueue:GetQuoteStateByItemType(itemType, itemGrade)
             end
-            if quotedPrice ~= nil then
+            if quoteState ~= nil and quoteState.status == "ready" and quoteState.price ~= nil then
+                quotedPrice, priceProvenance = quoteState.price, "live"
+            elseif quoteState == nil and type(quoteQueue) == "table" and type(quoteQueue.GetPriceWithProvenance) == "function" then
+                quotedPrice, priceProvenance = quoteQueue:GetPriceWithProvenance(itemType, itemGrade)
+            end
+            if quotedPrice ~= nil and priceProvenance ~= "reference" then
                 unitCost, totalCost, status = quotedPrice, quotedPrice * count, "quoted"
+            elseif quotedPrice ~= nil then
+                unitCost, totalCost, priceProvenance, status = quotedPrice, quotedPrice * count, "reference", "quoted_reference"
+            elseif quoteState ~= nil and (quoteState.status == "queued" or quoteState.status == "inflight") then
+                -- An explicit re-quote is in flight: keep showing any reference cost
+                -- rather than regressing to "pending" while it runs.
+                local referenceOnly
+                if type(quoteQueue) == "table" and type(quoteQueue.GetReferencePrice) == "function" then
+                    referenceOnly = quoteQueue:GetReferencePrice(itemType, itemGrade)
+                end
+                if referenceOnly ~= nil then
+                    unitCost, totalCost, priceProvenance, status = referenceOnly, referenceOnly * count, "reference", "quoted_reference"
+                else
+                    complete, status = false, "quote_pending"
+                end
+            elseif quoteState ~= nil and quoteState.status == "failed" then
+                local referenceOnly
+                if type(quoteQueue) == "table" and type(quoteQueue.GetReferencePrice) == "function" then
+                    referenceOnly = quoteQueue:GetReferencePrice(itemType, itemGrade)
+                end
+                quoteError = type(quoteState.error) == "string" and quoteState.error or tostring(quoteState.code or "报价失败")
+                if referenceOnly ~= nil then
+                    unitCost, totalCost, priceProvenance, status = referenceOnly, referenceOnly * count, "reference", "quoted_reference"
+                else
+                    complete, status = false, "quote_failed"
+                end
             else
-                complete, status = false, "explicit_quote_required"
+                local referenceOnly, referenceMeta
+                if type(quoteQueue) == "table" and type(quoteQueue.GetReferencePrice) == "function" then
+                    referenceOnly, referenceMeta = quoteQueue:GetReferencePrice(itemType, itemGrade)
+                end
+                if referenceOnly ~= nil then
+                    unitCost, totalCost, priceProvenance, status = referenceOnly, referenceOnly * count, "reference", "quoted_reference"
+                else
+                    complete, status = false, "explicit_quote_required"
+                end
             end
         end
         if totalCost ~= nil then total = total + totalCost end
 
+        -- Player-facing text only. `materialKey` is the canonical English data
+        -- key ("Chopped Produce"); showing it to a player on a Chinese client is
+        -- unreadable noise. Resolve through the identity service's display
+        -- resolver (Localization Authority first) and keep the internal key on a
+        -- diagnostics-only field instead of the rendered name.
+        local identityService = S.Services and S.Services.TradeMaterialIdentityV3 or nil
+        local displayName = (type(identityService) == "table" and type(identityService.ResolveMaterialDisplayName) == "function"
+            and identityService:ResolveMaterialDisplayName({
+                itemType = itemType, materialKey = materialKey,
+            })) or nil
+        if displayName == nil or displayName == "" then
+            displayName = LocalizedTradeItemName(itemType, materialKey)
+        end
         local row = {
             index = index,
             materialKey = materialKey,
             compactId = tonumber(ingredient.compactId),
-            name = BoundedTradeText(materialKey, "?", TRADE_MATERIAL_KEY_MAX_CHARS),
+            -- Diagnostics-only: never rendered on a page/HUD row.
+            internalKey = BoundedTradeText(materialKey, "?", TRADE_MATERIAL_KEY_MAX_CHARS),
+            name = BoundedTradeText(displayName or "材料", "材料", TRADE_MATERIAL_KEY_MAX_CHARS),
             count = count,
             itemType = itemType,
             itemGrade = itemGrade,
@@ -379,23 +532,34 @@ local function BuildTradeMaterialProjection(name)
             totalCostCopper = totalCost,
             costCopper = totalCost,
             costStatus = status,
+            quoteState = status == "quote_pending" and tostring(quoteState.status) or nil,
+            quoteError = quoteError ~= nil and BoundedTradeText(quoteError, "报价失败", 96) or nil,
         }
-        local detail = row.name .. "×" .. tostring(row.count)
+        -- Compact cell text: name × count only. Per-material price/status detail
+        -- lives on the row fields below (consumed by the detail window and the
+        -- diagnostics panel), not in the scanned table cell.
+        row.detailText = row.name .. "×" .. tostring(row.count)
         if status == "excluded" then
-            detail = detail .. "（不计成本）"
+            row.detailText = row.detailText .. "（不计成本）"
         elseif unitCost ~= nil and totalCost ~= nil then
-            detail = detail .. "（单价 " .. Money(unitCost) .. " / 小计 " .. Money(totalCost) .. "）"
+            row.detailText = row.detailText .. "（单价 " .. Money(unitCost) .. " / 小计 " .. Money(totalCost)
+                .. (priceProvenance == "reference" and "，参考" or "") .. "）"
+        elseif status == "quote_pending" then
+            row.detailText = row.detailText .. "（询价" .. (row.quoteState == "inflight" and "中" or "排队中") .. "）"
+        elseif status == "quote_failed" then
+            row.detailText = row.detailText .. "（询价失败）"
         else
-            detail = detail .. (status == "explicit_quote_required" and "（价格需显式询价）" or "（单价待确认）")
+            row.detailText = row.detailText .. (status == "explicit_quote_required" and "（价格需显式询价）" or "（单价待确认）")
         end
-        row.summaryText = BoundedTradeText(detail, row.name .. "×" .. tostring(row.count), TRADE_MATERIAL_SUMMARY_ROW_MAX_CHARS)
+        row.summaryText = BoundedTradeText(row.detailText, row.name .. "×" .. tostring(row.count), TRADE_MATERIAL_SUMMARY_ROW_MAX_CHARS)
+        row.cellText = BoundedTradeText(row.name .. "×" .. tostring(row.count), row.name, TRADE_MATERIAL_CELL_MAX_CHARS)
         result.rows[#result.rows + 1] = row
         result.materialRows[#result.materialRows + 1] = row
     end
 
     local summaryParts, summaryChars = {}, 0
     for _, row in ipairs(result.materialRows) do
-        local part = row.summaryText
+        local part = row.cellText or row.summaryText
         local nextChars = summaryChars + #part + (#summaryParts > 0 and 3 or 0)
         if nextChars > TRADE_MATERIAL_SUMMARY_MAX_CHARS then
             -- Keep the collection/cost contract explicit even if a future
@@ -419,17 +583,9 @@ local function BuildTradeMaterialProjection(name)
     return result
 end
 
-local function TradeMaterialSummary(name)
-    return BuildTradeMaterialProjection(name).summary
-end
-
-local function TradeMaterialCost(name)
-    return BuildTradeMaterialProjection(name).costCopper
-end
-
 local function ApplyTradeMaterialProjectionToRow(row)
     if type(row) ~= "table" then return false end
-    local materialProjection = BuildTradeMaterialProjection(row.sourceName or row.name)
+    local materialProjection = BuildTradeMaterialProjection(row)
     local cost = materialProjection.costCopper
     local price = tonumber(row.priceCopper)
     local profit = price and cost and (price - cost) or nil
@@ -445,18 +601,54 @@ local function ApplyTradeMaterialProjectionToRow(row)
     row.materialCostStatus = materialProjection.costStatus
     row.materialCostComplete = materialProjection.costComplete
     row.materialSubtotalCopper = materialProjection.subtotalCopper
-    row.profit = profit and Money(profit) or (price and "待材料价格" or "--")
+    row.identityStatus = materialProjection.identityStatus
+    row.recipeLabel = materialProjection.recipeLabel
+    row.identitySource = materialProjection.identitySource
+    row.materialIdentityPending = materialProjection.identityStatus == "live_pending"
+    -- .18.176 RU evidence: GetLowestPrice returns nil for every grade on every
+    -- control itemType (oats/hay/egg included), so a material cost is currently
+    -- unobtainable on this client. "待材料价格" used to imply the number was merely
+    -- pending; say what is actually missing and where the player can still get a
+    -- usable estimate (the sell price and 货率 columns remain real facts).
+    row.profit = profit and Money(profit) or (price and "缺材料价（拍卖行无返回）" or "--")
     return true
 end
 
+-- Actionable quote backlog: never-quoted materials plus failed ones the user can
+-- retry. In-flight (queued/inflight) materials are NOT counted here; they have
+-- their own counter so the button reflects only what a click would submit.
 local function PendingTradeQuoteCount(rows)
     local seen, count = {}, 0
     for _, row in ipairs(type(rows) == "table" and rows or {}) do
         for _, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
             local key = material.materialKey
-            if material.costStatus == "explicit_quote_required" and key ~= nil and seen[key] ~= true then
+            if (material.costStatus == "explicit_quote_required" or material.costStatus == "quote_failed")
+                and key ~= nil and seen[key] ~= true then
                 seen[key], count = true, count + 1
             end
+        end
+    end
+    return count
+end
+
+local function InFlightTradeQuoteCount(rows)
+    local seen, count = {}, 0
+    for _, row in ipairs(type(rows) == "table" and rows or {}) do
+        for _, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
+            local key = material.materialKey
+            if material.costStatus == "quote_pending" and key ~= nil and seen[key] ~= true then
+                seen[key], count = true, count + 1
+            end
+        end
+    end
+    return count
+end
+
+local function UnresolvedTradeIdentityCount(rows)
+    local count = 0
+    for _, row in ipairs(type(rows) == "table" and rows or {}) do
+        if row.materialIdentityPending == true or (row.identityStatus ~= nil and row.identityStatus ~= "resolved") then
+            count = count + 1
         end
     end
     return count
@@ -479,8 +671,35 @@ local function ApplyTradeDisplayModeToRow(row)
     row.currentRatio = current
     row.ratio = ratio
     row.rate = tostring(math.floor(ratio + 0.5)) .. "%"
-    row.priceCopper = TradePrice(row.destinationZone or Trade.State.toZone, row.sourceName or row.name, ratio)
-    row.price = row.priceCopper and Money(row.priceCopper) or "--"
+    local includeCommerce = Trade.State.commerceMode ~= "off"
+    local price, estimate = TradePrice(
+        row.destinationZone or Trade.State.toZone, row.sourceName or row.name, ratio,
+        TA.commerceSkill, TradeZoneName(row.originZone or Trade.State.fromZone), includeCommerce)
+    estimate = type(estimate) == "table" and estimate or {}
+    row.priceCopper = price
+    row.price = price and Money(price) or "--"
+    row.priceEstimateStatus = tostring(estimate.status or "unavailable")
+    row.priceComplete = estimate.complete == true
+    row.priceKey = estimate.priceKey
+    row.priceKeyMode = estimate.keyMode
+    row.priceFormulaSource = estimate.formulaSource
+    row.priceBaseAtRatioCopper = estimate.baseAtRatioCopper
+    row.commerceMultiplier = tonumber(estimate.commerceMultiplier)
+    row.commerceApplied = estimate.commerceApplied == true
+    row.packMultiplier = tonumber(estimate.packMultiplier)
+    row.packMultiplierToken = estimate.packToken
+    row.packMultiplierSource = estimate.packMultiplierSource
+    if row.priceComplete then
+        row.priceBreakdown = "货率基价 " .. Money(estimate.baseAtRatioCopper)
+            .. " × 熟练 " .. string.format("%.3f", tonumber(estimate.commerceMultiplier) or 1)
+            .. " × 品类 " .. string.format("%.2f", tonumber(estimate.packMultiplier) or 1)
+    elseif row.priceEstimateStatus == "commerce_skill_unavailable" then
+        row.priceBreakdown = "经商熟练度不可读，已停止输出不完整售价"
+    elseif row.priceEstimateStatus == "price_key_missing" then
+        row.priceBreakdown = "静态售价 Key 未匹配：" .. tostring(row.sourceName or row.name or "?")
+    else
+        row.priceBreakdown = "售价估算不可用：" .. row.priceEstimateStatus
+    end
     row.tone = ratio >= 125 and "green" or (ratio >= 115 and "yellow" or "red")
     ApplyTradeMaterialProjectionToRow(row)
     return true
@@ -539,6 +758,92 @@ function TA:RefreshQuotedMaterial(materialKey)
     self.revision = self.revision + 1
     PublishFeatureUpdate(Trade, self.revision, changed and "trade_quote_completed" or "trade_quote_completed_unmatched")
     return changed
+end
+
+-- Live identity fill-in: after a route result, rows the static chain could not
+-- name submit ONE bounded service request per distinct product itemType; the
+-- identity service serializes the X2Craft reads and calls back here.
+local function RequestPendingLiveIdentities()
+    local identity = S.Services and S.Services.TradeMaterialIdentityV3 or nil
+    if type(identity) ~= "table" or type(identity.RequestLive) ~= "function" then return end
+    local requested = {}
+    for _, row in ipairs(TA.rows or {}) do
+        local itemType = tonumber(row.itemType)
+        if row.materialIdentityPending == true and itemType ~= nil and requested[itemType] ~= true then
+            requested[itemType] = true
+            identity:RequestLive("life_trade", itemType, function(requestItemType)
+                return TA:ApplyLiveIdentity(requestItemType)
+            end)
+        end
+    end
+end
+
+function TA:ApplyLiveIdentity(itemType)
+    local changed = false
+    for _, row in ipairs(self.rows or {}) do
+        if tonumber(row.itemType) ~= nil and tonumber(row.itemType) == tonumber(itemType) then
+            ApplyTradeMaterialProjectionToRow(row)
+            changed = true
+        end
+    end
+    if changed then
+        self.revision = self.revision + 1
+        PublishFeatureUpdate(Trade, self.revision, "trade_identity_live")
+    end
+    return changed
+end
+
+function TA:CancelLiveIdentities()
+    local identity = S.Services and S.Services.TradeMaterialIdentityV3 or nil
+    if type(identity) == "table" and type(identity.CancelRequester) == "function" then
+        return identity:CancelRequester("life_trade")
+    end
+    return 0
+end
+
+function TA:DescribeIdentityState()
+    local total, unresolved, livePending, firstUnresolved = #(self.rows or {}), 0, 0, nil
+    for _, row in ipairs(self.rows or {}) do
+        if row.identityStatus == "live_pending" then livePending = livePending + 1 end
+        if row.identityStatus ~= nil and row.identityStatus ~= "resolved" then
+            unresolved = unresolved + 1
+            if firstUnresolved == nil then firstUnresolved = tostring(row.sourceName or row.name or "?") end
+        end
+    end
+    local identity = S.Services and S.Services.TradeMaterialIdentityV3 or nil
+    return {
+        rows = total, unresolved = unresolved, livePending = livePending,
+        firstUnresolved = firstUnresolved,
+        live = type(identity) == "table" and type(identity.Describe) == "function" and identity:Describe() or nil,
+    }
+end
+
+-- Bounded init/refresh milestone ring. The user-facing reload symptom "很多东
+-- 西没有初始化成功" cannot be reproduced statically; this trace records what
+-- actually happened during demand 0->1 (store restore, zones, commerce, route)
+-- so the diagnostics panel answers it with facts on the next repro.
+local function TraceInit(event, detail)
+    TA.initTrace = type(TA.initTrace) == "table" and TA.initTrace or {}
+    TA.initTrace[#TA.initTrace + 1] = {
+        at = S.NowMs and S.NowMs() or 0,
+        event = tostring(event),
+        detail = tostring(detail or ""),
+    }
+    if #TA.initTrace > 12 then table.remove(TA.initTrace, 1) end
+end
+
+function TA:DescribeInitTrace()
+    local out = {}
+    for _, record in ipairs(type(TA.initTrace) == "table" and TA.initTrace or {}) do
+        out[#out + 1] = { at = tonumber(record.at) or 0, event = tostring(record.event), detail = tostring(record.detail or "") }
+    end
+    return {
+        enabled = Trade.enabled == true,
+        runtimeEnabled = S.FeatureRuntime ~= nil and S.FeatureRuntime:IsEnabled(Trade.Id) == true,
+        storeLoaded = Trade.storeLoaded == true,
+        consumerCount = tonumber(Trade.consumerCount) or 0,
+        milestones = out,
+    }
 end
 
 function TA:RefreshZones()
@@ -737,10 +1042,18 @@ function TA:OnRatio(info)
             local name = item.name or item.itemName or value.name
             local ratio = Number(value.ratio or value.rate or value.percentage)
             if name ~= nil and ratio ~= nil then
+                local payout = S.Services and S.Services.TradePayoutV3 or nil
+                local displayName = type(payout) == "table" and type(payout.ResolveDisplayName) == "function"
+                    and payout:ResolveDisplayName(name) or Text(name)
+                -- The ratio row's product itemType is the live craft-identity
+                -- Authority for packs the static tables cannot name. RU shape
+                -- unproven: extract bounded, fail to nil and stay static-only.
+                local rowItemType = Number(item.itemType or item.itemTypeId or item.item_type or item.typeId
+                    or value.itemType or value.itemTypeId or value.typeId)
                 local row = {
                     key = tostring(flight.from) .. ":" .. tostring(flight.to) .. ":" .. tostring(name),
-                    name = Text(name), sourceName = Text(name), currentRatio = ratio, ratio = ratio,
-                    originZone = flight.from, destinationZone = flight.to,
+                    name = displayName, sourceName = Text(name), currentRatio = ratio, ratio = ratio,
+                    originZone = flight.from, destinationZone = flight.to, itemType = rowItemType,
                 }
                 ApplyTradeDisplayModeToRow(row)
                 rows[#rows + 1] = row
@@ -756,6 +1069,8 @@ function TA:OnRatio(info)
     self.rows, self.status, self.error = rows, (#rows > 0 and "ready" or "error"), (#rows > 0 and nil or "服务器返回的货率列表为空")
     self.revision = self.revision + 1
     PublishFeatureUpdate(Trade, self.revision, "ratio_result")
+    RequestPendingLiveIdentities()
+    TraceInit("ratio_result", "rows=" .. tostring(#rows) .. " from=" .. tostring(flight.from) .. "->" .. tostring(flight.to))
     return #rows > 0
 end
 function TA:DescribeRequestState()
@@ -779,14 +1094,20 @@ function TA:GetProjection()
         status = self.status, error = self.error, fromZone = Trade.State.fromZone, toZone = Trade.State.toZone,
         zoneFallback = self.zoneFallback == true, sellableFallback = self.sellableFallback == true, sellableError = self.sellableError,
         pendingQuoteCount = PendingTradeQuoteCount(self.rows),
+        quoteInFlightCount = InFlightTradeQuoteCount(self.rows),
+        unresolvedIdentityCount = UnresolvedTradeIdentityCount(self.rows),
         favorites = Trade:GetFavorites(), favoriteItems = Trade:GetFavoriteItems(),
         currentFavoriteKey = Trade:FavoriteKey(Trade.State.fromZone, Trade.State.toZone),
         currentRouteFavorite = Trade:IsFavorite(Trade.State.fromZone, Trade.State.toZone),
         selectedKey = self.selectedKey, sortMode = Trade.State.sortMode,
         ratioMode = Trade.State.ratioMode, fullRatio = TRADE_FULL_RATIO,
         commerceMode = Trade.State.commerceMode, commerceSkill = self.commerceSkill, commerceStatus = self.commerceStatus,
-        commerceName = self.commerceName, commerceError = self.commerceError, priceIncludesCommerce = false,
-        commercePriceFormulaStatus = "unverified",
+        commerceName = self.commerceName, commerceError = self.commerceError,
+        priceIncludesCommerce = Trade.State.commerceMode ~= "off" and self.commerceStatus == "ready",
+        commercePriceFormulaStatus = "supplied_working_v1",
+        packPriceMultiplierStatus = "supplied_working_v1",
+        payoutCalculator = type(S.Services and S.Services.TradePayoutV3) == "table"
+            and S.Services.TradePayoutV3:Describe() or nil,
     }
 end
 
@@ -821,31 +1142,42 @@ RegisterStore(Trade.storeId, "v3.life.trade", function() return NormalizeTradeSt
     end, NormalizeTradeState)
 
 Trade.ApiDependencies = { "X2Store:GetProductionZoneGroups", "X2Store:GetSellableZoneGroups", "X2Store:GetSpecialtyRatioBetween", "X2Ability:GetAllMyActabilityInfos" }
-function Trade:Initialize() return LoadStore(self) end
+function Trade:Initialize()
+    if type(S.Services and S.Services.TradePayoutV3) ~= "table" then return false, "跑商售价计算服务不可用" end
+    return LoadStore(self)
+end
 function Trade:ReconcileDemand(_, before, after)
     local beforeCount = tonumber(before and before.count) or 0
     local afterCount = tonumber(after and after.count) or 0
     if beforeCount <= 0 and afterCount > 0 then
+        TraceInit("demand_start", "consumer=" .. tostring(afterCount) .. " enabled=" .. tostring(self.enabled == true)
+            .. " storeLoaded=" .. tostring(self.storeLoaded == true)
+            .. " route=" .. tostring(Number(Trade.State.fromZone) or "-") .. "->" .. tostring(Number(Trade.State.toZone) or "-"))
         if S.Events ~= nil then
             S.Events:BindOwner(self, self.Id)
             if S.Events:SubscribeOptional("SPECIALTY_RATIO_BETWEEN_INFO", self, function(_, info) return TA:OnRatio(info) end) ~= true then
                 self.eventUnavailable = true
+                TraceInit("event_subscribe_failed", "SPECIALTY_RATIO_BETWEEN_INFO")
                 return false, "SPECIALTY_RATIO_BETWEEN_INFO 订阅失败"
             end
             self.eventUnavailable = false
         end
         self.Authority:RefreshCommerceSkill()
         self.Authority:RefreshZones()
+        TraceInit("demand_init_done", "zones=" .. tostring(#(TA.zones or {})) .. "/" .. tostring(#(TA.sellableZones or {}))
+            .. " fallback=" .. tostring(TA.zoneFallback == true) .. "/" .. tostring(TA.sellableFallback == true)
+            .. " commerce=" .. tostring(TA.commerceStatus or "-"))
     elseif beforeCount > 0 and afterCount <= 0 and S.Events ~= nil then
         S.Events:UnsubscribeOwner(self)
         TA.inFlight = nil
         TA.pendingRoute = nil
         TA:CancelRequestTimeout()
+        TA:CancelLiveIdentities()
     end
     return true
 end
-function Trade:Enable() self.enabled = true; return true end
-function Trade:Disable(reason) local ok, err = self.Demand:Clear(reason or "trade_disable"); if ok ~= true then return false, err end; if S.Events then S.Events:UnsubscribeOwner(self) end; self.enabled = false; TA.inFlight = nil; TA.pendingRoute = nil; TA:CancelRequestTimeout(); return true end
+function Trade:Enable() self.enabled = true; TraceInit("enable", "feature enabled"); return true end
+function Trade:Disable(reason) local ok, err = self.Demand:Clear(reason or "trade_disable"); if ok ~= true then return false, err end; if S.Events then S.Events:UnsubscribeOwner(self) end; self.enabled = false; TA.inFlight = nil; TA.pendingRoute = nil; TA:CancelRequestTimeout(); TA:CancelLiveIdentities(); TraceInit("disable", tostring(reason or "trade_disable")); return true end
 function Trade:AcquireConsumer(token) if not self.enabled then return false, "跑商功能已关闭" end return self.Demand:Acquire(token, {}, "trade_consumer") end
 function Trade:ReleaseConsumer(token) return self.Demand:Release(token, "trade_consumer") end
 function Trade:Refresh(reason)
@@ -924,9 +1256,7 @@ function Trade:SetCommerceMode(mode)
     local persisted, persistErr = PersistLifeMutation(self, "trade_commerce_mode", function(state) state.commerceMode = mode; return true end)
     if persisted ~= true then return false, persistErr or "熟练度模式保存失败" end
     TA:RefreshCommerceSkill()
-    TA.revision = TA.revision + 1
-    PublishFeatureUpdate(self, TA.revision, "trade_commerce_mode")
-    return true
+    return TA:RebuildDisplayRows("trade_commerce_mode")
 end
 function Trade:SetFrom(id)
     local nextFrom = Number(id)
@@ -996,10 +1326,44 @@ function Trade:QuoteMaterial(materialKey)
     if itemType == nil then return false, "该材料没有已验证的拍卖行身份，无法询价" end
     local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
     if type(queue) ~= "table" or type(queue.RequestQuote) ~= "function" then return false, "报价服务不可用" end
+    -- Already queued/inflight for this itemType: report success without a
+    -- duplicate native request; the existing entry's completion refreshes rows.
+    if type(queue.GetQuoteStateByItemType) == "function" then
+        local state = queue:GetQuoteStateByItemType(itemType, itemGrade)
+        if state ~= nil and (state.status == "queued" or state.status == "inflight") then
+            return true, "已在报价队列中"
+        end
+    end
+    -- Grade ladder per the verified legacy protocol: the explicit hint first,
+    -- then the 1..6 ladder and 0. The lowest listing grade often differs from
+    -- the static hint; nil at one grade means "no listing at that grade".
+    local gradeCandidates, seenGrades = {}, {}
+    local function AddGrade(value)
+        local n = tonumber(value)
+        if n == nil or n ~= n or n < 0 or n > 20 or n ~= math.floor(n) or seenGrades[n] then return end
+        seenGrades[n] = true
+        gradeCandidates[#gradeCandidates + 1] = math.floor(n)
+    end
+    AddGrade(itemGrade)
+    if itemGrade == nil and item ~= nil then
+        AddGrade(tonumber(item.gradeOffset) ~= nil and math.floor(tonumber(item.gradeOffset)) + 1 or nil)
+        AddGrade(item.gradeOffset)
+    end
+    for grade = 1, 6 do AddGrade(grade) end
+    AddGrade(0)
     local quotedMaterialKey = materialKey
+    -- Verified legacy fallback needs a localized display name: after the whole
+    -- grade ladder proves there is no direct listing, one bounded auction search
+    -- by name may still yield a reference bid price. Resolve through the shared
+    -- Localization authority; never fabricate a keyword from the EN meta key.
+    -- Keyword source is the same Localization Authority that renders the row. It
+    -- can drift from live RU auction wording; _CheckFallback therefore cross-checks
+    -- the returned row name and only rejects on a *positive* mismatch, so a stale
+    -- entry degrades to "no match found" instead of silently discarding real hits.
+    local searchName = LocalizedTradeItemName(itemType, nil)
     local ok, status = queue:RequestQuote("life_trade", itemType, itemGrade, function()
         return TA:RefreshQuotedMaterial(quotedMaterialKey)
-    end)
+    end, gradeCandidates, { searchName = searchName })
     if ok ~= true then return false, status or "报价请求失败" end
     return true, status or "queued"
 end
@@ -1011,7 +1375,8 @@ function Trade:QuotePendingMaterials()
     for _, row in ipairs(TA.rows or {}) do
         for _, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
             local key = material.materialKey
-            if material.costStatus == "explicit_quote_required" and key ~= nil and seen[key] ~= true then
+            if (material.costStatus == "explicit_quote_required" or material.costStatus == "quote_failed")
+                and key ~= nil and seen[key] ~= true then
                 seen[key] = true
                 if requested >= maxBatch then
                     skipped = skipped + 1
@@ -1033,7 +1398,8 @@ function Trade:QuoteRowMaterials(rowKey)
     local maxBatch = type(queue) == "table" and math.max(1, tonumber(queue.maxQueue) or 64) or 64
     for _, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
         local key = material.materialKey
-        if material.costStatus == "explicit_quote_required" and key ~= nil and seen[key] ~= true then
+        if (material.costStatus == "explicit_quote_required" or material.costStatus == "quote_failed")
+            and key ~= nil and seen[key] ~= true then
             seen[key] = true
             if requested >= maxBatch then skipped = skipped + 1
             else
@@ -1046,6 +1412,13 @@ function Trade:QuoteRowMaterials(rowKey)
     return true, "已提交当前贸易品 " .. tostring(requested) .. " 项询价" .. (skipped > 0 and ("，" .. tostring(skipped) .. " 项暂未提交") or ""), requested, skipped
 end
 
+-- Diagnostics reads describe helpers off the Feature table (S.Features.Trade),
+-- but the request/identity state lives on the Authority. Bonds defines its
+-- describe helpers directly on the feature table, which is why its row always
+-- rendered; expose the same reachability here or the 跑商 row degrades to
+-- "状态机诊断不可用" forever.
+function Trade:DescribeRequestState() return TA:DescribeRequestState() end
+function Trade:DescribeIdentityState() return TA:DescribeIdentityState() end
 Trade.Commands = { Refresh = function(_, reason) return Trade:Refresh(reason) end, SetFrom = function(_, id) return Trade:SetFrom(id) end, SetTo = function(_, id) return Trade:SetTo(id) end,
     SetSortMode = function(_, mode) return Trade:SetSortMode(mode) end,
     SetRatioMode = function(_, mode) return Trade:SetRatioMode(mode) end, SetCommerceMode = function(_, mode) return Trade:SetCommerceMode(mode) end,

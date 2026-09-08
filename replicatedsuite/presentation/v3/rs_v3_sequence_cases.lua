@@ -685,7 +685,7 @@ end)
 G:RegisterSequenceCase("v3_26_table_resize_contract", function()
     local util = S.RSUI and S.RSUI.DataViewUtil or nil
     if util == nil or type(util.ColumnResizeBounds) ~= "function" or type(util.ClampColumnResizeWidth) ~= "function" or type(util.ResolveColumnWidths) ~= "function" then return Fail("table_resize_util") end
-    if (tonumber(S.RSUI and S.RSUI.DataViewResizePreviewAuthorityContractVersion) or 0) < 1 then return Fail("table_resize_preview_authority_contract") end
+    if (tonumber(S.RSUI and S.RSUI.DataViewResizePreviewAuthorityContractVersion) or 0) < 2 then return Fail("table_resize_preview_authority_contract") end
     local minBound, maxBound = util.ColumnResizeBounds({ minWidth=80, maxWidth=120, absoluteMinWidth=1 })
     if minBound ~= 1 or maxBound ~= nil then return Fail("table_native_drag_reused_layout_max") end
     local hardMin, hardMax = util.ColumnResizeBounds({ minWidth=80, maxWidth=120, absoluteMinWidth=2, absoluteMaxWidth=333 })
@@ -720,6 +720,28 @@ G:RegisterSequenceCase("v3_26_table_resize_contract", function()
     local expanded = util.ResolveColumnWidths(previewColumns, 440, 0)
     if (expanded[1] + expanded[2] + expanded[3]) ~= 440 or expanded[1] <= committed[1] or expanded[2] <= committed[2] then
         return Fail("table_manual_fill_stopped_responding")
+    end
+
+    -- Trade regression: dragging the first Fill/Fixed boundary while a later
+    -- Fill column exists used to jump on DragStop because that untouched Fill
+    -- column restarted from minWidth and re-consumed slack. A committed preview
+    -- must seed the whole resolved baseline, not just the edited pair.
+    local tradeColumns = util.NormalizeColumns({
+        { id="name", size="fill", minWidth=150, absoluteMinWidth=1, fill=1 },
+        { id="rate", size="fixed", width=70, minWidth=60, absoluteMinWidth=1 },
+        { id="price", size="fixed", width=100, minWidth=80, absoluteMinWidth=1 },
+        { id="materials", size="fill", minWidth=160, absoluteMinWidth=1, fill=1 },
+        { id="profit", size="fixed", width=100, minWidth=80, absoluteMinWidth=1 },
+    })
+    local tradeBaseline = util.ResolveColumnWidths(tradeColumns, 800, 4)
+    local tradePreview, tradeLeft, tradeCompIndex, tradeCompWidth = util.ResolveAdjacentResizePreview(tradeColumns, tradeBaseline, 1, tradeBaseline[1] - 60)
+    if type(tradePreview) ~= "table" or tradeCompIndex ~= 2 then return Fail("table_trade_preview_geometry") end
+    for widthIndex, tradeColumn in ipairs(tradeColumns) do tradeColumn.manualWidth = tradePreview[widthIndex] end
+    util.CommitColumnResizeWidth(tradeColumns[1], tradeLeft)
+    util.CommitColumnResizeWidth(tradeColumns[tradeCompIndex], tradeCompWidth)
+    local tradeCommitted = util.ResolveColumnWidths(tradeColumns, 800, 4)
+    for widthIndex = 1, #tradePreview do
+        if tradeCommitted[widthIndex] ~= tradePreview[widthIndex] then return Fail("table_trade_dragstop_jump:" .. tostring(widthIndex)) end
     end
 
     local pageHost = S.UIV3 and S.UIV3.PageHost or nil

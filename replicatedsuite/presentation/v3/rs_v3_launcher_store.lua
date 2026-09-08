@@ -34,6 +34,10 @@ local function Normalize(value)
         offsetY = moved and not free and math.max(0, tonumber(value.offsetY) or 0) or nil,
         coordinateSpace = moved and (free and "logical-free-v2" or "logical-edge-v1") or nil,
         savedUiScale = moved and tonumber(value.savedUiScale) or nil,
+        savedLogicalWidth = free and tonumber(value.savedLogicalWidth) or nil,
+        savedLogicalHeight = free and tonumber(value.savedLogicalHeight) or nil,
+        normalizedCenterX = free and tonumber(value.normalizedCenterX) or nil,
+        normalizedCenterY = free and tonumber(value.normalizedCenterY) or nil,
     }
 end
 
@@ -105,12 +109,12 @@ function V3:ApplyLauncherPlacement()
     -- logical UI coordinates already affected by the client's UI scale; applying
     -- Suite content scale here again double-scaled R on low-resolution / high-scale setups.
     local size = LAUNCHER_LOGICAL_SIZE
-    S.Layout:ApplyPlacement(button, self.LauncherState, size, size, 300, 100, { mode = "free" })
+    S.Layout:ApplyPlacement(button, self.LauncherState, size, size, 300, 100, { mode = "strict" })
     if type(S.Layout.RegisterFloating) == "function" then
         S.Layout:RegisterFloating("v3_launcher", button, {
             onlyWhenVisible = true,
             onMetricsChanged = function()
-                S.Layout:ApplyPlacement(button, V3.LauncherState, LAUNCHER_LOGICAL_SIZE, LAUNCHER_LOGICAL_SIZE, 300, 100, { mode = "free" })
+                S.Layout:ApplyPlacement(button, V3.LauncherState, LAUNCHER_LOGICAL_SIZE, LAUNCHER_LOGICAL_SIZE, 300, 100, { mode = "strict" })
             end,
         })
     end
@@ -131,6 +135,8 @@ function V3:ResetLauncherPlacement(persist)
     state.userMoved = false
     state.x, state.y, state.anchorH, state.anchorV = nil, nil, nil, nil
     state.offsetX, state.offsetY, state.coordinateSpace, state.savedUiScale = nil, nil, nil, nil
+    state.savedLogicalWidth, state.savedLogicalHeight = nil, nil
+    state.normalizedCenterX, state.normalizedCenterY = nil, nil
     local ok = self:ApplyLauncherPlacement()
     if persist ~= false then self:MarkLauncherStoreDirty(250, "launcher_reset") end
     return ok

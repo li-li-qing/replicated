@@ -18,7 +18,7 @@ if type(UI) ~= "table" or type(RSUI) ~= "table" or type(UI.CreateWindowShell) ~=
 local generation = tonumber(S.Generation) or 0
 if type(RSUI.FloatingSurface) ~= "table" or tonumber(RSUI.FloatingSurface.generation) ~= generation then
     RSUI.FloatingSurface = {
-        version = 10,
+        version = 11,
         generation = generation,
         instances = setmetatable({}, { __mode = "v" }),
         metrics = {
@@ -29,12 +29,13 @@ if type(RSUI.FloatingSurface) ~= "table" or tonumber(RSUI.FloatingSurface.genera
         },
     }
 end
-RSUI.FloatingSurface.version = 10
+RSUI.FloatingSurface.version = 11
 RSUI.FloatingSurface.IdempotentMutationContractVersion = 1
 RSUI.FloatingSurface.CompactMinimizeContractVersion = 1
 RSUI.FloatingSurface.TitleAppearanceContractVersion = 1
 RSUI.FloatingSurface.DetachedStateContractVersion = 1
 RSUI.FloatingSurface.StateMutationTransactionContractVersion = 1
+RSUI.FloatingSurface.ResponsivePlacementIntentContractVersion = 1
 RSUI.FloatingSurface.generation = generation
 local F = RSUI.FloatingSurface
 
@@ -43,6 +44,7 @@ local STATE_KEYS = {
     "overallOpacity", "backgroundOpacity", "textOpacity", "fontScale", "userMoved",
     "x", "y", "anchorH", "anchorV", "offsetX", "offsetY",
     "coordinateSpace", "savedUiScale",
+    "savedLogicalWidth", "savedLogicalHeight", "normalizedCenterX", "normalizedCenterY",
 }
 
 local function Clamp(value, minimum, maximum, fallback)
@@ -118,6 +120,10 @@ function F:NormalizeState(value, policy)
         offsetY = moved and not free and math.max(0, tonumber(value.offsetY) or 0) or nil,
         coordinateSpace = moved and (free and "logical-free-v2" or "logical-edge-v1") or nil,
         savedUiScale = moved and tonumber(value.savedUiScale) or nil,
+        savedLogicalWidth = free and tonumber(value.savedLogicalWidth) or nil,
+        savedLogicalHeight = free and tonumber(value.savedLogicalHeight) or nil,
+        normalizedCenterX = free and tonumber(value.normalizedCenterX) or nil,
+        normalizedCenterY = free and tonumber(value.normalizedCenterY) or nil,
     }
 end
 

@@ -405,7 +405,8 @@ function D:BuildFeatureStatusRows()
             if #reasonKeys > 0 then reasonText = table.concat(reasonKeys, ",", 1, math.min(3, #reasonKeys)) end
             rows[#rows + 1] = FeatureRow("unit_lines", "单位连线", "degraded",
                 "投影有 " .. tostring(drawn) .. " 行但渲染层 0 个可见点 · 行=" .. firstRow
-                .. " · UI=" .. tostring(math.floor(tonumber(sampling0.addonScale) or 1)) .. "x"
+                .. " · 视口=" .. tostring(math.floor(tonumber(sampling0.logicalWidth) or 0)) .. "x" .. tostring(math.floor(tonumber(sampling0.logicalHeight) or 0))
+                .. " · Host=" .. tostring(math.floor(tonumber(sampling0.hostOriginX) or 0)) .. "," .. tostring(math.floor(tonumber(sampling0.hostOriginY) or 0))
                 .. " · proj失败=" .. tostring(projection.failures or 0)
                 .. (reasonText ~= nil and (" · 原因:" .. reasonText) or ""),
                 "渲染层没有产出任何点；若行=?? 为坐标缺失，否则为宿主/坐标空间问题——复制此行给维护者")
@@ -414,6 +415,8 @@ function D:BuildFeatureStatusRows()
                 "工作中 · rows=" .. tostring(drawn) .. "/" .. tostring(dia.attemptedPairs or 0)
                 .. " · 点=" .. tostring(visibleDots) .. "(唯一" .. tostring(uniquePositions) .. ")"
                 .. " · 行=" .. tostring(sampling and sampling.firstRow or "?")
+                .. " · Host=" .. tostring(math.floor(tonumber(sampling and sampling.hostOriginX) or 0)) .. "," .. tostring(math.floor(tonumber(sampling and sampling.hostOriginY) or 0))
+                .. " · 视口=" .. tostring(math.floor(tonumber(sampling and sampling.logicalWidth) or 0)) .. "x" .. tostring(math.floor(tonumber(sampling and sampling.logicalHeight) or 0))
                 .. " · 状态=" .. tostring(dia.lastStatus or "?")
                 .. " · proj失败=" .. tostring(projection.failures or 0),
                 lastFailure and ("部分未绘制：" .. tostring(lastFailure)) or nil)
@@ -465,7 +468,9 @@ function D:BuildFeatureStatusRows()
             if type(rangeSampling) == "table" then
                 rangeEvidence = " · 首点=" .. tostring(rangeSampling.first)
                     .. " · 宿主=" .. tostring(rangeSampling.hostVisible)
-                    .. " · 缩放=" .. tostring(math.floor((tonumber(rangeSampling.addonScale) or 1) * 100) / 100) .. "x"
+                    .. " · Host=" .. tostring(math.floor(tonumber(rangeSampling.hostOriginX) or 0)) .. "," .. tostring(math.floor(tonumber(rangeSampling.hostOriginY) or 0))
+                    .. " · 视口=" .. tostring(math.floor(tonumber(rangeSampling.logicalWidth) or 0)) .. "x" .. tostring(math.floor(tonumber(rangeSampling.logicalHeight) or 0))
+                    .. " · UIScale=" .. tostring(math.floor((tonumber(rangeSampling.uiScale) or 1) * 100) / 100)
             end
             rows[#rows + 1] = FeatureRow("range_assist", "范围辅助", "ok",
                 "工作中 · 圆周点 " .. tostring(points) .. " · 半径 " .. tostring(projection.radius or "?")
@@ -591,13 +596,56 @@ function D:BuildFeatureStatusRows()
             rows[#rows + 1] = FeatureRow("trade", "跑商", "down", "状态机诊断不可用", "复制此行给维护者")
         else
             local ok = describe.status == "ready" or describe.status == "loading"
+            local identityText = ""
+            local identity = feature and feature.DescribeIdentityState and feature:DescribeIdentityState() or nil
+            if type(identity) == "table" and (tonumber(identity.rows) or 0) > 0 then
+                identityText = " · 配方 " .. tostring((tonumber(identity.rows) or 0) - (tonumber(identity.unresolved) or 0))
+                    .. "/" .. tostring(identity.rows)
+                if (tonumber(identity.livePending) or 0) > 0 then identityText = identityText .. " · 解析中 " .. tostring(identity.livePending) end
+                if type(identity.live) == "table" then
+                    identityText = identityText .. " · live读" .. tostring(identity.live.liveReads or 0)
+                        .. " 缓存" .. tostring(identity.live.cachedReady or 0) .. "/" .. tostring(identity.live.cachedFailed or 0)
+                end
+            end
             rows[#rows + 1] = FeatureRow("trade", "跑商", ok and "ok" or "degraded",
                 "状态=" .. tostring(describe.status)
                 .. " · 选择=" .. tostring(describe.selectedRoute)
                 .. " · 在飞=" .. tostring(describe.activeRoute)
                 .. " · 排队=" .. tostring(describe.pendingRoute)
-                .. " · 丢弃回调=" .. tostring(describe.droppedCallbacks or 0),
+                .. " · 丢弃回调=" .. tostring(describe.droppedCallbacks or 0)
+                .. identityText,
                 describe.status == "idle" and "选择起点与目的地后查询" or nil)
+        end
+    end
+
+    -- 共享报价队列 (PriceQuoteQueueV3)：Trade/Craft/Auction 显式询价的唯一串行入口
+    do
+        local queue = S.Services and S.Services.PriceQuoteQueueV3 or nil
+        local health = queue and type(queue.GetHealth) == "function" and queue:GetHealth() or nil
+        if health == nil then
+            rows[#rows + 1] = FeatureRow("price_quote", "报价队列", "down", "报价服务不可用", "复制此行给维护者")
+        else
+            local last = type(health.lastCompleted) == "table" and health.lastCompleted or nil
+            local lastText = "最近=无"
+            if last ~= nil and last.itemType ~= nil then
+                lastText = "最近=" .. tostring(last.requester) .. "#" .. tostring(last.itemType)
+                    .. " " .. tostring(last.status)
+                    .. (last.priceSource ~= nil and (" src=" .. tostring(last.priceSource)) or "")
+                    .. (last.error ~= nil and ("（" .. tostring(last.error) .. "）") or "")
+            end
+            local failed = last ~= nil and (last.status == "failed" or last.status == "unavailable") or false
+            local rawShape = health.lastRawReturn
+            rows[#rows + 1] = FeatureRow("price_quote", "报价队列", failed and "degraded" or "ok",
+                "运行=" .. tostring(health.running == true)
+                .. " · 在飞=" .. tostring(health.pending == true)
+                .. " · 排队=" .. tostring(health.queueLength or 0) .. "/" .. tostring(health.maxQueue or 0)
+                .. " · 已报价品类=" .. tostring(health.pricedItemTypes or 0)
+                .. " · 尝试=" .. tostring(health.stats and health.stats.attempts or 0)
+                .. " · 成功=" .. tostring(health.stats and health.stats.ready or 0)
+                .. " · 失败=" .. tostring(health.stats and health.stats.failed or 0)
+                .. " · " .. lastText
+                .. (rawShape ~= nil and (" · 形态=" .. tostring(string.sub(tostring(rawShape), 1, 120))) or ""),
+                failed and "最近一次询价失败；打开跑商页「诊断」查看逐条原始返回，或点击材料询价重试" or nil)
         end
     end
 
@@ -675,6 +723,7 @@ function D:Snapshot()
         teamRoster = S.Services and S.Services.TeamRosterV3 and type(S.Services.TeamRosterV3.GetHealth)=="function" and S.Services.TeamRosterV3:GetHealth() or nil,
         screenProjection = S.Services and S.Services.ScreenProjectionV3 and type(S.Services.ScreenProjectionV3.GetHealth)=="function" and S.Services.ScreenProjectionV3:GetHealth() or nil,
         combatEventBus = S.Services and S.Services.CombatEventBusV3 and type(S.Services.CombatEventBusV3.GetHealth)=="function" and S.Services.CombatEventBusV3:GetHealth() or nil,
+        priceQuoteQueue = S.Services and S.Services.PriceQuoteQueueV3 and type(S.Services.PriceQuoteQueueV3.GetHealth)=="function" and S.Services.PriceQuoteQueueV3:GetHealth() or nil,
         deathReview = S.Features and S.Features.DeathReview and type(S.Features.DeathReview.GetHealth)=="function" and S.Features.DeathReview:GetHealth() or nil,
         ui = S.UI and type(S.UI.GetFrameworkSnapshot)=="function" and S.UI:GetFrameworkSnapshot() or nil,
         uiFoundation = {

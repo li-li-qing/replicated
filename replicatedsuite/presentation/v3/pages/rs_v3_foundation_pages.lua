@@ -571,6 +571,8 @@ local function BuildSettings(parent, route)
             shellState.minimized = false
             shellState.x, shellState.y, shellState.anchorH, shellState.anchorV = nil, nil, nil, nil
             shellState.offsetX, shellState.offsetY, shellState.coordinateSpace, shellState.savedUiScale = nil, nil, nil, nil
+            shellState.savedLogicalWidth, shellState.savedLogicalHeight = nil, nil
+            shellState.normalizedCenterX, shellState.normalizedCenterY = nil, nil
             if type(shell.ApplyMinimizedState) == "function" then shell:ApplyMinimizedState(false) end
             local shellOk = shell:ApplyLayout(false)
             local widgetsOk = type(host.ResetAllLayouts) == "function" and host:ResetAllLayouts() or false

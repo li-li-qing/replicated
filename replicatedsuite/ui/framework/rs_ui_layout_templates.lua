@@ -55,6 +55,7 @@ end
 -- into the control.
 ------------------------------------------------------------------------
 RSUI.FormRowPolicy = RSUI.FormRowPolicy or { version = 1 }
+RSUI.FormRowPolicy.version = 2
 function RSUI.FormRowPolicy:Resolve(innerWidth, gap, labelShare, labelMinWidth, controlMinWidth, hintWidth)
     innerWidth = math.max(0, tonumber(innerWidth) or 0)
     gap = math.max(0, tonumber(gap) or 0)
@@ -83,6 +84,16 @@ function RSUI.FormRowPolicy:Resolve(innerWidth, gap, labelShare, labelMinWidth, 
     return math.max(0, labelW), math.max(0, controlW), math.max(0, hintWidth)
 end
 
+RSUI.FormRowResponsiveContractVersion = 1
+function RSUI.FormRowPolicy:ResolveMode(availableWidth, layout, collapseWidth)
+    layout = tostring(layout or "horizontal"):lower()
+    if layout == "vertical" then return "vertical" end
+    if layout ~= "auto" and layout ~= "responsive" then return "horizontal" end
+    collapseWidth = math.max(1, tonumber(collapseWidth) or Token("settings.settingRowCollapseWidth", 360))
+    if tonumber(availableWidth) ~= nil and tonumber(availableWidth) < collapseWidth then return "vertical" end
+    return "horizontal"
+end
+
 RSUI:RegisterType("FormRow", function(spec)
     local c, err = Host("FormRow", spec)
     if c == nil then return nil, err end
@@ -91,25 +102,50 @@ RSUI:RegisterType("FormRow", function(spec)
     c.labelMinWidth = math.max(0, N(spec.labelMinWidth, Token("component.form.labelW", 116)))
     c.controlMinWidth = math.max(0, N(spec.controlMinWidth, 60))
     c.hintWidth = math.max(0, N(spec.hintWidth, 0))
-    c.vertical = tostring(spec.layout or spec.direction or "horizontal"):lower() == "vertical"
+    c.layoutMode = tostring(spec.layout or spec.direction or "horizontal"):lower()
+    c.collapseWidth = math.max(1, N(spec.collapseWidth, Token("settings.settingRowCollapseWidth", 360)))
+    c.lastResolvedMode = nil
 
     function c:GetZones()
-        return VisibleEntries(self)[1], VisibleEntries(self)[2], VisibleEntries(self)[3]
+        local entries = VisibleEntries(self)
+        return entries[1], entries[2], entries[3]
+    end
+
+    function c:ResolveLayoutMode(availableWidth)
+        local p = Pad(self.spec.padding)
+        local inner = tonumber(availableWidth)
+        if inner ~= nil then inner = math.max(0, inner - p.left - p.right) end
+        local mode = RSUI.FormRowPolicy:ResolveMode(inner, self.layoutMode, self.collapseWidth)
+        if self.lastResolvedMode ~= nil and self.lastResolvedMode ~= mode then
+            RSUI.metrics.settingsResponsiveModeChanges = (tonumber(RSUI.metrics.settingsResponsiveModeChanges) or 0) + 1
+        end
+        self.lastResolvedMode = mode
+        return mode
+    end
+
+    function c:GetResolvedLayoutMode()
+        return self.lastResolvedMode or self:ResolveLayoutMode(self.width or self.spec.width)
     end
 
     function c:Measure(availableW, availableH)
         local p = Pad(self.spec.padding)
+        local innerW = availableW and math.max(0, N(availableW, 0) - p.left - p.right) or nil
+        local innerH = availableH and math.max(0, N(availableH, 0) - p.top - p.bottom) or nil
         local label, control, hint = self:GetZones()
-        local lw = label and Measure(label.child, availableW, availableH) or 0
-        local cw = control and Measure(control.child, availableW, availableH) or 0
-        local hw = hint and Measure(hint.child, availableW, availableH) or 0
+        local lw, lh, cw, ch, hw, hh = 0, 0, 0, 0, 0, 0
+        if label ~= nil then lw, lh = Measure(label.child, innerW, innerH) end
+        if control ~= nil then cw, ch = Measure(control.child, innerW, innerH) end
+        if hint ~= nil then hw, hh = Measure(hint.child, innerW, innerH) end
+        local mode = self:ResolveLayoutMode(availableW)
         local w, h
-        if self.vertical then
+        if mode == "vertical" then
+            local visibleCount = (label and 1 or 0) + (control and 1 or 0) + (hint and 1 or 0)
             w = math.max(lw, cw, hw) + p.left + p.right
-            h = (label and lw + self.gap or 0) + (control and cw + self.gap or 0) + (hint and hw or 0) + p.top + p.bottom
+            h = lh + ch + hh + self.gap * math.max(0, visibleCount - 1) + p.top + p.bottom
         else
-            w = lw + cw + hw + (label and control and self.gap or 0) + (hint and (control or label) and self.gap or 0) + p.left + p.right
-            h = math.max(lw, cw, hw) + p.top + p.bottom
+            local gapCount = (label and control and 1 or 0) + (hint and (control or label) and 1 or 0)
+            w = lw + cw + hw + self.gap * gapCount + p.left + p.right
+            h = math.max(lh, ch, hh) + p.top + p.bottom
         end
         if availableW ~= nil and self.spec.allowOverflow ~= true then w = math.min(w, math.max(0, N(availableW, w))) end
         if availableH ~= nil and self.spec.allowOverflow ~= true then h = math.min(h, math.max(0, N(availableH, h))) end
@@ -123,14 +159,19 @@ RSUI:RegisterType("FormRow", function(spec)
         local p = Pad(self.spec.padding)
         local iw, ih = math.max(0, width - p.left - p.right), math.max(0, height - p.top - p.bottom)
         local label, control, hint = self:GetZones()
-        if self.vertical then
+        local mode = self:ResolveLayoutMode(width)
+        if mode == "vertical" then
             local cursor = p.top
-            for _, entry in ipairs({ label, control, hint }) do
+            local entries = { label, control, hint }
+            local remaining = 0
+            for _, entry in ipairs(entries) do if entry ~= nil and entry.child.visible ~= false then remaining = remaining + 1 end end
+            for _, entry in ipairs(entries) do
                 if entry ~= nil and entry.child.visible ~= false then
-                    local dw, dh = Measure(entry.child, iw, ih)
-                    local ey = Align(cursor, ih, dh, entry.slot.vAlign)
-                    Arrange(entry.child, p.left, ey, iw, math.max(1, dh))
-                    cursor = cursor + dh + self.gap
+                    local dw, dh = Measure(entry.child, iw, math.max(0, ih - cursor + p.top))
+                    local ex, ew = Align(p.left, iw, dw, entry.slot.hAlign)
+                    Arrange(entry.child, ex, cursor, math.max(1, ew), math.max(1, dh))
+                    remaining = remaining - 1
+                    cursor = cursor + dh + (remaining > 0 and self.gap or 0)
                 end
             end
             return height
@@ -939,4 +980,4 @@ RSUI:RegisterType("SplitToolbar", function(spec)
     return c
 end)
 
-RSUI.LayoutTemplates = { version = 3, types = { "FormRow", "KeyValueRow", "Toolbar", "HeaderBodyFooter", "GroupBox", "CollapsibleGroup", "DetailRow", "Steps", "SplitToolbar" } }
+RSUI.LayoutTemplates = { version = 4, types = { "FormRow", "KeyValueRow", "Toolbar", "HeaderBodyFooter", "GroupBox", "CollapsibleGroup", "DetailRow", "Steps", "SplitToolbar" } }

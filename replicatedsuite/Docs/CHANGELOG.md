@@ -1,3 +1,240 @@
+## M1.16.0.18.180 — Persistent Reference Price Table（长期价格表，2026-09-08）
+
+- **需求（用户提出）**：每次都要现场搜价太慢。改为「搜到过一次就记下来 → 下次直接显示旧价参与计算 → 后台再搜、拿到新价替换」。本插件面向玩家，等待时间本身就是功能缺陷。
+- **三层取价**（材料投影）：① 本次会话已完成的实时报价 → `quoted`；② 否则读持久参考价 → **`quoted_reference`**（新状态）；③ 否则诚实显示 pending / failed / 需询价。**询价中或询价失败时仍继续显示参考价**，不再退回空白等待——这是本方案的关键收益。
+- **存储**：新增 Persistence V3 store `v3.trade_reference_prices`（account scope / permanent / schemaVersion 1），沿用工程既有事务式写入 + `MarkDirty(1200ms)` 合并落盘。全部改动收敛在 `PriceQuoteQueueV3` 内部，未新增文件、未新增调度任务。
+- **用户锁定的三项决策，均已固化为代码约束**：
+  - **永不过期**：拍卖挂单可被人为压价污染，一个极低挂单会带歪所有人的预期。因此不做 TTL 静默失效，而是让**陈旧性显式可见**（见下），旧样本不会冒充当前行情。同时保留有界历史样本（≤6 条，新→旧），便于日后判断某次价格是否为异常低点。
+  - **`itemType + grade` 复合键**：品质阶梯本就逐档命中，记录实际成交的 `resolvedGrade` 而非提问档位；grade-0 无差别探测不得覆盖具体品质的记录。
+  - **数据不随包分发**：store 是账号运行期产物，每个玩家自己采集。绝不把开发机采到的价格塞进发布包 —— 那会把我们的样本伪装成用户的现实。
+- **诚实标注（决策 2A）**：参考价照常计入毛利，但与实时价明确区分：详情浮窗状态列 `已报价`(green) vs **`参考价`(muted)**；表格单元格价格后缀「，参考」；来源由服务层单一入口 `GetPriceWithProvenance()` 给出 `live|reference`，渲染层不再自行猜测。
+- **fail-closed 细节**：只有 direct 稳定 ID 成交才写入长期表；名称搜索得到的 `name_search_bid` 是**另一条挂单的估价**，永不进入长期表（防止估价被洗成长期事实）。加载失败只让内存表为空，绝不清写磁盘数据；服务层无原始 `SaveData` 调用。
+- **待办计数不误涨**：`quoted_reference` 不在询价 backlog 集合内，按钮数字不会因已有参考价的材料而虚高；玩家仍可主动对单条重新询价刷新。
+- **修掉一处我自己引入的错误**：`RecordReferencePrice` 用点号调用冒号定义的 `EnsureStoreLoaded`（self 丢失）。它能碰巧工作只因函数体全用闭包 `Q.` 而非 `self.`，属运气不是设计。已改回 `Q:EnsureStoreLoaded()`，并全工程扫描同类问题：**0 例**。
+- **门禁**：quote_state harness 升 **91/91**，新增 10 条锁死上述契约（store 注册、key 含 grade、估价不入表、样本有界、加载失败不清洗磁盘、合并写、live 优先于 reference、参考价状态独立且为 muted、参考价不计入 backlog、服务层禁 raw SaveData）。三条反向破坏测试验证非假绿：删估价拦截 → FAIL；key 去 grade → FAIL；去掉 provenance 区分 → FAIL。
+- **hover 高亮 bug 状态说明**：按你的要求本轮一并处理，但**我最初的「off-by-one gap 公式」诊断是错的** —— 数值验证表明我的"修复"与原式在 gap=4 时恒等，已完全撤销，未留下伪修复。真正线索指向 header cell 与 resize handle 的命中层级（handle 最后创建且有 Raise，理论上应在上层），仅靠静态阅读无法定案，需要实机确认，详见 STATUS 待办。
+- **BuildTag**：`v3-m1.16.0.18.180-persistent-reference-prices`。
+
+## M1.16.0.18.179 — Fallback Reachability Fix（`.178` 的修复本身是死锁，2026-09-08）
+
+- **`.178` 报告读数**：`已报=0` **且** `失败=0`，队列停在单个请求上轮转。两个计数同时为零排除了「取价失败」也排除了「取价成功」——只可能是**没有任何请求走到终局**。这不是判断错误，是结构性不可达。
+- **根因（我 `.178` 亲手引入）**：阶梯耗尽并 `BeginSearchFallback` 成功后，`Q.pending` 仍指向该请求；下一次 `Drain()` 在通用早退 `if Q.pending ~= nil then return end` 处直接返回，而轮询兜底结果的分支写在这行**之后** —— 于是永远执行不到。我把 `.177` 的「重试三次注定失败」改成「等待」，结果让等待变成了**永久停顿**：旧版那三个重试虽然愚蠢，至少还在推进状态机。
+- **修复**：兜底轮询本就必须优先于通用 pending 早退（它合法占用 pending 槽）。将 `_CheckFallback` 调用移入 `if Q.pending ~= nil then ... end` 内部、置于 return 之前；删除队列弹出之后的重复分支（那条按新结构已不可能命中）。`stats.attempts` 只在直接探档路径递增，保持"= GetLowestPrice 调用数"的语义。
+- **为什么现有 fence 完全没抓到**：`.178` 加的 `fallback_polling_not_counted_as_attempt` 用 `service.index(A) > service.index(B)` 断言顺序，但两处文本都存在于整个文件，跨函数比较毫无意义；可达性问题需要**在 Drain 函数体内比较行位置**。新增三条：`fallback_serviced_before_pending_return`（切出 `local function Drain()` 函数体，要求 `pending 守卫 < fallback 服务 < 队列表头弹出`）、`no_duplicate_fallback_branch`（恰好一处）、`attempts_only_for_direct_probe`。反向破坏测试重演 `.178` 死锁 → 两条同时 FAIL，确认非假绿。同时退役了那条被取代的旧检查。
+- **教训（第三次同类）**：连续三轮（`.172` 前向引用、`.174` 第二车道、`.178` 不可达分支）我的错误都不是"想错了"，而是**只验证了代码存在，没验证代码可达/会执行**。文本型 fence 对这类问题天然失明。本轮起：涉及控制流的修复必须断言函数体内的语句顺序，而不是全文件子串存在。
+- **BuildTag**：`v3-m1.16.0.18.179-fallback-reachability-fix`。
+
+## M1.16.0.18.178 — Working Name-Search Fallback（真正修复，2026-09-08）
+
+- **用户指出关键事实**：旧版（`参考的项目1`）点击货品→悬浮窗→「查价格」**能查到材料价**。这直接否证 `.177` 的「API 不可用」结论，也把调查方向从「RU 接口坏了」纠正为「我们漏实现了旧版的第二条路径」。
+- **旧版真实链路（逐行核实）**：`T:QuoteSelectedPack` → `Auction:QuotePack` → 每材料 `QueueOne` 同时启用 direct 与 search 两条路（L259-260）；`SendDirect` 走完 `BuildGradeCandidates` 阶梯后若全 nil，调用 **`FallbackToSearch`**（L203-217）→ `SendSearch` 以 `displayName`/`name` 作关键词发 `SearchAuctionArticle(1,0,999,1,0,false,query,"0","0")` → `OnSearched` 读首行 → `ExtractFolioReferencePrice` 取 `bidPriceStr`/`bidPrice` → `FinishRequest(price)`。**即：材料成本本来就来自拍卖搜索结果首行的竞拍价，GetLowestPrice 只是优先尝试。**
+- **为什么我们一直没走到那一步**：`.172` 写下的兜底链是**必崩的死代码**（`CompletePending` 前向引用，`.174` 才修掉崩溃）。修好崩溃后本轮又查出**三个仍在生效的逻辑缺陷**，任意一个都会让兜底永远拿不到价：
+  - **重试逻辑不可能成功**：`_CheckFallback` 在快照仍为 `waiting` 时重新调用 `AuctionQueryV3:Search`，而该方法开头即 `if self.pending ~= nil then return false, "上一个拍卖搜索仍在等待服务器返回"` —— 三次重试全是注定失败的调用，然后宣布「名称搜索无结果」。改为**按墙钟 deadline 等待**（`fallbackDeadlineAt`，12s 上限），不再重复发请求。
+  - **身份守卫把自己拒了**：守卫要求首行 `itemType` 与期望值相等，否则判「身份不匹配」；但当前 RU 的 `GetSearchedItemInfo` 并不稳定暴露 itemType，`rowType` 恒为 nil → **每一次真实命中都被自己的守卫拒绝**。改为只在**确证不同**时拒绝，并在关键词与返回行名称都已知且明显不符时才失败（新增「搜索结果名称不符」分支）。
+  - **轮询被记成询价尝试**：fallback 每个 tick 都给 `stats.attempts` +1，制造幻影尝试数。移到非 fallback 分支之后计数。
+- **搜索关键词来源**：改用与行标签同一个 Localization Authority（`LocalizedTradeItemName(itemType)`），绝不用英文数据键；因 RU 拍卖行措辞可能与本地表漂移，交叉校验只做「确证不符才拒」，避免陈旧条目静默丢弃真实命中。
+- **探针结论就地订正**：`RunProtocolProbe` 注释新增 CORRECTION 段，明确「三条控制项全 nil 不能推出无法取价」，并要求与本文件的兜底结果一起解读 —— 防止下一个读代码的人重犯同样的推断错误。
+- **防回归**：quote_state harness 升 **79/79**，新增 6 条专门锁这三类缺陷的检查：`fallback_no_retry_while_waiting`、`fallback_waits_on_deadline`、`fallback_identity_guard_allows_unknown_shape`、`fallback_name_cross_check`、`fallback_polling_not_counted_as_attempt`、`legacy_chain_reachable`；另加 `search_keyword_not_english_key`。其中三条做了反向破坏测试（退回 nil 即拒的身份守卫 → FAIL；删除 deadline → FAIL），确认非假绿。
+- **本轮方法论教训**：`.172/.174/.177` 连续三轮我都在**没有读完旧版完整链路**的情况下对单个 API 下结论，并且每次都把自己的实现缺陷解释成平台限制。技能 §12 明确要求旧版迁移要 trace 真实链路 —— 正确顺序应是先完整还原旧版两条路径再动手，而不是先修一条路再猜另一条。已把这条写进本条目作为记录。
+- **BuildTag**：`v3-m1.16.0.18.178-working-name-search-fallback`。
+
+## M1.16.0.18.177 — Quote Cooldown Fence + Compact Material Cells（2026-09-08）
+
+- ~~**协议探针跑完，给出决定性结论：`GetLowestPrice` 在当前 RU 客户端根本不返回可用价格。**~~ **【本结论已被 `.178` 推翻，见下方条目】**该判断错误的原因：探针只验证了旧版两条取价路径中的**一条**。旧版在品质阶梯全 nil 后会转入名称搜索并采用首行 bidPrice 作为材料成本 —— 也就是说「GetLowestPrice 全 nil」是旧版流程中的**正常中间状态**，不是终局。当时我们的兜底恰是死代码，于是把「自己没实现好」误读成「平台 API 不可用」。保留此段以免同类误判再次发生。
+- **修复探针偷取冷却窗口（真实缺陷）**：报告同时出现 `失败=3 · capability cooldown active: 500ms remaining`。根因是 `RunProtocolProbe` 与真实询价在**同一个 drain tick 内两次调用同一 capability**，第二次必然落进第一次的 500ms 官方窗口被能力门拒绝——探针一直在静默消耗用户询价的冷却预算。现改为探针**独占一个 tick**（调用后立即 return，不落到队列表头弹出）。
+- **墙钟冷却围栏**：`intervalMs=560` 只是调度 tick 间隔，而任务被 FrameBudget 延迟时（`deferCount++` 路径）相邻两次实际执行的墙钟间距可以远小于 500ms。新增 `Q.lastNativeCallAt`，Drain 入口以单调时钟判定 `(now - lastNativeCallAt) < intervalMs` 即直接跳过本 tick；探针路径与真实询价路径各打一次时间戳（共 2 处，fence 锁定计数）。真实节奏从此由墙钟保证，不再依赖 tick 计数是否被预算打断。
+- **材料列拥挤修复（用户截图反馈）**：原先每个材料都带括号状态后缀 —— `木材×2（询价失败）·牛奶×50（询价失败）·柠檬×30…`，四个普通材料就塞满整列并在玩家看完配方前触发截断。表格单元格现在只渲染 `名称×数量`（新 `cellText`，上限 26 字符），完整状态保留在行字段与详情浮窗（其自有 countText/unitText/subtotalText/statusText 列不受影响），逐材料价格明细也仍在诊断报告。玩家扫表看的是需要什么材料，不是每项的询价日志。
+- **毛利列诚实化**：`待材料价格` 改为 `缺材料价（拍卖行无返回）`。旧文案暗示数字"马上就来"，但按本轮证据它永远不会来；新文案说明缺失原因，且货率/预计售价两列仍是真实事实，玩家依旧可以用它们选路线。
+- **防回归**：quote_state harness 升 **72/72**。新增 `probe_owns_its_tick`（结构化定位 Drain 内调用点，要求其后先 `return` 再出现队列表头弹出）、`wall_clock_cooldown_fence`、`single_native_call_per_tick`（时间戳赋值恰好 2 处）。两条反证测试均验证非假绿：删掉探针后的 `return` → FAIL `probe_owns_its_tick`；把墙钟判定改成恒假 → 同时 FAIL 两项。
+- **fence 自身两次返工记录**：`probe_rides_existing_lane` 原锁字面语句，改语义后失配——按 `.171/.174` 惯例改为锁语义而非文本。首版 `_probe_branch_returns` 有两处错误：① 用"窗口内找不到 pop 即视为通过"，导致删掉 `return` 仍判 PASS（假绿，反证当场暴露）；② `text.find("Q:RunProtocolProbe()")` 命中的是函数定义头而非 Drain 调用点。均改为先定位 `local function Drain()` 再在其后搜索调用点、并要求 pop 必须存在且晚于 return。教训：**任何新 fence 必须先做反向破坏测试再宣布通过**，只看绿色数字不算数。
+- **BuildTag 协调**：本轮改动落在 `.176-table-resize-dragstop-stability` 之上（该轮为表格列宽拖拽 DragStop 稳定性，与本文件无交集），故本构建号为 `.177`。两处改动互不覆盖，均已核实共存。
+- **下一步（需要产品决策，不再是技术猜测）**：材料成本在 RU 当前不可得。可选方向：① 保持现状——货率+预计售价照常工作，毛利列明确标注缺材料价；② 引入玩家可维护的材料参考价（本地记账/手动输入并持久化，来源标注"自定义参考价"而非拍卖行实时价）；③ 探索 `AskMarketPrice` 等替代原生入口（注意：旧版从未使用过它，属未验证路径）。**（此建议随上方结论一并作废：`.178` 证明正确路径来自旧版可证实装，无需新探索。）**
+- **BuildTag**：`v3-m1.16.0.18.177-quote-cooldown-fence-and-compact-materials`。
+
+## M1.16.0.18.176 — Table Resize DragStop Stability（2026-09-08）
+
+- **跑商“货物 / 货率”分界松手跳变根因**：主跑商表是 `货物=Fill`、`货率=Fixed`，后面还存在第二个 `材料=Fill`。拖动期间 Preview 正确冻结了全表 resolved widths，但旧 `CommitColumnResizePair()` 只提交被编辑的两列；DragStop 后完整 Fill solver 重新从未触碰的 `材料.minWidth` 起算并再次分配剩余宽度，导致 `货物` 列被二次加宽，视觉上就是“鼠标拖到这里，松手控件突然变动”。连续操作会让 Native resize handle 与逻辑分界逐步失配。
+- **完整 resolved snapshot 提交**：`DataViewResizePreviewAuthorityContractVersion=2`。DragStop 先把用户最后看到的 Preview 宽度写成**全列 manual baseline**（保持未编辑列原 size mode），再提交实际编辑列对；同一 viewport 宽度下 `committedResolvedWidths` 直接作为几何 Authority，不允许紧接着再跑一次 Fill solver。窗口/viewport 真正变宽或变窄时自动废弃该快照并恢复响应式求解。
+- **分隔命中区恢复**：Table resize handle 的 Native `StartMoving` 现纳入 `BeginNativeGeometryLease/EndNativeGeometryLease`。手势结束后 DiffRenderer cache 被明确失效并重新锚定 14px 命中面；兼容路径使用 `InvalidateNativeState`。解决连续拖动后“鼠标仍放在视觉分界处但已经抓不到 handle”的漂移。
+- **性能边界不变**：无永久 Tick、无业务数据重绑、无保存扇出。仍只在拖动手势期间使用既有 16ms interactive lane；DragStop 额外工作为 O(列数)，跑商表仅 4–5 列。
+- **门禁**：RSUI v50 / API 13.4；Foundation Gate v135 / UIV3 Acceptance v89。`v3_26_table_resize_contract` 新增真实 Trade 形状（Fill + Fixed + Fixed + Fill + Fixed）的 DragStop 不跳变序列；`rs_input_focus_drag_harness` 新增全列快照、同 viewport Authority、geometry lease 与 Gate v2 fence。
+- **BuildTag**：`v3-m1.16.0.18.176-table-resize-dragstop-stability`。
+
+## M1.16.0.18.175 — Player-Facing Naming（2026-09-08）
+
+- **用户思维纠偏（用户直接指出）**：本插件的用户是中文 RU 客户端上的玩家，不是这套 Suite 的开发者。此前大量内部标识符直接渲染到界面与 HUD：材料行显示英文数据键（`Chopped Produce` / `Ground Grain` / `Lumber`）、配方标签显示英文 legacy 配方名或裸 craftType 数字、售价拆解显示 `熟练×0.875 · 品类×1.20` 因子记号、状态回退可能吐出 `explicit_quote_required` 一类代码。玩家只需要知道**这个东西叫什么**。
+- **材料行改为官方中文名**：`name` 不再取 `materialKey`，改走 identity 服务新增的显示解析器（Localization Authority 优先 → 静态记录本地化名 → 通用兜底「材料」）。原英文键移到**仅诊断可见**的 `internalKey` 字段。真实映射表校验：**70 个材料键全部命中正确中文名，零缺失**（切碎的蔬菜 / 谷物细粉 / 干净的肉脯 / 晒干的花草 …）。
+- **共享显示解析入口**：`TradeMaterialIdentityV3:ResolveMaterialDisplayName(row)` 与 `:ResolveProductDisplayName(itemType, fallback)` 成为身份→文案的唯一出口；`GetName` 合成的 `"ID <n>"` 形式被识别为"没有名字"而非名字，避免把编号当名称显示。m16 侧新增全局辅助 `LocalizedTradeItemName`（定义为全局以避开 Lua 5.1 主 chunk 200 local 上限——该文件实测已 `businessLocals=200/200`）。
+- **配方标签中文化**：live 分支不再把 `craftType` 数字当标签（改为本地化产品名，无则「配方已识别」）；静态分支的英文 legacy 名优先替换为本地化品名。两者原始值统一落到新字段 `identityDetail`，仅供诊断面板使用。
+- **贸易品详情浮窗**：删除 `name or material.materialKey` 的英文键回退（这是玩家表格上最直接的泄漏点）；倍率因子串改为一句人话「含经商与品类加成」，原始倍率只在诊断面板出现；新增 `PlayerPriceStatusText` 把未知内部码收敛为「暂无法估价」而不是原样回显。
+- **诊断面板保持完整开发信息**：本轮不是"删术语"，而是**分层**——玩家面只留中文，开发面（复制报告）额外补上逐行 `材料键[...]` 与 `identitySource;identityDetail`，可读性反而更强。
+- **新增常驻 fence（关键）**：`rs_trade_detail_favorites_harness` 升 **44/44**，加入"玩家界面不得输出内部标识符"扫描。首版用裸 token 子串匹配，误报三处合法用法（表格内部 row key、`if status == "quote_failed" then return "询价失败"` 这类读取比较），说明**字面量检查在这里根本不够用**；改为匹配显示位置形态（`name/text/label/title/summary/statusText =` 赋值）并剥离注释后归零。反向破坏测试确认非假绿：把英文键回退注回去即 FAIL。另锁 `ResolveMaterialDisplayName`/`ResolveProductDisplayName` 存在、`PlayerPriceStatusText` 存在、诊断面板仍保留 internal 细节（防止将来"顺手删掉所有术语"毁掉唯一可读状态源）。
+- **过程自纠**：本轮多次因 Python↔Lua 嵌套引号转义写出非法字符串、以及一次引用未定义辅助函数（`PlayerPriceStatusText`、`LocalizedTradeItemName`）而中断；均按 `.174` 教训以"写完立即解析+跑门禁"收口，未再产生运行期前向引用。`.174` 引入的 `rs_lua_local_order_audit` 在本轮全程护航（identity/m16/diag/detail 四个改动文件均 0 违规）。
+- **BuildTag**：`v3-m1.16.0.18.175-player-facing-naming`。
+
+## M1.16.0.18.174 — Forward-Reference Fix + Standing Local-Order Gate（2026-09-08）
+
+- **`.18.173` 报告自曝其短**：`协议探针: done=false 次=6` 且无任何明细行，同时报价队列 `尝试=0 / 排队=15` —— 探针一次结果都没产出，而真实询价一次都没发出。这不是市场数据问题，是 `.173` 自己把 `Drain()` 打断了。
+- **根因（同类 bug 第三次）**：`RunProtocolProbe` 调用了定义在其**之后**的 `ScanPrice` 与 `Publish`。Lua 局部函数不提升，该名字在调用点解析为 nil 全局 → `attempt to call a nil value` → `Drain()` 每 tick 崩在探针那一行，永远走不到下面的真实询价。**`.173` 不但没拿到证据，还回退了 `.172` 已能工作的询价路径。**
+- **顺带挖出一个潜伏的同类缺陷**：静态顺序审计发现 `.172` 的名称搜索兜底里 `_CheckFallback` 调用尚未定义的 `CompletePending` —— 即**整条兜底链从写下那刻起就是死代码**。这正好解释两轮报告为何从未出现 `name_search_bid`：不是没触发，是触发了必崩。两处均通过移动到依赖之后修复（`_CheckFallback` → `CompletePending` 之后；探针块 → `Publish` 之后），未改任何语义。
+- **新增常驻门禁 `tools/rs_lua_local_order_audit.py`**：静态检出「`local function X` 在其定义行之前被调用」。这是本会话连续三轮栽进去的同一类错误，而 `luaparser` 语法检查与文本 fence 都看不见它（Lua 合法、运行时才炸）。实现要点：剥离注释、跳过定义头行（`local function X(` / `function T:X(`）、剔除 `obj:Method()` / `obj.Method()` 这类带接收者的同名方法调用——后两条是为了消除误报而加，均已用真实样本验证。
+- **接入 `rs_foundation_audit`**：作为 `luaLocalOrder=` 汇总项与兄弟 gate 并列，缺失脚本 / 非零退出 / 缺 PASS marker 三种情况都记 failure。当前全工程 **218 个 Lua 文件 0 违规**。
+- **误报排查记录**（保留以免被当成漏网）：首版扫描另报两处，逐一核实均为工具误报而非代码缺陷——`rs_combat_event_bus_v3.lua` 命中的是 `function C:AcceptsTransport` 定义头本身；`rs_buff_display_store.lua` 命中的是 `Floating:NormalizeState(...)` 方法调用，与文件内同名 `local function NormalizeState` 无关。修工具后两者归零。
+- **防回归**：quote_state harness 升 **69/69**（新增 4 项：探针晚于其全部依赖、兜底晚于 CompletePending、审计脚本存在、审计已接进 foundation audit）。反向破坏测试确认非假绿——把探针挪回 `ScanPrice` 之前会 FAIL `probe_after_its_dependencies`。identity 66/66、craft_modes 25/25、favorites 35/35、presentation API audit PASS、quick_surface 6/6。
+- **方法论**：本轮真正的产出不是功能，而是把我个人的重复失误变成机器可检的约束。「改完不回读、基于记忆继续编辑」已经造成三次运行期崩溃级缺陷；现在即使再犯，门禁会在本地阶段拦住，不再消耗一次实机往返。
+- **仍未证实**：`GetLowestPrice` 在 RU 的真实语义依旧没有证据——`.173` 的探针从未真正执行过。A 部分的能力拒绝原因透传是有效的（报告已显示 `static=Unavailable`，说明 `X2Craft` 命名空间下该方法确实不是 function），B 部分需本构建重跑。
+- **BuildTag**：`v3-m1.16.0.18.174-forward-ref-fix-and-audit`。
+
+## M1.16.0.18.173 — Capability Block Reason + Auction Protocol Probe（2026-09-08）
+
+- **`.18.172` 实机报告结论（假设被证伪）**：探针首次给出决定性读数 `grade 6/7: nil:nil, nil:nil, nil:nil, nil:nil` —— 调用成功（`ok==true`，未走 `call_failed:`），但**四个返回值全是真 nil**。因此 `.172` 补的逗号分组字符串 / gold·silver·copper 复合表解析**不是本次根因**（根本没有值需要解析），"字段名不认识"这条老猜测同时被排除。询价对象是燕麦/稻草捆/鸡蛋/牛奶/红薯这类常年在售的普通交易品，七档全空的市场解释可信度远低于"调用协议不对"。
+- **A：能力拒绝原因透传（可观测性）**：live 身份层此前只报自造标签 `能力未放行：GetCraftTypeByItemType`，把 `IsAllowed` 的真实 reason 丢掉了。新增 `CapabilityBlockReason`，透传 registry reason 并附 `static=/official=/runtime=` 三态与**宿主事实**：`host_global_missing`（命名空间全局未建）vs `method_missing_on_host`（表在但方法不是 function）。三者恰好覆盖 `.18.169` 那类"X2Craft 不可用"的盲区。三个 X2Craft getter 改为统一 required-capability 循环守卫。
+- **B：有界协议鉴别探针（不再靠猜）**：按技能 §7「不确定时在热循环外加有界诊断探针」新增 `Q:RunProtocolProbe()`——对**必然在售**的控制 itemType（3545 燕麦 / 3712 稻草捆 / 3603 鸡蛋）各发一次 `grade=0` 查询，记录 `ok / err / 四槽 ShapeOf / ScanPrice` 结果。它直接区分三个互斥假设：H1 参数语义不符、H2 需拍卖行/搜索预热服务器缓存、H3 真无挂单。会话内最多 6 次尝试、`done` 后自动停止、**绝不写入 `pricesByItemType`/`quoteStateByItemType`/snapshots**（它是证据，不是报价）。
+- **单一车道契约保持**：探针复用既有 drain lane（`Drain` 开头推进，早于 pending 提前返回，避免被单个慢请求拖住），未新增任何 Scheduler 任务；`service_single_lane` / `probe_rides_existing_lane` 双向锁定。
+- **报告可达**：`Describe().protocolProbe` → `GetHealth()` → 跑商诊断面板复制报告新增"协议探针:"段（≤6 条逐控制项读数）。下一次实机报告即可判定该继续改协议还是转产品回落逻辑。
+- **防回归**：identity harness 66/66（`service_live_gated` 由字面量锁改为语义锁，并新增 `service_gate_reason_propagated`、`service_no_bare_block_label`）；quote_state harness 65/65（新增 9 项探针锁，含"探针永不写读模型"）。两组 fence 均做**反向破坏测试**验证非假绿：移除 reason 透传→FAIL `service_gate_reason_propagated`；绕过能力门→FAIL `service_live_gated`；让探针写价格→FAIL `probe_never_writes_read_model`。
+- **仍待实机**：本构建不改变询价成功率，只负责产出可判定的证据。若控制项同样四槽 nil → H1/H2 成立，下一步查 RU 是否需要先 `SearchAuctionArticle`/打开拍卖行填充服务端行缓存（旧版从未使用 `AskMarketPrice`，故不作为候选解）；若控制项返回价格 → H3 成立，转入产品回落（静态底价/`TradePayoutV3` 估算并诚实标注来源）。
+- **BuildTag**：`v3-m1.16.0.18.173-capability-reason-protocol-probe`。
+
+## M1.16.0.18.172 — Quote Money Coercion + Name Fallback + TTL Cache（2026-09-08）
+
+- **接力收口 `.18.171` 未完成项**：品质探测协议本身正确，但价格提取与兜底链仍不完整。本轮补齐旧版可证的三段语义，并修掉接力过程中引入的真实缺陷。
+- **金额解析完整化（关键）**：新增 `ToMoney`（移植旧版 `rs_auction_service.ToNumber` 完整语义）——支持逗号分组字符串（`"1,234,567"`）、gold/silver/copper 复合表（×10000/×100 合成）、以及 `directPrice/bidPrice/buyoutPrice/lowest_price` 等字段键遍历。此前 `ScanPrice`/`NormalizeQuote` 用裸 `tonumber`，RU 若返回上述形态会被误判为"该档无挂单"，白烧整条品质阶梯。`ScanPrice`、`NormalizeQuote`、兜底取价统一走 `ToMoney`。
+- **名称搜索兜底接入**：品质阶梯全部无挂单后，按材料本地化显示名发起**一次**有界拍卖搜索，取首行 `bidPrice`（退化 `directPrice`）作为参考价，来源标记 `name_search_bid`。`AUCTION_ITEM_SEARCHED` 这条无 token 完成边仍由 `AuctionQueryV3` 独占——本服务只调用其 `Search`/`GetSnapshot` 访问器，绝不自行订阅原生事件（共享事实所有权不变量）。兜底保留旧版身份守卫：首行 `itemType` 缺失或不匹配即拒绝，绝不拿相似物品的价格冒充。关键词经 `TrimToKeyword` 限界（1–64 可见字符，剔除控制符）。
+- **单一车道契约**：兜底等待复用既有 drain lane（每 paced tick 重入同一请求并由 `_CheckFallback` 推进），不新增第二个 Scheduler 任务。中途曾误加独立看门狗任务，被 `service_single_lane` fence 如实拦下——门禁正确，实现错误，未放宽 fence。
+- **会话级 TTL 缓存**：新增 `cache["itemType:grade"]`（TTL 120s，对齐旧版 `cacheTtlMs`）与被动读取入口 `PeekCached`。只有 direct 成交进缓存；`name_search_bid` 参考价不入缓存（估计值不得在后续被动刷新中冒充新报价）。显式 `RequestQuote` 始终绕过缓存——用户主动询价意图优先。失败/无挂单结果一律不缓存。
+- **修复接力期真实缺陷（三处）**：① `NormalizeQuote` 前向引用尚未定义的 `ToMoney`（Lua nil 调用，运行必崩）→ 调整定义顺序；② 误插入两份 `ToMoney` 定义 → 去重；③ 重复注释块 → 清理。教训固化为：**连续编辑必须回读文件实跑校验，不得基于记忆继续贴 old_str**。
+- **惰性 host 解析**：`CallCapability("X2Auction:GetLowestPrice", nil, ...)` 改为传 `object=nil`，由 `ResolveCapabilityHost` 在调用时解析命名空间全局（同 `.18.169` X2Craft 教训：客户端建全局时机晚于插件加载，捕获期取值会得到永久 nil）。
+- **防回归**：quote_state harness 升 **56/56**（原 39 + 17 项新锁：ToMoney 先于使用者定义、扫描路径无裸 tonumber、逗号串/金银铜合成、兜底经 AuctionQueryV3 Authority、不订阅原生事件、身份守卫、估计价来源标记、无第二车道、关键词限界、Trade 传 searchName 且经 Localization、TTL 上界、fallback 不入缓存、PeekCached 存在）。identity 64/64、craft_modes 25/25、favorites 35/35、presentation API audit PASS。
+- **仍未证实的假设**：`GetLowestPrice` 在 RU 的真实返回形态依旧没有实机证据——本轮所有形态支持均来自旧版可证实现，不是 RU 实测。`.171` 起 `lastRawReturn` 已带 `grade n/N:` 上下文并对第 2~4 返回值一并 `ShapeOf`，下一份诊断报告应能区分"调用被拒 / 真无挂单 / 返回了未被识别的形态"。
+- **BuildTag**：`v3-m1.16.0.18.172-quote-money-fallback-cache`。
+
+## M1.16.0.18.171 — Grade Probe Quotes（2026-09-08）
+
+- **询价失败根因修复（诊断报告实锤：15/15 全部 `nil:nil`）**：`GetLowestPrice(itemType, itemGrade)` 对某一品质返回 nil 是**正常答案（该品质无在售挂单）**，不是错误；静态 grade 提示常与实际最低挂单品质不符。自旧版可证实现恢复品质探测协议：`RequestQuote` 接受有序品质候选（显式 grade → offset+1/offset → 1..6 → 0，去重 ≤8 档），队列对同一请求逐档探测（每档仍守 560ms 服务器冷却），价格可能位于第 2~4 返回值（`ScanPrice` 扫描全部返回槽），全部档位无挂单才落 `unavailable: 全部 N 档品质均无在售挂单`。原始形态记录带 `grade n/N:` 上下文。
+- **身份车道 P3→P2**：报告证据 `队列=1 读=0`——P3 维护车道在负载下饿死（`.18.87` 同类前科），live 身份请求永久排队。升至与报价队列同级的 P2。
+- **时间成本说明**：15 材料 × 最多 8 档 × 560ms ≈ 最长 1 分钟跑完一批，行随每档成交异步回写；这是服务器查询冷却的固有成本。
+- **防回归**：identity harness 升 64/64（品质阶梯、同请求重排、多返回值扫价、无挂单语义、P2 车道）。
+- **BuildTag**：`v3-m1.16.0.18.171-grade-probe-quotes`。
+
+## M1.16.0.18.170 — Trade Init Trace（2026-09-08）
+
+- **跑商初始化追踪（用户反馈"重载后点开跑商页很多东西没初始化成功"，静态分析无法定位具体层）**：Trade Feature 新增有界初始化里程碑环（12 条），记录 demand 0→1（consumer/_enabled/storeLoaded/持久化路线）、事件订阅失败、地区/熟练度初始化结果（zones/fallback/commerce 状态）、货率返回行数、enable/disable。诊断面板新增"初始化"汇总行 + 最近里程碑，"复制诊断报告"携带完整追踪。下次复现时报告会直接显示是 store 未恢复、地区 API 失败、还是 Consumer/事件链断裂。
+- **BuildTag**：`v3-m1.16.0.18.170-trade-init-trace`。
+
+## M1.16.0.18.169 — Lazy Craft Host Fix（2026-09-08）
+
+- **修复 live 身份层 `X2Craft 不可用`（首份跑商诊断报告证据）**：报告确认静态身份层已实机打通（`配方 7/8`，`[黄金]保存传统特产→Halcyona Preserved Local Specialty` 尾词映射验证正确，15 个待询价材料识别），唯一未解析的 `黄金平原尾毛被子` 走 live 层时报 `X2Craft 不可用`。根因：服务在**加载时**捕获 `rawget(_G, "X2Craft")`，客户端建全局时机晚于插件加载则捕获到 nil 且永不更新。现改为传 `object=nil` 让 `ResolveCapabilityHost` 在**调用时**惰性解析命名空间全局（API 层既有机制）；若全局确实不存在，错误将变为明确的 `capability host unavailable: X2Craft:...`，报告可区分"命名空间缺失"与"原生返回不可读"。
+- **BuildTag**：`v3-m1.16.0.18.169-lazy-craft-host-fix`。
+
+## M1.16.0.18.168 — Trade Diagnostics Panel（2026-09-08）
+
+- **跑商专属诊断浮窗**：跑商页面新增"诊断"按钮，打开只读诊断面板（`TradeDiagnosticsV3`，会话级浮窗，无 Consumer、无 Commands、无持久化）。面板包含：三层汇总（路线/身份/live 队列、报价队列统计、最近原生返回形态）、最近 12 条询价逐条记录表（时间/itemType/状态/价格/**原始返回形态或错误**）、"复制诊断报告"按钮（经 SafeChat 输出有界多行报告，含最近询价、live 身份失败、逐行材料明细与首错）。订阅 Feature 更新与报价完成主题实时刷新。
+- **报价队列可观测性升级**：`PriceQuoteQueueV3` 记录每次原生调用的**有界原始返回形态**（`ShapeOf`：类型+表字段名列表，≤12 字段）、尝试/成功/失败计数、最近完成环形记录（12 条）。这是回答"RU `GetLowestPrice` 到底返回什么"的第一手探针——询价失败率高的根因（字段形态不匹配）将直接可见。诊断页"报价队列"行追加 尝试/成功/失败 与 形态= 段。
+- **身份服务**：live 身份失败环形记录（8 条）进 Describe，诊断报告逐条携带。
+- **防回归**：identity harness 升 57/57——新增面板 TOC 顺序、只读边界（无 Commands/Consumer/原生调用/持久化）、复制走 SafeChat、原始形态捕获与统计锁。
+- **BuildTag**：`v3-m1.16.0.18.168-trade-diagnostics-panel`。
+
+## M1.16.0.18.167 — Trade Identity Facade Fix（2026-09-08）
+
+- **修复 `.18.165` 静态解析层整体失效（用户实机：全部行"解析中"、按钮禁用）**：`TradeMaterialIdentityV3` 把访问器门面表 `S.Data.TradeStaticV2`（承载 GetRecipeByLegacyName/GetMaterialBy*）误当成注册表 `S.StaticDataV2`（只有 GetCatalog）捕获，`ResolveStatic` 守卫直接返回 nil——三层解析的静态层从未运行，所有行落入 live 分支。本实机症状同时证明 RU 货率行**携带产品 itemType**（live 层激活前提成立）。
+- **修复卡死状态机**：live 尝试已终局（失败或空结果）时行仍显示"配方解析中…"。现 `HasLiveAttempt` 区分"排队/在飞（解析中）"与"已终局（配方未匹配）"，且空 ready payload 按失败落账，不再有永久解析中。
+- **新增 Real-Lua harness `rs_trade_material_identity_lua_harness.py`**：真加载服务文件 + 真配方/家族/模板数据，按运行时表名注入访问器门面，断言 Gilda/传统特产→Local/特产尾词、家族奶酪行、肥料模板、无地区不解析、未知不伪造等 8 组语义。此类"表可达性"错误文本 fence 抓不住，只有真加载能抓（本机无 Lua 解释器，封包机执行）；静态 fence 同步锁定门面捕获与注册表禁用（43/43）。
+- **BuildTag**：`v3-m1.16.0.18.167-trade-identity-facade-fix`。
+
+## M1.16.0.18.166 — Trade Boundary + Diagnostics Hotfix（2026-09-08）
+
+- **修复 `service_presentation_boundary[invalid=TradePayoutV3:missing]` 阻断**：`.18.163` 引入 `TradePayoutV3` 时漏声明 `presentationBoundary`，运行时门禁如实拦截（本地静态门禁不执行该运行时契约，且未主动扫）。已补 `service_only`，并把「凡注册进 `S.Services` 必须声明边界」固化为 `rs_trade_material_identity_harness` 的全 services 目录类级 fence。
+- **修复跑商诊断行 `状态机诊断不可用`（历史缺陷）**：诊断读取 `feature.DescribeRequestState`，但该方法只定义在 `Trade.Authority`（TA）上，Feature 表上不可达——该行自加入起就不可能工作。债券行正常恰因 `DescribeDailyCache` 定义在 Feature 表上。现补 `Trade:DescribeRequestState/DescribeIdentityState` 委托，并 fence 锁定所有诊断消费的 describe 助手必须在 Feature 表可达。
+- **BuildTag**：`v3-m1.16.0.18.166-trade-boundary-diag-hotfix`。
+
+## M1.16.0.18.165 — Trade Material Identity Recovery（2026-09-08）
+
+- **实机根因修复（用户截图 .18.164）**：RU 服务器返回本地化中文货物名，而静态配方表按英文 legacy 名索引，`GetRecipeByLegacyName(中文名)` 全部落空 → 所有行"材料待确认"、材料行为空、材料询价按钮永久禁用。另发现第二个身份 bug：静态配方材料键为 `material.xxx` 注册键而拍卖元数据表按英文名索引，即使配方匹配材料也无法解析身份。
+- **新增共享服务 `TradeMaterialIdentityV3`**（语义自旧版可证实现恢复，不迁旧架构）：三层身份解析。① 共享静态家族：中文名关键字直接命中全地区同配方（肥料特产/陈化蜂蜜/陈化奶酪/陈化药材/时空碎片/蓝盐运输，材料表按 compact id 原样移植）；② 地区 Authority + 中文尾词：`originZoneId → GameIds.Zone(nameEn+tradeQuality)` 选择地区，本地化文本只选家族词（特制特产=Gilda Specialty、传统特产=Local Specialty、特产=Specialty）——**本地化文本永不决定地区**（旧版 [十字星]→Hasla 误映射教训）；③ live craft 事实：`X2Craft:GetCraftTypeByItemType + GetCraftProductInfo(产品侧验证) + GetCraftMaterialInfo`，按货率行携带的产品 itemType 解析（三个能力均已 OfficialEnabled，含 2026-06-02 GetCraftMaterialInfo 崩溃修复注记），250ms 串行队列、会话缓存、requester 取消、fail-closed。
+- **行级接入**：货率行捕获产品 itemType（bounded 字段列表，RU 形态未证时退化为纯静态链）；材料投影重写为逐层回退，未解析行诚实显示 `配方未匹配`（无 itemType）或 `配方解析中…`（已提交 live 解析）；解析完成后仅重建受影响行。生命周期：需求归零/功能关闭/路线重查即取消该 Feature 的待处理身份请求。
+- **可观测性**：投影新增 `unresolvedIdentityCount`，主页面/HUD 状态行显示"· 配方待解析 N"；诊断页跑商行追加 `配方 X/Y · 解析中 N · live读N 缓存ready/failed`，可直接判断静态层命中数与 live 链真实健康状况。
+- **防回归**：新增 `rs_trade_material_identity_harness.py` 36/36，锁定尾词映射、地区 Authority（禁止中文地区前缀映射）、能力门禁、单队列、所有权边界（X2Craft 仅存在于身份服务）与 TOC 顺序。
+- **验证**：静态套件本轮可执行项全部 PASS（Foundation Audit toc=225/225、Feature API Audit、RSUI Audit、trade 专项 25/25、35/35、39/39、36/36）；本机无 Lua 编译器，parse 步骤与 Real-Lua harness 在封包机执行，修改文件已 luaparser 补偿解析通过。
+- **BuildTag**：`v3-m1.16.0.18.165-trade-material-identity-recovery`。
+
+## M1.16.0.18.164 — Trade Quote State Observability（2026-09-08）
+
+- **材料询价失败可见化**：`PriceQuoteQueueV3` 新增共享按 itemType 报价生命周期读模型 `quoteStateByItemType`（queued/inflight/ready/failed）；失败完成记录真实错误（如"最低价返回不可读（当前 RU 字段待核）"），材料不再永远停留在无解释的"待询价"。fail-closed 语义不变：只有 ready 完成才写入 `pricesByItemType`，失败不清除已有可信价。
+- **Trade 材料投影状态**：材料行新增 `quoteState/quoteError`，costStatus 区分 `quote_pending`（询价排队中/询价中）与 `quote_failed`（询价失败）；详情悬浮窗状态列显示对应状态，存在失败时提示区直接显示第一条真实失败原因，底部状态条显示 待询价/询价中/询价失败 计数。
+- **命令语义**：`QuotePendingMaterials/QuoteRowMaterials` 把失败材料视为可重试的待询价项，排队/在飞材料自动跳过；`QuoteMaterial` 对同一 itemType 的重复请求返回"已在报价队列中"，不再重复入队。投影新增 `quoteInFlightCount`，主页面与 HUD 状态行显示"· 询价中 N"。
+- **诊断面**：诊断页新增独立"报价队列"功能行（运行/在飞/排队/已报价品类/最近一次 requester#itemType 状态、来源与错误），并进入 `Snapshot().priceQuoteQueue`；一键复制行可直接携带 `GetLowestPrice` 失败原因，供 RU 实机核对真实返回形态。
+- **防回归**：新增 `rs_trade_quote_state_harness.py` 39/39，锁定服务状态图、投影/命令语义、三个 UI 入口、诊断行与 Presentation 无原生拍卖访问的归属 fence。
+- **验证**：静态套件本轮可执行项全部 PASS（含 Foundation Audit 全部契约检查 toc=224/224、Presentation Feature API Audit calls=389、RSUI Component API Audit calls=561）；本机无 texluac/lua 解释器，`Active Lua parse` 步骤与 Real-Lua harness 在封包机执行，7 个本轮修改文件已用 luaparser 语法解析补偿通过。
+- **BuildTag**：`v3-m1.16.0.18.164-trade-quote-state-observability`。
+
+## M1.16.0.18.163 — Trade Payout Formula Recovery（2026-09-08）
+
+- **恢复预计售价完整计算链**：新增纯数据 `TradePayoutV3`，继续以 X2Store 实时货率和 X2Ability 经商熟练度为事实 Authority；预计售价恢复为 `静态底价 × 货率 × 经商倍率 × 贸易品类别倍率`。
+- **经商倍率**：恢复用户提供旧版中实际使用的 `1 + skill/10000*0.05`；默认“熟练：计入”，显式“忽略”仅用于对比。若计入模式下熟练度读取失败，售价 fail-closed 为 `--`，不再输出少乘一层倍率的误导数字。
+- **品类倍率**：恢复 `TradeNameMultipliers`（标准/新鲜/特供/基本发酵/加工发酵/无添加发酵/天然发酵）；原始名称无类别 token 时允许从已验证 canonical price key 回退识别。
+- **价格 Key 解析**：恢复别名与奶酪/药材/蜂蜜 larder canonical resolver，优先使用当前路线出发地区，避免服务器显示名与静态 payout key 不完全一致导致 `--`。
+- **可观测性**：贸易品行新增 `priceKey/keyMode/baseAtRatio/commerceMultiplier/packMultiplier/priceBreakdown`；详情悬浮窗直接显示熟练与品类倍率。
+- **BuildTag**：`v3-m1.16.0.18.163-trade-payout-formula-recovery`。
+
+## M1.16.0.18.162 — Bag Quick Transient Window Recovery（2026-09-08）
+
+- **修复仓库/箱子已打开但“取 / 放 / 停”快捷条不显示的 Presentation 根因**：旧 `rs_v3_bag_quick_overlay.lua` 仍使用 `UIParent` 顶层 `emptywidget + system layer`。项目 Native Primitive 已有 RU 实机结论：该宿主形态不能作为可靠顶层可见 Surface；Unit Lines 曾因同类问题出现“投影有效但屏幕零可见点”。`.162` 将 Bag Quick Overlay 迁为真实 `transient WINDOW` Host，子按钮继续走共享 RSUI/Button 与既有命令链，不建立第二 UI Authority。
+- **修正 Bag Native Window Fact 优先级**：`GetContentMainScriptPosVis` 的第 5 返回值现在接受 boolean/0-1/常见 string 形态；显式 Native visible/hidden 为最高 Authority。`ADDON:GetContent` 短父链只提供正向可见证据，hidden proxy 不再覆盖已经存在的合法 MainScript geometry；无显式 visible 时，合法四返回值 geometry 可以证明窗口已打开。`RequireStorageWindow` 与 Quick Overlay 继续消费同一事实函数。
+- **首开重试闭环**：Bag Quick transient Host 在模块 admission 时预创建为 hidden；实际 bag+bank/coffer 可见期间，既有 350ms 低成本 observer 发布 bounded visible heartbeat，使首次 Native Window/Handler 构造若临时失败可自动重试，而不会因为 feature state 已经 visible、后续状态未变化而永久不再创建。关闭仓储窗口后 heartbeat 停止。
+- **性能边界不变**：Observer 仍只读取 UIC_BAG/UIC_BANK/UIC_COFFER 的窗口事实，不创建 InventorySnapshot、不遍历物品、不移动槽位；重型扫描/Move Queue 仍只允许显式点击“取/放”触发。显式 `tools_bag=false` 仍是最终 FeatureRuntime Authority。
+- **门禁**：Bag Native Quick v7 / Reload Observer v3 / RU Four-Value Visibility v2 / Native Visibility Shape v1 / Visible Presenter Retry v1；Bag Quick Presenter v4 / Transient Host v1 / Visible Retry v1。Quick Surface Reload 6/6、Bag Move Queue v8 11/11、全量 41/41 Python Harness、Foundation Audit PASS、Lua Parse 223/223。
+- **BuildTag**：`v3-m1.16.0.18.162-bag-quick-transient-window-recovery`。
+
+## M1.16.0.18.161 — Settings Numeric Slider + Unit Lines Card Layout（2026-09-08）
+
+- **纠正 `.160` 的错误取舍**：Unit Lines 4 张样式卡不再为了压高度把 `slider=false`；全局 4 项 + 单线 8 项现在全部通过新增的 `SettingsNumericSlider -> NumericField` 薄策略，统一获得 Slider + 可编辑 NumericInput + Apply。Binding、Draft、动态范围与 Persistence Authority 仍只在 NumericField/NumericRangeStore。
+- **动态范围继续成立**：点大小的代码默认 Slider 范围仍为 `2..10`、业务硬上限 `24`；精确输入 20 后共享 NumericField 会把 Slider presentation max 扩至 20 并持久化 range metadata。密度/透明度/刷新间隔使用 fixed business range，避免无意义扩张。
+- **SettingsFoundation v3 视觉层级**：SettingsSection 改为 flat title + soft Divider + content，不再用 Card 做“黄框套黄框”；真正需要边界的 StyleCard 默认改为 `soft`、无 accent strip、无默认 gradient。UITokens v8（StyleCard 默认 300×116、Header 20、Page section gap 收紧），Design System v10。
+- **Unit Lines Card 重排**：每张卡改为两条完整 NumericSlider 行（密度/点大小）+ 一条 ColorField；删除 `.160` 的双 Numeric 横向挤压行。可见文字去除 RU 字体可能缺失的 `↔/✓/○` 字形，改为中文安全文本与 `：开/：关` 状态。2 列卡片 `minCellWidth=300`，窄宽度自动 1 列，不写分辨率特判。
+- **门禁**：SettingsFoundation v3 增加 `SettingsSectionHierarchyContractVersion=1`、`SettingsNumericSliderContractVersion=1`、ScrollSafeCard v2、StyleCard v3；BusinessPages v6 / UnitLine Consumer v3。Unit harness 强制 12/12 数值设置均为完整 slider 组合、8/8 单线 Slider、4/4 点大小保留 10->24 adaptive range，并禁止 Unit Lines 分支重新出现 `slider=false`/ResponsiveNumericSetting/手写 numeric row。
+- **验证**：41/41 Python Harness PASS；Settings Page Foundation 35/35；Unit Line Settings Page 43/43；UI Interaction Range 61/61；Interactive Draft 115/115；Foundation Audit PASS；Lua Parse 223/223。
+- **BuildTag**：`v3-m1.16.0.18.161-settings-numeric-slider-card-layout`。
+
+## M1.16.0.18.160 — Unit Lines Dense Settings Layout（2026-09-08）
+
+- **修复 `.159` 实机布局与设计目标不一致**：`SettingsToggleGrid` 的 Toggle 不再 `fill` 整个网格单元；标准设置页默认使用紧凑 Toggle 宽度与左对齐，Unit Lines 4 个开关在可用宽度内最多 4 列，窄宽度自动降列。
+- **修复 768p 下“样式卡看似消失”的 ScrollBox 组合问题**：RU ScrollBox 使用安全整项吸附；`.159` 将 4 张 StyleCard 包在约 300px+ 的单个 Section 中，当前 viewport 剩余高度不足时整块延后，形成大面积空白。`.160` 收紧 Settings tokens/Section/Card chrome，并把单线样式改为“密度 + 点大小”同一紧凑行（卡内不再重复 Slider，保留精确输入+应用），全局设置继续保留 Slider。
+- **SettingsFoundation v2**：新增 `compactToggleContractVersion=1`、`scrollSafeCardContractVersion=1`；StyleCard/Section headerHeight 可配置，UITokens 升 v7，Design System 升 v9。Unit Lines Consumer 契约升 v2 / BusinessPagesContract v5。
+- **768p 防复发**：`rs_unit_line_settings_page_harness.py` 增加样式区高度预算，2×2 卡片估算高度必须 `<=250px`；同时验证 4 个紧凑 Toggle、8 个卡内 input-first Numeric、4 个样式卡与默认折叠诊断。
+- **验证**：41/41 Python Harness PASS；Unit Line Settings Page 35/35；Settings Page Foundation 30/30；Foundation Audit PASS；Lua Parse 223/223。
+- **BuildTag**：`v3-m1.16.0.18.160-unit-lines-dense-settings-layout`。
+
+## M1.16.0.18.159 — Unit Lines Settings Foundation Consumer（2026-09-08）
+
+- **首个正式 SettingsFoundation Consumer**：`combat.unit_lines` 从旧 `PageHeader + 大块 Toggle + CompactNumericSetting + 手写 VerticalBox 卡片 + 常驻 TableView` 迁到 `.18.158` 的共享 `FeatureSettingsHeader / SettingsSection / SettingsToggleGrid / ResponsiveNumericSetting / SettingsStyleCardGrid / SettingsStyleCard / SettingsDiagnosticsDisclosure`。Feature Projection/Commands、Store、Demand、视觉刷新与投影 Authority 均未改变。
+- **信息层级重构**：页头只保留功能状态、开关和刷新；四类连线开关进入紧凑 ToggleGrid；全局显示与每条连线样式分区；四条连线改为 2→1 列响应式 Style Card。默认密度/点大小明确标注为旧配置/缺省回退，避免与单线覆盖语义混淆。
+- **诊断与普通设置分离**：`unit_projection_unavailable`、端点重合、投影失败及事实 TableView 全部移动到默认折叠“高级 / 诊断”；主摘要只显示正常/部分可用/等待目标等用户状态，不再裸露底层错误串。诊断 TableView 限制 5 行，展开才占页面空间，不启动新 Consumer。
+- **响应式策略**：全局数值区按 available width 2→1 列；Style Card `minCellWidth=292`、最多 2 列；每个 Numeric 继续用 exact EditBox + Slider + Apply，并在更窄 Card 内由共享 `responsiveStack` 自动换行。禁止任何 1024/1280/1920/2560 分辨率特判。
+- **防复发门禁**：`BusinessPagesContract v4` 新增 `unitLineSettingsFoundationConsumerContractVersion=1`；Foundation Gate v133 / UIV3 Acceptance v87 增加 `v3_unit_line_settings_page_contract`；Foundation Audit 禁止 Unit Lines 分支重新出现 `CompactNumericSetting`、旧 appearance grid 或分辨率魔法数。新增 `rs_unit_line_settings_page_harness.py` 28/28，真实构建形状验证 4 Toggle / 12 Responsive Numeric / 4 Style Card / 4 ColorField / 默认折叠 Diagnostics / Table 归属与主摘要不泄露 raw error。
+- **验证**：全量 `41/41` Python Harness PASS；Settings Foundation 28/28、Unit Line Settings Page 28/28、UI Interaction 61/61、Interactive Draft 115/115、Input Focus/Drag 110/110、Unit Line E2E 34/34、Sampling 11/11；Foundation Audit PASS（`toc=223 / activeLua=223 / allLua=223`）；Lua `223/223` Parse PASS。
+- **BuildTag**：`v3-m1.16.0.18.159-unit-lines-settings-foundation-consumer`。
+
+## M1.16.0.18.158 — Settings Page Foundation（2026-09-08）
+
+- **先补底层，不先重排单位连线页面**：新增 `RSUI.SettingsFoundation v1`，统一 Feature Header、ToggleGrid、SettingsSection、StyleCard/Grid、Responsive SettingRow、Responsive NumericSetting、默认折叠 DiagnosticsDisclosure。全部由现有 RSUI Measure/Arrange/BuildScope 组合，不建立第二套布局 Authority，不新增 Tick/OnUpdate。
+- **FormRow Responsive v1**：修复原 vertical Measure 把 child width 误当 height 的真实 bug；`layout=auto/responsive` 以当前可用宽度切换 horizontal/vertical，窄窗口不再把 label/control/hint 压成一行。
+- **Numeric Responsive Stack v1**：NumericField v7 增加 opt-in `responsiveStack`；标准 settings numeric 默认开启，窄宽度下 label 自动上移、Slider + exact input + Apply 留在第二行，Binding/持久化 Authority 不变。旧 `CompactNumericSetting` 默认行为不变，避免一次性改变所有现有页面。
+- **统一 Settings Tokens**：UITokens v6 新增 settings 密度/卡片/网格/setting-row/numeric breakpoint；Design System v8 提供薄代理，后续页面不再手写重复 minCellWidth/卡片/诊断区结构。
+- **门禁**：新增 `rs_settings_foundation_harness.py` 28/28；Responsive Numeric 回归纳入 `rs_ui_interaction_range_harness.py`；Foundation Gate v132 / UIV3 Acceptance v86。全量 `40/40` Python Harness PASS、Foundation Audit PASS（`toc=223 / activeLua=223 / allLua=223`）、TOC Lua `223/223` Parse PASS。下一步才迁移 Unit Lines 页面消费这套 Foundation。
+- **BuildTag**：`v3-m1.16.0.18.158-settings-page-foundation`。
+
+## M1.16.0.18.157 — Resolution / Coordinate Foundation（2026-09-08）
+
+- **不再按分辨率写补偿表**：针对 1280×768 与 2560×1440 之间世界视觉轻微漂移，以及用户在多种 4:3/5:4/5:3/16:10/16:9 分辨率下的悬浮窗口/屏幕按钮位置兼容，统一收敛到 Layout Authority。禁止新增 `1280x768 +N`、`1920x1200 +M` 之类分辨率魔法表。
+- **Screen→Overlay Host Contract v1**：`ScreenProjectionV3` 继续只拥有原生 UIParent Screen Coordinate；`Layout:GetUiParentLocalOrigin/ScreenPointToWidgetLocal` 负责把屏幕点转换为当前 Native Overlay Host 的本地坐标。转换先把 Host EffectiveOffset 与 UIParent 自身 EffectiveOffset 归一到同一 logical space，再只减一次 `Host-UIParent` 原点；因此即使 `CorrectOffsetByScreen` 或某分辨率让顶层 WINDOW/UIParent 出现非零原点，也不会二次偏移。CombatVisualGuides 每个渲染批次只读一次 transform，Unit Lines/Range 共用，不增加逐点 Native geometry read。
+- **Range Label 几何同源修复**：Range Assist 也使用 1×1 `'.'` Label；旧 `PlaceDot` 仍残留 `x-size/2,y-size/2`。现与 `.154` Unit Lines 一致：font size 只控制 glyph 墨迹，绝不参与坐标。
+- **Responsive Placement Intent v1**：`Layout:StorePlacement` 对 free/recoverable Surface 继续保存精确 logical x/y，同时增加 `savedLogicalWidth/Height + normalizedCenterX/Y`。同一 logical viewport 原样恢复；检测到真实分辨率变化时按归一化中心重投影并保证标题/拖动区仍可恢复。旧 `logical-free-v2` 没有 source viewport 时不猜原分辨率，只做 recoverable safety；用户下一次拖动自然补齐新元数据。
+- **窗口/按钮覆盖**：RSUI FloatingSurface v11 统一携带响应式位置意图，因此 DPS、状态显示、死亡回顾、活动/任务、跑商/生活浮窗、Auction/Craft Sidecar 等共用处理；主 Shell 同样保留该元数据。小型屏幕按钮统一优先边缘意图：Gear 快捷按钮继续使用 `logical-edge-v1`，R launcher 在用户下一次拖动提交后也由旧 free 坐标升级为 nearest-edge + margin；分辨率改变时保持用户选择的屏幕区域而非旧物理像素。Bag 快捷按钮仍从当前背包窗口实时派生，不持久化物理像素。
+- **诊断**：Unit Lines/Range 运行状态新增 `Host=x,y / 视口=WxH / UIScale`，后续实机可直接区分 Native Projection 与 Overlay Host 原点问题。
+- **验证**：新增 `rs_resolution_coordinate_harness.py`，覆盖截图所示主流 1024×768、1152×864、1176×664、1280×720/768/800/960/1024/1440、1360/1366×768、1440×1080、1600×900/1024/1200、1680×1050、1920×1080/1200/1440、2560×1440；响应式自由窗口、边缘按钮、Host local conversion 共 `46/46 PASS`（含 non-zero UIParent origin 与 strict edge-store）。Unit Line E2E 额外模拟非零 Host origin，34/34；全量 `39/39` Python Harness、Foundation Audit、222/222 Lua parse PASS。Foundation Gate v131 / UIV3 Acceptance v85。
+- **BuildTag**：`v3-m1.16.0.18.157-resolution-coordinate-foundation`。
+
 ## M1.16.0.18.156 — EditBox Post-Arm Focus Promotion（2026-09-08）
 
 - **RU 实机根因确认**：`.18.155` 为保护鼠标确定的 caret 位置，`ActivateInputWidget()` 在 `GetFocusedWidgetId()` 已指向当前 EditBox 时跳过 `SetFocus()`。但 RU 的鼠标事件顺序允许“Native 先发布 Focus ID，Lua OnClick 后执行”，此时 EditBox 仍处于 `EnableKeyboard(false)`。随后 Lua 仅把 Keyboard 升为 true，却因“already focused”误判跳过 `SetFocus`，最终形成**外观/Focus ID 都像已选中，但 Native 文本输入通道没有进入键盘编辑模式**的假 Focus。

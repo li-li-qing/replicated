@@ -197,7 +197,12 @@ S.Demand = {
 S.FrameBudget = {{ current = {{ pressure = "Normal" }} }}
 -- Deliberately non-1 Suite layout scale: world/screen projection coordinates
 -- must remain invariant because addonScale sizes Suite layouts, not screen positions.
-S.Layout = {{ GetContext = function() return {{ addonScale = 1.25, uiScale = 1.25 }} end }}
+S.Layout = {{
+  GetContext = function() return {{ addonScale = 1.25, uiScale = 1.25, logicalWidth = 2048, logicalHeight = 1152 }} end,
+  GetUiParentLocalOrigin = function(self, widget)
+    return tonumber(widget and widget.hostOriginX) or 0, tonumber(widget and widget.hostOriginY) or 0, true, nil
+  end,
+}}
 S.PerformanceMonitor = nil
 
 -- ---- Native API surface ---------------------------------------------------
@@ -312,7 +317,11 @@ end
 -- mock routes into the same widget records the assertions inspect.
 function S.UI:CreateOverlayWindow(name, owner)
   local widget = NewWidget(nil)
-  widget.x, widget.y, widget.width, widget.height = 0, 0, 200, 200
+  -- Simulate Native CorrectOffsetByScreen producing a non-zero host origin on
+  -- a non-reference resolution. Presenter children must compensate locally.
+  if string.find(tostring(name), "unit", 1, true) then widget.hostOriginX, widget.hostOriginY = 7, 13
+  else widget.hostOriginX, widget.hostOriginY = 5, 9 end
+  widget.x, widget.y, widget.width, widget.height = widget.hostOriginX, widget.hostOriginY, 200, 200
   return widget
 end
 function S.UI:CreateLabel(parent, name, text, x, y, w, h, fontSize, tone, align, shadow)
@@ -433,11 +442,13 @@ for _, w in pairs(widgets) do
 end
 local uniquePositions = 0
 for _ in pairs(seenPositions) do uniquePositions = uniquePositions + 1 end
+local visualPresenter = ReplicatedSuite.UIV3 and ReplicatedSuite.UIV3.CombatVisualGuidesV3 or nil
 Check("dots_visible_on_widgets", visibleDots >= 8, visibleDots)
 Check("dot_positions_unique", uniquePositions >= 8, uniquePositions)
 if firstUnitRow ~= nil and maxUnitDotX ~= nil and minUnitDotX ~= nil then
-  local expectedMin = math.min(tonumber(firstUnitRow.x1) or 0, tonumber(firstUnitRow.x2) or 0)
-  local expectedMax = math.max(tonumber(firstUnitRow.x1) or 0, tonumber(firstUnitRow.x2) or 0)
+  local hostOriginX = tonumber(visualPresenter and visualPresenter.lastUnitSampling and visualPresenter.lastUnitSampling.hostOriginX) or 0
+  local expectedMin = math.min(tonumber(firstUnitRow.x1) or 0, tonumber(firstUnitRow.x2) or 0) - hostOriginX
+  local expectedMax = math.max(tonumber(firstUnitRow.x1) or 0, tonumber(firstUnitRow.x2) or 0) - hostOriginX
   -- 1x1 label anchors must land on the RAW projected endpoints. Font size is
   -- visual ink only; subtracting half the font size reproduces the live
   -- "line slightly misses the head center" regression. The +/-1 tolerance is
@@ -470,9 +481,9 @@ if rangeEnabled == true then
   Check("range_facts_are_ring_not_center", string.find(facts, "EasyPull原生0/相机", 1, true) ~= nil and string.find(facts, "easypull_camera", 1, true) ~= nil, facts)
   local calibration = type(rangeRow) == "table" and tostring(rangeRow.calibration or "") or ""
   Check("range_camera_anchor_calibration_applied", calibration ~= "" and calibration ~= "-" and string.find(facts, "锚校applied", 1, true) ~= nil, calibration .. " | " .. facts)
-  local visualPresenter = ReplicatedSuite.UIV3 and ReplicatedSuite.UIV3.CombatVisualGuidesV3 or nil
+  visualPresenter = ReplicatedSuite.UIV3 and ReplicatedSuite.UIV3.CombatVisualGuidesV3 or nil
   Check("range_screen_coordinate_authority", visualPresenter ~= nil and visualPresenter.ScreenCoordinateAuthorityContractVersion == 1
-      and type(visualPresenter.lastRangeSampling) == "table" and visualPresenter.lastRangeSampling.coordinateSpace == "ui_parent_screen",
+      and type(visualPresenter.lastRangeSampling) == "table" and visualPresenter.lastRangeSampling.coordinateSpace == "ui_parent_screen_to_host_local",
       visualPresenter and visualPresenter.lastRangeSampling and visualPresenter.lastRangeSampling.coordinateSpace)
 
   -- A transient projection/read exception must never trip the shared scheduler

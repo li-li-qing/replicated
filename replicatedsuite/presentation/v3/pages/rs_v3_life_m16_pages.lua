@@ -61,7 +61,7 @@ local function Build(parent, route, feature, kind)
     if root == nil then return nil, err end
     root.consumerHeld = false
     local title, subtitle = "", ""
-    if kind == "trade" then title, subtitle = "跑商", "实时货率来自服务器；可切换满货率 130% 做本地对比。经商熟练度只读显示，精确 RU 售价倍率未验证前不计入估价。"
+    if kind == "trade" then title, subtitle = "跑商", "实时货率来自服务器；预计售价按静态底价 × 货率 × 经商熟练度 × 贸易品类别倍率计算。可切换满货率 130% 与忽略熟练度做对比。"
     elseif kind == "bonds" then title, subtitle = "债券 / 居民板", "读取居民板内容、QuestProgressV3 任务状态和有限背包材料总量；明确显示未知与部分可读诊断。"
     elseif kind == "treasure" then title, subtitle = "寻宝", "直接扫描有限背包槽位中的藏宝图坐标，并在单位世界坐标可用时计算方向与距离。"
     else title, subtitle = "钓鱼", "按需观察目标鱼动作 Buff 并给出技能栏推荐；自动 R 热键写入在 RU 完整回滚契约验证前保持 Runtime Blocked。" end
@@ -121,7 +121,7 @@ local function Build(parent, route, feature, kind)
             if ok == true then root:Refresh() end
             return ok, modeErr
         end
-        local tradeCommerceModeButton = RSUI:Button({ id = "v3_trade_commerce_mode", parent = actionRow, text = "熟练：读取", compact = true, slot = { size = "fixed", width = 94 } })
+        local tradeCommerceModeButton = RSUI:Button({ id = "v3_trade_commerce_mode", parent = actionRow, text = "熟练：计入", compact = true, slot = { size = "fixed", width = 94 } })
         tradeCommerceModeButton.onClick = function()
             local projection = feature:GetProjection() or {}
             local ok, modeErr = feature.Commands:SetCommerceMode(projection.commerceMode == "off" and "observe" or "off")
@@ -133,6 +133,12 @@ local function Build(parent, route, feature, kind)
             local ok, quoteErr = feature.Commands:QuotePendingMaterials()
             if ok == true then root:Refresh() end
             return ok, quoteErr
+        end
+        local tradeDiagButton = RSUI:Button({ id = "v3_trade_diagnostics", parent = actionRow, text = "诊断", compact = true, slot = { size = "fixed", width = 62 } })
+        tradeDiagButton.onClick = function()
+            local panel = S.UIV3 and S.UIV3.TradeDiagnosticsV3 or nil
+            if type(panel) ~= "table" or type(panel.Open) ~= "function" then return false, "跑商诊断面板不可用" end
+            return panel:Open()
         end
         root.tradeRatioModeButton, root.tradeCommerceModeButton, root.tradeQuoteButton = tradeRatioModeButton, tradeCommerceModeButton, tradeQuoteButton
     elseif kind == "bonds" then
@@ -295,7 +301,7 @@ local function Build(parent, route, feature, kind)
             end
             if root.tradeCommerceModeButton then
                 root.tradeCommerceModeButton:SetEnabled(enabled)
-                root.tradeCommerceModeButton:SetText(projection.commerceMode == "off" and "熟练：忽略" or "熟练：读取")
+                root.tradeCommerceModeButton:SetText(projection.commerceMode == "off" and "熟练：忽略" or "熟练：计入")
             end
             if root.tradeQuoteButton then
                 root.tradeQuoteButton:SetEnabled(enabled and pendingQuotes > 0)
@@ -309,16 +315,23 @@ local function Build(parent, route, feature, kind)
             local fallback = (projection.zoneFallback == true and " · 起点使用静态候选" or "") .. (projection.sellableFallback == true and " · 目的地使用兼容候选" or "")
             local errorText = projection.error and (" · " .. tostring(projection.error)) or (projection.sellableError and (" · " .. tostring(projection.sellableError)) or "")
             local quoteHint = pendingQuotes > 0 and (" · 待询价材料 " .. tostring(pendingQuotes)) or ""
+            local inFlightQuotes = math.max(0, tonumber(projection.quoteInFlightCount) or 0)
+            if inFlightQuotes > 0 then quoteHint = quoteHint .. (" · 询价中 " .. tostring(inFlightQuotes)) end
+            local unresolvedIdentity = math.max(0, tonumber(projection.unresolvedIdentityCount) or 0)
+            if unresolvedIdentity > 0 then quoteHint = quoteHint .. (" · 配方待解析 " .. tostring(unresolvedIdentity)) end
             local ratioHint = projection.ratioMode == "full" and (" · 满货率 " .. tostring(projection.fullRatio or 130) .. "% 对比") or " · 实时货率"
             local commerceHint = ""
             if projection.commerceMode == "observe" then
                 if projection.commerceStatus == "ready" and projection.commerceSkill ~= nil then
-                    commerceHint = " · 经商 " .. tostring(math.floor((tonumber(projection.commerceSkill) or 0) + 0.5)) .. "（只读，估价未计倍率）"
+                    local skill = math.max(0, tonumber(projection.commerceSkill) or 0)
+                    commerceHint = " · 经商 " .. tostring(math.floor(skill + 0.5))
+                        .. " ×" .. string.format("%.3f", 1 + (skill / 10000 * 0.05)) .. "（已计售价）"
                 else
-                    commerceHint = " · 经商熟练度待确认" .. (projection.commerceError and ("：" .. tostring(projection.commerceError)) or "")
+                    commerceHint = " · 经商熟练度不可读，完整售价暂停"
+                        .. (projection.commerceError and ("：" .. tostring(projection.commerceError)) or "")
                 end
             else
-                commerceHint = " · 熟练度忽略"
+                commerceHint = " · 熟练度忽略（对比模式）"
             end
             local favoriteHint = " · 收藏 " .. tostring(#favoriteItems) .. "/12" .. (projection.currentRouteFavorite == true and "（当前）" or "")
             local sortHint = projection.sortMode == "price" and " · 按售价排序" or " · 按货率排序"

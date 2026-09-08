@@ -5,7 +5,7 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D, Host = S.RSUI, S.UIV3Design, S.UIV3 and S.UIV3.PageHost or nil
 if type(RSUI) ~= "table" or type(D) ~= "table" or type(Host) ~= "table" then return end
-S.UIV3.BusinessPagesContract = { version = 3, componentIdContractVersion = 1, bagProductUxContractVersion = 1, auctionCurrentListingUxContractVersion = 1, craftPlanUxContractVersion = 1, craftSidecarUxContractVersion = 1 }
+S.UIV3.BusinessPagesContract = { version = 6, componentIdContractVersion = 1, bagProductUxContractVersion = 1, auctionCurrentListingUxContractVersion = 1, craftPlanUxContractVersion = 1, craftSidecarUxContractVersion = 1, unitLineSettingsFoundationConsumerContractVersion = 3 }
 
 local ROUTES = {
     { route = "combat.boss_alerts", id = "combat_boss_alerts" }, { route = "combat.target_monitor", id = "combat_target_monitor" },
@@ -46,15 +46,47 @@ local function Build(parent, route, id)
     local meta = S.FeatureRegistry and S.FeatureRegistry:Get(id)
     local contractOk, contractErr = ValidateBusinessFeature(feature, id)
     if contractOk ~= true then return nil, contractErr end
-    local root, err = D:ScrollablePageRoot(parent, "v3_page_business_" .. tostring(id))
+    local rootSpec = id == "combat_unit_lines" and {
+        id = "v3_page_business_" .. tostring(id), gap = 7, padding = 2, scrollStep = 1,
+    } or ("v3_page_business_" .. tostring(id))
+    local root, err = D:ScrollablePageRoot(parent, rootSpec)
     if root == nil then return nil, err end
     root.consumerHeld = false
-    D:PageHeader(root, "v3_business_" .. id .. "_header", meta and meta.name or id,
-        meta and meta.description or "V3 业务功能页；数据读取由独立 Authority 完成。", "刷新", function()
+    local unitLineSettingsPage = id == "combat_unit_lines"
+    local unitLineHeader, unitLineDiagnostics, unitLineDiagnosticsText
+    local toggle, hint
+
+    if unitLineSettingsPage then
+        local headerErr
+        unitLineHeader, headerErr = D:FeatureSettingsHeader(root, {
+            id = "v3_business_combat_unit_lines_settings",
+            title = meta and meta.name or "单位连线",
+            description = "选择需要显示的连线；全局参数控制默认表现，每条连线仍可独立调整密度、点大小和颜色。",
+            status = { status = "neutral", text = "等待状态" },
+        })
+        if unitLineHeader == nil then return nil, headerErr end
+        toggle = RSUI:Button({ id = "v3_business_combat_unit_lines_feature_toggle", parent = unitLineHeader.actions,
+            text = "关闭功能", compact = true, slot = { size = "fixed", width = 88 } })
+        local refresh = RSUI:Button({ id = "v3_business_combat_unit_lines_refresh_button", parent = unitLineHeader.actions,
+            text = "刷新", compact = true, slot = { size = "fixed", width = 64 } })
+        if toggle == nil or refresh == nil then return nil, "unit_line_settings_header_actions_failed" end
+        refresh.onClick = function()
             local ok, refreshErr = feature.Commands:Refresh("page_manual")
             if ok == true then root:Refresh() end
             return ok, refreshErr
-        end)
+        end
+        hint = RSUI:Text({ id = "v3_business_combat_unit_lines_summary", parent = root,
+            text = "状态：等待刷新", fontSize = 9, tone = "muted", overflow = "wrap", maxLines = 2,
+            slot = { size = "auto", minHeight = 20, hAlign = "fill" } })
+        if hint == nil then return nil, "unit_line_settings_summary_failed" end
+    else
+        D:PageHeader(root, "v3_business_" .. id .. "_header", meta and meta.name or id,
+            meta and meta.description or "V3 业务功能页；数据读取由独立 Authority 完成。", "刷新", function()
+                local ok, refreshErr = feature.Commands:Refresh("page_manual")
+                if ok == true then root:Refresh() end
+                return ok, refreshErr
+            end)
+    end
 
     local teamCenterIds = {
         combat_team_tools = { route = "combat.team_tools", text = "团队管理" },
@@ -78,9 +110,12 @@ local function Build(parent, route, id)
         end
     end
 
-    local actionRow = RSUI:HorizontalBox({ id = "v3_business_" .. id .. "_actions", parent = root, gap = 6, slot = { size = "fixed", height = 31, hAlign = "fill" } })
-    local toggle = RSUI:Button({ id = "v3_business_" .. id .. "_toggle", parent = actionRow, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
-    local hint = RSUI:Text({ id = "v3_business_" .. id .. "_hint", parent = root, text = "", fontSize = 9, tone = "muted", overflow = "wrap", slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
+    if unitLineSettingsPage ~= true then
+        local actionRow = RSUI:HorizontalBox({ id = "v3_business_" .. id .. "_actions", parent = root, gap = 6, slot = { size = "fixed", height = 31, hAlign = "fill" } })
+        toggle = RSUI:Button({ id = "v3_business_" .. id .. "_toggle", parent = actionRow, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
+        hint = RSUI:Text({ id = "v3_business_" .. id .. "_hint", parent = root, text = "", fontSize = 9, tone = "muted", overflow = "wrap", slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
+    end
+    if toggle == nil or hint == nil then return nil, "business_page_primary_controls_failed:" .. tostring(id) end
     toggle.onClick = function()
         local enabled = S.FeatureRuntime:IsEnabled(id) == true
         local target = not enabled
@@ -142,84 +177,151 @@ local function Build(parent, route, id)
             get = function() return (feature:GetProjection() or {}).hudDurationMs or 3000 end, set = function(v) return feature.Commands:SetHudDurationMs(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
     elseif id == "combat_unit_lines" then
         local pairSpecs = {
-            { key="target", on="当前目标：开", off="当前目标：关", field="showTarget" },
-            { key="targettarget", on="目标的目标：开", off="目标的目标：关", field="showTargetTarget" },
-            { key="focus", on="焦点目标：开", off="焦点目标：关", field="showFocusTarget" },
-            { key="focustarget", on="焦点的目标：开", off="焦点的目标：关", field="showFocusTargetTarget" },
+            { key="target", label="当前目标", field="showTarget" },
+            { key="targettarget", label="目标的目标", field="showTargetTarget" },
+            { key="focus", label="焦点目标", field="showFocusTarget" },
+            { key="focustarget", label="焦点的目标", field="showFocusTargetTarget" },
         }
-
-        -- The previous page packed four toggles and four numeric settings into
-        -- single horizontal rows. On the normal V3 content width that forced
-        -- controls below their readable minimums. Keep the same bindings, but
-        -- let the layout authority own a stable two-column arrangement.
-        local pairGrid = RSUI:UniformGrid({ id = "v3_business_combat_unit_lines_pairs", parent = root,
-            minCellWidth = 250, minCellHeight = 30, maxColumns = 2, gap = 6,
-            slot = { size = "auto", minHeight = 60, hAlign = "fill" } })
-        for _, spec in ipairs(pairSpecs) do
-            local specRef = spec
-            TrackField(RSUI:Toggle({ id="v3_business_combat_unit_lines_pair_"..specRef.key, parent=pairGrid,
-                onText=specRef.on, offText=specRef.off,
-                get=function() return (feature:GetProjection() or {})[specRef.field] ~= false end,
-                set=function(v)
-                    local ok,e=feature.Commands:SetPairEnabled(specRef.key,v==true)
-                    if ok then feature.Commands:Refresh("pair_toggle") end
-                    return ok,e
-                end,
-                slot={size="fill",fill=1,hAlign="fill"} }))
-        end
-
-        local grid = RSUI:UniformGrid({ id = "v3_business_combat_unit_lines_settings", parent = root,
-            minCellWidth = 265, minCellHeight = 30, maxColumns = 2, gap = 6,
-            slot = { size = "auto", minHeight = 60, hAlign = "fill" } })
-        TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_points", label = "默认基础密度", min = 8, max = 48, step = 1, integer = true, slider = true,
-            get = function() return (feature:GetProjection() or {}).pointCount or 24 end, set = function(v) return feature.Commands:SetPointCount(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
-        TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_size", label = "默认点大小", min = 2, max = 10, hardMin = 2, hardMax = 24, step = 1, integer = true, slider = true,
-            get = function() return (feature:GetProjection() or {}).pointSize or 4 end, set = function(v) return feature.Commands:SetPointSize(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
-        TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_opacity", label = "整体透明度", min = 0.1, max = 1, step = 0.05, integer = false, slider = true,
-            get = function() return (feature:GetProjection() or {}).opacity or 0.78 end, set = function(v) return feature.Commands:SetOpacity(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
-        TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_unit_lines_refresh", label = "刷新间隔", min = 1, max = 1000, step = 25, integer = true, unit = "ms", slider = true,
-            get = function() return (feature:GetProjection() or {}).refreshMs or 100 end, set = function(v) return feature.Commands:SetRefreshMs(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
-        RSUI:Text({ id = "v3_business_combat_unit_lines_density_hint", parent = root,
-            text = "基础密度保留近距离效果；远距离自动补点。多人/低帧压力下只削减额外补点并保持连续刷新，避免整批跳帧。",
-            fontSize = 9, tone = "muted", wrap = true, slot = { size = "fixed", height = 30, hAlign = "fill" } })
-
-        RSUI:Text({ id = "v3_business_combat_unit_lines_per_pair_title", parent = root,
-            text = "每种连线单独设置", fontSize = 10, tone = "strong",
-            slot = { size = "fixed", height = 20, hAlign = "fill" } })
+        -- Keep visible text inside the RU font's known-safe glyph set.  Earlier
+        -- arrow/check glyphs were silently missing on some client fonts and left
+        -- awkward gaps in card titles/toggle labels.
         local pairNames = {
-            target = "自己 ↔ 当前目标", targettarget = "当前目标 ↔ 目标的目标",
-            focus = "自己 ↔ 焦点目标", focustarget = "焦点目标 ↔ 焦点的目标",
+            target = "自己 与 当前目标", targettarget = "当前目标 与 目标的目标",
+            focus = "自己 与 焦点目标", focustarget = "焦点目标 与 焦点的目标",
         }
         local UNIT_LINE_PALETTE = {
             target = { 1.00, 0.72, 0.12 }, targettarget = { 0.94, 0.42, 0.20 },
             focus = { 0.35, 0.82, 1.00 }, focustarget = { 0.67, 0.52, 1.00 },
         }
-        local appearanceGrid = RSUI:UniformGrid({ id = "v3_business_combat_unit_lines_pair_appearance", parent = root,
-            minCellWidth = 300, minCellHeight = 88, maxColumns = 2, gap = 8,
-            slot = { size = "auto", minHeight = 184, hAlign = "fill" } })
+
+        -- .18.161: use the COMPLETE shared numeric contract everywhere.  The
+        -- .18.160 card compaction incorrectly disabled sliders in per-pair rows;
+        -- cards now keep one full Slider + exact NumericInput + Apply row per
+        -- value. NumericField remains the sole Binding/adaptive-range authority.
+        local visibilitySection, visibilityErr = D:SettingsSection(root, {
+            id = "v3_business_combat_unit_lines_visibility", title = "显示哪些连线",
+            headerHeight = 20, gap = 3, itemGap = 3,
+            slot = { size = "auto", hAlign = "fill" },
+        })
+        if visibilitySection == nil then return nil, visibilityErr end
+        local pairGrid, pairGridErr = D:SettingsToggleGrid(visibilitySection.content, {
+            id = "v3_business_combat_unit_lines_visibility_grid", compact = true, toggleWidth = 142,
+            minCellWidth = 150, minCellHeight = 26, maxColumns = 4, gap = 6,
+            slot = { size = "auto", hAlign = "fill" },
+        })
+        if pairGrid == nil then return nil, pairGridErr end
+        for _, spec in ipairs(pairSpecs) do
+            local specRef = spec
+            TrackField(pairGrid:AddToggle({
+                id = "v3_business_combat_unit_lines_pair_" .. specRef.key,
+                onText = specRef.label .. "：开", offText = specRef.label .. "：关",
+                get = function() return (feature:GetProjection() or {})[specRef.field] ~= false end,
+                set = function(v)
+                    local ok, e = feature.Commands:SetPairEnabled(specRef.key, v == true)
+                    if ok then feature.Commands:Refresh("pair_toggle") end
+                    return ok, e
+                end,
+            }))
+        end
+
+        local globalSection, globalErr = D:SettingsSection(root, {
+            id = "v3_business_combat_unit_lines_global", title = "全局显示",
+            headerHeight = 20, gap = 4, itemGap = 4,
+            slot = { size = "auto", hAlign = "fill" },
+        })
+        if globalSection == nil then return nil, globalErr end
+        RSUI:Text({ id = "v3_business_combat_unit_lines_global_hint", parent = globalSection.content,
+            text = "默认密度和默认点大小用于缺省回退；透明度与刷新间隔对全部连线生效。",
+            fontSize = 9, tone = "muted", overflow = "wrap", maxLines = 1,
+            slot = { size = "auto", hAlign = "fill" } })
+        local globalGrid = RSUI:UniformGrid({ id = "v3_business_combat_unit_lines_global_grid", parent = globalSection.content,
+            minCellWidth = 300, minCellHeight = 30, maxColumns = 2, gap = 6,
+            slot = { size = "auto", hAlign = "fill" } })
+        if globalGrid == nil then return nil, "unit_line_global_grid_failed" end
+        TrackField(D:SettingsNumericSlider(globalGrid, {
+            id = "v3_business_combat_unit_lines_points", label = "默认密度", min = 8, max = 48, hardMin = 8, hardMax = 48,
+            fixedRange = true, step = 1, integer = true, labelWidth = 68, inputWidth = 54, applyButtonWidth = 38,
+            controlHeight = 22, minHeight = 30, stackBelow = 274, sliderMinWidth = 74, sliderPreferredShare = 0.44,
+            get = function() return (feature:GetProjection() or {}).pointCount or 24 end,
+            set = function(v) return feature.Commands:SetPointCount(v) end,
+            slot = { size = "fill", fill = 1, hAlign = "fill" },
+        }))
+        TrackField(D:SettingsNumericSlider(globalGrid, {
+            id = "v3_business_combat_unit_lines_size", label = "默认点大小", min = 2, max = 10, hardMin = 2, hardMax = 24,
+            step = 1, integer = true, labelWidth = 68, inputWidth = 54, applyButtonWidth = 38,
+            controlHeight = 22, minHeight = 30, stackBelow = 274, sliderMinWidth = 74, sliderPreferredShare = 0.44,
+            get = function() return (feature:GetProjection() or {}).pointSize or 4 end,
+            set = function(v) return feature.Commands:SetPointSize(v) end,
+            slot = { size = "fill", fill = 1, hAlign = "fill" },
+        }))
+        TrackField(D:SettingsNumericSlider(globalGrid, {
+            id = "v3_business_combat_unit_lines_opacity", label = "整体透明度", min = 0.1, max = 1, hardMin = 0.1, hardMax = 1,
+            fixedRange = true, step = 0.05, integer = false, labelWidth = 68, inputWidth = 54, applyButtonWidth = 38,
+            controlHeight = 22, minHeight = 30, stackBelow = 274, sliderMinWidth = 74, sliderPreferredShare = 0.44,
+            get = function() return (feature:GetProjection() or {}).opacity or 0.78 end,
+            set = function(v) return feature.Commands:SetOpacity(v) end,
+            slot = { size = "fill", fill = 1, hAlign = "fill" },
+        }))
+        TrackField(D:SettingsNumericSlider(globalGrid, {
+            id = "v3_business_combat_unit_lines_refresh", label = "刷新间隔", min = 1, max = 1000, hardMin = 1, hardMax = 1000,
+            fixedRange = true, step = 25, integer = true, unit = "ms", labelWidth = 68, inputWidth = 58, applyButtonWidth = 38,
+            controlHeight = 22, minHeight = 30, stackBelow = 274, sliderMinWidth = 74, sliderPreferredShare = 0.44,
+            get = function() return (feature:GetProjection() or {}).refreshMs or 100 end,
+            set = function(v) return feature.Commands:SetRefreshMs(v) end,
+            slot = { size = "fill", fill = 1, hAlign = "fill" },
+        }))
+        RSUI:Text({ id = "v3_business_combat_unit_lines_density_hint", parent = globalSection.content,
+            text = "远距离自动补点；性能压力只削减额外补点，不降低基础连续性。",
+            fontSize = 9, tone = "muted", overflow = "wrap", maxLines = 1,
+            slot = { size = "auto", hAlign = "fill" } })
+
+        local styleSection, styleErr = D:SettingsSection(root, {
+            id = "v3_business_combat_unit_lines_styles", title = "每条连线样式",
+            headerHeight = 20, gap = 4, itemGap = 4,
+            slot = { size = "auto", hAlign = "fill" },
+        })
+        if styleSection == nil then return nil, styleErr end
+        local appearanceGrid, appearanceErr = D:SettingsStyleCardGrid(styleSection.content, {
+            id = "v3_business_combat_unit_lines_style_grid", minCellWidth = 300, minCellHeight = 116, maxColumns = 2, gap = 6,
+            slot = { size = "auto", hAlign = "fill" },
+        })
+        if appearanceGrid == nil then return nil, appearanceErr end
         for _, spec in ipairs(pairSpecs) do
             local specRef = spec
             local pairKey = specRef.key
-            local card = RSUI:VerticalBox({ id = "v3_business_combat_unit_lines_card_" .. pairKey, parent = appearanceGrid,
-                gap = 4, padding = 3, slot = { size = "fixed", height = 86, hAlign = "fill" } })
-            RSUI:Text({ id = "v3_business_combat_unit_lines_card_" .. pairKey .. "_name", parent = card,
-                text = tostring(pairNames[pairKey] or pairKey), fontSize = 9, tone = "strong", overflow = "ellipsis",
-                slot = { size = "fixed", height = 18, hAlign = "fill" } })
-            local settingRow = RSUI:HorizontalBox({ id = "v3_business_combat_unit_lines_card_" .. pairKey .. "_settings",
-                parent = card, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
-            TrackField(D:CompactNumericSetting(settingRow, { id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_points",
-                label = "基础密度", min = 8, max = 48, step = 1, integer = true, inlineHint = true, hint = "", slider = true,
-                get = function() return (feature:GetProjection() or {}).pairPoints and (feature:GetProjection() or {}).pairPoints[pairKey] or 24 end,
+            local card, cardErr = D:SettingsStyleCard(appearanceGrid, {
+                id = "v3_business_combat_unit_lines_card_" .. pairKey,
+                title = tostring(pairNames[pairKey] or pairKey), headerHeight = 20, padding = 5, gap = 3, itemGap = 3,
+                slot = { size = "auto", minHeight = 116, hAlign = "fill" },
+            })
+            if card == nil then return nil, cardErr end
+            TrackField(D:SettingsNumericSlider(card.content, {
+                id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_points",
+                label = "密度", min = 8, max = 48, hardMin = 8, hardMax = 48, fixedRange = true,
+                step = 1, integer = true, labelWidth = 42, inputWidth = 50, applyButtonWidth = 36,
+                controlHeight = 22, minHeight = 28, stackBelow = 286, sliderMinWidth = 72, sliderPreferredShare = 0.48,
+                get = function()
+                    local projection = feature:GetProjection() or {}
+                    return projection.pairPoints and projection.pairPoints[pairKey] or projection.pointCount or 24
+                end,
                 set = function(v) return feature.Commands:SetPairPoints(pairKey, v) end,
-                slot = { size = "fill", fill = 1, minWidth = 120, hAlign = "fill" } }))
-            TrackField(D:CompactNumericSetting(settingRow, { id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_size",
-                label = "大小", min = 2, max = 10, hardMin = 2, hardMax = 24, step = 1, integer = true, inlineHint = true, hint = "", slider = true,
-                get = function() return (feature:GetProjection() or {}).pairSizes and (feature:GetProjection() or {}).pairSizes[pairKey] or 4 end,
+                slot = { size = "auto", minHeight = 28, hAlign = "fill" },
+            }))
+            TrackField(D:SettingsNumericSlider(card.content, {
+                id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_size",
+                label = "点大小", min = 2, max = 10, hardMin = 2, hardMax = 24,
+                step = 1, integer = true, labelWidth = 42, inputWidth = 50, applyButtonWidth = 36,
+                controlHeight = 22, minHeight = 28, stackBelow = 286, sliderMinWidth = 72, sliderPreferredShare = 0.48,
+                get = function()
+                    local projection = feature:GetProjection() or {}
+                    return projection.pairSizes and projection.pairSizes[pairKey] or projection.pointSize or 4
+                end,
                 set = function(v) return feature.Commands:SetPairSize(pairKey, v) end,
-                slot = { size = "fill", fill = 1, minWidth = 120, hAlign = "fill" } }))
+                slot = { size = "auto", minHeight = 28, hAlign = "fill" },
+            }))
             local defaultColor = UNIT_LINE_PALETTE[pairKey] or { 1, 1, 1 }
             TrackField(RSUI:ColorField({ id = "v3_business_combat_unit_lines_pair_" .. pairKey .. "_color",
-                parent = card, label = "颜色",
+                parent = card.content, label = "颜色",
                 get = function()
                     local colors = (feature:GetProjection() or {}).colors
                     local c = type(colors) == "table" and colors[pairKey] or nil
@@ -228,8 +330,19 @@ local function Build(parent, route, id)
                         or { defaultColor[1], defaultColor[2], defaultColor[3] }
                 end,
                 set = function(color) return feature.Commands:SetPairColor(pairKey, color[1], color[2], color[3]) end,
-                slot = { size = "fixed", height = 28, hAlign = "fill" } }))
+                slot = { size = "auto", minHeight = 24, hAlign = "fill" } }))
         end
+
+        local diagnosticsErr
+        unitLineDiagnostics, diagnosticsErr = D:SettingsDiagnostics(root, {
+            id = "v3_business_combat_unit_lines_runtime", title = "高级 / 诊断", expanded = false,
+            slot = { size = "auto", hAlign = "fill" },
+        })
+        if unitLineDiagnostics == nil then return nil, diagnosticsErr end
+        unitLineDiagnosticsText = RSUI:Text({ id = "v3_business_combat_unit_lines_runtime_text", parent = unitLineDiagnostics.content,
+            text = "等待运行时诊断。", fontSize = 9, tone = "muted", overflow = "wrap", maxLines = 4,
+            slot = { size = "auto", minHeight = 20, hAlign = "fill" } })
+        if unitLineDiagnosticsText == nil then return nil, "unit_line_diagnostics_text_failed" end
     elseif id == "combat_range_assist" then
         local grid = RSUI:UniformGrid({ id = "v3_business_combat_range_assist_settings", parent = root, minCellWidth = 230, minCellHeight = 30, maxColumns = 2, gap = 5, slot = { size = "auto", minHeight = 60, hAlign = "fill" } })
         TrackField(D:CompactNumericSetting(grid, { id = "v3_business_combat_range_assist_radius", label = "半径", min = 1, max = 100, step = 0.5, integer = false, unit = "m", slider = true,
@@ -824,7 +937,12 @@ local function Build(parent, route, id)
         SetTeamActionStatus("全队职责只读；仅可设置当前玩家职责。成员移动等待合法队长/权限读取契约", "muted")
     end
     local tableView
-    tableView = RSUI:TableView({ id = "v3_business_" .. id .. "_table", parent = root, items = {}, rowHeight = 26, headerHeight = 27, desiredRows = 14, scrollbar = true, selectable = id == "tools_auction" or id == "tools_market_analysis" or id == "tools_social", selectionMode = "single", columnResize = true,
+    local tableParent = unitLineSettingsPage and unitLineDiagnostics and unitLineDiagnostics.content or root
+    local tableDesiredRows = unitLineSettingsPage and 5 or 14
+    local tableSlot = unitLineSettingsPage
+        and { size = "auto", minHeight = 150, hAlign = "fill" }
+        or { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" }
+    tableView = RSUI:TableView({ id = "v3_business_" .. id .. "_table", parent = tableParent, items = {}, rowHeight = 26, headerHeight = 27, desiredRows = tableDesiredRows, scrollbar = true, selectable = id == "tools_auction" or id == "tools_market_analysis" or id == "tools_social", selectionMode = "single", columnResize = true,
         columns = {
             { id = "name", title = "项目", field = "name", size = "fixed", width = 180, minWidth = 100 },
             { id = "text", title = "事实 / 说明", field = "text", size = "fill", minWidth = 220 },
@@ -834,7 +952,7 @@ local function Build(parent, route, id)
                 return #parts > 0 and table.concat(parts, "; ") or "--"
             end },
             { id = "status", title = "状态", field = "statusText", size = "fixed", width = 110, minWidth = 82, getTone = function(item) return item and item.tone or "muted" end },
-        }, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
+        }, slot = tableSlot })
     if id == "tools_auction" then
         tableView.onSelectionChanged = function(index)
             local row = tableView:GetItem(index)
@@ -1005,7 +1123,50 @@ local function Build(parent, route, id)
         end
         local enabled = S.FeatureRuntime:IsEnabled(id) == true
         toggle:SetText(enabled and "关闭功能" or "启用功能")
-        if projection.status == "runtime_blocked" then
+        if unitLineSettingsPage then
+            local dia = type(feature.Diagnostics) == "table" and feature.Diagnostics or {}
+            local projectionHealth = type(dia.projection) == "table" and dia.projection or {}
+            local status = tostring(projection.status or dia.lastStatus or "idle")
+            local statusKind, statusText = "neutral", BusinessStatusText(status)
+            if enabled ~= true then
+                statusKind, statusText = "muted", "已关闭"
+            elseif status == "ready" then
+                statusKind, statusText = "success", "正常"
+            elseif status == "partial" then
+                statusKind, statusText = "warning", "部分可用"
+            elseif status == "empty" then
+                statusKind, statusText = "caution", "等待目标"
+            elseif status == "runtime_blocked" or status == "failed" or status == "unavailable" then
+                statusKind, statusText = "danger", status == "runtime_blocked" and "运行时阻塞" or "投影不可用"
+            elseif enabled then
+                statusKind, statusText = "info", BusinessStatusText(status)
+            end
+            if unitLineHeader ~= nil then unitLineHeader:SetStatus(statusKind, statusText) end
+            if enabled ~= true then
+                hint:SetText("状态：功能已关闭；开启后才读取目标投影并绘制连线。")
+            elseif status == "ready" then
+                hint:SetText("状态：工作中 · 当前可绘制 " .. tostring(#rows) .. " 条连线。")
+            elseif status == "empty" then
+                hint:SetText("状态：等待可绘制目标；选中目标或设置焦点后会自动更新。")
+            elseif status == "partial" then
+                hint:SetText("状态：部分连线可用 · 当前可绘制 " .. tostring(#rows) .. " 条；详细原因见“高级 / 诊断”。")
+            else
+                hint:SetText("状态：" .. tostring(statusText) .. "；详细原因见“高级 / 诊断”。")
+            end
+            if unitLineDiagnosticsText ~= nil then
+                local reason = projection.error or dia.lastFailureReason or "无"
+                local parts = {
+                    "运行状态=" .. status,
+                    "消费者=" .. tostring(dia.consumerCount or 0),
+                    "尝试=" .. tostring(dia.attemptedPairs or 0),
+                    "可绘制=" .. tostring(dia.drawnRows or #rows),
+                    "端点重合=" .. tostring(dia.endpointCollapsed or 0),
+                    "投影失败=" .. tostring(projectionHealth.failures or 0),
+                    "最近原因=" .. tostring(reason),
+                }
+                unitLineDiagnosticsText:SetText(table.concat(parts, " · "))
+            end
+        elseif projection.status == "runtime_blocked" then
             hint:SetText("运行时阻塞：" .. tostring(projection.error or (meta and meta.runtimeBlocker) or "未说明") .. "\n当前实现：页面与生命周期已接入；剩余能力需 RU 实机/API 契约证据后才能继续。")
         elseif enabled and (projection.status == "partial" or (meta and meta.status == "migrated_partial")) then
             local detail = projection.error or (meta and meta.remainingCapability) or "部分能力仍待验证"

@@ -15,9 +15,11 @@ if type(UnitFeature) ~= "table" or type(RangeFeature) ~= "table" then return end
 S.UIV3 = S.UIV3 or {}
 S.UIV3.CombatVisualGuidesV3 = S.UIV3.CombatVisualGuidesV3 or {}
 local P = S.UIV3.CombatVisualGuidesV3
-P.version = 10
+P.version = 11
 P.ScreenCoordinateAuthorityContractVersion = 1
-P.UnitLineRawProjectedAnchorContractVersion = 1
+P.UnitLineRawProjectedAnchorContractVersion = 2
+P.ScreenToOverlayHostContractVersion = 1
+P.ResolutionIndependentOverlayContractVersion = 1
 P.owner = "v3:combat_visual_guides"
 P.unitToken = "presentation:unit_lines"
 P.rangeToken = "presentation:range_assist"
@@ -280,7 +282,31 @@ local function ResolveVisualPointFontSize(value)
     return math.max(15, math.floor(10 + setting * 3))
 end
 
-function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b)
+function P:ResolveHostTransform(host)
+    local context = S.Layout ~= nil and type(S.Layout.GetContext) == "function" and S.Layout:GetContext() or {}
+    local transform = {
+        screenWidth = tonumber(context.screenWidth), screenHeight = tonumber(context.screenHeight),
+        logicalWidth = tonumber(context.logicalWidth), logicalHeight = tonumber(context.logicalHeight),
+        uiScale = tonumber(context.uiScale) or 1, addonScale = tonumber(context.addonScale) or 1,
+        originX = 0, originY = 0, known = false, source = "identity",
+    }
+    if S.Layout ~= nil and type(S.Layout.GetUiParentLocalOrigin) == "function" then
+        local ok, ox, oy, known = pcall(function() return S.Layout:GetUiParentLocalOrigin(host) end)
+        if ok and known == true and tonumber(ox) ~= nil and tonumber(oy) ~= nil then
+            transform.originX, transform.originY = tonumber(ox), tonumber(oy)
+            transform.known, transform.source = true, "layout_host_origin"
+        end
+    end
+    return transform
+end
+
+local function HostLocalPoint(transform, x, y)
+    transform = type(transform) == "table" and transform or {}
+    return (tonumber(x) or 0) - (tonumber(transform.originX) or 0),
+        (tonumber(y) or 0) - (tonumber(transform.originY) or 0)
+end
+
+function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b, hostTransform)
     -- LABEL dots: color/size ride the label style, not a drawable (see
     -- EnsureUnitPairPool for why the drawable model was replaced).
     if type(dot)~="table" or dot.root==nil then return 0,0,0 end
@@ -302,8 +328,9 @@ function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b)
     -- every sampled point up-left by ~8..41px even though the projection itself
     -- was correct, so endpoints missed the unit-head center. Keep raw projected
     -- coordinates authoritative; font size changes visual ink only.
-    local px=math.floor((tonumber(x) or 0)+0.5)
-    local py=math.floor((tonumber(y) or 0)+0.5)
+    local localX, localY = HostLocalPoint(hostTransform, x, y)
+    local px=math.floor(localX+0.5)
+    local py=math.floor(localY+0.5)
     local anchorWrites,styleWrites,visibilityWrites=0,0,0
     -- .18.133 ROOT-CAUSE FIX (the "S visible but no dots" report): RSUI setters
     -- return false BOTH for "rejected" AND for "no change needed". CreateLabel
@@ -330,12 +357,15 @@ function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b)
     return anchorWrites,styleWrites,visibilityWrites
 end
 
-function P:PlaceDot(dot, x, y, size, opacity, kind, pairKey, r, g, b)
+function P:PlaceDot(dot, x, y, size, opacity, kind, pairKey, r, g, b, hostTransform)
     -- Label-dot placement (reference model). Color rides the label style;
     -- Base 2..10 retains the proven 16..40px mapping; exact values accepted
     -- above 10 continue monotonically instead of being visually flattened.
     size=ResolveVisualPointFontSize(size)
-    S.UI:SetAnchor(dot.root, kind == "unit" and self.unitHost or self.rangeHost, math.floor((tonumber(x) or 0)-size/2), math.floor((tonumber(y) or 0)-size/2), self.owner)
+    local localX, localY = HostLocalPoint(hostTransform, x, y)
+    -- Range dots use the same 1x1 label-anchor model as Unit Lines. Font size
+    -- changes glyph ink only and must never shift geometry.
+    S.UI:SetAnchor(dot.root, kind == "unit" and self.unitHost or self.rangeHost, math.floor(localX+0.5), math.floor(localY+0.5), self.owner)
     S.UI:SetFontSize(dot.root, size, self.owner)
     if kind == "range" then
         -- r,g,b are passed by RenderRange from the persisted projection color;
@@ -371,6 +401,7 @@ function P:RenderUnit()
     local pressure="Normal"
     if type(S.FrameBudget)=="table" and type(S.FrameBudget.current)=="table" then pressure=tostring(S.FrameBudget.current.pressure or "Normal") end
     local plans,budget=self:BuildUnitLineSamplePlan(rows,projection,nil,nil,pressure)
+    local hostTransform=self:ResolveHostTransform(self.unitHost)
     local active={}
     local visibleDots,requestedDots=0,0
     local anchorWrites,styleWrites,visibilityWrites,poolGrowth=0,0,0,0
@@ -399,7 +430,7 @@ function P:RenderUnit()
             local t=(i-1)/math.max(1,count-1)
             local px=math.floor((plan.x1+(plan.x2-plan.x1)*t)+0.5)
             local py=math.floor((plan.y1+(plan.y2-plan.y1)*t)+0.5)
-            local aw,sw,vw=self:PlaceUnitDot(pool[i],px,py,size,projection.opacity,key,cr,cg,cb)
+            local aw,sw,vw=self:PlaceUnitDot(pool[i],px,py,size,projection.opacity,key,cr,cg,cb,hostTransform)
             anchorWrites=anchorWrites+(tonumber(aw) or 0); styleWrites=styleWrites+(tonumber(sw) or 0); visibilityWrites=visibilityWrites+(tonumber(vw) or 0)
             local uk=tostring(px)..","..tostring(py)
             if uniqueSeen[uk]~=true then uniqueSeen[uk]=true; uniquePositions=uniquePositions+1 end
@@ -414,7 +445,9 @@ function P:RenderUnit()
     S.UI:SetVisible(self.unitHost,#plans>0,self.owner)
     self.lastUnitSampling={budget=budget,pressure=pressure,visibleEdges=#plans,requestedDots=requestedDots,
         visibleDots=visibleDots,poolGrowth=poolGrowth,anchorWrites=anchorWrites,styleWrites=styleWrites,visibilityWrites=visibilityWrites,
-        uniquePositions=uniquePositions,coordinateSpace="ui_parent_screen",
+        uniquePositions=uniquePositions,coordinateSpace="ui_parent_screen_to_host_local",
+        hostOriginX=tonumber(hostTransform.originX) or 0,hostOriginY=tonumber(hostTransform.originY) or 0,hostTransformSource=tostring(hostTransform.source or "identity"),
+        logicalWidth=tonumber(hostTransform.logicalWidth),logicalHeight=tonumber(hostTransform.logicalHeight),uiScale=tonumber(hostTransform.uiScale) or 1,
         firstRow=(plans[1]~=nil) and (tostring(math.floor(plans[1].x1))..","..tostring(math.floor(plans[1].y1)).."->"..tostring(math.floor(plans[1].x2))..","..tostring(math.floor(plans[1].y2))) or nil}
     return true
 end
@@ -429,15 +462,18 @@ function P:RenderRange()
     local rc=type(projection.color)=="table" and projection.color or nil
     local rr,rg,rb=rc and (tonumber(rc[1]) or 0.20) or 0.20, rc and (tonumber(rc[2]) or 0.82) or 0.82, rc and (tonumber(rc[3]) or 1.00) or 1.00
     local count=math.min(48,#points); local ok,err=self:EnsurePool("range",count); if ok~=true then return false,err end
+    local hostTransform=self:ResolveHostTransform(self.rangeHost)
     for i=1,count do
-        self:PlaceDot(self.rangePool[i],points[i].x,points[i].y,projection.pointSize,projection.opacity,"range",nil,rr,rg,rb)
+        self:PlaceDot(self.rangePool[i],points[i].x,points[i].y,projection.pointSize,projection.opacity,"range",nil,rr,rg,rb,hostTransform)
     end
     for i=count+1,#self.rangePool do S.UI:SetVisible(self.rangePool[i].root,false,self.owner) end
     S.UI:SetVisible(self.rangeHost,true,self.owner)
     local hostVisible, hostKnown = nil, false
     if type(S.UI.NativeVisibleReadback) == "function" then hostVisible, hostKnown = S.UI:NativeVisibleReadback(self.rangeHost) end
-    self.lastRangeSampling = { points = count, coordinateSpace = "ui_parent_screen",
+    self.lastRangeSampling = { points = count, coordinateSpace = "ui_parent_screen_to_host_local",
         first = (count > 0 and points[1] ~= nil) and (tostring(math.floor(tonumber(points[1].x) or 0)) .. "," .. tostring(math.floor(tonumber(points[1].y) or 0))) or "?",
+        hostOriginX=tonumber(hostTransform.originX) or 0,hostOriginY=tonumber(hostTransform.originY) or 0,hostTransformSource=tostring(hostTransform.source or "identity"),
+        logicalWidth=tonumber(hostTransform.logicalWidth),logicalHeight=tonumber(hostTransform.logicalHeight),uiScale=tonumber(hostTransform.uiScale) or 1,
         hostVisible = hostKnown == true and tostring(hostVisible == true) or "未知" }
     return true
 end

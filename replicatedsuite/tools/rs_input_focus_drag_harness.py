@@ -166,10 +166,16 @@ check("windowing_drag_condition_after_enable", condition > enable_drag >= 0)
 # Table resize preview must remain the only visible geometry Authority while a
 # drag is active; ambient Layout cannot repaint committed widths in between the
 # 16ms interactive samples. Newly rebound pooled rows inherit that same preview.
-check("table_resize_preview_authority_contract", "DataViewResizePreviewAuthorityContractVersion = 1" in data_views)
+check("table_resize_preview_authority_contract", "DataViewResizePreviewAuthorityContractVersion = 2" in data_views)
 check("table_layout_prefers_preview", 'local previewActive = type(self.previewResolvedWidths) == "table"' in data_views and 'widths = self.previewResolvedWidths' in data_views)
-check("table_layout_solver_only_when_not_preview", re.search(r'if previewActive then\s+widths = self\.previewResolvedWidths\s+else\s+widths, resolvedOverflow, compressed, emergencyClamp = ResolveColumnWidths\(self\.columns, columnW, self\.columnGap\)', data_views) is not None)
+check("table_layout_solver_only_when_not_preview", re.search(r'if previewActive then\s+widths = self\.previewResolvedWidths\s+elseif committedActive then.*?else\s+self\.committedResolvedWidths = nil\s+self\.committedResolvedAvailableWidth = nil\s+widths, resolvedOverflow, compressed, emergencyClamp = ResolveColumnWidths\(self\.columns, columnW, self\.columnGap\)', data_views, re.S) is not None)
 check("table_rows_keep_preview_during_rebind", 'row:SetResolvedWidths(c.previewResolvedWidths or c.resolvedWidths, c.previewResolvedWidths ~= nil)' in data_views)
+check("table_dragstop_seeds_full_resolved_snapshot", 'for widthIndex, snapshotColumn in ipairs(self.columns) do' in data_views and 'snapshotColumn.manualWidth = nextWidth' in data_views and 'self.committedResolvedWidths = committedSnapshot' in data_views)
+check("table_same_viewport_keeps_committed_snapshot", 'elseif committedActive then' in data_views and 'widths = self.committedResolvedWidths' in data_views and 'self.committedResolvedAvailableWidth' in data_views)
+check("table_resize_handle_geometry_lease", 'UI:BeginNativeGeometryLease(handle, c.owner, "table_column_resize:"' in data_views and 'UI:EndNativeGeometryLease(handle, c.owner)' in data_views)
+check("table_resize_handle_cache_fallback", 'UI:InvalidateNativeState(handle)' in data_views)
+check("foundation_requires_resize_preview_v2", 'DataViewResizePreviewAuthorityContractVersion) or 0) >= 2' in foundation_gate)
+check("acceptance_requires_resize_preview_v2", 'DataViewResizePreviewAuthorityContractVersion) or 0) < 2' in acceptance)
 
 # Foundation gate must reject future regressions.
 gate_match = re.search(r"S\.FoundationGate\s*=\s*\{\s*version\s*=\s*(\d+)", foundation_gate, re.S)

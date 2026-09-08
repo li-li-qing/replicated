@@ -15,7 +15,7 @@ if type(RSUI) ~= "table" or type(Floating) ~= "table" then return end
 S.UIV3 = S.UIV3 or {}
 S.UIV3.TradeDetailFloatingV3 = S.UIV3.TradeDetailFloatingV3 or {
     version = 1,
-    TradeDetailContractVersion = 1,
+    TradeDetailContractVersion = 2,
     id = "v3_trade_detail_floating",
     created = false,
     visible = false,
@@ -55,10 +55,41 @@ local function ZoneName(projection, id)
     return id and tostring(math.floor(id)) or "--"
 end
 
+-- Internal cost/price status codes must never reach a player. Map each known
+-- code to plain Chinese; an unknown code becomes an honest generic sentence
+-- rather than the raw identifier (that is exactly the unreadable-token class of
+-- noise this Suite kept producing).
+local PRICE_STATUS_TEXT = {
+    explicit_quote_required = "价格需询价",
+    quote_pending = "正在询价",
+    quote_failed = "询价失败",
+    price_pending = "价格待确认",
+    identity_pending = "材料待确认",
+    quoted = "已取价",
+    quoted_reference = "参考价",
+    excluded = "不计入成本",
+    unavailable = "暂无法估价",
+    partial = "部分材料未取到价",
+}
+local function PlayerPriceStatusText(code)
+    local key = tostring(code or "")
+    if PRICE_STATUS_TEXT[key] ~= nil then return PRICE_STATUS_TEXT[key] end
+    -- A bare ASCII identifier is an internal token, not wording: replace it.
+    if key ~= "" and key:match("^[A-Za-z0-9_%.%-]+$") then return "暂无法估价" end
+    return key ~= "" and key or "售价不可用"
+end
+
 local function MaterialStatus(row)
     local status = tostring(row and row.costStatus or "")
     if status == "quoted" then return "已报价", "green" end
+    -- Distinct wording AND a softer tone than a live quote: auction listings can
+    -- be manipulated, so a stored sample must never look like fresh market data.
+    if status == "quoted_reference" then return "参考价", "muted" end
     if status == "excluded" then return "不计成本", "muted" end
+    if status == "quote_pending" then
+        return tostring(row.quoteState) == "inflight" and "询价中" or "询价排队中", "yellow"
+    end
+    if status == "quote_failed" then return "询价失败", "red" end
     if status == "explicit_quote_required" then return "待询价", "yellow" end
     if status == "identity_pending" then return "身份待确认", "muted" end
     return "待确认", "muted"
@@ -218,16 +249,30 @@ function M:Refresh(reason)
     self.revision = (tonumber(self.revision) or 0) + 1
     if self.shell ~= nil and type(self.shell.SetTitle) == "function" then self.shell:SetTitle(tostring(row.name or "贸易品详情")) end
     self.route:SetText(ZoneName(projection, row.originZone) .. " → " .. ZoneName(projection, row.destinationZone))
-    self.summary:SetText("货率 " .. tostring(row.rate or "--") .. " · 预计售价 " .. tostring(row.price or "--")
-        .. " · 材料成本 " .. Money(row.materialCostCopper) .. " · 毛利 " .. tostring(row.profit or "--"))
+    local payoutFactors = row.priceComplete == true
+        and " · 含经商与品类加成"
+        or (" · " .. PlayerPriceStatusText(row.priceBreakdown or row.priceEstimateStatus))
+    self.summary:SetText("货率 " .. tostring(row.rate or "--") .. " · 预计售价 " .. tostring(row.price or "--") .. payoutFactors
+        .. "\n材料成本 " .. Money(row.materialCostCopper) .. " · 毛利 " .. tostring(row.profit or "--"))
 
-    local items, pending = {}, 0
+    local items, pending, inflight, failed, firstQuoteError = {}, 0, 0, 0, nil
     for index, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
         local statusText, tone = MaterialStatus(material)
-        if tostring(material.costStatus or "") == "explicit_quote_required" then pending = pending + 1 end
+        local costStatus = tostring(material.costStatus or "")
+        -- Actionable backlog for the quote button: never-quoted + failed retries.
+        if costStatus == "explicit_quote_required" or costStatus == "quote_failed" then pending = pending + 1 end
+        if costStatus == "quote_pending" then inflight = inflight + 1 end
+        if costStatus == "quote_failed" then
+            failed = failed + 1
+            if firstQuoteError == nil and material.quoteError ~= nil then firstQuoteError = tostring(material.quoteError) end
+        end
         items[#items + 1] = {
-            key = tostring(material.materialKey or index),
-            name = tostring(material.name or material.materialKey or "?"),
+            -- key is an internal row handle for the table widget, not display text.
+            key = tostring(material.internalKey or material.materialKey or index),
+            -- The projection already resolved `name` through the Localization
+            -- Authority; the old English-key fallback leaked raw data keys
+            -- ("Chopped Produce") straight onto a player-facing table.
+            name = tostring(material.name or "材料"),
             countText = "×" .. tostring(math.max(0, tonumber(material.count) or 0)),
             unitText = material.includeInCost == false and "不计" or Money(material.unitCostCopper),
             subtotalText = material.includeInCost == false and "不计" or Money(material.totalCostCopper),
@@ -244,7 +289,19 @@ function M:Refresh(reason)
     self.quoteButton:SetText(pending > 0 and ("询价当前材料(" .. tostring(pending) .. ")") or "材料已询价")
     self.favoriteButton:SetEnabled(projection.fromZone ~= nil and projection.toZone ~= nil)
     self.favoriteButton:SetText(projection.currentRouteFavorite == true and "取消路线收藏" or "收藏路线")
-    self.surface:SetStatus("材料 " .. tostring(#items) .. " 项" .. (pending > 0 and (" · 待询价 " .. tostring(pending)) or " · 价格已齐/无需询价"), pending > 0 and "yellow" or "accent")
+    local statusSummary = "材料 " .. tostring(#items) .. " 项"
+    if pending > 0 then statusSummary = statusSummary .. (" · 待询价 " .. tostring(pending)) end
+    if inflight > 0 then statusSummary = statusSummary .. (" · 询价中 " .. tostring(inflight)) end
+    if failed > 0 then statusSummary = statusSummary .. (" · 询价失败 " .. tostring(failed)) end
+    if pending == 0 and inflight == 0 and failed == 0 then statusSummary = statusSummary .. " · 价格已齐/无需询价" end
+    self.surface:SetStatus(statusSummary, failed > 0 and "red" or (pending > 0 and "yellow" or "accent"))
+    -- Surface the first real failure reason directly where the user clicked;
+    -- the diagnostics "报价队列" row carries the queue-wide last result.
+    if failed > 0 then
+        self.hint:SetText("询价失败原因：" .. (firstQuoteError or "未知；请复制诊断页「报价队列」行给维护者。"))
+    else
+        self.hint:SetText("材料价格只有在用户显式询价后才读取；普通刷新不会批量请求拍卖行。")
+    end
     return true
 end
 
