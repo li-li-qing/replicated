@@ -94,7 +94,7 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.183-bag-quick-self-heal-two-button"
+S.BuildTag = "v3-m1.16.0.18.191-popup-native-relative-anchor-diagnostics" -- 中文维护注释：.18.191 在 .18.189/.18.190 两次 RU 实机绝对坐标修复失败后，将 Suite-owned detached Popup 最终定位切换为 Native Window 直接相对 Trigger 锚定，并新增可见专项诊断入口作为长期回归证据。
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}
 S.SaveKey = tostring(S.Config.SaveKey or "replicated_suite_v1")

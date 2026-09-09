@@ -313,7 +313,12 @@ local TRADE_MATERIAL_MAX_ROWS = 32
 -- numbers, English legacy recipe names) must never be rendered as a row label:
 -- the Suite's users are players on a Chinese RU client. Returns nil only when
 -- no localized fact exists, so callers can choose an honest generic wording.
-function LocalizedTradeItemName(itemType, fallbackText)
+--
+-- MAINTENANCE: this helper is file-local by design. `.18.180` accidentally
+-- declared it as a global function, which polluted the addon namespace and made
+-- Foundation Audit fail even though every caller lives in this bundle. Keep it
+-- local; cross-module name resolution belongs to Localization/Identity services.
+local function LocalizedTradeItemName(itemType, fallbackText)
     local id = tonumber(itemType)
     if id ~= nil and S.Localization ~= nil and type(S.Localization.GetName) == "function" then
         local name = S.Localization:GetName("item", math.floor(id), nil)
@@ -436,6 +441,13 @@ local function BuildTradeMaterialProjection(row)
         local materialKey, itemType, itemGrade, includeInCost = ResolveTradeIngredient(static, meta, ingredient)
         local unitCost, totalCost, status = nil, nil, "price_pending"
         local quoteState, quoteError = nil, nil
+        -- Provenance is rendered after the pricing branch below, so its lifetime
+        -- must cover the whole ingredient iteration. Do NOT redeclare it inside
+        -- the `itemType ~= nil` branch: Lua block scope would end at `end`, and
+        -- the later detailText read would silently resolve a global named
+        -- `priceProvenance` instead. That exact leak was caught by the full
+        -- Foundation Audit while sealing `.18.188`.
+        local priceProvenance = nil
 
         if not includeInCost then
             totalCost, status = 0, "excluded"
@@ -457,7 +469,7 @@ local function BuildTradeMaterialProjection(row)
             -- auction listings are manipulable, so an old sample must never be
             -- presented as current market data.
             local quoteQueue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
-            local quotedPrice, priceProvenance
+            local quotedPrice
             if type(quoteQueue) == "table" and type(quoteQueue.GetQuoteStateByItemType) == "function" then
                 quoteState = quoteQueue:GetQuoteStateByItemType(itemType, itemGrade)
             end

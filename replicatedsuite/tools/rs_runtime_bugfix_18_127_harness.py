@@ -80,7 +80,7 @@ def check_static_contracts() -> None:
     assert "schemaVersion) == 6" in GATE
     acceptance_version = re.search(r"S\.UIV3Acceptance\s*=\s*\{\s*version\s*=\s*(\d+)", ACCEPTANCE)
     assert acceptance_version and int(acceptance_version.group(1)) >= 74
-    assert "bag_quick_take_put_contract_v9" in ACCEPTANCE
+    assert "bag_quick_take_put_contract_v13" in ACCEPTANCE
     assert "healer_native_roster_geometry_contract" in ACCEPTANCE
 
 

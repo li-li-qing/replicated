@@ -80,7 +80,7 @@ local BAG_QUICK_LIMIT = 40
 -- diagnostic read-only and fail closed when any part of the getter contract
 -- is unavailable or malformed.
 local function ReadBagWindowContext()
-    local context = { status = "unknown", visible = nil, follow = "diagnostic_only", embed = "fail_closed", source = "none", reason = nil }
+    local context = { status = "unknown", visible = nil, surfaceVisible = false, follow = "diagnostic_only", embed = "fail_closed", source = "none", surfaceSource = "none", visibilityConflict = false, reason = nil }
     local addonApi = AddonApi or rawget(_G, "ADDON")
     local bagContentId = rawget(_G, "UIC_BAG")
     if addonApi == nil or bagContentId == nil then context.reason = "ADDON/UIC_BAG 不可用"; return context end
@@ -183,21 +183,30 @@ local function ReadBagWindowContext()
     else
         resolvedVisible = false
     end
+    -- Presentation and native writes deliberately use different facts. During
+    -- the RU open animation MainScript may still report explicit hidden/0 for
+    -- one beat after the ADDON content chain is already visibly on screen. That
+    -- stale native flag must not suppress the harmless 取/放 surface, but it
+    -- remains authoritative for every inventory write (`visible`).
+    local surfaceVisible = nativeVisible == true or contentVisible == true
+        or (nativeKnown ~= true and mainRect == true)
     if mainRect == true then
-        context.status, context.visible = "ready", resolvedVisible
+        context.status, context.visible, context.surfaceVisible = "ready", resolvedVisible, surfaceVisible
+        context.visibilityConflict = surfaceVisible == true and resolvedVisible ~= true
         context.x, context.y, context.width, context.height = x, y, width, height
         context.source = nativeKnown and "main-script" or (contentVisible and "main-script+content-visible" or (contentKnown and "main-script-geometry-over-proxy" or "main-script-geometry"))
+        context.surfaceSource = context.visibilityConflict and "content-visible-over-native-hidden" or context.source
         return context
     end
 
     local px, py, pw, ph, source = ContentRect(content)
     if px ~= nil then
-        context.status, context.visible = "ready", contentVisible == true
-        context.x, context.y, context.width, context.height, context.source = px, py, pw, ph, source
+        context.status, context.visible, context.surfaceVisible = "ready", contentVisible == true, contentVisible == true
+        context.x, context.y, context.width, context.height, context.source, context.surfaceSource = px, py, pw, ph, source, source
         return context
     end
     if contentKnown == true and contentVisible ~= true then
-        context.status, context.visible, context.source, context.reason = "ready", false, "content-hidden", nil
+        context.status, context.visible, context.surfaceVisible, context.source, context.surfaceSource, context.reason = "ready", false, false, "content-hidden", "content-hidden", nil
         return context
     end
     context.reason = ok ~= true and "原生窗口几何读取失败" or "原生窗口几何/可见性返回值未知"
@@ -207,7 +216,7 @@ end
 local function ReadStorageWindowContext(target)
     local addonApi = AddonApi or rawget(_G, "ADDON")
     local contentId = target == "bank" and rawget(_G, "UIC_BANK") or target == "coffer" and rawget(_G, "UIC_COFFER") or nil
-    local result = { kind = target, status = "unknown", visible = false, source = "none", reason = nil }
+    local result = { kind = target, status = "unknown", visible = false, surfaceVisible = false, source = "none", surfaceSource = "none", visibilityConflict = false, reason = nil }
     if addonApi == nil or contentId == nil then result.reason = "仓储窗口标识不可用"; return result end
     if S.Api == nil or type(S.Api.IsCapabilityAllowed) ~= "function"
         or S.Api:IsCapabilityAllowed("ADDON:GetContentMainScriptPosVis") ~= true
@@ -270,22 +279,26 @@ local function ReadStorageWindowContext(target)
     elseif mainRect == true then resolvedVisible = true
     elseif contentKnown == true then resolvedVisible = false
     else resolvedVisible = false end
+    local surfaceVisible = nativeVisible == true or contentVisible == true
+        or (nativeKnown ~= true and mainRect == true)
 
     if mainRect == true then
-        result.status, result.visible = "ready", resolvedVisible
+        result.status, result.visible, result.surfaceVisible = "ready", resolvedVisible, surfaceVisible
+        result.visibilityConflict = surfaceVisible == true and resolvedVisible ~= true
         result.x, result.y, result.width, result.height = x, y, width, height
         result.source = nativeKnown and "main-script" or (contentVisible and "main-script+content-visible" or (contentKnown and "main-script-geometry-over-proxy" or "main-script-geometry"))
+        result.surfaceSource = result.visibilityConflict and "content-visible-over-native-hidden" or result.source
         return result
     end
     -- Storage geometry is not required to anchor the quick bar; the bag owns
     -- presentation geometry. A positively visible content chain is sufficient
     -- to prove that bank/coffer actions are currently meaningful.
     if contentVisible == true then
-        result.status, result.visible, result.source = "ready", true, "content-visible"
+        result.status, result.visible, result.surfaceVisible, result.source, result.surfaceSource = "ready", true, true, "content-visible", "content-visible"
         return result
     end
     if contentKnown == true then
-        result.status, result.visible, result.source, result.reason = "ready", false, "content-hidden", nil
+        result.status, result.visible, result.surfaceVisible, result.source, result.surfaceSource, result.reason = "ready", false, false, "content-hidden", "content-hidden", nil
         return result
     end
     result.reason = ok ~= true and "仓储窗口几何读取失败" or "仓储窗口几何/可见性返回值未知"
@@ -402,13 +415,23 @@ local function NormalizeBlacklist(value)
     local normalized = {
         enabled = NormalizeBoolean(source.enabled) == true,
         activeScope = NormalizeScope(source.activeScope) or "bank",
-        bank = { itemType = {}, category = {} },
-        coffer = { itemType = {}, category = {} },
+        -- itemName is Presentation metadata only. Runtime blocking continues to
+        -- use itemType/category as the sole Authority, so a localized-name
+        -- change can never make a blacklisted item pass the write gate.
+        bank = { itemType = {}, category = {}, itemName = {} },
+        coffer = { itemType = {}, category = {}, itemName = {} },
     }
     for scope, index in pairs({ bank = 1, coffer = 2 }) do
         local sourceScope = ScopeSource(source, scope, index)
         normalized[scope].itemType = NormalizeMap(FirstMap(sourceScope, { "itemType", "itemTypes", "items" }), NormalizeItemType)
         normalized[scope].category = NormalizeMap(FirstMap(sourceScope, { "category", "categories" }), NormalizeCategory)
+        local nameSource = FirstMap(sourceScope, { "itemName", "itemNames", "names" })
+        for rawId, rawName in pairs(type(nameSource) == "table" and nameSource or {}) do
+            local itemType, itemName = NormalizeItemType(rawId), Trim(rawName)
+            if itemType ~= nil and itemName ~= "" and #itemName <= 96 and itemName:find("[%c]") == nil then
+                normalized[scope].itemName[itemType] = itemName
+            end
+        end
     end
     return normalized
 end
@@ -423,11 +446,17 @@ local function ApplyBlacklistState(value, state)
 end
 
 local function BlacklistEntryCount(config)
-    local total = 0
+    -- User-facing blacklist rules are global to the organizer. A single item is
+    -- mirrored into bank+coffer for backwards-compatible runtime enforcement,
+    -- but it must count as one logical rule rather than consuming two slots.
+    local total, seen = 0, {}
     for _, scope in ipairs({ "bank", "coffer" }) do
         local bucket = type(config) == "table" and config[scope] or nil
         for _, field in ipairs({ "itemType", "category" }) do
-            for _ in pairs(type(bucket) == "table" and bucket[field] or {}) do total = total + 1 end
+            for key in pairs(type(bucket) == "table" and bucket[field] or {}) do
+                local token = tostring(field) .. ":" .. tostring(key)
+                if seen[token] ~= true then seen[token] = true; total = total + 1 end
+            end
         end
     end
     return total
@@ -551,6 +580,152 @@ end
 -- file-scope local, which is also why CheckedMove/BatchMove/Refresh can reach
 -- the reclaim without a forward-declared local.
 local BagMoveRuntime = {}
+BagMoveRuntime.QuickObserverIntervalMs = 100
+
+-- Product UX helpers for the organizer blacklist. These live on BagMoveRuntime
+-- instead of adding more file-scope locals: rs_business_bridge.lua is already
+-- close to Lua 5.1's 200-local main-chunk ceiling. All scans below are bounded
+-- and only run after an explicit user action or page refresh; never from the
+-- 100ms native-window observer.
+function BagMoveRuntime.NormalizeBlacklistItemName(value)
+    local name = Trim(value)
+    if name == "" or #name > 96 or name:find("[%c]") ~= nil then return nil end
+    return name
+end
+
+function BagMoveRuntime.KnownBlacklistItemName(feature, itemType)
+    local key = NormalizeItemType(itemType)
+    if key == nil then return nil end
+    for _, row in ipairs(type(feature) == "table" and type(feature.Authority) == "table" and type(feature.Authority.rows) == "table" and feature.Authority.rows or {}) do
+        if NormalizeItemType(row and row.itemType) == key then
+            local name = BagMoveRuntime.NormalizeBlacklistItemName(row.itemName or row.name)
+            if name ~= nil then return name end
+        end
+    end
+    local config = type(feature) == "table" and type(feature.State) == "table" and feature.State.blacklist or nil
+    for _, scope in ipairs({ "bank", "coffer" }) do
+        local bucket = type(config) == "table" and config[scope] or nil
+        local name = type(bucket) == "table" and type(bucket.itemName) == "table" and bucket.itemName[key] or nil
+        name = BagMoveRuntime.NormalizeBlacklistItemName(name)
+        if name ~= nil then return name end
+    end
+    return nil
+end
+
+function BagMoveRuntime.AddGlobalBlacklistItem(feature, itemType, itemName)
+    local key = NormalizeItemType(itemType)
+    if key == nil then return false, "物品ID必须是正整数" end
+    local safeName = BagMoveRuntime.NormalizeBlacklistItemName(itemName)
+    return MutateBlacklist(feature, "bag_blacklist_item_global_add", function(config)
+        local alreadyKnown = MapContains(config.bank and config.bank.itemType, key) or MapContains(config.coffer and config.coffer.itemType, key)
+        if alreadyKnown ~= true and BlacklistEntryCount(config) >= BLACKLIST_MAX_ENTRIES then return false, "黑名单条目已达上限（64）" end
+        local changed = config.enabled ~= true
+        config.enabled = true
+        for _, scope in ipairs({ "bank", "coffer" }) do
+            local bucket = config[scope]
+            bucket.itemType = type(bucket.itemType) == "table" and bucket.itemType or {}
+            bucket.itemName = type(bucket.itemName) == "table" and bucket.itemName or {}
+            if MapContains(bucket.itemType, key) ~= true then bucket.itemType[key] = true; changed = true end
+            if safeName ~= nil and bucket.itemName[key] ~= safeName then bucket.itemName[key] = safeName; changed = true end
+        end
+        return true, changed
+    end)
+end
+
+function BagMoveRuntime.RemoveGlobalBlacklistItem(feature, itemType)
+    local key = NormalizeItemType(itemType)
+    if key == nil then return false, "请选择有效的黑名单物品" end
+    return MutateBlacklist(feature, "bag_blacklist_item_global_remove", function(config)
+        local changed = false
+        for _, scope in ipairs({ "bank", "coffer" }) do
+            local bucket = config[scope]
+            if type(bucket) == "table" then
+                local itemMap = type(bucket.itemType) == "table" and bucket.itemType or {}
+                local nameMap = type(bucket.itemName) == "table" and bucket.itemName or {}
+                if MapContains(itemMap, key) then itemMap[key], itemMap[tonumber(key)] = nil, nil; changed = true end
+                if nameMap[key] ~= nil or nameMap[tonumber(key)] ~= nil then nameMap[key], nameMap[tonumber(key)] = nil, nil; changed = true end
+            end
+        end
+        if changed ~= true then return false, "黑名单中不存在该物品" end
+        return true, true
+    end)
+end
+
+function BagMoveRuntime.ResolveAndAddBlacklistItem(feature, query)
+    local raw = Trim(query)
+    if raw == "" or #raw > 96 or raw:find("[%c]") ~= nil then return false, "请输入物品ID或物品名称" end
+
+    -- A numeric ItemID is already an authoritative identity. Do not make the
+    -- explicit-ID workflow depend on a readable bag/storage snapshot: this is
+    -- important for users who know the ID but do not currently own the item.
+    local numeric = NormalizeItemType(raw)
+    if numeric ~= nil then
+        return BagMoveRuntime.AddGlobalBlacklistItem(feature, numeric, BagMoveRuntime.KnownBlacklistItemName(feature, numeric))
+    end
+
+    -- Name lookup is intentionally evidence-bound to the current bag and the
+    -- currently open storage. It runs only on this explicit button press.
+    local inventory = S.Services and S.Services.InventorySnapshotV3 or nil
+    if type(inventory) ~= "table" or type(inventory.BuildSnapshot) ~= "function" then return false, "背包快照服务不可用；可直接输入物品ID" end
+
+    local candidates, byId = {}, {}
+    local function collect(snapshot)
+        for _, row in ipairs(type(snapshot) == "table" and snapshot.rows or {}) do
+            local id = NormalizeItemType(row and row.itemType)
+            local name = BagMoveRuntime.NormalizeBlacklistItemName(row and row.name)
+            if id ~= nil and byId[id] == nil then
+                byId[id] = { itemType = id, name = name }
+                candidates[#candidates + 1] = byId[id]
+            elseif id ~= nil and name ~= nil and byId[id] ~= nil and byId[id].name == nil then
+                byId[id].name = name
+            end
+        end
+    end
+
+    local bagSnapshot = inventory:BuildSnapshot("bag", { maxSlots = BAG_SCAN_LIMIT })
+    if type(bagSnapshot) == "table" then collect(bagSnapshot) end
+    local storage = CurrentStorageContext()
+    if type(storage) == "table" and (storage.kind == "bank" or storage.kind == "coffer") then
+        local storageSnapshot = inventory:BuildSnapshot(storage.kind, { maxSlots = BAG_SCAN_LIMIT })
+        if type(storageSnapshot) == "table" then collect(storageSnapshot) end
+    end
+
+    local queryLower, exact, partial = raw:lower(), {}, {}
+    for _, row in ipairs(candidates) do
+        local name = BagMoveRuntime.NormalizeBlacklistItemName(row.name)
+        if name ~= nil then
+            local lowered = name:lower()
+            if lowered == queryLower then exact[#exact + 1] = row
+            elseif lowered:find(queryLower, 1, true) ~= nil then partial[#partial + 1] = row end
+        end
+    end
+    local matches = #exact > 0 and exact or partial
+    if #matches == 1 then return BagMoveRuntime.AddGlobalBlacklistItem(feature, matches[1].itemType, matches[1].name) end
+    if #matches > 1 then return false, "匹配到 " .. tostring(#matches) .. " 个物品，请输入更完整的名称或从背包列表选择" end
+    return false, "当前背包/仓储中未找到该名称；可直接输入物品ID"
+end
+
+function BagMoveRuntime.BlacklistRows(feature)
+    local config = type(feature) == "table" and type(feature.State) == "table" and feature.State.blacklist or nil
+    local keys, seen = {}, {}
+    for _, scope in ipairs({ "bank", "coffer" }) do
+        local bucket = type(config) == "table" and config[scope] or nil
+        for key in pairs(type(bucket) == "table" and type(bucket.itemType) == "table" and bucket.itemType or {}) do
+            local normalized = NormalizeItemType(key)
+            if normalized ~= nil and seen[normalized] ~= true then seen[normalized] = true; keys[#keys + 1] = normalized end
+        end
+    end
+    table.sort(keys, function(a, b) return (tonumber(a) or math.huge) < (tonumber(b) or math.huge) end)
+    local rows = {}
+    for _, key in ipairs(keys) do
+        local bank = type(config) == "table" and type(config.bank) == "table" and MapContains(config.bank.itemType, key) or false
+        local coffer = type(config) == "table" and type(config.coffer) == "table" and MapContains(config.coffer.itemType, key) or false
+        local scopeText = bank and coffer and "全部仓储" or (bank and "银行" or "箱子")
+        local name = BagMoveRuntime.KnownBlacklistItemName(feature, key) or "名称待识别"
+        rows[#rows + 1] = { value = key, text = tostring(key) .. " · " .. name, itemType = key, itemName = name, scopeText = scopeText }
+    end
+    return rows
+end
 
 -- An installed queue table is NOT proof of a running move: BeginBagQuick used to
 -- assign the (empty) queue table before its `plannedMoves == 0` early return, so
@@ -686,6 +861,7 @@ end
 local function BatchProjection(feature)
     local windowContext = ReadBagWindowContext()
     local categoryOptions, seen = {}, {}
+    local bagById = {}
     for _, row in ipairs(type(feature.Authority) == "table" and type(feature.Authority.rows) == "table" and feature.Authority.rows or {}) do
         local category = row and row.category
         if category ~= nil then
@@ -695,8 +871,56 @@ local function BatchProjection(feature)
                 categoryOptions[#categoryOptions + 1] = { value = key, text = BagCategoryLabel(category) .. "（" .. key .. "）" }
             end
         end
+        local itemType = NormalizeItemType(row and row.itemType)
+        if itemType ~= nil then
+            local entry = bagById[itemType]
+            if entry == nil then
+                local itemName = BagMoveRuntime.NormalizeBlacklistItemName(row.itemName or row.name) or "名称未知"
+                entry = { itemType = itemType, itemName = itemName, stack = 0, category = category }
+                bagById[itemType] = entry
+            end
+            entry.stack = (tonumber(entry.stack) or 0) + math.max(1, tonumber(row.stack) or 1)
+            if (entry.itemName == nil or entry.itemName == "名称未知") then
+                entry.itemName = BagMoveRuntime.NormalizeBlacklistItemName(row.itemName or row.name) or entry.itemName
+            end
+            entry.category = entry.category or category
+        end
     end
     table.sort(categoryOptions, function(a, b) return tostring(a.text or "") < tostring(b.text or "") end)
+
+    -- Presentation projection for the product page: one row per itemType, not one
+    -- row per physical slot. This is derived from the already-demanded bag
+    -- Authority, so no extra inventory scan is introduced by rendering the page.
+    local bagItemRows, bagItemOptions, bagKeys = {}, {}, {}
+    for key in pairs(bagById) do bagKeys[#bagKeys + 1] = key end
+    table.sort(bagKeys, function(a, b) return (tonumber(a) or math.huge) < (tonumber(b) or math.huge) end)
+    for _, key in ipairs(bagKeys) do
+        local item = bagById[key]
+        local display = tostring(key) .. " · " .. tostring(item.itemName or "名称未知")
+        local categoryText = item.category ~= nil and BagCategoryLabel(item.category) or "类别未知"
+        bagItemRows[#bagItemRows + 1] = {
+            key = "bag:item:" .. tostring(key), name = display, text = categoryText,
+            statusText = "×" .. tostring(math.max(1, math.floor(tonumber(item.stack) or 1))), tone = "default",
+            itemType = key, itemName = item.itemName, category = item.category, stack = item.stack,
+        }
+        bagItemOptions[#bagItemOptions + 1] = { value = key, text = display .. "  ×" .. tostring(math.max(1, math.floor(tonumber(item.stack) or 1))) }
+    end
+
+    local blacklistRows = BagMoveRuntime.BlacklistRows(feature)
+    local blacklistOptions = {}
+    for _, row in ipairs(blacklistRows) do
+        blacklistOptions[#blacklistOptions + 1] = { value = row.value, text = row.text .. "  · " .. tostring(row.scopeText or "全部仓储") }
+    end
+    local legacyCategoryCount, legacySeen = 0, {}
+    local blacklist = type(feature.State.blacklist) == "table" and feature.State.blacklist or {}
+    for _, scope in ipairs({ "bank", "coffer" }) do
+        local bucket = type(blacklist[scope]) == "table" and blacklist[scope] or {}
+        for key in pairs(type(bucket.category) == "table" and bucket.category or {}) do
+            local token = tostring(key)
+            if legacySeen[token] ~= true then legacySeen[token] = true; legacyCategoryCount = legacyCategoryCount + 1 end
+        end
+    end
+
     local openStorage = CurrentStorageContext()
     local resolvedTarget = type(openStorage) == "table" and openStorage.kind or nil
     local quickOverlay = Copy(feature._quickOverlay or { visible=false, storageKind=nil, status="等待仓库/箱子", moved=0, skipped=0, queued=0 })
@@ -704,9 +928,11 @@ local function BatchProjection(feature)
     -- must not keep advertising itself as running to the presentation layer.
     quickOverlay.running = BagQuickRunning(feature) == true
     quickOverlay.direction = feature._quickDirection
-    return { blacklist = feature.State.blacklist, batchCategory = feature.State.batchCategory,
-        -- Legacy choice, kept readable for old stores/diagnostics only: the UI no
-        -- longer asks for it. The live target is `batchTargetResolved` (derived).
+    return { blacklist = feature.State.blacklist, blacklistRows = blacklistRows, blacklistOptions = blacklistOptions,
+        blacklistLegacyCategoryCount = legacyCategoryCount, bagItemRows = bagItemRows, bagItemOptions = bagItemOptions,
+        bagItemCount = #bagItemRows, batchCategory = feature.State.batchCategory,
+        -- Legacy category-batch state/Commands remain public for upgrade/API
+        -- compatibility, but the normal player page no longer exposes them.
         batchTarget = feature.State.batchTarget, batchTargetMode = "auto_open_storage",
         batchTargetResolved = resolvedTarget,
         batchTargetLabel = resolvedTarget == "coffer" and "箱子" or (resolvedTarget == "bank" and "银行" or nil),
@@ -787,7 +1013,7 @@ end
 -- permanently faulted scheduler task) used to block the whole Feature until a
 -- reload, because the only unlock was the third 停 button the user reports as
 -- useless.  With two buttons the state machine has to recover on its own, so
--- this runs from the 350 ms window observer and from every click.
+-- this runs from the 100 ms window observer and from every click.
 function BagMoveRuntime.ReclaimStaleBagQuickRun(feature)
     if BagQuickRunning(feature) ~= true then return false end
     local alive, evidence = BagMoveRuntime.QuickRunEvidence(feature)
@@ -920,11 +1146,15 @@ local function BeginBagQuick(feature, direction)
     -- Last-resort guard: StartBagQuick resolves a live run by stop/switch before
     -- reaching here, so hitting this means a caller bypassed the two-button path.
     if BagQuickRunning(feature) then return false, "快捷取放正在运行，再点一次「取」或「放」可停止" end
-    local bagWindow = ReadBagWindowContext()
     local storage = CurrentStorageContext()
-    if type(bagWindow) ~= "table" or bagWindow.status ~= "ready" or bagWindow.visible ~= true then return false, "请先打开背包" end
-    if type(storage) ~= "table" then return false, "请先打开银行或箱子" end
+    if type(storage) ~= "table" then return false, "请先打开银行或箱子（窗口刚打开时请稍后再试）" end
 
+    -- Action Authority is the open storage session plus the physical container
+    -- reads below, not UIC_BAG's presentation visibility bit. RU can show the
+    -- physical bag beside a coffer while UIC_BAG still reports hidden/proxy; in
+    -- that state the old preflight rejected a perfectly readable bag before the
+    -- bounded InventorySnapshot had a chance to prove it. If either container
+    -- is unreadable, BagIdentitySet still fails closed before any native write.
     local target = storage.kind
     local bagSet, bagRows, bagErrors, bagErr, bagCounts, bagId = BagIdentitySet("bag")
     local storageSet, storageRows, storageErrors, storageErr, storageCounts = BagIdentitySet(target)
@@ -1143,16 +1373,33 @@ local function BeginBagQuick(feature, direction)
 end
 
 local function RefreshBagQuickOverlay(feature)
-    -- The 350 ms window observer doubles as the quick-run watchdog: no new Tick
+    -- The 100 ms window observer doubles as the quick-run watchdog: no new Tick
     -- and no new scheduler task, and an orphaned mutex can never outlive its
     -- task (see BagMoveRuntime.ReclaimStaleBagQuickRun).
     BagMoveRuntime.ReclaimStaleBagQuickRun(feature)
     local bag=ReadBagWindowContext()
     local bank=ReadStorageWindowContext("bank")
     local coffer=ReadStorageWindowContext("coffer")
-    local storage=type(bank)=="table" and bank.status=="ready" and bank.visible==true and bank
-        or type(coffer)=="table" and coffer.status=="ready" and coffer.visible==true and coffer or nil
-    local visible=type(bag)=="table" and bag.status=="ready" and bag.visible==true and type(storage)=="table"
+    -- Surface visibility is presentation evidence only. Native move Authority
+    -- continues to use `visible` via CurrentStorageContext/RequireStorageWindow.
+    local storage=type(bank)=="table" and bank.status=="ready" and bank.surfaceVisible==true and bank
+        or type(coffer)=="table" and coffer.status=="ready" and coffer.surfaceVisible==true and coffer or nil
+    -- Storage windows open together with the physical bag, but RU does not
+    -- guarantee that UIC_BAG itself flips to visible: it may remain a hidden
+    -- proxy while GetContentMainScriptPosVis still exposes the real bag rect.
+    -- For Presentation only, a live storage surface + a validated bag rectangle
+    -- is therefore sufficient to place the harmless 取/放 bar. Native move
+    -- Authority remains CurrentStorageContext() + bounded physical reads.
+    local bagMainScriptAnchor=type(bag)=="table" and tostring(bag.source or ""):sub(1,11)=="main-script"
+    local bagAnchorReady=bagMainScriptAnchor==true and bag.status=="ready"
+        and tonumber(bag.x)~=nil and tonumber(bag.y)~=nil
+        and (tonumber(bag.width) or 0)>0 and (tonumber(bag.height) or 0)>0
+    local storageSessionBagFallback=type(storage)=="table" and bagAnchorReady==true and bag.surfaceVisible~=true
+    local bagSurfaceEffectiveVisible=type(bag)=="table" and (bag.surfaceVisible==true or storageSessionBagFallback==true)
+    local bagSurfaceEffectiveSource=storageSessionBagFallback==true
+        and ("storage-session+"..tostring(bag.source or "bag-geometry"))
+        or (bag and bag.surfaceSource or "none")
+    local visible=bagSurfaceEffectiveVisible==true and type(storage)=="table"
     local old=feature._quickOverlay or {}
     local nextState=Copy(old)
     nextState.observerRuns=(tonumber(old.observerRuns) or 0)+1
@@ -1161,29 +1408,41 @@ local function RefreshBagQuickOverlay(feature)
     nextState.visible=visible==true; nextState.storageKind=storage and storage.kind or nil
     nextState.bagStatus=bag and bag.status or "unknown"
     nextState.bagVisible=bag and bag.visible==true or false
+    nextState.bagSurfaceVisible=bag and bag.surfaceVisible==true or false
+    nextState.bagSurfaceEffectiveVisible=bagSurfaceEffectiveVisible==true
+    nextState.bagSurfaceFallback=storageSessionBagFallback==true
+    nextState.bagVisibilityConflict=bag and bag.visibilityConflict==true or false
     nextState.bagSource=bag and bag.source or "none"
+    nextState.bagSurfaceSource=bag and bag.surfaceSource or "none"
+    nextState.bagSurfaceEffectiveSource=bagSurfaceEffectiveSource
     nextState.bagReason=bag and bag.reason or nil
     nextState.bankStatus=bank and bank.status or "unknown"
     nextState.bankVisible=bank and bank.visible==true or false
+    nextState.bankSurfaceVisible=bank and bank.surfaceVisible==true or false
+    nextState.bankVisibilityConflict=bank and bank.visibilityConflict==true or false
     nextState.bankSource=bank and bank.source or "none"
+    nextState.bankSurfaceSource=bank and bank.surfaceSource or "none"
     nextState.bankReason=bank and bank.reason or nil
     nextState.cofferStatus=coffer and coffer.status or "unknown"
     nextState.cofferVisible=coffer and coffer.visible==true or false
+    nextState.cofferSurfaceVisible=coffer and coffer.surfaceVisible==true or false
+    nextState.cofferVisibilityConflict=coffer and coffer.visibilityConflict==true or false
     nextState.cofferSource=coffer and coffer.source or "none"
+    nextState.cofferSurfaceSource=coffer and coffer.surfaceSource or "none"
     nextState.cofferReason=coffer and coffer.reason or nil
     if visible then
         nextState.x=bag.x; nextState.y=math.max(0,(tonumber(bag.y) or 0)-36); nextState.width=math.max(240,math.min(300,tonumber(bag.width) or 240)); nextState.height=32
         if nextState.status==nil or nextState.status=="等待仓库/箱子" then nextState.status="可快捷取放" end
     elseif nextState.status~="正在取出" and nextState.status~="正在放入" then nextState.status="等待仓库/箱子" end
     local changed = old.visible~=nextState.visible or old.storageKind~=nextState.storageKind or old.x~=nextState.x or old.y~=nextState.y or old.width~=nextState.width
-        or old.bagStatus~=nextState.bagStatus or old.bagVisible~=nextState.bagVisible or old.bagSource~=nextState.bagSource or old.bagReason~=nextState.bagReason
-        or old.bankStatus~=nextState.bankStatus or old.bankVisible~=nextState.bankVisible or old.bankSource~=nextState.bankSource or old.bankReason~=nextState.bankReason
-        or old.cofferStatus~=nextState.cofferStatus or old.cofferVisible~=nextState.cofferVisible or old.cofferSource~=nextState.cofferSource or old.cofferReason~=nextState.cofferReason
+        or old.bagStatus~=nextState.bagStatus or old.bagVisible~=nextState.bagVisible or old.bagSurfaceVisible~=nextState.bagSurfaceVisible or old.bagSurfaceEffectiveVisible~=nextState.bagSurfaceEffectiveVisible or old.bagSurfaceFallback~=nextState.bagSurfaceFallback or old.bagVisibilityConflict~=nextState.bagVisibilityConflict or old.bagSource~=nextState.bagSource or old.bagSurfaceSource~=nextState.bagSurfaceSource or old.bagSurfaceEffectiveSource~=nextState.bagSurfaceEffectiveSource or old.bagReason~=nextState.bagReason
+        or old.bankStatus~=nextState.bankStatus or old.bankVisible~=nextState.bankVisible or old.bankSurfaceVisible~=nextState.bankSurfaceVisible or old.bankVisibilityConflict~=nextState.bankVisibilityConflict or old.bankSource~=nextState.bankSource or old.bankSurfaceSource~=nextState.bankSurfaceSource or old.bankReason~=nextState.bankReason
+        or old.cofferStatus~=nextState.cofferStatus or old.cofferVisible~=nextState.cofferVisible or old.cofferSurfaceVisible~=nextState.cofferSurfaceVisible or old.cofferVisibilityConflict~=nextState.cofferVisibilityConflict or old.cofferSource~=nextState.cofferSource or old.cofferSurfaceSource~=nextState.cofferSurfaceSource or old.cofferReason~=nextState.cofferReason
     feature._quickOverlay=nextState
     -- While the native storage surface is visible, emit a low-rate heartbeat
     -- even when geometry is unchanged. Presentation creation is a different
     -- failure domain from native-window observation; if the first WINDOW build
-    -- is transiently rejected, the next 350 ms observation must get a chance to
+    -- is transiently rejected, the next 100 ms observation must get a chance to
     -- retry instead of waiting for the user to close/reopen the warehouse.
     if changed or visible==true then PublishBagOverlay(feature,changed and "bag_quick_window" or "bag_quick_visible_heartbeat") end
     return true
@@ -1236,7 +1495,7 @@ local function StartBagQuickObserver(feature)
     RefreshBagQuickOverlay(feature)
     if S.Scheduler==nil or type(S.Scheduler.AddTask)~="function" then return false,"背包窗口观察调度器不可用" end
     S.Scheduler:RemoveTask(BAG_QUICK_OBSERVE_TASK)
-    local added=S.Scheduler:AddTask(BAG_QUICK_OBSERVE_TASK,350,function() return RefreshBagQuickOverlay(feature) end,false,feature,"P3")
+    local added=S.Scheduler:AddTask(BAG_QUICK_OBSERVE_TASK,BagMoveRuntime.QuickObserverIntervalMs,function() return RefreshBagQuickOverlay(feature) end,false,feature,"P2",1)
     if added~=true then return false,"背包窗口观察任务创建失败" end
     if type(S.Scheduler.SetTaskModule)=="function" then S.Scheduler:SetTaskModule(BAG_QUICK_OBSERVE_TASK,"tools_bag",true) end
     return true
@@ -3112,7 +3371,7 @@ projection = BatchProjection, read = function()
             key = "bag:" .. tostring(item.slot), name = Text(item.name, "槽位 " .. tostring(item.slot)),
             text = "物品编号：" .. Text(item.itemType, "--") .. " · " .. categoryText,
             statusText = "数量 " .. Text(item.stack, "--"), tone = "default",
-            itemType = item.itemType, category = item.category, slot = item.slot, bagId = snapshot.bagId,
+            itemType = item.itemType, itemName = Text(item.name, ""), category = item.category, stack = item.stack, slot = item.slot, bagId = snapshot.bagId,
         }
     end
 
@@ -3139,6 +3398,11 @@ end, commands = {
     SetBlacklistScope = SetBlacklistScope,
     AddBlacklistItem = function(feature, scope, value) return AddBlacklistValue(feature, scope, "itemType", value, NormalizeItemType, "bag_blacklist_item_add") end,
     RemoveBlacklistItem = function(feature, scope, value) return RemoveBlacklistValue(feature, scope, "itemType", value, NormalizeItemType, "bag_blacklist_item_remove") end,
+    -- Product-facing commands: a blacklist item applies to both storage kinds.
+    -- Name lookup is bounded and explicit; itemType remains the enforcement key.
+    ResolveAndAddBlacklistItem = function(feature, query) return BagMoveRuntime.ResolveAndAddBlacklistItem(feature, query) end,
+    AddGlobalBlacklistItem = function(feature, itemType, itemName) return BagMoveRuntime.AddGlobalBlacklistItem(feature, itemType, itemName) end,
+    RemoveGlobalBlacklistItem = function(feature, itemType) return BagMoveRuntime.RemoveGlobalBlacklistItem(feature, itemType) end,
     AddBlacklistCategory = function(feature, scope, value) return AddBlacklistValue(feature, scope, "category", value, NormalizeCategory, "bag_blacklist_category_add") end,
     RemoveBlacklistCategory = function(feature, scope, value) return RemoveBlacklistValue(feature, scope, "category", value, NormalizeCategory, "bag_blacklist_category_remove") end,
     -- The page entry point: target is the open storage window, not a user guess.
@@ -3163,8 +3427,18 @@ BagTools.FullStorageContinuationContractVersion = 1
 BagTools.BatchLifecycleContractVersion = 5
 BagTools.NativeWindowQuickContractVersion = 7
 BagTools.ReloadQuickObserverContractVersion = 3
+BagTools.ResponsiveWindowObserverContractVersion = 1
+BagTools.ProductBlacklistUxContractVersion = 1
+BagTools.BlacklistNameMetadataContractVersion = 1
+BagTools.BlacklistExplicitLookupContractVersion = 1
 BagTools.RUFourValueWindowVisibilityContractVersion = 2
 BagTools.NativeVisibilityShapeContractVersion = 1
+BagTools.SurfaceVisibilitySplitContractVersion = 1
+-- A storage session can expose a real bag rectangle while UIC_BAG remains a
+-- hidden proxy; Presentation may use that rectangle, while native move safety
+-- is still proven by storage Authority + bounded physical reads.
+BagTools.StorageSessionBagSurfaceContractVersion = 1
+BagTools.BagActionPhysicalReadAuthorityContractVersion = 1
 BagTools.VisiblePresenterRetryContractVersion = 1
 BagTools.DynamicSourceResolutionContractVersion = 3
 BagTools.QuickIdentityFallbackContractVersion = 1

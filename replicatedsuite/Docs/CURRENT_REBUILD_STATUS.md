@@ -3,6 +3,8 @@
 > **Authority: CURRENT**  
 > 本文只保存“现在完成到哪里、现在还缺什么、下一步做什么”。逐版本实现过程见 [`CHANGELOG.md`](CHANGELOG.md)，历史阶段交接与验证记录见 `Archive/`。
 
+> 修改前必读：`Docs/MAINTENANCE_RULES.md`；从 `.18.190` 起所有新增或修改代码行必须附带详细中文维护注释。
+
 ## 1. 当前基线
 
 | 项 | 当前状态 |
@@ -10,14 +12,14 @@
 | Architecture | V3-only / `v3_rebuild` |
 | Runtime Addon | `replicatedsuite/` |
 | Legacy / Professional / `globals/` | 已物理删除，Active dependency = 0 |
-| BuildTag | `v3-m1.16.0.18.183-bag-quick-self-heal-two-button`（发布批次含 `.18.181/.18.182`；RU 回报的诊断横幅必须显示该值） |
-| Active TOC Lua | 223 |
-| Active / All Lua | 223 / 223 |
-| Foundation Audit | PASS |
-| Python Harness | 41 项脚本；本轮改动涉及的 3 个 harness + Foundation Audit token 已改写（Bag Quick Surface 10 项、Bag Move Queue v8 13 项）。**本机无 Python（WindowsApps 仅假可执行）**：以 node 移植 18/18 + Lua 行为模拟器 39/39 + 反向破坏用例 7/7 复验，`.py` 全量回归需在真 Python 环境复跑后才算封包门禁通过 |
+| BuildTag | `v3-m1.16.0.18.191-popup-native-relative-anchor-diagnostics` |
+| Active TOC Lua | 227 |
+| Active / All Lua | 227 / 227 |
+| Foundation Audit | **PASS**：toc/active/all=227；globals=0；Popup Positioning v3 / Native-relative v1 / Controls+Interactions consumer v2 / 可见专项诊断入口均已进入硬门禁 |
+| Python Harness | **48/48 PASS**；`rs_popup_coordinate_harness.py` = Source 29/29 + Real-Lua 30/30，直接验证 Trigger reference + `(0, triggerHeight+gap)` Native Anchor、CorrectOffsetByScreen 与三组 Raw Native Geometry；其余 47 组同时通过 |
 | Product Capability Matrix | 126 条：80 IMPLEMENTED / 35 PARTIAL / 0 TODO / 11 SPECIFIC_RUNTIME_BLOCKED |
-| RU Fresh Reload | `.18.151` Foundation/Persistence PASS；`.18.154` Unit Lines 头顶锚点 PASS；`.18.162` Bag Quick transient WINDOW 修复待银行/箱子 Fresh Reload；**`.18.183` Bag 快捷取放死锁自愈 + 两按钮化待 RU 复验（含"没有同类时点一次放，之后还能继续"）**；`.18.157` Resolution/Coordinate Foundation 仍待多分辨率矩阵复验 |
-| Current UI Gate | **`.18.161` Unit Lines SettingsFoundation v3 已纠正 `.160` 的交互降级**：卡内重新完整使用 Slider + 可编辑 NumericInput + Apply + 动态范围；Section 改 flat hierarchy，StyleCard 使用 soft surface，删除黄框嵌套与双 Numeric 横向挤压。下一步 RU 实机重点验收 1280×768 下 2 列卡片控件宽度、点大小输入 20 后 Slider max 自适应，以及 1024×768 自动单列；通过后再迁移 Range Assist 等设置页。`.18.157` 多分辨率世界视觉/悬浮位置矩阵仍并行待 RU 复验。 |
+| RU Fresh Reload | `.18.191` 首要验收 detached Popup：先重演团队中心职业与跑商起点/目的地；打开异常 Popup 后到“诊断与维护”点击 `RSUI Popup定位` 并复制报告。定位 lane 应为 `native_relative`，报告必须包含 Trigger/PopupBefore/PopupAfter 原始几何。之后再覆盖 1024×768、1280×768、1366×768、1920×1080 与 Shell 左上/中央/右下矩阵 |
+| Current UI Gate | **`.18.191 Popup Native-relative Anchor Authority`**：Suite-owned target Popup 最终位置只能由 `UI:EnsureAnchor(Popup, TriggerNative, localOffset)` 提交；显式 point、external native-window、world projection、persistent windows 保持独立 lane。`RSUI Popup定位` 可见诊断入口属于发布契约。RU 通过前不得用分辨率固定 offset 修补。 |
 
 - `RU-TRADE-PAYOUT-163`：旧版/当前静态底价表一致；真实回退来自新版遗漏经商倍率、TradeNameMultipliers 品类倍率与 larder/alias price-key resolver。`.18.163` 新增纯数据 TradePayoutV3 恢复完整链；计入熟练度但读不到熟练度时 fail-closed，不再输出不完整售价。待 RU 用至少 3 类货物（普通/新鲜/发酵）和当前经商熟练度实售复核。
 - `RU-BAG-WINDOW-162`：`.18.153` 的四返回值兼容仍不足以让实机快捷条显示。`.18.162` 真实追踪确认两层根因：① Quick Overlay 仍是已知不可靠的 `UIParent` 顶层 `emptywidget + system layer`，现迁为真实 transient WINDOW Host；② hidden `ADDON:GetContent` proxy 会错误否决合法 MainScript geometry，现改为“显式 Native visible/hidden > 正向 Content visible > 合法 MainScript geometry”，并兼容 boolean/0-1/string visible 形态。可见期间既有 350ms observer 提供 bounded Presenter retry；不扫描物品。待 RU Fresh Reload：无需进入整理背包页，直接打开银行/箱子，≤350ms 在背包上方出现取/放（`.18.183` 起快捷条只有这两个按钮，`停` 由"再点同一个按钮"承担）。
@@ -32,9 +34,9 @@
 当前 Foundation 结构指标：
 
 ```text
-toc=223
-activeLua=223
-allLua=223
+toc=227
+activeLua=227
+allLua=227
 globals=0
 presentation=0
 rawNative=0
@@ -91,6 +93,7 @@ presentationRootHandlers=0
 - Input Event Fence：未获 RU 证据前，Active Runtime 禁止猜测绑定通用 `OnKeyDown / OnKeyUp / OnTextChanged`；
 - Dropdown degraded path 改为 fail-closed/read-only，禁止弹层失败后偷偷退化成循环切换按钮；
 - PopupCoordinator v1 统一 Dropdown / ColorField / ContextMenu 的互斥弹层生命周期；`DropdownService` 仅保留兼容 alias，不再是第二 registry；
+- PopupPositioning v1 / Coordinate Space v1（`.18.189`）：detached Popup 统一 `viewport-logical-v1`，Layout 校准 RU Effective geometry 单位；Dropdown 自动 flip/clamp/限高；Bag external-native / ScreenProjection world / Windowing persistent 明确分车道；
 - UITokens v4 增加统一 `layer.popupPriority`，Popup 不再散落硬编码 Z priority；
 - 历史 `UI.ComponentsV2` 已退出 Active Runtime，Card/Section/FormSection 收敛回 RSUI `ContainerSurface`；
 - Foundation Audit / UIV3 Acceptance / Diagnostics；
@@ -191,7 +194,7 @@ Gate 仍为 **INCOMPLETE - CONTINUATION REQUIRED**。不得为了 Gate 变绿删
 - `.18.96` `SCREEN_PROJECTION_FRONT_HEMISPHERE_HARNESS PASS 14/14`：真实加载 `rs_screen_projection_v3.lua`，模拟 RU 对背后目标仍返回正 depth + 边角屏幕点以及“in-bounds 但处于 physical/UI-scale 或 stale”的 Native 点；验证 Camera Frame 每 batch 只读取一次、token 去重、所有 world read 均为 global、behind 在 Native screen read 前拒绝、UI-scale reconcile、严重偏移 camera fallback、前方出屏端点仍交给 Presenter clipping、旋转相机后原 behind 目标重新可见。
 - `.18.89` `INTERACTIVE_DRAFT_HARNESS PASS 13/13`：真实加载 `rs_ui_controls.lua`，验证 focused Text/Numeric draft 在 ambient refresh 中保持、失焦后可重新同步；Slider active preview 不被旧 Binding 回灌，final commit 可明确覆盖；`.18.90` 再增加 `RSUI_WORKSPACE_SMOKE_HARNESS` 与 `PERSISTENCE_ACCEPTANCE_SNAPSHOT_HARNESS`；`.18.91` 将 Workspace Smoke 扩至全部 6 类公共模板并新增全 Presentation Component API + RSUI TOC dependency-order 静态 Gate；`.18.92` 新增 Presentation→Feature API Audit 与 5/5 self-test，并修复 Tasks/Activities/Gear 三条真实缺失 Command。
 - `.18.94` Fresh Reload preflight：Foundation Audit 新增 DPS schema/`widgetVisible`/WidgetHost lifecycle 一致性以及 Trade Dropdown-only/Quote/Server route Authority package-coherence；UIV3 Acceptance v58 同步增加 `dps_widget_visibility_preference_contract` 与 `trade_dropdown_quote_preflight_contract`。本地回归：Workspace 27/27、Presentation→Feature 5/5、Persistence 19/19、Interactive Draft 13/13、Bag 4/4、Unit Lines 11/11、Front-Hemisphere 10/10。
-- 当前 BuildTag 与 `replicatedsuite.lua` 一致：`v3-m1.16.0.18.150-death-review-history-sequence-recovery`。
+- 当前 BuildTag 与 `replicatedsuite.lua` 一致：`v3-m1.16.0.18.191-popup-native-relative-anchor-diagnostics`；全量 Lua 227/227 Parse PASS，TOC missing/unlisted/duplicate 均为 0。
 
 历史专项 harness、每个 M1.x 的逐轮数字与修复详情不再复制到本文，统一查 [`CHANGELOG.md`](CHANGELOG.md)。
 
@@ -663,6 +666,13 @@ Fresh Reload 后优先验证本轮四项用户回归：
 
 72. **已完成 `.18.155` — EditBox Foundation Draft/Caret/Focus**：统一修复所有 RSUI TextInput/NumericInput 的光标不可见、强制全选、未知刷新源回灌旧 Binding、physical/logical focus identity 差异、重复 SetFocus 重置 caret、Disable/Release 幽灵 draft；Native caret 仍由 RU 原生闪烁，未新增 Tick/OnTextChanged/KeyDown。
 73. **已完成 `.18.156` — EditBox Post-Arm Focus Promotion**：RU 实机确认“Focus ID 已指向 EditBox”不等于 Keyboard text-edit admission。首次点击若 `EnableKeyboard(false→true)`，必须在 promotion 后补一次 `SetFocus`；仅已 armed+focused 的重复点击可跳过，兼顾可输入与 caret 稳定。Deferred Keyboard 的隐藏/禁用/Release 安全边界保持不变；新增 InputActivationDiagnostics v1 与 `UI输入` 运行时证据行。
+74. **已完成 `.18.157` — Resolution / Coordinate Foundation（本地，待 RU）**：不再对 1280×768/2560×1440 等分辨率分别加补偿。Layout 新增 Screen→OverlayHost Local Adapter；CombatVisualGuides 每批次读取一次真实 host origin，Unit Lines/Range 共用，Range 同时删除残留 font-size/2 几何偏移。Free FloatingSurface 持久化 source logical viewport + normalized center intent，跨分辨率自动重投影且保持拖动区可找回；Gear 等小按钮继续 edge-anchor，Launcher/主 Shell 兼容旧 free-v2 并在下一次拖动补齐响应式元数据。新增 20 组截图分辨率矩阵 `46/46` harness；全量 39/39、Audit、222/222 Parse PASS。
 75. **已完成 `.18.183` — Bag Quick Mutex Self-Heal + Two-Button Surface**：修掉"点了没反应"的真实死锁（空计划让 `_quickQueue` 常驻 → `BagQuickRunning` 永真，且被拒点击仍返回成功）；快捷条与整理背包页收敛为 `取 / 放` 两按钮（同向再点＝停止、异向＝切换，判定留在 Feature）；既有 350ms 窗口观察任务兼任取放看门狗（无新增 Tick/任务）；拒绝原因拆成短 `status` + 长 `error` 双通道并加宽状态标签。Foundation Gate v136 / UIV3 Acceptance v90 / Bag mutex v2 + 三个新契约；Lua 行为模拟器 39/39（修复前 14 红）、反向破坏用例 7/7、node 移植 harness 18/18、226/226 Lua Parse；另自捉两处同类字节陷阱：数字符的字符类跳过所有 CJK 首字节（假绿）、取反字节类切标点会把汉字切成半个（乱码）。
 76. **NEXT — RU `.18.183` Bag Quick Regression**：Fresh Reload 后①制造"没有同类"的场景点一次 `放`，随后 `取`/`放`/高级整理必须仍可执行（旧版此处永久卡死）；②运行中再点同向按钮必须立刻停止并显示"已停止…"；③点异向按钮必须切过去且只有一个移动任务；④悬浮条必须只有 `取 / 放` 两个按钮、状态文字完整可读；⑤若仍出现"点了没反应"，把快捷条状态文字与页面状态行（含 `悬浮按钮 N 个`）整行抄回，不靠猜改语义。
-74. **已完成 `.18.157` — Resolution / Coordinate Foundation（本地，待 RU）**：不再对 1280×768/2560×1440 等分辨率分别加补偿。Layout 新增 Screen→OverlayHost Local Adapter；CombatVisualGuides 每批次读取一次真实 host origin，Unit Lines/Range 共用，Range 同时删除残留 font-size/2 几何偏移。Free FloatingSurface 持久化 source logical viewport + normalized center intent，跨分辨率自动重投影且保持拖动区可找回；Gear 等小按钮继续 edge-anchor，Launcher/主 Shell 兼容旧 free-v2 并在下一次拖动补齐响应式元数据。新增 20 组截图分辨率矩阵 `46/46` harness；全量 39/39、Audit、222/222 Parse PASS。
+77. **已完成 `.18.185` — Bag Storage Session Surface / Physical Read Authority**：`.18.184` 实机证明仅拆 `surfaceVisible` 仍不够：RU 保管箱会话可以已经带出真实物理背包，但 `UIC_BAG` 保持 hidden proxy。现用“仓储 Surface 正向可见 + 经过 PlausibleRect 验证的 Bag MainScript 矩形”只为 Presentation 提供 `storage-session+...` 定位 fallback；取放 Action 不再依赖 `UIC_BAG.visible`，而由严格 `CurrentStorageContext` + 显式点击后的物理 bag/storage 有界读取共同证明。无新增 Tick/任务/后台物品扫描；Foundation v137 / Acceptance v92。
+78. **RU `.18.185` Fresh Reload 已实机通过（带体验问题）**：用户确认 Reload 后直接打开保管箱已经能够出现 `取 / 放`，说明 `storage-session + Bag MainScript rect` hidden-proxy fallback 与动作 Authority 解耦方向成立；剩余问题是 350ms Observer 偶尔造成明显等待，功能正确但体感像“按钮没出来”。
+79. **已完成 `.18.186` — Bag Responsive Window Observer**：唯一 Bag Surface Observer 从 350ms → **100ms**，优先级 P3→P2、cost=1；不新增 Tick/第二常驻任务，不把 InventorySnapshot/槽位遍历/物品匹配/Native Move 放入观察路径。既有 64ms Presenter bounded retry 保持；用户显式关闭 `tools_bag` 后观察任务仍释放。Foundation v138 / Acceptance v93 / `ResponsiveWindowObserverContractVersion=1`。下一步 RU 只需复验“打开保管箱后按钮是否基本立即出现”与空闲 CPU 体感。
+
+80. **已完成 `.18.187` — Bag Product Blacklist UX**：整理背包主页面收敛为“取出同类 / 存入同类 / 黑名单”。移除普通页面中的高级分类整理、scope/category 编辑和 Native Surface 长诊断；当前背包按 itemType 聚合为 `ID · 名称 / ×数量`，点击行可直接载入黑名单输入。新增显式 bounded 名称解析：只在用户点击添加时扫描当前物理背包和当前打开仓储，ItemID 仍是唯一拦截 Authority；名称作为 Store 中的 Presentation metadata 持久化。新普通黑名单同时覆盖银行与保管箱；旧 scoped/category 数据/Commands 保留兼容，不做破坏性迁移。Foundation v139 / Acceptance v94 / `BAG_PRODUCT_UX_HARNESS 23/23`。
+
+81. **已完成 `.18.188` — Bag Gate Scope + Shell Persistence Schema Recovery**：实机 `.18.187` 的 `v3_bag_action_contract ... InventorySnapshotV3 unavailable` 并不是 InventorySnapshot 服务真的消失，而是 Foundation Gate 把 `businessPagesContract` 的 block-local 越界引用成全局 nil；现 Bag Gate 独立成 `EvaluateBagActionContract()`，所有依赖在同一 lexical scope 解析并输出精确 `missing=<token>`。同时把 `.18.157` 后仍停留 schema6 的 `v3.shell` canonical 演进补成 schema7/legacy6：exact historical candidate 必须复现旧 stamp；对 `.18.184/.18.187` 连续一致的 `2EA0A82A>2EC2F5C5` 再提供 Store-owned exact-pair 最终迁移桥，Envelope Seal/metadata/schema/decode/budget/current hash 均通过才接受，未知 stamp 继续 Fence。新增源码注释、Persistence 架构规则、RU 验收步骤和 `rs_regression_18_188_harness.py`（15/15 + Real-Lua PASS）。Foundation v140 / Acceptance v95。

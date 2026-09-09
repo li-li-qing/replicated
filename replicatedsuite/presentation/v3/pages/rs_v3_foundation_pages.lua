@@ -763,6 +763,15 @@ local function BuildDiagnostics(parent, route)
             return true
         end)
     end })
+    RSUI:Button({ id = "v3_diag_popup_output", parent = actionRow, text = "RSUI Popup定位", compact = true, slot = { size = "fixed", width = 124 }, onClick = function() -- 中文维护注释：把 Popup 专项诊断入口放在第一排，用户打开异常下拉框后无需翻找隐藏日志即可直接复制真实 Native 坐标。
+        return RunDiagnosticAction("popup_positioning_output", function() -- 中文维护注释：专项诊断仍走统一 ActionRunner 边界，避免按钮重入/异常绕开现有 UI 错误治理。
+            local diagnostics = S.DiagnosticsManager -- 中文维护注释：只消费 DiagnosticsManager 公共报告 Authority，不从页面读取 Popup 内部 recent 表。
+            if type(diagnostics) ~= "table" or type(diagnostics.BuildPopupPositioningReport) ~= "function" then return false, "RSUI Popup定位诊断不可用" end -- 中文维护注释：底层报告能力缺失时给出明确失败，不静默输出空字符串。
+            local text = diagnostics:BuildPopupPositioningReport() -- 中文维护注释：在用户点击时即时构建有界报告；不会新增 Tick、Native 扫描或长期缓存。
+            if type(S.SafeChat) == "function" then S.SafeChat(text, "info", "diagnostics") end -- 中文维护注释：沿现有安全聊天输出路径发送，用户可直接复制整段给维护者。
+            return true -- 中文维护注释：报告成功生成并提交聊天输出后，ActionRunner 可按正常成功处理。
+        end) -- 中文维护注释：结束 Popup 专项诊断 ActionRunner 事务。
+    end }) -- 中文维护注释：结束第一排“RSUI Popup定位”按钮定义；该入口从 .18.191 起属于长期维护 UI。
     local actionRow2 = RSUI:HorizontalBox({ id = "v3_diag_actions_2", parent = root, gap = 8, slot = { size = "fixed", height = 34, hAlign = "fill" } })
     RSUI:Button({ id = "v3_diag_reload", parent = actionRow2, text = "重新加载文件", compact = true, slot = { size = "fixed", width = 130 }, onClick = function()
         return RunDiagnosticAction("reload", function()

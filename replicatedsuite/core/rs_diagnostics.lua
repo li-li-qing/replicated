@@ -731,6 +731,10 @@ function D:Snapshot()
             actions = S.ActionRunner and type(S.ActionRunner.GetSnapshot) == "function" and S.ActionRunner:GetSnapshot() or nil,
             binding = S.UI and S.UI.Binding and type(S.UI.Binding.GetSnapshot) == "function" and S.UI.Binding:GetSnapshot() or nil,
             floating = S.RSUI and S.RSUI.FloatingSurface and type(S.RSUI.FloatingSurface.GetSnapshot) == "function" and S.RSUI.FloatingSurface:GetSnapshot() or nil,
+            -- Detached-popup geometry evidence is intentionally sampled only by
+            -- explicit diagnostics.  The positioning Authority itself records a
+            -- bounded ring during Open/Layout events; Diagnostics never polls UI.
+            popupPositioning = S.RSUI and S.RSUI.PopupPositioning and type(S.RSUI.PopupPositioning.GetSnapshot) == "function" and S.RSUI.PopupPositioning:GetSnapshot() or nil,
             screenSnap = S.Layout and type(S.Layout.GetScreenSnapSnapshot) == "function" and S.Layout:GetScreenSnapSnapshot() or nil,
         },
         clientLanguage = "Unknown",
@@ -873,6 +877,32 @@ function D:BuildSummary()
         "迁移：" .. tostring(snap.migration and snap.migration.suiteStatus or "unknown") .. " · 旧运行时：不启用",
     }, "\n")
 end
+
+function D:BuildPopupPositioningReport() -- 中文维护注释：提供诊断页“RSUI Popup定位”按钮的唯一文本 Authority，专门输出最近 Popup 的 Native 原始坐标与相对锚定事实，避免用户只能复制不含 Popup 细节的基础框架摘要。
+    local positioning = S.RSUI and S.RSUI.PopupPositioning or nil -- 中文维护注释：只读取 RSUI PopupPositioning 单一 Authority，不从页面/Feature 复制第二份状态。
+    if type(positioning) ~= "table" or type(positioning.GetSnapshot) ~= "function" then return "【RSUI Popup定位】不可用：PopupPositioning 尚未加载" end -- 中文维护注释：底层 Authority 缺失时返回可直接复制的明确文本，不抛异常也不猜默认坐标。
+    local snap = positioning:GetSnapshot() or {} -- 中文维护注释：快照是事件式有界 recent 事实，不触发 Native 扫描、Tick 或业务读取。
+    local metrics = type(snap.metrics) == "table" and snap.metrics or {} -- 中文维护注释：Metrics 缺失时使用空表，报告仍可输出契约版本和最近记录。
+    local sections = {} -- 中文维护注释：报告只在用户点击按钮时临时构建字符串数组，离开函数即可回收，不形成长期缓存。
+    sections[#sections + 1] = string.format("【RSUI Popup定位】v%s · Contract %s · space=%s · relative=%d · screenFix=%d/%d · fallback=%d", tostring(snap.version or "?"), tostring(snap.contractVersion or "?"), tostring(snap.coordinateSpace or "?"), tonumber(metrics.nativeRelativeApplies) or 0, tonumber(metrics.nativeScreenCorrections) or 0, tonumber(metrics.nativeScreenCorrectionFailures) or 0, tonumber(metrics.anchorFallbacks) or 0) -- 中文维护注释：首行直接证明当前是否进入 .18.191 Native-relative lane，以及 Native 边缘修正是否发生异常。
+    local recent = type(snap.recent) == "table" and snap.recent or {} -- 中文维护注释：recent 由 PopupPositioning 限制最多 12 条，这里进一步只输出最后 6 条避免聊天文本失控。
+    if #recent == 0 then sections[#sections + 1] = "暂无 Popup 记录：请先打开一次出问题的下拉框，再点击本按钮。" end -- 中文维护注释：没有记录时给用户可执行指引，避免返回空白报告。
+    local function NativeText(label, row) -- 中文维护注释：把 RU 原始 GetOffset/GetEffectiveOffset/GetExtent/GetEffectiveExtent 格式化为同一可复制结构，不对数值做任何坐标变换。
+        row = type(row) == "table" and row or {} -- 中文维护注释：缺失采样统一按空表处理，报告不会因为某个 Widget 不提供 getter 而中断。
+        return string.format("%s[%s] Off=%s,%s Ext=%s,%s Eff=%s,%s EffExt=%s,%s", tostring(label or "Native"), tostring(row.logicalId or "?"), tostring(row.offsetX or "?"), tostring(row.offsetY or "?"), tostring(row.extentW or "?"), tostring(row.extentH or "?"), tostring(row.effectiveX or "?"), tostring(row.effectiveY or "?"), tostring(row.effectiveW or "?"), tostring(row.effectiveH or "?")) -- 中文维护注释：保留所有原始值原样输出，维护者可直接判断 RU 不同 Widget 类型的坐标单位/父级语义差异。
+    end -- 中文维护注释：结束 Native 原始几何格式化 helper。
+    for index = math.max(1, #recent - 5), #recent do -- 中文维护注释：只输出最后 6 个 Popup ID 的最新事实，覆盖当前操作又保持报告有界。
+        local row = recent[index] -- 中文维护注释：读取当前有界记录，不修改 PopupPositioning 内部状态。
+        if type(row) == "table" then -- 中文维护注释：异常/空记录直接跳过，避免诊断本身成为运行时故障源。
+            local relative = type(row.relative) == "table" and row.relative or nil -- 中文维护注释：.18.191 Native-relative 记录包含 Trigger-local 偏移；旧绝对记录则保持 nil。
+            if relative ~= nil then sections[#sections + 1] = string.format("Popup %s · mode=%s · placement=%s · rel=%s,%s · popup=%sx%s · trigger=%sx%s · source=%s · correction=%s/%s", tostring(row.id or "?"), tostring(row.mode or "?"), tostring(row.placement or "?"), tostring(relative.x or "?"), tostring(relative.y or "?"), tostring(relative.width or "?"), tostring(relative.height or "?"), tostring(relative.triggerWidth or "?"), tostring(relative.triggerHeight or "?"), tostring(row.anchorSource or "?"), tostring(row.nativeCorrectionAvailable), tostring(row.nativeCorrectionOk)) end -- 中文维护注释：相对记录首先输出“我们要求 Native 做什么”，与后面的“Native 实际返回什么”形成 A/B 证据。
+            if relative ~= nil then sections[#sections + 1] = NativeText("Trigger", row.targetNative) .. " · " .. NativeText("PopupBefore", row.popupNativeBeforeCorrection) .. " · " .. NativeText("PopupAfter", row.popupNativeAfterCorrection) end -- 中文维护注释：Native-relative lane 输出 Trigger、修正前 Popup、修正后 Popup 三组原始事实，下一轮无需截图猜坐标。
+            local anchor, result = type(row.anchor) == "table" and row.anchor or nil, type(row.result) == "table" and row.result or nil -- 中文维护注释：保留旧绝对 solver 记录兼容，方便同时看到 size solver/point lane 的历史证据。
+            if relative == nil and anchor ~= nil and result ~= nil then sections[#sections + 1] = string.format("Popup %s · mode=absolute · Anchor=%s,%s %sx%s → Result=%s,%s %sx%s · placement=%s · source=%s", tostring(row.id or "?"), tostring(anchor.x or "?"), tostring(anchor.y or "?"), tostring(anchor.width or "?"), tostring(anchor.height or "?"), tostring(result.x or "?"), tostring(result.y or "?"), tostring(result.width or "?"), tostring(result.height or "?"), tostring(row.placement or "?"), tostring(row.anchorSource or "?")) end -- 中文维护注释：point/legacy absolute lane 仍输出统一格式，确保全局 Popup 审计没有盲区。
+        end -- 中文维护注释：结束单条 Popup 记录有效性分支。
+    end -- 中文维护注释：结束最近 Popup 诊断循环。
+    return table.concat(sections, "\n") -- 中文维护注释：返回可直接交给 SafeChat/用户复制的完整文本；函数本身不负责发送，保持 Diagnostics 与 Presentation 分层。
+end -- 中文维护注释：结束 RSUI Popup 专项诊断报告 Authority。
 
 function D:BuildAllLogs()
     local snap = self:Snapshot()
@@ -1048,6 +1078,25 @@ function D:BuildAllLogs()
             tonumber(rm.measurePasses) or 0, tonumber(rm.measureSkips) or 0, tonumber(rm.layoutPasses) or 0, tonumber(rm.layoutSkips) or 0,
             tonumber(rm.viewportRefreshes) or 0, tonumber(rm.safeZoneClamps) or 0, tonumber(rm.screenBoundaryIssues) or 0,
             tonumber(rm.visibilityChanges) or 0, tonumber(rm.debugOverlayRefreshes) or 0)
+        local popupPositioning = snap.uiFoundation and snap.uiFoundation.popupPositioning or nil
+        if type(popupPositioning) == "table" then
+            local pm = popupPositioning.metrics or {}
+            sections[#sections + 1] = string.format("RSUI Popup定位：space=%s · 解析 %d · 翻转 %d · 横夹 %d · 纵夹 %d · 限高 %d · Anchor回退 %d",
+                tostring(popupPositioning.coordinateSpace or "?"), tonumber(pm.resolves) or 0, tonumber(pm.flips) or 0,
+                tonumber(pm.horizontalClamps) or 0, tonumber(pm.verticalClamps) or 0, tonumber(pm.shrinks) or 0, tonumber(pm.anchorFallbacks) or 0)
+            local recent = popupPositioning.recent or {}
+            for index = math.max(1, #recent - 3), #recent do
+                local row = recent[index]
+                local a, r = type(row) == "table" and row.anchor or nil, type(row) == "table" and row.result or nil
+                if type(a) == "table" and type(r) == "table" then
+                    sections[#sections + 1] = string.format("Popup %s｜Anchor %.0f,%.0f %.0fx%.0f → %.0f,%.0f %.0fx%.0f · %s%s%s%s · source=%s",
+                        tostring(row.id or "?"), tonumber(a.x) or 0, tonumber(a.y) or 0, tonumber(a.width) or 0, tonumber(a.height) or 0,
+                        tonumber(r.x) or 0, tonumber(r.y) or 0, tonumber(r.width) or 0, tonumber(r.height) or 0,
+                        tostring(row.placement or "?"), row.flipped and "/flip" or "", row.clampedX and "/clampX" or "", row.clampedY and "/clampY" or "",
+                        tostring(row.anchorSource or "?"))
+                end
+            end
+        end
         sections[#sections + 1] = string.format("RSUI重排/重叠：入队 %d · Flush %d · Reflow %d · 延期 %d · SiblingOverlap %d",
             tonumber(rm.layoutRootsQueued) or 0, tonumber(rm.layoutFlushes) or 0, tonumber(rm.layoutRootsReflowed) or 0,
             tonumber(rm.layoutFlushDeferrals) or 0, tonumber(rm.siblingOverlapIssues) or 0)

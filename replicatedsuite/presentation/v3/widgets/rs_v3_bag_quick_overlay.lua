@@ -17,8 +17,9 @@
  if type(feature) ~= "table" or type(S.UI) ~= "table" then return end
  S.UIV3 = S.UIV3 or {}
  local P = {
-     version=8, ReloadVisibilityContractVersion=2, NativeTransientHostContractVersion=2,
-     VisibleRetryContractVersion=2, TooltipLayerContractVersion=1, TwoButtonContractVersion=1,
+     version=9, ReloadVisibilityContractVersion=2, NativeTransientHostContractVersion=2,
+     VisibleRetryContractVersion=2, TooltipLayerContractVersion=1, TwoButtonContractVersion=1, ReleasedRootRecoveryContractVersion=1,
+     ExternalNativeWindowGeometryContractVersion=1,
      -- v8: the bar is *two buttons*. The label is empty by default and only
      -- carries a transient message (run in progress / why a click refused), then
      -- clears itself and the bar shrinks back. An always-on "银行 · 可快捷取放"
@@ -31,7 +32,7 @@
      DiffRenderContractVersion=1, HintYieldContractVersion=1,
      owner="v3:bag_quick_overlay",
      root=nil, take=nil, put=nil, status=nil, shown=false,
-     createAttempts=0, createFailures=0, refreshes=0, visibleRefreshes=0, lastError=nil,
+     createAttempts=0, createFailures=0, releasedRootRecoveries=0, refreshes=0, visibleRefreshes=0, lastError=nil,
      appliedGeometry=nil, appliedStatus=nil,
  }
  S.UIV3.BagQuickOverlay = P
@@ -45,11 +46,11 @@
  local MIN_WIDTH, MAX_WIDTH = 240, 320
  -- A refusal/stop message stays readable long enough to be read once, then the
  -- bar returns to its quiet form.  Expiry is evaluated on the beats the existing
- -- 350 ms observer already publishes: no new task, no Tick.
+ -- 100 ms read-only window observer already publishes: no new task, no Tick.
  local MESSAGE_TTL_MS = 6000
 
 -- A failed host build during a visible transition must not wait for the next
--- 350 ms storage heartbeat to retry: RU can reject the first transient-window
+-- 100 ms storage heartbeat to retry: RU can reject the first transient-window
 -- creation while the native bank/coffer window is still animating open, and if
 -- the user closes it again before the next heartbeat the overlay never appears
 -- for that session. Retry on the frame-cadence lane instead (bounded one-shot,
@@ -113,13 +114,25 @@ local function OverlayStatusText(overlay, now)
 end
 
 function P:EnsureCreated()
+    -- UI:ReleaseOwner marks native widgets as released but an owner-side Lua
+    -- reference can survive a hot reload / host teardown. Treat that reference
+    -- as dead and rebuild instead of claiming the presenter is already created.
+    if self.root ~= nil and self.root.rsUiReleased == true then
+        self.root,self.take,self.put,self.status=nil,nil,nil,nil
+        self.shown=false; self.appliedGeometry=nil; self.appliedStatus=nil
+        self.releasedRootRecoveries=(tonumber(self.releasedRootRecoveries) or 0)+1
+    end
     if self.root ~= nil then return true end
     self.createAttempts=(tonumber(self.createAttempts) or 0)+1
     -- Top-level emptywidgets are not a reliable RU system-layer host. The UI
     -- primitive contract already records the same failure class that once made
     -- Unit Lines have valid projection but zero visible dots. Quick actions are
-    -- interactive screen presentation, so use the proven transient WINDOW path
-    -- used by Dropdown/ColorField/ContextMenu instead of a root emptywidget.
+    -- interactive screen presentation, so use a transient WINDOW. IMPORTANT:
+    -- this bar is NOT a component popup. Its x/y come from the verified native
+    -- UIC_BAG MainScript rectangle, already expressed in the external-native
+    -- window lane. Feeding it through PopupPositioning would apply the wrong
+    -- Authority and risks double-transforming a coordinate path that .18.185
+    -- already proved on RU.
     local root,err=S.UI:CreatePanel(UIParent,"v3_bag_quick_overlay_root",0,0,MIN_WIDTH,32,"soft",{
         transientWindow=true, visible=false, pickable=false, gradient=false,
         accentStrip=false, owner=self.owner,
@@ -155,6 +168,8 @@ function P:EnsureCreated()
         return false,self.lastError
     end
     self.root,self.take,self.put,self.status=root,take,put,status
+    root.rsUiCoordinateLane="external-native-window-v1"
+    root.rsUiCoordinateSpace="viewport-logical-v1"
     local function bind(widget,name,fn)
         if type(S.UI.RequireHandler) ~= "function" then return false, "critical_interaction_contract_unavailable" end
         return S.UI:RequireHandler(widget,"OnClick",function()
@@ -258,6 +273,7 @@ function P:GetHealth()
         version=tonumber(self.version) or 0, buttons=2, labelVisible=self.appliedStatus~=nil and self.appliedStatus~="",
         created=self.root~=nil, visible=self.shown==true,
         createAttempts=tonumber(self.createAttempts) or 0, createFailures=tonumber(self.createFailures) or 0,
+        releasedRootRecoveries=tonumber(self.releasedRootRecoveries) or 0,
         refreshes=tonumber(self.refreshes) or 0, visibleRefreshes=tonumber(self.visibleRefreshes) or 0,
         retryScheduled=self.retryScheduled==true, retryCount=tonumber(self.retryCount) or 0, lastError=self.lastError,
     }

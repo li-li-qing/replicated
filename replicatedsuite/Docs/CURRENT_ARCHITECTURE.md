@@ -3,6 +3,7 @@
 > **Authority: CURRENT**  
 > 本文只描述“当前系统是什么、责任归谁、运行时如何组织”。历史版本、实施过程与逐条修复统一见 [`CHANGELOG.md`](CHANGELOG.md) 和 `Archive/`。  
 > 当前代码与 `toc.g` 是加载真相；若本文与真实代码冲突，以代码为准，并在同一修改轮次修正文档。
+> **修改前强制阅读**：所有后续开发/修复在读取本文前，必须先阅读 [`MAINTENANCE_RULES.md`](MAINTENANCE_RULES.md)。从 `.18.190` 起，所有新增或修改代码行必须附带详细中文维护注释；`.18.191` 再次把“每轮修改前先读维护规则”与“专项诊断可复制”纳入发布契约，该规则长期有效。
 
 ## 1. 当前形态
 
@@ -68,6 +69,28 @@ V3 Application Shell / Router / PageHost / WidgetHost / ModalHost
 - Domain / Service 直接控制 Page、Widget 或 Modal 的可见性；
 - Feature 之间直接互相调用形成强耦合；共享事实应进入 Service / EventBus；
 - 为了 UI 便利复制第二份业务 Authority。
+
+
+### `.18.191` Suite-owned Popup Native-relative Anchor Authority
+
+`.18.189` 的 Effective Geometry 校准与 `.18.190` 的 NativeStateCache 绝对父链在 RU 实机仍出现位置相关偏移，说明问题不只是 `uiScale` 单位，而是 **Widget Effective/absolute geometry 的父级语义并不足以作为 detached top-level Window 的最终定位 Authority**。因此 `.18.191` 收紧为：
+
+```text
+Suite-owned Trigger
+    ↓ Resolve Native Widget reference
+Top-level transient Popup Window
+    ↓ UI:EnsureAnchor(Popup, TriggerNative, localOffsetX, localOffsetY)
+RU Native Anchor ancestry / Shell / Scroll / UI Scale / resolution
+    ↓ Show
+UIBounds:CorrectOffsetByScreen()
+```
+
+- Dropdown / ColorField / 目标型 Tooltip / 目标型 ContextMenu：`popup-native-relative-v1`；不再把 Trigger 转成 UIParent 绝对 X/Y 后重新锚定。
+- 鼠标/显式屏幕点 Tooltip/ContextMenu：`popup-point-v1`，只允许一次 viewport-logical 绝对定位。
+- Bag quick 等外部游戏窗口跟随：`external-native-window-v1`，继续由 Native Window Geometry Authority 拥有。
+- Unit Lines / Range / Head Marker：继续只消费 `ScreenProjectionV3`，与 Popup 坐标完全隔离。
+- 每次 Popup 打开只做一次相对 Anchor 与有界 Native 几何采样；无 Tick/OnUpdate 坐标轮询。
+- “诊断与维护”第一页必须存在 **`RSUI Popup定位`** 按钮；报告输出 Trigger、Popup 修正前/后的 `GetOffset/GetExtent/GetEffectiveOffset/GetEffectiveExtent` 原始值。坐标修复失败后，维护者必须先使用此证据再继续修改。
 
 ## 4. Core / Runtime Foundation
 
@@ -170,6 +193,9 @@ Demand / Consumer lifecycle
 - `Feature Enabled ≠ Presentation Visible`；隐藏窗口不代表关闭 Feature，关闭 Feature 也不等于删除永久配置；
 - **持久 Surface 启动意图**：FeatureRuntime v4 允许 Feature 提供一次性的 `GetStartupEnableIntent()` 证明，但 Preference 写入/Enable 事务仍只由 FeatureRuntime 执行。该钩子只能修复有明确持久业务证据的历史分叉，并必须有 Store sentinel 阻止后续覆盖用户显式 disable；Presentation/页面 transient consumer 不得作为持久 Surface 的启用 Authority。
 - **低成本独立观察**：`tools_bag` 的 Native bag/bank/coffer 几何可见性观察属于低成本独立生命周期，默认可运行；它只读窗口状态，不扫描物品。InventorySnapshot 与移动队列仍只在显式动作后创建，Feature disable 立即释放观察任务。
+- **Bag 产品页边界（`.18.187`）**：普通玩家页面只消费 `tools_bag` 的 public projection/Commands，展示“取出同类 / 存入同类 / 整理黑名单”。背包行由既有 Demand snapshot 按 `itemType` 聚合为 `ID · 名称`；名称是 Presentation metadata，黑名单写入 Authority 仍是 ItemID。名称搜索只在用户显式添加时对 bag + 当前已打开 storage 做一次 bounded snapshot，不进入 100ms Window Observer。旧 category-batch 与 scoped/category blacklist 仅作为升级/API 兼容能力保留，不再强塞进主页面。
+- **Bag Gate lexical-scope 边界（`.18.188`）**：Foundation 对 Bag 的验收不允许再拼一个跨数百行的布尔表达式并复用其它 block 的 local。`EvaluateBagActionContract()` 必须在自己的 lexical scope 内解析 InventorySnapshot、Feature、Commands、BusinessPagesContract 与 Presenter，失败返回精确 `missing=<token>`。Gate 只做诊断/契约验证，不参与 Bag Runtime Authority；因此 Gate 重构不得改变 100ms observer、黑名单或 Native Move。
+- **Lua lexical-local 维护规则（`.18.188` 全量封版补充）**：只在单文件使用的 helper 必须声明为 `local function`；一个值如果要在 `if/elseif/else` 结束后继续消费，local 必须声明在该分支的共同父作用域。禁止依靠“同名全局恰好为空”维持正确性。Foundation `Unexpected Global` 属于阻断，不得以“与当前功能无关”为理由带入发布包；本规则由 Foundation Audit + `.18.188` regression source checks 双重约束。
 - Runtime Blocked / Partial 必须保留真实 blocker，不允许用空壳页面冒充完成。
 
 ## 8. Combat 共享架构
@@ -213,8 +239,11 @@ Panel A/B 保存整面板矩形，50 个槽位由几何派生；`auto / single /
 - 世界投影：`ScreenProjectionV3` 输出 UIParent Screen Coordinate；若最终 Widget 是顶层 Overlay Window 的 child，必须经 `Layout:ScreenPointToWidgetLocal` 转为 Host Local。转换使用 `(Host EffectiveOrigin - UIParent EffectiveOrigin)`，禁止把 UIParent 修正量重复扣除。
 - 自由悬浮窗口：持久化 exact logical x/y + source logical viewport + normalized center intent；同分辨率精确恢复，跨分辨率按意图重投影并保证顶部拖动区可找回。
 - 小型屏幕按钮：优先 `logical-edge-v1` 保存最近边缘/边距；Gear 已使用该契约，R launcher 的 legacy free 坐标先由 recoverable safety 承接，下一次用户拖动提交时升级为 edge intent。
-- 动态附着按钮：例如 Bag `取 / 放` 两按钮（`.18.183` 起无 `停`，停止＝再点同一个按钮）以当前 Native 背包窗口几何为 Authority，不把某次分辨率下的物理像素持久化。
-- `UI Scale / Addon Scale / Screen Projection` 是不同概念：Addon Scale 不得乘世界坐标；Native EffectiveOffset 由 Layout 统一归一到 logical UIParent。
+- 动态附着按钮：例如 Bag `取 / 放` 两按钮（`.18.183` 起无 `停`，停止＝再点同一个按钮）以当前 Native 背包窗口几何为 Presentation 锚点；`.18.185` 起若 RU 在已打开的银行/保管箱会话中把 `UIC_BAG` 留作 hidden proxy，可用“仓储 Surface 正向可见 + 已校验 Bag MainScript 矩形”做仅显示的 storage-session fallback。物品移动 Authority 永远来自严格仓储会话 + 显式点击后的物理容器读取，不由 `UIC_BAG` 可见位决定；不持久化某次分辨率的物理像素。`.18.189` 起该 Presenter 明确声明 `external-native-window-v1`，不得错误套入 Component Popup lane。
+- **Detached Popup（`.18.189`）**：Dropdown / ColorField / Tooltip fallback / ContextMenu 虽逻辑归属 trigger/page，但物理 root 挂到 `UIParent`。它们必须统一经 `RSUI.PopupPositioning -> Layout:ResolveViewportLogicalRect` 输出 `viewport-logical-v1`，只能转换一次；业务/组件禁止直接用 `GetEffectiveOffset`、`GetLogicalRect`、`/uiScale`、`*uiScale` 或 Shell x/y 拼绝对位置。Popup 自动做 Safe Viewport clamp、垂直 flip 与长列表高度限制。
+- **Detached Popup Suite Anchor Authority（`.18.190`）**：RU 实机证明 `.18.189` 的 Effective Geometry“单位校准”仍不够可靠；问题不仅可能是 scale，还可能是不同控件/父级下 EffectiveOffset 的绝对位置语义不同。对 Suite 自己通过 `UI:SetAnchor/UI:SetExtent` 管理的 Trigger，Popup 现在必须优先沿 `UI.NativeStateCache` 的完整 `anchorParent/anchorX/anchorY` 父链追溯到 `UIParent`，该链就是 Presentation 写入事实；父链不完整时 fail-closed，禁止再回退 EffectiveOffset 猜位置。只有外部原生 Trigger 才允许 `ResolveViewportLogicalRect` 的 Effective Geometry 校准车道。
+- **坐标 lane 必须显式**：`popup-anchor-v1`（detached component popup）、`external-native-window-v1`（跟随游戏原生窗口）、`world-projection`（ScreenProjectionV3）、persistent/free-window（Windowing/Layout）互不替代。SearchablePicker 当前是 embedded surface，不因为名字含 Picker 就强制迁入 detached popup lane。
+- `UI Scale / Addon Scale / Screen Projection` 是不同概念：Addon Scale 不得乘世界坐标；Native EffectiveOffset 由 Layout 统一归一到 logical UIParent。RU Effective geometry 可能已是 logical，也可能仍带 UI scale，`ResolveViewportLogicalRect` 通过 bounded facts 校准单位，Consumer 不再猜。
 
 支持新分辨率不需要改业务代码；只要 Native UIParent metrics 可读，同一套转换自动适用 4:3、5:4、5:3、16:10、16:9 与其它尺寸。
 
@@ -375,15 +404,15 @@ Feature Settings Page
 
 ## 13. 当前验证基线
 
-当前代码 BuildTag：`v3-m1.16.0.18.158-settings-page-foundation`。
+当前代码 BuildTag：`v3-m1.16.0.18.189-popup-coordinate-authority`。
 
 当前本地结构门禁基线：
 
 ```text
 FOUNDATION_AUDIT PASS
-toc=223
-activeLua=223
-allLua=223
+toc=227
+activeLua=227
+allLua=227
 globals=0
 presentation=0
 rawNative=0
@@ -402,7 +431,7 @@ rsuiLoadDeps=3
 presentationRootHandlers=0
 ```
 
-当前 Runtime Gate 为 Foundation v126 / UIV3 Acceptance v81；RSUI 为 v47 / API 13.1。`ScreenProjectionV3 v13` 要求 global world、front-hemisphere、批量索引稳定与 `UiParentScreenCoordinateContractVersion=1`；VisualGuides 必须 1:1 消费该屏幕坐标，不得乘 Suite `addonScale`。仅当 Camera Frame 暂时不可取得时允许当前有界批次使用 Native Projection fallback，禁止跨帧缓存或绕过恢复后的前半球校验。
+当前 Runtime Gate 为 Foundation v142 / UIV3 Acceptance v97；RSUI 为 v51 / API 13.5。`ScreenProjectionV3 v13` 要求 global world、front-hemisphere、批量索引稳定与 `UiParentScreenCoordinateContractVersion=1`；VisualGuides 必须 1:1 消费该屏幕坐标，不得乘 Suite `addonScale`。仅当 Camera Frame 暂时不可取得时允许当前有界批次使用 Native Projection fallback，禁止跨帧缓存或绕过恢复后的前半球校验。
 
 运行时只读事实继续收敛到共享 Service：`CastingObservationV3` 统一目标/自身施法快照，`AuraObservationV3` 统一 Buff/Debuff 快照。Boss 与 BuffDisplay 只持有 Demand lease，不得各自创建重复 Native polling；Boss exact mechanic lookup 在 Catalog 建表时完成，高频路径禁止模糊字符串扫描。
 
@@ -411,9 +440,20 @@ presentationRootHandlers=0
 本地静态/纯 Lua 门禁不能替代 RU 客户端 Fresh Reload、Native 构造、字段语义、视觉与多人性能验证。
 
 
+### `.18.189` Detached Popup Coordinate Authority
+
+所有物理挂到 `UIParent`、但逻辑锚点来自 page/card/component tree 的 transient popup，统一由 `RSUI.PopupPositioning` 拥有最终 Presentation geometry。`Layout:ResolveViewportLogicalRect` 是 Native effective geometry → `viewport-logical-v1` 的唯一归一边界，并针对 RU “Effective API 可能已 logical / 可能带 uiScale”做有界校准；Popup consumer 不能二次 scale 或叠加 Host origin。Dropdown 的可见行数由实际可用侧空间与 safe viewport 60% 上限决定，超出继续复用已有固定池/滚动。Foundation Audit 对 Dropdown/ColorField/Tooltip/ContextMenu 的 `GetLogicalRect/GetEffectiveOffset` 回流实行阻断。
+Effective API 暂不可读时，仅接受 `NativeStateCache` 中能够完整追溯到 `UIParent` 的 anchor chain；不再用 component-local `GetAbsoluteRect` 猜屏幕位置。不能证明 coordinate space 时直接 fail-closed。
+
+坐标 Authority 不是“一套函数包打天下”：Bag quick 属于 `external-native-window-v1`，World HUD 属于 `ScreenProjectionV3`，可拖/持久化窗口属于 Windowing/Layout。只有真正 detached component popup 才进入 `popup-anchor-v1`。这一分离防止修 Dropdown 时再次破坏 Unit Lines、Bag native-window follow 或窗口拖拽。
+
+### `.18.188` Shell Persistence Schema 边界
+
+`v3.shell` 只保存主窗口尺寸、route、最小化/锁定与自由位置意图，但仍属于 Integrity Authority。`.18.188` 起其当前 canonical 为 **schema 7**，schema 6 冻结为只读 historical generation。任何后续对 Shell canonical 字段、默认语义、坐标表示的修改必须再次升 schema，禁止在同一 schema 内“顺手加字段”。旧 schema 的恢复顺序固定为：Envelope Seal/metadata/decode/budget → current canonical mismatch → exact historical reconstruction（旧 Hash 精确匹配）→ 必要时 Store-owned exact known-stamp bridge → current canonical/budget → migrate/restamp。未知 fingerprint 永远继续 write fence；session fallback 只保证 UI 可打开，不是清 Store/忽略完整性的理由。详细规则见 `Architecture/PERSISTENCE_ARCHITECTURE.md`。
+
 ### `.18.150` Death Review 历史恢复边界
 
-Death Review 正常 Index Authority 仍是 Feature Store + stable codec；`history.entries` 的 `pairs()` 扫描只存在于一次性 Integrity mismatch historical recovery 中，不进入正常 Load/Save/Feature 生命周期。`.18.151` 对连续五轮实机确认的旧 v4 stamp `770CB0B8` 增加 Store 专属最终迁移桥：exact historical reconstruction 先执行；仅在它失败、Envelope Seal/metadata/schema/decode/budget/legacy-shape 全部通过且 fingerprint 精确在 Store allowlist 中时，才保留现存 Domain 并立即重盖 current codec。未知 fingerprint 继续 fail-closed。Snapshot 的 `historicalRecoveryProbe` 仅是 runtime 诊断，不是第二 Authority。 `.18.152` 把 Reload 后快捷界面状态纳入同一生命周期原则：Bag quick overlay 的低成本窗口观察独立默认启用，而重型 InventorySnapshot 仍显式按需；Gear quick buttons 的 persistent preference 与 page transient lease 严格分离，旧的“quick plan 已存在但 Feature preference=false”只执行一次 store-backed 启动意图修复，之后用户 disable 保持最终 Authority。 `.18.153` 进一步修正 Bag Native Window Fact：UIC_BAG/UIC_BANK/UIC_COFFER 不再假设 GetContentMainScriptPosVis 必有第 5 boolean，并让 RequireStorageWindow 与 Overlay 共享同一窗口事实。`.18.162` 根据后续 RU 实机继续收口该契约：第 5 visible 接受 boolean/0-1/常见 string 形态；显式 Native visible/hidden 为最高 Authority，ADDON:GetContent 短父链只提供正向 visible 证据，hidden proxy 不得否决已经存在的合法 MainScript geometry。Bag Quick Presenter 也不再使用顶层 emptywidget/system layer，而是统一走真实 transient WINDOW Host；首次 admission 预创建 hidden Host，窗口实际可见期间由既有 350ms observer 发布 bounded visible heartbeat 允许 Presenter 临时创建失败后重试。该观察仍是低频只读 Surface，不读取物品、不建立 InventorySnapshot；显式 tools_bag=false 继续由 FeatureRuntime preference 保持最终 Authority，不做猜测式自动迁移。 `.18.154` 收口 Unit Lines 最终 Presentation 坐标边界：`GetUnitScreenPosition` 的 raw `(x,y)` 是端点 Authority，1×1 label dot 必须直接锚在该点；font size 仅改变 glyph，不得再用 `size/2` 改写路径几何。Range Assist 保留独立 calibration Authority。
+Death Review 正常 Index Authority 仍是 Feature Store + stable codec；`history.entries` 的 `pairs()` 扫描只存在于一次性 Integrity mismatch historical recovery 中，不进入正常 Load/Save/Feature 生命周期。`.18.151` 对连续五轮实机确认的旧 v4 stamp `770CB0B8` 增加 Store 专属最终迁移桥：exact historical reconstruction 先执行；仅在它失败、Envelope Seal/metadata/schema/decode/budget/legacy-shape 全部通过且 fingerprint 精确在 Store allowlist 中时，才保留现存 Domain 并立即重盖 current codec。未知 fingerprint 继续 fail-closed。Snapshot 的 `historicalRecoveryProbe` 仅是 runtime 诊断，不是第二 Authority。 `.18.152` 把 Reload 后快捷界面状态纳入同一生命周期原则：Bag quick overlay 的低成本窗口观察独立默认启用，而重型 InventorySnapshot 仍显式按需；Gear quick buttons 的 persistent preference 与 page transient lease 严格分离，旧的“quick plan 已存在但 Feature preference=false”只执行一次 store-backed 启动意图修复，之后用户 disable 保持最终 Authority。 `.18.153` 进一步修正 Bag Native Window Fact：UIC_BAG/UIC_BANK/UIC_COFFER 不再假设 GetContentMainScriptPosVis 必有第 5 boolean，并让 RequireStorageWindow 与 Overlay 共享同一窗口事实。`.18.162` 根据后续 RU 实机继续收口该契约：第 5 visible 接受 boolean/0-1/常见 string 形态；显式 Native visible/hidden 为最高 Authority，ADDON:GetContent 短父链只提供正向 visible 证据，hidden proxy 不得否决已经存在的合法 MainScript geometry。Bag Quick Presenter 也不再使用顶层 emptywidget/system layer，而是统一走真实 transient WINDOW Host；首次 admission 预创建 hidden Host，窗口实际可见期间由既有 350ms observer 发布 bounded visible heartbeat 允许 Presenter 临时创建失败后重试。该观察仍是低频只读 Surface，不读取物品、不建立 InventorySnapshot；显式 tools_bag=false 继续由 FeatureRuntime preference 保持最终 Authority，不做猜测式自动迁移。 `.18.185` 进一步把 Bag 的 Proxy 与 Authority 彻底拆开：仓储打开期间，合法 Bag MainScript rect 可在 `UIC_BAG` hidden-proxy 情形下只承担悬浮条定位；`BeginBagQuick` 不再把 Bag UI visible 当动作前置，严格 storage visible + bounded physical bag/storage read 才是写入证明；Observer 仍不扫描物品。 `.18.186` 将这个**唯一只读 Surface Observer**从 350ms 收紧为 100ms（P2/cost=1），只提升 Native 窗口事实发现速度；InventorySnapshot、槽位遍历、同类匹配与 Native Move 继续严格留在显式用户动作之后，不新增 Tick 或第二常驻观察任务。 `.18.154` 收口 Unit Lines 最终 Presentation 坐标边界：`GetUnitScreenPosition` 的 raw `(x,y)` 是端点 Authority，1×1 label dot 必须直接锚在该点；font size 仅改变 glyph，不得再用 `size/2` 改写路径几何。Range Assist 保留独立 calibration Authority。
 
 ## 14. 权威文档索引
 

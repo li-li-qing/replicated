@@ -1,3 +1,85 @@
+
+## v3-m1.16.0.18.191-popup-native-relative-anchor-diagnostics
+
+- RU 实机确认 `.18.189` Effective Geometry 校准与 `.18.190` Suite cache 绝对父链仍无法消除 Dropdown 位置相关偏移；停止继续调整 `uiScale`/Shell origin 数学，Suite-owned detached Popup 改为 top-level Native Window **直接相对 Trigger Native Widget `AddAnchor`**。
+- Dropdown / ColorField / 目标型 Tooltip / 目标型 ContextMenu 迁移到 `popup-native-relative-v1`；鼠标/显式屏幕点保留 `popup-point-v1`，Bag external-native-window 与 ScreenProjection 世界投影保持独立 Authority。
+- Popup 显示后调用已验证的 `UIBounds:CorrectOffsetByScreen()` 处理屏幕边缘；无 Tick/OnUpdate/后台坐标轮询。
+- 新增 `DiagnosticsManager:BuildPopupPositioningReport()` 与诊断页第一排 **`RSUI Popup定位`** 按钮，输出最近 Popup 的 Trigger/Popup 修正前后 `GetOffset/GetExtent/GetEffectiveOffset/GetEffectiveExtent` 原始事实；修复再次失败时不再只靠截图猜测。
+- Foundation/Acceptance 升级 Popup Positioning v3 / Native-relative v1 / Controls+Interactions consumer v2，并把专项可观测性纳入发布 Gate。
+- 维护规则再次固化：每轮修改前必须读取 `MAINTENANCE_RULES.md`；所有新增/修改代码行必须有详细中文维护注释。
+
+## v3-m1.16.0.18.190-popup-suite-anchor-chain-authority
+
+- **RU 实机二次定案**：`.18.189` 已消除显式 double-scale，但 1280×768 实机仍出现 Dropdown 随 Trigger X/Y 增大而偏移，证明 `GetEffectiveOffset` 的问题不只是“logical vs uiScaled 单位”，还存在不同控件/父级下绝对位置语义不稳定。继续调 scale 只会制造新的分辨率补丁。
+- **Suite-owned cache-first Authority**：新增 `Layout.SuiteOwnedViewportAnchorContractVersion=1` / `ResolveSuiteOwnedViewportLogicalRect()`；对 RSUI Component 或已进入 `UI.NativeStateCache` 的 Trigger，沿 `anchorParent + anchorX/Y` 完整追溯至 `UIParent`，直接得到 Diff Authority 写入过的 viewport-logical 坐标。完整链无法证明时直接 fail-closed，不再回退 Effective Geometry 猜位置。
+- **外部 Native 独立车道**：只有非 Suite-owned 的真实外部原生控件继续使用 `.18.189` 的 `ResolveViewportLogicalRect + EffectiveGeometryCalibration`；两条车道禁止混算。
+- **防复发测试**：Popup Harness 新增“EffectiveOffset 故意返回错误绝对位置、尺寸仍合理”的场景，要求 Suite-owned Dropdown 仍严格跟随 cache 父链锚点；避免测试只覆盖 scale 差异却遗漏真实 RU 父级语义错误。
+- **长期维护规则**：新增 `Docs/MAINTENANCE_RULES.md`。以后每轮修改前必须先阅读该文件与 `CURRENT_ARCHITECTURE.md`；从 `.18.190` 起所有新增或修改代码行必须附带详细中文维护注释，并同步关键架构规则到文档。
+- **门禁版本**：Foundation v142 / UIV3 Acceptance v97 / PopupPositioning v2 / PopupCoordinateAuthority v2。
+
+## M1.16.0.18.189 — Popup Coordinate Authority / Resolution-safe Detached UI（2026-09-09）
+
+- **真实根因**：Dropdown/ColorField 的 detached popup 物理 parent 是 `UIParent`，旧 `ApplyPopupLayout()` 却先用 `Layout:GetLogicalRect(trigger)`。该旧 helper 对 `GetEffectiveOffset/GetEffectiveExtent` 无条件 `/ uiScale`；而项目已有 RU 证据表明 Effective geometry 在不同控件/客户端 UI size 下可能已经是 logical，也可能仍带 UI scale。已是 logical 的 anchor 被第二次缩放后，误差会随 X/Y 增大，正好对应 1280×768 实机截图中“控件本体正确、Popup 越靠右/下偏得越远”的表现。
+- **统一坐标 Authority**：新增 `ui/framework/rs_ui_popup_positioning.lua`（`PopupPositioningContractVersion=1` / `PopupCoordinateSpaceContractVersion=1`）。所有脱离父布局树并挂到 `UIParent` 的 Dropdown / ColorField / Tooltip fallback / ContextMenu 统一执行 `live native anchor -> Layout:ResolveViewportLogicalRect -> viewport-logical-v1 -> ResolveAnchored/ResolveDropdown/ResolvePoint -> UIParent`，禁止 Consumer 再乘/除 UI scale 或拼 Host origin。`Layout` 新增 bounded effective-unit calibration，根据 Suite Diff cache、UIParent effective extent、screen/logical ratio 等事实从候选 scale 中选择一次归一；旧 `GetLogicalRect()` 语义不改，避免误伤 Windowing/drag/snap。
+- **分辨率/边缘行为**：Dropdown 默认从 trigger 下方展开；空间不足自动翻到上方；左右/上下统一 clamp 到 Safe Viewport。长列表高度上限为当前 safe viewport 的 60%，按完整 rowHeight 计算 `visibleRows`，继续复用既有最多 16 行的 Native row pool 与滚动逻辑，不创建额外列表或 Tick。
+- **坐标车道分离**：本轮全局扫描了 `transientWindow=true` 与 `UIParent` 顶层消费者。组件 Popup 走 `popup-anchor-v1`；Bag `取/放` 跟随外部游戏窗口，明确声明 `external-native-window-v1`，仍以已验证 `UIC_BAG MainScript` geometry 为锚，不错误套用组件 Popup 变换；Unit Lines/Range/头顶标记继续只走 `ScreenProjectionV3` world-projection lane；WindowShell/FloatingSurface/Gear quick 等可拖/持久窗口继续归 Windowing/Layout lane。SearchablePicker 是 embedded workbench surface，不伪装成 detached popup。
+- **可观测性**：`Diagnostics:Snapshot()` 新增 bounded `uiFoundation.popupPositioning`，只读取 Popup Authority 已记录的最近 12 次事件，不轮询 Native UI。复制诊断可看到 `Anchor -> Final Rect / placement / flip / clamp / anchorSource / viewport-logical-v1`，以后不同分辨率错位可直接判断坐标来源而不是继续写 magic offset。
+- **防复发门禁**：Foundation Gate v141 新增 `v3_popup_coordinate_contract`；UIV3 Acceptance v96 新增 `popup_coordinate_authority_contract`；Foundation Audit 禁止 detached Popup consumer 回流 `GetLogicalRect/GetEffectiveOffset` 手算，并要求每个 top-level transient lane 明确分类。Bag Action Gate 同时要求 `ExternalNativeWindowGeometryContractVersion=1`。RSUI 升至 v51 / API 13.5。
+- **验证**：新增 `rs_popup_coordinate_harness.py`：source **20/20** + Real-Lua **24/24**，覆盖 1024×768、1280×720、1280×768、1366×768、1600×900、1920×1080、2560×1440，并分别模拟 RU Effective geometry=logical 与 =UI-scaled；验证 UIParent 非零 origin 只减一次、bottom flip、right clamp、60% 高度、row integer、point popup 与 fallback。全工程 **48/48 Python Harness PASS**；Foundation Audit PASS（toc/active/all Lua=227，globals=0）；RSUI Component API / Presentation Feature API / Lua Local Order 全 PASS；TOC **227/227 Lua parse PASS**。
+- **BuildTag**：`v3-m1.16.0.18.189-popup-coordinate-authority`。
+
+## M1.16.0.18.188 — Bag Gate Scope + Shell Persistence Schema Recovery（2026-09-09）
+
+- **`.18.187` 新增 Blocker 的真实根因**：`core/rs_foundation_gate.lua` 在较早的 UI 构建契约 block 内声明了 `local businessPagesContract`，但 Bag Action 契约在该 block 外再次直接使用同名标识。Lua 的 lexical scope 结束后该名字解析为全局 `nil`，所以即使 `InventorySnapshotV3`、`tools_bag` 与 Bag Quick Presenter 全部健康，Gate 仍会失败；旧失败文案又把任何缺项都错误收敛成 `InventorySnapshotV3 unavailable`，造成误诊。
+- **Bag Gate 隔离**：新增 `FoundationGate:EvaluateBagActionContract()`，在函数自己的 lexical scope 内重新解析 `InventorySnapshotV3 / tools_bag / Commands / BusinessPagesContract / BagQuickOverlay`，逐项返回 `missing=<token>`。`G:Run()` 只消费该结果，不再依赖跨 block local，也不再用单一 InventorySnapshot 文案掩盖真实缺项。此改动只影响诊断/验收，不改变 Bag Runtime、100ms Observer 或 Native Move。
+- **Shell 持久化演进边界**：`.18.157` 给主 Shell 增加 `savedLogicalWidth/Height + normalizedCenterX/Y` 时 Store 仍停留 schema 6，导致同一 schema 内出现两个 canonical generation。并非所有旧 payload 都必然 Hash 不同（nil 字段在 Lua table 中不存在），但这违反长期升级规则。现将 `v3.shell` 升为 **schema 7 / legacy 6**，保留不可变的 historical-v6 canonical，并通过 Persistence 既有 `rebuildCanonicalForIntegrity` 精确 Hash 复原；只有 Envelope Seal 已通过且候选精确复现旧 stamp 才能接受。
+- **重复 RU Shell 事故的一次性恢复**：用户在 `.18.184` 与 `.18.187` 连续报告完全相同的 `v3.shell: 2EA0A82A > 2EC2F5C5`。exact historical reconstruction 仍优先；若它不匹配，再允许 Store-owned `recoverKnownLegacyCanonical` 处理**仅这一组**旧/当前 fingerprint，并再次校验 `schema=6 + store/owner + current canonical hash`。成功后保留经过当前 Normalize 的 Shell UI 状态并立即迁移/重盖 schema 7；任何未知 fingerprint 继续 fail-closed，不清 Store、不关闭 integrity、不做通用吞错。
+- **防复发门禁**：Foundation Gate v140 / UIV3 Acceptance v95 新增 `v3_shell_persistence_schema_contract` / `shell_persistence_schema_v7_contract`，要求 schema7、historical hook、known-stamp hook 与对应 ContractVersion 同时存在。新增 `rs_regression_18_188_harness.py`：source **18/18** + Real-Lua runtime PASS，实际执行 Bag Gate（不创建全局 `businessPagesContract`）、模拟 schema6→7 exact historical recovery，并钉死本轮全局回归中发现的 Lua lexical-scope 泄漏。
+- **全局 Audit 顺带发现并修复真实旧缺陷**：`features/life/rs_life_m16_bundle.lua` 的 `LocalizedTradeItemName` 自 `.18.180` 起误声明为全局函数；同文件 `priceProvenance` 又在报价分支内 `local`、却在分支结束后的物料行渲染继续读取，Lua 因 lexical scope 结束会转而读取同名全局。前者污染运行时 namespace，后者会让“参考价”标签依赖不存在/被污染的全局值。现 helper 改回 file-local，并把 `priceProvenance` 生命周期提升到单个 ingredient iteration；代码内加入维护注释，禁止再次把 Presentation provenance 放进更窄的分支作用域。
+- **完整回归**：全部 **47/47 Python Harness PASS**；Presentation Feature API Audit PASS；RSUI Component API Audit PASS；Lua Local Order Audit PASS；Foundation Audit 在上述 lexical 修复后 **PASS（globals=0）**。Bag Product UX 23/23、Quick Surface 14/14、Bag Move Queue 13/13、Runtime 3/3 仍保持通过。
+- **BuildTag**：`v3-m1.16.0.18.188-bag-gate-scope-shell-schema-recovery`。
+
+## M1.16.0.18.187 — Bag Product Blacklist UX（整理背包主页面收敛，2026-09-09）
+
+- **主页面产品化**：`tools_bag` 不再把“高级整理 / 类别编号 / 银行/箱子黑名单范围 / Native Surface 诊断串”暴露给普通玩家。页面只保留三件事：`取出同类`、`存入同类`、`整理黑名单`；底部表格改成当前背包的可识别物品列表。旧 category-batch Commands 与 scoped/category 黑名单仍保留，避免升级时删除能力或破坏旧配置，但不再占据主页面。
+- **人类可读物品格式**：当前背包列表、黑名单下拉统一使用 `ItemID · 物品名称`，数量单独显示为 `×N`。不再让玩家面对 `#10 (10)` 或纯数字而猜物品含义。
+- **黑名单输入方式**：新增 `ResolveAndAddBlacklistItem`。用户可以直接输入正整数 ItemID；也可以输入当前背包或**当前已打开银行/保管箱**中的物品名称。名称匹配只在用户点击“加入黑名单”时执行一次有界 `InventorySnapshotV3` 读取，优先精确匹配，只有唯一的部分匹配才接受；多结果会要求输入更完整名称。点击下方背包物品行也会直接把 ItemID 填入输入框。
+- **Authority / Presentation 分离**：黑名单实际拦截仍只认 `itemType/category`；新增的 `itemName` 仅是持久化显示元数据，名字变化绝不能绕过写入检查。新加入的普通物品黑名单同时镜像到 bank/coffer 两个旧策略桶，因此符合“加入黑名单后取/放都不参与”的产品语义；旧单范围规则仍按原语义继续生效。
+- **性能边界**：100ms Bag Surface Observer 完全不变，仍只读窗口事实。名称匹配扫描只发生在显式“加入黑名单”动作；页面本身复用 Demand 已经建立的背包 Authority 聚合 `itemType`，不会因为显示 `ID · 名称` 再做第二遍扫描。Native Move、250ms 串行队列、黑名单逐步复验、关闭仓储即停全部保持。
+- **门禁**：`ProductBlacklistUxContractVersion=1`、`BlacklistNameMetadataContractVersion=1`、`BlacklistExplicitLookupContractVersion=1`、`BusinessPagesContract.bagProductUxContractVersion=2`；FoundationGate 138→139、UIV3Acceptance 93→94，Bag failure token 升为 `bag_quick_take_put_contract_v13`。新增 `BAG_PRODUCT_UX_HARNESS 23/23`，并更新 Quick Surface / Bag Move Queue harness 以明确“高级分类命令保留、普通页面移除”。
+- **BuildTag**：`v3-m1.16.0.18.187-bag-product-blacklist-ux`。
+
+## M1.16.0.18.186 — Bag Responsive Window Observer（悬浮按钮出现延迟优化，2026-09-09）
+
+- **用户实机证据**：`.18.185` 已确认 Fresh Reload 后直接打开保管箱能够正常出现 `取 / 放`，但偶尔要等待一个明显的观察周期，功能虽然正确，交互上仍像“按钮没出来”。根因不再是窗口 Authority/Proxy，而是纯粹的 Presentation 发现延迟：常驻窗口观察仍是 350ms。
+- **响应优化**：`tools_bag` 的唯一窗口观察任务从 **350ms → 100ms**，并从 `P3` 调整为低成本 UI Surface 使用的 `P2 / cost=1`。窗口事实一旦被 RU 客户端暴露，正常情况下下一次观察不再需要等 0.35 秒；若首次 transient WINDOW admission 恰好失败，Presenter 仍沿用既有 **64ms bounded one-shot retry** 自愈，不增加第二个常驻任务。
+- **性能边界不变**：100ms 任务仍然只读取 `UIC_BAG / UIC_BANK / UIC_COFFER` 的 Content/可见性/几何事实；**没有 InventorySnapshot、没有槽位遍历、没有物品匹配、没有 Native Move、没有新增 Tick**。物品数据仍只在用户显式点击 `取 / 放 / 高级整理` 后读取，移动队列仍是 250ms 单写串行。用户显式关闭 `tools_bag` 后该观察任务仍立即释放。
+- **看门狗同步提速**：同一个窗口观察任务继续兼任 quick-run stale mutex 回收，因此 UI 响应提速的同时，异常队列失去执行证据后的状态刷新也更及时；8 秒 stale 判定阈值本身不变。
+- **门禁**：新增 `ResponsiveWindowObserverContractVersion=1`；FoundationGate 137→138、UIV3Acceptance 92→93，失败 token 升为 `bag_quick_take_put_contract_v12`。quick-surface harness 钉死 `100ms + P2 + cost=1`，并继续断言 Observer 内不得出现 InventorySnapshot/Move。
+- **BuildTag**：`v3-m1.16.0.18.186-bag-responsive-window-observer`。
+
+## M1.16.0.18.185 — Bag Storage Session Surface / Physical Read Authority（Fresh Reload 打开保管箱仍无悬浮按钮，2026-09-09）
+
+- **本轮实机证据**：`.18.184` Fresh Reload 后打开保管箱，`取 / 放` 仍然没有出现；同一份诊断中只有 `v3.shell` 完整性失败，没有 `tools_bag` Store/Feature 故障。`v3.shell` 只负责主窗口状态且已进入 session fallback/write-protect，不能解释保管箱已打开却没有 Bag quick Surface，因此本轮不把存档故障当作背包根因。
+- **`.18.184` 没覆盖到的真实边界**：上一轮只解决了 `Native hidden/0 + Content visible` 的开窗 race，但 `RefreshBagQuickOverlay` 仍要求 `UIC_BAG.surfaceVisible=true`。RU 打开银行/保管箱时，**物理背包可以已经随仓储会话可操作，但 `UIC_BAG` 自身仍保持 hidden proxy**；这时 MainScript 仍可能给出合法背包矩形。旧逻辑把 proxy 的显示位继续当成“背包存在”的必要条件，所以 Observer 明明运行、仓储 Surface 也已可见，悬浮条仍被压掉。
+- **Presentation 修复**：只有在“银行/箱子 Surface 已正向可见”且 `UIC_BAG` 返回的背包矩形通过现有 `PlausibleRect` 校验时，允许 `storage-session + bag-geometry` 作为**悬浮条定位证据**。新增 `bagSurfaceEffectiveVisible / bagSurfaceFallback / bagSurfaceEffectiveSource` 诊断；页面会显示 `storage-session+...（仓储会话定位）`，明确告诉下一轮实机这是 fallback，不再把它伪装成 Native visible。
+- **Authority / Proxy 解耦**：`BeginBagQuick` 不再先检查 `UIC_BAG.visible`。写动作 Authority 现在严格由两层事实共同证明：① `CurrentStorageContext()` 的银行/箱子严格 `visible=true` 会话；② 用户显式点击后，对物理 `bag` 与当前 storage 执行有界 `BagIdentitySet/InventorySnapshotV3` 读取。任一容器不可读/存在槽位读取错误仍在任何 Native Move 前 fail-closed。**UIC_BAG 只负责 Presentation 锚点，不再拥有物品移动权限。**
+- **性能**：没有新增 Tick、没有新增 Scheduler、没有把 InventorySnapshot 放进 350ms Observer。fallback 只复用同一次窗口读取里的 4 个几何数值做常量级校验；物品扫描仍只在用户点击 `取 / 放 / 高级整理` 后发生。
+- **兼容**：不改 Store schema、不迁移/覆盖用户配置、不强制重开用户显式关闭的 `tools_bag`；`.18.152` 的 `defaultEnabled=true` 与“显式 false 最终 Authority”保持不变。
+- **门禁**：新增 `StorageSessionBagSurfaceContractVersion=1`、`BagActionPhysicalReadAuthorityContractVersion=1`；FoundationGate 136→137、UIV3Acceptance 91→92，失败 token 升为 `bag_quick_take_put_contract_v11`。quick-surface harness 新增“hidden UIC_BAG proxy + storage session + valid bag rect”与“取放动作不得依赖 Bag UI visible”两条控制流断言。
+- **BuildTag**：`v3-m1.16.0.18.185-bag-storage-session-surface-authority`。
+
+## M1.16.0.18.184 — Bag Surface / Action Visibility Split（开仓库/箱子不出现悬浮按钮，2026-09-09）
+
+- **用户报告**：打开箱子或仓库后，背包上方应该出现的 `取 / 放` 悬浮按钮不再出现。
+- **真实根因**：窗口观察把“是否显示无害的快捷条”和“是否允许执行原生仓库写入”共用了同一个严格 `visible`。RU 开窗过渡期可能先让 `ADDON:GetContent()` 的实际内容链进入可见状态，而 `GetContentMainScriptPosVis()` 第五返回值仍短暂为 `hidden/0`；旧逻辑把这个写入级 Authority 同时用于 Presentation，于是 `quickOverlay.visible` 被压成 false。现有 harness 还明确断言“显式 Native false 永远优先”，因此测试全绿也不会抓到这个 UI race。
+- **修复**：`ReadBagWindowContext/ReadStorageWindowContext` 新增 `surfaceVisible/surfaceSource/visibilityConflict`。`visible` 保持原语义，只用于 `CurrentStorageContext/RequireStorageWindow/BeginBagQuick` 等写动作，继续 fail-closed；`surfaceVisible` 只用于悬浮条显示——Native true、Content 已可见、或“无显式 Native hidden 时”的合法 MainScript 几何均可作为正向显示证据。特别是 `Native hidden/0 + Content visible` 时：**按钮显示=true，写动作=false**，严格区分 Presentation 与业务 Authority。
+- **Presenter 自愈**：`rs_v3_bag_quick_overlay.lua` v8→v9。若 `UI:ReleaseOwner` 已把旧 root 标为 `rsUiReleased=true`，`EnsureCreated()` 不再把残留 Lua 引用当作活控件，而是清空并重建；健康信息新增 `releasedRootRecoveries`。
+- **诊断**：整理背包页状态行现在同时显示 `动作:true/false` 与 `显示:true/false` 及显示证据源，下一次 RU 实机回报可直接区分“按钮判定错误”和“动作 Authority 尚未就绪”。
+- **性能**：没有新增 Tick、没有新增常驻 Scheduler；仍复用原 350ms 低成本窗口观察。新增的字段只是同一次窗口读取结果的常量级布尔/字符串投影，背包物品扫描和移动仍只在显式点击后发生。
+- **门禁**：`SurfaceVisibilitySplitContractVersion=1`、Presenter `ReleasedRootRecoveryContractVersion=1`；FoundationGate 135→136、UIV3Acceptance 90→91，失败 token 升为 `bag_quick_take_put_contract_v10`。quick-surface harness 新增“Native=0 + Content visible”双通道行为断言，并钉死写动作不得改用 `surfaceVisible`。
+- **BuildTag**：`v3-m1.16.0.18.184-bag-surface-visibility-split`。
+
 ## M1.16.0.18.183 — Bag Quick Mutex Self-Heal + Two-Button Surface（"点了没反应"的真实死锁，2026-09-08）
 
 - **用户报告**：① 打开仓库时背包上方的快捷条有 3 个按钮，第三个（`停`）没有用，只要 `存 / 放` 就够了；② 有时点了 `存` 或 `放` 完全没效果，"可能是卡到什么了"。两条不是两个 bug，是**同一个 bug 的两个面**。

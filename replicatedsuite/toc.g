@@ -47,6 +47,7 @@ ui/framework/rs_ui_adaptive_panels.lua
 ui/framework/rs_ui_layout_templates.lua
 ui/framework/rs_ui_workspace_templates.lua
 ui/framework/rs_ui_safety_layout.lua
+ui/framework/rs_ui_popup_positioning.lua
 ui/framework/rs_ui_layout_debug.lua
 ui/framework/rs_ui_selection.lua
 ui/framework/rs_ui_selection_geometry.lua

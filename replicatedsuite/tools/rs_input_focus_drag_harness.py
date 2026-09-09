@@ -221,7 +221,7 @@ check("colorfield_mouse_only", 'RSUI:TextInput({ id = spec.id .. "_hex"' not in 
 # Popup hit-test quiescence: hidden popups must be explicitly unpicked, and
 # every open path must re-pick before showing. This keeps an invisible surface
 # from ever intercepting input even if native hidden-hit-test semantics change.
-dropdown = block(controls, 'RSUI.DropdownContractVersion = 2', 'RSUI:RegisterType("ColorField"')
+dropdown = block(controls, 'RSUI.DropdownContractVersion = 3', 'RSUI:RegisterType("ColorField"')
 check("popup_quiescence_contract", "RSUI.PopupHitTestQuiescenceContractVersion = 1" in controls)
 # Anchor on the fail-closed detail tokens: they only exist in the real (non
 # degraded stub) Open/Close implementations.

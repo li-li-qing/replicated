@@ -5,7 +5,7 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D, Host = S.RSUI, S.UIV3Design, S.UIV3 and S.UIV3.PageHost or nil
 if type(RSUI) ~= "table" or type(D) ~= "table" or type(Host) ~= "table" then return end
-S.UIV3.BusinessPagesContract = { version = 6, componentIdContractVersion = 1, bagProductUxContractVersion = 1, auctionCurrentListingUxContractVersion = 1, craftPlanUxContractVersion = 1, craftSidecarUxContractVersion = 1, unitLineSettingsFoundationConsumerContractVersion = 3 }
+S.UIV3.BusinessPagesContract = { version = 6, componentIdContractVersion = 1, bagProductUxContractVersion = 2, auctionCurrentListingUxContractVersion = 1, craftPlanUxContractVersion = 1, craftSidecarUxContractVersion = 1, unitLineSettingsFoundationConsumerContractVersion = 3 }
 
 local ROUTES = {
     { route = "combat.boss_alerts", id = "combat_boss_alerts" }, { route = "combat.target_monitor", id = "combat_target_monitor" },
@@ -551,75 +551,32 @@ local function Build(parent, route, id)
                 slot = { size = "fill", fill = 1 } })
         end
     end
-    local bagQuickStatus, batchStatus, batchCategoryDropdown, batchTargetLabel, batchLimitField
+    local bagQuickStatus, blacklistStatus, blacklistToggle, blacklistPicker, itemInput
+    local selectedBlacklistItem = nil
     if id == "tools_bag" then
-        local quickRow = RSUI:HorizontalBox({ id="v3_business_tools_bag_quick_row", parent=root, gap=6,
-            slot={ size="fixed",height=31,hAlign="fill" } })
-        RSUI:Text({ id="v3_business_tools_bag_quick_label", parent=quickRow, text="日常整理", fontSize=9, tone="strong", slot={size="fixed",width=60} })
-        -- Two buttons only, same contract as the floating bar (.18.183): the user
-        -- reported the third 停 as useless, and the "已经在运行，请先停止" refusal it
-        -- existed for is exactly what made a 取/放 click look dead.  tools_bag now
-        -- resolves a click as start / stop (same button) / switch (other button).
-        local quickTake=RSUI:Button({ id="v3_business_tools_bag_quick_take", parent=quickRow, text="取同类", compact=true, slot={size="fixed",width=88} })
-        local quickPut=RSUI:Button({ id="v3_business_tools_bag_quick_put", parent=quickRow, text="放同类", compact=true, slot={size="fixed",width=88} })
+        RSUI:Text({ id="v3_business_tools_bag_quick_title", parent=root,
+            text="快速整理", fontSize=10, tone="strong", overflow="ellipsis",
+            slot={size="fixed",height=22,hAlign="fill"} })
+        local quickRow = RSUI:HorizontalBox({ id="v3_business_tools_bag_quick_row", parent=root, gap=8,
+            slot={size="fixed",height=36,hAlign="fill"} })
+        -- Product page mirrors the floating surface but uses explicit wording.
+        -- Same-button stop / other-button switch remains owned by tools_bag.
+        local quickTake=RSUI:Button({ id="v3_business_tools_bag_quick_take", parent=quickRow, text="取出同类", compact=true, slot={size="fixed",width=118} })
+        local quickPut=RSUI:Button({ id="v3_business_tools_bag_quick_put", parent=quickRow, text="存入同类", compact=true, slot={size="fixed",width=118} })
+        RSUI:Text({ id="v3_business_tools_bag_quick_help", parent=quickRow,
+            text="只移动背包与当前仓储两边都存在的同类物品。", fontSize=8, tone="muted", overflow="wrap", maxLines=2,
+            slot={size="fill",fill=1,minWidth=180} })
         bagQuickStatus=RSUI:Text({ id="v3_business_tools_bag_quick_status", parent=root,
-            text="打开银行或箱子后，背包上方会自动出现「取 / 放」两个按钮；只移动两边都存在的同类物品。运行中再点同一个按钮＝停止，点另一个＝切换方向。",
-            fontSize=8, tone="muted", overflow="wrap", maxLines=2,
-            slot={size="auto",minHeight=26,hAlign="fill"} })
+            text="当前：请先打开银行或保管箱。", fontSize=8, tone="muted", overflow="wrap", maxLines=2,
+            slot={size="auto",minHeight=22,hAlign="fill"} })
         local function Quick(command)
             local fn=feature.Commands[command]; if type(fn)~="function" then return false,"快捷取放命令不可用" end
             local ok,result=fn(feature.Commands)
-            -- root:Refresh() repaints this line from the projection, which already
-            -- carries the short status plus the full reason; painting it here too
-            -- would only race with that (and the old direct write was overwritten).
-            if ok~=true and bagQuickStatus~=nil then bagQuickStatus:SetText("取放失败："..tostring(result or "未执行")) end
+            if ok~=true and bagQuickStatus~=nil then bagQuickStatus:SetText("操作失败："..tostring(result or "未执行")) end
             root:Refresh(); return ok,result
         end
         quickTake.onClick=function() return Quick("QuickWithdraw") end
         quickPut.onClick=function() return Quick("QuickDeposit") end
-
-        local batchRow = RSUI:HorizontalBox({ id="v3_business_tools_bag_batch_row", parent=root, gap=6,
-            slot={ size="fixed",height=31,hAlign="fill" } })
-        RSUI:Text({ id="v3_business_tools_bag_batch_label", parent=batchRow, text="高级整理", fontSize=9, tone="strong", slot={size="fixed",width=60} })
-        local initialBagProjection = feature:GetProjection() or {}
-        batchCategoryDropdown = RSUI:Dropdown({ id="v3_business_tools_bag_batch_category", parent=batchRow,
-            items=type(initialBagProjection.batchCategoryOptions)=="table" and initialBagProjection.batchCategoryOptions or {}, maxVisible=10, popupWidth=220,
-            get=function() return (feature:GetProjection() or {}).batchCategory end,
-            set=function(value) return feature.Commands:SetBatchCategory(value) end, placeholder="选择背包内物品类别",
-            slot={size="fill",fill=1,minWidth=180} })
-        -- Read-only fact instead of a choice: 银行 and 箱子 cannot be open at the same
-        -- time, so asking the user to pick a target only produced "用户看不懂这个".
-        -- The Feature resolves the target from the open window (ResolveBatchTarget),
-        -- and this label mirrors that same fact. New widget id on purpose: swapping
-        -- the component kind under the old Toggle id would leave stale layout state.
-        batchTargetLabel = RSUI:Text({ id="v3_business_tools_bag_batch_target_auto", parent=batchRow,
-            text="目标：请先打开银行或箱子", fontSize=8, tone="muted", overflow="ellipsis", slot={size="fixed",width=126} })
-        local startBatch=RSUI:Button({ id="v3_business_tools_bag_batch_start", parent=batchRow, text="开始整理", compact=true, slot={size="fixed",width=72} })
-        local stopBatch=RSUI:Button({ id="v3_business_tools_bag_batch_stop", parent=batchRow, text="停止批量", compact=true, slot={size="fixed",width=72} })
-        local batchLimitRow=RSUI:HorizontalBox({ id="v3_business_tools_bag_batch_limit_row", parent=root, gap=6, slot={size="fixed",height=31,hAlign="fill"} })
-        batchLimitField=TrackField(D:CompactNumericSetting(batchLimitRow,{ id="v3_business_tools_bag_batch_limit",label="最多移动",min=1,max=40,step=1,integer=true,slider=true,
-            get=function() return (feature:GetProjection() or {}).batchLimit or 20 end,set=function(v) return feature.Commands:SetBatchLimit(v) end,slot={size="fill",fill=1,hAlign="fill"} }))
-        startBatch.onClick=function()
-            local projection=feature:GetProjection() or {}; local category=projection.batchCategory
-            local function fail(message)
-                if batchStatus~=nil then batchStatus:SetText("整理失败："..message) end
-                return false,message
-            end
-            if S.FeatureRuntime~=nil and S.FeatureRuntime.IsEnabled~=nil and S.FeatureRuntime:IsEnabled("tools_bag")~=true then
-                return fail("整理功能未启用，请先点击上方按钮启用")
-            end
-            if category==nil or tostring(category)=="" then return fail("请先从下拉列表选择物品类别") end
-            -- No target argument: the open storage window *is* the target.
-            local command=feature.Commands.DepositCategoryCurrent
-            if type(command)~="function" then return fail("类别整理命令不可用") end
-            local ok,result=command(feature.Commands,category,projection.batchLimit or 20)
-            if ok~=true then return fail(tostring(result or "未执行")) end
-            root:Refresh(); return ok,result
-        end
-        stopBatch.onClick=function() local ok,result=feature.Commands:CancelCategoryBatch(); root:Refresh(); return ok,result end
-        batchStatus = RSUI:Text({ id = "v3_business_tools_bag_batch_status", parent = root,
-            text = "高级整理把背包里选定类别的物品存入**当前打开的**银行或箱子（两者不会同时开，所以不用再选目标）；与上方快捷取放互斥。",
-            fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2, slot = { size = "auto", minHeight = 26, hAlign = "fill" } })
     end
     local socialInput, socialStatus = nil, nil
     if id == "tools_social" then
@@ -664,120 +621,94 @@ local function Build(parent, route, id)
         end
     end
 
-    local blacklistScope, blacklistEnabled = "bank", false
-    local blacklistStatus = nil
-    local bankScopeButton, cofferScopeButton, blacklistToggle = nil, nil, nil
-    local itemInput, categoryInput = nil, nil
     local function SetBlacklistStatus(text, tone)
         if blacklistStatus ~= nil then
             blacklistStatus:SetText(tostring(text or ""))
             if S.Theme ~= nil and type(S.Theme.SetLabelTone) == "function" then S.Theme:SetLabelTone(blacklistStatus, tone or "muted") end
         end
     end
-    local function ReadDraft(input)
-        if input == nil or type(input.GetDraftValue) ~= "function" then return nil, "输入控件不可用" end
-        return (tostring(input:GetDraftValue() or ""):match("^%s*(.-)%s*$")) or ""
-    end
-    local function ReadItemDraft()
-        local value, err = ReadDraft(itemInput)
-        if value == nil then return nil, err end
-        if value == "" or #value > 12 or not value:match("^%d+$") or tonumber(value) == nil or tonumber(value) < 1 then
-            return nil, "物品编号必须是正整数"
-        end
-        return value
-    end
-    local function ReadCategoryDraft()
-        local value, err = ReadDraft(categoryInput)
-        if value == nil then return nil, err end
-        if value == "" or #value > 64 or value:find("[%c]") ~= nil then return nil, "物品类别编号必须是 1-64 个可见字符" end
-        return value
-    end
-    local function InvokeBlacklist(command, value, input)
-        local callOk, commandOk, commandErr = pcall(function()
-            if command == "SetBlacklistEnabled" then return feature.Commands:SetBlacklistEnabled(value) end
-            if command == "SetBlacklistScope" then return feature.Commands:SetBlacklistScope(value) end
-            if command == "AddBlacklistItem" then return feature.Commands:AddBlacklistItem(blacklistScope, value) end
-            if command == "RemoveBlacklistItem" then return feature.Commands:RemoveBlacklistItem(blacklistScope, value) end
-            if command == "AddBlacklistCategory" then return feature.Commands:AddBlacklistCategory(blacklistScope, value) end
-            if command == "RemoveBlacklistCategory" then return feature.Commands:RemoveBlacklistCategory(blacklistScope, value) end
-            return false, "未知黑名单命令"
-        end)
-        if callOk ~= true then SetBlacklistStatus("失败：" .. tostring(commandOk), "warn"); return false, commandOk end
-        if commandOk ~= true then SetBlacklistStatus("失败：" .. tostring(commandErr or "黑名单修改未执行"), "warn"); return false, commandErr end
-        if input ~= nil and type(input.SetValue) == "function" then input:SetValue("", false, "blacklist_command_success") end
-        SetBlacklistStatus("已保存：" .. tostring(command), "success")
-        root:Refresh()
-        return true
-    end
-    local function BindBlacklistButton(button, command, input, reader)
-        if button == nil then return end
-        local handler = function()
-            local value, valueErr = reader ~= nil and reader() or nil
-            if reader ~= nil and value == nil then SetBlacklistStatus("失败：" .. tostring(valueErr), "warn"); return false, valueErr end
-            return InvokeBlacklist(command, value, input)
-        end
-        button.onClick = handler
-    end
     if id == "tools_bag" then
+        RSUI:Text({ id = "v3_business_tools_bag_blacklist_title", parent = root, text = "整理黑名单", fontSize = 10,
+            tone = "strong", overflow = "ellipsis", slot = { size = "fixed", height = 22, hAlign = "fill" } })
         blacklistStatus = RSUI:Text({ id = "v3_business_tools_bag_blacklist_status", parent = root,
-            text = "黑名单：关 · 默认不拦截", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
+            text = "加入黑名单的物品不会参与取出或存入。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
+            slot = { size = "auto", minHeight = 22, hAlign = "fill" } })
+
+        local addRow = RSUI:HorizontalBox({ id = "v3_business_tools_bag_blacklist_add_row", parent = root, gap = 6,
+            slot = { size = "fixed", height = 31, hAlign = "fill" } })
+        itemInput = RSUI:TextInput({ id = "v3_business_tools_bag_blacklist_item_input", parent = addRow, value = "", maxLength = 96,
+            allowEmpty = true, submitOnLostFocus = false, placeholder = "输入物品ID或当前背包/仓储中的物品名称",
+            slot = { size = "fill", fill = 1, minWidth = 220 } })
+        local addItemButton = RSUI:Button({ id = "v3_business_tools_bag_blacklist_item_add", parent = addRow, text = "加入黑名单", compact = true,
+            slot = { size = "fixed", width = 96 } })
+        blacklistToggle = RSUI:Button({ id = "v3_business_tools_bag_blacklist_toggle", parent = addRow, text = "黑名单：开", compact = true,
+            slot = { size = "fixed", width = 82 } })
+
+        local listRow = RSUI:HorizontalBox({ id = "v3_business_tools_bag_blacklist_list_row", parent = root, gap = 6,
+            slot = { size = "fixed", height = 31, hAlign = "fill" } })
+        RSUI:Text({ id = "v3_business_tools_bag_blacklist_list_label", parent = listRow, text = "当前黑名单", fontSize = 9,
+            tone = "strong", overflow = "ellipsis", slot = { size = "fixed", width = 72 } })
+        blacklistPicker = RSUI:Dropdown({ id = "v3_business_tools_bag_blacklist_picker", parent = listRow, items = {}, maxVisible = 8, popupWidth = 320,
+            get = function() return selectedBlacklistItem end,
+            set = function(value) selectedBlacklistItem = value ~= nil and tostring(value) or nil; return true end,
+            placeholder = "暂无黑名单物品", slot = { size = "fill", fill = 1, minWidth = 220 } })
+        local removeItemButton = RSUI:Button({ id = "v3_business_tools_bag_blacklist_item_remove", parent = listRow, text = "删除选中", compact = true,
+            slot = { size = "fixed", width = 82 } })
+
+        RSUI:Text({ id = "v3_business_tools_bag_blacklist_help", parent = root,
+            text = "也可以直接点击下方“当前背包物品”中的一行，物品ID会自动填入上面的输入框。名称搜索只在你主动添加时读取当前背包和已打开的仓储，不会后台扫描。",
+            fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
             slot = { size = "auto", minHeight = 26, hAlign = "fill" } })
-        local scopeRow = RSUI:HorizontalBox({ id = "v3_business_tools_bag_blacklist_scope_row", parent = root, gap = 6,
-            slot = { size = "fixed", height = 28, hAlign = "fill" } })
-        RSUI:Text({ id = "v3_business_tools_bag_blacklist_scope_label", parent = scopeRow, text = "黑名单范围", fontSize = 9,
-            tone = "strong", overflow = "ellipsis", slot = { size = "fixed", width = 70 } })
-        bankScopeButton = RSUI:Button({ id = "v3_business_tools_bag_blacklist_scope_bank", parent = scopeRow, text = "银行", compact = true,
-            slot = { size = "fixed", width = 68 } })
-        cofferScopeButton = RSUI:Button({ id = "v3_business_tools_bag_blacklist_scope_coffer", parent = scopeRow, text = "箱子", compact = true,
-            slot = { size = "fixed", width = 68 } })
-        blacklistToggle = RSUI:Button({ id = "v3_business_tools_bag_blacklist_toggle", parent = scopeRow, text = "黑名单：关", compact = true,
-            slot = { size = "fixed", width = 92 } })
-        local itemRow = RSUI:HorizontalBox({ id = "v3_business_tools_bag_blacklist_item_row", parent = root, gap = 6,
-            slot = { size = "fixed", height = 28, hAlign = "fill" } })
-        RSUI:Text({ id = "v3_business_tools_bag_blacklist_item_label", parent = itemRow, text = "物品编号", fontSize = 9, tone = "strong",
-            overflow = "ellipsis", slot = { size = "fixed", width = 70 } })
-        itemInput = RSUI:TextInput({ id = "v3_business_tools_bag_blacklist_item_input", parent = itemRow, value = "", maxLength = 12,
-            allowEmpty = true, submitOnLostFocus = false, placeholder = "物品ID", slot = { size = "fixed", width = 92 } })
-        local addItemButton = RSUI:Button({ id = "v3_business_tools_bag_blacklist_item_add", parent = itemRow, text = "添加", compact = true,
-            slot = { size = "fixed", width = 58 } })
-        local removeItemButton = RSUI:Button({ id = "v3_business_tools_bag_blacklist_item_remove", parent = itemRow, text = "删除", compact = true,
-            slot = { size = "fixed", width = 58 } })
-        local categoryRow = RSUI:HorizontalBox({ id = "v3_business_tools_bag_blacklist_category_row", parent = root, gap = 6,
-            slot = { size = "fixed", height = 28, hAlign = "fill" } })
-        RSUI:Text({ id = "v3_business_tools_bag_blacklist_category_label", parent = categoryRow, text = "类别编号", fontSize = 9, tone = "strong",
-            overflow = "ellipsis", slot = { size = "fixed", width = 70 } })
-        categoryInput = RSUI:TextInput({ id = "v3_business_tools_bag_blacklist_category_input", parent = categoryRow, value = "", maxLength = 64,
-            allowEmpty = true, submitOnLostFocus = false, placeholder = "如 48（蔬菜）", slot = { size = "fixed", width = 150 } })
-        local addCategoryButton = RSUI:Button({ id = "v3_business_tools_bag_blacklist_category_add", parent = categoryRow, text = "添加", compact = true,
-            slot = { size = "fixed", width = 58 } })
-        local removeCategoryButton = RSUI:Button({ id = "v3_business_tools_bag_blacklist_category_remove", parent = categoryRow, text = "删除", compact = true,
-            slot = { size = "fixed", width = 58 } })
-        local function BindScopeButton(button, scope)
-            if button == nil then return end
-            local handler = function() return InvokeBlacklist("SetBlacklistScope", scope) end
-            button.onClick = handler
+
+        addItemButton.onClick = function()
+            local query = itemInput ~= nil and type(itemInput.GetDraftValue) == "function" and tostring(itemInput:GetDraftValue() or "") or ""
+            local command = feature.Commands.ResolveAndAddBlacklistItem
+            if type(command) ~= "function" then SetBlacklistStatus("添加失败：黑名单匹配命令不可用", "warn"); return false, "黑名单匹配命令不可用" end
+            local ok, result = command(feature.Commands, query)
+            if ok ~= true then SetBlacklistStatus("添加失败：" .. tostring(result or "未执行"), "warn"); return false, result end
+            if itemInput ~= nil and type(itemInput.SetValue) == "function" then itemInput:SetValue("", false, "bag_blacklist_add_success") end
+            root:Refresh()
+            SetBlacklistStatus("已加入黑名单；对银行和保管箱同时生效。", "success")
+            return true
         end
-        BindScopeButton(bankScopeButton, "bank")
-        BindScopeButton(cofferScopeButton, "coffer")
-        BindBlacklistButton(blacklistToggle, "SetBlacklistEnabled", nil, function() return not blacklistEnabled end)
-        BindBlacklistButton(addItemButton, "AddBlacklistItem", itemInput, ReadItemDraft)
-        BindBlacklistButton(removeItemButton, "RemoveBlacklistItem", itemInput, ReadItemDraft)
-        BindBlacklistButton(addCategoryButton, "AddBlacklistCategory", categoryInput, ReadCategoryDraft)
-        BindBlacklistButton(removeCategoryButton, "RemoveBlacklistCategory", categoryInput, ReadCategoryDraft)
+        blacklistToggle.onClick = function()
+            local projection = feature:GetProjection() or {}
+            local config = type(projection.blacklist) == "table" and projection.blacklist or {}
+            local ok, result = feature.Commands:SetBlacklistEnabled(config.enabled ~= true)
+            if ok ~= true then SetBlacklistStatus("设置失败：" .. tostring(result or "未执行"), "warn"); return false, result end
+            root:Refresh(); return true
+        end
+        removeItemButton.onClick = function()
+            if selectedBlacklistItem == nil or tostring(selectedBlacklistItem) == "" then
+                SetBlacklistStatus("请先从“当前黑名单”选择一个物品。", "warn"); return false, "未选择黑名单物品"
+            end
+            local command = feature.Commands.RemoveGlobalBlacklistItem
+            if type(command) ~= "function" then SetBlacklistStatus("删除失败：黑名单删除命令不可用", "warn"); return false, "黑名单删除命令不可用" end
+            local ok, result = command(feature.Commands, selectedBlacklistItem)
+            if ok ~= true then SetBlacklistStatus("删除失败：" .. tostring(result or "未执行"), "warn"); return false, result end
+            selectedBlacklistItem = nil
+            root:Refresh()
+            SetBlacklistStatus("已从整理黑名单删除。", "success")
+            return true
+        end
+
         function root:RefreshBlacklistEditor(projection)
             local config = type(projection) == "table" and projection.blacklist or nil
             config = type(config) == "table" and config or {}
-            blacklistEnabled = config.enabled == true
-            blacklistScope = config.activeScope == "coffer" and "coffer" or "bank"
-            blacklistToggle:SetText(blacklistEnabled and "黑名单：开" or "黑名单：关")
-            if bankScopeButton ~= nil and type(bankScopeButton.SetSelected) == "function" then bankScopeButton:SetSelected(blacklistScope == "bank") end
-            if cofferScopeButton ~= nil and type(cofferScopeButton.SetSelected) == "function" then cofferScopeButton:SetSelected(blacklistScope == "coffer") end
-            local bucket = type(config[blacklistScope]) == "table" and config[blacklistScope] or {}
-            local itemCount, categoryCount = 0, 0
-            for _ in pairs(type(bucket.itemType) == "table" and bucket.itemType or {}) do itemCount = itemCount + 1 end
-            for _ in pairs(type(bucket.category) == "table" and bucket.category or {}) do categoryCount = categoryCount + 1 end
-            SetBlacklistStatus((blacklistEnabled and "黑名单：开" or "黑名单：关") .. " · " .. (blacklistScope == "bank" and "银行" or "箱子")
-                .. " · 物品编号 " .. tostring(itemCount) .. " · 类别编号 " .. tostring(categoryCount), "muted")
+            local enabledNow = config.enabled == true
+            local options = type(projection.blacklistOptions) == "table" and projection.blacklistOptions or {}
+            blacklistToggle:SetText(enabledNow and "黑名单：开" or "黑名单：关")
+            if type(blacklistPicker.SetItems) == "function" then blacklistPicker:SetItems(options) else blacklistPicker.items = options end
+            if selectedBlacklistItem ~= nil then
+                local found = false
+                for _, option in ipairs(options) do if tostring(option.value or "") == tostring(selectedBlacklistItem) then found = true; break end end
+                if found ~= true then selectedBlacklistItem = nil end
+            end
+            if type(blacklistPicker.Render) == "function" then blacklistPicker:Render() end
+            local legacyCount = math.max(0, tonumber(projection.blacklistLegacyCategoryCount) or 0)
+            local suffix = legacyCount > 0 and (" · 兼容旧分类规则 " .. tostring(legacyCount) .. " 项仍生效") or ""
+            SetBlacklistStatus((enabledNow and "黑名单保护已开启" or "黑名单保护已关闭") .. " · 物品 " .. tostring(#options) .. " 项" .. suffix,
+                enabledNow and "muted" or "warn")
         end
     end
     local teamRoleInput, teamFromMemberInput, teamToMemberInput, teamMovePartyMemberInput, teamToPartyInput, teamActionStatus, teamAutoRoleButton, teamExtra
@@ -951,8 +882,11 @@ local function Build(parent, route, id)
     local tableSlot = unitLineSettingsPage
         and { size = "auto", minHeight = 150, hAlign = "fill" }
         or { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" }
-    tableView = RSUI:TableView({ id = "v3_business_" .. id .. "_table", parent = tableParent, items = {}, rowHeight = 26, headerHeight = 27, desiredRows = tableDesiredRows, scrollbar = true, selectable = id == "tools_auction" or id == "tools_market_analysis" or id == "tools_social", selectionMode = "single", columnResize = true,
-        columns = {
+    tableView = RSUI:TableView({ id = "v3_business_" .. id .. "_table", parent = tableParent, items = {}, rowHeight = 26, headerHeight = 27, desiredRows = tableDesiredRows, scrollbar = true, selectable = id == "tools_bag" or id == "tools_auction" or id == "tools_market_analysis" or id == "tools_social", selectionMode = "single", columnResize = true,
+        columns = id == "tools_bag" and {
+            { id = "name", title = "当前背包物品（ID · 名称）", field = "name", size = "fill", minWidth = 300 },
+            { id = "status", title = "数量", field = "statusText", size = "fixed", width = 82, minWidth = 64, getTone = function(item) return item and item.tone or "muted" end },
+        } or {
             { id = "name", title = "项目", field = "name", size = "fixed", width = 180, minWidth = 100 },
             { id = "text", title = "事实 / 说明", field = "text", size = "fill", minWidth = 220 },
             { id = "cost", title = "成本 / 持有 / 缺口", field = "cost", size = "fixed", width = 190, minWidth = 120, getText = function(item)
@@ -962,6 +896,16 @@ local function Build(parent, route, id)
             end },
             { id = "status", title = "状态", field = "statusText", size = "fixed", width = 110, minWidth = 82, getTone = function(item) return item and item.tone or "muted" end },
         }, slot = tableSlot })
+    if id == "tools_bag" then
+        tableView.onSelectionChanged = function(index)
+            local row = tableView:GetItem(index)
+            if row == nil or row.itemType == nil then return end
+            if itemInput ~= nil and type(itemInput.SetValue) == "function" then
+                itemInput:SetValue(tostring(row.itemType), false, "bag_item_row_select")
+            end
+            SetBlacklistStatus("已选择：" .. tostring(row.name or row.itemType) .. "；点击“加入黑名单”即可。", "muted")
+        end
+    end
     if id == "tools_auction" then
         tableView.onSelectionChanged = function(index)
             local row = tableView:GetItem(index)
@@ -995,7 +939,7 @@ local function Build(parent, route, id)
     end
     function root:Refresh()
         local projection = feature:GetProjection() or {}
-        local rows = projection.rows or {}
+        local rows = id == "tools_bag" and (projection.bagItemRows or {}) or (projection.rows or {})
         for _, field in ipairs(specialFields) do if type(field.Render) == "function" then field:Render() end end
         if (id == "tools_auction" or id == "tools_market_analysis") and self.RefreshAuctionPaging then self:RefreshAuctionPaging(projection, tableView) else tableView:SetItems(rows, projection.revision or 0) end
         if (id == "tools_auction" or id == "tools_market_analysis") and auctionStatus ~= nil then
@@ -1077,44 +1021,24 @@ local function Build(parent, route, id)
             end
         end
         if id == "tools_bag" and type(self.RefreshBlacklistEditor) == "function" then self:RefreshBlacklistEditor(projection) end
-        if id == "tools_bag" and batchCategoryDropdown ~= nil then
-            batchCategoryDropdown.items = type(projection.batchCategoryOptions)=="table" and projection.batchCategoryOptions or {}
-            if type(batchCategoryDropdown.Render)=="function" then batchCategoryDropdown:Render() end
-        end
-        if id == "tools_bag" and batchTargetLabel ~= nil then
-            local resolved = projection.batchTargetResolved
-            batchTargetLabel:SetText(resolved == "coffer" and "目标：箱子（当前打开）"
-                or (resolved == "bank" and "目标：银行（当前打开）" or "目标：请先打开银行或箱子"))
-        end
-        if id == "tools_bag" and projection.batch ~= nil and batchStatus ~= nil then
-            local batch = projection.batch
-            local statusZh=({idle="等待操作",running="整理中",empty="没有匹配物品",complete="已完成",stopped="已停止",cancelled="已取消"})[tostring(batch.status or "idle")] or "状态未知"
-            batchStatus:SetText("批量状态：" .. statusZh .. " · 队列 " .. tostring(batch.queued or 0)
-                .. " · 已移动 " .. tostring(batch.moved or 0) .. " · 跳过 " .. tostring(batch.skipped or 0)
-                .. (batch.error and (" · " .. tostring(batch.error)) or ""))
-        end
         if id == "tools_bag" and bagQuickStatus ~= nil then
-            local quick = type(projection.quickButtons) == "table" and projection.quickButtons or {}
-            local window = type(projection.windowContext) == "table" and projection.windowContext or {}
-            local actionCount = type(quick.actions) == "table" and #quick.actions or 0
-            local windowText = window.status == "ready"
-                and (window.visible == true and ("背包窗口可见/" .. tostring(window.source or "unknown")) or ("背包窗口关闭/" .. tostring(window.source or "unknown")))
-                or ("背包窗口未知：" .. tostring(window.reason or "安全拒绝"))
-            local overlay = type(projection.quickOverlay)=="table" and projection.quickOverlay or {}
-            local storage = overlay.storageKind=="coffer" and "箱子" or overlay.storageKind=="bank" and "银行" or "仓储"
-            local storageFacts = "银行=" .. tostring(overlay.bankStatus or "unknown") .. "/" .. tostring(overlay.bankVisible==true) .. "/" .. tostring(overlay.bankSource or "none")
-                .. " 箱子=" .. tostring(overlay.cofferStatus or "unknown") .. "/" .. tostring(overlay.cofferVisible==true) .. "/" .. tostring(overlay.cofferSource or "none")
-            -- `running` is derived by the Feature (queue + executor evidence), so a
-            -- lost executor can never keep the page claiming work is in progress.
-            local runningNote = overlay.running==true
-                and (" · 运行中，再点一次「" .. (overlay.direction=="withdraw" and "取同类" or "放同类") .. "」可停止") or ""
-            bagQuickStatus:SetText((overlay.visible==true and (storage .. "已打开 · " .. tostring(overlay.status or "可快捷取放")
-                    .. " · 背包=" .. tostring(overlay.bagSource or window.source or "unknown") .. " · 仓储=" .. tostring((overlay.storageKind=="bank" and overlay.bankSource) or (overlay.storageKind=="coffer" and overlay.cofferSource) or "unknown"))
-                or (windowText .. " · " .. storageFacts))
-                .. runningNote
-                .. " · 已移动 " .. tostring(overlay.moved or 0) .. " · 跳过 " .. tostring(overlay.skipped or 0) .. " · 队列 " .. tostring(overlay.queued or 0)
-                .. " · 悬浮按钮 " .. tostring(actionCount) .. " 个"
-                .. (overlay.error and (" · " .. tostring(overlay.error)) or ""))
+            local overlay = type(projection.quickOverlay) == "table" and projection.quickOverlay or {}
+            local storage = overlay.storageKind == "coffer" and "保管箱" or (overlay.storageKind == "bank" and "银行" or nil)
+            local text
+            if overlay.running == true then
+                local action = overlay.direction == "withdraw" and "取出同类" or "存入同类"
+                text = "正在" .. action .. " · 已移动 " .. tostring(overlay.moved or 0) .. " · 队列 " .. tostring(overlay.queued or 0) .. " · 再点一次可停止"
+            elseif overlay.visible == true and storage ~= nil then
+                text = "当前：已识别" .. storage .. " · 可以取出或存入同类物品"
+                if (tonumber(overlay.moved) or 0) > 0 then text = text .. " · 上次移动 " .. tostring(overlay.moved) end
+            else
+                text = "当前：请先打开银行或保管箱。打开后背包上方会自动出现“取 / 放”。"
+            end
+            if overlay.error ~= nil and tostring(overlay.error) ~= "" then text = text .. " · " .. tostring(overlay.error) end
+            bagQuickStatus:SetText(text)
+            if S.Theme ~= nil and type(S.Theme.SetLabelTone) == "function" then
+                S.Theme:SetLabelTone(bagQuickStatus, overlay.error ~= nil and "warn" or (overlay.running == true and "success" or "muted"))
+            end
         end
         if id == "combat_team_tools" and teamAutoRoleButton ~= nil then
             teamAutoRoleButton:SetText(projection.autoRoleEnabled == false and "自动职责：关" or "自动职责：开")
@@ -1187,6 +1111,15 @@ local function Build(parent, route, id)
                 }
                 unitLineDiagnosticsText:SetText(table.concat(parts, " · "))
             end
+        elseif id == "tools_bag" then
+            if enabled ~= true then
+                hint:SetText("功能已关闭；黑名单配置会保留，重新启用后继续生效。")
+            else
+                local storage = projection.batchTargetResolved == "coffer" and "保管箱" or (projection.batchTargetResolved == "bank" and "银行" or nil)
+                hint:SetText(storage ~= nil
+                    and ("已连接" .. storage .. " · 取出同类 / 存入同类 · 当前背包可识别物品 " .. tostring(#rows) .. " 种")
+                    or ("打开银行或保管箱后即可整理同类物品 · 当前背包可识别物品 " .. tostring(#rows) .. " 种"))
+            end
         elseif projection.status == "runtime_blocked" then
             hint:SetText("运行时阻塞：" .. tostring(projection.error or (meta and meta.runtimeBlocker) or "未说明") .. "\n当前实现：页面与生命周期已接入；剩余能力需 RU 实机/API 契约证据后才能继续。")
         elseif enabled and (projection.status == "partial" or (meta and meta.status == "migrated_partial")) then
@@ -1201,9 +1134,9 @@ local function Build(parent, route, id)
         -- never set a view state, so empty/unavailable states had no overlay.
         local tvState, tvOpts
         if enabled ~= true then
-            tvState, tvOpts = "unavailable", { title = "功能已关闭", detail = (meta and meta.name or id) .. " 启用后才会读取对应 API 并填充此表。" }
+            tvState, tvOpts = "unavailable", { title = "功能已关闭", detail = id == "tools_bag" and "重新启用后会读取当前背包物品；已有黑名单不会丢失。" or ((meta and meta.name or id) .. " 启用后才会读取对应 API 并填充此表。") }
         elseif #rows == 0 then
-            tvState, tvOpts = "empty", { title = "暂无数据", detail = (meta and meta.name or id) .. " 启用并读取后，结果会显示在这里。" }
+            tvState, tvOpts = "empty", { title = id == "tools_bag" and "当前背包没有可识别物品" or "暂无数据", detail = id == "tools_bag" and "刷新页面或放入物品后会显示“物品ID · 名称”。" or ((meta and meta.name or id) .. " 启用并读取后，结果会显示在这里。") }
         else
             tvState = "ready"
         end

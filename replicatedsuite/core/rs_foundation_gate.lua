@@ -9,7 +9,7 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
 S.FoundationGate = {
-    version = 135,
+    version = 142, -- 中文维护注释：.18.190 新增 Suite-owned Popup cache-first 锚点门禁，防止 RU Effective Geometry 再次导致分辨率相关漂移。
     last = nil,
     sequenceCases = {},
     sequenceOrder = {},
@@ -55,6 +55,92 @@ function G:RunSequences()
         end
     end
     return result
+end
+
+
+-- Bag action gate is intentionally isolated in its own function.  `.18.187`
+-- accidentally referenced `businessPagesContract` outside the lexical block
+-- where that local was declared.  Lua treated the later name as a global nil,
+-- so the gate reported a false blocker even though InventorySnapshotV3 and the
+-- feature were healthy.  Keep every dependency resolved in THIS scope and
+-- return the exact missing tokens; never collapse an unrelated gate failure
+-- into a generic "InventorySnapshotV3 unavailable" diagnosis again.
+function G:EvaluateBagActionContract()
+    local missing = {}
+    local function Require(ok, token)
+        if ok ~= true then missing[#missing + 1] = tostring(token) end
+    end
+
+    local inventorySnapshot = S.Services and S.Services.InventorySnapshotV3 or nil
+    local bagTools = S.Features and S.Features.tools_bag or nil
+    local bagQuickPresenter = S.UIV3 and S.UIV3.BagQuickOverlay or nil
+    local businessPagesContract = S.UIV3 and S.UIV3.BusinessPagesContract or nil
+    local commands = type(bagTools) == "table" and bagTools.Commands or nil
+
+    Require(type(inventorySnapshot) == "table", "inventory.service")
+    Require(type(inventorySnapshot) == "table" and (tonumber(inventorySnapshot.SnapshotContractVersion) or 0) >= 1, "inventory.snapshot_v1")
+    Require(type(inventorySnapshot) == "table" and (tonumber(inventorySnapshot.PhysicalBagAuthorityContractVersion) or 0) >= 1, "inventory.physical_bag_v1")
+    Require(type(inventorySnapshot) == "table" and (tonumber(inventorySnapshot.IndexContractVersion) or 0) >= 1, "inventory.index_v1")
+    Require(type(inventorySnapshot) == "table" and tonumber(inventorySnapshot.PreferredBagId) == 1 and tonumber(inventorySnapshot.FallbackBagId) == 0, "inventory.bag_id_authority")
+    Require(type(inventorySnapshot) == "table" and type(inventorySnapshot.BuildSnapshot) == "function", "inventory.BuildSnapshot")
+    Require(type(inventorySnapshot) == "table" and type(inventorySnapshot.FindLiveRow) == "function", "inventory.FindLiveRow")
+    Require(type(inventorySnapshot) == "table" and type(inventorySnapshot.CountLive) == "function", "inventory.CountLive")
+    Require(type(inventorySnapshot) == "table" and type(inventorySnapshot.ReadPhysicalBagSlot) == "function", "inventory.ReadPhysicalBagSlot")
+
+    Require(type(bagTools) == "table", "bag.feature")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.BagMoveContractVersion) or 0) >= 8, "bag.move_v8")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.BatchLifecycleContractVersion) or 0) >= 5, "bag.batch_lifecycle_v5")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.NativeWindowQuickContractVersion) or 0) >= 7, "bag.native_quick_v7")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.ReloadQuickObserverContractVersion) or 0) >= 3, "bag.reload_observer_v3")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.ResponsiveWindowObserverContractVersion) or 0) >= 1, "bag.responsive_observer_v1")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.ProductBlacklistUxContractVersion) or 0) >= 1, "bag.product_blacklist_v1")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.BlacklistNameMetadataContractVersion) or 0) >= 1, "bag.blacklist_name_meta_v1")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.BlacklistExplicitLookupContractVersion) or 0) >= 1, "bag.blacklist_lookup_v1")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.RUFourValueWindowVisibilityContractVersion) or 0) >= 2, "bag.ru_visibility_v2")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.NativeVisibilityShapeContractVersion) or 0) >= 1, "bag.visibility_shape_v1")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.SurfaceVisibilitySplitContractVersion) or 0) >= 1, "bag.surface_split_v1")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.StorageSessionBagSurfaceContractVersion) or 0) >= 1, "bag.storage_session_surface_v1")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.BagActionPhysicalReadAuthorityContractVersion) or 0) >= 1, "bag.physical_read_authority_v1")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.VisiblePresenterRetryContractVersion) or 0) >= 1, "bag.presenter_retry_v1")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.DynamicSourceResolutionContractVersion) or 0) >= 3, "bag.dynamic_source_v3")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.QuickIdentityFallbackContractVersion) or 0) >= 1, "bag.identity_fallback_v1")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.BagTaskMutexContractVersion) or 0) >= 2, "bag.mutex_v2")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.QuickRunSelfHealContractVersion) or 0) >= 1, "bag.self_heal_v1")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.QuickTwoButtonContractVersion) or 0) >= 1, "bag.two_button_v1")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.QuickReasonVisibilityContractVersion) or 0) >= 1, "bag.reason_visibility_v1")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.QuickStatusTimestampContractVersion) or 0) >= 1, "bag.status_timestamp_v1")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.InventorySnapshotContractVersion) or 0) >= 1, "bag.inventory_bridge_v1")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.GroupedIntentQueueContractVersion) or 0) >= 1, "bag.grouped_intent_v1")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.FullStorageContinuationContractVersion) or 0) >= 1, "bag.full_storage_continue_v1")
+    Require(type(bagTools) == "table" and (tonumber(bagTools.BatchTargetAutoContractVersion) or 0) >= 1, "bag.batch_target_auto_v1")
+
+    Require(type(commands) == "table" and type(commands.QuickWithdraw) == "function", "command.QuickWithdraw")
+    Require(type(commands) == "table" and type(commands.QuickDeposit) == "function", "command.QuickDeposit")
+    Require(type(commands) == "table" and type(commands.QuickCancel) == "function", "command.QuickCancel")
+    Require(type(commands) == "table" and type(commands.ResolveAndAddBlacklistItem) == "function", "command.ResolveAndAddBlacklistItem")
+    Require(type(commands) == "table" and type(commands.AddGlobalBlacklistItem) == "function", "command.AddGlobalBlacklistItem")
+    Require(type(commands) == "table" and type(commands.RemoveGlobalBlacklistItem) == "function", "command.RemoveGlobalBlacklistItem")
+    Require(type(commands) == "table" and type(commands.SetBatchCategory) == "function", "command.SetBatchCategory")
+    Require(type(commands) == "table" and type(commands.SetBatchTarget) == "function", "command.SetBatchTarget")
+    Require(type(commands) == "table" and type(commands.SetBatchLimit) == "function", "command.SetBatchLimit")
+    Require(type(commands) == "table" and type(commands.DepositCategoryCurrent) == "function", "command.DepositCategoryCurrent")
+
+    Require(type(businessPagesContract) == "table" and (tonumber(businessPagesContract.bagProductUxContractVersion) or 0) >= 2, "pages.bag_product_ux_v2")
+    Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.version) or 0) >= 9, "presenter.v9")
+    Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.ReleasedRootRecoveryContractVersion) or 0) >= 1, "presenter.root_recovery_v1")
+    Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.ReloadVisibilityContractVersion) or 0) >= 2, "presenter.reload_visibility_v2")
+    Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.NativeTransientHostContractVersion) or 0) >= 1, "presenter.native_host_v1")
+    Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.VisibleRetryContractVersion) or 0) >= 1, "presenter.visible_retry_v1")
+    Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.TwoButtonContractVersion) or 0) >= 1, "presenter.two_button_v1")
+    Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.DiffRenderContractVersion) or 0) >= 1, "presenter.diff_render_v1")
+    Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.HintYieldContractVersion) or 0) >= 1, "presenter.hint_yield_v1")
+    Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.QuietByDefaultContractVersion) or 0) >= 1, "presenter.quiet_default_v1")
+    Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.ExternalNativeWindowGeometryContractVersion) or 0) >= 1, "presenter.external_native_geometry_v1")
+
+    if #missing == 0 then
+        return true, "shared physical-bag snapshot + storage-session Presentation fallback + explicit external-native-window geometry lane + physical-read action Authority + grouped-intent quick/category queues + live slot revalidation + empty-plan/self-heal mutex release + two-button start/stop/switch + product blacklist UX present"
+    end
+    return false, "missing=" .. Join(missing, 16)
 end
 
 function G:Run(options)
@@ -285,6 +371,37 @@ function G:Run(options)
                 .. "/nativeBoolSetter=" .. tostring(S.UI and S.UI.NativeBooleanSetterReturnContractVersion or 0)
                 .. "/alpha=" .. tostring(type(S.UI and S.UI.EnsureAlpha) == "function")
                 .. "/geometryTx=" .. tostring(S.UI and S.UI.GeometryStateTransactionContractVersion or 0))
+
+        local popupPositioning = S.RSUI and S.RSUI.PopupPositioning or nil
+        AddCheck(report, "v3_popup_coordinate_contract", type(S.Layout) == "table"
+                and (tonumber(S.Layout.ViewportLogicalRectContractVersion) or 0) >= 1 -- 中文维护注释：保留外部原生控件的 viewport logical 归一契约。
+                and (tonumber(S.Layout.EffectiveGeometryCalibrationContractVersion) or 0) >= 1 -- 中文维护注释：外部 Native Trigger 仍需要 bounded Effective Geometry 校准。
+                and (tonumber(S.Layout.SuiteOwnedViewportAnchorContractVersion) or 0) >= 1 -- 中文维护注释：Suite-owned Popup 必须具备完整 Diff cache 父链 Authority，防止 .18.189 实机再次漂移。
+                and type(S.Layout.ResolveViewportLogicalRect) == "function" -- 中文维护注释：要求外部原生几何解析入口仍然存在。
+                and type(S.Layout.ResolveSuiteOwnedViewportLogicalRect) == "function" -- 中文维护注释：要求 Suite-owned cache-first 锚点解析入口存在。
+                and type(popupPositioning) == "table" -- 中文维护注释：PopupPositioning 仍是 detached Popup 的唯一 Presentation Authority。
+                and (tonumber(S.RSUI.PopupPositioningContractVersion) or 0) >= 3 -- 中文维护注释：.18.191 要求 PopupPositioning v3；Suite-owned 最终位置必须由 Native-relative Trigger Anchor 提交，旧绝对坐标 solver 只能保留给显式 point/外部 Native 车道。
+                and (tonumber(S.RSUI.PopupNativeRelativeAnchorContractVersion) or 0) >= 1 -- 中文维护注释：强制存在 Native-relative Anchor 契约，防止未来又把 Dropdown/ColorField 改回 UIParent 绝对 X/Y。
+                and (tonumber(S.RSUI.PopupSuiteAnchorAuthorityContractVersion) or 0) >= 1 -- 中文维护注释：强制声明 .18.190 的 Suite anchor authority 契约。
+                and (tonumber(S.RSUI.PopupCoordinateSpaceContractVersion) or 0) >= 1 -- 中文维护注释：最终坐标空间仍必须是 viewport-logical-v1。
+                and (tonumber(S.RSUI.PopupCoordinateConsumerContractVersion) or 0) >= 2 -- 中文维护注释：Controls consumer v2 证明 Dropdown/ColorField 已迁移到 Native-relative 最终 Anchor。
+                and (tonumber(S.RSUI.InteractionPopupCoordinateConsumerContractVersion) or 0) >= 2 -- 中文维护注释：Interactions consumer v2 证明目标型 Tooltip/ContextMenu 已迁移，显式 point lane 仍保持独立。
+                and type(popupPositioning.ApplyNativeRelativePopup) == "function" -- 中文维护注释：Foundation 必须验证真正提交 Trigger-relative Native Anchor 的公共入口存在，而不是只验证旧绝对 solver。
+                and type(popupPositioning.CorrectNativePopupToScreen) == "function" -- 中文维护注释：屏幕边缘修正必须统一走 RU UIBounds:CorrectOffsetByScreen 封装，业务 Consumer 禁止自己加固定分辨率偏移。
+                and type(S.DiagnosticsManager) == "table" and type(S.DiagnosticsManager.BuildPopupPositioningReport) == "function" -- 中文维护注释：.18.190 缺少用户可复制的专项报告入口，因此 .18.191 把可观测性提升为 Popup 发布契约。
+                and type(popupPositioning.ResolveAnchorRect) == "function"
+                and type(popupPositioning.ResolveAnchored) == "function"
+                and type(popupPositioning.ResolveDropdown) == "function"
+                and type(popupPositioning.ResolvePoint) == "function",
+            "blocker", "layoutRect=" .. tostring(S.Layout and S.Layout.ViewportLogicalRectContractVersion or 0)
+                .. "/calibration=" .. tostring(S.Layout and S.Layout.EffectiveGeometryCalibrationContractVersion or 0) -- 中文维护注释：诊断输出外部 Native Effective Geometry 校准版本。
+                .. "/suiteAnchor=" .. tostring(S.Layout and S.Layout.SuiteOwnedViewportAnchorContractVersion or 0) -- 中文维护注释：诊断输出 Suite-owned cache 父链版本。
+                .. "/positioning=" .. tostring(S.RSUI and S.RSUI.PopupPositioningContractVersion or 0) -- 中文维护注释：诊断输出 PopupPositioning 主契约版本。
+                .. "/nativeRelative=" .. tostring(S.RSUI and S.RSUI.PopupNativeRelativeAnchorContractVersion or 0) -- 中文维护注释：诊断输出 Native-relative Trigger Anchor 契约版本，实机摘要可直接证明是否加载 .18.191 新底层。
+                .. "/suitePopup=" .. tostring(S.RSUI and S.RSUI.PopupSuiteAnchorAuthorityContractVersion or 0) -- 中文维护注释：诊断输出 Popup suite-anchor Authority 版本。
+                .. "/space=" .. tostring(S.RSUI and S.RSUI.PopupCoordinateSpaceContractVersion or 0) -- 中文维护注释：诊断输出最终坐标空间契约版本。
+                .. "/controls=" .. tostring(S.RSUI and S.RSUI.PopupCoordinateConsumerContractVersion or 0)
+                .. "/interactions=" .. tostring(S.RSUI and S.RSUI.InteractionPopupCoordinateConsumerContractVersion or 0))
 
         local genericShell = S.UI and S.UI.WindowShell or nil
         local genericShellInfo = genericShell and type(genericShell.Describe) == "function" and genericShell:Describe() or nil
@@ -525,7 +642,10 @@ function G:Run(options)
                 and (tonumber(S.Layout.RectTransformTransactionContractVersion) or 0) >= 2
                 and (tonumber(S.Layout.ScreenToWidgetLocalContractVersion) or 0) >= 1
                 and (tonumber(S.Layout.ResponsivePlacementIntentContractVersion) or 0) >= 1
+                and (tonumber(S.Layout.ViewportLogicalRectContractVersion) or 0) >= 1
+                and (tonumber(S.Layout.EffectiveGeometryCalibrationContractVersion) or 0) >= 1
                 and type(S.Layout.GetCoordinateSystemSnapshot) == "function"
+                and type(S.Layout.ResolveViewportLogicalRect) == "function"
                 and type(S.Layout.GetUiParentLocalOrigin) == "function"
                 and type(S.Layout.ScreenPointToWidgetLocal) == "function"
                 and type(S.Layout.OffsetPoint) == "function"
@@ -539,6 +659,8 @@ function G:Run(options)
                 .. "/rectTx=" .. tostring(S.Layout and S.Layout.RectTransformTransactionContractVersion or 0)
                 .. "/screenLocal=" .. tostring(S.Layout and S.Layout.ScreenToWidgetLocalContractVersion or 0)
                 .. "/responsivePlacement=" .. tostring(S.Layout and S.Layout.ResponsivePlacementIntentContractVersion or 0)
+                .. "/viewportRect=" .. tostring(S.Layout and S.Layout.ViewportLogicalRectContractVersion or 0)
+                .. "/effectiveCalibration=" .. tostring(S.Layout and S.Layout.EffectiveGeometryCalibrationContractVersion or 0)
                 .. "/pointer=" .. tostring(rsui and rsui.PointerContractVersion or 0)
                 .. "/capture=" .. tostring(rsui and rsui.Pointer and rsui.Pointer.captureSupported))
 
@@ -1683,6 +1805,31 @@ function G:Run(options)
             .. "/encodedLoadReject=" .. tostring(persistenceStats.encodedLoadRejects or 0)
             .. "/replacementRecover=" .. tostring(persistenceStats.verifiedReplacementRecoveries or 0)) or "missing")
 
+    -- Shell persistence evolution fence. `.18.157` extended the schema-6 shell
+    -- canonical without creating a schema boundary; `.18.184` and `.18.187` then
+    -- reproduced the same real-machine legacy stamp incident. Require schema 7,
+    -- exact historical reconstruction AND the narrowly-whitelisted known-stamp
+    -- bridge so later UI refactors cannot silently mutate a canonical generation
+    -- in place or replace fail-closed recovery with a generic mismatch bypass.
+    local shellStore = S.Persistence and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.shell") or nil
+    local shellUi = S.UIV3
+    AddCheck(report, "v3_shell_persistence_schema_contract",
+        type(shellStore) == "table"
+            and tonumber(shellStore.schemaVersion) == 7
+            and tonumber(shellStore.legacySchemaVersion) == 6
+            and type(shellStore.rebuildCanonicalForIntegrity) == "function"
+            and type(shellStore.recoverKnownLegacyCanonical) == "function"
+            and type(shellUi) == "table"
+            and (tonumber(shellUi.ShellCanonicalMigrationContractVersion) or 0) >= 1
+            and (tonumber(shellUi.ShellKnownLegacyRecoveryContractVersion) or 0) >= 1
+            and (tonumber(shellUi.ShellStoreSchemaContractVersion) or 0) >= 7,
+        "blocker", "schema=" .. tostring(shellStore and shellStore.schemaVersion or 0)
+            .. "/legacy=" .. tostring(shellStore and shellStore.legacySchemaVersion or 0)
+            .. "/historical=" .. tostring(type(shellStore) == "table" and type(shellStore.rebuildCanonicalForIntegrity) == "function")
+            .. "/known=" .. tostring(type(shellStore) == "table" and type(shellStore.recoverKnownLegacyCanonical) == "function")
+            .. "/contract=" .. tostring(shellUi and shellUi.ShellCanonicalMigrationContractVersion or 0)
+            .. "/knownContract=" .. tostring(shellUi and shellUi.ShellKnownLegacyRecoveryContractVersion or 0))
+
     AddCheck(report, "persistence_reliability_v5", persistence ~= nil
             and (tonumber(persistence.reliabilityContractVersion) or 0) >= 5
             and (tonumber(S.Persistence.MinIntegrityReliabilityContractVersion) or 0) <= 4
@@ -1971,47 +2118,8 @@ function G:Run(options)
     AddCheck(report, "v3_combat_life_usability_contract", #usabilityFailures == 0, "blocker",
         #usabilityFailures == 0 and "screen HUD/visual guides/life widgets/status observation contracts present" or ("missing=" .. Join(usabilityFailures, 8)))
 
-    local bagTools = S.Features and S.Features.tools_bag or nil
-    local bagQuickPresenter = S.UIV3 and S.UIV3.BagQuickOverlay or nil
-    local inventorySnapshot = S.Services and S.Services.InventorySnapshotV3 or nil
-    local bagContractOk = type(inventorySnapshot) == "table" and (tonumber(inventorySnapshot.SnapshotContractVersion) or 0) >= 1
-        and (tonumber(inventorySnapshot.PhysicalBagAuthorityContractVersion) or 0) >= 1
-        and (tonumber(inventorySnapshot.IndexContractVersion) or 0) >= 1
-        and tonumber(inventorySnapshot.PreferredBagId) == 1 and tonumber(inventorySnapshot.FallbackBagId) == 0
-        and type(inventorySnapshot.BuildSnapshot) == "function" and type(inventorySnapshot.FindLiveRow) == "function"
-        and type(inventorySnapshot.CountLive) == "function" and type(inventorySnapshot.ReadPhysicalBagSlot) == "function"
-        and type(bagTools) == "table" and (tonumber(bagTools.BagMoveContractVersion) or 0) >= 8
-        and (tonumber(bagTools.BatchLifecycleContractVersion) or 0) >= 5 and (tonumber(bagTools.NativeWindowQuickContractVersion) or 0) >= 7
-        and (tonumber(bagTools.ReloadQuickObserverContractVersion) or 0) >= 3
-        and (tonumber(bagTools.RUFourValueWindowVisibilityContractVersion) or 0) >= 2
-        and (tonumber(bagTools.NativeVisibilityShapeContractVersion) or 0) >= 1
-        and (tonumber(bagTools.VisiblePresenterRetryContractVersion) or 0) >= 1
-        and (tonumber(bagTools.DynamicSourceResolutionContractVersion) or 0) >= 3
-        and (tonumber(bagTools.QuickIdentityFallbackContractVersion) or 0) >= 1
-        and (tonumber(bagTools.BagTaskMutexContractVersion) or 0) >= 2
-        and (tonumber(bagTools.QuickRunSelfHealContractVersion) or 0) >= 1
-        and (tonumber(bagTools.QuickTwoButtonContractVersion) or 0) >= 1
-        and (tonumber(bagTools.QuickReasonVisibilityContractVersion) or 0) >= 1
-        and (tonumber(bagTools.QuickStatusTimestampContractVersion) or 0) >= 1
-        and (tonumber(bagTools.InventorySnapshotContractVersion) or 0) >= 1
-        and (tonumber(bagTools.GroupedIntentQueueContractVersion) or 0) >= 1
-        and (tonumber(bagTools.FullStorageContinuationContractVersion) or 0) >= 1
-        and type(bagTools.Commands) == "table" and type(bagTools.Commands.QuickWithdraw) == "function"
-        and type(bagTools.Commands.QuickDeposit) == "function" and type(bagTools.Commands.QuickCancel) == "function"
-        and type(bagTools.Commands.SetBatchCategory) == "function" and type(bagTools.Commands.SetBatchTarget) == "function"
-        and type(bagTools.Commands.SetBatchLimit) == "function"
-        and type(bagTools.Commands.DepositCategoryCurrent) == "function"
-        and (tonumber(bagTools.BatchTargetAutoContractVersion) or 0) >= 1
-        and type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.version) or 0) >= 8
-        and (tonumber(bagQuickPresenter.ReloadVisibilityContractVersion) or 0) >= 2
-        and (tonumber(bagQuickPresenter.NativeTransientHostContractVersion) or 0) >= 1
-        and (tonumber(bagQuickPresenter.VisibleRetryContractVersion) or 0) >= 1
-        and (tonumber(bagQuickPresenter.TwoButtonContractVersion) or 0) >= 1
-        and (tonumber(bagQuickPresenter.DiffRenderContractVersion) or 0) >= 1
-        and (tonumber(bagQuickPresenter.HintYieldContractVersion) or 0) >= 1
-        and (tonumber(bagQuickPresenter.QuietByDefaultContractVersion) or 0) >= 1
-    AddCheck(report, "v3_bag_action_contract", bagContractOk, "blocker",
-        bagContractOk and "shared physical-bag snapshot + grouped-intent quick/category queues + live slot revalidation + empty-plan/self-heal mutex release + two-button start/stop/switch present" or "bag action contract v8 / mutex v2 / quick-window host v6 / InventorySnapshotV3 unavailable")
+    local bagContractOk, bagContractDetail = self:EvaluateBagActionContract()
+    AddCheck(report, "v3_bag_action_contract", bagContractOk, "blocker", bagContractDetail)
     local gearFeature = S.Features and S.Features.Gear or nil
     local startupIntentOk = type(S.FeatureRuntime) == "table" and (tonumber(S.FeatureRuntime.StartupEnableIntentContractVersion) or 0) >= 1
         and type(gearFeature) == "table" and (tonumber(gearFeature.QuickStartupIntentContractVersion) or 0) >= 1

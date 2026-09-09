@@ -269,12 +269,12 @@ Add("life_butler", "life.butler", "管家助手", "life", 90, "预留管家充�
     evidence = "ArcheRage RU official addon API update 2026-08-26; capability surface is currently narrow",
 })
 
-Add("tools_bag", "tools.bag_organizer", "整理背包", "tools", 10, "背包/仓库整理、黑名单与按类别有界批量移动。", {
+Add("tools_bag", "tools.bag_organizer", "整理背包", "tools", 10, "快速在背包与当前银行/保管箱之间整理同类物品；黑名单物品不会参与取放。", {
     status = "migrated_partial", lifecycle = "independent_low_cost", authority = "v3.bag", settingsCapable = true, defaultEnabled = true,
-    capabilities = { "category_batch", "scheduler_queue", "window_commands", "native_window_quick_take_put", "blacklist_filter", "read_verify_stop", "dynamic_source_resolution", "ru_identity_fallback", "shared_inventory_snapshot", "physical_bag_authority", "grouped_intent_queue", "quick_two_button_stop_switch", "quick_stale_run_self_heal", "batch_target_open_storage" },
+    capabilities = { "category_batch", "scheduler_queue", "window_commands", "native_window_quick_take_put", "blacklist_filter", "read_verify_stop", "dynamic_source_resolution", "ru_identity_fallback", "shared_inventory_snapshot", "physical_bag_authority", "grouped_intent_queue", "quick_two_button_stop_switch", "quick_stale_run_self_heal", "batch_target_open_storage", "surface_action_visibility_split", "storage_session_bag_surface_fallback", "bag_action_physical_read_authority", "quick_released_host_recovery", "product_blacklist_ux", "blacklist_name_metadata", "blacklist_explicit_lookup" },
     scheduler = "InventorySnapshotV3 builds one bounded read/index snapshot per explicit plan (bagId=1 physical Authority with bounded bagId=0 fallback); Shared Scheduler serializes grouped same-item/category intent at 250ms; slotHint is revalidated before every write and quick/category tasks remain mutually exclusive; no per-frame polling",
-    window = "默认启用的低成本窗口观察只读取背包/银行/箱子的几何与可见性；兼容 RU GetContentMainScriptPosVis 的 boolean/0-1/string/四值形态。显式 Native 可见性最高优先级；ADDON:GetContent 仅提供正向可见证据，隐藏代理不得否决仍有合法 MainScript 几何的实际窗口。悬浮快捷条只有「取 / 放」两个按钮（用户反馈第三个「停」无可见作用）：空闲=开始，运行中点同一个=停止，点另一个=切换方向；使用真实 transient WINDOW 宿主，并在仓储可见期间以 350ms heartbeat 有界重试 Presenter。同一个 350ms 观察任务兼任取放看门狗：空计划不再占用互斥锁，失去执行器的队列会被自动释放并给出原因（不再出现「点了没反应」）。物品扫描/移动仍只在显式点击后执行；用户显式关闭整理背包后观察任务立即释放。",
-    blacklist = "Per-bank/coffer itemType/category rules are applied before every move; blacklist or source-read failure fails closed. 高级整理的目标 = 当前真正打开的那个仓储窗口（银行与箱子不会同时开，页面不再让用户二选一，只回显自动解析结果）。",
+    window = "默认启用的低成本窗口观察只读取背包/银行/箱子的几何与可见性；兼容 RU GetContentMainScriptPosVis 的 boolean/0-1/string/四值形态。动作 Authority 与显示 Surface 分离：仓储写入继续由当前打开仓储的严格事实 + 显式点击后的有界物理容器读取共同证明并 fail-closed；UIC_BAG 仅承担 Presentation 定位，不再作为取放动作 Authority。RU 打开银行/保管箱时若 UIC_BAG 仍是 hidden proxy，但 MainScript 已给出合法背包矩形，则可在“仓储 Surface 已可见”这一会话事实下仅用于显示/定位取放条，不放宽仓储写入门。悬浮快捷条只有「取 / 放」两个按钮：空闲=开始，运行中点同一个=停止，点另一个=切换方向；使用真实 transient WINDOW 宿主，并在仓储可见期间以 100ms 低成本 heartbeat 有界重试 Presenter。同一个 100ms 观察任务兼任取放看门狗；物品扫描/移动仍只在显式点击后执行；用户显式关闭整理背包后观察任务立即释放。",
+    blacklist = "普通玩家页面只暴露全局物品黑名单：可输入 ItemID、输入当前背包/仓储中的物品名称，或直接点击当前背包物品行；保存仍以 itemType 为 Authority，名称只作显示元数据。新增规则镜像到 bank/coffer 以保持现有运行时检查；旧 scope/category 规则继续兼容但不再占据主页面。",
     apiDependencies = {
         "X2Bag:Capacity", "X2Bag:GetBagItemInfo", "X2Bank:GetBagItemInfo", "X2Coffer:GetBagItemInfo",
         "X2Bag:MoveToEmptyBankSlot", "X2Bag:MoveToEmptyCofferSlot",

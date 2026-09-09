@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reload/window-fact regression for Bag quick overlay + Gear screen buttons (.18.153).
+"""Reload/window-fact regression for Bag quick overlay + product page + Gear screen buttons (.18.187).
 
 The Bag regression covers the real RU native-content quirk already proven by
 AuctionSurfaceV3: GetContentMainScriptPosVis may return only x/y/w/h and omit
@@ -51,7 +51,7 @@ def static_contracts() -> None:
     require(
         BUSINESS,
         "StartBagQuickObserver(feature)",
-        "BAG_QUICK_OBSERVE_TASK,350,function() return RefreshBagQuickOverlay(feature)",
+        "BagMoveRuntime.QuickObserverIntervalMs = 100",
         "BagTools.NativeWindowQuickContractVersion = 7",
         "BagTools.ReloadQuickObserverContractVersion = 3",
         "BagTools.RUFourValueWindowVisibilityContractVersion = 2",
@@ -60,6 +60,10 @@ def static_contracts() -> None:
         '"main-script+content-visible"',
         '"main-script-geometry-over-proxy"',
         'BagTools.NativeVisibilityShapeContractVersion = 1',
+        'BagTools.SurfaceVisibilitySplitContractVersion = 1',
+        'BagTools.StorageSessionBagSurfaceContractVersion = 1',
+        'BagTools.ResponsiveWindowObserverContractVersion = 1',
+        'BagTools.BagActionPhysicalReadAuthorityContractVersion = 1',
         'BagTools.VisiblePresenterRetryContractVersion = 1',
         'local bank=ReadStorageWindowContext("bank")',
         'local coffer=ReadStorageWindowContext("coffer")',
@@ -93,9 +97,10 @@ def static_contracts() -> None:
     observer = BUSINESS[observer_start:observer_end]
     assert "BuildSnapshot" not in observer, "idle bag observer must not scan inventory"
     assert "MoveToEmpty" not in observer, "idle bag observer must not move inventory"
+    assert "BagMoveRuntime.QuickObserverIntervalMs,function() return RefreshBagQuickOverlay(feature) end,false,feature,\"P2\",1" in observer, "bag quick observer must use 100ms low-cost P2 cadence"
 
     require(BAG_UI,
-        "version=8",
+        "version=9",
         "ReloadVisibilityContractVersion=2",
         "NativeTransientHostContractVersion=2",
         "VisibleRetryContractVersion=2",
@@ -129,6 +134,8 @@ def static_contracts() -> None:
         # The bar is two buttons; a message appears only while it matters and then
         # expires, and the bar shrinks back to buttons-only width.
         "QuietByDefaultContractVersion=1",
+        "ReleasedRootRecoveryContractVersion=1",
+        "self.root ~= nil and self.root.rsUiReleased == true",
         "COMPACT_WIDTH = 102",
         "MESSAGE_TTL_MS = 6000",
         'local width=statusText=="" and COMPACT_WIDTH',
@@ -145,8 +152,9 @@ def static_contracts() -> None:
     assert BAG_UI.count('S.UI:CreateButton(root,"v3_bag_quick_') == 2, "bag quick overlay must stay at exactly two buttons"
     assert "v3_bag_quick_stop" not in BAG_UI, "the 停 button must not come back: it was reported as useless"
     assert BAG_UI.count("tooltip:Bind(") == 2, "both remaining buttons keep their stop/switch hover contract"
-    require(PAGE, "背包窗口可见/", "overlay.bankSource", "overlay.cofferSource",
-        "运行中再点同一个按钮＝停止", "悬浮按钮")
+    require(PAGE, "bagProductUxContractVersion = 2", "取出同类", "存入同类",
+        "输入物品ID或当前背包/仓储中的物品名称", "当前背包物品", "当前黑名单")
+    assert "storageFacts" not in PAGE and "背包显示=" not in PAGE, "player bag page must not expose native diagnostic facts"
     assert "v3_business_tools_bag_quick_stop" not in PAGE, "page must not keep a third quick-stop button"
 
     require(GEAR_STORE, "runtimePreferenceLink = tonumber(value.runtimePreferenceLink) == 1 and 1 or nil")
@@ -177,7 +185,7 @@ def native_flag(value):
     return False, False
 
 
-def resolve_visible(native_visible, content_known: bool, content_visible: bool, main_rect: bool) -> bool:
+def resolve_action_visible(native_visible, content_known: bool, content_visible: bool, main_rect: bool) -> bool:
     known, value = native_flag(native_visible)
     if known:
         return value
@@ -189,28 +197,86 @@ def resolve_visible(native_visible, content_known: bool, content_visible: bool, 
         return False
     return False
 
+
+def resolve_surface_visible(native_visible, content_visible: bool, main_rect: bool) -> bool:
+    known, value = native_flag(native_visible)
+    return value is True or content_visible is True or (known is not True and main_rect is True)
+
 def test_ru_four_value_main_script_is_open_signal() -> None:
     # RU may omit the fifth return value entirely. Valid geometry must not be
     # rejected merely because visible=nil when no stronger content fact exists.
-    assert resolve_visible(None, False, False, True) is True
+    assert resolve_action_visible(None, False, False, True) is True
 
 
 def test_content_visibility_overrides_geometry_fallback() -> None:
     # GetContent may be a hidden proxy even while the MainScript window is open.
     # Valid MainScript geometry therefore remains positive evidence unless an
     # explicit native visibility value says the window is closed.
-    assert resolve_visible(None, True, False, True) is True
-    assert resolve_visible(None, True, True, True) is True
-    assert resolve_visible(None, True, False, False) is False
+    assert resolve_action_visible(None, True, False, True) is True
+    assert resolve_action_visible(None, True, True, True) is True
+    assert resolve_action_visible(None, True, False, False) is False
 
 
 def test_explicit_native_boolean_remains_authoritative() -> None:
-    assert resolve_visible(False, False, False, True) is False
-    assert resolve_visible(True, True, False, True) is True
-    assert resolve_visible(0, False, False, True) is False
-    assert resolve_visible(1, True, False, False) is True
-    assert resolve_visible("0", False, False, True) is False
-    assert resolve_visible("visible", True, False, False) is True
+    assert resolve_action_visible(False, False, False, True) is False
+    assert resolve_action_visible(True, True, False, True) is True
+    assert resolve_action_visible(0, False, False, True) is False
+    assert resolve_action_visible(1, True, False, False) is True
+    assert resolve_action_visible("0", False, False, True) is False
+    assert resolve_action_visible("visible", True, False, False) is True
+
+
+
+def test_surface_visibility_does_not_inherit_write_authority_race() -> None:
+    # RU opening race: Content is visibly live while MainScript fifth return still
+    # says hidden/0. The harmless floating surface must appear, but native writes
+    # remain fail-closed until action Authority catches up.
+    assert resolve_action_visible(0, True, True, True) is False
+    assert resolve_surface_visible(0, True, True) is True
+    assert resolve_surface_visible(False, True, True) is True
+    assert resolve_surface_visible(0, False, True) is False
+    refresh = BUSINESS[BUSINESS.index("local function RefreshBagQuickOverlay(feature)"):BUSINESS.index("local function StartBagQuick(feature, direction)")]
+    assert 'bank.surfaceVisible==true' in refresh and 'coffer.surfaceVisible==true' in refresh
+    assert 'bag.surfaceVisible==true' in refresh
+    current = BUSINESS[BUSINESS.index("local function CurrentStorageContext()"):BUSINESS.index("local function RequireStorageWindow") ]
+    assert '.visible==true' in current and 'surfaceVisible' not in current, "native writes must remain action-authority gated"
+
+
+def test_storage_session_can_anchor_hidden_bag_proxy() -> None:
+    # .18.184 still required UIC_BAG itself to be surface-visible. RU can open a
+    # coffer with a real physical bag and a valid bag MainScript rectangle while
+    # UIC_BAG remains a hidden proxy. A visible storage session may use that
+    # rectangle for Presentation only; it must never become write Authority.
+    refresh = BUSINESS[BUSINESS.index("local function RefreshBagQuickOverlay(feature)"):BUSINESS.index("local function StartBagQuick(feature, direction)")]
+    assert 'bagMainScriptAnchor=type(bag)=="table" and tostring(bag.source or ""):sub(1,11)=="main-script"' in refresh
+    assert 'storageSessionBagFallback=type(storage)=="table" and bagAnchorReady==true and bag.surfaceVisible~=true' in refresh
+    assert 'bagSurfaceEffectiveVisible=type(bag)=="table" and (bag.surfaceVisible==true or storageSessionBagFallback==true)' in refresh
+    assert '"storage-session+"..tostring(bag.source or "bag-geometry")' in refresh
+    assert 'nextState.bagSurfaceFallback=storageSessionBagFallback==true' in refresh
+    current = BUSINESS[BUSINESS.index("local function CurrentStorageContext()"):BUSINESS.index("local function RequireStorageWindow")]
+    assert '.visible==true' in current and 'surfaceVisible' not in current, "storage-session Presentation fallback must not loosen native write Authority"
+
+
+def test_quick_action_uses_physical_reads_not_bag_ui_visibility() -> None:
+    # UIC_BAG is a Presentation/proxy fact. The explicit move action is proven by
+    # the strict open-storage session and the bounded physical bag/storage reads.
+    begin = BUSINESS[BUSINESS.index("local function BeginBagQuick(feature, direction)"):BUSINESS.index("local function RefreshBagQuickOverlay")]
+    assert 'local bagWindow = ReadBagWindowContext()' not in begin
+    assert 'return false, "请先打开背包"' not in begin
+    storage_gate = begin.index('local storage = CurrentStorageContext()')
+    bag_read = begin.index('BagIdentitySet("bag")')
+    storage_read = begin.index('BagIdentitySet(target)')
+    assert storage_gate < bag_read < storage_read, "strict storage session must precede bounded physical reads"
+    assert 'if bagSet == nil or storageSet == nil then return false' in begin
+    assert 'if bagErrors > 0 or storageErrors > 0 then return false' in begin
+
+
+def test_released_presenter_root_is_rebuilt() -> None:
+    ensure = BAG_UI[BAG_UI.index("function P:EnsureCreated()"):BAG_UI.index("function P:Refresh()") ]
+    released = ensure.index("self.root ~= nil and self.root.rsUiReleased == true")
+    early_return = ensure.index("if self.root ~= nil then return true end")
+    assert released < early_return, "released-root recovery must run before the created fast path"
+    assert "self.root,self.take,self.put,self.status=nil,nil,nil,nil" in ensure
 
 
 def gear_startup_model(preferred: bool, explicit: bool, linked: bool, quick_rows: int, visible: bool) -> bool:
@@ -318,6 +384,10 @@ def main() -> int:
         test_ru_four_value_main_script_is_open_signal,
         test_content_visibility_overrides_geometry_fallback,
         test_explicit_native_boolean_remains_authoritative,
+        test_surface_visibility_does_not_inherit_write_authority_race,
+        test_storage_session_can_anchor_hidden_bag_proxy,
+        test_quick_action_uses_physical_reads_not_bag_ui_visibility,
+        test_released_presenter_root_is_rebuilt,
         test_legacy_gear_split_repairs_once,
         test_bag_explicit_disable_is_not_overridden,
         test_bag_idle_observer_is_low_cost_surface_only,

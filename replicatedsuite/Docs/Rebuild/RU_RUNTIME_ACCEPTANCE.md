@@ -1,3 +1,60 @@
+## `.18.189` Popup Coordinate Authority — RU 多分辨率实机验收
+
+## `.18.191` Popup Native-relative 实机验收（当前优先）
+
+1. 先在当前故障分辨率打开“团队中心→职业”与“跑商→起点/目的地”Dropdown；Popup 左边缘应与 Trigger 左边缘对齐，不应随 Shell X/Y 增大而漂移。
+2. 将主窗口依次放到左上、中央、右下，重复同一 Dropdown；不得出现位置相关线性偏移。
+3. 打开一次异常/正常 Popup 后进入“诊断与维护”，点击 **`RSUI Popup定位`**。报告必须可直接复制，并至少包含 `mode=native_relative`、`rel=`、`Trigger Off/Eff`、`PopupBefore Off/Eff`、`PopupAfter Off/Eff`。
+4. 在 1024×768、1280×768、1366×768、1920×1080 复测；靠近屏幕右/下边缘时由 `CorrectOffsetByScreen()` 保持在可见区域。
+5. 若仍偏移，**不要添加固定补偿值**；保留 Popup 打开状态，复制专项报告给维护者，下一轮先判定 RU `AddAnchor` reference 与 `CorrectOffsetByScreen` 的真实返回语义。
+
+
+BuildTag：`v3-m1.16.0.18.189-popup-coordinate-authority`。本轮修的是 detached Popup 的底层坐标 Authority，不允许用“跑商下拉框左移 N 像素”之类单分辨率补丁关闭问题。
+
+1. **固定控件集**：跑商 `起点 / 目的地 / 收藏路线`、整理背包现存 Dropdown；再抽测一个 ColorField、Tooltip 与有入口的 ContextMenu。SearchablePicker 是 embedded surface，不把它当 detached popup 验收。
+2. **固定分辨率矩阵**：至少 `1024×768 / 1280×768 / 1366×768 / 1920×1080`；有条件追加 `1280×720 / 1600×900 / 2560×1440`。每个分辨率把主 Shell 分别放 **左上 / 中央 / 右下** 后再打开相同控件。Popup 左/右边缘必须跟 trigger 保持一致语义，不能出现“越靠右/下偏得越远”的比例漂移。
+3. **边缘行为**：trigger 靠近屏幕底部时 Dropdown 自动向上展开；靠右时 Popup clamp 在 Safe Viewport 内；长地区列表高度不得占满/越出屏幕，必须保留完整行并通过既有滚动访问全部选项。
+4. **Scale**：如果客户端提供 UI Size/UI Scale 选项，在同一分辨率至少切两个非 1.0 档。Effective geometry 无论由 RU 返回 logical 还是 UI-scaled，最终 Popup 都必须仍贴合 trigger；禁止再按 UI Scale 写补偿表。
+5. **独立 lane 复验**：打开银行/保管箱确认 Bag `取 / 放` 仍跟随原生背包窗口；Unit Lines/Range/Head Marker 不应因 Popup Foundation 改动产生位置变化；DPS/死亡回顾/Gear quick 等持久/可拖 Surface 的拖动与恢复保持原语义。
+6. **失败证据**：打开 `诊断与维护` 复制诊断。`.18.189` 会记录 `RSUI Popup定位` 与最近若干 `Popup <id>｜Anchor x,y wxh → x,y wxh · top/bottom/flip/clamp · source=...`。失败时同时记录分辨率、UI Scale、Shell 所在屏幕区域、控件名与截图；先沿 `anchorSource / effectiveScale / scaleSource` 查单次归一，不添加业务 magic offset。
+7. **本地门禁基线**：`rs_popup_coordinate_harness` source **20/20** + Real-Lua **24/24**；全工程 **48/48 Harness PASS**；Foundation Audit PASS（227 Lua / globals=0）；TOC 227/227 parse PASS。RU 实机仍是 Native geometry/视觉最终 Authority。
+
+## `.18.188` Bag Gate / Shell Persistence Recovery — RU 实机验收
+
+BuildTag：`v3-m1.16.0.18.188-bag-gate-scope-shell-schema-recovery`。本轮不改变整理背包 Runtime/100ms Observer/移动语义；只修 `.18.187` 新增的 Foundation false blocker，并处理已连续两轮稳定复现的 `v3.shell` 历史完整性事故。
+
+1. **Fresh Reload 后先看 Foundation 横幅**：`v3_bag_action_contract` 不应再出现 `InventorySnapshotV3 unavailable`。若 Bag 契约真的缺失，失败详情必须变成 `missing=inventory.xxx / bag.xxx / command.xxx / pages.xxx / presenter.xxx` 的真实 token，而不是统一误报某一个服务。
+2. **Shell 一次性恢复**：旧存档当前已知事故为 `v3.shell:2EA0A82A>2EC2F5C5`。第一次加载 `.18.188` 允许看到 `STORE_KNOWN_LEGACY_CANONICAL_RECOVERY` 或 historical recovery 信息，但 `v3.shell` 最终必须解除 write fence，并迁移到 schema 7；不得清空其它 Store。
+3. **第二次 Reload 是关键验收**：再 Reload 一次后，不应再次出现 `v3.shell:integrity_failed:fingerprint_mismatch:2EA0A82A>2EC2F5C5`；`persistence_v2` 应至少不再因为 `v3.shell` 保持 `fenced=1`，`persistence_reliability_v4` 的本次新增 integrityFail 不应继续增加。
+4. **Shell 状态**：主窗口能正常打开、导航、拖动、最小化；若 historical exact path 只认证了旧 schema6 字段，响应式 source viewport metadata 可以在下一次手动拖动时重新生成，但窗口基础位置/尺寸/route 不应被无条件清空。
+5. **未知损坏仍拒绝**：不要手工清 Store 验证。代码边界要求任何非 `2EA0A82A>2EC2F5C5` 的未知 v4 mismatch 仍维持 write fence；若出现新 fingerprint，复制完整 `store/fingerprint/historical_probe`，不得继续扩大通用 allowlist。
+6. **整理背包回归**：打开保管箱后 `取 / 放` 仍应约 0~100ms 出现；页面的 ItemID/名称黑名单、点击背包行填 ID、按名称添加均保持 `.18.187` 行为。Gate 修复只应改变诊断，不应改变取放 Authority。
+7. **单位连线单独记录**：本轮没有修改 ScreenProjection/Unit Lines。若仍显示 `unit_projection_unavailable`，把该功能完整诊断行单独保留为下一项独立问题；不要把它与 Bag Gate 或 Shell Store 归为同一根因。
+
+## `.18.187` 整理背包主页面 / 黑名单 UX — RU 实机验收
+
+BuildTag：`v3-m1.16.0.18.187-bag-product-blacklist-ux`。本轮不修改 `.18.186` 的 100ms 悬浮窗口观察与取放写入 Authority，只收敛普通玩家页面。
+
+1. 打开“整理背包”后，主页面只应看到 `取出同类`、`存入同类`、`整理黑名单` 与“当前背包物品”；**不再出现**高级整理、类别编号、银行/箱子黑名单范围、`背包显示=.../main-script/...` 这类 Native 诊断串。
+2. 背包列表每种 itemType 聚合一行，格式必须类似 `1234 · 原木 | ×128`；点击一行后，上方黑名单输入框自动填入该 ItemID。
+3. 输入一个当前背包中存在的**完整物品名称**并点“加入黑名单”，应成功；输入只对应唯一结果的部分名称也可成功；若同时匹配多个物品必须明确提示“匹配到 N 个”，不得猜一个。
+4. 只打开保管箱/银行，把某物品放在仓储里而背包没有它；输入该物品名称后添加，应能通过当前已打开仓储的显式 bounded snapshot 识别。没有打开对应仓储且背包也没有该名称时，应提示可直接输入 ItemID。
+5. 输入合法 ItemID 即使当前看不到该物品也允许加入；若当前 bag/storage 能读到该 ID，同时保存名字。Reload 后“当前黑名单”应继续显示 `ID · 名称`；完全无法得到名字时只显示 `ID · 名称待识别`，不得伪造名字。
+6. 新加入的普通黑名单对银行与保管箱都生效：分别测试“取出同类”和“存入同类”，命中物品不得移动；关闭“黑名单：开”后规则保留但不拦截，再开启立即恢复。
+7. 性能回归：仅打开银行/箱子仍不能触发 InventorySnapshot 物品扫描；100ms observer 只读窗口事实。名称匹配仅在点“加入黑名单”时读取 bag/open-storage；普通页面刷新只复用 Demand 的 bag Authority。
+
+## `.18.186` Bag 快捷条响应速度 + hidden-proxy 回归 — RU 实机验收
+
+BuildTag：`v3-m1.16.0.18.186-bag-responsive-window-observer`。`.18.185` 已由实机确认功能可用，本轮只收口“按钮偶尔要等一会，像 bug”这一体验回归，同时继续验证 hidden-proxy 与动作 Authority 不倒退。
+
+1. **Fresh Reload 主路径**：重载后不要先手动打开普通背包，直接打开一个保管箱。RU 窗口事实可读后，目标是在下一个 **100ms Observer** 周期出现只有 `取 / 放` 的窄悬浮条；首次 transient WINDOW admission 若失败，允许再经过既有 64ms bounded retry，但不应再出现明显的 0.35 秒等待感。
+2. **hidden proxy 是允许的显示形态**：若整理背包页显示 `背包动作=false` 或原始 `bagSurfaceVisible=false`，但同时显示 `背包显示=storage-session+...（仓储会话定位）`，这是预期 fallback；它只证明悬浮条可以定位，**不证明 Native 写权限**。
+3. **动作 Authority 必须独立**：悬浮条出现后点 `取`/`放`，不得再因为 `UIC_BAG` hidden proxy 返回“请先打开背包”。动作应继续进入当前保管箱会话 + 物理 bag/coffer 的有界读取；若仓储严格 Authority 尚未完成同步，可以短暂拒绝“窗口刚打开，请稍后再试”，但绝不能绕过读取直接写。
+4. **Fail-closed 不变**：关闭保管箱后悬浮条最迟下一拍隐藏；任一 bag/coffer 槽读取失败、仓储严格 visible 不成立、黑名单/容量验证失败时必须停止并给出原因，不得为了让按钮出现而放宽 Native Move 门。
+5. **Feature 生命周期**：用户若显式关闭“整理背包”，Reload 后仍应保持关闭且不运行 100ms Observer；重新启用后再开保管箱，悬浮条恢复。默认从未显式关闭的用户仍由 `defaultEnabled=true` 自动启动 Observer。
+6. **性能复验**：只开/关保管箱、不点击按钮时，不应创建 InventorySnapshot、移动任务或第二个常驻任务；只有单一 100ms、P2、cost=1 的只读 Surface Observer。
+7. **若仍无按钮**：不要关保管箱，复制“整理背包”页整条状态，至少包含 `背包动作/显示/背包显示/箱子动作/显示/source/悬浮按钮`；如果 `bag` 连合法矩形都没有，下一轮应修 Native anchor 事实源，而不是继续放宽 Action Authority。
+
 ## `.18.183` Bag Quick 两按钮 + 取放锁自愈 — RU 实机验收
 
 BuildTag：未 bump（与 `.18.181/.18.182` 同批）。这一轮的用户报告是"第三个按钮没用"和"有时点了没反应"，本地已定位为一个真死锁；**关闭它必须要实机证据**。
@@ -66,7 +123,7 @@ BuildTag：`v3-m1.16.0.18.160-unit-lines-dense-settings-layout`。
 ## 统一前置
 
 1. 备份当前 addon 与用户配置；只加载 `replicatedsuite/`（单一 V3 Host）。`z_api_functions/` 仅作开发期 API 参考，**不进入运行时**；旧 `globals/` 与 Legacy UI/runtime 已于 2026-09-01/02 物理删除，不再随包，绝不重新引入。
-2. 使用当前 `replicatedsuite/replicatedsuite.lua` 的 BuildTag 启动新客户端（见 `S.BuildTag`，当前为 `v3-m1.16.0.18.160-unit-lines-dense-settings-layout`），记录 `ArcheRage.log`、`Chat.log` 和崩溃文件。
+2. 使用当前 `replicatedsuite/replicatedsuite.lua` 的 BuildTag 启动新客户端（见 `S.BuildTag`，当前为 `v3-m1.16.0.18.185-bag-storage-session-surface-authority`），记录 `ArcheRage.log`、`Chat.log` 和崩溃文件。
 3. 在 1024×768、1920×1080、2K 逐路由打开首页、战斗、生活、工具、系统页；记录页面/Widget/Modal 是否构建、文本裁切、列宽、黑边和关闭后资源释放。
 4. 每次测试前后记录 Foundation：`activeBuildScopes`、page/widget quarantine、Authority violation、Presentation boundary、Raw Native、Unexpected Global 和 Scheduler active tasks。
 5. 失败记录格式：时间、BuildTag、路由/动作、API 名、输入、原生返回值（脱敏）、日志错误码、是否可复现、恢复动作。
@@ -334,3 +391,13 @@ Fresh Reload 新进程还需验证三条本轮真实漏接链：① 打开 `life
 3. NumericInput 清空后等待刷新，空 draft 不得被旧数值立刻刷回；点击“应用”或失焦时再按当前校验规则提交/回滚。
 4. 切换到另一输入框，前一个必须 Commit/rollback 并释放 Keyboard；关闭/禁用页面后 WASD、技能、聊天不得被隐藏 EditBox 捕获。
 5. 不允许出现 Active Runtime `OnTextChanged/OnKeyDown/OnKeyUp` 或新增 Tick/轮询。
+
+
+## `.18.190` Popup Suite Anchor Chain 实机验收
+
+- 先用复现故障的 1280×768 测试：团队中心职业 Dropdown、跑商起点/目的地/收藏路线、整理背包相关 Picker。
+- 主窗口分别放在左上、中央、右下；同一 Trigger 每个位置至少开关 3 次。
+- 预期 Popup 左边缘与 Trigger 左边缘严格对齐（除非发生 Safe Viewport clamp），纵向紧贴 Trigger 下方或在底部空间不足时完整翻到上方。
+- 诊断中 Suite-owned Popup 的 `anchorSource` 必须是 `suite_native_state_anchor_chain`；若出现 `external_native_effective`，说明 Trigger 所有权分类错误。
+- 再测试 1024×768、1366×768、1920×1080；禁止用任何分辨率固定 offset 修补。
+- 若 `popup_suite_anchor_chain_unavailable`，应修复 NativeStateCache 父链登记，而不是回退 GetEffectiveOffset。

@@ -1,11 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Foundation Acceptance v89
+-- Replicated Suite V3 - Foundation Acceptance v97 -- 中文维护注释：.18.190 增加 Suite-owned Popup cache-first 锚点验收。
 --
 -- Bounded, on-demand checks only. No Native widget creation and no Tick.
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
-S.UIV3Acceptance = { version = 90 }
+S.UIV3Acceptance = { version = 97 } -- 中文维护注释：验收版本随 Popup Anchor Authority v2 同步升级。
 local A = S.UIV3Acceptance
 A.TradeDpsFreshReloadPreflightContractVersion = 2
 A.TradeDetailFavoritesContractVersion = 1
@@ -20,6 +20,8 @@ A.PersistenceTaskStableCodecContractVersion = 1
 A.BuffDisplayEquipmentReadContractVersion = 1
 A.SidecarServiceBoundaryContractVersion = 1
 A.QuickSurfaceReloadReconcileContractVersion = 3
+A.ShellPersistenceSchemaContractVersion = 1
+A.PopupCoordinateAuthorityContractVersion = 3 -- 中文维护注释：v3 要求 Suite-owned detached Popup 最终使用 Native-relative Trigger Anchor；绝对 viewport solver 仅服务显式 point/外部 Native，且专项诊断按钮属于验收能力。
 
 local MIGRATED_MODAL_MODULES = {
     ["v3_quest_detail_modal"] = "QuestDetailModalV3",
@@ -136,6 +138,17 @@ function A:RunMatrix()
             or (tonumber(businessPagesContract.unitLineSettingsFoundationConsumerContractVersion) or 0) < 2 then
         failures[#failures + 1] = "unit_line_settings_page_contract"
     end
+    local shellStore = S.Persistence and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.shell") or nil
+    if type(shellStore) ~= "table" or tonumber(shellStore.schemaVersion) ~= 7
+            or tonumber(shellStore.legacySchemaVersion) ~= 6
+            or type(shellStore.rebuildCanonicalForIntegrity) ~= "function"
+            or type(shellStore.recoverKnownLegacyCanonical) ~= "function"
+            or type(S.UIV3) ~= "table"
+            or (tonumber(S.UIV3.ShellCanonicalMigrationContractVersion) or 0) < 1
+            or (tonumber(S.UIV3.ShellKnownLegacyRecoveryContractVersion) or 0) < 1
+            or (tonumber(S.UIV3.ShellStoreSchemaContractVersion) or 0) < 7 then
+        failures[#failures + 1] = "shell_persistence_schema_v7_contract"
+    end
     if S.RSUI == nil or (tonumber(S.RSUI.StrictBuildFailFastContractVersion) or 0) < 1 then
         failures[#failures + 1] = "strict_build_fail_fast_contract"
     end
@@ -242,8 +255,15 @@ function A:RunMatrix()
         or type(bagTools) ~= "table" or (tonumber(bagTools.BagMoveContractVersion) or 0) < 8
         or (tonumber(bagTools.BatchLifecycleContractVersion) or 0) < 5 or (tonumber(bagTools.NativeWindowQuickContractVersion) or 0) < 7
         or (tonumber(bagTools.ReloadQuickObserverContractVersion) or 0) < 3
+        or (tonumber(bagTools.ResponsiveWindowObserverContractVersion) or 0) < 1
+        or (tonumber(bagTools.ProductBlacklistUxContractVersion) or 0) < 1
+        or (tonumber(bagTools.BlacklistNameMetadataContractVersion) or 0) < 1
+        or (tonumber(bagTools.BlacklistExplicitLookupContractVersion) or 0) < 1
         or (tonumber(bagTools.RUFourValueWindowVisibilityContractVersion) or 0) < 2
         or (tonumber(bagTools.NativeVisibilityShapeContractVersion) or 0) < 1
+        or (tonumber(bagTools.SurfaceVisibilitySplitContractVersion) or 0) < 1
+        or (tonumber(bagTools.StorageSessionBagSurfaceContractVersion) or 0) < 1
+        or (tonumber(bagTools.BagActionPhysicalReadAuthorityContractVersion) or 0) < 1
         or (tonumber(bagTools.VisiblePresenterRetryContractVersion) or 0) < 1
         or (tonumber(bagTools.DynamicSourceResolutionContractVersion) or 0) < 3
         or (tonumber(bagTools.QuickIdentityFallbackContractVersion) or 0) < 1
@@ -258,6 +278,9 @@ function A:RunMatrix()
         or (tonumber(bagTools.GroupedIntentQueueContractVersion) or 0) < 1
         or (tonumber(bagTools.FullStorageContinuationContractVersion) or 0) < 1
         or type(bagTools.Commands) ~= "table" or type(bagTools.Commands.QuickWithdraw) ~= "function"
+        or type(bagTools.Commands.ResolveAndAddBlacklistItem) ~= "function"
+        or type(bagTools.Commands.AddGlobalBlacklistItem) ~= "function"
+        or type(bagTools.Commands.RemoveGlobalBlacklistItem) ~= "function"
         or type(bagTools.Commands.QuickDeposit) ~= "function" or type(bagTools.Commands.QuickCancel) ~= "function"
         or type(bagTools.Commands.SetBatchCategory) ~= "function" or type(bagTools.Commands.SetBatchTarget) ~= "function"
         or type(bagTools.Commands.SetBatchLimit) ~= "function"
@@ -265,7 +288,9 @@ function A:RunMatrix()
         -- bank/coffer choice is gone from the page (.18.183 user report).
         or type(bagTools.Commands.DepositCategoryCurrent) ~= "function"
         or (tonumber(bagTools.BatchTargetAutoContractVersion) or 0) < 1
-        or type(bagQuickPresenter) ~= "table" or (tonumber(bagQuickPresenter.version) or 0) < 8
+        or type(businessPagesContract) ~= "table" or (tonumber(businessPagesContract.bagProductUxContractVersion) or 0) < 2
+        or type(bagQuickPresenter) ~= "table" or (tonumber(bagQuickPresenter.version) or 0) < 9
+        or (tonumber(bagQuickPresenter.ReleasedRootRecoveryContractVersion) or 0) < 1
         or (tonumber(bagQuickPresenter.ReloadVisibilityContractVersion) or 0) < 2
         or (tonumber(bagQuickPresenter.NativeTransientHostContractVersion) or 0) < 2
         or (tonumber(bagQuickPresenter.VisibleRetryContractVersion) or 0) < 2
@@ -273,7 +298,7 @@ function A:RunMatrix()
         or (tonumber(bagQuickPresenter.DiffRenderContractVersion) or 0) < 1
         or (tonumber(bagQuickPresenter.HintYieldContractVersion) or 0) < 1
         or (tonumber(bagQuickPresenter.QuietByDefaultContractVersion) or 0) < 1 then
-        failures[#failures + 1] = "bag_quick_take_put_contract_v9"
+        failures[#failures + 1] = "bag_quick_take_put_contract_v13"
     end
 
     local gearFeature = S.Features and S.Features.Gear or nil
@@ -890,6 +915,34 @@ function A:RunMatrix()
         or type(rsui.PopupCoordinator) ~= "table" or type(rsui.PopupCoordinator.CloseAll) ~= "function"
         or rsui.DropdownService ~= rsui.PopupCoordinator then
         failures[#failures + 1] = "popup_coordinator_contract"
+    end
+    -- Detached UIParent popups use one viewport-logical Authority.  Do not
+    -- regress to per-control GetEffectiveOffset/uiScale arithmetic: RU has
+    -- exposed effective geometry in more than one unit space, and a second
+    -- transform produces position-dependent drift on non-default resolutions.
+    local popupPositioning = rsui and rsui.PopupPositioning or nil
+    if type(S.Layout) ~= "table"
+        or (tonumber(S.Layout.ViewportLogicalRectContractVersion) or 0) < 1 -- 中文维护注释：外部 Native Trigger 仍必须能归一到 viewport-logical-v1。
+        or (tonumber(S.Layout.EffectiveGeometryCalibrationContractVersion) or 0) < 1 -- 中文维护注释：外部原生控件仍保留 bounded Effective Geometry 校准。
+        or (tonumber(S.Layout.SuiteOwnedViewportAnchorContractVersion) or 0) < 1 -- 中文维护注释：Suite-owned Trigger 必须提供完整 Diff cache 父链 Authority。
+        or type(S.Layout.ResolveViewportLogicalRect) ~= "function" -- 中文维护注释：验证外部原生几何解析函数存在。
+        or type(S.Layout.ResolveSuiteOwnedViewportLogicalRect) ~= "function" -- 中文维护注释：验证 Suite-owned cache-first 锚点函数存在。
+        or rsui == nil -- 中文维护注释：RSUI 缺失时 Popup 契约无法成立。
+        or (tonumber(rsui.PopupPositioningContractVersion) or 0) < 3 -- 中文维护注释：PopupPositioning v3 才包含 .18.191 Native-relative 最终 Anchor，.18.190 cache-first 绝对坐标已被 RU 实机证明不足。
+        or (tonumber(rsui.PopupNativeRelativeAnchorContractVersion) or 0) < 1 -- 中文维护注释：验收必须证明 Native-relative Trigger Anchor 契约已登记。
+        or (tonumber(rsui.PopupSuiteAnchorAuthorityContractVersion) or 0) < 1 -- 中文维护注释：显式要求 Suite Popup Anchor Authority 已登记。
+        or (tonumber(rsui.PopupCoordinateSpaceContractVersion) or 0) < 1 -- 中文维护注释：最终输出坐标空间仍必须是 viewport-logical-v1。
+        or (tonumber(rsui.PopupCoordinateConsumerContractVersion) or 0) < 2 -- 中文维护注释：Controls consumer v2 才能证明 Dropdown/ColorField 最终位置不再写 UIParent 绝对坐标。
+        or (tonumber(rsui.InteractionPopupCoordinateConsumerContractVersion) or 0) < 2 -- 中文维护注释：Interactions consumer v2 才能证明目标型 Tooltip/ContextMenu 已切换到同一 Native-relative Authority。
+        or type(popupPositioning) ~= "table" -- 中文维护注释：唯一 Popup Positioning Authority 缺失时不能接受 detached Popup 能力。
+        or type(popupPositioning.ApplyNativeRelativePopup) ~= "function" -- 中文维护注释：验收直接要求最终 Native-relative 提交入口存在，避免“契约版本升了但 Consumer 仍走旧算法”的假绿。
+        or type(popupPositioning.CorrectNativePopupToScreen) ~= "function" -- 中文维护注释：验收屏幕边缘 Native 修正入口，低分辨率不允许回退业务固定偏移。
+        or type(S.DiagnosticsManager) ~= "table" or type(S.DiagnosticsManager.BuildPopupPositioningReport) ~= "function" -- 中文维护注释：专项坐标报告属于 .18.191 可观测性契约，用户必须能复制真实 RU 几何。
+        or type(popupPositioning.ResolveAnchorRect) ~= "function"
+        or type(popupPositioning.ResolveAnchored) ~= "function"
+        or type(popupPositioning.ResolveDropdown) ~= "function"
+        or type(popupPositioning.ResolvePoint) ~= "function" then
+        failures[#failures + 1] = "popup_coordinate_authority_contract"
     end
     if rsui == nil or (tonumber(rsui.FocusContractVersion) or 0) < 2
         or type(rsui.Focus) ~= "table" or type(rsui.Focus.CanSet) ~= "function"

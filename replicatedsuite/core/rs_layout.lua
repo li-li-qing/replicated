@@ -22,6 +22,9 @@ L.CoordinateSystemContractVersion = 1
 L.RectTransformTransactionContractVersion = 2
 L.ScreenToWidgetLocalContractVersion = 1
 L.ResponsivePlacementIntentContractVersion = 1
+L.ViewportLogicalRectContractVersion = 1
+L.EffectiveGeometryCalibrationContractVersion = 1 -- 中文维护注释：保留 RU Effective Geometry 单位校准契约，供外部原生控件和诊断继续使用。
+L.SuiteOwnedViewportAnchorContractVersion = 1 -- 中文维护注释：从 .18.190 起，Suite 自己创建并由 Diff Authority 布局的控件，Popup 锚点必须优先使用完整 NativeStateCache 父链，而不能继续猜测 GetEffectiveOffset 的单位。
 L.coordinateSystem = {
     origin = "top_left",
     xPositive = "right",
@@ -417,6 +420,198 @@ function L:PollChanges()
         return true
     end
     return false
+end
+
+
+-- Detached Popup / UIParent coordinate normalization -----------------------
+--
+-- Do not retrofit this behaviour into GetLogicalRect().  That older helper is
+-- consumed by Windowing/drag/snap code whose callers already depend on its
+-- legacy semantics.  Popups need a stricter contract: a live widget rectangle
+-- expressed in UIParent viewport-logical coordinates exactly once.
+--
+-- RU has returned GetEffectiveOffset/GetEffectiveExtent in both logical and
+-- UI-scaled units.  We therefore calibrate the unit from multiple bounded facts
+-- instead of dividing by uiScale unconditionally.  A Suite-owned widget's
+-- cached logical extent is the strongest discriminator (raw extent ~= logical
+-- extent => scale 1; raw extent ~= logical*uiScale => scale uiScale). UIParent
+-- effective extent and physical/logical viewport ratios are fallback evidence.
+local function ReadEffectivePair(widget, methodName)
+    if widget == nil or type(widget[methodName]) ~= "function" then return nil, nil, false end
+    local ok, a, b = pcall(function() return widget[methodName](widget) end)
+    a, b = ok and tonumber(a) or nil, ok and tonumber(b) or nil
+    if a == nil or b == nil or a ~= a or b ~= b then return nil, nil, false end
+    return a, b, true
+end
+
+local function AddScaleCandidate(candidates, value, source)
+    value = tonumber(value)
+    if value == nil or value ~= value or value < 0.20 or value > 5.0 then return end
+    for _, row in ipairs(candidates) do
+        if math.abs(row.value - value) <= 0.0005 then return end
+    end
+    candidates[#candidates + 1] = { value = value, source = tostring(source or "candidate") }
+end
+
+function L:ResolveEffectiveGeometryScale(widget, rawWidth, rawHeight, context)
+    context = type(context) == "table" and context or self:GetContext()
+    local candidates = {}
+    AddScaleCandidate(candidates, 1, "logical_1")
+    AddScaleCandidate(candidates, context and context.uiScale, "ui_scale")
+    local logicalW = math.max(1, tonumber(context and context.logicalWidth) or 1)
+    local logicalH = math.max(1, tonumber(context and context.logicalHeight) or 1)
+    local screenW = tonumber(context and context.screenWidth)
+    local screenH = tonumber(context and context.screenHeight)
+    if screenW ~= nil then AddScaleCandidate(candidates, screenW / logicalW, "screen_width_ratio") end
+    if screenH ~= nil then AddScaleCandidate(candidates, screenH / logicalH, "screen_height_ratio") end
+
+    local rootW, rootH, rootExtentKnown = ReadEffectivePair(UIParent, "GetEffectiveExtent")
+    if rootExtentKnown then
+        AddScaleCandidate(candidates, rootW / logicalW, "uiparent_effective_width")
+        AddScaleCandidate(candidates, rootH / logicalH, "uiparent_effective_height")
+    end
+
+    local cachedW, cachedH = nil, nil
+    local cache = S.UI and S.UI.NativeStateCache or nil
+    local row = type(cache) == "table" and cache[widget] or nil
+    if type(row) == "table" then
+        cachedW, cachedH = tonumber(row.width), tonumber(row.height)
+        if cachedW ~= nil and cachedW > 0 and tonumber(rawWidth) ~= nil then
+            AddScaleCandidate(candidates, tonumber(rawWidth) / cachedW, "widget_cached_width")
+        end
+        if cachedH ~= nil and cachedH > 0 and tonumber(rawHeight) ~= nil then
+            AddScaleCandidate(candidates, tonumber(rawHeight) / cachedH, "widget_cached_height")
+        end
+    end
+
+    -- Score each candidate against every fact expressed in the same unit. The
+    -- cached Suite extent is weighted highest because it is the actual logical
+    -- value we wrote through the Diff Authority. Root/screen ratios only break
+    -- ties when a widget does not expose a usable effective extent.
+    local best, bestScore = nil, nil
+    for _, candidate in ipairs(candidates) do
+        local scale = candidate.value
+        local score, evidence = 0, 0
+        if cachedW ~= nil and cachedW > 0 and tonumber(rawWidth) ~= nil and tonumber(rawWidth) > 0 then
+            score = score + math.abs((tonumber(rawWidth) / scale) - cachedW) / math.max(1, cachedW) * 8
+            evidence = evidence + 8
+        end
+        if cachedH ~= nil and cachedH > 0 and tonumber(rawHeight) ~= nil and tonumber(rawHeight) > 0 then
+            score = score + math.abs((tonumber(rawHeight) / scale) - cachedH) / math.max(1, cachedH) * 8
+            evidence = evidence + 8
+        end
+        if rootExtentKnown and rootW > 0 and rootH > 0 then
+            score = score + math.abs((rootW / scale) - logicalW) / logicalW * 2
+            score = score + math.abs((rootH / scale) - logicalH) / logicalH * 2
+            evidence = evidence + 4
+        end
+        if screenW ~= nil and screenH ~= nil and screenW > 0 and screenH > 0 then
+            local screenScaleX, screenScaleY = screenW / logicalW, screenH / logicalH
+            score = score + math.abs(scale - screenScaleX) / math.max(1, screenScaleX) * 0.20
+            score = score + math.abs(scale - screenScaleY) / math.max(1, screenScaleY) * 0.20
+            evidence = evidence + 0.40
+        end
+        if evidence == 0 then
+            score = math.abs(scale - (tonumber(context and context.uiScale) or 1))
+        end
+        if bestScore == nil or score < bestScore then
+            best, bestScore = candidate, score
+        end
+    end
+    best = best or { value = math.max(0.001, tonumber(context and context.uiScale) or 1), source = "ui_scale_fallback" }
+    return math.max(0.001, tonumber(best.value) or 1), tostring(best.source or "unknown"), tonumber(bestScore) or 0
+end
+
+local function ResolveCachedViewportRect(widget) -- 中文维护注释：沿 UI Diff Authority 已提交的真实 NativeStateCache 父链累加逻辑坐标，得到相对 UIParent 的唯一可证明锚点。
+    local cache = S.UI and S.UI.NativeStateCache or nil -- 中文维护注释：NativeStateCache 是 UI:SetAnchor/UI:SetExtent 的写入镜像，因此对 Suite-owned 控件比 RU GetEffectiveOffset 的单位猜测更可靠。
+    if type(cache) ~= "table" or widget == nil then return nil end -- 中文维护注释：没有缓存表或目标控件时无法证明完整父链，必须 fail-closed。
+    local x, y = 0, 0 -- 中文维护注释：从目标控件开始累计每一级 TOPLEFT 逻辑偏移，最终得到 UIParent-local X/Y。
+    local current, guard = widget, 0 -- 中文维护注释：current 保存当前父链节点，guard 防止异常父链形成死循环。
+    local first = cache[current] -- 中文维护注释：目标节点自身的缓存行提供 Popup 需要的宽高。
+    local width = type(first) == "table" and tonumber(first.width) or nil -- 中文维护注释：宽度直接使用 Diff Authority 写入的逻辑宽度，不再根据 UI Scale 二次换算。
+    local height = type(first) == "table" and tonumber(first.height) or nil -- 中文维护注释：高度同样使用逻辑高度，保证 Dropdown 行高和触发器高度处于同一坐标空间。
+    while current ~= nil and current ~= UIParent and current ~= "UIParent" and guard < 64 do -- 中文维护注释：只有父链最终确实抵达 UIParent 才允许作为 detached Popup 的屏幕锚点。
+        guard = guard + 1 -- 中文维护注释：每向上追溯一级就增加保护计数，64 层远高于当前 RSUI 树深度。
+        local row = cache[current] -- 中文维护注释：读取当前节点最后一次由 Diff Authority 或 Native Primitive Factory 成功提交的 Native 几何状态。
+        if type(row) ~= "table" then return nil end -- 中文维护注释：当前节点连缓存行都不存在时父链不可证明，必须立即 fail-closed。
+        local parent = row.anchorParent -- 中文维护注释：优先读取 DiffRenderer v2 使用的标量父节点字段，这是后续布局写入的标准形式。
+        local anchorX = tonumber(row.anchorX) -- 中文维护注释：优先读取标量逻辑 X；保持与 UI:SetAnchor 写入单位完全一致。
+        local anchorY = tonumber(row.anchorY) -- 中文维护注释：优先读取标量逻辑 Y；保持与 UI:SetAnchor 写入单位完全一致。
+        local legacy = type(row.anchorTopLeft) == "table" and row.anchorTopLeft or nil -- 中文维护注释：Native Primitive Factory 初次创建控件时可能只 Prime `anchorTopLeft`，即使后续位置未变化也不会强制迁移成标量字段。
+        if parent == nil and legacy ~= nil then parent = legacy.parent end -- 中文维护注释：仅当标准父字段缺失时读取兼容父节点，避免覆盖已经由 DiffRenderer 更新的新 Authority。
+        if anchorX == nil and legacy ~= nil then anchorX = tonumber(legacy.x) end -- 中文维护注释：仅在标量 X 缺失时读取初始 Prime 的逻辑 X，保证未发生重排的控件也能组成完整父链。
+        if anchorY == nil and legacy ~= nil then anchorY = tonumber(legacy.y) end -- 中文维护注释：仅在标量 Y 缺失时读取初始 Prime 的逻辑 Y，保证首次打开 Popup 不依赖先发生一次布局变更。
+        if parent == nil then return nil end -- 中文维护注释：标准字段和兼容字段都无法证明父节点时，禁止退回 EffectiveOffset 猜坐标。
+        x = x + (anchorX or 0) -- 中文维护注释：累加当前节点相对父节点的逻辑 X；项目统一左上角原点，向右为正。
+        y = y + (anchorY or 0) -- 中文维护注释：累加当前节点相对父节点的逻辑 Y；项目统一左上角原点，向下为正。
+        current = parent -- 中文维护注释：继续沿已经明确解析出的真实缓存父节点追溯，直到 UIParent。
+    end -- 中文维护注释：结束父链追溯循环。
+    if current ~= UIParent and current ~= "UIParent" then return nil end -- 中文维护注释：未在保护深度内抵达 UIParent 时视为不可证明坐标，直接拒绝。
+    return x, y, math.max(1, width or 1), math.max(1, height or 1), guard -- 中文维护注释：返回 UIParent-local 逻辑矩形和父链深度，父链深度用于诊断，不参与业务判断。
+end -- 中文维护注释：结束缓存父链解析 helper。
+
+function L:ResolveSuiteOwnedViewportLogicalRect(widget) -- 中文维护注释：这是 .18.190 新增的 Suite-owned Popup 锚点 Authority，只接受完整 Diff cache 父链。
+    if widget == nil then return nil, nil, nil, nil, { source = "suite_widget_missing", coordinateSpace = "viewport-logical-v1" } end -- 中文维护注释：目标为空时明确返回不可用来源，避免上层退回魔法偏移。
+    local x, y, width, height, depth = ResolveCachedViewportRect(widget) -- 中文维护注释：直接消费完整缓存父链，不读取 RU EffectiveOffset，因此不会再被 UI Scale/分辨率语义差异污染。
+    if x == nil then return nil, nil, nil, nil, { source = "suite_anchor_chain_unavailable", coordinateSpace = "viewport-logical-v1" } end -- 中文维护注释：父链不完整时 fail-closed，让 PopupPositioning 决定是否允许外部原生车道兜底。
+    return x, y, width, height, { -- 中文维护注释：返回已经处于 UIParent viewport-logical-v1 的最终锚点，Consumer 禁止再次乘除 uiScale。
+        source = "suite_native_state_anchor_chain", -- 中文维护注释：明确记录 Authority 来源，实机诊断可直接区分 cache 父链与 Effective API。
+        coordinateSpace = "viewport-logical-v1", -- 中文维护注释：标记唯一允许 detached Popup 消费的逻辑视口坐标空间。
+        effectiveScale = 1, -- 中文维护注释：缓存父链本身已经是 UI:SetAnchor 接收的逻辑单位，因此这里不存在二次 Effective scale。
+        scaleSource = "diff_authority_logical", -- 中文维护注释：诊断说明此次没有执行 RU EffectiveGeometry 单位猜测。
+        anchorDepth = tonumber(depth) or 0, -- 中文维护注释：记录从 Trigger 到 UIParent 的完整父链层数，方便定位未来断链问题。
+    } -- 中文维护注释：结束元数据表。
+end -- 中文维护注释：结束 Suite-owned viewport logical rect Authority。
+
+function L:ResolveViewportLogicalRect(widget)
+    if widget == nil then return nil, nil, nil, nil, { source = "widget_missing", coordinateSpace = "viewport-logical-v1" } end
+    local context = self:GetContext()
+    local rawX, rawY, offsetKnown = ReadEffectivePair(widget, "GetEffectiveOffset")
+    local rawW, rawH, extentKnown = ReadEffectivePair(widget, "GetEffectiveExtent")
+    if offsetKnown == true then
+        local rootX, rootY, rootKnown = ReadEffectivePair(UIParent, "GetEffectiveOffset")
+        if rootKnown ~= true then rootX, rootY = 0, 0 end
+        local scale, scaleSource, score = self:ResolveEffectiveGeometryScale(widget, rawW, rawH, context)
+        local x, y = (rawX - rootX) / scale, (rawY - rootY) / scale
+        local width, height
+        if extentKnown == true then
+            width, height = rawW / scale, rawH / scale
+        else
+            local cache = S.UI and S.UI.NativeStateCache or nil
+            local row = type(cache) == "table" and cache[widget] or nil
+            width = type(row) == "table" and tonumber(row.width) or nil
+            height = type(row) == "table" and tonumber(row.height) or nil
+            if width == nil and type(widget.GetWidth) == "function" then pcall(function() width = tonumber(widget:GetWidth()) end) end
+            if height == nil and type(widget.GetHeight) == "function" then pcall(function() height = tonumber(widget:GetHeight()) end) end
+        end
+        if tonumber(width) ~= nil and tonumber(height) ~= nil then
+            return x, y, math.max(1, width), math.max(1, height), {
+                source = "effective_calibrated",
+                coordinateSpace = "viewport-logical-v1",
+                effectiveScale = scale,
+                scaleSource = scaleSource,
+                calibrationScore = score,
+                uiScale = tonumber(context.uiScale) or 1,
+                uiParentRawX = rootX,
+                uiParentRawY = rootY,
+            }
+        end
+    end
+
+    -- Bounded fallback for Suite-owned nodes whose effective API is temporarily
+    -- unavailable (for example while an ancestor is transitioning visibility).
+    -- Never mix this chain with a partial effective result: one complete source
+    -- owns the whole rect, preserving the single-transform rule.
+    local cx, cy, cw, ch = ResolveCachedViewportRect(widget)
+    if cx ~= nil then
+        return cx, cy, cw, ch, {
+            source = "native_state_anchor_chain_fallback",
+            coordinateSpace = "viewport-logical-v1",
+            effectiveScale = 1,
+            scaleSource = "cached_logical",
+        }
+    end
+    return nil, nil, nil, nil, { source = "viewport_rect_unavailable", coordinateSpace = "viewport-logical-v1" }
 end
 
 function L:GetLogicalRect(widget)

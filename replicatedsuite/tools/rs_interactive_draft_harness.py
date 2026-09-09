@@ -528,7 +528,7 @@ def main() -> int:
         'Write(self.binding, nextColor, true, "colorfield_api", spec)',
     ))
     require_source(INTERACTIONS, (
-        "RSUI.InteractionServiceContractVersion = 3",
+        "RSUI.InteractionServiceContractVersion = 4",
         "RSUI.InteractionPopupVisibilityContractVersion = 1",
         "local function EnsureVisible(widget, visible, owner)",
         "if okA == true and okB == true then",

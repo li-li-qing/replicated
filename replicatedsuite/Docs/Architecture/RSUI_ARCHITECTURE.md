@@ -150,6 +150,33 @@ Popup 构建失败属于能力不可用，不属于“换一种交互也算成�
 
 禁止再次使用“单按钮每点一次循环到下一个值”作为 Dropdown 失败 fallback。
 
+### `.18.191` Popup Native-relative Trigger Anchor / Coordinate Lane Contract
+
+`PopupCoordinator` 只拥有“谁可以同时打开”的生命周期；`RSUI.PopupPositioning` 拥有 detached Popup 的定位政策。`.18.189`/`.18.190` 两次 RU 实机结果证明：即使统一校准 `GetEffectiveOffset` 或重建 Suite `NativeStateCache` 完整父链，**把 Trigger 先反算成 UIParent 绝对坐标再定位 top-level Window 仍可能漂移**。因此 Suite-owned 目标型 Popup 不再消费绝对 Trigger 坐标。
+
+```text
+Suite-owned Trigger Native Widget
+        ↓ 直接作为 AddAnchor reference
+UIParent top-level transient Window
+        ↓ local relative offset（Dropdown = 0, TriggerHeight + gap）
+Native Anchor system
+        ↓ Show
+CorrectOffsetByScreen()
+```
+
+强制规则：
+
+- `popup-native-relative-v1`：Dropdown / ColorField / 目标型 Tooltip / 目标型 ContextMenu；最终调用 `UI:EnsureAnchor(Popup, TriggerNative, relativeX, relativeY)`。
+- `popup-point-v1`：鼠标位置或调用方明确给出的屏幕点；允许 `ResolvePoint()` 生成一次 `viewport-logical-v1` 绝对坐标。
+- `external-native-window-v1`：Bag quick 等跟随 ArcheAge 原生窗口的 Surface；继续使用独立 External Native Geometry Authority。
+- `world-projection`：Unit Lines / Range / Head Marker，只消费 `ScreenProjectionV3`。
+- Windowing/Layout lane：可拖、可缩放、可持久化的 Shell/Floating/Gear quick。
+- `ResolveViewportLogicalRect()` / `ResolveSuiteOwnedViewportLogicalRect()` 继续保留给外部原生几何、诊断与历史 solver；它们**不再拥有 Suite-owned target Popup 的最终 position**。
+- 所有 relative Popup 显示后可调用已验证的 `UIBounds:CorrectOffsetByScreen()` 做屏幕边缘修正；Consumer 禁止写分辨率特例和 magic offset。
+- 定位是用户打开 Popup 时的低频事务，无 Tick、OnUpdate 或持续轮询。
+
+可观测性也是契约：`DiagnosticsManager:BuildPopupPositioningReport()` 与诊断页 **`RSUI Popup定位`** 按钮必须同时存在。报告有界保留最近 Popup，并输出 Trigger / Popup-before / Popup-after 的原始 Native geometry。后续若 RU 仍异常，应先基于该报告验证 `AddAnchor`/`CorrectOffsetByScreen` 的真实语义，不允许继续仅凭截图调整数值。
+
 ### PopupCoordinator / Z-Layer Contract
 
 `.18.63` 的 Input/Popup 审计确认 Dropdown、ColorField、ContextMenu 已经是三个真实的 top-level click-open surface，因此“统一 popup 生命周期”已经满足跨 Feature/跨组件下沉条件，不再由 Dropdown 私有服务代管。
@@ -2493,6 +2520,8 @@ Option children inherit same owner
 
 - `UI:CreatePanel()` 必须在 `Register()` **之前**应用 explicit owner；禁止先以无 owner/Legacy 身份注册再补 owner。
 - Popup geometry/text/visible/enabled/pickable 走 `UI Diff Authority`；不允许业务页直接反复写 Native 状态。
+- Popup x/y 走 `RSUI.PopupPositioning`；Trigger 可以在 ScrollBox/Card/Shell 内，但脱离父树后只能消费 `viewport-logical-v1`。禁止业务页/Dropdown 自己 `GetEffectiveOffset / GetLogicalRect / uiScale` 拼位置。
+- 长 Dropdown 根据当前 Anchor 上/下可用空间 + Safe Viewport 60% 高度预算计算完整 `visibleRows`；下方不足时自动向上，左右越界统一 clamp，超出的选项继续复用固定行池与滚动。
 - Option rows 使用创建时固定池（当前 `maxVisible` 上限 16），`SetItems()` 只重绑内容并保留当前 top anchor；刷新不会制造 Native widget churn。
 - Option pool 的 OnClick closure 必须捕获 `optionButton/optionIndex` 的 iteration-local 副本，不能直接闭包引用 Lua 5.1 的 `for` 循环变量；这是 Dropdown Contract v2 的组成部分。
 - Dropdown 交互完全事件驱动；禁止 Tick/OnUpdate 常驻轮询。
@@ -5991,3 +6020,17 @@ UITokens v6 的 `settings.*` 是统一密度来源；禁止业务页复制一组
 视觉层级同步收敛：`SettingsSection` 是 flat title + soft Divider 的信息架构容器，不再创建嵌套 Card Surface；`SettingsStyleCard` 才是实际分组 Surface，默认 `soft`、无 accent strip、无 gradient。响应式策略仍只基于 available width，禁止任何分辨率名称/尺寸分支。
 
 契约：`SettingsFoundationContractVersion=3`、`SettingsResponsiveContractVersion=2`、`SettingsStyleCardContractVersion=3`、`SettingsScrollSafeCardContractVersion=2`、`SettingsSectionHierarchyContractVersion=1`、`SettingsNumericSliderContractVersion=1`；Design System v10、UITokens v8。
+
+
+### `.18.190` Suite-owned Popup Anchor Authority
+
+RU 1280×768 实机再次证明：只对 `GetEffectiveOffset/GetEffectiveExtent` 做单位校准仍可能得到错误绝对位置。原因不能再简化为 uiScale；同一 API 在不同 Widget/父级组合下可能具有不同的有效坐标语义。
+
+因此从 `.18.190` 起：
+
+1. RSUI Component / Diff Authority 管理过的 Native Trigger 属于 **suite-owned lane**。
+2. suite-owned lane 的 Popup Anchor 只能沿 `UI.NativeStateCache` 中 `anchorParent + anchorX + anchorY` 完整追溯到 `UIParent`。
+3. 这条父链来源于 Suite 自己成功执行过的 `UI:SetAnchor` 写入，是该 Presentation 的第一手布局事实；不得为了“更实时”先读 EffectiveOffset。
+4. 父链任一级缺失即 fail-closed；禁止 fallback 到 EffectiveOffset 或固定偏移。
+5. 非 Suite-owned 的外部游戏 Native Widget 才进入 `ResolveViewportLogicalRect` 的 Effective Geometry calibration lane。
+6. Popup placement 仍只做一次 flip / clamp / height solve，最终输出仍为 `viewport-logical-v1`。

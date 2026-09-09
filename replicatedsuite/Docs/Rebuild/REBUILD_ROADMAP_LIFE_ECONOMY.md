@@ -102,7 +102,7 @@
 |---|---|
 | 旧实现要点 | BagOrganizerService：背包/仓库整理、黑名单与按类别批量移动 |
 | V3 对应物 | `tools_bag`（v3.bag），状态 `migrated_partial` |
-| V3 已实现 | category_batch + scheduler_queue + native_window_quick_take_put + blacklist_filter + read_verify_stop；Shared Scheduler 串行 bounded 移动；V3 Presenter 跟随背包显示"取/放/停" |
+| V3 已实现 | category_batch + scheduler_queue + native_window_quick_take_put + blacklist_filter + read_verify_stop；Shared Scheduler 串行 bounded 移动；V3 Presenter 跟随背包显示“取/放”两按钮；`.18.187` 普通页面收敛为同类取放 + 全局物品黑名单（ID/名称/背包行直选），旧 category-batch 仅保留兼容命令 |
 | 剩余能力 | RU visual anchoring 和 move timing 仍需 Fresh Reload 验证 |
 | 重建前置条件 | ① RU 实机 Fresh Reload 验证窗口跟随锚定 ② 验证 250ms 串行移动时序 ③ 验证 storage close/change 停止逻辑 |
 

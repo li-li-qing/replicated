@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Developer-only Bag Move Contract v8 regression harness.
+"""Developer-only Bag Move Contract v8 + product-page regression harness.
 
 Contract v8 keeps the old/reference project only as product-behaviour evidence.
 Active V3 owns the implementation through InventorySnapshotV3: a single bounded
@@ -83,7 +83,9 @@ def require_source_contract() -> None:
     page = (ROOT / "presentation/v3/pages/rs_v3_business_pages.lua").read_text(encoding="utf-8-sig")
     assert "onText=\"目标：箱子\"" not in page and "offText=\"目标：银行\"" not in page, \
         "the bank/coffer target toggle must not come back: both cannot be open at once"
-    assert "v3_business_tools_bag_batch_target_auto" in page and "DepositCategoryCurrent" in page
+    assert "v3_business_tools_bag_batch_target_auto" not in page and "v3_business_tools_bag_batch_row" not in page, \
+        "category batch stays available as a compatibility command but must not clutter the normal player page"
+    assert "高级整理" not in page, "advanced category batch copy must stay off the simplified product page"
 
     code = re.sub(r"--\[\[.*?\]\]", "", SOURCE, flags=re.S)
     code = re.sub(r"--[^\n]*", "", code)

@@ -528,6 +528,16 @@ def main() -> int:
         "BagTools.QuickRunSelfHealContractVersion = 1",
         "BagTools.QuickTwoButtonContractVersion = 1",
         "BagTools.QuickReasonVisibilityContractVersion = 1",
+        "BagTools.StorageSessionBagSurfaceContractVersion = 1",
+        "BagTools.ResponsiveWindowObserverContractVersion = 1",
+        "BagTools.ProductBlacklistUxContractVersion = 1",
+        "BagTools.BlacklistNameMetadataContractVersion = 1",
+        "BagTools.BlacklistExplicitLookupContractVersion = 1",
+        "function BagMoveRuntime.ResolveAndAddBlacklistItem(feature, query)",
+        "function BagMoveRuntime.AddGlobalBlacklistItem(feature, itemType, itemName)",
+        "function BagMoveRuntime.RemoveGlobalBlacklistItem(feature, itemType)",
+        "BagMoveRuntime.QuickObserverIntervalMs = 100",
+        "BagTools.BagActionPhysicalReadAuthorityContractVersion = 1",
         "function BagMoveRuntime.QuickQueueActive(feature)",
         "function BagMoveRuntime.QuickRunEvidence(feature)",
         "function BagMoveRuntime.ReclaimStaleBagQuickRun(feature)",
@@ -887,7 +897,7 @@ def main() -> int:
         "captureSupported = false",
         "function Pointer:GetLogicalPosition()",
         "function Pointer:Delta(startX, startY, currentX, currentY)",
-        "RSUI.InteractionServiceContractVersion = 3",
+        "RSUI.InteractionServiceContractVersion = 4",
         "RSUI.InteractionPopupVisibilityContractVersion = 1",
         "local function EnsureVisible(widget, visible, owner)",
         "if okA == true and okB == true then",
@@ -2159,6 +2169,87 @@ def main() -> int:
         for token in tokens:
             if token not in source_text:
                 failures.append(source_name + " top-level layer contract missing: " + token)
+
+    # Detached popup coordinates are a typed Foundation boundary.  The trigger
+    # may be nested in Shell/ScrollBox/component ancestry while the popup root is
+    # reparented to UIParent.  Per-control GetEffectiveOffset/uiScale arithmetic
+    # is forbidden because RU effective geometry has appeared in both logical
+    # and UI-scaled units.  All detached popup consumers must resolve exactly once
+    # through RSUI.PopupPositioning.  External-native and world-projection lanes
+    # are intentionally separate and must declare their own lane instead.
+    popup_positioning_source = (root / "ui/framework/rs_ui_popup_positioning.lua").read_text(encoding="utf-8-sig", errors="replace")
+    layout_source = (root / "core/rs_layout.lua").read_text(encoding="utf-8-sig", errors="replace")
+    bag_quick_source = (root / "presentation/v3/widgets/rs_v3_bag_quick_overlay.lua").read_text(encoding="utf-8-sig", errors="replace")
+    popup_diagnostics_source = (root / "core/rs_diagnostics.lua").read_text(encoding="utf-8-sig", errors="replace")  # 中文维护注释：读取 Popup 专项报告 Authority，确保可观测性不只存在于口头说明。
+    diagnostics_page_source = (root / "presentation/v3/pages/rs_v3_foundation_pages.lua").read_text(encoding="utf-8-sig", errors="replace")  # 中文维护注释：读取诊断页源，锁定用户可见“RSUI Popup定位”入口。
+    for token in (
+        "PopupPositioningContractVersion = 3",  # 中文维护注释：.18.191 要求 PopupPositioning v3，最终位置由 Native-relative Trigger Anchor 拥有，旧绝对 solver 只能留在 point/external lane。
+        "PopupSuiteAnchorAuthorityContractVersion = 1",  # 中文维护注释：保留 .18.190 Suite cache 父链契约用于诊断/外部能力，不能因最终 Position Authority 改变而误删。
+        "PopupNativeRelativeAnchorContractVersion = 1",  # 中文维护注释：静态门禁直接要求 .18.191 Native-relative Anchor 契约，防止版本号提升但真正入口缺失。
+        "function P:ApplyNativeRelativePopup(popup, target, owner, options)",  # 中文维护注释：验证统一 Trigger-relative 提交函数存在，Consumer 不得绕过它写 UIParent 绝对坐标。
+        "function P:CorrectNativePopupToScreen(popup, id)",  # 中文维护注释：验证屏幕边缘适配统一封装 RU CorrectOffsetByScreen，而不是业务分辨率补丁。
+        "PopupCoordinateSpaceContractVersion = 1",  # 中文维护注释：最终 detached Popup 坐标空间仍保持 viewport-logical-v1。
+        'coordinateSpace = "viewport-logical-v1"',
+        "function P:ResolveAnchorRect(target)",
+        "function P:ResolveAnchored(anchor, popupWidth, popupHeight, options)",
+        "function P:ResolveDropdown(target, options)",
+        "function P:ResolvePoint(x, y, popupWidth, popupHeight, options)",
+    ):
+        if token not in popup_positioning_source:
+            failures.append("Popup positioning authority contract missing: " + token)
+    for token in (
+        "ViewportLogicalRectContractVersion = 1",
+        "EffectiveGeometryCalibrationContractVersion = 1",  # 中文维护注释：外部 Native Trigger 仍保留 Effective Geometry 单位校准能力。
+        "SuiteOwnedViewportAnchorContractVersion = 1",  # 中文维护注释：Suite-owned Trigger 必须具备完整 NativeStateCache 父链契约。
+        "function L:ResolveEffectiveGeometryScale(widget, rawWidth, rawHeight, context)",  # 中文维护注释：验证外部原生几何校准函数未被误删。
+        "function L:ResolveViewportLogicalRect(widget)",  # 中文维护注释：验证外部 Native viewport logical 解析函数仍存在。
+        "function L:ResolveSuiteOwnedViewportLogicalRect(widget)",  # 中文维护注释：验证 .18.190 Suite cache-first 锚点解析函数存在。
+    ):
+        if token not in layout_source:
+            failures.append("Viewport logical geometry contract missing: " + token)
+    for source_name, source_text, required in (
+        ("Dropdown/ColorField", controls_source, ("PopupCoordinateConsumerContractVersion = 2", "PopupCoordinateConsumerLane = \"popup-native-relative-v1\"", "ApplyNativeRelativePopup", "CorrectNativePopupToScreen")),  # 中文维护注释：Controls 必须声明 v2 + Native-relative lane，并同时包含相对 Anchor 与 Native 边缘修正调用。
+        ("Tooltip/ContextMenu", interaction_source_for_popup, ("InteractionPopupCoordinateConsumerContractVersion = 2", "InteractionPopupCoordinateConsumerLane = \"popup-native-relative-v1\"", "ApplyNativeRelativePopup", "CorrectNativePopupToScreen", "popup-point-v1")),  # 中文维护注释：Interactions 的目标型 Popup 必须 relative；显式 point lane 也必须保留，防止两种语义错误合并。
+    ):
+        for token in required:
+            if token not in source_text:
+                failures.append(source_name + " popup-coordinate consumer contract missing: " + token)
+    # These old entry points are valid elsewhere (Windowing, scroll hit tests),
+    # but detached popup consumers must never bypass the positioning Authority.
+    for source_name, source_text in (("Dropdown/ColorField", controls_source), ("Tooltip/ContextMenu", interaction_source_for_popup)):
+        if "GetLogicalRect(" in source_text:
+            failures.append(source_name + " detached popup escaped coordinate Authority via GetLogicalRect")
+        if "GetEffectiveOffset(" in source_text:
+            failures.append(source_name + " detached popup escaped coordinate Authority via GetEffectiveOffset")
+    for token in ("function D:BuildPopupPositioningReport()", "PopupBefore", "PopupAfter"):  # 中文维护注释：专项报告必须输出修正前后 Native 原始几何，否则 RU 再失败时仍无法定案。
+        if token not in popup_diagnostics_source:  # 中文维护注释：逐项扫描报告源码，缺任何一项都视为发布阻断。
+            failures.append("Popup positioning diagnostics contract missing: " + token)  # 中文维护注释：输出精确缺失令牌，便于维护者定位而不是只看到泛化 blocker。
+    for token in ('id = "v3_diag_popup_output"', 'text = "RSUI Popup定位"', "BuildPopupPositioningReport"):  # 中文维护注释：用户可见按钮的 ID、文案和实际报告调用三者必须同时存在。
+        if token not in diagnostics_page_source:  # 中文维护注释：防止页面重构后按钮被删除但底层报告仍让自动测试假绿。
+            failures.append("Popup positioning visible diagnostic button missing: " + token)  # 中文维护注释：缺失可复制入口直接阻断发布，避免重复 .18.190 的可观测性事故。
+    for token in (
+        "ExternalNativeWindowGeometryContractVersion=1",
+        'rsUiCoordinateLane="external-native-window-v1"',
+        'rsUiCoordinateSpace="viewport-logical-v1"',
+    ):
+        if token not in bag_quick_source:
+            failures.append("Bag quick external-native geometry lane missing: " + token)
+    classified_transient_lanes = {
+        "ui/framework/rs_ui_controls.lua": "popup-native-relative-v1",  # 中文维护注释：Controls 顶层 transient Window 从 .18.191 起必须能在源码声明中证明 Native-relative lane。
+        "ui/framework/rs_ui_interactions.lua": "popup-native-relative-v1",  # 中文维护注释：Interactions 目标型 transient Window 同样归属 Native-relative lane，point lane 是同文件的显式分支。
+        "presentation/v3/widgets/rs_v3_bag_quick_overlay.lua": "external-native-window-v1",
+    }
+    transient_spec_re = re.compile(r"transientWindow\s*=\s*true")
+    for rel in active_lua:
+        source = (root / rel).read_text(encoding="utf-8-sig", errors="replace")
+        code = strip_lua_strings(strip_lua_comments(source))
+        if transient_spec_re.search(code) is None:
+            continue
+        lane = classified_transient_lanes.get(rel)
+        if lane is None:
+            failures.append("Unclassified top-level transient coordinate lane: " + rel)
+        elif lane not in source:
+            failures.append("Declared transient coordinate lane token missing: " + rel + " -> " + lane)
     interaction_source = (root / "ui/framework/rs_ui_interactions.lua").read_text(encoding="utf-8-sig", errors="replace")
     for token in (
         "FocusContractVersion = 3",

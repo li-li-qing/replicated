@@ -783,7 +783,9 @@ RSUI:RegisterType("Slider", function(spec)
     return c
 end)
 
-RSUI.DropdownContractVersion = 2
+RSUI.DropdownContractVersion = 3
+RSUI.PopupCoordinateConsumerContractVersion = 2 -- 中文维护注释：.18.191 要求 Dropdown/ColorField 的 Suite-owned transient Window 使用 Native-relative Trigger Anchor，而不是 UIParent 绝对坐标。
+RSUI.PopupCoordinateConsumerLane = "popup-native-relative-v1" -- 中文维护注释：Controls 的 detached Popup 坐标 lane 显式登记为 Native-relative；Foundation Audit 用该令牌防止后续把 transient Window 偷偷改回旧 absolute lane。
 RSUI.DropdownDegradedFailClosedContractVersion = 1
 RSUI.DropdownRuntimeInteractionContractVersion = 1
 RSUI.PopupCoordinatorContractVersion = 1
@@ -931,6 +933,7 @@ RSUI:RegisterType("Dropdown", function(spec)
     c.selectedIndex = 0
     c.scrollOffset = 0
     c.maxVisible = maxVisible
+    c.visibleRows = maxVisible
     c.optionButtons = {}
     c.open = false
     c.lastLayout = { x = 0, y = 0, w = width, h = height, popupWidth = spec.popupWidth }
@@ -994,8 +997,12 @@ RSUI:RegisterType("Dropdown", function(spec)
         c.optionButtons[index] = button
     end
 
+    local function VisibleRowCapacity()
+        return math.max(1, math.min(c.maxVisible, math.floor(tonumber(c.visibleRows) or c.maxVisible)))
+    end
+
     local function MaxScrollOffset()
-        return math.max(0, #c.items - c.maxVisible)
+        return math.max(0, #c.items - VisibleRowCapacity())
     end
 
     function c:RefreshText()
@@ -1032,14 +1039,18 @@ RSUI:RegisterType("Dropdown", function(spec)
 
     function c:RefreshButtons()
         local count = #self.items
-        local needScroll = count > self.maxVisible
+        local rowCapacity = VisibleRowCapacity()
+        local needScroll = count > rowCapacity
         self.scrollOffset = math.max(0, math.min(tonumber(self.scrollOffset) or 0, MaxScrollOffset()))
 
         for index = 1, self.maxVisible do
             local button = self.optionButtons[index]
             local itemIndex = self.scrollOffset + index
             local item = self.items[itemIndex]
-            local visible = type(item) == "table"
+            -- PopupPositioning may reduce visibleRows on 768p or near a screen
+            -- edge.  Keep the preallocated pool, but never leave rows beyond
+            -- the resolved popup height visible/pickable.
+            local visible = index <= rowCapacity and type(item) == "table"
             button.rsItemIndex = visible and itemIndex or nil
             button.rsDropdownSelectable = visible and item.selectable ~= false and item.kind ~= "header"
             local visibleOk, visibleErr = EnsureRawVisible(button, visible, self.owner)
@@ -1130,40 +1141,33 @@ RSUI:RegisterType("Dropdown", function(spec)
     end
 
     function c:ApplyPopupLayout()
-        local layout = self.lastLayout or { x = 0, y = 0, w = width, h = height }
-        local triggerX, triggerY, triggerW, triggerH = tonumber(layout.x) or 0, tonumber(layout.y) or 0, tonumber(layout.w) or width, tonumber(layout.h) or height
-        if S.Layout ~= nil and type(S.Layout.GetLogicalRect) == "function" then
-            local ok, x, y, w, h = pcall(function() return S.Layout:GetLogicalRect(self.root) end)
-            if ok then
-                triggerX = tonumber(x) or triggerX
-                triggerY = tonumber(y) or triggerY
-                triggerW = tonumber(w) or triggerW
-                triggerH = tonumber(h) or triggerH
-            end
+        local positioning = RSUI.PopupPositioning
+        if type(positioning) ~= "table" or type(positioning.ResolveDropdown) ~= "function" then
+            return self:FailDropdownInteraction("dropdown_popup_positioning_contract_unavailable")
         end
-
-        local context = S.Layout ~= nil and type(S.Layout.GetContext) == "function" and S.Layout:GetContext() or nil
-        local logicalW = context and tonumber(context.logicalWidth) or 1024
-        local logicalH = context and tonumber(context.logicalHeight) or 768
-        local safeLeft = context and tonumber(context.safeLeft) or 4
-        local safeRight = context and tonumber(context.safeRight) or 4
-        local safeTop = context and tonumber(context.safeTop) or 4
-        local safeBottom = context and tonumber(context.safeBottom) or 4
-        local desiredW = math.max(triggerW, tonumber(layout.popupWidth) or tonumber(spec.popupWidth) or triggerW)
-        local popupW = math.max(100, math.min(desiredW, math.max(100, logicalW - safeLeft - safeRight)))
+        local layout = self.lastLayout or { x = 0, y = 0, w = width, h = height }
+        local triggerW = tonumber(layout.w) or width
+        local triggerH = tonumber(layout.h) or height
         local optionH = math.max(24, triggerH)
-        local visibleRows = math.max(1, math.min(self.maxVisible, #self.items))
-        local popupH = visibleRows * optionH
-        local x = math.max(safeLeft, math.min(triggerX, math.max(safeLeft, logicalW - safeRight - popupW)))
-        local belowY = triggerY + triggerH + 2
-        local aboveY = triggerY - popupH - 2
-        local y = belowY
-        if belowY + popupH > logicalH - safeBottom and aboveY >= safeTop then y = aboveY end
-        y = math.max(safeTop, math.min(y, math.max(safeTop, logicalH - safeBottom - popupH)))
+        local resolved, resolveErr, meta = positioning:ResolveDropdown(self, {
+            id = tostring(self.id or spec.id or "dropdown"),
+            popupWidth = math.max(triggerW, tonumber(layout.popupWidth) or tonumber(spec.popupWidth) or triggerW),
+            rowHeight = optionH,
+            itemCount = #self.items,
+            maxVisible = self.maxVisible,
+            maxViewportHeightRatio = 0.60,
+            gap = 2,
+        })
+        if resolved == nil then return self:FailDropdownInteraction("dropdown_popup_position_failed:" .. tostring(resolveErr or "unknown")) end
 
-        UI:SetExtent(self.popup, popupW, popupH, self.owner)
-        UI:SetAnchor(self.popup, UIParent, x, y, self.owner)
-        local scrollW = #self.items > self.maxVisible and 26 or 0
+        self.visibleRows = math.max(1, math.min(self.maxVisible, math.floor(tonumber(meta and meta.visibleRows) or self.maxVisible)))
+        self.scrollOffset = math.max(0, math.min(tonumber(self.scrollOffset) or 0, MaxScrollOffset()))
+        local popupW, popupH = math.max(1, tonumber(resolved.width) or triggerW), math.max(optionH, tonumber(resolved.height) or optionH)
+        local relativeOk, relativeErr = positioning:ApplyNativeRelativePopup(self.popup, self, self.owner, { id = tostring(self.id or spec.id or "dropdown"), width = popupW, height = popupH, triggerWidth = triggerW, triggerHeight = triggerH, gap = 2, placement = "bottom-start" }) -- 中文维护注释：Dropdown 顶层 Window 直接相对自身 Trigger 建立 Native Anchor，Shell/ScrollBox/分辨率/UI Scale 均交由 RU Anchor 系统处理。
+        if relativeOk ~= true then return self:FailDropdownInteraction("dropdown_native_relative_anchor_failed:" .. tostring(relativeErr or "unknown")) end -- 中文维护注释：原生相对锚定失败必须 fail-closed，禁止再次回退到 UIParent 绝对坐标猜测路径。
+
+        local rowCapacity = VisibleRowCapacity()
+        local scrollW = #self.items > rowCapacity and 26 or 0
         for index = 1, self.maxVisible do
             local button = self.optionButtons[index]
             UI:SetExtent(button, math.max(1, popupW - scrollW), optionH, self.owner)
@@ -1188,10 +1192,12 @@ RSUI:RegisterType("Dropdown", function(spec)
         -- every Open must re-establish pickable before it can receive input.
         local repickOk, _, repickErr = UI:EnsurePickable(self.popup, true, self.owner)
         if repickOk ~= true then return self:FailDropdownInteraction("dropdown_popup_repick_failed:" .. tostring(repickErr or "unknown")) end
-        local visibleOk, visibleErr = EnsureRawVisible(self.popup, true, self.owner)
-        if visibleOk ~= true then return self:FailDropdownInteraction("dropdown_popup_show_failed:" .. tostring(visibleErr or "unknown")) end
-        self.open = true
-        if type(self.popup.SetDrawPriority) == "function" then pcall(function() self.popup:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end
+        local visibleOk, visibleErr = EnsureRawVisible(self.popup, true, self.owner) -- 中文维护注释：先让 Native Window 真正进入可见状态，随后 CorrectOffsetByScreen 才能基于最终窗口尺寸执行屏幕边缘修正。
+        if visibleOk ~= true then return self:FailDropdownInteraction("dropdown_popup_show_failed:" .. tostring(visibleErr or "unknown")) end -- 中文维护注释：显示事务失败时立即停止，不发布 open=true，也不继续 Raise。
+        local correctionOk, correctionErr = RSUI.PopupPositioning:CorrectNativePopupToScreen(self.popup, tostring(self.id or spec.id or "dropdown")) -- 中文维护注释：相对 Trigger 锚定完成后只让 RU Native 修正屏幕边缘，不再由 Lua 计算绝对 X/Y。
+        if correctionOk ~= true then return self:FailDropdownInteraction("dropdown_screen_correction_failed:" .. tostring(correctionErr or "unknown")) end -- 中文维护注释：Native 修正方法存在却抛异常时 fail-closed，并保留诊断原始坐标证据。
+        self.open = true -- 中文维护注释：只有 Anchor、Show、边缘修正全部成功后才提交 Presentation open Authority，避免 Lua 状态领先 Native。
+        if type(self.popup.SetDrawPriority) == "function" then pcall(function() self.popup:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end -- 中文维护注释：维持既有 Popup Priority 契约，坐标修复不得改变层级所有权。
         if type(self.popup.Raise) == "function" then pcall(function() self.popup:Raise() end) end
         return true
     end
@@ -1469,31 +1475,23 @@ RSUI:RegisterType("ColorField", function(spec)
     end
 
     function c:ApplyPopupLayout()
-        local px, py, pw, ph = 0, 0, trigW, trigH
-        if S.Layout ~= nil and type(S.Layout.GetLogicalRect) == "function" then
-            local ok, x, y, w, h = pcall(function() return S.Layout:GetLogicalRect(self.root) end)
-            if ok then px, py, pw, ph = tonumber(x) or 0, tonumber(y) or 0, tonumber(w) or trigW, tonumber(h) or trigH end
+        local positioning = RSUI.PopupPositioning
+        if type(positioning) ~= "table" or type(positioning.ResolveAnchorRect) ~= "function"
+            or type(positioning.ResolveAnchored) ~= "function" then
+            return false, "colorfield_popup_positioning_contract_unavailable"
         end
-        local context = S.Layout ~= nil and type(S.Layout.GetContext) == "function" and S.Layout:GetContext() or nil
-        local logicalW = context and tonumber(context.logicalWidth) or 1024
-        local logicalH = context and tonumber(context.logicalHeight) or 768
-        local safeLeft = context and tonumber(context.safeLeft) or 4
-        local safeRight = context and tonumber(context.safeRight) or 4
-        local safeTop = context and tonumber(context.safeTop) or 4
-        local safeBottom = context and tonumber(context.safeBottom) or 4
-        local popupW = math.max(120, math.min(trigW, math.max(120, logicalW - safeLeft - safeRight)))
-        local popupH = 140
-        local x = math.max(safeLeft, math.min(px, math.max(safeLeft, logicalW - safeRight - popupW)))
-        local belowY = py + ph + 2
-        local aboveY = py - popupH - 2
-        local y = belowY
-        if belowY + popupH > logicalH - safeBottom and aboveY >= safeTop then y = aboveY end
-        y = math.max(safeTop, math.min(y, math.max(safeTop, logicalH - safeBottom - popupH)))
-        UI:SetExtent(self.popup, popupW, popupH, self.owner)
-        UI:SetAnchor(self.popup, UIParent, x, y, self.owner)
-        if type(self.popup.Raise) == "function" then pcall(function() self.popup:Raise() end) end
-        return true
+        local anchor, anchorErr = positioning:ResolveAnchorRect(self)
+        if anchor == nil then return false, "colorfield_anchor_unavailable:" .. tostring(anchorErr or "unknown") end
+        local resolved, resolveErr = positioning:ResolveAnchored(anchor, math.max(120, trigW), 140, {
+            id = tostring(self.id or spec.id or "colorfield"), gap = 2, preferred = "bottom-start",
+        })
+        if resolved == nil then return false, "colorfield_popup_position_failed:" .. tostring(resolveErr or "unknown") end
+        local relativeOk, relativeErr = positioning:ApplyNativeRelativePopup(self.popup, self, self.owner, { id = tostring(self.id or spec.id or "colorfield"), width = resolved.width, height = resolved.height, triggerWidth = trigW, triggerHeight = trigH, gap = 2, placement = "bottom-start" }) -- 中文维护注释：ColorField 与 Dropdown 共用 Native-relative Trigger Anchor，避免颜色弹层在不同分辨率重复出现同类偏移。
+        if relativeOk ~= true then return false, "colorfield_native_relative_anchor_failed:" .. tostring(relativeErr or "unknown") end -- 中文维护注释：相对锚定失败直接拒绝打开，不允许回退到旧 UIParent 绝对坐标。
+        if type(self.popup.Raise) == "function" then pcall(function() self.popup:Raise() end) end -- 中文维护注释：保留既有层级提升行为，最终 Show 后仍会再次 Raise，防止 Native visibility transition 重置层级。
+        return true -- 中文维护注释：此处只表示布局事务已建立；open 状态仍由后续 Show/修正成功后提交。
     end
+
     function c:Open()
         if self.enabled == false or self.released == true or self.rsUiDegraded == true then return false end
         if RSUI.PopupCoordinator ~= nil then RSUI.PopupCoordinator:CloseAll(self) end
@@ -1506,15 +1504,17 @@ RSUI:RegisterType("ColorField", function(spec)
             if type(self.FailClosedInteraction) == "function" then self:FailClosedInteraction("colorfield_popup_repick_failed:" .. tostring(repickErr or "unknown")) end
             return false, repickErr
         end
-        local visibleOk, visibleErr = EnsureRawVisible(self.popup, true, self.owner)
-        if visibleOk ~= true then
-            if type(self.FailClosedInteraction) == "function" then self:FailClosedInteraction("colorfield_popup_show_failed:" .. tostring(visibleErr or "unknown")) end
-            return false, visibleErr
-        end
-        self.open = true
-        if type(self.popup.SetDrawPriority) == "function" then pcall(function() self.popup:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end
-        if type(self.popup.Raise) == "function" then pcall(function() self.popup:Raise() end) end
-        return true
+        local visibleOk, visibleErr = EnsureRawVisible(self.popup, true, self.owner) -- 中文维护注释：先显示 ColorField transient Window，再进行 Native 屏幕边缘修正，确保 CorrectOffsetByScreen 看到最终窗口尺寸。
+        if visibleOk ~= true then -- 中文维护注释：显示失败进入既有 FailClosedInteraction，不能继续发布 open 状态。
+            if type(self.FailClosedInteraction) == "function" then self:FailClosedInteraction("colorfield_popup_show_failed:" .. tostring(visibleErr or "unknown")) end -- 中文维护注释：保留真实 Native 失败原因供诊断，不用坐标修复掩盖显示能力错误。
+            return false, visibleErr -- 中文维护注释：向调用方返回显示事务失败，停止后续修正与 Raise。
+        end -- 中文维护注释：结束 ColorField 显示失败分支。
+        local correctionOk, correctionErr = RSUI.PopupPositioning:CorrectNativePopupToScreen(self.popup, tostring(self.id or spec.id or "colorfield")) -- 中文维护注释：仅由 RU Native 处理屏幕边缘，Trigger 相对位置本身不再经过 Lua 绝对坐标转换。
+        if correctionOk ~= true then return false, "colorfield_screen_correction_failed:" .. tostring(correctionErr or "unknown") end -- 中文维护注释：Native 边缘修正异常时拒绝提交 open 状态，避免可见窗口处于未知位置。
+        self.open = true -- 中文维护注释：Anchor、Show、Correct 全部成功后才提交 ColorField open Presentation Authority。
+        if type(self.popup.SetDrawPriority) == "function" then pcall(function() self.popup:SetDrawPriority(Token("layer.popupPriority", 10000)) end) end -- 中文维护注释：保持既有 Popup Priority，坐标 Authority 变化不应影响 Z-Layer。
+        if type(self.popup.Raise) == "function" then pcall(function() self.popup:Raise() end) end -- 中文维护注释：最终 Raise 保证 system transient Window 保持在 Shell/Floating 之上。
+        return true -- 中文维护注释：返回完整 Popup 打开事务成功。
     end
     function c:Close()
         if self.open ~= true then return false end

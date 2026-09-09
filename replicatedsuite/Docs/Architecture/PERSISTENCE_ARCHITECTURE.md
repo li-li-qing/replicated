@@ -17,6 +17,18 @@
 
 Feature 业务 Store 不统一自动降级：其失败应隔离对应 Feature，而不是伪造业务数据。
 
+## Canonical / Schema 演进强制规则（`.18.188` 起）
+
+持久化 Store 的 `migrate/encode` 输出不是普通实现细节，而是 **Integrity Authority 的一部分**。因此从 `.18.188` 起执行以下长期规则：
+
+1. **Canonical 形状或字段语义发生变化必须升 schema**：新增/删除可持久化字段、默认值语义改变、布尔/数值 sentinel 改变、窗口坐标表示改变，都不能继续沿用原 schema。仅新增最终恒为 `nil` 且不进入 table 的临时计算不算 canonical 变化。
+2. **旧 canonical 必须冻结为只读 historical normalizer/codec**：升级时不得用当前 normalizer 猜旧 Hash。需要兼容时只能通过 `rebuildCanonicalForIntegrity` 构造确定性历史候选，并由 Core 用原 stamped fingerprint 精确认证。
+3. **未知 fingerprint 继续 fail-closed**：禁止为了升级方便清 Store、关闭 Integrity、`pcall` 后无条件吞错，或把任意 mismatch 当作 serializer drift。若连续多轮 RU 实机证明同一旧 stamp 是固定迁移身份，可按 Death Review / Shell 的模式增加 Store-owned `recoverKnownLegacyCanonical`，但必须 exact allowlist + legacy shape/metadata validation + current canonical recheck + immediate restamp。
+4. **Schema 迁移必须有 Gate + Acceptance + 回归 Harness**：任何 canonical schema bump 都要在 Foundation/Acceptance 钉死版本与恢复 hook，并至少有一个真实 Lua 行为用例覆盖 `旧 envelope → Load → migration → unfenced Apply`。仅搜索源码 token 不能作为完整回归证据。
+5. **Presentation-only Store 也遵守同一规则**：`v3.shell` 虽然只保存窗口位置/尺寸/route，不得因为“不是业务数据”而在同一 schema 内随 UI 重构任意改变 canonical。Startup session fallback 只是可用性保护，不是 schema 纪律的替代品。
+
+该规则直接来自 `.18.157 → .18.184/.18.187` 的 `v3.shell` 事故以及 Death Review `.18.146-.18.151` 的历史恢复链，目的是让后续版本升级不再靠用户重置配置解决。
+
 
 ## 当前 UI Setting Binding 边界（M1.14.4–M1.14.5）
 
@@ -300,6 +312,18 @@ Persistence 增加 `HistoricalCanonicalRecoveryContractVersion=1`，并允许单
 5. 该路径只发生在 Load 边界，无 Tick/轮询；错误 Store 不提供 hook 就完全不受影响。
 
 `.18.146` 的 terminal-load memoization 保留：同 generation terminal+fenced failure 仍只产生一次物理 Load/incident；历史精确恢复成功不是 terminal failure，会进入正常 apply + restamp 路径。
+
+## 0.18 `.18.188` Shell Schema 7 / Known Legacy Stamp Recovery
+
+`.18.184` 与 `.18.187` 两次 RU Fresh Reload 都稳定报告 `v3.shell:integrity_failed:fingerprint_mismatch:2EA0A82A>2EC2F5C5`。同时源码历史确认 `.18.157` 的 Resolution/Coordinate Foundation 给 Shell canonical 增加 `savedLogicalWidth/Height + normalizedCenterX/Y` 时仍保留 schema 6。新增字段若在旧 payload 中不存在并不必然改变 Hash，但同 schema 已经无法表达 canonical generation 边界，因此必须修正。
+
+1. `v3.shell` 升为 `schemaVersion=7 / legacySchemaVersion=6`；当前 schema7 normalizer 保留响应式 viewport metadata，另冻结一个 historical-v6 normalizer，只包含 schema6 时代的窗口字段。
+2. current-v4 mismatch 时先走 `rebuildCanonicalForIntegrity`。候选必须在 Envelope Seal 已通过后由 Core 重新计算 fingerprint，并**精确等于旧 stamp**才可恢复；它不会因为 Store 是 UI 状态而放宽。
+3. 对连续两轮完全一致的真实事故 pair `2EA0A82A > 2EC2F5C5`，exact reconstruction 若仍无法命中，再走 Store-owned `recoverKnownLegacyCanonical`。该 hook 只允许 `schema=6 + store=v3.shell + owner=v3.shell + old stamp=2EA0A82A + current canonical=2EC2F5C5`，然后返回当前 Normalize 后的 Shell Domain。任何其它 old/new pair 立即返回 nil，继续 Fence。
+4. 成功恢复后 Core 仍执行 Domain/current-canonical budget 检查，随后 schema6→7 migrate 并立即保存新 envelope。下一个 Fresh Reload 必须成为普通 schema7 `verified_canonical`，该 one-time bridge 不应每代重复触发。
+5. `rs_regression_18_188_harness.py` 使用 real Lua + real `rs_persistence.lua` 模拟一个 schema6 历史 canonical 与含新响应字段的磁盘 payload，验证 exact reconstruction 可以 unfence 并只保留旧 stamp 已认证的字段；同时直接执行 Bag Gate 证明跨 lexical-scope 的 false blocker 不再出现。
+
+该恢复不清 `v3.shell`，不修改其它 37 个 Store，也不把 session fallback 默认值写回旧存档。
 
 ## 0.17 `.18.151` Death Review Known Legacy Canonical Stamp Migration
 
