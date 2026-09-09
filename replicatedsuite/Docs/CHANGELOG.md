@@ -1,3 +1,23 @@
+## v3-m1.16.0.18.193-persistence-schema-canonical-recovery
+
+- **真实根因**：`.18.192` RU Fresh Reload 同时报告 `v3.activities:6271E40B>7E85D975` 与 `v3.death_review:014277AB>0CF5BCC1`。两个 Store 都直接/间接把可演进的 `FloatingSurface:NormalizeState()` 返回形状作为 canonical；共享 Foundation 后续加入 `savedLogicalWidth/Height + normalizedCenterX/Y` 后，Store schema 没有同步划分 canonical generation，旧合法数据因此被 Integrity v4 判为 mismatch。
+- **页面事务是次生症状**：被 Fence 的 Store 在 RSUI `CreatePersistentSettingBinding -> PrepareRead` 处 fail-closed，Toggle 无法创建 Binding，PageHost 严格构建事务随后报告 `toggle_binding_failed / PAGE_NAVIGATION_FAILED / rollback=1`。本轮不放宽 Toggle/Binding/PageHost；先恢复 Store，页面事务自然回到正常路径。
+- **Activities schema 8**：`v3.activities` 从 schema7 升到 schema8；当前窗口 canonical 显式投影 v11 字段，冻结 historical-v7 投影。优先 exact historical Hash recovery；若 RU 表形损失导致无法重建，则只允许真实实机 pair `6271E40B -> 7E85D975`，并要求 `schema=7 + store/owner + strict payload shape + current Hash` 全部命中。
+- **DeathReview Index schema 2**：Index 从 schema1 升到 schema2，codec 仍保持 v1，30 条历史与 31 个 record 分片协议不变。新增 schema1+codec1 historical window canonical；known-stamp 桥扩展为 `014277AB -> 0CF5BCC1`，同时保留旧 `770CB0B8` pre-codec 恢复。
+- **长期规则**：共享 Foundation normalizer 只负责“语义归一”，持久化 Store 必须显式拥有“物理字段投影”。任何新增持久字段都必须 schema bump + historical canonical/迁移证明，禁止同 schema 偷换 canonical generation。
+- **Persistence 保存优先级**：修复 `schema migration` 覆盖前置 `integrity_v4_upgrade` 的 deferred save 原因问题；历史/known-stamp 恢复要求的 0ms 重盖现在不会被普通 migration debounce 降级。
+- **安全边界**：不清 Store、不关闭 Integrity、不把任意 fingerprint mismatch 当 serializer drift；未知 old/new pair、未知字段、shape/type 异常继续 write fence。所有恢复只发生在 Load/Save 冷路径，无 Tick/Scheduler/战斗事件成本。
+- **回归门禁**：更新 DeathReview Persistence Harness，并新增 `rs_persistence_schema_18_193_harness.py`，Real-Lua 覆盖 Activities schema7->8 exact recovery、strict second reload、known pair accept/reject、未知 shape reject，以及 DeathReview 014277AB/0CF5BCC1 source contract。
+
+## v3-m1.16.0.18.192-compact-healer-team-trade-ui
+
+- **治疗辅助紧凑化**：摘要/策略/战斗显示区收紧垂直预算；“团队色块校准”从 `fill` 改为 `auto`，不再吞掉 1080p/2K 页面剩余高度。只调整 Presentation geometry，不修改 Healer 推荐、团队名册、Aura、校准四区域或持久化语义。
+- **团队中心导航修复**：FeatureRegistry/Router 新增 `navigationParentRoute` 展示元数据。`战备检查 / 招募助手 / 攻城战备` 仍保持独立 route、Feature 与生命周期，但 Shell 主侧栏继续高亮“团队中心”；战备页补齐团队中心子导航与共享标题，消除“点击战备检查像跳到另一个主页面”的割裂。
+- **跑商货率悬浮窗重构**：默认 `470×374` 收敛为 `410×306`，操作区从多行页面式布局改为 3 行 HUD（路线 / 快捷动作 / 收藏+排序），表格列与状态栏同步压缩。原 `from/to/ratio/commerce/quote/favorite/sort` 控件 ID 和 Feature Commands 全部保留。
+- **升级兼容**：不新增 Trade Store 字段、不升 schema。只有历史**精确默认尺寸 `470×374`**在 `GetWidgetWindowState()` 的只读 Presentation 副本中映射为 `410×306`；玩家其他自定义尺寸、位置、透明度、锁定状态不被改写，旧 fingerprint 不受纯 UI 重构影响。
+- **性能**：没有新增 Tick、Scheduler 任务、团队/Buff 扫描或货率请求；所有改动均为页面构建/状态投影时的 O(1) 布局与导航逻辑。
+- **门禁**：新增 `rs_ui_compact_team_navigation_harness.py`；全工程 **49/49 Python Harness PASS**，Foundation Audit PASS，TOC/Active/All Lua = 227/227/227。
+
 
 ## v3-m1.16.0.18.191-popup-native-relative-anchor-diagnostics
 

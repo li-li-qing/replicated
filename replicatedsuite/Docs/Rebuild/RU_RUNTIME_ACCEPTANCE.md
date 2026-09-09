@@ -1,3 +1,15 @@
+## `.18.193` Persistence Schema Recovery — 当前最高优先级 RU 验收
+
+BuildTag：`v3-m1.16.0.18.193-persistence-schema-canonical-recovery`。**不要清配置/不要重置 Store**，本轮就是验证旧用户配置能被可证明地保留并迁移。
+
+1. 第一次 Fresh Reload 后，基础框架不应再出现 `v3.activities:6271E40B>7E85D975` 或 `v3.death_review:014277AB>0CF5BCC1` 的 `integrity_failed`；`Fence` 应从当前 2 降到 0（若有其它新 Store 故障，必须按真实 Store 名单单独记录）。
+2. 第一次加载允许出现一次 `historical_canonical_recovery` 或 `known_legacy_canonical_recovery`；Activities 物理 Store 应迁到 schema8，DeathReview Index 应迁到 schema2。不要把一次性恢复本身当失败。
+3. **第二次 Fresh Reload 是关闭事故的关键证据**：`knownRecover` 不应再次因这两个 Store 增加，两者应成为普通 `verified_canonical`，`integrityFail=0`，`runtime_startup_degradation` 不再列它们。
+4. 进入“活动”：悬浮窗显隐、行数、隐藏活动、窗口位置/透明度等旧配置应保留；如果 historical exact path 只能认证旧 schema7 字段，四个响应式 source-viewport metadata 允许在下一次手动移动窗口时重新生成，但不能清业务偏好。
+5. 进入“死亡回顾”：自动显示、时间窗口、最大历史、最低伤害、Debuff 显示以及仍存在的历史摘要应保留；30 条 Index 上限与 31 个 record slots 不变。
+6. 重新打开此前出现 `PAGE_NAVIGATION_FAILED[toggle_binding_failed...]` 的页面。若两 Store 已解除 Fence，Persistent Toggle Binding 应正常创建，`v3_build_transaction_contract` 要求 `pageQ=0 / rollback=0 / txFail=0`。本轮没有放宽 Toggle/Binding；若仍失败，请复制**完整最近故障 token**。
+7. 若仍有已知两组 fingerprint mismatch，复制新的基础框架摘要 + A2/存档摘要；不得清档。若出现不同 old/new pair，也不要扩大 allowlist，先保留 `store/schema/fingerprint/historical_probe` 证据。
+
 ## `.18.189` Popup Coordinate Authority — RU 多分辨率实机验收
 
 ## `.18.191` Popup Native-relative 实机验收（当前优先）

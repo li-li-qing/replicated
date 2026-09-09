@@ -71,6 +71,32 @@ V3 Application Shell / Router / PageHost / WidgetHost / ModalHost
 - 为了 UI 便利复制第二份业务 Authority。
 
 
+### `.18.193` Persistence Canonical Generation / Store-owned Projection
+
+Persistence Store 与共享 UI Foundation 的责任边界进一步固定：**Foundation normalizer 只拥有逻辑语义，Store schema 才拥有可持久化字段形状**。Store 不得直接把可能继续增长的共享返回表作为 Integrity canonical。
+
+```text
+FloatingSurface Normalize（语义 Authority）
+            ↓
+Store-owned explicit projection（schema 字段 Authority）
+            ↓
+Canonical fingerprint / SaveData
+```
+
+- `v3.activities` 当前 schema8，historical schema7；`v3.death_review` Index 当前 schema2，historical schema1，codec 仍为 v1，record shards 仍为 schema1。
+- 任何共享 Foundation 新字段若要进入永久 Store，必须先显式决定：①是否属于该 Store；②schema 是否 bump；③历史 canonical/迁移如何证明；④Acceptance/Harness 是否同步。禁止“Foundation 加一个字段，所有 Store 指纹跟着变”。
+- Integrity mismatch 恢复顺序固定为：Envelope Seal/metadata/budget -> current canonical mismatch -> Store exact historical canonical -> Store exact known old/new pair（仅真实事故 allowlist）-> current budget/canonical -> migrate/apply -> immediate restamp。未知 mismatch 始终 fail-closed。
+- **RSUI Binding/页面构建不是 Persistence 的降级 Authority**：Persistent Store 被 Fence 时，`PrepareRead` 必须继续让 Toggle/Setting Binding 创建失败，PageHost 事务必须回滚。不得为了消除 `toggle_binding_failed` 让控件偷偷使用默认值；应修复上游 Store 的可证明兼容路径。
+- `schema migration` 不得覆盖先前 Integrity recovery 要求的 0ms durable restamp；只有纯 schema migration 才使用普通 debounce。
+
+### `.18.192` Compact Plugin Surface / Semantic Parent Navigation
+
+- **隐藏子页导航归属**：FeatureRegistry 可声明 `navigationParentRoute`，Router 只透传该 Presentation 元数据；Shell 只用它决定左侧主导航选中态。`PageHost:Navigate()`、`Router.current`、Feature Runtime、Consumer 与 Authority 必须继续使用真实子 route，禁止为了“看起来没跳页”把战备/招募/攻城业务合并进 `combat.team_tools`。
+- **团队中心局部导航**：团队管理与其隐藏子页可共享“团队中心”视觉标题/局部 tabs，但 tabs 只能调用统一 `Shell:Navigate()`；页面之间禁止直接互调 Domain/Feature 实现。
+- **紧凑页面规则**：只包含状态或帮助文字的卡片使用 `size=auto`，不得用 `fill` 吞掉页面剩余高度。Healer 的“团队色块校准”属于说明/校准入口，不是数据工作区，因此保持 auto；真正 Overlay/校准 Authority 仍在既有 Healer Presentation/Feature 链。
+- **紧凑 Floating HUD**：跑商货率等常驻小工具优先减少控制行数和 Chrome 占用，业务数据继续由 Feature Projection/Commands 提供。窗口尺寸属于 FloatingSurface policy/Feature Store 边界；纯 UI 改版不得随意新增 Store canonical 字段。
+- **历史尺寸兼容**：`.18.192` 对 Trade 旧精确默认 `470×374` 只在 `GetWidgetWindowState()` 返回的副本上投影为 `410×306`，不修改已加载 Store Authority；其他用户自定义尺寸/位置/透明度/锁定保持原值。
+
 ### `.18.191` Suite-owned Popup Native-relative Anchor Authority
 
 `.18.189` 的 Effective Geometry 校准与 `.18.190` 的 NativeStateCache 绝对父链在 RU 实机仍出现位置相关偏移，说明问题不只是 `uiScale` 单位，而是 **Widget Effective/absolute geometry 的父级语义并不足以作为 detached top-level Window 的最终定位 Authority**。因此 `.18.191` 收紧为：
@@ -404,7 +430,7 @@ Feature Settings Page
 
 ## 13. 当前验证基线
 
-当前代码 BuildTag：`v3-m1.16.0.18.189-popup-coordinate-authority`。
+当前代码 BuildTag：`v3-m1.16.0.18.193-persistence-schema-canonical-recovery`。
 
 当前本地结构门禁基线：
 

@@ -12,15 +12,16 @@
 | Architecture | V3-only / `v3_rebuild` |
 | Runtime Addon | `replicatedsuite/` |
 | Legacy / Professional / `globals/` | 已物理删除，Active dependency = 0 |
-| BuildTag | `v3-m1.16.0.18.191-popup-native-relative-anchor-diagnostics` |
+| BuildTag | `v3-m1.16.0.18.192-compact-healer-team-trade-ui` |
 | Active TOC Lua | 227 |
 | Active / All Lua | 227 / 227 |
 | Foundation Audit | **PASS**：toc/active/all=227；globals=0；Popup Positioning v3 / Native-relative v1 / Controls+Interactions consumer v2 / 可见专项诊断入口均已进入硬门禁 |
-| Python Harness | **48/48 PASS**；`rs_popup_coordinate_harness.py` = Source 29/29 + Real-Lua 30/30，直接验证 Trigger reference + `(0, triggerHeight+gap)` Native Anchor、CorrectOffsetByScreen 与三组 Raw Native Geometry；其余 47 组同时通过 |
+| Python Harness | **49/49 PASS**；新增 `rs_ui_compact_team_navigation_harness.py` 固化治疗校准 auto 高度、团队中心父导航归属、跑商三行 HUD/旧默认尺寸只读兼容；原 Popup/持久化/Bag/Trade/UnitLine 等 48 组同时通过 |
 | Product Capability Matrix | 126 条：80 IMPLEMENTED / 35 PARTIAL / 0 TODO / 11 SPECIFIC_RUNTIME_BLOCKED |
-| RU Fresh Reload | `.18.191` 首要验收 detached Popup：先重演团队中心职业与跑商起点/目的地；打开异常 Popup 后到“诊断与维护”点击 `RSUI Popup定位` 并复制报告。定位 lane 应为 `native_relative`，报告必须包含 Trigger/PopupBefore/PopupAfter 原始几何。之后再覆盖 1024×768、1280×768、1366×768、1920×1080 与 Shell 左上/中央/右下矩阵 |
-| Current UI Gate | **`.18.191 Popup Native-relative Anchor Authority`**：Suite-owned target Popup 最终位置只能由 `UI:EnsureAnchor(Popup, TriggerNative, localOffset)` 提交；显式 point、external native-window、world projection、persistent windows 保持独立 lane。`RSUI Popup定位` 可见诊断入口属于发布契约。RU 通过前不得用分辨率固定 offset 修补。 |
+| RU Fresh Reload | `.18.192` 首要验收三处 UI：治疗辅助确认“团队色块校准”不再占满剩余页面；团队中心点击“战备检查”后侧栏仍高亮团队中心且顶部子导航连续；跑商悬浮窗确认 410×306 三行操作区、下拉/询价/收藏/排序可用。随后继续执行 `.18.191` 的 Popup Native-relative 1024×768、1280×768、1366×768、1920×1080 实机矩阵 |
+| Current UI Gate | **.18.192 Compact Plugin Surface + .18.191 Popup Authority**：信息/帮助型卡片不得用 `fill` 吞掉剩余页面；隐藏语义子页可用 `navigationParentRoute` 归属主导航但不得合并 PageHost/Feature 生命周期；跑商等 HUD 优先紧凑三行/表格布局。Popup Native-relative Authority 与 `RSUI Popup定位` 诊断契约继续保持。 |
 
+- `.18.192 UI 收敛`：治疗辅助校准说明卡改为 auto 高度；团队战备检查视觉归属团队中心但仍是独立按需扫描 Feature；跑商悬浮窗改为 410×306 三行 HUD。Trade 旧 470×374 默认尺寸只在读取后的 Presentation 副本中映射，不改 Store canonical/schema/fingerprint。
 - `RU-TRADE-PAYOUT-163`：旧版/当前静态底价表一致；真实回退来自新版遗漏经商倍率、TradeNameMultipliers 品类倍率与 larder/alias price-key resolver。`.18.163` 新增纯数据 TradePayoutV3 恢复完整链；计入熟练度但读不到熟练度时 fail-closed，不再输出不完整售价。待 RU 用至少 3 类货物（普通/新鲜/发酵）和当前经商熟练度实售复核。
 - `RU-BAG-WINDOW-162`：`.18.153` 的四返回值兼容仍不足以让实机快捷条显示。`.18.162` 真实追踪确认两层根因：① Quick Overlay 仍是已知不可靠的 `UIParent` 顶层 `emptywidget + system layer`，现迁为真实 transient WINDOW Host；② hidden `ADDON:GetContent` proxy 会错误否决合法 MainScript geometry，现改为“显式 Native visible/hidden > 正向 Content visible > 合法 MainScript geometry”，并兼容 boolean/0-1/string visible 形态。可见期间既有 350ms observer 提供 bounded Presenter retry；不扫描物品。待 RU Fresh Reload：无需进入整理背包页，直接打开银行/箱子，≤350ms 在背包上方出现取/放（`.18.183` 起快捷条只有这两个按钮，`停` 由"再点同一个按钮"承担）。
 
@@ -194,7 +195,7 @@ Gate 仍为 **INCOMPLETE - CONTINUATION REQUIRED**。不得为了 Gate 变绿删
 - `.18.96` `SCREEN_PROJECTION_FRONT_HEMISPHERE_HARNESS PASS 14/14`：真实加载 `rs_screen_projection_v3.lua`，模拟 RU 对背后目标仍返回正 depth + 边角屏幕点以及“in-bounds 但处于 physical/UI-scale 或 stale”的 Native 点；验证 Camera Frame 每 batch 只读取一次、token 去重、所有 world read 均为 global、behind 在 Native screen read 前拒绝、UI-scale reconcile、严重偏移 camera fallback、前方出屏端点仍交给 Presenter clipping、旋转相机后原 behind 目标重新可见。
 - `.18.89` `INTERACTIVE_DRAFT_HARNESS PASS 13/13`：真实加载 `rs_ui_controls.lua`，验证 focused Text/Numeric draft 在 ambient refresh 中保持、失焦后可重新同步；Slider active preview 不被旧 Binding 回灌，final commit 可明确覆盖；`.18.90` 再增加 `RSUI_WORKSPACE_SMOKE_HARNESS` 与 `PERSISTENCE_ACCEPTANCE_SNAPSHOT_HARNESS`；`.18.91` 将 Workspace Smoke 扩至全部 6 类公共模板并新增全 Presentation Component API + RSUI TOC dependency-order 静态 Gate；`.18.92` 新增 Presentation→Feature API Audit 与 5/5 self-test，并修复 Tasks/Activities/Gear 三条真实缺失 Command。
 - `.18.94` Fresh Reload preflight：Foundation Audit 新增 DPS schema/`widgetVisible`/WidgetHost lifecycle 一致性以及 Trade Dropdown-only/Quote/Server route Authority package-coherence；UIV3 Acceptance v58 同步增加 `dps_widget_visibility_preference_contract` 与 `trade_dropdown_quote_preflight_contract`。本地回归：Workspace 27/27、Presentation→Feature 5/5、Persistence 19/19、Interactive Draft 13/13、Bag 4/4、Unit Lines 11/11、Front-Hemisphere 10/10。
-- 当前 BuildTag 与 `replicatedsuite.lua` 一致：`v3-m1.16.0.18.191-popup-native-relative-anchor-diagnostics`；全量 Lua 227/227 Parse PASS，TOC missing/unlisted/duplicate 均为 0。
+- 当前 BuildTag 与 `replicatedsuite.lua` 一致：`v3-m1.16.0.18.192-compact-healer-team-trade-ui`；全量 Lua 227/227 Parse PASS，TOC missing/unlisted/duplicate 均为 0；全工程 Python Harness 49/49 PASS。
 
 历史专项 harness、每个 M1.x 的逐轮数字与修复详情不再复制到本文，统一查 [`CHANGELOG.md`](CHANGELOG.md)。
 

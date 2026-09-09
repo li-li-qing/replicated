@@ -127,11 +127,14 @@ local id = "v3.death_review"
 local key = P.V3KeyPrefix .. "death_review_index"
 
 assert(type(F.WidgetWindowSizePolicy) == "table", "window_policy_owned_by_store")
-assert(F.PersistenceCanonicalWindowContractVersion == 6, "historical_index_canonical_v6")
+assert(F.PersistenceCanonicalWindowContractVersion == 7, "historical_index_canonical_v7") -- 中文维护注释：.18.193 要求 DeathReview 窗口 canonical 进入 Store-owned 投影 v7。
 assert(P.TerminalLoadMemoizationContractVersion == 1, "terminal_memo_contract")
 assert(P.HistoricalCanonicalRecoveryContractVersion == 3, "historical_canonical_contract")
-assert(P.KnownLegacyCanonicalRecoveryContractVersion == 1, "known_legacy_canonical_contract")
-local deathStore = assert(P:GetStore(id))
+assert(P.KnownLegacyCanonicalRecoveryContractVersion == 1, "known_legacy_canonical_contract") -- 中文维护注释：Core known-stamp 框架版本不变，本轮只扩展 Store 自己的精确事故 allowlist。
+local deathStore = assert(P:GetStore(id)) -- 中文维护注释：测试读取唯一注册的 DeathReview Index Store，不构造第二 Persistence Authority。
+assert(deathStore.schemaVersion == 2, "death_review_index_schema2") -- 中文维护注释：schema2 是 `.18.193` 当前 Index canonical generation，旧 schema1 仅用于迁移样本。
+assert(F.PersistenceIndexSchemaContractVersion == 2, "death_review_index_schema_contract") -- 中文维护注释：Feature 契约必须与实际 Store schema 同步。
+assert(F.PersistenceKnownLegacyRecoveryContractVersion == 2, "death_review_known_pair_contract_v2") -- 中文维护注释：Store recovery v2 必须包含 014277AB→0CF5BCC1 codec1 实机事故边界。
 assert(type(deathStore.rebuildCanonicalForIntegrity) == "function", "historical_canonical_hook_registered")
 assert(type(deathStore.recoverKnownLegacyCanonical) == "function", "known_legacy_hook_registered")
 
@@ -257,6 +260,28 @@ assert(P:GetStore(id).dirty == true and P:GetStore(id).lastDirtyReason == "integ
 assert(P:Flush() == true, "known_legacy_restamp_flush")
 assert(storage[key].codec == 1 and storage[key].__rsmeta.encodedFingerprint ~= "770CB0B8", "known_legacy_rewritten_codec")
 assert(P:LoadStore(id) == true and P:GetStore(id).lastIntegrityStatus == "verified_canonical", "known_legacy_second_reload_strict")
+
+-- 中文维护注释：`.18.193` 还必须钉死 2026-09-09 RU 实机 schema1+codec1 old/new pair；这里直接执行 Store hook，避免用 synthetic payload 猜真实 014277AB 的原始业务内容。
+local codecPairRaw = { -- 中文维护注释：构造严格 codec1 物理形状，只包含 DeathReview Index v1 编码允许的 settings/history/widgetWindow。
+  codec = 1, -- 中文维护注释：实机事故已经进入 codec1 世代，因此不能误走 pre-codec 770CB0B8 兼容分支。
+  payload = { -- 中文维护注释：payload 结构必须通过 Store-owned codec1 shape validator，未知字段应继续拒绝。
+    settings = { windowMs = 10000, maxHistory = 10, minDamage = 0 }, -- 中文维护注释：默认 true 布尔在 codec1 中通过“缺少 Disabled sentinel”表达，不重新写 Lua false。
+    history = { serial = 0, entries = {} }, -- 中文维护注释：空历史是合法 bounded Index 状态，不需要构造玩家/伤害业务数据。
+    widgetWindow = { width = 470, height = 330, overallOpacity = 0.96 }, -- 中文维护注释：只使用已知 schema1 codec1 窗口字段，响应式新字段可缺失。
+  }, -- 中文维护注释：结束 codec1 payload。
+  __rsmeta = { schema = 1, store = id, owner = "v3.death_review" }, -- 中文维护注释：known-pair hook 必须再次绑定旧 schema/store/owner，不能只凭 fingerprint。
+} -- 中文维护注释：结束 2026-09-09 codec1 known-pair 样本。
+local codecPairDecoded, codecPairDecodeErr = deathStore.decode(codecPairRaw) -- 中文维护注释：复用生产 codec decoder 得到当前 Domain，测试不绕过 settings/history/window Normalize。
+assert(type(codecPairDecoded) == "table" and codecPairDecodeErr == nil, "codec_pair_decodes") -- 中文维护注释：若 codec 本身不能正式解码，known-pair 迁移绝不能接受。
+local codecPairCanonical = assert(P:CanonicalIntegrityValue(deathStore, codecPairDecoded)) -- 中文维护注释：current canonical 仍由生产 Store encode 生成，只有 Hash primitive 在下一步替换为实机观测值。
+local originalCanonicalFingerprint = P.FingerprintCanonicalValue -- 中文维护注释：保存生产 Hash 函数，direct-hook 测试结束必须恢复，避免污染后续 persistence 测试。
+P.FingerprintCanonicalValue = function() return "0CF5BCC1" end -- 中文维护注释：offline 无用户原始 payload，只注入诊断中已观测 current Hash；生产运行仍使用真实 durable fingerprint。
+local codecPairRecovered, codecPairReason = deathStore.recoverKnownLegacyCanonical(codecPairDecoded, "014277AB", codecPairCanonical, codecPairRaw) -- 中文维护注释：old=014277AB 与 current=0CF5BCC1 同时命中才应返回当前 Normalize Domain。
+assert(type(codecPairRecovered) == "table" and tostring(codecPairReason):find("schema1_codec1", 1, true) ~= nil, "codec_pair_exact_accept") -- 中文维护注释：精确 pair 应可保留现存 Index 数据并交给 Core 立即 schema2 重盖。
+assert(deathStore.recoverKnownLegacyCanonical(codecPairDecoded, "014277AC", codecPairCanonical, codecPairRaw) == nil, "codec_pair_unknown_old_reject") -- 中文维护注释：只差一位的未知 old stamp 必须继续 fail-closed，禁止宽松 prefix/范围匹配。
+P.FingerprintCanonicalValue = function() return "0CF5BCC2" end -- 中文维护注释：模拟同一 old stamp 对应不同当前内容，证明 old stamp 单独不能授权恢复。
+assert(deathStore.recoverKnownLegacyCanonical(codecPairDecoded, "014277AB", codecPairCanonical, codecPairRaw) == nil, "codec_pair_wrong_current_reject") -- 中文维护注释：current Hash 不等于 0CF5BCC1 时必须维持 Fence，避免真实内容损坏被当成 canonical drift。
+P.FingerprintCanonicalValue = originalCanonicalFingerprint -- 中文维护注释：恢复真实 Hash primitive，后续 unknown-stamp/普通 Save/Load 测试继续覆盖生产 Persistence 行为。
 
 -- Unknown v4 stamp MUST NOT use the migration bridge.
 local unknownRaw = copy(knownRaw)
@@ -385,11 +410,13 @@ def main() -> int:
         "LEGACY_WINDOW_RECOVERABLE_KEYS = {",
         "LEGACY_DEFAULT_TRUE_SETTING_KEYS = {",
         "MAX_HISTORICAL_RECOVERY_MUTATIONS = 12",
-        "KNOWN_LEGACY_V4_INDEX_FINGERPRINTS",
-        "recoverKnownLegacyCanonical = RecoverKnownLegacyV4Index",
-        "NormalizeHistoricalIndexWithRecoveredEntries",
-        "lastHistoricalRecoveryProbe",
-        "rebuildCanonicalForIntegrity = RebuildV18_145Canonical",
+        "KNOWN_LEGACY_V4_INDEX_FINGERPRINTS",  # 中文维护注释：必须继续保留 Store-owned exact fingerprint allowlist，而不是把事故 pair 放进 Persistence Core。
+        '["014277AB"]',  # 中文维护注释：钉死 2026-09-09 RU schema1 codec1 的真实旧 stamp，防止维护时误删迁移桥。
+        'currentFingerprint = "0CF5BCC1"',  # 中文维护注释：old/new pair 必须双向精确约束，不能只凭旧 stamp 接受任意当前内容。
+        "recoverKnownLegacyCanonical = RecoverKnownLegacyV4Index",  # 中文维护注释：known-pair hook 必须注册到 Index Store，且只位于冷 Load 边界。
+        "NormalizeHistoricalIndexWithRecoveredEntries",  # 中文维护注释：旧 RU sequence/map shape 恢复仍保留，避免 schema2 修复回退既有兼容。
+        "lastHistoricalRecoveryProbe",  # 中文维护注释：失败必须保留无敏感业务内容的 runtime-only 诊断证据。
+        "rebuildCanonicalForIntegrity = RebuildHistoricalIndexCanonical",  # 中文维护注释：`.18.193` 统一路由 pre-codec 与 schema1 codec1 两个历史 canonical 世代。
     ):
         if token not in store_src:
             raise AssertionError("DeathReview canonical window implementation missing: " + token)

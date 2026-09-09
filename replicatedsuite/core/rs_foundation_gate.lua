@@ -1544,14 +1544,16 @@ function G:Run(options)
             and type(deathReview.Commands.ApplyWindowMs) == "function" and type(deathReview.Commands.ApplyMinDamage) == "function"
             and type(deathReview.Commands.SetMaxHistory) == "function" and type(deathReview.Commands.MarkStoreDirty) == "function"
             and type(deathReview.Commands.SetEnabled) == "function" and type(deathReview.Commands.ClearHistory) == "function"
-            and (tonumber(deathReview.PersistenceCanonicalWindowContractVersion) or 0) >= 6
-            and (tonumber(deathReview.PersistenceIndexCodecVersion) or 0) >= 1
-            and (tonumber(S.Persistence.HistoricalCanonicalRecoveryContractVersion) or 0) >= 3
-            and type(deathReview.WidgetWindowSizePolicy) == "table" and deathReview.Demand ~= nil
-            and deathStore ~= nil and type(deathStore.migrate) == "function"
-            and type(deathStore.rebuildCanonicalForIntegrity) == "function"
-            and type(deathStore.recoverKnownLegacyCanonical) == "function"
-            and (tonumber(S.Persistence.KnownLegacyCanonicalRecoveryContractVersion) or 0) >= 1
+            and (tonumber(deathReview.PersistenceCanonicalWindowContractVersion) or 0) >= 7 -- 中文维护注释：Foundation 要求 Store-owned 窗口字段投影 v7，防止共享 FloatingSurface 未来加字段再次污染既有 Index canonical。
+            and (tonumber(deathReview.PersistenceIndexSchemaContractVersion) or 0) >= 2 -- 中文维护注释：DeathReview Index 必须明确处于 schema2；record 分片仍独立 schema1，不在此合并。
+            and (tonumber(deathReview.PersistenceKnownLegacyRecoveryContractVersion) or 0) >= 2 -- 中文维护注释：Feature 必须携带 2026-09-09 schema1 codec1 exact-pair 恢复契约，不能只依赖旧 pre-codec 桥。
+            and (tonumber(deathReview.PersistenceIndexCodecVersion) or 0) >= 1 -- 中文维护注释：codec1 继续是 Index 稳定物理编码，schema bump 不等于强制换 codec。
+            and (tonumber(S.Persistence.HistoricalCanonicalRecoveryContractVersion) or 0) >= 3 -- 中文维护注释：Core exact historical canonical 恢复必须存在且先于 known-stamp 迁移。
+            and type(deathReview.WidgetWindowSizePolicy) == "table" and deathReview.Demand ~= nil -- 中文维护注释：Presentation policy 与独立 Demand 生命周期必须同时保持，持久化修复不得耦合高频战斗模块。
+            and deathStore ~= nil and tonumber(deathStore.schemaVersion) == 2 and type(deathStore.migrate) == "function" -- 中文维护注释：注册 Store 的真实 schema2 与纯 migrate 必须同时匹配 Feature 声明。
+            and type(deathStore.rebuildCanonicalForIntegrity) == "function" -- 中文维护注释：先以旧 stamp 精确证明历史 canonical，未知形状不能直接接受。
+            and type(deathStore.recoverKnownLegacyCanonical) == "function" -- 中文维护注释：实机固定 fingerprint pair 仅由 DeathReview Store 自己判定，Core 不持有业务 allowlist。
+            and (tonumber(S.Persistence.KnownLegacyCanonicalRecoveryContractVersion) or 0) >= 1 -- 中文维护注释：Persistence Core 必须提供 bounded known-stamp 框架并在恢复后立即重盖当前 canonical。
             and deathPage ~= nil and deathWidget ~= nil
             and deathMeta ~= nil and tostring(deathMeta.status) == "migrated_m15_2" and tostring(deathMeta.authority) == "v3.death_review",
         "blocker", deathHealth and ("enabled=" .. tostring(deathReview.enabled == true)

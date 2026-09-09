@@ -542,7 +542,10 @@ function Shell:Navigate(routeId, context)
     end
     self.lastRoute = resolved.id
     Router.current = resolved.id
-    for route, button in pairs(self.navButtons) do SetButtonSelected(button, route == resolved.id) end
+    -- 中文维护注释：隐藏子页属于语义子导航；这里仅修正侧栏选中态，PageHost 仍以 resolved.id 持有独立页面生命周期，禁止把子页业务合并进父 Feature。
+    local navigationRoute = tostring(resolved.navigationParentRoute or "") -- 中文维护注释：优先采用 Registry/Router 明确声明的父导航路由，避免 Shell 写死团队中心等业务标识。
+    if navigationRoute == "" or self.navButtons[navigationRoute] == nil then navigationRoute = resolved.id end -- 中文维护注释：没有合法父导航按钮时退回真实路由，保证普通页面和未知元数据继续按旧逻辑工作。
+    for route, button in pairs(self.navButtons) do SetButtonSelected(button, route == navigationRoute) end -- 中文维护注释：只切换主导航视觉状态，不触发二次 Navigate、Consumer 获取或 Authority 读取。
     local state = V3.ShellState or {}
     if state.lastRoute ~= resolved.id then state.lastRoute = resolved.id; MarkDirty("route_changed") end
     self:SetStatus(resolved.title .. " · 新版界面")

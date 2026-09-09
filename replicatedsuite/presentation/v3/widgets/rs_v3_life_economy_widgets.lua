@@ -213,58 +213,67 @@ local ok, err = Register({
             or type(Feature.Commands.SelectFavorite) ~= "function" or type(Feature.Commands.SetSortMode) ~= "function" then
             return false, "跑商悬浮窗 Feature 路线/收藏/询价命令缺失"
         end
-        local routeBox = RSUI:VerticalBox({ id = "v3_life_trade_widget_route", parent = content, gap = 4, slot = { size = "fixed", height = 158, hAlign = "fill" } })
-        local fromRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_from_row", parent = routeBox, gap = 5, slot = { size = "fixed", height = 30, hAlign = "fill" } })
-        RSUI:Text({ id = "v3_life_trade_widget_from_label", parent = fromRow, text = "起点", fontSize = 9, tone = "muted", slot = { size = "fixed", width = 42 } })
-        instance.fromDropdown = RSUI:Dropdown({ id = "v3_life_trade_widget_from", parent = fromRow, items = {}, maxVisible = 10, popupWidth = 240, placeholder = "选择起点",
-            get = function() return (Feature:GetRouteSettings() or {}).fromZone end, set = function(v) return Feature.Commands:SetFrom(v) end, slot = { size = "fill", fill = 1, minWidth = 120 } })
+        -- 中文维护注释：跑商 HUD 固定为“路线 / 快捷动作 / 收藏与排序”三行；只重排 Presentation，不复制货率、售价或询价 Authority。
+        -- 中文维护注释：原有语义控件 ID 必须继续复用，保证绑定、诊断与升级兼容不因布局重构失效。
+        local routeBox = RSUI:VerticalBox({ id = "v3_life_trade_widget_route", parent = content, gap = 3, -- 中文维护注释：三行控件以 3px 间距收敛为紧凑操作区，避免悬浮窗像完整应用页面。
+            slot = { size = "fixed", height = 90, hAlign = "fill" } }) -- 中文维护注释：28+28+28 加两段 3px 间距恰好 90px，禁止用 fill 抢占货物表格空间。
+        local routeRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_from_row", parent = routeBox, gap = 4, -- 中文维护注释：起点与目的地合并到同一行，保留旧 from 行 ID 以维持诊断连续性。
+            slot = { size = "fixed", height = 28, hAlign = "fill" } }) -- 中文维护注释：路线选择行固定 28px，低分辨率下优先压缩文字而不是增加悬浮窗高度。
+        RSUI:Text({ id = "v3_life_trade_widget_from_label", parent = routeRow, text = "起", fontSize = 9, tone = "muted", -- 中文维护注释：用单字标签降低横向占用，语义仍由原控件 ID 和下拉框 placeholder 保持明确。
+            slot = { size = "fixed", width = 18 } }) -- 中文维护注释：标签固定 18px，给两个路线下拉框留下最低 100px 可用宽度。
+        instance.fromDropdown = RSUI:Dropdown({ id = "v3_life_trade_widget_from", parent = routeRow, items = {}, maxVisible = 10, popupWidth = 210, placeholder = "起点", -- 中文维护注释：下拉逻辑与 Command 边界不变，仅缩小 popup 宽度以匹配紧凑 HUD。
+            get = function() return (Feature:GetRouteSettings() or {}).fromZone end, set = function(v) return Feature.Commands:SetFrom(v) end, -- 中文维护注释：起点状态继续由 Feature route settings/Command 管理，Widget 不持有副本。
+            slot = { size = "fill", fill = 1, minWidth = 100 } }) -- 中文维护注释：使用 fill 让路线下拉框随悬浮窗缩放，并守住 1024×768 场景下的最小可操作宽度。
+        RSUI:Text({ id = "v3_life_trade_widget_route_arrow", parent = routeRow, text = "→", fontSize = 9, tone = "muted", -- 中文维护注释：新增纯 Presentation 路线方向符号，不参与路线值、请求或持久化。
+            slot = { size = "fixed", width = 16 } }) -- 中文维护注释：方向符固定窄宽，避免不同地区名称长度导致控件顺序漂移。
+        RSUI:Text({ id = "v3_life_trade_widget_to_label", parent = routeRow, text = "到", fontSize = 9, tone = "muted", -- 中文维护注释：目的地标签压缩为单字，仍复用旧 to label ID 保持 UI 诊断稳定。
+            slot = { size = "fixed", width = 18 } }) -- 中文维护注释：固定 18px 防止标签挤占目的地下拉框。
+        instance.toDropdown = RSUI:Dropdown({ id = "v3_life_trade_widget_to", parent = routeRow, items = {}, maxVisible = 10, popupWidth = 210, placeholder = "目的地", -- 中文维护注释：目的地下拉仅缩减视觉尺寸，选区过滤与服务器货率 Authority 完全不变。
+            get = function() return (Feature:GetRouteSettings() or {}).toZone end, set = function(v) return Feature.Commands:SetTo(v) end, -- 中文维护注释：继续通过 Feature Command 写路线，Widget 禁止直接改 Trade.State。
+            slot = { size = "fill", fill = 1, minWidth = 100 } }) -- 中文维护注释：与起点等权自适应，保证紧凑窗口仍能清晰选择两个地区。
 
-        local toRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_to_row", parent = routeBox, gap = 5, slot = { size = "fixed", height = 30, hAlign = "fill" } })
-        RSUI:Text({ id = "v3_life_trade_widget_to_label", parent = toRow, text = "目的地", fontSize = 9, tone = "muted", slot = { size = "fixed", width = 42 } })
-        instance.toDropdown = RSUI:Dropdown({ id = "v3_life_trade_widget_to", parent = toRow, items = {}, maxVisible = 10, popupWidth = 240, placeholder = "选择目的地",
-            get = function() return (Feature:GetRouteSettings() or {}).toZone end, set = function(v) return Feature.Commands:SetTo(v) end, slot = { size = "fill", fill = 1, minWidth = 110 } })
-
-        local modeRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_mode_row", parent = routeBox, gap = 5, slot = { size = "fixed", height = 30, hAlign = "fill" } })
-        instance.ratioButton = RSUI:Button({ id = "v3_life_trade_widget_ratio_mode", parent = modeRow, text = "货率：实时", compact = true, slot = { size = "fixed", width = 96 } })
+        local modeRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_mode_row", parent = routeBox, gap = 4, -- 中文维护注释：第二行集中高频操作，减少鼠标移动和垂直占用。
+            slot = { size = "fixed", height = 28, hAlign = "fill" } }) -- 中文维护注释：快捷动作保持单行 28px；功能启停/询价行为仍由 Feature Commands 负责。
+        instance.ratioButton = RSUI:Button({ id = "v3_life_trade_widget_ratio_mode", parent = modeRow, text = "实时货率", compact = true, -- 中文维护注释：缩短按钮文案但保留 current/full 二态 Command 语义。
+            slot = { size = "fill", fill = 1, minWidth = 70 } }) -- 中文维护注释：用弹性宽度适配 320px 最小窗口，不额外创建模式状态。
         instance.ratioButton.onClick = function()
             local projection = Feature:GetProjection() or {}
             local ok, modeErr = Feature.Commands:SetRatioMode(projection.ratioMode == "full" and "current" or "full")
             if ok == true then instance:Refresh() end
             return ok, modeErr
         end
-        instance.commerceButton = RSUI:Button({ id = "v3_life_trade_widget_commerce_mode", parent = modeRow, text = "熟练：计入", compact = true, slot = { size = "fixed", width = 96 } })
+        instance.commerceButton = RSUI:Button({ id = "v3_life_trade_widget_commerce_mode", parent = modeRow, text = "计熟练", compact = true, -- 中文维护注释：经商熟练度开关只改显示文案，实际售价公式仍由 TradePayoutV3/Feature Authority 提供。
+            slot = { size = "fill", fill = 1, minWidth = 64 } }) -- 中文维护注释：最小 64px 保证中文状态可辨识，同时让询价/收藏按钮共存于同一行。
         instance.commerceButton.onClick = function()
             local projection = Feature:GetProjection() or {}
             local ok, modeErr = Feature.Commands:SetCommerceMode(projection.commerceMode == "off" and "observe" or "off")
             if ok == true then instance:Refresh() end
             return ok, modeErr
         end
-        instance.quoteButton = RSUI:Button({ id = "v3_life_trade_widget_quote", parent = modeRow, text = "材料询价", compact = true, slot = { size = "fixed", width = 88 } })
+        instance.quoteButton = RSUI:Button({ id = "v3_life_trade_widget_quote", parent = modeRow, text = "询价", compact = true, -- 中文维护注释：材料询价缩为高频短标签，SingleFlight/请求超时等 Authority 契约不在 Widget 中改动。
+            slot = { size = "fill", fill = 0.85, minWidth = 56 } }) -- 中文维护注释：询价按钮略低 fill 权重，优先给模式按钮留足状态文本空间。
         instance.quoteButton.onClick = function()
             local ok, quoteErr = Feature.Commands:QuotePendingMaterials()
             if ok == true then instance:Refresh() end
             return ok, quoteErr
         end
-
-        local favoriteRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_favorite_row", parent = routeBox, gap = 5, slot = { size = "fixed", height = 30, hAlign = "fill" } })
-        instance.favoriteDropdown = RSUI:Dropdown({ id = "v3_life_trade_widget_favorite", parent = favoriteRow, items = {}, maxVisible = 10, popupWidth = 290, placeholder = "收藏路线",
-            get = function() local projection = Feature:GetProjection() or {}; return projection.currentRouteFavorite and projection.currentFavoriteKey or nil end,
-            set = function(value) return Feature.Commands:SelectFavorite(value) end, slot = { size = "fill", fill = 1, minWidth = 120 } })
-        instance.favoriteButton = RSUI:Button({ id = "v3_life_trade_widget_favorite_toggle", parent = favoriteRow, text = "收藏", compact = true, slot = { size = "fixed", width = 64 } })
+        instance.favoriteButton = RSUI:Button({ id = "v3_life_trade_widget_favorite_toggle", parent = modeRow, text = "收藏", compact = true, -- 中文维护注释：收藏切换搬到快捷动作行但保留原控件 ID/Command，旧用户数据无需迁移。
+            slot = { size = "fill", fill = 0.85, minWidth = 56 } }) -- 中文维护注释：与询价保持同等紧凑预算，不增加额外行高。
         instance.favoriteButton.onClick = function()
             local ok, favoriteErr = Feature.Commands:ToggleCurrentFavorite()
             if ok == true then instance:Refresh() end
             return ok, favoriteErr
         end
-        -- Same one-of-many sort contract as the Trade page; the id stays
-        -- "v3_life_trade_widget_sort" for binding/fence continuity.  The old
-        -- cycle button lived on the favorite row, which had no room for three
-        -- segments, so the selector got its own row and routeBox grew by one
-        -- 30px row (the Feature widget policy raises defaultHeight to match).
-        local sortRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_sort_row", parent = routeBox, gap = 5, slot = { size = "fixed", height = 30, hAlign = "fill" } })
-        RSUI:Text({ id = "v3_life_trade_widget_sort_label", parent = sortRow, text = "排序", fontSize = 9, tone = "muted", slot = { size = "fixed", width = 42 } })
+
+        local favoriteRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_favorite_row", parent = routeBox, gap = 4, -- 中文维护注释：第三行合并收藏路线选择与排序，替代旧版额外排序行。
+            slot = { size = "fixed", height = 28, hAlign = "fill" } }) -- 中文维护注释：固定 28px 完成三行总高度约束，表格获得更多可见行。
+        instance.favoriteDropdown = RSUI:Dropdown({ id = "v3_life_trade_widget_favorite", parent = favoriteRow, items = {}, maxVisible = 10, popupWidth = 230, placeholder = "收藏路线", -- 中文维护注释：收藏路线 Popup 适度缩宽，列表数据仍完全来自 Feature projection。
+            get = function() local projection = Feature:GetProjection() or {}; return projection.currentRouteFavorite and projection.currentFavoriteKey or nil end, -- 中文维护注释：只读取投影中的当前收藏键，不在 Presentation 计算或复制收藏集合。
+            set = function(value) return Feature.Commands:SelectFavorite(value) end, slot = { size = "fill", fill = 1.25, minWidth = 110 } }) -- 中文维护注释：收藏选择继续通过 Command 写入，较高 fill 权重保证长路线名称优先获得空间。
+        RSUI:Text({ id = "v3_life_trade_widget_sort_label", parent = favoriteRow, text = "排序", fontSize = 8, tone = "muted", -- 中文维护注释：排序标签缩小字号与宽度，为三段选择器留出稳定空间。
+            slot = { size = "fixed", width = 28 } }) -- 中文维护注释：固定标签宽度避免排序段因语言长度产生抖动。
         instance.sortSelector = RSUI:SegmentedSelector({
-            id = "v3_life_trade_widget_sort", parent = sortRow, itemWidth = 36, gap = 2, height = 24, fontSize = 9,
+            id = "v3_life_trade_widget_sort", parent = favoriteRow, itemWidth = 34, gap = 1, height = 22, fontSize = 8, -- 中文维护注释：复用稳定 sort ID，将三段选择器压缩到 104px 左右且保留 one-of-many 语义。
             items = {
                 { value = "ratio", text = "货率" },
                 { value = "price", text = "售价" },
@@ -272,7 +281,7 @@ local ok, err = Register({
             },
             get = function() return (Feature:GetProjection() or {}).sortMode or "ratio" end,
             set = function(value) return Feature.Commands:SetSortMode(value) end,
-            slot = { size = "auto", hAlign = "left", vAlign = "fill" },
+            slot = { size = "auto", hAlign = "right", vAlign = "fill" }, -- 中文维护注释：排序控件靠右固定自身宽度，收藏下拉框吸收剩余空间。
         })
         return instance.fromDropdown ~= nil and instance.toDropdown ~= nil and instance.ratioButton ~= nil
             and instance.commerceButton ~= nil and instance.quoteButton ~= nil and instance.favoriteDropdown ~= nil
@@ -283,17 +292,17 @@ local ok, err = Register({
         if instance.fromDropdown then instance.fromDropdown:SetItems(fromItems); instance.fromDropdown:SetEnabled(#fromItems > 0); instance.fromDropdown:Render() end
         if instance.toDropdown then instance.toDropdown:SetItems(toItems); instance.toDropdown:SetEnabled(#toItems > 0); instance.toDropdown:Render() end
         local pending = math.max(0, tonumber(projection.pendingQuoteCount) or 0)
-        if instance.ratioButton then instance.ratioButton:SetText(projection.ratioMode == "full" and ("满货率 " .. tostring(projection.fullRatio or 130) .. "%") or "货率：实时") end
-        if instance.commerceButton then instance.commerceButton:SetText(projection.commerceMode == "off" and "熟练：忽略" or "熟练：计入") end
+        if instance.ratioButton then instance.ratioButton:SetText(projection.ratioMode == "full" and ("满" .. tostring(projection.fullRatio or 130) .. "%") or "实时货率") end -- 中文维护注释：刷新时使用短状态文案；ratioMode/fullRatio 仍只从 Feature projection 读取。
+        if instance.commerceButton then instance.commerceButton:SetText(projection.commerceMode == "off" and "忽略熟练" or "计熟练") end -- 中文维护注释：经商模式只更新按钮文本，不在 Widget 重新计算熟练度或售价。
         if instance.quoteButton then
             instance.quoteButton:SetEnabled(pending > 0)
-            instance.quoteButton:SetText(pending > 0 and ("询价(" .. tostring(pending) .. ")") or "材料询价")
+            instance.quoteButton:SetText(pending > 0 and ("询价(" .. tostring(pending) .. ")") or "询价") -- 中文维护注释：保留待询价数量反馈，同时去掉冗长“材料”前缀以降低横向预算。
         end
         local favoriteItems = type(projection.favoriteItems) == "table" and projection.favoriteItems or {}
         if instance.favoriteDropdown then instance.favoriteDropdown:SetItems(favoriteItems); instance.favoriteDropdown:SetEnabled(#favoriteItems > 0); instance.favoriteDropdown:Render() end
         if instance.favoriteButton then
             instance.favoriteButton:SetEnabled(projection.fromZone ~= nil and projection.toZone ~= nil)
-            instance.favoriteButton:SetText(projection.currentRouteFavorite == true and "取消收藏" or "收藏")
+            instance.favoriteButton:SetText(projection.currentRouteFavorite == true and "取消" or "收藏") -- 中文维护注释：当前路线已收藏时使用短“取消”状态，收藏事实仍由 Feature projection 决定。
         end
         if instance.sortSelector then
             instance.sortSelector:SetEnabled(#(projection.rows or {}) > 0)
@@ -312,10 +321,10 @@ local ok, err = Register({
         return detail:Open(row.key)
     end,
     columns = {
-        { id = "name", title = "货物", field = "name", size = "fill", minWidth = 120, fill = 1 },
-        { id = "rate", title = "货率", field = "rate", size = "fixed", width = 58, minWidth = 50, getTone = function(item) return item and item.tone or "muted" end },
-        { id = "price", title = "售价", field = "price", size = "fixed", width = 82, minWidth = 64 },
-        { id = "profit", title = "毛利", field = "profit", size = "fixed", width = 90, minWidth = 68 },
+        { id = "name", title = "货物", field = "name", size = "fill", minWidth = 108, fill = 1 }, -- 中文维护注释：货物列仍负责吸收剩余宽度，仅略降最小值以支持 320px 紧凑窗口。
+        { id = "rate", title = "货率", field = "rate", size = "fixed", width = 54, minWidth = 48, getTone = function(item) return item and item.tone or "muted" end }, -- 中文维护注释：货率列收紧但保留原 tone 规则，不改变 130%/实时货率业务判断。
+        { id = "price", title = "售价", field = "price", size = "fixed", width = 74, minWidth = 60 }, -- 中文维护注释：售价列缩窄到可读金币文本预算，字段来源仍是 Authority 已计算结果。
+        { id = "profit", title = "毛利", field = "profit", size = "fixed", width = 78, minWidth = 64 }, -- 中文维护注释：毛利列仅调整 Presentation 宽度，不更改材料成本/询价公式。
     },
     status = function(projection, rows)
         local pending = math.max(0, tonumber(projection.pendingQuoteCount) or 0)
@@ -339,11 +348,11 @@ local ok, err = Register({
             or " · 货率序"
         local inFlight = math.max(0, tonumber(projection.quoteInFlightCount) or 0)
         local unresolvedIdentity = math.max(0, tonumber(projection.unresolvedIdentityCount) or 0)
-        return FindZoneName(projection, projection.fromZone) .. " → " .. FindZoneName(projection, projection.toZone) .. " · " .. tostring(#rows) .. " 种"
-            .. ratio .. commerce .. (pending > 0 and (" · 待询价 " .. tostring(pending)) or "")
-            .. (inFlight > 0 and (" · 询价中 " .. tostring(inFlight)) or "")
-            .. (unresolvedIdentity > 0 and (" · 配方待解析 " .. tostring(unresolvedIdentity)) or "")
-            .. " · 收藏 " .. tostring(favorites) .. sort .. fallback
+        return FindZoneName(projection, projection.fromZone) .. " → " .. FindZoneName(projection, projection.toZone) .. " · " .. tostring(#rows) .. "种" -- 中文维护注释：底栏首段保留路线与货物数量，去掉多余空格以适配窄窗口。
+            .. ratio .. commerce .. " · 收藏" .. tostring(favorites) .. sort -- 中文维护注释：模式、熟练度、收藏和排序仍由投影状态拼接，不引入额外计算。
+            .. (pending > 0 and (" · 待询价" .. tostring(pending)) or "") -- 中文维护注释：仅在有待处理材料时显示计数，避免常态底栏冗长。
+            .. (inFlight > 0 and (" · 询价中" .. tostring(inFlight)) or "") -- 中文维护注释：保留正在询价状态，便于确认 SingleFlight 请求仍在工作。
+            .. (unresolvedIdentity > 0 and (" · 待解析" .. tostring(unresolvedIdentity)) or "") .. fallback -- 中文维护注释：身份解析与回退警告仍完整保留，只压缩标签文字。
     end,
 })
 if ok ~= true then error(err) end

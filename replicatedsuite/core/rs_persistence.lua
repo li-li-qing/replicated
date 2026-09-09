@@ -1711,10 +1711,12 @@ function P:LoadStore(id, options)
                 })
                 return false, nil, message
             end
-            value = migrated
-            self.stats.migrations = (tonumber(self.stats.migrations) or 0) + 1
-            deferredSaveReason = "migration"
-            deferredSaveDelayMs = self.defaultDelayMs
+            value = migrated -- 中文维护注释：只在 migration 成功且返回非 nil Domain 后替换待 Apply 值；Integrity recovery 已证明的当前 Domain 仍必须经过同一迁移边界。
+            self.stats.migrations = (tonumber(self.stats.migrations) or 0) + 1 -- 中文维护注释：schema 迁移统计照常增加，用于区分历史档升级与普通 current-schema Load。
+            if deferredSaveReason == nil then -- 中文维护注释：若前面已经发生 integrity/historical/known-stamp recovery，就保留其更强的“立即重盖”语义，禁止普通 schema migration 把 0ms durability 修复降成 debounce 保存。
+                deferredSaveReason = "migration" -- 中文维护注释：只有纯 schema 升级、没有更高优先级完整性恢复时，才使用普通 migration 脏标记原因。
+                deferredSaveDelayMs = self.defaultDelayMs -- 中文维护注释：纯迁移可按既有 debounce 保存；完整性恢复路径已在前面设置 0ms，不在此覆盖。
+            end -- 中文维护注释：结束 deferred save 优先级保护；period reset 后续仍可按其更高业务语义显式覆盖。
         end
     end
 

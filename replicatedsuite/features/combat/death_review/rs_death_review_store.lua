@@ -20,7 +20,7 @@ local F = S.Features.DeathReview
 local U = S.Utils
 
 local INDEX_STORE = "v3.death_review"
-local INDEX_SCHEMA = 1
+local INDEX_SCHEMA = 2 -- 中文维护注释：.18.193 把 DeathReview Index 的 codec1 + FloatingSurface v11 canonical 正式划为 schema2，结束 schema1 内多代 canonical 共存造成的重复假损坏。
 local INDEX_CODEC_VERSION = 1
 local RECORD_SCHEMA = 1
 local RECORD_PREFIX = P.V3KeyPrefix .. "death_review_record_"
@@ -44,7 +44,9 @@ if type(Floating) ~= "table" or type(Floating.NormalizeState) ~= "function" then
     error("FloatingSurface unavailable for DeathReview store")
 end
 
-F.PersistenceCanonicalWindowContractVersion = 6
+F.PersistenceCanonicalWindowContractVersion = 7 -- 中文维护注释：v7 表示 DeathReview 窗口 canonical 已由 Store 显式字段投影冻结，未来 FloatingSurface 新字段不得无 schema bump 进入指纹。
+F.PersistenceIndexSchemaContractVersion = INDEX_SCHEMA -- 中文维护注释：向 Acceptance/Foundation 暴露 Index schema2 边界，防止增量包只改 Store 而漏改门禁。
+F.PersistenceKnownLegacyRecoveryContractVersion = 2 -- 中文维护注释：v2 增加 2026-09-09 codec1 schema1 实机 old/new pair 恢复，同时保留原 770CB0B8 pre-codec 桥。
 F.PersistenceIndexCodecVersion = INDEX_CODEC_VERSION
 F.WidgetWindowSizePolicy = {
     defaultWidth = 470,
@@ -56,9 +58,33 @@ F.WidgetWindowSizePolicy = {
     defaultTextOpacity = 1.0,
 }
 
-local function NormalizeWidgetWindow(value)
-    return Floating:NormalizeState(value, F.WidgetWindowSizePolicy)
-end
+local CURRENT_WINDOW_KEYS = { -- 中文维护注释：schema2 自己声明 DeathReview HUD 的可持久化窗口字段，避免共享 FloatingSurface Foundation 演进时再次偷换 Index canonical。
+    "width", "height", "minimized", "locked", -- 中文维护注释：尺寸与锁定/最小化仍是用户 Presentation 偏好，不影响死亡记录 Gameplay Authority。
+    "overallOpacity", "backgroundOpacity", "textOpacity", "fontScale", "userMoved", -- 中文维护注释：外观与移动意图属于 HUD 状态，继续由 Index Store 保存。
+    "x", "y", "anchorH", "anchorV", "offsetX", "offsetY", "coordinateSpace", "savedUiScale", -- 中文维护注释：保留既有自由/边缘定位语义用于同分辨率恢复。
+    "savedLogicalWidth", "savedLogicalHeight", "normalizedCenterX", "normalizedCenterY", -- 中文维护注释：schema2 正式纳入 FloatingSurface v11 的跨分辨率响应式位置元数据。
+} -- 中文维护注释：结束 schema2 窗口字段白名单；新增字段必须配套 schema3 与 historical canonical。
+local HISTORICAL_SCHEMA1_CODEC_WINDOW_KEYS = { -- 中文维护注释：冻结 codec1 schema1 在响应式元数据进入 Store 之前的窗口 canonical，只用于旧盖章 exact recovery。
+    "width", "height", "minimized", "locked", -- 中文维护注释：历史 schema1 codec1 基础窗口字段保持原形。
+    "overallOpacity", "backgroundOpacity", "textOpacity", "fontScale", "userMoved", -- 中文维护注释：历史 schema1 codec1 外观字段必须保持，Core 才能用旧 Hash 证明逻辑内容。
+    "x", "y", "anchorH", "anchorV", "offsetX", "offsetY", "coordinateSpace", "savedUiScale", -- 中文维护注释：历史 schema1 codec1 不包含后加入的 source viewport/normalized center 元数据。
+} -- 中文维护注释：该列表只读且不可随当前 Foundation 增长，否则旧 Hash 证据会失去意义。
+
+local function ProjectWindow(normalized, keys) -- 中文维护注释：共享 normalizer 负责坐标语义，DeathReview Store 负责每个 schema 的持久化字段 Authority。
+    local out = {} -- 中文维护注释：新建 bounded 表，禁止未来共享 normalizer 的未知成员自动漏入既有 schema。
+    for _, key in ipairs(keys) do -- 中文维护注释：固定小列表只在存档 Load/Save canonical 边界运行，不进入战斗事件或 Tick 热路径。
+        if normalized[key] ~= nil then out[key] = normalized[key] end -- 中文维护注释：nil 仍不落盘，false/0 等有业务含义的值保持原样参与当前 canonical。
+    end -- 中文维护注释：结束 schema-owned 字段复制。
+    return out -- 中文维护注释：返回独立窗口表，避免 Persistence/Feature 共享同一引用产生隐式写入。
+end -- 中文维护注释：结束窗口 schema 投影 helper。
+
+local function NormalizeWidgetWindow(value) -- 中文维护注释：当前 schema2 的唯一窗口 canonical 入口，Feature Get/Set 仍复用同一 Store policy。
+    return ProjectWindow(Floating:NormalizeState(value, F.WidgetWindowSizePolicy), CURRENT_WINDOW_KEYS) -- 中文维护注释：先按 RSUI 语义归一，再冻结 schema2 物理字段，兼顾 UI 一致性与指纹稳定性。
+end -- 中文维护注释：结束当前 DeathReview 窗口 canonical。
+
+local function NormalizeHistoricalSchema1CodecWindow(value) -- 中文维护注释：只用于 schema1 codec1 mismatch 的历史候选，正常 Domain/Widget 不得调用。
+    return ProjectWindow(Floating:NormalizeState(value, F.WidgetWindowSizePolicy), HISTORICAL_SCHEMA1_CODEC_WINDOW_KEYS) -- 中文维护注释：剥离 schema2 响应式字段后交给 Core exact-hash 验证，不能凭形状直接信任。
+end -- 中文维护注释：结束 schema1 codec1 历史窗口 canonical。
 
 local function DeepCopy(value)
     if U ~= nil and type(U.DeepCopy) == "function" then return U.DeepCopy(value) end
@@ -267,6 +293,28 @@ local function DecodeIndex(raw)
     return NormalizeIndex(source), nil
 end
 
+local function RebuildHistoricalCodecV1Canonical(rawEnvelope) -- 中文维护注释：schema1 已经写入 codec1 后仍经历过 Floating canonical 演进；该 helper 重建“codec 不变、窗口字段旧一代”的精确历史候选。
+    if type(rawEnvelope) ~= "table" or tonumber(rawEnvelope.codec) ~= INDEX_CODEC_VERSION or type(rawEnvelope.payload) ~= "table" then return nil end -- 中文维护注释：只接受真正的 codec1 Index 包封，pre-codec 数据继续走原 `.18.145` 历史恢复器。
+    local decoded, decodeErr = DecodeIndex(rawEnvelope) -- 中文维护注释：复用正式 codec decoder 还原 settings/history；decoder 为纯 Normalize，不触发 Apply/Native 写入。
+    if type(decoded) ~= "table" or decodeErr ~= nil then return nil end -- 中文维护注释：codec 无法完整解码时保持 fail-closed，不构造猜测候选。
+    local encodedSettings = { -- 中文维护注释：历史候选必须保持 codec1 的稳定负向 sentinel 设计，禁止退回 pre-codec default-true 布尔表示。
+        windowMs = decoded.settings.windowMs, -- 中文维护注释：死亡前窗口数值直接来自已解码 Domain，仍受 NormalizeSettings 范围约束。
+        maxHistory = decoded.settings.maxHistory, -- 中文维护注释：历史条数继续使用 codec1 的规范化整数。
+        minDamage = decoded.settings.minDamage, -- 中文维护注释：最低伤害继续使用 codec1 的规范化整数。
+    } -- 中文维护注释：结束 codec1 基础设置编码表。
+    if decoded.settings.autoShow == false then encodedSettings.autoShowDisabled = 1 end -- 中文维护注释：显式关闭自动弹出必须保留 numeric sentinel，避免 RU 省略 false 再次产生歧义。
+    if decoded.settings.showDebuffs == false then encodedSettings.showDebuffsDisabled = 1 end -- 中文维护注释：显式关闭 Debuff 同样只使用 codec1 sentinel。
+    local historicalCanonical = { -- 中文维护注释：构造 Store-owned schema1 codec1 canonical；Core 之后会重新 Hash，候选本身不拥有信任权。
+        codec = INDEX_CODEC_VERSION, -- 中文维护注释：物理 codec 仍为 v1，本轮 schema bump 不改 DeathReview Index 数据编码协议。
+        payload = { -- 中文维护注释：codec1 业务 payload 仅包含 settings/history/widgetWindow 三个固定根字段。
+            settings = encodedSettings, -- 中文维护注释：设置使用上方稳定 sentinel 形状。
+            history = DeepCopy(decoded.history), -- 中文维护注释：历史摘要从正式 decoder 保留，不扫描记录分片、不改变 serial/storageId Authority。
+            widgetWindow = NormalizeHistoricalSchema1CodecWindow(rawEnvelope.payload.widgetWindow), -- 中文维护注释：只把窗口 canonical 回退到 schema1 历史字段，业务 settings/history 不做猜测。
+        }, -- 中文维护注释：结束 schema1 codec1 payload。
+    } -- 中文维护注释：结束 schema1 codec1 历史候选。
+    return historicalCanonical, decoded -- 中文维护注释：若旧 Hash 精确命中，Core 应用 recovered Domain 时仍使用当前 Normalize 后的 decoded 值并立即迁移到 schema2。
+end -- 中文维护注释：结束 codec1 历史 canonical 重建 helper。
+
 -- .18.143-.18.145 persisted widgetWindow as an opaque table. RU SaveData may
 -- also omit false-valued members. .18.148 covered only missing FloatingSurface
 -- fields, but a default-TRUE business flag (autoShow/showDebuffs) that was false
@@ -436,6 +484,14 @@ local function RebuildV18_145Canonical(value, stampedFingerprint, currentCanonic
     return strictHistorical
 end
 
+local function RebuildHistoricalIndexCanonical(value, stampedFingerprint, currentCanonical, rawEnvelope) -- 中文维护注释：统一 Index 历史恢复入口，先区分 codec1 schema1 与更早 pre-codec，不让两种表示互相误判。
+    local meta = type(rawEnvelope) == "table" and rawEnvelope.__rsmeta or nil -- 中文维护注释：历史候选必须绑定已通过 Envelope Seal 的真实 schema 元数据。
+    if type(meta) == "table" and tonumber(meta.schema) == 1 and tonumber(type(rawEnvelope) == "table" and rawEnvelope.codec or nil) == INDEX_CODEC_VERSION then -- 中文维护注释：schema1 + codec1 是 `.18.149+` 的稳定编码世代，优先尝试冻结窗口字段的 exact canonical。
+        return RebuildHistoricalCodecV1Canonical(rawEnvelope) -- 中文维护注释：Core 会验证返回候选 Hash；命不中旧 stamp 后才允许进入 known-pair 最终桥。
+    end -- 中文维护注释：结束 codec1 schema1 分支。
+    return RebuildV18_145Canonical(value, stampedFingerprint, currentCanonical, rawEnvelope) -- 中文维护注释：无 codec 的旧 schema1 继续使用既有 opaque-window/false omission bounded 搜索。
+end -- 中文维护注释：结束 DeathReview 多世代历史 canonical 路由。
+
 -- .18.151 one-time known-stamp bridge. The user's RU client has carried the
 -- SAME legacy v4 index stamp (770CB0B8) unchanged across .18.146-.18.150 while
 -- current canonicalization changed and every exact historical-shape solver
@@ -449,9 +505,10 @@ end
 -- legacy-Domain shape validation before returning a CURRENT normalized Domain
 -- for immediate codec-v1 restamp. It never clears the Store and never accepts a
 -- different fingerprint.
-local KNOWN_LEGACY_V4_INDEX_FINGERPRINTS = {
-    ["770CB0B8"] = "ru_2026_09_07_precodec_v4_index",
-}
+local KNOWN_LEGACY_V4_INDEX_FINGERPRINTS = { -- 中文维护注释：known-stamp 仅记录真实 RU 事故身份；未知 Hash 永远不能通过该表。
+    ["770CB0B8"] = { label = "ru_2026_09_07_precodec_v4_index", representation = "precodec" }, -- 中文维护注释：保留 `.18.151` 已验证的 pre-codec 桥；其安全边界仍是 strict legacy shape + exact old stamp。
+    ["014277AB"] = { label = "ru_2026_09_09_schema1_codec1_window_generation", representation = "codec1", currentFingerprint = "0CF5BCC1" }, -- 中文维护注释：`.18.192` 实机新事故必须同时命中 old=014277AB 与 current=0CF5BCC1，防止真实内容变化被误迁移。
+} -- 中文维护注释：结束 DeathReview known-stamp allowlist；新增事故必须有真实诊断证据与对应 current Hash。
 
 local LEGACY_INDEX_TOP_KEYS = { settings=true, history=true, widgetWindow=true }
 local LEGACY_SETTINGS_KEYS = { autoShow=true, windowMs=true, maxHistory=true, minDamage=true, showDebuffs=true }
@@ -546,38 +603,59 @@ local function ValidateLegacyIndexPayload(value)
     return true
 end
 
-local function RecoverKnownLegacyV4Index(decoded, stampedFingerprint, currentCanonical, rawEnvelope)
-    local stamp = tostring(stampedFingerprint or "")
-    local label = KNOWN_LEGACY_V4_INDEX_FINGERPRINTS[stamp]
-    if label == nil then return nil end
-    if type(rawEnvelope) ~= "table" or rawEnvelope.codec ~= nil or type(rawEnvelope.payload) ~= "table" then
-        return nil
-    end
-    local source = rawEnvelope.payload
-    local valid, reason = ValidateLegacyIndexPayload(source)
-    local store = P:GetStore(INDEX_STORE)
-    if valid ~= true then
-        if store ~= nil then
-            store.lastHistoricalRecoveryProbe = tostring(store.lastHistoricalRecoveryProbe or "")
-                .. "/knownStamp=" .. stamp .. "/knownShape=reject:" .. tostring(reason)
-        end
-        return nil
-    end
+local CODEC_V1_PAYLOAD_KEYS = { settings = true, history = true, widgetWindow = true } -- 中文维护注释：codec1 payload 根字段固定，known-pair 恢复不得接受附加业务子树。
+local CODEC_V1_SETTINGS_KEYS = { autoShowDisabled = true, windowMs = true, maxHistory = true, minDamage = true, showDebuffsDisabled = true } -- 中文维护注释：codec1 设置只允许稳定 numeric sentinel 与三个数值设置。
+local CODEC_V1_WINDOW_KEYS = { opacity = true } -- 中文维护注释：窗口验证允许历史 opacity 别名，但当前保存仍只写 overallOpacity。
+for _, key in ipairs(CURRENT_WINDOW_KEYS) do CODEC_V1_WINDOW_KEYS[key] = true end -- 中文维护注释：schema1 codec1 可能跨 Floating v11 前后保存，因此验证允许所有已知当前窗口字段，但不允许未知未来字段。
 
-    -- Preserve every still-present summary row even if native changed sequence
-    -- keys into map keys; normalize all remaining settings/window values through
-    -- the CURRENT Domain contract, then the existing codec writes a stable v1
-    -- representation. Missing values that the native serializer irreversibly
-    -- removed cannot be guessed; current Domain defaults apply only after the
-    -- exact known legacy stamp + strict shape gate identifies this migration.
-    local recovered = NormalizeHistoricalIndexWithRecoveredEntries(source)
-    recovered = NormalizeIndex(recovered)
-    if store ~= nil then
-        store.lastHistoricalRecoveryProbe = tostring(store.lastHistoricalRecoveryProbe or "")
-            .. "/knownStamp=" .. stamp .. "/knownShape=ok"
-    end
-    return recovered, label
-end
+local function ValidateCodecV1IndexPayload(rawEnvelope) -- 中文维护注释：`.18.193` 新 known-pair 桥的 Store-owned codec1 结构验证，避免只凭 Hash 字符串接受任意表。
+    if type(rawEnvelope) ~= "table" or tonumber(rawEnvelope.codec) ~= INDEX_CODEC_VERSION or type(rawEnvelope.payload) ~= "table" then return false, "codec_envelope" end -- 中文维护注释：必须是真正 codec1 Index 包封。
+    local payload = rawEnvelope.payload -- 中文维护注释：只验证业务 payload；元数据已由 Persistence Envelope Seal 在调用 hook 前验证。
+    local ok, err = HasOnlyKeys(payload, CODEC_V1_PAYLOAD_KEYS) -- 中文维护注释：先拒绝 codec1 未定义的根字段，防止 future schema 被旧桥降级读取。
+    if ok ~= true then return false, "payload:" .. tostring(err) end -- 中文维护注释：根字段异常直接 fail-closed。
+    if type(payload.settings) ~= "table" then return false, "settings_required" end -- 中文维护注释：codec1 settings 是必需子表，缺失不允许用默认值掩盖。
+    ok, err = HasOnlyKeys(payload.settings, CODEC_V1_SETTINGS_KEYS) -- 中文维护注释：设置只允许 v1 codec 明确字段。
+    if ok ~= true then return false, "settings:" .. tostring(err) end -- 中文维护注释：未知设置字段拒绝恢复。
+    for _, key in ipairs({ "autoShowDisabled", "showDebuffsDisabled", "windowMs", "maxHistory", "minDamage" }) do if payload.settings[key] ~= nil and tonumber(payload.settings[key]) == nil then return false, "settings_number:" .. key end end -- 中文维护注释：sentinel 与设置值必须保持数值可解析，字符串业务漂移不进入迁移。
+    local historyOk, historyReason = ValidateLegacyIndexPayload({ settings = {}, history = payload.history }) -- 中文维护注释：history 摘要结构与 pre-codec Domain 相同，复用既有 bounded serial/storageId/type 验证而不复制第二套规则。
+    if historyOk ~= true then return false, "history:" .. tostring(historyReason) end -- 中文维护注释：历史摘要任何异常都保持原 fence。
+    if payload.widgetWindow ~= nil then -- 中文维护注释：窗口可缺失，但存在时必须完全属于已知 Floating 字段。
+        ok, err = HasOnlyKeys(payload.widgetWindow, CODEC_V1_WINDOW_KEYS) -- 中文维护注释：允许 schema1 生命周期中已知的 v10/v11 字段集合，拒绝 future/未知成员。
+        if ok ~= true then return false, "window:" .. tostring(err) end -- 中文维护注释：窗口未知字段可能代表未来版本或损坏，不能降级吞掉。
+        for _, key in ipairs({ "minimized", "locked", "userMoved" }) do if payload.widgetWindow[key] ~= nil and type(payload.widgetWindow[key]) ~= "boolean" then return false, "window_bool:" .. key end end -- 中文维护注释：窗口布尔维持严格 Lua 类型。
+        for _, key in ipairs({ "width", "height", "opacity", "overallOpacity", "backgroundOpacity", "textOpacity", "fontScale", "x", "y", "offsetX", "offsetY", "savedUiScale", "savedLogicalWidth", "savedLogicalHeight", "normalizedCenterX", "normalizedCenterY" }) do if payload.widgetWindow[key] ~= nil and tonumber(payload.widgetWindow[key]) == nil then return false, "window_number:" .. key end end -- 中文维护注释：几何/透明度只允许数值表示漂移。
+        for _, key in ipairs({ "anchorH", "anchorV", "coordinateSpace" }) do if payload.widgetWindow[key] ~= nil and type(payload.widgetWindow[key]) ~= "string" then return false, "window_text:" .. key end end -- 中文维护注释：锚点/坐标空间必须仍是字符串枚举。
+    end -- 中文维护注释：结束 codec1 窗口验证。
+    return true -- 中文维护注释：结构验证通过后仍必须由 known old/new fingerprint pair 才能恢复。
+end -- 中文维护注释：结束 codec1 Index shape validator。
+
+local function RecoverKnownLegacyV4Index(decoded, stampedFingerprint, currentCanonical, rawEnvelope) -- 中文维护注释：DeathReview known-stamp 最终桥按表示世代分流；Core 的 exact historical reconstruction 永远先于本函数。
+    local stamp = tostring(stampedFingerprint or "") -- 中文维护注释：只把实机 stamped fingerprint 作为迁移身份，不从 Domain 数据推断版本。
+    local known = KNOWN_LEGACY_V4_INDEX_FINGERPRINTS[stamp] -- 中文维护注释：allowlist 未命中时立即返回 nil，继续通用 fail-closed。
+    if type(known) ~= "table" then return nil end -- 中文维护注释：不存在或格式异常的条目不能获得恢复权限。
+    local meta = type(rawEnvelope) == "table" and rawEnvelope.__rsmeta or nil -- 中文维护注释：再次绑定 schema1/store/owner，防止相同 Hash 在其它 Store/未来 schema 中误触。
+    if type(meta) ~= "table" or tonumber(meta.schema) ~= 1 or tostring(meta.store or "") ~= INDEX_STORE or tostring(meta.owner or "") ~= "v3.death_review" then return nil end -- 中文维护注释：只有旧 schema1 DeathReview Index 可使用本桥。
+    local store = P:GetStore(INDEX_STORE) -- 中文维护注释：获取当前注册 Store 仅用于当前 canonical Hash 与 runtime-only probe，不建立第二 Persistence Authority。
+    if known.representation == "codec1" then -- 中文维护注释：2026-09-09 事故来自已采用 codec1、但 schema 尚未划分新 canonical generation 的旧存档。
+        local valid, reason = ValidateCodecV1IndexPayload(rawEnvelope) -- 中文维护注释：old stamp 命中后仍必须通过严格 codec1 shape/type 验证。
+        if valid ~= true then if store ~= nil then store.lastHistoricalRecoveryProbe = tostring(store.lastHistoricalRecoveryProbe or "") .. "/knownStamp=" .. stamp .. "/codec1Shape=reject:" .. tostring(reason) end; return nil end -- 中文维护注释：shape 异常保留 probe 后拒绝，绝不清档或套默认值。
+        local currentFingerprint = store ~= nil and P:FingerprintCanonicalValue(store, currentCanonical) or nil -- 中文维护注释：计算同一磁盘数据在当前 schema2 canonical 下的 Hash，用 real-machine old/new pair 双重证明内容未跨事故边界变化。
+        if tostring(currentFingerprint or "") ~= tostring(known.currentFingerprint or "") then return nil end -- 中文维护注释：只认 014277AB→0CF5BCC1；同 old stamp 但 current 内容不同仍视为真实损坏。
+        if store ~= nil then store.lastHistoricalRecoveryProbe = tostring(store.lastHistoricalRecoveryProbe or "") .. "/knownStamp=" .. stamp .. "/codec1Shape=ok/current=" .. tostring(currentFingerprint) end -- 中文维护注释：记录无敏感业务内容的恢复证据，便于下一次 Fresh Reload 验收是否已重盖 schema2。
+        return NormalizeIndex(decoded), tostring(known.label or "death_review_codec1_known_pair") -- 中文维护注释：保留 decoder 已恢复的 settings/history/window；Core 仍执行预算、schema1→2 migrate、Apply 与立即保存。
+    end -- 中文维护注释：结束 codec1 known-pair 分支。
+    if known.representation ~= "precodec" or type(rawEnvelope) ~= "table" or rawEnvelope.codec ~= nil or type(rawEnvelope.payload) ~= "table" then return nil end -- 中文维护注释：旧 770CB0B8 只允许无 codec 的 pre-.18.149 包封，禁止与 codec1 新桥混用。
+    local source = rawEnvelope.payload -- 中文维护注释：pre-codec 恢复只读取已封印 envelope 的业务 payload。
+    local valid, reason = ValidateLegacyIndexPayload(source) -- 中文维护注释：继续复用 `.18.151` 的严格 legacy Domain 白名单与 bounded history 验证。
+    if valid ~= true then -- 中文维护注释：即使 770CB0B8 命中，旧 Domain shape 不合法也必须拒绝。
+        if store ~= nil then store.lastHistoricalRecoveryProbe = tostring(store.lastHistoricalRecoveryProbe or "") .. "/knownStamp=" .. stamp .. "/knownShape=reject:" .. tostring(reason) end -- 中文维护注释：只记录结构原因，不输出玩家/伤害内容。
+        return nil -- 中文维护注释：返回 nil 让 Persistence Core 保持原 integrity_failed/write fence。
+    end -- 中文维护注释：结束 pre-codec shape 拒绝分支。
+    local recovered = NormalizeHistoricalIndexWithRecoveredEntries(source) -- 中文维护注释：仅恢复磁盘仍存在的摘要行，继续兼容 RU sequence→map 表形漂移。
+    recovered = NormalizeIndex(recovered) -- 中文维护注释：恢复值进入当前 Domain normalizer 后再由 codec1/schema2 保存，不保留 opaque 历史形状。
+    if store ~= nil then store.lastHistoricalRecoveryProbe = tostring(store.lastHistoricalRecoveryProbe or "") .. "/knownStamp=" .. stamp .. "/knownShape=ok" end -- 中文维护注释：记录一次性 pre-codec 恢复命中，不暴露死亡记录内容。
+    return recovered, tostring(known.label or "death_review_precodec_known_stamp") -- 中文维护注释：Core 后续仍执行预算与重盖，770 桥不会进入正常 Save/Tick 路径。
+end -- 中文维护注释：结束 DeathReview known-stamp 多世代恢复桥。
 
 F.StoreId = INDEX_STORE
 F.IndexBudget = INDEX_BUDGET
@@ -597,8 +675,8 @@ if P:GetStore(INDEX_STORE) == nil then
         owner = "v3.death_review",
         scope = P.Scope.Account,
         lifetime = P.Lifetime.Permanent,
-        schemaVersion = INDEX_SCHEMA,
-        legacySchemaVersion = 0,
+        schemaVersion = INDEX_SCHEMA, -- 中文维护注释：Index 当前写入 schema2；record 分片仍保持独立 schema1，本轮只修 Index canonical generation。
+        legacySchemaVersion = 0, -- 中文维护注释：保留无元数据历史档的原 fallback 口径，带元数据 schema1 由正式 migrate/hook 迁移到 schema2。
         key = P.V3KeyPrefix .. "death_review_index",
         budget = INDEX_BUDGET,
         default = function() return NormalizeIndex(nil) end,
@@ -613,7 +691,7 @@ if P:GetStore(INDEX_STORE) == nil then
         -- accepted only when it EXACTLY reproduces the existing stamp; the exact
         -- historical logical value is then normalized by the current Store and
         -- immediately re-stamped.
-        rebuildCanonicalForIntegrity = RebuildV18_145Canonical,
+        rebuildCanonicalForIntegrity = RebuildHistoricalIndexCanonical, -- 中文维护注释：统一处理 pre-codec opaque canonical 与 schema1 codec1 历史窗口 canonical；所有候选仍由 Core exact Hash 认证。
         recoverKnownLegacyCanonical = RecoverKnownLegacyV4Index,
         -- The index Domain is a fixed-shape normalize output, so the canonical
         -- v3 fingerprint is stable across RU representation changes. This opt-in

@@ -60,6 +60,7 @@ function R:Register(spec)
         groupOrder = tonumber(spec.groupOrder) or 100,
         groupItemOrder = tonumber(spec.groupItemOrder) or tonumber(spec.order) or 100,
         navigationVisible = spec.navigationVisible ~= false,
+        navigationParentRoute = tostring(spec.navigationParentRoute or ""), -- 中文维护注释：隐藏语义子页可声明主导航父路由；这里只存展示元数据，绝不能改变 Feature 生命周期或 Authority。
         description = tostring(spec.description or ""),
         status = tostring(spec.status or "planned"),
         lifecycle = tostring(spec.lifecycle or "independent"),
@@ -168,7 +169,7 @@ Add("combat_buff_cap", "combat.buff_cap", "增益容量监控", "combat", 85, "�
 })
 Add("combat_team_tools", "combat.team_tools", "团队中心", "combat", 90, "全队职责只读与当前玩家职责设置；可选牺牲之舞头顶高亮与团队头标方案保存/串行恢复；成员移动在无法合法证明队长权限时安全停用。", { status = "migrated_partial", lifecycle = "explicit_action", authority = "v3.team_tools + v3.team_visuals", settingsCapable = true, apiDependencies = { "X2Team:GetRole", "X2Team:SetRole", "X2Unit:GetTargetAbilityTemplates", "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:GetOverHeadMarker", "X2Unit:SetOverHeadMarker" }, apiReadiness = "official_mixed", verification = "static_signature_verified_pending_ru_runtime", apiPolicy = "explicit_write_plus_bounded_shared_aura", currentImplementation = "TeamRoster 更新驱动的全队职责只读；X2Team:SetRole(role) 仅作为当前玩家职责写入；.18.122 增加按需牺牲之舞高亮（候选职业 10s/名单边发现、AuraObservationV3 共享 Buff 事实、仅激活时 50ms Presentation 投影）以及当前头标快照保存/按 1100ms 队列恢复并逐项 GetOverHeadMarker 读回验证；不会自动清除或覆盖未保存头标。成员移动按钮仍不可执行", remainingCapability = "MoveTeamMember/MoveTeamMemberToParty 仍需要允许使用的队长/权限 getter；当前 IsTeamOwner 明确 NotAllowed。牺牲之舞 Buff/屏幕位置与头标写入仍需 RU Fresh Reload 视觉/权限验证", evidence = "Bundled TMROLE_* + X2Team signatures; current RU capability list enables X2Unit Get/SetOverHeadMarker; user-provided legacy TeamUtility/ShinySac supplies Spelldance index 14 and Sac Buff IDs 30098/30137/30141/30142; shared TeamRosterV3/AuraObservationV3/ScreenProjectionV3 own reads" })
 Add("combat_raid_readiness", "combat.raid_readiness", "团队战备检查", "combat", 92, "按需检查团队职责、关键增益、装分与职业准备状态，不依赖 DPS 常驻运行。", {
-    navigationVisible = false,
+    navigationVisible = false, navigationParentRoute = "combat.team_tools", -- 中文维护注释：战备检查仍是独立路由/按需扫描 Feature，但主导航视觉归属团队中心。
     status = "migrated_m16_14", lifecycle = "on_demand_scan", authority = "v3.raid_readiness + v3.team_roster + v3.aura_observation",
     widgetCapable = false, settingsCapable = true, defaultEnabled = false,
     apiDependencies = { "X2Team:GetRole", "X2Unit:UnitGearScore", "X2Unit:UnitDistance", "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:UnitHiddenBuffCount", "X2Unit:UnitHiddenBuff" },
@@ -176,7 +177,7 @@ Add("combat_raid_readiness", "combat.raid_readiness", "团队战备检查", "com
     evidence = "V3 TeamRoster + AuraObservation Phase 12B; TEAM interface id 38 from bundled apitypes and GetRole capability registry",
 })
 Add("combat_raid_recruitment", "combat.raid_recruitment", "团队招募助手", "combat", 94, "按需读取招募申请并允许关闭招募；创建、接受、拒绝在参数形态未验证前安全停用。", {
-    navigationVisible = false,
+    navigationVisible = false, navigationParentRoute = "combat.team_tools", -- 中文维护注释：招募助手保持独立显式动作生命周期，仅把侧栏选中态归到团队中心。
     status = "migrated_partial", lifecycle = "explicit_action", authority = "v3.raid_recruitment", settingsCapable = true,
     apiDependencies = { "X2Team:RaidRecruitDel", "X2Team:RaidApplicantList" }, apiReadiness = "partial", apiPolicy = "verified_subset_only",
     currentImplementation = "读取 RaidApplicantList；Close 走 RaidRecruitDel；Create/Accept/Reject fail-closed",
@@ -184,7 +185,7 @@ Add("combat_raid_recruitment", "combat.raid_recruitment", "团队招募助手", 
     evidence = "Bundled X2Team signatures; only verified subset is exposed as executable",
 })
 Add("combat_siege_readiness", "combat.siege_readiness", "攻城战备检查", "combat", 96, "攻城场景专用的装备与团队准备检查，关闭后不保留高频观察。", {
-    navigationVisible = false,
+    navigationVisible = false, navigationParentRoute = "combat.team_tools", -- 中文维护注释：攻城战备即使处于 runtime-blocked，也属于团队中心子导航；不得因此绕过运行时阻塞。
     status = "runtime_blocked", runtimeBlocked = true, runtimeBlocker = "GetEquippedItemTooltipInfo 的装备字段结构与攻城场景判定 API 未在当前 RU 客户端验证", currentImplementation = "V3 页面显示精确阻塞，不对装备文本做猜测解析", remainingCapability = "需要稳定的 itemType/slot/装分返回字段和 siege context", lifecycle = "independent", authority = "v3.siege_readiness", widgetCapable = true,
     apiDependencies = { "X2Equipment:GetEquippedItemTooltipInfo", "X2Team:GetRole" }, apiReadiness = "research", apiPolicy = "read_only",
     evidence = "ArcheRage community Raidcheckersiege; exact remote equipment coverage requires RU runtime verification",

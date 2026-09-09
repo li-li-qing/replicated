@@ -52,8 +52,34 @@ local function BuildPage(parent, route)
     local root, rootErr = D:PageRoot(parent, "v3_page_raid_readiness")
     if root == nil then return nil, "页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
 
-    D:PageHeader(root, "v3_raid_readiness_header", "团队战备检查",
-        "按需检查当前团队的装分、职责与关键增益。只在你主动运行检查时读取增益，不依赖 DPS，也不会常驻扫描团队 Buff。")
+    D:PageHeader(root, "v3_raid_readiness_header", "团队中心", -- 中文维护注释：战备页的页面抬头归属团队中心，避免用户误以为进入了另一个主模块。
+        "团队管理、战备检查、招募与攻城准备共用同一入口；子功能保持独立生命周期与按需资源。") -- 中文维护注释：文案明确视觉共入口不等于业务强耦合，战备扫描仍按需启动。
+
+    local teamTabs = RSUI:HorizontalBox({ id = "v3_raid_readiness_team_tabs", parent = root, gap = 5, -- 中文维护注释：战备专页补齐与团队管理页一致的局部子导航，修复切换后失去团队中心上下文。
+        slot = { size = "fixed", height = 31, hAlign = "fill" } }) -- 中文维护注释：固定紧凑单行高度，禁止该导航参与页面剩余空间填充。
+    local teamRoutes = { -- 中文维护注释：子页只保存语义路由与显示宽度；实际启停和 Authority 仍由各自 Feature/PageHost 管理。
+        { route = "combat.team_tools", text = "团队管理", width = 88 }, -- 中文维护注释：回到团队管理父页面，不在此页直接调用团队管理业务函数。
+        { route = "combat.raid_readiness", text = "战备检查", width = 88 }, -- 中文维护注释：当前战备页保持独立 on-demand-scan 生命周期。
+        { route = "combat.raid_recruitment", text = "招募助手", width = 96 }, -- 中文维护注释：招募助手仍走自己的显式动作页面与权限边界。
+        { route = "combat.siege_readiness", text = "攻城战备", width = 88 }, -- 中文维护注释：攻城战备即使 runtime-blocked 也只通过 Router 导航，不绕过阻塞。
+    } -- 中文维护注释：结束团队中心子路由描述表；未来新增子页应同步 Registry 的 navigationParentRoute。
+    for _, tab in ipairs(teamRoutes) do -- 中文维护注释：这里只创建四个低频页面按钮，不订阅事件、不读取团队成员或 Buff。
+        local tabRef = tab -- 中文维护注释：Lua 5.1 闭包必须绑定当前表项，防止所有按钮最终指向同一路由。
+        local button = RSUI:Button({ id = "v3_raid_readiness_team_tab_" .. tabRef.route:gsub("[^%w]", "_"), parent = teamTabs, -- 中文维护注释：稳定组件 ID 基于语义路由，便于 RSUI fence/诊断持续识别。
+            text = (tabRef.route == ROUTE and "● " or "") .. tabRef.text, compact = true, -- 中文维护注释：当前页仅用视觉圆点标识，不新增独立选中状态存档。
+            slot = { size = "fixed", width = tabRef.width } }) -- 中文维护注释：固定宽度保证 1024×768 仍能单行容纳四个团队子入口。
+        button.onClick = function() -- 中文维护注释：点击只委托 Shell/Router 导航，禁止页面之间直接互调业务实现。
+            local shell = S.UIV3 and S.UIV3.Shell or nil -- 中文维护注释：通过统一 Shell 获取导航 Authority，避免私自创建或复用页面 Native 宿主。
+            if type(shell) ~= "table" or type(shell.Navigate) ~= "function" then return false, "团队中心导航不可用" end -- 中文维护注释：导航宿主缺失时 fail-closed，绝不退化为直接 Feature 调用。
+            return shell:Navigate(tabRef.route, { source = "team_center_tab" }) -- 中文维护注释：保留来源上下文给诊断，同时由 Router/PageHost 负责真正页面切换与生命周期回收。
+        end -- 中文维护注释：结束单个团队子导航按钮回调。
+    end -- 中文维护注释：结束团队中心子导航构建。
+
+    RSUI:Text({ id = "v3_raid_readiness_section_title", parent = root, text = "战备检查", -- 中文维护注释：在共享“团队中心”标题下继续标明当前子功能，避免视觉归属修复后丢失功能名称。
+        fontSize = 12, tone = "accent", slot = { size = "fixed", height = 24, hAlign = "fill" } }) -- 中文维护注释：标题固定小高度，仅承担信息层级，不抢占战备表格空间。
+    RSUI:Text({ id = "v3_raid_readiness_section_hint", parent = root, -- 中文维护注释：紧随子标题说明扫描触发条件，帮助用户理解该页不会常驻读取 Buff。
+        text = "按需检查当前团队的装分、职责与关键增益；只有主动运行检查时才读取增益。", -- 中文维护注释：保留 on-demand-scan 产品语义，禁止未来因 UI 合并而改成后台常驻检查。
+        fontSize = 8, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 18, hAlign = "fill" } }) -- 中文维护注释：单行提示使用省略布局，保持页面紧凑且不影响低分辨率。
 
     local summaryCard = D:InfoCard(root, {
         id = "v3_raid_readiness_summary", title = "检查状态", value = "尚未检查",

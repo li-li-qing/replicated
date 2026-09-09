@@ -22,10 +22,15 @@ G:RegisterSequenceCase("v3_m1_activities", function()
     if S.FeatureRuntime == nil or S.FeatureRuntime:IsImplemented("life_activities") ~= true then
         return Fail("implementation_missing")
     end
-    local store = S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.activities") or nil
-    if store == nil or tostring(store.owner or "") ~= "v3.activities" or tonumber(store.schemaVersion) ~= 7 then
-        return Fail("store_contract")
-    end
+    local store = S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.activities") or nil -- 中文维护注释：Acceptance 只读取 Persistence 注册事实，不创建第二 Store Authority，也不触发额外 Load/Save。
+    if store == nil or tostring(store.owner or "") ~= "v3.activities" or tonumber(store.schemaVersion) ~= 8 -- 中文维护注释：`.18.193` 当前活动偏好必须是 schema8，避免共享 FloatingSurface 增字段后继续在 schema7 内偷换 canonical。
+        or (tonumber(F.PersistenceStoreSchemaContractVersion) or 0) < 8 -- 中文维护注释：Feature 显式暴露 schema 契约，防止只改注册数字却漏掉维护边界声明。
+        or (tonumber(F.PersistenceWindowCanonicalContractVersion) or 0) < 1 -- 中文维护注释：窗口持久化必须经过 Store-owned 字段投影，而不是直接 Hash 可演进 Foundation 返回表。
+        or (tonumber(F.KnownLegacyCanonicalRecoveryContractVersion) or 0) < 1 -- 中文维护注释：要求活动 Store 保留严格 old/new fingerprint 一次性迁移桥，旧档不得靠清档恢复。
+        or type(store.rebuildCanonicalForIntegrity) ~= "function" -- 中文维护注释：schema7 历史 canonical 必须先走 exact Hash 重建，known-pair 只能作为其后的最后恢复边界。
+        or type(store.recoverKnownLegacyCanonical) ~= "function" then -- 中文维护注释：实机 6271E40B→7E85D975 必须由 Store-owned hook 验证，Persistence Core 不增加通用 bypass。
+        return Fail("store_contract") -- 中文维护注释：任何契约缺失都阻断发布，避免下一轮再次把持久化 Fence 表现误诊成页面/Toggle 故障。
+    end -- 中文维护注释：结束活动 schema8 + canonical recovery Acceptance 门禁。
     -- Legacy EventService is reference-only in V3 rebuild mode. A stale runtime
     -- Authority would make both event clocks compete, so fail the gate loudly.
     if S.Services ~= nil and S.Services.Event ~= nil then return Fail("legacy_event_authority_loaded") end

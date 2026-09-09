@@ -36,6 +36,7 @@ function R:Register(route, spec)
         groupOrder = tonumber(spec.groupOrder) or 100,
         groupItemOrder = tonumber(spec.groupItemOrder) or tonumber(spec.order) or 100,
         visible = spec.visible ~= false,
+        navigationParentRoute = tostring(spec.navigationParentRoute or ""), -- 中文维护注释：路由只透传父导航提示，PageHost 仍以当前 route 作为真实页面生命周期键。
     }
     self.routes[route] = row
     self.order[#self.order + 1] = route
@@ -76,6 +77,7 @@ for _, feature in ipairs(Features:List()) do
         groupOrder = feature.groupOrder,
         groupItemOrder = feature.groupItemOrder,
         visible = feature.navigationVisible ~= false,
+        navigationParentRoute = feature.navigationParentRoute, -- 中文维护注释：从 FeatureRegistry 复制展示归属，禁止在 Router 内硬编码团队中心等业务页面。
     })
     if row == nil then error(err) end
 end

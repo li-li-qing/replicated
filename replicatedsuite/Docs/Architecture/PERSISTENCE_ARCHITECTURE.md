@@ -313,6 +313,19 @@ Persistence 增加 `HistoricalCanonicalRecoveryContractVersion=1`，并允许单
 
 `.18.146` 的 terminal-load memoization 保留：同 generation terminal+fenced failure 仍只产生一次物理 Load/incident；历史精确恢复成功不是 terminal failure，会进入正常 apply + restamp 路径。
 
+## 0.19 `.18.193` Activities / DeathReview Canonical Generation Boundary
+
+`.18.192` RU 诊断同时出现 `v3.activities:6271E40B>7E85D975` 与 `v3.death_review:014277AB>0CF5BCC1`，并伴随 `toggle_binding_failed` 页面事务回滚。根因不是 Toggle：两个永久 Store 的窗口 canonical 跟随共享 `FloatingSurface` 增长，但 schema 没有表达 canonical generation 变化。Store 被 Integrity v4 Fence 后，RSUI Persistent Binding 的 `PrepareRead` 正确 fail-closed，页面构建失败只是上游存档故障的可见结果。
+
+1. **Store-owned projection**：Activities/DeathReview 都先调用共享 Floating normalizer获得逻辑窗口状态，再通过固定字段白名单投影为本 schema canonical。以后 Foundation 新增字段不会自动改变现有 Store fingerprint。
+2. **Activities**：`schema 7 -> 8`。historical-v7 projection 不包含 `savedLogicalWidth/Height + normalizedCenterX/Y`；current schema8 包含这些 v11 响应式元数据。exact historical candidate 仍由 Core 重新 Hash 并必须精确等于旧 stamp。
+3. **Activities known pair**：exact reconstruction 失败后，仅允许 `old=6271E40B / current=7E85D975 / schema=7 / store=v3.activities / owner=v3.activities`，同时 strict validate 根字段、hiddenEvents、窗口字段及类型。任一条件不匹配即返回 nil。
+4. **DeathReview**：Index `schema 1 -> 2`，codec 仍为 v1，record store schema1 不变。historical router 区分 pre-codec opaque 世代与 schema1+codec1 世代；后者只回退窗口投影，不猜 settings/history。
+5. **DeathReview known pair**：保留 `770CB0B8` pre-codec allowlist，并新增 `014277AB -> 0CF5BCC1` schema1+codec1 pair。新 pair 必须通过 codec1 root/settings/history/window 严格形状验证，再校验 current canonical Hash。
+6. **保存优先级**：若 historical/known-stamp recovery 已把 `deferredSaveReason` 设为 `integrity_v4_upgrade` + 0ms，后续 schema migration 只能迁移 Domain，不能覆盖该立即重盖语义；纯 migration 才使用默认 debounce。
+7. **禁止方案**：不得清 Activities/DeathReview Store、关闭 Integrity、修改 Core 为“同 Store mismatch 自动接受”、让 RSUI Binding 在 Fence 时套默认值、或把 known pair 扩成前缀/范围匹配。
+8. **性能**：字段投影是固定约 20 项，仅在 Store Normalize/Save/Load 边界执行；known-pair shape 验证只在 current-v4 mismatch 冷路径执行。无 Tick、Scheduler、CombatEventBus 或列表刷新成本。
+
 ## 0.18 `.18.188` Shell Schema 7 / Known Legacy Stamp Recovery
 
 `.18.184` 与 `.18.187` 两次 RU Fresh Reload 都稳定报告 `v3.shell:integrity_failed:fingerprint_mismatch:2EA0A82A>2EC2F5C5`。同时源码历史确认 `.18.157` 的 Resolution/Coordinate Foundation 给 Shell canonical 增加 `savedLogicalWidth/Height + normalizedCenterX/Y` 时仍保留 schema 6。新增字段若在旧 payload 中不存在并不必然改变 Hash，但同 schema 已经无法表达 canonical generation 边界，因此必须修正。

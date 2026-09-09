@@ -31,6 +31,7 @@
 - Raid 静态模式事件驱动且 4×25 槽位预分配，动态效果才建立 100ms 视觉任务。
 - 高级编辑器通过同一 Store Command/Normalize/MarkDirty 写入。
 - fresh 存档 head/raid enabled=false（安静默认），需用户手动开。
+- `.18.192` 页面紧凑契约：`团队色块校准` 仅承载状态/帮助与校准入口，必须按内容 `auto` 高度，禁止 `fill` 占满剩余页面；该 UI 规则不得改变 Raid Overlay、四区域坐标、Roster/Aura/Recommendation Authority 或任何 Store 字段。
 
 ## Aura Lease 事务
 

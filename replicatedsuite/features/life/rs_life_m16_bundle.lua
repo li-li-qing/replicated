@@ -148,7 +148,15 @@ S.Features.Trade = Trade
 Trade.UpdateTopic = "v3.life.trade.updated"
 Trade.State = { fromZone = nil, toZone = nil, favorites = {}, sortMode = "ratio", ratioMode = "current", commerceMode = "observe", widgetVisible = false, widgetWindow = nil }
 Trade.Authority = { version = 6, revision = 0, zones = {}, sellableZones = {}, rows = {}, selectedKey = nil, status = "idle", error = nil, inFlight = nil, zoneFallback = false, sellableFallback = false, sellableError = nil, commerceSkill = nil, commerceStatus = "idle", commerceName = nil, commerceError = nil }
-InstallLifeWidgetContract(Trade, { defaultWidth = 470, defaultHeight = 374, minWidth = 320, minHeight = 254, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 })
+InstallLifeWidgetContract(Trade, { defaultWidth = 410, defaultHeight = 306, minWidth = 320, minHeight = 228, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 }) -- 中文维护注释：跑商悬浮窗默认尺寸收敛到紧凑 HUD；只改变 Window policy，货率 Authority/请求生命周期不受影响。
+local TradeWidgetWindowStateBase = Trade.GetWidgetWindowState -- 中文维护注释：保留统一 FloatingSurface 状态读取入口，只在展示边界兼容旧默认尺寸，不改写持久化权威。
+function Trade:GetWidgetWindowState() -- 中文维护注释：跑商悬浮窗使用只读兼容投影，避免为纯 UI 紧凑化引入 Store schema/fingerprint 迁移风险。
+    local state = TradeWidgetWindowStateBase(self) -- 中文维护注释：先交给统一 FloatingSurface policy 归一化位置、透明度、锁定与当前尺寸。
+    if type(state) == "table" and Number(state.width) == 470 and Number(state.height) == 374 then -- 中文维护注释：仅识别历史版本精确默认 470x374，绝不压缩玩家主动保存的其他自定义尺寸。
+        state.width, state.height = 410, 306 -- 中文维护注释：把旧默认展示为新版紧凑尺寸；这里不修改 Trade.State，因此旧存档完整性指纹保持原样。
+    end -- 中文维护注释：结束历史默认尺寸兼容分支。
+    return state -- 中文维护注释：Presentation 只消费兼容后的副本；后续用户真实拖拽/缩放仍由统一 SetWidgetWindowState 持久化。
+end -- 中文维护注释：结束跑商悬浮窗兼容状态读取。
 local TA = Trade.Authority
 TA.RouteRefreshRetryContractVersion = 2
 TA.SingleFlightLatestRouteContractVersion = 1
