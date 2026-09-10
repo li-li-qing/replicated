@@ -2411,8 +2411,10 @@ function G:BuildCopyText(runNow)
     do
         local probeParts, seenProbe = {}, {}
         for _, row in ipairs(persistence and persistence.rows or {}) do
-            if row.writeFenced == true and row.lastHistoricalRecoveryProbe ~= nil then
-                local item = tostring(row.id or "?") .. ":" .. tostring(row.lastHistoricalRecoveryProbe):gsub("[\r\n]+", " ")
+            -- 中文维护注释：字段名必须是 `historicalRecoveryProbe`（rs_persistence.lua Describe() 输出的行字段），
+            -- 不是 store 原生字段名 `lastHistoricalRecoveryProbe`——写错会导致本段永远为空、诊断信息静默丢失。
+            if row.writeFenced == true and row.historicalRecoveryProbe ~= nil then
+                local item = tostring(row.id or "?") .. ":" .. tostring(row.historicalRecoveryProbe):gsub("[\r\n]+", " ")
                 if seenProbe[item] ~= true then
                     seenProbe[item] = true
                     probeParts[#probeParts + 1] = item

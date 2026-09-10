@@ -1651,6 +1651,15 @@ function P:LoadStore(id, options)
                         end
                         if recoveredHistoricalCanonical ~= true then
                             integrityErr = "fingerprint_mismatch:" .. tostring(stampedFingerprint) .. ">" .. tostring(actualFingerprint)
+                            -- 中文维护注释：`.18.198` 保底诊断。若 hook 未被调用（envelope/allowIntegrityUpgrade/
+                            -- decoded 预算任一前置不满足），probe 会保持 nil，「恢复探针」摘要段随之消失，
+                            -- 维护者将无法区分「没调用」和「调用了没命中」。这里补写明确标记，并注明被跳过的前置。
+                            if NonEmptyText(store.lastHistoricalRecoveryProbe) == nil then
+                                store.lastHistoricalRecoveryProbe = "hook_not_called/envelopeAdvertised="
+                                    .. tostring(envelopeAdvertised) .. "/allowUpgrade=" .. tostring(store.allowIntegrityUpgrade)
+                                    .. "/integrityVersion=" .. tostring(stampedIntegrityVersion)
+                                    .. "/reliability=" .. tostring(stampedReliabilityContract) -- 中文维护注释：仅元数据与布尔，无业务内容。
+                            end
                             local historicalProbe = NonEmptyText(store.lastHistoricalRecoveryProbe)
                             if historicalProbe ~= nil then
                                 integrityErr = integrityErr .. "|historical_probe=" .. historicalProbe
