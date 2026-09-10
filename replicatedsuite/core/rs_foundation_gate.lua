@@ -2404,6 +2404,24 @@ function G:BuildCopyText(runNow)
         end
     end
     if #persistenceIncidents > 0 then parts[#parts+1] = "存档故障 " .. table.concat(persistenceIncidents, " | ") end
+    -- 中文维护注释：`.18.198` 把完整性恢复探针单独成行。此前 probe 以 `|historical_probe=` 后缀挂在
+    -- 很长的"存档故障"行尾，实机摘要会被 UI 截断，导致最关键的定位证据（分支是否触发、缺哪些字段）
+    -- 恰好在复制时丢失。这里只输出**写保护中**的 Store 的 probe——字段名、候选计数与真实
+    -- schema/framework/transport 元数据，不含玩家名、伤害、技能或任何自由文本用户配置。
+    do
+        local probeParts, seenProbe = {}, {}
+        for _, row in ipairs(persistence and persistence.rows or {}) do
+            if row.writeFenced == true and row.lastHistoricalRecoveryProbe ~= nil then
+                local item = tostring(row.id or "?") .. ":" .. tostring(row.lastHistoricalRecoveryProbe):gsub("[\r\n]+", " ")
+                if seenProbe[item] ~= true then
+                    seenProbe[item] = true
+                    probeParts[#probeParts + 1] = item
+                    if #probeParts >= 3 then break end -- 中文维护注释：与存档故障行同口径，最多 3 条，防止损坏档在摘要里刷屏。
+                end
+            end
+        end
+        if #probeParts > 0 then parts[#parts+1] = "恢复探针 " .. table.concat(probeParts, " | ") end
+    end
     parts[#parts+1] = "界面所有权 违规 " .. tostring(authority and authority.violations or 0) .. "/冲突 " .. tostring(authority and authority.conflicts or 0) .. "/编号重复 " .. tostring(uiRegistry and uiRegistry.v3Duplicates or 0)
     local pageInfo = S.UIV3 and S.UIV3.PageHost and type(S.UIV3.PageHost.Describe) == "function" and S.UIV3.PageHost:Describe() or nil
     local factoryInfo = S.NativeObjectFactory and type(S.NativeObjectFactory.Describe) == "function" and S.NativeObjectFactory:Describe() or nil
