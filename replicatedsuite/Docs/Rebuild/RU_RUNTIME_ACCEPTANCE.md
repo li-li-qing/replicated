@@ -1,5 +1,14 @@
 ## `.18.193` Persistence Schema Recovery — 当前最高优先级 RU 验收
 
+
+## `.18.195` Fresh Reload P0 — DeathReview `73DF7418>224E5B9D` schema2/Framework2 通用恢复
+
+1. **不要 Reset/Clear `v3.death_review`**：直接覆盖 `.18.195`，保留当前真实 `73DF7418>224E5B9D` Store；这份旧数据正是验证通用恢复是否命中的必要证据。
+2. **第一次 Fresh Reload 目标**：`runtime_startup_degradation`、`persistence_v2` 与 `persistence_reliability_v4` 不再因 `v3.death_review` 阻断；`Fence=0`、`integrityFail=0`。允许出现一次 `integrityUpgradeRecoveries` 增长；若属于纯表形恢复，Store 状态应为 `verified_canonical_recovered_representation`，dirty reason 为 `framework_transport_upgrade`。
+3. **诊断证据**：若仍失败，必须复制 A2/Store 详情中的 `DRProbe`；本轮 probe 形如 `schema2fw2_codec1/ipairs=N/pairs=M`，只含表形计数。`pairs>M` 于 `ipairs` 表明仍存在 summary 被旧 sequence reader 漏读。禁止只根据新的 Hash 再加 allowlist。
+4. **第二次 Fresh Reload 硬门**：第一次恢复并保存后，再执行一次 Reload；必须 `verified_canonical`，不应再次增长同一路径 recovery，且物理存档已为 Framework3/Transport v1。
+5. **数据保持**：死亡回顾设置、窗口位置/尺寸、历史摘要不得被清空或恢复默认；若 exact old fingerprint 无法证明候选，系统继续 Fence 是正确行为，下一轮应根据 probe 分析而不是绕过完整性。
+
 BuildTag：`v3-m1.16.0.18.193-persistence-schema-canonical-recovery`。**不要清配置/不要重置 Store**，本轮就是验证旧用户配置能被可证明地保留并迁移。
 
 1. 第一次 Fresh Reload 后，基础框架不应再出现 `v3.activities:6271E40B>7E85D975` 或 `v3.death_review:014277AB>0CF5BCC1` 的 `integrity_failed`；`Fence` 应从当前 2 降到 0（若有其它新 Store 故障，必须按真实 Store 名单单独记录）。

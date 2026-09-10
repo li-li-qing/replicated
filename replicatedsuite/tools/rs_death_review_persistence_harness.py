@@ -134,7 +134,8 @@ assert(P.KnownLegacyCanonicalRecoveryContractVersion == 1, "known_legacy_canonic
 local deathStore = assert(P:GetStore(id)) -- 中文维护注释：测试读取唯一注册的 DeathReview Index Store，不构造第二 Persistence Authority。
 assert(deathStore.schemaVersion == 2, "death_review_index_schema2") -- 中文维护注释：schema2 是 `.18.193` 当前 Index canonical generation，旧 schema1 仅用于迁移样本。
 assert(F.PersistenceIndexSchemaContractVersion == 2, "death_review_index_schema_contract") -- 中文维护注释：Feature 契约必须与实际 Store schema 同步。
-assert(F.PersistenceKnownLegacyRecoveryContractVersion == 2, "death_review_known_pair_contract_v2") -- 中文维护注释：Store recovery v2 必须包含 014277AB→0CF5BCC1 codec1 实机事故边界。
+assert(F.PersistenceKnownLegacyRecoveryContractVersion == 3, "death_review_recovery_contract_v3") -- 中文维护注释：`.18.195` recovery v3 必须优先具备 schema2/Framework2 通用 exact-recovery；内容相关 known pair 只保留给更老 schema1/pre-codec 兜底。
+assert(F.PersistenceSchema2Framework2RecoveryContractVersion == 1, "death_review_schema2_framework2_recovery_v1") -- 中文维护注释：单独钉死本轮实机 `73DF7418>224E5B9D` 所揭示的 schema2/Framework2 表形恢复边界，防止未来再次只靠 Hash 白名单。
 assert(type(deathStore.rebuildCanonicalForIntegrity) == "function", "historical_canonical_hook_registered")
 assert(type(deathStore.recoverKnownLegacyCanonical) == "function", "known_legacy_hook_registered")
 
@@ -189,7 +190,7 @@ assert(rawDiskFingerprint ~= legacyFingerprint, "raw_disk_shape_must_not_match_o
 local legacyRaw = {
   payload = copy(legacyDiskPayload),
   __rsmeta = {
-    framework = P.FrameworkVersion, store = id, owner = "v3.death_review", contractVersion = deathStore.contractVersion,
+    framework = 2, store = id, owner = "v3.death_review", contractVersion = deathStore.contractVersion,
     lifetime = P.Lifetime.Permanent, scope = P.Scope.Account, schema = 1, periodId = "permanent",
     reliabilityContract = P.ReliabilityContractVersion, integrityVersion = P.IntegrityContractVersion,
   },
@@ -223,6 +224,42 @@ assert(storage[key].codec == 1, "serializer_stable_codec_written")
 assert(storage[key].payload.settings.autoShowDisabled == 1 and storage[key].payload.settings.showDebuffsDisabled == 1, "false_business_settings_use_numeric_sentinels")
 assert(P:GetStore(id).dirty ~= true, "current_codec_does_not_loop_restamp")
 
+-- 中文维护注释：`.18.195` 回归复现真实事故类别，而不是硬编码本次用户内容 Hash `73DF7418>224E5B9D`：`.18.193` 已经是 schema2+codec1，但 Persistence 仍是 Framework2；RU 若把 history.entries 从连续 sequence 变成稀疏/map 表，正常 DecodeIndex 的 ipairs 会少读摘要并造成内容相关 fingerprint mismatch。
+local schema2Domain = { -- 中文维护注释：构造两个摘要的合法 schema2 Domain；summary 内容只用于证明任意用户内容都能结构化恢复，不代表真实玩家存档。
+  settings = { autoShow = true, windowMs = 12000, maxHistory = 10, minDamage = 15, showDebuffs = true }, -- 中文维护注释：设置走现有 codec1 语义，numeric disabled sentinel 规则不在本轮改变。
+  history = { serial = 22, entries = { -- 中文维护注释：原 canonical 为连续 sequence；Framework2 存盘后只模拟表形改变，不删除业务 summary 内容。
+    { serial = 21, storageId = 5, time = 2100, clock = "00:00:21", windowMs = 12000, totalDamage = 21000, lethalSource = "Schema2A", lethalAbility = "HitA", lethalAmount = 9000, eventCount = 2, debuffCount = 1 }, -- 中文维护注释：第一条摘要用于确认 recovered sequence 排序与字段保留。
+    { serial = 22, storageId = 6, time = 2200, clock = "00:00:22", windowMs = 12000, totalDamage = 22000, lethalSource = "Schema2B", lethalAbility = "HitB", lethalAmount = 10000, eventCount = 3, debuffCount = 0 }, -- 中文维护注释：第二条摘要会被模拟移动到 string key，触发正常 ipairs 少读。
+  } }, -- 中文维护注释：结束原始连续 history。
+  widgetWindow = { width = 491, height = 341, minimized = false, locked = false, overallOpacity = 0.91, backgroundOpacity = 1, textOpacity = 1, fontScale = 1, userMoved = false }, -- 中文维护注释：窗口同时携带 Framework2 会吞的 false，证明 Store current normalizer 与 history 表形恢复可以组合工作。
+} -- 中文维护注释：结束 schema2 Framework2 回归 Domain。
+local schema2Canonical = assert(P:CanonicalIntegrityValue(deathStore, schema2Domain)) -- 中文维护注释：旧 stamped fingerprint 必须来自真实 Store codec canonical，不手写 Hash 输入。
+local schema2StampedFingerprint = assert(P:FingerprintCanonicalValue(deathStore, schema2Canonical)) -- 中文维护注释：生成内容相关旧 stamp；测试不依赖任何特定玩家 Hash。
+local schema2Raw = copy(schema2Canonical) -- 中文维护注释：schema2 typed Store 的业务 envelope 顶层就是 codec/payload；随后补入 Framework2 metadata 模拟 `.18.193` 实际落盘世代。
+schema2Raw.__rsmeta = { framework = 2, store = id, owner = "v3.death_review", contractVersion = deathStore.contractVersion, lifetime = P.Lifetime.Permanent, scope = P.Scope.Account, schema = 2, periodId = "permanent", reliabilityContract = P.ReliabilityContractVersion, integrityVersion = P.IntegrityContractVersion } -- 中文维护注释：明确 schema2 + Framework2 是本轮兼容边界；Framework3 mismatch 不应使用该恢复器。
+schema2Raw.__rsmeta.encodedFingerprint = schema2StampedFingerprint -- 中文维护注释：保留写盘前对完整连续 sequence 生成的真实旧 canonical stamp，作为恢复候选唯一信任证据。
+local movedRow = assert(schema2Raw.payload.history.entries[2]) -- 中文维护注释：只移动仍存在的第二条摘要，不伪造/删除数据；用于模拟 RU sequence→map/稀疏表表示漂移。
+schema2Raw.payload.history.entries[2] = nil -- 中文维护注释：移除连续索引 2 后，正常 ipairs 只能看到第一条；这正是旧 decoder 会产生不同 canonical 的条件。
+schema2Raw.payload.history.entries["2"] = movedRow -- 中文维护注释：同一摘要仍保存在磁盘表中，只改变 key 表形；historical pairs collector 有证据可恢复，若内容真正丢失则 exact Hash 不会命中。
+schema2Raw.payload.widgetWindow.minimized = nil -- 中文维护注释：同时模拟 Framework2 RU 省略默认 false；当前 schema2 normalizer 可确定性恢复该 Presentation 默认语义。
+schema2Raw.payload.widgetWindow.locked = nil -- 中文维护注释：锁定 false 省略属于已实证 serializer 行为，不创建新的业务猜测。
+schema2Raw.payload.widgetWindow.userMoved = nil -- 中文维护注释：移动意图 false 同样依赖 current Store-owned window policy 恢复。
+schema2Raw.__rsmeta.envelopeIntegrityVersion = P.EnvelopeIntegrityContractVersion -- 中文维护注释：历史恢复仍必须先通过独立 metadata envelope seal，不能因测试直接绕过 Core 安全链。
+schema2Raw.__rsmeta.envelopeFingerprint = assert(P:FingerprintEnvelopeIntegrity(schema2Raw)) -- 中文维护注释：seal 只覆盖 metadata，不掩盖业务 fingerprint mismatch；与生产 Persistence 行为一致。
+storage[key] = schema2Raw -- 中文维护注释：把 drift 后的 Framework2 schema2 envelope 放入模拟 RU 存储，下一行走完整生产 LoadStore。
+local schema2RecoveriesBefore = P.stats.integrityUpgradeRecoveries -- 中文维护注释：记录恢复计数，确保本路径被识别为一次性 canonical recovery 而不是静默忽略 mismatch。
+local schema2Ok, _, schema2Err = P:LoadStore(id, { discardDirty = true, discardUnverified = true, revalidateTerminal = true }) -- 中文维护注释：测试显式覆盖上一用例内存态；生产启动是新 Lua generation，不需要这些破坏性测试选项。
+assert(schema2Ok == true, "schema2_framework2_shape_recovers:" .. tostring(schema2Err)) -- 中文维护注释：任意内容 Hash 的 schema2/Framework2 表形漂移必须可由 exact old stamp 恢复。
+assert(P.stats.integrityUpgradeRecoveries == schema2RecoveriesBefore + 1, "schema2_framework2_recovery_counted") -- 中文维护注释：确认 Core 真正执行历史 exact recovery，而不是因为测试数据偶然 canonical 相同。
+assert(P:GetStore(id).lastIntegrityStatus == "verified_canonical_recovered_representation", "schema2_framework2_historical_status") -- 中文维护注释：schema2 逻辑 canonical 本身未变，只是 RU 物理表形漂移；exact old Hash 恢复后应标记为 representation recovery，而不是伪装成 schema/canonical generation 迁移。
+assert(type(P:GetStore(id).lastHistoricalRecoveryProbe) == "string" and P:GetStore(id).lastHistoricalRecoveryProbe:find("schema2fw2_codec1/ipairs=1/pairs=2", 1, true) ~= nil, "schema2_framework2_probe") -- 中文维护注释：probe 只报告 1→2 的表形证据，不泄露死亡记录业务内容。
+assert(#F.State.history.entries == 2 and F.State.history.entries[1].serial == 21 and F.State.history.entries[2].serial == 22, "schema2_framework2_history_preserved") -- 中文维护注释：恢复后必须保留两条现存摘要并重建连续 Domain sequence，不能默认清历史。
+assert(F.State.widgetWindow.minimized == false and F.State.widgetWindow.locked == false and F.State.widgetWindow.userMoved == false, "schema2_framework2_window_false_restored") -- 中文维护注释：Framework2 已省略的默认 false 应由 schema2 Store normalizer 确定恢复。
+assert(P:GetStore(id).dirty == true and P:GetStore(id).lastDirtyReason == "framework_transport_upgrade", "schema2_framework2_framework3_upgrade_queued") -- 中文维护注释：旧 stamp 已被 exact 证明仍正确，无需改写 Integrity；这里只立即升级 Framework3 物理 Transport，下一次 Reload 应转为普通 strict verify。
+assert(P:Flush() == true, "schema2_framework2_framework3_upgrade_flush") -- 中文维护注释：执行真实保存/readback 边界，验证兼容器不会只在内存中假通过。
+assert(storage[key].__rsmeta.framework == 3 and storage[key].__rsmeta.transportVersion == P.TransportContractVersion, "schema2_framework2_rewritten_framework3") -- 中文维护注释：成功修复的旧 Store 必须升级到 Framework3 物理表示，避免每次登录重复历史恢复。
+assert(P:LoadStore(id, { discardDirty = true, discardUnverified = true }) == true and P:GetStore(id).lastIntegrityStatus == "verified_canonical", "schema2_framework2_second_reload_strict") -- 中文维护注释：第二次 Reload 必须完全绕开历史恢复并严格验证当前 canonical；这是本轮真正完成迁移的硬门。
+
 -- Real-machine known-stamp migration bridge. 770CB0B8 is intentionally NOT the
 -- hash of this synthetic payload: exact historical reconstruction must fail,
 -- then the Store-owned exact stamp allowlist + strict legacy shape validator may
@@ -240,7 +277,7 @@ local knownLegacyPayload = {
 local knownRaw = {
   payload = copy(knownLegacyPayload),
   __rsmeta = {
-    framework = P.FrameworkVersion, store = id, owner = "v3.death_review", contractVersion = deathStore.contractVersion,
+    framework = 2, store = id, owner = "v3.death_review", contractVersion = deathStore.contractVersion,
     lifetime = P.Lifetime.Permanent, scope = P.Scope.Account, schema = 1, periodId = "permanent",
     reliabilityContract = P.ReliabilityContractVersion, integrityVersion = P.IntegrityContractVersion,
   },
@@ -332,9 +369,12 @@ F.State.widgetWindow = ReplicatedSuite.RSUI.FloatingSurface:NormalizeState({
 
 assert(P:SaveStore(id) == true, "save")
 assert(type(storage[key]) == "table", "disk_exists")
-assert(storage[key].payload.widgetWindow.minimized == nil, "serializer_dropped_false_minimized")
-assert(storage[key].payload.widgetWindow.locked == nil, "serializer_dropped_false_locked")
-assert(storage[key].payload.widgetWindow.userMoved == nil, "serializer_dropped_false_userMoved")
+-- Framework3 transport converts false to a stable physical sentinel before RU
+-- serialization. The simulator still drops raw false values, but these members
+-- must now remain present on disk and decode back to false after reload.
+assert(storage[key].payload.widgetWindow.minimized ~= nil and storage[key].payload.widgetWindow.minimized ~= false, "transport_kept_false_minimized")
+assert(storage[key].payload.widgetWindow.locked ~= nil and storage[key].payload.widgetWindow.locked ~= false, "transport_kept_false_locked")
+assert(storage[key].payload.widgetWindow.userMoved ~= nil and storage[key].payload.widgetWindow.userMoved ~= false, "transport_kept_false_userMoved")
 
 -- Barrier readback must canonicalize the drifted disk representation back to
 -- the same logical window state instead of declaring corruption.
@@ -374,7 +414,7 @@ local memoStore = P:GetStore("v3.memo")
 local raw = {
   payload = { value = 5 },
   __rsmeta = {
-    framework = P.FrameworkVersion, store = "v3.memo", owner = "v3.memo", contractVersion = memoStore.contractVersion,
+    framework = 2, store = "v3.memo", owner = "v3.memo", contractVersion = memoStore.contractVersion,
     lifetime = P.Lifetime.Permanent, scope = P.Scope.Account, schema = 1, periodId = "permanent",
     reliabilityContract = P.ReliabilityContractVersion, integrityVersion = P.IntegrityContractVersion,
   },

@@ -88,7 +88,7 @@ oldDomain.tracking.weekly.configured=true
 oldDomain.tracking.weekly.keys={{ west_hiram=true, akasch=true }}
 oldDomain.lastScope="weekly"
 local oldRaw={{ payload=copy(oldDomain), __rsmeta={{
-  framework=P.FrameworkVersion, store="v3.tasks", owner="v3.tasks", contractVersion=3,
+  framework=2, store="v3.tasks", owner="v3.tasks", contractVersion=3,
   lifetime="Permanent", scope="Account", schema=1, periodId="permanent",
   reliabilityContract=P.ReliabilityContractVersion, integrityVersion=P.PreCanonicalIntegrityContractVersion,
 }} }}
@@ -138,7 +138,7 @@ local skewRaw={{ payload={{
   tracking={{ daily={{ configured=true, keys={{guild=true,pack20=true}} }}, weekly={{ configured=true, keys={{akasch=true,west_hiram=true}} }} }},
   lastScope="weekly", widgetVisible=true,
 }}, __rsmeta={{
-  framework=P.FrameworkVersion, store="v3.tasks", owner="v3.tasks", contractVersion=3,
+  framework=2, store="v3.tasks", owner="v3.tasks", contractVersion=3,
   lifetime="Permanent", scope="Account", schema=1, periodId="permanent",
   reliabilityContract=P.ReliabilityContractVersion, integrityVersion=P.PreCanonicalIntegrityContractVersion,
 }} }}

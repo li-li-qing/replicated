@@ -164,6 +164,7 @@ features/tools/random_shop/rs_random_shop_authority.lua
 features/tools/random_shop/rs_random_shop_feature.lua
 presentation/v3/rs_v3_shell_store.lua
 presentation/v3/rs_v3_launcher_store.lua
+presentation/v3/rs_v3_aux_window_store.lua
 presentation/v3/rs_v3_native_adapter.lua
 presentation/v3/navigation/rs_v3_router.lua
 presentation/v3/widgets/rs_v3_widget_host.lua

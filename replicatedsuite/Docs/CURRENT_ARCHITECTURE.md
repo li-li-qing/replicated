@@ -430,15 +430,15 @@ Feature Settings Page
 
 ## 13. 当前验证基线
 
-当前代码 BuildTag：`v3-m1.16.0.18.193-persistence-schema-canonical-recovery`。
+当前代码 BuildTag：`v3-m1.16.0.18.196-navigation-development-order`。
 
 当前本地结构门禁基线：
 
 ```text
 FOUNDATION_AUDIT PASS
-toc=227
-activeLua=227
-allLua=227
+toc=228
+activeLua=228
+allLua=228
 globals=0
 presentation=0
 rawNative=0
@@ -457,7 +457,9 @@ rsuiLoadDeps=3
 presentationRootHandlers=0
 ```
 
-当前 Runtime Gate 为 Foundation v142 / UIV3 Acceptance v97；RSUI 为 v51 / API 13.5。`ScreenProjectionV3 v13` 要求 global world、front-hemisphere、批量索引稳定与 `UiParentScreenCoordinateContractVersion=1`；VisualGuides 必须 1:1 消费该屏幕坐标，不得乘 Suite `addonScale`。仅当 Camera Frame 暂时不可取得时允许当前有界批次使用 Native Projection fallback，禁止跨帧缓存或绕过恢复后的前半球校验。
+Persistence 当前物理存储基线为 **Framework3 / Transport v1**：Store Domain/canonical/hash 仍保持业务原语义，仅 SaveData/LoadData 边界对 RU 会丢失的 `false`、空表及保留前缀字符串执行稳定物理编码；Framework2 历史缺失/表形漂移只能通过原 stamped fingerprint 精确匹配恢复。`.18.195` 明确补齐 DeathReview 已处于 schema2+codec1、但物理 envelope 仍为 Framework2 的 sequence/map 恢复：`pairs()` 只在 mismatch 冷路径收集磁盘仍存在的 bounded summary，正常 History Authority 继续使用 sequence/`ipairs()`。Presentation-only 的 `v3.presentation.aux_windows` 只保存无独立 Feature Store 的可拖辅助窗口几何，并采用首次打开才 Load 的生命周期。
+
+当前 Runtime Gate 为 Foundation v144 / UIV3 Acceptance v97；RSUI 为 v51 / API 13.5。`ScreenProjectionV3 v13` 要求 global world、front-hemisphere、批量索引稳定与 `UiParentScreenCoordinateContractVersion=1`；VisualGuides 必须 1:1 消费该屏幕坐标，不得乘 Suite `addonScale`。仅当 Camera Frame 暂时不可取得时允许当前有界批次使用 Native Projection fallback，禁止跨帧缓存或绕过恢复后的前半球校验。
 
 运行时只读事实继续收敛到共享 Service：`CastingObservationV3` 统一目标/自身施法快照，`AuraObservationV3` 统一 Buff/Debuff 快照。Boss 与 BuffDisplay 只持有 Demand lease，不得各自创建重复 Native polling；Boss exact mechanic lookup 在 Catalog 建表时完成，高频路径禁止模糊字符串扫描。
 
@@ -477,9 +479,13 @@ Effective API 暂不可读时，仅接受 `NativeStateCache` 中能够完整追�
 
 `v3.shell` 只保存主窗口尺寸、route、最小化/锁定与自由位置意图，但仍属于 Integrity Authority。`.18.188` 起其当前 canonical 为 **schema 7**，schema 6 冻结为只读 historical generation。任何后续对 Shell canonical 字段、默认语义、坐标表示的修改必须再次升 schema，禁止在同一 schema 内“顺手加字段”。旧 schema 的恢复顺序固定为：Envelope Seal/metadata/decode/budget → current canonical mismatch → exact historical reconstruction（旧 Hash 精确匹配）→ 必要时 Store-owned exact known-stamp bridge → current canonical/budget → migrate/restamp。未知 fingerprint 永远继续 write fence；session fallback 只保证 UI 可打开，不是清 Store/忽略完整性的理由。详细规则见 `Architecture/PERSISTENCE_ARCHITECTURE.md`。
 
-### `.18.150` Death Review 历史恢复边界
+### `.18.196` 左侧开发导航完成度边界
 
-Death Review 正常 Index Authority 仍是 Feature Store + stable codec；`history.entries` 的 `pairs()` 扫描只存在于一次性 Integrity mismatch historical recovery 中，不进入正常 Load/Save/Feature 生命周期。`.18.151` 对连续五轮实机确认的旧 v4 stamp `770CB0B8` 增加 Store 专属最终迁移桥：exact historical reconstruction 先执行；仅在它失败、Envelope Seal/metadata/schema/decode/budget/legacy-shape 全部通过且 fingerprint 精确在 Store allowlist 中时，才保留现存 Domain 并立即重盖 current codec。未知 fingerprint 继续 fail-closed。Snapshot 的 `historicalRecoveryProbe` 仅是 runtime 诊断，不是第二 Authority。 `.18.152` 把 Reload 后快捷界面状态纳入同一生命周期原则：Bag quick overlay 的低成本窗口观察独立默认启用，而重型 InventorySnapshot 仍显式按需；Gear quick buttons 的 persistent preference 与 page transient lease 严格分离，旧的“quick plan 已存在但 Feature preference=false”只执行一次 store-backed 启动意图修复，之后用户 disable 保持最终 Authority。 `.18.153` 进一步修正 Bag Native Window Fact：UIC_BAG/UIC_BANK/UIC_COFFER 不再假设 GetContentMainScriptPosVis 必有第 5 boolean，并让 RequireStorageWindow 与 Overlay 共享同一窗口事实。`.18.162` 根据后续 RU 实机继续收口该契约：第 5 visible 接受 boolean/0-1/常见 string 形态；显式 Native visible/hidden 为最高 Authority，ADDON:GetContent 短父链只提供正向 visible 证据，hidden proxy 不得否决已经存在的合法 MainScript geometry。Bag Quick Presenter 也不再使用顶层 emptywidget/system layer，而是统一走真实 transient WINDOW Host；首次 admission 预创建 hidden Host，窗口实际可见期间由既有 350ms observer 发布 bounded visible heartbeat 允许 Presenter 临时创建失败后重试。该观察仍是低频只读 Surface，不读取物品、不建立 InventorySnapshot；显式 tools_bag=false 继续由 FeatureRuntime preference 保持最终 Authority，不做猜测式自动迁移。 `.18.185` 进一步把 Bag 的 Proxy 与 Authority 彻底拆开：仓储打开期间，合法 Bag MainScript rect 可在 `UIC_BAG` hidden-proxy 情形下只承担悬浮条定位；`BeginBagQuick` 不再把 Bag UI visible 当动作前置，严格 storage visible + bounded physical bag/storage read 才是写入证明；Observer 仍不扫描物品。 `.18.186` 将这个**唯一只读 Surface Observer**从 350ms 收紧为 100ms（P2/cost=1），只提升 Native 窗口事实发现速度；InventorySnapshot、槽位遍历、同类匹配与 Native Move 继续严格留在显式用户动作之后，不新增 Tick 或第二常驻观察任务。 `.18.154` 收口 Unit Lines 最终 Presentation 坐标边界：`GetUnitScreenPosition` 的 raw `(x,y)` 是端点 Authority，1×1 label dot 必须直接锚在该点；font size 仅改变 glyph，不得再用 `size/2` 改写路径几何。Range Assist 保留独立 calibration Authority。
+左侧导航的“完成/未完成”是**开发展示元数据**，不是新的业务 Authority。FeatureRegistry 在注册时根据 `runtimeBlocked/status/apiReadiness/verification/remainingCapability` 生成 `navigationDevelopmentState/navigationIncomplete`；对 CURRENT 已确认仍有 RU 实机问题、但旧迁移 status 过于乐观的少量 Feature 可显式覆盖。Router 只负责同分类 `complete → incomplete` 稳定排序，并把后缀写入专用 `navigationTitle`；原 `title/name/route/id` 均保持不变。Shell 只消费 `navigationTitle`，FeatureRuntime、Persistence、Service/EventBus 与 PageHost 禁止根据导航开发态启停功能。功能完成后应更新其真实 Registry/CURRENT 状态或移除显式 override，而不是在 Shell 硬编码名单。
+
+### `.18.195` Death Review 历史恢复边界
+
+Death Review 正常 Index Authority 仍是 Feature Store + stable codec；`history.entries` 的 `pairs()` 扫描只存在于一次性 Integrity mismatch historical recovery 中，不进入正常 Load/Save/Feature 生命周期。`.18.195` 补齐 `framework=2 + schema=2 + codec=1` 世代：若 RU 把仍存在的摘要从连续 sequence 变成稀疏/map 表，只允许 bounded `pairs()` 重建候选，并必须由原 stamped fingerprint 完整精确认证；不为每个用户内容新增 Hash pair。Framework3 mismatch 不进入该恢复器。`.18.151` 对连续五轮实机确认的旧 v4 stamp `770CB0B8` 增加 Store 专属最终迁移桥：exact historical reconstruction 先执行；仅在它失败、Envelope Seal/metadata/schema/decode/budget/legacy-shape 全部通过且 fingerprint 精确在 Store allowlist 中时，才保留现存 Domain 并立即重盖 current codec。未知 fingerprint 继续 fail-closed。Snapshot 的 `historicalRecoveryProbe` 仅是 runtime 诊断，不是第二 Authority。 `.18.152` 把 Reload 后快捷界面状态纳入同一生命周期原则：Bag quick overlay 的低成本窗口观察独立默认启用，而重型 InventorySnapshot 仍显式按需；Gear quick buttons 的 persistent preference 与 page transient lease 严格分离，旧的“quick plan 已存在但 Feature preference=false”只执行一次 store-backed 启动意图修复，之后用户 disable 保持最终 Authority。 `.18.153` 进一步修正 Bag Native Window Fact：UIC_BAG/UIC_BANK/UIC_COFFER 不再假设 GetContentMainScriptPosVis 必有第 5 boolean，并让 RequireStorageWindow 与 Overlay 共享同一窗口事实。`.18.162` 根据后续 RU 实机继续收口该契约：第 5 visible 接受 boolean/0-1/常见 string 形态；显式 Native visible/hidden 为最高 Authority，ADDON:GetContent 短父链只提供正向 visible 证据，hidden proxy 不得否决已经存在的合法 MainScript geometry。Bag Quick Presenter 也不再使用顶层 emptywidget/system layer，而是统一走真实 transient WINDOW Host；首次 admission 预创建 hidden Host，窗口实际可见期间由既有 350ms observer 发布 bounded visible heartbeat 允许 Presenter 临时创建失败后重试。该观察仍是低频只读 Surface，不读取物品、不建立 InventorySnapshot；显式 tools_bag=false 继续由 FeatureRuntime preference 保持最终 Authority，不做猜测式自动迁移。 `.18.185` 进一步把 Bag 的 Proxy 与 Authority 彻底拆开：仓储打开期间，合法 Bag MainScript rect 可在 `UIC_BAG` hidden-proxy 情形下只承担悬浮条定位；`BeginBagQuick` 不再把 Bag UI visible 当动作前置，严格 storage visible + bounded physical bag/storage read 才是写入证明；Observer 仍不扫描物品。 `.18.186` 将这个**唯一只读 Surface Observer**从 350ms 收紧为 100ms（P2/cost=1），只提升 Native 窗口事实发现速度；InventorySnapshot、槽位遍历、同类匹配与 Native Move 继续严格留在显式用户动作之后，不新增 Tick 或第二常驻观察任务。 `.18.154` 收口 Unit Lines 最终 Presentation 坐标边界：`GetUnitScreenPosition` 的 raw `(x,y)` 是端点 Authority，1×1 label dot 必须直接锚在该点；font size 仅改变 glyph，不得再用 `size/2` 改写路径几何。Range Assist 保留独立 calibration Authority。
 
 ## 14. 权威文档索引
 

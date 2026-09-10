@@ -1,11 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Foundation Acceptance v97 -- 中文维护注释：.18.190 增加 Suite-owned Popup cache-first 锚点验收。
+-- Replicated Suite V3 - Foundation Acceptance v98 -- 中文维护注释：.18.196 增加左侧“完成/未完成”开发排序与专用导航标题验收；Popup Authority 既有契约保持不变。
 --
 -- Bounded, on-demand checks only. No Native widget creation and no Tick.
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
-S.UIV3Acceptance = { version = 97 } -- 中文维护注释：验收版本随 Popup Anchor Authority v2 同步升级。
+S.UIV3Acceptance = { version = 98 } -- 中文维护注释：v98 只新增导航开发态展示契约，不改变 PageHost/Feature/Persistence Authority。
 local A = S.UIV3Acceptance
 A.TradeDpsFreshReloadPreflightContractVersion = 2
 A.TradeDetailFavoritesContractVersion = 1
@@ -22,6 +22,7 @@ A.SidecarServiceBoundaryContractVersion = 1
 A.QuickSurfaceReloadReconcileContractVersion = 3
 A.ShellPersistenceSchemaContractVersion = 1
 A.PopupCoordinateAuthorityContractVersion = 3 -- 中文维护注释：v3 要求 Suite-owned detached Popup 最终使用 Native-relative Trigger Anchor；绝对 viewport solver 仅服务显式 point/外部 Native，且专项诊断按钮属于验收能力。
+A.NavigationDevelopmentOrderContractVersion = 1 -- 中文维护注释：验收明确要求 Registry 单一判定、Router 完成优先排序、Shell 专用 navigationTitle 三段链路，防止未来 UI 重构重新混排。
 
 local MIGRATED_MODAL_MODULES = {
     ["v3_quest_detail_modal"] = "QuestDetailModalV3",
@@ -104,12 +105,19 @@ function A:RunMatrix()
     local registry = S.FeatureRegistry
     if router == nil then failures[#failures + 1] = "router_missing" end
     if registry == nil then failures[#failures + 1] = "feature_registry_missing" end
+    if router ~= nil and ((tonumber(router.version) or 0) < 2 or (tonumber(router.DevelopmentOrderContractVersion) or 0) < 1) then failures[#failures + 1] = "navigation_development_order_contract" end -- 中文维护注释：Router 必须显式声明开发态排序契约，避免仅靠当前偶然顺序通过。
     if router ~= nil and registry ~= nil then
         local seen = {}
         for _, feature in ipairs(registry:List()) do
             if seen[feature.route] then failures[#failures + 1] = "duplicate_route:" .. feature.route end
             seen[feature.route] = true
-            if router:Get(feature.route) == nil then failures[#failures + 1] = "unregistered_route:" .. feature.route end
+            local routeRow = router:Get(feature.route) -- 中文维护注释：同一 Router row 同时用于注册完整性与开发态展示一致性校验，不创建页面或 Consumer。
+            if routeRow == nil then failures[#failures + 1] = "unregistered_route:" .. feature.route end
+            if routeRow ~= nil and feature.navigationVisible ~= false then -- 中文维护注释：只有左侧真实可见入口需要“未完成”标签；隐藏团队子路由保持原业务标题。
+                if routeRow.navigationIncomplete ~= (feature.navigationIncomplete == true) then failures[#failures + 1] = "navigation_development_state_drift:" .. feature.id end -- 中文维护注释：Registry 是唯一完成度判定 Authority，Router 不允许出现第二份不同结果。
+                local expectedNavigationTitle = tostring(feature.name or "") .. (feature.navigationIncomplete == true and "（未完成）" or "") -- 中文维护注释：开发标签只拼接到专用 navigationTitle，不修改 feature.name/routeRow.title。
+                if tostring(routeRow.navigationTitle or "") ~= expectedNavigationTitle then failures[#failures + 1] = "navigation_development_title_drift:" .. feature.id end -- 中文维护注释：防止后续 Shell/Router 重构漏后缀或把后缀污染页面语义标题。
+            end
             -- Exact Namespace:Method dependencies must exist in the central
             -- capability registry. Semantic group tags such as legacy "MAP"
             -- remain allowed and are intentionally not treated as API names.

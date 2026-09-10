@@ -99,7 +99,7 @@ assert(P:RegisterV3Store({{
 local legacyKey = P.V3KeyPrefix .. "legacy"
 storage[legacyKey] = {{
   payload = {{ kept = "yes" }},
-  __rsmeta = {{ framework = P.FrameworkVersion, store = "v3.harness.legacy", owner = "v3.harness",
+  __rsmeta = {{ framework = 2, store = "v3.harness.legacy", owner = "v3.harness",
     contractVersion = 3, lifetime = "Permanent", scope = "Account", schema = 1, periodId = "permanent" }},
 }}
 assert(P:LoadStore("v3.harness.legacy") == true, "legacy_unstamped_load")

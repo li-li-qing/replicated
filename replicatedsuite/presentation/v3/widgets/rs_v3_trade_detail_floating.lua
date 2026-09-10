@@ -1,7 +1,9 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Trade Pack Floating Detail
 --
--- Session-only detail surface shared by the main Trade page and the Trade HUD.
+-- Auxiliary detail surface shared by the main Trade page and the Trade HUD.
+-- Geometry is persisted by the Presentation-only AuxWindow Store; business data
+-- remains owned by life_trade.
 -- Business facts remain owned by life_trade.  This presenter never calls X2Store
 -- or X2Auction directly; explicit material quotes route back through Trade
 -- Commands -> PriceQuoteQueueV3.
@@ -10,7 +12,8 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
 local Floating = RSUI and RSUI.FloatingSurface or nil
-if type(RSUI) ~= "table" or type(Floating) ~= "table" then return end
+local AuxStore = S.UIV3 and S.UIV3.AuxWindowStoreV3 or nil
+if type(RSUI) ~= "table" or type(Floating) ~= "table" or type(AuxStore) ~= "table" then return end
 
 S.UIV3 = S.UIV3 or {}
 S.UIV3.TradeDetailFloatingV3 = S.UIV3.TradeDetailFloatingV3 or {
@@ -23,10 +26,6 @@ S.UIV3.TradeDetailFloatingV3 = S.UIV3.TradeDetailFloatingV3 or {
     subscribed = false,
     rowKey = nil,
     revision = 0,
-    state = {
-        width = 620, height = 440, minimized = false, locked = false,
-        overallOpacity = 0.96, backgroundOpacity = 1.0, textOpacity = 1.0, fontScale = 1.0,
-    },
 }
 local M = S.UIV3.TradeDetailFloatingV3
 
@@ -124,6 +123,8 @@ end
 
 function M:EnsureCreated()
     if self.created == true and self.surface ~= nil then return true end
+    local loaded, loadErr = AuxStore:EnsureLoaded()
+    if loaded ~= true then return false, loadErr or "辅助窗口布局读取失败" end
     local surface, err = Floating:Create({
         id = self.id,
         owner = "v3:trade_detail:floating",
@@ -135,15 +136,12 @@ function M:EnsureCreated()
         minimizeMode = "compact",
         boundaryMode = "free",
         defaultPlacement = "center",
-        statePolicy = {
-            defaultWidth = 620, defaultHeight = 440, minWidth = 470, minHeight = 300,
-            defaultOverallOpacity = 0.96, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0,
-            defaultFontScale = 1.0, minFontScale = 0.80, maxFontScale = 1.25,
-        },
-        getState = function() return M.state end,
-        -- Detail placement is intentionally session-only. Trade route/favorite
-        -- persistence remains in v3.life.trade and is not duplicated here.
-        persist = function() return true end,
+        statePolicy = AuxStore:GetPolicy("trade_detail"),
+        getState = function() return AuxStore:GetWindowState("trade_detail") end,
+        setState = function(value, reason) return AuxStore:SetWindowState("trade_detail", value, reason) end,
+        -- 中文维护注释：贸易品详情只把窗口几何/锁定/透明度写入 Presentation Store；
+        -- 业务数据继续由原 Feature/Service Authority 管理，避免第二业务 Authority。
+        persist = function(reason, delayMs) return AuxStore:PersistWindow("trade_detail", reason, delayMs) end,
         onClosed = function()
             M:Deactivate("surface_closed")
             return true

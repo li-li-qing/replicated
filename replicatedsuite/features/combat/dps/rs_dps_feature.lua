@@ -335,8 +335,7 @@ end
 function F:GetWidgetWindowState()
     local value = self.State and self.State.widgetWindow or nil
     local floating = S.RSUI and S.RSUI.FloatingSurface or nil
-    local policy = { defaultWidth = 470, defaultHeight = 330, minWidth = 1, minHeight = 1,
-        defaultOverallOpacity = 0.96, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 }
+    local policy = self.WidgetWindowPolicy or {}
     if type(floating) == "table" and type(floating.NormalizeState) == "function" then
         return S.Utils.DeepCopy(floating:NormalizeState(value, policy))
     end
@@ -346,8 +345,7 @@ end
 function F:SetWidgetWindowState(value, reason)
     if type(value) ~= "table" or type(self.State) ~= "table" then return false, "dps widget window state unavailable" end
     local floating = S.RSUI and S.RSUI.FloatingSurface or nil
-    local policy = { defaultWidth = 470, defaultHeight = 330, minWidth = 1, minHeight = 1,
-        defaultOverallOpacity = 0.96, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 }
+    local policy = self.WidgetWindowPolicy or {}
     self.State.widgetWindow = type(floating) == "table" and type(floating.NormalizeState) == "function"
         and floating:NormalizeState(value, policy) or S.Utils.DeepCopy(value)
     return true

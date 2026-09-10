@@ -26,11 +26,10 @@ local function CompactNumber(value)
     return string.format(abs >= 100000 and "%.0fK" or "%.1fK", n / 1000)
 end
 local function Policy()
-    return {
-        defaultWidth = 560, defaultHeight = 410, minWidth = 430, minHeight = 250,
-        defaultOverallOpacity = 0.96, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0,
-        defaultFontScale = 1.0, minFontScale = 0.80, maxFontScale = 1.25,
-    }
+    -- 中文维护注释：Widget 不再维护第二套几何默认值，避免保存后 Reload 被
+    -- Feature 的另一套 policy 二次规范化。只复制 Store-owned policy，Presentation
+    -- 可消费但不能成为配置 Authority。
+    return S.Utils.DeepCopy(Feature.WidgetWindowPolicy or {})
 end
 local function Persist(reason, delayMs) return Feature.Commands:MarkStoreDirty(delayMs or 300, "widget_" .. tostring(reason or "state")) end
 
@@ -42,7 +41,9 @@ local function CreateWidget()
         statePolicy = Policy(), getState = function() return Feature:GetWidgetWindowState() end,
         setState = function(value, reason) return Feature.Commands:SetWidgetWindowState(value, reason) end, persist = Persist,
         onClosed = function(_, reason)
-            return Host:NotifyWindowClosed(WIDGET_ID, { persist = false, source = tostring(reason or "widget_close") })
+            -- 中文维护注释：关闭是用户明确的 durable visibility 选择。过去 persist=false
+            -- 只隐藏当前实例，Store 仍保留 widgetVisible=true，Reload/下次登录会再次弹出。
+            return Host:NotifyWindowClosed(WIDGET_ID, { persist = true, source = tostring(reason or "widget_close") })
         end,
     })
     if surface == nil then return nil, err or "DPS 悬浮窗创建失败" end

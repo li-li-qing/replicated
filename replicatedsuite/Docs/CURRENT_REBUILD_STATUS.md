@@ -5,6 +5,27 @@
 
 > 修改前必读：`Docs/MAINTENANCE_RULES.md`；从 `.18.190` 起所有新增或修改代码行必须附带详细中文维护注释。
 
+### 2026-09-10 · `.18.196` Navigation Development Order
+
+- 左侧业务导航改为“**完成优先、未完成置底**”。完成度由 FeatureRegistry 单一元数据判定，Router/Shell 只消费 detached 展示字段，不得反向影响 FeatureRuntime、Persistence、API capability 或 PageHost 生命周期。
+- 自动未完成证据：`runtimeBlocked=true`、`status` 含 partial/planned/blocked、`apiReadiness` 含 partial/pending/research、`verification` 含 pending、`remainingCapability` 非空。CURRENT 中仍有真实 RU 问题但旧迁移状态偏乐观的 `life.activities/life.tasks/life.bonds` 显式保持 incomplete，待对应 RU 关闭条件满足后再上移。
+- 左侧只把 `navigationTitle` 显示为 `名称（未完成）`；Feature 名称、Route/ID、配置键和已有 Store 均不改。Router v2 + Shell/Acceptance/Foundation 契约确保未来 UI 重构不能静默恢复混排。
+
+### 2026-09-10 · `.18.195` DeathReview schema2 / Framework2 Exact Recovery
+
+- RU `.18.194` 实机出现 `v3.death_review:73DF7418>224E5B9D`；确认缺口位于旧 **Framework2 + schema2 + codec1** Index，而不是 Framework3 Transport 新写入。旧 RU 物理表可能让 `history.entries` 从连续 sequence 变成稀疏/map，正常 `ipairs()` 少读仍存在的摘要。
+- DeathReview Store 新增 schema2/Framework2 专属 bounded historical candidate：只读取磁盘仍存在的最多 30 条 summary，用 `pairs()` 收集后按 `serial/storageId` 稳定重建，再由正式 codec1 encoder 生成候选；只有候选 Hash 与原 stamped fingerprint 完全一致才恢复。
+- 不新增 `73DF7418 -> 224E5B9D` known pair；不同用户不同业务内容不应依赖逐个 Hash 白名单。Framework3 mismatch、未知 schema/codec、真实内容丢失继续 Fence。
+- 首次精确恢复后只升级 Framework3 Transport v1；第二次 Reload 必须 `verified_canonical`。Foundation v144 新增该契约硬门禁；本地发布门禁已完成 **51/51 Harness PASS + Foundation Audit PASS（228/228/228）**。
+
+### 2026-09-10 · `.18.194` Persistence Save/Restore Transport
+
+- Persistence 升级为 Framework3 / Transport v1：业务 Domain 与 canonical hash 不变，仅在 SaveData 物理边界编码 `false`、空表与保留前缀字符串，LoadData 后在 metadata/schema/Apply 前还原；Framework2 成功加载后延迟 0ms 改写为新物理表示。
+- `rs_business_bridge` 为 nullable 永久字段增加显式白名单，修复团队角色、制作 Recipe/CraftType/ItemType、整理背包 batchCategory 因 `key=nil` 不存在于 Lua default table 而无法持久化。
+- DPS 关闭改为 durable visibility；Store-owned Window policy 统一 560×410 / min 430×250，消除 Reload 后双 canonicalizer 尺寸跳回。
+- Gear compact-v2 保持原 canonical 编码不变；Framework2 中被 RU 省略的 `managed=false` 只通过 Store-owned historical candidate + 原 stamped fingerprint 精确验证恢复。
+- 新增 `v3.presentation.aux_windows` Presentation-only 懒加载 Store，保存贸易品详情、跑商诊断、任务详情窗口几何，不复制任何业务 Authority。
+
 ## 1. 当前基线
 
 | 项 | 当前状态 |
@@ -12,13 +33,13 @@
 | Architecture | V3-only / `v3_rebuild` |
 | Runtime Addon | `replicatedsuite/` |
 | Legacy / Professional / `globals/` | 已物理删除，Active dependency = 0 |
-| BuildTag | `v3-m1.16.0.18.192-compact-healer-team-trade-ui` |
-| Active TOC Lua | 227 |
-| Active / All Lua | 227 / 227 |
-| Foundation Audit | **PASS**：toc/active/all=227；globals=0；Popup Positioning v3 / Native-relative v1 / Controls+Interactions consumer v2 / 可见专项诊断入口均已进入硬门禁 |
-| Python Harness | **49/49 PASS**；新增 `rs_ui_compact_team_navigation_harness.py` 固化治疗校准 auto 高度、团队中心父导航归属、跑商三行 HUD/旧默认尺寸只读兼容；原 Popup/持久化/Bag/Trade/UnitLine 等 48 组同时通过 |
+| BuildTag | `v3-m1.16.0.18.196-navigation-development-order` |
+| Active TOC Lua | 228 |
+| Active / All Lua | 228 / 228 |
+| Foundation Audit | `.18.196` 发布前必须 PASS：Foundation v145 额外要求 Router/Shell 左侧开发态排序契约；DeathReview/Persistence/Popup/RSUI 既有 blocker 全部保持 |
+| Python Harness | **52/52 PASS**；Persistence v3～v10、历史 schema、DPS/DeathReview、Gear、Craft/Bag、Quick Reload、Resolution、Trade、Team、UI Interaction、Unit Lines 等全部通过；新增 `rs_navigation_development_order_harness.py` 真实执行 Registry/Router Lua 验证完成优先排序与专用“（未完成）”标签，既有 Save/Restore v10 继续模拟 RU 删除 `false`/空表后的 Fresh Reload 恢复 |
 | Product Capability Matrix | 126 条：80 IMPLEMENTED / 35 PARTIAL / 0 TODO / 11 SPECIFIC_RUNTIME_BLOCKED |
-| RU Fresh Reload | `.18.192` 首要验收三处 UI：治疗辅助确认“团队色块校准”不再占满剩余页面；团队中心点击“战备检查”后侧栏仍高亮团队中心且顶部子导航连续；跑商悬浮窗确认 410×306 三行操作区、下拉/询价/收藏/排序可用。随后继续执行 `.18.191` 的 Popup Native-relative 1024×768、1280×768、1366×768、1920×1080 实机矩阵 |
+| RU Fresh Reload | `.18.194` P0：调整窗口位置/尺寸、锁定/最小化/透明度、关闭默认开启 Feature、关闭 DPS、修改 Gear managed 槽及 Craft/Bag nullable 设置后执行 Reload 与完整退出登录，确认均保持；贸易品详情/跑商诊断/任务详情三类辅助窗口必须同时验证位置恢复。Popup Native-relative 多分辨率矩阵继续保留 |
 | Current UI Gate | **.18.192 Compact Plugin Surface + .18.191 Popup Authority**：信息/帮助型卡片不得用 `fill` 吞掉剩余页面；隐藏语义子页可用 `navigationParentRoute` 归属主导航但不得合并 PageHost/Feature 生命周期；跑商等 HUD 优先紧凑三行/表格布局。Popup Native-relative Authority 与 `RSUI Popup定位` 诊断契约继续保持。 |
 
 - `.18.192 UI 收敛`：治疗辅助校准说明卡改为 auto 高度；团队战备检查视觉归属团队中心但仍是独立按需扫描 Feature；跑商悬浮窗改为 410×306 三行 HUD。Trade 旧 470×374 默认尺寸只在读取后的 Presentation 副本中映射，不改 Store canonical/schema/fingerprint。
@@ -35,9 +56,9 @@
 当前 Foundation 结构指标：
 
 ```text
-toc=227
-activeLua=227
-allLua=227
+toc=228
+activeLua=228
+allLua=228
 globals=0
 presentation=0
 rawNative=0
@@ -195,7 +216,7 @@ Gate 仍为 **INCOMPLETE - CONTINUATION REQUIRED**。不得为了 Gate 变绿删
 - `.18.96` `SCREEN_PROJECTION_FRONT_HEMISPHERE_HARNESS PASS 14/14`：真实加载 `rs_screen_projection_v3.lua`，模拟 RU 对背后目标仍返回正 depth + 边角屏幕点以及“in-bounds 但处于 physical/UI-scale 或 stale”的 Native 点；验证 Camera Frame 每 batch 只读取一次、token 去重、所有 world read 均为 global、behind 在 Native screen read 前拒绝、UI-scale reconcile、严重偏移 camera fallback、前方出屏端点仍交给 Presenter clipping、旋转相机后原 behind 目标重新可见。
 - `.18.89` `INTERACTIVE_DRAFT_HARNESS PASS 13/13`：真实加载 `rs_ui_controls.lua`，验证 focused Text/Numeric draft 在 ambient refresh 中保持、失焦后可重新同步；Slider active preview 不被旧 Binding 回灌，final commit 可明确覆盖；`.18.90` 再增加 `RSUI_WORKSPACE_SMOKE_HARNESS` 与 `PERSISTENCE_ACCEPTANCE_SNAPSHOT_HARNESS`；`.18.91` 将 Workspace Smoke 扩至全部 6 类公共模板并新增全 Presentation Component API + RSUI TOC dependency-order 静态 Gate；`.18.92` 新增 Presentation→Feature API Audit 与 5/5 self-test，并修复 Tasks/Activities/Gear 三条真实缺失 Command。
 - `.18.94` Fresh Reload preflight：Foundation Audit 新增 DPS schema/`widgetVisible`/WidgetHost lifecycle 一致性以及 Trade Dropdown-only/Quote/Server route Authority package-coherence；UIV3 Acceptance v58 同步增加 `dps_widget_visibility_preference_contract` 与 `trade_dropdown_quote_preflight_contract`。本地回归：Workspace 27/27、Presentation→Feature 5/5、Persistence 19/19、Interactive Draft 13/13、Bag 4/4、Unit Lines 11/11、Front-Hemisphere 10/10。
-- 当前 BuildTag 与 `replicatedsuite.lua` 一致：`v3-m1.16.0.18.192-compact-healer-team-trade-ui`；全量 Lua 227/227 Parse PASS，TOC missing/unlisted/duplicate 均为 0；全工程 Python Harness 49/49 PASS。
+- 当前 BuildTag 与 `replicatedsuite.lua` 一致：`v3-m1.16.0.18.196-navigation-development-order`；Foundation Audit 确认 TOC/Active/All Lua = 228/228/228、结构违规 0；全工程 Python Harness 52/52 PASS，Lua Local Order / Presentation Feature API / RSUI Component API 均 PASS。
 
 历史专项 harness、每个 M1.x 的逐轮数字与修复详情不再复制到本文，统一查 [`CHANGELOG.md`](CHANGELOG.md)。
 

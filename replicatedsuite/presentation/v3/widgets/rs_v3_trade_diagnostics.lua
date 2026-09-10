@@ -14,7 +14,8 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
 local Floating = RSUI and RSUI.FloatingSurface or nil
-if type(RSUI) ~= "table" or type(Floating) ~= "table" then return end
+local AuxStore = S.UIV3 and S.UIV3.AuxWindowStoreV3 or nil
+if type(RSUI) ~= "table" or type(Floating) ~= "table" or type(AuxStore) ~= "table" then return end
 
 S.UIV3 = S.UIV3 or {}
 S.UIV3.TradeDiagnosticsV3 = S.UIV3.TradeDiagnosticsV3 or {
@@ -25,10 +26,6 @@ S.UIV3.TradeDiagnosticsV3 = S.UIV3.TradeDiagnosticsV3 or {
     visible = false,
     subscribed = false,
     revision = 0,
-    state = {
-        width = 700, height = 520, minimized = false, locked = false,
-        overallOpacity = 0.96, backgroundOpacity = 1.0, textOpacity = 1.0, fontScale = 1.0,
-    },
 }
 local M = S.UIV3.TradeDiagnosticsV3
 
@@ -299,6 +296,8 @@ end
 
 function M:EnsureCreated()
     if self.created == true and self.surface ~= nil then return true end
+    local loaded, loadErr = AuxStore:EnsureLoaded()
+    if loaded ~= true then return false, loadErr or "辅助窗口布局读取失败" end
     local surface, err = Floating:Create({
         id = self.id,
         owner = "v3:trade_diagnostics:floating",
@@ -310,14 +309,12 @@ function M:EnsureCreated()
         minimizeMode = "compact",
         boundaryMode = "free",
         defaultPlacement = "center",
-        statePolicy = {
-            defaultWidth = 700, defaultHeight = 520, minWidth = 520, minHeight = 340,
-            defaultOverallOpacity = 0.96, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0,
-            defaultFontScale = 1.0, minFontScale = 0.80, maxFontScale = 1.25,
-        },
-        getState = function() return M.state end,
-        -- Diagnostics geometry is session-only by design; nothing here persists.
-        persist = function() return true end,
+        statePolicy = AuxStore:GetPolicy("trade_diagnostics"),
+        getState = function() return AuxStore:GetWindowState("trade_diagnostics") end,
+        setState = function(value, reason) return AuxStore:SetWindowState("trade_diagnostics", value, reason) end,
+        -- 中文维护注释：跑商诊断只把窗口几何/锁定/透明度写入 Presentation Store；
+        -- 业务数据继续由原 Feature/Service Authority 管理，避免第二业务 Authority。
+        persist = function(reason, delayMs) return AuxStore:PersistWindow("trade_diagnostics", reason, delayMs) end,
         onClosed = function()
             M:Deactivate("surface_closed")
             return true

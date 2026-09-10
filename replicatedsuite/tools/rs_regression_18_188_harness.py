@@ -138,7 +138,7 @@ assert(historicalFp ~= currentFp, "schema_generations_must_differ_when_new_field
 local raw = {
   payload = copy(decoded),
   __rsmeta = {
-    framework = P.FrameworkVersion, store = "v3.shell", owner = "v3.shell",
+    framework = 2, store = "v3.shell", owner = "v3.shell",
     contractVersion = shellStore.contractVersion, lifetime = P.Lifetime.Permanent,
     scope = P.Scope.Account, schema = 6, periodId = "permanent",
     reliabilityContract = P.ReliabilityContractVersion,

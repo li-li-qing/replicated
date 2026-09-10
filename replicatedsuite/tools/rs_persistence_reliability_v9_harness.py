@@ -117,7 +117,7 @@ assert(P:RegisterV3Store({{
 local strictRaw = {{
   payload = {{ opacity = 0.82, id = 77, extra = {{ tag = "x" }} }},
   __rsmeta = {{
-    framework = P.FrameworkVersion, store = "v3.v9.default_upgrade", owner = "v3.v9",
+    framework = 2, store = "v3.v9.default_upgrade", owner = "v3.v9",
     contractVersion = 3, lifetime = "Permanent", scope = "Account", schema = 1,
     periodId = "permanent", reliabilityContract = P.ReliabilityContractVersion,
     integrityVersion = P.PreCanonicalIntegrityContractVersion,
@@ -150,7 +150,7 @@ assert(P:RegisterV3Store({{
 local optOutRaw = {{
   payload = {{ opacity = 0.82, id = 78, extra = {{ tag = "x" }} }},
   __rsmeta = {{
-    framework = P.FrameworkVersion, store = "v3.v9.strict", owner = "v3.v9",
+    framework = 2, store = "v3.v9.strict", owner = "v3.v9",
     contractVersion = 3, lifetime = "Permanent", scope = "Account", schema = 1,
     periodId = "permanent", reliabilityContract = P.ReliabilityContractVersion,
     integrityVersion = P.PreCanonicalIntegrityContractVersion,
@@ -197,7 +197,7 @@ assert(P:RegisterV3Store({{
 local blindRaw = {{
   payload = {{ settings = {{ autoShow = true, windowMs = 8000 }}, history = {{ serial = 5, entries = {{ {{ serial = 5, storageId = 1 }} }} }}, widgetWindow = {{ x = 12 }} }},
   __rsmeta = {{
-    framework = P.FrameworkVersion, store = "v3.v9.blind", owner = "v3.v9",
+    framework = 2, store = "v3.v9.blind", owner = "v3.v9",
     contractVersion = 3, lifetime = "Permanent", scope = "Account", schema = 1,
     periodId = "permanent", reliabilityContract = P.ReliabilityContractVersion,
     integrityVersion = P.ContentBlindCanonicalContractVersion,

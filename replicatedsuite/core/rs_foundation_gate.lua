@@ -9,7 +9,7 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
 S.FoundationGate = {
-    version = 142, -- 中文维护注释：.18.190 新增 Suite-owned Popup cache-first 锚点门禁，防止 RU Effective Geometry 再次导致分辨率相关漂移。
+    version = 145, -- 中文维护注释：.18.196 在既有 Persistence/DeathReview blocker 上增加导航开发态排序契约，防止未完成功能再次混到已完成功能之间。
     last = nil,
     sequenceCases = {},
     sequenceOrder = {},
@@ -446,6 +446,24 @@ function G:Run(options)
                 .. "/close=" .. tostring(floatingInfo.closeRequests or 0)
                 .. "/veto=" .. tostring(floatingInfo.closeVetoes or 0)
                 .. "/fail=" .. tostring(floatingInfo.failures or 0)) or "missing")
+
+        local auxWindowStore = S.UIV3 and S.UIV3.AuxWindowStoreV3 or nil
+        local auxStoreRegistration = S.Persistence and type(S.Persistence.GetStore) == "function"
+            and S.Persistence:GetStore("v3.presentation.aux_windows") or nil
+        local auxTradePolicy = type(auxWindowStore) == "table" and type(auxWindowStore.GetPolicy) == "function" and auxWindowStore:GetPolicy("trade_detail") or nil
+        local auxDiagPolicy = type(auxWindowStore) == "table" and type(auxWindowStore.GetPolicy) == "function" and auxWindowStore:GetPolicy("trade_diagnostics") or nil
+        local auxQuestPolicy = type(auxWindowStore) == "table" and type(auxWindowStore.GetPolicy) == "function" and auxWindowStore:GetPolicy("quest_detail") or nil
+        AddCheck(report, "v3_aux_window_persistence_contract", type(auxWindowStore) == "table"
+                and (tonumber(auxWindowStore.contractVersion) or 0) >= 1
+                and type(auxStoreRegistration) == "table" and auxStoreRegistration.owner == "v3.presentation.aux_windows"
+                and type(auxWindowStore.EnsureLoaded) == "function" and type(auxWindowStore.GetWindowState) == "function"
+                and type(auxWindowStore.SetWindowState) == "function" and type(auxWindowStore.PersistWindow) == "function"
+                and type(auxTradePolicy) == "table" and tonumber(auxTradePolicy.defaultWidth) == 620
+                and type(auxDiagPolicy) == "table" and tonumber(auxDiagPolicy.defaultWidth) == 700
+                and type(auxQuestPolicy) == "table" and tonumber(auxQuestPolicy.defaultWidth) == 560,
+            "blocker", type(auxWindowStore) == "table" and ("contract=" .. tostring(auxWindowStore.contractVersion or 0)
+                .. "/registered=" .. tostring(type(auxStoreRegistration) == "table")
+                .. "/loaded=" .. tostring(auxWindowStore.loaded == true)) or "missing")
 
         local viewState = S.RSUI and S.RSUI.ViewState or nil
         local viewStateInfo = viewState and type(viewState.GetSnapshot) == "function" and viewState:GetSnapshot() or nil
@@ -1181,11 +1199,15 @@ function G:Run(options)
             "blocker", "Design v4: page roots accept id/spec and settings/forms can scroll at minimum viewport")
 
         local navEntries = shell and shell.navScroll and shell.navScroll.GetScrollableEntries and shell.navScroll:GetScrollableEntries() or {}
+        local router = S.UIV3 and S.UIV3.Router or nil -- 中文维护注释：Router 只在运行时门禁读取展示契约，不启动任何 Feature；完成度事实仍由 FeatureRegistry 注册时确定。
         AddCheck(report, "v3_navigation_critical_access", shell ~= nil and shell.navScroll ~= nil and #navEntries >= 12
                 and (tonumber(shell.NavigationCallbackCaptureContractVersion) or 0) >= 1
+                and (tonumber(shell.DevelopmentNavigationPresentationContractVersion) or 0) >= 1 -- 中文维护注释：Shell 必须使用专用 navigationTitle，防止“未完成”污染页面 title。
+                and type(router) == "table" and (tonumber(router.DevelopmentOrderContractVersion) or 0) >= 1 -- 中文维护注释：Router 必须保持完成优先排序契约；仅检查元数据，不触碰页面生命周期。
                 and shell.navButtons ~= nil and shell.navButtons["system.settings"] ~= nil
                 and shell.navButtons["system.diagnostics"] ~= nil and shell.reloadButton ~= nil,
             "blocker", "entries=" .. tostring(#navEntries) .. "/capture=" .. tostring(shell and shell.NavigationCallbackCaptureContractVersion or 0)
+                .. "/devNav=" .. tostring(shell and shell.DevelopmentNavigationPresentationContractVersion or 0) .. "/" .. tostring(router and router.DevelopmentOrderContractVersion or 0) -- 中文维护注释：诊断摘要同时输出 Shell/Router 两端契约版本，便于 RU 用户截图判断是否混装旧文件。
                 .. "/settings=" .. tostring(shell and shell.navButtons and shell.navButtons["system.settings"] ~= nil)
                 .. "/diagnostics=" .. tostring(shell and shell.navButtons and shell.navButtons["system.diagnostics"] ~= nil)
                 .. "/reload=" .. tostring(shell and shell.reloadButton ~= nil))
@@ -1546,7 +1568,8 @@ function G:Run(options)
             and type(deathReview.Commands.SetEnabled) == "function" and type(deathReview.Commands.ClearHistory) == "function"
             and (tonumber(deathReview.PersistenceCanonicalWindowContractVersion) or 0) >= 7 -- 中文维护注释：Foundation 要求 Store-owned 窗口字段投影 v7，防止共享 FloatingSurface 未来加字段再次污染既有 Index canonical。
             and (tonumber(deathReview.PersistenceIndexSchemaContractVersion) or 0) >= 2 -- 中文维护注释：DeathReview Index 必须明确处于 schema2；record 分片仍独立 schema1，不在此合并。
-            and (tonumber(deathReview.PersistenceKnownLegacyRecoveryContractVersion) or 0) >= 2 -- 中文维护注释：Feature 必须携带 2026-09-09 schema1 codec1 exact-pair 恢复契约，不能只依赖旧 pre-codec 桥。
+            and (tonumber(deathReview.PersistenceKnownLegacyRecoveryContractVersion) or 0) >= 3 -- 中文维护注释：DeathReview recovery v3 必须先结构化恢复 schema2/Framework2 serializer 表形，再把旧内容相关 known pair 留作早期世代兜底。
+            and (tonumber(deathReview.PersistenceSchema2Framework2RecoveryContractVersion) or 0) >= 1 -- 中文维护注释：发布门禁明确要求 `.18.195` schema2 codec1 Framework2 exact-recovery 存在，避免公开用户因不同 history 内容产生新 Hash 时再次被 Fence。
             and (tonumber(deathReview.PersistenceIndexCodecVersion) or 0) >= 1 -- 中文维护注释：codec1 继续是 Index 稳定物理编码，schema bump 不等于强制换 codec。
             and (tonumber(S.Persistence.HistoricalCanonicalRecoveryContractVersion) or 0) >= 3 -- 中文维护注释：Core exact historical canonical 恢复必须存在且先于 known-stamp 迁移。
             and type(deathReview.WidgetWindowSizePolicy) == "table" and deathReview.Demand ~= nil -- 中文维护注释：Presentation policy 与独立 Demand 生命周期必须同时保持，持久化修复不得耦合高频战斗模块。
@@ -1723,13 +1746,26 @@ function G:Run(options)
             and type(S.Persistence.VerifyPersistedValue) == "function"
             and type(S.Persistence.FingerprintEncodedPayload) == "function"
             and type(S.Persistence.FingerprintEnvelopeIntegrity) == "function"
+            and type(S.Persistence.EncodePhysicalEnvelope) == "function" and type(S.Persistence.DecodePhysicalEnvelope) == "function"
+            and type(S.Persistence.RebuildFramework2SerializerOmissions) == "function"
+            and (tonumber(S.Persistence.FrameworkVersion) or 0) >= 3
+            and (tonumber(S.Persistence.TransportContractVersion) or 0) >= 1
             and (tonumber(S.Persistence.ReliabilityContractVersion) or 0) >= 6
             and (tonumber(S.Persistence.IntegrityContractVersion) or 0) >= 1
             and (tonumber(S.Persistence.EnvelopeIntegrityContractVersion) or 0) >= 1
             and (tonumber(S.Persistence.ScopeBindingContractVersion) or 0) >= 1
             and (tonumber(S.Persistence.RuntimeAcceptanceDiagnosticsContractVersion) or 0) >= 1
             and type(S.Persistence.V3KeyPrefix) == "string",
-        "blocker", "v3 owner/scope/domain+envelope budgets + transactional load-before-write + post-write verify + persisted cross-reload integrity + runtime acceptance diagnostics")
+        "blocker", "v3 owner/scope/domain+envelope budgets + Framework3 physical transport + exact Framework2 serializer-omission recovery + transactional load-before-write + post-write verify + persisted cross-reload integrity + runtime acceptance diagnostics")
+    local featurePreferenceStore = S.Persistence ~= nil and type(S.Persistence.GetStore) == "function"
+        and S.Persistence:GetStore("v3.features") or nil
+    -- 中文维护注释：功能总开关是动态 key map，default={}，无法依赖 Core 的 fixed-shape
+    -- Framework2 恢复。这里仅验证 Store 已挂接自己的 exact-fingerprint recovery hook，
+    -- 不主动 LoadStore/读盘，因此 Foundation Gate 不会破坏按需加载或增加启动 SaveData I/O。
+    AddCheck(report, "feature_preference_persistence_recovery_contract",
+        type(featurePreferenceStore) == "table"
+            and type(featurePreferenceStore.rebuildCanonicalForIntegrity) == "function",
+        "blocker", type(featurePreferenceStore) == "table" and "framework2 dynamic-false exact recovery registered" or "v3.features store missing")
     local payloadSafe, payloadCycleRejected = false, false
     if S.Persistence ~= nil and type(S.Persistence.InspectPayload) == "function" then
         local safe = S.Persistence:InspectPayload({ probe = true, nested = { value = 1 } })

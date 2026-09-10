@@ -24,6 +24,16 @@ local SCHEMA = 4
 local MAX_BOSS_NAMES = 64
 local MAX_DISPLAY_ROWS = 150
 
+-- 中文维护注释：DPS Window policy 必须只有一个 Authority。过去 Feature 使用
+-- 470x330/min1，而 Floating Widget 使用 560x410/min430x250，Reload 后同一存档
+-- 会被两个 canonicalizer 反复解释，表现为尺寸/位置恢复后再次跳回。Store 暴露
+-- 只读 policy 给 Feature/Presentation 共用；这里不持久化 policy 本身。
+F.WidgetWindowPolicy = {
+    defaultWidth = 560, defaultHeight = 410, minWidth = 430, minHeight = 250,
+    defaultOverallOpacity = 0.96, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0,
+    defaultFontScale = 1.0, minFontScale = 0.80, maxFontScale = 1.25,
+}
+
 local function DeepCopy(value)
     if U ~= nil and type(U.DeepCopy) == "function" then return U.DeepCopy(value) end
     return value

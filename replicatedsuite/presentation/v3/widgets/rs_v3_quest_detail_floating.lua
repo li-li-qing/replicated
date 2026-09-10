@@ -1,7 +1,9 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Quest / Activity Floating Detail
 --
--- Session-only Presentation surface used when a HUD tracker row is activated.
+-- Presentation surface used when a HUD tracker row is activated. Its geometry
+-- is durable through the Presentation-only AuxWindow Store; quest/activity data
+-- remains owned by QuestProgressV3.
 -- Unlike the main-page modal it never wakes or redirects the application shell.
 -- Data remains owned by QuestProgressV3; no X2Quest/X2BattleField access here.
 ------------------------------------------------------------------------
@@ -9,17 +11,14 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI = S.RSUI
 local Floating = RSUI and RSUI.FloatingSurface or nil
-if type(RSUI) ~= "table" or type(Floating) ~= "table" then return end
+local AuxStore = S.UIV3 and S.UIV3.AuxWindowStoreV3 or nil
+if type(RSUI) ~= "table" or type(Floating) ~= "table" or type(AuxStore) ~= "table" then return end
 
 S.UIV3 = S.UIV3 or {}
 S.UIV3.QuestDetailFloatingV3 = S.UIV3.QuestDetailFloatingV3 or {
     id = "v3_quest_detail_floating",
     created = false,
     revision = 0,
-    state = {
-        width = 560, height = 420, minimized = false, locked = false,
-        overallOpacity = 0.96, backgroundOpacity = 1.0, textOpacity = 1.0, fontScale = 1.0,
-    },
 }
 local M = S.UIV3.QuestDetailFloatingV3
 
@@ -36,6 +35,8 @@ end
 
 function M:EnsureCreated()
     if self.created == true and self.surface ~= nil then return true end
+    local loaded, loadErr = AuxStore:EnsureLoaded()
+    if loaded ~= true then return false, loadErr or "辅助窗口布局读取失败" end
     local surface, err = Floating:Create({
         id = self.id,
         owner = "v3:quest_detail:floating",
@@ -47,15 +48,12 @@ function M:EnsureCreated()
         minimizeMode = "compact",
         boundaryMode = "free",
         defaultPlacement = "center",
-        statePolicy = {
-            defaultWidth = 560, defaultHeight = 420, minWidth = 420, minHeight = 260,
-            defaultOverallOpacity = 0.96, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0,
-            defaultFontScale = 1.0, minFontScale = 0.80, maxFontScale = 1.25,
-        },
-        getState = function() return M.state end,
-        -- This is deliberately session-only. Opening a detail must not create
-        -- a second feature/store authority or mutate Task/Activity settings.
-        persist = function() return true end,
+        statePolicy = AuxStore:GetPolicy("quest_detail"),
+        getState = function() return AuxStore:GetWindowState("quest_detail") end,
+        setState = function(value, reason) return AuxStore:SetWindowState("quest_detail", value, reason) end,
+        -- 中文维护注释：任务详情只把窗口几何/锁定/透明度写入 Presentation Store；
+        -- 业务数据继续由原 Feature/Service Authority 管理，避免第二业务 Authority。
+        persist = function(reason, delayMs) return AuxStore:PersistWindow("quest_detail", reason, delayMs) end,
         onClosed = function()
             M.visible = false
             return true

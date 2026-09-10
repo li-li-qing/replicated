@@ -1,3 +1,30 @@
+## v3-m1.16.0.18.196-navigation-development-order
+
+- **左侧开发导航分桶**：FeatureRegistry 新增单一 `navigationDevelopmentState` 判定。`runtimeBlocked`、`status=partial/planned/blocked`、API `partial/pending/research`、`verification=pending` 或 `remainingCapability` 非空都会自动进入“未完成”；CURRENT 仍有真实 RU 回归但旧 Registry 状态偏乐观的活动/任务追踪/债券使用显式 `incomplete` 覆盖。
+- **只改展示，不改业务**：Router v2 新增 `navigationTitle/navigationIncomplete`，同一分类先排完成、再排未完成；Shell 仅显示 `名称（未完成）`。`FeatureRegistry.name`、Router `title`、route、Feature id、Store key、FeatureRuntime lifecycle 与 API Authority 均不改变，避免纯开发排序影响用户配置/升级。
+- **长期维护门禁**：Router `DevelopmentOrderContractVersion=1`、Shell `DevelopmentNavigationPresentationContractVersion=1`、UIV3 Acceptance v98、Foundation Gate v145；新增 `rs_navigation_development_order_harness.py` 真实执行 Registry/Router Lua，验证 combat/life/tools 中完成项不会出现在未完成项之后、后缀只存在于 navigationTitle。
+- **当前可见分组**：战斗完成=`伤害统计/战斗分析/死亡回顾/换装`；生活完成=`住宅/税务/管家助手/寻宝`；工具完成=`副本目录/社交名单/随机商店计数`。其它可见入口依据当前 Registry/CURRENT 进入“未完成”区；隐藏团队子路由仍保持隐藏与原页面语义。
+- **发布门禁**：全工程 **52/52 Python Harness PASS**；Foundation Audit PASS（TOC/Active/All Lua=`228/228/228`）；Lua Local Order、Presentation Feature API、RSUI Component API 与全量 228 Lua Parse 均通过。
+
+## v3-m1.16.0.18.195-death-review-schema2-framework2-recovery
+
+- **RU 实机根因**：`.18.194` 首次启动仍出现 `v3.death_review:73DF7418>224E5B9D`。这不是 Framework3 Transport 新写坏数据，而是用户磁盘上已经存在的 **Framework2 + DeathReview schema2 + codec1** 历史 envelope。`.18.193` 虽已把 canonical generation 升到 schema2，但当时物理层仍可能把 `history.entries` 的连续 sequence 返回为稀疏/map 表；正常 `NormalizeIndex()` 使用 `ipairs()`，仍存在的摘要因此可能少读，产生与具体用户历史内容相关的新 Hash。
+- **停止追加内容 Hash 白名单**：`014277AB -> 0CF5BCC1` 只能迁移当时那一份具体 schema1 数据，无法覆盖公开用户不同 history/settings/window 内容。本轮不把 `73DF7418 -> 224E5B9D` 加入 allowlist，而是新增 `RebuildFramework2Schema2CodecV1Canonical()`：仅当 metadata 明确为 `framework=2 + schema=2 + codec=1` 时，在 mismatch 冷路径用 bounded `pairs()` 收集磁盘上仍存在的最多 30 条摘要，按 `serial/storageId` 稳定重建 sequence，再走正式 `EncodeIndex()` 形成候选。
+- **完整性仍 fail-closed**：恢复候选没有信任权；Persistence Core 仍使用磁盘原 `encodedFingerprint` 做**完整 exact Hash**验证。摘要真实丢失、内容改变、未知 codec/schema、Framework3 mismatch 都不会通过。成功且当前 canonical 与旧 stamp 相同时标记 `verified_canonical_recovered_representation`，只排队 `framework_transport_upgrade`；随后写成 Framework3 Transport v1，第二次 Reload 必须 `verified_canonical`。
+- **Authority/性能**：正常 DeathReview History Authority 仍使用 sequence/`ipairs()`；`pairs()` 只存在于一次性 Persistence historical recovery，最多 30 条，不访问 record 分片、不启动 CombatEventBus/Tick/Scheduler。窗口继续由 Store-owned schema2 projection 归一。
+- **维护门禁**：新增 `PersistenceSchema2Framework2RecoveryContractVersion=1`，DeathReview Acceptance 与 Foundation v144 强制要求该契约；DeathReview real-Lua Harness 新增“2 条摘要仍在磁盘但第二条变为 map/string-key”的 Framework2 schema2 复现，验证 exact recovery → Framework3 rewrite → second reload strict。发布前全工程 **51/51 Python Harness PASS**，Foundation Audit PASS（TOC/Active/All Lua=`228/228/228`）。
+
+## v3-m1.16.0.18.194-persistence-save-restore-transport
+
+- **Persistence Framework3 / Transport v1**：RU `SaveData` 已实证会省略业务 `false` 与空表。本轮不修改 Feature Domain/canonical/hash 语义，而是在真正的 SaveData/LoadData 物理边界统一编码/解码，并对保留前缀业务字符串做转义，避免“用户关闭/清空设置 → Reload/下次登录 → 默认值重新覆盖”。Framework2 继续兼容读取；成功迁移后以 0ms deferred resave 升级为 Framework3 物理表示。
+- **旧存档证据恢复**：Framework2 中已经被 RU 吞掉的 `false`/空表，只允许依据 Store 默认/schema 形成有界候选，并且候选 canonical fingerprint 必须与原 stamped fingerprint **完全一致**才恢复；动态 `v3.features` 单独只枚举 Registry 中 `defaultEnabled=true` 的 Feature 子集。未知 shape/fingerprint 继续 write-fence，不做猜测迁移。
+- **Nullable 配置持久化**：Business Feature Store 不再以 `pairs(default)` 作为唯一字段白名单；制作 Recipe/CraftType/ItemType、整理背包 batchCategory 等默认 `nil` 但运行时可赋值的永久字段进入显式 persistence key contract，修复“界面已应用但从未写盘”。
+- **DPS 保存 Authority 收敛**：右上角关闭现在同步 durable `widgetVisible=false`；DPS Floating Window 的默认/最小尺寸只由 Store-owned policy 提供，Feature 与 Presenter 不再使用两套 canonicalizer，避免 Reload 后尺寸/位置跳回。
+- **Gear compact-v2 兼容**：不改变现有换装 payload canonical/codec generation；仅对 Framework2 中编码器本应显式写出、但 RU 可能省略的 `managed=false` 形成 historical candidate，并以原 fingerprint 精确验真后恢复，防止“不参与换装”的槽位重登后变回参与。
+- **辅助悬浮窗位置保存**：新增 Presentation-only 懒加载 Store `v3.presentation.aux_windows`，统一保存贸易品详情、跑商诊断、任务详情窗口几何/锁定/透明度等视觉状态。Store 只在首次打开对应窗口时 Load，不复制业务 Authority、不增加启动 I/O。
+- **性能/生命周期**：所有新增工作仅发生于 Store Load/Save/readback 或窗口提交边界；没有新增 Tick、OnUpdate、战斗高频扫描或常驻 Scheduler。历史恢复属于升级冷路径并有严格候选上限。
+- **发布门禁**：全工程 **51/51 Python Harness PASS**；Foundation Audit PASS（TOC/Active/All Lua=`228/228/228`，globals/presentation/rawNative/rawScope/detachedWidgetState 等结构违规均为 0）；Lua Local Order、Presentation Feature API、RSUI Component API 全 PASS。`rs_trade_craft_modes_harness.py` 同时确认 `rs_business_bridge.lua` 顶层 local=`200/200`，未越过 Lua 5.1 硬上限。
+
 ## v3-m1.16.0.18.193-persistence-schema-canonical-recovery
 
 - **真实根因**：`.18.192` RU Fresh Reload 同时报告 `v3.activities:6271E40B>7E85D975` 与 `v3.death_review:014277AB>0CF5BCC1`。两个 Store 都直接/间接把可演进的 `FloatingSurface:NormalizeState()` 返回形状作为 canonical；共享 Foundation 后续加入 `savedLogicalWidth/Height + normalizedCenterX/Y` 后，Store schema 没有同步划分 canonical generation，旧合法数据因此被 Integrity v4 判为 mismatch。

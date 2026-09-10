@@ -189,6 +189,38 @@ local function EncodeCompactPayload(value)
     return raw
 end
 
+-- Framework2 RU serializer repair for compact-v2 boolean omissions. EncodeCompactPayload
+-- ALWAYS emitted c/ti.a/item.e/item.m, so a missing one in a valid v2 payload means the
+-- physical serializer removed false; it was never an optional business field. Persistence
+-- still hashes the reconstructed candidate against the old stamped canonical fingerprint
+-- before accepting it, so truncation/corruption cannot use this as a generic bypass.
+local function RebuildCompactV2Canonical(decoded, _stampedFingerprint, _currentCanonical, raw)
+    local meta = type(raw) == "table" and raw.__rsmeta or nil
+    if type(meta) ~= "table" or (tonumber(meta.framework) or 0) > 2 or tonumber(meta.schema) ~= PAYLOAD_SCHEMA
+        or tonumber(raw and raw.v) ~= PAYLOAD_FORMAT or type(raw.it) ~= "table" then return nil end
+    local candidate = DeepCopy(raw)
+    candidate.__rsmeta = nil
+    local recovered = NormalizePayload(decoded)
+    local changed = false
+    if candidate.c == nil then candidate.c = false; changed = true end
+    candidate.ti = type(candidate.ti) == "table" and candidate.ti or {}
+    if candidate.ti.a == nil then candidate.ti.a = false; changed = true end
+    local recoveredBySlot = {}
+    for _, item in ipairs(recovered.items or {}) do recoveredBySlot[tonumber(item.slot)] = item end
+    for _, row in ipairs(candidate.it) do
+        if type(row) == "table" then
+            if row.e == nil then row.e = false; changed = true end
+            if row.m == nil then
+                row.m = false; changed = true
+                local item = recoveredBySlot[tonumber(row.s)]
+                if item ~= nil and item.empty ~= true then item.managed = false end
+            end
+        end
+    end
+    if changed ~= true then return nil end
+    return candidate, recovered
+end
+
 local function DecodePayloadEnvelope(raw)
     if type(raw) ~= "table" then return nil, "gear payload raw must be table" end
     -- Schema 1 / pre-Reliability-v3 payloads used the framework default wrapper.
@@ -431,6 +463,7 @@ function F:EnsurePayloadStore(storageId, bank)
         encode = EncodeCompactPayload,
         decode = DecodePayloadEnvelope,
         migrate = function(value) return NormalizePayload(value) end,
+        rebuildCanonicalForIntegrity = RebuildCompactV2Canonical,
     })
     if store == nil then return nil, err end
     self.PayloadStoreIds[localCacheKey] = id

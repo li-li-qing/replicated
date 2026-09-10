@@ -40,7 +40,9 @@ local SCOPE = {
 }
 
 S.Persistence = {
-    FrameworkVersion = 2,
+    FrameworkVersion = 3,
+    -- 中文维护注释：Framework3 引入物理传输编码。RU SaveData 已实证会省略 false/空表；业务 Domain、Store canonical 与完整性指纹仍使用原始 Lua 语义，只有真正交给 SaveData 的物理 envelope 才编码，LoadData 后在 metadata/schema/Apply 前还原。Authority 仍唯一属于 Store/Persistence，不把哨兵泄漏到 Feature/UI。旧 Framework2 继续可读；旧插件读取 Framework3 时会命中 future-framework 写保护，避免回滚版本误写哨兵。
+    TransportContractVersion = 1,
     ReliabilityContractVersion = 8,
     MinIntegrityReliabilityContractVersion = 4,
     -- Integrity v3 verifies the CANONICAL store value (decode -> store
@@ -165,6 +167,85 @@ local function NonEmptyText(value)
     if value == nil then return nil end
     local text = tostring(value):gsub("[\r\n]+", " "):gsub("^%s+", ""):gsub("%s+$", "")
     return text ~= "" and text or nil
+end
+
+-- 中文维护注释：RU 物理 SaveData 传输层。这里仅解决已实证的两类表示丢失：boolean false 与空 table。
+-- 不能直接把 false 改成 nil，也不能让各 Feature 自己发明编码，否则重载后会出现“默认 true 覆盖用户 false”以及多套兼容逻辑。
+-- 保留字符串转义是为了消除哨兵碰撞：任何业务字符串只要以保留前缀开头，保存前都会先转义，因而解码绝不会把真实用户字符串误判成框架值。
+local TRANSPORT_PREFIX = "__rs_t1:"
+local TRANSPORT_FALSE = TRANSPORT_PREFIX .. "f"
+local TRANSPORT_EMPTY = TRANSPORT_PREFIX .. "e"
+local TRANSPORT_STRING = TRANSPORT_PREFIX .. "s"
+
+local function TransportEncodeValue(value, seen)
+    local kind = type(value)
+    if kind == "boolean" then return value == false and TRANSPORT_FALSE or true, nil end
+    if kind == "string" then
+        if value:sub(1, #TRANSPORT_PREFIX) == TRANSPORT_PREFIX then return TRANSPORT_STRING .. value, nil end
+        return value, nil
+    end
+    if kind ~= "table" then return value, nil end
+    if next(value) == nil then return TRANSPORT_EMPTY, nil end
+    seen = seen or {}
+    if seen[value] ~= nil then return nil, "transport_cycle" end
+    seen[value] = true
+    local out = {}
+    for key, child in pairs(value) do
+        local encodedKey, keyErr = TransportEncodeValue(key, seen)
+        if keyErr ~= nil then seen[value] = nil; return nil, keyErr end
+        local encodedChild, childErr = TransportEncodeValue(child, seen)
+        if childErr ~= nil then seen[value] = nil; return nil, childErr end
+        out[encodedKey] = encodedChild
+    end
+    seen[value] = nil
+    return out, nil
+end
+
+local function TransportDecodeValue(value, seen)
+    local kind = type(value)
+    if kind == "string" then
+        if value == TRANSPORT_FALSE then return false, nil end
+        if value == TRANSPORT_EMPTY then return {}, nil end
+        if value:sub(1, #TRANSPORT_STRING) == TRANSPORT_STRING then return value:sub(#TRANSPORT_STRING + 1), nil end
+        if value:sub(1, #TRANSPORT_PREFIX) == TRANSPORT_PREFIX then return nil, "unknown_transport_token" end
+        return value, nil
+    end
+    if kind ~= "table" then return value, nil end
+    seen = seen or {}
+    if seen[value] ~= nil then return nil, "transport_cycle" end
+    seen[value] = true
+    local out = {}
+    for key, child in pairs(value) do
+        local decodedKey, keyErr = TransportDecodeValue(key, seen)
+        if keyErr ~= nil then seen[value] = nil; return nil, keyErr end
+        local decodedChild, childErr = TransportDecodeValue(child, seen)
+        if childErr ~= nil then seen[value] = nil; return nil, childErr end
+        out[decodedKey] = decodedChild
+    end
+    seen[value] = nil
+    return out, nil
+end
+
+function P:EncodePhysicalEnvelope(raw)
+    if type(raw) ~= "table" then return nil, "transport_raw_type:" .. tostring(type(raw)) end
+    return TransportEncodeValue(raw)
+end
+
+function P:DecodePhysicalEnvelope(raw)
+    if type(raw) ~= "table" then return nil, "transport_raw_type:" .. tostring(type(raw)) end
+    local meta = type(raw.__rsmeta) == "table" and raw.__rsmeta or nil
+    local framework = meta and tonumber(meta.framework) or nil
+    local transport = meta and tonumber(meta.transportVersion) or nil
+    if framework ~= nil and framework >= 3 then
+        if transport ~= tonumber(self.TransportContractVersion) then
+            return nil, "transport_contract:" .. tostring(transport) .. ">" .. tostring(self.TransportContractVersion)
+        end
+        return TransportDecodeValue(raw)
+    end
+    -- 中文维护注释：Framework2/无 metadata 的历史存档没有物理哨兵，保持原样进入既有 legacy/schema 迁移。
+    -- transportVersion 单独出现而 framework 缺失属于损坏 envelope，不猜测恢复。
+    if transport ~= nil then return nil, "transport_without_framework" end
+    return raw, nil
 end
 
 local function NormalizeId(value)
@@ -690,6 +771,12 @@ local function DecodeValue(store, raw)
         return value, nil
     end
     if type(raw) == "table" and raw.payload ~= nil then return raw.payload, nil end
+    -- 中文维护注释（Framework2 RU 兼容）：普通 Store 只要带 __rsmeta，就一定是
+    -- Persistence 自己写出的 `{ payload = Domain, __rsmeta = ... }` envelope。RU 会把
+    -- `payload={ onlyFalse=false }` 先删掉 false，再把空 payload 表也删掉；此时不能把
+    -- `__rsmeta` 整个误当成 Domain。把它还原成空 Domain 只恢复“外壳语义”，真正丢失
+    -- 的 default=true -> false 字段仍必须在后续用旧指纹精确证明，绝不在这里猜值。
+    if type(raw) == "table" and type(raw.__rsmeta) == "table" then return {}, nil end
     return raw, nil
 end
 
@@ -715,6 +802,7 @@ EncodeValue = function(store, value, periodId, scopeFingerprint)
         periodId = periodId,
         scopeBindingContract = store.scope == SCOPE.Character and P.ScopeBindingContractVersion or nil,
         scopeIdentityFingerprint = store.scope == SCOPE.Character and NonEmptyText(scopeFingerprint) or nil,
+        transportVersion = P.TransportContractVersion, -- 中文维护注释：数值字段不会被 RU false/空表省略，用于 LoadData 边界决定是否还原物理哨兵；旧 Framework2 无此字段。
     }
     return raw, nil
 end
@@ -731,6 +819,69 @@ local function DefaultValue(store)
     return DeepCopy(value), nil
 end
 
+-- Framework2 historical bridge for the exact RU serializer behavior that
+-- motivated Transport v1. SaveData can remove a `false` field / empty table and
+-- then remove its now-empty parent table. For a plain Store we rebuild only
+-- serializer-removable values already declared by the Store default: missing
+-- default=false stays false, missing default={} stays empty, while a missing
+-- default=true is tried as false because persisted true would survive RU.
+--
+-- 中文维护边界：这里只处理无自定义 encode/decode 的普通 Store，而且只读取 Store
+-- 自己声明的 default=true 叶子；不扫描 Feature/业务注册表，不枚举未知字段。候选会先
+-- 重新经过当前 Store canonicalizer，再与磁盘中已经盖章的旧 fingerprint **完全匹配**。
+-- 任一条件不成立都返回 nil，让原来的完整性 fence 继续 fail-closed。该逻辑只在旧
+-- Framework<=2 的“当前 Integrity v4 指纹不匹配”冷路径运行，不进入 Tick/事件热路径。
+function P:RebuildFramework2SerializerOmissions(store, decoded, stampedFingerprint, raw)
+    if type(store) ~= "table" or type(raw) ~= "table" or type(raw.__rsmeta) ~= "table" then return nil, nil end
+    if type(store.encode) == "function" or type(store.decode) == "function" then return nil, nil end
+    local framework = tonumber(raw.__rsmeta.framework) or 0
+    if framework < 1 or framework > 2 then return nil, nil end
+
+    local defaults = DefaultValue(store)
+    if type(defaults) ~= "table" then return nil, nil end
+    local source = type(raw.payload) == "table" and raw.payload or (type(decoded) == "table" and decoded or {})
+    local recovered = DeepCopy(source)
+    local restored = 0
+    local limit = 64 -- 中文维护注释：仅为防御未来异常超大 schema；超过上限立即放弃恢复而不是扩大冷启动 CPU。
+
+    local function Restore(defaultNode, sourceNode, outputNode)
+        if restored > limit or type(defaultNode) ~= "table" or type(outputNode) ~= "table" then return end
+        local sourceTable = type(sourceNode) == "table" and sourceNode or nil
+        for key, defaultValue in pairs(defaultNode) do
+            if restored > limit then return end
+            local sourceValue = sourceTable ~= nil and sourceTable[key] or nil
+            if sourceValue == nil and type(defaultValue) == "boolean" then
+                -- 中文维护注释：RU 只会吞 false，不会吞 true。default=false 缺失直接复原 false；
+                -- default=true 缺失只“尝试”为 false，最终仍由旧 fingerprint 决定是否真实成立。
+                outputNode[key] = false
+                restored = restored + 1
+            elseif sourceValue == nil and type(defaultValue) == "table" and next(defaultValue) == nil then
+                -- 中文维护注释：空表是 RU 第二个已实证丢失形态。这里只恢复 Store default 明确声明的空表；
+                -- 动态未知表不在 Core 猜测，避免把业务 nil 强制变成 `{}`。
+                outputNode[key] = {}
+                restored = restored + 1
+            elseif type(defaultValue) == "table" then
+                local child = type(sourceValue) == "table" and DeepCopy(sourceValue) or {}
+                local before = restored
+                Restore(defaultValue, sourceValue, child)
+                if restored > before then outputNode[key] = child end
+            end
+        end
+    end
+
+    Restore(defaults, source, recovered)
+    if restored < 1 or restored > limit then return nil, nil end
+
+    local historicalCanonical = self:CanonicalIntegrityValue(store, recovered)
+    if type(historicalCanonical) ~= "table" then return nil, nil end
+    local fingerprint = self:FingerprintCanonicalValue(store, historicalCanonical)
+    local matched = fingerprint ~= nil and tostring(fingerprint) == tostring(stampedFingerprint)
+    store.lastHistoricalRecoveryProbe = "framework2_serializer_omissions=" .. tostring(restored)
+        .. "/matched=" .. tostring(matched == true)
+    if matched ~= true then return nil, nil end
+    return historicalCanonical, recovered
+end
+
 -- Only full-replacement journal shards may repair a fence created while
 -- READING a corrupt inactive copy. Future-schema and transient LoadData errors
 -- are deliberately excluded: overwriting those could destroy data the current
@@ -743,6 +894,7 @@ local function IsRecoverableReplacementFence(reason)
         or reason:match("^envelope_integrity_failed:") ~= nil
         or reason:match("^encoded_load_rejected:") ~= nil
         or reason:match("^decoded_load_rejected:") ~= nil
+        or reason:match("^transport_decode_failed:") ~= nil
 end
 
 -- Reliability v3: optional post-write readback verification for critical
@@ -779,6 +931,17 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
     if loadErr ~= nil then return Fail("readback_load_failed:" .. tostring(loadErr)) end
     if raw == nil then return Fail("readback_missing") end
     if type(raw) ~= "table" then return Fail("readback_raw_type:" .. tostring(type(raw))) end
+
+    -- 中文维护注释：立即回读必须先验证“物理 envelope”预算，再按 Framework3 transport 还原。
+    -- 完整性/Store decode 永远只看逻辑 raw，防止物理哨兵泄漏进业务层或把 RU 的 false/空表省略误判为用户恢复默认值。
+    local physicalInspection = self:InspectPayload(raw, store.encodedBudget)
+    store.lastPhysicalInspection = physicalInspection
+    if type(physicalInspection) ~= "table" or physicalInspection.ok ~= true then
+        return Fail("readback_physical_payload_rejected:" .. tostring(physicalInspection and physicalInspection.reason or "unknown"))
+    end
+    local decodedRaw, transportErr = self:DecodePhysicalEnvelope(raw)
+    if decodedRaw == nil then return Fail("readback_transport_decode_failed:" .. tostring(transportErr or "unknown")) end
+    raw = decodedRaw
 
     local rawInspection = self:InspectPayload(raw, store.encodedBudget)
     if type(rawInspection) ~= "table" or rawInspection.ok ~= true then
@@ -1031,6 +1194,36 @@ function P:LoadStore(id, options)
         return false, nil, store.lastError
     end
 
+    -- 中文维护注释：Framework3 的第一条读取边界必须是物理预算 + transport decode。
+    -- 这一步位于 metadata/canonical/decode/apply 之前；因此所有 Feature 仍只接触原始 Lua boolean/table，
+    -- 并且未来版本/损坏 transport 会 fail-closed，不会被当成“空存档”后用默认值覆盖。
+    local physicalLoadInspection = self:InspectPayload(raw, store.encodedBudget)
+    store.lastPhysicalInspection = physicalLoadInspection
+    if type(physicalLoadInspection) ~= "table" or physicalLoadInspection.ok ~= true then
+        store.loaded = true
+        store.loadStatus = "encoded_load_rejected"
+        store.lastError = "physical_load_rejected:" .. tostring(physicalLoadInspection and physicalLoadInspection.reason or "unknown")
+        store.writeFenced = true
+        store.writeFenceReason = store.lastError
+        self.stats.encodedLoadRejects = (tonumber(self.stats.encodedLoadRejects) or 0) + 1
+        self.stats.loadFailures = (tonumber(self.stats.loadFailures) or 0) + 1
+        Emit("error", "STORE_PHYSICAL_LOAD_REJECTED", "读取到的物理存档外壳超过安全预算，已在 transport 解码前阻止读取", {
+            store = store.id, reason = physicalLoadInspection and physicalLoadInspection.reason or "unknown",
+        })
+        return false, nil, store.lastError
+    end
+    local transportRaw, transportErr = self:DecodePhysicalEnvelope(raw)
+    if transportRaw == nil then
+        store.loaded = true
+        store.loadStatus = "transport_decode_failed"
+        store.lastError = "transport_decode_failed:" .. tostring(transportErr or "unknown")
+        store.writeFenced = true
+        store.writeFenceReason = store.lastError
+        self.stats.loadFailures = (tonumber(self.stats.loadFailures) or 0) + 1
+        Emit("error", "STORE_TRANSPORT_DECODE_FAILED", "Framework3 物理存档传输编码无法还原，已启用写保护", { store = store.id, error = tostring(transportErr or "unknown") })
+        return false, nil, store.lastError
+    end
+    raw = transportRaw
 
     -- Reliability v4 validates the encoded envelope on READ as well as WRITE.
     -- A serializer-truncated or otherwise malformed table must never reach a
@@ -1058,7 +1251,7 @@ function P:LoadStore(id, options)
         local metaFramework = tonumber(meta.framework)
         local metaContract = tonumber(meta.contractVersion)
         local metaReliability = tonumber(meta.reliabilityContract)
-        if metaFramework ~= nil and metaFramework > (tonumber(self.FrameworkVersion) or 2) then mismatch = "framework"
+        if metaFramework ~= nil and metaFramework > (tonumber(self.FrameworkVersion) or 3) then mismatch = "framework"
         elseif metaReliability ~= nil and metaReliability > (tonumber(self.ReliabilityContractVersion) or 0) then mismatch = "reliabilityContract"
         elseif metaContract ~= nil and metaContract > (tonumber(store.contractVersion) or 1) then mismatch = "contractVersion"
         elseif NonEmptyText(meta.store) ~= nil and tostring(meta.store) ~= tostring(store.id) then mismatch = "store"
@@ -1242,16 +1435,29 @@ function P:LoadStore(id, options)
                         -- stamped fingerprint byte-for-byte and the independent v6+
                         -- envelope seal already verified above.
                         local recoveredHistoricalCanonical = false
-                        if envelopeAdvertised == true and store.allowIntegrityUpgrade == true
-                            and type(store.rebuildCanonicalForIntegrity) == "function" then
+                        if envelopeAdvertised == true and store.allowIntegrityUpgrade == true then
                             local decodedInspection = self:InspectPayload(decoded, store.budget)
                             if type(decodedInspection) == "table" and decodedInspection.ok == true then
-                                -- Contract v2 passes the original raw envelope as a fourth argument. Existing
-                                -- hooks remain source-compatible (Lua ignores extra args). A hook may optionally
-                                -- return a second table: the recovered CURRENT Domain value. This is necessary when
-                                -- decode() cannot distinguish an RU-omitted false from a missing default-true field.
+                                -- 中文维护注释（恢复顺序）：先尝试 Core 能严格证明的 Framework2
+                                -- `false/空表` 省略（含 default=true 被用户关成 false）；匹配不上才交给 Store 自己的 typed/custom
+                                -- recovery hook。两条路径最终都必须重算并命中同一个旧 fingerprint，Core
+                                -- 不会因为“看起来像 RU 省略”就绕过完整性门。
                                 local rebuiltOk, historicalCanonical, recoveredDomain = pcall(
-                                    store.rebuildCanonicalForIntegrity, DeepCopy(decoded), stampedFingerprint, canonical, DeepCopy(raw))
+                                    self.RebuildFramework2SerializerOmissions, self, store, DeepCopy(decoded),
+                                    stampedFingerprint, DeepCopy(raw))
+                                if rebuiltOk ~= true or type(historicalCanonical) ~= "table" then
+                                    if type(store.rebuildCanonicalForIntegrity) == "function" then
+                                        -- Contract v2 passes the original raw envelope as a fourth argument. Existing
+                                        -- hooks remain source-compatible (Lua ignores extra args). A hook may optionally
+                                        -- return a second table: the recovered CURRENT Domain value. This is necessary when
+                                        -- decode() cannot distinguish an RU-omitted false from a missing default-true field.
+                                        rebuiltOk, historicalCanonical, recoveredDomain = pcall(
+                                            store.rebuildCanonicalForIntegrity, DeepCopy(decoded), stampedFingerprint,
+                                            canonical, DeepCopy(raw))
+                                    else
+                                        rebuiltOk, historicalCanonical, recoveredDomain = false, nil, nil
+                                    end
+                                end
                                 if rebuiltOk == true and type(historicalCanonical) == "table" then
                                     local historicalFingerprint = self:FingerprintCanonicalValue(store, historicalCanonical)
                                     if historicalFingerprint ~= nil and tostring(historicalFingerprint) == tostring(stampedFingerprint) then
@@ -1746,6 +1952,15 @@ function P:LoadStore(id, options)
         Emit("info", "STORE_PERIOD_RESET", "独立存档跨周期重置", { store = store.id, oldPeriod = storedPeriod, newPeriod = currentPeriod })
     end
 
+    if deferredSaveReason == nil and meta ~= nil
+        and (tonumber(meta.framework) or 0) < (tonumber(self.FrameworkVersion) or 3) then
+        -- 中文维护注释：旧 Framework2 只有在完整性、schema migration、周期 reset 全部
+        -- 成功后才排队升级物理 transport；若前面已有更强的 resave 原因则不覆盖，因为
+        -- 任一当前 SaveValue 都会自动写 Framework3。这样不会改变历史迁移的事务优先级。
+        deferredSaveReason = "framework_transport_upgrade"
+        deferredSaveDelayMs = 0
+    end
+
     -- Migration and period-reset transforms are also business code and may grow
     -- the payload. Re-check the final value immediately before Domain apply.
     local finalDecodedInspection = self:InspectPayload(value, store.budget)
@@ -1974,9 +2189,31 @@ function P:SaveValue(id, value, options)
         return false, store.lastError
     end
 
+    -- 中文维护注释：完整性指纹已经对逻辑 raw/Domain 完成；直到真正跨 SaveData 边界时才做物理 transport。
+    -- 这样 boolean false/空表在 RU 中不会消失，同时所有 Store codec、canonical、迁移和 Feature Apply 都保持原语义。
+    local physicalRaw, transportErr = self:EncodePhysicalEnvelope(raw)
+    if physicalRaw == nil then
+        store.lastError = "transport_encode_failed:" .. tostring(transportErr or "unknown")
+        self.stats.saveFailures = (tonumber(self.stats.saveFailures) or 0) + 1
+        Emit("error", "STORE_TRANSPORT_ENCODE_FAILED", "独立存档物理传输编码失败，已阻止 SaveData", { store = store.id, error = tostring(transportErr or "unknown") })
+        return false, store.lastError
+    end
+    local physicalInspection = self:InspectPayload(physicalRaw, store.encodedBudget)
+    store.lastPhysicalInspection = physicalInspection
+    if type(physicalInspection) ~= "table" or physicalInspection.ok ~= true then
+        store.lastError = "physical_payload_rejected:" .. tostring(physicalInspection and physicalInspection.reason or "unknown")
+        self.stats.encodedPayloadRejected = (tonumber(self.stats.encodedPayloadRejected) or 0) + 1
+        self.stats.saveFailures = (tonumber(self.stats.saveFailures) or 0) + 1
+        Emit("error", "STORE_PHYSICAL_PAYLOAD_REJECTED", "物理传输编码后的存档超过 SaveData 安全预算，已阻止写入", {
+            store = store.id, reason = physicalInspection and physicalInspection.reason or "unknown",
+        })
+        return false, store.lastError
+    end
+
     local ok, saveErr
     if type(store.save) == "function" then
-        local callOk, result, customErr = pcall(store.save, resolvedKey, raw, DeepCopy(value), options)
+        -- 中文维护注释：custom save 也属于物理写入边界，因此必须收到 transport 后 envelope；第三参数仍保留原 Domain 快照供事务型分片实现使用。
+        local callOk, result, customErr = pcall(store.save, resolvedKey, physicalRaw, DeepCopy(value), options)
         if callOk then
             ok = result == true
             saveErr = customErr
@@ -1985,7 +2222,7 @@ function P:SaveValue(id, value, options)
             saveErr = result
         end
     else
-        ok, saveErr = S.Api:SaveData(resolvedKey, raw)
+        ok, saveErr = S.Api:SaveData(resolvedKey, physicalRaw)
     end
     if ok ~= true then
         -- A failed SaveData return does not prove the physical key was untouched.
@@ -3084,6 +3321,8 @@ function P:Describe()
         registrationBudgetFailed = registrationBudgetFailed,
         unloadedDirty = unloadedDirty,
         barrierPending = barrierPending,
+        frameworkVersion = self.FrameworkVersion,
+        transportContractVersion = self.TransportContractVersion,
         reliabilityContractVersion = self.ReliabilityContractVersion,
         integrityContractVersion = self.IntegrityContractVersion,
         legacyIntegrityContractVersion = self.LegacyIntegrityContractVersion,

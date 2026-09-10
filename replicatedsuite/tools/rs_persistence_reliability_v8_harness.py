@@ -108,7 +108,7 @@ local legacyKey = P.V3KeyPrefix .. "legacy_settings"
 local legacyRaw = {{
   payload = {{ opacity = 0.82, x = 311.25, id = 100 }},
   __rsmeta = {{
-    framework = P.FrameworkVersion, store = "v3.v8.legacy_settings", owner = "v3.v8",
+    framework = 2, store = "v3.v8.legacy_settings", owner = "v3.v8",
     contractVersion = 3, lifetime = "Permanent", scope = "Account", schema = 1,
     periodId = "permanent", reliabilityContract = 7, integrityVersion = 1,
   }},
@@ -142,7 +142,7 @@ local criticalKey = P.V3KeyPrefix .. "critical"
 local criticalRaw = {{
   payload = {{ opacity = 0.82, id = 200 }},
   __rsmeta = {{
-    framework = P.FrameworkVersion, store = "v3.v8.critical", owner = "v3.v8",
+    framework = 2, store = "v3.v8.critical", owner = "v3.v8",
     contractVersion = 3, lifetime = "Permanent", scope = "Account", schema = 1,
     periodId = "permanent", reliabilityContract = 7, integrityVersion = 1,
   }},

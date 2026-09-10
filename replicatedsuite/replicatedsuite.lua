@@ -94,7 +94,7 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.193-persistence-schema-canonical-recovery" -- 中文维护注释：.18.193 只修复 Activities schema7 与 DeathReview schema1/codec1 的已证实 canonical-generation 演进事故；通过 Store-owned 字段投影、schema bump 与 exact old/new pair 恢复解除 Fence，不改变 Gameplay Authority、Native API 或高频 Runtime。
+S.BuildTag = "v3-m1.16.0.18.196-navigation-development-order" -- 中文维护注释：.18.196 只重排左侧开发导航：FeatureRegistry 判定 complete/incomplete，Router 先完成后未完成，Shell 仅在 navigationTitle 后附“（未完成）”；route、Feature id、Store、生命周期和业务 Authority 全部保持兼容。
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}
 S.SaveKey = tostring(S.Config.SaveKey or "replicated_suite_v1")

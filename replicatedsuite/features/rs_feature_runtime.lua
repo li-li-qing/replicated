@@ -62,6 +62,57 @@ local function ApplyPreferences(value)
     F.preferences = NormalizePreferences(value)
 end
 
+-- 中文维护注释（Framework2 功能总开关兼容）：`v3.features` 是动态 key map，Store
+-- default 必须保持空表，因此 Core 无法从 default 推导“哪个 feature=false 被 RU 吞掉”。
+-- 对默认开启 Feature，这个 false 会改变下一次登录的真实生命周期，必须单独恢复。
+-- 这里最多枚举当前 Registry 中 defaultEnabled=true 且磁盘缺失的子集；候选只有在
+-- **完全复现旧 stamped fingerprint** 时才返回给 Persistence。没有精确命中就继续
+-- fail-closed，绝不把“缺失”直接猜成 false。当前默认开启项很少，且本函数只在旧
+-- Framework2 + Integrity mismatch 冷路径运行，不增加任何 Feature Tick/事件成本。
+local function RebuildFeaturePreferenceCanonical(decoded, stampedFingerprint, _, raw)
+    if type(raw) ~= "table" or type(raw.__rsmeta) ~= "table" then return nil end
+    local framework = tonumber(raw.__rsmeta.framework) or 0
+    if framework < 1 or framework > 2 then return nil end
+    local store = P:GetStore(F.preferenceStoreId)
+    if type(store) ~= "table" then return nil end
+
+    local base = type(raw.payload) == "table" and NormalizePreferences(raw.payload)
+        or (type(decoded) == "table" and NormalizePreferences(decoded) or {})
+    local missing = {}
+    for _, meta in ipairs(Registry:List()) do
+        if meta.defaultEnabled == true and base[meta.id] == nil then missing[#missing + 1] = meta.id end
+    end
+    if #missing < 1 or #missing > 12 then return nil end
+
+    local candidate = S.Utils and type(S.Utils.DeepCopy) == "function" and S.Utils.DeepCopy(base) or {}
+    if next(candidate) == nil then for key, value in pairs(base) do candidate[key] = value end end
+    local matched = nil
+    local probes = 0
+    local function Probe(index, selected)
+        if matched ~= nil then return end
+        if index > #missing then
+            if selected < 1 then return end
+            probes = probes + 1
+            local fingerprint = P:FingerprintCanonicalValue(store, candidate)
+            if fingerprint ~= nil and tostring(fingerprint) == tostring(stampedFingerprint) then
+                matched = {}
+                for key, value in pairs(candidate) do matched[key] = value end
+            end
+            return
+        end
+        Probe(index + 1, selected)
+        if matched ~= nil then return end
+        candidate[missing[index]] = false
+        Probe(index + 1, selected + 1)
+        candidate[missing[index]] = nil
+    end
+    Probe(1, 0)
+    store.lastHistoricalRecoveryProbe = "feature_default_enabled_false_candidates=" .. tostring(probes)
+        .. "/matched=" .. tostring(matched ~= nil)
+    if matched == nil then return nil end
+    return matched, matched
+end
+
 if type(P.RegisterV3Store) == "function" and P:GetStore(F.preferenceStoreId) == nil then
     local store, err = P:RegisterV3Store({
         id = F.preferenceStoreId,
@@ -75,6 +126,7 @@ if type(P.RegisterV3Store) == "function" and P:GetStore(F.preferenceStoreId) == 
         default = function() return {} end,
         get = function() return NormalizePreferences(F.preferences) end,
         apply = ApplyPreferences,
+        rebuildCanonicalForIntegrity = RebuildFeaturePreferenceCanonical,
     })
     if store == nil then
         Emit("error", "FEATURE_PREF_STORE_REGISTER_FAILED", "新版功能开关存档注册失败", { error = tostring(err) })

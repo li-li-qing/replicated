@@ -94,7 +94,7 @@ local legacyPayload = {{
   }},
 }}
 storage[P.V3KeyPrefix .. "buff_display"] = {{ payload = legacyPayload, __rsmeta = {{
-  framework = P.FrameworkVersion, store = "v3.buff_display", owner = "v3.buff_display",
+  framework = 2, store = "v3.buff_display", owner = "v3.buff_display",
   contractVersion = 3, lifetime = "Permanent", scope = "Account", schema = 4,
   periodId = "permanent", reliabilityContract = P.ReliabilityContractVersion,
   integrityVersion = P.IntegrityContractVersion,

@@ -10,7 +10,7 @@ from rs_lua_runner import RUNNER  # 中文维护注释：复用项目统一 Lua 
 ROOT = pathlib.Path(__file__).resolve().parents[1]  # 中文维护注释：项目根目录是所有源码断言的唯一 Authority，禁止依赖绝对开发机路径。
 PERSISTENCE = ROOT / "core/rs_persistence.lua"  # 中文维护注释：读取真实 Persistence Core，验证 recovery/save 优先级没有被测试替身掩盖。
 ACTIVITY_STORE = ROOT / "features/life/activities/rs_activity_store.lua"  # 中文维护注释：Activities Store 是 6271E40B→7E85D975 实机事故的业务 Authority。
-DEATH_STORE = ROOT / "features/combat/death_review/rs_death_review_store.lua"  # 中文维护注释：DeathReview Store 用于静态钉死 014277AB→0CF5BCC1 与 schema2 边界。
+DEATH_STORE = ROOT / "features/combat/death_review/rs_death_review_store.lua"  # 中文维护注释：DeathReview Store 同时验证 schema2 边界、Framework2 通用表形 exact-recovery 与旧 014277AB→0CF5BCC1 最终兜底。
 
 
 def require(name: str, condition: bool) -> None:  # 中文维护注释：所有源码契约通过稳定名称 fail-fast，便于 Agent/CI 精确定位回归项。
@@ -22,14 +22,15 @@ def require(name: str, condition: bool) -> None:  # 中文维护注释：所有�
 def source_checks() -> None:  # 中文维护注释：静态检查钉死生产源码中的 schema/old-new pair/hook 注册，防止后续重构误删冷路径安全门。
     persistence = PERSISTENCE.read_text(encoding="utf-8-sig")  # 中文维护注释：只读 Core 源码验证完整性恢复的保存优先级，不执行写操作。
     activities = ACTIVITY_STORE.read_text(encoding="utf-8-sig")  # 中文维护注释：只读 Activities Store 验证 schema8 与 Store-owned window projection。
-    death = DEATH_STORE.read_text(encoding="utf-8-sig")  # 中文维护注释：只读 DeathReview Store 验证 schema2 与 codec1 exact pair。
+    death = DEATH_STORE.read_text(encoding="utf-8-sig")  # 中文维护注释：只读 DeathReview Store 验证 schema2 Framework2 serializer recovery、codec1 与旧 exact pair 的分层边界。
     require("activity_schema8", "local STORE_SCHEMA = 8" in activities and "local LEGACY_SCHEMA = 7" in activities)  # 中文维护注释：Activities 当前/上一代 schema 必须明确分世代，不能继续 schema7 内演进 canonical。
     require("activity_store_owned_projection", "CURRENT_WINDOW_KEYS" in activities and "HISTORICAL_V7_WINDOW_KEYS" in activities and "ProjectWindow" in activities)  # 中文维护注释：共享 Floating 只提供归一语义，Store 必须自己决定持久化字段形状。
     require("activity_exact_pair", 'KNOWN_V7_STAMP = "6271E40B"' in activities and 'KNOWN_V8_CANONICAL = "7E85D975"' in activities)  # 中文维护注释：实机 old/new Hash 必须双重精确匹配，不允许 wildcard mismatch recovery。
     require("activity_recovery_hooks", "rebuildCanonicalForIntegrity = function" in activities and "recoverKnownLegacyCanonical = RecoverKnownV7Canonical" in activities)  # 中文维护注释：exact historical recovery 必须先于 known-pair 最终桥且都由 Store 注册。
     require("death_schema2", "local INDEX_SCHEMA = 2" in death and "PersistenceIndexSchemaContractVersion = INDEX_SCHEMA" in death)  # 中文维护注释：DeathReview Index 已进入 schema2，record 分片 schema1 不应被误改。
-    require("death_exact_pair", '["014277AB"]' in death and 'currentFingerprint = "0CF5BCC1"' in death)  # 中文维护注释：2026-09-09 codec1 实机 pair 必须继续被精确 allowlist 约束。
-    require("death_historical_router", "RebuildHistoricalIndexCanonical" in death and "rebuildCanonicalForIntegrity = RebuildHistoricalIndexCanonical" in death)  # 中文维护注释：pre-codec 与 schema1 codec1 两代历史候选必须由统一冷路径路由区分。
+    require("death_schema2_framework2_recovery", "PersistenceSchema2Framework2RecoveryContractVersion = 1" in death and "RebuildFramework2Schema2CodecV1Canonical" in death and "schema2fw2_codec1/ipairs=" in death)  # 中文维护注释：`.18.195` 必须以通用结构恢复覆盖 schema2+Framework2 sequence/map 漂移，禁止继续为不同用户内容追加 Hash 白名单。
+    require("death_exact_pair", '["014277AB"]' in death and 'currentFingerprint = "0CF5BCC1"' in death)  # 中文维护注释：2026-09-09 schema1 codec1 实机 pair 仍作为更早世代最终 allowlist，不能因新通用路径而放宽成 wildcard。
+    require("death_historical_router", "RebuildHistoricalIndexCanonical" in death and "rebuildCanonicalForIntegrity = RebuildHistoricalIndexCanonical" in death)  # 中文维护注释：pre-codec、schema1 codec1、schema2 Framework2 三代候选必须由统一冷路径路由按 metadata 分流。
     require("integrity_restamp_priority", "if deferredSaveReason == nil then -- 中文维护注释：若前面已经发生 integrity/historical/known-stamp recovery" in persistence)  # 中文维护注释：schema migration 不得覆盖 integrity recovery 的 0ms 立即重盖语义。
 
 
@@ -75,7 +76,7 @@ historical.widgetWindow.savedLogicalWidth=nil; historical.widgetWindow.savedLogi
 local oldFp = assert(P:FingerprintCanonicalValue(store, historical)) -- 中文维护注释：用真实 durable canonical Hash 生成 synthetic schema7 旧盖章。
 local newFp = assert(P:FingerprintCanonicalValue(store, current)) -- 中文维护注释：用真实 current schema8 canonical Hash 证明新字段会改变指纹。
 assert(oldFp ~= newFp, "activity_schema_generations_differ") -- 中文维护注释：若两代 Hash 未分离，本测试无法证明 schema bump 的必要性，应直接失败。
-local raw = { payload=copy(decoded), __rsmeta={ framework=P.FrameworkVersion, store="v3.activities", owner="v3.activities", contractVersion=store.contractVersion, lifetime=P.Lifetime.Permanent, scope=P.Scope.Account, schema=7, periodId="permanent", reliabilityContract=P.ReliabilityContractVersion, integrityVersion=P.IntegrityContractVersion, encodedFingerprint=oldFp, envelopeIntegrityVersion=P.EnvelopeIntegrityContractVersion } } -- 中文维护注释：磁盘保留同一业务数据但 stamp 认证 schema7 historical projection，模拟真实 canonicalizer 演进事故。
+local raw = { payload=copy(decoded), __rsmeta={ framework=2, store="v3.activities", owner="v3.activities", contractVersion=store.contractVersion, lifetime=P.Lifetime.Permanent, scope=P.Scope.Account, schema=7, periodId="permanent", reliabilityContract=P.ReliabilityContractVersion, integrityVersion=P.IntegrityContractVersion, encodedFingerprint=oldFp, envelopeIntegrityVersion=P.EnvelopeIntegrityContractVersion } } -- 中文维护注释：磁盘保留同一业务数据但 stamp 认证 schema7 historical projection，模拟真实 canonicalizer 演进事故。
 raw.__rsmeta.envelopeFingerprint = assert(P:FingerprintEnvelopeIntegrity(raw)) -- 中文维护注释：先生成合法独立 Envelope Seal，确保恢复只处理业务 canonical mismatch 而不是元数据损坏。
 storage[P.V3KeyPrefix .. "activities"] = copy(raw) -- 中文维护注释：把旧档直接放入模拟物理 Store，不通过 current SaveStore 覆盖其历史 stamp。
 local ok, _, err = P:LoadStore("v3.activities") -- 中文维护注释：执行完整生产 Load 路径：seal→decode→current hash→historical exact proof→migrate→Apply。

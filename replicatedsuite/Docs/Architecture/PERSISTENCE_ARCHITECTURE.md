@@ -313,6 +313,17 @@ Persistence 增加 `HistoricalCanonicalRecoveryContractVersion=1`，并允许单
 
 `.18.146` 的 terminal-load memoization 保留：同 generation terminal+fenced failure 仍只产生一次物理 Load/incident；历史精确恢复成功不是 terminal failure，会进入正常 apply + restamp 路径。
 
+## 0.20 `.18.195` DeathReview schema2 / Framework2 Sequence-Map Exact Recovery
+
+`.18.194` RU Fresh Reload 报 `v3.death_review:73DF7418>224E5B9D`。源码与版本边界复核确认：DeathReview 在 `.18.193` 已升为 Index schema2/codec1，但当时 Persistence 物理 envelope 仍可能是 Framework2；因此 Transport v1 只能保护**之后的新写入**，无法自动修复已经在磁盘上发生的 sequence/map 表形漂移。
+
+1. **真实缺口**：codec1 的 `history.entries` 正常 Domain 是 sequence，`NormalizeIndex()` 故意使用 `ipairs()` 保持业务顺序 Authority。RU 若把第二条及后续仍存在摘要放到稀疏数字键或 map/string key，`ipairs()` 会提前结束，current canonical 少掉摘要，Hash 随每个用户实际 history 内容不同。旧 `014277AB -> 0CF5BCC1` known pair 因此不是长期解法。
+2. **Store-owned 通用恢复**：只有 `framework=2 + schema=2 + codec=1` 且 Envelope Seal/decode/budget 已通过、current Integrity v4 mismatch 后，DeathReview historical hook 才用 bounded `pairs()` 收集磁盘仍存在的 summary（最多 30 条），按 `serial/storageId` 稳定排序并重建 sequence；settings 仍来自正式 codec decoder，widgetWindow 仍由 schema2 Store-owned projection Normalize。
+3. **旧 stamp 是唯一信任 Authority**：重建值再次调用正式 `EncodeIndex()`，Persistence Core 重新计算 durable fingerprint。候选必须与磁盘已经 stamped 的旧 `encodedFingerprint` **完全一致**才可 Apply。真实摘要已删除、内容变化、未知字段/codec/schema 均不能靠该路径恢复。
+4. **Framework3 明确排除**：`framework>=3` 已有 Transport v1；如果此世代仍出现 fingerprint mismatch，视为真实损坏/新 bug，继续 Fence，不允许历史兼容器掩盖。
+5. **一次性升级**：若 exact recovery 证明“逻辑 canonical 未变、只发生表示漂移”，Store 状态为 `verified_canonical_recovered_representation`，无需改 Integrity stamp，只排队 `framework_transport_upgrade`。保存后物理 envelope 成为 Framework3；第二次 Fresh Reload 必须普通 `verified_canonical`。
+6. **性能/耦合**：`pairs()` 仅在单 Store mismatch 的 Load 冷路径运行，最多 30 行；不读取 record shard、不建立第二 History Authority、不增加 Tick/Scheduler/CombatEventBus 监听。
+
 ## 0.19 `.18.193` Activities / DeathReview Canonical Generation Boundary
 
 `.18.192` RU 诊断同时出现 `v3.activities:6271E40B>7E85D975` 与 `v3.death_review:014277AB>0CF5BCC1`，并伴随 `toggle_binding_failed` 页面事务回滚。根因不是 Toggle：两个永久 Store 的窗口 canonical 跟随共享 `FloatingSurface` 增长，但 schema 没有表达 canonical generation 变化。Store 被 Integrity v4 Fence 后，RSUI Persistent Binding 的 `PrepareRead` 正确 fail-closed，页面构建失败只是上游存档故障的可见结果。

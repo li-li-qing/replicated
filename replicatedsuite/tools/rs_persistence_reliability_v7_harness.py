@@ -83,7 +83,7 @@ local migrationState = {{ value = 0 }}
 local migrationKey = P.V3KeyPrefix .. "migration_apply_fail"
 storage[migrationKey] = {{
   payload = {{ value = 7 }},
-  __rsmeta = {{ framework = P.FrameworkVersion, store = "v3.v7.migration_apply_fail", owner = "v3.v7",
+  __rsmeta = {{ framework = 2, store = "v3.v7.migration_apply_fail", owner = "v3.v7",
     contractVersion = 3, lifetime = P.Lifetime.Permanent, scope = P.Scope.Account, schema = 1 }}
 }}
 assert(P:RegisterV3Store({{

@@ -53,6 +53,7 @@ local Shell = V3.Shell
 Shell.navigationCallbackContractVersion = 1
 Shell.NavigationCallbackCaptureContractVersion = 1
 Shell.StateMutationTransactionContractVersion = 1
+Shell.DevelopmentNavigationPresentationContractVersion = 1 -- 中文维护注释：Shell v1 开始只用 navigationTitle 展示“未完成”后缀，页面 title/route/Feature identity 均保持原语义。
 
 local SCROLL_CATEGORY_ORDER = { "home", "combat", "life", "tools" }
 local SYSTEM_ROUTES = { "system.widgets", "system.features", "system.settings", "system.diagnostics" }
@@ -139,7 +140,7 @@ function Shell:BuildScrollableNavigation()
                 local button = RSUI:Button({
                     id = "v3_nav_" .. routeRef.id:gsub("[^%w]", "_"),
                     parent = navParent,
-                    text = routeRef.title,
+                    text = tostring(routeRef.navigationTitle or routeRef.title), -- 中文维护注释：左侧主导航显示开发态标签；页面标题仍由 routeRef.title 保持纯业务名称，避免标签渗透其它 UI。
                     compact = true,
                     onClick = function() return self:Navigate(routeRef.id, { source = "navigation" }) end,
                     slot = { size = "fixed", height = 28, hAlign = "fill" },
@@ -162,7 +163,7 @@ function Shell:BuildSystemNavigation()
         if route ~= nil then
             local routeRef = route
             local button = RSUI:Button({
-                id = "v3_nav_" .. routeRef.id:gsub("[^%w]", "_"), parent = stack, text = routeRef.title, compact = true,
+                id = "v3_nav_" .. routeRef.id:gsub("[^%w]", "_"), parent = stack, text = tostring(routeRef.navigationTitle or routeRef.title), compact = true, -- 中文维护注释：系统导航同样消费专用 navigationTitle；当前系统项均为完成态，因此视觉文本保持原样。
                 onClick = function() return self:Navigate(routeRef.id, { source = "system_navigation" }) end,
                 slot = { size = "fixed", height = 27, hAlign = "fill" },
             })

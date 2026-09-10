@@ -1756,13 +1756,18 @@ PersistStateMutation = function(feature, reason, mutator)
     end, { delayMs = 300, reason = tostring(reason or "feature_mutation") })
 end
 
-local function PersistentState(state, defaults)
-    local out = {}
-    -- Store only fields declared by the Feature's permanent default contract.
-    -- Runtime projection/batch/query state may live beside them in State, but
-    -- must never silently become permanent configuration. Dynamic containers
-    -- (for example blacklist maps) are copied as values at the declared key.
-    for key in pairs(type(defaults) == "table" and defaults or {}) do out[key] = Copy(state[key]) end
+local function PersistentState(state, defaults, explicitKeys)
+    local out, keys = {}, {}
+    for key in pairs(type(defaults) == "table" and defaults or {}) do keys[key] = true end
+    for _, key in ipairs(type(explicitKeys) == "table" and explicitKeys or {}) do
+        key = tostring(key or "")
+        if key ~= "" then keys[key] = true end
+    end
+    -- 中文维护注释：Lua table literal 无法真正声明 `key = nil`，所以仅 pairs(default)
+    -- 不能作为永久字段完整白名单。制作选择、团队角色、整理背包类别等 nullable 配置
+    -- 必须通过 explicitKeys 声明；这里仍只复制白名单，Runtime projection/batch/query
+    -- 状态不会被误写入永久 Store。Authority 仍是 Feature State，Persistence 仅负责快照。
+    for key in pairs(keys) do out[key] = Copy(state[key]) end
     return out
 end
 
@@ -1772,10 +1777,21 @@ local function NewFeature(id, spec)
     feature.ObservationContractVersion = tonumber(spec.observationContractVersion) or 0
     S.Features[id] = feature
     local authority, state = feature.Authority, feature.State
-    RegisterStore(feature.storeId, "v3." .. id, function() return Copy(spec.default or {}) end, function() return PersistentState(state, spec.default) end, function(value)
+    feature._persistentKeys = {}
+    for key in pairs(type(spec.default) == "table" and spec.default or {}) do feature._persistentKeys[key] = true end
+    for _, key in ipairs(type(spec.persistentKeys) == "table" and spec.persistentKeys or {}) do
+        key = tostring(key or "")
+        if key ~= "" then feature._persistentKeys[key] = true end
+    end
+    RegisterStore(feature.storeId, "v3." .. id, function() return Copy(spec.default or {}) end, function() return PersistentState(state, spec.default, spec.persistentKeys) end, function(value)
         if type(spec.apply) == "function" then return spec.apply(value, state) end
         value = type(value) == "table" and value or {}
-        for key, default in pairs(spec.default or {}) do state[key] = value[key] == nil and default or value[key] end
+        -- 中文维护注释：apply 与 get 必须使用同一字段契约。显式 nullable 字段在存档缺失时
+        -- 恢复 nil，而不是保留本会话旧选择；非 nil 默认值继续按原默认恢复。
+        for key in pairs(feature._persistentKeys) do
+            local default = type(spec.default) == "table" and spec.default[key] or nil
+            state[key] = value[key] == nil and Copy(default) or Copy(value[key])
+        end
     end)
     feature.ApiDependencies = spec.apiDependencies or {}
     function authority:Refresh(reason)
@@ -2493,7 +2509,7 @@ local function NormalizeTeamRole(value)
 end
 
 local TeamTools = NewFeature("combat_team_tools", { apiDependencies = { "X2Team:GetRole", "X2Team:SetRole", "X2Unit:GetTargetAbilityTemplates", "X2Unit:UnitName" },
-    state = { role = nil, autoRoleEnabled = true }, default = { role = nil, autoRoleEnabled = true },
+    state = { role = nil, autoRoleEnabled = true }, default = { role = nil, autoRoleEnabled = true }, persistentKeys = { "role" },
     reconcileDemand = AcquireTeamRoleRoster,
     onDisable = ReleaseTeamRoleRoster,
     projection = function(feature)
@@ -3271,8 +3287,8 @@ local function CraftCommands()
 end
 
 local CRAFT_API_DEPENDENCIES = { "X2Craft:GetCraftBaseInfo", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo", "X2Craft:GetCraftTypeByItemType", "X2Bag:Capacity", "X2Bag:GetBagItemInfo" }
-local CraftPlanner = NewFeature("life_craft_planner", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, planItems = {} }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, planItems = {} }, read = CraftRead, projection = CraftProjection, commands = CraftCommands() })
-local CraftAssistant = NewFeature("tools_craft", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, read = CraftRead, projection = CraftProjection, commands = CraftCommands() })
+local CraftPlanner = NewFeature("life_craft_planner", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, planItems = {} }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, planItems = {} }, persistentKeys = { "selectedRecipeKey", "craftType", "itemType" }, read = CraftRead, projection = CraftProjection, commands = CraftCommands() })
+local CraftAssistant = NewFeature("tools_craft", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, persistentKeys = { "selectedRecipeKey", "craftType", "itemType" }, read = CraftRead, projection = CraftProjection, commands = CraftCommands() })
 CraftPlanner.CraftUserSelectionContractVersion = 1
 CraftAssistant.CraftUserSelectionContractVersion = 1
 
@@ -3343,7 +3359,7 @@ local BagTools = NewFeature("tools_bag", { apiDependencies = {
     "X2Bank:GetBagItemInfo", "X2Bank:Capacity", "X2Bank:MoveToEmptyBagSlot",
     "X2Coffer:GetBagItemInfo", "X2Coffer:Capacity", "X2Coffer:MoveToEmptyBagSlot",
     "ADDON:GetContent", "ADDON:GetContentMainScriptPosVis",
-}, state = { blacklist = BlacklistDefault(), batchCategory = nil, batchTarget = "bank", batchLimit = BATCH_DEFAULT_LIMIT }, default = { blacklist = BlacklistDefault(), batchCategory = nil, batchTarget = "bank", batchLimit = BATCH_DEFAULT_LIMIT }, apply = ApplyBagState,
+}, state = { blacklist = BlacklistDefault(), batchCategory = nil, batchTarget = "bank", batchLimit = BATCH_DEFAULT_LIMIT }, default = { blacklist = BlacklistDefault(), batchCategory = nil, batchTarget = "bank", batchLimit = BATCH_DEFAULT_LIMIT }, persistentKeys = { "batchCategory" }, apply = ApplyBagState,
 onEnable = function(feature) return StartBagQuickObserver(feature) end,
 onDisable = function(feature) StopBagBatch(feature, "stopped", "功能关闭，批量任务已释放"); return StopBagQuickAll(feature, "功能关闭，快捷取放已释放") end,
 projection = BatchProjection, read = function()

@@ -27,6 +27,22 @@ local function NormalizeId(value)
     return id:gsub("^_+", ""):gsub("_+$", "")
 end
 
+local function ResolveNavigationDevelopmentState(spec) -- 中文维护注释：左侧导航的“完成/未完成”只属于 Presentation 开发视图，不得反向成为 Feature 生命周期、Store、Authority 或 API 可用性的第二事实源。
+    spec = type(spec) == "table" and spec or {} -- 中文维护注释：Registry 注册边界统一归一输入，避免 nil spec 让开发排序在启动期抛错并阻断整个导航。
+    local forced = tostring(spec.navigationDevelopmentState or ""):lower() -- 中文维护注释：仅允许少量当前 RU 实机回归用显式覆盖；完成后删除/改为 complete 即可恢复自动判定，route/id/config key 均不变化。
+    if forced == "complete" or forced == "incomplete" then return forced end -- 中文维护注释：显式覆盖优先于启发式，仅用于 Registry 已知状态落后于 CURRENT 实机 ToDo 的窗口期。
+    local status = tostring(spec.status or "planned"):lower() -- 中文维护注释：status 是现有 Feature 元数据；planned/partial/blocked 都表示产品能力尚未闭环，适合作为导航开发排序证据。
+    local readiness = tostring(spec.apiReadiness or ""):lower() -- 中文维护注释：API readiness 只参与展示分桶；partial/pending/research 不会因此解锁或禁用任何运行时 API。
+    local verification = tostring(spec.verification or ""):lower() -- 中文维护注释：仍明确 pending 的运行时验证保持在“未完成”区，防止本地 Harness 通过后过早上移。
+    local remaining = tostring(spec.remainingCapability or "") -- 中文维护注释：Feature 自己声明仍有剩余产品能力时，左侧导航应继续把它视为开发中而不是“已完成”。
+    if spec.runtimeBlocked == true then return "incomplete" end -- 中文维护注释：Runtime Blocked 是最强未完成证据；这里只改变左侧排序/标签，原 fail-closed blocker 逻辑完全不动。
+    if status:find("partial", 1, true) ~= nil or status:find("planned", 1, true) ~= nil or status:find("blocked", 1, true) ~= nil then return "incomplete" end -- 中文维护注释：复用现有状态命名约定，避免每新增一个 PARTIAL Feature 都要手工维护第二张导航名单。
+    if readiness:find("partial", 1, true) ~= nil or readiness:find("pending", 1, true) ~= nil or readiness:find("research", 1, true) ~= nil then return "incomplete" end -- 中文维护注释：API 仍部分可用、等待 RU 或处于研究态时继续下沉，避免把“页面存在”误标成产品完成。
+    if verification:find("pending", 1, true) ~= nil then return "incomplete" end -- 中文维护注释：需要 RU Fresh Reload/实机证明的显式 verification 同样属于开发中状态。
+    if remaining ~= "" then return "incomplete" end -- 中文维护注释：remainingCapability 非空就是 Registry 自证尚未闭环；该判断不解析自然语言内容，只看是否存在剩余项。
+    return "complete" -- 中文维护注释：只有没有任何未完成证据的 Feature 才进入左侧上方“完成”区域；未来元数据补充会自动重新分桶。
+end
+
 
 function R:Resort()
     table.sort(self.order, function(a, b)
@@ -49,6 +65,7 @@ function R:Register(spec)
     local category = NormalizeId(spec.category)
     if self.categories[category] == nil then return nil, "unknown feature category: " .. category end
     local route = tostring(spec.route or id)
+    local navigationDevelopmentState = ResolveNavigationDevelopmentState(spec) -- 中文维护注释：在注册时冻结本次 Feature 的导航开发态，Router 只消费结果，禁止再复制一套判定规则造成排序漂移。
     local row = {
         id = id,
         route = route,
@@ -61,6 +78,8 @@ function R:Register(spec)
         groupItemOrder = tonumber(spec.groupItemOrder) or tonumber(spec.order) or 100,
         navigationVisible = spec.navigationVisible ~= false,
         navigationParentRoute = tostring(spec.navigationParentRoute or ""), -- 中文维护注释：隐藏语义子页可声明主导航父路由；这里只存展示元数据，绝不能改变 Feature 生命周期或 Authority。
+        navigationDevelopmentState = navigationDevelopmentState, -- 中文维护注释：唯一导航开发态结果只用于 Router/Shell 展示；FeatureRuntime、Persistence 与页面业务不得读取它做功能决策。
+        navigationIncomplete = navigationDevelopmentState == "incomplete", -- 中文维护注释：提供布尔投影给 Router 做稳定排序，避免 Presentation 每次比较时解析 status/readiness 自然语言字段。
         description = tostring(spec.description or ""),
         status = tostring(spec.status or "planned"),
         lifecycle = tostring(spec.lifecycle or "independent"),
@@ -205,6 +224,7 @@ Add("combat_gear", "combat.gear", "换装 / 称号", "combat", 100,
 })
 
 Add("life_activities", "life.activities", "活动", "life", 10, "世界活动、区域阶段、任务/实例参与进度。", {
+    navigationDevelopmentState = "incomplete", -- 中文维护注释：CURRENT 仍有 RU-ACT-01 实机交互闭环待确认；旧 migrated_m1 只代表迁移世代，不能在开发导航里误显示为已完成。
     status = "migrated_m1", lifecycle = "independent", authority = "v3.activity",
     widgetCapable = true, settingsCapable = true,
     apiDependencies = {
@@ -222,12 +242,14 @@ Add("life_trade", "life.trade", "跑商", "life", 20, "路线、多货物与实�
     apiReadiness = "official_mixed", apiPolicy = "on_demand_server_query", currentImplementation = "路线/区域/服务器实时货率 + 满货率 130% 本地对比模式（持久化）+ 经商熟练度读取并按已提供旧版工作公式计入预计售价；TradePayoutV3 统一组合静态底价、实时/130% 货率、经商倍率与 TradeNameMultipliers 品类倍率，并恢复 larder/别名价格 Key 解析。路线收藏最多 12 条并由 life.trade 单 Store 持久化，主页面与 life.trade HUD 共用收藏/排序命令（排序为货率/售价/名字三态单选，名字模式 [xx] 前缀货物置顶）；选中贸易品复用 TradeDetailFloatingV3，详情仅在可见期持有独立 Consumer，并通过 QuoteRowMaterials 显式询价当前材料。普通 Refresh 不产生 Auction fan-out。", remainingCapability = "GetLowestPrice 返回形态、RU 生产/可售地区 payload 与静态底价长期一致性仍需实机验证；新增售价拆解需用多路线/多熟练度实售样本继续校准；自动制作台刷新/叛乱记录仍缺安全事件证据", evidence = "V3 Trade Authority + SPECIALTY_RATIO_BETWEEN_INFO + official X2Ability actability list + supplied working Trade payout formula; TradePayoutV3 price-key/larder/category multiplier contracts; bounded favorites + shared TradeDetailFloatingV3 + explicit selected-row material quote",
 })
 Add("life_bonds", "life.bonds", "债券 / 居民板", "life", 30, "每日居民板材料、完成状态与背包资源。", {
+    navigationDevelopmentState = "incomplete", -- 中文维护注释：CURRENT 的 RU-BOND-01/02 仍包含悬浮操作一致性与真实任务/材料状态问题；在 RU 关闭条件满足前固定放入开发区。
     status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.life.bonds", widgetCapable = true, settingsCapable = true,
     apiDependencies = { "X2Resident:GetResidentBoardContent", "X2Bag:Capacity", "X2Bag:GetBagItemInfo", "X2Quest:IsCompleted", "X2Quest:IsReadyForCompleteQuest" }, apiReadiness = "official_mixed", apiPolicy = "on_demand_read_only",
     currentImplementation = "单次读取 1-7 居民板，兼容 contents/content/rows/items 与稀疏数字行；按 RU 已验证的 3+4=大陆、5/6=原大陆规则选择分类，并显式区分 unavailable/empty/ready",
     evidence = "V3 Bonds + RU residentboard GetResidentBoardContent(index).contents 行为；未知字段继续 fail-closed",
 })
 Add("life_tasks", "life.tasks", "任务追踪", "life", 40, "用户选择的日常与周常任务追踪；支持子任务展开和独立悬浮追踪。", {
+    navigationDevelopmentState = "incomplete", -- 中文维护注释：CURRENT 的 RU-TASK-01 尚需 RU 验证入口、悬浮窗与逐任务选择闭环；因此不沿用 migrated_m1 的乐观导航展示。
     status = "migrated_m1", lifecycle = "independent", authority = "v3.tasks",
     widgetCapable = true, settingsCapable = true, defaultEnabled = true,
     apiDependencies = {
