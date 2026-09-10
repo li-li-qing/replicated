@@ -347,6 +347,51 @@ local function TaskEvidence(taskName)
     return text, err
 end
 
+-- 中文维护注释：`.18.198` 诊断框架补强——数据驱动的「存档健康」行。
+-- 此前每个 Feature 的状态行都是手写的，而存档层的写保护/完整性故障（如 DeathReview /
+-- Activities 的跨重载指纹误配）只有在该 Feature 自己手写过对应判断时才会出现在诊断里；
+-- 这次用户看到"死亡回顾打不开"却没有任何状态行解释原因，只能靠长摘要往返。
+-- 此函数直接遍历 Persistence 的 Store 行：凡写保护或连续保存失败的 Store 自动生成
+-- 一行（含恢复探针），**无需各 Feature 自行接入**，对未来新增 Store 自动生效。
+local STORE_OWNER_LABELS = { -- 中文维护注释：owner → 用户可读名；未登记的 owner 回落原文，不影响数据驱动。
+    ["v3.death_review"] = "死亡回顾",
+    ["v3.activities"] = "活动",
+    ["v3.buff_display"] = "Buff 显示",
+    ["v3.tasks"] = "任务",
+    ["v3.gear"] = "一键换装",
+    ["v3.trade"] = "跑商",
+    ["v3.auction_favorites"] = "拍卖收藏",
+    ["v3.craft"] = "制作",
+    ["v3.fishing"] = "钓鱼",
+    ["v3.bonds"] = "债券",
+    ["v3.team_tools"] = "团队",
+    ["v3.instances"] = "副本",
+    ["v3.random_shop"] = "随机商店",
+}
+
+function D:BuildStoreHealthRows()
+    local rows = {}
+    local persistence = S.Persistence
+    local describe = persistence ~= nil and type(persistence.Describe) == "function" and persistence:Describe() or nil
+    for _, row in ipairs(describe and describe.rows or {}) do
+        if row.writeFenced == true or (tonumber(row.consecutiveSaveFailures) or 0) > 0 then
+            local ownerLabel = STORE_OWNER_LABELS[row.owner] or tostring(row.owner or row.id or "未知存档")
+            local reason = tostring(row.writeFenceReason or row.lastError or "save_failed"):gsub("[\r\n]+", " ")
+            local probe = row.historicalRecoveryProbe ~= nil
+                and tostring(row.historicalRecoveryProbe):gsub("[\r\n]+", " ") or nil -- 中文维护注释：恢复探针由 Persistence 写入（见 rs_persistence.lua），字段名不可改动。
+            rows[#rows + 1] = FeatureRow(
+                "store:" .. tostring(row.id or "?"),
+                "存档·" .. ownerLabel,
+                "down",
+                "写保护 · " .. tostring(row.lastIntegrityStatus or row.loadStatus or "?") .. " · " .. reason,
+                probe ~= nil and ("恢复探针: " .. probe .. " —— 不要清档，复制此行给维护者")
+                    or "不要清档；复制此行给维护者")
+            if #rows >= 6 then break end -- 中文维护注释：防损坏档刷屏；与摘要「存档故障」段的 3 条口径同源但更宽。
+        end
+    end
+    return rows
+end
+
 function D:BuildFeatureStatusRows()
     local rows = {}
     local features = S.Features or {}
@@ -667,6 +712,13 @@ function D:BuildFeatureStatusRows()
                 .. " · 完成=" .. tostring(cache.completedCount or 0),
                 ok == false and "进入西/东大陆可读居民板区域后点刷新；同一天不重复读" or nil)
         end
+    end
+
+    -- 中文维护注释：存档健康行（数据驱动）追加在所有手写功能行之后——任何 Store 的写保护/
+    -- 完整性故障都会自动出现在「诊断与维护」列表与摘要里，不再依赖各 Feature 手写接入。
+    do
+        local storeRows = self:BuildStoreHealthRows()
+        for _, storeRow in ipairs(storeRows) do rows[#rows + 1] = storeRow end
     end
 
     return rows

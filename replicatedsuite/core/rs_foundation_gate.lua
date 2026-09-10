@@ -2439,6 +2439,26 @@ function G:BuildCopyText(runNow)
         end
         if #probeParts > 0 then parts[#parts+1] = "恢复探针 " .. table.concat(probeParts, " | ") end
     end
+    -- 中文维护注释：`.18.198` 新增「功能诊断」段——汇总诊断管理器功能状态行里所有非 OK 项
+    --（含数据驱动的「存档·XX」写保护行）。它把"功能坏了"与"为什么坏"放进同一段可复制文本，
+    -- 避免用户只看到第一段的启动降级却不知道具体哪个功能受影响。仅取前 3 条防刷屏。
+    do
+        local diag = S.DiagnosticsManager
+        local featureRows = diag ~= nil and type(diag.BuildFeatureStatusRows) == "function" and diag:BuildFeatureStatusRows() or nil
+        local badParts, seenBad = {}, {}
+        for _, featureRow in ipairs(featureRows or {}) do
+            if featureRow.verdict == "down" or featureRow.verdict == "degraded" then
+                local item = (featureRow.verdict == "down" and "✗" or "△") .. tostring(featureRow.label)
+                    .. " " .. tostring(featureRow.text):gsub("[\r\n]+", " ")
+                if seenBad[item] ~= true then
+                    seenBad[item] = true
+                    badParts[#badParts + 1] = item
+                    if #badParts >= 3 then break end
+                end
+            end
+        end
+        if #badParts > 0 then parts[#parts+1] = "功能诊断 " .. table.concat(badParts, " | ") end
+    end
     parts[#parts+1] = "界面所有权 违规 " .. tostring(authority and authority.violations or 0) .. "/冲突 " .. tostring(authority and authority.conflicts or 0) .. "/编号重复 " .. tostring(uiRegistry and uiRegistry.v3Duplicates or 0)
     local pageInfo = S.UIV3 and S.UIV3.PageHost and type(S.UIV3.PageHost.Describe) == "function" and S.UIV3.PageHost:Describe() or nil
     local factoryInfo = S.NativeObjectFactory and type(S.NativeObjectFactory.Describe) == "function" and S.NativeObjectFactory:Describe() or nil

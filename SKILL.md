@@ -108,7 +108,28 @@ PY
 
 ---
 
-## 七、目录速览
+## 七、诊断框架（.18.198 起）
+
+排查功能问题时，按**三层数据源**从低成本到高成本取证据：
+
+1. **功能状态行**（「诊断与维护」列表 + 摘要「功能诊断」段）：
+   - 每个 Feature 一行：`✓/△/✗/○ 名称 状态 · 证据 · 行动建议`
+   - **「存档·XX」行为数据驱动**（`rs_diagnostics.lua` 的 `BuildStoreHealthRows`）：任何 Store 写保护/连续保存失败**自动**出现，含恢复探针——新 Store 无需接入即被覆盖
+2. **Gate 摘要**（「输出诊断摘要」）：
+   - 第一段（runtime_startup_degradation）会**前置注入**写保护 Store 的恢复探针（`/probe=...`）——这是唯一保证不被聊天截断的证据位
+   - 后段：存档故障、恢复探针、功能诊断（非 OK 功能行，≤3 条）
+3. **磁盘取证（最强证据，AI 直接做）**：
+   - 存档在 `C:\Users\23118\Documents\ArcheRage\USERcb92.../udf\*.sst|.log`（RocksDB，value 为可读文本）
+   - key 形如 `addon_replicatedsuite_replicated_suite_v1_<store 蛇形名>`
+   - 格式：`str_<key> <value>` / `isTable true` / `num_<float>` / `bool_true`（**false 被省略**）/ `"str_文本"`，`..` 是语句分隔，**缩进=层级**
+   - **数字是 float32**（470 → 469.999939）；指纹 token `%.6g` 已吸收该精度，但排查数值类漂移时必须考虑
+   - **不要让用户反复重启游戏做摘要往返**——先读磁盘
+
+**修复存档类 Fence 的固定模式**（按序尝试）：结构化 exact recovery（字段可反推时）→ known-pair（物理丢失时，需 old/new 双 hash + 严格 shape 验证）→ 恢复后 Core 立即重写为当前版本。未知 mismatch 一律 fail-closed。
+
+---
+
+## 八、目录速览
 
 ```text
 Addon/

@@ -362,7 +362,13 @@ echo "PASS=$pass FAIL=$fail"
 
 **判据**：Audit 输出 `FOUNDATION_AUDIT PASS | toc=N activeLua=N allLua=N`，且 globals/presentation/rawNative/rawScope 等结构违规全为 0。
 
-### 6.2 环境坑
+### 6.2 诊断框架（三层数据源）
+
+1. **功能状态行**（「诊断与维护」列表 / 摘要「功能诊断」段）：每 Feature 一行；**「存档·XX」行是数据驱动的**（`rs_diagnostics.lua` `BuildStoreHealthRows`）——任何 Store 写保护或连续保存失败自动出现并附恢复探针，新 Store 无需接入
+2. **Gate 摘要**：第一段（runtime_startup_degradation）**前置注入**写保护 Store 的恢复探针（唯一保证不被聊天截断的证据位）；后段依次为存档故障 / 恢复探针 / 功能诊断
+3. **磁盘取证（最强）**：存档在 `C:\Users\23118\Documents\ArcheRage\USERcb92…/udf\`（RocksDB 文本格式：`str_/num_/bool_/isTable`，数字为 float32）；排查存档类故障时 AI 直接读盘，不依赖用户往返复制
+
+### 6.3 环境坑
 
 - 本机可能没有 `texlua`：`tools/rs_lua_runner.py` 会回落到 `lua5.4`，并已在共享层注入 Lua 5.1 兼容垫片（`unpack` / `table.getn` / `math.mod` / `loadstring`）。**不要给单个 harness 手加垫片，也不要硬编码 `texlua`**
 - 工程全 CRLF；跨平台比对文本前先归一 `\r\n → \n`
