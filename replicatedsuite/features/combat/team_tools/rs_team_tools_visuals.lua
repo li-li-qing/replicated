@@ -22,6 +22,8 @@ local P = S.Persistence
 if type(Feature) ~= "table" or type(P) ~= "table" then return end
 
 local STORE_ID = "v3.combat.team_tools.visuals"
+local STORE_SCHEMA = 2 -- 中文维护注释：schema2 只表达“新安装默认开启牺牲之舞”的默认语义变化；物理 key/owner/savedMarks 形状不变，旧 schema1 用户选择必须迁移保留。
+local LEGACY_SCHEMA = 1 -- 中文维护注释：schema1 历史默认是 sacEnabled=false；即使 Framework2 曾把 false 省略，迁移也必须恢复为 false，不能被 schema2 默认 true 覆盖。
 local ROSTER_TOKEN = "combat_team_tools:sac_roster"
 local AURA_TOKEN = "combat_team_tools:sac_aura"
 local CANDIDATE_TASK = "v3_team_tools_sac_candidates"
@@ -46,8 +48,8 @@ local SAC_BUFF_IDS = {
 }
 
 local V = {
-    version = 1,
-    state = { sacEnabled = false, savedMarks = {} },
+    version = 2, -- 中文维护注释：Domain 运行语义不变，仅 Store 默认/迁移契约升代；候选扫描、Aura/Marker Authority 与任务频率保持原实现。
+    state = { sacEnabled = true, savedMarks = {} }, -- 中文维护注释：新安装/真正空 Store 默认开启；旧 schema1 明确关闭或历史缺失 false 会在迁移边界保留关闭。
     loaded = false,
     running = false,
     rosterHeld = false,
@@ -113,28 +115,52 @@ local function NormalizeSavedMarks(source)
     return out
 end
 
-local function NormalizeState(value)
+local function NormalizeState(value, missingSacDefault) -- 中文维护注释：Store canonical/default 的唯一业务归一入口；第二参数只在 schema migration 边界表达历史默认差异，不读取 Runtime/UI。
     value = type(value) == "table" and value or {}
+    local sacEnabled
+    if value.sacEnabled == nil then
+        sacEnabled = missingSacDefault == true -- 中文维护注释：schema2/空 Store 缺失值=新默认 true；schema1 历史缺失值=false，避免升级强行打开用户原关闭状态。
+    else
+        sacEnabled = value.sacEnabled == true -- 中文维护注释：显式 true/false 永远优先，Transport 会负责跨 SaveData 保留 false；Domain 不接受 0/1 猜测布尔。
+    end
     return {
-        sacEnabled = value.sacEnabled == true,
+        sacEnabled = sacEnabled,
         savedMarks = NormalizeSavedMarks(value.savedMarks),
     }
+end
+
+local function NormalizeHistoricalSchema1(value) -- 中文维护注释：只供 schema1 integrity/migration 复原；历史默认 false 是兼容 Authority，不允许未来维护为了“统一默认”删除。
+    return NormalizeState(value, false)
+end
+
+local function NormalizeCurrentState(value) -- 中文维护注释：schema2 当前 canonical 与新用户默认统一为 true；已有显式 false 仍保持 false。
+    return NormalizeState(value, true)
 end
 
 if P:GetStore(STORE_ID) == nil then
     local store, err = P:RegisterV3Store({
         id = STORE_ID,
-        owner = "v3.combat_team_tools.visuals",
+        owner = "v3.combat_team_tools.visuals", -- 中文维护注释：保持 schema1 已发布 owner 字符串不变；owner 属于 Persistence metadata 身份，随意改名会让旧用户同 key 存档触发 metadata mismatch/Fence。schema2 只升级默认语义，不迁移 owner。
         scope = P.Scope.Account,
         lifetime = P.Lifetime.Permanent,
-        schemaVersion = 1,
-        legacySchemaVersion = 0,
+        schemaVersion = STORE_SCHEMA, -- 中文维护注释：schema2 不换 key；仅让 Persistence 能区分“旧默认 false”与“新默认 true”，避免升级兼容歧义。
+        legacySchemaVersion = LEGACY_SCHEMA, -- 中文维护注释：直接上一代 schema1 可迁移；更旧无此 Store 的用户会走 empty/default true，不伪造历史数据。
         key = P.V3KeyPrefix .. "combat_team_tools_visuals",
         budget = { maxDepth = 4, maxNodes = 160, maxStringBytes = 2048, maxEntriesPerTable = 48 },
-        default = function() return { sacEnabled = false, savedMarks = {} } end,
-        get = function() return NormalizeState(V.state) end,
-        apply = function(value) V.state = NormalizeState(value) end,
-        migrate = function(value) return NormalizeState(value) end,
+        default = function() return NormalizeCurrentState(nil) end, -- 中文维护注释：只有物理 Store 真正为空时才获得新默认 true；已有用户绝不经过这个默认覆盖旧选择。
+        get = function() return NormalizeCurrentState(V.state) end, -- 中文维护注释：Feature State 是业务 Authority，Persistence 只取 detached canonical 快照；候选/Aura Runtime 状态不落盘。
+        apply = function(value) V.state = NormalizeCurrentState(value) end, -- 中文维护注释：Apply 只更新持久偏好，Start/StopSacObservation 仍由 Feature 生命周期拥有，Load 本身不偷偷启动 Consumer。
+        migrate = function(value, storedSchema)
+            if tonumber(storedSchema) ~= nil and tonumber(storedSchema) < STORE_SCHEMA then return NormalizeHistoricalSchema1(value) end -- 中文维护注释：schema1 升级时缺失 sacEnabled 必须按历史 false；显式 true 继续 true。
+            return NormalizeCurrentState(value) -- 中文维护注释：当前 canonical/get 调用不带 storedSchema，显式值稳定；真正空 Store 不走 migrate。
+        end,
+        rebuildCanonicalForIntegrity = function(decoded, _stampedFingerprint, _currentCanonical, raw)
+            local meta = type(raw) == "table" and raw.__rsmeta or nil -- 中文维护注释：schema1 的历史 default 与 schema2 不同，Integrity v4 必须能先精确重建旧 canonical 再迁移，不能先用新默认制造假 mismatch。
+            if type(meta) ~= "table" or tonumber(meta.schema) ~= LEGACY_SCHEMA then return nil end -- 中文维护注释：仅 schema1 有资格使用历史 default=false；schema2/future mismatch 继续 fail-closed。
+            local historical = NormalizeHistoricalSchema1(decoded) -- 中文维护注释：候选没有信任权，Core 会用原 stamped fingerprint 精确比对；这里不按“看起来像旧档”直接放行。
+            return historical, historical -- 中文维护注释：第二返回值让 Core/迁移继续基于已认证的旧逻辑值，防止 missing=false 被 schema2 default=true 改写。
+        end,
+        allowIntegrityUpgrade = true, -- 中文维护注释：只允许上面的 exact historical candidate 通过 Core 旧指纹证明后重盖；未知损坏仍保持 write fence。
     })
     if store == nil then error(err or "team tools visuals store register failed") end
 end
@@ -145,7 +171,7 @@ local function Mutate(reason, fn, options)
     return P:MutateStore(STORE_ID, function()
         local ok, err = fn(V.state)
         if ok == false then return false, err end
-        V.state = NormalizeState(V.state)
+        V.state = NormalizeCurrentState(V.state)
         return true
     end, {
         delayMs = tonumber(options.delayMs) or 300,
@@ -561,7 +587,7 @@ function Feature:Initialize()
     if V.loaded == true then return true end
     local status, _, loadErr = P:LoadStore(STORE_ID)
     if status ~= true and status ~= "empty" then return false, loadErr or tostring(status or "team visuals store load failed") end
-    if status == "empty" then V.state = NormalizeState({}) end
+    if status == "empty" then V.state = NormalizeCurrentState(nil) end -- 中文维护注释：仅物理空 Store 使用 schema2 新默认 true；旧 schema1 已由 Core 迁移并不会进入 empty。
     V.loaded = true
     return true
 end
@@ -650,6 +676,6 @@ for _, value in ipairs({ "X2Unit:GetTargetAbilityTemplates", "X2Unit:GetOverHead
     if seen[value] ~= true then Feature.ApiDependencies[#Feature.ApiDependencies + 1] = value; seen[value] = true end
 end
 
-Feature.TeamVisualContractVersion = 1
+Feature.TeamVisualContractVersion = 2 -- 中文维护注释：v2 公开默认开启 + schema1 兼容迁移契约；不表示扩大 Native 权限或扫描范围。
 Feature.TeamMarkerSnapshotContractVersion = 1
-Feature.TeamSacContractVersion = 1
+Feature.TeamSacContractVersion = 2 -- 中文维护注释：牺牲之舞新用户默认开启，但 Consumer 仍严格随 combat_team_tools Feature 生命周期按需获取/释放。

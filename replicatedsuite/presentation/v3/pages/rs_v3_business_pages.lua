@@ -5,7 +5,9 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D, Host = S.RSUI, S.UIV3Design, S.UIV3 and S.UIV3.PageHost or nil
 if type(RSUI) ~= "table" or type(D) ~= "table" or type(Host) ~= "table" then return end
-S.UIV3.BusinessPagesContract = { version = 6, componentIdContractVersion = 1, bagProductUxContractVersion = 2, auctionCurrentListingUxContractVersion = 1, craftPlanUxContractVersion = 1, craftSidecarUxContractVersion = 1, unitLineSettingsFoundationConsumerContractVersion = 3 }
+S.UIV3.BusinessPagesContract = { version = 7, componentIdContractVersion = 1, bagProductUxContractVersion = 2, auctionCurrentListingUxContractVersion = 1, craftPlanUxContractVersion = 1, craftSidecarUxContractVersion = 1, unitLineSettingsFoundationConsumerContractVersion = 3,
+    teamCenterLayoutContractVersion = 1, -- 中文维护注释：.18.197 团队中心把职责/团队辅助分组，并移除主视图中永远不可执行的成员移动表单；只改变 Presentation 层级与列定义，不改变 v3.team_tools / v3.team_visuals Authority、命令安全门或 Store。
+}
 
 local ROUTES = {
     { route = "combat.boss_alerts", id = "combat_boss_alerts" }, { route = "combat.target_monitor", id = "combat_target_monitor" },
@@ -49,7 +51,23 @@ local function Build(parent, route, id)
     local rootSpec = id == "combat_unit_lines" and {
         id = "v3_page_business_" .. tostring(id), gap = 7, padding = 2, scrollStep = 1,
     } or ("v3_page_business_" .. tostring(id))
-    local root, err = D:ScrollablePageRoot(parent, rootSpec)
+    local root, err
+    if id == "tools_bag" then
+        -- MAINTENANCE (2026-09-10, bag viewport fill): tools_bag is a data-view page whose
+        -- primary body is the virtualized TableView below.  The generic business ScrollBox
+        -- measures that table from desiredRows and treats it as an auto-sized snapped item;
+        -- on tall windows this left a large unused strip below the bag rows even though the
+        -- page still owned free viewport height.  InventorySnapshotV3 / feature projection
+        -- remains the data Authority and all quick-move / blacklist commands keep their
+        -- existing data flow; this is Presentation geometry only.  Give this one page a
+        -- normal VerticalBox root so its fixed editor controls consume natural height and
+        -- the TableView's existing fill slot receives the entire remainder.  The TableView
+        -- continues to own row scrolling/selection, while all other sequential business
+        -- pages retain ScrollablePageRoot for small-resolution/UI-scale compatibility.
+        root, err = D:PageRoot(parent, rootSpec)
+    else
+        root, err = D:ScrollablePageRoot(parent, rootSpec)
+    end
     if root == nil then return nil, err end
     root.consumerHeld = false
     local unitLineSettingsPage = id == "combat_unit_lines"
@@ -711,13 +729,17 @@ local function Build(parent, route, id)
                 enabledNow and "muted" or "warn")
         end
     end
-    local teamRoleInput, teamFromMemberInput, teamToMemberInput, teamMovePartyMemberInput, teamToPartyInput, teamActionStatus, teamAutoRoleButton, teamExtra
+    local teamRoleInput, teamActionStatus, teamAutoRoleButton, teamExtra
     if id == "combat_team_tools" then
-        local roleRow = RSUI:HorizontalBox({ id = "v3_business_combat_team_tools_role_row", parent = root, gap = 6,
+        -- 中文维护注释（2026-09-10，团队中心布局）：旧版把“职责、两个已禁用的成员移动表单、牺牲之舞/头标”连续堆在同一层，既占据大量垂直空间，也让不可执行的 Native 写能力看起来像可配置功能。这里仅重组 Presentation：v3.team_tools 继续拥有职责/自动职责 Authority，v3.team_visuals 继续拥有牺牲之舞与头标 Store/Consumer；成员移动命令仍保留在 Domain 并 fail-closed，等未来获得合法队长权限 getter 后再单独恢复 UI。禁止以后为了“把按钮放回来”绕过 Domain 权限安全门。
+        local roleGroup = RSUI:GroupBox({ id = "v3_business_combat_team_tools_role_group", parent = root, title = "职责设置", variant = "soft", gap = 5, padding = 8,
+            slot = { size = "auto", hAlign = "fill" } }) -- 中文维护注释：GroupBox 使用 RSUI 布局而非手算像素，窗口缩放/不同分辨率由 Measure/Arrange 统一处理，避免 1280×768 下控件挤压。
+        local roleInner = RSUI:VerticalBox({ id = "v3_business_combat_team_tools_role_inner", parent = roleGroup, gap = 5 }) -- 中文维护注释：职责组内部只承载当前玩家可执行的设置；全队职责表仍是只读投影，不与写入控件共享 Authority。
+        local roleRow = RSUI:HorizontalBox({ id = "v3_business_combat_team_tools_role_row", parent = roleInner, gap = 6,
             slot = { size = "fixed", height = 31, hAlign = "fill" } })
         RSUI:Text({ id = "v3_business_combat_team_tools_role_label", parent = roleRow, text = "我的职责", fontSize = 9, tone = "strong",
-            overflow = "ellipsis", slot = { size = "fixed", width = 36 } })
-        local roleProjection = feature:GetProjection() or {}
+            overflow = "ellipsis", slot = { size = "fixed", width = 58 } })
+        local roleProjection = feature:GetProjection() or {} -- 中文维护注释：下拉选项只读取 Feature detached projection，不直接调用 X2Team；Native 读写仍集中在 TeamTools Domain。
         local roleItems = {}
         for _, item in ipairs(type(roleProjection.roleOptions) == "table" and roleProjection.roleOptions or {}) do
             roleItems[#roleItems + 1] = { value = item.value, text = tostring(item.text or item.key or item.value) }
@@ -725,68 +747,37 @@ local function Build(parent, route, id)
         local teamRoleValue = nil
         teamRoleInput = RSUI:Dropdown({ id = "v3_business_combat_team_tools_role_input", parent = roleRow, items = roleItems, maxVisible = 5,
             get = function() return teamRoleValue end, set = function(value) teamRoleValue = value; return true end,
-            placeholder = #roleItems > 0 and "选择职责" or "职责不可用", slot = { size = "fixed", width = 100 } })
+            placeholder = #roleItems > 0 and "选择职责" or "职责不可用", slot = { size = "fixed", width = 126 } })
         local setRoleButton = RSUI:Button({ id = "v3_business_combat_team_tools_set_role", parent = roleRow, text = "设置我的职责", compact = true,
-            slot = { size = "fixed", width = 78 } })
+            slot = { size = "fixed", width = 96 } })
         teamAutoRoleButton = RSUI:Button({ id = "v3_business_combat_team_tools_auto_role", parent = roleRow, text = "自动职责：开", compact = true,
-            slot = { size = "fixed", width = 92 } })
-
-        local moveRow = RSUI:HorizontalBox({ id = "v3_business_combat_team_tools_move_row", parent = root, gap = 6,
-            slot = { size = "fixed", height = 31, hAlign = "fill" } })
-        RSUI:Text({ id = "v3_business_combat_team_tools_from_label", parent = moveRow, text = "从", fontSize = 9, tone = "strong",
-            overflow = "ellipsis", slot = { size = "fixed", width = 18 } })
-        teamFromMemberInput = RSUI:TextInput({ id = "v3_business_combat_team_tools_from_member_input", parent = moveRow, value = "", maxLength = 2,
-            allowEmpty = false, submitOnLostFocus = false, placeholder = "成员1-50", slot = { size = "fixed", width = 68 } })
-        RSUI:Text({ id = "v3_business_combat_team_tools_to_label", parent = moveRow, text = "到", fontSize = 9, tone = "strong",
-            overflow = "ellipsis", slot = { size = "fixed", width = 18 } })
-        teamToMemberInput = RSUI:TextInput({ id = "v3_business_combat_team_tools_to_member_input", parent = moveRow, value = "", maxLength = 2,
-            allowEmpty = false, submitOnLostFocus = false, placeholder = "成员1-50", slot = { size = "fixed", width = 68 } })
-        local moveButton = RSUI:Button({ id = "v3_business_combat_team_tools_move_member", parent = moveRow, text = "移动成员", compact = true,
-            slot = { size = "fixed", width = 78 } })
-
-        local movePartyRow = RSUI:HorizontalBox({ id = "v3_business_combat_team_tools_move_party_row", parent = root, gap = 6,
-            slot = { size = "fixed", height = 31, hAlign = "fill" } })
-        RSUI:Text({ id = "v3_business_combat_team_tools_party_member_label", parent = movePartyRow, text = "成员", fontSize = 9, tone = "strong",
-            overflow = "ellipsis", slot = { size = "fixed", width = 36 } })
-        teamMovePartyMemberInput = RSUI:TextInput({ id = "v3_business_combat_team_tools_move_party_member_input", parent = movePartyRow, value = "", maxLength = 2,
-            allowEmpty = false, submitOnLostFocus = false, placeholder = "成员1-50", slot = { size = "fixed", width = 68 } })
-        RSUI:Text({ id = "v3_business_combat_team_tools_party_label", parent = movePartyRow, text = "到小队", fontSize = 9, tone = "strong",
-            overflow = "ellipsis", slot = { size = "fixed", width = 42 } })
-        teamToPartyInput = RSUI:TextInput({ id = "v3_business_combat_team_tools_to_party_input", parent = movePartyRow, value = "", maxLength = 2,
-            allowEmpty = false, submitOnLostFocus = false, placeholder = "小队1-50", slot = { size = "fixed", width = 68 } })
-        local movePartyButton = RSUI:Button({ id = "v3_business_combat_team_tools_move_member_to_party", parent = movePartyRow, text = "移入小队", compact = true,
-            slot = { size = "fixed", width = 78 } })
+            slot = { size = "fixed", width = 108 } }) -- 中文维护注释：初始文案与 Domain 新安装默认 true 对齐；Refresh 仍以 projection 为最终事实，旧用户保存 false 不会被 UI 初始文字反向写入。
+        local roleStatus = RSUI:Text({ id = "v3_business_combat_team_tools_role_status", parent = roleInner,
+            text = "自动职责默认开启；进入团队或职业组合变化后按已验证职业表匹配。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
+            slot = { size = "auto", minHeight = 20, hAlign = "fill" } }) -- 中文维护注释：这是只读说明/状态文本，不参与 Store，避免把运行时识别结果误写成永久配置。
 
         teamExtra = {}
-        local visualRow = RSUI:HorizontalBox({ id = "v3_business_combat_team_tools_visual_row", parent = root, gap = 6,
+        local assistGroup = RSUI:GroupBox({ id = "v3_business_combat_team_tools_assist_group", parent = root, title = "团队辅助", variant = "soft", gap = 5, padding = 8,
+            slot = { size = "auto", hAlign = "fill" } }) -- 中文维护注释：团队视觉辅助与职责写入分组，明确它们由不同子 Authority 管理；分组本身不获取额外 Consumer。
+        local assistInner = RSUI:VerticalBox({ id = "v3_business_combat_team_tools_assist_inner", parent = assistGroup, gap = 5 })
+        local visualRow = RSUI:HorizontalBox({ id = "v3_business_combat_team_tools_visual_row", parent = assistInner, gap = 6,
             slot = { size = "fixed", height = 31, hAlign = "fill" } })
-        RSUI:Text({ id = "v3_business_combat_team_tools_visual_label", parent = visualRow, text = "团队辅助", fontSize = 9, tone = "strong",
-            overflow = "ellipsis", slot = { size = "fixed", width = 58 } })
-        teamExtra.sacButton = RSUI:Button({ id = "v3_business_combat_team_tools_sac_toggle", parent = visualRow, text = "牺牲之舞：关", compact = true,
-            slot = { size = "fixed", width = 96 } })
+        teamExtra.sacButton = RSUI:Button({ id = "v3_business_combat_team_tools_sac_toggle", parent = visualRow, text = "牺牲之舞：开", compact = true,
+            slot = { size = "fixed", width = 108 } }) -- 中文维护注释：仅默认显示“开”；真实状态由 TeamVisuals Store schema2 projection 刷新，旧 schema1 的关闭状态会立即显示回“关”。
         teamExtra.saveMarks = RSUI:Button({ id = "v3_business_combat_team_tools_mark_save", parent = visualRow, text = "保存头标", compact = true,
-            slot = { size = "fixed", width = 70 } })
+            slot = { size = "fixed", width = 78 } })
         teamExtra.restoreMarks = RSUI:Button({ id = "v3_business_combat_team_tools_mark_restore", parent = visualRow, text = "恢复头标", compact = true,
-            slot = { size = "fixed", width = 70 } })
+            slot = { size = "fixed", width = 78 } })
         teamExtra.clearMarks = RSUI:Button({ id = "v3_business_combat_team_tools_mark_clear", parent = visualRow, text = "清空保存", compact = true,
-            slot = { size = "fixed", width = 70 } })
-        teamExtra.status = RSUI:Text({ id = "v3_business_combat_team_tools_visual_status", parent = root,
-            text = "牺牲之舞高亮关闭 · 尚未保存团队头标", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
-            slot = { size = "auto", minHeight = 26, hAlign = "fill" } })
+            slot = { size = "fixed", width = 78 } })
+        teamExtra.status = RSUI:Text({ id = "v3_business_combat_team_tools_visual_status", parent = assistInner,
+            text = "牺牲之舞高亮默认开启 · 尚未保存团队头标", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
+            slot = { size = "auto", minHeight = 22, hAlign = "fill" } }) -- 中文维护注释：只展示 TeamVisuals detached projection，不进行 Aura/Marker Native 读取；高频事实仍由共享 Service + 按需 Consumer 提供。
 
         teamActionStatus = RSUI:Text({ id = "v3_business_combat_team_tools_action_status", parent = root,
-            text = "全队职责为只读；职责写入只作用于当前玩家。成员移动当前安全停用。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
-            slot = { size = "auto", minHeight = 26, hAlign = "fill" } })
+            text = "全队职责只读；职责写入只作用于当前玩家。成员移动因缺少合法队长权限读取契约继续安全停用。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
+            slot = { size = "auto", minHeight = 24, hAlign = "fill" } }) -- 中文维护注释：用一条明确能力说明替代两组永久禁用输入框，减少视觉噪声；Domain 的 MoveMember/MoveMemberToParty 仍存在并拒绝执行，兼容未来功能恢复与旧调用方。
 
-        local function ReadTeamToolInteger(input, label, maximum)
-            if input == nil or type(input.GetDraftValue) ~= "function" then return nil, label .. " 输入控件不可用" end
-            local value = tostring(input:GetDraftValue() or ""):match("^%s*(.-)%s*$") or ""
-            local number = tonumber(value)
-            if value == "" or not value:match("^%d+$") or number == nil or number < 1 or number > maximum then
-                return nil, label .. " 必须是 1-" .. tostring(maximum) .. " 的正整数"
-            end
-            return number
-        end
         local function SetTeamActionStatus(text, tone)
             teamActionStatus:SetText(tostring(text or ""))
             if S.Theme ~= nil and type(S.Theme.SetLabelTone) == "function" then S.Theme:SetLabelTone(teamActionStatus, tone or "muted") end
@@ -805,9 +796,9 @@ local function Build(parent, route, id)
             return true
         end
         teamAutoRoleButton.onClick = function()
-            local projection = feature:GetProjection() or {}
+            local projection = feature:GetProjection() or {} -- 中文维护注释：按钮切换以前一份 Feature projection 为事实，不使用本地按钮文案推断状态，避免 UI 与 Store 脱节。
             local nextValue = projection.autoRoleEnabled == false
-            local ok, err = feature.Commands:SetAutoRoleEnabled(nextValue)
+            local ok, err = feature.Commands:SetAutoRoleEnabled(nextValue) -- 中文维护注释：写入必须经过 TeamTools PersistStateMutation；Presentation 不直接改 State/SaveData。
             if ok ~= true then SetTeamActionStatus("自动职责设置失败：" .. tostring(err or "未执行"), "warn"); return false, err end
             root:Refresh()
             SetTeamActionStatus(nextValue and "自动职责已开启；进团或切换职业后会按职业组合自动匹配" or "自动职责已关闭", nextValue and "success" or "muted")
@@ -816,65 +807,39 @@ local function Build(parent, route, id)
         setRoleButton.onClick = function()
             local role = teamRoleInput and type(teamRoleInput.GetValue) == "function" and teamRoleInput:GetValue() or nil
             if role == nil then local valueErr = "请选择职责"; SetTeamActionStatus("失败：" .. valueErr, "warn"); return false, valueErr end
-            local ok, err = feature.Commands:SetRole(role)
+            local ok, err = feature.Commands:SetRole(role) -- 中文维护注释：X2Team:SetRole 的 Native 写 Authority 仍在 Domain ActionCapability；页面只提交已验证 TMROLE 枚举。
             if ok ~= true then SetTeamActionStatus("失败：" .. tostring(err or "职责设置未执行"), "warn"); return false, err end
             local refreshed, refreshErr = RefreshTeamAction("team_tools_set_role")
             if refreshed ~= true then SetTeamActionStatus(refreshErr, "warn"); return false, refreshErr end
             SetTeamActionStatus("当前玩家职责设置成功", "success"); return true
         end
-        moveButton.onClick = function()
-            local fromMember, valueErr = ReadTeamToolInteger(teamFromMemberInput, "源成员", 50); if fromMember == nil then SetTeamActionStatus("失败：" .. tostring(valueErr), "warn"); return false, valueErr end
-            local toMember; toMember, valueErr = ReadTeamToolInteger(teamToMemberInput, "目标成员", 50); if toMember == nil then SetTeamActionStatus("失败：" .. tostring(valueErr), "warn"); return false, valueErr end
-            local ok, err = feature.Commands:MoveMember(fromMember, toMember)
-            if ok ~= true then SetTeamActionStatus("失败：" .. tostring(err or "成员移动未执行"), "warn"); return false, err end
-            local refreshed, refreshErr = RefreshTeamAction("team_tools_move_member")
-            if refreshed ~= true then SetTeamActionStatus(refreshErr, "warn"); return false, refreshErr end
-            SetTeamActionStatus("成员移动成功", "success"); return true
-        end
-        movePartyButton.onClick = function()
-            local fromMember, valueErr = ReadTeamToolInteger(teamMovePartyMemberInput, "成员", 50); if fromMember == nil then SetTeamActionStatus("失败：" .. tostring(valueErr), "warn"); return false, valueErr end
-            local toParty; toParty, valueErr = ReadTeamToolInteger(teamToPartyInput, "小队", 50); if toParty == nil then SetTeamActionStatus("失败：" .. tostring(valueErr), "warn"); return false, valueErr end
-            local ok, err = feature.Commands:MoveMemberToParty(fromMember, toParty)
-            if ok ~= true then SetTeamActionStatus("失败：" .. tostring(err or "成员移入小队未执行"), "warn"); return false, err end
-            local refreshed, refreshErr = RefreshTeamAction("team_tools_move_member_to_party")
-            if refreshed ~= true then SetTeamActionStatus(refreshErr, "warn"); return false, refreshErr end
-            SetTeamActionStatus("成员移入小队成功", "success"); return true
-        end
         teamExtra.sacButton.onClick = function()
-            local projection = feature:GetProjection() or {}
+            local projection = feature:GetProjection() or {} -- 中文维护注释：牺牲之舞开关只消费 TeamVisuals projection；候选扫描/Aura 事实不由页面直接读取。
             local nextValue = projection.sacEnabled ~= true
-            local ok, err = feature.Commands:SetSacHighlightEnabled(nextValue)
+            local ok, err = feature.Commands:SetSacHighlightEnabled(nextValue) -- 中文维护注释：生命周期由 TeamVisuals 在开关变更后获取/释放 Consumer；隐藏页面不等于关闭功能。
             if ok ~= true then SetTeamActionStatus("牺牲之舞高亮设置失败：" .. tostring(err or "未执行"), "warn"); return false, err end
             root:Refresh()
             SetTeamActionStatus(nextValue and "牺牲之舞高亮已开启；仅扫描舞乐候选成员" or "牺牲之舞高亮已关闭并释放团队/Aura观察", nextValue and "success" or "muted")
             return true
         end
         teamExtra.saveMarks.onClick = function()
-            local ok, countOrErr = feature.Commands:SaveRaidMarkers()
+            local ok, countOrErr = feature.Commands:SaveRaidMarkers() -- 中文维护注释：头标快照通过 Domain 读 Native 并 durable 保存；UI 不缓存 marker identity。
             if ok ~= true then SetTeamActionStatus("保存头标失败：" .. tostring(countOrErr or "未执行"), "warn"); return false, countOrErr end
             root:Refresh(); SetTeamActionStatus("已保存当前团队头标：" .. tostring(countOrErr or 0) .. " 个", "success"); return true
         end
         teamExtra.restoreMarks.onClick = function()
-            local ok, countOrErr = feature.Commands:RestoreRaidMarkers()
+            local ok, countOrErr = feature.Commands:RestoreRaidMarkers() -- 中文维护注释：恢复仍由 1100ms 串行队列 + 读回验证治理，布局改动绝不能改成循环瞬发 Native 写入。
             if ok ~= true then SetTeamActionStatus("恢复头标失败：" .. tostring(countOrErr or "未执行"), "warn"); return false, countOrErr end
             root:Refresh(); SetTeamActionStatus("头标恢复队列已启动：" .. tostring(countOrErr or 0) .. " 个；按官方 1 秒冷却串行执行", "success"); return true
         end
         teamExtra.clearMarks.onClick = function()
-            local ok, err = feature.Commands:ClearSavedRaidMarkers()
+            local ok, err = feature.Commands:ClearSavedRaidMarkers() -- 中文维护注释：只清插件 Store 中的快照，不调用 Native 清除当前游戏头标，保持用户可逆性。
             if ok ~= true then SetTeamActionStatus("清空保存失败：" .. tostring(err or "未执行"), "warn"); return false, err end
             root:Refresh(); SetTeamActionStatus("已清空插件保存的头标方案；不会清除当前游戏头标", "muted"); return true
         end
-        if #roleItems <= 0 then teamRoleInput:SetEnabled(false); setRoleButton:SetEnabled(false) end
-        -- Native move APIs are write-capable, but the only known ownership getter
-        -- is explicitly disallowed. Keep these controls visible as capability
-        -- disclosure, but make the unsafe path impossible to invoke.
-        moveButton:SetEnabled(false)
-        movePartyButton:SetEnabled(false)
-        if teamFromMemberInput ~= nil then teamFromMemberInput:SetEnabled(false) end
-        if teamToMemberInput ~= nil then teamToMemberInput:SetEnabled(false) end
-        if teamMovePartyMemberInput ~= nil then teamMovePartyMemberInput:SetEnabled(false) end
-        if teamToPartyInput ~= nil then teamToPartyInput:SetEnabled(false) end
+        if #roleItems <= 0 then teamRoleInput:SetEnabled(false); setRoleButton:SetEnabled(false) end -- 中文维护注释：客户端 TMROLE 枚举不可用时 fail-closed，只禁用职责写 UI，不影响团队名单只读投影。
         SetTeamActionStatus("全队职责只读；仅可设置当前玩家职责。成员移动等待合法队长/权限读取契约", "muted")
+        teamExtra.roleStatus = roleStatus -- 中文维护注释：保留引用供 Refresh 更新自动职责运行说明；只属于当前页面生命周期，不跨重载持久化。
     end
     local tableView
     local tableParent = unitLineSettingsPage and unitLineDiagnostics and unitLineDiagnostics.content or root
@@ -886,6 +851,10 @@ local function Build(parent, route, id)
         columns = id == "tools_bag" and {
             { id = "name", title = "当前背包物品（ID · 名称）", field = "name", size = "fill", minWidth = 300 },
             { id = "status", title = "数量", field = "statusText", size = "fixed", width = 82, minWidth = 64, getTone = function(item) return item and item.tone or "muted" end },
+        } or id == "combat_team_tools" and { -- 中文维护注释：团队职责行没有 craft cost 语义；使用专用三列避免“成本/持有/缺口”空列长期浪费宽度。只改变 detached row 的 Presentation 映射，ReadTeamRoleRoster 数据结构/Authority 不变。
+            { id = "name", title = "团队成员", field = "name", size = "fixed", width = 180, minWidth = 120 }, -- 中文维护注释：成员名固定列保证 1280×768 仍有足够职责说明空间；不缓存 Unit 对象或身份指针。
+            { id = "text", title = "位置 / 职责", field = "text", size = "fill", minWidth = 260 }, -- 中文维护注释：复用 Domain 已生成的 team/member/role 文本，不在 Table 渲染循环重复调用 X2Team:GetRole。
+            { id = "status", title = "状态", field = "statusText", size = "fixed", width = 110, minWidth = 82, getTone = function(item) return item and item.tone or "muted" end },
         } or {
             { id = "name", title = "项目", field = "name", size = "fixed", width = 180, minWidth = 100 },
             { id = "text", title = "事实 / 说明", field = "text", size = "fill", minWidth = 220 },
@@ -1041,9 +1010,11 @@ local function Build(parent, route, id)
             end
         end
         if id == "combat_team_tools" and teamAutoRoleButton ~= nil then
-            teamAutoRoleButton:SetText(projection.autoRoleEnabled == false and "自动职责：关" or "自动职责：开")
-            if projection.autoRoleStatus and teamActionStatus ~= nil then
-                teamActionStatus:SetText(tostring(projection.autoRoleStatus) .. (projection.autoRoleLabel and (" · 识别：" .. tostring(projection.autoRoleLabel)) or "") .. "；手动职责仍可覆盖当前结果。")
+            teamAutoRoleButton:SetText(projection.autoRoleEnabled == false and "自动职责：关" or "自动职责：开") -- 中文维护注释：投影是显示 Authority，旧用户显式 false 会覆盖初始“开”文案；这里不触发任何持久化写入。
+            if type(teamExtra) == "table" and teamExtra.roleStatus ~= nil then
+                local roleRuntime = tostring(projection.autoRoleStatus or "等待团队/职业变化") -- 中文维护注释：运行状态来自 TeamTools Domain 的事件驱动结果，页面只做文本投影，不额外轮询职业或团队名单。
+                local roleLabel = projection.autoRoleLabel and (" · 识别：" .. tostring(projection.autoRoleLabel)) or ""
+                teamExtra.roleStatus:SetText((projection.autoRoleEnabled == false and "自动职责已关闭" or "自动职责已开启") .. " · " .. roleRuntime .. roleLabel)
             end
             if type(teamExtra) == "table" and teamExtra.sacButton ~= nil then
                 teamExtra.sacButton:SetText(projection.sacEnabled == true and "牺牲之舞：开" or "牺牲之舞：关")

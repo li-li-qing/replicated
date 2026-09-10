@@ -94,7 +94,7 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.196-navigation-development-order" -- 中文维护注释：.18.196 只重排左侧开发导航：FeatureRegistry 判定 complete/incomplete，Router 先完成后未完成，Shell 仅在 navigationTitle 后附“（未完成）”；route、Feature id、Store、生命周期和业务 Authority 全部保持兼容。
+S.BuildTag = "v3-m1.16.0.18.198-death-review-transport-v1-zero-recovery" -- 中文维护注释：.18.198 修复 RU 实机 `v3.death_review:55BD6B0A>44CFFAF4`。根因是 Transport v1 只保护 false/空表、不保护数值 0，导致自由布局窗口的 x/y（合法取 0）被原生 serializer 省略，FloatingSurface 的 free 分支随之塌陷、整组定位字段丢失。修复用「补回被省略的 0」的结构化 exact recovery 取代 known-pair 白名单，并让真正恢复过的 v1 Store 立即重写为 Transport v2；未知 mismatch 继续 fail-closed。
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}
 S.SaveKey = tostring(S.Config.SaveKey or "replicated_suite_v1")

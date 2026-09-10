@@ -29,8 +29,9 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function()
     local normalizedWindow = type(store.migrate) == "function" and store.migrate({ widgetWindow = { width = 470, height = 330 } }) or nil -- 中文维护注释：只执行纯 migrate normalizer 验证当前 canonical 形状，不触发 Native/UI 或磁盘写入。
     normalizedWindow = type(normalizedWindow) == "table" and normalizedWindow.widgetWindow or nil -- 中文维护注释：只抽取当前窗口投影用于契约检查，settings/history 不在此测试中改写。
     if (tonumber(F.PersistenceCanonicalWindowContractVersion) or 0) < 7 -- 中文维护注释：v7 表示 DeathReview Store 已冻结自己的窗口字段白名单，未来 Foundation 演进必须再升 schema。
-        or (tonumber(F.PersistenceKnownLegacyRecoveryContractVersion) or 0) < 3 -- 中文维护注释：v3 必须优先包含 `.18.195` schema2+Framework2 通用 exact-recovery，旧 770CB0B8/014277AB known pair 只允许作为更早世代最终兜底。
+        or (tonumber(F.PersistenceKnownLegacyRecoveryContractVersion) or 0) < 4 -- 中文维护注释：v4 必须优先包含「Transport v1 零值省略结构化恢复」与 `.18.195` schema2+Framework2 通用 exact-recovery；旧 770CB0B8/014277AB known pair 只允许作为更早世代最终兜底。
         or (tonumber(F.PersistenceSchema2Framework2RecoveryContractVersion) or 0) < 1 -- 中文维护注释：显式门禁本轮真实 `73DF7418>224E5B9D` 所揭示的 schema2 Framework2 sequence/map 表形恢复，防止未来又退回内容相关 Hash 白名单。
+        or (tonumber(F.PersistenceTransportV1ZeroOmissionRecoveryContractVersion) or 0) < 1 -- 中文维护注释：显式门禁 `.18.198` 实机 `55BD6B0A>44CFFAF4` 所揭示的 Transport v1 零值省略恢复，防止未来把窗口 x/y=0 的合法布局重新变成永久 Fence。
         or (tonumber(F.PersistenceIndexCodecVersion) or 0) < 1 -- 中文维护注释：物理 codec 仍保持 v1，schema2 只划分 canonical generation，不制造无必要的数据格式升级。
         or (tonumber(S.Persistence.HistoricalCanonicalRecoveryContractVersion) or 0) < 3 -- 中文维护注释：Core 必须继续支持 Store-owned exact historical canonical 验证。
         or (tonumber(S.Persistence.KnownLegacyCanonicalRecoveryContractVersion) or 0) < 1 -- 中文维护注释：Core known-stamp 通道只提供安全框架，具体 fingerprint Authority 仍在 Store。

@@ -15,6 +15,11 @@ Thumbs.db
 
 # External reference projects (read-only inspiration, ~56M, never part of the addon
 # source and must never be copied from — see project rules: "better, not copied")
-供参考的项目/
+#
+# 中文维护注释（2026-09-10 修正）：原规则写作「供参考的项目/」，与实际目录名
+# 「参考的项目/」不符（多一个「供」字），该规则从未生效，导致 230 个第三方文件 /
+# 约 20MB 被误提交进本仓库。本次一并执行 `git rm -r --cached 参考的项目/` 让其脱离
+# 跟踪（磁盘文件保留），恢复本注释声明的「参考项目永不进入 addon 源码」约定。
+参考的项目/
 __pycache__/
 *.pyc

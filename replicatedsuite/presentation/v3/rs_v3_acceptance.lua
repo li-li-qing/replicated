@@ -1,11 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Foundation Acceptance v98 -- 中文维护注释：.18.196 增加左侧“完成/未完成”开发排序与专用导航标题验收；Popup Authority 既有契约保持不变。
+-- Replicated Suite V3 - Foundation Acceptance v99 -- 中文维护注释：.18.197 增加 Persistence Transport v2/活动精确恢复、团队默认开启与团队中心布局验收；所有检查均为只读契约检查，不触发 Store Load 或 Native 动作。
 --
 -- Bounded, on-demand checks only. No Native widget creation and no Tick.
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
-S.UIV3Acceptance = { version = 98 } -- 中文维护注释：v98 只新增导航开发态展示契约，不改变 PageHost/Feature/Persistence Authority。
+S.UIV3Acceptance = { version = 99 } -- 中文维护注释：v99 把本轮持久化与团队产品语义纳入 Fresh Reload 发布门槛；不会把 Presentation acceptance 变成业务 Authority。
 local A = S.UIV3Acceptance
 A.TradeDpsFreshReloadPreflightContractVersion = 2
 A.TradeDetailFavoritesContractVersion = 1
@@ -23,6 +23,8 @@ A.QuickSurfaceReloadReconcileContractVersion = 3
 A.ShellPersistenceSchemaContractVersion = 1
 A.PopupCoordinateAuthorityContractVersion = 3 -- 中文维护注释：v3 要求 Suite-owned detached Popup 最终使用 Native-relative Trigger Anchor；绝对 viewport solver 仅服务显式 point/外部 Native，且专项诊断按钮属于验收能力。
 A.NavigationDevelopmentOrderContractVersion = 1 -- 中文维护注释：验收明确要求 Registry 单一判定、Router 完成优先排序、Shell 专用 navigationTitle 三段链路，防止未来 UI 重构重新混排。
+A.PersistenceSaveReadbackTransportContractVersion = 1 -- 中文维护注释：v1 表示 Acceptance 已要求 Framework3 Transport v2 + mismatch 字段级诊断证据；旧 Transport v1 仅允许读取迁移，禁止继续作为新写格式。
+A.TeamDefaultsLayoutContractVersion = 1 -- 中文维护注释：v1 固化自动职责/牺牲之舞 fresh default=on、旧显式关闭兼容，以及团队中心职责/辅助分区；不授予任何额外 Native 写权限。
 
 local MIGRATED_MODAL_MODULES = {
     ["v3_quest_detail_modal"] = "QuestDetailModalV3",
@@ -377,15 +379,20 @@ function A:RunMatrix()
         failures[#failures + 1] = "team_role_catalog_contract_v3"
     end
     local teamSacOverlay = S.UIV3 and S.UIV3.TeamSacOverlay or nil
-    if type(teamTools) ~= "table" or (tonumber(teamTools.TeamVisualContractVersion) or 0) < 1
-        or (tonumber(teamTools.TeamMarkerSnapshotContractVersion) or 0) < 1
-        or (tonumber(teamTools.TeamSacContractVersion) or 0) < 1
+    if type(teamTools) ~= "table" or (tonumber(teamTools.TeamVisualContractVersion) or 0) < 2 -- 中文维护注释：v2 要求新用户牺牲之舞默认开启且 schema1 旧关闭可迁移；Consumer 生命周期仍由 Feature Demand 控制。
+        or (tonumber(teamTools.TeamMarkerSnapshotContractVersion) or 0) < 1 -- 中文维护注释：标记恢复继续执行原串行 readback 校验，本轮不改写 marker 权限边界。
+        or (tonumber(teamTools.TeamSacContractVersion) or 0) < 2 -- 中文维护注释：拒绝遗漏 schema2/default-on Store 的增量包。
+        or (tonumber(teamTools.AutoRoleDefaultOnContractVersion) or 0) < 1 -- 中文维护注释：自动职责空 Store 默认 true 与旧 false 保留必须同时存在。
         or type(teamTools.Commands) ~= "table"
         or type(teamTools.Commands.SetSacHighlightEnabled) ~= "function"
         or type(teamTools.Commands.SaveRaidMarkers) ~= "function"
         or type(teamTools.Commands.RestoreRaidMarkers) ~= "function"
         or type(teamSacOverlay) ~= "table" or (tonumber(teamSacOverlay.TeamSacPresentationContractVersion) or 0) < 1 then
-        failures[#failures + 1] = "team_visual_marker_contract_v1"
+        failures[#failures + 1] = "team_visual_marker_contract_v2" -- 中文维护注释：故障键升 v2，实机诊断可直接区分“旧视觉契约缺失”与“.18.197 默认值/迁移遗漏”。
+    end
+    local businessPagesContract = S.UIV3 and S.UIV3.BusinessPagesContract or nil -- 中文维护注释：团队中心布局属于 Presentation contract；这里只验证分区版本，不把页面结构反向作为 TeamTools Domain Authority。
+    if type(businessPagesContract) ~= "table" or (tonumber(businessPagesContract.teamCenterLayoutContractVersion) or 0) < 1 then
+        failures[#failures + 1] = "team_center_layout_contract_v1" -- 中文维护注释：防止后续页面合并时重新露出已安全停用的成员移动表单或恢复无意义成本列。
     end
 
     local buffCap = S.Features and S.Features.combat_buff_cap or nil
@@ -395,6 +402,13 @@ function A:RunMatrix()
     end
 
     local activities = S.Features and S.Features.Activities or nil
+    local activityStore = S.Persistence ~= nil and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.activities") or nil -- 中文维护注释：Acceptance 只检查 Store spec，不主动读取用户存档，避免启动期为验收增加 SaveData I/O。
+    if type(activities) ~= "table" or (tonumber(activities.PersistenceStoreSchemaContractVersion) or 0) < 8
+        or (tonumber(activities.KnownLegacyCanonicalRecoveryContractVersion) or 0) < 2
+        or type(activityStore) ~= "table" or tonumber(activityStore.schemaVersion) ~= 8
+        or type(activityStore.recoverKnownLegacyCanonical) ~= "function" or activityStore.allowIntegrityUpgrade ~= true then
+        failures[#failures + 1] = "activity_persistence_recovery_contract_v2" -- 中文维护注释：必须证明 6963CEA5→109696BD 只走 schema8/Transport-v1 exact 恢复并能升级写入；未知 mismatch 不能被此 Gate 放宽。
+    end
     local tasks = S.Features and S.Features.Tasks or nil
     if type(activities) ~= "table" or (tonumber(activities.PersistenceMutationContractVersion) or 0) < 2
         or type(tasks) ~= "table" or (tonumber(tasks.PersistenceMutationContractVersion) or 0) < 2 then
@@ -586,6 +600,9 @@ function A:RunMatrix()
         or type(S.Persistence.VerifyPersistedValue) ~= "function"
         or type(S.Persistence.FingerprintEncodedPayload) ~= "function"
         or type(S.Persistence.FingerprintEnvelopeIntegrity) ~= "function"
+        or type(S.Persistence.EncodePhysicalEnvelope) ~= "function" or type(S.Persistence.DecodePhysicalEnvelope) ~= "function" -- 中文维护注释：物理 Transport 必须继续由 Persistence Core 单一拥有，业务 Store 不允许自行编码 sentinel。
+        or type(S.Persistence.DescribeCanonicalDivergence) ~= "function" or (tonumber(S.Persistence.ReadbackDivergenceDiagnosticsContractVersion) or 0) < 1 -- 中文维护注释：readback mismatch 必须留下字段级证据，未来同类 RU serializer 故障不能再只返回两个 Hash。
+        or (tonumber(S.Persistence.FrameworkVersion) or 0) < 3 or (tonumber(S.Persistence.TransportContractVersion) or 0) < 2 -- 中文维护注释：新写必须是 Framework3/Transport2；Transport1 仅兼容读取并迁移，防止 0/空字符串再次被物理省略。
         or type(S.Persistence.Flush) ~= "function"
         or (tonumber(S.Persistence.ReliabilityContractVersion) or 0) < 7
         or (tonumber(S.Persistence.MinIntegrityReliabilityContractVersion) or 0) > 4

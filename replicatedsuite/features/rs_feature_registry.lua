@@ -160,6 +160,7 @@ Add("combat_analytics", "combat.analytics", "战斗分析", "combat", 15, "模�
     widgetCapable = false, settingsCapable = true, defaultEnabled = false,
 })
 Add("combat_healer", "combat.healer", "治疗辅助", "combat", 20, "治疗推荐核心与团队校准/屏幕色块：共享团队名单与 Aura 事实；不再提供无意义的推荐列表悬浮窗，校准可在治疗计算关闭时独立显示。", {
+    navigationDevelopmentState = "complete", -- 中文维护注释：2026-09-10 用户已完成实机验收，左侧开发导航将治疗辅助列入“已完成”区域。这里只覆盖 Presentation 完成度；apiReadiness/remainingCapability 仍保留真实工程风险，不会因此放宽 Healer Consumer、Aura/TeamRoster Authority 或 Native API 门。
     status = "migrated_m16_18", lifecycle = "independent", authority = "v3.healer + v3.team_roster + v3.aura_observation",
     widgetCapable = false, settingsCapable = true, defaultEnabled = false,
     apiDependencies = { "X2Team:GetRole", "X2Unit:UnitHealth", "X2Unit:UnitMaxHealth", "X2Unit:UnitDistance", "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:UnitDeBuffCount", "X2Unit:UnitDeBuff", "X2Unit:UnitHiddenBuffCount", "X2Unit:UnitHiddenBuff", "X2Unit:GetUnitScreenPosition" },
@@ -282,17 +283,20 @@ Add("life_craft_planner", "life.craft_planner", "制作规划", "life", 70, "多
     evidence = "CraftPlanContract v1 + governed StaticDataV2 recipe/material identities + shared PriceQuoteQueueV3; no Native recipe enumeration or implicit auction fan-out",
 })
 Add("life_housing", "life.housing", "住宅 / 税务", "life", 80, "住宅名称、类型、所有者与当前税务信息；仅在住宅上下文按需读取。", {
+    navigationDevelopmentState = "incomplete", -- 中文维护注释：2026-09-10 用户明确住宅/税务尚未完成；即使只读 getter 已登记，左侧仍必须下沉并显示“未完成”。该标记不改变 page-scoped 生命周期、X2House 只读 Authority 或未来升级 key。
     status = "migrated_v3_read_only", lifecycle = "page_scoped", authority = "v3.housing", widgetCapable = false, settingsCapable = false,
     apiDependencies = { "X2House:GetCurrentHousingTaxInfo", "X2House:GetHouseOwnerName", "X2House:GetHouseName", "X2House:GetHouseType" },
     apiReadiness = "official", apiPolicy = "read_only", evidence = "ArcheRage RU official addon API update 2026-08-19",
 })
 Add("life_butler", "life.butler", "管家助手", "life", 90, "预留管家充能/服务状态入口；当前只接纳已开放的充能信息 getter，不提前接未授权动作。", {
+    navigationDevelopmentState = "incomplete", -- 中文维护注释：2026-09-10 用户明确管家助手仍属未完成功能；官方 narrow getter 只证明数据入口，不代表产品闭环。仅影响导航排序/后缀，不创建额外 Consumer 或写入能力。
     status = "migrated_v3_read_only", lifecycle = "page_scoped", authority = "v3.butler", widgetCapable = false, settingsCapable = false,
     apiDependencies = { "X2Butler:GetChargeInfo" }, apiReadiness = "official_narrow", apiPolicy = "read_only",
     evidence = "ArcheRage RU official addon API update 2026-08-26; capability surface is currently narrow",
 })
 
 Add("tools_bag", "tools.bag_organizer", "整理背包", "tools", 10, "快速在背包与当前银行/保管箱之间整理同类物品；黑名单物品不会参与取放。", {
+    navigationDevelopmentState = "complete", -- 中文维护注释：2026-09-10 用户已将整理背包列为完成；只改变左侧开发状态，现有 InventorySnapshotV3/显式 Move Authority、100ms 低成本窗口观察、250ms 串行写入与 fail-closed 边界全部保持。
     status = "migrated_partial", lifecycle = "independent_low_cost", authority = "v3.bag", settingsCapable = true, defaultEnabled = true,
     capabilities = { "category_batch", "scheduler_queue", "window_commands", "native_window_quick_take_put", "blacklist_filter", "read_verify_stop", "dynamic_source_resolution", "ru_identity_fallback", "shared_inventory_snapshot", "physical_bag_authority", "grouped_intent_queue", "quick_two_button_stop_switch", "quick_stale_run_self_heal", "batch_target_open_storage", "surface_action_visibility_split", "storage_session_bag_surface_fallback", "bag_action_physical_read_authority", "quick_released_host_recovery", "product_blacklist_ux", "blacklist_name_metadata", "blacklist_explicit_lookup" },
     scheduler = "InventorySnapshotV3 builds one bounded read/index snapshot per explicit plan (bagId=1 physical Authority with bounded bagId=0 fallback); Shared Scheduler serializes grouped same-item/category intent at 250ms; slotHint is revalidated before every write and quick/category tasks remain mutually exclusive; no per-frame polling",
@@ -354,6 +358,7 @@ Add("tools_portal_profiles", "tools.portal_profiles", "传送配置", "tools", 9
     evidence = "ArcheRage community Personal Portals setter; Suite candidate Option APIs remain runtime-unverified",
 })
 Add("tools_random_shop", "tools.random_shop", "随机商店计数", "tools", 100, "预留随机商店刷新次数显示与提醒；当前官方只开放刷新计数 getter，不假设其它商店数据可读。", {
+    navigationDevelopmentState = "incomplete", -- 中文维护注释：2026-09-10 用户明确随机商店计数仍未完成；单一刷新次数 getter 不等于完整功能。该状态只用于导航展示，仍禁止猜测商店列表/刷新动作。
     status = "migrated_v3_read_only", lifecycle = "page_scoped", authority = "v3.random_shop", widgetCapable = false, settingsCapable = false,
     apiDependencies = { "X2Store:GetRandomShopStoreRefreshCount" }, apiReadiness = "official_narrow", apiPolicy = "read_only",
     evidence = "ArcheRage RU official addon API update 2026-08-26",

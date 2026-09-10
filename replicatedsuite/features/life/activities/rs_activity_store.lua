@@ -125,21 +125,32 @@ end -- 中文维护注释：结束活动 known-stamp 形状验证。
 
 local KNOWN_V7_STAMP = "6271E40B" -- 中文维护注释：2026-09-09 RU Fresh Reload 实机重复报告的活动 schema7 旧 v4 盖章；只允许这一精确值进入一次性迁移。
 local KNOWN_V8_CANONICAL = "7E85D975" -- 中文维护注释：同一事故磁盘数据经当前 schema8 canonical 得到的 Hash；old 与 new 必须同时命中才允许保留数据。
+local KNOWN_V8_TRANSPORT_V1_STAMP = "6963CEA5" -- 中文维护注释：2026-09-10 RU 实机在 Framework3/Transport v1 上保存活动设置后记录的原 canonical 指纹；它不是通用“活动坏档”白名单。
+local KNOWN_V8_TRANSPORT_V1_READBACK = "109696BD" -- 中文维护注释：同一次 SaveData→LoadData 回读后活动 payload 经 schema8 canonical 得到的实机 Hash；必须与上面的 old stamp 成对命中。
 
-local function RecoverKnownV7Canonical(decoded, stampedFingerprint, currentCanonical, raw) -- 中文维护注释：Store-owned 一次性恢复桥只处理已证明的 schema7→8 canonical generation 事故，不改变 Persistence Core 通用 fail-closed。
-    local meta = type(raw) == "table" and raw.__rsmeta or nil -- 中文维护注释：先读取已被 Envelope Seal 验证过的元数据，用它限定 Store/owner/schema 身份。
-    if type(meta) ~= "table" or tonumber(meta.schema) ~= 7 or tostring(meta.store or "") ~= STORE_ID or tostring(meta.owner or "") ~= "v3.activities" then return nil end -- 中文维护注释：任何非 schema7 活动 Store 都不具备该迁移资格。
-    if tostring(stampedFingerprint or "") ~= KNOWN_V7_STAMP then return nil end -- 中文维护注释：未知旧指纹继续由 Core 维持 integrity_failed/write fence。
-    local source = type(raw.payload) == "table" and raw.payload or nil -- 中文维护注释：plain Store 的真实业务数据只允许来自 Persistence 包封的 payload，禁止从其它字段猜值。
-    if source == nil or ValidateKnownV7Payload(source) ~= true then return nil end -- 中文维护注释：即使 stamp 命中，业务形状异常也必须拒绝恢复。
-    local currentFingerprint = P:FingerprintDurablePayload(currentCanonical, ACTIVITY_BUDGET) -- 中文维护注释：再次验证当前 canonical 正好等于实机观察的 new Hash，防止同 old stamp 下内容已发生真实变化。
-    if tostring(currentFingerprint or "") ~= KNOWN_V8_CANONICAL then return nil end -- 中文维护注释：old/new pair 不完整即 fail-closed，绝不泛化为“活动 Store mismatch 都接受”。
-    return Normalize(decoded), "activities_schema7_known_pair_6271E40B_7E85D975" -- 中文维护注释：只返回当前 Domain normalizer 保留下来的用户偏好；Core 仍会预算、migrate、apply 并重盖 schema8。
-end -- 中文维护注释：结束活动已知旧盖章一次性恢复桥。
+local function RecoverKnownActivityCanonical(decoded, stampedFingerprint, currentCanonical, raw) -- 中文维护注释：活动 Store 自己拥有已知 canonical/transport 事故的恢复资格；Core 只负责机制与最终 exact-hash 证明，Feature/UI 不参与。
+    local meta = type(raw) == "table" and raw.__rsmeta or nil -- 中文维护注释：该 raw 已经过 Core 的物理预算、Transport 解码与 Envelope Seal 验证；这里仍再次限定 Store/owner/schema/transport，避免跨 Store 借用恢复。
+    if type(meta) ~= "table" or tostring(meta.store or "") ~= STORE_ID or tostring(meta.owner or "") ~= "v3.activities" then return nil end -- 中文维护注释：任何其它 Store/owner 即使碰巧 Hash 相同也必须 fail-closed。
+    local source = type(raw.payload) == "table" and raw.payload or nil -- 中文维护注释：plain Store 的业务 Authority 只来自 Persistence envelope.payload；禁止根据 UI 当前值或默认值猜测磁盘内容。
+    if source == nil or ValidateKnownV7Payload(source) ~= true then return nil end -- 中文维护注释：schema7/8 共享同一 bounded 字段形状；未知根字段/非法类型一律拒绝恢复，防止损坏数据被吞掉。
+    local currentFingerprint = P:FingerprintDurablePayload(currentCanonical, ACTIVITY_BUDGET) -- 中文维护注释：恢复资格必须同时证明“当前磁盘解码内容”正好落在已观测的新 Hash，而不是只看旧 stamp。
+
+    if tonumber(meta.schema) == 7 and tostring(stampedFingerprint or "") == KNOWN_V7_STAMP
+        and tostring(currentFingerprint or "") == KNOWN_V8_CANONICAL then -- 中文维护注释：保留 `.18.192` schema7→8 canonical generation 的旧 exact pair；其它 schema7 mismatch 继续 Fence。
+        return Normalize(decoded), "activities_schema7_known_pair_6271E40B_7E85D975" -- 中文维护注释：恢复后仅保留 Normalize 可证明的用户偏好，由 Core 立即按当前 schema/canonical 重盖。
+    end
+
+    if tonumber(meta.schema) == STORE_SCHEMA and tonumber(meta.framework) == 3 and tonumber(meta.transportVersion) == 1
+        and tostring(stampedFingerprint or "") == KNOWN_V8_TRANSPORT_V1_STAMP
+        and tostring(currentFingerprint or "") == KNOWN_V8_TRANSPORT_V1_READBACK then -- 中文维护注释：`.18.196` 新事故必须同时满足 schema8 + Framework3 + Transport v1 + exact old/readback Hash，禁止放宽成 wildcard。
+        return Normalize(decoded), "activities_schema8_transport1_known_pair_6963CEA5_109696BD" -- 中文维护注释：Transport v1 已经物理丢失的字段无法从 32 位 Hash 反推；这里保留磁盘仍能严格解释的全部设置，并让 Core 以 Transport v2 重新持久化，阻断同类再次发生。
+    end
+    return nil -- 中文维护注释：任何未知 mismatch 都继续进入 Persistence write fence；以后必须依赖新版 readback divergence 证据定位真实字段，不能继续追加宽泛容错。
+end -- 中文维护注释：结束活动已知事故恢复桥；本函数只在 integrity mismatch 冷路径执行，不进入活动刷新/Tick。
 
 F.PersistenceStoreSchemaContractVersion = STORE_SCHEMA -- 中文维护注释：暴露给 Acceptance/Foundation 的活动 Store schema 契约版本，防止后续增量包漏改测试而静默回退。
 F.PersistenceWindowCanonicalContractVersion = 1 -- 中文维护注释：标记活动窗口 canonical 已从共享可演进表收敛为 Store-owned 字段投影。
-F.KnownLegacyCanonicalRecoveryContractVersion = 1 -- 中文维护注释：标记活动 Store 注册了 exact old/new pair 恢复能力，诊断可据此区分旧包与新包。
+F.KnownLegacyCanonicalRecoveryContractVersion = 2 -- 中文维护注释：v2 同时覆盖 schema7 canonical generation 与 schema8/Transport-v1 实机 exact pair；未知 mismatch 仍由 Core Fence。
 
 local function Apply(value)
     local normalized = Normalize(value)
@@ -168,7 +179,7 @@ if P:GetStore(STORE_ID) == nil then
             if type(meta) ~= "table" or tonumber(meta.schema) ~= 7 then return nil end -- 中文维护注释：仅 schema7 候选有资格剥离 schema8 新窗口字段。
             return NormalizeHistoricalV7(decoded) -- 中文维护注释：Core 会自行计算候选 Hash；只有逐字等于旧 stamp 才把它视为认证历史逻辑值。
         end, -- 中文维护注释：结束活动 schema7 exact historical canonical hook。
-        recoverKnownLegacyCanonical = RecoverKnownV7Canonical, -- 中文维护注释：仅处理 6271E40B→7E85D975 已知实机 pair；未知 mismatch 继续 Fence。
+        recoverKnownLegacyCanonical = RecoverKnownActivityCanonical, -- 中文维护注释：只处理两个已实证 exact pair：6271E40B→7E85D975 与 schema8/Transport-v1 的 6963CEA5→109696BD；其余 mismatch 继续 Fence。
         allowIntegrityUpgrade = true, -- 中文维护注释：允许通过 Envelope Seal + Store-owned 严格 hook 后一次性重盖；正常 schema8 仍按 Integrity v4 严格验证。
     })
     if store == nil and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Error) == "function" then

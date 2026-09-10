@@ -9,7 +9,7 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
 S.FoundationGate = {
-    version = 145, -- 中文维护注释：.18.196 在既有 Persistence/DeathReview blocker 上增加导航开发态排序契约，防止未完成功能再次混到已完成功能之间。
+    version = 146, -- 中文维护注释：.18.197 把 Persistence Transport v2/readback divergence、Activities 精确恢复桥、团队默认开启与新布局全部提升为发布 Blocker；Gate 只验证契约存在，不主动 Load Store、启动 Consumer 或触发 Native 写入。
     last = nil,
     sequenceCases = {},
     sequenceOrder = {},
@@ -1568,8 +1568,9 @@ function G:Run(options)
             and type(deathReview.Commands.SetEnabled) == "function" and type(deathReview.Commands.ClearHistory) == "function"
             and (tonumber(deathReview.PersistenceCanonicalWindowContractVersion) or 0) >= 7 -- 中文维护注释：Foundation 要求 Store-owned 窗口字段投影 v7，防止共享 FloatingSurface 未来加字段再次污染既有 Index canonical。
             and (tonumber(deathReview.PersistenceIndexSchemaContractVersion) or 0) >= 2 -- 中文维护注释：DeathReview Index 必须明确处于 schema2；record 分片仍独立 schema1，不在此合并。
-            and (tonumber(deathReview.PersistenceKnownLegacyRecoveryContractVersion) or 0) >= 3 -- 中文维护注释：DeathReview recovery v3 必须先结构化恢复 schema2/Framework2 serializer 表形，再把旧内容相关 known pair 留作早期世代兜底。
+            and (tonumber(deathReview.PersistenceKnownLegacyRecoveryContractVersion) or 0) >= 4 -- 中文维护注释：DeathReview recovery v4 要求「可结构化证明的恢复」先于 known-pair：先补回 Transport v1 省略的零值窗口字段，再恢复 schema2/Framework2 表形，旧内容相关 known pair 只作早期世代兜底。
             and (tonumber(deathReview.PersistenceSchema2Framework2RecoveryContractVersion) or 0) >= 1 -- 中文维护注释：发布门禁明确要求 `.18.195` schema2 codec1 Framework2 exact-recovery 存在，避免公开用户因不同 history 内容产生新 Hash 时再次被 Fence。
+            and (tonumber(deathReview.PersistenceTransportV1ZeroOmissionRecoveryContractVersion) or 0) >= 1 -- 中文维护注释：`.18.198` 要求 Framework3/Transport v1 的零值省略结构化恢复必须随包存在，防止公开用户窗口 x/y=0 或透明度=0 时被永久 write fence。
             and (tonumber(deathReview.PersistenceIndexCodecVersion) or 0) >= 1 -- 中文维护注释：codec1 继续是 Index 稳定物理编码，schema bump 不等于强制换 codec。
             and (tonumber(S.Persistence.HistoricalCanonicalRecoveryContractVersion) or 0) >= 3 -- 中文维护注释：Core exact historical canonical 恢复必须存在且先于 known-stamp 迁移。
             and type(deathReview.WidgetWindowSizePolicy) == "table" and deathReview.Demand ~= nil -- 中文维护注释：Presentation policy 与独立 Demand 生命周期必须同时保持，持久化修复不得耦合高频战斗模块。
@@ -1749,7 +1750,8 @@ function G:Run(options)
             and type(S.Persistence.EncodePhysicalEnvelope) == "function" and type(S.Persistence.DecodePhysicalEnvelope) == "function"
             and type(S.Persistence.RebuildFramework2SerializerOmissions) == "function"
             and (tonumber(S.Persistence.FrameworkVersion) or 0) >= 3
-            and (tonumber(S.Persistence.TransportContractVersion) or 0) >= 1
+            and (tonumber(S.Persistence.TransportContractVersion) or 0) >= 2 -- 中文维护注释：.18.197 新写必须使用 Transport v2，保护 false/空表之外的 0/空字符串；v1 只保留 Load 兼容，不能再作为发布级写入契约。
+            and (tonumber(S.Persistence.ReadbackDivergenceDiagnosticsContractVersion) or 0) >= 1 and type(S.Persistence.DescribeCanonicalDivergence) == "function" -- 中文维护注释：任何未来 readback Hash mismatch 必须能给出首个字段差异证据；该 helper 仅失败冷路径 bounded 执行，不得被 Feature 热路径调用。
             and (tonumber(S.Persistence.ReliabilityContractVersion) or 0) >= 6
             and (tonumber(S.Persistence.IntegrityContractVersion) or 0) >= 1
             and (tonumber(S.Persistence.EnvelopeIntegrityContractVersion) or 0) >= 1
@@ -2230,9 +2232,10 @@ function G:Run(options)
 
     local teamSacOverlay = S.UIV3 and S.UIV3.TeamSacOverlay or nil
     local teamVisualOk = type(teamTools) == "table"
-        and (tonumber(teamTools.TeamVisualContractVersion) or 0) >= 1
-        and (tonumber(teamTools.TeamMarkerSnapshotContractVersion) or 0) >= 1
-        and (tonumber(teamTools.TeamSacContractVersion) or 0) >= 1
+        and (tonumber(teamTools.TeamVisualContractVersion) or 0) >= 2 -- 中文维护注释：v2 固化“牺牲之舞 fresh default=on + schema1 旧关闭语义迁移”；不等于扩大 Aura/TeamRoster 生命周期。
+        and (tonumber(teamTools.TeamMarkerSnapshotContractVersion) or 0) >= 1 -- 中文维护注释：标记快照仍沿用串行写入/回读确认契约；本轮不改变 Native marker Authority。
+        and (tonumber(teamTools.TeamSacContractVersion) or 0) >= 2 -- 中文维护注释：发布必须要求 schema2/default-on Store，否则新用户与旧用户升级语义可能混淆。
+        and (tonumber(teamTools.AutoRoleDefaultOnContractVersion) or 0) >= 1 -- 中文维护注释：自动职责 fresh Store 默认开启，但旧用户显式 false 必须继续由 v3.team_tools Store 持久化；Gate 只查声明，不写用户配置。
         and type(teamTools.Commands) == "table"
         and type(teamTools.Commands.SetSacHighlightEnabled) == "function"
         and type(teamTools.Commands.SaveRaidMarkers) == "function"
@@ -2243,6 +2246,15 @@ function G:Run(options)
         teamVisualOk and "bounded Sac overlay + persistent marker snapshot/verified serial restore present" or "team visual/marker contract unavailable")
 
     local activities = S.Features and S.Features.Activities or nil
+    local activityStore = S.Persistence ~= nil and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.activities") or nil -- 中文维护注释：只读取已注册 Store spec，不触发 LoadData；用于证明 .18.197 的 schema8 exact-pair 恢复桥实际挂在 Store Authority 上。
+    local activityRecoveryOk = type(activities) == "table"
+        and (tonumber(activities.PersistenceStoreSchemaContractVersion) or 0) >= 8 -- 中文维护注释：Activities 当前 canonical generation 必须仍是 schema8，禁止用降 schema 绕过 6963CEA5→109696BD。
+        and (tonumber(activities.KnownLegacyCanonicalRecoveryContractVersion) or 0) >= 2 -- 中文维护注释：v2 明确包含 schema8/Framework3/Transport-v1 exact pair，未知 pair 仍必须 Fence。
+        and type(activityStore) == "table" and tonumber(activityStore.schemaVersion) == 8
+        and type(activityStore.recoverKnownLegacyCanonical) == "function" and activityStore.allowIntegrityUpgrade == true -- 中文维护注释：恢复资格必须由 Store-owned hook + Core exact fingerprint 验真组合完成，Feature/UI 不得直接放行。
+    AddCheck(report, "v3_activity_persistence_recovery_contract", activityRecoveryOk, "blocker",
+        activityRecoveryOk and "schema8 exact canonical/Transport-v1 incident recovery + Transport v2 rewrite present" or "activity persistence recovery contract unavailable")
+
     local tasks = S.Features and S.Features.Tasks or nil
     local persistenceMutationOk = type(activities) == "table" and (tonumber(activities.PersistenceMutationContractVersion) or 0) >= 2
         and type(tasks) == "table" and (tonumber(tasks.PersistenceMutationContractVersion) or 0) >= 2

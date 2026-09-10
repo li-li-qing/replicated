@@ -2509,7 +2509,8 @@ local function NormalizeTeamRole(value)
 end
 
 local TeamTools = NewFeature("combat_team_tools", { apiDependencies = { "X2Team:GetRole", "X2Team:SetRole", "X2Unit:GetTargetAbilityTemplates", "X2Unit:UnitName" },
-    state = { role = nil, autoRoleEnabled = true }, default = { role = nil, autoRoleEnabled = true }, persistentKeys = { "role" },
+    -- 中文维护注释（2026-09-10，自动职责默认开启）：autoRoleEnabled 早已属于 default，因此 NewFeature 的持久化白名单事实上会保存它；这里把它同时写入 explicit persistentKeys，目的是把“新安装默认 true、旧用户显式 false 必须保留”变成可读且可测试的 Store 契约。Authority 仍是 TeamTools.State，UI 只通过 SetAutoRoleEnabled -> PersistStateMutation 修改；不会在 Reload/Enable 时强制把旧 false 改 true，也不会增加新的轮询任务。
+    state = { role = nil, autoRoleEnabled = true }, default = { role = nil, autoRoleEnabled = true }, persistentKeys = { "role", "autoRoleEnabled" },
     reconcileDemand = AcquireTeamRoleRoster,
     onDisable = ReleaseTeamRoleRoster,
     projection = function(feature)
@@ -2547,6 +2548,7 @@ TeamTools.TeamRoleRosterHeld = false
 TeamTools.TeamRoleRosterSubscribed = false
 TeamTools.TeamRoleContractVersion = 2
 TeamTools.AutoRoleCatalogContractVersion = 1
+TeamTools.AutoRoleDefaultOnContractVersion = 1 -- 中文维护注释：发布门禁钉死“空 Store 默认开 + 旧显式关可持久化”的产品语义；它不代表功能无条件常驻，Feature Disabled 时观察任务仍全部释放。
 
 local TEAM_AUTO_ROLE_TASK="v3_team_auto_role_apply"
 local function TeamAutoRoleCatalog() return S.Data and S.Data.TeamAutoRoleCatalog or nil end
@@ -2619,7 +2621,7 @@ function TeamTools:Disable(reason)
     self:StopAutoRoleObservation()
     return TeamToolsBaseDisable(self,reason)
 end
-TeamTools.AutoRoleContractVersion=1
+TeamTools.AutoRoleContractVersion=2 -- 中文维护注释：v2 只提升默认值/持久化可见契约；事件订阅仍仅在 TeamTools Enabled 且 autoRoleEnabled~=false 时建立，关闭后 RemoveTask/UnsubscribeOwner 保持原生命周期。
 NewFeature("combat_raid_recruitment", { apiDependencies = { "X2Team:RaidRecruitDel", "X2Team:RaidApplicantList" },
     read = function(feature)
         local ok, list, callErr = Call("X2Team:RaidApplicantList", TeamApi, "RaidApplicantList")

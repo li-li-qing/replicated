@@ -41,8 +41,10 @@ local SCOPE = {
 
 S.Persistence = {
     FrameworkVersion = 3,
-    -- 中文维护注释：Framework3 引入物理传输编码。RU SaveData 已实证会省略 false/空表；业务 Domain、Store canonical 与完整性指纹仍使用原始 Lua 语义，只有真正交给 SaveData 的物理 envelope 才编码，LoadData 后在 metadata/schema/Apply 前还原。Authority 仍唯一属于 Store/Persistence，不把哨兵泄漏到 Feature/UI。旧 Framework2 继续可读；旧插件读取 Framework3 时会命中 future-framework 写保护，避免回滚版本误写哨兵。
-    TransportContractVersion = 1,
+    -- 中文维护注释：Framework3 物理传输编码由 Persistence 单一 Authority 管理。Transport v1 已实证保护 false/空表；2026-09-10 RU 又出现 schema8 活动设置 SaveData=true 但同 generation 回读 Hash 6963CEA5→109696BD，说明 Native serializer 仍可能省略“合法但假值化”的标量。Transport v2 在不改变业务 Domain/canonical/schema 的前提下继续保护数值 0 与空字符串；旧 v1/v2 都可读，新写统一 v2。编码只发生 SaveData/LoadData 边界，不进入 Tick/Slider 热路径。
+    TransportContractVersion = 2,
+    ReadbackDivergenceDiagnosticsContractVersion = 1, -- 中文维护注释：.18.197 将 SaveData→LoadData 指纹不一致的首个 canonical 差异路径纳入正式诊断契约；只在完整性/readback 已失败的冷路径运行 bounded diff，不读取 Native 游戏状态、不改变 Store Authority，也禁止未来为了减少日志而静默移除此证据。
+    TransportScalarOmissionProtectionContractVersion = 1,
     ReliabilityContractVersion = 8,
     MinIntegrityReliabilityContractVersion = 4,
     -- Integrity v3 verifies the CANONICAL store value (decode -> store
@@ -169,31 +171,38 @@ local function NonEmptyText(value)
     return text ~= "" and text or nil
 end
 
--- 中文维护注释：RU 物理 SaveData 传输层。这里仅解决已实证的两类表示丢失：boolean false 与空 table。
--- 不能直接把 false 改成 nil，也不能让各 Feature 自己发明编码，否则重载后会出现“默认 true 覆盖用户 false”以及多套兼容逻辑。
--- 保留字符串转义是为了消除哨兵碰撞：任何业务字符串只要以保留前缀开头，保存前都会先转义，因而解码绝不会把真实用户字符串误判成框架值。
-local TRANSPORT_PREFIX = "__rs_t1:"
-local TRANSPORT_FALSE = TRANSPORT_PREFIX .. "f"
-local TRANSPORT_EMPTY = TRANSPORT_PREFIX .. "e"
-local TRANSPORT_STRING = TRANSPORT_PREFIX .. "s"
+-- 中文维护注释：RU 物理 SaveData 传输层由 Persistence 统一拥有；Feature Store 只能声明业务 schema，禁止各模块自己发明 Native serializer 补丁。
+-- Transport v1（历史可读）保护 boolean false、空 table 与 v1 保留前缀字符串；Transport v2（当前写入）继续保护数值 0 与空字符串，针对 2026-09-10
+-- `v3.activities 6963CEA5→109696BD` 暴露的“SaveData 成功但合法假值化标量可能消失”风险。所有哨兵只存在物理 envelope，LoadData 后在 metadata/schema/Apply 前还原，
+-- 因而 Domain Authority、canonical hash 与用户配置语义完全不变。循环/未知 token 继续 fail-closed；该递归只运行在 bounded Save/Load 边界，不进入 Tick/事件热路径。
+local TRANSPORT_V1_PREFIX = "__rs_t1:"
+local TRANSPORT_V1_FALSE = TRANSPORT_V1_PREFIX .. "f"
+local TRANSPORT_V1_EMPTY = TRANSPORT_V1_PREFIX .. "e"
+local TRANSPORT_V1_STRING = TRANSPORT_V1_PREFIX .. "s"
+local TRANSPORT_V2_PREFIX = "__rs_t2:"
+local TRANSPORT_V2_FALSE = TRANSPORT_V2_PREFIX .. "f"
+local TRANSPORT_V2_EMPTY_TABLE = TRANSPORT_V2_PREFIX .. "t"
+local TRANSPORT_V2_ZERO = TRANSPORT_V2_PREFIX .. "z"
+local TRANSPORT_V2_EMPTY_STRING = TRANSPORT_V2_PREFIX .. "e"
+local TRANSPORT_V2_STRING = TRANSPORT_V2_PREFIX .. "s"
 
-local function TransportEncodeValue(value, seen)
+local function TransportEncodeValueV1(value, seen) -- 中文维护注释：只用于兼容 Harness/历史语义说明；生产新写由 v2 承担。
     local kind = type(value)
-    if kind == "boolean" then return value == false and TRANSPORT_FALSE or true, nil end
+    if kind == "boolean" then return value == false and TRANSPORT_V1_FALSE or true, nil end
     if kind == "string" then
-        if value:sub(1, #TRANSPORT_PREFIX) == TRANSPORT_PREFIX then return TRANSPORT_STRING .. value, nil end
+        if value:sub(1, #TRANSPORT_V1_PREFIX) == TRANSPORT_V1_PREFIX then return TRANSPORT_V1_STRING .. value, nil end
         return value, nil
     end
     if kind ~= "table" then return value, nil end
-    if next(value) == nil then return TRANSPORT_EMPTY, nil end
+    if next(value) == nil then return TRANSPORT_V1_EMPTY, nil end
     seen = seen or {}
     if seen[value] ~= nil then return nil, "transport_cycle" end
     seen[value] = true
     local out = {}
     for key, child in pairs(value) do
-        local encodedKey, keyErr = TransportEncodeValue(key, seen)
+        local encodedKey, keyErr = TransportEncodeValueV1(key, seen)
         if keyErr ~= nil then seen[value] = nil; return nil, keyErr end
-        local encodedChild, childErr = TransportEncodeValue(child, seen)
+        local encodedChild, childErr = TransportEncodeValueV1(child, seen)
         if childErr ~= nil then seen[value] = nil; return nil, childErr end
         out[encodedKey] = encodedChild
     end
@@ -201,13 +210,13 @@ local function TransportEncodeValue(value, seen)
     return out, nil
 end
 
-local function TransportDecodeValue(value, seen)
+local function TransportDecodeValueV1(value, seen) -- 中文维护注释：Transport v1 永久保留只读解码，保证用户从 `.18.194-.196` 升级时无需清配置。
     local kind = type(value)
     if kind == "string" then
-        if value == TRANSPORT_FALSE then return false, nil end
-        if value == TRANSPORT_EMPTY then return {}, nil end
-        if value:sub(1, #TRANSPORT_STRING) == TRANSPORT_STRING then return value:sub(#TRANSPORT_STRING + 1), nil end
-        if value:sub(1, #TRANSPORT_PREFIX) == TRANSPORT_PREFIX then return nil, "unknown_transport_token" end
+        if value == TRANSPORT_V1_FALSE then return false, nil end
+        if value == TRANSPORT_V1_EMPTY then return {}, nil end
+        if value:sub(1, #TRANSPORT_V1_STRING) == TRANSPORT_V1_STRING then return value:sub(#TRANSPORT_V1_STRING + 1), nil end
+        if value:sub(1, #TRANSPORT_V1_PREFIX) == TRANSPORT_V1_PREFIX then return nil, "unknown_transport_token_v1" end
         return value, nil
     end
     if kind ~= "table" then return value, nil end
@@ -216,9 +225,62 @@ local function TransportDecodeValue(value, seen)
     seen[value] = true
     local out = {}
     for key, child in pairs(value) do
-        local decodedKey, keyErr = TransportDecodeValue(key, seen)
+        local decodedKey, keyErr = TransportDecodeValueV1(key, seen)
         if keyErr ~= nil then seen[value] = nil; return nil, keyErr end
-        local decodedChild, childErr = TransportDecodeValue(child, seen)
+        local decodedChild, childErr = TransportDecodeValueV1(child, seen)
+        if childErr ~= nil then seen[value] = nil; return nil, childErr end
+        out[decodedKey] = decodedChild
+    end
+    seen[value] = nil
+    return out, nil
+end
+
+local function TransportEncodeValueV2(value, seen) -- 中文维护注释：v2 只扩展 serializer omission 保护，不改非零数字/非空字符串类型，避免无必要放大 39 个 Store 的物理体积。
+    local kind = type(value)
+    if kind == "boolean" then return value == false and TRANSPORT_V2_FALSE or true, nil end
+    if kind == "number" then return value == 0 and TRANSPORT_V2_ZERO or value, nil end
+    if kind == "string" then
+        if value == "" then return TRANSPORT_V2_EMPTY_STRING, nil end
+        if value:sub(1, #TRANSPORT_V2_PREFIX) == TRANSPORT_V2_PREFIX then return TRANSPORT_V2_STRING .. value, nil end
+        return value, nil
+    end
+    if kind ~= "table" then return value, nil end
+    if next(value) == nil then return TRANSPORT_V2_EMPTY_TABLE, nil end
+    seen = seen or {}
+    if seen[value] ~= nil then return nil, "transport_cycle" end
+    seen[value] = true
+    local out = {}
+    for key, child in pairs(value) do
+        local encodedKey, keyErr = TransportEncodeValueV2(key, seen)
+        if keyErr ~= nil then seen[value] = nil; return nil, keyErr end
+        local encodedChild, childErr = TransportEncodeValueV2(child, seen)
+        if childErr ~= nil then seen[value] = nil; return nil, childErr end
+        out[encodedKey] = encodedChild
+    end
+    seen[value] = nil
+    return out, nil
+end
+
+local function TransportDecodeValueV2(value, seen) -- 中文维护注释：v2 只识别 `__rs_t2:`，因此真实业务字符串即使以旧 `__rs_t1:` 开头也不会被误解；v2 自身前缀在写前必定转义。
+    local kind = type(value)
+    if kind == "string" then
+        if value == TRANSPORT_V2_FALSE then return false, nil end
+        if value == TRANSPORT_V2_EMPTY_TABLE then return {}, nil end
+        if value == TRANSPORT_V2_ZERO then return 0, nil end
+        if value == TRANSPORT_V2_EMPTY_STRING then return "", nil end
+        if value:sub(1, #TRANSPORT_V2_STRING) == TRANSPORT_V2_STRING then return value:sub(#TRANSPORT_V2_STRING + 1), nil end
+        if value:sub(1, #TRANSPORT_V2_PREFIX) == TRANSPORT_V2_PREFIX then return nil, "unknown_transport_token_v2" end
+        return value, nil
+    end
+    if kind ~= "table" then return value, nil end
+    seen = seen or {}
+    if seen[value] ~= nil then return nil, "transport_cycle" end
+    seen[value] = true
+    local out = {}
+    for key, child in pairs(value) do
+        local decodedKey, keyErr = TransportDecodeValueV2(key, seen)
+        if keyErr ~= nil then seen[value] = nil; return nil, keyErr end
+        local decodedChild, childErr = TransportDecodeValueV2(child, seen)
         if childErr ~= nil then seen[value] = nil; return nil, childErr end
         out[decodedKey] = decodedChild
     end
@@ -228,7 +290,15 @@ end
 
 function P:EncodePhysicalEnvelope(raw)
     if type(raw) ~= "table" then return nil, "transport_raw_type:" .. tostring(type(raw)) end
-    return TransportEncodeValue(raw)
+    local encoded, err = TransportEncodeValueV2(raw) -- 中文维护注释：所有新写统一 v2；不强制启动时重写健康 v1 Store，只有下一次正常保存/迁移才自然升级，避免一次更新触发 39 个 SaveData fan-out。
+    if encoded == nil then return nil, err end
+    -- 中文维护注释：DecodePhysicalEnvelope 必须在完整解码前读取这两个路由字段；它们均为非零整数，不属于已知 serializer omission 类型。
+    -- 覆盖回原生数字也避免未来 v2 标量编码规则扩展后出现“为了知道 codec 版本必须先知道 codec 版本”的自举死循环。
+    if type(encoded.__rsmeta) == "table" and type(raw.__rsmeta) == "table" then
+        encoded.__rsmeta.framework = raw.__rsmeta.framework
+        encoded.__rsmeta.transportVersion = raw.__rsmeta.transportVersion
+    end
+    return encoded, nil
 end
 
 function P:DecodePhysicalEnvelope(raw)
@@ -237,10 +307,9 @@ function P:DecodePhysicalEnvelope(raw)
     local framework = meta and tonumber(meta.framework) or nil
     local transport = meta and tonumber(meta.transportVersion) or nil
     if framework ~= nil and framework >= 3 then
-        if transport ~= tonumber(self.TransportContractVersion) then
-            return nil, "transport_contract:" .. tostring(transport) .. ">" .. tostring(self.TransportContractVersion)
-        end
-        return TransportDecodeValue(raw)
+        if transport == 1 then return TransportDecodeValueV1(raw) end -- 中文维护注释：历史 v1 永久可读；成功业务写入后自然变成 v2，不做启动期批量迁移。
+        if transport == 2 then return TransportDecodeValueV2(raw) end -- 中文维护注释：当前 v2 解码必须在 Envelope Seal/Store schema/Apply 之前完成。
+        return nil, "transport_contract:" .. tostring(transport) .. ">" .. tostring(self.TransportContractVersion) -- 中文维护注释：未知/future transport 不猜测，防止旧客户端覆盖新格式。
     end
     -- 中文维护注释：Framework2/无 metadata 的历史存档没有物理哨兵，保持原样进入既有 legacy/schema 迁移。
     -- transportVersion 单独出现而 framework 缺失属于损坏 envelope，不猜测恢复。
@@ -1017,6 +1086,7 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
     if type(self.FingerprintPayload) ~= "function" then return Fail("fingerprint_unavailable") end
     local expectedFingerprint, expectedErr
     local actualFingerprint, actualErr
+    local canonicalExpectedForDiagnostics, canonicalActualForDiagnostics -- 中文维护注释：仅在 canonical readback mismatch 冷路径保留两个 bounded detached 表引用，用于生成首个字段差异；不写回 Domain，也不延长到函数之外。
     if canonicalReadback == true then
         -- v3: compare canonical store values on both sides so the readback
         -- proof survives the same representation changes the load-side
@@ -1029,6 +1099,7 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
         if canonicalActual == nil then
             return Fail("readback_canonical_failed:" .. tostring(canonicalActualErr or "unknown"))
         end
+        canonicalExpectedForDiagnostics, canonicalActualForDiagnostics = canonicalExpected, canonicalActual -- 中文维护注释：Authority 仍是 Store.get/SaveData；这里仅保存本次 Verify 的只读快照引用，不 Apply、不修值。
         expectedFingerprint, expectedErr = self:FingerprintCanonicalValue(store, canonicalExpected)
         actualFingerprint, actualErr = self:FingerprintCanonicalValue(store, canonicalActual)
     else
@@ -1038,7 +1109,13 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
     if expectedFingerprint == nil then return Fail("expected_fingerprint_failed:" .. tostring(expectedErr)) end
     if actualFingerprint == nil then return Fail("readback_fingerprint_failed:" .. tostring(actualErr)) end
     if tostring(actualFingerprint) ~= tostring(expectedFingerprint) then
-        return Fail("readback_fingerprint_mismatch:" .. tostring(expectedFingerprint) .. ">" .. tostring(actualFingerprint))
+        local divergence = nil -- 中文维护注释：Hash A>B 不能告诉维护者哪一字段被 RU serializer 改写；只在已经失败时做最多 512 节点的 deterministic diff，不增加正常保存/输入热路径成本。
+        if canonicalExpectedForDiagnostics ~= nil and canonicalActualForDiagnostics ~= nil
+            and type(self.DescribeCanonicalDivergence) == "function" then
+            divergence = self:DescribeCanonicalDivergence(canonicalExpectedForDiagnostics, canonicalActualForDiagnostics)
+        end
+        local detail = divergence ~= nil and ("|divergence=" .. tostring(divergence):gsub("[\r\n]+", " ")) or "" -- 中文维护注释：诊断保持单行可复制；不序列化整份用户配置，避免日志泄露/爆量。
+        return Fail("readback_fingerprint_mismatch:" .. tostring(expectedFingerprint) .. ">" .. tostring(actualFingerprint) .. detail)
     end
 
     store.lastVerifyOk = true
@@ -1363,6 +1440,10 @@ function P:LoadStore(id, options)
     local preDecodedValue = nil
     local serializerRepairNeeded = false
     local serializerRepairedRaw = nil
+    -- 中文维护注释：`.18.198` 记录进入本次 Load 前的 Integrity 恢复计数。历史 4 条恢复分支写在深层
+    -- if/elseif 内，其局部变量（如 recoveredHistoricalCanonical）在函数末尾的升级排队处不可见；
+    -- 用 stats 增量判断「本次加载是否真的执行过恢复」既可跨作用域，又不需要每个 Store 额外声明标记。
+    local recoveriesAtEntry = tonumber(self.stats.integrityUpgradeRecoveries) or 0
     if integrityAdvertised then
         self.stats.integrityLoadChecks = (tonumber(self.stats.integrityLoadChecks) or 0) + 1
         local integrityErr = nil
@@ -1959,6 +2040,20 @@ function P:LoadStore(id, options)
         -- 任一当前 SaveValue 都会自动写 Framework3。这样不会改变历史迁移的事务优先级。
         deferredSaveReason = "framework_transport_upgrade"
         deferredSaveDelayMs = 0
+    end
+
+    -- 中文维护注释：`.18.198` 补齐 `.18.197` 遗漏的一环。Transport v1 的物理表示已被实机证实有损
+    -- （只保护 boolean false 与空表，不保护数值 0 与空字符串），因此**本次加载确实因该表示丢失去做过
+    -- Integrity 恢复**的 Store 不能继续停留在 v1：否则每次启动都要重跑恢复路径，且用户不触发任何保存
+    -- 就退出时磁盘一直保持有损表示。
+    -- 但健康 v1 Store 继续保持 `.18.197` 的惰性升级策略（首次正常保存时自然写 v2），避免一次版本更新
+    -- 触发全部 39 个 Store 的 SaveData fan-out；因此这里用 stats 恢复计数增量严格限定为「本次真的恢复过」，
+    -- 而不是「所有 transport 落后的 Store」。
+    if deferredSaveReason == nil and meta ~= nil
+        and (tonumber(meta.transportVersion) or 0) < (tonumber(self.TransportContractVersion) or 0)
+        and (tonumber(self.stats.integrityUpgradeRecoveries) or 0) > recoveriesAtEntry then
+        deferredSaveReason = "transport_representation_upgrade" -- 中文维护注释：独立原因名，便于诊断区分「物理传输表示升级」与「Framework 升级」。
+        deferredSaveDelayMs = 0 -- 中文维护注释：立即排队，与 Integrity/known-pair 恢复保持同一事务优先级，不允许被普通 debounce 降级。
     end
 
     -- Migration and period-reset transforms are also business code and may grow
@@ -3057,15 +3152,21 @@ end
 -- the same deterministic key order the fingerprint uses and returns the FIRST
 -- path where they differ, so one real-machine run names the exact field the
 -- RU serializer (or a normalize gap) changed.
+local function SummarizeDivergenceScalar(value) -- 中文维护注释：诊断只需要证明“哪个字段/哪种值发生变化”，不应把完整用户字符串写进 Chat.log；单值摘要限制 80 字节并移除换行，避免新诊断本身造成日志爆量或泄露自由文本配置。
+    local text = tostring(value):gsub("[\r\n]+", " ") -- 中文维护注释：保持诊断单行可复制；不会修改 Store/Domain 原值，只处理临时日志字符串。
+    if #text > 80 then text = text:sub(1, 77) .. "..." end -- 中文维护注释：截断只作用于故障冷路径日志，不参与 fingerprint、恢复判定或业务比较。
+    return text -- 中文维护注释：返回 bounded 显示值；调用者仍同时输出 Lua type，足以区分 nil/false/0/空字符串等 serializer omission 类别。
+end
+
 local function DescribeValueDivergence(expected, actual, path, depth, budget)
-    if depth > 8 or budget.used >= budget.max then return nil end
+    if depth > 8 or budget.used >= budget.max then return nil end -- 中文维护注释：最多 8 层/512 节点，避免损坏或恶意嵌套配置在错误处理路径制造长时间扫描。
     local expectedKind, actualKind = type(expected), type(actual)
     if expectedKind ~= actualKind then
-        return tostring(path) .. ": type " .. expectedKind .. " vs " .. actualKind
+        return tostring(path) .. ": type " .. expectedKind .. " vs " .. actualKind -- 中文维护注释：类型变化优先报告；此处不展开表内容，避免日志复制完整配置。
     end
     if expectedKind ~= "table" then
         if expected ~= actual then
-            return tostring(path) .. ": " .. tostring(expected) .. " vs " .. tostring(actual)
+            return tostring(path) .. ": " .. expectedKind .. "(" .. SummarizeDivergenceScalar(expected) .. ") vs " .. actualKind .. "(" .. SummarizeDivergenceScalar(actual) .. ")" -- 中文维护注释：标量差异给出 bounded 值摘要，可直接识别 0/空串/false 等，同时不改变恢复 Authority。
         end
         return nil
     end
@@ -3323,6 +3424,7 @@ function P:Describe()
         barrierPending = barrierPending,
         frameworkVersion = self.FrameworkVersion,
         transportContractVersion = self.TransportContractVersion,
+        transportScalarOmissionProtectionContractVersion = self.TransportScalarOmissionProtectionContractVersion, -- 中文维护注释：把 Transport v2 的 false/空表/0/空字符串保护能力暴露给只读 Foundation/诊断；该字段不参与 Store 保存或任何业务 Authority。
         reliabilityContractVersion = self.ReliabilityContractVersion,
         integrityContractVersion = self.IntegrityContractVersion,
         legacyIntegrityContractVersion = self.LegacyIntegrityContractVersion,
