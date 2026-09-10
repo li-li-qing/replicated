@@ -150,7 +150,98 @@ end -- 中文维护注释：结束活动已知事故恢复桥；本函数只在 
 
 F.PersistenceStoreSchemaContractVersion = STORE_SCHEMA -- 中文维护注释：暴露给 Acceptance/Foundation 的活动 Store schema 契约版本，防止后续增量包漏改测试而静默回退。
 F.PersistenceWindowCanonicalContractVersion = 1 -- 中文维护注释：标记活动窗口 canonical 已从共享可演进表收敛为 Store-owned 字段投影。
-F.KnownLegacyCanonicalRecoveryContractVersion = 2 -- 中文维护注释：v2 同时覆盖 schema7 canonical generation 与 schema8/Transport-v1 实机 exact pair；未知 mismatch 仍由 Core Fence。
+F.KnownLegacyCanonicalRecoveryContractVersion = 3 -- 中文维护注释：v3 在 v2 的两个 exact-pair 之上，新增 Framework3 + Transport v1 的**零值省略结构化恢复**；内容相关的 known-pair 退回为更早世代的兜底，未知 mismatch 仍由 Core Fence。
+F.TransportV1ZeroOmissionRecoveryContractVersion = 1 -- 中文维护注释：单独暴露 `.18.198` 的 Transport v1 零值省略恢复契约，让 Foundation/Acceptance 钉死「可结构化证明的恢复优先于 known-pair 白名单」这一边界；该路径不读取 Native 游戏状态、不改变活动业务 Authority、只在完整性 mismatch 冷启动执行。
+
+-- 中文维护注释：`.18.198` 活动 Store 的零值省略结构化恢复。活动 HUD 窗口与 DeathReview 使用同一套 FloatingSurface 字段，
+-- 因此同样受 Transport v1「不保护数值 0」影响：窗口贴左/上边缘时 x 或 y 合法为 0，被 RU SaveData 省略后
+-- `free = moved and coordinateSpace=="logical-free-v2" and tonumber(value.x) ~= nil and tonumber(value.y) ~= nil`
+-- 判定失败，x/y/coordinateSpace/savedLogicalWidth/Height/normalizedCenterX/Y 整组自由定位字段一起塌成 nil。
+-- 本恢复器只做「把被省略的 0 补回去」这一件可证明的事，候选仍必须由 Core 用旧 stamped fingerprint 做完整
+-- exact Hash 校验；命不中即保持 integrity_failed + write fence，绝不放宽成通配接受。
+local TRANSPORT_V1_ZERO_WINDOW_KEYS = { -- 中文维护注释：判定依据是 FloatingSurface:NormalizeState 的实际表达式，不是直觉——依赖 free 的字段会随 x/y 塌陷而连带变 nil，不依赖 free 的字段原值为 0 时也会直接丢成 nil。
+    "x", "y", -- 中文维护注释：free 分支的唯一前置条件，0 表示贴左/上边缘。
+    "normalizedCenterX", "normalizedCenterY", -- 中文维护注释：跨分辨率归一化中心，拖到边界时为 0。
+    "savedLogicalWidth", "savedLogicalHeight", -- 中文维护注释：`free and tonumber(...) or nil`，x/y 塌陷时连带丢失。
+    "overallOpacity", "backgroundOpacity", "textOpacity", -- 中文维护注释：Clamp fallback 为 0.94/1.0/1.0，与用户显式设置的 0 无法在磁盘上区分。
+    "savedUiScale", -- 中文维护注释：不依赖 free；原值为 0 时会直接丢成 nil。
+    "offsetX", "offsetY", -- 中文维护注释：fallback 也是 0，理论安全，纳入枚举成本极低。
+} -- 中文维护注释：结束可省略零值字段白名单。
+local MAX_TRANSPORT_V1_ZERO_CANDIDATES = 1024 -- 中文维护注释：候选上限 2^10；实际数量由「磁盘上真正缺失的字段数」决定，通常远小于此。只在 mismatch 冷启动跑一次。
+
+local function RebuildTransportV1ZeroOmission(decoded, stampedFingerprint, rawEnvelope) -- 中文维护注释：活动 Store 版本的零值恢复；plain Store 没有 codec 包装，因此候选直接构造 Domain 后交给 Normalize。
+    local store = P:GetStore(STORE_ID) -- 中文维护注释：提前取 Store 引用，使每个早退分支都能写 runtime-only probe。
+    local function Probe(reason, extra) -- 中文维护注释：probe 只写字段名、计数与元数据，绝不输出玩家名、活动内容或自由文本配置。
+        if type(store) ~= "table" then return end -- 中文维护注释：Store 未注册时不做写入。
+        store.lastHistoricalRecoveryProbe = "transportV1Zero/" .. tostring(reason)
+            .. (extra ~= nil and ("/" .. tostring(extra)) or "") -- 中文维护注释：保持单行可复制。
+    end
+    local meta = type(rawEnvelope) == "table" and rawEnvelope.__rsmeta or nil -- 中文维护注释：恢复资格必须绑定已通过 Envelope Seal 的真实元数据。
+    local metaSchema = meta ~= nil and tonumber(meta.schema) or nil
+    local metaFramework = meta ~= nil and tonumber(meta.framework) or nil
+    local metaTransport = meta ~= nil and tonumber(meta.transportVersion) or nil
+    local metaDesc = "schema=" .. tostring(metaSchema) .. "/fw=" .. tostring(metaFramework) .. "/tv=" .. tostring(metaTransport) -- 中文维护注释：一次性记录真实世代，避免以后靠猜。
+    if type(meta) ~= "table" or metaSchema ~= STORE_SCHEMA or metaFramework ~= 3 then -- 中文维护注释：只接受当前 schema8 + Framework3；schema7 已有专用历史恢复器。
+        Probe("skip_generation", metaDesc)
+        return nil
+    end
+    if metaTransport ~= 1 then -- 中文维护注释：只有 Transport v1 存在数值 0 未保护缺陷；v2 写入后仍 mismatch 说明是真实内容损坏，必须继续 Fence。
+        Probe("skip_transport_v2", metaDesc)
+        return nil
+    end
+    local payload = type(rawEnvelope) == "table" and rawEnvelope.payload or nil -- 中文维护注释：plain Store 的业务 Authority 只来自 envelope.payload，禁止从 UI 当前值或默认值猜磁盘内容。
+    if type(payload) ~= "table" then -- 中文维护注释：payload 缺失属于损坏 envelope，不恢复。
+        Probe("skip_no_payload", metaDesc)
+        return nil
+    end
+    local rawWindow = type(payload.widgetWindow) == "table" and payload.widgetWindow or nil -- 中文维护注释：窗口缺失时不构造候选。
+    if rawWindow == nil then -- 中文维护注释：保持 fail-closed，不凭空合成窗口子树。
+        Probe("skip_no_window", metaDesc)
+        return nil
+    end
+    local missing, present = {}, {} -- 中文维护注释：分别记录缺失与存在的候选字段，用于诊断判断这一层到底漂移了多少。
+    for _, key in ipairs(TRANSPORT_V1_ZERO_WINDOW_KEYS) do -- 中文维护注释：固定小列表遍历。
+        if rawWindow[key] == nil then missing[#missing + 1] = key else present[#present + 1] = key end -- 中文维护注释：只把 nil 记为候选位，已存在字段保持磁盘原值不动。
+    end -- 中文维护注释：结束字段分类。
+    if #missing == 0 then -- 中文维护注释：没有缺失说明本机制不适用。
+        Probe("skip_no_missing_zero_key", metaDesc .. "/present=" .. table.concat(present, ","))
+        return nil
+    end
+    local zeroKeys = #missing -- 中文维护注释：缓存候选位数量。
+    local combinations = 2 ^ zeroKeys -- 中文维护注释：2^n 枚举「哪些缺失字段原本是 0」。
+    if combinations > MAX_TRANSPORT_V1_ZERO_CANDIDATES then -- 中文维护注释：超出预算即放弃，宁可 Fence 也不做无界暴力枚举。
+        Probe("skip_too_many", metaDesc .. "/missing=" .. table.concat(missing, ","))
+        return nil
+    end
+    local baseDomain = { -- 中文维护注释：业务字段全部取自 decoded（即磁盘 payload），只有窗口参与候选变化。
+        widgetVisible = payload.widgetVisible, -- 中文维护注释：可见性属于活动 HUD 用户偏好，原样保留。
+        widgetRows = payload.widgetRows, -- 中文维护注释：行数属于有界整数偏好，原样保留。
+        hiddenEvents = payload.hiddenEvents, -- 中文维护注释：隐藏活动集合原样保留，不新增也不删除任何用户数据。
+        widgetWindow = rawWindow, -- 中文维护注释：窗口占位，随后按候选替换。
+    } -- 中文维护注释：结束候选基础 Domain。
+    for mask = 1, combinations - 1 do -- 中文维护注释：mask=0 与当前 canonical 等价，无需重复校验。
+        local candidateWindow = DeepCopy(rawWindow) -- 中文维护注释：每个候选独立副本，禁止跨候选共享引用。
+        local bits = mask -- 中文维护注释：逐位解释；第 i 位为 1 表示 missing[i] 原本是 0。
+        for index = 1, zeroKeys do -- 中文维护注释：最多 #missing 次循环。
+            if bits % 2 == 1 then candidateWindow[missing[index]] = 0 end -- 中文维护注释：把被省略的 0 补回。
+            bits = math.floor(bits / 2) -- 中文维护注释：右移一位继续。
+        end -- 中文维护注释：结束单个候选的字段补零。
+        local candidateDomain = { -- 中文维护注释：其他字段复用 baseDomain，避免重复构造整份隐藏集合。
+            widgetVisible = baseDomain.widgetVisible,
+            widgetRows = baseDomain.widgetRows,
+            hiddenEvents = baseDomain.hiddenEvents,
+            widgetWindow = candidateWindow,
+        } -- 中文维护注释：结束单个候选 Domain。
+        local candidateCanonical = Normalize(candidateDomain) -- 中文维护注释：候选必须走当前 Store normalizer，与真实保存路径完全一致（例如补回 x=0 会让 free 分支重新成立）。
+        local candidateFingerprint = P:FingerprintCanonicalValue(store, candidateCanonical) -- 中文维护注释：候选没有信任权，只有与旧 stamp 逐字相等才可能被 Core 接受。
+        if candidateFingerprint ~= nil and tostring(candidateFingerprint) == tostring(stampedFingerprint) then -- 中文维护注释：exact match 是唯一接受条件。
+            Probe("match", "mask=" .. tostring(mask) .. "/keys=" .. tostring(zeroKeys) .. "/missing=" .. table.concat(missing, ",") .. "/" .. metaDesc)
+            return candidateCanonical, Normalize(candidateDomain) -- 中文维护注释：Core 随后仍会预算、Apply 并按当前 Transport 版本重盖。
+        end -- 中文维护注释：结束候选采纳分支。
+    end -- 中文维护注释：结束候选枚举。
+    Probe("no_match", "tried=" .. tostring(combinations - 1) .. "/missing=" .. table.concat(missing, ",") .. "/present=" .. table.concat(present, ",") .. "/" .. metaDesc) -- 中文维护注释：全部候选未命中时记录完整上下文，作为「真实差异不在零值省略」的证据。
+    return nil -- 中文维护注释：未命中即返回 nil，Core 继续维持 integrity_failed + write fence。
+end -- 中文维护注释：结束活动 Store 的 Transport v1 零值省略恢复器。
 
 local function Apply(value)
     local normalized = Normalize(value)
@@ -174,11 +265,14 @@ if P:GetStore(STORE_ID) == nil then
         get = function() return Normalize(F.State) end,
         apply = Apply,
         migrate = function(value) return Normalize(value) end, -- 中文维护注释：schema7→8 只做纯 Presentation 偏好归一，不触碰活动进度/Quest Authority，也不读取 Native API。
-        rebuildCanonicalForIntegrity = function(decoded, _stampedFingerprint, _currentCanonical, raw) -- 中文维护注释：current-v4 mismatch 时优先尝试可证明的 schema7 历史 canonical，known-pair 只是 exact 重建失败后的最后桥。
+        rebuildCanonicalForIntegrity = function(decoded, stampedFingerprint, _currentCanonical, raw) -- 中文维护注释：current-v4 mismatch 时优先尝试可证明的结构化历史 canonical，known-pair 只是 exact 重建失败后的最后桥。
             local meta = type(raw) == "table" and raw.__rsmeta or nil -- 中文维护注释：历史候选必须绑定旧元数据 schema，禁止当前/future schema 借用旧 normalizer。
-            if type(meta) ~= "table" or tonumber(meta.schema) ~= 7 then return nil end -- 中文维护注释：仅 schema7 候选有资格剥离 schema8 新窗口字段。
-            return NormalizeHistoricalV7(decoded) -- 中文维护注释：Core 会自行计算候选 Hash；只有逐字等于旧 stamp 才把它视为认证历史逻辑值。
-        end, -- 中文维护注释：结束活动 schema7 exact historical canonical hook。
+            if type(meta) == "table" and tonumber(meta.schema) == 7 then -- 中文维护注释：仅 schema7 候选有资格剥离 schema8 新窗口字段。
+                return NormalizeHistoricalV7(decoded) -- 中文维护注释：Core 会自行计算候选 Hash；只有逐字等于旧 stamp 才把它视为认证历史逻辑值。
+            end -- 中文维护注释：结束 schema7 历史候选分支。
+            -- 中文维护注释：`.18.198` 新增分支——schema8 + Framework3 + Transport v1 下，FloatingSurface 窗口中合法为 0 的字段会被原生 serializer 省略；该机制可结构化证明，因此先于内容相关的 known-pair。
+            return RebuildTransportV1ZeroOmission(decoded, stampedFingerprint, raw)
+        end, -- 中文维护注释：结束活动 Store 的历史 canonical 恢复入口；两条分支都必须由 Core 重新 Hash 认证。
         recoverKnownLegacyCanonical = RecoverKnownActivityCanonical, -- 中文维护注释：只处理两个已实证 exact pair：6271E40B→7E85D975 与 schema8/Transport-v1 的 6963CEA5→109696BD；其余 mismatch 继续 Fence。
         allowIntegrityUpgrade = true, -- 中文维护注释：允许通过 Envelope Seal + Store-owned 严格 hook 后一次性重盖；正常 schema8 仍按 Integrity v4 严格验证。
     })

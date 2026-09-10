@@ -2249,7 +2249,8 @@ function G:Run(options)
     local activityStore = S.Persistence ~= nil and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.activities") or nil -- 中文维护注释：只读取已注册 Store spec，不触发 LoadData；用于证明 .18.197 的 schema8 exact-pair 恢复桥实际挂在 Store Authority 上。
     local activityRecoveryOk = type(activities) == "table"
         and (tonumber(activities.PersistenceStoreSchemaContractVersion) or 0) >= 8 -- 中文维护注释：Activities 当前 canonical generation 必须仍是 schema8，禁止用降 schema 绕过 6963CEA5→109696BD。
-        and (tonumber(activities.KnownLegacyCanonicalRecoveryContractVersion) or 0) >= 2 -- 中文维护注释：v2 明确包含 schema8/Framework3/Transport-v1 exact pair，未知 pair 仍必须 Fence。
+        and (tonumber(activities.KnownLegacyCanonicalRecoveryContractVersion) or 0) >= 3 -- 中文维护注释：v3 明确包含 schema8/Framework3/Transport-v1 的**零值省略结构化恢复**，未知 pair 仍必须 Fence。
+        and (tonumber(activities.TransportV1ZeroOmissionRecoveryContractVersion) or 0) >= 1 -- 中文维护注释：`.18.198` 要求活动 Store 的 Transport v1 零值恢复必须随包存在，防止窗口 x/y=0 的用户被永久 write fence。
         and type(activityStore) == "table" and tonumber(activityStore.schemaVersion) == 8
         and type(activityStore.recoverKnownLegacyCanonical) == "function" and activityStore.allowIntegrityUpgrade == true -- 中文维护注释：恢复资格必须由 Store-owned hook + Core exact fingerprint 验真组合完成，Feature/UI 不得直接放行。
     AddCheck(report, "v3_activity_persistence_recovery_contract", activityRecoveryOk, "blocker",

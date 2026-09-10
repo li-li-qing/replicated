@@ -525,37 +525,75 @@ end -- 中文维护注释：结束 Framework2 schema2 codec1 通用恢复器；�
 -- 也会产生同样的 Hash 漂移。
 -- 本恢复器只做「把被省略的 0 补回去」这一件可证明的事：候选仍必须由 Core 用旧 stamped fingerprint
 -- 做完整 exact Hash 校验，命不中就原样保持 integrity_failed + write fence，绝不放宽成通配接受。
-local TRANSPORT_V1_ZERO_OMISSION_WINDOW_KEYS = { -- 中文维护注释：只列出「合法可为 0，且 fallback 与 0 不同」的窗口字段；width/height/fontScale 有 >0 下限、offsetX/offsetY 的 fallback 本身就是 0，因此都不需要也不可能成为候选。
-    "x", "y", -- 中文维护注释：自由定位坐标，0 表示贴左/上边缘，是 free 分支塌陷的直接触发点。
+local TRANSPORT_V1_ZERO_OMISSION_WINDOW_KEYS = { -- 中文维护注释：列出「可能为 0、且其 fallback 与 0 不同」的窗口数值字段。
+    -- 判定依据是 FloatingSurface:NormalizeState 的实际表达式，而不是直觉：
+    --   依赖 free 的字段（free 需要 x/y 非 nil）在 x 或 y 被省略后会整组塌成 nil；
+    --   不依赖 free 的字段若原值为 0，被省略后直接变 nil。
+    "x", "y", -- 中文维护注释：自由定位坐标；free 分支的唯一前置条件，0 表示贴左/上边缘。
     "normalizedCenterX", "normalizedCenterY", -- 中文维护注释：跨分辨率归一化中心，拖到边界时为 0。
-    "overallOpacity", "backgroundOpacity", "textOpacity", -- 中文维护注释：三者 fallback 为 policy 默认值（0.94/1.0/1.0），与用户显式设置的 0 无法在磁盘上区分，必须枚举。
-} -- 中文维护注释：结束 Transport v1 可省略零值字段白名单；新增字段必须先证明其 fallback 与 0 不同，否则会制造无意义候选。
-local MAX_TRANSPORT_V1_ZERO_CANDIDATES = 128 -- 中文维护注释：7 个字段 => 2^7 = 128 个候选上限；只在完整性 mismatch 冷启动边界运行一次，不进入 DeathReview 记录/战斗事件/Tick 路径。
+    "savedLogicalWidth", "savedLogicalHeight", -- 中文维护注释：`free and tonumber(...) or nil`——x/y 塌陷时它们会连带变 nil。
+    "overallOpacity", "backgroundOpacity", "textOpacity", -- 中文维护注释：Clamp fallback 是 0.94/1.0/1.0，与用户显式设置的 0 无法在磁盘上区分。
+    "savedUiScale", -- 中文维护注释：`moved and tonumber(...) or nil`，不依赖 free；原值为 0 时会直接丢成 nil。
+    "offsetX", "offsetY", -- 中文维护注释：fallback 本身也是 0，理论上安全，但纳入枚举成本极低，可防御 edge 车道的未来变更。
+} -- 中文维护注释：结束 Transport v1 可省略零值字段白名单。
+local MAX_TRANSPORT_V1_ZERO_CANDIDATES = 1024 -- 中文维护注释：候选上限 2^10；实际候选数由「磁盘上真正缺失的字段数」决定，通常远小于此。只在完整性 mismatch 冷启动跑一次，不进入战斗/刷新/Tick 路径。
 
 local function RebuildTransportV1ZeroOmissionCanonical(decoded, stampedFingerprint, currentCanonical, rawEnvelope) -- 中文维护注释：`.18.198` 结构化恢复 Framework3 + Transport v1 下被原生 serializer 省略的零值窗口字段；与 known-pair 白名单互斥，任何用户只要命中同一物理机制都可恢复。
+    local store = P:GetStore(INDEX_STORE) -- 中文维护注释：提前取 Store 引用，使每个早退分支都能写入 runtime-only probe，便于下一次 RU 实测判断「到底是哪一步没满足」。
+    local function Probe(reason, extra) -- 中文维护注释：probe 只写字段名、计数与元数据，绝不输出玩家名、伤害、技能或自由文本配置。
+        if type(store) ~= "table" then return end -- 中文维护注释：Store 未注册时不做任何写入。
+        store.lastHistoricalRecoveryProbe = "transportV1Zero/" .. tostring(reason)
+            .. (extra ~= nil and ("/" .. tostring(extra)) or "") -- 中文维护注释：单行可复制，便于诊断面板与聊天复制。
+    end
     local meta = type(rawEnvelope) == "table" and rawEnvelope.__rsmeta or nil -- 中文维护注释：恢复资格必须绑定已通过 Envelope Seal 的真实元数据，不允许从 Domain 内容反推世代。
-    if type(meta) ~= "table" or tonumber(meta.schema) ~= INDEX_SCHEMA or tonumber(meta.framework) ~= 3 then return nil end -- 中文维护注释：只接受当前 schema2 + Framework3；更早世代已有各自专用恢复器，未来 Framework 不从这里获得绕过。
-    if tonumber(meta.transportVersion) ~= 1 then return nil end -- 中文维护注释：只有 Transport v1 存在数值 0 未保护缺陷；v2 写入的存档若仍 mismatch 说明是真实内容损坏，必须继续 Fence。
-    if tonumber(type(rawEnvelope) == "table" and rawEnvelope.codec or nil) ~= INDEX_CODEC_VERSION or type(rawEnvelope.payload) ~= "table" then return nil end -- 中文维护注释：必须是真正的 DeathReview codec1 物理形状，未知/future codec 禁止降级恢复。
+    local metaSchema = meta ~= nil and tonumber(meta.schema) or nil -- 中文维护注释：先取出再判断，便于在 probe 里报告实际值。
+    local metaFramework = meta ~= nil and tonumber(meta.framework) or nil
+    local metaTransport = meta ~= nil and tonumber(meta.transportVersion) or nil
+    local metaCodec = tonumber(type(rawEnvelope) == "table" and rawEnvelope.codec or nil)
+    local metaDesc = "schema=" .. tostring(metaSchema) .. "/fw=" .. tostring(metaFramework)
+        .. "/tv=" .. tostring(metaTransport) .. "/codec=" .. tostring(metaCodec) -- 中文维护注释：把真实世代一次性记录下来，避免以后再靠猜。
+    if type(meta) ~= "table" or metaSchema ~= INDEX_SCHEMA or metaFramework ~= 3 then -- 中文维护注释：只接受当前 schema2 + Framework3；更早世代已有各自专用恢复器，未来 Framework 不从这里获得绕过。
+        Probe("skip_generation", metaDesc) -- 中文维护注释：记录被跳过的原因，下一次实测可直接看出是否根本没进本分支。
+        return nil
+    end
+    if metaTransport ~= 1 then -- 中文维护注释：只有 Transport v1 存在数值 0 未保护缺陷；v2 写入的存档若仍 mismatch 说明是真实内容损坏，必须继续 Fence。
+        Probe("skip_transport_v2", metaDesc)
+        return nil
+    end
+    if metaCodec ~= INDEX_CODEC_VERSION or type(rawEnvelope.payload) ~= "table" then -- 中文维护注释：必须是真正的 DeathReview codec1 物理形状，未知/future codec 禁止降级恢复。
+        Probe("skip_codec", metaDesc)
+        return nil
+    end
     local payload = rawEnvelope.payload -- 中文维护注释：候选的几何 Authority 只来自磁盘 payload，不使用 Feature 当前窗口状态或屏幕实况。
     local rawWindow = type(payload.widgetWindow) == "table" and payload.widgetWindow or nil -- 中文维护注释：窗口缺失时代码块整体不参与（NormalizeWidgetWindow 会用默认值），无需构造候选。
-    if rawWindow == nil then return nil end -- 中文维护注释：保持 fail-closed，不凭空合成窗口子树。
+    if rawWindow == nil then -- 中文维护注释：保持 fail-closed，不凭空合成窗口子树。
+        Probe("skip_no_window", metaDesc)
+        return nil
+    end
     local missing = {} -- 中文维护注释：收集磁盘上确实缺失的可零字段；非零值不会被 RU 省略，所以这里的缺失只可能来自「原值 0」或「原值 nil」两种来源。
-    for _, key in ipairs(TRANSPORT_V1_ZERO_OMISSION_WINDOW_KEYS) do -- 中文维护注释：固定小列表遍历，最多 7 项。
-        if rawWindow[key] == nil then missing[#missing + 1] = key end -- 中文维护注释：只把 nil 记为候选位，已存在的字段保持磁盘原值不动。
-    end -- 中文维护注释：结束缺失字段收集。
-    if #missing == 0 or #missing > #TRANSPORT_V1_ZERO_OMISSION_WINDOW_KEYS then return nil end -- 中文维护注释：没有任何缺失说明本机制不适用（交回 Core 继续 Fence）；超出白名单说明实现与列表不同步。
-    local store = P:GetStore(INDEX_STORE) -- 中文维护注释：取当前注册 Store 仅用于调用框架 Hash helper 与写 runtime-only probe，不建立第二 Persistence Authority。
-    if store == nil then return nil end -- 中文维护注释：Store 未注册时不做任何猜测。
+    local present = {} -- 中文维护注释：同时记录存在的字段名，用于诊断判断这一层到底漂移了多少。
+    for _, key in ipairs(TRANSPORT_V1_ZERO_OMISSION_WINDOW_KEYS) do -- 中文维护注释：固定小列表遍历。
+        if rawWindow[key] == nil then missing[#missing + 1] = key else present[#present + 1] = key end -- 中文维护注释：只把 nil 记为候选位，已存在的字段保持磁盘原值不动。
+    end -- 中文维护注释：结束字段分类。
+    if #missing == 0 then -- 中文维护注释：没有任何缺失说明本机制不适用（交回 Core 继续 Fence 或走 known-pair）。
+        Probe("skip_no_missing_zero_key", metaDesc .. "/present=" .. table.concat(present, ","))
+        return nil
+    end
     local zeroKeys = #missing -- 中文维护注释：缓存候选位数量，避免在循环里反复取长度。
-    local combinations = 2 ^ zeroKeys -- 中文维护注释：2^n 枚举「哪些缺失字段原本是 0」；n<=7 保证上限 128。
-    if combinations > MAX_TRANSPORT_V1_ZERO_CANDIDATES then return nil end -- 中文维护注释：双保险，超出预算直接放弃而不是扩大搜索。
+    local combinations = 2 ^ zeroKeys -- 中文维护注释：2^n 枚举「哪些缺失字段原本是 0」。
+    if combinations > MAX_TRANSPORT_V1_ZERO_CANDIDATES then -- 中文维护注释：超出预算时放弃而不是扩大搜索——宁可继续 Fence 也不能把冷启动变成无界暴力枚举。
+        Probe("skip_too_many", metaDesc .. "/missing=" .. table.concat(missing, ","))
+        return nil
+    end
     local baseCanonical = EncodeIndex({ settings = DeepCopy(decoded.settings), history = DeepCopy(decoded.history), widgetWindow = rawWindow }) -- 中文维护注释：settings/history 与本次窗口漂移无关，只编码一次复用；避免每个候选都重复 Normalize 整份历史摘要。
-    if type(baseCanonical) ~= "table" or type(baseCanonical.payload) ~= "table" then return nil end -- 中文维护注释：基础编码失败说明数据形状异常，保持 Fence。
+    if type(baseCanonical) ~= "table" or type(baseCanonical.payload) ~= "table" then -- 中文维护注释：基础编码失败说明数据形状异常，保持 Fence。
+        Probe("skip_encode_failed", metaDesc)
+        return nil
+    end
     for mask = 1, combinations - 1 do -- 中文维护注释：mask=0 即「没有任何字段被省略」，与当前 canonical 等价，无需重复校验，因此从 1 开始。
         local candidateWindow = DeepCopy(rawWindow) -- 中文维护注释：每个候选独立副本，禁止跨候选共享表引用。
         local bits = mask -- 中文维护注释：逐位解释 mask；第 i 位为 1 表示 missing[i] 在磁盘上原本是 0。
-        for index = 1, zeroKeys do -- 中文维护注释：最多 7 次循环。
+        for index = 1, zeroKeys do -- 中文维护注释：最多 #missing 次循环。
             if bits % 2 == 1 then candidateWindow[missing[index]] = 0 end -- 中文维护注释：把被省略的 0 补回；这正是 Transport v1 唯一无法表示的合法值。
             bits = math.floor(bits / 2) -- 中文维护注释：右移一位继续处理下一个候选位。
         end -- 中文维护注释：结束单个候选的字段补零。
@@ -570,10 +608,11 @@ local function RebuildTransportV1ZeroOmissionCanonical(decoded, stampedFingerpri
         } -- 中文维护注释：结束单个 Transport v1 零值恢复候选。
         local candidateFingerprint = P:FingerprintCanonicalValue(store, candidate) -- 中文维护注释：候选没有信任权；只有与旧 stamped fingerprint 逐字相等才可能被 Core 接受。
         if candidateFingerprint ~= nil and tostring(candidateFingerprint) == tostring(stampedFingerprint) then -- 中文维护注释：exact match 是唯一接受条件，不做近似或前缀比较。
-            store.lastHistoricalRecoveryProbe = tostring(store.lastHistoricalRecoveryProbe or "") .. "/transportV1Zero/mask=" .. tostring(mask) .. "/keys=" .. tostring(zeroKeys) -- 中文维护注释：只记录候选位与数量，不输出 x/y/透明度等用户布局数值。
+            Probe("match", "mask=" .. tostring(mask) .. "/keys=" .. tostring(zeroKeys) .. "/missing=" .. table.concat(missing, ",") .. "/" .. metaDesc)
             return candidate, NormalizeIndex({ settings = DeepCopy(decoded.settings), history = DeepCopy(decoded.history), widgetWindow = candidateWindow }) -- 中文维护注释：返回的 Domain 走当前 Store normalizer，Core 随后仍会预算、Apply 并按 Transport v2 重盖，阻断同一机制再次发生。
         end -- 中文维护注释：结束候选采纳分支。
     end -- 中文维护注释：结束候选枚举。
+    Probe("no_match", "tried=" .. tostring(combinations - 1) .. "/missing=" .. table.concat(missing, ",") .. "/present=" .. table.concat(present, ",") .. "/" .. metaDesc) -- 中文维护注释：把所有候选都试过仍未命中时记录完整上下文——这是判断「真实差异不在零值省略」的关键证据。
     return nil -- 中文维护注释：所有候选都未命中旧盖章时返回 nil，Core 继续维持 integrity_failed + write fence，绝不退化成「宽泛接受」。
 end -- 中文维护注释：结束 Framework3/Transport v1 零值省略结构化恢复器。
 

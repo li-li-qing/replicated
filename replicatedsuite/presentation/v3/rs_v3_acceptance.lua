@@ -404,10 +404,12 @@ function A:RunMatrix()
     local activities = S.Features and S.Features.Activities or nil
     local activityStore = S.Persistence ~= nil and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.activities") or nil -- 中文维护注释：Acceptance 只检查 Store spec，不主动读取用户存档，避免启动期为验收增加 SaveData I/O。
     if type(activities) ~= "table" or (tonumber(activities.PersistenceStoreSchemaContractVersion) or 0) < 8
-        or (tonumber(activities.KnownLegacyCanonicalRecoveryContractVersion) or 0) < 2
+        or (tonumber(activities.KnownLegacyCanonicalRecoveryContractVersion) or 0) < 3
+        or (tonumber(activities.TransportV1ZeroOmissionRecoveryContractVersion) or 0) < 1 -- 中文维护注释：`.18.198` 要求零值省略结构化恢复随包存在；它与 known-pair 互为先后层级，缺一不可。
         or type(activityStore) ~= "table" or tonumber(activityStore.schemaVersion) ~= 8
-        or type(activityStore.recoverKnownLegacyCanonical) ~= "function" or activityStore.allowIntegrityUpgrade ~= true then
-        failures[#failures + 1] = "activity_persistence_recovery_contract_v2" -- 中文维护注释：必须证明 6963CEA5→109696BD 只走 schema8/Transport-v1 exact 恢复并能升级写入；未知 mismatch 不能被此 Gate 放宽。
+        or type(activityStore.recoverKnownLegacyCanonical) ~= "function" or activityStore.allowIntegrityUpgrade ~= true
+        or type(activityStore.rebuildCanonicalForIntegrity) ~= "function" then
+        failures[#failures + 1] = "activity_persistence_recovery_contract_v3" -- 中文维护注释：`.18.198` 起 schema8/Transport-v1 走零值省略结构化 exact 恢复，6963CEA5→109696BD 只作为更早世代兜底；未知 mismatch 不能被此 Gate 放宽。
     end
     local tasks = S.Features and S.Features.Tasks or nil
     if type(activities) ~= "table" or (tonumber(activities.PersistenceMutationContractVersion) or 0) < 2
