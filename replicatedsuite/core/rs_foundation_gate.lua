@@ -219,10 +219,25 @@ function G:Run(options)
     local startupFirst = runtimeInfo and type(runtimeInfo.startupWarnings) == "table" and runtimeInfo.startupWarnings[1] or nil
     local startupFirstText = startupFirst and (tostring(startupFirst.stage or "unknown") .. ":" .. tostring(startupFirst.detail or "degraded")) or "none"
     if #startupFirstText > 180 then startupFirstText = startupFirstText:sub(1, 180) .. "..." end
+    -- 中文维护注释：`.18.198` 把完整性恢复探针**前置注入摘要第一个未通过项**。实测三次证明：摘要后段的
+    -- 「恢复探针」/「存档故障」行在聊天复制时被截断，永远到不了维护者手里；而第一个未通过项每次都能
+    -- 完整到达。因此这里主动收集写保护 Store 的 probe（字段名/候选计数/真实 schema-fw-tv 元数据，
+    -- 无玩家名、伤害、技能或自由文本配置），保证诊断证据与摘要同生共死。
+    local startupProbeParts = {}
+    do
+        local persistenceDescribe = S.Persistence ~= nil and type(S.Persistence.Describe) == "function" and S.Persistence:Describe() or nil
+        for _, probeRow in ipairs(persistenceDescribe and persistenceDescribe.rows or {}) do
+            if probeRow.writeFenced == true and probeRow.historicalRecoveryProbe ~= nil then -- 中文维护注释：字段名必须是 Describe() 行的 historicalRecoveryProbe（勿改回 store 原生名）。
+                startupProbeParts[#startupProbeParts + 1] = tostring(probeRow.id or "?") .. ":" .. tostring(probeRow.historicalRecoveryProbe):gsub("[\r\n]+", " ")
+                if #startupProbeParts >= 2 then break end -- 中文维护注释：最多 2 个 Store，控制第一段长度，避免把真正要复制的指纹挤出聊天框。
+            end
+        end
+    end
+    local startupProbeSuffix = #startupProbeParts > 0 and ("/probe=" .. table.concat(startupProbeParts, " ;; ")) or "" -- 中文维护注释：用 ;; 分隔多 Store，避免与既有 | 字段分隔符混淆。
     AddCheck(report, "runtime_startup_degradation", runtimeInfo == nil or runtimeInfo.startupDegraded ~= true,
         "warning", runtimeInfo and ("degraded=" .. tostring(runtimeInfo.startupDegraded == true)
             .. "/warnings=" .. tostring(runtimeInfo.startupWarningCount or 0)
-            .. "/first=" .. startupFirstText) or "runtime missing")
+            .. "/first=" .. startupFirstText .. startupProbeSuffix) or ("runtime missing" .. startupProbeSuffix))
     AddCheck(report, "bootstrap_recovery_entry", S.RecoveryEntryHealthy == true, "warning",
         "healthy=" .. tostring(S.RecoveryEntryHealthy == true) .. "/error=" .. tostring(S.RecoveryEntryError or "none"))
     AddCheck(report, "recovery_launcher_input_contract",
