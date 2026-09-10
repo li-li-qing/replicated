@@ -660,6 +660,7 @@ end -- 中文维护注释：结束 DeathReview 多世代历史 canonical 路由�
 local KNOWN_LEGACY_V4_INDEX_FINGERPRINTS = { -- 中文维护注释：known-stamp 仅记录真实 RU 事故身份；未知 Hash 永远不能通过该表。
     ["770CB0B8"] = { label = "ru_2026_09_07_precodec_v4_index", representation = "precodec" }, -- 中文维护注释：保留 `.18.151` 已验证的 pre-codec 桥；其安全边界仍是 strict legacy shape + exact old stamp。
     ["014277AB"] = { label = "ru_2026_09_09_schema1_codec1_window_generation", representation = "codec1", currentFingerprint = "0CF5BCC1" }, -- 中文维护注释：`.18.192` 实机新事故必须同时命中 old=014277AB 与 current=0CF5BCC1，防止真实内容变化被误迁移。
+    ["55BD6B0A"] = { label = "ru_2026_09_10_schema2_transport1_window_field_loss", representation = "schema2_transport1", currentFingerprint = "44CFFAF4" }, -- 中文维护注释：`.18.198` 实机事故。磁盘取证证实 RU udf 落盘时丢弃了 widgetWindow 的 4 个响应式字段（savedLogicalWidth/Height、normalizedCenterX/Y），而 stamp 是对含这些字段的 canonical 计算的——字段值来自保存时输入，物理丢失后无法从 32 位 Hash 反推，因此走 exact pair；恢复后立即按当前 Transport 版本重写。
 } -- 中文维护注释：结束 DeathReview known-stamp allowlist；新增事故必须有真实诊断证据与对应 current Hash。
 
 local LEGACY_INDEX_TOP_KEYS = { settings=true, history=true, widgetWindow=true }
@@ -785,9 +786,20 @@ local function RecoverKnownLegacyV4Index(decoded, stampedFingerprint, currentCan
     local stamp = tostring(stampedFingerprint or "") -- 中文维护注释：只把实机 stamped fingerprint 作为迁移身份，不从 Domain 数据推断版本。
     local known = KNOWN_LEGACY_V4_INDEX_FINGERPRINTS[stamp] -- 中文维护注释：allowlist 未命中时立即返回 nil，继续通用 fail-closed。
     if type(known) ~= "table" then return nil end -- 中文维护注释：不存在或格式异常的条目不能获得恢复权限。
-    local meta = type(rawEnvelope) == "table" and rawEnvelope.__rsmeta or nil -- 中文维护注释：再次绑定 schema1/store/owner，防止相同 Hash 在其它 Store/未来 schema 中误触。
-    if type(meta) ~= "table" or tonumber(meta.schema) ~= 1 or tostring(meta.store or "") ~= INDEX_STORE or tostring(meta.owner or "") ~= "v3.death_review" then return nil end -- 中文维护注释：只有旧 schema1 DeathReview Index 可使用本桥。
+    local meta = type(rawEnvelope) == "table" and rawEnvelope.__rsmeta or nil -- 中文维护注释：再次绑定 schema/store/owner，防止相同 Hash 在其它 Store/未来 schema 中误触。
+    if type(meta) ~= "table" or tostring(meta.store or "") ~= INDEX_STORE or tostring(meta.owner or "") ~= "v3.death_review" then return nil end -- 中文维护注释：Store/owner 身份必须精确匹配。
     local store = P:GetStore(INDEX_STORE) -- 中文维护注释：获取当前注册 Store 仅用于当前 canonical Hash 与 runtime-only probe，不建立第二 Persistence Authority。
+    if known.representation == "schema2_transport1" then -- 中文维护注释：`.18.198` 新增分支——schema2/Framework3/Transport v1 的窗口字段物理丢失。磁盘取证证实：stamp 是对含响应式字段的 canonical 计算的，而 RU udf 落盘时丢弃了它们，字段值无法反推，只能 exact pair 一次性迁移。
+        if tonumber(meta.schema) ~= INDEX_SCHEMA or tonumber(meta.framework) ~= 3 or tonumber(meta.transportVersion) ~= 1 then return nil end -- 中文维护注释：世代必须精确匹配，禁止放宽成 wildcard。
+        if type(store) == "table" then store.lastHistoricalRecoveryProbe = "knownStamp=" .. stamp .. "/transport1Shape=check" end -- 中文维护注释：runtime-only probe。
+        local valid, reason = ValidateCodecV1IndexPayload(rawEnvelope) -- 中文维护注释：codec1 物理形状与 schema1 世代相同，复用既有严格 shape/type 验证。
+        if valid ~= true then if store ~= nil then store.lastHistoricalRecoveryProbe = "knownStamp=" .. stamp .. "/transport1Shape=reject:" .. tostring(reason) end; return nil end -- 中文维护注释：shape 异常保留 probe 后拒绝。
+        local currentFingerprint = store ~= nil and P:FingerprintCanonicalValue(store, currentCanonical) or nil -- 中文维护注释：必须同时证明当前磁盘解码内容正好落在已观测的新 Hash。
+        if tostring(currentFingerprint or "") ~= tostring(known.currentFingerprint or "") then return nil end -- 中文维护注释：old/new pair 不完整即 fail-closed。
+        if store ~= nil then store.lastHistoricalRecoveryProbe = "knownStamp=" .. stamp .. "/transport1Shape=ok/current=" .. tostring(currentFingerprint) end -- 中文维护注释：记录恢复证据，便于下一次 Fresh Reload 确认已重写。
+        return NormalizeIndex(decoded), tostring(known.label or "death_review_transport1_known_pair") -- 中文维护注释：保留 decoder 已恢复的 settings/history/window；Core 仍执行预算、Apply 与按当前 Transport 版本立即重写。
+    end -- 中文维护注释：结束 schema2_transport1 分支。
+    if tonumber(meta.schema) ~= 1 then return nil end -- 中文维护注释：其余 known-stamp 分支只服务旧 schema1；当前 schema 的 mismatch 由结构化恢复器处理。
     if known.representation == "codec1" then -- 中文维护注释：2026-09-09 事故来自已采用 codec1、但 schema 尚未划分新 canonical generation 的旧存档。
         local valid, reason = ValidateCodecV1IndexPayload(rawEnvelope) -- 中文维护注释：old stamp 命中后仍必须通过严格 codec1 shape/type 验证。
         if valid ~= true then if store ~= nil then store.lastHistoricalRecoveryProbe = tostring(store.lastHistoricalRecoveryProbe or "") .. "/knownStamp=" .. stamp .. "/codec1Shape=reject:" .. tostring(reason) end; return nil end -- 中文维护注释：shape 异常保留 probe 后拒绝，绝不清档或套默认值。

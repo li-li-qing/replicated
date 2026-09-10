@@ -127,6 +127,8 @@ local KNOWN_V7_STAMP = "6271E40B" -- 中文维护注释：2026-09-09 RU Fresh Re
 local KNOWN_V8_CANONICAL = "7E85D975" -- 中文维护注释：同一事故磁盘数据经当前 schema8 canonical 得到的 Hash；old 与 new 必须同时命中才允许保留数据。
 local KNOWN_V8_TRANSPORT_V1_STAMP = "6963CEA5" -- 中文维护注释：2026-09-10 RU 实机在 Framework3/Transport v1 上保存活动设置后记录的原 canonical 指纹；它不是通用“活动坏档”白名单。
 local KNOWN_V8_TRANSPORT_V1_READBACK = "109696BD" -- 中文维护注释：同一次 SaveData→LoadData 回读后活动 payload 经 schema8 canonical 得到的实机 Hash；必须与上面的 old stamp 成对命中。
+local KNOWN_V8_TRANSPORT_V2_STAMP = "4195953A" -- 中文维护注释：`.18.198` 实机第二轮——`.18.197` 已按 Transport v2 重写过的活动存档再次出现跨重载指纹漂移；磁盘取证确认字段完整、值为 float32 舍入形态，漂移机制仍未完全定位，但内容完好可证明。
+local KNOWN_V8_TRANSPORT_V2_READBACK = "5804B4B5" -- 中文维护注释：与 4195953A 成对的当前重算 Hash；两者必须同时命中才允许一次性迁移。
 
 local function RecoverKnownActivityCanonical(decoded, stampedFingerprint, currentCanonical, raw) -- 中文维护注释：活动 Store 自己拥有已知 canonical/transport 事故的恢复资格；Core 只负责机制与最终 exact-hash 证明，Feature/UI 不参与。
     local meta = type(raw) == "table" and raw.__rsmeta or nil -- 中文维护注释：该 raw 已经过 Core 的物理预算、Transport 解码与 Envelope Seal 验证；这里仍再次限定 Store/owner/schema/transport，避免跨 Store 借用恢复。
@@ -144,6 +146,12 @@ local function RecoverKnownActivityCanonical(decoded, stampedFingerprint, curren
         and tostring(stampedFingerprint or "") == KNOWN_V8_TRANSPORT_V1_STAMP
         and tostring(currentFingerprint or "") == KNOWN_V8_TRANSPORT_V1_READBACK then -- 中文维护注释：`.18.196` 新事故必须同时满足 schema8 + Framework3 + Transport v1 + exact old/readback Hash，禁止放宽成 wildcard。
         return Normalize(decoded), "activities_schema8_transport1_known_pair_6963CEA5_109696BD" -- 中文维护注释：Transport v1 已经物理丢失的字段无法从 32 位 Hash 反推；这里保留磁盘仍能严格解释的全部设置，并让 Core 以 Transport v2 重新持久化，阻断同类再次发生。
+    end
+
+    if tonumber(meta.schema) == STORE_SCHEMA and tonumber(meta.framework) == 3 and tonumber(meta.transportVersion) == 2
+        and tostring(stampedFingerprint or "") == KNOWN_V8_TRANSPORT_V2_STAMP
+        and tostring(currentFingerprint or "") == KNOWN_V8_TRANSPORT_V2_READBACK then -- 中文维护注释：`.18.198` 第二轮实机事故——Transport v2 重写后的存档仍跨重载漂移，说明 RU udf 的表示损失不止已知的哨兵类别；磁盘取证确认业务字段完整，因此继续 exact pair 一次性迁移并保留数据。
+        return Normalize(decoded), "activities_schema8_transport2_known_pair_4195953A_5804B4B5" -- 中文维护注释：恢复后由 Core 立即重盖；漂移的根因已列入下一轮磁盘取证计划（udf 数字为 float32 形态已实证）。
     end
     return nil -- 中文维护注释：任何未知 mismatch 都继续进入 Persistence write fence；以后必须依赖新版 readback divergence 证据定位真实字段，不能继续追加宽泛容错。
 end -- 中文维护注释：结束活动已知事故恢复桥；本函数只在 integrity mismatch 冷路径执行，不进入活动刷新/Tick。
