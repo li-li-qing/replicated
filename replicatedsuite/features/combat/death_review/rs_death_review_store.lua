@@ -618,6 +618,19 @@ end -- 中文维护注释：结束 Framework3/Transport v1 零值省略结构化
 
 local function RebuildHistoricalIndexCanonical(value, stampedFingerprint, currentCanonical, rawEnvelope) -- 中文维护注释：统一 Index 历史恢复入口，按 schema/framework/codec 明确分代，避免内容相关 known-pair 继续承担可以结构化证明的兼容职责。
     local meta = type(rawEnvelope) == "table" and rawEnvelope.__rsmeta or nil -- 中文维护注释：历史候选必须绑定已通过 Envelope Seal 的真实 schema/framework 元数据。
+    -- 中文维护注释：`.18.198` 入口即写 probe。此前只有进入具体分支才写，而所有分支都不命中时
+    -- hook 返回 nil、probe 保持 nil，导致摘要里「恢复探针」段整个消失——维护者无法区分
+    -- 「hook 没被调用」和「调用了但分支不匹配」。现在入口先记录真实世代，分支内部再覆盖为更细的原因。
+    do
+        local entryStore = P:GetStore(INDEX_STORE) -- 中文维护注释：仅写 runtime-only probe，不建立第二 Persistence Authority。
+        if type(entryStore) == "table" then
+            entryStore.lastHistoricalRecoveryProbe = "enter/schema=" .. tostring(meta ~= nil and tonumber(meta.schema) or nil)
+                .. "/fw=" .. tostring(meta ~= nil and tonumber(meta.framework) or nil)
+                .. "/tv=" .. tostring(meta ~= nil and tonumber(meta.transportVersion) or nil)
+                .. "/codec=" .. tostring(type(rawEnvelope) == "table" and tonumber(rawEnvelope.codec) or nil)
+                .. "/stamped=" .. tostring(stampedFingerprint) -- 中文维护注释：stamped 只是 32 位 Hash，不含任何业务内容。
+        end -- 中文维护注释：结束入口 probe 写入。
+    end
     if type(meta) == "table" and tonumber(meta.schema) == INDEX_SCHEMA and tonumber(meta.framework) == 2 and tonumber(type(rawEnvelope) == "table" and rawEnvelope.codec or nil) == INDEX_CODEC_VERSION then -- 中文维护注释：`.18.193` 已升级到 schema2 但 Framework2 尚无 Transport v1；优先使用通用表形 exact recovery，覆盖任意合法用户内容而不是新增 Hash 白名单。
         return RebuildFramework2Schema2CodecV1Canonical(rawEnvelope) -- 中文维护注释：Core 会对候选重新 Hash 并要求等于真实 stamped fingerprint；失败后不会降级成“同 schema 自动接受”。
     end -- 中文维护注释：结束 Framework2 schema2 codec1 分支；Framework3 mismatch 不进入兼容器。
