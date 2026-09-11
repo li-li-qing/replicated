@@ -71,6 +71,7 @@ S.Persistence = {
     TerminalLoadMemoizationContractVersion = 1,
     HistoricalCanonicalRecoveryContractVersion = 3,
     KnownLegacyCanonicalRecoveryContractVersion = 1,
+    IntegrityRecoveryTraceContractVersion = 1, -- 中文维护注释：.18.200 新增只读恢复状态机轨迹；仅记录版本/世代/分支/候选结果等非业务元数据，用于定位 fingerprint mismatch 到底在哪一层被拒绝，不参与 SaveData、Hash、Apply 或任何 Feature Authority。
     Lifetime = LIFETIME,
     Scope = SCOPE,
     DefaultBudget = { maxDepth = 12, maxNodes = 4096, maxStringBytes = 65536, maxEntriesPerTable = 1024 },
@@ -169,6 +170,20 @@ local function NonEmptyText(value)
     if value == nil then return nil end
     local text = tostring(value):gsub("[\r\n]+", " "):gsub("^%s+", ""):gsub("%s+$", "")
     return text ~= "" and text or nil
+end
+
+-- 中文维护注释（.18.200 完整性取证）：历史故障连续多轮只暴露 old>new Hash，无法判断
+-- 是 envelope gate、Integrity 世代、Store historical hook、known-stamp shape 还是候选 Hash 拒绝。
+-- 该 trace 是 runtime-only、bounded、只含契约元数据与分支结果，不记录玩家名/伤害/设置值；
+-- Persistence 仍是唯一 Load/Save Authority，trace 不进入 canonical/envelope，也不会改变 fail-closed 决策。
+local function AppendIntegrityRecoveryTrace(store, token)
+    if type(store) ~= "table" then return end
+    token = NonEmptyText(token)
+    if token == nil then return end
+    local current = NonEmptyText(store.lastIntegrityRecoveryTrace)
+    local nextValue = current ~= nil and (current .. ";" .. token) or token
+    if #nextValue > 240 then nextValue = nextValue:sub(1, 237) .. "..." end -- 中文维护注释：限制诊断长度，避免聊天摘要被取证信息反向淹没。
+    store.lastIntegrityRecoveryTrace = nextValue
 end
 
 -- 中文维护注释：RU 物理 SaveData 传输层由 Persistence 统一拥有；Feature Store 只能声明业务 schema，禁止各模块自己发明 Native serializer 补丁。
@@ -1444,6 +1459,15 @@ function P:LoadStore(id, options)
     -- if/elseif 内，其局部变量（如 recoveredHistoricalCanonical）在函数末尾的升级排队处不可见；
     -- 用 stats 增量判断「本次加载是否真的执行过恢复」既可跨作用域，又不需要每个 Store 额外声明标记。
     local recoveriesAtEntry = tonumber(self.stats.integrityUpgradeRecoveries) or 0
+    -- 中文维护注释（.18.200）：每次真实 LoadStore 从头覆盖旧 trace，避免上一次失败/成功的 runtime 证据污染本轮判断。
+    store.lastIntegrityRecoveryTrace = nil
+    AppendIntegrityRecoveryTrace(store, "iv=" .. tostring(stampedIntegrityVersion)
+        .. ",rel=" .. tostring(stampedReliabilityContract)
+        .. ",fw=" .. tostring(meta and meta.framework or nil)
+        .. ",s=" .. tostring(storedSchema)
+        .. ",tv=" .. tostring(meta and meta.transportVersion or nil)
+        .. ",c=" .. tostring(type(raw) == "table" and raw.codec or nil)
+        .. ",env=" .. tostring(envelopeAdvertised == true and 1 or 0))
     if integrityAdvertised then
         self.stats.integrityLoadChecks = (tonumber(self.stats.integrityLoadChecks) or 0) + 1
         local integrityErr = nil
@@ -1508,6 +1532,7 @@ function P:LoadStore(id, options)
                     if actualFingerprint == nil then
                         integrityErr = "fingerprint_failed:" .. tostring(actualErr or "unknown")
                     elseif tostring(actualFingerprint) ~= tostring(stampedFingerprint) then
+                        AppendIntegrityRecoveryTrace(store, "v4=mis,new=" .. tostring(actualFingerprint)) -- 中文维护注释：只记录 32-bit canonical Hash，帮助确认是否真正进入当前 v4 canonical 分支。
                         -- A current-v4 mismatch normally remains fail-closed. One
                         -- narrow exception exists for Stores that can deterministically
                         -- rebuild the exact historical logical candidate after their
@@ -1518,6 +1543,7 @@ function P:LoadStore(id, options)
                         local recoveredHistoricalCanonical = false
                         if envelopeAdvertised == true and store.allowIntegrityUpgrade == true then
                             local decodedInspection = self:InspectPayload(decoded, store.budget)
+                            AppendIntegrityRecoveryTrace(store, "db=" .. tostring(type(decodedInspection) == "table" and decodedInspection.ok == true and 1 or 0)) -- 中文维护注释：Domain budget gate 结果；失败时 historical/known hook 均不会获得执行权。
                             if type(decodedInspection) == "table" and decodedInspection.ok == true then
                                 -- 中文维护注释（恢复顺序）：先尝试 Core 能严格证明的 Framework2
                                 -- `false/空表` 省略（含 default=true 被用户关成 false）；匹配不上才交给 Store 自己的 typed/custom
@@ -1526,6 +1552,7 @@ function P:LoadStore(id, options)
                                 local rebuiltOk, historicalCanonical, recoveredDomain = pcall(
                                     self.RebuildFramework2SerializerOmissions, self, store, DeepCopy(decoded),
                                     stampedFingerprint, DeepCopy(raw))
+                                AppendIntegrityRecoveryTrace(store, "coreF2=" .. tostring(rebuiltOk == true and type(historicalCanonical) == "table" and "cand" or (rebuiltOk == true and "skip" or "err"))) -- 中文维护注释：typed Store 正常应为 skip；若 future 改动意外让 Core 抢先产候选，可从首行直接看出。
                                 if rebuiltOk ~= true or type(historicalCanonical) ~= "table" then
                                     if type(store.rebuildCanonicalForIntegrity) == "function" then
                                         -- Contract v2 passes the original raw envelope as a fourth argument. Existing
@@ -1535,12 +1562,15 @@ function P:LoadStore(id, options)
                                         rebuiltOk, historicalCanonical, recoveredDomain = pcall(
                                             store.rebuildCanonicalForIntegrity, DeepCopy(decoded), stampedFingerprint,
                                             canonical, DeepCopy(raw))
+                                        AppendIntegrityRecoveryTrace(store, "hist=" .. tostring(rebuiltOk == true and type(historicalCanonical) == "table" and "cand" or (rebuiltOk == true and "nil" or "err"))) -- 中文维护注释：明确 Store historical hook 是否执行/抛错/无候选，结束“只看 Hash 猜分支”的盲区。
                                     else
+                                        AppendIntegrityRecoveryTrace(store, "hist=nohook") -- 中文维护注释：Store 未注册 historical hook 也必须显式可见。
                                         rebuiltOk, historicalCanonical, recoveredDomain = false, nil, nil
                                     end
                                 end
                                 if rebuiltOk == true and type(historicalCanonical) == "table" then
                                     local historicalFingerprint = self:FingerprintCanonicalValue(store, historicalCanonical)
+                                    AppendIntegrityRecoveryTrace(store, "hfp=" .. tostring(historicalFingerprint or "nil")) -- 中文维护注释：候选只输出 32-bit Hash，不输出 canonical 内容；可直接判断是 hook 未命中还是候选本身与旧盖章不一致。
                                     if historicalFingerprint ~= nil and tostring(historicalFingerprint) == tostring(stampedFingerprint) then
                                         -- The historical candidate is now integrity-authenticated by the OLD stamp.
                                         -- Apply must be derived from that recovered logical value, not blindly from
@@ -1616,6 +1646,7 @@ function P:LoadStore(id, options)
                             and type(store.recoverKnownLegacyCanonical) == "function" then
                             local knownOk, knownDomain, knownReason = pcall(
                                 store.recoverKnownLegacyCanonical, DeepCopy(decoded), stampedFingerprint, canonical, DeepCopy(raw))
+                            AppendIntegrityRecoveryTrace(store, "known=" .. tostring(knownOk == true and type(knownDomain) == "table" and "cand" or (knownOk == true and "nil" or "err"))) -- 中文维护注释：known-stamp 是最后恢复桥；只记录执行结果，具体拒绝原因由 Store probe 提供。
                             if knownOk == true and type(knownDomain) == "table" then
                                 local knownInspection = self:InspectPayload(knownDomain, store.budget)
                                 local knownCanonical = nil
@@ -1660,9 +1691,13 @@ function P:LoadStore(id, options)
                                     .. "/integrityVersion=" .. tostring(stampedIntegrityVersion)
                                     .. "/reliability=" .. tostring(stampedReliabilityContract) -- 中文维护注释：仅元数据与布尔，无业务内容。
                             end
+                            local recoveryTrace = NonEmptyText(store.lastIntegrityRecoveryTrace)
+                            if recoveryTrace ~= nil then
+                                integrityErr = integrityErr .. "|trace=" .. recoveryTrace -- 中文维护注释：.18.200 把短状态机轨迹放在长 probe 前面；startup warning 有长度上限，顺序反过来会再次把关键分支证据截掉。
+                            end
                             local historicalProbe = NonEmptyText(store.lastHistoricalRecoveryProbe)
                             if historicalProbe ~= nil then
-                                integrityErr = integrityErr .. "|historical_probe=" .. historicalProbe
+                                integrityErr = integrityErr .. "|historical_probe=" .. historicalProbe -- 中文维护注释：Store 专属细节保留在 trace 后作为第二层证据；不改变任何恢复/写保护决策。
                             end
                         end
                     else
@@ -3287,6 +3322,7 @@ function P:BuildRuntimeAcceptanceSnapshot(options)
             lastIntegrityStatus = store.lastIntegrityStatus,
             lastIntegrityError = store.lastIntegrityError,
             historicalRecoveryProbe = store.lastHistoricalRecoveryProbe,
+            integrityRecoveryTrace = store.lastIntegrityRecoveryTrace, -- 中文维护注释：runtime-only 状态机轨迹供 Gate/诊断读取；不属于持久化 Domain。
         }
         if row.loaded then loaded = loaded + 1 end
         if row.dirty then dirty = dirty + 1 end
@@ -3387,6 +3423,7 @@ function P:Describe()
             lastIntegrityStatus = store.lastIntegrityStatus,
             lastIntegrityError = store.lastIntegrityError,
             historicalRecoveryProbe = store.lastHistoricalRecoveryProbe,
+            integrityRecoveryTrace = store.lastIntegrityRecoveryTrace, -- 中文维护注释：与 AcceptanceSnapshot 同源，避免诊断页和 Gate 看到不同证据。
                 lastError = store.lastError,
                 lastSaveAt = store.lastSaveAt,
                 firstDirtyAt = store.firstDirtyAt,
@@ -3446,6 +3483,7 @@ function P:Describe()
         terminalLoadMemoizationContractVersion = self.TerminalLoadMemoizationContractVersion,
         historicalCanonicalRecoveryContractVersion = self.HistoricalCanonicalRecoveryContractVersion,
         knownLegacyCanonicalRecoveryContractVersion = self.KnownLegacyCanonicalRecoveryContractVersion,
+        integrityRecoveryTraceContractVersion = self.IntegrityRecoveryTraceContractVersion, -- 中文维护注释：只读能力声明，供 Foundation 验收诊断链没有被未来重构静默删除。
         lastFlush = DeepCopy(self.lastFlush),
         rows = rows,
         stats = DeepCopy(self.stats),

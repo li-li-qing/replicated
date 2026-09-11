@@ -29,9 +29,9 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function()
     local normalizedWindow = type(store.migrate) == "function" and store.migrate({ widgetWindow = { width = 470, height = 330 } }) or nil -- 中文维护注释：只执行纯 migrate normalizer 验证当前 canonical 形状，不触发 Native/UI 或磁盘写入。
     normalizedWindow = type(normalizedWindow) == "table" and normalizedWindow.widgetWindow or nil -- 中文维护注释：只抽取当前窗口投影用于契约检查，settings/history 不在此测试中改写。
     if (tonumber(F.PersistenceCanonicalWindowContractVersion) or 0) < 7 -- 中文维护注释：v7 表示 DeathReview Store 已冻结自己的窗口字段白名单，未来 Foundation 演进必须再升 schema。
-        or (tonumber(F.PersistenceKnownLegacyRecoveryContractVersion) or 0) < 4 -- 中文维护注释：v4 必须优先包含「Transport v1 零值省略结构化恢复」与 `.18.195` schema2+Framework2 通用 exact-recovery；旧 770CB0B8/014277AB known pair 只允许作为更早世代最终兜底。
-        or (tonumber(F.PersistenceSchema2Framework2RecoveryContractVersion) or 0) < 1 -- 中文维护注释：显式门禁本轮真实 `73DF7418>224E5B9D` 所揭示的 schema2 Framework2 sequence/map 表形恢复，防止未来又退回内容相关 Hash 白名单。
-        or (tonumber(F.PersistenceTransportV1ZeroOmissionRecoveryContractVersion) or 0) < 1 -- 中文维护注释：显式门禁 `.18.198` 实机 `55BD6B0A>44CFFAF4` 所揭示的 Transport v1 零值省略恢复，防止未来把窗口 x/y=0 的合法布局重新变成永久 Fence。
+        or (tonumber(F.PersistenceKnownLegacyRecoveryContractVersion) or 0) < 5 -- 中文维护注释：v5 必须把 Framework2/schema2 与 Transport v1 的合法 0 省略统一到 shared exact solver，并组合 history sequence/map 恢复；禁止回退到内容相关 Hash 白名单。
+        or (tonumber(F.PersistenceSchema2Framework2RecoveryContractVersion) or 0) < 2 -- 中文维护注释：Framework2/schema2 的 sequence/map + 数值 0 结构化恢复继续作为独立兼容能力；`.18.200` 实机已证明 73DF7418 属于 schema1，因此这里禁止再把该 known pair 当作 schema2 契约依据。
+        or (tonumber(F.PersistenceTransportV1ZeroOmissionRecoveryContractVersion) or 0) < 2 -- 中文维护注释：v2 要求零值候选位剔除 canonical 无影响的 offsetX/offsetY，使最大搜索固定 2^10，并与 history 表形恢复组合。
         or (tonumber(F.PersistenceIndexCodecVersion) or 0) < 1 -- 中文维护注释：物理 codec 仍保持 v1，schema2 只划分 canonical generation，不制造无必要的数据格式升级。
         or (tonumber(S.Persistence.HistoricalCanonicalRecoveryContractVersion) or 0) < 3 -- 中文维护注释：Core 必须继续支持 Store-owned exact historical canonical 验证。
         or (tonumber(S.Persistence.KnownLegacyCanonicalRecoveryContractVersion) or 0) < 1 -- 中文维护注释：Core known-stamp 通道只提供安全框架，具体 fingerprint Authority 仍在 Store。
@@ -43,6 +43,50 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function()
         or normalizedWindow.userMoved ~= false or tonumber(normalizedWindow.overallOpacity) ~= 0.96 then -- 中文维护注释：用户移动标记与透明度仍按既有 Store policy 规范化。
         return Fail("widget_window_canonical_contract") -- 中文维护注释：窗口 canonical/recovery 任一契约缺失都阻断，避免再次演化为 Toggle binding/page transaction 故障。
     end -- 中文维护注释：结束 DeathReview schema2 canonical/recovery Acceptance 门禁。
+
+    -- 中文维护注释：`.18.199` 增加真正执行恢复 hook 的合成契约，而不只检查版本号。
+    -- 场景模拟 Framework2/schema2 在 RU SaveData 往返后吞掉 free 布局的 x=0 与 normalizedCenterX=0：
+    -- 旧盖章来自完整 canonical，磁盘 raw 缺这两个字段；恢复器必须先保留/恢复 history 表形，再枚举合法 0，
+    -- 最终候选 Hash 必须逐字等于旧盖章。测试只用本地纯表，不写 SaveData、不 Apply F.State、不创建 Native UI。
+    do
+        local syntheticDomain = {
+            settings = { autoShow = true, windowMs = 10000, maxHistory = 10, minDamage = 0, showDebuffs = true },
+            history = { serial = 0, entries = {} },
+            widgetWindow = {
+                width = 470, height = 330, minimized = false, locked = false,
+                overallOpacity = 0.96, backgroundOpacity = 1, textOpacity = 1, fontScale = 1,
+                userMoved = true, x = 0, y = 128, coordinateSpace = "logical-free-v2",
+                savedUiScale = 1, savedLogicalWidth = 1280, savedLogicalHeight = 768,
+                normalizedCenterX = 0, normalizedCenterY = 0.5,
+            },
+        }
+        local stampedCanonical = type(store.encode) == "function" and store.encode(syntheticDomain) or nil
+        local stamped = type(stampedCanonical) == "table" and S.Persistence:FingerprintCanonicalValue(store, stampedCanonical) or nil
+        local rawProbe = type(store.encode) == "function" and store.encode(syntheticDomain) or nil
+        if type(rawProbe) ~= "table" or type(rawProbe.payload) ~= "table" or type(rawProbe.payload.widgetWindow) ~= "table" or stamped == nil then
+            return Fail("framework2_zero_probe_setup")
+        end
+        rawProbe.__rsmeta = { framework = 2, schema = 2, store = "v3.death_review", owner = "v3.death_review" }
+        rawProbe.payload.widgetWindow.x = nil
+        rawProbe.payload.widgetWindow.normalizedCenterX = nil
+        local decodedProbe = type(store.decode) == "function" and store.decode(rawProbe) or nil
+        local currentProbe = type(decodedProbe) == "table" and store.encode(decodedProbe) or nil
+        local currentFingerprint = type(currentProbe) == "table" and S.Persistence:FingerprintCanonicalValue(store, currentProbe) or nil
+        if type(decodedProbe) ~= "table" or currentFingerprint == nil or tostring(currentFingerprint) == tostring(stamped) then
+            return Fail("framework2_zero_probe_not_divergent")
+        end
+
+        local previousProbe = store.lastHistoricalRecoveryProbe -- 中文维护注释：Acceptance 不得污染用户可复制诊断，只临时借用 runtime-only probe。
+        local rebuildOk, rebuilt, recovered = pcall(store.rebuildCanonicalForIntegrity, decodedProbe, stamped, currentProbe, rawProbe)
+        store.lastHistoricalRecoveryProbe = previousProbe -- 中文维护注释：即使 hook 抛错也先恢复诊断状态，再由本契约返回明确 blocker。
+        local rebuiltFingerprint = rebuildOk == true and type(rebuilt) == "table" and S.Persistence:FingerprintCanonicalValue(store, rebuilt) or nil
+        local recoveredWindow = rebuildOk == true and type(recovered) == "table" and recovered.widgetWindow or nil
+        if rebuildOk ~= true or rebuiltFingerprint == nil or tostring(rebuiltFingerprint) ~= tostring(stamped)
+            or type(recoveredWindow) ~= "table" or tonumber(recoveredWindow.x) ~= 0
+            or tostring(recoveredWindow.coordinateSpace or "") ~= "logical-free-v2" then
+            return Fail("framework2_zero_exact_recovery")
+        end
+    end -- 中文维护注释：结束 Framework2/schema2 合法 0 exact-recovery 合成验收。
 
     if F.Demand == nil or type(F.Demand.Acquire) ~= "function" or type(F.Demand.Release) ~= "function"
         or type(F.ReconcileDemand) ~= "function" or type(F.GetSettings) ~= "function" or type(F.SetMaxHistory) ~= "function"

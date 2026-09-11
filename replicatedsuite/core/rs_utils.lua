@@ -21,6 +21,35 @@ function U.SafeNumber(value, fallback)
     return n
 end
 
+-- 中文维护注释（统一装备分数解析，2026-09-11）：
+-- 问题原因：RU API UnitGearScore(unit, comma) 的第二参数控制千分位显示，不是 target 标志。
+-- 本周更新后格式化返回可能成为 "12,345"；旧调用直接 tonumber 会得到 nil。
+-- Authority/数据流：此 helper 不读取 API、不缓存业务状态，只把 X2Unit 已返回的事实规范成
+-- number；BuffDisplay / RaidReadiness 共用它，避免两个模块的地区格式规则漂移。
+-- 兼容边界：支持 number、逗号、ASCII 空白、UTF-8 NBSP 与 thin-space；未知 table/object
+-- fail-closed 返回 nil。不能从字符串中“猜”非数字内容，也不能把 0/负数视为有效装分。
+-- 性能：只做短字符串替换，由已有低频 equipment/readiness 读取路径调用，禁止放入 Tick 新循环。
+U.GearScoreParseContractVersion = 1
+function U.ParseGearScore(raw)
+    local rawType = type(raw)
+    local formatted = false
+    local candidate = raw
+    if rawType == "string" then
+        local text = tostring(raw)
+        local cleaned = text:gsub(",", ""):gsub("%s", "")
+        cleaned = cleaned:gsub("\194\160", ""):gsub("\226\128\137", "")
+        formatted = cleaned ~= text
+        candidate = cleaned
+    elseif rawType ~= "number" then
+        return nil, false
+    end
+    local value = tonumber(candidate)
+    if value == nil or value ~= value or value == math.huge or value == -math.huge or value <= 0 then
+        return nil, formatted
+    end
+    return value, formatted
+end
+
 function U.FormatMoney(copper, signed)
     local value = math.floor(U.SafeNumber(copper, 0))
     local sign = ""

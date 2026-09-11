@@ -72,9 +72,15 @@ local function ReadRole(member)
 end
 
 local function ReadGear(member)
-    local score, err = ReadCapability("X2Unit:UnitGearScore", X2Unit, "UnitGearScore", tostring(member.unitToken or ""), true)
-    score = Number(score)
-    if score ~= nil and score <= 0 then score = nil end
+    -- 中文维护注释（UnitGearScore comma 参数修复，2026-09-11）：
+    -- 问题原因：第二参数是“是否格式化千分位”，旧代码误传 true；RU 更新后可能得到
+    -- "12,345"，旧 Number/tonumber 直接失败。Authority 仍是 X2Unit，团队战备只读取成员
+    -- unitToken，不允许用名字/角色类型推断装分。
+    -- 数据流：X2Unit -> shared S.Utils.ParseGearScore -> readiness row；与 BuffDisplay 使用同一
+    -- parser，避免两个功能再次出现格式兼容差异。兼容边界：API 失败或非数值返回保持 unknown。
+    local raw, err = ReadCapability("X2Unit:UnitGearScore", X2Unit, "UnitGearScore", tostring(member.unitToken or ""), false)
+    local score = nil
+    if err == nil and U ~= nil and type(U.ParseGearScore) == "function" then score = select(1, U.ParseGearScore(raw)) end
     return score, err
 end
 

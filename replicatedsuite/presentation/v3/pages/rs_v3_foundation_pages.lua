@@ -790,7 +790,16 @@ local function BuildDiagnostics(parent, route)
             return host:Notify({ title = "测试通知", detail = "通知宿主工作正常；该提示会自动消失。", tone = "green", durationMs = 3200 }) ~= nil
         end)
     end })
-    RSUI:Text({ id = "v3_diag_reload_hint", parent = actionRow2, text = "重载会先尽力保存；若 Store 保存失败会保留 ID + 原因并继续加载新文件，未保存修改可能丢失。完整自检只读取快照。", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
+    RSUI:Button({ id = "v3_diag_status_hud_output", parent = actionRow2, text = "状态HUD诊断", compact = true, slot = { size = "fixed", width = 116 }, onClick = function() -- 中文维护注释（HUD 大修专项入口，2026-09-11）：问题原因是状态显示跨 Shell/Store/Renderer，普通摘要不便复制完整证据；按钮只调用 DiagnosticsManager 的只读有界报告，不创建 HUD、不取得 Consumer。
+        return RunDiagnosticAction("status_hud_output", function() -- 中文维护注释：继续走 ActionRunner，防止诊断按钮重入或异常绕过统一 UI 错误治理；该动作不写存档。
+            local diagnostics = S.DiagnosticsManager -- 中文维护注释：DiagnosticsManager 是报告唯一 Authority；页面不直接读取校准 Draft、Marker metrics 或 Store，避免形成第二套诊断数据流。
+            if type(diagnostics) ~= "table" or type(diagnostics.BuildBuffHudReport) ~= "function" then return false, "状态HUD专项诊断不可用" end -- 中文维护注释：缺少后端时明确失败，避免用户复制空报告。
+            local text = diagnostics:BuildBuffHudReport() -- 中文维护注释：报告按需读取 detached 快照和最多 12 条校准轨迹，不触发 Native 扫描或 50ms 热路径采集。
+            if type(S.SafeChat) == "function" then S.SafeChat(text, "info", "diagnostics") end -- 中文维护注释：沿现有安全聊天输出，用户可直接复制给维护者。
+            return true
+        end)
+    end })
+    RSUI:Text({ id = "v3_diag_reload_hint", parent = actionRow2, text = "重载会先尽力保存；若 Store 保存失败会保留 ID + 原因并继续加载新文件，未保存修改可能丢失。HUD 异常可点“状态HUD诊断”。", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
     local actionRow3 = RSUI:HorizontalBox({ id = "v3_diag_actions_3", parent = root, gap = 8, slot = { size = "fixed", height = 34, hAlign = "fill" } })
     RSUI:Button({ id = "v3_diag_persistence_acceptance", parent = actionRow3, text = "输出存档验收", compact = true, slot = { size = "fixed", width = 130 }, onClick = function()
         return RunDiagnosticAction("persistence_acceptance", function()

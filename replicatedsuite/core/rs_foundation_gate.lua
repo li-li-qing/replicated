@@ -223,9 +223,17 @@ function G:Run(options)
     -- 「恢复探针」/「存档故障」行在聊天复制时被截断，永远到不了维护者手里；而第一个未通过项每次都能
     -- 完整到达。因此这里主动收集写保护 Store 的 probe（字段名/候选计数/真实 schema-fw-tv 元数据，
     -- 无玩家名、伤害、技能或自由文本配置），保证诊断证据与摘要同生共死。
-    local startupProbeParts = {}
+    local startupProbeParts, startupTraceParts = {}, {}
     do
         local persistenceDescribe = S.Persistence ~= nil and type(S.Persistence.Describe) == "function" and S.Persistence:Describe() or nil
+        for _, probeRow in ipairs(persistenceDescribe and persistenceDescribe.rows or {}) do
+            if probeRow.writeFenced == true and probeRow.integrityRecoveryTrace ~= nil then
+                local trace = tostring(probeRow.integrityRecoveryTrace):gsub("[\r\n]+", " ")
+                if #trace > 150 then trace = trace:sub(1, 147) .. "..." end -- 中文维护注释：状态机轨迹优先于长 Store probe，最多保留足够识别 iv/fw/schema/tv/hist/known 的前段。
+                startupTraceParts[#startupTraceParts + 1] = tostring(probeRow.id or "?") .. ":" .. trace
+                if #startupTraceParts >= 2 then break end
+            end
+        end
         for _, probeRow in ipairs(persistenceDescribe and persistenceDescribe.rows or {}) do
             if probeRow.writeFenced == true and probeRow.historicalRecoveryProbe ~= nil then -- 中文维护注释：字段名必须是 Describe() 行的 historicalRecoveryProbe（勿改回 store 原生名）。
                 startupProbeParts[#startupProbeParts + 1] = tostring(probeRow.id or "?") .. ":" .. tostring(probeRow.historicalRecoveryProbe):gsub("[\r\n]+", " ")
@@ -233,11 +241,12 @@ function G:Run(options)
             end
         end
     end
+    local startupTraceSuffix = #startupTraceParts > 0 and ("/itrace=" .. table.concat(startupTraceParts, " ;; ")) or "" -- 中文维护注释：.18.200 第一优先证据，直接表明 Core 恢复状态机走到哪一层。
     local startupProbeSuffix = #startupProbeParts > 0 and ("/probe=" .. table.concat(startupProbeParts, " ;; ")) or "" -- 中文维护注释：用 ;; 分隔多 Store，避免与既有 | 字段分隔符混淆。
     AddCheck(report, "runtime_startup_degradation", runtimeInfo == nil or runtimeInfo.startupDegraded ~= true,
         "warning", runtimeInfo and ("degraded=" .. tostring(runtimeInfo.startupDegraded == true)
             .. "/warnings=" .. tostring(runtimeInfo.startupWarningCount or 0)
-            .. "/first=" .. startupFirstText .. startupProbeSuffix) or ("runtime missing" .. startupProbeSuffix))
+            .. "/first=" .. startupFirstText .. startupTraceSuffix .. startupProbeSuffix) or ("runtime missing" .. startupTraceSuffix .. startupProbeSuffix))
     AddCheck(report, "bootstrap_recovery_entry", S.RecoveryEntryHealthy == true, "warning",
         "healthy=" .. tostring(S.RecoveryEntryHealthy == true) .. "/error=" .. tostring(S.RecoveryEntryError or "none"))
     AddCheck(report, "recovery_launcher_input_contract",
@@ -1397,14 +1406,63 @@ function G:Run(options)
         and buffDisplayPageHost.factories["combat.buff_display"] or nil
     local buffDisplayWidget = type(buffDisplayWidgetHost) == "table" and type(buffDisplayWidgetHost.GetSpec) == "function"
         and buffDisplayWidgetHost:GetSpec("combat.buff_display") or nil
+    -- 中文维护注释（状态显示字体契约取值修复，2026-09-11）：.18.203 的 Foundation
+    -- Gate 在下面检查 BuffIconFontSizeContractVersion 时直接引用 buffHeadMarkers，却没有在
+    -- 当前 BuildReport 作用域绑定这个局部变量；Lua 因而退化为读取同名全局（实际为 nil），
+    -- 导致正式 Renderer 已声明字体 Authority 契约仍被固定诊断为 font=0。这里仅从 UIV3
+    -- Presentation Authority 读取已加载模块，不创建 Widget、不取得 Consumer、不访问 Store，
+    -- 因此不会改变 HUD 生命周期或 50ms 热路径。注意不要改成缓存跨重载引用：Foundation
+    -- 每次构建报告都应读取当前 S.UIV3 实例，确保热重载/文件重载后的契约诊断反映真实模块。
+    local buffHeadMarkers = S.UIV3 and S.UIV3.BuffHeadMarkersV3 or nil
+    local buffHudCalibration = S.UIV3 and S.UIV3.BuffHudCalibrationV3 or nil
+    -- 中文维护注释（状态显示 HUD 校准验收，2026-09-11）：.18.206 后 Foundation 除双 profile
+    -- 与独立校准器外，还必须证明：统一屏幕Y语义、标题栏拖动、上下文参数、全局位置预览、正式
+    -- Renderer 校准抑制，以及 HUD 布局页正确的 Border Measure 契约。Authority：这些版本号只描述
+    -- Presentation 能力；Store schema5 与业务数据仍是正式 Authority。数据流：启动报告只读取已加载
+    -- 模块字段 -> AddCheck，不创建 UI、不取得/释放 Consumer、不写 Draft。兼容边界：热重载残留旧
+    -- 校准器/旧页面必须 fail-closed，避免用户把错误几何再次保存。
+    -- .18.207 新增 equipLocal/template 契约：装备 x/y 只能是各自局部微调，模板快照只从 Draft
+    -- 读取并输出；二者都不改变 schema5/Persistence Authority。
+    -- .18.208 再要求 targetTpl/gearApi/gearParse：目标发行默认只作用 fresh/reset，已有
+    -- targetLayout 仍由 Store Authority 持有；装分 API 读取必须遵守 UnitGearScore(unit, comma=false)，
+    -- 数字格式只由 Utils 共享 parser 规范化。Gate 仅读版本字段，不在启动验收里调用 Native API。
     AddCheck(report, "buff_display_v3_statusmap_contract", buffDisplay ~= nil and S.FeatureRuntime ~= nil
             and S.FeatureRuntime:IsImplemented("combat_buff_display") == true
             and type(buffDisplay.ProjectStatusMap) == "function" and type(buffDisplay.GetProjection) == "function"
             and type(buffDisplay.RefreshScope) == "function" and type(buffDisplay.Commands) == "table"
             and type(buffDisplay.Commands.SetSetting) == "function" and type(buffDisplay.Commands.SetWidgetVisible) == "function"
             and type(buffDisplay.Commands.ApplySettingFromBinding) == "function" and type(buffDisplay.Commands.MarkStoreDirty) == "function"
-            and buffDisplay.Demand ~= nil and buffDisplayStore ~= nil and tonumber(buffDisplayStore.schemaVersion) == 4
-            and (tonumber(buffDisplay.BuffHeadMarkerContractVersion) or 0) >= 1
+            and type(buffDisplay.Commands.GetHudCalibrationSnapshot) == "function" and type(buffDisplay.Commands.PersistHudCalibrationSnapshot) == "function"
+            and buffDisplay.Demand ~= nil and buffDisplayStore ~= nil and tonumber(buffDisplayStore.schemaVersion) == 5
+            and type(buffDisplayStore.rebuildCanonicalForIntegrity) == "function"
+            and type(buffDisplayStore.recoverKnownLegacyCanonical) == "function"
+            and (tonumber(buffDisplay.Schema5DualHudMigrationContractVersion) or 0) >= 1
+            and (tonumber(buffDisplay.TargetDefaultTemplateContractVersion) or 0) >= 1
+            and (tonumber(buffDisplay.GearScoreApiContractVersion) or 0) >= 1
+            and type(S.Utils) == "table" and (tonumber(S.Utils.GearScoreParseContractVersion) or 0) >= 1
+            and type(S.Utils.ParseGearScore) == "function"
+            and (tonumber(buffDisplay.LayoutAuthorityContractVersion) or 0) >= 3
+            and (tonumber(buffDisplay.HudCalibrationContractVersion) or 0) >= 1
+            and (tonumber(buffDisplay.BuffHeadMarkerContractVersion) or 0) >= 9
+            and type(buffHeadMarkers) == "table" and (tonumber(buffHeadMarkers.BuffIconFontSizeContractVersion) or 0) >= 1
+            and (tonumber(buffHeadMarkers.LiveHudSuppressionContractVersion) or 0) >= 1
+            and (tonumber(buffHeadMarkers.EquipmentIndependentOffsetContractVersion) or 0) >= 1
+            and type(buffHeadMarkers.SetCalibrationSuppressed) == "function"
+            and type(buffHudCalibration) == "table" and (tonumber(buffHudCalibration.version) or 0) >= 3
+            and (tonumber(buffHudCalibration.DiagnosticsContractVersion) or 0) >= 4
+            and (tonumber(buffHudCalibration.ScreenCoordinateAdapterContractVersion) or 0) >= 1
+            and (tonumber(buffHudCalibration.PanelDragContractVersion) or 0) >= 1
+            and (tonumber(buffHudCalibration.ContextualControlsContractVersion) or 0) >= 1
+            and (tonumber(buffHudCalibration.GlobalPreviewContractVersion) or 0) >= 1
+            and (tonumber(buffHudCalibration.LiveHudSuppressionContractVersion) or 0) >= 1
+            and (tonumber(buffHudCalibration.TemplateSnapshotContractVersion) or 0) >= 1
+            and type(buffHudCalibration.BuildTemplateSnapshotLines) == "function"
+            and type(buffHudCalibration.OutputTemplateSnapshot) == "function"
+            and type(buffHudCalibration.ToggleGlobalPreview) == "function"
+            and type(buffHudCalibration.Open) == "function" and type(buffHudCalibration.Exit) == "function"
+            and type(buffHudCalibration.GetDiagnostics) == "function"
+            and (tonumber(buffDisplay.HudLayoutPageMeasureContractVersion) or 0) >= 1
+            and type(S.DiagnosticsManager) == "table" and type(S.DiagnosticsManager.BuildBuffHudReport) == "function"
             and buffDisplayPage ~= nil and type(buffDisplayWidget) == "table"
             and buffDisplayMeta ~= nil and tostring(buffDisplayMeta.status) == "migrated_m16_18"
             and tostring(buffDisplayMeta.lifecycle) == "demand_scoped"
@@ -1412,7 +1470,32 @@ function G:Run(options)
         "blocker", buffDisplayHealth and ("enabled=" .. tostring(buffDisplay.enabled == true)
             .. "/consumer=" .. tostring(buffDisplayHealth.consumers or 0)
             .. "/aura=" .. tostring(buffDisplayHealth.auraHeld == true)
-            .. "/task=" .. tostring(buffDisplayHealth.taskActive == true)) or "missing")
+            .. "/task=" .. tostring(buffDisplayHealth.taskActive == true)
+            .. "/schema=" .. tostring(buffDisplayStore and buffDisplayStore.schemaVersion or 0)
+            .. "/hist=" .. tostring(type(buffDisplayStore) == "table" and type(buffDisplayStore.rebuildCanonicalForIntegrity) == "function" and 1 or 0)
+            .. "/known=" .. tostring(type(buffDisplayStore) == "table" and type(buffDisplayStore.recoverKnownLegacyCanonical) == "function" and 1 or 0)
+            .. "/mig=" .. tostring(buffDisplay.Schema5DualHudMigrationContractVersion or 0)
+            .. "/targetTpl=" .. tostring(buffDisplay.TargetDefaultTemplateContractVersion or 0)
+            .. "/gearApi=" .. tostring(buffDisplay.GearScoreApiContractVersion or 0)
+            .. "/gearParse=" .. tostring(type(S.Utils) == "table" and S.Utils.GearScoreParseContractVersion or 0)
+            .. "/layout=" .. tostring(buffDisplay.LayoutAuthorityContractVersion or 0)
+            .. "/hud=" .. tostring(buffDisplay.HudCalibrationContractVersion or 0)
+            .. "/marker=" .. tostring(buffDisplay.BuffHeadMarkerContractVersion or 0)
+            .. "/font=" .. tostring(type(buffHeadMarkers) == "table" and buffHeadMarkers.BuffIconFontSizeContractVersion or 0)
+            .. "/suppress=" .. tostring(type(buffHeadMarkers) == "table" and buffHeadMarkers.LiveHudSuppressionContractVersion or 0)
+            .. "/equipLocal=" .. tostring(type(buffHeadMarkers) == "table" and buffHeadMarkers.EquipmentIndependentOffsetContractVersion or 0)
+            .. "/cal=" .. tostring(type(buffHudCalibration) == "table" and buffHudCalibration.version or 0)
+            .. "/hudDiag=" .. tostring(buffHudCalibration and buffHudCalibration.DiagnosticsContractVersion or 0)
+            .. "/coord=" .. tostring(buffHudCalibration and buffHudCalibration.ScreenCoordinateAdapterContractVersion or 0)
+            .. "/panelDrag=" .. tostring(buffHudCalibration and buffHudCalibration.PanelDragContractVersion or 0)
+            .. "/context=" .. tostring(buffHudCalibration and buffHudCalibration.ContextualControlsContractVersion or 0)
+            .. "/global=" .. tostring(buffHudCalibration and buffHudCalibration.GlobalPreviewContractVersion or 0)
+            .. "/liveHide=" .. tostring(buffHudCalibration and buffHudCalibration.LiveHudSuppressionContractVersion or 0)
+            .. "/template=" .. tostring(buffHudCalibration and buffHudCalibration.TemplateSnapshotContractVersion or 0)
+            .. "/pageMeasure=" .. tostring(buffDisplay.HudLayoutPageMeasureContractVersion or 0)
+            .. "/page=" .. tostring(buffDisplayPage ~= nil and 1 or 0)
+            .. "/widget=" .. tostring(type(buffDisplayWidget) == "table" and 1 or 0)
+            .. "/meta=" .. tostring(buffDisplayMeta ~= nil and 1 or 0)) or "missing")
     AddCheck(report, "buff_display_v3_runtime_scope", buffDisplayHealth ~= nil
             and (((tonumber(buffDisplayHealth.consumers) or 0) > 0
                     and buffDisplayHealth.auraHeld == true and buffDisplayHealth.taskActive == true)
@@ -1583,9 +1666,9 @@ function G:Run(options)
             and type(deathReview.Commands.SetEnabled) == "function" and type(deathReview.Commands.ClearHistory) == "function"
             and (tonumber(deathReview.PersistenceCanonicalWindowContractVersion) or 0) >= 7 -- 中文维护注释：Foundation 要求 Store-owned 窗口字段投影 v7，防止共享 FloatingSurface 未来加字段再次污染既有 Index canonical。
             and (tonumber(deathReview.PersistenceIndexSchemaContractVersion) or 0) >= 2 -- 中文维护注释：DeathReview Index 必须明确处于 schema2；record 分片仍独立 schema1，不在此合并。
-            and (tonumber(deathReview.PersistenceKnownLegacyRecoveryContractVersion) or 0) >= 4 -- 中文维护注释：DeathReview recovery v4 要求「可结构化证明的恢复」先于 known-pair：先补回 Transport v1 省略的零值窗口字段，再恢复 schema2/Framework2 表形，旧内容相关 known pair 只作早期世代兜底。
-            and (tonumber(deathReview.PersistenceSchema2Framework2RecoveryContractVersion) or 0) >= 1 -- 中文维护注释：发布门禁明确要求 `.18.195` schema2 codec1 Framework2 exact-recovery 存在，避免公开用户因不同 history 内容产生新 Hash 时再次被 Fence。
-            and (tonumber(deathReview.PersistenceTransportV1ZeroOmissionRecoveryContractVersion) or 0) >= 1 -- 中文维护注释：`.18.198` 要求 Framework3/Transport v1 的零值省略结构化恢复必须随包存在，防止公开用户窗口 x/y=0 或透明度=0 时被永久 write fence。
+            and (tonumber(deathReview.PersistenceKnownLegacyRecoveryContractVersion) or 0) >= 5 -- 中文维护注释：DeathReview recovery v5 要求 Framework2/schema2 与 Transport v1 共用 exact 零值恢复，并组合 history 表形；旧 known pair 只保留给真正不可逆的早期事故。
+            and (tonumber(deathReview.PersistenceSchema2Framework2RecoveryContractVersion) or 0) >= 2 -- 中文维护注释：Framework2/schema2 exact-recovery 继续覆盖 sequence/map 与合法数值 0 省略，但 `.18.200` 实机证据已将 73DF7418 归入 schema1；Foundation 这里只校验通用结构化能力，不再把该事故错误绑定到 schema2。
+            and (tonumber(deathReview.PersistenceTransportV1ZeroOmissionRecoveryContractVersion) or 0) >= 2 -- 中文维护注释：v2 要求候选集合只包含 nil/0 真正影响 canonical 的 10 个字段，避免 offsetX/offsetY 造成 2^12 候选爆炸后跳过真实恢复。
             and (tonumber(deathReview.PersistenceIndexCodecVersion) or 0) >= 1 -- 中文维护注释：codec1 继续是 Index 稳定物理编码，schema bump 不等于强制换 codec。
             and (tonumber(S.Persistence.HistoricalCanonicalRecoveryContractVersion) or 0) >= 3 -- 中文维护注释：Core exact historical canonical 恢复必须存在且先于 known-stamp 迁移。
             and type(deathReview.WidgetWindowSizePolicy) == "table" and deathReview.Demand ~= nil -- 中文维护注释：Presentation policy 与独立 Demand 生命周期必须同时保持，持久化修复不得耦合高频战斗模块。
@@ -1767,6 +1850,7 @@ function G:Run(options)
             and (tonumber(S.Persistence.FrameworkVersion) or 0) >= 3
             and (tonumber(S.Persistence.TransportContractVersion) or 0) >= 2 -- 中文维护注释：.18.197 新写必须使用 Transport v2，保护 false/空表之外的 0/空字符串；v1 只保留 Load 兼容，不能再作为发布级写入契约。
             and (tonumber(S.Persistence.ReadbackDivergenceDiagnosticsContractVersion) or 0) >= 1 and type(S.Persistence.DescribeCanonicalDivergence) == "function" -- 中文维护注释：任何未来 readback Hash mismatch 必须能给出首个字段差异证据；该 helper 仅失败冷路径 bounded 执行，不得被 Feature 热路径调用。
+            and (tonumber(S.Persistence.IntegrityRecoveryTraceContractVersion) or 0) >= 1 -- 中文维护注释：.18.200 要求 fingerprint mismatch 必须暴露 bounded 状态机轨迹，禁止未来重构又退回只有 old>new Hash 的不可诊断状态。
             and (tonumber(S.Persistence.ReliabilityContractVersion) or 0) >= 6
             and (tonumber(S.Persistence.IntegrityContractVersion) or 0) >= 1
             and (tonumber(S.Persistence.EnvelopeIntegrityContractVersion) or 0) >= 1
@@ -2419,6 +2503,18 @@ function G:BuildCopyText(runNow)
         end
     end
     if #persistenceIncidents > 0 then parts[#parts+1] = "存档故障 " .. table.concat(persistenceIncidents, " | ") end
+    -- 中文维护注释（.18.200）：把 Core 完整性恢复状态机独立成段，先于 Store historical probe 输出。
+    -- 该证据只含契约版本/世代/分支/Hash 结果，用户即使只复制摘要前半段，也能判断失败发生在 Core gate 还是 Store hook。
+    do
+        local traceParts = {}
+        for _, row in ipairs(persistence and persistence.rows or {}) do
+            if row.writeFenced == true and row.integrityRecoveryTrace ~= nil then
+                traceParts[#traceParts + 1] = tostring(row.id or "?") .. ":" .. tostring(row.integrityRecoveryTrace):gsub("[\r\n]+", " ")
+                if #traceParts >= 3 then break end
+            end
+        end
+        if #traceParts > 0 then parts[#parts+1] = "完整性轨迹 " .. table.concat(traceParts, " | ") end
+    end
     -- 中文维护注释：`.18.198` 把完整性恢复探针单独成行。此前 probe 以 `|historical_probe=` 后缀挂在
     -- 很长的"存档故障"行尾，实机摘要会被 UI 截断，导致最关键的定位证据（分支是否触发、缺哪些字段）
     -- 恰好在复制时丢失。这里只输出**写保护中**的 Store 的 probe——字段名、候选计数与真实

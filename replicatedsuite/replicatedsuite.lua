@@ -94,7 +94,7 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.198-death-review-transport-v1-zero-recovery" -- 中文维护注释：.18.198 修复 RU 实机 `v3.death_review:55BD6B0A>44CFFAF4`。根因是 Transport v1 只保护 false/空表、不保护数值 0，导致自由布局窗口的 x/y（合法取 0）被原生 serializer 省略，FloatingSurface 的 free 分支随之塌陷、整组定位字段丢失。修复用「补回被省略的 0」的结构化 exact recovery 取代 known-pair 白名单，并让真正恢复过的 v1 Store 立即重写为 Transport v2；未知 mismatch 继续 fail-closed。
+S.BuildTag = "v3-m1.16.0.18.208-target-gear-score-api-default-template" -- 中文维护注释：.18.208 不改 schema5/Persistence；按实机 HUD_TEMPLATE_V1 固化已确认的目标装备默认布局，并修复 RU 更新后 UnitGearScore(unit, comma) 第二参数误用与 target-kind 前置门导致敌人装分不可见。装分格式解析统一收敛到 Utils，状态显示/团队战备共用同一 Authority 边界。
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}
 S.SaveKey = tostring(S.Config.SaveKey or "replicated_suite_v1")

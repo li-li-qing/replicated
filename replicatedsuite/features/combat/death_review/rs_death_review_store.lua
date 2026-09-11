@@ -46,9 +46,9 @@ end
 
 F.PersistenceCanonicalWindowContractVersion = 7 -- 中文维护注释：v7 表示 DeathReview 窗口 canonical 已由 Store 显式字段投影冻结，未来 FloatingSurface 新字段不得无 schema bump 进入指纹。
 F.PersistenceIndexSchemaContractVersion = INDEX_SCHEMA -- 中文维护注释：向 Acceptance/Foundation 暴露 Index schema2 边界，防止增量包只改 Store 而漏改门禁。
-F.PersistenceKnownLegacyRecoveryContractVersion = 4 -- 中文维护注释：v4 在 v3「schema2+Framework2 表形通用恢复」之上，新增 Framework3 + Transport v1 的**零值省略结构化恢复**：Transport v1 只保护 false/空表，数值 0 会被 RU serializer 省略，而 FloatingSurface 的 free 分支要求 x/y 非 nil、透明度 fallback 也不是 0，因此可通过「补回被省略的 0」精确复现旧盖章；旧 known-pair 仍是更老世代的最终兜底。
-F.PersistenceSchema2Framework2RecoveryContractVersion = 1 -- 中文维护注释：单独暴露 `.18.195` schema2/Framework2 冷路径恢复契约，Foundation/Acceptance 可阻止未来维护误删该路径；它不改变正常 schema2 codec、Feature Authority 或运行时 History 数据结构。
-F.PersistenceTransportV1ZeroOmissionRecoveryContractVersion = 1 -- 中文维护注释：单独暴露 `.18.198` Framework3/Transport v1 零值省略恢复契约，让 Foundation/Acceptance 能钉死「可结构化证明的恢复优先于 known-pair 白名单」这一边界；该路径不读取 Native 游戏状态、不改变 Index codec/schema、只在完整性 mismatch 冷启动执行。
+F.PersistenceKnownLegacyRecoveryContractVersion = 5 -- 中文维护注释：该契约版本保持不变；`.18.200` 实机 itrace 已证明 73DF7418 属于 Framework2/schema1/codec1，而不是先前误判的 schema2。这里不通过抬高版本号制造“已修复”假象，真实修复由下方 Store-owned exact old/new pair + generation gate 承担，未知 mismatch 继续 fail-closed。
+F.PersistenceSchema2Framework2RecoveryContractVersion = 2 -- 中文维护注释：v2 表示 `.18.199` Framework2 冷路径可组合恢复 history 表形 + RU 数值 0 省略；只在 integrity mismatch 执行，不改变正常 schema2 codec、Feature Authority 或运行时 History 数据结构。
+F.PersistenceTransportV1ZeroOmissionRecoveryContractVersion = 2 -- 中文维护注释：v2 修正 `.18.198` 候选爆炸：移除 canonical 无影响的 offsetX/offsetY，并与 history 表形恢复组合；最大候选固定为 2^10，仍只在完整性 mismatch 冷启动执行。
 F.PersistenceIndexCodecVersion = INDEX_CODEC_VERSION
 F.WidgetWindowSizePolicy = {
     defaultWidth = 470,
@@ -486,134 +486,200 @@ local function RebuildV18_145Canonical(value, stampedFingerprint, currentCanonic
     return strictHistorical
 end
 
-local function RebuildFramework2Schema2CodecV1Canonical(rawEnvelope) -- 中文维护注释：`.18.195` 专门恢复已经进入 schema2/codec1、但仍由 Framework2 物理保存的 DeathReview Index；该路径只在 Integrity mismatch 冷启动边界执行，不进入正常 History/CombatEventBus 生命周期。
-    local meta = type(rawEnvelope) == "table" and rawEnvelope.__rsmeta or nil -- 中文维护注释：恢复 Authority 必须绑定真实 envelope metadata；不能只凭 codec 或当前 Domain 猜历史世代。
-    if type(meta) ~= "table" or tonumber(meta.framework) ~= 2 or tonumber(meta.schema) ~= INDEX_SCHEMA then return nil end -- 中文维护注释：只接受 `.18.193`/早期 `.18.194` 可能留下的 Framework2 + schema2；Framework3 已有 Transport v1，若仍 mismatch 应视为真实损坏并保持 Fence。
-    if tonumber(type(rawEnvelope) == "table" and rawEnvelope.codec or nil) ~= INDEX_CODEC_VERSION or type(rawEnvelope.payload) ~= "table" then return nil end -- 中文维护注释：必须是真正 DeathReview codec1 物理形状；未知/future codec 禁止降级恢复。
-    local decoded, decodeErr = DecodeIndex(rawEnvelope) -- 中文维护注释：先复用正式 decoder 取得 settings/window 的当前业务语义；这里不 Apply、不触碰 Feature State。
-    if type(decoded) ~= "table" or decodeErr ~= nil then return nil end -- 中文维护注释：codec 无法正式解码即 fail-closed，不能用历史修复器绕过解码失败。
-    local payload = rawEnvelope.payload -- 中文维护注释：后续只读取已通过 Persistence Envelope Seal 的 codec payload，不访问 record 分片或 Native API。
-    local sourceHistory = type(payload.history) == "table" and payload.history or {} -- 中文维护注释：history 根表若被 RU 省略为空，按 codec1 的空历史语义进入有界恢复；不创建不存在的死亡记录。
-    local sourceEntries = type(sourceHistory.entries) == "table" and sourceHistory.entries or {} -- 中文维护注释：只对 Index 摘要 entries 做表形恢复；record slot 内容仍由各自 Store 独立 Authority 保存。
-    local ipairsCount = 0 -- 中文维护注释：记录正常 decoder 能看到的 sequence 行数，仅用于无敏感信息的诊断 probe。
-    for _ in ipairs(sourceEntries) do ipairsCount = ipairsCount + 1 end -- 中文维护注释：使用与正常 NormalizeIndex 相同的 ipairs 语义统计，不改变生产正常读取路径。
-    local pairsCount = 0 -- 中文维护注释：统计 RU 表形漂移后仍实际存在的 bounded row 数量，用来判断是否值得构造第二候选。
-    for _ in pairs(sourceEntries) do pairsCount = pairsCount + 1 end -- 中文维护注释：pairs 只运行在 mismatch 冷路径，最多恢复 MAX_HISTORY=30 条，不会增加战斗/刷新热路径开销。
-    local recoveredSeed = { -- 中文维护注释：构造临时 Domain seed；settings 来自正式 decoder，history 保留磁盘仍存在的摘要，window 保留磁盘表示等待当前 Store normalizer 统一处理。
-        settings = DeepCopy(decoded.settings), -- 中文维护注释：codec1 的 default-true 开关使用 numeric disabled sentinel，正式 decoder 已安全恢复，不能在此重新猜 boolean。
-        history = DeepCopy(sourceHistory), -- 中文维护注释：保留 serial 与现存 summary 内容；只改变后续“如何遍历表形”，不合成任何玩家/伤害数据。
-        widgetWindow = DeepCopy(payload.widgetWindow), -- 中文维护注释：窗口由当前 schema2 Store-owned 投影重新 Normalize；Framework2 被 RU 省略的默认 false 字段可由确定性默认语义恢复。
-    } -- 中文维护注释：结束临时历史恢复 seed，生命周期仅限本次 Load mismatch。
-    local recoveredDomain = NormalizeHistoricalIndexWithRecoveredEntries(recoveredSeed) -- 中文维护注释：复用既有 bounded pairs collector，将仍在磁盘上的 summary 重新按 serial/storageId 稳定排列并重建 sequence。
-    recoveredDomain.settings = DeepCopy(decoded.settings) -- 中文维护注释：历史 pairs helper 会再次 Normalize settings；这里显式回写正式 codec decoder 结果，保证 numeric sentinel 是唯一业务来源。
-    recoveredDomain.widgetWindow = NormalizeWidgetWindow(payload.widgetWindow) -- 中文维护注释：schema2 canonical 必须使用当前冻结字段投影；不允许共享 FloatingSurface 的 future 字段越过 schema 边界。
-    local historicalCanonical = EncodeIndex(recoveredDomain) -- 中文维护注释：schema2 的旧 stamped fingerprint 本来就是 codec1 canonical，因此候选必须重新走同一 Store encoder，禁止手工拼 Hash 输入。
-    local store = P:GetStore(INDEX_STORE) -- 中文维护注释：仅写 runtime-only shape probe；Persistence Core 仍拥有是否接受候选的最终 fingerprint Authority。
-    if type(store) == "table" then -- 中文维护注释：诊断只在 Store 已注册时写入，缺失时不影响 fail-closed 返回。
-        store.lastHistoricalRecoveryProbe = "schema2fw2_codec1/ipairs=" .. tostring(ipairsCount) .. "/pairs=" .. tostring(pairsCount) -- 中文维护注释：只输出表形计数，不包含玩家名、伤害、技能、时间或任何死亡记录内容。
-    end -- 中文维护注释：结束 runtime-only probe 写入。
-    return historicalCanonical, recoveredDomain -- 中文维护注释：返回候选不代表通过；Core 随后必须用 stampedFingerprint 做完整 exact Hash 比较，命不中仍原样 integrity_failed + write fence。
-end -- 中文维护注释：结束 Framework2 schema2 codec1 通用恢复器；成功后现有 Core 会立即以 Framework3 Transport v1 重盖，下一次 Reload 不再进入本路径。
+-- 中文维护注释：`.18.199` 将 Framework2（无 Transport）与 Framework3/Transport v1
+-- 的“RU 原生 serializer 省略合法数值 0”统一到同一个 Store-owned exact recovery。
+-- Authority 边界：Persistence Core 仍负责 envelope seal / budget / 最终 fingerprint 决策；
+-- DeathReview 只知道自己的 codec1 与 widgetWindow schema，不读取 Native UI、当前屏幕坐标或 record 分片。
+--
+-- 旧 `.18.198` 把 offsetX/offsetY 也放进候选位是错误的：FloatingSurface 在 edge 模式下
+-- 对缺失 offset 本来就 deterministic fallback=0，在 free 模式下 offset 又不会进入 canonical，
+-- 所以补 0 永远不可能改变 Hash，却会把候选位从 10 扩大到 12。free 布局里这两个字段通常都缺失，
+-- 于是 2^12=4096 会超过 1024 冷路径预算并直接 skip，真正的 x/y=0 反而无法恢复。
+-- 新列表只保留“nil 与 0 会改变当前 canonical”的字段，最大固定 10 位 => 1024 组合。
+local ZERO_OMISSION_WINDOW_KEYS = {
+    "x", "y", -- 中文维护注释：free 模式成立条件；任一 0 被删都会让整组 free 定位字段塌陷。
+    "normalizedCenterX", "normalizedCenterY", -- 中文维护注释：跨分辨率归一化中心允许边界值 0。
+    "savedLogicalWidth", "savedLogicalHeight", -- 中文维护注释：free 模式下直接参与 schema2 canonical。
+    "overallOpacity", "backgroundOpacity", "textOpacity", -- 中文维护注释：显式 0 与默认 0.96/1/1 不等价。
+    "savedUiScale", -- 中文维护注释：moved 状态下显式 0 与 nil 不等价；保留用于历史 exact reconstruction。
+}
+local MAX_ZERO_OMISSION_CANDIDATES = 1024
 
--- 中文维护注释：Transport v1 只保护 boolean false 与空表（数值 0 与空字符串直到 v2 才纳入保护），
--- 因此 `widgetWindow` 中**合法取 0** 的几何/透明度字段会在 RU SaveData 往返时被原生 serializer 省略。
--- 这在 DeathReview 上是放大性故障：FloatingSurface:NormalizeState 的 free 分支要求
--- `tonumber(value.x) ~= nil and tonumber(value.y) ~= nil`，只要 x 或 y 原本是 0（窗口贴左/上边缘）
--- 被省略，free 判定即失败，于是 x/y/coordinateSpace/savedLogicalWidth/Height/normalizedCenterX/Y
--- 整组自由定位字段一起塌成 nil 或 "logical-edge-v1"，当前 canonical 因此无法复现旧盖章。
--- 同理 overallOpacity/backgroundOpacity/textOpacity 的 fallback 是 0.94/1.0 而非 0，用户把透明度调到 0
--- 也会产生同样的 Hash 漂移。
--- 本恢复器只做「把被省略的 0 补回去」这一件可证明的事：候选仍必须由 Core 用旧 stamped fingerprint
--- 做完整 exact Hash 校验，命不中就原样保持 integrity_failed + write fence，绝不放宽成通配接受。
-local TRANSPORT_V1_ZERO_OMISSION_WINDOW_KEYS = { -- 中文维护注释：列出「可能为 0、且其 fallback 与 0 不同」的窗口数值字段。
-    -- 判定依据是 FloatingSurface:NormalizeState 的实际表达式，而不是直觉：
-    --   依赖 free 的字段（free 需要 x/y 非 nil）在 x 或 y 被省略后会整组塌成 nil；
-    --   不依赖 free 的字段若原值为 0，被省略后直接变 nil。
-    "x", "y", -- 中文维护注释：自由定位坐标；free 分支的唯一前置条件，0 表示贴左/上边缘。
-    "normalizedCenterX", "normalizedCenterY", -- 中文维护注释：跨分辨率归一化中心，拖到边界时为 0。
-    "savedLogicalWidth", "savedLogicalHeight", -- 中文维护注释：`free and tonumber(...) or nil`——x/y 塌陷时它们会连带变 nil。
-    "overallOpacity", "backgroundOpacity", "textOpacity", -- 中文维护注释：Clamp fallback 是 0.94/1.0/1.0，与用户显式设置的 0 无法在磁盘上区分。
-    "savedUiScale", -- 中文维护注释：`moved and tonumber(...) or nil`，不依赖 free；原值为 0 时会直接丢成 nil。
-    "offsetX", "offsetY", -- 中文维护注释：fallback 本身也是 0，理论上安全，但纳入枚举成本极低，可防御 edge 车道的未来变更。
-} -- 中文维护注释：结束 Transport v1 可省略零值字段白名单。
-local MAX_TRANSPORT_V1_ZERO_CANDIDATES = 1024 -- 中文维护注释：候选上限 2^10；实际候选数由「磁盘上真正缺失的字段数」决定，通常远小于此。只在完整性 mismatch 冷启动跑一次，不进入战斗/刷新/Tick 路径。
-
-local function RebuildTransportV1ZeroOmissionCanonical(decoded, stampedFingerprint, currentCanonical, rawEnvelope) -- 中文维护注释：`.18.198` 结构化恢复 Framework3 + Transport v1 下被原生 serializer 省略的零值窗口字段；与 known-pair 白名单互斥，任何用户只要命中同一物理机制都可恢复。
-    local store = P:GetStore(INDEX_STORE) -- 中文维护注释：提前取 Store 引用，使每个早退分支都能写入 runtime-only probe，便于下一次 RU 实测判断「到底是哪一步没满足」。
-    local function Probe(reason, extra) -- 中文维护注释：probe 只写字段名、计数与元数据，绝不输出玩家名、伤害、技能或自由文本配置。
-        if type(store) ~= "table" then return end -- 中文维护注释：Store 未注册时不做任何写入。
-        store.lastHistoricalRecoveryProbe = "transportV1Zero/" .. tostring(reason)
-            .. (extra ~= nil and ("/" .. tostring(extra)) or "") -- 中文维护注释：单行可复制，便于诊断面板与聊天复制。
+local function TryRebuildZeroOmittedWindowCanonical(baseDomain, rawWindow, stampedFingerprint, probePrefix, metaDesc)
+    local store = P:GetStore(INDEX_STORE) -- 中文维护注释：仅用于 exact Hash 与 runtime-only probe；业务状态 Authority 仍在 F.State。
+    local function Probe(reason, extra)
+        if type(store) ~= "table" then return end
+        store.lastHistoricalRecoveryProbe = tostring(probePrefix or "deathReviewZero") .. "/" .. tostring(reason)
+            .. (extra ~= nil and ("/" .. tostring(extra)) or "")
     end
-    local meta = type(rawEnvelope) == "table" and rawEnvelope.__rsmeta or nil -- 中文维护注释：恢复资格必须绑定已通过 Envelope Seal 的真实元数据，不允许从 Domain 内容反推世代。
-    local metaSchema = meta ~= nil and tonumber(meta.schema) or nil -- 中文维护注释：先取出再判断，便于在 probe 里报告实际值。
+
+    if type(baseDomain) ~= "table" or type(rawWindow) ~= "table" or type(store) ~= "table" then
+        Probe("skip_shape", metaDesc)
+        return nil
+    end
+
+    local missing, present = {}, {}
+    for _, key in ipairs(ZERO_OMISSION_WINDOW_KEYS) do
+        if rawWindow[key] == nil then missing[#missing + 1] = key else present[#present + 1] = key end
+    end
+    if #missing == 0 then
+        Probe("skip_no_missing_zero_key", tostring(metaDesc or "") .. "/present=" .. table.concat(present, ","))
+        return nil
+    end
+
+    local combinations = 2 ^ #missing
+    if combinations > MAX_ZERO_OMISSION_CANDIDATES then
+        -- 中文维护注释：理论上当前字段表最多 10 位，因此只有未来维护错误扩大列表才会命中此保护。
+        -- 宁可保持 write fence，也禁止冷启动无界暴力枚举。
+        Probe("skip_too_many", tostring(metaDesc or "") .. "/missing=" .. table.concat(missing, ","))
+        return nil
+    end
+
+    -- 中文维护注释：settings/history 固定来自同一已解码/已恢复 Domain，只枚举窗口中“缺失字段原值是否为 0”。
+    -- EncodeIndex 会再次经过当前 Store normalizer；候选仍必须逐个命中旧 stamped fingerprint 才能返回。
+    local baseCanonical = EncodeIndex({
+        settings = DeepCopy(baseDomain.settings),
+        history = DeepCopy(baseDomain.history),
+        widgetWindow = rawWindow,
+    })
+    if type(baseCanonical) ~= "table" or type(baseCanonical.payload) ~= "table" then
+        Probe("skip_encode_failed", metaDesc)
+        return nil
+    end
+
+    for mask = 1, combinations - 1 do
+        local candidateWindow = DeepCopy(rawWindow)
+        local bits = mask
+        for index = 1, #missing do
+            if bits % 2 == 1 then candidateWindow[missing[index]] = 0 end
+            bits = math.floor(bits / 2)
+        end
+
+        local candidateWindowCanonical = NormalizeWidgetWindow(candidateWindow)
+        local candidate = {
+            codec = baseCanonical.codec,
+            payload = {
+                settings = baseCanonical.payload.settings,
+                history = baseCanonical.payload.history,
+                widgetWindow = candidateWindowCanonical,
+            },
+        }
+        local candidateFingerprint = P:FingerprintCanonicalValue(store, candidate)
+        if candidateFingerprint ~= nil and tostring(candidateFingerprint) == tostring(stampedFingerprint) then
+            Probe("match", "mask=" .. tostring(mask)
+                .. "/bits=" .. tostring(#missing)
+                .. "/missing=" .. table.concat(missing, ",")
+                .. "/" .. tostring(metaDesc or ""))
+            return candidate, NormalizeIndex({
+                settings = DeepCopy(baseDomain.settings),
+                history = DeepCopy(baseDomain.history),
+                widgetWindow = candidateWindow,
+            })
+        end
+    end
+
+    Probe("no_match", "tried=" .. tostring(combinations - 1)
+        .. "/missing=" .. table.concat(missing, ",")
+        .. "/present=" .. table.concat(present, ",")
+        .. "/" .. tostring(metaDesc or ""))
+    return nil
+end
+
+local function RebuildFramework2Schema2CodecV1Canonical(rawEnvelope, stampedFingerprint) -- 中文维护注释：该结构化恢复器只服务“真实元数据就是 Framework2/schema2/codec1”的旧档，负责 sequence/map 表形与可证明的数值 0 省略；`.18.200` 诊断已排除 73DF7418 属于此世代，因此禁止再把该事故写进本分支，所有候选仍必须 exact 命中旧盖章。
+
+    local meta = type(rawEnvelope) == "table" and rawEnvelope.__rsmeta or nil
+    if type(meta) ~= "table" or tonumber(meta.framework) ~= 2 or tonumber(meta.schema) ~= INDEX_SCHEMA then return nil end
+    if tonumber(type(rawEnvelope) == "table" and rawEnvelope.codec or nil) ~= INDEX_CODEC_VERSION or type(rawEnvelope.payload) ~= "table" then return nil end
+
+    local decoded, decodeErr = DecodeIndex(rawEnvelope)
+    if type(decoded) ~= "table" or decodeErr ~= nil then return nil end
+    local payload = rawEnvelope.payload
+    local sourceHistory = type(payload.history) == "table" and payload.history or {}
+    local sourceEntries = type(sourceHistory.entries) == "table" and sourceHistory.entries or {}
+    local ipairsCount, pairsCount = 0, 0
+    for _ in ipairs(sourceEntries) do ipairsCount = ipairsCount + 1 end
+    for _ in pairs(sourceEntries) do pairsCount = pairsCount + 1 end
+
+    local recoveredDomain = NormalizeHistoricalIndexWithRecoveredEntries({
+        settings = DeepCopy(decoded.settings),
+        history = DeepCopy(sourceHistory),
+        widgetWindow = DeepCopy(payload.widgetWindow),
+    })
+    recoveredDomain.settings = DeepCopy(decoded.settings)
+    recoveredDomain.widgetWindow = NormalizeWidgetWindow(payload.widgetWindow)
+
+    local store = P:GetStore(INDEX_STORE)
+    local historicalCanonical = EncodeIndex(recoveredDomain)
+    local metaDesc = "schema=2/fw=2/codec=1/ipairs=" .. tostring(ipairsCount) .. "/pairs=" .. tostring(pairsCount)
+    if type(store) == "table" and type(historicalCanonical) == "table" then
+        local fingerprint = P:FingerprintCanonicalValue(store, historicalCanonical)
+        if fingerprint ~= nil and tostring(fingerprint) == tostring(stampedFingerprint) then
+            store.lastHistoricalRecoveryProbe = "schema2fw2_codec1/base_match/" .. metaDesc
+            return historicalCanonical, recoveredDomain
+        end
+    end
+
+    local zeroCanonical, zeroDomain = TryRebuildZeroOmittedWindowCanonical(
+        recoveredDomain, type(payload.widgetWindow) == "table" and payload.widgetWindow or nil,
+        stampedFingerprint, "schema2fw2_zero", metaDesc)
+    if type(zeroCanonical) == "table" then return zeroCanonical, zeroDomain end
+
+    -- 中文维护注释：返回原表形候选保持既有 fail-closed 行为；Core 仍会重新 Hash，不匹配就继续 known-stamp/Fence。
+    return historicalCanonical, recoveredDomain
+end
+
+local function RebuildTransportV1ZeroOmissionCanonical(decoded, stampedFingerprint, currentCanonical, rawEnvelope) -- 中文维护注释：`.18.199` Transport v1 也改用 shared solver；同时先恢复 history map/sequence 表形，防止同一次 Native 往返出现两种表示漂移时只能修其中一种。
+    local store = P:GetStore(INDEX_STORE)
+    local function Probe(reason, extra)
+        if type(store) ~= "table" then return end
+        store.lastHistoricalRecoveryProbe = "transportV1Zero/" .. tostring(reason)
+            .. (extra ~= nil and ("/" .. tostring(extra)) or "")
+    end
+
+    local meta = type(rawEnvelope) == "table" and rawEnvelope.__rsmeta or nil
+    local metaSchema = meta ~= nil and tonumber(meta.schema) or nil
     local metaFramework = meta ~= nil and tonumber(meta.framework) or nil
     local metaTransport = meta ~= nil and tonumber(meta.transportVersion) or nil
     local metaCodec = tonumber(type(rawEnvelope) == "table" and rawEnvelope.codec or nil)
     local metaDesc = "schema=" .. tostring(metaSchema) .. "/fw=" .. tostring(metaFramework)
-        .. "/tv=" .. tostring(metaTransport) .. "/codec=" .. tostring(metaCodec) -- 中文维护注释：把真实世代一次性记录下来，避免以后再靠猜。
-    if type(meta) ~= "table" or metaSchema ~= INDEX_SCHEMA or metaFramework ~= 3 then -- 中文维护注释：只接受当前 schema2 + Framework3；更早世代已有各自专用恢复器，未来 Framework 不从这里获得绕过。
-        Probe("skip_generation", metaDesc) -- 中文维护注释：记录被跳过的原因，下一次实测可直接看出是否根本没进本分支。
+        .. "/tv=" .. tostring(metaTransport) .. "/codec=" .. tostring(metaCodec)
+
+    if type(meta) ~= "table" or metaSchema ~= INDEX_SCHEMA or metaFramework ~= 3 then
+        Probe("skip_generation", metaDesc)
         return nil
     end
-    if metaTransport ~= 1 then -- 中文维护注释：只有 Transport v1 存在数值 0 未保护缺陷；v2 写入的存档若仍 mismatch 说明是真实内容损坏，必须继续 Fence。
+    if metaTransport ~= 1 then
         Probe("skip_transport_v2", metaDesc)
         return nil
     end
-    if metaCodec ~= INDEX_CODEC_VERSION or type(rawEnvelope.payload) ~= "table" then -- 中文维护注释：必须是真正的 DeathReview codec1 物理形状，未知/future codec 禁止降级恢复。
+    if metaCodec ~= INDEX_CODEC_VERSION or type(rawEnvelope.payload) ~= "table" then
         Probe("skip_codec", metaDesc)
         return nil
     end
-    local payload = rawEnvelope.payload -- 中文维护注释：候选的几何 Authority 只来自磁盘 payload，不使用 Feature 当前窗口状态或屏幕实况。
-    local rawWindow = type(payload.widgetWindow) == "table" and payload.widgetWindow or nil -- 中文维护注释：窗口缺失时代码块整体不参与（NormalizeWidgetWindow 会用默认值），无需构造候选。
-    if rawWindow == nil then -- 中文维护注释：保持 fail-closed，不凭空合成窗口子树。
-        Probe("skip_no_window", metaDesc)
-        return nil
+
+    local payload = rawEnvelope.payload
+    local sourceHistory = type(payload.history) == "table" and payload.history or {}
+    local recoveredDomain = NormalizeHistoricalIndexWithRecoveredEntries({
+        settings = DeepCopy(decoded.settings),
+        history = DeepCopy(sourceHistory),
+        widgetWindow = DeepCopy(payload.widgetWindow),
+    })
+    recoveredDomain.settings = DeepCopy(decoded.settings)
+    recoveredDomain.widgetWindow = NormalizeWidgetWindow(payload.widgetWindow)
+
+    -- 中文维护注释：先测试“只有 sequence/map 漂移”这一候选；若已经命中，无需进入零值枚举。
+    local baseCanonical = EncodeIndex(recoveredDomain)
+    if type(store) == "table" and type(baseCanonical) == "table" then
+        local baseFingerprint = P:FingerprintCanonicalValue(store, baseCanonical)
+        if baseFingerprint ~= nil and tostring(baseFingerprint) == tostring(stampedFingerprint) then
+            Probe("base_match", metaDesc)
+            return baseCanonical, recoveredDomain
+        end
     end
-    local missing = {} -- 中文维护注释：收集磁盘上确实缺失的可零字段；非零值不会被 RU 省略，所以这里的缺失只可能来自「原值 0」或「原值 nil」两种来源。
-    local present = {} -- 中文维护注释：同时记录存在的字段名，用于诊断判断这一层到底漂移了多少。
-    for _, key in ipairs(TRANSPORT_V1_ZERO_OMISSION_WINDOW_KEYS) do -- 中文维护注释：固定小列表遍历。
-        if rawWindow[key] == nil then missing[#missing + 1] = key else present[#present + 1] = key end -- 中文维护注释：只把 nil 记为候选位，已存在的字段保持磁盘原值不动。
-    end -- 中文维护注释：结束字段分类。
-    if #missing == 0 then -- 中文维护注释：没有任何缺失说明本机制不适用（交回 Core 继续 Fence 或走 known-pair）。
-        Probe("skip_no_missing_zero_key", metaDesc .. "/present=" .. table.concat(present, ","))
-        return nil
-    end
-    local zeroKeys = #missing -- 中文维护注释：缓存候选位数量，避免在循环里反复取长度。
-    local combinations = 2 ^ zeroKeys -- 中文维护注释：2^n 枚举「哪些缺失字段原本是 0」。
-    if combinations > MAX_TRANSPORT_V1_ZERO_CANDIDATES then -- 中文维护注释：超出预算时放弃而不是扩大搜索——宁可继续 Fence 也不能把冷启动变成无界暴力枚举。
-        Probe("skip_too_many", metaDesc .. "/missing=" .. table.concat(missing, ","))
-        return nil
-    end
-    local baseCanonical = EncodeIndex({ settings = DeepCopy(decoded.settings), history = DeepCopy(decoded.history), widgetWindow = rawWindow }) -- 中文维护注释：settings/history 与本次窗口漂移无关，只编码一次复用；避免每个候选都重复 Normalize 整份历史摘要。
-    if type(baseCanonical) ~= "table" or type(baseCanonical.payload) ~= "table" then -- 中文维护注释：基础编码失败说明数据形状异常，保持 Fence。
-        Probe("skip_encode_failed", metaDesc)
-        return nil
-    end
-    for mask = 1, combinations - 1 do -- 中文维护注释：mask=0 即「没有任何字段被省略」，与当前 canonical 等价，无需重复校验，因此从 1 开始。
-        local candidateWindow = DeepCopy(rawWindow) -- 中文维护注释：每个候选独立副本，禁止跨候选共享表引用。
-        local bits = mask -- 中文维护注释：逐位解释 mask；第 i 位为 1 表示 missing[i] 在磁盘上原本是 0。
-        for index = 1, zeroKeys do -- 中文维护注释：最多 #missing 次循环。
-            if bits % 2 == 1 then candidateWindow[missing[index]] = 0 end -- 中文维护注释：把被省略的 0 补回；这正是 Transport v1 唯一无法表示的合法值。
-            bits = math.floor(bits / 2) -- 中文维护注释：右移一位继续处理下一个候选位。
-        end -- 中文维护注释：结束单个候选的字段补零。
-        local candidateWindowCanonical = NormalizeWidgetWindow(candidateWindow) -- 中文维护注释：补零后必须重新走 schema2 冻结投影，让 free/edge 语义与真实保存路径完全一致（例如 x=0 会让 free 分支重新成立）。
-        local candidate = { -- 中文维护注释：复用 base 的 settings/history 引用是安全的：fingerprint 只读遍历，不会写回 Domain，也不延长引用生命周期。
-            codec = baseCanonical.codec, -- 中文维护注释：codec 版本必须与旧盖章完全一致，候选无权更改编码协议。
-            payload = { -- 中文维护注释：codec1 payload 固定三根字段。
-                settings = baseCanonical.payload.settings, -- 中文维护注释：设置部分与磁盘一致，不参与本次恢复。
-                history = baseCanonical.payload.history, -- 中文维护注释：历史摘要与磁盘一致，不合成也不删除任何死亡记录。
-                widgetWindow = candidateWindowCanonical, -- 中文维护注释：唯一被恢复改动的位置。
-            }, -- 中文维护注释：结束候选 payload。
-        } -- 中文维护注释：结束单个 Transport v1 零值恢复候选。
-        local candidateFingerprint = P:FingerprintCanonicalValue(store, candidate) -- 中文维护注释：候选没有信任权；只有与旧 stamped fingerprint 逐字相等才可能被 Core 接受。
-        if candidateFingerprint ~= nil and tostring(candidateFingerprint) == tostring(stampedFingerprint) then -- 中文维护注释：exact match 是唯一接受条件，不做近似或前缀比较。
-            Probe("match", "mask=" .. tostring(mask) .. "/keys=" .. tostring(zeroKeys) .. "/missing=" .. table.concat(missing, ",") .. "/" .. metaDesc)
-            return candidate, NormalizeIndex({ settings = DeepCopy(decoded.settings), history = DeepCopy(decoded.history), widgetWindow = candidateWindow }) -- 中文维护注释：返回的 Domain 走当前 Store normalizer，Core 随后仍会预算、Apply 并按 Transport v2 重盖，阻断同一机制再次发生。
-        end -- 中文维护注释：结束候选采纳分支。
-    end -- 中文维护注释：结束候选枚举。
-    Probe("no_match", "tried=" .. tostring(combinations - 1) .. "/missing=" .. table.concat(missing, ",") .. "/present=" .. table.concat(present, ",") .. "/" .. metaDesc) -- 中文维护注释：把所有候选都试过仍未命中时记录完整上下文——这是判断「真实差异不在零值省略」的关键证据。
-    return nil -- 中文维护注释：所有候选都未命中旧盖章时返回 nil，Core 继续维持 integrity_failed + write fence，绝不退化成「宽泛接受」。
+
+    return TryRebuildZeroOmittedWindowCanonical(
+        recoveredDomain, type(payload.widgetWindow) == "table" and payload.widgetWindow or nil,
+        stampedFingerprint, "transportV1Zero", metaDesc)
 end -- 中文维护注释：结束 Framework3/Transport v1 零值省略结构化恢复器。
 
 local function RebuildHistoricalIndexCanonical(value, stampedFingerprint, currentCanonical, rawEnvelope) -- 中文维护注释：统一 Index 历史恢复入口，按 schema/framework/codec 明确分代，避免内容相关 known-pair 继续承担可以结构化证明的兼容职责。
@@ -632,7 +698,7 @@ local function RebuildHistoricalIndexCanonical(value, stampedFingerprint, curren
         end -- 中文维护注释：结束入口 probe 写入。
     end
     if type(meta) == "table" and tonumber(meta.schema) == INDEX_SCHEMA and tonumber(meta.framework) == 2 and tonumber(type(rawEnvelope) == "table" and rawEnvelope.codec or nil) == INDEX_CODEC_VERSION then -- 中文维护注释：`.18.193` 已升级到 schema2 但 Framework2 尚无 Transport v1；优先使用通用表形 exact recovery，覆盖任意合法用户内容而不是新增 Hash 白名单。
-        return RebuildFramework2Schema2CodecV1Canonical(rawEnvelope) -- 中文维护注释：Core 会对候选重新 Hash 并要求等于真实 stamped fingerprint；失败后不会降级成“同 schema 自动接受”。
+        return RebuildFramework2Schema2CodecV1Canonical(rawEnvelope, stampedFingerprint) -- 中文维护注释：`.18.199` 组合恢复 Framework2 的 history 表形与合法 0 省略；Core 仍对候选做第二次 exact Hash 验证。
     end -- 中文维护注释：结束 Framework2 schema2 codec1 分支；Framework3 mismatch 不进入兼容器。
     if type(meta) == "table" and tonumber(meta.schema) == INDEX_SCHEMA and tonumber(meta.framework) == 3
         and tonumber(meta.transportVersion) == 1 and tonumber(type(rawEnvelope) == "table" and rawEnvelope.codec or nil) == INDEX_CODEC_VERSION then -- 中文维护注释：`.18.198` 新增分支——当前 schema2 在 Framework3 下已由 Transport v1 写盘，而 v1 未保护数值 0；这是可结构化证明的物理机制，优先级高于任何内容相关 known-pair。
@@ -660,6 +726,7 @@ end -- 中文维护注释：结束 DeathReview 多世代历史 canonical 路由�
 local KNOWN_LEGACY_V4_INDEX_FINGERPRINTS = { -- 中文维护注释：known-stamp 仅记录真实 RU 事故身份；未知 Hash 永远不能通过该表。
     ["770CB0B8"] = { label = "ru_2026_09_07_precodec_v4_index", representation = "precodec" }, -- 中文维护注释：保留 `.18.151` 已验证的 pre-codec 桥；其安全边界仍是 strict legacy shape + exact old stamp。
     ["014277AB"] = { label = "ru_2026_09_09_schema1_codec1_window_generation", representation = "codec1", currentFingerprint = "0CF5BCC1" }, -- 中文维护注释：`.18.192` 实机新事故必须同时命中 old=014277AB 与 current=0CF5BCC1，防止真实内容变化被误迁移。
+    ["73DF7418"] = { label = "ru_2026_09_11_schema1_framework2_codec1_index_drift", representation = "schema1_framework2_codec1", currentFingerprint = "224E5B9D" }, -- 中文维护注释：`.18.200` 实机 itrace 明确给出 fw=2/schema=1/transport=nil/codec=1，且同一磁盘内容 current canonical=224E5B9D；此前把它错误登记成 schema2，导致 known-stamp 在 generation gate 被提前拒绝。此条仍要求 Store/owner、Framework2、schema1、无 Transport、codec1 strict shape 与 old/new 双 Hash 全部精确命中，Authority 仅限 DeathReview Store，未知或未来世代绝不借用。
     ["55BD6B0A"] = { label = "ru_2026_09_10_schema2_transport1_window_field_loss", representation = "schema2_transport1", currentFingerprint = "44CFFAF4" }, -- 中文维护注释：`.18.198` 实机事故。磁盘取证证实 RU udf 落盘时丢弃了 widgetWindow 的 4 个响应式字段（savedLogicalWidth/Height、normalizedCenterX/Y），而 stamp 是对含这些字段的 canonical 计算的——字段值来自保存时输入，物理丢失后无法从 32 位 Hash 反推，因此走 exact pair；恢复后立即按当前 Transport 版本重写。
 } -- 中文维护注释：结束 DeathReview known-stamp allowlist；新增事故必须有真实诊断证据与对应 current Hash。
 
@@ -787,8 +854,29 @@ local function RecoverKnownLegacyV4Index(decoded, stampedFingerprint, currentCan
     local known = KNOWN_LEGACY_V4_INDEX_FINGERPRINTS[stamp] -- 中文维护注释：allowlist 未命中时立即返回 nil，继续通用 fail-closed。
     if type(known) ~= "table" then return nil end -- 中文维护注释：不存在或格式异常的条目不能获得恢复权限。
     local meta = type(rawEnvelope) == "table" and rawEnvelope.__rsmeta or nil -- 中文维护注释：再次绑定 schema/store/owner，防止相同 Hash 在其它 Store/未来 schema 中误触。
-    if type(meta) ~= "table" or tostring(meta.store or "") ~= INDEX_STORE or tostring(meta.owner or "") ~= "v3.death_review" then return nil end -- 中文维护注释：Store/owner 身份必须精确匹配。
     local store = P:GetStore(INDEX_STORE) -- 中文维护注释：获取当前注册 Store 仅用于当前 canonical Hash 与 runtime-only probe，不建立第二 Persistence Authority。
+    if type(meta) ~= "table" or tostring(meta.store or "") ~= INDEX_STORE or tostring(meta.owner or "") ~= "v3.death_review" then
+        if store ~= nil then store.lastHistoricalRecoveryProbe = "knownStamp=" .. stamp .. "/identity=reject:store=" .. tostring(type(meta) == "table" and meta.store or nil) .. ",owner=" .. tostring(type(meta) == "table" and meta.owner or nil) end -- 中文维护注释：只输出 Store/owner 契约身份，不输出任何死亡记录业务内容。
+        return nil
+    end -- 中文维护注释：Store/owner 身份必须精确匹配。
+    if known.representation == "schema1_framework2_codec1" then -- 中文维护注释：`.18.200` 实机 trace 已把 73DF7418 的真实世代锁定为 Framework2/schema1/transport=nil/codec1；该分支只纠正先前错误的 schema2 代际映射，不扩大 old/new Hash allowlist，也不改变 Persistence Core 的恢复 Authority。
+        if tonumber(meta.schema) ~= 1 or tonumber(meta.framework) ~= 2 or meta.transportVersion ~= nil then -- 中文维护注释：兼容边界必须逐项与实机元数据一致；schema2、Framework3 或已有 Transport 标记都属于其它世代，继续 fail-closed，禁止因为 Hash 相同跨代恢复。
+            if store ~= nil then store.lastHistoricalRecoveryProbe = "knownStamp=" .. stamp .. "/schema1Fw2Generation=reject:s=" .. tostring(meta.schema) .. ",fw=" .. tostring(meta.framework) .. ",tv=" .. tostring(meta.transportVersion) end -- 中文维护注释：runtime-only probe 只暴露代际元数据，不输出死亡记录内容；后续若再次失败可直接判断是否又发生世代误分类。
+            return nil -- 中文维护注释：代际证据不完整时不构造候选、不清档，让 Core 维持 write fence，避免把真实损坏误当兼容迁移。
+        end -- 中文维护注释：Framework2/schema1 的合法旧 envelope 不带 transportVersion；这也是与 schema2/Transport v1/v2 路径的硬隔离边界。
+        local valid, reason = ValidateCodecV1IndexPayload(rawEnvelope) -- 中文维护注释：即使 old Hash 命中，仍由 DeathReview Store 对 codec1 payload 做字段白名单与类型验证；Hash 只能标识事故，不能替代结构安全检查。
+        if valid ~= true then -- 中文维护注释：shape/type 不符合已知 codec1 结构时视为未知损坏，不允许进入 pair 迁移。
+            if store ~= nil then store.lastHistoricalRecoveryProbe = "knownStamp=" .. stamp .. "/schema1Fw2Shape=reject:" .. tostring(reason) end -- 中文维护注释：仅记录 bounded 结构拒绝原因，便于实机定位且不泄露历史战斗业务值。
+            return nil -- 中文维护注释：拒绝异常 shape 并把最终处置权交还 Core fence；不修改 F.State、不触发保存。
+        end -- 中文维护注释：结束 codec1 strict-shape 安全门。
+        local currentFingerprint = store ~= nil and P:FingerprintCanonicalValue(store, currentCanonical) or nil -- 中文维护注释：数据流为“磁盘 raw → codec1 decode/当前 canonical → current Hash”；必须精确得到实机观测 224E5B9D，才证明这是同一表示事故而不是内容变化。
+        if tostring(currentFingerprint or "") ~= tostring(known.currentFingerprint or "") then -- 中文维护注释：old=73DF7418 单独没有恢复权限；new Hash 不同意味着当前业务内容或 canonical 已发生其它变化，继续 fail-closed。
+            if store ~= nil then store.lastHistoricalRecoveryProbe = "knownStamp=" .. stamp .. "/schema1Fw2Shape=ok/current=reject:" .. tostring(currentFingerprint) .. "!=" .. tostring(known.currentFingerprint) end -- 中文维护注释：保留 exact-pair 第二半的拒绝证据，下一次日志无需再猜 generation/shape/current 哪一层失败。
+            return nil -- 中文维护注释：current Hash 未命中时绝不套用已知迁移，防止同 old stamp 下吞掉真实配置变化。
+        end -- 中文维护注释：结束 73DF7418→224E5B9D 双 Hash 认证门。
+        if store ~= nil then store.lastHistoricalRecoveryProbe = "knownStamp=" .. stamp .. "/schema1Fw2Shape=ok/current=" .. tostring(currentFingerprint) end -- 中文维护注释：只记录恢复证据；真正 Apply/migrate/restamp 仍由 Persistence Core 统一事务执行，Store 不直接写盘。
+        return NormalizeIndex(decoded), tostring(known.label or "death_review_schema1_framework2_known_pair") -- 中文维护注释：保留 decoder 已成功解释的全部 Domain 数据，随后 Core 继续执行 schema1→2 migrate，并按当前 Framework3/Transport v2 立即重盖；不会依赖高频战斗模块或 UI 生命周期。
+    end
     if known.representation == "schema2_transport1" then -- 中文维护注释：`.18.198` 新增分支——schema2/Framework3/Transport v1 的窗口字段物理丢失。磁盘取证证实：stamp 是对含响应式字段的 canonical 计算的，而 RU udf 落盘时丢弃了它们，字段值无法反推，只能 exact pair 一次性迁移。
         if tonumber(meta.schema) ~= INDEX_SCHEMA or tonumber(meta.framework) ~= 3 or tonumber(meta.transportVersion) ~= 1 then return nil end -- 中文维护注释：世代必须精确匹配，禁止放宽成 wildcard。
         if type(store) == "table" then store.lastHistoricalRecoveryProbe = "knownStamp=" .. stamp .. "/transport1Shape=check" end -- 中文维护注释：runtime-only probe。

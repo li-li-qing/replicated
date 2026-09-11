@@ -10,9 +10,11 @@
 --       metadata  -> GetTargetAbilityTemplates class (class component)
 --       equipment -> UnitGearScore + equipped slots (gearScore/weapons/wings)
 --       cast      -> UnitCastingInfo (castBar component)
---   * UNIT-SCOPE gate: gear score for the target lane is only read when the
---     target resolves to a PLAYER unit; NPC/UNKNOWN targets fail closed
---     (purged). Equipped icons are player-scope only: the RU client ignores
+--   * UnitGearScore is unit-token keyed and read directly for player/target.
+--     It is deliberately NOT gated by target kind: the 2026-09-11 RU API
+--     update made kind resolution less reliable while UnitGearScore("target")
+--     remains the authoritative read. Equipped icons are still player-scope
+--     only: the RU client ignores
 --     GetEquippedItemTooltipInfo's targetEquippedItem flag (returns own gear),
 --     so a target read can never be trusted (evidence 2026-09-01).
 --   * O(1) tracked index rebuilt on demand
@@ -34,6 +36,7 @@ if type(Runtime) ~= "table" then return end
 
 F.Id = "combat_buff_display"
 F.EquipmentReadContractVersion = 1 -- player equipped icons read through shared GearV3 authority
+F.GearScoreApiContractVersion = 1 -- UnitGearScore(unit, comma=false) + target read independent of kind classification
 F.enabled = F.enabled == true
 F.consumers, F.consumerCount = {}, 0
 F.auraHeld = false
@@ -76,6 +79,16 @@ F.EquipmentDiagnostics = F.EquipmentDiagnostics or {
     nameOnlyTooltips = 0, unresolvedSlots = 0,
     lastError = nil, lastReadSource = nil, iconField = nil, lastIcon = nil,
     sampleItemKeys = nil, lastTickAt = 0,
+    -- 中文维护注释（装备分数 API 诊断，2026-09-11）：
+    -- 问题原因：RU 更新后 UnitGearScore(unit, comma) 的 comma 语义开始影响返回格式；旧代码
+    -- 对 target 传 true 并直接 tonumber，"12,345" 会变 nil。同时 target-kind gate 可能在 API
+    -- 更新后阻断一个本来可读的 UnitGearScore("target")。
+    -- Authority/数据流：这里仅保存 equipment lane 最近一次 API 读事实和有界计数，不持久化、
+    -- 不写聊天、不参与 HUD Authority。调用仍由 EquipmentTick/P3 lane 拥有。
+    -- 兼容边界：只记录最后 raw type/短 raw 文本/最终数值与错误；不会缓存目标对象或扩大轮询。
+    gearScoreReads = 0, gearScoreErrors = 0, gearScoreUnavailable = 0, gearScoreFormatted = 0,
+    gearScoreLastScope = nil, gearScoreLastRawType = nil, gearScoreLastRaw = nil,
+    gearScoreLastValue = nil, gearScoreLastError = nil, gearScoreLastAt = 0,
 }
 
 local function Aura() return S.Services and S.Services.AuraObservationV3 or nil end
@@ -107,10 +120,12 @@ local function CopySettings()
     return out
 end
 local settingsCache, settingsCacheRevision = nil, -1
+local scopeSettingsCache, scopeSettingsCacheRevision = {}, -1
 local function SettingsRevision() return tonumber(F.settingsRevision) or 0 end
 function F:InvalidateSettingsCache()
     self.settingsRevision = SettingsRevision() + 1
     settingsCache, settingsCacheRevision = nil, -1
+    scopeSettingsCache, scopeSettingsCacheRevision = {}, -1
     return true
 end
 
@@ -132,13 +147,74 @@ local function SplitLines(text)
     return lines
 end
 
-local function ComponentEnabled(key)
-    local component = Settings().components and Settings().components[key] or nil
-    return component ~= nil and component.enabled ~= false
+-- 中文维护注释（双 HUD scope 读取，2026-09-11）：
+-- 问题原因：旧 ComponentEnabled 永远读取 player 的 settings.components，targetLayout 即使
+-- 独立保存也无法驱动 lane，导致“目标 HUD 开启组件但后台不采集”。Authority 仍是 Store；
+-- Feature 只取得 detached profile。数据流为 Store profile -> scope lane gate -> projection -> Presentation。
+-- 兼容边界：无 scope 调用表示“任一 HUD 需要该能力”，用于共享 Scheduler lane；带 scope
+-- 调用只控制该单位的数据读取。这样不会为了目标显示强迫无关 player UI 开启，也不增加 Tick。
+local function RawScopeLayout(scope)
+    if type(F.GetScopeLayoutSettings) == "function" then
+        local profile = F:GetScopeLayoutSettings(scope)
+        if type(profile) == "table" then return profile end
+    end
+    local settings = Settings()
+    return { plateScale=settings.plateScale, plate=settings.plate, info=settings.info, components=settings.components }
 end
 
-local function AnyHeadComponent()
-    for _, key in ipairs(COMPONENT_KEYS) do if ComponentEnabled(key) then return true end end
+local function EnsureScopeSettingsCache()
+    local revision = SettingsRevision()
+    if scopeSettingsCacheRevision == revision then return end
+    local settings = Settings()
+    scopeSettingsCache = {}
+    for _, name in ipairs({ "player", "target" }) do
+        local profile = RawScopeLayout(name)
+        scopeSettingsCache[name] = {
+            headEnabled = settings.headEnabled ~= false, headShowAll = settings.headShowAll == true,
+            headPlayer = settings.headPlayer ~= false, headTarget = settings.headTarget ~= false,
+            headShowStacks = settings.headShowStacks ~= false, headShowTime = settings.headShowTime ~= false,
+            plateScale = profile.plateScale,
+            plate = S.Utils.DeepCopy(profile.plate or {}),
+            info = S.Utils.DeepCopy(profile.info or {}),
+            components = S.Utils.DeepCopy(profile.components or {}),
+        }
+    end
+    scopeSettingsCacheRevision = revision
+end
+
+local function ScopeLayout(scope)
+    -- 中文维护注释（lane 热路径缓存）：distance/position 可每 50ms 调用 ComponentEnabled。
+    -- 不能在这里每次 Normalize + DeepCopy Store profile；按 settingsRevision 构建一次小型
+    -- scope cache，内部 lane 只读该 cache，公共 Presentation 接口再返回 detached copy。
+    scope = tostring(scope or "player") == "target" and "target" or "player"
+    EnsureScopeSettingsCache()
+    return scopeSettingsCache[scope] or RawScopeLayout(scope)
+end
+
+local function ComponentEnabled(key, scope)
+    if scope ~= nil then
+        local layout = ScopeLayout(scope)
+        local component = type(layout.components) == "table" and layout.components[key] or nil
+        if component == nil or component.enabled == false then return false end
+        -- 中文维护注释（Info 生命周期门，2026-09-11）：distance/class/gearScore 都只会
+        -- 被绘制到 info 行。旧逻辑即使 info.enabled=false 仍会让 50ms distance、1s
+        -- metadata/equipment lane 继续采集，造成“UI 已关闭但后台仍轮询”。Authority 仍由
+        -- 当前 scope 的 HUD profile 决定；这里只做运行时需求投影，不改 Store。兼容边界：
+        -- Buff/Debuff/装备/施法条不受此门影响，重新开启 info 后 lane 会由 Reconcile 恢复。
+        if key == "distance" or key == "class" or key == "gearScore" then
+            local info = type(layout.info) == "table" and layout.info or {}
+            if info.enabled == false then return false end
+            if key == "class" then return info.showClass ~= false end
+            if key == "gearScore" then return info.showGear ~= false end
+            return info.showDistance ~= false
+        end
+        return true
+    end
+    return ComponentEnabled(key, "player") or ComponentEnabled(key, "target")
+end
+
+local function AnyHeadComponent(scope)
+    for _, key in ipairs(COMPONENT_KEYS) do if ComponentEnabled(key, scope) then return true end end
     return false
 end
 
@@ -148,8 +224,9 @@ local function HeadScopeActive()
     -- (VisualTick/Start/Reconcile); the lane gates must match it so turning the
     -- head display off also stops the position/distance/metadata/equipment/cast
     -- lanes instead of leaving them polling for a hidden renderer.
-    return settings.headEnabled ~= false and AnyHeadComponent()
-        and (settings.headPlayer ~= false or settings.headTarget ~= false)
+    return settings.headEnabled ~= false
+        and ((settings.headPlayer ~= false and AnyHeadComponent("player"))
+            or (settings.headTarget ~= false and AnyHeadComponent("target")))
 end
 
 local function LaneInterval(laneKey)
@@ -443,11 +520,11 @@ function F:DistanceTick()
     return true
 end
 
--- UNIT-SCOPE gate: player-only metadata (gear score/class templates) must never
--- be read for a non-player target, so the lane fails closed (nil + purge)
--- unless the target resolves to a PLAYER unit. Equipped icons go one step
--- further and are player-scope only (see EquipmentTick: the RU client ignores
--- the targetEquippedItem flag and returns own gear).
+-- UNIT-SCOPE gate for CLASS metadata only: ability templates must never be
+-- trusted for a non-player target, so class still fails closed unless target
+-- resolves to PLAYER. Gear score no longer uses this gate: UnitGearScore is a
+-- unit-token keyed API and is read directly for target after the 2026-09-11 RU
+-- update. Equipped icons remain player-scope only (see EquipmentTick).
 -- The resolved kind is cached briefly; UnitIdentityV3:GetById additionally keeps
 -- its own 60s kind TTL and a 1.5s miss TTL, so this helper adds no hot-path cost.
 local targetKindCache = { kind = nil, at = 0 }
@@ -477,6 +554,52 @@ local function TargetIsPlayer()
     return ResolveTargetKind() == "PLAYER"
 end
 
+-- 中文维护注释（UnitGearScore 规范化边界，2026-09-11）：
+-- X2Unit 是装分 Authority；格式解析统一收敛到 S.Utils.ParseGearScore，避免状态显示与
+-- 团队战备检查各自维护一套地区数字规则。Feature 只负责调用 API 与记录最近诊断。
+local function ReadGearScore(scope, api)
+    local dia = F.EquipmentDiagnostics
+    if dia ~= nil then
+        dia.gearScoreReads = (tonumber(dia.gearScoreReads) or 0) + 1
+        dia.gearScoreLastScope = tostring(scope or "")
+        dia.gearScoreLastAt = math.max(0, tonumber(S.NowMs and S.NowMs()) or 0)
+        dia.gearScoreLastError = nil
+    end
+    if api == nil or type(api.CallCapability) ~= "function" or X2Unit == nil then
+        if dia ~= nil then
+            dia.gearScoreErrors = (tonumber(dia.gearScoreErrors) or 0) + 1
+            dia.gearScoreLastError = "api_unavailable"
+            dia.gearScoreLastRawType, dia.gearScoreLastRaw, dia.gearScoreLastValue = nil, nil, nil
+        end
+        return nil
+    end
+    -- comma=false is the documented API contract. Target selection is expressed
+    -- by the unit token ("target"), never by the second argument.
+    local ok, raw, err = api:CallCapability("X2Unit:UnitGearScore", X2Unit, "UnitGearScore", scope, false)
+    local value, formatted = nil, false
+    if ok == true and S.Utils ~= nil and type(S.Utils.ParseGearScore) == "function" then
+        value, formatted = S.Utils.ParseGearScore(raw)
+    end
+    if dia ~= nil then
+        dia.gearScoreLastRawType = type(raw)
+        local rawText = raw == nil and "nil" or tostring(raw)
+        if #rawText > 48 then rawText = string.sub(rawText, 1, 48) .. "…" end
+        dia.gearScoreLastRaw = rawText
+        dia.gearScoreLastValue = value
+        if formatted == true then dia.gearScoreFormatted = (tonumber(dia.gearScoreFormatted) or 0) + 1 end
+        if ok ~= true then
+            dia.gearScoreErrors = (tonumber(dia.gearScoreErrors) or 0) + 1
+            dia.gearScoreLastError = tostring(err or "read_failed")
+        elseif value == nil then
+            -- nil/0 is expected for NPCs and some non-inspectable units; keep it
+            -- observable without counting it as an API fault every P3 lane tick.
+            dia.gearScoreUnavailable = (tonumber(dia.gearScoreUnavailable) or 0) + 1
+            dia.gearScoreLastError = "unavailable"
+        end
+    end
+    return value
+end
+
 local function ReadClass(scope)
     local api = Api()
     if api == nil or type(api.CallCapability) ~= "function" then return nil end
@@ -500,7 +623,7 @@ function F:MetadataTick()
     if (tonumber(self.consumerCount) or 0) <= 0 then return true end
     local changed = false
     for _, scope in ipairs({ "player", "target" }) do
-        if ScopeHeadEnabled(scope) and ComponentEnabled("class") then
+        if ScopeHeadEnabled(scope) and ComponentEnabled("class", scope) then
             local lane = self.laneData[scope] or {}
             -- UNIT-SCOPE gate: ability templates are player metadata. NPC/UNKNOWN
             -- targets fail closed so the player's own class can never leak onto
@@ -641,19 +764,17 @@ function F:EquipmentTick()
                     if lane[key] ~= nil then lane[key], changed = nil, true end
                 end
             end
-            -- gear score keeps the unit-keyed X2Unit:UnitGearScore read (the
-            -- same tested form as rs_target_service / legacy plates 目标装等),
-            -- but still fails closed for non-player targets.
-            local isPlayerScope = scope == "player" or TargetIsPlayer() == true
-            if ComponentEnabled("gearScore") and isPlayerScope then
-                local score = nil
-                if api ~= nil and type(api.CallCapability) == "function" and X2Unit ~= nil then
-                    local ok, raw = api:CallCapability("X2Unit:UnitGearScore", X2Unit, "UnitGearScore", scope, scope == "target")
-                    local n = ok and tonumber(raw) or nil
-                    if n ~= nil and n > 0 then score = n end
-                end
+            -- 中文维护注释（目标装分 API 更新修复，2026-09-11）：
+            -- 旧逻辑同时犯了两个错误：把 UnitGearScore 的 comma 参数当 target 布尔传 true，
+            -- 并用 TargetIsPlayer() 作为调用前置门。前者可能得到 "12,345" 后 tonumber 失败，
+            -- 后者在本周 target-kind API 变化时会让一个仍可用的 unit-keyed 读完全不执行。
+            -- Authority/数据流：gearScore 直接读取 scope token（player/target）的 X2Unit Authority；
+            -- class 仍保留 TargetIsPlayer gate，装备图标仍只读 player，三类能力不互相放宽。
+            -- 兼容边界：nil/0/异常值 fail-closed 并清掉旧 lane 值，绝不把自己装分复制到目标。
+            if ComponentEnabled("gearScore", scope) then
+                local score = ReadGearScore(scope, api)
                 if lane.gearScore ~= score then lane.gearScore, changed = score, true end
-            elseif isPlayerScope ~= true and lane.gearScore ~= nil then
+            elseif lane.gearScore ~= nil then
                 lane.gearScore, changed = nil, true
             end
             -- weapon / glider icons (player scope only). Grade overlay is part
@@ -662,7 +783,7 @@ function F:EquipmentTick()
             -- unchanged base icon.
             if scope == "player" then
                 for _, key in ipairs({ "mainHand", "offHand", "ranged", "wings" }) do
-                    if ComponentEnabled(key) then
+                    if ComponentEnabled(key, scope) then
                         local slotId = EQUIPMENT_SLOTS[key]()
                         local item = ReadEquippedIcon(slotId, scope)
                         if not SameEquipmentItem(lane[key], item) then lane[key], changed = item, true end
@@ -682,7 +803,7 @@ function F:CastTick()
     local casting = Casting()
     local changed = false
     for _, scope in ipairs({ "player", "target" }) do
-        if ScopeHeadEnabled(scope) and ComponentEnabled("castBar") then
+        if ScopeHeadEnabled(scope) and ComponentEnabled("castBar", scope) then
             local lane = self.laneData[scope] or {}
             local cast = type(casting) == "table" and type(casting.Get) == "function" and casting:Get(scope) or nil
             local old = lane.cast
@@ -775,11 +896,32 @@ function F:GetSettingsProjection()
     return S.Utils.DeepCopy(snapshot)
 end
 
+function F:GetHeadPolicyProjection()
+    local settings = Settings()
+    return {
+        headEnabled = settings.headEnabled ~= false,
+        headShowAll = settings.headShowAll == true,
+        headPlayer = settings.headPlayer ~= false,
+        headTarget = settings.headTarget ~= false,
+        headShowStacks = settings.headShowStacks ~= false,
+        headShowTime = settings.headShowTime ~= false,
+    }
+end
+
+function F:GetScopeSettingsProjection(scope)
+    scope = tostring(scope or "player") == "target" and "target" or "player"
+    -- 中文维护注释（PVP 50ms 热路径）：cache 只含 6 个运行策略 + 当前视觉 profile，
+    -- 不复制 tracked/classification 大表。内部 lane 读同一 generation 的只读 cache；
+    -- Presentation 边界仍 DeepCopy，避免 UI 反向修改 Feature/Store Authority。
+    EnsureScopeSettingsCache()
+    return S.Utils.DeepCopy(scopeSettingsCache[scope] or {})
+end
+
 -- Head plates projection for the renderer: enabled components + bounded rows.
 function F:GetPlatesProjection(scope)
     scope = tostring(scope or "player")
     local laneData = self.laneData[scope] or {}
-    local plates = self.ProjectPlates(laneData, Settings())
+    local plates = self.ProjectPlates(laneData, self:GetScopeSettingsProjection(scope), self.trackedIndex)
     local maxRevision = 0
     for _, lane in pairs(self.lanes) do maxRevision = math.max(maxRevision, tonumber(lane.revision) or 0) end
     return plates, maxRevision
@@ -796,7 +938,7 @@ end
 function F:GetTrackedHeadProjection(scope)
     scope = tostring(scope or "player")
     if scope ~= "player" and scope ~= "target" then return {} end
-    local settings = Settings()
+    local settings = self:GetScopeSettingsProjection(scope)
     local buffs = type(settings.components) == "table" and settings.components.buffs or nil
     buffs = type(buffs) == "table" and buffs or {}
     local perRow = math.max(1, math.min(16, math.floor(tonumber(buffs.maxPerRow) or 8)))
@@ -1220,9 +1362,13 @@ function F:ExportAll()
     local settings = Settings()
     return {
         format = "replicatedsuite.buff_display",
-        schemaVersion = self.SchemaVersion or 4,
+        schemaVersion = self.SchemaVersion or 5,
         tracked = S.Utils.DeepCopy(settings.tracked or { buff = {}, debuff = {} }),
         components = S.Utils.DeepCopy(settings.components or {}),
+        -- 中文维护注释（完整导出双 HUD）：legacy `components` 继续导出 player 组件，
+        -- 供旧文本兼容；`hud` 是新 Authority 快照，补齐 player 的 plate/info/scale 以及
+        -- target 全量视觉 profile。导出只读 detached snapshot，不触碰运行时缓存。
+        hud = type(self.GetHudCalibrationSnapshot) == "function" and self:GetHudCalibrationSnapshot() or nil,
         classification = S.Utils.DeepCopy(settings.classification or {}),
         settings = {
             showBuffs = settings.showBuffs ~= false, showDebuffs = settings.showDebuffs ~= false,
@@ -1242,7 +1388,7 @@ function F:SerializeExport(data)
     data = type(data) == "table" and data or {}
     local lines = {
         "# ReplicatedSuite 状态显示导出",
-        "VERSION=" .. tostring(data.schemaVersion or self.SchemaVersion or 4),
+        "VERSION=" .. tostring(data.schemaVersion or self.SchemaVersion or 5),
         "FORMAT=" .. tostring(data.format or "replicatedsuite.buff_display"),
     }
     for _, category in ipairs({ "buff", "debuff" }) do
@@ -1273,6 +1419,46 @@ function F:SerializeExport(data)
             end
         end
     end
+    -- HUD profile extension is additive to the legacy line format. Older builds
+    -- ignore these unknown records while still reading COMPONENT/SETTING; new
+    -- builds preserve player plate/info/scale and the entire target profile.
+    local hud = type(data.hud) == "table" and data.hud or {}
+    local function AppendBool(value) return value == true and "1" or "0" end
+    local function AppendHudProfile(scope, profile, includeComponents)
+        if type(profile) ~= "table" then return end
+        lines[#lines + 1] = "HUDSCALE=" .. scope .. ":" .. tostring(profile.plateScale or 1)
+        local plate = type(profile.plate) == "table" and profile.plate or {}
+        for _, field in ipairs({ "enabled", "width", "height", "x", "y", "opacity", "showName" }) do
+            if plate[field] ~= nil then
+                local value = (field == "enabled" or field == "showName") and AppendBool(plate[field]) or tostring(plate[field])
+                lines[#lines + 1] = "HUDPLATE=" .. scope .. ":" .. field .. ":" .. value
+            end
+        end
+        local info = type(profile.info) == "table" and profile.info or {}
+        for _, field in ipairs({ "enabled", "x", "y", "fontSize", "showClass", "showGear", "showDistance" }) do
+            if info[field] ~= nil then
+                local isBool = field == "enabled" or field == "showClass" or field == "showGear" or field == "showDistance"
+                lines[#lines + 1] = "HUDINFO=" .. scope .. ":" .. field .. ":" .. (isBool and AppendBool(info[field]) or tostring(info[field]))
+            end
+        end
+        if includeComponents == true then
+            local profileComponents = type(profile.components) == "table" and profile.components or {}
+            for _, key in ipairs(COMPONENT_KEYS) do
+                local component = profileComponents[key]
+                if type(component) == "table" then
+                    for _, field in ipairs({ "enabled", "x", "y", "size", "fontSize", "alpha", "spacing", "maxPerRow", "maxRows", "width", "showText" }) do
+                        if component[field] ~= nil then
+                            local value = (field == "enabled" or field == "showText") and AppendBool(component[field]) or tostring(component[field])
+                            lines[#lines + 1] = "HUDCOMPONENT=" .. scope .. ":" .. key .. ":" .. field .. ":" .. value
+                        end
+                    end
+                end
+            end
+        end
+    end
+    AppendHudProfile("player", hud.player, false)
+    AppendHudProfile("target", hud.target, true)
+
     local policy = type(data.settings) == "table" and data.settings or {}
     for _, key in ipairs({ "refreshMs", "headRefreshMs", "playerRows", "targetRows", "showBuffs", "showDebuffs", "showHidden", "freezeEnabled", "headEnabled", "headShowAll", "headPlayer", "headTarget", "headShowStacks", "headShowTime" }) do
         if policy[key] ~= nil then lines[#lines + 1] = "SETTING=" .. key .. ":" .. tostring(policy[key]) end
@@ -1283,7 +1469,7 @@ end
 -- Parse full-export text. Returns { data = table, errors = {line:n msg}, warnings = {...} }.
 function F:ParseImportText(text)
     text = tostring(text or "")
-    local data = { tracked = { buff = {}, debuff = {} }, components = {}, classification = {}, settings = {}, schemaVersion = 4 }
+    local data = { tracked = { buff = {}, debuff = {} }, components = {}, hud = {}, classification = {}, settings = {}, schemaVersion = 5 }
     local errors, warnings = {}, {}
     local seenTracked = {}
     for index, raw in ipairs(SplitLines(text)) do
@@ -1344,6 +1530,58 @@ function F:ParseImportText(text)
                                 else component[field] = n end
                             else errors[#errors + 1] = "第 " .. tostring(index) .. " 行：未知组件字段 " .. tostring(field) end
                             data.components[componentKey] = component
+                        end
+                    end
+                elseif key == "HUDSCALE" then
+                    local scope, rawValue = value:match("^([^:]+):(.+)$")
+                    if scope ~= "player" and scope ~= "target" then errors[#errors + 1] = "第 " .. tostring(index) .. " 行：HUD scope 必须是 player/target"
+                    else
+                        local n = tonumber(rawValue)
+                        if n == nil then errors[#errors + 1] = "第 " .. tostring(index) .. " 行：HUD 缩放无效"
+                        else data.hud[scope] = data.hud[scope] or {}; data.hud[scope].plateScale = n end
+                    end
+                elseif key == "HUDPLATE" or key == "HUDINFO" then
+                    local parts = {}; for part in value:gmatch("[^:]+") do parts[#parts + 1] = part end
+                    if #parts < 3 then errors[#errors + 1] = "第 " .. tostring(index) .. " 行：HUD profile 格式无效" else
+                        local scope, field, rawValue = parts[1], parts[2], parts[3]
+                        if scope ~= "player" and scope ~= "target" then errors[#errors + 1] = "第 " .. tostring(index) .. " 行：HUD scope 必须是 player/target" else
+                            local isPlate = key == "HUDPLATE"
+                            local boolFields = isPlate and { enabled=true, showName=true } or { enabled=true, showClass=true, showGear=true, showDistance=true }
+                            local numberFields = isPlate and { width=true, height=true, x=true, y=true, opacity=true } or { x=true, y=true, fontSize=true }
+                            if boolFields[field] ~= true and numberFields[field] ~= true then
+                                errors[#errors + 1] = "第 " .. tostring(index) .. " 行：未知 HUD 字段 " .. tostring(field)
+                            else
+                                local target = isPlate and "plate" or "info"
+                                data.hud[scope] = data.hud[scope] or {}; data.hud[scope][target] = data.hud[scope][target] or {}
+                                if boolFields[field] == true then data.hud[scope][target][field] = rawValue == "1" or rawValue == "true"
+                                else
+                                    local n = tonumber(rawValue)
+                                    if n == nil then errors[#errors + 1] = "第 " .. tostring(index) .. " 行：HUD 数值无效 " .. tostring(rawValue)
+                                    else data.hud[scope][target][field] = n end
+                                end
+                            end
+                        end
+                    end
+                elseif key == "HUDCOMPONENT" then
+                    local parts = {}; for part in value:gmatch("[^:]+") do parts[#parts + 1] = part end
+                    if #parts < 4 then errors[#errors + 1] = "第 " .. tostring(index) .. " 行：HUDCOMPONENT 格式应为 scope:key:field:value" else
+                        local scope, componentKey, field, rawValue = parts[1], parts[2], parts[3], parts[4]
+                        local known = false; for _, ck in ipairs(COMPONENT_KEYS) do if ck == componentKey then known = true break end end
+                        if (scope ~= "player" and scope ~= "target") or known ~= true then
+                            errors[#errors + 1] = "第 " .. tostring(index) .. " 行：HUDCOMPONENT scope/组件无效"
+                        else
+                            local boolField = field == "enabled" or field == "showText"
+                            local numberField = field == "x" or field == "y" or field == "size" or field == "fontSize" or field == "alpha"
+                                or field == "spacing" or field == "maxPerRow" or field == "maxRows" or field == "width"
+                            if not boolField and not numberField then errors[#errors + 1] = "第 " .. tostring(index) .. " 行：未知 HUD 组件字段 " .. tostring(field) else
+                                data.hud[scope] = data.hud[scope] or {}; data.hud[scope].components = data.hud[scope].components or {}
+                                local component = data.hud[scope].components[componentKey] or {}
+                                if boolField then component[field] = rawValue == "1" or rawValue == "true" else
+                                    local n = tonumber(rawValue)
+                                    if n == nil then errors[#errors + 1] = "第 " .. tostring(index) .. " 行：HUD 组件数值无效 " .. tostring(rawValue) else component[field] = n end
+                                end
+                                data.hud[scope].components[componentKey] = component
+                            end
                         end
                     end
                 elseif key == "SETTING" then
@@ -1407,6 +1645,35 @@ function F:ImportAll(data, mode)
                     end
                 end
             end
+        end
+        -- Apply the optional dual-HUD profile inside this same persistence transaction.
+        -- `COMPONENT=` legacy player fields above have already updated State, so the
+        -- baseline snapshot here includes them before profile-specific plate/info data.
+        if type(data.hud) == "table" and next(data.hud) ~= nil and type(self.ApplyHudCalibrationSnapshotRaw) == "function" then
+            local currentHud = self:GetHudCalibrationSnapshot()
+            local function OverlayProfile(base, patch)
+                base = S.Utils.DeepCopy(type(base) == "table" and base or {})
+                patch = type(patch) == "table" and patch or {}
+                if patch.plateScale ~= nil then base.plateScale = patch.plateScale end
+                for _, section in ipairs({ "plate", "info" }) do
+                    if type(patch[section]) == "table" then
+                        base[section] = type(base[section]) == "table" and base[section] or {}
+                        for field, item in pairs(patch[section]) do base[section][field] = item end
+                    end
+                end
+                if type(patch.components) == "table" then
+                    base.components = type(base.components) == "table" and base.components or {}
+                    for componentKey, componentPatch in pairs(patch.components) do
+                        base.components[componentKey] = type(base.components[componentKey]) == "table" and base.components[componentKey] or {}
+                        for field, item in pairs(type(componentPatch) == "table" and componentPatch or {}) do base.components[componentKey][field] = item end
+                    end
+                end
+                return base
+            end
+            currentHud.player = OverlayProfile(currentHud.player, data.hud.player)
+            currentHud.target = OverlayProfile(currentHud.target, data.hud.target)
+            local hudOk, hudErr = self:ApplyHudCalibrationSnapshotRaw(currentHud)
+            if hudOk ~= true then return false, hudErr or "HUD profile 导入失败" end
         end
         local policy = type(data.settings) == "table" and data.settings or {}
         for key, value in pairs(policy) do
@@ -1577,6 +1844,16 @@ F.Commands = {
     end,
     GetDefaultLayoutSettingsSnapshot = function()
         return type(F.GetDefaultLayoutSettingsSnapshot) == "function" and F:GetDefaultLayoutSettingsSnapshot() or {}
+    end,
+    GetHudCalibrationSnapshot = function()
+        return type(F.GetHudCalibrationSnapshot) == "function" and F:GetHudCalibrationSnapshot() or { player={}, target={} }
+    end,
+    GetDefaultHudCalibrationSnapshot = function()
+        return type(F.GetDefaultHudCalibrationSnapshot) == "function" and F:GetDefaultHudCalibrationSnapshot() or { player={}, target={} }
+    end,
+    PersistHudCalibrationSnapshot = function(_, snapshot, reason)
+        if type(F.PersistHudCalibrationSnapshot) ~= "function" then return false, "HUD 校准持久化入口不可用" end
+        return F:PersistHudCalibrationSnapshot(snapshot, reason)
     end,
     CanPersistLayoutSettings = function()
         if type(F.CanPersistLayoutSettings) ~= "function" then return false, "HUD 布局持久化入口不可用" end

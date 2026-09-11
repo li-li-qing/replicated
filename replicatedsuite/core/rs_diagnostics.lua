@@ -246,6 +246,9 @@ end
 -- User-copyable single-line diagnostics for the two P0 observability targets
 -- (acceptance brief §19). Bounded, no per-frame chat output; both read only
 -- Feature-owned runtime diagnostic tables.
+-- 中文维护注释（.18.208 装分可观测性）：仅汇总 EquipmentDiagnostics 已缓存的最近
+-- 事实，不重新调用 UnitGearScore。raw 文本被 Feature 限长到 48 字符；计数有界于数字字段，
+-- 不保存目标对象。这样用户复制一次诊断即可区分 API error、不可检查单位与格式化返回。
 function D.BuffGearLine(snap)
     local dia = snap.buffDisplay and snap.buffDisplay.equipmentDiagnostics or nil
     if dia == nil then return "BuffGear：装备诊断不可用（功能未加载）" end
@@ -257,8 +260,152 @@ function D.BuffGearLine(snap)
         .. " · unresolvedSlots=" .. tostring(dia.unresolvedSlots or 0)
         .. " · source=" .. tostring(dia.lastReadSource or "none")
         .. " · iconField=" .. tostring(dia.iconField or "none")
+        .. " · gear=" .. tostring(dia.gearScoreLastScope or "none")
+        .. ":" .. tostring(dia.gearScoreLastValue or "nil")
+        .. "/rawType=" .. tostring(dia.gearScoreLastRawType or "nil")
+        .. "/formatted=" .. tostring(dia.gearScoreFormatted or 0)
+        .. "/unavail=" .. tostring(dia.gearScoreUnavailable or 0)
+        .. "/gerr=" .. tostring(dia.gearScoreErrors or 0)
+        .. (dia.gearScoreLastRaw and (" · gearRaw=" .. tostring(dia.gearScoreLastRaw)) or "")
+        .. (dia.gearScoreLastError and (" · gearError=" .. tostring(dia.gearScoreLastError)) or "")
         .. (dia.lastError and (" · lastError=" .. tostring(dia.lastError)) or "")
         .. (dia.sampleItemKeys and (" · itemKeys=" .. tostring(dia.sampleItemKeys)) or "")
+end
+
+-- 中文维护注释（状态显示 HUD 校准专项摘要，2026-09-11）：
+-- 问题原因：状态显示的大修跨越 Shell、校准 Draft、Persistence、Marker Renderer，只有 BuffDisplay
+-- Domain 健康信息不足以定位编辑器问题。Authority：这里只读取 BuffHudCalibrationV3:GetDiagnostics()
+-- 的 detached 快照，不轮询 Native UI、不修改配置。数据流：校准显式事件记录 -> Snapshot -> 本行。
+-- 兼容边界：校准模块未加载时返回明确文本；轨迹本身保持在 Presentation 的 12 条有界缓存中，
+-- Diagnostics 只拼一行摘要，因此不会增加 50ms HUD 热路径 CPU/内存。后续若扩展字段，应优先追加
+-- 聚合计数，禁止把整个 Draft/Store payload 塞进日志。.18.205 追加 panelDrag 和
+-- screen/logical/stored Y 三段值；.18.206 追加 globalPreview/liveHudSuppressed，证明校准画面是否已
+-- 隔离正式 Renderer。.18.207 追加 template 输出成功/失败/分行数，证明模板按钮是否真正把当前
+-- Draft 发到聊天；字段仍只在显式用户动作或按需 Snapshot 时更新，不允许从 50ms Renderer 反向采样。
+function D.BuffHudCalibrationLine(snap)
+    local dia = snap.buffHudCalibration
+    if type(dia) ~= "table" then return "HUD校准：诊断不可用（校准模块未加载）" end
+    return "HUD校准：v" .. tostring(dia.contractVersion or 0)
+        .. " · visible=" .. tostring(dia.visible == true)
+        .. " · dirty=" .. tostring(dia.dirty == true)
+        .. " · scope=" .. tostring(dia.lastScope or "player")
+        .. " · component=" .. tostring(dia.lastComponent or "buffs")
+        .. " · open=" .. tostring(dia.openCount or 0) .. "/fail" .. tostring(dia.openFailures or 0)
+        .. " · save=" .. tostring(dia.saveCount or 0) .. "/fail" .. tostring(dia.saveFailures or 0)
+        .. " · cancel=" .. tostring(dia.cancelCount or 0)
+        .. " · sync=" .. tostring(dia.syncCount or 0)
+        .. " · drag=" .. tostring(dia.dragCommitCount or 0) .. "/fail" .. tostring(dia.dragFailures or 0)
+        .. " · panelDrag=" .. tostring(dia.panelDragCount or 0) .. "/fail" .. tostring(dia.panelDragFailures or 0)
+        .. "@" .. tostring(dia.panelX or "-") .. "," .. tostring(dia.panelY or "-")
+        .. " · y=" .. tostring(dia.yAdapter or "normal") .. ":screen" .. tostring(dia.lastScreenDy or "-")
+        .. "/logical" .. tostring(dia.lastLogicalDy or "-") .. "/stored" .. tostring(dia.lastStoredDy or "-")
+        .. " · preview=" .. tostring(dia.previewSource or "none") .. "@" .. tostring(dia.previewX or "-") .. "," .. tostring(dia.previewY or "-")
+        .. " · global=" .. tostring(dia.globalPreviewEnabled == true) .. "/refresh" .. tostring(dia.globalPreviewRefreshes or 0)
+        .. " · liveSuppressed=" .. tostring(dia.liveHudSuppressed == true) .. "/fail" .. tostring(dia.suppressionFailures or 0) .. "/restoreFail" .. tostring(dia.suppressionRestoreFailures or 0)
+        .. " · template=" .. tostring(dia.templateOutputCount or 0) .. "/fail" .. tostring(dia.templateOutputFailures or 0) .. "/lines" .. tostring(dia.lastTemplateLines or 0)
+        .. " · shell=" .. tostring(dia.shellWasMinimized == true and "min" or "open") .. "→" .. tostring(dia.shellRestored == nil and "?" or (dia.shellRestored == true and "ok" or "fail"))
+        .. " · last=" .. tostring(dia.lastAction or "idle")
+        .. (dia.lastError and (" · err=" .. tostring(dia.lastError)) or "")
+end
+
+-- 中文维护注释（正式 HUD Renderer 诊断）：BuffHeadMarkers 本来已有 GetDiagnostics，但过去只在
+-- 代码验收中存在，用户“输出诊断摘要”看不到。这里把运行/Consumer/锚点失败按 scope 显式输出；
+-- Authority 仍由 BuffHeadMarkers metrics 持有，Diagnostics 只读，不重新做投影或 Native 查询。
+function D.BuffHeadRendererLine(snap)
+    local dia = snap.buffHeadMarkers
+    if type(dia) ~= "table" then return "HUD渲染：诊断不可用（Renderer 未加载）" end
+    local failures = type(dia.anchorFailures) == "table" and dia.anchorFailures or {}
+    local function Failure(scope)
+        local row = type(failures[scope]) == "table" and failures[scope] or {}
+        return tostring(tonumber(row.count) or 0) .. ":" .. tostring(row.lastErr or "none")
+    end
+    local source = type(dia.source) == "table" and dia.source or {}
+    local anchor = type(dia.anchor) == "table" and dia.anchor or {}
+    local projectError = type(dia.projectError) == "table" and dia.projectError or {}
+    return "HUD渲染：v" .. tostring(dia.version or 0)
+        .. "/fontCv" .. tostring(dia.buffIconFontSizeContractVersion or 0)
+        .. "/castYCv" .. tostring(dia.castYOffsetContractVersion or 0)
+        .. " · running=" .. tostring(dia.running == true)
+        .. " · consumer=" .. tostring(dia.consumerHeld == true)
+        .. " · suppressCv" .. tostring(dia.liveHudSuppressionContractVersion or 0) .. "=" .. tostring(dia.calibrationSuppressed == true)
+        .. (dia.calibrationSuppressionReason and ("(" .. tostring(dia.calibrationSuppressionReason) .. ")") or "")
+        .. " · pools=" .. tostring(dia.poolsAllocated or 0)
+        .. " · ticks=" .. tostring(dia.ticks or 0)
+        .. " · projections=" .. tostring(dia.projections or 0)
+        .. " · player=" .. tostring(source.player or "-") .. "@" .. tostring(anchor.player or "-") .. "/fail" .. Failure("player")
+        .. " · target=" .. tostring(source.target or "-") .. "@" .. tostring(anchor.target or "-") .. "/fail" .. Failure("target")
+        .. (projectError.player and (" · pErr=" .. tostring(projectError.player)) or "")
+        .. (projectError.target and (" · tErr=" .. tostring(projectError.target)) or "")
+end
+
+-- 中文维护注释（可复制专项报告 Authority）：这是状态显示 HUD 大修后的长期维护入口。报告只在
+-- 用户点击诊断按钮时构建，包含校准状态、正式 Renderer、两套几何 Authority 摘要以及最近有界
+-- 校准事件；不输出追踪 ID、Buff 列表等大数据，也不触发采集。未来增加 HUD 子组件时优先在
+-- ProfileLine 追加必要几何字段，保持报告可复制且有界。
+function D:BuildBuffHudReport()
+    local snap = self:Snapshot()
+    local lines = { "【状态HUD诊断】", D.BuffHudCalibrationLine(snap), D.BuffHeadRendererLine(snap) }
+    -- 中文维护注释（HUD Store 边界诊断，2026-09-11）：HUD 大修后“界面不动”可能来自
+    -- Calibration/Renderer，也可能在更早的 Persistence Fence 阶段就根本没有 Apply。专项报告
+    -- 必须把 Store schema/load/fence/integrity/historical probe 一并带出，避免只看 Presentation
+    -- 误判。这里纯读取 runtime telemetry，不触发 LoadStore、不 Hash、不写盘，也不进入 50ms 路径。
+    local store = S.Persistence and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.buff_display") or nil
+    if type(store) == "table" then
+        local function Bounded(value, limit)
+            local text = tostring(value or "-")
+            limit = tonumber(limit) or 180
+            if #text > limit then return text:sub(1, limit) .. "..." end
+            return text
+        end
+        lines[#lines + 1] = "HUD存档：schema=" .. tostring(store.schemaVersion or "-")
+            .. " load=" .. tostring(store.loadStatus or "-")
+            .. " fence=" .. tostring(store.writeFenced == true)
+            .. " reason=" .. Bounded(store.writeFenceReason, 100)
+            .. " integrity=" .. tostring(store.lastIntegrityStatus or "-")
+            .. " itrace=" .. Bounded(store.lastIntegrityRecoveryTrace, 180)
+            .. " probe=" .. Bounded(store.lastHistoricalRecoveryProbe, 180)
+    else
+        lines[#lines + 1] = "HUD存档：Store不可用"
+    end
+    local feature = S.Features and S.Features.BuffDisplay or nil
+    local hud = type(feature) == "table" and type(feature.GetHudCalibrationSnapshot) == "function" and feature:GetHudCalibrationSnapshot() or nil
+    local function ProfileLine(label, profile)
+        profile = type(profile) == "table" and profile or {}
+        local plate = type(profile.plate) == "table" and profile.plate or {}
+        local info = type(profile.info) == "table" and profile.info or {}
+        local components = type(profile.components) == "table" and profile.components or {}
+        local buff = type(components.buffs) == "table" and components.buffs or {}
+        local debuff = type(components.debuffs) == "table" and components.debuffs or {}
+        local cast = type(components.castBar) == "table" and components.castBar or {}
+        return tostring(label)
+            .. "：scale=" .. tostring(profile.plateScale or "-")
+            .. " plate=" .. tostring(plate.x or "-") .. "," .. tostring(plate.y or "-") .. "/" .. tostring(plate.width or "-") .. "x" .. tostring(plate.height or "-")
+            .. " info=" .. tostring(info.x or "-") .. "," .. tostring(info.y or "-") .. "/f" .. tostring(info.fontSize or "-")
+            .. " buff=" .. tostring(buff.x or "-") .. "," .. tostring(buff.y or "-") .. "/s" .. tostring(buff.size or "-") .. "/f" .. tostring(buff.fontSize or "-") .. "/" .. tostring(buff.maxPerRow or "-") .. "x" .. tostring(buff.maxRows or "-")
+            .. " debuff=" .. tostring(debuff.x or "-") .. "," .. tostring(debuff.y or "-") .. "/s" .. tostring(debuff.size or "-") .. "/f" .. tostring(debuff.fontSize or "-") .. "/" .. tostring(debuff.maxPerRow or "-") .. "x" .. tostring(debuff.maxRows or "-")
+            .. " cast=" .. tostring(cast.x or "-") .. "," .. tostring(cast.y or "-") .. "/" .. tostring(cast.width or "-") .. "x" .. tostring(cast.size or "-") .. "/f" .. tostring(cast.fontSize or "-")
+    end
+    if type(hud) == "table" then
+        lines[#lines + 1] = ProfileLine("自己HUD", hud.player)
+        lines[#lines + 1] = ProfileLine("目标HUD", hud.target)
+    else
+        lines[#lines + 1] = "HUD配置：双 profile 快照不可用"
+    end
+    local trace = snap.buffHudCalibration and snap.buffHudCalibration.trace or nil
+    if type(trace) == "table" and #trace > 0 then
+        local parts = {}
+        for index = math.max(1, #trace - 7), #trace do
+            local row = trace[index]
+            if type(row) == "table" then
+                parts[#parts + 1] = tostring(row.action or "?") .. "@" .. tostring(row.scope or "?") .. "/" .. tostring(row.component or "?")
+                    .. (row.error and ("!" .. tostring(row.error)) or "")
+            end
+        end
+        lines[#lines + 1] = "最近校准事件：" .. table.concat(parts, " -> ")
+    else
+        lines[#lines + 1] = "最近校准事件：暂无"
+    end
+    return table.concat(lines, "\n")
 end
 
 function D.UnitLineLine(snap)
@@ -379,13 +526,16 @@ function D:BuildStoreHealthRows()
             local reason = tostring(row.writeFenceReason or row.lastError or "save_failed"):gsub("[\r\n]+", " ")
             local probe = row.historicalRecoveryProbe ~= nil
                 and tostring(row.historicalRecoveryProbe):gsub("[\r\n]+", " ") or nil -- 中文维护注释：恢复探针由 Persistence 写入（见 rs_persistence.lua），字段名不可改动。
+            local recoveryTrace = row.integrityRecoveryTrace ~= nil
+                and tostring(row.integrityRecoveryTrace):gsub("[\r\n]+", " ") or nil -- 中文维护注释：.18.200 Core 状态机轨迹优先告诉维护者“哪个 gate/hook 被走到”，不包含业务 payload。
             rows[#rows + 1] = FeatureRow(
                 "store:" .. tostring(row.id or "?"),
                 "存档·" .. ownerLabel,
                 "down",
                 "写保护 · " .. tostring(row.lastIntegrityStatus or row.loadStatus or "?") .. " · " .. reason,
-                probe ~= nil and ("恢复探针: " .. probe .. " —— 不要清档，复制此行给维护者")
-                    or "不要清档；复制此行给维护者")
+                recoveryTrace ~= nil and ("完整性轨迹: " .. recoveryTrace .. (probe ~= nil and ("；恢复探针: " .. probe) or "") .. " —— 不要清档，复制此行给维护者")
+                    or (probe ~= nil and ("恢复探针: " .. probe .. " —— 不要清档，复制此行给维护者")
+                        or "不要清档；复制此行给维护者"))
             if #rows >= 6 then break end -- 中文维护注释：防损坏档刷屏；与摘要「存档故障」段的 3 条口径同源但更宽。
         end
     end
@@ -578,6 +728,8 @@ function D:BuildFeatureStatusRows()
     end
 
     -- Buff display
+    -- .18.208 这里附带最近装分 scope/value/rawType，但只消费 GetHealth snapshot；
+    -- 绝不因为生成“功能诊断”额外触发 equipment lane 或 Native API 读取。
     do
         local feature = features.BuffDisplay
         local health = feature and feature.GetHealth and feature:GetHealth() or {}
@@ -589,8 +741,12 @@ function D:BuildFeatureStatusRows()
         else
             rows[#rows + 1] = FeatureRow("buff_display", "状态显示", "ok",
                 "工作中 · lanes=" .. tostring(#(health.activeLanes or {})) .. "/6"
-                .. " · 装备读取=" .. tostring(dia and dia.validIcons or 0) .. "图标/" .. tostring(dia and dia.readErrors or 0) .. "错",
-                (tonumber(dia and dia.readErrors or 0)) > 0 and ("装备读取报错：" .. tostring(dia.lastError)) or nil)
+                .. " · 装备读取=" .. tostring(dia and dia.validIcons or 0) .. "图标/" .. tostring(dia and dia.readErrors or 0) .. "错"
+                .. " · 装分=" .. tostring(dia and dia.gearScoreLastScope or "-") .. ":" .. tostring(dia and dia.gearScoreLastValue or "-")
+                .. "/" .. tostring(dia and dia.gearScoreLastRawType or "-"),
+                (tonumber(dia and dia.gearScoreErrors or 0)) > 0
+                    and ("装分读取最近错误：" .. tostring(dia.gearScoreLastError or "unknown") .. " raw=" .. tostring(dia.gearScoreLastRaw or "nil"))
+                    or ((tonumber(dia and dia.readErrors or 0)) > 0 and ("装备读取报错：" .. tostring(dia.lastError)) or nil))
         end
     end
 
@@ -768,6 +924,10 @@ function D:Snapshot()
         refreshCoordinator = S.RefreshCoordinator and type(S.RefreshCoordinator.Describe)=="function" and S.RefreshCoordinator:Describe() or nil,
         auraObservation = S.Services and S.Services.AuraObservationV3 and type(S.Services.AuraObservationV3.GetHealth)=="function" and S.Services.AuraObservationV3:GetHealth() or nil,
         buffDisplay = S.Features and S.Features.BuffDisplay and type(S.Features.BuffDisplay.GetHealth)=="function" and S.Features.BuffDisplay:GetHealth() or nil,
+        -- 中文维护注释：HUD 校准属于 Presentation 诊断 Authority，不能塞进 BuffDisplay Store/Health；
+        -- Snapshot 只在用户请求诊断时读取 detached 快照，避免 Domain 反向依赖 Presentation。
+        buffHudCalibration = S.UIV3 and S.UIV3.BuffHudCalibrationV3 and type(S.UIV3.BuffHudCalibrationV3.GetDiagnostics)=="function" and S.UIV3.BuffHudCalibrationV3:GetDiagnostics() or nil,
+        buffHeadMarkers = S.UIV3 and S.UIV3.BuffHeadMarkersV3 and type(S.UIV3.BuffHeadMarkersV3.GetDiagnostics)=="function" and S.UIV3.BuffHeadMarkersV3:GetDiagnostics() or nil,
         unitLines = S.Features and S.Features.combat_unit_lines and type(S.Features.combat_unit_lines.Diagnostics)=="table" and S.Features.combat_unit_lines.Diagnostics or nil,
         bossAlerts = S.Features and S.Features.combat_boss_alerts and type(S.Features.combat_boss_alerts._bossDiag)=="table" and S.Features.combat_boss_alerts._bossDiag or nil,
         unitIdentity = S.Services and S.Services.UnitIdentityV3 and type(S.Services.UnitIdentityV3.GetHealth)=="function" and S.Services.UnitIdentityV3:GetHealth() or nil,
@@ -916,6 +1076,8 @@ function D:BuildSummary()
             .. " · Aura " .. tostring(snap.buffDisplay and snap.buffDisplay.auraHeld == true and "held" or "idle")
             .. " · Task " .. tostring(snap.buffDisplay and snap.buffDisplay.taskActive == true and "active" or "idle")
             .. " · Revision " .. tostring(snap.buffDisplay and snap.buffDisplay.revision or 0),
+        D.BuffHudCalibrationLine(snap),
+        D.BuffHeadRendererLine(snap),
         D.BuffGearLine(snap),
         D.UnitLineLine(snap),
         D.BossLine(snap),

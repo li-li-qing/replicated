@@ -1,12 +1,11 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Buff Display Page (UI_IMPLEMENTING / workspace v2)
+-- Replicated Suite V3 - Buff Display Page (UI_IMPLEMENTING / HUD calibration v1)
 --
 -- Three authoritative surfaces only:
 --   1) 追踪管理  : one virtual TableView for player + target facts.
---   2) HUD 布局  : Element Tree + LayoutEditorWorkspace v2 + LayoutEditSession.
---                  Working state is page-local and NEVER registered as the
---                  Persistence getter. Preview/Undo/Redo/Reset/Revert are
---                  non-durable; Apply is the only durable layout write.
+--   2) HUD 布局  : policy controls + standalone in-world HUD calibration entry.
+--                  Calibration owns a detached player/target draft and only
+--                  Save & Exit crosses the Persistence boundary.
 --   3) 导入导出  : tracked-id quick import + full Store export/import.
 --
 -- Presentation consumes only BuffDisplay projection/commands.  The page loads
@@ -23,38 +22,6 @@ if type(RSUI) ~= "table" or type(D) ~= "table" or type(PageHost) ~= "table" or t
 
 local ROUTE = "combat.buff_display"
 local TAB_KEYS = { "track", "layout", "transfer" }
-local EDITOR_CANVAS = { x = 0, y = 0, width = 640, height = 320 }
-local COMPONENT_META = {
-    buffs     = { title = "Buff 图标",     desc = "血条上方追踪 Buff" },
-    debuffs   = { title = "Debuff 图标",   desc = "血条下方追踪 Debuff" },
-    distance  = { title = "距离",           desc = "顶部信息行中的距离" },
-    class     = { title = "职业",           desc = "顶部信息行中的职业" },
-    gearScore = { title = "装分",           desc = "顶部信息行中的装备评分" },
-    mainHand  = { title = "主手",           desc = "左侧装备区主手" },
-    offHand   = { title = "副手",           desc = "左侧装备区副手（靠近血条）" },
-    ranged    = { title = "远程",           desc = "左侧装备区远程武器" },
-    wings     = { title = "背部",           desc = "右侧背部 / 滑翔翼" },
-    castBar   = { title = "读条",           desc = "血条下方施法条" },
-}
-
-local function Copy(value)
-    if type(S.Utils) == "table" and type(S.Utils.DeepCopy) == "function" then return S.Utils.DeepCopy(value) end
-    if type(value) ~= "table" then return value end
-    local out = {}
-    for key, child in pairs(value) do out[key] = Copy(child) end
-    return out
-end
-
-local function Clamp(value, minValue, maxValue, fallback)
-    value = tonumber(value)
-    if value == nil then value = tonumber(fallback) or 0 end
-    if value < minValue then value = minValue end
-    if value > maxValue then value = maxValue end
-    return value
-end
-
-local function Round(value) return math.floor((tonumber(value) or 0) + 0.5) end
-
 local function MatchRow(row, query)
     query = tostring(query or ""):lower()
     if query == "" then return true end
@@ -87,10 +54,8 @@ local function BuildPage(parent, route)
     local root, rootErr = D:PageRoot(parent, "v3_page_buff_display")
     if root == nil then return nil, "状态显示页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
     root.activeTab, root.filterText, root.quickText, root.importCategory = "track", "", "", "auto"
-    root.layoutWorking = Copy(Feature.Commands:GetLayoutSettingsSnapshot())
-    root.selectedLayoutKey = "buffs"
 
-    D:PageHeader(root, "v3_buff_display_header", "状态显示", "统一管理状态追踪与头顶 HUD；HUD 布局只有点击“应用”才会写入存档。", "刷新", function()
+    D:PageHeader(root, "v3_buff_display_header", "状态显示", "统一管理状态追踪与头顶 HUD；HUD 校准会暂时最小化主菜单，在真实游戏画面上调整。", "刷新", function()
         return Feature.Commands:Refresh("page_manual")
     end)
 
@@ -107,9 +72,9 @@ local function BuildPage(parent, route)
 
     local switcher
     local transferEdit = nil
-    local layoutWorkspace = nil
-    local selectedControls = {}
-    local globalLayoutControls = {}
+    local layoutPolicyControls = {}
+    local layoutProfileSummary = nil
+    local calibrationButton = nil
 
     local tabSelector, tabSelectorErr = RSUI:SegmentedSelector({
         id = "v3_buff_display_tabs", parent = root, maxItems = 3, gap = 2, height = 26, fontSize = 10,
@@ -191,405 +156,106 @@ local function BuildPage(parent, route)
     })
 
     ------------------------------------------------------------------
-    -- Tab 2: HUD layout - isolated Working + reusable Workspace.
+    -- Tab 2: HUD layout policy + standalone real-screen calibration.
     ------------------------------------------------------------------
-    local tabLayout = RSUI:VerticalBox({ id = "v3_buff_display_tab_layout", parent = switcher, gap = 5, slot = { hAlign = "fill", vAlign = "fill" } })
-    local layoutToggleRow = RSUI:HorizontalBox({ id = "v3_buff_display_layout_global_toggles", parent = tabLayout, gap = 5, slot = { size = "fixed", height = 28, hAlign = "fill" } })
+    local tabLayout = RSUI:VerticalBox({ id = "v3_buff_display_tab_layout", parent = switcher, gap = 7, slot = { hAlign = "fill", vAlign = "fill" } })
 
-    local function Working() return type(root.layoutWorking) == "table" and root.layoutWorking or {} end
-    local function WorkingComponent(key)
-        local components = type(Working().components) == "table" and Working().components or {}
-        return type(components[key]) == "table" and components[key] or nil
-    end
-    local function NotifyWorking(source, refreshSource)
-        if layoutWorkspace ~= nil then
-            if refreshSource == true then return layoutWorkspace:RefreshFromSource(source or "working") end
-            local session = layoutWorkspace:GetSessionModel()
-            if session ~= nil and type(session.RefreshWorking) == "function" then return session:RefreshWorking(source or "working") end
-        end
-        return true
-    end
-    local function SetWorkingValue(key, value, source)
-        Working()[key] = value
-        NotifyWorking(source or ("layout_" .. tostring(key)), true)
-        if type(root.RefreshLayoutControls) == "function" then root:RefreshLayoutControls() end
-        return true
-    end
+    -- 中文维护注释（页面职责收敛，2026-09-11）：旧页把 640x320 的假画布塞在主菜单内部，
+    -- 用户打开菜单后真实角色头顶 HUD 被遮住，拖动结果也无法和实际画面对齐。这里不再维护
+    -- 第二套布局几何编辑器；主菜单只保留低频业务策略，几何/字体/图标/行数由独立
+    -- BuffHudCalibrationV3 在真实 UIParent 上编辑。Authority 仍是 BuffDisplay Store。
+    local introCard = RSUI:Border({ id = "v3_buff_display_layout_intro_card", parent = tabLayout, padding = 8, variant = "card",
+        minHeight = 112, slot = { size = "auto", minHeight = 112, hAlign = "fill" } })
+    local introStack = RSUI:VerticalBox({ id = "v3_buff_display_layout_intro_stack", parent = introCard, gap = 4, slot = { hAlign = "fill" } })
+    RSUI:Text({ id = "v3_buff_display_layout_intro_title", parent = introStack, text = "HUD 校准模式", fontSize = 12, tone = "strong", slot = { size = "fixed", height = 22 } })
+    RSUI:Text({ id = "v3_buff_display_layout_intro_text", parent = introStack, text = "点击“调整 HUD”后主菜单会临时最小化。可分别校准自己 / 目标 HUD，拖动预览框或用方向键、数值框精调；目标 HUD 可手动一键同步自身布局。", fontSize = 10, tone = "muted", overflow = "wrap", maxLines = 3, slot = { size = "auto", minHeight = 38, hAlign = "fill" } })
+    local launchRow = RSUI:HorizontalBox({ id = "v3_buff_display_layout_launch_row", parent = introStack, gap = 8, slot = { size = "fixed", height = 32, hAlign = "fill" } })
+    calibrationButton = RSUI:Button({ id = "v3_buff_display_layout_open_calibration", parent = launchRow, text = "调整 HUD", compact = false, slot = { size = "fixed", width = 132 } })
+    layoutProfileSummary = RSUI:Text({ id = "v3_buff_display_layout_profile_summary", parent = launchRow, text = "自己 / 目标：独立布局", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1, vAlign = "center" } })
 
-    local globalToggleSpecs = {
-        { key = "headEnabled", on = "HUD：开", off = "HUD：关", width = 82 },
-        { key = "headShowAll", on = "全部：开", off = "全部：关", width = 82 },
-        { key = "headPlayer", on = "自己：开", off = "自己：关", width = 82 },
-        { key = "headTarget", on = "目标：开", off = "目标：关", width = 82 },
-        { key = "headShowStacks", on = "层数：开", off = "层数：关", width = 82 },
-        { key = "headShowTime", on = "时间：开", off = "时间：关", width = 82 },
+    -- 中文维护注释（HUD 布局页响应式重排，2026-09-11）：旧版把 6 个固定宽度开关塞进
+    -- 单行 HorizontalBox，再把刷新滑块塞进同一张 auto-height 卡片；在 1k/0.8 UI Scale 下
+    -- 子控件宽度超过内容区且 CompactNumericSetting 自己需要多行高度，最终出现截图中的重叠。
+    -- Authority 仍由 Feature Settings 持有；这里只改变 Presentation 排版，不复制任何设置状态。
+    -- 三块职责固定为“校准入口 / 显示策略 / 刷新设置”，以后新增策略优先进入 Grid，禁止重新
+    -- 回到一行固定按钮堆叠。
+    -- 中文维护注释（.18.206 Measure 修复）：RSUI Border:Measure() 读取的是 Border 自身 spec.minHeight，
+    -- 不是父 VerticalBox 的 slot.minHeight。.18.205 只把最小高度写进 slot，Native 子控件实际需要更高
+    -- 时父布局仍可能按过小 desiredHeight 排下一个卡片，造成截图中的边框/文本重叠。本版把 minHeight
+    -- 同时声明在组件 spec 与 slot：spec 是 Measure Authority，slot 只作为父容器的下限提示。该修复
+    -- 仅影响 Presentation 几何，不读写 Store，也不改变响应式 Grid 的列数 Authority。
+    local policyCard = RSUI:Border({ id = "v3_buff_display_layout_policy_card", parent = tabLayout, padding = 8, variant = "card",
+        minHeight = 132, slot = { size = "auto", minHeight = 132, hAlign = "fill" } })
+    local policyStack = RSUI:VerticalBox({ id = "v3_buff_display_layout_policy_stack", parent = policyCard, gap = 6, slot = { hAlign = "fill" } })
+    RSUI:Text({ id = "v3_buff_display_layout_policy_title", parent = policyStack, text = "显示策略", fontSize = 11, tone = "strong", slot = { size = "fixed", height = 20 } })
+    local policyToggleGrid = RSUI:UniformGrid({ id = "v3_buff_display_layout_policy_toggle_grid", parent = policyStack, minCellWidth = 96, minCellHeight = 28, maxColumns = 3, gap = 5, slot = { size = "auto", hAlign = "fill" } })
+    local policySpecs = {
+        { key="headEnabled", on="HUD：开", off="HUD：关", trueOnly=false },
+        { key="headShowAll", on="全部：开", off="全部：关", trueOnly=true },
+        { key="headPlayer", on="自己：开", off="自己：关", trueOnly=false },
+        { key="headTarget", on="目标：开", off="目标：关", trueOnly=false },
+        { key="headShowStacks", on="层数：开", off="层数：关", trueOnly=false },
+        { key="headShowTime", on="时间：开", off="时间：关", trueOnly=false },
     }
-    for _, spec in ipairs(globalToggleSpecs) do
+    for _, spec in ipairs(policySpecs) do
+        local key, trueOnly = spec.key, spec.trueOnly == true
         local toggle = RSUI:Toggle({
-            id = "v3_buff_display_layout_global_" .. spec.key, parent = layoutToggleRow, width = spec.width, height = 24,
+            id = "v3_buff_display_layout_policy_" .. key, parent = policyToggleGrid, width = 94, height = 24,
             onText = spec.on, offText = spec.off,
-            get = function() return Working()[spec.key] ~= false end,
-            set = function(v) return SetWorkingValue(spec.key, v == true, "layout_global_" .. spec.key) end,
-            slot = { size = "fixed", width = spec.width },
-        })
-        if toggle ~= nil then globalLayoutControls[#globalLayoutControls + 1] = toggle end
-    end
-
-    -- Equipment visibility used to be discoverable only by selecting a leaf in
-    -- the element tree and then finding Inspector.enabled. Keep the Inspector as
-    -- the advanced editor, but expose the four self-equipment switches directly
-    -- in the HUD layout workflow. They edit the SAME isolated Working snapshot
-    -- and therefore preserve the page's Apply/Revert persistence contract.
-    local equipmentToggleRow = RSUI:HorizontalBox({ id = "v3_buff_display_equipment_toggles", parent = tabLayout, gap = 5, slot = { size = "fixed", height = 28, hAlign = "fill" } })
-    RSUI:Text({ id = "v3_buff_display_equipment_toggle_label", parent = equipmentToggleRow, text = "自身装备", fontSize = 9, tone = "muted", slot = { size = "fixed", width = 58, vAlign = "center" } })
-    for _, equipmentSpec in ipairs({
-        { key = "mainHand", label = "主手" }, { key = "offHand", label = "副手" },
-        { key = "ranged", label = "远程" }, { key = "wings", label = "背部" },
-    }) do
-        local componentKey, label = equipmentSpec.key, equipmentSpec.label
-        local toggle = RSUI:Toggle({
-            id = "v3_buff_display_equipment_toggle_" .. componentKey, parent = equipmentToggleRow, width = 82, height = 24,
-            onText = label .. "：开", offText = label .. "：关",
             get = function()
-                local component = WorkingComponent(componentKey)
-                return type(component) == "table" and component.enabled ~= false
+                local settings = Feature:GetSettingsProjection() or {}
+                return trueOnly and settings[key] == true or (not trueOnly and settings[key] ~= false)
             end,
-            set = function(value)
-                local component = WorkingComponent(componentKey)
-                if type(component) ~= "table" then return false, "HUD 组件不存在：" .. tostring(componentKey) end
-                component.enabled = value == true
-                local ok, err = NotifyWorking("layout_equipment_" .. componentKey, true)
-                if ok == false then return false, err end
-                if type(root.RefreshLayoutControls) == "function" then root:RefreshLayoutControls() end
-                return true
-            end,
-            slot = { size = "fixed", width = 82 },
+            set = function(value) return ApplySetting(key, value == true) end,
+            slot = { size = "auto", hAlign = "left", vAlign = "center" },
         })
-        if toggle ~= nil then globalLayoutControls[#globalLayoutControls + 1] = toggle end
+        if toggle ~= nil then layoutPolicyControls[#layoutPolicyControls + 1] = toggle end
     end
-    RSUI:Text({ id = "v3_buff_display_equipment_toggle_hint", parent = equipmentToggleRow, text = "修改后点“应用”保存", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1, hAlign = "right", vAlign = "center" } })
+    RSUI:Text({ id = "v3_buff_display_layout_policy_hint", parent = policyStack, text = "这里仅控制 HUD 是否运行和通用文字显示；各组件位置、图标、字号、间距和尺寸统一在“调整 HUD”里设置。", fontSize = 9, tone = "muted", overflow = "wrap", maxLines = 2, slot = { size = "auto", minHeight = 28, hAlign = "fill" } })
 
-    local globalGrid = RSUI:UniformGrid({ id = "v3_buff_display_layout_global_grid", parent = tabLayout, minCellWidth = 220, minCellHeight = 30, maxColumns = 3, gap = 4, slot = { size = "auto", hAlign = "fill" } })
-    local refreshField = D:CompactNumericSetting(globalGrid, {
-        id = "v3_buff_display_layout_refresh", label = "位置刷新", min = 25, max = 2000, step = 25, integer = true, unit = "ms", slider = true,
-        get = function() return tonumber(Working().headRefreshMs) or 100 end,
-        set = function(v) return SetWorkingValue("headRefreshMs", Round(v), "layout_refresh_ms") end,
+    local refreshCard = RSUI:Border({ id = "v3_buff_display_layout_refresh_card", parent = tabLayout, padding = 8, variant = "card",
+        minHeight = 104, slot = { size = "auto", minHeight = 104, hAlign = "fill" } })
+    local refreshStack = RSUI:VerticalBox({ id = "v3_buff_display_layout_refresh_stack", parent = refreshCard, gap = 5, slot = { hAlign = "fill" } })
+    RSUI:Text({ id = "v3_buff_display_layout_refresh_title", parent = refreshStack, text = "刷新设置", fontSize = 11, tone = "strong", slot = { size = "fixed", height = 20 } })
+    local refreshGrid = RSUI:UniformGrid({ id = "v3_buff_display_layout_refresh_grid", parent = refreshStack, minCellWidth = 320, minCellHeight = 34, maxColumns = 1, gap = 4, slot = { size = "auto", hAlign = "fill" } })
+    local refreshField = D:CompactNumericSetting(refreshGrid, {
+        id = "v3_buff_display_layout_refresh", label = "HUD 刷新", min = 25, max = 2000, hardMin = 1, hardMax = 2000, step = 25, integer = true, unit = "ms", slider = true,
+        get = function() return tonumber((Feature:GetSettingsProjection() or {}).headRefreshMs) or 50 end,
+        set = function(v) return ApplySetting("headRefreshMs", math.floor((tonumber(v) or 50) + 0.5)) end,
         slot = { size = "fill", fill = 1 },
     })
-    local scaleField = D:CompactNumericSetting(globalGrid, {
-        id = "v3_buff_display_layout_scale", label = "全局缩放", min = 0.5, max = 2.0, step = 0.05, integer = false, slider = true,
-        get = function() return tonumber(Working().plateScale) or 1 end,
-        set = function(v) return SetWorkingValue("plateScale", Clamp(v, 0.5, 2, 1), "layout_scale") end,
-        slot = { size = "fill", fill = 1 },
-    })
-    if refreshField then globalLayoutControls[#globalLayoutControls + 1] = refreshField end
-    if scaleField then globalLayoutControls[#globalLayoutControls + 1] = scaleField end
-
-    local layoutBody = RSUI:HorizontalBox({ id = "v3_buff_display_layout_body", parent = tabLayout, gap = 6, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
-    local treePanel = RSUI:Border({ id = "v3_buff_display_layout_tree_panel", parent = layoutBody, padding = 5, variant = "card", slot = { size = "fixed", width = 176, minWidth = 160, hAlign = "fill", vAlign = "fill" } })
-    local treeStack = RSUI:VerticalBox({ id = "v3_buff_display_layout_tree_stack", parent = treePanel, gap = 3, slot = { hAlign = "fill", vAlign = "fill" } })
-    RSUI:Text({ id = "v3_buff_display_layout_tree_title", parent = treeStack, text = "元素树", fontSize = 10, tone = "strong", slot = { size = "fixed", height = 20 } })
-
-    if type(RSUI.CreateSelectionModel) ~= "function" or type(RSUI.TreeView) ~= "function" then
-        return nil, "状态显示 HUD 布局依赖未就绪：SelectionModel/TreeView"
-    end
-    local layoutSelection = RSUI:CreateSelectionModel({ id = "v3_buff_display_layout_selection", mode = "single", selectedKeys = { "buffs" } })
-    local treeNodes = {
-        { key = "plate", text = "血条基准" },
-        { key = "buffs", text = "Buff 图标" },
-        { key = "debuffs", text = "Debuff 图标" },
-        { key = "info", text = "顶部信息", children = {
-            { key = "class", text = "职业" }, { key = "gearScore", text = "装分" }, { key = "distance", text = "距离" },
-        } },
-        { key = "leftGroup", text = "左侧装备", children = {
-            { key = "offHand", text = "副手" }, { key = "mainHand", text = "主手" }, { key = "ranged", text = "远程" },
-        } },
-        { key = "rightGroup", text = "右侧装备", children = { { key = "wings", text = "背部" } } },
-        { key = "castBar", text = "读条" },
-    }
-    local layoutTree = RSUI:TreeView({
-        id = "v3_buff_display_layout_tree", parent = treeStack, nodes = treeNodes, selectionModel = layoutSelection,
-        defaultExpandedDepth = 2, desiredRows = 13, rowHeight = 23, maxNodes = 32,
-        onSelectionChanged = function(key)
-            root.selectedLayoutKey = tostring(key or "")
-            if type(root.RefreshLayoutControls) == "function" then root:RefreshLayoutControls() end
-        end,
-        slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
-    })
-    if layoutTree == nil then return nil, "状态显示 Element Tree 创建失败" end
-
-    local function ComponentSize(key)
-        local component = WorkingComponent(key) or {}
-        if key == "buffs" or key == "debuffs" then
-            local size = Clamp(component.size, 8, 64, 29)
-            local perRow = Clamp(component.maxPerRow, 1, 16, 8)
-            local rows = Clamp(component.maxRows, 1, 4, 2)
-            local spacing = Clamp(component.spacing, 0, 24, 2)
-            return size * perRow + spacing * math.max(0, perRow - 1), size * rows + spacing * math.max(0, rows - 1)
-        elseif key == "castBar" then
-            return Clamp(component.width, 20, 480, 120), math.max(10, Clamp(component.size, 4, 64, 7) + 6)
-        elseif key == "class" or key == "gearScore" or key == "distance" then
-            local info = type(Working().info) == "table" and Working().info or {}
-            local font = Clamp(info.fontSize, 8, 24, 10)
-            return key == "gearScore" and 92 or 70, font + 10
-        end
-        local size = Clamp(component.size, 8, 64, 26)
-        return size, size
-    end
-
-    local RectForKey
-    RectForKey = function(key)
-        key = tostring(key or "")
-        local w = Working()
-        local plate = type(w.plate) == "table" and w.plate or {}
-        local info = type(w.info) == "table" and w.info or {}
-        local px = Round(plate.x or 0)
-        local py = Round(plate.y or 0)
-        if key == "plate" then return { x = 245 + px, y = 150 + py, width = Clamp(plate.width, 80, 320, 150), height = Clamp(plate.height, 8, 40, 20) } end
-        if key == "info" then return { x = 230 + Round(info.x or 0), y = 86 + Round(info.y or 0), width = 180, height = Clamp(info.fontSize, 8, 24, 10) + 10 } end
-        if key == "leftGroup" then
-            local a, b, c = RectForKey("offHand"), RectForKey("mainHand"), RectForKey("ranged")
-            local minX = math.min(a.x, b.x, c.x); local minY = math.min(a.y, b.y, c.y)
-            local maxX = math.max(a.x + a.width, b.x + b.width, c.x + c.width); local maxY = math.max(a.y + a.height, b.y + b.height, c.y + c.height)
-            return { x = minX, y = minY, width = maxX - minX, height = maxY - minY }
-        end
-        if key == "rightGroup" then return RectForKey("wings") end
-
-        local component = WorkingComponent(key) or {}
-        local width, height = ComponentSize(key)
-        local x, y
-        if key == "buffs" then x, y = 320 - width / 2, 80
-        elseif key == "debuffs" then x, y = 320 - width / 2, 184
-        elseif key == "class" then x, y = 238 + Round(info.x or 0), 86 + Round(info.y or 0)
-        elseif key == "gearScore" then x, y = 306 + Round(info.x or 0), 86 + Round(info.y or 0)
-        elseif key == "distance" then x, y = 402 + Round(info.x or 0), 86 + Round(info.y or 0)
-        elseif key == "offHand" then x, y = 209, 147
-        elseif key == "mainHand" then x, y = 176, 147
-        elseif key == "ranged" then x, y = 143, 147
-        elseif key == "wings" then x, y = 405, 147
-        elseif key == "castBar" then x, y = 320 - width / 2, 226
-        else x, y = 300, 150 end
-        if key ~= "class" and key ~= "gearScore" and key ~= "distance" then
-            x = x + Round(component.x or 0); y = y + Round(component.y or 0)
-        end
-        return { x = x, y = y, width = width, height = height }
-    end
-
-    local function ApplyRect(key, rect)
-        key, rect = tostring(key or ""), type(rect) == "table" and rect or {}
-        local old = RectForKey(key)
-        if old == nil then return false, "未知 HUD 元素：" .. key end
-        local dx, dy = Round((tonumber(rect.x) or old.x) - old.x), Round((tonumber(rect.y) or old.y) - old.y)
-        local w = Working()
-        local function ShiftComponent(componentKey)
-            local component = WorkingComponent(componentKey)
-            if component == nil then return end
-            component.x = Round(Clamp((component.x or 0) + dx, -400, 400, 0))
-            component.y = Round(Clamp((component.y or 0) + dy, -400, 400, 0))
-        end
-        if key == "plate" then
-            w.plate = type(w.plate) == "table" and w.plate or {}
-            w.plate.x = Round(Clamp((w.plate.x or 0) + dx, -200, 200, 0))
-            w.plate.y = Round(Clamp((w.plate.y or 0) + dy, -500, 500, 0))
-            w.plate.width = Round(Clamp(rect.width, 80, 320, old.width))
-            w.plate.height = Round(Clamp(rect.height, 8, 40, old.height))
-        elseif key == "info" or key == "class" or key == "gearScore" or key == "distance" then
-            w.info = type(w.info) == "table" and w.info or {}
-            w.info.x = Round(Clamp((w.info.x or 0) + dx, -200, 200, 0))
-            w.info.y = Round(Clamp((w.info.y or 0) + dy, -80, 80, 0))
-        elseif key == "leftGroup" then
-            ShiftComponent("offHand"); ShiftComponent("mainHand"); ShiftComponent("ranged")
-        elseif key == "rightGroup" then ShiftComponent("wings")
-        elseif key == "castBar" then
-            ShiftComponent(key)
-            local component = WorkingComponent(key)
-            component.width = Round(Clamp(rect.width, 20, 480, old.width))
-            component.size = Round(Clamp((tonumber(rect.height) or old.height) - 6, 4, 64, component.size or 7))
-        else ShiftComponent(key) end
-        return true
-    end
-
-    local function ApplyItems(items)
-        for _, item in ipairs(type(items) == "table" and items or {}) do
-            local ok, err = ApplyRect(item.key, item.rect)
-            if ok ~= true then return false, err end
-        end
-        return true
-    end
-
-    local function ItemConstraints(key)
-        key = tostring(key or "")
-        local rect = RectForKey(key)
-        if key == "plate" then return { minWidth = 80, maxWidth = 320, minHeight = 8, maxHeight = 40 } end
-        if key == "castBar" then return { minWidth = 20, maxWidth = 480, minHeight = 10, maxHeight = 70 } end
-        return { minWidth = rect.width, maxWidth = rect.width, minHeight = rect.height, maxHeight = rect.height }
-    end
-
-    local function ViewportPointerToEditorLocal(viewportX, viewportY, controller)
-        -- LayoutEditorGesture samples viewport-logical coordinates. This page
-        -- edits rectangles in the LayoutEditorOverlay's own local 640x320
-        -- space, so identity conversion is invalid whenever the page/window is
-        -- not at viewport origin. Resolve the live native overlay root on every
-        -- gesture sample; no cached geometry survives responsive reflow/ScaleBox/UI scale.
-        local selectionOverlay = type(controller) == "table" and controller.overlay or nil
-        local editorOverlay = type(selectionOverlay) == "table" and selectionOverlay.parentComponent or nil
-        local nativeRoot = type(editorOverlay) == "table" and editorOverlay.root or nil
-        if nativeRoot == nil or type(S.Layout) ~= "table" or type(S.Layout.GetLogicalRect) ~= "function" then
-            return nil, nil
-        end
-        local ok, originX, originY, liveWidth, liveHeight = pcall(function() return S.Layout:GetLogicalRect(nativeRoot) end)
-        viewportX, viewportY = tonumber(viewportX), tonumber(viewportY)
-        originX, originY = tonumber(originX), tonumber(originY)
-        liveWidth, liveHeight = tonumber(liveWidth), tonumber(liveHeight)
-        local editorWidth, editorHeight = tonumber(EDITOR_CANVAS.width), tonumber(EDITOR_CANVAS.height)
-        if ok ~= true or viewportX == nil or viewportY == nil or originX == nil or originY == nil
-            or liveWidth == nil or liveHeight == nil or liveWidth <= 0 or liveHeight <= 0
-            or editorWidth == nil or editorHeight == nil or editorWidth <= 0 or editorHeight <= 0 then
-            return nil, nil
-        end
-        return (viewportX - originX) * editorWidth / liveWidth,
-            (viewportY - originY) * editorHeight / liveHeight
-    end
-
-    layoutWorkspace = RSUI:CreateLayoutEditorWorkspace({
-        id = "v3_buff_display_layout_editor", parent = layoutBody, selectionModel = layoutSelection,
-        canvasRect = EDITOR_CANVAS, coordinateSpace = "local", pointerToLocal = ViewportPointerToEditorLocal, maxSelected = 1,
-        autoOpenInspectorOnSelection = true,
-        minWidth = 4, minHeight = 4, maxWidth = 640, maxHeight = 320,
-        getRect = function(key) return RectForKey(key) end,
-        getParentRect = function() return EDITOR_CANVAS end,
-        getItemConstraints = ItemConstraints,
-        onPreview = function(items) return ApplyItems(items) end,
-        onCommit = function(items) return ApplyItems(items) end,
-        onCancel = function(items) ApplyItems(items); return true end,
-        editSession = {
-            getWorkingSnapshot = function() return Copy(root.layoutWorking) end,
-            getPersistedSnapshot = function() return Copy(Feature.Commands:GetLayoutSettingsSnapshot()) end,
-            getDefaultSnapshot = function() return Copy(Feature.Commands:GetDefaultLayoutSettingsSnapshot()) end,
-            applyWorkingSnapshot = function(snapshot)
-                root.layoutWorking = Copy(snapshot)
-                if type(root.RefreshLayoutControls) == "function" then root:RefreshLayoutControls() end
-                return true
-            end,
-            persistSnapshot = function(snapshot)
-                local ok, err = Feature.Commands:PersistLayoutSettingsSnapshot(snapshot, "layout_editor_apply")
-                if ok == true then root.layoutWorking = Copy(Feature.Commands:GetLayoutSettingsSnapshot()) end
-                return ok, err
-            end,
-            canPersist = function() return Feature.Commands:CanPersistLayoutSettings() end,
-            maxSnapshotNodes = 512,
-        },
-        onEditorCommand = function(command, accepted, detail)
-            if accepted == true and command == "apply" then persistHint:SetText("HUD 布局已安全写入存档")
-            elseif accepted == true then persistHint:SetText("HUD 布局为预览状态 · 点击应用才保存")
-            else persistHint:SetText("HUD 布局操作失败：" .. tostring(detail or command)) end
-            if type(root.RefreshLayoutControls) == "function" then root:RefreshLayoutControls() end
-        end,
-        onEditSessionChanged = function(reason, snapshot)
-            if type(snapshot) == "table" and snapshot.dirty == true then persistHint:SetText("HUD 布局有未应用修改") end
-        end,
-        slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
-    })
-    if layoutWorkspace == nil then return nil, "状态显示 LayoutEditorWorkspace v2 创建失败" end
-
-    RSUI:Text({ id = "v3_buff_display_layout_preview_hint", parent = layoutWorkspace.previewHost,
-        text = "HUD 逻辑预览 · 中央为血条基准\n拖动选中框调整位置；血条 / 读条支持缩放。", fontSize = 10, tone = "muted", overflow = "wrap", maxLines = 3,
-        slot = { hAlign = "center", vAlign = "center" } })
-
-    local selectedTitle = RSUI:Text({ id = "v3_buff_display_layout_selected_title", parent = layoutWorkspace.inspectorHost, text = "元素属性", fontSize = 10, tone = "strong", slot = { size = "auto", hAlign = "fill" } })
-    local selectedEnabled = RSUI:Toggle({
-        id = "v3_buff_display_layout_selected_enabled", parent = layoutWorkspace.inspectorHost, width = 112, height = 24,
-        onText = "显示：开", offText = "显示：关",
-        get = function()
-            local key = root.selectedLayoutKey
-            if key == "info" then return type(Working().info) == "table" and Working().info.enabled ~= false end
-            local component = WorkingComponent(key); return component ~= nil and component.enabled ~= false
-        end,
-        set = function(v)
-            local key = root.selectedLayoutKey
-            if key == "info" then Working().info.enabled = v == true
-            else local component = WorkingComponent(key); if component == nil then return false, "该元素没有显示开关" end; component.enabled = v == true end
-            NotifyWorking("layout_selected_enabled", true); root:RefreshLayoutControls(); return true
-        end,
-        slot = { size = "fixed", width = 112 },
-    })
-    selectedControls[#selectedControls + 1] = selectedEnabled
-
-    local selectedGrid = RSUI:UniformGrid({ id = "v3_buff_display_layout_selected_grid", parent = layoutWorkspace.inspectorHost, minCellWidth = 190, minCellHeight = 30, maxColumns = 1, gap = 3, slot = { size = "auto", hAlign = "fill" } })
-    local function AddSelectedField(name, label, minValue, maxValue, step, integer, unit, getValue, setValue, visibleFor)
-        local field = D:CompactNumericSetting(selectedGrid, {
-            id = "v3_buff_display_layout_selected_" .. name, label = label, min = minValue, max = maxValue, step = step,
-            integer = integer ~= false, unit = unit, slider = true, get = getValue,
-            set = function(v) local ok, err = setValue(v); if ok == true then NotifyWorking("layout_selected_" .. name, true); root:RefreshLayoutControls() end; return ok, err end,
-            slot = { size = "fill", fill = 1 },
-        })
-        if field ~= nil then
-            field._layoutVisibleFor = visibleFor
-            selectedControls[#selectedControls + 1] = field
-        end
-        return field
-    end
-    AddSelectedField("size", "尺寸", 4, 64, 1, true, "px",
-        function() local c = WorkingComponent(root.selectedLayoutKey); return c and (c.size or 0) or 0 end,
-        function(v) local c = WorkingComponent(root.selectedLayoutKey); if not c then return false, "该元素没有尺寸属性" end; c.size = Round(Clamp(v, 4, 64, c.size or 26)); return true end,
-        function(key) return WorkingComponent(key) ~= nil end)
-    AddSelectedField("font", "字号", 8, 32, 1, true, "px",
-        function()
-            if root.selectedLayoutKey == "info" then return tonumber(Working().info and Working().info.fontSize) or 10 end
-            local c = WorkingComponent(root.selectedLayoutKey); return c and (c.fontSize or 10) or 10
-        end,
-        function(v)
-            if root.selectedLayoutKey == "info" then Working().info.fontSize = Round(Clamp(v, 8, 24, 10)); return true end
-            local c = WorkingComponent(root.selectedLayoutKey); if not c or c.fontSize == nil then return false, "该元素没有字号属性" end
-            c.fontSize = Round(Clamp(v, 8, 32, c.fontSize)); return true
-        end,
-        function(key) local c = WorkingComponent(key); return key == "info" or (c and c.fontSize ~= nil) end)
-    AddSelectedField("alpha", "透明度", 0.1, 1.0, 0.05, false, "",
-        function() local c = WorkingComponent(root.selectedLayoutKey); return c and (c.alpha or 1) or 1 end,
-        function(v) local c = WorkingComponent(root.selectedLayoutKey); if not c or c.alpha == nil then return false, "该元素没有透明度属性" end; c.alpha = Clamp(v, 0.1, 1, c.alpha); return true end,
-        function(key) local c = WorkingComponent(key); return c and c.alpha ~= nil end)
-    AddSelectedField("spacing", "图标间距", 0, 24, 1, true, "px",
-        function() local c = WorkingComponent(root.selectedLayoutKey); return c and (c.spacing or 0) or 0 end,
-        function(v) local c = WorkingComponent(root.selectedLayoutKey); if not c or c.spacing == nil then return false, "该元素没有间距属性" end; c.spacing = Round(Clamp(v, 0, 24, c.spacing)); return true end,
-        function(key) return key == "buffs" or key == "debuffs" end)
-    AddSelectedField("per_row", "每行数量", 1, 16, 1, true, "",
-        function() local c = WorkingComponent(root.selectedLayoutKey); return c and (c.maxPerRow or 8) or 8 end,
-        function(v) local c = WorkingComponent(root.selectedLayoutKey); if not c or c.maxPerRow == nil then return false, "该元素没有行容量属性" end; c.maxPerRow = Round(Clamp(v, 1, 16, c.maxPerRow)); return true end,
-        function(key) return key == "buffs" or key == "debuffs" end)
-    AddSelectedField("rows", "最大行数", 1, 4, 1, true, "",
-        function() local c = WorkingComponent(root.selectedLayoutKey); return c and (c.maxRows or 2) or 2 end,
-        function(v) local c = WorkingComponent(root.selectedLayoutKey); if not c or c.maxRows == nil then return false, "该元素没有行数属性" end; c.maxRows = Round(Clamp(v, 1, 4, c.maxRows)); return true end,
-        function(key) return key == "buffs" or key == "debuffs" end)
-
-    local castTextToggle = RSUI:Toggle({
-        id = "v3_buff_display_layout_cast_text", parent = layoutWorkspace.inspectorHost, width = 118, height = 24,
-        onText = "施法名：开", offText = "施法名：关",
-        get = function() local c = WorkingComponent("castBar"); return c ~= nil and c.showText ~= false end,
-        set = function(v) local c = WorkingComponent("castBar"); if not c then return false end; c.showText = v == true; NotifyWorking("layout_cast_text", false); return true end,
-        slot = { size = "fixed", width = 118 },
-    })
-    castTextToggle._layoutVisibleFor = function(key) return key == "castBar" end
-    selectedControls[#selectedControls + 1] = castTextToggle
+    if refreshField ~= nil then layoutPolicyControls[#layoutPolicyControls + 1] = refreshField end
+    RSUI:Text({ id = "v3_buff_display_layout_refresh_hint", parent = refreshStack, text = "PVP 推荐保持 50ms；只有在低性能设备或大规模战斗中需要时再提高。", fontSize = 9, tone = "muted", overflow = "wrap", maxLines = 2, slot = { size = "auto", minHeight = 26, hAlign = "fill" } })
 
     function root:RefreshLayoutControls()
-        local key = tostring(self.selectedLayoutKey or "")
-        local meta = COMPONENT_META[key]
-        local title = meta and meta.title or ({ plate = "血条基准", info = "顶部信息", leftGroup = "左侧装备组", rightGroup = "右侧装备组" })[key] or "元素属性"
-        selectedTitle:SetText(title .. (meta and (" · " .. meta.desc) or ""))
-        for _, control in ipairs(globalLayoutControls) do if control ~= nil and type(control.Render) == "function" then control:Render() end end
-        for _, control in ipairs(selectedControls) do
-            if control ~= nil then
-                local visible = true
-                if type(control._layoutVisibleFor) == "function" then visible = control._layoutVisibleFor(key) == true
-                elseif control == selectedEnabled then visible = (key == "info" or WorkingComponent(key) ~= nil) end
-                if type(control.Show) == "function" then control:Show(visible) end
-                if visible and type(control.Render) == "function" then control:Render() end
-            end
+        for _, control in ipairs(layoutPolicyControls) do
+            if control ~= nil and type(control.Render) == "function" then control:Render() end
         end
+        if layoutProfileSummary ~= nil then
+            local snapshot = Feature.Commands:GetHudCalibrationSnapshot()
+            local player = type(snapshot) == "table" and snapshot.player or nil
+            local target = type(snapshot) == "table" and snapshot.target or nil
+            local pScale = type(player) == "table" and tonumber(player.plateScale) or 1
+            local tScale = type(target) == "table" and tonumber(target.plateScale) or 1
+            layoutProfileSummary:SetText(string.format("自己 / 目标独立保存 · 缩放 %.2f / %.2f · 保存并退出后写入存档", pScale or 1, tScale or 1))
+        end
+        return true
+    end
+
+    calibrationButton.onClick = function()
+        local calibration = S.UIV3 and S.UIV3.BuffHudCalibrationV3 or nil
+        if type(calibration) ~= "table" or type(calibration.Open) ~= "function" then return false, "HUD 校准模块未加载" end
+        local ok, err = calibration:Open({ source = "status_display_page", scope = "player", onExit = function(saved, restored, restoreErr)
+            if saved == true then persistHint:SetText("HUD 校准已保存 · 自己 / 目标配置已写入")
+            else persistHint:SetText("HUD 校准已取消 · 未保存本次修改") end
+            if restored ~= true and restoreErr ~= nil then persistHint:SetText("HUD 校准已退出，但主菜单恢复异常：" .. tostring(restoreErr)) end
+            if type(root.RefreshLayoutControls) == "function" then root:RefreshLayoutControls() end
+        end })
+        if ok ~= true then return false, err or "HUD 校准启动失败" end
+        persistHint:SetText("HUD 校准中 · 保存并退出后写入配置")
         return true
     end
     root:RefreshLayoutControls()
-    layoutTree:SetSelectedKey("buffs")
 
     ------------------------------------------------------------------
     -- Tab 3: Import / Export.
@@ -699,10 +365,6 @@ local function BuildPage(parent, route)
         if transferEdit ~= nil and type(transferEdit.Show) == "function" then transferEdit:Show(value == "transfer") end
         if value == "layout" then
             self:RefreshLayoutControls()
-            if layoutWorkspace ~= nil then
-                layoutWorkspace:RefreshFromSource("tab_open")
-                if layoutWorkspace:GetMode() == "drawer" then layoutWorkspace:SetDrawerOpen(true, true) end
-            end
         elseif value == "transfer" then self:RefreshTransferStatus() end
         return true
     end
@@ -763,19 +425,13 @@ local function BuildPage(parent, route)
     clearTextBtn.onClick = function() WriteNativeText(transferEdit, ""); transferStatus:SetText("文本框已清空。"); return true end
 
     ------------------------------------------------------------------
-    -- Lifecycle.  Re-activation always rebases the isolated editor from the
-    -- durable Store so abandoned page-local edits cannot survive navigation.
+    -- Lifecycle. HUD calibration draft is owned by the standalone overlay, not
+    -- by this page; page navigation therefore never commits or replays geometry.
     ------------------------------------------------------------------
     function root:OnActivated()
         local loaded, loadErr = Feature:EnsureStoreLoaded()
         if loaded ~= true then return false, loadErr or "状态显示配置读取失败" end
-        self.layoutWorking = Copy(Feature.Commands:GetLayoutSettingsSnapshot())
-        if layoutWorkspace ~= nil then
-            local rebased, rebaseErr = layoutWorkspace:RebaseEditSession("page_activated")
-            if rebased ~= true then return false, rebaseErr end
-            layoutWorkspace:RefreshFromSource("page_activated")
-        end
-        persistHint:SetText("配置已读取 · HUD 修改仅在“应用”后保存")
+        persistHint:SetText("配置已读取 · HUD 校准仅在“保存并退出”后写入")
         if S.FeatureRuntime:IsEnabled("combat_buff_display") == true then
             local ok, err = Feature:AcquireConsumer("page:buff_display"); if ok ~= true then return false, err end
             if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" and type(S.Events.SubscribeInternal) == "function" then
@@ -795,14 +451,19 @@ local function BuildPage(parent, route)
     function root:OnDeactivated()
         if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
         Feature:ReleaseConsumer("page:buff_display")
-        -- No persistence action here. Un-applied HUD Working state is page-local
-        -- and will be rebased from the durable Store on the next activation.
+        -- 校准器若仍开启，Shell 已被临时最小化，因此正常页面导航不会走到这里；
+        -- 即使页面被宿主回收，Detached Draft 仍不会越过 Persistence boundary。
         return true
     end
     function root:RefreshData() return self:Refresh() end
     root.route = route
     return root
 end
+
+-- 中文维护注释（页面 Measure 契约）：v1 证明 HUD 布局三卡片把 minHeight 写入组件 spec，
+-- 而不是只写父 slot。Foundation/Acceptance 只读该声明来阻止热重载残留 .205 页面继续运行；
+-- 不创建额外 UI、不改变 Store Authority。
+Feature.HudLayoutPageMeasureContractVersion = 1
 
 local ok, err = PageHost:RegisterFactory(ROUTE, BuildPage)
 if ok ~= true then error(err) end

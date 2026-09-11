@@ -167,10 +167,13 @@ local function CopyComponents(components)
     return out
 end
 
-function F.ProjectPlates(laneData, settings)
+function F.ProjectPlates(laneData, settings, trackedIndex)
     laneData, settings = type(laneData) == "table" and laneData or {}, type(settings) == "table" and settings or {}
     local components = CopyComponents(settings.components)
-    local trackedIndex = BuildTrackedIndex(settings)
+    -- 中文维护注释（高频 HUD 投影）：Feature 已维护 O(1) trackedIndex 时直接复用，
+    -- 避免 50ms HUD 刷新反复复制/遍历最多 2048 个追踪 ID；纯函数调用仍可省略第三参
+    -- 并从 settings.tracked 构建，保持旧 acceptance/调用方兼容。
+    trackedIndex = type(trackedIndex) == "table" and trackedIndex or BuildTrackedIndex(settings)
     local out = { components = components, buffs = {}, debuffs = {} }
     out.buffs = BoundedTracked(laneData.buffRows, settings, "buff", trackedIndex)
     out.debuffs = BoundedTracked(laneData.debuffRows, settings, "debuff", trackedIndex)

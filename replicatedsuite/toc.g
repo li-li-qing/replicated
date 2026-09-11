@@ -184,6 +184,7 @@ presentation/v3/widgets/rs_v3_death_review_widget.lua
 presentation/v3/widgets/rs_v3_dps_widget.lua
 presentation/v3/widgets/rs_v3_buff_display_widget.lua
 presentation/v3/widgets/rs_v3_buff_head_markers.lua
+presentation/v3/widgets/rs_v3_buff_hud_calibration.lua
 presentation/v3/widgets/rs_v3_healer_head_marker.lua
 presentation/v3/widgets/rs_v3_healer_raid_overlay.lua
 presentation/v3/widgets/rs_v3_team_sac_overlay.lua

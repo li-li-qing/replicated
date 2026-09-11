@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Buff Display Acceptance (schema 4)
+-- Replicated Suite V3 - Buff Display Acceptance (schema 5)
 -- Non-destructive contract checks. No feature is enabled by this case.
 --
--- Schema 4 contracts covered here:
---   * store schemaVersion == 4, tracked = { buff = {...}, debuff = {...} }
+-- Schema 5 contracts covered here:
+--   * store schemaVersion == 5, with schema4 single-HUD integrity recovery + 4->5 migration
 --   * shared StatusClassificationV3 service resolves category + detection
 --     source (hidden is a detection source, never a user category)
 --   * Feature commands: SetTrackedId(id, category, enabled) with explicit
@@ -29,20 +29,59 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     end
     if S.FeatureRuntime == nil or S.FeatureRuntime:IsImplemented(F.Id) ~= true then return false, "implementation_missing" end
     local store = S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.buff_display") or nil
-    if store == nil or tostring(store.owner or "") ~= "v3.buff_display" or tonumber(store.schemaVersion) ~= 4 then return false, "store_contract" end
-    -- Shared classification service (schema 4 Authority).
+    if store == nil or tostring(store.owner or "") ~= "v3.buff_display" or tonumber(store.schemaVersion) ~= 5 then return false, "store_contract" end
+    if type(store.rebuildCanonicalForIntegrity) ~= "function" or type(store.recoverKnownLegacyCanonical) ~= "function"
+        or type(store.migrate) ~= "function" then return false, "schema5_migration_hooks_missing" end
+    -- 中文维护注释（非破坏性 schema4→5 验收）：构造一个“不含 targetLayout”的旧单 HUD
+    -- Domain，要求 historical hook 返回仍不含新字段的旧 canonical；随后正式 migrate 必须补出
+    -- targetLayout。这里只验证纯函数边界，不 Apply、不保存、不取得 Consumer。
+    local legacyProbeSettings = type(F.GetDefaultSettingsSnapshot) == "function" and F:GetDefaultSettingsSnapshot() or nil
+    if type(legacyProbeSettings) ~= "table" then return false, "schema5_migration_probe_defaults_missing" end
+    legacyProbeSettings = S.Utils.DeepCopy(legacyProbeSettings)
+    legacyProbeSettings.targetLayout = nil
+    legacyProbeSettings.plate = type(legacyProbeSettings.plate) == "table" and legacyProbeSettings.plate or {}
+    legacyProbeSettings.plate.y = nil -- 旧 schema4 对“plate table 存在但 y 缺失”的 fallback 是 0；用于防止只删 targetLayout 的伪恢复。
+    local legacyProbe = { settings = legacyProbeSettings, widgetVisible = false }
+    local previousHistoricalProbe = store.lastHistoricalRecoveryProbe
+    local historicalProbe, recoveredProbe = store.rebuildCanonicalForIntegrity(legacyProbe, "ACCEPTANCE", nil, {
+        __rsmeta = { store = "v3.buff_display", owner = "v3.buff_display", framework = 3, schema = 4, transportVersion = 1 },
+    })
+    -- 中文维护注释：Acceptance 不得污染实机恢复诊断。hook 为了真实故障会写 runtime-only
+    -- probe，因此合成验收完成后必须原样恢复旧值，保证“恢复探针”只反映真实 LoadStore。
+    store.lastHistoricalRecoveryProbe = previousHistoricalProbe
+    if type(historicalProbe) ~= "table" or type(historicalProbe.settings) ~= "table"
+        or historicalProbe.settings.targetLayout ~= nil or tonumber(historicalProbe.settings.plate and historicalProbe.settings.plate.y) ~= 0
+        or type(recoveredProbe) ~= "table" then return false, "schema4_historical_canonical_rebuild" end
+    local migratedProbe = store.migrate(recoveredProbe, 4, 5)
+    if type(migratedProbe) ~= "table" or type(migratedProbe.settings) ~= "table"
+        or type(migratedProbe.settings.targetLayout) ~= "table"
+        or type(migratedProbe.settings.targetLayout.components) ~= "table" then return false, "schema4_to_5_dual_hud_migration" end
+    -- Shared classification service (schema 4+ Authority; schema5 only adds dual-HUD persistence).
     local classification = S.Services and S.Services.StatusClassificationV3 or nil
     if type(classification) ~= "table" or (tonumber(classification.version) or 0) < 1
         or type(classification.ClassifyEntry) ~= "function" or type(classification.ClassifyId) ~= "function"
         or type(classification.SetOverride) ~= "function" or type(classification.GetOverrides) ~= "function"
         or type(classification.ApplyOverrides) ~= "function" or type(classification.GetRegistrySnapshot) ~= "function"
         or type(classification.GetHealth) ~= "function" then return false, "classification_service_contract" end
+    -- 中文维护注释（.18.208 装分/API 与目标默认模板契约）：
+    -- 问题原因：UnitGearScore 的 comma 参数曾被误作 target 标志，且 target 装分被 kind gate
+    -- 阻断；同时发行模板开始拥有已实机确认的 TARGET|EQUIP 默认值。Acceptance 只验证声明
+    -- 能力与共享 parser，不主动读取目标、不调用 X2Unit、不写 Store。旧模块热重载残留必须
+    -- fail-closed，避免 UI 看似可用却继续吞掉格式化装分或恢复成错误目标默认值。
     if type(F.ProjectStatusMap) ~= "function" or type(F.ProjectPlates) ~= "function"
         or type(F.GetProjection) ~= "function" or type(F.GetSettingsProjection) ~= "function"
         or type(F.RefreshScope) ~= "function" or type(F.Refresh) ~= "function"
         or type(F.AcquireConsumer) ~= "function" or type(F.ReleaseConsumer) ~= "function"
-        or tonumber(F.SchemaVersion) ~= 4 or (tonumber(F.ProjectPlatesContractVersion) or 0) < 4
-        or (tonumber(F.LayoutAuthorityContractVersion) or 0) < 1
+        or tonumber(F.SchemaVersion) ~= 5 or (tonumber(F.ProjectPlatesContractVersion) or 0) < 4
+        or (tonumber(F.LayoutAuthorityContractVersion) or 0) < 3
+        or (tonumber(F.HudCalibrationContractVersion) or 0) < 1
+        or (tonumber(F.Schema5DualHudMigrationContractVersion) or 0) < 1
+        or (tonumber(F.TargetDefaultTemplateContractVersion) or 0) < 1
+        or (tonumber(F.GearScoreApiContractVersion) or 0) < 1
+        or type(S.Utils) ~= "table" or (tonumber(S.Utils.GearScoreParseContractVersion) or 0) < 1
+        or type(S.Utils.ParseGearScore) ~= "function"
+        or type(F.GetHeadPolicyProjection) ~= "function"
+        or type(F.GetScopeSettingsProjection) ~= "function"
         or type(F.GetDefaultSettingsSnapshot) ~= "function"
         or type(F.SyncTrackedProjectionFlags) ~= "function"
         or type(F.Commands) ~= "table" or type(F.Commands.SetSetting) ~= "function"
@@ -53,11 +92,14 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or type(F.Commands.SetComponentField) ~= "function" or type(F.Commands.ImportTrackedIds) ~= "function"
         or type(F.Commands.GetLayoutSettingsSnapshot) ~= "function"
         or type(F.Commands.GetDefaultLayoutSettingsSnapshot) ~= "function"
+        or type(F.Commands.GetHudCalibrationSnapshot) ~= "function"
+        or type(F.Commands.GetDefaultHudCalibrationSnapshot) ~= "function"
+        or type(F.Commands.PersistHudCalibrationSnapshot) ~= "function"
         or type(F.Commands.CanPersistLayoutSettings) ~= "function"
         or type(F.Commands.PersistLayoutSettingsSnapshot) ~= "function"
         or type(F.Commands.ExportAll) ~= "function" or type(F.Commands.SerializeExport) ~= "function"
         or type(F.Commands.ParseImportText) ~= "function" or type(F.Commands.ImportAll) ~= "function"
-        or (tonumber(F.BuffHeadMarkerContractVersion) or 0) < 6 then return false, "feature_contract" end
+        or (tonumber(F.BuffHeadMarkerContractVersion) or 0) < 9 then return false, "feature_contract" end
     -- Head renderer gate contract: tracked-independent start (HasRenderableComponents
     -- gate) + GetDiagnostics triage surface + anchorFailure trail on hidden scopes.
     local headMarkers = S.UIV3 and S.UIV3.BuffHeadMarkersV3 or nil
@@ -65,7 +107,36 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or type(headMarkers.GetDiagnostics) ~= "function"
         or type(headMarkers.metrics) ~= "table" or type(headMarkers.metrics.anchorFailures) ~= "table"
         or type(headMarkers.Start) ~= "function" or type(headMarkers.Stop) ~= "function" or type(headMarkers.Reconcile) ~= "function"
-        or type(headMarkers.VisualTick) ~= "function" then return false, "head_marker_gate_contract" end
+        or type(headMarkers.VisualTick) ~= "function" or (tonumber(headMarkers.CastYOffsetContractVersion) or 0) < 1
+        or (tonumber(headMarkers.BuffIconFontSizeContractVersion) or 0) < 1
+        or (tonumber(headMarkers.LiveHudSuppressionContractVersion) or 0) < 1
+        or (tonumber(headMarkers.EquipmentIndependentOffsetContractVersion) or 0) < 1
+        or type(headMarkers.SetCalibrationSuppressed) ~= "function" then return false, "head_marker_gate_contract" end
+    -- 中文维护注释（HUD 校准交互契约 v3）：.18.206 在方向适配/面板拖动基础上增加全局位置预览，
+    -- 并要求正式 Renderer 支持仅 Presentation 层的校准隐藏。Acceptance 只检查声明能力，不创建
+    -- Native Widget、不写 Draft/Store、不取得或释放 Consumer。兼容边界：schema5 不变；旧校准器、
+    -- 旧 Renderer 或旧 HUD 布局页若热重载残留必须 fail-closed，避免校准画面同时出现正式 HUD。
+    -- .18.207 继续要求 equipment local-offset 与 HUD_TEMPLATE_V1 Draft snapshot 两个能力；前者防止
+    -- 主手/副手/远程位置串联，后者只读校准 Draft 并分行输出，不取得新的 Consumer、不写 Store。
+    local calibration = S.UIV3 and S.UIV3.BuffHudCalibrationV3 or nil
+    if type(calibration) ~= "table" or (tonumber(calibration.version) or 0) < 3
+        or (tonumber(F.HudCalibrationPresentationContractVersion) or 0) < 5
+        or (tonumber(calibration.DiagnosticsContractVersion) or 0) < 4
+        or (tonumber(calibration.ScreenCoordinateAdapterContractVersion) or 0) < 1
+        or (tonumber(calibration.PanelDragContractVersion) or 0) < 1
+        or (tonumber(calibration.ContextualControlsContractVersion) or 0) < 1
+        or (tonumber(calibration.GlobalPreviewContractVersion) or 0) < 1
+        or (tonumber(calibration.LiveHudSuppressionContractVersion) or 0) < 1
+        or (tonumber(calibration.TemplateSnapshotContractVersion) or 0) < 1
+        or type(calibration.BuildTemplateSnapshotLines) ~= "function" or type(calibration.OutputTemplateSnapshot) ~= "function"
+        or type(calibration.ToggleGlobalPreview) ~= "function"
+        or type(calibration.Open) ~= "function" or type(calibration.Exit) ~= "function"
+        or type(calibration.SetScope) ~= "function" or type(calibration.SetComponent) ~= "function"
+        or type(calibration.SyncPlayerToTarget) ~= "function" or type(calibration.GetDraftSnapshot) ~= "function"
+        or type(calibration.GetDiagnostics) ~= "function"
+        or (tonumber(F.HudLayoutPageMeasureContractVersion) or 0) < 1 then
+        return false, "hud_calibration_presentation_contract"
+    end
     local aura = S.Services and S.Services.AuraObservationV3 or nil
     if type(aura) ~= "table" or (tonumber(aura.version) or 0) < 2 or type(aura.GetSnapshot) ~= "function"
         or type(aura.GetStatusMap) ~= "function" or type(aura.AcquireConsumer) ~= "function" then return false, "aura_contract" end
@@ -104,6 +175,30 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     if layoutSnapshot.tracked ~= nil or layoutSnapshot.classification ~= nil then
         return false, "layout_snapshot_leaks_tracking_authority"
     end
+    if type(layoutSnapshot.targetLayout) ~= "table" or type(layoutSnapshot.targetLayout.components) ~= "table" then
+        return false, "dual_hud_layout_snapshot_missing"
+    end
+    local hudSnapshot = F.Commands:GetHudCalibrationSnapshot()
+    local defaultHudSnapshot = F.Commands:GetDefaultHudCalibrationSnapshot()
+    if type(hudSnapshot) ~= "table" or type(hudSnapshot.player) ~= "table" or type(hudSnapshot.target) ~= "table"
+        or type(hudSnapshot.player.components) ~= "table" or type(hudSnapshot.target.components) ~= "table"
+        or type(defaultHudSnapshot) ~= "table" or type(defaultHudSnapshot.player) ~= "table" or type(defaultHudSnapshot.target) ~= "table" then
+        return false, "dual_hud_calibration_snapshot_missing"
+    end
+    -- Detached-snapshot contract: calibration draft edits must never mutate Store before Save & Exit.
+    local freshBefore = F.Commands:GetHudCalibrationSnapshot()
+    local oldTargetX = tonumber(freshBefore.target.plate and freshBefore.target.plate.x) or 0
+    hudSnapshot.target.plate.x = oldTargetX + 17
+    local freshAfter = F.Commands:GetHudCalibrationSnapshot()
+    if (tonumber(freshAfter.target.plate and freshAfter.target.plate.x) or 0) ~= oldTargetX then
+        return false, "hud_calibration_snapshot_aliases_store"
+    end
+    local playerProjection = F:GetScopeSettingsProjection("player")
+    local targetProjection = F:GetScopeSettingsProjection("target")
+    if type(playerProjection) ~= "table" or type(playerProjection.components) ~= "table"
+        or type(targetProjection) ~= "table" or type(targetProjection.components) ~= "table" then
+        return false, "scope_settings_projection_missing"
+    end
 
     local settingsProjection = type(F.GetSettingsProjection) == "function" and F:GetSettingsProjection() or {}
     local components = type(settingsProjection.components) == "table" and settingsProjection.components or {}
@@ -112,7 +207,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     local missingComponents = 0
     for _, key in ipairs(componentKeys) do if type(components[key]) ~= "table" then missingComponents = missingComponents + 1 end end
     if missingComponents ~= 0 or type(tracked.buff) ~= "table" or type(tracked.debuff) ~= "table"
-        or settingsProjection.freezeEnabled ~= false or settingsProjection.showHidden ~= false then return false, "schema4_settings_projection" end
+        or settingsProjection.freezeEnabled ~= false or settingsProjection.showHidden ~= false then return false, "schema5_settings_projection" end
     -- Head plates projection: bounded tracked rows + enabled component data.
     local plates = F.ProjectPlates({
         buffRows = { { id = 101, name = "A" } }, distance = 1234.5, class = "法师", gearScore = 12345,
@@ -131,15 +226,25 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     local parsed40 = F:ParseImportText("BUFF=" .. table.concat(ids, ","))
     if type(parsed40) ~= "table" or type(parsed40.data) ~= "table"
         or #(parsed40.data.tracked.buff or {}) ~= 40 then return false, "import_tracking_cap_regression" end
-    local serialized = F:SerializeExport({ schemaVersion = 4, tracked = { buff = {}, debuff = {} }, classification = {},
+    local serialized = F:SerializeExport({ schemaVersion = 5, tracked = { buff = {}, debuff = {} }, classification = {},
         components = { buffs = { enabled = true, x = 0, y = 0, size = 29, fontSize = 11, alpha = 1, spacing = 5, maxPerRow = 11, maxRows = 3 },
-            castBar = { enabled = true, x = 0, y = 0, size = 7, fontSize = 12, alpha = 1, width = 177, showText = false } }, settings = {} })
+            castBar = { enabled = true, x = 0, y = 0, size = 7, fontSize = 12, alpha = 1, width = 177, showText = false } },
+        hud = { player = { plateScale = 1.1, plate = { x = 7, y = 22 }, info = { x = 3, y = -4 } },
+            target = { plateScale = 0.9, plate = { x = -15, y = 31, width = 166, height = 19 }, info = { x = 8, y = -9, fontSize = 13 },
+                components = { buffs = { enabled = true, x = 5, y = -2, size = 31, fontSize = 12, alpha = 1, spacing = 4, maxPerRow = 9, maxRows = 3 } } } },
+        settings = {} })
     local roundTrip = F:ParseImportText(serialized)
     local rtComponents = roundTrip and roundTrip.data and roundTrip.data.components or {}
     if type(rtComponents.buffs) ~= "table" or rtComponents.buffs.spacing ~= 5
         or rtComponents.buffs.maxPerRow ~= 11 or rtComponents.buffs.maxRows ~= 3
         or type(rtComponents.castBar) ~= "table" or rtComponents.castBar.width ~= 177
         or rtComponents.castBar.showText ~= false then return false, "component_export_roundtrip_regression" end
+    local rtHud = roundTrip and roundTrip.data and roundTrip.data.hud or {}
+    if type(rtHud.player) ~= "table" or tonumber(rtHud.player.plateScale) ~= 1.1
+        or type(rtHud.target) ~= "table" or tonumber(rtHud.target.plateScale) ~= 0.9
+        or type(rtHud.target.plate) ~= "table" or tonumber(rtHud.target.plate.x) ~= -15
+        or type(rtHud.target.components) ~= "table" or type(rtHud.target.components.buffs) ~= "table"
+        or tonumber(rtHud.target.components.buffs.maxPerRow) ~= 9 then return false, "dual_hud_export_roundtrip_regression" end
     return true
 end)
 

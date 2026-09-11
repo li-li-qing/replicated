@@ -1,10 +1,16 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Buff Display Settings Store (schema 4)
+-- Replicated Suite V3 - Buff Display Settings Store (schema 5)
 --
 -- Permanent display policy only. Aura facts stay session data owned by
 -- AuraObservationV3; FeatureRuntime owns enabled/disabled state.
 --
--- Schema 4 highlights (vs schema 3):
+-- Schema 5 highlights (vs schema 4):
+--   * player HUD remains on the historical flat layout fields for upgrade compatibility
+--   * targetLayout is a second, independently persisted visual HUD profile
+--   * schema-4 single-HUD saves are integrity-rebuilt with the exact old canonicalizer,
+--     then migrated to schema 5 and immediately restamped; no user layout is discarded
+--
+-- Schema 4 compatibility carried forward:
 --   * tracked ids are category-keyed: tracked = { buff = {...}, debuff = {...} }
 --   * hidden is a detection source, not a user category; user overrides live
 --     in classification = { [id] = "buff"|"debuff" }
@@ -25,9 +31,10 @@ S.Features.BuffDisplay = S.Features.BuffDisplay or {}
 local F = S.Features.BuffDisplay
 local U = S.Utils
 local STORE_ID = "v3.buff_display"
-local SCHEMA = 4
--- Layout preset version. Schema 4 (tracked buckets / classification) is
--- unchanged; layout geometry evolves through this preset counter, NOT schema.
+local SCHEMA = 5
+-- Layout preset version. Schema 4 introduced tracked buckets/classification; schema 5 only
+-- adds the second persisted HUD profile. Geometry presets still evolve through this counter,
+-- while persistent STRUCTURE changes must increment SCHEMA.
 --   v1 -> v2 : compact one-row equipment preset (M1.16.0.18.50)
 --   v2 -> v3 : health-bar anchor layout (this round). Absolute component y
 --              values are no longer screen offsets — they become local
@@ -78,6 +85,23 @@ local COMPONENT_DEFAULTS = {
     ranged    = { enabled = false, x = 0, y = 0, size = 26, fontSize = 0,  alpha = 1.0 },
     wings     = { enabled = true,  x = 0, y = 0, size = 26, fontSize = 0,  alpha = 1.0 },
     castBar   = { enabled = true,  x = 0, y = 0, size = 7,  fontSize = 12, alpha = 1.0 },
+}
+
+-- 中文维护注释（发行版目标 HUD 装备模板，2026-09-11）：
+-- 问题背景：维护者通过 HUD_TEMPLATE_V1 在实机完成目标装备区域校准，需要把这组结果
+-- 固化为“新用户/恢复默认”的 target 默认模板，而不是覆盖已有用户保存的 targetLayout。
+-- Authority/数据流：这些值只参与 fresh NormalizeSettings(nil) 与 ResetLayoutSettings 的默认
+-- profile 构建；已有 schema5 targetLayout 仍是用户 Store Authority，schema4/缺 targetLayout 的
+-- 老用户仍按兼容规则复制现有 player profile，绝不因为版本更新被强制换成发行模板。
+-- 兼容边界：本次用户只提供 TARGET|EQUIP，因此只固化主手/副手/远程/背部；Buff、信息、
+-- 施法条等目标默认继续继承 player defaults，禁止猜测未提供的模板行。
+-- 实现理由：单独维护目标 equipment overlay，避免复制整套 COMPONENT_DEFAULTS 后未来字段漂移。
+-- 后续维护：收到其余 HUD_TEMPLATE_V1 行时按同样的“只覆盖已确认字段”方式扩展模板。
+local TARGET_EQUIPMENT_TEMPLATE = {
+    mainHand = { enabled = true, x = -32, y = 0, size = 22, alpha = 1.0 },
+    offHand  = { enabled = true, x = -33, y = 0, size = 22, alpha = 1.0 },
+    ranged   = { enabled = true, x = 39,  y = 0, size = 22, alpha = 1.0 },
+    wings    = { enabled = true, x = 0,   y = 0, size = 22, alpha = 1.0 },
 }
 
 local function NormalizeTrackedIds(value)
@@ -144,6 +168,91 @@ local function NormalizeComponents(value)
     return out
 end
 
+-- 中文维护注释（HUD 双配置 Authority，2026-09-11）：
+-- 问题原因：旧版只有 settings.plate/info/components/plateScale 一套几何 Authority，
+-- 自身与目标 HUD 被迫共享布局；校准目标时会同时改动自身，无法满足 PVP 双 HUD。
+-- Authority/数据流：Store 继续以旧字段作为 player Authority，新增 targetLayout 只负责 target
+-- 的视觉几何；Feature/Presentation 只能通过 GetScopeLayoutSettings/GetHudCalibrationSnapshot
+-- 读取 detached snapshot，禁止直接持有或修改 F.State。
+-- 兼容边界：当前持久化结构为 schema5。旧 schema4 存档不存在 targetLayout 时，完整性
+-- 证明通过后由迁移路径复制当前 player 布局作为初始 target；一旦保存 targetLayout 就完全独立。
+-- 这样升级不丢原 HUD，也不会让
+-- 新字段反向污染追踪列表/分类/Feature 生命周期。
+-- 实现理由：不把 player 旧字段整体搬迁到新结构，避免对现有导入导出、Binding 和旧版
+-- schema4 存档做破坏性迁移。潜在风险：未来若新增视觉字段，必须同时进入 profile normalize。
+local function NormalizeHudProfile(value, fallback)
+    fallback = type(fallback) == "table" and fallback or {}
+    if type(value) ~= "table" then return Copy(fallback) end
+    local plateFallback = type(fallback.plate) == "table" and fallback.plate or {}
+    local infoFallback = type(fallback.info) == "table" and fallback.info or {}
+    local componentsFallback = type(fallback.components) == "table" and fallback.components or {}
+
+    -- 中文维护注释（profile 字段级继承）：targetLayout 在旧存档升级、导入或未来字段
+    -- 扩展时可能只有“部分 component”。若直接用整张 component 表覆盖 fallback，未出现的
+    -- fontSize/spacing/maxRows 等字段会错误回落到全局默认，而不是用户已经调好的 player
+    -- profile。这里先做字段级 overlay，再交给统一 Normalize* 限幅，保证 Authority 只有一套。
+    local plate = Copy(plateFallback)
+    for key, item in pairs(type(value.plate) == "table" and value.plate or {}) do plate[key] = Copy(item) end
+    local info = Copy(infoFallback)
+    for key, item in pairs(type(value.info) == "table" and value.info or {}) do info[key] = Copy(item) end
+    local rawComponents = Copy(componentsFallback)
+    for key, component in pairs(type(value.components) == "table" and value.components or {}) do
+        local merged = Copy(type(rawComponents[key]) == "table" and rawComponents[key] or {})
+        for field, item in pairs(type(component) == "table" and component or {}) do merged[field] = Copy(item) end
+        rawComponents[key] = merged
+    end
+    local function BoolOrFallback(raw, fallbackValue, defaultValue)
+        if raw ~= nil then return raw == true end
+        if fallbackValue ~= nil then return fallbackValue == true end
+        return defaultValue == true
+    end
+    return {
+        plateScale = ClampFloat(value.plateScale, 0.5, 2.0, fallback.plateScale or 1.0),
+        plate = {
+            enabled = BoolOrFallback(plate.enabled, plateFallback.enabled, true),
+            width = ClampInt(plate.width, 80, 320, plateFallback.width or 150),
+            height = ClampInt(plate.height, 8, 40, plateFallback.height or 20),
+            x = ClampInt(plate.x, -400, 400, plateFallback.x or 0),
+            y = ClampInt(plate.y, -500, 500, plateFallback.y or 22),
+            opacity = ClampFloat(plate.opacity, 0.2, 1.0, plateFallback.opacity or 0.85),
+            showName = BoolOrFallback(plate.showName, plateFallback.showName, true),
+        },
+        info = {
+            enabled = BoolOrFallback(info.enabled, infoFallback.enabled, true),
+            x = ClampInt(info.x, -400, 400, infoFallback.x or 0),
+            y = ClampInt(info.y, -120, 120, infoFallback.y or 0),
+            fontSize = ClampInt(info.fontSize, 8, 24, infoFallback.fontSize or 12),
+            showClass = BoolOrFallback(info.showClass, infoFallback.showClass, true),
+            showGear = BoolOrFallback(info.showGear, infoFallback.showGear, true),
+            showDistance = BoolOrFallback(info.showDistance, infoFallback.showDistance, true),
+        },
+        components = NormalizeComponents(rawComponents),
+    }
+end
+
+local function BuildDefaultTargetHudProfile(playerProfile)
+    local target = NormalizeHudProfile(nil, playerProfile)
+    target.components = type(target.components) == "table" and target.components or {}
+    for key, overlay in pairs(TARGET_EQUIPMENT_TEMPLATE) do
+        local merged = Copy(type(target.components[key]) == "table" and target.components[key] or {})
+        for field, item in pairs(overlay) do merged[field] = Copy(item) end
+        target.components[key] = NormalizeComponent(merged, COMPONENT_DEFAULTS[key])
+    end
+    return target
+end
+
+local function HudProfileFromSettings(settings)
+    settings = type(settings) == "table" and settings or {}
+    return NormalizeHudProfile({
+        plateScale = settings.plateScale, plate = settings.plate, info = settings.info, components = settings.components,
+    }, {
+        plateScale = 1.0,
+        plate = { enabled=true, width=150, height=20, x=0, y=22, opacity=0.85, showName=true },
+        info = { enabled=true, x=0, y=0, fontSize=12, showClass=true, showGear=true, showDistance=true },
+        components = COMPONENT_DEFAULTS,
+    })
+end
+
 local function NormalizeClassification(value)
     local out = {}
     if type(value) == "table" then
@@ -156,6 +265,11 @@ local function NormalizeClassification(value)
 end
 
 local function NormalizeSettings(value)
+    -- Keep the distinction between a truly fresh default request (nil) and an
+    -- existing/legacy settings table without targetLayout. The latter must keep
+    -- the schema5 upgrade rule “target starts as current player”; only fresh
+    -- installs / explicit Reset defaults receive the release target template.
+    local isFreshDefault = type(value) ~= "table"
     value = type(value) == "table" and value or {}
     local tracked = type(value.tracked) == "table" and value.tracked or {}
     -- NativeBarProxy: the RU API exposes no native unit-frame rectangle, so the
@@ -191,6 +305,25 @@ local function NormalizeSettings(value)
     if plate.y == nil and value.plate == nil then
         plate.y = 22
     end
+    local normalizedPlayerProfile = NormalizeHudProfile({
+        plateScale = value.plateScale, plate = plate, info = info, components = rawComponents,
+    }, {
+        plateScale = 1.0,
+        plate = { enabled=true, width=150, height=20, x=0, y=22, opacity=0.85, showName=true },
+        info = { enabled=true, x=0, y=0, fontSize=12, showClass=true, showGear=true, showDistance=true },
+        components = COMPONENT_DEFAULTS,
+    })
+    local normalizedTargetProfile
+    if type(value.targetLayout) == "table" then
+        normalizedTargetProfile = NormalizeHudProfile(value.targetLayout, normalizedPlayerProfile)
+    elseif isFreshDefault == true then
+        normalizedTargetProfile = BuildDefaultTargetHudProfile(normalizedPlayerProfile)
+    else
+        -- Compatibility Authority: an old persisted single-HUD state must not
+        -- suddenly receive the distributor template; initialize target from the
+        -- user's current player layout exactly once, as schema5 originally did.
+        normalizedTargetProfile = Copy(normalizedPlayerProfile)
+    end
     return {
         showBuffs = value.showBuffs ~= false,
         showDebuffs = value.showDebuffs ~= false,
@@ -209,7 +342,8 @@ local function NormalizeSettings(value)
         -- existing saves). User-tuned values (anything else) are preserved.
         refreshMs = (tonumber(value.refreshMs) == 400) and 120
             or ClampInt(value.refreshMs, 1, 2000, 120),
-        components = NormalizeComponents(rawComponents),
+        components = Copy(normalizedPlayerProfile.components),
+        targetLayout = Copy(normalizedTargetProfile),
         layoutPresetVersion = LAYOUT_PRESET_VERSION,
         tracked = {
             buff = NormalizeTrackedIds(tracked.buff),
@@ -225,29 +359,13 @@ local function NormalizeSettings(value)
         headShowStacks = value.headShowStacks ~= false,
         headShowTime = value.headShowTime ~= false,
         -- Global plate scale multiplies every region (health bar, icons, text).
-        plateScale = ClampFloat(value.plateScale, 0.5, 2.0, 1.0),
+        plateScale = normalizedPlayerProfile.plateScale,
         -- NativeBarProxy anchor rect: aligned by the player onto the native bar
         -- via x/y/width/height. Not drawn; used only for layout. enabled/
         -- opacity/showName kept for backward compatibility, ignored by renderer.
-        plate = {
-            enabled = plate.enabled ~= false,
-            width = ClampInt(plate.width, 80, 320, 150),
-            height = ClampInt(plate.height, 8, 40, 20),
-            x = ClampInt(plate.x, -400, 400, 0),
-            y = ClampInt(plate.y, -500, 500, 0),
-            opacity = ClampFloat(plate.opacity, 0.2, 1.0, 0.85),
-            showName = plate.showName ~= false,
-        },
+        plate = Copy(normalizedPlayerProfile.plate),
         -- Info row above buffs: class · gear score · distance (each toggleable).
-        info = {
-            enabled = info.enabled ~= false,
-            x = ClampInt(info.x, -400, 400, 0),
-            y = ClampInt(info.y, -120, 120, 0),
-            fontSize = ClampInt(info.fontSize, 8, 24, 12),
-            showClass = info.showClass ~= false,
-            showGear = info.showGear ~= false,
-            showDistance = info.showDistance ~= false,
-        },
+        info = Copy(normalizedPlayerProfile.info),
     }
 end
 
@@ -260,7 +378,172 @@ local function NormalizeState(value)
     }
 end
 
--- Lossless schema < 4 -> 4 migration. Persistence calls migrate(raw, from, to)
+-- 中文维护注释（schema4 单 HUD 历史 canonical，2026-09-11）：
+-- 问题原因：.18.202 把 targetLayout 加进 schema4 的 NormalizeSettings，却没有升级
+-- schema。旧 schema4 SaveData 的已盖章 canonical 因而从 515E1BF3 变成了
+-- 3B898E2F，Persistence 正确地把它视为同代数据被静默改写并 Fence。
+-- Authority/数据流：此函数只复刻 .18.202 之前 schema4 的 Store canonical；它不是
+-- 新业务 Authority，也不会 Apply/写盘。Persistence Core 仍负责 envelope 校验、预算、旧
+-- fingerprint exact-match、4->5 migrate、Apply 与当前 schema5 的重新盖章。
+-- 兼容边界：只用于 __rsmeta.schema==4 的历史档；当前/future schema 永远不得调用。
+-- 为什么不用“删掉 targetLayout 再 Hash”：.18.202 同时把 player profile 收敛到
+-- NormalizeHudProfile；其中缺省 plate.y 的 fallback 与旧 schema4 有细微差异。逐行保留旧
+-- normalizer 才能证明旧盖章，而不是猜测某个字段导致 Hash 变化。
+-- 后续维护：任何新的持久化字段都必须升级 Schema；禁止再次在同一 schema 下改变 canonical。
+local function NormalizeHistoricalSchema4SingleHudSettings(value)
+    value = type(value) == "table" and value or {}
+    local tracked = type(value.tracked) == "table" and value.tracked or {}
+    local plate = type(value.plate) == "table" and value.plate or {}
+    local info = type(value.info) == "table" and value.info or {}
+    local rawComponents = Copy(type(value.components) == "table" and value.components or {})
+    local legacyIconSize = tonumber(value.headIconSize)
+    local legacyMaxIcons = tonumber(value.headMaxIcons)
+    if legacyIconSize ~= nil then
+        rawComponents.buffs = type(rawComponents.buffs) == "table" and rawComponents.buffs or {}
+        rawComponents.debuffs = type(rawComponents.debuffs) == "table" and rawComponents.debuffs or {}
+        if rawComponents.buffs.size == nil then rawComponents.buffs.size = legacyIconSize end
+        if rawComponents.debuffs.size == nil then rawComponents.debuffs.size = legacyIconSize end
+    end
+    if legacyMaxIcons ~= nil then
+        rawComponents.buffs = type(rawComponents.buffs) == "table" and rawComponents.buffs or {}
+        rawComponents.debuffs = type(rawComponents.debuffs) == "table" and rawComponents.debuffs or {}
+        if rawComponents.buffs.maxPerRow == nil then rawComponents.buffs.maxPerRow = legacyMaxIcons end
+        if rawComponents.debuffs.maxPerRow == nil then rawComponents.debuffs.maxPerRow = legacyMaxIcons end
+    end
+    if plate.y == nil and value.plate == nil then plate.y = 22 end
+    return {
+        showBuffs = value.showBuffs ~= false,
+        showDebuffs = value.showDebuffs ~= false,
+        showHidden = value.showHidden == true,
+        freezeEnabled = value.freezeEnabled == true,
+        playerRows = ClampInt(value.playerRows, 1, 64, 24),
+        targetRows = ClampInt(value.targetRows, 1, 64, 24),
+        refreshMs = (tonumber(value.refreshMs) == 400) and 120 or ClampInt(value.refreshMs, 1, 2000, 120),
+        components = NormalizeComponents(rawComponents),
+        layoutPresetVersion = LAYOUT_PRESET_VERSION,
+        tracked = { buff = NormalizeTrackedIds(tracked.buff), debuff = NormalizeTrackedIds(tracked.debuff) },
+        classification = NormalizeClassification(value.classification),
+        headEnabled = value.headEnabled ~= false,
+        headShowAll = value.headShowAll == true,
+        headPlayer = value.headPlayer ~= false,
+        headTarget = value.headTarget ~= false,
+        headRefreshMs = (tonumber(value.headRefreshMs) == 100) and 50 or ClampInt(value.headRefreshMs, 1, 2000, 50),
+        headShowStacks = value.headShowStacks ~= false,
+        headShowTime = value.headShowTime ~= false,
+        plateScale = ClampFloat(value.plateScale, 0.5, 2.0, 1.0),
+        plate = {
+            enabled = plate.enabled ~= false,
+            width = ClampInt(plate.width, 80, 320, 150),
+            height = ClampInt(plate.height, 8, 40, 20),
+            x = ClampInt(plate.x, -400, 400, 0),
+            y = ClampInt(plate.y, -500, 500, 0),
+            opacity = ClampFloat(plate.opacity, 0.2, 1.0, 0.85),
+            showName = plate.showName ~= false,
+        },
+        info = {
+            enabled = info.enabled ~= false,
+            x = ClampInt(info.x, -400, 400, 0),
+            y = ClampInt(info.y, -120, 120, 0),
+            fontSize = ClampInt(info.fontSize, 8, 24, 12),
+            showClass = info.showClass ~= false,
+            showGear = info.showGear ~= false,
+            showDistance = info.showDistance ~= false,
+        },
+    }
+end
+
+local function NormalizeHistoricalSchema4SingleHudState(value)
+    value = type(value) == "table" and value or {}
+    return {
+        settings = NormalizeHistoricalSchema4SingleHudSettings(value.settings),
+        widgetWindow = NormalizeWindow(value.widgetWindow),
+        widgetVisible = value.widgetVisible == true,
+    }
+end
+
+local function BuffDisplayStoreProbe(text)
+    local store = type(P.GetStore) == "function" and P:GetStore(STORE_ID) or nil
+    if type(store) == "table" then store.lastHistoricalRecoveryProbe = tostring(text or "") end
+end
+
+local function IsHistoricalSingleHudMeta(raw)
+    local meta = type(raw) == "table" and raw.__rsmeta or nil
+    if type(meta) ~= "table" then return false, nil, "meta_missing" end
+    if tostring(meta.store or "") ~= STORE_ID or tostring(meta.owner or "") ~= "v3.buff_display" then
+        return false, meta, "identity"
+    end
+    if tonumber(meta.framework) ~= 3 or tonumber(meta.schema) ~= 4 then
+        return false, meta, "generation"
+    end
+    return true, meta, nil
+end
+
+local function RebuildHistoricalSingleHudCanonical(decoded, stampedFingerprint, _currentCanonical, raw)
+    local eligible, meta, reason = IsHistoricalSingleHudMeta(raw)
+    if eligible ~= true then
+        BuffDisplayStoreProbe("schema4SingleHud=skip:" .. tostring(reason) .. "/fw=" .. tostring(meta and meta.framework)
+            .. "/s=" .. tostring(meta and meta.schema) .. "/tv=" .. tostring(meta and meta.transportVersion))
+        return nil
+    end
+    local settings = type(decoded) == "table" and decoded.settings or nil
+    if type(settings) ~= "table" or settings.targetLayout ~= nil then
+        BuffDisplayStoreProbe("schema4SingleHud=reject:shape/targetLayout=" .. tostring(type(settings) == "table" and settings.targetLayout ~= nil))
+        return nil
+    end
+    local historical = NormalizeHistoricalSchema4SingleHudState(decoded)
+    local store = type(P.GetStore) == "function" and P:GetStore(STORE_ID) or nil
+    local fp = type(P.FingerprintCanonicalValue) == "function" and type(store) == "table"
+        and P:FingerprintCanonicalValue(store, historical) or nil
+    BuffDisplayStoreProbe("schema4SingleHud=cand/hfp=" .. tostring(fp or "nil") .. "/old=" .. tostring(stampedFingerprint)
+        .. "/tv=" .. tostring(meta.transportVersion))
+    -- recovered Domain 故意返回“原 decoded 单 HUD”，而不是提前塞 targetLayout。这样 Core
+    -- 在 exact old-hash 证明成功后仍会走正式 4->5 migrate；Schema 迁移保持唯一 Authority。
+    return historical, Copy(decoded)
+end
+
+local KNOWN_SCHEMA4_SINGLE_HUD = { ["515E1BF3"] = "3B898E2F" }
+
+local function ValidateHistoricalSchema4SingleHudShape(decoded)
+    if type(decoded) ~= "table" or type(decoded.settings) ~= "table" then return false, "root" end
+    local settings = decoded.settings
+    if settings.targetLayout ~= nil then return false, "target_layout_present" end
+    if type(settings.tracked) ~= "table" or type(settings.tracked.buff) ~= "table" or type(settings.tracked.debuff) ~= "table" then
+        return false, "tracked"
+    end
+    if type(settings.components) ~= "table" or type(settings.plate) ~= "table" or type(settings.info) ~= "table" then
+        return false, "layout"
+    end
+    return true, nil
+end
+
+local function RecoverKnownSchema4SingleHud(decoded, stampedFingerprint, currentCanonical, raw)
+    local expectedCurrent = KNOWN_SCHEMA4_SINGLE_HUD[tostring(stampedFingerprint or "")]
+    if expectedCurrent == nil then return nil end
+    local eligible, meta, reason = IsHistoricalSingleHudMeta(raw)
+    if eligible ~= true or tonumber(meta and meta.transportVersion) ~= 1 then
+        BuffDisplayStoreProbe("knownSchema4=" .. tostring(stampedFingerprint) .. "/generation=reject:" .. tostring(reason)
+            .. "/fw=" .. tostring(meta and meta.framework) .. "/s=" .. tostring(meta and meta.schema)
+            .. "/tv=" .. tostring(meta and meta.transportVersion))
+        return nil
+    end
+    local valid, shapeReason = ValidateHistoricalSchema4SingleHudShape(decoded)
+    if valid ~= true then
+        BuffDisplayStoreProbe("knownSchema4=" .. tostring(stampedFingerprint) .. "/shape=reject:" .. tostring(shapeReason))
+        return nil
+    end
+    local store = type(P.GetStore) == "function" and P:GetStore(STORE_ID) or nil
+    local currentFingerprint = type(P.FingerprintCanonicalValue) == "function" and type(store) == "table"
+        and P:FingerprintCanonicalValue(store, currentCanonical) or nil
+    if tostring(currentFingerprint or "") ~= tostring(expectedCurrent) then
+        BuffDisplayStoreProbe("knownSchema4=" .. tostring(stampedFingerprint) .. "/shape=ok/current=reject:"
+            .. tostring(currentFingerprint) .. "!=" .. tostring(expectedCurrent))
+        return nil
+    end
+    BuffDisplayStoreProbe("knownSchema4=" .. tostring(stampedFingerprint) .. "/shape=ok/current=" .. tostring(currentFingerprint))
+    return Copy(decoded), "schema4_single_hud_known_pair"
+end
+
+-- Lossless schema < 5 -> 5 migration. Persistence calls migrate(raw, from, to)
 -- and write-fences on failure, so a failed migration never loses the raw data.
 local function MigrateState(value, fromSchema)
     value = type(value) == "table" and value or {}
@@ -303,8 +586,11 @@ local function MigrateState(value, fromSchema)
 end
 
 F.StoreId, F.SchemaVersion = STORE_ID, SCHEMA
-F.LayoutAuthorityContractVersion = 2
+F.LayoutAuthorityContractVersion = 3
+F.HudCalibrationContractVersion = 1
+F.Schema5DualHudMigrationContractVersion = 1
 F.LayoutPersistenceBoundaryContractVersion = 1
+F.TargetDefaultTemplateContractVersion = 1 -- verified TARGET|EQUIP release preset from HUD_TEMPLATE_V1
 F.State = NormalizeState(F.State)
 F.StoreLoaded = F.StoreLoaded == true
 
@@ -326,6 +612,12 @@ if P:GetStore(STORE_ID) == nil then
         get = function() return NormalizeState(F.State) end,
         apply = ApplyState,
         migrate = function(value, fromSchema) return MigrateState(value, fromSchema) end,
+        -- 中文维护注释（schema4→5 完整性迁移）：旧单 HUD 存档必须先由旧 normalizer
+        -- 逐字重建 canonical 并命中原 fingerprint，之后才允许 4→5 migrate。known-pair 只作为
+        -- 已实机证明的 515E1BF3→3B898E2F 最终桥；未知 Hash 继续 fail-closed。
+        rebuildCanonicalForIntegrity = RebuildHistoricalSingleHudCanonical,
+        recoverKnownLegacyCanonical = RecoverKnownSchema4SingleHud,
+        allowIntegrityUpgrade = true,
     })
     if store == nil and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Error) == "function" then
         S.DiagnosticsManager:Error("buff_display_v3", "BUFF_DISPLAY_STORE_REGISTER_FAILED", "状态显示设置存档注册失败", { error = tostring(err) })
@@ -384,6 +676,7 @@ local function NormalizeLayoutSnapshot(value)
             showDistance = info.showDistance ~= false,
         },
         components = NormalizeComponents(value.components),
+        targetLayout = NormalizeHudProfile(value.targetLayout, HudProfileFromSettings(value)),
     }
 end
 
@@ -397,6 +690,7 @@ local function ApplyLayoutSnapshotToSettings(settings, snapshot)
     settings.plate = Copy(normalized.plate)
     settings.info = Copy(normalized.info)
     settings.components = Copy(normalized.components)
+    settings.targetLayout = Copy(normalized.targetLayout)
     return normalized
 end
 
@@ -406,6 +700,70 @@ end
 
 function F:GetDefaultLayoutSettingsSnapshot()
     return LayoutSnapshotFromSettings(NormalizeSettings(nil))
+end
+
+-- 中文维护注释（HUD 校准事务边界，2026-09-11）：
+-- CalibrationDraft 由 Presentation 临时持有，箭头/拖动/输入都只改 Draft。只有
+-- PersistHudCalibrationSnapshot 才进入 Store MutateStore durable transaction；取消编辑不会
+-- 触碰 F.State。player 使用旧字段 Authority，target 使用 targetLayout Authority。
+-- 兼容边界：此接口只负责视觉 profile，不复制 headShowAll/追踪 ID/敌我过滤等业务规则。
+function F:GetScopeLayoutSettings(scope)
+    local settings = self.State.settings
+    local player = HudProfileFromSettings(settings)
+    if tostring(scope or "player") == "target" then
+        return NormalizeHudProfile(settings.targetLayout, player)
+    end
+    return player
+end
+
+function F:GetHudCalibrationSnapshot()
+    local player = self:GetScopeLayoutSettings("player")
+    local target = self:GetScopeLayoutSettings("target")
+    return { player = Copy(player), target = Copy(target) }
+end
+
+function F:GetDefaultHudCalibrationSnapshot()
+    local defaults = NormalizeSettings(nil)
+    local player = HudProfileFromSettings(defaults)
+    -- 中文维护注释（目标发行模板默认值）：目标 HUD 已有独立默认 Authority，不能再像
+    -- .18.207 那样无条件 target=Copy(player)。否则“恢复当前目标 HUD”会绕过维护者实机校准
+    -- 的 TARGET|EQUIP 模板，而 Store 的 ResetLayoutSettings 又使用另一套 target defaults。
+    -- 这里统一从 defaults.targetLayout 读取，使新用户、恢复布局和校准恢复目标三条路径一致。
+    local target = NormalizeHudProfile(defaults.targetLayout, player)
+    return { player = Copy(player), target = Copy(target) }
+end
+
+function F:ApplyHudCalibrationSnapshotRaw(snapshot)
+    snapshot = type(snapshot) == "table" and snapshot or {}
+    local settings = self.State.settings
+    local currentPlayer = HudProfileFromSettings(settings)
+    local currentTarget = NormalizeHudProfile(settings.targetLayout, currentPlayer)
+    local player = NormalizeHudProfile(snapshot.player, currentPlayer)
+    -- 中文维护注释（双 profile 部分更新边界）：target 已经是独立 Authority；调用者若
+    -- 只提交 player patch，绝不能因为 target 缺席就隐式执行“同步自身 → 目标”。手动同步
+    -- 只能由校准器显式把 player Copy 到 snapshot.target。这样导入/未来 API 的部分更新也
+    -- 不会意外覆盖用户已经单独调好的目标 HUD。
+    local target = NormalizeHudProfile(snapshot.target, currentTarget)
+    settings.plateScale = player.plateScale
+    settings.plate = Copy(player.plate)
+    settings.info = Copy(player.info)
+    settings.components = Copy(player.components)
+    settings.targetLayout = Copy(target)
+    return true
+end
+
+function F:PersistHudCalibrationSnapshot(snapshot, reason)
+    snapshot = type(snapshot) == "table" and snapshot or {}
+    local saved, saveErr = self:MutateStore(function()
+        -- 中文维护注释：durable API 与“完整导入”复用同一个 Domain-only 应用函数，
+        -- 避免 targetLayout 在两个入口分别 Normalize 后产生字段漂移；只有最外层事务决定何时写盘。
+        return self:ApplyHudCalibrationSnapshotRaw(snapshot)
+    end, 0, tostring(reason or "buff_display_hud_calibration_apply"), true)
+    if saved ~= true then return false, saveErr or "HUD 校准保存失败" end
+    if type(F.ReconcileLanes) == "function" then F:ReconcileLanes() end
+    if type(F.RefreshScope) == "function" then F:RefreshScope("player"); F:RefreshScope("target") end
+    if S.Events ~= nil and type(S.Events.Publish) == "function" then S.Events:Publish("v3.buff_display.settings", "hud_calibration_apply") end
+    return true, nil
 end
 
 function F:CanPersistLayoutSettings()
@@ -455,6 +813,9 @@ function F:ResetLayoutSettings()
     settings.plateScale = defaults.plateScale
     settings.plate = Copy(defaults.plate)
     settings.info = Copy(defaults.info)
+    -- 中文维护注释：Layout Reset 必须同时重置 player 与 target 两套视觉 Authority。
+    -- 若只重置旧 player 字段，targetLayout 会保留旧坐标，用户看到的“恢复默认”将只恢复一半。
+    settings.targetLayout = Copy(defaults.targetLayout)
     return true, before
 end
 
@@ -472,6 +833,9 @@ function F:EnsureStoreLoaded()
     if status ~= true and status ~= "empty" then return false, err or tostring(status or "读取失败") end
     if status == "empty" then ApplyState(nil) end
     self.StoreLoaded = true
+    -- 中文维护注释：LoadStore 会替换 F.State table generation；若 UI/acceptance 在读取前
+    -- 已建立 settings/scope cache，而这里不失效，HUD 校准会看到默认值而不是刚读回的用户配置。
+    if type(F.InvalidateSettingsCache) == "function" then F:InvalidateSettingsCache() end
     return true
 end
 

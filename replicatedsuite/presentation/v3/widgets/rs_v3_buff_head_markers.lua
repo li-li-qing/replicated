@@ -20,7 +20,7 @@ if type(Feature) ~= "table" or type(S.UI) ~= "table" or type(S.Events) ~= "table
 S.UIV3 = S.UIV3 or {}
 S.UIV3.BuffHeadMarkersV3 = S.UIV3.BuffHeadMarkersV3 or {}
 local P = S.UIV3.BuffHeadMarkersV3
-P.version = 6
+P.version = 8
 P.owner = "v3:buff_head_markers"
 P.consumerToken = "presentation:buff_head_markers"
 P.running = P.running == true
@@ -28,6 +28,12 @@ P.consumerHeld = P.consumerHeld == true
 P.pools = P.pools or { player = { icons = {}, labels = {}, cast = nil, plate = nil, info = nil }, target = { icons = {}, labels = {}, cast = nil, plate = nil, info = nil } }
 P.lifecycleOwner = P.lifecycleOwner or {}
 P.metrics = P.metrics or { starts=0, stops=0, ticks=0, projections=0, allocated=0, anchorFailures={} }
+P.calibrationSuppressed = P.calibrationSuppressed == true
+P.calibrationSuppressionReason = P.calibrationSuppressionReason or nil
+P.calibrationSuppressionCount = tonumber(P.calibrationSuppressionCount) or 0
+P.calibrationRestoreCount = tonumber(P.calibrationRestoreCount) or 0
+P.LiveHudSuppressionContractVersion = 1
+P.EquipmentIndependentOffsetContractVersion = 1
 
 local SCOPES = { "player", "target" }
 local RENDERABLE_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar" }
@@ -35,8 +41,19 @@ local UNKNOWN_ICON = "ui/icon/icon_unknown_item.dds"
 
 local function N(v, fallback) return tonumber(v) or tonumber(fallback) or 0 end
 local function Settings()
-    local value = type(Feature.GetSettingsProjection) == "function" and Feature:GetSettingsProjection() or nil
+    -- 中文维护注释：VisualTick 是 50ms 级热路径，只需要 HUD 运行策略，不再复制
+    -- tracked/classification 等大表；scope 几何由 ScopeSettings 单独取轻量投影。
+    local value = type(Feature.GetHeadPolicyProjection) == "function" and Feature:GetHeadPolicyProjection() or nil
+    if type(value) ~= "table" and type(Feature.GetSettingsProjection) == "function" then value = Feature:GetSettingsProjection() end
     return type(value) == "table" and value or {}
+end
+local function ScopeSettings(scope)
+    -- 中文维护注释（双 HUD Presentation 读取，2026-09-11）：renderer 不再直接把
+    -- player settings.components 套到 target。Feature 是 scope profile 的投影边界；
+    -- Presentation 只消费 detached snapshot，避免 Proxy/Presentation 反向改 Authority。
+    local value = type(Feature.GetScopeSettingsProjection) == "function" and Feature:GetScopeSettingsProjection(scope) or nil
+    if type(value) == "table" then return value end
+    return Settings()
 end
 local function FeatureEnabled()
     return S.FeatureRuntime ~= nil and S.FeatureRuntime:IsEnabled("combat_buff_display") == true
@@ -49,12 +66,24 @@ end
 -- presentation never owns or bypasses tracking policy.
 local function HasRenderableComponents(settings)
     local components = type(settings.components) == "table" and settings.components or {}
-    local plate = type(settings.plate) == "table" and settings.plate or {}
-    local info = type(settings.info) == "table" and settings.info or {}
-    if plate.enabled ~= false or info.enabled ~= false then return true end
+    -- 中文维护注释：plate 是“原生血条代理锚点”，renderer 从不绘制它，不能把
+    -- plate.enabled 当作启动理由；否则用户把所有可视组件关掉后仍会持有 Consumer，
+    -- 进而让 Aura lane 因 consumerCount>0 继续运行。真正可见能力只由组件开关决定。
     for _, key in ipairs(RENDERABLE_KEYS) do
         local component = components[key]
-        if component == nil or component.enabled ~= false then return true end
+        if component == nil or component.enabled ~= false then
+            -- 中文维护注释（Info 可见性门，2026-09-11）：distance/class/gearScore 没有
+            -- 独立绘制区域，info 关闭后它们不能作为 Renderer/Consumer 的启动理由。这样
+            -- 与 Feature 的 scope lane gate 保持同一 Authority，避免隐藏 HUD 仍保持 50ms
+            -- 数据路径；其他组件继续按自己的 enabled 独立启停。
+            if key ~= "distance" and key ~= "class" and key ~= "gearScore" then return true end
+            local info = type(settings.info) == "table" and settings.info or {}
+            if info.enabled ~= false then
+                if key == "class" and info.showClass ~= false then return true end
+                if key == "gearScore" and info.showGear ~= false then return true end
+                if key == "distance" and info.showDistance ~= false then return true end
+            end
+        end
     end
     return false
 end
@@ -121,8 +150,13 @@ local function RequiredIconCount(settings)
 end
 
 function P:EnsurePools(settings)
-    settings = type(settings) == "table" and settings or Settings()
-    local iconCount = RequiredIconCount(settings)
+    -- 中文维护注释：player/target 的 maxPerRow/maxRows 现在可独立；池容量必须取两者
+    -- 最大值，否则目标配置放大后会出现“设置已保存但最后几枚图标没有 pooled marker”。
+    local iconCount = 0
+    for _, scope in ipairs(SCOPES) do
+        iconCount = math.max(iconCount, RequiredIconCount(ScopeSettings(scope)))
+    end
+    if iconCount <= 0 then iconCount = RequiredIconCount(type(settings) == "table" and settings or Settings()) end
     for _, scope in ipairs(SCOPES) do
         local pool = self.pools[scope]
         for index = #pool.icons + 1, iconCount do
@@ -187,10 +221,28 @@ local function LogicalScreenWidth()
     return screenW
 end
 
-local function LayoutIcon(marker, size, showStacks, showTime)
+-- 中文维护注释（Buff/Debuff 字体 Authority，2026-09-11）：旧 Renderer 虽然 Store/校准器都
+-- 保存 component.fontSize，但正式渲染始终用 icon size × 固定比例重算字体，造成“校准预览能改、
+-- 保存成功、实机字体却不动”。字体 Authority 应来自当前 scope 的组件配置；plateScale 只负责把
+-- 逻辑字体映射到最终视觉尺寸。fontSize<=0 时保留旧比例回退，兼容装备池等没有字体配置的调用。
+-- 该函数是纯数值计算，不读取 Store/Native，不增加 50ms VisualTick 的对象分配。
+local function ResolveIconFontSize(cfg, scale, size, role)
+    local configured = tonumber(type(cfg) == "table" and cfg.fontSize or nil) or 0
+    if configured > 0 then
+        return math.max(8, math.floor(configured * math.max(0.1, tonumber(scale) or 1)))
+    end
+    local ratio = role == "stack" and 0.34 or 0.32
+    return math.max(8, math.floor((tonumber(size) or 24) * ratio))
+end
+P.ResolveIconFontSize = ResolveIconFontSize
+P.BuffIconFontSizeContractVersion = 1
+
+local function LayoutIcon(marker, size, showStacks, showTime, stackFontSize, timeFontSize)
     local cache = marker.layout
-    if cache.size == size and cache.showStacks == showStacks and cache.showTime == showTime then return end
+    if cache.size == size and cache.showStacks == showStacks and cache.showTime == showTime
+        and cache.stackFontSize == stackFontSize and cache.timeFontSize == timeFontSize then return end
     cache.size, cache.showStacks, cache.showTime = size, showStacks, showTime
+    cache.stackFontSize, cache.timeFontSize = stackFontSize, timeFontSize
     -- Remaining-time label is embedded at the icon's bottom-right (no extra row
     -- height) so it is always visible without pushing rows apart; the stack
     -- counter stays at the top-right.
@@ -206,8 +258,8 @@ local function LayoutIcon(marker, size, showStacks, showTime)
     S.UI:SetExtent(marker.stack, size - 2, math.max(12, math.floor(size * 0.5)), P.owner)
     S.UI:SetAnchor(marker.time, marker.root, 0, math.max(0, size - 10), P.owner)
     S.UI:SetExtent(marker.time, size - 1, 10, P.owner)
-    S.UI:SetFontSize(marker.stack, math.max(8, math.floor(size * 0.34)), P.owner)
-    S.UI:SetFontSize(marker.time, math.max(8, math.floor(size * 0.32)), P.owner)
+    S.UI:SetFontSize(marker.stack, stackFontSize, P.owner)
+    S.UI:SetFontSize(marker.time, timeFontSize, P.owner)
     S.UI:SetVisible(marker.stack, showStacks, P.owner)
     S.UI:SetVisible(marker.time, showTime, P.owner)
 end
@@ -233,8 +285,10 @@ local function ClampToScreen(x, y, w, h)
     return x, y
 end
 
-local function ApplyIcon(marker, row, size, cfg, x, y, showStacks, showTime)
-    LayoutIcon(marker, size, showStacks, showTime)
+local function ApplyIcon(marker, row, size, cfg, x, y, showStacks, showTime, scale)
+    local stackFontSize = ResolveIconFontSize(cfg, scale, size, "stack")
+    local timeFontSize = ResolveIconFontSize(cfg, scale, size, "time")
+    LayoutIcon(marker, size, showStacks, showTime, stackFontSize, timeFontSize)
     if type(cfg) == "table" then S.UI:SetAlpha(marker.root, math.max(0.1, math.min(1, N(cfg.alpha, 1))), P.owner) end
     local path = tostring(row and row.iconPath or "")
     if path ~= marker.iconPath then
@@ -267,7 +321,7 @@ end
 
 -- Render a horizontal icon row for a component; returns how many slots used.
 -- The WHOLE row is clamped as one group; individual icons keep exact spacing.
-local function RenderIconRow(scope, pool, rows, cfg, centerX, rowY, showStacks, showTime, slotOffset, size, gap)
+local function RenderIconRow(scope, pool, rows, cfg, centerX, rowY, showStacks, showTime, slotOffset, size, gap, scale)
     local used = 0
     size = math.max(8, math.floor(tonumber(size) or N(cfg.size, 24)))
     gap = math.max(0, math.floor(tonumber(gap) or N(cfg.spacing, 2)))
@@ -279,7 +333,7 @@ local function RenderIconRow(scope, pool, rows, cfg, centerX, rowY, showStacks, 
     for index = 1, count do
         local marker = pool.icons[slotOffset + index]
         if marker == nil then break end
-        ApplyIcon(marker, rows[index], size, cfg, startX + (index - 1) * (size + gap), startY, showStacks, showTime)
+        ApplyIcon(marker, rows[index], size, cfg, startX + (index - 1) * (size + gap), startY, showStacks, showTime, scale)
         used = used + 1
     end
     return used
@@ -287,7 +341,7 @@ end
 
 -- Multi-row buff/debuff rendering: rows stack upward (buff) or downward
 -- (debuff) from the plate edge, bounded by MaxPerRow and MaxRows.
-local function RenderRows(scope, pool, rows, cfg, centerX, firstRowTop, showStacks, showTime, slotOffset, size, spacing, maxPerRow, maxRows, rowGap, direction)
+local function RenderRows(scope, pool, rows, cfg, centerX, firstRowTop, showStacks, showTime, slotOffset, size, spacing, maxPerRow, maxRows, rowGap, direction, scale)
     local used = 0
     local all = type(rows) == "table" and rows or {}
     local total = math.min(#all, maxPerRow * maxRows)
@@ -299,7 +353,7 @@ local function RenderRows(scope, pool, rows, cfg, centerX, firstRowTop, showStac
         local rowTop = firstRowTop + direction * (r * rowGap)
         local slice = {}
         for i = 1, count do slice[i] = all[start + i - 1] end
-        used = used + RenderIconRow(scope, pool, slice, cfg, centerX, rowTop, showStacks, showTime, slotOffset + used, size, spacing)
+        used = used + RenderIconRow(scope, pool, slice, cfg, centerX, rowTop, showStacks, showTime, slotOffset + used, size, spacing, scale)
     end
     return used
 end
@@ -394,12 +448,20 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
             if enabled then
                 local size = math.max(8, math.floor(N(cfg.size, 26) * scale))
                 local gap = math.max(1, math.floor(N(cfg.gap or cfg.spacing, EQUIP_GAP) * scale))
-                local x
-                if direction < 0 then x = edge - gap - size else x = edge + gap end
-                x = x + math.floor(N(cfg.x, 0) * scale)
+                -- 中文维护注释（装备局部位置 Authority，2026-09-11）：旧实现先把当前槽位
+                -- cfg.x 加到最终 x，再用这个“已微调 x”推进 edge，导致 offHand.x 会拖着
+                -- mainHand/ranged 一起移动，mainHand.x 又会继续拖着 ranged。默认槽位顺序本身
+                -- 没问题，错误在于把“用户局部微调”污染成了下一个槽位的布局 Authority。
+                -- 现在先计算不含用户 offset 的 baseX；当前组件最终 x=baseX+cfg.x，但 edge
+                -- 只从 baseX/size 推进。这样默认仍按 offHand→mainHand→ranged 排列，单独移动
+                -- 任一装备只影响自己。兼容边界：size/gap 仍属于基础槽位几何，改变尺寸时外侧
+                -- 槽位会自然重新排布以避免默认重叠；schema5/x/y 数值语义完全不变。
+                local baseX
+                if direction < 0 then baseX = edge - gap - size else baseX = edge + gap end
+                local x = baseX + math.floor(N(cfg.x, 0) * scale)
                 local y = bar.centerY - math.floor(size / 2) + math.floor(N(cfg.y, 0) * scale)
-                slots[#slots + 1] = { key = key, x = x, y = y, size = size }
-                edge = direction < 0 and x or (x + size)
+                slots[#slots + 1] = { key = key, x = x, y = y, size = size, baseX = baseX }
+                edge = direction < 0 and baseX or (baseX + size)
             end
         end
         return slots
@@ -432,6 +494,7 @@ end
 -- Expose the pure layout function for acceptance geometry tests and any other
 -- consumer that needs the plate geometry without touching widgets.
 P.ComputePlateLayout = ComputePlateLayout
+P.CastYOffsetContractVersion = 1
 
 ------------------------------------------------------------------------
 -- Render
@@ -448,6 +511,11 @@ local function RenderCastBar(scope, cast, cfg, centerX, y, scale)
     local alpha = math.max(0.1, math.min(1, N(cfg.alpha, 1)))
     local ratio = math.max(0, math.min(1, cast.totalMs > 0 and (cast.currMs / cast.totalMs) or 0))
     local x = math.floor(centerX + N(cfg.x, 0) * scale - barW / 2)
+    -- 中文维护注释（施法条 Y Authority，2026-09-11）：旧 renderer 读取 castBar.x 却
+    -- 完全忽略 castBar.y，导致 HUD 校准器的上下拖动/方向键“保存成功但画面不动”。
+    -- castBar.y 与其余 equipment 微调一致，以 plateScale 后的局部像素解释；这里只在
+    -- Presentation 几何阶段应用，不改变 CastingObservation 数据或高频采集路径。
+    y = N(y, 0) + N(cfg.y, 0) * scale
     local cache = bar.layout
     if cache.alpha ~= alpha then S.UI:SetAlpha(bar.root, alpha, P.owner); cache.alpha = alpha end
     if cache.barW ~= barW then cache.barW = barW end
@@ -478,7 +546,7 @@ end
 -- Apply a pre-computed equipment group (left or right flank). The whole group
 -- is clamped as one unit (only the group origin moves); members keep their
 -- exact relative slots, so icons never pile at a screen edge.
-local function ApplyEquipGroup(scope, pool, plates, components, group, slotStart)
+local function ApplyEquipGroup(scope, pool, plates, components, group, slotStart, scale)
     local slots = type(group) == "table" and group.slots or nil
     if slots == nil or #slots == 0 then return 0 end
     local used = 0
@@ -492,7 +560,7 @@ local function ApplyEquipGroup(scope, pool, plates, components, group, slotStart
         if marker == nil then break end
         local item = type(plates) == "table" and plates[s.key] or {}
         local cfg = type(components) == "table" and components[s.key] or {}
-        ApplyIcon(marker, { iconPath = item.icon, gradeIconPath = item.gradeIconPath, stack = nil, timeText = nil }, s.size, cfg, s.x + dx, s.y, false, false)
+        ApplyIcon(marker, { iconPath = item.icon, gradeIconPath = item.gradeIconPath, stack = nil, timeText = nil }, s.size, cfg, s.x + dx, s.y, false, false, scale)
         used = used + 1
     end
     return used
@@ -583,15 +651,15 @@ local function RenderScope(scope, settings)
     local slot = 0
     -- Buff rows (stack upward from bar.top).
     if buffEnabled then
-        slot = slot + RenderRows(scope, pool, buffRows, components.buffs or {}, bar.centerX, L.buff.firstTop, showStacks, showTime, slot, L.buff.size, L.buff.spacing, L.buff.maxPerRow, L.buff.maxRows, L.buff.rowGap, -1)
+        slot = slot + RenderRows(scope, pool, buffRows, components.buffs or {}, bar.centerX, L.buff.firstTop, showStacks, showTime, slot, L.buff.size, L.buff.spacing, L.buff.maxPerRow, L.buff.maxRows, L.buff.rowGap, -1, scale)
     end
     -- Debuff rows (stack downward from bar.bottom).
     if debuffEnabled then
-        slot = slot + RenderRows(scope, pool, debuffRows, components.debuffs or {}, bar.centerX, L.debuff.firstTop, showStacks, showTime, slot, L.debuff.size, L.debuff.spacing, L.debuff.maxPerRow, L.debuff.maxRows, L.debuff.rowGap, 1)
+        slot = slot + RenderRows(scope, pool, debuffRows, components.debuffs or {}, bar.centerX, L.debuff.firstTop, showStacks, showTime, slot, L.debuff.size, L.debuff.spacing, L.debuff.maxPerRow, L.debuff.maxRows, L.debuff.rowGap, 1, scale)
     end
     -- Equipment flanks: pre-computed groups applied as whole units (group clamp).
-    slot = slot + ApplyEquipGroup(scope, pool, plates, components, L.leftGroup, slot)
-    slot = slot + ApplyEquipGroup(scope, pool, plates, components, L.rightGroup, slot)
+    slot = slot + ApplyEquipGroup(scope, pool, plates, components, L.leftGroup, slot, scale)
+    slot = slot + ApplyEquipGroup(scope, pool, plates, components, L.rightGroup, slot, scale)
     for index = slot + 1, #pool.icons do HideIcon(pool.icons[index]) end
 
     -- Info row (class name · gear score · distance), auto-placed above actual rows.
@@ -613,12 +681,48 @@ local function RenderScope(scope, settings)
     end
 end
 
+-- 中文维护注释（HUD 校准 Presentation suppression，2026-09-11）：
+-- 问题原因：独立校准器过去只是在 UIParent 上叠加模拟 Preview，正式 BuffHeadMarkers 仍持续绘制
+-- 自己/目标 Buff 与装备，导致用户调整主手/副手时同时看到旧图标，无法判断哪个才是 Draft。
+-- Authority：Feature/Store/Aura/位置 Lane 继续运行，本开关只属于 Renderer Presentation；禁止用
+-- Feature disable/ReleaseConsumer 来“隐藏”，否则校准器会失去真实单位锚点并改变高频数据生命周期。
+-- 数据流：Calibration Open -> SetCalibrationSuppressed(true) -> VisualTick 只 HideAll；Exit -> false ->
+-- 立即 VisualTick 恢复正式 HUD。兼容边界：不持久化、不进入 schema5、不改变 Consumer 数；模块热重载
+-- 后默认 false。后续任何校准 Overlay 都应复用此 Presentation gate，而不是直接改 Store 开关。
+function P:SetCalibrationSuppressed(value, reason)
+    local nextValue = value == true
+    if self.calibrationSuppressed == nextValue then
+        self.calibrationSuppressionReason = nextValue and tostring(reason or self.calibrationSuppressionReason or "hud_calibration") or nil
+        if nextValue then self:HideAll() elseif self.running == true then self:VisualTick() end
+        return true
+    end
+    self.calibrationSuppressed = nextValue
+    self.calibrationSuppressionReason = nextValue and tostring(reason or "hud_calibration") or nil
+    if nextValue then
+        self.calibrationSuppressionCount = (tonumber(self.calibrationSuppressionCount) or 0) + 1
+        self:HideAll()
+    else
+        self.calibrationRestoreCount = (tonumber(self.calibrationRestoreCount) or 0) + 1
+        if self.running == true then self:VisualTick() else self:HideAll() end
+    end
+    return true
+end
+function P:IsCalibrationSuppressed() return self.calibrationSuppressed == true end
+
 function P:VisualTick()
     if self.running ~= true then return false end
     self.metrics.ticks = self.metrics.ticks + 1
-    local settings = Settings()
-    if settings.headEnabled == false or not HasRenderableComponents(settings) then self:HideAll(); return true end
-    for _, scope in ipairs(SCOPES) do RenderScope(scope, settings) end
+    if self.calibrationSuppressed == true then self:HideAll(); return true end
+    local policy = Settings()
+    if policy.headEnabled == false then self:HideAll(); return true end
+    local rendered = false
+    for _, scope in ipairs(SCOPES) do
+        local settings = ScopeSettings(scope)
+        if ScopeEnabled(scope, settings) and HasRenderableComponents(settings) then
+            RenderScope(scope, settings); rendered = true
+        else HideScope(scope) end
+    end
+    if rendered ~= true then self:HideAll() end
     return true
 end
 
@@ -626,7 +730,9 @@ function P:Start()
     if self.running == true then return true end
     if not FeatureEnabled() then return false, "状态显示功能已关闭" end
     local settings = Settings()
-    if settings.headEnabled == false or not HasRenderableComponents(settings) then self:HideAll(); return true end
+    local playerRenderable = settings.headPlayer ~= false and HasRenderableComponents(ScopeSettings("player"))
+    local targetRenderable = settings.headTarget ~= false and HasRenderableComponents(ScopeSettings("target"))
+    if settings.headEnabled == false or (playerRenderable ~= true and targetRenderable ~= true) then self:HideAll(); return true end
     local ok, err = self:EnsurePools(settings)
     if ok ~= true then return false, err end
     local acquired, acquireErr = Feature:AcquireConsumer(self.consumerToken)
@@ -662,7 +768,9 @@ end
 
 function P:Reconcile(reason)
     local settings = Settings()
-    local shouldRun = FeatureEnabled() and settings.headEnabled ~= false and HasRenderableComponents(settings)
+    local playerRenderable = settings.headPlayer ~= false and HasRenderableComponents(ScopeSettings("player"))
+    local targetRenderable = settings.headTarget ~= false and HasRenderableComponents(ScopeSettings("target"))
+    local shouldRun = FeatureEnabled() and settings.headEnabled ~= false and (playerRenderable or targetRenderable)
     if shouldRun then
         if self.running ~= true then return self:Start() end
         local ok, err = self:EnsurePools(settings)
@@ -679,8 +787,15 @@ function P:GetDiagnostics()
     local function Lane(scope) return type(laneData) == "table" and laneData[scope] or nil end
     return {
         version = self.version,
+        buffIconFontSizeContractVersion = tonumber(self.BuffIconFontSizeContractVersion) or 0,
+        castYOffsetContractVersion = tonumber(self.CastYOffsetContractVersion) or 0,
         running = self.running == true,
         consumerHeld = self.consumerHeld == true,
+        calibrationSuppressed = self.calibrationSuppressed == true,
+        calibrationSuppressionReason = self.calibrationSuppressionReason,
+        calibrationSuppressionCount = tonumber(self.calibrationSuppressionCount) or 0,
+        calibrationRestoreCount = tonumber(self.calibrationRestoreCount) or 0,
+        liveHudSuppressionContractVersion = tonumber(self.LiveHudSuppressionContractVersion) or 0,
         poolsAllocated = tonumber(self.metrics.allocated) or 0,
         starts = tonumber(self.metrics.starts) or 0,
         stops = tonumber(self.metrics.stops) or 0,
@@ -708,5 +823,10 @@ end
 -- class contributes name text only (no role icon); equipment collapses when
 -- absent; main/off + optional ranged share the left flank, wings/back owns the
 -- right flank; x/y are local offsets.
-Feature.BuffHeadMarkerContractVersion = 6
+-- Contract 8 adds authoritative Buff/Debuff fontSize consumption. Startup acceptance checks
+-- the dedicated BuffIconFontSizeContractVersion too so a stale Renderer cannot silently accept
+-- the new calibration UI while ignoring its font controls.
+-- Contract 9 keeps equipment default-slot flow but fences every component x/y as a local offset:
+-- moving offHand/mainHand/ranged/wings can no longer shift sibling slot bases.
+Feature.BuffHeadMarkerContractVersion = 9
 P:Reconcile("load")

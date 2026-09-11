@@ -525,21 +525,60 @@ function A:RunMatrix()
         or type(fishingWidget) ~= "table" or fishingWidget.featureId ~= "life_fishing" then
         failures[#failures + 1] = "life_economy_widget_contract_v2"
     end
+    -- 中文维护注释（.18.208 状态显示装备分数边界）：Presentation acceptance 只证明
+    -- Feature 已切到 UnitGearScore(unit, comma=false)、共享 ParseGearScore，以及 Store 已声明
+    -- 实机 TARGET|EQUIP 默认模板；不在验收中读目标/装备分数，也不修改 schema5 配置。
+    -- 这样热重载旧 Feature/Utils 会明确失败，而不会让 Renderer 静默显示空装分。
     local buffDisplay = S.Features and S.Features.BuffDisplay or nil
     local gearV3 = S.Services and S.Services.GearV3 or nil
     local buffHealth = type(buffDisplay) == "table" and type(buffDisplay.GetHealth) == "function" and buffDisplay:GetHealth() or nil
     if type(buffHealth) ~= "table" or (tonumber(buffHealth.observationContractVersion) or 0) < 2
         or (tonumber(buffDisplay and buffDisplay.EquipmentReadContractVersion) or 0) < 1
+        or (tonumber(buffDisplay and buffDisplay.GearScoreApiContractVersion) or 0) < 1
+        or (tonumber(buffDisplay and buffDisplay.TargetDefaultTemplateContractVersion) or 0) < 1
+        or type(S.Utils) ~= "table" or (tonumber(S.Utils.GearScoreParseContractVersion) or 0) < 1
+        or type(S.Utils.ParseGearScore) ~= "function"
         or type(gearV3) ~= "table" or tostring(gearV3.presentationBoundary or "") ~= "service_only" or type(gearV3.GetEquipped) ~= "function"
         or (tonumber(gearV3.version) or 0) < 4 or (tonumber(gearV3.PartialApplyContractVersion) or 0) < 1
         or type(buffDisplay.eventTaskName) ~= "string"
         or type(buffHeadMarkers) ~= "table" or (tonumber(buffHeadMarkers.version) or 0) < 2
         or type(buffHeadMarkers.GetDiagnostics) ~= "function"
         or type(buffHeadMarkers.metrics) ~= "table" or type(buffHeadMarkers.metrics.anchorFailures) ~= "table"
-        or (tonumber(buffDisplay.BuffHeadMarkerContractVersion) or 0) < 3
-        or tonumber(buffDisplay.SchemaVersion) ~= 4
+        or (tonumber(buffHeadMarkers.BuffIconFontSizeContractVersion) or 0) < 1
+        or (tonumber(buffDisplay.BuffHeadMarkerContractVersion) or 0) < 9
+        or type(S.UIV3 and S.UIV3.BuffHeadMarkersV3) ~= "table"
+        or (tonumber(S.UIV3.BuffHeadMarkersV3.LiveHudSuppressionContractVersion) or 0) < 1
+        or (tonumber(S.UIV3.BuffHeadMarkersV3.EquipmentIndependentOffsetContractVersion) or 0) < 1
+        or type(S.UIV3.BuffHeadMarkersV3.SetCalibrationSuppressed) ~= "function"
+        or (tonumber(buffDisplay.LayoutAuthorityContractVersion) or 0) < 3
+        or (tonumber(buffDisplay.HudCalibrationContractVersion) or 0) < 1
+        or tonumber(buffDisplay.SchemaVersion) ~= 5
         or type(S.Services and S.Services.StatusClassificationV3) ~= "table" then
         failures[#failures + 1] = "buff_display_observation_head_marker_contract"
+    end
+    -- 中文维护注释（HUD 校准 v3 交互边界）：HUD 校准是按需 Presentation，不得通过验收时创建。
+    -- .18.206 同时检查屏幕Y适配、面板拖动、上下文控件、全局位置预览、正式 HUD suppression 与
+    -- 页面 Measure 契约，防止热重载后混入旧模块。Authority 仍由 BuffDisplay Store/Renderer 持有；
+    -- 验收不触碰 Draft、Native geometry 或 Consumer，因此不会把静态检查变成运行时副作用。
+    -- .18.207 追加装备局部 offset 与模板快照契约，避免旧 Renderer 继续把前一槽位 x 传给后续
+    -- 槽位，也避免旧校准器缺少发行模板导出却仍被视为可用。
+    local buffHudCalibration = S.UIV3 and S.UIV3.BuffHudCalibrationV3 or nil
+    if type(buffHudCalibration) ~= "table" or (tonumber(buffHudCalibration.version) or 0) < 3
+        or (tonumber(buffDisplay and buffDisplay.HudCalibrationPresentationContractVersion) or 0) < 5
+        or (tonumber(buffHudCalibration.DiagnosticsContractVersion) or 0) < 4
+        or (tonumber(buffHudCalibration.ScreenCoordinateAdapterContractVersion) or 0) < 1
+        or (tonumber(buffHudCalibration.PanelDragContractVersion) or 0) < 1
+        or (tonumber(buffHudCalibration.ContextualControlsContractVersion) or 0) < 1
+        or (tonumber(buffHudCalibration.GlobalPreviewContractVersion) or 0) < 1
+        or (tonumber(buffHudCalibration.LiveHudSuppressionContractVersion) or 0) < 1
+        or (tonumber(buffHudCalibration.TemplateSnapshotContractVersion) or 0) < 1
+        or type(buffHudCalibration.BuildTemplateSnapshotLines) ~= "function" or type(buffHudCalibration.OutputTemplateSnapshot) ~= "function"
+        or type(buffHudCalibration.ToggleGlobalPreview) ~= "function"
+        or type(buffHudCalibration.Open) ~= "function" or type(buffHudCalibration.Exit) ~= "function"
+        or type(buffHudCalibration.SyncPlayerToTarget) ~= "function" or type(buffHudCalibration.GetDiagnostics) ~= "function"
+        or (tonumber(buffDisplay and buffDisplay.HudLayoutPageMeasureContractVersion) or 0) < 1
+        or type(S.DiagnosticsManager) ~= "table" or type(S.DiagnosticsManager.BuildBuffHudReport) ~= "function" then
+        failures[#failures + 1] = "buff_display_hud_calibration_contract"
     end
     local healerWidgetSpec = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("combat.healer") or nil
     local healerRaidOverlay = S.UIV3 and S.UIV3.HealerRaidOverlay or nil
