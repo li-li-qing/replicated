@@ -31,6 +31,95 @@ local function FindZoneName(projection, id)
     return tostring(id)
 end
 
+-- 维护（overview-content-1）：页面与悬浮窗共用内容构建器而非Reparent原生窗口。
+-- 每个实例独立id/owner/控件，Feature投影/Command唯一，构建和刷新绝不发出材料询价。
+local Contents={specs={}}
+S.UIV3.LifeEconomyContent=Contents
+local function BuildBody(instance,parent,spec,Feature)
+        local content = RSUI:VerticalBox({ id = instance.contentPrefix .. "content", parent = parent, gap = 4,
+            slot = { size="fill", fill=1, hAlign = "fill", vAlign = "fill" } }) -- 填满卡片余量，否则auto只给空表一行高度。
+        instance.content=content
+        instance.controls=RSUI:VerticalBox({id=instance.contentPrefix.."controls",parent=content,gap=3,slot={size="auto",hAlign="fill"}})
+        if type(spec.buildControls) == "function" then
+            local controlsOk, controlsErr = spec.buildControls(instance, instance.controls, Feature)
+            if controlsOk == false then return nil, controlsErr or (spec.title .. "悬浮窗控制条创建失败") end
+        end
+        instance.table = RSUI:TableView({
+            id = instance.contentPrefix .. "table", parent = content, items = {}, rowHeight = instance.overview and 26 or 24, headerHeight = instance.overview and 26 or 23, desiredRows = 10,
+            overscan = 1, scrollbar = true, selectable = spec.selectable == true, selectionMode = "single", columnResize = true, headerInteractive = false,
+            columns = S.Utils.DeepCopy(spec.columns), slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
+        })
+        if spec.selectable == true and type(spec.onSelection) == "function" then
+            instance.table.onSelectionChanged = function(index)
+                local row = instance.table:GetItem(index)
+                return spec.onSelection(instance, row, Feature)
+            end
+        end
+        if type(spec.onItemActivated) == "function" then
+            -- 中文维护注释（table-activation-contract-1）：RSUI TableView 的真实回调签名为
+            -- (item,index,key,view,reason)。旧实现把第一个 item 当成 index，在简化 mock 中能通过、
+            -- 实机双击却取不到行。Presentation 直接消费 item；仅在兼容旧测试/调用方时按 index 回退。
+            instance.table.onItemActivated = function(item, index, key, view, reason)
+                local row = item
+                if type(row) ~= "table" and tonumber(index) ~= nil then row = instance.table:GetItem(index) end
+                return spec.onItemActivated(instance, row, Feature, reason)
+            end
+        end
+
+    return true
+end
+local function RefreshBody(self,spec,Feature)
+            local projection = Feature:GetProjection() or {}
+            local rows = type(spec.rows) == "function" and spec.rows(projection) or (projection.rows or {})
+            rows = type(rows) == "table" and rows or {}
+            self.table:SetItems(rows, projection.revision or 0)
+            if type(spec.refreshControls) == "function" then spec.refreshControls(self, projection, rows, Feature) end
+            if projection.status == "unavailable" or projection.status == "error" then
+                self.table:SetViewState("unavailable", { title = spec.title .. "数据不可用", detail = tostring(projection.error or "事实读取失败") })
+            elseif spec.featureName == "Trade" and projection.status == "loading" and #rows == 0 then
+                -- 中文维护注释（trade-native-cooldown-1）：货率查询是异步 Native 事件。旧 UI 在 loading 时仍显示“暂无货率”，
+                -- 用户会误以为刷新按钮无效并连续点击，从而更容易撞服务器冷却。只改变 Presentation 文案；请求节流仍由 Trade Authority 所有。
+                self.table:SetViewState("empty", { title = "正在查询货率", detail = "等待服务器返回货率；无需连续点击刷新。" })
+            elseif spec.featureName == "Trade" and projection.status == "cooldown" and #rows == 0 then
+                local remaining = math.max(0, tonumber(projection.cooldownRemainingMs) or 0)
+                self.table:SetViewState("empty", { title = "等待服务器查询冷却", detail = "约 " .. tostring(math.ceil(remaining / 1000)) .. " 秒后自动重试。" })
+            elseif #rows == 0 then
+                self.table:SetViewState("empty", { title = spec.emptyTitle, detail = spec.emptyDetail })
+            else
+                self.table:SetViewState("ready")
+            end
+            -- 首页仅压缩重复说明；保留来源错误，报价 Authority 仍在共享 Feature。
+            local statusText = spec.status(projection, rows)
+            if self.overview and spec.featureName == "Trade" then
+                local batch = projection.quoteBatch or {}
+                statusText = tostring(#rows) .. " 种货物 · 待询价 " .. tostring(projection.pendingQuoteCount or 0)
+                    .. (batch.active and (" · 正在询价 " .. tostring(batch.completed or 0) .. "/" .. tostring(batch.total or 0))
+                        or (" · 每批最多4项"))
+                if projection.status == "error" or projection.status == "unavailable" then statusText=tostring(projection.error or "货率读取失败") end
+            end
+            self.surface:SetStatus(statusText, projection.status == "ready" and "accent" or (projection.status == "loading" and "yellow" or "muted"))
+            return true
+        end
+
+-- overview 仅是显示密度，不持有额外消费者、报价缓存或保存副本。
+-- 同一查询按钮在首页批次进行中可取消；高级搜索继续留在完整页面/原悬浮窗。
+function Contents:Create(parent,name,prefix,options)
+    local spec=self.specs[name];local Feature=S.Features and S.Features[name]
+    if not spec or not Feature then return nil,"经济内容不可用："..tostring(name) end
+    local instance={contentPrefix=prefix,visible=true,overview=type(options)=="table" and options.overview==true}
+    local ok,err=BuildBody(instance,parent,spec,Feature);if not ok then return nil,err end
+    local status=RSUI:Text({id=prefix.."status",parent=instance.content,text="--",fontSize=9,tone="muted",overflow="ellipsis",slot={size="fixed",height=18}})
+    instance.surface={SetStatus=function(_,v)status:SetText(v);return true end}
+    function instance:Refresh()return RefreshBody(self,spec,Feature)end
+    function instance:SetAvailable(available,reason)
+        self.controls:SetVisible(available)
+        if available then return self:Refresh() end
+        self.table:SetItems({},"unavailable");self.table:SetViewState("empty",{title=reason or "未启用",detail="点击右上角打开功能页面；首页不会自动启用模块。"})
+        status:SetText(reason or "未启用");return true
+    end
+    return instance
+end
+
 local function Register(spec)
     local featureId = tostring(spec.featureId or "")
     if featureId == "" then return false, "生活悬浮窗 featureId 缺失: " .. tostring(spec.widgetId) end
@@ -41,6 +130,8 @@ local function Register(spec)
         or type(Feature.ReleaseConsumer) ~= "function" or type(Feature.Commands) ~= "table" then
         return false, "生活悬浮窗 Feature 契约不完整: " .. tostring(spec.widgetId)
     end
+
+    Contents.specs[spec.featureName]=spec
 
     local function Policy()
         return type(Feature.GetWidgetWindowPolicy) == "function" and Feature:GetWidgetWindowPolicy()
@@ -67,40 +158,10 @@ local function Register(spec)
         if surface == nil then return nil, createErr or (spec.title .. "悬浮窗创建失败") end
         instance.surface, instance.shell, instance.window = surface, surface.shell, surface.window
         instance.root, instance.windowController = surface.shell.root, surface.windowController
-        local content = RSUI:VerticalBox({ id = spec.contentId, parent = surface:GetContentRoot(), gap = 4,
-            slot = { hAlign = "fill", vAlign = "fill" } })
-        if type(spec.buildControls) == "function" then
-            local controlsOk, controlsErr = spec.buildControls(instance, content, Feature)
-            if controlsOk == false then return nil, controlsErr or (spec.title .. "悬浮窗控制条创建失败") end
-        end
-        instance.table = RSUI:TableView({
-            id = spec.tableId, parent = content, items = {}, rowHeight = 24, headerHeight = 23, desiredRows = 10,
-            overscan = 1, scrollbar = true, selectable = spec.selectable == true, selectionMode = "single", columnResize = true, headerInteractive = false,
-            columns = spec.columns, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
-        })
-        if spec.selectable == true and type(spec.onSelection) == "function" then
-            instance.table.onSelectionChanged = function(index)
-                local row = instance.table:GetItem(index)
-                return spec.onSelection(instance, row, Feature)
-            end
-        end
-
-        function instance:Refresh()
-            local projection = Feature:GetProjection() or {}
-            local rows = type(spec.rows) == "function" and spec.rows(projection) or (projection.rows or {})
-            rows = type(rows) == "table" and rows or {}
-            self.table:SetItems(rows, projection.revision or 0)
-            if type(spec.refreshControls) == "function" then spec.refreshControls(self, projection, rows, Feature) end
-            if projection.status == "unavailable" or projection.status == "error" then
-                self.table:SetViewState("unavailable", { title = spec.title .. "数据不可用", detail = tostring(projection.error or "事实读取失败") })
-            elseif #rows == 0 then
-                self.table:SetViewState("empty", { title = spec.emptyTitle, detail = spec.emptyDetail })
-            else
-                self.table:SetViewState("ready")
-            end
-            self.surface:SetStatus(spec.status(projection, rows), projection.status == "ready" and "accent" or (projection.status == "loading" and "yellow" or "muted"))
-            return true
-        end
+        instance.contentPrefix=spec.rootId.."_"
+        local bodyOk,bodyErr=BuildBody(instance,surface:GetContentRoot(),spec,Feature)
+        if not bodyOk then return nil,bodyErr end
+        function instance:Refresh()return RefreshBody(self,spec,Feature)end
         function instance:Subscribe()
             if self.subscribed then return true end
             if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" and type(Feature.UpdateTopic) == "string" then
@@ -213,28 +274,40 @@ local ok, err = Register({
             or type(Feature.Commands.SelectFavorite) ~= "function" or type(Feature.Commands.SetSortMode) ~= "function" then
             return false, "跑商悬浮窗 Feature 路线/收藏/询价命令缺失"
         end
-        -- 中文维护注释：跑商 HUD 固定为“路线 / 快捷动作 / 收藏与排序”三行；只重排 Presentation，不复制货率、售价或询价 Authority。
+        -- 中文维护注释：跑商 HUD 为“路线 / 快捷动作 / 收藏与排序”三行；只重排 Presentation，不复制货率、售价或询价 Authority。
         -- 中文维护注释：原有语义控件 ID 必须继续复用，保证绑定、诊断与升级兼容不因布局重构失效。
-        local routeBox = RSUI:VerticalBox({ id = "v3_life_trade_widget_route", parent = content, gap = 3, -- 中文维护注释：三行控件以 3px 间距收敛为紧凑操作区，避免悬浮窗像完整应用页面。
-            slot = { size = "fixed", height = 90, hAlign = "fill" } }) -- 中文维护注释：28+28+28 加两段 3px 间距恰好 90px，禁止用 fill 抢占货物表格空间。
-        local routeRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_from_row", parent = routeBox, gap = 4, -- 中文维护注释：起点与目的地合并到同一行，保留旧 from 行 ID 以维持诊断连续性。
+        local routeBox = RSUI:VerticalBox({ id = (instance.contentPrefix or "v3_life_trade_widget_") .. "route", parent = content, gap = 3, -- 中文维护注释（trade-floating-compact-1）：悬浮窗定位是快速看货率，不复制完整管理页；固定三行紧凑操作区。
+            slot = { size = "fixed", height = 90, hAlign = "fill" } }) -- 中文维护注释：三行28px+两个3px间距=90px；高级批量询价保留在完整页面/命令层，不再占用悬浮窗第四行。
+        instance.routeBox = routeBox -- 中文维护注释：仅暴露 Presentation 容器给布局回归测试/诊断，不作为业务状态或 Authority。
+        instance.routeControlHeight = 90 -- 中文维护注释：固定记录紧凑头部预算，便于诊断/回归确认未重新膨胀为四行。
+        local routeRow = RSUI:HorizontalBox({ id = (instance.contentPrefix or "v3_life_trade_widget_") .. "from_row", parent = routeBox, gap = 4, -- 中文维护注释：起点与目的地合并到同一行，保留旧 from 行 ID 以维持诊断连续性。
             slot = { size = "fixed", height = 28, hAlign = "fill" } }) -- 中文维护注释：路线选择行固定 28px，低分辨率下优先压缩文字而不是增加悬浮窗高度。
-        RSUI:Text({ id = "v3_life_trade_widget_from_label", parent = routeRow, text = "起", fontSize = 9, tone = "muted", -- 中文维护注释：用单字标签降低横向占用，语义仍由原控件 ID 和下拉框 placeholder 保持明确。
+        RSUI:Text({ id = (instance.contentPrefix or "v3_life_trade_widget_") .. "from_label", parent = routeRow, text = "起", fontSize = 9, tone = "muted", -- 中文维护注释：用单字标签降低横向占用，语义仍由原控件 ID 和下拉框 placeholder 保持明确。
             slot = { size = "fixed", width = 18 } }) -- 中文维护注释：标签固定 18px，给两个路线下拉框留下最低 100px 可用宽度。
-        instance.fromDropdown = RSUI:Dropdown({ id = "v3_life_trade_widget_from", parent = routeRow, items = {}, maxVisible = 10, popupWidth = 210, placeholder = "起点", -- 中文维护注释：下拉逻辑与 Command 边界不变，仅缩小 popup 宽度以匹配紧凑 HUD。
+        instance.fromDropdown = RSUI:Dropdown({ id = (instance.contentPrefix or "v3_life_trade_widget_") .. "from", parent = routeRow, items = {}, maxVisible = 10, popupWidth = 210, placeholder = "起点", -- 中文维护注释：下拉逻辑与 Command 边界不变，仅缩小 popup 宽度以匹配紧凑 HUD。
             get = function() return (Feature:GetRouteSettings() or {}).fromZone end, set = function(v) return Feature.Commands:SetFrom(v) end, -- 中文维护注释：起点状态继续由 Feature route settings/Command 管理，Widget 不持有副本。
             slot = { size = "fill", fill = 1, minWidth = 100 } }) -- 中文维护注释：使用 fill 让路线下拉框随悬浮窗缩放，并守住 1024×768 场景下的最小可操作宽度。
-        RSUI:Text({ id = "v3_life_trade_widget_route_arrow", parent = routeRow, text = "→", fontSize = 9, tone = "muted", -- 中文维护注释：新增纯 Presentation 路线方向符号，不参与路线值、请求或持久化。
+        RSUI:Text({ id = (instance.contentPrefix or "v3_life_trade_widget_") .. "route_arrow", parent = routeRow, text = "→", fontSize = 9, tone = "muted", -- 中文维护注释：新增纯 Presentation 路线方向符号，不参与路线值、请求或持久化。
             slot = { size = "fixed", width = 16 } }) -- 中文维护注释：方向符固定窄宽，避免不同地区名称长度导致控件顺序漂移。
-        RSUI:Text({ id = "v3_life_trade_widget_to_label", parent = routeRow, text = "到", fontSize = 9, tone = "muted", -- 中文维护注释：目的地标签压缩为单字，仍复用旧 to label ID 保持 UI 诊断稳定。
+        RSUI:Text({ id = (instance.contentPrefix or "v3_life_trade_widget_") .. "to_label", parent = routeRow, text = "到", fontSize = 9, tone = "muted", -- 中文维护注释：目的地标签压缩为单字，仍复用旧 to label ID 保持 UI 诊断稳定。
             slot = { size = "fixed", width = 18 } }) -- 中文维护注释：固定 18px 防止标签挤占目的地下拉框。
-        instance.toDropdown = RSUI:Dropdown({ id = "v3_life_trade_widget_to", parent = routeRow, items = {}, maxVisible = 10, popupWidth = 210, placeholder = "目的地", -- 中文维护注释：目的地下拉仅缩减视觉尺寸，选区过滤与服务器货率 Authority 完全不变。
+        instance.toDropdown = RSUI:Dropdown({ id = (instance.contentPrefix or "v3_life_trade_widget_") .. "to", parent = routeRow, items = {}, maxVisible = 10, popupWidth = 210, placeholder = "目的地", -- 中文维护注释：目的地下拉仅缩减视觉尺寸，选区过滤与服务器货率 Authority 完全不变。
             get = function() return (Feature:GetRouteSettings() or {}).toZone end, set = function(v) return Feature.Commands:SetTo(v) end, -- 中文维护注释：继续通过 Feature Command 写路线，Widget 禁止直接改 Trade.State。
             slot = { size = "fill", fill = 1, minWidth = 100 } }) -- 中文维护注释：与起点等权自适应，保证紧凑窗口仍能清晰选择两个地区。
+        -- 中文维护注释（trade-refresh-shared-1）：首页与跑商悬浮窗都属于高频入口，均提供显式刷新。
+        -- 按钮只调用 Feature Command；SingleFlight/超时/服务器回调继续归 Trade Authority 所有，Presentation 不直接触碰 X2Store。
+        instance.refreshButton = RSUI:Button({ id = (instance.contentPrefix or "v3_life_trade_widget_") .. "refresh", parent = routeRow, text = "刷新", compact = true,
+            slot = { size = "fixed", width = 48 } })
+        instance.refreshButton.onClick = function()
+            local reason = instance.overview and "overview_manual" or "widget_manual"
+            local ok, refreshErr = Feature.Commands:Refresh(reason)
+            if ok == true then instance:Refresh() end
+            return ok, refreshErr
+        end
 
-        local modeRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_mode_row", parent = routeBox, gap = 4, -- 中文维护注释：第二行集中高频操作，减少鼠标移动和垂直占用。
+        local modeRow = RSUI:HorizontalBox({ id = (instance.contentPrefix or "v3_life_trade_widget_") .. "mode_row", parent = routeBox, gap = 4, -- 中文维护注释：第二行集中高频操作，减少鼠标移动和垂直占用。
             slot = { size = "fixed", height = 28, hAlign = "fill" } }) -- 中文维护注释：快捷动作保持单行 28px；功能启停/询价行为仍由 Feature Commands 负责。
-        instance.ratioButton = RSUI:Button({ id = "v3_life_trade_widget_ratio_mode", parent = modeRow, text = "实时货率", compact = true, -- 中文维护注释：缩短按钮文案但保留 current/full 二态 Command 语义。
+        instance.ratioButton = RSUI:Button({ id = (instance.contentPrefix or "v3_life_trade_widget_") .. "ratio_mode", parent = modeRow, text = "实时货率", compact = true, -- 中文维护注释：缩短按钮文案但保留 current/full 二态 Command 语义。
             slot = { size = "fill", fill = 1, minWidth = 70 } }) -- 中文维护注释：用弹性宽度适配 320px 最小窗口，不额外创建模式状态。
         instance.ratioButton.onClick = function()
             local projection = Feature:GetProjection() or {}
@@ -242,7 +315,7 @@ local ok, err = Register({
             if ok == true then instance:Refresh() end
             return ok, modeErr
         end
-        instance.commerceButton = RSUI:Button({ id = "v3_life_trade_widget_commerce_mode", parent = modeRow, text = "计熟练", compact = true, -- 中文维护注释：经商熟练度开关只改显示文案，实际售价公式仍由 TradePayoutV3/Feature Authority 提供。
+        instance.commerceButton = RSUI:Button({ id = (instance.contentPrefix or "v3_life_trade_widget_") .. "commerce_mode", parent = modeRow, text = "计熟练", compact = true, -- 中文维护注释：经商熟练度开关只改显示文案，实际售价公式仍由 TradePayoutV3/Feature Authority 提供。
             slot = { size = "fill", fill = 1, minWidth = 64 } }) -- 中文维护注释：最小 64px 保证中文状态可辨识，同时让询价/收藏按钮共存于同一行。
         instance.commerceButton.onClick = function()
             local projection = Feature:GetProjection() or {}
@@ -250,30 +323,35 @@ local ok, err = Register({
             if ok == true then instance:Refresh() end
             return ok, modeErr
         end
-        instance.quoteButton = RSUI:Button({ id = "v3_life_trade_widget_quote", parent = modeRow, text = "询价", compact = true, -- 中文维护注释：材料询价缩为高频短标签，SingleFlight/请求超时等 Authority 契约不在 Widget 中改动。
+        instance.quoteButton = RSUI:Button({ id = (instance.contentPrefix or "v3_life_trade_widget_") .. "quote", parent = modeRow, text = "询价", compact = true, -- 中文维护注释：材料询价缩为高频短标签，SingleFlight/请求超时等 Authority 契约不在 Widget 中改动。
             slot = { size = "fill", fill = 0.85, minWidth = 56 } }) -- 中文维护注释：询价按钮略低 fill 权重，优先给模式按钮留足状态文本空间。
         instance.quoteButton.onClick = function()
-            local ok, quoteErr = Feature.Commands:QuotePendingMaterials()
+            -- 中文维护注释（trade-floating-compact-1）：询价按钮自身承担“询价/取消询价”二态，
+            -- 避免悬浮窗为取消按钮再占一整行；批次状态/取消 Authority 仍在 Feature Commands。
+            local batch = (Feature:GetProjection() or {}).quoteBatch or {}
+            local ok, quoteErr
+            if batch.active then ok,quoteErr=Feature.Commands:CancelQuoteBatch(instance.overview and "home_cancel" or "widget_cancel")
+            else ok,quoteErr=Feature.Commands:QuotePendingMaterials() end
             if ok == true then instance:Refresh() end
             return ok, quoteErr
         end
-        instance.favoriteButton = RSUI:Button({ id = "v3_life_trade_widget_favorite_toggle", parent = modeRow, text = "收藏", compact = true, -- 中文维护注释：收藏切换搬到快捷动作行但保留原控件 ID/Command，旧用户数据无需迁移。
-            slot = { size = "fill", fill = 0.85, minWidth = 56 } }) -- 中文维护注释：与询价保持同等紧凑预算，不增加额外行高。
+        instance.favoriteButton = RSUI:Button({ id = (instance.contentPrefix or "v3_life_trade_widget_") .. "favorite_toggle", parent = modeRow, text = "收藏", compact = true, -- 中文维护注释：收藏切换搬到快捷动作行但保留原控件 ID/Command，旧用户数据无需迁移。
+            slot = { size = "fill", fill = 1.0, minWidth = 72 } }) -- 中文维护注释：“取消收藏”需完整可读，仍与其它快捷按钮共用同一行。
         instance.favoriteButton.onClick = function()
             local ok, favoriteErr = Feature.Commands:ToggleCurrentFavorite()
             if ok == true then instance:Refresh() end
             return ok, favoriteErr
         end
 
-        local favoriteRow = RSUI:HorizontalBox({ id = "v3_life_trade_widget_favorite_row", parent = routeBox, gap = 4, -- 中文维护注释：第三行合并收藏路线选择与排序，替代旧版额外排序行。
+        local favoriteRow = RSUI:HorizontalBox({ id = (instance.contentPrefix or "v3_life_trade_widget_") .. "favorite_row", parent = routeBox, gap = 4, -- 中文维护注释：第三行合并收藏路线选择与排序，替代旧版额外排序行。
             slot = { size = "fixed", height = 28, hAlign = "fill" } }) -- 中文维护注释：固定 28px 完成三行总高度约束，表格获得更多可见行。
-        instance.favoriteDropdown = RSUI:Dropdown({ id = "v3_life_trade_widget_favorite", parent = favoriteRow, items = {}, maxVisible = 10, popupWidth = 230, placeholder = "收藏路线", -- 中文维护注释：收藏路线 Popup 适度缩宽，列表数据仍完全来自 Feature projection。
+        instance.favoriteDropdown = RSUI:Dropdown({ id = (instance.contentPrefix or "v3_life_trade_widget_") .. "favorite", parent = favoriteRow, items = {}, maxVisible = 10, popupWidth = 230, placeholder = "收藏路线", -- 中文维护注释：收藏路线 Popup 适度缩宽，列表数据仍完全来自 Feature projection。
             get = function() local projection = Feature:GetProjection() or {}; return projection.currentRouteFavorite and projection.currentFavoriteKey or nil end, -- 中文维护注释：只读取投影中的当前收藏键，不在 Presentation 计算或复制收藏集合。
             set = function(value) return Feature.Commands:SelectFavorite(value) end, slot = { size = "fill", fill = 1.25, minWidth = 110 } }) -- 中文维护注释：收藏选择继续通过 Command 写入，较高 fill 权重保证长路线名称优先获得空间。
-        RSUI:Text({ id = "v3_life_trade_widget_sort_label", parent = favoriteRow, text = "排序", fontSize = 8, tone = "muted", -- 中文维护注释：排序标签缩小字号与宽度，为三段选择器留出稳定空间。
+        RSUI:Text({ id = (instance.contentPrefix or "v3_life_trade_widget_") .. "sort_label", parent = favoriteRow, text = "排序", fontSize = 8, tone = "muted", -- 中文维护注释：排序标签缩小字号与宽度，为三段选择器留出稳定空间。
             slot = { size = "fixed", width = 28 } }) -- 中文维护注释：固定标签宽度避免排序段因语言长度产生抖动。
         instance.sortSelector = RSUI:SegmentedSelector({
-            id = "v3_life_trade_widget_sort", parent = favoriteRow, itemWidth = 34, gap = 1, height = 22, fontSize = 8, -- 中文维护注释：复用稳定 sort ID，将三段选择器压缩到 104px 左右且保留 one-of-many 语义。
+            id = (instance.contentPrefix or "v3_life_trade_widget_") .. "sort", parent = favoriteRow, itemWidth = 34, gap = 1, height = 22, fontSize = 8, -- 中文维护注释：复用稳定 sort ID，将三段选择器压缩到 104px 左右且保留 one-of-many 语义。
             items = {
                 { value = "ratio", text = "货率" },
                 { value = "price", text = "售价" },
@@ -283,6 +361,8 @@ local ok, err = Register({
             set = function(value) return Feature.Commands:SetSortMode(value) end,
             slot = { size = "auto", hAlign = "right", vAlign = "fill" }, -- 中文维护注释：排序控件靠右固定自身宽度，收藏下拉框吸收剩余空间。
         })
+        -- 中文维护注释（trade-floating-compact-1）：悬浮窗删除独立询价控制行，把取消动作合并进 quoteButton。
+        -- “full”扩大询价 Command 保留在 Feature/完整管理页能力边界，不能因为紧凑 HUD 布局而删除业务接口。
         return instance.fromDropdown ~= nil and instance.toDropdown ~= nil and instance.ratioButton ~= nil
             and instance.commerceButton ~= nil and instance.quoteButton ~= nil and instance.favoriteDropdown ~= nil
             and instance.favoriteButton ~= nil and instance.sortSelector ~= nil, "跑商悬浮窗路线/模式/收藏控件创建失败"
@@ -291,18 +371,20 @@ local ok, err = Register({
         local fromItems, toItems = ZoneItems(projection.zones), ZoneItems(projection.sellableZones)
         if instance.fromDropdown then instance.fromDropdown:SetItems(fromItems); instance.fromDropdown:SetEnabled(#fromItems > 0); instance.fromDropdown:Render() end
         if instance.toDropdown then instance.toDropdown:SetItems(toItems); instance.toDropdown:SetEnabled(#toItems > 0); instance.toDropdown:Render() end
+        if instance.refreshButton then instance.refreshButton:SetEnabled(projection.fromZone ~= nil and projection.toZone ~= nil) end
         local pending = math.max(0, tonumber(projection.pendingQuoteCount) or 0)
         if instance.ratioButton then instance.ratioButton:SetText(projection.ratioMode == "full" and ("满" .. tostring(projection.fullRatio or 130) .. "%") or "实时货率") end -- 中文维护注释：刷新时使用短状态文案；ratioMode/fullRatio 仍只从 Feature projection 读取。
         if instance.commerceButton then instance.commerceButton:SetText(projection.commerceMode == "off" and "忽略熟练" or "计熟练") end -- 中文维护注释：经商模式只更新按钮文本，不在 Widget 重新计算熟练度或售价。
+        local batch=projection.quoteBatch or {}
         if instance.quoteButton then
-            instance.quoteButton:SetEnabled(pending > 0)
-            instance.quoteButton:SetText(pending > 0 and ("询价(" .. tostring(pending) .. ")") or "询价") -- 中文维护注释：保留待询价数量反馈，同时去掉冗长“材料”前缀以降低横向预算。
+            instance.quoteButton:SetEnabled(batch.active == true or (pending>0 and not batch.active))
+            instance.quoteButton:SetText(batch.active and "取消询价" or "询价(4)")
         end
         local favoriteItems = type(projection.favoriteItems) == "table" and projection.favoriteItems or {}
         if instance.favoriteDropdown then instance.favoriteDropdown:SetItems(favoriteItems); instance.favoriteDropdown:SetEnabled(#favoriteItems > 0); instance.favoriteDropdown:Render() end
         if instance.favoriteButton then
             instance.favoriteButton:SetEnabled(projection.fromZone ~= nil and projection.toZone ~= nil)
-            instance.favoriteButton:SetText(projection.currentRouteFavorite == true and "取消" or "收藏") -- 中文维护注释：当前路线已收藏时使用短“取消”状态，收藏事实仍由 Feature projection 决定。
+            instance.favoriteButton:SetText(projection.currentRouteFavorite == true and "取消收藏" or "收藏") -- 中文维护注释：显式写出“取消收藏”，避免与询价取消等动作产生歧义；收藏事实仍由 Feature projection 决定。
         end
         if instance.sortSelector then
             instance.sortSelector:SetEnabled(#(projection.rows or {}) > 0)
@@ -361,18 +443,34 @@ ok, err = Register({
     featureName = "Bonds", featureId = "life_bonds", widgetId = "life.bonds", token = "life_bonds", owner = "v3:widget:life_bonds",
     rootId = "v3_life_bonds_widget", contentId = "v3_life_bonds_widget_content", tableId = "v3_life_bonds_widget_table", title = "债券 / 居民板",
     emptyTitle = "暂无居民板条目", emptyDetail = "居民板事实不可用或当前筛选没有条目。",
+    selectable = true,
+    onSelection = function(instance, row, Feature)
+        if row == nil or row.key == nil then return false end
+        if type(Feature.Commands.SelectRow) == "function" then
+            return Feature.Commands:SelectRow(row.key)
+        end
+        return true
+    end,
+    onItemActivated = function(instance, row, Feature)
+        if row == nil then return false end
+        local floating = S.UIV3 and S.UIV3.QuestDetailFloatingV3 or nil
+        if type(floating) == "table" and type(floating.Open) == "function" then
+            return floating:Open("bonds", row.key, row)
+        end
+        return false
+    end,
     buildControls = function(instance, content, Feature)
         if type(Feature.GetBondFilter) ~= "function" or type(Feature.Commands.SetSortMode) ~= "function"
             or type(Feature.Commands.SetBondFilterOption) ~= "function" or type(Feature.Commands.SetDuplicatePriority) ~= "function" then
             return false, "债券悬浮窗筛选命令缺失"
         end
-        local bar = RSUI:HorizontalBox({ id = "v3_life_bonds_widget_toolbar", parent = content, gap = 4, slot = { size = "fixed", height = 28, hAlign = "fill" } })
+        local bar = RSUI:HorizontalBox({ id = (instance.contentPrefix or "v3_life_bonds_widget_") .. "toolbar", parent = content, gap = 4, slot = { size = "fixed", height = 28, hAlign = "fill" } })
         local function Apply(command)
             local ok, commandErr = command()
             if ok == true then instance:Refresh() end
             return ok, commandErr
         end
-        instance.bondSortButton = RSUI:Button({ id = "v3_life_bonds_widget_sort", parent = bar, text = "数量序", compact = true, slot = { size = "fixed", width = 62 } })
+        instance.bondSortButton = RSUI:Button({ id = (instance.contentPrefix or "v3_life_bonds_widget_") .. "sort", parent = bar, text = "数量序", compact = true, slot = { size = "fixed", width = 62 } })
         instance.bondSortButton.onClick = function()
             local state = Feature:GetBondFilter()
             return Apply(function() return Feature.Commands:SetSortMode(state.sortMode == "quantity" and "continent" or "quantity") end)
@@ -387,12 +485,12 @@ ok, err = Register({
             instance.bondFilterButtons[key] = button
             return button
         end
-        Toggle("v3_life_bonds_widget_q20", "20", "q20", 38)
-        Toggle("v3_life_bonds_widget_q60", "60", "q60", 38)
-        Toggle("v3_life_bonds_widget_q100", "100", "q100", 42)
-        Toggle("v3_life_bonds_widget_auroria", "原陆", "auroria", 48)
-        Toggle("v3_life_bonds_widget_dedupe", "去重", "excludeSame", 48)
-        instance.bondPriorityButton = RSUI:Button({ id = "v3_life_bonds_widget_priority", parent = bar, text = "优先西", compact = true, slot = { size = "fixed", width = 58 } })
+        Toggle((instance.contentPrefix or "v3_life_bonds_widget_") .. "q20", "20", "q20", 38)
+        Toggle((instance.contentPrefix or "v3_life_bonds_widget_") .. "q60", "60", "q60", 38)
+        Toggle((instance.contentPrefix or "v3_life_bonds_widget_") .. "q100", "100", "q100", 42)
+        Toggle((instance.contentPrefix or "v3_life_bonds_widget_") .. "auroria", "原陆", "auroria", 48)
+        Toggle((instance.contentPrefix or "v3_life_bonds_widget_") .. "dedupe", "去重", "excludeSame", 48)
+        instance.bondPriorityButton = RSUI:Button({ id = (instance.contentPrefix or "v3_life_bonds_widget_") .. "priority", parent = bar, text = "优先西", compact = true, slot = { size = "fixed", width = 58 } })
         instance.bondPriorityButton.onClick = function()
             local state = Feature:GetBondFilter()
             return Apply(function() return Feature.Commands:SetDuplicatePriority(state.priority == "west" and "east" or "west") end)

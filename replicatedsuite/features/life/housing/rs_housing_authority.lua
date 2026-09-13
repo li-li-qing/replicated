@@ -34,10 +34,11 @@ local function BoundedValue(value, depth, seen, budget)
 end
 
 local function Read(capability, method)
-    if S.Api == nil or type(S.Api.CallCapability) ~= "function" or X2House == nil then
+    local host = rawget(_G, "X2House") or X2House
+    if S.Api == nil or type(S.Api.CallCapability) ~= "function" or host == nil then
         return nil, "housing API unavailable"
     end
-    local ok, value, err = S.Api:CallCapability(capability, X2House, method)
+    local ok, value, err = S.Api:CallCapability(capability, host, method)
     if ok ~= true then return nil, err or "housing getter failed" end
     return value, nil
 end
@@ -75,6 +76,10 @@ function A:Refresh(reason)
         source = "X2House read-only",
         reason = tostring(reason or "refresh"),
     }
+    -- 中文维护注释：刷新完成后发布轻量事件，通知活跃页面更新，不持有持久化
+    if S.Events and type(S.Events.Publish) == "function" then
+        S.Events:Publish("v3.housing.updated", { revision = self.revision, reason = reason })
+    end
     return true
 end
 

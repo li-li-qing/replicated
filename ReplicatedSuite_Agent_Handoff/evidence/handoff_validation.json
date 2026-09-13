@@ -1,0 +1,31 @@
+{
+  "status": "passed",
+  "created_date": "2026-09-13",
+  "scope": "handoff structure, seed coverage and file integrity; not Agent behavior or game validation",
+  "checks": {
+    "handoff_local_markdown_links_checked": 9,
+    "unchanged_skill_members": 33,
+    "feature_counts": {
+      "registered": 40,
+      "incomplete": 24,
+      "incomplete_visible": 19,
+      "incomplete_hidden": 5
+    },
+    "queue_incomplete_routes_exactly_once": 24,
+    "reference_file_hashes_checked": 327,
+    "unchanged_input_archives": 10,
+    "runtime_or_user_data_files_added": 0
+  },
+  "executed_skill_tool_tests": {
+    "ran": 37,
+    "passed": 35,
+    "skipped": 2,
+    "failures": 0,
+    "exit_code": 0,
+    "skip_reason": "RS_TEST_LUA51 not set; genuine Lua5.1 tests not executed"
+  },
+  "game_runtime_tests": "not_run",
+  "agent_behavior_or_AB_evaluation": "not_run",
+  "user_local_checkout": "not_accessed",
+  "errors": []
+}

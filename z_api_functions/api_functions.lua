@@ -1,6 +1,6 @@
 ----------------------------------------------------------------------------------------
 -- ArcheRage RU API reference maintenance overlay
--- Updated: 2026-08-28
+-- Updated: 2026-09-12 (quest objective delta only; other sections retain 2026-08-28 basis)
 -- Basis: bundled snapshot + official ArcheRage RU addon update announcements.
 -- Important: 'officially enabled' is not identical to 'runtime verified'.
 -- See API_CHANGELOG_20260828.md and api_capabilities_ru_20260828.lua for restrictions,
@@ -4188,6 +4188,10 @@ MAX_QUEST_OBJECTIVE
 Allowed functions
 ----------------------------------------------------------------------------------------
 GetQuestContextMainTitle(type)
+-- RU officially enabled 2026-09-09; shape/index conventions still need client validation.
+-- https://ru.archerage.to/forums/threads/obnovlenie-09-09-2026.17558/
+GetQuestJournalObjectiveCount(idx)
+GetQuestJournalObjectiveText(idx, objIdx)
 SetTrackingActiveQuest(idx)
 GetActiveQuestListCount()
 GetActiveQuestType(idx)
@@ -4278,9 +4282,7 @@ GetQuestJournalSubTitleByType(type)
 GetQuestCategoryTextByType(type)
 GetQuestJournalProgTitle(idx)
 GetQuestJournalProgTitleByType(type)
-GetQuestJournalObjectiveCount(idx)
 GetQuestJournalObjectiveCountByType(type)
-GetQuestJournalObjectiveText(idx, objIdx)
 GetQuestJournalObjectiveTextByType(type, objIdx)
 GetQuestJournalBodyCount(idx)
 GetQuestJournalBodyText(idx, bodyIdx)

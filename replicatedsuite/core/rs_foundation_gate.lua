@@ -1433,7 +1433,13 @@ function G:Run(options)
             and type(buffDisplay.Commands.SetSetting) == "function" and type(buffDisplay.Commands.SetWidgetVisible) == "function"
             and type(buffDisplay.Commands.ApplySettingFromBinding) == "function" and type(buffDisplay.Commands.MarkStoreDirty) == "function"
             and type(buffDisplay.Commands.GetHudCalibrationSnapshot) == "function" and type(buffDisplay.Commands.PersistHudCalibrationSnapshot) == "function"
-            and buffDisplay.Demand ~= nil and buffDisplayStore ~= nil and tonumber(buffDisplayStore.schemaVersion) == 5
+            -- 中文维护注释：状态追踪已升级 schema6；旧 schema5 gate 必须同步，否则正常升级会误报阻断。
+            -- Gate 仅读模块版本，不把尚未实现的冷却运行时列为已通过能力。
+            and buffDisplay.Demand ~= nil and buffDisplayStore ~= nil and tonumber(buffDisplayStore.schemaVersion) == 6
+            and (tonumber(buffDisplay.Schema6TrackingMigrationContractVersion) or 0) >= 1
+            and (tonumber(buffDisplay.ManagementProjectionContractVersion) or 0) >= 1
+            and buffDisplay.TransferFormatVersion == 2
+            and type(S.Data and S.Data.StatusTrackingCatalogV3) == "table"
             and type(buffDisplayStore.rebuildCanonicalForIntegrity) == "function"
             and type(buffDisplayStore.recoverKnownLegacyCanonical) == "function"
             and (tonumber(buffDisplay.Schema5DualHudMigrationContractVersion) or 0) >= 1

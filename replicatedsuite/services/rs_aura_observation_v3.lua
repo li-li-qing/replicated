@@ -288,7 +288,9 @@ function A:GetSnapshot(unitId, options)
     for lane, limit in pairs(requested) do
         if limit > 0 then
             local existing = entry[lane]
-            local fresh = type(existing) == "table" and now - (tonumber(existing.at) or 0) <= ttlMs
+            -- 维护：留存模式的Buff/DeBuff事件可能在同一时钟刻度内增删；ttl=0仍会命中旧缓存。
+            -- 仅显式forceRefresh绕过缓存，其他消费者/常规轮询继续共享TTL，不改事实分类。
+            local fresh = options.forceRefresh~=true and type(existing) == "table" and now - (tonumber(existing.at) or 0) <= ttlMs
             local covered = fresh and (existing.complete == true or (tonumber(existing.limit) or 0) >= limit)
             if covered ~= true then
                 local scanned = self:_ScanLane(unitId, lane, limit)

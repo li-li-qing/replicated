@@ -95,4 +95,15 @@ C.byClassKey["name_4_9_10"]={role="healer", classType="Healer"}
 C.byClassKey["name_2_5_10"]={role="healer", classType="Healer"}
 C.byClassKey["name_2_3_10"]={role="healer", classType="Healer"}
 C.byClassKey["name_2_4_10"]={role="healer", classType="Healer"}
+-- 中文维护（enemy-loadout-1）：仅借用已存在客户端资源路径，不引入外部插件运行时。
+-- 来源：Strawberry-devs/ArcheRage-addons, classtracker/classtracker.lua,
+-- commit 6e7813108325d1631f10735cfe99aa48b0dd2ce4。中央类别图标与 byClassKey 同源匹配；
+-- 不修改原职责映射，不按名字猜测，不为 NPC/未知组合分配误导性图标。
+C.iconByClassType = {
+    Tank="ui/icon/icon_skill_adamant15.dds", Songer="ui/icon/icon_skill_romance15.dds",
+    Melee="ui/icon/icon_skill_fight37.dds", Archer="ui/icon/icon_skill_wild35.dds",
+    Mage="ui/icon/icon_skill_magic40.dds", Gunner="ui/icon/icon_skill_madness07.dds",
+    Malediction="ui/icon/icon_skill_hatred25.dds", Dancer="ui/icon/icon_skill_pleasure02.dds",
+    Swiftblade="ui/icon/icon_skill_assassin43.dds", Healer="ui/icon/icon_skill_love01.dds",
+}
 S.Data.TeamAutoRoleCatalog=C

@@ -1,0 +1,726 @@
+{
+  "revision": "2026.09.13-r2",
+  "recorded_date": "2026-09-13",
+  "skill_baseline": {
+    "archive": "skillforge-archerage-addon(1).zip",
+    "sha256": "95aaf758344d8c493d2150aacd964dcee06b36fdb0202bcee43b93a4623e2a42"
+  },
+  "scope": "只读源码取材与技能维护；未修改游戏运行代码。下列重建不证明用户本机覆盖顺序。",
+  "archive_chain": [
+    {
+      "order": 0,
+      "archive": "Addon(20260912-140314).zip",
+      "sha256": "09768a4ed71e8e8f0ff6c1e0196d729bca28980d1415ef992732a79f5f05726f",
+      "file_members": 310
+    },
+    {
+      "order": 1,
+      "archive": "ReplicatedSuite_20260912_BossAlerts_Patch.zip",
+      "sha256": "00939166f6633ec924b1b6714da635b6cc6568fa6f5673ea07f4cc8241dc6493",
+      "file_members": 8
+    },
+    {
+      "order": 2,
+      "archive": "ReplicatedSuite_20260912_BuffCap_Patch.zip",
+      "sha256": "781946fbf4d90794a3db6a5fd37c796df57cc4949daa62ba278f01adff30739d",
+      "file_members": 6
+    },
+    {
+      "order": 3,
+      "archive": "ReplicatedSuite_20260912_Persistence_Copy_Patch.zip",
+      "sha256": "8e3c39ba50dcc4f7881397541e931883bc60a2ea69fbef2a6bc06b42718512d3",
+      "file_members": 8
+    },
+    {
+      "order": 4,
+      "archive": "ReplicatedSuite_20260912_RandomShop_Patch.zip",
+      "sha256": "c9a4a67a4812ed9b29d5b086bf8db75674106f3fb49fad1594de3b97105f93e6",
+      "file_members": 8
+    },
+    {
+      "order": 5,
+      "archive": "ReplicatedSuite_20260913_EnemyTypes_BossHud_Patch.zip",
+      "sha256": "bc1f41b9b54489ab81883b7646dee721578e65314fec7ed5a103588a7b84833f",
+      "file_members": 16
+    },
+    {
+      "order": 6,
+      "archive": "ReplicatedSuite_20260913_PvpHud_Patch.zip",
+      "sha256": "ae242a75b1fc998e52e8e56018ae9857d96d490944adc35133c747114139c80a",
+      "file_members": 10
+    },
+    {
+      "order": 7,
+      "archive": "ReplicatedSuite_20260913_HudTemplate_Patch.zip",
+      "sha256": "e812744f656d29f7734dc88528a6281d88a7fea0065722b187c6c7d3cc043402",
+      "file_members": 3
+    },
+    {
+      "order": 8,
+      "archive": "ReplicatedSuite_20260913_HudTemplate_CopyFix_Patch.zip",
+      "sha256": "8735ee1ee08c667374a5658a732b923606ce877a601416a32fd7bebd5a790d15",
+      "file_members": 5
+    },
+    {
+      "order": 9,
+      "archive": "ReplicatedSuite_20260913_HudDefaults_Patch.zip",
+      "sha256": "e7a12b4c2e2aae54f943d7e6c6e13f4e3f2bb11a98f9a4353ca91e206e238f4b",
+      "file_members": 7
+    }
+  ],
+  "inspected_files": [
+    {
+      "path": "replicatedsuite/features/combat/buff_display/rs_buff_display_feature.lua",
+      "origin_archive": "ReplicatedSuite_20260913_PvpHud_Patch.zip",
+      "bytes": 108187,
+      "sha256": "0fd677f911a907be9fcc4084abd5000e64143f859177441f8386a6ab8325330e",
+      "anchors": [
+        {
+          "symbol": "LaneInterval",
+          "line_hits": [
+            240,
+            271,
+            321,
+            994
+          ]
+        },
+        {
+          "symbol": "_QueueEventRefresh",
+          "line_hits": [
+            1018,
+            1079,
+            1088,
+            1104,
+            1110
+          ]
+        },
+        {
+          "symbol": "_StartEvents",
+          "line_hits": [
+            1068,
+            1143
+          ]
+        },
+        {
+          "symbol": "pendingEdges",
+          "line_hits": [
+            77,
+            1025,
+            1046,
+            1047,
+            1128
+          ]
+        },
+        {
+          "symbol": "equipmentBackstopMs",
+          "line_hits": [
+            1238
+          ]
+        }
+      ],
+      "inspection": "读取上述相关片段、调用点和接口声明；未审查全文件每一行，不以维护注释单独证明现场因果。"
+    },
+    {
+      "path": "replicatedsuite/presentation/v3/widgets/rs_v3_buff_head_markers.lua",
+      "origin_archive": "ReplicatedSuite_20260913_PvpHud_Patch.zip",
+      "bytes": 53837,
+      "sha256": "17c116ffd58ab37ca87309f1cdc24c8577c9de2fa5a295bd4d3c9801c5523696",
+      "anchors": [
+        {
+          "symbol": "MakeIcon",
+          "line_hits": [
+            100,
+            182
+          ]
+        },
+        {
+          "symbol": "RenderScope",
+          "line_hits": [
+            656,
+            817
+          ]
+        },
+        {
+          "symbol": "Texture",
+          "line_hits": [
+            260,
+            262,
+            265,
+            266,
+            270,
+            330,
+            346,
+            642
+          ]
+        },
+        {
+          "symbol": "PvpPatch",
+          "line_hits": [
+            38,
+            891
+          ]
+        }
+      ],
+      "inspection": "读取上述相关片段、调用点和接口声明；未审查全文件每一行，不以维护注释单独证明现场因果。"
+    },
+    {
+      "path": "replicatedsuite/features/combat/buff_display/rs_buff_display_store.lua",
+      "origin_archive": "ReplicatedSuite_20260913_HudDefaults_Patch.zip",
+      "bytes": 72176,
+      "sha256": "abb164b1f885e0f828afdf3a8ede63a5f32856b74f2cb753960bf27483577df0",
+      "anchors": [
+        {
+          "symbol": "COMPONENT_DEFAULTS",
+          "line_hits": [
+            78,
+            99,
+            167,
+            240,
+            253,
+            315,
+            559,
+            560
+          ]
+        },
+        {
+          "symbol": "TARGET_EQUIPMENT_TEMPLATE",
+          "line_hits": [
+            101,
+            237
+          ]
+        },
+        {
+          "symbol": "VERIFIED_HUD_DEFAULT_PROFILE",
+          "line_hits": [
+            596,
+            644,
+            646
+          ]
+        },
+        {
+          "symbol": "isFreshDefault",
+          "line_hits": [
+            273,
+            320,
+            614,
+            641
+          ]
+        },
+        {
+          "symbol": "RebuildHistoricalCanonical",
+          "line_hits": [
+            659,
+            788
+          ]
+        }
+      ],
+      "inspection": "读取上述相关片段、调用点和接口声明；未审查全文件每一行，不以维护注释单独证明现场因果。"
+    },
+    {
+      "path": "replicatedsuite/services/rs_alerts_service.lua",
+      "origin_archive": "ReplicatedSuite_20260913_EnemyTypes_BossHud_Patch.zip",
+      "bytes": 13746,
+      "sha256": "25863ea7f249b6a21e917f58a53397f52eafba1330188e42d668a210916d3751",
+      "anchors": [
+        {
+          "symbol": "EnsureTimer",
+          "line_hits": [
+            106,
+            131,
+            153
+          ]
+        },
+        {
+          "symbol": "Maintain",
+          "line_hits": [
+            151
+          ]
+        },
+        {
+          "symbol": "Tick",
+          "line_hits": [
+            143,
+            154,
+            158,
+            160,
+            227
+          ]
+        },
+        {
+          "symbol": "countdownEndsAt",
+          "line_hits": [
+            35,
+            123,
+            162,
+            163,
+            181,
+            228
+          ]
+        },
+        {
+          "symbol": "currentOwnerKey",
+          "line_hits": [
+            35,
+            117,
+            119,
+            152,
+            182,
+            197,
+            215,
+            229
+          ]
+        }
+      ],
+      "inspection": "读取上述相关片段、调用点和接口声明；未审查全文件每一行，不以维护注释单独证明现场因果。"
+    },
+    {
+      "path": "replicatedsuite/presentation/v3/widgets/rs_v3_alert_hud.lua",
+      "origin_archive": "ReplicatedSuite_20260913_EnemyTypes_BossHud_Patch.zip",
+      "bytes": 10690,
+      "sha256": "5cbeeeb4b5ee0161406f37615ac85bc1668d9a0219f62ceefaece6ba57911a0e",
+      "anchors": [
+        {
+          "symbol": "WriteText",
+          "line_hits": [
+            73,
+            117,
+            124,
+            173,
+            186
+          ]
+        },
+        {
+          "symbol": "ApplyLayout",
+          "line_hits": [
+            92,
+            116,
+            140,
+            158
+          ]
+        },
+        {
+          "symbol": "EditLayout",
+          "line_hits": [
+            126,
+            174,
+            177
+          ]
+        },
+        {
+          "symbol": "boss-hud-clock-1",
+          "line_hits": [
+            3,
+            15
+          ]
+        }
+      ],
+      "inspection": "读取上述相关片段、调用点和接口声明；未审查全文件每一行，不以维护注释单独证明现场因果。"
+    },
+    {
+      "path": "replicatedsuite/ui/rs_ui_framework.lua",
+      "origin_archive": "ReplicatedSuite_20260913_PvpHud_Patch.zip",
+      "bytes": 92883,
+      "sha256": "42130f76e8fe7b752879cd9420024c6a13507a85ded7c8d49bb3f33887de4c90",
+      "anchors": [
+        {
+          "symbol": "report-selection-1",
+          "line_hits": [
+            99,
+            319,
+            531
+          ]
+        },
+        {
+          "symbol": "SetIconTexture",
+          "line_hits": [
+            1066,
+            1068,
+            1104
+          ]
+        },
+        {
+          "symbol": "EnsureIconTexture",
+          "line_hits": [
+            1067,
+            1097
+          ]
+        },
+        {
+          "symbol": "BeginNativeGeometryLease",
+          "line_hits": [
+            1114
+          ]
+        }
+      ],
+      "inspection": "读取上述相关片段、调用点和接口声明；未审查全文件每一行，不以维护注释单独证明现场因果。"
+    },
+    {
+      "path": "replicatedsuite/core/rs_persistence.lua",
+      "origin_archive": "ReplicatedSuite_20260912_Persistence_Copy_Patch.zip",
+      "bytes": 251114,
+      "sha256": "07bc50fb1ae347d525f7bed204d701bcb632808f99ab5b1a4a21018e24328121",
+      "anchors": [
+        {
+          "symbol": "signed-readback-1",
+          "line_hits": [
+            48
+          ]
+        },
+        {
+          "symbol": "TransportEncodeValueV3",
+          "line_hits": [
+            327,
+            354,
+            356,
+            448,
+            531
+          ]
+        },
+        {
+          "symbol": "readback_stamped_fingerprint_mismatch",
+          "line_hits": [
+            1438
+          ]
+        },
+        {
+          "symbol": "durableVerifyFailures",
+          "line_hits": [
+            154,
+            2749
+          ]
+        }
+      ],
+      "inspection": "读取上述相关片段、调用点和接口声明；未审查全文件每一行，不以维护注释单独证明现场因果。"
+    },
+    {
+      "path": "replicatedsuite/core/rs_report_copy_transport.lua",
+      "origin_archive": "Addon(20260912-140314).zip",
+      "bytes": 16275,
+      "sha256": "34473c99eadf5f6d23b1c97eb8507c0a8cab524fe48894f867e299407a6d9c87",
+      "anchors": [
+        {
+          "symbol": "Checksum",
+          "line_hits": [
+            17,
+            24,
+            26,
+            87,
+            126,
+            145,
+            152,
+            187
+          ]
+        },
+        {
+          "symbol": "BuildTextPages",
+          "line_hits": [
+            232
+          ]
+        },
+        {
+          "symbol": "GetTextPage",
+          "line_hits": [
+            253
+          ]
+        }
+      ],
+      "inspection": "读取上述相关片段、调用点和接口声明；未审查全文件每一行，不以维护注释单独证明现场因果。"
+    },
+    {
+      "path": "replicatedsuite/tools/rs_error_pages_decode.py",
+      "origin_archive": "Addon(20260912-140314).zip",
+      "bytes": 5312,
+      "sha256": "76794a4e65b27b16635a57783d4b871e320144020f447c10c2c0121c0b846458",
+      "anchors": [
+        {
+          "symbol": "decode_error_pages",
+          "line_hits": [
+            27,
+            112
+          ]
+        },
+        {
+          "symbol": "MAX_INPUT",
+          "line_hits": [
+            16,
+            31,
+            110
+          ]
+        },
+        {
+          "symbol": "exclusive",
+          "line_hits": [
+            7
+          ]
+        }
+      ],
+      "inspection": "读取上述相关片段、调用点和接口声明；未审查全文件每一行，不以维护注释单独证明现场因果。"
+    },
+    {
+      "path": "replicatedsuite/presentation/v3/widgets/rs_v3_buff_hud_calibration.lua",
+      "origin_archive": "ReplicatedSuite_20260913_HudTemplate_CopyFix_Patch.zip",
+      "bytes": 95624,
+      "sha256": "87ced47b16e7744de87480152c1b3b2554e3e87206bd625755bc0ff464161ee7",
+      "anchors": [
+        {
+          "symbol": "BuildTemplateSnapshotLines",
+          "line_hits": [
+            510,
+            738
+          ]
+        },
+        {
+          "symbol": "HUD_TEMPLATE_V2",
+          "line_hits": [
+            748
+          ]
+        },
+        {
+          "symbol": "TemplateCopyPatch",
+          "line_hits": [
+            584,
+            709,
+            747,
+            760
+          ]
+        }
+      ],
+      "inspection": "读取上述相关片段、调用点和接口声明；未审查全文件每一行，不以维护注释单独证明现场因果。"
+    },
+    {
+      "path": "replicatedsuite/tools/rs_status_refactor_test_runner.py",
+      "origin_archive": "ReplicatedSuite_20260913_HudDefaults_Patch.zip",
+      "bytes": 11595,
+      "sha256": "9ccf5b22a851af22df66f4570d25b5e71c1224edaba425c2bca505e3dc88dcf5",
+      "anchors": [
+        {
+          "symbol": "run_lua",
+          "line_hits": [
+            16,
+            156
+          ]
+        },
+        {
+          "symbol": "lua5.4",
+          "line_hits": [
+            3,
+            24,
+            26
+          ]
+        },
+        {
+          "symbol": "--syntax",
+          "line_hits": [
+            60
+          ]
+        }
+      ],
+      "inspection": "读取上述相关片段、调用点和接口声明；未审查全文件每一行，不以维护注释单独证明现场因果。"
+    },
+    {
+      "path": "z_api_functions/api_functions.lua",
+      "origin_archive": "Addon(20260912-140314).zip",
+      "bytes": 166274,
+      "sha256": "f9fd484e1bb05cfcb2e7ad6771706f4585066848e05a051680568ea2ff010b4a",
+      "anchors": [
+        {
+          "symbol": "UnitBuffTooltip",
+          "line_hits": [
+            5190
+          ]
+        },
+        {
+          "symbol": "UnitBuffCount",
+          "line_hits": [
+            5192
+          ]
+        },
+        {
+          "symbol": "GetUnitScreenPosition",
+          "line_hits": [
+            5203
+          ]
+        },
+        {
+          "symbol": "GetFocusedWidgetId",
+          "line_hits": [
+            5388
+          ]
+        }
+      ],
+      "inspection": "读取上述相关片段、调用点和接口声明；未审查全文件每一行，不以维护注释单独证明现场因果。"
+    },
+    {
+      "path": "z_api_functions/ui_functions.lua",
+      "origin_archive": "Addon(20260912-140314).zip",
+      "bytes": 61271,
+      "sha256": "b69ec0aa5cdb8f54a4da5723a69c37f5f7b9d0f64e3c6b53dc06925a3b5c62b6",
+      "anchors": [
+        {
+          "symbol": "SetText",
+          "line_hits": [
+            44,
+            305,
+            306,
+            307,
+            311,
+            327,
+            340,
+            445
+          ]
+        },
+        {
+          "symbol": "GetText",
+          "line_hits": [
+            310,
+            434,
+            484,
+            486,
+            487,
+            1391,
+            1423,
+            1424
+          ]
+        },
+        {
+          "symbol": "UseSelectAllWhenFocused",
+          "line_hits": [
+            459
+          ]
+        },
+        {
+          "symbol": "SetExtent",
+          "line_hits": [
+            1463,
+            1535,
+            1563
+          ]
+        }
+      ],
+      "inspection": "读取上述相关片段、调用点和接口声明；未审查全文件每一行，不以维护注释单独证明现场因果。"
+    }
+  ],
+  "lessons": [
+    {
+      "id": "RS-L17",
+      "title": "负整数回读差异",
+      "evidence_scope": "user symptoms + scoped source inspection; historical tests not rerun unless separately recorded",
+      "claim": "用户给出-2与0的canonical差异；源码保护负整数走已有n-token。无该次原始LoadData，Native内部原因仍是假设。",
+      "reference": "persistence-and-diagnostics.md"
+    },
+    {
+      "id": "RS-L18",
+      "title": "后续保存失败未入导出",
+      "evidence_scope": "user symptoms + scoped source inspection; historical tests not rerun unless separately recorded",
+      "claim": "加载正常不反证后续durable失败；导出当前未解决失败而非只枚举加载fence。",
+      "reference": "persistence-and-diagnostics.md"
+    },
+    {
+      "id": "RS-L19",
+      "title": "等待复制选区失效",
+      "evidence_scope": "user symptoms + scoped source inspection; historical tests not rerun unless separately recorded",
+      "claim": "用户报告延迟复制失败；不能据2秒推断定时SetText，应分查正文、几何和焦点。",
+      "reference": "diagnostic-report-workflow.md"
+    },
+    {
+      "id": "RS-L20",
+      "title": "倒计时是真实时钟链",
+      "evidence_scope": "user symptoms + scoped source inspection; historical tests not rerun unless separately recorded",
+      "claim": "期限、调度、Presenter确认分别验证；长帧/重复采样不能延长同段读条。",
+      "reference": "boss-alert-clock-and-layout.md"
+    },
+    {
+      "id": "RS-L21",
+      "title": "规则目录不是Boss全技能",
+      "evidence_scope": "user symptoms + scoped source inspection; historical tests not rerun unless separately recorded",
+      "claim": "少量静态规则与未收录实际读条不能证明瞬发或预测CD覆盖。",
+      "reference": "boss-alert-clock-and-layout.md"
+    },
+    {
+      "id": "RS-L22",
+      "title": "敌人装备类型不是物品",
+      "evidence_scope": "user symptoms + scoped source inspection; historical tests not rerun unless separately recorded",
+      "claim": "当前Buff可证明类型，不能显示敌方具体物品；同类型切换不必变图。",
+      "reference": "status-tracking-contracts.md"
+    },
+    {
+      "id": "RS-L23",
+      "title": "新增图标必须可校准",
+      "evidence_scope": "user symptoms + scoped source inspection; historical tests not rerun unless separately recorded",
+      "claim": "渲染/配置/校准/预览/导出/恢复闭环；自己目标不共用可变布局。",
+      "reference": "hud-template-and-defaults.md"
+    },
+    {
+      "id": "RS-L24",
+      "title": "事件洪流不能饿死装备",
+      "evidence_scope": "user symptoms + scoped source inspection; historical tests not rerun unless separately recorded",
+      "claim": "实际Queue合并原因并保留最早期限；检查执行中重入与失败安排。",
+      "reference": "pvp-hud-and-freshness.md"
+    },
+    {
+      "id": "RS-L25",
+      "title": "位置与内容分离",
+      "evidence_scope": "user symptoms + scoped source inspection; historical tests not rerun unless separately recorded",
+      "claim": "位置路径只跟随父容器，固定观察范围；不把理论间隔当实测性能。",
+      "reference": "pvp-hud-and-freshness.md"
+    },
+    {
+      "id": "RS-L26",
+      "title": "原生拒写不推进渲染缓存",
+      "evidence_scope": "user symptoms + scoped source inspection; historical tests not rerun unless separately recorded",
+      "claim": "保持pcall/逻辑接受/无变化三个含义；纹理失败不缓存新路径为已显示。",
+      "reference": "pvp-hud-and-freshness.md"
+    },
+    {
+      "id": "RS-L27",
+      "title": "模板复制要双层校验",
+      "evidence_scope": "user symptoms + scoped source inspection; historical tests not rerun unless separately recorded",
+      "claim": "先逐页字节/Adler32，再检查11条V2结构；草稿导出不是保存或应用。",
+      "reference": "hud-template-and-defaults.md"
+    },
+    {
+      "id": "RS-L28",
+      "title": "发行默认与旧canonical分开",
+      "evidence_scope": "user symptoms + scoped source inspection; historical tests not rerun unless separately recorded",
+      "claim": "读取到fresh默认覆盖层及历史规范化保留；不更新时强改已保存布局。",
+      "reference": "hud-template-and-defaults.md"
+    },
+    {
+      "id": "RS-L29",
+      "title": "Lua5.4结果不能升级成5.1",
+      "evidence_scope": "user symptoms + scoped source inspection; historical tests not rerun unless separately recorded",
+      "claim": "实际旧测试runner允许5.4兜底；新技能工具缺5.1就blocked，不伪装客户端验收。",
+      "reference": "runtime-and-api.md"
+    },
+    {
+      "id": "RS-L30",
+      "title": "技能评测的三种证据",
+      "evidence_scope": "user symptoms + scoped source inspection; historical tests not rerun unless separately recorded",
+      "claim": "文档/工具/独立Agent效果分开；本轮未执行Agent A/B与RU客户端。",
+      "reference": "feedback.md"
+    }
+  ],
+  "external_sources": [
+    {
+      "url": "https://www.lua.org/manual/5.1/manual.html",
+      "checked": "2026-09-13",
+      "scope": "Lua5.1语言/标准库，非RU沙箱"
+    },
+    {
+      "url": "https://agentskills.io/specification",
+      "checked": "2026-09-13",
+      "scope": "技能包结构，不证明所有宿主安装/发现行为"
+    }
+  ],
+  "validation_limits": [
+    "未运行RU客户端或真实剪贴板/多人PVP",
+    "未执行独立Agent无技能/有技能A/B",
+    "未重新确认当前RU权限公告；历史API声明仍按原日期适用",
+    "本机缺Lua5.1 CLI；源码下载因DNS不可用失败，不把Lua5.4结果称为5.1"
+  ],
+  "privacy": "不打包玩家名称、原始日志/UDF、账号目录、项目源码、截图或Lua解释器；只含摘要与脱敏案例。",
+  "executions_this_revision": {
+    "reference": "../validation/results.json",
+    "note": "本次执行Python工具与16组Lua5.4纯协议互通；未重跑整项目回归。"
+  }
+}

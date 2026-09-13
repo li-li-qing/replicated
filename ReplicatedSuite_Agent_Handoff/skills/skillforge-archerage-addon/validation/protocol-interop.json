@@ -1,0 +1,122 @@
+{
+  "scope": "actual project Lua report producer -> new skill Python receiver; pure protocol only",
+  "runtime": "Lua 5.4",
+  "project_transport_sha256": "34473c99eadf5f6d23b1c97eb8507c0a8cab524fe48894f867e299407a6d9c87",
+  "tests": [
+    {
+      "case": "interop-0-512",
+      "capacity": 512,
+      "pages": 1,
+      "raw_bytes": 0,
+      "passed": true
+    },
+    {
+      "case": "interop-0-875",
+      "capacity": 875,
+      "pages": 1,
+      "raw_bytes": 0,
+      "passed": true
+    },
+    {
+      "case": "interop-0-4096",
+      "capacity": 4096,
+      "pages": 1,
+      "raw_bytes": 0,
+      "passed": true
+    },
+    {
+      "case": "interop-0-32768",
+      "capacity": 32768,
+      "pages": 1,
+      "raw_bytes": 0,
+      "passed": true
+    },
+    {
+      "case": "interop-1-512",
+      "capacity": 512,
+      "pages": 1,
+      "raw_bytes": 39,
+      "passed": true
+    },
+    {
+      "case": "interop-1-875",
+      "capacity": 875,
+      "pages": 1,
+      "raw_bytes": 39,
+      "passed": true
+    },
+    {
+      "case": "interop-1-4096",
+      "capacity": 4096,
+      "pages": 1,
+      "raw_bytes": 39,
+      "passed": true
+    },
+    {
+      "case": "interop-1-32768",
+      "capacity": 32768,
+      "pages": 1,
+      "raw_bytes": 39,
+      "passed": true
+    },
+    {
+      "case": "interop-2-512",
+      "capacity": 512,
+      "pages": 15,
+      "raw_bytes": 3210,
+      "passed": true
+    },
+    {
+      "case": "interop-2-875",
+      "capacity": 875,
+      "pages": 6,
+      "raw_bytes": 3210,
+      "passed": true
+    },
+    {
+      "case": "interop-2-4096",
+      "capacity": 4096,
+      "pages": 1,
+      "raw_bytes": 3210,
+      "passed": true
+    },
+    {
+      "case": "interop-2-32768",
+      "capacity": 32768,
+      "pages": 1,
+      "raw_bytes": 3210,
+      "passed": true
+    },
+    {
+      "case": "interop-3-512",
+      "capacity": 512,
+      "pages": 5,
+      "raw_bytes": 720,
+      "passed": true
+    },
+    {
+      "case": "interop-3-875",
+      "capacity": 875,
+      "pages": 2,
+      "raw_bytes": 720,
+      "passed": true
+    },
+    {
+      "case": "interop-3-4096",
+      "capacity": 4096,
+      "pages": 1,
+      "raw_bytes": 720,
+      "passed": true
+    },
+    {
+      "case": "interop-3-32768",
+      "capacity": 32768,
+      "pages": 1,
+      "raw_bytes": 720,
+      "passed": true
+    }
+  ],
+  "passed": 16,
+  "failed": 0,
+  "game_run": false
+}

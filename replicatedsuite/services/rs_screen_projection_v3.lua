@@ -20,7 +20,10 @@ local P = S.Services.ScreenProjectionV3
 -- space. Suite addonScale is deliberately excluded from this coordinate path.
 -- v9+ returns raw coordinates, culls camera-behind via depth, and records the
 -- exact failure reason for every rejected read.
-P.version = 13
+P.version = 14
+-- 维护 2026-09-12：本轮只修正批量投影的事实依赖/深度否决，不改raw坐标尺度。
+P.NativeScreenIndependentWorldContractVersion = 1
+P.NativeDepthVetoContractVersion = 1
 P.presentationBoundary = "service_only"
 P.EasyPullWorldToScreenContractVersion = 2
 P.UiParentScreenCoordinateContractVersion = 1
@@ -30,6 +33,18 @@ P.metrics = P.metrics or { unitReads=0, worldReads=0, nativeProjects=0, cameraPr
 P.metrics.failuresByReason = P.metrics.failuresByReason or {}
 
 local function N(v) v=tonumber(v); if v==nil or v~=v or v==math.huge or v==-math.huge then return nil end; return v end
+
+-- 维护：UIParent raw视口和投影事实由同一个Service提供，Presentation不再自己查询Native。
+-- 来源与现有相机frame一致，不采用Layout logical大小或除以UIScale；失败显式返回unknown，
+-- 下游只取消裁剪而不取消有限坐标的绘制。按需两个只读getter，无任务/常驻尺寸缓存。
+function P:GetUiParentViewport()
+    if UIParent==nil or type(UIParent.GetScreenWidth)~="function" or type(UIParent.GetScreenHeight)~="function" then return nil,nil end
+    local okW,w=pcall(UIParent.GetScreenWidth,UIParent)
+    local okH,h=pcall(UIParent.GetScreenHeight,UIParent)
+    w,h=N(w),N(h)
+    if not okW or not okH or w==nil or h==nil or w<=1 or h<=1 then return nil,nil end
+    return w,h
+end
 
 -- Single funnel for every rejected read so one paste can name the reason.
 local function RecordFailure(reason)
@@ -479,7 +494,10 @@ function P:ProjectUnitBatch(unitTokens, options)
         local fact=facts[token]
         local worldAvailable=fact.wx~=nil and (not requireFront or fact.forward~=nil)
         local definitelyBehind=requireFront and worldAvailable and fact.forward<=frontEpsilon
-        if worldAvailable and (not definitelyBehind or fact.aliasCandidate==true) then
+        -- 维护：非strict调用原本也必须先有world才读screen，导致焦点world暂缺时
+        -- 连有效screen也被丢弃。Authority是本次Native screen；world仅提供可选回退。
+        -- strict消费者仍须证明world/front，不重启以前因RU空间不一致禁用的全局相机门。
+        if not requireFront or (worldAvailable and (not definitelyBehind or fact.aliasCandidate==true)) then
             local x,y,depth,err=self:ProjectUnit(token)
             fact.nativeX,fact.nativeY,fact.nativeDepth,fact.nativeErr=x,y,depth,err
         end
@@ -513,6 +531,11 @@ function P:ProjectUnitBatch(unitTokens, options)
             out[token]={visible=false,reason=fact.worldErr or "unit_world_position_unavailable"}
         elseif requireFront and forward<=frontEpsilon and fact.worldAliased~=true then
             self.metrics.behindCameraRejects=(tonumber(self.metrics.behindCameraRejects) or 0)+1
+            out[token]={visible=false,reason="behind_camera",forward=forward}
+        elseif fact.nativeErr=="behind_camera" then
+            -- 维护：ProjectUnit已取得明确的非正深度。旧分支把这种“不可见”当读取缺失，
+            -- 再用world回退复活端点，生成朝屏幕边缘的假线。禁止任何fallback覆盖此否决；
+            -- 缺少depth仍保留旧接口兼容，不把缺值编造成behind。
             out[token]={visible=false,reason="behind_camera",forward=forward}
         elseif fact.worldAliased==true then
             -- Do NOT use the camera projection here: it was derived from the
@@ -578,13 +601,22 @@ function P:ProjectUnitBatch(unitTokens, options)
                     sourceName="world_fallback"
                 end
             end
-            if x~=nil and y~=nil then
+            if x~=nil and y~=nil and (depth==nil or depth>0) then
                 out[token]={visible=true,x=x,y=y,depth=depth or 1,source=sourceName,forward=forward}
+            elseif depth~=nil and depth<=0 then
+                -- 同一可见性约束也应用于world Native返回值，不能把负深度标成visible。
+                out[token]={visible=false,reason="behind_camera",forward=forward}
             else
                 out[token]={visible=false,reason=err or "unit_projection_unavailable",forward=forward}
             end
             end
         end
+    end
+    -- 维护：仅返还本次端点证据，不跨帧缓存目标或打印聊天。调用方最多保留自身有限token；
+    -- screen/world错误分开，避免下一次仍只收到 unit_projection_unavailable 无法定位层级。
+    for _,token in ipairs(ordered) do
+        local row,fact=out[token],facts[token]
+        if row and fact then row.nativeError=fact.nativeErr;row.worldError=fact.worldErr end
     end
     return out,"ready"
 end

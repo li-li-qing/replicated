@@ -149,6 +149,13 @@ local function Build(parent, route, feature, kind)
             if type(panel) ~= "table" or type(panel.Open) ~= "function" then return false, "跑商诊断面板不可用" end
             return panel:Open()
         end
+        -- 维护：报价预算/取消统一走Feature，三处视图共享同一批次；此行只显示进度。
+        local qb=RSUI:HorizontalBox({id="v3_trade_quote_budget",parent=root,gap=6,slot={size="fixed",height=28}})
+        root.tradeCancelQuote=RSUI:Button({id="v3_trade_cancel_quote",parent=qb,text="取消询价",compact=true,slot={size="fixed",width=90}})
+        root.tradeCancelQuote.onClick=function()return feature.Commands:CancelQuoteBatch("user")end
+        root.tradeFullQuote=RSUI:Button({id="v3_trade_full_quote",parent=qb,text="扩大询价(最多4项)",compact=true,slot={size="fixed",width=140}})
+        root.tradeFullQuote.onClick=function()return feature.Commands:QuotePendingMaterials("full")end
+        root.tradeQuoteProgress=RSUI:Text({id="v3_trade_quote_progress",parent=qb,text="默认仅提示品质；扩大查询才搜索其他品质/名称。",fontSize=9,overflow="ellipsis",slot={size="fill",fill=1}})
         root.tradeRatioModeButton, root.tradeCommerceModeButton, root.tradeQuoteButton = tradeRatioModeButton, tradeCommerceModeButton, tradeQuoteButton
     elseif kind == "bonds" then
         local sortButton = RSUI:Button({ id = "v3_bonds_sort", parent = actionRow, text = "按数量排序", compact = true, slot = { size = "fixed", width = 108 } })
@@ -169,6 +176,17 @@ local function Build(parent, route, feature, kind)
         local priorityButton = RSUI:Button({ id = "v3_bonds_priority", parent = actionRow, text = "优先西", compact = true, slot = { size = "fixed", width = 64 } })
         priorityButton.onClick = function() local state = bondState(); return runBondCommand(function() return feature.Commands:SetDuplicatePriority(state.priority == "west" and "east" or "west") end) end
         root.bondPriorityButton = priorityButton
+        local detailButton = RSUI:Button({ id = "v3_bonds_detail", parent = actionRow, text = "查看详情", compact = true, slot = { size = "fixed", width = 84 } })
+        detailButton.onClick = function()
+            local selected = type(feature.GetSelectedRow) == "function" and feature:GetSelectedRow() or nil
+            if selected == nil then return false, "请先选择一条居民板任务" end
+            local floating = S.UIV3 and S.UIV3.QuestDetailFloatingV3 or nil
+            if type(floating) == "table" and type(floating.Open) == "function" then
+                return floating:Open("bonds", selected.key, selected)
+            end
+            return false, "任务详情浮窗不可用"
+        end
+        root.bondDetailButton = detailButton
     elseif kind == "fishing" then
         local autoButton = RSUI:Button({ id = "v3_fishing_auto", parent = actionRow, text = "自动 R 已阻塞", compact = true, slot = { size = "fixed", width = 118 } })
         autoButton.onClick = function()
@@ -219,7 +237,7 @@ local function Build(parent, route, feature, kind)
 
     local tableView = RSUI:TableView({
         id = "v3_" .. kind .. "_table", parent = root, items = {}, rowHeight = 26, headerHeight = 27, desiredRows = 12,
-        scrollbar = true, selectable = kind == "treasure" or kind == "trade", selectionMode = "single", columnResize = true, headerInteractive = false,
+        scrollbar = true, selectable = kind == "treasure" or kind == "trade" or kind == "bonds", selectionMode = "single", columnResize = true, headerInteractive = false,
         columns = kind == "trade" and {
             { id = "name", title = "货物", field = "name", size = "fill", minWidth = 150 },
             { id = "rate", title = "货率", field = "rate", size = "fixed", width = 70, minWidth = 60, getTone = function(item) return item and item.tone or "muted" end },
@@ -263,6 +281,25 @@ local function Build(parent, route, feature, kind)
             local ok, selectErr = feature.Commands:Select(row.key)
             if ok == true then root:Refresh() end
             return ok, selectErr
+        end
+    elseif kind == "bonds" then
+        tableView.onSelectionChanged = function(index)
+            local row = tableView:GetItem(index)
+            if row == nil or row.key == nil then return false end
+            if type(feature.Commands) == "table" and type(feature.Commands.SelectRow) == "function" then
+                feature.Commands:SelectRow(row.key)
+            end
+            if root.bondDetailButton then root.bondDetailButton:SetEnabled(true) end
+            return true
+        end
+        tableView.onItemActivated = function(index)
+            local row = tableView:GetItem(index)
+            if row == nil then return false end
+            local floating = S.UIV3 and S.UIV3.QuestDetailFloatingV3 or nil
+            if type(floating) == "table" and type(floating.Open) == "function" then
+                return floating:Open("bonds", row.key, row)
+            end
+            return false
         end
     end
 
@@ -312,10 +349,14 @@ local function Build(parent, route, feature, kind)
                 root.tradeCommerceModeButton:SetEnabled(enabled)
                 root.tradeCommerceModeButton:SetText(projection.commerceMode == "off" and "熟练：忽略" or "熟练：计入")
             end
+            local batch=projection.quoteBatch or {}
             if root.tradeQuoteButton then
-                root.tradeQuoteButton:SetEnabled(enabled and pendingQuotes > 0)
-                root.tradeQuoteButton:SetText(pendingQuotes > 0 and ("材料询价 (" .. tostring(pendingQuotes) .. ")") or "材料询价")
+                root.tradeQuoteButton:SetEnabled(enabled and pendingQuotes>0 and not batch.active)
+                root.tradeQuoteButton:SetText(batch.active and "询价中" or "材料询价(4)")
             end
+            root.tradeCancelQuote:SetEnabled(enabled and batch.active==true)
+            root.tradeFullQuote:SetEnabled(enabled and not batch.active and #rows>0)
+            root.tradeQuoteProgress:SetText((batch.active and "进行中 " or "本批完成 ")..tostring(batch.completed or 0).."/"..tostring(batch.total or 0).." · 未报价 "..pendingQuotes.." · 失败 "..tostring(batch.failed or 0).."；扩大询价才扫描其他品质。")
             local dropdownHint = ""
             if enabled then
                 if #fromItems == 0 then dropdownHint = dropdownHint .. " · 起点下拉不可用：地区未读取" end
@@ -384,6 +425,10 @@ local function Build(parent, route, feature, kind)
                 root.bondFilterButtons.excludeSame:SetText(bondFilter.excludeSame and "去重✓" or "去重×")
             end
             if root.bondPriorityButton then root.bondPriorityButton:SetText(bondFilter.priority == "east" and "优先东" or "优先西") end
+            if root.bondDetailButton then
+                local selected = type(feature.GetSelectedRow) == "function" and feature:GetSelectedRow() or nil
+                root.bondDetailButton:SetEnabled(enabled and selected ~= nil)
+            end
             if widgetButton then
                 widgetButton:SetEnabled(enabled)
                 widgetButton:SetText(WidgetHost:IsVisible("life.bonds") and "关闭悬浮窗" or "打开悬浮窗")

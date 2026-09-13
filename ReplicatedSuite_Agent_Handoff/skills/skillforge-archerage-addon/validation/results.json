@@ -1,0 +1,73 @@
+{
+  "revision": "2026.09.13-r2",
+  "scope": "skill tools and pure report protocol, not whole-addon tests",
+  "python_version": "3.13.5",
+  "unit_tests": {
+    "methods": 37,
+    "passed": 35,
+    "failed": 0,
+    "skipped": 2,
+    "skip_reason": "real Lua5.1 CLI not available",
+    "command": "python -m unittest discover -s tests -v"
+  },
+  "red_green": {
+    "initial_baseline": "26 expected failures: four requested tools absent; structural/tool capability failure, not model behavior",
+    "hardening": "duplicate JSON key and Python syntax fixtures failed before validator changes, then passed",
+    "variant_guard": "Synthetic LuaJIT version-alias case failed before probe variant check, then passed; not an executed LuaJIT runtime."
+  },
+  "lua51_gate": {
+    "status": "blocked",
+    "checked": 0,
+    "passed": 0,
+    "failed": 0,
+    "files": [],
+    "scope": "text syntax only; no chunks executed; no RU verification",
+    "reason": "lua51_executable_not_found"
+  },
+  "protocol_interop": {
+    "cases": 16,
+    "passed": 16,
+    "failed": 0,
+    "producer_runtime": "Lua 5.4",
+    "producer": "actual project core/rs_report_copy_transport.lua",
+    "scope": "protocol only; no Native or game"
+  },
+  "provided_hud_report": {
+    "status": "verified_copy",
+    "pages": 3,
+    "wire_bytes": 1552,
+    "wire_check": "9BF4FA11",
+    "raw_bytes": 1539,
+    "raw_check": "3486F051"
+  },
+  "behavior_eval": {
+    "specifications": 52,
+    "new_specifications": 26,
+    "executed": 0,
+    "status": "not_run"
+  },
+  "trigger_eval": {
+    "specifications": 27,
+    "new_specifications": 10,
+    "executed": 0,
+    "status": "not_run"
+  },
+  "game_client": "not_run",
+  "independent_agent_review": "not_run; manual code review and unit tests only",
+  "runtime_project_modified": false,
+  "final_zip_requirement": "Re-extract final ZIP, rerun structure/unit tests, compare full and delta overlay; see external release notes for final ZIP hashes.",
+  "limitations": [
+    "Filename screening is not content-based secret detection",
+    "Syntax is not runtime/API verification",
+    "Protocol checksum is not authenticity or semantic completeness",
+    "No current RU API permission revalidation",
+    "Tool tests do not prove agent compliance"
+  ],
+  "tested_tool_sha256": {
+    "audit_patch.py": "93c6e22830fa4e14580b9222e1bc26fe3488539274c34ea1b8ec584fd2fe47df",
+    "check_lua51.py": "23f5f2bf753cc47d927a862a0b4bdd38988460ccec20d3248b7ec1ee2b90323e",
+    "verify_report.py": "f5c77a7c805e1d973fe101b2974cf903ae2a02fe75ffec8c088190f8e0073eb4",
+    "verify_skill.py": "51ce7f315ffdb2102a229a25ef87d8721c0b594c6e061a8f40b2891383ca391b"
+  },
+  "test_source_sha256": "30b9aae9a3f7dd72a49dd285f842dee7d5f1e606fb6a929896a830f95010f1ec"
+}

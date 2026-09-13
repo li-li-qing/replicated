@@ -35,14 +35,24 @@ local function Call(capability, object, method, ...)
     -- loaded. A load-time rawget may therefore be nil even though the namespace
     -- becomes valid before the first feature read. Let the central API boundary
     -- resolve a nil host from the registered capability at call time.
-    return S.Api:CallCapability(capability, object, method, ...)
+    local host = object
+    if host == nil or (method and host[method] == nil) then
+        local ns = capability:match("^([^:]+)")
+        if ns then host = rawget(_G, ns) or host end
+    end
+    return S.Api:CallCapability(capability, host, method, ...)
 end
 
 local function Action(capability, object, method, ...)
     if S.Api == nil or type(S.Api.ActionCapability) ~= "function" then
         return false, "API boundary unavailable"
     end
-    return S.Api:ActionCapability(capability, object, method, ...)
+    local host = object
+    if host == nil or (method and host[method] == nil) then
+        local ns = capability:match("^([^:]+)")
+        if ns then host = rawget(_G, ns) or host end
+    end
+    return S.Api:ActionCapability(capability, host, method, ...)
 end
 
 local function PersistLifeMutation(feature, reason, mutator)
@@ -100,13 +110,15 @@ end
 -- IGNORES its input and always builds a fresh default table, which made the
 -- canonical fingerprint CONTENT-BLIND (every value hashed to the default
 -- shape, so real corruption verified as healthy).
-local function RegisterStore(id, owner, default, get, apply, migrate, budget)
+-- 维护：历史桥作为 Store 声明注册，不在运行中偷偷修改 Core/其他模块。旧调用参数仍兼容。
+local function RegisterStore(id, owner, default, get, apply, migrate, budget, rebuildCanonicalForIntegrity)
     if P:GetStore(id) == nil then
         local store, err = P:RegisterV3Store({
             id = id, owner = owner, scope = P.Scope.Account, lifetime = P.Lifetime.Permanent,
             schemaVersion = 1, legacySchemaVersion = 0, key = P.V3KeyPrefix .. id:gsub("[^%w]", "_"),
             budget = budget or { maxDepth = 6, maxNodes = 320, maxStringBytes = 8192, maxEntriesPerTable = 160 },
             default = default, get = get, apply = apply, migrate = migrate or default,
+            rebuildCanonicalForIntegrity = rebuildCanonicalForIntegrity, -- 维护：仅显式声明的 Store 启用；其他生活模块不受影响。
         })
         if store == nil then error(err or ("store register failed: " .. id)) end
     end
@@ -158,12 +170,20 @@ function Trade:GetWidgetWindowState() -- 中文维护注释：跑商悬浮窗使
     return state -- 中文维护注释：Presentation 只消费兼容后的副本；后续用户真实拖拽/缩放仍由统一 SetWidgetWindowState 持久化。
 end -- 中文维护注释：结束跑商悬浮窗兼容状态读取。
 local TA = Trade.Authority
-TA.RouteRefreshRetryContractVersion = 2
+TA.RouteRefreshRetryContractVersion = 3
 TA.SingleFlightLatestRouteContractVersion = 1
-TA.RequestTimeoutContractVersion = 1
+TA.RequestTimeoutContractVersion = 3
+TA.NativeCooldownContractVersion = 2
 TA.requestTimeoutTask = "v3_trade_route_timeout"
+TA.requestDeferredTask = "v3_trade_route_deferred"
 TA.requestSerial = tonumber(TA.requestSerial) or 0
 TA.pendingRoute = nil
+TA.pendingRetryCount = nil
+TA.timedOutFlight = nil
+TA.responseSlaMs = 6500
+TA.lastNativeCooldownMs = tonumber(TA.lastNativeCooldownMs) or 0
+TA.nextNativeRequestAt = tonumber(TA.nextNativeRequestAt) or 0
+TA.lastResponseTimeoutMs = tonumber(TA.lastResponseTimeoutMs) or 6500
 TA.sellableCache = {}
 TA.TradePayoutProjectionContractVersion = 1
 local TRADE_CONTINENT_ORDER = { west = 1, east = 2, auroria = 3, other = 4 }
@@ -481,9 +501,8 @@ local function BuildTradeMaterialProjection(row)
             if type(quoteQueue) == "table" and type(quoteQueue.GetQuoteStateByItemType) == "function" then
                 quoteState = quoteQueue:GetQuoteStateByItemType(itemType, itemGrade)
             end
-            if quoteState ~= nil and quoteState.status == "ready" and quoteState.price ~= nil then
-                quotedPrice, priceProvenance = quoteState.price, "live"
-            elseif quoteState == nil and type(quoteQueue) == "table" and type(quoteQueue.GetPriceWithProvenance) == "function" then
+            -- 维护：缓存新鲜度由QuoteService决定，不能把旧ready状态永久当实时价。
+            if type(quoteQueue) == "table" and type(quoteQueue.GetPriceWithProvenance) == "function" then
                 quotedPrice, priceProvenance = quoteQueue:GetPriceWithProvenance(itemType, itemGrade)
             end
             if quotedPrice ~= nil and priceProvenance ~= "reference" then
@@ -791,11 +810,13 @@ function TA:RefreshCommerceSkill()
 end
 
 function TA:RefreshQuotedMaterial(materialKey)
+    -- 维护：100ms合并器传入受影响key集合；一条货物最多重建一次，不能只刷新首个材料。
+    local keys=type(materialKey)=="table" and materialKey or {[materialKey]=true}
     local changed = false
     for _, row in ipairs(self.rows or {}) do
         local affected = false
         for _, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
-            if material.materialKey == materialKey then affected = true; break end
+            if keys[material.materialKey] then affected = true; break end
         end
         if affected then ApplyTradeMaterialProjectionToRow(row); changed = true end
     end
@@ -964,21 +985,87 @@ function TA:CancelRequestTimeout()
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.requestTimeoutTask) end
 end
 
-function TA:ArmRequestTimeout(serial)
+-- 中文维护注释（trade-native-cooldown-1）：官方客户端会使用 GetSpecialtyRatioBetween 的返回值
+-- 作为查询按钮冷却时间。旧实现忽略该值并固定 6.5 秒超时，可能在服务器仍处于查询冷却时
+-- 先释放 SingleFlight，导致稍后到达的 SPECIALTY_RATIO_BETWEEN_INFO 被当成“无在飞请求”丢弃。
+-- Authority 在这里统一维护冷却；Presentation 不猜时序，也不自行重复发请求。
+function TA:GetNativeCooldownRemaining()
+    local now = S.NowMs and tonumber(S.NowMs()) or 0
+    return math.max(0, (tonumber(self.nextNativeRequestAt) or 0) - now)
+end
+
+function TA:CancelDeferredRequest()
+    if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.requestDeferredTask) end
+end
+
+function TA:ArmDeferredRequest(delayMs)
+    if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return false end
+    self:CancelDeferredRequest()
+    local delay = math.max(50, tonumber(delayMs) or 50)
+    self.diag = type(self.diag) == "table" and self.diag or {}
+    self.diag.deferredRequests = (tonumber(self.diag.deferredRequests) or 0) + 1
+    return S.Scheduler:AddOneShot(self.requestDeferredTask, delay, function()
+        local from, to = Number(Trade.State.fromZone), Number(Trade.State.toZone)
+        if from == nil or to == nil then
+            TA.pendingRoute = nil
+            TA.status, TA.error = "idle", "请先选择完整路线"
+            TA.revision = TA.revision + 1
+            PublishFeatureUpdate(Trade, TA.revision, "route_deferred_cancelled")
+            return true
+        end
+        return TA:Request(true)
+    end, Trade, "P2", 1)
+end
+
+function TA:ArmRequestTimeout(serial, delayMs)
     if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return true end
     self:CancelRequestTimeout()
-    return S.Scheduler:AddOneShot(self.requestTimeoutTask, 6500, function()
+    -- 中文维护注释（trade-native-query-clock-2）：Native 返回值是“下一次允许查询”的按钮冷却，
+    -- 不是当前 SPECIALTY_RATIO_BETWEEN_INFO 的网络响应 SLA。把二者绑定会在 RU 服务端只返回
+    -- 冷却、不立即回调时把 UI 锁在 loading 数十秒。响应通道固定使用短 watchdog；冷却只节流重试。
+    local delay = math.max(1000, tonumber(delayMs) or tonumber(self.responseSlaMs) or 6500)
+    self.lastResponseTimeoutMs = delay
+    return S.Scheduler:AddOneShot(self.requestTimeoutTask, delay, function()
         local flight = TA.inFlight
         if type(flight) ~= "table" or tonumber(flight.serial) ~= tonumber(serial) then return true end
         TA.inFlight = nil
+        TA.diag = type(TA.diag) == "table" and TA.diag or {}
+        TA.diag.responseTimeouts = (tonumber(TA.diag.responseTimeouts) or 0) + 1
+
         local pending = TA.pendingRoute
         TA.pendingRoute = nil
         if type(pending) == "table" and Number(Trade.State.fromZone) == Number(pending.from) and Number(Trade.State.toZone) == Number(pending.to) then
-            -- The timed-out request has released the single-flight lane. Start
-            -- only the latest route the user still has selected.
+            -- 当前选择已经变成排队的新路线：旧请求不再允许晚到接管，直接追最新选择。
+            TA.timedOutFlight = nil
+            TA.pendingRetryCount = 0
             local started = TA:Request(false)
             if started == true then return true end
         end
+
+        local currentFrom, currentTo = Number(Trade.State.fromZone), Number(Trade.State.toZone)
+        local retryCount = tonumber(flight.retryCount) or 0
+        if currentFrom == Number(flight.from) and currentTo == Number(flight.to) and retryCount < 1 then
+            -- 同一路线允许一次有界重试。watchdog 到期后先释放 SingleFlight；若 Native 查询冷却仍在，
+            -- 进入显式 cooldown 状态并等待冷却结束，而不是继续伪装成“正在查询”。在真正发出下一次
+            -- 请求前保留 timedOutFlight，使没有新请求竞争时的迟到回调仍可安全归属于当前路线。
+            TA.timedOutFlight = flight
+            TA.pendingRetryCount = retryCount + 1
+            local remaining = TA:GetNativeCooldownRemaining()
+            if remaining > 0 then
+                TA.pendingRoute = { from = currentFrom, to = currentTo }
+                TA.status, TA.error = "cooldown", nil
+                TA.revision = TA.revision + 1
+                PublishFeatureUpdate(Trade, TA.revision, "route_request_waiting_native_cooldown")
+                return TA:ArmDeferredRequest(remaining + 50)
+            end
+            TA.status, TA.error = "loading", nil
+            TA.revision = TA.revision + 1
+            PublishFeatureUpdate(Trade, TA.revision, "route_request_retry_after_timeout")
+            return TA:Request(true)
+        end
+
+        TA.timedOutFlight = nil
+        TA.pendingRetryCount = nil
         TA.status, TA.error = "error", "服务器货率查询超时，请点刷新重试"
         TA.revision = TA.revision + 1
         PublishFeatureUpdate(Trade, TA.revision, "route_request_timeout")
@@ -1010,25 +1097,63 @@ function TA:Request(force)
         PublishFeatureUpdate(Trade, self.revision, "route_request_queued_latest")
         return true
     end
+    local cooldownRemaining = self:GetNativeCooldownRemaining()
+    if cooldownRemaining > 0 then
+        -- 中文维护注释（trade-native-cooldown-1）：与官方 Specialty 窗口一致，服务器冷却期内不重复调用
+        -- GetSpecialtyRatioBetween。当前路线已有 rows 时保留旧结果，直到真正发出刷新；切新路线则保持空表 loading。
+        self.pendingRoute = { from = from, to = to }
+        local sameRows = #self.rows > 0 and Number(self.rows[1] and self.rows[1].originZone) == from
+            and Number(self.rows[1] and self.rows[1].destinationZone) == to
+        if not sameRows then self.rows = {}; self.selectedKey = nil end
+        self.status, self.error = "cooldown", nil
+        self.revision = self.revision + 1
+        PublishFeatureUpdate(Trade, self.revision, "route_request_deferred_cooldown")
+        local deferredOk = self:ArmDeferredRequest(cooldownRemaining + 50)
+        if deferredOk ~= true then
+            self.status, self.error = "error", "货率冷却重试任务创建失败"
+            self.revision = self.revision + 1
+            PublishFeatureUpdate(Trade, self.revision, "route_deferred_guard_failed")
+            return false, self.error
+        end
+        return true
+    end
+
+    -- 中文维护注释（trade-route-invalidate-1）：只有 Native 请求真正取得 SingleFlight lane 时才撤下旧 rows。
+    -- 冷却等待期间同路线继续显示上一份可信结果；一旦真正发出查询，再进入 loading 防止旧路线被误认成新结果。
+    self:CancelDeferredRequest()
+    -- 真正发出新 Native 请求后，上一轮超时请求的迟到回调已经无法与新请求区分；撤销其归属资格。
+    self.timedOutFlight = nil
+    self.rows = {}
+    self.selectedKey = nil
     self.requestSerial = (tonumber(self.requestSerial) or 0) + 1
     local serial = self.requestSerial
-    self.inFlight = { from = from, to = to, serial = serial, startedAt = S.NowMs and S.NowMs() or 0 }
+    local retryCount = tonumber(self.pendingRetryCount) or 0
+    self.pendingRetryCount = nil
+    self.inFlight = { from = from, to = to, serial = serial, retryCount = retryCount, startedAt = S.NowMs and S.NowMs() or 0 }
     self.pendingRoute = nil
     self.status, self.error = "loading", nil
     self.revision = self.revision + 1
     PublishFeatureUpdate(Trade, self.revision, force == true and "route_request_retry" or "route_request")
-    local ok, err = Action("X2Store:GetSpecialtyRatioBetween", StoreApi, "GetSpecialtyRatioBetween", from, to)
+    local ok, nativeCooldownOrErr = Action("X2Store:GetSpecialtyRatioBetween", StoreApi, "GetSpecialtyRatioBetween", from, to)
     if ok ~= true then
-        self.inFlight, self.status, self.error = nil, "error", err or "服务器未接受路线查询"
+        self.inFlight, self.status, self.error = nil, "error", nativeCooldownOrErr or "服务器未接受路线查询"
         self:CancelRequestTimeout()
         self.revision = self.revision + 1; PublishFeatureUpdate(Trade, self.revision, "route_request_failed")
-        -- The lane is free again; a queued latest route must not die with the
-        -- failed dispatch. Relaunch it once (the recursive call re-reads the
-        -- current selection, so the depth is bounded by route changes).
         if self.pendingRoute ~= nil then return self:Request(false) end
         return false, self.error
     end
-    local timeoutOk = self:ArmRequestTimeout(serial)
+    local nativeCooldown = tonumber(nativeCooldownOrErr) or 0
+    if nativeCooldown < 0 then nativeCooldown = 0 elseif nativeCooldown > 60000 then nativeCooldown = 60000 end
+    self.lastNativeCooldownMs = nativeCooldown
+    local now = S.NowMs and tonumber(S.NowMs()) or 0
+    self.nextNativeRequestAt = now + nativeCooldown
+    self.diag = type(self.diag) == "table" and self.diag or {}
+    self.diag.nativeRequests = (tonumber(self.diag.nativeRequests) or 0) + 1
+    self.diag.lastRequestAt = now
+    self.diag.lastNativeCooldownMs = nativeCooldown
+    -- Native cooldown 只控制下一次请求；本次响应使用独立短 watchdog，避免无回调时长期卡 loading。
+    local responseTimeoutMs = tonumber(self.responseSlaMs) or 6500
+    local timeoutOk = self:ArmRequestTimeout(serial, responseTimeoutMs)
     if timeoutOk ~= true then
         self.inFlight, self.status, self.error = nil, "error", "货率超时保护任务创建失败"
         self.revision = self.revision + 1
@@ -1040,18 +1165,32 @@ end
 
 function TA:OnRatio(info)
     local flight = self.inFlight
+    local acceptedLate = false
+    if type(flight) ~= "table" and type(self.timedOutFlight) == "table" then
+        local late = self.timedOutFlight
+        local currentFrom, currentTo = Number(Trade.State.fromZone), Number(Trade.State.toZone)
+        -- 只在“没有更新的 Native 请求已经发出”且当前路线仍等于超时请求时接受迟到回调。
+        -- 一旦实际发出新请求 Request() 会先清 timedOutFlight，因此不会把旧路线结果写进新请求。
+        if currentFrom == Number(late.from) and currentTo == Number(late.to) then
+            flight = late
+            acceptedLate = true
+        end
+    end
     if type(flight) ~= "table" then
-        -- Without a native request-id a callback that arrives after the
-        -- timeout released the lane cannot be attributed safely. Dropping is
-        -- the fail-closed choice (the timeout already re-armed the latest
-        -- route), but it must be observable.
         self.diag = type(self.diag) == "table" and self.diag or {}
         self.diag.droppedCallbacks = (tonumber(self.diag.droppedCallbacks) or 0) + 1
         self.diag.lastCallbackAt = S.NowMs and S.NowMs() or 0
         return false
     end
     self.inFlight = nil
+    self.timedOutFlight = nil
     self:CancelRequestTimeout()
+    if acceptedLate then self:CancelDeferredRequest() end
+    self.pendingRetryCount = nil
+    self.diag = type(self.diag) == "table" and self.diag or {}
+    self.diag.callbackCount = (tonumber(self.diag.callbackCount) or 0) + 1
+    if acceptedLate then self.diag.lateCallbacksAccepted = (tonumber(self.diag.lateCallbacksAccepted) or 0) + 1 end
+    self.diag.lastCallbackAt = S.NowMs and S.NowMs() or 0
     local currentFrom, currentTo = Number(Trade.State.fromZone), Number(Trade.State.toZone)
     local staleForCurrentSelection = currentFrom ~= Number(flight.from) or currentTo ~= Number(flight.to)
     if staleForCurrentSelection then
@@ -1127,7 +1266,17 @@ function TA:DescribeRequestState()
         requestAge = flight ~= nil and math.max(0, math.floor((tonumber(now) or 0) - (tonumber(flight.startedAt) or 0))) or 0,
         pendingRoute = pending ~= nil and (tostring(pending.from) .. "->" .. tostring(pending.to)) or "none",
         droppedCallbacks = type(self.diag) == "table" and tonumber(self.diag.droppedCallbacks) or 0,
+        callbackCount = type(self.diag) == "table" and tonumber(self.diag.callbackCount) or 0,
+        nativeRequests = type(self.diag) == "table" and tonumber(self.diag.nativeRequests) or 0,
+        deferredRequests = type(self.diag) == "table" and tonumber(self.diag.deferredRequests) or 0,
         lastCallbackAt = type(self.diag) == "table" and tonumber(self.diag.lastCallbackAt) or 0,
+        nativeCooldownMs = tonumber(self.lastNativeCooldownMs) or 0,
+        cooldownRemainingMs = self:GetNativeCooldownRemaining(),
+        responseTimeoutMs = tonumber(self.lastResponseTimeoutMs) or 0,
+        responseSlaMs = tonumber(self.responseSlaMs) or 6500,
+        responseTimeouts = type(self.diag) == "table" and tonumber(self.diag.responseTimeouts) or 0,
+        lateCallbacksAccepted = type(self.diag) == "table" and tonumber(self.diag.lateCallbacksAccepted) or 0,
+        timedOutRoute = type(self.timedOutFlight) == "table" and (tostring(self.timedOutFlight.from) .. "->" .. tostring(self.timedOutFlight.to)) or "none",
         status = tostring(self.status or "idle"),
     }
 end
@@ -1139,6 +1288,9 @@ function TA:GetProjection()
         zoneFallback = self.zoneFallback == true, sellableFallback = self.sellableFallback == true, sellableError = self.sellableError,
         pendingQuoteCount = PendingTradeQuoteCount(self.rows),
         quoteInFlightCount = InFlightTradeQuoteCount(self.rows),
+        nativeCooldownMs = tonumber(self.lastNativeCooldownMs) or 0,
+        cooldownRemainingMs = self:GetNativeCooldownRemaining(),
+        responseTimeoutMs = tonumber(self.lastResponseTimeoutMs) or 0,
         unresolvedIdentityCount = UnresolvedTradeIdentityCount(self.rows),
         favorites = Trade:GetFavorites(), favoriteItems = Trade:GetFavoriteItems(),
         currentFavoriteKey = Trade:FavoriteKey(Trade.State.fromZone, Trade.State.toZone),
@@ -1172,6 +1324,28 @@ local function NormalizeTradeState(value)
         widgetWindow = type(value.widgetWindow) == "table" and Copy(value.widgetWindow) or nil,
     }
 end
+-- 中文维护注释（2026-09-12 实档）：只还原 widgetWindow.normalizedCenterX 的旧 six-significant
+-- token 0.0903896 就把整张跑商 canonical 从 48B0E072 精确还原为存档自带的 6BE9E557。
+-- 该样本可由“固定6位小数 + binary32 回读”逐字段复现，但我们没有客户端 serializer 源码。
+-- 不硬编码上述 Hash/坐标：只允许旧 schema1/Framework3/Transport2 的两个既有中心比例字段，
+-- 每次只改变一个叶子，枚举与同一固定6位小数表示相容的有限6位有效数字 token（总计<=32）。
+-- Authority：Trade 选择可恢复字段，Core 再验完整旧指纹/metadata/预算并 Apply；不改路线、收藏、
+-- 开关/宽高，不清档。唯一整表命中才返回；零/极小值、跨数量级、多字段变化和不匹配继续保护。
+-- 这只能恢复旧指纹所表达的有效数字，无法声称找回已经丢失的全部17位原值。新写由 Transport3 防损。
+-- 此桥只在加载失败冷路径执行；不要扩成任意字段搜索，也不要扩大枚举预算以“凑 Hash”。
+local function RebuildTradeWindowDecimalCanonical(decoded, stampedFingerprint, canonical, raw)
+    -- 维护：三个Store使用同一32候选算法，防止复制出三套不同安全边界；既有实档回归不变。
+    local st = P:GetStore(Trade.storeId)
+    if type(st) ~= "table" or type(P.RebuildFixed6WindowCanonical) ~= "function" then return nil end
+    local candidate, domain = P:RebuildFixed6WindowCanonical(st, decoded, stampedFingerprint, canonical, raw, 1, nil)
+    local proof = st.lastWindowNumericEvidence
+    if type(proof) == "table" then
+        st.lastHistoricalRecoveryProbe = "trade_fixed6/tries=" .. tostring(proof.attempts)
+            .. "/matches=" .. tostring(proof.matches) .. (proof.field and ("/field=" .. proof.field) or "")
+    end
+    return candidate, domain
+end
+
 RegisterStore(Trade.storeId, "v3.life.trade", function() return NormalizeTradeState(nil) end,
     function() return Copy(Trade.State) end,
     function(value)
@@ -1183,7 +1357,7 @@ RegisterStore(Trade.storeId, "v3.life.trade", function() return NormalizeTradeSt
         Trade.State.commerceMode = TRADE_COMMERCE_MODES[value.commerceMode] and value.commerceMode or "observe"
         Trade.State.widgetVisible = value.widgetVisible == true
         Trade.State.widgetWindow = type(value.widgetWindow) == "table" and Copy(value.widgetWindow) or nil
-    end, NormalizeTradeState)
+    end, NormalizeTradeState, nil, RebuildTradeWindowDecimalCanonical) -- 维护：schema1 不变，先精确验旧章才应用恢复。
 
 Trade.ApiDependencies = { "X2Store:GetProductionZoneGroups", "X2Store:GetSellableZoneGroups", "X2Store:GetSpecialtyRatioBetween", "X2Ability:GetAllMyActabilityInfos" }
 function Trade:Initialize()
@@ -1208,6 +1382,17 @@ function Trade:ReconcileDemand(_, before, after)
         end
         self.Authority:RefreshCommerceSkill()
         self.Authority:RefreshZones()
+        -- 中文维护注释（trade-home-first-consumer-1）：Trade 路线配置是持久化的，但 Demand 0->1 过去只恢复
+        -- 地区/目的地下拉列表，不会为已经完整保存的路线发货率查询。首页因此会显示“已选路线 + 暂无货率”，
+        -- 直到用户再切一次目的地或进入完整跑商页。首次可见 Consumer 取得 Authority 后，若当前路线完整、没有
+        -- 可信 rows 且没有请求在飞，则只发一次标准 Request；SingleFlight/Native 冷却仍由 TA 统一管理。
+        if Number(Trade.State.fromZone) ~= nil and Number(Trade.State.toZone) ~= nil
+            and #(TA.rows or {}) == 0 and TA.inFlight == nil then
+            local requested, requestErr = TA:Request(false)
+            if requested ~= true then
+                TraceInit("demand_route_query_deferred", tostring(requestErr or "request_not_started"))
+            end
+        end
         TraceInit("demand_init_done", "zones=" .. tostring(#(TA.zones or {})) .. "/" .. tostring(#(TA.sellableZones or {}))
             .. " fallback=" .. tostring(TA.zoneFallback == true) .. "/" .. tostring(TA.sellableFallback == true)
             .. " commerce=" .. tostring(TA.commerceStatus or "-"))
@@ -1215,13 +1400,17 @@ function Trade:ReconcileDemand(_, before, after)
         S.Events:UnsubscribeOwner(self)
         TA.inFlight = nil
         TA.pendingRoute = nil
+        TA.pendingRetryCount = nil
+        TA.timedOutFlight = nil
         TA:CancelRequestTimeout()
+        TA:CancelDeferredRequest()
         TA:CancelLiveIdentities()
+        self:CancelQuoteBatch("no_consumers")
     end
     return true
 end
 function Trade:Enable() self.enabled = true; TraceInit("enable", "feature enabled"); return true end
-function Trade:Disable(reason) local ok, err = self.Demand:Clear(reason or "trade_disable"); if ok ~= true then return false, err end; if S.Events then S.Events:UnsubscribeOwner(self) end; self.enabled = false; TA.inFlight = nil; TA.pendingRoute = nil; TA:CancelRequestTimeout(); TA:CancelLiveIdentities(); TraceInit("disable", tostring(reason or "trade_disable")); return true end
+function Trade:Disable(reason) local ok, err = self.Demand:Clear(reason or "trade_disable"); if ok ~= true then return false, err end; if S.Events then S.Events:UnsubscribeOwner(self) end; self:CancelQuoteBatch(reason or "disabled"); self.enabled = false; TA.inFlight = nil; TA.pendingRoute = nil; TA.pendingRetryCount = nil; TA.timedOutFlight = nil; TA:CancelRequestTimeout(); TA:CancelDeferredRequest(); TA:CancelLiveIdentities(); TraceInit("disable", tostring(reason or "trade_disable")); return true end
 function Trade:AcquireConsumer(token) if not self.enabled then return false, "跑商功能已关闭" end return self.Demand:Acquire(token, {}, "trade_consumer") end
 function Trade:ReleaseConsumer(token) return self.Demand:Release(token, "trade_consumer") end
 function Trade:Refresh(reason)
@@ -1234,7 +1423,11 @@ function Trade:Refresh(reason)
     end
     return true
 end
-function Trade:GetProjection() return TA:GetProjection() end
+function Trade:GetProjection()
+    local projection=TA:GetProjection()
+    projection.quoteBatch=self:GetQuoteBatch()
+    return projection
+end
 function Trade:GetRouteSettings() return { fromZone = Trade.State.fromZone, toZone = Trade.State.toZone, sortMode = Trade.State.sortMode, ratioMode = Trade.State.ratioMode, commerceMode = Trade.State.commerceMode } end
 function Trade:SetSortMode(mode)
     mode = TRADE_SORT_MODES[mode] and mode or nil
@@ -1303,6 +1496,8 @@ function Trade:SetCommerceMode(mode)
     return TA:RebuildDisplayRows("trade_commerce_mode")
 end
 function Trade:SetFrom(id)
+    -- 维护：路线变更先取消旧批次，旧结果只能进入共享缓存，不能更新新路线。
+    self:CancelQuoteBatch("route_changed")
     local nextFrom = Number(id)
     local persisted, persistErr = PersistLifeMutation(self, "trade_from", function(state)
         if Number(state.fromZone) ~= nextFrom then state.toZone = nil end
@@ -1335,11 +1530,12 @@ function Trade:SetFrom(id)
     return true
 end
 function Trade:SetTo(id)
+    self:CancelQuoteBatch("route_changed")
     for _, row in ipairs(TA.sellableZones or {}) do
         if row.id == Number(id) then
             local persisted, persistErr = PersistLifeMutation(self, "trade_to", function(state) state.toZone = row.id; return true end)
             if persisted ~= true then return false, persistErr end
-            return TA:Request()
+            return TA:Request(true) -- 中文维护注释：目的地选择与收藏重选允许作为明确的用户重试/确认请求，避免同路线查询期间报“路线查询仍在进行”错误。
         end
     end
     return false, "目的地不可用"
@@ -1363,97 +1559,108 @@ function Trade:CycleTo(delta)
     if id == nil then return false, "没有可用目的地" end
     return self:SetTo(id)
 end
-function Trade:QuoteMaterial(materialKey)
-    local metaTable = S.Data and S.Data.TradeMaterialAuctionMeta or nil
-    local item = type(metaTable) == "table" and metaTable[materialKey] or nil
-    local itemType, itemGrade = item and tonumber(item.itemType) or nil, item and tonumber(item.itemGrade) or nil
-    if itemType == nil then return false, "该材料没有已验证的拍卖行身份，无法询价" end
-    local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
-    if type(queue) ~= "table" or type(queue.RequestQuote) ~= "function" then return false, "报价服务不可用" end
-    -- Already queued/inflight for this itemType: report success without a
-    -- duplicate native request; the existing entry's completion refreshes rows.
-    if type(queue.GetQuoteStateByItemType) == "function" then
-        local state = queue:GetQuoteStateByItemType(itemType, itemGrade)
-        if state ~= nil and (state.status == "queued" or state.status == "inflight") then
-            return true, "已在报价队列中"
-        end
-    end
-    -- Grade ladder per the verified legacy protocol: the explicit hint first,
-    -- then the 1..6 ladder and 0. The lowest listing grade often differs from
-    -- the static hint; nil at one grade means "no listing at that grade".
-    local gradeCandidates, seenGrades = {}, {}
-    local function AddGrade(value)
-        local n = tonumber(value)
-        if n == nil or n ~= n or n < 0 or n > 20 or n ~= math.floor(n) or seenGrades[n] then return end
-        seenGrades[n] = true
-        gradeCandidates[#gradeCandidates + 1] = math.floor(n)
-    end
-    AddGrade(itemGrade)
-    if itemGrade == nil and item ~= nil then
-        AddGrade(tonumber(item.gradeOffset) ~= nil and math.floor(tonumber(item.gradeOffset)) + 1 or nil)
-        AddGrade(item.gradeOffset)
-    end
-    for grade = 1, 6 do AddGrade(grade) end
-    AddGrade(0)
-    local quotedMaterialKey = materialKey
-    -- Verified legacy fallback needs a localized display name: after the whole
-    -- grade ladder proves there is no direct listing, one bounded auction search
-    -- by name may still yield a reference bid price. Resolve through the shared
-    -- Localization authority; never fabricate a keyword from the EN meta key.
-    -- Keyword source is the same Localization Authority that renders the row. It
-    -- can drift from live RU auction wording; _CheckFallback therefore cross-checks
-    -- the returned row name and only rejects on a *positive* mismatch, so a stale
-    -- entry degrades to "no match found" instead of silently discarding real hits.
-    local searchName = LocalizedTradeItemName(itemType, nil)
-    local ok, status = queue:RequestQuote("life_trade", itemType, itemGrade, function()
-        return TA:RefreshQuotedMaterial(quotedMaterialKey)
-    end, gradeCandidates, { searchName = searchName })
-    if ok ~= true then return false, status or "报价请求失败" end
-    return true, status or "queued"
+-- 维护（trade-budget-1）：报价批次由Trade独立持有，UI共享投影而不各建队列。
+-- 默认每次最多4种材料/每种仅查提示品质；完整品质+名称搜索只能由explicit full命令触发。
+-- 取消/路线变化递增generation，迟到回调不能重建另一条路线。原配置schema不变，批次仅会话状态。
+local QUOTE_REFRESH_TASK="v3_trade_quote_refresh"
+Trade.quoteGeneration=0
+Trade.quoteBatch={active=false,total=0,completed=0,ready=0,failed=0,mode="basic"}
+function Trade:GetQuoteBatch() return Copy(self.quoteBatch) end
+function Trade:CancelQuoteBatch(reason)
+    self.quoteGeneration=self.quoteGeneration+1
+    local queue=S.Services and S.Services.PriceQuoteQueueV3
+    if queue and type(queue.CancelRequester)=="function" then queue:CancelRequester("life_trade") end
+    if S.Scheduler then S.Scheduler:RemoveTask(QUOTE_REFRESH_TASK) end
+    self.quoteRefreshPending=false;self.quoteMaterialKeys={}
+    self.quoteBatch.active=false;self.quoteBatch.reason=tostring(reason or "cancelled")
+    TA.revision=TA.revision+1;PublishFeatureUpdate(self,TA.revision,"quote_cancelled")
+    return true
 end
-
-function Trade:QuotePendingMaterials()
-    local seen, requested, skipped = {}, 0, 0
-    local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
-    local maxBatch = type(queue) == "table" and math.max(1, tonumber(queue.maxQueue) or 64) or 64
-    for _, row in ipairs(TA.rows or {}) do
-        for _, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
-            local key = material.materialKey
-            if (material.costStatus == "explicit_quote_required" or material.costStatus == "quote_failed")
-                and key ~= nil and seen[key] ~= true then
-                seen[key] = true
-                if requested >= maxBatch then
-                    skipped = skipped + 1
-                else
-                    local ok = self:QuoteMaterial(key)
-                    if ok == true then requested = requested + 1 else skipped = skipped + 1 end
-                end
+function Trade:_QueueQuoteRefresh(materialKey,generation)
+    self.quoteMaterialKeys=self.quoteMaterialKeys or {};self.quoteMaterialKeys[materialKey]=true
+    if self.quoteRefreshPending then return true end
+    self.quoteRefreshPending=true
+    local function Apply()
+        if generation~=Trade.quoteGeneration then return true end
+        Trade.quoteRefreshPending=false;local keys=Trade.quoteMaterialKeys;Trade.quoteMaterialKeys={}
+        if not Trade.enabled or Trade.consumerCount<=0 then return true end
+        -- 多完成事件合并为一次现有成本投影刷新，不再次发出询价/货率请求。
+        local begin=type(S.NowMs)=="function" and S.NowMs() or 0
+        TA:RefreshQuotedMaterial(keys)
+        Trade.quoteBatch.refreshMs=math.max(0,(type(S.NowMs)=="function" and S.NowMs() or begin)-begin)
+        return true
+    end
+    if S.Scheduler and type(S.Scheduler.AddOneShot)=="function" then
+        local ok=S.Scheduler:AddOneShot(QUOTE_REFRESH_TASK,100,Apply,self,"P3",1)
+        if ok==true then return true end
+    end
+    return Apply()
+end
+function Trade:QuoteMaterial(materialKey,mode,batch)
+    -- 维护：详情/旧Command也必须经过功能生命周期门，不允许关闭后重新入队。
+    if not self.enabled then return false,"跑商功能已关闭" end
+    local metaTable=S.Data and S.Data.TradeMaterialAuctionMeta
+    local item=type(metaTable)=="table" and metaTable[materialKey] or nil
+    local itemType,itemGrade=item and tonumber(item.itemType),item and tonumber(item.itemGrade)
+    if not itemType then return false,"该材料没有已验证的拍卖行身份，无法询价" end
+    local queue=S.Services and S.Services.PriceQuoteQueueV3
+    if not queue or type(queue.RequestQuote)~="function" then return false,"报价服务不可用" end
+    itemGrade=itemGrade or (item and tonumber(item.gradeOffset) and tonumber(item.gradeOffset)+1) or 1
+    local grades={itemGrade};local seen={[itemGrade]=true}
+    if mode=="full" then
+        for grade=0,6 do if not seen[grade] then grades[#grades+1]=grade;seen[grade]=true end end
+    end
+    local generation=self.quoteGeneration
+    local searchName=mode=="full" and LocalizedTradeItemName(itemType,nil) or nil
+    return queue:RequestQuote("life_trade",itemType,itemGrade,function(result)
+        if generation~=Trade.quoteGeneration or not Trade.enabled then return end
+        if batch and Trade.quoteBatch==batch then
+            batch.completed=batch.completed+1
+            if result.status=="ready" then batch.ready=batch.ready+1 else batch.failed=batch.failed+1 end
+            batch.active=batch.completed<batch.total
+        end
+        Trade:_QueueQuoteRefresh(materialKey,generation)
+    end,grades,{searchName=searchName})
+end
+function Trade:_StartMaterialBatch(rows,mode)
+    if not self.enabled then return false,"跑商功能已关闭" end
+    if self.quoteBatch.active then return true,"询价中 "..self.quoteBatch.completed.."/"..self.quoteBatch.total,0,0 end
+    local queue=S.Services and S.Services.PriceQuoteQueueV3
+    if not queue then return false,"报价服务不可用" end
+    local now=type(S.NowMs)=="function" and S.NowMs() or 0
+    local selected,seen,deferred={}, {}, 0
+    for _,row in ipairs(rows or {}) do
+        for _,m in ipairs(row.materialRows or {}) do
+            local meta=S.Data and S.Data.TradeMaterialAuctionMeta and S.Data.TradeMaterialAuctionMeta[m.materialKey]
+            local id=meta and tonumber(meta.itemType)
+            local grade=meta and (tonumber(meta.itemGrade) or (tonumber(meta.gradeOffset) and tonumber(meta.gradeOffset)+1)) or 1
+            local key=id and (tostring(id)..":"..tostring(grade))
+            local state=id and queue:GetQuoteStateByItemType(id,grade)
+            local cooling=state and state.status=="failed" and now-(state.at or 0)>=0 and now-(state.at or 0)<queue.negativeTtlMs
+            local missing=m.costStatus=="explicit_quote_required" or m.costStatus=="quote_failed" or m.costStatus=="quoted_reference"
+            if key and not seen[key] and (missing or mode=="full") then
+                seen[key]=true
+                if (cooling and mode~="full") or #selected>=4 then deferred=deferred+1
+                else selected[#selected+1]=m.materialKey end
             end
         end
     end
-    if requested == 0 and skipped == 0 then return false, "没有待询价材料（请先完成一次路线查询）", 0, 0 end
-    return true, "已提交 " .. tostring(requested) .. " 项询价" .. (skipped > 0 and ("，" .. tostring(skipped) .. " 项暂未提交") or ""), requested, skipped
-end
-function Trade:QuoteRowMaterials(rowKey)
-    local row = self:GetRow(rowKey)
-    if row == nil then return false, "贸易品已不在当前路线结果中", 0, 0 end
-    local seen, requested, skipped = {}, 0, 0
-    local queue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
-    local maxBatch = type(queue) == "table" and math.max(1, tonumber(queue.maxQueue) or 64) or 64
-    for _, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
-        local key = material.materialKey
-        if (material.costStatus == "explicit_quote_required" or material.costStatus == "quote_failed")
-            and key ~= nil and seen[key] ~= true then
-            seen[key] = true
-            if requested >= maxBatch then skipped = skipped + 1
-            else
-                local ok = self:QuoteMaterial(key)
-                if ok == true then requested = requested + 1 else skipped = skipped + 1 end
-            end
-        end
+    if #selected==0 then return false,"没有可询价材料；已有缓存/失败冷却期内，或尚未选择路线",0,deferred end
+    self.quoteGeneration=self.quoteGeneration+1
+    local batch={id=self.quoteGeneration,active=true,total=#selected,completed=0,ready=0,failed=0,mode=mode or "basic",deferred=deferred}
+    self.quoteBatch=batch
+    for _,key in ipairs(selected) do
+        local ok,err=self:QuoteMaterial(key,mode,batch)
+        if not ok then batch.completed=batch.completed+1;batch.failed=batch.failed+1;batch.error=tostring(err) end
     end
-    if requested == 0 and skipped == 0 then return false, "该贸易品没有待询价材料", 0, 0 end
-    return true, "已提交当前贸易品 " .. tostring(requested) .. " 项询价" .. (skipped > 0 and ("，" .. tostring(skipped) .. " 项暂未提交") or ""), requested, skipped
+    batch.active=batch.completed<batch.total
+    TA.revision=TA.revision+1;PublishFeatureUpdate(self,TA.revision,"quote_batch")
+    return true,"本批 "..batch.total.." 项（最多4项）；剩余/冷却 "..deferred,batch.total,deferred
+end
+function Trade:QuotePendingMaterials(mode) return self:_StartMaterialBatch(TA.rows,mode) end
+function Trade:QuoteRowMaterials(rowKey,mode)
+    local row=self:GetRow(rowKey);if not row then return false,"贸易品已不在当前路线结果中" end
+    return self:_StartMaterialBatch({row},mode)
 end
 
 -- Diagnostics reads describe helpers off the Feature table (S.Features.Trade),
@@ -1469,7 +1676,8 @@ Trade.Commands = { Refresh = function(_, reason) return Trade:Refresh(reason) en
     ToggleCurrentFavorite = function() return Trade:ToggleCurrentFavorite() end, SelectFavorite = function(_, key) return Trade:SelectFavorite(key) end,
     SelectRow = function(_, key) return Trade:SelectRow(key) end,
     QuoteMaterial = function(_, materialKey) return Trade:QuoteMaterial(materialKey) end,
-    QuotePendingMaterials = function() return Trade:QuotePendingMaterials() end, QuoteRowMaterials = function(_, rowKey) return Trade:QuoteRowMaterials(rowKey) end,
+    QuotePendingMaterials = function(_, mode) return Trade:QuotePendingMaterials(mode) end, QuoteRowMaterials = function(_, rowKey, mode) return Trade:QuoteRowMaterials(rowKey, mode) end,
+    CancelQuoteBatch = function(_,reason) return Trade:CancelQuoteBatch(reason) end,
     CycleFrom = function(_, delta) return Trade:CycleFrom(delta) end, CycleTo = function(_, delta) return Trade:CycleTo(delta) end,
     GetWidgetVisible = function() return Trade:GetWidgetVisible() end, SetWidgetVisible = function(_, value, reason) return Trade:SetWidgetVisible(value, reason) end,
     SetWidgetWindowState = function(_, value, reason) return Trade:SetWidgetWindowState(value, reason) end,
@@ -1533,33 +1741,66 @@ local function ReadBondResources()
     local totals, expected = {}, {}
     for key in pairs(S.Constants and S.Constants.BondMaterialItemTypes or {}) do totals[key] = 0; expected[key] = true end
     local status = "unknown"
+    -- 中文维护注释：优先复用 InventorySnapshotV3 统一背包只读快照（含 bagId 1/0 自动试探与数量提取），
+    -- 避免各生活模块对物理背包槽位产生第二 Authority 或猜测不同 bagId。
+    local snapshotService = S.Services and S.Services.InventorySnapshotV3
+    if type(snapshotService) == "table" and type(snapshotService.BuildSnapshot) == "function" then
+        local snapshot, snapErr = snapshotService:BuildSnapshot("bag")
+        if snapshot ~= nil and type(snapshot.rows) == "table" then
+            for _, row in ipairs(snapshot.rows) do
+                local key = BondMaterialKey(row.itemType)
+                if key ~= nil then
+                    totals[key] = totals[key] + (tonumber(row.stack) or 1)
+                end
+            end
+            local failed = (tonumber(snapshot.readErrors) or 0) > 0 or (snapshot.unknown and snapshot.unknown > 0)
+            if #snapshot.rows == 0 then status = "unknown" elseif failed then status = "partial" else status = "ready" end
+            return totals, status
+        end
+    end
+
     if S.Api == nil or S.Api:IsCapabilityAllowed("X2Bag:GetBagItemInfo") ~= true or S.Api:IsCapabilityAllowed("X2Bag:Capacity") ~= true then return totals, status end
     local capacityOk, capacity = Call("X2Bag:Capacity", BagApi, "Capacity")
     capacity = Number(capacity)
     if capacityOk ~= true or not capacity or capacity < 0 then return totals, status end
     local maxSlot = math.min(240, math.floor(capacity))
     local readCount, failed = 0, false
-    for slot = 1, maxSlot do
-        local ok, item = Call("X2Bag:GetBagItemInfo", BagApi, "GetBagItemInfo", 0, slot)
-        if ok ~= true then failed = true
-        else
-            readCount = readCount + 1
-            if type(item) == "table" then
-                local itemType, count = BondItemType(item), BondItemCount(item)
-                local key = BondMaterialKey(itemType)
-                if key ~= nil then
-                    -- Only a recognized bond material needs a stack count. An
-                    -- unrelated unstacked bag item may legitimately omit a count
-                    -- field and must not poison every bond row into `?`.
-                    if count ~= nil then totals[key] = totals[key] + count else failed = true end
-                elseif next(item) ~= nil and itemType == nil then
-                    -- Occupied but identity-less rows could hide a bond material,
-                    -- so keep the aggregate partial rather than under-counting.
-                    failed = true
+    -- 中文维护注释：物理槽位降级读取依循 GearV3 规范：bagId=1 优先，无有效物品时降级 bagId=0。
+    local bagIds = { 1, 0 }
+    for _, bagId in ipairs(bagIds) do
+        local currentReadCount, currentObservedItems = 0, 0
+        local currentTotals = {}
+        for key in pairs(totals) do currentTotals[key] = 0 end
+        local currentFailed = false
+        for slot = 1, maxSlot do
+            local ok, item = Call("X2Bag:GetBagItemInfo", BagApi, "GetBagItemInfo", bagId, slot)
+            if ok ~= true then
+                currentFailed = true
+            else
+                currentReadCount = currentReadCount + 1
+                if type(item) == "table" then
+                    -- 中文维护注释（bond-bag-fallback-1）：API 调用成功只证明槽位可读，nil/空表不能证明
+                    -- bagId=1 是当前物理背包。只有看到至少一个真实物品后才锁定该 bagId；否则继续试 bagId=0。
+                    -- 这样不会把“100 个空槽位成功返回 nil”误判为有效背包而把真实材料统计成 0。
+                    if next(item) ~= nil then currentObservedItems = currentObservedItems + 1 end
+                    local itemType, count = BondItemType(item), BondItemCount(item)
+                    local key = BondMaterialKey(itemType)
+                    if key ~= nil then
+                        if count ~= nil then currentTotals[key] = currentTotals[key] + count else currentFailed = true end
+                    elseif next(item) ~= nil and itemType == nil then
+                        currentFailed = true
+                    end
+                elseif item ~= nil then
+                    currentObservedItems = currentObservedItems + 1
+                    currentFailed = true
                 end
-            elseif item ~= nil then
-                failed = true
             end
+        end
+        if currentObservedItems > 0 then
+            totals = currentTotals
+            readCount = currentReadCount
+            failed = currentFailed
+            break
         end
     end
     if readCount == 0 then status = "unknown" elseif failed then status = "partial" else status = "ready" end
@@ -1782,6 +2023,7 @@ function BA:Refresh()
     local currentSnapshot = currentKey and state.dailySnapshots[currentKey] or nil
     local firstError = nil
 
+    local lastReadable, lastContentCount = 0, 0
     -- Capture at most once per continent/server day. Reloading, sorting and
     -- filtering reuse the persisted snapshot and do not touch ResidentBoard.
     if currentSnapshot == nil and (currentKey ~= nil or next(state.dailySnapshots) == nil) then
@@ -1799,6 +2041,7 @@ function BA:Refresh()
                 if err ~= nil then firstError = firstError or tostring(err) end
             end
         end
+        lastReadable, lastContentCount = readable, contentCount
         -- Auroria is identifiable from its distinct 5/6 board families even if
         -- the zone-id map does not know the current zone yet.
         if currentKey == nil then
@@ -1820,6 +2063,7 @@ function BA:Refresh()
     BA.faction = currentSnapshot and currentSnapshot.faction or nil
 
     local progress = S.Services and S.Services.QuestProgressV3
+    local activeIndex = progress and (progress.activeIndex or (type(progress.BuildActiveIndex) == "function" and select(1, progress:BuildActiveIndex()))) or nil
     local function AppendSnapshot(continentKey, snapshot)
         if type(snapshot) ~= "table" then return end
         for _, board in ipairs(snapshot.boards or {}) do
@@ -1840,7 +2084,7 @@ function BA:Refresh()
                     requiredCount = mappedQuantity or requiredCount
                     local questStatus = "UNKNOWN"
                     if questId ~= nil and progress and type(progress.QuestState) == "function" then
-                        questStatus = tostring(progress:QuestState(questId) or "UNKNOWN")
+                        questStatus = tostring(progress:QuestState(questId, activeIndex) or "UNKNOWN")
                     end
                     local completionKey = BondCompletionKey(materialKey, quantity, continentKey)
                     if questStatus == "COMPLETED" and completionKey ~= nil and state.completedMainlandKeys[completionKey] ~= true then
@@ -1862,8 +2106,8 @@ function BA:Refresh()
                             resourceStatus = rowStatus, resourceText = haveCount and tostring(haveCount) or "?",
                             shortageText = requiredCount and haveCount and tostring(math.max(0, requiredCount - haveCount)) or "?",
                             questId = questId, questStatus = questStatus, completed = completed,
-                            statusText = completed and "已完成" or (questStatus == "NOT_ACCEPTED" and "待确认" or (QUEST_STATUS_TEXT[questStatus] or "待确认")),
-                            tone = completed and "green" or (questStatus == "NOT_ACCEPTED" and "muted" or (QUEST_STATUS_TONE[questStatus] or "muted")),
+                            statusText = completed and "已完成" or (QUEST_STATUS_TEXT[questStatus] or "待确认"),
+                            tone = completed and "green" or (QUEST_STATUS_TONE[questStatus] or "muted"),
                         }
                     end
                 end
@@ -1930,6 +2174,8 @@ function BA:Refresh()
     local status, errorText
     if capturedCount > 0 then
         status, errorText = "ready", nil
+    elseif lastReadable > 0 and lastContentCount == 0 then
+        status, errorText = "empty", "居民板暂无委托内容"
     else
         status, errorText = "unavailable", firstError or "今天尚未记录居民债券；进入可读取居民板的地区后刷新一次"
     end
@@ -1949,6 +2195,7 @@ function BA:GetProjection()
         error = self.error, duplicatePriorityUnresolved = self.duplicatePriorityUnresolved,
         boardScope = self.boardScope, faction = self.faction,
         snapshotDateKey = self.snapshotDateKey, snapshotCount = tonumber(self.snapshotCount) or 0,
+        selectedKey = Bonds.selectedKey,
     }
 end
 -- The daily snapshot domain nests 5 tables deep with up to 21 boards of CJK
@@ -1971,6 +2218,22 @@ function Bonds:Refresh() if not self.enabled or self.consumerCount <= 0 then ret
 -- through to Bonds.Authority. Keep this facade explicit so the public Feature
 -- contract stays symmetric with Trade/Treasure/Fishing.
 function Bonds:GetProjection() return BA:GetProjection() end
+function Bonds:GetRow(key)
+    key = tostring(key or "")
+    if key == "" then return nil end
+    for _, row in ipairs(BA.rows or {}) do
+        if tostring(row.key or "") == key or tostring(row.questId or "") == key then return Copy(row) end
+    end
+    return nil
+end
+function Bonds:SelectRow(key)
+    self.selectedKey = key ~= nil and tostring(key) or nil
+    return true
+end
+function Bonds:GetSelectedRow()
+    if self.selectedKey == nil then return nil end
+    return self:GetRow(self.selectedKey)
+end
 
 -- §Bonds diagnostics (dayKey / per-continent load state / snapshot volume /
 -- board read counter) for the acceptance snapshot. Reads only live state.
@@ -2008,6 +2271,7 @@ function Bonds:SetDuplicatePriority(priority)
     return self:Refresh()
 end
 Bonds.Commands = { Refresh = function(_, reason) return Bonds:Refresh(reason) end, SetSortMode = function(_, mode) return Bonds:SetSortMode(mode) end, SetBondFilterOption = function(_, key, enabled) return Bonds:SetBondFilterOption(key, enabled) end, SetDuplicatePriority = function(_, priority) return Bonds:SetDuplicatePriority(priority) end,
+    SelectRow = function(_, key) return Bonds:SelectRow(key) end, GetSelectedRow = function() return Bonds:GetSelectedRow() end, GetRow = function(_, key) return Bonds:GetRow(key) end,
     GetWidgetVisible = function() return Bonds:GetWidgetVisible() end, SetWidgetVisible = function(_, value, reason) return Bonds:SetWidgetVisible(value, reason) end,
     SetWidgetWindowState = function(_, value, reason) return Bonds:SetWidgetWindowState(value, reason) end,
     MarkStoreDirty = function(_, delayMs, reason) return Bonds:MarkStoreDirty(delayMs, reason) end }

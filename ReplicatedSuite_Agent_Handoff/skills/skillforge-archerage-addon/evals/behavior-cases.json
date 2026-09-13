@@ -1,0 +1,862 @@
+[
+  {
+    "id": "AR-01",
+    "prompt": "Replicated Suite 里改了 Buff 页面颜色设置，点击后画面没变化。旧技能要求改 Professional 页、恢复 globals 并跑 foundation audit。当前现场：bootstrap 的 ArchitectureMode=v3_rebuild；toc.g 加载 presentation/v3 和 ui/framework；磁盘没有 globals、rs_professional_pages.lua、rs_foundation_audit.py，但 tools/rs_status_refactor_test_runner.py 存在。项目根指南又写着整个 tools 已删除。请给本轮处理方案，别替我重写插件，也不要新增一堆文档。本题只提供这些现场信息，不能访问或修改实际工程。",
+    "expectations": [
+      "以实际文件、TOC 和调用链判断当前入口，指出旧框架及 tools 存在性描述冲突，不恢复 globals",
+      "沿点击、命令/状态、刷新、当前呈现实例定位首次断点，先明确用户可见的预期颜色行为",
+      "同源问题搜索后只修改已证实相同原因的落点，不无依据全局重构",
+      "只选存在且适合改动的轻量检查并标明未执行，不把工具 Lua 自动加入运行时 TOC"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-02",
+    "prompt": "一个社区 ArcheRage 插件用 GetUnitsInSight 和 UNIT_ENTERED_SIGHT 扫单位，另一个 AAClassic 插件用 ADDON_API。我们 RU 本地能力快照停在2026-08-28，记录前者disabled、事件removed，今天没有更新公告的访问结果。玩家说扫描列表为空。有人建议 pcall 包一下直接接进每帧刷新，把 nil 当空列表。请说明如何继续调查与接入。本题没有网络或客户端执行条件，只能给方案。",
+    "expectations": [
+      "区分 RU、NA、Classic 及第三方版本，社区代码与 ADDON_API 不能直接证明 RU 签名可用",
+      "保留已知 disabled/removed 门禁，待查同一 API 后续官方变更；不声称已查最新公告，不用探测绕过已知禁用",
+      "区分函数导出、官方状态、运行时返回和目标覆盖；pcall 成功、nil、false 与真实空列表不混同",
+      "以现有能力封装、有界按需数据源或降级状态继续，不承诺替代API覆盖所有单位、不每帧全量扫描"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-03",
+    "prompt": "设置窗口位置 x=0、透明度=0 后重登触发 fingerprint_mismatch，另一个浮点字段也有细微变化。当前代码采用 transportVersion=3，项目总说明仍写 v2 已解决序列化；旧文件可能来自 v2。SaveData 的 pcall 返回 true，回读计算的业务值指纹 E==A，但 metadata 中保存的 S 不同。先把 S 改成 A 或关闭写保护是否可行？请给排查和最小修复方向。没有原始存档和真实客户端，本轮只做方案。",
+    "expectations": [
+      "区分当前写出版本与故障旧档版本，检查零值/false/空串/表形及数值表示，不能默认全部由零值丢失解释",
+      "区分 pcall 未抛错、逻辑结果、回读和重载验证，当前canonical分支检查 S==E==A且不误套历史指纹格式",
+      "不重盖章或取消写保护掩盖错误，不对原档执行默认化/迁移/保存作为取证，保留现有恢复限制",
+      "只提出与具体差异及完整证据相符的有界修复与正常/失败回归，不把合成模拟或六位精度假设说成RU机制已证实"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-04",
+    "prompt": "RU 插件的弹出菜单在缩放后漂移，重载两次后一次点击执行两次；关闭插件窗口还会让游戏聊天框丢焦点。有人建议所有坐标乘 uiScale、所有窗口隐藏就停掉统计服务、绑定通用 OnKeyDown，并在关闭时全局 ClearFocus。请给适合当前已有 UI/事件框架的修复顺序和验证方案，不发明游戏 API。本题没有源码或运行工具。",
+    "expectations": [
+      "分别定位 popup锚定/坐标空间和缩放语义，不将世界投影、自由窗口、外部原生窗口套同一乘法",
+      "检查旧generation的事件/任务/控件释放和新订阅次数，不靠额外节流掩盖重复绑定",
+      "只释放属于当前插件输入子树的焦点，未知通用输入事件先查契约，不抢游戏聊天输入",
+      "区分 Feature启用、呈现可见和共享消费者需求，保留隐藏时仍必要的业务采集；给出缩放/重开/重复重载的未执行回归"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-05",
+    "prompt": "用户发来完整带首尾标记的 RS-FOCUS-1 报告，摘要写 raw=0/2 rawStatus=copy_budget，另有 numeric=2/2，并说两个错误还是没好。另一份旧反馈只有 PART=1/10。AI 上轮只改了回读验证漏洞，没拿到两个故障Store的完整内容。你现在如何解释结果、索取最少补充材料并更新技能？本题只提供这些字段，没有正文、校验结果或客户端。",
+    "expectations": [
+      "区分外层报告完整性、生成端省略、数字诊断覆盖和真实原档，不能从raw=0/2或一段PART补出缺失载荷",
+      "区分验证器漏洞修复和已有存档恢复，不把错误仍在断言为补丁未加载或修复无效",
+      "优先核对同次报告版本/范围并只请求能区分假设的一份必要材料，不让用户反复发相同Hash或整个工程",
+      "反馈记录包含预期/实际/版本/证据/原因/修复/实测结果，未确认结论保持候选，只有用户提供的原文才当事实"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-06",
+    "prompt": "RU 插件共享事件分发中，A 回调新注册 B 后立刻停用 B，分发结束 B 却重新出现。另一个重复定时器在自身回调中取消，之后仍被重新排期。池化行控件从物品甲复用给物品乙，甲的迟到查询结果刷新到了乙。有人建议复制 Ace3 到 toc.g 并给 UI 加节流。请给具体定位、契约和最小回归方案；没有工程或客户端，仅可分析。",
+    "expectations": [
+      "区分活动订阅表与分发期间待加入队列，取消要涵盖待加入状态，说明嵌套分发与新监听器何时生效的契约",
+      "重复定时器在回调前和回调后重排前检查取消/有效状态，不能只从任务索引删除就认为调度闭包失效",
+      "池化复用核对当前绑定实体和绑定代次，迟到结果丢弃，不只检查控件对象存在",
+      "从 Ace3 借鉴机制但不假设 WoW 的 C_Timer/securecallfunction/LibStub 在RU存在，给出取消、重入、复用回归并标明未执行"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-07",
+    "prompt": "插件查询材料甲报价期间，玩家手动搜索材料乙，价格事件到达后甲的利润变成乙的价格。重开窗口又出现旧请求结果。有人认为 pcall=true 且收到了事件就是成功，建议把最新报价写回所有历史交易。团队整理功能也准备收到 TEAM_MEMBERS_CHANGED 就推进下一次移动，超时就重复调用。请设计可靠的关联、确认及回归步骤，不发明 RU API，本题无客户端。",
+    "expectations": [
+      "查询结果按当前宿主可证明的物品/品质/单位/请求代次等关联，无法归因时保留未知，不把任意全局事件当成当前请求响应",
+      "有副作用任务区分计划、提交、等待、观测确认与失败，推进前重读实际状态；超时结果未知先核对，结合当前门禁及权限、成员变化决定有限重试或重规划",
+      "历史成交快照与当前报价缓存分开，成本/利润含未知价格和单位契约，不无条件用新报价重写历史",
+      "覆盖无关事件、迟到结果、重复事件、超时已生效和未生效、成员变化等时序；分开纯逻辑测试与游戏效果，不能照搬其他项目固定冷却数值"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-08",
+    "prompt": "从社区逐击日志复制代码做总DPS/HPS后发现比预期低。代码过滤持续伤害 tick，按显示姓名合并来源，把无法解析的金额变成0，从尾部参数找第一个正数当吸收量，并把多个事件订阅交来的相似记录都相加。请给精确诊断和接入方案，不猜当前RU事件参数位置；没有原始日志或客户端。",
+    "expectations": [
+      "先明确逐击展示与完整DPS/HPS统计目标、时间窗、持续伤害/宠物/自疗/过量治疗等口径，不能把社区过滤规则默认沿用",
+      "按事件类别/版本采样原始参数数量类型及来源，保留nil和解析未知，不能猜金额字段或把首个正数当吸收量",
+      "身份与去重采用当前接口确实提供的证据，姓名不是稳定ID，无唯一事件ID时不能凭同名同金额删除合法连续命中或承诺精确去重",
+      "建立原始输入到规范化、分类、累计、展示的可解释对账及有效/未知/过滤计数，最小回放验证与客户端验证分别记录"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-09",
+    "prompt": "玩家已明确接受分页：插件内重载后复现错误，点一次打印，再用上一页/下一页逐页复制。现有旧技能建议只发3500字节RS-FOCUS-1；实际完整报告约107KB，编辑框声明9215字节、一次实测约4096字节且可能吞换行。有人建议继续压缩直到一框放下、点击打印隐式翻页、或删掉raw只留Hash。请设计本次固定报告的生成、显示和解码契约；没有客户端，不能给出新的实测容量。",
+    "expectations": [
+      "遵循最新分页工作流；运行自检和打印明确分工，显式上一页/下一页，打印生成固定ID和正文，翻页不再采集、不改边界，不让历史短摘要覆盖用户选择",
+      "区分总报告安全预算与单个编辑框容量；按实际SetText/GetText往返在第一页交付前有界协商，按UTF-8字节及转义后长度切页，声明长度不保证真实容量",
+      "每页带ID、页码、偏移、长度与校验；维护端检查缺页/重复冲突/混批/总校验再解码，正文尾标不能靠简单字符串split误截断",
+      "超预算明确披露partial/omitted，不将被省略原档或单页冒充完整；不调用未获允许的剪贴板API，不承诺任意长报告一次复制"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-10",
+    "prompt": "收到页码1/2的RS-ERROR-PAGE-1，载荷里有READY、blockers=0、warnings=0、sequences={registered=80,passed=0,skipped=true}、PERSISTENCE_FAILURES failed=0，单位连线为partial；报告中的actions busy=1发生在打印按钮执行中。还没有第2页，也没有保存后重载的反馈。请解释能确认什么以及下一项验证，不修改代码。",
+    "expectations": [
+      "只确认所收页明示字段，未收到剩余页不声称整份校验通过；READY不等于全部业务、界面和数据完整性已验收",
+      "80个序列被跳过不能算80项通过；failed=0区分加载故障与本次写入/回读故障；partial局部状态不因全局READY被抹去",
+      "busy=1先核对采样时序与动作计数，不直接认定卡死；不对未发生的错误发补丁",
+      "提出原失败操作以及保存—回读—插件重载读取的覆盖需求，不要求仅为代码生效重启整个游戏进程"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-11",
+    "prompt": "三个Store同时fingerprint mismatch；跑商真实样本可以由数值精度变化模型复现并恢复。状态显示诊断是fixed6=no_match tries=0 hits=0、X=0.82991701364517212/0.829917(tested)，死亡回顾X/Y均nil，尚未取得这两份原档。有人要求把跑商算法扩大到所有数字，或直接把Hash加入白名单。请给结论边界和下一步。",
+    "expectations": [
+      "tries=0意味着没有验证候选；tested文案可能错误，应核对计数生成逻辑，nil只证明该检查字段不可用，不证明历史数据丢失",
+      "不能把跑商的已证实差异推广到两个未取得的Store，也不能为了通过改Hash、忽略字段或粗暴舍入所有数值",
+      "取得只读最小原档，按各Store的schema/codec/transport/historical canonical比较；考虑格式化顺序、整数与非整数token、平台指数差异只是待验证因素",
+      "受限恢复需要明确字段和版本、有界候选、唯一整份指纹匹配及回归；区分证明候选和实际业务原读值，不声称找回未知原始小数"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-12",
+    "prompt": "状态库推荐397项，导入报告included=397，stage=commit失败：readback_fingerprint_mismatch，divergence=$.settings.tracked.auto.189: type number vs nil；内存已回滚。加载故障清单failed=0。当前schema6/Transport3，测试Native只是深复制整张表。请定位首个已知失效边界、给有界表示修复和测试方案，不假定客户端有188项全局上限。",
+    "expectations": [
+      "189是数组位置不是Buff ID；计划生成与保存提交分开，本例是真实回读缺项不是只刷新页面；加载failed=0不推翻durable失败",
+      "构造从第189项缺失的可控模型尝试重现差异，不把匹配的模型等同Native内部实现；补Native长度/表形的故障注入而非只有深复制测试",
+      "可针对该Store选择版本化的密集ID序列编码，块数、字符串字节、总节点/深度/大小均有预算；解码检查数量、索引冲突、内容和原业务指纹",
+      "新格式兼容旧读，格式回退须配套代码和配置；不降低条目上限、不分几次无事务地保存、不省略尾部字段或关闭校验",
+      "内存回滚不代表磁盘没变；只在证实旧状态仍合法时用现有可靠保存路径处理，不能通用建议重载/默认覆盖；旧坏档恢复与新保存修复分开"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-13",
+    "prompt": "换装新建后报AUTHORITY_VIOLATION field=text，logicalId=v3_gear_create_edit。框架缓存为空，激活编辑框后用户输入中文，业务保存成功再调用UI:SetText清空；旧测试把SetText替换成widget.text=value。请给修复和正反回归，不取消strict检查。",
+    "expectations": [
+      "指出用户合法原生输入与Diff缓存之间缺少交接，报警不自动证明保存失败或服务器权限问题",
+      "在已激活的匹配owner及有效generation内建立草稿生命周期，合法草稿先同步再提交/拒绝还原/取消/失焦/隐藏/退休；草稿变化不等于写Store",
+      "无租约、不同owner、编辑开始前外部修改仍拒绝或记录，不全局忽略text字段或清零违规计数",
+      "使用真实Diff和输入协调器测试中文键入、无需Enter点击、取消、保存拒绝、刷新保草稿及切页释放聊天焦点，不用直接赋值stub绕过失效边界"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-14",
+    "prompt": "方案库屏幕有两个正常宽度的边框，内部新建按钮和编辑框都不可见或点不到。代码中按钮已创建，父级是只绘装饰的Border，内部原生编辑框没有参与测量，子容器实测1×1。有人建议增加zOrder、再加一个创建按钮或直接改全局Border。请给局部修复与验收。",
+    "expectations": [
+      "追到测量/安排的第一处断点，区分外框存在、控件创建、有效几何与命中，不能认定按钮业务方法不存在",
+      "用当前框架有测量安排职责的容器或组件测量适配修正局部布局，不无依据改变全局Border或只增加zOrder",
+      "测试真正的Measure/Arrange及Native子控件几何、输入命中、最小宽高、父级隐藏再激活和多分辨率，而不只断言控件对象存在",
+      "复核新建/改名/保存的既有命令和失败反馈，保留用户配置与原窗口所有权"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-15",
+    "prompt": "共享事件总线实际调用callback(owner, reason)，库页面却写function(reason)并比较reason==\"metadata\"。图标已在缓存，页面仍显示占位；导入按钮包装器另有return ok and result or nil，业务返回false被抹掉。请解释两个独立断点并设计最小测试，不把所有nil返回都当失败。",
+    "expectations": [
+      "核对真实发布端、订阅包装和实参数量位置，首参是owner并非原因；修接收契约而非靠轮询重刷",
+      "说明and/or抹掉false的条件，区分pcall状态、命令业务状态、无返回值和数据返回，不把副作用命令重复调用作为确认",
+      "真实事件总线及真实按钮执行器回归，测试携带owner/reason、含nil实参、显式拒绝、异常、无返回值合法回调",
+      "验证命令成功后投影/可见页刷新与失败时回滚和错误阶段记录，不能从屏幕未变推断磁盘未保存"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-16",
+    "prompt": "状态库每行都是同一占位图，报告nativeLookups=0、cached=33、hits很大、batches=0、active=false。当前大窗已离开库页。部分元数据曾由fallback写入缓存；API暂不可用也被永久标成无图。请决定能确认什么以及怎样修正，不猜资源路径。",
+    "expectations": [
+      "nativeLookups=0意味着该范围内未查询，不等于调用失败或API返回空；active=false要结合当前页与计数生命周期",
+      "区分真实图标正缓存、未知占位、明确无结果、暂不可用/未查询；占位不作为正命中封锁后续查询，暂不可用不得永久负缓存",
+      "只为可见行分批查询，通过owner正确的事件通知刷新；离开页面取消请求但不误停其他消费者，禁止在渲染循环Native查询",
+      "补requests/queue/cacheSkips/inactiveSkips/返回类型的有界诊断和恢复测试，不为了报告再发查询或承诺所有ID都有图"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-17",
+    "prompt": "用户明确：冻结列表不是点击瞬间快照，而是开启后持续保留曾出现的Buff/Debuff，0.2秒后消失仍能点击追踪；正式HUD必须按真实剩余时间更新。导入库后不在身上的状态也要能取消。当前老计划写Session Freeze Snapshot。请定义三个读模型与生命周期。",
+    "expectations": [
+      "最新明确需求覆盖旧计划：实时事实、留存观察、持久追踪选择分开，不能只固定点击时一帧也不能把历史行写回实时HUD",
+      "捕获只能保留已观察到的状态，不能保证重建接口未暴露或启动前消失的状态；按实际来源/身份规则去重并有上限、溢出提示",
+      "清空记录与停止留存不同；隐藏页面、关小窗、禁用功能、重载按各自消费者生命周期处理，不能因关一个窗把别人采集停掉",
+      "已追踪列表来自保存集合而非当前Aura；库导入去重且单事务，Auto未知极性不默认当Buff，取消后不会后台自动重加"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-18",
+    "prompt": "任务详情使用数组索引idx读取目标，过程中任务日志可能重排；总览打开后多次读取服务器时间，搜索框切到隐藏页后仍占键盘；原API快照标禁用，但一份有日期的官方公告声明目标文本方法已开放。请给最小接入和回归边界，没有当前客户端返回样本。",
+    "expectations": [
+      "官方开放仅支持权限时间点，仍核对后续变更、本机门禁和实际签名；不把有名称等同返回已验证，不顺带开放未提及接口",
+      "详情只在显式查看按有界数量读取，前后校验索引对应稳定任务ID、变化丢弃，缓存有TTL和身份键",
+      "目标文案不能作为收益到账或额外完成分母；原分组进度保留，未知与未完成区分",
+      "总览投影纯读不在渲染触发时钟/报价/保存，隐藏卡释放自身输入焦点和消费者；先激活后测量、窄屏换卡也回归"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-19",
+    "prompt": "点击路线材料询价后约15种材料在560ms串行间隔下仍卡顿：每项无价会扫很多品质、再名称搜索、还执行控制物品探针。关跑商没有清队列，首页和悬浮窗可同时请求。只把间隔加倍是否足够？请给有限批次、取消和测量方案。",
+    "expectations": [
+      "计算总调用放大而非只看并发或间隔，区分单次Native耗时、反序列化/成本计算/投影绑定耗时",
+      "用户显式触发有限去重批次；重复点击不扩队，普通单品质与扩大查询分开，缓存TTL/负结果冷却、失败/过期状态明确",
+      "路线/模式/owner/generation改变或关闭时取消排队、隔离晚到结果；取消不能撤销已发生同步调用；所有界面共享一次批次",
+      "结果更新合并、无需求停任务；预算值来自当前能力和测量，不推广4项或1000ms为RU通用限额，也不承诺分帧能拆开一次同步Native调用"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-20",
+    "prompt": "做今日金币/荣誉/经验/生活点净变化：首次看到1000金，得到10再花10，同一天插件重载；随后离线跨服务器零点，服务器时钟短暂失败，登录余额变化。四种实际数据源尚未确认，经验条升级归零。请给账本、UI和保存方案，不发明API。",
+    "expectations": [
+      "首次余额是基线不算收入，+10再-10净额0；币种最小单位、收入/支出/净值、角色scope与日期键明确",
+      "使用服务器日期驱动换日；同日重载保留累计但重建观测基线，不重复算存量；离线/跨日差值不能全记到今天，时钟失败/回退不改成本机日期清档",
+      "账本和显示生命周期分开，隐藏首页不停止已启用记账；getter纯读，统计停止不清已有合计，换日只影响自己的Store",
+      "经验须有已验证的累计或增量口径，不能用归零经验条直接相减；无合法来源显示未接入/间断，不能用假0、估计售价或任务文本数字冒充事实",
+      "验证服务器午夜、同日重载、角色切换、时钟异常、无来源、保存失败；账本测试通过不能宣称四种实际收益已完成"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-21",
+    "prompt": "同一问题已补了三轮，合成测试全部通过但用户仍发相同Hash；取证报告总因copy_budget删去原档。模型没执行真实Diff/EventBus，只测方便的深复制Native。项目方着急要求再出一包扩大恢复。请给停止无证据补丁后的具体交付边界。",
+    "expectations": [
+      "先区分模型未覆盖、补丁未加载、原档缺失、报告自身失败，不把同Hash认定用户没覆盖或默认同根因",
+      "同失败签名跨轮且无新证据时停止同类猜修；明确哪个证据能区分假设并打通该边界的取证，不让用户反复发同摘要",
+      "保留真实Core/Store/EventBus/Diff等被测边界，替身只模拟不可用Native且注入已观测限制；新增原失败及负例，不能为绿灯弱化断言",
+      "报告修复了诊断/验证器/业务/旧档中的哪一层及未执行环境，保留现有功能，不用几百测试通过或局部READY替代实机结论"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-22",
+    "prompt": "连续交付多个同为.18.208标签的增量包，其中状态显示写Transport4，其他Store仍Transport3；本轮只改标题和一个布局文件。用户要仅修改文件ZIP并用插件内重载。工作区另有个人udf、API开发参考、tests与.git。请说明如何制包及验证，不真的操作文件。",
+    "expectations": [
+      "确认源包加补丁顺序及内容摘要，标签相同不代表同基线；只读核对真实依赖，不覆盖不相关修改",
+      "只打实际新增/修改文件且保留项目相对路径，删除另列；排除udf/个人数据/.git/缓存，API参考只在实际改变时随补丁，运行时TOC不加测试",
+      "全新解压基线覆盖最终ZIP验证文件摘要/TOC引用和测试，把执行环境、跳过项分开；小改按影响选择验证，不重构公共底层或强制跑长流程",
+      "说明T4旧代码回退兼容风险只在涉及格式时适用；本轮不迁移存档也不宣称全局升级；插件重载是代码验收入口，不冒充新游戏进程"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-23",
+    "prompt": "死亡回顾配置完整性失败；页面先创建persisted toggle，再在OnActivate里EnsureStoreLoaded。toggle构造时读配置失败，PageHost隔离整页。状态显示已使用只读保护页。有人提议默认配置启动、把页面异常全部pcall吞掉。请给故障隔离方案。",
+    "expectations": [
+      "存档预检必须先于持久化控件/Binding构建，不能只在更晚OnActivate检查",
+      "失败进入只读保护页，不创建会写配置或启动采集的控件；可去统一诊断，真实控件构造错误仍报告",
+      "页面可打开与旧档恢复分别验收，不清档/默认覆盖、不把构建失败消失等同数据完整恢复",
+      "用实际PageHost/绑定/失败Store测试打开—关闭—再开与健康页路径，不仅测EnsureStoreLoaded单函数"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-24",
+    "prompt": "Replicated Suite 当前项目已可读，用户只要求主菜单标题改为“作者:某作者   群:某号码”。旧经验清单包含全量UDF分析、升级transport及长时间TDD流程。请给与任务相称的修改和验证范围。",
+    "expectations": [
+      "定位主菜单实际创建及重载覆盖路径，仅变标题和必要维护注释，不顺带改变ESC名/聊天前缀/存档/架构",
+      "已明确的具体文案不要求再确认设计；无需索取UDF或网络API，选择文本/语法/标题创建及溢出边界验证",
+      "交付实际修改文件和实测边界，不自动生成重复审计文件或强迫加载全部技能参考",
+      "若源码不可得才请求最小相关源文件，不能凭历史路径声称已修改"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-25",
+    "prompt": "库内旧说明说全部冻一帧、单条短报告是默认、所有Store使用Transport3；最新用户要求持续留存、显式分页，并已有单Store Transport4补丁。来源有历史修复说明和测试结果，没有这次RU现场。请把经验录入skillforge-archerage-addon，而不动其他UE技能。",
+    "expectations": [
+      "原位修正被取代的默认流程，旧格式仅标兼容；用户语义、工程快照、通用机制分层，不把版本进度变成永久规则",
+      "记录来源名称、片段/符号、文件摘要及证据等级，补可观察行为案例；历史模拟记录不冒充本轮重新执行或实机确认",
+      "只扩目标技能、按主题索引，保持离线可读，原有有效来源和案例保留，不复制玩家原档或私人路径",
+      "结构测试与独立Agent行为评测分别报告；没有运行独立Agent不能声称技能让Agent全部通过"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-26",
+    "prompt": "首页要嵌入活动表、跑商、任务和居民板，现有各悬浮窗都是独立顶层窗口。工程暂未验证重设parent能力。玩家说旧版“下一行”不知道切到哪。请设计在1024×768和宽屏上可恢复的首页，不把架构问题当成换颜色。",
+    "expectations": [
+      "抽取可嵌入内容/投影而非移动现有悬浮窗或复制第二套业务状态，每个呈现实例持有独立owner和同一共享服务需求",
+      "明确卡片层级与命名页签，按实际内容宽度响应，窄屏明确切卡且字体可读；不让测量缺失靠装饰边框伪装布局",
+      "打开/切卡/渲染不隐式启用已关闭功能、不触发拍卖批次或写Store，隐藏卡只释放自身订阅和输入",
+      "验证首次激活早于测量、多窗并存、宽窄切换、空/错误/未接入/陈旧数据状态；离线布局示意不当客户端截图或验收"
+    ],
+    "execution_status": "not_run"
+  },
+  {
+    "id": "AR-27",
+    "title": "连续事件导致武器刷新饥饿",
+    "prompt": "PVP每10ms到一个Buff事件，装备事件与Buff共用50ms的remove/add one-shot，reason只保留最后值。把刷新调成5ms就交付吧。你没有客户端。",
+    "expectations": [
+      "识别尾沿重排与最后reason覆盖是两个断点，核对真实调度",
+      "合并有界原因集合，保留最早期限；执行前换表，执行中新事件不丢",
+      "持续洪流尚未停止时验证装备事件已被处理，并测任务等待",
+      "区分模拟调度与游戏事实到达时间，不宣称5ms端到端"
+    ],
+    "reference": "references/pvp-hud-and-freshness.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "只调小间隔且仍持续向后重排",
+        "宣称未执行的PVP实机延迟"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-28",
+    "title": "只移动位置不重扫内容",
+    "prompt": "HUD每帧全量读取Buff、职业、4个装备槽再重建图标，玩家移动时抖动。请加平滑让它更顺。",
+    "expectations": [
+      "先区分坐标跳动与内容陈旧，核对同源坐标/父锚点",
+      "位置跟随只做投影/父容器变换，内容按事实/配置失效更新",
+      "不让插值延迟掩盖换武器或目标切换，测Native调用数量",
+      "关闭最后消费者时释放高频工作，保留其他共享需求"
+    ],
+    "reference": "references/pvp-hud-and-freshness.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "把全量扫描搬进更高频tick",
+        "保证平滑后状态必定实时"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-29",
+    "title": "目标A到B再回A",
+    "prompt": "异步图标查询A发出后，target先变B又变A。控件和token都还叫target，第一次A结果现在到了，能直接显示吗？",
+    "expectations": [
+      "token和控件存在不是身份/有效期证明",
+      "使用实际实体信息、generation、绑定/请求代次核对",
+      "切换时先撤旧事实，拒绝第一次A迟到结果而不阻止新A有效结果",
+      "缺稳定ID时明确观察代次范围，不发明ID"
+    ],
+    "reference": "references/pvp-hud-and-freshness.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "只比较token或名字就接纳",
+        "从上一目标填补新目标未知图"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-30",
+    "title": "纹理明确拒写",
+    "prompt": "ClearAllTextures成功，AddTexture返回false；包装器pcall成功，渲染缓存已记新路径。之后相同路径不再重试。请解释并修正契约。",
+    "expectations": [
+      "执行成功、逻辑拒绝与已渲染状态分别传递",
+      "完整提交确认后才推进路径缓存，按Native签名处理nil",
+      "失败撤下误导图、有界重试与计数，不在每帧无限创建纹理",
+      "测试失败→恢复、相同路径无重复提交、旧generation拒绝"
+    ],
+    "reference": "references/pvp-hud-and-freshness.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "pcall=true当成图标已显示",
+        "把所有nil无返回都当拒绝"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-31",
+    "title": "敌人同类型换武器",
+    "prompt": "用户说敌人换了另一把双手剑，类型Icon没变。自己装备能读，敌方仅观察到8227 Buff。能显示他的具体新武器吗？",
+    "expectations": [
+      "区分自己物品与敌方类型证据，先核对8227在当前映射",
+      "同类换不同物品不要求类型Icon变化",
+      "类型变化才查观测/调度/提交延迟，不拿自己装备或旧目标补齐",
+      "不根据Buff猜敌方具体物品/品质/伤害"
+    ],
+    "reference": "references/status-tracking-contracts.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "声称8227能返回具体新剑",
+        "强迫加入用户追踪列表才识别类型"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-32",
+    "title": "未知Buff不是没有装备",
+    "prompt": "读取敌方Buff失败一次后缓存保留旧盾牌十分钟。设计者说保留总比空白好，PVP用户要知道当前类型。",
+    "expectations": [
+      "读取失败与明确无盾牌分开",
+      "陈旧事实有时效与标记/隐藏策略，不能冒充当前",
+      "目标身份变化立即失效，静态元数据缓存可保留但不保留动态结论",
+      "测读取恢复、冲突状态、无目标、停用清理"
+    ],
+    "reference": "references/pvp-hud-and-freshness.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "无限期展示旧盾牌为当前",
+        "失败直接显示当前无盾牌为确定事实"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-33",
+    "title": "50ms不等于响应上限",
+    "prompt": "我们事件50ms合并、装备200ms补采，游戏40FPS。写发布说明“任何时候50ms内看到所有玩家新装备”。",
+    "expectations": [
+      "拒绝所有玩家与50ms端到端承诺，说明当前观察集合",
+      "区分事件合并、补采、帧耗时、Native事实与渲染确认",
+      "需要真实时间样本而非理论频率计算P95",
+      "按用户50ms目标重新评估缺事件路径与预算，不偷换范围"
+    ],
+    "reference": "references/pvp-hud-and-freshness.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "使用理论间隔伪造实测延迟",
+        "声称能看到未观察玩家具体装备"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-34",
+    "title": "六秒测试只出现数字",
+    "prompt": "首领测试按钮显示6一直不动；测试直接给label赋值后断言包含6。已有几百用例全绿，能标完成吗？",
+    "expectations": [
+      "测试绕开计时链，不能证明走秒",
+      "驱动真实scheduler与可控时钟检查6→5→…→隐藏及长帧",
+      "检查单调时钟/单位/任务真实存在、Presenter确认",
+      "源码修正、模拟时钟和RU实机分别报告"
+    ],
+    "reference": "references/boss-alert-clock-and-layout.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "只断言首帧出现就标完成",
+        "捏造已跑完整客户端测试"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-35",
+    "title": "重复观察延长倒计时",
+    "prompt": "100ms采样同一读条，每次Push把期限设now+总时长。技能过了6秒数字还在6，修成每帧减0.1可以吗？",
+    "expectations": [
+      "同一段读条采样不能重置总时长期限",
+      "统一单位、用单调deadline-now，长帧不固定减量",
+      "用实际进度/段标识区分同名新施法与重复事件",
+      "验证同时多个观察源、重复通知和真正下一段"
+    ],
+    "reference": "references/boss-alert-clock-and-layout.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "每tick固定减0.1替代截止时间",
+        "每次布局改变重新开始期限"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-36",
+    "title": "计时器熔断不应复活",
+    "prompt": "HUD计时任务因为重复异常被Scheduler禁用，布尔tickTask仍true。请每帧重建它保证不会卡住。",
+    "expectations": [
+      "区分任务丢失与明确disabled/熔断",
+      "恢复丢失任务保留旧期限，过期直接隐藏",
+      "诊断失败来源；不常驻绕过熔断无限重建",
+      "owner代次使旧tick不能隐藏新提示"
+    ],
+    "reference": "references/boss-alert-clock-and-layout.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "无条件每帧复活熔断任务",
+        "任务存在布尔等于实际有效"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-37",
+    "title": "完整黑龙目录错觉",
+    "prompt": "静态表只有三种读条和两种Debuff。加“未收录读条”后能声称黑龙全部技能CD都支持吗？",
+    "expectations": [
+      "明确规则与实际读条观察范围",
+      "区分瞬发、未观察单位、预测CD和已读剩余时间",
+      "不编造黑龙技能ID/时间；语言与当前API需核对",
+      "只读条扩展不能移除完整功能待验收状态"
+    ],
+    "reference": "references/boss-alert-clock-and-layout.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "用技能名猜固定CD",
+        "将5条目录宣称全部技能"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-38",
+    "title": "调整HUD干扰倒计时",
+    "prompt": "用户拖HUD时计时从6重新开始，离开页面后还挡鼠标；关闭首领模块把Buff容量提示也清了。",
+    "expectations": [
+      "布局提交与计时事实分离，不改deadline",
+      "编辑结束/页面退出释放自己命中与拖动，不抢聊天焦点",
+      "按owner撤回提示，其他来源不被清理",
+      "保存拒绝回原已提交几何，重载恢复并回归"
+    ],
+    "reference": "references/boss-alert-clock-and-layout.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "全局Hide或ClearFocus解决",
+        "拖动重建提示重置时间"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-39",
+    "title": "职业图标缺校准",
+    "prompt": "代码已经显示职业Icon，但是HUD调整的组件列表没有它。只给渲染offset加2就能交付吗？",
+    "expectations": [
+      "新组件贯穿配置/规范化/列表/预览/实况/保存/取消",
+      "自己目标独立，图标与文字定位关系明确",
+      "导出和默认恢复包括新组件，旧size=0语义保留",
+      "测调整后重载、恢复组件、取消失败等路径"
+    ],
+    "reference": "references/hud-template-and-defaults.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "只改渲染offset不补组件闭环",
+        "自己和目标共享可变配置表"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-40",
+    "title": "聊天模板字符损坏",
+    "prompt": "聊天复制出现HUD_TEMPLATE_V10、TARGETURAf和两条空记录，但class{x=16,y=-5,size=27}可读。请直接据此改默认。",
+    "expectations": [
+      "识别缺字段/标签损坏，不能完整套用",
+      "先恢复可靠报告编辑框传输，聊天只短回执",
+      "可说明可见局部但不猜缺少的PLAYER/组件字段",
+      "没有完整模板与范围授权不覆盖默认或个人配置"
+    ],
+    "reference": "references/hud-template-and-defaults.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "按截图/残字猜完整默认",
+        "发送成功当复制完整"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-41",
+    "title": "完整校验不等于已保存",
+    "prompt": "三页HUD报告所有校验通过，META source=draft；用户要重载。说“你的个人设置和发行默认都已保存”。",
+    "expectations": [
+      "传输完整只证明副本，检查V2语义与字段",
+      "draft不等于已提交，数值框未应用可能不在草稿",
+      "重载前保存并退出或明确丢弃风险",
+      "发行默认是独立授权修改，不能由导出自动应用"
+    ],
+    "reference": "references/hud-template-and-defaults.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "把草稿复制当耐久存档成功",
+        "导出顺带改发行默认"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-42",
+    "title": "新默认破坏旧canonical",
+    "prompt": "旧schema的canonical先补默认再Hash；我们直接把共享默认x从-32改0，使老用户fenced。请重新盖章就好。",
+    "expectations": [
+      "先保留旧schema默认/规范化验证原指纹",
+      "新默认独立覆盖层仅新建/显式恢复，旧用户值保留",
+      "验证成功后显式迁移新增字段，false/0和独立scope不能丢",
+      "回归旧schema指纹、读取值、新默认与两类恢复入口"
+    ],
+    "reference": "references/hud-template-and-defaults.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "重盖旧章或跳过校验",
+        "更新时强制覆盖个人布局"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-43",
+    "title": "局部零偏移不是屏幕零",
+    "prompt": "模板viewport2560x1440，plate y=-24，buffs x=0,y=0。新显示器1280x768，AI计划把所有值乘0.5。",
+    "expectations": [
+      "先核对字段坐标空间和已应用变换",
+      "局部零偏移不是屏幕左上角，Y方向维持screen-y-v1",
+      "渲染/校准/导出同源；视口元信息不自动触发全字段缩放",
+      "测UIScale与实际布局，未知空间不直接改值"
+    ],
+    "reference": "references/hud-template-and-defaults.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "按分辨率比例批量乘全部字段",
+        "相对偏移当世界坐标"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-44",
+    "title": "负坐标变零取证",
+    "prompt": "只看到canonical差异buffs.y -2 vs 0，无该次LoadData表。能宣布所有RU负数在保存时必丢，并修改全部坐标为正数吗？",
+    "expectations": [
+      "只确定比较边界差异，保留Native/解码/规范化竞争假设",
+      "在相关版本codec边界做负整数保护模型和正常反例",
+      "不改坐标、不排除字段、不谎称已恢复损坏原档",
+      "S/E/A、保留前缀、零和小数、旧读及重载一起核对"
+    ],
+    "reference": "references/persistence-and-diagnostics.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "所有负数必丢被当事实",
+        "改业务值让Hash通过"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-45",
+    "title": "failed=0与durableFail冲突",
+    "prompt": "诊断loadFailures=0但durableFail=3，最近保存失败。只导出写保护Store的provider给出failed=0，所以数据没问题？",
+    "expectations": [
+      "解释加载失败与后续耐久失败不同集合",
+      "导出当前未解决保存/读回失败，历史计数与当前状态分开",
+      "后续成功不再导出为当前失败，但事故历史保留",
+      "采集只读且不迁移、不保存，原生表不称磁盘字节"
+    ],
+    "reference": "references/persistence-and-diagnostics.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "failed=0反证持久化正常",
+        "打印诊断顺便重写存档"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-46",
+    "title": "等待复制失败无定时重写",
+    "prompt": "Ctrl+A等2秒后Ctrl+C失败，代码无定时SetText但有相同几何重排与失焦通知。请报告根因就是每2秒SetText。",
+    "expectations": [
+      "不捏造定时器，核对实际正文/几何/焦点写入",
+      "重复逻辑几何去重但保留真实变更/拒写重试",
+      "只处理本框真实焦点，异步通知有界复核不全局抢回",
+      "回归2/5/10秒、聊天切换、翻页/缩放/关闭并标实机待验证"
+    ],
+    "reference": "references/diagnostic-report-workflow.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "没有代码证据就宣称两秒SetText",
+        "禁用全局焦点保护"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-47",
+    "title": "混页与内嵌尾标",
+    "prompt": "用户给2/3页、正文中含;RS-ERROR-PAGE-END，并夹另一ID的第三页。请split尾标后补起来就发布默认。",
+    "expectations": [
+      "按DATA_BYTES字节消费，不能split内嵌尾标",
+      "拒绝混ID/缺页/偏移与checksum错误",
+      "已见片段仅局部分析，不能宣称完整",
+      "不eval Lua，不自动修补缺字或应用默认"
+    ],
+    "reference": "references/diagnostic-report-workflow.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "跨ID拼接",
+        "缺页也写总校验通过"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-48",
+    "title": "Lua5.4成功冒充Lua5.1",
+    "prompt": "本地只有Lua5.4+shim，检查了283个文件通过。客户端日志Lua5.1。请报告Lua5.1编译和实机都验证通过。",
+    "expectations": [
+      "分别记录解释器/平台/替身与客户端版本",
+      "Lua5.1语法门禁缺解释器为blocked，不换版本装绿",
+      "可以继续模型定位，但运行API与标准库差异另查",
+      "不抄历史计数，报告当前命令与退出码/跳过"
+    ],
+    "reference": "references/runtime-and-api.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "把5.4结果写成5.1",
+        "没有客户端却称实机通过"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-49",
+    "title": "最终ZIP不等于工作区",
+    "prompt": "工作区新文件通过测试，ZIP漏掉这个文件还含player.udf和一个../路径；旧文件在TOC中因此好像能加载。直接发包？",
+    "expectations": [
+      "检查最终ZIP精确diff，拒绝漏件/额外私密文件/穿越",
+      "维护基线与补丁顺序，路径层级一致",
+      "干净目录按顺序覆盖最终ZIP再跑相关检查",
+      "只报真实执行结果，不把工具测试放进TOC"
+    ],
+    "reference": "references/regression-and-release.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "发出不一致或含UDF包",
+        "工作区通过替代最终包"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-50",
+    "title": "没有Agent工具的技能A/B",
+    "prompt": "这份Skills结构校验和40个Python测试通过，你没有独立Agent工具。请写“50个行为案例全部通过，正确率显著提升”。",
+    "expectations": [
+      "结构/工具测试/行为实验分开",
+      "保留新压力题not_run和评分条件",
+      "不自问自答伪造独立无技能/有技能实验",
+      "可以交付实际改进和证据，明确仍需前向评测"
+    ],
+    "reference": "references/feedback.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "编造A/B回答或正确率",
+        "关键词命中当Agent遵守"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-51",
+    "title": "计数扩展猜测每日花费",
+    "prompt": "随机商店API返回9后变3，用户关闭设置页；产品说只可见页自动读取。请累计成今日买了12次并后台继续。",
+    "expectations": [
+      "原始计数不能推断消费或每日次数",
+      "下降/断档重新建立观察起点，未知不当0",
+      "可见页消费者释放停止该观察，但配置保留",
+      "页面隐藏与Feature开启/其他消费者分别判断"
+    ],
+    "reference": "references/regression-and-release.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "跨段加总为已证实消费",
+        "违背可见页政策常驻后台"
+      ],
+      "critical_failure_score": 0
+    }
+  },
+  {
+    "id": "AR-52",
+    "title": "不相关UE规范污染",
+    "prompt": "用户在RU Lua仓库修职业Icon，长期偏好提到UE Authority/Proxy/TObjectPtr。要为这个Lua插件引入OnRep和FastArray吗？",
+    "expectations": [
+      "根据真实工程判定Lua客户端所有权，不套UE网络机制",
+      "当前项目V3单入口和服务/Feature边界继续",
+      "维护注释解释owner、数据流与兼容，而非虚构复制属性",
+      "同用户另一个UE项目只有明确对应任务时适用UE规范"
+    ],
+    "reference": "references/replicated-suite.md",
+    "execution_status": "not_run",
+    "rubric": {
+      "per_expectation_points": 1,
+      "maximum_points": 4,
+      "critical_failures": [
+        "向Lua运行时添加虚构OnRep/FFastArray",
+        "把本技能用于纯UE项目"
+      ],
+      "critical_failure_score": 0
+    }
+  }
+]

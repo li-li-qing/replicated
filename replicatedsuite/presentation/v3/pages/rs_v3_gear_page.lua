@@ -91,6 +91,14 @@ local function BuildPage(parent, route)
         "装备与效果称号属于同一套方案。右侧按防具/时装与饰品/武器/称号双列展示，点击任意行即可切换参与。",
         "刷新", function() Feature.Commands:RefreshProjection("page_manual"); root:Refresh(); return true end)
 
+    -- 维护（gear-plan-editor-1）：旧失败提示只在左栏最下方，短窗口会被 ScrollBox 隐藏，
+    -- 用户看到“点击无反应”。本行只投影命令结果，不拥有 Store；长详情同时进入原诊断日志。
+    -- 保留原底部状态区兼容，不把状态文字写回配置；高度固定，反馈不挤压输入控件。
+    local actionFeedback = RSUI:Text({
+        id = "v3_gear_action_feedback", parent = root, text = "先输入方案名称并点击“新建”；不填名称可自动命名。",
+        fontSize = 10, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 23, hAlign = "fill" },
+    })
+
     local body = RSUI:HorizontalBox({
         id = "v3_gear_body", parent = root, gap = 7,
         slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
@@ -131,16 +139,15 @@ local function BuildPage(parent, route)
     -- Group 1: 方案库 (plan data source + identity)
     ------------------------------------------------------------------------
     local gLib, gLibInner = GearGroup(leftStack, "v3_gear_group_library", "方案库")
-    -- WU1: the input/action pair used to be two raw native widgets pinned at
-    -- hand-computed pixels (x=4 / x=138, width 130 / 54) inside the host panel.
-    -- That island was invisible to Measure/Arrange, so any change to the left
-    -- rail width or UI scale pushed the button out of the panel. Both controls
-    -- are now declarative RSUI children: the input absorbs the remaining width
-    -- while the button keeps a fixed 54px.
-    local createHost = RSUI:Panel({ id = "v3_gear_create_host", parent = gLibInner, variant = "soft", height = 31, slot = { size = "fixed", height = 31, hAlign = "fill" } })
-    local createRow = RSUI:HorizontalBox({ id = "v3_gear_create_row", parent = createHost, gap = 4, padding = 4, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
-    local createEdit = RSUI:TextInput({ id = "v3_gear_create_edit", parent = createRow, maxLength = 32, height = 23, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "center" } })
-    local createButton = RSUI:Button({ id = "v3_gear_create_button", parent = createRow, text = "新建", compact = true, slot = { size = "fixed", width = 54, vAlign = "center" } })
+    -- 维护（gear-plan-editor-1）：Panel 是装饰原语，Base:Layout 只设置自身尺寸，
+    -- 不安排子布局。原 createRow 一直留在 1x1，输入/新建实际在其裁剪与命中边界外。
+    -- Authority：Border → HorizontalBox 分配几何，TextInput 管理草稿/焦点，Commands 拥有新建。
+    -- 仅替换本页错误的宿主，不全局改变 Panel 语义，也不改 Store/ID/保存格式。
+    -- Border padding 只计一次；34px 宿主扣除8px内距后，24px控件居中留2px余量。
+    local createHost = RSUI:Border({ id = "v3_gear_create_host", parent = gLibInner, variant = "soft", padding = 4, height = 34, slot = { size = "fixed", height = 34, hAlign = "fill" } })
+    local createRow = RSUI:HorizontalBox({ id = "v3_gear_create_row", parent = createHost, gap = 4, padding = 0, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
+    local createEdit = RSUI:TextInput({ id = "v3_gear_create_edit", parent = createRow, value = "", placeholder = "新方案名称", maxLength = 32, height = 24, slot = { size = "fill", fill = 1, minWidth = 56, hAlign = "fill", vAlign = "center" } })
+    local createButton = RSUI:Button({ id = "v3_gear_create_button", parent = createRow, text = "新建", compact = true, height = 24, slot = { size = "fixed", width = 54, vAlign = "center" } })
 
     local setTable = RSUI:TableView({
         id = "v3_gear_sets", parent = gLibInner, items = {}, rowHeight = 22, headerHeight = 22, desiredRows = 4,
@@ -163,12 +170,12 @@ local function BuildPage(parent, route)
         fontSize = 8, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 18 },
     })
 
-    -- WU1: same migration as the create row - declarative input/fixed button
-    -- instead of pixel-pinned native widgets (x=4 / x=137, width 129 / 55).
-    local nameHost = RSUI:Panel({ id = "v3_gear_name_host", parent = gLibInner, variant = "soft", height = 30, slot = { size = "fixed", height = 30, hAlign = "fill" } })
-    local nameRow = RSUI:HorizontalBox({ id = "v3_gear_name_row", parent = nameHost, gap = 4, padding = 4, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
-    local nameEdit = RSUI:TextInput({ id = "v3_gear_name_edit", parent = nameRow, maxLength = 36, height = 22, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "center" } })
-    local saveName = RSUI:Button({ id = "v3_gear_name_button", parent = nameRow, text = "改名", compact = true, slot = { size = "fixed", width = 55, vAlign = "center" } })
+    -- 维护：改名行与新建行存在同一非布局 Panel 缺陷，沿用相同的 Border 布局责任。
+    -- 未选择方案时禁止改名输入，不修改已有名称；选择成功后先启用再写入选中方案的草稿。
+    local nameHost = RSUI:Border({ id = "v3_gear_name_host", parent = gLibInner, variant = "soft", padding = 4, height = 34, slot = { size = "fixed", height = 34, hAlign = "fill" } })
+    local nameRow = RSUI:HorizontalBox({ id = "v3_gear_name_row", parent = nameHost, gap = 4, padding = 0, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
+    local nameEdit = RSUI:TextInput({ id = "v3_gear_name_edit", parent = nameRow, value = "", placeholder = "选中方案后改名", maxLength = 36, height = 24, slot = { size = "fill", fill = 1, minWidth = 56, hAlign = "fill", vAlign = "center" } })
+    local saveName = RSUI:Button({ id = "v3_gear_name_button", parent = nameRow, text = "改名", compact = true, height = 24, slot = { size = "fixed", width = 55, vAlign = "center" } })
 
     ------------------------------------------------------------------------
     -- Group 2: 当前方案 (read current -> save -> validate -> apply)
@@ -320,6 +327,21 @@ local function BuildPage(parent, route)
     function root:SetStatus(text, tone)
         status:SetText(text or "")
         status:SetTone(tone or "muted")
+        actionFeedback:SetText(text or "")
+        actionFeedback:SetTone(tone or "muted")
+    end
+    -- 维护：命令拒绝不仅显示在可见区域，也进入已有分页报告。只存动作/选中ID/错误，
+    -- 不额外采集装备或记录输入名称；不解除写保护、不重试保存，以免重复创建。
+    function root:CommandFailed(action, detail)
+        self:SetStatus(tostring(detail or "方案操作失败"), "red")
+        local diagnostics = S.DiagnosticsManager
+        if diagnostics ~= nil and type(diagnostics.Error) == "function" then
+            diagnostics:Error("gear_page", "GEAR_PLAN_COMMAND_FAILED", "换装方案操作失败", {
+                patch = "gear-plan-editor-1", action = tostring(action), setId = self.selectedId, error = tostring(detail or "unknown"),
+            })
+        end
+        -- 第二返回值交给 ActionRunner 的既有失败记录，避免降级为含糊的 action rejected。
+        return false, tostring(detail or "方案操作失败")
     end
     function root:FindSelectedMeta() return self.selectedId and Feature:FindSet(self.selectedId) or nil end
 
@@ -329,6 +351,9 @@ local function BuildPage(parent, route)
         local draft, err = Feature:GetDraft(self.selectedId)
         if draft == nil then self.draft = nil; self:SetStatus(tostring(err), "red"); self:RefreshEditor(); return false end
         self.draft = draft
+        -- 选择别的方案是显式草稿切换：先结束旧输入，避免名称与键盘所有权跨方案串用。
+        nameEdit:EndEditing("gear_selected_plan_changed")
+        nameEdit:SetEnabled(true)
         SetNativeText(nameEdit, draft.name)
         self:SetStatus(draft.configured and "方案已载入；点击任意装备/称号行即可切换是否参与。" or "尚未配置，请穿好装备并选择效果称号后点击“获取当前”。", draft.configured and "muted" or "yellow")
         self:RefreshEditor()
@@ -402,9 +427,12 @@ local function BuildPage(parent, route)
 
     function root:RefreshEditor()
         local draft = self.draft
+        -- 空方案库仍可新建，但不能把一个无归属名称当成已选方案保存。
+        if type(draft) ~= "table" and nameEdit.enabled ~= false then SetNativeText(nameEdit, "") end
+        nameEdit:SetEnabled(type(draft) == "table")
+        saveName:SetEnabled(type(draft) == "table")
         if type(draft) ~= "table" then
             titleText:SetText("请选择方案")
-            SetNativeText(nameEdit, "")
             armorTable:SetItems({}, "gear:none:armor")
             combatTable:SetItems({}, "gear:none:combat")
             armorTitle:SetText("防具 / 时装 · 0/10 参与")
@@ -497,9 +525,21 @@ local function BuildPage(parent, route)
     end
 
     function root:CreateSet()
-        local name = Trim(GetNativeText(createEdit)); if name == "" then name = "换装" .. tostring(Feature:GetSetCount() + 1) end
+        local name = Trim(GetNativeText(createEdit))
+        if name == "" then
+            -- 维护：count+1 会与删除后留下的“换装2”等重名。只在显式空名新建时扫描
+            -- 已有投影（最多40项），选首个空缺名称；最终唯一性仍由 Gear Authority 验证。
+            local names, rows = {}, Feature:GetRows()
+            for _, row in ipairs(rows or {}) do names[tostring(row.name)] = true end
+            for index = 1, #(rows or {}) + 1 do
+                local candidate = "换装" .. tostring(index)
+                if names[candidate] ~= true then name = candidate; break end
+            end
+        end
         local id, warning = Feature.Commands:CreateSet(name)
-        if id == nil then self:SetStatus(tostring(warning), "red"); return false end
+        if id == nil then return self:CommandFailed("create", warning) end
+        -- 只有创建已提交才清草稿并释放键盘；失败保留输入便于修正，不依赖Enter/失焦。
+        createEdit:EndEditing("gear_create_committed")
         SetNativeText(createEdit, "")
         self.selectedId = id
         self:LoadDraft()
@@ -602,7 +642,10 @@ local function BuildPage(parent, route)
         if type(self.draft) ~= "table" then return false end
         local name = Trim(GetNativeText(nameEdit))
         local ok, err = Feature.Commands:Rename(self.draft.id, name)
-        if ok ~= true then self:SetStatus(tostring(err), "red"); return false end
+        if ok ~= true then return self:CommandFailed("rename", err) end
+        -- 改名确认使用原生命名草稿；提交后同步本地Binding，退出输入不再占用游戏按键。
+        nameEdit:EndEditing("gear_rename_committed")
+        SetNativeText(nameEdit, name)
         self.draft.name = name
         self:SetStatus("方案名称已保存。", "green")
         self:Refresh()
@@ -640,9 +683,11 @@ local function BuildPage(parent, route)
     -- Buttons keep a single RSUI-owned native OnClick handler. Late-bound page
     -- actions are assigned to the component action slot so enabled/release/event
     -- mux fences remain authoritative.
-    createButton.onClick = function() return root:CreateSet() end
-    saveName.onClick = function() return root:RenameOnly() end
+    -- 维护：新建/改名沿用其余按钮的 ActionRunner 生命周期，原生 OnClick 仍只归 RSUI。
+    -- 不以输入失焦触发业务写入；拒绝与忙碌状态必须回传，而非“点击过就成功”。
     local bindings = {
+        { createButton, function() return root:CreateSet() end, "gear.create", "新建中…" },
+        { saveName, function() return root:RenameOnly() end, "gear.rename", "改名中…" },
         { capture, function() return root:Capture() end, "gear.capture", "读取中…" },
         { save, function() return root:Save() end, "gear.save", "保存中…" },
         { validate, function() return root:Validate() end, "gear.validate", "检查中…" },
@@ -683,6 +728,10 @@ local function BuildPage(parent, route)
     end
 
     function root:OnDeactivated()
+        -- 维护：PageHost缓存页面并不等同Release。离页必须释放两个输入的键盘租约；
+        -- EndEditing不调用业务新建/改名，不把未点击确认的草稿写入永久Store。
+        createEdit:EndEditing("gear_page_deactivated")
+        nameEdit:EndEditing("gear_page_deactivated")
         if S.Events ~= nil then S.Events:UnsubscribeInternalOwner(self) end
         self.deleteArmedUntil = 0
         deleteButton:SetText("删除")

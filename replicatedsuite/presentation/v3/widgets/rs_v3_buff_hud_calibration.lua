@@ -19,7 +19,8 @@ if type(Feature) ~= "table" or type(S.UI) ~= "table" then return end
 S.UIV3 = S.UIV3 or {}
 S.UIV3.BuffHudCalibrationV3 = S.UIV3.BuffHudCalibrationV3 or {}
 local C = S.UIV3.BuffHudCalibrationV3
-C.version = 3
+C.version = 4
+C.PvpPatch = "pvp-hud-1"
 C.owner = "v3:buff_hud_calibration"
 C.visible = C.visible == true
 C.scope = C.scope or "player"
@@ -64,8 +65,11 @@ local COMPONENTS = {
     { key="buffs",    label="Buff" },
     { key="debuffs",  label="Debuff" },
     { key="info",     label="基础信息" },
-    { key="mainHand", label="主手" },
-    { key="offHand",  label="副手" },
+    -- 维护：class一直有持久化布局字段，但旧选择器漏掉它。仅接通图标几何，旧职业整体开关不改义。
+    { key="class",    label="职业图标" },
+    -- 中文维护：复用校准存档字段，不移动已有用户布局；目标栏表达可见 Buff 类型而非可检查装备。
+    { key="mainHand", label="主手/目标武器" },
+    { key="offHand",  label="副手/目标防具" },
     { key="ranged",   label="远程" },
     { key="wings",    label="背部" },
     { key="castBar",  label="施法条" },
@@ -283,7 +287,7 @@ local function ApplyField(name, value)
         component.y = ScreenYToStoredY(key, screenY)
     elseif name == "size" then
         if key == "plate" then component.height = Round(Clamp(value, 8, 40, component.height or 20))
-        else component.size = Round(Clamp(value, key == "castBar" and 4 or 8, 64, component.size or 26)) end
+        else component.size = Round(Clamp(value, key == "class" and 0 or (key == "castBar" and 4 or 8), 64, component.size or 26)) end
     elseif name == "font" then
         if key == "info" then component.fontSize = Round(Clamp(value, 8, 24, component.fontSize or 12))
         elseif component.fontSize ~= nil or key == "buffs" or key == "debuffs" or key == "castBar" then
@@ -339,13 +343,29 @@ local function FindEquipSlot(layout, key)
     return nil
 end
 
+-- 维护：校准显示只读取现有投影，不新增Native查询。职业名称/图标与真实HUD共用
+-- ComputeInfoLayout；无目标时明确使用预览占位。已有schema6的size=0保留随字号自动尺寸。
+local function PreviewPlates()
+    local plates = type(Feature.GetPlatesProjection)=="function" and Feature:GetPlatesProjection(C.scope) or {}
+    if type(plates.class)~="table" or tostring(plates.class.value or "")=="" then
+        plates.class={value="职业预览",icon=UNKNOWN_ICON}
+    elseif plates.class.icon==nil then plates.class.icon=UNKNOWN_ICON end
+    return plates
+end
+
 local function PreviewRect(key)
     local profile = Profile()
     local anchorX, anchorY, liveAnchor = PreviewAnchor(C.scope)
     local compute = Markers and Markers.ComputePlateLayout or nil
     if type(compute) ~= "function" then return { x=anchorX-70, y=anchorY-20, width=140, height=40 }, liveAnchor end
-    local layout = compute(anchorX, anchorY, profile, 4, 4, { mainHand=true, offHand=true, ranged=true, wings=true })
     key = tostring(key or C.component or "buffs")
+    local plates = (key=="class" or key=="info") and PreviewPlates() or nil
+    local buffCount, debuffCount = 4,4
+    if plates then
+        buffCount=(profile.components.buffs or {}).enabled~=false and #(plates.buffs or {}) or 0
+        debuffCount=(profile.components.debuffs or {}).enabled~=false and #(plates.debuffs or {}) or 0
+    end
+    local layout = compute(anchorX, anchorY, profile, buffCount, debuffCount, { mainHand=true, offHand=true, ranged=true, wings=true })
     local scale = N(layout.scale, 1)
     if key == "plate" then
         return { x=layout.bar.left, y=layout.bar.top, width=layout.bar.width, height=layout.bar.height }, liveAnchor
@@ -357,9 +377,13 @@ local function PreviewRect(key)
         local x = layout.bar.centerX + N(cfg.x, 0) - width / 2
         local y = region.firstTop
         return { x=Round(x), y=Round(y), width=Round(width), height=Round(region.size) }, liveAnchor
-    elseif key == "info" then
-        local width = math.max(160, Round(220 * scale))
-        return { x=Round(layout.bar.centerX + N(profile.info.x,0) - width/2), y=Round(layout.info.top), width=width, height=math.max(18, Round(layout.info.height)) }, liveAnchor
+    elseif key == "info" or key == "class" then
+        if type(Markers.ComputeInfoLayout)=="function" then
+            local g=Markers.ComputeInfoLayout(plates,profile.info,profile.components,layout.bar.centerX,layout.info.top,layout.info.font,scale)
+            if key=="class" then return {x=g.iconX,y=g.iconY,width=g.iconSize,height=g.iconSize,iconPath=g.icon or UNKNOWN_ICON},liveAnchor end
+            return {x=g.x,y=g.y,width=g.width,height=g.height,text=g.text},liveAnchor
+        end
+        return {x=layout.bar.centerX-110,y=layout.info.top,width=220,height=layout.info.height},liveAnchor
     elseif key == "castBar" then
         local cfg = profile.components.castBar or {}
         local width = math.max(24, Round(N(cfg.width,120) * scale))
@@ -450,8 +474,12 @@ end
 -- 最终发行模板后，把结果回传给维护者写入默认值。Authority 必须是当前 Calibration Draft，
 -- 不能强迫 Save & Exit 后再从 Store 读取，否则“眼前已经调好但尚未保存”的最后一次微调会丢失。
 -- 输出只包含视觉布局，不包含 tracked ID、敌我分类、Aura 业务规则等用户数据；格式固定为
--- HUD_TEMPLATE_V1 并按 META/BASE/AURA/EQUIP/CAST 分行，降低游戏聊天单行截断风险。该能力
+-- HUD_TEMPLATE_V1 并按 META/BASE/AURA/EQUIP/CAST 分行；当前只作为内存兼容格式，禁止直接发聊天。该能力
 -- 只在用户点击按钮时执行，不注册 Scheduler、不进入 50ms Renderer，也不会修改 Draft/Store。
+-- 维护（hud-template-restore-1）：新增职业图标可独立校准后，旧快照遗漏 components.class，
+-- 仅恢复按钮仍无法重建用户的新默认布局。沿用上述 Draft Authority，额外输出 CLASS 行；
+-- 原 V1 各行/屏幕 Y 语义不变，size=0 保留自动大小，scale 仍取 BASE 的 profile.plateScale。
+-- 输出的是相对 HUD 布局的逻辑偏移，不是移动单位当前的绝对屏幕点；不得把预览合成坐标写回默认值。
 local function TemplateNumber(value, fallback)
     local n = tonumber(value)
     if n == nil then n = tonumber(fallback) or 0 end
@@ -536,32 +564,205 @@ function C:BuildTemplateSnapshotLines(meta)
             ..",h="..TemplateNumber(castBar.size,7)..",font="..TemplateNumber(castBar.fontSize,12)
             ..",alpha="..TemplateNumber(castBar.alpha,1)..",enabled="..TemplateBool(castBar.enabled,true)
             ..",text="..TemplateBool(castBar.showText,true).."}"
+        -- 维护：只追加独立 CLASS section，避免延长已有 EQUIP 行或改变旧行解析；不导出职业事实/纹理。
+        -- class 的 enabled 与 BASE.info.class 均保留，维护者按现有双开关语义重建，不在导出时做归一化写入。
+        lines[#lines+1] = "HUD_TEMPLATE_V1|"..scopeName.."|CLASS|"
+            ..TemplateComponent(profile,"class",{size=0})
     end
     AddScope("PLAYER", draft.player)
     AddScope("TARGET", draft.target)
     return lines
 end
 
+-- 维护（hud-template-copy-2）：实机回传V1的scope/section及部分正文已丢失。旧边界把带“|”
+-- 的机器文本直接交给聊天富文本，SafeChat成功仅证明调用未抛错，不能证明渲染/复制字节完整。
+-- Authority：校准Draft仍是布局来源；此对象只拥有一次只读导出的字符串/分页/输入焦点，
+-- 绝不更新Store或内置默认值。V1纯生成器保留兼容，交付正文换成无管道符V2，经已有完整
+-- 报告分页器校验SetText/GetText后才提示“已显示”。原生剪贴板和聊天渲染均不作为可信回读。
+-- 生命周期：只由获取/翻页/重试/关闭驱动；无Tick/新订阅，关闭校准一并释放正文和输入。
+C.TemplateCopyContractVersion = 2
+C.TemplateCopyPatch = "hud-template-copy-2"
+
+local function TemplateCopyNavigation(r)
+    local count = r.session and r.session.parts or 0
+    local ready = r.visible == true and r.failed ~= true and (r.index or 0) > 0
+    S.UI:SetEnabled(r.previous, ready and r.index > 1, C.owner)
+    S.UI:SetEnabled(r.next, ready and r.index < count, C.owner)
+    S.UI:SetEnabled(r.retry, r.visible == true and r.text ~= nil, C.owner)
+    SafeText(r.page, tostring(r.index or 0).." / "..tostring(count)..(r.failed and "（未交付）" or ""))
+end
+
+function C:CloseTemplateCopy()
+    local r = self.templateCopy
+    if not r then return true end
+    -- 维护：关闭报告只丢弃导出快照，不关闭校准/不动Draft；不能用全局ClearFocus抢走聊天输入。
+    r.visible = false
+    if r.editor then
+        if type(S.UI.DeactivateInputWidget) == "function" then
+            pcall(S.UI.DeactivateInputWidget, S.UI, r.editor, self.owner, "hud_template_close")
+        end
+        SafeVisible(r.editor, false)
+        pcall(r.editor.SetText, r.editor, "")
+    end
+    SafeVisible(r.root, false)
+    r.text, r.session, r.id, r.index, r.requested, r.failed = nil, nil, nil, 0, nil, false
+    return true
+end
+
+local function EnsureTemplateCopyUi()
+    local ui, r = S.UI, C.templateCopy
+    if r and r.ready then return r end
+    if r and r.initError then return nil, r.initError end -- 半建对象留存静默，重载前不重复创建泄漏。
+    if type(ui.CreateMultiEditBox) ~= "function" or type(ui.BindDeferredInputActivation) ~= "function"
+        or type(ui.ActivateInputWidget) ~= "function" then return nil, "原生复制框接口不可用" end
+    r = r or { index=0, visible=false, generation=S.Generation }
+    C.templateCopy = r
+    local ok, err = pcall(function()
+        -- 维护：可交互跨根报告必须用已有真实Window策略；普通root emptywidget不能保证越过校准HUD。
+        -- owner在注册之前传入，避免先无主注册再补字段；禁用Native ESC/模态，关闭由本生命周期处理。
+        r.root = assert(ui:CreatePanel(UIParent, "v3_buff_hud_template_copy", 0, 0, 720, 420, "card",
+            {owner=C.owner,transientWindow=true,pickable=true,visible=false,gradient=false}))
+        r.title = assert(ui:CreateLabel(r.root, "v3_buff_hud_template_title", "HUD 当前位置 · 可复制报告", 12, 10, 690, 22, 13, "strong", "LEFT", false))
+        r.status = assert(ui:CreateLabel(r.root, "v3_buff_hud_template_status", "", 12, 38, 690, 64, 10, "default", "LEFT", false))
+        r.previous = assert(MakeButton(r.root, "v3_buff_hud_template_prev", "上一页", 12, 106, 92, 26,
+            function() return C:ShowTemplateCopyPage((r.index or 0)-1) end))
+        r.next = assert(MakeButton(r.root, "v3_buff_hud_template_next", "下一页", 112, 106, 92, 26,
+            function() return C:ShowTemplateCopyPage((r.index or 0)+1) end))
+        r.page = assert(ui:CreateLabel(r.root, "v3_buff_hud_template_page", "0 / 0", 216, 106, 190, 26, 10, "default", "LEFT", false))
+        r.retry = assert(MakeButton(r.root, "v3_buff_hud_template_retry", "重试当前页", 12, 384, 132, 26,
+            function() return C:ShowTemplateCopyPage(r.requested or r.index or 1) end))
+        r.close = assert(MakeButton(r.root, "v3_buff_hud_template_close", "关闭报告", 610, 384, 98, 26,
+            function() return C:CloseTemplateCopy() end))
+        r.editor = assert(ui:CreateMultiEditBox(r.root, "v3_buff_hud_template_edit", 12, 140, 696, 232, 32768))
+        assert(type(r.editor.SetText)=="function" and type(r.editor.GetText)=="function", "复制框读写接口不可用")
+        local bound, why = ui:BindDeferredInputActivation(r.editor, C.owner, "v3_buff_hud_template_edit", {preserveFocusedSelection=true})
+        assert(bound==true, why or "复制框输入绑定失败")
+    end)
+    if not ok then
+        r.initError = "复制框创建失败，请重载后再试："..tostring(err)
+        C:CloseTemplateCopy()
+        if r.editor and type(ui.RetireInputWidget)=="function" then pcall(ui.RetireInputWidget,ui,r.editor,C.owner,"hud_template_build_failed") end
+        return nil, r.initError
+    end
+    r.ready = true
+    return r
+end
+
+local function LayoutTemplateCopy(r)
+    -- 维护：复制框不参与每帧预览布局。仅显式获取时按逻辑视口布置一次，翻页/空闲不重设
+    -- Extent/Anchor/Focus，防止复发等待两秒后选区消失；原生几何失败不能进入成功交付。
+    local sw, sh = ScreenSize()
+    local w, h = math.min(800, sw-24), math.min(460, sh-24)
+    if w < 310 or h < 240 then return false, "可用界面过小，请降低界面缩放后重新获取" end
+    local function Place(widget, parent, x, y, width, height)
+        local ok, accepted = pcall(S.UI.EnsureExtent, S.UI, widget, width, height, C.owner)
+        if not ok or accepted~=true then return false end
+        ok, accepted = pcall(S.UI.EnsureAnchor, S.UI, widget, parent, x, y, C.owner)
+        return ok and accepted==true
+    end
+    if not Place(r.root, UIParent, math.floor((sw-w)/2), math.floor((sh-h)/2), w, h)
+        or not Place(r.title,r.root,12,10,w-24,22)
+        or not Place(r.status,r.root,12,38,w-24,64)
+        or not Place(r.page,r.root,216,106,w-228,26)
+        or not Place(r.editor,r.root,12,140,w-24,h-188)
+        or not Place(r.retry,r.root,12,h-36,132,26)
+        or not Place(r.close,r.root,w-110,h-36,98,26) then return false, "复制框布局未成功" end
+    return true
+end
+
+function C:ShowTemplateCopyPage(index)
+    local r, transport = self.templateCopy, S.ReportCopyTransport
+    if not self.visible or not r or not r.visible or not r.text or r.generation~=S.Generation then return false,"报告已关闭或已重载" end
+    if type(transport)~="table" or type(transport.BuildTextPages)~="function" or type(transport.GetTextPage)~="function"
+        or type(transport.VerifyEditorReadback)~="function" then return false,"完整报告分页接口不可用" end
+    index = tonumber(index)
+    if not index or index~=math.floor(index) or index<1 or index>(r.session and r.session.parts or 1) then return false,"页码越界" end
+    r.requested = index
+    local session, locked = r.session, r.session ~= nil
+    local cap = session and session.capacity or 3500
+    if not session and type(r.editor.MaxTextLength)=="function" then
+        local ok, n = pcall(r.editor.MaxTextLength,r.editor); n = ok and tonumber(n) or nil
+        if n and n==n and n>0 and n<math.huge then cap=math.min(cap,math.floor(n)) end
+    end
+    local reason, trace
+    -- 只在明确获取/翻页/重试时激活；无后台选区保活。激活在写入之前，防止焦点进入时清字。
+    local shown, accepted = pcall(S.UI.EnsureVisible,S.UI,r.editor,true,self.owner)
+    if not shown or accepted~=true then reason="复制框不可见" end
+    if not reason then pcall(S.UI.ActivateInputWidget,S.UI,r.editor,self.owner,"hud_template_copy") end
+    for attempt=1,8 do
+        if reason then break end
+        if not session then
+            session, reason = transport:BuildTextPages(r.text,cap,r.id)
+            if not session then break end
+        end
+        local payload, err = transport:GetTextPage(session,index)
+        if not payload then reason=err;break end
+        local wrote, result = pcall(r.editor.SetText,r.editor,payload)
+        if wrote and result~=false and type(r.editor.SetCursorOffset)=="function" then pcall(r.editor.SetCursorOffset,r.editor,0) end
+        local read, actual = pcall(r.editor.GetText,r.editor)
+        local compare = read and type(actual)=="string" and actual:gsub('[\r\n]','') or actual
+        local exact; exact, trace = transport:VerifyEditorReadback({capacity=cap,wire="error_pages1"},payload,compare)
+        trace.writeOk,trace.writeRejected,trace.readOk,trace.attempts=wrote,result==false,read,attempt
+        if wrote and result~=false and read and exact then
+            -- 维护：第一页回读成功即冻结ID/正文/边界；之后失败不缩容、不再读Draft或Store。
+            r.session,r.index,r.failed=session,index,false
+            SafeText(r.status,"报告 "..r.id.." · "..#r.text.." 字节 · "..self.TemplateCopyPatch
+                .."\n点击下框，Ctrl+A、Ctrl+C；逐页复制，不要修改正文。\n关闭报告不保存布局；重新获取才生成新快照。")
+            TemplateCopyNavigation(r)
+            self.Diagnostics.templateCopyId,self.Diagnostics.templateCopyPage,self.Diagnostics.templateCopyPages=r.id,index,session.parts
+            return true
+        end
+        if locked or cap<=512 or attempt==8 then break end
+        cap=math.max(512,math.floor(cap/2));session=nil
+    end
+    r.failed=true
+    -- 失败保持可重试快照但撤掉截断文本；不把上一次页号推进为本次交付，不伪造完成回执。
+    pcall(r.editor.SetText,r.editor,"")
+    SafeVisible(r.editor,false)
+    if type(S.UI.DeactivateInputWidget)=="function" then pcall(S.UI.DeactivateInputWidget,S.UI,r.editor,self.owner,"hud_template_readback_failed") end
+    reason=reason or (type(transport.FormatReadback)=="function" and transport:FormatReadback(trace)) or "文字回读不一致"
+    SafeText(r.status,"本页未交付："..tostring(reason).."\n快照保留，请重试当前页；不要复制残缺内容。")
+    TemplateCopyNavigation(r)
+    Trace("template_page_failed",{error=tostring(reason),page=index})
+    return false, reason
+end
+
 function C:OutputTemplateSnapshot()
-    local lines, err = self:BuildTemplateSnapshotLines()
-    if type(lines) ~= "table" then
-        self.Diagnostics.templateOutputFailures = (tonumber(self.Diagnostics.templateOutputFailures) or 0) + 1
-        Trace("template_output_failed", { error=tostring(err or "模板快照生成失败") })
-        SafeText(self.statusLabel, "模板输出失败：" .. tostring(err or "未知错误"))
-        return false, err
+    local function Failed(err)
+        self.Diagnostics.templateOutputFailures=(tonumber(self.Diagnostics.templateOutputFailures) or 0)+1
+        Trace("template_output_failed",{error=tostring(err or "未知错误")})
+        SafeText(self.statusLabel,"模板未交付："..tostring(err or "未知错误"))
+        return false,err
     end
-    if type(S.SafeChat) ~= "function" then
-        self.Diagnostics.templateOutputFailures = (tonumber(self.Diagnostics.templateOutputFailures) or 0) + 1
-        Trace("template_output_failed", { error="SafeChat unavailable", templateLines=#lines })
-        SafeText(self.statusLabel, "模板输出失败：聊天输出不可用")
-        return false, "聊天输出不可用"
-    end
-    for _, line in ipairs(lines) do S.SafeChat(line, "info", "hud_template") end
-    self.Diagnostics.templateOutputCount = (tonumber(self.Diagnostics.templateOutputCount) or 0) + 1
-    self.Diagnostics.lastTemplateLines = #lines
-    Trace("template_output", { templateLines=#lines, clearError=true })
-    SafeText(self.statusLabel, "已输出 " .. tostring(#lines) .. " 条 HUD_TEMPLATE_V1，请完整复制给维护者")
-    return true, lines
+    if self.visible~=true then return Failed("请先打开HUD校准") end
+    local lines,err=self:BuildTemplateSnapshotLines()
+    if type(lines)~="table" then return Failed(err) end
+    local transport=S.ReportCopyTransport
+    if type(transport)~="table" or type(transport.BuildTextPages)~="function" then return Failed("完整报告分页接口不可用") end
+    local r; r,err=EnsureTemplateCopyUi();if not r then return Failed(err) end
+    if r.generation~=S.Generation then return Failed("复制框属于旧加载，请重载") end
+    self:CloseTemplateCopy()
+    local laidOut;laidOut,err=LayoutTemplateCopy(r);if not laidOut then return Failed(err) end
+    -- V2仅替换行协议分隔符，不对布局值重新归一化、不套用当前默认值；保留0/负Y/禁用字段。
+    local body={"RS-HUD-TEMPLATE-2", "LINES="..#lines..";PATCH="..self.TemplateCopyPatch}
+    for _,line in ipairs(lines) do body[#body+1]=line:gsub('|',';'):gsub('^HUD_TEMPLATE_V1;','HUD_TEMPLATE_V2;') end
+    body[#body+1]="RS-HUD-TEMPLATE-END"
+    self.templateCopySequence=(tonumber(self.templateCopySequence) or 0)+1
+    r.id="hud."..tostring(math.max(0,math.floor(tonumber(S.Generation) or 0))).."."..tostring(self.templateCopySequence)
+    r.text,r.index,r.requested,r.visible=table.concat(body,"\n"),0,1,true
+    local shown,yes=pcall(S.UI.EnsureVisible,S.UI,r.root,true,self.owner)
+    if not shown or yes~=true then self:CloseTemplateCopy();return Failed("复制报告窗口显示失败") end
+    if type(r.root.Raise)=="function" then pcall(r.root.Raise,r.root) end
+    local delivered;delivered,err=self:ShowTemplateCopyPage(1)
+    if not delivered then return Failed(err) end
+    self.Diagnostics.templateOutputCount=(tonumber(self.Diagnostics.templateOutputCount) or 0)+1
+    self.Diagnostics.lastTemplateLines=#lines
+    self.Diagnostics.templateCopyPatch=self.TemplateCopyPatch
+    Trace("template_output",{templateLines=#lines,reportId=r.id,pages=r.session.parts,clearError=true})
+    SafeText(self.statusLabel,"当前位置报告已显示，请从报告编辑框复制；尚未保存或修改默认布局")
+    -- 聊天只发短回执，不含管道符/模板正文。回执发送失败不否定已经验证的编辑框交付。
+    if type(S.SafeChat)=="function" then pcall(S.SafeChat,"HUD位置报告 "..r.id.." 已显示，请从报告框逐页全选复制。","info","hud_template") end
+    return true,lines
 end
 
 local function SetLiveHudSuppressed(value, reason)
@@ -642,13 +843,27 @@ function C:LayoutPreview()
                 S.UI:SetExtent(icon.time, size, 13, self.owner)
             end
         end
+    elseif key == "class" then
+        SetPreviewChildrenVisible("icons")
+        for i,icon in ipairs(self.preview.icons) do SafeVisible(icon.root,i==1) end
+        local icon=self.preview.icons[1]
+        if icon then
+            S.UI:SetAnchor(icon.root,self.preview.root,0,0,self.owner)
+            S.UI:SetExtent(icon.root,rect.width,rect.height,self.owner)
+            if icon.texture then
+                S.UI:SetIconTexture(icon.texture,rect.iconPath or UNKNOWN_ICON,self.owner)
+                S.UI:SetExtent(icon.texture,rect.width,rect.height,self.owner)
+                S.UI:SetAnchor(icon.texture,icon.root,0,0,self.owner)
+            end
+            SafeText(icon.time,"")
+        end
     elseif key == "info" then
         SetPreviewChildrenVisible("info")
         local profile = Profile(); local parts = {}
         if (profile.components.class or {}).enabled ~= false and profile.info.showClass ~= false then parts[#parts+1] = "职业预览" end
         if (profile.components.gearScore or {}).enabled ~= false and profile.info.showGear ~= false then parts[#parts+1] = "12345" end
         if (profile.components.distance or {}).enabled ~= false and profile.info.showDistance ~= false then parts[#parts+1] = "28.4m" end
-        SafeText(self.preview.infoLabel, #parts > 0 and table.concat(parts, " · ") or "基础信息已全部关闭")
+        SafeText(self.preview.infoLabel, rect.text or (#parts > 0 and table.concat(parts, " · ") or "基础信息已全部关闭"))
         S.UI:SetFontSize(self.preview.infoLabel, math.max(8, Round((CurrentFields().font or 12) * N(Profile().plateScale, 1))), self.owner)
         S.UI:SetAnchor(self.preview.infoLabel, self.preview.root, 0, 0, self.owner)
         S.UI:SetExtent(self.preview.infoLabel, rect.width, rect.height, self.owner)
@@ -679,7 +894,7 @@ function C:LayoutPreview()
         elseif key == "plate" then SetDrawableColor(self.preview.bg, 0.08,0.46,0.72,0.32)
         else SetDrawableColor(self.preview.bg, 0.08,0.36,0.55,0.18) end
     end
-    SafeText(self.anchorHint, liveAnchor and "锚点：游戏实时位置" or "锚点：当前无单位，使用校准预览位置")
+    SafeText(self.anchorHint, self.component=="class" and "尺寸0随字号；XY只移动图标，不移动名称" or (liveAnchor and "锚点：游戏实时位置" or "锚点：当前无单位，使用校准预览位置"))
     if type(self.preview.root.Raise) == "function" then pcall(self.preview.root.Raise, self.preview.root) end
     return true
 end
@@ -722,6 +937,7 @@ local FIELD_VISIBLE = {
     buffs   = { x=true,y=true,size=true,font=true,spacing=true,perRow=true,rows=true,scale=true,alpha=true },
     debuffs = { x=true,y=true,size=true,font=true,spacing=true,perRow=true,rows=true,scale=true,alpha=true },
     info    = { x=true,y=true,font=true,scale=true },
+    class   = { x=true,y=true,size=true,scale=true,alpha=true },
     mainHand= { x=true,y=true,size=true,scale=true,alpha=true },
     offHand = { x=true,y=true,size=true,scale=true,alpha=true },
     ranged  = { x=true,y=true,size=true,scale=true,alpha=true },
@@ -781,7 +997,7 @@ function C:RefreshControls()
             SafeText(self.enabledButton, "锚点基准")
             S.UI:SetButtonActive(self.enabledButton, false, self.owner)
         else
-            SafeText(self.enabledButton, CurrentEnabled() and "显示：开" or "显示：关")
+            SafeText(self.enabledButton, (self.component=="class" and "职业整体：" or "显示：") .. (CurrentEnabled() and "开" or "关"))
             S.UI:SetButtonActive(self.enabledButton, CurrentEnabled(), self.owner)
         end
     end
@@ -968,6 +1184,8 @@ local function RestoreShell()
 end
 
 function C:HideOverlay()
+    -- 维护（hud-template-copy-2）：取消/保存/重载退出均释放本校准的导出快照与键盘，不触碰其他报告。
+    self:CloseTemplateCopy()
     self.visible = false
     SafeVisible(self.panel, false); SafeVisible(self.preview.root, false)
     for _, item in pairs(type(self.globalPreview) == "table" and type(self.globalPreview.items) == "table" and self.globalPreview.items or {}) do SafeVisible(item.root, false) end
@@ -1105,10 +1323,12 @@ function C:EnsureCreated()
     self.statusLabel = S.UI:CreateLabel(panel, "v3_buff_hud_calibration_status", "拖动预览框或使用按钮微调", 12, 544, 396, 18, 9, "muted", "LEFT", false)
     MakeButton(panel, "v3_buff_hud_calibration_default_component", "恢复当前组件", 12, 568, 116, 26, function() return C:ResetCurrentComponent() end)
     MakeButton(panel, "v3_buff_hud_calibration_default", "恢复当前 HUD", 134, 568, 116, 26, function() return C:ResetCurrentScope() end)
-    -- 中文维护注释（模板输出入口）：此按钮只读取当前 Draft 并分行输出 HUD_TEMPLATE_V1，
-    -- 不触发 Save、不退出校准，也不改变自己/目标 HUD。用户可以在最终微调完成但尚未保存时
-    -- 先复制模板给维护者，避免“为记录模板而额外改变存档”的隐性副作用。
-    MakeButton(panel, "v3_buff_hud_calibration_template", "输出模板快照", 256, 568, 152, 26, function() return C:OutputTemplateSnapshot() end)
+    -- 维护（hud-template-restore-1）：用户重新校准新增组件，需要恢复被发行 DebugFlags 隐藏的入口。
+    -- Authority 仍是 Calibration Draft；按钮复用 OutputTemplateSnapshot，同时导出自己/目标，
+    -- 不触发 Save/Reset、不改默认值、不退出校准。文本框未应用的输入仍不是 Draft，必须先“应用输入值”。
+    -- 兼容：保留原逻辑 ID 与 152x26 布局槽，仅取消开发开关门禁；复用面板时不重复创建/绑定。
+    -- 风险：这是“获取布局供维护者设默认值”，不是自动设为默认；未来新增组件须同步补充模板 section。
+    MakeButton(panel, "v3_buff_hud_calibration_template", "获取当前位置", 256, 568, 152, 26, function() return C:OutputTemplateSnapshot() end)
     MakeButton(panel, "v3_buff_hud_calibration_cancel", "取消并退出", 12, 602, 148, 28, function() return C:Exit(false) end)
     MakeButton(panel, "v3_buff_hud_calibration_save", "保存并退出", 166, 602, 156, 28, function() return C:Exit(true) end)
 

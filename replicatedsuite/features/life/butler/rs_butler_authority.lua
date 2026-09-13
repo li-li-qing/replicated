@@ -28,16 +28,21 @@ end
 
 function A:Refresh(reason)
     local value, err
-    if S.Api == nil or type(S.Api.CallCapability) ~= "function" or X2Butler == nil then
+    local host = rawget(_G, "X2Butler") or X2Butler
+    if S.Api == nil or type(S.Api.CallCapability) ~= "function" or host == nil then
         err = "butler API unavailable"
     else
-        local ok, result, callErr = S.Api:CallCapability("X2Butler:GetChargeInfo", X2Butler, "GetChargeInfo")
+        local ok, result, callErr = S.Api:CallCapability("X2Butler:GetChargeInfo", host, "GetChargeInfo")
         if ok == true then value = Bounded(result, 0, nil, { count = 0 }) else err = callErr or "butler getter failed" end
     end
     self.revision = self.revision + 1
     self.metrics.refreshes = self.metrics.refreshes + 1
     if value == nil then self.metrics.failures = self.metrics.failures + 1 end
     self.snapshot = { revision = self.revision, available = value ~= nil, status = value ~= nil and "ready" or "unavailable", charge = value, error = err, source = "X2Butler:GetChargeInfo", reason = tostring(reason or "refresh") }
+    -- 中文维护注释：刷新完成后发布轻量事件，通知管家助手页面更新
+    if S.Events and type(S.Events.Publish) == "function" then
+        S.Events:Publish("v3.butler.updated", { revision = self.revision, reason = reason })
+    end
     return true
 end
 function A:GetProjection()

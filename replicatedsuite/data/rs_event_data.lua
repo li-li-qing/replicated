@@ -142,10 +142,12 @@ S.Data.ZoneStateWatch = {
     -- Short names are used only when the responsive layout becomes narrow.
     { zoneId = 20,  name = O.CINDERSTONE or "十字星平原", fullName = O.CINDERSTONE or "十字星平原", stripName = "十字星", sourceName = "Cinderstone Moor", questScope = "event", questKey = "cinderstone_purify" },
     { zoneId = 17,  name = O.YNYSTERE or "伊尼斯泰尔", fullName = O.YNYSTERE or "伊尼斯泰尔", stripName = "伊尼斯", sourceName = "Ynystere", questScope = "event", questKey = "ynystere_purify" },
-    { zoneId = 103, name = O.WHALESONG or "鲸鱼歌湾", fullName = O.WHALESONG or "鲸鱼歌湾", stripName = "鲸鱼", sourceName = "Whalesong Harbor" },
+    -- 中文维护注释：鲸鱼歌湾与海之烛台补齐 questScope/questKey 显式绑定，与下文 DynamicEventZones 保持一致；
+    -- 确保 BuildZoneRows 生成的实时行能正确经 AttachProgress 挂接阶段任务进度，并在用户点击时调起 3 阶段任务详情悬浮窗。
+    { zoneId = 103, name = O.WHALESONG or "鲸鱼歌湾", fullName = O.WHALESONG or "鲸鱼歌湾", stripName = "鲸鱼", sourceName = "Whalesong Harbor", questScope = "event", questKey = "whalesong" },
     -- Aegis is the same live-region class as Whalesong. Keep it visible in
     -- every phase; only its extra task countdown/status changes with the phase.
-    { zoneId = 102, name = O.AEGIS or "海之烛台", fullName = O.AEGIS or "海之烛台", stripName = "烛台", sourceName = "Aegis Island" },
+    { zoneId = 102, name = O.AEGIS or "海之烛台", fullName = O.AEGIS or "海之烛台", stripName = "烛台", sourceName = "Aegis Island", questScope = "event", questKey = "aegis" },
 }
 S.Data.ZoneStateWatchById = {}
 for _, definition in ipairs(S.Data.ZoneStateWatch) do

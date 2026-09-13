@@ -48,7 +48,8 @@ local function Build(parent, route, id)
     local meta = S.FeatureRegistry and S.FeatureRegistry:Get(id)
     local contractOk, contractErr = ValidateBusinessFeature(feature, id)
     if contractOk ~= true then return nil, contractErr end
-    local rootSpec = id == "combat_unit_lines" and {
+    -- 中文维护：增益计数页也使用连续滚动，窄屏表单不用逐项跳页；不改变其它页面的滚动语义。
+    local rootSpec = (id == "combat_unit_lines" or id == "combat_boss_alerts" or id == "combat_buff_cap") and {
         id = "v3_page_business_" .. tostring(id), gap = 7, padding = 2, scrollStep = 1,
     } or ("v3_page_business_" .. tostring(id))
     local root, err
@@ -70,6 +71,31 @@ local function Build(parent, route, id)
     end
     if root == nil then return nil, err end
     root.consumerHeld = false
+    if id == "combat_buff_cap" then
+        -- 中文维护：新增持久设置在构造 Binding 前读取原 Store；失败保持只读保护页，
+        -- 不显示可写默认值、不重置存档、不启用观察。普通控件构建错误仍交给 PageHost。
+        local called, loaded, loadErr = pcall(feature.Initialize, feature)
+        if called ~= true or loaded ~= true then
+            root.route, root.persistenceUnavailable = route, true
+            D:PageHeader(root, "v3_business_combat_buff_cap_protected_header", "增益容量监控：配置已保护",
+                "配置未通过读取校验；未清空旧设置，暂不创建编辑器或启动计数。")
+            RSUI:Text({ id = "v3_business_combat_buff_cap_protected_reason", parent = root,
+                text = "读取失败：" .. tostring((called and loadErr or loaded) or "未知错误"), fontSize = 10,
+                tone = "warn", overflow = "wrap", slot = { size = "auto", minHeight = 45, hAlign = "fill" } })
+            RSUI:Button({ id = "v3_business_combat_buff_cap_diagnostics", parent = root,
+                text = "打开诊断与维护", compact = true, slot = { size = "fixed", width = 156, height = 30 },
+                onClick = function()
+                    -- 中文维护：统一导航 Authority 在 UIV3.Shell（宿主适配器是 UIV3Host），
+                    -- UIV3 本身不是 Navigate 接口；只走已有 Shell，不绕过 PageHost 自建诊断页。
+                    local shell = S.UIV3 and S.UIV3.Shell or nil
+                    if type(shell) ~= "table" or type(shell.Navigate) ~= "function" then return false, "诊断导航不可用" end
+                    return shell:Navigate("system.diagnostics", { source = "buff_cap_protected" })
+                end })
+            function root:OnActivated() return true end
+            function root:OnDeactivated() return true end
+            return root
+        end
+    end
     local unitLineSettingsPage = id == "combat_unit_lines"
     local unitLineHeader, unitLineDiagnostics, unitLineDiagnosticsText
     local toggle, hint
@@ -162,37 +188,199 @@ local function Build(parent, route, id)
     local craftPlanTable, craftPlanQtyInput, craftPlanRemoveButton, craftPlanQuoteButton, craftPlanStatus, craftPlanSelectedIndex
     local specialFields = {}
     local function TrackField(field) if field ~= nil then specialFields[#specialFields + 1] = field end return field end
-    local bossTestStatus = nil
+    -- 中文维护（2026-09-12）：选择只是本页视图状态，规则开关仍由 Feature/Store 持有。
+    -- 操作前按稳定 key 重新读取 Projection，避免行排序/刷新后用旧 index 改错规则。
+    -- 动作回执独立于 Refresh 摘要，保存拒绝不能被紧随其后的事件刷新覆盖成成功。
+    local bossTestStatus, bossRuleSummary, bossRuleToggle, bossRuleTest
+    local bossRulesOn, bossRulesOff, bossSelectedKey, SyncBossControls
+    local function FindSelectedBossRule(projection)
+        for _, row in ipairs((projection or {}).rows or {}) do
+            if bossSelectedKey ~= nil and row.mechanicKey == bossSelectedKey then return row end
+        end
+        return nil
+    end
+    local function BossActionResult(ok, actionErr, message)
+        if type(root.Refresh) == "function" then root:Refresh() end
+        if bossTestStatus ~= nil then
+            bossTestStatus:SetText(ok == true and message or ("操作失败：" .. tostring(actionErr or "未执行")))
+        end
+        return ok, actionErr
+    end
+    -- 中文维护：计数设置的操作回执与实时读数分开；后续观察刷新不能吞掉保存失败。
+    -- 开关/阈值只经 Feature Commands，输入草稿/焦点/应用按钮继续由 RSUI NumericField 持有。
+    local capActionStatus, capLiveStatus, capTestButton, SyncBuffCapControls
+    if id == "combat_buff_cap" then
+        local function Result(ok, actionErr, message)
+            if type(root.Refresh) == "function" then root:Refresh() end
+            if capActionStatus ~= nil then capActionStatus:SetText(ok == true and message or ("操作失败：" .. tostring(actionErr or "未执行"))) end
+            return ok, actionErr
+        end
+        local actions = RSUI:UniformGrid({ id = "v3_business_combat_buff_cap_settings_actions", parent = root,
+            minCellWidth = 140, minCellHeight = 30, maxColumns = 3, gap = 6,
+            slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
+        TrackField(RSUI:Toggle({ id = "v3_business_combat_buff_cap_reminder_enabled", parent = actions,
+            onText = "个人数量提醒：开", offText = "个人数量提醒：关",
+            get = function() return feature:GetProjection().reminderEnabled == true end,
+            set = function(value)
+                local ok, actionErr = feature.Commands:SetReminderEnabled(value)
+                return Result(ok, actionErr, "提醒开关已保存并回读；至少一项阈值大于0才后台观察。")
+            end, slot = { size = "fill", hAlign = "fill" } }))
+        capTestButton = RSUI:Button({ id = "v3_business_combat_buff_cap_test_reminder", parent = actions,
+            text = "测试屏幕提醒", compact = true, slot = { size = "fill", hAlign = "fill" },
+            onClick = function()
+                local ok, actionErr = feature.Commands:TestReminder()
+                return Result(ok, actionErr, "已发送手动提醒；不代表真实计数越线，也不改变峰值。")
+            end })
+        RSUI:Button({ id = "v3_business_combat_buff_cap_reset_peaks", parent = actions,
+            text = "重置本次峰值", compact = true, slot = { size = "fill", hAlign = "fill" },
+            onClick = function()
+                local ok, actionErr = feature.Commands:ResetPeaks()
+                return Result(ok, actionErr, "峰值已从当前可靠读数重新开始；设置未改变。")
+            end })
+        local fields = RSUI:UniformGrid({ id = "v3_business_combat_buff_cap_thresholds", parent = root,
+            minCellWidth = 250, minCellHeight = 30, maxColumns = 2, gap = 6,
+            slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
+        local function AddThreshold(key, label)
+            -- 中文维护：只提供精确整数输入和显式应用，不创建第二套滑块范围存档。
+            -- 0-1000 是个人配置预算，不代表 Buff 槽位上限；未实测的容量预警继续不开放。
+            TrackField(D:CompactNumericSetting(fields, { id = "v3_business_combat_buff_cap_" .. key .. "_threshold",
+                label = label, min = 0, max = 1000, step = 1, integer = true, slider = false,
+                inputWidth = 70, labelWidth = 86, applyButton = true,
+                get = function() return feature:GetProjection()[key .. "Threshold"] or 0 end,
+                set = function(value)
+                    local ok, actionErr = feature.Commands:SetThreshold(key, value)
+                    return Result(ok, actionErr, label .. "已保存并回读；0表示关闭该类提醒。")
+                end, slot = { size = "fill", hAlign = "fill" } }))
+        end
+        AddThreshold("normal", "普通增益阈值")
+        AddThreshold("hidden", "隐藏增益阈值")
+        capActionStatus = RSUI:Text({ id = "v3_business_combat_buff_cap_action_status", parent = root,
+            text = "阈值默认0（关闭）；输入后点击应用。功能关闭时也能保存设置。", fontSize = 9,
+            tone = "muted", overflow = "wrap", slot = { size = "auto", minHeight = 22, hAlign = "fill" } })
+        capLiveStatus = RSUI:Text({ id = "v3_business_combat_buff_cap_live_status", parent = root,
+            text = "", fontSize = 9, tone = "muted", overflow = "wrap", slot = { size = "auto", minHeight = 22, hAlign = "fill" } })
+        SyncBuffCapControls = function(projection)
+            capTestButton:SetEnabled(S.FeatureRuntime:IsEnabled(id) == true)
+            local text = (projection.observing == true and "正在观察" or "观察已停止")
+                .. " · 采样 " .. tostring(projection.samples or 0) .. " · 部分/失败 " .. tostring(projection.failedSamples or 0)
+                .. " · 自动提醒 " .. tostring(projection.delivered or 0)
+            if projection.error ~= nil then text = text .. " · " .. tostring(projection.error) end
+            if projection.reminderError ~= nil then text = text .. " · 提醒失败：" .. tostring(projection.reminderError) end
+            capLiveStatus:SetText(text)
+        end
+    end
+
     if id == "combat_boss_alerts" then
-        local hudRow = RSUI:HorizontalBox({ id = "v3_business_combat_boss_alerts_hud_row", parent = root, gap = 6,
-            slot = { size = "fixed", height = 30, hAlign = "fill" } })
+        -- 中文维护：旧单行六按钮+回执超过窄页宽度。用共享 UniformGrid 自动换行；
+        -- 不做 Native 绝对坐标/二次缩放，原设置 Commands、输入/焦点所有权与 HUD Presenter 保持不变。
+        local hudRow = RSUI:UniformGrid({ id = "v3_business_combat_boss_alerts_hud_row", parent = root,
+            minCellWidth = 145, minCellHeight = 30, maxColumns = 3, gap = 6,
+            slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
         TrackField(RSUI:Toggle({ id = "v3_business_combat_boss_alerts_hud_enabled", parent = hudRow,
             onText = "机制 HUD：开", offText = "机制 HUD：关",
             get = function() return (feature:GetProjection() or {}).hudEnabled == true end,
-            set = function(v) return feature.Commands:SetHudEnabled(v == true) end,
-            slot = { size = "fixed", width = 120 } }))
+            set = function(v)
+                local ok, actionErr = feature.Commands:SetHudEnabled(v == true)
+                return BossActionResult(ok, actionErr, "HUD 开关已保存并回读")
+            end, slot = { size = "fill", hAlign = "fill" } }))
         TrackField(RSUI:Toggle({ id = "v3_business_combat_boss_alerts_hud_anchor", parent = hudRow,
             onText = "位置：顶部", offText = "位置：中央",
             get = function() return (feature:GetProjection() or {}).hudAnchor == "top" end,
             set = function(v) return feature.Commands:SetHudAnchor(v and "top" or "center") end,
-            slot = { size = "fixed", width = 120 } }))
-        local testBig = RSUI:Button({ id = "v3_business_combat_boss_alerts_test_big", parent = hudRow, text = "测试大字", compact = true, slot = { size = "fixed", width = 82 } })
-        local testCountdown = RSUI:Button({ id = "v3_business_combat_boss_alerts_test_countdown", parent = hudRow, text = "测试倒计时", compact = true, slot = { size = "fixed", width = 92 } })
-        -- World-boss-independent verification: inject a CATALOGED rule through
-        -- the real lookup+push chain (no boss encounter required). Fact-source
-        -- truth stays with the Boss: diagnostics line on any cast-bar mob.
-        local simCast = RSUI:Button({ id = "v3_business_combat_boss_alerts_sim_cast", parent = hudRow, text = "仿真读条", compact = true, slot = { size = "fixed", width = 82 } })
-        local simDebuff = RSUI:Button({ id = "v3_business_combat_boss_alerts_sim_debuff", parent = hudRow, text = "仿真Debuff", compact = true, slot = { size = "fixed", width = 92 } })
-        bossTestStatus = RSUI:Text({ id = "v3_business_combat_boss_alerts_test_status", parent = hudRow, text = "实时：目标施法 + 自身Debuff", fontSize = 8, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
-        testBig.onClick = function() local ok, actionErr = feature.Commands:TestBigText(); bossTestStatus:SetText(ok and "大字 HUD 已触发" or ("测试失败：" .. tostring(actionErr or "未执行"))); return ok, actionErr end
-        testCountdown.onClick = function() local ok, actionErr = feature.Commands:TestCountdown(); bossTestStatus:SetText(ok and "倒计时 HUD 已触发" or ("测试失败：" .. tostring(actionErr or "未执行"))); return ok, actionErr end
-        simCast.onClick = function() local ok, actionErr = feature.Commands:SimulateCast(); bossTestStatus:SetText(ok and "仿真读条：规则匹配+HUD 已触发" or ("仿真失败：" .. tostring(actionErr or "未执行"))); return ok, actionErr end
-        simDebuff.onClick = function() local ok, actionErr = feature.Commands:SimulateDebuff(); bossTestStatus:SetText(ok and "仿真Debuff：规则匹配+HUD 已触发" or ("仿真失败：" .. tostring(actionErr or "未执行"))); return ok, actionErr end
+            slot = { size = "fill", hAlign = "fill" } }))
+        local function TestButton(suffix, text, command, success)
+            return RSUI:Button({ id = "v3_business_combat_boss_alerts_" .. suffix, parent = hudRow,
+                text = text, compact = true, slot = { size = "fill", hAlign = "fill" },
+                onClick = function()
+                    local ok, actionErr = feature.Commands[command](feature.Commands)
+                    return BossActionResult(ok, actionErr, success)
+                end })
+        end
+        TestButton("test_big", "测试大字", "TestBigText", "大字 HUD 已触发（手动测试）")
+        TestButton("test_countdown", "测试倒计时", "TestCountdown", "倒计时 HUD 已触发（手动测试）")
+        TestButton("sim_cast", "仿真读条", "SimulateCast", "仿真读条已触发；不是实时命中证明")
+        TestButton("sim_debuff", "仿真 Debuff", "SimulateDebuff", "仿真 Debuff 已触发；不是实时命中证明")
+        -- 中文维护（boss-hud-clock-1）：校准通过命令/服务/Windowing，不让页面直接操纵 HUD Native。
+        TrackField(RSUI:Toggle({id="v3_business_combat_boss_alerts_hud_edit", parent=hudRow,
+            onText="完成 HUD 调整", offText="调整 HUD（可拖动）",
+            get=function()return (feature:GetProjection() or {}).hudEditing == true end,
+            set=function(v)local ok,err=feature.Commands:SetHudEditing(v==true);return BossActionResult(ok,err,"HUD 调整状态已切换")end,
+            slot={size="fill",hAlign="fill"}}))
+        TestButton("hud_reset", "重置 HUD 布局", "ResetHudLayout", "HUD 布局已重置，机制开关未改变")
+        TrackField(RSUI:Toggle({id="v3_business_combat_boss_alerts_observed_casts", parent=hudRow,
+            onText="未收录读条：开", offText="未收录读条：关",
+            get=function()return (feature:GetProjection() or {}).showObservedCasts==true end,
+            set=function(v)local ok,err=feature.Commands:SetShowObservedCasts(v==true);return BossActionResult(ok,err,"仅显示目标/关注目标的真实读条，不预测 CD")end,
+            slot={size="fill",hAlign="fill"}}))
         local hudGrid = RSUI:UniformGrid({ id = "v3_business_combat_boss_alerts_hud_grid", parent = root, minCellWidth = 260, minCellHeight = 30, maxColumns = 2, gap = 5, slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
         TrackField(D:CompactNumericSetting(hudGrid, { id = "v3_business_combat_boss_alerts_font", label = "HUD 字号", min = 18, max = 56, step = 1, integer = true, unit = "", slider = true,
             get = function() return (feature:GetProjection() or {}).hudFontSize or 34 end, set = function(v) return feature.Commands:SetHudFontSize(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
-        TrackField(D:CompactNumericSetting(hudGrid, { id = "v3_business_combat_boss_alerts_duration", label = "显示时长", min = 1000, max = 10000, step = 250, integer = true, unit = "ms", slider = true,
+        TrackField(D:CompactNumericSetting(hudGrid, { id = "v3_business_combat_boss_alerts_duration", label = "大字时长", min = 1000, max = 10000, step = 250, integer = true, unit = "ms", slider = true,
             get = function() return (feature:GetProjection() or {}).hudDurationMs or 3000 end, set = function(v) return feature.Commands:SetHudDurationMs(v) end, slot = { size = "fill", fill = 1, hAlign = "fill" } }))
+        -- 中文维护：数值与拖拽共用同一耐久设置；零/负偏移有效，修改后立即布局但不重启倒计时。
+        for _, setting in ipairs({
+            {suffix="offset_x",label="水平偏移",key="hudOffsetX",command="SetHudOffsetX",min=-8192,max=8192,default=0},
+            {suffix="offset_y",label="垂直偏移",key="hudOffsetY",command="SetHudOffsetY",min=-8192,max=8192,default=0},
+            {suffix="width",label="HUD 宽度",key="hudWidth",command="SetHudWidth",min=280,max=1200,default=720},
+        }) do
+            local field=setting
+            TrackField(D:CompactNumericSetting(hudGrid,{id="v3_business_combat_boss_alerts_"..field.suffix,
+                label=field.label,min=field.min,max=field.max,step=1,integer=true,unit="",slider=false,
+                get=function()return (feature:GetProjection() or {})[field.key] or field.default end,
+                set=function(v)local ok,err=feature.Commands[field.command](feature.Commands,v);return BossActionResult(ok,err,"HUD 设置已保存并应用")end,
+                slot={size="fill",fill=1,hAlign="fill"}}))
+        end
+        RSUI:Text({id="v3_business_combat_boss_alerts_coverage_hint",parent=root,
+            text="已知机制仅 3 种读条 + 2 种自身 Debuff。可开启未收录读条；瞬发、未观察单位和未来 CD 不会被猜测。倒计时按实际剩余时间结束。",
+            fontSize=9,tone="muted",overflow="wrap",maxLines=3,slot={size="auto",minHeight=32,hAlign="fill"}})
+        local ruleActions = RSUI:UniformGrid({ id = "v3_business_combat_boss_alerts_rule_actions", parent = root,
+            minCellWidth = 145, minCellHeight = 30, maxColumns = 4, gap = 6,
+            slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
+        bossRuleToggle = RSUI:Button({ id = "v3_business_combat_boss_alerts_rule_toggle", parent = ruleActions,
+            text = "关闭选中规则", compact = true, enabled = false, slot = { size = "fill", hAlign = "fill" },
+            onClick = function()
+                local row = FindSelectedBossRule(feature:GetProjection())
+                if row == nil then return BossActionResult(false, "请先选择一条机制规则") end
+                local ok, actionErr = feature.Commands:SetRuleEnabled(row.mechanicKey, row.enabled ~= true)
+                return BossActionResult(ok, actionErr, "规则设置已保存并回读")
+            end })
+        bossRuleTest = RSUI:Button({ id = "v3_business_combat_boss_alerts_rule_test", parent = ruleActions,
+            text = "测试选中规则", compact = true, enabled = false, slot = { size = "fill", hAlign = "fill" },
+            onClick = function()
+                local row = FindSelectedBossRule(feature:GetProjection())
+                if row == nil then return BossActionResult(false, "请先选择一条机制规则") end
+                local ok, actionErr = feature.Commands:TestRule(row.mechanicKey)
+                return BossActionResult(ok, actionErr, "选中规则已触发（手动测试，不是实时命中）")
+            end })
+        local function BulkButton(suffix, text, enabled)
+            return RSUI:Button({ id = "v3_business_combat_boss_alerts_" .. suffix, parent = ruleActions,
+                text = text, compact = true, slot = { size = "fill", hAlign = "fill" },
+                onClick = function()
+                    local ok, actionErr = feature.Commands:SetAllRulesEnabled(enabled)
+                    return BossActionResult(ok, actionErr, "全部规则设置已保存并回读")
+                end })
+        end
+        bossRulesOn = BulkButton("rules_on", "全部启用", true)
+        bossRulesOff = BulkButton("rules_off", "全部关闭", false)
+        bossRuleSummary = RSUI:Text({ id = "v3_business_combat_boss_alerts_rule_summary", parent = root,
+            text = "请选择下方规则", fontSize = 9, tone = "muted", overflow = "wrap", maxLines = 2,
+            slot = { size = "auto", minHeight = 20, hAlign = "fill" } })
+        bossTestStatus = RSUI:Text({ id = "v3_business_combat_boss_alerts_test_status", parent = root,
+            text = "规则可独立启停；规则与未收录读条都关闭后停止观察。", fontSize = 9, tone = "muted", overflow = "wrap",
+            slot = { size = "auto", minHeight = 20, hAlign = "fill" } })
+        SyncBossControls = function(projection)
+            local row = FindSelectedBossRule(projection)
+            if row == nil then bossSelectedKey = nil end
+            local enabledCount, total = tonumber(projection.enabledRuleCount) or 0, tonumber(projection.ruleCount) or 0
+            bossRuleToggle:SetEnabled(row ~= nil)
+            bossRuleToggle:SetText(row ~= nil and row.enabled ~= true and "启用选中规则" or "关闭选中规则")
+            bossRuleTest:SetEnabled(row ~= nil and row.enabled == true and projection.hudEnabled == true and S.FeatureRuntime:IsEnabled(id) == true)
+            bossRulesOn:SetEnabled(enabledCount < total)
+            bossRulesOff:SetEnabled(enabledCount > 0)
+            bossRuleSummary:SetText("已启用 " .. tostring(enabledCount) .. "/" .. tostring(total)
+                .. (projection.realtime == true and " · 实时观察已启动" or " · 实时观察已停止")
+                .. (row ~= nil and (" · 已选：" .. tostring(row.name)) or " · 请选择下方规则"))
+        end
     elseif id == "combat_unit_lines" then
         local pairSpecs = {
             { key="target", label="当前目标", field="showTarget" },
@@ -843,12 +1031,41 @@ local function Build(parent, route, id)
     end
     local tableView
     local tableParent = unitLineSettingsPage and unitLineDiagnostics and unitLineDiagnostics.content or root
-    local tableDesiredRows = unitLineSettingsPage and 5 or 14
+    local tableDesiredRows = (unitLineSettingsPage or id == "combat_boss_alerts") and 5 or 14
     local tableSlot = unitLineSettingsPage
         and { size = "auto", minHeight = 150, hAlign = "fill" }
         or { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" }
-    tableView = RSUI:TableView({ id = "v3_business_" .. id .. "_table", parent = tableParent, items = {}, rowHeight = 26, headerHeight = 27, desiredRows = tableDesiredRows, scrollbar = true, selectable = id == "tools_bag" or id == "tools_auction" or id == "tools_market_analysis" or id == "tools_social", selectionMode = "single", columnResize = true,
-        columns = id == "tools_bag" and {
+    -- 中文维护：机制只有五条静态规则；固定自然高度交给外层 ScrollBox 管理溢出，
+    -- 不用十四行空表挤走操作区。getKey/回调必须传入构造器，TableView 不转发事后赋值字段。
+    if id == "combat_boss_alerts" then tableSlot = { size = "fixed", height = 180, hAlign = "fill" } end
+    -- 中文维护：计数只有两行，不让通用十四行成本表把设置挤出窄屏；滚动仍由外层负责。
+    if id == "combat_buff_cap" then tableSlot = { size = "fixed", height = 100, hAlign = "fill" }; tableDesiredRows = 2 end
+    tableView = RSUI:TableView({ id = "v3_business_" .. id .. "_table", parent = tableParent, items = {}, rowHeight = 26, headerHeight = 27, desiredRows = tableDesiredRows, scrollbar = true, selectable = id == "combat_boss_alerts" or id == "tools_bag" or id == "tools_auction" or id == "tools_market_analysis" or id == "tools_social", selectionMode = "single", columnResize = true,
+        getKey = id == "combat_boss_alerts" and function(row) return row and row.key end or nil,
+        onSelectionChanged = id == "combat_boss_alerts" and function(_, _, view)
+            -- 中文维护：ClearSelection 的同步回调可能仍携带旧 index；当前 primary key 才是选择事实。
+            -- 仅遍历五条 detached 目录行，不用内部 ListView 字段，也不读取 Native 或持久化。
+            local selectedKey, projection = view:GetSelectedKey(), feature:GetProjection() or {}
+            bossSelectedKey = nil
+            for _, row in ipairs(projection.rows or {}) do
+                if selectedKey ~= nil and row.key == selectedKey then bossSelectedKey = row.mechanicKey; break end
+            end
+            if SyncBossControls ~= nil then SyncBossControls(projection) end
+        end or nil,
+        -- 中文维护：只消费独立计数/峰值投影，不在单元格读API，不把未知显示成0或合计容量。
+        columns = id == "combat_buff_cap" and {
+            { id = "name", title = "增益类别", field = "name", size = "fixed", width = 100, minWidth = 82 },
+            { id = "count", title = "当前数量", size = "fixed", width = 85, minWidth = 68,
+                getText = function(row) return row and row.count ~= nil and tostring(row.count) or "未知" end },
+            { id = "peak", title = "本次峰值", size = "fixed", width = 85, minWidth = 68,
+                getText = function(row) return row and row.peak ~= nil and tostring(row.peak) or "--" end },
+            { id = "status", title = "个人提醒", field = "statusText", size = "fill", minWidth = 120,
+                getTone = function(row) return row and row.tone or "muted" end },
+        } or id == "combat_boss_alerts" and {
+            { id = "name", title = "机制规则", field = "name", size = "fixed", width = 150, minWidth = 110 },
+            { id = "text", title = "触发条件", field = "text", size = "fill", minWidth = 140 },
+            { id = "status", title = "追踪状态 / 提示", field = "statusText", size = "fixed", width = 145, minWidth = 120, getTone = function(item) return item and item.tone or "muted" end },
+        } or id == "tools_bag" and {
             { id = "name", title = "当前背包物品（ID · 名称）", field = "name", size = "fill", minWidth = 300 },
             { id = "status", title = "数量", field = "statusText", size = "fixed", width = 82, minWidth = 64, getTone = function(item) return item and item.tone or "muted" end },
         } or id == "combat_team_tools" and { -- 中文维护注释：团队职责行没有 craft cost 语义；使用专用三列避免“成本/持有/缺口”空列长期浪费宽度。只改变 detached row 的 Presentation 映射，ReadTeamRoleRoster 数据结构/Authority 不变。
@@ -911,6 +1128,8 @@ local function Build(parent, route, id)
         local rows = id == "tools_bag" and (projection.bagItemRows or {}) or (projection.rows or {})
         for _, field in ipairs(specialFields) do if type(field.Render) == "function" then field:Render() end end
         if (id == "tools_auction" or id == "tools_market_analysis") and self.RefreshAuctionPaging then self:RefreshAuctionPaging(projection, tableView) else tableView:SetItems(rows, projection.revision or 0) end
+        if SyncBossControls ~= nil then SyncBossControls(projection) end
+        if SyncBuffCapControls ~= nil then SyncBuffCapControls(projection) end -- 中文维护：实时说明独立更新，保留用户动作回执。
         if (id == "tools_auction" or id == "tools_market_analysis") and auctionStatus ~= nil then
             local statusZh=({idle="等待查询",waiting="等待服务器",ready="查询完成",partial="部分结果",empty="没有结果",failed="查询失败",unavailable="不可用"})[tostring(projection.searchStatus or "idle")] or tostring(projection.searchStatus or "idle")
             local quotePart = ""
@@ -1082,6 +1301,10 @@ local function Build(parent, route, id)
                 }
                 unitLineDiagnosticsText:SetText(table.concat(parts, " · "))
             end
+        elseif id == "combat_buff_cap" then
+            -- 中文维护：不再沿用通用“部分可用”长文案遮住操作区；边界随页面一直可见。
+            hint:SetText("普通/隐藏分别计数，不推断共享容量或顶替规则。0关闭该类提醒；本次启用峰值仅覆盖实际采样。"
+                .. (enabled ~= true and " 功能已关闭，设置仍可保存。" or " 关闭页面后仅个人提醒继续观察；关闭功能全部停止。"))
         elseif id == "tools_bag" then
             if enabled ~= true then
                 hint:SetText("功能已关闭；黑名单配置会保留，重新启用后继续生效。")
@@ -1104,7 +1327,9 @@ local function Build(parent, route, id)
         -- signals used for the hint line above. The business table previously
         -- never set a view state, so empty/unavailable states had no overlay.
         local tvState, tvOpts
-        if enabled ~= true then
+        -- 中文维护：机制目录不是实时采集结果，停用 Feature 后仍可配置下一次启动规则；
+        -- 这里只保持静态表可选，测试按钮与观察任务仍服从 Feature/HUD 开关，不放宽其它页面。
+        if enabled ~= true and id ~= "combat_boss_alerts" then
             tvState, tvOpts = "unavailable", { title = "功能已关闭", detail = id == "tools_bag" and "重新启用后会读取当前背包物品；已有黑名单不会丢失。" or ((meta and meta.name or id) .. " 启用后才会读取对应 API 并填充此表。") }
         elseif #rows == 0 then
             tvState, tvOpts = "empty", { title = id == "tools_bag" and "当前背包没有可识别物品" or "暂无数据", detail = id == "tools_bag" and "刷新页面或放入物品后会显示“物品ID · 名称”。" or ((meta and meta.name or id) .. " 启用并读取后，结果会显示在这里。") }
@@ -1173,6 +1398,8 @@ local function Build(parent, route, id)
         return self:Refresh()
     end
     function root:OnDeactivated()
+        -- 中文维护：离开设置页只退出鼠标校准，保留已启用机制的后台观察，避免 HUD 截获战斗点击。
+        if id == "combat_boss_alerts" and type(feature.Commands.SetHudEditing) == "function" then feature.Commands:SetHudEditing(false) end
         self:UnbindFeatureUpdates()
         if self.consumerHeld then feature:ReleaseConsumer("page:" .. id); self.consumerHeld = false end
         return true

@@ -31,7 +31,8 @@ S.Features.BuffDisplay = S.Features.BuffDisplay or {}
 local F = S.Features.BuffDisplay
 local U = S.Utils
 local STORE_ID = "v3.buff_display"
-local SCHEMA = 5
+-- 中文维护注释：结构新增必须升级 schema；旧 canonical 在下方以词法隔离冻结，不能冒用 schema5。
+local SCHEMA = 6
 -- Layout preset version. Schema 4 introduced tracked buckets/classification; schema 5 only
 -- adds the second persisted HUD profile. Geometry presets still evolve through this counter,
 -- while persistent STRUCTURE changes must increment SCHEMA.
@@ -533,7 +534,7 @@ local function RecoverKnownSchema4SingleHud(decoded, stampedFingerprint, current
     end
     local store = type(P.GetStore) == "function" and P:GetStore(STORE_ID) or nil
     local currentFingerprint = type(P.FingerprintCanonicalValue) == "function" and type(store) == "table"
-        and P:FingerprintCanonicalValue(store, currentCanonical) or nil
+        and P:FingerprintCanonicalValue(store, NormalizeState(decoded)) or nil
     if tostring(currentFingerprint or "") ~= tostring(expectedCurrent) then
         BuffDisplayStoreProbe("knownSchema4=" .. tostring(stampedFingerprint) .. "/shape=ok/current=reject:"
             .. tostring(currentFingerprint) .. "!=" .. tostring(expectedCurrent))
@@ -541,6 +542,171 @@ local function RecoverKnownSchema4SingleHud(decoded, stampedFingerprint, current
     end
     BuffDisplayStoreProbe("knownSchema4=" .. tostring(stampedFingerprint) .. "/shape=ok/current=" .. tostring(currentFingerprint))
     return Copy(decoded), "schema4_single_hud_known_pair"
+end
+
+-- 中文维护注释（schema6 / 历史 canonical 词法隔离）：
+-- 上方 Normalize* 是上传 .18.208 的 schema5 原逻辑；schema4 hook 也仍捕获旧 helper。
+-- 以下以同名 local 重新绑定当前规范化函数，旧 closure 不会读取新组件/Auto/库元数据。
+-- Authority：先由 Persistence 用 historical exact hash 验证，随后 migrate，再盖 schema6 章。
+-- 不放宽未知 mismatch，不改变 schema5/4 的默认值、双 HUD、窗口或冻结字段的旧 hash。
+-- 新冷却字段仅保存用户选择/几何，不保存实时计时；目标组件强制关闭，禁止推测敌人 CD。
+local NormalizeSchema5State = NormalizeState
+local NormalizeSchema5Settings = NormalizeSettings
+local NormalizeSchema5HudProfile = NormalizeHudProfile
+local HudProfileFromSchema5Settings = HudProfileFromSettings
+local COMPONENT_KEYS = Copy(COMPONENT_KEYS)
+COMPONENT_KEYS[#COMPONENT_KEYS + 1] = "cooldowns"
+local COMPONENT_DEFAULTS = Copy(COMPONENT_DEFAULTS)
+COMPONENT_DEFAULTS.cooldowns = { enabled=false, x=0, y=90, size=29, fontSize=11, alpha=1, spacing=2, maxPerRow=8, maxRows=2 }
+local function NormalizeComponents(value)
+    local out = {}
+    for _, key in ipairs(COMPONENT_KEYS) do
+        out[key] = NormalizeComponent(type(value)=="table" and value[key] or nil, COMPONENT_DEFAULTS[key])
+    end
+    return out
+end
+local function NormalizeHudProfile(value, fallback)
+    local out = NormalizeSchema5HudProfile(value, fallback)
+    local base = type(fallback)=="table" and type(fallback.components)=="table" and fallback.components.cooldowns or nil
+    local merged = Copy(type(base)=="table" and base or {})
+    local incoming = type(value)=="table" and type(value.components)=="table" and value.components.cooldowns or nil
+    for k,v in pairs(type(incoming)=="table" and incoming or {}) do merged[k]=v end
+    out.components = type(out.components)=="table" and out.components or {}
+    out.components.cooldowns = NormalizeComponent(merged, COMPONENT_DEFAULTS.cooldowns)
+    return out
+end
+local function HudProfileFromSettings(settings)
+    return NormalizeHudProfile(settings, HudProfileFromSchema5Settings(settings))
+end
+local function NormalizeCooldownIds(value)
+    local out = NormalizeTrackedIds(value)
+    while #out > 256 do out[#out]=nil end
+    return out
+end
+-- 中文维护（hud-default-template-2，2026-09-13）：用户实机 hud.1.1 的三页已按
+-- 619+619+314 连续偏移验真；wire=9BF4FA11，raw=1539/3486F051，含11条V2记录。
+-- Authority/数据流：仅“无设置的新安装”和显式默认快照/恢复动作使用此发行模板；
+-- 原 Store/canonical 仍拥有已存几何，不能在每次 Normalize 或加载时套用新布局。
+-- 兼容边界：上方 schema4/5 closure、schema6 对已有 table 的缺字段 fallback 必须冻结；
+-- 直接修改 COMPONENT_DEFAULTS 会改旧档 Hash，因此在当前 schema6 的 fresh 分支合并。
+-- 坐标为校准局部 screen-y-v1：plate/info/class 的Y直接使用，Aura旧存储Y方向相反但本次
+-- 两行均为0；不要据2560x1440/uiScale=1再乘分辨率或把屏幕绝对点写进默认。
+-- 只固化已导出的视觉字段；未导出的cooldowns/距离/装分组件及业务选择继续用既有默认。
+-- PLAYER/TARGET本次值相同但每次分别Normalize成独立表；以后不要共享用户可写表。
+local VERIFIED_HUD_DEFAULT_PROFILE = {
+    plateScale = 1.0,
+    plate = { x=0, y=-24, width=150, height=20 },
+    info = { x=1, y=0, fontSize=12, enabled=true, showClass=true, showGear=true, showDistance=true },
+    components = {
+        buffs = { x=0, y=0, size=29, fontSize=11, spacing=2, maxPerRow=8, maxRows=2, alpha=1, enabled=true },
+        debuffs = { x=0, y=0, size=29, fontSize=11, spacing=2, maxPerRow=8, maxRows=2, alpha=1, enabled=true },
+        mainHand = { x=0, y=0, size=26, alpha=1, enabled=true },
+        offHand = { x=0, y=0, size=26, alpha=1, enabled=true },
+        ranged = { x=0, y=0, size=26, alpha=1, enabled=false },
+        wings = { x=0, y=0, size=26, alpha=1, enabled=true },
+        castBar = { x=0, y=0, width=120, size=7, fontSize=12, alpha=1, enabled=true, showText=true },
+        class = { x=16, y=-5, size=27, alpha=1, enabled=true },
+    },
+}
+
+local function NormalizeSettings(value)
+    -- 维护：必须在nil被替换成{}之前区分fresh；空表、旧档缺targetLayout也不是发行模板请求。
+    local isFreshDefault = type(value) ~= "table"
+    local out = NormalizeSchema5Settings(value)
+    value = type(value)=="table" and value or {}
+    local rawTracked = type(value.tracked)=="table" and value.tracked or {}
+    out.tracked.auto = NormalizeTrackedIds(rawTracked.auto)
+    -- 旧 buff/debuff 桶原样保留；只排除新 Auto 与明确选择的重复，不迁移猜测用户意图。
+    local explicit = {}; for _,category in ipairs({"buff","debuff"}) do
+        for _,id in ipairs(out.tracked[category]) do explicit[id]=true end
+    end
+    local auto = {}; for _,id in ipairs(out.tracked.auto) do if not explicit[id] then auto[#auto+1]=id end end
+    out.tracked.auto = auto
+    local cooldowns = type(value.trackedCooldowns)=="table" and value.trackedCooldowns or {}
+    out.trackedCooldowns = {skill=NormalizeCooldownIds(cooldowns.skill),mate=NormalizeCooldownIds(cooldowns.mate)}
+    out.components.cooldowns = NormalizeComponent(type(value.components)=="table" and value.components.cooldowns or nil, COMPONENT_DEFAULTS.cooldowns)
+    out.targetLayout.components.cooldowns = NormalizeComponent(nil, COMPONENT_DEFAULTS.cooldowns)
+    local library = type(value.library)=="table" and value.library or {}
+    out.library = {catalogVersion=ClampInt(library.catalogVersion,0,1000000,0),importedPacks={}}
+    local count=0
+    -- importedPacks 仅是用户主动导入的版本水位，不形成“后台补回被取消 ID”的订阅。
+    local keys={};for key in pairs(type(library.importedPacks)=="table" and library.importedPacks or {}) do
+        if type(key)=="string" and #key<=64 then keys[#keys+1]=key end
+    end
+    table.sort(keys)
+    for _,key in ipairs(keys) do
+        if count<64 then out.library.importedPacks[key]=ClampInt(library.importedPacks[key],0,1000000,0);count=count+1 end
+    end
+    out.freezeEnabled = false -- 只保留读取兼容字段；会话冻结不是持久化 Authority。
+    if isFreshDefault then
+        -- 维护：默认入口集中到这一个纯函数分支；Reset/校准默认均经此处，不保存、不读Native。
+        -- target显式覆盖本次全部已验真字段，避免继承历史TARGET装备的-32/-33/22px与远程开启。
+        local player = NormalizeHudProfile(VERIFIED_HUD_DEFAULT_PROFILE, HudProfileFromSettings(out))
+        out.plateScale, out.plate, out.info, out.components = player.plateScale, player.plate, player.info, player.components
+        out.targetLayout = NormalizeHudProfile(VERIFIED_HUD_DEFAULT_PROFILE, out.targetLayout)
+    end
+    return out
+end
+local function NormalizeState(value)
+    value=type(value)=="table" and value or {}
+    return {settings=NormalizeSettings(value.settings),widgetWindow=NormalizeWindow(value.widgetWindow),widgetVisible=value.widgetVisible==true}
+end
+-- 中文维护注释（schema5/6 表示兼容）：旧回归未覆盖数字序号变成字符串，ipairs 可在
+-- 校验前漏读仍存在磁盘的 ID。此处不改变正常 canonical、不新增 Hash 白名单；只对声明列表
+-- 无损重建 dense 候选。schema5 用冻结旧 normalizer，schema6 用当前规则，再由 Core 比旧章。
+-- Authority/数据流：原 decoded → 列表候选 → 对应世代 canonical → Core 验真/迁移/Apply。
+-- 不重分类、不查 Native、不补默认 ID；未来 schema/错误 owner 禁入，未知 Hash 保留写保护。
+local function RebuildHistoricalCanonical(decoded, stamped, current, raw)
+    local meta = type(raw) == "table" and raw.__rsmeta or nil
+    local schema = type(meta) == "table" and tonumber(meta.schema) or nil
+    if type(meta) == "table" and meta.store == STORE_ID and meta.owner == "v3.buff_display"
+        and tonumber(meta.framework) == 3 and (schema == 5 or schema == 6) then
+        local normalize = schema == 5 and NormalizeSchema5State or NormalizeState
+        local base = normalize(decoded)
+        local store = P:GetStore(STORE_ID)
+        local baseFp = P:FingerprintCanonicalValue(store, base)
+        local prefix = "schema" .. tostring(schema) .. "/base=" .. tostring(baseFp) .. "/old=" .. tostring(stamped)
+        BuffDisplayStoreProbe(prefix)
+        if tostring(baseFp) == tostring(stamped) then return base, Copy(decoded) end
+        if type(decoded) ~= "table" or type(decoded.settings) ~= "table"
+            or type(P.RebuildDenseSequenceForIntegrity) ~= "function" then
+            BuffDisplayStoreProbe(prefix .. "/sequence=unavailable")
+            return base, Copy(decoded)
+        end
+        local recovered, changes = Copy(decoded), 0
+        local function RebuildGroup(group, keys, limit)
+            if type(group) ~= "table" then return true end
+            for _, key in ipairs(keys) do
+                if group[key] ~= nil then
+                    local rows, reason, changed = P:RebuildDenseSequenceForIntegrity(group[key], limit)
+                    if rows == nil then return false, key .. ":" .. tostring(reason) end
+                    if changed then group[key] = rows; changes = changes + 1 end
+                end
+            end
+            return true
+        end
+        local ok, reason = RebuildGroup(recovered.settings.tracked,
+            schema == 5 and {"buff", "debuff"} or {"buff", "debuff", "auto"}, 1024)
+        if ok and schema == 6 then
+            ok, reason = RebuildGroup(recovered.settings.trackedCooldowns, {"skill", "mate"}, 256)
+        end
+        if not ok or changes == 0 then
+            BuffDisplayStoreProbe(prefix .. "/sequence=" .. tostring(reason or "unchanged"))
+            -- 维护（F2窗口精度）：该失败形状与已实证跑商共用Floating中心比例。先严格确认
+            -- 追踪列表完整且未重建，再在原schema5/6 canonical上尝试单轴精度恢复；不是
+            -- 先迁移再比较旧章。复合序列+数值漂移本轮不猜，历史ID/双HUD/默认值仍保持原链路。
+            if ok and changes == 0 and type(P.RebuildFixed6WindowCanonical) == "function" then
+                local candidate, domain = P:RebuildFixed6WindowCanonical(store, decoded, stamped, base, raw, schema, nil)
+                if candidate ~= nil then return candidate, domain end
+            end
+            return base, Copy(decoded)
+        end
+        local candidate = normalize(recovered)
+        BuffDisplayStoreProbe(prefix .. "/sequence=" .. tostring(changes)
+            .. "/seqfp=" .. tostring(P:FingerprintCanonicalValue(store, candidate)))
+        return candidate, recovered -- Core 仍是唯一验真/迁移/Apply/重盖章 Authority。
+    end
+    return RebuildHistoricalSingleHudCanonical(decoded,stamped,current,raw)
 end
 
 -- Lossless schema < 5 -> 5 migration. Persistence calls migrate(raw, from, to)
@@ -589,6 +755,7 @@ F.StoreId, F.SchemaVersion = STORE_ID, SCHEMA
 F.LayoutAuthorityContractVersion = 3
 F.HudCalibrationContractVersion = 1
 F.Schema5DualHudMigrationContractVersion = 1
+F.Schema6TrackingMigrationContractVersion = 1
 F.LayoutPersistenceBoundaryContractVersion = 1
 F.TargetDefaultTemplateContractVersion = 1 -- verified TARGET|EQUIP release preset from HUD_TEMPLATE_V1
 F.State = NormalizeState(F.State)
@@ -599,6 +766,9 @@ if P:GetStore(STORE_ID) == nil then
     local store, err = P:RegisterV3Store({
         id = STORE_ID, owner = "v3.buff_display", scope = P.Scope and P.Scope.Account or "account",
         lifetime = P.Lifetime and P.Lifetime.Permanent or "permanent", schemaVersion = SCHEMA,
+        -- 维护：实机一键导入397个ID回读在auto[189]缺项。仅选择Core有界整数块物理格式，
+        -- 不把追踪数降到188、不放宽校验，也不更改用户schema6/旧Normalizer/恢复白名单。
+        transportVersion = 4,
         legacySchemaVersion = 1, key = P.V3KeyPrefix and (P.V3KeyPrefix .. "buff_display") or STORE_ID,
         -- Budget sized for REAL payloads (2026-09-01): legacy schema 1-3 saves
         -- can carry hundreds of tracked ids per category (one live save held
@@ -615,7 +785,10 @@ if P:GetStore(STORE_ID) == nil then
         -- 中文维护注释（schema4→5 完整性迁移）：旧单 HUD 存档必须先由旧 normalizer
         -- 逐字重建 canonical 并命中原 fingerprint，之后才允许 4→5 migrate。known-pair 只作为
         -- 已实机证明的 515E1BF3→3B898E2F 最终桥；未知 Hash 继续 fail-closed。
-        rebuildCanonicalForIntegrity = RebuildHistoricalSingleHudCanonical,
+        rebuildCanonicalForIntegrity = RebuildHistoricalCanonical,
+        -- 中文维护注释：当前序列已覆盖保存回读回归，仅声明许可；精确验真由 Core 完成。
+        -- 历史世代和未知 Hash 不因此获得回读放行或写入权。
+        recoverReadbackRepresentation = true,
         recoverKnownLegacyCanonical = RecoverKnownSchema4SingleHud,
         allowIntegrityUpgrade = true,
     })
@@ -865,6 +1038,7 @@ end
 
 function F:GetTracked(category)
     local tracked = self.State.settings.tracked or {}
+    if category == "auto" then return Copy(tracked.auto or {}) end
     if category == "debuff" then return Copy(tracked.debuff or {}) end
     return Copy(tracked.buff or {})
 end
@@ -872,54 +1046,41 @@ end
 function F:GetClassification() return Copy(self.State.settings.classification or {}) end
 
 -- category: "buff" | "debuff" | nil (nil => classify via shared service)
+-- 中文维护注释（追踪桶单写入入口）：同一 ID 的取消必须清除全部桶，避免 Auto 导入后
+-- UI 按 Native 分类取消却删不到；开启时原子迁移桶，容量超限在事务前拒绝。Store 只写选择。
 function F:IsTrackedId(id, category)
-    id = math.floor(tonumber(id) or 0)
-    if id <= 0 then return false end
-    local tracked = self.State.settings.tracked or {}
-    if category == nil or category == "debuff" then
-        for _, trackedId in ipairs(tracked.debuff or {}) do if trackedId == id then return true end end
-    end
-    if category == nil or category == "buff" then
-        for _, trackedId in ipairs(tracked.buff or {}) do if trackedId == id then return true end end
+    id=math.floor(tonumber(id) or 0)
+    for _,bucket in ipairs({"buff","debuff","auto"}) do
+        if category==nil or category==bucket or bucket=="auto" then
+            for _,trackedId in ipairs(self.State.settings.tracked[bucket] or {}) do if trackedId==id then return true end end
+        end
     end
     return false
 end
-
-function F:SetTrackedId(id, category, enabled)
-    id = math.floor(tonumber(id) or 0)
-    if id <= 0 then return false, "Buff ID 无效" end
-    local settings = self.State.settings
-    if category ~= "buff" and category ~= "debuff" then
-        local classification = S.Services and S.Services.StatusClassificationV3 or nil
-        category = "buff"
-        if classification ~= nil and type(classification.ClassifyId) == "function" then
-            local kind = classification:ClassifyId(id, settings.classification)
-            if kind ~= nil and kind.category == "debuff" then category = "debuff" end
-        end
+local function RemoveTrackedFromBuckets(settings,id)
+    for _,bucket in ipairs({"buff","debuff","auto"}) do
+        local out={};for _,item in ipairs(settings.tracked[bucket] or {}) do if item~=id then out[#out+1]=item end end
+        settings.tracked[bucket]=out
     end
-    local list, found = NormalizeTrackedIds(settings.tracked[category]), false
-    for _, tracked in ipairs(list) do if tracked == id then found = true break end end
-    if enabled == true and found then return true end
-    if enabled ~= true and not found then return true end
-    if enabled == true and #list >= 1024 then return false, "最多追踪 1024 个状态" end
-    local marked, markErr = self:MutateStore(function()
-        local current = self.State.settings
-        local nextList = NormalizeTrackedIds(current.tracked[category])
-        if enabled == true then
-            local exists = false
-            for _, tracked in ipairs(nextList) do if tracked == id then exists = true break end end
-            if not exists then nextList[#nextList + 1] = id; table.sort(nextList) end
-        else
-            local filtered = {}
-            for _, tracked in ipairs(nextList) do if tracked ~= id then filtered[#filtered + 1] = tracked end end
-            nextList = filtered
+end
+function F:SetTrackedId(id,category,enabled)
+    id=tonumber(id)
+    if id==nil or id~=math.floor(id) or id<=0 or id>2147483647 then return false,"状态 ID 无效" end
+    if category~="buff" and category~="debuff" and category~="auto" then category="auto" end
+    if enabled==true and not self:IsTrackedId(id,category) and #(self.State.settings.tracked[category] or {})>=1024 then
+        return false,"该分类最多追踪 1024 个状态"
+    end
+    local ok,err=self:MutateStore(function()
+        local settings=self.State.settings
+        RemoveTrackedFromBuckets(settings,id)
+        if enabled==true then
+            if #settings.tracked[category]>=1024 then return false,"该分类最多追踪 1024 个状态" end
+            settings.tracked[category][#settings.tracked[category]+1]=id;table.sort(settings.tracked[category])
         end
-        current.tracked[category] = nextList
         return true
-    end, 200, "tracked_" .. category .. "_" .. tostring(id))
-    if marked ~= true then return false, markErr or "追踪状态保存失败" end
-    if S.Events ~= nil and type(S.Events.Publish) == "function" then S.Events:Publish("v3.buff_display.settings", "tracked") end
-    return true
+    end,200,"tracked_"..category.."_"..tostring(id))
+    if ok==true and S.Events and type(S.Events.Publish)=="function" then S.Events:Publish("v3.buff_display.settings","tracked") end
+    return ok,err
 end
 
 function F:ClearTrackedIds(category)
@@ -927,7 +1088,8 @@ function F:ClearTrackedIds(category)
         local settings = self.State.settings
         if category == "buff" then settings.tracked.buff = {}
         elseif category == "debuff" then settings.tracked.debuff = {}
-        else settings.tracked = { buff = {}, debuff = {} } end
+        elseif category == "auto" then settings.tracked.auto = {}
+        else settings.tracked = { buff = {}, debuff = {}, auto = {} } end
         return true
     end, 200, "tracked_clear")
     if marked ~= true then return false, markErr or "清空追踪状态保存失败" end
@@ -971,6 +1133,16 @@ function F:SetClassification(id, category)
     if category ~= "buff" and category ~= "debuff" then return false, "分类必须是 buff 或 debuff" end
     local marked, markErr = self:MutateStore(function()
         local classification = self.State.settings.classification or {}
+        -- 中文维护注释：人工分类与追踪桶同一事务迁移，失败时 Persistence 整体回滚。
+        local tracked=self:IsTrackedId(id)
+        if tracked and #(self.State.settings.tracked[category] or {})>=1024 and not self:IsTrackedId(id,category) then
+            return false,"目标分类已达容量上限"
+        end
+        if tracked then
+            RemoveTrackedFromBuckets(self.State.settings,id)
+            if #self.State.settings.tracked[category]>=1024 then return false,"目标分类已达容量上限" end
+            table.insert(self.State.settings.tracked[category],id);table.sort(self.State.settings.tracked[category])
+        end
         classification[id] = category
         self.State.settings.classification = classification
         return true
@@ -985,6 +1157,12 @@ function F:ClearClassification(id)
     if id <= 0 then return false, "Buff ID 无效" end
     local marked, markErr = self:MutateStore(function()
         local classification = self.State.settings.classification or {}
+        -- 中文维护注释：恢复自动分类保留追踪意图，不把条目默默取消；事务内检查 Auto 容量。
+        if self:IsTrackedId(id) then
+            RemoveTrackedFromBuckets(self.State.settings,id)
+            if #self.State.settings.tracked.auto>=1024 then return false,"自动分类已达容量上限" end
+            table.insert(self.State.settings.tracked.auto,id);table.sort(self.State.settings.tracked.auto)
+        end
         classification[id] = nil
         self.State.settings.classification = classification
         return true
@@ -1000,7 +1178,7 @@ function F:ApplySettingRaw(key, value)
     if key == "showBuffs" then settings.showBuffs = value == true
     elseif key == "showDebuffs" then settings.showDebuffs = value == true
     elseif key == "showHidden" then settings.showHidden = value == true
-    elseif key == "freezeEnabled" then settings.freezeEnabled = value == true
+    elseif key == "freezeEnabled" then settings.freezeEnabled = false -- 旧导入兼容；实时冻结由 Feature 命令拥有。
     elseif key == "playerRows" then settings.playerRows = ClampInt(value, 1, 64, settings.playerRows)
     elseif key == "targetRows" then settings.targetRows = ClampInt(value, 1, 64, settings.targetRows)
     elseif key == "refreshMs" then settings.refreshMs = ClampInt(value, 1, 2000, settings.refreshMs)

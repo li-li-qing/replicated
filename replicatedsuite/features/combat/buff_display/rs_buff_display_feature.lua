@@ -18,8 +18,8 @@
 --     GetEquippedItemTooltipInfo's targetEquippedItem flag (returns own gear),
 --     so a target read can never be trusted (evidence 2026-09-01).
 --   * O(1) tracked index rebuilt on demand
---   * freeze list (freezeEnabled): tracked rows keep a session snapshot so
---     expired/vanish buffs stay in the list until untracked or freeze is off
+--   * management-only session retention: keep old and newly observed rows until explicit clear
+--     without altering live HUD lanes (implemented in rs_buff_display_management.lua)
 --   * tracked-id import / full export-import with schema migration awareness
 --
 -- Closing a component stops its lane tasks and clears its cached facts; hiding
@@ -50,10 +50,9 @@ F.settingsRevision = tonumber(F.settingsRevision) or 0
 F.projections = F.projections or { player = {}, target = {} }
 F.coverage = F.coverage or { player = {}, target = {} }
 F.laneData = F.laneData or { player = {}, target = {} }
-F.trackedIndex = F.trackedIndex or { buff = {}, debuff = {} }
--- Session snapshot of tracked rows that have left the live StatusMap while
--- freezeEnabled is on; keeps them visible in the list for convenient tracking.
-F.frozenRows = F.frozenRows or { player = {}, target = {} }
+F.trackedIndex = F.trackedIndex or { buff = {}, debuff = {}, auto = {} }
+-- 中文维护注释：清理旧 tracked-only 快照引用；唯一会话快照由 Management 文件建立。
+F.frozenRows = nil
 F.lanes = F.lanes or {
     -- The aura lane intentionally keeps the historical contract task name so
     -- FoundationGate / GetHealth() keep observing the same scheduled task the
@@ -62,15 +61,23 @@ F.lanes = F.lanes or {
     -- P3 lane it was deferred indefinitely during combat frames (real-machine
     -- report 2026-09-01: a self-applied buff took seconds to appear).
     aura      = { active = false, revision = 0, task = "v3_buff_display_refresh",     priority = "P1", cost = 2 },
-    position  = { active = false, revision = 0, task = "v3_buff_display_lane_position",  priority = "P2", cost = 1 },
+    position  = { active = false, revision = 0, task = "v3_buff_display_lane_position",  priority = "P1", cost = 1 },
     distance  = { active = false, revision = 0, task = "v3_buff_display_lane_distance",  priority = "P2", cost = 1 },
     metadata  = { active = false, revision = 0, task = "v3_buff_display_lane_metadata",  priority = "P3", cost = 1 },
-    equipment = { active = false, revision = 0, task = "v3_buff_display_lane_equipment", priority = "P3", cost = 2 },
+    equipment = { active = false, revision = 0, task = "v3_buff_display_lane_equipment", priority = "P1", cost = 2 },
     cast      = { active = false, revision = 0, task = "v3_buff_display_lane_cast",      priority = "P2", cost = 1 },
 }
 -- A file-scoped reload must not leave the aura lane pointing at a stale task
 -- name; the contract name is the single source of truth.
 F.lanes.aura.task = F.taskName
+-- 维护（pvp-hud-1）：运动与换武器是当前两单位的时效性事实，不是全场后台扫描。
+-- 只提升这两条有界 lane；职业/装分慢项仍限频，避免把整个模块无差别提升到 P1。
+F.lanes.position.priority, F.lanes.equipment.priority = "P1", "P1"
+F.PvpPatch = "pvp-hud-1"
+F.pendingEdges = {}
+F.eventEpoch = (tonumber(F.eventEpoch) or 0) + 1
+F.pvpMetrics = { queued=0, merged=0, drained=0, maxQueueAgeMs=0, positionTicks=0,
+    equipmentTicks=0, targetInvalidations=0, lastEquipmentAt=0, lastAuraAt=0 }
 
 -- Bounded equipment-lane diagnostics (RU acceptance workflow §BuffGear).
 -- Never persisted, never printed per frame; exposed through GetHealth().
@@ -84,7 +91,7 @@ F.EquipmentDiagnostics = F.EquipmentDiagnostics or {
     -- 对 target 传 true 并直接 tonumber，"12,345" 会变 nil。同时 target-kind gate 可能在 API
     -- 更新后阻断一个本来可读的 UnitGearScore("target")。
     -- Authority/数据流：这里仅保存 equipment lane 最近一次 API 读事实和有界计数，不持久化、
-    -- 不写聊天、不参与 HUD Authority。调用仍由 EquipmentTick/P3 lane 拥有。
+    -- 不写聊天、不参与 HUD Authority。装分仍在 EquipmentTick 内按1秒限频；换武器快项走P1。
     -- 兼容边界：只记录最后 raw type/短 raw 文本/最终数值与错误；不会缓存目标对象或扩大轮询。
     gearScoreReads = 0, gearScoreErrors = 0, gearScoreUnavailable = 0, gearScoreFormatted = 0,
     gearScoreLastScope = nil, gearScoreLastRawType = nil, gearScoreLastRaw = nil,
@@ -129,7 +136,8 @@ function F:InvalidateSettingsCache()
     return true
 end
 
-local COMPONENT_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar" }
+local HUD_SCOPES = { "player", "target" } -- 帧位置路径复用，不逐帧创建单位列表
+local COMPONENT_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar", "cooldowns" }
 
 local function SplitLines(text)
     local lines = {}
@@ -231,11 +239,16 @@ end
 
 local function LaneInterval(laneKey)
     local settings = Settings()
-    if laneKey == "aura" then return settings.refreshMs or 120 end
-    if laneKey == "position" or laneKey == "distance" or laneKey == "cast" then return settings.headRefreshMs or 50 end
+    -- 中文维护：留存短状态时复用 aura lane 的50ms兜底；停止留存恢复用户间隔，不写配置。
+    if laneKey == "aura" then return F.managementFreeze and F.managementFreeze.active and 50 or settings.refreshMs or 120 end
+    -- 维护：位置 lane 仅两次原生屏幕点读取，由既有单 OnUpdate 调度器每渲染帧最多执行一次。
+    -- 1ms 是请求每帧，不是保证 1000Hz；这里严禁 Buff/装备/职业读取与布局重建。
+    if laneKey == "position" then return 1 end
+    if laneKey == "distance" or laneKey == "cast" then return settings.headRefreshMs or 50 end
     if laneKey == "metadata" then return 1000 end
-    -- Drift backstop only: UNIT_EQUIPMENT_CHANGED owns swap immediacy.
-    if laneKey == "equipment" then return 1000 end
+    -- 维护：事件合并上限50ms；丢事件时200ms兜底，仅自己最多四个已启用装备槽。
+    -- EquipmentTick 的装分读仍单独限为1秒，不能让兜底提频放大所有 Native 调用。
+    if laneKey == "equipment" then return 200 end
     return 400
 end
 
@@ -282,12 +295,20 @@ end
 -- Lane tick handlers
 ------------------------------------------------------------------------
 
-function F:RefreshScope(scope)
+function F:RefreshScope(scope, forceRefresh)
     scope = tostring(scope or "")
     if scope ~= "player" and scope ~= "target" then return false, "invalid buff display scope" end
+    -- 中文维护（enemy-loadout-1）：先撤销旧目标类型，再读取当前实时事实。读取失败/目标消失
+    -- 不等于继续沿用上一目标；管理留存仍独立，不因 HUD 失败而删除历史。
+    if scope == "target" then
+        self.laneData.target = self.laneData.target or {}
+        self.laneData.target.targetLoadout = {}
+    end
     local aura = Aura()
     if type(aura) ~= "table" or type(aura.GetSnapshot) ~= "function" or type(aura.GetStatusMap) ~= "function" then
         self.projections[scope], self.coverage[scope] = {}, { available = false, complete = false, reliable = false, total = 0, error = "AuraObservationV3 unavailable" }
+        -- 维护（pvp-hud-1）：不可读不是当前Buff仍生效；只清live HUD，不删除独立的管理留存。
+        local live=self.laneData[scope] or {};live.buffRows,live.debuffRows={},{};self.laneData[scope]=live
         return false, "AuraObservationV3 unavailable"
     end
     local settings = Settings()
@@ -296,49 +317,65 @@ function F:RefreshScope(scope)
     -- old, doubling worst-case buff latency (lane wait + stale cache). With
     -- ttl < interval every lane tick rescans fresh facts; other consumers
     -- calling between ticks still coalesce onto one scan.
-    local snapshotTtlMs = math.max(1, math.floor((tonumber(settings.refreshMs) or 120) / 2))
+    local retaining=self.managementFreeze and self.managementFreeze.active==true
+    local snapshotTtlMs = math.max(1, math.floor((tonumber(LaneInterval("aura")) or 120) / 2))
     local snapshot, snapshotErr = aura:GetSnapshot(scope, {
-        buff = true, debuff = true, hidden = true, limit = 64, ttlMs = snapshotTtlMs,
+        buff = true, debuff = true, hidden = true, limit = retaining and 128 or 64, ttlMs = snapshotTtlMs, forceRefresh=forceRefresh==true or (scope=="target" and self.targetInvalidated==true),
     })
     if type(snapshot) ~= "table" then
         self.projections[scope], self.coverage[scope] = {}, { available = false, complete = false, reliable = false, total = 0, error = snapshotErr }
+        -- 维护：清除Presentation所用的live行，避免服务暂不可用时仍展示上次Buff图标。
+        local live=self.laneData[scope] or {};live.buffRows,live.debuffRows={},{};self.laneData[scope]=live
+        -- 不可读不是已消失；留存仍保留旧行，只更新覆盖状态。
+        if type(self.ObserveManagementRows)=="function" then self:ObserveManagementRows(scope,nil,self.coverage[scope],nil) end
         return false, snapshotErr or "aura snapshot unavailable"
     end
+    if scope == "target" then self.targetInvalidated = false end
+    self.pvpMetrics.lastAuraAt = S.NowMs and S.NowMs() or 0
     local statusMap, meta = aura:GetStatusMap(snapshot, { buff = true, debuff = true, hidden = true })
-    local limit = scope == "player" and settings.playerRows or settings.targetRows
+    -- 中文维护：类型识别与 Buff 可视白名单/冻结列表分离，不需要用户额外追踪这些被动效果。
+    if scope == "target" and type(self.ProjectTargetLoadout) == "function" then
+        self.laneData.target.targetLoadout = self.ProjectTargetLoadout(statusMap)
+    end
+    -- 中文维护注释：管理列表分页数不能截断 HUD 事实；普通模式三类各64，留存模式各128；投影上限随之为192/384个ID。
+    -- 最终显示容量仍由各组件 geometry/虚拟列表控制，而不是先丢掉后面的 Debuff。
+    -- 管理事实无条件保留；旧 showBuffs/showDebuffs 仅在下面 HUD lane 生效，避免旧存档隐藏管理行。
+    local limit = retaining and 384 or 192
     self.trackedIndex = self:BuildTrackedIndex(settings)
     local rows, coverage = self.ProjectStatusMap(statusMap, {
         available = meta and meta.available, complete = meta and meta.complete, reliable = meta and meta.reliable,
         revision = snapshot.revision,
-    }, settings, scope, limit, self.trackedIndex)
-    -- Freeze list: while freezeEnabled is on, tracked rows that have vanished
-    -- from the live StatusMap stay in the list for convenient tracking.
-    rows = self:ApplyFreezeRows(scope, rows, settings)
+    }, {showBuffs=true,showDebuffs=true,classification=settings.classification,tracked=settings.tracked}, scope, limit, self.trackedIndex)
+    -- 中文维护注释：这里只构建实时 Aura/HUD；管理冻结由独立 Session Snapshot 拥有，
+    -- 不得再把过期冻结行写入 laneData，否则头顶状态永远不消失。unknown 也不能误入 Buff lane。
     coverage.scannedAt, coverage.buffCount = tonumber(snapshot.at) or 0, snapshot.buff and tonumber(snapshot.buff.count) or 0
     coverage.debuffCount, coverage.hiddenCount = snapshot.debuff and tonumber(snapshot.debuff.count) or 0, snapshot.hidden and tonumber(snapshot.hidden.count) or 0
     self.projections[scope], self.coverage[scope] = rows, coverage
+    -- 中文维护：实时已读事实 -> Feature会话留存。副本去重，永不回写HUD，取消追踪不删除记录。
+    if retaining and type(self.ObserveManagementRows)=="function" then self:ObserveManagementRows(scope,rows,coverage,snapshot.at) end
     -- cached category rows for the head plates renderer
     local lane = self.laneData[scope] or {}
     lane.buffRows, lane.debuffRows = {}, {}
     for _, row in ipairs(rows) do
-        if row.category == "debuff" then lane.debuffRows[#lane.debuffRows + 1] = row else lane.buffRows[#lane.buffRows + 1] = row end
+        if row.category == "debuff" and settings.showDebuffs ~= false then lane.debuffRows[#lane.debuffRows + 1] = row
+        elseif row.category == "buff" and settings.showBuffs ~= false then lane.buffRows[#lane.buffRows + 1] = row end
     end
     self.laneData[scope] = lane
     return true
 end
 
+-- 中文维护注释：追踪索引只在 settings revision 改变时重建；Aura 的 50ms 热路径不能遍历整库。
 function F:BuildTrackedIndex(settings)
-    settings = type(settings) == "table" and settings or Settings()
-    local index = { buff = {}, debuff = {} }
-    local tracked = type(settings.tracked) == "table" and settings.tracked or {}
-    for _, id in ipairs(type(tracked.buff) == "table" and tracked.buff or {}) do
-        id = math.floor(tonumber(id) or 0)
-        if id > 0 then index.buff[id] = true end
+    settings=type(settings)=="table" and settings or Settings()
+    local revision=SettingsRevision()
+    if settings==Settings() and self.trackedIndexRevision==revision then return self.trackedIndex end
+    local index={buff={},debuff={},auto={}}
+    for _,category in ipairs({"buff","debuff","auto"}) do
+        for _,id in ipairs(type(settings.tracked)=="table" and settings.tracked[category] or {}) do
+            id=math.floor(tonumber(id) or 0);if id>0 then index[category][id]=true end
+        end
     end
-    for _, id in ipairs(type(tracked.debuff) == "table" and tracked.debuff or {}) do
-        id = math.floor(tonumber(id) or 0)
-        if id > 0 then index.debuff[id] = true end
-    end
+    if settings==Settings() then self.trackedIndex,self.trackedIndexRevision=index,revision end
     return index
 end
 
@@ -351,7 +388,8 @@ function F:SyncTrackedProjectionFlags()
         for _, row in ipairs(self.projections[scope] or {}) do
             local category = row.category == "debuff" and "debuff" or "buff"
             local id = math.floor(tonumber(row.id) or 0)
-            local tracked = id > 0 and type(index[category]) == "table" and index[category][id] == true
+            local tracked = id > 0 and ((type(index[category]) == "table" and index[category][id] == true)
+                or (type(index.auto)=="table" and index.auto[id]==true))
             row.tracked = tracked == true
             row.trackedText = tracked == true and "已追踪" or ""
         end
@@ -362,86 +400,13 @@ function F:SyncTrackedProjectionFlags()
     return true
 end
 
-------------------------------------------------------------------------
--- Freeze list (Legacy Plates freeze semantics)
-------------------------------------------------------------------------
+-- 中文维护注释：留存的唯一实现位于 rs_buff_display_management.lua；仅管理列表读取历史，HUD不读。
+-- 不保留旧 ApplyFreezeRows 旁路；TOC 在完整加载 Feature 后注册管理命令。
 
--- Purge one tracked id from every frozen snapshot (used on untrack so a row the
--- player explicitly stopped following disappears immediately).
-function F:DropFrozenRows(id)
-    id = math.floor(tonumber(id) or 0)
-    if id <= 0 then return true end
-    for _, scope in ipairs({ "player", "target" }) do
-        local frozen = self.frozenRows[scope] or {}
-        if frozen[id] ~= nil then
-            frozen[id] = nil
-            self.frozenRows[scope] = frozen
-        end
-    end
-    return true
-end
-
-function F:ClearFrozenRows()
-    self.frozenRows = { player = {}, target = {} }
-    return true
-end
-
--- Re-bind the frozen snapshot and re-append vanished tracked rows. Called from
--- RefreshScope right after ProjectStatusMap; pure row transformation, no Native
--- reads. While freezeEnabled is on the snapshot is refreshed from the live
--- tracked rows (so icon/name stay current), then every tracked id no longer
--- present in the live projection is re-appended as a frozen placeholder row.
-function F:ApplyFreezeRows(scope, rows, settings)
-    scope = tostring(scope or "")
-    settings = type(settings) == "table" and settings or Settings()
-    if settings.freezeEnabled ~= true then return rows end
-    local frozen = self.frozenRows[scope] or {}
-    -- 1) refresh the snapshot from currently live tracked rows
-    for _, row in ipairs(rows) do
-        if row.tracked == true then
-            frozen[row.id] = {
-                id = row.id, name = row.name, iconPath = row.iconPath,
-                category = row.category, detectionSource = row.detectionSource,
-                stack = row.stack,
-            }
-        end
-    end
-    -- 2) append tracked rows that have vanished from the live StatusMap
-    local present = {}
-    for _, row in ipairs(rows) do present[row.id] = true end
-    for id, snap in pairs(frozen) do
-        if present[id] ~= true then
-            local category = snap.category == "debuff" and "debuff" or "buff"
-            rows[#rows + 1] = {
-                key = tostring(scope) .. ":frozen:" .. tostring(id), id = id,
-                name = tostring(snap.name or id), iconPath = tostring(snap.iconPath or ""),
-                category = category, detectionSource = snap.detectionSource or "frozen",
-                effectType = category, effectTypeText = category == "debuff" and "Debuff" or "Buff",
-                stack = math.max(1, math.floor(tonumber(snap.stack) or 1)),
-                timeLeft = nil, timeText = "已冻结", sourceMask = 0, timeKnown = false,
-                tracked = true, trackedText = "已追踪", frozen = true,
-            }
-        end
-    end
-    -- 3) re-sort and re-bound so frozen rows respect the page row budget
-    table.sort(rows, function(a, b)
-        local at, bt = tonumber(a.timeLeft), tonumber(b.timeLeft)
-        if at ~= nil and bt ~= nil and at ~= bt then return at < bt end
-        if at ~= nil and bt == nil then return true end
-        if at == nil and bt ~= nil then return false end
-        return (tonumber(a.id) or 0) < (tonumber(b.id) or 0)
-    end)
-    local limit = scope == "player" and settings.playerRows or settings.targetRows
-    limit = math.max(1, math.floor(tonumber(limit) or 24))
-    while #rows > limit do rows[#rows] = nil end
-    self.frozenRows[scope] = frozen
-    return rows
-end
-
-function F:Refresh(reason)
+function F:Refresh(reason, forceRefresh)
     if self.auraHeld ~= true then return false, "buff display aura lease not held" end
-    self:RefreshScope("player")
-    self:RefreshScope("target")
+    self:RefreshScope("player",forceRefresh)
+    self:RefreshScope("target",forceRefresh)
     BumpLane("aura")
     self.revision = self.revision + 1
     Publish("v3.buff_display.updated", tostring(reason or "refresh"))
@@ -458,14 +423,17 @@ end
 
 local function ProjectScope(scope)
     local projection = Projection()
-    if type(projection) ~= "table" or type(projection.ProjectUnitFlexible) ~= "function" then
+    if type(projection) ~= "table" or type(projection.ProjectUnit) ~= "function" then
         local lane = F.laneData[scope] or {}
         lane.x, lane.y, lane.depth, lane.source = nil, nil, nil, nil
         lane.projectErr = "projection_service_unavailable"
         F.laneData[scope] = lane
         return false
     end
-    local x, y, depth, err, source = projection:ProjectUnitFlexible(scope)
+    -- 维护：原生血条与附着图标必须共用 native_unit 锚点；缺失时隐藏，不在不同帧
+    -- 切换到 world+1 米的另一投影（也不覆写 behind_camera 否决），避免跳位和背面残影。
+    local x, y, depth, err = projection:ProjectUnit(scope)
+    local source = x ~= nil and "native_unit" or nil
     local lane = F.laneData[scope] or {}
     local changed = lane.x ~= x or lane.y ~= y or lane.depth ~= depth
     if x ~= nil and y ~= nil and depth ~= nil then
@@ -481,14 +449,27 @@ end
 
 function F:PositionTick()
     if (tonumber(self.consumerCount) or 0) <= 0 then return true end
-    local changed = false
-    for _, scope in ipairs({ "player", "target" }) do
-        if ScopeHeadEnabled(scope) then changed = ProjectScope(scope) or changed end
+    for _, scope in ipairs(HUD_SCOPES) do
+        if ScopeHeadEnabled(scope) and AnyHeadComponent(scope) then ProjectScope(scope) end
     end
+    -- 维护：raw屏幕视口由同一Service提供，不再用插件logical尺寸裁剪raw投影。
+    -- 有限缓存仅减少视口getter；分辨率变更最多等待250ms，位置本身从不缓存/插值。
+    local now = S.NowMs and S.NowMs() or 0
+    if self.viewportAt == nil or now - self.viewportAt >= 250 then
+        local service = Projection()
+        if service and type(service.GetUiParentViewport) == "function" then
+            self.viewportWidth, self.viewportHeight = service:GetUiParentViewport()
+        end
+        self.viewportAt = now
+    end
+    self.pvpMetrics.positionTicks = self.pvpMetrics.positionTicks + 1
     BumpLane("position")
-    if changed == true then Publish("v3.buff_display.plates.updated", "position") end
+    -- 维护：位置事件只移动父容器；静止帧也允许消费待提交的内容dirty，不再重复ProjectPlates。
+    Publish("v3.buff_display.plates.motion", "position")
     return true
 end
+
+function F:GetHeadViewport() return self.viewportWidth, self.viewportHeight end
 
 local function NormalizeDistance(value)
     if type(value) == "table" then value = value.distance end
@@ -614,9 +595,12 @@ local function ReadClass(scope)
     if x2Locale == nil or type(x2Locale.LocalizeUiText) ~= "function" or combinedText == nil then return nil end
     local localizedOk, localized = api:CallCapability("X2Locale:LocalizeUiText", x2Locale, "LocalizeUiText", combinedText, key, "")
     if localizedOk ~= true or localized == nil or tostring(localized) == "" then return nil end
-    -- Class contributes only its localized NAME text to the InfoRow. No role
-    -- icon: the class component's sole purpose is the display name.
-    return { name = tostring(localized), key = key }
+    -- 中文维护（enemy-loadout-1）：沿用中央精确三天赋分类，不以装备/名称猜职业；
+    -- 图标是类别提示而非新的团队职责判定，未知组合保留真职业名且不冒用别人的图标。
+    local catalog = S.Data and S.Data.TeamAutoRoleCatalog
+    local row = catalog and catalog.byClassKey and catalog.byClassKey[key]
+    local icon = row and catalog.iconByClassType and catalog.iconByClassType[row.classType]
+    return { name = tostring(localized), key = key, icon = icon }
 end
 
 function F:MetadataTick()
@@ -635,7 +619,8 @@ function F:MetadataTick()
             if type(value) == "string" then normalized = { name = value, key = nil } end
             local same = (lane.class == nil and normalized == nil)
                 or (type(lane.class) == "table" and type(normalized) == "table"
-                    and tostring(lane.class.name) == tostring(normalized.name))
+                    and tostring(lane.class.name) == tostring(normalized.name)
+                    and lane.class.key == normalized.key and lane.class.icon == normalized.icon)
             if same ~= true then lane.class, changed = normalized, true end
             self.laneData[scope] = lane
         end
@@ -738,8 +723,15 @@ local function SameEquipmentItem(left, right)
         and tostring(left.name or "") == tostring(right.name or "")
 end
 
-function F:EquipmentTick()
+function F:EquipmentTick(onlyFast)
     if (tonumber(self.consumerCount) or 0) <= 0 then return true end
+    -- 维护：自己装备与装分分频，不改GetEquipped Authority；显式完整刷新仍可立即读装分。
+    -- 无效装备读取仍清旧图，不把旧武器当作当前真相。周期/合并事件只执行有界快项。
+    local now = S.NowMs and S.NowMs() or 0
+    local scoresDue = onlyFast ~= true or self.lastGearScoreAt == nil or now - self.lastGearScoreAt >= 1000
+    if scoresDue then self.lastGearScoreAt = now end
+    self.pvpMetrics.equipmentTicks = self.pvpMetrics.equipmentTicks + 1
+    self.pvpMetrics.lastEquipmentAt = now
     local dia = F.EquipmentDiagnostics
     if dia ~= nil then
         dia.laneTicks = (tonumber(dia.laneTicks) or 0) + 1
@@ -771,10 +763,10 @@ function F:EquipmentTick()
             -- Authority/数据流：gearScore 直接读取 scope token（player/target）的 X2Unit Authority；
             -- class 仍保留 TargetIsPlayer gate，装备图标仍只读 player，三类能力不互相放宽。
             -- 兼容边界：nil/0/异常值 fail-closed 并清掉旧 lane 值，绝不把自己装分复制到目标。
-            if ComponentEnabled("gearScore", scope) then
+            if ComponentEnabled("gearScore", scope) and scoresDue then
                 local score = ReadGearScore(scope, api)
                 if lane.gearScore ~= score then lane.gearScore, changed = score, true end
-            elseif lane.gearScore ~= nil then
+            elseif not ComponentEnabled("gearScore", scope) and lane.gearScore ~= nil then
                 lane.gearScore, changed = nil, true
             end
             -- weapon / glider icons (player scope only). Grade overlay is part
@@ -826,6 +818,11 @@ end
 local function LaneNeeds(laneKey, settings)
     local positionActive = HeadScopeActive()
     if laneKey == "aura" then
+        -- 管理留存与HUD开关独立，否则隐藏Buff组件会让短状态无机会进入留存列表。
+        if F.managementFreeze and F.managementFreeze.active then return true end
+        -- 中文维护：目标类型组件消费同一个 Aura 租约；隐藏 Buff 行不能意外停掉类型识别。
+        if positionActive and ScopeHeadEnabled("target")
+            and (ComponentEnabled("mainHand", "target") or ComponentEnabled("offHand", "target")) then return true end
         return (settings.showBuffs ~= false or settings.showDebuffs ~= false)
             and (ComponentEnabled("buffs") or ComponentEnabled("debuffs") or (tonumber(F.consumerCount) or 0) > 0)
     end
@@ -860,7 +857,7 @@ function F:ReconcileLanes()
     SetLaneActive("position", LaneNeeds("position", settings), function() return F:PositionTick() end, true)
     SetLaneActive("distance", LaneNeeds("distance", settings), function() return F:DistanceTick() end, true)
     SetLaneActive("metadata", LaneNeeds("metadata", settings), function() return F:MetadataTick() end, true)
-    SetLaneActive("equipment", LaneNeeds("equipment", settings), function() return F:EquipmentTick() end, true)
+    SetLaneActive("equipment", LaneNeeds("equipment", settings), function() return F:EquipmentTick(true) end, true)
     SetLaneActive("cast", castNeeded, function() return F:CastTick() end, true)
     return true
 end
@@ -927,11 +924,11 @@ function F:GetPlatesProjection(scope)
     return plates, maxRevision
 end
 
--- Screen anchor (logical RSUI space) for the head-plate renderer.
+-- 维护（pvp-hud-1）：原生UIParent屏幕坐标，不除以UI缩放；第五返回为只读失败原因，前四参保持兼容。
 function F:GetPlatesAnchor(scope)
     scope = tostring(scope or "player")
     local lane = self.laneData[scope] or {}
-    return lane.x, lane.y, lane.depth, lane.source
+    return lane.x, lane.y, lane.depth, lane.source, lane.projectErr
 end
 
 -- Legacy accessor kept for old consumers: tracked BUFF rows only.
@@ -961,54 +958,9 @@ end
 -- name/icon/scope, while tracked ids that have vanished (and are not frozen)
 -- stay as "已消失" placeholders so the player can still untrack them.
 function F:GetTrackedList()
-    local settings = Settings()
-    local tracked = type(settings.tracked) == "table" and settings.tracked or {}
-    local live = {}
-    for _, scope in ipairs({ "player", "target" }) do
-        for _, row in ipairs(self.projections[scope] or {}) do
-            local idNum = math.floor(tonumber(row.id) or 0)
-            if idNum > 0 then live[idNum] = { row = row, scope = scope } end
-        end
-    end
-    local rows, seen = {}, {}
-    local function AddCategory(category, idList)
-        for _, id in ipairs(type(idList) == "table" and idList or {}) do
-            id = math.floor(tonumber(id) or 0)
-            if id > 0 and seen[id] ~= true then
-                seen[id] = true
-                local entry = live[id]
-                if type(entry) == "table" and type(entry.row) == "table" then
-                    local row = entry.row
-                    rows[#rows + 1] = {
-                        key = "tracked:" .. tostring(category) .. ":" .. tostring(id),
-                        id = id, category = category, effectType = category,
-                        effectTypeText = category == "debuff" and "Debuff" or "Buff",
-                        name = tostring(row.name or id), iconPath = tostring(row.iconPath or ""),
-                        scope = entry.scope, scopeText = entry.scope == "player" and "自己" or "目标",
-                        stack = math.max(1, math.floor(tonumber(row.stack) or 1)),
-                        tracked = true, trackedText = "已追踪", vanished = false,
-                    }
-                else
-                    rows[#rows + 1] = {
-                        key = "tracked:" .. tostring(category) .. ":" .. tostring(id),
-                        id = id, category = category, effectType = category,
-                        effectTypeText = category == "debuff" and "Debuff" or "Buff",
-                        name = tostring(id), iconPath = "",
-                        scope = nil, scopeText = "已消失",
-                        stack = 1, tracked = true, trackedText = "已追踪", vanished = true,
-                    }
-                end
-            end
-        end
-    end
-    AddCategory("buff", tracked.buff)
-    AddCategory("debuff", tracked.debuff)
-    table.sort(rows, function(a, b)
-        if a.vanished ~= b.vanished then return a.vanished == false end
-        if a.category ~= b.category then return a.category == "buff" end
-        return (tonumber(a.id) or 0) < (tonumber(b.id) or 0)
-    end)
-    return rows, self.revision
+    -- 中文维护注释：包括非实时条目的管理投影由统一目录负责；这里不再每次热刷重建全部 ID。
+    if type(self.GetManagementProjection)=="function" then return self:GetManagementProjection({view="tracked",cacheOwner="widget"}) end
+    return {}, self.revision
 end
 
 ------------------------------------------------------------------------
@@ -1065,37 +1017,50 @@ end
 
 function F:_QueueEventRefresh(reason, delayMs)
     if self.enabled ~= true or (tonumber(self.consumerCount) or 0) <= 0 then return true end
-    if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return false, "统一调度器 one-shot 不可用" end
-    S.Scheduler:RemoveTask(self.eventTaskName)
-    local eventReason = tostring(reason or "event")
-    local ok = S.Scheduler:AddOneShot(self.eventTaskName, math.max(80, tonumber(delayMs) or 120), function()
-        if F.enabled == true and (tonumber(F.consumerCount) or 0) > 0 then
-            local settings = Settings()
-            -- Equipment events refresh ONLY the equipment lane: a weapon swap
-            -- says nothing about aura facts, and mirroring the aura-lane rule
-            -- (events never trigger foreign lanes' Native reads) keeps the
-            -- swap path at 4-5 cheap reads.
-            if eventReason == "equipment_changed" then
-                if LaneNeeds("equipment", settings) then F:EquipmentTick() end
-                return true
-            end
-            -- Aura events refresh only Aura facts. They must not trigger class,
-            -- equipment or cast Native reads; those lanes own their cadence.
-            F:Refresh(eventReason)
-            if eventReason == "target_changed" then
-                -- UNIT-SCOPE: a new target invalidates the cached kind so the
-                -- equipment/class gates re-evaluate on the very next lane tick.
-                targetKindCache.at = 0
-                if LaneNeeds("position", settings) then F:PositionTick() end
-                if LaneNeeds("distance", settings) then F:DistanceTick() end
-                if LaneNeeds("metadata", settings) then F:MetadataTick() end
-                if LaneNeeds("equipment", settings) then F:EquipmentTick() end
-                if LaneNeeds("cast", settings) then F:CastTick() end
-            end
-            return true
+    if S.Scheduler == nil then return false, "状态显示事件调度器不可用" end
+    -- 维护（pvp-hud-1）：旧单reason任务每个事件先删后建，BUFF洪流可永久推迟武器事件，
+    -- 并用最后一个reason覆盖其它类型。现在保存三个位的并集与最早期限；后来事件只能合并
+    -- 或提前目标切换，绝不向后延时。Authority是本Feature的待处理失效，不是第二份装备缓存。
+    local now = S.NowMs and S.NowMs() or 0
+    local pending = self.pendingEdges
+    reason = tostring(reason or "event")
+    if reason == "equipment_changed" then pending.equipment, pending.aura = true, true
+    elseif reason == "target_changed" then pending.target, pending.aura = true, true
+    else pending.aura = true end
+    if self.pendingSince == nil then self.pendingSince = now end
+    self.pvpMetrics.queued = self.pvpMetrics.queued + 1
+    local delay = reason == "target_changed" and 1 or math.max(1, math.min(50, tonumber(delayMs) or 50))
+    local due = now + delay
+    local exists = S.Scheduler.tasks and S.Scheduler.tasks[self.eventTaskName] ~= nil
+    if exists and self.pendingDue ~= nil and self.pendingDue <= due then
+        self.pvpMetrics.merged = self.pvpMetrics.merged + 1
+        return true
+    end
+    if exists then S.Scheduler:RemoveTask(self.eventTaskName) end
+    self.pendingDue = due
+    local epoch, generation = self.eventEpoch, S.Generation
+    local add = S.Scheduler.AddHighFrequencyOneShot or S.Scheduler.AddOneShot
+    if type(add) ~= "function" then return false, "状态显示事件合并任务不可用" end
+    local ok = add(S.Scheduler, self.eventTaskName, delay, function()
+        if F.eventEpoch ~= epoch or S.Generation ~= generation then return true end
+        local edges, since = F.pendingEdges, F.pendingSince
+        F.pendingEdges, F.pendingSince, F.pendingDue = {}, nil, nil
+        if F.enabled ~= true or (tonumber(F.consumerCount) or 0) <= 0 then return true end
+        local at = S.NowMs and S.NowMs() or 0
+        F.pvpMetrics.drained = F.pvpMetrics.drained + 1
+        F.pvpMetrics.maxQueueAgeMs = math.max(F.pvpMetrics.maxQueueAgeMs, at - (since or at))
+        local settings = Settings()
+        -- 强制刷新只越过共享Aura本次TTL；不改别的消费者缓存策略、不扫描静态库。
+        if edges.aura then F:Refresh("event_batch", true) end
+        if (edges.equipment or edges.target) and LaneNeeds("equipment", settings) then F:EquipmentTick(true) end
+        if edges.target then
+            targetKindCache.kind, targetKindCache.at = nil, 0
+            if LaneNeeds("distance", settings) then F:DistanceTick() end
+            if LaneNeeds("metadata", settings) then F:MetadataTick() end
+            if LaneNeeds("cast", settings) then F:CastTick() end
         end
         return true
-    end, self, "P2", 1)
+    end, self, "P1", 2)
     if ok == true and type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(self.eventTaskName, self.Id, true) end
     return ok == true, ok == true and nil or "状态显示事件合并任务创建失败"
 end
@@ -1106,14 +1071,36 @@ function F:_StartEvents()
     local any = false
     if S.Events:SubscribeOptional("BUFF_UPDATE", self, function()
         F.eventEdges = (tonumber(F.eventEdges) or 0) + 1
+        -- 中文维护：留存期间在事件边立即读已暴露的事实，不能延迟120ms直到短状态消失。
+        -- forceRefresh 仅绕过共享Aura本次缓存，不遍历静态库；无消费者/关闭时不读Native。
+        if F.managementFreeze and F.managementFreeze.active and F.enabled and (F.consumerCount or 0)>0 then
+            return F:Refresh("capture_buff_update",true)
+        end
         return F:_QueueEventRefresh("buff_update", 120)
     end) == true then any = true end
     if S.Events:SubscribeOptional("DEBUFF_UPDATE", self, function()
         F.eventEdges = (tonumber(F.eventEdges) or 0) + 1
+        -- 中文维护：留存期间在事件边立即读已暴露的事实，不能延迟120ms直到短状态消失。
+        -- forceRefresh 仅绕过共享Aura本次缓存，不遍历静态库；无消费者/关闭时不读Native。
+        if F.managementFreeze and F.managementFreeze.active and F.enabled and (F.consumerCount or 0)>0 then
+            return F:Refresh("capture_debuff_update",true)
+        end
         return F:_QueueEventRefresh("debuff_update", 120)
     end) == true then any = true end
     if S.Events:SubscribeOptional("TARGET_CHANGED", self, function()
+        -- 中文维护：事件边立即撤掉前一目标类型/职业，延迟采样尚未执行时不能短暂贴到新目标。
+        -- 维护：失效必须覆盖整份身份快照；只清职业/类型仍会把旧Buff、装分、读条贴到新目标。
+        F.laneData.target, F.projections.target, F.coverage.target = {}, {}, {}
+        F.targetInvalidated = true
+        F.pvpMetrics.targetInvalidations = F.pvpMetrics.targetInvalidations + 1
+        targetKindCache.kind, targetKindCache.at = nil, 0
+        Publish("v3.buff_display.plates.updated", "target_identity_invalidated")
         F.eventEdges = (tonumber(F.eventEdges) or 0) + 1
+        -- 中文维护：留存期间在事件边立即读已暴露的事实，不能延迟120ms直到短状态消失。
+        -- forceRefresh 仅绕过共享Aura本次缓存，不遍历静态库；无消费者/关闭时不读Native。
+        if F.managementFreeze and F.managementFreeze.active and F.enabled and (F.consumerCount or 0)>0 then
+            F:Refresh("capture_target_changed",true)
+        end
         return F:_QueueEventRefresh("target_changed", 80)
     end) == true then any = true end
     -- Weapon/glider swaps must reach the head icons near-instantly (PvP swap
@@ -1136,6 +1123,9 @@ function F:_StartEvents()
 end
 
 function F:_StopEvents()
+    -- 维护：已退订的旧闭包不能写入重开后的Feature；清掉未执行失效，不保留第二个调度器。
+    self.eventEpoch = self.eventEpoch + 1
+    self.pendingEdges, self.pendingSince, self.pendingDue = {}, nil, nil
     if S.Events ~= nil and type(S.Events.UnsubscribeOwner) == "function" then S.Events:UnsubscribeOwner(self) end
     if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.eventTaskName) end
@@ -1169,7 +1159,7 @@ function F:ReconcileDemand(before, after)
         self.projections = { player = {}, target = {} }
         self.coverage = { player = {}, target = {} }
         self.laneData = { player = {}, target = {} }
-        self.frozenRows = { player = {}, target = {} }
+        if type(self.ClearFrozenRows)=="function" then self:ClearFrozenRows() end
     end
     return true
 end
@@ -1185,7 +1175,7 @@ local demand, demandErr = S.Demand:Create({
         F:_ReleaseCasting()
         F:_ReleaseAura()
         F.laneData = { player = {}, target = {} }
-        F.frozenRows = { player = {}, target = {} }
+        if type(F.ClearFrozenRows)=="function" then F:ClearFrozenRows() end
         return true
     end,
 })
@@ -1233,11 +1223,19 @@ function F:GetHealth()
     local activeLanes = {}
     for laneKey, lane in pairs(self.lanes) do if lane.active == true then activeLanes[#activeLanes + 1] = laneKey end end
     table.sort(activeLanes)
-    return { ok = self.enabled == true, consumers = self.consumerCount, auraHeld = self.auraHeld == true, castingHeld = self.castingHeld == true,
+    -- 中文维护注释：公开有界诊断，不把目录/冻结行写入 Store；未接入 Native 的 CD 不报告为可用。
+    return { schemaVersion=self.SchemaVersion, management=type(self.GetManagementHealth)=="function" and self:GetManagementHealth() or nil,
+        ok = self.enabled == true, consumers = self.consumerCount, auraHeld = self.auraHeld == true, castingHeld = self.castingHeld == true,
         revision = self.revision, player = self.coverage.player, target = self.coverage.target,
         eventSubscribed = self.eventSubscribed == true, eventEdges = tonumber(self.eventEdges) or 0,
         eventRefreshPending = S.Scheduler ~= nil and S.Scheduler.tasks and S.Scheduler.tasks[self.eventTaskName] ~= nil,
         observationContractVersion = 2,
+        pvp = { patch=self.PvpPatch, queued=self.pvpMetrics.queued, merged=self.pvpMetrics.merged,
+            drained=self.pvpMetrics.drained, maxQueueAgeMs=self.pvpMetrics.maxQueueAgeMs,
+            pendingAgeMs=self.pendingSince and math.max(0,(S.NowMs and S.NowMs() or 0)-self.pendingSince) or 0,
+            positionTicks=self.pvpMetrics.positionTicks, equipmentTicks=self.pvpMetrics.equipmentTicks,
+            lastEquipmentAt=self.pvpMetrics.lastEquipmentAt, lastAuraAt=self.pvpMetrics.lastAuraAt,
+            targetInvalidations=self.pvpMetrics.targetInvalidations, equipmentBackstopMs=200, eventWindowMs=50 },
         equipmentDiagnostics = S.Utils ~= nil and type(S.Utils.DeepCopy) == "function" and S.Utils.DeepCopy(F.EquipmentDiagnostics) or F.EquipmentDiagnostics,
         activeLanes = activeLanes,
         auraConsumers = tonumber(ah.consumers) or 0, taskActive = S.Scheduler ~= nil and S.Scheduler.tasks and S.Scheduler.tasks[self.taskName] ~= nil }
@@ -1409,7 +1407,7 @@ function F:SerializeExport(data)
             -- Serialize component-specific geometry too. Without these fields a
             -- full export/import silently lost row capacity/spacing and cast-bar
             -- width/text settings even though the UI exposed them.
-            if key == "buffs" or key == "debuffs" then
+            if key == "buffs" or key == "debuffs" or key == "cooldowns" then
                 lines[#lines + 1] = "COMPONENT=" .. key .. ":spacing:" .. tostring(component.spacing or 2)
                 lines[#lines + 1] = "COMPONENT=" .. key .. ":maxPerRow:" .. tostring(component.maxPerRow or 8)
                 lines[#lines + 1] = "COMPONENT=" .. key .. ":maxRows:" .. tostring(component.maxRows or 2)
@@ -1604,35 +1602,19 @@ end
 -- applies components/classification that are explicitly present; "overwrite"
 -- replaces tracked lists entirely (policy fields always overwrite when present).
 function F:ImportAll(data, mode)
-    if type(data) ~= "table" then return false, "导入数据无效" end
+    -- 中文维护注释（v2 原子导入）：容量/非法输入/跨桶冲突先整体拒绝，预览绝不调用 Native。
+    -- Legacy HUD 字段仍走下方原有 ApplyRaw 链；所有选择与双 HUD 只提交一个 durable 事务。
+    local prepared, prepareErr = self:PrepareTrackingImport(data, mode)
+    if prepared == nil then return false, prepareErr end
     local nextClassification = nil
     local marked, markErr = self:MutateStore(function()
         local settings = self.State.settings
-        if type(data.tracked) == "table" then
-            for _, category in ipairs({ "buff", "debuff" }) do
-                local ids = type(data.tracked[category]) == "table" and data.tracked[category] or {}
-                local existing = mode == "overwrite" and {} or S.Utils.DeepCopy(settings.tracked[category] or {})
-                local seen = {}
-                for _, id in ipairs(existing) do seen[id] = true end
-                for _, id in ipairs(ids) do
-                    id = math.floor(tonumber(id) or 0)
-                    if id > 0 and seen[id] ~= true and #existing < 1024 then seen[id] = true; existing[#existing + 1] = id end
-                end
-                table.sort(existing)
-                settings.tracked[category] = existing
-            end
-        end
-        if type(data.classification) == "table" and next(data.classification) ~= nil then
-            local merged = S.Utils.DeepCopy(settings.classification or {})
-            for id, itemCategory in pairs(data.classification) do
-                local numeric = math.floor(tonumber(id) or 0)
-                if numeric > 0 and (itemCategory == "buff" or itemCategory == "debuff") then merged[numeric] = itemCategory end
-            end
-            settings.classification = merged
-            nextClassification = S.Utils.DeepCopy(merged)
-        end
+        settings.tracked = S.Utils.DeepCopy(prepared.tracked)
+        settings.trackedCooldowns = S.Utils.DeepCopy(prepared.trackedCooldowns)
+        settings.classification = S.Utils.DeepCopy(prepared.classification)
+        nextClassification = S.Utils.DeepCopy(prepared.classification)
         if type(data.components) == "table" then
-            for _, key in ipairs({ "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar" }) do
+            for _, key in ipairs({ "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar", "cooldowns" }) do
                 local component = data.components[key]
                 if type(component) == "table" and next(component) ~= nil then
                     for field, value in pairs(component) do
@@ -1699,7 +1681,7 @@ function F:ImportAll(data, mode)
             end
         end
         return true
-    end, 250, "import_all")
+    end, 0, "import_all", true)
     if marked ~= true then return false, markErr or "完整导入保存失败" end
 
     local classification = Classification()
@@ -1799,27 +1781,22 @@ F.Commands = {
         return F.Commands:ResetLayoutSettings()
     end,
     SetSetting = function(_, key, value)
-        local ok, err = F:SetSettingValue(key, value)
-        if ok == true then
-            -- Turning the freeze list off drops every frozen snapshot so the next
-            -- projection shows only live rows again; turning it on immediately
-            -- re-binds the snapshot from the current tracked rows.
-            if key == "freezeEnabled" and value ~= true then F:ClearFrozenRows() end
-            F:ReconcileLanes()
-            if key == "freezeEnabled" then
-                F:RefreshScope("player")
-                F:RefreshScope("target")
-            end
+        -- 中文维护注释：兼容旧按钮命令，但不再写 freezeEnabled 到永久 Store。
+        if key=="freezeEnabled" then
+            if value==true then return F:CaptureManagementFreeze() end
+            return F:ClearFrozenRows()
         end
-        return ok, err
+        local ok,err=F:SetSettingValue(key,value)
+        if ok==true then F:ReconcileLanes() end
+        return ok,err
     end,
     SetTrackedId = function(_, id, category, enabled)
         local ok, err = F:SetTrackedId(id, category, enabled)
         if ok == true then
-            if enabled ~= true then F:DropFrozenRows(id) end
+            -- 取消追踪只更新选择，不删除冻结的事实；用户可在同一快照再次追踪。
             F.trackedIndex = F:BuildTrackedIndex(Settings())
             F:SyncTrackedProjectionFlags()
-            -- re-project so a frozen row leaves/joins the list immediately
+            -- 重新刷新的是实时事实；冻结行保留，管理装饰层只更新其追踪标记。
             F:RefreshScope("player")
             F:RefreshScope("target")
         end
@@ -1828,7 +1805,6 @@ F.Commands = {
     ClearTrackedIds = function(_, category)
         local ok, err = F:ClearTrackedIds(category)
         if ok == true then
-            F:ClearFrozenRows()
             F.trackedIndex = F:BuildTrackedIndex(Settings())
             F:SyncTrackedProjectionFlags()
             F:RefreshScope("player")

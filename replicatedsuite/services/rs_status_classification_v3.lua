@@ -1,143 +1,82 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Status Classification Service
 --
--- Shared single Authority for "what an effect is" across every consumer
--- (Buff Display, Plates, Import/Export). The user-facing world only has two
--- categories: Buff and Debuff. "Hidden" and "special rule" are NOT user
--- categories anymore - they are detection sources that describe WHERE a
--- classification came from:
---
---   category        : "buff" | "debuff"          (the only user-facing kinds)
---   detectionSource : "normal" | "hidden" | "special_rule"
---
--- Resolution order (first match wins):
---   1. User override (settings.classification[id], persisted, manually fixed)
---   2. Seeded registry (wiki-verified buffs, curated Plates compatibility IDs)
---   3. Snapshot sources heuristic (debuff lane beats buff lane)
---   4. Default: unknown hidden-sourced effects classify as debuff
---
--- No Native/API access: pure data service, safe for projection and stores.
+-- 纯分类 Authority：category=buff/debuff/unknown；hidden/special_rule 是来源。
+-- 旧接口保留，未知不再默认 Buff，详见下方 v2 维护注释。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
 
+-- 中文维护注释（分类 v2）：资源类型曾把 393 个 unknown 全部升级为正面 Buff。
+-- Authority 仍是本纯服务；Native 事实来自 Aura，用户 override 来自 Feature Store。
+-- 顺序：用户 > Native 无冲突 lane > 明确静态极性 > 特殊规则 > unknown。
+-- Hidden 只说明探测来源，计时修正规则不证明负面极性。这里不调用 Native、不持久化事实，
+-- 不根据名称/ID 规律推断分类；旧 ClassifyId/override 接口保持兼容。
 local Classification = {
-    version = 1,
-    -- Presentation-free shared service. Consumers receive pure data only; the
-    -- service never creates widgets or owns UI state. FoundationGate requires
-    -- every registered Service to declare this boundary explicitly.
-    presentationBoundary = "service_only",
-    registry = {},      -- [id] = { category, detectionSource, name, source }
-    overrides = {},     -- [id] = "buff"|"debuff"   (user manual corrections)
-    seedCount = 0,
+    version = 2, presentationBoundary = "service_only", registry = {}, overrides = {}, seedCount = 0,
+    hits = { user=0, native=0, verified_static=0, special_rule=0, unknown=0 }, conflicts = 0,
 }
 S.Services.StatusClassificationV3 = Classification
-
 local function NormalizeCategory(value)
-    if value == "debuff" then return "debuff" end
-    if value == "buff" then return "buff" end
+    if value == "buff" or value == "debuff" then return value end
     return nil
 end
-
 local function NormalizeSource(value)
-    if value == "hidden" then return "hidden" end
-    if value == "special_rule" then return "special_rule" end
+    if value == "hidden" or value == "special_rule" then return value end
     return "normal"
 end
-
-local function Seed(id, category, detectionSource, name, source)
+local function Seed(id, category, detectionSource, name, source, confidence)
     id = math.floor(tonumber(id) or 0)
-    category = NormalizeCategory(category)
-    if id <= 0 or category == nil then return end
-    if Classification.registry[id] ~= nil then return end -- first seed wins
-    Classification.registry[id] = {
-        category = category,
-        detectionSource = NormalizeSource(detectionSource),
-        name = tostring(name or ""),
-        source = tostring(source or "seed"),
-    }
+    if id <= 0 or Classification.registry[id] ~= nil then return end
+    Classification.registry[id] = { category=NormalizeCategory(category) or "unknown",
+        detectionSource=NormalizeSource(detectionSource), name=tostring(name or ""),
+        source=tostring(source or "seed"), confidence=confidence or "unknown" }
     Classification.seedCount = Classification.seedCount + 1
 end
-
-------------------------------------------------------------------------
--- Seeding. The Buff ID Registry adapter (rs_buff_ids.lua) is the wiki-verified
--- polarity source; Plates curated sets supply hidden/special-rule provenance.
-------------------------------------------------------------------------
 local function SeedFromBuffLibrary()
-    local byId = S.GameIds and S.GameIds.Buff and S.GameIds.Buff.ById or nil
-    if type(byId) ~= "table" then return end
+    local byId = S.GameIds and S.GameIds.Buff and S.GameIds.Buff.ById or {}
     for id, record in pairs(byId) do
-        local kind = type(record) == "table" and record.kind or nil
-        local name = type(record) == "table" and record.name or nil
-        if kind == "buff" then Seed(id, "buff", "normal", name, "seed_buff_library")
-        elseif kind == "debuff" then Seed(id, "debuff", "normal", name, "seed_buff_library") end
+        local category = type(record) == "table" and NormalizeCategory(record.effectCategory) or nil
+        if category ~= nil then Seed(id, category, "normal", record.name, "skill_effects", "verified_static") end
     end
 end
-
 local function SeedFromPlates()
-    local plates = S.GameIds and S.GameIds.Plates or nil
-    if type(plates) ~= "table" then return end
-    -- Hidden timer corrections: effects the RU client hides; they stay
-    -- detectable and trackable but now classify as a normal category.
-    local corrections = type(plates.EffectTimerCorrections) == "table" and plates.EffectTimerCorrections.hidden or nil
-    for id in pairs(type(corrections) == "table" and corrections or {}) do
-        Seed(id, "debuff", "hidden", nil, "seed_plates_hidden")
-    end
-    -- Magic circle buffs are curated special-rule effects (positive).
-    for _, id in ipairs(type(plates.MagicCircleBuffIds) == "table" and plates.MagicCircleBuffIds or {}) do
-        Seed(id, "buff", "special_rule", nil, "seed_plates_magic_circle")
+    local plates = S.GameIds and S.GameIds.Plates or {}
+    local corrections = type(plates.EffectTimerCorrections) == "table" and plates.EffectTimerCorrections.hidden or {}
+    for id in pairs(corrections) do Seed(id, "unknown", "hidden", nil, "timer_correction_only", "unknown") end
+    for _, id in ipairs(plates.MagicCircleBuffIds or {}) do
+        Seed(id, "buff", "special_rule", nil, "curated_magic_circle", "special_rule")
     end
 end
-
-------------------------------------------------------------------------
--- Public API
-------------------------------------------------------------------------
-
--- Resolve the user-visible category for an entry, honouring manual overrides.
--- `sources` is the AuraObservationV3 entry.sources table (buff/debuff/hidden).
+local function Result(self, category, detectionSource, confidence, source, conflict)
+    self.hits[confidence] = (self.hits[confidence] or 0) + 1
+    if conflict == true then self.conflicts = self.conflicts + 1 end
+    return { category=category, detectionSource=detectionSource, confidence=confidence, source=source, conflict=conflict==true }
+end
 function Classification:ClassifyEntry(entry, overrideMap)
     entry = type(entry) == "table" and entry or {}
     local id = math.floor(tonumber(entry.id or entry.effectId) or 0)
     local sources = type(entry.sources) == "table" and entry.sources or {}
     local overrides = type(overrideMap) == "table" and overrideMap or self.overrides
-
-    -- 1. user override
-    if id > 0 then
-        local user = NormalizeCategory(overrides[id])
-        if user ~= nil then
-            return { category = user, detectionSource = NormalizeSource(sources.hidden == true and "hidden" or (sources.special ~= true and "normal" or "special_rule")) }
-        end
+    local seeded = self.registry[id]
+    local detection = sources.hidden == true and "hidden" or (sources.special == true and "special_rule" or "normal")
+    local user = NormalizeCategory(overrides[id])
+    if user ~= nil then return Result(self, user, detection, "user", "override") end
+    if sources.buff == true and sources.debuff == true then
+        return Result(self, "unknown", detection, "unknown", "native_lane_conflict", true)
     end
-
-    -- 2. seeded registry
-    local seeded = id > 0 and self.registry[id] or nil
+    if sources.debuff == true then return Result(self, "debuff", detection, "native", "native_debuff") end
+    if sources.buff == true then return Result(self, "buff", detection, "native", "native_buff") end
     if seeded ~= nil then
-        local detectionSource = sources.hidden == true and "hidden" or seeded.detectionSource
-        return { category = seeded.category, detectionSource = detectionSource }
+        return Result(self, seeded.category, sources.hidden == true and "hidden" or seeded.detectionSource, seeded.confidence, seeded.source)
     end
-
-    -- 3. snapshot sources heuristic
-    if sources.debuff == true then return { category = "debuff", detectionSource = "normal" } end
-    if sources.buff == true then return { category = "buff", detectionSource = "normal" } end
-
-    -- 4. default: unknown hidden-sourced effects classify as debuff
-    if sources.hidden == true then return { category = "debuff", detectionSource = "hidden" } end
-    return { category = "buff", detectionSource = "normal" }
+    return Result(self, "unknown", detection, "unknown", "unverified")
 end
-
--- Same resolution for a bare id (imports/migration do not always have a
--- snapshot). Unknown ids classify as buff - migration keeps every previously
--- tracked id visible instead of dropping data.
 function Classification:ClassifyId(id, overrideMap)
     id = math.floor(tonumber(id) or 0)
     if id <= 0 then return nil end
-    local overrides = type(overrideMap) == "table" and overrideMap or self.overrides
-    local user = NormalizeCategory(overrides[id])
-    if user ~= nil then return { category = user, detectionSource = "normal" } end
-    local seeded = self.registry[id]
-    if seeded ~= nil then return { category = seeded.category, detectionSource = seeded.detectionSource } end
-    return { category = "buff", detectionSource = "normal" }
+    return self:ClassifyEntry({id=id}, overrideMap)
 end
 
 function Classification:SetOverride(id, category)
@@ -204,10 +143,12 @@ end
 
 function Classification:GetHealth()
     local overrideCount, registryCount = 0, 0
+    -- 中文维护注释：统计仅复制固定大小的计数，不把可变内部表交给诊断调用者。
+    local hits = {}; for key,value in pairs(self.hits) do hits[key]=value end
     for _ in pairs(self.overrides or {}) do overrideCount = overrideCount + 1 end
     for _ in pairs(self.registry or {}) do registryCount = registryCount + 1 end
     return {
-        ok = true, version = self.version, seedCount = self.seedCount,
+        ok = true, version = self.version, seedCount = self.seedCount, conflicts = self.conflicts, hits=hits,
         overrideCount = overrideCount, registryCount = registryCount,
     }
 end

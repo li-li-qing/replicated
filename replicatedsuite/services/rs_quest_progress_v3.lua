@@ -141,7 +141,8 @@ function P:QuestState(qid, activeIndex)
         if okDone and done == true then state = QS.COMPLETED end
     end
 
-    if state ~= QS.COMPLETED and type(activeIndex) == "table" and activeIndex[qid] ~= nil then
+    local active = type(activeIndex) == "table" and activeIndex or (type(self.activeIndex) == "table" and self.activeIndex or nil)
+    if state ~= QS.COMPLETED and active ~= nil and active[qid] ~= nil then
         if Capability("X2Quest:IsReadyForCompleteQuest") then
             local okReady, ready = S.Api:CallCapability("X2Quest:IsReadyForCompleteQuest", questHost, "IsReadyForCompleteQuest", qid)
             if okReady and ready == true then state = QS.READY_TO_TURN_IN else state = QS.IN_PROGRESS end
@@ -306,6 +307,7 @@ function P:RefreshInstances(nextSnapshots, forceDiscovery)
 end
 
 function P:Refresh(reason, forceInstanceDiscovery)
+    self:ClearJournalCache() -- invalidate objective text on existing quest events/safety, never query it here.
     local ok, err = xpcall(function()
         local activeIndex, questAvailable = self:BuildActiveIndex()
         self.refreshQuestStateCache = {}
@@ -402,6 +404,7 @@ function P:Start()
 end
 
 function P:Stop()
+    self:ClearJournalCache() -- explicit-detail cache must not survive service quiescence.
     if self.running ~= true then return true end
     self.running = false
     if S.Events ~= nil then
@@ -584,6 +587,41 @@ local function FindGroup(scope, key)
     if scope == "event" then
         return S.Data and S.Data.EventQuestProgress and S.Data.EventQuestProgress[key] or nil
     end
+    if scope == "bonds" or scope == "bond" then
+        -- 中文维护注释：支持居民债券条目详情浮窗/弹窗动态查找，从 Bonds Authority 读取行数据
+        local bondsFeature = S.Features and S.Features.Bonds or nil
+        if type(bondsFeature) == "table" and type(bondsFeature.GetRow) == "function" then
+            local row = bondsFeature:GetRow(key)
+            if type(row) == "table" then
+                return {
+                    key = key,
+                    title = row.text or ("居民债券：" .. tostring(row.name or "") .. tostring(row.quantity or "")),
+                    objectives = {
+                        {
+                            name = tostring(row.text or (tostring(row.name or "") .. " " .. tostring(row.quantity or ""))),
+                            quests = row.questId and { row.questId } or {},
+                            category = "居民委托",
+                        }
+                    }
+                }
+            end
+        end
+        local qid = tonumber(key)
+        if qid ~= nil then
+            return {
+                key = tostring(qid),
+                title = "居民委托 #" .. tostring(qid),
+                objectives = {
+                    {
+                        name = "居民债券任务 #" .. tostring(qid),
+                        quests = { qid },
+                        category = "居民委托",
+                    }
+                }
+            }
+        end
+        return nil
+    end
     local groups = S.Data and S.Data.QuestGroups and S.Data.QuestGroups[scope] or nil
     if type(groups) ~= "table" then return nil end
     for _, group in ipairs(groups) do
@@ -592,7 +630,93 @@ local function FindGroup(scope, key)
     return nil
 end
 
-function P:GetGroupDetail(scope, key)
+-- Maintenance (overview-workbench-2): RU officially enabled these two getters
+-- on 2026-09-09. Signatures != runtime verification: accept only finite integer
+-- counts and plain text. QuestProgress owns Native reads, UI owns no copies of
+-- gameplay state. This is explicit-detail-only, NOT part of table projection.
+-- The active-list index is identity checked before/after reading so a journal
+-- reorder cannot attribute another quest's objectives to the selected quest.
+local JOURNAL_MAX_QUESTS, JOURNAL_MAX_ROWS, JOURNAL_TEXT_BYTES = 4, 16, 2048
+local JOURNAL_CACHE_MAX, JOURNAL_TTL = 16, 3000
+function P:ClearJournalCache()
+    self.journalCache = {}
+end
+function P:GetJournalObjectives(questId)
+    local id=tonumber(questId)
+    local diag=self.journalDiagnostics or {reads=0,hits=0,failures=0}
+    self.journalDiagnostics=diag;self.journalCache=self.journalCache or {}
+    local function Reject(reason)
+        diag.failures=diag.failures+1;diag.lastReason=reason
+        return {available=false,rows={},reason=reason,questId=id}
+    end
+    if not id or id~=id or id<1 or id~=math.floor(id) then return Reject("quest_id_invalid") end
+    local index=self.activeIndex[id]
+    if type(index)~="number" then return Reject("quest_not_active") end
+    if not Capability("X2Quest:GetQuestJournalObjectiveCount") or not Capability("X2Quest:GetQuestJournalObjectiveText")
+        or not Capability("X2Quest:GetActiveQuestType") then return Reject("journal_capability_unavailable") end
+    local host=rawget(_G,"X2Quest")
+    if not host then return Reject("quest_host_unavailable") end
+    local function SameIdentity()
+        local ok,value=S.Api:CallCapability("X2Quest:GetActiveQuestType",host,"GetActiveQuestType",index)
+        return ok==true and tonumber(value)==id
+    end
+    if not SameIdentity() then return Reject("quest_index_changed") end
+    local cached=self.journalCache[id];local now=NowMs()
+    if cached and cached.index==index and now>=cached.at and now-cached.at<JOURNAL_TTL then
+        diag.hits=diag.hits+1;return S.Utils.DeepCopy(cached.value)
+    end
+    local ok,count=S.Api:CallCapability("X2Quest:GetQuestJournalObjectiveCount",host,"GetQuestJournalObjectiveCount",index)
+    diag.reads=diag.reads+1;diag.countType=type(count)
+    if not ok then return Reject("objective_count_unavailable") end
+    if type(count)~="number" or count~=count or count<0 or count~=math.floor(count) then return Reject("objective_count_shape") end
+    if count>JOURNAL_MAX_ROWS then return Reject("objective_count_limit") end
+    local rows={}
+    for objective=1,count do
+        local read,text=S.Api:CallCapability("X2Quest:GetQuestJournalObjectiveText",host,"GetQuestJournalObjectiveText",index,objective)
+        diag.reads=diag.reads+1;diag.textType=type(text)
+        if not read then return Reject("objective_text_unavailable") end
+        if type(text)~="string" or text=="" then return Reject("objective_text_shape") end
+        if #text>JOURNAL_TEXT_BYTES then return Reject("objective_text_limit") end
+        rows[#rows+1]={text=text,objectiveIndex=objective,questId=id}
+    end
+    if not SameIdentity() then return Reject("quest_index_changed") end
+    local result={available=true,rows=rows,questId=id,count=count,source="native_journal",observedAt=now}
+    -- At most 16 snapshots; deterministic eviction, no periodic cache sweeper.
+    local size,oldest,oldAt=0,nil,math.huge
+    for key,item in pairs(self.journalCache)do
+        size=size+1;if item.at<oldAt or (item.at==oldAt and (not oldest or key<oldest))then oldest,oldAt=key,item.at end
+    end
+    if not self.journalCache[id] and size>=JOURNAL_CACHE_MAX then self.journalCache[oldest]=nil end
+    self.journalCache[id]={at=now,index=index,value=result};diag.lastReason=nil
+    return S.Utils.DeepCopy(result)
+end
+function P:AppendJournalDetail(children)
+    local result={included=0,questReads=0,omitted=0,unavailable=0}
+    local rows,seen={},{}
+    for _,row in ipairs(children)do
+        rows[#rows+1]=row
+        local id=row.questId
+        if id and self.activeIndex[id] and not seen[id] then
+            seen[id]=true
+            if result.questReads>=JOURNAL_MAX_QUESTS then result.omitted=result.omitted+1
+            else
+                result.questReads=result.questReads+1
+                local journal=self:GetJournalObjectives(id)
+                if journal.available then
+                    for _,objective in ipairs(journal.rows)do
+                        rows[#rows+1]={key="journal:"..tostring(id)..":"..objective.objectiveIndex,
+                            category="目标",name=objective.text,status="",tone="default",questId=id,
+                            counted=false,related=true,journal=true}
+                        result.included=result.included+1
+                    end
+                else result.unavailable=result.unavailable+1;result.lastReason=journal.reason end
+            end
+        end
+    end
+    return rows,result
+end
+
+function P:GetGroupDetail(scope, key, options)
     scope, key = tostring(scope or "event"), tostring(key or "")
     if key == "" then return nil end
     local group = FindGroup(scope, key)
@@ -641,7 +765,16 @@ function P:GetGroupDetail(scope, key)
     if readyCount > 0 then summary = summary .. " · " .. tostring(readyCount) .. " 项可交付" end
     if activeCount > 0 then summary = summary .. " · " .. tostring(activeCount) .. " 项进行中" end
     if relatedCount > 0 then summary = summary .. " · " .. tostring(relatedCount) .. " 项关联任务" end
+    -- 普通投影不读取目标文本；只在用户打开详情时追加，不改变主进度分母。
+    local journal
+    if type(options)=="table" and options.journal==true then
+        children,journal=self:AppendJournalDetail(children)
+        if journal.included>0 then summary=summary.." · "..journal.included.." 条任务目标" end
+        if journal.unavailable>0 then summary=summary.." · 目标暂不可用 "..journal.unavailable end
+        if journal.omitted>0 then summary=summary.." · 目标预算未读 "..journal.omitted end
+    end
     return {
+        journal = journal,
         scope = scope, key = key, title = tostring(group.title or key), kind = tostring(group.kind or "activity"),
         completed = completed, total = total, activeCount = activeCount, readyCount = readyCount, relatedCount = relatedCount,
         summaryText = summary, children = children,
@@ -677,5 +810,15 @@ function P:GetHealth(scope)
         instanceConsumerHeld = self.instanceConsumerHeld == true,
         updatedAtMs = self.updatedAtMs,
         scope = scope,
+        journal = self:GetJournalHealth(),
     }
+end
+
+-- No Native reads in diagnostic snapshots; messages retain shapes/reasons, not all text.
+function P:GetJournalHealth()
+    local count=0;for _ in pairs(self.journalCache or {})do count=count+1 end
+    local d=self.journalDiagnostics or {}
+    return {patch="quest-journal-20260909",cached=count,cacheMax=16,reads=d.reads or 0,hits=d.hits or 0,
+        failures=d.failures or 0,lastReason=d.lastReason,countType=d.countType,textType=d.textType,
+        perDetailQuestLimit=4,perQuestObjectiveLimit=16}
 end

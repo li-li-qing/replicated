@@ -335,7 +335,11 @@ function Shell:Create()
     })
     local topRow = RSUI:HorizontalBox({ id = "v3_shell_top_row", parent = self.topBar, gap = 8 })
     local brand = RSUI:VerticalBox({ id = "v3_shell_brand", parent = topRow, gap = 1, slot = { size = "fill", fill = 1 } })
-    RSUI:Text({ id = "v3_shell_title", parent = brand, text = "上古世纪综合辅助", fontSize = 15, tone = "accent", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
+    -- 维护（2026-09-12）：按发行界面要求，仅将主菜单标题替换为作者与 QQ 群信息。
+    -- Authority / 数据流：仍由 v3:shell 经 RSUI:Text 创建展示文本，不直接写 Native 或业务 Store。
+    -- 兼容边界：保留逻辑 ID、响应式宽度及样式；不改 ESC 注册名、聊天前缀或用户配置，无迁移。
+    -- 后续维护：联系信息仅在此展示；窄窗沿用省略规则，不扩大拖动命中区或挤占右侧按钮。
+    RSUI:Text({ id = "v3_shell_title", parent = brand, text = "作者:Replicated   QQ群:1104129461", fontSize = 15, tone = "accent", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
     RSUI:Text({ id = "v3_shell_subtitle", parent = brand, text = "模块化重构 · 新版界面", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 14 } })
     RSUI:Button({ id = "v3_shell_diag_button", parent = topRow, text = "诊断", compact = true,
         onClick = function() return self:Navigate("system.diagnostics", { source = "topbar" }) end,

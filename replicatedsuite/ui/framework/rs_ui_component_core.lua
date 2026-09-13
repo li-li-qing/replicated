@@ -529,7 +529,12 @@ local function SafeInvoke(label, fn, ...)
         end
         return false, err
     end
-    return true, result and result[1] or nil
+    -- 维护（gear-plan-editor-1）：and/or把显式false折叠成nil，Button将nil视为
+    -- 无返回值成功，造成同名/保存拒绝仍被报告已接受。Callback只负责异常边界，
+    -- 业务布尔值属于调用者Authority；保持true/nil/false原样，不改变多返回值契约。
+    -- 影响所有RSUI回调，必须回归按钮/表单拒绝，不能靠页面特殊补丁掩盖此边界错误。
+    if result == nil then return true, nil end
+    return true, result[1]
 end
 
 local function TouchType(kind)

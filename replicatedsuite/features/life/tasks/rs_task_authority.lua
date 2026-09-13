@@ -38,6 +38,14 @@ local function CurrentServerDateKey()
         local value = IsoDateKey(S.Utils.ServerDateKey())
         if value ~= nil then return value end
     end
+    -- 中文维护注释：优先使用统一的 S.Utils.GetServerTime() 回退，保持全插件时钟采样口径一致。
+    if S.Utils ~= nil and type(S.Utils.GetServerTime) == "function" then
+        local t = S.Utils.GetServerTime()
+        if type(t) == "table" then
+            local y, m, d = tonumber(t.year), tonumber(t.month), tonumber(t.day)
+            if y ~= nil and m ~= nil and d ~= nil then return y * 10000 + m * 100 + d end
+        end
+    end
     if UIParent ~= nil and type(UIParent.GetServerTimeTable) == "function" then
         local ok, value = pcall(UIParent.GetServerTimeTable, UIParent)
         if ok and type(value) == "table" then

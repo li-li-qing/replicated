@@ -552,7 +552,9 @@ function A:RunMatrix()
         or type(S.UIV3.BuffHeadMarkersV3.SetCalibrationSuppressed) ~= "function"
         or (tonumber(buffDisplay.LayoutAuthorityContractVersion) or 0) < 3
         or (tonumber(buffDisplay.HudCalibrationContractVersion) or 0) < 1
-        or tonumber(buffDisplay.SchemaVersion) ~= 5
+        -- 中文维护注释：UI 与 schema6 管理/导入版本配套；只检查声明，不在验收里创建页面或写入追踪。
+        or tonumber(buffDisplay.SchemaVersion) ~= 6
+        or (tonumber(buffDisplay.ManagementProjectionContractVersion) or 0) < 1 or buffDisplay.TransferFormatVersion ~= 2
         or type(S.Services and S.Services.StatusClassificationV3) ~= "table" then
         failures[#failures + 1] = "buff_display_observation_head_marker_contract"
     end

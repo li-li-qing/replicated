@@ -1,9 +1,9 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Buff Display Acceptance (schema 5)
+-- Replicated Suite V3 - Buff Display Acceptance (schema 6)
 -- Non-destructive contract checks. No feature is enabled by this case.
 --
--- Schema 5 contracts covered here:
---   * store schemaVersion == 5, with schema4 single-HUD integrity recovery + 4->5 migration
+-- Schema 6 contracts covered here:
+--   * store schemaVersion == 6, with exact schema4/5 historical integrity rebuild
 --   * shared StatusClassificationV3 service resolves category + detection
 --     source (hidden is a detection source, never a user category)
 --   * Feature commands: SetTrackedId(id, category, enabled) with explicit
@@ -29,7 +29,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     end
     if S.FeatureRuntime == nil or S.FeatureRuntime:IsImplemented(F.Id) ~= true then return false, "implementation_missing" end
     local store = S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.buff_display") or nil
-    if store == nil or tostring(store.owner or "") ~= "v3.buff_display" or tonumber(store.schemaVersion) ~= 5 then return false, "store_contract" end
+    if store == nil or tostring(store.owner or "") ~= "v3.buff_display" or tonumber(store.schemaVersion) ~= 6 then return false, "store_contract" end
     if type(store.rebuildCanonicalForIntegrity) ~= "function" or type(store.recoverKnownLegacyCanonical) ~= "function"
         or type(store.migrate) ~= "function" then return false, "schema5_migration_hooks_missing" end
     -- 中文维护注释（非破坏性 schema4→5 验收）：构造一个“不含 targetLayout”的旧单 HUD
@@ -52,13 +52,13 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     if type(historicalProbe) ~= "table" or type(historicalProbe.settings) ~= "table"
         or historicalProbe.settings.targetLayout ~= nil or tonumber(historicalProbe.settings.plate and historicalProbe.settings.plate.y) ~= 0
         or type(recoveredProbe) ~= "table" then return false, "schema4_historical_canonical_rebuild" end
-    local migratedProbe = store.migrate(recoveredProbe, 4, 5)
+    local migratedProbe = store.migrate(recoveredProbe, 4, 6)
     if type(migratedProbe) ~= "table" or type(migratedProbe.settings) ~= "table"
         or type(migratedProbe.settings.targetLayout) ~= "table"
         or type(migratedProbe.settings.targetLayout.components) ~= "table" then return false, "schema4_to_5_dual_hud_migration" end
     -- Shared classification service (schema 4+ Authority; schema5 only adds dual-HUD persistence).
     local classification = S.Services and S.Services.StatusClassificationV3 or nil
-    if type(classification) ~= "table" or (tonumber(classification.version) or 0) < 1
+    if type(classification) ~= "table" or (tonumber(classification.version) or 0) < 2
         or type(classification.ClassifyEntry) ~= "function" or type(classification.ClassifyId) ~= "function"
         or type(classification.SetOverride) ~= "function" or type(classification.GetOverrides) ~= "function"
         or type(classification.ApplyOverrides) ~= "function" or type(classification.GetRegistrySnapshot) ~= "function"
@@ -72,7 +72,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or type(F.GetProjection) ~= "function" or type(F.GetSettingsProjection) ~= "function"
         or type(F.RefreshScope) ~= "function" or type(F.Refresh) ~= "function"
         or type(F.AcquireConsumer) ~= "function" or type(F.ReleaseConsumer) ~= "function"
-        or tonumber(F.SchemaVersion) ~= 5 or (tonumber(F.ProjectPlatesContractVersion) or 0) < 4
+        or tonumber(F.SchemaVersion) ~= 6 or (tonumber(F.ProjectPlatesContractVersion) or 0) < 4
         or (tonumber(F.LayoutAuthorityContractVersion) or 0) < 3
         or (tonumber(F.HudCalibrationContractVersion) or 0) < 1
         or (tonumber(F.Schema5DualHudMigrationContractVersion) or 0) < 1
@@ -100,6 +100,14 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or type(F.Commands.ExportAll) ~= "function" or type(F.Commands.SerializeExport) ~= "function"
         or type(F.Commands.ParseImportText) ~= "function" or type(F.Commands.ImportAll) ~= "function"
         or (tonumber(F.BuffHeadMarkerContractVersion) or 0) < 9 then return false, "feature_contract" end
+    -- 中文维护注释：schema6 必须同包加载目录/管理/文本版本，否则半覆盖会把 Auto 吞掉。
+    -- 这里只检查纯读能力，不导入目录、不冻结、不触碰 Native/Store；冷却运行时未完成不冒充验收通过。
+    local catalog=S.Data and S.Data.StatusTrackingCatalogV3
+    if (tonumber(F.Schema6TrackingMigrationContractVersion) or 0)<1
+        or (tonumber(F.ManagementProjectionContractVersion) or 0)<1 or F.TransferFormatVersion~=2
+        or type(F.GetManagementProjection)~="function" or type(F.CaptureManagementFreeze)~="function"
+        or type(F.Commands.ImportBuiltinPack)~="function" or type(F.Commands.PreviewImport)~="function"
+        or type(catalog)~="table" or catalog.version~=1 then return false,"schema6_tracking_modules_missing" end
     -- Head renderer gate contract: tracked-independent start (HasRenderableComponents
     -- gate) + GetDiagnostics triage surface + anchorFailure trail on hidden scopes.
     local headMarkers = S.UIV3 and S.UIV3.BuffHeadMarkersV3 or nil
@@ -207,7 +215,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     local missingComponents = 0
     for _, key in ipairs(componentKeys) do if type(components[key]) ~= "table" then missingComponents = missingComponents + 1 end end
     if missingComponents ~= 0 or type(tracked.buff) ~= "table" or type(tracked.debuff) ~= "table"
-        or settingsProjection.freezeEnabled ~= false or settingsProjection.showHidden ~= false then return false, "schema5_settings_projection" end
+        or type(tracked.auto) ~= "table" or settingsProjection.freezeEnabled ~= false or settingsProjection.showHidden ~= false then return false, "schema5_settings_projection" end
     -- Head plates projection: bounded tracked rows + enabled component data.
     local plates = F.ProjectPlates({
         buffRows = { { id = 101, name = "A" } }, distance = 1234.5, class = "法师", gearScore = 12345,

@@ -21,6 +21,8 @@ core/rs_demand.lua
 core/rs_api.lua
 core/rs_api_capabilities.lua
 core/rs_diagnostics.lua
+core/rs_report_copy_transport.lua
+core/rs_self_check_report.lua
 core/rs_persistence.lua
 core/rs_app_state_v3.lua
 core/rs_ui_host_manager.lua
@@ -92,6 +94,7 @@ data/rs_combat_mechanic_catalog.lua
 data/ids/rs_skill_ids.lua
 data/ids/rs_buff_ids.lua
 data/ids/rs_plates_ids.lua
+data/rs_status_tracking_catalog.lua
 services/rs_skill_metadata_v3.lua
 services/rs_buff_metadata_v3.lua
 services/rs_status_classification_v3.lua
@@ -139,6 +142,8 @@ features/combat/healer/rs_healer_feature.lua
 features/combat/buff_display/rs_buff_display_store.lua
 features/combat/buff_display/rs_buff_display_projection.lua
 features/combat/buff_display/rs_buff_display_feature.lua
+features/combat/buff_display/rs_buff_display_management.lua
+features/combat/buff_display/rs_buff_display_transfer_v2.lua
 features/combat/buff_display/rs_buff_display_acceptance.lua
 features/combat/gear/rs_gear_store.lua
 features/combat/gear/rs_gear_authority.lua
@@ -154,6 +159,8 @@ features/life/tasks/rs_task_store.lua
 features/life/tasks/rs_task_authority.lua
 features/life/tasks/rs_task_feature.lua
 features/life/rs_life_m16_bundle.lua
+features/life/rs_daily_ledger.lua
+features/life/rs_daily_income_source.lua
 features/rs_business_bridge.lua
 features/combat/team_tools/rs_team_tools_visuals.lua
 features/life/craft/rs_craft_planner_extension_v3.lua
@@ -193,6 +200,7 @@ presentation/v3/modals/rs_v3_quest_detail_modal.lua
 presentation/v3/modals/rs_v3_gear_quick_settings_modal.lua
 presentation/v3/shell/rs_v3_toast_host.lua
 presentation/v3/shell/rs_v3_page_host.lua
+presentation/v3/pages/rs_v3_home_overview.lua
 presentation/v3/pages/rs_v3_foundation_pages.lua
 presentation/v3/pages/rs_v3_gear_page.lua
 presentation/v3/pages/rs_v3_housing_page.lua
@@ -218,6 +226,7 @@ features/life/activities/rs_activity_acceptance.lua
 features/life/housing/rs_housing_acceptance.lua
 features/life/butler/rs_butler_acceptance.lua
 features/life/tasks/rs_task_acceptance.lua
+features/life/bonds/rs_bonds_acceptance.lua
 features/tools/instances/rs_instance_acceptance.lua
 features/tools/random_shop/rs_random_shop_acceptance.lua
 features/combat/gear/rs_gear_acceptance.lua

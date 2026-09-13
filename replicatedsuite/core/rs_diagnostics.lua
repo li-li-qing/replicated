@@ -322,6 +322,8 @@ function D.BuffHeadRendererLine(snap)
     local source = type(dia.source) == "table" and dia.source or {}
     local anchor = type(dia.anchor) == "table" and dia.anchor or {}
     local projectError = type(dia.projectError) == "table" and dia.projectError or {}
+    -- 维护（pvp-hud-1）：只读有界计数，区分移动提交、内容重建、纹理拒写；不因打印报告重新采样。
+    local pvp = type(dia.pvp)=="table" and dia.pvp or {}
     return "HUD渲染：v" .. tostring(dia.version or 0)
         .. "/fontCv" .. tostring(dia.buffIconFontSizeContractVersion or 0)
         .. "/castYCv" .. tostring(dia.castYOffsetContractVersion or 0)
@@ -331,6 +333,9 @@ function D.BuffHeadRendererLine(snap)
         .. (dia.calibrationSuppressionReason and ("(" .. tostring(dia.calibrationSuppressionReason) .. ")") or "")
         .. " · pools=" .. tostring(dia.poolsAllocated or 0)
         .. " · ticks=" .. tostring(dia.ticks or 0)
+        .. " · pvp=" .. tostring(pvp.patch or "none") .. "/frame" .. tostring(pvp.frames or 0)
+        .. "/root" .. tostring(pvp.rootWrites or 0) .. "/content" .. tostring(pvp.contentBuilds or 0)
+        .. "/textureFail" .. tostring(pvp.textureFailures or 0) .. "/anchorFail" .. tostring(pvp.anchorFailures or 0)
         .. " · projections=" .. tostring(dia.projections or 0)
         .. " · player=" .. tostring(source.player or "-") .. "@" .. tostring(anchor.player or "-") .. "/fail" .. Failure("player")
         .. " · target=" .. tostring(source.target or "-") .. "@" .. tostring(anchor.target or "-") .. "/fail" .. Failure("target")
@@ -589,6 +594,14 @@ function D:BuildFeatureStatusRows()
                     or (heldDesync == true and "租约被外部清空，1 秒内自动重取；不恢复复制此行"
                     or (lifecycleSeen == nil and "重开连线开关；若生命周期仍=未收到 复制此行给维护者（事件未达渲染层）"
                     or "重开连线开关；仍为 0 复制此行给维护者")))
+        elseif drawn > 0 and renderedZero and sampling.viewportKnown==true
+            and (tonumber(sampling.outsideEdges) or 0)+(tonumber(sampling.shortEdges) or 0)==drawn
+            and (dia==nil or dia.lastStatus~="partial") then
+            -- 维护：Service有端点但整段不与同源视口相交是离屏，不等同Native渲染故障。
+            -- 仅所有行有裁剪证据且无投影partial时归idle；真正API/anchor失败继续暴露。
+            rows[#rows+1]=FeatureRow("unit_lines","单位连线","idle",
+                "工作中 · 当前连线均在视口外 · rows="..tostring(drawn).." · 屏内点=0",
+                "转动视角后按原刷新频率重新采样；没有钳制目标到屏幕角落")
         elseif drawn > 0 and renderedZero then
             local sampling0 = sampling or {}
             local firstRow = tostring(sampling0.firstRow or "?")
@@ -606,9 +619,15 @@ function D:BuildFeatureStatusRows()
                 .. (reasonText ~= nil and (" · 原因:" .. reasonText) or ""),
                 "渲染层没有产出任何点；若行=?? 为坐标缺失，否则为宿主/坐标空间问题——复制此行给维护者")
         elseif drawn > 0 then
-            rows[#rows + 1] = FeatureRow("unit_lines", "单位连线", "ok",
+            -- 维护：partial或点写入失败不能继续给绿色ok。是局部可视降级，不更改框架
+            -- 检查总数/全局READY，也不把共享投影服务的历史累计失败等同当前帧失败。
+            local unitVerdict=(dia and dia.lastStatus=="partial") or (tonumber(sampling and sampling.placementFailures) or 0)>0
+            rows[#rows + 1] = FeatureRow("unit_lines", "单位连线", unitVerdict and "degraded" or "ok",
                 "工作中 · rows=" .. tostring(drawn) .. "/" .. tostring(dia.attemptedPairs or 0)
                 .. " · 点=" .. tostring(visibleDots) .. "(唯一" .. tostring(uniquePositions) .. ")"
+                .. " · 裁剪="..tostring(sampling and sampling.clippedEdges or 0).."/离屏="..tostring(sampling and sampling.outsideEdges or 0)
+                .. " · 写入失败="..tostring(sampling and sampling.placementFailures or 0)
+                .. " · raw视口="..tostring(sampling and sampling.viewportWidth or "?").."x"..tostring(sampling and sampling.viewportHeight or "?")
                 .. " · 行=" .. tostring(sampling and sampling.firstRow or "?")
                 .. " · Host=" .. tostring(math.floor(tonumber(sampling and sampling.hostOriginX) or 0)) .. "," .. tostring(math.floor(tonumber(sampling and sampling.hostOriginY) or 0))
                 .. " · 视口=" .. tostring(math.floor(tonumber(sampling and sampling.logicalWidth) or 0)) .. "x" .. tostring(math.floor(tonumber(sampling and sampling.logicalHeight) or 0))
@@ -622,6 +641,10 @@ function D:BuildFeatureStatusRows()
                 lastFailure == "ALL_PAIRS_DISABLED" and "在连线设置里至少开启一种连线"
                     or "选中一个目标后刷新诊断；仍有此行请复制给维护者")
         end
+        -- 维护：空集/down分支尤其需要端点证据；不能只给有行的分支附带诊断。
+        -- 引用的是本次有界小表，打印时才序列化；正常刷新不构造长字符串。
+        rows[#rows].endpoints=dia and dia.endpoints or nil
+        rows[#rows].projectionPatch="unit-lines-raw-viewport-1"
     end
 
     -- 范围辅助: needs circle points projected; renderer hides below 3.
@@ -710,6 +733,9 @@ function D:BuildFeatureStatusRows()
     do
         local feature = features.combat_boss_alerts
         local dia = feature and feature._bossDiag or nil
+        -- 中文维护（boss-hud-clock-1）：冻结需要实际时钟/任务/原生写入证据，不把观察 ticks 当倒计时正常。
+        local alerts = S.Services and S.Services.Alerts
+        local hudHealth = alerts and type(alerts.Describe) == "function" and alerts:Describe() or nil
         local enabled = RuntimeEnabled("combat_boss_alerts")
         local hud = feature and feature.State and feature.State.hudEnabled
         if not enabled then
@@ -723,7 +749,14 @@ function D:BuildFeatureStatusRows()
                 "工作中 · ticks=" .. tostring(dia.observeTicks or 0)
                 .. " · 最近事实=" .. tostring(dia.lastFactSource or "none")
                 .. " · 命中规则=" .. tostring(dia.matchedRule or "-"),
-                "对读条怪应看到 casting=技能名；Boss 真名靠 seenCast 自动取证")
+                "测试应为6到1；开启未收录读条仅观察目标/关注目标，不预测CD")
+        end
+        -- 中文维护：完整分页报告附带实际调度/Presenter 状态与最多八个读条名字；不启动新自检或读原生API。
+        rows[#rows].hud = hudHealth
+        rows[#rows].observedCastNames = dia and dia.castNames or nil
+        if hudHealth and hudHealth.owner == "combat_boss_alerts" and hudHealth.task and not hudHealth.task.registered then
+            rows[#rows].verdict = "degraded"
+            rows[#rows].text = rows[#rows].text .. " · 倒计时任务缺失"
         end
     end
 
@@ -747,6 +780,22 @@ function D:BuildFeatureStatusRows()
                 (tonumber(dia and dia.gearScoreErrors or 0)) > 0
                     and ("装分读取最近错误：" .. tostring(dia.gearScoreLastError or "unknown") .. " raw=" .. tostring(dia.gearScoreLastRaw or "nil"))
                     or ((tonumber(dia and dia.readErrors or 0)) > 0 and ("装备读取报错：" .. tostring(dia.lastError)) or nil))
+        end
+        -- 维护（2026-09-12）：追踪导入/图标/留存的问题不能再只打印HUD lane数量。
+        -- 只复制Feature已有的小型健康快照，不读Native、不输出追踪ID全集或2048条历史。
+        -- 维护：完整分页错误报告也携带PVP路径证据，避免只有短摘要可见；不输出装备明细/追踪全集。
+        rows[#rows].pvp = health.pvp
+        local markers=S.UIV3 and S.UIV3.BuffHeadMarkersV3
+        if markers and type(markers.GetDiagnostics)=="function" then
+            local render=markers:GetDiagnostics();rows[#rows].hud=render.pvp
+        end
+        local management=type(health.management)=="table" and health.management or nil
+        if management then
+            local tracked=management.tracked or {}
+            rows[#rows].tracking={patch="status-retain-library-1",buff=tracked.buff or 0,
+                debuff=tracked.debuff or 0,auto=tracked.auto or 0,lastImport=management.lastImport,
+                -- 维护：追加库集成补丁标识，不替换已有留存版本；只读已有诊断，不额外请求图标。
+                capture=management.freeze,metadata=management.metadata,libraryPatch=management.libraryPatch}
         end
     end
 
@@ -813,6 +862,12 @@ function D:BuildFeatureStatusRows()
                 .. " · 选择=" .. tostring(describe.selectedRoute)
                 .. " · 在飞=" .. tostring(describe.activeRoute)
                 .. " · 排队=" .. tostring(describe.pendingRoute)
+                .. " · Native冷却=" .. tostring(math.floor(tonumber(describe.cooldownRemainingMs) or 0)) .. "ms"
+                .. " · 响应SLA=" .. tostring(math.floor(tonumber(describe.responseSlaMs) or 0)) .. "ms"
+                .. " · 请求/回调=" .. tostring(describe.nativeRequests or 0) .. "/" .. tostring(describe.callbackCount or 0)
+                .. " · 超时=" .. tostring(describe.responseTimeouts or 0)
+                .. " · 延迟=" .. tostring(describe.deferredRequests or 0)
+                .. " · 迟到接收=" .. tostring(describe.lateCallbacksAccepted or 0)
                 .. " · 丢弃回调=" .. tostring(describe.droppedCallbacks or 0)
                 .. identityText,
                 describe.status == "idle" and "选择起点与目的地后查询" or nil)
@@ -847,6 +902,37 @@ function D:BuildFeatureStatusRows()
                 .. " · " .. lastText
                 .. (rawShape ~= nil and (" · 形态=" .. tostring(string.sub(tostring(rawShape), 1, 120))) or ""),
                 failed and "最近一次询价失败；打开跑商页「诊断」查看逐条原始返回，或点击材料询价重试" or nil)
+            -- 维护：只摘录共享队列预算和Trade批次，不在诊断里触发报价或探针。
+            rows[#rows].budget = { patch=health.patch, intervalMs=health.intervalMs, stats=health.stats,
+                batch=features.Trade and features.Trade.GetQuoteBatch and features.Trade:GetQuoteBatch() or nil }
+        end
+    end
+    do
+        local ledger=features.DailyLedger
+        if ledger and type(ledger.GetHealth)=="function" then
+            local h=ledger:GetHealth()
+            local income=features.DailyIncomeSource and type(features.DailyIncomeSource.GetHealth)=="function" and features.DailyIncomeSource:GetHealth() or nil
+            local incomeText=income and (" · 收益监听="..(income.started and "开" or "关").."/样本"..tostring(income.totalSamples or 0)) or ""
+            local stateText=not h.enabled and "关闭" or h.paused and "暂停" or "运行"
+            rows[#rows+1]=FeatureRow("daily_stats","今日收支",(not h.enabled or h.paused) and "off" or h.lastError and "degraded" or "ok",
+                "服务器日="..tostring(h.day).." · 状态="..stateText.." · 已核验来源="..tostring(h.verifiedSources).."/4"..incomeText,
+                h.verifiedSources==0 and "结构化收益来源仍待RU实机命中；未知数值没有显示为0" or h.lastError)
+            rows[#rows].ledger=h
+            rows[#rows].incomeSource=income
+        end
+    end
+
+    -- 维护（overview-workbench-2）：任务详情Native返回形态进入现有分页报告，
+    -- 这里只读缓存计数，不能因诊断再读取目标或启动未启用的任务功能。
+    do
+        local service=S.Services and S.Services.QuestProgressV3
+        if service and type(service.GetHealth)=="function" then
+            local h=service:GetHealth("all")
+            rows[#rows+1]=FeatureRow("task_progress","任务进度",h.running and "ok" or "off",
+                "分组 "..tostring(h.available).."/"..tostring(h.projections).." · 消费者 "..tostring(h.consumers),
+                h.journal and h.journal.lastReason and ("上次目标读取："..tostring(h.journal.lastReason)) or nil)
+            rows[#rows].journal=h.journal
+            rows[#rows].overviewPatch=S.UIV3 and S.UIV3.HomeOverview and S.UIV3.HomeOverview.patch
         end
     end
 
@@ -1076,6 +1162,13 @@ function D:BuildSummary()
             .. " · Aura " .. tostring(snap.buffDisplay and snap.buffDisplay.auraHeld == true and "held" or "idle")
             .. " · Task " .. tostring(snap.buffDisplay and snap.buffDisplay.taskActive == true and "active" or "idle")
             .. " · Revision " .. tostring(snap.buffDisplay and snap.buffDisplay.revision or 0),
+        -- 中文维护注释：只读取 Feature 的有界管理摘要，供部分覆盖/分类/冻结核验；不轮询 Native。
+        "状态追踪：schema " .. tostring(snap.buffDisplay and snap.buffDisplay.schemaVersion or "-")
+            .. " · Catalog " .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.catalog and snap.buffDisplay.management.catalog.effectCount or 0)
+            .. " · Auto " .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.tracked and snap.buffDisplay.management.tracked.auto or 0)
+            .. " · Freeze " .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.freeze and snap.buffDisplay.management.freeze.active == true)
+            .. "/" .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.freeze and snap.buffDisplay.management.freeze.count or 0)
+            .. " · CD运行时 " .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.cooldownRuntime or "missing"),
         D.BuffHudCalibrationLine(snap),
         D.BuffHeadRendererLine(snap),
         D.BuffGearLine(snap),
@@ -1362,6 +1455,238 @@ function D:BuildAllLogs()
 
     if #logs == 0 then sections[#sections + 1] = "（本次加载尚无日志记录）" end
     return table.concat(sections, "  ║  ")
+end
+
+-- 中文维护注释：保留逐 Store 详细构建接口供维护工具使用；RS-DIAG-3 默认聊天不再调用它。
+-- 长摘要截断后无法辨认第三个故障；此详细报告只读 Core 缓存，
+-- 不读磁盘、不迁移、不快照 Domain，不打印玩家追踪/死亡记录。最多 32 个 Store，超出显式提示。
+-- Authority：Diagnostics 只格式化证据，恢复/写保护仍归 Persistence；每行 <=320 字节，给聊天前缀留余量。
+-- 标识只用于验证热补丁载入，不改全局 buildTag 或伪造自检通过。
+-- 维护（failed-save-evidence-1）：只有 Core 能判定未提交写入是否仍失败；诊断只格式化。
+-- 兼容旧 Core 的降级仅保留其原 writeFenced 能力，不凭 lastError 猜恢复权限或读健康档。
+local function PersistenceFailureKind(store)
+    local persistence = S.Persistence
+    if type(persistence) == "table" and type(persistence.GetStoreFailureKind) == "function" then
+        return persistence:GetStoreFailureKind(store)
+    end
+    if type(store) == "table" and store.writeFenced == true then return "write_fenced" end
+    return nil
+end
+
+function D:BuildPersistenceFailureReport()
+    local persistence = S.Persistence
+    local failures = {}
+    for _, store in pairs(type(persistence) == "table" and persistence.stores or {}) do
+        if PersistenceFailureKind(store) ~= nil then failures[#failures + 1] = store end
+    end
+    table.sort(failures, function(a,b) return tostring(a.id) < tostring(b.id) end)
+    local lines = {"RS-PERSIST-EVIDENCE-2 failed=" .. tostring(#failures) .. " (read-only)"}
+    local function Safe(value, limit)
+        local text = tostring(value or "-"):gsub("[%c]", " ")
+        if #text > limit then
+            -- 中文维护注释：Lua 5.1 按字节截断会切开中文错误文本，造成报告尾部乱码。
+            -- 只在诊断长度上限处回退 UTF-8 延续字节，不触碰 Store 值或依赖新 Lua utf8 库。
+            local cut, boundary = limit - 3, limit - 2
+            local byte = text:byte(boundary)
+            while boundary > 1 and byte ~= nil and byte >= 128 and byte < 192 do
+                boundary = boundary - 1; byte = text:byte(boundary)
+            end
+            if boundary <= cut then cut = boundary - 1 end
+            text = text:sub(1,cut) .. "..."
+        end
+        return text
+    end
+    for index = 1, math.min(#failures,32) do
+        local store = failures[index]
+        local evidence = type(store.lastIntegrityMismatchEvidence) == "table" and store.lastIntegrityMismatchEvidence or {}
+        local id = Safe(store.id,64)
+        -- 维护：fence=0 的回读失败也必须呈现，不能把“加载正常”冒充“保存成功”。
+        lines[#lines+1] = id .. " kind=" .. Safe(PersistenceFailureKind(store),24)
+            .. " verify=" .. tostring(store.lastVerifyOk) .. " barrierPending=" .. tostring(store.needsBarrierVerify == true)
+        if store.lastVerifyError ~= nil then lines[#lines+1] = id .. " verifyError=" .. Safe(store.lastVerifyError,240) end
+        lines[#lines+1] = id .. " load=" .. Safe(store.loadStatus,32) .. " fence=" .. (store.writeFenced == true and "1" or "0") .. " schema="
+            .. Safe(evidence.storedSchema,12) .. ">" .. Safe(store.schemaVersion,12)
+            .. " old=" .. Safe(evidence.stampedFingerprint,16) .. " new=" .. Safe(evidence.actualFingerprint,16)
+        lines[#lines+1] = id .. " fw=" .. Safe(evidence.framework,12) .. " tv=" .. Safe(evidence.transportVersion,12)
+            .. " codec=" .. Safe(evidence.codec,12) .. " rawfp=" .. Safe(evidence.rawFingerprint,16)
+            .. " hook=" .. Safe(store.lastHistoricalRecoveryHookState,24)
+        -- 维护：展示当前实际 SaveKey，避免把源码 ZIP 或猜测的 .udf 文件误当成存档。
+        lines[#lines+1] = id .. " key=" .. Safe(store.resolvedKey,240)
+        lines[#lines+1] = id .. " trace=" .. Safe(store.lastIntegrityRecoveryTrace,240)
+        lines[#lines+1] = id .. " probe=" .. Safe(store.lastHistoricalRecoveryProbe,240)
+        if evidence.stampedFingerprint == nil then
+            lines[#lines+1] = id .. " reason=" .. Safe(store.lastError or store.writeFenceReason,240)
+        end
+    end
+    if #failures > 32 then lines[#lines+1] = "RS-PERSIST-EVIDENCE-2 omitted=" .. tostring(#failures-32) end
+    return lines
+end
+
+-- 中文维护注释：用户持续点击普通摘要，而单条超长 Native 聊天会截掉真实故障。
+-- 此函数仅保留为开发期显式分段工具，默认两个诊断按钮禁止调用；UTF-8 边界保留。
+-- Authority：Diagnostics 负责展示，不修改 Persistence 状态。单条正文 <=320 字节，失败即返回。
+function D:PrintBoundedText(text, label)
+    text = tostring(text or "")
+    if #text > 1048576 then return false, "诊断文本超过上限" end
+    label = tostring(label or "RS"):gsub("[^%w_%-]", "_"):sub(1,16)
+    local chunks, start = {}, 1
+    while start <= #text do
+        local cut = math.min(#text, start + 287)
+        if cut < #text then
+            local nextByte = text:byte(cut + 1)
+            while cut >= start and nextByte ~= nil and nextByte >= 128 and nextByte < 192 do
+                cut = cut - 1; nextByte = text:byte(cut + 1)
+            end
+        end
+        if cut < start then return false, "诊断文本编码异常" end
+        chunks[#chunks+1] = text:sub(start,cut); start = cut + 1
+    end
+    if #chunks == 0 then chunks[1] = "" end
+    for index, chunk in ipairs(chunks) do
+        local line = "[" .. label .. " " .. tostring(index) .. "/" .. tostring(#chunks) .. "] " .. chunk
+        local ok
+        if type(S.SafeChat) == "function" then ok = S.SafeChat(line,"info","diagnostics")
+        elseif type(S.DispatchSystemChat) == "function" then ok = S.DispatchSystemChat(line)
+        else return false, "聊天输出不可用" end
+        if ok == false then return false, "诊断输出失败：" .. tostring(index) end
+    end
+    return true
+end
+
+-- 中文维护注释（RS-DIAG-3）：RU 聊天只能逐条复制；EVIDENCE-2 把一次动作拆成
+-- 多条故障行再接 30 条总览，使用户无法一次提交。不能简单 concat 回超长消息，否则又会
+-- 丢尾。Diagnostics 仅从 Gate.last / Persistence.stores 选择元数据，生成有界单条；
+-- 不调用 BuildCopyText/Run/Describe/LoadData，不触发恢复、采集或写入，不复制业务 payload。
+-- Authority：字段真值仍归 Gate/Core；这里只缩写展示。每个 Store 的整组指纹必须完整加入，
+-- 放不下就显示 more=N，不截半个 Hash、不把未知填成 0。完整原始取证仍走现有显式文本框。
+-- 288 是保守正文预算，连同当前 SafeChat 的 27 字节前缀 <=315；并非声明已知 Native 上限。
+-- 维护时不能加第二条解释/成功通知；末尾 END 用于用户发现 Native 是否仍截断，不是数据校验。
+local SINGLE_DIAGNOSTIC_BYTES = 288
+local function CompactDiagnosticToken(value, limit)
+    if type(value) ~= "string" and type(value) ~= "number" then return "-" end
+    local text = tostring(value):gsub("[^A-Za-z0-9_.:%-]", "_")
+    if text == "" then return "-" end
+    if #text > limit then text = text:sub(1, limit - 1) .. "~" end
+    return text
+end
+local function CompactDiagnosticNumber(value, missing)
+    if value == nil then return missing or "?" end
+    if type(value) ~= "number" and type(value) ~= "string" then return "?" end
+    local number = tonumber(value)
+    if number == nil or number ~= number or number < 0 or number > 999999 or number ~= math.floor(number) then return "?" end
+    return string.format("%.0f", number)
+end
+local function CompactDiagnosticFingerprint(value)
+    if value == nil then return "-" end
+    -- 维护：只能展示完整缓存 Hash；格式未知用 ? 明示，禁止截前八位或现场重算冒充旧证据。
+    if type(value) ~= "string" or #value ~= 8 or value:find("[^0-9A-Fa-f]") then return "?" end
+    return value:upper()
+end
+local COMPACT_HOOK_CODES = {candidate="C", no_candidate="N", exception="E", not_registered="R", not_called="S", called="I"}
+local function CompactDiagnosticSequence(probe)
+    if type(probe) ~= "string" then return "-" end
+    local sequence = probe:match("sequence=([^/;]+)")
+    if sequence == nil then return "-" end
+    if sequence == "unchanged" then return "U" end
+    if sequence == "unavailable" then return "A" end
+    if tonumber(sequence) ~= nil then return "C" end
+    return "?" -- 有其它拒绝原因；完整探针留在详细证据，不猜测是否已恢复。
+end
+local function CompactDiagnosticStore(store)
+    local evidence = type(store.lastIntegrityMismatchEvidence) == "table" and store.lastIntegrityMismatchEvidence or {}
+    local text = CompactDiagnosticToken(store.id, 48) .. " s" .. CompactDiagnosticNumber(evidence.storedSchema, "-")
+        .. ">" .. CompactDiagnosticNumber(store.schemaVersion, "-")
+    if next(evidence) ~= nil then
+        text = text .. " " .. CompactDiagnosticFingerprint(evidence.stampedFingerprint)
+            .. ">" .. CompactDiagnosticFingerprint(evidence.actualFingerprint)
+            .. " r" .. CompactDiagnosticFingerprint(evidence.rawFingerprint)
+            .. " m" .. CompactDiagnosticNumber(evidence.framework, "-") .. "/"
+            .. CompactDiagnosticNumber(evidence.transportVersion, "-") .. "/" .. CompactDiagnosticNumber(evidence.codec, "-")
+    else
+        -- 无 mismatch 元数据的 fence 可能是其它失败，不能输出假 Hash 或复制含隐私的 lastError。
+        text = text .. " e=" .. CompactDiagnosticToken(store.loadStatus, 24)
+    end
+    return text .. " q" .. CompactDiagnosticSequence(store.lastHistoricalRecoveryProbe)
+        .. " h" .. (COMPACT_HOOK_CODES[store.lastHistoricalRecoveryHookState] or "-")
+end
+
+function D:BuildCompactDiagnosticSummary()
+    local gate = type(S.FoundationGate) == "table" and S.FoundationGate.last or nil
+    local report = type(gate) == "table" and gate or {}
+    local stores = type(S.Persistence) == "table" and S.Persistence.stores or nil
+    local failures = {}
+    for _, store in pairs(type(stores) == "table" and stores or {}) do
+        if type(store) == "table" and store.writeFenced == true then failures[#failures+1] = store end
+    end
+    table.sort(failures, function(a,b) return tostring(a.id) < tostring(b.id) end)
+    local build = type(S.BuildTag) == "string" and (S.BuildTag:match("^(v%d+%-m[%d%.]+)") or S.BuildTag) or nil
+    local text = "RS-DIAG-3 b=" .. CompactDiagnosticToken(build, 28)
+        .. " B" .. CompactDiagnosticNumber(report.blockers) .. "/W" .. CompactDiagnosticNumber(report.warnings)
+        .. " F" .. (type(stores) == "table" and tostring(#failures) or "?")
+    local items, omittedKey, format = failures, "more", CompactDiagnosticStore
+    if #failures == 0 then
+        -- 无存档故障时仍展示失败检查 ID；不带 detail（可能很长且含业务字段），不重跑验收。
+        items, omittedKey = {}, "checksMore"
+        for _, check in ipairs(type(report.checks) == "table" and report.checks or {}) do
+            if type(check) == "table" and check.ok == false then items[#items+1] = check end
+        end
+        format = function(check)
+            return (check.severity == "blocker" and "B:" or "W:") .. CompactDiagnosticToken(check.id, 64)
+        end
+    end
+    local included = 0
+    for index, item in ipairs(items) do
+        local entry = " | " .. format(item)
+        local remaining = #items - index
+        local tail = (remaining > 0 and (" | " .. omittedKey .. "=" .. remaining) or "") .. " | END"
+        if #text + #entry + #tail > SINGLE_DIAGNOSTIC_BYTES then break end
+        text, included = text .. entry, index
+    end
+    if included < #items then text = text .. " | " .. omittedKey .. "=" .. tostring(#items-included) end
+    return text .. " | END"
+end
+
+local function PrintSingleDiagnostic(text)
+    if type(text) ~= "string" or #text > SINGLE_DIAGNOSTIC_BYTES or text:find("[%c]") then
+        return false, "单条诊断格式或长度异常"
+    end
+    -- 维护：只选择一个现有输出入口；入口执行后失败/抛错也不能再重发，避免已投递消息重复。
+    -- pcall 只隔离 UI 动作，返回 false 仍如实传播；不更改全局 SafeChat/其它模块的日志策略。
+    local send = type(S.SafeChat) == "function" and S.SafeChat or S.DispatchSystemChat
+    if type(send) ~= "function" then return false, "聊天输出不可用" end
+    local ok, sent = pcall(send, text, "info", "diagnostics")
+    if not ok or sent ~= true then return false, "单条诊断输出失败" end
+    return true
+end
+
+function D:PrintFoundationSummary()
+    return PrintSingleDiagnostic(self:BuildCompactDiagnosticSummary())
+end
+
+-- 维护：选项只读已注册故障 Store，不创建/加载其它模块，也不导出健康角色数据。
+function D:GetPersistenceFailureChoices()
+    local out = {}
+    for _, store in pairs(S.Persistence and S.Persistence.stores or {}) do
+        -- 维护：与摘要、Core取证入口使用同一失败集合，避免 durableFail>0 但原档0份。
+        if PersistenceFailureKind(store) ~= nil then out[#out+1] = {value=store.id,text=store.id} end
+    end
+    table.sort(out,function(a,b) return a.value < b.value end)
+    return out
+end
+
+function D:BuildPersistenceEvidenceText(id, options)
+    -- 维护：Core 校验 SaveKey/scope/预算；此转发不调用任何 Feature 默认值或恢复函数。
+    if type(S.Persistence) ~= "table" or type(S.Persistence.BuildFailedStoreEvidenceText) ~= "function" then
+        return nil,"只读存档取证不可用"
+    end
+    -- 维护：只转发显式外壳精简选项，保留Core的scope/预算/只读所有权；默认完整外壳兼容。
+    return S.Persistence:BuildFailedStoreEvidenceText(id, {compact=type(options)=="table" and options.compact==true})
+end
+
+-- 维护：诊断页与故障页的旧按钮/公共函数名保持兼容，统一一次输出；
+-- 详细 BuildPersistenceFailureReport 仍可供维护工具读取，但不再自动逐行发送。
+function D:PrintPersistenceFailureReport()
+    return self:PrintFoundationSummary()
 end
 
 function D:PrintAllLogs()

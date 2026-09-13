@@ -121,7 +121,9 @@ function M:Open(scope, key, sourceRow)
     if type(service) ~= "table" or type(service.GetGroupDetail) ~= "function" then
         return NotifyUnavailable("新版任务进度服务不可用。")
     end
-    local detail = service:GetGroupDetail(scope, key)
+    -- 维护：仅显式打开详情读取日志目标，平时活动/任务表格刷新不会触发。
+    -- Service 验证 active index 与 questId，目标不计入主任务分母。
+    local detail = service:GetGroupDetail(scope, key, { journal = true })
     if type(detail) ~= "table" then
         return NotifyUnavailable("没有找到 " .. tostring(sourceRow and sourceRow.name or key) .. " 的任务详情。")
     end

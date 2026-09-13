@@ -79,15 +79,17 @@ local Q = {
     storeLoaded = false,
     persistPending = false,
     -- Session price cache keyed by "itemType:grade" (legacy-verified TTL model).
-    -- A fresh explicit RequestQuote always bypasses it (user intent wins); only
-    -- passive projections consult PeekCached so an ordinary Refresh never burns
-    -- cooldown-bound native calls. Failed/unavailable outcomes are NOT cached.
+    -- Maintenance trade-budget-1: explicit normal clicks also reuse a fresh
+    -- quote; options.force is the opt-in refresh override. Negative outcomes
+    -- carry a separate 30s strategy-specific backoff, never a fabricated price.
     cache = {},
     cacheTtlMs = 120000,
     owner = {},
     -- Spacing between drained requests. Must be >= the 500ms official cooldown
     -- so the capability gate never rejects the next call mid-batch.
-    intervalMs = 560,
+    -- 维护（trade-budget-1）：用户一次询价可能展开多品质/协议探针；服务拥有节奏，
+    -- 正常请求不探针、不隐式扩展。保持>=API的500ms门，默认1000ms，单次同步调用仍不可拆帧。
+    intervalMs = 1000,
     -- Real spacing is enforced against the monotonic clock, not the scheduler's
     -- tick count: a budget-deferred tick makes two adjacent drains land far
     -- closer together than intervalMs, which tripped the official 500 ms gate and
@@ -98,7 +100,10 @@ local Q = {
     running = false,
     -- Debugging observability (.18.168): many RU quotes fail closed; these
     -- bounded records expose WHY without touching the read-model contracts.
-    stats = { attempts = 0, ready = 0, failed = 0 },
+    stats = { attempts = 0, ready = 0, failed = 0, merged = 0, cacheHits = 0,
+        cancelled = 0, nativeLastMs = 0, nativeMaxMs = 0 },
+    negativeCache = {}, negativeTtlMs = 30000, cacheMax = 512,
+    budgetPatch = "trade-budget-1",
     recent = {},        -- newest-first ring of the last completions
     recentMax = 12,
     lastRawReturn = nil, -- bounded shape of the most recent native return
@@ -302,6 +307,22 @@ local function FallbackRowPrice(row)
 end
 
 
+-- 维护：会话缓存有界，取消仅移除请求者需求；不能清除其它模块共享的事实。
+local function CachePut(cache, key, value)
+    local count, oldest, at = 0, nil, math.huge
+    for k, v in pairs(cache) do count=count+1;if (tonumber(v.at) or 0)<at then oldest,at=k,tonumber(v.at) or 0 end end
+    if cache[key]==nil and count>=Q.cacheMax and oldest then cache[oldest]=nil end
+    cache[key]=value
+end
+local function Deliver(requester, callback, snapshot)
+    local value=Copy(snapshot);value.requester=requester
+    CachePut(Q.snapshots, requester, value)
+    if type(callback)=="function" then
+        local ok,err=pcall(callback,Copy(value))
+        if not ok then S.LastPriceQuoteCallbackError={requester=requester,error=tostring(err)} end
+    end
+end
+
 local function CompletePending(status, quote, err, origin)
     local pending = Q.pending
     if type(pending) ~= "table" then return false end
@@ -319,7 +340,7 @@ local function CompletePending(status, quote, err, origin)
         completedAt = NowMs(),
         contract = "显式+异步报价；串行限速；结果字段按当前 RU 返回做 bounded normalization，未验证字段不作为成交样本",
     }
-    Q.snapshots[requester] = snapshot
+    snapshot.at = snapshot.completedAt
     -- Shared per-itemType lifecycle state. "ready" mirrors pricesByItemType;
     -- every other terminal status records why the material stays unpriced so a
     -- projection can show 询价失败(原因) instead of an endless 待询价.
@@ -327,12 +348,12 @@ local function CompletePending(status, quote, err, origin)
         if status == "ready" and quote ~= nil then
             Q.quoteStateByItemType[pending.itemType] = {
                 status = "ready", price = quote.value, priceSource = quote.source,
-                itemGrade = pending.itemGrade, requester = requester, at = snapshot.completedAt,
+                itemGrade = pending.resolvedGrade or pending.itemGrade, requester = requester, at = snapshot.completedAt,
             }
         else
             Q.quoteStateByItemType[pending.itemType] = {
                 status = "failed", code = tostring(status or "failed"), error = err,
-                itemGrade = pending.itemGrade, requester = requester, at = snapshot.completedAt,
+                itemGrade = pending.resolvedGrade or pending.itemGrade, requester = requester, at = snapshot.completedAt,
             }
         end
     end
@@ -355,7 +376,7 @@ local function CompletePending(status, quote, err, origin)
     -- "unknown" that a projection might misrender as zero.
     if status == "ready" and quote ~= nil and pending.itemType ~= nil then
         Q.pricesByItemType[pending.itemType] = {
-            price = quote.value, source = quote.source, itemGrade = pending.itemGrade,
+            price = quote.value, source = quote.source, itemGrade = pending.resolvedGrade or pending.itemGrade,
             completedAt = snapshot.completedAt,
         }
         -- Persist the grade that actually answered (resolvedGrade), not the hint
@@ -368,15 +389,19 @@ local function CompletePending(status, quote, err, origin)
         if origin ~= "fallback" then
             local resolvedGrade = tonumber(pending.resolvedGrade) or tonumber(pending.itemGrade)
             if resolvedGrade ~= nil then
-                Q.cache[tostring(math.floor(pending.itemType)) .. ":" .. tostring(math.floor(resolvedGrade))] =
-                    { price = quote.value, at = snapshot.completedAt }
+                CachePut(Q.cache, tostring(math.floor(pending.itemType)) .. ":" .. tostring(math.floor(resolvedGrade)),
+                    { price = quote.value, at = snapshot.completedAt })
             end
         end
     end
-    if type(pending.callback) == "function" then
-        local ok, cbErr = pcall(function() pending.callback(snapshot) end)
-        if not ok then S.LastPriceQuoteCallbackError = { requester = requester, error = tostring(cbErr or "unknown") } end
+    if status ~= "ready" and pending.requestKey then
+        CachePut(Q.negativeCache, pending.requestKey, {at=NowMs(),snapshot=Copy(snapshot)})
     end
+    -- 每个消费者各接收一次；取消的页面不再回调。快照在回调前复制，不能跨Feature共享可写表。
+    for token, watcher in pairs(pending.watchers or {[requester]={callback=pending.callback}}) do
+        Deliver(token,watcher.callback,snapshot)
+    end
+    if #Q.queue==0 and Q.pending==nil then Q:_StopLane() end
     Publish()
     return true
 end
@@ -440,26 +465,13 @@ function Q:_CheckFallback()
 end
 
 local function Drain()
-    -- Protocol discrimination rides the same paced lane as real quotes: it only
-    -- advances while the queue is already alive (explicit user demand), stops by
-    -- itself once ProbeState is done, and never needs its own timer/task. It is
-    -- advanced before the pending early-return so a slow in-flight request cannot
-    -- stall the whole probe behind one drain slot.
-    -- One native call per tick, period. The probe shares the GetLowestPrice
-    -- capability cooldown with real quotes, so issuing both in the same drain
-    -- slot made the second one fail with "cooldown active: 500ms remaining" and
-    -- burned user quotes. When the probe still has work, it takes the tick and
-    -- the real queue waits for the next paced slot.
-    -- Wall-clock cooldown fence: never enter the native path until the previous
-    -- attempt is provably outside the official window. Applies to probe and real
-    -- quotes alike, so a deferred tick cannot double-fire inside 500 ms.
+    -- 维护（trade-budget-1）：普通需求不再附带控制物品协议探针。复用唯一队列并以实际
+    -- 时间节流，一次回调最多一次报价调用；显式维护探针仍共用lastNativeCallAt栅栏。
+    -- 同步Native的单次耗时不能被分帧拆开，nativeLastMs/nativeMaxMs单独记录。
     local now = NowMs()
     if Q.lastNativeCallAt ~= nil and (now - Q.lastNativeCallAt) < Q.intervalMs then return end
 
-    if ProbeState.done ~= true then
-        Q:RunProtocolProbe()
-        return
-    end
+    -- 维护：协议探针仅由显式诊断调用；普通用户批次只查所选材料。禁止恢复自动探针。
     -- An in-flight fallback search legitimately occupies Q.pending while we wait
     -- for AUCTION_ITEM_SEARCHED. Servicing it must happen *before* the generic
     -- pending early-return below, otherwise the wait becomes a permanent stall
@@ -467,7 +479,7 @@ local function Drain()
     if Q.pending ~= nil then
         if Q.pending.fallbackState == "searching" then
             Q:_CheckFallback()
-            if Q.pending == nil then Q.running = false end
+            if Q.pending == nil and #Q.queue == 0 then Q:_StopLane() end
         end
         return
     end
@@ -496,11 +508,14 @@ local function Drain()
         Q:_FailPending("unavailable", "没有可探测的品质档位")
         return
     end
-    -- CallCapability enforces the 500ms cooldown itself; our 560ms spacing keeps
+    -- CallCapability enforces the 500ms cooldown itself; our 1000ms spacing keeps
     -- the native call inside a clean window. A false return here means the gate
     -- (or the native getter) rejected it — fail closed, do not retry blindly.
     Q.lastNativeCallAt = NowMs()
+    local started = Q.lastNativeCallAt
     local ok, value, err, b, c, d = S.Api:CallCapability("X2Auction:GetLowestPrice", nil, "GetLowestPrice", request.itemType, grade)
+    Q.stats.nativeLastMs = math.max(0, NowMs() - started)
+    Q.stats.nativeMaxMs = math.max(Q.stats.nativeMaxMs, Q.stats.nativeLastMs)
     local gradeLabel = "grade " .. tostring(grade) .. "/" .. tostring(#grades)
     Q.lastRawReturn = ok ~= true and ("call_failed:" .. tostring(err or "?")) or (gradeLabel .. ": " .. ShapeOf(value) .. ", " .. ShapeOf(b) .. ", " .. ShapeOf(c) .. ", " .. ShapeOf(d))
     if ok ~= true then
@@ -551,10 +566,11 @@ function Q:_FailPending(status, err)
 end
 
 function Q:_StartLane()
-    if Q.running == true then return end
-    if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then return end
+    if Q.running == true then return true end
+    if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then return false, "报价调度不可用" end
     local added = S.Scheduler:AddTask(Q.taskName, Q.intervalMs, function() Drain() end, false, Q.owner, "P2", 1)
-    if added == true then Q.running = true end
+    if added == true then Q.running = true; return true end
+    return false, "报价调度注册失败"
 end
 
 function Q:_StopLane()
@@ -563,17 +579,31 @@ function Q:_StopLane()
     Q.running = false
 end
 
-function Q:_Enqueue(requester, itemType, itemGrade, callback, grades, searchName)
+function Q:_Enqueue(requester, itemType, itemGrade, callback, grades, searchName, requestKey)
+    local function Share(request)
+        if request and request.requestKey==requestKey then
+            request.watchers=request.watchers or {}
+            request.watchers[requester]={callback=callback}
+            self.stats.merged=self.stats.merged+1
+            return true
+        end
+    end
+    if Share(self.pending) then return true,"shared" end
+    for _,request in ipairs(self.queue) do if Share(request) then return true,"shared" end end
     local request = {
         requester = requester, itemType = itemType, itemGrade = itemGrade,
-        callback = callback, requestedAt = NowMs(),
+        callback = callback, requestedAt = NowMs(), requestKey=requestKey,
+        watchers = {[requester]={callback=callback}},
         grades = type(grades) == "table" and #grades > 0 and grades or nil,
         gradeIndex = 1,
         searchName = searchName, fallbackState = nil, fallbackAttempts = 0,
     }
     if #Q.queue >= Q.maxQueue then return false, "报价队列已满，请稍后再试" end
     Q.queue[#Q.queue + 1] = request
-    Q:_StartLane()
+    -- Maintenance: no successful request without a drain owner; a failed
+    -- scheduler registration must roll back this enqueue, not leave a phantom.
+    local started, startErr = Q:_StartLane()
+    if started ~= true then table.remove(Q.queue); return false, startErr end
     return true
 end
 
@@ -585,7 +615,7 @@ end
 -- ---------------------------------------------------------------------
 local MAX_REFERENCE_SAMPLES = 6
 local function ReferenceKey(itemType, itemGrade)
-    local id, grade = PositiveInt(itemType), PositiveInt(itemGrade)
+    local id, grade = PositiveInt(itemType), tonumber(itemGrade)
     if id == nil then return nil end
     -- Grade is part of the identity: the ladder answers per grade, and an
     -- unfiltered grade-0 probe must not overwrite a specific grade's record.
@@ -727,7 +757,8 @@ end
 
 -- Explicit entry point. Feature modules submit one material at a time; the
 -- service serializes and paces the native calls. `callback(snapshot)` fires once
--- when this request resolves (asynchronously). `requester` is a stable token
+-- when this request resolves (synchronously on a cache hit, otherwise paced).
+-- Callers must establish batch state before requesting. `requester` is a stable token
 -- used both for snapshot lookup and for delivery routing. `gradeCandidates` is
 -- the optional ordered grade ladder (0..20, max 8): nil at one grade is a valid
 -- "no listing" answer, so the request walks the ladder before failing.
@@ -738,7 +769,8 @@ function Q:RequestQuote(requester, itemType, itemGrade, callback, gradeCandidate
     itemType = PositiveInt(itemType)
     if requester == "" then return false, "报价来源不能为空" end
     if itemType == nil then return false, "物品类型无效" end
-    itemGrade = PositiveInt(itemGrade)
+    itemGrade = tonumber(itemGrade)
+    if itemGrade==nil or itemGrade~=math.floor(itemGrade) or itemGrade<0 or itemGrade>20 then itemGrade=1 end
     options = type(options) == "table" and options or {}
     local searchName = TrimToKeyword(options.searchName)
     local grades = {}
@@ -757,10 +789,24 @@ function Q:RequestQuote(requester, itemType, itemGrade, callback, gradeCandidate
     end
     if #grades == 0 then
         AddGrade(itemGrade)
-        for grade = 1, 6 do AddGrade(grade) end
-        AddGrade(0)
     end
-    local ok, err = Q:_Enqueue(requester, itemType, itemGrade, callback, grades, searchName)
+    local parts={};for _,grade in ipairs(grades) do parts[#parts+1]=tostring(grade) end
+    local requestKey=tostring(itemType)..":"..table.concat(parts,",")..":"..tostring(searchName or "")
+    -- 显式force只跳过缓存，仍遵守串行/去重。正常点击不反复查询刚完成/刚失败的材料。
+    if options.force ~= true then
+        local price,at=Q:PeekCached(itemType,grades[1])
+        if price~=nil then
+            self.stats.cacheHits=self.stats.cacheHits+1
+            Deliver(requester,callback,{status="ready",price=price,itemType=itemType,itemGrade=grades[1],cached=true,
+                completedAt=at,at=NowMs(),priceSource="cached"});Publish();return true,"cached"
+        end
+        local negative=self.negativeCache[requestKey]
+        if negative and NowMs()-negative.at>=0 and NowMs()-negative.at<self.negativeTtlMs then
+            self.stats.cacheHits=self.stats.cacheHits+1;local snap=Copy(negative.snapshot);snap.cached=true
+            Deliver(requester,callback,snap);Publish();return true,"cached_negative"
+        end
+    end
+    local ok, err = Q:_Enqueue(requester, itemType, itemGrade, callback, grades, searchName, requestKey)
     if ok ~= true then return ok, err end
     -- Mark the requester "queued" so its projection can render an honest
     -- pending state instead of a stale previous price.
@@ -774,7 +820,31 @@ function Q:RequestQuote(requester, itemType, itemGrade, callback, gradeCandidate
     Q.quoteStateByItemType[itemType] = {
         status = "queued", itemGrade = itemGrade, requester = requester, at = NowMs(),
     }
-    return true, "queued"
+    return true, err or "queued"
+end
+
+-- 维护：取消权限是精确requester，不按item清缓存，也不取消其它模块的同项请求。
+-- 已发出的同步调用不能撤回；名称搜索保留占位到其结束/超时，避免晚到无token事件误配下次请求。
+function Q:CancelRequester(requester)
+    requester=tostring(requester or "")
+    local removed=0
+    for i=#self.queue,1,-1 do
+        local r=self.queue[i]
+        if r.watchers and r.watchers[requester] then r.watchers[requester]=nil;removed=removed+1 end
+        if not next(r.watchers or {}) then
+            table.remove(self.queue,i)
+            self.quoteStateByItemType[r.itemType]={status="cancelled",itemGrade=r.itemGrade,at=NowMs()}
+        end
+    end
+    local r=self.pending
+    if r and r.watchers and r.watchers[requester] then
+        r.watchers[requester]=nil;removed=removed+1
+        if not next(r.watchers) and r.fallbackState~="searching" then self.pending=nil end
+    end
+    self.stats.cancelled=self.stats.cancelled+removed
+    self.snapshots[requester]={status="cancelled",requester=requester,at=NowMs()}
+    if #self.queue==0 and self.pending==nil then self:_StopLane() end
+    return true,removed
 end
 
 -- Read the last result for a requester without issuing a server query.
@@ -810,15 +880,15 @@ end
 -- Passive read of the session price cache for a projection. Never issues a
 -- native call and never extends freshness: an ordinary Refresh consults this to
 -- avoid re-burning cooldown-bound queries after a reload of the UI (not the
--- addon). Explicit user quotes bypass it inside RequestQuote by design.
+-- addon). Normal explicit clicks also reuse it; force is an explicit override.
 function Q:PeekCached(itemType, itemGrade)
     itemType = PositiveInt(itemType)
-    local grade = PositiveInt(itemGrade)
+    local grade = tonumber(itemGrade)
     if itemType == nil or grade == nil then return nil end
     local entry = Q.cache[tostring(itemType) .. ":" .. tostring(grade)]
     if type(entry) ~= "table" then return nil end
     local at = tonumber(entry.at) or 0
-    if NowMs() - at > Q.cacheTtlMs then
+    if NowMs() - at < 0 or NowMs() - at > Q.cacheTtlMs then
         Q.cache[tostring(itemType) .. ":" .. tostring(grade)] = nil
         return nil
     end
@@ -832,8 +902,10 @@ function Q:GetPriceWithProvenance(itemType, itemGrade)
     itemType = PositiveInt(itemType)
     if itemType == nil then return nil, "none" end
     local fresh = Q.pricesByItemType[itemType]
-    if type(fresh) == "table" and fresh.price ~= nil then
-        return tonumber(fresh.price), "live", { source = fresh.source, at = fresh.completedAt, grade = fresh.itemGrade }
+    if type(fresh) == "table" and fresh.price ~= nil and (itemGrade==nil or tonumber(fresh.itemGrade)==tonumber(itemGrade)) then
+        local age=NowMs()-(tonumber(fresh.completedAt) or 0)
+        local kind=(age>=0 and age<=self.cacheTtlMs and fresh.source~="name_search_bid") and "live" or "reference"
+        return tonumber(fresh.price), kind, { source = fresh.source, at = fresh.completedAt, grade = fresh.itemGrade }
     end
     local reference, meta = Q:GetReferencePrice(itemType, itemGrade)
     if reference ~= nil then return reference, "reference", meta end
@@ -865,7 +937,7 @@ function Q:Describe()
         recent[#recent + 1] = Copy(record)
     end
     return {
-        version = self.version, running = self.running == true,
+        version = self.version, patch=self.budgetPatch, running = self.running == true,
         pending = self.pending ~= nil, queueLength = #self.queue,
         maxQueue = self.maxQueue, intervalMs = self.intervalMs,
         pricedItemTypes = priced,

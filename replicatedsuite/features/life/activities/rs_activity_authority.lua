@@ -238,12 +238,31 @@ function A:BuildStaticRows()
         if EventDateEnabled(event, currentDateSerial) then
             local best = nil
             local duration = math.max(0, tonumber(event.duration) or 0) * 60
+            -- 中文维护注释：支持活动 taskTailMinutes 后续任务保持期（如征兆之痕90分钟、煦日120分钟）。
+            -- 当玩家身上已接受或待交后续 Boss/恶魔阶段任务（tailInFlightCount > 0）时，
+            -- 即使首个计划时长（如10分钟）已过，仍将当期活动保持为“进行中”，防止在击杀过程中倒计时过早跳到 4 小时后的下一次。
+            local taskTailMinutes = tonumber(event.taskTailMinutes)
+            local tailDuration = taskTailMinutes and math.max(duration, taskTailMinutes * 60) or duration
+            local progressSnapshot = (taskTailMinutes ~= nil and event.questKey ~= nil and type(self.questProgressProvider) == "function")
+                and self.questProgressProvider(event.questScope or "event", event.questKey) or nil
+            local tailInFlight = type(progressSnapshot) == "table" and (tonumber(progressSnapshot.tailInFlightCount) or 0) > 0
+
             for day = 1, 7 do
                 if HasDay(event.days, day) then
                     local start = ((day - 1) * DAY_SECONDS) + (tonumber(event.hour) or 0) * 3600 + (tonumber(event.minute) or 0) * 60
                     local elapsed = NormalizeWeekSeconds(now - start)
-                    local active = duration > 0 and elapsed < duration
-                    local seconds = active and math.max(0, math.floor(duration - elapsed)) or math.max(0, math.floor(NormalizeWeekSeconds(start - now)))
+                    local baseActive = duration > 0 and elapsed < duration
+                    local tailActive = tailInFlight and (elapsed >= duration and elapsed < tailDuration)
+                    local active = baseActive or tailActive
+                    local seconds
+                    if baseActive then
+                        seconds = math.max(0, math.floor(duration - elapsed))
+                    elseif tailActive then
+                        seconds = math.max(0, math.floor(tailDuration - elapsed))
+                    else
+                        seconds = math.max(0, math.floor(NormalizeWeekSeconds(start - now)))
+                    end
+
                     local candidate = {
                         key = "event:" .. tostring(event.fullName or event.name or "unknown"),
                         name = tostring(event.name or event.fullName or "活动"),
@@ -380,8 +399,10 @@ function A:BuildZoneRows()
             source = "live",
             zoneState = true,
             zoneId = zoneId,
-            questScope = definition.questScope,
-            questKey = definition.questKey,
+            -- 中文维护注释：实时区域行优先从 definition 获取任务关联，同时回退到 DynamicEventZones 中的定义，
+            -- 确保如鲸鱼歌湾（103）与海之烛台（102）能正确关联 whalesong 与 aegis 任务组并挂接阶段进度。
+            questScope = definition.questScope or (dynamic and dynamic.questScope),
+            questKey = definition.questKey or (dynamic and dynamic.questKey),
             active = active,
             seconds = untimed and nil or sortSeconds,
             sortSeconds = sortSeconds,

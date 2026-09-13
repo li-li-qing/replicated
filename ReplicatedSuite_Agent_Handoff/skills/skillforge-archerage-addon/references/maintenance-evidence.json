@@ -1,0 +1,242 @@
+{
+  "schema": 1,
+  "collection": "Replicated Suite 开发经验增补",
+  "as_of": "2026-09-12",
+  "basis": "本会话用户反馈及实际存在的已交付文件；不是实时客户端状态或新网页调查。",
+  "source_archive": "Skills.zip",
+  "source_archive_sha256": "39051a9e3c218bca5bd9f6de0abc7e68aea83408d579d9007be2fb10bc909bbe",
+  "code": [
+    {
+      "archive": "ReplicatedSuite_PagedReports_UDFRecovery_2026-09-12.zip",
+      "path": "replicatedsuite/core/rs_self_check_report.lua",
+      "sha256": "b12c1becd0bc7cfaeab95c84b9c34251dd149b3d88d3b1fe3ecdb13cf3970ec3",
+      "bytes": 36088,
+      "source_id": "RS-CODE-01",
+      "archive_sha256": "8584792b9e8e36b6db406bd0e005288d06d9b86688ebc6ab3be0f5d4c29d60af",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_PagedReports_UDFRecovery_2026-09-12.zip",
+      "path": "replicatedsuite/core/rs_report_copy_transport.lua",
+      "sha256": "34473c99eadf5f6d23b1c97eb8507c0a8cab524fe48894f867e299407a6d9c87",
+      "bytes": 16275,
+      "source_id": "RS-CODE-02",
+      "archive_sha256": "8584792b9e8e36b6db406bd0e005288d06d9b86688ebc6ab3be0f5d4c29d60af",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_Gear_Plan_Editor_Fix_2026-09-12.zip",
+      "path": "replicatedsuite/presentation/v3/pages/rs_v3_gear_page.lua",
+      "sha256": "32874019df29fbc5750f3fd0be63b606e9894e9ab119219da78d307267c7c6fd",
+      "bytes": 44891,
+      "source_id": "RS-CODE-03",
+      "archive_sha256": "196b3a85b87b46e588a89997de29c55f0ea08338179a479819169d90682868f0",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_Gear_Plan_Editor_Fix_2026-09-12.zip",
+      "path": "replicatedsuite/ui/framework/rs_ui_component_core.lua",
+      "sha256": "2d7ce2587e553c8a8e0d404b6d2a6a10dd9c9e776891badc5cd0025bf08dcf9f",
+      "bytes": 112743,
+      "source_id": "RS-CODE-04",
+      "archive_sha256": "196b3a85b87b46e588a89997de29c55f0ea08338179a479819169d90682868f0",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_StatusLibrary_EventImport_Fix_2026-09-12.zip",
+      "path": "replicatedsuite/presentation/v3/pages/rs_v3_buff_display_page.lua",
+      "sha256": "614a8f797c8f03e1d910f2c0755728a4f2d127cce66aea49055999ab8d140240",
+      "bytes": 62939,
+      "source_id": "RS-CODE-05",
+      "archive_sha256": "d752325a1f71f2e0e4d331cf90bc583e67cdb901659a51c281f3648a83c14e71",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_Gear_Input_BuffLibrary_Durable_Fix_2026-09-12.zip",
+      "path": "replicatedsuite/core/rs_persistence.lua",
+      "sha256": "f858f7ca0113b64315eea5799524c53956a6a0cbcbb981e1b1086782852dee23",
+      "bytes": 248664,
+      "source_id": "RS-CODE-06",
+      "archive_sha256": "d792d547da4c4b6387ccd82fd514ece3cb20bb363964eaf0599c0c84aaed50d9",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_Gear_Input_BuffLibrary_Durable_Fix_2026-09-12.zip",
+      "path": "replicatedsuite/ui/rs_ui_framework.lua",
+      "sha256": "7fec9e411d1616e03b35ae23aef243985ff4253b90bd174900e7f8e4924ce2fa",
+      "bytes": 86529,
+      "source_id": "RS-CODE-07",
+      "archive_sha256": "d792d547da4c4b6387ccd82fd514ece3cb20bb363964eaf0599c0c84aaed50d9",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_Gear_Input_BuffLibrary_Durable_Fix_2026-09-12.zip",
+      "path": "replicatedsuite/ui/framework/rs_ui_controls.lua",
+      "sha256": "94b3a2684a75fbdc92564cb0c7d31b76805dad21d5f0fb1e3fbae545dff7c602",
+      "bytes": 86232,
+      "source_id": "RS-CODE-08",
+      "archive_sha256": "d792d547da4c4b6387ccd82fd514ece3cb20bb363964eaf0599c0c84aaed50d9",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_Gear_Input_BuffLibrary_Durable_Fix_2026-09-12.zip",
+      "path": "replicatedsuite/features/combat/buff_display/rs_buff_display_store.lua",
+      "sha256": "360f7896fa09993ab566838a045b27015512a50f82a433a72460958645d46a17",
+      "bytes": 72634,
+      "source_id": "RS-CODE-09",
+      "archive_sha256": "d792d547da4c4b6387ccd82fd514ece3cb20bb363964eaf0599c0c84aaed50d9",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_Gear_Input_BuffLibrary_Durable_Fix_2026-09-12.zip",
+      "path": "replicatedsuite/features/combat/buff_display/rs_buff_display_management.lua",
+      "sha256": "55bd4ad9f62fdee9cf354bfed6ae47ef278ebe066b79f0756eb1f2c302f21627",
+      "bytes": 27697,
+      "source_id": "RS-CODE-10",
+      "archive_sha256": "d792d547da4c4b6387ccd82fd514ece3cb20bb363964eaf0599c0c84aaed50d9",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_Gear_Input_BuffLibrary_Durable_Fix_2026-09-12.zip",
+      "path": "replicatedsuite/services/rs_buff_metadata_v3.lua",
+      "sha256": "92d08b7493b3697ec98ce7fe6b230df767bc96112ca056b8b1c7d70c1206fa14",
+      "bytes": 11944,
+      "source_id": "RS-CODE-11",
+      "archive_sha256": "d792d547da4c4b6387ccd82fd514ece3cb20bb363964eaf0599c0c84aaed50d9",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_Overview_Workbench_Tasks_2026-09-12.zip",
+      "path": "replicatedsuite/features/life/rs_daily_ledger.lua",
+      "sha256": "c183555c4d72ead88162af2052254bb014569ce1b37dd0dd7a2c4013bfc48775",
+      "bytes": 11075,
+      "source_id": "RS-CODE-12",
+      "archive_sha256": "435bbbf72c3cc1e1f65ed9005ecda7a5d6d7db36f22bb3101789f7bcf122e873",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_Overview_Workbench_Tasks_2026-09-12.zip",
+      "path": "replicatedsuite/services/rs_quest_progress_v3.lua",
+      "sha256": "a51cfee49c1a7b7433eb64e9dd78f008e18a05327fbe0cc2a5447c6ccf701645",
+      "bytes": 35125,
+      "source_id": "RS-CODE-13",
+      "archive_sha256": "435bbbf72c3cc1e1f65ed9005ecda7a5d6d7db36f22bb3101789f7bcf122e873",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_Overview_Workbench_Tasks_2026-09-12.zip",
+      "path": "replicatedsuite/presentation/v3/pages/rs_v3_home_overview.lua",
+      "sha256": "c2906817d7ac45056c160cab7e749427a5720abe12e36d307b07a4a48baf58c5",
+      "bytes": 25509,
+      "source_id": "RS-CODE-14",
+      "archive_sha256": "435bbbf72c3cc1e1f65ed9005ecda7a5d6d7db36f22bb3101789f7bcf122e873",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_Overview_Workbench_Tasks_2026-09-12.zip",
+      "path": "replicatedsuite/core/rs_api_capabilities.lua",
+      "sha256": "f31a50f571071974ac26ce3e53f1d8357e2c0a39f52dde657e6eb9406d3e8fa6",
+      "bytes": 30303,
+      "source_id": "RS-CODE-15",
+      "archive_sha256": "435bbbf72c3cc1e1f65ed9005ecda7a5d6d7db36f22bb3101789f7bcf122e873",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_CompactTracking_TradeBudget_Overview_2026-09-12.zip",
+      "path": "replicatedsuite/services/rs_price_quote_queue_v3.lua",
+      "sha256": "70d8c699cc9e977e7600d133d36096c3a694ffd84e76f1a9b7c0acc27a624362",
+      "bytes": 50344,
+      "source_id": "RS-CODE-16",
+      "archive_sha256": "ebcbcc60a9dc9955174e820952dcc5d8719da427c3de685c3a92727fc1f000f1",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_CompactTracking_TradeBudget_Overview_2026-09-12.zip",
+      "path": "replicatedsuite/features/life/rs_life_m16_bundle.lua",
+      "sha256": "f1877e1be218d48fd12c04aeccdf59bc3044e82197f0384ef8a6cebfe98ddfea",
+      "bytes": 137253,
+      "source_id": "RS-CODE-17",
+      "archive_sha256": "ebcbcc60a9dc9955174e820952dcc5d8719da427c3de685c3a92727fc1f000f1",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_CompactTracking_TradeBudget_Overview_2026-09-12.zip",
+      "path": "replicatedsuite/presentation/v3/widgets/rs_v3_buff_display_widget.lua",
+      "sha256": "4918bc55d434e9fda49b71468b66cbb80692dd8878d479b41cbf3ed80a08d905",
+      "bytes": 16071,
+      "source_id": "RS-CODE-18",
+      "archive_sha256": "ebcbcc60a9dc9955174e820952dcc5d8719da427c3de685c3a92727fc1f000f1",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_StatusLibrary_ContinuousCapture_2026-09-12.zip",
+      "path": "replicatedsuite/features/combat/buff_display/rs_buff_display_feature.lua",
+      "sha256": "2b64f14d26d6d4dd2ebfba342e61807e78c1c45753f2a70152de97c24dcc6e25",
+      "bytes": 100850,
+      "source_id": "RS-CODE-19",
+      "archive_sha256": "a93672dfb24eb6bd67426d510ad13d1b787e8b3ac2d515c08048259abc0ddf70",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_StatusLibrary_ContinuousCapture_2026-09-12.zip",
+      "path": "replicatedsuite/services/rs_aura_observation_v3.lua",
+      "sha256": "e9d18a6765e841ccb78be9e81e6e9aec8ddb3b6eca5088952183b04adf27c1c3",
+      "bytes": 21334,
+      "source_id": "RS-CODE-20",
+      "archive_sha256": "a93672dfb24eb6bd67426d510ad13d1b787e8b3ac2d515c08048259abc0ddf70",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_UnitLines_Projection_Viewport_Fix_2026-09-12.zip",
+      "path": "replicatedsuite/services/rs_screen_projection_v3.lua",
+      "sha256": "54e15af03d6e596df80371dd01414775a40b27b3d9d3895eff99c098cf19e30f",
+      "bytes": 37546,
+      "source_id": "RS-CODE-21",
+      "archive_sha256": "65c2825ab44e1f007e5dc357b2cac7b2e7c86e176e607b37d968c4f63108c02a",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    },
+    {
+      "archive": "ReplicatedSuite_UnitLines_Projection_Viewport_Fix_2026-09-12.zip",
+      "path": "replicatedsuite/presentation/v3/widgets/rs_v3_combat_visual_guides.lua",
+      "sha256": "b250cda3d2570540a59436cd8d9d766f50460d49acecbeca405849e19d2776bb",
+      "bytes": 41195,
+      "source_id": "RS-CODE-22",
+      "archive_sha256": "65c2825ab44e1f007e5dc357b2cac7b2e7c86e176e607b37d968c4f63108c02a",
+      "inspection": "本轮读取相关符号/维护注释；未运行整个插件。文件摘要不表示所有行都经过语义审查。"
+    }
+  ],
+  "notes": [
+    {
+      "artifact": "ReplicatedSuite_Gear_Input_BuffLibrary_Durable_Fix_2026-09-12_Notes.md",
+      "sha256": "a1777885fffa59abb6b55163d251d209c752b3ee7f6cff450fe481be9c5e92bb",
+      "status": "本轮读取说明；其中模拟与实档实验是历史报告，未在本轮重新执行。"
+    },
+    {
+      "artifact": "ReplicatedSuite_PagedReports_UDFRecovery_2026-09-12_Notes.md",
+      "sha256": "274fff11aca19dff9853e6be4543387ec242532ebac290c232d98228ae6d38a4",
+      "status": "本轮读取说明；其中模拟与实档实验是历史报告，未在本轮重新执行。"
+    },
+    {
+      "artifact": "ReplicatedSuite_Overview_Workbench_Tasks_2026-09-12_Notes.md",
+      "sha256": "fb84af0e990d2addd4a54f413e1c1bac0ebb8e1221bfcb10c5ba3b2ed6bf88d0",
+      "status": "本轮读取说明；其中模拟与实档实验是历史报告，未在本轮重新执行。"
+    }
+  ],
+  "user_feedback": {
+    "basis": "本会话分段错误报告、截图和明确交互更正",
+    "examples": [
+      "持续留存取代一次冻结快照",
+      "显式上一页/下一页取代3500字节默认短摘要",
+      "一次现场报告READY且加载失败0；不证明所有业务通过",
+      "397项导入在tracked.auto.189回读缺项",
+      "原生输入正常编辑后记录text所有权违规"
+    ],
+    "privacy": "未打包UDF、玩家名称、QQ号码、用户目录、原始账号配置或完整报告。"
+  },
+  "validation_limits": [
+    "没有重新联网确认历史API公告",
+    "没有重新运行项目Lua/Native回归",
+    "没有运行RU客户端",
+    "没有运行独立Agent基线/前向评测；新增用例为待执行规格"
+  ]
+}

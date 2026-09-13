@@ -41,8 +41,13 @@ local SCOPE = {
 
 S.Persistence = {
     FrameworkVersion = 3,
-    -- 中文维护注释：Framework3 物理传输编码由 Persistence 单一 Authority 管理。Transport v1 已实证保护 false/空表；2026-09-10 RU 又出现 schema8 活动设置 SaveData=true 但同 generation 回读 Hash 6963CEA5→109696BD，说明 Native serializer 仍可能省略“合法但假值化”的标量。Transport v2 在不改变业务 Domain/canonical/schema 的前提下继续保护数值 0 与空字符串；旧 v1/v2 都可读，新写统一 v2。编码只发生 SaveData/LoadData 边界，不进入 Tick/Slider 热路径。
-    TransportContractVersion = 2,
+    -- 中文维护注释：Framework3 物理传输编码由 Persistence 单一 Authority 管理。Transport v1 已实证保护 false/空表；2026-09-10 RU 又出现 schema8 活动设置 SaveData=true 但同 generation 回读 Hash 6963CEA5→109696BD，说明 Native serializer 仍可能省略“合法但假值化”的标量。Transport v2 在不改变业务 Domain/canonical/schema 的前提下继续保护数值 0 与空字符串；该轮旧 v1/v2 都可读；本次在下方以 v3 继续保护数值精度。编码只发生 SaveData/LoadData 边界，不进入 Tick/Slider 热路径。
+    -- 维护：v3 只升级物理表示；业务 schema 与既有六位有效数字指纹算法不变。
+    TransportContractVersion = 3,
+    TransportNumericPrecisionProtectionContractVersion = 1,
+    -- 维护（signed-readback-1）：负整数也走既有 n-token；仅标识本次物理保护，不改变 Schema/章算法。
+    TransportSignedIntegerProtectionContractVersion = 1,
+    FailedSaveEvidenceContractVersion = 1,
     ReadbackDivergenceDiagnosticsContractVersion = 1, -- 中文维护注释：.18.197 将 SaveData→LoadData 指纹不一致的首个 canonical 差异路径纳入正式诊断契约；只在完整性/readback 已失败的冷路径运行 bounded diff，不读取 Native 游戏状态、不改变 Store Authority，也禁止未来为了减少日志而静默移除此证据。
     TransportScalarOmissionProtectionContractVersion = 1,
     ReliabilityContractVersion = 8,
@@ -187,7 +192,7 @@ local function AppendIntegrityRecoveryTrace(store, token)
 end
 
 -- 中文维护注释：RU 物理 SaveData 传输层由 Persistence 统一拥有；Feature Store 只能声明业务 schema，禁止各模块自己发明 Native serializer 补丁。
--- Transport v1（历史可读）保护 boolean false、空 table 与 v1 保留前缀字符串；Transport v2（当前写入）继续保护数值 0 与空字符串，针对 2026-09-10
+-- Transport v1（历史可读）保护 boolean false、空 table 与 v1 保留前缀字符串；Transport v2（历史可读）继续保护数值 0 与空字符串，针对 2026-09-10
 -- `v3.activities 6963CEA5→109696BD` 暴露的“SaveData 成功但合法假值化标量可能消失”风险。所有哨兵只存在物理 envelope，LoadData 后在 metadata/schema/Apply 前还原，
 -- 因而 Domain Authority、canonical hash 与用户配置语义完全不变。循环/未知 token 继续 fail-closed；该递归只运行在 bounded Save/Load 边界，不进入 Tick/事件热路径。
 local TRANSPORT_V1_PREFIX = "__rs_t1:"
@@ -201,7 +206,7 @@ local TRANSPORT_V2_ZERO = TRANSPORT_V2_PREFIX .. "z"
 local TRANSPORT_V2_EMPTY_STRING = TRANSPORT_V2_PREFIX .. "e"
 local TRANSPORT_V2_STRING = TRANSPORT_V2_PREFIX .. "s"
 
-local function TransportEncodeValueV1(value, seen) -- 中文维护注释：只用于兼容 Harness/历史语义说明；生产新写由 v2 承担。
+local function TransportEncodeValueV1(value, seen) -- 中文维护注释：只用于兼容 Harness/历史语义说明；生产新写由 v3 承担。
     local kind = type(value)
     if kind == "boolean" then return value == false and TRANSPORT_V1_FALSE or true, nil end
     if kind == "string" then
@@ -250,7 +255,7 @@ local function TransportDecodeValueV1(value, seen) -- 中文维护注释：Trans
     return out, nil
 end
 
-local function TransportEncodeValueV2(value, seen) -- 中文维护注释：v2 只扩展 serializer omission 保护，不改非零数字/非空字符串类型，避免无必要放大 39 个 Store 的物理体积。
+local function TransportEncodeValueV2(value, seen) -- 维护：冻结历史 v2 语义供兼容；非零数字不保护的缺口由新的 v3 处理，禁止偷换 v2 解码。
     local kind = type(value)
     if kind == "boolean" then return value == false and TRANSPORT_V2_FALSE or true, nil end
     if kind == "number" then return value == 0 and TRANSPORT_V2_ZERO or value, nil end
@@ -303,12 +308,232 @@ local function TransportDecodeValueV2(value, seen) -- 中文维护注释：v2 �
     return out, nil
 end
 
+-- 中文维护注释（2026-09-12 真实跑商取证）：normalizedCenterX 的旧业务 token 是
+-- 0.0903896（整表精确复现旧章），Native 返回 0.09038999676704407，token 变成 0.09039。
+-- “六位有效数字 Hash”并不能抵抗“先保留六位小数，再转单精度”的传输损失。
+-- Authority：只有 Persistence 拥有物理传输；Store/Feature 仍接收原数值，不量化其 Domain。
+-- v3 用 17 位往返十进制字符串封装非整数和超出 binary32 连续整数区间的数值（包含键）。
+-- 非负小整数/版本路由继续用 Native number；v1/v2 解码永久保留，健康旧档不在启动时批量重写。
+-- 风险：编码串计入原预算，超限仍拒绝；不扩大 StringBudget、不弱化业务指纹、不做循环内 I/O。
+local TRANSPORT_V3_PREFIX = "__rs_t3:"
+local TRANSPORT_V3_FALSE = TRANSPORT_V3_PREFIX .. "f"
+local TRANSPORT_V3_EMPTY_TABLE = TRANSPORT_V3_PREFIX .. "t"
+local TRANSPORT_V3_ZERO = TRANSPORT_V3_PREFIX .. "z"
+local TRANSPORT_V3_EMPTY_STRING = TRANSPORT_V3_PREFIX .. "e"
+local TRANSPORT_V3_STRING = TRANSPORT_V3_PREFIX .. "s"
+local TRANSPORT_V3_NUMBER = TRANSPORT_V3_PREFIX .. "n"
+local NATIVE_EXACT_INTEGER_LIMIT = 16777216
+
+local function TransportEncodeValueV3(value, seen)
+    local kind = type(value)
+    if kind == "boolean" then return value == false and TRANSPORT_V3_FALSE or true, nil end
+    if kind == "number" then
+        if value ~= value or value == math.huge or value == -math.huge then return nil, "transport_nonfinite_v3" end
+        if value == 0 then return TRANSPORT_V3_ZERO, nil end
+        -- 维护（2026-09-12）：实机回读证据为 buffs.y 的 -2 -> 0，负整数原先绕过了
+        -- n-token。尚无该次原始 LoadData 表，不能断言 Native 内部是省略还是置零；
+        -- 但负号不应继续裸传。Core 在 Save/Load 冷边界复用旧版已可读的 n-token，
+        -- Domain 仍持有原负数；旧裸负整数解码保留。正整数 ID/路由不变，预算照旧。
+        -- 不把 -2 改为 0、不从 Hash 猜旧坐标，也不放宽 expected/stamped/actual 校验。
+        if value > 0 and value == math.floor(value) and value <= NATIVE_EXACT_INTEGER_LIMIT then return value, nil end
+        return TRANSPORT_V3_NUMBER .. string.format("%.17g", value), nil
+    end
+    if kind == "string" then
+        if value == "" then return TRANSPORT_V3_EMPTY_STRING, nil end
+        if value:sub(1, #TRANSPORT_V3_PREFIX) == TRANSPORT_V3_PREFIX then return TRANSPORT_V3_STRING .. value, nil end
+        return value, nil
+    end
+    if kind ~= "table" then return nil, "transport_type_v3:" .. kind end
+    if next(value) == nil then return TRANSPORT_V3_EMPTY_TABLE, nil end
+    seen = seen or {}
+    if seen[value] ~= nil then return nil, "transport_cycle" end
+    seen[value] = true
+    local out = {}
+    for key, child in pairs(value) do
+        if type(key) ~= "number" and type(key) ~= "string" then seen[value] = nil; return nil, "transport_key_type_v3" end
+        local encodedKey, keyErr = TransportEncodeValueV3(key, seen)
+        if keyErr ~= nil then seen[value] = nil; return nil, keyErr end
+        local encodedChild, childErr = TransportEncodeValueV3(child, seen)
+        if childErr ~= nil then seen[value] = nil; return nil, childErr end
+        if out[encodedKey] ~= nil then seen[value] = nil; return nil, "transport_key_collision_v3" end
+        out[encodedKey] = encodedChild
+    end
+    seen[value] = nil
+    return out, nil
+end
+
+-- 维护：C runtime 可能把同一科学计数法指数写成 e-021/e-21；只归一指数的补零，
+-- 不接受不同尾数或非规范数字。防止跨运行库升级让精确数值串无故变成坏档。
+local function ComparableTransportNumberToken(token)
+    local mantissa, exponent = token:match("^(.-)[eE]([%+%-]?%d+)$")
+    if mantissa ~= nil then return mantissa .. "e" .. string.format("%.0f", tonumber(exponent)) end
+    return token
+end
+
+local function TransportDecodeValueV3(value, seen)
+    local kind = type(value)
+    if kind == "string" then
+        if value == TRANSPORT_V3_FALSE then return false, nil end
+        if value == TRANSPORT_V3_EMPTY_TABLE then return {}, nil end
+        if value == TRANSPORT_V3_ZERO then return 0, nil end
+        if value == TRANSPORT_V3_EMPTY_STRING then return "", nil end
+        if value:sub(1, #TRANSPORT_V3_STRING) == TRANSPORT_V3_STRING then return value:sub(#TRANSPORT_V3_STRING + 1), nil end
+        if value:sub(1, #TRANSPORT_V3_NUMBER) == TRANSPORT_V3_NUMBER then
+            local token = value:sub(#TRANSPORT_V3_NUMBER + 1)
+            local number = #token > 0 and #token <= 32 and not token:find("[^%d%.eE%+%-]") and tonumber(token) or nil
+            -- 维护：只接受本编码器产生的有限规范串，不接受 NaN/Inf/hex/空白/另一种写法；
+            -- 此处不 loadstring、不修复输入。业务字面前缀已走 s 转义，不会误当数值。
+            if number == nil or number ~= number or number == math.huge or number == -math.huge
+                or ComparableTransportNumberToken(string.format("%.17g", number)) ~= ComparableTransportNumberToken(token) then
+                return nil, "transport_number_token_v3"
+            end
+            return number, nil
+        end
+        if value:sub(1, #TRANSPORT_V3_PREFIX) == TRANSPORT_V3_PREFIX then return nil, "unknown_transport_token_v3" end
+        return value, nil
+    end
+    if kind == "number" then
+        if value ~= value or value == math.huge or value == -math.huge then return nil, "transport_nonfinite_v3" end
+        -- 维护：v3 风险数值必须来自 n-token；未封装的小数/大整数不能冒充安全 v3 数据。
+        if value ~= math.floor(value) or math.abs(value) > NATIVE_EXACT_INTEGER_LIMIT then return nil, "transport_native_number_v3" end
+        return value, nil
+    end
+    if kind == "boolean" then return value, nil end
+    if kind ~= "table" then return nil, "transport_type_v3:" .. kind end
+    seen = seen or {}
+    if seen[value] ~= nil then return nil, "transport_cycle" end
+    seen[value] = true
+    local out = {}
+    for key, child in pairs(value) do
+        local decodedKey, keyErr = TransportDecodeValueV3(key, seen)
+        if keyErr ~= nil then seen[value] = nil; return nil, keyErr end
+        if type(decodedKey) ~= "number" and type(decodedKey) ~= "string" then seen[value] = nil; return nil, "transport_key_type_v3" end
+        local decodedChild, childErr = TransportDecodeValueV3(child, seen)
+        if childErr ~= nil then seen[value] = nil; return nil, childErr end
+        -- 维护：损坏输入可以把两个物理键映射成同一逻辑键，必须整体拒绝，禁止后一个覆盖前一个。
+        if out[decodedKey] ~= nil then seen[value] = nil; return nil, "transport_key_collision_v3" end
+        out[decodedKey] = decodedChild
+    end
+    seen[value] = nil
+    return out, nil
+end
+
+
+-- 维护（2026-09-12 批量追踪实机）：397条导入在回读auto[189]首次缺失，
+-- 测试的“保留前188个数字键”可精确复现04287DD8>3AF652D5，但不是Native上限的断言。
+-- Authority：Core独占物理表示；Store只显式选择transport4。业务结构、canonical及旧章不改。
+-- v4继承v3标量精度保护，只将>32项的连续正整数序列装成16项/串、最多2048项的短块。
+-- 每串最多143字节，每表最多130项；计数/键集/段长严格验证，缺段绝不默认为短列表。
+-- 旧1/2/3永久可读。真实保留前缀先转义，禁止用户字段被误识别为传输标记。
+-- 只在已有Save/Load冷路径执行；没有新I/O/计时任务，物理大小仍受Store预算约束。
+local TRANSPORT_V4_PREFIX = "__rs_t4:"
+local TRANSPORT_V4_STRING = TRANSPORT_V4_PREFIX .. "s"
+local TRANSPORT_V4_ARRAY = TRANSPORT_V4_PREFIX .. "a"
+local VECTOR_CHUNK = 16
+local VECTOR_LIMIT = 2048
+
+local function DensePositiveIntegerCount(value)
+    local count,maximum=0,0
+    for key,child in pairs(value) do
+        if type(key)~="number" or key<1 or key~=math.floor(key) or key>VECTOR_LIMIT
+            or type(child)~="number" or child<1 or child>NATIVE_EXACT_INTEGER_LIMIT or child~=math.floor(child) then return nil end
+        count=count+1;maximum=math.max(maximum,key)
+    end
+    if count>32 and count==maximum then return count end
+end
+local function TransportEncodeValueV4(value,seen)
+    if type(value)=="string" and value:sub(1,#TRANSPORT_V4_PREFIX)==TRANSPORT_V4_PREFIX then
+        return TRANSPORT_V4_STRING..value,nil
+    end
+    if type(value)~="table" or next(value)==nil then return TransportEncodeValueV3(value) end
+    seen=seen or {};if seen[value] then return nil,"transport_cycle" end;seen[value]=true
+    local count=DensePositiveIntegerCount(value)
+    if count then
+        local out={[TRANSPORT_V4_ARRAY]=1,count=count}
+        for first=1,count,VECTOR_CHUNK do
+            local tokens={}
+            for i=first,math.min(count,first+VECTOR_CHUNK-1) do tokens[#tokens+1]=string.format("%.0f",value[i]) end
+            out["p"..tostring(math.floor((first-1)/VECTOR_CHUNK)+1)]=table.concat(tokens,",")
+        end
+        seen[value]=nil;return out,nil
+    end
+    local out={}
+    for key,child in pairs(value) do
+        if type(key)~="number" and type(key)~="string" then seen[value]=nil;return nil,"transport_key_type_v4" end
+        local ek,ke=TransportEncodeValueV4(key,seen);if ke then seen[value]=nil;return nil,ke end
+        local ev,ve=TransportEncodeValueV4(child,seen);if ve then seen[value]=nil;return nil,ve end
+        if out[ek]~=nil then seen[value]=nil;return nil,"transport_key_collision_v4" end
+        out[ek]=ev
+    end
+    seen[value]=nil;return out,nil
+end
+local function DecodePositiveVector(value)
+    local count=value.count
+    if value[TRANSPORT_V4_ARRAY]~=1 or type(count)~="number" or count~=math.floor(count)
+        or count<=32 or count>VECTOR_LIMIT then return nil,"transport_vector_header_v4" end
+    local parts=math.ceil(count/VECTOR_CHUNK);local fields=0
+    for key in pairs(value) do
+        fields=fields+1
+        if key~=TRANSPORT_V4_ARRAY and key~="count" then
+            local n=type(key)=="string" and key:match("^p([1-9]%d*)$") or nil
+            n=tonumber(n)
+            if not n or n>parts then return nil,"transport_vector_extra_key_v4" end
+        end
+    end
+    if fields~=parts+2 then return nil,"transport_vector_missing_chunk_v4" end
+    local out={}
+    for index=1,parts do
+        local text=value["p"..tostring(index)]
+        if type(text)~="string" or #text>143 or not text:match("^[1-9]%d*[,0-9]*$") then return nil,"transport_vector_chunk_v4:"..index end
+        local tokens={};local expected=math.min(VECTOR_CHUNK,count-(index-1)*VECTOR_CHUNK)
+        for token in text:gmatch("[^,]+") do
+            local n=tonumber(token)
+            if not n or n<1 or n>NATIVE_EXACT_INTEGER_LIMIT or n~=math.floor(n) or string.format("%.0f",n)~=token then return nil,"transport_vector_token_v4:"..index end
+            tokens[#tokens+1]=token;if #tokens>expected then return nil,"transport_vector_count_v4:"..index end
+            out[#out+1]=n
+        end
+        if #tokens~=expected or table.concat(tokens,",")~=text then return nil,"transport_vector_count_v4:"..index end
+    end
+    return out,nil
+end
+local function TransportDecodeValueV4(value,seen)
+    if type(value)=="string" and value:sub(1,#TRANSPORT_V4_PREFIX)==TRANSPORT_V4_PREFIX then
+        if value:sub(1,#TRANSPORT_V4_STRING)==TRANSPORT_V4_STRING then
+            local literal=value:sub(#TRANSPORT_V4_STRING+1)
+            -- 维护：仅Encoder能产生的保留前缀转义可读；拒绝残缺/伪造标记，不做容错补字。
+            if literal:sub(1,#TRANSPORT_V4_PREFIX)==TRANSPORT_V4_PREFIX then return literal,nil end
+            return nil,"invalid_transport_escape_v4"
+        end
+        return nil,"unknown_transport_token_v4"
+    end
+    if type(value)~="table" then return TransportDecodeValueV3(value) end
+    if value[TRANSPORT_V4_ARRAY]~=nil then return DecodePositiveVector(value) end
+    seen=seen or {};if seen[value] then return nil,"transport_cycle" end;seen[value]=true
+    local out={}
+    for key,child in pairs(value) do
+        local dk,ke=TransportDecodeValueV4(key,seen);if ke then seen[value]=nil;return nil,ke end
+        if type(dk)~="number" and type(dk)~="string" then seen[value]=nil;return nil,"transport_key_type_v4" end
+        local dv,ve=TransportDecodeValueV4(child,seen);if ve then seen[value]=nil;return nil,ve end
+        if out[dk]~=nil then seen[value]=nil;return nil,"transport_key_collision_v4" end
+        out[dk]=dv
+    end
+    seen[value]=nil;return out,nil
+end
+P.SupportedTransportContractVersion=4 -- 可读上限；默认新写仍为3，不启动全项目迁移。
+
 function P:EncodePhysicalEnvelope(raw)
     if type(raw) ~= "table" then return nil, "transport_raw_type:" .. tostring(type(raw)) end
-    local encoded, err = TransportEncodeValueV2(raw) -- 中文维护注释：所有新写统一 v2；不强制启动时重写健康 v1 Store，只有下一次正常保存/迁移才自然升级，避免一次更新触发 39 个 SaveData fan-out。
+    -- 维护：生产 EncodeValue 按Store注册选择默认3或显式4；旧格式仍原样支持，禁止内容与版本标签不一致。
+    local version = type(raw.__rsmeta) == "table" and tonumber(raw.__rsmeta.transportVersion) or self.TransportContractVersion
+    local encoded, err
+    if version == 1 then encoded, err = TransportEncodeValueV1(raw)
+    elseif version == 2 then encoded, err = TransportEncodeValueV2(raw)
+    elseif version == 3 then encoded, err = TransportEncodeValueV3(raw)
+    elseif version == 4 then encoded, err = TransportEncodeValueV4(raw)
+    else return nil, "transport_contract:" .. tostring(version) .. ">" .. tostring(self.SupportedTransportContractVersion) end
     if encoded == nil then return nil, err end
     -- 中文维护注释：DecodePhysicalEnvelope 必须在完整解码前读取这两个路由字段；它们均为非零整数，不属于已知 serializer omission 类型。
-    -- 覆盖回原生数字也避免未来 v2 标量编码规则扩展后出现“为了知道 codec 版本必须先知道 codec 版本”的自举死循环。
+    -- 覆盖回原生数字也避免 v3 标量编码规则扩展后出现“为了知道 codec 版本必须先知道 codec 版本”的自举死循环。
     if type(encoded.__rsmeta) == "table" and type(raw.__rsmeta) == "table" then
         encoded.__rsmeta.framework = raw.__rsmeta.framework
         encoded.__rsmeta.transportVersion = raw.__rsmeta.transportVersion
@@ -322,14 +547,45 @@ function P:DecodePhysicalEnvelope(raw)
     local framework = meta and tonumber(meta.framework) or nil
     local transport = meta and tonumber(meta.transportVersion) or nil
     if framework ~= nil and framework >= 3 then
-        if transport == 1 then return TransportDecodeValueV1(raw) end -- 中文维护注释：历史 v1 永久可读；成功业务写入后自然变成 v2，不做启动期批量迁移。
-        if transport == 2 then return TransportDecodeValueV2(raw) end -- 中文维护注释：当前 v2 解码必须在 Envelope Seal/Store schema/Apply 之前完成。
-        return nil, "transport_contract:" .. tostring(transport) .. ">" .. tostring(self.TransportContractVersion) -- 中文维护注释：未知/future transport 不猜测，防止旧客户端覆盖新格式。
+        if transport == 1 then return TransportDecodeValueV1(raw) end -- 中文维护注释：历史 v1 永久可读；成功业务写入后自然变成当前传输版本，不做启动期批量迁移。
+        if transport == 2 then return TransportDecodeValueV2(raw) end -- 中文维护注释：历史 v2 解码仍在 Envelope Seal/Store schema/Apply 之前完成。
+        -- 维护：先还原精确 number，再进入原 Envelope/Store 校验；未知代际仍 fail-closed。
+        if transport == 3 then return TransportDecodeValueV3(raw) end
+        if transport == 4 then return TransportDecodeValueV4(raw) end
+        return nil, "transport_contract:" .. tostring(transport) .. ">" .. tostring(self.SupportedTransportContractVersion) -- 中文维护注释：未知/future transport 不猜测，防止旧客户端覆盖新格式。
     end
     -- 中文维护注释：Framework2/无 metadata 的历史存档没有物理哨兵，保持原样进入既有 legacy/schema 迁移。
     -- transportVersion 单独出现而 framework 缺失属于损坏 envelope，不猜测恢复。
     if transport ~= nil then return nil, "transport_without_framework" end
     return raw, nil
+end
+
+-- 中文维护注释（序列表示恢复）：离线 Native 边界回归中 { ["1"]=row } 被 ipairs 当成空列表；
+-- Transport v2 保护标量，却不固定数字键的物理类型。这里只提供有界、无丢弃的形状候选；
+-- 哪些字段是序列由 Store 声明，验真仍归 Persistence，必须命中原 stamped fingerprint。
+-- 兼容/风险：只接受完整 1..N，拒绝稀疏、0 起点、重复数字/字符串索引及非规范键，不猜顺序。
+-- 仅 mismatch 冷路径返回副本，不访问 Native、不 Apply、不清 fence，禁止用作全局 map→array。
+function P:RebuildDenseSequenceForIntegrity(value, limit)
+    if type(value) ~= "table" then return nil, "sequence_type" end
+    limit = math.min(2048, math.max(0, math.floor(tonumber(limit) or 0)))
+    local indexed, count, maximum, changed = {}, 0, 0, false
+    for key, row in pairs(value) do
+        local kind, index = type(key), tonumber(key)
+        if (kind ~= "number" and kind ~= "string") or index == nil or index ~= index
+            or index < 1 or index ~= math.floor(index) then return nil, "invalid_index" end
+        if index > limit or count >= limit then return nil, "sequence_limit" end
+        if kind == "string" and (not key:match("^[1-9]%d*$") or tostring(index) ~= key) then
+            return nil, "invalid_index"
+        end
+        if indexed[index] ~= nil then return nil, "duplicate_index" end
+        indexed[index], count = row, count + 1
+        maximum = math.max(maximum, index)
+        changed = changed or kind == "string"
+    end
+    if maximum ~= count then return nil, "sparse_sequence" end
+    local out = {}
+    for index = 1, count do out[index] = DeepCopy(indexed[index]) end
+    return out, nil, changed
 end
 
 local function NormalizeId(value)
@@ -639,6 +895,9 @@ local function ValidateDefinition(def)
     if LIFETIME[lifetime] == nil then return nil, "invalid lifetime: " .. lifetime end
     local scope = tostring(def.scope or SCOPE.Account)
     if SCOPE[scope] == nil then return nil, "invalid scope: " .. scope end
+    -- 维护：只允许注册时明确选择已实现的物理格式；未知版本禁止写入。
+    local tv=def.transportVersion
+    if tv~=nil and (type(tv)~="number" or tv~=math.floor(tv) or tv<1 or tv>P.SupportedTransportContractVersion) then return nil,"unsupported store transport" end
     local contractVersion = math.max(1, math.floor(tonumber(def.contractVersion) or 1))
     if contractVersion >= 2 then
         if NonEmptyText(def.owner) == nil then return nil, "V2 store owner required" end
@@ -691,6 +950,8 @@ function P:RegisterStore(def)
         scope = tostring(def.scope or SCOPE.Account),
         contractVersion = math.max(1, math.floor(tonumber(def.contractVersion) or 1)),
         schemaVersion = math.max(1, math.floor(tonumber(def.schemaVersion) or 1)),
+        -- 维护：仅批量ID Store选择v4；其他Store继续原有v3，schema和canonical不变。
+        transportVersion = def.transportVersion or P.TransportContractVersion,
         legacySchemaVersion = math.max(0, math.floor(tonumber(def.legacySchemaVersion) or 0)),
         key = NonEmptyText(def.key),
         resolvedKey = nil,
@@ -720,6 +981,10 @@ function P:RegisterStore(def)
         -- replaced by the current default. Typed-codec Stores retain decode-owned
         -- Domain application. Successful recovery queues an immediate restamp.
         rebuildCanonicalForIntegrity = def.rebuildCanonicalForIntegrity,
+        -- 中文维护注释：只有已测试的 Store 才允许本次保存回读复用精确表示恢复。默认关闭，
+        -- 不是历史迁移/known-pair 通行证；回读必须同时命中磁盘章与本次期望值并通过当前
+        -- canonical + Domain budget，不 Apply、不补写、不改变当前工作副本。
+        recoverReadbackRepresentation = def.recoverReadbackRepresentation == true,
         -- Optional STORE-OWNED one-time migration bridge for a known historical
         -- canonical stamp that is no longer invertible after a native serializer
         -- representation loss. This is intentionally stronger-gated than the
@@ -886,7 +1151,7 @@ EncodeValue = function(store, value, periodId, scopeFingerprint)
         periodId = periodId,
         scopeBindingContract = store.scope == SCOPE.Character and P.ScopeBindingContractVersion or nil,
         scopeIdentityFingerprint = store.scope == SCOPE.Character and NonEmptyText(scopeFingerprint) or nil,
-        transportVersion = P.TransportContractVersion, -- 中文维护注释：数值字段不会被 RU false/空表省略，用于 LoadData 边界决定是否还原物理哨兵；旧 Framework2 无此字段。
+        transportVersion = store.transportVersion or P.TransportContractVersion, -- 维护：Store显式物理策略；数值字段不会被 RU false/空表省略，用于 LoadData 边界决定是否还原物理哨兵；旧 Framework2 无此字段。
     }
     return raw, nil
 end
@@ -981,6 +1246,39 @@ local function IsRecoverableReplacementFence(reason)
         or reason:match("^transport_decode_failed:") ~= nil
 end
 
+-- 中文维护注释（加载/保存闭环）：仅修 Load 会使字符串序号样本“可加载但保存回读失败”。
+-- 当前世代/current schema mismatch 冷路径才尝试一次；外层已验证身份、Envelope Seal 和预算。
+-- 本次期望 Hash、磁盘既有 Hash、候选 Hash、当前 Domain canonical Hash 必须全部一致。
+-- Authority 仍是 Persistence，Store 只重建声明的序列表示；不走 known-pair、不 Apply/Save，
+-- 不放宽 schema，失败继续原拒绝。保存探针与 Load 分离，无帧循环或后台重试。
+local function VerifyReadbackRepresentation(store, raw, actual, canonical, expectedFingerprint)
+    local meta = type(raw) == "table" and raw.__rsmeta or nil
+    if store.recoverReadbackRepresentation ~= true or type(store.rebuildCanonicalForIntegrity) ~= "function"
+        or type(meta) ~= "table" or tonumber(meta.framework) ~= P.FrameworkVersion
+        or tonumber(meta.schema) ~= store.schemaVersion or tonumber(meta.transportVersion) ~= (store.transportVersion or P.TransportContractVersion)
+        or tonumber(meta.integrityVersion) ~= P.IntegrityContractVersion
+        or tostring(meta.encodedFingerprint or meta.payloadFingerprint) ~= tostring(expectedFingerprint) then
+        return false
+    end
+    local loadProbe = store.lastHistoricalRecoveryProbe
+    local ok, candidate, recoveredDomain = pcall(store.rebuildCanonicalForIntegrity,
+        DeepCopy(actual), expectedFingerprint, DeepCopy(canonical), DeepCopy(raw))
+    local probe = store.lastHistoricalRecoveryProbe
+    store.lastHistoricalRecoveryProbe = loadProbe -- 只读回读不能污染真实 Load 的失败证据。
+    store.lastReadbackRecoveryProbe = tostring(probe or "hook_no_probe"):sub(1, 200)
+    if not ok or type(candidate) ~= "table" or type(recoveredDomain) ~= "table" then return false end
+    local candidateFingerprint = P:FingerprintCanonicalValue(store, candidate)
+    if candidateFingerprint == nil or tostring(candidateFingerprint) ~= tostring(expectedFingerprint) then return false end
+    local inspection = P:InspectPayload(recoveredDomain, store.budget)
+    if type(inspection) ~= "table" or inspection.ok ~= true then return false end
+    local currentCanonical = P:CanonicalIntegrityValue(store, recoveredDomain)
+    if type(currentCanonical) ~= "table" then return false end
+    local currentFingerprint = P:FingerprintCanonicalValue(store, currentCanonical)
+    if currentFingerprint == nil or tostring(currentFingerprint) ~= tostring(expectedFingerprint) then return false end
+    store.lastReadbackRepresentationRecovered = true
+    return true
+end
+
 -- Reliability v3: optional post-write readback verification for critical
 -- stores. SaveData returning true is not treated as durable proof on RU because
 -- oversized/nested payloads have historically been observed to truncate
@@ -999,6 +1297,9 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
 
     self.stats.readbackVerifyAttempts = (tonumber(self.stats.readbackVerifyAttempts) or 0) + 1
     store.lastVerifyAt = NowMs()
+    -- 中文维护注释：每次真正回读独立留证，不复用上次成功结果，也不清 Load 探针。
+    store.lastReadbackRecoveryProbe = nil
+    store.lastReadbackRepresentationRecovered = false
     local function Fail(reason)
         reason = tostring(reason or "readback verification failed")
         store.lastVerifyOk = false
@@ -1123,6 +1424,24 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
     end
     if expectedFingerprint == nil then return Fail("expected_fingerprint_failed:" .. tostring(expectedErr)) end
     if actualFingerprint == nil then return Fail("readback_fingerprint_failed:" .. tostring(actualErr)) end
+    -- 中文维护注释（2026-09-12，回读业务章绑定）：旧 v4 回读只验证 expected==actual，
+    -- 没把 metadata.encodedFingerprint 绑定到本次期望值。合成的旧章/有效 envelope 可因此
+    -- 被 Verify/SaveStore/Flush 判为成功，但下一代 LoadStore 必然按同一旧章拒绝，形成假耐久。
+    -- Authority：Store 拥有 canonical，Persistence 拥有证明；envelope seal 仅证明 metadata
+    -- 自洽，不等于业务章与 payload 匹配。先要求 stamped==expected，再走 actual==expected
+    -- 及原有精确表示恢复；三者一致才算成功。禁止在此重盖章、Apply、写盘或解除写保护。
+    -- 兼容：不改 Hash/schema/transport；旧 integrity-v2 已在上方校验 encoded payload，
+    -- 不能把其 raw-envelope 章误比成 Domain 章。健康 v4 和已验证的序列表形恢复保持不变。
+    -- 性能/维护：复用已有短 Hash，仅一次字符串比较；失败沿用 Fail/耐久屏障，不新增轮询。
+    -- 证据边界：该漏洞已离线复现，尚未证明是用户三个现存故障存档的生成原因。
+    if canonicalReadback == true and tostring(stampedEncodedFingerprint) ~= tostring(expectedFingerprint) then
+        return Fail("readback_stamped_fingerprint_mismatch:" .. tostring(stampedEncodedFingerprint)
+            .. ">" .. tostring(expectedFingerprint))
+    end
+    if canonicalReadback == true and tostring(actualFingerprint) ~= tostring(expectedFingerprint)
+        and VerifyReadbackRepresentation(store, raw, actualValue, canonicalActualForDiagnostics, expectedFingerprint) then
+        actualFingerprint = expectedFingerprint -- 上述四重等值证明成立，不把候选写回业务 Domain。
+    end
     if tostring(actualFingerprint) ~= tostring(expectedFingerprint) then
         local divergence = nil -- 中文维护注释：Hash A>B 不能告诉维护者哪一字段被 RU serializer 改写；只在已经失败时做最多 512 节点的 deterministic diff，不增加正常保存/输入热路径成本。
         if canonicalExpectedForDiagnostics ~= nil and canonicalActualForDiagnostics ~= nil
@@ -1228,6 +1547,15 @@ function P:LoadStore(id, options)
     store.resolvedScopeFingerprint = scopeFingerprint
     store.lastScopeBindingError = nil
 
+    -- 中文维护注释：仅在真正重读前清空上一轮证据，terminal memo 返回则保留故障。
+    -- 原实现只重置 trace，回归中会夹带旧 schema 的 probe；诊断不是恢复 Authority。
+    store.lastHistoricalRecoveryProbe = nil
+    -- 维护（F2窗口精度）：新物理读取清除上一轮数值证据，防止终端失败缓存重验后误用旧样本。
+    -- 只存两轴标量/次数，不持有整份raw；普通终端缓存命中不会到达此处。
+    store.lastWindowNumericEvidence = nil
+    store.lastHistoricalRecoveryHookState = "not_called"
+    store.lastIntegrityRecoveryTrace = nil
+    store.lastIntegrityMismatchEvidence = nil
     local raw, loadErr = S.Api:LoadData(resolvedKey)
     store.lastLoadAt = NowMs()
     if loadErr ~= nil then
@@ -1459,8 +1787,7 @@ function P:LoadStore(id, options)
     -- if/elseif 内，其局部变量（如 recoveredHistoricalCanonical）在函数末尾的升级排队处不可见；
     -- 用 stats 增量判断「本次加载是否真的执行过恢复」既可跨作用域，又不需要每个 Store 额外声明标记。
     local recoveriesAtEntry = tonumber(self.stats.integrityUpgradeRecoveries) or 0
-    -- 中文维护注释（.18.200）：每次真实 LoadStore 从头覆盖旧 trace，避免上一次失败/成功的 runtime 证据污染本轮判断。
-    store.lastIntegrityRecoveryTrace = nil
+    -- 中文维护注释：真实读取前已统一清理证据；此处只追加本次契约世代，不复用旧探针。
     AppendIntegrityRecoveryTrace(store, "iv=" .. tostring(stampedIntegrityVersion)
         .. ",rel=" .. tostring(stampedReliabilityContract)
         .. ",fw=" .. tostring(meta and meta.framework or nil)
@@ -1540,6 +1867,17 @@ function P:LoadStore(id, options)
                         -- field. We accept it only when that candidate reproduces the
                         -- stamped fingerprint byte-for-byte and the independent v6+
                         -- envelope seal already verified above.
+                        -- 中文维护注释：只缓存版本/Hash，不保留磁盘 payload；短报告能逐一说明
+                        -- 全部故障 Store，避免长摘要截掉第三项。仅 mismatch 冷路径计算一次。
+                        local rawProof = type(store.encode) == "function" and type(store.decode) == "function"
+                            and self:FingerprintEncodedPayload(raw, store.encodedBudget)
+                            or self:FingerprintCanonicalValue(store, decoded)
+                        store.lastIntegrityMismatchEvidence = {
+                            storedSchema = storedSchema, currentSchema = store.schemaVersion,
+                            framework = meta and meta.framework, transportVersion = meta and meta.transportVersion,
+                            codec = raw.codec, stampedFingerprint = stampedFingerprint,
+                            actualFingerprint = actualFingerprint, rawFingerprint = rawProof,
+                        }
                         local recoveredHistoricalCanonical = false
                         if envelopeAdvertised == true and store.allowIntegrityUpgrade == true then
                             local decodedInspection = self:InspectPayload(decoded, store.budget)
@@ -1559,11 +1897,20 @@ function P:LoadStore(id, options)
                                         -- hooks remain source-compatible (Lua ignores extra args). A hook may optionally
                                         -- return a second table: the recovered CURRENT Domain value. This is necessary when
                                         -- decode() cannot distinguish an RU-omitted false from a missing default-true field.
+                                        -- 中文维护注释：调用状态独立于 Store 是否写 probe；返回候选却没
+                                        -- probe 不等于没调用。Core 记录真实结果，不影响恢复/写保护决策。
+                                        store.lastHistoricalRecoveryHookState = "called"
                                         rebuiltOk, historicalCanonical, recoveredDomain = pcall(
                                             store.rebuildCanonicalForIntegrity, DeepCopy(decoded), stampedFingerprint,
                                             canonical, DeepCopy(raw))
+                                        store.lastHistoricalRecoveryHookState = rebuiltOk ~= true and "exception"
+                                            or (type(historicalCanonical) == "table" and "candidate" or "no_candidate")
+                                        if NonEmptyText(store.lastHistoricalRecoveryProbe) == nil then
+                                            store.lastHistoricalRecoveryProbe = "hook_" .. store.lastHistoricalRecoveryHookState
+                                        end
                                         AppendIntegrityRecoveryTrace(store, "hist=" .. tostring(rebuiltOk == true and type(historicalCanonical) == "table" and "cand" or (rebuiltOk == true and "nil" or "err"))) -- 中文维护注释：明确 Store historical hook 是否执行/抛错/无候选，结束“只看 Hash 猜分支”的盲区。
                                     else
+                                        store.lastHistoricalRecoveryHookState = "not_registered" -- 中文维护注释：与前置 gate 跳过明确区分。
                                         AppendIntegrityRecoveryTrace(store, "hist=nohook") -- 中文维护注释：Store 未注册 historical hook 也必须显式可见。
                                         rebuiltOk, historicalCanonical, recoveredDomain = false, nil, nil
                                     end
@@ -1682,11 +2029,10 @@ function P:LoadStore(id, options)
                         end
                         if recoveredHistoricalCanonical ~= true then
                             integrityErr = "fingerprint_mismatch:" .. tostring(stampedFingerprint) .. ">" .. tostring(actualFingerprint)
-                            -- 中文维护注释：`.18.198` 保底诊断。若 hook 未被调用（envelope/allowIntegrityUpgrade/
-                            -- decoded 预算任一前置不满足），probe 会保持 nil，「恢复探针」摘要段随之消失，
-                            -- 维护者将无法区分「没调用」和「调用了没命中」。这里补写明确标记，并注明被跳过的前置。
+                            -- 中文维护注释：保底诊断使用实际调用状态，不能由 probe 缺失推断未调用；
+                            -- 前置 gate 跳过、未注册、无候选、异常必须有不同证据，不能绕过失败。
                             if NonEmptyText(store.lastHistoricalRecoveryProbe) == nil then
-                                store.lastHistoricalRecoveryProbe = "hook_not_called/envelopeAdvertised="
+                                store.lastHistoricalRecoveryProbe = "hook_" .. tostring(store.lastHistoricalRecoveryHookState or "not_called") .. "/envelopeAdvertised="
                                     .. tostring(envelopeAdvertised) .. "/allowUpgrade=" .. tostring(store.allowIntegrityUpgrade)
                                     .. "/integrityVersion=" .. tostring(stampedIntegrityVersion)
                                     .. "/reliability=" .. tostring(stampedReliabilityContract) -- 中文维护注释：仅元数据与布尔，无业务内容。
@@ -2093,8 +2439,10 @@ function P:LoadStore(id, options)
     -- 但健康 v1 Store 继续保持 `.18.197` 的惰性升级策略（首次正常保存时自然写 v2），避免一次版本更新
     -- 触发全部 39 个 Store 的 SaveData fan-out；因此这里用 stats 恢复计数增量严格限定为「本次真的恢复过」，
     -- 而不是「所有 transport 落后的 Store」。
+    -- 维护：精确恢复成功才排队升级到Store声明的物理版本（默认3/显式4），避免再写有损表示；
+    -- 只是标 dirty，不在验证/Apply 完成前写盘。健康 v2 不走该分支，不触发全 Store 批量保存。
     if deferredSaveReason == nil and meta ~= nil
-        and (tonumber(meta.transportVersion) or 0) < (tonumber(self.TransportContractVersion) or 0)
+        and (tonumber(meta.transportVersion) or 0) < (tonumber(store.transportVersion or self.TransportContractVersion) or 0)
         and (tonumber(self.stats.integrityUpgradeRecoveries) or 0) > recoveriesAtEntry then
         deferredSaveReason = "transport_representation_upgrade" -- 中文维护注释：独立原因名，便于诊断区分「物理传输表示升级」与「Framework 升级」。
         deferredSaveDelayMs = 0 -- 中文维护注释：立即排队，与 Integrity/known-pair 恢复保持同一事务优先级，不允许被普通 debounce 降级。
@@ -3057,12 +3405,12 @@ local function NumberToken(value)
     return string.format("%.17g", value)
 end
 
--- Persistence Integrity v2 deliberately uses a serializer-stable numeric token
--- for non-integral values. RU SaveData/LoadData may normalize floating-point
--- representation even when the business value is unchanged; hashing the full
--- 17-digit binary representation therefore created false cross-reload
--- corruption fences for UI geometry/opacity/color settings. Integral values
--- remain exact so item/skill ids, counters and timestamps do not lose entropy.
+-- Historical integrity v2/v4 use a six-significant-digit token for non-integers.
+-- Keep this contract for old stamps: it is NOT intrinsically stable under a
+-- serializer which first rounds to six fractional decimals (actual trade fixture).
+-- Transport v3 protects full numeric values at the Native boundary instead of
+-- silently changing this algorithm or dropping numeric fields from integrity.
+-- Integral values remain exact so ids, counters and timestamps retain their bits.
 local function DurableNumberToken(value)
     value = tonumber(value) or 0
     if value == 0 then return "0" end
@@ -3070,7 +3418,10 @@ local function DurableNumberToken(value)
         return string.format("%.0f", value)
     end
     -- Six significant decimal digits stay safely inside single-precision
-    -- serializer round-trip accuracy while exceeding the precision required by
+    -- serializer precision in common cases; this alone does NOT protect fixed-six-decimal
+    -- rounding (2026-09-12 real trade evidence). Transport v3 now preserves the number
+    -- before it crosses Native. Keep this historical hash unchanged for old saves.
+    -- This numeric token also exceeds the precision required by
     -- Suite UI scale/opacity/color/geometry settings. This token is used only
     -- by the persistence integrity layer, never by business-domain fingerprints.
     return string.format("%.6g", value)
@@ -3244,6 +3595,137 @@ function P:FingerprintCanonicalValue(store, canonical, budget)
     return self:FingerprintDurablePayload(canonical, budget or store.encodedBudget)
 end
 
+-- 维护（真实udf，2026-09-12）：读出的数字可能经历binary32 -> 固定6位小数 -> binary32，
+-- 与此前只建模“固定6位 -> binary32”不同。这里只提供有限正/负数的独立投影用于旧章证明，
+-- 不覆盖Lua算术/format，不在Tick运行，不将此模型当作RU源码；新Transport3不需要该损失。
+-- 分支使用IEEE ties-to-even，调用者先限制数据范围；不会把数据库/Native对象带入计算。
+local function LegacyBinary32(value)
+    if value==0 then return value end
+    local sign=value<0 and -1 or 1
+    local magnitude=math.abs(value)
+    local _,exponent=math.frexp(magnitude)
+    local step=2^(exponent-24)
+    local scaled=magnitude/step;local whole=math.floor(scaled);local fraction=scaled-whole
+    if fraction>0.5 or (fraction==0.5 and whole%2==1) then whole=whole+1 end
+    return sign*whole*step
+end
+local function LegacyFloatFirstProjection(value)
+    return LegacyBinary32(tonumber(string.format("%.6f",LegacyBinary32(value))))
+end
+
+-- 维护（F2窗口精度，2026-09-12）：跑商真实样本已证明“固定6位小数→binary32”可以改变
+-- 旧6位有效数字指纹；另外两个Store同样保存Floating的归一化中心，但未接入该受限恢复。
+-- 此处收敛原跑商算法，不放大到任意数字/多字段组合：仅既有normalizedCenterX/Y，每次
+-- 改一个标量，总计<=32个候选，完整原章唯一命中才返回。Hash是原项目一致性检查，非密码学证明。
+-- 本轮新增已由udf复现的float32先行分支，仍在同一候选/单轴上限内；见LegacyFloatFirstProjection。
+-- Authority：Store声明schema/codec及历史canonical，Core已验metadata/预算，最终再验完整
+-- 指纹并迁移/Apply。helper不调用Native、不写盘、不解除Fence、不查业务模块、不更换默认值。
+-- 比例必须原raw/decoded/canonical一致且属于logical-free-v2；零/小值/跨数量级/双轴损失
+-- 继续拒绝。新Transport3绝不走此桥。无法命中时留两轴17g值/6g token与次数供单份短报告，
+-- 不是完整原档。保持32上限，不为了凑Hash扩枚举；新增字段/机制须先给独立实证与回归。
+P.Fixed6WindowRecoveryContractVersion = 2
+function P:RebuildFixed6WindowCanonical(store, decoded, stamp, canonical, raw, schema, codec)
+    local meta = type(raw) == "table" and raw.__rsmeta or nil
+    if type(store) ~= "table" or type(meta) ~= "table" or meta.store ~= store.id or meta.owner ~= store.owner
+        or tonumber(meta.framework) ~= 3 or tonumber(meta.transportVersion) ~= 2
+        or tonumber(meta.schema) ~= schema or tonumber(meta.integrityVersion) ~= 4
+        or type(stamp) ~= "string" or #stamp ~= 8 or stamp:find("[^%x]")
+        or (codec == nil and raw.codec ~= nil) or (codec ~= nil and raw.codec ~= codec) then return nil end
+    local proof = {status="shape", attempts=0, matches=0, fields={}}
+    store.lastWindowNumericEvidence = proof
+    local body = codec ~= nil and type(canonical) == "table" and canonical.payload or canonical
+    local cw = type(body) == "table" and body.widgetWindow or nil
+    local dw = type(decoded) == "table" and decoded.widgetWindow or nil
+    local rw = type(raw.payload) == "table" and raw.payload.widgetWindow or nil
+    if type(cw) ~= "table" or type(dw) ~= "table" or type(rw) ~= "table" then return nil end
+    local function TextNumber(v)
+        if type(v) ~= "number" then return "<" .. type(v) .. ">" end
+        if v ~= v or v == math.huge or v == -math.huge then return "<nonfinite>" end
+        return string.format("%.17g",v)
+    end
+    for _,key in ipairs({"normalizedCenterX","normalizedCenterY"}) do
+        proof.fields[key]={raw=TextNumber(rw[key]),canonical=TextNumber(cw[key]),
+            token=type(cw[key])=="number" and DurableNumberToken(cw[key]) or "-",reason="not_free"}
+    end
+    if cw.coordinateSpace ~= "logical-free-v2" or cw.userMoved ~= true then return nil end
+    if self:InspectPayload(canonical,store.encodedBudget).ok ~= true then proof.status="budget";return nil end
+    local matched, matchedKey, matchedValue
+    for _,key in ipairs({"normalizedCenterX","normalizedCenterY"}) do
+        local value,field=cw[key],proof.fields[key]
+        local magnitude=type(value)=="number" and math.abs(value) or 0
+        field.reason="range"
+        if type(value)=="number" and value==value and magnitude>=0.01 and magnitude<1 then
+            field.reason="normalized"
+            if dw[key]==value and rw[key]==value then
+                local fixed=string.format("%.6f",value)
+                local center=tonumber(fixed)
+                local exponent=math.floor(math.log(magnitude)/math.log(10))
+                local step=10^(exponent-5)
+                local low,high=center-0.0000005,center+0.0000005
+                field.reason="boundary"
+                if low*high>0 and math.floor(math.log(math.abs(low))/math.log(10))==exponent
+                    and math.floor(math.log(math.abs(high))/math.log(10))==exponent then
+                    local first,last=math.floor(low/step)-1,math.ceil(high/step)+1
+                    field.reason="candidate_budget"
+                    if last-first+1<=16 then
+                        -- 维护（诊断纠错）：进入枚举不等于执行了指纹测试。真实F2轴值没有
+                        -- 可区分候选；仅在实际计算候选Hash时标tested，避免tries=0却显示tested。
+                        -- 不改变候选集合/步长/预算/恢复规则，不额外枚举或放行任何Hash。
+                        field.reason="no_alternative"
+                        local seen={}
+                        for index=first,last do
+                            local token=string.format("%.6g",index*step)
+                            local number=tonumber(token)
+                            if not seen[token] and token~=DurableNumberToken(value) then
+                                local witness,restored,model
+                                -- 保留已验证跑商旧桥；它还原token值，不偷改老兼容契约。
+                                if string.format("%.6f",number)==fixed then
+                                    witness,restored,model=number,number,"fixed6"
+                                else
+                                    -- 新实证：0.8299175 -> float32(.829917490...) -> .829917，
+                                    -- 但旧6g章为.829918。只探查当前/候选舍入边界，不全域凑Hash。
+                                    -- witness仅用于历史token证明，实际窗口保留已读value；丢失的小数
+                                    -- 无法唯一反演，不能把一个可行源值伪称为用户原值。
+                                    local points={number,number-step/2,number+step/2,
+                                        number-step/2+1e-12,number+step/2-1e-12,
+                                        low,high,low+1e-12,high-1e-12}
+                                    for _,point in ipairs(points)do
+                                        if DurableNumberToken(point)==token and LegacyFloatFirstProjection(point)==value then
+                                            witness,restored,model=point,value,"float32_fixed6";break
+                                        end
+                                    end
+                                end
+                                if witness~=nil then
+                                    field.reason="tested"
+                                    seen[token]=true;proof.attempts=proof.attempts+1
+                                    if proof.attempts>32 then proof.status="budget";return nil end
+                                    local candidate=DeepCopy(canonical)
+                                    local window=codec~=nil and candidate.payload.widgetWindow or candidate.widgetWindow
+                                    window[key]=witness
+                                    local fp=self:FingerprintCanonicalValue(store,candidate)
+                                    if fp==stamp then
+                                        proof.matches=proof.matches+1;matched=candidate;matchedKey=key;matchedValue=restored
+                                        proof.model=model;proof.matchedToken=token
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    proof.status=proof.matches==1 and "unique" or (proof.matches>1 and "ambiguous" or "no_match")
+    proof.field=proof.matches==1 and matchedKey or nil
+    -- 维护：投影canonical与业务Domain不同（死亡codec / Buff历史schema），只修改声明的
+    -- Domain叶子，保留已解码的完整历史/追踪集合；schema升级仍由调用方Core处理。
+    if proof.matches==1 then
+        local recovered=DeepCopy(decoded);recovered.widgetWindow[matchedKey]=matchedValue
+        return matched,recovered
+    end
+    return nil
+end
+
 local ENVELOPE_SEAL_BUDGET = { maxDepth = 4, maxNodes = 96, maxStringBytes = 4096, maxEntriesPerTable = 32 }
 
 function P:FingerprintEnvelopeIntegrity(raw)
@@ -3267,6 +3749,115 @@ function P:FingerprintEnvelopeIntegrity(raw)
         scopeIdentityFingerprint = tostring(meta.scopeIdentityFingerprint or "<nil>"),
     }
     return self:FingerprintPayload(canonical, ENVELOPE_SEAL_BUDGET)
+end
+
+-- 维护（failed-save-evidence-1）：事务回滚只还原 Domain/dirty 元数据，不撤销已经发生的
+-- Native 写入；durable 回读失败可以没有 writeFenced，且 consecutiveSaveFailures 被回滚为0。
+-- Authority：此只读判定由 Core 统一，供取证授权和诊断选择共用；不尝试修复、不读盘。
+-- needsBarrierVerify 单独为 true 只是正常待验证，不能当故障导出健康玩家存档。
+-- 成功耐久重试/重新验证解除 pending 后不再列作当前失败，历史 incident 计数仍保留。
+function P:GetStoreFailureKind(storeOrId)
+    local store = type(storeOrId) == "table" and storeOrId or self:GetStore(storeOrId)
+    if type(store) ~= "table" then return nil end
+    if store.writeFenced == true then return "write_fenced" end
+    -- 维护：成功Load或普通Save会清lastError，但可能保留历史verify/counter；不可因此导出健康档。
+    -- 当前保存/屏障失败的正式调用链都会设置lastError；仅pending本身仍只是待验证。
+    if NonEmptyText(store.lastError) == nil then return nil end
+    if store.needsBarrierVerify == true then
+        if store.lastVerifyOk == false then return "readback_failed" end
+        if store.lastBarrierVerifyOk == false then return "barrier_failed" end
+        if store.lastError ~= nil then return "save_failed" end
+    end
+    if (tonumber(store.consecutiveSaveFailures) or 0) > 0 then return "save_failed" end
+    return nil
+end
+
+-- 中文维护注释（RS-PERSIST-EVIDENCE-2）：实机仍是旧 Hash 不匹配且 sequence=unchanged，
+-- 继续增加猜测候选无法证明数据完整。此入口只在用户明确点击时读取一个当前失败 Store 的
+-- Native LoadData 返回表；绝不调用 LoadStore/default/decode/migrate/apply/SaveData/ClearData。
+-- Authority：Core 独占已解析 SaveKey 与角色 scope 校验，Diagnostics/页面只能取得分离文本。
+-- 兼容：不改 schema、transport、canonical 或 known-pair。快照不是磁盘原始字节，也不是恢复证明。
+-- 隐私/性能：可能含玩家名、追踪 ID 和布局，禁止自动输出聊天；最多 256KiB ASCII 文本，超限
+-- 整体拒绝，不返回截断档案。只在点击冷路径分配临时字符串，页面隐藏时须释放文本。
+function P:BuildFailedStoreEvidenceText(id, options)
+    local store = self:GetStore(id)
+    -- 维护：加载写保护与当前保存失败都可只读取证；其余健康 Store 仍拒绝。
+    -- 保留旧错误码供旧维护工具兼容；scope/已解析 key/硬预算和 Native 原表序列化门不变。
+    if self:GetStoreFailureKind(store) == nil then return nil, "store_not_fenced" end
+    if store.lifetime == LIFETIME.Session or NonEmptyText(store.resolvedKey) == nil then
+        return nil, "store_key_unresolved"
+    end
+    local bound, bindingError = CurrentScopeBinding(store)
+    if bound ~= true then return nil, "evidence_scope:" .. tostring(bindingError) end
+    if type(S.Api) ~= "table" or type(S.Api.LoadData) ~= "function" then return nil, "load_api_unavailable" end
+    local ok, raw, readError = pcall(S.Api.LoadData, S.Api, store.resolvedKey)
+    if not ok then return nil, "evidence_load_exception:" .. tostring(raw) end
+    if readError ~= nil then return nil, "evidence_load_failed:" .. tostring(readError) end
+    if type(raw) ~= "table" then return nil, "evidence_raw_type:" .. type(raw) end
+    -- 维护：先检查原始 Native 表，再序列化；拒绝环、非有限数、过深/过大表，不修正错误输入。
+    local declared = store.encodedBudget or self.DefaultBudget
+    -- 维护：取证使用独立硬上限，并不扩大 Store 的预算；与离线解码器预算保持一致。
+    local budget = {
+        maxDepth = math.min(declared.maxDepth or 12, 15),
+        maxNodes = math.min(declared.maxNodes or 4096, 64000),
+        maxStringBytes = math.min(declared.maxStringBytes or 65536, 131072),
+        maxEntriesPerTable = math.min(declared.maxEntriesPerTable or 1024, 4096),
+    }
+    local inspection = self:InspectPayload(raw, budget)
+    if inspection.ok ~= true then return nil, "evidence_payload:" .. tostring(inspection.reason) end
+    local snapshot = {
+        store = store.id, key = store.resolvedKey, loadStatus = store.loadStatus,
+        failure = tostring(store.lastError or store.writeFenceReason or ""),
+        buildTag = tostring(S.BuildTag or "unknown"), luaVersion = tostring(_VERSION),
+        capturedAtMs = NowMs(), source = "Native LoadData snapshot; unverified; not disk bytes",
+        raw = raw,
+    }
+    -- 维护（默认故障报告）：原取证外壳重复failure/key/build，导致一次复制预算被诊断文本
+    -- 而非真实字段耗尽。仅显式compact请求移除外壳冗余；raw整张Native表（含__rsmeta）
+    -- 原样保留，先前scope/预算门不变。此选项不改变磁盘数据、解码、指纹或写保护Authority。
+    -- 旧无参数入口保持原格式/信息；消费者必须标明这只是未验证的本次读取，不是全档恢复。
+    if type(options) == "table" and options.compact == true then
+        snapshot = { store = store.id, raw = raw }
+    end
+    local parts, size, limit = {}, 0, 262144
+    local function Add(text)
+        size = size + #text
+        if size > limit then error("evidence_text_limit") end
+        parts[#parts + 1] = text
+    end
+    local function Hex(text)
+        -- 维护：HEX 保留任意 UTF-8/控制字节及 transport 哨兵；不会由聊天/文本框解释转义。
+        return (text:gsub(".", function(c) return string.format("%02X", string.byte(c)) end))
+    end
+    local function Serialize(value)
+        local kind = type(value)
+        if kind == "nil" then Add("N;")
+        elseif kind == "boolean" then Add(value and "B1;" or "B0;")
+        elseif kind == "number" then Add("D" .. string.format("%.17g", value) .. ";")
+        elseif kind == "string" then
+            -- 维护：先算编码后长度再分配 HEX，避免超限字符串产生无用的大临时副本。
+            local prefix = "S" .. tostring(#value) .. ":"
+            if size + #prefix + #value * 2 + 1 > limit then error("evidence_text_limit") end
+            Add(prefix .. Hex(value) .. ";")
+        elseif kind == "table" then
+            local keys = {}
+            for key in pairs(value) do keys[#keys + 1] = key end
+            table.sort(keys, function(a,b)
+                if type(a) ~= type(b) then return type(a) < type(b) end
+                return a < b
+            end)
+            Add("T" .. tostring(#keys) .. "{")
+            for _, key in ipairs(keys) do Serialize(key); Serialize(value[key]) end
+            Add("}")
+        else error("evidence_unsupported_type:" .. kind) end
+    end
+    local serialized, serializationError = pcall(Serialize, snapshot)
+    if not serialized then return nil, tostring(serializationError) end
+    local body = table.concat(parts)
+    -- 维护：此 checksum 只检测复制缺段/改字，不替代存档 integrity，不提供密码学认证。
+    local checksum = string.format("%08X", HashText(146959810, body))
+    return "RS-PERSIST-EVIDENCE-1\nBYTES=" .. tostring(#body) .. "\nCHECK=" .. checksum
+        .. "\n" .. body .. "\nRS-PERSIST-EVIDENCE-END", nil
 end
 
 function P:BuildRuntimeAcceptanceSnapshot(options)
