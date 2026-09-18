@@ -5,14 +5,16 @@
 ## 当前状态
 
 - 维护日期：**2026-09-18**
-- 已核对 ArcheRage RU 官方更新至：**2026-09-16**
-- 最近一次影响 Addon API 权限的官方更新：**2026-09-09**
+- 官方更新索引已检查至：**2026-09-16**
+- 本轮可直接读取并逐条核对的最新更新正文：**2026-09-09**
+- 最近一次已直接确认影响 Addon API 权限的官方更新：**2026-09-09**
 - Native API 分区：**83**
 - Native Allowed 函数：**358**
-- Native Available / not allowed 函数：**2331**
+- Native Available / not allowed 函数：**2330**
 - UI API 分区：**44**
-- UI Allowed 函数：**960**
-- 当前已清除：同分区重复签名、Allowed / Not allowed 同时重复条目、过期历史快照
+- UI Allowed 函数：**956**
+- 二次审计额外清理 `Drawable` 中残余的 `SetCoords` 同义重复和畸形 `SetSnap( used)`，保留规范签名。
+- 当前已清除：同分区重复/语义重复签名、Allowed / Not allowed 同时重复条目、过期历史快照
 
 ## 文件职责
 
@@ -68,6 +70,38 @@ RUNTIME_CALL = forbidden
 
 `UNIT_ENTERED_SIGHT` / `UNIT_LEAVED_SIGHT` 同期被移除。
 
+## 2026-09-18 二次审计结论
+
+### 当前最新 API 变动
+
+2026-09-09 的官方 RU 更新正文已再次核对，仍然只有以下三个新增开放接口：
+
+```text
+X2Faction:GetExpeditionMemberCount()
+X2Quest:GetQuestJournalObjectiveCount(idx)
+X2Quest:GetQuestJournalObjectiveText(idx, objIdx)
+```
+
+当前 `api_functions.lua` 已全部放在对应 namespace 的 `Allowed functions` 中。
+
+官方索引已经出现 **2026-09-16** 更新，但本轮联网工具暂时无法直接读取该帖正文；搜索索引也没有发现 `X2` / `Addon` 变更片段。因此本库继续保留 `latest_api_change = 2026-09-09`，同时在 capability 元数据中区分“看到最新官方更新”和“本轮已直接读取正文”，避免把未重新读取的正文写成硬证据。
+
+### 补齐的历史能力链
+
+二次审计发现旧版 `api_capabilities_ru.lua` 从 2025-04 到 2026-02 之间缺少多轮官方记录。已补入：
+
+- 任务追踪 / 单位 ID 查询
+- 拍卖搜索与最低价/市场价
+- 战斗资源 / Craft 查询
+- 9.5 新增的 Unit 世界坐标与 ADDON UI 注册接口
+- ADDON 持久化 GetName / LoadData / SaveData / ClearData 及 2025-07-08 修复记录
+- Hotkey / Skill cooldown / Mate cooldown
+- WorldmapLocation 两次签名演进
+- Mate 装备接口
+- 10.0 的 `X2Resident:RefreshResidentMembers` / `GetResidentMembers`
+
+这些 API 在当前 `api_functions.lua` 中原本就已经位于 `Allowed functions`；本轮主要修复的是 Authority 时间线，不改变当前导出清单。
+
 ## 2026-09-09 新开放 API
 
 以下三个函数已从 `Available/not allowed functions` 移到 `Allowed functions`：
@@ -99,7 +133,24 @@ X2Quest:GetQuestJournalObjectiveText(idx, objIdx)
 - 2026-09-16  
   https://ru.archerage.to/forums/threads/obnovlenie-16-09-2026.17572/
 
-其中 2026-09-02 与 2026-09-16 公告没有 Addon API 权限变更；2026-09-09 是当前最新的 API 权限变更。
+2026-09-09 正文已在本轮再次直接核对。2026-09-16 更新已由官方索引确认存在，但本轮工具无法直接读取该帖正文；因此只把它记为“latest official update seen”，不把“正文无 API 变化”作为本轮独立验证结论。当前没有发现晚于 2026-09-09 的已确认 API 权限变化。
+
+## 本轮补核的关键官方历史来源
+
+- 2025-04-16：Quest tracking / `X2Unit:GetUnitInfoById`
+- 2025-04-30：Ability / Auction Search / CombatResource / Craft / Quest
+- 2025-05-07：Auction searched-item getters
+- 2025-06-08：9.5 custom addon APIs
+- 2025-07-01 / 07-08：ADDON 持久化接口与修复
+- 2025-07-16：`GetUnitWorldPositionByTarget` 签名调整
+- 2025-08-12 / 08-20：Auction price / Hotkey / Skill cooldown
+- 2025-09-17：`SaveHotKey` / `GetMateCooldown`
+- 2025-10-07：Hotkey binding conversion
+- 2025-11-05 / 11-12：World map location 新增与签名调整
+- 2025-12-03：Mate equipment APIs
+- 2026-02-16：10.0 custom `X2Resident` APIs
+
+详细状态以 `api_capabilities_ru.lua -> changes` 为准。
 
 ## 清理策略
 

@@ -1,5 +1,6 @@
 -- ArcheRage RU addon API capability overlay
--- Maintained 2026-09-18; official announcements checked through 2026-09-16.
+-- Maintained 2026-09-18; official update index checked through 2026-09-16.
+-- Latest update body directly reverified in this pass: 2026-09-09.
 -- status reflects official announcements; runtime_verified=false means the project has not yet
 -- independently sampled the function on the current client in this update pass.
 return {
@@ -7,15 +8,96 @@ return {
     updated = "2026-09-18",
     checked_through = "2026-09-16",
     latest_api_change = "2026-09-09",
+    latest_official_update_seen = "2026-09-16",
+    latest_update_body_verified_this_pass = "2026-09-09",
     server = "ArcheRage RU",
     policy = "official announcements overlay bundled snapshot; runtime evidence may override for safety",
+    date_key_note = "Historical keys preserve the date label used by the source pass; EN maintenance posts can be one calendar day earlier than the RU/MSK restart date. Treat keys as chronology labels, not timezone-normalized timestamps.",
+    history_scope = "Official addon API changes verified from 2025-04 onward, including 9.5/10.0 custom update notes.",
   },
 
   changes = {
+    ["2025-04-15"] = {
+      { api="X2Quest:GetActiveQuestListCount", status="official_enabled" },
+      { api="X2Quest:GetActiveQuestType", status="official_enabled" },
+      { api="X2Quest:SetTrackingActiveQuest", status="official_enabled" },
+      { api="X2Unit:GetUnitInfoById", status="official_enabled" },
+    },
     ["2025-04-29"] = {
+      { api="X2Ability:GetAllMyActabilityInfos", status="official_enabled" },
+      { api="X2Auction:SearchAuctionArticle", status="official_enabled", cooldown_ms=1000, note="Results are delivered through AUCTION_ITEM_SEARCHED." },
+      { api="X2CombatResource:GetCombatResourceInfo", status="official_enabled" },
+      { api="X2CombatResource:GetCombatResourceInfoByGroupType", status="official_enabled" },
+      { api="X2CombatResource:CheckCombatResourceMaxPointByGroupType", status="official_enabled", note="Present in the RU announcement; omitted from the parallel EN post." },
       { api="X2Craft:GetCraftBaseInfo", status="official_enabled" },
       { api="X2Craft:GetCraftMaterialInfo", status="official_enabled", note="Later fixed for client crash on 2026-06-02." },
       { api="X2Craft:GetCraftProductInfo", status="official_enabled" },
+      { api="X2Quest:GetQuestContextMainTitle", status="official_enabled" },
+      { api="X2Quest:IsCompleted", status="official_enabled" },
+    },
+    ["2025-05-06"] = {
+      { api="X2Auction:GetSearchedItemPage", status="official_enabled" },
+      { api="X2Auction:GetSearchedItemCount", status="official_enabled" },
+      { api="X2Auction:GetSearchedItemTotalCount", status="official_enabled" },
+      { api="X2Auction:GetSearchedItemInfo", status="official_enabled" },
+    },
+    ["2025-06-08"] = {
+      { api="X2Unit:GetUnitWorldPositionByTarget", status="official_enabled", note="Initial 9.5 form: (unit). Changed in July 2025 to add isLocal and angle return." },
+      { api="ADDON:GetContentMainScriptPosVis", status="official_enabled" },
+      { api="ADDON:AddEscMenuButton", status="official_enabled", note="Official 9.5 post spells this as X2:AddEscMenuButton; bundled client/project authority uses ADDON." },
+      { api="ADDON:RegisterContentWidget", status="official_enabled" },
+      { api="ADDON:RegisterContentTriggerFunc", status="official_enabled" },
+    },
+    ["2025-07-01"] = {
+      { api="ADDON:GetName", status="official_enabled" },
+      { api="ADDON:LoadData", status="official_enabled" },
+      { api="ADDON:SaveData", status="official_enabled" },
+      { api="ADDON:ClearData", status="official_enabled" },
+    },
+    ["2025-07-08"] = {
+      { api="ADDON:LoadData", status="official_fixed", note="Official RU update states this persistence function was adjusted/fixed." },
+      { api="ADDON:SaveData", status="official_fixed", note="Official RU update states this persistence function was adjusted/fixed." },
+      { api="ADDON:ClearData", status="official_fixed", note="Official RU update states this persistence function was adjusted/fixed." },
+    },
+    ["2025-07-15"] = {
+      { api="X2Unit:GetUnitWorldPositionByTarget", status="official_changed", note="Changed to (unit, isLocal), returning x/y/z and angle. Official EN/RU post contains the namespace typo X2Uint; bundled export uses X2Unit." },
+    },
+    ["2025-08-12"] = {
+      { api="X2Auction:GetLowestPrice", status="official_enabled", cooldown_ms=500 },
+      { api="X2Auction:AskMarketPrice", status="official_enabled", cooldown_ms=500 },
+    },
+    ["2025-08-20"] = {
+      { api="X2Hotkey:GetOptionBinding", status="official_enabled" },
+      { api="X2Hotkey:GetOptionBindingButton", status="official_enabled" },
+      { api="X2Hotkey:SetOptionBindingWithIndex", status="official_enabled" },
+      { api="X2Hotkey:SetOptionBindingButtonWithIndex", status="official_enabled" },
+      { api="X2Hotkey:EnableHotkey", status="official_enabled" },
+      { api="X2Hotkey:IsOverridableAction", status="official_enabled" },
+      { api="X2Hotkey:IsValidActionName", status="official_enabled" },
+      { api="X2Skill:Info", status="official_enabled" },
+      { api="X2Skill:GetCooldown", status="official_enabled", note="Returns remaining cooldown and duration." },
+    },
+    ["2025-09-17"] = {
+      { api="X2Hotkey:SaveHotKey", status="official_enabled" },
+      { api="X2Skill:GetMateCooldown", status="official_enabled", note="mateType: 0=none, 1=ride, 2=battle. RU post body contains an unrelated stale restart-date typo; thread title and parallel EN post identify this as the September 2025 update." },
+    },
+    ["2025-10-07"] = {
+      { api="X2Hotkey:BindingToOption", status="official_enabled" },
+      { api="X2Hotkey:OptionToBinding", status="official_enabled" },
+    },
+    ["2025-11-05"] = {
+      { api="X2Map:ShowWorldmapLocation", status="official_enabled", note="Initial form used zoneId with x/y/z." },
+    },
+    ["2025-11-12"] = {
+      { api="X2Map:ShowWorldmapLocation", status="official_changed", note="Changed to zoneGroupId with global x/y/z coordinates; bundled manifest reflects this current form." },
+    },
+    ["2025-12-03"] = {
+      { api="X2Equipment:PickupMateEquippedItem", status="official_enabled", note="Official argument labels: targetName, slotNo; bundled export labels the same callable slots as unit, equipSlot." },
+      { api="X2Equipment:MateUnequipItem", status="official_enabled", note="Official argument labels: targetName, slotNo; bundled export labels the same callable slots as unit, equipSlot." },
+    },
+    ["2026-02-16"] = {
+      { api="X2Resident:RefreshResidentMembers", status="official_enabled", note="Enabled by the ArcheRage 10.0 custom changes." },
+      { api="X2Resident:GetResidentMembers", status="official_enabled", note="Enabled by the ArcheRage 10.0 custom changes." },
     },
     ["2026-02-24"] = {
       { api="X2Team:MoveTeamMember", status="official_enabled", cooldown_ms=1000 },

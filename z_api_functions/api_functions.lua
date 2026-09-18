@@ -1,6 +1,6 @@
 ----------------------------------------------------------------------------------------
 -- ArcheRage RU API reference maintenance overlay
--- Updated: 2026-09-18 (official ArcheRage RU announcements checked through 2026-09-16)
+-- Updated: 2026-09-18 (official update index seen through 2026-09-16; latest body reverified 2026-09-09)
 -- Basis: bundled snapshot + official ArcheRage RU addon update announcements.
 -- Important: 'officially enabled' is not identical to 'runtime verified'.
 -- See API_CHANGELOG.md and api_capabilities_ru.lua for restrictions,
