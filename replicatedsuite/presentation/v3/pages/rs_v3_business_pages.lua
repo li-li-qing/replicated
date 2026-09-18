@@ -1,6 +1,8 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - business Feature pages
 ------------------------------------------------------------------------
+-- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D, Host = S.RSUI, S.UIV3Design, S.UIV3 and S.UIV3.PageHost or nil
@@ -102,15 +104,7 @@ local function Build(parent, route, id)
             RSUI:Text({ id = "v3_business_combat_buff_cap_protected_reason", parent = root,
                 text = "读取失败：" .. tostring((called and loadErr or loaded) or "未知错误"), fontSize = 10,
                 tone = "warn", overflow = "wrap", slot = { size = "auto", minHeight = 45, hAlign = "fill" } })
-            RSUI:Button({ id = "v3_business_combat_buff_cap_diagnostics", parent = root,
-                text = "打开诊断与维护", compact = true, slot = { size = "fixed", width = 156, height = 30 },
-                onClick = function()
-                    -- 中文维护：统一导航 Authority 在 UIV3.Shell（宿主适配器是 UIV3Host），
-                    -- UIV3 本身不是 Navigate 接口；只走已有 Shell，不绕过 PageHost 自建诊断页。
-                    local shell = S.UIV3 and S.UIV3.Shell or nil
-                    if type(shell) ~= "table" or type(shell.Navigate) ~= "function" then return false, "诊断导航不可用" end
-                    return shell:Navigate("system.diagnostics", { source = "buff_cap_protected" })
-                end })
+    -- 维护（module-controls-diag-2）：保护页仍有宿主诊断按钮；不依赖错误的UIV3:Navigate，也不启用受保护模块。
             function root:OnActivated() return true end
             function root:OnDeactivated() return true end
             return root
@@ -129,7 +123,7 @@ local function Build(parent, route, id)
             status = { status = "neutral", text = "等待状态" },
         })
         if unitLineHeader == nil then return nil, headerErr end
-        toggle = RSUI:Button({ id = "v3_business_combat_unit_lines_feature_toggle", parent = unitLineHeader.actions,
+        toggle = D:ModuleToggleButton({ id = "v3_business_combat_unit_lines_feature_toggle", parent = unitLineHeader.actions,
             text = "关闭功能", compact = true, slot = { size = "fixed", width = 88 } })
         local refresh = RSUI:Button({ id = "v3_business_combat_unit_lines_refresh_button", parent = unitLineHeader.actions,
             text = "刷新", compact = true, slot = { size = "fixed", width = 64 } })
@@ -176,7 +170,7 @@ local function Build(parent, route, id)
 
     if unitLineSettingsPage ~= true then
         local actionRow = RSUI:HorizontalBox({ id = "v3_business_" .. id .. "_actions", parent = root, gap = 6, slot = { size = "fixed", height = 31, hAlign = "fill" } })
-        toggle = RSUI:Button({ id = "v3_business_" .. id .. "_toggle", parent = actionRow, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
+        toggle = D:ModuleToggleButton({ id = "v3_business_" .. id .. "_toggle", parent = actionRow, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
         hint = RSUI:Text({ id = "v3_business_" .. id .. "_hint", parent = root, text = "", fontSize = 9, tone = "muted", overflow = "wrap", slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
     end
     if toggle == nil or hint == nil then return nil, "business_page_primary_controls_failed:" .. tostring(id) end

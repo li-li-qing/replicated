@@ -21,7 +21,12 @@ if type(RSUI) ~= "table" or type(UI) ~= "table" or type(Floating) ~= "table"
     or type(AuxStore) ~= "table" or type(Hub) ~= "table" then return end
 
 S.UIV3 = S.UIV3 or {}
-S.UIV3.ModuleDiagnosticsWindowV3 = S.UIV3.ModuleDiagnosticsWindowV3 or {
+-- 维护（module-controls-diag-2）：重载后Native控件已由Bootstrap退役；不得复用旧surface/Hub闭包。
+-- 只在同加载代复用共享窗口，下一代重新懒创建，防止报告写入隐藏的旧编辑框。
+local previousWindow = S.UIV3.ModuleDiagnosticsWindowV3
+S.UIV3.ModuleDiagnosticsWindowV3 = type(previousWindow) == "table"
+    and previousWindow.generation == (tonumber(S.Generation) or 0) and previousWindow or {
+    generation = tonumber(S.Generation) or 0,
     version = 1,
     contractVersion = 1,
     id = "v3_module_diagnostics_window",
@@ -46,15 +51,18 @@ end
 function W:_UpdateNavigation()
     local total = self.snapshot and tonumber(self.snapshot.parts) or 0
     local index = tonumber(self.pageIndex) or 0
-    if self.previousButton ~= nil and type(self.previousButton.SetEnabled) == "function" then self.previousButton:SetEnabled(index > 1) end
-    if self.nextButton ~= nil and type(self.nextButton.SetEnabled) == "function" then self.nextButton:SetEnabled(index > 0 and index < total) end
-    SetText(self.pageLabel, tostring(index) .. " / " .. tostring(total))
+    if self.previousButton ~= nil and type(self.previousButton.SetEnabled) == "function" then self.previousButton:SetEnabled(self.copyPageValid ~= false and index > 1) end
+    if self.nextButton ~= nil and type(self.nextButton.SetEnabled) == "function" then self.nextButton:SetEnabled(self.copyPageValid ~= false and index > 0 and index < total) end
+    SetText(self.pageLabel, self.copyPageValid == false and "写入失败" or (tostring(index) .. " / " .. tostring(total)))
+    if self.retryButton and type(self.retryButton.SetEnabled) == "function" then
+        self.retryButton:SetEnabled(self.pendingSnapshot ~= nil or self.snapshot ~= nil)
+    end
     return true
 end
 
 function W:_ResetSnapshot(reason)
     if self.copyBox ~= nil and type(self.copyBox.Deactivate) == "function" then self.copyBox:Deactivate(reason or "snapshot_reset") end
-    self.snapshot, self.pageIndex = nil, 0
+    self.snapshot, self.pageIndex, self.pendingSnapshot, self.copyPageValid = nil, 0, nil, nil
     if self.copyBox ~= nil and type(self.copyBox.Clear) == "function" then self.copyBox:Clear(reason or "snapshot_reset") end
     self:_UpdateNavigation()
     if self.surface ~= nil and type(self.surface.SetStatus) == "function" then
@@ -180,8 +188,24 @@ function W:EnsureCreated()
         overflow = "ellipsis", slot = { size = "fixed", width = 74 } })
     self.nextButton = RSUI:Button({ id = self.id .. "_next", parent = actions, text = "下一页", compact = true,
         slot = { size = "fixed", width = 82 } })
+    -- 维护（module-controls-diag-2）：复制失败只重切冻结正文，不重新取证；按钮明确且不会隐式翻页。
+    self.retryButton = RSUI:Button({ id = self.id .. "_retry", parent = actions, text = "缩短分页", compact = true,
+        slot = { size = "fixed", width = 88 } })
     self.moduleText = RSUI:Text({ id = self.id .. "_module", parent = actions, text = "", fontSize = 10, tone = "muted",
         overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
+    -- 维护（module-controls-diag-2）：特殊字段探测也是统一诊断窗的显式动作，绝不能在生成/翻页时自动执行。
+    self.detailActions = RSUI:HorizontalBox({ id = self.id .. "_detail_actions", parent = stack, gap = 6,
+        visible = false, slot = { size = "fixed", height = 28, hAlign = "fill" } })
+    self.probeButton = RSUI:Button({ id = self.id .. "_aura_probe", parent = self.detailActions, text = "字段探测", compact = true,
+        slot = { size = "fixed", width = 88 }, onClick = function() return W:ProbeAuraFields() end })
+    self.storeReportButton = RSUI:Button({ id = self.id .. "_store_report", parent = self.detailActions, text = "存档短报告", compact = true,
+        slot = { size = "fixed", width = 100 }, onClick = function()
+            local diagnostics = S.DiagnosticsManager
+            if type(diagnostics) ~= "table" or type(diagnostics.PrintPersistenceFailureReport) ~= "function" then return false, "存档报告不可用" end
+            return diagnostics:PrintPersistenceFailureReport()
+        end })
+    RSUI:Text({ id = self.id .. "_detail_hint", parent = self.detailActions, text = "字段探测后请点生成诊断；不会自动更新已复制快照。",
+        fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
     local copyHost = RSUI:Border({ id = self.id .. "_copy_host", parent = stack, variant = "card", padding = 4,
         slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
     if self.generateButton == nil or self.previousButton == nil or self.pageLabel == nil or self.nextButton == nil
@@ -208,6 +232,7 @@ function W:EnsureCreated()
     end
 
     self.generateButton.onClick = function() return W:Generate() end
+    self.retryButton.onClick = function() return W:RetrySmallerPages() end
     self.previousButton.onClick = function() return W:ShowPage((tonumber(W.pageIndex) or 0) - 1) end
     self.nextButton.onClick = function() return W:ShowPage((tonumber(W.pageIndex) or 0) + 1) end
     self.created = true
@@ -227,23 +252,52 @@ function W:Open(moduleId)
     end
     if self.shell ~= nil and type(self.shell.SetTitle) == "function" then self.shell:SetTitle(tostring(meta.name or moduleId) .. " · 模块诊断") end
     SetText(self.moduleText, tostring(meta.name or moduleId) .. " · " .. tostring(meta.route or ""))
+    if self.detailActions and type(self.detailActions.SetVisible) == "function" then
+        self.detailActions:SetVisible(moduleId == "combat_buff_display")
+    end
     local shown, showErr = self.surface:Show(true)
     if shown ~= true then return false, showErr or "模块诊断窗口显示失败" end
     self.visible = true
     return true
 end
 
-function W:Generate()
-    if self.moduleId == nil then return false, "尚未选择模块" end
-    if self.copyBox ~= nil then self.copyBox:Deactivate("new_capture") end
-    local capacity = self.copyBox and type(self.copyBox.GetCapacity) == "function" and self.copyBox:GetCapacity() or 3500
-    local snapshot, err = Hub:Capture(self.moduleId, capacity)
-    if snapshot == nil then
-        if self.surface ~= nil and type(self.surface.SetStatus) == "function" then self.surface:SetStatus("诊断生成失败：" .. tostring(err or "unknown"), "red") end
-        return false, err
+-- 维护（module-controls-diag-2）：Window 是分页展示 Authority，不是数据采集 Authority。
+-- Capture / GetPage / Native 写入分阶段隔离；第一页回读成功才提交 snapshot/pageIndex。
+-- 失败保留旧快照并挂起候选；禁止为了恢复复制而反复扫描模块或自动改写用户选中的文本。
+function W:_ReportFailure(err)
+    if self.surface and type(self.surface.SetStatus) == "function" then
+        self.surface:SetStatus(tostring(err or "诊断操作失败"), "red")
     end
-    self.snapshot, self.pageIndex = snapshot, 0
-    return self:ShowPage(1)
+    self:_UpdateNavigation()
+    return false, err
+end
+
+function W:_PresentSnapshot(snapshot, index)
+    local got, text, err = pcall(Hub.GetPage, Hub, snapshot, index)
+    if not got or text == nil then return self:_ReportFailure(got and err or text) end
+    local accepted, wrote, writeErr = pcall(self.copyBox.SetPageText, self.copyBox, text, "page:" .. tostring(index))
+    if not accepted or wrote ~= true then
+        self.copyPageValid = false
+        return self:_ReportFailure(accepted and writeErr or wrote)
+    end
+    self.snapshot, self.pageIndex, self.copyPageValid = snapshot, index, true
+    self.pendingSnapshot = nil
+    self:_UpdateNavigation()
+    if self.surface and type(self.surface.SetStatus) == "function" then
+        self.surface:SetStatus("报告 #" .. tostring(snapshot.id or "?") .. " · " .. tostring(index) .. "/" .. tostring(snapshot.parts)
+            .. " 页 · 本页回读一致；点击文本框 Ctrl+A / Ctrl+C，翻页不重新采集。", "accent")
+    end
+    return true
+end
+
+function W:Generate()
+    if self.moduleId == nil or self.copyBox == nil then return false, "尚未选择模块" end
+    self.copyBox:Deactivate("new_capture")
+    local capacity = type(self.copyBox.GetCapacity) == "function" and self.copyBox:GetCapacity() or 3500
+    local ok, snapshot, err = pcall(Hub.Capture, Hub, self.moduleId, capacity)
+    if not ok or snapshot == nil then return self:_ReportFailure("诊断生成失败：" .. tostring(ok and err or snapshot)) end
+    self.pendingSnapshot = snapshot
+    return self:_PresentSnapshot(snapshot, 1)
 end
 
 function W:ShowPage(index)
@@ -251,17 +305,22 @@ function W:ShowPage(index)
     index = math.floor(tonumber(index) or 0)
     local total = tonumber(self.snapshot.parts) or 0
     if index < 1 or index > total then return false, "页码超出范围" end
-    local text, err = Hub:GetPage(self.snapshot, index)
-    if text == nil then return false, err or "诊断页读取失败" end
-    local wrote, writeErr = self.copyBox:SetPageText(text, "page:" .. tostring(index))
-    if wrote ~= true then return false, writeErr end
-    self.pageIndex = index
-    self:_UpdateNavigation()
-    if self.surface ~= nil and type(self.surface.SetStatus) == "function" then
-        self.surface:SetStatus("报告 #" .. tostring(self.snapshot.id or "?") .. " · 第 " .. tostring(index) .. "/" .. tostring(total)
-            .. " 页 · 点击文本框后 Ctrl+A / Ctrl+C 复制。", "accent")
-    end
-    return true
+    return self:_PresentSnapshot(self.snapshot, index)
+end
+
+function W:RetrySmallerPages()
+    local source = self.pendingSnapshot or self.snapshot
+    if type(source) ~= "table" or type(Hub.Repage) ~= "function" then return self:_ReportFailure("没有可重新分页的报告") end
+    local oldCapacity = source.session and tonumber(source.session.capacity) or 3500
+    if oldCapacity <= 512 then return self:_ReportFailure("已达到最小分页；当前控件仍未通过回读，请重新加载后检查诊断窗口。") end
+    local capacity = math.max(512, math.floor(oldCapacity * 0.7))
+    self.copyBox:Deactivate("explicit_repage")
+    local ok, snapshot, err = pcall(Hub.Repage, Hub, source, capacity)
+    if not ok or snapshot == nil then return self:_ReportFailure(ok and err or snapshot) end
+    self.pendingSnapshot = snapshot
+    local shown, detail = self:_PresentSnapshot(snapshot, 1)
+    if shown and type(self.copyBox.SetCapacity) == "function" then self.copyBox:SetCapacity(capacity) end
+    return shown, detail
 end
 
 function W:Close()
@@ -273,7 +332,10 @@ function W:Close()
         local ok, err = self.surface:Close("module_diagnostics_close")
         if ok ~= true then return false, err end
     elseif self.surface ~= nil and type(self.surface.Show) == "function" then
-        self.surface:Show(false)
+        local ok, err = self.surface:Show(false)
+        if ok ~= true then return false, err end
+        -- fallback Show 不触发 onClosed，必须在成功隐藏后显式释放，不得在 veto 前释放。
+        if self.copyBox then self.copyBox:Deactivate("fallback_close") end
     end
     self.visible = false
     return true
@@ -285,4 +347,34 @@ function W:Describe()
         parts = self.snapshot and tonumber(self.snapshot.parts) or 0,
         auxPersistenceDegraded = self.auxPersistenceDegraded == true,
         copy = self.copyBox and type(self.copyBox.GetDiagnostics) == "function" and self.copyBox:GetDiagnostics() or nil }
+end
+
+-- 维护：复用已验证的业务只读探测Command，保留聊天输出与短报告；仅缓存返回证据供下次Capture。
+-- 不改变当前snapshot；诊断窗口不直接访问X2Unit、不写配置、不隐式启用模块。
+function W:ProbeAuraFields()
+    if self.moduleId ~= "combat_buff_display" then return false, "当前模块不支持状态字段探测" end
+    local feature = S.Features and S.Features.BuffDisplay
+    local command = feature and feature.Commands and feature.Commands.ProbeAuraFields
+    if type(command) ~= "function" then return self:_ReportFailure("状态字段探测不可用") end
+    local ok, accepted, detail = pcall(command, feature.Commands)
+    local result = ok and detail or accepted
+    -- 有界显式探测结果按UTF-8边界裁剪且声明损失，不能以截断文本冒充完整字段报告。
+    local text = tostring(result or "无返回信息")
+    if #text > 8192 then
+        local finish = 8192
+        while finish > 0 and (text:byte(finish + 1) or 0) >= 128 and (text:byte(finish + 1) or 0) < 192 do finish = finish - 1 end
+        text = text:sub(1, finish) .. "[TRUNCATED originalBytes=" .. tostring(#text) .. "]"
+    end
+    self.lastAuraProbe = { success = ok and accepted == true, detail = text,
+        capturedAt = type(S.NowMs) == "function" and S.NowMs() or 0 }
+    if self.surface and type(self.surface.SetStatus) == "function" then
+        self.surface:SetStatus((ok and accepted == true and "字段探测完成" or "字段探测失败") .. "；点生成诊断收录本次证据。",
+            ok and accepted == true and "accent" or "red")
+    end
+    return ok and accepted == true, result
+end
+if type(Hub.RegisterProvider) == "function" then
+    Hub:RegisterProvider("combat_buff_display", "explicit_aura_probe", function()
+        return W.lastAuraProbe or { sampled = false, reason = "only_runs_on_explicit_probe_button" }
+    end)
 end

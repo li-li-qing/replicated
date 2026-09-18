@@ -44,6 +44,7 @@ V3.Shell = V3.Shell or {
     minimizeButton = nil,
     reloadButton = nil,
     navButtons = {},
+    navFeatureIds = {},
     lastRect = nil,
     lastRoute = nil,
     windowController = nil,
@@ -115,6 +116,22 @@ function Shell:RefreshNavScrollHint()
     return true
 end
 
+-- 维护（module-controls-diag-2）：红绿仅表示FeatureRuntime真实启停，选中态仍由路由决定。
+-- 构建时缓存路由->Feature映射；生命周期事件/导航/按钮事务后刷新，禁止轮询GetHealth。
+function Shell:RefreshFeatureStates(featureId)
+    local controls = V3.ModuleControlsV3
+    if not controls then return true end
+    for route, id in pairs(self.navFeatureIds or {}) do
+        if featureId == nil or featureId == id then
+            local button = self.navButtons[route]
+            if button and type(button.SetStatusTone) == "function" then
+                button:SetStatusTone(controls:ReadState(id).enabled == true and "green" or "red")
+            end
+        end
+    end
+    return true
+end
+
 function Shell:BuildScrollableNavigation()
     if self.navScroll == nil then return false end
     local navParent = self.navScroll
@@ -150,11 +167,15 @@ function Shell:BuildScrollableNavigation()
                     slot = { size = "fixed", height = 28, hAlign = "fill" },
                 })
                 self.navButtons[routeRef.id] = button
+                local meta = S.FeatureRegistry:GetByRoute(routeRef.id)
+                local controls = V3.ModuleControlsV3
+                self.navFeatureIds[routeRef.id] = controls and controls:ControlId(meta) or nil
                 previousGroup = group
             end
             RSUI:Spacer({ id = "v3_nav_gap_" .. categoryId, parent = navParent, height = 5, slot = { size = "fixed", height = 5 } })
         end
     end
+    self:RefreshFeatureStates()
     return true
 end
 
@@ -599,6 +620,7 @@ function Shell:Navigate(routeId, context)
     local navigationRoute = tostring(resolved.navigationParentRoute or "") -- 中文维护注释：优先采用 Registry/Router 明确声明的父导航路由，避免 Shell 写死团队中心等业务标识。
     if navigationRoute == "" or self.navButtons[navigationRoute] == nil then navigationRoute = resolved.id end -- 中文维护注释：没有合法父导航按钮时退回真实路由，保证普通页面和未知元数据继续按旧逻辑工作。
     for route, button in pairs(self.navButtons) do SetButtonSelected(button, route == navigationRoute) end -- 中文维护注释：只切换主导航视觉状态，不触发二次 Navigate、Consumer 获取或 Authority 读取。
+    self:RefreshFeatureStates()
     local state = V3.ShellState or {}
     if state.lastRoute ~= resolved.id then state.lastRoute = resolved.id; MarkDirty("route_changed") end
     self:SetStatus(resolved.title .. " · 新版界面")

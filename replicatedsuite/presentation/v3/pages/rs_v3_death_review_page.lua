@@ -1,6 +1,8 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Death Review Page
 ------------------------------------------------------------------------
+-- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -28,13 +30,7 @@ local function BuildProtectedPage(parent, route, reason)
     RSUI:Text({id="v3_death_review_protected_reason",parent=root,
         text="读取失败：" .. tostring(reason or "未知错误"),fontSize=10,tone="warn",overflow="wrap",maxLines=6,
         slot={size="auto",minHeight=64,hAlign="fill"}})
-    RSUI:Button({id="v3_death_review_diagnostics",parent=root,text="打开诊断与维护",compact=true,
-        slot={size="fixed",width=156,height=30},onClick=function()
-            -- 维护：只经统一 V3 导航，不直接调用另一业务页或存档。缺导航时显式失败。
-            local v3=S.UIV3
-            if type(v3)~="table" or type(v3.Navigate)~="function" then return false,"诊断导航不可用" end
-            return v3:Navigate("system.diagnostics",{source="death_review_protected"})
-        end})
+    -- 维护（module-controls-diag-2）：保护页仍有宿主诊断按钮；不依赖错误的UIV3:Navigate，也不启用受保护模块。
     RSUI:Text({id="v3_death_review_protected_hint",parent=root,fontSize=10,tone="muted",overflow="wrap",maxLines=5,
         text="请保留原存档，不要重置配置。短报告未附原档时，无需重复复制相同 Hash；使用随包 tools/rs_udf_evidence.html 离线采集完整 udf 文件夹。采集前退出游戏，先查看文件清单与隐私提示。",
         slot={size="auto",minHeight=60,hAlign="fill"}})
@@ -71,7 +67,7 @@ local function Build(parent, route)
     end
 
     local top = RSUI:HorizontalBox({ id = "v3_death_review_top", parent = root, gap = 8, slot = { size = "fixed", height = 34, hAlign = "fill" } })
-    local featureToggle = RSUI:Button({ id = "v3_death_review_enable", parent = top, text = "启用死亡回顾", compact = true, slot = { size = "fixed", width = 118 } })
+    local featureToggle = D:ModuleToggleButton({ id = "v3_death_review_enable", parent = top, text = "启用死亡回顾", compact = true, slot = { size = "fixed", width = 118 } })
     -- FloatingSurface owns `v3_death_review_widget`; keep the page action on a
     -- distinct logical identity so auto-show and page creation can coexist.
     local showWidget = RSUI:Button({ id = "v3_death_review_widget_toggle", parent = top, text = "查看最近记录", compact = true, slot = { size = "fixed", width = 110 } })

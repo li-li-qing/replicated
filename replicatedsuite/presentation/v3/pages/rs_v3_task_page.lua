@@ -1,6 +1,8 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Task Tracker Page
 ------------------------------------------------------------------------
+-- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -42,7 +44,7 @@ local function BuildTaskPage(parent, route)
     local row1 = RSUI:HorizontalBox({ id = "v3_tasks_actions_scope", parent = root, gap = 7, slot = { size = "fixed", height = 30, hAlign = "fill" } })
     -- Primary lifecycle actions stay first, matching the other V3 feature pages.
     -- Scope/filter actions follow them so users never have to hunt for Enable.
-    local featureButton = RSUI:Button({ id = "v3_tasks_feature_toggle", parent = row1, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
+    local featureButton = D:ModuleToggleButton({ id = "v3_tasks_feature_toggle", parent = row1, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
     local widgetButton = RSUI:Button({ id = "v3_tasks_widget_toggle", parent = row1, text = "打开悬浮窗", compact = true, slot = { size = "fixed", width = 116 } })
     local dailyButton = RSUI:Button({ id = "v3_tasks_daily", parent = row1, text = "日常", compact = true, slot = { size = "fixed", width = 76 } })
     local weeklyButton = RSUI:Button({ id = "v3_tasks_weekly", parent = row1, text = "周常", compact = true, slot = { size = "fixed", width = 76 } })

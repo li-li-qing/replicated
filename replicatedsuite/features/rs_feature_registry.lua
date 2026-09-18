@@ -22,6 +22,47 @@ S.FeatureRegistry = {
 }
 local R = S.FeatureRegistry
 
+-- 维护（module-controls-diag-2）：这是源码工作负载预估，不是CPU/内存/FPS采样。
+-- 显式登记避免按模块名称猜等级；只在注册时取值，关闭模块也能查看开启成本。
+-- 高密度PVP/圈点数量/团队人数可改变真实开销，后续实测调整元数据而不能改动生命周期。
+local PERFORMANCE_LABELS = { "低", "中", "高", "非常高" }
+local PERFORMANCE_PROFILES = {
+    life_daily_stats = { 1, "低频事件累计今日变化，无全场扫描。" },
+    combat_stats = { 3, "战斗事件量与参与单位、技能明细增加时开销上升。" },
+    combat_analytics = { 4, "多种战斗指标、参与者关系与统计维度会放大高密度战斗处理量。" },
+    combat_healer = { 4, "多人团队生命值、距离、状态与推荐排序持续更新，人数越多开销越高。" },
+    combat_death_review = { 1, "有界死亡前事件历史；战斗密集时事件处理量增加。" },
+    combat_buff_display = { 3, "自身/目标状态观察、图标与HUD更新；追踪数量会影响开销。" },
+    combat_boss_alerts = { 2, "按需观察首领技能与状态事件，机制与可见提示数量影响开销。" },
+    combat_target_monitor = { 1, "按需观察少量指定目标。" },
+    combat_unit_lines = { 3, "持续投影与连线点绘制；刷新间隔、线条数和密度影响开销。" },
+    combat_range_assist = { 3, "多圆多点投影；圆数、点密度与刷新频率越高开销越大。" },
+    combat_buff_cap = { 1, "自身状态数量低频观察。" },
+    combat_team_tools = { 2, "团队列表投影和可选高亮；多人团队/高亮刷新增加开销。" },
+    combat_raid_readiness = { 2, "显式战备检查时扫描团队，非持续全场扫描。" },
+    combat_raid_recruitment = { 1, "以用户操作和事件处理为主。" },
+    combat_siege_readiness = { 1, "当前运行入口受保护；此等级不表示功能可用。" },
+    combat_gear = { 1, "按用户操作切换装备，不持续扫描所有单位。" },
+    life_activities = { 1, "时间表与低频阶段、倒计时更新。" },
+    life_trade = { 2, "可见页面和显式查询使用报价队列；查询量影响开销。" },
+    life_bonds = { 2, "任务状态及材料列表按需更新。" },
+    life_tasks = { 1, "任务事件与低频进度投影。" },
+    life_treasure = { 2, "开启指引时进行坐标计算与方向更新。" },
+    life_fishing = { 2, "有使用者时才采样；目标数量与刷新频率影响开销。" },
+    life_housing = { 1, "页面打开时读取住宅投影。" },
+    life_butler = { 1, "页面使用期间读取管家信息。" },
+    tools_bag = { 1, "显式整理计划及容器事件；执行计划时有短时增量。" },
+    tools_auction = { 2, "用户搜索与材料列表查询；非持续全量市场扫描。" },
+    tools_market_analysis = { 2, "显式查询和结果分析，数据量越大成本越高。" },
+    tools_craft = { 2, "配方与材料计划计算；复杂计划会增加开销。" },
+    tools_instance_browser = { 1, "按需查询和列表展示。" },
+    tools_social = { 1, "以显式操作和事件为主。" },
+    tools_hotkey_profiles = { 1, "当前运行入口受保护；此等级不表示功能可用。" },
+    tools_reinforce_analysis = { 2, "强化事件记录与统计分析。" },
+    tools_portal_profiles = { 1, "当前运行入口受保护；此等级不表示功能可用。" },
+    tools_random_shop = { 1, "默认手动读取，可选可见时低频刷新。" },
+}
+
 local function NormalizeId(value)
     local id = tostring(value or ""):lower():gsub("[^%w_%.%-]", "_"):gsub("_+", "_")
     return id:gsub("^_+", ""):gsub("_+$", "")
@@ -116,6 +157,15 @@ function R:Register(spec)
         currentImplementation = tostring(spec.currentImplementation or ""),
         remainingCapability = tostring(spec.remainingCapability or ""),
     }
+    -- 首页控制今日统计；系统管理页无独立工作负载，不能伪造绿色“已开启”。
+    row.controlFeatureId = id == "home" and "life_daily_stats" or (row.lifecycle == "shell" and "" or id)
+    -- 系统管理页面不是独立工作负载，报告也不应凭空标一个“中”等级。
+    if row.controlFeatureId ~= "" then
+        local cost = PERFORMANCE_PROFILES[row.controlFeatureId] or { 2, "尚未专项评估，暂按中等开销预估。" }
+        row.performanceLevel, row.performanceLabel, row.performanceReason = cost[1], PERFORMANCE_LABELS[cost[1]], cost[2]
+        row.performanceEstimated = true
+    end
+    self.registrationRevision = (tonumber(self.registrationRevision) or 0) + 1
     self.features[id] = row
     self.order[#self.order + 1] = id
     self:Resort()

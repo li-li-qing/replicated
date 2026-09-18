@@ -94,7 +94,7 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.245-activity-timeline-v2" -- 中文维护注释（2026-09-18）：.245 仅重构活动排序 Authority。计划活动与可确定的 live-derived occurrence 进入 Timeline，active 按剩余结束时间、upcoming 按距离开始时间；战争/纷争/和平/危险阶段留在独立 live section，并按 curated ZoneStateWatch 顺序稳定展示。继续复用 .244 模块诊断、.243 Buff 分片持久化、QuestProgressV3 与现有 Scheduler；禁止把 timeUntil 的每秒 Native/Quest 扫描、旧跨天算法或阶段权重照搬回来。
+S.BuildTag = "v3-m1.16.0.18.246-module-controls-diagnostics-v2" -- 维护：统一模块左上角控制条、实际运行态红绿导航、四级预估性能；模块故障证据与只读复制回读校验增强。保留.245活动时间线、.243持久化分片与原Feature启停事务；离线验收不代表RU实机性能/剪贴板验证。
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}
 S.SaveKey = tostring(S.Config.SaveKey or "replicated_suite_v1")

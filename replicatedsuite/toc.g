@@ -207,6 +207,7 @@ presentation/v3/shell/rs_v3_modal_host.lua
 presentation/v3/modals/rs_v3_quest_detail_modal.lua
 presentation/v3/modals/rs_v3_gear_quick_settings_modal.lua
 presentation/v3/shell/rs_v3_toast_host.lua
+presentation/v3/shell/rs_v3_module_controls.lua
 presentation/v3/shell/rs_v3_page_host.lua
 presentation/v3/pages/rs_v3_home_overview.lua
 presentation/v3/pages/rs_v3_foundation_pages.lua

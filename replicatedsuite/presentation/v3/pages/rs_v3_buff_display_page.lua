@@ -14,6 +14,8 @@
 -- the Store before constructing editable controls, so a disabled Feature can
 -- never edit defaults over an unread saved payload.
 ------------------------------------------------------------------------
+-- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -156,17 +158,10 @@ local function BuildPersistenceUnavailablePage(parent, route, reason)
     RSUI:Text({ id="v3_buff_persistence_error", parent=root,
         text="读取失败：" .. tostring(reason or "未知错误"), fontSize=10, tone="warn",
         overflow="wrap", maxLines=6, slot={size="auto", minHeight=72, hAlign="fill"} })
-    RSUI:Button({ id="v3_buff_persistence_report", parent=root, text="输出存档故障", compact=true,
-        slot={size="fixed", width=144, height=30}, onClick=function()
-            local diagnostics = S.DiagnosticsManager
-            if type(diagnostics) ~= "table" or type(diagnostics.PrintPersistenceFailureReport) ~= "function" then
-                return false, "存档故障报告不可用"
-            end
-            return diagnostics:PrintPersistenceFailureReport()
-        end })
-    -- 维护（RS-DIAG-3）：提示与单次发送契约一致；不改变取证读取、输入焦点或写保护。
+    -- 维护（module-controls-diag-2）：主诊断入口由宿主左上角提供；完整原档只读取证仍保留，
+    -- 不以普通错误摘要替代故障UDF，也不清除fence/回写默认值。
     RSUI:Text({ id="v3_buff_persistence_hint", parent=root,
-        text="报告只发送一条 RS-DIAG-3 消息，复制到末尾 END 即可。请保留旧存档；完整原始字段仍从下方文本框读取。",
+        text="请先从左上角诊断复制模块报告。请保留旧存档；完整原始字段仍可从下方只读取证框获取。",
         fontSize=10, tone="muted", overflow="wrap", maxLines=3,
         slot={size="auto", minHeight=42, hAlign="fill"} })
     local setEvidenceVisible = AttachEvidenceReader(root)
@@ -193,7 +188,7 @@ local function BuildPage(parent, route)
     end)
 
     local actionRow = RSUI:HorizontalBox({ id = "v3_buff_display_actions", parent = root, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
-    local featureButton = RSUI:Button({ id = "v3_buff_display_feature_toggle", parent = actionRow, text = "启用功能", compact = true, slot = { size = "fixed", width = 96 } })
+    local featureButton = D:ModuleToggleButton({ id = "v3_buff_display_feature_toggle", parent = actionRow, text = "启用功能", compact = true, slot = { size = "fixed", width = 96 } })
     local widgetButton = RSUI:Button({ id = "v3_buff_display_widget_toggle", parent = actionRow, text = "打开悬浮窗", compact = true, slot = { size = "fixed", width = 116 } })
     local persistHint = RSUI:Text({ id = "v3_buff_display_persist_hint", parent = actionRow, text = "配置已读取", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1, hAlign = "right" } })
 
@@ -267,7 +262,7 @@ local function BuildPage(parent, route)
     local freezeButton = RSUI:Button({ id = "v3_buff_display_track_freeze", parent = trackAction, text = "冻结列表（留存）", compact = true, slot = { size = "fixed", width = 126 } })
     local updateFreezeButton=RSUI:Button({id="v3_buff_update_freeze",parent=trackAction,text="清空记录",compact=true,slot={size="fixed",width=78}})
     local clearTrackButton = RSUI:Button({ id = "v3_buff_display_track_clear", parent = trackAction, text = "清空追踪", compact = true, slot = { size = "fixed", width = 78 } })
-    local probeButton = RSUI:Button({ id = "v3_buff_display_track_probe", parent = trackAction, text = "字段诊断", compact = true, slot = { size = "fixed", width = 78 } })
+    -- 维护（module-controls-diag-2）：字段探测移到统一诊断窗的显式操作；打开/翻页不自动触发Native探测。
 
     -- 中文维护（tracking-scope-v1）：行点击只拥有“选择”语义，不能越过四通道按钮直接改 Store。
     -- 这样同一个 effect ID 可以只显示于目标、只显示于自身，或在两个 HUD 上独立选择 Buff/Debuff。
@@ -758,7 +753,6 @@ local function BuildPage(parent, route)
     end
     searchClear.onClick = function() root.filterText = ""; if searchInput ~= nil and type(searchInput.SetValue) == "function" then searchInput:SetValue("", false, "search_clear") end; return root:Refresh() end
     clearTrackButton.onClick = function() local ok, err = Feature.Commands:ClearTrackedIds(); if ok then root:Refresh() end; return ok, err end
-    probeButton.onClick = function() local ok, summary = Feature.Commands:ProbeAuraFields(); selectedText:SetText(ok and ("字段诊断已输出到聊天框 · " .. tostring(summary)) or tostring(summary or "诊断失败")); return ok, summary end
 
     local function QuickImportText(mode)
         local text = quickInput ~= nil and type(quickInput.GetDraftValue) == "function" and tostring(quickInput:GetDraftValue() or "") or ""

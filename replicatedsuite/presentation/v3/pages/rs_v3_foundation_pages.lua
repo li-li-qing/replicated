@@ -702,11 +702,11 @@ local function BuildDiagnostics(parent, route)
     if root==nil then return nil,"页面根组件创建失败："..tostring(rootErr or "未知错误") end
     root.route=route
     -- 中文维护注释（2026-09-18，module-diagnostics-system-scope-1）：全局诊断页不删除，
-    -- 但职责固定为 Core/Foundation/完整维护取证；普通业务故障的默认入口已经迁到模块页右上角。
+    -- 但职责固定为 Core/Foundation/完整维护取证；普通业务故障的默认入口已经迁到模块页左上角。
     -- 禁止为了“方便”把所有 Feature 的日常诊断再次塞回这里；只有维护者明确需要全局证据时才使用
     -- 下方完整报告。这个页面的旧复制框继续保持兼容，不允许为了修模块 DiagnosticCopyBox 去改普通输入生命周期。
     D:PageHeader(root,"v3_diag_header","系统诊断与维护",
-        "这里保留 Core / Foundation 的完整维护自检。业务模块故障请优先使用对应页面右上角“诊断”，只采集该模块的错误、Store 与运行状态；完整报告仅在维护底层框架时使用。")
+        "这里保留 Core / Foundation 的完整维护自检。业务模块故障请优先使用对应页面左上角“诊断”，只采集该模块的错误、Store 与运行状态；完整报告仅在维护底层框架时使用。")
     local actions=RSUI:HorizontalBox({id="v3_diag_actions",parent=root,gap=8,slot={size="fixed",height=32,hAlign="fill"}})
     local runButton=RSUI:Button({id="v3_diag_full_check",parent=actions,text="运行自检",compact=true,slot={size="fixed",width=120}})
     local printButton=RSUI:Button({id="v3_diag_output",parent=actions,text="打印故障报告",compact=true,slot={size="fixed",width=144}})
@@ -714,7 +714,7 @@ local function BuildDiagnostics(parent, route)
     local card=D:InfoCard(root,{id="v3_diag_gate",title="自检结果",value="尚未运行",
         detail="不会清除历史错误、修改配置或解除写保护。",slot={size="fixed",height=60,hAlign="fill"}})
     local status=RSUI:Text({id="v3_diag_report_status",parent=root,fontSize=10,tone="accent",overflow="wrap",maxLines=3,
-        text="系统报告用于 Core / Foundation 维护，仍完整保留本次加载阻断与故障 Store 取证；业务模块请优先使用模块右上角诊断，避免复制无关内容。",
+        text="系统报告用于 Core / Foundation 维护，仍完整保留本次加载阻断与故障 Store 取证；业务模块请优先使用模块左上角诊断，避免复制无关内容。",
         slot={size="fixed",height=50,hAlign="fill"}})
     -- 维护：导航独立于run/print，不创建N个Native编辑框；复用同一框显示逻辑编辑框1..N，
     -- 节省控件/焦点资源。前后按钮达到边界即禁用；没有隐式轮转、没有新事件或后台任务。

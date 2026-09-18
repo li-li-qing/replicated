@@ -1,6 +1,8 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Life vertical-slice pages
 ------------------------------------------------------------------------
+-- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -71,7 +73,7 @@ local function Build(parent, route, feature, kind)
         return ok, refreshErr
     end)
     local actionRow = RSUI:HorizontalBox({ id = "v3_" .. kind .. "_actions", parent = root, gap = 6, slot = { size = "fixed", height = 32, hAlign = "fill" } })
-    local featureButton = RSUI:Button({ id = "v3_" .. kind .. "_toggle", parent = actionRow, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
+    local featureButton = D:ModuleToggleButton({ id = "v3_" .. kind .. "_toggle", parent = actionRow, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
     local widgetButton = RSUI:Button({ id = "v3_" .. kind .. "_widget_toggle", parent = actionRow, text = "打开悬浮窗", compact = true, slot = { size = "fixed", width = 96 } })
     local status
 
@@ -143,12 +145,8 @@ local function Build(parent, route, feature, kind)
             if ok == true then root:Refresh() end
             return ok, quoteErr
         end
-        local tradeDiagButton = RSUI:Button({ id = "v3_trade_diagnostics", parent = actionRow, text = "诊断", compact = true, slot = { size = "fixed", width = 62 } })
-        tradeDiagButton.onClick = function()
-            local panel = S.UIV3 and S.UIV3.TradeDiagnosticsV3 or nil
-            if type(panel) ~= "table" or type(panel.Open) ~= "function" then return false, "跑商诊断面板不可用" end
-            return panel:Open()
-        end
+        -- 维护（module-controls-diag-2）：诊断入口统一在左上角；原跑商请求/身份/初始化证据
+        -- 改为Hub独立Provider，删除这里只会重复/串窗口的按钮，不删除原数据或报价流程。
         -- 维护：报价预算/取消统一走Feature，三处视图共享同一批次；此行只显示进度。
         local qb=RSUI:HorizontalBox({id="v3_trade_quote_budget",parent=root,gap=6,slot={size="fixed",height=28}})
         root.tradeCancelQuote=RSUI:Button({id="v3_trade_cancel_quote",parent=qb,text="取消询价",compact=true,slot={size="fixed",width=90}})

@@ -417,3 +417,17 @@ function M:Close(reason)
     self:Deactivate(reason or "trade_diag_close")
     return true
 end
+
+-- 维护（module-controls-diag-2）：主入口统一后，跑商专有证据迁入共享Hub，而非删除功能。
+-- 每个只读Describe独立隔离；不获取Consumer、不发查询、不启用Feature，不导出其他模块的报价行。
+-- 旧面板仍保留兼容入口，但正常页面只打开统一诊断窗口。
+if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.RegisterProvider) == "function" then
+    for _, method in ipairs({ "DescribeRequestState", "DescribeIdentityState", "DescribeInitTrace" }) do
+        local methodName = method
+        S.ModuleDiagnosticsHub:RegisterProvider("life_trade", methodName, function()
+            local feature = Feature()
+            if type(feature) ~= "table" or type(feature[methodName]) ~= "function" then return { available = false } end
+            return feature[methodName](feature) or { available = false, reason = "not_sampled" }
+        end)
+    end
+end

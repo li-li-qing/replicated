@@ -711,13 +711,39 @@ local function BuildPage(parent, route)
         button.onClick = handler
     end
 
+    -- 维护：旧页没有总开关，显式补齐；FeatureRuntime拥有保存和启停回滚，页面仅持有page:gear租约。
+    local master = D:ModuleToggleButton({ id = "v3_gear_feature_toggle", parent = root, text = "启动", compact = true,
+        slot = { size = "fixed", height = 30, width = 92 }, onClick = function()
+            local runtime = S.FeatureRuntime
+            local target = not runtime:IsEnabled("combat_gear")
+            local ok, detail = runtime:SetPreferredEnabled("combat_gear", target, "gear_page_toolbar")
+            if ok ~= true then return false, detail end
+            if target then
+                local held, holdErr = Feature:AcquireTransient("page:gear")
+                if held ~= true then
+                    local reverted, revertErr = runtime:SetPreferredEnabled("combat_gear", false, "gear_toolbar_lease_rollback")
+                    return false, tostring(holdErr) .. (reverted ~= true and ("; rollback=" .. tostring(revertErr)) or "")
+                end
+                root.pageConsumerHeld = true
+            else root.pageConsumerHeld = false end
+            root:Refresh()
+            return true
+        end })
+    if master == nil then return nil, "gear_master_control_failed" end
+
+    -- 维护（module-controls-diag-2）：AcquireTransient原本会自动Enable；新增总开关后，
+    -- 页面激活只在实际enabled时获取原租约，禁止导航改变用户的关闭选择。显式操作/快捷按钮原语义保留。
     function root:OnActivated()
         Feature.Commands:SetDisableWhenIdle(false)
         self.deleteArmedUntil = 0
         deleteButton:SetText("删除")
-        local ok, err = Feature:AcquireTransient("page:gear")
-        if ok ~= true then return false, err end
-        self.pageConsumerHeld = true
+        if S.FeatureRuntime:IsEnabled("combat_gear") then
+            local ok, err = Feature:AcquireTransient("page:gear")
+            if ok ~= true then return false, err end
+            self.pageConsumerHeld = true
+        else
+            self.pageConsumerHeld = false
+        end
         if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
             S.Events:UnsubscribeInternalOwner(self)
             S.Events:SubscribeInternal("v3.gear.updated", self, function() root:Refresh() end)

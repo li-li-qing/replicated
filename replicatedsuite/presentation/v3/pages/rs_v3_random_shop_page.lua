@@ -4,6 +4,8 @@
 -- 数值草稿归RSUI NumericField；实时文本与操作回执分开，1秒观察不能擦掉输入或保存失败。
 -- 页面隐藏即释放自己的需求；设置保存不等于常驻运行，阈值提示只在本页，不占用首领HUD。
 ------------------------------------------------------------------------
+-- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -28,12 +30,7 @@ local function BuildPage(parent, route)
         D:PageHeader(root, ID .. "protected_header", "随机商店计数：配置已保护", "配置未通过读取校验，未清空旧设置，也未开始观察。")
         RSUI:Text({ id = ID .. "protected_reason", parent = root, text = tostring((called and loadErr or loaded) or "配置不可用"),
             fontSize = 10, tone = "warn", overflow = "wrap", slot = { size = "auto", minHeight = 40, hAlign = "fill" } })
-        RSUI:Button({ id = ID .. "diagnostics", parent = root, text = "打开诊断与维护", compact = true,
-            slot = { size = "fixed", height = 30, width = 160 }, onClick = function()
-                local shell = S.UIV3 and S.UIV3.Shell
-                if not shell or type(shell.Navigate) ~= "function" then return false, "诊断导航不可用" end
-                return shell:Navigate("system.diagnostics", { source = "random_shop_protected" })
-            end })
+    -- 维护（module-controls-diag-2）：保护页仍有宿主诊断按钮；不依赖错误的UIV3:Navigate，也不启用受保护模块。
         function root:OnActivated() return true end
         function root:OnDeactivated() return true end
         return root
@@ -47,7 +44,7 @@ local function BuildPage(parent, route)
         if actionStatus then actionStatus:SetText(ok == true and message or ("操作失败：" .. tostring(actionErr or "未执行"))) end
         return ok, actionErr
     end
-    toggle = RSUI:Button({ id = ID .. "toggle", parent = actions, text = "启用功能", compact = true,
+    toggle = D:ModuleToggleButton({ id = ID .. "toggle", parent = actions, text = "启用功能", compact = true,
         slot = { size = "fill", hAlign = "fill" }, onClick = function()
             local target = S.FeatureRuntime:IsEnabled(Feature.Id) ~= true
             local ok, actionErr = S.FeatureRuntime:SetPreferredEnabled(Feature.Id, target, "random_shop_page_toggle")

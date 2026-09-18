@@ -445,6 +445,16 @@ function F:GetSnapshot(id)
     }
 end
 
+-- 维护（module-controls-diag-2）：导航/工具条只读运行时薄状态，不触发 GetHealth/Store Load。
+-- preferred 不是当前运行态；初始化失败或停用回滚必须以 enabled 的实际值着色。
+function F:GetControlState(id)
+    id = NormalizeId(id)
+    local row = self.state[id]
+    return { implemented = self.implementations[id] ~= nil, initialized = row and row.initialized == true or false,
+        enabled = row and row.enabled == true or false, faulted = row and row.faulted == true or false,
+        lastError = row and row.lastError or nil }
+end
+
 function F:Describe()
     local implemented, initialized, enabled, faulted = 0, 0, 0, 0
     for _, id in ipairs(Registry.order) do

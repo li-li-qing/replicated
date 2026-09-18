@@ -1589,6 +1589,15 @@ function UI:SetLabelTone(widget, tone, owner)
     return changed
 end
 
+-- 维护（module-controls-diag-2）：保留既有 WidgetUsable 与 Native 写计数，Theme 是唯一着色 Authority。
+function UI:SetButtonStatusTone(widget, tone, owner)
+    if WidgetUsable(widget) ~= true then return false end
+    if S.Theme == nil or type(S.Theme.SetButtonStatusTone) ~= "function" then return false end
+    local changed = S.Theme:SetButtonStatusTone(widget, tone) == true
+    RecordAttempt("BUTTON_STATUS_TONE", widget, changed, changed and 1 or 0, owner)
+    return changed
+end
+
 function UI:SetButtonActive(widget, active, owner)
     if WidgetUsable(widget) ~= true then return false end
     if S.Theme == nil or type(S.Theme.SetButtonActive) ~= "function" then return false end

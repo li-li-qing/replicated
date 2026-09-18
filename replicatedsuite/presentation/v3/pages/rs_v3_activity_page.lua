@@ -1,6 +1,8 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Activity Page
 ------------------------------------------------------------------------
+-- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -47,7 +49,7 @@ local function BuildActivityPage(parent, route)
     local actionRow = RSUI:HorizontalBox({ id = "v3_activity_actions", parent = root, gap = 7, slot = { size = "fixed", height = 30, hAlign = "fill" } })
     local selectedKey = nil
     local tableView = nil
-    local featureButton = RSUI:Button({ id = "v3_activity_feature_toggle", parent = actionRow, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
+    local featureButton = D:ModuleToggleButton({ id = "v3_activity_feature_toggle", parent = actionRow, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
     local widgetButton = RSUI:Button({ id = "v3_activity_widget_toggle", parent = actionRow, text = "打开悬浮窗", compact = true, slot = { size = "fixed", width = 116 } })
     widgetButton.onClick = function()
         return RunAction("widget_toggle", widgetButton, function()

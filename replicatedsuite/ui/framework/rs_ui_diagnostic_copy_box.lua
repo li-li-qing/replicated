@@ -73,12 +73,29 @@ function UI:CreateDiagnosticCopyBox(spec)
 
     function box:SetPageText(text, reason)
         text = tostring(text or "")
-        if self.text == text then return true end
+        -- 维护（module-controls-diag-2）：只在显式翻页/生成时写 Native。旧代控件不能触碰；
+        -- SetText 返回成功不代表未被 RU 字数上限截短，正文必须完整回读一致后才提交缓存。
+        -- 失败不伪报已复制；不绑定普通 EditBox、不轮询 GetText，保证等待复制时选区稳定。
+        if self.edit.rsNativeGeneration ~= nil and tonumber(self.edit.rsNativeGeneration) ~= tonumber(S.Generation) then
+            return false, "diagnostic editor generation retired"
+        end
+        if self.text == text and self.textVerified ~= false then return true end
         if type(self.edit.SetText) ~= "function" then return false, "diagnostic set text unavailable" end
         local ok, result = pcall(self.edit.SetText, self.edit, text)
         if ok ~= true or result == false then return false, ok and "diagnostic set text rejected" or tostring(result) end
-        self.text = text
         self.stats.textWrites = (tonumber(self.stats.textWrites) or 0) + 1
+        local readOk, actual = false, nil
+        if type(self.edit.GetText) == "function" then readOk, actual = pcall(self.edit.GetText, self.edit) end
+        self.stats.expectedBytes = #text
+        self.stats.actualBytes = readOk and type(actual) == "string" and #actual or -1
+        if readOk ~= true or type(actual) ~= "string" or actual ~= text then
+            self.textVerified = false
+            self.stats.readbackFailures = (tonumber(self.stats.readbackFailures) or 0) + 1
+            self.stats.lastReason = "readback_mismatch"
+            return false, "复制页回读不一致：预期 " .. tostring(#text) .. " 字节，实际 "
+                .. tostring(self.stats.actualBytes) .. "；请使用缩短分页重试，本页不可作为完整报告。"
+        end
+        self.text, self.textVerified = text, true
         self.stats.lastTextAt = NowMs(); self.stats.lastReason = tostring(reason or "page")
         if type(self.edit.SetCursorOffset) == "function" then pcall(self.edit.SetCursorOffset, self.edit, 0) end
         return true
@@ -164,6 +181,11 @@ function UI:CreateDiagnosticCopyBox(spec)
         return true
     end
 
+    -- 维护：容量只在用户显式重新分页且成功回读后更新；不写文本，不触碰选区。
+    function box:SetCapacity(capacity)
+        self.copyCapacity = math.max(512, math.min(32768, math.floor(tonumber(capacity) or 3500)))
+        return true
+    end
     function box:GetCapacity() return self.copyCapacity end
 
     function box:GetDiagnostics()
@@ -172,6 +194,8 @@ function UI:CreateDiagnosticCopyBox(spec)
             textWrites = tonumber(self.stats.textWrites) or 0, geometryWrites = tonumber(self.stats.geometryWrites) or 0,
             geometrySkips = tonumber(self.stats.geometrySkips) or 0, activations = tonumber(self.stats.activations) or 0,
             activationFailures = tonumber(self.stats.activationFailures) or 0,
+            readbackFailures = tonumber(self.stats.readbackFailures) or 0, textVerified = self.textVerified ~= false,
+            expectedBytes = tonumber(self.stats.expectedBytes) or 0, actualBytes = tonumber(self.stats.actualBytes) or 0,
             lostFocusNotifications = tonumber(self.stats.lostFocusNotifications) or 0,
             deactivations = tonumber(self.stats.deactivations) or 0, lastReason = self.stats.lastReason,
         }

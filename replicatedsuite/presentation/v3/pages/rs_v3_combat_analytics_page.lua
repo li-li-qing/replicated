@@ -4,6 +4,8 @@
 -- and bounded actor drill-downs only; metric state/native combat APIs stay behind
 -- the CombatAnalytics Feature/Service boundary.
 ------------------------------------------------------------------------
+-- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 local RSUI,D=S.RSUI,S.UIV3Design
@@ -128,7 +130,7 @@ local function Build(parent)
         fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=34}})
 
     local toolbar=RSUI:HorizontalBox({id="v3_analytics_toolbar",parent=root,gap=6,slot={size="fixed",height=34,hAlign="fill"}})
-    local enable=RSUI:Button({id="v3_analytics_enable",parent=toolbar,text="开始分析",compact=true,slot={size="fixed",width=92}})
+    local enable=D:ModuleToggleButton({id="v3_analytics_enable",parent=toolbar,text="开始分析",compact=true,slot={size="fixed",width=92}})
     local metric,metricErr=RSUI:Dropdown({id="v3_analytics_metric",parent=toolbar,items={},maxVisible=9,
         get=function() return Feature:GetSelectedMetric() end,
         set=function(id) local ok,err=Feature.Commands:SetSelectedMetric(id);if ok==true then root.compareA,root.compareB,root.selectedRow=nil,nil,nil;root:RefreshData() end;return ok,err end,

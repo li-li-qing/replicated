@@ -73,12 +73,19 @@ end
 local function SanitizeContext(value)
     if type(value) ~= "table" then return nil end
     local out, count = {}, 0
+    -- 维护（module-controls-diag-2）：归属字段先于不确定的 pairs 顺序，防止第13字段丢失模块身份。
+    -- 这里只保留原有短上下文；长错误证据另走有界 primitive 白名单，禁止保存配置对象/Native 引用。
+    for _, key in ipairs({ "moduleId", "featureId", "feature", "route", "store", "owner", "phase", "error", "reason" }) do
+        if value[key] ~= nil then out[key] = SafePrimitive(value[key]); count = count + 1 end
+    end
     for key, item in pairs(value) do
         if count >= CONTEXT_MAX_FIELDS then break end
+        if out[key] == nil then
         local safeKey = tostring(key or "")
         if safeKey ~= "" then
             out[safeKey] = SafePrimitive(item)
             count = count + 1
+        end
         end
     end
     return next(out) ~= nil and out or nil
@@ -110,12 +117,38 @@ local function TouchBoundedKey(container, order, key, limit)
     if oldest ~= nil then container[oldest] = nil end
 end
 
+-- 维护（module-controls-diag-2）：日志短上下文曾在入库时截到180字节，诊断再分页也无法恢复根因。
+-- 仅 warning/error 保存以下 primitive 证据，总计最多16 KiB、单字段8 KiB；超限保留头尾并明确标记。
+-- 不递归配置/对象、不采集额外游戏数据、不上传。Diagnostics 仍是记录 Authority，Hub 仅投影。
+local FAULT_FIELDS = { "moduleId", "featureId", "feature", "route", "store", "owner", "phase", "method", "action",
+    "error", "reason", "detail", "traceback", "stack", "path", "expected", "actual" }
+local function FaultEvidence(level, context)
+    if (level ~= "error" and level ~= "warning") or type(context) ~= "table" then return nil end
+    local out, remaining = {}, 16384
+    for _, key in ipairs(FAULT_FIELDS) do
+        local value = context[key]
+        if type(value) == "string" and remaining > 0 then
+            local cap = math.min(8192, remaining)
+            if #value > cap then
+                local half = math.max(0, math.floor((cap - 64) / 2))
+                local left, right = half, math.max(1, #value - half + 1)
+                while left > 0 and (value:byte(left + 1) or 0) >= 128 and (value:byte(left + 1) or 0) < 192 do left = left - 1 end
+                while right <= #value and (value:byte(right) or 0) >= 128 and (value:byte(right) or 0) < 192 do right = right + 1 end
+                value = value:sub(1, left) .. "[TRUNCATED originalBytes=" .. tostring(#value) .. "]" .. value:sub(right)
+            end
+            out[key] = value; remaining = remaining - #value
+        elseif type(value) == "boolean" or type(value) == "number" then out[key] = value end
+    end
+    return next(out) and out or nil
+end
+
 function D:_Append(level, source, code, message, context, options)
     options = type(options) == "table" and options or {}
     level = NormalizeLevel(level)
     source = NormalizeSource(source)
     code = NormalizeCode(code)
     message = tostring(message or "")
+    local faultEvidence = options.faultEvidence or FaultEvidence(level, context)
     context = SanitizeContext(context)
 
     self.sequence = (tonumber(self.sequence) or 0) + 1
@@ -127,6 +160,7 @@ function D:_Append(level, source, code, message, context, options)
         code = code,
         message = message,
         context = context,
+        faultEvidence = faultEvidence,
         at = now,
         count = math.max(1, math.floor(tonumber(options.count) or 1)),
         firstAt = tonumber(options.firstAt) or now,
@@ -173,10 +207,24 @@ end
 -- Repeated hot-loop problems are aggregated instead of writing hundreds of log
 -- rows.  The next eligible emission reports how many repeats were suppressed.
 function D:RateLimited(level, source, code, intervalMs, message, context)
+    level = NormalizeLevel(level)
     source = NormalizeSource(source)
     code = NormalizeCode(code)
     intervalMs = math.max(250, tonumber(intervalMs) or 5000)
-    local key = source .. "|" .. code
+    -- 维护（module-controls-diag-2）：共享ui/runtime source下不同模块不能互相吞错。
+    -- 仅取调用方显式归属字段，不在热路径做Registry遍历/模糊匹配；日志级别也独立限流。
+    local scope = ""
+    if type(context) == "table" then
+        for _, field in ipairs({ "moduleId", "featureId", "feature", "route", "store", "owner" }) do
+            local value = context[field]
+            if type(value) == "string" and value ~= "" then
+                -- 异常超长身份不截成碰撞键；退化为有界recent直接记录，不保存无界rate key。
+                if #value > 160 then return self:_Append(level, source, code, message, context) end
+                scope = field .. ":" .. value; break
+            end
+        end
+    end
+    local key = level .. "|" .. source .. "|" .. code .. "|" .. scope
     local now = NowMs()
     local state = self.rate[key]
 
@@ -197,9 +245,12 @@ function D:RateLimited(level, source, code, intervalMs, message, context)
     local repeats = tonumber(state.suppressed) or 0
     state.lastEmitAt = now
     state.suppressed = 0
+    -- 先从原primitive上下文冻结证据，再生成简短日志上下文；否则第二次可发射记录再次截断根因。
+    local evidence = FaultEvidence(level, context)
     local merged = SanitizeContext(context) or {}
     if repeats > 0 then merged.suppressedCount = repeats end
     return self:_Append(level, source, code, message, merged, {
+        faultEvidence = evidence,
         count = repeats + 1,
         firstAt = state.firstAt,
         lastAt = now,

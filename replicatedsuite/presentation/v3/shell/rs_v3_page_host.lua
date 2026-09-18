@@ -19,6 +19,7 @@ S.UIV3.PageHost = {
     factories = {},
     fallbackFactory = nil,
     pages = {},
+    moduleControls = {},
     pageOrder = {},
     activeRoute = nil,
     context = nil,
@@ -57,7 +58,19 @@ end
 function H:Attach(parent)
     if self.switcher ~= nil then return true end
     self.root = parent
-    self.switcher = RSUI:WidgetSwitcher({ id = "v3_page_switcher", parent = parent, activeIndex = 1, measureMode = "active", slot = { hAlign = "fill", vAlign = "fill" } })
+    local controls = S.UIV3.ModuleControlsV3
+    if controls then
+        -- 维护（module-controls-diag-2）：工具条固定占一行，正文独立Fill；不侵入ScrollBox也不改Native父级。
+        self.frame = RSUI:VerticalBox({ id = "v3_page_frame", parent = parent, gap = 6,
+            slot = { hAlign = "fill", vAlign = "fill" } })
+        if not self.frame then return false, "page_frame_failed" end
+        self.controlsSwitcher = RSUI:WidgetSwitcher({ id = "v3_module_controls_switcher", parent = self.frame,
+            activeIndex = 1, measureMode = "active", slot = { size = "fixed", height = 32, hAlign = "fill" } })
+        if not self.controlsSwitcher then return false, "module_controls_switcher_failed" end
+        parent = self.frame
+        controls:BindLifecycle()
+    end
+    self.switcher = RSUI:WidgetSwitcher({ id = "v3_page_switcher", parent = parent, activeIndex = 1, measureMode = "active", slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
     return self.switcher ~= nil
 end
 
@@ -66,7 +79,7 @@ function H:GetBuildContext()
     if type(row) ~= "table" then return nil end
     -- 返回新的薄表，禁止 DesignSystem/页面工厂反向修改 PageHost 当前上下文。Feature 元数据本身
     -- 来自 FeatureRegistry，只用于读取 id/route/name；诊断按钮不能通过这里启停 Feature。
-    return { route = row.route, moduleId = row.moduleId, feature = row.feature }
+    return { route = row.route, moduleId = row.moduleId, feature = row.feature, controlBar = row.controlBar }
 end
 
 function H:CreatePage(route)
@@ -84,15 +97,23 @@ function H:CreatePage(route)
     local factory = self.factories[route] or self.fallbackFactory
     if type(factory) ~= "function" then return nil, "page factory unavailable: " .. tostring(route) end
 
+    local controlBar
     local ok, page, detail = RSUI:WithBuildScope("page:" .. route, function()
         -- 中文维护注释（2026-09-18）：PageHeader 的诊断按钮必须自动知道当前 Feature，
         -- 但不能要求每个业务页面手工传 moduleId。这里以页面工厂同步调用栈作为唯一边界；
         -- xpcall 确保 factory 抛错时 buildContext 也一定恢复。禁止把 buildContext 留到页面
         -- 激活/Refresh 阶段，否则异步 UI 会串模块并把错误报告归错 Owner。
         local previousBuildContext = self.buildContext
-        self.buildContext = { route = route, moduleId = feature and feature.id or nil, feature = feature }
+        if self.controlsSwitcher and S.UIV3.ModuleControlsV3 then
+            local controlErr
+            controlBar, controlErr = S.UIV3.ModuleControlsV3:Create(self.controlsSwitcher, route, feature)
+            if not controlBar then error(controlErr or "module_controls_failed") end
+        end
+        self.buildContext = { route = route, moduleId = feature and feature.id or nil, feature = feature, controlBar = controlBar }
         local factoryOk, builtPage, builtDetail = xpcall(function()
-            return factory(self.switcher, route, feature)
+            local result, resultErr = factory(self.switcher, route, feature)
+            if result and controlBar then S.UIV3.ModuleControlsV3:Finish(controlBar, result) end
+            return result, resultErr
         end, S.SafeTraceback)
         self.buildContext = previousBuildContext
         if factoryOk ~= true then error(builtPage) end
@@ -111,8 +132,21 @@ function H:CreatePage(route)
         return nil, err
     end
     self.pages[route] = page
+    self.moduleControls[route] = controlBar
     self.pageOrder[#self.pageOrder + 1] = route
     return page
+end
+
+function H:ActivateControls(route)
+    local bar = self.moduleControls[route]
+    if not bar or not self.controlsSwitcher then return true end
+    if self.activeControlsRoute ~= route then
+        local accepted = self.controlsSwitcher:SetActiveWidget(bar.root)
+        if accepted == false then return false, "module controls switch rejected" end
+        self.activeControlsRoute = route
+    end
+    S.UIV3.ModuleControlsV3:Refresh(bar)
+    return true
 end
 
 function H:Navigate(route, context)
@@ -134,6 +168,8 @@ function H:Navigate(route, context)
             if switched == false then return false, "widget switcher rejected previous page restore" end
         end
         self.activeRoute, self.context = previousRoute, previousContext
+        local controlsOk, controlsErr = self:ActivateControls(previousRoute)
+        if controlsOk ~= true then return false, controlsErr end
         if type(previousPage.OnRoute) == "function" then
             local routed, routeErr = xpcall(function() return previousPage:OnRoute(previousContext or {}) end, S.SafeTraceback)
             if routed ~= true then return false, routeErr end
@@ -182,7 +218,7 @@ function H:Navigate(route, context)
         self.activeRoute = route
         self.context = nextContext
         if type(page.Refresh) == "function" and route == "system.diagnostics" then page:Refresh() end
-        return true
+        return self:ActivateControls(route)
     end
 
     if previousPage ~= nil and previousPage ~= page and type(previousPage.OnDeactivated) == "function" then
@@ -232,6 +268,12 @@ function H:Navigate(route, context)
         end
     end
 
+    local controlsOk, controlsErr = self:ActivateControls(route)
+    if controlsOk ~= true then
+        if type(page.OnDeactivated) == "function" then pcall(page.OnDeactivated, page, previousRoute) end
+        local restored, restoreErr = RestorePreviousPage()
+        return false, tostring(controlsErr) .. (restored ~= true and ("; restore: " .. tostring(restoreErr)) or "")
+    end
     if type(page.Refresh) == "function" and route == "system.diagnostics" then page:Refresh() end
     return true
 end

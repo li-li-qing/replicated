@@ -97,12 +97,8 @@ function Home:Build(parent,route)
     local ledgerToggle = R:Button({id="v3_home_stats_toggle",parent=header,text="暂停统计",compact=true,slot={size="fixed",width=90},
         onClick=function()
             local ledger=S.Features and S.Features.DailyLedger
-            if not Enabled("life_daily_stats") then
-                if not S.FeatureRuntime then return false,"功能管理不可用" end
-                local ok,why=S.FeatureRuntime:SetPreferredEnabled("life_daily_stats",true,"home_toggle")
-                if ok then root:QueueRefresh() end
-                return ok,why
-            end
+            -- 维护（module-controls-diag-2）：暂停仅暂停统计，不暗中启动Feature；总开关统一归左上角。
+            if not Enabled("life_daily_stats") then return false,"请先从左上角启动今日统计" end
             if type(ledger)~="table" or type(ledger.SetPaused)~="function" then return false,"统计暂停接口不可用" end
             local ok,why=ledger:SetPaused(ledger.paused~=true,"home_toggle")
             if ok then root:QueueRefresh() end
@@ -305,7 +301,8 @@ function Home:Build(parent,route)
         local ledger=S.Features and S.Features.DailyLedger
         local projection=ledger and ledger:GetProjection() or {rows={},error="账本未加载"}
         dateText:SetText((not Enabled("life_daily_stats") and "统计日期 · " or projection.clockAvailable==false and "上次确认 · " or "服务器日期 · ")..tostring(projection.day or "等待读取"))
-        ledgerToggle:SetText(not Enabled("life_daily_stats") and "启用统计" or projection.paused==true and "继续统计" or "暂停统计")
+        ledgerToggle:SetText(not Enabled("life_daily_stats") and "统计未开启" or projection.paused==true and "继续统计" or "暂停统计")
+        ledgerToggle:SetEnabled(Enabled("life_daily_stats"))
         local ready=0
         for _,row in ipairs(projection.rows or {})do
             local view=statViews[row.key]

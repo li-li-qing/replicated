@@ -1,6 +1,8 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Butler Read-only Page
 ------------------------------------------------------------------------
+-- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -60,7 +62,7 @@ local function BuildPage(parent, route)
         return ok, refreshErr
     end)
     local toggleRow = RSUI:HorizontalBox({ id = "v3_butler_lifecycle", parent = root, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
-    local toggle = RSUI:Button({ id = "v3_butler_toggle", parent = toggleRow, text = "启用功能", compact = true, slot = { size = "fixed", width = 92 } })
+    local toggle = D:ModuleToggleButton({ id = "v3_butler_toggle", parent = toggleRow, text = "启用功能", compact = true, slot = { size = "fixed", width = 92 } })
     RSUI:Text({ id = "v3_butler_lifecycle_hint", parent = toggleRow, text = "页面不会自动启用功能；只有显式启用后才读取原生 API。", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
     local card = D:InfoCard(root, { id = "v3_butler_card", title = "充能信息", value = "等待读取", detail = "进入管家上下文后刷新。", detailMaxLines = 6, slot = { size = "fill", fill = 1, hAlign = "fill" } })
     local status = RSUI:Text({ id = "v3_butler_status", parent = root, text = "", fontSize = 9, tone = "muted", overflow = "wrap", slot = { size = "auto", minHeight = 30, hAlign = "fill" } })

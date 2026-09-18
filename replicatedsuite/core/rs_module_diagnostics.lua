@@ -21,7 +21,12 @@ local PROVIDER_MAX = 16
 local REPORT_VALUE_DEPTH = 4
 local REPORT_STRING_MAX = 1200
 
-S.ModuleDiagnosticsHub = type(S.ModuleDiagnosticsHub) == "table" and S.ModuleDiagnosticsHub or {
+-- 维护（module-controls-diag-2）：重载会保留Suite全局表，错误池/Provider却只属于一次加载。
+-- Generation不同时丢弃旧投影，避免旧故障冒充“本次加载”；旧窗口由Bootstrap统一退役。
+-- 同Generation重复执行文件仍可复用；早期错误留在新DiagnosticsManager，Capture再按身份归属。
+S.ModuleDiagnosticsHub = type(S.ModuleDiagnosticsHub) == "table"
+    and S.ModuleDiagnosticsHub.generation == (tonumber(S.Generation) or 0) and S.ModuleDiagnosticsHub or {
+    generation = tonumber(S.Generation) or 0,
     version = 1,
     contractVersion = 1,
     rings = {},
@@ -36,34 +41,55 @@ local function Normalize(value)
     return tostring(value or ""):lower():gsub("[^%w_%.%-]", "_"):gsub("_+", "_"):gsub("^_+", ""):gsub("_+$", "")
 end
 
-local function Copy(value, depth)
+-- 维护（module-controls-diag-2）：深层快照不得返回原表，避免后续业务修改污染已冻结报告。
+-- 复制仅允许有界 primitive 树；没有 Native/UObject 类引用，也不会递归环形或巨大业务对象。
+local function Copy(value, depth, seen)
     depth = tonumber(depth) or 0
-    if depth > 5 or type(value) ~= "table" then return value end
-    local out = {}
-    for key, item in pairs(value) do out[key] = Copy(item, depth + 1) end
+    if type(value) ~= "table" then return value end
+    if depth > 5 then return "<depth_limit>" end
+    seen = seen or {}; if seen[value] then return "<cycle>" end; seen[value] = true
+    local out, count = {}, 0
+    for key, item in pairs(value) do
+        count = count + 1; if count > 64 then out.__truncated = true; break end
+        if type(key) == "string" or type(key) == "number" then out[key] = Copy(item, depth + 1, seen) end
+    end
+    seen[value] = nil
     return out
 end
 
 local function Clip(value, limit)
     local text = tostring(value or ""):gsub("\r\n", "\n"):gsub("\r", "\n")
     limit = tonumber(limit) or REPORT_STRING_MAX
-    if #text > limit then return text:sub(1, limit) .. "…" end
+    if #text > limit then
+        local finish = limit
+        while finish > 0 and (text:byte(finish + 1) or 0) >= 128 and (text:byte(finish + 1) or 0) < 192 do finish = finish - 1 end
+        return text:sub(1, finish) .. "[TRUNCATED originalBytes=" .. tostring(#text) .. "]"
+    end
     return text
 end
 
 local function Keys(value)
     local out = {}
-    if type(value) == "table" then for key in pairs(value) do out[#out + 1] = key end end
+    if type(value) == "table" then
+        for key in pairs(value) do out[#out + 1] = key; if #out >= 64 then break end end
+    end
     table.sort(out, function(a, b) return tostring(a) < tostring(b) end)
     return out
 end
 
-local function ValueText(value, depth, seen)
+local function ValueText(value, depth, seen, budget)
     depth = tonumber(depth) or 0
+    budget = budget or { left = 16384, nodes = 256 }
+    budget.nodes = budget.nodes - 1
+    if budget.left <= 0 or budget.nodes <= 0 then return "<serialization_budget>" end
     local kind = type(value)
     if kind == "nil" then return "nil" end
     if kind == "boolean" or kind == "number" then return tostring(value) end
-    if kind == "string" then return Clip(value) end
+    if kind == "string" then
+        local text = Clip(value, math.min(REPORT_STRING_MAX, budget.left))
+        budget.left = budget.left - #text
+        return text
+    end
     if kind ~= "table" then return "<" .. kind .. ">" end
     if depth >= REPORT_VALUE_DEPTH then return "<table>" end
     seen = seen or {}
@@ -73,7 +99,7 @@ local function ValueText(value, depth, seen)
     for _, key in ipairs(Keys(value)) do
         count = count + 1
         if count > 48 then parts[#parts + 1] = "…"; break end
-        parts[#parts + 1] = tostring(key) .. "=" .. ValueText(value[key], depth + 1, seen)
+        parts[#parts + 1] = tostring(key) .. "=" .. ValueText(value[key], depth + 1, seen, budget)
     end
     seen[value] = nil
     return "{" .. table.concat(parts, ",") .. "}"
@@ -105,67 +131,103 @@ function H:RegisterStoreOwner(moduleId, value)
     return true
 end
 
-function H:_ResolveByStore(storeId, owner)
-    storeId, owner = tostring(storeId or ""), tostring(owner or "")
-    if storeId ~= "" and self.storeOwners[storeId] ~= nil then return self.storeOwners[storeId] end
-    if owner ~= "" and self.storeOwners[owner] ~= nil then return self.storeOwners[owner] end
+-- 维护（module-controls-diag-2）：注册时编译身份索引，错误热路径不再逐模块分词/Tag匹配。
+-- 同一个共享 Authority 被多个模块引用时标记为歧义，保留在 system；明确 moduleId/route 优先。
+function H:_IdentityIndex()
     local registry = Registry()
-    if registry == nil or type(registry.List) ~= "function" then return nil end
-    local best, bestLen = nil, 0
-    for _, meta in ipairs(registry:List()) do
-        for _, token in ipairs(AuthorityTokens(meta)) do
-            local matches = owner == token or storeId == token
-                or (storeId ~= "" and storeId:sub(1, #token + 1) == token .. ".")
-                or (owner ~= "" and owner:sub(1, #token + 1) == token .. ".")
-            if matches and #token > bestLen then best, bestLen = meta.id, #token end
-        end
+    if registry == nil then return nil end
+    local revision = tonumber(registry.registrationRevision) or #(registry.order or {})
+    local old = self.identityIndex
+    if old and old.registry == registry and old.revision == revision then return old end
+    local index = { registry = registry, revision = revision, sources = {}, routes = {}, stores = {} }
+    local function Put(map, key, id)
+        if key == nil or key == "" then return end
+        if map[key] == nil then map[key] = id elseif map[key] ~= id then map[key] = false end
     end
-    return best
+    for _, meta in ipairs(type(registry.List) == "function" and registry:List() or {}) do
+        Put(index.sources, meta.id, meta.id); Put(index.sources, meta.route, meta.id); Put(index.routes, meta.route, meta.id)
+        for _, alias in ipairs(meta.diagnosticSources or {}) do Put(index.sources, alias, meta.id) end
+        for _, token in ipairs(AuthorityTokens(meta)) do Put(index.stores, token, meta.id) end
+    end
+    self.identityIndex = index
+    return index
+end
+
+function H:_ResolveByStore(storeId, owner)
+    local index = self:_IdentityIndex()
+    local function Find(value)
+        value = tostring(value or "")
+        -- 最长前缀逐段回退只与 ID 层数有关；共享歧义前缀不会退到更宽的错误 Owner。
+        for _ = 1, 16 do
+            if value == "" then break end
+            if self.storeOwners[value] ~= nil then return self.storeOwners[value] end
+            if index and index.stores[value] ~= nil then return index.stores[value] end
+            local shorter = value:match("^(.*)%.[^%.]+$")
+            if shorter == nil then break end
+            value = shorter
+        end
+        return nil
+    end
+    local byStore = Find(storeId)
+    if byStore ~= nil then return byStore or nil end
+    return Find(owner) or nil
 end
 
 function H:ResolveModule(entry)
     entry = type(entry) == "table" and entry or {}
-    local context = type(entry.context) == "table" and entry.context or {}
-    local registry = Registry()
+    local context = type(entry.faultEvidence) == "table" and entry.faultEvidence or entry.context or {}
     local explicit = Normalize(context.moduleId or context.featureId or context.feature)
     if explicit ~= "" and Meta(explicit) ~= nil then return explicit end
-    local route = tostring(context.route or "")
-    if route ~= "" and registry ~= nil and type(registry.GetByRoute) == "function" then
-        local row = registry:GetByRoute(route); if row ~= nil then return row.id end
-    end
-    local storeModule = self:_ResolveByStore(context.store, context.owner)
-    if storeModule ~= nil then return storeModule end
-    local source = tostring(entry.source or "")
-    if source ~= "" and registry ~= nil then
-        local byId = type(registry.Get) == "function" and registry:Get(source) or nil
-        if byId ~= nil then return byId.id end
-        local byRoute = type(registry.GetByRoute) == "function" and registry:GetByRoute(source) or nil
-        if byRoute ~= nil then return byRoute.id end
-        -- 中文维护注释：历史模块长期使用 buff_display_v3 / dps_v3 等 source。它们只能由
-        -- FeatureRegistry.diagnosticSources 显式声明后精确归属；禁止在 Hub 里做去后缀、包含词、
-        -- 编辑距离等模糊推断，否则 ui_v3/static_data 等共享 source 会被错误塞进业务模块。
-        if type(registry.List) == "function" then
-            for _, meta in ipairs(registry:List()) do
-                for _, alias in ipairs(type(meta.diagnosticSources) == "table" and meta.diagnosticSources or {}) do
-                    if source == tostring(alias) then return meta.id end
-                end
-            end
-        end
-    end
-    return "system"
+    local index = self:_IdentityIndex()
+    local route = index and index.routes[tostring(context.route or "")]
+    if route then return route end
+    local owner = self:_ResolveByStore(context.store, context.owner)
+    if owner then return owner end
+    return index and index.sources[tostring(entry.source or "")] or "system"
+end
+
+local function IsFault(row)
+    return row.level == "error" or row.level == "warning" or row.level == "warn" or row.level == "fatal"
+end
+local function SameFault(a, b)
+    if not a or a.level ~= b.level or a.source ~= b.source or a.code ~= b.code or a.message ~= b.message then return false end
+    local left, right = a.faultEvidence or a.context or {}, b.faultEvidence or b.context or {}
+    for key, value in pairs(left) do if right[key] ~= value then return false end end
+    for key, value in pairs(right) do if left[key] ~= value then return false end end
+    return true
+end
+function H:_ModuleCounters(id)
+    self.moduleCounters = self.moduleCounters or {}
+    self.moduleCounters[id] = self.moduleCounters[id] or { ignored = 0, evicted = 0, repeats = 0 }
+    return self.moduleCounters[id]
 end
 
 function H:Observe(entry)
+    -- 新Manager已加载、Hub尚未加载的短暂边界不写旧代投影；全局recent仍保留新证据。
+    if self.generation ~= (tonumber(S.Generation) or 0) then return false, "retired_generation" end
     if type(entry) ~= "table" then return false, "entry required" end
     local moduleId = self:ResolveModule(entry)
     if moduleId ~= "system" and Meta(moduleId) == nil then moduleId = "system" end
+    local counters = self:_ModuleCounters(moduleId)
+    self.stats.observed = (tonumber(self.stats.observed) or 0) + 1
+    -- 信息日志留在全局日志；模块故障池只保留 warning/error，防止正常刷新淹没真实故障。
+    if not IsFault(entry) then counters.ignored = counters.ignored + 1; return true, moduleId end
     local ring = self.rings[moduleId]
     if type(ring) ~= "table" then ring = {}; self.rings[moduleId] = ring end
-    ring[#ring + 1] = Copy(entry)
-    self.stats.observed = (tonumber(self.stats.observed) or 0) + 1
+    local last = ring[#ring]
+    if SameFault(last, entry) then
+        last.count = (tonumber(last.count) or 1) + (tonumber(entry.count) or 1)
+        last.lastSeq = entry.seq; last.lastAt = entry.lastAt or entry.at
+        counters.repeats = counters.repeats + (tonumber(entry.count) or 1)
+    else
+        ring[#ring + 1] = Copy(entry)
+    end
     if moduleId == "system" then self.stats.system = (tonumber(self.stats.system) or 0) + 1
     else self.stats.routed = (tonumber(self.stats.routed) or 0) + 1 end
-    while #ring > RING_MAX do table.remove(ring, 1); self.stats.evicted = (tonumber(self.stats.evicted) or 0) + 1 end
+    while #ring > RING_MAX do
+        table.remove(ring, 1); self.stats.evicted = (tonumber(self.stats.evicted) or 0) + 1
+        counters.evicted = counters.evicted + 1
+    end
     return true, moduleId
 end
 
@@ -184,15 +246,26 @@ function H:_CollectReportRecent(moduleId)
     -- DiagnosticsManager.recent；这里只构造临时报表列表，不搬迁/删除历史、不产生新日志。
     -- 这样既补回启动早期业务错误，又不会在每条错误热路径上等待 Registry 或做全表扫描。
     moduleId = Normalize(moduleId)
+    if moduleId == "system_diagnostics" then moduleId = "system" end
     local out, seen = {}, {}
     local function Add(row)
-        if type(row) ~= "table" then return end
+        if type(row) ~= "table" or not IsFault(row) then return end
+        for _, prior in ipairs(out) do
+            if SameFault(prior, row) and (tonumber(row.seq) or 0) >= (tonumber(prior.seq) or 0)
+                and (tonumber(row.seq) or 0) <= (tonumber(prior.lastSeq or prior.seq) or 0) then return end
+        end
         local key = tostring(row.seq or "")
         if key ~= "" and seen[key] then return end
         if key ~= "" then seen[key] = true end
         out[#out + 1] = Copy(row)
     end
-    for _, row in ipairs(self.rings[moduleId] or {}) do Add(row) end
+    for _, row in ipairs(self.rings[moduleId] or {}) do
+        if self:ResolveModule(row) == moduleId then Add(row) end
+    end
+    -- Registry 未就绪时落入 system 的故障即便已被全局80条淘汰，也从有界 system 池重新归属。
+    if moduleId ~= "system" then
+        for _, row in ipairs(self.rings.system or {}) do if self:ResolveModule(row) == moduleId then Add(row) end end
+    end
     local diagnostics = S.DiagnosticsManager
     for _, row in ipairs(type(diagnostics) == "table" and diagnostics.recent or {}) do
         if self:ResolveModule(row) == moduleId then Add(row) end
@@ -243,6 +316,7 @@ function H:BuildReport(moduleId)
     local meta = Meta(moduleId)
     if meta == nil then return nil, "unknown module: " .. tostring(moduleId) end
     local runtime = RuntimeState(moduleId)
+    local providerFailures = 0
     local lines = {
         "RS-MODULE-DIAG-1",
         "BUILD=" .. tostring(S.BuildTag or "?"),
@@ -261,15 +335,15 @@ function H:BuildReport(moduleId)
         and S.FeatureRuntime.implementations[moduleId] or nil
     if runtime.initialized and type(impl) == "table" and type(impl.GetHealth) == "function" then
         local ok, value = xpcall(function() return impl:GetHealth() end, S.SafeTraceback or tostring)
+        if not ok or value == nil or value == false then providerFailures = providerFailures + 1 end
         lines[#lines + 1] = ok and ("featureHealth=" .. ValueText(value)) or ("featureHealthError=" .. Clip(value))
     else
         lines[#lines + 1] = "featureHealth=not_sampled(uninitialized_or_unavailable)"
     end
 
-    local providerFailures = 0
     for _, row in ipairs(self.providers[moduleId] or {}) do
         local ok, value, detail = xpcall(function() return row.fn(moduleId, meta) end, S.SafeTraceback or tostring)
-        if ok and value ~= false then
+        if ok and value ~= false and value ~= nil then
             lines[#lines + 1] = "provider." .. row.id .. "=" .. ValueText(value)
         else
             providerFailures = providerFailures + 1
@@ -285,18 +359,41 @@ function H:BuildReport(moduleId)
         lines[#lines + 1] = string.format("#%s %s/%s %s%s", tostring(row.seq or "?"), tostring(row.level or "?"),
             tostring(row.source or "?"), Clip(row.code or "LEGACY", 96) .. ":" .. Clip(row.message or "", 700),
             type(row.context) == "table" and (" " .. ValueText(row.context)) or "")
+        lines[#lines + 1] = " occurrences=" .. tostring(row.count or 1) .. " firstMs=" .. tostring(row.firstAt or row.at or "?")
+            .. " lastMs=" .. tostring(row.lastAt or row.at or "?")
+        -- 入库时已经有界且只含白名单 primitive；不再套1200字节的短摘要裁剪，保留根因头尾。
+        for _, key in ipairs(Keys(row.faultEvidence)) do
+            lines[#lines + 1] = " evidence." .. tostring(key) .. "=" .. tostring(row.faultEvidence[key])
+        end
     end
 
     lines[#lines + 1] = "[MODULE_STORES]"
-    local describe = type(S.Persistence) == "table" and type(S.Persistence.Describe) == "function" and S.Persistence:Describe() or nil
-    local storeCount = 0
+    -- 维护（module-controls-diag-2）：存档/健康/Provider 各自隔离，诊断自身异常必须成为证据而非吞掉报告。
+    -- Describe 只读现有状态，不做 Load/Recover/Save；异常不影响其他分区的证据输出。
+    local describe
+    if type(S.Persistence) == "table" and type(S.Persistence.Describe) == "function" then
+        local ok, value = xpcall(function() return S.Persistence:Describe() end, S.SafeTraceback or tostring)
+        if ok and type(value) == "table" then describe = value
+        else
+            providerFailures = providerFailures + 1
+            lines[#lines + 1] = "storeCollectorError=" .. Clip(value, 4096)
+        end
+    else
+        lines[#lines + 1] = "storeCollector=unavailable"
+        providerFailures = providerFailures + 1
+    end
+    local storeCount, storeFaults = 0, 0
     for _, row in ipairs(type(describe) == "table" and describe.rows or {}) do
         if self:_StoreBelongs(moduleId, row) then
             storeCount = storeCount + 1
+            if row.writeFenced == true or (tonumber(row.consecutiveSaveFailures) or 0) > 0 then storeFaults = storeFaults + 1 end
             lines[#lines + 1] = tostring(row.id or "?") .. " owner=" .. tostring(row.owner or "?")
                 .. " load=" .. tostring(row.loadStatus or "?") .. " integrity=" .. tostring(row.lastIntegrityStatus or "?")
                 .. " fenced=" .. tostring(row.writeFenced == true) .. " saveFail=" .. tostring(row.consecutiveSaveFailures or 0)
-                .. (row.writeFenceReason and (" reason=" .. Clip(row.writeFenceReason, 400)) or "")
+                .. (row.writeFenceReason and (" reason=" .. Clip(row.writeFenceReason, 1200)) or "")
+                .. (row.lastIntegrityError and (" integrityError=" .. Clip(row.lastIntegrityError, 4096)) or "")
+                .. (row.lastVerifyFingerprint and (" verifyFp=" .. tostring(row.lastVerifyFingerprint)) or "")
+                .. (row.lastIntegrityFingerprint and (" integrityFp=" .. tostring(row.lastIntegrityFingerprint)) or "")
         end
     end
     if storeCount == 0 then lines[#lines + 1] = "none" end
@@ -307,8 +404,23 @@ function H:BuildReport(moduleId)
     lines[#lines + 1] = "activeRoute=" .. tostring(type(host) == "table" and host.activeRoute or "")
         .. "/pageCreated=" .. tostring(pageCreated)
 
-    lines[#lines + 1] = "[RESULT] providerFailures=" .. tostring(providerFailures) .. " errors=" .. tostring(#recent)
-        .. " stores=" .. tostring(storeCount)
+    local counters = self:_ModuleCounters(moduleId == "system_diagnostics" and "system" or moduleId)
+    local errors, warnings = 0, 0
+    for _, row in ipairs(recent) do
+        if row.level == "error" or row.level == "fatal" then errors = errors + (tonumber(row.count) or 1)
+        else warnings = warnings + (tonumber(row.count) or 1) end
+    end
+    local summary = "已记录错误=" .. errors .. " / 警告=" .. warnings .. " / 存档保护或写入失败=" .. storeFaults
+        .. " / 采集失败=" .. providerFailures
+    table.insert(lines, 7, "SUMMARY=" .. summary)
+    table.insert(lines, 8, "COVERAGE=本次加载已记录且仍保留的模块证据；无记录不代表无故障；不含未捕获的客户端内部错误。")
+    table.insert(lines, 9, "PRIVACY=可能含角色名/配置字段/本地错误路径；仅本地生成，分享前请检查。")
+    if meta.performanceLabel then lines[#lines + 1] = "performance=" .. meta.performanceLabel .. "(预估，非CPU/FPS实测) " .. tostring(meta.performanceReason or "") end
+    lines[#lines + 1] = "[RETENTION] groups=" .. #recent .. "/" .. RING_MAX .. " evictedGroups=" .. counters.evicted
+        .. " repeated=" .. counters.repeats .. " informationalNotInFaultRing=" .. counters.ignored
+    lines[#lines + 1] = "[RESULT] providerFailures=" .. tostring(providerFailures) .. " errors=" .. tostring(errors)
+        .. " warnings=" .. tostring(warnings) .. " stores=" .. tostring(storeCount)
+        .. " collection=" .. (providerFailures > 0 and "INCOMPLETE" or "captured_available_sources")
     lines[#lines + 1] = "RS-MODULE-DIAG-END"
     return table.concat(lines, "\n")
 end
@@ -319,12 +431,26 @@ function H:Capture(moduleId, capacity)
     local transport = S.ReportCopyTransport
     if type(transport) ~= "table" or type(transport.BuildTextPages) ~= "function" then return nil, "report paging unavailable" end
     self.captureSequence = (tonumber(self.captureSequence) or 0) + 1
-    local id = "MD" .. tostring(self.captureSequence) .. "." .. Normalize(moduleId)
+    local id = "MD" .. tostring(S.Generation or 0) .. "." .. tostring(self.captureSequence) .. "." .. Normalize(moduleId)
     local session, pageErr = transport:BuildTextPages(report, tonumber(capacity) or 3500, id)
     if session == nil then return nil, pageErr end
     self.stats.captures = (tonumber(self.stats.captures) or 0) + 1
     return { version = 1, id = id, moduleId = Normalize(moduleId), report = report, session = session,
         parts = tonumber(session.parts) or 1, capturedAt = type(S.NowMs) == "function" and S.NowMs() or 0 }
+end
+
+-- 维护：仅用户点击“缩短分页”时重切同一份 report，不重新采集或读存档。新分页ID避免混入旧页。
+function H:Repage(snapshot, capacity)
+    if type(snapshot) ~= "table" or type(snapshot.report) ~= "string" then return nil, "snapshot required" end
+    local transport = S.ReportCopyTransport
+    if type(transport) ~= "table" or type(transport.BuildTextPages) ~= "function" then return nil, "paging unavailable" end
+    local revision = (tonumber(snapshot.pageRevision) or 0) + 1
+    local baseId = tostring(snapshot.baseId or snapshot.id or "MD"):sub(1, 40)
+    local id = baseId .. "r" .. tostring(revision)
+    local session, err = transport:BuildTextPages(snapshot.report, capacity, id)
+    if session == nil then return nil, err end
+    return { version = snapshot.version, id = id, baseId = baseId, pageRevision = revision, moduleId = snapshot.moduleId,
+        report = snapshot.report, capturedAt = snapshot.capturedAt, session = session, parts = session.parts }
 end
 
 function H:GetPage(snapshot, index)

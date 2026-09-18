@@ -57,6 +57,20 @@ function D:ScrollablePageRoot(parent, idOrSpec)
     return RSUI:ScrollBox(spec)
 end
 
+-- 维护（module-controls-diag-2）：页面通过此入口领取宿主已创建的总开关。
+-- 原回调、ActionRunner引用、失败回滚继续使用同一实例；只迁移位置，不另造状态/Consumer。
+-- 非PageHost直接构建（独立页面宿主）仍按spec创建，兼容现有隔离页面使用方式。
+function D:ModuleToggleButton(spec)
+    local host = S.UIV3 and S.UIV3.PageHost
+    local context = host and type(host.GetBuildContext) == "function" and host:GetBuildContext() or nil
+    local bar = context and context.controlBar
+    if bar and bar.toggle then
+        if type(spec.onClick) == "function" then bar.toggle.onClick, bar.toggle.spec.onClick = spec.onClick, spec.onClick end
+        return bar.toggle
+    end
+    return RSUI:Button(spec)
+end
+
 function D:ModuleDiagnosticsButton(parent, id, width)
     -- 中文维护注释（2026-09-18，module-diagnostics-header-2）：所有业务页的诊断入口都必须
     -- 经过这个共享 helper。标准 PageHeader 自动调用；少数拥有自定义抬头（首页/战斗分析）的页面
@@ -64,6 +78,7 @@ function D:ModuleDiagnosticsButton(parent, id, width)
     -- 变化只改 DesignSystem，不会在几十个页面里产生分叉。
     local pageHost = S.UIV3 and S.UIV3.PageHost or nil
     local buildContext = type(pageHost) == "table" and type(pageHost.GetBuildContext) == "function" and pageHost:GetBuildContext() or nil
+    if buildContext and buildContext.controlBar then return buildContext.controlBar.diagnostics end
     local moduleId = type(buildContext) == "table" and tostring(buildContext.moduleId or "") or ""
     local route = type(buildContext) == "table" and tostring(buildContext.route or "") or ""
     if moduleId == "" or moduleId == "system_diagnostics" or route == "system.diagnostics" then return nil end
