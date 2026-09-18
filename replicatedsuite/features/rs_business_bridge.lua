@@ -35,11 +35,21 @@ local function Copy(value, seen)
 end
 local function Call(capability, object, method, ...)
     if S.Api == nil or type(S.Api.CallCapability) ~= "function" then return false, nil, "API boundary unavailable" end
-    return S.Api:CallCapability(capability, object, method, ...)
+    local host = object
+    if host == nil or (method and host[method] == nil) then
+        local capPrefix = capability and capability:match("^([^:]+)")
+        if capPrefix then host = rawget(_G, capPrefix) or host end
+    end
+    return S.Api:CallCapability(capability, host, method, ...)
 end
 local function Action(capability, object, method, ...)
     if S.Api == nil or type(S.Api.ActionCapability) ~= "function" then return false, "API boundary unavailable" end
-    return S.Api:ActionCapability(capability, object, method, ...)
+    local host = object
+    if host == nil or (method and host[method] == nil) then
+        local capPrefix = capability and capability:match("^([^:]+)")
+        if capPrefix then host = rawget(_G, capPrefix) or host end
+    end
+    return S.Api:ActionCapability(capability, host, method, ...)
 end
 local function RegisterStore(id, owner, default, get, apply)
     if P:GetStore(id) == nil then
@@ -1889,317 +1899,449 @@ local function NewFeature(id, spec)
 end
 
 do
-    -- Boss mechanics: business meaning stays here; Native casting/Aura facts are
-    -- shared Services. Exact catalog lookups are built once at load time so the
-    -- 100 ms observation loop never performs fuzzy/tag matching.
+    -- 中文维护（2026-09-12）：首领规则是 Feature 的业务 Authority；Casting/Aura 仅供事实，
+    -- Alerts 仅负责提示寿命。逐条开关用稳定 key 持久化，目录不被写入；默认缺省=启用，兼容旧 HUD-only 存档。
     local BOSS_OBSERVE_TASK = "v3_business_boss_alert_observe"
     local BOSS_AURA_INTERVAL_MS = 300
-    -- wbdebuff matches the RU client's localized spellName; its exact case on
-    -- the wire is unproven, so both index and lookup normalize case/whitespace
-    -- once (O(1) afterwards, no per-tick fuzzy scanning).
-    local function NormalizeCastKey(value)
-        local text = tostring(value or ""):gsub("^%s*(.-)%s*$", "%1")
-        return string.lower(text)
-    end
-    -- Proven fact-source priority from wbdebuff (jumpblackdragon.lua:123-131):
-    -- target first, then target's target, then the player, then the focus
-    -- target. Casting facts for all four scopes come from the shared
-    -- CastingObservationV3 (v2, four-unit polling).
     local BOSS_CAST_SCOPES = { "target", "targettarget", "watchtarget", "player" }
-    local BossCastIndex, BossDebuffIndex = {}, {}
-    for index, value in ipairs(S.Data and S.Data.BossAlerts or {}) do
+    local function NormalizeCastKey(value)
+        return string.lower(tostring(value or ""):gsub("^%s*(.-)%s*$", "%1"))
+    end
+    local BossCastIndex, BossDebuffIndex, BossRuleIndex, BossRules = {}, {}, {}, {}
+    for _, value in ipairs(S.Data and S.Data.BossAlerts or {}) do
         local row = type(value) == "table" and value or {}
-        row._index = index
-        if tostring(row.kind or "") == "cast" then
-            for _, rawName in ipairs(type(row.names) == "table" and row.names or {}) do
-                local name = NormalizeCastKey(rawName)
-                if name ~= "" then BossCastIndex[name] = row end
+        local key = tostring(row.key or "")
+        if key ~= "" and BossRuleIndex[key] == nil then
+            BossRuleIndex[key] = row
+            BossRules[#BossRules + 1] = row
+            if row.kind == "cast" then
+                for _, name in ipairs(type(row.names) == "table" and row.names or {}) do
+                    local normalized = NormalizeCastKey(name)
+                    if normalized ~= "" then BossCastIndex[normalized] = row end
+                end
+            elseif row.kind == "debuff" and tonumber(row.debuffId) ~= nil then
+                BossDebuffIndex[tonumber(row.debuffId)] = row
             end
-        elseif tostring(row.kind or "") == "debuff" then
-            local id = tonumber(row.debuffId)
-            if id ~= nil and id > 0 then BossDebuffIndex[id] = row end
         end
     end
 
+    local function BossRuleEnabled(feature, key)
+        return not (type(feature.State.items) == "table" and feature.State.items[key] == false)
+    end
+    local function BossEnabledCount(feature)
+        local count = 0
+        for _, rule in ipairs(BossRules) do if BossRuleEnabled(feature, rule.key) then count = count + 1 end end
+        return count
+    end
+    local function BossHide(feature, key)
+        local alerts = S.Services and S.Services.Alerts
+        if alerts and type(alerts.HideOwner) == "function" then return alerts:HideOwner(feature.Id, key) end
+        return true -- 中文维护：旧服务无按 owner 隐藏时不退回全局 Hide，避免清除别的业务提示。
+    end
+    -- 中文维护（boss-hud-clock-1）：可选字段避免改动旧 HUD-only 存档的缺省形状；
+    -- Feature 是设置 Authority，服务/Presenter 接收分离配置，不得反向写 State。
+    local function BossHudConfig(feature)
+        return {anchorMode=feature.State.hudAnchor, fontSize=feature.State.hudFontSize,
+            offsetX=feature.State.hudOffsetX, offsetY=feature.State.hudOffsetY, width=feature.State.hudWidth}
+    end
+    local function BossSaveLayout(feature, mutator)
+        local loaded, loadErr = Load(feature); if loaded ~= true then return false, loadErr end
+        local ok, err = P:MutateStore(feature.storeId, function() return mutator(feature.State) end,
+            {durable=true, reason="boss_hud_layout"})
+        if ok ~= true then return false, err end
+        local alerts = S.Services and S.Services.Alerts
+        local applied, applyErr = true, nil
+        if alerts and type(alerts.ConfigureOwner) == "function" then applied, applyErr = alerts:ConfigureOwner(feature.Id, BossHudConfig(feature)) end
+        feature.Authority:Refresh("boss_hud_layout_saved")
+        if applied ~= true then return false, "设置已保存，但 HUD 布局未应用：" .. tostring(applyErr) end
+        return true
+    end
+    local function BossNumber(value, low, high)
+        local n = tonumber(value)
+        if n == nil or n ~= n or n == math.huge or n == -math.huge then return nil end
+        return math.floor(math.max(low, math.min(high, n)))
+    end
     local function BossPush(feature, rule, remainingMs)
-        if feature.State.hudEnabled ~= true or type(rule) ~= "table" then return true end
-        local alerts = S.Services and S.Services.Alerts or nil
+        if feature.State.hudEnabled ~= true then return false, "请先启用首领机制 HUD" end
+        if type(rule) ~= "table" then return false, "首领规则不存在" end
+        if not BossRuleEnabled(feature, rule.key) then return false, "该规则已关闭" end
+        local alerts = S.Services and S.Services.Alerts
         if type(alerts) ~= "table" or type(alerts.Push) ~= "function" then return false, "AlertsService 不可用" end
         local style = tostring(rule.style or "bigtext")
-        local configuredDuration = math.max(1000, math.min(10000, math.floor(tonumber(feature.State.hudDurationMs) or 3000)))
+        local duration = math.max(1000, math.min(10000, math.floor(tonumber(feature.State.hudDurationMs) or 3000)))
         local remaining = math.max(0, math.floor(tonumber(remainingMs) or 0))
-        local duration = style == "countdown" and remaining > 0 and math.max(500, math.min(configuredDuration, remaining)) or configuredDuration
-        return alerts:Push({
-            text = tostring(rule.alert or rule.key or "首领机制"), style = style, durationMs = duration,
-            remainingMs = style == "countdown" and remaining or 0,
-            presentationConfig = { anchorMode = feature.State.hudAnchor, fontSize = feature.State.hudFontSize },
-        }) == true
+        -- 中文维护：读条必须覆盖实际剩余时间；hudDurationMs 仅控制普通大字提示，不截断长读条。
+        if style == "countdown" and remaining > 0 then duration = remaining end
+        -- 中文维护：不把显示时长当作读条剩余时间；来源/key 让停用只回收当前规则的提示。
+        return alerts:Push({ text = tostring(rule.alert or rule.key), style = style, durationMs = duration,
+            remainingMs = style == "countdown" and remaining or 0, ownerKey = feature.Id, alertKey = rule.key,
+            presentationConfig = BossHudConfig(feature) })
+    end
+    local function BossDeliver(feature, rule, remaining, source)
+        local dia = feature._bossDiag
+        dia.lastFactSource, dia.matchedRule = source, tostring(rule.key)
+        dia.lastMechanicAt = math.max(0, tonumber(S.NowMs and S.NowMs()) or 0)
+        local ok, err = BossPush(feature, rule, remaining)
+        -- 中文维护：失败也消费本次观察边沿，防止 100ms 无限重试；保留可见失败证据，不虚报已显示。
+        if ok == true then
+            dia.delivered = (tonumber(dia.delivered) or 0) + 1
+            dia.lastDeliveryError = nil
+        else
+            dia.deliveryFailures = (tonumber(dia.deliveryFailures) or 0) + 1
+            dia.lastDeliveryError = tostring(err or "提示显示失败")
+        end
     end
 
     local function BossObserve(feature)
-        if feature.enabled ~= true or (tonumber(feature.consumerCount) or 0) <= 0 or feature.State.hudEnabled ~= true then return true end
+        if feature.enabled ~= true or feature._bossObservationStarted ~= true
+            or (tonumber(feature.consumerCount) or 0) <= 0 or feature.State.hudEnabled ~= true then return true end
         local dia = feature._bossDiag
-        if dia == nil then
-            dia = { observeTicks = 0, lastFactSource = "none", castingSkill = "", playerDebuff = "", matchedRule = "", lastMechanicAt = 0 }
-            feature._bossDiag = dia
-        end
         dia.observeTicks = (tonumber(dia.observeTicks) or 0) + 1
-        local casting = S.Services and S.Services.CastingObservationV3 or nil
+        local alerts = S.Services and S.Services.Alerts
+        -- 中文维护：恢复被维护清理掉的计时任务，不重复 Push、不延后真实截止点。
+        if alerts and type(alerts.Maintain) == "function" then alerts:Maintain(feature.Id) end
+        local casting = S.Services and S.Services.CastingObservationV3
         if type(casting) == "table" and type(casting.Get) == "function" then
-            -- Edge-detect every requested scope independently; the first scope
-            -- currently casting wins (wbdebuff order). A per-scope signature
-            -- keeps re-triggers working after a cast ends on that scope.
-            local signatures = type(feature._bossCastSignatures) == "table" and feature._bossCastSignatures or {}
-            feature._bossCastSignatures = signatures
+            local previous, matches, restarts = feature._bossCastSignatures, feature._bossCastMatches, feature._bossCastRestarts
+            for key in pairs(matches) do matches[key] = nil end
+            for key in pairs(restarts) do restarts[key] = nil end
+            local complete, observed = true, nil
             for _, scope in ipairs(BOSS_CAST_SCOPES) do
+                local coverage = type(casting.GetCoverage) == "function" and casting:GetCoverage(scope) or nil
+                local available = type(coverage) == "table" and coverage.available == true
+                complete = complete and available
                 local cast = casting:Get(scope)
-                local active = type(cast) == "table" and cast.casting == true and tostring(cast.spellName or "") ~= ""
-                local signature = nil
-                if active == true then
-                    signature = tostring(cast.spellName) .. "|" .. tostring(math.floor(tonumber(cast.totalMs) or 0))
+                if available and type(cast) == "table" and cast.casting == true then
                     local rule = BossCastIndex[NormalizeCastKey(cast.spellName)]
-                    dia.lastFactSource = scope
-                    dia.castingSkill = tostring(cast.spellName)
-                    -- Evidence ring: the wbdebuff RU spell names cannot be
-                    -- verified against a 3-day world boss on demand. Capture
-                    -- the REAL localized names the client returns (bounded,
-                    -- distinct) so any cast-bar mob -- including the boss when
-                    -- finally available -- proves or corrects the name table
-                    -- without another blind patch round.
-                    local ring = type(dia.castNames) == "table" and dia.castNames or {}
-                    if ring[tostring(cast.spellName)] ~= true then
-                        ring[tostring(cast.spellName)] = true
-                        ring[#ring + 1] = tostring(cast.spellName)
-                        while #ring > 8 do
-                            local oldest = ring[1]
-                            ring[oldest] = nil
-                            table.remove(ring, 1)
+                    local old = previous[scope]
+                    -- 中文维护：未收录读条只来自当前目标/关注目标的真实观测，不猜 Boss ID/未来 CD；
+                    -- 不把自己的技能、目标的目标混作机制。固定两个候选，不全单位扫描。
+                    if rule == nil and feature.State.showObservedCasts == true and observed == nil
+                        and (scope == "target" or scope == "watchtarget") then
+                        observed = {scope=scope, serial=cast.serial, spellName=cast.spellName, remaining=cast.remainingMs}
+                    end
+                    if rule ~= nil then
+                        if matches[rule.key] == nil then matches[rule.key] = { rule = rule, remaining = cast.remainingMs, source = scope } end
+                        if old ~= nil and old.ruleKey == rule.key and old.serial ~= cast.serial then restarts[rule.key] = true end
+                    end
+                    previous[scope] = { ruleKey = rule and rule.key or nil, serial = cast.serial }
+                    dia.lastFactSource, dia.castingSkill = scope, tostring(cast.spellName)
+                    local ring = dia.castNames
+                    if ring[cast.spellName] ~= true then
+                        ring[cast.spellName] = true; ring[#ring + 1] = cast.spellName
+                        if #ring > 8 then ring[table.remove(ring, 1)] = nil end
+                    end
+                elseif available then previous[scope] = nil end
+            end
+            dia.castCoverageComplete = complete
+            -- 中文维护：同机制同时出现在多个 scope 时只合并“提示”，不宣称它们是同一实体。
+            -- 真实空观察可结束通知段；同 scope 读条进度回退可重开一段；未知读取不得伪造结束。
+            -- 固定目录/四个 scope 有界遍历，精确索引匹配；不做全单位枚举、Tag 模糊匹配或热路径保存。
+            for _, rule in ipairs(BossRules) do
+                if rule.kind == "cast" then
+                    local match = matches[rule.key]
+                    if match ~= nil and BossRuleEnabled(feature, rule.key) then
+                        if not feature._bossActiveCasts[rule.key] or restarts[rule.key] then
+                            BossDeliver(feature, rule, match.remaining, match.source)
+                        end
+                        feature._bossActiveCasts[rule.key] = match.source
+                    else
+                        -- 中文维护（boss-hud-clock-1）：以前要求四个 scope 都可读才能结束段；
+                        -- 无关注目标/无效第三方读条会让已结束规则永远处于 active，漏掉下次施法。
+                        -- 只让本提示实际观测来源的“已可读且不再匹配”结束段；未知不伪造打断。
+                        local source = feature._bossActiveCasts[rule.key]
+                        local ownCoverage = type(source) == "string" and casting:GetCoverage(source) or nil
+                        if complete or (ownCoverage and ownCoverage.available) or not BossRuleEnabled(feature, rule.key) then
+                            feature._bossActiveCasts[rule.key] = nil
+                            BossHide(feature, rule.key)
                         end
                     end
-                    dia.castNames = ring
-                    if signature ~= signatures[scope] then
-                        signatures[scope] = signature
-                        if rule ~= nil then
-                            dia.matchedRule = tostring(rule.key or "?")
-                            dia.lastMechanicAt = math.max(0, tonumber(S.NowMs and S.NowMs()) or 0)
-                            BossPush(feature, rule, cast.remainingMs)
-                        end
-                    end
-                else
-                    -- A cast end is a real edge; clearing the scope signature
-                    -- lets the same mechanic trigger again on its next cast.
-                    signatures[scope] = nil
+                end
+            end
+            -- 中文维护：已知机制/手动测试/其他模块提示优先，泛化读条不得抢占它们。
+            -- 只按 scope+serial 建立一次倒计时；后续采样不反复重置，断读仅按已有截止点失效。
+            local activeKey = alerts and alerts.currentAlertKey or nil
+            local isObserved = alerts and alerts.currentOwnerKey == feature.Id
+                and type(activeKey) == "string" and activeKey:sub(1,9) == "observed:"
+            if observed ~= nil then
+                local old = feature._bossObserved
+                local changed = old == nil or old.scope ~= observed.scope or old.serial ~= observed.serial or old.spellName ~= observed.spellName
+                if changed and alerts and (alerts.currentText == nil or isObserved) then
+                    BossDeliver(feature, {key="observed:" .. observed.scope, alert="读条：" .. tostring(observed.spellName), style="countdown"},
+                        observed.remaining, observed.scope)
+                    feature._bossObserved = observed
+                end
+            elseif feature._bossObserved ~= nil then
+                local old = feature._bossObserved
+                local coverage = casting:GetCoverage(old.scope)
+                if coverage and coverage.available then
+                    BossHide(feature, "observed:" .. old.scope); feature._bossObserved = nil
                 end
             end
         end
-
         local now = math.max(0, tonumber(S.NowMs and S.NowMs()) or 0)
-        if now < (tonumber(feature._bossNextAuraAt) or 0) then return true end
+        if now < feature._bossNextAuraAt then return true end
         feature._bossNextAuraAt = now + BOSS_AURA_INTERVAL_MS
-        local aura = S.Services and S.Services.AuraObservationV3 or nil
+        local aura = S.Services and S.Services.AuraObservationV3
         if type(aura) ~= "table" or type(aura.GetSnapshot) ~= "function" or type(aura.GetStatusMap) ~= "function" then return true end
         local snapshot = aura:GetSnapshot("player", { buff = false, debuff = true, hidden = false, debuffLimit = 64, ttlMs = 250 })
         if type(snapshot) ~= "table" then return true end
         local statusMap, meta = aura:GetStatusMap(snapshot, { buff = false, debuff = true, hidden = false })
         statusMap = type(statusMap) == "table" and statusMap or {}
-        feature._bossActiveDebuffs = type(feature._bossActiveDebuffs) == "table" and feature._bossActiveDebuffs or {}
+        dia.auraCoverageComplete = type(meta) == "table" and meta.available == true and meta.complete == true and meta.reliable == true
         for id, rule in pairs(BossDebuffIndex) do
-            local present = statusMap[id] ~= nil
-            if present and feature._bossActiveDebuffs[id] ~= true then
-                feature._bossActiveDebuffs[id] = true
-                dia.lastFactSource = "player_debuff"
-                dia.playerDebuff = tostring(id)
-                dia.matchedRule = tostring(rule.key or "?")
-                dia.lastMechanicAt = math.max(0, tonumber(S.NowMs and S.NowMs()) or 0)
-                BossPush(feature, rule, 0)
-            elseif not present and type(meta) == "table" and meta.available == true and meta.complete == true and meta.reliable == true then
-                feature._bossActiveDebuffs[id] = nil
-            end
+            if statusMap[id] ~= nil and BossRuleEnabled(feature, rule.key) then
+                if not feature._bossActiveDebuffs[id] then
+                    feature._bossActiveDebuffs[id] = true
+                    dia.playerDebuff = tostring(id)
+                    BossDeliver(feature, rule, 0, "player_debuff")
+                end
+            elseif dia.auraCoverageComplete or not BossRuleEnabled(feature, rule.key) then feature._bossActiveDebuffs[id] = nil end
         end
-        return true
-    end
-
-    local function BossStartObservation(feature)
-        if feature._bossObservationStarted == true then return true end
-        local casting = S.Services and S.Services.CastingObservationV3 or nil
-        local aura = S.Services and S.Services.AuraObservationV3 or nil
-        if type(casting) ~= "table" or type(casting.AcquireConsumer) ~= "function" then return false, "CastingObservationV3 不可用" end
-        if type(aura) ~= "table" or type(aura.AcquireConsumer) ~= "function" then return false, "AuraObservationV3 不可用" end
-        local castOk, castErr = casting:AcquireConsumer("boss_alerts:casting",
-            { player = true, target = true, targettarget = true, watchtarget = true, intervalMs = 100, purpose = "boss_alerts" })
-        if castOk ~= true then return false, castErr end
-        feature._bossCastingHeld = true
-        local auraOk, auraErr = aura:AcquireConsumer("boss_alerts:aura", { purpose = "boss_alerts" })
-        if auraOk ~= true then
-            casting:ReleaseConsumer("boss_alerts:casting")
-            feature._bossCastingHeld = false
-            return false, auraErr
-        end
-        feature._bossAuraHeld = true
-        if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then
-            aura:ReleaseConsumer("boss_alerts:aura"); casting:ReleaseConsumer("boss_alerts:casting")
-            feature._bossAuraHeld, feature._bossCastingHeld = false, false
-            return false, "首领机制 Scheduler 不可用"
-        end
-        local added = S.Scheduler:AddTask(BOSS_OBSERVE_TASK, 100, function() return BossObserve(feature) end, false, feature, "P2", 1)
-        if added ~= true then
-            aura:ReleaseConsumer("boss_alerts:aura"); casting:ReleaseConsumer("boss_alerts:casting")
-            feature._bossAuraHeld, feature._bossCastingHeld = false, false
-            return false, "首领机制观察任务创建失败"
-        end
-        if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(BOSS_OBSERVE_TASK, feature.Id, false) end
-        feature._bossObservationStarted = true
-        feature._bossLastCastSignature = nil
-        feature._bossCastSignatures = {}
-        feature._bossActiveDebuffs = {}
-        feature._bossNextAuraAt = 0
-        BossObserve(feature)
         return true
     end
 
     local function BossStopObservation(feature)
-        if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(BOSS_OBSERVE_TASK) end
-        local firstErr = nil
-        local aura = S.Services and S.Services.AuraObservationV3 or nil
-        local casting = S.Services and S.Services.CastingObservationV3 or nil
-        if feature._bossAuraHeld == true and type(aura) == "table" and type(aura.ReleaseConsumer) == "function" then
-            local ok, err = aura:ReleaseConsumer("boss_alerts:aura")
-            if ok ~= true then firstErr = firstErr or err else feature._bossAuraHeld = false end
-        end
-        if feature._bossCastingHeld == true and type(casting) == "table" and type(casting.ReleaseConsumer) == "function" then
-            local ok, err = casting:ReleaseConsumer("boss_alerts:casting")
-            if ok ~= true then firstErr = firstErr or err else feature._bossCastingHeld = false end
-        end
+        -- 中文维护：先使回调代次失效，再释放租约；旧闭包不能在下次启用时复用新需求。
+        feature._bossObservationGeneration = (tonumber(feature._bossObservationGeneration) or 0) + 1
         feature._bossObservationStarted = false
-        feature._bossLastCastSignature = nil
-        feature._bossCastSignatures = {}
-        feature._bossActiveDebuffs = {}
-        feature._bossNextAuraAt = 0
+        if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(BOSS_OBSERVE_TASK) end
+        local firstErr
+        for _, pair in ipairs({ {field = "_bossAuraHeld", service = "AuraObservationV3", token = "boss_alerts:aura"},
+            {field = "_bossCastingHeld", service = "CastingObservationV3", token = "boss_alerts:casting"} }) do
+            local service = S.Services and S.Services[pair.service]
+            if feature[pair.field] == true then
+                local ok, err = false, "观察服务释放入口不可用"
+                if service and type(service.ReleaseConsumer) == "function" then ok, err = service:ReleaseConsumer(pair.token) end
+                if ok == true then feature[pair.field] = false else firstErr = firstErr or err end
+            end
+        end
+        feature._bossCastSignatures, feature._bossActiveCasts, feature._bossActiveDebuffs = {}, {}, {}
+        feature._bossCastMatches, feature._bossCastRestarts, feature._bossNextAuraAt = {}, {}, 0
+        feature._bossObserved = nil
+        BossHide(feature)
         return firstErr == nil, firstErr
+    end
+    local function BossStartObservation(feature)
+        if feature._bossObservationStarted then return true end
+        local casting, aura = S.Services and S.Services.CastingObservationV3, S.Services and S.Services.AuraObservationV3
+        if type(casting) ~= "table" or type(casting.AcquireConsumer) ~= "function" then return false, "CastingObservationV3 不可用" end
+        if type(aura) ~= "table" or type(aura.AcquireConsumer) ~= "function" then return false, "AuraObservationV3 不可用" end
+        local ok, err = casting:AcquireConsumer("boss_alerts:casting", {player = true, target = true, targettarget = true, watchtarget = true, intervalMs = 100, purpose = "boss_alerts"})
+        if ok ~= true then return false, err end
+        feature._bossCastingHeld = true
+        ok, err = aura:AcquireConsumer("boss_alerts:aura", {purpose = "boss_alerts"})
+        if ok ~= true then BossStopObservation(feature); return false, err end
+        feature._bossAuraHeld = true
+        if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then BossStopObservation(feature); return false, "首领机制 Scheduler 不可用" end
+        feature._bossObservationGeneration = (tonumber(feature._bossObservationGeneration) or 0) + 1
+        local generation = feature._bossObservationGeneration
+        ok = S.Scheduler:AddTask(BOSS_OBSERVE_TASK, 100, function()
+            if feature._bossObservationGeneration ~= generation or S.Features[feature.Id] ~= feature then return true end
+            return BossObserve(feature)
+        end, false, feature, "P2", 1)
+        if ok ~= true then BossStopObservation(feature); return false, "首领机制观察任务创建失败" end
+        if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(BOSS_OBSERVE_TASK, feature.Id, false) end
+        feature._bossObservationStarted = true
+        feature._bossCastSignatures, feature._bossActiveCasts, feature._bossActiveDebuffs = {}, {}, {}
+        feature._bossCastMatches, feature._bossCastRestarts, feature._bossNextAuraAt = {}, {}, 0
+        feature._bossDiag = feature._bossDiag or {observeTicks = 0, delivered = 0, deliveryFailures = 0,
+            lastFactSource = "none", castingSkill = "", playerDebuff = "", matchedRule = "", lastMechanicAt = 0, castNames = {}}
+        return BossObserve(feature)
+    end
+    local function BossSyncObservation(feature)
+        if feature.enabled == true and (tonumber(feature.consumerCount) or 0) > 0
+            and feature.State.hudEnabled == true and (BossEnabledCount(feature) > 0 or feature.State.showObservedCasts == true) then
+            return BossStartObservation(feature)
+        end
+        return BossStopObservation(feature)
+    end
+    local function BossCommitRules(feature, key, enabled)
+        if type(enabled) ~= "boolean" then return false, "规则开关必须为布尔值" end
+        if key ~= nil and BossRuleIndex[key] == nil then return false, "首领规则不存在：" .. tostring(key) end
+        local loaded, loadErr = Load(feature)
+        if not loaded then return false, loadErr end
+        local changed = false
+        for _, rule in ipairs(BossRules) do
+            if (key == nil or rule.key == key) and BossRuleEnabled(feature, rule.key) ~= enabled then changed = true end
+        end
+        if not changed then return true end
+        -- 中文维护：用户显式开关必须经过现有耐久事务及回读；失败回滚 State，不更新投影/观察。
+        -- 全部启停仅提交一次；nil key 仅是私有批量入口，不把用户输入作为任意存档字段名。
+        local ok, err = P:MutateStore(feature.storeId, function()
+            feature.State.items = type(feature.State.items) == "table" and feature.State.items or {}
+            for _, rule in ipairs(BossRules) do
+                if key == nil or rule.key == key then
+                    if enabled then feature.State.items[rule.key] = nil else feature.State.items[rule.key] = false end
+                end
+            end
+            return true
+        end, {durable = true, reason = "boss_rule_settings"})
+        if ok ~= true then return false, err end
+        if enabled ~= true then BossHide(feature, key) end
+        -- 中文维护：重新启用可提示仍在观察到的当前机制；这是设置操作边沿，不修改事实或伪造状态。
+        for _, rule in ipairs(BossRules) do
+            if key == nil or rule.key == key then
+                if feature._bossActiveCasts then feature._bossActiveCasts[rule.key] = nil end
+                if feature._bossActiveDebuffs and rule.debuffId then feature._bossActiveDebuffs[rule.debuffId] = nil end
+            end
+        end
+        local started, startErr = BossSyncObservation(feature)
+        feature.Authority:Refresh("boss_rules_saved")
+        if started ~= true then return false, "规则已保存，但观察启动/停止失败：" .. tostring(startErr) end
+        return true
+    end
+    local function BossTestRule(feature, key, kind)
+        local rule = key ~= nil and BossRuleIndex[tostring(key)] or nil
+        if key == nil then
+            for _, candidate in ipairs(BossRules) do
+                if (kind == nil or candidate.kind == kind) and BossRuleEnabled(feature, candidate.key) then rule = candidate; break end
+            end
+        end
+        if rule == nil or (kind ~= nil and rule.kind ~= kind) then return false, "未找到可测试的对应规则" end
+        -- 中文维护：仿真只验证目录到 Presenter 的路径；不写真实观察诊断，也不能证明 RU Boss 已触发。
+        return BossPush(feature, rule, rule.kind == "cast" and 6000 or 0)
+    end
+
+    -- 中文维护：静态规则配置不依赖启用/消费租约；首次打开已关闭功能也要能配置。
+    -- 纯投影读 State，不触发 Native/Store/事件；运行期 read 与初始目录回退复用同一构建函数。
+    local function BossRuleRows(feature)
+        local rows = {}
+        for _, rule in ipairs(BossRules) do
+            local trigger
+            if rule.kind == "cast" then
+                trigger = "施法：" .. table.concat(rule.names or {}, " / ")
+            else trigger = "自身 Debuff ID：" .. tostring(rule.debuffId or "--") end
+            local enabled = BossRuleEnabled(feature, rule.key)
+            rows[#rows + 1] = {key = "boss:" .. rule.key, name = tostring(rule.alert or rule.key), text = trigger,
+                enabled = enabled, statusText = enabled and (rule.style == "countdown" and "已启用 · 倒计时" or "已启用 · 大字") or "已关闭",
+                tone = enabled and "success" or "muted", mechanicKey = rule.key, kind = rule.kind, style = rule.style, debuffId = tonumber(rule.debuffId)}
+        end
+        if #rows == 0 then return rows, "empty", "BossAlerts 静态目录为空" end
+        return rows, "ready" -- 中文维护：避免 `true and nil or error` 把成功投影也写成错误。
     end
 
     local BossAlerts = NewFeature("combat_boss_alerts", {
         apiDependencies = { "X2Unit:UnitCastingInfo", "X2Unit:UnitDeBuffCount", "X2Unit:UnitDeBuff", "X2Unit:UnitDeBuffTooltip" },
-        observationContractVersion = 2,
+        observationContractVersion = 3,
         onEnable = function(feature)
-            -- HUD alerts are a feature lifecycle, not a page lifecycle. Holding
-            -- one runtime consumer keeps observation alive after the main window
-            -- closes; disabling the module clears the lease and all resources.
-            if feature.Demand:Has("boss_alerts:runtime") == true then return true end
+            -- 中文维护：关闭设置页不等于关闭警报；运行期租约只随 Feature 停用/重载清除。
+            if feature.Demand:Has("boss_alerts:runtime") then return true end
             return feature.Demand:Acquire("boss_alerts:runtime", {}, "boss_alert_runtime")
         end,
-        state = { hudEnabled = true, hudAnchor = "center", hudFontSize = 34, hudDurationMs = 3000 },
-        default = { hudEnabled = true, hudAnchor = "center", hudFontSize = 34, hudDurationMs = 3000 },
-        reconcileDemand = function(feature, before, after)
-            local beforeCount = tonumber(before and before.count) or 0
-            local afterCount = tonumber(after and after.count) or 0
-            if beforeCount <= 0 and afterCount > 0 and feature.State.hudEnabled == true then return BossStartObservation(feature) end
-            if beforeCount > 0 and afterCount <= 0 then return BossStopObservation(feature) end
-            return true
-        end,
+        -- 中文维护：新增可选字段只有显式调整时写入；不向旧完整性快照强加非 nil 默认字段。
+        persistentKeys = {"hudOffsetX", "hudOffsetY", "hudWidth", "showObservedCasts"},
+        state = { hudEnabled = true, hudAnchor = "center", hudFontSize = 34, hudDurationMs = 3000, items = {} },
+        default = { hudEnabled = true, hudAnchor = "center", hudFontSize = 34, hudDurationMs = 3000, items = {} },
+        reconcileDemand = function(feature) return BossSyncObservation(feature) end,
         onDisable = function(feature) return BossStopObservation(feature) end,
-        read = function()
-            local rows = {}
-            for index, value in ipairs(S.Data and S.Data.BossAlerts or {}) do
-                local row = type(value) == "table" and value or {}
-                local key = tostring(row.key or index)
-                local kind = tostring(row.kind or "unknown")
-                local triggerText
-                if kind == "cast" then
-                    local names = {}
-                    for nameIndex = 1, math.min(3, #(type(row.names) == "table" and row.names or {})) do names[#names + 1] = tostring(row.names[nameIndex]) end
-                    triggerText = "目标施法：" .. (#names > 0 and table.concat(names, " / ") or "名称待补")
-                elseif kind == "debuff" then triggerText = "自身 Debuff ID：" .. tostring(row.debuffId or "--")
-                else triggerText = "触发事实：待确认" end
-                rows[#rows + 1] = {
-                    key = "boss:" .. key, name = tostring(row.alert or key), text = triggerText,
-                    statusText = tostring(row.style) == "countdown" and "实时倒计时" or "实时大字",
-                    tone = tostring(row.style) == "countdown" and "yellow" or "orange",
-                    mechanicKey = key, kind = kind, style = tostring(row.style or "bigtext"), debuffId = tonumber(row.debuffId),
-                }
-            end
-            return rows, #rows > 0 and "ready" or "empty", #rows > 0 and nil or "BossAlerts 静态目录为空"
-        end,
+        read = BossRuleRows,
         projection = function(feature)
-            return { hudEnabled = feature.State.hudEnabled == true, hudAnchor = feature.State.hudAnchor,
+            local initialRows
+            if #feature.Authority.rows == 0 then initialRows = BossRuleRows(feature) end
+            return {rows = initialRows, hudEnabled = feature.State.hudEnabled == true, hudAnchor = feature.State.hudAnchor,
                 hudFontSize = tonumber(feature.State.hudFontSize) or 34, hudDurationMs = tonumber(feature.State.hudDurationMs) or 3000,
-                realtime = feature._bossObservationStarted == true,
-                diag = feature._bossDiag }
+                enabledRuleCount = BossEnabledCount(feature), ruleCount = #BossRules,
+                realtime = feature._bossObservationStarted == true, diag = feature._bossDiag,
+                showObservedCasts = feature.State.showObservedCasts == true,
+                hudOffsetX = tonumber(feature.State.hudOffsetX) or 0, hudOffsetY = tonumber(feature.State.hudOffsetY) or 0,
+                hudWidth = tonumber(feature.State.hudWidth) or 720,
+                hudEditing = S.Services and S.Services.Alerts and S.Services.Alerts.editOwnerKey == feature.Id,
+                hudHealth = S.Services and S.Services.Alerts and type(S.Services.Alerts.Describe) == "function" and S.Services.Alerts:Describe() or nil}
         end,
         commands = {
+            SetRuleEnabled = function(feature, key, value)
+                if type(key) ~= "string" or key == "" then return false, "请选择有效规则" end
+                return BossCommitRules(feature, key, value)
+            end,
+            SetAllRulesEnabled = function(feature, value) return BossCommitRules(feature, nil, value) end,
+            TestRule = function(feature, key)
+                if type(key) ~= "string" or key == "" then return false, "请先选择规则" end
+                return BossTestRule(feature, key)
+            end,
             SetHudEnabled = function(feature, value)
-                local enabled = value == true
-                local ok, err = PersistStateMutation(feature, "boss_hud_enabled", function(state) state.hudEnabled = enabled; return true end)
+                if type(value) ~= "boolean" then return false, "HUD 开关必须为布尔值" end
+                -- 中文维护：低频显式开关先耐久保存，保存失败不改变观察/提示生命周期。
+                local ok, err = P:MutateStore(feature.storeId, function() feature.State.hudEnabled = value; return true end,
+                    {durable = true, reason = "boss_hud_enabled"})
                 if ok ~= true then return false, err end
-                if (tonumber(feature.consumerCount) or 0) > 0 then
-                    if enabled then return BossStartObservation(feature) else return BossStopObservation(feature) end
-                end
+                local synced, syncErr = BossSyncObservation(feature)
+                feature.Authority:Refresh("boss_hud_saved")
+                if synced ~= true then return false, "HUD 设置已保存，但观察切换失败：" .. tostring(syncErr) end
                 return true
             end,
             SetHudAnchor = function(feature, value)
-                value = value == "top" and "top" or "center"
-                return PersistStateMutation(feature, "boss_hud_anchor", function(state) state.hudAnchor = value; return true end)
+                return BossSaveLayout(feature, function(state)
+                    state.hudAnchor = value == "top" and "top" or "center"
+                    state.hudOffsetX, state.hudOffsetY = nil, nil; return true
+                end)
             end,
             SetHudFontSize = function(feature, value)
-                value = math.max(18, math.min(56, math.floor(tonumber(value) or 34)))
-                return PersistStateMutation(feature, "boss_hud_font", function(state) state.hudFontSize = value; return true end)
+                local n = BossNumber(value, 18, 56); if n == nil then return false, "请输入有效字号" end
+                return BossSaveLayout(feature, function(state) state.hudFontSize=n; return true end)
             end,
             SetHudDurationMs = function(feature, value)
-                value = math.max(1000, math.min(10000, math.floor(tonumber(value) or 3000)))
-                return PersistStateMutation(feature, "boss_hud_duration", function(state) state.hudDurationMs = value; return true end)
+                local n = BossNumber(value, 1000, 10000); if n == nil then return false, "请输入有效显示时长" end
+                return BossSaveLayout(feature, function(state) state.hudDurationMs=n; return true end)
+            end,
+            SetHudOffsetX = function(feature, value)
+                local n = BossNumber(value, -8192, 8192); if n == nil then return false, "请输入有效水平偏移" end
+                return BossSaveLayout(feature, function(state) state.hudOffsetX=n; return true end)
+            end,
+            SetHudOffsetY = function(feature, value)
+                local n = BossNumber(value, -8192, 8192); if n == nil then return false, "请输入有效垂直偏移" end
+                return BossSaveLayout(feature, function(state) state.hudOffsetY=n; return true end)
+            end,
+            SetHudWidth = function(feature, value)
+                local n = BossNumber(value, 280, 1200); if n == nil then return false, "请输入有效宽度" end
+                return BossSaveLayout(feature, function(state) state.hudWidth=n; return true end)
+            end,
+            ResetHudLayout = function(feature)
+                return BossSaveLayout(feature, function(state)
+                    state.hudOffsetX,state.hudOffsetY,state.hudWidth=nil,nil,nil
+                    state.hudAnchor,state.hudFontSize="center",34; return true
+                end)
+            end,
+            SetHudEditing = function(feature, enabled)
+                if type(enabled) ~= "boolean" then return false, "校准开关必须为布尔值" end
+                local alerts = S.Services and S.Services.Alerts
+                if not alerts or type(alerts.SetLayoutEditor) ~= "function" then return false, "HUD 校准服务不可用" end
+                local ok, err = alerts:SetLayoutEditor(feature.Id, enabled, BossHudConfig(feature), function(x,y,width)
+                    x,y,width=BossNumber(x,-8192,8192),BossNumber(y,-8192,8192),BossNumber(width,280,1200)
+                    if x == nil or y == nil or width == nil then return false, "HUD 几何无效，未保存" end
+                    return BossSaveLayout(feature, function(state)
+                        state.hudOffsetX,state.hudOffsetY,state.hudWidth=BossNumber(x,-8192,8192),BossNumber(y,-8192,8192),BossNumber(width,280,1200)
+                        return true
+                    end)
+                end)
+                feature.Authority:Refresh("boss_hud_editor")
+                return ok, err
+            end,
+            SetShowObservedCasts = function(feature, enabled)
+                if type(enabled) ~= "boolean" then return false, "观察开关必须为布尔值" end
+                local ok, err = P:MutateStore(feature.storeId, function()feature.State.showObservedCasts=enabled;return true end,
+                    {durable=true,reason="boss_observed_casts"})
+                if ok ~= true then return false, err end
+                if not enabled then
+                    BossHide(feature,"observed:target");BossHide(feature,"observed:watchtarget");feature._bossObserved=nil
+                end
+                local synced, syncErr = BossSyncObservation(feature);feature.Authority:Refresh("boss_observed_casts_saved")
+                return synced, syncErr
             end,
             TestBigText = function(feature)
-                if feature.State.hudEnabled ~= true then return false, "请先启用首领机制 HUD" end
-                local alerts = S.Services and S.Services.Alerts or nil
-                if type(alerts) ~= "table" or type(alerts.Push) ~= "function" then return false, "AlertsService 不可用" end
-                return alerts:Push({ text = "首领机制 HUD 测试", style = "bigtext", durationMs = feature.State.hudDurationMs,
-                    presentationConfig = { anchorMode = feature.State.hudAnchor, fontSize = feature.State.hudFontSize } }) == true
+                return BossPush(feature, {key = "__hud_test_big", alert = "首领机制 HUD 测试", style = "bigtext"}, 0)
             end,
             TestCountdown = function(feature)
-                if feature.State.hudEnabled ~= true then return false, "请先启用首领机制 HUD" end
-                local alerts = S.Services and S.Services.Alerts or nil
-                if type(alerts) ~= "table" or type(alerts.Push) ~= "function" then return false, "AlertsService 不可用" end
-                local duration = math.max(3000, tonumber(feature.State.hudDurationMs) or 3000)
-                return alerts:Push({ text = "机制倒计时", style = "countdown", durationMs = duration, remainingMs = duration,
-                    presentationConfig = { anchorMode = feature.State.hudAnchor, fontSize = feature.State.hudFontSize } }) == true
+                return BossPush(feature, {key = "__hud_test_countdown", alert = "机制倒计时", style = "countdown"},
+                    6000) -- 中文维护：固定六秒，6/5/4/3/2/1 后隐藏，便于验证实际调度而非静态标签。
             end,
-            -- No-boss verification path (the referenced world boss spawns once
-            -- every 3 days): inject the CATALOGED fact through the real rule
-            -- lookup and push chain -- the same pipeline the live observer
-            -- uses -- so matching + HUD can be proven on demand. Facts from
-            -- the four-scope observer are proven separately by the Boss:
-            -- diagnostics line on any cast-bar mob.
-            SimulateCast = function(feature, key)
-                if feature.State.hudEnabled ~= true then return false, "请先启用首领机制 HUD" end
-                local rule = nil
-                if key ~= nil and BossDebuffIndex == nil then return false, "规则索引不可用" end
-                for _, candidate in ipairs(S.Data and S.Data.BossAlerts or {}) do
-                    local row = type(candidate) == "table" and candidate or {}
-                    if tostring(row.kind or "") == "cast" and (key == nil or tostring(row.key or "") == tostring(key)) then
-                        rule = row
-                        if key ~= nil then break end
-                    end
-                end
-                if rule == nil then return false, "施法规则不存在：" .. tostring(key or "(第一个)") end
-                return BossPush(feature, rule, 6000), nil
-            end,
-            SimulateDebuff = function(feature, key)
-                if feature.State.hudEnabled ~= true then return false, "请先启用首领机制 HUD" end
-                local rule = nil
-                for _, candidate in ipairs(S.Data and S.Data.BossAlerts or {}) do
-                    local row = type(candidate) == "table" and candidate or {}
-                    if tostring(row.kind or "") == "debuff" and (key == nil or tostring(row.key or "") == tostring(key)) then
-                        rule = row
-                        if key ~= nil then break end
-                    end
-                end
-                if rule == nil then return false, "Debuff 规则不存在：" .. tostring(key or "(第一个)") end
-                return BossPush(feature, rule, 0), nil
-            end,
+            SimulateCast = function(feature, key) return BossTestRule(feature, key, "cast") end,
+            SimulateDebuff = function(feature, key) return BossTestRule(feature, key, "debuff") end,
         },
     })
-    BossAlerts.HudContractVersion = 2
-    BossAlerts.RealtimeFactBridgeContractVersion = 1
+    BossAlerts.HudContractVersion = 4 -- 中文维护：可校准 HUD、调度健康证据、可选未收录读条；旧命令兼容。
+    BossAlerts.RealtimeFactBridgeContractVersion = 2
+    BossAlerts.RuleManagementContractVersion = 1
 end
 
 local TARGET_MONITOR_TASK = "v3_business_target_monitor_distance"
@@ -2235,43 +2377,295 @@ NewFeature("combat_target_monitor", { apiDependencies = { "X2Unit:GetTargetUnitI
         return { { key = "target", name = Text(name, "目标"), text = "ID：" .. Text(id, "--"), statusText = okDistance and Text(distance, "--") or "--", tone = "default" } }, "ready"
     end,
 })
-local BUFF_CAP_REFRESH_TASK = "v3_business_buff_cap_refresh"
-NewFeature("combat_buff_cap", { apiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitHiddenBuffCount" },
-    observationContractVersion = 1,
-    event = "BUFF_UPDATE",
-    reconcileDemand = function(_, before, after)
-        local beforeCount = tonumber(before and before.count) or 0
-        local afterCount = tonumber(after and after.count) or 0
-        if beforeCount <= 0 and afterCount > 0 then
-            if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return false, "增益容量刷新 Scheduler 不可用" end
-        elseif beforeCount > 0 and afterCount <= 0 and S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then
-            S.Scheduler:RemoveTask(BUFF_CAP_REFRESH_TASK)
+do
+    -- 中文维护（2026-09-12，个人数量提醒）：此模块只拥有自身两种计数与用户阈值，
+    -- 不推断 RU 的 Buff 总容量、普通/隐藏是否共享槽位或顶替顺序，也不扫描 Aura 明细。
+    -- 复用原 Feature/Store ID；Permanent 仅三项设置，计数/峰值/提示边沿属于本次启用会话。
+    local BUFF_CAP_REFRESH_TASK = "v3_business_buff_cap_refresh"
+    local BUFF_CAP_POLL_TASK = "v3_business_buff_cap_poll"
+    local REMINDER_TOKEN = "buff_cap:reminders"
+    local CHANNELS = { "normal", "hidden" }
+    local LABELS = { normal = "普通增益", hidden = "隐藏增益" }
+    local POLL_MS, EDGE_MS, REMINDER_GAP_MS = 1000, 150, 5000
+
+    local function Count(value)
+        local n = tonumber(value)
+        if n == nil or n ~= n or n == math.huge or n < 0 or n ~= math.floor(n) then return nil end
+        return n -- 中文维护：0 是可靠读数；失败/nil/小数不是零，不把两类未知数相加冒充总量。
+    end
+    local function Threshold(value)
+        local n = Count(value)
+        if n == nil or n > 1000 then return nil end
+        return n -- 中文维护：1000 仅是本地输入预算，绝非服务器容量；0 明确关闭该类提醒。
+    end
+    local function NewSession()
+        return { counts = {}, peaks = {}, latched = {}, readErrors = {}, samples = 0,
+            failedSamples = 0, delivered = 0, deliveryFailures = 0, observing = false }
+    end
+    local function HideOwn(feature, alertKey)
+        local alerts = S.Services and S.Services.Alerts
+        if alerts and type(alerts.HideOwner) == "function" then return alerts:HideOwner(feature.Id, alertKey) end
+        return true -- 中文维护：缺来源级取消时不能退回全局 Hide，避免撤回首领警报。
+    end
+    local function Wanted(feature)
+        return feature.enabled == true and feature.State.reminderEnabled == true
+            and ((tonumber(feature.State.normalThreshold) or 0) > 0 or (tonumber(feature.State.hiddenThreshold) or 0) > 0)
+    end
+    local function Rows(feature)
+        local session, rows = feature._buffCap, {}
+        for _, key in ipairs(CHANNELS) do
+            local count, peak = session.counts[key], session.peaks[key]
+            local threshold = tonumber(feature.State[key .. "Threshold"]) or 0
+            local high = count ~= nil and threshold > 0 and count >= threshold
+            local text = threshold == 0 and "未设个人阈值" or ("个人阈值 " .. tostring(threshold))
+            if feature.State.reminderEnabled ~= true then text = "提醒关闭 · " .. text
+            elseif high then text = "已达到 · " .. text end
+            if count == nil then text = session.observing and "读数不可用" or "未观察" end
+            rows[#rows + 1] = { key = "buff_cap:" .. key, name = LABELS[key], count = count, peak = peak,
+                available = count ~= nil, threshold = threshold, aboveThreshold = high,
+                text = "当前 " .. Text(count, "未知") .. " · 本次启用峰值 " .. Text(peak, "--"),
+                statusText = text, tone = count == nil and "muted" or (high and feature.State.reminderEnabled == true and "warn" or "default") }
         end
+        if not session.observing then return rows, feature.enabled and "idle" or "stopped", session.lifecycleError end
+        local normal, hidden = session.counts.normal, session.counts.hidden
+        local status = normal ~= nil and hidden ~= nil and "ready" or (normal ~= nil or hidden ~= nil) and "partial" or "unavailable"
+        local errors = {}
+        for _, key in ipairs(CHANNELS) do
+            if session.readErrors[key] ~= nil then errors[#errors + 1] = LABELS[key] .. "：" .. session.readErrors[key] end
+        end
+        if session.scheduleError ~= nil then errors[#errors + 1] = session.scheduleError end
+        if session.lifecycleError ~= nil then errors[#errors + 1] = session.lifecycleError end
+        return rows, status, #errors > 0 and table.concat(errors, "；") or nil
+    end
+    local function Publish(feature, reason)
+        -- 中文维护：设置/停止/峰值重置只重新投影，不在 UI 命令回执或 Getter 偷读 Native。
+        local authority = feature.Authority
+        authority.rows, authority.status, authority.error = Rows(feature)
+        authority.revision = authority.revision + 1
+        if S.Events and type(S.Events.Publish) == "function" then S.Events:Publish(feature.UpdateTopic, authority.revision, reason) end
+    end
+    local function ChannelFree(feature)
+        local alerts = S.Services and S.Services.Alerts
+        if alerts == nil or type(alerts.Push) ~= "function" then return false, "AlertsService 不可用" end
+        -- 中文维护：Alerts 是单通道；低优先级个人数量提醒不得替换首领等其它来源。
+        -- 只观察服务公开状态，不改它的计时；等待期间每次重新核对当前可靠数量，不缓存旧告警文本。
+        if alerts.currentText ~= nil and alerts.currentOwnerKey ~= feature.Id then return false, "其他提示正在显示", true end
+        return true, alerts
+    end
+    local function Evaluate(feature)
+        local session = feature._buffCap
+        if not Wanted(feature) or not session.observing then return end
+        local eligible, anyHigh = {}, false
+        for _, key in ipairs(CHANNELS) do
+            local threshold, count = tonumber(feature.State[key .. "Threshold"]) or 0, session.counts[key]
+            if threshold <= 0 then session.latched[key] = nil
+            elseif count ~= nil then
+                if count < threshold then session.latched[key] = nil
+                else
+                    anyHigh = true
+                    if session.latched[key] ~= true then eligible[#eligible + 1] = key end
+                end
+            end -- 中文维护：未知不等于状态消失，不重置已通知边沿，避免 API 暂时失败后重复响。
+        end
+        -- 中文维护：低于阈值只撤回自动提醒，不能在下一次采样误清仍处于3秒展示期的手动测试。
+        -- Stop/关闭设置仍不传 key，以释放本模块全部提示；其它 owner 始终受 HideOwner 保护。
+        if not anyHigh then HideOwn(feature, "personal_threshold") end
+        if #eligible == 0 then return end
+        local now = tonumber(S.NowMs and S.NowMs()) or 0
+        if session.lastAttemptAt ~= nil and now - session.lastAttemptAt < REMINDER_GAP_MS then return end
+        local free, alerts, busy = ChannelFree(feature)
+        if busy then return end
+        local parts = {}
+        for _, key in ipairs(eligible) do
+            parts[#parts + 1] = LABELS[key] .. " " .. tostring(session.counts[key]) .. "（个人阈值 " .. tostring(feature.State[key .. "Threshold"]) .. "）"
+            session.latched[key] = true
+        end
+        -- 中文维护：两类同批越线合并一次。真正投递失败也消耗本次边沿并留下错误，不能每秒重试刷屏。
+        session.lastAttemptAt = now
+        local ok, err = false, alerts
+        if free then
+            ok, err = alerts:Push({ text = "增益数量提醒：" .. table.concat(parts, " · "), style = "bigtext",
+                durationMs = 3000, ownerKey = feature.Id, alertKey = "personal_threshold",
+                presentationConfig = { anchorMode = "top", fontSize = 28 } })
+        end
+        if ok == true then session.delivered = session.delivered + 1; session.reminderError = nil
+        else session.deliveryFailures = session.deliveryFailures + 1; session.reminderError = tostring(err or "提醒投递失败") end
+    end
+    local function Sample(feature)
+        local session = feature._buffCap
+        if not session.observing or feature.enabled ~= true or (tonumber(feature.consumerCount) or 0) <= 0 then return Rows(feature) end
+        local okA, a, errA = Call("X2Unit:UnitBuffCount", UnitApi, "UnitBuffCount", "player")
+        local okB, b, errB = Call("X2Unit:UnitHiddenBuffCount", UnitApi, "UnitHiddenBuffCount", "player")
+        session.counts.normal = okA == true and Count(a) or nil
+        session.counts.hidden = okB == true and Count(b) or nil
+        session.readErrors.normal = nil; session.readErrors.hidden = nil
+        if session.counts.normal == nil then session.readErrors.normal = tostring(errA or "返回值不是有效非负整数") end
+        if session.counts.hidden == nil then session.readErrors.hidden = tostring(errB or "返回值不是有效非负整数") end
+        for _, key in ipairs(CHANNELS) do
+            local count = session.counts[key]
+            if count ~= nil then session.peaks[key] = math.max(count, session.peaks[key] or count) end
+        end
+        session.samples = session.samples + 1
+        if session.counts.normal == nil or session.counts.hidden == nil then session.failedSamples = session.failedSamples + 1 end
+        Evaluate(feature)
+        return Rows(feature)
+    end
+    local function CancelEdge(feature)
+        feature._buffCapEdgeSerial = (feature._buffCapEdgeSerial or 0) + 1
+        feature._buffCapEdgePending = false
+        if S.Scheduler and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(BUFF_CAP_REFRESH_TASK) end
+    end
+    local function Stop(feature)
+        -- 中文维护：先撤销 epoch 再删任务，旧回调即使被宿主持有也不得访问重启后的会话。
+        feature._buffCapEpoch = (feature._buffCapEpoch or 0) + 1
+        feature._buffCap.observing = false
+        feature._buffCap.counts, feature._buffCap.readErrors, feature._buffCap.latched = {}, {}, {}
+        CancelEdge(feature)
+        if S.Scheduler and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(BUFF_CAP_POLL_TASK) end
+        HideOwn(feature)
         return true
-    end,
-    onDisable = function()
-        if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(BUFF_CAP_REFRESH_TASK) end
+    end
+    local function Live(feature, epoch, generation)
+        return ReplicatedSuite == S and S.Features.combat_buff_cap == feature and S.Generation == generation
+            and feature.enabled == true and feature._buffCap.observing == true
+            and feature._buffCapEpoch == epoch and (tonumber(feature.consumerCount) or 0) > 0
+    end
+    local function Reconcile(feature, before, after)
+        local previous, nextCount = tonumber(before.count) or 0, tonumber(after.count) or 0
+        if previous > 0 and nextCount <= 0 then Stop(feature); Publish(feature, "buff_cap_observation_stopped"); return true end
+        if previous > 0 or nextCount <= 0 then return true end
+        if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then return false, "增益计数 Scheduler 不可用" end
+        feature._buffCapEpoch = (feature._buffCapEpoch or 0) + 1
+        local epoch, generation = feature._buffCapEpoch, S.Generation
+        feature._buffCap.observing = true
+        local added = S.Scheduler:AddTask(BUFF_CAP_POLL_TASK, POLL_MS, function()
+            if not Live(feature, epoch, generation) then return end
+            CancelEdge(feature) -- 中文维护：兜底已经取样时合并尚未执行的事件刷新，避免同帧双读。
+            feature.Authority:Refresh("buff_cap_fallback")
+        end, false, feature, "P2", 1)
+        if added ~= true then Stop(feature); return false, "增益计数兜底任务创建失败" end
+        if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(BUFF_CAP_POLL_TASK, feature.Id, true) end
         return true
-    end,
-    onEvent = function(feature)
-        if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return false, "增益容量刷新 Scheduler 不可用" end
-        S.Scheduler:RemoveTask(BUFF_CAP_REFRESH_TASK)
-        local added = S.Scheduler:AddOneShot(BUFF_CAP_REFRESH_TASK, 150, function()
-            if feature.enabled == true and (tonumber(feature.consumerCount) or 0) > 0 then feature.Authority:Refresh("buff_update") end
-        end, feature, "P2", 1)
-        return added == true, added == true and nil or "增益容量合并刷新任务创建失败"
-    end,
-    read = function()
-        local okA, normal = Call("X2Unit:UnitBuffCount", UnitApi, "UnitBuffCount", "player")
-        local okB, hidden = Call("X2Unit:UnitHiddenBuffCount", UnitApi, "UnitHiddenBuffCount", "player")
-        if not okA and not okB then return {}, "unavailable", "普通/隐藏增益数量均不可读" end
-        local total = (Number(normal) or 0) + (Number(hidden) or 0)
-        return { { key = "buff_cap", name = "自身增益", text = "普通 " .. Text(normal, "--") .. " · 隐藏 " .. Text(hidden, "--"), statusText = "总计 " .. tostring(total), tone = "default" } }, "partial", "当前只证明增益数量读取；RU 容量/顶替阈值未验证，不生成风险告警"
-    end,
-})
+    end
+    local function OnEvent(feature)
+        -- 中文维护：旧代码反复 Remove/Add 尾沿 debounce，在连续 BUFF_UPDATE 下会一直延后。
+        -- 首次事件安排150ms刷新，后续只合并；不猜事件参数身份，读取范围始终只有 player 两个 getter。
+        if feature._buffCapEdgePending then return true end
+        if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then return false, "增益计数 Scheduler 不可用" end
+        local epoch, generation = feature._buffCapEpoch, S.Generation
+        feature._buffCapEdgeSerial = (feature._buffCapEdgeSerial or 0) + 1
+        local serial = feature._buffCapEdgeSerial
+        feature._buffCapEdgePending = true
+        -- 中文维护：在同名任务移除之前核对代次；通用 AddOneShot 会先移除同名任务，
+        -- 迟到旧 wrapper 可能误删新任务。这里复用 Scheduler 的有限自移除任务，不另建计时器。
+        local added = S.Scheduler:AddTask(BUFF_CAP_REFRESH_TASK, EDGE_MS, function()
+            if not Live(feature, epoch, generation) or feature._buffCapEdgeSerial ~= serial then return end
+            CancelEdge(feature)
+            feature.Authority:Refresh("buff_cap_event")
+        end, false, feature, "P2", 1)
+        if added ~= true then
+            feature._buffCapEdgePending = false
+            feature._buffCap.scheduleError = "事件合并任务创建失败，保留1秒兜底"
+            Publish(feature, "buff_cap_schedule_failed")
+            return false, feature._buffCap.scheduleError
+        end
+        feature._buffCap.scheduleError = nil
+        if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(BUFF_CAP_REFRESH_TASK, feature.Id, true) end
+        return true
+    end
+    local function SyncReminder(feature)
+        local wanted, held = Wanted(feature), feature.Demand:Has(REMINDER_TOKEN)
+        if wanted and not held then return feature.Demand:Acquire(REMINDER_TOKEN, {}, "buff_cap_reminder") end
+        if not wanted and held then return feature.Demand:Release(REMINDER_TOKEN, "buff_cap_reminder_off") end
+        return true
+    end
+    local function Commit(feature, key, value)
+        local loaded, loadErr = Load(feature); if loaded ~= true then return false, loadErr end
+        local changed = feature.State[key] ~= value
+        if changed then
+            -- 中文维护：先耐久保存和回读，再切换需求/提示；失败由原 Store 事务还原，不能提前执行副作用。
+            local ok, err = P:MutateStore(feature.storeId, function() feature.State[key] = value; return true end,
+                { durable = true, reason = "buff_cap_settings" })
+            if ok ~= true then return false, err end
+            -- 中文维护：两个个人阈值是独立业务通道；修改隐藏阈值不能重新通知已越线的普通增益。
+            -- 只重新准备被编辑通道；总开关才清两类边沿，保留原5秒投递节流及来源级撤回。
+            if key == "normalThreshold" then feature._buffCap.latched.normal = nil
+            elseif key == "hiddenThreshold" then feature._buffCap.latched.hidden = nil
+            else feature._buffCap.latched = {} end
+            HideOwn(feature)
+        end
+        -- 中文维护：无变化也允许恢复上次启动失败的观察，但不重复写盘；已保存与运行失败分开回执。
+        local synced, syncErr = SyncReminder(feature)
+        feature._buffCap.lifecycleError = synced ~= true and tostring(syncErr or "观察切换失败") or nil
+        if synced == true then Evaluate(feature) end
+        Publish(feature, "buff_cap_settings")
+        if synced ~= true then return false, "设置已保存，但观察切换失败：" .. tostring(syncErr) end
+        return true
+    end
+
+    local BuffCap = NewFeature("combat_buff_cap", {
+        apiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitHiddenBuffCount" }, observationContractVersion = 2,
+        state = { reminderEnabled = false, normalThreshold = 0, hiddenThreshold = 0 },
+        default = { reminderEnabled = false, normalThreshold = 0, hiddenThreshold = 0 },
+        apply = function(value, state)
+            -- 中文维护：旧 schema1 空配置沿原 key 读取；缺省关闭，不自动写迁移、不把显式 false/0 改为开启。
+            value = type(value) == "table" and value or {}
+            state.reminderEnabled = value.reminderEnabled == true
+            state.normalThreshold = Threshold(value.normalThreshold) or 0
+            state.hiddenThreshold = Threshold(value.hiddenThreshold) or 0
+        end,
+        onEnable = function(feature)
+            local ok, err = Load(feature); if ok ~= true then return false, err end
+            feature._buffCap = NewSession()
+            return SyncReminder(feature)
+        end,
+        onDisable = function(feature) Stop(feature); Publish(feature, "buff_cap_disabled"); return true end,
+        reconcileDemand = Reconcile, event = "BUFF_UPDATE", onEvent = OnEvent, read = Sample,
+        projection = function(feature)
+            local session = feature._buffCap
+            local rows, status = Rows(feature)
+            return { rows = rows, status = status, observing = session.observing,
+                reminderEnabled = feature.State.reminderEnabled == true,
+                normalThreshold = feature.State.normalThreshold, hiddenThreshold = feature.State.hiddenThreshold,
+                samples = session.samples, failedSamples = session.failedSamples, delivered = session.delivered,
+                deliveryFailures = session.deliveryFailures, reminderError = session.reminderError }
+        end,
+        commands = {
+            SetReminderEnabled = function(feature, value)
+                if type(value) ~= "boolean" then return false, "提醒开关必须为布尔值" end
+                return Commit(feature, "reminderEnabled", value)
+            end,
+            SetThreshold = function(feature, key, value)
+                if key ~= "normal" and key ~= "hidden" then return false, "请选择普通或隐藏增益" end
+                local number = Threshold(value)
+                if number == nil then return false, "个人阈值必须为0-1000的整数；0表示关闭该类提醒" end
+                return Commit(feature, key .. "Threshold", number)
+            end,
+            ResetPeaks = function(feature)
+                -- 中文维护：仅重置本次启用的历史统计，不清配置、不重读、不重新准备提醒边沿。
+                feature._buffCap.peaks = Copy(feature._buffCap.counts)
+                Publish(feature, "buff_cap_peaks_reset")
+                return true
+            end,
+            TestReminder = function(feature)
+                if feature.enabled ~= true then return false, "请先启用增益容量监控" end
+                local free, alerts = ChannelFree(feature)
+                if free ~= true then return false, alerts end
+                -- 中文维护：手动路径只证明 Presenter，不注入虚假计数、峰值或自动提醒成功统计。
+                return alerts:Push({ text = "增益数量提醒测试（非容量警报）", style = "bigtext", durationMs = 3000,
+                    ownerKey = feature.Id, alertKey = "manual_test", presentationConfig = { anchorMode = "top", fontSize = 28 } })
+            end,
+        },
+    })
+    BuffCap._buffCap = NewSession()
+    BuffCap.PersonalReminderContractVersion = 1 -- 中文维护：局部交付标识，不提升为 RU 实机通过或改变全局 BuildTag。
+end
 local TEAM_ROLE_MAX_TEAMS, TEAM_ROLE_MAX_MEMBERS = 2, 50
 local TEAM_ROLE_MAX_ROWS = TEAM_ROLE_MAX_TEAMS * TEAM_ROLE_MAX_MEMBERS
 local TEAM_ROLE_ROSTER_TOKEN = "combat_team_tools:roster"
+-- 中文维护注释（2026-09-16，Lua5.1 主 chunk local 预算）：自动职责 roster token 使用稳定字面量
+-- "combat_team_tools:auto_role_roster"，不再新增顶层 local。该文件已接近 Lua 5.1 每函数 200 local 上限；
+-- 资源身份仍由 Demand token 保证唯一，避免为了可读性增加顶层 local 导致整个 business bridge 无法加载。
 
 local function TeamRosterV3()
     return S.Services and S.Services.TeamRosterV3 or nil
@@ -2522,9 +2916,23 @@ local TeamTools = NewFeature("combat_team_tools", { apiDependencies = { "X2Team:
     read = ReadTeamRoleRoster,
     commands = {
         SetAutoRoleEnabled = function(feature, value)
-            local ok, err = PersistStateMutation(feature, "team_auto_role", function(state) state.autoRoleEnabled = value == true; return true end)
+            local enabled = value == true
+            local ok, err = PersistStateMutation(feature, "team_auto_role", function(state) state.autoRoleEnabled = enabled; return true end)
             if ok ~= true then return false, err end
-            if feature.State.autoRoleEnabled == true and type(feature.ScheduleAutoRole) == "function" then feature:ScheduleAutoRole("setting_enabled", 100) end
+            -- 中文维护注释（2026-09-16，自动职责生命周期）：旧实现只改 Store，false 时不释放观察，且若 Feature 启动时 Store=false，
+            -- 后续切回 true 只 Schedule 一次 Apply，并不会重新订阅 ABILITY/roster 事件。Authority 仍是 TeamTools.State，Command 负责把用户意图同步到运行时资源。
+            -- 数据流：SetAutoRoleEnabled -> Start/StopAutoRoleObservation -> 独立 TeamRoster lease + 独立 Event owner；Presentation 不直接订阅 Native。
+            -- 兼容边界：先提交用户配置，再调整本会话资源；若运行时资源建立失败，保留用户 true 意图并返回错误，下一次 Enable/重载仍会重试，不静默改回 false。
+            if feature.enabled == true then
+                if enabled then
+                    local started, startErr = feature:StartAutoRoleObservation()
+                    if started ~= true then feature.AutoRoleStatus = "自动职责启动失败：" .. tostring(startErr or "unknown"); return false, startErr end
+                else
+                    local stopped, stopErr = feature:StopAutoRoleObservation()
+                    if stopped ~= true then feature.AutoRoleStatus = "自动职责停止不完整：" .. tostring(stopErr or "unknown"); return false, stopErr end
+                    feature.AutoRoleStatus = "自动职责已关闭"
+                end
+            end
             return true
         end,
         SetRole = function(_, role)
@@ -2547,8 +2955,12 @@ local TeamTools = NewFeature("combat_team_tools", { apiDependencies = { "X2Team:
 TeamTools.TeamRoleRosterHeld = false
 TeamTools.TeamRoleRosterSubscribed = false
 TeamTools.TeamRoleContractVersion = 2
-TeamTools.AutoRoleCatalogContractVersion = 1
+TeamTools.AutoRoleCatalogContractVersion = 2 -- 中文维护注释（2026-09-16）：v2 增加 8+9+14=治疗 与 6+8+9=远程的双规则验收；目录仍是精确 class-key Authority。
 TeamTools.AutoRoleDefaultOnContractVersion = 1 -- 中文维护注释：发布门禁钉死“空 Store 默认开 + 旧显式关可持久化”的产品语义；它不代表功能无条件常驻，Feature Disabled 时观察任务仍全部释放。
+TeamTools.AutoRoleRosterLeaseContractVersion = 1 -- 中文维护注释（2026-09-16）：自动职责开启时必须独立持有 TeamRosterV3，不能借页面/Healer 的 Consumer“碰巧运行”。
+TeamTools.AutoRoleRosterHeld = false
+TeamTools.AutoRoleSubscribed = false
+TeamTools.AutoRoleEventOwner = { Id = "combat_team_tools:auto_role_observer" } -- 中文维护注释：事件 owner 与 Feature 本体分离；StopAutoRoleObservation 只回收自己的 Native/Internal 订阅，不能误删职责页面的 v3.team_roster.updated 订阅。
 
 local TEAM_AUTO_ROLE_TASK="v3_team_auto_role_apply"
 local function TeamAutoRoleCatalog() return S.Data and S.Data.TeamAutoRoleCatalog or nil end
@@ -2569,8 +2981,19 @@ local function FindPlayerRoleSlot()
     local roster=TeamRosterV3(); if type(roster)~="table" or type(roster.GetSnapshot)~="function" then return nil,nil,"团队名单不可用" end
     local ok,name,err=Call("X2Unit:UnitName",rawget(_G,"X2Unit"),"UnitName","player")
     name=ok==true and tostring(name or "") or ""; if name=="" then return nil,nil,"当前玩家名称不可读："..tostring(err or "unknown") end
-    local snap=roster:GetSnapshot(); for _,member in ipairs(type(snap)=="table" and type(snap.members)=="table" and snap.members or {}) do
-        if tostring(member.name or "")==name then return tonumber(member.teamIndex),tonumber(member.memberIndex),nil end
+    local wanted=string.lower(name)
+    local snap=roster:GetSnapshot()
+    for _,member in ipairs(type(snap)=="table" and type(snap.members)=="table" and snap.members or {}) do
+        local memberName=string.lower(tostring(member.name or ""))
+        if memberName==wanted then
+            local teamIndex,memberIndex=tonumber(member.teamIndex),tonumber(member.memberIndex)
+            -- 中文维护注释（2026-09-16，入团竞态）：TeamRosterV3 总会先以 player/0/0 种下本地身份，0/0 只证明“玩家存在”，
+            -- 不能证明 native team slot 已稳定。旧代码把 0/0 当有效槽位，可能在 TEAM_MEMBERS_CHANGED 过早到达时调用 GetRole(0,0)/SetRole，
+            -- RU 侧拒绝后又没有后续边沿，于是表现为“有时进团不改职责”。这里只接受 >0 的真实团队槽位；晚到槽位由 TeamRoster 的有界 settle refresh 补齐。
+            -- 数据流仍只消费 TeamRosterV3 公共 Snapshot，不读取其私有 map；大小写归一化只用于当前玩家同名匹配，不建立第二份缓存。
+            if teamIndex~=nil and teamIndex>0 and memberIndex~=nil and memberIndex>0 then return teamIndex,memberIndex,nil end
+            return nil,nil,"当前玩家团队槽位尚未就绪"
+        end
     end
     return nil,nil,"当前玩家尚未进入团队名单"
 end
@@ -2596,20 +3019,68 @@ function TeamTools:ScheduleAutoRole(reason,delayMs)
     if ok==true and type(S.Scheduler.SetTaskModule)=="function" then S.Scheduler:SetTaskModule(TEAM_AUTO_ROLE_TASK,self.Id,true) end
     return ok==true,ok==true and nil or "自动职责任务创建失败"
 end
+function TeamTools:AcquireAutoRoleRoster()
+    if self.AutoRoleRosterHeld == true then return true end
+    local roster = TeamRosterV3()
+    if type(roster) ~= "table" or type(roster.AcquireConsumer) ~= "function" then return false, "自动职责团队名单服务不可用" end
+    local ok, err = roster:AcquireConsumer("combat_team_tools:auto_role_roster", { purpose = "combat_team_tools_auto_role" })
+    if ok ~= true then return false, err or "自动职责团队名单获取失败" end
+    self.AutoRoleRosterHeld = true
+    return true
+end
+
+function TeamTools:ReleaseAutoRoleRoster()
+    if self.AutoRoleRosterHeld ~= true then return true end
+    local roster = TeamRosterV3()
+    if type(roster) ~= "table" or type(roster.ReleaseConsumer) ~= "function" then return false, "自动职责团队名单释放不可用" end
+    local ok, err = roster:ReleaseConsumer("combat_team_tools:auto_role_roster")
+    if ok ~= true then return false, err or "自动职责团队名单释放失败" end
+    self.AutoRoleRosterHeld = false
+    return true
+end
+
 function TeamTools:StartAutoRoleObservation()
-    if self.AutoRoleSubscribed==true then return true end
+    if self.AutoRoleSubscribed==true and self.AutoRoleRosterHeld==true then return true end
     if S.Events==nil then return false,"自动职责事件总线不可用" end
-    S.Events:BindOwner(self,self.Id)
-    local ok1=S.Events:SubscribeOptional("ABILITY_SET_CHANGED",self,function() TeamTools:ScheduleAutoRole("ability_set",150) end)
-    local ok2=S.Events:SubscribeOptional("ABILITY_CHANGED",self,function() TeamTools:ScheduleAutoRole("ability",150) end)
-    local ok3=type(S.Events.SubscribeInternal)=="function" and S.Events:SubscribeInternal("v3.team_roster.updated",self,function() TeamTools:ScheduleAutoRole("team_roster",250) end) or false
-    if ok1~=true or ok2~=true or ok3~=true then S.Events:UnsubscribeOwner(self); if type(S.Events.UnsubscribeInternalOwner)=="function" then S.Events:UnsubscribeInternalOwner(self) end; return false,"自动职责事件订阅失败" end
-    self.AutoRoleSubscribed=true; self:ScheduleAutoRole("enable",300); return true
+    local rosterOk, rosterErr = self:AcquireAutoRoleRoster()
+    if rosterOk ~= true then return false, rosterErr end
+    local owner = self.AutoRoleEventOwner
+    -- 中文维护注释（2026-09-16，独立观察所有权）：自动职责不能借 combat_team_tools 页面 Demand 持有 TeamRoster，也不能用 Feature 本体
+    -- 作为 Event owner 后再 UnsubscribeOwner(self)，否则关闭自动职责会顺带删除页面只读职责订阅。这里把 Native ability 事件和内部 roster 事件都绑定到专属 owner。
+    -- 生命周期：Feature Enabled + autoRoleEnabled=true 才持有；关闭设置/Feature Disable 时 RemoveTask + Unsubscribe + ReleaseConsumer 全部释放。无 Tick、无常驻扫描。
+    S.Events:BindOwner(owner,self.Id)
+    local ok1=S.Events:SubscribeOptional("ABILITY_SET_CHANGED",owner,function() TeamTools:ScheduleAutoRole("ability_set",150) end)
+    local ok2=S.Events:SubscribeOptional("ABILITY_CHANGED",owner,function() TeamTools:ScheduleAutoRole("ability",150) end)
+    local ok3=type(S.Events.SubscribeInternal)=="function" and S.Events:SubscribeInternal("v3.team_roster.updated",owner,function() TeamTools:ScheduleAutoRole("team_roster",250) end) or false
+    if ok1~=true or ok2~=true or ok3~=true then
+        if type(S.Events.UnsubscribeOwner)=="function" then S.Events:UnsubscribeOwner(owner) end
+        if type(S.Events.UnsubscribeInternalOwner)=="function" then S.Events:UnsubscribeInternalOwner(owner) end
+        self:ReleaseAutoRoleRoster()
+        self.AutoRoleSubscribed=false
+        return false,"自动职责事件订阅失败"
+    end
+    self.AutoRoleSubscribed=true
+    local scheduled, scheduleErr = self:ScheduleAutoRole("enable",300)
+    if scheduled ~= true then
+        if type(S.Events.UnsubscribeOwner)=="function" then S.Events:UnsubscribeOwner(owner) end
+        if type(S.Events.UnsubscribeInternalOwner)=="function" then S.Events:UnsubscribeInternalOwner(owner) end
+        self:ReleaseAutoRoleRoster()
+        self.AutoRoleSubscribed=false
+        return false, scheduleErr or "自动职责任务启动失败"
+    end
+    return true
 end
 function TeamTools:StopAutoRoleObservation()
     if S.Scheduler and type(S.Scheduler.RemoveTask)=="function" then S.Scheduler:RemoveTask(TEAM_AUTO_ROLE_TASK) end
-    if S.Events then if type(S.Events.UnsubscribeOwner)=="function" then S.Events:UnsubscribeOwner(self) end; if type(S.Events.UnsubscribeInternalOwner)=="function" then S.Events:UnsubscribeInternalOwner(self) end end
-    self.AutoRoleSubscribed=false; return true
+    local owner = self.AutoRoleEventOwner
+    if S.Events then
+        if type(S.Events.UnsubscribeOwner)=="function" then S.Events:UnsubscribeOwner(owner) end
+        if type(S.Events.UnsubscribeInternalOwner)=="function" then S.Events:UnsubscribeInternalOwner(owner) end
+    end
+    self.AutoRoleSubscribed=false
+    local released, releaseErr = self:ReleaseAutoRoleRoster()
+    if released ~= true then return false, releaseErr end
+    return true
 end
 local TeamToolsBaseEnable,TeamToolsBaseDisable=TeamTools.Enable,TeamTools.Disable
 function TeamTools:Enable(reason)
@@ -2618,10 +3089,13 @@ function TeamTools:Enable(reason)
     return true
 end
 function TeamTools:Disable(reason)
-    self:StopAutoRoleObservation()
-    return TeamToolsBaseDisable(self,reason)
+    local stopOk, stopErr = self:StopAutoRoleObservation()
+    local baseOk, baseErr = TeamToolsBaseDisable(self,reason)
+    if baseOk ~= true then return false, baseErr end
+    if stopOk ~= true then return false, stopErr end
+    return true
 end
-TeamTools.AutoRoleContractVersion=2 -- 中文维护注释：v2 只提升默认值/持久化可见契约；事件订阅仍仅在 TeamTools Enabled 且 autoRoleEnabled~=false 时建立，关闭后 RemoveTask/UnsubscribeOwner 保持原生命周期。
+TeamTools.AutoRoleContractVersion=3 -- 中文维护注释（2026-09-16）：v3 固化独立 TeamRoster lease、独立 Event owner、关→开重建观察与真实>0团队槽位门；仍为事件驱动，不增加周期轮询。
 NewFeature("combat_raid_recruitment", { apiDependencies = { "X2Team:RaidRecruitDel", "X2Team:RaidApplicantList" },
     read = function(feature)
         local ok, list, callErr = Call("X2Team:RaidApplicantList", TeamApi, "RaidApplicantList")
@@ -2859,13 +3333,14 @@ end
 
 local function CraftHeldCounts()
     local held, diagnostics = {}, { status = "unknown", scanned = 0, readErrors = 0, unknownOccupied = 0, capacity = nil }
-    if BagApi == nil then return held, diagnostics end
-    local ok, capacity = Call("X2Bag:Capacity", BagApi, "Capacity")
+    local bag = BagApi or rawget(_G, "X2Bag")
+    if bag == nil then return held, diagnostics end
+    local ok, capacity = Call("X2Bag:Capacity", bag, "Capacity")
     capacity = CraftInteger(capacity, true)
     if ok ~= true or capacity == nil then diagnostics.error = "背包容量未知"; return held, diagnostics end
     diagnostics.capacity = math.min(capacity, BAG_SCAN_LIMIT); diagnostics.status = "ready"
     for slot = 1, diagnostics.capacity do
-        local itemOk, info = Call("X2Bag:GetBagItemInfo", BagApi, "GetBagItemInfo", 0, slot)
+        local itemOk, info = Call("X2Bag:GetBagItemInfo", bag, "GetBagItemInfo", 0, slot)
         diagnostics.scanned = diagnostics.scanned + 1
         if itemOk ~= true then
             diagnostics.readErrors = diagnostics.readErrors + 1
@@ -2886,14 +3361,15 @@ local function CraftHeldCounts()
 end
 
 local function CraftEnrichItems(items, held, bagDiagnostics)
-    local incomplete = bagDiagnostics.status ~= "ready"
+    local bagReady = bagDiagnostics and bagDiagnostics.status == "ready"
+    local incomplete = not bagReady
     for _, item in ipairs(items or {}) do
-        item.held = item.itemType ~= nil and held[item.itemType] or nil
+        item.held = item.itemType ~= nil and (held[item.itemType] or (bagReady and 0 or nil)) or nil
         item.shortage = item.count ~= nil and item.held ~= nil and math.max(0, item.count - item.held) or nil
         item.unitCost, item.costStatus = CraftQuote(item)
         item.lineCost = item.unitCost ~= nil and item.count ~= nil and item.unitCost * item.count or nil
         item.status = (item.itemType ~= nil and item.count ~= nil and item.unitCost ~= nil and item.held ~= nil) and "ready" or "incomplete"
-        if bagDiagnostics.status ~= "ready" then item.status = "incomplete" end
+        if not bagReady then item.status = "incomplete" end
         if item.status ~= "ready" then incomplete = true end
     end
     return incomplete
@@ -3087,7 +3563,8 @@ local function CraftResolveTypes(feature)
     if itemType ~= nil and craftType ~= nil then return {}, { status = "failed", error = "制作物上下文冲突，请重新选择" } end
     if craftType ~= nil then return { craftType }, { status = "ready", source = "已选制作物", itemType = nil, craftType = craftType } end
     if itemType == nil then return {}, { status = "empty", source = "未选择制作物", itemType = nil } end
-    local ok, first, errorText, second, third, fourth = Call("X2Craft:GetCraftTypeByItemType", CraftApi, "GetCraftTypeByItemType", itemType)
+    local craft = CraftApi or rawget(_G, "X2Craft")
+    local ok, first, errorText, second, third, fourth = Call("X2Craft:GetCraftTypeByItemType", craft, "GetCraftTypeByItemType", itemType)
     if ok ~= true then return {}, { status = "failed", source = "X2Craft:GetCraftTypeByItemType", itemType = itemType, error = Text(errorText, "制作配方查询失败") } end
     local types, seen = {}, {}
     for _, value in ipairs({ first, second, third, fourth }) do CraftCollectTypeIds(value, types, seen, 0) end
@@ -3128,10 +3605,11 @@ local function CraftRead(feature)
     local held, bagDiagnostics = CraftHeldCounts()
     local doodadId = feature.State.doodadId == nil and 0 or CraftInteger(feature.State.doodadId, true)
     if doodadId == nil then doodadId = 0 end
+    local craftApi = CraftApi or rawget(_G, "X2Craft")
     for _, craftType in ipairs(craftTypes) do
-        local okBase, base, baseError = Call("X2Craft:GetCraftBaseInfo", CraftApi, "GetCraftBaseInfo", craftType)
-        local okProduct, product, productError = Call("X2Craft:GetCraftProductInfo", CraftApi, "GetCraftProductInfo", craftType)
-        local okMaterial, material, materialError = Call("X2Craft:GetCraftMaterialInfo", CraftApi, "GetCraftMaterialInfo", craftType, doodadId)
+        local okBase, base, baseError = Call("X2Craft:GetCraftBaseInfo", craftApi, "GetCraftBaseInfo", craftType)
+        local okProduct, product, productError = Call("X2Craft:GetCraftProductInfo", craftApi, "GetCraftProductInfo", craftType)
+        local okMaterial, material, materialError = Call("X2Craft:GetCraftMaterialInfo", craftApi, "GetCraftMaterialInfo", craftType, doodadId)
         local recipe = { craftType = craftType, base = CraftBaseSection(okBase, base, baseError, craftType), product = CraftSection("product", okProduct, product, productError, craftType, doodadId), materials = CraftSection("materials", okMaterial, material, materialError, craftType, doodadId) }
         if selectedRecipe ~= nil and tonumber(selectedRecipe.craftId) == tonumber(craftType) then
             if (recipe.product.failed or recipe.product.opaque or #(recipe.product.items or {}) == 0) and tonumber(selectedRecipe.productItemId) ~= nil then
@@ -3289,9 +3767,10 @@ local function CraftCommands()
 end
 
 local CRAFT_API_DEPENDENCIES = { "X2Craft:GetCraftBaseInfo", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo", "X2Craft:GetCraftTypeByItemType", "X2Bag:Capacity", "X2Bag:GetBagItemInfo" }
-local CraftPlanner = NewFeature("life_craft_planner", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, planItems = {} }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, planItems = {} }, persistentKeys = { "selectedRecipeKey", "craftType", "itemType" }, read = CraftRead, projection = CraftProjection, commands = CraftCommands() })
+-- 中文维护注释（2026-09-15，移除 life_craft_planner）：共享 CraftRead/CraftProjection 仍由制作台助手使用，
+-- 但不再实例化 life_craft_planner，因此不会注册 v3.business.life_craft_planner Store、Demand 或 Runtime Implementation。
+-- 旧磁盘键保持原样不主动清除，避免“删除功能”变成不可逆用户数据写操作；toc 同时停止加载 Planner extension。
 local CraftAssistant = NewFeature("tools_craft", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, persistentKeys = { "selectedRecipeKey", "craftType", "itemType" }, read = CraftRead, projection = CraftProjection, commands = CraftCommands() })
-CraftPlanner.CraftUserSelectionContractVersion = 1
 CraftAssistant.CraftUserSelectionContractVersion = 1
 
 local function EnsureBlacklist(feature)
@@ -3503,9 +3982,16 @@ local function ApplyAuctionState(value,state)
     state.favorites=NormalizeAuctionFavorites(value.favorites)
     state.exactMatch=value.exactMatch==true
     state.resultLimit=NormalizeAuctionResultLimit(value.resultLimit) or 20
+    -- 中文维护注释（2026-09-15，拍卖悬浮助手独立开关）：旧 v3.business.tools_auction
+    -- payload 没有 sidecarEnabled。缺字段必须保持历史行为=开启，只有显式 false 才关闭；否则升级后
+    -- 会把所有旧用户的拍卖助手静默关掉。Feature State 是永久偏好 Authority，Presentation 只能经
+    -- Commands:SetSidecarEnabled 修改。该字段只控制 AuctionSurface/Sidecar 生命周期，不影响收藏、
+    -- 当前挂单查询、今日任务或 Session 临时清单。沿用现有 schema1 是兼容加字段：旧 payload 的
+    -- integrity 仍按其原始内容验证，Apply 后缺字段补 true；下一次合法写入才带上新字段。
+    state.sidecarEnabled=value.sidecarEnabled~=false
     state.searchStatus="idle"
 end
-local function AuctionDefault() return { keyword="",favorites={},exactMatch=false,resultLimit=20 } end
+local function AuctionDefault() return { keyword="",favorites={},exactMatch=false,resultLimit=20,sidecarEnabled=true } end
 local function AuctionQueryService() return S.Services and S.Services.AuctionQueryV3 or nil end
 local function AuctionQueryReconcile(feature,before,after)
     local a=tonumber(before and before.count) or 0; local b=tonumber(after and after.count) or 0
@@ -3546,8 +4032,13 @@ local function AuctionSearch(feature,value)
     if keyword==nil then feature.State.searchStatus="failed"; return false,"搜索关键词必须是 1-64 个可见字符" end
     local persisted,persistErr=PersistStateMutation(feature,"auction_keyword",function(state) state.keyword=keyword; return true end)
     if persisted~=true then feature.State.searchStatus="failed"; return false,persistErr or "搜索关键词保存失败" end
-    local query=AuctionQueryService(); if type(query)~="table" or type(query.Search)~="function" then return false,"拍卖查询服务不可用" end
-    local ok,result=query:Search(feature.Id,keyword,{exactMatch=feature.State.exactMatch==true,resultLimit=feature.State.resultLimit})
+    local bridge=S.Services and S.Services.AuctionSearchBridgeV3 or nil
+    local query=AuctionQueryService()
+    if (type(bridge)~="table" or type(bridge.Search)~="function") and (type(query)~="table" or type(query.Search)~="function") then return false,"拍卖查询服务不可用" end
+    local options={exactMatch=feature.State.exactMatch==true,resultLimit=feature.State.resultLimit}
+    local ok,result
+    if type(bridge)=="table" and type(bridge.Search)=="function" then ok,result=bridge:Search(feature.Id,keyword,options)
+    else ok,result=query:Search(feature.Id,keyword,options) end
     feature.State.searchStatus=ok==true and "waiting" or "failed"
     if feature.Authority then feature.Authority:Refresh("auction_search_requested") end
     return ok,result
@@ -3570,8 +4061,12 @@ local function AuctionProjection(feature)
     -- page, never issues server queries.
     local quote=S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
     local quoteSnapshot=type(quote)=="table" and type(quote.GetSnapshot)=="function" and quote:GetSnapshot(feature.Id) or nil
+    local bridge=S.Services and S.Services.AuctionSearchBridgeV3 or nil
+    local bridgeSnapshot=type(bridge)=="table" and type(bridge.GetSnapshot)=="function" and bridge:GetSnapshot() or {}
     return { keyword=feature.State.keyword,favoriteCount=#(feature.State.favorites or {}),favoriteMax=AUCTION_FAVORITE_MAX,
-        exactMatch=feature.State.exactMatch==true,resultLimit=feature.State.resultLimit,
+        exactMatch=feature.State.exactMatch==true,resultLimit=feature.State.resultLimit,sidecarEnabled=feature.State.sidecarEnabled~=false,
+        nativeSync=tostring(bridgeSnapshot.nativeSync or "idle"),nativeCandidateStatus=tostring(bridgeSnapshot.candidateStatus or "none"),
+        nativeCandidatePath=bridgeSnapshot.candidatePath,nativeSyncReason=bridgeSnapshot.reason,nativeSyncFallbackCount=tonumber(bridgeSnapshot.fallbackCount) or 0,
         searchStatus=snapshot.status or feature.State.searchStatus or "idle",resultStatus=snapshot.status or "idle",
         resultCount=tonumber(snapshot.count) or 0,queryError=snapshot.error,queryContract=snapshot.contract,
         quoteStatus=quoteSnapshot and quoteSnapshot.status or "idle",
@@ -3608,9 +4103,74 @@ auctionCommands.RemoveFavorite=function(feature,index)
     index=tonumber(index); if index==nil or index~=math.floor(index) or index<1 or index>#feature.State.favorites then return false,"收藏索引无效" end
     return PersistStateMutation(feature,"auction_favorite_remove",function(state) table.remove(state.favorites,index); return true end)
 end
+-- 中文维护注释（2026-09-14，拍卖收藏稳定身份 CRUD）：收藏永久 Store 继续保持历史字符串数组，
+-- 避免为了 UI 排序/重命名升级 schema 导致旧用户配置迁移风险。业务身份使用规范化后的 keyword，
+-- UI 行 index 只作瞬时显示位置；所有写入仍经 PersistStateMutation -> v3.business.tools_auction Store。
+-- 风险边界：关键词必须唯一，因此 rename/move/remove-by-keyword 每次都扫描当前 Authority State，
+-- 禁止缓存旧 index 后直接写入，避免排序刷新后误删/误改别的收藏。
+auctionCommands.RenameFavorite=function(feature,oldValue,newValue)
+    local oldKeyword=NormalizeAuctionKeyword(oldValue); if oldKeyword==nil then return false,"收藏关键词必须是 1-64 个可见字符" end
+    local index=nil; for i,item in ipairs(feature.State.favorites or {}) do if item==oldKeyword then index=i; break end end
+    if index==nil then return false,"收藏关键词不存在" end
+    local newKeyword=NormalizeAuctionKeyword(newValue); if newKeyword==nil then return false,"新收藏关键词必须是 1-64 个可见字符" end
+    if newKeyword==oldKeyword then return true end
+    for _,item in ipairs(feature.State.favorites or {}) do if item==newKeyword then return false,"收藏关键词已存在" end end
+    return PersistStateMutation(feature,"auction_favorite_rename",function(state) state.favorites[index]=newKeyword; return true end)
+end
+auctionCommands.MoveFavorite=function(feature,value,direction)
+    local keyword=NormalizeAuctionKeyword(value); if keyword==nil then return false,"收藏关键词必须是 1-64 个可见字符" end
+    local index=nil; for i,item in ipairs(feature.State.favorites or {}) do if item==keyword then index=i; break end end
+    if index==nil then return false,"收藏关键词不存在" end
+    local delta=tonumber(direction); if delta==nil or delta==0 then return false,"移动方向无效" end
+    delta=delta<0 and -1 or 1
+    local target=index+delta; if target<1 or target>#feature.State.favorites then return false,"收藏已在边界" end
+    return PersistStateMutation(feature,"auction_favorite_move",function(state)
+        state.favorites[index],state.favorites[target]=state.favorites[target],state.favorites[index]; return true
+    end)
+end
+auctionCommands.RemoveFavoriteByKeyword=function(feature,value)
+    local keyword=NormalizeAuctionKeyword(value); if keyword==nil then return false,"收藏关键词必须是 1-64 个可见字符" end
+    local index=nil; for i,item in ipairs(feature.State.favorites or {}) do if item==keyword then index=i; break end end
+    if index==nil then return false,"收藏关键词不存在" end
+    return PersistStateMutation(feature,"auction_favorite_remove_keyword",function(state) table.remove(state.favorites,index); return true end)
+end
+auctionCommands.ClearFavorites=function(feature)
+    if #(feature.State.favorites or {})==0 then return true end
+    return PersistStateMutation(feature,"auction_favorite_clear",function(state) state.favorites={}; return true end)
+end
+-- 中文维护注释（2026-09-15，拍卖悬浮助手设置命令）：偏好写入仍走 tools_auction
+-- Persistence 事务；Feature 已启用时同步启停 AuctionSurfaceV3，以确保“关”不仅隐藏窗口，
+-- 还释放 250ms 原生窗口观察任务。Surface Start/Stop 只管理只读观察，收藏与 AuctionQuery 完全独立。
+auctionCommands.SetSidecarEnabled=function(feature,value)
+    local target=value==true
+    local persisted,persistErr=PersistStateMutation(feature,"auction_sidecar_enabled",function(state) state.sidecarEnabled=target; return true end)
+    if persisted~=true then return false,persistErr end
+    local surface=S.Services and S.Services.AuctionSurfaceV3 or nil
+    if feature.enabled==true and type(surface)=="table" then
+        if target==true and type(surface.Start)=="function" then
+            local started,startErr=surface:Start()
+            if started~=true and S.DiagnosticsManager~=nil and type(S.DiagnosticsManager.Warn)=="function" then
+                S.DiagnosticsManager:Warn("auction","AUCTION_SIDECAR_OBSERVER_UNAVAILABLE","拍卖悬浮助手偏好已开启，但原生拍卖窗口观察未启动；主页面功能保持可用",{error=tostring(startErr or "unknown")})
+            end
+        elseif target~=true and type(surface.Stop)=="function" then
+            surface:Stop("sidecar_preference_disabled")
+        end
+    end
+    -- 只刷新 detached projection/设置订阅，不发起 Auction Search。这样主页面 Toggle 会立即追平，
+    -- Sidecar 的真实显隐仍由 AuctionSurfaceV3 -> Controller 单向驱动。
+    if type(feature.Authority)=="table" and type(feature.Authority.Refresh)=="function" then feature.Authority:Refresh("auction_sidecar_setting") end
+    return true
+end
 local AUCTION_API_DEPENDENCIES={"X2Auction:SearchAuctionArticle","X2Auction:GetSearchedItemCount","X2Auction:GetSearchedItemInfo","X2Auction:GetLowestPrice","ADDON:GetContent","ADDON:GetContentMainScriptPosVis"}
-local AuctionFavorites = NewFeature("tools_auction",{apiDependencies=AUCTION_API_DEPENDENCIES,state={keyword="",favorites={},exactMatch=false,resultLimit=20,searchStatus="idle"},default=AuctionDefault(),apply=ApplyAuctionState,
-    onEnable=function()
+local AuctionFavorites = NewFeature("tools_auction",{apiDependencies=AUCTION_API_DEPENDENCIES,
+    -- 中文维护注释（2026-09-15，Sidecar Preference Authority）：sidecarEnabled 与收藏/查询参数共用
+    -- tools_auction 永久 Store，但它只拥有“是否启用拍卖悬浮助手”的偏好，不拥有 Widget 可见性。
+    -- 旧 Store 缺字段由 ApplyAuctionState 补 true；显式 persistentKeys 把该兼容字段钉死，避免后续
+    -- 清理 default 时误从持久化白名单移除。关闭后 AuctionSurface watcher 也停止，真正释放 250ms
+    -- 观察任务；主页面收藏与显式 AuctionQuery 不依赖该 watcher。
+    state={keyword="",favorites={},exactMatch=false,resultLimit=20,sidecarEnabled=true,searchStatus="idle"},default=AuctionDefault(),persistentKeys={"sidecarEnabled"},apply=ApplyAuctionState,
+    onEnable=function(feature)
+        if feature.State.sidecarEnabled==false then return true end
         local surface=S.Services and S.Services.AuctionSurfaceV3 or nil
         if type(surface)=="table" and type(surface.Start)=="function" then
             local started,startErr=surface:Start()
@@ -3627,6 +4187,11 @@ local AuctionFavorites = NewFeature("tools_auction",{apiDependencies=AUCTION_API
     end,
     reconcileDemand=AuctionQueryReconcile,read=function(feature) local rows,snapshot=AuctionRows(feature,true); local status=snapshot.status=="failed" and (#rows>0 and "partial" or "unavailable") or (#rows>0 and "ready" or "empty"); return rows,status,snapshot.error end,
     projection=AuctionProjection,commands=auctionCommands})
+-- 中文维护注释（2026-09-15，Sidecar Preference read facade）：Presentation 禁止直接读取
+-- Feature.State；这个只读 facade 让 Sidecar Controller 在 250ms Surface 事件上 O(1) 获取偏好，
+-- 不必调用 GetProjection() 深拷贝当前拍卖结果。它不返回 Store 本体，也不允许反向写状态。
+function AuctionFavorites:IsSidecarEnabled() return self.State.sidecarEnabled~=false end
+AuctionFavorites.SidecarPreferenceContractVersion=1
 function AuctionFavorites:Search(value) return self.Commands:Search(value) end
 function AuctionFavorites:AddFavorite(value) return self.Commands:AddFavorite(value) end
 function AuctionFavorites:RemoveFavorite(index) return self.Commands:RemoveFavorite(index) end
@@ -3805,7 +4370,11 @@ local UNIT_LINE_PAIRS = {
 -- user actually asks for it.
 
 local function UnitLineInterval(feature)
-    return math.max(1, math.min(1000, math.floor(tonumber(feature.State.refreshMs) or 100)))
+    -- 2026-09-15: 1000ms is only the recommended slider ceiling. Slower user
+    -- cadences are safe and reduce work, so the Domain accepts them up to the
+    -- shared technical envelope instead of mirroring the old UI maximum.
+    return math.max(S.VisualGuideLimits.refreshMsHardMin or 1, math.min(S.VisualGuideLimits.refreshMsHardMax or 60000,
+        math.floor(tonumber(feature.State.refreshMs) or 100)))
 end
 local function StartUnitLineTask(feature)
     if S.Scheduler == nil or type(S.Scheduler.AddHighFrequencyTask) ~= "function" then return false, "单位连线 Scheduler 不可用" end
@@ -3824,6 +4393,10 @@ local UNIT_LINE_DEFAULT_COLORS = {
 }
 S.VisualGuideLimits = S.VisualGuideLimits or (S.Constants and S.Constants.VisualGuide) or {
     pointSizeMin = 2, pointSizeDefaultMax = 10, pointSizeHardMax = 24,
+    unitLineDensityHardMin = 2, unitLineDensityHardMax = 160,
+    rangeDensityHardMin = 3, rangeDensityHardMax = 192,
+    rangeRadiusHardMin = 0.5, rangeRadiusHardMax = 1000,
+    refreshMsHardMin = 1, refreshMsHardMax = 60000,
 }
 
 local function NormalizeUnitLineColors(value)
@@ -3880,13 +4453,13 @@ local UnitLines = NewFeature("combat_unit_lines", {
         dia.attemptedPairs = 0
         dia.drawnRows = 0
         dia.endpointCollapsed = 0
+        dia.endpoints = {} -- 维护：最多五个配置token，本次刷新覆盖；不写State/Store、不累计历史目标。
         local projection = S.Services and S.Services.ScreenProjectionV3 or nil
         if type(projection) ~= "table" or type(projection.ProjectUnitBatch) ~= "function" then
             dia.lastStatus = "unavailable"
             dia.lastFailureReason = "SCREEN_PROJECTION_UNAVAILABLE"
             return {}, "unavailable", "ScreenProjectionV3 v7 不可用"
         end
-        dia.projection = projection.GetHealth ~= nil and projection:GetHealth() or nil
         local rows, attempted, failed, tokens = {}, 0, {}, {}
         local seen = {}
         for _, pair in ipairs(UNIT_LINE_PAIRS) do
@@ -3911,6 +4484,16 @@ local UnitLines = NewFeature("combat_unit_lines", {
         -- space do not agree on RU. Native depth is the proven behind-cull.
         local projected,batchErr = projection:ProjectUnitBatch(tokens,{ worldZOffset=1 })
         projected=type(projected)=="table" and projected or {}
+        -- 维护：健康计数必须在本次采集之后读取，旧实现报告的是上一批。端点来自Service事实，
+        -- 保存screen/world各自的错误给统一诊断，避免焦点缺失永远只有一个泛化字符串。
+        dia.projection = projection.GetHealth ~= nil and projection:GetHealth() or nil
+        for _,token in ipairs(tokens) do
+            local point=projected[token]
+            if type(point)=="table" then
+                dia.endpoints[token]={visible=point.visible==true,x=point.x,y=point.y,depth=point.depth,
+                    source=point.source,reason=point.reason,nativeError=point.nativeError,worldError=point.worldError}
+            end
+        end
         for _, pair in ipairs(UNIT_LINE_PAIRS) do
             if feature.State[pair.setting] ~= false then
                 local a,b=projected[pair.from],projected[pair.to]
@@ -3952,17 +4535,24 @@ local UnitLines = NewFeature("combat_unit_lines", {
     end,
     projection = function(feature) return { pointCount=feature.State.pointCount, pointSize=feature.State.pointSize, opacity=feature.State.opacity,
         pointSizeMin=S.VisualGuideLimits.pointSizeMin, pointSizeDefaultMax=S.VisualGuideLimits.pointSizeDefaultMax, pointSizeHardMax=S.VisualGuideLimits.pointSizeHardMax,
+        pointCountHardMin=S.VisualGuideLimits.unitLineDensityHardMin, pointCountHardMax=S.VisualGuideLimits.unitLineDensityHardMax,
+        refreshHardMin=S.VisualGuideLimits.refreshMsHardMin, refreshHardMax=S.VisualGuideLimits.refreshMsHardMax,
         refreshMs=UnitLineInterval(feature), showTarget=feature.State.showTarget~=false, showTargetTarget=feature.State.showTargetTarget~=false,
         showFocusTarget=feature.State.showFocusTarget~=false, showFocusTargetTarget=feature.State.showFocusTargetTarget~=false,
         colors=NormalizeUnitLineColors(feature.State.colors),
         pairPoints=feature.State.pairPoints or {}, pairSizes=feature.State.pairSizes or {},
         samplingMode="adaptive_screen_space", pointBudgetMode="cadence_pressure_bounded", refreshPriority="P1_visual" } end,
     commands = {
-        SetPointCount = function(feature, value) value=math.max(8,math.min(48,math.floor(tonumber(value) or 24))); return PersistStateMutation(feature,"unit_lines_points",function(state) state.pointCount=value; return true end) end,
+        SetPointCount = function(feature, value)
+            -- 8..48 is Presentation guidance only; Feature owns the real safety
+            -- envelope so exact entry (e.g. 58) is persisted and renderer-visible.
+            value=math.max(S.VisualGuideLimits.unitLineDensityHardMin or 2,math.min(S.VisualGuideLimits.unitLineDensityHardMax or 160,math.floor(tonumber(value) or 24)))
+            return PersistStateMutation(feature,"unit_lines_points",function(state) state.pointCount=value; return true end)
+        end,
         SetPointSize = function(feature, value) value=math.max(S.VisualGuideLimits.pointSizeMin,math.min(S.VisualGuideLimits.pointSizeHardMax,math.floor(tonumber(value) or 4))); return PersistStateMutation(feature,"unit_lines_size",function(state) state.pointSize=value; return true end) end,
         SetOpacity = function(feature, value) value=math.max(0.1,math.min(1,tonumber(value) or 0.78)); return PersistStateMutation(feature,"unit_lines_opacity",function(state) state.opacity=value; return true end) end,
         SetRefreshMs = function(feature, value)
-            value=math.max(1,math.min(1000,math.floor(tonumber(value) or 100)))
+            value=math.max(S.VisualGuideLimits.refreshMsHardMin or 1,math.min(S.VisualGuideLimits.refreshMsHardMax or 60000,math.floor(tonumber(value) or 100)))
             local ok,err=PersistStateMutation(feature,"unit_lines_refresh",function(state) state.refreshMs=value; return true end)
             if ok~=true then return false,err end
             if feature.enabled==true and (tonumber(feature.consumerCount) or 0)>0 then return StartUnitLineTask(feature) end
@@ -3986,7 +4576,7 @@ local UnitLines = NewFeature("combat_unit_lines", {
         SetPairPoints = function(feature, key, value)
             key=tostring(key or "")
             if UNIT_LINE_DEFAULT_COLORS[key] == nil then return false,"未知连线类型" end
-            value=math.max(8,math.min(48,math.floor(tonumber(value) or 24)))
+            value=math.max(S.VisualGuideLimits.unitLineDensityHardMin or 2,math.min(S.VisualGuideLimits.unitLineDensityHardMax or 160,math.floor(tonumber(value) or 24)))
             return PersistStateMutation(feature,"unit_lines_pair_points_"..key,function(state)
                 state.pairPoints = state.pairPoints or {}
                 state.pairPoints[key] = value
@@ -4014,11 +4604,141 @@ UnitLines.ProjectionConsistencyContractVersion = 1
 
 local RANGE_ASSIST_TASK = "v3_business_range_assist_refresh"
 local RANGE_ASSIST_REFRESH_MS = 50
-local RangeAssist = NewFeature("combat_range_assist", {
-    apiDependencies = { "X2Unit:GetUnitWorldPositionByTarget", "X2Unit:GetUnitScreenPosition" },
-    state = { radius = 10, pointCount = 24, pointSize = 4, opacity = 0.68, color = { 0.20, 0.82, 1.00 } },
-    default = { radius = 10, pointCount = 24, pointSize = 4, opacity = 0.68, color = { 0.20, 0.82, 1.00 } },
-    observationContractVersion = 3,
+-- 中文维护注释（range-multi-circle-local-budget-1）：rs_business_bridge.lua 是 Lua 5.1 单一主 chunk，
+-- 原文件已经长期接近 200 个活跃顶层 local 的硬上限。本次多圆不能把常量/Normalize/Find 等辅助项
+-- 继续声明在主 chunk，否则整个 business bridge 会在编译期失败，范围辅助、背包、拍卖、制造、团队等
+-- 同文件 Feature 会一起“implementation unavailable”。因此多圆内部 Authority/迁移/命令辅助全部封进
+-- 这个 IIFE 的子函数作用域；主 chunk 只增加/保留 RangeAssist 一个引用。数据流仍是
+-- Persistence -> Feature.State.circles -> Authority rows -> Presenter rangePools，不改变任何其它业务 Feature。
+-- 后续维护若要增加多圆 helper，也必须放在此内部作用域或对象字段，禁止再消耗主 chunk local 预算。
+local RangeAssist = (function()
+local RANGE_ASSIST_DEFAULT_RADIUS = 10
+local RANGE_ASSIST_DEFAULT_POINT_COUNT = 24
+local RANGE_ASSIST_DEFAULT_POINT_SIZE = 4
+local RANGE_ASSIST_DEFAULT_OPACITY = 0.68
+local RANGE_ASSIST_DEFAULT_COLOR = { 0.20, 0.82, 1.00 }
+local RANGE_ASSIST_TOTAL_POINT_BUDGET = 192
+local RANGE_ASSIST_POINT_HARD_MIN = math.max(3, math.floor(tonumber(S.VisualGuideLimits.rangeDensityHardMin) or 3))
+local RANGE_ASSIST_POINT_HARD_MAX = math.min(RANGE_ASSIST_TOTAL_POINT_BUDGET,
+    math.max(RANGE_ASSIST_POINT_HARD_MIN, math.floor(tonumber(S.VisualGuideLimits.rangeDensityHardMax) or RANGE_ASSIST_TOTAL_POINT_BUDGET)))
+local RANGE_ASSIST_RADIUS_HARD_MIN = tonumber(S.VisualGuideLimits.rangeRadiusHardMin) or 0.5
+local RANGE_ASSIST_RADIUS_HARD_MAX = tonumber(S.VisualGuideLimits.rangeRadiusHardMax) or 1000
+local RANGE_ASSIST_METRIC_CALIBRATION_MS = 500
+
+local function RangeAssistClampColor(color)
+    return {
+        math.max(0, math.min(1, tonumber(type(color) == "table" and color[1]) or RANGE_ASSIST_DEFAULT_COLOR[1])),
+        math.max(0, math.min(1, tonumber(type(color) == "table" and color[2]) or RANGE_ASSIST_DEFAULT_COLOR[2])),
+        math.max(0, math.min(1, tonumber(type(color) == "table" and color[3]) or RANGE_ASSIST_DEFAULT_COLOR[3])),
+    }
+end
+
+local function RangeAssistNormalizeCircle(circle, fallbackId)
+    local id = math.floor(tonumber(type(circle) == "table" and circle.id or fallbackId) or 0)
+    if id <= 0 then id = math.max(1, math.floor(tonumber(fallbackId) or 1)) end
+    return {
+        id = id,
+        name = tostring(type(circle) == "table" and circle.name or ("范围圆 " .. tostring(id))),
+        enabled = type(circle) ~= "table" or circle.enabled ~= false,
+        -- Recommended UI window remains radius 1..100 / density 12..48, but
+        -- normalization must preserve any exact value accepted inside the true
+        -- renderer safety envelope. Otherwise Reload would silently undo the
+        -- user's dynamic-slider expansion.
+        radius = math.max(RANGE_ASSIST_RADIUS_HARD_MIN, math.min(RANGE_ASSIST_RADIUS_HARD_MAX, tonumber(type(circle) == "table" and circle.radius) or RANGE_ASSIST_DEFAULT_RADIUS)),
+        pointCount = math.max(RANGE_ASSIST_POINT_HARD_MIN, math.min(RANGE_ASSIST_POINT_HARD_MAX, math.floor(tonumber(type(circle) == "table" and circle.pointCount) or RANGE_ASSIST_DEFAULT_POINT_COUNT))),
+        pointSize = math.max(S.VisualGuideLimits.pointSizeMin, math.min(S.VisualGuideLimits.pointSizeHardMax,
+            math.floor(tonumber(type(circle) == "table" and circle.pointSize) or RANGE_ASSIST_DEFAULT_POINT_SIZE))),
+        opacity = math.max(0.1, math.min(1, tonumber(type(circle) == "table" and circle.opacity) or RANGE_ASSIST_DEFAULT_OPACITY)),
+        color = RangeAssistClampColor(type(circle) == "table" and circle.color or nil),
+    }
+end
+
+local function RangeAssistCopyCircles(circles)
+    local out = {}
+    local maxId = 0
+    for index, circle in ipairs(type(circles) == "table" and circles or {}) do
+        local normalized = RangeAssistNormalizeCircle(circle, index)
+        if normalized.id > maxId then maxId = normalized.id end
+        out[#out + 1] = normalized
+    end
+    return out, maxId
+end
+
+local function RangeAssistResolveCircles(state)
+    local circles, maxId = RangeAssistCopyCircles(type(state) == "table" and state.circles or nil)
+    if type(state) == "table" then
+        state.circles = circles
+        state.nextCircleId = math.max(maxId + 1, math.floor(tonumber(state.nextCircleId) or 1))
+    end
+    return circles
+end
+
+local function RangeAssistFindCircle(circles, circleId)
+    local id = math.floor(tonumber(circleId) or 0)
+    if id <= 0 then return nil end
+    for index, circle in ipairs(type(circles) == "table" and circles or {}) do
+        if tonumber(circle.id) == id then return index, circle end
+    end
+    return nil
+end
+
+local function RangeAssistFirstCircle(circles)
+    return type(circles) == "table" and circles[1] or nil
+end
+
+local function RangeAssistMutateCircle(feature, circleId, reason, mutator)
+    local id = math.floor(tonumber(circleId) or 0)
+    if id <= 0 then return false, "范围圆编号无效" end
+    local circles = RangeAssistResolveCircles(feature.State)
+    local index = RangeAssistFindCircle(circles, id)
+    if index == nil then return false, "范围圆不存在" end
+    return PersistStateMutation(feature, reason, function(state)
+        local working = RangeAssistResolveCircles(state)
+        local workingIndex = RangeAssistFindCircle(working, id)
+        if workingIndex == nil then return false, "范围圆不存在" end
+        local nextCircle = RangeAssistNormalizeCircle(working[workingIndex], id)
+        local ok, err = mutator(nextCircle)
+        if ok ~= true then return false, err end
+        working[workingIndex] = RangeAssistNormalizeCircle(nextCircle, id)
+        state.circles = working
+        return true
+    end)
+end
+
+local function RangeAssistLegacyCircleId(feature)
+    local first = RangeAssistFirstCircle(RangeAssistResolveCircles(feature.State))
+    if first == nil then return nil, "请先新增范围圆" end
+    return tonumber(first.id)
+end
+
+return NewFeature("combat_range_assist", {
+    apiDependencies = { "X2Unit:GetUnitWorldPositionByTarget", "X2Unit:GetUnitScreenPosition", "X2Unit:UnitDistance" },
+    state = { circles = {}, nextCircleId = 1 },
+    default = { circles = {}, nextCircleId = 1 },
+    persistentKeys = { "circles", "nextCircleId" },
+    apply = function(value, state)
+        value = type(value) == "table" and value or {}
+        -- 中文维护注释（range-multi-circle-store-1）：默认空 circles 才符合“新用户不送圆”的产品要求；
+        -- 但老版本只存一组 radius/pointCount/...，这里要做单次兼容迁移，避免已有玩家的半径/颜色设置在升级后丢失。
+        -- Authority 仍是 feature.State.circles；Persistence 只负责把旧单圆快照转为新数组快照，不自动为真正新用户造圆。
+        if type(value.circles) == "table" then
+            state.circles = RangeAssistResolveCircles({ circles = value.circles, nextCircleId = value.nextCircleId })
+            state.nextCircleId = math.max(1, math.floor(tonumber(value.nextCircleId) or 1))
+            RangeAssistResolveCircles(state)
+            return true
+        end
+        local legacyDefined = value.radius ~= nil or value.pointCount ~= nil or value.pointSize ~= nil or value.opacity ~= nil or type(value.color) == "table"
+        if legacyDefined == true then
+            state.circles = { RangeAssistNormalizeCircle({ id = 1, radius = value.radius, pointCount = value.pointCount,
+                pointSize = value.pointSize, opacity = value.opacity, color = value.color }, 1) }
+            state.nextCircleId = 2
+            return true
+        end
+        state.circles = {}
+        state.nextCircleId = 1
+        return true
+    end,
+    observationContractVersion = 4,
     reconcileDemand = function(feature, before, after)
         local b, a = tonumber(before and before.count) or 0, tonumber(after and after.count) or 0
         if b <= 0 and a > 0 then
@@ -4043,10 +4763,6 @@ local RangeAssist = NewFeature("combat_range_assist", {
                 health.consecutiveFailures=(tonumber(health.consecutiveFailures) or 0)+1
                 health.lastErrorAtMs=S.NowMs and S.NowMs() or 0
                 health.lastError=tostring(refreshResult or "unknown")
-                -- Do not freeze the previous screen-space ring after one native
-                -- projection exception. Clear once, publish the empty authority
-                -- state, then continue bounded 50 ms retries without tripping the
-                -- shared scheduler's three-error breaker.
                 if health.consecutiveFailures==1 then
                     feature.Authority.rows={}
                     feature.Authority.status="unavailable"
@@ -4071,89 +4787,243 @@ local RangeAssist = NewFeature("combat_range_assist", {
     read = function(feature)
         local projection = S.Services and S.Services.ScreenProjectionV3 or nil
         if type(projection) ~= "table" or type(projection.GetUnitWorldPosition) ~= "function" or type(projection.ProjectWorldBatch) ~= "function" then return {}, "unavailable", "ScreenProjectionV3 不可用" end
-        -- EasyPull's verified circle path uses isLocal=true and sends those
-        -- local-world points directly to ConvertWorldToScreen. Keep that exact
-        -- coordinate contract; do not substitute the unrelated global-world
-        -- convention used by movement-distance helpers or camera-space lines.
-        local px,py,pz,posErr = projection:GetUnitWorldPosition("player", true)
-        if px == nil then return {}, "unavailable", "自身世界坐标不可读：" .. tostring(posErr or "unknown") end
-        local count=math.max(12,math.min(48,math.floor(tonumber(feature.State.pointCount) or 24)))
-        local radius=math.max(1,math.min(100,tonumber(feature.State.radius) or 10))
-        local worldPoints={}
-        for index=1,count do
-            local angle=((index-1)/count)*math.pi*2
-            worldPoints[index]={x=px+math.cos(angle)*radius,y=py+math.sin(angle)*radius,z=pz+0.25}
-        end
-
-        -- Exact EasyPull-style projector policy for the ring: one coordinate
-        -- source for the entire shape, native ConvertWorldToScreen only, strict
-        -- numeric depth > 0. Per-point camera fallback is intentionally disabled
-        -- here because mixing two projection spaces can bend one logical circle.
-        local projected, batchSource, ringBatch = projection:ProjectWorldBatch(worldPoints,{
-            easyPullCompat=true,
-            -- Resolution/UI-scale calibration: the 3D camera fallback keeps the
-            -- EasyPull shape, while ScreenProjectionV3 rigidly translates the
-            -- entire camera batch so its projected centre matches the native
-            -- player screen anchor.  No per-point calibration lives in Feature.
-            anchorUnit="player", anchorWorld={x=px,y=py,z=pz+0.25},
-        })
-        local points={}
-        projected = type(projected)=="table" and projected or {}
-        for index=1,count do
-            local screenPoint=projected[index]
-            if type(screenPoint)=="table" and tonumber(screenPoint.x)~=nil and tonumber(screenPoint.y)~=nil
-                and screenPoint.visible~=false and tonumber(screenPoint.depth)~=nil and tonumber(screenPoint.depth)>0 then
-                points[#points+1]={x=screenPoint.x,y=screenPoint.y}
+        local circles = RangeAssistResolveCircles(feature.State)
+        local enabledCircles = {}
+        local totalRequestedPoints = 0
+        for _, circle in ipairs(circles) do
+            if circle.enabled ~= false then
+                enabledCircles[#enabledCircles + 1] = circle
+                totalRequestedPoints = totalRequestedPoints + (tonumber(circle.pointCount) or 0)
             end
         end
-        if #points < 3 then return {}, "partial", "EasyPull 投影没有足够可见点；原生与 WorldToScreen fallback 均不可用或点在相机后方" end
-
-        local batch=type(ringBatch)=="table" and ringBatch or {}
-        local depthBand=(batch.depthMin~=nil) and string.format("%.0f..%.0f",batch.depthMin,batch.depthMax) or "-"
-        local refresh=type(feature.RangeRefreshHealth)=="table" and feature.RangeRefreshHealth or {}
-        local calibration="-"
-        if tostring(batch.calibrationStatus or "")=="applied" then
-            calibration=string.format("%d,%d",math.floor((tonumber(batch.calibrationDx) or 0)+0.5),math.floor((tonumber(batch.calibrationDy) or 0)+0.5))
-        elseif batch.calibrationStatus~=nil then
-            calibration=tostring(batch.calibrationStatus)
-            if batch.calibrationErr~=nil then calibration=calibration..":"..tostring(batch.calibrationErr) end
+        if #enabledCircles <= 0 then return {}, "ready" end
+        local px,py,pz,posErr = projection:GetUnitWorldPosition("player", true)
+        if px == nil then return {}, "unavailable", "自身世界坐标不可读：" .. tostring(posErr or "unknown") end
+        -- 中文维护注释（2026-09-15，range-real-meter-1）：配置里的 circle.radius 永远保存“游戏米”，
+        -- 不把历史用户配置迁移成世界单位。真正绘制前才向 ScreenProjectionV3 请求受控标定：
+        -- UnitDistance(target) 是米数 Authority，player/target world delta 只计算 worldUnitsPerMeter；
+        -- Camera fallback 的 screen scale 也是 Session-only 校准。无目标/样本不可信时都回退 1:1，
+        -- 因而旧配置、无目标场景和 Native ConvertWorldToScreen 可用场景不会被错误永久放大/缩小。
+        local metricCalibration = { worldUnitsPerMeter=1, projectionScale=1, worldScaleStatus="default", projectionScaleStatus="default",
+            worldSampleCount=0, projectionSampleCount=0 }
+        if type(projection.GetRangeMetricCalibration) == "function" then
+            local okMetric, measured = pcall(projection.GetRangeMetricCalibration, projection, {
+                anchorUnit="player", targetUnit="target", anchorWorld={x=px,y=py,z=pz}, worldZOffset=0.25,
+                intervalMs=RANGE_ASSIST_METRIC_CALIBRATION_MS,
+            })
+            if okMetric == true and type(measured) == "table" then metricCalibration = measured end
         end
-        local projFacts=string.format("EasyPull原生%d/相机%d/原拒%d/相拒%d 深度%s · 锚校%s · 50ms尝试%d/失%d/连续%d · 样本%s",
-            tonumber(batch.native) or 0,tonumber(batch.camera) or 0,tonumber(batch.nativeRejected) or 0,tonumber(batch.cameraRejected) or 0,depthBand,
-            tostring(batch.calibrationStatus or "-"),tonumber(refresh.attempts) or 0,tonumber(refresh.failures) or 0,tonumber(refresh.consecutiveFailures) or 0,
-            tostring(batch.sample or "-"))
-        return {{ key="self_radius", name="自身范围圆",
-            text=string.format("半径 %.1fm · 可见点 %d/%d · %s",radius,#points,count,tostring(batchSource or "projection")),
-            statusText="实时", tone="green", points=points, radius=radius, calibration=calibration, projFacts=projFacts }}, "ready"
+        local worldUnitsPerMeter = tonumber(metricCalibration.worldUnitsPerMeter) or 1
+        if worldUnitsPerMeter <= 0 or worldUnitsPerMeter ~= worldUnitsPerMeter then worldUnitsPerMeter = 1 end
+        local metricScreenScale = tonumber(metricCalibration.projectionScale) or 1
+        if metricScreenScale <= 0 or metricScreenScale ~= metricScreenScale then metricScreenScale = 1 end
+        local budgetScale = totalRequestedPoints > RANGE_ASSIST_TOTAL_POINT_BUDGET
+            and (RANGE_ASSIST_TOTAL_POINT_BUDGET / math.max(1, totalRequestedPoints)) or 1
+        local rows, partialCount = {}, 0
+        for _, circle in ipairs(enabledCircles) do
+            local requestedCount = math.max(RANGE_ASSIST_POINT_HARD_MIN, math.min(RANGE_ASSIST_POINT_HARD_MAX,
+                math.floor(tonumber(circle.pointCount) or RANGE_ASSIST_DEFAULT_POINT_COUNT)))
+            local renderCount = requestedCount
+            if budgetScale < 1 then
+                renderCount = math.max(RANGE_ASSIST_POINT_HARD_MIN, math.min(requestedCount, math.floor(requestedCount * budgetScale + 0.5)))
+            end
+            renderCount = math.max(RANGE_ASSIST_POINT_HARD_MIN, math.min(RANGE_ASSIST_POINT_HARD_MAX, renderCount))
+            local worldPoints = {}
+            local worldRadius = circle.radius * worldUnitsPerMeter
+            for index = 1, renderCount do
+                local angle = ((index - 1) / renderCount) * math.pi * 2
+                worldPoints[index] = { x = px + math.cos(angle) * worldRadius, y = py + math.sin(angle) * worldRadius, z = pz + 0.25 }
+            end
+            local projected, batchSource, ringBatch = projection:ProjectWorldBatch(worldPoints, {
+                easyPullCompat = true,
+                anchorUnit = "player", anchorWorld = { x = px, y = py, z = pz + 0.25 },
+                metricScreenScale = metricScreenScale,
+            })
+            local points = {}
+            projected = type(projected) == "table" and projected or {}
+            for index = 1, renderCount do
+                local screenPoint = projected[index]
+                if type(screenPoint) == "table" and tonumber(screenPoint.x) ~= nil and tonumber(screenPoint.y) ~= nil
+                    and screenPoint.visible ~= false and tonumber(screenPoint.depth) ~= nil and tonumber(screenPoint.depth) > 0 then
+                    points[#points + 1] = { x = screenPoint.x, y = screenPoint.y }
+                end
+            end
+            local batch = type(ringBatch) == "table" and ringBatch or {}
+            local depthBand = (batch.depthMin ~= nil) and string.format("%.0f..%.0f", batch.depthMin, batch.depthMax) or "-"
+            local refresh = type(feature.RangeRefreshHealth) == "table" and feature.RangeRefreshHealth or {}
+            local calibration = "-"
+            if tostring(batch.calibrationStatus or "") == "applied" then
+                calibration = string.format("%d,%d", math.floor((tonumber(batch.calibrationDx) or 0) + 0.5), math.floor((tonumber(batch.calibrationDy) or 0) + 0.5))
+            elseif batch.calibrationStatus ~= nil then
+                calibration = tostring(batch.calibrationStatus)
+                if batch.calibrationErr ~= nil then calibration = calibration .. ":" .. tostring(batch.calibrationErr) end
+            end
+            local metricFacts = string.format("米标定=%.4fwu/m[%s/%d] · 屏标定=%.3f[%s/%d/%s]",
+                worldUnitsPerMeter, tostring(metricCalibration.worldScaleStatus or "default"), tonumber(metricCalibration.worldSampleCount) or 0,
+                metricScreenScale, tostring(metricCalibration.projectionScaleStatus or "default"), tonumber(metricCalibration.projectionSampleCount) or 0,
+                tostring(batch.metricScreenScaleStatus or "-"))
+            local projFacts = string.format("EasyPull原生%d/相机%d/原拒%d/相拒%d 深度%s · 锚校%s · %s · 50ms尝试%d/失%d/连续%d · 样本%s",
+                tonumber(batch.native) or 0, tonumber(batch.camera) or 0, tonumber(batch.nativeRejected) or 0, tonumber(batch.cameraRejected) or 0, depthBand,
+                tostring(batch.calibrationStatus or "-"), metricFacts, tonumber(refresh.attempts) or 0, tonumber(refresh.failures) or 0, tonumber(refresh.consecutiveFailures) or 0,
+                tostring(batch.sample or "-"))
+            if #points < 3 then partialCount = partialCount + 1 end
+            local meterVerified = tostring(metricCalibration.worldScaleStatus or "") == "calibrated"
+            local cameraCount = tonumber(batch.camera) or 0
+            local screenVerified = cameraCount <= 0 or tostring(batch.metricScreenScaleStatus or "") == "applied"
+                or tostring(batch.metricScreenScaleStatus or "") == "identity"
+            local metricVerified = meterVerified and screenVerified
+            -- 维护：未获得可靠 target 距离/屏幕样本时仍可按旧 1:1 路径绘制，但 UI 明确标为“待米校准”，
+            -- 禁止把“能画出来”误报成“30m 已经过真实距离验证”。一旦 Session 内得到稳定样本即可转绿。
+            rows[#rows + 1] = {
+                key = "self_radius_" .. tostring(circle.id), circleId = circle.id, circleKey = "circle_" .. tostring(circle.id),
+                name = tostring(circle.name or ("范围圆 " .. tostring(circle.id))),
+                text = string.format("半径 %.1fm · 可见点 %d/%d · %s", circle.radius, #points, renderCount, tostring(batchSource or "projection")),
+                statusText = #points >= 3 and (metricVerified and "实时 · 米已校准" or "实时 · 待米校准") or "投影不足",
+                tone = #points >= 3 and (metricVerified and "green" or "warn") or "warn",
+                points = points, radius = circle.radius, worldRadius = worldRadius, calibration = calibration, projFacts = projFacts,
+                metricVerified = metricVerified,
+                worldUnitsPerMeter = worldUnitsPerMeter, projectionScale = metricScreenScale,
+                metricWorldStatus = metricCalibration.worldScaleStatus, metricProjectionStatus = metricCalibration.projectionScaleStatus,
+                color = { circle.color[1], circle.color[2], circle.color[3] }, pointSize = circle.pointSize, opacity = circle.opacity,
+                requestedPointCount = requestedCount, renderPointCount = renderCount, visibleCount = #points,
+            }
+        end
+        if #rows <= 0 then return {}, "ready" end
+        if partialCount > 0 then
+            return rows, "partial", "部分范围圆投影点不足；已保留有效圆并继续 50ms 重试"
+        end
+        return rows, "ready"
     end,
     projection = function(feature)
-        local color = type(feature.State.color) == "table" and feature.State.color or { 0.20, 0.82, 1.00 }
+        local circles = RangeAssistResolveCircles(feature.State)
+        local projectionCircles = {}
+        local enabledCircleCount, totalConfiguredPoints = 0, 0
+        for _, circle in ipairs(circles) do
+            if circle.enabled ~= false then enabledCircleCount = enabledCircleCount + 1 end
+            totalConfiguredPoints = totalConfiguredPoints + (tonumber(circle.pointCount) or 0)
+            projectionCircles[#projectionCircles + 1] = {
+                id = circle.id, name = circle.name, enabled = circle.enabled ~= false, radius = circle.radius,
+                pointCount = circle.pointCount, pointSize = circle.pointSize, opacity = circle.opacity,
+                color = { circle.color[1], circle.color[2], circle.color[3] },
+            }
+        end
         return {
-            radius=feature.State.radius, pointCount=feature.State.pointCount, pointSize=feature.State.pointSize, opacity=feature.State.opacity,
-            pointSizeMin=S.VisualGuideLimits.pointSizeMin, pointSizeDefaultMax=S.VisualGuideLimits.pointSizeDefaultMax, pointSizeHardMax=S.VisualGuideLimits.pointSizeHardMax,
-            color={
-                math.max(0,math.min(1,tonumber(color[1]) or 0.20)),
-                math.max(0,math.min(1,tonumber(color[2]) or 0.82)),
-                math.max(0,math.min(1,tonumber(color[3]) or 1.00)),
-            },
+            circles = projectionCircles,
+            circleCount = #projectionCircles,
+            enabledCircleCount = enabledCircleCount,
+            totalConfiguredPoints = totalConfiguredPoints,
+            totalPointBudget = RANGE_ASSIST_TOTAL_POINT_BUDGET,
+            pointCountHardMin = RANGE_ASSIST_POINT_HARD_MIN, pointCountHardMax = RANGE_ASSIST_POINT_HARD_MAX,
+            radiusHardMin = RANGE_ASSIST_RADIUS_HARD_MIN, radiusHardMax = RANGE_ASSIST_RADIUS_HARD_MAX,
+            pointSizeMin = S.VisualGuideLimits.pointSizeMin,
+            pointSizeDefaultMax = S.VisualGuideLimits.pointSizeDefaultMax,
+            pointSizeHardMax = S.VisualGuideLimits.pointSizeHardMax,
         }
     end,
     commands = {
-        SetRadius = function(feature,value) value=math.max(1,math.min(100,tonumber(value) or 10)); return PersistStateMutation(feature,"range_radius",function(state) state.radius=value; return true end) end,
-        SetPointCount = function(feature,value) value=math.max(12,math.min(48,math.floor(tonumber(value) or 24))); return PersistStateMutation(feature,"range_points",function(state) state.pointCount=value; return true end) end,
-        SetPointSize = function(feature,value) value=math.max(S.VisualGuideLimits.pointSizeMin,math.min(S.VisualGuideLimits.pointSizeHardMax,math.floor(tonumber(value) or 4))); return PersistStateMutation(feature,"range_size",function(state) state.pointSize=value; return true end) end,
-        SetOpacity = function(feature,value) value=math.max(0.1,math.min(1,tonumber(value) or 0.68)); return PersistStateMutation(feature,"range_opacity",function(state) state.opacity=value; return true end) end,
-        SetColor = function(feature,r,g,b)
-            r=math.max(0,math.min(1,tonumber(r) or 0.20)); g=math.max(0,math.min(1,tonumber(g) or 0.82)); b=math.max(0,math.min(1,tonumber(b) or 1.00))
-            return PersistStateMutation(feature,"range_color",function(state) state.color={r,g,b}; return true end)
+        AddCircle = function(feature)
+            return PersistStateMutation(feature, "range_add_circle", function(state)
+                local circles = RangeAssistResolveCircles(state)
+                local nextId = math.max(1, math.floor(tonumber(state.nextCircleId) or 1))
+                circles[#circles + 1] = RangeAssistNormalizeCircle({ id = nextId, name = "范围圆 " .. tostring(#circles + 1) }, nextId)
+                state.circles = circles
+                state.nextCircleId = nextId + 1
+                return true
+            end)
+        end,
+        RemoveCircle = function(feature, circleId)
+            local circles = RangeAssistResolveCircles(feature.State)
+            local index = RangeAssistFindCircle(circles, circleId)
+            if index == nil then return false, "范围圆不存在" end
+            return PersistStateMutation(feature, "range_remove_circle", function(state)
+                local working = RangeAssistResolveCircles(state)
+                local workingIndex = RangeAssistFindCircle(working, circleId)
+                if workingIndex == nil then return false, "范围圆不存在" end
+                table.remove(working, workingIndex)
+                state.circles = working
+                return true
+            end)
+        end,
+        SetCircleEnabled = function(feature, circleId, value)
+            return RangeAssistMutateCircle(feature, circleId, "range_circle_enabled", function(circle)
+                circle.enabled = value == true
+                return true
+            end)
+        end,
+        SetCircleRadius = function(feature, circleId, value)
+            value = math.max(RANGE_ASSIST_RADIUS_HARD_MIN, math.min(RANGE_ASSIST_RADIUS_HARD_MAX, tonumber(value) or RANGE_ASSIST_DEFAULT_RADIUS))
+            return RangeAssistMutateCircle(feature, circleId, "range_circle_radius", function(circle)
+                circle.radius = value
+                return true
+            end)
+        end,
+        SetCirclePointCount = function(feature, circleId, value)
+            value = math.max(RANGE_ASSIST_POINT_HARD_MIN, math.min(RANGE_ASSIST_POINT_HARD_MAX,
+                math.floor(tonumber(value) or RANGE_ASSIST_DEFAULT_POINT_COUNT)))
+            return RangeAssistMutateCircle(feature, circleId, "range_circle_points", function(circle)
+                circle.pointCount = value
+                return true
+            end)
+        end,
+        SetCirclePointSize = function(feature, circleId, value)
+            value = math.max(S.VisualGuideLimits.pointSizeMin, math.min(S.VisualGuideLimits.pointSizeHardMax,
+                math.floor(tonumber(value) or RANGE_ASSIST_DEFAULT_POINT_SIZE)))
+            return RangeAssistMutateCircle(feature, circleId, "range_circle_size", function(circle)
+                circle.pointSize = value
+                return true
+            end)
+        end,
+        SetCircleOpacity = function(feature, circleId, value)
+            value = math.max(0.1, math.min(1, tonumber(value) or RANGE_ASSIST_DEFAULT_OPACITY))
+            return RangeAssistMutateCircle(feature, circleId, "range_circle_opacity", function(circle)
+                circle.opacity = value
+                return true
+            end)
+        end,
+        SetCircleColor = function(feature, circleId, r, g, b)
+            local color = RangeAssistClampColor({ r, g, b })
+            return RangeAssistMutateCircle(feature, circleId, "range_circle_color", function(circle)
+                circle.color = color
+                return true
+            end)
+        end,
+        -- 中文维护注释（range-legacy-command-1）：保留旧单圆命令名字给旧页面/脚本兼容；
+        -- 但新默认是空 circles，不允许隐式造圆，以免“新用户默认没有圆”的产品规则被兼容层破坏。
+        SetRadius = function(feature, value)
+            local circleId, err = RangeAssistLegacyCircleId(feature)
+            if circleId == nil then return false, err end
+            return feature.Commands:SetCircleRadius(circleId, value)
+        end,
+        SetPointCount = function(feature, value)
+            local circleId, err = RangeAssistLegacyCircleId(feature)
+            if circleId == nil then return false, err end
+            return feature.Commands:SetCirclePointCount(circleId, value)
+        end,
+        SetPointSize = function(feature, value)
+            local circleId, err = RangeAssistLegacyCircleId(feature)
+            if circleId == nil then return false, err end
+            return feature.Commands:SetCirclePointSize(circleId, value)
+        end,
+        SetOpacity = function(feature, value)
+            local circleId, err = RangeAssistLegacyCircleId(feature)
+            if circleId == nil then return false, err end
+            return feature.Commands:SetCircleOpacity(circleId, value)
+        end,
+        SetColor = function(feature, r, g, b)
+            local circleId, err = RangeAssistLegacyCircleId(feature)
+            if circleId == nil then return false, err end
+            return feature.Commands:SetCircleColor(circleId, r, g, b)
         end,
     },
 })
-RangeAssist.VisualGuideContractVersion = 7
-RangeAssist.WorldSpaceContractVersion = 2
-RangeAssist.ProjectionFactsContractVersion = 5
+end)()
+RangeAssist.VisualGuideContractVersion = 9
+RangeAssist.WorldSpaceContractVersion = 3
+RangeAssist.ProjectionFactsContractVersion = 7
 RangeAssist.RefreshCadenceContractVersion = 1
-RangeAssist.AnchorCalibrationContractVersion = 1
+RangeAssist.AnchorCalibrationContractVersion = 2
+RangeAssist.MetricDistanceContractVersion = 1
+RangeAssist.MultiCircleContractVersion = 1
 
 NewFeature("combat_siege_readiness", { blocker = "GetEquippedItemTooltipInfo 的槽位/装分字段和攻城上下文未在当前 RU 实机确认；不猜测装备状态" })
 NewFeature("tools_hotkey_profiles", { blocker = "当前 RU API 没有动作名称枚举；GetOptionBinding 只能读取已知 action/index，无法安全导出完整快捷键方案" })

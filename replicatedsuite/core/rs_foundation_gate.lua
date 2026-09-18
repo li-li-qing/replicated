@@ -9,7 +9,7 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 
 S.FoundationGate = {
-    version = 146, -- 中文维护注释：.18.197 把 Persistence Transport v2/readback divergence、Activities 精确恢复桥、团队默认开启与新布局全部提升为发布 Blocker；Gate 只验证契约存在，不主动 Load Store、启动 Consumer 或触发 Native 写入。
+    version = 147, -- 中文维护注释：.18.225 在 v6 持久化发布门中区分当前失败与历史 incident；.18.197 把 Persistence Transport v2/readback divergence、Activities 精确恢复桥、团队默认开启与新布局全部提升为发布 Blocker；Gate 只验证契约存在，不主动 Load Store、启动 Consumer 或触发 Native 写入。
     last = nil,
     sequenceCases = {},
     sequenceOrder = {},
@@ -55,6 +55,50 @@ function G:RunSequences()
         end
     end
     return result
+end
+
+-- 中文维护注释（persistence-current-health-1 / .18.225）：
+-- 问题原因：durableVerifyFailures/readbackVerifyFailures 是“本次加载以来累计 incident”，成功耐久
+-- 重试不会清零，这是正确的取证语义；旧 v6 Gate 却把累计 durableVerifyFailures==0 当发布健康，
+-- 导致一次瞬时失败即使已经成功恢复，整个会话仍永久 BLOCKED。
+-- Authority/数据流：Persistence:Describe() 现在通过 GetStoreFailureKind 汇总 currentFailures；
+-- Foundation 只判断当前失败 Store、Envelope/Scope/Decode 结构性失败。历史 incident 仍由
+-- persistence_reliability_incidents warning 原样报告，绝不清计数、绝不触发 Save/Load/Retry。
+-- 兼容边界：旧 Persistence 若没有 currentFailureSummaryContractVersion，fail-closed，不把 unknown
+-- 当 healthy。该函数是纯只读 evaluator，便于回归测试且不会启动 Feature/Consumer。
+function G:EvaluatePersistenceReliabilityV6(persistence)
+    persistence = type(persistence) == "table" and persistence or nil
+    local stats = persistence and type(persistence.stats) == "table" and persistence.stats or {}
+    local contract = persistence and (tonumber(persistence.reliabilityContractVersion) or 0) or 0
+    local envelope = persistence and (tonumber(persistence.envelopeIntegrityContractVersion) or 0) or 0
+    local scope = persistence and (tonumber(persistence.scopeBindingContractVersion) or 0) or 0
+    local currentContract = persistence and (tonumber(persistence.currentFailureSummaryContractVersion) or 0) or 0
+    local currentFailures = persistence and tonumber(persistence.currentFailures) or nil
+    local ok = persistence ~= nil
+        and contract >= 6
+        and envelope >= 1
+        and scope >= 1
+        and currentContract >= 1
+        and type(S.Persistence) == "table"
+        and type(S.Persistence.FingerprintEnvelopeIntegrity) == "function"
+        and (tonumber(stats.envelopeIntegrityLoadFailures) or 0) == 0
+        and (tonumber(stats.decodedLoadRejects) or 0) == 0
+        and currentFailures ~= nil and currentFailures == 0
+        and (tonumber(stats.scopeBindingMismatches) or 0) == 0
+    local detail = "contract=" .. tostring(contract)
+        .. "/envelope=" .. tostring(envelope)
+        .. "/scope=" .. tostring(scope)
+        .. "/currentContract=" .. tostring(currentContract)
+        .. "/currentFail=" .. tostring(currentFailures == nil and "missing" or currentFailures)
+        .. "/envelopeStamped=" .. tostring(stats.envelopeIntegrityStampedSaves or 0)
+        .. "/envelopeCheck=" .. tostring(stats.envelopeIntegrityLoadChecks or 0)
+        .. "/envelopeFail=" .. tostring(stats.envelopeIntegrityLoadFailures or 0)
+        .. "/decodedReject=" .. tostring(stats.decodedLoadRejects or 0)
+        .. "/durable=" .. tostring(stats.durableVerifyAttempts or 0)
+        .. "/durableFail=" .. tostring(stats.durableVerifyFailures or 0)
+        .. "/scopeMismatch=" .. tostring(stats.scopeBindingMismatches or 0)
+        .. "/scopeRebind=" .. tostring(stats.scopeRebinds or 0)
+    return ok, detail
 end
 
 
@@ -359,7 +403,10 @@ function G:Run(options)
                 and (tonumber(shell.StateMutationTransactionContractVersion) or 0) >= 1
                 and type(controller.SetLocked) == "function" and type(controller.SetResizeEnabled) == "function" and type(controller.IsInteracting) == "function"
                 and type(controller.PulseLiveGeometry) == "function" and type(windowing.Detach) == "function"
-                and S.Layout ~= nil and type(S.Layout.ResolvePlacement) == "function" and tostring(S.Layout.defaultFloatingBoundary or "") == "free" and tostring(controller.boundaryMode or "") == "free"
+                -- 维护（2026-09-16）：Windowing committed rect 必须能直接进入 Layout 持久化，
+                -- 禁止 Foundation 回退到“提交后重新读取 Native”的漂移路径。
+                and S.Layout ~= nil and type(S.Layout.ResolvePlacement) == "function" and type(S.Layout.StorePlacementRect) == "function"
+                and tostring(S.Layout.defaultFloatingBoundary or "") == "free" and tostring(controller.boundaryMode or "") == "free"
                 and type(ui.BeginNativeGeometryLease) == "function" and type(ui.EndNativeGeometryLease) == "function",
             "blocker", "version=" .. tostring(windowing and windowing.version or "?")
                 .. "/drag=" .. tostring(controller ~= nil and controller.dragHandle ~= nil)
@@ -404,13 +451,16 @@ function G:Run(options)
                 and type(S.Layout.ResolveViewportLogicalRect) == "function" -- 中文维护注释：要求外部原生几何解析入口仍然存在。
                 and type(S.Layout.ResolveSuiteOwnedViewportLogicalRect) == "function" -- 中文维护注释：要求 Suite-owned cache-first 锚点解析入口存在。
                 and type(popupPositioning) == "table" -- 中文维护注释：PopupPositioning 仍是 detached Popup 的唯一 Presentation Authority。
-                and (tonumber(S.RSUI.PopupPositioningContractVersion) or 0) >= 3 -- 中文维护注释：.18.191 要求 PopupPositioning v3；Suite-owned 最终位置必须由 Native-relative Trigger Anchor 提交，旧绝对坐标 solver 只能保留给显式 point/外部 Native 车道。
-                and (tonumber(S.RSUI.PopupNativeRelativeAnchorContractVersion) or 0) >= 1 -- 中文维护注释：强制存在 Native-relative Anchor 契约，防止未来又把 Dropdown/ColorField 改回 UIParent 绝对 X/Y。
+                and (tonumber(S.RSUI.PopupPositioningContractVersion) or 0) >= 4 -- 中文维护注释：PopupPositioning v4 同时维护 native-relative 与 viewport-resolved 两条已验证车道；禁止再把某一条车道强制套给所有 detached Popup。
+                and (tonumber(S.RSUI.PopupNativeRelativeAnchorContractVersion) or 0) >= 1 -- 中文维护注释：Dropdown/Tooltip/ContextMenu 仍要求 Native-relative Anchor 契约。
+                and (tonumber(S.RSUI.PopupViewportResolvedAnchorContractVersion) or 0) >= 1 -- 中文维护注释：ColorField V2 必须具备 resolved viewport→UIParent 专用车道，禁止顶层 Window 跨层级锚到 Button。
+                and (tonumber(S.RSUI.ColorFieldContractVersion) or 0) >= 2 -- 中文维护注释：颜色选择器必须具备 Draft/Apply/Cancel/0..255/显式布局 V2 契约。
                 and (tonumber(S.RSUI.PopupSuiteAnchorAuthorityContractVersion) or 0) >= 1 -- 中文维护注释：强制声明 .18.190 的 Suite anchor authority 契约。
                 and (tonumber(S.RSUI.PopupCoordinateSpaceContractVersion) or 0) >= 1 -- 中文维护注释：最终坐标空间仍必须是 viewport-logical-v1。
-                and (tonumber(S.RSUI.PopupCoordinateConsumerContractVersion) or 0) >= 2 -- 中文维护注释：Controls consumer v2 证明 Dropdown/ColorField 已迁移到 Native-relative 最终 Anchor。
+                and (tonumber(S.RSUI.PopupCoordinateConsumerContractVersion) or 0) >= 3 -- 中文维护注释：Controls consumer v3 证明 Dropdown 与 ColorField 已按控件类型选择各自安全最终 Anchor 车道。
                 and (tonumber(S.RSUI.InteractionPopupCoordinateConsumerContractVersion) or 0) >= 2 -- 中文维护注释：Interactions consumer v2 证明目标型 Tooltip/ContextMenu 已迁移，显式 point lane 仍保持独立。
-                and type(popupPositioning.ApplyNativeRelativePopup) == "function" -- 中文维护注释：Foundation 必须验证真正提交 Trigger-relative Native Anchor 的公共入口存在，而不是只验证旧绝对 solver。
+                and type(popupPositioning.ApplyNativeRelativePopup) == "function" -- 中文维护注释：Native-relative 消费者公共入口仍需存在。
+                and type(popupPositioning.ApplyResolvedViewportPopup) == "function" -- 中文维护注释：ColorField V2 的 viewport-resolved 顶层 Popup 提交入口必须存在。
                 and type(popupPositioning.CorrectNativePopupToScreen) == "function" -- 中文维护注释：屏幕边缘修正必须统一走 RU UIBounds:CorrectOffsetByScreen 封装，业务 Consumer 禁止自己加固定分辨率偏移。
                 and type(S.DiagnosticsManager) == "table" and type(S.DiagnosticsManager.BuildPopupPositioningReport) == "function" -- 中文维护注释：.18.190 缺少用户可复制的专项报告入口，因此 .18.191 把可观测性提升为 Popup 发布契约。
                 and type(popupPositioning.ResolveAnchorRect) == "function"
@@ -421,7 +471,9 @@ function G:Run(options)
                 .. "/calibration=" .. tostring(S.Layout and S.Layout.EffectiveGeometryCalibrationContractVersion or 0) -- 中文维护注释：诊断输出外部 Native Effective Geometry 校准版本。
                 .. "/suiteAnchor=" .. tostring(S.Layout and S.Layout.SuiteOwnedViewportAnchorContractVersion or 0) -- 中文维护注释：诊断输出 Suite-owned cache 父链版本。
                 .. "/positioning=" .. tostring(S.RSUI and S.RSUI.PopupPositioningContractVersion or 0) -- 中文维护注释：诊断输出 PopupPositioning 主契约版本。
-                .. "/nativeRelative=" .. tostring(S.RSUI and S.RSUI.PopupNativeRelativeAnchorContractVersion or 0) -- 中文维护注释：诊断输出 Native-relative Trigger Anchor 契约版本，实机摘要可直接证明是否加载 .18.191 新底层。
+                .. "/nativeRelative=" .. tostring(S.RSUI and S.RSUI.PopupNativeRelativeAnchorContractVersion or 0) -- 中文维护注释：诊断输出 Native-relative 契约版本。
+                .. "/viewportResolved=" .. tostring(S.RSUI and S.RSUI.PopupViewportResolvedAnchorContractVersion or 0) -- 中文维护注释：诊断输出 ColorField V2 resolved→UIParent 车道版本。
+                .. "/colorField=" .. tostring(S.RSUI and S.RSUI.ColorFieldContractVersion or 0) -- 中文维护注释：诊断输出共享颜色选择器契约版本。
                 .. "/suitePopup=" .. tostring(S.RSUI and S.RSUI.PopupSuiteAnchorAuthorityContractVersion or 0) -- 中文维护注释：诊断输出 Popup suite-anchor Authority 版本。
                 .. "/space=" .. tostring(S.RSUI and S.RSUI.PopupCoordinateSpaceContractVersion or 0) -- 中文维护注释：诊断输出最终坐标空间契约版本。
                 .. "/controls=" .. tostring(S.RSUI and S.RSUI.PopupCoordinateConsumerContractVersion or 0)
@@ -436,7 +488,12 @@ function G:Run(options)
                 and (tonumber(genericShellInfo.visibilityTransactionContract) or 0) >= 1
                 and (tonumber(genericShellInfo.stateMutationTransactionContract) or 0) >= 1
                 and (tonumber(genericShellInfo.stateCallbackTransactionContract) or 0) >= 1
-                and (tonumber(genericShellInfo.topLevelLayerContractVersion) or 0) >= 1
+                and (tonumber(genericShellInfo.topLevelLayerContractVersion) or 0) >= 2
+                and (tonumber(genericShellInfo.topmostPreferenceContractVersion) or 0) >= 1
+                and type(S.RSUI.WindowPreferences) == "table"
+                and (tonumber(S.RSUI.WindowPreferencePersistenceContractVersion) or 0) >= 1
+                and (tonumber(S.RSUI.WindowLayerPreferenceContractVersion) or 0) >= 1
+                and type(S.RSUI.WindowPreferences.GetTopmost) == "function" and type(S.RSUI.WindowPreferences.SetTopmost) == "function"
                 and type(S.UI.CreateWindowShell) == "function",
             "blocker", genericShellInfo and ("version=" .. tostring(genericShellInfo.version)
                 .. "/idem=" .. tostring(genericShellInfo.idempotentMutationContract or 0)
@@ -446,6 +503,8 @@ function G:Run(options)
                 .. "/stateTx=" .. tostring(genericShellInfo.stateMutationTransactionContract or 0)
                 .. "/stateCbTx=" .. tostring(genericShellInfo.stateCallbackTransactionContract or 0)
                 .. "/topLayer=" .. tostring(genericShellInfo.topLevelLayerContractVersion or 0)
+                .. "/topPref=" .. tostring(genericShellInfo.topmostPreferenceContractVersion or 0)
+                .. "/windowPref=" .. tostring(S.RSUI and S.RSUI.WindowPreferencePersistenceContractVersion or 0)
                 .. "/fail=" .. tostring(genericShellInfo.failures or 0)) or "missing")
 
         local floatingSurface = S.RSUI and S.RSUI.FloatingSurface or nil
@@ -458,6 +517,7 @@ function G:Run(options)
                 and (tonumber(floatingSurface.DetachedStateContractVersion) or 0) >= 1
                 and (tonumber(floatingSurface.StateMutationTransactionContractVersion) or 0) >= 1
                 and (tonumber(floatingSurface.ResponsivePlacementIntentContractVersion) or 0) >= 1
+                and (tonumber(floatingSurface.CommittedGeometryPersistenceContractVersion) or 0) >= 1
                 and type(floatingSurface.Create) == "function" and type(floatingSurface.NormalizeState) == "function"
                 and type(floatingSurface.CreateStateAdapter) == "function",
             "blocker", floatingInfo and ("version=" .. tostring(floatingInfo.version) .. "/active=" .. tostring(floatingInfo.active or 0)
@@ -467,6 +527,7 @@ function G:Run(options)
                 .. "/detached=" .. tostring(floatingSurface and floatingSurface.DetachedStateContractVersion or 0)
                 .. "/stateTx=" .. tostring(floatingSurface and floatingSurface.StateMutationTransactionContractVersion or 0)
                 .. "/responsivePlacement=" .. tostring(floatingSurface and floatingSurface.ResponsivePlacementIntentContractVersion or 0)
+                .. "/committedGeometry=" .. tostring(floatingSurface and floatingSurface.CommittedGeometryPersistenceContractVersion or 0)
                 .. "/close=" .. tostring(floatingInfo.closeRequests or 0)
                 .. "/veto=" .. tostring(floatingInfo.closeVetoes or 0)
                 .. "/fail=" .. tostring(floatingInfo.failures or 0)) or "missing")
@@ -645,7 +706,10 @@ function G:Run(options)
                 and (tonumber(rsui.SettingsCompactToggleContractVersion) or 0) >= 1
                 and (tonumber(rsui.SettingsScrollSafeCardContractVersion) or 0) >= 2
                 and (tonumber(rsui.SettingsSectionHierarchyContractVersion) or 0) >= 1
-                and (tonumber(rsui.SettingsNumericSliderContractVersion) or 0) >= 1
+                -- Numeric Range v2 is a Foundation requirement: min/max are soft presentation bounds,
+                -- while accepted exact input expands through NumericRangeStore. Reject mixed v1/v2 boots
+                -- instead of allowing pages and Domain clamps to disagree after an upgrade.
+                and (tonumber(rsui.SettingsNumericSliderContractVersion) or 0) >= 2
                 and (tonumber(rsui.FormRowResponsiveContractVersion) or 0) >= 1
                 and (tonumber(rsui.NumericResponsiveStackContractVersion) or 0) >= 1
                 and type(rsui.CreateFeatureSettingsHeader) == "function"
@@ -1068,7 +1132,9 @@ function G:Run(options)
                 and (tonumber(rsui.FormLayoutContractVersion) or 0) >= 2
                 and (tonumber(rsui.NumericInlineContractVersion) or 0) >= 6
                 and (tonumber(rsui.NumericStepPairFallbackContractVersion) or 0) >= 1
-                and (tonumber(rsui.NumericAdaptiveRangeContractVersion) or 0) >= 1
+                -- Keep the generic Form contract aligned with SettingsFoundation; no Feature Store
+                -- migration is implied here because range endpoints remain Presentation-owned metadata.
+                and (tonumber(rsui.NumericAdaptiveRangeContractVersion) or 0) >= 2
                 and (tonumber(rsui.NumericExplicitApplyContractVersion) or 0) >= 1
                 and (tonumber(rsui.NumericRangePersistenceContractVersion) or 0) >= 1
                 and type(numericRangeStore) == "table" and tostring(numericRangeStore.owner or "") == "v3.rsui.numeric_ranges"
@@ -1188,6 +1254,41 @@ function G:Run(options)
                 .. "/widgetQ=" .. tostring(widgetInfo and widgetInfo.quarantined or 0)
                 .. "/failFast=" .. tostring(rsui and rsui.StrictBuildFailFastContractVersion or 0)
                 .. "/businessIds=" .. tostring(businessPagesContract and businessPagesContract.componentIdContractVersion or 0)) or "missing")
+
+        -- 中文维护注释（2026-09-18，module-diagnostics-gate-1）：模块诊断横跨 Core/RSUI/
+        -- PageHost/Design/Presentation 五层，用户只覆盖部分文件时最危险的表现不是直接报错，而是页面
+        -- 出现“诊断”按钮却没有可用 CopyBox/窗口，或 buildContext 串到错误 Feature。Foundation 必须
+        -- 将整套契约视为一个不可拆分单元；这里只检查接口版本和 Aux policy，不创建窗口、不运行
+        -- Provider、不启动 Feature，因此仍保持 Gate 的只读/无 Tick 边界。
+        local moduleDiagnosticsHub = S.ModuleDiagnosticsHub
+        local moduleDiagnosticsWindow = S.UIV3 and S.UIV3.ModuleDiagnosticsWindowV3 or nil
+        local moduleDiagnosticsPolicy = type(auxWindowStore) == "table" and type(auxWindowStore.GetPolicy) == "function"
+            and auxWindowStore:GetPolicy("module_diagnostics") or nil
+        local moduleDiagnosticsRegistryAlias = false
+        local buffDiagnosticsMeta = S.FeatureRegistry and type(S.FeatureRegistry.Get) == "function"
+            and S.FeatureRegistry:Get("combat_buff_display") or nil
+        for _, source in ipairs(type(buffDiagnosticsMeta) == "table" and type(buffDiagnosticsMeta.diagnosticSources) == "table"
+            and buffDiagnosticsMeta.diagnosticSources or {}) do
+            if tostring(source) == "buff_display_v3" then moduleDiagnosticsRegistryAlias = true; break end
+        end
+        AddCheck(report, "v3_module_diagnostics_contract",
+            type(moduleDiagnosticsHub) == "table" and (tonumber(moduleDiagnosticsHub.contractVersion) or 0) >= 1
+                and type(moduleDiagnosticsHub.Capture) == "function" and type(moduleDiagnosticsHub.GetPage) == "function"
+                and type(S.UI) == "table" and (tonumber(S.UI.DiagnosticCopyBoxContractVersion) or 0) >= 1
+                and type(S.UI.CreateDiagnosticCopyBox) == "function"
+                and pageInfo ~= nil and (tonumber(pageInfo.buildContextContractVersion) or 0) >= 1
+                and type(S.UIV3Design) == "table" and (tonumber(S.UIV3Design.diagnosticHeaderContractVersion) or 0) >= 1
+                and type(S.UIV3Design.ModuleDiagnosticsButton) == "function"
+                and type(moduleDiagnosticsWindow) == "table" and (tonumber(moduleDiagnosticsWindow.contractVersion) or 0) >= 1
+                and type(moduleDiagnosticsWindow.Open) == "function" and type(moduleDiagnosticsPolicy) == "table"
+                and moduleDiagnosticsRegistryAlias == true,
+            "blocker", "hub=" .. tostring(moduleDiagnosticsHub and moduleDiagnosticsHub.contractVersion or 0)
+                .. "/copy=" .. tostring(S.UI and S.UI.DiagnosticCopyBoxContractVersion or 0)
+                .. "/page=" .. tostring(pageInfo and pageInfo.buildContextContractVersion or 0)
+                .. "/design=" .. tostring(S.UIV3Design and S.UIV3Design.diagnosticHeaderContractVersion or 0)
+                .. "/window=" .. tostring(moduleDiagnosticsWindow and moduleDiagnosticsWindow.contractVersion or 0)
+                .. "/policy=" .. tostring(type(moduleDiagnosticsPolicy) == "table")
+                .. "/registryAlias=" .. tostring(moduleDiagnosticsRegistryAlias))
 
         local tasksFeature = S.Features and S.Features.Tasks or nil
         local activitiesFeature = S.Features and S.Features.Activities or nil
@@ -1400,6 +1501,7 @@ function G:Run(options)
     local buffDisplayHealth = type(buffDisplay) == "table" and type(buffDisplay.GetHealth) == "function" and buffDisplay:GetHealth() or nil
     local buffDisplayMeta = S.FeatureRegistry and S.FeatureRegistry:Get("combat_buff_display") or nil
     local buffDisplayStore = S.Persistence and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.buff_display") or nil
+    local buffDisplayLayoutStore = S.Persistence and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.buff_display.layout") or nil
     local buffDisplayPageHost = S.UIV3 and S.UIV3.PageHost or nil
     local buffDisplayWidgetHost = S.UIV3 and S.UIV3.WidgetHost or nil
     local buffDisplayPage = type(buffDisplayPageHost) == "table" and type(buffDisplayPageHost.factories) == "table"
@@ -1433,7 +1535,49 @@ function G:Run(options)
             and type(buffDisplay.Commands.SetSetting) == "function" and type(buffDisplay.Commands.SetWidgetVisible) == "function"
             and type(buffDisplay.Commands.ApplySettingFromBinding) == "function" and type(buffDisplay.Commands.MarkStoreDirty) == "function"
             and type(buffDisplay.Commands.GetHudCalibrationSnapshot) == "function" and type(buffDisplay.Commands.PersistHudCalibrationSnapshot) == "function"
-            and buffDisplay.Demand ~= nil and buffDisplayStore ~= nil and tonumber(buffDisplayStore.schemaVersion) == 5
+            -- 中文维护注释：状态追踪已升级 schema8 六通道；Gate 只验声明，不触发状态扫描/写入。
+            -- 旧 schema7 与文本 v2 模块若半覆盖残留必须 fail-closed。
+            and buffDisplay.Demand ~= nil and buffDisplayStore ~= nil and tonumber(buffDisplayStore.schemaVersion) == 8
+            and tonumber(buffDisplayStore.transportVersion) == 5
+            and type(buffDisplayStore.repairPhysicalTransport) == "function"
+            -- 中文维护注释（.18.241）：HUD layout 是独立小 Store Authority；半覆盖旧 Store/新 Feature
+            -- 会重新把校准保存写回追踪大表，因此 Foundation 必须 fail-closed。这里仅读注册元数据。
+            and buffDisplayLayoutStore ~= nil
+            and tostring(buffDisplayLayoutStore.owner or "") == "v3.buff_display.layout"
+            and tonumber(buffDisplayLayoutStore.schemaVersion) == 1
+            and tonumber(buffDisplayLayoutStore.transportVersion) == 3
+            and tostring(buffDisplay.HudLayoutStoreId or "") == "v3.buff_display.layout"
+            and (tonumber(buffDisplay.HudLayoutStoreContractVersion) or 0) >= 1
+            and (tonumber(buffDisplay.LayoutPersistenceBoundaryContractVersion) or 0) >= 3
+            and type(buffDisplay.PersistResetLayoutSettings) == "function"
+            and (tonumber(buffDisplay.Schema8Transport5RecoveryContractVersion) or 0) >= 8
+            -- 中文维护注释（.18.241，已失败 HUD 大 Store 的一次性冷恢复）：.240 的 SaveData
+            -- 已可能把主 Store distance.x=-1 省略成默认 0 后留在磁盘。新布局小 Store 只能阻止
+            -- 后续再发生，不能让已经损坏的主 Store跨过 Reload。此契约只声明 Store 拥有
+            -- schema8/tv5 + 单字段 omitted + 全 Store 旧章唯一命中的 bounded scalar proof；Gate
+            -- 不枚举数值、不读 Store。半覆盖时必须 fail-closed，禁止把“拆 Store”误报成已可升级。
+            and (tonumber(buffDisplay.Schema8Transport5DistanceXOmissionRecoveryContractVersion) or 0) >= 1
+            -- 中文维护注释（.18.242，Transport5 前缀事故能力门禁）：实机已连续证明 marker/count 可被省略，
+            -- `chunks` 作为普通 map 残留，且最后幸存 chunk 既可能在完整 token 边界截断，也可能直接在
+            -- 十进制 ID 的数字中间截断。Store 只能把它当“严格字节前缀候选”，最终仍由整 Store 旧章精确验真。
+            -- Gate 只验证能力版本，不读取/修复 Store；半覆盖旧 Store 必须 fail-closed，避免又退回
+            -- `player.auto:invalid_index` 或有人把 byte-prefix 误改成任意 substring/近似匹配。
+            and (tonumber(buffDisplay.Schema8Transport5ScopedPrefixRecoveryContractVersion) or 0) >= 2
+            -- 中文维护注释（.18.235）：.234 实机进一步证明“健康 twin”可能因 schema8 合法 scope 分叉
+            -- 生成可解码但业务指纹错误的候选。本契约要求 Store 具备“twin primary + 旧指纹精确 Catalog fallback”
+            -- 能力；Catalog 仍只能修 missing/count-truncated 且必须命中旧章，Core 再做统一 Envelope/fingerprint 验真。
+            -- 半覆盖旧 Store/新 Gate 必须 fail-closed，禁止退回“完整 twin 就默认正确”或“最像 Catalog 即恢复”。
+            and (tonumber(buffDisplay.Schema8Transport4RecoveryProbeContractVersion) or 0) >= 4
+            -- 中文维护注释（.18.238）：已知事故恢复必须是 Store-owned exact pair gate；Foundation
+            -- 只验能力声明，不执行恢复、不读取/改写业务表。半覆盖旧 Store 必须 fail-closed。
+            and (tonumber(buffDisplay.Schema8KnownTransport4IncidentRecoveryContractVersion) or 0) >= 1
+            and (tonumber(buffDisplay.Schema6TrackingMigrationContractVersion) or 0) >= 1
+            and (tonumber(buffDisplay.Schema7GearScoreFormatMigrationContractVersion) or 0) >= 1
+            and (tonumber(buffDisplay.Schema8TrackingScopeMigrationContractVersion) or 0) >= 1
+            and (tonumber(buffDisplay.ManagementProjectionContractVersion) or 0) >= 2
+            and type(buffDisplay.Commands.SetTrackedChannel) == "function"
+            and buffDisplay.TransferFormatVersion == 3
+            and type(S.Data and S.Data.StatusTrackingCatalogV3) == "table"
             and type(buffDisplayStore.rebuildCanonicalForIntegrity) == "function"
             and type(buffDisplayStore.recoverKnownLegacyCanonical) == "function"
             and (tonumber(buffDisplay.Schema5DualHudMigrationContractVersion) or 0) >= 1
@@ -1445,8 +1589,10 @@ function G:Run(options)
             and (tonumber(buffDisplay.HudCalibrationContractVersion) or 0) >= 1
             and (tonumber(buffDisplay.BuffHeadMarkerContractVersion) or 0) >= 9
             and type(buffHeadMarkers) == "table" and (tonumber(buffHeadMarkers.BuffIconFontSizeContractVersion) or 0) >= 1
+            and (tonumber(buffHeadMarkers.GearScoreFormatContractVersion) or 0) >= 1
             and (tonumber(buffHeadMarkers.LiveHudSuppressionContractVersion) or 0) >= 1
             and (tonumber(buffHeadMarkers.EquipmentIndependentOffsetContractVersion) or 0) >= 1
+            and (tonumber(buffHeadMarkers.SplitInfoTextLayoutContractVersion) or 0) >= 1
             and type(buffHeadMarkers.SetCalibrationSuppressed) == "function"
             and type(buffHudCalibration) == "table" and (tonumber(buffHudCalibration.version) or 0) >= 3
             and (tonumber(buffHudCalibration.DiagnosticsContractVersion) or 0) >= 4
@@ -1456,6 +1602,7 @@ function G:Run(options)
             and (tonumber(buffHudCalibration.GlobalPreviewContractVersion) or 0) >= 1
             and (tonumber(buffHudCalibration.LiveHudSuppressionContractVersion) or 0) >= 1
             and (tonumber(buffHudCalibration.TemplateSnapshotContractVersion) or 0) >= 1
+            and (tonumber(buffHudCalibration.SplitInfoTextCalibrationContractVersion) or 0) >= 1
             and type(buffHudCalibration.BuildTemplateSnapshotLines) == "function"
             and type(buffHudCalibration.OutputTemplateSnapshot) == "function"
             and type(buffHudCalibration.ToggleGlobalPreview) == "function"
@@ -1472,6 +1619,12 @@ function G:Run(options)
             .. "/aura=" .. tostring(buffDisplayHealth.auraHeld == true)
             .. "/task=" .. tostring(buffDisplayHealth.taskActive == true)
             .. "/schema=" .. tostring(buffDisplayStore and buffDisplayStore.schemaVersion or 0)
+            .. "/tv=" .. tostring(buffDisplayStore and buffDisplayStore.transportVersion or 0)
+            .. "/tv5Recover=" .. tostring(buffDisplay.Schema8Transport5RecoveryContractVersion or 0)
+            .. "/tv5Prefix=" .. tostring(buffDisplay.Schema8Transport5ScopedPrefixRecoveryContractVersion or 0)
+            .. "/distXRecover=" .. tostring(buffDisplay.Schema8Transport5DistanceXOmissionRecoveryContractVersion or 0)
+            .. "/v4Probe=" .. tostring(buffDisplay.Schema8Transport4RecoveryProbeContractVersion or 0)
+            .. "/v4Known=" .. tostring(buffDisplay.Schema8KnownTransport4IncidentRecoveryContractVersion or 0)
             .. "/hist=" .. tostring(type(buffDisplayStore) == "table" and type(buffDisplayStore.rebuildCanonicalForIntegrity) == "function" and 1 or 0)
             .. "/known=" .. tostring(type(buffDisplayStore) == "table" and type(buffDisplayStore.recoverKnownLegacyCanonical) == "function" and 1 or 0)
             .. "/mig=" .. tostring(buffDisplay.Schema5DualHudMigrationContractVersion or 0)
@@ -1479,11 +1632,14 @@ function G:Run(options)
             .. "/gearApi=" .. tostring(buffDisplay.GearScoreApiContractVersion or 0)
             .. "/gearParse=" .. tostring(type(S.Utils) == "table" and S.Utils.GearScoreParseContractVersion or 0)
             .. "/layout=" .. tostring(buffDisplay.LayoutAuthorityContractVersion or 0)
+            .. "/layoutStore=" .. tostring(type(buffDisplayLayoutStore) == "table" and buffDisplayLayoutStore.schemaVersion or 0)
+            .. "/layoutBoundary=" .. tostring(buffDisplay.LayoutPersistenceBoundaryContractVersion or 0)
             .. "/hud=" .. tostring(buffDisplay.HudCalibrationContractVersion or 0)
             .. "/marker=" .. tostring(buffDisplay.BuffHeadMarkerContractVersion or 0)
             .. "/font=" .. tostring(type(buffHeadMarkers) == "table" and buffHeadMarkers.BuffIconFontSizeContractVersion or 0)
             .. "/suppress=" .. tostring(type(buffHeadMarkers) == "table" and buffHeadMarkers.LiveHudSuppressionContractVersion or 0)
             .. "/equipLocal=" .. tostring(type(buffHeadMarkers) == "table" and buffHeadMarkers.EquipmentIndependentOffsetContractVersion or 0)
+            .. "/infoSplit=" .. tostring(type(buffHeadMarkers) == "table" and buffHeadMarkers.SplitInfoTextLayoutContractVersion or 0)
             .. "/cal=" .. tostring(type(buffHudCalibration) == "table" and buffHudCalibration.version or 0)
             .. "/hudDiag=" .. tostring(buffHudCalibration and buffHudCalibration.DiagnosticsContractVersion or 0)
             .. "/coord=" .. tostring(buffHudCalibration and buffHudCalibration.ScreenCoordinateAdapterContractVersion or 0)
@@ -1492,6 +1648,7 @@ function G:Run(options)
             .. "/global=" .. tostring(buffHudCalibration and buffHudCalibration.GlobalPreviewContractVersion or 0)
             .. "/liveHide=" .. tostring(buffHudCalibration and buffHudCalibration.LiveHudSuppressionContractVersion or 0)
             .. "/template=" .. tostring(buffHudCalibration and buffHudCalibration.TemplateSnapshotContractVersion or 0)
+            .. "/infoCal=" .. tostring(buffHudCalibration and buffHudCalibration.SplitInfoTextCalibrationContractVersion or 0)
             .. "/pageMeasure=" .. tostring(buffDisplay.HudLayoutPageMeasureContractVersion or 0)
             .. "/page=" .. tostring(buffDisplayPage ~= nil and 1 or 0)
             .. "/widget=" .. tostring(type(buffDisplayWidget) == "table" and 1 or 0)
@@ -1984,26 +2141,8 @@ function G:Run(options)
             .. "/clearVerify=" .. tostring(persistenceStats.clearVerifyAttempts or 0)
             .. "/clearVerifyFail=" .. tostring(persistenceStats.clearVerifyFailures or 0)) or "missing")
 
-    AddCheck(report, "persistence_reliability_v6", persistence ~= nil
-            and (tonumber(persistence.reliabilityContractVersion) or 0) >= 6
-            and (tonumber(persistence.envelopeIntegrityContractVersion) or 0) >= 1
-            and (tonumber(persistence.scopeBindingContractVersion) or 0) >= 1
-            and type(S.Persistence.FingerprintEnvelopeIntegrity) == "function"
-            and (tonumber(persistenceStats.envelopeIntegrityLoadFailures) or 0) == 0
-            and (tonumber(persistenceStats.decodedLoadRejects) or 0) == 0
-            and (tonumber(persistenceStats.durableVerifyFailures) or 0) == 0
-            and (tonumber(persistenceStats.scopeBindingMismatches) or 0) == 0,
-        "blocker", persistence and ("contract=" .. tostring(persistence.reliabilityContractVersion or 0)
-            .. "/envelope=" .. tostring(persistence.envelopeIntegrityContractVersion or 0)
-            .. "/scope=" .. tostring(persistence.scopeBindingContractVersion or 0)
-            .. "/envelopeStamped=" .. tostring(persistenceStats.envelopeIntegrityStampedSaves or 0)
-            .. "/envelopeCheck=" .. tostring(persistenceStats.envelopeIntegrityLoadChecks or 0)
-            .. "/envelopeFail=" .. tostring(persistenceStats.envelopeIntegrityLoadFailures or 0)
-            .. "/decodedReject=" .. tostring(persistenceStats.decodedLoadRejects or 0)
-            .. "/durable=" .. tostring(persistenceStats.durableVerifyAttempts or 0)
-            .. "/durableFail=" .. tostring(persistenceStats.durableVerifyFailures or 0)
-            .. "/scopeMismatch=" .. tostring(persistenceStats.scopeBindingMismatches or 0)
-            .. "/scopeRebind=" .. tostring(persistenceStats.scopeRebinds or 0)) or "missing")
+    local persistenceV6Ok, persistenceV6Detail = self:EvaluatePersistenceReliabilityV6(persistence)
+    AddCheck(report, "persistence_reliability_v6", persistenceV6Ok, "blocker", persistenceV6Detail)
 
     AddCheck(report, "persistence_reliability_v7", persistence ~= nil
             and (tonumber(persistence.reliabilityContractVersion) or 0) >= 7
@@ -2146,7 +2285,8 @@ function G:Run(options)
         combat_boss_alerts = "migrated_partial", combat_buff_cap = "migrated_partial", combat_team_tools = "migrated_partial",
         combat_unit_lines = "migrated_partial", combat_range_assist = "migrated_partial",
         combat_raid_recruitment = "migrated_partial", life_trade = "migrated_partial", life_fishing = "migrated_partial",
-        life_craft_planner = "migrated_partial", tools_bag = "migrated_partial", tools_auction = "migrated_partial", tools_market_analysis = "migrated_partial", tools_craft = "migrated_partial",
+        -- 中文维护注释（2026-09-15）：life_craft_planner 已按用户要求移除，Foundation 真值表不得再把“缺失”视为 blocker。
+        tools_bag = "migrated_partial", tools_auction = "migrated_m1", tools_market_analysis = "migrated_partial", tools_craft = "migrated_partial",
     }
     local truthFailures = {}
     for id, expected in pairs(truthExpected) do
@@ -2154,15 +2294,20 @@ function G:Run(options)
         if row == nil or tostring(row.status or "") ~= expected then truthFailures[#truthFailures + 1] = id .. ":" .. tostring(row and row.status or "missing") end
     end
     local fishingTruth = S.Features and S.Features.Fishing or nil
-    if type(fishingTruth) ~= "table" or fishingTruth.HotkeyRuntimeBlocked ~= true or (tonumber(fishingTruth.HotkeyContractVersion) or 0) < 2 then
-        truthFailures[#truthFailures + 1] = "life_fishing:auto_r_runtime_block"
+    local fishingHotkey = S.Services and S.Services.FishingHotkeyV3 or nil
+    -- 中文维护：旧 gate 把“Auto-R 必须硬阻塞”当作真值，导致真实事务恢复后仍被基础验收判失败；现在 Authority 是 HotkeyContract v3 + 独立事务服务。
+    -- 兼容边界：这里仅验证契约存在，不执行任何 Native 热键读写；RU 写键行为仍由 FishingHotkeyV3 capability gate/战斗门/持久恢复快照保护。
+    if type(fishingTruth) ~= "table" or fishingTruth.HotkeyRuntimeBlocked == true
+        or (tonumber(fishingTruth.HotkeyContractVersion) or 0) < 3
+        or type(fishingHotkey) ~= "table" or (tonumber(fishingHotkey.TransactionContractVersion) or 0) < 3 then
+        truthFailures[#truthFailures + 1] = "life_fishing:auto_r_transaction"
     end
     local reinforceTruth = S.Features and S.Features.tools_reinforce_analysis or nil
     if type(reinforceTruth) ~= "table" or reinforceTruth.SlotProbeRuntimeBlocked ~= true then
         truthFailures[#truthFailures + 1] = "tools_reinforce_analysis:slot_probe_runtime_block"
     end
     table.sort(truthFailures)
-    AddCheck(report, "v3_feature_truth_contract", #truthFailures == 0, "blocker", #truthFailures == 0 and "partial/blocked capabilities labeled honestly; locked RU blockers fail closed" or ("invalid=" .. Join(truthFailures, 8)))
+    AddCheck(report, "v3_feature_truth_contract", #truthFailures == 0, "blocker", #truthFailures == 0 and "partial capabilities labeled honestly; risky Native transactions fail closed" or ("invalid=" .. Join(truthFailures, 8)))
 
     local apiCooldownOk = type(S.Api) == "table" and (tonumber(S.Api.CapabilityCooldownContractVersion) or 0) >= 1
         and type(S.Api.ConsumeCapabilityCooldown) == "function" and type(S.Api.GetCapabilityCooldownState) == "function"
@@ -2193,14 +2338,21 @@ function G:Run(options)
     local rangeAssist = S.Features and S.Features.combat_range_assist or nil
     local buffDisplay2 = S.Features and S.Features.BuffDisplay or nil
     local buffHealth2 = type(buffDisplay2) == "table" and type(buffDisplay2.GetHealth) == "function" and buffDisplay2:GetHealth() or nil
-    if type(screenProjection) ~= "table" or (tonumber(screenProjection.version) or 0) < 13 or tostring(screenProjection.presentationBoundary or "") ~= "service_only"
+    -- 中文维护注释（2026-09-15，range-real-meter-foundation-1）：这里仅门禁投影/米数契约，
+    -- 不在 Foundation 自检读取 target。真实 UnitDistance 样本只由 RangeAssist Demand 在运行期按需采集。
+    if type(screenProjection) ~= "table" or (tonumber(screenProjection.version) or 0) < 15 or tostring(screenProjection.presentationBoundary or "") ~= "service_only"
         or type(screenProjection.ProjectUnitFlexible) ~= "function" or type(screenProjection.ProjectUnitBatch) ~= "function"
         or (tonumber(screenProjection.FrontHemisphereBatchContractVersion) or 0) < 1
         or (tonumber(screenProjection.UnitProjectionConsistencyContractVersion) or 0) < 1
         or (tonumber(screenProjection.UnitWorldAliasGuardContractVersion) or 0) < 1
         or (tonumber(screenProjection.WorldBatchIndexContractVersion) or 0) < 1
         or (tonumber(screenProjection.WorldBatchFactsContractVersion) or 0) < 2
-        or (tonumber(screenProjection.WorldBatchAnchorCalibrationContractVersion) or 0) < 1
+        or (tonumber(screenProjection.WorldBatchAnchorCalibrationContractVersion) or 0) < 2
+        or (tonumber(screenProjection.RangeMetricCalibrationContractVersion) or 0) < 1
+        or (tonumber(screenProjection.RangeMetricScreenScaleContractVersion) or 0) < 1
+        or (tonumber(screenProjection.RangeMetricWorldUnitContractVersion) or 0) < 1
+        or (tonumber(screenProjection.RangeMetricScreenScaleApplyContractVersion) or 0) < 1
+        or type(screenProjection.GetRangeMetricCalibration) ~= "function"
         or (tonumber(screenProjection.CameraUnavailableNativeFallbackContractVersion) or 0) < 1
         or (tonumber(screenProjection.UiParentScreenCoordinateContractVersion) or 0) < 1
         or type(screenProjection.ProjectWorld) ~= "function" or type(screenProjection.ProjectWorldBatch) ~= "function" then usabilityFailures[#usabilityFailures + 1] = "screen_projection" end
@@ -2218,16 +2370,21 @@ function G:Run(options)
         or (tonumber(visualGuides.UnitLineRawProjectedAnchorContractVersion) or 0) < 2
         or (tonumber(visualGuides.ScreenToOverlayHostContractVersion) or 0) < 1
         or (tonumber(visualGuides.ResolutionIndependentOverlayContractVersion) or 0) < 1
+        -- 中文维护注释（2026-09-17）：VisualGuide 的 Native host 必须具备 world-HUD game-layer 契约。
+        -- 这是 Foundation 对“点不遮挡原生窗口”的启动门禁，只读契约版本，不创建窗口、不触发 Native 调用。
+        -- 数据流/所有权仍为 Presenter -> UI Primitive；若版本缺失则明确降级，而不是让 system 层问题静默复发。
+        or (tonumber(S.UI and S.UI.WorldHudNativeLayerContractVersion) or 0) < 1
         or type(visualGuides.BuildUnitLineSamplePlan) ~= "function"
         or type(unitLines) ~= "table" or (tonumber(unitLines.VisualGuideContractVersion) or 0) < 5
         or (tonumber(unitLines.AdaptiveDensityContractVersion) or 0) < 2
         or (tonumber(unitLines.SmoothRefreshContractVersion) or 0) < 1
         or (tonumber(unitLines.FrontHemisphereContractVersion) or 0) < 1
         or (tonumber(unitLines.ProjectionConsistencyContractVersion) or 0) < 1
-        or type(rangeAssist) ~= "table" or (tonumber(rangeAssist.VisualGuideContractVersion) or 0) < 7
-        or (tonumber(rangeAssist.WorldSpaceContractVersion) or 0) < 2
-        or (tonumber(rangeAssist.ProjectionFactsContractVersion) or 0) < 5
-        or (tonumber(rangeAssist.AnchorCalibrationContractVersion) or 0) < 1 then usabilityFailures[#usabilityFailures + 1] = "visual_guides" end
+        or type(rangeAssist) ~= "table" or (tonumber(rangeAssist.VisualGuideContractVersion) or 0) < 9
+        or (tonumber(rangeAssist.WorldSpaceContractVersion) or 0) < 3
+        or (tonumber(rangeAssist.ProjectionFactsContractVersion) or 0) < 7
+        or (tonumber(rangeAssist.AnchorCalibrationContractVersion) or 0) < 2
+        or (tonumber(rangeAssist.MetricDistanceContractVersion) or 0) < 1 then usabilityFailures[#usabilityFailures + 1] = "visual_guides" end
     local tradeWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.trade") or nil
     local bondsWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.bonds") or nil
     if type(lifeWidgets) ~= "table" or (tonumber(lifeWidgets.version) or 0) < 3 or type(tradeWidget) ~= "table" or type(bondsWidget) ~= "table" then usabilityFailures[#usabilityFailures + 1] = "life_widgets" end
@@ -2284,26 +2441,49 @@ function G:Run(options)
     local auctionSidecarOk = type(auctionSurface) == "table" and (tonumber(auctionSurface.version) or 0) >= 2
         and (tonumber(auctionSurface.VisibilityContractVersion) or 0) >= 2
         and type(auctionSurface.GetSnapshot) == "function" and type(auctionSurface.Start) == "function" and type(auctionSurface.Stop) == "function"
-        and type(auctionSidecar) == "table" and type(auction) == "table"
+        and type(auctionSidecar) == "table" and (tonumber(auctionSidecar.SidecarControlContractVersion) or 0) >= 2
+        and type(auctionSidecar.GetControlState) == "function" and type(auctionSidecar.RequestShow) == "function"
+        and type(auction) == "table" and (tonumber(auction.SidecarPreferenceContractVersion) or 0) >= 1
+        and type(auction.IsSidecarEnabled) == "function" and type(auction.Commands) == "table" and type(auction.Commands.SetSidecarEnabled) == "function"
     AddCheck(report, "v3_auction_sidecar_contract", auctionSidecarOk, "blocker",
-        auctionSidecarOk and "native-auction visibility/geometry observer + shared-favorite sidecar present" or "auction sidecar contract v2 unavailable")
+        auctionSidecarOk and "native-auction observer + persistent user-controlled sidecar lifecycle present" or "auction sidecar control contract unavailable")
 
-    local craftSelectionOk = true
-    for _, craftId in ipairs({ "life_craft_planner", "tools_craft" }) do
-        local craftFeature = S.Features and S.Features[craftId] or nil
-        if type(craftFeature) ~= "table" or (tonumber(craftFeature.CraftUserSelectionContractVersion) or 0) < 1
-            or type(craftFeature.Commands) ~= "table" or type(craftFeature.Commands.SelectRecipe) ~= "function" then craftSelectionOk = false end
-    end
+    -- 中文维护注释（2026-09-14，拍卖工作区 Gate）：Sidecar 的三页签不是第二业务 Authority；收藏继续
+    -- 由 tools_auction Store 持久化，今日任务只读 QuestProgress/静态配方，临时清单明确无 Store。这里阻断的
+    -- 是这些稳定接口是否存在，而不是当前玩家今天是否有任务。Native 搜索框同步属于增强能力，失败时仍能
+    -- 经 AuctionQueryV3 查询，所以单独只报 warning，绝不能把 RU 原生 EditBox 差异升级成启动 blocker。
+    local auctionSession = S.Services and S.Services.AuctionSessionListV3 or nil
+    local auctionDaily = S.Services and S.Services.DailyAuctionMaterialsV3 or nil
+    local questProgress = S.Services and S.Services.QuestProgressV3 or nil
+    local auctionWorkspaceOk = type(auctionSidecar) == "table" and (tonumber(auctionSidecar.AuctionWorkspaceContractVersion) or 0) >= 1
+        and type(auctionSession) == "table" and (tonumber(auctionSession.SessionListContractVersion) or 0) >= 1
+        and auctionSession.PersistenceStoreId == nil and type(auctionSession.AddTradeRow) == "function" and type(auctionSession.AddMaterial) == "function"
+        and type(auctionDaily) == "table" and (tonumber(auctionDaily.DailyMaterialContractVersion) or 0) >= 2
+        and type(auctionDaily.AcquireConsumer) == "function" and type(auctionDaily.ReleaseConsumer) == "function"
+        and type(auctionDaily.SelectRecipe) == "function" and type(auctionDaily.GetSnapshot) == "function"
+        and type(questProgress) == "table" and type(questProgress.GetActiveQuestStates) == "function" and type(questProgress.GetActiveQuestList) == "function"
+        and type(auction) == "table" and type(auction.Commands) == "table"
+        and type(auction.Commands.RenameFavorite) == "function" and type(auction.Commands.MoveFavorite) == "function"
+        and type(auction.Commands.RemoveFavoriteByKeyword) == "function" and type(auction.Commands.ClearFavorites) == "function"
+    AddCheck(report, "v3_auction_workspace_contract", auctionWorkspaceOk, "blocker",
+        auctionWorkspaceOk and "favorites CRUD + demand-scoped daily materials + session-only temporary groups + three-tab sidecar present"
+            or "auction workspace contract v2 unavailable")
+
+    local auctionSearchBridge = S.Services and S.Services.AuctionSearchBridgeV3 or nil
+    local nativeSyncEnhancementOk = type(auctionSearchBridge) == "table" and (tonumber(auctionSearchBridge.SearchBridgeContractVersion) or 0) >= 1
+        and (tonumber(auctionSearchBridge.NativeSyncContractVersion) or 0) >= 1 and type(auctionSearchBridge.Search) == "function"
+        and type(auctionSearchBridge.GetSnapshot) == "function"
+    AddCheck(report, "v3_auction_native_search_sync_enhancement", nativeSyncEnhancementOk, "warning",
+        nativeSyncEnhancementOk and "verified native EditBox sync bridge present; runtime candidate failure safely falls back to AuctionQueryV3"
+            or "native search-box synchronization enhancement unavailable; direct AuctionQueryV3 remains authoritative")
+
+    -- 中文维护注释（2026-09-15，删除制作规划）：制作相关 Foundation blocker 只覆盖仍在产品中的 tools_craft。
+    -- 不保留 v3_craft_plan_contract 空壳检查；否则旧功能删除后会永久制造 blocker，迫使 Runtime 重新注册无用 Store。
+    local craftFeature = S.Features and S.Features.tools_craft or nil
+    local craftSelectionOk = type(craftFeature) == "table" and (tonumber(craftFeature.CraftUserSelectionContractVersion) or 0) >= 1
+        and type(craftFeature.Commands) == "table" and type(craftFeature.Commands.SelectRecipe) == "function"
     AddCheck(report, "v3_craft_user_selection_contract", craftSelectionOk, "blocker",
-        craftSelectionOk and "user selects verified craft entry; raw ids are internal" or "craft user-selection contract unavailable")
-
-    local craftPlanner = S.Features and S.Features.life_craft_planner or nil
-    local craftPlanOk = type(craftPlanner) == "table" and (tonumber(craftPlanner.CraftPlanContractVersion) or 0) >= 1
-        and type(craftPlanner.Commands) == "table" and type(craftPlanner.Commands.AddPlanRecipe) == "function"
-        and type(craftPlanner.Commands.RemovePlanRecipe) == "function" and type(craftPlanner.Commands.ClearPlan) == "function"
-        and type(craftPlanner.Commands.QuotePlanMaterials) == "function"
-    AddCheck(report, "v3_craft_plan_contract", craftPlanOk, "blocker",
-        craftPlanOk and "persistent bounded multi-recipe plan + explicit shared quote queue present" or "craft multi-plan contract unavailable")
+        craftSelectionOk and "craft assistant selects verified craft entry; raw ids are internal" or "craft assistant user-selection contract unavailable")
 
     local craftSurface = S.Services and S.Services.CraftSurfaceV3 or nil
     local craftSidecar = S.UIV3 and S.UIV3.CraftSidecar or nil
@@ -2318,16 +2498,25 @@ function G:Run(options)
         craftSidecarOk and "bounded native-craft observer + shared-authority sidecar present" or "craft sidecar contract unavailable")
 
     local teamTools = S.Features and S.Features.combat_team_tools or nil
+    local teamRoster = S.Services and S.Services.TeamRosterV3 or nil
     local teamRoleCatalog = S.Data and S.Data.TeamAutoRoleCatalog or nil
     local archerRole = type(teamRoleCatalog) == "table" and type(teamRoleCatalog.byClassKey) == "table"
         and teamRoleCatalog.byClassKey["name_6_8_9"] or nil
+    local dancerHealerRole = type(teamRoleCatalog) == "table" and type(teamRoleCatalog.byClassKey) == "table"
+        and teamRoleCatalog.byClassKey["name_8_9_14"] or nil
+    -- 中文维护注释（2026-09-16，团队职责发布门禁）：同时钉死两个用户已确认职业组合，以及自动职责自己的 TeamRoster lease/团队边沿 settle。
+    -- Gate 只读取声明与静态目录，不触发 X2Team 写入/名单扫描；目的是防止增量包只改角色表却漏掉“关闭页面后不再监听入团”的生命周期根因。
     local teamRoleOk = type(teamTools) == "table" and (tonumber(teamTools.TeamRoleContractVersion) or 0) >= 2
-        and (tonumber(teamTools.AutoRoleCatalogContractVersion) or 0) >= 1
+        and (tonumber(teamTools.AutoRoleContractVersion) or 0) >= 3 -- 中文维护注释（2026-09-16）：v3 才包含独立 Event owner/roster lease 与关→开重建观察，不能只看目录版本。
+        and (tonumber(teamTools.AutoRoleCatalogContractVersion) or 0) >= 2
+        and (tonumber(teamTools.AutoRoleRosterLeaseContractVersion) or 0) >= 1
         and type(teamTools.Commands) == "table" and type(teamTools.Commands.SetRole) == "function"
-        and type(teamRoleCatalog) == "table" and (tonumber(teamRoleCatalog.version) or 0) >= 2
+        and type(teamRoster) == "table" and (tonumber(teamRoster.TeamEdgeSettleContractVersion) or 0) >= 1
+        and type(teamRoleCatalog) == "table" and (tonumber(teamRoleCatalog.version) or 0) >= 3
         and type(archerRole) == "table" and tostring(archerRole.role or "") == "ranged"
+        and type(dancerHealerRole) == "table" and tostring(dancerHealerRole.role or "") == "healer"
     AddCheck(report, "v3_team_role_contract", teamRoleOk, "blocker",
-        teamRoleOk and "roster observation + self-role write + Archer ranged-role catalog semantics present" or "team role/catalog contract unavailable")
+        teamRoleOk and "independent roster lease + bounded team-edge settle + ranged/healer exact class-role semantics present" or "team role/catalog lifecycle contract unavailable")
 
     local teamSacOverlay = S.UIV3 and S.UIV3.TeamSacOverlay or nil
     local teamVisualOk = type(teamTools) == "table"
@@ -2347,6 +2536,7 @@ function G:Run(options)
     local activities = S.Features and S.Features.Activities or nil
     local activityStore = S.Persistence ~= nil and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.activities") or nil -- 中文维护注释：只读取已注册 Store spec，不触发 LoadData；用于证明 .18.197 的 schema8 exact-pair 恢复桥实际挂在 Store Authority 上。
     local activityRecoveryOk = type(activities) == "table"
+        and type(activities.Authority) == "table" and (tonumber(activities.Authority.PriorityStageSortContractVersion) or 0) >= 1 -- 中文维护注释（2026-09-16）：鲸鱼/烛台阶段的 3h 排序分带必须随 Activities Authority 一起存在；只查声明，不改变 Store/排序数据。
         and (tonumber(activities.PersistenceStoreSchemaContractVersion) or 0) >= 8 -- 中文维护注释：Activities 当前 canonical generation 必须仍是 schema8，禁止用降 schema 绕过 6963CEA5→109696BD。
         and (tonumber(activities.KnownLegacyCanonicalRecoveryContractVersion) or 0) >= 3 -- 中文维护注释：v3 明确包含 schema8/Framework3/Transport-v1 的**零值省略结构化恢复**，未知 pair 仍必须 Fence。
         and (tonumber(activities.TransportV1ZeroOmissionRecoveryContractVersion) or 0) >= 1 -- 中文维护注释：`.18.198` 要求活动 Store 的 Transport v1 零值恢复必须随包存在，防止窗口 x/y=0 的用户被永久 write fence。

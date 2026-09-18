@@ -20,16 +20,34 @@ local P = S.Services.ScreenProjectionV3
 -- space. Suite addonScale is deliberately excluded from this coordinate path.
 -- v9+ returns raw coordinates, culls camera-behind via depth, and records the
 -- exact failure reason for every rejected read.
-P.version = 13
+P.version = 15
+-- 维护 2026-09-12：本轮只修正批量投影的事实依赖/深度否决，不改raw坐标尺度。
+P.NativeScreenIndependentWorldContractVersion = 1
+P.NativeDepthVetoContractVersion = 1
 P.presentationBoundary = "service_only"
-P.EasyPullWorldToScreenContractVersion = 2
+P.EasyPullWorldToScreenContractVersion = 3
+P.RangeMetricCalibrationContractVersion = 1
+P.RangeMetricScreenScaleContractVersion = 1
 P.UiParentScreenCoordinateContractVersion = 1
 P.presentationDebt = nil
-P.metrics = P.metrics or { unitReads=0, worldReads=0, nativeProjects=0, cameraProjects=0, cameraBatches=0, failures=0,
-    unitBatches=0, behindCameraRejects=0, nativeScaleReconciles=0, nativeConsistencyFallbacks=0, worldAliasGuards=0, nativeCameraFallbacks=0 }
+P.metrics = P.metrics or { unitReads=0, worldReads=0, distanceReads=0, nativeProjects=0, cameraProjects=0, cameraBatches=0, failures=0,
+    unitBatches=0, behindCameraRejects=0, nativeScaleReconciles=0, nativeConsistencyFallbacks=0, worldAliasGuards=0, nativeCameraFallbacks=0,
+    rangeMetricSamples=0, rangeMetricAccepted=0, rangeProjectionScaleAccepted=0 }
 P.metrics.failuresByReason = P.metrics.failuresByReason or {}
 
 local function N(v) v=tonumber(v); if v==nil or v~=v or v==math.huge or v==-math.huge then return nil end; return v end
+
+-- 维护：UIParent raw视口和投影事实由同一个Service提供，Presentation不再自己查询Native。
+-- 来源与现有相机frame一致，不采用Layout logical大小或除以UIScale；失败显式返回unknown，
+-- 下游只取消裁剪而不取消有限坐标的绘制。按需两个只读getter，无任务/常驻尺寸缓存。
+function P:GetUiParentViewport()
+    if UIParent==nil or type(UIParent.GetScreenWidth)~="function" or type(UIParent.GetScreenHeight)~="function" then return nil,nil end
+    local okW,w=pcall(UIParent.GetScreenWidth,UIParent)
+    local okH,h=pcall(UIParent.GetScreenHeight,UIParent)
+    w,h=N(w),N(h)
+    if not okW or not okH or w==nil or h==nil or w<=1 or h<=1 then return nil,nil end
+    return w,h
+end
 
 -- Single funnel for every rejected read so one paste can name the reason.
 local function RecordFailure(reason)
@@ -72,6 +90,26 @@ function P:GetUnitWorldPosition(unitToken, isLocal)
         return nil,nil,nil,err or "unit_world_position_unavailable"
     end
     return x, y, z, nil
+end
+
+-- 中文维护注释（2026-09-15，range-meter-authority-1）：RangeAssist 页面里的“m”不能由
+-- 世界坐标数值自行解释。RU 已有官方只读 UnitDistance，故游戏米数以该 API 为事实 Authority；
+-- 世界坐标只承担几何绘制。这里放在 ScreenProjectionV3 是因为它已经统一拥有 unit world/screen
+-- 事实读取边界，Feature 不再直接跨层访问 X2Unit。失败保持 nil，绝不把未知距离当 0。
+function P:GetUnitDistanceMeters(unitToken)
+    unitToken = tostring(unitToken or "")
+    if unitToken == "" then return nil,"unit_token_required" end
+    if S.Api == nil or type(S.Api.CallCapability) ~= "function" then return nil,"api_unavailable" end
+    self.metrics.distanceReads = (tonumber(self.metrics.distanceReads) or 0) + 1
+    local ok, raw, err = S.Api:CallCapability("X2Unit:UnitDistance", X2Unit, "UnitDistance", unitToken)
+    local value = raw
+    if type(raw) == "table" then value = raw.distance end
+    value = N(value)
+    if ok ~= true or value == nil or value < 0 then
+        RecordFailure("unit_distance:" .. tostring(err or "unavailable"))
+        return nil,err or "unit_distance_unavailable"
+    end
+    return value,nil
 end
 
 function P:_BuildCameraFrame()
@@ -177,6 +215,184 @@ function P:_ProjectWithEasyPullCameraFrame(frame, wx, wy, wz)
     local screenY=(frame.screenH/2)-((upComponent/forward)*frame.focal*(frame.screenH/2))
     return screenX,screenY,distance
 end
+
+-- 中文维护注释（2026-09-15，range-meter-calibration-1）：只做“测量”，不拥有循环。
+-- Authority：gameDistanceMeters 来自 X2Unit:UnitDistance；worldUnitsPerMeter 由同一时刻 player/target
+-- 世界坐标比值得到；projectionScale 仅比较 Camera fallback 与 Native unit-screen 的相对向量。
+-- 数据流：RangeAssist Demand(50ms) -> 本 Service 每 <=500ms 一次受控采样 -> bounded median ->
+-- 世界半径换算 + Camera batch 围绕玩家 Native 锚点等比缩放。兼容边界：无目标、陡峭高度差、
+-- 屏幕向量太短/方向残差过大时 fail-closed 到既有 1:1 投影；不写死倍率、不保存到用户配置。
+function P:MeasureRangeMetricCalibration(options)
+    options = type(options) == "table" and options or {}
+    self.metrics.rangeMetricSamples = (tonumber(self.metrics.rangeMetricSamples) or 0) + 1
+    local anchorUnit = tostring(options.anchorUnit or "player")
+    local targetUnit = tostring(options.targetUnit or "target")
+    local worldZOffset = N(options.worldZOffset) or 0.25
+    local sample = {
+        at = (S.NowMs and S.NowMs() or 0),
+        anchorUnit = anchorUnit, targetUnit = targetUnit,
+        worldScaleStatus = "unavailable", projectionScaleStatus = "unavailable",
+        worldUnitsPerMeter = nil, projectionScale = nil,
+    }
+
+    local anchorWorld = type(options.anchorWorld) == "table" and options.anchorWorld or nil
+    local awx,awy,awz = anchorWorld and N(anchorWorld.x) or nil, anchorWorld and N(anchorWorld.y) or nil, anchorWorld and N(anchorWorld.z) or nil
+    if awx == nil or awy == nil or awz == nil then
+        awx,awy,awz,sample.anchorWorldError = self:GetUnitWorldPosition(anchorUnit, true)
+    end
+    local targetWorld = type(options.targetWorld) == "table" and options.targetWorld or nil
+    local twx,twy,twz = targetWorld and N(targetWorld.x) or nil, targetWorld and N(targetWorld.y) or nil, targetWorld and N(targetWorld.z) or nil
+    if twx == nil or twy == nil or twz == nil then
+        twx,twy,twz,sample.targetWorldError = self:GetUnitWorldPosition(targetUnit, true)
+    end
+    local gameDistance = N(options.gameDistanceMeters)
+    if gameDistance == nil then gameDistance,sample.distanceError = self:GetUnitDistanceMeters(targetUnit) end
+    sample.gameDistanceMeters = gameDistance
+
+    if awx ~= nil and awy ~= nil and awz ~= nil and twx ~= nil and twy ~= nil and twz ~= nil and gameDistance ~= nil then
+        local dx,dy,dz = twx-awx,twy-awy,twz-awz
+        local worldDistance = math.sqrt(dx*dx+dy*dy+dz*dz)
+        local verticalRatio = worldDistance > 0 and math.abs(dz)/worldDistance or 1
+        sample.worldDistanceUnits = worldDistance
+        sample.verticalRatio = verticalRatio
+        if gameDistance < 3 then
+            sample.worldScaleStatus = "rejected"; sample.worldScaleReason = "target_too_close"
+        elseif gameDistance > 120 then
+            sample.worldScaleStatus = "rejected"; sample.worldScaleReason = "target_too_far"
+        elseif worldDistance < 0.01 then
+            sample.worldScaleStatus = "rejected"; sample.worldScaleReason = "world_distance_too_small"
+        elseif verticalRatio > 0.35 then
+            sample.worldScaleStatus = "rejected"; sample.worldScaleReason = "vertical_delta_too_large"
+        else
+            local ratio = worldDistance / gameDistance
+            if ratio >= 0.001 and ratio <= 1000 then
+                sample.worldScaleStatus = "accepted"
+                sample.worldUnitsPerMeter = ratio
+                self.metrics.rangeMetricAccepted = (tonumber(self.metrics.rangeMetricAccepted) or 0) + 1
+            else
+                sample.worldScaleStatus = "rejected"; sample.worldScaleReason = "world_scale_out_of_bounds"
+            end
+        end
+    else
+        sample.worldScaleReason = sample.distanceError or sample.targetWorldError or sample.anchorWorldError or "metric_facts_unavailable"
+    end
+
+    local frame, frameErr = self:_BuildEasyPullCameraFrame()
+    sample.projectionFrameError = frameErr
+    local uiScale = 1
+    if S.Api ~= nil and type(S.Api.GetUiMetrics) == "function" then
+        local okMetrics,_,_,scale = pcall(function() return S.Api:GetUiMetrics() end)
+        if okMetrics == true and N(scale) ~= nil then uiScale = N(scale) end
+    end
+    if type(frame) == "table" then
+        sample.projectionContextKey = string.format("%dx%d/f%.8f/u%.4f",
+            math.floor(N(frame.screenW) or 0), math.floor(N(frame.screenH) or 0), N(frame.focal) or 0, uiScale)
+    end
+
+    if type(frame) == "table" and awx ~= nil and awy ~= nil and awz ~= nil and twx ~= nil and twy ~= nil and twz ~= nil then
+        local nativeAnchorX,nativeAnchorY,_,anchorScreenErr = self:ProjectUnit(anchorUnit)
+        local nativeTargetX,nativeTargetY,_,targetScreenErr = self:ProjectUnit(targetUnit)
+        local cameraAnchorX,cameraAnchorY = self:_ProjectWithEasyPullCameraFrame(frame,awx,awy,awz+worldZOffset)
+        local cameraTargetX,cameraTargetY = self:_ProjectWithEasyPullCameraFrame(frame,twx,twy,twz+worldZOffset)
+        if nativeAnchorX ~= nil and nativeAnchorY ~= nil and nativeTargetX ~= nil and nativeTargetY ~= nil
+            and cameraAnchorX ~= nil and cameraAnchorY ~= nil and cameraTargetX ~= nil and cameraTargetY ~= nil then
+            local cdx,cdy = cameraTargetX-cameraAnchorX,cameraTargetY-cameraAnchorY
+            local ndx,ndy = nativeTargetX-nativeAnchorX,nativeTargetY-nativeAnchorY
+            local cameraLen2 = cdx*cdx+cdy*cdy
+            local nativeLen2 = ndx*ndx+ndy*ndy
+            local cameraLen,nativeLen = math.sqrt(cameraLen2),math.sqrt(nativeLen2)
+            sample.cameraVectorPixels = cameraLen; sample.nativeVectorPixels = nativeLen
+            if cameraLen >= 12 and nativeLen >= 12 then
+                local scale = (cdx*ndx+cdy*ndy)/cameraLen2
+                local rx,ry = ndx-scale*cdx,ndy-scale*cdy
+                local residualRatio = math.sqrt(rx*rx+ry*ry)/nativeLen
+                sample.projectionScale = scale; sample.projectionResidualRatio = residualRatio
+                if scale >= 0.25 and scale <= 4 and residualRatio <= 0.20 then
+                    sample.projectionScaleStatus = "accepted"
+                    self.metrics.rangeProjectionScaleAccepted = (tonumber(self.metrics.rangeProjectionScaleAccepted) or 0) + 1
+                else
+                    sample.projectionScaleStatus = "rejected"
+                    if scale < 0.25 or scale > 4 then sample.projectionScaleReason = "projection_scale_out_of_bounds" else sample.projectionScaleReason = "projection_vector_residual" end
+                end
+            else
+                sample.projectionScaleStatus = "rejected"; sample.projectionScaleReason = "screen_vector_too_short"
+            end
+        else
+            sample.projectionScaleReason = targetScreenErr or anchorScreenErr or "screen_projection_facts_unavailable"
+        end
+    else
+        sample.projectionScaleReason = frameErr or sample.targetWorldError or sample.anchorWorldError or "projection_frame_unavailable"
+    end
+    return sample
+end
+
+function P:GetRangeMetricCalibration(options)
+    options = type(options) == "table" and options or {}
+    local now = math.max(0,N(S.NowMs and S.NowMs()) or 0)
+    local intervalMs = math.max(250,math.min(5000,N(options.intervalMs) or 500))
+    local state = type(self.rangeMetricCalibration) == "table" and self.rangeMetricCalibration or nil
+    if state == nil then
+        state = { worldSamples={}, projectionSamples={}, worldUnitsPerMeter=1, projectionScale=1,
+            worldScaleStatus="default", projectionScaleStatus="default", lastAttemptAt=-1000000 }
+        self.rangeMetricCalibration = state
+    end
+
+    local function Median(samples)
+        local copy={}
+        for i=1,#samples do if N(samples[i])~=nil then copy[#copy+1]=N(samples[i]) end end
+        table.sort(copy)
+        local count=#copy
+        if count<=0 then return nil end
+        local middle=math.floor((count+1)/2)
+        if count%2==1 then return copy[middle] end
+        return (copy[middle]+copy[middle+1])/2
+    end
+    local function Push(samples,value)
+        value=N(value); if value==nil then return end
+        samples[#samples+1]=value
+        while #samples>5 do table.remove(samples,1) end
+    end
+    local function Snapshot(sampled)
+        return {
+            at=now, sampled=sampled==true,
+            worldUnitsPerMeter=N(state.worldUnitsPerMeter) or 1,
+            projectionScale=N(state.projectionScale) or 1,
+            worldScaleStatus=tostring(state.worldScaleStatus or "default"),
+            projectionScaleStatus=tostring(state.projectionScaleStatus or "default"),
+            worldSampleCount=#state.worldSamples, projectionSampleCount=#state.projectionSamples,
+            projectionContextKey=state.projectionContextKey,
+            lastSample=state.lastSample, lastAcceptedAt=state.lastAcceptedAt,
+            lastReason=state.lastReason,
+        }
+    end
+
+    if options.forceSample ~= true and now-(N(state.lastAttemptAt) or 0) < intervalMs then return Snapshot(false) end
+    state.lastAttemptAt=now
+    local sample=self:MeasureRangeMetricCalibration(options)
+    state.lastSample=sample
+    local sampleContext=type(sample)=="table" and sample.projectionContextKey or nil
+    if sampleContext~=nil and state.projectionContextKey~=nil and sampleContext~=state.projectionContextKey then
+        -- 维护：分辨率/FOV/UI Scale 改变后旧 screen scale 立即失效；worldUnitsPerMeter 是游戏世界单位事实，保留。
+        state.projectionSamples={}; state.projectionScale=1; state.projectionScaleStatus="default"
+    end
+    if sampleContext~=nil then state.projectionContextKey=sampleContext end
+    if type(sample)=="table" and sample.worldScaleStatus=="accepted" and N(sample.worldUnitsPerMeter)~=nil then
+        Push(state.worldSamples,sample.worldUnitsPerMeter)
+        state.worldUnitsPerMeter=Median(state.worldSamples) or 1
+        state.worldScaleStatus="calibrated"
+        state.lastAcceptedAt=now
+    end
+    if type(sample)=="table" and sample.projectionScaleStatus=="accepted" and N(sample.projectionScale)~=nil then
+        Push(state.projectionSamples,sample.projectionScale)
+        state.projectionScale=Median(state.projectionSamples) or 1
+        state.projectionScaleStatus="calibrated"
+        state.lastAcceptedAt=now
+    end
+    if type(sample)=="table" then
+        state.lastReason=sample.worldScaleReason or sample.projectionScaleReason
+    end
+    return Snapshot(true)
+end
 function P:_ProjectWithCamera(wx, wy, wz)
     local frame=self:_BuildCameraFrame(); if frame==nil then return nil,nil,nil end
     return self:_ProjectWithCameraFrame(frame,wx,wy,wz)
@@ -281,6 +497,7 @@ function P:ProjectWorldBatch(points, options)
     -- stays a rigid projection (no per-point mixing/scaling), and the calibration
     -- automatically follows resolution/UI-scale changes every refresh.
     local calibrationStatus, calibrationDx, calibrationDy, calibrationErr = "not_requested", nil, nil, nil
+    local calibrationAnchorX,calibrationAnchorY=nil,nil
     local anchorUnit=tostring(options.anchorUnit or "")
     local anchorWorld=type(options.anchorWorld)=="table" and options.anchorWorld or nil
     if easyPullCompat and cameraAccepted>0 and nativeAccepted==0 and anchorUnit~="" and anchorWorld~=nil then
@@ -312,6 +529,7 @@ function P:ProjectWorldBatch(points, options)
                 end
                 calibrationStatus="applied"
                 calibrationDx,calibrationDy=dx,dy
+                calibrationAnchorX,calibrationAnchorY=anchorX,anchorY
             else
                 calibrationStatus="rejected"
                 calibrationErr="anchor_delta_out_of_bounds"
@@ -325,11 +543,50 @@ function P:ProjectWorldBatch(points, options)
         calibrationStatus="mixed_source_skipped"
     end
 
+    -- 中文维护注释（2026-09-15，range-screen-scale-1）：锚点平移只修正 principal-point 偏移，
+    -- 不能修正 Camera fallback 与 Native screen 的焦距比例。只有“整批全 Camera + Native 玩家锚点已成功”
+    -- 时，才允许围绕同一个玩家锚点做一次 rigid isotropic scale；Native 投影点或混合批次绝不缩放，
+    -- 避免半个圆使用另一尺度。倍率来自上面的 UnitDistance/target 校准，不在这里猜常量。
+    local metricScreenScale=N(options.metricScreenScale)
+    local metricScreenScaleStatus=metricScreenScale~=nil and "pending" or "not_requested"
+    local metricAnchorX,metricAnchorY=nil,nil
+    if metricScreenScale~=nil then
+        if metricScreenScale<0.25 or metricScreenScale>4 then
+            metricScreenScaleStatus="rejected"
+        elseif easyPullCompat and cameraAccepted>0 and nativeAccepted==0 and calibrationStatus=="applied" then
+            -- 复用本批锚点校准已经读取的 Native player screen；禁止为了 screen scale 再做一次 20Hz Native read。
+            local anchorX,anchorY=calibrationAnchorX,calibrationAnchorY
+            if anchorX~=nil and anchorY~=nil then
+                metricAnchorX,metricAnchorY=anchorX,anchorY
+                if math.abs(metricScreenScale-1)<=0.0001 then
+                    metricScreenScaleStatus="identity"
+                else
+                    for index=1,#source do
+                        local row=out[index]
+                        if type(row)=="table" and row.visible==true and row.source=="easypull_camera" then
+                            row.x=anchorX+(row.x-anchorX)*metricScreenScale
+                            row.y=anchorY+(row.y-anchorY)*metricScreenScale
+                        end
+                    end
+                    metricScreenScaleStatus="applied"
+                end
+            else
+                metricScreenScaleStatus="anchor_unavailable"
+            end
+        elseif nativeAccepted>0 then
+            metricScreenScaleStatus="native_or_mixed_skipped"
+        else
+            metricScreenScaleStatus="camera_unavailable"
+        end
+    end
+
     local mode=easyPullCompat and "easypull_native_then_worldtoscreen" or (nativeOnly and "native_only" or "native_then_camera")
     local facts={ at=(S.NowMs and S.NowMs() or 0), total=#source, native=nativeAccepted,
         camera=cameraAccepted, nativeRejected=nativeRejected, cameraRejected=cameraRejected, frameErr=frameErr,
         depthMin=depthMin, depthMax=depthMax, mode=mode, calibrationStatus=calibrationStatus,
         calibrationDx=calibrationDx, calibrationDy=calibrationDy, calibrationErr=calibrationErr,
+        metricScreenScale=metricScreenScale, metricScreenScaleStatus=metricScreenScaleStatus,
+        metricAnchorX=metricAnchorX, metricAnchorY=metricAnchorY,
         sample=(out[1]~=nil) and (tostring(math.floor(tonumber(out[1].x) or 0))..","..tostring(math.floor(tonumber(out[1].y) or 0)).."/"..tostring(out[1].source or (out[1].visible==true and "native" or out[1].reason))) or nil }
     self.lastWorldBatch=facts
     if nativeAccepted<=0 and cameraAccepted<=0 then
@@ -479,7 +736,10 @@ function P:ProjectUnitBatch(unitTokens, options)
         local fact=facts[token]
         local worldAvailable=fact.wx~=nil and (not requireFront or fact.forward~=nil)
         local definitelyBehind=requireFront and worldAvailable and fact.forward<=frontEpsilon
-        if worldAvailable and (not definitelyBehind or fact.aliasCandidate==true) then
+        -- 维护：非strict调用原本也必须先有world才读screen，导致焦点world暂缺时
+        -- 连有效screen也被丢弃。Authority是本次Native screen；world仅提供可选回退。
+        -- strict消费者仍须证明world/front，不重启以前因RU空间不一致禁用的全局相机门。
+        if not requireFront or (worldAvailable and (not definitelyBehind or fact.aliasCandidate==true)) then
             local x,y,depth,err=self:ProjectUnit(token)
             fact.nativeX,fact.nativeY,fact.nativeDepth,fact.nativeErr=x,y,depth,err
         end
@@ -513,6 +773,11 @@ function P:ProjectUnitBatch(unitTokens, options)
             out[token]={visible=false,reason=fact.worldErr or "unit_world_position_unavailable"}
         elseif requireFront and forward<=frontEpsilon and fact.worldAliased~=true then
             self.metrics.behindCameraRejects=(tonumber(self.metrics.behindCameraRejects) or 0)+1
+            out[token]={visible=false,reason="behind_camera",forward=forward}
+        elseif fact.nativeErr=="behind_camera" then
+            -- 维护：ProjectUnit已取得明确的非正深度。旧分支把这种“不可见”当读取缺失，
+            -- 再用world回退复活端点，生成朝屏幕边缘的假线。禁止任何fallback覆盖此否决；
+            -- 缺少depth仍保留旧接口兼容，不把缺值编造成behind。
             out[token]={visible=false,reason="behind_camera",forward=forward}
         elseif fact.worldAliased==true then
             -- Do NOT use the camera projection here: it was derived from the
@@ -578,13 +843,22 @@ function P:ProjectUnitBatch(unitTokens, options)
                     sourceName="world_fallback"
                 end
             end
-            if x~=nil and y~=nil then
+            if x~=nil and y~=nil and (depth==nil or depth>0) then
                 out[token]={visible=true,x=x,y=y,depth=depth or 1,source=sourceName,forward=forward}
+            elseif depth~=nil and depth<=0 then
+                -- 同一可见性约束也应用于world Native返回值，不能把负深度标成visible。
+                out[token]={visible=false,reason="behind_camera",forward=forward}
             else
                 out[token]={visible=false,reason=err or "unit_projection_unavailable",forward=forward}
             end
             end
         end
+    end
+    -- 维护：仅返还本次端点证据，不跨帧缓存目标或打印聊天。调用方最多保留自身有限token；
+    -- screen/world错误分开，避免下一次仍只收到 unit_projection_unavailable 无法定位层级。
+    for _,token in ipairs(ordered) do
+        local row,fact=out[token],facts[token]
+        if row and fact then row.nativeError=fact.nativeErr;row.worldError=fact.worldErr end
     end
     return out,"ready"
 end
@@ -594,11 +868,16 @@ P.UnitProjectionConsistencyContractVersion = 1
 P.UnitWorldAliasGuardContractVersion = 1
 P.WorldBatchIndexContractVersion = 1
 P.WorldBatchFactsContractVersion = 2
-P.WorldBatchAnchorCalibrationContractVersion = 1
+P.WorldBatchAnchorCalibrationContractVersion = 2
+P.RangeMetricWorldUnitContractVersion = 1
+P.RangeMetricScreenScaleApplyContractVersion = 1
 P.CameraUnavailableNativeFallbackContractVersion = 1
 
 function P:GetHealth()
     return { version=self.version, unitReads=tonumber(self.metrics.unitReads) or 0, worldReads=tonumber(self.metrics.worldReads) or 0,
+        distanceReads=tonumber(self.metrics.distanceReads) or 0, rangeMetricSamples=tonumber(self.metrics.rangeMetricSamples) or 0,
+        rangeMetricAccepted=tonumber(self.metrics.rangeMetricAccepted) or 0, rangeProjectionScaleAccepted=tonumber(self.metrics.rangeProjectionScaleAccepted) or 0,
+        rangeMetricCalibration=self.rangeMetricCalibration,
         nativeProjects=tonumber(self.metrics.nativeProjects) or 0, cameraProjects=tonumber(self.metrics.cameraProjects) or 0,
         cameraBatches=tonumber(self.metrics.cameraBatches) or 0, failures=tonumber(self.metrics.failures) or 0,
         failuresByReason=self.metrics.failuresByReason, lastFailure=self.metrics.lastFailure,

@@ -43,6 +43,8 @@ Feature.Authority = A
 local WEEK_SECONDS = 7 * 24 * 60 * 60
 local DAY_SECONDS = 24 * 60 * 60
 local CLOCK_SAMPLE_MS = 15000
+local PRIORITY_STAGE_THRESHOLD_SECONDS = 3 * 60 * 60
+A.PriorityStageSortContractVersion = 1 -- 中文维护注释（2026-09-16，活动排序 Authority）：v1 固化“普通进行中 → 普通<=3h → 鲸鱼/烛台已知阶段 → 普通>3h → 其它无时限”的产品规则。这里只声明排序契约，不改变活动时间/阶段读取或 Store。
 
 local ZONE_STATE = {
     TROUBLE_0 = tonumber(rawget(_G, "HPWS_TROUBLE_0")) or 0,
@@ -63,7 +65,7 @@ local ZONE_VIEW = {
     [ZONE_STATE.TROUBLE_4] = { text = "危险5阶段", tone = "orange", untimed = true },
     [ZONE_STATE.BATTLE] = { text = "纷争", tone = "orange", timed = true },
     [ZONE_STATE.WAR] = { text = "战争", tone = "red", timed = true },
-    [ZONE_STATE.PEACE] = { text = "和平", tone = "green", timed = true },
+    [ZONE_STATE.PEACE] = { text = "和平", tone = "blue", timed = true },
 }
 
 local DAY_NAME = { "周日", "周一", "周二", "周三", "周四", "周五", "周六" }
@@ -238,12 +240,31 @@ function A:BuildStaticRows()
         if EventDateEnabled(event, currentDateSerial) then
             local best = nil
             local duration = math.max(0, tonumber(event.duration) or 0) * 60
+            -- 中文维护注释：支持活动 taskTailMinutes 后续任务保持期（如征兆之痕90分钟、煦日120分钟）。
+            -- 当玩家身上已接受或待交后续 Boss/恶魔阶段任务（tailInFlightCount > 0）时，
+            -- 即使首个计划时长（如10分钟）已过，仍将当期活动保持为“进行中”，防止在击杀过程中倒计时过早跳到 4 小时后的下一次。
+            local taskTailMinutes = tonumber(event.taskTailMinutes)
+            local tailDuration = taskTailMinutes and math.max(duration, taskTailMinutes * 60) or duration
+            local progressSnapshot = (taskTailMinutes ~= nil and event.questKey ~= nil and type(self.questProgressProvider) == "function")
+                and self.questProgressProvider(event.questScope or "event", event.questKey) or nil
+            local tailInFlight = type(progressSnapshot) == "table" and (tonumber(progressSnapshot.tailInFlightCount) or 0) > 0
+
             for day = 1, 7 do
                 if HasDay(event.days, day) then
                     local start = ((day - 1) * DAY_SECONDS) + (tonumber(event.hour) or 0) * 3600 + (tonumber(event.minute) or 0) * 60
                     local elapsed = NormalizeWeekSeconds(now - start)
-                    local active = duration > 0 and elapsed < duration
-                    local seconds = active and math.max(0, math.floor(duration - elapsed)) or math.max(0, math.floor(NormalizeWeekSeconds(start - now)))
+                    local baseActive = duration > 0 and elapsed < duration
+                    local tailActive = tailInFlight and (elapsed >= duration and elapsed < tailDuration)
+                    local active = baseActive or tailActive
+                    local seconds
+                    if baseActive then
+                        seconds = math.max(0, math.floor(duration - elapsed))
+                    elseif tailActive then
+                        seconds = math.max(0, math.floor(tailDuration - elapsed))
+                    else
+                        seconds = math.max(0, math.floor(NormalizeWeekSeconds(start - now)))
+                    end
+
                     local candidate = {
                         key = "event:" .. tostring(event.fullName or event.name or "unknown"),
                         name = tostring(event.name or event.fullName or "活动"),
@@ -257,8 +278,12 @@ function A:BuildStaticRows()
                         active = active,
                         seconds = seconds,
                         sortSeconds = active and 0 or seconds,
-                        tone = active and "red" or (seconds <= 900 and "yellow" or "blue"),
-                        status = active and ("进行中 " .. FormatCountdown(seconds)) or FormatCountdown(seconds),
+                        -- 中文维护注释（2026-09-15，活动显示规范）：计划活动的 active 只负责排序/任务尾部保持，
+                        -- 不再承担视觉颜色或“进行中”文案。普通时间统一用 default（白色）；战争/纷争/和平颜色
+                        -- 只由实时区域状态 Authority 决定，避免同一个红色同时代表“活动正在发生”和“战争区域”。
+                        -- 兼容边界：active/seconds/sortSeconds/occurrenceKey 均保持原语义，Store 与任务尾部逻辑不变。
+                        tone = "default",
+                        status = FormatCountdown(seconds),
                         scheduleText = FormatSchedule(day, event.hour, event.minute),
                         occurrenceKey = tostring(event.fullName or event.name) .. ":" .. tostring(day) .. ":" .. tostring(start),
                     }
@@ -340,7 +365,9 @@ function A:BuildZoneRows()
         local untimed = true
 
         if remain ~= nil and view ~= nil and view.timed == true then
-            status = (active and "进行中 " or "") .. view.text .. " " .. FormatCountdown(remain)
+            -- 中文维护注释（2026-09-15）：实时区域状态直接显示“战争/纷争/和平 + 时间”，
+            -- active 继续作为内部排序/摘要事实，Presentation 不再把它拼成“进行中”。
+            status = view.text .. " " .. FormatCountdown(remain)
             sortSeconds = remain
             untimed = false
         end
@@ -352,7 +379,7 @@ function A:BuildZoneRows()
             local total = math.max(0, tonumber(dynamic and dynamic.warTotalMinutes) or 90)
             local activeMinutes = math.max(0, tonumber(dynamic and dynamic.activeWarMinutes) or 20)
             active = remain > math.max(0, total - activeMinutes) * 60
-            status = (active and "进行中 " or "") .. "战争 " .. FormatCountdown(remain)
+            status = "战争 " .. FormatCountdown(remain)
         elseif zoneId == 103 and state == ZONE_STATE.BATTLE and remain ~= nil then
             status, active, sortSeconds, untimed = "纷争 " .. FormatCountdown(remain), false, remain, false
         elseif zoneId == 103 and state == ZONE_STATE.WAR and remain ~= nil then
@@ -361,9 +388,12 @@ function A:BuildZoneRows()
             local boss = tostring(dynamic and dynamic.bossLabel or "首领")
             if remain > threshold then
                 local bossRemain = remain - threshold
-                status, tone, active, sortSeconds = boss .. " " .. FormatCountdown(bossRemain), "yellow", false, bossRemain
+                -- 中文维护注释（2026-09-15，区域颜色 Authority）：此 Boss 倒计时仍处于 WAR conflictState，
+                -- 因此颜色必须继续使用战争红色；Boss 文案只改变状态文字，不能覆盖区域语义颜色。
+                -- 兼容边界：阈值、active、sortSeconds 与任务进度均保持原逻辑，仅修正 Presentation tone。
+                status, tone, active, sortSeconds = boss .. " " .. FormatCountdown(bossRemain), "red", false, bossRemain
             elseif remain > activeUntil then
-                status, tone, active, sortSeconds = boss .. "进行中", "red", true, 0
+                status, tone, active, sortSeconds = boss, "red", true, 0
             else
                 status, tone, active, sortSeconds = "战争 " .. FormatCountdown(remain), "red", false, remain
             end
@@ -380,8 +410,15 @@ function A:BuildZoneRows()
             source = "live",
             zoneState = true,
             zoneId = zoneId,
-            questScope = definition.questScope,
-            questKey = definition.questKey,
+            -- 中文维护注释（2026-09-16，阶段排序事实）：phaseKnown 只表示本次 X2Map conflictState 能映射到已知区域阶段，
+            -- 它属于 Activity Authority 的瞬时只读事实，用来区分“危险1~5/纷争/战争/和平”与真正的“状态未知”。
+            -- 数据流只从 ScanZone -> ZONE_VIEW -> row 投影；不持久化、不影响任务进度。这样鲸鱼/烛台即使危险阶段没有 remainTime，
+            -- 也能进入专用排序带；未知状态仍 fail-closed 留在末尾，避免把 API 失败误当成有效阶段。
+            phaseKnown = view ~= nil,
+            -- 中文维护注释：实时区域行优先从 definition 获取任务关联，同时回退到 DynamicEventZones 中的定义，
+            -- 确保如鲸鱼歌湾（103）与海之烛台（102）能正确关联 whalesong 与 aegis 任务组并挂接阶段进度。
+            questScope = definition.questScope or (dynamic and dynamic.questScope),
+            questKey = definition.questKey or (dynamic and dynamic.questKey),
             active = active,
             seconds = untimed and nil or sortSeconds,
             sortSeconds = sortSeconds,
@@ -400,7 +437,7 @@ function A:BuildZoneRows()
         if state ~= nil and remain ~= nil then
             local status, tone, active, seconds = "状态未知", "muted", false, remain
             if state == ZONE_STATE.WAR then
-                status, tone, active = "进行中 战争 " .. FormatCountdown(remain), "red", true
+                status, tone, active = "战争 " .. FormatCountdown(remain), "red", true
             elseif state == ZONE_STATE.BATTLE then
                 status, tone = "纷争 " .. FormatCountdown(remain), "orange"
             elseif state == ZONE_STATE.PEACE then
@@ -423,10 +460,30 @@ function A:BuildZoneRows()
     return rows
 end
 
+local function IsPriorityLiveStage(row)
+    local zoneId = tonumber(type(row) == "table" and row.zoneId or nil)
+    return (zoneId == 102 or zoneId == 103) and row.phaseKnown == true
+end
+
+local function ActivitySortBand(row)
+    local specialStage = IsPriorityLiveStage(row)
+    local seconds = tonumber(type(row) == "table" and row.sortSeconds or nil)
+    local timed = seconds ~= nil and seconds ~= math.huge
+    -- 中文维护注释（2026-09-16，活动排序根因修复）：旧 SortRows 只比较 active/sortSeconds，导致鲸鱼/烛台
+    -- 在战争阶段按 1h 倒计时插进普通 1~2h 活动前面，而危险阶段因为无倒计时又掉到所有长时活动之后。
+    -- Authority 现在使用显式业务分带：普通进行中(0) → 普通<=3h(1) → 鲸鱼/烛台已知阶段(2) → 普通>3h(3) → 其它无时限/未知(4)。
+    -- 特殊阶段必须在 active 判断之前归入 band=2，避免“活动阶段 active=true”再次抢到最前；恰好3小时仍属于用户定义的“3小时以内”。
+    -- 兼容边界：不改 sortSeconds/active 的原始语义，也不影响十字星/伊尼斯/庭院等其它区域；同一 band 内仍沿用秒数、zoneState、名称稳定排序。
+    if specialStage then return 2 end
+    if type(row) == "table" and row.active == true then return 0 end
+    if timed and seconds <= PRIORITY_STAGE_THRESHOLD_SECONDS then return 1 end
+    if timed then return 3 end
+    return 4
+end
+
 local function SortRows(a, b)
-    if a.active ~= b.active then return a.active == true end
-    local aTimed, bTimed = tonumber(a.sortSeconds) ~= nil and a.sortSeconds ~= math.huge, tonumber(b.sortSeconds) ~= nil and b.sortSeconds ~= math.huge
-    if aTimed ~= bTimed then return aTimed == true end
+    local aBand, bBand = ActivitySortBand(a), ActivitySortBand(b)
+    if aBand ~= bBand then return aBand < bBand end
     local sa, sb = tonumber(a.sortSeconds) or math.huge, tonumber(b.sortSeconds) or math.huge
     if sa ~= sb then return sa < sb end
     if a.zoneState ~= b.zoneState then return a.zoneState == true end

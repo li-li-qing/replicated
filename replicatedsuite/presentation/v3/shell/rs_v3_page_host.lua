@@ -11,8 +11,9 @@ if type(RSUI) ~= "table" then return end
 
 S.UIV3 = S.UIV3 or {}
 S.UIV3.PageHost = {
-    version = 4,
+    version = 5,
     buildTransactionContractVersion = 1,
+    buildContextContractVersion = 1,
     root = nil,
     switcher = nil,
     factories = {},
@@ -21,6 +22,11 @@ S.UIV3.PageHost = {
     pageOrder = {},
     activeRoute = nil,
     context = nil,
+    -- 中文维护注释（2026-09-18，module-diagnostics-header-1）：buildContext 只在页面工厂
+    -- 同步构建期间存在，用来把 FeatureRegistry 的 moduleId 传给 DesignSystem。它不是运行时
+    -- Feature Authority，也不得跨帧缓存；页面构建成功/失败都必须恢复 previousContext，避免
+    -- 后一个页面错误继承前一个模块的诊断入口。
+    buildContext = nil,
     failedPages = {},
     stats = { builds = 0, buildFailures = 0, quarantinedRejects = 0 },
 }
@@ -55,6 +61,14 @@ function H:Attach(parent)
     return self.switcher ~= nil
 end
 
+function H:GetBuildContext()
+    local row = self.buildContext
+    if type(row) ~= "table" then return nil end
+    -- 返回新的薄表，禁止 DesignSystem/页面工厂反向修改 PageHost 当前上下文。Feature 元数据本身
+    -- 来自 FeatureRegistry，只用于读取 id/route/name；诊断按钮不能通过这里启停 Feature。
+    return { route = row.route, moduleId = row.moduleId, feature = row.feature }
+end
+
 function H:CreatePage(route)
     route = tostring(route or "")
     if self.switcher == nil then return nil, "page host not attached" end
@@ -71,7 +85,18 @@ function H:CreatePage(route)
     if type(factory) ~= "function" then return nil, "page factory unavailable: " .. tostring(route) end
 
     local ok, page, detail = RSUI:WithBuildScope("page:" .. route, function()
-        return factory(self.switcher, route, feature)
+        -- 中文维护注释（2026-09-18）：PageHeader 的诊断按钮必须自动知道当前 Feature，
+        -- 但不能要求每个业务页面手工传 moduleId。这里以页面工厂同步调用栈作为唯一边界；
+        -- xpcall 确保 factory 抛错时 buildContext 也一定恢复。禁止把 buildContext 留到页面
+        -- 激活/Refresh 阶段，否则异步 UI 会串模块并把错误报告归错 Owner。
+        local previousBuildContext = self.buildContext
+        self.buildContext = { route = route, moduleId = feature and feature.id or nil, feature = feature }
+        local factoryOk, builtPage, builtDetail = xpcall(function()
+            return factory(self.switcher, route, feature)
+        end, S.SafeTraceback)
+        self.buildContext = previousBuildContext
+        if factoryOk ~= true then error(builtPage) end
+        return builtPage, builtDetail
     end)
     self.stats.builds = (tonumber(self.stats.builds) or 0) + 1
     if ok ~= true or page == nil then
@@ -223,7 +248,7 @@ function H:Describe()
     local quarantined = 0
     for _, row in pairs(self.failedPages or {}) do if type(row) == "table" and tonumber(row.generation) == tonumber(S.Generation) then quarantined = quarantined + 1 end end
     return {
-        version = self.version, buildTransactionContractVersion = self.buildTransactionContractVersion, registeredFactories = registered, hasFallback = self.fallbackFactory ~= nil,
+        version = self.version, buildTransactionContractVersion = self.buildTransactionContractVersion, buildContextContractVersion = self.buildContextContractVersion, registeredFactories = registered, hasFallback = self.fallbackFactory ~= nil,
         created = #self.pageOrder, activeRoute = self.activeRoute, quarantined = quarantined,
         builds = tonumber(self.stats.builds) or 0, buildFailures = tonumber(self.stats.buildFailures) or 0, quarantinedRejects = tonumber(self.stats.quarantinedRejects) or 0,
     }

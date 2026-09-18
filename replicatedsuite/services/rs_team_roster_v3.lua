@@ -12,7 +12,7 @@ S.Services = S.Services or {}
 
 local T = {
     Id = "v3.team_roster",
-    version = 6,
+    version = 7,
     members = {},
     ordered = {},
     revision = 0,
@@ -26,6 +26,11 @@ local T = {
     subscribed = false,
     refreshTask = "v3_team_roster_refresh",
     retryTask = "v3_team_roster_retry",
+    settleTask = "v3_team_roster_settle",
+    settleMaxPasses = 2,
+    settleRefreshes = 0,
+    settleScheduleFailures = 0,
+    TeamEdgeSettleContractVersion = 1,
     visibleTeamIndex = nil,
     visibleTeamDetectionAvailable = false,
 }
@@ -246,6 +251,31 @@ function T:ScheduleRefresh(delayMs, reason)
     end, self, "P1", 2)
 end
 
+function T:ScheduleSettleRefresh(delayMs, reason, pass)
+    if self.consumerCount <= 0 then return true end
+    if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return false, "team roster settle scheduler unavailable" end
+    pass = math.max(1, math.floor(tonumber(pass) or 1))
+    if pass > math.max(1, tonumber(self.settleMaxPasses) or 2) then return true end
+    -- 中文维护注释（2026-09-16，团队边沿稳定化）：RU 的 TEAM_MEMBERS_CHANGED 可能先于 teamN/native slot 真正就绪。
+    -- TeamRosterV3 是团队身份 Authority，因此“晚到槽位”的补扫也必须留在 Service 内，而不是让 AutoRole/Healer 各自扫描 X2Unit。
+    -- 每个原生边沿只允许最多两次 one-shot 尾随扫描：第1次约700ms、第2次再约900ms；没有 Tick/周期常驻，且新边沿会替换旧链。
+    -- Refresh 仍通过 SameRosterSnapshot 只在身份/槽位真的变化时发布 v3.team_roster.updated，所以正常稳定团队不会引发额外 Consumer 重算。
+    -- 兼容风险：若未来客户端槽位稳定时间超过该有界窗口，只增加此 Authority 的 pass/delay，不要在业务 Feature 新建第二套名单缓存。
+    if pass == 1 and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.settleTask) end
+    local taskReason = tostring(reason or "team_edge") .. ":settle:" .. tostring(pass)
+    local scheduled = S.Scheduler:AddOneShot(self.settleTask, math.max(250, tonumber(delayMs) or 700), function()
+        T.settleRefreshes = (tonumber(T.settleRefreshes) or 0) + 1
+        local ok, count = T:Refresh(taskReason)
+        if pass < math.max(1, tonumber(T.settleMaxPasses) or 2) and T.consumerCount > 0 then
+            local nextOk = T:ScheduleSettleRefresh(900, reason, pass + 1)
+            if nextOk ~= true then T.settleScheduleFailures = (tonumber(T.settleScheduleFailures) or 0) + 1 end
+        end
+        return ok, count
+    end, self, "P2", 2)
+    if scheduled ~= true then self.settleScheduleFailures = (tonumber(self.settleScheduleFailures) or 0) + 1 end
+    return scheduled == true, scheduled == true and nil or "team roster settle task schedule failed"
+end
+
 function T:IsMemberName(name)
     local full, base = SplitName(name)
     if full == "" then return false end
@@ -270,10 +300,17 @@ function T:GetSnapshot()
 end
 
 function T:_Start()
-    if self.subscribed == true then return self:ScheduleRefresh(80, "consumer_start") end
+    if self.subscribed == true then
+        local scheduled, err = self:ScheduleRefresh(80, "consumer_start")
+        if scheduled ~= true then return false, err end
+        return self:ScheduleSettleRefresh(700, "consumer_start", 1)
+    end
     if S.Events == nil or type(S.Events.Subscribe) ~= "function" then return false, "team roster event bus unavailable" end
     local subscribed = S.Events:Subscribe("TEAM_MEMBERS_CHANGED", self, function(_, reason)
-        T:ScheduleRefresh(180, "team_members_changed:" .. tostring(reason or ""))
+        local edgeReason = "team_members_changed:" .. tostring(reason or "")
+        local primaryOk = T:ScheduleRefresh(180, edgeReason)
+        local settleOk = T:ScheduleSettleRefresh(700, edgeReason, 1)
+        if primaryOk ~= true or settleOk ~= true then T.settleScheduleFailures = (tonumber(T.settleScheduleFailures) or 0) + 1 end
     end)
     if subscribed ~= true then return false, "TEAM_MEMBERS_CHANGED subscribe failed" end
     self.subscribed = true
@@ -282,6 +319,13 @@ function T:_Start()
         if type(S.Events.UnsubscribeOwner) == "function" then S.Events:UnsubscribeOwner(self) end
         self.subscribed = false
         return false, err or "team roster initial refresh schedule failed"
+    end
+    local settleScheduled, settleErr = self:ScheduleSettleRefresh(700, "consumer_start", 1)
+    if settleScheduled ~= true then
+        if type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.refreshTask) end
+        if type(S.Events.UnsubscribeOwner) == "function" then S.Events:UnsubscribeOwner(self) end
+        self.subscribed = false
+        return false, settleErr or "team roster initial settle schedule failed"
     end
     return true
 end
@@ -332,6 +376,9 @@ function T:GetHealth()
         scanFailures = self.scanFailures,
         retries = self.retries,
         retryStreak = self.retryStreak,
+        settleRefreshes = tonumber(self.settleRefreshes) or 0,
+        settleScheduleFailures = tonumber(self.settleScheduleFailures) or 0,
+        teamEdgeSettleContractVersion = tonumber(self.TeamEdgeSettleContractVersion) or 0,
         lastRefreshAt = self.lastRefreshAt,
         subscribed = self.subscribed == true,
         visibleTeamIndex = self.visibleTeamIndex,

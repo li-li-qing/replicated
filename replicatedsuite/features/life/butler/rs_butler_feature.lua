@@ -10,6 +10,7 @@ local F = S.Features.Butler
 if type(Runtime) ~= "table" or type(F.Authority) ~= "table" then return end
 
 F.Id = "life_butler"
+F.UpdateTopic = "v3.butler.updated"
 F.ApiDependencies = { "X2Butler:GetChargeInfo" }
 F.enabled = F.enabled == true
 

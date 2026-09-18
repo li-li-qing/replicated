@@ -53,7 +53,6 @@ A.migratedPresentation = {
     { route = "life.bonds", widget = "life.bonds" },
     { route = "life.treasure" },
     { route = "life.fishing" },
-    { route = "life.craft_planner" },
     { route = "life.housing" },
     { route = "life.butler" },
     { route = "life.tasks", widget = "life.tasks" },
@@ -211,7 +210,9 @@ function A:RunMatrix()
     local lifeContracts = {
         { name = "Trade", id = "life_trade", methods = { "GetProjection", "GetRouteSettings", "GetFavoriteItems", "GetRow", "GetWidgetVisible", "GetWidgetWindowState", "AcquireConsumer", "ReleaseConsumer" }, commands = { "Refresh", "SetFrom", "SetTo", "SetSortMode", "ToggleCurrentFavorite", "SelectFavorite", "SelectRow", "QuotePendingMaterials", "QuoteRowMaterials", "GetWidgetVisible", "SetWidgetVisible", "SetWidgetWindowState" } },
         { name = "Bonds", id = "life_bonds", methods = { "GetProjection", "GetSortMode", "GetBondFilter", "GetWidgetVisible", "GetWidgetWindowState", "AcquireConsumer", "ReleaseConsumer" }, commands = { "Refresh", "SetSortMode", "SetBondFilterOption", "SetDuplicatePriority", "GetWidgetVisible", "SetWidgetVisible", "SetWidgetWindowState" } },
-        { name = "Treasure", id = "life_treasure", methods = { "GetProjection", "GetWidgetVisible", "GetWidgetWindowState", "AcquireConsumer", "ReleaseConsumer" }, commands = { "Refresh", "Select", "GetWidgetVisible", "SetWidgetVisible", "SetWidgetWindowState" } },
+        -- 中文维护注释（2026-09-16，寻宝地图 Command 边界）：原生地图定位是新增的显式用户动作。Acceptance 必须验证 Command 存在，
+        -- 防止 Feature/Presentation 热重载版本错配时悬浮窗出现按钮却在点击后才报 nil；这里只检查函数表，不执行 X2Map，也不扫描背包。
+        { name = "Treasure", id = "life_treasure", methods = { "GetProjection", "GetWidgetVisible", "GetWidgetWindowState", "AcquireConsumer", "ReleaseConsumer" }, commands = { "Refresh", "Select", "ShowSelectedOnMap", "GetWidgetVisible", "SetWidgetVisible", "SetWidgetWindowState" } },
         { name = "Fishing", id = "life_fishing", methods = { "GetProjection", "GetWidgetVisible", "GetWidgetWindowState", "IsAutoArmed", "AcquireConsumer", "ReleaseConsumer" }, commands = { "Refresh", "GetWidgetVisible", "SetWidgetVisible", "SetWidgetWindowState", "ArmAuto", "DisarmAuto" } },
     }
     for _, contract in ipairs(lifeContracts) do
@@ -241,9 +242,8 @@ function A:RunMatrix()
         { id = "combat_raid_recruitment", status = "migrated_partial" },
         { id = "life_trade", status = "migrated_partial" },
         { id = "life_fishing", status = "migrated_partial" },
-        { id = "life_craft_planner", status = "migrated_partial" },
         { id = "tools_bag", status = "migrated_partial" },
-        { id = "tools_auction", status = "migrated_partial" },
+        { id = "tools_auction", status = "migrated_m1" },
         { id = "tools_market_analysis", status = "migrated_partial" },
         { id = "tools_craft", status = "migrated_partial" },
     }
@@ -335,24 +335,37 @@ function A:RunMatrix()
         or tostring(auctionSurface.presentationBoundary or "") ~= "service_only"
         or (tonumber(auctionSurface.VisibilityContractVersion) or 0) < 2
         or type(auctionSurface.GetSnapshot) ~= "function" or type(auctionSurface.Start) ~= "function" or type(auctionSurface.Stop) ~= "function"
-        or type(auctionSidecar) ~= "table" then
-        failures[#failures + 1] = "auction_sidecar_contract_v2"
+        or type(auctionSidecar) ~= "table" or (tonumber(auctionSidecar.SidecarControlContractVersion) or 0) < 2
+        or type(auctionSidecar.GetControlState) ~= "function" or type(auctionSidecar.RequestShow) ~= "function"
+        or type(auction) ~= "table" or (tonumber(auction.SidecarPreferenceContractVersion) or 0) < 1
+        or type(auction.IsSidecarEnabled) ~= "function" or type(auction.Commands) ~= "table"
+        or type(auction.Commands.SetSidecarEnabled) ~= "function" then
+        failures[#failures + 1] = "auction_sidecar_contract_v3"
+    end
+    -- 中文维护注释：Acceptance 只验拍卖工作区的稳定数据/生命周期接口；原生搜索框同步是可降级增强，
+    -- 不纳入 blocker。这样客户端 UI 层级变化时仍可通过 AuctionQueryV3 完成用户显式搜索。
+    local auctionSession = S.Services and S.Services.AuctionSessionListV3 or nil
+    local auctionDaily = S.Services and S.Services.DailyAuctionMaterialsV3 or nil
+    local questProgress = S.Services and S.Services.QuestProgressV3 or nil
+    if type(auctionSidecar) ~= "table" or (tonumber(auctionSidecar.AuctionWorkspaceContractVersion) or 0) < 1
+        or type(auctionSession) ~= "table" or (tonumber(auctionSession.SessionListContractVersion) or 0) < 1
+        or auctionSession.PersistenceStoreId ~= nil or type(auctionSession.AddTradeRow) ~= "function" or type(auctionSession.AddMaterial) ~= "function"
+        or type(auctionDaily) ~= "table" or (tonumber(auctionDaily.DailyMaterialContractVersion) or 0) < 2
+        or type(auctionDaily.AcquireConsumer) ~= "function" or type(auctionDaily.ReleaseConsumer) ~= "function"
+        or type(auctionDaily.SelectRecipe) ~= "function" or type(auctionDaily.GetSnapshot) ~= "function"
+        or type(questProgress) ~= "table" or type(questProgress.GetActiveQuestStates) ~= "function" or type(questProgress.GetActiveQuestList) ~= "function"
+        or type(auction) ~= "table" or type(auction.Commands) ~= "table"
+        or type(auction.Commands.RenameFavorite) ~= "function" or type(auction.Commands.MoveFavorite) ~= "function"
+        or type(auction.Commands.RemoveFavoriteByKeyword) ~= "function" or type(auction.Commands.ClearFavorites) ~= "function" then
+        failures[#failures + 1] = "auction_workspace_contract_v2"
     end
 
-    for _, craftId in ipairs({ "life_craft_planner", "tools_craft" }) do
-        local craftFeature = S.Features and S.Features[craftId] or nil
-        if type(craftFeature) ~= "table" or (tonumber(craftFeature.CraftUserSelectionContractVersion) or 0) < 1
-            or type(craftFeature.Commands) ~= "table" or type(craftFeature.Commands.SelectRecipe) ~= "function" then
-            failures[#failures + 1] = "craft_user_selection_contract:" .. craftId
-        end
-    end
-
-    local craftPlanner = S.Features and S.Features.life_craft_planner or nil
-    if type(craftPlanner) ~= "table" or (tonumber(craftPlanner.CraftPlanContractVersion) or 0) < 1
-        or type(craftPlanner.Commands) ~= "table" or type(craftPlanner.Commands.AddPlanRecipe) ~= "function"
-        or type(craftPlanner.Commands.RemovePlanRecipe) ~= "function" or type(craftPlanner.Commands.ClearPlan) ~= "function"
-        or type(craftPlanner.Commands.QuotePlanMaterials) ~= "function" then
-        failures[#failures + 1] = "craft_plan_contract_v1"
+    -- 中文维护注释（2026-09-15，删除制作规划）：Acceptance 只验证仍在产品中的 tools_craft。
+    -- life_craft_planner 不再是 Route/Feature/Store 契约；继续要求它会让“已删除功能”反向阻断整个 V3 启动。
+    local craftFeature = S.Features and S.Features.tools_craft or nil
+    if type(craftFeature) ~= "table" or (tonumber(craftFeature.CraftUserSelectionContractVersion) or 0) < 1
+        or type(craftFeature.Commands) ~= "table" or type(craftFeature.Commands.SelectRecipe) ~= "function" then
+        failures[#failures + 1] = "craft_user_selection_contract:tools_craft"
     end
     local craftSurface = S.Services and S.Services.CraftSurfaceV3 or nil
     local craftSidecar = S.UIV3 and S.UIV3.CraftSidecar or nil
@@ -368,15 +381,24 @@ function A:RunMatrix()
     end
 
     local teamTools = S.Features and S.Features.combat_team_tools or nil
+    local teamRoster = S.Services and S.Services.TeamRosterV3 or nil
     local teamRoleCatalog = S.Data and S.Data.TeamAutoRoleCatalog or nil
     local archerRole = type(teamRoleCatalog) == "table" and type(teamRoleCatalog.byClassKey) == "table"
         and teamRoleCatalog.byClassKey["name_6_8_9"] or nil
+    local dancerHealerRole = type(teamRoleCatalog) == "table" and type(teamRoleCatalog.byClassKey) == "table"
+        and teamRoleCatalog.byClassKey["name_8_9_14"] or nil
+    -- 中文维护注释（2026-09-16）：Acceptance 与 FoundationGate 使用同一职责/生命周期最小契约；
+    -- 避免页面能打开但 auto-role 因未持有 TeamRoster 或 8+9+14 仍映射 tank 而静默失效。验收只读，不执行 Native 写。
     if type(teamTools) ~= "table" or (tonumber(teamTools.TeamRoleContractVersion) or 0) < 2
-        or (tonumber(teamTools.AutoRoleCatalogContractVersion) or 0) < 1
+        or (tonumber(teamTools.AutoRoleContractVersion) or 0) < 3 -- 中文维护注释（2026-09-16）：确保自动职责生命周期修复本体随包存在，而非只有静态映射。
+        or (tonumber(teamTools.AutoRoleCatalogContractVersion) or 0) < 2
+        or (tonumber(teamTools.AutoRoleRosterLeaseContractVersion) or 0) < 1
         or type(teamTools.Commands) ~= "table" or type(teamTools.Commands.SetRole) ~= "function"
-        or type(teamRoleCatalog) ~= "table" or (tonumber(teamRoleCatalog.version) or 0) < 2
-        or type(archerRole) ~= "table" or tostring(archerRole.role or "") ~= "ranged" then
-        failures[#failures + 1] = "team_role_catalog_contract_v3"
+        or type(teamRoster) ~= "table" or (tonumber(teamRoster.TeamEdgeSettleContractVersion) or 0) < 1
+        or type(teamRoleCatalog) ~= "table" or (tonumber(teamRoleCatalog.version) or 0) < 3
+        or type(archerRole) ~= "table" or tostring(archerRole.role or "") ~= "ranged"
+        or type(dancerHealerRole) ~= "table" or tostring(dancerHealerRole.role or "") ~= "healer" then
+        failures[#failures + 1] = "team_role_catalog_lifecycle_contract_v4"
     end
     local teamSacOverlay = S.UIV3 and S.UIV3.TeamSacOverlay or nil
     if type(teamTools) ~= "table" or (tonumber(teamTools.TeamVisualContractVersion) or 0) < 2 -- 中文维护注释：v2 要求新用户牺牲之舞默认开启且 schema1 旧关闭可迁移；Consumer 生命周期仍由 Feature Demand 控制。
@@ -403,7 +425,8 @@ function A:RunMatrix()
 
     local activities = S.Features and S.Features.Activities or nil
     local activityStore = S.Persistence ~= nil and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.activities") or nil -- 中文维护注释：Acceptance 只检查 Store spec，不主动读取用户存档，避免启动期为验收增加 SaveData I/O。
-    if type(activities) ~= "table" or (tonumber(activities.PersistenceStoreSchemaContractVersion) or 0) < 8
+    if type(activities) ~= "table" or type(activities.Authority) ~= "table" or (tonumber(activities.Authority.PriorityStageSortContractVersion) or 0) < 1 -- 中文维护注释（2026-09-16）：排序分带是 Activity Authority 契约，不依赖页面是否打开。
+        or (tonumber(activities.PersistenceStoreSchemaContractVersion) or 0) < 8
         or (tonumber(activities.KnownLegacyCanonicalRecoveryContractVersion) or 0) < 3
         or (tonumber(activities.TransportV1ZeroOmissionRecoveryContractVersion) or 0) < 1 -- 中文维护注释：`.18.198` 要求零值省略结构化恢复随包存在；它与 known-pair 互为先后层级，缺一不可。
         or type(activityStore) ~= "table" or tonumber(activityStore.schemaVersion) ~= 8
@@ -446,6 +469,12 @@ function A:RunMatrix()
     if type(fishing) ~= "table" or (tonumber(fishing.ObservationContractVersion) or 0) < 1 or type(fishing.UpdateTopic) ~= "string" then
         failures[#failures + 1] = "fishing_observation_contract"
     end
+    local fishingHotkey = S.Services and S.Services.FishingHotkeyV3 or nil
+    -- 中文维护：Presentation acceptance 必须验证 Auto-R 已从“文案存在但 Runtime Blocked”升级为真实 v3 事务；只读契约，不在验收中触碰用户按键。
+    if type(fishing) ~= "table" or fishing.HotkeyRuntimeBlocked == true or (tonumber(fishing.HotkeyContractVersion) or 0) < 3
+        or type(fishingHotkey) ~= "table" or (tonumber(fishingHotkey.TransactionContractVersion) or 0) < 3 then
+        failures[#failures + 1] = "fishing_hotkey_transaction_contract"
+    end
 
     -- M1.16.0.18.43 usability recovery: these contracts prove that the newly
     -- visible HUD/screen capabilities are real runtime surfaces, not page-only
@@ -481,7 +510,7 @@ function A:RunMatrix()
     local visualGuides = S.UIV3 and S.UIV3.CombatVisualGuidesV3 or nil
     local unitLines = S.Features and S.Features.combat_unit_lines or nil
     local rangeAssist = S.Features and S.Features.combat_range_assist or nil
-    if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 11 or type(visualGuides.Describe) ~= "function"
+    if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 12 or type(visualGuides.Describe) ~= "function"
         or (tonumber(visualGuides.AdaptiveUnitLineSamplingContractVersion) or 0) < 2
         or (tonumber(visualGuides.UnitLineVisibleSegmentClippingContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLinePressureBudgetContractVersion) or 0) < 1
@@ -490,6 +519,9 @@ function A:RunMatrix()
         or (tonumber(visualGuides.UnitLineRawProjectedAnchorContractVersion) or 0) < 2
         or (tonumber(visualGuides.ScreenToOverlayHostContractVersion) or 0) < 1
         or (tonumber(visualGuides.ResolutionIndependentOverlayContractVersion) or 0) < 1
+        -- 中文维护注释（2026-09-17）：验收显式要求 VisualGuide overlay 走 game-layer Foundation 契约。
+        -- 这里只验证版本，避免 Acceptance 自己创建/抬高任何 Native host；RU 最终遮挡关系仍需实机确认。
+        or (tonumber(S.UI and S.UI.WorldHudNativeLayerContractVersion) or 0) < 1
         or type(visualGuides.BuildUnitLineSamplePlan) ~= "function" then
         failures[#failures + 1] = "combat_visual_guides_presenter_contract"
     end
@@ -503,13 +535,24 @@ function A:RunMatrix()
         or type(unitLines.Commands.SetRefreshMs) ~= "function" or type(unitLines.Commands.SetPairEnabled) ~= "function" then
         failures[#failures + 1] = "unit_lines_visual_contract"
     end
-    if type(rangeAssist) ~= "table" or (tonumber(rangeAssist.VisualGuideContractVersion) or 0) < 7
-        or (tonumber(rangeAssist.WorldSpaceContractVersion) or 0) < 2
-        or (tonumber(rangeAssist.ProjectionFactsContractVersion) or 0) < 5
-        or (tonumber(rangeAssist.AnchorCalibrationContractVersion) or 0) < 1
-        or type(rangeAssist.Commands) ~= "table" or type(rangeAssist.Commands.SetRadius) ~= "function"
-        or type(rangeAssist.Commands.SetPointCount) ~= "function" or type(rangeAssist.Commands.SetOpacity) ~= "function"
-        or type(rangeAssist.Commands.SetColor) ~= "function" then
+    -- 中文维护注释（2026-09-15，range-real-meter-acceptance-1）：范围圆显示“m”后必须同时具备
+    -- UnitDistance 米数 Authority、world-unit 比例校准和 Camera fallback 的整批 screen-scale 校准。
+    -- 只检查契约/方法存在，不在启动验收时主动读目标，避免 Acceptance 自己制造 Native 高频副作用。
+    if type(rangeAssist) ~= "table" or (tonumber(rangeAssist.VisualGuideContractVersion) or 0) < 9
+        or (tonumber(rangeAssist.WorldSpaceContractVersion) or 0) < 3
+        or (tonumber(rangeAssist.ProjectionFactsContractVersion) or 0) < 7
+        or (tonumber(rangeAssist.AnchorCalibrationContractVersion) or 0) < 2
+        or (tonumber(rangeAssist.MetricDistanceContractVersion) or 0) < 1
+        or (tonumber(rangeAssist.MultiCircleContractVersion) or 0) < 1
+        or type(rangeAssist.Commands) ~= "table" or type(rangeAssist.Commands.AddCircle) ~= "function"
+        or type(rangeAssist.Commands.RemoveCircle) ~= "function" or type(rangeAssist.Commands.SetCircleEnabled) ~= "function"
+        or type(rangeAssist.Commands.SetCircleRadius) ~= "function" or type(rangeAssist.Commands.SetCirclePointCount) ~= "function"
+        or type(rangeAssist.Commands.SetCircleOpacity) ~= "function" or type(rangeAssist.Commands.SetCircleColor) ~= "function"
+        or type(rangeAssist.Commands.SetRadius) ~= "function"
+        or type(S.Services and S.Services.ScreenProjectionV3) ~= "table"
+        or (tonumber(S.Services.ScreenProjectionV3.RangeMetricCalibrationContractVersion) or 0) < 1
+        or (tonumber(S.Services.ScreenProjectionV3.RangeMetricScreenScaleContractVersion) or 0) < 1
+        or type(S.Services.ScreenProjectionV3.GetRangeMetricCalibration) ~= "function" then
         failures[#failures + 1] = "range_assist_visual_contract"
     end
     local lifeWidgets = S.UIV3 and S.UIV3.LifeEconomyWidgetsV3 or nil
@@ -518,7 +561,13 @@ function A:RunMatrix()
     local bondsWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.bonds") or nil
     local treasureWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.treasure") or nil
     local fishingWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.fishing") or nil
-    if type(lifeWidgets) ~= "table" or (tonumber(lifeWidgets.version) or 0) < 2
+    -- 中文维护注释（2026-09-16，生活悬浮窗 v6）：v6 同时要求寻宝“地图定位”和钓鱼 Auto-R 控制。
+    -- 两个子契约只验证 Presentation surface 已加载到同一版本，不创建窗口、不启动 Consumer、不执行 Native 动作；
+    -- 这样旧 rs_v3_life_economy_widgets.lua 与新 Feature 混载时会在启动验收阶段明确阻断，而不是留到玩家钓鱼/寻宝时才发现。
+    if type(lifeWidgets) ~= "table" or (tonumber(lifeWidgets.version) or 0) < 6
+        or (tonumber(lifeWidgets.bondsMultiContinentContractVersion) or 0) < 1
+        or (tonumber(lifeWidgets.treasureMapLocationContractVersion) or 0) < 1
+        or (tonumber(lifeWidgets.fishingFloatingAutoRContractVersion) or 0) < 1
         or type(tradeWidget) ~= "table" or tradeWidget.featureId ~= "life_trade"
         or type(bondsWidget) ~= "table" or bondsWidget.featureId ~= "life_bonds"
         or type(treasureWidget) ~= "table" or treasureWidget.featureId ~= "life_treasure"
@@ -549,10 +598,17 @@ function A:RunMatrix()
         or type(S.UIV3 and S.UIV3.BuffHeadMarkersV3) ~= "table"
         or (tonumber(S.UIV3.BuffHeadMarkersV3.LiveHudSuppressionContractVersion) or 0) < 1
         or (tonumber(S.UIV3.BuffHeadMarkersV3.EquipmentIndependentOffsetContractVersion) or 0) < 1
+        or (tonumber(S.UIV3.BuffHeadMarkersV3.SplitInfoTextLayoutContractVersion) or 0) < 1
+        or (tonumber(S.UIV3.BuffHeadMarkersV3.GearScoreFormatContractVersion) or 0) < 1
         or type(S.UIV3.BuffHeadMarkersV3.SetCalibrationSuppressed) ~= "function"
         or (tonumber(buffDisplay.LayoutAuthorityContractVersion) or 0) < 3
         or (tonumber(buffDisplay.HudCalibrationContractVersion) or 0) < 1
-        or tonumber(buffDisplay.SchemaVersion) ~= 5
+        or (tonumber(buffDisplay.Schema7GearScoreFormatMigrationContractVersion) or 0) < 1
+        or (tonumber(buffDisplay.Schema8TrackingScopeMigrationContractVersion) or 0) < 1
+        -- 中文维护注释：UI 与 schema8 四按钮/六通道、文本 v3 配套；只检查声明，不创建页面或写入追踪。
+        or tonumber(buffDisplay.SchemaVersion) ~= 8
+        or (tonumber(buffDisplay.ManagementProjectionContractVersion) or 0) < 2 or buffDisplay.TransferFormatVersion ~= 3
+        or type(buffDisplay.Commands and buffDisplay.Commands.SetTrackedChannel) ~= "function"
         or type(S.Services and S.Services.StatusClassificationV3) ~= "table" then
         failures[#failures + 1] = "buff_display_observation_head_marker_contract"
     end
@@ -564,7 +620,8 @@ function A:RunMatrix()
     -- 槽位，也避免旧校准器缺少发行模板导出却仍被视为可用。
     local buffHudCalibration = S.UIV3 and S.UIV3.BuffHudCalibrationV3 or nil
     if type(buffHudCalibration) ~= "table" or (tonumber(buffHudCalibration.version) or 0) < 3
-        or (tonumber(buffDisplay and buffDisplay.HudCalibrationPresentationContractVersion) or 0) < 5
+        or (tonumber(buffDisplay and buffDisplay.HudCalibrationPresentationContractVersion) or 0) < 7
+        or (tonumber(buffHudCalibration.GearScoreFormatCalibrationContractVersion) or 0) < 1
         or (tonumber(buffHudCalibration.DiagnosticsContractVersion) or 0) < 4
         or (tonumber(buffHudCalibration.ScreenCoordinateAdapterContractVersion) or 0) < 1
         or (tonumber(buffHudCalibration.PanelDragContractVersion) or 0) < 1
@@ -572,6 +629,7 @@ function A:RunMatrix()
         or (tonumber(buffHudCalibration.GlobalPreviewContractVersion) or 0) < 1
         or (tonumber(buffHudCalibration.LiveHudSuppressionContractVersion) or 0) < 1
         or (tonumber(buffHudCalibration.TemplateSnapshotContractVersion) or 0) < 1
+        or (tonumber(buffHudCalibration.SplitInfoTextCalibrationContractVersion) or 0) < 1
         or type(buffHudCalibration.BuildTemplateSnapshotLines) ~= "function" or type(buffHudCalibration.OutputTemplateSnapshot) ~= "function"
         or type(buffHudCalibration.ToggleGlobalPreview) ~= "function"
         or type(buffHudCalibration.Open) ~= "function" or type(buffHudCalibration.Exit) ~= "function"
@@ -592,18 +650,28 @@ function A:RunMatrix()
     end
 
     local windowShell = S.UI and S.UI.WindowShell or nil
-    if windowShell == nil or (tonumber(windowShell.version) or 0) < 24 or (tonumber(windowShell.compactMinimizeContract) or 0) < 1
+    local windowPreferences = S.RSUI and S.RSUI.WindowPreferences or nil
+    -- 维护（2026-09-16，window-layer-acceptance-1）：发布验收必须同时看到“默认 normal / 显式
+    -- system”层级契约和独立 WindowPreferences Store，防止 toc 漏文件或未来把 topmost 又塞回
+    -- Feature canonical。这里仅检查接口/版本，不主动读盘，不改变按需加载与用户 Store。
+    if windowShell == nil or (tonumber(windowShell.version) or 0) < 26 or (tonumber(windowShell.compactMinimizeContract) or 0) < 1
         or (tonumber(windowShell.titleAppearanceContract) or 0) < 3
-        or (tonumber(windowShell.topLevelLayerContractVersion) or 0) < 1
+        or (tonumber(windowShell.topLevelLayerContractVersion) or 0) < 2
+        or (tonumber(windowShell.topmostPreferenceContractVersion) or 0) < 1
+        or type(windowPreferences) ~= "table"
+        or (tonumber(S.RSUI.WindowPreferencePersistenceContractVersion) or 0) < 1
+        or (tonumber(S.RSUI.WindowLayerPreferenceContractVersion) or 0) < 1
+        or type(windowPreferences.GetTopmost) ~= "function" or type(windowPreferences.SetTopmost) ~= "function"
         or type(S.UI.CreateWindowShell) ~= "function" then
         failures[#failures + 1] = "window_shell_compact_contract"
     end
     local floatingSurface = S.RSUI and S.RSUI.FloatingSurface or nil
-    if floatingSurface == nil or (tonumber(floatingSurface.version) or 0) < 11
+    if floatingSurface == nil or (tonumber(floatingSurface.version) or 0) < 12
         or (tonumber(floatingSurface.CompactMinimizeContractVersion) or 0) < 1
         or (tonumber(floatingSurface.TitleAppearanceContractVersion) or 0) < 1
         or (tonumber(floatingSurface.DetachedStateContractVersion) or 0) < 1
         or (tonumber(floatingSurface.ResponsivePlacementIntentContractVersion) or 0) < 1
+        or (tonumber(floatingSurface.CommittedGeometryPersistenceContractVersion) or 0) < 1
         or tonumber(floatingSurface.generation) ~= tonumber(S.Generation)
         or type(floatingSurface.Create) ~= "function" or type(floatingSurface.NormalizeState) ~= "function"
         or type(floatingSurface.CreateStateAdapter) ~= "function" then
@@ -782,7 +850,9 @@ function A:RunMatrix()
     local numericRangeStore = S.Persistence and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.rsui.numeric_ranges") or nil
     if S.UIV3Design == nil or (tonumber(S.UIV3Design.version) or 0) < 7 or type(S.UIV3Design.ScrollablePageRoot) ~= "function"
         or type(S.UIV3Design.CompactNumericSetting) ~= "function" or (tonumber(S.RSUI and S.RSUI.NumericInlineContractVersion) or 0) < 6
-        or (tonumber(S.RSUI and S.RSUI.NumericAdaptiveRangeContractVersion) or 0) < 1
+        -- Numeric Range v2 acceptance prevents a partial update where pages advertise dynamic
+        -- sliders but Forms still treats their recommended min/max as the old contract.
+        or (tonumber(S.RSUI and S.RSUI.NumericAdaptiveRangeContractVersion) or 0) < 2
         or (tonumber(S.RSUI and S.RSUI.NumericExplicitApplyContractVersion) or 0) < 1
         or (tonumber(S.RSUI and S.RSUI.NumericRangePersistenceContractVersion) or 0) < 1
         or type(numericRangeStore) ~= "table" or tostring(numericRangeStore.owner or "") ~= "v3.rsui.numeric_ranges"
@@ -812,6 +882,7 @@ function A:RunMatrix()
         or (tonumber(layout.RectTransformTransactionContractVersion) or 0) < 2
         or (tonumber(layout.ScreenToWidgetLocalContractVersion) or 0) < 1
         or (tonumber(layout.ResponsivePlacementIntentContractVersion) or 0) < 1
+        or type(layout.StorePlacementRect) ~= "function"
         or type(layout.GetCoordinateSystemSnapshot) ~= "function" or type(layout.OffsetPoint) ~= "function"
         or type(layout.GetUiParentLocalOrigin) ~= "function" or type(layout.ScreenPointToWidgetLocal) ~= "function"
         or type(layout.CreateRectTransformTransaction) ~= "function"
@@ -944,7 +1015,9 @@ function A:RunMatrix()
         or (tonumber(rsui.SettingsCompactToggleContractVersion) or 0) < 1
         or (tonumber(rsui.SettingsScrollSafeCardContractVersion) or 0) < 2
         or (tonumber(rsui.SettingsSectionHierarchyContractVersion) or 0) < 1
-        or (tonumber(rsui.SettingsNumericSliderContractVersion) or 0) < 1
+        -- SettingsFoundation must expose the same v2 soft-range policy; persisted business values
+        -- and v3.rsui.numeric_ranges remain separate Authorities, so this check is upgrade-safe.
+        or (tonumber(rsui.SettingsNumericSliderContractVersion) or 0) < 2
         or (tonumber(rsui.FormRowResponsiveContractVersion) or 0) < 1
         or (tonumber(rsui.NumericResponsiveStackContractVersion) or 0) < 1
         or type(rsui.CreateFeatureSettingsHeader) ~= "function"
@@ -994,14 +1067,17 @@ function A:RunMatrix()
         or type(S.Layout.ResolveViewportLogicalRect) ~= "function" -- 中文维护注释：验证外部原生几何解析函数存在。
         or type(S.Layout.ResolveSuiteOwnedViewportLogicalRect) ~= "function" -- 中文维护注释：验证 Suite-owned cache-first 锚点函数存在。
         or rsui == nil -- 中文维护注释：RSUI 缺失时 Popup 契约无法成立。
-        or (tonumber(rsui.PopupPositioningContractVersion) or 0) < 3 -- 中文维护注释：PopupPositioning v3 才包含 .18.191 Native-relative 最终 Anchor，.18.190 cache-first 绝对坐标已被 RU 实机证明不足。
-        or (tonumber(rsui.PopupNativeRelativeAnchorContractVersion) or 0) < 1 -- 中文维护注释：验收必须证明 Native-relative Trigger Anchor 契约已登记。
+        or (tonumber(rsui.PopupPositioningContractVersion) or 0) < 4 -- 中文维护注释：PopupPositioning v4 才包含 ColorField V2 的 resolved viewport→UIParent 车道，同时保留 Dropdown 等 Native-relative 消费者。
+        or (tonumber(rsui.PopupNativeRelativeAnchorContractVersion) or 0) < 1 -- 中文维护注释：验收 Native-relative 消费者仍具备合法提交入口。
+        or (tonumber(rsui.PopupViewportResolvedAnchorContractVersion) or 0) < 1 -- 中文维护注释：验收 ColorField V2 resolved viewport→UIParent 车道已登记。
+        or (tonumber(rsui.ColorFieldContractVersion) or 0) < 2 -- 中文维护注释：验收共享颜色选择器已具备 Draft/Apply/Cancel 和可读 0..255 UI。
         or (tonumber(rsui.PopupSuiteAnchorAuthorityContractVersion) or 0) < 1 -- 中文维护注释：显式要求 Suite Popup Anchor Authority 已登记。
         or (tonumber(rsui.PopupCoordinateSpaceContractVersion) or 0) < 1 -- 中文维护注释：最终输出坐标空间仍必须是 viewport-logical-v1。
-        or (tonumber(rsui.PopupCoordinateConsumerContractVersion) or 0) < 2 -- 中文维护注释：Controls consumer v2 才能证明 Dropdown/ColorField 最终位置不再写 UIParent 绝对坐标。
+        or (tonumber(rsui.PopupCoordinateConsumerContractVersion) or 0) < 3 -- 中文维护注释：Controls consumer v3 才能证明共享控件已从“一刀切 Native-relative”升级为分类型安全车道。
         or (tonumber(rsui.InteractionPopupCoordinateConsumerContractVersion) or 0) < 2 -- 中文维护注释：Interactions consumer v2 才能证明目标型 Tooltip/ContextMenu 已切换到同一 Native-relative Authority。
         or type(popupPositioning) ~= "table" -- 中文维护注释：唯一 Popup Positioning Authority 缺失时不能接受 detached Popup 能力。
-        or type(popupPositioning.ApplyNativeRelativePopup) ~= "function" -- 中文维护注释：验收直接要求最终 Native-relative 提交入口存在，避免“契约版本升了但 Consumer 仍走旧算法”的假绿。
+        or type(popupPositioning.ApplyNativeRelativePopup) ~= "function" -- 中文维护注释：Native-relative 提交入口仍需存在。
+        or type(popupPositioning.ApplyResolvedViewportPopup) ~= "function" -- 中文维护注释：ColorField V2 的 resolved→UIParent 提交入口必须存在。
         or type(popupPositioning.CorrectNativePopupToScreen) ~= "function" -- 中文维护注释：验收屏幕边缘 Native 修正入口，低分辨率不允许回退业务固定偏移。
         or type(S.DiagnosticsManager) ~= "table" or type(S.DiagnosticsManager.BuildPopupPositioningReport) ~= "function" -- 中文维护注释：专项坐标报告属于 .18.191 可观测性契约，用户必须能复制真实 RU 几何。
         or type(popupPositioning.ResolveAnchorRect) ~= "function"

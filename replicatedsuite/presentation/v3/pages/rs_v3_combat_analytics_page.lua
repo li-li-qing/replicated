@@ -118,7 +118,11 @@ local function Build(parent)
     if root==nil then error("战斗分析 PageRoot 创建失败："..tostring(rootErr or "unknown")) end
     root.subscribed=false;root.rows={};root.compareA=nil;root.compareB=nil;root.selectedRow=nil
 
-    RSUI:Text({id="v3_analytics_title",parent=root,text="战斗分析",fontSize=16,tone="strong",slot={size="fixed",height=27}})
+    -- 中文维护注释（2026-09-18）：战斗分析拥有自定义工具栏，不能依赖标准 PageHeader。
+    -- 这里仅提供标题行几何并调用共享 ModuleDiagnosticsButton；诊断 Authority/点击逻辑不得复制到业务页。
+    local titleRow=RSUI:HorizontalBox({id="v3_analytics_title_row",parent=root,gap=8,slot={size="fixed",height=27,hAlign="fill"}})
+    RSUI:Text({id="v3_analytics_title",parent=titleRow,text="战斗分析",fontSize=16,tone="strong",slot={size="fill",fill=1,height=27}})
+    D:ModuleDiagnosticsButton(titleRow,"v3_analytics_diagnostics",76)
     RSUI:Text({id="v3_analytics_subtitle",parent=root,
         text="这是 DPS 之外的战斗行为分析：查看击杀/助攻、技能释放、爆发、控制、演奏、辅助、Buff/Debuff 与 Boss 机制。选择玩家后可继续查看具体明细。",
         fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=34}})

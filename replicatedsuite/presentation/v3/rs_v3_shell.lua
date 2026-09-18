@@ -39,6 +39,8 @@ V3.Shell = V3.Shell or {
     contentRoot = nil,
     footer = nil,
     status = nil,
+    topmost = false,
+    topmostButton = nil,
     minimizeButton = nil,
     reloadButton = nil,
     navButtons = {},
@@ -53,6 +55,8 @@ local Shell = V3.Shell
 Shell.navigationCallbackContractVersion = 1
 Shell.NavigationCallbackCaptureContractVersion = 1
 Shell.StateMutationTransactionContractVersion = 1
+Shell.TopmostLayerContractVersion = 1
+Shell.CommittedGeometryPersistenceContractVersion = 1
 Shell.DevelopmentNavigationPresentationContractVersion = 1 -- 中文维护注释：Shell v1 开始只用 navigationTitle 展示“未完成”后缀，页面 title/route/Feature identity 均保持原语义。
 
 local SCROLL_CATEGORY_ORDER = { "home", "combat", "life", "tools" }
@@ -271,7 +275,14 @@ function Shell:CommitWindowGeometry(_, x, y, width, height, reason)
         state.width = math.max(size.minWidth, width / scale)
         state.height = math.max(size.minHeight, height / scale)
     end
-    if S.Layout ~= nil and type(S.Layout.StorePlacement) == "function" then S.Layout:StorePlacement(state, self.window, { mode = "free" }) end
+    -- 维护（2026-09-16，main-shell-committed-geometry-1）：Windowing 已把最终逻辑矩形
+    -- 作为参数交给这里；禁止再次从 Native 读回坐标。主菜单与悬浮窗使用同一 Layout Authority，
+    -- 保持原 free-v2 / normalized-center 持久化格式，旧配置无需迁移。
+    if S.Layout ~= nil and type(S.Layout.StorePlacementRect) == "function" then
+        S.Layout:StorePlacementRect(state, x, y, width, height, { mode = "free" })
+    elseif S.Layout ~= nil and type(S.Layout.StorePlacement) == "function" then
+        S.Layout:StorePlacement(state, self.window, { mode = "free" })
+    end
     state.userMoved = true
     local layoutOk, layoutErr = self:ApplyLayout(false)
     if layoutOk ~= true then
@@ -280,9 +291,38 @@ function Shell:CommitWindowGeometry(_, x, y, width, height, reason)
         pcall(function() self:ApplyLayout(false) end)
         return false, layoutErr or "主窗口几何提交失败"
     end
-    MarkDirty("window_" .. tostring(reason or "geometry"))
+    -- Geometry is a low-frequency commit edge. Mark due immediately so a user
+    -- who drags the window and exits the client right away does not lose the final rect.
+    if type(V3.MarkShellStoreDirty) == "function" then V3:MarkShellStoreDirty(0, "window_" .. tostring(reason or "geometry")) end
     return true
 end
+
+function Shell:SetTopmost(value, persist)
+    local nextValue = value == true
+    local previous = self.topmost == true
+    if previous == nextValue then SetButtonSelected(self.topmostButton, nextValue); return true, nextValue, false end
+    if self.window == nil or type(Adapter.SetRootLayer) ~= "function" then return false, "主窗口层级能力不可用" end
+    local layerOk, layerErr = Adapter:SetRootLayer(self.window, nextValue)
+    if layerOk ~= true then return false, layerErr or "主窗口层级切换失败" end
+    self.topmost = nextValue
+    SetButtonSelected(self.topmostButton, nextValue)
+    if persist ~= false then
+        local prefs = RSUI.WindowPreferences
+        if type(prefs) ~= "table" or type(prefs.SetTopmost) ~= "function" then
+            Adapter:SetRootLayer(self.window, previous); self.topmost = previous; SetButtonSelected(self.topmostButton, previous)
+            return false, "窗口层级偏好存档不可用"
+        end
+        local ok, accepted, detail = pcall(function() return prefs:SetTopmost("main_shell", nextValue, true) end)
+        if ok ~= true or accepted ~= true then
+            Adapter:SetRootLayer(self.window, previous); self.topmost = previous; SetButtonSelected(self.topmostButton, previous)
+            return false, tostring(detail or accepted or "主窗口置顶保存失败")
+        end
+    end
+    if nextValue and type(Adapter.Raise) == "function" then Adapter:Raise(self.window) end
+    return true, nextValue, true
+end
+
+function Shell:GetTopmost() return self.topmost == true end
 
 function Shell:Create()
     if self.created == true and self.window ~= nil then return true end
@@ -308,11 +348,15 @@ function Shell:Create()
         return false, self.failedBuildError
     end
 
-    local window, createErr = Adapter:CreateRootWindow(self.logicalId, self.owner)
+    -- 维护（2026-09-16，main-shell-topmost-1）：主窗口默认 normal，只有用户显式保存 [顶]
+    -- 才请求 system。偏好由 RSUI.WindowPreferences 独立持久化，避免修改 v3.shell schema。
+    local prefs = RSUI.WindowPreferences
+    self.topmost = type(prefs) == "table" and type(prefs.GetTopmost) == "function" and prefs:GetTopmost("main_shell") == true or false
+    local window, createErr = Adapter:CreateRootWindow(self.logicalId, self.owner, self.topmost and "system" or "normal")
     if window == nil then return FailBuild(createErr) end
     self.window = window
-    -- Explicit layer role keeps the full-screen application below independent
-    -- FloatingSurface windows while both remain in the native system layer.
+    self.window.rsUiTopmost = self.topmost == true
+    -- DrawPriority orders Replicated Suite roots only inside the selected Native layer.
     local shellPriority = (S.UITokens and type(S.UITokens.Number) == "function"
         and S.UITokens:Number("layer.shellPriority", 100)) or 100
     if type(window.SetDrawPriority) == "function" then pcall(function() window:SetDrawPriority(shellPriority) end) end
@@ -335,11 +379,19 @@ function Shell:Create()
     })
     local topRow = RSUI:HorizontalBox({ id = "v3_shell_top_row", parent = self.topBar, gap = 8 })
     local brand = RSUI:VerticalBox({ id = "v3_shell_brand", parent = topRow, gap = 1, slot = { size = "fill", fill = 1 } })
-    RSUI:Text({ id = "v3_shell_title", parent = brand, text = "上古世纪综合辅助", fontSize = 15, tone = "accent", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
+    -- 维护（2026-09-12）：按发行界面要求，仅将主菜单标题替换为作者与 QQ 群信息。
+    -- Authority / 数据流：仍由 v3:shell 经 RSUI:Text 创建展示文本，不直接写 Native 或业务 Store。
+    -- 兼容边界：保留逻辑 ID、响应式宽度及样式；不改 ESC 注册名、聊天前缀或用户配置，无迁移。
+    -- 后续维护：联系信息仅在此展示；窄窗沿用省略规则，不扩大拖动命中区或挤占右侧按钮。
+    RSUI:Text({ id = "v3_shell_title", parent = brand, text = "作者:Replicated   QQ群:1104129461", fontSize = 15, tone = "accent", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
     RSUI:Text({ id = "v3_shell_subtitle", parent = brand, text = "模块化重构 · 新版界面", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 14 } })
     RSUI:Button({ id = "v3_shell_diag_button", parent = topRow, text = "诊断", compact = true,
         onClick = function() return self:Navigate("system.diagnostics", { source = "topbar" }) end,
         slot = { size = "fixed", width = 64 } })
+    self.topmostButton = RSUI:Button({ id = "v3_shell_topmost_button", parent = topRow, text = "顶", compact = true,
+        onClick = function() return self:SetTopmost(not self.topmost, true) end,
+        slot = { size = "fixed", width = 36 } })
+    SetButtonSelected(self.topmostButton, self.topmost == true)
     self.minimizeButton = RSUI:Button({ id = "v3_shell_minimize_button", parent = topRow, text = "—", compact = true,
         onClick = function() return self:ToggleMinimized() end,
         slot = { size = "fixed", width = 36 } })

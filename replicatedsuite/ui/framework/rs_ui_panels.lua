@@ -13,6 +13,7 @@ local UI, RSUI = S.UI, S.RSUI
 if type(UI) ~= "table" or type(RSUI) ~= "table" then return end
 local Tokens = S.UITokens or {}
 local Base = RSUI.BaseComponent
+RSUI.LinearSlotMeasureContractVersion = 1 -- 中文维护注释：.18.218 起 Linear Measure 与 Layout 对 slot/child min/max 使用同一几何约束，禁止父容器低估尺寸后由子控件在 Arrange 阶段溢出造成重叠/裁切。
 
 local function Token(path, fallback)
     if type(Tokens.Number) == "function" then return Tokens:Number(path, fallback) end
@@ -118,9 +119,28 @@ local function NewLinear(kind, axis, spec)
             local child,slot=entry.child,entry.slot
             if child.visible~=false then
                 local dw,dh=Measure(child, availableW, availableH)
-                local cp = axis=="x" and (dw+slot.padding.left+slot.padding.right) or (dh+slot.padding.top+slot.padding.bottom)
-                local cc = axis=="x" and (dh+slot.padding.top+slot.padding.bottom) or (dw+slot.padding.left+slot.padding.right)
-                if slot.size=="fixed" then cp=axis=="x" and N(slot.width,cp) or N(slot.height,cp) end
+                -- 中文维护注释（2026-09-14，linear slot minimum authority）：Measure 与 Layout 必须对
+                -- slot.minWidth/minHeight/maxWidth/maxHeight 使用同一套约束。旧 Measure 只看 child 的自然尺寸，
+                -- Layout 却在 Arrange 阶段才应用 slot minimum，导致父容器先报告过小高度，随后子项又按更大的
+                -- 最小高度排版并溢出父边界；在设置页表现为颜色/状态行、标题/列表互相覆盖或被裁切。
+                -- 这里仅统一几何预算，不改变业务组件尺寸来源、Fill 权重或 Native 写入时机。
+                local childSpec=type(child.spec)=="table" and child.spec or {}
+                local desiredPrimary=axis=="x" and dw or dh
+                local desiredCross=axis=="x" and dh or dw
+                local minPrimary=axis=="x" and N(slot.minWidth or childSpec.minWidth,0) or N(slot.minHeight or childSpec.minHeight,0)
+                local maxPrimary=axis=="x" and tonumber(slot.maxWidth or childSpec.maxWidth) or tonumber(slot.maxHeight or childSpec.maxHeight)
+                local minCross=axis=="x" and N(slot.minHeight or childSpec.minHeight,0) or N(slot.minWidth or childSpec.minWidth,0)
+                local maxCross=axis=="x" and tonumber(slot.maxHeight or childSpec.maxHeight) or tonumber(slot.maxWidth or childSpec.maxWidth)
+                desiredPrimary=Clamp(desiredPrimary,minPrimary,maxPrimary)
+                desiredCross=Clamp(desiredCross,minCross,maxCross)
+                local primaryPadding=axis=="x" and (slot.padding.left+slot.padding.right) or (slot.padding.top+slot.padding.bottom)
+                local crossPadding=axis=="x" and (slot.padding.top+slot.padding.bottom) or (slot.padding.left+slot.padding.right)
+                local cp=desiredPrimary+primaryPadding
+                local cc=desiredCross+crossPadding
+                if slot.size=="fixed" then
+                    local fixed=axis=="x" and N(slot.width,desiredPrimary) or N(slot.height,desiredPrimary)
+                    cp=Clamp(fixed,minPrimary,maxPrimary)+primaryPadding
+                end
                 primary=primary+cp; cross=math.max(cross,cc); count=count+1
             end
         end

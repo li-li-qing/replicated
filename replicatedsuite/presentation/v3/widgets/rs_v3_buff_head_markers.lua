@@ -20,7 +20,7 @@ if type(Feature) ~= "table" or type(S.UI) ~= "table" or type(S.Events) ~= "table
 S.UIV3 = S.UIV3 or {}
 S.UIV3.BuffHeadMarkersV3 = S.UIV3.BuffHeadMarkersV3 or {}
 local P = S.UIV3.BuffHeadMarkersV3
-P.version = 8
+P.version = 10
 P.owner = "v3:buff_head_markers"
 P.consumerToken = "presentation:buff_head_markers"
 P.running = P.running == true
@@ -34,6 +34,14 @@ P.calibrationSuppressionCount = tonumber(P.calibrationSuppressionCount) or 0
 P.calibrationRestoreCount = tonumber(P.calibrationRestoreCount) or 0
 P.LiveHudSuppressionContractVersion = 1
 P.EquipmentIndependentOffsetContractVersion = 1
+P.RangedWeaponVisualOrderContractVersion = 1
+P.SplitInfoTextLayoutContractVersion = 1 -- 中文维护注释（.18.225）：职业名称/装分/距离使用独立 pooled label 与独立几何；不改 Store schema，不增加 Native 查询。
+P.GearScoreFormatContractVersion = 1 -- .18.226：只格式化现有 Projection 数值，full/compact 不新增事实读取。
+-- 维护（pvp-hud-1）：内容dirty与运动分离；指标固定规模，不保存/逐帧打印。
+P.PvpPatch = "pvp-hud-1"
+P.contentDirty = true
+P.motionMetrics = { frames=0, rootWrites=0, contentBuilds=0, textureFailures=0, anchorFailures=0 }
+
 
 local SCOPES = { "player", "target" }
 local RENDERABLE_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar" }
@@ -93,7 +101,7 @@ end
 ------------------------------------------------------------------------
 
 local function MakeIcon(scope, index)
-    local root, err = S.UI:CreateEmptyWidget(UIParent, "v3_buff_head_" .. scope .. "_icon_" .. tostring(index), 0, 0, 40, 40, false, P.owner)
+    local root, err = S.UI:CreateEmptyWidget(P.pools[scope].root, "v3_buff_head_" .. scope .. "_icon_" .. tostring(index), 0, 0, 40, 40, false, P.owner)
     if root == nil then return nil, err end
     root.rsUiOwner = P.owner
     local icon = root.CreateIconDrawable and root:CreateIconDrawable("artwork") or nil
@@ -107,7 +115,7 @@ local function MakeIcon(scope, index)
         return nil, "buff_head_marker_child_create_failed"
     end
     S.UI:SetVisible(root, false, P.owner)
-    return { root=root, icon=icon, grade=nil, stack=stack, time=time, iconPath=nil, gradePath=nil, layout={} }
+    return { root=root, icon=icon, grade=nil, stack=stack, time=time, iconPath=nil, gradePath=nil, layout={}, scope=scope }
 end
 
 local function MakeLabel(scope, index)
@@ -118,7 +126,7 @@ local function MakeLabel(scope, index)
 end
 
 local function MakeCastBar(scope)
-    local root, err = S.UI:CreateEmptyWidget(UIParent, "v3_buff_head_" .. scope .. "_castbar", 0, 0, 120, 8, false, P.owner)
+    local root, err = S.UI:CreateEmptyWidget(P.pools[scope].root, "v3_buff_head_" .. scope .. "_castbar", 0, 0, 120, 8, false, P.owner)
     if root == nil then return nil, err end
     root.rsUiOwner = P.owner
     local bg = root.CreateColorDrawable and root:CreateColorDrawable(0.10, 0.10, 0.12, 0.85, "overlay") or nil
@@ -133,10 +141,28 @@ local function MakeCastBar(scope)
 end
 
 local function MakeInfo(scope)
-    local label, err = S.UI:CreateLabel(UIParent, "v3_buff_head_" .. scope .. "_info", "", 0, 0, 220, 16, 10, "default", "CENTER", true)
-    if label == nil then return nil, err end
-    S.UI:SetVisible(label, false, P.owner)
-    return { root=label, text="" }
+    local parent = P.pools[scope].root
+    local classLabel, err = S.UI:CreateLabel(parent, "v3_buff_head_" .. scope .. "_info_class", "", 0, 0, 120, 16, 10, "default", "CENTER", true)
+    if classLabel == nil then return nil, err end
+    local gearLabel, gearErr = S.UI:CreateLabel(parent, "v3_buff_head_" .. scope .. "_info_gear", "", 0, 0, 90, 16, 10, "default", "CENTER", true)
+    if gearLabel == nil then S.UI:SetVisible(classLabel, false, P.owner); return nil, gearErr end
+    local distanceLabel, distanceErr = S.UI:CreateLabel(parent, "v3_buff_head_" .. scope .. "_info_distance", "", 0, 0, 90, 16, 10, "default", "CENTER", true)
+    if distanceLabel == nil then
+        S.UI:SetVisible(classLabel, false, P.owner); S.UI:SetVisible(gearLabel, false, P.owner)
+        return nil, distanceErr
+    end
+    S.UI:SetVisible(classLabel, false, P.owner); S.UI:SetVisible(gearLabel, false, P.owner); S.UI:SetVisible(distanceLabel, false, P.owner)
+    -- 中文维护注释（HUD 基础信息拆分，2026-09-17）：旧实现只有一个拼接 label，导致职业名称、
+    -- 装分和距离只能整体移动/改字号。这里仍保持每 scope 固定 3 个 pooled label，不在 50ms
+    -- VisualTick 中创建对象。root 继续别名到 classTextRoot，保护旧测试/诊断引用；gear/distance
+    -- 仅消费 Feature 已有投影，不产生新的 Native 查询、Consumer 或 Scheduler。
+    local iconRoot = S.UI:CreateEmptyWidget(parent, "v3_buff_head_" .. scope .. "_class_icon", 0, 0, 16, 16, false, P.owner)
+    local icon = iconRoot and iconRoot.CreateIconDrawable and iconRoot:CreateIconDrawable("artwork") or nil
+    if iconRoot then S.UI:SetVisible(iconRoot, false, P.owner) end
+    return {
+        root=classLabel, classTextRoot=classLabel, gearRoot=gearLabel, distanceRoot=distanceLabel,
+        classText="", gearText="", distanceText="", iconRoot=iconRoot, icon=icon,
+    }
 end
 
 local function RequiredIconCount(settings)
@@ -159,6 +185,15 @@ function P:EnsurePools(settings)
     if iconCount <= 0 then iconCount = RequiredIconCount(type(settings) == "table" and settings or Settings()) end
     for _, scope in ipairs(SCOPES) do
         local pool = self.pools[scope]
+        -- 维护：新建时就固定父链，绝不reparent已有Native控件。所有子项落在union正坐标内，
+        -- 避免小父容器裁剪；移动只写这个无命中父容器，职业/装备/Buff不会逐个追赶血条。
+        if pool.root == nil then
+            pool.root = S.UI:CreateEmptyWidget(UIParent, "v3_buff_head_" .. scope .. "_plate_root", 0, 0, 1, 1, false, self.owner)
+            if pool.root == nil then return false, "buff_head_plate_root_create_failed" end
+            pool.placements, pool.placementCount = {}, 0
+            S.UI:SetVisible(pool.root, false, self.owner)
+            self.metrics.allocated = self.metrics.allocated + 1
+        end
         for index = #pool.icons + 1, iconCount do
             local marker, err = MakeIcon(scope, index)
             if marker == nil then return false, err end
@@ -187,10 +222,17 @@ end
 local function HideScope(scope)
     local pool = P.pools[scope]
     if pool == nil then return end
+    if pool.root then S.UI:SetVisible(pool.root, false, P.owner) end
+    pool.ready = false
     for _, marker in ipairs(pool.icons) do HideIcon(marker) end
     if pool.labels then for _, label in ipairs(pool.labels) do if label.root then S.UI:SetVisible(label.root, false, P.owner) end end end
     if pool.cast then S.UI:SetVisible(pool.cast.root, false, P.owner) end
-    if pool.info then S.UI:SetVisible(pool.info.root, false, P.owner) end
+    if pool.info then
+        if pool.info.classTextRoot then S.UI:SetVisible(pool.info.classTextRoot, false, P.owner) end
+        if pool.info.gearRoot then S.UI:SetVisible(pool.info.gearRoot, false, P.owner) end
+        if pool.info.distanceRoot then S.UI:SetVisible(pool.info.distanceRoot, false, P.owner) end
+        if pool.info.iconRoot then S.UI:SetVisible(pool.info.iconRoot, false, P.owner) end
+    end
 end
 function P:HideAll()
     for _, scope in ipairs(SCOPES) do HideScope(scope) end
@@ -201,24 +243,51 @@ end
 -- Layout helpers
 ------------------------------------------------------------------------
 
--- Clamp a whole horizontal group into the logical screen. Members keep their
--- fixed relative spacing; only the group origin moves. This is the only
--- horizontal clamp path — individual icons are never clamped separately
--- (per-icon clamping would pile icons up at the screen edge).
-local function ClampHorizontalGroup(groupLeft, groupWidth, screenWidth)
-    if groupWidth == nil or groupWidth <= 0 then return groupLeft end
-    if groupWidth >= screenWidth - 4 then return math.max(2, groupLeft) end
-    return math.max(2, math.min(math.max(2, screenWidth - groupWidth - 2), groupLeft))
+-- 维护：内容布局以单位原点(0,0)计算，先记录所有子项边界再统一平移到父容器的正坐标。
+-- 只在内容/设置变更时执行，不在每渲染帧构建表；每个placement对象在池里复用。
+local function Place(pool, widget, x, y, w, h)
+    local n = (pool.placementCount or 0) + 1
+    local row = pool.placements[n] or {}
+    pool.placements[n], pool.placementCount = row, n
+    row.widget, row.x, row.y, row.w, row.h = widget, x, y, w, h
+    pool.minX = math.min(pool.minX or x, x); pool.minY = math.min(pool.minY or y, y)
+    pool.maxX = math.max(pool.maxX or x+w, x+w); pool.maxY = math.max(pool.maxY or y+h, y+h)
 end
-
-local function LogicalScreenWidth()
-    local screenW = 1024
-    if S.Api ~= nil and type(S.Api.GetUiMetrics) == "function" then
-        local sw, sh, scale, lw, lh = S.Api:GetUiMetrics()
-        scale = tonumber(scale) or 1
-        screenW = tonumber(lw) or ((tonumber(sw) or 1024) / math.max(0.001, scale))
+local function CommitPlacements(pool)
+    local left, top = math.floor(pool.minX or 0), math.floor(pool.minY or 0)
+    pool.offsetX, pool.offsetY = left, top
+    pool.width = math.max(1, math.ceil(pool.maxX or 1)-left)
+    pool.height = math.max(1, math.ceil(pool.maxY or 1)-top)
+    -- 维护：父容器与子锚点必须整体被接受。部分拒写时隐藏该组并重试，不能提交半新半旧的布局。
+    local accepted = true
+    if type(S.UI.EnsureExtent)=="function" then
+        accepted = S.UI:EnsureExtent(pool.root,pool.width,pool.height,P.owner) == true
+    else S.UI:SetExtent(pool.root,pool.width,pool.height,P.owner) end
+    for i=1,pool.placementCount do
+        local row=pool.placements[i]
+        if type(S.UI.EnsureAnchor)=="function" then
+            if S.UI:EnsureAnchor(row.widget,pool.root,row.x-left,row.y-top,P.owner)~=true then accepted=false end
+        else S.UI:SetAnchor(row.widget,pool.root,row.x-left,row.y-top,P.owner) end
     end
-    return screenW
+    pool.ready = accepted and pool.placementCount > 0
+    if not accepted then
+        P.motionMetrics.anchorFailures=P.motionMetrics.anchorFailures+1
+        P.textureRetryAt=(S.NowMs and S.NowMs() or 0)+50
+    end
+end
+-- 维护：SetIconTexture的false也可能是diff无变化，所以通过Ensure契约区分成功与拒写。
+-- 路径缓存只能在确认提交后改变；失败先隐藏旧武器并50ms后重试，不能把旧图当新事实。
+local function Texture(cache, field, drawable, path)
+    if cache[field] == path then return true end
+    local ok, _, err
+    if type(S.UI.EnsureIconTexture) == "function" then ok, _, err = S.UI:EnsureIconTexture(drawable, path, P.owner)
+    else ok = S.UI:SetIconTexture(drawable, path, P.owner) end
+    if ok == true then cache[field] = path; return true end
+    cache[field] = nil -- 清除成功但添加失败可能已擦掉旧图；返回旧武器时也必须重新提交。
+    P.motionMetrics.textureFailures = P.motionMetrics.textureFailures + 1
+    P.motionMetrics.lastTextureError = tostring(err or "texture_write_rejected")
+    P.textureRetryAt = (S.NowMs and S.NowMs() or 0) + 50
+    return false
 end
 
 -- 中文维护注释（Buff/Debuff 字体 Authority，2026-09-11）：旧 Renderer 虽然 Store/校准器都
@@ -268,32 +337,17 @@ local function TextWidth(text, fontSize)
     return math.max(24, math.floor(#tostring(text or "") * (fontSize or 10) * 0.62) + 8)
 end
 
--- Clamp a marker's top-left into the logical screen so a centered icon row can
--- never overflow off-screen when the anchored unit is near a screen edge (the
--- "only a few icons visible / position out of bounds" symptom). Layout remains
--- free within the screen; only off-screen placement is pulled back.
-local function ClampToScreen(x, y, w, h)
-    local screenW, screenH = 1024, 768
-    if S.Api ~= nil and type(S.Api.GetUiMetrics) == "function" then
-        local sw, sh, scale, lw, lh = S.Api:GetUiMetrics()
-        scale = tonumber(scale) or 1
-        screenW = tonumber(lw) or ((tonumber(sw) or 1024) / math.max(0.001, scale))
-        screenH = tonumber(lh) or ((tonumber(sh) or 768) / math.max(0.001, scale))
-    end
-    x = math.floor(math.max(2, math.min(math.max(2, screenW - (tonumber(w) or 0) - 2), x)))
-    y = math.floor(math.max(2, math.min(math.max(2, screenH - (tonumber(h) or 0) - 2), y)))
-    return x, y
-end
-
 local function ApplyIcon(marker, row, size, cfg, x, y, showStacks, showTime, scale)
     local stackFontSize = ResolveIconFontSize(cfg, scale, size, "stack")
     local timeFontSize = ResolveIconFontSize(cfg, scale, size, "time")
     LayoutIcon(marker, size, showStacks, showTime, stackFontSize, timeFontSize)
     if type(cfg) == "table" then S.UI:SetAlpha(marker.root, math.max(0.1, math.min(1, N(cfg.alpha, 1))), P.owner) end
     local path = tostring(row and row.iconPath or "")
-    if path ~= marker.iconPath then
-        S.UI:SetIconTexture(marker.icon, path ~= "" and path or UNKNOWN_ICON, P.owner)
-        marker.iconPath = path
+    if (path ~= "" and path or UNKNOWN_ICON) ~= marker.iconPath then
+        local actual = path ~= "" and path or UNKNOWN_ICON
+        if Texture(marker, "iconPath", marker.icon, actual) ~= true then
+            HideIcon(marker); return false
+        end
     end
     local gradePath = tostring(row and row.gradeIconPath or "")
     if gradePath ~= "" and marker.grade == nil and marker.root ~= nil and type(marker.root.CreateIconDrawable) == "function" then
@@ -306,8 +360,9 @@ local function ApplyIcon(marker, row, size, cfg, x, y, showStacks, showTime, sca
     end
     if marker.grade ~= nil then
         if gradePath ~= marker.gradePath then
-            if gradePath ~= "" then S.UI:SetIconTexture(marker.grade, gradePath, P.owner) end
-            marker.gradePath = gradePath
+            if gradePath ~= "" then
+                if Texture(marker, "gradePath", marker.grade, gradePath) ~= true then HideIcon(marker); return false end
+            else marker.gradePath = "" end
         end
         S.UI:SetVisible(marker.grade, gradePath ~= "", P.owner)
     end
@@ -315,7 +370,7 @@ local function ApplyIcon(marker, row, size, cfg, x, y, showStacks, showTime, sca
     marker.time:SetText(showTime and tostring(row.timeText or "--") or "")
     -- Group-level clamping already kept the whole row/group inside the screen;
     -- each icon is placed at its exact computed slot so members never pile up.
-    S.UI:SetAnchor(marker.root, UIParent, x, y, P.owner)
+    Place(P.pools[marker.scope], marker.root, x, y, size, size)
     S.UI:SetVisible(marker.root, true, P.owner)
 end
 
@@ -328,7 +383,7 @@ local function RenderIconRow(scope, pool, rows, cfg, centerX, rowY, showStacks, 
     local count = math.min(#rows, 16)
     local totalW = count * size + math.max(0, count - 1) * gap
     local startX = math.floor(centerX + N(cfg.x, 0) - totalW / 2)
-    startX = ClampHorizontalGroup(startX, totalW, LogicalScreenWidth())
+    -- 维护：整个血条附着组在移动父容器时统一裁剪，不能单独拉回每一排图标。
     local startY = math.floor(tonumber(rowY) or 0)
     for index = 1, count do
         local marker = pool.icons[slotOffset + index]
@@ -435,8 +490,10 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
     local infoTop = (buffActualRows > 0 and buffTopMostTop or bar.top) - infoGap - infoH
     infoTop = infoTop + math.floor(N(infoCfg.y, 0) * scale)
 
-    -- Equipment flanks. Left: offHand closest to bar, mainHand next, optional
-    -- ranged outermost. Right: wings/back only. Component x/y are
+    -- Equipment flanks. Historical v3 keeps offHand closest -> mainHand -> ranged outermost.
+    -- Release v4 visually reads left-to-right as mainHand -> offHand -> ranged -> plate, so ranged is
+    -- immediately to the RIGHT of offHand as requested by ranged-class players. Right: wings/back only.
+    -- Component x/y are
     -- local micro offsets. Slots are returned UNCLAMPED with their absolute
     -- origin; the renderer clamps each group as a whole (never per-icon).
     local function EquipSlots(edgeStart, direction, keys)
@@ -466,7 +523,13 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
         end
         return slots
     end
-    local leftSlots = EquipSlots(bar.left, -1, { "offHand", "mainHand", "ranged" })
+    -- 中文维护注释（装备排列版本化）：EquipSlots(direction=-1) 的 keys 是“从血条向外”顺序，
+    -- 所以 v4 传 ranged→offHand→mainHand 后，屏幕从左到右正好是 mainHand→offHand→ranged。
+    -- v3 继续使用历史顺序，保护曾主动调过 ranged 的旧用户；只有 fresh/reset 或“旧默认未动”
+    -- 的兼容升级会进入 v4。单项 cfg.x 仍只影响自己，不恢复旧联动。
+    local presetVersion = math.floor(tonumber(settings.layoutPresetVersion) or 3)
+    local leftOrder = presetVersion >= 4 and { "ranged", "offHand", "mainHand" } or { "offHand", "mainHand", "ranged" }
+    local leftSlots = EquipSlots(bar.left, -1, leftOrder)
     local rightSlots = EquipSlots(bar.right, 1, { "wings" })
     local function GroupRect(slots)
         if #slots == 0 then return nil end
@@ -519,9 +582,10 @@ local function RenderCastBar(scope, cast, cfg, centerX, y, scale)
     local cache = bar.layout
     if cache.alpha ~= alpha then S.UI:SetAlpha(bar.root, alpha, P.owner); cache.alpha = alpha end
     if cache.barW ~= barW then cache.barW = barW end
-    local clampedX, clampedY = ClampToScreen(x, math.floor(y), barW, barH)
-    S.UI:SetAnchor(bar.root, UIParent, clampedX, clampedY, P.owner)
-    S.UI:SetExtent(bar.root, barW, barH, P.owner)
+    -- 维护：施法条/文字也归属同一个单位容器；总高度包含文字，避免父裁剪。
+    local totalH = barH + (showText and 15 or 0)
+    Place(pool, bar.root, x, math.floor(y), barW, totalH)
+    S.UI:SetExtent(bar.root, barW, totalH, P.owner)
     S.UI:SetAnchor(bar.bg, bar.root, 0, 0, P.owner)
     S.UI:SetExtent(bar.bg, barW, barH, P.owner)
     S.UI:SetAnchor(bar.fill, bar.root, 0, 0, P.owner)
@@ -530,6 +594,7 @@ local function RenderCastBar(scope, cast, cfg, centerX, y, scale)
     S.UI:SetFontSize(bar.text, math.max(8, math.floor(N(cfg.fontSize, 10) * scale)), P.owner)
     S.UI:SetAnchor(bar.text, bar.root, 0, barH + 1, P.owner)
     S.UI:SetExtent(bar.text, barW, 14, P.owner)
+    S.UI:SetVisible(bar.text, showText, P.owner)
     S.UI:SetVisible(bar.root, true, P.owner)
 end
 
@@ -543,66 +608,159 @@ local function RecordAnchorFailure(scope, reason)
     entry.lastErr = tostring(reason or "anchor_unavailable")
 end
 
--- Apply a pre-computed equipment group (left or right flank). The whole group
--- is clamped as one unit (only the group origin moves); members keep their
--- exact relative slots, so icons never pile at a screen edge.
+-- 维护：装备沿用局部布局。只由外层整组容器执行屏幕边缘约束，不能让装备/
+-- Buff/职业各自夹紧到不同位置；这样移动与屏幕边缘的相对几何始终一致。
 local function ApplyEquipGroup(scope, pool, plates, components, group, slotStart, scale)
     local slots = type(group) == "table" and group.slots or nil
     if slots == nil or #slots == 0 then return 0 end
     local used = 0
-    local dx = 0
-    local rect = type(group) == "table" and group.rect or nil
-    if rect ~= nil then
-        dx = ClampHorizontalGroup(rect.left, rect.width, LogicalScreenWidth()) - rect.left
-    end
     for _, s in ipairs(slots) do
         local marker = pool.icons[slotStart + used + 1]
         if marker == nil then break end
         local item = type(plates) == "table" and plates[s.key] or {}
         local cfg = type(components) == "table" and components[s.key] or {}
-        ApplyIcon(marker, { iconPath = item.icon, gradeIconPath = item.gradeIconPath, stack = nil, timeText = nil }, s.size, cfg, s.x + dx, s.y, false, false, scale)
+        ApplyIcon(marker, { iconPath = item.icon, gradeIconPath = item.gradeIconPath, stack = nil, timeText = nil }, s.size, cfg, s.x, s.y, false, false, scale)
         used = used + 1
     end
     return used
 end
 
--- Info row: class · gear score · distance, dynamically concatenated.
-local function RenderInfo(scope, plates, infoCfg, components, centerX, y, fontSize)
+-- 中文维护注释（HUD 信息拆分几何 Authority，2026-09-17）：
+-- Store schema6 已经持久化 info、components.gearScore、components.distance 三套几何字段；
+-- schema7 只在 info 增加 gearScoreFormat，不改变这些几何 Authority。旧 Renderer 把文本先拼成一个
+-- label，后两套字段事实上从未参与正式 HUD。职业名称继续使用 info.x/y/fontSize；装备分数使用
+-- gearScore.x/y/fontSize/alpha；距离使用 distance.x/y/fontSize/alpha；职业图标仍只使用
+-- class.x/y/size/alpha。历史 schema6 canonical 由 Store 冻结验真；schema7 只新增文字格式，
+-- 不会把“图标微调”重新耦合到职业名字。ComputePlateLayout 历史上把 info.y 预先加进
+-- info.top，因此本函数先还原 baseY，再分别应用三项 Y，确保移动职业名称不拖着装分/距离。
+-- 零偏移时三段仍按旧职业→装分→距离顺序整体居中，升级后默认视觉不会无故散开。
+
+-- 中文维护注释（装备分数显示格式，2026-09-17）：
+-- Renderer 只格式化 Projection 已提供的 gearScore，不读取 Native、不缓存第二份数值 Authority。
+-- compact 只在 >=1000 时使用 K，一位小数四舍五入并去掉 .0；full 保持整数文本。
+-- 非数字输入 fail-soft 原样显示，避免未来诊断占位被错误吞掉。
+function P.FormatGearScoreValue(value, mode)
+    local raw = tostring(value == nil and "" or value)
+    local n = tonumber(raw)
+    if n == nil then return raw end
+    n = math.max(0, math.floor(n + 0.5))
+    if tostring(mode or "full") ~= "compact" or n < 1000 then return tostring(n) end
+    local tenths = math.floor((n / 100) + 0.5)
+    if tenths % 10 == 0 then return tostring(math.floor(tenths / 10)) .. "K" end
+    return string.format("%.1fK", tenths / 10)
+end
+
+function P.ComputeInfoItemsLayout(plates, infoCfg, components, centerX, y, fontSize, scale)
+    plates, infoCfg, components = type(plates)=="table" and plates or {}, infoCfg or {}, components or {}
+    scale = tonumber(scale) or 1
+    local class = type(plates.class)=="table" and plates.class or {}
+    local classCfg = components.class or {}
+    local gearCfg = components.gearScore or {}
+    local distanceCfg = components.distance or {}
+    -- 中文维护注释（职业名称/图标独立 Authority）：showClass 只控制职业名称；class.enabled 只控制
+    -- 职业图标。旧合并 label 曾把二者绑定，拆分后若继续复用同一门会导致“关图标=名字也没了”。
+    local classValue = tostring(class.value or "")
+    local classText = infoCfg.showClass ~= false and classValue or ""
+    local rawGearText = infoCfg.showGear ~= false and gearCfg.enabled ~= false and type(plates.gearScore)=="table" and tostring(plates.gearScore.value or "") or ""
+    local gearText = rawGearText ~= "" and P.FormatGearScoreValue(rawGearText, infoCfg.gearScoreFormat) or ""
+    local distanceText = infoCfg.showDistance ~= false and distanceCfg.enabled ~= false and type(plates.distance)=="table" and tostring(plates.distance.value or "") or ""
+
+    local classFont = math.max(8, math.floor(tonumber(fontSize) or 12))
+    local gearFont = math.max(8, math.floor(N(gearCfg.fontSize, 12) * scale))
+    local distanceFont = math.max(8, math.floor(N(distanceCfg.fontSize, 12) * scale))
+    local specs = {}
+    if classText ~= "" then specs[#specs+1] = { key="classText", raw=classText, font=classFont } end
+    if gearText ~= "" then specs[#specs+1] = { key="gearScore", raw=gearText, font=gearFont } end
+    if distanceText ~= "" then specs[#specs+1] = { key="distance", raw=distanceText, font=distanceFont } end
+    for index, item in ipairs(specs) do
+        -- 用户要求装备分数前不再显示“·”。gearScore 使用纯文字，并通过几何 gap 与前项分开；
+        -- distance 保留旧分隔符语义。这样 gear label 的真实文本就是 15200/15.2K，不带隐藏前缀。
+        item.gapBefore = (index > 1 and item.key == "gearScore") and math.max(3, math.floor(item.font * 0.25)) or 0
+        item.text = (index > 1 and item.key ~= "gearScore" and "· " or "") .. item.raw
+        item.width = TextWidth(item.text, item.font)
+        item.height = math.max(12, item.font + 4)
+    end
+
+    local icon = classCfg.enabled ~= false and type(class.icon)=="string" and class.icon ~= "" and class.icon or nil
+    local automaticSize = math.max(12, classFont + 2)
+    local iconGap = icon and (automaticSize + 4) or 0
+    local rowWidth = 0
+    for _, item in ipairs(specs) do rowWidth = rowWidth + (item.gapBefore or 0) + item.width end
+    local rowStartX = math.floor(centerX - (rowWidth + iconGap) / 2)
+    local cursorX = rowStartX + iconGap
+    local baseY = math.floor(N(y, 0) - N(infoCfg.y, 0) * scale)
+    local out = { width=rowWidth, height=math.max(12,classFont+4), x=cursorX, y=baseY, icon=icon }
+    for _, item in ipairs(specs) do
+        cursorX = cursorX + (item.gapBefore or 0)
+        local cfg, xOffset, yOffset, alpha = {}, 0, 0, 1
+        if item.key == "classText" then
+            xOffset, yOffset = N(infoCfg.x,0), N(infoCfg.y,0) * scale
+        elseif item.key == "gearScore" then
+            cfg=gearCfg; xOffset=N(cfg.x,0)*scale; yOffset=N(cfg.y,0)*scale; alpha=math.max(.1,math.min(1,N(cfg.alpha,1)))
+        else
+            cfg=distanceCfg; xOffset=N(cfg.x,0)*scale; yOffset=N(cfg.y,0)*scale; alpha=math.max(.1,math.min(1,N(cfg.alpha,1)))
+        end
+        out[item.key] = { text=item.raw, displayText=item.text, x=math.floor(cursorX+xOffset), y=math.floor(baseY+yOffset), width=item.width, height=item.height, font=item.font, alpha=alpha }
+        cursorX = cursorX + item.width
+    end
+    local size = N(classCfg.size,0)>0 and math.max(8,math.floor(N(classCfg.size,0)*scale)) or automaticSize
+    -- 图标锚定于基础信息行的未偏移基准，不消费 info.x/info.y；这样职业名称和职业图标
+    -- 在 HUD 调整器中真正独立。class.x/y 仍只作用图标；schema7 仅新增装分文字格式，不改变图标几何。
+    out.iconX = rowStartX + math.floor(N(classCfg.x,0)*scale)
+    out.iconY = baseY + math.floor(N(classCfg.y,0)*scale)
+    out.iconSize = size
+    out.iconAlpha = math.max(.1,math.min(1,N(classCfg.alpha,1)))
+    return out
+end
+
+-- 兼容只读 API：旧校准/外部测试若仍调用 ComputeInfoLayout，返回三段文字 union，而不是重新
+-- 恢复单 label。新代码应读取 ComputeInfoItemsLayout 的 classText/gearScore/distance 子矩形。
+function P.ComputeInfoLayout(plates, infoCfg, components, centerX, y, fontSize, scale)
+    local g=P.ComputeInfoItemsLayout(plates,infoCfg,components,centerX,y,fontSize,scale)
+    local minX,maxX,minY,maxY=nil,nil,nil,nil;local text={}
+    for _,key in ipairs({"classText","gearScore","distance"}) do
+        local item=g[key]
+        if item then
+            minX=math.min(minX or item.x,item.x);maxX=math.max(maxX or item.x+item.width,item.x+item.width)
+            minY=math.min(minY or item.y,item.y);maxY=math.max(maxY or item.y+item.height,item.y+item.height)
+            text[#text+1]=item.text
+        end
+    end
+    return {text=table.concat(text," "),x=minX or g.x,y=minY or g.y,width=math.max(1,(maxX or g.x+1)-(minX or g.x)),height=math.max(1,(maxY or g.y+1)-(minY or g.y)),icon=g.icon,iconX=g.iconX,iconY=g.iconY,iconSize=g.iconSize,alpha=g.iconAlpha}
+end
+
+local function RenderTextItem(pool, widget, cache, cacheField, item)
+    if widget == nil then return end
+    if item == nil or item.text == "" then S.UI:SetVisible(widget,false,P.owner); cache[cacheField]=""; return end
+    local rendered = item.displayText or item.text
+    if cache[cacheField] ~= rendered then widget:SetText(rendered);cache[cacheField]=rendered end
+    S.UI:SetFontSize(widget,item.font,P.owner)
+    S.UI:SetAlpha(widget,item.alpha or 1,P.owner)
+    S.UI:SetExtent(widget,item.width,item.height,P.owner)
+    Place(pool,widget,item.x,item.y,item.width,item.height)
+    S.UI:SetVisible(widget,true,P.owner)
+end
+
+local function RenderInfo(scope, plates, infoCfg, components, centerX, y, fontSize, scale)
     local pool = P.pools[scope]
     if pool == nil or pool.info == nil then return end
     local info = pool.info
-    local parts = {}
-    local classPart, gearPart, distancePart = nil, nil, nil
-    local classCfg = components.class or {}
-    if infoCfg.showClass ~= false and classCfg.enabled ~= false then
-        local c = type(plates.class) == "table" and plates.class or {}
-        if c.value ~= nil and tostring(c.value) ~= "" then classPart = tostring(c.value) end
+    local g = P.ComputeInfoItemsLayout(plates,infoCfg,components,centerX,y,fontSize,scale)
+    RenderTextItem(pool,info.classTextRoot,info,"classText",g.classText)
+    RenderTextItem(pool,info.gearRoot,info,"gearText",g.gearScore)
+    RenderTextItem(pool,info.distanceRoot,info,"distanceText",g.distance)
+    if info.iconRoot then
+        local showIcon = g.icon ~= nil and info.icon ~= nil and g.classText ~= nil
+        if showIcon then
+            showIcon = Texture(info,"iconPath",info.icon,g.icon)
+            S.UI:SetExtent(info.iconRoot,g.iconSize,g.iconSize,P.owner)
+            S.UI:SetExtent(info.icon,g.iconSize,g.iconSize,P.owner)
+            S.UI:SetAnchor(info.icon,info.iconRoot,0,0,P.owner)
+            S.UI:SetAlpha(info.iconRoot,g.iconAlpha,P.owner)
+            Place(pool,info.iconRoot,g.iconX,g.iconY,g.iconSize,g.iconSize)
+        end
+        S.UI:SetVisible(info.iconRoot,showIcon,P.owner)
     end
-    local gearCfg = components.gearScore or {}
-    if infoCfg.showGear ~= false and gearCfg.enabled ~= false then
-        local g = type(plates.gearScore) == "table" and plates.gearScore or {}
-        if g.value ~= nil then gearPart = tostring(g.value) end
-    end
-    local distCfg = components.distance or {}
-    if infoCfg.showDistance ~= false and distCfg.enabled ~= false then
-        local d = type(plates.distance) == "table" and plates.distance or {}
-        if d.value ~= nil then distancePart = tostring(d.value) end
-    end
-    if classPart ~= nil then parts[#parts + 1] = classPart end
-    if gearPart ~= nil then parts[#parts + 1] = gearPart end
-    if distancePart ~= nil then parts[#parts + 1] = distancePart end
-    local text = table.concat(parts, " · ")
-    local width = math.max(24, TextWidth(text, fontSize))
-    if text ~= info.text or info.fontSize ~= fontSize then
-        info.text, info.fontSize = text, fontSize
-        info.root:SetText(text)
-        S.UI:SetFontSize(info.root, fontSize, P.owner)
-    end
-    local x = math.floor(centerX + N(infoCfg.x, 0) - width / 2)
-    local clampedX, clampedY = ClampToScreen(x, math.floor(y), width, fontSize + 4)
-    S.UI:SetExtent(info.root, width, math.max(12, fontSize + 4), P.owner)
-    S.UI:SetAnchor(info.root, UIParent, clampedX, clampedY, P.owner)
-    S.UI:SetVisible(info.root, text ~= "", P.owner)
 end
 
 local function RenderScope(scope, settings)
@@ -610,30 +768,24 @@ local function RenderScope(scope, settings)
     if pool == nil then return end
     if ScopeEnabled(scope, settings) ~= true then HideScope(scope); return end
     local plates = Feature:GetPlatesProjection(scope)
-    local anchorX, anchorY, depth = Feature:GetPlatesAnchor(scope)
+    -- 维护：所有内容在单位原点生成；屏幕移动留给MotionTick，绝不在这里重读投影Native。
+    local anchorX, anchorY = 0, 0
+    pool.placementCount, pool.minX, pool.minY, pool.maxX, pool.maxY = 0, nil, nil, nil, nil
     P.metrics.projections = P.metrics.projections + 1
-    if anchorX == nil or anchorY == nil then
-        RecordAnchorFailure(scope, "anchor_unavailable")
-        HideScope(scope)
-        return
-    end
-    if N(depth, 1) <= 0 then
-        RecordAnchorFailure(scope, "depth_non_positive")
-        HideScope(scope)
-        return
-    end
     local components = type(settings.components) == "table" and settings.components or {}
     local infoCfg = type(settings.info) == "table" and settings.info or {}
     local showStacks = settings.headShowStacks ~= false
     local showTime = settings.headShowTime ~= false
 
-    -- Equipment visibility: collapse slots that have no item. Ranged stays an
-    -- independent opt-in component (default off); wings is the default right slot.
+    -- Equipment visibility: collapse slots that have no item. Ranged remains an independent component;
+    -- fresh/player defaults are ON from layout preset v4, while customized historical profiles keep their stored choice.
     local equip = {}
     for _, key in ipairs({ "mainHand", "offHand", "ranged", "wings" }) do
         local cfg = components[key] or {}
         local item = plates[key]
+        -- 中文维护：观察到类型但元数据缺图时不借“未知物品”伪装具体装备；待共享元数据补齐再绘制。
         equip[key] = cfg.enabled ~= false and item ~= nil and item.icon ~= nil
+            and (item.source ~= "observed_buff" or item.icon ~= "")
     end
 
     local buffRows = plates.buffs or {}
@@ -664,10 +816,15 @@ local function RenderScope(scope, settings)
 
     -- Info row (class name · gear score · distance), auto-placed above actual rows.
     if infoCfg.enabled ~= false then
-        RenderInfo(scope, plates, infoCfg, components, bar.centerX, L.info.top, L.info.font)
+        RenderInfo(scope, plates, infoCfg, components, bar.centerX, L.info.top, L.info.font, scale)
     else
         local info = pool.info
-        if info then S.UI:SetVisible(info.root, false, P.owner) end
+        if info then
+            if info.classTextRoot then S.UI:SetVisible(info.classTextRoot, false, P.owner) end
+            if info.gearRoot then S.UI:SetVisible(info.gearRoot, false, P.owner) end
+            if info.distanceRoot then S.UI:SetVisible(info.distanceRoot, false, P.owner) end
+            if info.iconRoot then S.UI:SetVisible(info.iconRoot, false, P.owner) end
+        end
     end
 
     -- Cast bar below the debuff rows (hidden when not casting).
@@ -679,6 +836,7 @@ local function RenderScope(scope, settings)
         local cast = pool.cast
         if cast then S.UI:SetVisible(cast.root, false, P.owner) end
     end
+    CommitPlacements(pool)
 end
 
 -- 中文维护注释（HUD 校准 Presentation suppression，2026-09-11）：
@@ -709,9 +867,58 @@ function P:SetCalibrationSuppressed(value, reason)
 end
 function P:IsCalibrationSuppressed() return self.calibrationSuppressed == true end
 
+-- 维护：raw投影与raw视口只转换一次。组内子项全部不动，边缘裁剪平移整个union，
+-- 禁止逐图标clamp/插值（会引入空间误导）；原生点不可用或在屏幕后时立即隐藏整组。
+local function MoveRoots()
+    local w,h
+    if type(Feature.GetHeadViewport)=="function" then w,h=Feature:GetHeadViewport() end
+    for _,scope in ipairs(SCOPES) do
+        local pool=P.pools[scope]
+        local x,y,depth,source,err=Feature:GetPlatesAnchor(scope)
+        local valid=x~=nil and y~=nil and N(depth,1)>0
+        if pool and not valid then
+            local reason=tostring(err or "native_anchor_unavailable")
+            if pool.lastAnchorFailure~=reason then RecordAnchorFailure(scope,reason) end
+            pool.lastAnchorFailure=reason
+        elseif pool then pool.lastAnchorFailure=nil end
+        local show=pool and pool.ready==true and valid
+        if show then
+            x,y=x+pool.offsetX,y+pool.offsetY
+            if w and h and w>0 and h>0 then
+                x=math.max(0,math.min(math.max(0,w-pool.width),x))
+                y=math.max(0,math.min(math.max(0,h-pool.height),y))
+            end
+            x,y=math.floor(x+.5),math.floor(y+.5)
+            if pool.screenX~=x or pool.screenY~=y then
+                local ok
+                if type(S.UI.EnsureAnchor)=="function" then ok=S.UI:EnsureAnchor(pool.root,UIParent,x,y,P.owner)
+                else ok=S.UI:SetAnchor(pool.root,UIParent,x,y,P.owner) end
+                if ok==true then
+                    pool.screenX,pool.screenY=x,y
+                    P.motionMetrics.rootWrites=P.motionMetrics.rootWrites+1
+                else
+                    show=false;P.motionMetrics.anchorFailures=P.motionMetrics.anchorFailures+1
+                end
+            end
+        end
+        if pool and pool.root then S.UI:SetVisible(pool.root,show==true,P.owner) end
+    end
+end
+function P:MotionTick()
+    if self.running~=true then return false end
+    self.motionMetrics.frames=self.motionMetrics.frames+1
+    if self.calibrationSuppressed==true then return true end
+    local now=S.NowMs and S.NowMs() or 0
+    if self.contentDirty or (self.textureRetryAt and now>=self.textureRetryAt) then return self:VisualTick() end
+    MoveRoots()
+    return true
+end
+
 function P:VisualTick()
     if self.running ~= true then return false end
     self.metrics.ticks = self.metrics.ticks + 1
+    self.contentDirty, self.textureRetryAt = false, nil
+    self.motionMetrics.contentBuilds = self.motionMetrics.contentBuilds + 1
     if self.calibrationSuppressed == true then self:HideAll(); return true end
     local policy = Settings()
     if policy.headEnabled == false then self:HideAll(); return true end
@@ -722,7 +929,7 @@ function P:VisualTick()
             RenderScope(scope, settings); rendered = true
         else HideScope(scope) end
     end
-    if rendered ~= true then self:HideAll() end
+    if rendered ~= true then self:HideAll() else MoveRoots() end
     return true
 end
 
@@ -738,11 +945,16 @@ function P:Start()
     local acquired, acquireErr = Feature:AcquireConsumer(self.consumerToken)
     if acquired ~= true then return false, acquireErr end
     self.consumerHeld = true
-    -- The Feature position lane publishes plates.updated at the configured
-    -- cadence; the renderer is event-driven and owns no periodic scheduler.
+    -- Feature发布独立的帧位置事件；Renderer自己不注册OnUpdate/任务。
+    -- 内容lane只置脏，在下一次位置提交时合并渲染，而非每个位置回调重建内容。
     if type(S.Events.SubscribeInternal) == "function" then
         S.Events:UnsubscribeInternalOwner(self)
-        S.Events:SubscribeInternal("v3.buff_display.plates.updated", self, function() return P:VisualTick() end)
+        -- 维护：多个数据lane同一帧发布只置一次dirty；身份失效立即清屏，不能等内容轮询。
+        S.Events:SubscribeInternal("v3.buff_display.plates.updated", self, function(_,reason)
+            P.contentDirty=true
+            if reason=="target_identity_invalidated" then HideScope("target") end
+        end)
+        S.Events:SubscribeInternal("v3.buff_display.plates.motion", self, function() return P:MotionTick() end)
     end
     self.running = true
     self.metrics.starts = self.metrics.starts + 1
@@ -758,6 +970,7 @@ function P:Stop(reason)
         if releaseOk == true then self.consumerHeld = false end
     end
     self.running = false
+    self.contentDirty, self.textureRetryAt = true, nil
     self:HideAll()
     self.metrics.stops = self.metrics.stops + 1
     -- Keep consumerHeld true on a failed release so diagnostics/reconcile retain
@@ -787,6 +1000,9 @@ function P:GetDiagnostics()
     local function Lane(scope) return type(laneData) == "table" and laneData[scope] or nil end
     return {
         version = self.version,
+        pvp = { patch=self.PvpPatch, frames=self.motionMetrics.frames, rootWrites=self.motionMetrics.rootWrites,
+            contentBuilds=self.motionMetrics.contentBuilds, textureFailures=self.motionMetrics.textureFailures,
+            anchorFailures=self.motionMetrics.anchorFailures, lastTextureError=self.motionMetrics.lastTextureError },
         buffIconFontSizeContractVersion = tonumber(self.BuffIconFontSizeContractVersion) or 0,
         castYOffsetContractVersion = tonumber(self.CastYOffsetContractVersion) or 0,
         running = self.running == true,
@@ -820,7 +1036,7 @@ if type(S.Events.SubscribeInternal) == "function" then
 end
 
 -- Contract 6: health-bar proxy anchor layout via pure ComputePlateLayout;
--- class contributes name text only (no role icon); equipment collapses when
+-- class now contributes exact-catalog role icon + localized text; equipment collapses when
 -- absent; main/off + optional ranged share the left flank, wings/back owns the
 -- right flank; x/y are local offsets.
 -- Contract 8 adds authoritative Buff/Debuff fontSize consumption. Startup acceptance checks
@@ -828,5 +1044,7 @@ end
 -- the new calibration UI while ignoring its font controls.
 -- Contract 9 keeps equipment default-slot flow but fences every component x/y as a local offset:
 -- moving offHand/mainHand/ranged/wings can no longer shift sibling slot bases.
+-- 中文维护（enemy-loadout-1）：目标武器/防具是可见 Buff 类型投影；现有布局/存档契约不变。
+P.TargetLoadoutPatch = "enemy-loadout-1"
 Feature.BuffHeadMarkerContractVersion = 9
 P:Reconcile("load")

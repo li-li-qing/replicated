@@ -18,7 +18,7 @@ if type(RSUI) ~= "table" or type(Floating) ~= "table" or type(AuxStore) ~= "tabl
 S.UIV3 = S.UIV3 or {}
 S.UIV3.TradeDetailFloatingV3 = S.UIV3.TradeDetailFloatingV3 or {
     version = 1,
-    TradeDetailContractVersion = 2,
+    TradeDetailContractVersion = 3,
     id = "v3_trade_detail_floating",
     created = false,
     visible = false,
@@ -163,6 +163,11 @@ function M:EnsureCreated()
         slot = { size = "fixed", width = 116 } })
     self.favoriteButton = RSUI:Button({ id = self.id .. "_favorite", parent = actions, text = "收藏路线", compact = true,
         slot = { size = "fixed", width = 92 } })
+    -- 中文维护注释（2026-09-14，跑商→拍卖临时清单）：这里不让 Presentation 重算配方，也不把
+    -- 临时材料写进 life_trade Store。点击时只把 Trade Authority 已经解析好的 detached row/materialRows
+    -- 交给 AuctionSessionListV3；该 Service 没有 Persistence Store，ReloadAddon 后自然清空。
+    self.auctionTempButton = RSUI:Button({ id = self.id .. "_auction_temp", parent = actions, text = "加入拍卖临时清单", compact = true,
+        slot = { size = "fixed", width = 126 } })
     self.refreshButton = RSUI:Button({ id = self.id .. "_refresh", parent = actions, text = "刷新详情", compact = true,
         slot = { size = "fixed", width = 86 } })
 
@@ -185,7 +190,7 @@ function M:EnsureCreated()
         overflow = "wrap", maxLines = 2, slot = { size = "fixed", height = 34, hAlign = "fill" } })
 
     if self.route == nil or self.summary == nil or self.quoteButton == nil or self.favoriteButton == nil
-        or self.refreshButton == nil or self.table == nil or self.hint == nil then
+        or self.auctionTempButton == nil or self.refreshButton == nil or self.table == nil or self.hint == nil then
         surface:Destroy()
         self.surface, self.shell = nil, nil
         return false, "贸易品详情悬浮窗内容创建失败"
@@ -208,6 +213,22 @@ function M:EnsureCreated()
         local ok, favoriteErr = feature.Commands:ToggleCurrentFavorite()
         if ok == true then M:Refresh("favorite_changed") end
         return ok, favoriteErr
+    end
+    self.auctionTempButton.onClick = function()
+        local feature = Feature()
+        local session = S.Services and S.Services.AuctionSessionListV3 or nil
+        if type(feature) ~= "table" or type(feature.GetRow) ~= "function" then return false, "跑商数据不可用" end
+        if type(session) ~= "table" or type(session.AddTradeRow) ~= "function" then return false, "拍卖临时清单服务不可用" end
+        local row = feature:GetRow(M.rowKey)
+        if type(row) ~= "table" then return false, "当前贸易品已失效，请重新选择" end
+        if type(row.materialRows) ~= "table" or #row.materialRows <= 0 then return false, "当前贸易品没有可加入的材料" end
+        local ok, groupOrErr = session:AddTradeRow(row)
+        if ok == true then
+            M.hint:SetText("已加入拍卖助手“临时”选项卡；临时数据只保留到本次插件重载/客户端重启。")
+        else
+            M.hint:SetText("加入拍卖临时清单失败：" .. tostring(groupOrErr or "未执行"))
+        end
+        return ok, groupOrErr
     end
     self.refreshButton.onClick = function() return M:Refresh("manual") end
 
@@ -240,6 +261,7 @@ function M:Refresh(reason)
         self.summary:SetText("请回到跑商列表重新选择贸易品。")
         self.quoteButton:SetEnabled(false)
         self.favoriteButton:SetEnabled(false)
+        self.auctionTempButton:SetEnabled(false)
         self.surface:SetStatus("结果已更新", "yellow")
         return false, "贸易品已不在当前路线结果中"
     end
@@ -287,6 +309,7 @@ function M:Refresh(reason)
     self.quoteButton:SetText(pending > 0 and ("询价当前材料(" .. tostring(pending) .. ")") or "材料已询价")
     self.favoriteButton:SetEnabled(projection.fromZone ~= nil and projection.toZone ~= nil)
     self.favoriteButton:SetText(projection.currentRouteFavorite == true and "取消路线收藏" or "收藏路线")
+    self.auctionTempButton:SetEnabled(type(S.Services and S.Services.AuctionSessionListV3) == "table" and #(row.materialRows or {}) > 0)
     local statusSummary = "材料 " .. tostring(#items) .. " 项"
     if pending > 0 then statusSummary = statusSummary .. (" · 待询价 " .. tostring(pending)) end
     if inflight > 0 then statusSummary = statusSummary .. (" · 询价中 " .. tostring(inflight)) end

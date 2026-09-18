@@ -682,6 +682,101 @@ local function RebuildTransportV1ZeroOmissionCanonical(decoded, stampedFingerpri
         stampedFingerprint, "transportV1Zero", metaDesc)
 end -- 中文维护注释：结束 Framework3/Transport v1 零值省略结构化恢复器。
 
+-- 中文维护注释（schema2/transport2）：旧索引 decode 先 ipairs，字符串序号记录在 hook
+-- 收到 decoded 前已丢失；旧恢复只覆盖 Framework2/Transport1。当前桥必须读取已通过预算与
+-- Envelope Seal 的 raw payload，按原序号无损重建，重新用原 Decode/Encode，比对整份旧章。
+-- Authority：Store 只产候选，Core 决定验真与 Apply；不打开/修改任何 record 分片，不猜缺失记录。
+-- 只接受完整 1..N（最多 MAX_HISTORY），拒绝重复/稀疏/非法序号；内容变了仍继续写保护。
+local function RebuildTransportV2SequenceCanonical(rawEnvelope, stampedFingerprint)
+    -- 维护：v3 只解决标量精度，不改变序列键风险；已解码 v2/v3 共用严格索引重建。
+    -- 这里不是死亡回顾未知数值指纹的恢复；仍须整表原指纹精确一致。
+    local probe = "schema2tv" .. tostring(rawEnvelope.__rsmeta.transportVersion)
+    local store = P:GetStore(INDEX_STORE)
+    local payload = type(rawEnvelope.payload) == "table" and rawEnvelope.payload or nil
+    local history = payload and type(payload.history) == "table" and payload.history or nil
+    if history == nil or type(P.RebuildDenseSequenceForIntegrity) ~= "function" then
+        if store then store.lastHistoricalRecoveryProbe = probe .. "/sequence=unavailable" end
+        return nil
+    end
+    local rows, reason, changed = P:RebuildDenseSequenceForIntegrity(history.entries, MAX_HISTORY)
+    if rows == nil or not changed then
+        if store then store.lastHistoricalRecoveryProbe = probe .. "/sequence=" .. tostring(reason or "unchanged") end
+        -- 维护：第三返回值是严格序列检查的结构事实，不解析诊断文本决定是否能恢复。
+        -- 改日志措辞/禁用日志不得改变业务门禁；非法序列明确false，完整未改序列才true。
+        return nil, nil, rows ~= nil and changed ~= true
+    end
+    local recoveredRaw = DeepCopy(rawEnvelope)
+    recoveredRaw.payload.history.entries = rows
+    local recovered = DecodeIndex(recoveredRaw)
+    if recovered == nil then
+        if store then store.lastHistoricalRecoveryProbe = probe .. "/sequence=decode_failed" end
+        return nil
+    end
+    local canonical = EncodeIndex(recovered)
+    if store then store.lastHistoricalRecoveryProbe = probe .. "/rows=" .. tostring(#rows)
+        .. "/hfp=" .. tostring(P:FingerprintCanonicalValue(store, canonical)) .. "/old=" .. tostring(stampedFingerprint) end
+    return canonical, recovered
+end
+
+-- 维护（真实udf，2026-09-12）：死亡索引time原为非整数毫秒；binary32投影后恰好成整数，
+-- 旧Fingerprint从%.6g切换为%.0f，内容近似不变但章失配。只验证当前codec1/schema2/tv2
+-- 的time token，<=8个合格time、<=255个子集；其余字段必须与已解码canonical逐项相同。
+-- Authority：候选供Core校验整份旧章，返回Domain仍为原读出的数值/顺序/记录，没有“造回”
+-- 丢失的毫秒小数、不读record分片、不清档、不改算法；正常Load/Transport3不进此冷路径。
+-- 模型与本次udf相符但不是对客户端源码的断言；未命中/多命中/超预算继续写保护。
+local function RebuildRoundedHistoryTimeCanonical(value, stamp, canonical, rawEnvelope)
+    local st=P:GetStore(INDEX_STORE)
+    local meta=type(rawEnvelope)=='table' and rawEnvelope.__rsmeta or nil
+    if type(st)~='table' or type(meta)~='table' or meta.store~=INDEX_STORE or meta.owner~=st.owner
+        or tonumber(meta.framework)~=3 or tonumber(meta.schema)~=2 or tonumber(meta.transportVersion)~=2
+        or tonumber(meta.integrityVersion)~=4 or rawEnvelope.codec~=1
+        or type(stamp)~='string' or #stamp~=8 or stamp:find('[^%x]') then return nil end
+    local function Probe(text)st.lastHistoricalRecoveryProbe=tostring(st.lastHistoricalRecoveryProbe or '')..'/timestamp='..text end
+    if type(canonical)~='table' or canonical.codec~=1 or type(canonical.payload)~='table'
+        or P:InspectPayload(canonical,st.encodedBudget).ok~=true then return nil end
+    -- 先严格对照完整codec业务树；拒绝靠normalizer删未知字段/记录后借time匹配。
+    local function Equal(a,b,depth)
+        if type(a)~=type(b) or depth>12 then return false end
+        if type(a)~='table'then return a==b end
+        for k,v in pairs(a)do if not Equal(v,b[k],depth+1)then return false end end
+        for k in pairs(b)do if a[k]==nil then return false end end
+        return true
+    end
+    if not Equal(canonical.payload,rawEnvelope.payload,0)then Probe('shape');return nil end
+    local history=canonical.payload.history
+    local entries=type(history)=='table'and history.entries or nil
+    if type(entries)~='table' then return nil end
+    local indices,witnesses={},{}
+    for i,row in ipairs(entries)do
+        local n=type(row)=='table'and row.time or nil
+        -- 此范围确保binary32 ULP<=1且%.6g非整数分支为科学计数；小时间/大时间未获本次证明。
+        if type(n)=='number' and n==math.floor(n) and n>=1000000 and n<16777216 then
+            indices[#indices+1]=i
+            if #indices>8 then Probe('budget');return nil end
+            local _,exponent=math.frexp(n)
+            local fraction=2^(exponent-26) -- binary32 ULP/4，严格位于同一个round-to-nearest单元
+            witnesses[#witnesses+1]=n+fraction
+        end
+    end
+    if #indices==0 then Probe('no_candidates');return nil end
+    local candidate=DeepCopy(canonical)
+    local matches,matched,changed=0,nil,0
+    for mask=1,2^#indices-1 do
+        local count=0
+        for j,index in ipairs(indices)do
+            local use=math.floor(mask/2^(j-1))%2==1
+            candidate.payload.history.entries[index].time=use and witnesses[j]or entries[index].time
+            if use then count=count+1 end
+        end
+        if P:FingerprintCanonicalValue(st,candidate)==stamp then
+            matches=matches+1;matched=DeepCopy(candidate);changed=count
+        end
+    end
+    Probe('tested'..tostring(2^#indices-1)..':hits'..matches..':changed'..changed)
+    if matches==1 then return matched,DeepCopy(value) end
+    return nil
+end
+
 local function RebuildHistoricalIndexCanonical(value, stampedFingerprint, currentCanonical, rawEnvelope) -- 中文维护注释：统一 Index 历史恢复入口，按 schema/framework/codec 明确分代，避免内容相关 known-pair 继续承担可以结构化证明的兼容职责。
     local meta = type(rawEnvelope) == "table" and rawEnvelope.__rsmeta or nil -- 中文维护注释：历史候选必须绑定已通过 Envelope Seal 的真实 schema/framework 元数据。
     -- 中文维护注释：`.18.198` 入口即写 probe。此前只有进入具体分支才写，而所有分支都不命中时
@@ -696,6 +791,29 @@ local function RebuildHistoricalIndexCanonical(value, stampedFingerprint, curren
                 .. "/codec=" .. tostring(type(rawEnvelope) == "table" and tonumber(rawEnvelope.codec) or nil)
                 .. "/stamped=" .. tostring(stampedFingerprint) -- 中文维护注释：stamped 只是 32 位 Hash，不含任何业务内容。
         end -- 中文维护注释：结束入口 probe 写入。
+    end
+    -- 中文维护注释：当前世代也可能仅序列键形变化；身份/schema/codec/transport 明确匹配。
+    if type(meta) == "table" and meta.store == INDEX_STORE and meta.owner == "v3.death_review"
+        and tonumber(meta.schema) == INDEX_SCHEMA and tonumber(meta.framework) == 3
+        -- 维护：数值传输升级后保留原 schema/codec/owner 门，不能让已修复的字符串序号回读回归。
+        and (tonumber(meta.transportVersion) == 2 or tonumber(meta.transportVersion) == 3)
+        and tonumber(rawEnvelope.codec) == INDEX_CODEC_VERSION then
+        local candidate, domain, sequenceUnchanged = RebuildTransportV2SequenceCanonical(rawEnvelope, stampedFingerprint)
+        if candidate ~= nil then return candidate, domain end
+        -- 维护（F2窗口精度）：codec1的原指纹覆盖{codec,payload}，不能拿Domain直接算。
+        -- 严格序列已证明未改变时才尝试两个既有中心比例；稀疏/坏序列不得借窗口桥丢掉历史。
+        -- Core验旧章后才Apply；不读record分片、不依赖DPS、不变更schema2或history排序。
+        local st = P:GetStore(INDEX_STORE)
+        if sequenceUnchanged and type(P.RebuildFixed6WindowCanonical) == "function" then
+            local windowCandidate,windowDomain=P:RebuildFixed6WindowCanonical(st, value, stampedFingerprint, currentCanonical,
+                rawEnvelope, INDEX_SCHEMA, INDEX_CODEC_VERSION)
+            if windowCandidate~=nil then return windowCandidate,windowDomain end
+        end
+        -- 实际udf已证明time分支；仅严格未变序列可进入，窗口桥不命中才尝试，不能组合任意损失。
+        if sequenceUnchanged then
+            return RebuildRoundedHistoryTimeCanonical(value,stampedFingerprint,currentCanonical,rawEnvelope)
+        end
+        return nil
     end
     if type(meta) == "table" and tonumber(meta.schema) == INDEX_SCHEMA and tonumber(meta.framework) == 2 and tonumber(type(rawEnvelope) == "table" and rawEnvelope.codec or nil) == INDEX_CODEC_VERSION then -- 中文维护注释：`.18.193` 已升级到 schema2 但 Framework2 尚无 Transport v1；优先使用通用表形 exact recovery，覆盖任意合法用户内容而不是新增 Hash 白名单。
         return RebuildFramework2Schema2CodecV1Canonical(rawEnvelope, stampedFingerprint) -- 中文维护注释：`.18.199` 组合恢复 Framework2 的 history 表形与合法 0 省略；Core 仍对候选做第二次 exact Hash 验证。
@@ -944,6 +1062,9 @@ if P:GetStore(INDEX_STORE) == nil then
         -- historical logical value is then normalized by the current Store and
         -- immediately re-stamped.
         rebuildCanonicalForIntegrity = RebuildHistoricalIndexCanonical, -- 中文维护注释：统一处理 pre-codec opaque canonical 与 schema1 codec1 历史窗口 canonical；所有候选仍由 Core exact Hash 认证。
+        -- 中文维护注释：当前索引序列已覆盖保存回读回归；只授权 Core 精确表示验真，
+        -- 不开放旧世代回读迁移，不改历史记录 Authority 或分片生命周期。
+        recoverReadbackRepresentation = true,
         recoverKnownLegacyCanonical = RecoverKnownLegacyV4Index,
         -- The index Domain is a fixed-shape normalize output, so the canonical
         -- v3 fingerprint is stable across RU representation changes. This opt-in

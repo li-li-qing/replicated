@@ -9,7 +9,7 @@ local S = ReplicatedSuite
 local RSUI = S.RSUI
 if type(RSUI) ~= "table" then return end
 
-S.UIV3Design = { version = 10 }
+S.UIV3Design = { version = 11, diagnosticHeaderContractVersion = 1 }
 local D = S.UIV3Design
 
 local function Text(parent, id, text, size, tone, slot, overflow)
@@ -57,6 +57,38 @@ function D:ScrollablePageRoot(parent, idOrSpec)
     return RSUI:ScrollBox(spec)
 end
 
+function D:ModuleDiagnosticsButton(parent, id, width)
+    -- 中文维护注释（2026-09-18，module-diagnostics-header-2）：所有业务页的诊断入口都必须
+    -- 经过这个共享 helper。标准 PageHeader 自动调用；少数拥有自定义抬头（首页/战斗分析）的页面
+    -- 只负责放置按钮，不得复制 Window:Open、Feature 归属或错误处理逻辑。这样未来诊断入口协议
+    -- 变化只改 DesignSystem，不会在几十个页面里产生分叉。
+    local pageHost = S.UIV3 and S.UIV3.PageHost or nil
+    local buildContext = type(pageHost) == "table" and type(pageHost.GetBuildContext) == "function" and pageHost:GetBuildContext() or nil
+    local moduleId = type(buildContext) == "table" and tostring(buildContext.moduleId or "") or ""
+    local route = type(buildContext) == "table" and tostring(buildContext.route or "") or ""
+    if moduleId == "" or moduleId == "system_diagnostics" or route == "system.diagnostics" then return nil end
+    return RSUI:Button({
+        id = tostring(id or "module_diagnostics"), parent = parent, text = "诊断", compact = true,
+        slot = { size = "fixed", width = tonumber(width) or 76 },
+        onClick = function()
+            -- Authority/生命周期：诊断只能观察。禁止通过按钮 InitializeFeature、SetEnabled、Acquire
+            -- Consumer 或调用业务刷新；关闭/故障模块必须同样可以打开诊断窗口。窗口按点击时解析，
+            -- 因 DesignSystem 的 TOC 顺序早于 Presentation widget，加载期不能缓存 nil。
+            local window = S.UIV3 and S.UIV3.ModuleDiagnosticsWindowV3 or nil
+            if type(window) ~= "table" or type(window.Open) ~= "function" then
+                local diagnostics = S.DiagnosticsManager
+                if type(diagnostics) == "table" and type(diagnostics.Error) == "function" then
+                    diagnostics:Error("ui_v3", "MODULE_DIAGNOSTICS_WINDOW_UNAVAILABLE", "模块诊断窗口不可用", {
+                        feature = moduleId, route = route, owner = "module_diagnostics_header",
+                    })
+                end
+                return false, "模块诊断窗口不可用"
+            end
+            return window:Open(moduleId)
+        end,
+    })
+end
+
 function D:PageHeader(parent, id, title, subtitle, actionText, onAction)
     local block = RSUI:VerticalBox({ id = id, parent = parent, gap = 3, slot = { size = "auto", hAlign = "fill" } })
     local row = RSUI:HorizontalBox({ id = id .. "_row", parent = block, gap = 8, slot = { size = "fixed", height = 30, hAlign = "fill" } })
@@ -64,6 +96,7 @@ function D:PageHeader(parent, id, title, subtitle, actionText, onAction)
     if actionText ~= nil and tostring(actionText) ~= "" then
         RSUI:Button({ id = id .. "_action", parent = row, text = actionText, compact = true, onClick = onAction, slot = { size = "fixed", width = 110 } })
     end
+    self:ModuleDiagnosticsButton(row, id .. "_diagnostics", 76)
     if subtitle ~= nil and tostring(subtitle) ~= "" then
         Text(block, id .. "_subtitle", subtitle, 10, "muted", { size = "auto", hAlign = "fill" }, "wrap")
     end

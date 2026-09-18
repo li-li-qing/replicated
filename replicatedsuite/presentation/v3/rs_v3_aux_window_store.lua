@@ -35,6 +35,13 @@ local POLICIES = {
         defaultOverallOpacity = 0.96, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0,
         defaultFontScale = 1.0, minFontScale = 0.80, maxFontScale = 1.25,
     },
+    -- 中文维护注释（2026-09-18，module-diagnostics-1）：模块诊断窗只有 Presentation 几何进入
+    -- AuxWindow Store；报告正文、页码、moduleId 都是 Session 冷快照，禁止持久化，避免诊断自己污染业务/存档。
+    module_diagnostics = {
+        defaultWidth = 760, defaultHeight = 590, minWidth = 560, minHeight = 380,
+        defaultOverallOpacity = 0.98, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0,
+        defaultFontScale = 1.0, minFontScale = 0.85, maxFontScale = 1.20,
+    },
 }
 
 local function Copy(value)

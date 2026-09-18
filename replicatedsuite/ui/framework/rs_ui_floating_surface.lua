@@ -18,7 +18,7 @@ if type(UI) ~= "table" or type(RSUI) ~= "table" or type(UI.CreateWindowShell) ~=
 local generation = tonumber(S.Generation) or 0
 if type(RSUI.FloatingSurface) ~= "table" or tonumber(RSUI.FloatingSurface.generation) ~= generation then
     RSUI.FloatingSurface = {
-        version = 11,
+        version = 12,
         generation = generation,
         instances = setmetatable({}, { __mode = "v" }),
         metrics = {
@@ -29,13 +29,14 @@ if type(RSUI.FloatingSurface) ~= "table" or tonumber(RSUI.FloatingSurface.genera
         },
     }
 end
-RSUI.FloatingSurface.version = 11
+RSUI.FloatingSurface.version = 12
 RSUI.FloatingSurface.IdempotentMutationContractVersion = 1
 RSUI.FloatingSurface.CompactMinimizeContractVersion = 1
 RSUI.FloatingSurface.TitleAppearanceContractVersion = 1
 RSUI.FloatingSurface.DetachedStateContractVersion = 1
 RSUI.FloatingSurface.StateMutationTransactionContractVersion = 1
 RSUI.FloatingSurface.ResponsivePlacementIntentContractVersion = 1
+RSUI.FloatingSurface.CommittedGeometryPersistenceContractVersion = 1
 RSUI.FloatingSurface.generation = generation
 local F = RSUI.FloatingSurface
 
@@ -145,7 +146,11 @@ end
 
 local function PersistSpec(spec, reason)
     F.metrics.stateWrites = (tonumber(F.metrics.stateWrites) or 0) + 1
-    local delay = math.max(0, tonumber(spec.persistDelayMs) or 250)
+    -- 维护（2026-09-16，geometry-edge-durability-1）：拖动/缩放结束属于低频用户事务边沿。
+    -- 位置若仍等默认 250ms Dirty 窗口，紧接退出客户端时可能只移动了 Native 却没来得及进入
+    -- 持久化调度。geometry 使用 delay=0 只推进已有 Persistence scheduler，不增加 Tick；透明度/
+    -- 字体等连续调整仍保留去抖，避免高频写入。
+    local delay = tostring(reason or "") == "geometry" and 0 or math.max(0, tonumber(spec.persistDelayMs) or 250)
     local ok, err = SafeCall(spec.persist, tostring(reason or "state"), delay)
     if ok ~= true then
         F.metrics.failures = (tonumber(F.metrics.failures) or 0) + 1
@@ -409,28 +414,45 @@ function F:Create(spec)
             target.fontScale = Clamp(snapshot.fontScale, policy.minFontScale, policy.maxFontScale, FirstNonNil(target.fontScale, policy.defaultFontScale))
 
             if reason == "geometry" then
+                -- 维护（2026-09-16，floating-committed-geometry-1）：WindowShell 传入的 snapshot
+                -- 是 Windowing 事务提交后的唯一几何事实。旧代码在这里再次 GetLogicalRect，正是钓鱼
+                -- 等悬浮窗重登漂移的来源。若启用吸附，CommitScreenSnap 也消费同一矩形并把解析后的
+                -- x/y 返回，再以 StorePlacementRect 写入原 Feature-owned widgetWindow。没有新增坐标 Store。
+                local placementX = tonumber(snapshot.x) or 0
+                local placementY = tonumber(snapshot.y) or 0
+                local placementW = math.max(1, tonumber(snapshot.width) or tonumber(snapshot.normalWidth) or width)
+                local placementH = math.max(1, tonumber(snapshot.height) or tonumber(snapshot.normalHeight) or height)
                 if spec.snappable == true and tostring(snapshot.geometryKind or "") == "drag" and type(UI.CommitScreenSnap) == "function" then
                     local snapEnabled = spec.snapEnabled
                     if type(spec.snapEnabledProvider) == "function" then
                         local ok, value = pcall(spec.snapEnabledProvider)
                         snapEnabled = ok and value == true
                     end
-                    local _, _, _, snapped = UI:CommitScreenSnap(surface.snapId, surface.shell.window, {
+                    local committed, resolvedX, resolvedY, snapped = UI:CommitScreenSnap(surface.snapId, surface.shell.window, {
                         owner = owner,
                         enabled = snapEnabled ~= false,
                         group = tostring(spec.snapGroup or "hud_panels"),
                         kind = tostring(spec.snapKind or "window"),
                         distance = tonumber(spec.snapDistance),
                         gap = tonumber(spec.snapGap),
+                        x = placementX, y = placementY, width = placementW, height = placementH,
                     })
+                    if committed == true then
+                        placementX = tonumber(resolvedX) or placementX
+                        placementY = tonumber(resolvedY) or placementY
+                    end
                     if snapped == true then F.metrics.snapCommits = (tonumber(F.metrics.snapCommits) or 0) + 1 end
                 end
-                local _, _, nativeW, nativeH = S.Layout:GetLogicalRect(surface.shell.window)
                 local liveContext = S.Layout:GetContext()
                 local liveScale = spec.scaleWithAddon == false and 1 or math.max(0.01, tonumber(liveContext.addonScale) or 1)
-                target.width = math.max(policy.minWidth, (tonumber(snapshot.normalWidth) or tonumber(nativeW) or width) / liveScale)
-                target.height = math.max(policy.minHeight, (tonumber(snapshot.normalHeight) or tonumber(nativeH) or height) / liveScale)
-                if type(S.Layout.StorePlacement) == "function" then S.Layout:StorePlacement(target, surface.shell.window, { mode = tostring(spec.boundaryMode or "free") }) end
+                target.width = math.max(policy.minWidth, (tonumber(snapshot.normalWidth) or placementW) / liveScale)
+                target.height = math.max(policy.minHeight, (tonumber(snapshot.normalHeight) or placementH) / liveScale)
+                if type(S.Layout.StorePlacementRect) == "function" then
+                    S.Layout:StorePlacementRect(target, placementX, placementY, placementW, placementH, { mode = tostring(spec.boundaryMode or "free") })
+                elseif type(S.Layout.StorePlacement) == "function" then
+                    -- Compatibility only for a partially-upgraded development tree; release toc always loads StorePlacementRect.
+                    S.Layout:StorePlacement(target, surface.shell.window, { mode = tostring(spec.boundaryMode or "free") })
+                end
                 target.userMoved = true
                 F.metrics.geometryCommits = (tonumber(F.metrics.geometryCommits) or 0) + 1
             end

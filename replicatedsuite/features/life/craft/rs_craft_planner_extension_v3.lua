@@ -139,7 +139,7 @@ local function BuildPlanProjection(base)
     local materialRows, pending, priced, quotedRequired, quotedShortage = {}, 0, 0, 0, 0
     for _, mapKey in ipairs(materialOrder) do
         local row = materialMap[mapKey]
-        row.held = row.itemType ~= nil and heldKnown and tonumber(held[row.itemType]) or nil
+        row.held = row.itemType ~= nil and heldKnown and (tonumber(held[row.itemType]) or 0) or nil
         row.shortage = row.held ~= nil and math.max(0, row.required - row.held) or nil
         if row.includeInCost == true and row.itemType ~= nil and type(queue) == "table" and type(queue.GetPriceByItemType) == "function" then
             row.unitCost = queue:GetPriceByItemType(row.itemType, row.itemGrade)
@@ -291,6 +291,46 @@ function Feature.Commands:QuotePlanMaterials()
     sealed = true; FinishIfReady()
     if requested == 0 then return false, "计划材料未能进入报价队列", 0, skipped end
     return true, "已提交 " .. tostring(requested) .. " 项计划材料询价" .. (skipped > 0 and ("，" .. tostring(skipped) .. " 项暂未提交") or ""), requested, skipped
+end
+
+-- 中文维护注释：制作规划制作物检索命令，支持按物品名称、内部配方key、地区中文或数字ID检索已核配方
+function Feature.Commands:FindRecipes(keyword)
+    local query = tostring(keyword or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+    local results = {}
+    local static = S.StaticDataV2
+    if type(static) == "table" and type(static.List) == "function" then
+        for _, record in ipairs(static:List("trade_recipe")) do
+            local craftId = tonumber(record and record.craftId)
+            local key = tostring(record and record.key or "")
+            if craftId ~= nil and key ~= "" then
+                local productItemId = tonumber(record.productItemId)
+                local name = ProductName(record)
+                local zoneZh = tostring((S.CRAFT_ZONE_ZH and S.CRAFT_ZONE_ZH[tonumber(record.originZoneId)]) or "已核地区")
+                local match = false
+                if query == "" then
+                    match = true
+                elseif tostring(craftId) == query or (productItemId ~= nil and tostring(productItemId) == query) then
+                    match = true
+                elseif name:lower():find(query, 1, true) ~= nil or key:lower():find(query, 1, true) ~= nil or zoneZh:lower():find(query, 1, true) ~= nil then
+                    match = true
+                end
+                if match then
+                    results[#results + 1] = {
+                        key = key,
+                        craftId = math.floor(craftId),
+                        productItemId = productItemId,
+                        name = name,
+                        zoneZh = zoneZh,
+                        text = zoneZh .. " · " .. name,
+                        record = record,
+                    }
+                    if #results >= 98 then break end
+                end
+            end
+        end
+    end
+    table.sort(results, function(a, b) return tostring(a.name) < tostring(b.name) end)
+    return results
 end
 
 Feature.CraftPlanContractVersion = 1

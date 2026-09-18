@@ -15,7 +15,7 @@ local S = ReplicatedSuite
 S.ApiCapabilities = {
     records = {},
     aliases = {},
-    updated = "2026-08-28",
+    updated = "2026-09-16", -- bounded delta: quest objective getters + user-supplied RU TreasureMapHunter/native manifest map-location evidence
     server = "ArcheRage RU",
 }
 local R = S.ApiCapabilities
@@ -121,6 +121,13 @@ local CAPABILITIES = {
     ["ADDON:LoadData"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["ADDON:SaveData"] = { OfficialState="OfficialEnabled", Risk="write" },
     ["ADDON:ClearData"] = { OfficialState="OfficialEnabled", Risk="destructive" },
+    -- 维护（2026-09-12）：旧补丁只按函数名搜索，误把 ADDON 的 Available/not allowed
+    -- 区段当成 Allowed。SetClipboardText 位于前者，不能因全局函数存在就调用/探测。
+    -- 保留显式禁止记录防止后续回归；不是声明新的服务端公告，依据仅为随包参考区段。
+    -- 报告复制改走已验证UI输入框的用户 Ctrl+C，不转用未验证 Message/系统接口绕过门禁。
+    ["ADDON:SetClipboardText"] = { OfficialState="OfficialDisabled", Risk="write", SideEffectFree=false,
+        Source="z_api_functions/api_functions.lua ADDON Available/not allowed functions",
+        Notes="not permitted by bundled manifest; never probe or call for report copy" },
     ["ADDON:AddEscMenuButton"] = { OfficialState="OfficialChanged", Notes="4-arg form remains current project compatibility path" },
     ["ADDON:UpdateEscMenuButton"] = { OfficialState="OfficialEnabled" },
     ["ADDON:GetContent"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
@@ -289,9 +296,19 @@ local CAPABILITIES = {
     ["X2Option:GetOptionItemValue"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="personal portal option read; candidate registration P2" },
     ["X2Option:SetItemFloatValue"] = { OfficialState="OfficialEnabled", Risk="write", Notes="personal portal option write; candidate registration P2" },
     ["X2Map:GetZoneStateInfoByZoneId"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    -- 中文维护注释（2026-09-16，寻宝原生地图定位）：用户提供的 RU 实机可用 TreasureMapHunter 与 bundled API manifest
+    -- 都证明 X2Map:ShowWorldmapLocation(contextId, x, y, z) 属于 Allowed 能力。这里仅登记显式用户点击触发的 UI 定位动作，
+    -- 不允许 Scheduler/Tick 自动调用；250ms 冷却防止双击/连点反复打开地图。Treasure Feature 仍经 ActionCapability fail-closed，
+    -- 地图定位失败不会改变选中藏宝图、距离追踪或任何持久化 Authority。
+    ["X2Map:ShowWorldmapLocation"] = { OfficialState="OfficialEnabled", Cooldown=250, Risk="write", SideEffectFree=false,
+        Source="user-supplied TreasureMapHunter RU addon + bundled api_functions.lua Allowed list", Notes="explicit treasure-map world-map location only" },
     ["X2Quest:GetActiveQuestListCount"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Quest:GetActiveQuestType"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Quest:GetQuestContextMainTitle"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    -- 维护：2026-09-09 RU 官方公告开放任务目标只读入口；不等于返回形态已实机验收。
+    -- 唯一消费者 QuestProgress 的显式详情读取；不能用奖励文案代替收益记账。
+    ["X2Quest:GetQuestJournalObjectiveCount"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Since="2026-09-09", Source="https://ru.archerage.to/forums/threads/obnovlenie-09-09-2026.17558/" },
+    ["X2Quest:GetQuestJournalObjectiveText"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Since="2026-09-09", Source="https://ru.archerage.to/forums/threads/obnovlenie-09-09-2026.17558/" },
     ["X2Quest:IsCompleted"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Achievement:GetTodayAssignmentInfo"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Equipment:GetEquippedItemTooltipInfo"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="targetEquippedItem flag silently ignored on current RU client: always returns the player's OWN gear (real-machine evidence 2026-09-01); never use for target-scope reads" },

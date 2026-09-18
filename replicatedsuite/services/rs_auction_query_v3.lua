@@ -36,15 +36,6 @@ local function PositiveInt(value)
     local n = tonumber(value); if n == nil or n ~= math.floor(n) or n < 1 then return nil end
     return math.floor(n)
 end
-local function FirstText(info, keys)
-    if type(info) ~= "table" then return nil end
-    for _, key in ipairs(keys) do
-        local value = info[key]
-        if type(value) == "string" and value ~= "" then return value end
-        if type(value) == "number" then return tostring(value) end
-    end
-    return nil
-end
 local function Nested(info, fn)
     if type(info) ~= "table" then return nil end
     local direct = fn(info); if direct ~= nil then return direct end
@@ -53,6 +44,16 @@ local function Nested(info, fn)
         if type(child) == "table" then local value = fn(child); if value ~= nil then return value end end
     end
     return nil
+end
+local function FirstText(info, keys)
+    return Nested(info, function(row)
+        for _, key in ipairs(keys) do
+            local value = row[key]
+            if type(value) == "string" and value ~= "" then return value end
+            if type(value) == "number" then return tostring(value) end
+        end
+        return nil
+    end)
 end
 local function ItemType(info)
     return Nested(info, function(row)
@@ -70,18 +71,26 @@ local function Amount(info)
     end)
 end
 local function Price(info, keys)
-    if type(info) ~= "table" then return nil end
-    for _, key in ipairs(keys) do
-        local raw = info[key]
-        local n = tonumber(raw)
-        if n ~= nil and n >= 0 then return math.floor(n) end
-        if type(raw) == "string" and raw ~= "" then return raw end
-    end
-    return nil
+    return Nested(info, function(row)
+        for _, key in ipairs(keys) do
+            local raw = row[key]
+            local n = tonumber(raw)
+            if n ~= nil and n >= 0 then return math.floor(n) end
+            if type(raw) == "string" and raw ~= "" then return raw end
+        end
+        return nil
+    end)
+end
+local function ItemGrade(info)
+    return Nested(info, function(row)
+        local value = tonumber(row.itemGrade or row.grade or row.item_grade or row.item_grade_id)
+        return value ~= nil and math.floor(value) or nil
+    end)
 end
 local function NormalizeRow(info, index)
     if type(info) ~= "table" then return nil end
     local itemType = ItemType(info)
+    local itemGrade = ItemGrade(info) -- 中文维护注释：提取拍卖行搜索结果的物品品级，支持后续针对具体品级走 PriceQuoteQueueV3 显式询价
     local name = ItemName(info)
     local count = Amount(info)
     local direct = Price(info, { "directPriceStr", "directPrice", "buyoutPriceStr", "buyoutPrice" })
@@ -98,7 +107,7 @@ local function NormalizeRow(info, index)
     if seller ~= nil then parts[#parts + 1] = "卖家 " .. tostring(seller) end
     if #parts == 0 then parts[1] = "当前 RU 返回字段有限；保留该条结果" end
     return {
-        key = "auction:" .. tostring(index), resultIndex = index, itemType = itemType,
+        key = "auction:" .. tostring(index), resultIndex = index, itemType = itemType, itemGrade = itemGrade,
         name = tostring(name), text = table.concat(parts, " · "), statusText = "搜索结果", tone = "default",
         quantity = count, directPrice = direct, bidPrice = bid, seller = seller,
     }

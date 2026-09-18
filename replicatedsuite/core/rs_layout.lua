@@ -1074,11 +1074,17 @@ function L:EndSafeMove(key, cancel)
     return true, x, y, width, height
 end
 
-function L:StorePlacement(target, widget, options)
-    if type(target) ~= "table" or widget == nil then return end
+-- 维护（2026-09-16，committed-geometry-authority-1）：Windowing 在拖动/缩放事务提交时已经
+-- 产生唯一的逻辑坐标 x/y/width/height。此前调用方收到这组值后又通过 GetLogicalRect(widget)
+-- 读取一次 Native，UI Scale/原生坐标更新时序可能让“屏幕上最终位置”和“写入 Store 的位置”不同，
+-- 下次登录便出现悬浮窗漂移。StorePlacementRect 只消费事务已经提交的逻辑矩形；StorePlacement
+-- 保留给没有显式事务矩形的低频兼容调用。Authority：Windowing committed rect -> Layout -> Feature/UI Store。
+-- 兼容边界：持久化字段、coordinateSpace 和响应式中心比例完全不变，不触碰任何 Store schema。
+function L:StorePlacementRect(target, x, y, width, height, options)
+    if type(target) ~= "table" then return end
     options = type(options) == "table" and options or {}
     local context = self:GetContext()
-    local x, y, width, height = self:GetLogicalRect(widget)
+    x, y = tonumber(x) or 0, tonumber(y) or 0
     local mode = tostring(options.mode or "free")
     width = math.max(1, tonumber(width) or 1)
     height = math.max(1, tonumber(height) or 1)
@@ -1149,6 +1155,12 @@ function L:StorePlacement(target, widget, options)
     target.savedLogicalWidth, target.savedLogicalHeight = nil, nil
     target.normalizedCenterX, target.normalizedCenterY = nil, nil
     return x, y, width, height
+end
+
+function L:StorePlacement(target, widget, options)
+    if type(target) ~= "table" or widget == nil then return end
+    local x, y, width, height = self:GetLogicalRect(widget)
+    return self:StorePlacementRect(target, x, y, width, height, options)
 end
 
 function L:ResolvePlacement(placement, width, height, defaultX, defaultY, options)

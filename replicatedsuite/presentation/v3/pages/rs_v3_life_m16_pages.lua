@@ -32,8 +32,8 @@ local function ValidateFeatureContract(feature, kind)
             return false, "跑商页面 Feature 契约不完整"
         end
     elseif kind == "bonds" then
-        if type(feature.GetSortMode) ~= "function" or type(feature.GetBondFilter) ~= "function"
-            or type(commands.SetSortMode) ~= "function" or type(commands.SetBondFilterOption) ~= "function"
+        if type(feature.GetSortMode) ~= "function" or type(feature.GetContinentOrder) ~= "function" or type(feature.GetBondFilter) ~= "function"
+            or type(commands.SetSortMode) ~= "function" or type(commands.SetContinentOrder) ~= "function" or type(commands.SetBondFilterOption) ~= "function"
             or type(commands.SetDuplicatePriority) ~= "function" or type(feature.GetWidgetVisible) ~= "function"
             or type(commands.SetWidgetVisible) ~= "function" then
             return false, "债券页面 Feature 契约不完整"
@@ -62,9 +62,9 @@ local function Build(parent, route, feature, kind)
     root.consumerHeld = false
     local title, subtitle = "", ""
     if kind == "trade" then title, subtitle = "跑商", "实时货率来自服务器；预计售价按静态底价 × 货率 × 经商熟练度 × 贸易品类别倍率计算。可切换满货率 130% 与忽略熟练度做对比。"
-    elseif kind == "bonds" then title, subtitle = "债券 / 居民板", "读取居民板内容、QuestProgressV3 任务状态和有限背包材料总量；明确显示未知与部分可读诊断。"
+    elseif kind == "bonds" then title, subtitle = "债券 / 居民板", "分别在西大陆、东大陆（以及原大陆）刷新一次即可保存当天快照；页面会合并显示已读取大陆，排序不会隐藏另一大陆。"
     elseif kind == "treasure" then title, subtitle = "寻宝", "直接扫描有限背包槽位中的藏宝图坐标，并在单位世界坐标可用时计算方向与距离。"
-    else title, subtitle = "钓鱼", "按需观察目标鱼动作 Buff 并给出技能栏推荐；自动 R 热键写入在 RU 完整回滚契约验证前保持 Runtime Blocked。" end
+    else title, subtitle = "钓鱼", "按需识别目标鱼动作并可安全切换 R；关闭、切区、战斗恢复或重载时按持久恢复快照还原原键位。" end
     D:PageHeader(root, "v3_" .. kind .. "_header", title, subtitle, "刷新", function()
         local ok, refreshErr = feature.Commands:Refresh("page_manual")
         if ok == true then root:Refresh() end
@@ -149,9 +149,21 @@ local function Build(parent, route, feature, kind)
             if type(panel) ~= "table" or type(panel.Open) ~= "function" then return false, "跑商诊断面板不可用" end
             return panel:Open()
         end
+        -- 维护：报价预算/取消统一走Feature，三处视图共享同一批次；此行只显示进度。
+        local qb=RSUI:HorizontalBox({id="v3_trade_quote_budget",parent=root,gap=6,slot={size="fixed",height=28}})
+        root.tradeCancelQuote=RSUI:Button({id="v3_trade_cancel_quote",parent=qb,text="取消询价",compact=true,slot={size="fixed",width=90}})
+        root.tradeCancelQuote.onClick=function()return feature.Commands:CancelQuoteBatch("user")end
+        root.tradeFullQuote=RSUI:Button({id="v3_trade_full_quote",parent=qb,text="扩大询价(最多4项)",compact=true,slot={size="fixed",width=140}})
+        root.tradeFullQuote.onClick=function()return feature.Commands:QuotePendingMaterials("full")end
+        root.tradeQuoteProgress=RSUI:Text({id="v3_trade_quote_progress",parent=qb,text="默认仅提示品质；扩大查询才搜索其他品质/名称。",fontSize=9,overflow="ellipsis",slot={size="fill",fill=1}})
         root.tradeRatioModeButton, root.tradeCommerceModeButton, root.tradeQuoteButton = tradeRatioModeButton, tradeCommerceModeButton, tradeQuoteButton
     elseif kind == "bonds" then
-        local sortButton = RSUI:Button({ id = "v3_bonds_sort", parent = actionRow, text = "按数量排序", compact = true, slot = { size = "fixed", width = 108 } })
+        -- 中文维护注释（2026-09-15，债券控制语义重排）：旧版把排序、数量筛选、去重和“优先西”
+        -- 全塞进通用 actionRow，既拥挤又把两个完全不同的概念混在一起。现在 actionRow 只保留功能/
+        -- 悬浮窗/详情，债券专用选项放到独立一行：排序方式、大陆顺序、数量筛选、重复显示策略。
+        -- 数据 Authority 不变，所有按钮仍只调用 Feature.Commands；1024 宽度下使用短标签避免挤压表格。
+        local bondOptionsRow = RSUI:HorizontalBox({ id = "v3_bonds_options", parent = root, gap = 5, slot = { size = "fixed", height = 30, hAlign = "fill" } })
+        local sortButton = RSUI:Button({ id = "v3_bonds_sort", parent = bondOptionsRow, text = "排序：按大陆", compact = true, slot = { size = "fixed", width = 104 } })
         root.bondSortButton = sortButton
         local runBondCommand = function(command)
             local ok, commandErr = command()
@@ -159,18 +171,44 @@ local function Build(parent, route, feature, kind)
             return ok, commandErr
         end
         sortButton.onClick = function() return runBondCommand(function() return feature.Commands:SetSortMode(feature:GetSortMode() == "quantity" and "continent" or "quantity") end) end
+
+        local continentOrderButton = RSUI:Button({ id = "v3_bonds_continent_order", parent = bondOptionsRow, text = "大陆：西→东", compact = true, slot = { size = "fixed", width = 104 } })
+        continentOrderButton.onClick = function()
+            return runBondCommand(function() return feature.Commands:SetContinentOrder(feature:GetContinentOrder() == "east_first" and "west_first" or "east_first") end)
+        end
+        root.bondContinentOrderButton = continentOrderButton
+
         local bondState = function() return feature:GetBondFilter() end
-        local bondButton = function(id, text, key)
-            local button = RSUI:Button({ id = id, parent = actionRow, text = text, compact = true, slot = { size = "fixed", width = 54 } })
+        local bondButton = function(id, text, key, width)
+            local button = RSUI:Button({ id = id, parent = bondOptionsRow, text = text, compact = true, slot = { size = "fixed", width = width or 48 } })
             button.onClick = function() local state = bondState(); return runBondCommand(function() return feature.Commands:SetBondFilterOption(key, not state[key]) end) end
             return button
         end
-        root.bondFilterButtons = { q20 = bondButton("v3_bonds_q20", "20", "q20"), q60 = bondButton("v3_bonds_q60", "60", "q60"), q100 = bondButton("v3_bonds_q100", "100", "q100"), auroria = bondButton("v3_bonds_auroria", "原大陆", "auroria"), excludeSame = bondButton("v3_bonds_exclude", "去重", "excludeSame") }
-        local priorityButton = RSUI:Button({ id = "v3_bonds_priority", parent = actionRow, text = "优先西", compact = true, slot = { size = "fixed", width = 64 } })
+        root.bondFilterButtons = {
+            q20 = bondButton("v3_bonds_q20", "20", "q20", 42),
+            q60 = bondButton("v3_bonds_q60", "60", "q60", 42),
+            q100 = bondButton("v3_bonds_q100", "100", "q100", 46),
+            auroria = bondButton("v3_bonds_auroria", "原陆", "auroria", 54),
+            excludeSame = bondButton("v3_bonds_exclude", "重复：全部", "excludeSame", 92),
+        }
+        local priorityButton = RSUI:Button({ id = "v3_bonds_priority", parent = bondOptionsRow, text = "合并留西", compact = true, slot = { size = "fixed", width = 76 } })
         priorityButton.onClick = function() local state = bondState(); return runBondCommand(function() return feature.Commands:SetDuplicatePriority(state.priority == "west" and "east" or "west") end) end
         root.bondPriorityButton = priorityButton
+
+        local detailButton = RSUI:Button({ id = "v3_bonds_detail", parent = actionRow, text = "查看详情", compact = true, slot = { size = "fixed", width = 84 } })
+        detailButton.onClick = function()
+            local selected = type(feature.GetSelectedRow) == "function" and feature:GetSelectedRow() or nil
+            if selected == nil then return false, "请先选择一条居民板任务" end
+            local floating = S.UIV3 and S.UIV3.QuestDetailFloatingV3 or nil
+            if type(floating) == "table" and type(floating.Open) == "function" then
+                return floating:Open("bonds", selected.key, selected)
+            end
+            return false, "任务详情浮窗不可用"
+        end
+        root.bondDetailButton = detailButton
     elseif kind == "fishing" then
-        local autoButton = RSUI:Button({ id = "v3_fishing_auto", parent = actionRow, text = "自动 R 已阻塞", compact = true, slot = { size = "fixed", width = 118 } })
+        -- 中文维护：按钮文案只表达会话状态；“暂时不可用”可能来自战斗/恢复/能力门，不能再误导为永久 Runtime Blocked。
+        local autoButton = RSUI:Button({ id = "v3_fishing_auto", parent = actionRow, text = "启用自动 R", compact = true, slot = { size = "fixed", width = 118 } })
         autoButton.onClick = function()
             local ok, actionErr
             if feature:IsAutoArmed() then ok, actionErr = feature.Commands:DisarmAuto() else ok, actionErr = feature.Commands:ArmAuto() end
@@ -219,7 +257,7 @@ local function Build(parent, route, feature, kind)
 
     local tableView = RSUI:TableView({
         id = "v3_" .. kind .. "_table", parent = root, items = {}, rowHeight = 26, headerHeight = 27, desiredRows = 12,
-        scrollbar = true, selectable = kind == "treasure" or kind == "trade", selectionMode = "single", columnResize = true, headerInteractive = false,
+        scrollbar = true, selectable = kind == "treasure" or kind == "trade" or kind == "bonds", selectionMode = "single", columnResize = true, headerInteractive = false,
         columns = kind == "trade" and {
             { id = "name", title = "货物", field = "name", size = "fill", minWidth = 150 },
             { id = "rate", title = "货率", field = "rate", size = "fixed", width = 70, minWidth = 60, getTone = function(item) return item and item.tone or "muted" end },
@@ -227,13 +265,16 @@ local function Build(parent, route, feature, kind)
             { id = "materials", title = "材料", field = "materials", size = "fill", minWidth = 160 },
             { id = "profit", title = "毛利", field = "profit", size = "fixed", width = 100, minWidth = 80 },
         } or kind == "bonds" and {
-            { id = "board", title = "板", field = "name", size = "fixed", width = 100, minWidth = 80 },
-            { id = "text", title = "居民板原文", field = "text", size = "fill", minWidth = 220 },
-            { id = "quantity", title = "数量", field = "quantity", size = "fixed", width = 70, minWidth = 54 },
-            { id = "resource", title = "资源", field = "resourceText", size = "fixed", width = 70, minWidth = 54 },
-            { id = "shortage", title = "缺口", field = "shortageText", size = "fixed", width = 70, minWidth = 54 },
-            { id = "resourceStatus", title = "资源状态", field = "resourceStatus", size = "fixed", width = 90, minWidth = 72 },
-            { id = "status", title = "任务状态", field = "statusText", size = "fixed", width = 86, minWidth = 72, getTone = function(item) return item and item.tone or "muted" end },
+            -- 中文维护注释：大陆是同日多快照最关键的身份字段，必须直接展示；否则西/东行同时存在时
+            -- 玩家仍无法判断来源。只消费 Authority row.continent，不在 UI 重新推断大陆。
+            { id = "continent", title = "大陆", field = "continent", size = "fixed", width = 72, minWidth = 62 },
+            { id = "board", title = "材料", field = "name", size = "fixed", width = 96, minWidth = 76 },
+            { id = "text", title = "居民板原文", field = "text", size = "fill", minWidth = 180 },
+            { id = "quantity", title = "数量", field = "quantity", size = "fixed", width = 64, minWidth = 50 },
+            { id = "resource", title = "持有", field = "resourceText", size = "fixed", width = 64, minWidth = 50 },
+            { id = "shortage", title = "缺口", field = "shortageText", size = "fixed", width = 64, minWidth = 50 },
+            { id = "resourceStatus", title = "资源状态", field = "resourceStatusText", size = "fixed", width = 82, minWidth = 68 },
+            { id = "status", title = "任务状态", field = "statusText", size = "fixed", width = 82, minWidth = 68, getTone = function(item) return item and item.tone or "muted" end },
         } or kind == "treasure" and {
             { id = "name", title = "藏宝图", field = "name", size = "fixed", width = 140, minWidth = 100 },
             { id = "coord", title = "坐标", field = "text", size = "fill", minWidth = 220 },
@@ -263,6 +304,25 @@ local function Build(parent, route, feature, kind)
             local ok, selectErr = feature.Commands:Select(row.key)
             if ok == true then root:Refresh() end
             return ok, selectErr
+        end
+    elseif kind == "bonds" then
+        tableView.onSelectionChanged = function(index)
+            local row = tableView:GetItem(index)
+            if row == nil or row.key == nil then return false end
+            if type(feature.Commands) == "table" and type(feature.Commands.SelectRow) == "function" then
+                feature.Commands:SelectRow(row.key)
+            end
+            if root.bondDetailButton then root.bondDetailButton:SetEnabled(true) end
+            return true
+        end
+        tableView.onItemActivated = function(index)
+            local row = tableView:GetItem(index)
+            if row == nil then return false end
+            local floating = S.UIV3 and S.UIV3.QuestDetailFloatingV3 or nil
+            if type(floating) == "table" and type(floating.Open) == "function" then
+                return floating:Open("bonds", row.key, row)
+            end
+            return false
         end
     end
 
@@ -312,10 +372,14 @@ local function Build(parent, route, feature, kind)
                 root.tradeCommerceModeButton:SetEnabled(enabled)
                 root.tradeCommerceModeButton:SetText(projection.commerceMode == "off" and "熟练：忽略" or "熟练：计入")
             end
+            local batch=projection.quoteBatch or {}
             if root.tradeQuoteButton then
-                root.tradeQuoteButton:SetEnabled(enabled and pendingQuotes > 0)
-                root.tradeQuoteButton:SetText(pendingQuotes > 0 and ("材料询价 (" .. tostring(pendingQuotes) .. ")") or "材料询价")
+                root.tradeQuoteButton:SetEnabled(enabled and pendingQuotes>0 and not batch.active)
+                root.tradeQuoteButton:SetText(batch.active and "询价中" or "材料询价(4)")
             end
+            root.tradeCancelQuote:SetEnabled(enabled and batch.active==true)
+            root.tradeFullQuote:SetEnabled(enabled and not batch.active and #rows>0)
+            root.tradeQuoteProgress:SetText((batch.active and "进行中 " or "本批完成 ")..tostring(batch.completed or 0).."/"..tostring(batch.total or 0).." · 未报价 "..pendingQuotes.." · 失败 "..tostring(batch.failed or 0).."；扩大询价才扫描其他品质。")
             local dropdownHint = ""
             if enabled then
                 if #fromItems == 0 then dropdownHint = dropdownHint .. " · 起点下拉不可用：地区未读取" end
@@ -361,29 +425,43 @@ local function Build(parent, route, feature, kind)
             end
             status:SetText(enabled and fishingText or "功能已关闭")
             if root.autoButton then
-                local autoAvailable = enabled and projection.autoAvailable == true
+                -- 中文维护：战斗中禁止“新写键”不等于禁止用户发出关闭意图。已 armed 时按钮必须保持可点，Disarm 会立即停止新映射并把恢复延迟到脱战后。
+                local armed = feature:IsAutoArmed() == true
+                local autoAvailable = enabled and (armed or projection.autoAvailable == true)
                 root.autoButton:SetEnabled(autoAvailable)
-                root.autoButton:SetText(autoAvailable and (feature:IsAutoArmed() and "关闭自动 R" or "启用自动 R") or "自动 R 已阻塞")
+                root.autoButton:SetText(armed and "关闭自动 R" or (autoAvailable and "启用自动 R" or "自动 R 不可用"))
             end
             if widgetButton then widgetButton:SetEnabled(enabled); widgetButton:SetText(WidgetHost:IsVisible("life.fishing") and "关闭悬浮窗" or "打开悬浮窗") end
         else
             local diagnostic = projection.duplicatePriorityUnresolved and (" · " .. projection.duplicatePriorityUnresolved) or ""
-            local scopeText = projection.boardScope == "mainland" and "大陆居民板"
-                or (projection.boardScope == "auroria" and "原大陆居民板" or "区域未判定")
-            local factionText = projection.faction and tostring(projection.faction) ~= "" and (" · 阵营 " .. tostring(projection.faction)) or ""
+            local currentText = projection.boardScope == "west" and "当前位置：西大陆"
+                or (projection.boardScope == "east" and "当前位置：东大陆"
+                or (projection.boardScope == "auroria" and "当前位置：原大陆"
+                or "当前位置：未识别（显示今日缓存）"))
+            local coverage = type(projection.dailySnapshotStatus) == "table" and projection.dailySnapshotStatus or {}
+            local coverageText = "今日已获取：西" .. (coverage.west and "✓" or "×")
+                .. " 东" .. (coverage.east and "✓" or "×") .. " 原" .. (coverage.auroria and "✓" or "×")
             local errorText = projection.error and (" · " .. tostring(projection.error)) or ""
-            status:SetText(enabled and ((projection.status or "--") .. " · " .. scopeText .. factionText
+            status:SetText(enabled and ((projection.status or "--") .. " · " .. currentText .. " · " .. coverageText
                 .. " · " .. tostring(#(projection.rows or {})) .. " 条" .. diagnostic .. errorText) or "功能已关闭")
             local bondFilter = feature:GetBondFilter()
-            if root.bondSortButton then root.bondSortButton:SetText(bondFilter.sortMode == "quantity" and "按大陆排序" or "按数量排序") end
+            if root.bondSortButton then root.bondSortButton:SetText(bondFilter.sortMode == "quantity" and "排序：按数量" or "排序：按大陆") end
+            if root.bondContinentOrderButton then root.bondContinentOrderButton:SetText(bondFilter.continentOrder == "east_first" and "大陆：东→西" or "大陆：西→东") end
             if root.bondFilterButtons then
                 root.bondFilterButtons.q20:SetText(bondFilter.q20 and "20✓" or "20×")
                 root.bondFilterButtons.q60:SetText(bondFilter.q60 and "60✓" or "60×")
                 root.bondFilterButtons.q100:SetText(bondFilter.q100 and "100✓" or "100×")
                 root.bondFilterButtons.auroria:SetText(bondFilter.auroria and "原陆✓" or "原陆×")
-                root.bondFilterButtons.excludeSame:SetText(bondFilter.excludeSame and "去重✓" or "去重×")
+                root.bondFilterButtons.excludeSame:SetText(bondFilter.excludeSame and "重复：合并" or "重复：全部")
             end
-            if root.bondPriorityButton then root.bondPriorityButton:SetText(bondFilter.priority == "east" and "优先东" or "优先西") end
+            if root.bondPriorityButton then
+                root.bondPriorityButton:SetText(bondFilter.priority == "east" and "合并留东" or "合并留西")
+                root.bondPriorityButton:SetEnabled(enabled and bondFilter.excludeSame == true)
+            end
+            if root.bondDetailButton then
+                local selected = type(feature.GetSelectedRow) == "function" and feature:GetSelectedRow() or nil
+                root.bondDetailButton:SetEnabled(enabled and selected ~= nil)
+            end
             if widgetButton then
                 widgetButton:SetEnabled(enabled)
                 widgetButton:SetText(WidgetHost:IsVisible("life.bonds") and "关闭悬浮窗" or "打开悬浮窗")

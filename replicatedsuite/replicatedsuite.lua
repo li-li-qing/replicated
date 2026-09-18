@@ -94,7 +94,7 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.208-target-gear-score-api-default-template" -- 中文维护注释：.18.208 不改 schema5/Persistence；按实机 HUD_TEMPLATE_V1 固化已确认的目标装备默认布局，并修复 RU 更新后 UnitGearScore(unit, comma) 第二参数误用与 target-kind 前置门导致敌人装分不可见。装分格式解析统一收敛到 Utils，状态显示/团队战备共用同一 Authority 边界。
+S.BuildTag = "v3-m1.16.0.18.244-module-diagnostics-v1" -- 中文维护注释（2026-09-18）：.244 建立模块级诊断基础设施。DiagnosticsManager 仍是全局错误 Authority；ModuleDiagnosticsHub 只做有界归属与用户显式冷快照；每个 Feature 页面通过 PageHost buildContext + DesignSystem 共享入口打开唯一 ModuleDiagnosticsWindow。诊断正文使用独立 DiagnosticCopyBox 生命周期，禁止复用/修改普通 EditBox 的 Draft/失焦逻辑。系统诊断保留给 Core/Foundation；业务诊断不得重新塞回全局巨型报告。.243 的 Buff 持久化分片 Authority 保持不变。
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}
 S.SaveKey = tostring(S.Config.SaveKey or "replicated_suite_v1")
@@ -172,6 +172,8 @@ S.LogBuffer = {}
 S.LogSequence = 0
 S.LogDropped = 0
 S.LogBufferMax = 200
+-- 维护：采集失败计数属于当前 generation；不能让诊断异常递归写日志。
+S.SelfCheckCaptureFailures = 0
 
 local function RecordLog(level, source, message)
     local buffer = S.LogBuffer
@@ -187,6 +189,16 @@ local function RecordLog(level, source, message)
         message = tostring(message or ""),
         at = type(S.NowMs) == "function" and (tonumber(S.NowMs()) or 0) or 0,
     }
+    -- 维护（两按钮统一报告）：早期/运行时 warning/error 通过同一日志入口交给
+    -- Diagnostics 的有界错误环，避免 200 条 info 把原始异常挤掉。先验证 generation，
+    -- 防热重载把新错误投到旧 manager；仅错误路径受保护调用，不新增 Tick/持久化。
+    -- Diagnostics 不反写 RecordLog，因此不递归；采集失败只计数，原日志仍保留。
+    local diagnostic = S.DiagnosticsManager
+    if (level == "error" or level == "warning" or level == "warn") and type(diagnostic) == "table"
+        and diagnostic.SelfCheckGeneration == S.Generation and type(diagnostic.CaptureSelfCheckIssue) == "function" then
+        local captured = pcall(diagnostic.CaptureSelfCheckIssue, diagnostic, buffer[#buffer])
+        if not captured then S.SelfCheckCaptureFailures = (S.SelfCheckCaptureFailures or 0) + 1 end
+    end
     local limit = math.max(20, tonumber(S.LogBufferMax) or 200)
     while #buffer > limit do
         table.remove(buffer, 1)
@@ -244,7 +256,9 @@ function S.WarnOnce(key, message)
     key = tostring(key or message or "warning")
     if S.Diagnostics.seen[key] == true then return end
     S.Diagnostics.seen[key] = true
-    SafeChat(message)
+    -- 维护：WarnOnce 原来走默认 info，保存/后台任务故障无法进入错误历史；只补充已有
+    -- warning 语义，不推断普通聊天是错误，不改变 once 去重或业务控制流。
+    SafeChat(message, "warning", "suite.warn_once")
 end
 
 -- ArcheAge native widget names are not a safe place for long logical paths.

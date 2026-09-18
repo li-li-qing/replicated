@@ -12,21 +12,23 @@ local UI, RSUI = S.UI, S.RSUI
 if type(UI) ~= "table" or type(RSUI) ~= "table" or type(RSUI.Windowing) ~= "table" then return end
 
 local Shell = {
-    version = 24,
+    version = 26,
     visibilityTransactionContract = 1,
     stateMutationTransactionContract = 1,
     stateCallbackTransactionContract = 1,
     idempotentMutationContract = 1,
-    compactMinimizeContract = 1,
+    compactMinimizeContract = 2,
+    compactDragSurfaceContract = 1,
     titleAppearanceContract = 3,
     titleBarInteractionContract = 1,
-    topLevelLayerContractVersion = 1,
+    topLevelLayerContractVersion = 2,
+    topmostPreferenceContractVersion = 1,
     consumedById = {},
     metrics = {
         created = 0, shown = 0, hidden = 0, minimized = 0, restored = 0, destroyed = 0, layouts = 0, failures = 0,
         closeRequests = 0, closeVetoes = 0, closeCallbackFailures = 0, closedCallbacks = 0, quarantinedRejects = 0,
         layoutInvalidations = 0, layoutInvalidationCoalesces = 0, appearancePanelToggles = 0,
-        visibilityFailures = 0, minimizeRollbacks = 0, stateCallbackRejects = 0,
+        visibilityFailures = 0, minimizeRollbacks = 0, stateCallbackRejects = 0, topmostChanges = 0, layerFailures = 0,
     },
 }
 UI.WindowShell = Shell
@@ -131,14 +133,32 @@ function Shell:Create(spec)
     window.rsUiOwner = owner
     if type(UI.ClaimNativeAuthority) == "function" then UI:ClaimNativeAuthority(window, owner, "strict") end
 
-    -- Every independent WindowShell is a real top-level V3 surface. Keep it in
-    -- the same native system layer as the application shell so Raise() works
-    -- across roots; use role priority to guarantee Shell < Floating < Popup.
-    local function ApplyRootWindowPolicy()
+    local preferenceId = tostring(spec.topmostPreferenceId or id)
+    local preferences = RSUI.WindowPreferences
+    local initialTopmost = false
+    if type(preferences) == "table" and type(preferences.GetTopmost) == "function" then
+        local ok, value = pcall(function() return preferences:GetTopmost(preferenceId) end)
+        initialTopmost = ok == true and value == true
+    end
+
+    -- 维护（2026-09-16，native-layer-policy-2）：旧版把所有独立窗口固定放进 system，
+    -- 因此普通插件面板会压住客户端 normal/dialog UI。Native layer 现在由独立 WindowPreferences
+    -- Authority 决定：默认 normal，不置顶；用户显式勾选 [顶] 才进入 system。SetDrawPriority 仍只
+    -- 负责 Replicated Suite 自身同层窗口的顺序，不能再冒充跨原生层级的置顶。兼容边界：旧用户
+    -- 没有新偏好记录时 initialTopmost=false；不改 Feature store，不引入 Tick。Native 拒绝层级时
+    -- 构建/切换 fail-closed，避免逻辑状态与实际层级分叉。
+    local function ApplyNativeLayer(topmost)
+        local layerName = topmost == true and "system" or "normal"
         if type(window.SetUILayer) == "function" then
-            local ok, result = pcall(function() return window:SetUILayer("system") end)
-            if ok ~= true or result == false then return false, "window_shell_system_layer_rejected" end
+            local ok, result = pcall(function() return window:SetUILayer(layerName) end)
+            if ok ~= true or result == false then return false, "window_shell_layer_rejected:" .. layerName end
         end
+        return true, nil
+    end
+
+    local function ApplyRootWindowPolicy(topmost)
+        local layerOk, layerErr = ApplyNativeLayer(topmost)
+        if layerOk ~= true then return false, layerErr end
         for _, row in ipairs({
             { method = "SetCloseOnEscape", value = false },
             { method = "SetWindowModal", value = false },
@@ -158,7 +178,7 @@ function Shell:Create(spec)
         window.rsUiLayerPriority = priority
         return true
     end
-    local policyOk, policyErr = ApplyRootWindowPolicy()
+    local policyOk, policyErr = ApplyRootWindowPolicy(initialTopmost)
     if policyOk ~= true then return FailBuild(policyErr) end
 
     local shell = {
@@ -167,6 +187,8 @@ function Shell:Create(spec)
         window = window,
         spec = spec,
         title = tostring(spec.title or id),
+        topmost = initialTopmost,
+        topmostPreferenceId = preferenceId,
         minimized = spec.minimized == true,
         minimizeMode = tostring(spec.minimizeMode or "hide"),
         compactChrome = spec.compactChrome == true,
@@ -208,6 +230,8 @@ function Shell:Create(spec)
         tone = "accent", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
     shell.appearanceButton = spec.appearanceControls == true and RSUI:Button({ id = id .. "_appearance", parent = shell.titleRow, text = "外", compact = true,
         slot = { size = "fixed", width = titleControlWidth } }) or nil
+    shell.topmostButton = spec.topmostControl == false and nil or RSUI:Button({ id = id .. "_topmost", parent = shell.titleRow, text = "顶", compact = true,
+        slot = { size = "fixed", width = titleControlWidth } })
     shell.minimizeButton = RSUI:Button({ id = id .. "_minimize", parent = shell.titleRow, text = "—", compact = true,
         slot = { size = "fixed", width = titleControlWidth } })
     shell.closeButton = spec.closeButton == false and nil or RSUI:Button({ id = id .. "_close", parent = shell.titleRow, text = "×", compact = true,
@@ -240,10 +264,18 @@ function Shell:Create(spec)
         return FailBuild("window shell component create failed")
     end
 
-    function shell:NotifyState(reason, geometryKind)
+    function shell:NotifyState(reason, geometryKind, committedRect)
         if type(self.spec.onStateChanged) ~= "function" then return true, nil end
         local x, y, w, h = 0, 0, self.normalWidth, self.normalHeight
-        if S.Layout ~= nil and type(S.Layout.GetLogicalRect) == "function" then pcall(function() x, y, w, h = S.Layout:GetLogicalRect(self.window) end) end
+        -- 维护（2026-09-16，committed-geometry-authority-2）：几何事务回调必须直接透传
+        -- Windowing 已提交的逻辑矩形。只有非几何状态（锁定/透明度/最小化等）没有事务矩形时
+        -- 才允许读取当前 Native。这样 UI Scale 或 Native 更新时序不会让保存坐标漂移。
+        if type(committedRect) == "table" then
+            x = tonumber(committedRect.x) or x; y = tonumber(committedRect.y) or y
+            w = tonumber(committedRect.width) or w; h = tonumber(committedRect.height) or h
+        elseif S.Layout ~= nil and type(S.Layout.GetLogicalRect) == "function" then
+            pcall(function() x, y, w, h = S.Layout:GetLogicalRect(self.window) end)
+        end
         local ok, accepted, detail = pcall(self.spec.onStateChanged, self, {
             x = tonumber(x) or 0, y = tonumber(y) or 0,
             width = tonumber(w) or self.normalWidth, height = tonumber(h) or self.normalHeight,
@@ -270,10 +302,23 @@ function Shell:Create(spec)
 
     local function ApplyMinimizedChrome(self)
         local compact = IsCompactMinimized(self)
+        -- 中文维护注释（2026-09-15，compact-drag-surface-1）：compact 最小化后 30x30 的“+”按钮
+        -- 会覆盖整个 titleBar。旧实现仍让子 Button 参与命中，导致 Windowing 的共享 titleBar OnDragStart
+        -- 永远收不到鼠标手势，所以所有悬浮窗最小化后位置固定。Authority 仍是 Windowing：这里仅在
+        -- compact 状态把“+”变成纯视觉子控件，让鼠标命中穿透到 titleBar；恢复普通状态立即恢复 Button
+        -- pickability。位置提交仍走 Windowing -> onGeometryChanged -> FloatingSurface StorePlacement，不复制第二套坐标。
+        -- 风险边界：只作用 minimizeMode=compact；普通窗口/非最小化按钮点击行为保持不变。
+        if self.minimizeButton ~= nil and self.minimizeButton.root ~= nil then
+            if type(UI.EnsurePickable) ~= "function" then return false, compact, "compact_drag_pickable_contract_unavailable" end
+            local pickOk, _, pickErr = UI:EnsurePickable(self.minimizeButton.root, compact ~= true, self.owner)
+            if pickOk ~= true then return false, compact, pickErr or "compact_drag_pickable_rejected" end
+        end
         local titleOk, titleErr = EnsureComponentVisibility(self.titleText, compact and "collapsed" or "visible", "title_text")
         if titleOk ~= true then return false, compact, titleErr end
         local appearanceOk, appearanceErr = EnsureComponentVisibility(self.appearanceButton, compact and "collapsed" or "visible", "appearance_button")
         if appearanceOk ~= true then return false, compact, appearanceErr end
+        local topmostOk, topmostErr = EnsureComponentVisibility(self.topmostButton, compact and "collapsed" or "visible", "topmost_button")
+        if topmostOk ~= true then return false, compact, topmostErr end
         local closeOk, closeErr = EnsureComponentVisibility(self.closeButton, compact and "collapsed" or "visible", "close_button")
         if closeOk ~= true then return false, compact, closeErr end
         if self.minimized == true and self.appearanceOpen == true then
@@ -282,6 +327,16 @@ function Shell:Create(spec)
             self.appearanceOpen = false
         end
         return true, compact, nil
+    end
+
+    -- 中文维护注释（2026-09-15）：compact 状态下恢复点击由 titleBar 自己处理；“+”只负责视觉。
+    -- 这样同一个 30x30 Surface 同时支持“单击恢复”和“按住拖动”，不再让子按钮吞掉 Windowing 手势。
+    -- Border 已拥有单一 OnClick mux，禁止直接 RequireHandler 覆盖 RSUI 的事件治理。
+    if shell.titleBar ~= nil and type(shell.titleBar.SetOnClick) == "function" then
+        shell.titleBar:SetOnClick(function()
+            if IsCompactMinimized(shell) then return shell:SetMinimized(false, true) end
+            return true
+        end)
     end
 
     function shell:LayoutInteractive(width, height)
@@ -844,6 +899,42 @@ function Shell:Create(spec)
 
     function shell:ToggleAppearance() return self:SetAppearanceOpen(self.appearanceOpen ~= true) end
 
+    local function RefreshTopmostButton(self)
+        if self.topmostButton ~= nil and type(self.topmostButton.SetSelected) == "function" then
+            self.topmostButton:SetSelected(self.topmost == true)
+        end
+    end
+
+    function shell:SetTopmost(value, persist)
+        if self.destroyed == true then return false, "window_destroyed" end
+        local nextValue = value == true
+        local previous = self.topmost == true
+        if previous == nextValue then RefreshTopmostButton(self); return true, nextValue, false end
+        local layerOk, layerErr = ApplyNativeLayer(nextValue)
+        if layerOk ~= true then
+            Shell.metrics.layerFailures = (tonumber(Shell.metrics.layerFailures) or 0) + 1
+            return false, layerErr or "window_layer_rejected"
+        end
+        self.topmost = nextValue
+        self.window.rsUiTopmost = nextValue
+        RefreshTopmostButton(self)
+        if persist ~= false then
+            if type(preferences) ~= "table" or type(preferences.SetTopmost) ~= "function" then
+                ApplyNativeLayer(previous); self.topmost = previous; self.window.rsUiTopmost = previous; RefreshTopmostButton(self)
+                return false, "window_preference_store_unavailable"
+            end
+            local ok, accepted, detail = pcall(function() return preferences:SetTopmost(self.topmostPreferenceId, nextValue, true) end)
+            if ok ~= true or accepted ~= true then
+                ApplyNativeLayer(previous); self.topmost = previous; self.window.rsUiTopmost = previous; RefreshTopmostButton(self)
+                return false, tostring(detail or accepted or "window_topmost_persist_rejected")
+            end
+        end
+        if nextValue and type(self.window.Raise) == "function" then pcall(function() self.window:Raise() end) end
+        Shell.metrics.topmostChanges = (tonumber(Shell.metrics.topmostChanges) or 0) + 1
+        return true, nextValue, true
+    end
+    function shell:GetTopmost() return self.topmost == true end
+
     function shell:SetTitle(text) self.title = tostring(text or ""); self.titleText:SetText(self.title); return true end
     function shell:SetStatus(text, tone)
         if self.statusText == nil then return false end
@@ -877,6 +968,11 @@ function Shell:Create(spec)
     if shell.appearanceButton ~= nil then
         shell.appearanceButton.onClick = function() return shell:ToggleAppearance() end
     end
+    if shell.topmostButton ~= nil then
+        RefreshTopmostButton(shell)
+        shell.topmostButton.onClick = function() return shell:SetTopmost(not shell.topmost, true) end
+    end
+    shell.window.rsUiTopmost = shell.topmost == true
     if shell.minimizeButton ~= nil then
         shell.minimizeButton:SetText(shell.minimized and "+" or "—")
         shell.minimizeButton.onClick = function() return shell:SetMinimized(not shell.minimized, true) end
@@ -919,7 +1015,7 @@ function Shell:Create(spec)
         recoveryVisibleY = math.max(8, tonumber(spec.recoveryVisibleY) or 14),
         dragHandleHeight = titleH,
         canResize = function() return shell.minimized ~= true end,
-        onGeometryChanged = function(_, _, _, w, h, geometryKind)
+        onGeometryChanged = function(_, x, y, w, h, geometryKind)
             local previousW, previousH = shell.normalWidth, shell.normalHeight
             if shell.minimized ~= true then shell.normalWidth, shell.normalHeight = w, h end
             local layoutOk, layoutErr = shell:Layout(shell.normalWidth, shell.normalHeight)
@@ -928,7 +1024,7 @@ function Shell:Create(spec)
                 shell:Layout(previousW, previousH)
                 return false, layoutErr or "geometry_layout_rejected"
             end
-            local stateOk, stateErr = shell:NotifyState("geometry", geometryKind)
+            local stateOk, stateErr = shell:NotifyState("geometry", geometryKind, { x = x, y = y, width = w, height = h })
             if stateOk ~= true then
                 shell.normalWidth, shell.normalHeight = previousW, previousH
                 shell:Layout(previousW, previousH)
@@ -987,6 +1083,9 @@ function Shell:Describe()
         stateMutationTransactionContract = tonumber(self.stateMutationTransactionContract) or 0,
         stateCallbackTransactionContract = tonumber(self.stateCallbackTransactionContract) or 0,
         topLevelLayerContractVersion = tonumber(self.topLevelLayerContractVersion) or 0,
+        topmostPreferenceContractVersion = tonumber(self.topmostPreferenceContractVersion) or 0,
+        topmostChanges = tonumber(self.metrics.topmostChanges) or 0,
+        layerFailures = tonumber(self.metrics.layerFailures) or 0,
         stateCallbackRejects = tonumber(self.metrics.stateCallbackRejects) or 0,
     }
 end

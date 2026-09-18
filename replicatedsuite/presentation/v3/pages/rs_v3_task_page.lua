@@ -51,13 +51,22 @@ local function BuildTaskPage(parent, route)
     local row2 = RSUI:HorizontalBox({ id = "v3_tasks_actions_tracking", parent = root, gap = 7, slot = { size = "fixed", height = 30, hAlign = "fill" } })
     local toggleTrackButton = RSUI:Button({ id = "v3_tasks_toggle_track", parent = row2, text = "追踪 / 取消", compact = true, enabled = false, slot = { size = "fixed", width = 112 } })
     local expandButton = RSUI:Button({ id = "v3_tasks_expand", parent = row2, text = "展开 / 收起", compact = true, enabled = false, slot = { size = "fixed", width = 112 } })
+    local detailButton = RSUI:Button({ id = "v3_tasks_view_detail", parent = row2, text = "查看详情", compact = true, enabled = false, slot = { size = "fixed", width = 96 } })
     local allButton = RSUI:Button({ id = "v3_tasks_track_all", parent = row2, text = "全部追踪", compact = true, slot = { size = "fixed", width = 96 } })
     local noneButton = RSUI:Button({ id = "v3_tasks_track_none", parent = row2, text = "全部取消", compact = true, slot = { size = "fixed", width = 96 } })
     local hint = RSUI:Text({ id = "v3_tasks_hint", parent = root, text = "--", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 20, hAlign = "fill" } })
 
     local function SelectedParent()
         local row = selectedId and Feature:GetRow(selectedId) or nil
-        return type(row) == "table" and row.parent == true and row or nil
+        if type(row) ~= "table" then return nil end
+        if row.parent == true then return row end
+        -- 中文维护注释：如果选中的是展开后的子任务行，向上定位其所属的父任务组，
+        -- 使得“追踪/取消”与“查看详情”对子任务选中态也能无缝生效，避免误报不可用。
+        if row.child == true and row.groupKey ~= nil and row.scope ~= nil then
+            local parent = Feature:GetRow(row.scope .. ":" .. row.groupKey)
+            if type(parent) == "table" then return parent end
+        end
+        return nil
     end
 
     local function FilterRows(rows)
@@ -76,7 +85,11 @@ local function BuildTaskPage(parent, route)
         getKey = function(item) return item and item.id or nil end,
         onItemActivated = function(item)
             if type(item) ~= "table" then return false end
-            if item.parent == true then return Feature.Commands:ToggleExpanded(item.scope, item.groupKey) end
+            -- 中文维护注释：仅在父任务有子阶段（objectiveCount > 0）时执行折叠/展开；
+            -- 无子阶段任务或直接点击子阶段时，直接调起通用任务详情浮窗。
+            if item.parent == true and (tonumber(item.objectiveCount) or 0) > 0 then
+                return Feature.Commands:ToggleExpanded(item.scope, item.groupKey)
+            end
             return OpenDetail(item)
         end,
         onSelectionChanged = function(_, _, view)
@@ -84,6 +97,7 @@ local function BuildTaskPage(parent, route)
             local row = SelectedParent()
             toggleTrackButton:SetEnabled(row ~= nil)
             expandButton:SetEnabled(row ~= nil and tonumber(row.objectiveCount) > 0)
+            detailButton:SetEnabled(row ~= nil)
             if row ~= nil then toggleTrackButton:SetText(row.tracked and "取消追踪" or "加入追踪") else toggleTrackButton:SetText("追踪 / 取消") end
         end,
         columns = {
@@ -126,6 +140,11 @@ local function BuildTaskPage(parent, route)
         if row == nil then return false end
         return Feature.Commands:ToggleExpanded(row.scope, row.groupKey)
     end
+    detailButton.onClick = function()
+        local row = SelectedParent()
+        if row == nil then return false end
+        return OpenDetail(row)
+    end
     allButton.onClick = function() return Feature.Commands:SetAllTracked(currentScope, true, "task_page_all") end
     noneButton.onClick = function() return Feature.Commands:SetAllTracked(currentScope, false, "task_page_none") end
     featureButton.onClick = function()
@@ -163,13 +182,13 @@ local function BuildTaskPage(parent, route)
 
     for _, binding in ipairs({
         { dailyButton, "daily" }, { weeklyButton, "weekly" }, { trackedOnlyButton, "tracked_only" },
-        { toggleTrackButton, "toggle_track" }, { expandButton, "expand" }, { allButton, "all" },
-        { noneButton, "none" }, { featureButton, "feature" }, { widgetButton, "widget" },
+        { toggleTrackButton, "toggle_track" }, { expandButton, "expand" }, { detailButton, "detail" },
+        { allButton, "all" }, { noneButton, "none" }, { featureButton, "feature" }, { widgetButton, "widget" },
     }) do
         local button, name = binding[1], binding[2]
         local execute = button.onClick
         button.onClick = function()
-            if S.ActionRunner ~= nil and (name == "toggle_track" or name == "all" or name == "none" or name == "feature" or name == "widget") then
+            if S.ActionRunner ~= nil and (name == "toggle_track" or name == "all" or name == "none" or name == "feature" or name == "widget" or name == "detail") then
                 return S.ActionRunner:Run({ id = "tasks." .. name, button = button, idleText = button.spec and button.spec.text, busyText = "处理中…", notify = false, execute = execute })
             end
             return execute()
@@ -206,6 +225,7 @@ local function BuildTaskPage(parent, route)
         local selected = SelectedParent()
         toggleTrackButton:SetEnabled(enabled and selected ~= nil)
         expandButton:SetEnabled(enabled and selected ~= nil and tonumber(selected.objectiveCount) > 0)
+        detailButton:SetEnabled(enabled and selected ~= nil)
         if selected ~= nil then toggleTrackButton:SetText(selected.tracked and "取消追踪" or "加入追踪") end
         local progress = S.Services and S.Services.QuestProgressV3 or nil
         local health = type(progress) == "table" and type(progress.GetHealth) == "function" and progress:GetHealth(currentScope) or nil

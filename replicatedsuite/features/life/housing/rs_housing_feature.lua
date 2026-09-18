@@ -10,6 +10,7 @@ local F = S.Features.Housing
 if type(Runtime) ~= "table" or type(F.Authority) ~= "table" then return end
 
 F.Id = "life_housing"
+F.UpdateTopic = "v3.housing.updated"
 F.ApiDependencies = { "X2House:GetCurrentHousingTaxInfo", "X2House:GetHouseOwnerName", "X2House:GetHouseName", "X2House:GetHouseType" }
 F.enabled = F.enabled == true
 

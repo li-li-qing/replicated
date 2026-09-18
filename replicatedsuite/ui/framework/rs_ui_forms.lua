@@ -17,7 +17,7 @@ RSUI.NumericResponsiveStackContractVersion = 1
 RSUI.NumericExplicitApplyContractVersion = 1
 RSUI.NumericStepPairFallbackContractVersion = 1
 RSUI.FormCompositeFailClosedContractVersion = 1
-RSUI.NumericAdaptiveRangeContractVersion = 1
+RSUI.NumericAdaptiveRangeContractVersion = 2
 
 local function Token(path, fallback)
     if type(Tokens.Number) == "function" then return Tokens:Number(path, fallback) end
@@ -439,11 +439,16 @@ RSUI:RegisterType("NumericField", function(spec)
     c.stepOrigin = tonumber(spec.stepOrigin) or c.baseMinimum
     c.integer = spec.integer == true
     c.unit = tostring(spec.unit or spec.suffix or "")
-    -- Adaptive range changes only the slider's presentation endpoints.  Domain
-    -- setters remain authoritative for real business constraints: if a Feature
-    -- clamps/rejects an out-of-range edit, we read that authoritative value back
-    -- and do not expand the slider to the rejected request.
+    -- Numeric Adaptive Range Contract v2 (2026-09-15): `min/max` are the
+    -- RECOMMENDED initial slider window, not implicit business limits. Exact
+    -- input may extend either endpoint after the Feature accepts the value.
+    -- `hardMin/hardMax` are reserved for real safety/business envelopes and
+    -- `fixedRange=true` is reserved for normalized quantities such as opacity.
+    -- Domain setters remain authoritative: a clamped/rejected request is read
+    -- back first, so the slider never expands to a value the Feature did not
+    -- actually accept. This keeps Presentation metadata separate from Authority.
     c.adaptiveRange = c.useSlider and spec.adaptiveRange ~= false and spec.fixedRange ~= true
+    c.rangePolicy = c.adaptiveRange == true and "adaptive" or "fixed"
     c.hardMinimum = tonumber(spec.hardMin)
     c.hardMaximum = tonumber(spec.hardMax)
     if c.adaptiveRange ~= true then
@@ -478,6 +483,10 @@ RSUI:RegisterType("NumericField", function(spec)
     if c.adaptiveRange == true then
         if initialCurrent < c.minimum then c.minimum = initialCurrent end
         if c.maximum ~= nil and initialCurrent > c.maximum then c.maximum = initialCurrent end
+    end
+
+    function c:GetPresentationRange()
+        return self.minimum, self.maximum, self.rangePolicy
     end
 
     local function PersistRange(reason)
@@ -526,6 +535,15 @@ RSUI:RegisterType("NumericField", function(spec)
 
     local function Applied(_, source)
         c.transientFeedback, c.transientTone, c.localError = nil, nil, nil
+        source = tostring(source or "input")
+        -- 中文维护注释（DraftSession V2 / competing Authority）：Slider 是同一 NumericField 的另一条显式
+        -- Authority 写路径。若用户先在精确输入框留下未应用草稿，再拖动 Slider，Slider 的最终值必须明确
+        -- 取代该草稿，否则页面会长期被 stale draft 栅栏且下一次点击又复活旧文本。这里只取消同字段草稿，
+        -- 不影响其它字段的独立 draft session。
+        if source == "slider" and c.input ~= nil and type(c.input.HasDraftSession) == "function"
+            and c.input:HasDraftSession() == true and type(c.input.CancelEditing) == "function" then
+            c.input:CancelEditing("numeric_field_slider_supersede")
+        end
         -- A Feature setter may clamp the submitted draft. Always read back the
         -- authoritative Domain value before deciding whether the slider expands.
         local actual = Current()
@@ -558,6 +576,9 @@ RSUI:RegisterType("NumericField", function(spec)
         suffix = c.unit, maxLength = tonumber(spec.maxLength) or 14,
         binding = c.binding, enabled = spec.enabled ~= false,
         commitOnFinal = spec.commitOnFinal == true,
+        -- 中文维护注释（DraftSession V2）：有明确“应用”按钮的 NumericField 不再把 RU LostFocus
+        -- 当成业务提交；输入草稿由 Lua 持有，只有 Apply/Enter 写 Authority。无 Apply 的旧字段保持 blur commit。
+        draftCommitMode = c.useApplyButton and "explicit" or "blur",
         format = spec.format,
         onChanged = function(value) Applied(value, "input") end,
         onInvalid = function()
@@ -574,10 +595,9 @@ RSUI:RegisterType("NumericField", function(spec)
         local actionSource = tostring(source or "apply_button")
         local draft = type(self.input.GetDraftNumber) == "function" and self.input:GetDraftNumber() or nil
         local actual = Current()
-        -- On RU a button click can deliver EditBox LostFocus before Button
-        -- OnClick. LostFocus already committed the same value in that ordering;
-        -- avoid a duplicate Domain/Persistence write. If focus is still owned by
-        -- the EditBox, CommitAndEndEditing is the authoritative path.
+        -- DraftSession V2: Apply may run after RU has already delivered LostFocus. Explicit fields keep the
+        -- Lua draft across that blur, so Apply reads the same draft and commits exactly once. If draft already
+        -- equals Authority, simply close the transaction without an unnecessary Domain/Persistence write.
         if self.input:IsEditing() ~= true and draft ~= nil and tonumber(draft) == tonumber(actual) then
             if type(self.input.EndEditing) == "function" then self.input:EndEditing(actionSource .. ":already_committed") end
             SyncControls(actual, "commit", true)
@@ -633,10 +653,16 @@ RSUI:RegisterType("NumericField", function(spec)
 
     function c:Apply(value, source)
         if self.enabled == false then return false end
+        local actionSource = tostring(source or "numeric_field")
+        -- 中文维护注释（DraftSession V2）：+/- 或外部 NumericField API 是明确的 Authority 决策，
+        -- 应取代本字段尚未应用的精确输入草稿，避免同一字段同时存在两个冲突事实。
+        if self.input ~= nil and type(self.input.HasDraftSession) == "function" and self.input:HasDraftSession() == true
+            and type(self.input.CancelEditing) == "function" then
+            self.input:CancelEditing("numeric_field_" .. actionSource .. "_supersede")
+        end
         local normalized = Normalize(value)
         if normalized == nil then self:SetFeedback(spec.invalidText or "请输入有效数字", "danger", true); return false end
         local previous = BindingValue(self.binding, normalized)
-        local actionSource = tostring(source or "numeric_field")
         local ok = self.binding:Set(normalized, true, actionSource, previous)
         if ok and spec.commitOnFinal == true and type(self.binding.Commit) == "function" then ok = self.binding:Commit(actionSource) end
         if ok then self.transientFeedback, self.transientTone, self.localError = nil, nil, nil end

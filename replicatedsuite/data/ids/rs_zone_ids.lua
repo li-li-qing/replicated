@@ -60,6 +60,43 @@ local DEFINITIONS = {
     { 103, "WHALESONG",     "Whalesong",     "Coastal" },
 }
 
+local DISPLAY_NAME_ZH = {
+    [1] = "格威尔森林",
+    [2] = "玛瑞诺普",
+    [3] = "碎石平原",
+    [4] = "黎明半岛",
+    [5] = "索兹里德半岛",
+    [6] = "黎利尔丘陵",
+    [7] = "彩虹荒野",
+    [8] = "双冠丘陵",
+    [9] = "摩哈特比",
+    [10] = "空气之原",
+    [11] = "猎鹰高原",
+    [12] = "咏唱之地",
+    [13] = "烈日峡谷",
+    [14] = "风刃废墟",
+    [15] = "棋盘石林",
+    [16] = "洛卡棋盘",
+    [17] = "伊尼斯泰尔",
+    [18] = "白雪森林",
+    [19] = "埋骨之地",
+    [20] = "十字星平原",
+    [21] = "珊瑚海岸北部",
+    [22] = "黄金平原",
+    [23] = "翡翠谷",
+    [24] = "虎脊山脉",
+    [25] = "古代森林",
+    [26] = "地狱沼泽",
+    [27] = "珊瑚海岸",
+    [54] = "墟境之口",
+    [56] = "煦日之野",
+    [57] = "黄金废墟",
+    [93] = "安息之地",
+    [99] = "洛卡山脉",
+    [102] = "海之烛台",
+    [103] = "鲸鱼歌湾",
+}
+
 for _, def in ipairs(DEFINITIONS) do
     local zoneId, semanticKey, nameEn, tradeQuality = def[1], def[2], def[3], def[4]
     local key = "zone." .. tostring(semanticKey):lower()
@@ -67,6 +104,7 @@ for _, def in ipairs(DEFINITIONS) do
         zoneId = zoneId,
         semanticKey = semanticKey,
         nameEn = nameEn,
+        nameZh = DISPLAY_NAME_ZH[zoneId],
         tradeQuality = tradeQuality,
         source = SOURCE,
         confidence = "curated",

@@ -15,7 +15,9 @@ if type(UnitFeature) ~= "table" or type(RangeFeature) ~= "table" then return end
 S.UIV3 = S.UIV3 or {}
 S.UIV3.CombatVisualGuidesV3 = S.UIV3.CombatVisualGuidesV3 or {}
 local P = S.UIV3.CombatVisualGuidesV3
-P.version = 11
+P.version = 13
+P.RawViewportSamplingContractVersion = 1
+P.UnitAnchorAcceptanceContractVersion = 1
 P.ScreenCoordinateAuthorityContractVersion = 1
 P.UnitLineRawProjectedAnchorContractVersion = 2
 P.ScreenToOverlayHostContractVersion = 1
@@ -29,7 +31,8 @@ P.unitHost = P.unitHost or nil
 P.rangeHost = P.rangeHost or nil
 P.unitPools = P.unitPools or {}
 P.unitPool = P.unitPool or {} -- legacy allocation field retained only for diagnostics compatibility
-P.rangePool = P.rangePool or {}
+P.rangePools = P.rangePools or {}
+P.rangePool = P.rangePool or {} -- legacy first-pool alias kept for diagnostics compatibility
 P.eventOwner = P.eventOwner or {}
 P.hostMetrics = P.hostMetrics or {}
 -- Lifecycle watchdog telemetry (v6): the presenter acquires its render lease by
@@ -100,17 +103,15 @@ end
 -- added as the segment grows so long-distance relations keep the same visual
 -- continuity as short-distance relations.  A cadence-aware TOTAL budget caps
 -- Native work when the user selects very high refresh rates.
--- v7 reference alignment: NO segment clipping. The reference renderers anchor
--- sampled dots at RAW projected coordinates (rp_ui.lua UpdateLinesView
--- AddAnchor(host, x, y)) — off-screen dots are simply off-screen and cost
--- nothing but bounded pool slots. The previous Liang-Barsky clip compared
--- raw/native coordinates against the logical viewport from GetUiMetrics; when
--- those spaces disagreed the clip rejected EVERY plan and the renderer placed
--- 0 dots while the feature still reported a projected row ("投影有 1 行但渲染
--- 层 0 个可见点", .18.130b field report). Dots are still bounded per pair and
--- per refresh cadence.
+-- 维护 2026-09-12：客户端报告端点y=-3345，旧实现整段分配点并把屏外点计为可见。
+-- 只在UIParent:GetScreenWidth/Height同源raw坐标范围裁剪线段，再分配屏内密度。
+-- 禁止用GetUiMetrics的logical尺寸或addonScale裁raw坐标；拿不到同源尺寸就保留原坐标。
+-- 裁剪是Presentation的可见采样，不修改Feature端点，也不以裁剪代替Service的behind否决。
 local UNIT_LINE_REFERENCE_LENGTH = 240
-local UNIT_LINE_PAIR_HARD_CAP = 160
+local VISUAL_GUIDE_LIMITS = (S.Constants and S.Constants.VisualGuide) or {}
+local UNIT_LINE_DENSITY_HARD_MIN = math.max(2, math.floor(tonumber(VISUAL_GUIDE_LIMITS.unitLineDensityHardMin) or 2))
+local UNIT_LINE_PAIR_HARD_CAP = math.max(UNIT_LINE_DENSITY_HARD_MIN, math.floor(tonumber(VISUAL_GUIDE_LIMITS.unitLineDensityHardMax) or 160))
+local RANGE_DENSITY_HARD_MAX = math.max(3, math.floor(tonumber(VISUAL_GUIDE_LIMITS.rangeDensityHardMax) or 192))
 local UNIT_LINE_TOTAL_BUDGET_FAST = 256
 local UNIT_LINE_TOTAL_BUDGET_MEDIUM = 320
 local UNIT_LINE_TOTAL_BUDGET_NORMAL = 384
@@ -124,7 +125,7 @@ local UNIT_LINE_PRESSURE_FACTOR = { Normal=1.00, Busy=0.82, Heavy=0.68, Critical
 local UNIT_LINE_POOL_GROWTH = { Normal=48, Busy=32, Heavy=24, Critical=16 }
 
 local function UnitLineTotalBudget(refreshMs)
-    refreshMs=math.max(1,math.min(1000,math.floor(tonumber(refreshMs) or 100)))
+    refreshMs=math.max(1,math.floor(tonumber(refreshMs) or 100))
     if refreshMs <= 16 then return UNIT_LINE_TOTAL_BUDGET_FAST end
     if refreshMs <= 33 then return UNIT_LINE_TOTAL_BUDGET_MEDIUM end
     if refreshMs <= 50 then return UNIT_LINE_TOTAL_BUDGET_NORMAL end
@@ -142,7 +143,7 @@ local function UnitLinePoolGrowthBudget(pressure)
 end
 
 local function DesiredUnitLinePointCount(length, baseCount)
-    baseCount=math.max(8,math.min(48,math.floor(tonumber(baseCount) or 24)))
+    baseCount=math.max(UNIT_LINE_DENSITY_HARD_MIN,math.min(UNIT_LINE_PAIR_HARD_CAP,math.floor(tonumber(baseCount) or 24)))
     length=math.max(0,tonumber(length) or 0)
     -- Preserve the old near-distance look: baseCount remains a floor.  The
     -- reference maps 24 legacy points to roughly 10.4 logical px spacing.
@@ -151,24 +152,69 @@ local function DesiredUnitLinePointCount(length, baseCount)
     return math.max(baseCount,math.min(UNIT_LINE_PAIR_HARD_CAP,adaptive))
 end
 
-function P:BuildUnitLineSamplePlan(rows, projection, logicalW, logicalH, pressure)
+local function FinitePointNumber(value)
+    local n=tonumber(value)
+    if n==nil or n~=n or n==math.huge or n==-math.huge then return nil end
+    return n
+end
+
+function P:ReadUnitViewport()
+    -- 维护：视口事实仍由ScreenProjectionV3提供，Presenter只决定可见段如何分配点数。
+    -- 服务缺失/异常时不拿Layout logical大小代替，保留旧版raw坐标回退及unknown诊断。
+    local service=S.Services and S.Services.ScreenProjectionV3 or nil
+    if type(service)~="table" or type(service.GetUiParentViewport)~="function" then return nil,nil end
+    local ok,w,h=pcall(service.GetUiParentViewport,service)
+    w,h=FinitePointNumber(w),FinitePointNumber(h)
+    if not ok or w==nil or h==nil or w<=1 or h<=1 then return nil,nil end
+    return w,h
+end
+
+local function ClipUnitSegment(x1,y1,x2,y2,w,h)
+    -- Liang-Barsky参数裁剪保留原线斜率；不能分别clamp端点(会改变指向)。固定四边，O(1)。
+    local dx,dy=x2-x1,y2-y1
+    local enter,leave=0,1
+    local function Edge(p,q)
+        if p==0 then return q>=0 end
+        local t=q/p
+        if p<0 then if t>leave then return false end;if t>enter then enter=t end
+        else if t<enter then return false end;if t<leave then leave=t end end
+        return true
+    end
+    if not Edge(-dx,x1) or not Edge(dx,w-1-x1) or not Edge(-dy,y1) or not Edge(dy,h-1-y1) then return nil end
+    return x1+enter*dx,y1+enter*dy,x1+leave*dx,y1+leave*dy,enter>0 or leave<1
+end
+
+function P:BuildUnitLineSamplePlan(rows, projection, viewportW, viewportH, pressure)
     rows=type(rows)=="table" and rows or {}
     projection=type(projection)=="table" and projection or {}
     local pairPoints=type(projection.pairPoints)=="table" and projection.pairPoints or {}
     local plans,totalBase,totalDesired={},0,0
+    viewportW,viewportH=FinitePointNumber(viewportW),FinitePointNumber(viewportH)
+    local known=viewportW~=nil and viewportH~=nil and viewportW>1 and viewportH>1
+    local stats={inputEdges=#rows,clippedEdges=0,outsideEdges=0,invalidEdges=0,shortEdges=0,viewportKnown=known}
     for _,row in ipairs(rows) do
         if type(row)=="table" then
-            local x1,y1,x2,y2=tonumber(row.x1),tonumber(row.y1),tonumber(row.x2),tonumber(row.y2)
-            if x1~=nil and y1~=nil and x2~=nil and y2~=nil then
-                local base=math.max(8,math.min(48,math.floor(tonumber(pairPoints[row.pairKey]) or tonumber(projection.pointCount) or 24)))
-                local dx,dy=x2-x1,y2-y1
-                local length=math.sqrt(dx*dx+dy*dy)
-                local desired=DesiredUnitLinePointCount(length,base)
-                local plan={ row=row,x1=x1,y1=y1,x2=x2,y2=y2,length=length,base=base,desired=desired,count=base }
-                plans[#plans+1]=plan
-                totalBase=totalBase+base; totalDesired=totalDesired+desired
-            end
-        end
+            local x1,y1,x2,y2=FinitePointNumber(row.x1),FinitePointNumber(row.y1),FinitePointNumber(row.x2),FinitePointNumber(row.y2)
+            if x1~=nil and y1~=nil and x2~=nil and y2~=nil and FinitePointNumber(x2-x1) and FinitePointNumber(y2-y1) then
+                local clipped=false
+                if known then x1,y1,x2,y2,clipped=ClipUnitSegment(x1,y1,x2,y2,viewportW,viewportH) end
+                if x1==nil then stats.outsideEdges=stats.outsideEdges+1
+                else
+                    if clipped then stats.clippedEdges=stats.clippedEdges+1 end
+                    local dx,dy=x2-x1,y2-y1
+                    local length=FinitePointNumber(math.sqrt(dx*dx+dy*dy))
+                    if length==nil then stats.invalidEdges=stats.invalidEdges+1
+                    elseif length<1 then stats.shortEdges=stats.shortEdges+1
+                    else
+                        local base=math.max(UNIT_LINE_DENSITY_HARD_MIN,math.min(UNIT_LINE_PAIR_HARD_CAP,
+                            math.floor(tonumber(pairPoints[row.pairKey]) or tonumber(projection.pointCount) or 24)))
+                        local desired=DesiredUnitLinePointCount(length,base)
+                        local plan={row=row,x1=x1,y1=y1,x2=x2,y2=y2,length=length,base=base,desired=desired,count=base,clipped=clipped==true}
+                        plans[#plans+1]=plan;totalBase=totalBase+base;totalDesired=totalDesired+desired
+                    end
+                end
+            else stats.invalidEdges=stats.invalidEdges+1 end
+        else stats.invalidEdges=stats.invalidEdges+1 end
     end
     local budget=UnitLinePressureBudget(UnitLineTotalBudget(projection.refreshMs),totalBase,pressure)
     if totalDesired <= budget then
@@ -193,11 +239,11 @@ function P:BuildUnitLineSamplePlan(rows, projection, logicalW, logicalH, pressur
             if canGrow~=true then break end
         end
     end
-    return plans,budget
+    return plans,budget,stats
 end
 
 P.AdaptiveUnitLineSamplingContractVersion = 2
-P.UnitLineVisibleSegmentClippingContractVersion = 1
+P.UnitLineVisibleSegmentClippingContractVersion = 2
 P.UnitLinePressureBudgetContractVersion = 1
 P.UnitLineDiffRenderContractVersion = 1
 P.UnitLineProgressivePoolContractVersion = 1
@@ -240,9 +286,14 @@ function P:SetUnitDotVisible(dot, visible)
     -- desync: every later frame believed the dot was already hidden/shown and
     -- never retried, leaving pool widgets stuck visible at (0,0) -- the
     -- reported "screen shows a single dot" failure shape.
-    if S.UI:SetVisible(dot.root,value,self.owner)~=true then return false end
+    -- 维护：SetVisible=false既可能no-op也可能失败；EnsureVisible区分accepted/changed。
+    -- 只有Native写入或框架已确认的no-op才能提交本地cache，拒绝时仍可在下帧重试。
+    local accepted,changed
+    if type(S.UI.EnsureVisible)=="function" then accepted,changed=S.UI:EnsureVisible(dot.root,value,self.owner)
+    else accepted=S.UI:SetVisible(dot.root,value,self.owner);changed=accepted end
+    if accepted~=true then return false end
     state.visible=value
-    return true
+    return changed==true
 end
 
 function P:HideUnitPools()
@@ -252,7 +303,11 @@ function P:HideUnitPools()
 end
 
 function P:EnsurePool(kind, count)
-    count=math.max(0,math.min(48,math.floor(tonumber(count) or 0)))
+    -- Legacy compatibility helper: honor the same real safety envelopes as the
+    -- active per-pair/per-circle pools so a future caller cannot reintroduce the
+    -- obsolete 48-dot presentation ceiling behind the Feature Authority.
+    local hardCap = kind == "range" and RANGE_DENSITY_HARD_MAX or UNIT_LINE_PAIR_HARD_CAP
+    count=math.max(0,math.min(hardCap,math.floor(tonumber(count) or 0)))
     local pool = kind == "unit" and self.unitPool or self.rangePool
     local host, err = self:EnsureHost(kind); if host == nil then return false, err end
     for index=1,count do
@@ -271,6 +326,39 @@ end
 
 function P:HidePool(pool)
     for _,dot in ipairs(pool) do S.UI:SetVisible(dot.root, false, self.owner) end
+end
+
+function P:EnsureRangePool(circleKey, count)
+    count = math.max(0, math.min(RANGE_DENSITY_HARD_MAX, math.floor(tonumber(count) or 0)))
+    local host, err = self:EnsureHost("range"); if host == nil then return nil, err end
+    local key = tostring(circleKey or "default"):gsub("[^%w_]", "_")
+    self.rangePools = self.rangePools or {}
+    local pool = self.rangePools[key]
+    if type(pool) ~= "table" then pool = {}; self.rangePools[key] = pool end
+    if self.rangePool == nil or #self.rangePool == 0 then self.rangePool = pool end
+    for index = 1, count do
+        local row = pool[index]
+        if type(row) ~= "table" or row.root == nil then
+            local dot, dotErr = S.UI:CreateLabel(host, "v3_visual_range_" .. key .. "_dot_" .. tostring(index), ".", 0, 0, 1, 1, 15, "strong", "CENTER", false)
+            if dot == nil then return nil, dotErr end
+            row = { root = dot, drawable = nil, label = true }; pool[index] = row
+            S.UI:SetVisible(dot, false, self.owner)
+        end
+    end
+    return pool
+end
+
+function P:HideRangePools(active)
+    self.rangePools = self.rangePools or {}
+    for key, pool in pairs(self.rangePools) do
+        if active == nil or active[key] ~= true then self:HidePool(pool) end
+    end
+end
+
+local function RangePoolDotCount(rangePools)
+    local total = 0
+    for _, pool in pairs(type(rangePools) == "table" and rangePools or {}) do total = total + #pool end
+    return total
 end
 
 local VISUAL_POINT_SIZE_MIN = tonumber(S.Constants and S.Constants.VisualGuide and S.Constants.VisualGuide.pointSizeMin) or 2
@@ -342,8 +430,14 @@ function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b, hostTransfor
     -- and never bails): a visible dot with imperfect styling beats a
     -- perfectly-styled dot that never shows.
     if state.x~=px or state.y~=py then
-        S.UI:SetAnchor(dot.root,self.unitHost,px,py,self.owner)
-        state.x,state.y=px,py; anchorWrites=1
+        -- 维护：旧代码无条件提交anchor缓存，一次拒绝后相同坐标永不重试、点卡在旧位置。
+        -- Authority=RSUI EnsureAnchor确认结果；失败隐藏当前点，保留未提交cache供下一帧重试。
+        -- 不引入新重试任务、不动用户位置配置；共享range绘制不受此分支影响。
+        local accepted,changed
+        if type(S.UI.EnsureAnchor)=="function" then accepted,changed=S.UI:EnsureAnchor(dot.root,self.unitHost,px,py,self.owner)
+        else accepted=S.UI:SetAnchor(dot.root,self.unitHost,px,py,self.owner);changed=accepted end
+        if accepted~=true then self:SetUnitDotVisible(dot,false);return 0,0,0,false end
+        state.x,state.y=px,py;anchorWrites=changed==true and 1 or 0
     end
     if state.size~=size then
         S.UI:SetFontSize(dot.root,size,self.owner)
@@ -354,7 +448,7 @@ function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b, hostTransfor
         state.r,state.g,state.b,state.a=cr,cg,cb,alpha; styleWrites=styleWrites+1
     end
     if self:SetUnitDotVisible(dot,true) then visibilityWrites=1 end
-    return anchorWrites,styleWrites,visibilityWrites
+    return anchorWrites,styleWrites,visibilityWrites,state.visible==true
 end
 
 function P:PlaceDot(dot, x, y, size, opacity, kind, pairKey, r, g, b, hostTransform)
@@ -390,7 +484,10 @@ end
 -- 1:1; all projection/calibration authority remains in ScreenProjectionV3.
 
 function P:RenderUnit()
-    if self.unitHeld ~= true then self:HideUnitPools(); return true end
+    -- 维护：先清本帧telemetry再处理空集/关闭，否则上次“176点”在目标消失后仍被报告为可见。
+    -- 无跨帧单位缓存；仅有界Native池复用，禁用时隐藏且Feature释放自己的刷新任务。
+    self.lastUnitSampling={inputEdges=0,visibleEdges=0,visibleDots=0,uniquePositions=0,requestedDots=0,clippedEdges=0,outsideEdges=0,invalidEdges=0}
+    if self.unitHeld ~= true then self:HideUnitPools();S.UI:SetVisible(self.unitHost,false,self.owner);return true end
     local projection=UnitFeature:GetProjection() or {}; local rows=type(projection.rows)=="table" and projection.rows or {}
     if #rows==0 then
         self:HideUnitPools()
@@ -400,10 +497,11 @@ function P:RenderUnit()
     local pairSizes = type(projection.pairSizes) == "table" and projection.pairSizes or {}
     local pressure="Normal"
     if type(S.FrameBudget)=="table" and type(S.FrameBudget.current)=="table" then pressure=tostring(S.FrameBudget.current.pressure or "Normal") end
-    local plans,budget=self:BuildUnitLineSamplePlan(rows,projection,nil,nil,pressure)
+    local viewportW,viewportH=self:ReadUnitViewport()
+    local plans,budget,sampleStats=self:BuildUnitLineSamplePlan(rows,projection,viewportW,viewportH,pressure)
     local hostTransform=self:ResolveHostTransform(self.unitHost)
     local active={}
-    local visibleDots,requestedDots=0,0
+    local visibleDots,requestedDots,placementFailures=0,0,0
     local anchorWrites,styleWrites,visibilityWrites,poolGrowth=0,0,0,0
     local uniqueSeen={}
     local uniquePositions=0
@@ -425,15 +523,19 @@ function P:RenderUnit()
         created=math.max(0,tonumber(created) or 0); growthRemaining=math.max(0,growthRemaining-created); poolGrowth=poolGrowth+created
         remainingPlans=math.max(0,remainingPlans-1)
         local count=math.min(requested,#pool)
-        active[key]=true; visibleDots=visibleDots+count
+        active[key]=true
         for i=1,count do
             local t=(i-1)/math.max(1,count-1)
             local px=math.floor((plan.x1+(plan.x2-plan.x1)*t)+0.5)
             local py=math.floor((plan.y1+(plan.y2-plan.y1)*t)+0.5)
-            local aw,sw,vw=self:PlaceUnitDot(pool[i],px,py,size,projection.opacity,key,cr,cg,cb,hostTransform)
+            local aw,sw,vw,placed=self:PlaceUnitDot(pool[i],px,py,size,projection.opacity,key,cr,cg,cb,hostTransform)
             anchorWrites=anchorWrites+(tonumber(aw) or 0); styleWrites=styleWrites+(tonumber(sw) or 0); visibilityWrites=visibilityWrites+(tonumber(vw) or 0)
-            local uk=tostring(px)..","..tostring(py)
-            if uniqueSeen[uk]~=true then uniqueSeen[uk]=true; uniquePositions=uniquePositions+1 end
+            -- 计数Native确认的可显示点而不是池容量；失败点不冒充“可见”。
+            if placed==true then
+                visibleDots=visibleDots+1
+                local uk=tostring(px)..","..tostring(py)
+                if uniqueSeen[uk]~=true then uniqueSeen[uk]=true;uniquePositions=uniquePositions+1 end
+            else placementFailures=placementFailures+1 end
         end
         for i=count+1,#pool do if self:SetUnitDotVisible(pool[i],false) then visibilityWrites=visibilityWrites+1 end end
     end
@@ -444,7 +546,10 @@ function P:RenderUnit()
     -- above other Suite surfaces (rp_ui.lua UpdateLinesView host Show/Raise).
     S.UI:SetVisible(self.unitHost,#plans>0,self.owner)
     self.lastUnitSampling={budget=budget,pressure=pressure,visibleEdges=#plans,requestedDots=requestedDots,
-        visibleDots=visibleDots,poolGrowth=poolGrowth,anchorWrites=anchorWrites,styleWrites=styleWrites,visibilityWrites=visibilityWrites,
+        inputEdges=sampleStats.inputEdges,clippedEdges=sampleStats.clippedEdges,outsideEdges=sampleStats.outsideEdges,
+        invalidEdges=sampleStats.invalidEdges,shortEdges=sampleStats.shortEdges,viewportKnown=sampleStats.viewportKnown,
+        viewportWidth=viewportW,viewportHeight=viewportH,viewportSource=sampleStats.viewportKnown and "ui_parent_screen" or "unknown",
+        placementFailures=placementFailures,visibleDots=visibleDots,poolGrowth=poolGrowth,anchorWrites=anchorWrites,styleWrites=styleWrites,visibilityWrites=visibilityWrites,
         uniquePositions=uniquePositions,coordinateSpace="ui_parent_screen_to_host_local",
         hostOriginX=tonumber(hostTransform.originX) or 0,hostOriginY=tonumber(hostTransform.originY) or 0,hostTransformSource=tostring(hostTransform.source or "identity"),
         logicalWidth=tonumber(hostTransform.logicalWidth),logicalHeight=tonumber(hostTransform.logicalHeight),uiScale=tonumber(hostTransform.uiScale) or 1,
@@ -453,26 +558,36 @@ function P:RenderUnit()
 end
 
 function P:RenderRange()
-    if self.rangeHeld ~= true then self:HidePool(self.rangePool); S.UI:SetVisible(self.rangeHost,false,self.owner); return true end
-    local projection=RangeFeature:GetProjection() or {}; local row=projection.rows and projection.rows[1] or nil
-    local points=type(row)=="table" and type(row.points)=="table" and row.points or {}
-    if #points<3 then self:HidePool(self.rangePool); S.UI:SetVisible(self.rangeHost,false,self.owner); return true end
-    -- Range line color is now configurable via the page ColorField; fall back to
-    -- the legacy default when no color has been persisted.
-    local rc=type(projection.color)=="table" and projection.color or nil
-    local rr,rg,rb=rc and (tonumber(rc[1]) or 0.20) or 0.20, rc and (tonumber(rc[2]) or 0.82) or 0.82, rc and (tonumber(rc[3]) or 1.00) or 1.00
-    local count=math.min(48,#points); local ok,err=self:EnsurePool("range",count); if ok~=true then return false,err end
+    if self.rangeHeld ~= true then self:HideRangePools(); S.UI:SetVisible(self.rangeHost,false,self.owner); return true end
+    local projection=RangeFeature:GetProjection() or {}; local rows=type(projection.rows)=="table" and projection.rows or {}
+    local active, renderedCircles, totalDots = {}, 0, 0
+    if #rows<1 then self:HideRangePools(); S.UI:SetVisible(self.rangeHost,false,self.owner); return true end
     local hostTransform=self:ResolveHostTransform(self.rangeHost)
-    for i=1,count do
-        self:PlaceDot(self.rangePool[i],points[i].x,points[i].y,projection.pointSize,projection.opacity,"range",nil,rr,rg,rb,hostTransform)
+    local firstPoint = "?"
+    for _, row in ipairs(rows) do
+        local points=type(row)=="table" and type(row.points)=="table" and row.points or {}
+        if #points>=3 then
+            local circleKey=tostring(row.circleKey or row.key or ("range_" .. tostring(renderedCircles + 1)))
+            local pool, err = self:EnsureRangePool(circleKey, math.min(RANGE_DENSITY_HARD_MAX, #points)); if pool == nil then return false, err end
+            active[circleKey:gsub("[^%w_]", "_")] = true
+            local color = type(row.color)=="table" and row.color or nil
+            local rr,rg,rb = color and (tonumber(color[1]) or 0.20) or 0.20, color and (tonumber(color[2]) or 0.82) or 0.82, color and (tonumber(color[3]) or 1.00) or 1.00
+            local count=math.min(RANGE_DENSITY_HARD_MAX,#points)
+            for i=1,count do
+                self:PlaceDot(pool[i],points[i].x,points[i].y,row.pointSize or projection.pointSize,row.opacity or projection.opacity,"range",nil,rr,rg,rb,hostTransform)
+            end
+            for i=count+1,#pool do S.UI:SetVisible(pool[i].root,false,self.owner) end
+            renderedCircles = renderedCircles + 1
+            totalDots = totalDots + count
+            if firstPoint == "?" and points[1] ~= nil then firstPoint = tostring(math.floor(tonumber(points[1].x) or 0)) .. "," .. tostring(math.floor(tonumber(points[1].y) or 0)) end
+        end
     end
-    for i=count+1,#self.rangePool do S.UI:SetVisible(self.rangePool[i].root,false,self.owner) end
-    S.UI:SetVisible(self.rangeHost,true,self.owner)
+    self:HideRangePools(active)
+    S.UI:SetVisible(self.rangeHost,renderedCircles>0,self.owner)
     local hostVisible, hostKnown = nil, false
     if type(S.UI.NativeVisibleReadback) == "function" then hostVisible, hostKnown = S.UI:NativeVisibleReadback(self.rangeHost) end
-    self.lastRangeSampling = { points = count, coordinateSpace = "ui_parent_screen_to_host_local",
-        first = (count > 0 and points[1] ~= nil) and (tostring(math.floor(tonumber(points[1].x) or 0)) .. "," .. tostring(math.floor(tonumber(points[1].y) or 0))) or "?",
-        hostOriginX=tonumber(hostTransform.originX) or 0,hostOriginY=tonumber(hostTransform.originY) or 0,hostTransformSource=tostring(hostTransform.source or "identity"),
+    self.lastRangeSampling = { points = totalDots, circles = renderedCircles, totalCircles = tonumber(projection.circleCount) or 0, enabledCircles = tonumber(projection.enabledCircleCount) or 0, coordinateSpace = "ui_parent_screen_to_host_local",
+        first = firstPoint, hostOriginX=tonumber(hostTransform.originX) or 0,hostOriginY=tonumber(hostTransform.originY) or 0,hostTransformSource=tostring(hostTransform.source or "identity"),
         logicalWidth=tonumber(hostTransform.logicalWidth),logicalHeight=tonumber(hostTransform.logicalHeight),uiScale=tonumber(hostTransform.uiScale) or 1,
         hostVisible = hostKnown == true and tostring(hostVisible == true) or "未知" }
     return true
@@ -481,9 +596,19 @@ end
 function P:ReconcileOne(feature,id,token,heldField,kind)
     local enabled=S.FeatureRuntime:IsEnabled(id)==true
     if not enabled then
-        if kind=="unit" then self:HideUnitPools() else self:HidePool(self.rangePool) end
+        if kind=="unit" then
+            self:HideUnitPools();S.UI:SetVisible(self.unitHost,false,self.owner)
+            -- 禁用路径不再报告上一次已显示采样，不创建/销毁range的资源。
+            self.lastUnitSampling={inputEdges=0,visibleEdges=0,visibleDots=0,uniquePositions=0,requestedDots=0}
+        else self:HideRangePools(); S.UI:SetVisible(self.rangeHost,false,self.owner); self.lastRangeSampling={points=0,circles=0,totalCircles=0,enabledCircles=0} end
         if self[heldField]==true then
-            local ok,err=feature:ReleaseConsumer(token); if ok~=true then return false,err end
+            -- 维护：Feature:Disable已先Demand:Clear，旧代码再次Release得到consumer not held，
+            -- 使Presenter的held标记无法收敛。租约Authority在Demand；确认已无此token即可清本地影子。
+            -- 仍持有时必须真实释放并检查结果；无HasConsumer的旧实现保留原保守路径。
+            local alreadyReleased=type(feature.HasConsumer)=="function" and feature:HasConsumer(token)~=true
+            if not alreadyReleased then
+                local ok,err=feature:ReleaseConsumer(token);if ok~=true then return false,err end
+            end
             self[heldField]=false
         end
         return true
@@ -552,10 +677,20 @@ function P:ConvergeTick()
     self:Reconcile("lifecycle_watchdog")
 end
 
-function P:Describe() local sample=type(self.lastUnitSampling)=="table" and self.lastUnitSampling or {}; return {version=self.version,adaptiveUnitLineSampling=tonumber(self.AdaptiveUnitLineSamplingContractVersion) or 0,unitLinePressureBudget=tonumber(self.UnitLinePressureBudgetContractVersion) or 0,unitLineDiffRender=tonumber(self.UnitLineDiffRenderContractVersion) or 0,unitLineProgressivePool=tonumber(self.UnitLineProgressivePoolContractVersion) or 0,unitHeld=self.unitHeld==true,rangeHeld=self.rangeHeld==true,unitDots=(function() local n=0; for _,pool in pairs(self.unitPools) do n=n+#pool end; return n end)(),unitVisibleDots=tonumber(sample.visibleDots) or 0,unitRequestedDots=tonumber(sample.requestedDots) or 0,unitVisibleEdges=tonumber(sample.visibleEdges) or 0,unitClippedEdges=tonumber(sample.clippedEdges) or 0,unitBudget=tonumber(sample.budget) or 0,unitPressure=tostring(sample.pressure or "Normal"),unitPoolGrowth=tonumber(sample.poolGrowth) or 0,unitAnchorWrites=tonumber(sample.anchorWrites) or 0,unitStyleWrites=tonumber(sample.styleWrites) or 0,unitVisibilityWrites=tonumber(sample.visibilityWrites) or 0,rangeDots=#self.rangePool,
-    lastLifecycle=self.lastLifecycle,reconcileRuns=tonumber(self.reconcileRuns) or 0,watchdogTicks=tonumber(self.watchdogTicks) or 0,
-    acquireAttempts={unit=tonumber(self.acquireAttempts and self.acquireAttempts.unit) or 0,range=tonumber(self.acquireAttempts and self.acquireAttempts.range) or 0},
-    lastAcquireError=self.lastAcquireError} end
+function P:Describe()
+    local sample=type(self.lastUnitSampling)=="table" and self.lastUnitSampling or {}
+    local rangeSample=type(self.lastRangeSampling)=="table" and self.lastRangeSampling or {}
+    return {
+        version=self.version,adaptiveUnitLineSampling=tonumber(self.AdaptiveUnitLineSamplingContractVersion) or 0,unitLinePressureBudget=tonumber(self.UnitLinePressureBudgetContractVersion) or 0,unitLineDiffRender=tonumber(self.UnitLineDiffRenderContractVersion) or 0,unitLineProgressivePool=tonumber(self.UnitLineProgressivePoolContractVersion) or 0,
+        unitHeld=self.unitHeld==true,rangeHeld=self.rangeHeld==true,
+        unitDots=(function() local n=0; for _,pool in pairs(self.unitPools) do n=n+#pool end; return n end)(),
+        unitVisibleDots=tonumber(sample.visibleDots) or 0,unitRequestedDots=tonumber(sample.requestedDots) or 0,unitVisibleEdges=tonumber(sample.visibleEdges) or 0,unitClippedEdges=tonumber(sample.clippedEdges) or 0,unitBudget=tonumber(sample.budget) or 0,unitPressure=tostring(sample.pressure or "Normal"),unitPoolGrowth=tonumber(sample.poolGrowth) or 0,unitAnchorWrites=tonumber(sample.anchorWrites) or 0,unitStyleWrites=tonumber(sample.styleWrites) or 0,unitVisibilityWrites=tonumber(sample.visibilityWrites) or 0,
+        rangeDots=RangePoolDotCount(self.rangePools),rangeCircles=tonumber(rangeSample.circles) or 0,rangeEnabledCircles=tonumber(rangeSample.enabledCircles) or 0,rangeConfiguredCircles=tonumber(rangeSample.totalCircles) or 0,
+        lastLifecycle=self.lastLifecycle,reconcileRuns=tonumber(self.reconcileRuns) or 0,watchdogTicks=tonumber(self.watchdogTicks) or 0,
+        acquireAttempts={unit=tonumber(self.acquireAttempts and self.acquireAttempts.unit) or 0,range=tonumber(self.acquireAttempts and self.acquireAttempts.range) or 0},
+        lastAcquireError=self.lastAcquireError
+    }
+end
 
 if S.Events ~= nil and type(S.Events.SubscribeInternal)=="function" then
     S.Events:SubscribeInternal((S.FeatureRuntime and S.FeatureRuntime.LifecycleTopic) or "v3.feature.lifecycle",P.eventOwner,function(_,featureId,state)

@@ -67,30 +67,12 @@ local function FormatApiDependencies(meta)
     return table.concat(out, " · ")
 end
 
+-- 维护（overview-content-1）：统一首页入口不变；独立内容模块仅拥有UI，
+-- 不能启动关闭的Feature、复用原生浮窗或复制业务数据。初始化失败照常报告。
 local function BuildHome(parent, route)
-    local root, rootErr = D:PageRoot(parent, "v3_page_home")
-    if root == nil then return nil, "页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
-    D:PageHeader(root, "v3_home_header", "今日总览", "新版工作台。每个功能按照独立数据源、生命周期、存档和悬浮组件逐步迁入。")
-
-    local grid = RSUI:UniformGrid({
-        id = "v3_home_grid", parent = root, minCellWidth = 210, minCellHeight = 82, maxColumns = 2, gap = 10,
-        slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
-    })
-    local cards = {
-        { "activity", "活动 / 世界状态", "已迁移", "俄服时间表、实时区域阶段、任务/副本参与进度与独立活动悬浮窗已经接入。" },
-        { "trade", "跑商当前路线", "已接入 · 部分能力可用", "当前可见路线、货率与多材料投影；完整自动路线决策或实机字段仍待确认。" },
-        { "bond", "债券 / 居民板", "已接入 · 部分能力可用", "七类居民板已读取；居民完成状态仍待确认。" },
-        { "tasks", "我的任务追踪", "已迁移", "日常 / 周常使用独立追踪选择，支持子任务展开和悬浮追踪，并共享只读任务进度数据源。" },
-        { "today", "今日统计", "范围待确认", "当前仅展示已接入的活动与任务摘要；金币、经验、荣誉和生活点等今日统计范围仍待确认。" },
-    }
-    for _, row in ipairs(cards) do
-        D:InfoCard(grid, {
-            id = "v3_home_card_" .. row[1], title = row[2], value = row[3], detail = row[4], detailMaxLines = 4,
-            slot = { hAlign = "fill", vAlign = "fill" },
-        })
-    end
-    root.route = route
-    return root
+    local home=S.UIV3 and S.UIV3.HomeOverview
+    if not home or type(home.Build)~="function" then return nil,"今日总览内容模块未加载" end
+    return home:Build(parent, route)
 end
 
 local function BuildFeaturePlaceholder(parent, route, feature)
@@ -263,9 +245,12 @@ local function BuildWidgets(parent, route)
     AdoptWidgetAction(activityLock, "activity_lock")
     AdoptWidgetAction(activityReset, "activity_reset")
     local activityHint = RSUI:Text({ id = "v3_widgets_activity_hint", parent = actions, text = "", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
+    -- 维护（2026-09-15，numeric-range-v2）：透明度百分比是归一化业务量，不属于“推荐窗口”。
+    -- 明确固定 0..100，防止通用自适应 Slider 把非法精确输入扩展成新的范围；Authority 仍由 WidgetHost/Feature
+    -- 回读确认，旧 appearance 配置与持久化键不变。
     local overallOpacityField = D:NumericSetting(activityStack, {
         id = "v3_widgets_activity_overall_opacity", label = "整体透明度", hint = "作用于整个悬浮窗，并与背景/文字透明度相乘；可直接输入 0–100。",
-        min = 0, max = 100, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
+        min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function()
             local host = S.UIV3 and S.UIV3.WidgetHost or nil
             local state = host and host:GetState("life.activities") or nil
@@ -281,7 +266,7 @@ local function BuildWidgets(parent, route)
     })
     local backgroundOpacityField = D:NumericSetting(activityStack, {
         id = "v3_widgets_activity_background_opacity", label = "背景透明度", hint = "只调整面板、边框、按钮等背景，不降低文字清晰度；可直接输入 0–100。",
-        min = 0, max = 100, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
+        min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function()
             local host = S.UIV3 and S.UIV3.WidgetHost or nil
             local state = host and host:GetState("life.activities") or nil
@@ -297,7 +282,7 @@ local function BuildWidgets(parent, route)
     })
     local textOpacityField = D:NumericSetting(activityStack, {
         id = "v3_widgets_activity_text_opacity", label = "文字透明度", hint = "只调整标题、状态、表格文字和按钮文字；可直接输入 0–100。",
-        min = 0, max = 100, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
+        min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function()
             local host = S.UIV3 and S.UIV3.WidgetHost or nil
             local state = host and host:GetState("life.activities") or nil
@@ -395,9 +380,11 @@ local function BuildWidgets(parent, route)
         if host == nil then return false, "悬浮组件宿主不可用" end
         return host:SetAppearance("combat.gear.quick", channel, (tonumber(value) or 100) / 100, false)
     end
+    -- 同一 Numeric Range v2 规则：换装快捷按钮透明度是真实 0..100 百分比，因此保留 fixedRange。
+    -- 这里只声明 Presentation 安全语义，不新增 Store，也不改变 Gear Appearance 的 Authority/升级兼容。
     local gearOverallOpacityField = D:NumericSetting(gearStack, {
         id = "v3_widgets_gear_overall_opacity", label = "整体透明度", hint = "同时作用于所有换装快捷按钮，并与背景/文字透明度相乘；可直接输入 0–100。",
-        min = 0, max = 100, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
+        min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function() return GearAppearanceGet("overallOpacity", 0.94) end,
         set = function(value) return GearAppearanceSet("overall", value) end,
         storeId = GEAR_INDEX_STORE_ID, persistDelayMs = 250, persistReason = "gear_quick_overall_opacity",
@@ -405,7 +392,7 @@ local function BuildWidgets(parent, route)
     })
     local gearBackgroundOpacityField = D:NumericSetting(gearStack, {
         id = "v3_widgets_gear_background_opacity", label = "背景透明度", hint = "只调整所有换装快捷按钮的背景，不降低文字清晰度。",
-        min = 0, max = 100, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
+        min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function() return GearAppearanceGet("backgroundOpacity", 1.0) end,
         set = function(value) return GearAppearanceSet("background", value) end,
         storeId = GEAR_INDEX_STORE_ID, persistDelayMs = 250, persistReason = "gear_quick_background_opacity",
@@ -413,7 +400,7 @@ local function BuildWidgets(parent, route)
     })
     local gearTextOpacityField = D:NumericSetting(gearStack, {
         id = "v3_widgets_gear_text_opacity", label = "文字透明度", hint = "只调整换装按钮上的方案名称文字。",
-        min = 0, max = 100, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
+        min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function() return GearAppearanceGet("textOpacity", 1.0) end,
         set = function(value) return GearAppearanceSet("text", value) end,
         storeId = GEAR_INDEX_STORE_ID, persistDelayMs = 250, persistReason = "gear_quick_text_opacity",
@@ -707,283 +694,266 @@ local function BuildPersistenceAcceptanceCopyText()
 end
 
 local function BuildDiagnostics(parent, route)
-    local root, rootErr = D:ScrollablePageRoot(parent, "v3_page_system_diagnostics")
-    if root == nil then return nil, "页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
-    D:PageHeader(root, "v3_diag_header", "诊断与维护", "用于检查框架健康状态、界面所有权、功能生命周期、存档、调度器和原生接口。")
-
-    local function RunDiagnosticAction(id, execute, options)
-        options = type(options) == "table" and options or {}
-        if S.ActionRunner ~= nil and type(S.ActionRunner.Run) == "function" then
-            return S.ActionRunner:Run({
-                id = "diagnostics." .. tostring(id),
-                execute = execute,
-                notify = options.notify == true,
-                successTitle = options.successTitle or "自检完成",
-                errorTitle = options.errorTitle or "自检发现问题",
-                successText = options.successText,
-                errorText = options.errorText,
-            })
+    -- 维护（2026-09-12）：旧ScrollBox的OuterSize只读子项Measure，不采用slot.height；
+    -- 原生编辑框不是Border的RSUI content，因此Border测量为0，实际布局复现宿主高仅1。
+    -- 同时回执早于编辑框写入。诊断主体为run/print与前后翻页+单正文，采用Foundation VerticalBox fill，
+    -- 由共享布局分配正文空间，无Tick/自制滚动/新弹窗；不更改其他长设置页的ScrollBox。
+    local root, rootErr = D:PageRoot(parent,{id="v3_page_system_diagnostics",gap=6})
+    if root==nil then return nil,"页面根组件创建失败："..tostring(rootErr or "未知错误") end
+    root.route=route
+    -- 中文维护注释（2026-09-18，module-diagnostics-system-scope-1）：全局诊断页不删除，
+    -- 但职责固定为 Core/Foundation/完整维护取证；普通业务故障的默认入口已经迁到模块页右上角。
+    -- 禁止为了“方便”把所有 Feature 的日常诊断再次塞回这里；只有维护者明确需要全局证据时才使用
+    -- 下方完整报告。这个页面的旧复制框继续保持兼容，不允许为了修模块 DiagnosticCopyBox 去改普通输入生命周期。
+    D:PageHeader(root,"v3_diag_header","系统诊断与维护",
+        "这里保留 Core / Foundation 的完整维护自检。业务模块故障请优先使用对应页面右上角“诊断”，只采集该模块的错误、Store 与运行状态；完整报告仅在维护底层框架时使用。")
+    local actions=RSUI:HorizontalBox({id="v3_diag_actions",parent=root,gap=8,slot={size="fixed",height=32,hAlign="fill"}})
+    local runButton=RSUI:Button({id="v3_diag_full_check",parent=actions,text="运行自检",compact=true,slot={size="fixed",width=120}})
+    local printButton=RSUI:Button({id="v3_diag_output",parent=actions,text="打印故障报告",compact=true,slot={size="fixed",width=144}})
+    local fullReportButton=RSUI:Button({id="v3_diag_output_full",parent=actions,text="完整报告",compact=true,slot={size="fixed",width=112}})
+    local card=D:InfoCard(root,{id="v3_diag_gate",title="自检结果",value="尚未运行",
+        detail="不会清除历史错误、修改配置或解除写保护。",slot={size="fixed",height=60,hAlign="fill"}})
+    local status=RSUI:Text({id="v3_diag_report_status",parent=root,fontSize=10,tone="accent",overflow="wrap",maxLines=3,
+        text="系统报告用于 Core / Foundation 维护，仍完整保留本次加载阻断与故障 Store 取证；业务模块请优先使用模块右上角诊断，避免复制无关内容。",
+        slot={size="fixed",height=50,hAlign="fill"}})
+    -- 维护：导航独立于run/print，不创建N个Native编辑框；复用同一框显示逻辑编辑框1..N，
+    -- 节省控件/焦点资源。前后按钮达到边界即禁用；没有隐式轮转、没有新事件或后台任务。
+    local navigation=RSUI:HorizontalBox({id="v3_diag_report_navigation",parent=root,gap=8,slot={size="fixed",height=30,hAlign="fill"}})
+    local previousButton=RSUI:Button({id="v3_diag_report_prev",parent=navigation,text="上一页",compact=true,slot={size="fixed",width=96}})
+    local pageLabel=RSUI:Text({id="v3_diag_report_page",parent=navigation,text="0 / 0",slot={size="fixed",width=90}})
+    local nextButton=RSUI:Button({id="v3_diag_report_next",parent=navigation,text="下一页",compact=true,slot={size="fixed",width=96}})
+    local host=RSUI:Border({id="v3_diag_report_host",parent=root,padding=4,variant="card",
+        slot={size="fill",fill=1,hAlign="fill",vAlign="fill"}})
+    local ui=S.UI
+    local editor,editorReady,editorError
+    if host and host.root and type(ui)=="table" and type(ui.CreateMultiEditBox)=="function" then
+        -- 原生容量须实际回读，不能因 SetMaxTextLength(1MiB) 不抛错就认定支持1MiB。
+        -- 维护（2026-09-12）：32KiB只为请求值，RU本次回报9215。交付按实际返回容量
+        -- 分段，无返回时保守3500，再以真实回读协商；两个主操作之外是明确的上一页/下一页。
+        local ok,value,err=pcall(ui.CreateMultiEditBox,ui,host.root,"v3_diag_report_edit",4,4,300,96,32768)
+        if ok then editor=value;editorError=err else editorError=value end
+        if editor and type(editor.SetText)=="function" and type(editor.GetText)=="function" and type(ui.BindDeferredInputActivation)=="function" then
+            local bound,accepted,bindErr=pcall(ui.BindDeferredInputActivation,ui,editor,host.owner,"v3_diag_report_edit",
+                {preserveFocusedSelection=true}) -- 维护：仅此复制框启用实时焦点身份保护，不影响业务表单。
+            editorReady=bound and accepted==true
+            if not editorReady then editorError=bound and bindErr or accepted end
         end
-        return execute()
+        if editor and not editorReady then
+            if type(ui.RetireInputWidget)=="function" then pcall(ui.RetireInputWidget,ui,editor,host.owner,"diagnostic_editor_unavailable") end
+            if type(editor.Show)=="function" then pcall(editor.Show,editor,false) end
+            editor=nil
+        end
     end
-
-    local actionRow = RSUI:HorizontalBox({ id = "v3_diag_actions", parent = root, gap = 8, slot = { size = "fixed", height = 34, hAlign = "fill" } })
-    RSUI:Button({ id = "v3_diag_refresh", parent = actionRow, text = "刷新诊断", compact = true, slot = { size = "fixed", width = 104 }, onClick = function()
-        return RunDiagnosticAction("refresh", function() return type(root.Refresh) == "function" and root:Refresh() or false end)
-    end })
-    RSUI:Button({ id = "v3_diag_full_check", parent = actionRow, text = "运行完整自检", compact = true, slot = { size = "fixed", width = 120 }, onClick = function()
-        return RunDiagnosticAction("full_check", function()
-            if S.FoundationGate == nil or type(S.FoundationGate.Run) ~= "function" then return false, "基础框架自检不可用" end
-            local report = S.FoundationGate:Run({ skipSequences = true })
-            if type(root.Refresh) == "function" then root:Refresh(report) end
-            if type(report) ~= "table" then return false, "自检未返回报告" end
-            local summary = "阻断 " .. tostring(report.blockers or 0) .. " · 警告 " .. tostring(report.warnings or 0)
-            -- The diagnostic action itself succeeded even when the report finds
-            -- blockers. Do not emit ACTION_FAILED for a healthy self-check that
-            -- merely discovered a real problem; that fake fault can hide the
-            -- original page/native error in the recent-fault window.
-            local toastHost = S.UIV3 and S.UIV3.ToastHost or nil
-            if type(toastHost) == "table" and type(toastHost.Notify) == "function" then
-                toastHost:Notify({
-                    id = "v3_full_check_result",
-                    title = tostring(report.status or "") == "READY" and "完整自检通过" or "完整自检完成",
-                    detail = summary,
-                    tone = (tonumber(report.blockers) or 0) > 0 and "red" or ((tonumber(report.warnings) or 0) > 0 and "yellow" or "green"),
-                    durationMs = 3600,
-                })
-            end
-            return true, summary
-        end, { notify = false })
-    end })
-    RSUI:Button({ id = "v3_diag_output", parent = actionRow, text = "输出诊断摘要", compact = true, slot = { size = "fixed", width = 124 }, onClick = function()
-        return RunDiagnosticAction("output", function()
-            if S.FoundationGate == nil or type(S.FoundationGate.BuildCopyText) ~= "function" then return false end
-            local text = S.FoundationGate:BuildCopyText(false)
-            if type(S.SafeChat) == "function" then S.SafeChat(text, "info", "diagnostics") end
-            return true
-        end)
-    end })
-    RSUI:Button({ id = "v3_diag_popup_output", parent = actionRow, text = "RSUI Popup定位", compact = true, slot = { size = "fixed", width = 124 }, onClick = function() -- 中文维护注释：把 Popup 专项诊断入口放在第一排，用户打开异常下拉框后无需翻找隐藏日志即可直接复制真实 Native 坐标。
-        return RunDiagnosticAction("popup_positioning_output", function() -- 中文维护注释：专项诊断仍走统一 ActionRunner 边界，避免按钮重入/异常绕开现有 UI 错误治理。
-            local diagnostics = S.DiagnosticsManager -- 中文维护注释：只消费 DiagnosticsManager 公共报告 Authority，不从页面读取 Popup 内部 recent 表。
-            if type(diagnostics) ~= "table" or type(diagnostics.BuildPopupPositioningReport) ~= "function" then return false, "RSUI Popup定位诊断不可用" end -- 中文维护注释：底层报告能力缺失时给出明确失败，不静默输出空字符串。
-            local text = diagnostics:BuildPopupPositioningReport() -- 中文维护注释：在用户点击时即时构建有界报告；不会新增 Tick、Native 扫描或长期缓存。
-            if type(S.SafeChat) == "function" then S.SafeChat(text, "info", "diagnostics") end -- 中文维护注释：沿现有安全聊天输出路径发送，用户可直接复制整段给维护者。
-            return true -- 中文维护注释：报告成功生成并提交聊天输出后，ActionRunner 可按正常成功处理。
-        end) -- 中文维护注释：结束 Popup 专项诊断 ActionRunner 事务。
-    end }) -- 中文维护注释：结束第一排“RSUI Popup定位”按钮定义；该入口从 .18.191 起属于长期维护 UI。
-    local actionRow2 = RSUI:HorizontalBox({ id = "v3_diag_actions_2", parent = root, gap = 8, slot = { size = "fixed", height = 34, hAlign = "fill" } })
-    RSUI:Button({ id = "v3_diag_reload", parent = actionRow2, text = "重新加载文件", compact = true, slot = { size = "fixed", width = 130 }, onClick = function()
-        return RunDiagnosticAction("reload", function()
-            -- ReloadCodeFromDisk is the single reload/Flush Authority. Do not
-            -- pre-Flush here. Recovery reload performs one best-effort barrier,
-            -- preserves the exact failure evidence, and still reloads disk code
-            -- when a broken Store is itself the reason recovery is required.
-            if type(S.ReloadCodeFromDisk) ~= "function" then return false end
-            return S.ReloadCodeFromDisk("v3_diagnostics")
-        end)
-    end })
-    RSUI:Button({ id = "v3_diag_toast_test", parent = actionRow2, text = "测试通知", compact = true, slot = { size = "fixed", width = 96 }, onClick = function()
-        return RunDiagnosticAction("toast_test", function()
-            local host = S.UIV3 and S.UIV3.ToastHost or nil
-            if host == nil or type(host.Notify) ~= "function" then return false end
-            return host:Notify({ title = "测试通知", detail = "通知宿主工作正常；该提示会自动消失。", tone = "green", durationMs = 3200 }) ~= nil
-        end)
-    end })
-    RSUI:Button({ id = "v3_diag_status_hud_output", parent = actionRow2, text = "状态HUD诊断", compact = true, slot = { size = "fixed", width = 116 }, onClick = function() -- 中文维护注释（HUD 大修专项入口，2026-09-11）：问题原因是状态显示跨 Shell/Store/Renderer，普通摘要不便复制完整证据；按钮只调用 DiagnosticsManager 的只读有界报告，不创建 HUD、不取得 Consumer。
-        return RunDiagnosticAction("status_hud_output", function() -- 中文维护注释：继续走 ActionRunner，防止诊断按钮重入或异常绕过统一 UI 错误治理；该动作不写存档。
-            local diagnostics = S.DiagnosticsManager -- 中文维护注释：DiagnosticsManager 是报告唯一 Authority；页面不直接读取校准 Draft、Marker metrics 或 Store，避免形成第二套诊断数据流。
-            if type(diagnostics) ~= "table" or type(diagnostics.BuildBuffHudReport) ~= "function" then return false, "状态HUD专项诊断不可用" end -- 中文维护注释：缺少后端时明确失败，避免用户复制空报告。
-            local text = diagnostics:BuildBuffHudReport() -- 中文维护注释：报告按需读取 detached 快照和最多 12 条校准轨迹，不触发 Native 扫描或 50ms 热路径采集。
-            if type(S.SafeChat) == "function" then S.SafeChat(text, "info", "diagnostics") end -- 中文维护注释：沿现有安全聊天输出，用户可直接复制给维护者。
-            return true
-        end)
-    end })
-    RSUI:Text({ id = "v3_diag_reload_hint", parent = actionRow2, text = "重载会先尽力保存；若 Store 保存失败会保留 ID + 原因并继续加载新文件，未保存修改可能丢失。HUD 异常可点“状态HUD诊断”。", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
-    local actionRow3 = RSUI:HorizontalBox({ id = "v3_diag_actions_3", parent = root, gap = 8, slot = { size = "fixed", height = 34, hAlign = "fill" } })
-    RSUI:Button({ id = "v3_diag_persistence_acceptance", parent = actionRow3, text = "输出存档验收", compact = true, slot = { size = "fixed", width = 130 }, onClick = function()
-        return RunDiagnosticAction("persistence_acceptance", function()
-            local text, err = BuildPersistenceAcceptanceCopyText()
-            if text == nil then return false, err or "存档验收快照失败" end
-            if type(S.SafeChat) == "function" then S.SafeChat(text, "info", "diagnostics") end
-            return true
-        end)
-    end })
-    RSUI:Text({ id = "v3_diag_persistence_acceptance_hint", parent = actionRow3, text = "只读当前 Domain 指纹，不写 SaveData；Fresh Reload 前后各复制一次，ALL 与单 Store 指纹应保持一致。", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
-
-    local card = D:InfoCard(root, { id = "v3_diag_gate", title = "基础框架检查", value = "检查中", detail = "尚未运行", slot = { size = "fixed", height = 104, hAlign = "fill" } })
-    local hostRow = D:StatusRow(root, "v3_diag_host", "界面宿主", "-", "default")
-    local featureRow = D:StatusRow(root, "v3_diag_features", "功能目录", "-", "default")
-    local widgetRow = D:StatusRow(root, "v3_diag_widgets", "悬浮组件", "-", "default")
-    local windowRow = D:StatusRow(root, "v3_diag_windowing", "窗口基础能力", "-", "default")
-    local modalRow = D:StatusRow(root, "v3_diag_modal", "模态窗口宿主", "-", "default")
-    local toastRow = D:StatusRow(root, "v3_diag_toast", "通知宿主", "-", "default")
-    local persistenceRow = D:StatusRow(root, "v3_diag_persistence", "新版存档", "-", "default")
-    local persistenceIncidentRow = D:StatusRow(root, "v3_diag_persistence_incident", "最近存档落盘", "-", "default")
-    local schedulerRow = D:StatusRow(root, "v3_diag_scheduler", "统一调度器", "-", "default")
-    local runtimeFoundationRow = D:StatusRow(root, "v3_diag_runtime_foundation", "共享运行基础", "-", "default")
-    local combatFoundationRow = D:StatusRow(root, "v3_diag_combat_foundation", "战斗事实基础", "-", "default")
-    local interactionFoundationRow = D:StatusRow(root, "v3_diag_interaction_foundation", "UI 交互基础", "-", "default")
-    local uiStateFoundationRow = D:StatusRow(root, "v3_diag_ui_state_foundation", "UI 状态 / 持久化", "-", "default")
-    local eventRow = D:StatusRow(root, "v3_diag_events", "统一事件总线", "-", "default")
-    local nativeRow = D:StatusRow(root, "v3_diag_native", "原生接口", "-", "default")
-    local authorityRow = D:StatusRow(root, "v3_diag_authority", "界面所有权", "-", "default")
-    local sequenceRow = D:StatusRow(root, "v3_diag_sequence", "自动验收", "-", "default")
-    local bootRow = D:StatusRow(root, "v3_diag_boot", "启动状态", "-", "default")
-
-    -- 功能状态分区 (2026-09-06): one live verdict line per feature. The
-    -- aggregate counters above say "something moved"; these rows say WHICH
-    -- feature is broken, at which layer, and what to do next.
-    local featureStatusCard = D:InfoCard(root, { id = "v3_diag_feature_status", title = "功能状态", value = "读取中", detail = "实时判定：✓工作 △降级 ✗故障 ○关闭", slot = { size = "fixed", height = 84, hAlign = "fill" } })
-    local featureStatusRows = {}
-    for index, spec in ipairs({
-        { id = "unit_lines", label = "单位连线" },
-        { id = "range_assist", label = "范围辅助" },
-        { id = "boss_alerts", label = "首领机制" },
-        { id = "buff_display", label = "状态显示" },
-        { id = "healer", label = "治疗辅助" },
-        { id = "gear", label = "一键换装" },
-        { id = "trade", label = "跑商" },
-        { id = "bonds", label = "债券" },
-    }) do
-        local row = D:StatusRow(root, "v3_diag_feature_" .. spec.id, spec.label, "-", "default")
-        featureStatusRows[spec.id] = row
+    -- 维护（report-selection-1）：原先每次同尺寸布局仍进入Native几何回读修复，
+    -- GetWidth/GetEffectiveOffset抖动时会重设Extent/Anchor并破坏Native选区。
+    -- 此原生框几何只由本宿主提交：已成功的相同逻辑尺寸/父级不再重复写；真实resize或失败重试仍执行。
+    -- 不改变共享RSUI的strict规则，不用SetText/SetFocus轮询“维持”选区；缓存随页面生命周期释放。
+    local geometryError, geometryWidth, geometryHeight, geometryParent
+    local copyStats={textWrites=0,geometryApplications=0,geometrySkips=0}
+    local function CopyNow()return type(S.NowMs)=="function" and S.NowMs() or 0 end
+    local function WriteReportText(text,reason)
+        copyStats.textWrites=copyStats.textWrites+1;copyStats.lastTextReason=reason
+        copyStats.lastTextAt=CopyNow();copyStats.lastTextBytes=#text
+        return pcall(editor.SetText,editor,text)
     end
-    local repairRow = D:StatusRow(root, "v3_diag_repair_guidance", "修复引导", "-", "default")
-
-    local function CountTable(tbl)
-        local count = 0
-        for _ in pairs(type(tbl) == "table" and tbl or {}) do count = count + 1 end
-        return count
+    function root:GetReportInputSnapshot()
+        local input={available=false}
+        if editor and type(ui.GetCopyInputSnapshot)=="function" then input=ui:GetCopyInputSnapshot(editor) end
+        return {patch="report-selection-1",available=editorReady==true,input=input,
+            textWrites=copyStats.textWrites,lastTextReason=copyStats.lastTextReason,
+            lastTextAt=copyStats.lastTextAt,lastTextBytes=copyStats.lastTextBytes,
+            geometryApplications=copyStats.geometryApplications,geometrySkips=copyStats.geometrySkips,
+            lastGeometryAt=copyStats.lastGeometryAt,geometryError=geometryError}
     end
-
-    function root:Refresh(gateOverride)
-        local gate = type(gateOverride) == "table" and gateOverride
-            or (S.FoundationGate and S.FoundationGate:Run({ skipSequences = true }) or nil)
-        local host = S.UIHostManager and S.UIHostManager:Describe() or {}
-        local features = S.FeatureRegistry and S.FeatureRegistry:Describe() or {}
-        local widgets = S.UIV3.WidgetHost and S.UIV3.WidgetHost:Describe() or {}
-        local windowing = S.RSUI and S.RSUI.Windowing and S.RSUI.Windowing:Describe() or {}
-        local modal = S.UIV3 and S.UIV3.ModalHost and S.UIV3.ModalHost:Describe() or {}
-        local toast = S.UIV3 and S.UIV3.ToastHost and S.UIV3.ToastHost:Describe() or {}
-        local persistence = S.Persistence and S.Persistence:Describe() or {}
-        local native = S.NativeCapabilities and S.NativeCapabilities:Describe() or {}
-        local imports = native.imports or {}
-        local authority = S.UI and type(S.UI.GetAuthoritySnapshot) == "function" and S.UI:GetAuthoritySnapshot() or {}
-        local scheduler = S.Scheduler or {}
-        local eventBus = S.Events or {}
-        local sequences = gate and gate.sequences or (S.FoundationGate and S.FoundationGate.lastSequences) or {}
-        local demand = S.Demand and type(S.Demand.Describe) == "function" and S.Demand:Describe() or {}
-        local refresh = S.RefreshCoordinator and type(S.RefreshCoordinator.Describe) == "function" and S.RefreshCoordinator:Describe() or {}
-        local combatBus = S.Services and S.Services.CombatEventBusV3 and type(S.Services.CombatEventBusV3.GetHealth) == "function" and S.Services.CombatEventBusV3:GetHealth() or {}
-        local buffDisplay = S.Features and S.Features.BuffDisplay and type(S.Features.BuffDisplay.GetHealth) == "function" and S.Features.BuffDisplay:GetHealth() or {}
-        local unitIdentity = S.Services and S.Services.UnitIdentityV3 and type(S.Services.UnitIdentityV3.GetHealth) == "function" and S.Services.UnitIdentityV3:GetHealth() or {}
-        local deathReview = S.Features and S.Features.DeathReview and type(S.Features.DeathReview.GetHealth) == "function" and S.Features.DeathReview:GetHealth() or {}
-        local viewState = S.RSUI and S.RSUI.ViewState and type(S.RSUI.ViewState.GetSnapshot) == "function" and S.RSUI.ViewState:GetSnapshot() or {}
-        local actions = S.ActionRunner and type(S.ActionRunner.GetSnapshot) == "function" and S.ActionRunner:GetSnapshot() or {}
-        local bindings = S.UI and S.UI.Binding and type(S.UI.Binding.GetSnapshot) == "function" and S.UI.Binding:GetSnapshot() or {}
-        local floating = S.RSUI and S.RSUI.FloatingSurface and type(S.RSUI.FloatingSurface.GetSnapshot) == "function" and S.RSUI.FloatingSurface:GetSnapshot() or {}
-        local snap = S.Layout and type(S.Layout.GetScreenSnapSnapshot) == "function" and S.Layout:GetScreenSnapSnapshot() or {}
-
-        if gate ~= nil then
-            local healthy = tostring(gate.status or "") == "READY" and (tonumber(gate.blockers) or 0) == 0
-            card:SetData({ value = healthy and "正常" or "需要处理", detail = "阻断 " .. tostring(gate.blockers or 0) .. " · 警告 " .. tostring(gate.warnings or 0) .. " · 检查项 " .. tostring(#(gate.checks or {})) })
-        end
-        hostRow.valueText:SetText("当前 " .. tostring(host.activeId == "v3" and "新版" or host.activeId or "未知") .. " · 共 " .. tostring(host.total or 0))
-        featureRow.valueText:SetText("已登记 " .. tostring(features.total or 0) .. " · 运行 " .. tostring(S.FeatureRuntime and S.FeatureRuntime:Describe().enabled or 0))
-        widgetRow.valueText:SetText("登记 " .. tostring(widgets.registered or 0) .. " · 显示 " .. tostring(widgets.visible or 0) .. " · 锁定 " .. tostring(widgets.locked or 0))
-        windowRow.valueText:SetText("接入 " .. tostring(windowing.attached or 0) .. " · 拖动 " .. tostring(windowing.drags or 0) .. " · 缩放 " .. tostring(windowing.resizes or 0))
-        modalRow.valueText:SetText((modal.attached == true and "正常" or "未挂载") .. " · 当前 " .. tostring(modal.count or 0))
-        toastRow.valueText:SetText((toast.attached == true and "正常" or "未挂载") .. " · 当前 " .. tostring(toast.active or 0) .. " · 自动关闭 " .. tostring(toast.autoDismissals or 0))
-        persistenceRow.valueText:SetText("存档 " .. tostring(persistence.total or 0) .. " · 待写 " .. tostring(persistence.dirty or 0) .. " · 写入保护 " .. tostring(persistence.fenced or 0))
-        local lastFlush = type(persistence.lastFlush) == "table" and persistence.lastFlush or nil
-        local flushFailures = lastFlush and type(lastFlush.failures) == "table" and lastFlush.failures or {}
-        if lastFlush ~= nil and lastFlush.ok == false then
-            local first = tostring(flushFailures[1] or "未知 Store:save failed"):gsub("[\r\n]+", " ")
-            persistenceIncidentRow.valueText:SetText("失败 " .. tostring(#flushFailures) .. " 项 · " .. first)
-        elseif (tonumber(persistence.fenced) or 0) > 0 then
-            local first = nil
-            for _, row in ipairs(persistence.rows or {}) do
-                if row.writeFenced == true then
-                    first = tostring(row.id or "?") .. ":" .. tostring(row.writeFenceReason or row.lastError or "write_fenced")
-                    break
+    if host and type(host.Layout)=="function" then
+        local arrange=host.Layout
+        function host:Layout(x,y,width,height)
+            local result=arrange(self,x,y,width,height)
+            -- 原生多行框不属于RSUI子组件，故在宿主layout时交给共享Extent/Anchor事务；
+            -- 只用一个左上锚+明确尺寸，避免固定300宽/双锚与不同分辨率相冲突。
+            if editor then
+                local w,h=math.max(1,width-8),math.max(1,height-8)
+                if geometryError==nil and geometryWidth==w and geometryHeight==h and geometryParent==self.root then
+                    copyStats.geometrySkips=copyStats.geometrySkips+1
+                    return result
                 end
+                copyStats.geometryApplications=copyStats.geometryApplications+1;copyStats.lastGeometryAt=CopyNow()
+                local ok,accepted,_,err=pcall(ui.EnsureExtent,ui,editor,w,h,self.owner)
+                geometryError=not(ok and accepted==true) and (err or "editor_extent_failed") or nil
+                local anchored,yes,_,anchorErr=pcall(ui.EnsureAnchor,ui,editor,self.root,4,4,self.owner)
+                if not anchored or yes~=true then geometryError=anchorErr or "editor_anchor_failed" end
+                -- 维护：只有整组原生几何提交成功才能缓存；失败不伪装no-op，后续布局必须再试。
+                if geometryError==nil then geometryWidth,geometryHeight,geometryParent=w,h,self.root end
             end
-            persistenceIncidentRow.valueText:SetText("写保护 " .. tostring(persistence.fenced or 0) .. " 项 · " .. tostring(first or "请输出诊断摘要"))
-        elseif lastFlush ~= nil and lastFlush.ok == true then
-            persistenceIncidentRow.valueText:SetText("成功 · 当前待写 " .. tostring(persistence.dirty or 0))
-        else
-            persistenceIncidentRow.valueText:SetText("尚未执行本进程 Flush · 当前待写 " .. tostring(persistence.dirty or 0))
+            return result
         end
-        local taskCount, enabledTasks = 0, 0
-        for _, task in pairs(type(scheduler.tasks) == "table" and scheduler.tasks or {}) do taskCount = taskCount + 1; if task.enabled == true then enabledTasks = enabledTasks + 1 end end
-        local backlog = type(scheduler.DescribeBacklog) == "function" and scheduler:DescribeBacklog() or {}
-        schedulerRow.valueText:SetText("任务 " .. tostring(enabledTasks) .. "/" .. tostring(taskCount) .. " · 待执行 " .. tostring(backlog.pending or 0))
-        runtimeFoundationRow.valueText:SetText("Demand " .. tostring(demand.active or 0) .. "/" .. tostring(demand.leases or 0)
-            .. " · Refresh pending " .. tostring(refresh.pending or 0)
-            .. " · rollbackFail " .. tostring(demand.rollbackFailures or 0)
-            .. " · quiesceFail " .. tostring(demand.quiesceFailures or 0))
-        combatFoundationRow.valueText:SetText("Bus " .. tostring(combatBus.running == true and "运行" or "空闲")
-            .. " · Consumer " .. tostring(combatBus.consumers or 0)
-            .. " · Coverage " .. tostring(combatBus.coverageState or "INACTIVE")
-            .. " · Host " .. tostring(combatBus.globalHosts or 0) .. "/2"
-            .. " · Park " .. tostring(combatBus.privateParked == true and 1 or 0) .. "/" .. tostring(combatBus.globalParkedHosts or 0)
-            .. " · J " .. tostring(combatBus.journalPending or 0) .. "/" .. tostring(combatBus.journalReplayed or 0) .. "/" .. tostring(combatBus.journalDropped or 0)
-            .. " · Facts " .. tostring(combatBus.received or 0) .. "/" .. tostring(combatBus.delivered or 0)
-            .. " · Mut " .. tostring(combatBus.factMutationErrors or 0)
-            .. " · BuffDisplay " .. tostring(buffDisplay.ok == true and "ON" or "off") .. "/" .. tostring(buffDisplay.consumers or 0)
-            .. " · Aura " .. tostring(buffDisplay.auraHeld == true and "held" or "idle")
-            .. " · Identity " .. tostring(unitIdentity.cache or 0) .. "/" .. tostring(unitIdentity.cacheMax or 0)
-            .. " · DeathReview " .. tostring(deathReview.ok == true and "ON" or "off")
-            .. " H" .. tostring(deathReview.history or 0) .. "/D" .. tostring(deathReview.deaths or 0)
-            .. "/Q" .. tostring(deathReview.pendingDeath == true and 1 or 0) .. "/F" .. tostring(deathReview.deferredFinalizeFailures or 0))
-        interactionFoundationRow.valueText:SetText("View R/E/Err " .. tostring(viewState.states and viewState.states.ready or 0)
-            .. "/" .. tostring(viewState.states and viewState.states.empty or 0) .. "/" .. tostring(viewState.states and viewState.states.error or 0)
-            .. " · Action busy " .. tostring(actions.busy or 0) .. " · failed " .. tostring(actions.failed or 0))
-        uiStateFoundationRow.valueText:SetText("Floating " .. tostring(floating.active or 0) .. " · Snap " .. tostring(snap.registered or 0)
-            .. " · Binding A/P/D/E " .. tostring(bindings.active or 0) .. "/" .. tostring(bindings.persistentActive or 0)
-            .. "/" .. tostring(bindings.dirty or 0) .. "/" .. tostring(bindings.errored or 0))
-        eventRow.valueText:SetText("原生事件 " .. tostring(CountTable(eventBus.registered)) .. " · 内部通道 " .. tostring(CountTable(eventBus.internalListeners)))
-        nativeRow.valueText:SetText("基础接口 " .. tostring(imports.core or 0) .. " · 功能接口 " .. tostring(imports.feature or 0) .. " · 对象 " .. tostring(imports.objects or 0))
-        authorityRow.valueText:SetText("违规 " .. tostring(authority.violations or 0) .. " · 冲突 " .. tostring(authority.conflicts or 0))
-        if sequences.skipped == true then
-            sequenceRow.valueText:SetText("已登记 " .. tostring(sequences.registered or sequences.total or 0) .. " · 实机诊断不执行状态变更序列")
-        else
-            sequenceRow.valueText:SetText("通过 " .. tostring(sequences.passed or 0) .. "/" .. tostring(sequences.total or 0) .. " · 失败 " .. tostring(sequences.failed or 0))
+    end
+    local function ClearReport()
+        root.selfCheckText,root.selfCheckMeta=nil,nil
+        -- 同一快照分段缓存只属于此页；运行新自检/隐藏一起释放，禁止持久化或跨快照混页。
+        root.selfCheckDelivery,root.selfCheckPart,root.selfCheckRetry=nil,nil,nil
+        if editor then WriteReportText("","clear_report") end -- 维护：显式清空也计入输入诊断，不记录正文。
+    end
+    local function Backend(method)
+        local diagnostic=S.DiagnosticsManager
+        if type(diagnostic)~="table" or type(diagnostic[method])~="function" then return nil,"统一自检后端不可用，请完整覆盖补丁后重新加载文件。" end
+        return diagnostic
+    end
+    local function Execute(id,fn)
+        if type(S.ActionRunner)=="table" and type(S.ActionRunner.Run)=="function" then
+            return S.ActionRunner:Run({id="diagnostics."..id,execute=fn,notify=false,errorTitle="诊断操作失败"})
         end
-        local rawStage = tostring(S.BootStage or "unknown")
-        bootRow.valueText:SetText((S.Ready == true and "已就绪" or "未就绪") .. " · 阶段 " .. tostring(BOOT_STAGE_NAMES[rawStage] or "未知"))
-        -- 功能状态行：verdict + evidence + per-row hint (same source the copy
-        -- text uses, so the page and the chat banner never disagree).
-        local diag = S.DiagnosticsManager
-        if type(diag) == "table" and type(diag.BuildFeatureStatusRows) == "function" then
-            local okRows, statusRows = pcall(function() return diag:BuildFeatureStatusRows() end)
-            if okRows == true and type(statusRows) == "table" then
-                local verdictTone = { ok = "green", degraded = "yellow", down = "red", off = "muted" }
-                local okCount = 0
-                for _, row in ipairs(statusRows) do
-                    local widgetRow = featureStatusRows[row.id]
-                    if widgetRow ~= nil then
-                        widgetRow.valueText:SetText(tostring(row.text or "") .. (row.hint and (" ｜ " .. tostring(row.hint)) or ""))
-                        if type(widgetRow.valueText.SetColor) == "function" then
-                            widgetRow.valueText:SetColor(verdictTone[row.verdict] or "default")
-                        end
-                    end
-                    if row.verdict == "ok" then okCount = okCount + 1 end
-                end
-                if featureStatusCard.SetData ~= nil then
-                    featureStatusCard:SetData({ value = tostring(okCount) .. "/" .. tostring(#statusRows) .. " 正常",
-                        detail = "✓工作 △降级 ✗故障 ○关闭 · 与复制文本同源" })
-                end
-                if repairRow ~= nil and repairRow.valueText ~= nil then
-                    repairRow.valueText:SetText(diag:BuildRepairGuidance(statusRows))
-                end
-            end
-        end
+        local ok,a,b=pcall(fn)
+        if not ok then status:SetText("诊断操作异常："..tostring(a));return false,tostring(a) end
+        return a,b
+    end
+    function root:Refresh(result)
+        -- 显示/刷新结果不回填正文、不自动读盘，不破坏用户选区和本次打印快照。
+        local diagnostic=S.DiagnosticsManager
+        local check=type(result)=="table" and result or (type(diagnostic)=="table" and diagnostic.lastSelfCheck)
+        if type(check)~="table" then card:SetData({value="尚未运行",detail="点击运行自检，或直接打印报告。"})
+        elseif check.status=="ERROR" then card:SetData({value="自检执行异常",detail="仍可打印其余证据；执行异常不等于检查通过。"})
+        else card:SetData({value=(tonumber(check.blockers)or 0)>0 and "需要处理" or ((tonumber(check.warnings)or 0)>0 and "存在警告" or "检查通过"),
+            detail="阻断 "..tostring(check.blockers or 0).." · 警告 "..tostring(check.warnings or 0).." · 检查项 "..tostring(#(check.checks or {}))}) end
         return true
     end
-    function root:OnActivated() return self:Refresh() end
-    root:Refresh(); root.route = route
+    -- 维护：一个Native编辑框承载多份独立页文本。快照/边界在首次打印确定，上一页/下一页
+    -- 只读这份快照，绝不能重跑Gate、读取Store或变更报告ID。失败不推进页码、不重分段。
+    local function Navigation()
+        local session,index=root.selfCheckDelivery,root.selfCheckPart or 0
+        local count=session and session.parts or 0
+        previousButton:SetEnabled(index>1)
+        nextButton:SetEnabled(index>0 and index<count)
+        pageLabel:SetText(index..' / '..count)
+    end
+    local function DescribePage(view)
+        if view.state=='failed' then
+            status:SetText('报告框未交付 ['..tostring(view.code)..'] '..tostring(view.error or '')..'；本次快照未更换，请重试当前操作。')
+        else
+            local meta=root.selfCheckMeta
+            status:SetText('报告 #'..tostring(meta.id)..' · 原文 '..#root.selfCheckText..' 字节 · 第 '..view.index..'/'..view.parts
+                ..' 页。Ctrl+A、Ctrl+C复制当前页；用上一页/下一页翻页。打印会生成新报告。'
+                ..(meta.partial and ' 部分来源不可用或超过总安全上限，具体原因在正文。' or ''))
+        end
+        Navigation()
+    end
+    local function Present(text,meta,requested)
+        root.selfCheckText,root.selfCheckMeta=text,meta;root:Refresh(meta.check)
+        if not editorReady or not editor then return {state='failed',code='NO_EDITOR',error=editorError or 'multiline_editor_unavailable'} end
+        local transport=S.ReportCopyTransport
+        if type(transport)~='table' or type(transport.BuildTextPages)~='function' or type(transport.GetTextPage)~='function' then
+            return {state='failed',code='PAGES_MISSING',error='请完整覆盖补丁后使用重新加载文件'}
+        end
+        -- 原生布局和焦点先于写入；用户翻页可重新激活输入，但后台刷新不抢选区。
+        if type(root.Layout)=='function' and root.width and root.height then
+            local ok,err=pcall(root.Layout,root,root.x or 0,root.y or 0,root.width,root.height)
+            if not ok then return {state='failed',code='LAYOUT_FAILED',error=err} end
+        end
+        if geometryError then return {state='failed',code='GEOMETRY_FAILED',error=geometryError} end
+        local shown,accepted=pcall(ui.EnsureVisible,ui,editor,true,host.owner)
+        if not shown or accepted~=true then return {state='failed',code='SHOW_FAILED'} end
+        local focused=false
+        if type(ui.ActivateInputWidget)=='function' then local ok,value=pcall(ui.ActivateInputWidget,ui,editor,host.owner,'diagnostic_page_copy');focused=ok and value==true end
+        local session=root.selfCheckDelivery
+        local locked=(root.selfCheckPart or 0)>0
+        local cap=session and session.capacity or 3500
+        if not session and type(editor.MaxTextLength)=='function' then
+            local ok,n=pcall(editor.MaxTextLength,editor);n=ok and tonumber(n) or nil
+            if n and n==n and n>0 and n<math.huge then cap=math.min(cap,math.floor(n)) end
+        end
+        local index=requested or 1
+        local trace
+        for attempt=1,8 do
+            if not session then
+                local err;session,err=transport:BuildTextPages(text,cap,meta.id)
+                if not session then return {state='failed',code='TEXT_CAPACITY',error=err} end
+            end
+            local payload,err=transport:GetTextPage(session,index)
+            if not payload then return {state='failed',code='PAGE_RANGE',error=err} end
+            local wrote,result=WriteReportText(payload,"present_page") -- 维护：只在用户打印/翻页时更换正文。
+            if wrote and result~=false and type(editor.SetCursorOffset)=='function' then pcall(editor.SetCursorOffset,editor,0) end
+            local read,actual=pcall(editor.GetText,editor)
+            -- Wire无字面CR/LF，允许控件插入排版换行；原字符串换行已显式转义。
+            local compare=read and type(actual)=='string' and actual:gsub('[\r\n]','') or actual
+            local exact;exact,trace=transport:VerifyEditorReadback({kind='plain',wire='error_pages1',capacity=cap},payload,compare)
+            trace.writeOk,trace.writeRejected,trace.readOk,trace.attempts=wrote,result==false,read,attempt
+            if wrote and result~=false and read and exact then
+                root.selfCheckDelivery,root.selfCheckPart=session,index
+                return {state=session.parts==1 and 'plain' or 'part',code='OK',index=index,parts=session.parts,
+                    bytes=#payload,focused=focused,readback=trace,wire='error_pages1'}
+            end
+            -- 尚未展示首段时才能缩小容量；之后保持边界，避免用户已复制的页失去意义。
+            if locked or cap<=512 or attempt==8 then break end
+            cap=math.max(512,math.floor(cap/2));session=nil
+        end
+        WriteReportText("","delivery_failed") -- 维护：失败交付显式清空，不能留着截断页冒充成功。
+        return {state='failed',code='TEXT_READBACK',readback=trace,error=transport:FormatReadback(trace)}
+    end
+    runButton.onClick=function()
+        return Execute('run_self_check',function()
+            local diagnostic,err=Backend('RunSelfCheck');if not diagnostic then status:SetText(err);return false,err end
+            ClearReport();Navigation()
+            if editor and type(ui.DeactivateInputWidget)=='function' then pcall(ui.DeactivateInputWidget,ui,editor,host.owner,'diagnostic_new_check') end
+            root:Refresh(diagnostic:RunSelfCheck());status:SetText('自检已完成；复现期间记录的错误仍保留。优先打印故障报告，只有维护者要求时再用完整报告。')
+            return true
+        end)
+    end
+    -- 中文维护注释（2026-09-18，.18.237 故障报告 Authority 回归修复）：
+    -- 原因：诊断页“打印故障报告”曾误接历史兼容 PrintFocusedSelfCheckReport；Focused 会在 Presentation
+    -- 分页之前先把证据压到 3500 bytes，导致真实 RU 报告出现 PAGE=1/1 但正文已有 <cut>/<text_omitted>，
+    -- 丢失恰好用于判断 Store 恢复候选的尾部证据。Authority/数据流：Diagnostics 的 BuildPaged 仍是
+    -- 本次加载故障快照 Authority，Persistence/Store 只提供只读取证；Presentation 只持有固定 text/meta
+    -- 并按 Native 编辑框回读容量分页，上一页/下一页不得重新 RunSelfCheck/LoadData。兼容边界：
+    -- PrintFocusedSelfCheckReport API 保留给旧工具/专项测试，但不再作为用户默认按钮；不改变 Store schema、
+    -- fingerprint/Fence、恢复候选或写盘行为。风险：完整故障证据可能产生更多页，这是为了不丢证据的预期结果；
+    -- 页数增加不能通过重新引入预裁剪来“优化”。
+    printButton.onClick=function()
+        return Execute('print_self_check',function()
+            local diagnostic,err=Backend('PrintPagedSelfCheckReport');if not diagnostic then status:SetText(err);return false,err end
+            ClearReport();Navigation()
+            local ok,text,meta=diagnostic:PrintPagedSelfCheckReport(Present)
+            if ok~=true or type(text)~='string' or type(meta)~='table' then status:SetText('故障报告生成失败：'..tostring(text));return false,tostring(text) end
+            DescribePage(meta.presentation)
+            return meta.delivered==true or meta.partReady==true
+        end)
+    end
+    fullReportButton.onClick=function()
+        return Execute('print_full_self_check',function()
+            local diagnostic,err=Backend('PrintPagedSelfCheckReport');if not diagnostic then status:SetText(err);return false,err end
+            ClearReport();Navigation()
+            local ok,text,meta=diagnostic:PrintPagedSelfCheckReport(Present)
+            if ok~=true or type(text)~='string' or type(meta)~='table' then status:SetText('完整报告生成失败：'..tostring(text));return false,tostring(text) end
+            DescribePage(meta.presentation)
+            return meta.delivered==true or meta.partReady==true
+        end)
+    end
+    local function MovePage(delta)
+        return Execute('report_page',function()
+            local session=root.selfCheckDelivery;local index=(root.selfCheckPart or 0)+delta
+            if not session or index<1 or index>session.parts then return false,'report_page_boundary' end
+            local view=Present(root.selfCheckText,root.selfCheckMeta,index)
+            DescribePage(view)
+            return view.state~='failed',view.error
+        end)
+    end
+    previousButton.onClick=function()return MovePage(-1)end
+    nextButton.onClick=function()return MovePage(1)end
+    Navigation()
+    function root:OnActivated()
+        -- 维护：重开可重新验证物理布局；在新复制选区建立前执行，不在等待Ctrl+C时回填。
+        geometryWidth,geometryHeight,geometryParent=nil,nil,nil
+        if editor and type(editor.Show)=="function" then pcall(editor.Show,editor,true) end
+        return self:Refresh()
+    end
+    function root:OnDeactivated()
+        ClearReport();Navigation()
+        if editor and type(ui.DeactivateInputWidget)=="function" then pcall(ui.DeactivateInputWidget,ui,editor,host.owner,"diagnostic_page_hidden") end
+        if editor and type(editor.Show)=="function" then pcall(editor.Show,editor,false) end
+        status:SetText("报告文本已随页面关闭释放；错误历史保留，打印可生成新报告。")
+        return true
+    end
+    if not editorReady then status:SetText("报告框不可用："..tostring(editorError or "multiline_editor_unavailable").."。打印将如实返回交付失败，不会声称正文已显示。") end
+    root:Refresh()
     return root
 end
 

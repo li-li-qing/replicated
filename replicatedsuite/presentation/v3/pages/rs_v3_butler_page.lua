@@ -8,14 +8,46 @@ local PageHost = S.UIV3 and S.UIV3.PageHost or nil
 local Feature = S.Features and S.Features.Butler or nil
 if type(RSUI) ~= "table" or type(D) ~= "table" or type(PageHost) ~= "table" or type(Feature) ~= "table" then return end
 
-local function ValueText(value)
-    if value == nil then return "未读取" end
-    if type(value) == "table" then
-        local count = 0
-        for _ in pairs(value) do count = count + 1 end
-        return "结构化数据（" .. tostring(count) .. " 个字段；字段映射待 RU 验证）"
+local function FormatChargeInfo(tbl)
+    if type(tbl) ~= "table" then return tostring(tbl or "") end
+    local parts = {}
+    local keyLabels = {
+        charge = "充能点数",
+        maxCharge = "充能上限",
+        remainTime = "剩余时间",
+        remainPoint = "剩余点数",
+        chargeType = "充能类型",
+        chargeState = "充能状态",
+        isCharged = "已充能",
+        cost = "消耗",
+    }
+    for k, v in pairs(tbl) do
+        local label = keyLabels[k] or tostring(k)
+        if type(v) == "table" then
+            local sub = {}
+            for sk, sv in pairs(v) do
+                if #sub < 3 then sub[#sub + 1] = tostring(sk) .. "=" .. tostring(sv) end
+            end
+            parts[#parts + 1] = label .. "={" .. table.concat(sub, ", ") .. "}"
+        else
+            parts[#parts + 1] = label .. ": " .. tostring(v)
+        end
+        if #parts >= 6 then
+            parts[#parts + 1] = "..."
+            break
+        end
     end
-    return tostring(value) == "" and "未读取" or tostring(value)
+    if #parts == 0 then return "空数据表" end
+    return table.concat(parts, " | ")
+end
+
+local function ValueText(value)
+    if value == nil then return "未读取（未召唤管家或未进入管家上下文）" end
+    if type(value) == "table" then
+        return FormatChargeInfo(value)
+    end
+    local text = tostring(value)
+    return text == "" and "未读取" or text
 end
 
 local function BuildPage(parent, route)
@@ -30,7 +62,7 @@ local function BuildPage(parent, route)
     local toggleRow = RSUI:HorizontalBox({ id = "v3_butler_lifecycle", parent = root, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
     local toggle = RSUI:Button({ id = "v3_butler_toggle", parent = toggleRow, text = "启用功能", compact = true, slot = { size = "fixed", width = 92 } })
     RSUI:Text({ id = "v3_butler_lifecycle_hint", parent = toggleRow, text = "页面不会自动启用功能；只有显式启用后才读取原生 API。", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
-    local card = D:InfoCard(root, { id = "v3_butler_card", title = "充能信息", value = "等待读取", detail = "进入管家上下文后刷新。", detailMaxLines = 4, slot = { size = "fill", fill = 1, hAlign = "fill" } })
+    local card = D:InfoCard(root, { id = "v3_butler_card", title = "充能信息", value = "等待读取", detail = "进入管家上下文后刷新。", detailMaxLines = 6, slot = { size = "fill", fill = 1, hAlign = "fill" } })
     local status = RSUI:Text({ id = "v3_butler_status", parent = root, text = "", fontSize = 9, tone = "muted", overflow = "wrap", slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
     function root:Refresh()
         local enabled = S.FeatureRuntime:IsEnabled("life_butler") == true
@@ -41,8 +73,13 @@ local function BuildPage(parent, route)
             return true
         end
         local projection = Feature:GetProjection() or {}
-        card:SetData({ value = projection.available and "已读取" or "当前不可用", detail = "充能：" .. ValueText(projection.charge) .. "\n数据源：官方只读 getter\nRevision：" .. tostring(projection.revision or 0) })
-        status:SetText(projection.available and "管家只读信息已返回；其它能力保持关闭。" or "当前客户端/上下文未返回管家充能信息；页面保持只读降级。")
+        if not projection.available then
+            card:SetData({ value = "当前不可用", detail = "未检测到管家充能数据。\n\n提示：请召唤管家或靠近管家后再点击刷新；当前客户端仅开放只读充能查询接口，插件绝不执行未授权的管家动作。" })
+            status:SetText("当前客户端/上下文未返回管家充能信息；页面保持只读降级。")
+        else
+            card:SetData({ value = "已读取", detail = "充能状态：" .. ValueText(projection.charge) .. "\n数据源：官方只读 getter (X2Butler:GetChargeInfo)\nRevision：" .. tostring(projection.revision or 0) })
+            status:SetText("管家只读信息已返回；其它能力保持关闭。")
+        end
         return true
     end
     toggle.onClick = function()
@@ -70,10 +107,19 @@ local function BuildPage(parent, route)
         local acquired, acquireErr = Feature:AcquireConsumer("page:butler")
         if acquired ~= true then return false, acquireErr end
         self.consumerHeld = true
+        if S.Events and type(S.Events.SubscribeInternal) == "function" and not self.eventSub then
+            self.eventSub = S.Events:SubscribeInternal("v3.butler.updated", root, function()
+                if root.Refresh then root:Refresh() end
+            end)
+        end
         return self:Refresh()
     end
     function root:OnDeactivated()
         if self.consumerHeld then Feature:ReleaseConsumer("page:butler"); self.consumerHeld = false end
+        if S.Events and type(S.Events.UnsubscribeInternal) == "function" then
+            S.Events:UnsubscribeInternal("v3.butler.updated", root)
+            self.eventSub = nil
+        end
         return true
     end
     root.route = route

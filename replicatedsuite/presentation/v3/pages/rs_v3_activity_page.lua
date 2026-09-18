@@ -129,7 +129,7 @@ local function BuildActivityPage(parent, route)
         end,
         columns = {
             { id = "name", title = "活动", field = "name", size = "fill", minWidth = 126, fill = 1.0,
-                getTone = function(item) return item and item.active and "red" or "default" end },
+                getTone = function(item) return "default" end },
             { id = "status", title = "当前状态 / 倒计时", field = "status", size = "fill", minWidth = 176, fill = 1.35,
                 getTone = function(item) return item and item.tone or "muted" end },
             { id = "schedule", title = "来源 / 下次", field = "scheduleText", size = "fill", minWidth = 116, fill = 0.85,
@@ -156,7 +156,9 @@ local function BuildActivityPage(parent, route)
         end
         local summary = Feature:GetSummary()
         summaryCard:SetData({
-            value = enabled and (tostring(summary.active or 0) .. " 进行中") or "功能已关闭",
+            -- 中文维护注释（2026-09-15）：summary.active 仍是 Domain 内部“当前发生”计数，
+            -- 但活动 UI 规范禁止再显示“进行中”；这里仅改展示词，不改 Summary/排序 Authority。
+            value = enabled and ("当前 " .. tostring(summary.active or 0)) or "功能已关闭",
             detail = "共 " .. tostring(summary.total or 0) .. " 条 · 2小时内 " .. tostring(summary.withinTwoHours or 0)
                 .. " · 实时区域 " .. tostring(summary.liveZones or 0) .. " · 已隐藏 " .. tostring(summary.hidden or 0)
                 .. "\n区域状态读取失败 " .. tostring(summary.zoneScanFailures or 0) .. " · 数据版本 " .. tostring(summary.revision or 0),

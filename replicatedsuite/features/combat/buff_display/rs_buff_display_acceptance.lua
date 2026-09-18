@@ -1,13 +1,15 @@
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Buff Display Acceptance (schema 5)
+-- Replicated Suite V3 - Buff Display Acceptance (schema 8)
 -- Non-destructive contract checks. No feature is enabled by this case.
 --
--- Schema 5 contracts covered here:
---   * store schemaVersion == 5, with schema4 single-HUD integrity recovery + 4->5 migration
+-- Schema 8 contracts covered here:
+--   * store schemaVersion == 8, with exact schema4/5/6/7 historical integrity rebuild
+--   * per-HUD gearScoreFormat full/compact migration plus scoped player/target tracking contracts
 --   * shared StatusClassificationV3 service resolves category + detection
 --     source (hidden is a detection source, never a user category)
---   * Feature commands: SetTrackedId(id, category, enabled) with explicit
---     category; SetComponentField; tracked-id import; full export/import
+--   * Feature commands: SetTrackedChannel(id, scope, category, enabled) owns the
+--     four visible player/target × Buff/Debuff channels; legacy SetTrackedId is compatibility-only
+--   * SetComponentField; scoped tracked-id import; full export/import v3
 --   * 10 head components projected through GetSettingsProjection
 --   * ProjectStatusMap rows carry category/detectionSource; hidden-sourced
 --     rows classify as debuff
@@ -29,9 +31,39 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     end
     if S.FeatureRuntime == nil or S.FeatureRuntime:IsImplemented(F.Id) ~= true then return false, "implementation_missing" end
     local store = S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.buff_display") or nil
-    if store == nil or tostring(store.owner or "") ~= "v3.buff_display" or tonumber(store.schemaVersion) ~= 5 then return false, "store_contract" end
+    if store == nil or tostring(store.owner or "") ~= "v3.buff_display" or tonumber(store.schemaVersion) ~= 8 then return false, "store_contract" end
+    local layoutStore = S.Persistence and S.Persistence:GetStore(F.HudLayoutStoreId or "v3.buff_display.layout") or nil
+    -- 中文维护注释（.18.241 HUD Layout Authority）：校准/策略/Reset 已从追踪大 Store 拆出。
+    -- Acceptance 必须同时看到小 Store，防止只覆盖 Feature 文件却漏掉 Store 注册，导致 HUD 编辑
+    -- 静默退回 v3.buff_display 全量保存。这里只读注册定义，不 Load/Save/Apply。
+    if layoutStore == nil or tostring(layoutStore.owner or "") ~= "v3.buff_display.layout"
+        or tonumber(layoutStore.schemaVersion) ~= 1 or tonumber(layoutStore.transportVersion) ~= 3 then
+        return false, "hud_layout_store_contract"
+    end
+    -- 中文维护注释（.18.243 分片 Authority 验收）：旧 v3.buff_display 仅保留历史迁移 hooks，
+    -- 正常运行必须由 settings/layout + tracking A/B + manifest 共同组成 Authority。这里故意逐个
+    -- 验证注册与版本，防止“只覆盖 Feature 文件/漏覆盖 Store 注册”后静默退回单体大 Store。
+    -- 兼容边界：Acceptance 只读 Store 定义，不 LoadData、不触发迁移、不写用户配置。
+    if tostring(F.SettingsStoreId or "") ~= "v3.buff_display.settings"
+        or tostring(F.TrackingManifestStoreId or "") ~= "v3.buff_display.tracking.manifest"
+        or (tonumber(F.TrackingPersistenceContractVersion) or 0) < 1
+        or (tonumber(F.LegacyStoreWriteProhibitedContractVersion) or 0) < 1 then
+        return false, "split_persistence_contract_missing"
+    end
+    local splitIds = {
+        "v3.buff_display.settings", "v3.buff_display.tracking.manifest",
+        "v3.buff_display.tracking.player.a", "v3.buff_display.tracking.player.b",
+        "v3.buff_display.tracking.target.a", "v3.buff_display.tracking.target.b",
+        "v3.buff_display.tracking.meta.a", "v3.buff_display.tracking.meta.b",
+    }
+    for _, splitId in ipairs(splitIds) do
+        local splitStore = S.Persistence and S.Persistence:GetStore(splitId) or nil
+        if type(splitStore) ~= "table" or tostring(splitStore.owner or "") ~= splitId then
+            return false, "split_store_missing:" .. tostring(splitId)
+        end
+    end
     if type(store.rebuildCanonicalForIntegrity) ~= "function" or type(store.recoverKnownLegacyCanonical) ~= "function"
-        or type(store.migrate) ~= "function" then return false, "schema5_migration_hooks_missing" end
+        or type(store.migrate) ~= "function" then return false, "historical_migration_hooks_missing" end
     -- 中文维护注释（非破坏性 schema4→5 验收）：构造一个“不含 targetLayout”的旧单 HUD
     -- Domain，要求 historical hook 返回仍不含新字段的旧 canonical；随后正式 migrate 必须补出
     -- targetLayout。这里只验证纯函数边界，不 Apply、不保存、不取得 Consumer。
@@ -52,13 +84,16 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     if type(historicalProbe) ~= "table" or type(historicalProbe.settings) ~= "table"
         or historicalProbe.settings.targetLayout ~= nil or tonumber(historicalProbe.settings.plate and historicalProbe.settings.plate.y) ~= 0
         or type(recoveredProbe) ~= "table" then return false, "schema4_historical_canonical_rebuild" end
-    local migratedProbe = store.migrate(recoveredProbe, 4, 5)
+    local migratedProbe = store.migrate(recoveredProbe, 4, 8)
     if type(migratedProbe) ~= "table" or type(migratedProbe.settings) ~= "table"
         or type(migratedProbe.settings.targetLayout) ~= "table"
-        or type(migratedProbe.settings.targetLayout.components) ~= "table" then return false, "schema4_to_5_dual_hud_migration" end
+        or type(migratedProbe.settings.targetLayout.components) ~= "table"
+        or type(migratedProbe.settings.tracked) ~= "table"
+        or type(migratedProbe.settings.tracked.player) ~= "table"
+        or type(migratedProbe.settings.tracked.target) ~= "table" then return false, "schema4_to_8_scoped_migration" end
     -- Shared classification service (schema 4+ Authority; schema5 only adds dual-HUD persistence).
     local classification = S.Services and S.Services.StatusClassificationV3 or nil
-    if type(classification) ~= "table" or (tonumber(classification.version) or 0) < 1
+    if type(classification) ~= "table" or (tonumber(classification.version) or 0) < 2
         or type(classification.ClassifyEntry) ~= "function" or type(classification.ClassifyId) ~= "function"
         or type(classification.SetOverride) ~= "function" or type(classification.GetOverrides) ~= "function"
         or type(classification.ApplyOverrides) ~= "function" or type(classification.GetRegistrySnapshot) ~= "function"
@@ -72,10 +107,26 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or type(F.GetProjection) ~= "function" or type(F.GetSettingsProjection) ~= "function"
         or type(F.RefreshScope) ~= "function" or type(F.Refresh) ~= "function"
         or type(F.AcquireConsumer) ~= "function" or type(F.ReleaseConsumer) ~= "function"
-        or tonumber(F.SchemaVersion) ~= 5 or (tonumber(F.ProjectPlatesContractVersion) or 0) < 4
+        or tonumber(F.SchemaVersion) ~= 8 or (tonumber(F.ProjectPlatesContractVersion) or 0) < 4
         or (tonumber(F.LayoutAuthorityContractVersion) or 0) < 3
         or (tonumber(F.HudCalibrationContractVersion) or 0) < 1
+        or (tonumber(F.HudLayoutStoreContractVersion) or 0) < 1
+        or (tonumber(F.LayoutPersistenceBoundaryContractVersion) or 0) < 3
+        -- 中文维护注释（.18.241）：布局拆 Store 只解决未来保存；旧 .240 失败写入若已把
+        -- main Store 的 distance.x 省略，Reload 仍需受旧章唯一命中的单字段冷恢复。
+        -- Acceptance 只验能力版本，不执行 801 次 Hash 枚举，也不读/写实机 Store。
+        or (tonumber(F.Schema8Transport5RecoveryContractVersion) or 0) < 8
+        or (tonumber(F.Schema8Transport5DistanceXOmissionRecoveryContractVersion) or 0) < 1
+        or (tonumber(F.Schema8Transport5ScopedPrefixRecoveryContractVersion) or 0) < 2
+        or tostring(F.HudLayoutStoreId or "") ~= "v3.buff_display.layout"
+        or type(F.GetTrackingPersistenceHealth) ~= "function"
+        or type(F.CommitTrackingSnapshot) ~= "function"
+        or type(F.MigrateLegacyBuffDisplayOnce) ~= "function"
+        or type(F.PersistResetLayoutSettings) ~= "function"
         or (tonumber(F.Schema5DualHudMigrationContractVersion) or 0) < 1
+        or (tonumber(F.Schema6TrackingMigrationContractVersion) or 0) < 1
+        or (tonumber(F.Schema7GearScoreFormatMigrationContractVersion) or 0) < 1
+        or (tonumber(F.Schema8TrackingScopeMigrationContractVersion) or 0) < 1
         or (tonumber(F.TargetDefaultTemplateContractVersion) or 0) < 1
         or (tonumber(F.GearScoreApiContractVersion) or 0) < 1
         or type(S.Utils) ~= "table" or (tonumber(S.Utils.GearScoreParseContractVersion) or 0) < 1
@@ -87,7 +138,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or type(F.Commands) ~= "table" or type(F.Commands.SetSetting) ~= "function"
         or type(F.Commands.ApplySettingFromBinding) ~= "function" or type(F.Commands.MarkStoreDirty) ~= "function"
         or type(F.Commands.GetWidgetVisible) ~= "function" or type(F.Commands.SetWidgetVisible) ~= "function"
-        or type(F.Commands.SetTrackedId) ~= "function" or type(F.Commands.ClearTrackedIds) ~= "function"
+        or type(F.Commands.SetTrackedChannel) ~= "function" or type(F.Commands.SetTrackedId) ~= "function" or type(F.Commands.ClearTrackedIds) ~= "function"
         or type(F.Commands.ResetLayoutSettings) ~= "function"
         or type(F.Commands.SetComponentField) ~= "function" or type(F.Commands.ImportTrackedIds) ~= "function"
         or type(F.Commands.GetLayoutSettingsSnapshot) ~= "function"
@@ -100,6 +151,16 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or type(F.Commands.ExportAll) ~= "function" or type(F.Commands.SerializeExport) ~= "function"
         or type(F.Commands.ParseImportText) ~= "function" or type(F.Commands.ImportAll) ~= "function"
         or (tonumber(F.BuffHeadMarkerContractVersion) or 0) < 9 then return false, "feature_contract" end
+    -- 中文维护注释：schema8 必须同包加载 scope Store、管理投影与文本格式 v3；否则半覆盖会
+    -- 把 player/target 六通道压回旧全局白名单。这里只检查声明与纯读能力，不写 Store/不取 Consumer。
+    local catalog=S.Data and S.Data.StatusTrackingCatalogV3
+    if (tonumber(F.Schema6TrackingMigrationContractVersion) or 0)<1
+        or (tonumber(F.Schema7GearScoreFormatMigrationContractVersion) or 0)<1
+        or (tonumber(F.Schema8TrackingScopeMigrationContractVersion) or 0)<1
+        or (tonumber(F.ManagementProjectionContractVersion) or 0)<2 or F.TransferFormatVersion~=3
+        or type(F.GetManagementProjection)~="function" or type(F.CaptureManagementFreeze)~="function"
+        or type(F.Commands.ImportBuiltinPack)~="function" or type(F.Commands.PreviewImport)~="function"
+        or type(catalog)~="table" or catalog.version~=1 then return false,"schema8_tracking_modules_missing" end
     -- Head renderer gate contract: tracked-independent start (HasRenderableComponents
     -- gate) + GetDiagnostics triage surface + anchorFailure trail on hidden scopes.
     local headMarkers = S.UIV3 and S.UIV3.BuffHeadMarkersV3 or nil
@@ -109,6 +170,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or type(headMarkers.Start) ~= "function" or type(headMarkers.Stop) ~= "function" or type(headMarkers.Reconcile) ~= "function"
         or type(headMarkers.VisualTick) ~= "function" or (tonumber(headMarkers.CastYOffsetContractVersion) or 0) < 1
         or (tonumber(headMarkers.BuffIconFontSizeContractVersion) or 0) < 1
+        or (tonumber(headMarkers.GearScoreFormatContractVersion) or 0) < 1
         or (tonumber(headMarkers.LiveHudSuppressionContractVersion) or 0) < 1
         or (tonumber(headMarkers.EquipmentIndependentOffsetContractVersion) or 0) < 1
         or type(headMarkers.SetCalibrationSuppressed) ~= "function" then return false, "head_marker_gate_contract" end
@@ -120,7 +182,8 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     -- 主手/副手/远程位置串联，后者只读校准 Draft 并分行输出，不取得新的 Consumer、不写 Store。
     local calibration = S.UIV3 and S.UIV3.BuffHudCalibrationV3 or nil
     if type(calibration) ~= "table" or (tonumber(calibration.version) or 0) < 3
-        or (tonumber(F.HudCalibrationPresentationContractVersion) or 0) < 5
+        or (tonumber(F.HudCalibrationPresentationContractVersion) or 0) < 7
+        or (tonumber(calibration.GearScoreFormatCalibrationContractVersion) or 0) < 1
         or (tonumber(calibration.DiagnosticsContractVersion) or 0) < 4
         or (tonumber(calibration.ScreenCoordinateAdapterContractVersion) or 0) < 1
         or (tonumber(calibration.PanelDragContractVersion) or 0) < 1
@@ -161,9 +224,9 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         { showBuffs = true, showDebuffs = false, showHidden = false, classification = mapSettings.classification }, "player", 8)
     if type(hiddenOnlyRows) ~= "table" or #hiddenOnlyRows ~= 2 or hiddenOnlyRows[1].id ~= 101
         or hiddenOnlyRows[2].id ~= 303 or hiddenOnlyRows[2].detectionSource ~= "hidden" then return false, "hidden_source_not_suppressed_by_category_toggle" end
-    -- Settings projection exposes all 10 head components + category-keyed tracked.
+    -- Settings projection exposes all 10 head components + player/target scoped tracked channels.
     if (tonumber(F.LayoutAuthorityContractVersion) or 0) < 2
-        or (tonumber(F.LayoutPersistenceBoundaryContractVersion) or 0) < 1 then
+        or (tonumber(F.LayoutPersistenceBoundaryContractVersion) or 0) < 3 then
         return false, "layout_persistence_boundary_contract_missing"
     end
     local layoutSnapshot = F.Commands:GetLayoutSettingsSnapshot()
@@ -182,7 +245,12 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     local defaultHudSnapshot = F.Commands:GetDefaultHudCalibrationSnapshot()
     if type(hudSnapshot) ~= "table" or type(hudSnapshot.player) ~= "table" or type(hudSnapshot.target) ~= "table"
         or type(hudSnapshot.player.components) ~= "table" or type(hudSnapshot.target.components) ~= "table"
-        or type(defaultHudSnapshot) ~= "table" or type(defaultHudSnapshot.player) ~= "table" or type(defaultHudSnapshot.target) ~= "table" then
+        or type(hudSnapshot.player.info) ~= "table" or type(hudSnapshot.target.info) ~= "table"
+        or tostring(hudSnapshot.player.info.gearScoreFormat or "") == ""
+        or tostring(hudSnapshot.target.info.gearScoreFormat or "") == ""
+        or type(defaultHudSnapshot) ~= "table" or type(defaultHudSnapshot.player) ~= "table" or type(defaultHudSnapshot.target) ~= "table"
+        or tostring(defaultHudSnapshot.player.info and defaultHudSnapshot.player.info.gearScoreFormat or "") ~= "full"
+        or tostring(defaultHudSnapshot.target.info and defaultHudSnapshot.target.info.gearScoreFormat or "") ~= "full" then
         return false, "dual_hud_calibration_snapshot_missing"
     end
     -- Detached-snapshot contract: calibration draft edits must never mutate Store before Save & Exit.
@@ -206,8 +274,10 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     local componentKeys = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar" }
     local missingComponents = 0
     for _, key in ipairs(componentKeys) do if type(components[key]) ~= "table" then missingComponents = missingComponents + 1 end end
-    if missingComponents ~= 0 or type(tracked.buff) ~= "table" or type(tracked.debuff) ~= "table"
-        or settingsProjection.freezeEnabled ~= false or settingsProjection.showHidden ~= false then return false, "schema5_settings_projection" end
+    if missingComponents ~= 0 or type(tracked.player) ~= "table" or type(tracked.target) ~= "table"
+        or type(tracked.player.buff) ~= "table" or type(tracked.player.debuff) ~= "table" or type(tracked.player.auto) ~= "table"
+        or type(tracked.target.buff) ~= "table" or type(tracked.target.debuff) ~= "table" or type(tracked.target.auto) ~= "table"
+        or settingsProjection.freezeEnabled ~= false or settingsProjection.showHidden ~= false then return false, "schema8_settings_projection" end
     -- Head plates projection: bounded tracked rows + enabled component data.
     local plates = F.ProjectPlates({
         buffRows = { { id = 101, name = "A" } }, distance = 1234.5, class = "法师", gearScore = 12345,
@@ -225,7 +295,10 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     for i = 1, 40 do ids[#ids + 1] = tostring(70000 + i) end
     local parsed40 = F:ParseImportText("BUFF=" .. table.concat(ids, ","))
     if type(parsed40) ~= "table" or type(parsed40.data) ~= "table"
-        or #(parsed40.data.tracked.buff or {}) ~= 40 then return false, "import_tracking_cap_regression" end
+        or type(parsed40.data.tracked) ~= "table" or type(parsed40.data.tracked.player) ~= "table" or type(parsed40.data.tracked.target) ~= "table"
+        or #(parsed40.data.tracked.player.buff or {}) ~= 40 or #(parsed40.data.tracked.target.buff or {}) ~= 40 then
+        return false, "legacy_import_scope_migration_regression"
+    end
     local serialized = F:SerializeExport({ schemaVersion = 5, tracked = { buff = {}, debuff = {} }, classification = {},
         components = { buffs = { enabled = true, x = 0, y = 0, size = 29, fontSize = 11, alpha = 1, spacing = 5, maxPerRow = 11, maxRows = 3 },
             castBar = { enabled = true, x = 0, y = 0, size = 7, fontSize = 12, alpha = 1, width = 177, showText = false } },
@@ -339,9 +412,16 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
     if type(comps.buffs) ~= "table" or comps.buffs.y ~= 0 or comps.debuffs.y ~= 0 then
         return false, "case13_fresh_defaults_not_anchor_relative"
     end
-    -- ranged is opt-in by default; wings/back remains the default right slot.
-    if comps.ranged.enabled ~= false or comps.wings.enabled ~= true then
+    -- 玩家远程武器从 v4 起默认开启；背部仍保持右侧独立槽位。
+    if comps.ranged.enabled ~= true or comps.wings.enabled ~= true or tonumber(defaultSettings.layoutPresetVersion) ~= 4 then
         return false, "case13_ranged_wings_default_wrong"
+    end
+    local releaseLayout = Compute(500, 400, defaultSettings, 0, 0, { mainHand=true, offHand=true, ranged=true, wings=true })
+    local releaseByKey = {}
+    for _, slot in ipairs(releaseLayout.leftGroup.slots or {}) do releaseByKey[slot.key] = slot end
+    if releaseByKey.mainHand == nil or releaseByKey.offHand == nil or releaseByKey.ranged == nil
+        or not (releaseByKey.mainHand.x < releaseByKey.offHand.x and releaseByKey.offHand.x < releaseByKey.ranged.x) then
+        return false, "case13_ranged_not_right_of_offhand"
     end
     if defaultSettings.headIconSize ~= nil or defaultSettings.headMaxIcons ~= nil then
         return false, "case13_duplicate_icon_authority_present"

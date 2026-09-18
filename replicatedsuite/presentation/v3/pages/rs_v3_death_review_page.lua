@@ -12,7 +12,46 @@ local STORE_ID = "v3.death_review"
 local function Settings() return Feature:GetSettingsProjection() end
 local CLEAR_CONFIRM_TASK = "v3_death_review_clear_confirm_expire"
 
+-- 维护（F2 页面隔离，2026-09-12）：持久化 Toggle 在 Build 时即 PrepareRead，不能等到
+-- OnActivated 才检查存档。失败分支必须早于所有编辑器/Commands/历史投影，否则一次业务
+-- 校验失败会升级为 required_component_build_failed 并隔离整页。
+-- Authority：Feature/Core 决定能否读写；此页只呈现故障，不以默认值替换、不调用恢复/清档，
+-- 不注册事件、不取记录分片、不启用战斗/Aura消费者。正常控件构造错误仍交给 BuildScope。
+-- 保护页在本次 Generation 保持只读；完整覆盖补丁后通过既有“重新加载文件”重新准备。
+local function BuildProtectedPage(parent, route, reason)
+    local makeRoot = D.ScrollablePageRoot or D.PageRoot
+    local root, err = makeRoot(D, parent, "v3_page_death_review")
+    if root == nil then return nil, err or "死亡回顾保护页创建失败" end
+    root.route, root.persistenceUnavailable = route, true
+    D:PageHeader(root, "v3_death_review_protected_header", "死亡回顾：配置已保护",
+        "配置尚未通过读取校验；历史未清空，编辑、删除和记录开关暂不开放。")
+    RSUI:Text({id="v3_death_review_protected_reason",parent=root,
+        text="读取失败：" .. tostring(reason or "未知错误"),fontSize=10,tone="warn",overflow="wrap",maxLines=6,
+        slot={size="auto",minHeight=64,hAlign="fill"}})
+    RSUI:Button({id="v3_death_review_diagnostics",parent=root,text="打开诊断与维护",compact=true,
+        slot={size="fixed",width=156,height=30},onClick=function()
+            -- 维护：只经统一 V3 导航，不直接调用另一业务页或存档。缺导航时显式失败。
+            local v3=S.UIV3
+            if type(v3)~="table" or type(v3.Navigate)~="function" then return false,"诊断导航不可用" end
+            return v3:Navigate("system.diagnostics",{source="death_review_protected"})
+        end})
+    RSUI:Text({id="v3_death_review_protected_hint",parent=root,fontSize=10,tone="muted",overflow="wrap",maxLines=5,
+        text="请保留原存档，不要重置配置。短报告未附原档时，无需重复复制相同 Hash；使用随包 tools/rs_udf_evidence.html 离线采集完整 udf 文件夹。采集前退出游戏，先查看文件清单与隐私提示。",
+        slot={size="auto",minHeight=60,hAlign="fill"}})
+    function root:OnActivated() return true end -- 维护：不重读盘、不订阅、不隐藏写保护状态。
+    function root:OnDeactivated() return true end -- 维护：此分支没有消费者/编辑框需要释放。
+    return root
+end
+
 local function Build(parent, route)
+    -- 维护：在任何持久化 Binding 创建之前准备；缺失/抛错也不允许编辑未读默认值。
+    local called, loaded, loadErr = false, false, "死亡回顾读取入口不可用"
+    if type(Feature.EnsureStoreLoaded)=="function" then
+        called, loaded, loadErr = pcall(Feature.EnsureStoreLoaded,Feature)
+    end
+    if not called or loaded~=true then
+        return BuildProtectedPage(parent,route,called and loadErr or loaded or loadErr)
+    end
     local root, rootErr = D:PageRoot(parent, "v3_page_death_review")
     if root == nil then error("死亡回顾 PageRoot 创建失败：" .. tostring(rootErr or "unknown")) end
     root.route = route

@@ -96,6 +96,8 @@ UI.NativeCaretPlacementPreservationContractVersion = 2
 UI.PostArmFocusPromotionContractVersion = 1
 UI.InputActivationDiagnosticsContractVersion = 1
 UI.DeferredKeyboardActivationContractVersion = 1
+-- 维护（report-selection-1）：仅显式启用的只读报告交付框有额外选区保护；普通表单策略不变。
+UI.ReportCopySelectionContractVersion = 1
 UI.ExplicitInputCommitFocusContractVersion = 1
 UI.Tokens = S.UITokens
 UI.NativeStateCache = stateCache
@@ -292,6 +294,14 @@ local function SetInputKeyboardState(widget, armed, owner, reason)
         return false, false, tostring(acceptErr or "keyboard_toggle_rejected")
     end
     widget.rsUiKeyboardArmed = armed
+    -- 维护：只为请求复制保护的输入记录本次键盘状态原因，不记录正文/按键/聊天目标。
+    -- 每框常量大小；隐藏/停用的真实撤权也留证，不以新的计时任务维持或夺回焦点。
+    local activity = widget.rsUiCopyActivity
+    if type(activity) == "table" then
+        activity.lastKeyboardReason = tostring(reason or ""):sub(1, 96)
+        activity.lastKeyboardAt = type(S.NowMs) == "function" and S.NowMs() or 0
+        activity.keyboardChanges = (tonumber(activity.keyboardChanges) or 0) + 1
+    end
     if armed then
         lifecycle.armedInputs[widget] = true
         metrics.lifecycle.keyboardArms = (tonumber(metrics.lifecycle.keyboardArms) or 0) + 1
@@ -306,7 +316,21 @@ function UI:ArmInputWidget(widget, owner, reason)
     return SetInputKeyboardState(widget, true, owner, reason or "explicit_input_activation")
 end
 
+-- 维护（report-selection-1）：复制框失焦时仅允许一个下一帧复核；任何显式撤权先取消。
+-- Task属于此Native实例/owner/generation；不让隐藏、换页、释放后遗留回调修改键盘状态。
+local function CancelCopyFocusRecheck(widget)
+    if widget == nil then return end
+    local name, scheduler = widget.rsUiCopyFocusTask, widget.rsUiCopyFocusScheduler
+    widget.rsUiCopyFocusTask, widget.rsUiCopyFocusScheduler = nil, nil
+    if name ~= nil and scheduler ~= nil and type(scheduler.RemoveTask) == "function" then
+        pcall(function() scheduler:RemoveTask(name) end)
+    end
+end
+
 function UI:DisarmInputWidget(widget, owner, reason)
+    CancelCopyFocusRecheck(widget)
+    -- 维护：先把最后的合法键入交回Diff，再撤销键盘权；清空/取消在disarm后也不会误报警。
+    if type(self.AdoptInputDraftText)=="function" then self:AdoptInputDraftText(widget,owner) end
     return SetInputKeyboardState(widget, false, owner, reason or "input_deactivation")
 end
 
@@ -391,13 +415,56 @@ function UI:DisarmInputWithin(widget, owner, reason)
     return failed == nil, count, failed
 end
 
+-- 维护：OnLostFocus与Native焦点ID更新的先后顺序不受Lua保证。仅看即时ID并永远忽略通知，
+-- 可能在真正切到聊天后仍让旧框持有键盘。用现有Scheduler的一次性下一帧检查区分：仍归本框
+-- 则完全不写Native；已离开/未知则撤权。绝不SetFocus/ClearFocus、读写正文或重新选中。
+-- 没有调度能力/注册失败则走原撤权边界；重复通知合并，隐藏/Retire/ReleaseOwner统一取消。
+local function ScheduleCopyFocusRecheck(ui, widget, owner, eventLabel)
+    local scheduler, physicalId = S.Scheduler, PhysicalIdOf(widget)
+    if scheduler == nil or type(scheduler.AddHighFrequencyOneShot) ~= "function"
+        or type(scheduler.RemoveTask) ~= "function" or physicalId == nil then return false end
+    if widget.rsUiCopyFocusTask ~= nil then return true end
+    local name, generation = "rsui:copy_focus:" .. tostring(physicalId), S.Generation
+    widget.rsUiCopyFocusTask, widget.rsUiCopyFocusScheduler = name, scheduler
+    local registered, accepted = pcall(function()
+        return scheduler:AddHighFrequencyOneShot(name, 1, function()
+            if widget.rsUiCopyFocusTask ~= name then return end
+            widget.rsUiCopyFocusTask, widget.rsUiCopyFocusScheduler = nil, nil
+            if rawget(_G, "ReplicatedSuite") ~= S or S.Generation ~= generation
+                or WidgetUsable(widget) ~= true or widget.rsUiInputLifecycleRetired == true
+                or OwnerOf(widget) ~= OwnerOf(widget, owner) then return end
+            local focused, err = ui:IsInputWidgetFocused(widget)
+            local activity = widget.rsUiCopyActivity
+            if type(activity) == "table" then
+                activity.focusRechecks = (tonumber(activity.focusRechecks) or 0) + 1
+                activity.lastRecheckAt = type(S.NowMs) == "function" and S.NowMs() or 0
+                activity.lastRecheckStillOwned = focused == true and err == nil
+            end
+            if focused == true and err == nil then return end
+            ui:DisarmInputWidget(widget, owner, eventLabel .. ":lost_focus_recheck")
+            if type(ui.SetEditBoxFocusVisual) == "function" then ui:SetEditBoxFocusVisual(widget, false) end
+        end, owner, "P0", 1)
+    end)
+    if registered == true and accepted == true then return true end
+    CancelCopyFocusRecheck(widget)
+    return false
+end
+
 -- Raw multiline inputs are rare and intentionally stay outside the generic
 -- Component factory. This helper gives them the same explicit-click activation
 -- contract without allowing Presentation to bind Native handlers directly.
-function UI:BindDeferredInputActivation(widget, owner, label)
+function UI:BindDeferredInputActivation(widget, owner, label, options)
     if not IsInputTarget(widget) then return false, "input_target_required" end
     if type(self.SafeHandler) ~= "function" then return false, "handler_contract_unavailable" end
     local eventLabel = tostring(label or widget.rsUiLogicalId or widget.rsNativeLogicalId or "input")
+    -- 维护：Native失焦通知可能晚于一次重新激活；无条件Disarm会使选中文字仍可见但Ctrl+C失效。
+    -- 仅报告框显式请求且实时identity仍证明焦点属于同一输入时保留已激活键盘，不调用SetFocus。
+    -- 外部/聊天焦点、查询失败、隐藏、退休仍走原撤权流程。此保护不能证明客户端此次2秒触发源。
+    local preserveSelection = type(options) == "table" and options.preserveFocusedSelection == true
+    CancelCopyFocusRecheck(widget) -- 重新绑定也不能继承上一个交互策略的延迟回调。
+    if preserveSelection and type(widget.rsUiCopyActivity) ~= "table" then
+        widget.rsUiCopyActivity = { lostFocusNotifications = 0, stillFocusedNotifications = 0, keyboardChanges = 0 }
+    end
     local clickBound = self:SafeHandler(widget, "OnClick", function()
         local ok = self:ActivateInputWidget(widget, owner, eventLabel .. ":click")
         if type(self.SetEditBoxFocusVisual) == "function" then self:SetEditBoxFocusVisual(widget, ok == true) end
@@ -405,6 +472,21 @@ function UI:BindDeferredInputActivation(widget, owner, label)
     end, eventLabel .. ":activate")
     if clickBound ~= true then return false, "input_click_activation_bind_failed" end
     local lostBound = self:SafeHandler(widget, "OnLostFocus", function()
+        local activity = widget.rsUiCopyActivity
+        if preserveSelection then
+            local focused, focusErr = self:IsInputWidgetFocused(widget)
+            if type(activity) == "table" then
+                activity.lostFocusNotifications = activity.lostFocusNotifications + 1
+                activity.lastLostFocusAt = type(S.NowMs) == "function" and S.NowMs() or 0
+                activity.lastLostFocusKnown = focusErr == nil
+                activity.lastLostFocusStillOwned = focused == true and focusErr == nil
+            end
+            if focusErr == nil and focused == true and widget.rsUiKeyboardArmed == true
+                and widget.rsUiInputLifecycleRetired ~= true and OwnerOf(widget) == OwnerOf(widget, owner) then
+                activity.stillFocusedNotifications = activity.stillFocusedNotifications + 1
+                if ScheduleCopyFocusRecheck(self, widget, owner, eventLabel) then return true end
+            end
+        end
         self:DisarmInputWidget(widget, owner, eventLabel .. ":lost_focus")
         if type(self.SetEditBoxFocusVisual) == "function" then self:SetEditBoxFocusVisual(widget, false) end
         return true
@@ -446,10 +528,22 @@ function UI:IsInputWidgetFocused(widget)
     return ResolveTrackedFocusedInput(focusedId) == widget, nil
 end
 
+-- 维护（report-selection-1）：只读有界状态供打印使用，禁止复制整个Native对象/正文，
+-- 不扫描UI、不查询剪贴板、不从未知focused ID推断所有权；数据只在本generation内存在。
+function UI:GetCopyInputSnapshot(widget)
+    if not IsInputTarget(widget) then return { available = false } end
+    local focused, err = self:IsInputWidgetFocused(widget)
+    local out = { available = true, focused = focused == true, focusKnown = err == nil,
+        keyboardArmed = widget.rsUiKeyboardArmed == true, retired = widget.rsUiInputLifecycleRetired == true,
+        focusRecheckPending = widget.rsUiCopyFocusTask ~= nil }
+    for key, value in pairs(type(widget.rsUiCopyActivity) == "table" and widget.rsUiCopyActivity or {}) do
+        out[key] = value
+    end
+    return out
+end
+
 -- Clear focus only when the global focus id resolves to a registered Suite
--- EditBox and that EditBox is proven to be inside the subtree becoming
--- inactive. This is the core fence that prevents Suite cleanup from stealing
--- focus from ArcheAge chat or another game window.
+-- EditBox proven to be inside the subtree becoming inactive. Never steal chat focus.
 function UI:ReleaseFocusWithin(widget, owner, reason)
     if widget == nil then return true, false, nil end
     local subtreeInputs = tonumber(widget.rsUiKeyboardInputSubtreeCount) or 0
@@ -804,6 +898,23 @@ function UI:GetAuthoritySnapshot()
     }
 end
 
+
+-- 维护（gear draft authority）：Native键入会改变text，旧Diff缓存仍是空串；成功新建清空
+-- 输入时被误报外部写入。只在已明确arm的键盘输入、相同owner、未退役的生命周期内
+-- 读取并接纳草稿text；不提交Binding/Store，不修改可见性/几何，不清除历史违规计数。
+-- 非输入控件、未激活编辑框、其他owner仍走原严格校验。无OnTextChanged假设/轮询。
+function UI:AdoptInputDraftText(widget,owner)
+    if not IsInputTarget(widget) or widget.rsUiInputLifecycleRetired==true
+        or widget.rsUiKeyboardArmed~=true or lifecycle.armedInputs[widget]~=true then return false end
+    local claim=authorityClaims[widget]
+    if claim and NormalizeOwner(owner)~=tostring(claim.owner) then return false end
+    if not claim and NormalizeOwner(owner)~=OwnerOf(widget) then return false end
+    local text,known=TryNativeText(widget)
+    if not known then return false end
+    GetState(widget).text=text
+    return true
+end
+
 function UI:SetText(widget, value, owner)
     local usable = WidgetUsable(widget)
     if usable ~= true or type(widget.SetText) ~= "function" then return false end
@@ -817,8 +928,11 @@ function UI:SetText(widget, value, owner)
             RecordAttempt("SET_TEXT", widget, false, 0, owner)
             return false
         end
-        RepairCachedField(row, "text", nativeText)
-        RecordCacheRepair("text", widget, owner)
+        -- 维护：显式提交/拒绝可以覆盖用户草稿，但必须先完成合法输入的缓存交接。
+        if self:AdoptInputDraftText(widget,owner) ~= true then
+            RepairCachedField(row, "text", nativeText)
+            RecordCacheRepair("text", widget, owner)
+        end
     end
     local ok, err = pcall(function() widget:SetText(text) end)
     if ok ~= true then RecordNativeSafetyFailure("SET_TEXT", widget, err, owner); return false end
@@ -946,27 +1060,49 @@ end
 -- Icon drawables in RU expose ClearAllTextures/AddTexture rather than a
 -- universal SetTexture contract. Cache the path here so HUD/list components can
 -- refresh the same icon snapshot without repeated native texture writes.
+-- 维护（pvp-hud-1）：pcall成功只表示未抛Lua错误，不表示原生接受纹理。
+-- 旧实现吞掉AddTexture的false并缓存新路径，装备切换后便不再重试。清除与添加视为
+-- 一次提交：任何失败都作废缓存；调用方隐藏不确定图标，待下次内容刷新重试。
+-- 兼容：Native无返回值仍视作接受；SetIconTexture保留false=no-op旧接口；需要提交证明
+-- 的HUD使用EnsureIconTexture区分接受/变化，不能将no-op误判成错误。缓存由RSUI独占。
 function UI:SetIconTexture(drawable, path, owner)
     if drawable == nil then return false end
     local value = tostring(path or "")
     local row = GetState(drawable)
     if row.iconTexture == value then RecordAttempt("ICON_TEXTURE", drawable, false, 0, owner); return false end
     local calls = 0
+    local function Reject()
+        row.iconTexture = nil
+        metrics.nativeSafety.callFailures = metrics.nativeSafety.callFailures + 1
+        return false
+    end
     if type(drawable.ClearAllTextures) == "function" then
-        local ok = pcall(function() drawable:ClearAllTextures() end)
-        if not ok then return false end
+        local ok, result = pcall(drawable.ClearAllTextures, drawable)
+        if not ok or result == false then return Reject() end
         calls = calls + 1
+        row.iconTexture = nil -- Clear已改变物理状态；不能保留旧路径的成功声明。
     end
     if value ~= "" then
-        if type(drawable.AddTexture) ~= "function" then return false end
-        local ok = pcall(function() drawable:AddTexture(value) end)
-        if not ok then return false end
+        if type(drawable.AddTexture) ~= "function" then return Reject() end
+        local ok, result = pcall(drawable.AddTexture, drawable, value)
+        if not ok or result == false then return Reject() end
         calls = calls + 1
     end
-    if calls == 0 then return false end
+    if calls == 0 then return Reject() end
     row.iconTexture = value
     RecordAttempt("ICON_TEXTURE", drawable, true, calls, owner)
     return true
+end
+
+function UI:EnsureIconTexture(drawable, path, owner)
+    if drawable == nil then return false, false, "drawable_required" end
+    local value = tostring(path or "")
+    if GetState(drawable).iconTexture == value then
+        RecordAttempt("ICON_TEXTURE_ENSURE", drawable, false, 0, owner)
+        return true, false, nil
+    end
+    if self:SetIconTexture(drawable, value, owner) == true then return true, true, nil end
+    return false, false, "native_icon_texture_rejected"
 end
 
 
@@ -1206,7 +1342,16 @@ end
 function UI:CommitScreenSnap(id, widget, options)
     options = type(options) == "table" and options or {}
     if widget == nil or S.Layout == nil or type(S.Layout.GetLogicalRect) ~= "function" then return false, nil, nil, false, nil end
-    local x, y, width, height = S.Layout:GetLogicalRect(widget)
+    -- 维护（2026-09-16，snap-committed-rect-1）：拖动事务已经拥有逻辑矩形时，吸附必须
+    -- 使用同一份 committed rect，不能再次读 Native；否则 UI Scale/原生更新时序可能在吸附前
+    -- 就把旧坐标带回持久化链。无显式矩形的旧调用仍回退 GetLogicalRect，保持 API 兼容。
+    local x, y, width, height
+    if tonumber(options.x) ~= nil and tonumber(options.y) ~= nil then
+        x, y = tonumber(options.x), tonumber(options.y)
+        width, height = tonumber(options.width), tonumber(options.height)
+    else
+        x, y, width, height = S.Layout:GetLogicalRect(widget)
+    end
     if tonumber(x) == nil or tonumber(y) == nil then return false, x, y, false, nil end
     local sx, sy, snapped, targetId = self:ResolveScreenSnap(id, x, y, width, height, options)
     if snapped == true then

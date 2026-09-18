@@ -161,6 +161,57 @@ function F:GetWidgetProjection()
     return self.Authority:GetWidgetRows()
 end
 
+-- 维护（overview-workbench-2）：首页需要独立的周期/完成状态/追踪筛选，不能借用
+-- 悬浮窗可见行或直接改 State。Authority 的缓存行是唯一事实来源；这里只建立有界
+-- 只读视图，一份 revision+筛选缓存，不在搜索/绘制中查询 Native，不把展开子任务计为新组。
+-- 写入仍经现有 Commands，旧追踪选择与存档 schema 不变；未知进度不能算成已完成。
+function F:GetOverviewProjection(options)
+    options = type(options) == "table" and options or {}
+    local scope = VALID_SCOPE[options.scope] and options.scope or "all"
+    local view = options.view == "all" and "all" or "tracked"
+    local status = ({ all=true, unfinished=true, ready=true, completed=true })[options.status] and options.status or "all"
+    local query = tostring(options.query or ""):sub(1, 96):lower()
+    local revision = tonumber(self.Authority.revision) or 0
+    local cache = self.overviewCache
+    if cache and cache.revision == revision and cache.scope == scope and cache.view == view
+        and cache.status == status and cache.query == query then return cache.value end
+    local rows, summary = {}, { total=0, tracked=0, completed=0, unfinished=0, ready=0, unavailable=0, shown=0 }
+    for _, current in ipairs(scope == "all" and { "daily", "weekly" } or { scope }) do
+        local source = self.Authority:GetRows(current)
+        for _, row in ipairs(source or {}) do
+            if row.parent == true and (view == "all" or row.tracked == true) then
+                summary.total = summary.total + 1
+                if row.tracked then summary.tracked = summary.tracked + 1 end
+                if row.available ~= true then summary.unavailable = summary.unavailable + 1
+                elseif row.status == "已完成" then summary.completed = summary.completed + 1
+                else
+                    summary.unfinished = summary.unfinished + 1
+                    if row.status == "可交付" then summary.ready = summary.ready + 1 end
+                end
+                local match = status == "all" or (status == "unfinished" and row.status ~= "已完成")
+                    or (status == "ready" and row.status == "可交付") or (status == "completed" and row.status == "已完成")
+                local text = tostring(row.rawName or row.name or ""):lower()
+                if match and (query == "" or text:find(query, 1, true) or tostring(row.groupKey):lower():find(query, 1, true)) then
+                    rows[#rows + 1] = row
+                end
+            end
+        end
+    end
+    local priority = { ["可交付"]=1, ["进行中"]=2, ["未接"]=3, ["已完成"]=4, ["暂不可用"]=5 }
+    table.sort(rows, function(a,b)
+        local ap, bp = priority[a.status] or 6, priority[b.status] or 6
+        if ap ~= bp then return ap < bp end
+        if a.scope ~= b.scope then return a.scope == "daily" end
+        if a.rawName ~= b.rawName then return tostring(a.rawName) < tostring(b.rawName) end
+        return tostring(a.id) < tostring(b.id)
+    end)
+    summary.shown = #rows
+    local value = { rows=rows, summary=summary, revision=tostring(revision)..":"..scope..":"..view..":"..status..":"..query,
+        patch="overview-workbench-2", scope=scope, view=view, status=status }
+    self.overviewCache = { revision=revision, scope=scope, view=view, status=status, query=query, value=value }
+    return value
+end
+
 function F:RefreshProjection(reason)
     if self.enabled ~= true then return false, "task feature disabled" end
     return self.Authority:Refresh(reason or "presentation_refresh")
@@ -214,6 +265,7 @@ function F:ReconcileDemand(before, after)
             if released ~= true then return false, releaseErr or "quest progress release failed" end
             self.progressConsumerHeld = false
         end
+        self.overviewCache = nil -- 首页缓存只属于本次观察会话；停用后不保留旧任务行。
         self.Authority:ResetTransient()
     end
     return true
@@ -252,6 +304,7 @@ function F:QuiesceDemand(reason, cause)
             if released ~= true then ok = false else self.progressConsumerHeld = false end
         end
     end
+    self.overviewCache = nil -- 首页缓存只属于本次观察会话；停用后不保留旧任务行。
     self.Authority:ResetTransient()
     return ok
 end

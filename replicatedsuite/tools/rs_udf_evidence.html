@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Replicated Suite · 只读存档采集</title>
+<style>
+:root{color-scheme:dark;font:16px/1.65 system-ui,"Microsoft YaHei",sans-serif;background:#111820;color:#e4e8ed}
+body{max-width:880px;margin:42px auto;padding:0 24px}h1{font-size:27px;line-height:1.3}h2{font-size:19px;margin:0 0 8px}
+section{border:1px solid #3a4859;padding:20px;margin:20px 0;border-radius:8px}.muted{color:#b7c0cc}.notice{border-left:4px solid #d7b568;padding-left:14px}
+button,.save{padding:10px 18px;border-radius:5px;border:1px solid #839ab2;font:inherit;background:#233a51;color:#fff;display:inline-block;text-decoration:none;cursor:pointer}button:disabled{opacity:.5;cursor:default}[hidden]{display:none!important}
+label{display:block;margin:10px 0}input[type=checkbox]{margin-right:9px}input[type=file]{max-width:100%;font:inherit}
+#inventory{white-space:pre-wrap;overflow:auto;max-height:230px;font-size:13px;background:#090e14;padding:12px}.error{color:#ffbcb3}.ok{color:#add9ba}code{overflow-wrap:anywhere}small{display:block;color:#b7c0cc}
+</style>
+</head>
+<body>
+<p class="muted">REPLICATED SUITE / F2 EVIDENCE</p>
+<h1>完整存档取证，不经过游戏文本框</h1>
+<p>本页离线运行。只读取你手动选择的 <code>udf</code> 文件夹，将浏览器提供的全部所选文件原样装入一个 ZIP；不会修复、删除、覆盖或上传存档。</p>
+<p class="notice"><strong>先完全退出游戏客户端，再选择目录。</strong><br>这不是数据库在线备份工具。页面不能确认游戏进程是否退出，也不能证明存档内容正常；只记录你确认后的文件字节。</p>
+<section>
+<h2>1 · 选择当前账号的 udf 文件夹</h2>
+<p>项目维护文档记录的位置为“文档 → ArcheRage → USER… → udf”。这是项目记录的目录线索，不代表本页已找到你的目录。请选你当前账号的 <strong>udf 本身</strong>，不要选整个 USER、游戏或插件目录。</p>
+<input id="folder" type="file" webkitdirectory multiple aria-label="选择 udf 文件夹">
+<p id="selection" class="muted" role="status">尚未选择。最多 2,048 个文件，总计不超过 64 MiB；超限会整体停止，不漏文件。</p>
+<details><summary>查看将包含的相对路径与大小</summary><pre id="inventory">尚无文件。</pre></details>
+</section>
+<section>
+<h2>2 · 确认范围并生成 ZIP</h2>
+<p class="notice"><strong>隐私提示：</strong>udf 可能包含其他插件设置、角色名和历史记录。本页不解析数据库，也不能只过滤两个 Store。ZIP 会包含下方清单里的全部文件；不愿提供这些内容时请勿继续。</p>
+<label><input id="closed" type="checkbox">我已完全退出游戏，采集结束前不会重新启动客户端。</label>
+<label><input id="consent" type="checkbox">我已查看采集范围，理解其中可能包含其他配置；同意在本机生成 ZIP。</label>
+<button id="build" disabled>生成本地取证 ZIP</button>
+<p id="status" role="status" aria-live="polite">选择文件夹并完成两项确认后可生成。</p>
+<a id="download" class="save" hidden>保存取证 ZIP</a>
+<small>生成后点击保存，再把该 ZIP 作为附件提交给维护者。下载位置由浏览器决定，本页不能确认你是否已经保存。ZIP 不是加密文件，不要公开分享。</small>
+</section>
+<p class="muted">输出格式：<code>RS-UDF-EVIDENCE-1</code>。包含文件 SHA256、大小和相对路径清单；校验的是复制字节，不是游戏存档完整性。原始目录不写入任何文件。浏览器文件清单无法独立证明目录中不存在不可见或无权读取的文件。</p>
+<script id="collector-core">
+/* Maintenance: browser File objects are read-only inputs chosen by the user. The earlier in-game
+ * 3500-byte report dropped needed evidence. This collector packages opaque files, not guessed
+ * RocksDB records. No network, SaveData, system shell, file-write handle, or automatic upload.
+ * ZIP uses the standard STORE method (no lossy text conversion/compression). Bytes + SHA256 + CRC32
+ * preserve binary data and zero-byte LOCK files. Any invalid path/overflow/read failure rejects ALL.
+ * This is NOT an atomic database snapshot: require a closed-client confirmation and disclose that
+ * the browser cannot verify process state. Never infer successful game recovery from this archive. */
+(function(root){
+'use strict';
+const MAX_BYTES=64*1024*1024, MAX_FILES=2048, encoder=new TextEncoder();
+const crcTable=new Uint32Array(256);
+for(let i=0;i<256;i++){let x=i;for(let j=0;j<8;j++)x=(x&1)?(0xedb88320^(x>>>1)):(x>>>1);crcTable[i]=x>>>0;}
+function crc32(bytes){let c=0xffffffff;for(const b of bytes)c=(c>>>8)^crcTable[(c^b)&255];return (c^0xffffffff)>>>0;}
+function checkedPath(file){
+ const p=file.webkitRelativePath;
+ if(typeof p!=='string'||p.includes('\\')||p.includes('\0')||/[\x00-\x1f\x7f]/.test(p))throw Error('PATH：无效文件路径');
+ const parts=p.split('/');
+ if(parts[0].toLowerCase()!=='udf'||parts.length<2)throw Error('DIRECTORY：请只选择当前账号的 udf 文件夹');
+ if(parts.length>17||parts.some(x=>x===''||x==='.'||x==='..'||x.includes(':')))throw Error('PATH：路径层级或字符无效');
+ const name='udf/'+parts.slice(1).join('/');
+ if(encoder.encode(name).length>1024)throw Error('PATH：文件名过长');
+ return name;
+}
+function plan(input){
+ const files=Array.from(input||[]);
+ if(!files.length)throw Error('EMPTY：未选择文件，或选择了空目录');
+ if(files.length>MAX_FILES)throw Error('LIMIT：文件数超过 '+MAX_FILES+'，没有省略任何文件');
+ const names=new Set();let totalBytes=0;
+ const entries=files.map(file=>{
+  const path=checkedPath(file),key=path.toLowerCase();
+  if(names.has(key))throw Error('DUPLICATE：有重复或大小写冲突的路径');names.add(key);
+  if(!Number.isSafeInteger(file.size)||file.size<0)throw Error('SIZE：无法确认文件长度');
+  if(typeof file.arrayBuffer!=='function')throw Error('READ：浏览器不能读取所选文件');
+  totalBytes+=file.size;if(totalBytes>MAX_BYTES)throw Error('LIMIT：总数据超过 64 MiB，未生成残缺 ZIP');
+  return {file,path,bytes:file.size,lastModified:Number.isFinite(file.lastModified)?file.lastModified:null};
+ });
+ entries.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
+ return {files:entries,count:entries.length,totalBytes};
+}
+async function sha256(data){
+ if(!root.crypto||!root.crypto.subtle)throw Error('HASH：当前浏览器缺少本地 SHA256；请使用桌面 Chrome 或 Edge 打开此文件');
+ const hash=new Uint8Array(await root.crypto.subtle.digest('SHA-256',data));
+ return Array.from(hash,b=>b.toString(16).padStart(2,'0')).join('');
+}
+function makeZip(entries){
+ // ZIP32, UTF-8 names, STORE. Fixed DOS timestamp prevents fabricating a source filesystem time.
+ // Local/central sizes and CRC agree; evidence file times live in manifest instead.
+ const chunks=[],central=[];let offset=0,centralSize=0;
+ function header(n){const b=new Uint8Array(n);return [b,new DataView(b.buffer)];}
+ for(const e of entries){
+  const name=encoder.encode(e.path),data=e.data,crc=crc32(data);
+  const [local,v]=header(30+name.length);
+  v.setUint32(0,0x04034b50,true);v.setUint16(4,20,true);v.setUint16(6,0x800,true);
+  v.setUint16(12,33,true);v.setUint32(14,crc,true);v.setUint32(18,data.length,true);v.setUint32(22,data.length,true);v.setUint16(26,name.length,true);local.set(name,30);
+  const [cd,c]=header(46+name.length);
+  c.setUint32(0,0x02014b50,true);c.setUint16(4,20,true);c.setUint16(6,20,true);c.setUint16(8,0x800,true);
+  c.setUint16(14,33,true);c.setUint32(16,crc,true);c.setUint32(20,data.length,true);c.setUint32(24,data.length,true);c.setUint16(28,name.length,true);c.setUint32(42,offset,true);cd.set(name,46);
+  chunks.push(local,data);central.push(cd);offset+=local.length+data.length;centralSize+=cd.length;
+ }
+ const [end,v]=header(22);v.setUint32(0,0x06054b50,true);v.setUint16(8,entries.length,true);v.setUint16(10,entries.length,true);v.setUint32(12,centralSize,true);v.setUint32(16,offset,true);
+ const total=offset+centralSize+end.length;
+ if(total>MAX_BYTES+4*1024*1024)throw Error('LIMIT：ZIP 元数据超过预算');
+ const output=new Uint8Array(total);let at=0;
+ for(const bytes of [...chunks,...central,end]){output.set(bytes,at);at+=bytes.length;}
+ return output;
+}
+async function build(input,options){
+ options=options||{};
+ if(options.clientClosed!==true||options.privacyAccepted!==true)throw Error('CONFIRM：需要先退出客户端并确认隐私范围');
+ const selected=plan(input),entries=[],rows=[];
+ for(let i=0;i<selected.files.length;i++){
+  const item=selected.files[i];let buffer;
+  try{buffer=await item.file.arrayBuffer();}catch(_){throw Error('READ：读取失败 '+item.path+'；未生成 ZIP。请确认客户端已退出后重新选择目录。');}
+  const bytes=new Uint8Array(buffer);
+  if(bytes.length!==item.bytes)throw Error('CHANGED：读取长度变化 '+item.path+'，已整体停止；请重新选择目录');
+  const hash=await sha256(bytes);entries.push({path:item.path,data:bytes});
+  rows.push({path:item.path,bytes:bytes.length,sha256:hash,lastModified:item.lastModified});
+  if(typeof options.progress==='function')options.progress(i+1,selected.count);
+ }
+ const manifest={format:'RS-UDF-EVIDENCE-1',source:'user_selected_udf_files',capturedAt:new Date().toISOString(),
+  enumeration:'browser_supplied_file_list_not_independently_verified',
+  consistency:'client_closed_user_confirmed_not_atomic',saveIntegrityVerified:false,
+  privacy:'entire_selected_udf_may_include_other_addons_and_character_data',omittedFiles:0,sourceFileCount:rows.length,sourceBytes:selected.totalBytes,files:rows};
+ entries.push({path:'evidence_manifest.json',data:encoder.encode(JSON.stringify(manifest,null,2)+'\n')});
+ const bytes=makeZip(entries);return {bytes,manifest};
+}
+root.RSUdfEvidence=Object.freeze({plan,build,crc32,MAX_BYTES,MAX_FILES});
+})(globalThis);
+</script>
+<script id="collector-ui">
+/* Maintenance: selection only inspects File metadata; actual reads require BOTH confirmations and
+ * Generate click. textContent is mandatory for filenames/errors, preventing filename HTML injection.
+ * Old Blob URLs are revoked on re-selection/unload; no local storage, telemetry or background task. */
+(function(){
+'use strict';
+const $=id=>document.getElementById(id),folder=$('folder'),closed=$('closed'),consent=$('consent'),button=$('build'),status=$('status'),link=$('download');
+let selected=[],generation=0,url=null,busy=false;
+function clearDownload(){if(url){URL.revokeObjectURL(url);url=null;}link.hidden=true;link.removeAttribute('href');}
+function ready(){button.disabled=busy||!selected.length||!closed.checked||!consent.checked;}
+folder.addEventListener('change',()=>{
+ generation++;clearDownload();selected=[];closed.checked=false;consent.checked=false;status.className='';
+ try{const plan=RSUdfEvidence.plan(folder.files);selected=Array.from(folder.files);
+  $('selection').textContent=plan.count+' 个文件，共 '+plan.totalBytes.toLocaleString()+' 字节。请先查看清单，再确认。';
+  $('inventory').textContent=plan.files.map(x=>x.path+'  ['+x.bytes+' bytes]').join('\n');
+  status.textContent='未读取正文；请完成两项确认。';
+ }catch(e){$('selection').textContent=e.message;$('inventory').textContent='没有可采集清单。';status.textContent='选择失败，未生成 ZIP。';status.className='error';}
+ ready();
+});
+closed.addEventListener('change',ready);consent.addEventListener('change',ready);
+button.addEventListener('click',async()=>{
+ if(button.disabled)return;
+ const job=generation;busy=true;folder.disabled=true;closed.disabled=true;consent.disabled=true;ready();clearDownload();status.className='';
+ try{
+  const result=await RSUdfEvidence.build(selected,{clientClosed:closed.checked,privacyAccepted:consent.checked,
+    progress:(n,total)=>{status.textContent='只读采集中：'+n+'/'+total+'；未上传。';}});
+  if(job!==generation)throw Error('选择已改变，请重新采集');
+  url=URL.createObjectURL(new Blob([result.bytes],{type:'application/zip'}));link.href=url;
+  link.download='ReplicatedSuite_UDF_Evidence_'+new Date().toISOString().replace(/[:.]/g,'-')+'.zip';link.hidden=false;
+  status.className='ok';status.textContent='ZIP 已生成：'+result.manifest.sourceFileCount+' 个原文件全部包含（另附校验清单），'+result.bytes.length.toLocaleString()+' 字节。点击“保存取证 ZIP”，再上传给维护者。尚未验证游戏存档是否正常。';
+ }catch(e){clearDownload();status.className='error';status.textContent=String(e.message||e)+'；没有提供部分 ZIP。';}
+ finally{busy=false;folder.disabled=false;closed.disabled=false;consent.disabled=false;ready();}
+});
+window.addEventListener('pagehide',()=>{generation++;selected=[];clearDownload();});
+})();
+</script>
+</body></html>
