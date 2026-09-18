@@ -23,8 +23,10 @@ S.Features.Activities = S.Features.Activities or {}
 local Feature = S.Features.Activities
 
 local A = {
-    version = 1,
+    version = 2,
     rows = {},
+    timelineRows = {},
+    liveRows = {},
     rowByKey = {},
     revision = 0,
     updatedAtMs = 0,
@@ -43,8 +45,17 @@ Feature.Authority = A
 local WEEK_SECONDS = 7 * 24 * 60 * 60
 local DAY_SECONDS = 24 * 60 * 60
 local CLOCK_SAMPLE_MS = 15000
-local PRIORITY_STAGE_THRESHOLD_SECONDS = 3 * 60 * 60
-A.PriorityStageSortContractVersion = 1 -- 中文维护注释（2026-09-16，活动排序 Authority）：v1 固化“普通进行中 → 普通<=3h → 鲸鱼/烛台已知阶段 → 普通>3h → 其它无时限”的产品规则。这里只声明排序契约，不改变活动时间/阶段读取或 Store。
+A.ActivityTimelineSortContractVersion = 2
+A.PriorityStageSortContractVersion = 1 -- 兼容只读标记：旧 v1 分带已经退役，保留字段仅防止历史诊断/脚本因 nil 误判。
+-- 中文维护注释（2026-09-18，Activity Timeline v2）：
+-- 原 v1 把“计划活动时间”和“实时区域阶段”塞进同一 comparator，再用 <=3h / 鲸鱼烛台 / >3h 的业务分带补偿，
+-- 结果虽然可控，却不是玩家理解的时间线：一个“危险3阶段”没有可比较的开始时间，却会插进 2h40m 与 3h10m 之间。
+-- v2 的 Authority 边界改为两类投影：
+--   1) timeline：只有能得到明确开始/结束时间的计划活动或 live-derived occurrence；active 按剩余结束时间，upcoming 按距离开始时间。
+--   2) live：只描述战争/纷争/和平/危险阶段，按 curated ZoneStateWatch 顺序稳定展示，绝不与 timeline 比较。
+-- 数据流仍是 CuratedSchedule + X2Map transient facts -> Activity Authority；不增加 Tick、不改变 QuestProgress/Store Authority。
+-- 后续维护禁止重新引入“阶段权重/3小时阈值”把 live row 插回 timeline；若某实时状态可以确定地推导出时间点，应新建 dynamic occurrence，
+-- 并同时保留原 live state row。不能根据名称或阶段猜测时间，也不能把实时区域颜色传播到 timeline 倒计时。
 
 local ZONE_STATE = {
     TROUBLE_0 = tonumber(rawget(_G, "HPWS_TROUBLE_0")) or 0,
@@ -202,12 +213,26 @@ function A:GetDateSerial()
     return baseDate + math.floor((baseSeconds + elapsed) / DAY_SECONDS)
 end
 
+local function TimelineSortParts(row)
+    -- 中文维护注释（Activity Timeline v2）：timelineState 是时间排序的唯一语义 Authority。
+    -- active 使用 secondsUntilEnd，upcoming 使用 secondsUntilStart；兼容旧/测试行时才回退 active/seconds/sortSeconds。
+    -- 不读取 zoneState/tone/name 来推导时间状态，避免 Presentation 语义反向污染 Domain 排序。
+    local active = type(row) == "table" and (row.timelineState == "active" or row.active == true) or false
+    if active then
+        return 0, tonumber(row.secondsUntilEnd) or tonumber(row.seconds) or math.huge
+    end
+    return 1, tonumber(type(row) == "table" and row.secondsUntilStart or nil)
+        or tonumber(type(row) == "table" and row.seconds or nil)
+        or tonumber(type(row) == "table" and row.sortSeconds or nil)
+        or math.huge
+end
+
 local function BetterOccurrence(candidate, existing)
     if existing == nil then return true end
-    if candidate.active ~= existing.active then return candidate.active == true end
-    local a = tonumber(candidate.sortSeconds) or math.huge
-    local b = tonumber(existing.sortSeconds) or math.huge
-    if a ~= b then return a < b end
+    local aState, aSeconds = TimelineSortParts(candidate)
+    local bState, bSeconds = TimelineSortParts(existing)
+    if aState ~= bState then return aState < bState end
+    if aSeconds ~= bSeconds then return aSeconds < bSeconds end
     return tostring(candidate.scheduleText or "") < tostring(existing.scheduleText or "")
 end
 
@@ -273,10 +298,15 @@ function A:BuildStaticRows()
                         microName = tostring(event.microName or event.shortName or event.name or "活动"),
                         kind = "schedule",
                         source = "curated",
+                        presentationSection = "timeline",
+                        timelineState = active and "active" or "upcoming",
                         questScope = event.questScope,
                         questKey = event.questKey,
                         active = active,
                         seconds = seconds,
+                        secondsUntilStart = active and 0 or seconds,
+                        secondsUntilEnd = active and seconds or nil,
+                        -- sortSeconds 仅作为旧 Presentation/诊断兼容字段；v2 comparator 不再把 live 状态和它比较。
                         sortSeconds = active and 0 or seconds,
                         -- 中文维护注释（2026-09-15，活动显示规范）：计划活动的 active 只负责排序/任务尾部保持，
                         -- 不再承担视觉颜色或“进行中”文案。普通时间统一用 default（白色）；战争/纷争/和平颜色
@@ -352,8 +382,15 @@ function A:ScanTrackedZones()
 end
 
 function A:BuildZoneRows()
+    -- 中文维护注释（2026-09-18，Activity Timeline v2 / Live Authority）：
+    -- 这里的 row 只描述“区域现在是什么状态”，不再承载 Boss/活动开始时间。旧实现会把 102/103 的 Boss 文案写回 zone row，
+    -- 然后再拿 remainTime 与计划活动排序，造成 live state 与 timeline 语义混用。现在战争/纷争/和平/危险阶段永远留在 live section；
+    -- 能从这些状态确定性推导出来的活动时间由 BuildDynamicTimelineRows 另建 occurrence。这样同一 Native 事实可以有两个只读投影，
+    -- 但 Authority 仍然只有本 Activity Authority，不增加第二套扫描/缓存/持久化。
     local rows = {}
+    local liveOrder = 0
     for _, definition in ipairs(S.Data and S.Data.ZoneStateWatch or {}) do
+        liveOrder = liveOrder + 1
         local zoneId = tonumber(definition.zoneId)
         local state = zoneId and tonumber(self.zoneStates[zoneId]) or nil
         local remain = zoneId and self:GetZoneRemainSeconds(zoneId) or nil
@@ -361,45 +398,13 @@ function A:BuildZoneRows()
         local status = view and view.text or "状态未知"
         local tone = view and view.tone or "muted"
         local active = state == ZONE_STATE.BATTLE or state == ZONE_STATE.WAR
-        local sortSeconds = math.huge
         local untimed = true
-
         if remain ~= nil and view ~= nil and view.timed == true then
-            -- 中文维护注释（2026-09-15）：实时区域状态直接显示“战争/纷争/和平 + 时间”，
-            -- active 继续作为内部排序/摘要事实，Presentation 不再把它拼成“进行中”。
             status = view.text .. " " .. FormatCountdown(remain)
-            sortSeconds = remain
             untimed = false
         end
 
         local dynamic = S.Data and S.Data.DynamicEventZones and S.Data.DynamicEventZones[zoneId] or nil
-        if zoneId == 102 and state == ZONE_STATE.BATTLE and remain ~= nil then
-            status, active, sortSeconds, untimed = "纷争 " .. FormatCountdown(remain), false, remain, false
-        elseif zoneId == 102 and state == ZONE_STATE.WAR and remain ~= nil then
-            local total = math.max(0, tonumber(dynamic and dynamic.warTotalMinutes) or 90)
-            local activeMinutes = math.max(0, tonumber(dynamic and dynamic.activeWarMinutes) or 20)
-            active = remain > math.max(0, total - activeMinutes) * 60
-            status = "战争 " .. FormatCountdown(remain)
-        elseif zoneId == 103 and state == ZONE_STATE.BATTLE and remain ~= nil then
-            status, active, sortSeconds, untimed = "纷争 " .. FormatCountdown(remain), false, remain, false
-        elseif zoneId == 103 and state == ZONE_STATE.WAR and remain ~= nil then
-            local threshold = math.max(0, tonumber(dynamic and dynamic.bossWarRemainMinutes) or 76) * 60
-            local activeUntil = math.max(0, tonumber(dynamic and dynamic.bossActiveUntilWarRemainMinutes) or 75) * 60
-            local boss = tostring(dynamic and dynamic.bossLabel or "首领")
-            if remain > threshold then
-                local bossRemain = remain - threshold
-                -- 中文维护注释（2026-09-15，区域颜色 Authority）：此 Boss 倒计时仍处于 WAR conflictState，
-                -- 因此颜色必须继续使用战争红色；Boss 文案只改变状态文字，不能覆盖区域语义颜色。
-                -- 兼容边界：阈值、active、sortSeconds 与任务进度均保持原逻辑，仅修正 Presentation tone。
-                status, tone, active, sortSeconds = boss .. " " .. FormatCountdown(bossRemain), "red", false, bossRemain
-            elseif remain > activeUntil then
-                status, tone, active, sortSeconds = boss, "red", true, 0
-            else
-                status, tone, active, sortSeconds = "战争 " .. FormatCountdown(remain), "red", false, remain
-            end
-            untimed = false
-        end
-
         local row = {
             key = "zone:" .. tostring(zoneId),
             name = tostring(definition.name or definition.sourceName or ("区域 " .. tostring(zoneId))),
@@ -408,20 +413,16 @@ function A:BuildZoneRows()
             microName = tostring(definition.stripName or definition.name or zoneId),
             kind = "zone",
             source = "live",
+            presentationSection = "live",
+            liveOrder = liveOrder,
             zoneState = true,
             zoneId = zoneId,
-            -- 中文维护注释（2026-09-16，阶段排序事实）：phaseKnown 只表示本次 X2Map conflictState 能映射到已知区域阶段，
-            -- 它属于 Activity Authority 的瞬时只读事实，用来区分“危险1~5/纷争/战争/和平”与真正的“状态未知”。
-            -- 数据流只从 ScanZone -> ZONE_VIEW -> row 投影；不持久化、不影响任务进度。这样鲸鱼/烛台即使危险阶段没有 remainTime，
-            -- 也能进入专用排序带；未知状态仍 fail-closed 留在末尾，避免把 API 失败误当成有效阶段。
             phaseKnown = view ~= nil,
-            -- 中文维护注释：实时区域行优先从 definition 获取任务关联，同时回退到 DynamicEventZones 中的定义，
-            -- 确保如鲸鱼歌湾（103）与海之烛台（102）能正确关联 whalesong 与 aegis 任务组并挂接阶段进度。
             questScope = definition.questScope or (dynamic and dynamic.questScope),
             questKey = definition.questKey or (dynamic and dynamic.questKey),
             active = active,
-            seconds = untimed and nil or sortSeconds,
-            sortSeconds = sortSeconds,
+            seconds = untimed and nil or remain,
+            sortSeconds = untimed and math.huge or remain, -- 兼容诊断字段；v2 不用它与 timeline 比较。
             tone = tone,
             status = status,
             scheduleText = "实时区域",
@@ -431,74 +432,216 @@ function A:BuildZoneRows()
         rows[#rows + 1] = row
     end
 
+    -- Garden 不是 ZoneStateWatch 的常驻四区之一，但 DynamicEventZones 已有独立 live Authority。
+    -- 保留历史 key `zone:133:garden_boss` 兼容选择/诊断；语义改为 live state，真正的 Boss 时间线另由 dynamic occurrence 投影。
     local garden = S.Data and S.Data.DynamicEventZones and S.Data.DynamicEventZones[133] or nil
     if garden ~= nil then
         local state, remain = tonumber(self.zoneStates[133]), self:GetZoneRemainSeconds(133)
-        if state ~= nil and remain ~= nil then
-            local status, tone, active, seconds = "状态未知", "muted", false, remain
-            if state == ZONE_STATE.WAR then
-                status, tone, active = "战争 " .. FormatCountdown(remain), "red", true
-            elseif state == ZONE_STATE.BATTLE then
-                status, tone = "纷争 " .. FormatCountdown(remain), "orange"
-            elseif state == ZONE_STATE.PEACE then
-                local lead = math.max(0, tonumber(garden.conflictLeadMinutes) or 10) * 60
-                seconds = remain + lead
-                status, tone = "距下次战争约 " .. FormatCountdown(seconds), "blue"
-            else
-                local view = ZONE_VIEW[state]
-                status, tone = view and view.text or "状态未知", view and view.tone or "muted"
+        if state ~= nil then
+            local view = ZONE_VIEW[state]
+            local status = view and view.text or "状态未知"
+            local tone = view and view.tone or "muted"
+            local untimed = true
+            if remain ~= nil and view ~= nil and view.timed == true then
+                status = view.text .. " " .. FormatCountdown(remain)
+                untimed = false
             end
             rows[#rows + 1] = {
-                key = "zone:133:garden_boss", name = tostring(garden.name or "庭院首领"), fullName = tostring(garden.fullName or garden.name or "庭院首领"),
-                shortName = tostring(garden.shortName or "庭院"), microName = tostring(garden.microName or "庭院"),
-                kind = "zone", source = "live", zoneState = true, zoneId = 133,
-                active = active, seconds = seconds, sortSeconds = active and 0 or seconds, tone = tone, status = status,
-                scheduleText = "实时区域", progressText = "--", progressTone = "muted", progressAvailable = false,
+                key = "zone:133:garden_boss",
+                name = tostring(garden.name or "庭院Boss"),
+                fullName = tostring(garden.fullName or garden.name or "庭院Boss"),
+                shortName = tostring(garden.shortName or "庭院"),
+                microName = tostring(garden.microName or "庭院"),
+                kind = "zone", source = "live", presentationSection = "live", liveOrder = liveOrder + 1,
+                zoneState = true, zoneId = 133, phaseKnown = view ~= nil,
+                active = state == ZONE_STATE.BATTLE or state == ZONE_STATE.WAR,
+                seconds = untimed and nil or remain, sortSeconds = untimed and math.huge or remain,
+                tone = tone, status = status, scheduleText = "实时区域", untimed = untimed,
+                progressText = "--", progressTone = "muted", progressAvailable = false,
             }
         end
     end
     return rows
 end
 
-local function IsPriorityLiveStage(row)
-    local zoneId = tonumber(type(row) == "table" and row.zoneId or nil)
-    return (zoneId == 102 or zoneId == 103) and row.phaseKnown == true
+local function MakeDynamicOccurrence(options)
+    options = type(options) == "table" and options or {}
+    local active = options.active == true
+    local seconds = math.max(0, math.floor(tonumber(options.seconds) or 0))
+    return {
+        key = tostring(options.key or "dynamic:unknown"),
+        name = tostring(options.name or "活动"),
+        fullName = tostring(options.fullName or options.name or "活动"),
+        shortName = tostring(options.shortName or options.name or "活动"),
+        microName = tostring(options.microName or options.shortName or options.name or "活动"),
+        kind = "dynamic_occurrence",
+        source = "live-derived",
+        presentationSection = "timeline",
+        timelineState = active and "active" or "upcoming",
+        derivedFromZoneId = tonumber(options.zoneId),
+        zoneId = tonumber(options.zoneId),
+        questScope = options.questScope,
+        questKey = options.questKey,
+        active = active,
+        seconds = seconds,
+        secondsUntilStart = active and 0 or seconds,
+        secondsUntilEnd = active and seconds or nil,
+        sortSeconds = active and 0 or seconds,
+        -- Timeline 时间统一使用中性颜色。区域红/橙/蓝属于 live-state 语义，不能传播到时间点。
+        tone = "default",
+        status = FormatCountdown(seconds),
+        scheduleText = "实时推导",
+        occurrenceKey = tostring(options.key or "dynamic:unknown") .. ":" .. tostring(options.phase or "derived"),
+    }
 end
 
-local function ActivitySortBand(row)
-    local specialStage = IsPriorityLiveStage(row)
-    local seconds = tonumber(type(row) == "table" and row.sortSeconds or nil)
-    local timed = seconds ~= nil and seconds ~= math.huge
-    -- 中文维护注释（2026-09-16，活动排序根因修复）：旧 SortRows 只比较 active/sortSeconds，导致鲸鱼/烛台
-    -- 在战争阶段按 1h 倒计时插进普通 1~2h 活动前面，而危险阶段因为无倒计时又掉到所有长时活动之后。
-    -- Authority 现在使用显式业务分带：普通进行中(0) → 普通<=3h(1) → 鲸鱼/烛台已知阶段(2) → 普通>3h(3) → 其它无时限/未知(4)。
-    -- 特殊阶段必须在 active 判断之前归入 band=2，避免“活动阶段 active=true”再次抢到最前；恰好3小时仍属于用户定义的“3小时以内”。
-    -- 兼容边界：不改 sortSeconds/active 的原始语义，也不影响十字星/伊尼斯/庭院等其它区域；同一 band 内仍沿用秒数、zoneState、名称稳定排序。
-    if specialStage then return 2 end
-    if type(row) == "table" and row.active == true then return 0 end
-    if timed and seconds <= PRIORITY_STAGE_THRESHOLD_SECONDS then return 1 end
-    if timed then return 3 end
-    return 4
+function A:BuildDynamicTimelineRows()
+    -- 中文维护注释（Activity Timeline v2，动态 occurrence）：只使用已经由 X2Map Authority 采样并缓存的 zoneStates/remainTime，
+    -- 本函数禁止再调用 Native API。只有“能由当前已知规则得到唯一秒数”的状态才进入 timeline；危险阶段等无确定时间的信息留在 live section。
+    -- 未来新增规则必须把时间来源/阈值写进 data/rs_event_data.lua，禁止从 UI 文案或名称猜测。
+    local rows = {}
+    local function append(row)
+        if type(row) ~= "table" or IsHidden(row) == true then return end
+        self:AttachProgress(row)
+        rows[#rows + 1] = row
+    end
+
+    -- 中文维护注释（十字星/伊尼斯净化）：RU 客户端在 BATTLE 阶段提供 remainTime，参考 timeUntil 也把该冲突窗口结束
+    -- 视为净化开始；本项目只借鉴这个“可确定开始时间”的事实，用现有 5s Zone snapshot 构造 upcoming occurrence。
+    -- 一旦进入 WAR，本 Authority 不凭观察时刻再制造“15分钟进行中”计时，因为那会把插件启动/事件到达时间错误提升为服务器 Authority。
+    -- 若未来拿到官方/Native 的活动结束时间，再把 active 时长写入 data Authority；在此之前必须 fail-closed。
+    for _, zoneId in ipairs({ 20, 17 }) do
+        local definition = S.Data and S.Data.ZoneStateWatchById and S.Data.ZoneStateWatchById[zoneId] or nil
+        local state, remain = tonumber(self.zoneStates[zoneId]), self:GetZoneRemainSeconds(zoneId)
+        if type(definition) == "table" and state == ZONE_STATE.BATTLE and remain ~= nil then
+            local short = tostring(definition.stripName or definition.name or zoneId)
+            append(MakeDynamicOccurrence({
+                key = zoneId == 20 and "dynamic:zone:20:cinderstone_purify" or "dynamic:zone:17:ynystere_purify",
+                name = short .. "净化",
+                fullName = tostring(definition.fullName or definition.name or short) .. "净化",
+                shortName = short .. "净化", microName = short .. "净化", zoneId = zoneId,
+                questScope = definition.questScope, questKey = definition.questKey,
+                seconds = remain, active = false, phase = "battle_to_purification",
+            }))
+        end
+    end
+
+    local aegis = S.Data and S.Data.DynamicEventZones and S.Data.DynamicEventZones[102] or nil
+    if aegis ~= nil then
+        local state, remain = tonumber(self.zoneStates[102]), self:GetZoneRemainSeconds(102)
+        if remain ~= nil and state == ZONE_STATE.BATTLE then
+            append(MakeDynamicOccurrence({
+                key = "dynamic:zone:102:aegis", name = aegis.name or "海之烛台", fullName = aegis.fullName or aegis.name,
+                shortName = aegis.shortName or "烛台", microName = aegis.microName or "烛台", zoneId = 102,
+                questScope = aegis.questScope, questKey = aegis.questKey, seconds = remain, active = false, phase = "battle_to_war",
+            }))
+        elseif remain ~= nil and state == ZONE_STATE.WAR then
+            local total = math.max(0, tonumber(aegis.warTotalMinutes) or 90)
+            local activeMinutes = math.max(0, tonumber(aegis.activeWarMinutes) or 20)
+            local endThreshold = math.max(0, total - activeMinutes) * 60
+            if remain > endThreshold then
+                append(MakeDynamicOccurrence({
+                    key = "dynamic:zone:102:aegis", name = aegis.name or "海之烛台", fullName = aegis.fullName or aegis.name,
+                    shortName = aegis.shortName or "烛台", microName = aegis.microName or "烛台", zoneId = 102,
+                    questScope = aegis.questScope, questKey = aegis.questKey, seconds = remain - endThreshold, active = true, phase = "war_opening",
+                }))
+            end
+        end
+    end
+
+    local whalesong = S.Data and S.Data.DynamicEventZones and S.Data.DynamicEventZones[103] or nil
+    if whalesong ~= nil then
+        local state, remain = tonumber(self.zoneStates[103]), self:GetZoneRemainSeconds(103)
+        if remain ~= nil and state == ZONE_STATE.WAR then
+            local threshold = math.max(0, tonumber(whalesong.bossWarRemainMinutes) or 76) * 60
+            local activeUntil = math.max(0, tonumber(whalesong.bossActiveUntilWarRemainMinutes) or 75) * 60
+            local bossName = tostring(whalesong.bossLabel or "Boss")
+            if remain > threshold then
+                append(MakeDynamicOccurrence({
+                    key = "dynamic:zone:103:whalesong_boss", name = tostring(whalesong.shortName or "鲸鱼") .. " " .. bossName,
+                    fullName = tostring(whalesong.fullName or whalesong.name or "鲸鱼歌湾") .. " " .. bossName,
+                    shortName = tostring(whalesong.shortName or "鲸鱼") .. " " .. bossName, microName = "鲸鱼Boss", zoneId = 103,
+                    questScope = whalesong.questScope, questKey = whalesong.questKey, seconds = remain - threshold, active = false, phase = "boss_countdown",
+                }))
+            elseif remain > activeUntil then
+                append(MakeDynamicOccurrence({
+                    key = "dynamic:zone:103:whalesong_boss", name = tostring(whalesong.shortName or "鲸鱼") .. " " .. bossName,
+                    fullName = tostring(whalesong.fullName or whalesong.name or "鲸鱼歌湾") .. " " .. bossName,
+                    shortName = tostring(whalesong.shortName or "鲸鱼") .. " " .. bossName, microName = "鲸鱼Boss", zoneId = 103,
+                    questScope = whalesong.questScope, questKey = whalesong.questKey, seconds = remain - activeUntil, active = true, phase = "boss_active",
+                }))
+            end
+        end
+    end
+
+    local garden = S.Data and S.Data.DynamicEventZones and S.Data.DynamicEventZones[133] or nil
+    if garden ~= nil then
+        local state, remain = tonumber(self.zoneStates[133]), self:GetZoneRemainSeconds(133)
+        local seconds, active, phase = nil, false, nil
+        if remain ~= nil and state == ZONE_STATE.PEACE then
+            seconds = remain + math.max(0, tonumber(garden.conflictLeadMinutes) or 10) * 60
+            phase = "peace_to_war"
+        elseif remain ~= nil and state == ZONE_STATE.BATTLE then
+            seconds, phase = remain, "battle_to_war"
+        elseif remain ~= nil and state == ZONE_STATE.WAR then
+            seconds, active, phase = remain, true, "war_active"
+        end
+        if seconds ~= nil then
+            append(MakeDynamicOccurrence({
+                key = "dynamic:zone:133:garden_boss", name = garden.name or "庭院Boss", fullName = garden.fullName or garden.name,
+                shortName = garden.shortName or "庭院", microName = garden.microName or "庭院", zoneId = 133,
+                questScope = garden.questScope, questKey = garden.questKey, seconds = seconds, active = active, phase = phase,
+            }))
+        end
+    end
+    return rows
 end
 
-local function SortRows(a, b)
-    local aBand, bBand = ActivitySortBand(a), ActivitySortBand(b)
-    if aBand ~= bBand then return aBand < bBand end
-    local sa, sb = tonumber(a.sortSeconds) or math.huge, tonumber(b.sortSeconds) or math.huge
-    if sa ~= sb then return sa < sb end
-    if a.zoneState ~= b.zoneState then return a.zoneState == true end
-    return tostring(a.name) < tostring(b.name)
+local function SortTimelineRows(a, b)
+    local aState, aSeconds = TimelineSortParts(a)
+    local bState, bSeconds = TimelineSortParts(b)
+    if aState ~= bState then return aState < bState end
+    if aSeconds ~= bSeconds then return aSeconds < bSeconds end
+    local aSource = tostring(a.source or "") == "live-derived" and 0 or 1
+    local bSource = tostring(b.source or "") == "live-derived" and 0 or 1
+    if aSource ~= bSource then return aSource < bSource end
+    local aName, bName = tostring(a.name or ""), tostring(b.name or "")
+    if aName ~= bName then return aName < bName end
+    return tostring(a.scheduleText or "") < tostring(b.scheduleText or "")
+end
+
+local function SortLiveRows(a, b)
+    -- Live section 是状态面板，不是时间线。使用 data/rs_event_data.lua 的 curated 顺序作为稳定 Authority；
+    -- remainTime 只显示，不参与行位置，避免“战争剩 59m”每秒在区域列表里和别的阶段互换。
+    local ao, bo = tonumber(a.liveOrder) or math.huge, tonumber(b.liveOrder) or math.huge
+    if ao ~= bo then return ao < bo end
+    local az, bz = tonumber(a.zoneId) or math.huge, tonumber(b.zoneId) or math.huge
+    if az ~= bz then return az < bz end
+    return tostring(a.name or "") < tostring(b.name or "")
 end
 
 function A:Refresh(reason)
     self:SyncClock(false)
-    local rows = self:BuildZoneRows()
-    local static = self:BuildStaticRows()
-    for _, row in ipairs(static) do rows[#rows + 1] = row end
-    table.sort(rows, SortRows)
+
+    -- 中文维护注释（Activity Timeline v2 projection transaction）：一次 Refresh 内分别构建 timeline/live，
+    -- 各自完成排序后再拼接，最后一次性替换 rows/rowByKey/revision。Presentation 因此永远看到同一 revision 的完整快照，
+    -- 不会在 1s timer 中先看到新 timeline、后看到旧 live。动态 occurrence 只复用前一次 5s zone scan 的 transient facts，
+    -- 所以本路径仍然没有 Native API 调用；性能模型保持“1s 纯投影 + 5s 区域采样”。
+    local timeline = self:BuildStaticRows()
+    local dynamic = self:BuildDynamicTimelineRows()
+    for _, row in ipairs(dynamic) do timeline[#timeline + 1] = row end
+    table.sort(timeline, SortTimelineRows)
+
+    local live = self:BuildZoneRows()
+    table.sort(live, SortLiveRows)
+
+    local rows = {}
+    for _, row in ipairs(timeline) do rows[#rows + 1] = row end
+    for _, row in ipairs(live) do rows[#rows + 1] = row end
 
     local byKey = {}
     for _, row in ipairs(rows) do byKey[row.key] = row end
+    self.timelineRows, self.liveRows = timeline, live
     self.rows, self.rowByKey = rows, byKey
     self.revision = (tonumber(self.revision) or 0) + 1
     self.updatedAtMs = self:NowMs()
@@ -511,6 +654,14 @@ end
 
 function A:GetRows()
     return self.rows, self.revision
+end
+
+function A:GetTimelineRows()
+    return self.timelineRows, self.revision
+end
+
+function A:GetLiveRows()
+    return self.liveRows, self.revision
 end
 
 function A:GetRow(key)
@@ -528,25 +679,34 @@ function A:GetWidgetRows(limit)
 end
 
 function A:GetSummary()
-    local active, soon, live = 0, 0, 0
-    for _, row in ipairs(self.rows) do
-        if row.active == true then active = active + 1 end
-        if row.zoneState == true then live = live + 1 end
-        local seconds = tonumber(row.seconds)
-        if row.active ~= true and seconds ~= nil and seconds <= 2 * 60 * 60 then soon = soon + 1 end
+    local timelineActive, liveActive, soon = 0, 0, 0
+    for _, row in ipairs(self.timelineRows or {}) do
+        if row.timelineState == "active" or row.active == true then
+            timelineActive = timelineActive + 1
+        else
+            local seconds = tonumber(row.secondsUntilStart) or tonumber(row.seconds)
+            if seconds ~= nil and seconds <= 2 * 60 * 60 then soon = soon + 1 end
+        end
+    end
+    for _, row in ipairs(self.liveRows or {}) do
+        if row.active == true then liveActive = liveActive + 1 end
     end
     local hidden = 0
     for _, value in pairs(Feature.State and Feature.State.hiddenEvents or {}) do if value == true then hidden = hidden + 1 end end
     return {
         revision = self.revision,
-        total = #self.rows,
-        active = active,
+        total = #(self.rows or {}),
+        active = timelineActive + liveActive, -- 历史兼容字段；新 UI 使用 timelineActive/liveActive 分离语义。
+        timelineActive = timelineActive,
+        liveActive = liveActive,
+        timelineTotal = #(self.timelineRows or {}),
         withinTwoHours = soon,
-        liveZones = live,
+        liveZones = #(self.liveRows or {}),
         hidden = hidden,
         updatedAtMs = self.updatedAtMs,
         zoneScanFailures = self.zoneScanFailures,
         progressAuthority = self.questProgressProvider ~= nil or self.instanceProgressProvider ~= nil,
+        timelineContractVersion = self.ActivityTimelineSortContractVersion,
     }
 end
 

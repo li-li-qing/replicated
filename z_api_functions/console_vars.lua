@@ -1,3 +1,9 @@
+----------------------------------------------------------------------------------------
+-- ArcheRage RU console-variable reference dump
+-- Maintained: 2026-09-18
+-- Reference-only: this file is NOT executable Lua and is NOT an addon API allow-list.
+-- Keep it outside runtime loading; use only for manual diagnostics/research.
+----------------------------------------------------------------------------------------
  REQUIRE_NET_SYNC: cannot be changed on client and when connecting it's sent to the client
  SAVEGAME: stored when saving a savegame
  READONLY: can not be changed by the user
@@ -16452,7 +16458,7 @@ help:
 
 variable: cl_immigration_passport_hash 
 type: string
-current: I3MaAzOL‰ÈM­Y7ë0ëCb
+current: I3MaAzOLï¿½ï¿½Mï¿½Y7ï¿½0ï¿½Cb
 help: cl_immigration_passport_hash
 
 variable: option_character_privacy_status 

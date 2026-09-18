@@ -120,6 +120,7 @@ Test("feature metadata and contracts exist", function()
     assert(F.PersistenceStoreSchemaContractVersion == 8)
     assert(F.PersistenceWindowCanonicalContractVersion == 1)
     assert(F.KnownLegacyCanonicalRecoveryContractVersion >= 1)
+    assert((tonumber(F.Authority and F.Authority.ActivityTimelineSortContractVersion) or 0) >= 2, "Activity Timeline v2 contract missing")
     assert(type(F.Commands) == "table")
     assert(type(F.Commands.MarkStoreDirty) == "function")
     assert(type(F.Commands.SetWidgetWindowState) == "function")
@@ -211,48 +212,98 @@ Test("activity status text removes 进行中 and zone tones encode only semantic
     end
 end)
 
-Test("special boss countdown keeps war semantic red", function()
-    -- 中文维护注释（2026-09-15）：103 特殊首领倒计时仍发生在 WAR 状态内；
-    -- UI 规范以区域语义为颜色 Authority，因此不能再用黄色覆盖战争红色。
+Test("whalesong boss becomes a timed timeline occurrence while live row keeps war semantics", function()
+    -- Activity Timeline v2：区域状态与可计算的活动时间点必须拆开。103 仍在 WAR，
+    -- live row 只描述战争；Boss 倒计时作为独立 dynamic occurrence 进入时间线。
     local S, F, h = ActivityBoot({ zoneState = 6, remainTime = 80 * 60 })
     assert(F.Authority:ScanTrackedZones())
-    assert(F.Authority:Refresh("war_boss_tone"))
-    local row = assert(F.Authority:GetRow("zone:103"), "missing zone 103 special boss countdown row")
-    assert(not tostring(row.status or ""):find("战争", 1, true), "test fixture did not enter special boss countdown band")
-    assert(row.tone == "red", "WAR special boss countdown must remain red, got " .. tostring(row.tone))
+    assert(F.Authority:Refresh("war_boss_timeline"))
+    local live = assert(F.Authority:GetRow("zone:103"), "missing zone 103 live row")
+    assert(live.presentationSection == "live", "Whalesong zone row must stay in live section")
+    assert(tostring(live.status or ""):find("战争", 1, true), "live row must keep WAR semantic text")
+    assert(live.tone == "red", "WAR live row must remain red")
+    local boss = assert(F.Authority:GetRow("dynamic:zone:103:whalesong_boss"), "missing Whalesong boss timeline occurrence")
+    assert(boss.presentationSection == "timeline")
+    assert(boss.timelineState == "upcoming")
+    assert(boss.secondsUntilStart == 4 * 60, "Boss should start in 4m, got " .. tostring(boss.secondsUntilStart))
+    assert(boss.tone == "default", "timeline countdown color must stay neutral")
 end)
 
-Test("whalesong and aegis stages sort after <=3h activities but before >3h activities", function()
-    -- 中文维护测试（2026-09-16）：鲸鱼/烛台的“阶段”既可能是带 remainTime 的战争/纷争，
-    -- 也可能是没有倒计时的危险1~5阶段。排序 Authority 必须按业务阶段身份分带，而不能只看 sortSeconds。
-    -- 产品规则：普通进行中最前；普通 <=3h；鲸鱼/烛台已知阶段；普通 >3h；最后才是其它无时限状态。
-    for _, zoneState in ipairs({ 6, 2 }) do -- WAR timed + TROUBLE_2 untimed
-        local S, F, h = ActivityBoot({ zoneState = zoneState, remainTime = 60 * 60 })
-        assert(F.Authority:ScanTrackedZones())
-        assert(F.Authority:Refresh("priority_band:" .. tostring(zoneState)))
-        local rows = F.Authority:GetRows()
-        local specialPositions, shortOrdinaryPositions, longOrdinaryPositions = {}, {}, {}
-        for index, row in ipairs(rows) do
-            local seconds = tonumber(row.sortSeconds)
-            local isTimed = seconds ~= nil and seconds ~= math.huge
-            local isSpecial = tonumber(row.zoneId) == 102 or tonumber(row.zoneId) == 103
-            if isSpecial and row.phaseKnown == true then
-                specialPositions[#specialPositions + 1] = index
-            elseif isTimed and row.active ~= true and seconds <= 3 * 60 * 60 then
-                shortOrdinaryPositions[#shortOrdinaryPositions + 1] = index
-            elseif isTimed and row.active ~= true and seconds > 3 * 60 * 60 then
-                longOrdinaryPositions[#longOrdinaryPositions + 1] = index
+Test("timeline rows sort purely by temporal semantics and always precede live state rows", function()
+    local S, F, h = ActivityBoot({ zoneState = 6, remainTime = 60 * 60 })
+    assert(F.Authority:ScanTrackedZones())
+    assert(F.Authority:Refresh("timeline_v2_sort"))
+    local rows = F.Authority:GetRows()
+    local sawLive = false
+    local previousUpcoming = -1
+    local previousActiveEnd = -1
+    local inUpcoming = false
+    local timelineCount, liveCount = 0, 0
+    for _, row in ipairs(rows) do
+        if row.presentationSection == "live" then
+            sawLive = true
+            liveCount = liveCount + 1
+        else
+            assert(row.presentationSection == "timeline", "unexpected projection section: " .. tostring(row.presentationSection))
+            assert(not sawLive, "timeline row appeared after live-state section: " .. tostring(row.key))
+            timelineCount = timelineCount + 1
+            if row.timelineState == "active" then
+                assert(not inUpcoming, "active timeline row appeared after upcoming row")
+                local remain = assert(tonumber(row.secondsUntilEnd), "active row missing secondsUntilEnd")
+                assert(remain >= previousActiveEnd, "active rows must sort by time-to-end")
+                previousActiveEnd = remain
+            else
+                inUpcoming = true
+                assert(row.timelineState == "upcoming", "timeline row missing upcoming state")
+                local start = assert(tonumber(row.secondsUntilStart), "upcoming row missing secondsUntilStart")
+                assert(start >= previousUpcoming, "upcoming rows must sort by time-to-start")
+                previousUpcoming = start
             end
         end
-        assert(#specialPositions == 2, "fixture must expose both known Whalesong and Aegis stages for state " .. tostring(zoneState))
-        assert(#shortOrdinaryPositions > 0, "fixture needs at least one <=3h ordinary activity")
-        assert(#longOrdinaryPositions > 0, "fixture needs at least one >3h ordinary activity")
-        local firstSpecial = math.min(unpack(specialPositions))
-        local lastSpecial = math.max(unpack(specialPositions))
-        local lastShort = math.max(unpack(shortOrdinaryPositions))
-        local firstLong = math.min(unpack(longOrdinaryPositions))
-        assert(lastShort < firstSpecial, "all <=3h ordinary activities must sort before Whalesong/Aegis stages; state=" .. tostring(zoneState))
-        assert(lastSpecial < firstLong, "Whalesong/Aegis stages must sort before every >3h ordinary activity; state=" .. tostring(zoneState))
+    end
+    assert(timelineCount > 0, "timeline section empty")
+    assert(liveCount >= #(S.Data.ZoneStateWatch or {}), "live section incomplete")
+end)
+
+Test("aegis conflict derives an upcoming timeline occurrence without moving its live-state row", function()
+    local S, F, h = ActivityBoot({ zoneState = 5, remainTime = 30 * 60 }) -- BATTLE / 纷争
+    assert(F.Authority:ScanTrackedZones())
+    assert(F.Authority:Refresh("aegis_dynamic_timeline"))
+    local live = assert(F.Authority:GetRow("zone:102"), "missing Aegis live row")
+    assert(live.presentationSection == "live")
+    assert(tostring(live.status or ""):find("纷争", 1, true), "Aegis live row must expose conflict state")
+    local event = assert(F.Authority:GetRow("dynamic:zone:102:aegis"), "missing Aegis dynamic occurrence")
+    assert(event.presentationSection == "timeline")
+    assert(event.timelineState == "upcoming")
+    assert(event.secondsUntilStart == 30 * 60)
+    assert(event.questKey == "aegis")
+end)
+
+Test("cinderstone and ynystere conflict states derive purification timeline occurrences", function()
+    -- timeUntil 值得借鉴的是把可计算的区域事件变成时间线 occurrence；我们只复用已有 5s zone snapshot，
+    -- 不照搬它的 OnUpdate / Quest 扫描，也不在 WAR 后伪造 15 分钟计时。
+    local S, F, h = ActivityBoot({ zoneState = 5, remainTime = 25 * 60 })
+    assert(F.Authority:ScanTrackedZones())
+    assert(F.Authority:Refresh("purify_dynamic_timeline"))
+    local cinder = assert(F.Authority:GetRow("dynamic:zone:20:cinderstone_purify"), "missing Cinderstone purification occurrence")
+    local ynys = assert(F.Authority:GetRow("dynamic:zone:17:ynystere_purify"), "missing Ynystere purification occurrence")
+    assert(cinder.timelineState == "upcoming" and cinder.secondsUntilStart == 25 * 60)
+    assert(ynys.timelineState == "upcoming" and ynys.secondsUntilStart == 25 * 60)
+    assert(cinder.questKey == "cinderstone_purify")
+    assert(ynys.questKey == "ynystere_purify")
+    assert(F.Authority:GetRow("zone:20").presentationSection == "live")
+    assert(F.Authority:GetRow("zone:17").presentationSection == "live")
+end)
+
+Test("live-state rows keep curated zone order instead of being ranked by remaining time", function()
+    local S, F, h = ActivityBoot({ zoneState = 6, remainTime = 60 * 60 })
+    assert(F.Authority:ScanTrackedZones())
+    assert(F.Authority:Refresh("live_order"))
+    local live = F.Authority:GetLiveRows()
+    local expected = { 20, 17, 103, 102 }
+    for index, zoneId in ipairs(expected) do
+        assert(live[index] ~= nil, "missing live row at index " .. tostring(index))
+        assert(tonumber(live[index].zoneId) == zoneId, "live order changed at " .. tostring(index) .. ": " .. tostring(live[index].zoneId))
     end
 end)
 

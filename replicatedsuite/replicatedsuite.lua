@@ -94,7 +94,7 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.244-module-diagnostics-v1" -- 中文维护注释（2026-09-18）：.244 建立模块级诊断基础设施。DiagnosticsManager 仍是全局错误 Authority；ModuleDiagnosticsHub 只做有界归属与用户显式冷快照；每个 Feature 页面通过 PageHost buildContext + DesignSystem 共享入口打开唯一 ModuleDiagnosticsWindow。诊断正文使用独立 DiagnosticCopyBox 生命周期，禁止复用/修改普通 EditBox 的 Draft/失焦逻辑。系统诊断保留给 Core/Foundation；业务诊断不得重新塞回全局巨型报告。.243 的 Buff 持久化分片 Authority 保持不变。
+S.BuildTag = "v3-m1.16.0.18.245-activity-timeline-v2" -- 中文维护注释（2026-09-18）：.245 仅重构活动排序 Authority。计划活动与可确定的 live-derived occurrence 进入 Timeline，active 按剩余结束时间、upcoming 按距离开始时间；战争/纷争/和平/危险阶段留在独立 live section，并按 curated ZoneStateWatch 顺序稳定展示。继续复用 .244 模块诊断、.243 Buff 分片持久化、QuestProgressV3 与现有 Scheduler；禁止把 timeUntil 的每秒 Native/Quest 扫描、旧跨天算法或阶段权重照搬回来。
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}
 S.SaveKey = tostring(S.Config.SaveKey or "replicated_suite_v1")

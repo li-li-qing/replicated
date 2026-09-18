@@ -276,7 +276,9 @@ Add("life_activities", "life.activities", "活动", "life", 10, "世界活动、
     -- Authority 仍是 v3.activity，区域状态/服务器时钟/任务进度数据流不变；这里只改变导航开发态，
     -- 不把“完成”标签用于放宽 X2Map/X2Quest 能力门，也不改既有 Store/隐藏活动/悬浮窗配置兼容。
     navigationDevelopmentState = "complete",
-    currentImplementation = "世界活动与实时区域状态监测；已修复海之烛台/鲸鱼歌湾任务组关联与阶段进度展示；已修复征兆/煦日等活动在任务进行中的尾部持续期保持；通过 rs_activity_tests 与 v3_m1_activities 验收",
+    -- 中文维护注释（2026-09-18）：FeatureRegistry 只记录实现契约，不复制排序逻辑。Activity Timeline v2 的 Authority
+    -- 仍在 rs_activity_authority.lua；这里明确性能边界，防止以后为了“更实时”把 timeUntil 的 OnUpdate/Quest 扫描重新接入模块元数据驱动。
+    currentImplementation = "Activity Timeline v2：固定计划与可确定的实时派生活动进入时间线（当前活动按剩余结束时间、未来活动按距离开始时间）；战争/纷争/和平/危险阶段独立放在实时区域段，保持 curated 区域顺序；继续复用 QuestProgressV3、5s 区域采样与1s纯投影，不增加 Native 扫描",
     status = "migrated_m1", lifecycle = "independent", authority = "v3.activity", diagnosticSources = { "activities_v3" },
     widgetCapable = true, settingsCapable = true,
     apiDependencies = {

@@ -1,9 +1,9 @@
 ----------------------------------------------------------------------------------------
 -- ArcheRage RU API reference maintenance overlay
--- Updated: 2026-08-28
+-- Updated: 2026-09-18 (official ArcheRage RU announcements checked through 2026-09-16)
 -- Basis: bundled snapshot + official ArcheRage RU addon update announcements.
 -- Important: 'officially enabled' is not identical to 'runtime verified'.
--- See API_CHANGELOG_20260828.md and api_capabilities_ru_20260828.lua for restrictions,
+-- See API_CHANGELOG.md and api_capabilities_ru.lua for restrictions,
 -- cooldowns, removed events, signature ambiguities, and verification notes.
 ----------------------------------------------------------------------------------------
 -- ADDON
@@ -299,8 +299,6 @@ ExecuteString(str)
 
 Available/not allowed functions
 ----------------------------------------------------------------------------------------
-GetAttribute(attr)
-ExecuteString(str)
 ----------------------------------------------------------------------------------------
 
 
@@ -2042,6 +2040,8 @@ MAX_GUILD_FUNCTION_BUFF_TYPE
 Allowed functions
 ----------------------------------------------------------------------------------------
 IsMyExpeditionMember(charName)
+-- Enabled by ArcheRage RU update 2026-09-09.
+GetExpeditionMemberCount()
 ----------------------------------------------------------------------------------------
 
 Available/not allowed functions
@@ -2074,7 +2074,6 @@ GetExpeditionMyRolePolicy()
 GetExpeditionMyRole()
 GetExpeditionLevelInfo(expeditionLevel)
 GetExpeditionMaxLevel()
-GetExpeditionMemberCount()
 RequestExpeditionMembers(allMember, startIndex, sortKind, asc)
 GetExpeditionMembersPerPage()
 CanInviteExpedition()
@@ -2476,9 +2475,6 @@ Available/not allowed functions
 IsMyHouse()
 IsHouseUnderConstruction()
 GetHouseId()
-GetHouseOwnerName()
-GetHouseName()
-GetHouseType()
 SetHouseName(newName)
 GetHousePermission()
 SetHousePermission(newPermission)
@@ -2520,7 +2516,6 @@ GetDecoActabilityLimitGroup()
 GetHousingRebuildingPackInfo()
 GetHousingRebuildingBaseInfo(type)
 RequestHousingRebuildingTaxInfo()
-GetCurrentHousingTaxInfo()
 GetHousingRebuildingTaxInfo(type)
 GetHousingRebuildingMaterialInfo(type)
 GetCurrentHousingItemType()
@@ -4193,6 +4188,9 @@ GetActiveQuestListCount()
 GetActiveQuestType(idx)
 IsCompleted(type)
 IsReadyForCompleteQuest(questType)
+-- Enabled by ArcheRage RU update 2026-09-09.
+GetQuestJournalObjectiveCount(idx)
+GetQuestJournalObjectiveText(idx, objIdx)
 ----------------------------------------------------------------------------------------
 
 Available/not allowed functions
@@ -4278,9 +4276,7 @@ GetQuestJournalSubTitleByType(type)
 GetQuestCategoryTextByType(type)
 GetQuestJournalProgTitle(idx)
 GetQuestJournalProgTitleByType(type)
-GetQuestJournalObjectiveCount(idx)
 GetQuestJournalObjectiveCountByType(type)
-GetQuestJournalObjectiveText(idx, objIdx)
 GetQuestJournalObjectiveTextByType(type, objIdx)
 GetQuestJournalBodyCount(idx)
 GetQuestJournalBodyText(idx, bodyIdx)
@@ -5039,7 +5035,6 @@ TRIAL_SENTENCE
 TRIAL_GUILTY_BY_SYSTEM
 TRIAL_GUILTY_BY_USER
 TRIAL_POST_SENTENCE
-TRIAL_POST_SENTENCE
 MAX_BAD_USER_RECORDS_PAGE_COUNT
 MAX_BAD_USER_RECORD_PER_PAGE_COUNT
 MAX_BAD_USER_RECORDS_LIST_COUNT
@@ -5210,6 +5205,8 @@ GetOverHeadMarker(unit)
 GetOverHeadMarkerUnitId(markerIndex)
 UnitInfo(unit)
 UnitModifierInfo(unit)
+-- Exported by the client, but server-disabled by ArcheRage RU since 2026-08-19.
+-- Keep it in the export manifest; runtime code must treat the capability as disabled.
 GetUnitsInSight(unitOwner)
 ----------------------------------------------------------------------------------------
 

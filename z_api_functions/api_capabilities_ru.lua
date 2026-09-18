@@ -1,10 +1,12 @@
 -- ArcheRage RU addon API capability overlay
--- Updated through 2026-08-28.
+-- Maintained 2026-09-18; official announcements checked through 2026-09-16.
 -- status reflects official announcements; runtime_verified=false means the project has not yet
 -- independently sampled the function on the current client in this update pass.
 return {
   meta = {
-    updated = "2026-08-28",
+    updated = "2026-09-18",
+    checked_through = "2026-09-16",
+    latest_api_change = "2026-09-09",
     server = "ArcheRage RU",
     policy = "official announcements overlay bundled snapshot; runtime evidence may override for safety",
   },
@@ -148,6 +150,11 @@ return {
       { api="X2Butler:GetChargeInfo", status="official_enabled", side_effect_free=true },
       { api="X2Store:GetRandomShopStoreRefreshCount", status="official_enabled", side_effect_free=true },
       { api="X2Input:GetMousePos", status="official_enabled", side_effect_free=true },
+    },
+    ["2026-09-09"] = {
+      { api="X2Faction:GetExpeditionMemberCount", status="official_enabled", side_effect_free=true },
+      { api="X2Quest:GetQuestJournalObjectiveCount", status="official_enabled", side_effect_free=true },
+      { api="X2Quest:GetQuestJournalObjectiveText", status="official_enabled", side_effect_free=true },
     },
   },
 

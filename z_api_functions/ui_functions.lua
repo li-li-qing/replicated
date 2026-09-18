@@ -1,4 +1,10 @@
 ----------------------------------------------------------------------------------------
+-- ArcheRage RU UI API reference manifest
+-- Maintained: 2026-09-18
+-- Reference-only file: not executable Lua and must not be loaded by addon runtime.
+-- Exact duplicate signatures inside the same UI class/list have been removed.
+----------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------
 -- Avi
 ----------------------------------------------------------------------------------------
 
@@ -308,8 +314,6 @@ SetTextureColor(colorKey)
 SetCoords(x, y, w, h)
 SetInset(left, top, right, bottom)
 GetTextureSize()
-SetTextureColor(colorKey)
-SetColor(r, g, b, a)
 GetColor()
 SetOutlineInvisiblePart(invisible, part)
 SetTgaTexture(filename)
@@ -336,9 +340,6 @@ ChangeUserImageFile(idx)
 ChangeColor1(r, g, b)
 ChangeColor2(r, g, b)
 ChangeColor3(r, g, b)
-SetCoords(x, y, width, height)
-SetTexture(filename)
-SetInset(left, top, right, bottom)
 SetInternalDrawType(drawType)
 SetEffectPriority(phase, priority, velocityTime, accelerationTime)
 SetEffectScale(phase, initialX, finalX, initialY, finalY)
@@ -929,8 +930,6 @@ ScrollUp()
 ScrollDown()
 ScrollToTop()
 ScrollToBottom()
-ScrollUp()
-ScrollDown()
 PageUp()
 PageDown()
 GetCurrentLine()
@@ -1332,17 +1331,11 @@ IsHideTab(index)
 GetTabCount()
 AlignTabButtons()
 AddTab(tabName, widget)
-RemoveTab(idx)
-RemoveAllTabs()
-SelectTab(idx)
-SetOffset(offset)
-SetGap(gap)
 SetSlideTimeInDragging(time)
 SetContentOffset(topLeftXOffset, topLeftYOffset, bottomRightXOffset, bottomRightYOffset)
 AllowTabSwitch(allow)
 UseAddTabButton(use)
 SetInjectable(injectable)
-GetSelectedTab()
 GetAddButton()
 GetLeftLineDrawable()
 GetRightLineDrawable()

@@ -263,6 +263,19 @@ function F:GetRows()
     return self.Authority:GetRows()
 end
 
+-- 中文维护注释（2026-09-18，Activity Timeline v2 只读边界）：
+-- Presentation 需要区分“时间线”和“实时区域”，但 Feature 仍是唯一对外 read-model 边界，
+-- 页面/悬浮窗禁止直接持有 Authority 表或自行重新排序。这里仅透传 Authority 的同一 revision 快照；
+-- 不创建缓存、不触发 Native、不写 Store。以后如果 UI 需要分段渲染，应继续通过这两个 getter，
+-- 禁止复制 BuildStaticRows/BuildZoneRows 逻辑到 Presentation。
+function F:GetTimelineRows()
+    return self.Authority:GetTimelineRows()
+end
+
+function F:GetLiveRows()
+    return self.Authority:GetLiveRows()
+end
+
 function F:GetRow(key)
     return self.Authority:GetRow(key)
 end
@@ -355,8 +368,13 @@ function F:GetHealth()
         ok = self.enabled == true,
         consumers = self.consumerCount,
         rows = summary.total,
-        active = summary.active,
+        active = summary.active, -- 历史兼容健康字段；新诊断/Presentation 应优先使用下面的 timeline/live 分离字段。
+        -- 中文维护注释：Health 只投影计数和契约版本，不能反向成为排序 Authority；诊断读取这些值也不得启动 Consumer。
+        timelineActive = summary.timelineActive,
+        timelineRows = summary.timelineTotal,
+        liveActive = summary.liveActive,
         liveZones = summary.liveZones,
+        timelineContractVersion = summary.timelineContractVersion,
         zoneScanFailures = summary.zoneScanFailures,
         questProgressMigrated = summary.progressAuthority == true,
         progressRevision = type(progressHealth) == "table" and progressHealth.revision or 0,

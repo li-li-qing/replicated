@@ -425,7 +425,7 @@ function A:RunMatrix()
 
     local activities = S.Features and S.Features.Activities or nil
     local activityStore = S.Persistence ~= nil and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.activities") or nil -- 中文维护注释：Acceptance 只检查 Store spec，不主动读取用户存档，避免启动期为验收增加 SaveData I/O。
-    if type(activities) ~= "table" or type(activities.Authority) ~= "table" or (tonumber(activities.Authority.PriorityStageSortContractVersion) or 0) < 1 -- 中文维护注释（2026-09-16）：排序分带是 Activity Authority 契约，不依赖页面是否打开。
+    if type(activities) ~= "table" or type(activities.Authority) ~= "table" or (tonumber(activities.Authority.ActivityTimelineSortContractVersion) or 0) < 2 -- 中文维护注释（2026-09-18）：v2 明确要求 Timeline/Live 分离；旧 PriorityStageSortContractVersion 仅兼容保留，不能再作为发布门禁。
         or (tonumber(activities.PersistenceStoreSchemaContractVersion) or 0) < 8
         or (tonumber(activities.KnownLegacyCanonicalRecoveryContractVersion) or 0) < 3
         or (tonumber(activities.TransportV1ZeroOmissionRecoveryContractVersion) or 0) < 1 -- 中文维护注释：`.18.198` 要求零值省略结构化恢复随包存在；它与 known-pair 互为先后层级，缺一不可。

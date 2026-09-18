@@ -110,9 +110,10 @@ local function CreateActivityWidget()
             self.table:SetViewState("ready")
         end
         local summary = Feature:GetSummary()
-        -- 中文维护注释（2026-09-15）：悬浮窗页脚不再用“进行中”或橙色复述 active，
-        -- 颜色仅留给每行实时区域语义；摘要用中性文字，避免用户把摘要色误认成区域状态。
-        self.surface:SetStatus("当前 " .. tostring(summary.active or 0) .. " · 两小时内 " .. tostring(summary.withinTwoHours or 0), "muted")
+        -- 中文维护注释（2026-09-18，Activity Timeline v2）：悬浮窗与主页面必须消费同一 Summary 语义；
+        -- 只显示 timelineActive/withinTwoHours/liveZones，禁止再用 summary.active 把 live 战争状态混入“当前活动”。
+        self.surface:SetStatus("当前 " .. tostring(summary.timelineActive or 0) .. " · 两小时内 " .. tostring(summary.withinTwoHours or 0)
+            .. " · 实时 " .. tostring(summary.liveZones or 0), "muted")
         return true
     end
 

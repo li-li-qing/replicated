@@ -29,7 +29,7 @@ local function BuildActivityPage(parent, route)
         end
         return execute()
     end
-    D:PageHeader(root, "v3_activity_header", "活动", "俄服活动时间表 + 实时区域阶段 + 任务/副本参与进度。任务读取由共享 V3 Progress Service 按需运行，活动页面本身不直接调用游戏任务 API。", "刷新", function()
+    D:PageHeader(root, "v3_activity_header", "活动", "Activity Timeline v2：可计算时间的活动按时间线排序；战争/纷争/和平/危险阶段固定放在实时区域段，不再与未来活动混排。任务读取仍由共享 V3 Progress Service 按需运行。", "刷新", function()
         return RunAction("refresh", nil, function()
             if S.FeatureRuntime == nil or S.FeatureRuntime:IsEnabled("life_activities") ~= true then return false end
             local progress = S.Services and S.Services.QuestProgressV3 or nil
@@ -114,7 +114,7 @@ local function BuildActivityPage(parent, route)
     end
     local hideExecute = hideButton.onClick
     hideButton.onClick = function() return RunAction("hide_selected", hideButton, hideExecute) end
-    local progressHint = RSUI:Text({ id = "v3_activity_progress_hint", parent = root, text = "任务进度：共享数据源按需启动 · 点击活动行查看任务详情 · 鼠标滚轮可浏览全部活动", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 20, hAlign = "fill" } })
+    local progressHint = RSUI:Text({ id = "v3_activity_progress_hint", parent = root, text = "排序：当前活动 → 即将开始（按时间）→ 实时区域（固定顺序） · 点击活动行查看任务详情", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 20, hAlign = "fill" } })
 
     tableView = RSUI:TableView({
         id = "v3_activity_table", parent = root, items = {},
@@ -130,7 +130,7 @@ local function BuildActivityPage(parent, route)
         columns = {
             { id = "name", title = "活动", field = "name", size = "fill", minWidth = 126, fill = 1.0,
                 getTone = function(item) return "default" end },
-            { id = "status", title = "当前状态 / 倒计时", field = "status", size = "fill", minWidth = 176, fill = 1.35,
+            { id = "status", title = "时间 / 区域状态", field = "status", size = "fill", minWidth = 176, fill = 1.35,
                 getTone = function(item) return item and item.tone or "muted" end },
             { id = "schedule", title = "来源 / 下次", field = "scheduleText", size = "fill", minWidth = 116, fill = 0.85,
                 getTone = function(item) return item and item.zoneState and "accent" or "muted" end },
@@ -156,12 +156,13 @@ local function BuildActivityPage(parent, route)
         end
         local summary = Feature:GetSummary()
         summaryCard:SetData({
-            -- 中文维护注释（2026-09-15）：summary.active 仍是 Domain 内部“当前发生”计数，
-            -- 但活动 UI 规范禁止再显示“进行中”；这里仅改展示词，不改 Summary/排序 Authority。
-            value = enabled and ("当前 " .. tostring(summary.active or 0)) or "功能已关闭",
-            detail = "共 " .. tostring(summary.total or 0) .. " 条 · 2小时内 " .. tostring(summary.withinTwoHours or 0)
+            -- 中文维护注释（2026-09-18，Timeline v2 Presentation）：Summary 不再用 active 混合“计划活动”和“区域战争”。
+            -- timelineActive 是可比较时间线中的当前活动；liveZones 是独立实时状态段。兼容字段 summary.active 仍保留给旧诊断，
+            -- 但新 UI 禁止再次用它把两种语义合成一个数字。
+            value = enabled and ("时间线 " .. tostring(summary.timelineTotal or 0)) or "功能已关闭",
+            detail = "当前活动 " .. tostring(summary.timelineActive or 0) .. " · 2小时内 " .. tostring(summary.withinTwoHours or 0)
                 .. " · 实时区域 " .. tostring(summary.liveZones or 0) .. " · 已隐藏 " .. tostring(summary.hidden or 0)
-                .. "\n区域状态读取失败 " .. tostring(summary.zoneScanFailures or 0) .. " · 数据版本 " .. tostring(summary.revision or 0),
+                .. "\nTimeline v" .. tostring(summary.timelineContractVersion or 0) .. " · 区域读取失败 " .. tostring(summary.zoneScanFailures or 0) .. " · 数据版本 " .. tostring(summary.revision or 0),
         })
         local widgetVisible = S.UIV3.WidgetHost and S.UIV3.WidgetHost:IsVisible("life.activities") == true
         featureButton:SetText(enabled and "关闭功能" or "启用功能")
@@ -174,8 +175,8 @@ local function BuildActivityPage(parent, route)
         if not enabled then
             progressHint:SetText("活动功能已关闭")
         elseif summary.progressAuthority and type(health) == "table" then
-            progressHint:SetText("任务 / 副本进度：可用 " .. tostring(health.available or 0) .. "/" .. tostring(health.projections or 0)
-                .. " · 数据版本 " .. tostring(health.revision or 0) .. " · 点击活动行查看详情")
+            progressHint:SetText("时间线按开始/结束时间排序 · 实时区域固定置后 · 任务进度 " .. tostring(health.available or 0) .. "/" .. tostring(health.projections or 0)
+                .. " · 点击活动行查看详情")
         else
             progressHint:SetText("任务 / 副本进度：共享数据源不可用")
         end
