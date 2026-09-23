@@ -86,6 +86,7 @@ local function BuildPage(parent, route)
     root.draft = nil
     root.validation = nil
     root.deleteArmedUntil = 0
+    root.deleteArmedId = nil
 
     D:PageHeader(root, "v3_gear_header", "换装 / 称号",
         "装备与效果称号属于同一套方案。右侧按防具/时装与饰品/武器/称号双列展示，点击任意行即可切换参与。",
@@ -118,8 +119,12 @@ local function BuildPage(parent, route)
     -- stack of titled GroupBoxes so the rail stays operable at any window height
     -- and each control cluster reads as a single semantic unit. Priority order:
     -- data source (方案库) -> edit/commit/apply (当前方案) -> quick participation
-    -- presets (参与范围) -> screen+snap (屏幕快捷与吸附) -> order/delete
-    -- (顺序与删除) -> live feedback (状态与反馈). Lower groups scroll instead of
+    -- presets (参与范围) -> screen+snap (屏幕快捷与吸附) -> live feedback。
+    -- 维护（gear-selected-delete-1）：方案顺序/删除属于“选中方案”的身份管理，不能继续埋在
+    -- ScrollBox 下方的独立组里，否则短窗口/1024×768 首屏看起来只有“新建”没有“删除”。
+    -- Authority 仍是 Gear Authority + v3.gear.index；页面只把已有 Commands 提升到方案库附近，
+    -- 不复制删除逻辑、不改变 Store/schema。风险边界：删除仍需二次确认，且确认绑定具体 setId。
+    -- Lower groups scroll instead of
     -- clipping on short windows, so the layout never regresses to the old soup.
     local leftStack = RSUI:ScrollBox({
         id = "v3_gear_left_scroll", parent = left, orientation = "vertical", gap = 10, padding = 4,
@@ -155,7 +160,14 @@ local function BuildPage(parent, route)
         getKey = function(item) return item and item.id or nil end,
         onSelectionChanged = function(_, _, view)
             if root.syncingPlanSelection == true then return end
-            root.selectedId = view and type(view.GetSelectedKey) == "function" and view:GetSelectedKey() or nil
+            local nextId = view and type(view.GetSelectedKey) == "function" and view:GetSelectedKey() or nil
+            -- 维护（gear-selected-delete-1）：删除确认必须绑定发起确认时的 setId。用户在确认窗口
+            -- 内切换行时立即撤销确认，禁止“先确认 A、再切到 B、第二击删 B”的跨选择误删。
+            -- 这里只重置页面瞬态，不触碰 Gear Authority/Store，也不引入 Timer/Tick。
+            if tostring(root.selectedId or "") ~= tostring(nextId or "") and type(root.ResetDeleteConfirmation) == "function" then
+                root:ResetDeleteConfirmation("selection_changed")
+            end
+            root.selectedId = nextId
             root:LoadDraft()
         end,
         columns = {
@@ -176,6 +188,15 @@ local function BuildPage(parent, route)
     local nameRow = RSUI:HorizontalBox({ id = "v3_gear_name_row", parent = nameHost, gap = 4, padding = 0, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
     local nameEdit = RSUI:TextInput({ id = "v3_gear_name_edit", parent = nameRow, value = "", placeholder = "选中方案后改名", maxLength = 36, height = 24, slot = { size = "fill", fill = 1, minWidth = 56, hAlign = "fill", vAlign = "center" } })
     local saveName = RSUI:Button({ id = "v3_gear_name_button", parent = nameRow, text = "改名", compact = true, height = 24, slot = { size = "fixed", width = 55, vAlign = "center" } })
+
+    -- 维护（gear-selected-delete-1）：选中方案的排序与删除入口紧跟方案表，保证无需滚动即可发现。
+    -- Authority/数据流：按钮 -> Feature.Commands -> Gear Authority -> v3.gear.index；删除成功后
+    -- Authority 再清理 payload 分片并发布 v3.gear.updated，页面本身从不直接改 F.State。
+    -- 兼容边界：沿用既有 DeleteSet/MoveSet 与存档格式，旧配置无需迁移。
+    local selectedActions = RSUI:HorizontalBox({ id = "v3_gear_selected_actions", parent = gLibInner, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
+    local moveUp = RSUI:Button({ id = "v3_gear_up", parent = selectedActions, text = "上移", compact = true, slot = { size = "fill", fill = 1 } })
+    local moveDown = RSUI:Button({ id = "v3_gear_down", parent = selectedActions, text = "下移", compact = true, slot = { size = "fill", fill = 1 } })
+    local deleteButton = RSUI:Button({ id = "v3_gear_delete", parent = selectedActions, text = "删除选中", compact = true, slot = { size = "fill", fill = 1 } })
 
     ------------------------------------------------------------------------
     -- Group 2: 当前方案 (read current -> save -> validate -> apply)
@@ -216,16 +237,7 @@ local function BuildPage(parent, route)
     local snapSettings = RSUI:Button({ id = "v3_gear_snap_settings", parent = snapActions, text = "设置", compact = true, slot = { size = "fixed", width = 58 } })
 
     ------------------------------------------------------------------------
-    -- Group 5: 顺序与删除
-    ------------------------------------------------------------------------
-    local gOrder, gOrderInner = GearGroup(leftStack, "v3_gear_group_order", "顺序与删除")
-    local orderActions = RSUI:HorizontalBox({ id = "v3_gear_order_actions", parent = gOrderInner, gap = 4, slot = { size = "fixed", height = 24, hAlign = "fill" } })
-    local moveUp = RSUI:Button({ id = "v3_gear_up", parent = orderActions, text = "上移", compact = true, slot = { size = "fill", fill = 1 } })
-    local moveDown = RSUI:Button({ id = "v3_gear_down", parent = orderActions, text = "下移", compact = true, slot = { size = "fill", fill = 1 } })
-    local deleteButton = RSUI:Button({ id = "v3_gear_delete", parent = orderActions, text = "删除", compact = true, slot = { size = "fill", fill = 1 } })
-
-    ------------------------------------------------------------------------
-    -- Group 6: 状态与反馈 (live runtime + editor status)
+    -- Group 5: 状态与反馈 (live runtime + editor status)
     ------------------------------------------------------------------------
     local gStatus, gStatusInner = GearGroup(leftStack, "v3_gear_group_status", "状态与反馈")
     local runtimeStatus = RSUI:Text({
@@ -345,6 +357,17 @@ local function BuildPage(parent, route)
     end
     function root:FindSelectedMeta() return self.selectedId and Feature:FindSet(self.selectedId) or nil end
 
+    -- 维护（gear-selected-delete-1）：确认状态只属于 Presentation 瞬态，不能进入 Store。
+    -- Authority 是 selectedId + Gear Authority 当前行；任何选择切换/刷新/删除提交都清除 armedId。
+    -- 不使用 Scheduler/OnUpdate 自动改按钮，避免为一次低频确认引入常驻生命周期；超时在下一次点击
+    -- 时判定，超过窗口只会重新要求确认，不会执行删除。
+    function root:ResetDeleteConfirmation(reason)
+        self.deleteArmedUntil = 0
+        self.deleteArmedId = nil
+        deleteButton:SetText("删除选中")
+        return true
+    end
+
     function root:LoadDraft()
         self.validation = nil
         if self.selectedId == nil then self.draft = nil; self:RefreshEditor(); return true end
@@ -431,6 +454,13 @@ local function BuildPage(parent, route)
         if type(draft) ~= "table" and nameEdit.enabled ~= false then SetNativeText(nameEdit, "") end
         nameEdit:SetEnabled(type(draft) == "table")
         saveName:SetEnabled(type(draft) == "table")
+        -- 删除/排序只依赖轻量 index 身份，不依赖 payload 是否还能解码。即使历史 payload 已损坏，
+        -- 用户仍必须能删除该索引项；因此不能用 draft ~= nil 作为删除按钮的 Authority。
+        local hasSelection = self.selectedId ~= nil
+        moveUp:SetEnabled(hasSelection)
+        moveDown:SetEnabled(hasSelection)
+        deleteButton:SetEnabled(hasSelection)
+        if not hasSelection then self:ResetDeleteConfirmation("no_selection") end
         if type(draft) ~= "table" then
             titleText:SetText("请选择方案")
             armorTable:SetItems({}, "gear:none:armor")
@@ -500,6 +530,7 @@ local function BuildPage(parent, route)
         -- injects marker text, special tones, or a feature-specific "当前" row.
         if selectedId ~= nil and selectedIndex == nil then
             self.selectedId, self.draft, self.validation = nil, nil, nil
+            self:ResetDeleteConfirmation("selection_missing")
         end
 
         setTable:SetItems(rows, "gear:sets:" .. tostring(revision))
@@ -661,21 +692,51 @@ local function BuildPage(parent, route)
     end
 
     function root:DeleteSelected()
-        if self.selectedId == nil then return false end
-        local now = S.NowMs and S.NowMs() or 0
-        if now > (tonumber(self.deleteArmedUntil) or 0) then
-            self.deleteArmedUntil = now + 3500
-            deleteButton:SetText("确认")
-            self:SetStatus("再次点击“确认”才会删除当前方案；3.5 秒后自动取消。", "yellow")
+        local id = self.selectedId ~= nil and tostring(self.selectedId) or ""
+        if id == "" then
+            self:SetStatus("请先选择要删除的方案。", "yellow")
+            self:ResetDeleteConfirmation("no_selection")
             return false
         end
-        local id = self.selectedId
-        self.deleteArmedUntil = 0
-        deleteButton:SetText("删除")
+
+        local now = S.NowMs and S.NowMs() or 0
+        local armedSameSet = tostring(self.deleteArmedId or "") == id
+        local armedInTime = armedSameSet and now <= (tonumber(self.deleteArmedUntil) or 0)
+        if not armedInTime then
+            self.deleteArmedId = id
+            self.deleteArmedUntil = now + 3500
+            deleteButton:SetText("确认删除")
+            local selected = self:FindSelectedMeta()
+            self:SetStatus("再次点击“确认删除”才会删除「" .. tostring(selected and selected.name or id) .. "」；3.5 秒后确认失效。", "yellow")
+            return false
+        end
+
+        -- 维护（gear-selected-delete-1）：删除成功后选择相邻方案，避免清空编辑上下文让用户误以为
+        -- 列表失效。fallback 只从删除前 Authority 投影取稳定 id，不保存到 Store；真正删除仍由
+        -- Feature.Commands:DeleteSet 原子提交 index。若 payload 物理清理失败，Authority 已有诊断并
+        -- 保持索引删除结果，页面不得自行回滚或直接操作分片。
+        local rows = select(1, Feature:GetRows()) or {}
+        local selectedIndex, fallbackId = nil, nil
+        for index, row in ipairs(rows) do
+            if tostring(row.id or "") == id then selectedIndex = index; break end
+        end
+        if selectedIndex ~= nil then
+            local fallback = rows[selectedIndex + 1] or rows[selectedIndex - 1]
+            fallbackId = fallback and tostring(fallback.id or "") or nil
+            if fallbackId == "" then fallbackId = nil end
+        end
+
+        self:ResetDeleteConfirmation("delete_commit")
         local ok, err = Feature.Commands:DeleteSet(id)
-        if ok ~= true then self:SetStatus(tostring(err), "red"); return false end
-        self.selectedId, self.draft, self.validation = nil, nil, nil
-        self:SetStatus("方案已删除。", "green")
+        if ok ~= true then return self:CommandFailed("delete", err) end
+
+        self.selectedId, self.draft, self.validation = fallbackId, nil, nil
+        if fallbackId ~= nil then
+            self:LoadDraft()
+        else
+            self:RefreshEditor()
+        end
+        self:SetStatus(fallbackId ~= nil and "方案已删除，已选中相邻方案。" or "方案已删除。", "green")
         self:Refresh()
         return true
     end
@@ -711,13 +772,38 @@ local function BuildPage(parent, route)
         button.onClick = handler
     end
 
+    -- 维护：旧页没有总开关，显式补齐；FeatureRuntime拥有保存和启停回滚，页面仅持有page:gear租约。
+    local master = D:ModuleToggleButton({ id = "v3_gear_feature_toggle", parent = root, text = "启动", compact = true,
+        slot = { size = "fixed", height = 30, width = 92 }, onClick = function()
+            local runtime = S.FeatureRuntime
+            local target = not runtime:IsEnabled("combat_gear")
+            local ok, detail = runtime:SetPreferredEnabled("combat_gear", target, "gear_page_toolbar")
+            if ok ~= true then return false, detail end
+            if target then
+                local held, holdErr = Feature:AcquireTransient("page:gear")
+                if held ~= true then
+                    local reverted, revertErr = runtime:SetPreferredEnabled("combat_gear", false, "gear_toolbar_lease_rollback")
+                    return false, tostring(holdErr) .. (reverted ~= true and ("; rollback=" .. tostring(revertErr)) or "")
+                end
+                root.pageConsumerHeld = true
+            else root.pageConsumerHeld = false end
+            root:Refresh()
+            return true
+        end })
+    if master == nil then return nil, "gear_master_control_failed" end
+
+    -- 维护（module-controls-diag-2）：AcquireTransient原本会自动Enable；新增总开关后，
+    -- 页面激活只在实际enabled时获取原租约，禁止导航改变用户的关闭选择。显式操作/快捷按钮原语义保留。
     function root:OnActivated()
         Feature.Commands:SetDisableWhenIdle(false)
-        self.deleteArmedUntil = 0
-        deleteButton:SetText("删除")
-        local ok, err = Feature:AcquireTransient("page:gear")
-        if ok ~= true then return false, err end
-        self.pageConsumerHeld = true
+        self:ResetDeleteConfirmation("page_activated")
+        if S.FeatureRuntime:IsEnabled("combat_gear") then
+            local ok, err = Feature:AcquireTransient("page:gear")
+            if ok ~= true then return false, err end
+            self.pageConsumerHeld = true
+        else
+            self.pageConsumerHeld = false
+        end
         if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
             S.Events:UnsubscribeInternalOwner(self)
             S.Events:SubscribeInternal("v3.gear.updated", self, function() root:Refresh() end)
@@ -733,8 +819,7 @@ local function BuildPage(parent, route)
         createEdit:EndEditing("gear_page_deactivated")
         nameEdit:EndEditing("gear_page_deactivated")
         if S.Events ~= nil then S.Events:UnsubscribeInternalOwner(self) end
-        self.deleteArmedUntil = 0
-        deleteButton:SetText("删除")
+        self:ResetDeleteConfirmation("page_deactivated")
         if self.pageConsumerHeld == true then Feature:ReleaseTransient("page:gear"); self.pageConsumerHeld = false end
         return true
     end

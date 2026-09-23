@@ -22,6 +22,10 @@ G:RegisterSequenceCase("v3_m1_activities", function()
     if S.FeatureRuntime == nil or S.FeatureRuntime:IsImplemented("life_activities") ~= true then
         return Fail("implementation_missing")
     end
+    if type(F.Authority) ~= "table" or (tonumber(F.Authority.ActivityTimelineSortContractVersion) or 0) < 2
+        or type(F.Authority.GetTimelineRows) ~= "function" or type(F.Authority.GetLiveRows) ~= "function" then
+        return Fail("activity_timeline_v2_contract")
+    end
     local store = S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.activities") or nil -- 中文维护注释：Acceptance 只读取 Persistence 注册事实，不创建第二 Store Authority，也不触发额外 Load/Save。
     if store == nil or tostring(store.owner or "") ~= "v3.activities" or tonumber(store.schemaVersion) ~= 8 -- 中文维护注释：`.18.193` 当前活动偏好必须是 schema8，避免共享 FloatingSurface 增字段后继续在 schema7 内偷换 canonical。
         or (tonumber(F.PersistenceStoreSchemaContractVersion) or 0) < 8 -- 中文维护注释：Feature 显式暴露 schema 契约，防止只改注册数字却漏掉维护边界声明。
@@ -81,12 +85,28 @@ G:RegisterSequenceCase("v3_m1_activities", function()
     local rows = F.Authority and F.Authority:GetRows() or {}
     local seen = {}
     local staticCount, liveCount = 0, 0
+    local sawLive = false
     for _, row in ipairs(type(rows) == "table" and rows or {}) do
         local key = tostring(row and row.key or "")
         if key == "" then if acquired then F:ReleaseConsumer(token) end; return Fail("empty_row_key") end
         if seen[key] then if acquired then F:ReleaseConsumer(token) end; return Fail("duplicate_row_key:" .. key) end
         seen[key] = true
-        if row.zoneState == true then liveCount = liveCount + 1 else staticCount = staticCount + 1 end
+        if row.zoneState == true then
+            liveCount = liveCount + 1
+            sawLive = true
+            if row.presentationSection ~= "live" then if acquired then F:ReleaseConsumer(token) end; return Fail("live_section_mismatch:" .. key) end
+        else
+            staticCount = staticCount + 1
+            if sawLive then if acquired then F:ReleaseConsumer(token) end; return Fail("timeline_after_live:" .. key) end
+            if row.presentationSection ~= "timeline" then if acquired then F:ReleaseConsumer(token) end; return Fail("timeline_section_mismatch:" .. key) end
+            if row.timelineState == "active" then
+                if tonumber(row.secondsUntilEnd) == nil then if acquired then F:ReleaseConsumer(token) end; return Fail("active_end_missing:" .. key) end
+            elseif row.timelineState == "upcoming" then
+                if tonumber(row.secondsUntilStart) == nil then if acquired then F:ReleaseConsumer(token) end; return Fail("upcoming_start_missing:" .. key) end
+            else
+                if acquired then F:ReleaseConsumer(token) end; return Fail("timeline_state_missing:" .. key)
+            end
+        end
     end
 
     if acquired then F:ReleaseConsumer(token) end

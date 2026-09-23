@@ -4,6 +4,8 @@
 -- Rich live projection for combat statistics. Presentation consumes only DPS
 -- Feature Projection/Commands; no native combat/target API is read here.
 ------------------------------------------------------------------------
+-- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -150,7 +152,7 @@ local function Build(parent, route)
 
     local top = RSUI:HorizontalBox({ id = "v3_dps_top", parent = root, gap = 8,
         slot = { size = "fixed", height = 34, hAlign = "fill" } })
-    local enableBtn = RSUI:Button({ id = "v3_dps_enable", parent = top, text = "启用伤害统计", compact = true,
+    local enableBtn = D:ModuleToggleButton({ id = "v3_dps_enable", parent = top, text = "启用伤害统计", compact = true,
         slot = { size = "fixed", width = 124 } })
     -- FloatingSurface already owns logical id `v3_dps_widget`.  Page controls
     -- must never alias a floating root because V3 component IDs are ownership

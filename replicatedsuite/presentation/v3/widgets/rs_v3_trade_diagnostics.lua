@@ -29,8 +29,8 @@ S.UIV3.TradeDiagnosticsV3 = S.UIV3.TradeDiagnosticsV3 or {
 }
 local M = S.UIV3.TradeDiagnosticsV3
 
-local REPORT_MAX_CHARS = 4800
-local LINE_MAX_CHARS = 220
+local REPORT_MAX_BYTES = 4800
+local LINE_MAX_BYTES = 220
 
 local function Feature() return S.Features and S.Features.Trade or nil end
 local function Queue() return S.Services and S.Services.PriceQuoteQueueV3 or nil end
@@ -47,9 +47,40 @@ local function AgoText(at)
     return math.floor(delta / 60 + 0.5) .. "m前"
 end
 
-local function Bounded(value, fallback, maxChars)
+-- 维护（2026-09-23，trade-diagnostics-utf8-1）：诊断页容量限制是 Lua 字节预算，不是 Unicode 字符数；
+-- RU/中文文本不能直接按 byte string.sub，否则落在 UTF-8 中间时复制报告会损坏。最大只扫描 4.8KB，
+-- 且仅发生在用户打开/刷新诊断时，不进入业务刷新或 Native 查询链。
+local function Utf8Prefix(value, maxBytes)
+    local text = tostring(value or "")
+    local limit = math.max(0, math.floor(tonumber(maxBytes) or #text))
+    if #text <= limit then return text end
+    local index, lastComplete = 1, 0
+    while index <= #text and index <= limit do
+        local first = string.byte(text, index)
+        if first == nil then break end
+        local width
+        if first <= 0x7F then width = 1
+        elseif first >= 0xC2 and first <= 0xDF then width = 2
+        elseif first >= 0xE0 and first <= 0xEF then width = 3
+        elseif first >= 0xF0 and first <= 0xF4 then width = 4
+        else break end
+        if index + width - 1 > limit then break end
+        local valid = true
+        for offset = 1, width - 1 do
+            local continuation = string.byte(text, index + offset)
+            if continuation == nil or continuation < 0x80 or continuation > 0xBF then valid = false; break end
+        end
+        if not valid then break end
+        lastComplete = index + width - 1
+        index = lastComplete + 1
+    end
+    return lastComplete > 0 and string.sub(text, 1, lastComplete) or ""
+end
+
+local function Bounded(value, fallback, maxBytes)
     local text = tostring(value or fallback or "")
-    if #text > (maxChars or LINE_MAX_CHARS) then return string.sub(text, 1, maxChars or LINE_MAX_CHARS) .. "…" end
+    local limit = maxBytes or LINE_MAX_BYTES
+    if #text > limit then return Utf8Prefix(text, limit) .. "…" end
     return text
 end
 
@@ -92,9 +123,25 @@ local function SummaryLines(state)
     local featureLine = "功能=" .. (state.featureEnabled and "开" or "关")
         .. " · 状态=" .. tostring(projection.status or request and request.status or "--")
         .. " · 线路=" .. tostring(projection.fromZone or "-") .. "->" .. tostring(projection.toZone or "-")
-        .. " · 货物=" .. tostring(#(projection.rows or {}))
+        .. " · 显示=" .. tostring(#(projection.rows or {})) .. "/" .. tostring(projection.rawRowCount or #(projection.rows or {}))
+        .. " · 模式=" .. tostring(projection.viewMode or "all")
         .. " · 地区=" .. tostring(#(projection.zones or {})) .. "/" .. tostring(#(projection.sellableZones or {}))
     lines[#lines + 1] = featureLine
+    if type(request) == "table" then
+        lines[#lines + 1] = "请求: active=" .. tostring(request.activeKind or "none") .. ":" .. tostring(request.activeRoute or "none")
+            .. " reason=" .. tostring(request.activeReason or request.lastRequestReason or "-")
+            .. " · pending=" .. tostring(request.pendingRoute or "none") .. ":" .. tostring(request.pendingReason or "-")
+            .. " · cooldown=" .. tostring(math.floor(tonumber(request.cooldownRemainingMs) or 0)) .. "ms"
+            .. " · drain=" .. tostring(math.floor(tonumber(request.timeoutDrainRemainingMs) or 0)) .. "ms/" .. tostring(request.timedOutRoute or "none")
+            .. " · bypass=" .. tostring(request.cooldownBypassAccepted or 0) .. "/" .. tostring(request.cooldownBypassAttempts or 0)
+            .. " fallback=" .. tostring(request.cooldownBypassFallbacks or 0)
+            .. " · latency=" .. tostring(math.floor(tonumber(request.lastCallbackLatencyMs) or 0)) .. "ms"
+        local cargo = request.cargo or {}
+        lines[#lines + 1] = "随身: " .. tostring(cargo.status or "empty") .. " item=" .. tostring(cargo.itemType or "-")
+            .. " origin=" .. tostring(cargo.originZone or "-") .. " scan=" .. tostring(cargo.scanning == true)
+            .. " queue=" .. tostring(cargo.queueIndex or 0) .. "/" .. tostring(cargo.queueCount or 0)
+            .. (cargo.error ~= nil and (" · " .. Bounded(cargo.error, "", 80)) or "")
+    end
     local identityState = state.identityState or {}
     local identityLine = "身份: 配方 " .. tostring((tonumber(identityState.rows) or 0) - (tonumber(identityState.unresolved) or 0))
         .. "/" .. tostring(identityState.rows or 0)
@@ -166,7 +213,7 @@ end
 local function BuildCopyReport(state)
     local parts = {}
     local function Add(line)
-        parts[#parts + 1] = Bounded(line, "", LINE_MAX_CHARS)
+        parts[#parts + 1] = Bounded(line, "", LINE_MAX_BYTES)
     end
     Add("[RS跑商诊断] " .. tostring(S.BuildTag or "?"))
     for line in string.gmatch(SummaryLines(state), "([^\n]+)") do Add(line) end
@@ -203,6 +250,17 @@ local function BuildCopyReport(state)
         for index, record in ipairs(identity.recentFailed) do
             if index > 8 then break end
             Add("  #" .. tostring(index) .. " itemType=" .. tostring(record.itemType) .. " " .. Bounded(record.error, "-", 140))
+        end
+    end
+    local request = state.request
+    if type(request) == "table" and type(request.requestTrace) == "table" and #request.requestTrace > 0 then
+        Add("货率请求轨迹:")
+        local first = math.max(1, #request.requestTrace - 11)
+        for index = first, #request.requestTrace do
+            local record = request.requestTrace[index]
+            Add("  #" .. tostring(index) .. " " .. AgoText(record.at) .. " " .. tostring(record.event or "?")
+                .. " " .. tostring(record.kind or "route") .. " " .. tostring(record.from or "-") .. "->" .. tostring(record.to or "-")
+                .. " reason=" .. tostring(record.reason or "-") .. " " .. Bounded(record.detail, "", 130))
         end
     end
     local init = state.initTrace
@@ -257,7 +315,7 @@ local function BuildCopyReport(state)
         end
     end
     local report = table.concat(parts, "\n")
-    if #report > REPORT_MAX_CHARS then report = string.sub(report, 1, REPORT_MAX_CHARS) .. "\n…(已截断)" end
+    if #report > REPORT_MAX_BYTES then report = Utf8Prefix(report, REPORT_MAX_BYTES) .. "\n…(已截断)" end
     return report
 end
 
@@ -416,4 +474,18 @@ function M:Close(reason)
     if closed ~= true then return false, closeErr end
     self:Deactivate(reason or "trade_diag_close")
     return true
+end
+
+-- 维护（module-controls-diag-2）：主入口统一后，跑商专有证据迁入共享Hub，而非删除功能。
+-- 每个只读Describe独立隔离；不获取Consumer、不发查询、不启用Feature，不导出其他模块的报价行。
+-- 旧面板仍保留兼容入口，但正常页面只打开统一诊断窗口。
+if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.RegisterProvider) == "function" then
+    for _, method in ipairs({ "DescribeRequestState", "DescribeIdentityState", "DescribeInitTrace" }) do
+        local methodName = method
+        S.ModuleDiagnosticsHub:RegisterProvider("life_trade", methodName, function()
+            local feature = Feature()
+            if type(feature) ~= "table" or type(feature[methodName]) ~= "function" then return { available = false } end
+            return feature[methodName](feature) or { available = false, reason = "not_sampled" }
+        end)
+    end
 end

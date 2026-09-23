@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 10 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 -- 中文维护注释：开发期回归，不进 TOC。只在 Native SaveData/LoadData 边界注入合成表形，
 -- 使用生产 Store/codec/Persistence/PageHost/BuildScope；不是用户实档或 RU 像素布局验收。
 -- 损坏样本不重新盖业务指纹，错误校验不得因测试便利被忽略；每个样本结束恢复健康环境。
@@ -61,70 +65,74 @@ return function(ctx)
         raw.payload.settings.tracked.debuff=StringKeys(raw.payload.settings.tracked.debuff)
         WithBuff(raw,function()
             local ok,_,err=P:LoadStore(store.id,options);assert(ok,err)
-            assert(Equal(F.State.settings.tracked.buff,fixture.canonical.settings.tracked.buff))
-            assert(Equal(F.State.settings.tracked.debuff,fixture.canonical.settings.tracked.debuff))
+            assert(Equal(F.State.settings.tracked.player.buff,fixture.canonical.settings.tracked.buff))
+            assert(Equal(F.State.settings.tracked.player.debuff,fixture.canonical.settings.tracked.debuff))
+            assert(Equal(F.State.settings.tracked.target.buff,fixture.canonical.settings.tracked.buff))
+            assert(Equal(F.State.settings.tracked.target.debuff,fixture.canonical.settings.tracked.debuff))
             assert(F.State.settings.targetLayout.plate.x==fixture.canonical.settings.targetLayout.plate.x)
             assert(F.State.settings.components.buffs.size==47 and not store.writeFenced)
             assert(P:SaveStore(store.id,{force=true,verifyAfterSave=true}));assert(P:LoadStore(store.id,options))
         end)
     end)
-    Test('schema6 string-index auto and cooldown selections recover without loss',function()
-        local value=store.default();value.settings.tracked.auto={21,82}
+    Test('schema8 string-index scoped auto and cooldown selections recover without loss',function()
+        local value=store.default();value.settings.tracked.player.auto={21,82};value.settings.tracked.target.auto={21,82}
         value.settings.trackedCooldowns.skill={123,456};value.settings.trackedCooldowns.mate={789}
         local raw=Physical(store,value)
-        raw.payload.settings.tracked.auto=StringKeys(raw.payload.settings.tracked.auto)
+        raw.payload.settings.tracked.player.auto=StringKeys(raw.payload.settings.tracked.player.auto)
+        raw.payload.settings.tracked.target.auto=StringKeys(raw.payload.settings.tracked.target.auto)
         raw.payload.settings.trackedCooldowns.skill=StringKeys(raw.payload.settings.trackedCooldowns.skill)
         raw.payload.settings.trackedCooldowns.mate=StringKeys(raw.payload.settings.trackedCooldowns.mate)
         WithBuff(raw,function()
             local ok,_,err=P:LoadStore(store.id,options);assert(ok,err)
-            assert(Equal(F.State.settings.tracked.auto,{21,82}))
+            assert(Equal(F.State.settings.tracked.player.auto,{21,82}))
+            assert(Equal(F.State.settings.tracked.target.auto,{21,82}))
             assert(Equal(F.State.settings.trackedCooldowns.skill,{123,456}))
             assert(Equal(F.State.settings.trackedCooldowns.mate,{789}))
         end)
     end)
     Test('durable buff save verifies string-index readback without applying disk to live state',function()
-        local value=store.default();value.settings.tracked.auto={21,82}
+        local value=store.default();value.settings.tracked.player.auto={21,82}
         WithBuff(Physical(store,value),function(key)
             assert(P:LoadStore(store.id,options));local before=store.get()
             store.lastHistoricalRecoveryProbe='load-evidence'
             local ok,err=SaveAltered(store,key,function(raw)
-                raw.payload.settings.tracked.auto=StringKeys(raw.payload.settings.tracked.auto)
+                raw.payload.settings.tracked.player.auto=StringKeys(raw.payload.settings.tracked.player.auto)
             end)
             assert(ok,err);assert(Equal(store.get(),before),'readback mutated live domain')
             assert(store.lastHistoricalRecoveryProbe=='load-evidence','readback polluted load probe')
             assert(store.lastReadbackRepresentationRecovered==true,'exact proof not recorded')
-            assert(P:LoadStore(store.id,options));assert(Equal(F.State.settings.tracked.auto,{21,82}))
+            assert(P:LoadStore(store.id,options));assert(Equal(F.State.settings.tracked.player.auto,{21,82}))
         end)
     end)
     Test('durable buff readback rejects changed tracked content after key conversion',function()
-        local value=store.default();value.settings.tracked.auto={21,82}
+        local value=store.default();value.settings.tracked.player.auto={21,82}
         WithBuff(Physical(store,value),function(key)
             assert(P:LoadStore(store.id,options))
             local ok=SaveAltered(store,key,function(raw)
-                raw.payload.settings.tracked.auto=StringKeys(raw.payload.settings.tracked.auto)
-                raw.payload.settings.tracked.auto['1']=98765
+                raw.payload.settings.tracked.player.auto=StringKeys(raw.payload.settings.tracked.player.auto)
+                raw.payload.settings.tracked.player.auto['1']=98765
             end)
             assert(not ok and store.lastVerifyOk==false,'changed content passed readback')
         end)
     end)
     Test('readback representation recovery requires explicit opt-in',function()
-        local value=store.default();value.settings.tracked.auto={21,82}
+        local value=store.default();value.settings.tracked.player.auto={21,82}
         WithBuff(Physical(store,value),function(key)
             assert(P:LoadStore(store.id,options));local enabled=store.recoverReadbackRepresentation
             store.recoverReadbackRepresentation=false
             local ok=SaveAltered(store,key,function(raw)
-                raw.payload.settings.tracked.auto=StringKeys(raw.payload.settings.tracked.auto)
+                raw.payload.settings.tracked.player.auto=StringKeys(raw.payload.settings.tracked.player.auto)
             end)
             store.recoverReadbackRepresentation=enabled
             assert(not ok and not store.lastReadbackRepresentationRecovered,'unapproved store used recovery')
         end)
     end)
     Test('readback cannot borrow a candidate from a different stamped fingerprint',function()
-        local value=store.default();value.settings.tracked.auto={21,82}
+        local value=store.default();value.settings.tracked.player.auto={21,82}
         WithBuff(Physical(store,value),function(key)
             assert(P:LoadStore(store.id,options))
             local ok=SaveAltered(store,key,function(raw)
-                raw.payload.settings.tracked.auto=StringKeys(raw.payload.settings.tracked.auto)
+                raw.payload.settings.tracked.player.auto=StringKeys(raw.payload.settings.tracked.player.auto)
                 raw.__rsmeta.encodedFingerprint='00000000'
                 raw.__rsmeta.envelopeFingerprint=assert(P:FingerprintEnvelopeIntegrity(raw))
             end)
@@ -152,11 +160,11 @@ return function(ctx)
     end)
     Test('maximum tracked capacity recovers without truncating or reordering',function()
         local value=store.default();local ids={};for i=1,1024 do ids[i]=i+10000 end
-        value.settings.tracked.auto=ids;local raw=Physical(store,value)
-        raw.payload.settings.tracked.auto=StringKeys(raw.payload.settings.tracked.auto)
+        value.settings.tracked.player.auto=ids;local raw=Physical(store,value)
+        raw.payload.settings.tracked.player.auto=StringKeys(raw.payload.settings.tracked.player.auto)
         WithBuff(raw,function()
             local ok,_,err=P:LoadStore(store.id,options);assert(ok,err)
-            assert(Equal(F.State.settings.tracked.auto,ids))
+            assert(Equal(F.State.settings.tracked.player.auto,ids))
         end)
     end)
     Test('load metadata rejects wrong owner before recovery even with a sealed envelope',function()

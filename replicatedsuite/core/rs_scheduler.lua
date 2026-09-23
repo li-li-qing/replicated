@@ -16,6 +16,9 @@ local S = ReplicatedSuite
 
 S.Scheduler = {
     version = 3,
+    -- 维护（foundation-lifecycle-1）：调度器独占执行 Authority，Epoch 隔离同 Generation 重启。
+    -- Owner 手动暂停与异常熔断必须分离；不改变业务 Store、Native API 或现有任务调用签名。
+    runEpoch = 0, lifecycleContractVersion = 1,
     driver = nil, running = false, tasks = {}, taskModules = {}, transientTaskModules = {}, dueScratch = {},
     backlog = { health="Normal", pending=0, maxLateMs=0, maxLateRatio=0, executedLastFrame=0, deferredByBudget=0 },
 }
@@ -45,9 +48,17 @@ local function NormalizeDelta(dt)
     return math.min(ReadDeltaMs(dt), 1000)
 end
 
+-- 维护：非法数值不得进入排序/计时/预算；与 FrameBudget 的有限数规则一致。
+-- 正常有限值仍按旧上下限处理；NaN/Inf 回到安全默认，不让一个调用者污染整帧。
+local function Finite(value, fallback)
+    value = tonumber(value)
+    if value == nil or value ~= value or value == math.huge or value == -math.huge then return fallback end
+    return value
+end
+
 local function NormalizePriority(value)
     if type(value) == "string" then value = PRIORITY[string.upper(value)] end
-    value = math.floor(tonumber(value) or 3)
+    value = math.floor(Finite(value, 3))
     if value < 0 then return 0 end
     if value > 5 then return 5 end
     return value
@@ -55,7 +66,7 @@ end
 
 
 local function NormalizeCost(value)
-    value = math.floor(tonumber(value) or 1)
+    value = math.floor(Finite(value, 1))
     if value < 1 then return 1 end
     if value > 8 then return 8 end
     return value
@@ -70,15 +81,14 @@ local function ClassifyBacklog(pending, maxLateRatio)
     return "Normal"
 end
 
-local function CompareDueNames(a, b)
-    local ta, tb = Scheduler.tasks[a], Scheduler.tasks[b]
-    if ta == nil then return false end
-    if tb == nil then return true end
-    local pa, pb = NormalizePriority(ta.priority), NormalizePriority(tb.priority)
+-- 维护：排序固定的任务实例而不是可被回调替换的 name；同名新任务必须等下一帧。
+-- Scratch 数组只保存实例引用且每帧清空，不创建每帧表/比较闭包，也不延长 Owner 生命周期。
+local function CompareDueTasks(a, b)
+    local pa, pb = a.priority, b.priority
     if pa ~= pb then return pa < pb end
-    local da, db = tonumber(ta.dueSinceMs) or 0, tonumber(tb.dueSinceMs) or 0
+    local da, db = tonumber(a.dueSinceMs) or 0, tonumber(b.dueSinceMs) or 0
     if da ~= db then return da < db end
-    return tostring(a) < tostring(b)
+    return a.name < b.name
 end
 
 local function AddTaskInternal(self, name, intervalMs, callback, runImmediately, owner, priority, costUnits, lane)
@@ -86,12 +96,13 @@ local function AddTaskInternal(self, name, intervalMs, callback, runImmediately,
     lane = (lane == "interactive" and "interactive") or (lane == "highfrequency" and "highfrequency") or "background"
     local minimum = lane == "interactive" and INTERACTIVE_MIN_INTERVAL_MS
         or (lane == "highfrequency" and HIGHFREQUENCY_MIN_INTERVAL_MS or BACKGROUND_MIN_INTERVAL_MS)
-    local interval = math.max(minimum, tonumber(intervalMs)
-        or (lane == "interactive" and INTERACTIVE_MIN_INTERVAL_MS or (lane == "highfrequency" and HIGHFREQUENCY_MIN_INTERVAL_MS or 1000)))
+    local interval = math.max(minimum, Finite(intervalMs,
+        lane == "interactive" and INTERACTIVE_MIN_INTERVAL_MS or (lane == "highfrequency" and HIGHFREQUENCY_MIN_INTERVAL_MS or 1000)))
     local moduleId = self.taskModules[tostring(name)] or "suite"
     self.tasks[name] = {
-        intervalMs = interval, callback = callback, lane = lane,
-        elapsedMs = runImmediately == true and interval or 0, enabled = true,
+        -- 维护：name 仅作索引，table 身份才是本次注册的执行凭证；Owner 的暂停不由熔断器接管。
+        name = name, intervalMs = interval, callback = callback, lane = lane,
+        elapsedMs = runImmediately == true and interval or 0, enabled = true, manuallyDisabled = false,
         owner = owner, failureCount = 0, failureTotal = 0, runCount = 0, priority = NormalizePriority(priority),
         costUnits = NormalizeCost(costUnits), deferCount = 0,
         lastRunAtMs = nil, lastSuccessAtMs = nil, lastErrorAtMs = nil, lastError = nil,
@@ -126,18 +137,23 @@ end
 -- a visual reaction must not wait the 50 ms background one-shot floor.
 function Scheduler:AddHighFrequencyOneShot(name, delayMs, callback, owner, priority, costUnits)
     if type(name) ~= "string" or name == "" or type(callback) ~= "function" then return false end
-    local scheduler = self
-    return self:AddHighFrequencyTask(name, math.max(HIGHFREQUENCY_MIN_INTERVAL_MS, tonumber(delayMs) or HIGHFREQUENCY_MIN_INTERVAL_MS), function()
+    -- 维护：旧 one-shot 闭包无权删除后来同名任务；先验证注册实例，再移除，再调业务。
+    -- 允许业务回调安全地重新注册同名任务；返回值/Owner/优先级兼容原接口。
+    local scheduler, registeredTask = self, nil
+    local added = self:AddHighFrequencyTask(name, math.max(HIGHFREQUENCY_MIN_INTERVAL_MS, Finite(delayMs, HIGHFREQUENCY_MIN_INTERVAL_MS)), function()
+        if registeredTask == nil or scheduler.tasks[name] ~= registeredTask then return false end
         scheduler:RemoveTask(name)
         return callback()
     end, false, owner, priority or "P1", costUnits or 1)
+    if added == true then registeredTask = self.tasks[name] end
+    return added
 end
 
 local function TaskInterval(task)
     local lane = type(task) == "table" and task.lane or "background"
     local minimum = lane == "interactive" and INTERACTIVE_MIN_INTERVAL_MS
         or (lane == "highfrequency" and HIGHFREQUENCY_MIN_INTERVAL_MS or BACKGROUND_MIN_INTERVAL_MS)
-    return math.max(minimum, tonumber(task and task.intervalMs) or 1000)
+    return math.max(minimum, Finite(task and task.intervalMs, 1000))
 end
 
 -- Bounded one-shot work shares the same single scheduler driver. The task is
@@ -146,11 +162,15 @@ end
 -- and other finite work; Feature periodic jobs should keep using AddTask.
 function Scheduler:AddOneShot(name, delayMs, callback, owner, priority, costUnits)
     if type(name) ~= "string" or name == "" or type(callback) ~= "function" then return false end
-    local scheduler = self
-    return self:AddTask(name, math.max(50, tonumber(delayMs) or 50), function()
+    -- 维护：与高频 one-shot 共用实例所有权规则，旧闭包不能撤销同名后继任务。
+    local scheduler, registeredTask = self, nil
+    local added = self:AddTask(name, math.max(50, Finite(delayMs, 50)), function()
+        if registeredTask == nil or scheduler.tasks[name] ~= registeredTask then return false end
         scheduler:RemoveTask(name)
         return callback()
     end, false, owner, priority or "P3", costUnits or 1)
+    if added == true then registeredTask = self.tasks[name] end
+    return added
 end
 
 function Scheduler:RemoveTask(name)
@@ -196,8 +216,12 @@ end
 function Scheduler:SetEnabled(name, enabled)
     local task = self.tasks[name]
     if task ~= nil then
+        -- 维护：Owner 显式暂停优先于后台异常恢复；保留 fault 信息供只读诊断。
+        -- 显式恢复只清本次熔断窗口，不清累计 failureTotal/resumeCount，避免掩盖历史故障。
+        task.manuallyDisabled = enabled ~= true
         task.enabled = enabled == true
-        if task.enabled ~= true then task.pending = false; task.dueSinceMs = nil; task.deferCount = 0 end
+        if task.enabled ~= true then task.pending = false; task.dueSinceMs = nil; task.deferCount = 0
+        elseif task.faultedAtMs ~= nil then task.faultedAtMs = nil; task.failureCount = 0 end
     end
 end
 
@@ -254,7 +278,8 @@ end
 function Scheduler:RecoverFaultedTasks(now)
     local recovered = 0
     for _, task in pairs(self.tasks) do
-        if task.enabled ~= true and task.faultedAtMs ~= nil
+        -- 维护：只有熔断器暂停的任务可自动恢复；手动暂停即使保留 fault 证据也不得重启。
+        if task.enabled ~= true and task.manuallyDisabled ~= true and task.faultedAtMs ~= nil
             and (tonumber(now) or 0) - task.faultedAtMs >= FaultResumeDelayMs(task.resumeCount) then
             task.enabled = true
             task.faultedAtMs = nil
@@ -277,7 +302,8 @@ function Scheduler:GetTaskState(name)
     local task = self.tasks[name]
     if task == nil then return { name=name, registered=false } end
     return {
-        name=name, registered=true, enabled=task.enabled == true, lane=tostring(task.lane or "background"),
+        -- 维护：只读区分手动暂停与熔断暂停，不暴露 callback/Owner 或触发恢复。
+        name=name, registered=true, enabled=task.enabled == true, manuallyDisabled=task.manuallyDisabled == true, lane=tostring(task.lane or "background"),
         intervalMs=tonumber(task.intervalMs) or 0, priority=tonumber(task.priority) or 3,
         pending=task.pending == true, runCount=tonumber(task.runCount) or 0,
         failureCount=tonumber(task.failureCount) or 0, failureTotal=tonumber(task.failureTotal) or 0,
@@ -308,6 +334,7 @@ function Scheduler:GetHealth()
     end
     return {
         version = self.version, running = self.running == true, activeTasks = activeTasks,
+        lifecycleContractVersion = self.lifecycleContractVersion, -- 只读执行隔离契约，不改变任务状态。
         faultResumes = tonumber(self.faultResumes) or 0,
         moduleMappings = moduleMappings, transientMappings = transientMappings, transientOrphans = transientOrphans,
     }
@@ -327,6 +354,9 @@ function Scheduler:Start()
     if driver.Show ~= nil then driver:Show(true) end
     self.driver = driver
     self.running = true
+    -- 维护：不能只比较 Generation；同代重启后，无法解绑的旧 Native driver 仍可能回调。
+    self.runEpoch = self.runEpoch + 1
+    local epoch = self.runEpoch
     local generation = S.Generation
 
     if type(driver.SetHandler) ~= "function" then
@@ -338,7 +368,7 @@ function Scheduler:Start()
     end
     local handlerOk, handlerResult = pcall(function()
         return driver:SetHandler("OnUpdate", function(_, dt)
-        if S.Generation ~= generation or Scheduler.running ~= true then return end
+        if S.Generation ~= generation or Scheduler.running ~= true or Scheduler.driver ~= driver or Scheduler.runEpoch ~= epoch then return end
         local rawElapsed = ReadDeltaMs(dt)
         local elapsed = NormalizeDelta(dt)
         if elapsed <= 0 then return end
@@ -350,8 +380,8 @@ function Scheduler:Start()
         -- never execute while iterating the authoritative table. Reuse the
         -- scratch array: this handler runs every frame and must not create a
         -- fresh table/comparator closure when no task is due.
-        local dueNames = Scheduler.dueScratch
-        for index = #dueNames, 1, -1 do dueNames[index] = nil end
+        local dueTasks = Scheduler.dueScratch
+        for index = #dueTasks, 1, -1 do dueTasks[index] = nil end
         Scheduler:RecoverFaultedTasks(now)
         local pendingCount, maxLateMs, maxLateRatio = 0, 0, 0
         for name, task in pairs(Scheduler.tasks) do
@@ -364,7 +394,7 @@ function Scheduler:Start()
                         task.pending = true
                         task.dueSinceMs = now
                     end
-                    dueNames[#dueNames + 1] = name
+                    dueTasks[#dueTasks + 1] = task
                     -- High-frequency tasks are due every frame by construction;
                     -- counting their lateness would permanently poison the
                     -- shared backlog health classification.
@@ -379,7 +409,8 @@ function Scheduler:Start()
             end
         end
 
-        if #dueNames > 1 then table.sort(dueNames, CompareDueNames) end
+        if #dueTasks > 1 then table.sort(dueTasks, CompareDueTasks) end
+        local dueCount = #dueTasks
 
         local health = ClassifyBacklog(pendingCount, maxLateRatio)
         local frameBudget = S.FrameBudget
@@ -388,9 +419,12 @@ function Scheduler:Start()
         end
         local fallbackBudget = FALLBACK_HEALTH_BUDGET[health] or 8
         local executed, deferredByBudget = 0, 0
-        for _, name in ipairs(dueNames) do
-            local task = Scheduler.tasks[name]
-            if task ~= nil and task.enabled == true and task.pending == true then
+        for index = 1, dueCount do
+            -- 维护：回调可 Stop/Start/RemoveOwner；旧帧不得读取新代 scratch 或提交旧遥测。
+            if S.Generation ~= generation or Scheduler.runEpoch ~= epoch or Scheduler.driver ~= driver or Scheduler.running ~= true then break end
+            local task = dueTasks[index]
+            local name = task and task.name
+            if task ~= nil and Scheduler.tasks[name] == task and task.enabled == true and task.pending == true then
                 local interval = TaskInterval(task)
                 local lateMs = math.max(0, (tonumber(task.elapsedMs) or interval) - interval)
                 local lateRatio = lateMs / interval
@@ -413,9 +447,25 @@ function Scheduler:Start()
                 end
             end
         end
+        -- 维护：中途重载也必须结束旧帧；仅清理仍属本 Epoch 的 scratch，不碰重启后的工作集。
+        if S.Generation ~= generation or Scheduler.runEpoch ~= epoch or Scheduler.driver ~= driver or Scheduler.running ~= true then
+            if Scheduler.runEpoch == epoch then
+                for index = 1, dueCount do dueTasks[index] = nil end
+            end
+            return
+        end
+        -- 维护：HF 执行不能减掉普通任务积压；回调取消/替换的任务也不再算 pending。
+        -- 仅二次检查本帧 due 快照，边统计边清引用；不重新全扫描 tasks，不保留已释放 Owner。
+        local pendingAfter = 0
+        for index = 1, dueCount do
+            local task = dueTasks[index]
+            if task ~= nil and Scheduler.tasks[task.name] == task and task.enabled == true
+                and task.pending == true and task.lane ~= "highfrequency" then pendingAfter = pendingAfter + 1 end
+            dueTasks[index] = nil
+        end
         local backlog = Scheduler.backlog
         backlog.health = health
-        backlog.pending = math.max(0, pendingCount - executed)
+        backlog.pending = pendingAfter
         backlog.maxLateMs = maxLateMs
         backlog.maxLateRatio = maxLateRatio
         backlog.executedLastFrame = executed
@@ -435,6 +485,8 @@ function Scheduler:Start()
 end
 
 function Scheduler:Stop()
+    -- 维护：先撤销旧帧/旧 Native 闭包权限；即使当前业务回调同步重启也不能续跑旧快照。
+    self.runEpoch = self.runEpoch + 1
     self.running = false
     self.tasks = {}
     for name in pairs(self.transientTaskModules or {}) do self.taskModules[name] = nil end

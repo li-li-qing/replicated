@@ -1,6 +1,8 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Activity Page
 ------------------------------------------------------------------------
+-- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -11,12 +13,14 @@ if type(RSUI) ~= "table" or type(D) ~= "table" or type(PageHost) ~= "table" or t
 local ROUTE = "life.activities"
 
 local function OpenActivityDetail(row)
-    if type(row) ~= "table" then return false end
+    if type(row) ~= "table" then return false, "活动行数据不可用" end
     -- Main page and floating activity/task widgets share one independent detail
     -- surface. This keeps task details reusable after the application shell is
     -- closed and prevents a second modal-only presentation authority.
     local detail = S.UIV3 and S.UIV3.QuestDetailFloatingV3 or nil
-    if type(detail) ~= "table" or type(detail.Open) ~= "function" then return false end
+    if type(detail) ~= "table" or type(detail.Open) ~= "function" then
+        return false, "QuestDetailFloatingV3 未加载"
+    end
     return detail:Open(row.questScope or "event", row.questKey, row)
 end
 
@@ -29,7 +33,7 @@ local function BuildActivityPage(parent, route)
         end
         return execute()
     end
-    D:PageHeader(root, "v3_activity_header", "活动", "俄服活动时间表 + 实时区域阶段 + 任务/副本参与进度。任务读取由共享 V3 Progress Service 按需运行，活动页面本身不直接调用游戏任务 API。", "刷新", function()
+    D:PageHeader(root, "v3_activity_header", "活动", "Activity Timeline v2：可计算时间的活动按时间线排序；战争/纷争/和平/危险阶段固定放在实时区域段，不再与未来活动混排。任务读取仍由共享 V3 Progress Service 按需运行。", "刷新", function()
         return RunAction("refresh", nil, function()
             if S.FeatureRuntime == nil or S.FeatureRuntime:IsEnabled("life_activities") ~= true then return false end
             local progress = S.Services and S.Services.QuestProgressV3 or nil
@@ -47,7 +51,7 @@ local function BuildActivityPage(parent, route)
     local actionRow = RSUI:HorizontalBox({ id = "v3_activity_actions", parent = root, gap = 7, slot = { size = "fixed", height = 30, hAlign = "fill" } })
     local selectedKey = nil
     local tableView = nil
-    local featureButton = RSUI:Button({ id = "v3_activity_feature_toggle", parent = actionRow, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
+    local featureButton = D:ModuleToggleButton({ id = "v3_activity_feature_toggle", parent = actionRow, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
     local widgetButton = RSUI:Button({ id = "v3_activity_widget_toggle", parent = actionRow, text = "打开悬浮窗", compact = true, slot = { size = "fixed", width = 116 } })
     widgetButton.onClick = function()
         return RunAction("widget_toggle", widgetButton, function()
@@ -76,6 +80,7 @@ local function BuildActivityPage(parent, route)
             if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
                 S.Events:UnsubscribeInternalOwner(root)
                 S.Events:SubscribeInternal("v3.activities.updated", root, function() root:Refresh() end)
+                S.Events:SubscribeInternal("v3.workspace.updated", root, function(_,kind)if kind=="lists" then root:Refresh() end end)
             end
         else
             -- FeatureRuntime:Disable already clears the feature Demand transactionally.
@@ -114,9 +119,13 @@ local function BuildActivityPage(parent, route)
     end
     local hideExecute = hideButton.onClick
     hideButton.onClick = function() return RunAction("hide_selected", hideButton, hideExecute) end
-    local progressHint = RSUI:Text({ id = "v3_activity_progress_hint", parent = root, text = "任务进度：共享数据源按需启动 · 点击活动行查看任务详情 · 鼠标滚轮可浏览全部活动", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 20, hAlign = "fill" } })
+    -- 完整目录包括已隐藏和未发生的活动/区域，恢复不再只能全部恢复。
+    RSUI:Button({id="v3_activity_customize",parent=actionRow,text="自定义",compact=true,slot={size="fixed",width=76},
+        onClick=function()return S.UIV3.WorkspacePage:Open("lists","activities")end})
+    local progressHint = RSUI:Text({ id = "v3_activity_progress_hint", parent = root, text = "排序：当前活动 → 即将开始（按时间）→ 实时区域（独立视口） · 点击活动行查看任务详情", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 20, hAlign = "fill" } })
 
-    tableView = RSUI:TableView({
+    -- ActivityLists 只分配双视口；原 Consumer/开关/保存逻辑保留，区域不再被长时间线挤出。
+    tableView = S.UIV3.ActivityLists:Create({
         id = "v3_activity_table", parent = root, items = {},
         rowHeight = 29, headerHeight = 29, overscan = 2, desiredRows = 12,
         scrollbar = true, selectable = true, selectionMode = "single", columnResize = true, headerInteractive = false,
@@ -129,8 +138,8 @@ local function BuildActivityPage(parent, route)
         end,
         columns = {
             { id = "name", title = "活动", field = "name", size = "fill", minWidth = 126, fill = 1.0,
-                getTone = function(item) return item and item.active and "red" or "default" end },
-            { id = "status", title = "当前状态 / 倒计时", field = "status", size = "fill", minWidth = 176, fill = 1.35,
+                getTone = function(item) return "default" end },
+            { id = "status", title = "时间 / 区域状态", field = "status", size = "fill", minWidth = 176, fill = 1.35,
                 getTone = function(item) return item and item.tone or "muted" end },
             { id = "schedule", title = "来源 / 下次", field = "scheduleText", size = "fill", minWidth = 116, fill = 0.85,
                 getTone = function(item) return item and item.zoneState and "accent" or "muted" end },
@@ -144,6 +153,9 @@ local function BuildActivityPage(parent, route)
     function root:Refresh()
         local enabled = S.FeatureRuntime ~= nil and S.FeatureRuntime:IsEnabled("life_activities") == true
         local rows, revision = Feature:GetRows()
+        -- 三个入口统一应用个人顺序，但不改共享 Authority 数组；双视口内分别排序。
+        local workspace=S.UIV3.Workspace
+        if workspace then rows=workspace:ProjectRows("activities",rows);revision=tostring(revision)..":"..workspace.revision end
         -- SetItems owns the visible-pool reconcile; do not immediately force a
         -- second row bind for the same revision.
         tableView:SetItems(rows, revision)
@@ -155,25 +167,32 @@ local function BuildActivityPage(parent, route)
             tableView:SetViewState("ready")
         end
         local summary = Feature:GetSummary()
+        local timing = Feature:GetTimingDiagnostics()
         summaryCard:SetData({
-            value = enabled and (tostring(summary.active or 0) .. " 进行中") or "功能已关闭",
-            detail = "共 " .. tostring(summary.total or 0) .. " 条 · 2小时内 " .. tostring(summary.withinTwoHours or 0)
+            -- 中文维护注释（2026-09-18，Timeline v2 Presentation）：Summary 不再用 active 混合“计划活动”和“区域战争”。
+            -- timelineActive 是可比较时间线中的当前活动；liveZones 是独立实时状态段。兼容字段 summary.active 仍保留给旧诊断，
+            -- 但新 UI 禁止再次用它把两种语义合成一个数字。
+            value = enabled and ("时间线 " .. tostring(summary.timelineTotal or 0)) or "功能已关闭",
+            detail = "当前活动 " .. tostring(summary.timelineActive or 0) .. " · 2小时内 " .. tostring(summary.withinTwoHours or 0)
                 .. " · 实时区域 " .. tostring(summary.liveZones or 0) .. " · 已隐藏 " .. tostring(summary.hidden or 0)
-                .. "\n区域状态读取失败 " .. tostring(summary.zoneScanFailures or 0) .. " · 数据版本 " .. tostring(summary.revision or 0),
+                .. "\n服务器样本 " .. tostring(timing.serverSample) .. (timing.fresh and "" or "（已过期/未知）")
+                -- 中文维护注释（2026-09-19）：普通活动页不暴露“参考”这类内部来源标签；
+                -- 来源可信度仍保存在 Authority/诊断中。这里仅保留玩家真正需要的时间误差说明。
+                .. " · 时间按活动日程估算，实际结束时间可能有偏差",
         })
         local widgetVisible = S.UIV3.WidgetHost and S.UIV3.WidgetHost:IsVisible("life.activities") == true
         featureButton:SetText(enabled and "关闭功能" or "启用功能")
         widgetButton:SetEnabled(enabled)
         widgetButton:SetText(widgetVisible and "关闭悬浮窗" or "打开悬浮窗")
         local selectedRow = selectedKey and Feature:GetRow(selectedKey) or nil
-        hideButton:SetEnabled(enabled and selectedRow ~= nil and selectedRow.zoneState ~= true)
+        hideButton:SetEnabled(enabled and selectedRow ~= nil)
         local progress = S.Services and S.Services.QuestProgressV3 or nil
         local health = type(progress) == "table" and type(progress.GetHealth) == "function" and progress:GetHealth() or nil
         if not enabled then
             progressHint:SetText("活动功能已关闭")
         elseif summary.progressAuthority and type(health) == "table" then
-            progressHint:SetText("任务 / 副本进度：可用 " .. tostring(health.available or 0) .. "/" .. tostring(health.projections or 0)
-                .. " · 数据版本 " .. tostring(health.revision or 0) .. " · 点击活动行查看详情")
+            progressHint:SetText("时间线按开始/结束时间排序 · 实时区域独立显示 · 任务进度 " .. tostring(health.available or 0) .. "/" .. tostring(health.projections or 0)
+                .. " · 点击活动行查看详情")
         else
             progressHint:SetText("任务 / 副本进度：共享数据源不可用")
         end
@@ -187,6 +206,7 @@ local function BuildActivityPage(parent, route)
             if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
                 S.Events:UnsubscribeInternalOwner(self)
                 S.Events:SubscribeInternal("v3.activities.updated", self, function() root:Refresh() end)
+                S.Events:SubscribeInternal("v3.workspace.updated", self, function(_,kind)if kind=="lists" then root:Refresh() end end)
             end
         end
         self:Refresh()

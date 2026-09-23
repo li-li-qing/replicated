@@ -21,6 +21,9 @@ local PERSISTENCE_ACCEPTANCE_STORE_IDS = {
     "v3.tasks",
     "v3.dps",
     "v3.life.trade",
+    -- 中文维护注释（2026-09-23，trade-preferences-acceptance）：跑商历史 Store 不扩 schema；
+    -- 新的关注/自动刷新/随身扫描偏好独立持久化，因此也必须进入运行时存档验收，避免升级后静默丢配置。
+    "v3.trade_preferences",
     "v3.death_review",
 }
 local PERSISTENCE_ACCEPTANCE_STORE_PREFIXES = { "v3.gear.payload." }
@@ -93,6 +96,8 @@ local function BuildFeaturePlaceholder(parent, route, feature)
 end
 
 local function BuildFeatures(parent, route)
+    -- 工作台以薄运行态替代逐行 GetSnapshot/GetHealth；旧实现保留隔离宿主回退，业务启停不变。
+    if S.UIV3.WorkspacePage then return S.UIV3.WorkspacePage:Build(parent, route, "features") end
     local root, rootErr = D:PageRoot(parent, "v3_page_system_features")
     if root == nil then return nil, "页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
     D:PageHeader(root, "v3_features_header", "功能模块", "这里管理已经迁入新版框架的功能生命周期；尚未迁移的功能保持零运行成本。")
@@ -194,7 +199,9 @@ end
 local function BuildWidgets(parent, route)
     local root, rootErr = D:ScrollablePageRoot(parent, "v3_page_system_widgets")
     if root == nil then return nil, "页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
-    D:PageHeader(root, "v3_widgets_header", "悬浮组件", "这里只管理已经迁入新版框架的独立悬浮组件；位置、锁定和布局恢复由统一组件宿主管理。")
+    -- 统一清单入口不替换下方已有活动/换装等精细数值控制，保持用户原调参能力。
+    D:PageHeader(root, "v3_widgets_header", "悬浮组件", "管理全部悬浮窗口的显示、收起、锁定和复位；下方保留各模块的精细外观设置。",
+        "管理全部窗口", function() return S.UIV3.WorkspacePage:Open("windows") end)
     local function AdoptWidgetAction(button, id)
         if type(button) ~= "table" or type(button.spec) ~= "table" or type(button.spec.onClick) ~= "function" then return button end
         local execute = button.spec.onClick
@@ -245,9 +252,12 @@ local function BuildWidgets(parent, route)
     AdoptWidgetAction(activityLock, "activity_lock")
     AdoptWidgetAction(activityReset, "activity_reset")
     local activityHint = RSUI:Text({ id = "v3_widgets_activity_hint", parent = actions, text = "", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
+    -- 维护（2026-09-15，numeric-range-v2）：透明度百分比是归一化业务量，不属于“推荐窗口”。
+    -- 明确固定 0..100，防止通用自适应 Slider 把非法精确输入扩展成新的范围；Authority 仍由 WidgetHost/Feature
+    -- 回读确认，旧 appearance 配置与持久化键不变。
     local overallOpacityField = D:NumericSetting(activityStack, {
         id = "v3_widgets_activity_overall_opacity", label = "整体透明度", hint = "作用于整个悬浮窗，并与背景/文字透明度相乘；可直接输入 0–100。",
-        min = 0, max = 100, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
+        min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function()
             local host = S.UIV3 and S.UIV3.WidgetHost or nil
             local state = host and host:GetState("life.activities") or nil
@@ -263,7 +273,7 @@ local function BuildWidgets(parent, route)
     })
     local backgroundOpacityField = D:NumericSetting(activityStack, {
         id = "v3_widgets_activity_background_opacity", label = "背景透明度", hint = "只调整面板、边框、按钮等背景，不降低文字清晰度；可直接输入 0–100。",
-        min = 0, max = 100, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
+        min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function()
             local host = S.UIV3 and S.UIV3.WidgetHost or nil
             local state = host and host:GetState("life.activities") or nil
@@ -279,7 +289,7 @@ local function BuildWidgets(parent, route)
     })
     local textOpacityField = D:NumericSetting(activityStack, {
         id = "v3_widgets_activity_text_opacity", label = "文字透明度", hint = "只调整标题、状态、表格文字和按钮文字；可直接输入 0–100。",
-        min = 0, max = 100, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
+        min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function()
             local host = S.UIV3 and S.UIV3.WidgetHost or nil
             local state = host and host:GetState("life.activities") or nil
@@ -377,9 +387,11 @@ local function BuildWidgets(parent, route)
         if host == nil then return false, "悬浮组件宿主不可用" end
         return host:SetAppearance("combat.gear.quick", channel, (tonumber(value) or 100) / 100, false)
     end
+    -- 同一 Numeric Range v2 规则：换装快捷按钮透明度是真实 0..100 百分比，因此保留 fixedRange。
+    -- 这里只声明 Presentation 安全语义，不新增 Store，也不改变 Gear Appearance 的 Authority/升级兼容。
     local gearOverallOpacityField = D:NumericSetting(gearStack, {
         id = "v3_widgets_gear_overall_opacity", label = "整体透明度", hint = "同时作用于所有换装快捷按钮，并与背景/文字透明度相乘；可直接输入 0–100。",
-        min = 0, max = 100, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
+        min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function() return GearAppearanceGet("overallOpacity", 0.94) end,
         set = function(value) return GearAppearanceSet("overall", value) end,
         storeId = GEAR_INDEX_STORE_ID, persistDelayMs = 250, persistReason = "gear_quick_overall_opacity",
@@ -387,7 +399,7 @@ local function BuildWidgets(parent, route)
     })
     local gearBackgroundOpacityField = D:NumericSetting(gearStack, {
         id = "v3_widgets_gear_background_opacity", label = "背景透明度", hint = "只调整所有换装快捷按钮的背景，不降低文字清晰度。",
-        min = 0, max = 100, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
+        min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function() return GearAppearanceGet("backgroundOpacity", 1.0) end,
         set = function(value) return GearAppearanceSet("background", value) end,
         storeId = GEAR_INDEX_STORE_ID, persistDelayMs = 250, persistReason = "gear_quick_background_opacity",
@@ -395,7 +407,7 @@ local function BuildWidgets(parent, route)
     })
     local gearTextOpacityField = D:NumericSetting(gearStack, {
         id = "v3_widgets_gear_text_opacity", label = "文字透明度", hint = "只调整换装按钮上的方案名称文字。",
-        min = 0, max = 100, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
+        min = 0, max = 100, hardMin = 0, hardMax = 100, fixedRange = true, step = 1, integer = true, unit = "%", slider = true, stepButtons = false,
         get = function() return GearAppearanceGet("textOpacity", 1.0) end,
         set = function(value) return GearAppearanceSet("text", value) end,
         storeId = GEAR_INDEX_STORE_ID, persistDelayMs = 250, persistReason = "gear_quick_text_opacity",
@@ -549,17 +561,11 @@ local function BuildSettings(parent, route)
             local shell = S.UIV3 and S.UIV3.Shell or nil
             local host = S.UIV3 and S.UIV3.WidgetHost or nil
             if shellState == nil or shell == nil or host == nil then return false end
-            shellState.userMoved = false
-            shellState.minimized = false
-            shellState.x, shellState.y, shellState.anchorH, shellState.anchorV = nil, nil, nil, nil
-            shellState.offsetX, shellState.offsetY, shellState.coordinateSpace, shellState.savedUiScale = nil, nil, nil, nil
-            shellState.savedLogicalWidth, shellState.savedLogicalHeight = nil, nil
-            shellState.normalizedCenterX, shellState.normalizedCenterY = nil, nil
-            if type(shell.ApplyMinimizedState) == "function" then shell:ApplyMinimizedState(false) end
-            local shellOk = shell:ApplyLayout(false)
+            -- 维护（viewport-recovery-1）：设置页不再自行清字段/猜坐标，硬恢复与 Native
+            -- 可见性、捕获取消、Store 失败回滚全部由 Shell 负责；不影响 Workspace 偏好。
+            local shellOk = type(shell.ResetLayout)=="function" and shell:ResetLayout(true) or false
             local widgetsOk = type(host.ResetAllLayouts) == "function" and host:ResetAllLayouts() or false
             local launcherOk = type(S.UIV3.ResetLauncherPlacement) == "function" and S.UIV3:ResetLauncherPlacement(true) or false
-            if shellOk == true and type(S.UIV3.MarkShellStoreDirty) == "function" then S.UIV3:MarkShellStoreDirty(250, "settings_reset_all_windows") end
             return shellOk == true and widgetsOk == true and launcherOk == true
         end)
     end })
@@ -696,15 +702,20 @@ local function BuildDiagnostics(parent, route)
     local root, rootErr = D:PageRoot(parent,{id="v3_page_system_diagnostics",gap=6})
     if root==nil then return nil,"页面根组件创建失败："..tostring(rootErr or "未知错误") end
     root.route=route
-    D:PageHeader(root,"v3_diag_header","诊断与维护",
-        "复现错误后打印固定报告；逐页全选复制，用上一页／下一页切换，翻页不重新采集。")
+    -- 中文维护注释（2026-09-18，module-diagnostics-system-scope-1）：全局诊断页不删除，
+    -- 但职责固定为 Core/Foundation/完整维护取证；普通业务故障的默认入口已经迁到模块页左上角。
+    -- 禁止为了“方便”把所有 Feature 的日常诊断再次塞回这里；只有维护者明确需要全局证据时才使用
+    -- 下方完整报告。这个页面的旧复制框继续保持兼容，不允许为了修模块 DiagnosticCopyBox 去改普通输入生命周期。
+    D:PageHeader(root,"v3_diag_header","系统诊断与维护",
+        "这里保留 Core / Foundation 的完整维护自检。业务模块故障请优先使用对应页面左上角“诊断”，只采集该模块的错误、Store 与运行状态；完整报告仅在维护底层框架时使用。")
     local actions=RSUI:HorizontalBox({id="v3_diag_actions",parent=root,gap=8,slot={size="fixed",height=32,hAlign="fill"}})
     local runButton=RSUI:Button({id="v3_diag_full_check",parent=actions,text="运行自检",compact=true,slot={size="fixed",width=120}})
-    local printButton=RSUI:Button({id="v3_diag_output",parent=actions,text="打印自检报告",compact=true,slot={size="fixed",width=144}})
+    local printButton=RSUI:Button({id="v3_diag_output",parent=actions,text="打印故障报告",compact=true,slot={size="fixed",width=144}})
+    local fullReportButton=RSUI:Button({id="v3_diag_output_full",parent=actions,text="完整报告",compact=true,slot={size="fixed",width=112}})
     local card=D:InfoCard(root,{id="v3_diag_gate",title="自检结果",value="尚未运行",
         detail="不会清除历史错误、修改配置或解除写保护。",slot={size="fixed",height=60,hAlign="fill"}})
     local status=RSUI:Text({id="v3_diag_report_status",parent=root,fontSize=10,tone="accent",overflow="wrap",maxLines=3,
-        text="打印会收集本次重载后的已记录错误与故障原档；超出单框容量按页显示，不再因摘要预算丢弃。",
+        text="系统报告用于 Core / Foundation 维护，仍完整保留本次加载阻断与故障 Store 取证；业务模块请优先使用模块左上角诊断，避免复制无关内容。",
         slot={size="fixed",height=50,hAlign="fill"}})
     -- 维护：导航独立于run/print，不创建N个Native编辑框；复用同一框显示逻辑编辑框1..N，
     -- 节省控件/焦点资源。前后按钮达到边界即禁用；没有隐式轮转、没有新事件或后台任务。
@@ -884,16 +895,35 @@ local function BuildDiagnostics(parent, route)
             local diagnostic,err=Backend('RunSelfCheck');if not diagnostic then status:SetText(err);return false,err end
             ClearReport();Navigation()
             if editor and type(ui.DeactivateInputWidget)=='function' then pcall(ui.DeactivateInputWidget,ui,editor,host.owner,'diagnostic_new_check') end
-            root:Refresh(diagnostic:RunSelfCheck());status:SetText('自检已完成；复现期间记录的错误仍保留。打印生成固定报告，上一页/下一页只翻页。')
+            root:Refresh(diagnostic:RunSelfCheck());status:SetText('自检已完成；复现期间记录的错误仍保留。优先打印故障报告，只有维护者要求时再用完整报告。')
             return true
         end)
     end
+    -- 中文维护注释（2026-09-18，.18.237 故障报告 Authority 回归修复）：
+    -- 原因：诊断页“打印故障报告”曾误接历史兼容 PrintFocusedSelfCheckReport；Focused 会在 Presentation
+    -- 分页之前先把证据压到 3500 bytes，导致真实 RU 报告出现 PAGE=1/1 但正文已有 <cut>/<text_omitted>，
+    -- 丢失恰好用于判断 Store 恢复候选的尾部证据。Authority/数据流：Diagnostics 的 BuildPaged 仍是
+    -- 本次加载故障快照 Authority，Persistence/Store 只提供只读取证；Presentation 只持有固定 text/meta
+    -- 并按 Native 编辑框回读容量分页，上一页/下一页不得重新 RunSelfCheck/LoadData。兼容边界：
+    -- PrintFocusedSelfCheckReport API 保留给旧工具/专项测试，但不再作为用户默认按钮；不改变 Store schema、
+    -- fingerprint/Fence、恢复候选或写盘行为。风险：完整故障证据可能产生更多页，这是为了不丢证据的预期结果；
+    -- 页数增加不能通过重新引入预裁剪来“优化”。
     printButton.onClick=function()
         return Execute('print_self_check',function()
             local diagnostic,err=Backend('PrintPagedSelfCheckReport');if not diagnostic then status:SetText(err);return false,err end
             ClearReport();Navigation()
             local ok,text,meta=diagnostic:PrintPagedSelfCheckReport(Present)
-            if ok~=true or type(text)~='string' or type(meta)~='table' then status:SetText('报告生成失败：'..tostring(text));return false,tostring(text) end
+            if ok~=true or type(text)~='string' or type(meta)~='table' then status:SetText('故障报告生成失败：'..tostring(text));return false,tostring(text) end
+            DescribePage(meta.presentation)
+            return meta.delivered==true or meta.partReady==true
+        end)
+    end
+    fullReportButton.onClick=function()
+        return Execute('print_full_self_check',function()
+            local diagnostic,err=Backend('PrintPagedSelfCheckReport');if not diagnostic then status:SetText(err);return false,err end
+            ClearReport();Navigation()
+            local ok,text,meta=diagnostic:PrintPagedSelfCheckReport(Present)
+            if ok~=true or type(text)~='string' or type(meta)~='table' then status:SetText('完整报告生成失败：'..tostring(text));return false,tostring(text) end
             DescribePage(meta.presentation)
             return meta.delivered==true or meta.partReady==true
         end)

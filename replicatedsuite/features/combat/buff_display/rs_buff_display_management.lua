@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 8 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
 -- 中文维护注释（状态追踪管理 Authority）：
 -- 问题：旧“冻结”只保留 tracked 行且复用 HUD；未出现的已追踪 ID 无处取消。
@@ -29,25 +33,68 @@ end
 local function Publish(reason)
     if S.Events and type(S.Events.Publish)=="function" then S.Events:Publish("v3.buff_display.updated",reason) end
 end
+local function PublishSettings(reason)
+    -- 中文维护注释（2026-09-19，cooldown-tracking-reconcile-1）：tracking.meta 的耐久提交完成后，
+    -- 必须通知 Feature 重建 CooldownObservationV3 lease。过去 SetTrackedCooldownId/内置 CD 包只改 Store
+    -- 和管理页缓存，没有发布 settings topic；若 Runtime 已经持有 Consumer，它会继续探测旧 ID 集合。
+    -- 发布只发生在低频用户写操作成功之后，不进入 Native/50ms/100ms 热路径。
+    if S.Events and type(S.Events.Publish)=="function" then S.Events:Publish("v3.buff_display.settings",reason or "tracked_cooldown") end
+    Publish(reason or "tracked_cooldown")
+end
 local function Settings() return F.State.settings end
-local function Bucket(id,index)
-    if index.buff[id] then return "buff" end
-    if index.debuff[id] then return "debuff" end
-    if index.auto[id] then return "auto" end
-    return nil
+local TRACKING_CHANNEL_ORDER = {
+    {scope="player",category="buff",text="自身·Buff"},
+    {scope="player",category="debuff",text="自身·Debuff"},
+    {scope="target",category="buff",text="目标·Buff"},
+    {scope="target",category="debuff",text="目标·Debuff"},
+    {scope="player",category="auto",text="自身·自动"},
+    {scope="target",category="auto",text="目标·自动"},
+}
+local function ChannelsForId(id,index)
+    local channels,scopes,categories={},{},{}
+    id=math.floor(tonumber(id) or 0)
+    for _,def in ipairs(TRACKING_CHANNEL_ORDER) do
+        local scoped=type(index[def.scope])=="table" and index[def.scope] or {}
+        if type(scoped[def.category])=="table" and scoped[def.category][id]==true then
+            channels[#channels+1]={scope=def.scope,category=def.category,text=def.text}
+            scopes[def.scope],categories[def.category]=true,true
+        end
+    end
+    return channels,scopes,categories
 end
 local function Decorate(row,index)
-    local bucket=Bucket(row.id,index)
-    row.trackedBucket=bucket;row.tracked=bucket~=nil;row.trackedText=bucket and "已追踪" or "未追踪"
+    local channels,scopes,categories=ChannelsForId(row.id,index)
+    row.trackedChannels,row.trackedScopes,row.trackedCategories=channels,scopes,categories
+    row.tracked=#channels>0
+    local labels={};for _,channel in ipairs(channels) do labels[#labels+1]=channel.text end
+    row.trackedText=row.tracked and table.concat(labels," / ") or "未追踪"
+    if #channels==1 then row.trackedBucket=channels[1].category else row.trackedBucket=#channels>1 and "multi" or nil end
     local user=Settings().classification[row.id]
     if user=="buff" or user=="debuff" then row.category=user end
     row.effectType=row.category
-    row.effectTypeText=row.category=="buff" and "Buff" or (row.category=="debuff" and "Debuff" or (bucket=="auto" and "自动识别" or "待分类"))
-    row.scopeText=row.scope=="player" and "自己" or (row.scope=="target" and "目标" or "已收藏")
+    row.effectTypeText=row.category=="buff" and "Buff" or (row.category=="debuff" and "Debuff" or ((categories.auto==true) and "自动识别" or "待分类"))
+    if row.scope=="player" then row.scopeText="自己"
+    elseif row.scope=="target" then row.scopeText="目标"
+    elseif scopes.player and scopes.target then row.scopeText="自己+目标"
+    elseif scopes.player then row.scopeText="自己"
+    elseif scopes.target then row.scopeText="目标"
+    else row.scopeText="未追踪" end
     local meta=S.Services and S.Services.BuffMetadataV3
-    if (row.iconPath==nil or row.iconPath=="") and meta and type(meta.GetCached)=="function" then
+    if meta and type(meta.GetCached)=="function" then
         local info=meta:GetCached(row.id)
-        if info then row.iconPath=info.iconPath;if not row.name or row.name==tostring(row.id) then row.name=info.name end end
+        if info then
+            -- 维护（2026-09-20，状态名称 Native Authority）：
+            -- 原因：旧实现只在静态名称为空/等于 ID 时才采用 GetBuffTooltip 名称，导致内置库中
+            -- 的英文名、旧译名或人工占位名永久压过 RU 客户端实际本地化名称。
+            -- Authority：BuffMetadataV3/X2Ability:GetBuffTooltip 是运行时展示名称 Authority；
+            -- SkillEffects/Catalog.name 只是离线 fallback 与搜索种子，不拥有最终显示文案。
+            -- 数据流：可见行按需请求 Metadata -> 缓存 -> Decorate 覆盖展示 name/icon；不修改 ID、
+            -- Buff/Debuff 分类或用户 tracked 配置，也不把 Native 名称写回持久化配置。
+            -- 性能/兼容：这里只 peek 已有缓存，不增加 Native 调用；原有每批最多 8 个的延迟元数据
+            -- 队列仍负责读取，关闭页面/Feature 后没有新增轮询。
+            if type(info.name)=="string" and info.name~="" then row.name=info.name end
+            if (row.iconPath==nil or row.iconPath=="") and type(info.iconPath)=="string" then row.iconPath=info.iconPath end
+        end
     end
     row.name=tostring(row.name or row.id);row.timeText=row.timeText or "--"
     return row
@@ -195,6 +242,19 @@ function F:SetManagementPageActive(active,token)
     end
     return true
 end
+
+F.cooldownManagementActive=F.cooldownManagementActive==true
+function F:SetCooldownManagementActive(active)
+    active=active==true
+    if self.cooldownManagementActive==active then return true end
+    self.cooldownManagementActive=active
+    -- 中文维护注释（2026-09-19，CD 管理页 Demand）：只有“技能 CD”管理视图本身可见时，
+    -- 才把管理页计入 CooldownObservationV3 Demand。V4 已完全移除正常 CD Runtime 对 COMBAT_MSG/Aura 的依赖；
+    -- 管理页/HUD/持久追踪都只消费显式 Skill ID，并由有界 Native GetCooldown/GetMateCooldown 探测。
+    -- 最后一个消费者释放后回收两条 Scheduler 任务与临时缓存，Store 中的 Skill ID 收藏保持不变。
+    if self.enabled==true and (tonumber(self.consumerCount) or 0)>0 and type(self.ReconcileLanes)=="function" then return self:ReconcileLanes() end
+    return true
+end
 function F:QueueManagementMetadata(id)
     local m=self.managementMetadata;local service=S.Services and S.Services.BuffMetadataV3
     id=tonumber(id)
@@ -238,7 +298,10 @@ local function CatalogRow(entry)
     -- 缓存peek不触发Native；真正读取由页面可见行的延迟队列发起，禁止393+行逐帧查询。
     local meta=S.Services and S.Services.BuffMetadataV3
     local info=entry.kind=="effect" and meta and type(meta.GetCached)=="function" and meta:GetCached(entry.id) or nil
-    return {id=entry.id,key=entry.key,name=entry.name,category=entry.category,iconPath=info and info.iconPath or "",
+    -- 维护：目录静态 name 只做未解析 fallback；一旦客户端 Tooltip 已缓存，优先展示当前 RU
+    -- 构建返回的真实名称，避免静态英文/旧译名继续覆盖 Native 本地化名称。
+    local displayName=(info and type(info.name)=="string" and info.name~="") and info.name or entry.name
+    return {id=entry.id,key=entry.key,name=displayName,category=entry.category,iconPath=info and info.iconPath or "",
         detectionSource=entry.tags.hidden and "hidden" or (entry.tags.special_rule and "special_rule" or "normal"),
         confidence=entry.confidence,scope="catalog",timeText="--",kind=entry.kind}
 end
@@ -254,12 +317,16 @@ local function Matches(row,options)
     local filter=options.filter or "all"
     if options.scope and options.scope~="all" and row.scope~=options.scope then return false end
     if (filter=="buff" or filter=="debuff") and row.category~=filter then return false end
-    if filter=="tracked_buff" and not (row.tracked and row.category=="buff") then return false end
-    if filter=="tracked_debuff" and not (row.tracked and row.category=="debuff") then return false end
-    if filter=="auto" and not (row.category=="unknown" or row.trackedBucket=="auto") then return false end
+    if filter=="tracked_buff" and not (row.tracked and type(row.trackedCategories)=="table" and row.trackedCategories.buff==true) then return false end
+    if filter=="tracked_debuff" and not (row.tracked and type(row.trackedCategories)=="table" and row.trackedCategories.debuff==true) then return false end
+    if filter=="auto" and not (row.category=="unknown" or (type(row.trackedCategories)=="table" and row.trackedCategories.auto==true)) then return false end
     if filter=="hidden" and row.detectionSource~="hidden" then return false end
     if filter=="untracked" and row.tracked then return false end
-    if (filter=="player" or filter=="target") and row.scope~=filter then return false end
+    if filter=="player" or filter=="target" then
+        if row.scope=="tracked" or row.scope=="catalog" then
+            if not (type(row.trackedScopes)=="table" and row.trackedScopes[filter]==true) then return false end
+        elseif row.scope~=filter then return false end
+    end
     local query=tostring(options.query or ""):lower()
     return query=="" or row.name:lower():find(query,1,true)~=nil or tostring(row.id):find(query,1,true)~=nil
 end
@@ -273,8 +340,11 @@ function F:GetManagementProjection(options)
     local revision=(view=="live" and self.revision) or (view=="frozen" and frozen.revision) or Catalog.version
     local metaService=S.Services and S.Services.BuffMetadataV3
     local metaRevision=metaService and type(metaService.GetRevision)=="function" and metaService:GetRevision() or 0
+    local cooldownService=S.Services and S.Services.CooldownObservationV3
+    local cooldownHealth=cooldownService and type(cooldownService.GetHealth)=="function" and cooldownService:GetHealth() or nil
+    local cooldownRevision=type(cooldownHealth)=="table" and tonumber(cooldownHealth.revision) or 0
     local key=table.concat({view,tostring(options.filter or "all"),tostring(options.sort or "tracked"),
-        tostring(options.query or ""),tostring(options.scope or "all"),tostring(options.pack or "all"),tostring(self.settingsRevision),tostring(revision),tostring(self.managementMetadata.revision),tostring(metaRevision)},"|")
+        tostring(options.query or ""),tostring(options.scope or "all"),tostring(options.pack or "all"),tostring(self.settingsRevision),tostring(revision),tostring(self.managementMetadata.revision),tostring(metaRevision),tostring(cooldownRevision)},"|")
     -- 中文维护注释：页面 live 与悬浮窗 tracked 是独立消费者。单槽缓存会使两者交错时每 50ms 重建 393 行。
     -- 固定八槽（含悬浮窗当前/留存/追踪）、每槽单查询，既阻止热路径整库复制，也避免任意筛选字符串形成无限缓存。
     self.managementCaches=self.managementCaches or {}
@@ -284,14 +354,16 @@ function F:GetManagementProjection(options)
     if cached and cached.key==key then return cached.rows,key,cached.coverage end
     local rows={};local index=self:BuildTrackedIndex(Settings())
     if view=="tracked" then
-        local seen={}
-        for _,category in ipairs({"buff","debuff","auto"}) do
-            for _,id in ipairs(Settings().tracked[category] or {}) do
-                if not seen[id] then
-                    seen[id]=true;local entry=Catalog.ByEffectId[id]
-                    local row=entry and CatalogRow(entry) or {id=id,key="effect:"..id,name=tostring(id),detectionSource="normal"}
-                    row.category=category=="auto" and "unknown" or category;row.scope="tracked"
-                    rows[#rows+1]=Decorate(row,index)
+        local seen={};local tracked=Settings().tracked or {}
+        for _,scope in ipairs({"player","target"}) do
+            local scoped=type(tracked[scope])=="table" and tracked[scope] or {}
+            for _,category in ipairs({"buff","debuff","auto"}) do
+                for _,id in ipairs(scoped[category] or {}) do
+                    if not seen[id] then
+                        seen[id]=true;local entry=Catalog.ByEffectId[id]
+                        local row=entry and CatalogRow(entry) or {id=id,key="effect:"..id,name=tostring(id),detectionSource="normal",category="unknown"}
+                        row.scope="tracked";rows[#rows+1]=Decorate(row,index)
+                    end
                 end
             end
         end
@@ -301,20 +373,39 @@ function F:GetManagementProjection(options)
             local row=CatalogRow(entry)
             if entry.kind=="effect" then rows[#rows+1]=Decorate(row,index)
             else
-                row.scopeText=entry.kind=="mate" and "伙伴 CD" or "自己 CD"
-                row.effectTypeText="技能 CD";row.tracked=false;row.timeText="未接入冷却"
+                row.scopeText=entry.kind=="mate" and "坐骑/宠物 CD" or "玩家/翼类 CD"
+                row.effectTypeText="技能 CD";row.tracked=false;row.timeText="未追踪"
                 for _,id in ipairs(Settings().trackedCooldowns[entry.kind] or {}) do if id==entry.id then row.tracked=true break end end
                 row.trackedText=row.tracked and "已追踪" or "未追踪"
+                if row.tracked and cooldownService and type(cooldownService.GetTrackedRows)=="function" then
+                    for _,cd in ipairs(select(1,cooldownService:GetTrackedRows()) or {}) do
+                        if cd.kind==entry.kind and cd.id==entry.id then
+                            row.timeText=cd.timeText;row.timeLeft=cd.timeLeft;row.iconPath=cd.iconPath or row.iconPath
+                            row.active=cd.active;row.mateType=cd.mateType;row.authority=cd.authority;break
+                        end
+                    end
+                end
                 rows[#rows+1]=row
             end
         end
     elseif view=="cooldowns" then
-        for _,kind in ipairs({"skill","mate"}) do
-            for _,id in ipairs(Settings().trackedCooldowns[kind] or {}) do
-                local entry=Catalog.ByKey["cooldown:"..kind..":"..id]
-                local row=entry and CatalogRow(entry) or {id=id,key="cooldown:"..kind..":"..id,name=tostring(id),kind=kind}
-                row.scopeText=kind=="mate" and "伙伴 CD" or "自己 CD";row.effectTypeText="技能 CD"
-                row.tracked=true;row.trackedText="已追踪";row.timeText="未接入冷却";rows[#rows+1]=row
+        local runtimeRows=cooldownService and type(cooldownService.GetTrackedRows)=="function" and select(1,cooldownService:GetTrackedRows()) or nil
+        if type(runtimeRows)=="table" and #runtimeRows>0 then
+            for _,runtime in ipairs(runtimeRows) do
+                local row=Copy(runtime)
+                row.key="cooldown:"..tostring(runtime.kind)..":"..tostring(runtime.id)
+                row.scopeText=runtime.kind=="mate" and (runtime.mateType==1 and "坐骑 CD" or runtime.mateType==2 and "战斗宠物 CD" or "坐骑/宠物 CD") or "玩家/翼类 CD"
+                row.effectTypeText="技能 CD";row.category="cooldown";row.tracked=true;row.trackedText="已追踪"
+                rows[#rows+1]=row
+            end
+        else
+            for _,kind in ipairs({"skill","mate"}) do
+                for _,id in ipairs(Settings().trackedCooldowns[kind] or {}) do
+                    local entry=Catalog.ByKey["cooldown:"..kind..":"..id]
+                    local row=entry and CatalogRow(entry) or {id=id,key="cooldown:"..kind..":"..id,name=tostring(id),kind=kind}
+                    row.scopeText=kind=="mate" and "坐骑/宠物 CD" or "玩家/翼类 CD";row.effectTypeText="技能 CD"
+                    row.tracked=true;row.trackedText="已追踪";row.timeText="等待运行时";rows[#rows+1]=row
+                end
             end
         end
     else
@@ -365,54 +456,103 @@ function F:ImportBuiltinPack(key,newOnly)
     local loaded,loadErr=self:EnsureStoreLoaded();if loaded~=true then return Failed(loadErr) end
     local result={included=#pack.entries,buff=0,debuff=0,auto=0,cooldown=0,existing=0,rejected=0}
     attempt.result=result
-    local ok,err=self:MutateStore(function()
+    -- 中文维护注释（.18.243 内置库导入）：recommended/all 包只属于 Tracking Authority。
+    -- 一次用户点击现在物理上会写 inactive player/target/meta + manifest 四次，这是有意的两阶段提交，
+    -- 不能为了恢复“单次 SaveData”测试指标而写回旧 monolith。只有 manifest 成功才把 attempt 标为 committed；
+    -- 任一 inactive 写失败都保留上一代配置，准确率优先于写次数。
+    local ok,err=self:MutateTrackingStore(function()
         attempt.stage="mutate"
         local settings=Settings();local index=self:BuildTrackedIndex(settings)
         local since=newOnly==true and (settings.library.importedPacks[key] or 0) or -1
+        local function AddEffect(scope,category,id)
+            local scoped=settings.tracked[scope];local list=scoped[category]
+            if category=="auto" and ((index[scope].buff and index[scope].buff[id]) or (index[scope].debuff and index[scope].debuff[id])) then
+                result.existing=result.existing+1;return true
+            end
+            if index[scope][category] and index[scope][category][id] then result.existing=result.existing+1;return true end
+            if #list>=1024 then result.rejected=result.rejected+1;return false,"内置包超过追踪容量，本次整体未写入" end
+            list[#list+1]=id;result[category]=result[category]+1;return true
+        end
         for _,entry in ipairs(pack.entries) do
             if entry.introducedVersion>since then
                 local category=entry.category
                 if category~="buff" and category~="debuff" then category="auto" end
-                local list=entry.kind=="effect" and settings.tracked[category] or settings.trackedCooldowns[entry.kind]
-                local exists=entry.kind=="effect" and Bucket(entry.id,index)~=nil
-                if entry.kind~="effect" then for _,id in ipairs(list) do if id==entry.id then exists=true break end end end
-                if exists then result.existing=result.existing+1
-                elseif #list>=(entry.kind=="effect" and 1024 or 256) then
-                    result.rejected=result.rejected+1;return false,"内置包超过追踪容量，本次整体未写入"
+                if entry.kind=="effect" then
+                    for _,scope in ipairs({"player","target"}) do
+                        local added,addErr=AddEffect(scope,category,entry.id);if added~=true then return false,addErr end
+                    end
                 else
-                    list[#list+1]=entry.id
-                    if entry.kind=="effect" then result[category]=result[category]+1 else result.cooldown=result.cooldown+1 end
+                    local list=settings.trackedCooldowns[entry.kind];local exists=false
+                    for _,id in ipairs(list) do if id==entry.id then exists=true break end end
+                    if exists then result.existing=result.existing+1
+                    elseif #list>=256 then result.rejected=result.rejected+1;return false,"内置包超过追踪容量，本次整体未写入"
+                    else list[#list+1]=entry.id;result.cooldown=result.cooldown+1 end
                 end
             end
         end
-        for _,category in ipairs({"buff","debuff","auto"}) do table.sort(settings.tracked[category]) end
+        for _,scope in ipairs({"player","target"}) do for _,category in ipairs({"buff","debuff","auto"}) do table.sort(settings.tracked[scope][category]) end end
         table.sort(settings.trackedCooldowns.skill);table.sort(settings.trackedCooldowns.mate)
         settings.library.catalogVersion=Catalog.version;settings.library.importedPacks[key]=Catalog.version
         attempt.stage="commit"
         return true
-    end,0,"builtin_pack:"..key,true)
+    end,"builtin_pack:"..key)
     if ok~=true then return Failed(err) end
     attempt.ok=true;attempt.stage="committed"
     self.trackedIndex=self:BuildTrackedIndex(Settings());self:SyncTrackedProjectionFlags()
     -- 中文维护：成功结果来自持久化事务之后的真实选择，不以实时出现数量冒充导入数。
-    result.total=#Settings().tracked.buff+#Settings().tracked.debuff+#Settings().tracked.auto
-    return true,string.format("已保存：新增 Buff %d / Debuff %d / 自动识别 %d / CD %d；已有 %d，状态追踪合计 %d。",result.buff,result.debuff,result.auto,result.cooldown,result.existing,result.total),result
+    result.total=0
+    for _,scope in ipairs({"player","target"}) do for _,category in ipairs({"buff","debuff","auto"}) do result.total=result.total+#Settings().tracked[scope][category] end end
+    -- 维护：成功提交后立即刷新 Runtime 的 skill/mate 集合；失败事务绝不发布，防止内存/磁盘错代。
+    if result.cooldown>0 then PublishSettings("tracked_cooldown_import") else Publish("builtin_pack_import") end
+    return true,string.format("已保存：新增追踪通道 Buff %d / Debuff %d / 自动识别 %d / CD %d；已有 %d，状态通道合计 %d。",result.buff,result.debuff,result.auto,result.cooldown,result.existing,result.total),result
 end
 function F:SetTrackedCooldownId(id,kind,enabled)
     id=tonumber(id)
     if (kind~="skill" and kind~="mate") or not id or id<=0 or id~=math.floor(id) or id>2147483647 then return false,"冷却技能 ID/类型无效" end
-    return self:MutateStore(function()
+    -- 中文维护注释（2026-09-19，cooldown-skill-id-only-1）：状态 ID 与技能 ID 是两个不同 namespace。
+    -- BuffDisplay 可以观察到坐骑/宠物技能产生的 Aura，但 Aura/Effect ID 绝不能直接写入
+    -- trackedCooldowns；X2Skill:GetCooldown/GetMateCooldown 的参数 Authority 是 Skill ID。
+    -- 启用时先让 CooldownObservationV3 做只读身份校验：已知 Effect-only ID 明确拒绝，
+    -- 未收录但可能是真实 RU Skill ID 仍允许进入 Native 探测，避免静态库不完整阻断用户。
+    -- 删除旧条目不做身份校验，确保历史误填的 Buff ID 始终可以被用户清理。
+    if enabled then
+        local cooldown=S.Services and S.Services.CooldownObservationV3 or nil
+        if type(cooldown)=="table" and type(cooldown.ValidateSkillId)=="function" then
+            local valid,detail=cooldown:ValidateSkillId(id,kind)
+            if valid~=true then return false,detail or "该 ID 不是可追踪的技能 ID" end
+        end
+    end
+    -- trackedCooldowns 与 classification/library 一起属于 tracking.meta；该 Store 只保存用户选择，
+    -- 不保存 Buff 事实或实时剩余时间。运行时 CD 仍完全由 CooldownObservationV3 Native 读数所有。
+    local ok,err=self:MutateTrackingStore(function()
         local list={};for _,value in ipairs(Settings().trackedCooldowns[kind] or {}) do if value~=id then list[#list+1]=value end end
         if enabled then if #list>=256 then return false,"冷却追踪达到上限" end;list[#list+1]=id end
         table.sort(list);Settings().trackedCooldowns[kind]=list;return true
-    end,200,"tracked_cooldown")
+    end,"tracked_cooldown")
+    if ok==true then PublishSettings("tracked_cooldown") end
+    return ok,err
 end
 function F:GetManagementHealth()
     -- 中文维护注释：CD 当前仅有持久化收藏和目录，不得用候选数量冒充运行时冷却支持。
-    return {contract=self.ManagementProjectionContractVersion,cooldownRuntime="not_implemented",freeze=self:GetManagementFreezeState(),
-        tracked={buff=#Settings().tracked.buff,debuff=#Settings().tracked.debuff,auto=#Settings().tracked.auto},
+    -- tracking-scope-v1：诊断既保留 player/target 六通道明细，也提供 buff/debuff/auto 通道总数；
+    -- 后者只为旧诊断消费者兼容，不是新的持久化 Authority，也不是去重后的状态数量。
+    local trackedSettings=Settings().tracked
+    local player={buff=#trackedSettings.player.buff,debuff=#trackedSettings.player.debuff,auto=#trackedSettings.player.auto}
+    local target={buff=#trackedSettings.target.buff,debuff=#trackedSettings.target.debuff,auto=#trackedSettings.target.auto}
+    local cooldown=S.Services and S.Services.CooldownObservationV3
+    local cooldownHealth=cooldown and type(cooldown.GetHealth)=="function" and cooldown:GetHealth() or nil
+    return {contract=self.ManagementProjectionContractVersion,cooldownRuntime=type(cooldownHealth)=="table" and ("native_v"..tostring(cooldownHealth.version or 1)) or "unavailable",cooldown=cooldownHealth,freeze=self:GetManagementFreezeState(),
+        tracked={
+            player=player,target=target,
+            buff=player.buff+target.buff,debuff=player.debuff+target.debuff,auto=player.auto+target.auto,
+            channelTotal=player.buff+player.debuff+player.auto+target.buff+target.debuff+target.auto,
+        },
         classification=S.Services.StatusClassificationV3:GetHealth(),
         catalog=Catalog:GetHealth(),lastImport=Copy(self.lastLibraryImport),
+        -- 中文维护注释（.18.243 诊断 Authority）：状态显示持久化已拆成多个 Store，诊断必须
+        -- 直接暴露 manifest generation/slot 与一次性 legacyMigration 结果；禁止再用旧
+        -- v3.buff_display 的 loadStatus 推断当前运行 Authority，否则旧损坏证据会被误报成当前故障。
+        persistence=type(self.GetTrackingPersistenceHealth)=="function" and self:GetTrackingPersistenceHealth() or nil,
         -- 维护：只读已有解析结果/返回形态，用于区分未调度、Native未提供图标、界面未更新。
         -- GetHealth绝不触发新的tooltip读取；采样表有界，不能把整份tooltip正文塞进诊断。
         libraryPatch=self.LibraryIntegrationPatch,

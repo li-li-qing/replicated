@@ -102,42 +102,74 @@ function V3:MarkLauncherStoreDirty(delayMs, reason)
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 250, reason or "launcher_changed")
 end
 
+-- 维护：R 是独立屏幕按钮，不是内容窗口；只由 Layout 解析 logical 坐标，Windowing 提交 Native。
+-- 空/未拖动 Store 必须传默认 intent，旧 ApplyPlacement({userMoved=false}) 会误落入 LEFT/TOP=0。
+-- UI Scale 不再乘除 x/y，30 是 logical 尺寸；创建/明确恢复才补采样，metrics 回调复用当前 context。
+local function ApplyLauncherRect(state, reason, fresh)
+    local button, L = S.RecoveryEntry, S.Layout
+    if button == nil or L == nil then return false, "launcher_geometry_unavailable" end
+    L:GetContext(fresh == true)
+    local x,y,w,h,info = L:ResolvePlacement(state,LAUNCHER_LOGICAL_SIZE,LAUNCHER_LOGICAL_SIZE,300,100,
+        {mode="strict",topLevel=true,topReachHeight=LAUNCHER_LOGICAL_SIZE,reason=reason})
+    local windowing = S.RSUI and S.RSUI.Windowing
+    local ok,err
+    if windowing and type(windowing.ApplyGeometry)=="function" then
+        ok,err = windowing:ApplyGeometry(button,"v3:launcher",x,y,w,h,true)
+    else
+        -- Bootstrap 早于 RSUI；仅保留同一 solver 结果的最小 Native 提交，不能增加第二套坐标算法。
+        -- nil 返回仍兼容 RU setters；显式 false/异常必须向恢复入口反馈，不以假成功写 Store。
+        ok,err = pcall(function()
+            if button:SetExtent(w,h)==false then error("launcher_extent_rejected") end
+            if button:RemoveAllAnchors()==false then error("launcher_clear_anchor_rejected") end
+            if button:AddAnchor("TOPLEFT","UIParent",x,y)==false then error("launcher_anchor_rejected") end
+        end)
+    end
+    V3.LauncherPlacementInfo=info
+    if info then info.nativeError=ok~=true and tostring(err or "launcher_geometry_rejected") or nil end
+    return ok==true,err
+end
+
 function V3:ApplyLauncherPlacement()
-    local button = S.RecoveryEntry
-    if button == nil or S.Layout == nil then return false end
-    -- Launcher is a screen affordance, not Suite content. SetExtent receives
-    -- logical UI coordinates already affected by the client's UI scale; applying
-    -- Suite content scale here again double-scaled R on low-resolution / high-scale setups.
-    local size = LAUNCHER_LOGICAL_SIZE
-    S.Layout:ApplyPlacement(button, self.LauncherState, size, size, 300, 100, { mode = "strict" })
-    if type(S.Layout.RegisterFloating) == "function" then
-        S.Layout:RegisterFloating("v3_launcher", button, {
-            onlyWhenVisible = true,
-            onMetricsChanged = function()
-                S.Layout:ApplyPlacement(button, V3.LauncherState, LAUNCHER_LOGICAL_SIZE, LAUNCHER_LOGICAL_SIZE, 300, 100, { mode = "strict" })
-            end,
+    local ok,err=ApplyLauncherRect(self.LauncherState,"show",true)
+    if S.Layout and type(S.Layout.RegisterFloating)=="function" and S.RecoveryEntry then
+        S.Layout:RegisterFloating("v3_launcher",S.RecoveryEntry,{
+            ensureNow=false,onlyWhenVisible=true,
+            onMetricsChanged=function()return ApplyLauncherRect(V3.LauncherState,"resolution_migration",false)end,
         })
     end
-    if type(S.Layout.RegisterScreenSnap) == "function" then
-        S.Layout:RegisterScreenSnap("v3_launcher", button, {
-            snapGroup = "screen_buttons",
-            snapKind = "button",
-            snapDistance = 16,
-            snapGap = 0,
+    if S.Layout and type(S.Layout.RegisterScreenSnap)=="function" and S.RecoveryEntry then
+        S.Layout:RegisterScreenSnap("v3_launcher",S.RecoveryEntry,{
+            snapGroup="screen_buttons",snapKind="button",snapDistance=16,snapGap=0,
         })
     end
-    return true
+    return ok,err
 end
 
 function V3:ResetLauncherPlacement(persist)
-    local state = self.LauncherState
-    if type(state) ~= "table" then return false end
-    state.userMoved = false
-    state.x, state.y, state.anchorH, state.anchorV = nil, nil, nil, nil
-    state.offsetX, state.offsetY, state.coordinateSpace, state.savedUiScale = nil, nil, nil, nil
-    state.savedLogicalWidth, state.savedLogicalHeight = nil, nil
-    state.normalizedCenterX, state.normalizedCenterY = nil, nil
-    local ok = self:ApplyLauncherPlacement()
-    if persist ~= false then self:MarkLauncherStoreDirty(250, "launcher_reset") end
-    return ok
+    local state,button=self.LauncherState,S.RecoveryEntry
+    if type(state)~="table" or button==nil then return false,"launcher_unavailable" end
+    -- 维护：显式 Reset 先撤销手势资格，Native 接受后才改 Store；旧 metadata 不参与默认解析。
+    -- 不在普通 Show/metrics 写入，失败保留原始缺失键；schema/Normalize 完全不变。
+    if button.rsMoving and type(button.StopMovingOrSizing)=="function" then pcall(button.StopMovingOrSizing,button) end
+    button.rsMoving,button.rsIgnoreClick=false,false
+    button.rsDragStartX,button.rsDragStartY,button.rsGeometryUnitScale,button.rsDragViewport=nil,nil,nil,nil
+    local before={};for k,v in pairs(state)do before[k]=v end
+    local ok,err=ApplyLauncherRect({userMoved=false},"explicit_reset",true)
+    if ok~=true then return false,err end
+    if S.UI and type(S.UI.EnsureVisible)=="function" then
+        if type(S.UI.InvalidateNativeState)=="function" then S.UI:InvalidateNativeState(button,"visible") end
+        local accepted,_,detail=S.UI:EnsureVisible(button,true,"v3:launcher")
+        ok,err=accepted,detail
+    else
+        local called,result=pcall(button.Show,button,true);ok=called and result~=false;err=result
+    end
+    if ok~=true then ApplyLauncherRect(before,"reset_rollback",false);return false,err or "launcher_show_rejected" end
+    Apply(nil)
+    if persist~=false then ok,err=self:MarkLauncherStoreDirty(0,"launcher_reset") end
+    if ok~=true then
+        for k in pairs(state)do state[k]=nil end;for k,v in pairs(before)do state[k]=v end
+        ApplyLauncherRect(before,"reset_rollback",false)
+        return false,err
+    end
+    return true
 end

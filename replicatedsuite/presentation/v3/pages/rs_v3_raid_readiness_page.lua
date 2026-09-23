@@ -1,6 +1,8 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Raid Readiness Page
 ------------------------------------------------------------------------
+-- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -147,7 +149,7 @@ local function BuildPage(parent, route)
 
     local actions = RSUI:HorizontalBox({ id = "v3_raid_readiness_actions", parent = root, gap = 6,
         slot = { size = "fixed", height = 31, hAlign = "fill" } })
-    local featureButton = RSUI:Button({ id = "v3_raid_readiness_feature_toggle", parent = actions, text = "启用功能", compact = true,
+    local featureButton = D:ModuleToggleButton({ id = "v3_raid_readiness_feature_toggle", parent = actions, text = "启用功能", compact = true,
         slot = { size = "fixed", width = 96 } })
     local scanButton = RSUI:Button({ id = "v3_raid_readiness_scan", parent = actions, text = "运行检查", compact = true,
         slot = { size = "fixed", width = 96 } })

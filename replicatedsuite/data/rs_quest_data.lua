@@ -22,16 +22,32 @@ end
 --     with an event/category.
 --   * Faction variants of the same objective stay inside one `quests` list,
 --     therefore they never inflate x/y progress.
---   * Wrapper/prerequisite/boss side quests that belong to the same activity
---     are stored in `relatedObjectives`. They default to display-only, but the
---     player may explicitly track them from the activity detail window; tracked
---     related tasks then participate in that player's x/y denominator.
+--   * Wrapper/prerequisite/side quests that belong to the same activity are stored
+--     in `relatedObjectives`. They are always detail/reference rows and never enter
+--     the activity x/y denominator.
+--   * Personal progress selection is the default policy for every verified activity
+--     with TWO OR MORE canonical `objectives`. All canonical objectives start selected;
+--     the player may remove stages they do not intend to run, and only the remaining
+--     selected objectives determine the displayed x/y. A group may explicitly set
+--     `progressSelectionEnabled=false` if a future multi-objective activity must remain
+--     atomic. One-objective and instance-raid groups keep a fixed denominator because
+--     allowing the only objective to be removed would create a meaningless 0/0 state.
 --   * If the latest database does not provide a verified mapping, EventData
 --     must leave questKey unset instead of borrowing an unrelated task set.
 local ActivityQuestGroups = {}
 
 local function Activity(key, title, objectives, options)
     options = type(options) == "table" and options or {}
+    objectives = type(objectives) == "table" and objectives or {}
+    -- 中文维护注释（2026-09-22，activity-progress-selection-all-multistage）：
+    -- `objectives` 已经由本文件的数据 Authority 区分为真正参与 x/y 的主任务，relatedObjectives
+    -- 只作详情参考，因此“是否允许用户缩小个人分母”应由主任务数量决定，而不是在 Presentation
+    -- 为每个活动硬编码。>=2 个已核验主任务默认开放选择；1 个主任务保持固定 1/1，避免用户
+    -- 取消唯一任务后出现 0/0。显式 false 仍保留给未来必须原子完成的多阶段活动。
+    local progressSelectionEnabled = options.progressSelectionEnabled
+    if progressSelectionEnabled == nil then
+        progressSelectionEnabled = #objectives >= 2
+    end
     local group = {
         key = key,
         title = title,
@@ -40,11 +56,15 @@ local function Activity(key, title, objectives, options)
         -- state. QuestService skips them in the quest projection and publishes
         -- their progress from the instance snapshot instead.
         kind = options.kind or "activity",
-        objectives = objectives or {},
-        -- `relatedObjectives` are real quests tied to the activity but default
-        -- to untracked. This preserves the compact canonical denominator until
-        -- a player explicitly opts an optional/wrapper/Boss task into x/y.
+        objectives = objectives,
+        -- `relatedObjectives` are real quests tied to the activity but are detail/reference only.
+        -- They never participate in the personal x/y denominator; only canonical `objectives` may
+        -- be selected into that denominator when progressSelectionEnabled=true.
         relatedObjectives = options.relatedObjectives or {},
+        -- Personal progress selection is an Activity preference, not Quest truth.
+        -- QuestProgressV3 only publishes detached per-objective facts; Activities
+        -- applies this curated multi-stage policy when projecting the player's x/y.
+        progressSelectionEnabled = progressSelectionEnabled == true,
         -- Optional server-date window for seasonal/limited activities.  Quest
         -- state remains the game API Authority; these fields only control when
         -- the curated dashboard row is exposed to the player.
@@ -104,6 +124,10 @@ Activity("crimson", O.crimson or "征兆之痕", {
     { role = "暗影恶魔阶段", keepsEventAlive = true, quests = Q.Activity.crimson.shadowDemon },
     { role = "Shadow Fang Boss", keepsEventAlive = true, quests = Q.Activity.crimson.shadowFang },
 }, {
+    -- 中文维护注释（2026-09-21，activity-progress-selection-1）：征兆六阶段是默认个人进度集合。
+    -- 新用户/未配置用户仍显示 0/6；只有用户在详情里主动取消某阶段后，Activities 才把剩余阶段
+    -- 作为个人分母（例如只保留后三项 => 0/3）。关联任务始终只作参考，绝不进入该分母。
+    progressSelectionEnabled = true,
     relatedObjectives = {
         { role = "征兆守护任务", quests = Q.Activity.crimson.guard },
         { role = "荣耀之路：猎犬", quests = Q.Activity.crimson.pathHounds },
@@ -327,6 +351,21 @@ Activity("garden_anthalon", "庭院安塔伦", {
     relatedObjectives = {
         { role = "爪牙", quests = Q.Activity.gardenAnthalon.minion },
     },
+})
+
+-- Garden of the Gods / 精灵的委托 (10056): the quest internally accumulates score and Reward Level 1..12,
+-- but the Activity completion contract is still one daily quest: unfinished = 0/1, ready/completed = 1/1.
+-- 中文维护注释（2026-09-22，Garden score + binary completion Authority）：
+-- 1) QuestProgressV3 仍独占 X2Quest 状态与 Journal Objective 读取；Activity 只消费 detached facts。
+-- 2) kind=scoreQuest 只表示“详情内部是积分/奖励阶段型”，不改变 Activity 的完成度语义。活动列表必须统一显示 0/1 -> 1/1。
+-- 3) 实时积分/奖励阶段只展示 RU 客户端原生 Journal 文本。当前没有稳定、已验证的结构化数值 API，
+--    因此禁止从本地文案猜阈值或维护第二套积分表。未来若 Native 提供结构化分数，再在 QuestProgress Authority 扩展。
+-- 4) 单任务积分活动不开放个人分母选择；否则取消唯一任务会制造无意义的 0/0。
+Activity("garden_fairy", "精灵的委托", {
+    { category = "积分任务", quests = Q.Activity.gardenFairyRequest },
+}, {
+    kind = "scoreQuest",
+    progressSelectionEnabled = false,
 })
 -- 红龙巢穴 / Red Dragon's Keep: a TEAM RAID, not a quest.  The old mapping
 -- (9215/7654/8958/47243) treated the activity as a kill quest, which is wrong:

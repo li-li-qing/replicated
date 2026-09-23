@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 4 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Buff Display Pure Projection
 -- No Native/API access. Converts AuraObservationV3 StatusMap facts and
@@ -23,24 +27,23 @@ end
 -- O(1) tracked index: { buff = {[id]=true}, debuff = {[id]=true} }.
 -- Falls back to building from settings.tracked when callers pass nothing.
 local function BuildTrackedIndex(settings)
-    local index = { buff = {}, debuff = {}, auto = {} }
+    local index = { player={buff={},debuff={},auto={}}, target={buff={},debuff={},auto={}}, buff={},debuff={},auto={} }
     settings = type(settings) == "table" and settings or {}
     local tracked = type(settings.tracked) == "table" and settings.tracked or {}
-    for _, id in ipairs(type(tracked.buff) == "table" and tracked.buff or {}) do
-        id = math.floor(tonumber(id) or 0)
-        if id > 0 then index.buff[id] = true end
-    end
-    for _, id in ipairs(type(tracked.debuff) == "table" and tracked.debuff or {}) do
-        id = math.floor(tonumber(id) or 0)
-        if id > 0 then index.debuff[id] = true end
-    end
-    -- 中文维护注释：Auto 是追踪选择，不是极性；只在 Native 分类已知后进入对应 HUD。
-    for _, id in ipairs(type(tracked.auto) == "table" and tracked.auto or {}) do
-        id = math.floor(tonumber(id) or 0); if id > 0 then index.auto[id] = true end
+    -- 维护（合并残留修复）：索引 Authority 是 schema8 player/target 六通道；兼容平面数据只走 scoped 分支。
+    -- 不能在循环后再次追加旧 tracked.auto，否则混入第二套平面选择；这里仍为按设置变化重建，不加采样。
+    local nested = type(tracked.player)=="table" or type(tracked.target)=="table"
+    for _,scope in ipairs({"player","target"}) do
+        local scoped=nested and (type(tracked[scope])=="table" and tracked[scope] or {}) or tracked
+        for _,category in ipairs({"buff","debuff","auto"}) do
+            for _,id in ipairs(type(scoped[category])=="table" and scoped[category] or {}) do
+                id=math.floor(tonumber(id) or 0)
+                if id>0 then index[scope][category][id]=true;index[category][id]=true end
+            end
+        end
     end
     return index
 end
-
 -- Compact time display for head-plate icons and table rows.
 --   >= 60s  → M.SS.cc  (e.g. 1.20.10 = 1 min 20 sec 10 cs)
 --   <  60s  → S.c      (e.g. 10.0 = 10 sec 0 cs)
@@ -92,8 +95,14 @@ function F.ProjectStatusMap(statusMap, meta, settings, scope, limit, trackedInde
             seen[id] = true
             local timeLeft = tonumber(entry.timeLeft)
             local idNum = math.floor(tonumber(id) or 0)
-            local tracked = (trackedIndex[category] ~= nil and trackedIndex[category][idNum] == true)
-                or (trackedIndex.auto ~= nil and trackedIndex.auto[idNum] == true)
+            -- 中文维护（schema8 scoped tracking）：实时列表的“已追踪”标志必须读取当前单位 scope，
+            -- 不能读取 player/target 的兼容 union。否则“仅目标 Buff”会在自身实时列表也显示已追踪，
+            -- 虽然 HUD 白名单正确但管理语义错误。兼容旧纯函数调用：没有嵌套 scope 时回退旧平面索引。
+            local scopedTracked = (scope == "player" or scope == "target") and trackedIndex[scope] or nil
+            scopedTracked = type(scopedTracked) == "table" and scopedTracked or trackedIndex
+            local tracked = (scopedTracked.buff ~= nil and scopedTracked.buff[idNum] == true)
+                or (scopedTracked.debuff ~= nil and scopedTracked.debuff[idNum] == true)
+                or (scopedTracked.auto ~= nil and scopedTracked.auto[idNum] == true)
             rows[#rows + 1] = {
                 key = tostring(scope or "unit") .. ":" .. tostring(id), id = idNum,
                 name = tostring(entry.name or id), iconPath = tostring(entry.iconPath or ""),
@@ -131,7 +140,7 @@ end
 -- explicit tracked whitelist. This keeps "observed Hidden" separate from
 -- "displayed Hidden" even when the user enables show-all mode.
 ------------------------------------------------------------------------
-local function BoundedTracked(rows, settings, category, trackedIndex)
+local function BoundedTracked(rows, settings, category, trackedIndex, scope)
     rows = type(rows) == "table" and rows or {}
     trackedIndex = type(trackedIndex) == "table" and trackedIndex or BuildTrackedIndex(settings)
     local component = type(settings.components) == "table" and settings.components[category == "debuff" and "debuffs" or "buffs"] or nil
@@ -146,8 +155,10 @@ local function BoundedTracked(rows, settings, category, trackedIndex)
     for _, row in ipairs(rows) do
         local idNum = math.floor(tonumber(row.id) or 0)
         -- 中文维护注释：HUD 白名单同时接受 Auto；lane 分流仍由真实分类决定，不能把 unknown 塞入 Buff。
-        local isTracked = (trackedIndex[category] ~= nil and trackedIndex[category][idNum] == true)
-            or (trackedIndex.auto ~= nil and trackedIndex.auto[idNum] == true)
+        local scoped = (scope=="player" or scope=="target") and trackedIndex[scope] or nil
+        scoped = type(scoped)=="table" and scoped or trackedIndex
+        local isTracked = (scoped[category] ~= nil and scoped[category][idNum] == true)
+            or (scoped.auto ~= nil and scoped.auto[idNum] == true)
         local hiddenSource = row.detectionSource == "hidden"
         if isTracked == true or (showAll == true and hiddenSource ~= true) then
             local copy = {}
@@ -209,16 +220,31 @@ function F.ProjectTargetLoadout(statusMap)
     return { weapon = weapon, armor = armor, weaponConflict = weaponConflict, armorConflict = armorConflict }
 end
 
-function F.ProjectPlates(laneData, settings, trackedIndex)
+function F.ProjectPlates(laneData, settings, trackedIndex, scope)
     laneData, settings = type(laneData) == "table" and laneData or {}, type(settings) == "table" and settings or {}
     local components = CopyComponents(settings.components)
     -- 中文维护注释（高频 HUD 投影）：Feature 已维护 O(1) trackedIndex 时直接复用，
     -- 避免 50ms HUD 刷新反复复制/遍历最多 2048 个追踪 ID；纯函数调用仍可省略第三参
     -- 并从 settings.tracked 构建，保持旧 acceptance/调用方兼容。
     trackedIndex = type(trackedIndex) == "table" and trackedIndex or BuildTrackedIndex(settings)
-    local out = { components = components, buffs = {}, debuffs = {} }
-    out.buffs = BoundedTracked(laneData.buffRows, settings, "buff", trackedIndex)
-    out.debuffs = BoundedTracked(laneData.debuffRows, settings, "debuff", trackedIndex)
+    local out = { components = components, buffs = {}, debuffs = {}, cooldowns = {} }
+    out.buffs = BoundedTracked(laneData.buffRows, settings, "buff", trackedIndex, scope)
+    out.debuffs = BoundedTracked(laneData.debuffRows, settings, "debuff", trackedIndex, scope)
+    -- 中文维护注释（2026-09-19，本机 CD HUD 投影）：cooldownRows 已由 CooldownObservationV3
+    -- 过滤成“当前真正处于 CD”的本机 Native 事实。这里只做有界 detached copy，不查询 API、
+    -- 不把静态 expectedSec 当 Authority，也绝不把 player CD 复制到 target scope。
+    if scope == "player" and type(laneData.cooldownRows) == "table" then
+        local cfg = type(components.cooldowns) == "table" and components.cooldowns or {}
+        local maxPerRow = math.max(1, math.min(16, math.floor(tonumber(cfg.maxPerRow) or 8)))
+        local maxRows = math.max(1, math.min(4, math.floor(tonumber(cfg.maxRows) or 2)))
+        local limit = math.min(64, maxPerRow * maxRows)
+        for _, row in ipairs(laneData.cooldownRows) do
+            local copy = {}
+            for key, value in pairs(row) do copy[key] = value end
+            out.cooldowns[#out.cooldowns + 1] = copy
+            if #out.cooldowns >= limit then break end
+        end
+    end
 
     local distance = tonumber(laneData.distance)
     if distance ~= nil then
@@ -260,4 +286,4 @@ function F.ProjectPlates(laneData, settings, trackedIndex)
     return out
 end
 
-F.ProjectPlatesContractVersion = 4
+F.ProjectPlatesContractVersion = 5

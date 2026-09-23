@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 1 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 -- 维护：真实投影/Feature/Demand/Presenter/诊断逻辑；只模拟Native坐标、RSUI写入和调度驱动。
 -- 故障依据：2026-09-12 客户端 rows=2/4、(1280,731)->(931,-3345)、partial仍标ok。
 -- 这些反例证明代码分支，不声明已复现RU原生投影返回值的全部原因；不读写用户UDF。
@@ -232,6 +236,79 @@ Test('deterministic segment sweep preserves viewport bounds and collinearity',fu
             assert(p.count<=160 and p.count<=b)
         end
     end
+end)
+
+
+Test('accepted unit-line density above legacy 48 remains the configured base density',function()
+    local S,P,G,F=Boot()
+    assert(F:Initialize())
+    assert(F.Commands:SetPointCount(58))
+    assert(F.State.pointCount==58,'feature clamped accepted density to '..tostring(F.State.pointCount))
+    local plans=G:BuildUnitLineSamplePlan({Row(10,10,600,100,'target')},{pointCount=F.State.pointCount,refreshMs=50},1280,768,'Normal')
+    assert(#plans==1 and plans[1].base==58,'presenter base density remained '..tostring(plans[1] and plans[1].base))
+end)
+
+Test('unit-line renderer progressively reaches an accepted density above 48',function()
+    local S,P,G,F,c=Boot()
+    assert(F:Initialize())
+    assert(F.Commands:SetPointCount(58))
+    assert(F.Commands:SetPairPoints('target',58))
+    G.unitHeld=true
+    assert(G:EnsureHost('unit'))
+    UseRows(F,{Row(10,10,900,100,'target')})
+    assert(G:RenderUnit())
+    assert(G:RenderUnit())
+    assert(#G.unitPools.target>=58,'unit-line pool stopped at '..tostring(#G.unitPools.target))
+    assert(G.lastUnitSampling.visibleDots>=58,'unit-line renderer stopped at '..tostring(G.lastUnitSampling.visibleDots)..' visible dots')
+end)
+
+Test('accepted range-circle density above legacy 48 survives domain normalization',function()
+    local S=Boot()
+    local R=assert(S.Features.combat_range_assist)
+    assert(R:Initialize())
+    assert(R.Commands:AddCircle())
+    local circle=assert(R.State.circles[1])
+    assert(R.Commands:SetCirclePointCount(circle.id,58))
+    circle=assert(R.State.circles[1])
+    assert(circle.pointCount==58,'range feature clamped accepted density to '..tostring(circle.pointCount))
+end)
+
+
+Test('range renderer displays every accepted point above the old 48-dot ceiling',function()
+    local S,P,G,F,c=Boot()
+    local R=assert(S.Features.combat_range_assist)
+    c.world.player={0,10,0}
+    assert(R:Initialize())
+    assert(R.Commands:AddCircle())
+    local circle=assert(R.State.circles[1])
+    assert(R.Commands:SetCirclePointCount(circle.id,58))
+    assert(R.Authority:Refresh('density_regression'))
+    local row=assert(R.Authority.rows[1])
+    assert(row.renderPointCount==58 and #row.points==58,'feature generated '..tostring(row.renderPointCount)..'/'..tostring(#row.points)..' points')
+    G.rangeHeld=true
+    assert(G:EnsureHost('range'))
+    assert(G:RenderRange())
+    assert(G.lastRangeSampling.points==58,'presenter rendered '..tostring(G.lastRangeSampling.points)..' instead of 58')
+    local pool=assert(G.rangePools.circle_1)
+    assert(#pool>=58,'range pool stopped at '..tostring(#pool))
+end)
+
+
+Test('range total-point budgeting never expands a low-density circle above its requested count',function()
+    local S,P,G,F,c=Boot()
+    local R=assert(S.Features.combat_range_assist)
+    c.world.player={0,10,0}
+    assert(R:Initialize())
+    assert(R.Commands:AddCircle())
+    assert(R.Commands:AddCircle())
+    local first=assert(R.State.circles[1])
+    local second=assert(R.State.circles[2])
+    assert(R.Commands:SetCirclePointCount(first.id,192))
+    assert(R.Commands:SetCirclePointCount(second.id,3))
+    assert(R.Authority:Refresh('budget_low_density_regression'))
+    local secondRow=assert(R.Authority.rows[2])
+    assert(secondRow.requestedPointCount==3,'test precondition lost requested density')
+    assert(secondRow.renderPointCount<=3,'budgeting expanded requested 3 points to '..tostring(secondRow.renderPointCount))
 end)
 
 print('UNIT LINES RESULT '..passed..' passed / '..failed..' failed ('.._VERSION..')')

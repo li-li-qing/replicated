@@ -157,7 +157,14 @@ local function GetMaterialRecord(ingredient)
     if byEn ~= nil then return byEn end
     local compactId = tonumber(ingredient.compactId)
     if compactId ~= nil and type(StaticFacade.GetMaterialByCompactId) == "function" then
-        return StaticFacade:GetMaterialByCompactId(compactId)
+        local byCompact = StaticFacade:GetMaterialByCompactId(compactId)
+        if byCompact ~= nil then return byCompact end
+    end
+    -- Live craft rows may carry only itemType. Resolve through the same curated material record so cost policy
+    -- (bound/non-market/auctionable) cannot diverge between static recipes and X2Craft fallback identities.
+    local itemType = tonumber(ingredient.itemType)
+    if itemType ~= nil and type(StaticFacade.GetMaterialByItemId) == "function" then
+        return StaticFacade:GetMaterialByItemId(itemType)
     end
     return nil
 end
@@ -494,6 +501,29 @@ function M:_StopLane()
     M.running = false
 end
 
+-- 维护（2026-09-23，trade-live-cache-budget-1）：liveCache 以 itemType 为稀疏 key，Lua 5.1 的 # 运算符
+-- 对哈希表没有计数语义。旧代码对 liveCache 使用长度运算符判断 128 上限，实际通常一直得到 0，长期切路线/新贸易品时
+-- session cache 可以无界增长。预算在写入点统一执行：优先淘汰最老失败项，再淘汰最老 ready 项；不会在查询循环
+-- 里反复遍历，也不会驱逐当前 pending（它尚未进入 cache）。
+local function TrimLiveCacheForInsert()
+    local maxEntries = math.max(1, math.floor(tonumber(M.maxCacheEntries) or 128))
+    local count = 0
+    local oldestFailedKey, oldestFailedAt = nil, nil
+    local oldestAnyKey, oldestAnyAt = nil, nil
+    for key, entry in pairs(M.liveCache) do
+        count = count + 1
+        local at = type(entry) == "table" and (tonumber(entry.at) or 0) or 0
+        if oldestAnyAt == nil or at < oldestAnyAt then oldestAnyKey, oldestAnyAt = key, at end
+        if type(entry) ~= "table" or entry.status ~= "ready" then
+            if oldestFailedAt == nil or at < oldestFailedAt then oldestFailedKey, oldestFailedAt = key, at end
+        end
+    end
+    if count < maxEntries then return false end
+    local evictKey = oldestFailedKey or oldestAnyKey
+    if evictKey ~= nil then M.liveCache[evictKey] = nil; return true end
+    return false
+end
+
 function M:_Drain()
     if M.pending ~= nil then return end
     local request = table.remove(M.queue, 1)
@@ -502,6 +532,7 @@ function M:_Drain()
     local rows, err, craftType = ReadLiveMaterials(request.itemType)
     M.liveReads = M.liveReads + 1
     M.pending = nil
+    TrimLiveCacheForInsert()
     if rows ~= nil and #rows > 0 then
         M.liveCache[request.itemType] = { status = "ready", rows = rows, craftType = craftType, at = NowMs() }
     else
@@ -537,16 +568,6 @@ function M:RequestLive(requester, itemType, callback)
     end
     if #M.queue >= M.maxQueue then return false, "身份解析队列已满" end
     M.queue[#M.queue + 1] = { requester = requester, itemType = itemType, callback = callback, requestedAt = NowMs() }
-    if #M.liveCache >= M.maxCacheEntries then
-        -- Bounded session cache: drop the oldest failed entry first.
-        local oldestKey, oldestAt = nil, nil
-        for key, entry in pairs(M.liveCache) do
-            if entry.status ~= "ready" and (oldestAt == nil or (tonumber(entry.at) or 0) < oldestAt) then
-                oldestKey, oldestAt = key, (tonumber(entry.at) or 0)
-            end
-        end
-        if oldestKey ~= nil then M.liveCache[oldestKey] = nil end
-    end
     M:_StartLane()
     return true, "queued"
 end

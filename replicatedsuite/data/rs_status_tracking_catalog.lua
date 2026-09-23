@@ -12,7 +12,16 @@ S.Data=S.Data or {}
 local Library=S.Data.SkillEffects or {}
 local Ability=S.Data.CombatAbilityCatalog or {}
 local Plates=S.GameIds and S.GameIds.Plates or {}
-local C={version=1,ByEffectId={},BySkillId={},ByTree={},ByTag={},ByKey={},Packs={},PackOrder={},
+-- 维护（2026-09-20，builtin-catalog-version-2）：
+-- 问题：一键加入追踪使用 importedPacks 水位做增量导入，但旧目录把所有后加 ID 都固定
+-- introducedVersion=1。已经导入过 v1 的用户再次点击时，这些新 ID 会被误判为“旧条目/用户主动删除”
+-- 而被跳过。Authority 仍由 Catalog 的版本元数据决定，不读取用户实时 Aura，也不全量复活旧选择。
+-- v2 当前仅声明 853 为新增目录项：v1 老用户只补 853；新用户 since=0 时仍导入完整目录。
+-- 后续新增内置 ID 必须同时登记 introducedVersion，禁止只改 SkillEffects 后忘记升级目录水位。
+local EFFECT_INTRODUCED_VERSION = {
+    [853] = 2,
+}
+local C={version=2,ByEffectId={},BySkillId={},ByTree={},ByTag={},ByKey={},Packs={},PackOrder={},
     counts={trees=0,skills=0,effects=0,control=0,hidden=0,cooldowns=0}}
 S.Data.StatusTrackingCatalogV3=C
 local function Pack(key,name,description)
@@ -26,7 +35,7 @@ local function Effect(id,name,kind)
     local category=(kind=="buff" or kind=="debuff") and kind or "unknown"
     local row={id=id,key="effect:"..tostring(id),name=tostring(name or id),kind="effect",category=category,
         confidence=category=="unknown" and "unknown" or "verified_static",skillTrees={},skillIds={},tags={},
-        source="SkillEffects",introducedVersion=1}
+        source="SkillEffects",introducedVersion=EFFECT_INTRODUCED_VERSION[id] or 1}
     C.ByEffectId[id],C.ByKey[row.key]=row,row;return row
 end
 for id,entry in pairs(Library.buffs or {}) do
@@ -70,8 +79,8 @@ for _,id in ipairs(Plates.MagicCircleBuffIds or {}) do
     local row=Effect(id,nil,"unknown");row.tags.special_rule=true
     if not hiddenSeen[id] then hidden.entries[#hidden.entries+1]=row;hiddenSeen[id]=true end
 end
-local glider=Pack("cooldown:skill","滑翔翼 / 翅膀技能 CD","只导入技能 ID；实际倒计时必须来自已验证的 Native 读数。")
-local mate=Pack("cooldown:mate","坐骑 / 伙伴技能 CD","只导入技能 ID；不以静态 expectedSec 伪造倒计时。")
+local glider=Pack("cooldown:skill","玩家 / 滑翔翼 / 翅膀技能 CD（Skill ID）","这里只保存 Skill ID，不是 Buff/Effect ID；实际倒计时必须来自 GetCooldown Native 读数。")
+local mate=Pack("cooldown:mate","坐骑 / 宠物技能 CD（Skill ID）","这里只保存 Skill ID，不是 Buff/Effect ID；实际倒计时必须来自 GetMateCooldown Native 读数。")
 for _,seed in ipairs(Plates.ImportantCooldownEntries or {}) do
     local kind=seed.kind=="mate" and "mate" or "skill"
     local row={id=seed.id,key="cooldown:"..kind..":"..tostring(seed.id),name=tostring(seed.label or seed.id),

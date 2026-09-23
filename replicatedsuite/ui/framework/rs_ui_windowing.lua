@@ -17,8 +17,8 @@ local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
 if type(UI) ~= "table" or type(RSUI) ~= "table" then return end
 
-RSUI.Windowing = RSUI.Windowing or { version = 18, bindings = {}, metrics = { attached = 0, detached = 0, drags = 0, resizes = 0, locks = 0, raises = 0, opacityChanges = 0, resizeHover = 0, liveResizeFrames = 0, interactionBegins = 0, interactionEnds = 0, freePlacementCommits = 0, recoveryClamps = 0, geometryCallbackRejects = 0 } }
-RSUI.Windowing.version = 18
+RSUI.Windowing = RSUI.Windowing or { version = 19, bindings = {}, metrics = { attached = 0, detached = 0, drags = 0, resizes = 0, locks = 0, raises = 0, opacityChanges = 0, resizeHover = 0, liveResizeFrames = 0, interactionBegins = 0, interactionEnds = 0, freePlacementCommits = 0, recoveryClamps = 0, geometryCallbackRejects = 0, resizeStartAttempts = 0, resizeStartRejects = 0, resizeSurfaceRaises = 0 } }
+RSUI.Windowing.version = 19
 RSUI.Windowing.StateMutationTransactionContractVersion = 1
 RSUI.Windowing.GeometryCallbackTransactionContractVersion = 1
 RSUI.Windowing.IdempotentStateContractVersion = 1
@@ -26,6 +26,8 @@ RSUI.Windowing.CallbackCaptureContractVersion = 1
 RSUI.Windowing.CriticalInteractionContractVersion = 3
 RSUI.Windowing.DragSurfaceHitTestContractVersion = 1
 RSUI.Windowing.ExplicitDragConditionContractVersion = 1
+RSUI.Windowing.ResizeHitSurfaceContractVersion = 2
+RSUI.Windowing.ResizeCaptureStabilityContractVersion = 2
 RSUI.Windowing.metrics = RSUI.Windowing.metrics or {}
 local W = RSUI.Windowing
 local NATIVE_RESIZE_LIMIT = 16384 -- technical guard only; not a user-facing window cap
@@ -48,10 +50,13 @@ local function EnsureNativeResizing(window, enabled)
     return true, nil
 end
 
-local function ReadLogicalRect(window)
-    if S.Layout ~= nil and type(S.Layout.GetLogicalRect) == "function" then
-        local ok, x, y, width, height = pcall(function() return S.Layout:GetLogicalRect(window) end)
-        if ok then return tonumber(x) or 0, tonumber(y) or 0, math.max(1, tonumber(width) or 1), math.max(1, tonumber(height) or 1) end
+-- 维护（viewport-recovery-1）：只从校准后的 viewport logical 读顶层窗口，
+-- 不沿用 GetLogicalRect 无条件 /uiScale。手势中使用 Begin 固定单位，防止 native resize
+-- 改变 extent 后用旧 cache 误判比例；同一链只变换一次，持久化仅在 CommitGeometry。
+local function ReadLogicalRect(window, pinnedScale)
+    if S.Layout ~= nil and type(S.Layout.GetWindowLogicalRect) == "function" then
+        local ok, x, y, width, height, info = pcall(function() return S.Layout:GetWindowLogicalRect(window, pinnedScale) end)
+        if ok and x ~= nil then return x, y, width, height, info end
     end
     local x, y, width, height = 0, 0, 1, 1
     if window ~= nil and type(window.GetOffset) == "function" then pcall(function() x, y = window:GetOffset() end) end
@@ -60,17 +65,57 @@ local function ReadLogicalRect(window)
     return tonumber(x) or 0, tonumber(y) or 0, math.max(1, tonumber(width) or 1), math.max(1, tonumber(height) or 1)
 end
 
+-- 维护：Windowing 是顶层 Native 几何写入 Authority。reset/metrics/手势结束强制失效
+-- 仅几何缓存，避免沿用旧 anchor 命中；不清除颜色/可见性等其它状态，也不碰任何 Store。
+-- extent/anchor 任一拒绝就返回失败并尽力回滚；Native 若连回滚也拒绝，明确报告而非假成功。
+function W:ApplyGeometry(window, owner, x, y, width, height, force)
+    for _,v in ipairs({x,y,width,height}) do
+        if type(v) ~= "number" or v ~= v or v == math.huge or v == -math.huge then return false, "non_finite_window_rect" end
+    end
+    if x == nil or y == nil or width == nil or height == nil or width <= 0 or height <= 0 then return false, "invalid_window_rect" end
+    if type(UI.EnsureAnchor) ~= "function" or type(UI.EnsureExtent) ~= "function" then return false,"geometry_transaction_unavailable" end
+    -- 维护：内容刷新可能很频繁，常规布局只用 DiffRenderer 已提交矩形作为回滚基线。
+    -- 只有 create（无缓存）/show/reset/metrics/手势结束 force 边沿读取 Native，禁止变相逐帧读坐标。
+    local row=UI.NativeStateCache and UI.NativeStateCache[window]
+    local bx,by,bw,bh
+    if force~=true and row and type(row.anchorX)=="number" and type(row.anchorY)=="number"
+        and type(row.width)=="number" and type(row.height)=="number" then
+        bx,by,bw,bh=row.anchorX,row.anchorY,row.width,row.height
+    else bx,by,bw,bh=ReadLogicalRect(window) end
+    local function Invalidate()
+        if type(UI.InvalidateNativeState) == "function" then
+            for _,field in ipairs({"width","height","anchorParent","anchorX","anchorY","anchorTopLeft"}) do UI:InvalidateNativeState(window,field) end
+        end
+    end
+    if force == true then Invalidate() end
+    local ok,_,err = UI:EnsureExtent(window,width,height,owner)
+    if ok == true then ok,_,err = UI:EnsureAnchor(window,UIParent,x,y,owner) end
+    if ok ~= true then
+        Invalidate()
+        local sizeOk = UI:EnsureExtent(window,bw,bh,owner)
+        local anchorOk = UI:EnsureAnchor(window,UIParent,bx,by,owner)
+        return false, tostring(err or "native_geometry_rejected") .. ((sizeOk ~= true or anchorOk ~= true) and ":rollback_rejected" or "")
+    end
+    return true,x,y,width,height
+end
+
 local function ReconcileWindow(controller, window, owner, x, y, width, height)
     if window == nil then return false end
     local originalX, originalY = tonumber(x) or 0, tonumber(y) or 0
     local boundaryMode = tostring(controller and controller.boundaryMode or "free")
-    if boundaryMode == "strict" then
-        local context = S.Layout and S.Layout:GetContext() or { logicalWidth = 1024, logicalHeight = 768, safeLeft = 0, safeTop = 0, safeRight = 0, safeBottom = 0 }
-        local left = tonumber(context.safeLeft) or 0
-        local top = tonumber(context.safeTop) or 0
-        local right = math.max(left, (tonumber(context.logicalWidth) or width) - (tonumber(context.safeRight) or 0) - width)
-        local bottom = math.max(top, (tonumber(context.logicalHeight) or height) - (tonumber(context.safeBottom) or 0) - height)
-        x, y = Clamp(x, left, right), Clamp(y, top, bottom)
+    -- 维护（2026-09-22，viewport-contained-floating-1）：Windowing 是真实用户 Drag/Resize
+    -- 提交 Authority。若这里只做“标题仍可抓取”的 recoverable clamp，后续 FloatingSurface 会把
+    -- 这个部分离屏矩形原样持久化，下一次登录/切分辨率仍会从错误 intent 开始。普通 free/strict
+    -- 顶层窗口在手势提交时统一做 full-safe clamp；只有显式 recoverable 模式保留部分离屏语义。
+    -- 这样 Native 最终矩形与 StorePlacementRect 收到的 committed rect 始终一致，不产生二次修正漂移。
+    if (boundaryMode == "strict" or boundaryMode == "free") and S.Layout ~= nil and type(S.Layout.ClampTopLeft) == "function" then
+        -- 手势可能来自较大分辨率遗留窗口，也可能是用户把 Resize 拉到当前 viewport 之外。
+        -- 运行时 extent 先拟合当前 usable area，再夹紧 top-left；FloatingSurface 对 drag 不会把
+        -- 此运行时拟合写回 preferred width/height，因此“低分辨率拖一下”不会永久损失大屏尺寸。
+        local context = S.Layout:GetContext()
+        width = math.min(math.max(1, tonumber(width) or 1), math.max(1, tonumber(context.usableWidth) or 1))
+        height = math.min(math.max(1, tonumber(height) or 1), math.max(1, tonumber(context.usableHeight) or 1))
+        x, y = S.Layout:ClampTopLeft(x, y, width, height)
     elseif boundaryMode == "recoverable" and S.Layout ~= nil and type(S.Layout.ClampRecoverableTopLeft) == "function" then
         x, y = S.Layout:ClampRecoverableTopLeft(x, y, width, height, {
             visibleX = controller and controller.recoveryVisibleX or 72,
@@ -86,10 +131,7 @@ local function ReconcileWindow(controller, window, owner, x, y, width, height)
     -- while the mouse is captured. Clear the cached native snapshot BEFORE the
     -- strict owner writes the committed geometry back, so this valid transaction
     -- never looks like an authority violation.
-    if type(UI.InvalidateNativeState) == "function" then UI:InvalidateNativeState(window) end
-    UI:SetAnchor(window, UIParent, x, y, owner)
-    UI:SetExtent(window, width, height, owner)
-    return true, x, y, width, height
+    return W:ApplyGeometry(window, owner, x, y, width, height, true)
 end
 
 local HANDLE_SPECS = {
@@ -134,6 +176,7 @@ function W:Attach(spec)
         recoveryVisibleX = math.max(8, tonumber(spec.recoveryVisibleX) or 72),
         recoveryVisibleY = math.max(8, tonumber(spec.recoveryVisibleY) or 18),
         dragHandleHeight = math.max(8, tonumber(spec.dragHandleHeight) or 36),
+        scaleWithAddon = spec.scaleWithAddon ~= false,
         onGeometryChanged = spec.onGeometryChanged,
         canDrag = spec.canDrag,
         canResize = spec.canResize,
@@ -145,6 +188,20 @@ function W:Attach(spec)
         opacity = math.max(0.0, math.min(1.0, tonumber(spec.opacity) or 1.0)),
     }
 
+
+    -- 维护：Metrics 在手势中只标记，停止后放弃旧 viewport 的提交并重放原 intent。
+    -- Reset 主动取消 lease 和捕获；迟到 OnDragStop 不能再写 Store 或移动恢复后的窗口。
+    function controller:GetLogicalRect() return ReadLogicalRect(self.window, self.geometryUnitScale) end
+    function controller:CancelInteraction()
+        if self:IsInteracting() and type(self.window.StopMovingOrSizing) == "function" then
+            pcall(function() self.window:StopMovingOrSizing() end)
+        end
+        self.dragging = false
+        for _,handle in pairs(self.handles) do handle.rsWindowSizing = false end
+        self:EndInteraction()
+        self.geometryUnitScale, self.pendingPlacement, self.interactionViewport = nil, nil, nil
+        return true
+    end
 
     function controller:IsInteracting()
         return self.interactionKind ~= nil
@@ -176,8 +233,8 @@ function W:Attach(spec)
     end
 
     function controller:PulseLiveGeometry(force)
-        if self:IsResizing() ~= true or type(self.onLiveGeometry) ~= "function" then return false end
-        local x, y, width, height = ReadLogicalRect(self.window)
+        if self:IsResizing() ~= true or self.pendingPlacement or type(self.onLiveGeometry) ~= "function" then return false end
+        local x, y, width, height = self:GetLogicalRect()
         local changed = force == true
             or self.lastLiveWidth == nil or self.lastLiveHeight == nil
             or math.abs(width - self.lastLiveWidth) > 0.5 or math.abs(height - self.lastLiveHeight) > 0.5
@@ -227,9 +284,12 @@ function W:Attach(spec)
             local ok = UI:BeginNativeGeometryLease(self.window, self.owner, kind)
             if ok ~= true then return false end
         end
+        local _,_,_,_,info = ReadLogicalRect(self.window)
+        self.geometryUnitScale = type(info) == "table" and info.effectiveScale or nil
+        self.interactionViewport = S.Layout and S.Layout:MakeSignature(S.Layout:GetContext()) or nil
         self.interactionKind = kind
         self.interactionDirection = direction
-        self.lastLiveX, self.lastLiveY, self.lastLiveWidth, self.lastLiveHeight = ReadLogicalRect(self.window)
+        self.lastLiveX, self.lastLiveY, self.lastLiveWidth, self.lastLiveHeight = self:GetLogicalRect()
         W.metrics.interactionBegins = (tonumber(W.metrics.interactionBegins) or 0) + 1
         return true
     end
@@ -266,9 +326,13 @@ function W:Attach(spec)
     function controller:ApplyNativeResizeBounds()
         if self.window == nil then return false, "window_required" end
         local context = S.Layout and S.Layout:GetContext() or { addonScale = 1 }
-        local scale = math.max(0.01, tonumber(context.addonScale) or 1)
+        local scale = self.scaleWithAddon == false and 1 or math.max(0.01, tonumber(context.addonScale) or 1)
         local minW = math.max(1, (tonumber(self.minWidth) or 1) * scale)
         local minH = math.max(1, (tonumber(self.minHeight) or 1) * scale)
+        -- 维护：语义 min 不能大于当前 viewport，否则运行时 fit 被 native resize 限制撤销。
+        -- 原 min/preferred 不改，返回大屏时自动恢复；这里只更新本次 native bounds。
+        minW = math.min(minW, context.usableWidth or minW)
+        minH = math.min(minH, context.usableHeight or minH)
         -- Native APIs require a finite maximum on some RU clients. When the
         -- caller has no semantic max, use a very large technical guard instead
         -- of silently capping to the current viewport.
@@ -289,16 +353,31 @@ function W:Attach(spec)
     end
 
     function controller:CommitGeometry(reason)
-        local x, y, width, height = ReadLogicalRect(self.window)
+        -- 手势结束允许新鲜读取一次；Metrics 未通知但此时已变化也不能将旧坐标标成新空间。
+        if S.Layout and self.interactionViewport then
+            S.Layout:GetContext(true)
+            if self.interactionViewport ~= S.Layout:MakeSignature(S.Layout:GetContext()) then self.pendingPlacement = true end
+        end
+        if self.pendingPlacement then
+            self.pendingPlacement, self.geometryUnitScale, self.interactionViewport = nil, nil, nil
+            if type(self.onPlacementReady) == "function" then return self.onPlacementReady() end
+            return false, "viewport_changed_during_gesture"
+        end
+        local x, y, width, height = self:GetLogicalRect()
+        self.geometryUnitScale, self.interactionViewport = nil, nil
         local context = S.Layout and S.Layout:GetContext() or { addonScale = 1 }
-        local scale = math.max(0.01, tonumber(context.addonScale) or 1)
-        width = math.max((tonumber(self.minWidth) or 1) * scale, width)
-        height = math.max((tonumber(self.minHeight) or 1) * scale, height)
-        if self.maxWidth ~= nil then width = math.min(width, self.maxWidth * scale) end
-        if self.maxHeight ~= nil then height = math.min(height, self.maxHeight * scale) end
+        local scale = self.scaleWithAddon == false and 1 or math.max(0.01, tonumber(context.addonScale) or 1)
+        -- 维护：drag 只改位置；compact / runtime-fitted 尺寸不能被语义 min 拉大，
+        -- 更不能当作用户 resize 写回 preferred size。只有 resize 才应用尺寸约束。
+        if tostring(reason) == "resize" then
+            width = math.max(math.min((tonumber(self.minWidth) or 1)*scale,context.usableWidth or width),width)
+            height = math.max(math.min((tonumber(self.minHeight) or 1)*scale,context.usableHeight or height),height)
+            if self.maxWidth ~= nil then width = math.min(width,self.maxWidth*scale) end
+            if self.maxHeight ~= nil then height = math.min(height,self.maxHeight*scale) end
+        end
         local ok
         ok, x, y, width, height = ReconcileWindow(self, self.window, self.owner, x, y, width, height)
-        if ok ~= true then return false end
+        if ok ~= true then return false, x end
         if type(self.onGeometryChanged) == "function" then
             local callbackOk, accepted, detail = pcall(self.onGeometryChanged, self, x, y, width, height, tostring(reason or "geometry"))
             if callbackOk ~= true then
@@ -316,6 +395,14 @@ function W:Attach(spec)
 
     function controller:LayoutHandles(width, height)
         width, height = math.max(1, tonumber(width) or 1), math.max(1, tonumber(height) or 1)
+        -- 维护（2026-09-22，window-resize-capture-stability-1）：StartSizing 之后 Native 窗口本身
+        -- 是唯一 capture/geometry Authority。旧实现的 16ms live reflow 会再次进入 LayoutHandles，
+        -- 对 8 个手柄持续重锚，并且每帧重新调用 UseResizing/SetMinResizingExtent/SetMaxResizingExtent。
+        -- RU 客户端对活动中的 sizing transaction 不保证这些配置调用幂等，实机表现就是“按住边缘有时
+        -- 没反应 / 刚开始又失效”。Slider 与 Table separator 已经遵守“活动 drag surface 不重锚”规则，
+        -- Windowing 现在统一同一语义：手势期间只让内容跟随 live extent，手柄和 Native resize bounds
+        -- 冻结到 DragStart；DragStop/Commit 后一次性重排。无 Tick 新增，不改变 Store 或窗口尺寸 Authority。
+        if self:IsResizing() == true then return true end
         local t = self.handleThickness
         local interactive = self.resizeEnabled == true and self.locked ~= true and self.enabled ~= false
         if type(UI.EnsureVisible) ~= "function" or type(UI.EnsureEnabled) ~= "function" or type(UI.EnsurePickable) ~= "function" then
@@ -340,6 +427,13 @@ function W:Attach(spec)
                 local pickOk, _, pickErr = UI:EnsurePickable(handle, interactive, self.owner)
                 if visibleOk ~= true or enabledOk ~= true or pickOk ~= true then
                     return false, tostring(visibleErr or enabledErr or pickErr or "window_handle_state_rejected")
+                end
+                -- FloatingSurface 的 Feature 内容是在 WindowShell 创建后才追加的；如果不重新 Raise，
+                -- 后创建的 ListView/Scrollbar/Border 可能位于 resize emptywidget 之上，导致同一条边有时命中
+                -- 内容、有时命中手柄。这里只在非活动手势的低频 Layout/Show/ResizeStop 边沿重建 z-order。
+                if interactive and type(handle.Raise) == "function" then
+                    local raised = pcall(function() handle:Raise() end)
+                    if raised then W.metrics.resizeSurfaceRaises = (tonumber(W.metrics.resizeSurfaceRaises) or 0) + 1 end
                 end
             end
         end
@@ -458,6 +552,7 @@ function W:Attach(spec)
         return true
     end, "v3_window:" .. id .. ":drag_start")
     local stopBound, stopErr = UI:RequireHandler(dragHandle, "OnDragStop", function()
+        if controller.dragging ~= true then return true end -- 取消/重载后的旧手势不得再次提交。
         if controller.dragging == true and type(window.StopMovingOrSizing) == "function" then pcall(function() window:StopMovingOrSizing() end) end
         controller.dragging = false
         controller:EndInteraction()
@@ -492,7 +587,10 @@ function W:Attach(spec)
                 -- remain identical.
                 local hoverLine = nil
                 if type(handle.CreateColorDrawable) == "function" then
-                    hoverLine = handle:CreateColorDrawable(0.84, 0.68, 0.28, 0.0, "overlay")
+                    -- 维护（window-resize-hit-plane-1）：完全 alpha=0 的 EmptyWidget 在 RU 不同父层/后创建
+                    -- 子控件组合下命中不稳定。0.001 是肉眼不可见的 Native hit plane，与自定义 Slider 已验证
+                    -- 的透明拖动面保持一致；hover 才提高到 0.72。该 Drawable 不拥有几何或持久化。
+                    hoverLine = handle:CreateColorDrawable(0.84, 0.68, 0.28, 0.001, "overlay")
                     if hoverLine ~= nil and type(hoverLine.AddAnchor) == "function" then
                         hoverLine:AddAnchor("TOPLEFT", handle, 0, 0)
                         hoverLine:AddAnchor("BOTTOMRIGHT", handle, 0, 0)
@@ -500,19 +598,37 @@ function W:Attach(spec)
                 end
                 local function SetResizeHover(active)
                     if hoverLine ~= nil and type(hoverLine.SetColor) == "function" then
-                        pcall(function() hoverLine:SetColor(0.84, 0.68, 0.28, active and 0.72 or 0.0) end)
+                        pcall(function() hoverLine:SetColor(0.84, 0.68, 0.28, active and 0.72 or 0.001) end)
                     end
                     if active then W.metrics.resizeHover = (tonumber(W.metrics.resizeHover) or 0) + 1 end
                 end
                 UI:SafeHandler(handle, "OnEnter", function() SetResizeHover(true); return true end, "v3_window:" .. id .. ":resize_enter:" .. handleDefinition.key)
                 UI:SafeHandler(handle, "OnLeave", function() if handle.rsWindowSizing ~= true then SetResizeHover(false) end; return true end, "v3_window:" .. id .. ":resize_leave:" .. handleDefinition.key)
                 local resizeStartBound, resizeStartErr = UI:RequireHandler(handle, "OnDragStart", function()
-                    if controller:IsResizeAllowed() ~= true or type(window.StartSizing) ~= "function" then return false end
+                    W.metrics.resizeStartAttempts = (tonumber(W.metrics.resizeStartAttempts) or 0) + 1
+                    if controller:IsResizeAllowed() ~= true or type(window.StartSizing) ~= "function" then
+                        W.metrics.resizeStartRejects = (tonumber(W.metrics.resizeStartRejects) or 0) + 1
+                        W.metrics.lastResizeStartReject = "not_allowed_or_start_sizing_unavailable"
+                        return false
+                    end
                     controller:BringToFront()
-                    if controller:BeginInteraction("resize", handleDefinition.direction) ~= true then return false end
+                    -- 内容控件可能在最近一次布局后创建/重排；DragStart 再把实际命中的 surface 提到
+                    -- 当前窗口最上层，然后整个 sizing transaction 内保持静止，避免捕获对象被自己移动。
+                    if type(handle.Raise) == "function" then pcall(function() handle:Raise() end) end
+                    if controller:BeginInteraction("resize", handleDefinition.direction) ~= true then
+                        W.metrics.resizeStartRejects = (tonumber(W.metrics.resizeStartRejects) or 0) + 1
+                        W.metrics.lastResizeStartReject = "geometry_lease_rejected"
+                        return false
+                    end
                     local sizing = UI:TryInteractionCall(window, "StartSizing", handleDefinition.direction)
                     handle.rsWindowSizing = sizing == true
-                    if handle.rsWindowSizing ~= true then controller:EndInteraction(); return false end
+                    if handle.rsWindowSizing ~= true then
+                        controller:EndInteraction()
+                        W.metrics.resizeStartRejects = (tonumber(W.metrics.resizeStartRejects) or 0) + 1
+                        W.metrics.lastResizeStartReject = "native_start_sizing_rejected"
+                        return false
+                    end
+                    W.metrics.lastResizeStartReject = nil
                     if type(controller.onResizeStart) == "function" then pcall(controller.onResizeStart, controller, handleDefinition.direction) end
                     controller:PulseLiveGeometry(true)
                     controller:StartLiveGeometryTask(handle)
@@ -521,6 +637,7 @@ function W:Attach(spec)
                     return true
                 end, "v3_window:" .. id .. ":resize_start:" .. handleDefinition.key)
                 local resizeStopBound, resizeStopErr = UI:RequireHandler(handle, "OnDragStop", function()
+                    if handle.rsWindowSizing ~= true then return true end -- Reset 后迟到回调无效。
                     if handle.rsWindowSizing == true and type(window.StopMovingOrSizing) == "function" then pcall(function() window:StopMovingOrSizing() end) end
                     handle.rsWindowSizing = false
                     controller:PulseLiveGeometry(true)
@@ -605,6 +722,12 @@ function W:Describe()
         opacityChanges = tonumber(self.metrics.opacityChanges) or 0,
         resizeHover = tonumber(self.metrics.resizeHover) or 0,
         liveResizeFrames = tonumber(self.metrics.liveResizeFrames) or 0,
+        resizeStartAttempts = tonumber(self.metrics.resizeStartAttempts) or 0,
+        resizeStartRejects = tonumber(self.metrics.resizeStartRejects) or 0,
+        resizeSurfaceRaises = tonumber(self.metrics.resizeSurfaceRaises) or 0,
+        lastResizeStartReject = self.metrics.lastResizeStartReject,
+        resizeHitSurfaceContractVersion = tonumber(self.ResizeHitSurfaceContractVersion) or 0,
+        resizeCaptureStabilityContractVersion = tonumber(self.ResizeCaptureStabilityContractVersion) or 0,
         interactionBegins = tonumber(self.metrics.interactionBegins) or 0,
         interactionEnds = tonumber(self.metrics.interactionEnds) or 0,
         freePlacementCommits = tonumber(self.metrics.freePlacementCommits) or 0,

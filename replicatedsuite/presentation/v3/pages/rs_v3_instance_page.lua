@@ -1,6 +1,8 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Instance Browser Page
 ------------------------------------------------------------------------
+-- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -31,7 +33,7 @@ local function BuildPage(parent, route)
     })
 
     local actions = RSUI:HorizontalBox({ id = "v3_instances_filters", parent = root, gap = 7, slot = { size = "fixed", height = 30, hAlign = "fill" } })
-    local toggle = RSUI:Button({ id = "v3_instances_toggle", parent = actions, text = "启用功能", compact = true, slot = { size = "fixed", width = 92 } })
+    local toggle = D:ModuleToggleButton({ id = "v3_instances_toggle", parent = actions, text = "启用功能", compact = true, slot = { size = "fixed", width = 92 } })
     local allButton = RSUI:Button({ id = "v3_instances_filter_all", parent = actions, text = "全部", compact = true, slot = { size = "fixed", width = 72 } })
     local availableButton = RSUI:Button({ id = "v3_instances_filter_available", parent = actions, text = "可进入", compact = true, slot = { size = "fixed", width = 78 } })
     local limitedButton = RSUI:Button({ id = "v3_instances_filter_limited", parent = actions, text = "有限次数", compact = true, slot = { size = "fixed", width = 88 } })

@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 5 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 -- 维护：用户明确要求固定报告+独立上一页/下一页。使用实际报告/传输/Page工厂；只模拟Native。
 -- 此测试不在TOC，既不证明RU实机输入框容量，也不解除任何业务Store写保护。
 local passed,failed=0,0
@@ -26,9 +30,9 @@ end
 local function Ready(S)assert(type(S.ReportCopyTransport.BuildTextPages)=='function','BuildTextPages missing');assert(type(S.ReportCopyTransport.GetTextPage)=='function','GetTextPage missing')end
 local function Data(text)local n=tonumber(text:match(';DATA_BYTES=(%d+);'));local p=assert(text:find(';DATA=',1,true))+6;return text:sub(p,p+n-1)end
 local function Unescape(s)return (s:gsub('\\(.)',function(c)return ({n='\n',r='\r',['\\']='\\'})[c] or error('bad escape')end))end
-Test('explicit previous and next accompany the two top-level actions',function()
+Test('explicit previous and next accompany focused and full report actions',function()
  local S,D,c,r,h=Boot();local n=0;for _,v in pairs(h.widgets)do if v.onClick then n=n+1 end end
- assert(n==4,'expected run/print/previous/next');assert(h.widgets.v3_diag_report_prev.spec.text=='上一页');assert(h.widgets.v3_diag_report_next.spec.text=='下一页')
+ assert(n==5,'expected run/fault/full/previous/next');assert(h.widgets.v3_diag_report_prev.spec.text=='上一页');assert(h.widgets.v3_diag_report_next.spec.text=='下一页')
  assert(c.checks==0 and c.reads==0 and c.chats==0)
 end)
 Test('normal builder includes all fenced originals without copy budget deletion',function()
@@ -47,7 +51,7 @@ Test('text pages preserve Chinese newlines slashes and literal marker strings',f
  assert(T:GetTextPage(session,0)==nil and T:GetTextPage(session,session.parts+1)==nil)
 end)
 Test('previous next reuse a frozen snapshot and do not read or check again',function()
- local S,D,c,r,h=Boot();assert(h.widgets.v3_diag_output.onClick());assert(r.selfCheckDelivery.parts>1)
+ local S,D,c,r,h=Boot();assert(h.widgets.v3_diag_output_full.onClick());assert(r.selfCheckDelivery.parts>1)
  local first=h.edit.text;local original=r.selfCheckText;local check,read=c.checks,c.reads
  S.RecordLog('error','later','ERROR_AFTER_CAPTURE')
  assert(h.widgets.v3_diag_report_next.onClick());assert(r.selfCheckPart==2 and h.edit.text~=first)
@@ -56,28 +60,28 @@ Test('previous next reuse a frozen snapshot and do not read or check again',func
  assert(c.checks==check and c.reads==read and c.writes==0 and c.chats==1)
 end)
 Test('print generates a new snapshot on page one instead of secretly moving next',function()
- local S,D,c,r,h=Boot();assert(h.widgets.v3_diag_output.onClick());local id=r.selfCheckMeta.id
+ local S,D,c,r,h=Boot();assert(h.widgets.v3_diag_output_full.onClick());local id=r.selfCheckMeta.id
  assert(h.widgets.v3_diag_report_next.onClick());S.RecordLog('error','test','NEXT_SNAPSHOT_ERROR')
- assert(h.widgets.v3_diag_output.onClick());assert(r.selfCheckPart==1 and r.selfCheckMeta.id~=id)
+ assert(h.widgets.v3_diag_output_full.onClick());assert(r.selfCheckPart==1 and r.selfCheckMeta.id~=id)
  assert(r.selfCheckText:find('NEXT_SNAPSHOT_ERROR',1,true) and c.checks==2 and c.reads==4)
 end)
 Test('small receiver negotiates once then all pages keep identical boundaries',function()
- local S,D,c,r,h=Boot(1800);assert(h.widgets.v3_diag_output.onClick());assert(r.selfCheckDelivery.capacity<=1800)
+ local S,D,c,r,h=Boot(1800);assert(h.widgets.v3_diag_output_full.onClick());assert(r.selfCheckDelivery.capacity<=1800)
  local n=r.selfCheckDelivery.parts;local all={Data(h.edit.text)};local original=r.selfCheckText
  for i=2,n do assert(h.widgets.v3_diag_report_next.onClick());assert(r.selfCheckPart==i and r.selfCheckDelivery.parts==n);all[#all+1]=Data(h.edit.text)end
  assert(Unescape(table.concat(all))==original and c.reads==2 and c.checks==1)
  assert(h.widgets.v3_diag_report_next.onClick()==false and r.selfCheckPart==n,'must not wrap at last page')
 end)
 Test('navigation failure never advances page or regenerates boundaries',function()
- local S,D,c,r,h=Boot();assert(h.widgets.v3_diag_output.onClick());local session=r.selfCheckDelivery
+ local S,D,c,r,h=Boot();assert(h.widgets.v3_diag_output_full.onClick());local session=r.selfCheckDelivery
  function h.edit:SetText(v)self.text=v:sub(1,90)end
  assert(h.widgets.v3_diag_report_next.onClick()==false);assert(r.selfCheckPart==1 and r.selfCheckDelivery==session)
  assert(c.checks==1 and c.reads==2)
 end)
 Test('run and page release discard text but retain captured errors',function()
- local S,D,c,r,h=Boot();S.RecordLog('error','test','KEPT_AFTER_CHECK');assert(h.widgets.v3_diag_output.onClick())
+ local S,D,c,r,h=Boot();S.RecordLog('error','test','KEPT_AFTER_CHECK');assert(h.widgets.v3_diag_output_full.onClick())
  assert(h.widgets.v3_diag_full_check.onClick());assert(r.selfCheckText==nil and r.selfCheckDelivery==nil)
- assert(h.widgets.v3_diag_output.onClick());assert(r.selfCheckText:find('KEPT_AFTER_CHECK',1,true));r:OnDeactivated()
+ assert(h.widgets.v3_diag_output_full.onClick());assert(r.selfCheckText:find('KEPT_AFTER_CHECK',1,true));r:OnDeactivated()
  assert(r.selfCheckText==nil and r.selfCheckDelivery==nil and h.edit.text=='')
 end)
 Test('error capture has a bounded string snapshot independent of info eviction',function()

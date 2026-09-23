@@ -11,7 +11,7 @@ S.Data = S.Data or {}
 --   * buff 索引: ID + 中文名
 --
 -- 【已清空 / 待游戏内补全】(wiki 不区分 Buff/Debuff, 也无连锁 ID, 无法自动获取):
---   * kind  (buff / debuff): 当前全部为 "unknown", 需进游戏确认后填入
+--   * kind  (buff / debuff): 自动生成基础表仍为 "unknown"；用户实测/明确确认项在下方维护块覆盖
 --   * target(self / enemy): 当前全部为 "unknown", 需进游戏确认后填入
 --   * 连锁反应 (A 触发 B): wiki 无结构化数据, 需游戏内记录后补 chains 字段
 --
@@ -161,7 +161,6 @@ do
     B[2921] = { name = "死亡刻印", kind = "unknown" }
     B[2923] = { name = "复仇刃铠", kind = "unknown" }
     B[2924] = { name = "复仇刃铠（2级）", kind = "unknown" }
-    B[2956] = { name = "睿明祝福（2级）", kind = "unknown" }
     B[3127] = { name = "眩晕", kind = "unknown" }
     B[3200] = { name = "진공 당겨짐", kind = "unknown" }
     B[3532] = { name = "冲击盾：增加威胁", kind = "unknown" }
@@ -196,7 +195,6 @@ do
     B[7658] = { name = "雄鹰之力（5级）", kind = "unknown" }
     B[7659] = { name = "猎手印记（4级）", kind = "unknown" }
     B[7660] = { name = "复活（5级）", kind = "unknown" }
-    B[7661] = { name = "睿明祝福（3级）", kind = "unknown" }
     B[7662] = { name = "英雄进行曲（2级）", kind = "unknown" }
     B[7664] = { name = "英雄进行曲（2级）", kind = "unknown" }
     B[8075] = { name = "魔法阵（3级）", kind = "unknown" }
@@ -227,8 +225,6 @@ do
     B[13786] = { name = "生命乐章（4级）", kind = "unknown" }
     B[13787] = { name = "生命乐章（4级）", kind = "unknown" }
     B[13788] = { name = "生命乐章（5级）", kind = "unknown" }
-    B[13790] = { name = "睿明祝福（4级）", kind = "unknown" }
-    B[13791] = { name = "睿明祝福（5级）", kind = "unknown" }
     B[13867] = { name = "脉轮之息（5级）", kind = "unknown" }
     B[13868] = { name = "脉轮之息（6级）", kind = "unknown" }
     B[14861] = { name = "腾空之力", kind = "unknown" }
@@ -392,7 +388,7 @@ do
     B[28256] = { name = "深渊的水之禁锢", kind = "unknown" }
     B[28257] = { name = "深渊的水之禁锢", kind = "unknown" }
     B[28585] = { name = "装填中", kind = "unknown" }
-    B[28597] = { name = "移动中", kind = "unknown" }
+    B[28597] = { name = "移动中", kind = "buff" }
     B[28671] = { name = "창꽂힘 연쇄 불가", kind = "unknown" }
     B[31536] = { name = "步履轻盈：风暴", kind = "unknown" }
     B[31538] = { name = "가벼운 발놀림: 돌풍 복제", kind = "unknown" }
@@ -433,6 +429,71 @@ do
     B[2778] = { name = "减速", kind = "unknown" }
     B[2276] = { name = "睡眠", kind = "unknown" }
     B[93] = { name = "冻结", kind = "unknown" }
+end
+
+do
+    ------------------------------------------------------------------------
+    -- 维护（2026-09-19，状态追踪内置库人工确认 + 控制免疫补充）：
+    -- 原因：自动技能库只保证“ID/名称存在”，kind 长期为 unknown；本批 ID 已由用户明确
+    -- 确认 Buff/Debuff 极性。控制免疫补充来自 ArcheRage 4.5 的重复控制规则与当前 Wiki
+    -- 的 Buff ID 清单，只收录能明确核对到名称的免疫状态，不把 NPC/装备专属的一次性免疫
+    -- 或无法核到 ID 的“石化免疫”猜进来。
+    -- Authority：这里仍只是 Data 静态身份/默认分类 Authority；用户实际追踪选择仍由
+    -- BuffDisplay Feature/Store Authority 持有，禁止把选择状态反写到 Data。
+    -- 数据流：SkillEffects.buffs -> StatusTrackingCatalogV3（TOC 一次编译） -> 管理页面；
+    -- ImportBuiltinPack 会分别写入 player/target，因此这里绝不按“自身/目标”复制两份 ID。
+    -- 兼容/性能：只做加载期 O(N) 静态表登记，不新增 Native 调用、Timer、Tick 或名称 Tag 扫描。
+    -- 17385 暂无可靠 Buff 名称证据，保留数字名；运行时 BuffMetadataV3 观察到该 ID 后可用
+    -- 客户端元数据补本地化名称与图标，避免把同号 NPC 名称误写成 Buff 名称。
+    ------------------------------------------------------------------------
+    local B = S.Data.SkillEffects.buffs
+
+    -- 用户明确确认（Buff / Debuff）。
+    -- 维护（2026-09-20，状态内置库小修）：853 由用户再次实机确认为 Debuff，继续作为
+    -- 静态分类 Authority 收录；“睿明祝福”旧的 2956/7661/13790 及技能 16004 已从
+    -- SkillEffects 数据源删除，避免 recommended/all 与爱天赋包继续把过期 ID 导入用户追踪。
+    -- 该删除只影响内置目录，不主动清理用户已经手工保存的 tracked ID，保持升级兼容边界。
+    B[18] = { name = "Breakthrough Shock", kind = "debuff" }
+    B[138] = { name = "倒地", kind = "debuff" }
+    B[495] = { name = "Zeal", kind = "buff" }
+    B[853] = { name = "Unguarded", kind = "debuff" }
+    B[2672] = { name = "Angrier Elephant", kind = "buff" }
+    B[4389] = { name = "大地赞歌（2级）", kind = "buff" }
+    B[5932] = { name = "Vicious Implosion Immunity", kind = "buff" }
+    B[7018] = { name = "Jola's Grudge", kind = "debuff" }
+    B[7663] = { name = "英雄进行曲（2级）", kind = "buff" }
+    B[17385] = { name = "17385", kind = "buff" }
+    B[21401] = { name = "Bubble Trap", kind = "debuff" }
+    B[21432] = { name = "Charmed", kind = "debuff" }
+    B[21987] = { name = "Silence", kind = "debuff" }
+    B[22543] = { name = "Bubble Trap: Mist Immunity", kind = "buff" }
+    B[22551] = { name = "Banshee Wail Immunity", kind = "buff" }
+    B[22552] = { name = "Invincibility Limit", kind = "debuff" }
+    B[22903] = { name = "Dive Trap", kind = "debuff" }
+    B[24061] = { name = "Discord", kind = "debuff" }
+    B[27128] = { name = "Immortal Warden's Shield Immunity", kind = "buff" }
+    B[27701] = { name = "Steady Shooting", kind = "buff" }
+    -- 28597 已在基础索引中存在；上方原条目已直接校正为 buff，避免双重 Authority。
+    B[28660] = { name = "Freeze!", kind = "buff" }
+    B[28674] = { name = "Tired Snowflake", kind = "debuff" }
+    B[29300] = { name = "Room Sweeper", kind = "buff" }
+    B[8000502] = { name = "Truly Cathletic", kind = "buff" }
+    B[8000503] = { name = "Cat Nap", kind = "debuff" }
+    B[8000546] = { name = "Specter Spectacular", kind = "buff" }
+
+    -- 控制免疫：官方 4.5 规则确认重复 Debuff 到 Rank 4 会进入免疫；Wiki 可明确核到
+    -- 下列控制免疫 Buff ID。这里把它们加入“内置库”，但不声称每个 ID 都是所有场景下
+    -- Rank-4 机制唯一的运行时标记；实战观察仍以 AuraObservationV3 为事实来源。
+    B[417] = { name = "沉默免疫", kind = "buff" }
+    B[602] = { name = "睡眠免疫", kind = "buff" }
+    B[2160] = { name = "水之禁锢免疫", kind = "buff" }
+    B[2161] = { name = "隔空取物免疫", kind = "buff" }
+    B[2162] = { name = "浮空免疫", kind = "buff" }
+    B[2280] = { name = "冻结免疫", kind = "buff" }
+    B[2371] = { name = "眩晕免疫", kind = "buff" }
+    B[2374] = { name = "倒地免疫", kind = "buff" }
+    B[2377] = { name = "恐惧免疫", kind = "buff" }
+    B[5929] = { name = "枪刺免疫", kind = "buff" }
 end
 
 do
@@ -1503,12 +1564,6 @@ do
     T.skills[14931] = { name = "心脉连击", effects = {} }
     T.skills[14932] = { name = "心脉连击", effects = {} }
     T.skills[14933] = { name = "心脉连击", effects = {} }
-    T.skills[16004] = { name = "睿明祝福", effects = {
-        { buffId = 2956, name = "睿明祝福（2级）", target = "unknown", kind = "unknown" },
-        { buffId = 7661, name = "睿明祝福（3级）", target = "unknown", kind = "unknown" },
-        { buffId = 13790, name = "睿明祝福（4级）", target = "unknown", kind = "unknown" },
-        { buffId = 13791, name = "睿明祝福（5级）", target = "unknown", kind = "unknown" },
-    } }
     T.skills[16783] = { name = "魔法盾", effects = {
         { buffId = 16870, name = "魔力魔法盾", target = "unknown", kind = "unknown" },
         { buffId = 17339, name = "Infuse", target = "unknown", kind = "unknown" },
@@ -1789,7 +1844,7 @@ do
     T.skills[44197] = { name = "腐蚀射击", effects = {} }
     T.skills[44198] = { name = "疯狂的子弹", effects = {} }
     T.skills[44199] = { name = "战术移动", effects = {
-        { buffId = 28597, name = "移动中", target = "unknown", kind = "unknown" },
+        { buffId = 28597, name = "移动中", target = "unknown", kind = "buff" },
     } }
     T.skills[44200] = { name = "爆炸射击", effects = {} }
     T.skills[44201] = { name = "预告", effects = {

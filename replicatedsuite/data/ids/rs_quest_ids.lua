@@ -342,6 +342,16 @@ Q.Activity.gardenAnthalon = {
     main = RegisterSet("ACTIVITY_GARDEN_ANTHALON", { 10186 }, nil, { "DAILY", "BOSS", "ACTIVITY" }),
     minion = RegisterSet("ACTIVITY_GARDEN_ANTHALON_MINION", { 10187 }, nil, { "DAILY", "RELATED", "BOSS" }),
 }
+-- 中文维护注释（2026-09-22，Garden Fairy Request）：10056 是神之庭院区域的每日刷分任务，
+-- 数据库明确描述为通过击杀/采集/钓鱼等累计积分提升 Reward Level。它与庭院安塔伦 10186/10187
+-- 是不同业务事实：前者绑定普通庭院动态战争/刷分活动，后者继续只绑定固定周常庭院安塔伦。
+-- 这里单独注册 Activity set，避免 EventData 反向借用 Dashboard namespace；同一 QuestId 可以属于
+-- 多个 Registry set，身份 Authority 仍然只有 quest id 10056。
+Q.Activity.gardenFairyRequest = RegisterSet(
+    "ACTIVITY_GARDEN_FAIRY_REQUEST", { 10056 }, "精灵的委托",
+    { "DAILY", "ACTIVITY", "GARDEN", "SCORE" },
+    "Garden of the Gods score/reward-level daily; display native journal detail instead of inventing a local score parser."
+)
 Q.Activity.abyssal = {
     doomsday = RegisterSet("ACTIVITY_ABYSSAL_DOOMSDAY", { 6791 }, nil, { "DAILY", "ACTIVITY", "ABYSSAL" }),
     seaknight = RegisterSet("ACTIVITY_ABYSSAL_SEAKNIGHT", { 6973, 6974, 6975, 6976 }, nil, { "DAILY", "ACTIVITY", "ABYSSAL" }),

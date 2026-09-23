@@ -1210,8 +1210,11 @@ function UI:SetExtent(widget, width, height, owner)
         -- The authoritative write below restores the requested logical extent.
         RecordCacheRepair("extent", widget, owner)
     end
-    local ok, err = pcall(function() widget:SetExtent(w, h) end)
-    if ok ~= true then RecordNativeSafetyFailure("SET_EXTENT", widget, err, owner); return false end
+    -- 维护（viewport-recovery-1）：原生 false 与抛错同为拒绝；nil 仍是历史成功。
+    -- 不发布未被 Native 接受的 Diff cache，否则 Reset 会命中虚假缓存且 Store 误存。
+    -- 仅改变失败边界，不改变 accepted/changed 契约和正常高频 diff 路径。
+    local ok, err = pcall(function() return widget:SetExtent(w, h) end)
+    if ok ~= true or err == false then RecordNativeSafetyFailure("SET_EXTENT", widget, err, owner); return false end
     row.width, row.height = w, h
     RefreshCompositeExtent(widget)
     RecordAttempt("SET_EXTENT", widget, true, 1, owner)
@@ -1275,12 +1278,13 @@ function UI:SetAnchor(widget, parent, x, y, owner)
     end
     local nativeCalls = 0
     if type(widget.RemoveAllAnchors) == "function" then
-        local removeOk, removeErr = pcall(function() widget:RemoveAllAnchors() end)
-        if removeOk ~= true then RecordNativeSafetyFailure("REMOVE_ANCHORS", widget, removeErr, owner); return false end
+        -- 维护：与 extent 同一 Native 成功判据；坐标仍为 UIParent logical，不做缩放。
+        local removeOk, removeErr = pcall(function() return widget:RemoveAllAnchors() end)
+        if removeOk ~= true or removeErr == false then RecordNativeSafetyFailure("REMOVE_ANCHORS", widget, removeErr, owner); return false end
         nativeCalls = nativeCalls + 1
     end
-    local anchorOk, anchorErr = pcall(function() widget:AddAnchor("TOPLEFT", nativeParent, ax, ay) end)
-    if anchorOk ~= true then
+    local anchorOk, anchorErr = pcall(function() return widget:AddAnchor("TOPLEFT", nativeParent, ax, ay) end)
+    if anchorOk ~= true or anchorErr == false then
         RecordNativeSafetyFailure("SET_ANCHOR", widget, anchorErr, owner)
         return false
     end
@@ -1342,11 +1346,32 @@ end
 function UI:CommitScreenSnap(id, widget, options)
     options = type(options) == "table" and options or {}
     if widget == nil or S.Layout == nil or type(S.Layout.GetLogicalRect) ~= "function" then return false, nil, nil, false, nil end
-    local x, y, width, height = S.Layout:GetLogicalRect(widget)
+    -- 维护（2026-09-16，snap-committed-rect-1）：拖动事务已经拥有逻辑矩形时，吸附必须
+    -- 使用同一份 committed rect，不能再次读 Native；否则 UI Scale/原生更新时序可能在吸附前
+    -- 就把旧坐标带回持久化链。无显式矩形的屏幕控件调用使用统一 Native logical 校准，HUD 的其它坐标 helper 不变。
+    local x, y, width, height
+    if tonumber(options.x) ~= nil and tonumber(options.y) ~= nil then
+        x, y = tonumber(options.x), tonumber(options.y)
+        width, height = tonumber(options.width), tonumber(options.height)
+    else
+        x, y, width, height = S.Layout:GetWindowLogicalRect(widget)
+    end
     if tonumber(x) == nil or tonumber(y) == nil then return false, x, y, false, nil end
     local sx, sy, snapped, targetId = self:ResolveScreenSnap(id, x, y, width, height, options)
     if snapped == true then
-        self:SetAnchor(widget, UIParent, sx, sy, options.owner or "screen_snap")
+        -- 维护：吸附也是 Native 几何事务，拒绝不能冒充 committed 并进入位置 Store。
+        local windowing=S.RSUI and S.RSUI.Windowing
+        local ok,err
+        if windowing and type(windowing.ApplyGeometry)=="function" then
+            ok,err=windowing:ApplyGeometry(widget,options.owner or "screen_snap",sx,sy,width,height,true)
+        else
+            if type(self.InvalidateNativeState)=="function" then
+                for _,field in ipairs({"anchorParent","anchorX","anchorY","anchorTopLeft"})do self:InvalidateNativeState(widget,field) end
+            end
+            local accepted,_,detail=self:EnsureAnchor(widget,UIParent,sx,sy,options.owner or "screen_snap")
+            ok,err=accepted,detail
+        end
+        if ok~=true then return false,x,y,false,targetId,err or "snap_geometry_rejected" end
         x, y = sx, sy
     end
     return true, x, y, snapped == true, targetId
@@ -1577,6 +1602,15 @@ function UI:SetLabelTone(widget, tone, owner)
     if S.Theme == nil or type(S.Theme.SetLabelTone) ~= "function" then return false end
     local changed = S.Theme:SetLabelTone(widget, tone) == true
     RecordAttempt("LABEL_TONE", widget, changed, changed and 1 or 0, owner)
+    return changed
+end
+
+-- 维护（module-controls-diag-2）：保留既有 WidgetUsable 与 Native 写计数，Theme 是唯一着色 Authority。
+function UI:SetButtonStatusTone(widget, tone, owner)
+    if WidgetUsable(widget) ~= true then return false end
+    if S.Theme == nil or type(S.Theme.SetButtonStatusTone) ~= "function" then return false end
+    local changed = S.Theme:SetButtonStatusTone(widget, tone) == true
+    RecordAttempt("BUTTON_STATUS_TONE", widget, changed, changed and 1 or 0, owner)
     return changed
 end
 

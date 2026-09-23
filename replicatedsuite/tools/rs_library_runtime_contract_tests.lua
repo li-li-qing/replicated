@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 9 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 -- 维护（2026-09-12）：物理版本按Store注册策略验收；仍比较完整配置，不放宽业务指纹/重载一致性。
 -- Development-only: shipped EventBus/Scheduler/Api/Store; optional production
 -- Button factory/Click dispatch through a recorded Native handler. Geometry, focus,
@@ -11,9 +15,9 @@ end
 local function Copy(v)if type(v)~='table'then return v end;local t={};for k,x in pairs(v)do t[k]=Copy(x)end;return t end
 local function Same(a,b)if type(a)~=type(b)then return false end;if type(a)~='table'then return a==b end;for k,v in pairs(a)do if not Same(v,b[k])then return false end end;for k in pairs(b)do if a[k]==nil then return false end end;return true end
 local function Boot(options)
-    options=options or {};local c={reads=0,writes=0,tooltip=0,logs={},clock=1000,disk={}}
+    options=options or {};local c={reads=0,writes=0,tooltip=0,logs={},clock=1000,disk=Copy(options.disk or {}),failWrites=false}
     ADDON={LoadData=function(_,k)c.reads=c.reads+1;return Copy(c.disk[k])end,
-        SaveData=function(_,k,v)c.writes=c.writes+1;if options.saveFail then return false end;c.disk[k]=options.nativeLoss and options.nativeLoss(v) or Copy(v);return true end,
+        SaveData=function(_,k,v)c.writes=c.writes+1;if options.saveFail and c.failWrites then return false end;c.disk[k]=options.nativeLoss and options.nativeLoss(v) or Copy(v);return true end,
         ClearData=function()error('must not clear')end}
     X2Ability={GetBuffTooltip=function(_,id,level)c.tooltip=c.tooltip+1;if options.tooltip then return options.tooltip(id,level)end;return {name='Native '..id,iconPath='ui/icon/test_'..id..'.dds'}end}
     ReplicatedSuite={Features={},Services={},UI={CreateWindowShell=function()end},RSUI={},Generation=1,
@@ -67,18 +71,18 @@ Test('real owner-first event refreshes committed tracking from outside page butt
     assert(F.Commands:SetTrackedId(first.id,'auto',true))
     assert(h.widgets.v3_buff_library_table.items[1].tracked,'committed tracking stayed untracked until tab reopen')
 end)
-Test('real API and EventBus import recommended package in one durable write',function()
+Test('real API and EventBus import recommended package through one manifest transaction',function()
     local S,F,p,h,c=Boot();local before=c.writes
     local ok,err=h.widgets.v3_buff_library_import.onClick();assert(ok,err)
-    assert(c.writes==before+1 and p.managementView=='tracked' and p.activeTab=='track')
+    assert(c.writes==before+4 and p.managementView=='tracked' and p.activeTab=='track')
     local rows=h.widgets.v3_buff_display_tracking_table.items;assert(#rows==397)
     for _,row in ipairs(rows)do assert(row.tracked and F:IsTrackedId(row.id),'uncommitted row '..row.id)end
-    local store=S.Persistence:GetStore('v3.buff_display');local expected=store.get()
-    store.loaded=false;assert(F:EnsureStoreLoaded());assert(Same(store.get(),expected),'durable list changed on reload')
+    local expected=Copy(F.State.settings.tracked)
+    local _,fresh=Boot({disk=c.disk});assert(Same(fresh.State.settings.tracked,expected),'durable list changed on reload')
 end)
 Test('native SaveData rejection is visible and logged with transaction stage',function()
-    local S,F,p,h,c=Boot({saveFail=true});local st=S.Persistence:GetStore('v3.buff_display');local before=st.get()
-    assert(not h.widgets.v3_buff_library_import.onClick());assert(Same(st.get(),before) and p.activeTab=='library')
+    local S,F,p,h,c=Boot({saveFail=true});local before=Copy(F.State.settings.tracked);c.failWrites=true
+    assert(not h.widgets.v3_buff_library_import.onClick());assert(Same(F.State.settings.tracked,before) and p.activeTab=='library')
     local hit;for _,v in ipairs(c.logs)do if v.code=='BUFF_LIBRARY_IMPORT_FAILED'then hit=v end end
     assert(hit and hit.context.pack=='recommended' and hit.context.stage=='commit','silent bulk import failure')
     assert(h.widgets.v3_buff_library_hint.text:find('失败',1,true))
@@ -123,18 +127,19 @@ Test('actual Button factory dispatch finds callback installed after construction
     local S,F,p,h,c=Boot({productionButtons=true});local button=h.widgets.v3_buff_library_import
     assert(type(button.root.events.OnClick)=='function')
     local before=c.writes;assert(button.root.events.OnClick(button.root,'LeftButton'))
-    assert(c.writes==before+1 and #h.widgets.v3_buff_display_tracking_table.items==397 and F.lastLibraryImport.ok)
+    assert(c.writes==before+4 and #h.widgets.v3_buff_display_tracking_table.items==397 and F.lastLibraryImport.ok)
     p:SwitchTab('library');local prior=c.writes;button:SetEnabled(false)
     assert(not button.root.events.OnClick(button.root,'LeftButton') and c.writes==prior,'disabled button still wrote')
 end)
 Test('duplicates preserve custom tracked entries without changing their classification',function()
     local S,F,p,h,c=Boot();assert(F.Commands:SetTrackedId(900000,'debuff',true))
-    assert(F:ImportBuiltinPack('recommended',false));local st=S.Persistence:GetStore('v3.buff_display');local first=st.get()
+    assert(F:ImportBuiltinPack('recommended',false));local first=Copy(F.State.settings.tracked)
     assert(F:ImportBuiltinPack('recommended',false))
-    assert(Same(st.get(),first) and F:IsTrackedId(900000,'debuff'))
-    assert(F.lastLibraryImport.result.existing==397 and F.lastLibraryImport.result.total==398)
-    assert(F.Commands:SetTrackedId(82,'auto',false));assert(S.Persistence:SaveStore(st.id,{force=true,durable=true}));local kept=st.get();st.loaded=false;assert(F:EnsureStoreLoaded())
-    assert(Same(kept,st.get()) and not F:IsTrackedId(82),'reloading reimported a removed entry')
+    assert(Same(F.State.settings.tracked,first) and F:IsTrackedId(900000,'debuff'))
+    assert(F.lastLibraryImport.result.existing==794 and F.lastLibraryImport.result.total==796)
+    assert(F.Commands:SetTrackedId(82,'auto',false));local kept=Copy(F.State.settings.tracked)
+    local _,fresh=Boot({disk=c.disk})
+    assert(Same(kept,fresh.State.settings.tracked) and not fresh:IsTrackedId(82),'reloading reimported a removed entry')
 end)
 Test('prepare failure logs failing stage without calling SaveData',function()
     local S,F,p,h,c=Boot();local before=c.writes;F.EnsureStoreLoaded=function()return false,'integrity_failed:test' end
@@ -144,7 +149,7 @@ Test('prepare failure logs failing stage without calling SaveData',function()
 end)
 Test('capacity rejection restores configuration and does not perform partial save',function()
     local S,F,p,h,c=Boot();local config=F.State.settings
-    for i=1,1024 do config.tracked.auto[i]=900000+i end
+    for i=1,1024 do config.tracked.player.auto[i]=900000+i end
     local before=Copy(config);local writes=c.writes
     assert(not F:ImportBuiltinPack('recommended',false))
     assert(Same(before,F.State.settings) and writes==c.writes and F.lastLibraryImport.stage=='mutate')
@@ -153,8 +158,8 @@ end)
 Test('post-commit view exception reports saved status rather than rollback',function()
     local S,F,p,h,c=Boot();p.SwitchTab=function()error('injected_view_exception')end
     assert(not h.widgets.v3_buff_library_import.onClick())
-    assert(F.lastLibraryImport.ok and F.lastLibraryImport.stage=='committed' and c.writes==1)
-    local st=S.Persistence:GetStore('v3.buff_display');assert(#st.get().settings.tracked.auto>390)
+    assert(F.lastLibraryImport.ok and F.lastLibraryImport.stage=='committed' and c.writes>=4)
+    local tr=F.State.settings.tracked;assert(#tr.player.auto>390 and #tr.target.auto>390)
     assert(h.widgets.v3_buff_library_hint.text:find('追踪已保存',1,true))
     local log=c.logs[#c.logs];assert(log.code=='BUFF_LIBRARY_VIEW_FAILED' and log.context.committed==true)
 end)
@@ -197,20 +202,22 @@ Test('search reset exception after commit is not mislabeled as an unwritten impo
     local S,F,p,h,c=Boot()
     h.widgets.v3_buff_display_search.SetValue=function()error('search_reset_failed')end
     local ok,result=pcall(h.widgets.v3_buff_library_import.onClick)
-    assert(ok and result==false and c.writes==1 and F.lastLibraryImport.ok)
+    assert(ok and result==false and c.writes>=4 and F.lastLibraryImport.ok)
     assert(c.logs[#c.logs].code=='BUFF_LIBRARY_VIEW_FAILED' and c.logs[#c.logs].context.committed)
 end)
 Test('bulk import preserves numeric window configuration through Transport3 loss model',function()
     local model=dofile('tools/rs_udf_numeric_test_host.lua')
     local S,F,p,h,c=Boot({nativeLoss=model.NativeLoss,productionButtons=true})
     -- State schema owns the window; use actual registered get/apply to avoid assumptions.
-    local st=S.Persistence:GetStore('v3.buff_display');local v=st.get()
-    v.widgetWindow.normalizedCenterX=0.82991701364517212;v.widgetWindow.normalizedCenterY=0.19861100614070892
-    st.apply(v)
+    assert(F:MutateStore(function()
+        F.State.widgetWindow.userMoved=true;F.State.widgetWindow.coordinateSpace='logical-free-v2';F.State.widgetWindow.x=100;F.State.widgetWindow.y=120;F.State.widgetWindow.normalizedCenterX=0.82991701364517212;F.State.widgetWindow.normalizedCenterY=0.19861100614070892;return true
+    end,0,'numeric_window_fixture',true))
     assert(h.widgets.v3_buff_library_import.root.events.OnClick())
-    local before=st.get();assert(#before.settings.tracked.auto>390)
-    local key=S.Persistence:ResolveStoreKey(st);assert(c.disk[key].__rsmeta.transportVersion==(st.transportVersion or S.Persistence.TransportContractVersion))
-    st.loaded=false;assert(F:EnsureStoreLoaded());assert(Same(st.get(),before))
+    local before=Copy(F.State);assert(#before.settings.tracked.player.auto>390 and #before.settings.tracked.target.auto>390)
+    local _,fresh=Boot({disk=c.disk})
+    assert(math.abs(fresh.State.widgetWindow.normalizedCenterX-before.widgetWindow.normalizedCenterX)<0.000001)
+    assert(math.abs(fresh.State.widgetWindow.normalizedCenterY-before.widgetWindow.normalizedCenterY)<0.000001)
+    assert(Same(fresh.State.settings.tracked,before.settings.tracked))
 end)
 Test('late Native method installation can repair an unavailable cache entry',function()
     local S=Boot();local M=S.Services.BuffMetadataV3;X2Ability={};M:GetInfo(93,true)
@@ -218,7 +225,7 @@ Test('late Native method installation can repair an unavailable cache entry',fun
     local row=M:GetInfo(93,true);assert(row and row.iconPath=='ui/icon/late_method.dds')
 end)
 Test('real paged self-check includes import failure stage and Native shape without new reads',function()
-    local S,F,p,h,c,Pump=Boot({saveFail=true,tooltip=function()return {description='BODY_NOT_FOR_REPORT',name='test'}end})
+    local S,F,p,h,c,Pump=Boot({saveFail=true,tooltip=function()return {description='BODY_NOT_FOR_REPORT',name='test'}end});c.failWrites=true
     dofile('core/rs_diagnostics.lua')
     S.FoundationGate={Run=function()return {status='READY',blockers=0,warnings=0,checks={}}end}
     S.LogBuffer={};S.RecordLog=function(level,source,message)

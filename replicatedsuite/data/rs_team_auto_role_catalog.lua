@@ -8,7 +8,7 @@
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 S.Data=S.Data or {}
-local C={ version=2, byClassKey={} }
+local C={ version=3, byClassKey={} }
 C.byClassKey["name_3_4_5"]={role="tank", classType="Tank"}
 C.byClassKey["name_2_3_4"]={role="tank", classType="Tank"}
 C.byClassKey["name_3_5_8"]={role="tank", classType="Tank"}
@@ -81,7 +81,11 @@ C.byClassKey["name_8_10_14"]={role="healer", classType="Dancer"}
 C.byClassKey["name_2_10_14"]={role="healer", classType="Dancer"}
 C.byClassKey["name_3_4_14"]={role="tank", classType="Dancer"}
 C.byClassKey["name_1_3_14"]={role="tank", classType="Dancer"}
-C.byClassKey["name_8_9_14"]={role="tank", classType="Dancer"}
+-- 中文维护注释（2026-09-16，职责纠正）：用户已在 RU 实机确认 8(暗杀)+9(吟游)+14(欢乐) 的团队职责是治疗。
+-- Authority：这里只修改 TeamAutoRoleCatalog 的业务职责映射；classType 仍保留 Dancer，因为它服务职业类别/图标，不等同于团队职责。
+-- 数据流：ResolveAutoRole 精确按排序后的三天赋 key 读取 role，再映射到 TMROLE_HEALER；Presentation 不参与判定。
+-- 兼容边界：不改 Store schema、不改其它 Dancer 组合，也不按职业名称模糊推断。风险：未来 RU 若重做该职业组合语义，必须用新的实机证据更新此精确 key。
+C.byClassKey["name_8_9_14"]={role="healer", classType="Dancer"}
 C.byClassKey["name_3_9_14"]={role="tank", classType="Dancer"}
 C.byClassKey["name_3_10_14"]={role="healer", classType="Healer"}
 C.byClassKey["name_3_8_10"]={role="healer", classType="Healer"}

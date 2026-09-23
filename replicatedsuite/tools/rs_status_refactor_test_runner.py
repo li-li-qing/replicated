@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 6 处未解决的 Git 合并冲突。
+# 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+# 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+# 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 """开发期离线回归；不进入 toc.g，不模拟已通过 RU 实机验收。
 优先使用系统 Lua 5.1；无 CLI 时仅以 liblua5.4 + 兼容垫片运行纯逻辑测试。
 """
@@ -21,6 +25,7 @@ UNFINISHED_CLOSURE_TESTS = [
     "tools/rs_butler_tests.lua",
     "tools/rs_craft_planner_tests.lua",
     "tools/rs_trade_tests.lua",
+    "tools/rs_fishing_tests.lua",
     "tools/rs_auction_favorites_tests.lua",
     "tools/rs_team_tools_tests.lua",
     "tools/rs_raid_readiness_tests.lua",
@@ -103,6 +108,24 @@ def main() -> int:
             import json
             source += f'assert(loadfile({json.dumps(str(path), ensure_ascii=False)}));\n'
         source += f'print("SYNTAX PASS: {len(paths)} Lua files (runtime=" .. _VERSION .. ")")'
+    elif "--window-viewport" in sys.argv:
+        # 维护：独立 Native 窗口模型执行真实 Api/Layout/Windowing/Shell/Surface 与完整 viewport 矩阵。
+        # 不替换缺失历史夹具，不改变默认全量的 BLOCKED 判据；通过不等同 RU Native/OnScale 验收。
+        required = ["tools/rs_window_viewport_test_host.lua", "tools/rs_window_viewport_tests.lua"]
+        if not require_test_files(required): return 2
+        source = prelude + lua_dofiles(required[1:])
+    elif "--activity-layout" in sys.argv:
+        # 维护（activity-section-pack-1）：真实 ActivityLists 分区器 + 受控 TableView 几何替身；
+        # 覆盖特定窗口高度的中段空白、极小高度降级与混合计数矩阵，不等同 RU Native 渲染验收。
+        required = ["tools/rs_activity_lists_layout_tests.lua"]
+        if not require_test_files(required): return 2
+        source = prelude + lua_dofiles(required)
+    elif "--foundation-lifecycle" in sys.argv:
+        # 维护（foundation-lifecycle-1）：真实事件/调度/刷新链路，独立 Native/时钟故障模型。
+        # 不依赖缺失历史 UI host，不改变默认全量的 BLOCKED 判据，不把兼容 Lua 运行算作 RU 验收。
+        required = ["tools/rs_foundation_lifecycle_tests.lua"]
+        if not require_test_files(required): return 2
+        source = prelude + lua_dofiles(required)
     elif "--hud-defaults" in sys.argv:
         # 维护：用户完整11行模板、真实Store/校准/复制往返及旧schema4/5/6指纹；只替换Native/磁盘。
         # 此独立入口不进入toc.g；新默认不等同强制迁移已有布局，也不等同RU实机验收。
@@ -118,7 +141,7 @@ def main() -> int:
     elif "--pvp-hud" in sys.argv:
         # 维护：实际事件合并/调度/FrameBudget/Renderer/校准/存档，另测实际RSUI纹理提交。
         # Native/磁盘/屏幕仍是替身；1ms请求代表每渲染帧，不代表实机1000Hz或网络延迟上界。
-        source = prelude + 'dofile("tools/rs_pvp_hud_tests.lua"); dofile("tools/rs_pvp_hud_contract_tests.lua")'
+        source = prelude + 'dofile("tools/rs_pvp_hud_tests.lua"); dofile("tools/rs_pvp_hud_contract_tests.lua"); dofile("tools/rs_hud_info_split_tests.lua"); dofile("tools/rs_gear_score_format_tests.lua")'
     elif "--enemy-boss" in sys.argv:
         # 维护：目标类型事实、实际头顶Renderer、实际计时driver/告警Presenter/Windowing；仅Native/时钟为替身。
         # 独立入口不改变历史分组；Lua5.4兼容垫片测试不能冒充RU Lua5.1/屏幕实测。
@@ -130,7 +153,7 @@ def main() -> int:
     elif "--persistence-copy" in sys.argv:
         # 维护：真实Core负坐标传输/耐久失败只读取证和诊断页输入生命周期；独立Native模型，非RU实机。
         # 此入口不改变默认历史分组，不写用户存档；测试夹具/临时产物不得放入运行时TOC或补丁。
-        source = prelude + 'dofile("tools/rs_signed_readback_tests.lua"); dofile("tools/rs_report_selection_tests.lua")'
+        source = prelude + 'dofile("tools/rs_signed_readback_tests.lua"); dofile("tools/rs_persistence_gate_current_health_tests.lua"); dofile("tools/rs_report_selection_tests.lua")'
     elif "--buff-cap" in sys.argv:
         # 中文维护：计数/会话峰值/个人提醒/耐久保存和真实RSUI；Native与磁盘为替身，不证明RU容量或实机通过。
         # 仅新增独立入口，保持其它分组/默认调用次序；本轮测试文件不进入游戏TOC。
@@ -139,7 +162,7 @@ def main() -> int:
         # 中文维护：首领规则/耐久回读/真实RSUI选择与布局；Native、磁盘和Presenter为替身，非RU验收。
         source = prelude + 'dofile("tools/rs_boss_alerts_regression_tests.lua"); dofile("tools/rs_boss_alerts_ui_tests.lua")'
     elif "--unfinished-closure" in sys.argv:
-        # 维护（unfinished-closure-1）：B1~B11 的专项必须进入统一入口；implemented_pending_ru 仍属待 RU 验收，
+        # 维护（unfinished-closure-1）：B1~B11 与钓鱼 Hotkey v3 专项必须进入统一入口；implemented_pending_ru 仍属待 RU 验收，
         # 本地 PASS 只能证明离线契约，不得把导航状态提升为 complete。
         if not require_test_files(UNFINISHED_CLOSURE_TESTS): return 2
         try:
@@ -167,15 +190,21 @@ def main() -> int:
     elif "--gear-page" in sys.argv:
         # 维护：真实RSUI布局/表单/虚拟表格/EventBus/ActionRunner/Gear存档；Native为模拟。
         source = prelude + 'dofile("tools/rs_gear_page_regression_tests.lua")'
+    elif "--cooldown" in sys.argv:
+        # CooldownObservationV3 V4: Skill-ID-only, event-independent Native cooldown authority with bounded READY probe and full demand release; Native transport is a model.
+        source = prelude + 'dofile("tools/rs_cooldown_observation_tests.lua")'
     elif "--library-runtime" in sys.argv:
         # 维护：真实EventBus owner-first / Scheduler / Api / Store与Button逻辑；Native仍为模拟。
         source = prelude + 'dofile("tools/rs_library_runtime_contract_tests.lua")'
     elif "--capture-library" in sys.argv:
         # Real status Feature/Store/UI bindings and bounded metadata/retention; no RU-client claim.
-        source = prelude + 'dofile("tools/rs_status_capture_library_tests.lua")'
+        source = prelude + 'dofile("tools/rs_tracking_scope_tests.lua"); dofile("tools/rs_tracking_scope_ui_tests.lua"); dofile("tools/rs_status_capture_library_tests.lua")'
     elif "--unit-lines" in sys.argv:
         # 维护：真实Service/Feature/Presenter回归；Native、坐标和调度驱动为模拟，不代表RU实机。
         source = prelude + 'dofile("tools/rs_unit_lines_regression_tests.lua")'
+    elif "--colorfield" in sys.argv:
+        # 维护：共享 ColorField V2 的布局/事务/Popup 坐标契约；Native 顶层 Window 行为仍需 RU 实机确认。
+        source = prelude + 'dofile("tools/rs_colorfield_v2_tests.lua"); dofile("tools/rs_colorfield_popup_positioning_tests.lua")'
     elif "--paged" in sys.argv:
         # Explicit UI navigation + immutable report; no implicit print-to-next behavior.
         source = prelude + 'dofile("tools/rs_report_paging_tests.lua")'
@@ -205,12 +234,12 @@ def main() -> int:
         source = prelude + 'dofile("tools/rs_persistence_pipeline_audit.lua")'
     else:
         # 维护（full-runner-proof-1）：默认入口先确认所有声明为“全量”所依赖的测试文件真实存在。
-        # 缺历史夹具时明确 BLOCKED 并非零退出；禁止跳过缺失文件后仍宣称“全量全绿”。B1~B11 专项同时纳入默认集合。
+        # 缺历史夹具时明确 BLOCKED 并非零退出；禁止跳过缺失文件后仍宣称“全量全绿”。B1~B11 与钓鱼 Hotkey v3 专项同时纳入默认集合。
         legacy = [
-            "tools/rs_status_refactor_tests.lua", "tools/rs_persistence_pipeline_audit.lua", "tools/rs_self_check_report_tests.lua",
+            "tools/rs_status_refactor_tests.lua", "tools/rs_tracking_scope_tests.lua", "tools/rs_tracking_scope_ui_tests.lua", "tools/rs_persistence_pipeline_audit.lua", "tools/rs_self_check_report_tests.lua",
             "tools/rs_report_delivery_tests.lua", "tools/rs_focus_report_tests.lua", "tools/rs_native_numeric_transport_tests.lua",
             "tools/rs_window_numeric_recovery_tests.lua", "tools/rs_f2_protected_page_tests.lua", "tools/rs_report_paging_tests.lua",
-            "tools/rs_udf_numeric_regression_tests.lua", "tools/rs_unit_lines_regression_tests.lua", "tools/rs_status_capture_library_tests.lua",
+            "tools/rs_udf_numeric_regression_tests.lua", "tools/rs_unit_lines_regression_tests.lua", "tools/rs_colorfield_v2_tests.lua", "tools/rs_colorfield_popup_positioning_tests.lua", "tools/rs_status_capture_library_tests.lua",
             "tools/rs_library_runtime_contract_tests.lua", "tools/rs_gear_page_regression_tests.lua", "tools/rs_report_failure_regression_tests.lua",
             "tools/rs_overview_quote_tests.lua", "tools/rs_compact_tracker_tests.lua", "tools/rs_daily_ledger_tests.lua",
             "tools/rs_daily_income_source_tests.lua", "tools/rs_home_overview_tests.lua", "tools/rs_overview_v2_tests.lua", "tools/rs_quest_journal_detail_tests.lua",

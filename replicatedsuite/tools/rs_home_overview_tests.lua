@@ -1,40 +1,19 @@
--- Actual RSUI layout and EventBus; Feature facts + Native widgets are controlled test inputs.
+-- .247 migration of home regression: personalization replaces mutually exclusive tabs.
+-- Preserve data, lease, explicit-enable, statistics and immediate trade assertions.
 local pass,fail=0,0
-local function Test(n,f)local ok,e=pcall(f);if ok then pass=pass+1;print('PASS home '..n)else fail=fail+1;print('FAIL home '..n..': '..tostring(e))end end
-local function Boot()
- local h=dofile('tools/rs_gear_page_test_host.lua')();local S=h.S;local counts={quotes=0,enabledWrites=0,pauseWrites=0,reads=0,acquired=0,released=0}
- local enabled={life_trade=true,life_activities=true,life_tasks=true,life_bonds=false,life_daily_stats=true}
- S.FeatureRuntime.IsEnabled=function(_,key)return enabled[key]==true end
- S.FeatureRuntime.SetPreferredEnabled=function(_,key,v)counts.enabledWrites=counts.enabledWrites+1;enabled[key]=v;return true end
- local function Feature(name,id,topic)
-  local F={Id=id,UpdateTopic=topic,consumers={},Commands={}}
-  function F:AcquireConsumer(token)if not self.consumers[token] then self.consumers[token]=true;counts.acquired=counts.acquired+1 end;return true end
-  function F:ReleaseConsumer(token)assert(self.consumers[token],'release missing token');self.consumers[token]=nil;counts.released=counts.released+1;return true end
-  function F:GetProjection()counts.reads=counts.reads+1;return {rows={{key='a',name='货物',rate='130%',price='1金',profit='缺价',text='板',quantity=20}},revision=1,zones={{id=1,name='甲'}},sellableZones={{id=2,name='乙'}},fromZone=1,toZone=2,favoriteItems={},pendingQuoteCount=2,quoteBatch={active=false,total=0,completed=0},status='ready'} end
-  function F:GetRows()return {{key='event',shortName='征兆',status='1分钟',progressText='0/4'}},1 end
-  function F:GetWidgetProjection()return {{id='quest',rawName='任务',cycleText='每日',status='进行中',progressText='1/2'}},1 end
-  function F:GetOverviewProjection()return {rows={{id='daily:quest',groupKey='quest',scope='daily',rawName='任务',cycleText='日常',status='进行中',progressText='1/2',tracked=true,available=true}},revision=1,summary={tracked=1,unfinished=1}}end
-  function F:GetWidgetWindowState()return {}end;function F:GetWidgetVisible()return false end
-  function F:GetRouteSettings()return {fromZone=1,toZone=2}end;function F:GetBondFilter()return {}end
-  for _,k in ipairs({'SetFrom','SetTo','SetSortMode','SetRatioMode','SetCommerceMode','ToggleCurrentFavorite','SelectFavorite','SetBondFilterOption','SetDuplicatePriority','SetWidgetWindowState','MarkStoreDirty','SetWidgetVisible'}) do F.Commands[k]=function()return true end end
-  F.Commands.QuotePendingMaterials=function(_,mode)counts.quotes=counts.quotes+1;counts.lastMode=mode;return true end
-  F.Commands.CancelQuoteBatch=function()counts.cancelled=true;return true end
-  S.Features[name]=F;return F
- end
- Feature('Trade','life_trade','v3.life.trade.updated');Feature('Activities','life_activities','v3.activities.updated')
- Feature('Tasks','life_tasks','v3.tasks.updated');Feature('Bonds','life_bonds','v3.life.bonds.updated');Feature('Treasure','life_treasure','treasure');Feature('Fishing','life_fishing','fishing')
- S.Features.DailyLedger={paused=false,SetPaused=function(self,v)self.paused=v==true;counts.pauseWrites=counts.pauseWrites+1;return true end,GetProjection=function(self)local rows={};for _,k in ipairs({'gold','honor','experience','living'})do rows[#rows+1]={key=k,name=k,status=self.paused and 'paused' or 'unconnected'}end;return {day='2026-09-12',rows=rows,enabled=true,paused=self.paused,revision=1}end}
- S.UIV3.WidgetHost={Register=function()return true end,BindFeatureLifecycle=function()return true end}
- S.RSUI.FloatingSurface={CreateStateAdapter=function()return {}end}
- dofile('presentation/v3/widgets/rs_v3_life_economy_widgets.lua')
- dofile('presentation/v3/pages/rs_v3_home_overview.lua')
- local parent=h.Native(nil,'home_parent',0,0,850,700)
- local page=assert(S.UIV3.HomeOverview:Build(parent,'home'));page:Layout(0,0,850,700)
- local index={};local function Walk(n)index[n.id]=n;for _,v in ipairs(n.children or {})do Walk(v)end end;Walk(page)
- return S,page,index,counts,enabled
+local function Test(n,f)local ok,e=xpcall(f,debug.traceback);if ok then pass=pass+1;print('PASS home '..n)else fail=fail+1;print('FAIL home '..n..': '..tostring(e))end end
+local Host=dofile('tools/rs_workspace_home_test_host.lua')
+local function Boot()return Host({visible={'activities','trade'}})end
+local function Show(S,p,keys)
+ local chosen={};for _,k in ipairs(keys)do chosen[k]=true end
+ assert(S.UIV3.Workspace:Change('home',function()for _,c in ipairs(S.UIV3.Workspace:GetCards(true))do S.UIV3.Workspace.state.home.hidden[c.id]=not chosen[c.id] or nil end;return true end))
+ p:Layout(0,0,p.width,p.height);p:RefreshData()
+end
+local function Drain(S,p)
+ S.Scheduler:RemoveTask('v3_home_refresh');p.refreshQueued=false;p:RefreshData()
 end
 Test('home renders live activities and trade data instead of placeholder cards',function()
- local S,p,n,c=Boot();assert(p:OnActivated());assert(n.v3_home_activity_table:GetItemCount()==1);assert(n.v3_home_trade_table:GetItemCount()==1)
+ local S,p,n,c=Boot();assert(p:OnActivated());assert(n.v3_home_activities_table:GetItemCount()==1);assert(n.v3_home_trade_table:GetItemCount()==1)
  assert(c.quotes==0 and c.enabledWrites==0,'opening home triggered quote or forced feature enable')
  assert(n.v3_home_trade_table.height>30,'unmeasured data table')
 end)
@@ -44,7 +23,7 @@ Test('independent consumer ownership does not release another floating window',f
  assert(p:OnDeactivated());assert(S.Features.Trade.consumers['widget:trade']);assert(c.acquired==c.released)
 end)
 Test('disabled bonds shows off and does not start native collection',function()
- local S,p,n,c=Boot();p:OnActivated();p:SetWorkspace('tasks');assert(not next(S.Features.Bonds.consumers));assert(n.v3_home_bonds_table:GetViewState()=='empty' or n.v3_home_bonds_table:GetViewState()=='unavailable')
+ local S,p,n,c=Boot();p:OnActivated();Show(S,p,{'daily','bonds'});assert(not next(S.Features.Bonds.consumers));assert(n.v3_home_bonds_table:GetViewState()=='empty' or n.v3_home_bonds_table:GetViewState()=='unavailable')
 end)
 Test('same content builder supports unique widget and home control identities',function()
  local S,p,n,c=Boot();assert(n.v3_home_trade_from and n.v3_home_trade_to)
@@ -54,34 +33,45 @@ Test('same content builder supports unique widget and home control identities',f
  assert(not n.v3_home_trade_full_quote)
  assert(n.v3_home_trade_quote.onClick());assert(c.quotes==1 and c.lastMode==nil)
 end)
-Test('small viewport stacks cards instead of squeezing four feature panels',function()
- local S,p,n=Boot();local grid=n.v3_home_data_grid;assert(grid:ResolveColumns(640,4)==1);assert(grid:ResolveColumns(850,4)==2)
- for _,w in ipairs({640,800,1080,1700})do
-  p:Layout(0,0,w,650)
-  local seen={}
-  for _,workspace in ipairs({'world','tasks'})do p:SetWorkspace(workspace)
-   for slot=1,2 do p:SetCompactCard(slot)
-    for _,card in ipairs(p.cards)do if card.panel.viewportVisible then
-     seen[card.spec.name]=true;local t=card.table or card.content.table;assert(t.height>30,'collapsed table')
-     assert(card.panel.y>=0 and card.panel.y+card.panel.height<=grid.height+0.1,'viewport escape')
-    end end
-   end
+Test('small viewport exposes each configured card through row scrolling',function()
+ local S,p,n=Boot();Show(S,p,{'daily','weekly','activities','bonds','trade'});local grid=p.grid
+ assert(grid:ResolveColumns(640)==1 and grid:ResolveColumns(850)==2)
+ for _,w in ipairs({440,640,800,1080,1700})do
+  p:Layout(0,0,w,650);local seen={}
+  for offset=0,grid.maxScrollOffset do
+   grid:SetScrollOffset(offset);p:RefreshData()
+   for _,card in ipairs(p.cards)do if card.panel.viewportVisible then
+    seen[card.spec.key]=true;local t=card.table or card.content.table
+    assert(t.height>30,'collapsed table '..card.spec.key)
+    assert(card.panel.y>=0 and card.panel.y+card.panel.height<=grid.height+0.1,'viewport escape')
+   end end
   end
-  for _,name in ipairs({'Activities','Trade','Tasks','Bonds'})do assert(seen[name],'inaccessible card '..name)end
+  for _,key in ipairs({'daily','weekly','activities','bonds','trade'})do assert(seen[key],'inaccessible card '..key)end
  end
 end)
 Test('unconnected gains never render fabricated zero',function()
- local S,p,n=Boot();p:OnActivated();assert(n.v3_home_stat_gold.text=='—' and n.v3_home_stat_source_gold.text=='待接入')
+ local S,p,n=Boot();p:OnActivated();assert(n.v3_home_stat_gold.text=='—')
 end)
 Test('economy body fills card and keeps useful visible rows',function()
  local S,p,n,c=Boot();p:OnActivated();p:Layout(0,0,850,700)
  assert(n.v3_home_trade_table.height>150,'economy body shrank to only one row')
 end)
-Test('home navigation uses uniform host not metadata-only router',function()
+Test('home navigation uses Shell authority instead of missing UIV3.Navigate shim',function()
  local S,p,n=Boot();local route
- S.UIV3.Navigate=function(_,r)route=r;return true end
+ S.UIV3.Navigate=nil
+ S.UIV3.Shell={Navigate=function(_,r)route=r;return true end}
  assert(n.v3_home_trade_open.onClick());assert(route=='life.trade')
 end)
+
+Test('home cards expose direct floating-window buttons and can enable a disabled feature before opening',function()
+ local S,p,n,c,enabled=Boot()
+ assert(n.v3_home_activities_widget and n.v3_home_trade_widget and n.v3_home_daily_widget and n.v3_home_bonds_widget, 'missing home floating shortcuts')
+ assert(n.v3_home_trade_widget.onClick());assert(c.lastWidget=='life.trade' and c.widgetWrites==1)
+ assert(enabled.life_bonds==false)
+ assert(n.v3_home_bonds_widget.onClick());assert(enabled.life_bonds==true,'disabled bonds was not enabled by explicit floating shortcut')
+ assert(c.lastWidget=='life.bonds' and c.widgetWrites==2)
+end)
+
 Test('non-trade feature changes coalesce once and deactivate cancels pending work',function()
  local S,p,n,c=Boot();p:OnActivated();local before=c.reads
  for i=1,20 do S.Events:Publish('v3.activities.updated')end
@@ -105,7 +95,7 @@ Test('registered native delta source stays probing until first real change',func
  end
  assert(p:OnActivated())
  assert(n.v3_home_stat_gold.text=='—')
- assert(n.v3_home_stat_source_gold.text=='监听中 · 等待变化')
+ assert(n.v3_home_stat_living.text=='—' and not n.v3_home_stat_source_gold)
 end)
 
 Test('daily ledger update refreshes statistic cards immediately without scheduler delay',function()
@@ -115,7 +105,7 @@ Test('daily ledger update refreshes statistic cards immediately without schedule
    {key='gold',status='ready',value=value},{key='honor',status='unconnected',value=nil},
    {key='experience',status='unconnected',value=nil},{key='living',status='unconnected',value=nil}}}
  end
- assert(p:OnActivated());local before=n.v3_home_stat_gold.text
+ assert(p:OnActivated());Drain(S,p);local before=n.v3_home_stat_gold.text
  value=500;S.Events:Publish('v3.daily_ledger.updated')
  assert(n.v3_home_stat_gold.text~=before,'gold card stayed stale after ledger event')
  assert(S.Scheduler.tasks.v3_home_refresh==nil,'ledger update should not wait on shared 100ms refresh task')
@@ -131,7 +121,7 @@ Test('visible home trade card applies trade updates immediately without the shar
   return {rows=rows,revision=revision,zones={{id=1,name='甲'}},sellableZones={{id=2,name='乙'}},fromZone=1,toZone=2,
    favoriteItems={},pendingQuoteCount=0,quoteBatch={active=false,total=0,completed=0},status='ready'}
  end
- assert(p:OnActivated())
+ assert(p:OnActivated());Drain(S,p)
  assert(n.v3_home_trade_table:GetItem(1).key=='before')
  rows={{key='after',name='新货物',rate='130%',price='2金',profit='--'}};revision=2
  S.Events:Publish('v3.life.trade.updated')
@@ -141,4 +131,10 @@ Test('visible home trade card applies trade updates immediately without the shar
   'trade-only projection updates should not depend on the shared delayed whole-page refresh task')
 end)
 
+Test('explicit enable-and-open rolls back only the newly enabled feature on window failure',function()
+ local S,p,n,c,enabled=Boot();S.UIV3.WidgetHost.SetVisible=function()return false,'create_failed'end
+ assert(n.v3_home_bonds_widget.onClick()==false);assert(enabled.life_bonds==false and c.enabledWrites==2)
+ local before=c.enabledWrites;assert(n.v3_home_trade_widget.onClick()==false)
+ assert(enabled.life_trade==true and c.enabledWrites==before,'opening failure stopped an existing feature')
+end)
 print('HOME RESULT '..pass..' passed / '..fail..' failed');if fail>0 then error('home tests failed')end

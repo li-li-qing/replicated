@@ -14,6 +14,8 @@
 -- the Store before constructing editable controls, so a disabled Feature can
 -- never edit defaults over an unread saved payload.
 ------------------------------------------------------------------------
+-- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -156,17 +158,10 @@ local function BuildPersistenceUnavailablePage(parent, route, reason)
     RSUI:Text({ id="v3_buff_persistence_error", parent=root,
         text="读取失败：" .. tostring(reason or "未知错误"), fontSize=10, tone="warn",
         overflow="wrap", maxLines=6, slot={size="auto", minHeight=72, hAlign="fill"} })
-    RSUI:Button({ id="v3_buff_persistence_report", parent=root, text="输出存档故障", compact=true,
-        slot={size="fixed", width=144, height=30}, onClick=function()
-            local diagnostics = S.DiagnosticsManager
-            if type(diagnostics) ~= "table" or type(diagnostics.PrintPersistenceFailureReport) ~= "function" then
-                return false, "存档故障报告不可用"
-            end
-            return diagnostics:PrintPersistenceFailureReport()
-        end })
-    -- 维护（RS-DIAG-3）：提示与单次发送契约一致；不改变取证读取、输入焦点或写保护。
+    -- 维护（module-controls-diag-2）：主诊断入口由宿主左上角提供；完整原档只读取证仍保留，
+    -- 不以普通错误摘要替代故障UDF，也不清除fence/回写默认值。
     RSUI:Text({ id="v3_buff_persistence_hint", parent=root,
-        text="报告只发送一条 RS-DIAG-3 消息，复制到末尾 END 即可。请保留旧存档；完整原始字段仍从下方文本框读取。",
+        text="请先从左上角诊断复制模块报告。请保留旧存档；完整原始字段仍可从下方只读取证框获取。",
         fontSize=10, tone="muted", overflow="wrap", maxLines=3,
         slot={size="auto", minHeight=42, hAlign="fill"} })
     local setEvidenceVisible = AttachEvidenceReader(root)
@@ -185,7 +180,7 @@ local function BuildPage(parent, route)
 
     local root, rootErr = D:PageRoot(parent, "v3_page_buff_display")
     if root == nil then return nil, "状态显示页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
-    root.activeTab, root.filterText, root.quickText, root.importCategory = "track", "", "", "auto"
+    root.activeTab, root.filterText, root.quickText, root.importCategory, root.importScope = "track", "", "", "auto", "all"
     root.managementView, root.managementFilter, root.managementSort, root.libraryPack = "live", "all", "tracked", "recommended"
 
     D:PageHeader(root, "v3_buff_display_header", "状态显示", "统一管理状态追踪与头顶 HUD；HUD 校准会暂时最小化主菜单，在真实游戏画面上调整。", "刷新", function()
@@ -193,13 +188,26 @@ local function BuildPage(parent, route)
     end)
 
     local actionRow = RSUI:HorizontalBox({ id = "v3_buff_display_actions", parent = root, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
-    local featureButton = RSUI:Button({ id = "v3_buff_display_feature_toggle", parent = actionRow, text = "启用功能", compact = true, slot = { size = "fixed", width = 96 } })
+    local featureButton = D:ModuleToggleButton({ id = "v3_buff_display_feature_toggle", parent = actionRow, text = "启用功能", compact = true, slot = { size = "fixed", width = 96 } })
     local widgetButton = RSUI:Button({ id = "v3_buff_display_widget_toggle", parent = actionRow, text = "打开悬浮窗", compact = true, slot = { size = "fixed", width = 116 } })
     local persistHint = RSUI:Text({ id = "v3_buff_display_persist_hint", parent = actionRow, text = "配置已读取", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1, hAlign = "right" } })
 
     local function ApplySetting(key, value)
         local ok, err = Feature.Commands:SetSetting(key, value)
         if ok == true then root:Refresh() end
+        return ok, err
+    end
+    local function ApplyComponentSetting(componentKey, field, value)
+        local ok, err = Feature.Commands:SetComponentField(componentKey, field, value)
+        if ok == true then
+            -- SetComponentField owns durable HUD-layout persistence. The click is an explicit low-frequency user
+            -- action, so after lane reconciliation we may run one bounded equipment refresh immediately; this avoids
+            -- waiting for the 200ms backstop while adding no scan to Page Refresh/Tick. EquipmentTick itself no-ops
+            -- without a consumer, preserving the feature lifecycle contract.
+            if type(Feature.ReconcileLanes) == "function" then Feature:ReconcileLanes() end
+            if type(Feature.EquipmentTick) == "function" then Feature:EquipmentTick(true) end
+            root:Refresh()
+        end
         return ok, err
     end
 
@@ -234,9 +242,13 @@ local function BuildPage(parent, route)
     -- 中文维护注释：筛选属于页面 Session，不借 showBuffs/showHidden 改写 HUD 或永久配置。
     local viewRow=RSUI:HorizontalBox({id="v3_buff_manage_views",parent=tabTrack,gap=5,slot={size="fixed",height=28,hAlign="fill"}})
     local viewPicker=RSUI:Dropdown({id="v3_buff_manage_view",parent=viewRow,maxVisible=4,
-        items={{value="live",text="当前状态"},{value="frozen",text="留存记录（持续收集）"},{value="tracked",text="已追踪（含未出现）"},{value="cooldowns",text="技能 CD（未完成）"}},
+        items={{value="live",text="当前状态"},{value="frozen",text="留存记录（持续收集）"},{value="tracked",text="已追踪（含未出现）"},{value="cooldowns",text="技能 CD"}},
         get=function() return root.managementView end,
-        set=function(value) root.managementView=value;return root:Refresh() end,slot={size="fixed",width=164}})
+        set=function(value)
+            root.managementView=value
+            if type(Feature.SetCooldownManagementActive)=="function" then Feature:SetCooldownManagementActive(root.activeTab=="track" and value=="cooldowns") end
+            return root:Refresh()
+        end,slot={size="fixed",width=164}})
     local filterPicker=RSUI:Dropdown({id="v3_buff_manage_filter",parent=viewRow,maxVisible=8,
         items={{value="all",text="全部"},{value="tracked_buff",text="追踪 Buff"},{value="tracked_debuff",text="追踪 Debuff"},
             {value="auto",text="自动识别 / 待分类"},{value="hidden",text="隐藏状态"},{value="untracked",text="未追踪"},{value="player",text="自己"},{value="target",text="目标"}},
@@ -263,26 +275,24 @@ local function BuildPage(parent, route)
     local searchClear = RSUI:Button({ id = "v3_buff_display_search_clear", parent = filterRow, text = "清空筛选", compact = true, slot = { size = "fixed", width = 72 } })
 
     local trackAction = RSUI:HorizontalBox({ id = "v3_buff_display_track_actions", parent = tabTrack, gap = 6, slot = { size = "fixed", height = 28, hAlign = "fill" } })
-    local selectedText = RSUI:Text({ id = "v3_buff_display_selected", parent = trackAction, text = "点击状态行可追踪 / 取消追踪", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1, minWidth = 150 } })
+    local selectedText = RSUI:Text({ id = "v3_buff_display_selected", parent = trackAction, text = "点击状态行选择，再用列表下方按钮指定自身 / 目标与 Buff / Debuff。", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1, minWidth = 150 } })
     local freezeButton = RSUI:Button({ id = "v3_buff_display_track_freeze", parent = trackAction, text = "冻结列表（留存）", compact = true, slot = { size = "fixed", width = 126 } })
     local updateFreezeButton=RSUI:Button({id="v3_buff_update_freeze",parent=trackAction,text="清空记录",compact=true,slot={size="fixed",width=78}})
     local clearTrackButton = RSUI:Button({ id = "v3_buff_display_track_clear", parent = trackAction, text = "清空追踪", compact = true, slot = { size = "fixed", width = 78 } })
-    local probeButton = RSUI:Button({ id = "v3_buff_display_track_probe", parent = trackAction, text = "字段诊断", compact = true, slot = { size = "fixed", width = 78 } })
+    -- 维护（module-controls-diag-2）：字段探测移到统一诊断窗的显式操作；打开/翻页不自动触发Native探测。
 
-    local function ToggleRowTracked(item)
-        if type(item) ~= "table" or item.id == nil then return true end
-        local target = item.tracked ~= true
-        root.selectedManagementRow=item
-        local category=item.trackedBucket or ((item.category=="buff" or item.category=="debuff") and item.category or "auto")
-        local ok,err
-        if item.kind=="skill" or item.kind=="mate" then ok,err=Feature.Commands:SetTrackedCooldownId(tonumber(item.id),item.kind,target)
-        else ok,err=Feature.Commands:SetTrackedId(tonumber(item.id),category,target) end
-        selectedText:SetText(ok == true
-            and ((target and "已追踪：" or "已取消追踪：") .. tostring(item.name or item.id) .. " · ID " .. tostring(item.id))
-            or ("追踪失败：" .. tostring(item.name or item.id) .. " · " .. tostring(err or "未知错误")))
-        if ok == true then root:Refresh() end
-        return ok, err
+    -- 中文维护（tracking-scope-v1）：行点击只拥有“选择”语义，不能越过四通道按钮直接改 Store。
+    -- 这样同一个 effect ID 可以只显示于目标、只显示于自身，或在两个 HUD 上独立选择 Buff/Debuff。
+    -- selectedManagementRow 是页面 Session 状态；不持久化、不进入 Aura 热路径。
+    local channelButtons = {}
+    local RefreshSelectedTrackingControls
+    local function SelectManagementRow(item)
+        if type(item) ~= "table" or item.id == nil then return false, "状态行无效" end
+        root.selectedManagementRow = item
+        if type(RefreshSelectedTrackingControls) == "function" then RefreshSelectedTrackingControls() end
+        return true
     end
+
 
     local trackingPanel = RSUI:Border({ id = "v3_buff_display_tracking_panel", parent = tabTrack, padding = 5, variant = "card", slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
     local trackingStack = RSUI:VerticalBox({ id = "v3_buff_display_tracking_stack", parent = trackingPanel, gap = 3, slot = { hAlign = "fill", vAlign = "fill" } })
@@ -291,8 +301,13 @@ local function BuildPage(parent, route)
         id = "v3_buff_display_tracking_table",
         -- 仅排队，可见行渲染不直接调用Native；图标缺失由共享Metadata分批缓存。
         bindRow=function(_,item) if item and item.kind~="skill" and item.kind~="mate" then Feature:QueueManagementMetadata(item.id) end end, parent = trackingStack, items = {}, rowHeight = 25, headerHeight = 23, desiredRows = 12,
-        overscan = 2, scrollbar = true, selectable = false, columnResize = true, headerInteractive = false,
-        onItemActivated = ToggleRowTracked,
+        overscan = 2, scrollbar = true, selectable = true, selectionMode = "single", columnResize = true, headerInteractive = false,
+        getKey = function(item) return item and tostring(item.key or item.id or "") or nil end,
+        onSelectionChanged = function(index, _, view)
+            local item = view and type(view.GetItem) == "function" and view:GetItem(index) or nil
+            if item ~= nil then SelectManagementRow(item) end
+        end,
+        onItemActivated = SelectManagementRow,
         columns = {
             { id = "scope", title = "来源", field = "scopeText", size = "fixed", width = 48, minWidth = 44, sortable = false },
             { id = "id", title = "ID", field = "id", size = "fixed", width = 52, minWidth = 44, sortable = false },
@@ -306,24 +321,142 @@ local function BuildPage(parent, route)
             { id = "type", title = "类型", field = "effectTypeText", size = "fixed", width = 54, minWidth = 48, sortable = false },
             { id = "stack", title = "层", field = "stack", size = "fixed", width = 34, minWidth = 30, sortable = false },
             { id = "time", title = "剩余", field = "timeText", size = "fixed", width = 52, minWidth = 44, sortable = false },
-            { id = "tracked", title = "追踪", field = "trackedText", size = "fixed", width = 56, minWidth = 50, sortable = false, getTone = function(item) return item and item.tracked == true and "green" or "muted" end },
+            { id = "tracked", title = "追踪位置", field = "trackedText", size = "fixed", width = 176, minWidth = 150, sortable = false, getTone = function(item) return item and item.tracked == true and "green" or "muted" end },
         },
         slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
     })
 
+    local scopeTrackRow=RSUI:HorizontalBox({id="v3_buff_scope_track_row",parent=tabTrack,gap=5,slot={size="fixed",height=29,hAlign="fill"}})
+    -- 中文维护（tracking-toggle-label-v1）：四通道按钮只是当前追踪 Store 的 Presentation Proxy，
+    -- Authority 仍由 Feature:IsTrackedChannel / Commands:SetTrackedChannel 持有；按钮文案必须跟随
+    -- authoritative channel 状态切换“设为/取消”，不能用本地 UI flag 猜测，否则页面刷新、导入或
+    -- 其他入口改动追踪后会显示错误动作。该改动只影响文案，不改变六通道数据流、持久化协议或旧配置。
+    local channelDefs={
+        {id="v3_buff_track_player_buff",scope="player",category="buff",setLabel="所选设为自身 Buff",unsetLabel="所选取消自身 Buff",status="自身·Buff"},
+        {id="v3_buff_track_player_debuff",scope="player",category="debuff",setLabel="所选设为自身 Debuff",unsetLabel="所选取消自身 Debuff",status="自身·Debuff"},
+        {id="v3_buff_track_target_buff",scope="target",category="buff",setLabel="所选设为目标 Buff",unsetLabel="所选取消目标 Buff",status="目标·Buff"},
+        {id="v3_buff_track_target_debuff",scope="target",category="debuff",setLabel="所选设为目标 Debuff",unsetLabel="所选取消目标 Debuff",status="目标·Debuff"},
+    }
+    local function IsEffectRow(row) return type(row)=="table" and row.id~=nil and row.kind~="skill" and row.kind~="mate" end
+    local function SelectedChannelLabels(row)
+        if not IsEffectRow(row) then return {} end
+        local labels={}
+        for _,def in ipairs(channelDefs) do if Feature:IsTrackedChannel(row.id,def.scope,def.category) then labels[#labels+1]=def.status end end
+        if Feature:IsTrackedChannel(row.id,"player","auto") then labels[#labels+1]="自身·自动" end
+        if Feature:IsTrackedChannel(row.id,"target","auto") then labels[#labels+1]="目标·自动" end
+        return labels
+    end
+    RefreshSelectedTrackingControls=function()
+        local row=root.selectedManagementRow;local valid=IsEffectRow(row)
+        for _,def in ipairs(channelDefs) do
+            local button=channelButtons[def.id]
+            if button then
+                local active=valid and Feature:IsTrackedChannel(row.id,def.scope,def.category)==true
+                -- 文案从真实通道状态投影：已追踪时直接告诉用户下一次点击会“取消”，
+                -- 未追踪时才显示“设为”。无有效选择时仍保留默认动作名并禁用按钮。
+                button:SetEnabled(valid);button:SetText(active and def.unsetLabel or def.setLabel)
+            end
+        end
+        if not row then selectedText:SetText("点击状态行选择；Buff/Effect 与技能 CD 使用不同 ID。")
+        elseif row.kind=="skill" or row.kind=="mate" then
+            selectedText:SetText("所选："..tostring(row.name or row.id).." · Skill ID "..tostring(row.id).." · "..(row.kind=="mate" and "坐骑/宠物 CD" or "玩家/滑翔翼/翅膀 CD"))
+        elseif not valid then selectedText:SetText("所选条目不可用于状态四通道。")
+        else
+            local labels=SelectedChannelLabels(row)
+            local sourceSkills={}
+            local catalog=S.Data and S.Data.StatusTrackingCatalogV3 or nil
+            local entry=type(catalog)=="table" and type(catalog.ByEffectId)=="table" and catalog.ByEffectId[tonumber(row.id)] or nil
+            for skillId in pairs(type(entry)=="table" and type(entry.skillIds)=="table" and entry.skillIds or {}) do sourceSkills[#sourceSkills+1]=tonumber(skillId) or skillId end
+            table.sort(sourceSkills,function(a,b) return tonumber(a or 0)<tonumber(b or 0) end)
+            local skillHint=""
+            if #sourceSkills>0 then
+                local shown={};for i=1,math.min(3,#sourceSkills) do shown[#shown+1]=tostring(sourceSkills[i]) end
+                skillHint=" · 来源 Skill ID "..table.concat(shown,",")..(#sourceSkills>3 and "…" or "")
+            end
+            selectedText:SetText("所选："..tostring(row.name or row.id).." · Effect ID "..tostring(row.id)..skillHint.." · "..(#labels>0 and table.concat(labels," / ") or "未追踪"))
+        end
+        return true
+    end
+    local function ToggleSelectedChannel(scope,category)
+        local row=root.selectedManagementRow
+        if not IsEffectRow(row) then RefreshSelectedTrackingControls();return false,"请先点击一个 Buff / Debuff 状态行" end
+        local target=not Feature:IsTrackedChannel(row.id,scope,category)
+        local ok,err=Feature.Commands:SetTrackedChannel(row.id,scope,category,target)
+        if ok==true then root:Refresh() else selectedText:SetText("追踪更新失败："..tostring(err or "未知错误")) end
+        RefreshSelectedTrackingControls();return ok,err
+    end
+    for _,def in ipairs(channelDefs) do
+        local d=def
+        local button=RSUI:Button({id=d.id,parent=scopeTrackRow,text=d.setLabel,compact=true,
+            onClick=function() return ToggleSelectedChannel(d.scope,d.category) end,
+            slot={size="fill",fill=1,minWidth=106}})
+        button:SetEnabled(false);channelButtons[d.id]=button
+    end
+
+    -- 中文维护注释（2026-09-19，cooldown-skill-id-editor-1）：技能 CD 与 Aura 追踪使用不同 ID namespace。
+    -- 这里提供独立 Skill ID 入口，用户不能再从 Buff 行直接“当成 CD”保存；真正倒计时仍由
+    -- CooldownObservationV3 的 Native GetCooldown/GetMateCooldown Authority 提供。坐骑/宠物共用 mate
+    -- 桶是为了保持旧 trackedCooldowns schema 兼容，具体 ride/battle 只在 Native 正 CD 后确定。
+    root.cooldownKind=root.cooldownKind or "mate"
+    local cooldownEditorRow=RSUI:HorizontalBox({id="v3_buff_cooldown_editor_row",parent=tabTrack,gap=5,slot={size="fixed",height=29,hAlign="fill"}})
+    RSUI:Text({id="v3_buff_cooldown_skill_id_label",parent=cooldownEditorRow,text="Skill ID",fontSize=9,tone="strong",slot={size="fixed",width=50}})
+    local cooldownIdInput=RSUI:TextInput({id="v3_buff_cooldown_skill_id",parent=cooldownEditorRow,value="",maxLength=12,buildOptional=true,
+        allowEmpty=false,placeholder="不是 Buff ID",slot={size="fixed",width=116}})
+    local cooldownKindSelector,cooldownKindErr=RSUI:SegmentedSelector({id="v3_buff_cooldown_kind",parent=cooldownEditorRow,maxItems=2,gap=2,height=24,fontSize=9,
+        items={{value="mate",text="坐骑/宠物",width=82},{value="skill",text="玩家/翼类",width=82}},
+        get=function() return root.cooldownKind or "mate" end,
+        set=function(value) root.cooldownKind=value=="skill" and "skill" or "mate";return true end,
+        slot={size="auto"}})
+    if cooldownKindSelector==nil then error("技能 CD 类型选择器创建失败："..tostring(cooldownKindErr or "unknown")) end
+    local cooldownAddButton=RSUI:Button({id="v3_buff_cooldown_add",parent=cooldownEditorRow,text="添加技能CD",compact=true,slot={size="fixed",width=88}})
+    local cooldownRemoveButton=RSUI:Button({id="v3_buff_cooldown_remove",parent=cooldownEditorRow,text="删除所选",compact=true,slot={size="fixed",width=74}})
+    local cooldownEditorStatus=RSUI:Text({id="v3_buff_cooldown_editor_status",parent=cooldownEditorRow,
+        text="必须填写 Skill ID；Buff/Effect ID 只用于状态追踪。",fontSize=8,tone="muted",overflow="ellipsis",slot={size="fill",fill=1,minWidth=100}})
+    if cooldownIdInput==nil then cooldownAddButton:SetEnabled(false) end
+    cooldownEditorRow:SetVisible(false)
+    cooldownAddButton.onClick=function()
+        if cooldownIdInput==nil or type(cooldownIdInput.GetDraftValue)~="function" then return false,"当前客户端文本输入框不可用" end
+        local raw=tostring(cooldownIdInput:GetDraftValue() or ""):match("^%s*(.-)%s*$")
+        local id=tonumber(raw)
+        if id==nil or id<=0 or id~=math.floor(id) then cooldownEditorStatus:SetText("请输入真正的数字 Skill ID，不要填写 Buff ID。") return false,"Skill ID 无效" end
+        local kind=root.cooldownKind=="skill" and "skill" or "mate"
+        local ok,err=Feature.Commands:SetTrackedCooldownId(id,kind,true)
+        if ok==true then
+            cooldownIdInput:SetValue("",false,"cooldown_add_clear")
+            root.managementView="cooldowns";root.selectedManagementRow=nil
+            cooldownEditorStatus:SetText("已加入 Skill ID "..tostring(id).."；等待 Native CD 读数。")
+            root:Refresh()
+        else cooldownEditorStatus:SetText("添加失败："..tostring(err or "未知错误")) end
+        return ok,err
+    end
+    cooldownRemoveButton.onClick=function()
+        local row=root.selectedManagementRow
+        if type(row)~="table" or (row.kind~="skill" and row.kind~="mate") then return false,"请先在技能 CD 列表选择一条" end
+        local ok,err=Feature.Commands:SetTrackedCooldownId(row.id,row.kind,false)
+        if ok==true then
+            cooldownEditorStatus:SetText("已删除 Skill ID "..tostring(row.id));root.selectedManagementRow=nil;root:Refresh()
+        else cooldownEditorStatus:SetText("删除失败："..tostring(err or "未知错误")) end
+        return ok,err
+    end
+
+    -- 中文维护注释（分类纠错与追踪通道分权）：schema8 的四按钮只决定“在哪个 HUD/哪条 lane 显示”，
+    -- 不能顺手删除旧有 Native 极性人工纠错能力。分类 override 仍是全局 metadata Authority，只影响
+    -- Auto/未显式放置状态的识别；它不移动、不新增、不删除任何 player/target 追踪通道。
     local classifyRow=RSUI:HorizontalBox({id="v3_buff_classify_row",parent=tabTrack,gap=5,slot={size="fixed",height=27,hAlign="fill"}})
+    RSUI:Text({id="v3_buff_classify_label",parent=classifyRow,text="类型纠错",fontSize=9,tone="muted",slot={size="fixed",width=58}})
     local function ClassifySelected(category)
         local row=root.selectedManagementRow
-        if not row or row.kind=="skill" or row.kind=="mate" then return false,"请先点击一个状态行" end
+        if not IsEffectRow(row) then return false,"请先点击一个 Buff / Debuff 状态行" end
         local ok,err
         if category=="auto" then ok,err=Feature.Commands:ClearClassification(row.id)
         else ok,err=Feature.Commands:SetClassification(row.id,category) end
-        if ok then root:Refresh() end
-        selectedText:SetText(ok and "已更新所选状态分类" or tostring(err));return ok,err
+        if ok==true then root:Refresh();RefreshSelectedTrackingControls()
+        else selectedText:SetText("类型纠错失败："..tostring(err or "未知错误")) end
+        return ok,err
     end
-    RSUI:Button({id="v3_buff_classify_buff",parent=classifyRow,text="所选设为 Buff",compact=true,onClick=function() return ClassifySelected("buff") end,slot={size="fixed",width=112}})
-    RSUI:Button({id="v3_buff_classify_debuff",parent=classifyRow,text="所选设为 Debuff",compact=true,onClick=function() return ClassifySelected("debuff") end,slot={size="fixed",width=122}})
-    RSUI:Button({id="v3_buff_classify_auto",parent=classifyRow,text="所选恢复自动",compact=true,onClick=function() return ClassifySelected("auto") end,slot={size="fixed",width=112}})
+    RSUI:Button({id="v3_buff_classify_buff",parent=classifyRow,text="识别为 Buff",compact=true,onClick=function() return ClassifySelected("buff") end,slot={size="fixed",width=94}})
+    RSUI:Button({id="v3_buff_classify_debuff",parent=classifyRow,text="识别为 Debuff",compact=true,onClick=function() return ClassifySelected("debuff") end,slot={size="fixed",width=104}})
+    RSUI:Button({id="v3_buff_classify_auto",parent=classifyRow,text="恢复自动识别",compact=true,onClick=function() return ClassifySelected("auto") end,slot={size="fixed",width=108}})
 
     -- 中文维护注释：内置包在 Catalog 一次编译；页面只读 Feature 投影，导入走单事务命令。
     -- 维护：用户主流程是选分类 -> 一键加入 -> 已追踪，而非按版本水位补齐。
@@ -336,18 +469,21 @@ local function BuildPage(parent, route)
         get=function() return root.libraryPack end,set=function(value) root.libraryPack=value;return root:RefreshLibrary() end,slot={size="fill",fill=1,minWidth=200}})
     if not libraryPicker then error("内置包选择器创建失败") end
     local importPack=RSUI:Button({id="v3_buff_library_import",parent=libraryToolbar,text="一键加入追踪",compact=true,slot={size="fixed",width=112}})
-    local libraryHint=RSUI:Text({id="v3_buff_library_hint",parent=tabLibrary,text="点击一次即可加入所选分类，并打开“已追踪”。自动识别也已追踪，状态出现时按实际 Buff/Debuff 显示；不会把技能 CD 加进推荐库。",fontSize=9,tone="muted",overflow="wrap",maxLines=2,slot={size="auto",minHeight=30,hAlign="fill"}})
+    local libraryHint=RSUI:Text({id="v3_buff_library_hint",parent=tabLibrary,text="点击条目只会选择；可回到追踪管理用四通道按钮指定自身 / 目标。‘一键加入追踪’仍按内置分类导入到自身与目标。",fontSize=9,tone="muted",overflow="wrap",maxLines=2,slot={size="auto",minHeight=30,hAlign="fill"}})
     -- 维护（library-eventbus-2）：是否导入以Feature持久化集合为准，不以实时Aura数量或按钮点击为准。
     -- 单独的结果行在图标异步刷新时仍保留失败提示；仅目录revision改变时计算计数，不做Native查询。
     local libraryStatus=RSUI:Text({id="v3_buff_library_status",parent=tabLibrary,text="",
         fontSize=10,tone="strong",overflow="ellipsis",slot={size="fixed",height=22,hAlign="fill"}})
     local libraryTable=RSUI:TableView({id="v3_buff_library_table",parent=tabLibrary,items={},rowHeight=25,headerHeight=23,desiredRows=12,
-        overscan=2,scrollbar=true,selectable=false,columnResize=true,headerInteractive=false,onItemActivated=ToggleRowTracked,
+        overscan=2,scrollbar=true,selectable=true,selectionMode="single",columnResize=true,headerInteractive=false,
+        getKey=function(item) return item and tostring(item.key or item.id or "") or nil end,
+        onSelectionChanged=function(index,_,view) local item=view and type(view.GetItem)=="function" and view:GetItem(index) or nil;if item then SelectManagementRow(item) end end,
+        onItemActivated=SelectManagementRow,
         -- 维护：与管理表复用原生icon单元格；没有资源的ID明确用unknown，不编造图标路径。
         bindRow=function(_,item) if item and item.kind=="effect" then Feature:QueueManagementMetadata(item.id) end end,
         columns={{id="icon",title="",field="iconPath",cellType="icon",iconSize=18,fallbackIcon="ui/icon/icon_unknown_item.dds",size="fixed",width=25,minWidth=24,sortable=false,resizable=false},
             {id="id",title="ID",field="id",size="fixed",width=70},{id="name",title="名称",field="name",size="fill",fill=1,minWidth=160},
-            {id="category",title="类别",field="effectTypeText",size="fixed",width=76},{id="tracked",title="追踪",field="trackedText",size="fixed",width=72}},
+            {id="category",title="类别",field="effectTypeText",size="fixed",width=76},{id="tracked",title="追踪位置",field="trackedText",size="fixed",width=176,minWidth=150}},
         slot={size="fill",fill=1,hAlign="fill",vAlign="fill"}})
     function root:RefreshLibrary()
         local rows,revision=Feature:GetManagementProjection({view="library",pack=self.libraryPack,sort="id"})
@@ -370,7 +506,10 @@ local function BuildPage(parent, route)
         -- 维护（library-eventbus-2）：旧回调异常只到RSUI保护层，玩家看不出是否写入；
         -- UI不接管事务、不在异常时重试写盘。记录“命令调用”与“保存后显示”两个阶段，
         -- 业务失败由Feature保留并写诊断，显示失败不得谎称已提交的配置被回滚。
-        local called,ok,detail=pcall(Feature.Commands.ImportBuiltinPack,Feature.Commands,root.libraryPack,false)
+        -- 中文维护（tracking-scope-v1）：发行版只保留一个“一键加入追踪”入口，但它必须同时承担
+        -- 首次完整导入与后续增量补库。传 newOnly=true 时 importedPacks 水位为 0 的新用户仍会导入全部 v1 条目；
+        -- 已导入用户再次点击只补 introducedVersion 更新，不会把用户已经删除/改成仅自身或仅目标的条目复活。
+        local called,ok,detail=pcall(Feature.Commands.ImportBuiltinPack,Feature.Commands,root.libraryPack,true)
         if not called then
             local message=tostring(ok or "未知异常")
             libraryHint:SetText("导入调用异常："..message.."。尚未确认保存，请打印自检报告。")
@@ -439,7 +578,9 @@ local function BuildPage(parent, route)
     -- 同时声明在组件 spec 与 slot：spec 是 Measure Authority，slot 只作为父容器的下限提示。该修复
     -- 仅影响 Presentation 几何，不读写 Store，也不改变响应式 Grid 的列数 Authority。
     local policyCard = RSUI:Border({ id = "v3_buff_display_layout_policy_card", parent = tabLayout, padding = 8, variant = "card",
-        minHeight = 132, slot = { size = "auto", minHeight = 132, hAlign = "fill" } })
+        -- 7 个策略项在 maxColumns=3 时会形成 3 行；必须给第三行真实 Measure 空间，避免 1024x768
+        -- 下与下方刷新设置重叠。这里只增加 Presentation 高度，不改变 Store 或业务刷新。
+        minHeight = 166, slot = { size = "auto", minHeight = 166, hAlign = "fill" } })
     local policyStack = RSUI:VerticalBox({ id = "v3_buff_display_layout_policy_stack", parent = policyCard, gap = 6, slot = { hAlign = "fill" } })
     RSUI:Text({ id = "v3_buff_display_layout_policy_title", parent = policyStack, text = "显示策略", fontSize = 11, tone = "strong", slot = { size = "fixed", height = 20 } })
     local policyToggleGrid = RSUI:UniformGrid({ id = "v3_buff_display_layout_policy_toggle_grid", parent = policyStack, minCellWidth = 96, minCellHeight = 28, maxColumns = 3, gap = 5, slot = { size = "auto", hAlign = "fill" } })
@@ -450,22 +591,31 @@ local function BuildPage(parent, route)
         { key="headTarget", on="目标：开", off="目标：关", trueOnly=false },
         { key="headShowStacks", on="层数：开", off="层数：关", trueOnly=false },
         { key="headShowTime", on="时间：开", off="时间：关", trueOnly=false },
+        { key="ranged", component="ranged", on="远程武器：开", off="远程武器：关", trueOnly=false },
     }
     for _, spec in ipairs(policySpecs) do
-        local key, trueOnly = spec.key, spec.trueOnly == true
+        local key, trueOnly, componentKey = spec.key, spec.trueOnly == true, spec.component
         local toggle = RSUI:Toggle({
             id = "v3_buff_display_layout_policy_" .. key, parent = policyToggleGrid, width = 94, height = 24,
             onText = spec.on, offText = spec.off,
             get = function()
                 local settings = Feature:GetSettingsProjection() or {}
+                if componentKey ~= nil then
+                    local components = type(settings.components) == "table" and settings.components or {}
+                    local component = type(components[componentKey]) == "table" and components[componentKey] or {}
+                    return component.enabled ~= false
+                end
                 return trueOnly and settings[key] == true or (not trueOnly and settings[key] ~= false)
             end,
-            set = function(value) return ApplySetting(key, value == true) end,
+            set = function(value)
+                if componentKey ~= nil then return ApplyComponentSetting(componentKey, "enabled", value == true) end
+                return ApplySetting(key, value == true)
+            end,
             slot = { size = "auto", hAlign = "left", vAlign = "center" },
         })
         if toggle ~= nil then layoutPolicyControls[#layoutPolicyControls + 1] = toggle end
     end
-    RSUI:Text({ id = "v3_buff_display_layout_policy_hint", parent = policyStack, text = "这里仅控制 HUD 是否运行和通用文字显示；各组件位置、图标、字号、间距和尺寸统一在“调整 HUD”里设置。", fontSize = 9, tone = "muted", overflow = "wrap", maxLines = 2, slot = { size = "auto", minHeight = 28, hAlign = "fill" } })
+    RSUI:Text({ id = "v3_buff_display_layout_policy_hint", parent = policyStack, text = "这里可直接确认远程武器是否被关闭；各组件位置、图标、字号、间距和尺寸统一在“调整 HUD”里设置。", fontSize = 9, tone = "muted", overflow = "wrap", maxLines = 2, slot = { size = "auto", minHeight = 28, hAlign = "fill" } })
 
     local refreshCard = RSUI:Border({ id = "v3_buff_display_layout_refresh_card", parent = tabLayout, padding = 8, variant = "card",
         minHeight = 104, slot = { size = "auto", minHeight = 104, hAlign = "fill" } })
@@ -534,6 +684,14 @@ local function BuildPage(parent, route)
         slot = { size = "auto" },
     })
     if categorySelector == nil then error("状态显示导入分类选择器创建失败：" .. tostring(categorySelectorErr or "unknown")) end
+    local scopeSelector, scopeSelectorErr = RSUI:SegmentedSelector({
+        id = "v3_buff_display_transfer_scope", parent = quickRow, maxItems = 3, gap = 2, height = 24, fontSize = 9,
+        items = { { value = "all", text = "自身+目标", width = 72 }, { value = "player", text = "仅自身", width = 58 }, { value = "target", text = "仅目标", width = 58 } },
+        get = function() return root.importScope or "all" end,
+        set = function(v) root.importScope = (v=="player" or v=="target") and v or "all"; return true end,
+        slot = { size = "auto" },
+    })
+    if scopeSelector == nil then error("状态显示导入范围选择器创建失败：" .. tostring(scopeSelectorErr or "unknown")) end
     local quickImport = RSUI:Button({ id = "v3_buff_display_transfer_quick_import", parent = quickRow, text = "合并导入", compact = true, slot = { size = "fixed", width = 78 } })
     local quickOverwrite = RSUI:Button({ id = "v3_buff_display_transfer_quick_overwrite", parent = quickRow, text = "覆盖导入", compact = true, slot = { size = "fixed", width = 78 } })
     local transferStatus = RSUI:Text({ id = "v3_buff_display_transfer_status", parent = tabTransfer, text = "当前追踪：--", fontSize = 9, tone = "muted", overflow = "wrap", maxLines = 3, slot = { size = "auto", minHeight = 32, hAlign = "fill" } })
@@ -579,9 +737,13 @@ local function BuildPage(parent, route)
     function root:RefreshTransferStatus()
         local settings = Feature:GetSettingsProjection() or {}
         local tracked = type(settings.tracked) == "table" and settings.tracked or {}
-        local buffCount = #(type(tracked.buff) == "table" and tracked.buff or {})
-        local debuffCount = #(type(tracked.debuff) == "table" and tracked.debuff or {})
-        transferStatus:SetText("当前追踪：Buff " .. tostring(buffCount) .. " · Debuff " .. tostring(debuffCount) .. " · Auto "..tostring(#(tracked.auto or {})).."（每类上限 1024）。")
+        local function Counts(scope)
+            local scoped=type(tracked[scope])=="table" and tracked[scope] or {}
+            return #(scoped.buff or {}),#(scoped.debuff or {}),#(scoped.auto or {})
+        end
+        local pb,pd,pa=Counts("player");local tb,td,ta=Counts("target")
+        transferStatus:SetText("当前追踪：自身 Buff "..pb.." / Debuff "..pd.." / Auto "..pa
+            .." · 目标 Buff "..tb.." / Debuff "..td.." / Auto "..ta.."（每通道上限 1024）。")
         return true
     end
 
@@ -611,6 +773,11 @@ local function BuildPage(parent, route)
         buffButton:SetText(self.managementFilter=="tracked_buff" and "Buff ✓" or "追踪 Buff")
         debuffButton:SetText(self.managementFilter=="tracked_debuff" and "Debuff ✓" or "追踪 Debuff")
         hiddenButton:SetText(self.managementFilter=="hidden" and "隐藏 ✓" or "隐藏状态")
+        local cooldownView=self.managementView=="cooldowns"
+        scopeTrackRow:SetVisible(not cooldownView);classifyRow:SetVisible(not cooldownView);cooldownEditorRow:SetVisible(cooldownView)
+        buffButton:SetEnabled(not cooldownView);debuffButton:SetEnabled(not cooldownView);hiddenButton:SetEnabled(not cooldownView)
+        cooldownRemoveButton:SetEnabled(cooldownView and type(self.selectedManagementRow)=="table" and (self.selectedManagementRow.kind=="skill" or self.selectedManagementRow.kind=="mate"))
+        if type(RefreshSelectedTrackingControls)=="function" then RefreshSelectedTrackingControls() end
         if self.activeTab=="library" then self:RefreshLibrary() end
         if self.activeTab == "layout" then self:RefreshLayoutControls() end
         if self.activeTab == "transfer" then self:RefreshTransferStatus() end
@@ -625,6 +792,7 @@ local function BuildPage(parent, route)
         self.activeTab=TAB_KEYS[index]
         -- 页面离开目录/管理表即取消图标队列；不影响Feature采集和留存。
         Feature:SetManagementPageActive(value=="track" or value=="library")
+        if type(Feature.SetCooldownManagementActive)=="function" then Feature:SetCooldownManagementActive(value=="track" and self.managementView=="cooldowns") end
         switcher:SetActiveIndex(index)
         if tabSelector and type(tabSelector.Render)=="function" then tabSelector:Render() end
         if transferEdit ~= nil and type(transferEdit.Show) == "function" then transferEdit:Show(value == "transfer") end
@@ -682,12 +850,11 @@ local function BuildPage(parent, route)
     end
     searchClear.onClick = function() root.filterText = ""; if searchInput ~= nil and type(searchInput.SetValue) == "function" then searchInput:SetValue("", false, "search_clear") end; return root:Refresh() end
     clearTrackButton.onClick = function() local ok, err = Feature.Commands:ClearTrackedIds(); if ok then root:Refresh() end; return ok, err end
-    probeButton.onClick = function() local ok, summary = Feature.Commands:ProbeAuraFields(); selectedText:SetText(ok and ("字段诊断已输出到聊天框 · " .. tostring(summary)) or tostring(summary or "诊断失败")); return ok, summary end
 
     local function QuickImportText(mode)
         local text = quickInput ~= nil and type(quickInput.GetDraftValue) == "function" and tostring(quickInput:GetDraftValue() or "") or ""
         if text == "" then transferStatus:SetText("请先填写要导入的 Buff ID（逗号/换行分隔）。"); return true end
-        local ok, err = Feature.Commands:ImportTrackedIds(text, root.importCategory or "auto", mode or "merge")
+        local ok, err = Feature.Commands:ImportTrackedIds(text, root.importCategory or "auto", mode or "merge", root.importScope or "all")
         if ok then root:Refresh(); transferStatus:SetText(tostring(err or "导入完成")) else transferStatus:SetText("导入失败：" .. tostring(err or "未知错误")) end
         return true
     end
@@ -697,7 +864,9 @@ local function BuildPage(parent, route)
         if transferEdit == nil then transferStatus:SetText("多行文本框不可用，无法导出。"); return true end
         local data = Feature.Commands:ExportAll(); WriteNativeText(transferEdit, Feature.Commands:SerializeExport(data))
         local tracked = type(data) == "table" and type(data.tracked) == "table" and data.tracked or {}
-        transferStatus:SetText("已导出 Buff " .. tostring(#(tracked.buff or {})) .. " · Debuff " .. tostring(#(tracked.debuff or {})) .. " 到文本框。")
+        local p=type(tracked.player)=="table" and tracked.player or {};local t=type(tracked.target)=="table" and tracked.target or {}
+        transferStatus:SetText("已导出：自身 Buff "..#(p.buff or {}).." / Debuff "..#(p.debuff or {})
+            .." · 目标 Buff "..#(t.buff or {}).." / Debuff "..#(t.debuff or {}).." 到文本框。")
         return true
     end
     -- 中文维护注释：首次只预览；再次点击时校验文本、模式与 Store revision 未变，才单事务提交。
@@ -731,6 +900,7 @@ local function BuildPage(parent, route)
         if loaded ~= true then return false, loadErr or "状态显示配置读取失败" end
         persistHint:SetText("配置已读取 · HUD 校准仅在“保存并退出”后写入")
         Feature:SetManagementPageActive(self.activeTab=="track" or self.activeTab=="library")
+        if type(Feature.SetCooldownManagementActive)=="function" then Feature:SetCooldownManagementActive(self.activeTab=="track" and self.managementView=="cooldowns") end
         SubscribePageUpdates()
         if S.FeatureRuntime:IsEnabled("combat_buff_display") == true then
             local ok, err = Feature:AcquireConsumer("page:buff_display"); if ok ~= true then return false, err end
@@ -740,6 +910,7 @@ local function BuildPage(parent, route)
     end
     function root:OnDeactivated()
         Feature:SetManagementPageActive(false)
+        if type(Feature.SetCooldownManagementActive)=="function" then Feature:SetCooldownManagementActive(false) end
         if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
         if Feature.Demand and Feature.Demand:Has("page:buff_display") then Feature:ReleaseConsumer("page:buff_display") end
         -- 校准器若仍开启，Shell 已被临时最小化，因此正常页面导航不会走到这里；

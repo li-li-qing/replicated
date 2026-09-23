@@ -713,6 +713,27 @@ function Base:AddChild(component, slot)
     return component, true
 end
 
+-- 个人工作台（2026-09-18）：同一 Parent 内的纯顺序修改。先验证完整输入再提交，
+-- 不调用 RemoveChild（它会销毁）、不 Reparent、不重新创建 Native；slots 与 children 同步。
+-- 未列出的已有子项保持末尾原顺序，便于保留 Scrollbar 等结构子项；跨父/重复项失败不动原数组。
+function Base:ReorderChildren(ordered)
+    if self.released or type(ordered) ~= "table" then return false, "invalid_order" end
+    local nextChildren, seen, rank, owned = {}, {}, {}, {}
+    for _, child in ipairs(self.children) do owned[child] = true end
+    for _, child in ipairs(ordered) do
+        if type(child) ~= "table" or child.parentComponent ~= self or not owned[child] or seen[child] then return false, "invalid_order_child" end
+        seen[child] = true; nextChildren[#nextChildren + 1] = child
+    end
+    for _, child in ipairs(self.children) do if not seen[child] then nextChildren[#nextChildren + 1] = child end end
+    local changed = false
+    for i, child in ipairs(nextChildren) do rank[child] = i; if self.children[i] ~= child then changed = true end end
+    if not changed then return true, false end
+    self.children = nextChildren
+    if self.slots then table.sort(self.slots, function(a,b) return (rank[a.child] or 100000) < (rank[b.child] or 100000) end) end
+    self:InvalidateMeasure("same_parent_reorder")
+    return true, true
+end
+
 -- Public child removal is terminal for the current Generation. The physical
 -- widget cannot be safely reparented/recreated under the same identity, so a
 -- removal always releases/hides the subtree instead of returning a detachable

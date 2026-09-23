@@ -28,16 +28,23 @@ local P = {
     consumerCount = 0,
     running = false,
     revision = 0,
+    refreshEpoch = 0,
     updatedAtMs = -1,
     snapshots = {},
     scopeSnapshots = { daily = {}, weekly = {} },
     activeIndex = {},
+    -- 中文维护注释（2026-09-14，quest-active-state-publish）：除固定 QuestGroups 外，居民债券/拍卖今日任务
+    -- 也会消费任意活动任务事实。保存 detached qid->state 快照，只用于判断事件是否需要发布；不暴露 Native 对象。
+    activeQuestStates = {},
     refreshQuestStateCache = nil,
     instanceConsumerToken = "service:v3.quest_progress:instances",
     instanceConsumerHeld = false,
     questTitleCache = {},
     safetyTask = "v3_quest_progress_safety",
     refreshFailures = 0,
+    ActiveQuestListContractVersion = 1,
+    -- Activity consumers may personalize x/y only when detached per-objective facts are present.
+    ActivityObjectiveFactsContractVersion = 1,
 }
 P.presentationBoundary = "service_only"
 S.Services.QuestProgressV3 = P
@@ -82,6 +89,22 @@ local function RelatedList(group)
     return type(group) == "table" and type(group.relatedObjectives) == "table" and group.relatedObjectives or {}
 end
 
+-- 中文维护注释（2026-09-21，activity-progress-selection-1）：稳定任务身份必须由静态 Quest variant
+-- 集合构造，不能用“当前最匹配 QuestId”或本地化标题。Activity 个人进度选择和详情行共用同一 token，
+-- 但 QuestProgressV3 只发布身份/状态事实，不读取用户选择 Store。这样 Service 保持只读 Authority，
+-- Activities Feature 才拥有“哪些事实计入我的 x/y”这一偏好投影。
+local function ObjectiveTrackingKey(objective, index, related)
+    objective = type(objective) == "table" and objective or {}
+    local variants = {}
+    for _, rawId in ipairs(type(objective.quests) == "table" and objective.quests or {}) do
+        local qid = tonumber(rawId)
+        if qid ~= nil and qid == math.floor(qid) and qid > 0 then variants[#variants + 1] = tostring(qid) end
+    end
+    table.sort(variants)
+    local prefix = related == true and "related:" or "main:"
+    return #variants > 0 and (prefix .. table.concat(variants, ",")) or (prefix .. "index:" .. tostring(index or 1))
+end
+
 local function SnapshotEqual(a, b)
     if a == b then return true end
     if type(a) ~= "table" or type(b) ~= "table" then return false end
@@ -95,6 +118,8 @@ local function SnapshotEqual(a, b)
         and a.tailInFlightCount == b.tailInFlightCount
         and a.text == b.text
         and a.tone == b.tone
+        and a.progressSelectionEnabled == b.progressSelectionEnabled
+        and a.objectiveSignature == b.objectiveSignature
         and a.instanceType == b.instanceType
         and a.enterCount == b.enterCount
         and a.maxEnterCount == b.maxEnterCount
@@ -103,7 +128,19 @@ end
 local function CopySnapshot(value)
     if type(value) ~= "table" then return nil end
     local copy = {}
-    for key, item in pairs(value) do copy[key] = item end
+    for key, item in pairs(value) do
+        if key == "objectiveStates" and type(item) == "table" then
+            local rows = {}
+            for index, row in ipairs(item) do
+                local detached = {}
+                for field, fieldValue in pairs(type(row) == "table" and row or {}) do detached[field] = fieldValue end
+                rows[index] = detached
+            end
+            copy[key] = rows
+        else
+            copy[key] = item
+        end
+    end
     return copy
 end
 
@@ -177,7 +214,8 @@ end
 function P:BuildQuestSnapshot(key, group, activeIndex, questAvailable)
     local objectives = ObjectiveList(group)
     local completed, activeCount, readyCount, tailInFlightCount = 0, 0, 0, 0
-    for _, objective in ipairs(objectives) do
+    local objectiveStates, signature = {}, {}
+    for index, objective in ipairs(objectives) do
         local state = self:ObjectiveState(objective, activeIndex)
         if state == QS.COMPLETED then
             completed = completed + 1
@@ -190,6 +228,14 @@ function P:BuildQuestSnapshot(key, group, activeIndex, questAvailable)
         if objective.keepsEventAlive == true and (state == QS.IN_PROGRESS or state == QS.READY_TO_TURN_IN) then
             tailInFlightCount = tailInFlightCount + 1
         end
+        local token = ObjectiveTrackingKey(objective, index, false)
+        objectiveStates[#objectiveStates + 1] = {
+            key = "main:" .. tostring(index), trackingKey = token, state = state,
+            completed = state == QS.COMPLETED or state == QS.READY_TO_TURN_IN,
+            ready = state == QS.READY_TO_TURN_IN,
+            active = state == QS.IN_PROGRESS,
+        }
+        signature[#signature + 1] = token .. "=" .. tostring(state)
     end
 
     local relatedActive, relatedReady = 0, 0
@@ -204,14 +250,32 @@ function P:BuildQuestSnapshot(key, group, activeIndex, questAvailable)
 
     local total = #objectives
     local available = questAvailable == true and total > 0
+    local kind = tostring(group.kind or "quest")
+    local text = available and (tostring(completed) .. "/" .. tostring(total)) or "--"
+    local tone = ProgressTone(completed, total, activeCount, readyCount, available)
+    if kind == "scoreQuest" and available then
+        -- 中文维护注释（2026-09-22，scoreQuest binary completion）：积分型任务内部虽然有分数/奖励阶段，
+        -- 但 Activity 层跟踪的是“这一个每日任务是否完成”。因此紧凑活动行必须保留统一 x/y 合同：
+        -- 未接/进行中 = 0/1，可交付/已完成 = 1/1。分数和 Reward Level 只在显式详情读取 Native Journal，
+        -- 禁止把积分文本解析塞进 1 秒 Activity 热路径，也禁止把 scoreQuest 改成自定义多阶段分母。
+        text = tostring(math.min(completed, 1)) .. "/1"
+        tone = ProgressTone(math.min(completed, 1), 1, activeCount, readyCount, true)
+    end
     return {
-        key = tostring(key), kind = "quest", available = available,
+        key = tostring(key), kind = kind, available = available,
         completed = completed, total = total,
         activeCount = activeCount, readyCount = readyCount,
         relatedActiveCount = relatedActive, relatedReadyCount = relatedReady,
         tailInFlightCount = tailInFlightCount,
-        text = available and (tostring(completed) .. "/" .. tostring(total)) or "--",
-        tone = ProgressTone(completed, total, activeCount, readyCount, available),
+        -- Detached per-objective facts let Activities project a user-selected denominator without
+        -- re-reading X2Quest on the one-second activity presentation cadence. `objectiveSignature`
+        -- participates in equality so a state change inside a selected subset cannot be hidden by
+        -- an unchanged aggregate snapshot. Consumers must treat objectiveStates as immutable data.
+        objectiveStates = objectiveStates,
+        objectiveSignature = table.concat(signature, "|"),
+        progressSelectionEnabled = group.progressSelectionEnabled == true,
+        text = text,
+        tone = tone,
     }
 end
 
@@ -238,6 +302,14 @@ local function SnapshotMapEqual(a, b)
     b = type(b) == "table" and b or {}
     for key, value in pairs(b) do if SnapshotEqual(a[key], value) ~= true then return false end end
     for key in pairs(a) do if b[key] == nil then return false end end
+    return true
+end
+
+local function ActiveQuestStateMapEqual(a, b)
+    a = type(a) == "table" and a or {}
+    b = type(b) == "table" and b or {}
+    for questId, state in pairs(b) do if tostring(a[questId] or "") ~= tostring(state or "") then return false end end
+    for questId in pairs(a) do if b[questId] == nil then return false end end
     return true
 end
 
@@ -312,6 +384,14 @@ function P:Refresh(reason, forceInstanceDiscovery)
         local activeIndex, questAvailable = self:BuildActiveIndex()
         self.refreshQuestStateCache = {}
 
+        -- 中文维护注释（quest-active-state-publish-2）：只遍历 Native 当前活动任务（数量有界），记录 membership
+        -- 与 IN_PROGRESS/READY_TO_TURN_IN 状态。居民债券并不一定属于静态 QuestGroups；如果这里只比较固定组，
+        -- 交任务/变为可交付时不会发布 v3.quest_progress.updated，只能等别的页面刷新或 15s safety 偶然碰上。
+        local nextActiveQuestStates = {}
+        for questId in pairs(activeIndex or {}) do
+            nextActiveQuestStates[questId] = self:QuestState(questId, activeIndex)
+        end
+
         local nextSnapshots = {}
         for key, group in pairs(S.Data and S.Data.EventQuestProgress or {}) do
             if type(group) == "table" and group.kind ~= "instanceRaid" then
@@ -326,15 +406,18 @@ function P:Refresh(reason, forceInstanceDiscovery)
             weekly = self:BuildScopeSnapshots("weekly", questGroups.weekly, activeIndex, questAvailable),
         }
 
-        local changed = SnapshotMapEqual(self.snapshots, nextSnapshots) ~= true
+        local changed = ActiveQuestStateMapEqual(self.activeQuestStates, nextActiveQuestStates) ~= true
+            or SnapshotMapEqual(self.snapshots, nextSnapshots) ~= true
             or SnapshotMapEqual(self.scopeSnapshots and self.scopeSnapshots.daily, nextScopes.daily) ~= true
             or SnapshotMapEqual(self.scopeSnapshots and self.scopeSnapshots.weekly, nextScopes.weekly) ~= true
 
         self.activeIndex = activeIndex
+        self.activeQuestStates = nextActiveQuestStates
         self.snapshots = nextSnapshots
         self.scopeSnapshots = nextScopes
         self.refreshQuestStateCache = nil
         self.updatedAtMs = NowMs()
+        self.refreshEpoch = (tonumber(self.refreshEpoch) or 0) + 1
         if changed then
             self.revision = (tonumber(self.revision) or 0) + 1
             if S.Events ~= nil and type(S.Events.Publish) == "function" then
@@ -349,6 +432,14 @@ function P:Refresh(reason, forceInstanceDiscovery)
             S.DiagnosticsManager:Record("warning", "v3.quest_progress", "新版任务进度刷新失败: " .. tostring(err))
         end
         return false, err
+    end
+    -- 中文维护注释（2026-09-21，任务详情实时目标刷新）：`v3.quest_progress.updated` 只在主进度/任务状态
+    -- 发生变化时发布，但击杀 17/30 -> 18/30 这类 Journal Objective 文本变化不会改变 BuildQuestSnapshot，
+    -- 若详情窗只监听 updated 就会停在旧数字。这里额外发布“成功刷新纪元”，仅表示 QuestProgress Authority
+    -- 已完成一次事件驱动/15s safety 读取并清掉 Journal cache；Presentation 可按需重读当前显式详情。
+    -- 该事件不改变业务 revision、不新增 Tick/轮询，活动 Authority 仍只监听 updated，避免普通列表无意义重建。
+    if S.Events ~= nil and type(S.Events.Publish) == "function" then
+        S.Events:Publish("v3.quest_progress.refreshed", self.refreshEpoch, self.revision, tostring(reason or "refresh"))
     end
     return true
 end
@@ -494,6 +585,58 @@ function P:GetQuestProgress(scope, key)
     return value
 end
 
+-- 中文维护注释（2026-09-14，任务活动事实只读接口）：DailyAuctionMaterialsV3 需要知道一组已核
+-- QuestId 当前是否在活动列表中，但 Service 私有 activeIndex 不能被外部直接引用，否则刷新/排序后消费者
+-- 可能持有过期表并反向修改 Authority。这里每次只返回 detached primitive；state 仍由 QuestProgressV3
+-- 的 QuestState 统一判定，不新增任务轮询，也不暴露内部缓存。
+function P:GetActiveQuestState(questId)
+    local id = tonumber(questId)
+    if id == nil or id ~= math.floor(id) or id < 1 then return nil end
+    id = math.floor(id)
+    local index = type(self.activeIndex) == "table" and tonumber(self.activeIndex[id]) or nil
+    return {
+        questId = id,
+        active = index ~= nil,
+        index = index ~= nil and math.floor(index) or nil,
+        state = self:QuestState(id, self.activeIndex),
+        -- 中文维护注释：标题仍由 QuestProgressV3 经已允许的 X2Quest 能力读取并缓存；只有当前活动任务
+        -- 才请求标题，批量检查未接任务不会产生额外 Native 调用。消费者拿到的是 detached string。
+        title = index ~= nil and self:QuestTitle(id, "居民做货任务 #" .. tostring(id)) or nil,
+    }
+end
+
+function P:GetActiveQuestStates(questIds)
+    local out = {}
+    for _, questId in ipairs(type(questIds) == "table" and questIds or {}) do
+        local fact = self:GetActiveQuestState(questId)
+        if fact ~= nil then out[fact.questId] = fact end
+    end
+    return out
+end
+
+-- 中文维护注释（2026-09-14，活动任务目录只读接口）：今日做货不能只依赖历史 QuestId 白名单，
+-- RU 私服可能存在同语义不同 ID 的区域制作日常。这里只把当前 activeIndex 转成 detached 列表并按
+-- Native 活动列表 index 排序；标题仍由 QuestProgressV3 缓存读取，消费者不能持有/修改 activeIndex。
+function P:GetActiveQuestList()
+    local rows = {}
+    for rawId, rawIndex in pairs(type(self.activeIndex) == "table" and self.activeIndex or {}) do
+        local id, index = tonumber(rawId), tonumber(rawIndex)
+        if id ~= nil and index ~= nil then
+            id, index = math.floor(id), math.floor(index)
+            rows[#rows + 1] = {
+                questId = id, index = index, active = true,
+                state = self:QuestState(id, self.activeIndex),
+                title = self:QuestTitle(id, "任务 " .. tostring(id)),
+            }
+        end
+    end
+    table.sort(rows, function(a,b)
+        if a.index ~= b.index then return a.index < b.index end
+        return a.questId < b.questId
+    end)
+    return rows
+end
+
 function P:GetInstanceProgress(scope, key)
     local value = self:GetProgress(scope, key)
     if value == nil or value.kind ~= "instanceRaid" then return nil end
@@ -560,14 +703,24 @@ function P:ResolveObjectiveDetail(objective, index, related)
     if bestState == QS.UNKNOWN and bestQuest ~= nil then bestState = self:QuestState(bestQuest, self.activeIndex) end
 
     local role = tostring(objective.role or "")
-    local fallback = role ~= "" and role or ((related == true and "关联任务 " or "任务阶段 ") .. tostring(index or 1))
+    local curatedTitle = tostring(objective.title or objective.name or "")
+    local fallback = curatedTitle ~= "" and curatedTitle
+        or (role ~= "" and role or ((related == true and "关联任务 " or "任务阶段 ") .. tostring(index or 1)))
     local title = self:QuestTitle(bestQuest, fallback)
     if role ~= "" and title ~= role and string.find(title, role, 1, true) == nil then
         title = role .. " · " .. title
     end
-    local category = related == true and (role ~= "" and role or "关联") or "主任务"
+    local category = related == true and (role ~= "" and role or "关联")
+        or tostring(objective.category or "主任务")
+    -- 中文维护注释（2026-09-21，activity-progress-selection-1）：Presentation 的追踪选择不能用
+    -- `bestQuest` 作为身份，因为同一逻辑阶段可能按阵营/已接状态切换不同 QuestId；也不能依赖标题，
+    -- 否则本地化或官方改名会把用户偏好指向错误任务。这里用静态 variants 的排序集合构造 detached
+    -- trackingKey；它只提供稳定身份，不拥有“是否追踪”的业务状态。若未来目录增删变体，必须显式
+    -- 处理兼容，而不是让 UI 猜旧标题。无 QuestId 的极端目录项才回退到逻辑 index。
+    local trackingKey = ObjectiveTrackingKey(objective, index, related)
     return {
         key = (related == true and "related:" or "main:") .. tostring(index or 1),
+        trackingKey = trackingKey,
         category = category,
         name = title,
         status = DETAIL_STATE_TEXT[bestState] or "未知",
@@ -628,6 +781,15 @@ local function FindGroup(scope, key)
         if type(group) == "table" and tostring(group.key or "") == key then return group end
     end
     return nil
+end
+
+-- 中文维护注释（2026-09-21，详情窗 Demand 选项）：Presentation 需要在 Acquire QuestProgress Consumer 之前
+-- 知道当前条目是否依赖 InstanceCatalog，否则所有普通活动都被迫唤醒副本目录，违反按需加载。这里只返回
+-- 静态分组 kind，不暴露 group/table，也不读取 Native；具体任务/副本事实仍由 GetGroupDetail/GetProgress 提供。
+function P:GetGroupKind(scope, key)
+    local group = FindGroup(scope, key)
+    if type(group) ~= "table" then return nil end
+    return tostring(group.kind or "quest")
 end
 
 -- Maintenance (overview-workbench-2): RU officially enabled these two getters
@@ -705,7 +867,11 @@ function P:AppendJournalDetail(children)
                 if journal.available then
                     for _,objective in ipairs(journal.rows)do
                         rows[#rows+1]={key="journal:"..tostring(id)..":"..objective.objectiveIndex,
-                            category="目标",name=objective.text,status="",tone="default",questId=id,
+                            -- 中文维护注释：目标行属于上方已接任务的显式 Journal 明细，不计入主任务分母；
+                            -- 使用轻量树形前缀帮助玩家区分“任务”与“任务目标”，不引入第二层 TreeView/缓存。
+                            -- parentTrackingKey 让“仅追踪”视图跟随父任务展示目标，但目标本身不是独立追踪项。
+                            category="目标",name="└ "..objective.text,status="",tone="default",questId=id,
+                            parentTrackingKey=row.trackingKey,
                             counted=false,related=true,journal=true}
                         result.included=result.included+1
                     end
@@ -732,11 +898,12 @@ function P:GetGroupDetail(scope, key, options)
         local displayMax = rawMax > 0 and rawMax ~= 1000 and rawMax or configuredMax
         return {
             scope = scope, key = key, title = tostring(group.title or key), kind = "instanceRaid",
+            progressSelectionEnabled = false,
             completed = entered and 1 or 0, total = 1, activeCount = 0, readyCount = 0, relatedCount = 0,
             summaryText = available and ("副本参与 " .. tostring(math.min(count, displayMax)) .. "/" .. tostring(displayMax)) or "副本参与状态暂不可用",
             children = {
                 {
-                    key = "instance_entry", category = "副本", name = "副本参与次数",
+                    key = "instance_entry", trackingKey = "instance:entry", category = "副本", name = "副本参与次数",
                     status = available and (entered and "已完成" or (tostring(math.min(count, displayMax)) .. "/" .. tostring(displayMax))) or "暂不可用",
                     tone = available and (entered and "green" or "muted") or "red",
                     state = entered and QS.COMPLETED or (available and QS.NOT_ACCEPTED or QS.UNKNOWN),
@@ -761,9 +928,21 @@ function P:GetGroupDetail(scope, key, options)
         children[#children + 1] = self:ResolveObjectiveDetail(objective, index, true)
     end
     local total = #ObjectiveList(group)
-    local summary = total > 0 and ("已完成 " .. tostring(completed) .. "/" .. tostring(total)) or "暂无主任务"
-    if readyCount > 0 then summary = summary .. " · " .. tostring(readyCount) .. " 项可交付" end
-    if activeCount > 0 then summary = summary .. " · " .. tostring(activeCount) .. " 项进行中" end
+    local kind = tostring(group.kind or "activity")
+    local summary
+    if kind == "scoreQuest" then
+        local stateText = "未接"
+        if readyCount > 0 then stateText = "可交付"
+        elseif total > 0 and completed >= total then stateText = "已完成"
+        elseif activeCount > 0 then stateText = "进行中" end
+        -- 中文维护注释（2026-09-22，scoreQuest detail）：详情同时保留两层语义：Activity 完成度是 0/1 -> 1/1，
+        -- score/reward-level 是同一个任务内部目标。这样用户在所有活动里都能用一致的完成度判断，同时不会丢失积分型信息。
+        summary = "已完成 " .. tostring(math.min(completed, 1)) .. "/1 · 积分任务 " .. stateText
+    else
+        summary = total > 0 and ("已完成 " .. tostring(completed) .. "/" .. tostring(total)) or "暂无主任务"
+        if readyCount > 0 then summary = summary .. " · " .. tostring(readyCount) .. " 项可交付" end
+        if activeCount > 0 then summary = summary .. " · " .. tostring(activeCount) .. " 项进行中" end
+    end
     if relatedCount > 0 then summary = summary .. " · " .. tostring(relatedCount) .. " 项关联任务" end
     -- 普通投影不读取目标文本；只在用户打开详情时追加，不改变主进度分母。
     local journal
@@ -775,7 +954,8 @@ function P:GetGroupDetail(scope, key, options)
     end
     return {
         journal = journal,
-        scope = scope, key = key, title = tostring(group.title or key), kind = tostring(group.kind or "activity"),
+        scope = scope, key = key, title = tostring(group.title or key), kind = kind,
+        progressSelectionEnabled = group.progressSelectionEnabled == true,
         completed = completed, total = total, activeCount = activeCount, readyCount = readyCount, relatedCount = relatedCount,
         summaryText = summary, children = children,
     }
@@ -803,6 +983,7 @@ function P:GetHealth(scope)
         running = self.running == true,
         consumers = self.consumerCount,
         revision = self.revision,
+        refreshEpoch = self.refreshEpoch,
         projections = total,
         available = available,
         refreshFailures = self.refreshFailures,

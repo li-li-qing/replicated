@@ -73,12 +73,19 @@ end
 local function SanitizeContext(value)
     if type(value) ~= "table" then return nil end
     local out, count = {}, 0
+    -- 维护（module-controls-diag-2）：归属字段先于不确定的 pairs 顺序，防止第13字段丢失模块身份。
+    -- 这里只保留原有短上下文；长错误证据另走有界 primitive 白名单，禁止保存配置对象/Native 引用。
+    for _, key in ipairs({ "moduleId", "featureId", "feature", "route", "store", "owner", "phase", "error", "reason" }) do
+        if value[key] ~= nil then out[key] = SafePrimitive(value[key]); count = count + 1 end
+    end
     for key, item in pairs(value) do
         if count >= CONTEXT_MAX_FIELDS then break end
+        if out[key] == nil then
         local safeKey = tostring(key or "")
         if safeKey ~= "" then
             out[safeKey] = SafePrimitive(item)
             count = count + 1
+        end
         end
     end
     return next(out) ~= nil and out or nil
@@ -110,12 +117,38 @@ local function TouchBoundedKey(container, order, key, limit)
     if oldest ~= nil then container[oldest] = nil end
 end
 
+-- 维护（module-controls-diag-2）：日志短上下文曾在入库时截到180字节，诊断再分页也无法恢复根因。
+-- 仅 warning/error 保存以下 primitive 证据，总计最多16 KiB、单字段8 KiB；超限保留头尾并明确标记。
+-- 不递归配置/对象、不采集额外游戏数据、不上传。Diagnostics 仍是记录 Authority，Hub 仅投影。
+local FAULT_FIELDS = { "moduleId", "featureId", "feature", "route", "store", "owner", "phase", "method", "action",
+    "error", "reason", "detail", "traceback", "stack", "path", "expected", "actual" }
+local function FaultEvidence(level, context)
+    if (level ~= "error" and level ~= "warning") or type(context) ~= "table" then return nil end
+    local out, remaining = {}, 16384
+    for _, key in ipairs(FAULT_FIELDS) do
+        local value = context[key]
+        if type(value) == "string" and remaining > 0 then
+            local cap = math.min(8192, remaining)
+            if #value > cap then
+                local half = math.max(0, math.floor((cap - 64) / 2))
+                local left, right = half, math.max(1, #value - half + 1)
+                while left > 0 and (value:byte(left + 1) or 0) >= 128 and (value:byte(left + 1) or 0) < 192 do left = left - 1 end
+                while right <= #value and (value:byte(right) or 0) >= 128 and (value:byte(right) or 0) < 192 do right = right + 1 end
+                value = value:sub(1, left) .. "[TRUNCATED originalBytes=" .. tostring(#value) .. "]" .. value:sub(right)
+            end
+            out[key] = value; remaining = remaining - #value
+        elseif type(value) == "boolean" or type(value) == "number" then out[key] = value end
+    end
+    return next(out) and out or nil
+end
+
 function D:_Append(level, source, code, message, context, options)
     options = type(options) == "table" and options or {}
     level = NormalizeLevel(level)
     source = NormalizeSource(source)
     code = NormalizeCode(code)
     message = tostring(message or "")
+    local faultEvidence = options.faultEvidence or FaultEvidence(level, context)
     context = SanitizeContext(context)
 
     self.sequence = (tonumber(self.sequence) or 0) + 1
@@ -127,6 +160,7 @@ function D:_Append(level, source, code, message, context, options)
         code = code,
         message = message,
         context = context,
+        faultEvidence = faultEvidence,
         at = now,
         count = math.max(1, math.floor(tonumber(options.count) or 1)),
         firstAt = tonumber(options.firstAt) or now,
@@ -138,6 +172,13 @@ function D:_Append(level, source, code, message, context, options)
     if options.writeLog ~= false and type(S.RecordLog) == "function" then
         local suffix = entry.count > 1 and (" · 重复 " .. tostring(entry.count - 1) .. " 次") or ""
         S.RecordLog(level, source, "[" .. code .. "] " .. message .. suffix .. ContextText(context))
+    end
+    -- 中文维护注释（2026-09-18，module-diagnostics-1）：全局 Diagnostics 仍是唯一错误 Authority；
+    -- ModuleDiagnosticsHub 只接收已经完成隐私裁剪/限长后的 detached entry 做有界模块投影。
+    -- 这里绝不因 Hub 缺失/异常改变原错误写入结果，避免“诊断系统故障反过来吞掉真实故障”。
+    local moduleHub = S.ModuleDiagnosticsHub
+    if type(moduleHub) == "table" and type(moduleHub.Observe) == "function" then
+        pcall(moduleHub.Observe, moduleHub, entry)
     end
     return entry
 end
@@ -166,10 +207,24 @@ end
 -- Repeated hot-loop problems are aggregated instead of writing hundreds of log
 -- rows.  The next eligible emission reports how many repeats were suppressed.
 function D:RateLimited(level, source, code, intervalMs, message, context)
+    level = NormalizeLevel(level)
     source = NormalizeSource(source)
     code = NormalizeCode(code)
     intervalMs = math.max(250, tonumber(intervalMs) or 5000)
-    local key = source .. "|" .. code
+    -- 维护（module-controls-diag-2）：共享ui/runtime source下不同模块不能互相吞错。
+    -- 仅取调用方显式归属字段，不在热路径做Registry遍历/模糊匹配；日志级别也独立限流。
+    local scope = ""
+    if type(context) == "table" then
+        for _, field in ipairs({ "moduleId", "featureId", "feature", "route", "store", "owner" }) do
+            local value = context[field]
+            if type(value) == "string" and value ~= "" then
+                -- 异常超长身份不截成碰撞键；退化为有界recent直接记录，不保存无界rate key。
+                if #value > 160 then return self:_Append(level, source, code, message, context) end
+                scope = field .. ":" .. value; break
+            end
+        end
+    end
+    local key = level .. "|" .. source .. "|" .. code .. "|" .. scope
     local now = NowMs()
     local state = self.rate[key]
 
@@ -190,9 +245,12 @@ function D:RateLimited(level, source, code, intervalMs, message, context)
     local repeats = tonumber(state.suppressed) or 0
     state.lastEmitAt = now
     state.suppressed = 0
+    -- 先从原primitive上下文冻结证据，再生成简短日志上下文；否则第二次可发射记录再次截断根因。
+    local evidence = FaultEvidence(level, context)
     local merged = SanitizeContext(context) or {}
     if repeats > 0 then merged.suppressedCount = repeats end
     return self:_Append(level, source, code, message, merged, {
+        faultEvidence = evidence,
         count = repeats + 1,
         firstAt = state.firstAt,
         lastAt = now,
@@ -250,14 +308,22 @@ end
 -- 事实，不重新调用 UnitGearScore。raw 文本被 Feature 限长到 48 字符；计数有界于数字字段，
 -- 不保存目标对象。这样用户复制一次诊断即可区分 API error、不可检查单位与格式化返回。
 function D.BuffGearLine(snap)
-    local dia = snap.buffDisplay and snap.buffDisplay.equipmentDiagnostics or nil
+    local buff = snap.buffDisplay
+    local dia = buff and buff.equipmentDiagnostics or nil
+    local state = buff and buff.equipmentState or nil
     if dia == nil then return "BuffGear：装备诊断不可用（功能未加载）" end
+    local rangedState = "unknown"
+    if type(state) == "table" then
+        rangedState = (state.rangedEnabled == true and "on" or "off")
+            .. "/" .. (state.rangedPresent == true and "present" or "empty")
+    end
     return "BuffGear：lane=" .. tostring(dia.laneTicks or 0) .. "次"
         .. " · reads=" .. tostring(dia.reads or 0)
         .. " · icons=" .. tostring(dia.validIcons or 0)
         .. " · empty=" .. tostring(dia.emptySlots or 0)
         .. " · errors=" .. tostring(dia.readErrors or 0)
         .. " · unresolvedSlots=" .. tostring(dia.unresolvedSlots or 0)
+        .. " · ranged=" .. rangedState
         .. " · source=" .. tostring(dia.lastReadSource or "none")
         .. " · iconField=" .. tostring(dia.iconField or "none")
         .. " · gear=" .. tostring(dia.gearScoreLastScope or "none")
@@ -647,17 +713,31 @@ function D:BuildFeatureStatusRows()
         rows[#rows].projectionPatch="unit-lines-raw-viewport-1"
     end
 
-    -- 范围辅助: needs circle points projected; renderer hides below 3.
+    -- 范围辅助：多圆模式；空 circles 与“全部关闭”都是合法配置，不能被误判成故障。
     do
         local feature = features.combat_range_assist
         local enabled = RuntimeEnabled("combat_range_assist")
         local projection = feature and feature.GetProjection and feature:GetProjection() or {}
-        local row = type(projection.rows) == "table" and projection.rows[1] or nil
-        local points = type(row) == "table" and type(row.points) == "table" and #row.points or 0
-        local visible = tonumber(row and row.visibleCount) or points
+        local projectionRows = type(projection.rows) == "table" and projection.rows or {}
+        local circleCount = tonumber(projection.circleCount) or 0
+        local enabledCircles = tonumber(projection.enabledCircleCount) or 0
+        local totalPoints, visible, renderedCircles = 0, 0, 0
+        local firstRenderable = nil
+        for _, candidate in ipairs(projectionRows) do
+            local pointCount = type(candidate) == "table" and type(candidate.points) == "table" and #candidate.points or 0
+            totalPoints = totalPoints + pointCount
+            visible = visible + (tonumber(candidate and candidate.visibleCount) or pointCount)
+            if pointCount >= 3 then
+                renderedCircles = renderedCircles + 1
+                if firstRenderable == nil then firstRenderable = candidate end
+            end
+        end
+        local row = firstRenderable or projectionRows[1] or nil
         local rangeTaskText, rangeTaskError = TaskEvidence("v3_business_range_assist_refresh")
         local refreshHealth = type(feature) == "table" and type(feature.RangeRefreshHealth) == "table" and feature.RangeRefreshHealth or {}
-        local rangeRefreshText = "刷新=尝试" .. tostring(tonumber(refreshHealth.attempts) or 0)
+        local rangeRefreshText = "刷新=" .. tostring(tonumber(refreshHealth.targetIntervalMs) or tonumber(projection.refreshMs) or "?") .. "ms"
+            .. "/尝试" .. tostring(tonumber(refreshHealth.attempts) or 0)
+            .. "/跳" .. tostring(tonumber(refreshHealth.skippedByCadence) or 0)
             .. "/失" .. tostring(tonumber(refreshHealth.failures) or 0)
             .. "/连续" .. tostring(tonumber(refreshHealth.consecutiveFailures) or 0)
         local rangeRefreshError = refreshHealth.lastError
@@ -666,7 +746,7 @@ function D:BuildFeatureStatusRows()
             if #rangeRefreshError > 96 then rangeRefreshError = rangeRefreshError:sub(1, 96) .. "…" end
         else rangeRefreshError = nil end
         if not enabled then
-            rows[#rows + 1] = FeatureRow("range_assist", "范围辅助", "off", "关闭 · 在范围辅助页开启", "开启后在角色脚下显示范围圆")
+            rows[#rows + 1] = FeatureRow("range_assist", "范围辅助", "off", "关闭 · 在范围辅助页开启", "开启后可在角色脚下显示用户自建范围圆")
         elseif ConsumerCount(feature) <= 0 then
             local attempts = type(guides) == "table" and tonumber(guides.acquireAttempts and guides.acquireAttempts.range) or 0
             local acqErr = type(guides) == "table" and type(guides.lastAcquireError) == "table" and guides.lastAcquireError.range or nil
@@ -678,20 +758,34 @@ function D:BuildFeatureStatusRows()
                 acqErr ~= nil and ("重开范围辅助开关；仍失败复制此行（" .. tostring(acqErr.error) .. "）")
                     or (heldDesync == true and "租约被外部清空，1 秒内自动重取；不恢复复制此行"
                     or "重开范围辅助开关；仍为 0 复制此行"))
-        elseif points >= 3 then
+        elseif circleCount <= 0 then
+            rows[#rows + 1] = FeatureRow("range_assist", "范围辅助", "ok",
+                "工作中 · circles=0 · 空配置 · " .. rangeTaskText .. " · " .. rangeRefreshText
+                .. (rangeTaskError ~= nil and (" · taskErr=" .. rangeTaskError) or "")
+                .. (rangeRefreshError ~= nil and (" · refreshErr=" .. rangeRefreshError) or ""),
+                "这是合法状态：新用户默认没有范围圆。到范围辅助页点击“新增范围圆”即可开始配置。")
+        elseif enabledCircles <= 0 then
+            rows[#rows + 1] = FeatureRow("range_assist", "范围辅助", "ok",
+                "工作中 · circles=" .. tostring(circleCount) .. " · enabled=0 · " .. rangeTaskText .. " · " .. rangeRefreshText
+                .. (rangeTaskError ~= nil and (" · taskErr=" .. rangeTaskError) or "")
+                .. (rangeRefreshError ~= nil and (" · refreshErr=" .. rangeRefreshError) or ""),
+                "这是合法状态：已创建范围圆但全部关闭。启用至少一个圆后才会投影和绘制。")
+        elseif renderedCircles > 0 then
             local rangeSampling = type(guides) == "table" and guides.lastRangeSampling or nil
             local calibration = type(row) == "table" and tostring(row.calibration or "-") or "-"
             local projFacts = type(row) == "table" and tostring(row.projFacts or "") or ""
             local rangeEvidence = ""
             if type(rangeSampling) == "table" then
                 rangeEvidence = " · 首点=" .. tostring(rangeSampling.first)
+                    .. " · 圆=" .. tostring(rangeSampling.circles or renderedCircles)
                     .. " · 宿主=" .. tostring(rangeSampling.hostVisible)
                     .. " · Host=" .. tostring(math.floor(tonumber(rangeSampling.hostOriginX) or 0)) .. "," .. tostring(math.floor(tonumber(rangeSampling.hostOriginY) or 0))
                     .. " · 视口=" .. tostring(math.floor(tonumber(rangeSampling.logicalWidth) or 0)) .. "x" .. tostring(math.floor(tonumber(rangeSampling.logicalHeight) or 0))
                     .. " · UIScale=" .. tostring(math.floor((tonumber(rangeSampling.uiScale) or 1) * 100) / 100)
             end
             rows[#rows + 1] = FeatureRow("range_assist", "范围辅助", "ok",
-                "工作中 · 圆周点 " .. tostring(points) .. " · 半径 " .. tostring(projection.radius or "?")
+                "工作中 · 圆 " .. tostring(renderedCircles) .. "/" .. tostring(enabledCircles) .. "/" .. tostring(circleCount)
+                .. " · 点 " .. tostring(totalPoints)
                 .. " · 校准=" .. calibration
                 .. (projFacts ~= "" and (" · " .. projFacts) or "")
                 .. " · rev=" .. tostring(tonumber(projection.revision) or 0)
@@ -700,7 +794,7 @@ function D:BuildFeatureStatusRows()
                 .. (rangeRefreshError ~= nil and (" · refreshErr=" .. rangeRefreshError) or ""),
                 (rangeTaskError ~= nil or rangeRefreshError ~= nil)
                     and "范围刷新曾出现异常；run/尝试继续增长且连续=0 表示已恢复，若连续失败增长请复制此行"
-                    or (points < 8 and "点数偏少：检查投影失败计数" or nil))
+                    or "可在页面中为不同圆分别配置半径、密度、点大小、透明度与颜色。")
         else
             local reasonText = nil
             local projHealth = S.Services and S.Services.ScreenProjectionV3 and S.Services.ScreenProjectionV3.GetHealth and S.Services.ScreenProjectionV3:GetHealth() or {}
@@ -713,6 +807,8 @@ function D:BuildFeatureStatusRows()
             local batchText = ""
             if type(batch) == "table" then
                 batchText = " · 批次=" .. tostring(batch.mode or "?")
+                    .. "/刚性=" .. tostring(batch.rigidBatch == true)
+                    .. "/源=" .. tostring(batch.rigidSource or "-")
                     .. "/原" .. tostring(tonumber(batch.native) or 0)
                     .. "/相" .. tostring(tonumber(batch.camera) or 0)
                     .. "/原拒" .. tostring(tonumber(batch.nativeRejected) or 0)
@@ -720,7 +816,8 @@ function D:BuildFeatureStatusRows()
                 if batch.frameErr ~= nil then batchText = batchText .. "/相机错=" .. CompactLogText(batch.frameErr) end
             end
             rows[#rows + 1] = FeatureRow("range_assist", "范围辅助", "down",
-                "可见点不足(" .. tostring(points) .. "/3 以下不绘制) · 世界位置或投影失败"
+                "可绘制圆为 0/" .. tostring(enabledCircles) .. "(" .. tostring(circleCount) .. " 总配置) · 总点 " .. tostring(totalPoints)
+                .. " · 世界位置或投影失败"
                 .. " · " .. rangeTaskText .. " · " .. rangeRefreshText .. batchText
                 .. (reasonText ~= nil and (" · 原因:" .. reasonText) or "")
                 .. (rangeTaskError ~= nil and (" · taskErr=" .. rangeTaskError) or "")
@@ -792,9 +889,14 @@ function D:BuildFeatureStatusRows()
         local management=type(health.management)=="table" and health.management or nil
         if management then
             local tracked=management.tracked or {}
-            rows[#rows].tracking={patch="status-retain-library-1",buff=tracked.buff or 0,
-                debuff=tracked.debuff or 0,auto=tracked.auto or 0,lastImport=management.lastImport,
-                -- 维护：追加库集成补丁标识，不替换已有留存版本；只读已有诊断，不额外请求图标。
+            local player=type(tracked.player)=="table" and tracked.player or {}
+            local target=type(tracked.target)=="table" and tracked.target or {}
+            rows[#rows].tracking={patch="status-tracking-scope-1",buff=tracked.buff or 0,
+                debuff=tracked.debuff or 0,auto=tracked.auto or 0,channelTotal=tracked.channelTotal or 0,
+                player={buff=player.buff or 0,debuff=player.debuff or 0,auto=player.auto or 0},
+                target={buff=target.buff or 0,debuff=target.debuff or 0,auto=target.auto or 0},
+                lastImport=management.lastImport,
+                -- 维护：只复制六通道计数与已有留存/Metadata 摘要；不扫描 Native、不输出追踪 ID 全集。
                 capture=management.freeze,metadata=management.metadata,libraryPatch=management.libraryPatch}
         end
     end
@@ -871,6 +973,43 @@ function D:BuildFeatureStatusRows()
                 .. " · 丢弃回调=" .. tostring(describe.droppedCallbacks or 0)
                 .. identityText,
                 describe.status == "idle" and "选择起点与目的地后查询" or nil)
+        end
+    end
+
+    -- 钓鱼：观察 Authority 与 Auto-R 事务/恢复状态必须同一行取证。
+    -- 中文维护：用户反馈“钓鱼没用”时，必须能区分目标 Buff 没读到、Consumer 未激活、战斗门、Native 写键失败和持久恢复 pending；诊断只读 projection，绝不触发改键。
+    do
+        local feature = features.Fishing
+        local enabled = RuntimeEnabled("life_fishing")
+        if not enabled then
+            rows[#rows + 1] = FeatureRow("fishing", "钓鱼", "off", "关闭 · 在钓鱼页开启", "开启页面/悬浮窗后才启动目标鱼观察")
+        elseif type(feature) ~= "table" or type(feature.GetProjection) ~= "function" then
+            rows[#rows + 1] = FeatureRow("fishing", "钓鱼", "down", "Fishing projection 不可用", "复制此行给维护者")
+        else
+            local projection = feature:GetProjection() or {}
+            local hotkey = type(projection.hotkey) == "table" and projection.hotkey or {}
+            local hotkeyStats = type(hotkey.stats) == "table" and hotkey.stats or {}
+            local status = tostring(projection.status or "?")
+            local writeFailures = tonumber(projection.writeFailures) or 0
+            local degraded = status == "error" or writeFailures > 0 or projection.lastWriteError ~= nil
+            local consumers = tonumber(feature.consumerCount) or 0
+            rows[#rows + 1] = FeatureRow("fishing", "钓鱼", degraded and "degraded" or "ok",
+                "patch=" .. tostring(projection.patch or "-")
+                .. " · 状态=" .. status
+                .. " · Consumer=" .. tostring(consumers)
+                .. " · Buff=" .. tostring(projection.buffId or "-")
+                .. " · 槽=" .. tostring(projection.slot or "-")
+                .. " · Zone=" .. tostring(projection.zoneGroup or "-")
+                .. " · Auto=" .. tostring(projection.autoArmed == true)
+                .. "/可用" .. tostring(projection.autoAvailable == true)
+                .. " · Recovery=" .. tostring(projection.recoveryPending == true)
+                .. " · 扫描=" .. tostring(projection.polls or 0) .. "/事件" .. tostring(projection.nativeEventRefreshes or 0)
+                .. " · writeFailures=" .. tostring(writeFailures)
+                .. " · Move=" .. tostring(hotkeyStats.moveAttempts or 0) .. "/" .. tostring(hotkeyStats.moveFailures or 0)
+                .. " · Restore=" .. tostring(hotkeyStats.restoreAttempts or 0) .. "/" .. tostring(hotkeyStats.restoreFailures or 0)
+                .. " · Hotkey=" .. tostring(hotkey.currentSlot or "-") .. "/src" .. tostring(hotkey.sourceSlot or "-")
+                .. (projection.lastWriteError and (" · last=" .. tostring(projection.lastWriteError)) or ""),
+                consumers <= 0 and "打开钓鱼页面或悬浮窗后再实钓；Consumer=0 时按设计不扫描" or (projection.autoBlockedReason and tostring(projection.autoBlockedReason) or nil))
         end
     end
 
@@ -1165,7 +1304,12 @@ function D:BuildSummary()
         -- 中文维护注释：只读取 Feature 的有界管理摘要，供部分覆盖/分类/冻结核验；不轮询 Native。
         "状态追踪：schema " .. tostring(snap.buffDisplay and snap.buffDisplay.schemaVersion or "-")
             .. " · Catalog " .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.catalog and snap.buffDisplay.management.catalog.effectCount or 0)
-            .. " · Auto " .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.tracked and snap.buffDisplay.management.tracked.auto or 0)
+            .. " · P(B/D/A) " .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.tracked and snap.buffDisplay.management.tracked.player and snap.buffDisplay.management.tracked.player.buff or 0)
+            .. "/" .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.tracked and snap.buffDisplay.management.tracked.player and snap.buffDisplay.management.tracked.player.debuff or 0)
+            .. "/" .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.tracked and snap.buffDisplay.management.tracked.player and snap.buffDisplay.management.tracked.player.auto or 0)
+            .. " · T(B/D/A) " .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.tracked and snap.buffDisplay.management.tracked.target and snap.buffDisplay.management.tracked.target.buff or 0)
+            .. "/" .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.tracked and snap.buffDisplay.management.tracked.target and snap.buffDisplay.management.tracked.target.debuff or 0)
+            .. "/" .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.tracked and snap.buffDisplay.management.tracked.target and snap.buffDisplay.management.tracked.target.auto or 0)
             .. " · Freeze " .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.freeze and snap.buffDisplay.management.freeze.active == true)
             .. "/" .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.freeze and snap.buffDisplay.management.freeze.count or 0)
             .. " · CD运行时 " .. tostring(snap.buffDisplay and snap.buffDisplay.management and snap.buffDisplay.management.cooldownRuntime or "missing"),
@@ -1191,9 +1335,9 @@ function D:BuildPopupPositioningReport() -- 中文维护注释：提供诊断页
     local snap = positioning:GetSnapshot() or {} -- 中文维护注释：快照是事件式有界 recent 事实，不触发 Native 扫描、Tick 或业务读取。
     local metrics = type(snap.metrics) == "table" and snap.metrics or {} -- 中文维护注释：Metrics 缺失时使用空表，报告仍可输出契约版本和最近记录。
     local sections = {} -- 中文维护注释：报告只在用户点击按钮时临时构建字符串数组，离开函数即可回收，不形成长期缓存。
-    sections[#sections + 1] = string.format("【RSUI Popup定位】v%s · Contract %s · space=%s · relative=%d · screenFix=%d/%d · fallback=%d", tostring(snap.version or "?"), tostring(snap.contractVersion or "?"), tostring(snap.coordinateSpace or "?"), tonumber(metrics.nativeRelativeApplies) or 0, tonumber(metrics.nativeScreenCorrections) or 0, tonumber(metrics.nativeScreenCorrectionFailures) or 0, tonumber(metrics.anchorFallbacks) or 0) -- 中文维护注释：首行直接证明当前是否进入 .18.191 Native-relative lane，以及 Native 边缘修正是否发生异常。
+    sections[#sections + 1] = string.format("【RSUI Popup定位】v%s · Contract %s · space=%s · relative=%d · resolved=%d · screenFix=%d/%d · fallback=%d", tostring(snap.version or "?"), tostring(snap.contractVersion or "?"), tostring(snap.coordinateSpace or "?"), tonumber(metrics.nativeRelativeApplies) or 0, tonumber(metrics.viewportResolvedApplies) or 0, tonumber(metrics.nativeScreenCorrections) or 0, tonumber(metrics.nativeScreenCorrectionFailures) or 0, tonumber(metrics.anchorFallbacks) or 0) -- 中文维护注释：同时输出 Native-relative 与 ColorField V2 viewport-resolved 两条车道次数；用户可直接证明当前颜色弹层是否进入新路径。
     local recent = type(snap.recent) == "table" and snap.recent or {} -- 中文维护注释：recent 由 PopupPositioning 限制最多 12 条，这里进一步只输出最后 6 条避免聊天文本失控。
-    if #recent == 0 then sections[#sections + 1] = "暂无 Popup 记录：请先打开一次出问题的下拉框，再点击本按钮。" end -- 中文维护注释：没有记录时给用户可执行指引，避免返回空白报告。
+    if #recent == 0 then sections[#sections + 1] = "暂无 Popup 记录：请先打开一次出问题的下拉框或颜色选择器，再点击本按钮。" end -- 中文维护注释：没有记录时给用户可执行指引，避免返回空白报告。
     local function NativeText(label, row) -- 中文维护注释：把 RU 原始 GetOffset/GetEffectiveOffset/GetExtent/GetEffectiveExtent 格式化为同一可复制结构，不对数值做任何坐标变换。
         row = type(row) == "table" and row or {} -- 中文维护注释：缺失采样统一按空表处理，报告不会因为某个 Widget 不提供 getter 而中断。
         return string.format("%s[%s] Off=%s,%s Ext=%s,%s Eff=%s,%s EffExt=%s,%s", tostring(label or "Native"), tostring(row.logicalId or "?"), tostring(row.offsetX or "?"), tostring(row.offsetY or "?"), tostring(row.extentW or "?"), tostring(row.extentH or "?"), tostring(row.effectiveX or "?"), tostring(row.effectiveY or "?"), tostring(row.effectiveW or "?"), tostring(row.effectiveH or "?")) -- 中文维护注释：保留所有原始值原样输出，维护者可直接判断 RU 不同 Widget 类型的坐标单位/父级语义差异。
@@ -1204,8 +1348,13 @@ function D:BuildPopupPositioningReport() -- 中文维护注释：提供诊断页
             local relative = type(row.relative) == "table" and row.relative or nil -- 中文维护注释：.18.191 Native-relative 记录包含 Trigger-local 偏移；旧绝对记录则保持 nil。
             if relative ~= nil then sections[#sections + 1] = string.format("Popup %s · mode=%s · placement=%s · rel=%s,%s · popup=%sx%s · trigger=%sx%s · source=%s · correction=%s/%s", tostring(row.id or "?"), tostring(row.mode or "?"), tostring(row.placement or "?"), tostring(relative.x or "?"), tostring(relative.y or "?"), tostring(relative.width or "?"), tostring(relative.height or "?"), tostring(relative.triggerWidth or "?"), tostring(relative.triggerHeight or "?"), tostring(row.anchorSource or "?"), tostring(row.nativeCorrectionAvailable), tostring(row.nativeCorrectionOk)) end -- 中文维护注释：相对记录首先输出“我们要求 Native 做什么”，与后面的“Native 实际返回什么”形成 A/B 证据。
             if relative ~= nil then sections[#sections + 1] = NativeText("Trigger", row.targetNative) .. " · " .. NativeText("PopupBefore", row.popupNativeBeforeCorrection) .. " · " .. NativeText("PopupAfter", row.popupNativeAfterCorrection) end -- 中文维护注释：Native-relative lane 输出 Trigger、修正前 Popup、修正后 Popup 三组原始事实，下一轮无需截图猜坐标。
-            local anchor, result = type(row.anchor) == "table" and row.anchor or nil, type(row.result) == "table" and row.result or nil -- 中文维护注释：保留旧绝对 solver 记录兼容，方便同时看到 size solver/point lane 的历史证据。
-            if relative == nil and anchor ~= nil and result ~= nil then sections[#sections + 1] = string.format("Popup %s · mode=absolute · Anchor=%s,%s %sx%s → Result=%s,%s %sx%s · placement=%s · source=%s", tostring(row.id or "?"), tostring(anchor.x or "?"), tostring(anchor.y or "?"), tostring(anchor.width or "?"), tostring(anchor.height or "?"), tostring(result.x or "?"), tostring(result.y or "?"), tostring(result.width or "?"), tostring(result.height or "?"), tostring(row.placement or "?"), tostring(row.anchorSource or "?")) end -- 中文维护注释：point/legacy absolute lane 仍输出统一格式，确保全局 Popup 审计没有盲区。
+            local anchor, result = type(row.anchor) == "table" and row.anchor or nil, type(row.result) == "table" and row.result or nil -- 中文维护注释：保留绝对 solver 记录；ColorField V2 的 viewport-resolved lane 也复用同一 Anchor/Result 事实。
+            if tostring(row.mode or "") == "viewport_resolved" and anchor ~= nil and result ~= nil then
+                sections[#sections + 1] = string.format("Popup %s · mode=viewport_resolved · Anchor=%s,%s %sx%s → Result=%s,%s %sx%s · placement=%s · source=%s", tostring(row.id or "?"), tostring(anchor.x or "?"), tostring(anchor.y or "?"), tostring(anchor.width or "?"), tostring(anchor.height or "?"), tostring(result.x or "?"), tostring(result.y or "?"), tostring(result.width or "?"), tostring(result.height or "?"), tostring(row.placement or "?"), tostring(row.anchorSource or "?"))
+                sections[#sections + 1] = NativeText("PopupBefore", row.popupNativeBeforeCorrection) .. " · " .. NativeText("PopupAfter", row.popupNativeAfterCorrection)
+            elseif relative == nil and anchor ~= nil and result ~= nil then
+                sections[#sections + 1] = string.format("Popup %s · mode=absolute · Anchor=%s,%s %sx%s → Result=%s,%s %sx%s · placement=%s · source=%s", tostring(row.id or "?"), tostring(anchor.x or "?"), tostring(anchor.y or "?"), tostring(anchor.width or "?"), tostring(anchor.height or "?"), tostring(result.x or "?"), tostring(result.y or "?"), tostring(result.width or "?"), tostring(result.height or "?"), tostring(row.placement or "?"), tostring(row.anchorSource or "?"))
+            end -- 中文维护注释：ColorField V2 额外输出修正前/后 Native 几何；point/legacy absolute lane 仍保持兼容。
         end -- 中文维护注释：结束单条 Popup 记录有效性分支。
     end -- 中文维护注释：结束最近 Popup 诊断循环。
     return table.concat(sections, "\n") -- 中文维护注释：返回可直接交给 SafeChat/用户复制的完整文本；函数本身不负责发送，保持 Diagnostics 与 Presentation 分层。
@@ -1514,6 +1663,14 @@ function D:BuildPersistenceFailureReport()
         lines[#lines+1] = id .. " key=" .. Safe(store.resolvedKey,240)
         lines[#lines+1] = id .. " trace=" .. Safe(store.lastIntegrityRecoveryTrace,240)
         lines[#lines+1] = id .. " probe=" .. Safe(store.lastHistoricalRecoveryProbe,240)
+        -- 中文维护注释（2026-09-18，.18.239 回读恢复取证）：Load 侧 historical probe 与
+        -- SaveData 立即回读的 representation probe 是两条不同数据流；`.238` 的报告只打印前者，
+        -- 导致 readback_fingerprint_mismatch 时无法判断 exact-twin 候选是“未进入/不匹配/已命中”。
+        -- 这里只在当前失败 Store 的显式诊断报告增加 bounded 文本，不读取 Native、不改变 Store、
+        -- 不进入 Tick；Authority 仍由 Persistence 的 VerifyPersistedValue / fingerprint 决定。
+        if store.lastReadbackRecoveryProbe ~= nil then
+            lines[#lines+1] = id .. " readbackProbe=" .. Safe(store.lastReadbackRecoveryProbe,240)
+        end
         if evidence.stampedFingerprint == nil then
             lines[#lines+1] = id .. " reason=" .. Safe(store.lastError or store.writeFenceReason,240)
         end

@@ -29,8 +29,195 @@ function F:Initialize()
     if ok ~= true then return false, err end
     local progress = S.Services and S.Services.QuestProgressV3 or nil
     if type(progress) == "table" then
-        self.Authority:SetQuestProgressProvider(function(scope, key) return progress:GetQuestProgress(scope, key) end)
+        -- 中文维护注释（2026-09-21，activity-progress-selection-1）：只有 QuestProgress 明确提供 detached
+        -- per-objective facts 契约时，Activity Authority 才启用个人分母投影。这样用户只覆盖一部分补丁文件时
+        -- 会安全退回原始 0/N，而不是因为 objectiveStates 缺失把进度变成 --/0。QuestProgress 仍独占 Native
+        -- 任务事实；正常路径不会增加 Quest API 读取，只过滤其刷新时已经生成的 detached objectiveStates。
+        if (tonumber(progress.ActivityObjectiveFactsContractVersion) or 0) >= 1 then
+            self.Authority:SetQuestProgressProvider(function(scope, key) return F:GetActivityQuestProgress(scope, key) end)
+        else
+            self.Authority:SetQuestProgressProvider(function(scope, key) return progress:GetQuestProgress(scope, key) end)
+        end
         self.Authority:SetInstanceProgressProvider(function(scope, key) return progress:GetInstanceProgress(scope, key) end)
+    end
+    return true
+end
+
+
+local function ProgressTone(completed, total, activeCount, readyCount, available)
+    if available ~= true then return "muted" end
+    if total > 0 and completed >= total then return readyCount > 0 and "orange" or "green" end
+    if readyCount > 0 then return "orange" end
+    if activeCount > 0 or completed > 0 then return "yellow" end
+    return "muted"
+end
+
+local function ObjectiveTokens(snapshot)
+    local tokens = {}
+    for _, row in ipairs(type(snapshot) == "table" and type(snapshot.objectiveStates) == "table" and snapshot.objectiveStates or {}) do
+        local token = tostring(type(row) == "table" and row.trackingKey or "")
+        if token ~= "" then tokens[#tokens + 1] = token end
+    end
+    return tokens
+end
+
+local function CopyShallow(value)
+    local out = {}
+    for key, item in pairs(type(value) == "table" and value or {}) do out[key] = item end
+    return out
+end
+
+-- Personal x/y projection. Missing/unreadable preference Store always falls back to all canonical main objectives,
+-- so a UI preference failure can never turn a verified 0/6 into -- or 0/0. Tail-in-flight counters remain raw quest
+-- facts: hiding a stage from personal progress must not prematurely end the event's schedule tail while that quest is active.
+function F:ProjectActivityProgress(scope, key, snapshot)
+    scope, key = tostring(scope or "event"), tostring(key or "")
+    if type(snapshot) ~= "table" or scope ~= "event" or snapshot.progressSelectionEnabled ~= true then return snapshot end
+    local eligible = ObjectiveTokens(snapshot)
+    local selected, configured, selectionAvailable, selectionErr = self:GetDetailProgressSelection(key, eligible)
+    local completed, activeCount, readyCount, total = 0, 0, 0, 0
+    for _, fact in ipairs(type(snapshot.objectiveStates) == "table" and snapshot.objectiveStates or {}) do
+        local token = tostring(type(fact) == "table" and fact.trackingKey or "")
+        if token ~= "" and selected[token] == true then
+            total = total + 1
+            if fact.completed == true then completed = completed + 1 end
+            if fact.active == true then activeCount = activeCount + 1 end
+            if fact.ready == true then readyCount = readyCount + 1 end
+        end
+    end
+    -- Defensive fallback for malformed/stale selection. Command rejects removing the final item, but a future data
+    -- migration must not render an impossible denominator if all saved tokens vanished from the verified catalog.
+    if total <= 0 and #eligible > 0 then
+        selected = {}; completed, activeCount, readyCount, total = 0, 0, 0, 0
+        for _, fact in ipairs(snapshot.objectiveStates or {}) do
+            local token = tostring(fact.trackingKey or "")
+            if token ~= "" then
+                selected[token] = true; total = total + 1
+                if fact.completed == true then completed = completed + 1 end
+                if fact.active == true then activeCount = activeCount + 1 end
+                if fact.ready == true then readyCount = readyCount + 1 end
+            end
+        end
+        configured = false
+    end
+    local out = CopyShallow(snapshot)
+    out.baseCompleted, out.baseTotal = tonumber(snapshot.completed) or 0, tonumber(snapshot.total) or 0
+    out.completed, out.total = completed, total
+    out.activeCount, out.readyCount = activeCount, readyCount
+    out.available = snapshot.available == true and total > 0
+    out.text = out.available and (tostring(completed) .. "/" .. tostring(total)) or "--"
+    out.tone = ProgressTone(completed, total, activeCount, readyCount, out.available)
+    out.progressSelectionConfigured = configured == true
+    out.progressSelectionAvailable = selectionAvailable == true
+    out.progressSelectionError = selectionErr
+    out.progressSelectionSelected = total
+    out.progressSelectionEligible = #eligible
+    return out
+end
+
+function F:GetActivityQuestProgress(scope, key)
+    local progress = S.Services and S.Services.QuestProgressV3 or nil
+    if type(progress) ~= "table" or type(progress.GetQuestProgress) ~= "function" then return nil end
+    local snapshot = progress:GetQuestProgress(scope, key)
+    return self:ProjectActivityProgress(scope, key, snapshot)
+end
+
+-- Detail projection uses the same Store semantics as the compact activity row. Presentation receives detached rows
+-- already marked progressSelected/progressSelectable and never computes its own denominator.
+function F:ProjectActivityDetail(detail)
+    if type(detail) ~= "table" or tostring(detail.scope or "event") ~= "event" or detail.progressSelectionEnabled ~= true then
+        return detail
+    end
+    local eligible = {}
+    for _, row in ipairs(type(detail.children) == "table" and detail.children or {}) do
+        if type(row) == "table" and row.journal ~= true and row.related ~= true and row.counted == true then
+            local token = tostring(row.trackingKey or "")
+            if token ~= "" then eligible[#eligible + 1] = token end
+        end
+    end
+    local selected, configured, selectionAvailable, selectionErr = self:GetDetailProgressSelection(detail.key, eligible)
+    local out = CopyShallow(detail)
+    out.children = {}
+    local completed, activeCount, readyCount, total = 0, 0, 0, 0
+    local QS = S.Constants and S.Constants.QuestStatus or {
+        IN_PROGRESS = "IN_PROGRESS", READY_TO_TURN_IN = "READY_TO_TURN_IN", COMPLETED = "COMPLETED",
+    }
+    for _, sourceRow in ipairs(type(detail.children) == "table" and detail.children or {}) do
+        local row = CopyShallow(sourceRow)
+        local token = tostring(row.trackingKey or "")
+        if row.journal == true then
+            row.progressSelected = selected[tostring(row.parentTrackingKey or "")] == true
+            row.progressSelectable = false
+        elseif row.related ~= true and row.counted == true and token ~= "" then
+            row.progressSelectable = true
+            row.progressSelected = selected[token] == true
+            if row.progressSelected then
+                total = total + 1
+                if row.state == QS.COMPLETED or row.state == QS.READY_TO_TURN_IN then completed = completed + 1 end
+                if row.state == QS.READY_TO_TURN_IN then readyCount = readyCount + 1 end
+                if row.state == QS.IN_PROGRESS then activeCount = activeCount + 1 end
+            end
+        else
+            row.progressSelectable = false
+            row.progressSelected = false
+        end
+        out.children[#out.children + 1] = row
+    end
+    if total <= 0 and #eligible > 0 then
+        -- Same stale-selection recovery as compact projection; mark every main row selected without writing Store.
+        completed, activeCount, readyCount, total = 0, 0, 0, 0
+        for _, row in ipairs(out.children) do
+            if row.related ~= true and row.counted == true and row.journal ~= true and tostring(row.trackingKey or "") ~= "" then
+                row.progressSelected = true; total = total + 1
+                if row.state == QS.COMPLETED or row.state == QS.READY_TO_TURN_IN then completed = completed + 1 end
+                if row.state == QS.READY_TO_TURN_IN then readyCount = readyCount + 1 end
+                if row.state == QS.IN_PROGRESS then activeCount = activeCount + 1 end
+            elseif row.journal == true then row.progressSelected = true end
+        end
+        configured = false
+    end
+    out.baseCompleted, out.baseTotal = tonumber(detail.completed) or 0, tonumber(detail.total) or 0
+    out.completed, out.total = completed, total
+    out.activeCount, out.readyCount = activeCount, readyCount
+    out.progressSelectionConfigured = configured == true
+    out.progressSelectionAvailable = selectionAvailable == true
+    out.progressSelectionError = selectionErr
+    out.progressSelectionSelected = total
+    out.progressSelectionEligible = #eligible
+    local summary = "个人进度 " .. tostring(completed) .. "/" .. tostring(total)
+    if readyCount > 0 then summary = summary .. " · " .. tostring(readyCount) .. " 项可交付" end
+    if activeCount > 0 then summary = summary .. " · " .. tostring(activeCount) .. " 项进行中" end
+    local relatedCount = math.max(0, math.floor(tonumber(detail.relatedCount) or 0))
+    if relatedCount > 0 then summary = summary .. " · " .. tostring(relatedCount) .. " 项关联任务" end
+    if type(detail.journal) == "table" then
+        if (tonumber(detail.journal.included) or 0) > 0 then summary = summary .. " · " .. tostring(detail.journal.included) .. " 条任务目标" end
+        if (tonumber(detail.journal.unavailable) or 0) > 0 then summary = summary .. " · 目标暂不可用 " .. tostring(detail.journal.unavailable) end
+        if (tonumber(detail.journal.omitted) or 0) > 0 then summary = summary .. " · 目标预算未读 " .. tostring(detail.journal.omitted) end
+    end
+    out.summaryText = summary
+    return out
+end
+
+function F:SetProgressTaskSelected(eventKey, token, enabled, source)
+    eventKey, token = tostring(eventKey or ""), tostring(token or "")
+    local progress = S.Services and S.Services.QuestProgressV3 or nil
+    if type(progress) ~= "table" or type(progress.GetQuestProgress) ~= "function" then return false, "新版任务进度服务不可用" end
+    local snapshot = progress:GetQuestProgress("event", eventKey)
+    if type(snapshot) ~= "table" or snapshot.progressSelectionEnabled ~= true then return false, "当前活动尚未开放个人进度选择" end
+    local eligible = ObjectiveTokens(snapshot)
+    local changed, changeErr = self:SetDetailProgressTaskSelected(eventKey, token, enabled == true, eligible, source or "activity_detail")
+    if changed ~= true then return false, changeErr end
+    -- Selection is pure preference; recompute existing Activity rows immediately from cached Quest facts. No Native
+    -- refresh is needed, and if the main page/widget is closed there is no Activity consumer to wake.
+    if self.enabled == true and self.consumerCount > 0 then
+        local refreshed, refreshErr = self.Authority:Refresh("progress_selection")
+        if refreshed == false and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Record) == "function" then
+            -- 中文维护注释：到这里 Store 事务已经成功，不能因为一次 Presentation 投影刷新失败而
+            -- 对调用者谎报“设置失败”，否则用户重试会对同一持久化偏好执行相反操作。记录告警后
+            -- 保持成功；下一次 Activity 定时刷新/重新打开会从 Store + 缓存 Quest facts 自动收敛。
+            S.DiagnosticsManager:Record("warning", "activities_v3",
+                "个人进度选择已保存，但活动投影即时刷新失败: " .. tostring(refreshErr or "unknown"))
+        end
     end
     return true
 end
@@ -263,6 +450,19 @@ function F:GetRows()
     return self.Authority:GetRows()
 end
 
+-- 中文维护注释（2026-09-18，Activity Timeline v2 只读边界）：
+-- Presentation 需要区分“时间线”和“实时区域”，但 Feature 仍是唯一对外 read-model 边界，
+-- 页面/悬浮窗禁止直接持有 Authority 表或自行重新排序。这里仅透传 Authority 的同一 revision 快照；
+-- 不创建缓存、不触发 Native、不写 Store。以后如果 UI 需要分段渲染，应继续通过这两个 getter，
+-- 禁止复制 BuildStaticRows/BuildZoneRows 逻辑到 Presentation。
+function F:GetTimelineRows()
+    return self.Authority:GetTimelineRows()
+end
+
+function F:GetLiveRows()
+    return self.Authority:GetLiveRows()
+end
+
 function F:GetRow(key)
     return self.Authority:GetRow(key)
 end
@@ -347,6 +547,9 @@ function F:SetWidgetVisible(visible, source)
     return true
 end
 
+-- 只读诊断契约，供模块页面展示已采样时钟；Presentation 不直接访问 Authority。
+function F:GetTimingDiagnostics() return self.Authority:GetTimingDiagnostics() end
+
 function F:GetHealth()
     local summary = self.Authority:GetSummary()
     local progress = S.Services and S.Services.QuestProgressV3 or nil
@@ -355,13 +558,21 @@ function F:GetHealth()
         ok = self.enabled == true,
         consumers = self.consumerCount,
         rows = summary.total,
-        active = summary.active,
+        active = summary.active, -- 历史兼容健康字段；新诊断/Presentation 应优先使用下面的 timeline/live 分离字段。
+        -- 中文维护注释：Health 只投影计数和契约版本，不能反向成为排序 Authority；诊断读取这些值也不得启动 Consumer。
+        timelineActive = summary.timelineActive,
+        timelineRows = summary.timelineTotal,
+        liveActive = summary.liveActive,
         liveZones = summary.liveZones,
+        timelineContractVersion = summary.timelineContractVersion,
         zoneScanFailures = summary.zoneScanFailures,
+        -- 模块诊断包含冻结的时钟证据/JMG方向，不触发采样或读存档；避免“时间不对”只能猜时差。
+        timing = self.Authority:GetTimingDiagnostics(),
         questProgressMigrated = summary.progressAuthority == true,
         progressRevision = type(progressHealth) == "table" and progressHealth.revision or 0,
         progressAvailable = type(progressHealth) == "table" and progressHealth.available or 0,
         progressFailures = type(progressHealth) == "table" and progressHealth.refreshFailures or 0,
+        progressSelectionContractVersion = tonumber(self.ProgressSelectionContractVersion) or 0,
     }
 end
 
@@ -374,6 +585,12 @@ function F.Commands:SetWidgetSize(width, height, source) return F:SetWidgetSize(
 function F.Commands:RefreshProjection(reason, scanZones) return F:RefreshProjection(reason or "activity_command", scanZones) end
 function F.Commands:HideEvent(key) return F:HideEvent(key) end
 function F.Commands:RestoreHiddenEvents() return F:RestoreHiddenEvents() end
+-- 中文维护注释（2026-09-21，活动个人进度 Command 边界）：勾选集合直接决定该活动的个人 x/y。
+-- Command 只允许 QuestProgressV3 已发布、且静态组显式 opt-in 的 main objective token；related/journal
+-- 永远不能通过 UI 混入分母。修改后只从缓存任务事实重建 Activity Projection，不额外读取 Native。
+function F.Commands:SetProgressTaskSelected(eventKey, token, enabled, source)
+    return F:SetProgressTaskSelected(eventKey, token, enabled == true, source or "activity_detail")
+end
 function F.Commands:ResetWidgetVisibility(source)
     -- Presentation calls this when a lifecycle auto-show fails so the persisted
     -- preference cannot claim a window that is not on screen.
@@ -386,3 +603,26 @@ end
 
 local ok, err = Runtime:RegisterImplementation(F.Id, F)
 if ok ~= true then error(err) end
+
+-- 关注批量命令：由 Activity Store 接受显示偏好；不启动计时器、不申请消费者。
+-- 全部校验后单事务持久化；旧隐藏名称保留，失败用既有 MutateStore 回滚。
+function F:GetAttentionCatalog()
+    local ok, err=self:EnsureStoreLoaded(); if not ok then return {},err end
+    return self.Authority:GetAttentionCatalog()
+end
+function F.Commands:SetAttention(keys, enabled)
+    if type(keys)~="table" or #keys>512 then return false,"无效活动选择" end
+    local rows,err=F:GetAttentionCatalog();if err then return false,err end
+    local known={};for _,row in ipairs(rows)do known[row.id]=true end
+    for _,key in ipairs(keys)do if not known[key]then return false,"未知活动："..tostring(key)end end
+    if #keys==0 then return true end
+    local ok,why=F:MutateStore(function()
+        F.State.hiddenEvents=F.State.hiddenEvents or {}
+        for _,key in ipairs(keys)do F.State.hiddenEvents[key]=enabled~=true or nil end
+        return true
+    end,200,"activity_attention_batch", true)
+    if not ok then return false,why end
+    if F.enabled and F.consumerCount>0 then return F.Authority:Refresh("attention_changed")end
+    if S.Events then S.Events:Publish("v3.activities.updated",nil,"attention_changed")end
+    return true
+end

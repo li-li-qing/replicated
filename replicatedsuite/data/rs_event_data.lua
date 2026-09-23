@@ -45,6 +45,10 @@ local function Add(fullName, shortName, entries, questKey, options)
         -- most recent occurrence visible while one of the group's explicitly
         -- marked follow-up objectives is still active/ready.
         item.taskTailMinutes = tonumber(options.taskTailMinutes)
+        -- 维护（activity-time-audit）：证据等级仅供显示/诊断；不改 fullName/key 或旧关注配置。
+        -- 两份第三方表一致也不等于当前官方核验，计划时长不能作为首领存活 Authority。
+        item.scheduleConfidence = options.scheduleConfidence
+        item.scheduleEvidence = options.scheduleEvidence
         E[#E + 1] = item
     end
 end
@@ -70,7 +74,7 @@ Add(O.SUNGOLD_CRIMSON or "煦日之野征兆", "煦日征兆", Times(ALL,10,{{1,
 -- These are server-clock slots from the current addon baseline; do NOT apply a
 -- blanket Beijing +/-5h conversion. Change them only after a current RU schedule
 -- source or live server observation verifies the exact occurrence times.
-Add(O.JMG or "JMG", "JMG", Times(ALL,15,{{3,20},{7,20},{11,20},{15,20},{19,20},{23,20}}), "jmg", { microName="JMG" })
+Add(O.JMG or "JMG", "JMG", Times(ALL,15,{{3,20},{7,20},{11,20},{15,20},{19,20},{23,20}}), "jmg", { microName="JMG", scheduleConfidence="reference", scheduleEvidence="当前工程与用户 TimeUntil(1) 时刻一致；当前 RU 具体场次待实机核对；15 分钟为计划显示窗口" })
 -- Lusca / 海妖之乱: use the portal/main-event opening as schedule Authority.
 -- Current RU live observation reports the portal at 12:30 / 22:00 server
 -- time.  Do not subtract ten minutes for an earlier monster-wave phase: the
@@ -101,7 +105,12 @@ Add("血之使者卡杜姆", "卡杜姆", Times({1,3,5,7},30,{{2,0},{10,30},{20,
 Add("小泰坦", "小泰坦", Times({3,6},15,{{4,0},{7,0},{10,0},{13,0},{16,0},{19,0},{22,0}}), nil, { activeFrom="2026-05-27", activeUntil="2026-06-23", microName="小泰" })
 Add("大泰坦", "大泰坦", Times({4,7},15,{{14,0},{21,0}}), nil, { activeFrom="2026-05-27", activeUntil="2026-06-23", microName="大泰" })
 Add(O.ABYSSAL or "深渊之袭", "深渊", Times({3,5,7},30,{{12,0},{22,30}}), "abyssal", { microName="深渊" })
-Add("翡翠谷征兆", "翡翠征兆", Times({1,2,3,4},15,{{18,49},{20,49}}), "hasla_shadow", { microName="翡翠" })
+-- 维护（activity-time-audit）：原表把每天的 Hasla 限为周日到周三且提前11分钟，周五会显示“两天后”。
+-- RU Wiki 任务9000068文本明确每天21:00；19:00仅用户提供的 TimeUntil(1) 有记录，必须标参考。
+-- 两场共用原活动 key/任务；15分钟仍只是计划窗口，不宣称怪物必定存在或精确结束。
+-- https://wiki.archerage.to/ru-en/db/quests/9000068 （2026-09-18核对）。不把 NA 日程套给 RU。
+Add("翡翠谷征兆", "翡翠征兆", Times(ALL,15,{{19,0}}), "hasla_shadow", { microName="翡翠", scheduleConfidence="reference", scheduleEvidence="用户 TimeUntil(1)；19:00场待 RU 实机确认" })
+Add("翡翠谷征兆", "翡翠征兆", Times(ALL,15,{{21,0}}), "hasla_shadow", { microName="翡翠", scheduleConfidence="quest_text", scheduleEvidence="RU Wiki quest 9000068: Every day at 9pm；15分钟为计划窗口" })
 -- Akasch Invasion / Ipnya Defense. Version 9.0 removed Monday, leaving
 -- Friday/Saturday. The maintained RU timer has a dedicated 2025 fix that
 -- keeps Saturday's third start at 21:30 and shifts Friday's third start to
@@ -163,14 +172,18 @@ S.Data.DynamicEventZones = {
     -- Garden of the Gods is zone 133 on the ArcheRage client/database.
     -- Ordinary Garden raid bosses are tied to the live War phase, while
     -- Garden Anthalon keeps its separate fixed weekly schedule above.
-    -- Render this as a normal activity row instead of a fifth zone-strip cell.
+    -- 中文维护注释（2026-09-19，Garden phase migration）：同一个庭院事实按阶段互斥投影。
+    -- WAR 前作为 timeline 倒计时提醒玩家提前去四 Boss；Native 确认进入 WAR 后只在 live section 显示战争剩余时间。
+    -- 不在 Presentation 层复制这套判断，也不把 1h50m 写成本地计时；WAR 剩余时间继续直接消费 X2Map.remainTime。
     [133] = {
         name = "庭院Boss", fullName = "庭院Boss", shortName = "庭院", microName = "庭院",
         sourceName = "Garden of the Gods",
-        -- Generic Garden War/boss availability has no single verified quest
-        -- mapping.  Do not attach Fairy Request (10056), which is an unrelated
-        -- ordinary Garden daily.
-        liveRowOnly = true,
+        -- 中文维护注释（2026-09-22，Garden Fairy Request）：庭院战争/Boss 时间事实仍由 zone 133
+        -- 的 Native 状态独占；但玩家在同一庭院活动期间实际追踪的刷分任务是“精灵的委托”(10056)。
+        -- 因此这里只建立 Presentation 关联：点击庭院活动时打开 garden_fairy 任务详情，并在活动行显示
+        -- 该任务的未接/进行中/可交付/已完成状态。禁止把 Quest 状态反向当成战争/Boss 存活 Authority。
+        -- QuestProgressV3 会在详情中读取原生 Journal Objective；未验证结构化分数前不解析本地积分阈值。
+        questScope = "event", questKey = "garden_fairy",
         -- Current RU rules retain a 10-minute Conflict immediately before War.
         -- During Peace we can therefore derive the next boss window from the
         -- authoritative remaining Peace time plus this Conflict lead.
@@ -192,15 +205,15 @@ S.Data.DynamicEventZones = {
         name = O.WHALESONG or "鲸鱼歌湾", fullName = O.WHALESONG or "鲸鱼歌湾",
         questScope = "event", questKey = "whalesong", sourceName = "Whalesong",
         inlineOnly = true,
-        -- RU-server live rule confirmed by the user: during War, the map's
-        -- authoritative remaining-time counter triggers the Whalesong Boss
-        -- when it reaches 1h16m.  This is a War-remaining threshold, NOT an
-        -- elapsed offset after War begins.
-        bossWarRemainMinutes = 76,
-        -- The Boss normally dies within roughly one minute after spawning.  The
-        -- display therefore uses a short Boss-active band down to 1h15m, then
-        -- falls back to the ordinary War remainder without "进行中".
-        bossActiveUntilWarRemainMinutes = 75,
+        -- 中文维护注释（2026-09-19，Whalesong live calibration）：RU 实机再次观测证明旧 76m
+        -- 触发点晚约 1 分钟；继续把 X2Map.remainTime 作为唯一 Authority，只校正数据阈值，
+        -- 不从本地观察时刻制造 Boss 时间。Boss 刷新点改为战争剩余 1h17m。
+        -- 兼容边界：这不是 Store/用户配置，不迁移旧存档；后续若服务器规则再次变化，
+        -- 只改此数据 Authority 与对应回归测试，禁止在 Presentation 中加减补偿秒数。
+        bossWarRemainMinutes = 77,
+        -- 保持原先约 1 分钟的“已到刷新时间”窗口，因此结束阈值同步前移到 1h16m。
+        -- 这里表示推导窗口，不声称 Boss 实际存活到该秒。
+        bossActiveUntilWarRemainMinutes = 76,
         bossLabel = "Boss",
     },
 }

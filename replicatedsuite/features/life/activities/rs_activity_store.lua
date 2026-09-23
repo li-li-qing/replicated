@@ -315,3 +315,377 @@ function F:MutateStore(mutator, delayMs, reason, durable)
         delayMs = tonumber(delayMs) or 500, reason = tostring(reason or "activity_changed"), durable = durable == true,
     })
 end
+
+------------------------------------------------------------------------
+-- Activity personal progress-selection preferences (isolated Store)
+--
+-- 中文维护注释（2026-09-21，activity-progress-selection-1）：
+-- 问题原因：上一版把“追踪”做成纯详情收藏，因此征兆无论用户勾选几项都固定显示 0/6；真实需求是
+-- “被勾选的主任务就是个人进度集合”，例如只保留后三阶段时必须显示 0/3。Authority：本 Store 只拥有
+-- “哪些 Activity main objective 计入个人 x/y”的偏好；Quest 完成/进行中/可交付事实仍由 QuestProgressV3
+-- 独占，related/Boss 旁支若在 relatedObjectives 中则永远只是参考，不能进入分母。数据流：QuestProgressV3
+-- 发布稳定 main token + 状态 -> Activities Feature 用本 Store 选择集合投影 personalized progress -> Activity
+-- Authority/详情 UI 只消费投影。兼容边界：物理 Store ID 保持 `v3.activities.detail_tracking`，但 schema1 的
+-- “详情收藏”语义错误，schema2 迁移时明确重置为“未配置=默认全选”，避免旧收藏突然改变玩家 0/6；主
+-- `v3.activities` schema8、窗口几何、hiddenEvents 均不触碰。实现理由：未配置用“隐式全选”，只有用户
+-- 第一次取消某项才物化子集，既满足旧用户默认 0/6，也减少持久化体积。风险/维护：当前只允许静态组显式
+-- opt-in（首个是 crimson）；未来其它活动必须先核验其主任务语义后再开启，禁止全局自动套用。
+------------------------------------------------------------------------
+local DETAIL_TRACKING_STORE_ID = "v3.activities.detail_tracking"
+local DETAIL_TRACKING_SCHEMA = 2
+local DETAIL_TRACKING_CODEC = 2
+local DETAIL_TRACKING_MAX_GROUPS = 64
+local DETAIL_TRACKING_MAX_TOKENS = 24
+
+local function NormalizeDetailTrackingToken(value)
+    local token = tostring(value or "")
+    if token == "" or #token > 128 then return nil end
+    return token
+end
+
+local function NormalizeDetailTracking(value)
+    value = type(value) == "table" and value or {}
+    local source = type(value.groups) == "table" and value.groups or {}
+    local groups, groupCount = {}, 0
+    for rawKey, rawBucket in pairs(source) do
+        local groupKey = tostring(rawKey or "")
+        if groupKey ~= "" and #groupKey <= 96 and groupCount < DETAIL_TRACKING_MAX_GROUPS then
+            local tokens, tokenCount = {}, 0
+            local tokenSource = type(rawBucket) == "table" and rawBucket or {}
+            for rawToken, enabled in pairs(tokenSource) do
+                local candidate = nil
+                if enabled == true then candidate = rawToken
+                elseif type(rawToken) == "number" and type(enabled) == "string" then candidate = enabled end
+                local token = NormalizeDetailTrackingToken(candidate)
+                -- schema2 只持久化主进度身份；任何旧 related 收藏在迁移/归一时都丢弃，避免旁支进入分母。
+                if token ~= nil and string.sub(token, 1, 5) == "main:" and tokens[token] ~= true
+                    and tokenCount < DETAIL_TRACKING_MAX_TOKENS then
+                    tokens[token] = true
+                    tokenCount = tokenCount + 1
+                end
+            end
+            -- 空 bucket 不落盘：缺失 group 就是“未配置，默认全选”。显式 0 项没有业务意义，Command
+            -- 也会拒绝取消最后一项，因此这里不需要第二种空集合表示。
+            if tokenCount > 0 then
+                groups[groupKey] = tokens
+                groupCount = groupCount + 1
+            end
+        end
+    end
+    return { groups = groups }
+end
+
+local function SortedDetailTrackingGroups(value)
+    local normalized = NormalizeDetailTracking(value)
+    local keys = {}
+    for key in pairs(normalized.groups) do keys[#keys + 1] = key end
+    table.sort(keys)
+    local out = {}
+    for _, key in ipairs(keys) do
+        local tokens = {}
+        for token in pairs(normalized.groups[key]) do tokens[#tokens + 1] = token end
+        table.sort(tokens)
+        out[#out + 1] = { key = key, tokens = tokens }
+    end
+    return out
+end
+
+local function EncodeDetailTracking(value)
+    return {
+        codec = DETAIL_TRACKING_CODEC,
+        payload = { groups = SortedDetailTrackingGroups(value) },
+    }
+end
+
+local function DecodeDetailTracking(raw)
+    if type(raw) ~= "table" then return nil, "activity_progress_selection_payload_required" end
+    local payload = type(raw.payload) == "table" and raw.payload or raw
+    local rows = type(payload.groups) == "table" and payload.groups or {}
+    local domain = { groups = {} }
+    if rows[1] ~= nil then
+        for _, row in ipairs(rows) do
+            if type(row) == "table" then
+                local key = tostring(row.key or "")
+                if key ~= "" and type(row.tokens) == "table" then domain.groups[key] = row.tokens end
+            end
+        end
+    else
+        domain.groups = rows
+    end
+    return NormalizeDetailTracking(domain), nil
+end
+
+-- 中文维护注释（2026-09-21，activity-progress-selection-schema1-integrity-recovery）：
+-- 问题原因：detail_tracking 的 schema1 使用 codec=1，schema2 为了改变“收藏”语义升级为 codec=2。Persistence
+-- Integrity v4 会在 schema migration **之前**用当前 typed codec 重建 canonical，因此一个完全健康的 schema1
+-- 空 Store 会从旧指纹 1013634B 被当前 codec 重算成 5CF32E2D 并正确触发 fence。Authority：这组 helper
+-- 只重建 schema1 自己当时的逻辑/编码形状，不能读取当前 UI、Quest 状态或用户默认值；Core 仍必须用磁盘
+-- stamped fingerprint 做 exact match 后才允许继续。数据流：raw schema1 envelope -> 历史 decoder/normalizer ->
+-- codec1 canonical -> Core exact hash 认证 -> 现有 migrate(value,1,2) -> schema2“未配置=默认全选” -> 立即重盖。
+-- 兼容边界：schema2/current/future schema、非本 Store/owner、非 codec1 一律不进入恢复；旧 schema1 即使曾收藏
+-- related task，也只用于复现旧章，随后仍由既有 migration 明确丢弃，绝不把旧收藏偷渡成新 denominator。
+-- 实现理由：结构化历史 canonical 比硬编码某一 old>new Hash 对更稳健，既能覆盖空 Store，也能覆盖 schema1
+-- 里任意合法 bounded 收藏组合。风险/维护：未来若再次升级 typed codec，必须保留对应旧 generation 的只读
+-- canonical helper；禁止修改本 schema1 helper 来“统一”新格式，否则已发布旧章将再次无法认证。
+local DETAIL_TRACKING_HISTORICAL_V1_CODEC = 1
+
+local function NormalizeDetailTrackingHistoricalV1(value)
+    value = type(value) == "table" and value or {}
+    local source = type(value.groups) == "table" and value.groups or {}
+    local groups, groupCount = {}, 0
+    for rawKey, rawBucket in pairs(source) do
+        local groupKey = tostring(rawKey or "")
+        if groupKey ~= "" and #groupKey <= 96 and groupCount < DETAIL_TRACKING_MAX_GROUPS then
+            local tokens, tokenCount = {}, 0
+            local tokenSource = type(rawBucket) == "table" and rawBucket or {}
+            for rawToken, enabled in pairs(tokenSource) do
+                local candidate = nil
+                if enabled == true then candidate = rawToken
+                elseif type(rawToken) == "number" and type(enabled) == "string" then candidate = enabled end
+                local token = NormalizeDetailTrackingToken(candidate)
+                -- schema1 的真实业务语义允许 main/related/其它已核验详情 token；这里必须原样保留该历史规则，
+                -- 否则 related 收藏会在 old-hash 认证前被当前 schema2 normalizer 删除，无法证明旧数据健康。
+                if token ~= nil and tokens[token] ~= true and tokenCount < DETAIL_TRACKING_MAX_TOKENS then
+                    tokens[token] = true
+                    tokenCount = tokenCount + 1
+                end
+            end
+            if tokenCount > 0 then
+                groups[groupKey] = tokens
+                groupCount = groupCount + 1
+            end
+        end
+    end
+    return { groups = groups }
+end
+
+local function EncodeDetailTrackingHistoricalV1(value)
+    local normalized = NormalizeDetailTrackingHistoricalV1(value)
+    local groupKeys = {}
+    for key in pairs(normalized.groups) do groupKeys[#groupKeys + 1] = key end
+    table.sort(groupKeys)
+    local rows = {}
+    for _, key in ipairs(groupKeys) do
+        local tokens = {}
+        for token in pairs(normalized.groups[key]) do tokens[#tokens + 1] = token end
+        table.sort(tokens)
+        rows[#rows + 1] = { key = key, tokens = tokens }
+    end
+    return { codec = DETAIL_TRACKING_HISTORICAL_V1_CODEC, payload = { groups = rows } }
+end
+
+local function DecodeDetailTrackingHistoricalV1(raw)
+    if type(raw) ~= "table" then return nil, "schema1_raw_required" end
+    local payload = type(raw.payload) == "table" and raw.payload or raw
+    if payload.groups ~= nil and type(payload.groups) ~= "table" then return nil, "schema1_groups_invalid" end
+    local rows = type(payload.groups) == "table" and payload.groups or {}
+    local domain = { groups = {} }
+    if rows[1] ~= nil then
+        for _, row in ipairs(rows) do
+            if type(row) ~= "table" then return nil, "schema1_group_row_invalid" end
+            local key = tostring(row.key or "")
+            if key ~= "" then
+                if type(row.tokens) ~= "table" then return nil, "schema1_tokens_invalid" end
+                domain.groups[key] = row.tokens
+            end
+        end
+    else
+        -- schema1 decoder 曾显式接受 bare map 作为中断开发版本的兼容表示；历史 canonical 也必须保留这一
+        -- 读取边界，但最终候选仍会重新编码成正式 codec1 排序数组并由旧 stamp 精确认证。
+        domain.groups = rows
+    end
+    return NormalizeDetailTrackingHistoricalV1(domain), nil
+end
+
+local function RebuildDetailTrackingSchema1Canonical(_decoded, stampedFingerprint, _currentCanonical, raw)
+    local store = P:GetStore(DETAIL_TRACKING_STORE_ID)
+    local function Probe(reason, extra)
+        if type(store) ~= "table" then return end
+        store.lastHistoricalRecoveryProbe = "activity_progress_schema1/" .. tostring(reason)
+            .. (extra ~= nil and ("/" .. tostring(extra)) or "")
+    end
+    local meta = type(raw) == "table" and raw.__rsmeta or nil
+    if type(meta) ~= "table"
+        or tostring(meta.store or "") ~= DETAIL_TRACKING_STORE_ID
+        or tostring(meta.owner or "") ~= "v3.activities.detail_tracking"
+        or tonumber(meta.schema) ~= 1 then
+        Probe("skip_generation", "schema=" .. tostring(meta and meta.schema or nil))
+        return nil
+    end
+    if tonumber(raw.codec) ~= DETAIL_TRACKING_HISTORICAL_V1_CODEC then
+        Probe("skip_codec", "codec=" .. tostring(raw.codec))
+        return nil
+    end
+    local historicalDomain, decodeErr = DecodeDetailTrackingHistoricalV1(raw)
+    if type(historicalDomain) ~= "table" then
+        Probe("decode_failed", tostring(decodeErr or "unknown"))
+        return nil
+    end
+    local historicalCanonical = EncodeDetailTrackingHistoricalV1(historicalDomain)
+    -- Store hook 自己先做一次 exact match，可把“不适用”与“候选不匹配”写进模块诊断；Persistence Core
+    -- 随后还会独立重算并再次要求同一 old stamp，故此处不是绕过完整性层。
+    local candidateFingerprint = type(P.FingerprintCanonicalValue) == "function"
+        and P:FingerprintCanonicalValue(store, historicalCanonical) or nil
+    if candidateFingerprint ~= nil and tostring(candidateFingerprint) ~= tostring(stampedFingerprint or "") then
+        Probe("candidate_mismatch", "old=" .. tostring(stampedFingerprint) .. "/cand=" .. tostring(candidateFingerprint))
+        return nil
+    end
+    Probe("candidate", "old=" .. tostring(stampedFingerprint) .. "/cand=" .. tostring(candidateFingerprint or "defer_core"))
+    return historicalCanonical, historicalDomain
+end
+
+local function NormalizeEligibleTokens(values)
+    local ordered, set = {}, {}
+    for _, raw in ipairs(type(values) == "table" and values or {}) do
+        local token = NormalizeDetailTrackingToken(type(raw) == "table" and raw.trackingKey or raw)
+        if token ~= nil and string.sub(token, 1, 5) == "main:" and set[token] ~= true then
+            ordered[#ordered + 1] = token
+            set[token] = true
+        end
+    end
+    return ordered, set
+end
+
+local function CopyTokenSet(source)
+    local out = {}
+    for token, enabled in pairs(type(source) == "table" and source or {}) do if enabled == true then out[token] = true end end
+    return out
+end
+
+local function CountTokenSet(source)
+    local count = 0
+    for _, enabled in pairs(type(source) == "table" and source or {}) do if enabled == true then count = count + 1 end end
+    return count
+end
+
+F.DetailTrackingState = NormalizeDetailTracking(F.DetailTrackingState)
+F.DetailTrackingStoreId = DETAIL_TRACKING_STORE_ID
+F.DetailTrackingStoreLoaded = F.DetailTrackingStoreLoaded == true
+F.DetailTrackingContractVersion = 3
+F.ProgressSelectionContractVersion = 2 -- v2: all verified multi-objective event groups use personal denominator selection; one-objective groups stay fixed.
+
+local function ApplyDetailTracking(value)
+    F.DetailTrackingState = NormalizeDetailTracking(value)
+end
+
+if P:GetStore(DETAIL_TRACKING_STORE_ID) == nil then
+    local detailStore, detailStoreErr = P:RegisterV3Store({
+        id = DETAIL_TRACKING_STORE_ID,
+        owner = "v3.activities.detail_tracking",
+        scope = P.Scope.Account,
+        lifetime = P.Lifetime.Permanent,
+        schemaVersion = DETAIL_TRACKING_SCHEMA,
+        legacySchemaVersion = 1,
+        key = P.V3KeyPrefix .. "activities_detail_tracking",
+        budget = { maxDepth = 6, maxNodes = 4096, maxStringBytes = 262144, maxEntriesPerTable = 256 },
+        default = function() return NormalizeDetailTracking(nil) end,
+        get = function() return NormalizeDetailTracking(F.DetailTrackingState) end,
+        apply = ApplyDetailTracking,
+        encode = EncodeDetailTracking,
+        decode = DecodeDetailTracking,
+        migrate = function(value, fromSchema)
+            -- schema1 是错误的“详情收藏”语义。不能把其中用户随手收藏的一两个任务直接解释成新
+            -- denominator，否则升级后征兆可能从 0/6 突然变成 0/1。明确重置为未配置=默认全选。
+            if tonumber(fromSchema) == 1 then return NormalizeDetailTracking(nil) end
+            return NormalizeDetailTracking(value)
+        end,
+        -- typed-codec schema 升级发生在 Integrity v4 校验之后；必须先用发布过的 codec1 精确重建旧 canonical，
+        -- 让 Core 验证旧 stamp，再进入上面的 1→2 migration。否则健康 schema1 会因 codec=1→2 被永久 fence。
+        rebuildCanonicalForIntegrity = RebuildDetailTrackingSchema1Canonical,
+        allowIntegrityUpgrade = true,
+    })
+    if detailStore == nil and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Error) == "function" then
+        S.DiagnosticsManager:Error("activities_v3", "ACTIVITY_PROGRESS_SELECTION_STORE_REGISTER_FAILED",
+            "活动个人进度选择存档注册失败", { error = tostring(detailStoreErr or "unknown") })
+    end
+end
+
+function F:EnsureDetailTrackingLoaded()
+    if self.DetailTrackingStoreLoaded == true and type(P.IsStoreLoaded) == "function"
+        and P:IsStoreLoaded(DETAIL_TRACKING_STORE_ID) == true then return true end
+    if P:GetStore(DETAIL_TRACKING_STORE_ID) == nil then return false, "活动个人进度选择存档不可用" end
+    local status, _, err = P:LoadStore(DETAIL_TRACKING_STORE_ID)
+    if status == true or status == "empty" then
+        if status == "empty" then ApplyDetailTracking(nil) end
+        self.DetailTrackingStoreLoaded = true
+        return true
+    end
+    return false, err or tostring(status or "活动个人进度选择读取失败")
+end
+
+-- Read projection: missing bucket means default-all. A Store read failure also falls back to default-all for
+-- gameplay display so a Presentation preference fence can never erase the canonical 0/6 progress; callers get
+-- `available=false` and can disable editing while still showing truthful default progress.
+function F:GetDetailProgressSelection(eventKey, eligibleTokens)
+    eventKey = tostring(eventKey or "")
+    local ordered, eligible = NormalizeEligibleTokens(eligibleTokens)
+    local defaults = {}; for _, token in ipairs(ordered) do defaults[token] = true end
+    if eventKey == "" or #ordered == 0 then return defaults, false, false, "no_eligible_progress_tasks" end
+    local loaded, loadErr = self:EnsureDetailTrackingLoaded()
+    if loaded ~= true then return defaults, false, false, loadErr or "活动个人进度选择读取失败" end
+    local bucket = type(self.DetailTrackingState.groups[eventKey]) == "table" and self.DetailTrackingState.groups[eventKey] or nil
+    if bucket == nil then return defaults, false, true, nil end
+    local selected = {}
+    for token in pairs(eligible) do if bucket[token] == true then selected[token] = true end end
+    -- Stale/unknown-only bucket cannot produce 0/0. Treat it as unconfigured default-all; the next explicit edit
+    -- will canonicalize the bucket from the current verified objective catalog.
+    if next(selected) == nil then return defaults, false, true, nil end
+    return selected, true, true, nil
+end
+
+function F:SetDetailProgressTaskSelected(eventKey, token, enabled, eligibleTokens, source)
+    eventKey, token = tostring(eventKey or ""), NormalizeDetailTrackingToken(token)
+    if eventKey == "" or #eventKey > 96 or token == nil or string.sub(token, 1, 5) ~= "main:" then
+        return false, "活动个人进度任务身份无效"
+    end
+    local ordered, eligible = NormalizeEligibleTokens(eligibleTokens)
+    if #ordered == 0 or eligible[token] ~= true then return false, "该任务不属于当前活动主进度集合" end
+    if #ordered > DETAIL_TRACKING_MAX_TOKENS then return false, "单个活动可选主任务超过存档上限" end
+    local selected, _, available, selectionErr = self:GetDetailProgressSelection(eventKey, ordered)
+    if available ~= true then return false, selectionErr or "活动个人进度选择不可用" end
+    local target = enabled == true
+    local current = selected[token] == true
+    if current == target then return true end
+    if target ~= true and CountTokenSet(selected) <= 1 then return false, "至少保留 1 个活动进度任务" end
+    if type(P.MutateStore) ~= "function" then return false, "活动个人进度持久化事务不可用" end
+
+    local nextSelected = CopyTokenSet(selected)
+    if target then nextSelected[token] = true else nextSelected[token] = nil end
+    local selectedCount = CountTokenSet(nextSelected)
+    local changed, changeErr = P:MutateStore(DETAIL_TRACKING_STORE_ID, function()
+        local groups = self.DetailTrackingState.groups
+        local existingBucket = type(groups[eventKey]) == "table" and groups[eventKey] or nil
+        if existingBucket == nil and selectedCount < #ordered then
+            local groupCount = 0
+            for _, candidate in pairs(groups) do
+                if type(candidate) == "table" and next(candidate) ~= nil then groupCount = groupCount + 1 end
+            end
+            if groupCount >= DETAIL_TRACKING_MAX_GROUPS then return false, "活动个人进度分组已达到上限" end
+        end
+        -- Full selection is canonicalized back to nil: no config == all main objectives selected.
+        if selectedCount == #ordered then groups[eventKey] = nil
+        else groups[eventKey] = CopyTokenSet(nextSelected) end
+        return true
+    end, {
+        delayMs = 250,
+        reason = "activity_progress_selection:" .. tostring(source or "detail"),
+        durable = false,
+    })
+    if changed ~= true then return false, changeErr or "活动个人进度选择未保存，已回滚" end
+    if S.Events ~= nil and type(S.Events.Publish) == "function" then
+        S.Events:Publish("v3.activities.progress_selection", eventKey, token, target, tostring(source or "detail"))
+    end
+    return true
+end
+
+-- Compatibility names remain narrow wrappers for this development generation. They intentionally require the
+-- current eligible catalog so no caller can recreate the old “arbitrary related-task bookmark” semantics.
+function F:GetDetailTrackedKeys(eventKey, eligibleTokens)
+    local selected = self:GetDetailProgressSelection(eventKey, eligibleTokens)
+    return selected
+end
+
+function F:IsDetailTaskTracked(eventKey, token, eligibleTokens)
+    local selected = self:GetDetailProgressSelection(eventKey, eligibleTokens)
+    return type(selected) == "table" and selected[tostring(token or "")] == true or false
+end

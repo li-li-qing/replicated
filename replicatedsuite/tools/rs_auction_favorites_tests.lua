@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 11 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Auction Favorites & Query Test Suite (B9)
 --
@@ -152,6 +156,25 @@ dofile("features/rs_feature_runtime.lua")
 dofile("services/rs_price_quote_queue_v3.lua")
 dofile("services/rs_auction_query_v3.lua")
 dofile("services/rs_auction_surface_v3.lua")
+local auctionSearchBridgeLoaded, auctionSearchBridgeLoadErr = pcall(dofile, "services/rs_auction_search_bridge_v3.lua")
+dofile("services/rs_auction_session_list_v3.lua")
+local dailySidecarConsumers = 0
+S.Services.DailyAuctionMaterialsV3 = {
+    version = 2, DailyMaterialContractVersion = 2,
+    Topic = "v3.daily_auction_materials.updated",
+    snapshot = { status = "ready", revision = 1, tasks = {
+        { questId = 7001, recipes = { "候选货物A", "候选货物B" }, selectedRecipe = "候选货物A", requiresSelection = false, materials = {
+            { key = "item:501", questId = 7001, recipe = "候选货物A", itemType = 501, name = "木材", count = 20, searchable = true, hidden = false },
+        } },
+    } },
+    AcquireConsumer = function(self, token) dailySidecarConsumers = dailySidecarConsumers + 1; return true end,
+    ReleaseConsumer = function(self, token) dailySidecarConsumers = math.max(0, dailySidecarConsumers - 1); return true end,
+    GetSnapshot = function(self) return self.snapshot end,
+    SelectRecipe = function(self, questId, recipe) self.selectedRecipe = recipe; return true end,
+    SetMaterialHidden = function(self, questId, recipe, key, hidden) self.hidden = { questId=questId, recipe=recipe, key=key, hidden=hidden }; return true end,
+    RestoreHidden = function(self, questId) self.restoredQuestId = questId; return true end,
+    MoveMaterial = function(self, questId, recipe, key, direction) self.moved = { questId=questId, recipe=recipe, key=key, direction=direction }; return true end,
+}
 
 -- Business bridge (defines tools_auction and tools_market_analysis)
 dofile("features/rs_business_bridge.lua")
@@ -163,13 +186,20 @@ local function ParseSpec(a, b)
     if type(a) == "table" then return a end
     return {}
 end
-S.RSUI.VerticalBox = function(self, spec) return {} end
-S.RSUI.HorizontalBox = function(self, spec) return {} end
+local function MockContainer(spec)
+    local c = { spec = ParseSpec(spec), visibility = "visible" }
+    function c:SetVisibility(v) self.visibility = v; return v, true end
+    return c
+end
+S.RSUI.VerticalBox = function(self, spec) return MockContainer(spec) end
+S.RSUI.HorizontalBox = function(self, spec) return MockContainer(spec) end
 S.RSUI.TextInput = function(self, spec)
     spec = ParseSpec(self, spec)
     local inp = { spec = spec, val = spec.value or "" }
     function inp:GetDraftValue() return self.val end
     function inp:SetValue(v) self.val = v end
+    function inp:SetVisibility(v) self.visibility = v; return v, true end
+    function inp:SetEnabled(v) self.enabled = v end
     return inp
 end
 S.RSUI.Button = function(self, spec)
@@ -177,12 +207,14 @@ S.RSUI.Button = function(self, spec)
     local btn = { spec = spec, enabled = true, text = spec.text or "" }
     function btn:SetText(t) self.text = t end
     function btn:SetEnabled(e) self.enabled = e end
+    function btn:SetVisibility(v) self.visibility = v; return v, true end
     return btn
 end
 S.RSUI.Text = function(self, spec)
     spec = ParseSpec(self, spec)
     local txt = { spec = spec, text = spec.text or "" }
     function txt:SetText(t) self.text = t end
+    function txt:SetVisibility(v) self.visibility = v; return v, true end
     return txt
 end
 S.RSUI.TableView = function(self, spec)
@@ -191,6 +223,9 @@ S.RSUI.TableView = function(self, spec)
     function tv:SetItems(items, rev) self.items = items or {}; self.rev = rev end
     function tv:SetViewState(state, info) self.viewState = state; self.viewInfo = info end
     function tv:GetItem(idx) return self.items[idx] end
+    function tv:GetSelectedKey() return self.selectedKey end
+    function tv:ClearSelection() self.selectedKey = nil; return true end
+    function tv:SetSelectedIndex(idx) self.selectedKey = self.items[idx] and self.items[idx].key or nil; return true end
     return tv
 end
 
@@ -245,6 +280,13 @@ Test("T1: Feature registry metadata & contracts", function()
     assert(reg.name == "拍卖收藏", "name mismatch")
     assert(reg.category == "tools", "category mismatch")
     assert(reg.authority == "v3.auction", "authority mismatch")
+    assert(reg.widgetCapable == true, "tools_auction must advertise its native-surface Sidecar capability")
+    -- 中文维护注释（2026-09-15，拍卖收藏完成态回归）：用户已确认该功能进入完成区。
+    -- 这里同时钉住导航完成态与 Registry 产品状态，防止后续残留的 pending/partial 元数据把它
+    -- 再次下沉到“未完成”区。该断言只验证展示/产品元数据，不参与 AuctionQuery/Sidecar Authority。
+    assert(reg.navigationDevelopmentState == "complete" and reg.navigationIncomplete ~= true, "tools_auction must be marked complete in navigation")
+    assert(reg.status == "migrated_m1", "tools_auction completed product status must be migrated_m1")
+    assert(reg.description == "拍卖关键词收藏、当前挂单查询与拍卖助手管理；打开拍卖行后可使用收藏、今日任务和临时清单工作区。", "auction registry description must be player-facing and explain the Sidecar workspace")
     assert(reg.apiPolicy == "explicit_server_query_plus_readonly_native_surface_observation", "apiPolicy mismatch")
 
     -- Check required API dependencies
@@ -270,6 +312,8 @@ Test("T1: Feature registry metadata & contracts", function()
     assert(type(Feature.Commands.Quote) == "function", "Commands.Quote missing")
     assert(type(Feature.Commands.SetExactMatch) == "function", "Commands.SetExactMatch missing")
     assert(type(Feature.Commands.SetResultLimit) == "function", "Commands.SetResultLimit missing")
+    assert(type(Feature.Commands.SetSidecarEnabled) == "function", "Commands.SetSidecarEnabled missing")
+    assert(type(Feature.IsSidecarEnabled) == "function", "Feature.IsSidecarEnabled missing")
 end)
 
 ------------------------------------------------------------------------
@@ -326,6 +370,103 @@ Test("T2: Favorite keywords: Add, deduplication, bounds & Remove", function()
     -- Cleanup
     Feature.State.favorites = { "原木", "粗糙的石头" }
     Feature:ReleaseConsumer("test_t2")
+end)
+
+------------------------------------------------------------------------
+-- Test 2B: Favorite stable-key CRUD preserves legacy string-array schema
+------------------------------------------------------------------------
+Test("T2B: Favorite rename, move, remove-by-keyword & clear", function()
+    Feature.State.favorites = { "木材", "铁锭", "蜂蜜" }
+
+    local renameOk, renameErr = Feature.Commands:RenameFavorite("铁锭", "铁矿石")
+    assert(renameOk == true, "RenameFavorite failed: " .. tostring(renameErr))
+    assert(Feature.State.favorites[1] == "木材" and Feature.State.favorites[2] == "铁矿石" and Feature.State.favorites[3] == "蜂蜜", "rename must preserve order and string-array schema")
+
+    local duplicateOk = Feature.Commands:RenameFavorite("铁矿石", "木材")
+    assert(duplicateOk == false, "rename must reject duplicate target keyword")
+
+    local moveOk, moveErr = Feature.Commands:MoveFavorite("蜂蜜", -1)
+    assert(moveOk == true, "MoveFavorite failed: " .. tostring(moveErr))
+    assert(Feature.State.favorites[2] == "蜂蜜" and Feature.State.favorites[3] == "铁矿石", "move up must swap adjacent string entries")
+
+    local edgeMoveOk = Feature.Commands:MoveFavorite("木材", -1)
+    assert(edgeMoveOk == false, "moving first favorite further up must fail")
+
+    local removeOk, removeErr = Feature.Commands:RemoveFavoriteByKeyword("蜂蜜")
+    assert(removeOk == true, "RemoveFavoriteByKeyword failed: " .. tostring(removeErr))
+    assert(#Feature.State.favorites == 2 and Feature.State.favorites[1] == "木材" and Feature.State.favorites[2] == "铁矿石", "remove-by-keyword must preserve remaining order")
+
+    local clearOk, clearErr = Feature.Commands:ClearFavorites()
+    assert(clearOk == true, "ClearFavorites failed: " .. tostring(clearErr))
+    assert(#Feature.State.favorites == 0, "ClearFavorites must leave legacy favorites as empty array")
+
+    Feature.State.favorites = { "原木", "粗糙的石头" }
+end)
+
+------------------------------------------------------------------------
+-- Test 2C: AuctionSearchBridgeV3 native sync success/fallback is non-blocking
+------------------------------------------------------------------------
+Test("T2C: Search bridge verified native sync and fallback", function()
+    assert(auctionSearchBridgeLoaded == true, "AuctionSearchBridgeV3 failed to load: " .. tostring(auctionSearchBridgeLoadErr))
+    local Bridge = S.Services.AuctionSearchBridgeV3
+    assert(type(Bridge) == "table" and type(Bridge.Search) == "function", "AuctionSearchBridgeV3 contract missing")
+
+    -- Verified EditBox candidate: path/name carries search semantics, type is EditBox, and readback must match.
+    local nativeText = ""
+    mockAuctionContent.keywordSearchBox = {
+        GetObjectType = function() return "EditBox" end,
+        GetName = function() return "auctionKeywordSearch" end,
+        SetText = function(self, value) nativeText = tostring(value) end,
+        GetText = function() return nativeText end,
+    }
+    Bridge:ResetNativeCandidate("test_verified")
+    Query:_CleanupNativeEdge(); Query.pending = nil; mockAuction.searchCalls = {}
+    local ok, status = Bridge:Search("tools_auction", "木材", { exactMatch = false, resultLimit = 20 })
+    assert(ok == true and status == "waiting", "bridge direct search must preserve AuctionQuery waiting contract")
+    assert(#mockAuction.searchCalls == 1 and mockAuction.searchCalls[1].keyword == "木材", "bridge must issue exactly one authoritative server search")
+    assert(nativeText == "木材", "verified native EditBox must receive keyword")
+    local verified = Bridge:GetSnapshot()
+    assert(verified.nativeSync == "success", "verified native sync must report success")
+    assert(tostring(verified.candidatePath or ""):find("keywordSearchBox", 1, true) ~= nil, "candidate path must be diagnosable")
+
+    -- Finish request before second query.
+    mockAuction.searchedItems = {}; Query:_OnSearched()
+
+    -- No verified candidate: server query must still run and bridge reports fallback.
+    mockAuctionContent.keywordSearchBox = nil
+    Bridge:ResetNativeCandidate("test_fallback")
+    Query:_CleanupNativeEdge(); Query.pending = nil; mockAuction.searchCalls = {}
+    local fallbackOk, fallbackStatus = Bridge:Search("tools_auction", "铁锭", { exactMatch = false, resultLimit = 20 })
+    assert(fallbackOk == true and fallbackStatus == "waiting", "native-sync absence must not block direct search")
+    assert(#mockAuction.searchCalls == 1 and mockAuction.searchCalls[1].keyword == "铁锭", "fallback must still query server exactly once")
+    local fallback = Bridge:GetSnapshot()
+    assert(fallback.nativeSync == "fallback" or fallback.nativeSync == "unavailable", "missing candidate must be reported as fallback/unavailable")
+    assert((tonumber(fallback.fallbackCount) or 0) >= 1, "fallback counter must increase")
+    mockAuction.searchedItems = {}; Query:_OnSearched()
+end)
+
+------------------------------------------------------------------------
+-- Test 2D: hostile/opaque userdata in Native auction content must fail closed
+------------------------------------------------------------------------
+Test("T2D: Search bridge hostile userdata probe cannot break authoritative query", function()
+    local Bridge = S.Services.AuctionSearchBridgeV3
+    mockAuctionContent.keywordSearchBox = nil
+    local hostile = io.tmpfile()
+    assert(type(hostile) == "userdata", "test requires a userdata candidate")
+    debug.setmetatable(hostile, { __index = function() error("opaque native userdata") end })
+    mockAuctionContent.searchOpaqueNative = hostile
+    Bridge:ResetNativeCandidate("test_hostile_userdata")
+    Query:_CleanupNativeEdge(); Query.pending = nil; mockAuction.searchCalls = {}
+    local callOk, searchOk, searchStatus = pcall(function()
+        return Bridge:Search("tools_auction", "原木", { exactMatch = false, resultLimit = 20 })
+    end)
+    assert(callOk == true, "opaque native userdata must be contained by fail-closed probe")
+    assert(searchOk == true and searchStatus == "waiting", "native probe failure must not block authoritative query")
+    assert(#mockAuction.searchCalls == 1 and mockAuction.searchCalls[1].keyword == "原木", "authoritative query must still execute exactly once")
+    local snap = Bridge:GetSnapshot()
+    assert(snap.nativeSync == "fallback", "opaque userdata must degrade to fallback, not abort search")
+    mockAuctionContent.searchOpaqueNative = nil
+    mockAuction.searchedItems = {}; Query:_OnSearched()
 end)
 
 ------------------------------------------------------------------------
@@ -701,6 +842,218 @@ Test("T9: AuctionSidecar widget: native window tracking & anchoring", function()
 end)
 
 ------------------------------------------------------------------------
+-- Test 9A: Main page may explicitly restore a manually dismissed Sidecar
+------------------------------------------------------------------------
+Test("T9A: AuctionSidecar explicit restore contract", function()
+    local controller = S.UIV3.AuctionSidecar
+    assert(type(controller.GetControlState) == "function", "AuctionSidecar must expose read-only control state for the main page")
+    assert(type(controller.RequestShow) == "function", "AuctionSidecar must expose an explicit user-requested restore action")
+    assert(type(controller.ControlTopic) == "string" and controller.ControlTopic ~= "", "AuctionSidecar control state topic missing")
+
+    local openSnapshot = { status = "ready", visible = true, x = 400, y = 200, width = 800, height = 600, revision = 15 }
+    S.Events:Publish("v3.auction_surface.updated", openSnapshot)
+    local instance = S.UIV3.WidgetHost:GetInstance("tools.auction_sidecar")
+    assert(instance ~= nil, "sidecar instance unavailable")
+
+    instance.surface.spec.onClosed(instance.surface, "user_click_close")
+    local dismissed = controller:GetControlState()
+    assert(dismissed.nativeVisible == true, "native auction must remain open after manual sidecar close")
+    assert(dismissed.visible == false, "sidecar must be hidden after manual close")
+    assert(dismissed.dismissed == true, "manual close must be represented as dismissed")
+    assert(dismissed.canShow == true, "main page must be allowed to restore a dismissed sidecar while auction is open")
+
+    local restored, restoreErr = controller:RequestShow("test_main_page_restore")
+    assert(restored == true, "explicit restore failed: " .. tostring(restoreErr))
+    local restoredState = controller:GetControlState()
+    assert(restoredState.visible == true and restoredState.dismissed == false, "explicit restore must show sidecar and clear dismissal")
+
+    local closeSnapshot = { status = "ready", visible = false, x = 0, y = 0, width = 0, height = 0, revision = 16 }
+    S.Events:Publish("v3.auction_surface.updated", closeSnapshot)
+    local blocked, blockedErr = controller:RequestShow("test_closed_native")
+    assert(blocked == false, "main page must not create a detached sidecar while native auction is closed")
+    assert(tostring(blockedErr):find("拍卖行", 1, true) ~= nil, "closed-native error must explain that auction house needs to be opened")
+end)
+
+------------------------------------------------------------------------
+-- Test 9A1: Persistent Sidecar enable/disable preference owns observer lifecycle
+------------------------------------------------------------------------
+Test("T9A1: AuctionSidecar persistent enable/disable preference", function()
+    local controller = S.UIV3.AuctionSidecar
+    local store = S.Persistence:GetStore(Feature.storeId)
+    assert(type(store) == "table" and type(store.apply) == "function" and type(store.get) == "function", "auction store contract unavailable")
+
+    -- Compatibility: pre-toggle payloads have no sidecarEnabled field and must
+    -- keep the historical behavior (automatic Sidecar enabled).
+    store.apply({ keyword = "", favorites = {}, exactMatch = false, resultLimit = 20 })
+    assert(Feature:IsSidecarEnabled() == true, "legacy auction payload must default Sidecar to enabled")
+
+    local openSnapshot = { status = "ready", visible = true, x = 400, y = 200, width = 800, height = 600, revision = 17 }
+    S.Events:Publish("v3.auction_surface.updated", openSnapshot)
+    assert(S.UIV3.WidgetHost:IsVisible("tools.auction_sidecar") == true, "precondition: Sidecar should be visible while enabled")
+
+    local offOk, offErr = Feature.Commands:SetSidecarEnabled(false)
+    assert(offOk == true, "disabling Sidecar failed: " .. tostring(offErr))
+    assert(Feature:IsSidecarEnabled() == false, "Sidecar preference must become false")
+    assert(store.get().sidecarEnabled == false, "disabled preference must be part of persistent auction payload")
+    assert(Surface.started == false, "disabled Sidecar must release AuctionSurface observer")
+    assert(S.UIV3.WidgetHost:IsVisible("tools.auction_sidecar") == false, "disabling must immediately hide an already-visible Sidecar")
+    local offState = controller:GetControlState()
+    assert(offState.enabled == false and offState.canShow == false, "controller must expose disabled state and block manual show")
+    local blocked, blockedErr = controller:RequestShow("test_disabled_preference")
+    assert(blocked == false and tostring(blockedErr):find("开启", 1, true) ~= nil, "manual show must be blocked while Sidecar preference is off")
+
+    -- Lifecycle/reload equivalent: a persisted false preference must prevent
+    -- Feature enable from restarting the 250ms native AuctionSurface watcher.
+    assert(Feature:Disable("t9a1_pref_off") == true, "feature disable with Sidecar off failed")
+    assert(Feature:Enable("t9a1_pref_off_reload") == true, "feature enable with Sidecar off failed")
+    assert(Surface.started == false, "persisted Sidecar-off preference must survive Feature enable without restarting observer")
+    assert(S.UIV3.WidgetHost:IsVisible("tools.auction_sidecar") == false, "Feature enable must not resurrect Sidecar while preference is off")
+
+    -- Re-enable while the native auction mock is already open. Starting the
+    -- observer must refresh the real native surface and auto-show immediately.
+    local onOk, onErr = Feature.Commands:SetSidecarEnabled(true)
+    assert(onOk == true, "re-enabling Sidecar failed: " .. tostring(onErr))
+    assert(Feature:IsSidecarEnabled() == true, "Sidecar preference must become true")
+    assert(store.get().sidecarEnabled == true, "enabled preference must be persisted")
+    assert(Surface.started == true, "re-enabled Sidecar must restart AuctionSurface observer")
+    assert(S.UIV3.WidgetHost:IsVisible("tools.auction_sidecar") == true, "re-enable while auction is open must immediately show Sidecar")
+
+    Surface:Stop("t9a1_cleanup")
+end)
+
+------------------------------------------------------------------------
+-- Test 9A2: Auction main page contains the Sidecar explanation and entry controls
+------------------------------------------------------------------------
+Test("T9A2: Auction main page Sidecar entry layout contract", function()
+    local pageFile = assert(io.open("presentation/v3/pages/rs_v3_business_pages.lua", "rb"))
+    local pageText = pageFile:read("*a"); pageFile:close()
+    assert(pageText:find('auctionSidecarEntryContractVersion = 2', 1, true) ~= nil,
+        "business page contract must record the auction Sidecar entry layout")
+    assert(pageText:find('id = "v3_business_tools_auction_sidecar_card"', 1, true) ~= nil,
+        "auction page must build a dedicated Sidecar explanation card")
+    assert(pageText:find('id = "v3_business_tools_auction_sidecar_status"', 1, true) ~= nil,
+        "auction page must show native-auction/Sidecar status")
+    assert(pageText:find('id = "v3_business_tools_auction_sidecar_enabled"', 1, true) ~= nil,
+        "auction page must expose an independent Sidecar enable/disable toggle")
+    assert(pageText:find('SetSidecarEnabled(value == true)', 1, true) ~= nil,
+        "auction page toggle must persist through the tools_auction command facade")
+    assert(pageText:find('id = "v3_business_tools_auction_sidecar_show"', 1, true) ~= nil,
+        "auction page must expose a restore/show button")
+    assert(pageText:find('RequestShow("auction_main_page")', 1, true) ~= nil,
+        "auction page show button must route through AuctionSidecar controller instead of WidgetHost directly")
+    assert(pageText:find('ControlTopic', 1, true) ~= nil,
+        "auction page must listen to Sidecar control-state changes while active")
+end)
+
+------------------------------------------------------------------------
+-- Test 9B: Auction sidecar three-tab workspace and explicit row actions
+------------------------------------------------------------------------
+Test("T9B: AuctionSidecar favorites/daily/temp workspace", function()
+    local openSnapshot = { status = "ready", visible = true, x = 400, y = 200, width = 800, height = 600, revision = 20 }
+    S.Events:Publish("v3.auction_surface.updated", openSnapshot)
+    local instance = S.UIV3.WidgetHost:GetInstance("tools.auction_sidecar")
+    assert(instance ~= nil, "sidecar instance unavailable")
+    assert(type(instance.tabButtons) == "table" and instance.tabButtons.favorites and instance.tabButtons.daily and instance.tabButtons.temp, "three tab buttons missing")
+    assert(type(instance.SetTab) == "function" and instance.activeTab == "favorites", "default tab must be favorites")
+    assert(instance.editButton and instance.upButton and instance.downButton and instance.clearButton, "CRUD/move controls missing")
+
+    -- Favorite single-row activation is a real explicit search, not background polling.
+    Feature.State.favorites = { "木材", "铁锭" }; Feature:Refresh("sidecar_t9b")
+    instance:SetTab("favorites"); instance:Refresh()
+    Query:_CleanupNativeEdge(); Query.pending = nil; mockAuction.searchCalls = {}
+    local favoriteRow = instance.currentRows[1]
+    local activated = instance.table.spec.onItemActivated(favoriteRow, 1, favoriteRow.key, instance.table, "row_click")
+    assert(activated == true and #mockAuction.searchCalls == 1 and mockAuction.searchCalls[1].keyword == "木材", "favorite click must explicitly search selected keyword")
+    mockAuction.searchedItems = {}; Query:_OnSearched()
+
+    -- Daily tab acquires only while active; material click searches, candidate click selects.
+    assert(instance:SetTab("daily") == true and instance.activeTab == "daily", "daily tab switch failed")
+    assert(dailySidecarConsumers == 1, "daily tab must acquire one demand consumer")
+    instance:Refresh()
+    local materialRow, recipeRow
+    for _, row in ipairs(instance.currentRows or {}) do if row.kind == "daily_material" then materialRow = row elseif row.kind == "daily_recipe" then recipeRow = recipeRow or row end end
+    assert(materialRow and recipeRow, "daily rows must expose recipe choices and materials")
+    Query:_CleanupNativeEdge(); Query.pending = nil; mockAuction.searchCalls = {}
+    assert(instance.table.spec.onItemActivated(materialRow, 1, materialRow.key, instance.table, "row_click") == true, "daily material activation failed")
+    assert(#mockAuction.searchCalls == 1 and mockAuction.searchCalls[1].keyword == "木材", "daily material click must search material")
+    mockAuction.searchedItems = {}; Query:_OnSearched()
+    assert(instance.table.spec.onItemActivated(recipeRow, 1, recipeRow.key, instance.table, "row_click") == true, "daily recipe activation must select candidate")
+    assert(S.Services.DailyAuctionMaterialsV3.selectedRecipe == recipeRow.recipe, "daily recipe selection not routed to service")
+
+    -- Temporary tab releases daily demand, supports manual add and session-only data.
+    assert(instance:SetTab("temp") == true and dailySidecarConsumers == 0, "leaving daily tab must release quest demand")
+    instance.input:SetValue("蜂蜜")
+    instance.qtyInput:SetValue("3")
+    local addOk, addErr = instance.addButton.onClick()
+    assert(addOk == true, "temporary manual add failed: " .. tostring(addErr))
+    local tempSnap = S.Services.AuctionSessionListV3:GetSnapshot()
+    assert(#tempSnap.groups >= 1, "temporary group missing")
+    local found = false
+    for _, group in ipairs(tempSnap.groups) do for _, material in ipairs(group.materials or {}) do if material.name == "蜂蜜" and material.count == 3 then found = true end end end
+    assert(found, "manual temporary material/count missing")
+
+    S.Events:Publish("v3.auction_surface.updated", { status="ready", visible=false, revision=21 })
+    assert(dailySidecarConsumers == 0, "sidecar hide must not leak daily consumer")
+end)
+
+------------------------------------------------------------------------
+-- Regression: FloatingSurface reserves <surface-id>_status for footer chrome.
+-- A child content Text must never reuse that logical id in the same build Generation.
+------------------------------------------------------------------------
+Test("T9C: AuctionSidecar content status id does not collide with FloatingSurface footer", function()
+    local sidecarFile = assert(io.open("presentation/v3/widgets/rs_v3_auction_sidecar.lua", "rb"))
+    local sidecarText = sidecarFile:read("*a"); sidecarFile:close()
+    assert(sidecarText:find('id = "v3_auction_sidecar_status"', 1, true) == nil,
+        "content status logical id collides with WindowShell-generated v3_auction_sidecar_status")
+    assert(sidecarText:find('id = "v3_auction_sidecar_action_status"', 1, true) ~= nil,
+        "sidecar must use a dedicated content/action status logical id")
+end)
+
+------------------------------------------------------------------------
+-- Regression: switching Daily <-> Temp changes searchRow layout participation.
+-- The FloatingSurface must run a fresh shell layout after that visibility change
+-- or the resurrected search row keeps its old bounds while the action row stays
+-- in the Daily-tab position, causing both rows to overlap.
+------------------------------------------------------------------------
+Test("T9D: AuctionSidecar tab visibility change reapplies floating layout", function()
+    local openSnapshot = { status = "ready", visible = true, x = 400, y = 200, width = 800, height = 600, revision = 30 }
+    S.Events:Publish("v3.auction_surface.updated", openSnapshot)
+    local instance = S.UIV3.WidgetHost:GetInstance("tools.auction_sidecar")
+    assert(instance ~= nil and instance.surface ~= nil, "sidecar instance/surface unavailable")
+
+    local originalApply = instance.surface.ApplyLayout
+    local layoutCalls = 0
+    instance.surface.ApplyLayout = function(self, fromMetricsChange)
+        layoutCalls = layoutCalls + 1
+        return originalApply(self, fromMetricsChange)
+    end
+
+    assert(instance:SetTab("daily") == true, "daily tab switch failed")
+    assert(instance.searchRow.visibility == "collapsed", "daily tab must collapse search row")
+    assert(instance:SetTab("temp") == true, "temp tab switch failed")
+    assert(instance.searchRow.visibility == "visible", "temp tab must restore search row")
+    assert(layoutCalls >= 2, "each search-row visibility transition must trigger FloatingSurface ApplyLayout; calls=" .. tostring(layoutCalls))
+
+    instance.surface.ApplyLayout = originalApply
+end)
+
+------------------------------------------------------------------------
+-- Regression: Temp tab quantity input must explain its meaning, and this compact
+-- Sidecar should request a slightly shorter native caret than the shared default.
+------------------------------------------------------------------------
+Test("T9E: AuctionSidecar temp quantity affordance and compact caret", function()
+    local sidecarFile = assert(io.open("presentation/v3/widgets/rs_v3_auction_sidecar.lua", "rb"))
+    local sidecarText = sidecarFile:read("*a"); sidecarFile:close()
+    assert(sidecarText:find('id = "v3_auction_sidecar_qty_label"', 1, true) ~= nil,
+        "temporary quantity field needs an explicit quantity marker")
+    assert(sidecarText:find('SetVisible(self.qtyLabel, self.activeTab == "temp")', 1, true) ~= nil,
+        "quantity marker must follow the temporary-only quantity input visibility")
+    assert(sidecarText:find('id = "v3_auction_sidecar_keyword"', 1, true) ~= nil
+        and sidecarText:find('height = 22', 1, true) ~= nil,
+        "sidecar edit boxes need an explicit compact creation height so native caret is not oversized")
+end)
+
+------------------------------------------------------------------------
 -- Test 10: FoundationGate & Acceptance Contract Verification
 ------------------------------------------------------------------------
 Test("T10: FoundationGate & Acceptance contract verification", function()
@@ -737,6 +1090,23 @@ Test("T10: FoundationGate & Acceptance contract verification", function()
 
     local sidecarSpec = S.UIV3.WidgetHost:GetSpec("tools.auction_sidecar")
     assert(sidecarSpec ~= nil and sidecarSpec.featureId == "tools_auction", "Sidecar spec must exist with featureId tools_auction")
+
+    -- 4. Auction Workspace contracts: CRUD + daily/session authorities + optional native-sync bridge.
+    local Bridge = S.Services.AuctionSearchBridgeV3
+    local Session = S.Services.AuctionSessionListV3
+    local Daily = S.Services.DailyAuctionMaterialsV3
+    assert(type(S.UIV3.AuctionSidecar) == "table" and (tonumber(S.UIV3.AuctionSidecar.AuctionWorkspaceContractVersion) or 0) >= 1, "Auction workspace sidecar contract missing")
+    assert(type(Session) == "table" and (tonumber(Session.SessionListContractVersion) or 0) >= 1 and Session.PersistenceStoreId == nil, "Session-only auction list contract missing")
+    assert(type(Daily) == "table" and (tonumber(Daily.DailyMaterialContractVersion) or 0) >= 2, "Daily auction materials contract missing")
+    assert(type(Bridge) == "table" and (tonumber(Bridge.SearchBridgeContractVersion) or 0) >= 1 and (tonumber(Bridge.NativeSyncContractVersion) or 0) >= 1, "Search bridge contract missing")
+    assert(type(Feature.Commands.RenameFavorite) == "function" and type(Feature.Commands.MoveFavorite) == "function" and type(Feature.Commands.RemoveFavoriteByKeyword) == "function" and type(Feature.Commands.ClearFavorites) == "function", "Favorite CRUD commands incomplete")
+    local gateFile = assert(io.open("core/rs_foundation_gate.lua", "rb")); local gateText = gateFile:read("*a"); gateFile:close()
+    local acceptanceFile = assert(io.open("presentation/v3/rs_v3_acceptance.lua", "rb")); local acceptanceText = acceptanceFile:read("*a"); acceptanceFile:close()
+    local reportFile = assert(io.open("core/rs_self_check_report.lua", "rb")); local reportText = reportFile:read("*a"); reportFile:close()
+    assert(gateText:find("v3_auction_workspace_contract", 1, true) ~= nil, "FoundationGate must expose auction workspace contract")
+    assert(acceptanceText:find("auction_workspace_contract_v2", 1, true) ~= nil, "Acceptance must verify auction workspace contract")
+    assert(reportText:find("AUCTION_SEARCH_BRIDGE", 1, true) ~= nil, "Self-check report must expose native auction search sync evidence")
+    assert(reportText:find("DAILY_AUCTION_MATERIALS", 1, true) ~= nil, "Self-check report must expose daily trade task discovery evidence")
 end)
 
 print(string.format("\nAuction Favorites & Query Test Results: %d/%d passed", passed, total))

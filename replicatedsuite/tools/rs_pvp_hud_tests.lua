@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 1 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 -- 维护：回归必须经过实际任务与事件队列；连续事件不是测试中直接调用 EquipmentTick。
 -- 显示位置用父链计算；Native纹理拒写是明确模型，不代替 RU 的渲染/网络时延测量。
 local passed,failed=0,0
@@ -173,4 +177,152 @@ Test('unsupported same-type weapon changes are not falsely reported as specific 
     assert(before.buffId==after.buffId and after.source=='observed_buff' and after.icon~=h.weapon)
 end)
 
+Test('class name and gear score have independent text geometry while zero offsets preserve row flow',function()
+    local h,S,F,P=Boot();F.laneData.player.class={name='Bard',icon='role.dds'};F.laneData.player.gearScore=12345;F.laneData.player.distance=28
+    F:InvalidateSettingsCache();P:VisualTick()
+    assert(type(P.ComputeInfoItemsLayout)=='function','split info layout API missing')
+    local profile=F:GetScopeLayoutSettings('player');profile.info.x=0;profile.info.y=0;profile.components.gearScore.x=0;profile.components.gearScore.y=0;profile.components.distance.x=0;profile.components.distance.y=0
+    local base=P.ComputePlateLayout(350,350,profile,0,0,{})
+    local plates=F:GetPlatesProjection('player')
+    local g0=P.ComputeInfoItemsLayout(plates,profile.info,profile.components,base.bar.centerX,base.info.top,base.info.font,base.scale)
+    assert(g0.classText and g0.gearScore and g0.distance,'split items missing')
+    assert(g0.classText.x+g0.classText.width<=g0.gearScore.x,'class/gear flow overlaps at zero offset')
+    local oldGearX,oldDistanceX=g0.gearScore.x,g0.distance.x
+    profile.info.x=31
+    local g1=P.ComputeInfoItemsLayout(plates,profile.info,profile.components,base.bar.centerX,base.info.top,base.info.font,base.scale)
+    assert(g1.classText.x==g0.classText.x+31,'class name ignores info.x')
+    assert(g1.gearScore.x==oldGearX and g1.distance.x==oldDistanceX,'class name movement dragged other info items')
+    profile.info.x=0;profile.components.gearScore.x=19
+    local g2=P.ComputeInfoItemsLayout(plates,profile.info,profile.components,base.bar.centerX,base.info.top,base.info.font,base.scale)
+    assert(g2.gearScore.x==oldGearX+19,'gear score ignores its own x')
+    assert(g2.classText.x==g0.classText.x and g2.distance.x==oldDistanceX,'gear score movement dragged sibling info items')
+end)
+Test('target distance x stays stable when player metadata disappears on NPC targets',function()
+    local h,S,F,P=Boot()
+    local profile=F:GetScopeLayoutSettings('target')
+    profile.info.x=0;profile.info.y=0
+    profile.components.gearScore.x=0;profile.components.gearScore.y=0
+    profile.components.distance.x=0;profile.components.distance.y=0
+    profile.components.class.x=0;profile.components.class.y=0
+    local base=P.ComputePlateLayout(850,350,profile,0,0,{})
+    local playerPlates={class={value='Bard',icon='role.dds'},gearScore={value='12345'},distance={value='28.0m'}}
+    local npcPlates={distance={value='28.0m'}}
+    local player=P.ComputeInfoItemsLayout(playerPlates,profile.info,profile.components,base.bar.centerX,base.info.top,base.info.font,base.scale,'target')
+    local npc=P.ComputeInfoItemsLayout(npcPlates,profile.info,profile.components,base.bar.centerX,base.info.top,base.info.font,base.scale,'target')
+    assert(player.distance and npc.distance,'distance item missing')
+    assert(player.distance.x==npc.distance.x,'distance x reflowed when target class/gear disappeared')
+    assert(player.distance.y==npc.distance.y,'distance y changed with target kind')
+end)
+Test('class icon geometry remains independent from split class-name text',function()
+    local h,S,F,P=Boot();F.laneData.player.class={name='Bard',icon='role.dds'};F.laneData.player.gearScore=12345
+    F:InvalidateSettingsCache();P:VisualTick()
+    local info=P.pools.player.info
+    assert(info.classTextRoot and info.gearRoot,'split renderer widgets missing')
+    local tx,ty=h:World(info.classTextRoot);local ix,iy=h:World(info.iconRoot)
+    local c=F.State.settings.components.class;c.x=(c.x or 0)+13;c.y=(c.y or 0)-7
+    F:InvalidateSettingsCache();P:VisualTick()
+    local ntx,nty=h:World(info.classTextRoot);local nix,niy=h:World(info.iconRoot)
+    assert(ntx==tx and nty==ty,'class icon offsets still move class name')
+    assert(nix==ix+13 and niy==iy-7,'class icon did not consume its own offsets')
+end)
+Test('class name visibility and class icon visibility are independent',function()
+    local h,S,F,P=Boot();F.laneData.player.class={name='Bard',icon='role.dds'};F.laneData.player.gearScore=12345
+    F:InvalidateSettingsCache();P:VisualTick()
+    local profile=F:GetScopeLayoutSettings('player')
+    local base=P.ComputePlateLayout(350,350,profile,0,0,{})
+    local plates=F:GetPlatesProjection('player')
+    profile.info.showClass=true;profile.components.class.enabled=false
+    local noIcon=P.ComputeInfoItemsLayout(plates,profile.info,profile.components,base.bar.centerX,base.info.top,base.info.font,base.scale)
+    assert(noIcon.classText and noIcon.classText.text=='Bard','disabling class icon also hid profession name')
+    assert(noIcon.icon==nil,'disabled class icon still rendered')
+    profile.components.class.enabled=true;profile.info.showClass=false
+    local iconOnly=P.ComputeInfoItemsLayout(plates,profile.info,profile.components,base.bar.centerX,base.info.top,base.info.font,base.scale)
+    assert(iconOnly.classText==nil,'hidden profession name still rendered')
+    assert(iconOnly.icon=='role.dds','hiding profession name also hid independent class icon')
+    profile.info.showClass=true;profile.info.x=0;profile.info.y=0
+    local anchored=P.ComputeInfoItemsLayout(plates,profile.info,profile.components,base.bar.centerX,base.info.top,base.info.font,base.scale)
+    profile.info.x=27;profile.info.y=11
+    local movedName=P.ComputeInfoItemsLayout(plates,profile.info,profile.components,base.bar.centerX,base.info.top+11*base.scale,base.info.font,base.scale)
+    assert(movedName.classText.x==anchored.classText.x+27 and movedName.classText.y==anchored.classText.y+11*base.scale,'profession text offsets did not move profession text')
+    assert(movedName.iconX==anchored.iconX and movedName.iconY==anchored.iconY,'profession text offsets still moved independent class icon')
+end)
+Test('copied player and target profiles use the same info-slot geometry',function()
+    local h,S,F,P=Boot()
+    local profile=F:GetScopeLayoutSettings('player')
+    profile.info.x=0;profile.info.y=0
+    profile.components.class.x=0;profile.components.class.y=0
+    profile.components.gearScore.x=0;profile.components.gearScore.y=0
+    profile.components.distance.x=0;profile.components.distance.y=0
+    local base=P.ComputePlateLayout(350,350,profile,0,0,{})
+    local plates={class={value='Bard',icon='role.dds'},gearScore={value='12345'},distance={value='28.0m'}}
+    local player=P.ComputeInfoItemsLayout(plates,profile.info,profile.components,base.bar.centerX,base.info.top,base.info.font,base.scale,'player')
+    local target=P.ComputeInfoItemsLayout(plates,profile.info,profile.components,base.bar.centerX,base.info.top,base.info.font,base.scale,'target')
+    assert(player.classText and target.classText and player.gearScore and target.gearScore and player.distance and target.distance,'copied info items missing')
+    assert(player.classText.x==target.classText.x,'copied profession x differs by scope')
+    assert(player.gearScore.x==target.gearScore.x,'copied gear score x differs by scope')
+    assert(player.distance.x==target.distance.x,'copied distance x differs by scope')
+    assert(player.classText.y==target.classText.y and player.gearScore.y==target.gearScore.y and player.distance.y==target.distance.y,'copied info y differs by scope')
+end)
+
+Test('info slot is independent from visible buff row count',function()
+    local h,S,F,P=Boot()
+    local profile=F:GetScopeLayoutSettings('target')
+    local none=P.ComputePlateLayout(850,350,profile,0,0,{mainHand=true,offHand=true,ranged=true,wings=true})
+    local many=P.ComputePlateLayout(850,350,profile,16,0,{mainHand=true,offHand=true,ranged=true,wings=true})
+    assert(none.info.top==many.info.top,'info slot moved when buff rows appeared')
+end)
+Test('cast slot is independent from visible debuff row count',function()
+    local h,S,F,P=Boot()
+    local profile=F:GetScopeLayoutSettings('target')
+    local none=P.ComputePlateLayout(850,350,profile,0,0,{mainHand=true,offHand=true,ranged=true,wings=true})
+    local many=P.ComputePlateLayout(850,350,profile,0,16,{mainHand=true,offHand=true,ranged=true,wings=true})
+    assert(type(none.cast)=='table' and type(many.cast)=='table','fixed cast slot geometry missing')
+    assert(none.cast.top==many.cast.top,'cast slot moved when debuff rows appeared')
+end)
+Test('equipment semantic slots do not collapse when a sibling item is absent',function()
+    local h,S,F,P=Boot()
+    local profile=F:GetScopeLayoutSettings('target')
+    local function Find(layout,key)
+        for _,group in ipairs({layout.leftGroup,layout.rightGroup}) do
+            for _,slot in ipairs((group and group.slots) or {}) do if slot.key==key then return slot end end
+        end
+    end
+    local all=P.ComputePlateLayout(850,350,profile,0,0,{mainHand=true,offHand=true,ranged=true,wings=true})
+    local mainOnly=P.ComputePlateLayout(850,350,profile,0,0,{mainHand=true,offHand=false,ranged=false,wings=false})
+    local offOnly=P.ComputePlateLayout(850,350,profile,0,0,{mainHand=false,offHand=true,ranged=false,wings=false})
+    assert(Find(all,'mainHand').x==Find(mainOnly,'mainHand').x,'mainHand collapsed into missing sibling slot')
+    assert(Find(all,'offHand').x==Find(offOnly,'offHand').x,'offHand collapsed into missing sibling slot')
+end)
+Test('equipment size changes cannot push sibling semantic slots',function()
+    local h,S,F,P=Boot()
+    local profile=F:GetScopeLayoutSettings('target')
+    local function Find(layout,key)
+        for _,group in ipairs({layout.leftGroup,layout.rightGroup}) do
+            for _,slot in ipairs((group and group.slots) or {}) do if slot.key==key then return slot end end
+        end
+    end
+    local before=P.ComputePlateLayout(850,350,profile,0,0,{mainHand=true,offHand=true,ranged=true,wings=true})
+    local mainX,rangedX=Find(before,'mainHand').x,Find(before,'ranged').x
+    profile.components.offHand.size=(profile.components.offHand.size or 26)+14
+    local after=P.ComputePlateLayout(850,350,profile,0,0,{mainHand=true,offHand=true,ranged=true,wings=true})
+    assert(Find(after,'mainHand').x==mainX,'offHand size pushed mainHand slot')
+    assert(Find(after,'ranged').x==rangedX,'offHand size pushed ranged slot')
+end)
+Test('class icon uses a fixed slot independent from profession text width',function()
+    local h,S,F,P=Boot()
+    local profile=F:GetScopeLayoutSettings('target')
+    profile.info.x=0;profile.info.y=0;profile.components.class.x=0;profile.components.class.y=0
+    local base=P.ComputePlateLayout(850,350,profile,0,0,{})
+    local short=P.ComputeInfoItemsLayout({class={value='A',icon='role.dds'}},profile.info,profile.components,base.bar.centerX,base.info.top,base.info.font,base.scale,'target')
+    local long=P.ComputeInfoItemsLayout({class={value='VeryLongProfessionName',icon='role.dds'}},profile.info,profile.components,base.bar.centerX,base.info.top,base.info.font,base.scale,'target')
+    assert(short.iconX==long.iconX,'profession text width pushed class icon slot')
+end)
+Test('class icon visibility is independent from profession name visibility',function()
+    local h,S,F,P=Boot()
+    F.laneData.player.class={name='Bard',icon='role.dds'}
+    F.State.settings.info.showClass=false
+    F.State.settings.components.class.enabled=true
+    F:InvalidateSettingsCache();P:VisualTick()
+    assert(P.pools.player.info.iconRoot.shown==true,'hiding profession text also hid class icon')
+end)
 print(string.format('PVP_HUD_RESULT passed=%d failed=%d',passed,failed));assert(failed==0,'PVP HUD regression failures')

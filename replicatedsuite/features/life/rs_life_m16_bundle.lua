@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 2 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Life vertical slice (Trade / Bonds / Treasure / Fishing)
 --
@@ -19,6 +23,7 @@ local ResidentApi = rawget(_G, "X2Resident")
 local BagApi = rawget(_G, "X2Bag")
 local UnitApi = rawget(_G, "X2Unit")
 local AbilityApi = rawget(_G, "X2Ability")
+local EquipmentApi = rawget(_G, "X2Equipment")
 
 S.Features = S.Features or {}
 
@@ -155,11 +160,15 @@ end
 ------------------------------------------------------------------------
 -- Trade
 ------------------------------------------------------------------------
-local Trade = { Id = "life_trade", storeId = "v3.life.trade", enabled = false, storeLoaded = false }
+local Trade = { Id = "life_trade", storeId = "v3.life.trade", preferenceStoreId = "v3.trade_preferences", enabled = false, storeLoaded = false, preferenceStoreLoaded = false }
 S.Features.Trade = Trade
 Trade.UpdateTopic = "v3.life.trade.updated"
 Trade.State = { fromZone = nil, toZone = nil, favorites = {}, sortMode = "ratio", ratioMode = "current", commerceMode = "observe", widgetVisible = false, widgetWindow = nil }
-Trade.Authority = { version = 6, revision = 0, zones = {}, sellableZones = {}, rows = {}, selectedKey = nil, status = "idle", error = nil, inFlight = nil, zoneFallback = false, sellableFallback = false, sellableError = nil, commerceSkill = nil, commerceStatus = "idle", commerceName = nil, commerceError = nil }
+-- 维护（2026-09-23，trade-preferences-split-1）：关注货物/显示模式/自动刷新是新能力，禁止直接扩展
+-- 历史 v3.life.trade schema1。旧 Store 曾有实档指纹恢复桥；把新字段塞进去会让升级用户重新走完整性迁移。
+-- 因此使用独立 schema1 Store，业务路线/收藏/悬浮窗继续由旧 Store Authority 管理。
+Trade.Preferences = { viewMode = "all", trackedProducts = {}, autoRefresh = true, cargoScan = true }
+Trade.Authority = { version = 9, revision = 0, zones = {}, sellableZones = {}, rows = {}, rawRows = {}, selectedKey = nil, status = "idle", error = nil, inFlight = nil, zoneFallback = false, sellableFallback = false, sellableError = nil, commerceSkill = nil, commerceStatus = "idle", commerceName = nil, commerceError = nil }
 InstallLifeWidgetContract(Trade, { defaultWidth = 410, defaultHeight = 306, minWidth = 320, minHeight = 228, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 }) -- 中文维护注释：跑商悬浮窗默认尺寸收敛到紧凑 HUD；只改变 Window policy，货率 Authority/请求生命周期不受影响。
 local TradeWidgetWindowStateBase = Trade.GetWidgetWindowState -- 中文维护注释：保留统一 FloatingSurface 状态读取入口，只在展示边界兼容旧默认尺寸，不改写持久化权威。
 function Trade:GetWidgetWindowState() -- 中文维护注释：跑商悬浮窗使用只读兼容投影，避免为纯 UI 紧凑化引入 Store schema/fingerprint 迁移风险。
@@ -170,21 +179,64 @@ function Trade:GetWidgetWindowState() -- 中文维护注释：跑商悬浮窗使
     return state -- 中文维护注释：Presentation 只消费兼容后的副本；后续用户真实拖拽/缩放仍由统一 SetWidgetWindowState 持久化。
 end -- 中文维护注释：结束跑商悬浮窗兼容状态读取。
 local TA = Trade.Authority
+-- 维护（2026-09-24，trade-native-callback-lease-1）：SPECIALTY_RATIO_BETWEEN_INFO 是已发 Native 请求的回执，
+-- 生命周期不能跟瞬时 UI Consumer 完全绑定。页面切换时 Demand 可能短暂 1->0；旧版此时立即 Unsubscribe + 清 inFlight，
+-- 已被 X2Store 接受的请求随后回调无人接收，下一次打开只能再等一个 Native 窗口。单独的轻量 owner 只持有这一条回执事件；
+-- 装备/跨区等观察事件仍严格随 Consumer 释放。它不主动发请求，不形成后台扫描。
+Trade.nativeRatioEventOwner = { Id = "life_trade.native_ratio_callback" }
+Trade.nativeRatioSubscribed = false
+local TraceInit -- forward declaration: diagnostics ring is used by cargo/equipment helpers defined before its implementation.
 TA.RouteRefreshRetryContractVersion = 3
 TA.SingleFlightLatestRouteContractVersion = 1
 TA.RequestTimeoutContractVersion = 3
-TA.NativeCooldownContractVersion = 2
+TA.NativeCooldownContractVersion = 4
+TA.QuerySchedulerContractVersion = 2
+TA.AutoRefreshContractVersion = 2
+TA.NativeCallbackLeaseContractVersion = 1
+TA.CargoObservationContractVersion = 1
+TA.PreferenceProjectionContractVersion = 1
 TA.requestTimeoutTask = "v3_trade_route_timeout"
+TA.timeoutDrainTask = "v3_trade_timeout_drain"
 TA.requestDeferredTask = "v3_trade_route_deferred"
+TA.requestAutoTask = "v3_trade_route_auto_refresh"
+TA.equipmentRefreshTask = "v3_trade_equipment_refresh"
+TA.cargoPumpTask = "v3_trade_cargo_pump"
+TA.cargoRescanTask = "v3_trade_cargo_rescan"
 TA.requestSerial = tonumber(TA.requestSerial) or 0
 TA.pendingRoute = nil
 TA.pendingRetryCount = nil
 TA.timedOutFlight = nil
 TA.responseSlaMs = 6500
+-- A callback carries no request-id. After a timeout, keep the lane empty briefly so a late callback
+-- can be consumed as the timed-out flight instead of being misattributed to the next request.
+TA.timeoutDrainMs = 2000
+TA.timeoutDrainUntil = tonumber(TA.timeoutDrainUntil) or 0
 TA.lastNativeCooldownMs = tonumber(TA.lastNativeCooldownMs) or 0
 TA.nextNativeRequestAt = tonumber(TA.nextNativeRequestAt) or 0
 TA.lastResponseTimeoutMs = tonumber(TA.lastResponseTimeoutMs) or 6500
 TA.sellableCache = {}
+TA.lastCompletedRoute = nil
+TA.lastRatioAt = tonumber(TA.lastRatioAt) or 0
+-- 维护（2026-09-23，trade-route-session-cache-1）：路线切换受 RU Native 查询冷却限制，且回调没有 request-id，
+-- 因此不能靠并发“抢跑”来消除等待。这里增加仅本次插件加载有效的路线快照缓存：已经成功查过的路线再次
+-- 选中时立即恢复上一份真实货率，并在后台等合法 Native 窗口刷新。缓存不是服务器 Authority、不写存档，
+-- UI 会继续按 lastRatioAt 显示数据年龄；最多保留 12 条路线，避免长期会话无界增长。
+TA.routeCache = {}
+TA.routeCacheOrder = {}
+TA.routeCacheMax = 12
+-- 维护（2026-09-24，trade-auto-refresh-headroom-1）：RU Native 当前实机返回 5000ms 查询窗口。旧版自动刷新也按 5 秒
+-- 紧贴窗口执行，等价于几乎永久占满下一次合法请求机会；用户切收藏/目的地时自然总撞 cooldown。自动刷新仍保持
+-- 足够实时，但至少预留一个完整 Native cooldown 的交互空窗：默认 10 秒，且不低于最近 Native cooldown 的 2 倍。
+-- 用户手动路线/跨区刷新仍是高优先级；这里只调整低优先级后台刷新，不改变服务器 Authority。
+TA.autoRefreshTargetMs = 10000
+TA.autoRefreshCooldownFactor = 2
+TA.cargoRescanIntervalMs = 15000
+-- 维护（2026-09-23，trade-cargo-native-budget-1）：随身扫描是低优先级后台消费者。即使某个 RU 客户端
+-- 对 GetSpecialtyRatioBetween 的数值返回语义发生变化，也至少保持 1 秒 Native 间隔；正常情况下更大的
+-- 服务器返回节流仍优先生效。这样不会因错误把 0/小数值解释成 cooldown 而对几十个目的地形成短时请求风暴。
+TA.cargoMinIntervalMs = 1000
+TA.cargo = { status = "empty", itemType = nil, legacyName = nil, name = nil, originZone = nil, results = {}, queue = {}, generation = 0, scanning = false, lastScanAt = 0, scanStartedAt = 0, error = nil }
+TA.requestTrace = {}
 TA.TradePayoutProjectionContractVersion = 1
 local TRADE_CONTINENT_ORDER = { west = 1, east = 2, auroria = 3, other = 4 }
 local TRADE_ANCHORS_W = { [1] = true, [5] = true, [8] = true, [20] = true }
@@ -199,6 +251,7 @@ local TRADE_COMMERCE_MODES = { observe = true, off = true }
 -- Sort modes are a closed set shared by Authority normalization and the
 -- page/widget selectors: ratio (default), price, name ([]-prefixed first).
 local TRADE_SORT_MODES = { ratio = true, price = true, name = true }
+local TRADE_VIEW_MODES = { all = true, tracked = true, cargo = true }
 local TRADE_COMMERCE_NAMES = { ["Commerce"] = true, ["经商"] = true, ["贸易"] = true, ["Торговля"] = true }
 
 local function StaticTradeZones()
@@ -318,6 +371,54 @@ function Trade:GetFavoriteItems()
     return result
 end
 
+-- 维护（2026-09-23，trade-focus-mode-1）：服务器 GetSpecialtyRatioBetween 只能按路线整包返回，
+-- “关注货物”不能伪装成服务端单品查询。这里仅持久化经过核验的 product itemType，随后在本地 Projection
+-- 过滤并只对可见/关注行执行材料身份与成本重投影，从而减少 Live Craft/报价相关工作。最大 128 项，禁止
+-- 把 localized name 当稳定身份；itemType 缺失的行仍可在“全部”查看，但不能写入关注 Store。
+function Trade:NormalizeTrackedProducts(value)
+    local out, seen = {}, {}
+    for _, raw in ipairs(type(value) == "table" and value or {}) do
+        local id = Number(raw)
+        if id ~= nil then
+            id = math.floor(id)
+            if id > 0 and seen[id] ~= true then
+                seen[id] = true
+                out[#out + 1] = id
+                if #out >= 128 then break end
+            end
+        end
+    end
+    table.sort(out)
+    return out
+end
+
+function Trade:RefreshTrackedProductSet()
+    self.Preferences.trackedProducts = self:NormalizeTrackedProducts(self.Preferences.trackedProducts)
+    local set = {}
+    for _, id in ipairs(self.Preferences.trackedProducts) do set[id] = true end
+    self._trackedProductSet = set
+    return set
+end
+
+function Trade:IsTrackedProduct(itemType)
+    itemType = Number(itemType)
+    if itemType == nil then return false end
+    itemType = math.floor(itemType)
+    local set = type(self._trackedProductSet) == "table" and self._trackedProductSet or self:RefreshTrackedProductSet()
+    return set[itemType] == true
+end
+
+local function PersistTradePreference(reason, mutator)
+    if type(P.MutateStore) ~= "function" then return false, "Persistence mutation transaction unavailable" end
+    return P:MutateStore(Trade.preferenceStoreId, function()
+        return mutator(Trade.Preferences)
+    end, { delayMs = 300, reason = reason or "trade_preferences_changed" })
+end
+
+function Trade:GetViewMode()
+    return TRADE_VIEW_MODES[self.Preferences.viewMode] and self.Preferences.viewMode or "all"
+end
+
 local function TradePrice(destination, name, ratio, commerceSkill, originZoneName, includeCommerce)
     local payout = S.Services and S.Services.TradePayoutV3 or nil
     if type(payout) ~= "table" or type(payout.Estimate) ~= "function" then
@@ -336,6 +437,11 @@ end
 -- and total cost; a truncated recipe never reports its subtotal as a complete
 -- cost.
 local TRADE_MATERIAL_MAX_ROWS = 32
+-- 维护（2026-09-23，trade-row-quote-intent-1）：全列表批量询价仍保持 4 项预算，避免误操作导致拍卖行请求洪泛；
+-- 但“用户双击某一货物”是明确的单行意图，必须覆盖该行已解析出的全部材料，否则会出现点了询价却仍算不出毛利。
+-- 单行预算受 TRADE_MATERIAL_MAX_ROWS 的硬上限保护，底层 PriceQuoteQueueV3 继续串行执行，不增加 Native 并发。
+local TRADE_DEFAULT_QUOTE_BATCH_MAX = 4
+local TRADE_ROW_QUOTE_BATCH_MAX = TRADE_MATERIAL_MAX_ROWS
 -- Player-facing Chinese name for an itemType, via the shared Localization
 -- Authority. Internal identifiers (English data keys, compact ids, craftType
 -- numbers, English legacy recipe names) must never be rendered as a row label:
@@ -359,17 +465,48 @@ local function LocalizedTradeItemName(itemType, fallbackText)
     return nil
 end
 
-local TRADE_MATERIAL_KEY_MAX_CHARS = 48
--- Table cells hold "name×count" only; keep the bound tight so four materials fit.
-local TRADE_MATERIAL_CELL_MAX_CHARS = 26
-local TRADE_MATERIAL_SUMMARY_ROW_MAX_CHARS = 120
-local TRADE_MATERIAL_SUMMARY_MAX_CHARS = 4096
+local TRADE_MATERIAL_KEY_MAX_BYTES = 48
+-- Table cells hold "name×count" only. These limits are byte budgets because Lua 5.1
+-- strings are byte arrays; never cut a localized UTF-8 code point in the middle.
+local TRADE_MATERIAL_CELL_MAX_BYTES = 26
+local TRADE_MATERIAL_SUMMARY_ROW_MAX_BYTES = 120
+local TRADE_MATERIAL_SUMMARY_MAX_BYTES = 4096
 
-local function BoundedTradeText(value, fallback, maxChars)
+-- 维护（2026-09-23，trade-utf8-boundary-1）：旧 BoundedTradeText 直接 string.sub(text, 1, limit)，
+-- 中文 3-byte UTF-8 在边界处会被切出无效字节，轻则显示乱码，重则污染原生编辑框/列表文本。Authority 仍只
+-- 负责有界 Projection，不扩大缓存预算；这里按“字节上限”扫描完整 code point，非法/不完整序列直接停在其前。
+-- 该逻辑只在构建材料显示文本时执行，最多扫描 120 bytes，不进入 Tick/高频 Native 查询。
+local function TradeUtf8Prefix(value, maxBytes)
+    local text = tostring(value or "")
+    local limit = math.max(0, math.floor(tonumber(maxBytes) or #text))
+    if #text <= limit then return text end
+    local index, lastComplete = 1, 0
+    while index <= #text and index <= limit do
+        local first = string.byte(text, index)
+        if first == nil then break end
+        local width
+        if first <= 0x7F then width = 1
+        elseif first >= 0xC2 and first <= 0xDF then width = 2
+        elseif first >= 0xE0 and first <= 0xEF then width = 3
+        elseif first >= 0xF0 and first <= 0xF4 then width = 4
+        else break end
+        if index + width - 1 > limit then break end
+        local valid = true
+        for offset = 1, width - 1 do
+            local continuation = string.byte(text, index + offset)
+            if continuation == nil or continuation < 0x80 or continuation > 0xBF then valid = false; break end
+        end
+        if not valid then break end
+        lastComplete = index + width - 1
+        index = lastComplete + 1
+    end
+    return lastComplete > 0 and string.sub(text, 1, lastComplete) or ""
+end
+
+local function BoundedTradeText(value, fallback, maxBytes)
     local text = Text(value, fallback)
-    local limit = tonumber(maxChars) or TRADE_MATERIAL_KEY_MAX_CHARS
-    if #text > limit then return string.sub(text, 1, limit) end
-    return text
+    local limit = tonumber(maxBytes) or TRADE_MATERIAL_KEY_MAX_BYTES
+    return #text > limit and TradeUtf8Prefix(text, limit) or text
 end
 
 -- Ingredient identity comes from the curated trade_material record (resolved by
@@ -386,14 +523,24 @@ local function ResolveTradeIngredient(static, meta, ingredient)
         if record == nil and type(static.GetMaterialByCompactId) == "function" and tonumber(ingredient.compactId) ~= nil then
             record = static:GetMaterialByCompactId(ingredient.compactId)
         end
+        -- X2Craft fallback material rows can be detached from English/compact keys. ItemID remains the stable
+        -- Authority for curated cost policy, especially bound resources such as Gilda Star (23633).
+        if record == nil and type(static.GetMaterialByItemId) == "function" and tonumber(ingredient.itemType) ~= nil then
+            record = static:GetMaterialByItemId(ingredient.itemType)
+        end
     end
     local item = (record == nil and type(meta) == "table") and meta[ingredient.materialKey] or nil
     local itemType = (record and tonumber(record.itemId)) or (item and tonumber(item.itemType)) or tonumber(ingredient.itemType)
     local itemGrade = (record and tonumber(record.itemGrade)) or (item and tonumber(item.itemGrade)) or tonumber(ingredient.itemGrade)
     local includeInCost = not (record and record.includeInCost == false) and not (item and item.includeInCost == false)
     if ingredient.includeInCost == false then includeInCost = false end
+    local auctionable = not (record and record.auctionable == false) and itemType ~= nil
+    if ingredient.auctionable == false then auctionable = false end
+    local costKind = record and tostring(record.costKind or "") or ""
+    if costKind == "" then costKind = auctionable and "market" or (includeInCost and "unknown_non_market" or "non_market") end
+    local note = record and record.note or nil
     local materialKey = tostring((record and record.nameEn) or ingredient.materialKey or ingredient.compactId or "?")
-    return materialKey, itemType, itemGrade, includeInCost
+    return materialKey, itemType, itemGrade, includeInCost, auctionable, costKind, note
 end
 
 local function BuildTradeMaterialProjection(row)
@@ -412,6 +559,7 @@ local function BuildTradeMaterialProjection(row)
         rows = {}, materialRows = {}, summary = "材料待确认", sourceCount = 0,
         truncated = false, costCopper = nil, subtotalCopper = 0,
         costComplete = false, costStatus = "unavailable",
+        boundResourceCount = 0, nonMarketResourceCount = 0, hasUnpricedNonMarket = false,
         identityStatus = "unresolved", recipeLabel = nil, identitySource = nil,
     }
     -- Layer 2/3 of the identity chain: shared static families and the
@@ -466,7 +614,7 @@ local function BuildTradeMaterialProjection(row)
     for index = 1, limit do
         local ingredient = type(ingredients[index]) == "table" and ingredients[index] or {}
         local count = math.max(0, tonumber(ingredient.count) or 0)
-        local materialKey, itemType, itemGrade, includeInCost = ResolveTradeIngredient(static, meta, ingredient)
+        local materialKey, itemType, itemGrade, includeInCost, auctionable, costKind, materialNote = ResolveTradeIngredient(static, meta, ingredient)
         local unitCost, totalCost, status = nil, nil, "price_pending"
         local quoteState, quoteError = nil, nil
         -- Provenance is rendered after the pricing branch below, so its lifetime
@@ -478,9 +626,15 @@ local function BuildTradeMaterialProjection(row)
         local priceProvenance = nil
 
         if not includeInCost then
-            totalCost, status = 0, "excluded"
+            -- 维护（2026-09-23，trade-bound-resource-cost-1）：绑定资源/非市场凭证仍是配方真实需求，
+            -- 不能因为“不进入金币成本”就被表现成“识别不到材料”。金币小计为 0，但保留 itemType/count/资源类型，
+            -- 并禁止进入拍卖询价队列。利润仍可给出“金币口径”，详情明确提示存在未折价资源。
+            totalCost = 0
+            status = costKind == "bound_resource" and "bound_resource" or "non_market_resource"
         elseif itemType == nil then
             complete, status = false, "identity_pending"
+        elseif auctionable ~= true then
+            complete, status = false, "non_market_unpriced"
         else
             -- Material identity is a local fact. Price is not: GetLowestPrice is
             -- cooldown-bound and must never fan out from an ordinary route refresh.
@@ -564,12 +718,15 @@ local function BuildTradeMaterialProjection(row)
             materialKey = materialKey,
             compactId = tonumber(ingredient.compactId),
             -- Diagnostics-only: never rendered on a page/HUD row.
-            internalKey = BoundedTradeText(materialKey, "?", TRADE_MATERIAL_KEY_MAX_CHARS),
-            name = BoundedTradeText(displayName or "材料", "材料", TRADE_MATERIAL_KEY_MAX_CHARS),
+            internalKey = BoundedTradeText(materialKey, "?", TRADE_MATERIAL_KEY_MAX_BYTES),
+            name = BoundedTradeText(displayName or "材料", "材料", TRADE_MATERIAL_KEY_MAX_BYTES),
             count = count,
             itemType = itemType,
             itemGrade = itemGrade,
             includeInCost = includeInCost,
+            auctionable = auctionable == true,
+            costKind = costKind,
+            materialNote = materialNote ~= nil and BoundedTradeText(materialNote, "", 96) or nil,
             unitCostCopper = unitCost,
             totalCostCopper = totalCost,
             costCopper = totalCost,
@@ -581,8 +738,12 @@ local function BuildTradeMaterialProjection(row)
         -- lives on the row fields below (consumed by the detail window and the
         -- diagnostics panel), not in the scanned table cell.
         row.detailText = row.name .. "×" .. tostring(row.count)
-        if status == "excluded" then
-            row.detailText = row.detailText .. "（不计成本）"
+        if status == "bound_resource" then
+            row.detailText = row.detailText .. "（绑定资源，不计金币成本）"
+        elseif status == "non_market_resource" then
+            row.detailText = row.detailText .. "（非市场资源，不计金币成本）"
+        elseif status == "non_market_unpriced" then
+            row.detailText = row.detailText .. "（不可拍卖，价格未折算）"
         elseif unitCost ~= nil and totalCost ~= nil then
             row.detailText = row.detailText .. "（单价 " .. Money(unitCost) .. " / 小计 " .. Money(totalCost)
                 .. (priceProvenance == "reference" and "，参考" or "") .. "）"
@@ -593,8 +754,11 @@ local function BuildTradeMaterialProjection(row)
         else
             row.detailText = row.detailText .. (status == "explicit_quote_required" and "（价格需显式询价）" or "（单价待确认）")
         end
-        row.summaryText = BoundedTradeText(row.detailText, row.name .. "×" .. tostring(row.count), TRADE_MATERIAL_SUMMARY_ROW_MAX_CHARS)
-        row.cellText = BoundedTradeText(row.name .. "×" .. tostring(row.count), row.name, TRADE_MATERIAL_CELL_MAX_CHARS)
+        row.summaryText = BoundedTradeText(row.detailText, row.name .. "×" .. tostring(row.count), TRADE_MATERIAL_SUMMARY_ROW_MAX_BYTES)
+        row.cellText = BoundedTradeText(row.name .. "×" .. tostring(row.count), row.name, TRADE_MATERIAL_CELL_MAX_BYTES)
+        if status == "bound_resource" then result.boundResourceCount = result.boundResourceCount + 1 end
+        if status == "non_market_resource" then result.nonMarketResourceCount = result.nonMarketResourceCount + 1 end
+        if status == "non_market_unpriced" then result.hasUnpricedNonMarket = true end
         result.rows[#result.rows + 1] = row
         result.materialRows[#result.materialRows + 1] = row
     end
@@ -603,7 +767,7 @@ local function BuildTradeMaterialProjection(row)
     for _, row in ipairs(result.materialRows) do
         local part = row.cellText or row.summaryText
         local nextChars = summaryChars + #part + (#summaryParts > 0 and 3 or 0)
-        if nextChars > TRADE_MATERIAL_SUMMARY_MAX_CHARS then
+        if nextChars > TRADE_MATERIAL_SUMMARY_MAX_BYTES then
             -- Keep the collection/cost contract explicit even if a future
             -- localized material name makes the bounded display too long.
             result.summaryDisplayTruncated = true
@@ -619,7 +783,13 @@ local function BuildTradeMaterialProjection(row)
     end
     result.subtotalCopper = math.floor(total + 0.5)
     result.costComplete = complete and not result.truncated and not result.summaryDisplayTruncated
-    result.costStatus = result.truncated and "truncated" or (result.costComplete and "ready" or "partial")
+    if result.truncated then
+        result.costStatus = "truncated"
+    elseif result.costComplete and (result.boundResourceCount > 0 or result.nonMarketResourceCount > 0) then
+        result.costStatus = "ready_with_resources"
+    else
+        result.costStatus = result.costComplete and "ready" or "partial"
+    end
     result.costCopper = result.costComplete and result.subtotalCopper or nil
     result.count = #result.materialRows
     return result
@@ -643,6 +813,10 @@ local function ApplyTradeMaterialProjectionToRow(row)
     row.materialCostStatus = materialProjection.costStatus
     row.materialCostComplete = materialProjection.costComplete
     row.materialSubtotalCopper = materialProjection.subtotalCopper
+    row.boundResourceCount = tonumber(materialProjection.boundResourceCount) or 0
+    row.nonMarketResourceCount = tonumber(materialProjection.nonMarketResourceCount) or 0
+    row.hasUnpricedNonMarket = materialProjection.hasUnpricedNonMarket == true
+    row.materialCostBasis = (row.boundResourceCount > 0 or row.nonMarketResourceCount > 0) and "gold_only_with_resources" or "gold_only"
     row.identityStatus = materialProjection.identityStatus
     row.recipeLabel = materialProjection.recipeLabel
     row.identitySource = materialProjection.identitySource
@@ -652,7 +826,37 @@ local function ApplyTradeMaterialProjectionToRow(row)
     -- unobtainable on this client. "待材料价格" used to imply the number was merely
     -- pending; say what is actually missing and where the player can still get a
     -- usable estimate (the sell price and 货率 columns remain real facts).
-    row.profit = profit and Money(profit) or (price and "缺材料价（拍卖行无返回）" or "--")
+    if profit then
+        row.profitStatus = "ready"
+        row.profit = Money(profit) .. ((row.boundResourceCount > 0 or row.nonMarketResourceCount > 0) and "*" or "")
+    else
+        -- 维护（2026-09-23，trade-row-actionable-profit-1）：紧凑列表中的毛利列必须告诉玩家“下一步做什么”。
+        -- 旧文案“缺材料价（拍卖行无返回）”既过长又像永久故障，且无法解释显式询价模型。这里仅消费已经
+        -- 解析好的材料状态，不发 Native 请求；双击行为仍由 Presentation -> QuoteRowMaterials 明确触发。
+        local hasQuotePending, hasQuoteFailed, hasQuoteRequired = false, false, false
+        for _, material in ipairs(type(materialProjection.materialRows) == "table" and materialProjection.materialRows or {}) do
+            if material.costStatus == "quote_pending" then hasQuotePending = true
+            elseif material.costStatus == "quote_failed" then hasQuoteFailed = true
+            elseif material.costStatus == "explicit_quote_required" then hasQuoteRequired = true end
+        end
+        if price == nil then
+            row.profitStatus, row.profit = "price_unavailable", "--"
+        elseif hasQuotePending then
+            row.profitStatus, row.profit = "quote_pending", "询价中…"
+        elseif hasQuoteFailed then
+            row.profitStatus, row.profit = "quote_failed", "询价失败"
+        elseif hasQuoteRequired then
+            row.profitStatus, row.profit = "quote_required", "双击询价"
+        elseif materialProjection.identityStatus == "live_pending" then
+            row.profitStatus, row.profit = "identity_pending", "材料解析中"
+        elseif materialProjection.identityStatus ~= "resolved" then
+            row.profitStatus, row.profit = "identity_unresolved", "材料未识别"
+        elseif materialProjection.hasUnpricedNonMarket == true then
+            row.profitStatus, row.profit = "non_market_unpriced", "材料不可估"
+        else
+            row.profitStatus, row.profit = "partial", "材料价不全"
+        end
+    end
     return true
 end
 
@@ -768,45 +972,200 @@ local function ApplyTradeDisplayModeToRow(row)
     return true
 end
 
+local function CopyTradeRouteRow(raw)
+    -- 维护（2026-09-23，trade-raw-projection-split-1）：RawRatioSnapshot 只保存服务器货率事实，
+    -- Display Projection 才挂售价/材料/利润。浅拷贝足够，因为 raw 行全部是标量；避免对几十行反复 DeepCopy。
+    return {
+        key = raw.key, name = raw.name, sourceName = raw.sourceName, currentRatio = raw.currentRatio, ratio = raw.ratio,
+        originZone = raw.originZone, destinationZone = raw.destinationZone, itemType = raw.itemType, ratioUpdatedAt = raw.ratioUpdatedAt,
+    }
+end
+
+function TA:BuildCargoDisplayRows()
+    local cargo = type(self.cargo) == "table" and self.cargo or {}
+    local rows = {}
+    if cargo.status ~= "ready" and cargo.status ~= "scanning" and cargo.status ~= "complete" then return rows end
+    for destination, result in pairs(type(cargo.results) == "table" and cargo.results or {}) do
+        if type(result) == "table" and Number(result.ratio) ~= nil then
+            local to = Number(destination) or Number(result.destinationZone)
+            local row = {
+                key = "cargo:" .. tostring(cargo.itemType or "?") .. ":" .. tostring(to or "?"),
+                name = "→ " .. TradeZoneName(to), sourceName = tostring(cargo.legacyName or cargo.name or ""),
+                currentRatio = Number(result.ratio), ratio = Number(result.ratio), originZone = Number(cargo.originZone),
+                destinationZone = to, itemType = Number(cargo.itemType), ratioUpdatedAt = tonumber(result.updatedAt) or 0,
+                cargoMode = true, cargoProductName = tostring(cargo.name or cargo.legacyName or "随身货物"),
+            }
+            ApplyTradeDisplayModeToRow(row)
+            row.tracked = Trade:IsTrackedProduct(row.itemType)
+            rows[#rows + 1] = row
+        end
+    end
+    return rows
+end
+
 function TA:RebuildDisplayRows(reason)
-    for _, row in ipairs(self.rows or {}) do ApplyTradeDisplayModeToRow(row) end
-    SortTradeRows(self.rows or {})
+    local mode = Trade:GetViewMode()
+    local rows = {}
+    if mode == "cargo" then
+        rows = self:BuildCargoDisplayRows()
+    else
+        for _, raw in ipairs(type(self.rawRows) == "table" and self.rawRows or {}) do
+            if mode == "all" or Trade:IsTrackedProduct(raw.itemType) then
+                local row = CopyTradeRouteRow(raw)
+                ApplyTradeDisplayModeToRow(row)
+                row.tracked = Trade:IsTrackedProduct(row.itemType)
+                rows[#rows + 1] = row
+            end
+        end
+    end
+    self.rows = rows
+    SortTradeRows(self.rows)
+    if self.selectedKey ~= nil then
+        local found = false
+        for _, row in ipairs(self.rows) do if tostring(row.key or "") == tostring(self.selectedKey) then found = true; break end end
+        if not found then self.selectedKey = nil end
+    end
     self.revision = self.revision + 1
     PublishFeatureUpdate(Trade, self.revision, reason or "trade_display_mode")
+    if type(self.RequestPendingLiveIdentities) == "function" then self:RequestPendingLiveIdentities() end
     return true
 end
 
 function TA:RefreshCommerceSkill()
+    local oldSkill, oldStatus, oldName, oldError = self.commerceSkill, self.commerceStatus, self.commerceName, self.commerceError
     if Trade.State.commerceMode ~= "observe" then
         self.commerceSkill, self.commerceName, self.commerceError = nil, nil, nil
         self.commerceStatus = "off"
-        return true
-    end
-    local ok, infos, err = Call("X2Ability:GetAllMyActabilityInfos", AbilityApi, "GetAllMyActabilityInfos")
-    if ok ~= true or type(infos) ~= "table" then
-        self.commerceSkill, self.commerceName = nil, nil
-        self.commerceStatus, self.commerceError = "unavailable", err or "经商熟练度列表不可读"
-        return true
-    end
-    for _, info in pairs(infos) do
-        if type(info) == "table" then
-            local name = Text(info.name, "")
-            if TRADE_COMMERCE_NAMES[name] == true then
-                local point, modify = Number(info.point), Number(info.modifyPoint)
-                if point ~= nil or modify ~= nil then
-                    self.commerceSkill = math.max(0, (point or 0) + (modify or 0))
-                    self.commerceName, self.commerceStatus, self.commerceError = name, "ready", nil
-                    return true
+    else
+        local ok, infos, err = Call("X2Ability:GetAllMyActabilityInfos", AbilityApi, "GetAllMyActabilityInfos")
+        if ok ~= true or type(infos) ~= "table" then
+            self.commerceSkill, self.commerceName = nil, nil
+            self.commerceStatus, self.commerceError = "unavailable", err or "经商熟练度列表不可读"
+        else
+            local matched = false
+            for _, info in pairs(infos) do
+                if type(info) == "table" then
+                    local name = Text(info.name, "")
+                    if TRADE_COMMERCE_NAMES[name] == true then
+                        matched = true
+                        local point, modify = Number(info.point), Number(info.modifyPoint)
+                        if point ~= nil or modify ~= nil then
+                            self.commerceSkill = math.max(0, (point or 0) + (modify or 0))
+                            self.commerceName, self.commerceStatus, self.commerceError = name, "ready", nil
+                        else
+                            self.commerceSkill, self.commerceName = nil, name
+                            self.commerceStatus, self.commerceError = "unavailable", "经商熟练度字段不可读"
+                        end
+                        break
+                    end
                 end
-                self.commerceSkill, self.commerceName = nil, name
-                self.commerceStatus, self.commerceError = "unavailable", "经商熟练度字段不可读"
-                return true
+            end
+            if not matched then
+                self.commerceSkill, self.commerceName = nil, nil
+                self.commerceStatus, self.commerceError = "not_found", "未在当前本地化熟练度列表中识别到经商项目"
             end
         end
     end
-    self.commerceSkill, self.commerceName = nil, nil
-    self.commerceStatus, self.commerceError = "not_found", "未在当前本地化熟练度列表中识别到经商项目"
-    return true
+    local changed = oldSkill ~= self.commerceSkill or oldStatus ~= self.commerceStatus or oldName ~= self.commerceName or oldError ~= self.commerceError
+    return true, changed
+end
+
+local function TradeBackpackSlot()
+    local slot = rawget(_G, "EST_BACKPACK")
+    return Number(slot)
+end
+
+function TA:RefreshCargoObservation(reason)
+    local cargo = type(self.cargo) == "table" and self.cargo or {}
+    self.cargo = cargo
+    local oldItemType, oldOrigin = Number(cargo.itemType), Number(cargo.originZone)
+    local oldStatus, oldError, oldName = cargo.status, cargo.error, cargo.name
+    local function ObservationChanged()
+        return oldItemType ~= Number(cargo.itemType) or oldOrigin ~= Number(cargo.originZone)
+            or oldStatus ~= cargo.status or oldError ~= cargo.error or oldName ~= cargo.name
+    end
+    local slot = TradeBackpackSlot()
+    if slot == nil then
+        cargo.status, cargo.error = "unavailable", "EST_BACKPACK 不可用"
+        cargo.itemType, cargo.legacyName, cargo.name, cargo.originZone = nil, nil, nil, nil
+        local changed = ObservationChanged()
+        if oldItemType ~= nil then
+            cargo.results, cargo.queue, cargo.scanning = {}, {}, false
+            cargo.generation = (tonumber(cargo.generation) or 0) + 1
+        end
+        return true, changed
+    end
+    local ok, itemType, err = Call("X2Equipment:GetEquippedItemType", EquipmentApi, "GetEquippedItemType", slot)
+    itemType = ok == true and Number(itemType) or nil
+    if ok ~= true then
+        -- 维护（2026-09-23，trade-cargo-observation-state-1）：API 短暂不可读时保留上一次 ItemID/结果，
+        -- 但必须把 unavailable/error 作为一次可观察状态变化发布；否则 UI 会继续显示“随身扫描正常”。
+        cargo.status, cargo.error = "unavailable", err or "背部装备读取失败"
+        return true, ObservationChanged()
+    end
+    if itemType == nil or itemType <= 0 then
+        local identityChanged = oldItemType ~= nil
+        cargo.status, cargo.error = "empty", nil
+        cargo.itemType, cargo.legacyName, cargo.name, cargo.originZone = nil, nil, nil, nil
+        if identityChanged then
+            cargo.results, cargo.queue, cargo.scanning = {}, {}, false
+            cargo.generation = (tonumber(cargo.generation) or 0) + 1
+        end
+        return true, ObservationChanged()
+    end
+    itemType = math.floor(itemType)
+    local products = S.GameIds and S.GameIds.TradeProduct or nil
+    local product = type(products) == "table" and type(products.GetByItemId) == "function" and products:GetByItemId(itemType) or nil
+    if type(product) ~= "table" then
+        local identityChanged = oldItemType ~= itemType or oldOrigin ~= nil
+        cargo.status, cargo.error = "not_trade", nil
+        cargo.itemType, cargo.legacyName, cargo.name, cargo.originZone = itemType, nil, LocalizedTradeItemName(itemType, nil), nil
+        if identityChanged then cargo.results, cargo.queue, cargo.scanning = {}, {}, false; cargo.generation = (tonumber(cargo.generation) or 0) + 1 end
+        return true, ObservationChanged()
+    end
+    local legacyName = tostring(product.legacyName or "")
+    local static = S.Data and S.Data.TradeStaticV2 or nil
+    local recipe = type(static) == "table" and type(static.GetRecipeByLegacyName) == "function" and static:GetRecipeByLegacyName(legacyName) or nil
+    local originZone = type(recipe) == "table" and Number(recipe.originZoneId) or nil
+    local identityChanged = oldItemType ~= itemType or oldOrigin ~= originZone
+    cargo.itemType, cargo.legacyName = itemType, legacyName
+    cargo.name = LocalizedTradeItemName(itemType, legacyName) or legacyName
+    cargo.originZone = originZone
+    -- 维护（trade-cargo-observation-state-1）：仅观察背包不能把同一货物正在进行的扫描状态从 scanning/complete
+    -- 强行降回 ready。只有身份变化才重建扫描世代；普通武器/经商装变化不应重启整条目的地队列。
+    if originZone == nil then
+        cargo.status, cargo.error = "unknown_origin", "贸易品来源地区尚未映射"
+    elseif not identityChanged and (oldStatus == "scanning" or oldStatus == "complete") then
+        cargo.status, cargo.error = oldStatus, nil
+    else
+        cargo.status, cargo.error = "ready", nil
+    end
+    if identityChanged then
+        cargo.results, cargo.queue, cargo.scanning = {}, {}, false
+        cargo.generation = (tonumber(cargo.generation) or 0) + 1
+    end
+    local changed = ObservationChanged()
+    TraceInit("cargo_observed", tostring(reason or "refresh") .. " item=" .. tostring(itemType) .. " origin=" .. tostring(originZone or "-"))
+    return true, changed
+end
+
+function TA:ScheduleEquipmentRefresh(reason)
+    if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then
+        local _, commerceChanged = self:RefreshCommerceSkill()
+        local _, cargoChanged = self:RefreshCargoObservation(reason or "equipment_changed")
+        if commerceChanged or cargoChanged then self:RebuildDisplayRows("trade_equipment_changed") end
+        return true
+    end
+    S.Scheduler:RemoveTask(self.equipmentRefreshTask)
+    return S.Scheduler:AddOneShot(self.equipmentRefreshTask, 220, function()
+        local _, commerceChanged = TA:RefreshCommerceSkill()
+        local _, cargoChanged = TA:RefreshCargoObservation(reason or "equipment_changed")
+        if commerceChanged or cargoChanged then TA:RebuildDisplayRows("trade_equipment_changed") end
+        if cargoChanged and Trade:GetViewMode() == "cargo" and Trade.Preferences.cargoScan == true and type(TA.StartCargoScan) == "function" then
+            TA:StartCargoScan("equipment_changed")
+        end
+        return true
+    end, Trade, "P2", 1)
 end
 
 function TA:RefreshQuotedMaterial(materialKey)
@@ -828,7 +1187,7 @@ end
 -- Live identity fill-in: after a route result, rows the static chain could not
 -- name submit ONE bounded service request per distinct product itemType; the
 -- identity service serializes the X2Craft reads and calls back here.
-local function RequestPendingLiveIdentities()
+function TA:RequestPendingLiveIdentities()
     local identity = S.Services and S.Services.TradeMaterialIdentityV3 or nil
     if type(identity) ~= "table" or type(identity.RequestLive) ~= "function" then return end
     local requested = {}
@@ -887,7 +1246,7 @@ end
 -- 西没有初始化成功" cannot be reproduced statically; this trace records what
 -- actually happened during demand 0->1 (store restore, zones, commerce, route)
 -- so the diagnostics panel answers it with facts on the next repro.
-local function TraceInit(event, detail)
+TraceInit = function(event, detail)
     TA.initTrace = type(TA.initTrace) == "table" and TA.initTrace or {}
     TA.initTrace[#TA.initTrace + 1] = {
         at = S.NowMs and S.NowMs() or 0,
@@ -975,36 +1334,219 @@ function TA:RefreshSellable(force)
     self.sellableCache[from] = { list = list, fallback = self.sellableFallback, error = self.sellableError }
     local found = false
     for _, row in ipairs(list) do if row.id == Number(Trade.State.toZone) then found = true end end
-    if not found then Trade.State.toZone = nil; self.rows = {}; self.status = "idle" end
+    if not found then Trade.State.toZone = nil; self.rawRows, self.rows = {}, {}; self.status = "idle" end
     self.revision = self.revision + 1
     PublishFeatureUpdate(Trade, self.revision, "sellable")
     return true
+end
+
+function TA:TraceRequest(event, spec, detail)
+    self.requestTrace = type(self.requestTrace) == "table" and self.requestTrace or {}
+    local row = {
+        at = S.NowMs and tonumber(S.NowMs()) or 0,
+        event = tostring(event or "?"),
+        kind = type(spec) == "table" and tostring(spec.kind or "route") or "route",
+        from = type(spec) == "table" and Number(spec.from) or nil,
+        to = type(spec) == "table" and Number(spec.to) or nil,
+        reason = type(spec) == "table" and tostring(spec.reason or "") or "",
+        detail = tostring(detail or ""),
+    }
+    self.requestTrace[#self.requestTrace + 1] = row
+    if #self.requestTrace > 20 then table.remove(self.requestTrace, 1) end
 end
 
 function TA:CancelRequestTimeout()
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.requestTimeoutTask) end
 end
 
--- 中文维护注释（trade-native-cooldown-1）：官方客户端会使用 GetSpecialtyRatioBetween 的返回值
--- 作为查询按钮冷却时间。旧实现忽略该值并固定 6.5 秒超时，可能在服务器仍处于查询冷却时
--- 先释放 SingleFlight，导致稍后到达的 SPECIALTY_RATIO_BETWEEN_INFO 被当成“无在飞请求”丢弃。
--- Authority 在这里统一维护冷却；Presentation 不猜时序，也不自行重复发请求。
+function TA:CancelTimeoutDrain()
+    if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.timeoutDrainTask) end
+    self.timeoutDrainUntil = 0
+end
+
+function TA:GetTimeoutDrainRemaining()
+    local now = S.NowMs and tonumber(S.NowMs()) or 0
+    return math.max(0, (tonumber(self.timeoutDrainUntil) or 0) - now)
+end
+
+-- 维护（2026-09-23，trade-timeout-drain-1）：SPECIALTY_RATIO_BETWEEN_INFO 没有 request-id。旧代码在
+-- 6.5s 超时后立刻释放 SingleFlight 并发起下一条路线/目的地；若旧回调随后迟到，它会被误认成“当前 inFlight”，
+-- 把 A→B 的 payload 写进 C→D。这里仅在“已超时”冷路径保留 2s drain 窗口：正常路线切换零额外延迟；
+-- 迟到回调先按 timedOutFlight 消费，若窗口内始终无回调，再恢复最新 pendingRoute/cargo 队列。
+function TA:ArmTimeoutDrain(flight)
+    if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then
+        self.timedOutFlight, self.timeoutDrainUntil = nil, 0
+        return false
+    end
+    self:CancelTimeoutDrain()
+    self.timedOutFlight = type(flight) == "table" and flight or nil
+    local delay = math.max(500, tonumber(self.timeoutDrainMs) or 2000)
+    local now = S.NowMs and tonumber(S.NowMs()) or 0
+    self.timeoutDrainUntil = now + delay
+    self:TraceRequest("timeout_drain_start", flight, "delay=" .. tostring(delay))
+    local added = S.Scheduler:AddOneShot(self.timeoutDrainTask, delay, function()
+        local timedOut = TA.timedOutFlight
+        TA.timeoutDrainUntil = 0
+        if TA.inFlight ~= nil then return true end
+        TA.timedOutFlight = nil
+        if type(timedOut) == "table" then TA:TraceRequest("timeout_drain_expired", timedOut, "") end
+        -- A cargo timeout is only committed after the drain window expires. If a late callback arrived, OnRatio
+        -- cancelled this task and OnCargoRatio advanced queueIndex exactly once. Advancing at the original timeout
+        -- would make a late callback advance it a second time and silently skip the next destination.
+        if type(timedOut) == "table" and tostring(timedOut.kind or "route") == "cargo" then
+            local cargo = TA.cargo
+            if cargo.scanning == true and tonumber(cargo.generation) == tonumber(timedOut.cargoGeneration)
+                and Number(cargo.itemType) == Number(timedOut.itemType) then
+                cargo.results[Number(timedOut.to)] = { destinationZone = Number(timedOut.to), error = "查询超时", updatedAt = S.NowMs and tonumber(S.NowMs()) or 0 }
+                cargo.queueIndex = (tonumber(cargo.queueIndex) or 1) + 1
+                cargo.error = "部分目的地查询超时，已继续扫描"
+                TA:RebuildDisplayRows("cargo_request_timeout_committed")
+            end
+        end
+        local pending = type(TA.pendingRoute) == "table" and TA.pendingRoute or nil
+        if pending ~= nil then return TA:Request(pending.force ~= false, pending.reason or "route_change") end
+        if type(timedOut) == "table" and tostring(timedOut.kind or "route") == "cargo" and TA.cargo.scanning == true then
+            return TA:ArmCargoPump(50)
+        end
+        return true
+    end, Trade, "P2", 1)
+    if added ~= true then self.timedOutFlight, self.timeoutDrainUntil = nil, 0 end
+    return added == true
+end
+
+function TA:CancelDeferredRequest()
+    if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.requestDeferredTask) end
+    self.deferredReason = nil
+end
+
+function TA:CancelAutoRefresh()
+    if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.requestAutoTask) end
+end
+
+function TA:CancelEquipmentRefresh()
+    if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.equipmentRefreshTask) end
+end
+
+function TA:CancelCargoTasks()
+    if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then
+        S.Scheduler:RemoveTask(self.cargoPumpTask)
+        S.Scheduler:RemoveTask(self.cargoRescanTask)
+    end
+end
+
+-- 维护（2026-09-23，trade-cargo-generation-stop-1）：停止随身扫描不能只把 scanning=false。Native 回调没有
+-- request-id，已经发出的 cargo 请求仍可能迟到；若不推进 generation，旧回调会重新写 results/lastScanAt，甚至把
+-- “已关闭/已卸货”的状态重新推进为 complete。这里保留 inFlight 直到真实回调释放 SingleFlight，但使其结果世代失效。
+-- Presentation 只读取 cargo Projection，不拥有取消语义；重新启用扫描会创建新 generation 并在旧 lane 释放后继续。
+function TA:StopCargoScan(reason, preserveStatus)
+    self:CancelCargoTasks()
+    local cargo = type(self.cargo) == "table" and self.cargo or {}
+    self.cargo = cargo
+    local wasScanning = cargo.scanning == true
+    cargo.scanning = false
+    cargo.generation = (tonumber(cargo.generation) or 0) + 1
+
+    local itemType, originZone = Number(cargo.itemType), Number(cargo.originZone)
+    -- Observation failures (API unavailable / unknown origin / non-trade item) already carry the truthful status/error.
+    -- Stopping the scan must invalidate its generation without rewriting that evidence back to ready/complete.
+    if preserveStatus ~= true then
+        if itemType ~= nil and originZone ~= nil then
+            local hasResults = false
+            for _ in pairs(type(cargo.results) == "table" and cargo.results or {}) do hasResults = true; break end
+            cargo.status = hasResults and "complete" or "ready"
+            if tostring(reason or "") == "scan_disabled" then cargo.error = nil end
+        elseif cargo.status == "scanning" or cargo.status == "complete" or cargo.status == "ready" then
+            cargo.status = itemType ~= nil and "unknown_origin" or "empty"
+        end
+    end
+    self:TraceRequest("cargo_scan_stop", { kind = "cargo", from = originZone, reason = reason }, wasScanning and "active=1" or "active=0")
+    return true
+end
+
+-- 维护（2026-09-23，trade-native-cooldown-4）：实机已经证明该数值必须作为 Native 查询窗口处理。
+-- SPECIALTY_RATIO_BETWEEN_INFO 又没有 request-id，因此路线切换不能在冷却内并发/抢跑；否则可能得到
+-- “函数调用成功但没有本路线回调”，最后进入超时恢复。现在统一由 Scheduler 等窗口到期，已查过路线则
+-- 先恢复会话缓存，保证交互有即时反馈；所有 Native 调用仍只有一条 SingleFlight lane。
 function TA:GetNativeCooldownRemaining()
     local now = S.NowMs and tonumber(S.NowMs()) or 0
     return math.max(0, (tonumber(self.nextNativeRequestAt) or 0) - now)
 end
 
-function TA:CancelDeferredRequest()
-    if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.requestDeferredTask) end
+function TA:HasRawRowsForRoute(from, to)
+    from, to = Number(from), Number(to)
+    if from == nil or to == nil or #(self.rawRows or {}) == 0 then return false end
+    local first = self.rawRows[1]
+    return type(first) == "table" and Number(first.originZone) == from and Number(first.destinationZone) == to
 end
 
-function TA:ArmDeferredRequest(delayMs)
+local function TradeRouteCacheKey(from, to)
+    from, to = Number(from), Number(to)
+    if from == nil or to == nil then return nil end
+    return tostring(math.floor(from)) .. ":" .. tostring(math.floor(to))
+end
+
+function TA:StoreRouteCache(from, to, rows, updatedAt)
+    local key = TradeRouteCacheKey(from, to)
+    if key == nil or type(rows) ~= "table" or #rows == 0 then return false end
+    self.routeCache = type(self.routeCache) == "table" and self.routeCache or {}
+    self.routeCacheOrder = type(self.routeCacheOrder) == "table" and self.routeCacheOrder or {}
+    self.routeCache[key] = { from = Number(from), to = Number(to), rows = Copy(rows), updatedAt = tonumber(updatedAt) or 0 }
+    for index = #self.routeCacheOrder, 1, -1 do
+        if self.routeCacheOrder[index] == key then table.remove(self.routeCacheOrder, index) end
+    end
+    self.routeCacheOrder[#self.routeCacheOrder + 1] = key
+    local limit = math.max(1, math.floor(tonumber(self.routeCacheMax) or 12))
+    while #self.routeCacheOrder > limit do
+        local evicted = table.remove(self.routeCacheOrder, 1)
+        self.routeCache[evicted] = nil
+    end
+    return true
+end
+
+function TA:RestoreRouteCache(from, to, reason)
+    local key = TradeRouteCacheKey(from, to)
+    local entry = key ~= nil and type(self.routeCache) == "table" and self.routeCache[key] or nil
+    if type(entry) ~= "table" or type(entry.rows) ~= "table" or #entry.rows == 0 then return false end
+    self.rawRows = Copy(entry.rows)
+    self.lastCompletedRoute = { from = Number(from), to = Number(to) }
+    self.lastRatioAt = tonumber(entry.updatedAt) or 0
+    self.selectedKey = nil
+    self.status, self.error = "ready", nil
+    self:RebuildDisplayRows(reason or "route_cache_restore")
+    self:TraceRequest("route_cache_restore", { kind = "route", from = from, to = to, reason = reason or "route_change" }, "rows=" .. tostring(#self.rawRows))
+    return true
+end
+
+function TA:GetSellableForOrigin(origin, force)
+    origin = Number(origin)
+    if origin == nil then return {}, false, "贸易品来源地区不可用" end
+    local cached = force ~= true and self.sellableCache[origin] or nil
+    if type(cached) == "table" and type(cached.list) == "table" then
+        return cached.list, cached.fallback == true, cached.error
+    end
+    local ok, value, sellableErr = Call("X2Store:GetSellableZoneGroups", StoreApi, "GetSellableZoneGroups", origin)
+    local list = ok == true and NormalizeTradeZones(value) or {}
+    local fallback, errorText = false, nil
+    if #list == 0 then
+        for _, row in ipairs(self.zones or {}) do
+            if Number(row.id) ~= origin then list[#list + 1] = Copy(row) end
+        end
+        fallback = #list > 0
+        errorText = sellableErr or (ok == true and "可售地区列表为空，已使用生产地区候选" or "可售地区 API 不可用，已使用生产地区候选")
+    end
+    self.sellableCache[origin] = { list = list, fallback = fallback, error = errorText }
+    return list, fallback, errorText
+end
+
+function TA:ArmDeferredRequest(delayMs, reason)
     if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return false end
     self:CancelDeferredRequest()
     local delay = math.max(50, tonumber(delayMs) or 50)
+    self.deferredReason = tostring(reason or "deferred")
     self.diag = type(self.diag) == "table" and self.diag or {}
     self.diag.deferredRequests = (tonumber(self.diag.deferredRequests) or 0) + 1
     return S.Scheduler:AddOneShot(self.requestDeferredTask, delay, function()
+        local pending = type(TA.pendingRoute) == "table" and TA.pendingRoute or nil
         local from, to = Number(Trade.State.fromZone), Number(Trade.State.toZone)
         if from == nil or to == nil then
             TA.pendingRoute = nil
@@ -1013,135 +1555,143 @@ function TA:ArmDeferredRequest(delayMs)
             PublishFeatureUpdate(Trade, TA.revision, "route_deferred_cancelled")
             return true
         end
-        return TA:Request(true)
+        local requestReason = pending and pending.reason or TA.deferredReason or "deferred"
+        TA.deferredReason = nil
+        return TA:Request(pending == nil or pending.force ~= false, requestReason)
     end, Trade, "P2", 1)
 end
 
-function TA:ArmRequestTimeout(serial, delayMs)
-    if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return true end
-    self:CancelRequestTimeout()
-    -- 中文维护注释（trade-native-query-clock-2）：Native 返回值是“下一次允许查询”的按钮冷却，
-    -- 不是当前 SPECIALTY_RATIO_BETWEEN_INFO 的网络响应 SLA。把二者绑定会在 RU 服务端只返回
-    -- 冷却、不立即回调时把 UI 锁在 loading 数十秒。响应通道固定使用短 watchdog；冷却只节流重试。
-    local delay = math.max(1000, tonumber(delayMs) or tonumber(self.responseSlaMs) or 6500)
-    self.lastResponseTimeoutMs = delay
-    return S.Scheduler:AddOneShot(self.requestTimeoutTask, delay, function()
-        local flight = TA.inFlight
-        if type(flight) ~= "table" or tonumber(flight.serial) ~= tonumber(serial) then return true end
-        TA.inFlight = nil
-        TA.diag = type(TA.diag) == "table" and TA.diag or {}
-        TA.diag.responseTimeouts = (tonumber(TA.diag.responseTimeouts) or 0) + 1
-
-        local pending = TA.pendingRoute
-        TA.pendingRoute = nil
-        if type(pending) == "table" and Number(Trade.State.fromZone) == Number(pending.from) and Number(Trade.State.toZone) == Number(pending.to) then
-            -- 当前选择已经变成排队的新路线：旧请求不再允许晚到接管，直接追最新选择。
-            TA.timedOutFlight = nil
-            TA.pendingRetryCount = 0
-            local started = TA:Request(false)
-            if started == true then return true end
-        end
-
-        local currentFrom, currentTo = Number(Trade.State.fromZone), Number(Trade.State.toZone)
-        local retryCount = tonumber(flight.retryCount) or 0
-        if currentFrom == Number(flight.from) and currentTo == Number(flight.to) and retryCount < 1 then
-            -- 同一路线允许一次有界重试。watchdog 到期后先释放 SingleFlight；若 Native 查询冷却仍在，
-            -- 进入显式 cooldown 状态并等待冷却结束，而不是继续伪装成“正在查询”。在真正发出下一次
-            -- 请求前保留 timedOutFlight，使没有新请求竞争时的迟到回调仍可安全归属于当前路线。
-            TA.timedOutFlight = flight
-            TA.pendingRetryCount = retryCount + 1
-            local remaining = TA:GetNativeCooldownRemaining()
-            if remaining > 0 then
-                TA.pendingRoute = { from = currentFrom, to = currentTo }
-                TA.status, TA.error = "cooldown", nil
-                TA.revision = TA.revision + 1
-                PublishFeatureUpdate(Trade, TA.revision, "route_request_waiting_native_cooldown")
-                return TA:ArmDeferredRequest(remaining + 50)
-            end
-            TA.status, TA.error = "loading", nil
-            TA.revision = TA.revision + 1
-            PublishFeatureUpdate(Trade, TA.revision, "route_request_retry_after_timeout")
-            return TA:Request(true)
-        end
-
-        TA.timedOutFlight = nil
-        TA.pendingRetryCount = nil
-        TA.status, TA.error = "error", "服务器货率查询超时，请点刷新重试"
-        TA.revision = TA.revision + 1
-        PublishFeatureUpdate(Trade, TA.revision, "route_request_timeout")
+function TA:ArmAutoRefresh(delayMs)
+    if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return false end
+    self:CancelAutoRefresh()
+    if Trade.enabled ~= true or (tonumber(Trade.consumerCount) or 0) <= 0 or Trade.Preferences.autoRefresh ~= true then return false end
+    if Trade:GetViewMode() == "cargo" then return false end
+    if Number(Trade.State.fromZone) == nil or Number(Trade.State.toZone) == nil then return false end
+    local delay = math.max(250, tonumber(delayMs) or tonumber(self.autoRefreshTargetMs) or 10000)
+    return S.Scheduler:AddOneShot(self.requestAutoTask, delay, function()
+        if Trade.enabled ~= true or (tonumber(Trade.consumerCount) or 0) <= 0 or Trade.Preferences.autoRefresh ~= true or Trade:GetViewMode() == "cargo" then return true end
+        local ok = TA:Request(false, "auto_refresh")
+        if ok ~= true then TA:ArmAutoRefresh(1000) end
         return true
-    end, Trade, "P2", 1)
+    end, Trade, "P3", 1)
 end
 
-function TA:Request(force)
-    local from, to = Number(Trade.State.fromZone), Number(Trade.State.toZone)
-    if from == nil or to == nil then self.status, self.rows = "idle", {}; return false, "请先选择完整路线" end
-    if self.inFlight ~= nil then
-        local same = tonumber(self.inFlight.from) == from and tonumber(self.inFlight.to) == to
-        if same and force ~= true then return false, "路线查询仍在进行" end
-        if same and force == true then
-            -- Without a native request-id, issuing a second identical request
-            -- would make the two callbacks indistinguishable. Keep the current
-            -- request alive; Refresh becomes a visible no-op retry request.
-            self.status, self.error = "loading", nil
-            self.revision = self.revision + 1
-            PublishFeatureUpdate(Trade, self.revision, "route_request_still_inflight")
-            return true
-        end
-        -- Different route while one request is active: never overlap Native
-        -- requests. Remember only the latest desired route and launch it after
-        -- the current callback/timeout releases the lane.
-        self.pendingRoute = { from = from, to = to }
-        self.rows, self.status, self.error = {}, "loading", nil
-        self.revision = self.revision + 1
-        PublishFeatureUpdate(Trade, self.revision, "route_request_queued_latest")
-        return true
-    end
-    local cooldownRemaining = self:GetNativeCooldownRemaining()
-    if cooldownRemaining > 0 then
-        -- 中文维护注释（trade-native-cooldown-1）：与官方 Specialty 窗口一致，服务器冷却期内不重复调用
-        -- GetSpecialtyRatioBetween。当前路线已有 rows 时保留旧结果，直到真正发出刷新；切新路线则保持空表 loading。
-        self.pendingRoute = { from = from, to = to }
-        local sameRows = #self.rows > 0 and Number(self.rows[1] and self.rows[1].originZone) == from
-            and Number(self.rows[1] and self.rows[1].destinationZone) == to
-        if not sameRows then self.rows = {}; self.selectedKey = nil end
-        self.status, self.error = "cooldown", nil
-        self.revision = self.revision + 1
-        PublishFeatureUpdate(Trade, self.revision, "route_request_deferred_cooldown")
-        local deferredOk = self:ArmDeferredRequest(cooldownRemaining + 50)
-        if deferredOk ~= true then
-            self.status, self.error = "error", "货率冷却重试任务创建失败"
-            self.revision = self.revision + 1
-            PublishFeatureUpdate(Trade, self.revision, "route_deferred_guard_failed")
-            return false, self.error
-        end
-        return true
-    end
+function TA:ScheduleNextAutoRefresh()
+    if Trade.Preferences.autoRefresh ~= true or Trade:GetViewMode() == "cargo" then self:CancelAutoRefresh(); return false end
+    -- 后台刷新不能把 Native 单通道持续占满。最近一次 Native cooldown 若为 5 秒，则下一次自动刷新至少 10 秒后；
+    -- 这给收藏路线/手动目的地留下一个完整合法查询窗口，同时跨区与用户显式刷新仍可立即进入 Scheduler。
+    local baseTarget = math.max(1000, tonumber(self.autoRefreshTargetMs) or 10000)
+    local cooldownTarget = math.max(0, tonumber(self.lastNativeCooldownMs) or 0) * math.max(1, tonumber(self.autoRefreshCooldownFactor) or 2)
+    local target = math.max(baseTarget, cooldownTarget)
+    local remaining = self:GetNativeCooldownRemaining()
+    return self:ArmAutoRefresh(math.max(target, remaining + 50))
+end
 
-    -- 中文维护注释（trade-route-invalidate-1）：只有 Native 请求真正取得 SingleFlight lane 时才撤下旧 rows。
-    -- 冷却等待期间同路线继续显示上一份可信结果；一旦真正发出查询，再进入 loading 防止旧路线被误认成新结果。
-    self:CancelDeferredRequest()
-    -- 真正发出新 Native 请求后，上一轮超时请求的迟到回调已经无法与新请求区分；撤销其归属资格。
-    self.timedOutFlight = nil
-    self.rows = {}
-    self.selectedKey = nil
-    self.requestSerial = (tonumber(self.requestSerial) or 0) + 1
-    local serial = self.requestSerial
-    local retryCount = tonumber(self.pendingRetryCount) or 0
-    self.pendingRetryCount = nil
-    self.inFlight = { from = from, to = to, serial = serial, retryCount = retryCount, startedAt = S.NowMs and S.NowMs() or 0 }
-    self.pendingRoute = nil
-    self.status, self.error = "loading", nil
-    self.revision = self.revision + 1
-    PublishFeatureUpdate(Trade, self.revision, force == true and "route_request_retry" or "route_request")
-    local ok, nativeCooldownOrErr = Action("X2Store:GetSpecialtyRatioBetween", StoreApi, "GetSpecialtyRatioBetween", from, to)
-    if ok ~= true then
-        self.inFlight, self.status, self.error = nil, "error", nativeCooldownOrErr or "服务器未接受路线查询"
-        self:CancelRequestTimeout()
-        self.revision = self.revision + 1; PublishFeatureUpdate(Trade, self.revision, "route_request_failed")
-        if self.pendingRoute ~= nil then return self:Request(false) end
-        return false, self.error
+function TA:ArmCargoPump(delayMs)
+    if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return false end
+    if S.Scheduler.RemoveTask ~= nil then S.Scheduler:RemoveTask(self.cargoPumpTask) end
+    local delay = math.max(50, tonumber(delayMs) or 50)
+    return S.Scheduler:AddOneShot(self.cargoPumpTask, delay, function() return TA:PumpCargoQueue() end, Trade, "P3", 1)
+end
+
+function TA:ScheduleCargoRescan(delayMs)
+    if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return false end
+    if S.Scheduler.RemoveTask ~= nil then S.Scheduler:RemoveTask(self.cargoRescanTask) end
+    if Trade.enabled ~= true or (tonumber(Trade.consumerCount) or 0) <= 0 or Trade:GetViewMode() ~= "cargo" or Trade.Preferences.cargoScan ~= true then return false end
+    local delay = math.max(1000, tonumber(delayMs) or tonumber(self.cargoRescanIntervalMs) or 15000)
+    return S.Scheduler:AddOneShot(self.cargoRescanTask, delay, function()
+        if Trade.enabled == true and (tonumber(Trade.consumerCount) or 0) > 0 and Trade:GetViewMode() == "cargo" and Trade.Preferences.cargoScan == true then
+            TA:StartCargoScan("periodic")
+        end
+        return true
+    end, Trade, "P3", 1)
+end
+
+function TA:StartCargoScan(reason)
+    self:CancelAutoRefresh()
+    if Trade.enabled ~= true or (tonumber(Trade.consumerCount) or 0) <= 0 then return false, "跑商功能未运行" end
+    if Trade:GetViewMode() ~= "cargo" or Trade.Preferences.cargoScan ~= true then
+        self:StopCargoScan("scan_disabled")
+        return true
     end
+    -- 维护（2026-09-23，trade-cargo-restart-lifecycle-1）：开始一轮新扫描先撤销上一轮 pump/rescan one-shot。
+    -- 否则“上一轮 complete 后已排的 rescan”可能在新货物扫描中途触发 StartCargoScan，再次推进 generation/重置队列。
+    -- Native inFlight 不在这里强行清除；它仍由 generation + SingleFlight 正确归属/淘汰。
+    self:CancelCargoTasks()
+    local _, cargoChanged = self:RefreshCargoObservation(reason or "cargo_scan")
+    local cargo = self.cargo
+    if cargo.status ~= "ready" and cargo.status ~= "scanning" and cargo.status ~= "complete" then
+        self:StopCargoScan("cargo_not_ready", true)
+        self:RebuildDisplayRows("cargo_not_ready")
+        return false, cargo.error or "当前背部没有可识别贸易品"
+    end
+    if Number(cargo.originZone) == nil or Number(cargo.itemType) == nil then
+        self:StopCargoScan("cargo_origin_missing", true)
+        self:RebuildDisplayRows("cargo_origin_missing")
+        return false, cargo.error or "贸易品来源地区尚未映射"
+    end
+    local destinations, fallback, sellableErr = self:GetSellableForOrigin(cargo.originZone, false)
+    cargo.generation = (tonumber(cargo.generation) or 0) + 1
+    cargo.queue, cargo.queueIndex = {}, 1
+    for _, row in ipairs(destinations or {}) do
+        local to = Number(row.id)
+        if to ~= nil and to ~= Number(cargo.originZone) then cargo.queue[#cargo.queue + 1] = to end
+        if #cargo.queue >= 48 then break end
+    end
+    cargo.scanning = #cargo.queue > 0
+    cargo.status = cargo.scanning and "scanning" or "complete"
+    cargo.error = #cargo.queue == 0 and (sellableErr or "没有可扫描的目的地") or nil
+    cargo.sellableFallback = fallback == true
+    cargo.scanStartedAt = S.NowMs and tonumber(S.NowMs()) or 0
+    -- 维护（trade-cargo-stale-while-refresh-1）：周期刷新期间继续显示上一轮结果，但只保留仍在当前可售集合中的目的地；
+    -- lastScanAt 代表“最后一份真实结果/完整扫描”的时间，不能在仅开始新扫描时伪装成刚更新。
+    local keepResults, validDestination = {}, {}
+    for _, to in ipairs(cargo.queue or {}) do validDestination[Number(to)] = true end
+    for to, result in pairs(type(cargo.results) == "table" and cargo.results or {}) do
+        local key = Number(to)
+        if key ~= nil and validDestination[key] == true then keepResults[key] = result end
+    end
+    cargo.results = keepResults
+    self:TraceRequest("cargo_scan_start", { kind = "cargo", from = cargo.originZone, reason = reason }, "destinations=" .. tostring(#cargo.queue) .. " changed=" .. tostring(cargoChanged == true))
+    self:RebuildDisplayRows("cargo_scan_start")
+    if cargo.scanning then return self:PumpCargoQueue() end
+    self:ScheduleCargoRescan()
+    return true
+end
+
+function TA:PumpCargoQueue()
+    local cargo = self.cargo
+    if Trade.enabled ~= true or (tonumber(Trade.consumerCount) or 0) <= 0 or Trade:GetViewMode() ~= "cargo" or Trade.Preferences.cargoScan ~= true then
+        self:StopCargoScan("pump_inactive")
+        return true
+    end
+    -- A stale callback/task from an invalidated generation must never resurrect an empty/disabled cargo state.
+    if cargo.scanning ~= true then return true end
+    -- Gate on the ownership token, not wall-clock remaining. The scheduler may run late under backlog; once a timed-out
+    -- callback owns quarantine, no newer Native request may start until the drain callback explicitly releases it.
+    if type(self.timedOutFlight) == "table" then return true end
+    if type(self.pendingRoute) == "table" then
+        if self.inFlight == nil then return self:Request(true, self.pendingRoute.reason or "route_change") end
+        return true
+    end
+    if self.inFlight ~= nil then return true end
+    local nextIndex = math.max(1, tonumber(cargo.queueIndex) or 1)
+    local destination = cargo.queue and cargo.queue[nextIndex] or nil
+    if destination == nil then
+        cargo.scanning = false
+        cargo.status = "complete"
+        cargo.lastScanAt = S.NowMs and tonumber(S.NowMs()) or cargo.lastScanAt
+        self:RebuildDisplayRows("cargo_scan_complete")
+        self:TraceRequest("cargo_scan_complete", { kind = "cargo", from = cargo.originZone }, "results=" .. tostring((function() local n=0; for _ in pairs(cargo.results or {}) do n=n+1 end; return n end)()))
+        self:ScheduleCargoRescan()
+        return true
+    end
+    local remaining = self:GetNativeCooldownRemaining()
+    if remaining > 0 then return self:ArmCargoPump(remaining + 50) end
+    return self:StartCargoNativeRequest(destination)
+end
+
+function TA:RecordNativeAccepted(nativeCooldownOrErr, flight)
     local nativeCooldown = tonumber(nativeCooldownOrErr) or 0
     if nativeCooldown < 0 then nativeCooldown = 0 elseif nativeCooldown > 60000 then nativeCooldown = 60000 end
     self.lastNativeCooldownMs = nativeCooldown
@@ -1151,11 +1701,223 @@ function TA:Request(force)
     self.diag.nativeRequests = (tonumber(self.diag.nativeRequests) or 0) + 1
     self.diag.lastRequestAt = now
     self.diag.lastNativeCooldownMs = nativeCooldown
-    -- Native cooldown 只控制下一次请求；本次响应使用独立短 watchdog，避免无回调时长期卡 loading。
-    local responseTimeoutMs = tonumber(self.responseSlaMs) or 6500
-    local timeoutOk = self:ArmRequestTimeout(serial, responseTimeoutMs)
+    self.diag.lastRequestReason = type(flight) == "table" and tostring(flight.reason or "") or ""
+    self:TraceRequest("native_accepted", flight, "cooldown=" .. tostring(nativeCooldown))
+    return nativeCooldown
+end
+
+function TA:StartCargoNativeRequest(destination)
+    local cargo = self.cargo
+    destination = Number(destination)
+    if cargo.scanning ~= true then return false, "随身货物扫描已停止" end
+    if destination == nil or Number(cargo.originZone) == nil or Number(cargo.itemType) == nil then return false, "随身货物扫描参数不完整" end
+    if self.inFlight ~= nil then return false, "Native 查询通道占用中" end
+    local generation = tonumber(cargo.generation) or 0
+    self.requestSerial = (tonumber(self.requestSerial) or 0) + 1
+    local serial = self.requestSerial
+    local flight = {
+        kind = "cargo", from = Number(cargo.originZone), to = destination, serial = serial,
+        startedAt = S.NowMs and tonumber(S.NowMs()) or 0, reason = "cargo_scan",
+        cargoGeneration = generation, itemType = Number(cargo.itemType), legacyName = cargo.legacyName,
+    }
+    self.inFlight = flight
+    self:TraceRequest("native_attempt", flight, "")
+    local ok, nativeCooldownOrErr = Action("X2Store:GetSpecialtyRatioBetween", StoreApi, "GetSpecialtyRatioBetween", flight.from, flight.to)
+    if ok ~= true then
+        self.inFlight = nil
+        cargo.results[destination] = { destinationZone = destination, error = tostring(nativeCooldownOrErr or "服务器未接受查询"), updatedAt = S.NowMs and tonumber(S.NowMs()) or 0 }
+        cargo.queueIndex = (tonumber(cargo.queueIndex) or 1) + 1
+        self:TraceRequest("native_rejected", flight, tostring(nativeCooldownOrErr or "rejected"))
+        self:RebuildDisplayRows("cargo_request_failed")
+        return self:ArmCargoPump(math.max(1000, self:GetNativeCooldownRemaining() + 50))
+    end
+    self:RecordNativeAccepted(nativeCooldownOrErr, flight)
+    local timeoutOk = self:ArmRequestTimeout(serial, tonumber(self.responseSlaMs) or 6500)
     if timeoutOk ~= true then
-        self.inFlight, self.status, self.error = nil, "error", "货率超时保护任务创建失败"
+        self.inFlight = nil
+        cargo.results[destination] = { destinationZone = destination, error = "货率超时保护任务创建失败", updatedAt = S.NowMs and tonumber(S.NowMs()) or 0 }
+        cargo.queueIndex = (tonumber(cargo.queueIndex) or 1) + 1
+        self:RebuildDisplayRows("cargo_timeout_guard_failed")
+        return false, "货率超时保护任务创建失败"
+    end
+    return true
+end
+
+function TA:ArmRequestTimeout(serial, delayMs)
+    if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return true end
+    self:CancelRequestTimeout()
+    local delay = math.max(1000, tonumber(delayMs) or tonumber(self.responseSlaMs) or 6500)
+    self.lastResponseTimeoutMs = delay
+    return S.Scheduler:AddOneShot(self.requestTimeoutTask, delay, function()
+        local flight = TA.inFlight
+        if type(flight) ~= "table" or tonumber(flight.serial) ~= tonumber(serial) then return true end
+        TA.inFlight = nil
+        TA.diag = type(TA.diag) == "table" and TA.diag or {}
+        TA.diag.responseTimeouts = (tonumber(TA.diag.responseTimeouts) or 0) + 1
+        TA:TraceRequest("response_timeout", flight, "age=" .. tostring(delay))
+
+        if tostring(flight.kind or "route") == "cargo" then
+            local cargo = TA.cargo
+            if tonumber(cargo.generation) == tonumber(flight.cargoGeneration) and Number(cargo.itemType) == Number(flight.itemType) then
+                cargo.error = "目的地查询超时，等待迟到回调保护"
+                TA:RebuildDisplayRows("cargo_request_timeout_waiting_drain")
+            end
+            return TA:ArmTimeoutDrain(flight)
+        end
+
+        local currentFrom, currentTo = Number(Trade.State.fromZone), Number(Trade.State.toZone)
+        local pending = type(TA.pendingRoute) == "table" and TA.pendingRoute or nil
+        if type(pending) == "table" and currentFrom == Number(pending.from) and currentTo == Number(pending.to) then
+            TA.pendingRoute = pending
+            TA.pendingRetryCount = 0
+            TA.status, TA.error = TA:HasRawRowsForRoute(currentFrom, currentTo) and "refreshing" or "loading", nil
+            TA.revision = TA.revision + 1
+            PublishFeatureUpdate(Trade, TA.revision, "route_request_waiting_timeout_drain")
+            return TA:ArmTimeoutDrain(flight)
+        end
+
+        -- If the selection changed while the timed-out request was in flight, keep the latest user route even when
+        -- pendingRoute was lost/replaced by another maintenance action. It will start after the drain window.
+        if currentFrom ~= nil and currentTo ~= nil and (currentFrom ~= Number(flight.from) or currentTo ~= Number(flight.to)) then
+            TA.pendingRoute = { from = currentFrom, to = currentTo, reason = "route_change", force = true }
+            TA.pendingRetryCount = 0
+            TA.status, TA.error = TA:HasRawRowsForRoute(currentFrom, currentTo) and "refreshing" or "loading", nil
+            TA.revision = TA.revision + 1
+            PublishFeatureUpdate(Trade, TA.revision, "route_request_latest_after_timeout")
+            return TA:ArmTimeoutDrain(flight)
+        end
+
+        local retryCount = tonumber(flight.retryCount) or 0
+        if currentFrom == Number(flight.from) and currentTo == Number(flight.to) and retryCount < 1 then
+            TA.pendingRetryCount = retryCount + 1
+            TA.pendingRoute = { from = currentFrom, to = currentTo, reason = "timeout_retry", force = true }
+            TA.status, TA.error = TA:HasRawRowsForRoute(currentFrom, currentTo) and "refreshing" or "loading", nil
+            TA.revision = TA.revision + 1
+            PublishFeatureUpdate(Trade, TA.revision, "route_request_waiting_timeout_drain")
+            return TA:ArmTimeoutDrain(flight)
+        end
+
+        TA.pendingRetryCount = nil
+        if TA:HasRawRowsForRoute(currentFrom, currentTo) then
+            TA.status, TA.error = "ready", "本次货率刷新超时，继续显示上一份数据"
+            TA:ScheduleNextAutoRefresh()
+        else
+            TA.status, TA.error = "error", "服务器货率查询超时，请点刷新重试"
+        end
+        TA.revision = TA.revision + 1
+        PublishFeatureUpdate(Trade, TA.revision, "route_request_timeout")
+        return TA:ArmTimeoutDrain(flight)
+    end, Trade, "P2", 1)
+end
+
+function TA:Request(force, reason)
+    reason = tostring(reason or (force == true and "manual_refresh" or "initial"))
+    local from, to = Number(Trade.State.fromZone), Number(Trade.State.toZone)
+    if from == nil or to == nil then
+        self.status, self.rawRows, self.rows = "idle", {}, {}
+        return false, "请先选择完整路线"
+    end
+
+    local timeoutDrainRemaining = self:GetTimeoutDrainRemaining()
+    -- timedOutFlight is the quarantine ownership token. Do not rely on remaining>0: a scheduler backlog can make
+    -- the deadline pass before the drain task executes, and reopening the lane in that gap would reintroduce
+    -- late-callback misattribution. The drain callback clears timedOutFlight before resuming the latest request.
+    if self.inFlight == nil and type(self.timedOutFlight) == "table" then
+        self.pendingRoute = { from = from, to = to, reason = reason, force = force == true }
+        if not self:HasRawRowsForRoute(from, to) and Trade:GetViewMode() ~= "cargo" then self:RestoreRouteCache(from, to, "route_cache_timeout_drain") end
+        self.status, self.error = self:HasRawRowsForRoute(from, to) and "refreshing" or "loading", nil
+        self.revision = self.revision + 1
+        PublishFeatureUpdate(Trade, self.revision, "route_request_deferred_timeout_drain")
+        self:TraceRequest("timeout_drain_deferred", self.pendingRoute, "remaining=" .. tostring(math.floor(timeoutDrainRemaining)))
+        return true
+    end
+
+    if self.inFlight ~= nil then
+        local same = tostring(self.inFlight.kind or "route") == "route" and Number(self.inFlight.from) == from and Number(self.inFlight.to) == to
+        if same and force ~= true then return false, "路线查询仍在进行" end
+        if same and force == true then
+            self.status, self.error = self:HasRawRowsForRoute(from, to) and "refreshing" or "loading", nil
+            self.revision = self.revision + 1
+            PublishFeatureUpdate(Trade, self.revision, "route_request_still_inflight")
+            return true
+        end
+        -- 维护（trade-singleflight-latest-2）：无 native request-id 时绝不并发；任何用户路线都只保留最后一次选择。
+        -- cargo 扫描属于低优先级后台消费者，当前 Native 回调结束后必须先让 pendingRoute 取得通道。
+        self.pendingRoute = { from = from, to = to, reason = reason, force = force == true }
+        if Trade:GetViewMode() ~= "cargo" and not self:HasRawRowsForRoute(from, to) then
+            if self:RestoreRouteCache(from, to, "route_cache_queued_latest") ~= true then self.rawRows, self.rows, self.selectedKey = {}, {}, nil end
+        end
+        self.status, self.error = self:HasRawRowsForRoute(from, to) and "refreshing" or "loading", nil
+        self.revision = self.revision + 1
+        PublishFeatureUpdate(Trade, self.revision, "route_request_queued_latest")
+        self:TraceRequest("queued_latest", { kind = "route", from = from, to = to, reason = reason }, "active=" .. tostring(self.inFlight.kind or "route"))
+        return true
+    end
+
+    local cooldownRemaining = self:GetNativeCooldownRemaining()
+    -- 维护（2026-09-23，trade-native-cooldown-4）：实机确认路线切换在 Native 冷却窗口内“先调用再说”并不会
+    -- 更快得到新路线；调用可能只返回剩余时间而不产生对应回调，随后反而要等响应超时/迟到回调隔离，形成
+    -- “第一次失败，再等很久”的体验。回调又没有 request-id，因此不能并发第二条路线。正确做法是：路线选择
+    -- 立即生效，若有会话缓存就先显示缓存；Native 查询统一在 nextNativeRequestAt 到期后单通道执行。
+    if cooldownRemaining > 0 then
+        self.pendingRoute = { from = from, to = to, reason = reason, force = force == true }
+        if not self:HasRawRowsForRoute(from, to) and Trade:GetViewMode() ~= "cargo" then
+            if self:RestoreRouteCache(from, to, "route_cache_before_cooldown") ~= true then self.rawRows, self.rows, self.selectedKey = {}, {}, nil end
+        end
+        self.status, self.error = self:HasRawRowsForRoute(from, to) and "refreshing" or "cooldown", nil
+        self.revision = self.revision + 1
+        PublishFeatureUpdate(Trade, self.revision, "route_request_deferred_cooldown")
+        self:TraceRequest("cooldown_deferred", { kind = "route", from = from, to = to, reason = reason }, "remaining=" .. tostring(math.floor(cooldownRemaining)))
+        local deferredOk = self:ArmDeferredRequest(cooldownRemaining + 50, reason)
+        if deferredOk ~= true then
+            self.status, self.error = "error", "货率冷却重试任务创建失败"
+            self.revision = self.revision + 1
+            PublishFeatureUpdate(Trade, self.revision, "route_deferred_guard_failed")
+            return false, self.error
+        end
+        return true
+    end
+
+    self:CancelDeferredRequest()
+    self:CancelAutoRefresh()
+    self:CancelTimeoutDrain()
+    self.timedOutFlight = nil
+    local keepRows = self:HasRawRowsForRoute(from, to)
+    if not keepRows then
+        self.rawRows, self.rows, self.selectedKey = {}, {}, nil
+    end
+    self.requestSerial = (tonumber(self.requestSerial) or 0) + 1
+    local serial = self.requestSerial
+    local retryCount = tonumber(self.pendingRetryCount) or 0
+    self.pendingRetryCount = nil
+    local flight = {
+        kind = "route", from = from, to = to, serial = serial, retryCount = retryCount,
+        startedAt = S.NowMs and tonumber(S.NowMs()) or 0, reason = reason,
+        cooldownBypassed = false,
+    }
+    self.inFlight = flight
+    self.pendingRoute = nil
+    self.status, self.error = keepRows and "refreshing" or "loading", nil
+    self.revision = self.revision + 1
+    PublishFeatureUpdate(Trade, self.revision, "route_request_" .. reason)
+    self:TraceRequest("native_attempt", flight, "local_remaining=" .. tostring(math.floor(cooldownRemaining)))
+    local ok, nativeCooldownOrErr = Action("X2Store:GetSpecialtyRatioBetween", StoreApi, "GetSpecialtyRatioBetween", from, to)
+    if ok ~= true then
+        self.inFlight = nil
+        self:CancelRequestTimeout()
+        self:TraceRequest("native_rejected", flight, tostring(nativeCooldownOrErr or "rejected"))
+        -- 非冷却窗口内的真实 Native 调用失败才落到这里；冷却中的路线变更已在上方直接延迟，
+        -- 不再制造一个无回调的“假 inFlight”后再走 6.5 秒超时恢复。
+        self.status, self.error = keepRows and "ready" or "error", nativeCooldownOrErr or "服务器未接受路线查询"
+        self.revision = self.revision + 1
+        PublishFeatureUpdate(Trade, self.revision, "route_request_failed")
+        if keepRows then self:ScheduleNextAutoRefresh() end
+        return false, self.error
+    end
+    self:RecordNativeAccepted(nativeCooldownOrErr, flight)
+    local timeoutOk = self:ArmRequestTimeout(serial, tonumber(self.responseSlaMs) or 6500)
+    if timeoutOk ~= true then
+        self.inFlight, self.status, self.error = nil, keepRows and "ready" or "error", "货率超时保护任务创建失败"
         self.revision = self.revision + 1
         PublishFeatureUpdate(Trade, self.revision, "route_timeout_guard_failed")
         return false, self.error
@@ -1163,18 +1925,51 @@ function TA:Request(force)
     return true
 end
 
+function TA:OnCargoRatio(info, flight)
+    local cargo = self.cargo
+    if tonumber(cargo.generation) ~= tonumber(flight.cargoGeneration) or Number(cargo.itemType) ~= Number(flight.itemType) then
+        self:TraceRequest("cargo_result_stale", flight, "generation/item changed")
+    else
+        local foundRatio = nil
+        if type(info) == "table" then
+            for _, value in pairs(info) do
+                if type(value) == "table" then
+                    local item = type(value.itemInfo) == "table" and value.itemInfo or value
+                    local name = item.name or item.itemName or value.name
+                    local itemType = Number(item.itemType or item.itemTypeId or item.item_type or item.typeId or value.itemType or value.itemTypeId or value.typeId)
+                    local nameMatches = tostring(name or "") == tostring(flight.legacyName or "")
+                    if Number(itemType) == Number(flight.itemType) or (itemType == nil and nameMatches) then
+                        foundRatio = Number(value.ratio or value.rate or value.percentage)
+                        if foundRatio ~= nil then break end
+                    end
+                end
+            end
+        end
+        local now = S.NowMs and tonumber(S.NowMs()) or 0
+        cargo.results[Number(flight.to)] = {
+            destinationZone = Number(flight.to), ratio = foundRatio, updatedAt = now,
+            error = foundRatio == nil and "当前目的地未返回该贸易品" or nil,
+        }
+        cargo.queueIndex = (tonumber(cargo.queueIndex) or 1) + 1
+        cargo.lastScanAt = now
+        cargo.error = nil
+        self:RebuildDisplayRows("cargo_ratio_result")
+        self:TraceRequest("cargo_result", flight, foundRatio ~= nil and ("ratio=" .. tostring(foundRatio)) or "missing")
+    end
+    local pending = self.pendingRoute
+    if type(pending) == "table" then return self:Request(true, pending.reason or "route_change") end
+    if cargo.scanning ~= true then return true end
+    return self:ArmCargoPump(math.max(tonumber(self.cargoMinIntervalMs) or 1000, self:GetNativeCooldownRemaining() + 50))
+end
+
 function TA:OnRatio(info)
     local flight = self.inFlight
     local acceptedLate = false
     if type(flight) ~= "table" and type(self.timedOutFlight) == "table" then
-        local late = self.timedOutFlight
-        local currentFrom, currentTo = Number(Trade.State.fromZone), Number(Trade.State.toZone)
-        -- 只在“没有更新的 Native 请求已经发出”且当前路线仍等于超时请求时接受迟到回调。
-        -- 一旦实际发出新请求 Request() 会先清 timedOutFlight，因此不会把旧路线结果写进新请求。
-        if currentFrom == Number(late.from) and currentTo == Number(late.to) then
-            flight = late
-            acceptedLate = true
-        end
+        -- During the drain window the only callback that can legally arrive belongs to the timed-out lane, regardless
+        -- of whether the user already selected a new route. Route staleness is handled below after the callback is consumed.
+        flight = self.timedOutFlight
+        acceptedLate = true
     end
     if type(flight) ~= "table" then
         self.diag = type(self.diag) == "table" and self.diag or {}
@@ -1182,43 +1977,67 @@ function TA:OnRatio(info)
         self.diag.lastCallbackAt = S.NowMs and S.NowMs() or 0
         return false
     end
+
     self.inFlight = nil
     self.timedOutFlight = nil
     self:CancelRequestTimeout()
-    if acceptedLate then self:CancelDeferredRequest() end
+    if acceptedLate then self:CancelTimeoutDrain(); self:CancelDeferredRequest() end
     self.pendingRetryCount = nil
     self.diag = type(self.diag) == "table" and self.diag or {}
     self.diag.callbackCount = (tonumber(self.diag.callbackCount) or 0) + 1
     if acceptedLate then self.diag.lateCallbacksAccepted = (tonumber(self.diag.lateCallbacksAccepted) or 0) + 1 end
-    self.diag.lastCallbackAt = S.NowMs and S.NowMs() or 0
+    local callbackAt = S.NowMs and tonumber(S.NowMs()) or 0
+    self.diag.lastCallbackAt = callbackAt
+    self.diag.lastCallbackLatencyMs = math.max(0, callbackAt - (tonumber(flight.startedAt) or callbackAt))
+    self:TraceRequest("callback", flight, "latency=" .. tostring(math.floor(self.diag.lastCallbackLatencyMs)) .. (acceptedLate and " late=1" or ""))
+
+    if tostring(flight.kind or "route") == "cargo" then return self:OnCargoRatio(info, flight) end
+
     local currentFrom, currentTo = Number(Trade.State.fromZone), Number(Trade.State.toZone)
     local staleForCurrentSelection = currentFrom ~= Number(flight.from) or currentTo ~= Number(flight.to)
     if staleForCurrentSelection then
         local pending = self.pendingRoute
         self.pendingRoute = nil
+        -- Consumer 已释放时只结算旧 Native lane，绝不因为迟到回调在后台追逐后来保存的路线。下一次真正的
+        -- Consumer 会按当前 State 发起 initial 查询；这保持“关闭功能即释放资源”，同时避免回调串线。
+        if Trade.enabled ~= true or (tonumber(Trade.consumerCount) or 0) <= 0 then
+            self.status, self.error = "idle", nil
+            self:TraceRequest("stale_callback_consumed_no_consumers", flight, "selected=" .. tostring(currentFrom) .. "->" .. tostring(currentTo))
+            self.revision = self.revision + 1
+            PublishFeatureUpdate(Trade, self.revision, "route_result_stale_no_consumers")
+            return true
+        end
         if currentFrom ~= nil and currentTo ~= nil then
-            self.rows, self.status, self.error = {}, "loading", nil
+            if Trade:GetViewMode() ~= "cargo" then self.rawRows, self.rows, self.selectedKey = {}, {}, nil end
+            self.status, self.error = "loading", nil
             self.revision = self.revision + 1
             PublishFeatureUpdate(Trade, self.revision, "route_result_superseded")
-            return self:Request(false)
+            -- 维护（trade-route-switch-priority-2）：旧路线回调释放 SingleFlight 后立即追最新用户选择；
+            -- 若 Native 冷却尚未结束，Request 会直接按剩余时间延迟，不再先制造一次无回调的抢跑请求。
+            return self:Request(true, type(pending) == "table" and pending.reason or "route_change")
         end
-        -- Changing the origin intentionally clears toZone. The superseded
-        -- callback must NOT leave the panel in "loading" with empty rows and
-        -- no re-arm path (the SetFrom dead corner) -- drop to an explicit
-        -- idle prompt instead.
-        self.rows, self.status, self.error = {}, "idle", "请先选择完整路线"
+        if Trade:GetViewMode() ~= "cargo" then self.rawRows, self.rows, self.selectedKey = {}, {}, nil end
+        self.status, self.error = "idle", "请先选择完整路线"
         self.revision = self.revision + 1
         PublishFeatureUpdate(Trade, self.revision, "route_result_superseded_idle")
         return true
     end
+
     self.pendingRoute = nil
     if type(info) ~= "table" then
-        self.status, self.error = "error", "货率返回为空"
+        if self:HasRawRowsForRoute(flight.from, flight.to) then
+            self.status, self.error = "ready", "货率返回为空，继续显示上一份数据"
+            self:ScheduleNextAutoRefresh()
+        else
+            self.status, self.error = "error", "货率返回为空"
+        end
         self.revision = self.revision + 1
         PublishFeatureUpdate(Trade, self.revision, "ratio_result_invalid")
         return false
     end
+
     local rows = {}
+    local now = callbackAt
     for _, value in pairs(info) do
         if type(value) == "table" then
             local item = type(value.itemInfo) == "table" and value.itemInfo or value
@@ -1226,84 +2045,131 @@ function TA:OnRatio(info)
             local ratio = Number(value.ratio or value.rate or value.percentage)
             if name ~= nil and ratio ~= nil then
                 local payout = S.Services and S.Services.TradePayoutV3 or nil
-                local displayName = type(payout) == "table" and type(payout.ResolveDisplayName) == "function"
-                    and payout:ResolveDisplayName(name) or Text(name)
-                -- The ratio row's product itemType is the live craft-identity
-                -- Authority for packs the static tables cannot name. RU shape
-                -- unproven: extract bounded, fail to nil and stay static-only.
-                local rowItemType = Number(item.itemType or item.itemTypeId or item.item_type or item.typeId
-                    or value.itemType or value.itemTypeId or value.typeId)
-                local row = {
-                    key = tostring(flight.from) .. ":" .. tostring(flight.to) .. ":" .. tostring(name),
-                    name = displayName, sourceName = Text(name), currentRatio = ratio, ratio = ratio,
-                    originZone = flight.from, destinationZone = flight.to, itemType = rowItemType,
+                local sourceName = Text(name)
+                local displayName = type(payout) == "table" and type(payout.ResolveDisplayName) == "function" and payout:ResolveDisplayName(name) or sourceName
+                local rowItemType = Number(item.itemType or item.itemTypeId or item.item_type or item.typeId or value.itemType or value.itemTypeId or value.typeId)
+                if rowItemType == nil then
+                    local products = S.GameIds and S.GameIds.TradeProduct or nil
+                    local known = type(products) == "table" and type(products.GetByLegacyName) == "function" and products:GetByLegacyName(sourceName) or nil
+                    rowItemType = type(known) == "table" and Number(known.itemId) or nil
+                end
+                rows[#rows + 1] = {
+                    key = tostring(flight.from) .. ":" .. tostring(flight.to) .. ":" .. sourceName,
+                    name = displayName, sourceName = sourceName, currentRatio = ratio, ratio = ratio,
+                    originZone = flight.from, destinationZone = flight.to, itemType = rowItemType, ratioUpdatedAt = now,
                 }
-                ApplyTradeDisplayModeToRow(row)
-                rows[#rows + 1] = row
             end
         end
     end
-    SortTradeRows(rows)
-    if self.selectedKey ~= nil then
-        local found = false
-        for _, row in ipairs(rows) do if tostring(row.key or "") == tostring(self.selectedKey) then found = true; break end end
-        if not found then self.selectedKey = nil end
-    end
-    self.rows, self.status, self.error = rows, (#rows > 0 and "ready" or "error"), (#rows > 0 and nil or "服务器返回的货率列表为空")
-    self.revision = self.revision + 1
-    PublishFeatureUpdate(Trade, self.revision, "ratio_result")
-    RequestPendingLiveIdentities()
-    TraceInit("ratio_result", "rows=" .. tostring(#rows) .. " from=" .. tostring(flight.from) .. "->" .. tostring(flight.to))
+    self.rawRows = rows
+    self.lastCompletedRoute = { from = Number(flight.from), to = Number(flight.to) }
+    self.lastRatioAt = now
+    if #rows > 0 then self:StoreRouteCache(flight.from, flight.to, rows, now) end
+    self.status, self.error = (#rows > 0 and "ready" or "error"), (#rows > 0 and nil or "服务器返回的货率列表为空")
+    self:RebuildDisplayRows("ratio_result")
+    TraceInit("ratio_result", "rows=" .. tostring(#rows) .. " from=" .. tostring(flight.from) .. "->" .. tostring(flight.to) .. " reason=" .. tostring(flight.reason or ""))
+    if #rows > 0 then self:ScheduleNextAutoRefresh() end
+    if Trade:GetViewMode() == "cargo" and self.cargo.scanning == true then self:ArmCargoPump(math.max(50, self:GetNativeCooldownRemaining() + 50)) end
     return #rows > 0
 end
+
 function TA:DescribeRequestState()
     local flight = type(self.inFlight) == "table" and self.inFlight or nil
     local pending = type(self.pendingRoute) == "table" and self.pendingRoute or nil
-    local now = S.NowMs and S.NowMs() or 0
+    local now = S.NowMs and tonumber(S.NowMs()) or 0
+    local trace = {}
+    for _, row in ipairs(type(self.requestTrace) == "table" and self.requestTrace or {}) do trace[#trace + 1] = Copy(row) end
     return {
         selectedRoute = tostring(Number(Trade.State.fromZone) or "-") .. "->" .. tostring(Number(Trade.State.toZone) or "-"),
+        activeKind = flight ~= nil and tostring(flight.kind or "route") or "none",
         activeRoute = flight ~= nil and (tostring(flight.from) .. "->" .. tostring(flight.to)) or "none",
-        requestAge = flight ~= nil and math.max(0, math.floor((tonumber(now) or 0) - (tonumber(flight.startedAt) or 0))) or 0,
+        activeReason = flight ~= nil and tostring(flight.reason or "") or "",
+        requestAge = flight ~= nil and math.max(0, math.floor(now - (tonumber(flight.startedAt) or now))) or 0,
         pendingRoute = pending ~= nil and (tostring(pending.from) .. "->" .. tostring(pending.to)) or "none",
+        pendingReason = pending ~= nil and tostring(pending.reason or "") or "",
         droppedCallbacks = type(self.diag) == "table" and tonumber(self.diag.droppedCallbacks) or 0,
         callbackCount = type(self.diag) == "table" and tonumber(self.diag.callbackCount) or 0,
         nativeRequests = type(self.diag) == "table" and tonumber(self.diag.nativeRequests) or 0,
         deferredRequests = type(self.diag) == "table" and tonumber(self.diag.deferredRequests) or 0,
+        consumerCount = tonumber(Trade.consumerCount) or 0, nativeCallbackSubscribed = Trade.nativeRatioSubscribed == true,
+        consumerReleaseFlightsPreserved = type(self.diag) == "table" and tonumber(self.diag.consumerReleaseFlightsPreserved) or 0,
+        autoRefreshTargetMs = math.max(1000, tonumber(self.autoRefreshTargetMs) or 10000),
+        autoRefreshCooldownFactor = math.max(1, tonumber(self.autoRefreshCooldownFactor) or 2),
         lastCallbackAt = type(self.diag) == "table" and tonumber(self.diag.lastCallbackAt) or 0,
+        lastCallbackLatencyMs = type(self.diag) == "table" and tonumber(self.diag.lastCallbackLatencyMs) or 0,
+        lastRequestReason = type(self.diag) == "table" and tostring(self.diag.lastRequestReason or "") or "",
         nativeCooldownMs = tonumber(self.lastNativeCooldownMs) or 0,
         cooldownRemainingMs = self:GetNativeCooldownRemaining(),
+        cooldownBypassAttempts = type(self.diag) == "table" and tonumber(self.diag.cooldownBypassAttempts) or 0,
+        cooldownBypassAccepted = type(self.diag) == "table" and tonumber(self.diag.cooldownBypassAccepted) or 0,
+        cooldownBypassFallbacks = type(self.diag) == "table" and tonumber(self.diag.cooldownBypassFallbacks) or 0,
         responseTimeoutMs = tonumber(self.lastResponseTimeoutMs) or 0,
         responseSlaMs = tonumber(self.responseSlaMs) or 6500,
         responseTimeouts = type(self.diag) == "table" and tonumber(self.diag.responseTimeouts) or 0,
         lateCallbacksAccepted = type(self.diag) == "table" and tonumber(self.diag.lateCallbacksAccepted) or 0,
+        timeoutDrainMs = tonumber(self.timeoutDrainMs) or 0, timeoutDrainRemainingMs = self:GetTimeoutDrainRemaining(),
         timedOutRoute = type(self.timedOutFlight) == "table" and (tostring(self.timedOutFlight.from) .. "->" .. tostring(self.timedOutFlight.to)) or "none",
         status = tostring(self.status or "idle"),
+        rawRows = #(self.rawRows or {}), displayRows = #(self.rows or {}), lastRatioAt = tonumber(self.lastRatioAt) or 0,
+        viewMode = Trade:GetViewMode(), requestTrace = trace,
+        cargo = {
+            status = tostring(self.cargo and self.cargo.status or "empty"), itemType = self.cargo and Number(self.cargo.itemType) or nil,
+            originZone = self.cargo and Number(self.cargo.originZone) or nil, scanning = self.cargo and self.cargo.scanning == true or false,
+            queueIndex = self.cargo and tonumber(self.cargo.queueIndex) or 0, queueCount = self.cargo and #(self.cargo.queue or {}) or 0,
+            lastScanAt = self.cargo and tonumber(self.cargo.lastScanAt) or 0, error = self.cargo and self.cargo.error or nil,
+        },
     }
 end
 
 function TA:GetProjection()
+    local mode = Trade:GetViewMode()
+    local now = S.NowMs and tonumber(S.NowMs()) or 0
+    local dataAt = tonumber(self.lastRatioAt) or 0
+    local displayStatus, displayError = self.status, self.error
+    local cargoProjection = Copy(self.cargo)
+    cargoProjection.results = nil
+    cargoProjection.queue = nil
+    cargoProjection.resultCount = 0
+    for _ in pairs(type(self.cargo.results) == "table" and self.cargo.results or {}) do cargoProjection.resultCount = cargoProjection.resultCount + 1 end
+    cargoProjection.queueCount = #(self.cargo.queue or {})
+    cargoProjection.queueIndex = tonumber(self.cargo.queueIndex) or 0
+    cargoProjection.completedCount = math.max(0, math.min(cargoProjection.queueCount, cargoProjection.queueIndex - 1))
+    if mode == "cargo" then
+        dataAt = tonumber(self.cargo.lastScanAt) or 0
+        local cargoStatus = tostring(self.cargo.status or "empty")
+        if cargoStatus == "scanning" then displayStatus, displayError = "refreshing", self.cargo.error
+        elseif cargoStatus == "complete" or cargoStatus == "ready" then displayStatus, displayError = (#(self.rows or {}) > 0 and "ready" or "empty"), self.cargo.error
+        elseif cargoStatus == "unavailable" or cargoStatus == "unknown_origin" then displayStatus, displayError = "unavailable", self.cargo.error
+        else displayStatus, displayError = "empty", self.cargo.error end
+    end
+    local ratioAgeMs = dataAt > 0 and math.max(0, now - dataAt) or nil
+    local trackedCount = #(Trade.Preferences.trackedProducts or {})
+    -- 维护（2026-09-23，trade-commerce-projection-authority-1）：Presentation 不得复制经商倍率公式。
+    -- 售价与状态栏必须共享 TradePayoutV3 Authority，否则服务公式/校准一旦变化，列表售价与“熟练度×倍率”会分叉。
+    -- 这里只投影已计算倍率；换装仍由 UNIT_EQUIPMENT_CHANGED -> RefreshCommerceSkill -> RebuildDisplayRows 驱动。
+    local payoutService = S.Services and S.Services.TradePayoutV3 or nil
+    local commerceMultiplier = nil
+    if type(payoutService) == "table" and type(payoutService.GetCommerceMultiplier) == "function" then
+        commerceMultiplier = payoutService:GetCommerceMultiplier(self.commerceSkill, Trade.State.commerceMode ~= "off")
+    end
     return {
         revision = self.revision, zones = Copy(self.zones), sellableZones = Copy(self.sellableZones), rows = Copy(self.rows),
-        status = self.status, error = self.error, fromZone = Trade.State.fromZone, toZone = Trade.State.toZone,
+        status = displayStatus, routeStatus = self.status, error = displayError, fromZone = Trade.State.fromZone, toZone = Trade.State.toZone,
         zoneFallback = self.zoneFallback == true, sellableFallback = self.sellableFallback == true, sellableError = self.sellableError,
-        pendingQuoteCount = PendingTradeQuoteCount(self.rows),
-        quoteInFlightCount = InFlightTradeQuoteCount(self.rows),
-        nativeCooldownMs = tonumber(self.lastNativeCooldownMs) or 0,
-        cooldownRemainingMs = self:GetNativeCooldownRemaining(),
-        responseTimeoutMs = tonumber(self.lastResponseTimeoutMs) or 0,
-        unresolvedIdentityCount = UnresolvedTradeIdentityCount(self.rows),
-        favorites = Trade:GetFavorites(), favoriteItems = Trade:GetFavoriteItems(),
-        currentFavoriteKey = Trade:FavoriteKey(Trade.State.fromZone, Trade.State.toZone),
-        currentRouteFavorite = Trade:IsFavorite(Trade.State.fromZone, Trade.State.toZone),
-        selectedKey = self.selectedKey, sortMode = Trade.State.sortMode,
-        ratioMode = Trade.State.ratioMode, fullRatio = TRADE_FULL_RATIO,
-        commerceMode = Trade.State.commerceMode, commerceSkill = self.commerceSkill, commerceStatus = self.commerceStatus,
-        commerceName = self.commerceName, commerceError = self.commerceError,
+        pendingQuoteCount = PendingTradeQuoteCount(self.rows), quoteInFlightCount = InFlightTradeQuoteCount(self.rows),
+        nativeCooldownMs = tonumber(self.lastNativeCooldownMs) or 0, cooldownRemainingMs = self:GetNativeCooldownRemaining(),
+        responseTimeoutMs = tonumber(self.lastResponseTimeoutMs) or 0, unresolvedIdentityCount = UnresolvedTradeIdentityCount(self.rows),
+        favorites = Trade:GetFavorites(), favoriteItems = Trade:GetFavoriteItems(), currentFavoriteKey = Trade:FavoriteKey(Trade.State.fromZone, Trade.State.toZone),
+        currentRouteFavorite = Trade:IsFavorite(Trade.State.fromZone, Trade.State.toZone), selectedKey = self.selectedKey, sortMode = Trade.State.sortMode,
+        ratioMode = Trade.State.ratioMode, fullRatio = TRADE_FULL_RATIO, commerceMode = Trade.State.commerceMode, commerceSkill = self.commerceSkill,
+        commerceStatus = self.commerceStatus, commerceName = self.commerceName, commerceError = self.commerceError, commerceMultiplier = commerceMultiplier,
         priceIncludesCommerce = Trade.State.commerceMode ~= "off" and self.commerceStatus == "ready",
-        commercePriceFormulaStatus = "supplied_working_v1",
-        packPriceMultiplierStatus = "supplied_working_v1",
-        payoutCalculator = type(S.Services and S.Services.TradePayoutV3) == "table"
-            and S.Services.TradePayoutV3:Describe() or nil,
+        commercePriceFormulaStatus = "supplied_working_v1", packPriceMultiplierStatus = "supplied_working_v1",
+        viewMode = mode, trackedCount = trackedCount, autoRefresh = Trade.Preferences.autoRefresh == true, cargoScan = Trade.Preferences.cargoScan == true,
+        rawRowCount = #(self.rawRows or {}), displayRowCount = #(self.rows or {}), lastRatioAt = tonumber(self.lastRatioAt) or 0,
+        ratioAgeMs = ratioAgeMs, isRefreshing = displayStatus == "refreshing" or displayStatus == "loading" or displayStatus == "cooldown",
+        cargo = cargoProjection,
+        payoutCalculator = type(payoutService) == "table" and payoutService:Describe() or nil,
     }
 end
 
@@ -1324,6 +2190,16 @@ local function NormalizeTradeState(value)
         widgetWindow = type(value.widgetWindow) == "table" and Copy(value.widgetWindow) or nil,
     }
 end
+local function NormalizeTradePreferences(value)
+    value = type(value) == "table" and value or {}
+    return {
+        viewMode = TRADE_VIEW_MODES[value.viewMode] and value.viewMode or "all",
+        trackedProducts = Trade:NormalizeTrackedProducts(value.trackedProducts),
+        autoRefresh = value.autoRefresh ~= false,
+        cargoScan = value.cargoScan ~= false,
+    }
+end
+
 -- 中文维护注释（2026-09-12 实档）：只还原 widgetWindow.normalizedCenterX 的旧 six-significant
 -- token 0.0903896 就把整张跑商 canonical 从 48B0E072 精确还原为存档自带的 6BE9E557。
 -- 该样本可由“固定6位小数 + binary32 回读”逐字段复现，但我们没有客户端 serializer 源码。
@@ -1359,76 +2235,237 @@ RegisterStore(Trade.storeId, "v3.life.trade", function() return NormalizeTradeSt
         Trade.State.widgetWindow = type(value.widgetWindow) == "table" and Copy(value.widgetWindow) or nil
     end, NormalizeTradeState, nil, RebuildTradeWindowDecimalCanonical) -- 维护：schema1 不变，先精确验旧章才应用恢复。
 
-Trade.ApiDependencies = { "X2Store:GetProductionZoneGroups", "X2Store:GetSellableZoneGroups", "X2Store:GetSpecialtyRatioBetween", "X2Ability:GetAllMyActabilityInfos" }
+-- 维护（2026-09-23，trade-preferences-store-1）：新显示/刷新策略使用独立 Store，避免改变历史
+-- v3.life.trade 的 schema1 canonical。trackedProducts 只保存 itemType，禁止保存本地化货物名。
+RegisterStore(Trade.preferenceStoreId, "v3.life.trade.preferences", function() return NormalizeTradePreferences(nil) end,
+    function() return Copy(Trade.Preferences) end,
+    function(value)
+        Trade.Preferences = NormalizeTradePreferences(value)
+        Trade:RefreshTrackedProductSet()
+    end, NormalizeTradePreferences, { maxDepth = 4, maxNodes = 192, maxStringBytes = 1024, maxEntriesPerTable = 144 })
+
+Trade.ApiDependencies = { "X2Store:GetProductionZoneGroups", "X2Store:GetSellableZoneGroups", "X2Store:GetSpecialtyRatioBetween", "X2Ability:GetAllMyActabilityInfos", "X2Equipment:GetEquippedItemType" }
 function Trade:Initialize()
     if type(S.Services and S.Services.TradePayoutV3) ~= "table" then return false, "跑商售价计算服务不可用" end
-    return LoadStore(self)
+    local ok, err = LoadStore(self)
+    if ok ~= true then return false, err end
+    if self.preferenceStoreLoaded ~= true then
+        if P:GetStore(self.preferenceStoreId) == nil then return false, "store unavailable: " .. tostring(self.preferenceStoreId) end
+        local status, _, preferenceErr = P:LoadStore(self.preferenceStoreId)
+        if status ~= true and status ~= "empty" then return false, preferenceErr or tostring(status or "trade preference store load failed") end
+        self.preferenceStoreLoaded = true
+    end
+    self:RefreshTrackedProductSet()
+    return true
 end
+function Trade:EnsureNativeRatioSubscription()
+    if self.nativeRatioSubscribed == true then return true end
+    if S.Events == nil or type(S.Events.SubscribeOptional) ~= "function" then return false, "事件系统不可用" end
+    if type(S.Events.BindOwner) == "function" then S.Events:BindOwner(self.nativeRatioEventOwner, self.Id) end
+    local ok = S.Events:SubscribeOptional("SPECIALTY_RATIO_BETWEEN_INFO", self.nativeRatioEventOwner, function(_, info) return TA:OnRatio(info) end)
+    if ok ~= true then
+        self.nativeRatioSubscribed = false
+        return false, "SPECIALTY_RATIO_BETWEEN_INFO 订阅失败"
+    end
+    self.nativeRatioSubscribed = true
+    TA:TraceRequest("native_callback_subscribed", { kind = "lifecycle", reason = "ensure" }, "consumer=" .. tostring(tonumber(self.consumerCount) or 0))
+    return true
+end
+
+function Trade:ReleaseNativeRatioSubscription(reason)
+    if self.nativeRatioSubscribed ~= true then return true end
+    if S.Events ~= nil and type(S.Events.UnsubscribeOwner) == "function" then S.Events:UnsubscribeOwner(self.nativeRatioEventOwner) end
+    self.nativeRatioSubscribed = false
+    TA:TraceRequest("native_callback_unsubscribed", { kind = "lifecycle", reason = tostring(reason or "release") }, "")
+    return true
+end
+
+function TA:HandleWorldBoundary(reason)
+    local _, cargoChanged = self:RefreshCargoObservation(reason or "zone_change")
+    if Trade:GetViewMode() == "cargo" then
+        if cargoChanged then self:RebuildDisplayRows("cargo_zone_observed") end
+        return self:StartCargoScan(reason or "zone_change")
+    end
+    local from, to = Number(Trade.State.fromZone), Number(Trade.State.toZone)
+    if from ~= nil and to ~= nil then return self:Request(true, "zone_change") end
+    return true
+end
+
 function Trade:ReconcileDemand(_, before, after)
     local beforeCount = tonumber(before and before.count) or 0
     local afterCount = tonumber(after and after.count) or 0
     if beforeCount <= 0 and afterCount > 0 then
         TraceInit("demand_start", "consumer=" .. tostring(afterCount) .. " enabled=" .. tostring(self.enabled == true)
             .. " storeLoaded=" .. tostring(self.storeLoaded == true)
-            .. " route=" .. tostring(Number(Trade.State.fromZone) or "-") .. "->" .. tostring(Number(Trade.State.toZone) or "-"))
+            .. " route=" .. tostring(Number(Trade.State.fromZone) or "-") .. "->" .. tostring(Number(Trade.State.toZone) or "-")
+            .. " view=" .. tostring(self:GetViewMode()))
         if S.Events ~= nil then
             S.Events:BindOwner(self, self.Id)
-            if S.Events:SubscribeOptional("SPECIALTY_RATIO_BETWEEN_INFO", self, function(_, info) return TA:OnRatio(info) end) ~= true then
+            -- Native 回执使用独立 lease owner；Demand 结束时不能撤销一个已经被服务器接受的请求的回调归属。
+            local nativeSubscribed, nativeSubscribeErr = self:EnsureNativeRatioSubscription()
+            if nativeSubscribed ~= true then
                 self.eventUnavailable = true
                 TraceInit("event_subscribe_failed", "SPECIALTY_RATIO_BETWEEN_INFO")
-                return false, "SPECIALTY_RATIO_BETWEEN_INFO 订阅失败"
+                return false, nativeSubscribeErr or "SPECIALTY_RATIO_BETWEEN_INFO 订阅失败"
             end
+            -- 维护（2026-09-23，trade-event-refresh-1）：换装/跨区都由事件驱动，禁止 Tick 轮询。
+            -- UNIT_EQUIPMENT_CHANGED 可能一次换装连续触发，Authority 内 220ms debounce 后只读取一次熟练度/背包槽；
+            -- ENTER_ANOTHER_ZONEGROUP 只提高一次刷新优先级，不绕开 SingleFlight。
+            S.Events:SubscribeOptional("UNIT_EQUIPMENT_CHANGED", self, function() return TA:ScheduleEquipmentRefresh("UNIT_EQUIPMENT_CHANGED") end)
+            S.Events:SubscribeOptional("ENTER_ANOTHER_ZONEGROUP", self, function() return TA:HandleWorldBoundary("zone_change") end)
             self.eventUnavailable = false
         end
         self.Authority:RefreshCommerceSkill()
+        self.Authority:RefreshCargoObservation("demand_start")
         self.Authority:RefreshZones()
-        -- 中文维护注释（trade-home-first-consumer-1）：Trade 路线配置是持久化的，但 Demand 0->1 过去只恢复
-        -- 地区/目的地下拉列表，不会为已经完整保存的路线发货率查询。首页因此会显示“已选路线 + 暂无货率”，
-        -- 直到用户再切一次目的地或进入完整跑商页。首次可见 Consumer 取得 Authority 后，若当前路线完整、没有
-        -- 可信 rows 且没有请求在飞，则只发一次标准 Request；SingleFlight/Native 冷却仍由 TA 统一管理。
-        if Number(Trade.State.fromZone) ~= nil and Number(Trade.State.toZone) ~= nil
-            and #(TA.rows or {}) == 0 and TA.inFlight == nil then
-            local requested, requestErr = TA:Request(false)
-            if requested ~= true then
-                TraceInit("demand_route_query_deferred", tostring(requestErr or "request_not_started"))
+        if self:GetViewMode() == "cargo" then
+            self.Authority:StartCargoScan("demand_start")
+        elseif Number(Trade.State.fromZone) ~= nil and Number(Trade.State.toZone) ~= nil then
+            if #(TA.rawRows or {}) == 0 and TA.inFlight == nil then
+                local requested, requestErr = TA:Request(false, "initial")
+                if requested ~= true then TraceInit("demand_route_query_deferred", tostring(requestErr or "request_not_started")) end
+            else
+                TA:ScheduleNextAutoRefresh()
             end
         end
         TraceInit("demand_init_done", "zones=" .. tostring(#(TA.zones or {})) .. "/" .. tostring(#(TA.sellableZones or {}))
             .. " fallback=" .. tostring(TA.zoneFallback == true) .. "/" .. tostring(TA.sellableFallback == true)
-            .. " commerce=" .. tostring(TA.commerceStatus or "-"))
-    elseif beforeCount > 0 and afterCount <= 0 and S.Events ~= nil then
-        S.Events:UnsubscribeOwner(self)
-        TA.inFlight = nil
+            .. " commerce=" .. tostring(TA.commerceStatus or "-") .. " cargo=" .. tostring(TA.cargo.status or "-"))
+    elseif beforeCount > 0 and afterCount <= 0 then
+        -- 维护（2026-09-24，trade-native-callback-lease-1）：释放高频/业务观察资源，但已接受的 Native 请求必须
+        -- 保留 inFlight + timeout + 独立回执订阅直到 callback/timeout 自然结算。诊断 18.294 已证明旧版在 native_accepted
+        -- 后立刻 no_consumers，造成 1 次请求永久丢失。pendingRoute 属于 UI 意图，Consumer 归零时清掉，避免后台追新路线。
+        if S.Events ~= nil then S.Events:UnsubscribeOwner(self) end
+        local preserveNativeFlight = type(TA.inFlight) == "table" or type(TA.timedOutFlight) == "table"
         TA.pendingRoute = nil
         TA.pendingRetryCount = nil
-        TA.timedOutFlight = nil
-        TA:CancelRequestTimeout()
         TA:CancelDeferredRequest()
+        TA:CancelAutoRefresh()
+        TA:CancelEquipmentRefresh()
+        TA:StopCargoScan("no_consumers")
         TA:CancelLiveIdentities()
         self:CancelQuoteBatch("no_consumers")
+        if preserveNativeFlight then
+            TA.diag = type(TA.diag) == "table" and TA.diag or {}
+            TA.diag.consumerReleaseFlightsPreserved = (tonumber(TA.diag.consumerReleaseFlightsPreserved) or 0) + 1
+            TA:TraceRequest("consumer_release_preserve_flight", TA.inFlight or TA.timedOutFlight, "consumer=0")
+        else
+            TA.timedOutFlight = nil
+            TA:CancelRequestTimeout()
+            TA:CancelTimeoutDrain()
+        end
     end
     return true
 end
-function Trade:Enable() self.enabled = true; TraceInit("enable", "feature enabled"); return true end
-function Trade:Disable(reason) local ok, err = self.Demand:Clear(reason or "trade_disable"); if ok ~= true then return false, err end; if S.Events then S.Events:UnsubscribeOwner(self) end; self:CancelQuoteBatch(reason or "disabled"); self.enabled = false; TA.inFlight = nil; TA.pendingRoute = nil; TA.pendingRetryCount = nil; TA.timedOutFlight = nil; TA:CancelRequestTimeout(); TA:CancelDeferredRequest(); TA:CancelLiveIdentities(); TraceInit("disable", tostring(reason or "trade_disable")); return true end
+
+function Trade:Enable()
+    self.enabled = true
+    TraceInit("enable", "feature enabled")
+    return true
+end
+
+function Trade:Disable(reason)
+    local ok, err = self.Demand:Clear(reason or "trade_disable")
+    if ok ~= true then return false, err end
+    if S.Events then S.Events:UnsubscribeOwner(self) end
+    self:ReleaseNativeRatioSubscription(reason or "trade_disable")
+    self:CancelQuoteBatch(reason or "disabled")
+    self.enabled = false
+    TA.inFlight, TA.pendingRoute, TA.pendingRetryCount, TA.timedOutFlight = nil, nil, nil, nil
+    TA:CancelRequestTimeout(); TA:CancelTimeoutDrain(); TA:CancelDeferredRequest(); TA:CancelAutoRefresh(); TA:CancelEquipmentRefresh(); TA:StopCargoScan("feature_disabled"); TA:CancelLiveIdentities()
+    TraceInit("disable", tostring(reason or "trade_disable"))
+    return true
+end
+
 function Trade:AcquireConsumer(token) if not self.enabled then return false, "跑商功能已关闭" end return self.Demand:Acquire(token, {}, "trade_consumer") end
 function Trade:ReleaseConsumer(token) return self.Demand:Release(token, "trade_consumer") end
+
 function Trade:Refresh(reason)
     if not self.enabled or self.consumerCount <= 0 then return true end
-    TA:RefreshCommerceSkill()
+    local _, commerceChanged = TA:RefreshCommerceSkill()
+    local _, cargoChanged = TA:RefreshCargoObservation(reason or "manual_refresh")
     local zonesOk, zonesErr = TA:RefreshZones()
     if zonesOk ~= true then return false, zonesErr end
-    if Number(Trade.State.fromZone) ~= nil and Number(Trade.State.toZone) ~= nil then
-        return TA:Request(true)
-    end
+    if commerceChanged or cargoChanged then TA:RebuildDisplayRows("trade_manual_observation_refresh") end
+    if self:GetViewMode() == "cargo" then return TA:StartCargoScan(reason or "manual_refresh") end
+    if Number(Trade.State.fromZone) ~= nil and Number(Trade.State.toZone) ~= nil then return TA:Request(true, "manual_refresh") end
     return true
 end
+
 function Trade:GetProjection()
     local projection=TA:GetProjection()
     projection.quoteBatch=self:GetQuoteBatch()
     return projection
 end
-function Trade:GetRouteSettings() return { fromZone = Trade.State.fromZone, toZone = Trade.State.toZone, sortMode = Trade.State.sortMode, ratioMode = Trade.State.ratioMode, commerceMode = Trade.State.commerceMode } end
+function Trade:GetRouteSettings() return { fromZone = Trade.State.fromZone, toZone = Trade.State.toZone, sortMode = Trade.State.sortMode, ratioMode = Trade.State.ratioMode, commerceMode = Trade.State.commerceMode, viewMode = self:GetViewMode() } end
+
+function Trade:SetViewMode(mode)
+    mode = TRADE_VIEW_MODES[mode] and mode or nil
+    if mode == nil then return false, "显示模式必须是 all、tracked 或 cargo" end
+    if self:GetViewMode() == mode then return true end
+    local persisted, persistErr = PersistTradePreference("trade_view_mode", function(state) state.viewMode = mode; return true end)
+    if persisted ~= true then return false, persistErr or "显示模式保存失败" end
+    self:RefreshTrackedProductSet()
+    self:CancelQuoteBatch("view_mode_changed")
+    if mode == "cargo" then
+        TA:CancelAutoRefresh()
+        TA:RebuildDisplayRows("trade_view_cargo")
+        if self.enabled and (tonumber(self.consumerCount) or 0) > 0 then return TA:StartCargoScan("view_mode") end
+        return true
+    end
+    TA:StopCargoScan("view_changed")
+    TA:RebuildDisplayRows("trade_view_" .. mode)
+    if self.enabled and (tonumber(self.consumerCount) or 0) > 0 and Number(self.State.fromZone) ~= nil and Number(self.State.toZone) ~= nil then
+        if not TA:HasRawRowsForRoute(self.State.fromZone, self.State.toZone) then return TA:Request(true, "route_change") end
+        TA:ScheduleNextAutoRefresh()
+    end
+    return true
+end
+
+function Trade:ToggleTrackedProduct(value)
+    local itemType = Number(value)
+    if itemType == nil then
+        local key = tostring(value or "")
+        local row = self:GetRow(key)
+        if row == nil then
+            for _, raw in ipairs(TA.rawRows or {}) do if tostring(raw.key or "") == key then row = raw; break end end
+        end
+        itemType = row and Number(row.itemType) or nil
+    end
+    if itemType == nil or itemType <= 0 then return false, "该贸易品缺少已验证 ItemID，暂不能加入关注" end
+    itemType = math.floor(itemType)
+    local wasTracked = self:IsTrackedProduct(itemType)
+    local nextValues = {}
+    for _, id in ipairs(self:NormalizeTrackedProducts(self.Preferences.trackedProducts)) do if id ~= itemType then nextValues[#nextValues + 1] = id end end
+    if not wasTracked then
+        if #nextValues >= 128 then return false, "关注货物最多 128 项" end
+        nextValues[#nextValues + 1] = itemType
+    end
+    table.sort(nextValues)
+    local persisted, persistErr = PersistTradePreference("trade_tracked_product", function(state) state.trackedProducts = nextValues; return true end)
+    if persisted ~= true then return false, persistErr or "关注货物保存失败" end
+    self:RefreshTrackedProductSet()
+    TA:RebuildDisplayRows("trade_tracked_product")
+    return true, wasTracked and "已取消关注" or "已关注货物"
+end
+
+function Trade:SetAutoRefresh(value)
+    value = value == true
+    local persisted, persistErr = PersistTradePreference("trade_auto_refresh", function(state) state.autoRefresh = value; return true end)
+    if persisted ~= true then return false, persistErr or "自动刷新设置保存失败" end
+    if value then TA:ScheduleNextAutoRefresh() else TA:CancelAutoRefresh() end
+    TA.revision = TA.revision + 1; PublishFeatureUpdate(self, TA.revision, "trade_auto_refresh")
+    return true
+end
+
+function Trade:SetCargoScan(value)
+    value = value == true
+    local persisted, persistErr = PersistTradePreference("trade_cargo_scan", function(state) state.cargoScan = value; return true end)
+    if persisted ~= true then return false, persistErr or "随身货物扫描设置保存失败" end
+    if value and self:GetViewMode() == "cargo" and self.enabled and (tonumber(self.consumerCount) or 0) > 0 then return TA:StartCargoScan("cargo_scan_enabled") end
+    if not value then TA:StopCargoScan("scan_disabled"); TA:RebuildDisplayRows("cargo_scan_disabled") end
+    return true
+end
 function Trade:SetSortMode(mode)
     mode = TRADE_SORT_MODES[mode] and mode or nil
     if mode == nil then return false, "排序模式必须是 ratio、price 或 name" end
@@ -1464,9 +2501,30 @@ function Trade:SelectFavorite(key)
         if self:FavoriteKey(favorite.fromZone, favorite.toZone) == key then selected = favorite; break end
     end
     if selected == nil then return false, "收藏路线不存在" end
-    local ok, err = self:SetFrom(selected.fromZone)
-    if ok ~= true then return false, err end
-    return self:SetTo(selected.toZone)
+
+    -- 维护（2026-09-23，trade-favorite-route-atomic-1）：收藏路线是一次“from+to”用户意图，不能继续拆成
+    -- SetFrom -> SetTo 两次持久化/两次 UI 发布。旧流程会先把 to 清空，再刷新可售地区，再提交第二次请求；
+    -- 如果此时正处 Native 冷却或旧请求回调，用户会看到一次中间失败/空表。这里一次事务写入完整路线，
+    -- 再刷新 sellable 候选、恢复会话缓存并交给同一 SingleFlight Scheduler；不新增第二 Authority。
+    self:CancelQuoteBatch("favorite_route_changed")
+    local from, to = Number(selected.fromZone), Number(selected.toZone)
+    if from == nil or to == nil then return false, "收藏路线数据不完整" end
+    -- 先读取候选并验证，再提交一次完整状态事务；验证失败不能把旧路线改成半成品。
+    local sellable, sellableFallback, sellableErr = TA:GetSellableForOrigin(from)
+    local targetAvailable = false
+    for _, row in ipairs(sellable or {}) do if Number(row.id) == to then targetAvailable = true; break end end
+    if targetAvailable ~= true then return false, sellableErr or "收藏路线目的地当前不可用" end
+
+    local persisted, persistErr = PersistLifeMutation(self, "trade_select_favorite", function(state)
+        state.fromZone, state.toZone = from, to
+        return true
+    end)
+    if persisted ~= true then return false, persistErr or "收藏路线切换保存失败" end
+
+    TA.sellableZones = Copy(sellable)
+    TA.sellableFallback, TA.sellableError = sellableFallback == true, sellableErr
+    TA:RestoreRouteCache(from, to, "favorite_route_cache")
+    return TA:Request(true, "route_change")
 end
 function Trade:GetRow(key)
     key = tostring(key or "")
@@ -1513,17 +2571,17 @@ function Trade:SetFrom(id)
     TA:RefreshSellable()
     local currentTo = Number(Trade.State.toZone)
     if TA.inFlight ~= nil or currentTo ~= nil then
-        TA.pendingRoute = currentTo ~= nil and { from = nextFrom, to = currentTo } or nil
-        TA.rows = {}
+        TA.pendingRoute = currentTo ~= nil and { from = nextFrom, to = currentTo, reason = "route_change", force = true } or nil
+        TA.rawRows, TA.rows = {}, {}
         if TA.inFlight ~= nil then
             TA.status, TA.error = "loading", nil
         elseif TA.pendingRoute ~= nil then
             TA.status, TA.error = "loading", nil
-            TA:Request(false)
+            TA:Request(true, "route_change")
         end
     else
         TA.pendingRoute = nil
-        TA.rows, TA.status, TA.error = {}, "idle", nil
+        TA.rawRows, TA.rows, TA.status, TA.error = {}, {}, "idle", nil
     end
     TA.revision = (tonumber(TA.revision) or 0) + 1
     PublishFeatureUpdate(self, TA.revision, "trade_from")
@@ -1535,7 +2593,10 @@ function Trade:SetTo(id)
         if row.id == Number(id) then
             local persisted, persistErr = PersistLifeMutation(self, "trade_to", function(state) state.toZone = row.id; return true end)
             if persisted ~= true then return false, persistErr end
-            return TA:Request(true) -- 中文维护注释：目的地选择与收藏重选允许作为明确的用户重试/确认请求，避免同路线查询期间报“路线查询仍在进行”错误。
+            -- 维护（trade-route-session-cache-1）：已查过的路线先恢复会话快照，让列表立即可见；Native 刷新仍由
+            -- SingleFlight/cooldown Scheduler 串行执行。未命中缓存时保持原来的 loading/cooldown 空态提示。
+            TA:RestoreRouteCache(Trade.State.fromZone, row.id, "route_cache_manual_select")
+            return TA:Request(true, "route_change")
         end
     end
     return false, "目的地不可用"
@@ -1596,16 +2657,39 @@ function Trade:_QueueQuoteRefresh(materialKey,generation)
     end
     return Apply()
 end
-function Trade:QuoteMaterial(materialKey,mode,batch)
-    -- 维护：详情/旧Command也必须经过功能生命周期门，不允许关闭后重新入队。
+local function ResolveTradeQuoteIdentity(material)
+    local materialKey, itemType, itemGrade, gradeOffset
+    if type(material) == "table" then
+        materialKey = tostring(material.materialKey or material.internalKey or "")
+        itemType, itemGrade = tonumber(material.itemType), tonumber(material.itemGrade)
+    else
+        materialKey = tostring(material or "")
+    end
+    local metaTable = S.Data and S.Data.TradeMaterialAuctionMeta
+    local meta = type(metaTable) == "table" and metaTable[materialKey] or nil
+    if type(meta) == "table" then
+        itemType = itemType or tonumber(meta.itemType)
+        itemGrade = itemGrade or tonumber(meta.itemGrade)
+        gradeOffset = tonumber(meta.gradeOffset)
+    end
+    if itemType == nil or itemType <= 0 then return materialKey, nil, nil end
+    itemType = math.floor(itemType)
+    itemGrade = itemGrade or (gradeOffset ~= nil and gradeOffset + 1) or 1
+    itemGrade = math.max(0, math.min(20, math.floor(tonumber(itemGrade) or 1)))
+    if materialKey == "" then materialKey = "item:" .. tostring(itemType) end
+    return materialKey, itemType, itemGrade
+end
+
+function Trade:QuoteMaterial(material,mode,batch)
+    -- 维护（2026-09-23，trade-live-material-quote-1）：显式询价的 Authority 是投影材料的 itemType/itemGrade，
+    -- 不是静态 English materialKey。旧实现只查 TradeMaterialAuctionMeta，导致 X2Craft 实时解析出来但尚未进入
+    -- 静态材料表的新材料永远显示“可拍卖”却无法点击询价。这里保留 string key 旧 Command 兼容，同时允许
+    -- 传入 detached material row；Native 询价仍全部由 PriceQuoteQueueV3 串行/冷却管理，不新增并发。
     if not self.enabled then return false,"跑商功能已关闭" end
-    local metaTable=S.Data and S.Data.TradeMaterialAuctionMeta
-    local item=type(metaTable)=="table" and metaTable[materialKey] or nil
-    local itemType,itemGrade=item and tonumber(item.itemType),item and tonumber(item.itemGrade)
+    local materialKey,itemType,itemGrade=ResolveTradeQuoteIdentity(material)
     if not itemType then return false,"该材料没有已验证的拍卖行身份，无法询价" end
     local queue=S.Services and S.Services.PriceQuoteQueueV3
     if not queue or type(queue.RequestQuote)~="function" then return false,"报价服务不可用" end
-    itemGrade=itemGrade or (item and tonumber(item.gradeOffset) and tonumber(item.gradeOffset)+1) or 1
     local grades={itemGrade};local seen={[itemGrade]=true}
     if mode=="full" then
         for grade=0,6 do if not seen[grade] then grades[#grades+1]=grade;seen[grade]=true end end
@@ -1622,45 +2706,73 @@ function Trade:QuoteMaterial(materialKey,mode,batch)
         Trade:_QueueQuoteRefresh(materialKey,generation)
     end,grades,{searchName=searchName})
 end
-function Trade:_StartMaterialBatch(rows,mode)
+function Trade:_StartMaterialBatch(rows,mode,options)
     if not self.enabled then return false,"跑商功能已关闭" end
-    if self.quoteBatch.active then return true,"询价中 "..self.quoteBatch.completed.."/"..self.quoteBatch.total,0,0 end
+    options=type(options)=="table" and options or {}
+    if self.quoteBatch.active then
+        return true,"询价中 "..self.quoteBatch.completed.."/"..self.quoteBatch.total,0,0
+    end
     local queue=S.Services and S.Services.PriceQuoteQueueV3
     if not queue then return false,"报价服务不可用" end
+    -- 维护（2026-09-23，trade-row-quote-intent-1）：批量入口默认最多4项；明确的单行双击可以把预算提高到
+    -- 当前行材料投影硬上限。两者共用同一 PriceQuoteQueueV3 requester，因此仍严格串行，不能从这里直接调用拍卖 API。
+    local maxItems=math.max(1,math.min(TRADE_MATERIAL_MAX_ROWS,math.floor(tonumber(options.maxItems) or TRADE_DEFAULT_QUOTE_BATCH_MAX)))
     local now=type(S.NowMs)=="function" and S.NowMs() or 0
     local selected,seen,deferred={}, {}, 0
     for _,row in ipairs(rows or {}) do
         for _,m in ipairs(row.materialRows or {}) do
-            local meta=S.Data and S.Data.TradeMaterialAuctionMeta and S.Data.TradeMaterialAuctionMeta[m.materialKey]
-            local id=meta and tonumber(meta.itemType)
-            local grade=meta and (tonumber(meta.itemGrade) or (tonumber(meta.gradeOffset) and tonumber(meta.gradeOffset)+1)) or 1
+            local materialKey,id,grade=ResolveTradeQuoteIdentity(m)
             local key=id and (tostring(id)..":"..tostring(grade))
             local state=id and queue:GetQuoteStateByItemType(id,grade)
             local cooling=state and state.status=="failed" and now-(state.at or 0)>=0 and now-(state.at or 0)<queue.negativeTtlMs
             local missing=m.costStatus=="explicit_quote_required" or m.costStatus=="quote_failed" or m.costStatus=="quoted_reference"
-            if key and not seen[key] and (missing or mode=="full") then
+            if key and not seen[key] and m.auctionable~=false and m.includeInCost~=false and (missing or mode=="full") then
                 seen[key]=true
-                if (cooling and mode~="full") or #selected>=4 then deferred=deferred+1
-                else selected[#selected+1]=m.materialKey end
+                if (cooling and mode~="full") or #selected>=maxItems then deferred=deferred+1
+                else selected[#selected+1]={materialKey=materialKey,itemType=id,itemGrade=grade} end
             end
         end
     end
-    if #selected==0 then return false,"没有可询价材料；已有缓存/失败冷却期内，或尚未选择路线",0,deferred end
+    if #selected==0 then return false,"没有可询价材料；已有有效报价、失败冷却中，或材料本身不可拍卖",0,deferred end
     self.quoteGeneration=self.quoteGeneration+1
-    local batch={id=self.quoteGeneration,active=true,total=#selected,completed=0,ready=0,failed=0,mode=mode or "basic",deferred=deferred}
+    local batch={
+        id=self.quoteGeneration,active=true,total=#selected,completed=0,ready=0,failed=0,mode=mode or "basic",deferred=deferred,
+        scope=tostring(options.scope or "batch"),rowKey=options.rowKey,label=options.label,maxItems=maxItems,
+    }
     self.quoteBatch=batch
-    for _,key in ipairs(selected) do
-        local ok,err=self:QuoteMaterial(key,mode,batch)
+    local affectedKeys={}
+    for _,material in ipairs(selected) do
+        if material.materialKey~=nil then affectedKeys[material.materialKey]=true end
+        local ok,err=self:QuoteMaterial(material,mode,batch)
         if not ok then batch.completed=batch.completed+1;batch.failed=batch.failed+1;batch.error=tostring(err) end
     end
     batch.active=batch.completed<batch.total
+    -- RequestQuote 会立刻把共享 read-model 标成 queued/inflight；马上重投影受影响行，让毛利列从“查询材料”
+    -- 变成“询价中…”。只重建命中的材料行，不刷新货率，也不遍历/请求未选中的路线数据。
+    if next(affectedKeys)~=nil then TA:RefreshQuotedMaterial(affectedKeys) end
     TA.revision=TA.revision+1;PublishFeatureUpdate(self,TA.revision,"quote_batch")
-    return true,"本批 "..batch.total.." 项（最多4项）；剩余/冷却 "..deferred,batch.total,deferred
+    return true,"本次查询 "..batch.total.." 项材料"..(deferred>0 and ("；另有 "..deferred.." 项处于冷却/预算外") or ""),batch.total,deferred
 end
-function Trade:QuotePendingMaterials(mode) return self:_StartMaterialBatch(TA.rows,mode) end
+function Trade:QuotePendingMaterials(mode)
+    return self:_StartMaterialBatch(TA.rows,mode,{maxItems=TRADE_DEFAULT_QUOTE_BATCH_MAX,scope="batch"})
+end
 function Trade:QuoteRowMaterials(rowKey,mode)
     local row=self:GetRow(rowKey);if not row then return false,"贸易品已不在当前路线结果中" end
-    return self:_StartMaterialBatch({row},mode)
+    -- 双击另一行代表新的明确用户意图；旧的单行批次若仍在排队，直接取消而不是让用户等待一个已经不关心的货物。
+    -- 同一行重复双击则只返回当前进度，避免取消后又重建同一 requester。
+    if self.quoteBatch.active then
+        if self.quoteBatch.scope=="row" and tostring(self.quoteBatch.rowKey or "")==tostring(rowKey or "") then
+            return true,"正在查询该货物材料 "..tostring(self.quoteBatch.completed or 0).."/"..tostring(self.quoteBatch.total or 0)
+        end
+        self:CancelQuoteBatch("row_quote_superseded")
+    end
+    local ok,msg,total,deferred=self:_StartMaterialBatch({row},mode,{
+        maxItems=TRADE_ROW_QUOTE_BATCH_MAX,scope="row",rowKey=rowKey,label=row.name,
+    })
+    if ok~=true and row.materialCostComplete==true and row.materialCostCopper~=nil then
+        return true,"该货物材料价格已可用，毛利已更新",0,0
+    end
+    return ok,msg,total,deferred
 end
 
 -- Diagnostics reads describe helpers off the Feature table (S.Features.Trade),
@@ -1673,6 +2785,8 @@ function Trade:DescribeIdentityState() return TA:DescribeIdentityState() end
 Trade.Commands = { Refresh = function(_, reason) return Trade:Refresh(reason) end, SetFrom = function(_, id) return Trade:SetFrom(id) end, SetTo = function(_, id) return Trade:SetTo(id) end,
     SetSortMode = function(_, mode) return Trade:SetSortMode(mode) end,
     SetRatioMode = function(_, mode) return Trade:SetRatioMode(mode) end, SetCommerceMode = function(_, mode) return Trade:SetCommerceMode(mode) end,
+    SetViewMode = function(_, mode) return Trade:SetViewMode(mode) end, ToggleTrackedProduct = function(_, value) return Trade:ToggleTrackedProduct(value) end,
+    SetAutoRefresh = function(_, value) return Trade:SetAutoRefresh(value) end, SetCargoScan = function(_, value) return Trade:SetCargoScan(value) end,
     ToggleCurrentFavorite = function() return Trade:ToggleCurrentFavorite() end, SelectFavorite = function(_, key) return Trade:SelectFavorite(key) end,
     SelectRow = function(_, key) return Trade:SelectRow(key) end,
     QuoteMaterial = function(_, materialKey) return Trade:QuoteMaterial(materialKey) end,
@@ -1690,10 +2804,21 @@ local ok, err = Runtime:RegisterImplementation(Trade.Id, Trade); if ok ~= true t
 ------------------------------------------------------------------------
 -- Bonds / Resident board
 ------------------------------------------------------------------------
-local Bonds = { Id = "life_bonds", storeId = "v3.life.bonds", enabled = false, storeLoaded = false }
+local Bonds = { Id = "life_bonds", storeId = "v3.life.bonds", enabled = false, storeLoaded = false,
+    progressConsumerToken = "feature:life_bonds:quest_progress", progressConsumerHeld = false, progressSubscribed = false }
 S.Features.Bonds = Bonds
 Bonds.UpdateTopic = "v3.life.bonds.updated"
-Bonds.State = { sortMode = "continent", showCompleted = true, q20 = true, q60 = true, q100 = true, auroria = true, excludeSame = false, priority = "west", completionDateKey = nil, completedMainlandKeys = {}, dailyDateKey = nil, dailySnapshots = {}, widgetVisible = false, widgetWindow = nil }
+Bonds.State = { sortMode = "continent", continentOrder = "west_first", showCompleted = true, q20 = true, q60 = true, q100 = true, auroria = true, excludeSame = false, priority = "west", completionDateKey = nil, completedMainlandKeys = {}, dailyDateKey = nil, dailySnapshots = {}, widgetVisible = false, widgetWindow = nil }
+-- 中文维护注释（2026-09-15，西/东大陆同日快照与排序语义）：
+-- 问题原因：旧页面把“按大陆排序”“优先西/东”和“去重”挤在同一排，priority 还会隐式开启去重，
+-- 用户切换排序时会看到另一大陆行被隐藏，从而误以为 Authority 只能读取一个大陆。Authority 实际已经
+-- 按 server day 保存 west/east/auroria 三份快照，因此本次不新增第二数据源，只把“大陆展示顺序”提升为
+-- 独立持久化偏好 continentOrder，并明确 duplicate priority 只有在合并模式开启时才参与。
+-- Authority/数据流：ResidentBoard -> Bonds.Authority -> dailySnapshots[continent] -> detached Projection；
+-- Presentation 只能调用 Commands，禁止直接读取 State。兼容边界：新增字段缺失时默认 west_first，旧 Store
+-- schema/fingerprint 仍由 NormalizeBondState 兼容；不增加轮询，不跨大陆伪造远程读取。
+-- 风险：未来若增加第四大陆/新阵营，必须同时扩展排序 rank、dailySnapshotStatus 和 UI 标签，不能复用 priority。
+Bonds.MultiContinentSnapshotContractVersion = 1
 InstallLifeWidgetContract(Bonds, { defaultWidth = 500, defaultHeight = 330, minWidth = 280, minHeight = 150, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 })
 Bonds.Authority = { version = 2, revision = 0, rows = {}, status = "idle", error = nil, boardScope = "unknown", faction = nil }
 local BA = Bonds.Authority
@@ -1963,7 +3088,9 @@ local function NormalizeBondState(value)
         local snap = NormalizeBondSnapshot(type(value.dailySnapshots) == "table" and value.dailySnapshots[continentKey] or nil, continentKey)
         if snap ~= nil then snapshots[continentKey] = snap end
     end
-    return { sortMode = value.sortMode == "quantity" and "quantity" or "continent", showCompleted = value.showCompleted ~= false,
+    return { sortMode = value.sortMode == "quantity" and "quantity" or "continent",
+        continentOrder = value.continentOrder == "east_first" and "east_first" or "west_first",
+        showCompleted = value.showCompleted ~= false,
         q20 = value.q20 ~= false, q60 = value.q60 ~= false, q100 = value.q100 ~= false, auroria = value.auroria ~= false,
         excludeSame = value.excludeSame == true, priority = value.priority == "east" and "east" or "west",
         completionDateKey = dateKey, completedMainlandKeys = completed,
@@ -1977,6 +3104,32 @@ local function NormalizeBondState(value)
         -- and repairs legacy windows saved with missing keys.
         widgetWindow = NormalizeBondWidgetWindow(value.widgetWindow) }
 end
+-- 中文维护注释（2026-09-15，债券 historical canonical 修复）：上一版在 schema=1 的
+-- NormalizeBondState 中新增 continentOrder，导致已经合法盖章的旧存档（字段尚不存在）在下一次
+-- Fresh Reload 被当前 canonical 自动补成 west_first，从而出现 fingerprint_mismatch。这里由 Bonds Store
+-- 自己声明唯一可证明的历史形状：CURRENT canonical 去掉新增字段。候选没有信任权，仍必须重新计算并
+-- 精确命中磁盘已经保存的 stampedFingerprint；未知 Hash、已有 continentOrder 的 payload、非 schema1
+-- 都继续 fail-closed。恢复成功后第二返回值使用当前 NormalizeBondState，Core 会按当前 canonical 立即重盖章。
+-- 该函数只走 Persistence mismatch 冷路径，不进入 Refresh/Tick，也不读取居民板或背包。
+local function RebuildBondCanonicalForIntegrity(decoded, stampedFingerprint, currentCanonical, rawEnvelope)
+    if type(decoded) ~= "table" or type(currentCanonical) ~= "table" then return nil, nil end
+    if decoded.continentOrder ~= nil then return nil, nil end
+    local meta = type(rawEnvelope) == "table" and rawEnvelope.__rsmeta or nil
+    if type(meta) == "table" and tonumber(meta.schema) ~= 1 then return nil, nil end
+    if currentCanonical.continentOrder ~= "west_first" then return nil, nil end
+
+    local historical = Copy(currentCanonical)
+    historical.continentOrder = nil
+    local store = type(P.GetStore) == "function" and P:GetStore(Bonds.storeId) or nil
+    if type(store) ~= "table" or type(P.FingerprintCanonicalValue) ~= "function" then return nil, nil end
+    local candidateFingerprint = P:FingerprintCanonicalValue(store, historical)
+    local matched = candidateFingerprint ~= nil and tostring(candidateFingerprint) == tostring(stampedFingerprint)
+    store.lastHistoricalRecoveryProbe = "bonds_pre_continent_order/candidate=" .. tostring(candidateFingerprint or "nil")
+        .. "/matched=" .. tostring(matched == true)
+    if matched ~= true then return nil, nil end
+    return historical, NormalizeBondState(decoded)
+end
+
 local function BondCompletionKey(materialKey, quantity, continentKey)
     if continentKey == "auroria" or materialKey == nil or tonumber(quantity) == nil then return nil end
     return tostring(materialKey) .. ":" .. tostring(math.floor(tonumber(quantity)))
@@ -2103,7 +3256,11 @@ function BA:Refresh()
                             text = textValue, quantity = quantity, materialKey = materialKey, auroriaToken = auroriaToken,
                             requiredCount = requiredCount, haveCount = haveCount,
                             shortage = requiredCount and haveCount and math.max(0, requiredCount - haveCount) or nil,
-                            resourceStatus = rowStatus, resourceText = haveCount and tostring(haveCount) or "?",
+                            resourceStatus = rowStatus,
+                            -- 中文维护注释：resourceStatus 保留机器态供诊断/兼容，玩家表格使用本地化文本，
+                            -- 避免直接暴露 ready/partial/unknown 造成语义不清；这里仍由同一 Authority 生成。
+                            resourceStatusText = rowStatus == "ready" and "可读取" or (rowStatus == "partial" and "部分" or "未知"),
+                            resourceText = haveCount and tostring(haveCount) or "?",
                             shortageText = requiredCount and haveCount and tostring(math.max(0, requiredCount - haveCount)) or "?",
                             questId = questId, questStatus = questStatus, completed = completed,
                             statusText = completed and "已完成" or (QUEST_STATUS_TEXT[questStatus] or "待确认"),
@@ -2152,22 +3309,33 @@ function BA:Refresh()
         end
     end
 
-    if state.sortMode == "quantity" then
-        local continentRank, materialRank = { west=1, east=2, auroria=3 }, { leather=1, fabric=2, lumber=3, iron=4 }
-        table.sort(rows, function(a, b)
-            local aq, bq = Number(a.quantity), Number(b.quantity)
+    -- 中文维护注释（2026-09-15，排序只排序不删数据）：continentOrder 与 duplicate priority 完全分离。
+    -- 按大陆模式先比较大陆，按数量模式先比较数量；两种模式都使用同一个确定性 tie-breaker。这样切换
+    -- “西→东/东→西”只改变行顺序，不会触发去重，也不会修改快照。原大陆始终排在两主大陆之后。
+    local continentRank = state.continentOrder == "east_first"
+        and { east = 1, west = 2, auroria = 3 } or { west = 1, east = 2, auroria = 3 }
+    local materialRank = { leather = 1, fabric = 2, lumber = 3, iron = 4 }
+    table.sort(rows, function(a, b)
+        local ac, bc = continentRank[a.continentKey] or 9, continentRank[b.continentKey] or 9
+        local aq, bq = Number(a.quantity), Number(b.quantity)
+        if state.sortMode == "quantity" then
             if aq ~= bq then
                 if aq == nil then return false end
                 if bq == nil then return true end
                 return aq < bq
             end
-            local ac, bc = continentRank[a.continentKey] or 9, continentRank[b.continentKey] or 9
             if ac ~= bc then return ac < bc end
-            local am, bm = materialRank[a.materialKey] or 9, materialRank[b.materialKey] or 9
-            if am ~= bm then return am < bm end
-            return tostring(a.key) < tostring(b.key)
-        end)
-    end
+        else
+            if ac ~= bc then return ac < bc end
+            -- 中文维护注释：按大陆模式只负责把同一大陆聚在一起，组内继续保持居民板 1→7 的
+            -- 自然顺序；不能再按数量二次重排，否则“按大陆”仍会改变板位阅读顺序并让语义模糊。
+            local ab, bb = Number(a.board) or 99, Number(b.board) or 99
+            if ab ~= bb then return ab < bb end
+        end
+        local am, bm = materialRank[a.materialKey] or 9, materialRank[b.materialKey] or 9
+        if am ~= bm then return am < bm end
+        return tostring(a.key) < tostring(b.key)
+    end)
 
     local capturedCount = 0
     for _, key in ipairs({ "west", "east", "auroria" }) do if state.dailySnapshots[key] ~= nil then capturedCount = capturedCount + 1 end end
@@ -2190,11 +3358,17 @@ function BA:Refresh()
 end
 
 function BA:GetProjection()
+    local snapshots = type(Bonds.State.dailySnapshots) == "table" and Bonds.State.dailySnapshots or {}
+    -- 中文维护注释（2026-09-15，Projection 覆盖状态）：Presentation 需要告诉玩家“今天西/东大陆
+    -- 哪些已读取”，但禁止直接读 State/Store。因此 Authority 只投影三个布尔值和当前大陆标签，不暴露
+    -- snapshot 原文/嵌套表，也不复制第二份业务数据。该 detached 状态不会触发任何 Native 读取。
+    local coverage = { west = snapshots.west ~= nil, east = snapshots.east ~= nil, auroria = snapshots.auroria ~= nil }
     return {
         revision = self.revision, rows = Copy(self.rows), status = self.status, resourceStatus = self.resourceStatus,
         error = self.error, duplicatePriorityUnresolved = self.duplicatePriorityUnresolved,
-        boardScope = self.boardScope, faction = self.faction,
+        boardScope = self.boardScope, currentContinentLabel = BOND_CONTINENT_LABEL[self.boardScope], faction = self.faction,
         snapshotDateKey = self.snapshotDateKey, snapshotCount = tonumber(self.snapshotCount) or 0,
+        dailySnapshotStatus = coverage,
         selectedKey = Bonds.selectedKey,
     }
 end
@@ -2205,10 +3379,58 @@ RegisterStore(Bonds.storeId, "v3.life.bonds", function() return NormalizeBondSta
     function() return Copy(Bonds.State) end,
     function(value) Bonds.State = NormalizeBondState(value) end,
     NormalizeBondState,
-    { maxDepth = 8, maxNodes = 960, maxStringBytes = 24576, maxEntriesPerTable = 192 })
+    { maxDepth = 8, maxNodes = 960, maxStringBytes = 24576, maxEntriesPerTable = 192 },
+    RebuildBondCanonicalForIntegrity) -- 中文维护注释：仅 Bonds 注册 pre-continentOrder exact historical bridge；Core 规则不放宽。
 Bonds.ApiDependencies = { "X2Resident:GetResidentBoardContent", "X2Bag:Capacity", "X2Bag:GetBagItemInfo", "X2Unit:GetCurrentZoneGroup" }
 function Bonds:Initialize() return LoadStore(self) end
-function Bonds:ReconcileDemand(_, before, after) if (tonumber(before and before.count) or 0) <= 0 and (tonumber(after and after.count) or 0) > 0 then BA:Refresh(); return true end return true end
+function Bonds:SubscribeProgress()
+    if self.progressSubscribed == true then return true end
+    if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then return false, "quest progress internal event unavailable" end
+    local subscribed = S.Events:SubscribeInternal("v3.quest_progress.updated", self, function()
+        -- 中文维护注释（bond-quest-reactive-1）：居民板 Store/材料快照仍由 Bonds Authority 持有；这里只在已有
+        -- Bonds Consumer 时重算 questStatus，不新增 ResidentBoard 轮询。QuestProgress 的事件由 Native Quest 事件
+        -- 合并后发布，因此交任务/变为可交付可以在事件后立即刷新主页面与悬浮窗。
+        if Bonds.enabled == true and Bonds.consumerCount > 0 then BA:Refresh() end
+    end)
+    if subscribed ~= true then return false, "quest progress internal subscribe failed" end
+    self.progressSubscribed = true
+    return true
+end
+function Bonds:UnsubscribeProgress()
+    if self.progressSubscribed ~= true then return true end
+    if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
+    self.progressSubscribed = false
+    return true
+end
+function Bonds:ReconcileDemand(_, before, after)
+    local beforeCount = tonumber(before and before.count) or 0
+    local afterCount = tonumber(after and after.count) or 0
+    if beforeCount <= 0 and afterCount > 0 then
+        local progress = S.Services and S.Services.QuestProgressV3 or nil
+        if type(progress) ~= "table" or type(progress.AcquireConsumer) ~= "function" then return false, "quest progress service unavailable" end
+        local acquired, acquireErr = progress:AcquireConsumer(self.progressConsumerToken)
+        if acquired ~= true then return false, acquireErr end
+        self.progressConsumerHeld = true
+        local subscribed, subErr = self:SubscribeProgress()
+        if subscribed ~= true then
+            progress:ReleaseConsumer(self.progressConsumerToken)
+            self.progressConsumerHeld = false
+            return false, subErr
+        end
+        -- Demand 0->1 在 QuestProgress 已完成一次同步刷新后再重算 Bonds，确保首次打开也使用最新 activeIndex。
+        BA:Refresh()
+    elseif beforeCount > 0 and afterCount <= 0 then
+        self:UnsubscribeProgress()
+        if self.progressConsumerHeld == true then
+            local progress = S.Services and S.Services.QuestProgressV3 or nil
+            if type(progress) ~= "table" or type(progress.ReleaseConsumer) ~= "function" then return false, "quest progress release unavailable" end
+            local released, releaseErr = progress:ReleaseConsumer(self.progressConsumerToken)
+            if released ~= true then return false, releaseErr or "quest progress release failed" end
+            self.progressConsumerHeld = false
+        end
+    end
+    return true
+end
 function Bonds:Enable() self.enabled = true; return true end
 function Bonds:Disable(reason) local ok, err = self.Demand:Clear(reason or "bonds_disable"); if ok ~= true then return false, err end; self.enabled = false; return true end
 function Bonds:AcquireConsumer(token) if not self.enabled then return false, "居民板功能已关闭" end return self.Demand:Acquire(token, {}, "bonds_consumer") end
@@ -2255,6 +3477,15 @@ function Bonds:SetSortMode(mode)
     if persisted ~= true then return false, persistErr end
     return self:Refresh()
 end
+function Bonds:GetContinentOrder() return NormalizeBondState(Bonds.State).continentOrder end
+function Bonds:SetContinentOrder(order)
+    if order ~= "west_first" and order ~= "east_first" then return false, "大陆排序方向无效" end
+    -- 中文维护注释：大陆顺序是纯 Presentation 偏好，但由 Bonds Store 持久化并由 Authority 排序，
+    -- 这样主页面/悬浮窗共享同一顺序。该命令不读 ResidentBoard、不修改 dailySnapshots，也不触发去重。
+    local persisted, persistErr = PersistLifeMutation(self, "bonds_continent_order", function(state) state.continentOrder = order; return true end)
+    if persisted ~= true then return false, persistErr end
+    return self:Refresh()
+end
 function Bonds:GetBondFilter() return NormalizeBondState(Bonds.State) end
 function Bonds:GetBondFilterOption(key) return Bonds:GetBondFilter()[key] == true end
 function Bonds:GetDuplicatePriority() return Bonds:GetBondFilter().priority end
@@ -2266,11 +3497,14 @@ function Bonds:SetBondFilterOption(key, enabled)
 end
 function Bonds:SetDuplicatePriority(priority)
     if priority ~= "west" and priority ~= "east" then return false, "重复材料优先大陆无效" end
-    local persisted, persistErr = PersistLifeMutation(self, "bonds_priority", function(state) state.priority = priority; state.excludeSame = true; return true end)
+    -- 中文维护注释（2026-09-15，合并优先级无副作用）：旧实现会在选择“优先西/东”时顺手把
+    -- excludeSame=true，导致用户只是想改顺序/偏好却突然少一整个大陆的重复行。priority 现在只保存
+    -- “合并模式下保留哪一侧”，是否合并只能由 SetBondFilterOption(excludeSame) 显式决定。
+    local persisted, persistErr = PersistLifeMutation(self, "bonds_priority", function(state) state.priority = priority; return true end)
     if persisted ~= true then return false, persistErr end
     return self:Refresh()
 end
-Bonds.Commands = { Refresh = function(_, reason) return Bonds:Refresh(reason) end, SetSortMode = function(_, mode) return Bonds:SetSortMode(mode) end, SetBondFilterOption = function(_, key, enabled) return Bonds:SetBondFilterOption(key, enabled) end, SetDuplicatePriority = function(_, priority) return Bonds:SetDuplicatePriority(priority) end,
+Bonds.Commands = { Refresh = function(_, reason) return Bonds:Refresh(reason) end, SetSortMode = function(_, mode) return Bonds:SetSortMode(mode) end, SetContinentOrder = function(_, order) return Bonds:SetContinentOrder(order) end, SetBondFilterOption = function(_, key, enabled) return Bonds:SetBondFilterOption(key, enabled) end, SetDuplicatePriority = function(_, priority) return Bonds:SetDuplicatePriority(priority) end,
     SelectRow = function(_, key) return Bonds:SelectRow(key) end, GetSelectedRow = function() return Bonds:GetSelectedRow() end, GetRow = function(_, key) return Bonds:GetRow(key) end,
     GetWidgetVisible = function() return Bonds:GetWidgetVisible() end, SetWidgetVisible = function(_, value, reason) return Bonds:SetWidgetVisible(value, reason) end,
     SetWidgetWindowState = function(_, value, reason) return Bonds:SetWidgetWindowState(value, reason) end,
@@ -2281,16 +3515,26 @@ Bonds.Demand = bondsDemand
 ok, err = Runtime:RegisterImplementation(Bonds.Id, Bonds); if ok ~= true then error(err) end
 
 ------------------------------------------------------------------------
--- Treasure maps (direct bounded bag read; no Resource/Legacy dependency)
+-- Treasure maps (shared InventorySnapshotV3 + DMS coordinates + native world-map location)
 ------------------------------------------------------------------------
 local Treasure = { Id = "life_treasure", storeId = "v3.life.treasure", enabled = false, storeLoaded = false }
 S.Features.Treasure = Treasure
 Treasure.UpdateTopic = "v3.life.treasure.updated"
-Treasure.ObservationContractVersion = 1
+Treasure.ObservationContractVersion = 2 -- 中文维护注释（2026-09-16，背包 Authority 收敛）：v2 表示藏宝图枚举不再固定 bagId=0 直扫，改由 InventorySnapshotV3 选择 RU 当前可读物理背包视图；位置 500ms 刷新仍只读取玩家坐标，不重复扫描背包。
+Treasure.MapLocationContractVersion = 2 -- 中文维护注释（2026-09-19，原生地图定位区域 Authority）：v2 修复旧版把 ShowWorldmapLocation 首参固定为 2 的错误假设。RU 2025-11 后签名明确要求 zoneGroupId + 全局坐标；优先使用藏宝图原生条目显式区域组，缺失时只退化到玩家当前区域组，绝不再用魔数伪造地图上下文。
 Treasure.State = { selectedKey = nil, widgetVisible = false, widgetWindow = nil }
 InstallLifeWidgetContract(Treasure, { defaultWidth = 390, defaultHeight = 220, minWidth = 240, minHeight = 120, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 })
-Treasure.Authority = { version = 1, revision = 0, maps = {}, selected = nil, status = "idle", error = nil }
+Treasure.Authority = { version = 2, revision = 0, maps = {}, selected = nil, status = "idle", error = nil, lastMapActionError = nil, mapOpenAttempts = 0, lastMapZoneGroup = nil, lastMapZoneSource = nil }
 local XA = Treasure.Authority
+local function NormalizeTreasureZoneGroup(value)
+    -- 中文维护注释（2026-09-19，区域事实边界）：ShowWorldmapLocation 的首参是 zoneGroupId，不是 WorldId/MapContext。
+    -- 这里只接受客户端已经给出的正整数事实；禁止从坐标范围、名称、当前大陆等软线索猜区域，否则地图会打开却把标记投到错误图层。
+    local n = Number(value)
+    if n == nil then return nil end
+    n = math.floor(n)
+    if n <= 0 then return nil end
+    return n
+end
 local function Dms(dir, deg, min, sec, offset)
     deg, min, sec = Number(deg), Number(min), Number(sec); if not deg or not min or not sec then return nil end
     local value = deg + min / 60 + sec / 3600; if dir == "W" or dir == "S" then value = -value end
@@ -2303,32 +3547,75 @@ local function TreasureText(item)
     if (lon ~= "E" and lon ~= "W") or (lat ~= "N" and lat ~= "S") or not a or not b or not c or not d or not e or not f then return nil end
     return string.format("%s %d°%d' %d\" · %s %d°%d' %d\"", lon, a, b, c, lat, d, e, f)
 end
+local function TreasureMapFromNativeItem(item, row, bagId)
+    -- 中文维护注释（2026-09-16，跨语言藏宝图识别）：RU 客户端物品名不是中文，旧 string.find(name,"藏宝图") 会把真实藏宝图全部过滤掉。
+    -- 藏宝图原生物品事实自身携带完整经纬 DMS 字段，这是本功能真正需要且与语言无关的业务证据；只有八个坐标字段均合法时才接纳，
+    -- 不根据名字、Tooltip 文案或未知 category 猜测。InventorySnapshotV3 只负责“哪个物理背包槽真实存在”，业务坐标判断仍由 Treasure Authority 所有。
+    if type(item) ~= "table" then return nil end
+    local text = TreasureText(item)
+    local worldX = Dms(item.longitudeDir, item.longitudeDeg, item.longitudeMin, item.longitudeSec, 21504)
+    local worldY = Dms(item.latitudeDir, item.latitudeDeg, item.latitudeMin, item.latitudeSec, 28672)
+    if text == nil or worldX == nil or worldY == nil then return nil end
+    local slot = math.max(1, math.floor(Number(row and row.slot) or 1))
+    local name = Text(item.name or item.itemName)
+    if name == "" then name = "藏宝图 " .. tostring(slot) end -- 中文维护注释：这里只是缺名时的 Presentation fallback，不参与识别，因此不会重新引入本地化依赖。
+    return {
+        -- 中文维护注释（2026-09-16，旧配置兼容）：selectedKey 在旧版一直使用“坐标文本:槽位”。
+        -- 虽然新版 Snapshot 能读到 itemType，也绝不能把它塞进 key，否则用户升级后已保存的当前藏宝图会失配并被静默切回第一张。
+        -- itemType 仍作为事实字段保留供诊断/未来迁移使用；只有显式 schema migration 才允许改变持久身份格式。
+        key = text .. ":" .. tostring(slot),
+        name = name, text = text, worldX = worldX, worldY = worldY,
+        -- 中文维护注释（2026-09-19，原生区域优先）：部分 RU 物品结构会直接附带 zoneGroupId/zoneGroupType。
+        -- 若字段不存在则保持 nil，后续显式地图定位时再读取“当前区域组”作为有证据的 fallback；不要在背包扫描阶段调用位置 API。
+        zoneGroupId = NormalizeTreasureZoneGroup(item.zoneGroupId) or NormalizeTreasureZoneGroup(item.zoneGroupType) or NormalizeTreasureZoneGroup(item.zoneGroup),
+        slot = slot, bagId = Number(bagId), itemType = Number(row and row.itemType), direction = "--", distance = nil,
+    }
+end
 function XA:Refresh()
-    local maps, readable = {}, false
-    if S.Api == nil or S.Api:IsCapabilityAllowed("X2Bag:GetBagItemInfo") ~= true then self.status, self.error = "unavailable", "X2Bag:GetBagItemInfo 被能力门阻止"; return false end
-    local maxSlot = 150
-    local okCapacity, capacity = Call("X2Bag:Capacity", BagApi, "Capacity")
-    if okCapacity and Number(capacity) and Number(capacity) > 0 then maxSlot = math.min(240, math.floor(Number(capacity))) end
-    for slot = 1, maxSlot do
-        local ok, item = Call("X2Bag:GetBagItemInfo", BagApi, "GetBagItemInfo", 0, slot)
-        if ok then
-            readable = true
-            if type(item) == "table" then
-                local name = Text(item.name or item.itemName)
-                local text = TreasureText(item)
-                local wx, wy = Dms(item.longitudeDir, item.longitudeDeg, item.longitudeMin, item.longitudeSec, 21504), Dms(item.latitudeDir, item.latitudeDeg, item.latitudeMin, item.latitudeSec, 28672)
-                if text and string.find(name, "藏宝图", 1, true) and wx and wy then maps[#maps + 1] = { key = text .. ":" .. tostring(slot), name = name, text = text, worldX = wx, worldY = wy, slot = slot, direction = "--", distance = nil } end
-            end
+    -- 中文维护注释（2026-09-16，共享背包事实）：Treasure 不再直接循环 X2Bag。显式刷新/Consumer 首次进入时只构建一次 bounded Snapshot，
+    -- 由 InventorySnapshotV3 统一处理 bagId=1/0 RU 差异；随后只对 Snapshot 已确认占用的槽做一次原生详情读取以取得坐标字段。
+    -- 该二阶段读取不在 500ms 位置任务内执行，因此不会把背包扫描带入高频路径，也不会复制第二份 Inventory Authority。
+    local snapshotService = S.Services and S.Services.InventorySnapshotV3 or nil
+    if type(snapshotService) ~= "table" or type(snapshotService.BuildSnapshot) ~= "function" or type(snapshotService.ReadPhysicalBagSlot) ~= "function" then
+        self.status, self.error = "unavailable", "InventorySnapshotV3 不可用"
+        self.revision = self.revision + 1
+        PublishFeatureUpdate(Treasure, self.revision, "treasure_inventory_unavailable")
+        return false
+    end
+    local snapshot, snapshotErr = snapshotService:BuildSnapshot("bag", { maxSlots = 240 })
+    if type(snapshot) ~= "table" then
+        self.status, self.error = "unavailable", "背包快照不可用：" .. tostring(snapshotErr or "unknown")
+        self.revision = self.revision + 1
+        PublishFeatureUpdate(Treasure, self.revision, "treasure_inventory_failed")
+        return false
+    end
+
+    local maps = {}
+    for _, row in ipairs(type(snapshot.rows) == "table" and snapshot.rows or {}) do
+        local readOk, item, _, physicalBagId = snapshotService:ReadPhysicalBagSlot(row.slot, snapshot.bagId)
+        if readOk == true and type(item) == "table" and next(item) ~= nil then
+            local map = TreasureMapFromNativeItem(item, row, physicalBagId or snapshot.bagId)
+            if map ~= nil then maps[#maps + 1] = map end
         end
     end
+
     local selected = Treasure.State.selectedKey
-    local found = false
-    for _, map in ipairs(maps) do if map.key == selected then found = true; XA.selected = map end end
-    if not found then XA.selected = maps[1]; selected = maps[1] and maps[1].key or nil; Treasure.State.selectedKey = selected end
-    self.maps, self.selected, self.status, self.error = maps, self.selected, (#maps > 0 and "ready" or "empty"), nil
+    local selectedMap = nil
+    for _, map in ipairs(maps) do
+        if map.key == selected then selectedMap = map; break end
+    end
+    if selectedMap == nil then
+        selectedMap = maps[1]
+        selected = selectedMap and selectedMap.key or nil
+        Treasure.State.selectedKey = selected
+    end
+    self.maps, self.selected = maps, selectedMap
+    self.inventoryBagId = snapshot.bagId
+    self.inventoryFallbackUsed = snapshot.fallbackUsed == true
+    self.status, self.error = (#maps > 0 and "ready" or "empty"), nil
     self.revision = self.revision + 1
     PublishFeatureUpdate(Treasure, self.revision, "treasure_scan")
-    return readable
+    return true
 end
 function XA:UpdatePosition()
     local map = self.selected; if not map then return false end
@@ -2342,7 +3629,15 @@ function XA:UpdatePosition()
     PublishFeatureUpdate(Treasure, self.revision, "treasure_position")
     return true
 end
-function XA:GetProjection() return { revision = self.revision, maps = Copy(self.maps), selected = Copy(self.selected), status = self.status, error = self.error } end
+function XA:GetProjection()
+    return {
+        revision = self.revision, maps = Copy(self.maps), selected = Copy(self.selected), status = self.status, error = self.error,
+        observationContractVersion = Treasure.ObservationContractVersion, mapLocationContractVersion = Treasure.MapLocationContractVersion,
+        inventoryBagId = self.inventoryBagId, inventoryFallbackUsed = self.inventoryFallbackUsed == true,
+        lastMapActionError = self.lastMapActionError, mapOpenAttempts = self.mapOpenAttempts,
+        lastMapZoneGroup = self.lastMapZoneGroup, lastMapZoneSource = self.lastMapZoneSource,
+    }
+end
 local function NormalizeTreasureState(value)
     value = type(value) == "table" and value or {}
     return {
@@ -2357,7 +3652,7 @@ RegisterStore(Treasure.storeId, "v3.life.treasure", function() return NormalizeT
     Treasure.State.widgetVisible = value.widgetVisible == true
     Treasure.State.widgetWindow = type(value.widgetWindow) == "table" and Copy(value.widgetWindow) or nil
 end, NormalizeTreasureState)
-Treasure.ApiDependencies = { "X2Bag:GetBagItemInfo", "X2Bag:Capacity", "X2Unit:GetUnitWorldPositionByTarget" }
+Treasure.ApiDependencies = { "X2Bag:GetBagItemInfo", "X2Bag:Capacity", "X2Unit:GetUnitWorldPositionByTarget", "X2Unit:GetCurrentZoneGroup", "X2Map:ShowWorldmapLocation" } -- 中文维护注释：地图 API 与当前区域读取都只在显式 Command 点击时执行；加入依赖仅确保 FeatureRuntime 惰性导入对应 namespace，不启动任何地图观察。
 function Treasure:Initialize() return LoadStore(self) end
 local TREASURE_POSITION_TASK = "v3_life_treasure_position"
 function Treasure:ReconcileDemand(_, before, after)
@@ -2392,158 +3687,514 @@ function Treasure:Select(key)
     end
     return false, "藏宝图选择无效"
 end
-Treasure.Commands = { Refresh = function(_, reason) return Treasure:Refresh(reason) end, Select = function(_, key) return Treasure:Select(key) end,
+local function ResolveTreasureMapZoneGroup(map)
+    -- 中文维护注释（2026-09-19，地图定位证据链）：参考 TreasureMapHunter 的真实调用是 targetZone + global x/y，
+    -- 因此先信藏宝图条目自己的 zoneGroup；没有时只允许用玩家当前 zoneGroup。后者只能保证“玩家已进入藏宝图所在区域”时精确定位，
+    -- 但至少不会像旧魔数 2 那样打开地图却静默落到错误区域。跨区域一键定位若要完全可靠，后续必须补结构化 Treasure Location DB，不能猜。
+    local explicit = type(map) == "table" and NormalizeTreasureZoneGroup(map.zoneGroupId) or nil
+    if explicit ~= nil then return explicit, "item" end
+    local ok, currentZone, err = Call("X2Unit:GetCurrentZoneGroup", UnitApi, "GetCurrentZoneGroup")
+    local zone = ok == true and NormalizeTreasureZoneGroup(currentZone) or nil
+    if zone ~= nil then return zone, "current_zone" end
+    return nil, tostring(err or "藏宝图未提供区域组，且当前区域组不可用")
+end
+function Treasure:ShowSelectedOnMap()
+    -- 中文维护注释（2026-09-16，Native 写边界）：地图打开属于显式用户动作，只能从 Command 进入并经 Capability Gate；
+    -- Scheduler/UpdatePosition 永远不能调用它。失败只记录诊断并保留当前选择/距离追踪，不清 Store、不切换藏宝图，避免 UI 能力故障污染 Domain Authority。
+    local map = XA.selected
+    if type(map) ~= "table" then return false, "请先选择一张藏宝图" end
+    local worldX, worldY = Number(map.worldX), Number(map.worldY)
+    if worldX == nil or worldY == nil then return false, "藏宝图坐标不可用" end
+    local zoneGroupId, zoneSourceOrErr = ResolveTreasureMapZoneGroup(map)
+    if zoneGroupId == nil then
+        XA.lastMapActionError = "地图定位缺少区域组：" .. tostring(zoneSourceOrErr or "unknown")
+        XA.lastMapZoneGroup, XA.lastMapZoneSource = nil, "unresolved"
+        XA.revision = XA.revision + 1
+        PublishFeatureUpdate(self, XA.revision, "treasure_map_zone_unresolved")
+        return false, XA.lastMapActionError
+    end
+    XA.mapOpenAttempts = (tonumber(XA.mapOpenAttempts) or 0) + 1
+    XA.lastMapZoneGroup, XA.lastMapZoneSource = zoneGroupId, tostring(zoneSourceOrErr or "unknown")
+    local ok, mapErr = Action("X2Map:ShowWorldmapLocation", nil, "ShowWorldmapLocation", zoneGroupId, worldX, worldY, 0)
+    if ok ~= true then
+        XA.lastMapActionError = tostring(mapErr or "地图定位失败")
+        XA.revision = XA.revision + 1
+        PublishFeatureUpdate(self, XA.revision, "treasure_map_failed")
+        return false, XA.lastMapActionError
+    end
+    XA.lastMapActionError = nil
+    XA.revision = XA.revision + 1
+    PublishFeatureUpdate(self, XA.revision, "treasure_map_opened")
+    return true
+end
+Treasure.Commands = {
+    Refresh = function(_, reason) return Treasure:Refresh(reason) end,
+    Select = function(_, key) return Treasure:Select(key) end,
+    ShowSelectedOnMap = function() return Treasure:ShowSelectedOnMap() end, -- 中文维护注释：Presentation 只调用 Feature Command，不直接触碰 X2Map；主页面与悬浮窗因此共享同一选择和失败诊断。
     GetWidgetVisible = function() return Treasure:GetWidgetVisible() end, SetWidgetVisible = function(_, value, reason) return Treasure:SetWidgetVisible(value, reason) end,
-    SetWidgetWindowState = function(_, value, reason) return Treasure:SetWidgetWindowState(value, reason) end, MarkStoreDirty = function(_, delayMs, reason) return Treasure:MarkStoreDirty(delayMs, reason) end }
+    SetWidgetWindowState = function(_, value, reason) return Treasure:SetWidgetWindowState(value, reason) end, MarkStoreDirty = function(_, delayMs, reason) return Treasure:MarkStoreDirty(delayMs, reason) end,
+}
 local treasureDemand, treasureErr = Demand:Create({ id = "feature:" .. Treasure.Id, owner = Treasure, projectionOwner = Treasure, projectionConsumersField = "consumers", projectionCountField = "consumerCount", reconcile = function(lease, before, after) return Treasure:ReconcileDemand(lease, before, after) end })
 if treasureDemand == nil then error(treasureErr) end
 Treasure.Demand = treasureDemand
 ok, err = Runtime:RegisterImplementation(Treasure.Id, Treasure); if ok ~= true then error(err) end
 
 ------------------------------------------------------------------------
--- Fishing (bounded observation; Auto-R hotkey writes remain runtime-blocked)
+-- Fishing (Demand-scoped observation + reversible Auto-R hotkey transaction)
 ------------------------------------------------------------------------
-local Fishing = { Id = "life_fishing", storeId = "v3.life.fishing", enabled = false, storeLoaded = false, autoArmed = false }
-S.Features.Fishing = Fishing
-Fishing.UpdateTopic = "v3.life.fishing.updated"
-Fishing.ObservationContractVersion = 1
-Fishing.HotkeyContractVersion = 2
-Fishing.HotkeyRuntimeBlocked = true
-Fishing.State = { autoPreference = false, widgetVisible = false, widgetWindow = nil }
+local Fishing = { Id = "life_fishing", storeId = "v3.life.fishing", enabled = false, storeLoaded = false, autoArmed = false, autoLeaseHeld = false, recoveryNativeRestored = false } -- 中文维护：Fishing Feature 继续拥有业务生命周期；Auto-R 会话状态只在本模块存活，持久恢复证据进入 v3.life.fishing Store。
+S.Features.Fishing = Fishing -- 中文维护：保持现有 FeatureRuntime/Presentation Authority 名称，用户升级无需迁移导航或 Consumer token。
+Fishing.Patch = "fishing-auto-r-transaction-1" -- 中文维护：实机诊断必须能区分本轮完整 Auto-R 事务与旧 Runtime-Blocked 版本，避免覆盖错误时继续猜根因。
+Fishing.UpdateTopic = "v3.life.fishing.updated" -- 中文维护：页面与悬浮窗继续消费同一更新主题；识别/改键不能创建第二套 UI 状态源。
+Fishing.ObservationContractVersion = 2 -- 中文维护：v2 表示 TARGET/BUFF 事件 + 100ms Demand-scoped 兜底扫描；避免 RU 漏 BUFF_UPDATE 时长期不刷新。
+Fishing.HotkeyContractVersion = 3 -- 中文维护：v3 表示恢复旧版已验证的完整 R 快照/恢复事务，并要求持久化 durability barrier + Native readback。
+Fishing.HotkeyRuntimeBlocked = false -- 中文维护：旧版实机实现和当前 Capability 面已补足缺失证据；若运行时能力/存档不可用仍由事务 fail-closed，不再全局硬禁用。
+Fishing.State = { autoPreference = false, widgetVisible = false, widgetWindow = nil, recovery = nil } -- 中文维护：recovery 是唯一持久恢复 Authority；模块关闭仍保留直到原按键已确认恢复。
 InstallLifeWidgetContract(Fishing, { defaultWidth = 360, defaultHeight = 190, minWidth = 230, minHeight = 110, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 })
-local FISHING_AUTO_BLOCKER = "自动 R 仍缺少 RU 实机完整 GetOptionBinding 源槽位/空绑定语义与故障注入回滚证据；当前版本仅提供鱼动作识别和技能栏推荐，不修改任何快捷键。"
-Fishing.Authority = { version = 1, revision = 0, status = "idle", message = "尚未观察目标鱼动作", buffId = nil, slot = nil, autoArmed = false, autoAvailable = false, autoBlockedReason = FISHING_AUTO_BLOCKER }
-local FA = Fishing.Authority
-local FISH_MAP = { [5264] = { slot = 4, text = "向左拉" }, [5265] = { slot = 3, text = "向右拉" }, [5267] = { slot = 5, text = "放线" }, [5266] = { slot = 6, text = "收线" }, [5508] = { slot = 7, text = "提竿" } }
 
-function FA:Refresh()
+local FishingHotkey = S.Services and S.Services.FishingHotkeyV3 or nil -- 中文维护：Feature 只编排事务，不直接复制 Native Hotkey 细节；服务缺失时观察仍可用、Auto-R fail-closed。
+local FISH_NORMAL_MAP = { [5264] = { slot = 4, text = "向左拉" }, [5265] = { slot = 3, text = "向右拉" }, [5267] = { slot = 5, text = "放线" }, [5266] = { slot = 6, text = "收线" }, [5508] = { slot = 7, text = "提竿" } } -- 中文维护：来源为用户提供的可用旧版 + GitHub FishBuddy/Nuzi 同组 Buff；只迁移行为语义，不搬旧生命周期。
+local FISH_MIRAGE_MAP = { [5264] = { slot = 3, text = "向左拉" }, [5265] = { slot = 2, text = "向右拉" }, [5267] = { slot = 4, text = "放线" }, [5266] = { slot = 5, text = "收线" }, [5508] = { slot = 6, text = "提竿" } } -- 中文维护：ZoneGroup 49 使用旧版已验证的幻想岛槽位偏移；不能把普通区域映射硬套过去。
+local FISHING_POLL_TASK = "v3_life_fishing_poll" -- 中文维护：100ms 兜底仅在 Consumer>0 运行；隐藏/关闭后必须释放，避免生活模块常驻扫描 Buff。
+local FISHING_EVENT_TASK = "v3_life_fishing_event_refresh" -- 中文维护：BUFF_UPDATE 可爆发，事件边沿合并为单次 50ms 扫描，和周期兜底共享同一 Authority。
+local FISHING_AUTO_CONSUMER = "auto:r" -- 中文维护：Auto-R 自身就是独立 Demand consumer；关闭主菜单不能终止已明确启用的自动钓鱼，Disarm 后必须释放。
+local FISHING_RECOVERY_TASK = "v3_life_fishing_recovery" -- 中文维护：仅“战斗中等待恢复/恢复记录清理失败”时存在；不扫描 Buff，只保障用户键位最终恢复。
+local FISHING_POLL_MS = 100 -- 中文维护：自动 R 需要比旧 500ms 更及时；任务严格 Demand-scoped，成本边界是最多每秒 10 次目标 Buff 扫描。
+local FISHING_RECOVERY_MS = 250 -- 中文维护：恢复任务只检查战斗状态/重试事务，无需高频；250ms 兼顾脱战恢复体验与开销。
+
+Fishing.Authority = {
+    version = 2, revision = 0, status = "idle", message = "尚未观察目标鱼动作",
+    buffId = nil, slot = nil, zoneGroup = nil, autoArmed = false, autoAvailable = false, autoBlockedReason = nil,
+    lastScanCount = 0, lastObservedIds = {}, lastRefreshAt = 0, lastRefreshReason = "init",
+    polls = 0, nativeEventRefreshes = 0, writeFailures = 0, lastWriteError = nil,
+} -- 中文维护：诊断保留“事件/兜底/动作/写失败”边界，后续 RU 报告可以直接区分没事件、ID 不对还是 Hotkey 事务失败。
+local FA = Fishing.Authority
+
+local function NormalizeFishingSnapshot(snapshot) -- 中文维护：恢复快照经过持久化后不信任表形；只接受 v3 所需标量/槽位，防止旧实验记录触发 Native 写入。
+    if type(snapshot) ~= "table" or (tonumber(snapshot.contractVersion) or 0) < 3 then return nil end
+    local sourceSlot = Number(snapshot.sourceSlot)
+    if sourceSlot == nil then return nil end
+    sourceSlot = math.floor(sourceSlot)
+    if sourceSlot < 1 or sourceSlot > 12 then return nil end
+    local out = { contractVersion = 3, sourceSlot = sourceSlot, sourceBinding = Text(snapshot.sourceBinding, "R"), slots = {}, touched = {} }
+    for key, item in pairs(type(snapshot.slots) == "table" and snapshot.slots or {}) do
+        if type(item) == "table" then
+            local slot = Number(item.slot or key)
+            if slot ~= nil then
+                slot = math.floor(slot)
+                if slot >= 1 and slot <= 12 then out.slots[slot] = { slot = slot, binding = item.binding ~= nil and tostring(item.binding) or nil, wasUnbound = item.wasUnbound == true } end
+            end
+        end
+    end
+    for key, touched in pairs(type(snapshot.touched) == "table" and snapshot.touched or {}) do
+        local slot = Number(key)
+        if touched == true and slot ~= nil then out.touched[math.floor(slot)] = true end
+    end
+    if type(out.slots[sourceSlot]) ~= "table" then out.slots[sourceSlot] = { slot = sourceSlot, binding = out.sourceBinding, wasUnbound = false } end
+    return out
+end
+
+local function NormalizeFishingRecovery(recovery) -- 中文维护：只把 pending=true + contractVersion>=3 视为可执行恢复权威；旧版/损坏形状保留给诊断但绝不自动写键。
+    if type(recovery) ~= "table" then return nil end
+    local snapshot = NormalizeFishingSnapshot(recovery.snapshot)
+    if recovery.pending ~= true or snapshot == nil then return Copy(recovery) end
+    return { pending = true, snapshot = snapshot }
+end
+
+local function HasValidFishingRecovery(value) -- 中文维护：所有自动恢复入口共用一个验证条件，避免 UI/Initialize/Disable 对同一存档形状做不同判断。
+    return type(value) == "table" and value.pending == true and NormalizeFishingSnapshot(value.snapshot) ~= nil
+end
+
+local function CurrentFishingMap() -- 中文维护：ZoneGroup 读取是业务事实；失败时回退普通映射而不阻断动作提示，Zone 49 只有明确读到时才启用特殊偏移。
+    local zoneId = nil
+    if S.Api ~= nil and S.Api:IsCapabilityAllowed("X2Unit:GetCurrentZoneGroup") == true then
+        local okZone, value = Call("X2Unit:GetCurrentZoneGroup", UnitApi, "GetCurrentZoneGroup")
+        if okZone == true then zoneId = Number(value) end
+    end
+    zoneId = zoneId ~= nil and math.floor(zoneId) or nil
+    FA.zoneGroup = zoneId
+    return zoneId == 49 and FISH_MIRAGE_MAP or FISH_NORMAL_MAP
+end
+
+function Fishing:PersistRecoverySnapshot(snapshot, reason) -- 中文维护：每次首次触碰新槽位前走 durable=true；SaveData+readback 未通过就拒绝 Native 改键，不允许“稍后再存”。
+    local normalized = NormalizeFishingSnapshot(snapshot)
+    if normalized == nil then return false, "钓鱼恢复快照无效" end
+    return P:MutateStore(self.storeId, function()
+        self.State.recovery = { pending = true, snapshot = Copy(normalized) }
+        self.State.autoPreference = true
+        return true
+    end, { durable = true, reason = reason or "fishing_hotkey_recovery" })
+end
+
+function Fishing:ClearRecoveryRecord(reason) -- 中文维护：必须在 Native 完整恢复成功之后才清；清理也要求持久读回，防止 Reload 又看到伪清理状态。
+    return P:MutateStore(self.storeId, function()
+        self.State.recovery = nil
+        self.State.autoPreference = false
+        return true
+    end, { durable = true, reason = reason or "fishing_hotkey_recovery_clear" })
+end
+
+function Fishing:RefreshAutoAvailability() -- 中文维护：按钮可用性来自当前 Capability/战斗/恢复状态，不把失败藏在 onClick；观察功能即使 Auto-R 不可用仍保持工作。
+    local supported, supportErr = false, "FishingHotkeyV3 服务不可用"
+    if type(FishingHotkey) == "table" and type(FishingHotkey.IsSupported) == "function" then supported, supportErr = FishingHotkey:IsSupported() end
+    local invalidRecovery = type(self.State.recovery) == "table" and not HasValidFishingRecovery(self.State.recovery)
+    -- 中文维护：Lua 的 `a and b or true` 会在 b=false 时重新落到 true；此前因此把“未战斗”也判成战斗中，Auto-R UI 永远不可用。
+    -- Authority：战斗状态只由 FishingHotkeyV3 的 capability-gated PlayerInCombat 读取；服务缺失时才 fail-closed 为 true。
+    local inCombat = true
+    if type(FishingHotkey) == "table" and type(FishingHotkey.InCombat) == "function" then
+        inCombat = FishingHotkey:InCombat() == true
+    end
+    FA.autoArmed = self.autoArmed == true
+    FA.autoAvailable = supported == true and invalidRecovery ~= true and inCombat ~= true and (self:IsRecoveryPending() ~= true or self.autoArmed == true)
+    if invalidRecovery then FA.autoBlockedReason = "检测到无法验证的旧版自动 R 恢复记录；为避免误删按键，本次拒绝改键。请先确认游戏按键并重置钓鱼配置。"
+    elseif supported ~= true then FA.autoBlockedReason = tostring(supportErr or "自动 R API 不可用")
+    elseif inCombat then FA.autoBlockedReason = "战斗中不能修改按键"
+    elseif self:IsRecoveryPending() and self.autoArmed ~= true then FA.autoBlockedReason = "正在恢复原 R 键，请稍候"
+    else FA.autoBlockedReason = nil end
+    return FA.autoAvailable
+end
+
+function Fishing:IsRecoveryPending() -- 中文维护：持久 Store 和服务内存任一仍有恢复义务，都视为 pending；UI 关闭不能抹掉这个安全状态。
+    if self.recoveryNativeRestored == true then return true end
+    if HasValidFishingRecovery(self.State.recovery) then return true end
+    return type(FishingHotkey) == "table" and type(FishingHotkey.IsRecoveryPending) == "function" and FishingHotkey:IsRecoveryPending() == true or false
+end
+
+function Fishing:CancelRecoveryTask() -- 中文维护：恢复完成后主动释放低频安全任务；不会让生活功能关闭后留下永久 Scheduler 消费者。
+    if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(FISHING_RECOVERY_TASK) end
+end
+
+function Fishing:EnsureRecoveryTask() -- 中文维护：仅在确有恢复义务时创建；即使 Feature 被关闭也允许此安全任务继续，直到用户原键位恢复。
+    if self:IsRecoveryPending() ~= true then self:CancelRecoveryTask(); return true end
+    if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then return false, "钓鱼按键恢复 Scheduler 不可用" end
+    if S.Scheduler.tasks and S.Scheduler.tasks[FISHING_RECOVERY_TASK] ~= nil then return true end
+    local added = S.Scheduler:AddTask(FISHING_RECOVERY_TASK, FISHING_RECOVERY_MS, function()
+        if Fishing:IsRecoveryPending() ~= true then Fishing:CancelRecoveryTask(); return true end
+        if type(FishingHotkey) == "table" and FishingHotkey:InCombat() == true then return true end
+        Fishing:ProcessPendingRecovery(true, "recovery_task")
+        return true
+    end, false, self, "P1", 1)
+    if added == true and type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(FISHING_RECOVERY_TASK, self.Id, false) end
+    return added == true, added == true and nil or "钓鱼按键恢复任务创建失败"
+end
+
+function Fishing:ProcessPendingRecovery(silent, reason) -- 中文维护：Native 恢复与持久 recovery 清理分两段；任一失败都保留 Authority，下一 tick 可重试，不会宣称已恢复。
+    local recovery = HasValidFishingRecovery(self.State.recovery) and self.State.recovery or nil
+    local snapshot = recovery and NormalizeFishingSnapshot(recovery.snapshot) or nil
+    if snapshot == nil and type(FishingHotkey) == "table" and type(FishingHotkey.sessionSnapshot) == "table" then snapshot = NormalizeFishingSnapshot(FishingHotkey.sessionSnapshot) end
+    if snapshot == nil then
+        self.recoveryNativeRestored = false
+        if type(FishingHotkey) == "table" and type(FishingHotkey.ResetSession) == "function" then FishingHotkey:ResetSession() end
+        self:CancelRecoveryTask()
+        self:RefreshAutoAvailability()
+        return true
+    end
+    if type(FishingHotkey) ~= "table" then self:EnsureRecoveryTask(); return false, "FishingHotkeyV3 服务不可用" end
+    if FishingHotkey:InCombat() == true then
+        FishingHotkey:AdoptRecovery(snapshot)
+        FishingHotkey.pendingRecovery = true
+        self.autoArmed = false
+        FA.autoArmed = false
+        FA.status, FA.message = "recovering", "战斗中不能改键 · 等待脱战恢复原 R"
+        self:EnsureRecoveryTask()
+        self:RefreshAutoAvailability()
+        return false, "战斗中等待恢复"
+    end
+    if FishingHotkey.sessionSnapshot == nil then FishingHotkey:AdoptRecovery(snapshot) end
+    if self.recoveryNativeRestored ~= true then
+        local restored, restoreErr = FishingHotkey:RestoreSnapshot(snapshot)
+        if restored ~= true then
+            FA.status, FA.message = "error", "恢复原按键失败：" .. tostring(restoreErr or "unknown")
+            FA.lastWriteError = tostring(restoreErr or "restore failed")
+            self:EnsureRecoveryTask()
+            self:RefreshAutoAvailability()
+            if silent ~= true then S.SafeChat(FA.message) end
+            return false, restoreErr
+        end
+        self.recoveryNativeRestored = true
+    end
+    local cleared, clearErr = self:ClearRecoveryRecord("fishing_recovery_clear:" .. tostring(reason or "manual"))
+    if cleared ~= true then
+        FA.status, FA.message = "recovering", "原按键已恢复，但恢复记录保存失败；将继续重试"
+        FA.lastWriteError = tostring(clearErr or "recovery clear failed")
+        self:EnsureRecoveryTask()
+        self:RefreshAutoAvailability()
+        return false, clearErr
+    end
+    self.recoveryNativeRestored = false
+    self.autoArmed = false
+    FishingHotkey:ResetSession()
+    self:CancelRecoveryTask()
+    FA.autoArmed = false
+    FA.status, FA.message = "waiting", "自动 R 已关闭 · 已恢复原按键"
+    FA.lastWriteError = nil
+    self:RefreshAutoAvailability()
+    FA.revision = FA.revision + 1
+    PublishFeatureUpdate(self, FA.revision, "fishing_hotkey_restored")
+    if silent ~= true then S.SafeChat("钓鱼自动 R 已关闭，原按键已恢复。") end
+    return true
+end
+
+function FA:Refresh(reason) -- 中文维护：鱼动作识别是唯一 projection Authority；事件刷新和 100ms 兜底都走这里，防止 UI 与 Auto-R 读取不同 Buff 快照。
+    reason = tostring(reason or "manual")
     self.buffId, self.slot = nil, nil
+    self.lastScanCount, self.lastObservedIds = 0, {}
+    self.lastRefreshAt = S.NowMs and S.NowMs() or 0
+    self.lastRefreshReason = reason
+    if reason == "poll" then self.polls = (tonumber(self.polls) or 0) + 1 else self.nativeEventRefreshes = (tonumber(self.nativeEventRefreshes) or 0) + 1 end
     if S.Api:IsCapabilityAllowed("X2Unit:UnitBuffCount") ~= true or S.Api:IsCapabilityAllowed("X2Unit:UnitBuff") ~= true then
         self.status, self.message = "unavailable", "当前 RU 能力面未证明目标 Buff 读取"
+        Fishing:RefreshAutoAvailability()
         self.revision = self.revision + 1
         PublishFeatureUpdate(Fishing, self.revision, "fishing_observation_unavailable")
         return false
     end
+    local map = CurrentFishingMap()
     local ok, count = Call("X2Unit:UnitBuffCount", UnitApi, "UnitBuffCount", "target")
     count = ok and Number(count) or 0
-    for index = 1, math.min(128, math.floor(count)) do
+    count = math.max(0, math.min(128, math.floor(count or 0)))
+    self.lastScanCount = count
+    for index = 1, count do
         local readOk, buff = Call("X2Unit:UnitBuff", UnitApi, "UnitBuff", "target", index)
         local id = readOk and type(buff) == "table" and Number(buff.buff_id or buff.buffId or buff.type or buff.id) or nil
-        if id and FISH_MAP[id] then self.buffId, self.slot = id, FISH_MAP[id].slot; break end
+        if id ~= nil and #self.lastObservedIds < 16 then self.lastObservedIds[#self.lastObservedIds + 1] = math.floor(id) end
+        if id and map[id] then self.buffId, self.slot = math.floor(id), map[id].slot; break end
     end
     self.status = self.buffId and "ready" or "waiting"
-    self.message = self.buffId and (FISH_MAP[self.buffId].text .. " · 推荐技能栏 " .. tostring(self.slot)) or "等待鱼的动作 Buff"
-    self.autoArmed = false
-    self.autoAvailable = false
-    self.autoBlockedReason = FISHING_AUTO_BLOCKER
+    if self.buffId then
+        self.message = map[self.buffId].text .. " · 技能栏 " .. tostring(self.slot) .. (Fishing.autoArmed and " · R 已自动映射" or "")
+    else
+        self.message = Fishing.autoArmed and "等待鱼的动作 Buff · R 保持当前映射" or "选中正在挣扎的鱼后显示推荐技能"
+    end
+
+    if Fishing.autoArmed == true and self.slot ~= nil then
+        if type(FishingHotkey) ~= "table" then
+            self.writeFailures = (tonumber(self.writeFailures) or 0) + 1
+            self.lastWriteError = "FishingHotkeyV3 服务不可用"
+            Fishing.autoArmed = false
+            Fishing:ReleaseAutoLease("fishing_auto_missing_service")
+            self.status, self.message = "error", "自动 R 不可用：FishingHotkeyV3 服务缺失"
+            Fishing:RefreshAutoAvailability()
+            self.revision = self.revision + 1
+            PublishFeatureUpdate(Fishing, self.revision, "fishing_auto_missing_service")
+            return false
+        end
+        local moved, moveErr = FishingHotkey:MoveR(self.slot, function(snapshot)
+            return Fishing:PersistRecoverySnapshot(snapshot, "fishing_hotkey_touch_slot")
+        end)
+        if moved ~= true then
+            self.writeFailures = (tonumber(self.writeFailures) or 0) + 1
+            self.lastWriteError = tostring(moveErr or "hotkey move failed")
+            Fishing.autoArmed = false
+            self.autoArmed = false
+            Fishing:ReleaseAutoLease("fishing_auto_write_failure")
+            self.status, self.message = "error", "自动 R 设置失败：" .. self.lastWriteError
+            Fishing:EnsureRecoveryTask()
+            -- 中文维护：写入失败后不丢恢复快照；非战斗状态立即尝试回滚，战斗状态交给独立恢复任务，绝不继续切换新槽位。
+            if FishingHotkey:InCombat() ~= true then Fishing:ProcessPendingRecovery(true, "auto_move_failure") end
+            Fishing:RefreshAutoAvailability()
+            self.revision = self.revision + 1
+            PublishFeatureUpdate(Fishing, self.revision, "fishing_auto_write_failed")
+            return false
+        end
+    end
+
+    Fishing:RefreshAutoAvailability()
     self.revision = self.revision + 1
-    PublishFeatureUpdate(Fishing, self.revision, "fishing_observation")
+    PublishFeatureUpdate(Fishing, self.revision, "fishing_observation:" .. reason)
     return true
 end
 
-function FA:GetProjection()
+function FA:GetProjection() -- 中文维护：Presentation 只读 detached projection；Hotkey 服务内部快照/真实按键内容永不暴露给 UI。
+    local hotkeyDiag = type(FishingHotkey) == "table" and type(FishingHotkey.GetDiagnostics) == "function" and FishingHotkey:GetDiagnostics() or nil
     return {
-        revision = self.revision, status = self.status, message = self.message, buffId = self.buffId, slot = self.slot,
-        autoArmed = false, autoAvailable = false, autoBlockedReason = self.autoBlockedReason or FISHING_AUTO_BLOCKER,
+        patch = Fishing.Patch, revision = self.revision, status = self.status, message = self.message, buffId = self.buffId, slot = self.slot, zoneGroup = self.zoneGroup,
+        autoArmed = Fishing.autoArmed == true, autoAvailable = self.autoAvailable == true, autoBlockedReason = self.autoBlockedReason,
+        lastScanCount = self.lastScanCount, lastObservedIds = Copy(self.lastObservedIds), lastRefreshAt = self.lastRefreshAt, lastRefreshReason = self.lastRefreshReason,
+        polls = self.polls, nativeEventRefreshes = self.nativeEventRefreshes, writeFailures = self.writeFailures, lastWriteError = self.lastWriteError,
+        recoveryPending = Fishing:IsRecoveryPending(), hotkey = hotkeyDiag,
     }
 end
 
--- Hotkey writes are intentionally runtime-blocked. PRODUCT_COMPLETION_MATRIX
--- keeps both Fishing full-R snapshot and write/restore contracts locked until
--- RU Fresh Reload proves the complete source-slot set, explicit unbound
--- semantics, readback, reload recovery and failure rollback. Do not reintroduce
--- SetOptionBinding/RemoveOptionBinding/SaveHotKey here without that evidence.
-function Fishing:ArmAuto()
-    self.autoArmed = false
-    FA.autoArmed = false
-    FA.autoAvailable = false
-    FA.autoBlockedReason = FISHING_AUTO_BLOCKER
-    return false, FISHING_AUTO_BLOCKER
+function Fishing:AcquireAutoLease() -- 中文维护：Auto-R 持有自己的 Demand lease，避免用户关闭主页面后 consumer=0 导致刚启用的 R 映射立即被恢复。
+    if self.autoLeaseHeld == true and self.Demand:Has(FISHING_AUTO_CONSUMER) then return true end
+    local ok, err = self.Demand:Acquire(FISHING_AUTO_CONSUMER, { autoR = true }, "fishing_auto_r")
+    if ok == true then self.autoLeaseHeld = true end
+    return ok, err
 end
 
-function Fishing:DisarmAuto()
-    self.autoArmed = false
-    FA.autoArmed = false
-    FA.autoAvailable = false
+function Fishing:ReleaseAutoLease(reason) -- 中文维护：先清本地 held 标志再 Release，防止 1→0 reconcile 回调再次进入 Disarm 形成递归；失败时恢复标志供后续清理。
+    if self.autoLeaseHeld ~= true and self.Demand:Has(FISHING_AUTO_CONSUMER) ~= true then return true end
+    self.autoLeaseHeld = false
+    local ok, err = self.Demand:Release(FISHING_AUTO_CONSUMER, reason or "fishing_auto_r_release")
+    if ok ~= true and self.Demand:Has(FISHING_AUTO_CONSUMER) then self.autoLeaseHeld = true end
+    return ok, err
+end
+
+function Fishing:ArmAuto() -- 中文维护：启用流程固定为“能力/战斗检查→找到原 R→全槽快照→durable recovery→进入会话→按当前 Buff 映射”；顺序不可反转。
+    if self.autoArmed == true then return true end
+    if self.enabled ~= true or (tonumber(self.consumerCount) or 0) <= 0 then return false, "请先打开钓鱼页面或悬浮窗，再启用自动 R" end
+    if type(FishingHotkey) ~= "table" then return false, "FishingHotkeyV3 服务不可用" end
+    if type(self.State.recovery) == "table" and HasValidFishingRecovery(self.State.recovery) ~= true then
+        self:RefreshAutoAvailability()
+        return false, FA.autoBlockedReason or "旧版恢复记录无法验证"
+    end
+    if self:IsRecoveryPending() == true then
+        local recovered, recoverErr = self:ProcessPendingRecovery(true, "before_arm")
+        if recovered ~= true then return false, recoverErr or "仍有未完成的按键恢复" end
+    end
+    local supported, supportErr = FishingHotkey:IsSupported()
+    if supported ~= true then self:RefreshAutoAvailability(); return false, supportErr end
+    if FishingHotkey:InCombat() == true then self:RefreshAutoAvailability(); return false, "战斗中不能修改按键" end
+    local original = FishingHotkey:FindOriginalRSlot()
+    if original == nil then return false, "无法可靠读取当前 R 键所在动作栏位置，因此不会修改键位" end
+    local snapshot, snapshotErr = FishingHotkey:BuildSessionSnapshot(original)
+    if snapshot == nil then return false, snapshotErr end
+    local persisted, persistErr = self:PersistRecoverySnapshot(snapshot, "fishing_hotkey_arm")
+    if persisted ~= true then return false, "无法持久保存改键恢复快照，因此拒绝修改按键：" .. tostring(persistErr or "unknown") end
+    local adopted, adoptErr = FishingHotkey:AdoptRecovery(snapshot)
+    if adopted ~= true then return false, adoptErr end
+    local leased, leaseErr = self:AcquireAutoLease()
+    if leased ~= true then
+        -- 中文维护：此时尚未执行 Native 写键；若独立 Auto-R Demand 无法建立，撤销内存会话并 durable 清除恢复记录，不能留下“其实没改键”的幽灵 recovery。
+        FishingHotkey:ResetSession()
+        self:ClearRecoveryRecord("fishing_auto_lease_rollback")
+        return false, leaseErr or "自动 R 生命周期启动失败"
+    end
+    self.autoArmed = true
+    self.recoveryNativeRestored = false
+    FA.autoArmed = true
+    FA.status, FA.message = "waiting", "自动 R 已启用 · 等待鱼动作"
+    FA.lastWriteError = nil
+    self:RefreshAutoAvailability()
+    local refreshed, refreshErr = FA:Refresh("arm_auto")
+    if refreshed ~= true then return false, refreshErr or FA.lastWriteError or "自动 R 初次映射失败" end
+    S.SafeChat("钓鱼自动 R 已启用；关闭功能/悬浮窗或切换区域时会恢复原按键。")
     return true
 end
 
-function Fishing:IsAutoArmed() return false end
+function Fishing:DisarmAuto(silent) -- 中文维护：关闭时先停止新映射并释放 Auto-R 自有 Demand，再恢复；战斗中只标记 pending，不触碰受限 Hotkey API，脱战由恢复任务处理。
+    self.autoArmed = false
+    FA.autoArmed = false
+    self:ReleaseAutoLease("fishing_auto_disarm")
+    if self:IsRecoveryPending() ~= true then
+        self:RefreshAutoAvailability()
+        return true
+    end
+    if type(FishingHotkey) ~= "table" then return false, "FishingHotkeyV3 服务不可用" end
+    if FishingHotkey:InCombat() == true then
+        FishingHotkey.pendingRecovery = true
+        FA.status, FA.message = "recovering", "战斗中不能改键 · 等待脱战恢复原 R"
+        self:EnsureRecoveryTask()
+        self:RefreshAutoAvailability()
+        if silent ~= true then S.SafeChat("战斗中不能修改按键，脱战后自动恢复原 R。") end
+        return false, "战斗中等待恢复"
+    end
+    return self:ProcessPendingRecovery(silent, "disarm")
+end
 
-local function NormalizeFishingState(value)
+function Fishing:IsAutoArmed() return self.autoArmed == true end -- 中文维护：Presentation 只查询 Feature 会话状态，不直接读 Hotkey 服务内部字段。
+
+local function NormalizeFishingState(value) -- 中文维护：旧 Store schema 继续兼容；新增 recovery 仍在同一 schema 的可选字段，不删除窗口/用户偏好。
     value = type(value) == "table" and value or {}
     return {
         autoPreference = value.autoPreference == true,
         widgetVisible = value.widgetVisible == true,
         widgetWindow = type(value.widgetWindow) == "table" and Copy(value.widgetWindow) or nil,
-        recovery = type(value.recovery) == "table" and Copy(value.recovery) or nil,
+        recovery = NormalizeFishingRecovery(value.recovery),
     }
 end
 RegisterStore(Fishing.storeId, "v3.life.fishing", function() return NormalizeFishingState(nil) end, function() return Copy(Fishing.State) end, function(value)
-    value = type(value) == "table" and value or {}
+    value = NormalizeFishingState(value)
     Fishing.State.autoPreference = value.autoPreference == true
     Fishing.State.widgetVisible = value.widgetVisible == true
     Fishing.State.widgetWindow = type(value.widgetWindow) == "table" and Copy(value.widgetWindow) or nil
     Fishing.State.recovery = type(value.recovery) == "table" and Copy(value.recovery) or nil
 end, NormalizeFishingState)
-Fishing.ApiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff" }
-function Fishing:Initialize()
+Fishing.ApiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:GetCurrentZoneGroup", "X2Hotkey:GetOptionBinding", "X2Hotkey:BindingToOption", "X2Hotkey:SetOptionBindingWithIndex", "X2Hotkey:RemoveOptionBinding", "X2Hotkey:SaveHotKey", "X2Player:PlayerInCombat" } -- 中文维护：Registry/诊断必须公开真实依赖，不能再次把 Auto-R 写能力隐藏成“只读功能”。
+
+function Fishing:Initialize() -- 中文维护：Reload 时先加载 Store，再优先修复未完成 Hotkey 事务；不会因为 autoPreference=true 自动重新改键。
     local ok, err = LoadStore(self)
     if ok ~= true then return ok, err end
-    -- `.18.115` and earlier may have persisted an experimental recovery marker
-    -- inside the main Fishing store. Its unbound semantics were never RU-verified,
-    -- so this version deliberately quarantines it instead of issuing any Native
-    -- hotkey write. Preserve the marker for manual diagnosis/reset.
-    if type(self.State.recovery) == "table" then
-        FA.autoBlockedReason = "检测到旧版自动 R 恢复记录；为避免误删真实快捷键，本版本不会自动写回。请先在游戏按键设置中确认 R 键。"
-        S.SafeChat(FA.autoBlockedReason)
+    self.autoArmed = false
+    if HasValidFishingRecovery(self.State.recovery) then
+        if type(FishingHotkey) ~= "table" then return false, "检测到钓鱼按键恢复记录，但 FishingHotkeyV3 服务不可用" end
+        local adopted, adoptErr = FishingHotkey:AdoptRecovery(NormalizeFishingSnapshot(self.State.recovery.snapshot))
+        if adopted ~= true then return false, adoptErr end
+        local recovered = self:ProcessPendingRecovery(true, "initialize_reload")
+        if recovered ~= true then self:EnsureRecoveryTask() end
+    elseif type(self.State.recovery) == "table" then
+        -- 中文维护：历史实验记录不满足 v3 SnapshotContract，绝不自动解释/删除；这是最后一道防止误删真实用户按键的兼容边界。
+        FA.status = "blocked"
+        FA.message = "检测到无法验证的旧版自动 R 恢复记录"
+        self:RefreshAutoAvailability()
+        S.SafeChat(FA.autoBlockedReason or FA.message)
+    else
+        self:RefreshAutoAvailability()
     end
     return true
 end
-local FISHING_OBSERVE_TASK = "v3_life_fishing_observe"
-function Fishing:ReconcileDemand(_, before, after)
+
+function Fishing:HandleWorldBoundary(reason) -- 中文维护：切地图/进入世界会改变动作栏上下文；先终止 Auto-R 并恢复，再重新观察，禁止携带旧槽位映射跨区域。
+    if self.autoArmed == true or self:IsRecoveryPending() == true then self:DisarmAuto(true) end
+    if self.enabled == true and (tonumber(self.consumerCount) or 0) > 0 then return FA:Refresh(reason or "world_boundary") end
+    return true
+end
+
+function Fishing:ReconcileDemand(_, before, after) -- 中文维护：观察扫描严格由 Consumer 生命周期驱动；Auto-R 关闭/页面关闭时释放高频读，只有安全恢复任务可短暂独立存在。
     local beforeCount = tonumber(before and before.count) or 0
     local afterCount = tonumber(after and after.count) or 0
     if beforeCount <= 0 and afterCount > 0 then
-        if S.Events == nil or S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return false, "钓鱼观察事件/Scheduler 不可用" end
+        if S.Events == nil or S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" or type(S.Scheduler.AddOneShot) ~= "function" then return false, "钓鱼观察事件/Scheduler 不可用" end
         S.Events:BindOwner(self, self.Id)
-        local targetOk = S.Events:SubscribeOptional("TARGET_CHANGED", self, function()
-            if Fishing.enabled and Fishing.consumerCount > 0 then return FA:Refresh() end
+        local targetOk = S.Events:SubscribeOptional("TARGET_CHANGED", self, function(_)
+            if Fishing.enabled and Fishing.consumerCount > 0 then return FA:Refresh("target_changed") end
+            return true
         end)
-        local buffOk = S.Events:SubscribeOptional("BUFF_UPDATE", self, function()
+        local buffOk = S.Events:SubscribeOptional("BUFF_UPDATE", self, function(_)
             if Fishing.enabled and Fishing.consumerCount > 0 then
-                -- BUFF_UPDATE can be noisy. Coalesce all native edges into one
-                -- bounded target scan instead of scanning up to 128 buffs per event.
-                S.Scheduler:AddOneShot(FISHING_OBSERVE_TASK, 100, function()
-                    if Fishing.enabled and Fishing.consumerCount > 0 then return FA:Refresh() end
+                S.Scheduler:AddOneShot(FISHING_EVENT_TASK, 50, function()
+                    if Fishing.enabled and Fishing.consumerCount > 0 then return FA:Refresh("buff_update") end
                     return true
-                end, Fishing, "P2", 1)
+                end, Fishing, "P1", 1)
             end
             return true
         end)
-        if targetOk ~= true or buffOk ~= true then S.Events:UnsubscribeOwner(self); return false, "钓鱼目标/Buff 事件订阅失败" end
-        return FA:Refresh()
+        local worldOk = S.Events:SubscribeOptional("ENTERED_WORLD", self, function(_) return Fishing:HandleWorldBoundary("entered_world") end)
+        local zoneOk = S.Events:SubscribeOptional("ENTER_ANOTHER_ZONEGROUP", self, function(_) return Fishing:HandleWorldBoundary("zone_changed") end)
+        if targetOk ~= true or buffOk ~= true or worldOk ~= true or zoneOk ~= true then S.Events:UnsubscribeOwner(self); return false, "钓鱼目标/Buff/区域事件订阅失败" end
+        local added = S.Scheduler:AddTask(FISHING_POLL_TASK, FISHING_POLL_MS, function()
+            if Fishing.enabled == true and (tonumber(Fishing.consumerCount) or 0) > 0 then return FA:Refresh("poll") end
+            return true
+        end, false, self, "P2", 1)
+        if added ~= true then S.Events:UnsubscribeOwner(self); return false, "钓鱼 100ms 兜底扫描任务创建失败" end
+        if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(FISHING_POLL_TASK, self.Id, false); S.Scheduler:SetTaskModule(FISHING_EVENT_TASK, self.Id, false) end
+        return FA:Refresh("consumer_start")
     elseif beforeCount > 0 and afterCount <= 0 then
+        -- 中文维护：Auto-R 有自己的 lease；正常页面关闭不会走到 0。真正 0-consumer 时仅在仍 armed 的异常路径执行 Disarm，避免 ReleaseAutoLease 的 1→0 转换递归。
+        if self.autoArmed == true then self:DisarmAuto(true) end
         if S.Events ~= nil then S.Events:UnsubscribeOwner(self) end
-        if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then
-            S.Scheduler:RemoveTask(FISHING_OBSERVE_TASK)
-        end
+        if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(FISHING_POLL_TASK); S.Scheduler:RemoveTask(FISHING_EVENT_TASK) end
+        if self:IsRecoveryPending() then self:EnsureRecoveryTask() end
     end
     return true
 end
-function Fishing:Enable() self.enabled = true; return true end
-function Fishing:Disable(reason)
+
+function Fishing:Enable() self.enabled = true; self:RefreshAutoAvailability(); return true end
+function Fishing:Disable(reason) -- 中文维护：Disable 先清 Demand/停止扫描，再恢复 R；若战斗阻止恢复，低频 recovery task 继续到成功，不能因 Feature off 丢失恢复义务。
+    self.autoLeaseHeld = false -- 中文维护：Demand:Clear 会原子删除 Auto-R token；先清本地标志，避免 reconcile 中 Disarm 再尝试 Release 已被 Clear 的 token。
     local ok, err = self.Demand:Clear(reason or "fishing_disable")
     if ok ~= true then return false, err end
     if S.Events then S.Events:UnsubscribeOwner(self) end
-    if S.Scheduler and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(FISHING_OBSERVE_TASK) end
-    self:DisarmAuto()
+    if S.Scheduler and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(FISHING_POLL_TASK); S.Scheduler:RemoveTask(FISHING_EVENT_TASK) end
+    local restored, restoreErr = self:DisarmAuto(true)
     self.enabled = false
-    return true
+    if restored ~= true and self:IsRecoveryPending() then self:EnsureRecoveryTask() end
+    return restored ~= false or self:IsRecoveryPending(), restoreErr
 end
 function Fishing:AcquireConsumer(token) if not self.enabled then return false, "钓鱼功能已关闭" end return self.Demand:Acquire(token, {}, "fishing_consumer") end
 function Fishing:ReleaseConsumer(token) return self.Demand:Release(token, "fishing_consumer") end
-function Fishing:Refresh() if not self.enabled or self.consumerCount <= 0 then return true end return FA:Refresh() end
+function Fishing:Refresh(reason) if not self.enabled or self.consumerCount <= 0 then return true end return FA:Refresh(reason or "manual") end
 function Fishing:GetProjection() return FA:GetProjection() end
 Fishing.Commands = {
     Refresh = function(_, reason) return Fishing:Refresh(reason) end,

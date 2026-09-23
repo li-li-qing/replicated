@@ -21,6 +21,13 @@ local N, Clamp, Pad, Measure, Align, Arrange, Host = U.N, U.Clamp, U.Pad, U.Meas
 local Base = RSUI.BaseComponent
 
 local function GetUiMetrics()
+    -- 维护（viewport-recovery-1）：ResolutionRoot 消费同一次 Layout context，不能各自
+    -- 重新采样得到不同 viewport。真实采样只在创建/显示/事件/Reset 边沿，无每帧 GetUiMetrics。
+    -- 独立工具测试尚未安装 Layout 时保留历史 API fallback，不改变 Popup/HUD 的坐标语义。
+    if S.Layout and type(S.Layout.GetContext) == "function" then
+        local c = S.Layout:GetContext()
+        return c.logicalWidth,c.logicalHeight,c.uiScale,c.screenWidth,c.screenHeight
+    end
     if S.Api ~= nil and type(S.Api.GetUiMetrics) == "function" then
         local ok, sw, sh, scale, lw, lh = pcall(function() return S.Api:GetUiMetrics() end)
         if ok then

@@ -108,11 +108,14 @@ for name, row in pairs(S.Data.TradeMaterialResources or {}) do
 end
 
 local COST_POLICY = {
-    ["Gilda Star"] = { includeInCost=false, auctionable=false, note="特殊货币，不计成本", itemType=23633, gradeOffset=0 },
-    ["Quality Certificate"] = { includeInCost=false, auctionable=false, note="当前不可购买，不计拍卖成本" },
+    ["Gilda Star"] = { includeInCost=false, auctionable=false, costKind="bound_resource", note="绑定制作资源；保留配方需求数量，但默认不折算金币成本", itemType=23633, gradeOffset=0 },
+    ["Quality Certificate"] = { includeInCost=false, auctionable=false, costKind="non_market", note="当前不可购买；保留配方需求数量，但不进入拍卖成本" },
 }
 
-local materialKeyByLegacyName, materialKeyByCompactId = {}, {}
+-- 维护（2026-09-23，trade-material-itemid-authority-1）：Live X2Craft 只保证给出 itemType，未必保留
+-- English materialKey/compactId。绑定资源策略（例如德翡纳之星 23633）必须能按 ItemID 回到同一静态记录，
+-- 否则静态配方正确、Live 配方却会把绑定资源误判为可拍卖材料。反向表仅在启动静态注册时构建一次。
+local materialKeyByLegacyName, materialKeyByCompactId, materialKeyByItemId = {}, {}, {}
 S.GameIds = S.GameIds or {}
 S.GameIds.TradeMaterial = S.GameIds.TradeMaterial or { ByLegacyName = {}, ByCompactId = {} }
 local TradeMaterialIds = S.GameIds.TradeMaterial
@@ -134,6 +137,9 @@ for name in pairs(allNames) do
         gradeOffset = tonumber(meta.gradeOffset or policy.gradeOffset) or 0,
         includeInCost = policy.includeInCost ~= false,
         auctionable = policy.auctionable ~= false and itemId ~= nil,
+        -- 维护（2026-09-23，trade-material-resource-kind-1）：“不计金币成本”与“配方不需要”不是同一语义。
+        -- 绑定货币/不可交易凭证仍必须进入材料需求 Projection，只禁止拍卖询价并标明资源类型。
+        costKind = tostring(policy.costKind or ((policy.auctionable == false) and "non_market" or "market")),
         note = policy.note,
         source = "ArcheRage RU curated trade material data",
         confidence = "curated",
@@ -143,6 +149,7 @@ for name in pairs(allNames) do
     if record ~= nil then
         materialKeyByLegacyName[name] = record.key
         if compactId ~= nil then materialKeyByCompactId[compactId] = record.key end
+        if itemId ~= nil then materialKeyByItemId[math.floor(itemId)] = record.key end
 
         -- Shared item identity follows the same Registry path as Skills/Buffs.
         -- Compact trade IDs are compatibility-only and never become server IDs.
@@ -355,6 +362,7 @@ RegisterTemplate("template.transport", S.Data.TradeMaterialTransport, "transport
 S.Data.TradeStaticV2 = {
     materialKeyByLegacyName = materialKeyByLegacyName,
     materialKeyByCompactId = materialKeyByCompactId,
+    materialKeyByItemId = materialKeyByItemId,
     recipeKeyByLegacyName = recipeKeyByLegacyName,
     recipeKeyByCraftId = recipeKeyByCraftId,
     tradeCraftStats = tradeCraftStats,
@@ -366,6 +374,11 @@ function S.Data.TradeStaticV2:GetMaterialByLegacyName(name)
 end
 function S.Data.TradeStaticV2:GetMaterialByCompactId(id)
     local key = self.materialKeyByCompactId[tonumber(id)]
+    return key and Static:Get("trade_material", key) or nil
+end
+function S.Data.TradeStaticV2:GetMaterialByItemId(id)
+    id = tonumber(id)
+    local key = id ~= nil and self.materialKeyByItemId[math.floor(id)] or nil
     return key and Static:Get("trade_material", key) or nil
 end
 function S.Data.TradeStaticV2:GetRecipeByLegacyName(name)

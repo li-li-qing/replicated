@@ -1,5 +1,9 @@
--- 维护：默认报告收敛回归；真实Diagnostics/Core/Page，仅Native和外部诊断Getter模拟。
--- 原因：完整状态转储逼用户复制十段。新默认只摘故障，最多一份完整只读原档；不能冒充全量。
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 7 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
+-- 维护：RS-FOCUS-1 兼容格式回归；真实Diagnostics/Core/Page，仅Native和外部诊断Getter模拟。
+-- 页面默认必须使用完整的 paged fault report；Focused 仅保留旧工具兼容，不能再次成为用户默认输出。
 -- 测试不进TOC，不清除业务Fence，不可将合成Native容量/档案当作RU实机验证。
 local passed,failed=0,0
 local function Test(name,fn)
@@ -79,6 +83,52 @@ local function Page(S,calls,cap)
     function h.edit:SetText(v)self.text=v:gsub('[\r\n]',''):sub(1,cap or 4096)end
     return root,h
 end
+Test('transport decode failure includes physical repair probe in focused store row',function()
+    local S,D=Boot();local st=S.Persistence.stores['v3.buff_display']
+    st.lastIntegrityMismatchEvidence={}
+    st.lastError='transport_decode_failed:transport_vector_missing_chunk_v4'
+    st.lastPhysicalTransportRepairProbe=nil
+    st.lastPhysicalTransportRepairError='catalog_repair_failed:catalog_count:player.auto:397/401'
+    local text=assert(Focus(D))
+    assert(text:find('phy=catalog_repair_failed:catalog_count:player.auto:397/401',1,true),'physical repair evidence missing')
+end)
+
+Test('successful physical repair probe remains visible when later fingerprint gate blocks the store',function()
+    local S,D=Boot();local st=S.Persistence.stores['v3.buff_display']
+    st.lastIntegrityMismatchEvidence={storedSchema=8,stampedFingerprint='2FBF9352',actualFingerprint='0EBC870A',rawFingerprint='4FF5DE1D',framework=3,transportVersion=4}
+    st.lastError='integrity_failed:fingerprint_mismatch:2FBF9352>0EBC870A'
+    st.lastPhysicalTransportRepairOk=true
+    st.lastPhysicalTransportRepairProbe='schema8_v4/repairs=6/twin:player.auto/primaryfp=0EBC870A/fallback=catalog_no_candidate:player.auto'
+    st.lastPhysicalTransportRepairError=nil
+    local text=assert(Focus(D))
+    assert(text:find('phy=schema8_v4/repairs=6/twin:player.auto',1,true),'successful physical repair probe hidden after later fingerprint rejection: '..text)
+    assert(text:find('fallback=catalog_no_candidate:player.auto',1,true),'fallback evidence missing after later fingerprint rejection: '..text)
+end)
+
+Test('focused transport row keeps extended physical recovery evidence for one failed store',function()
+    local S,D=Boot();local st=S.Persistence.stores['v3.buff_display']
+    st.lastIntegrityMismatchEvidence={}
+    st.lastError='transport_decode_failed:transport_vector_missing_chunk_v4'
+    st.lastPhysicalTransportRepairProbe=nil
+    st.lastPhysicalTransportRepairError='catalog_no_candidate:player.auto|bucket=player.auto/count=393/missing=p25/sameCount=pack:all/mis=p1/disk='..('12345,'):rep(80)..'TRACE_TAIL'
+    local text=assert(Focus(D))
+    assert(text:find('bucket=player.auto',1,true),'extended physical evidence missing')
+    assert(text:find('TRACE_TAIL',1,true),'physical evidence still clipped to the old tiny budget')
+    assert(#text<=3500,'focused report exceeded editor page budget')
+end)
+
+Test('focused transport row keeps deep two-scope audit beyond old 1500-byte clip',function()
+    local S,D=Boot();local st=S.Persistence.stores['v3.buff_display']
+    st.lastIntegrityMismatchEvidence={}
+    st.lastError='transport_decode_failed:transport_vector_missing_chunk_v4'
+    st.lastPhysicalTransportRepairProbe=nil
+    st.lastPhysicalTransportRepairError='Pauto=c393/p25/m=1,2,3,4,19/b=5:count10/16/'..('x'):rep(1650)..'/DEEP_TAIL'
+    local text=assert(Focus(D))
+    assert(text:find('Pauto=c393',1,true),'deep player audit missing')
+    assert(text:find('DEEP_TAIL',1,true),'deep physical audit clipped at the old 1500-byte ceiling')
+    assert(#text<=3500,'focused report exceeded editor page budget')
+end)
+
 Test('default builder keeps three exact store fingerprint groups and is one bounded line',function()
     local S,D,c=Boot();local text,m=Focus(D);assert(text,m)
     assert(text:find('RS-FOCUS-1',1,true)==1 and text:find('RS-FOCUS-END',1,true))
@@ -120,26 +170,27 @@ Test('many fences report omissions and never output half a fingerprint',function
     local text,m=Focus(D);assert(text,m);assert(#text<=3500 and m.storesOmitted>0 and text:find('storeOmit=',1,true))
     for left,right in text:gmatch('fp=([^ ]+)>([^ ]+)') do assert(#left==8 and #right==8) end
 end)
-Test('default page has explicit pagination and complete failure capture within each editor limit',function()
+Test('default page prints complete paged faults while focused format stays compatibility-only',function()
     local S,D,c=Boot();local root,h=Page(S,c)
-    local buttons=0;for _,w in pairs(h.widgets) do if w.onClick then buttons=buttons+1 end end;assert(buttons==4)
-    assert(h.widgets.v3_diag_output.onClick());assert(root.selfCheckMeta.kind=='paged','page did not switch to complete paged capture')
-    assert(root.selfCheckDelivery.parts>=1 and #h.edit.text<=3500 and h.edit.text:find('RS-ERROR-PAGE-END',1,true))
-    assert(h.edit.text:find('PAGE=1/',1,true) and #c.chats==1 and #c.reads==3)
-    assert(h.widgets.v3_diag_report_status.text:find('上一页/下一页',1,true))
+    local buttons=0;for _,w in pairs(h.widgets) do if w.onClick then buttons=buttons+1 end end;assert(buttons==5)
+    assert(h.widgets.v3_diag_output.onClick());assert(root.selfCheckMeta.kind=='paged','default print must be paged')
+    assert(root.selfCheckDelivery.parts>=1 and h.edit.text:find('RS-ERROR-PAGE-END',1,true))
+    assert(root.selfCheckText:find('RS-SELF-CHECK-1',1,true) and not root.selfCheckText:find('RS-FOCUS-1',1,true))
+    assert(#c.chats==1 and #c.reads==3)
+    assert(h.widgets.v3_diag_output_full and type(h.widgets.v3_diag_output_full.onClick)=='function')
 end)
-Test('printing twice makes a fresh paged report rather than advancing',function()
+Test('printing default paged report twice makes a fresh snapshot rather than advancing',function()
     local S,D,c=Boot();local root,h=Page(S,c);assert(h.widgets.v3_diag_output.onClick());local id=root.selfCheckMeta.id
     assert(h.widgets.v3_diag_output.onClick());assert(root.selfCheckMeta.id~=id and root.selfCheckPart==1)
     assert(c.checks==2 and #c.reads==6 and #c.chats==2)
 end)
-Test('tiny editor rejects delivery rather than passing a partial frame',function()
+Test('tiny editor rejects paged delivery rather than passing a partial frame',function()
     local S,D,c=Boot();local root,h=Page(S,c,100)
     assert(h.widgets.v3_diag_output.onClick()==false)
-    assert(not(root.selfCheckDelivery and root.selfCheckDelivery.parts>1) and #c.chats==1)
+    assert(#c.chats==1)
     assert(root.selfCheckMeta and root.selfCheckMeta.kind=='paged')
 end)
-Test('focused report releases text on hide and run does not read stores',function()
+Test('paged fault report releases text on hide and run does not read stores',function()
     local S,D,c=Boot();local root,h=Page(S,c);assert(#c.reads==0);assert(h.widgets.v3_diag_output.onClick())
     root:OnDeactivated();assert(h.edit.text=='' and root.selfCheckText==nil)
     local reads=#c.reads;assert(h.widgets.v3_diag_full_check.onClick());assert(#c.reads==reads)
@@ -152,8 +203,8 @@ Test('real store compact envelope preserves exact raw values and existing full e
     for name,value in pairs({compact=compact,full=full})do local f=assert(io.open('tools/.focus_evidence_'..name..'.txt','wb'));f:write(value);f:close()end
     assert(c.writes==0)
 end)
--- 维护：聚焦格式仍为内部兼容入口，不再作为页面默认。保留跨语言旧协议fixture。
-Test('legacy focus builder preserves its single trade sample while default UI is paged',function()
+-- 维护：Focused Builder 仅作为历史兼容入口保留；页面默认禁止依赖它。
+Test('focused builder preserves its single trade sample for compatibility tools',function()
     local S,D,c=Boot(true);local before=#c.reads
     local text,meta=Focus(D);assert(text,meta)
     assert(meta.kind=='focused' and meta.evidenceIncluded==1 and meta.evidenceStore=='v3.life.trade')
@@ -241,17 +292,15 @@ Test('oversized evidence advertises the offline udf route without hiding omissio
     assert(text:find('next=udf_snapshot',1,true) and m.evidenceIncluded==0 and #c.reads==1)
     assert(#text<=3500 and not text:find('RAW_BEGIN',1,true))
 end)
--- 维护：用户允许分页后，50KiB的原档不再被3500字节摘要预算丢弃。
-Test('default page retains oversized evidence and shows explicit previous next',function()
+-- 维护：默认打印必须直接保留大故障原档并分页，不能先裁成 Focus；兼容 Focus API 仍可单独测试。
+Test('default paged fault report retains oversized failed-store evidence instead of focus clipping it',function()
     local S,D,c=Boot();S.Persistence.BuildFailedStoreEvidenceText=function(_,id)
         c.reads[#c.reads+1]=id;return ('x'):rep(50000)
     end
     local root,h=Page(S,c);assert(h.widgets.v3_diag_output.onClick())
-    local status=h.widgets.v3_diag_report_status.text
-    assert(status:find('上一页/下一页',1,true))
     local buttons=0;for _,w in pairs(h.widgets)do if w.onClick then buttons=buttons+1 end end
-    assert(buttons==4 and root.selfCheckMeta.evidenceIncluded==3 and root.selfCheckDelivery.parts>1)
-    assert(#c.reads==3 and root.selfCheckText:find(('x'):rep(50000),1,true))
+    assert(buttons==5 and root.selfCheckMeta.kind=='paged' and #c.reads==3)
+    assert(root.selfCheckDelivery.parts>1 and root.selfCheckText:find(('x'):rep(50000),1,true))
 end)
 
 

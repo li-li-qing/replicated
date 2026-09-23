@@ -11,15 +11,18 @@ local UI = S.UI
 if type(UI) ~= "table" then return end
 
 S.UIV3NativeAdapter = S.UIV3NativeAdapter or {
-    version = 4,
+    version = 5,
     consumedById = {},
-    metrics = { rootsCreated = 0, systemLayerApplied = 0, nativeEscapeCloseDisabled = 0, nativeModalDisabled = 0, consumedRejects = 0 },
+    metrics = { rootsCreated = 0, systemLayerApplied = 0, normalLayerApplied = 0, layerChanges = 0, layerFailures = 0, nativeEscapeCloseDisabled = 0, nativeModalDisabled = 0, consumedRejects = 0 },
 }
 local A = S.UIV3NativeAdapter
-A.version = 4
+A.version = 5
 A.consumedById = A.consumedById or {}
-A.metrics = A.metrics or { rootsCreated = 0, systemLayerApplied = 0, nativeEscapeCloseDisabled = 0, nativeModalDisabled = 0, consumedRejects = 0 }
+A.metrics = A.metrics or { rootsCreated = 0, systemLayerApplied = 0, normalLayerApplied = 0, layerChanges = 0, layerFailures = 0, nativeEscapeCloseDisabled = 0, nativeModalDisabled = 0, consumedRejects = 0 }
 A.metrics.consumedRejects = tonumber(A.metrics.consumedRejects) or 0
+A.metrics.normalLayerApplied = tonumber(A.metrics.normalLayerApplied) or 0
+A.metrics.layerChanges = tonumber(A.metrics.layerChanges) or 0
+A.metrics.layerFailures = tonumber(A.metrics.layerFailures) or 0
 A.RootInteractionPolicyContractVersion = 2
 
 local FALSE_STATE_POLICY_SETTERS = {
@@ -54,7 +57,7 @@ local function RejectRoot(window, owner, reason)
     return nil, tostring(reason or "v3_root_policy_failed")
 end
 
-function A:CreateRootWindow(logicalId, owner)
+function A:CreateRootWindow(logicalId, owner, requestedLayer)
     logicalId = tostring(logicalId or "")
     owner = tostring(owner or "")
     if logicalId == "" or owner:sub(1, 3) ~= "v3:" then return nil, "invalid v3 native identity" end
@@ -83,13 +86,16 @@ function A:CreateRootWindow(logicalId, owner)
     local hiddenOk, _, hiddenErr = UI:EnsureVisible(window, false, owner)
     if hiddenOk ~= true then return RejectRoot(window, owner, "v3 root initial hide rejected:" .. tostring(hiddenErr or "unknown")) end
 
-    -- All V3 root windows use one explicit native policy. Native Escape closing
-    -- is disabled because it would hide a window behind the lifecycle/persistence
-    -- authorities. If the client exposes these methods but rejects the requested
-    -- state, reject the root instead of returning a lifecycle-invalid window.
-    local layerOk, layerPresent = OptionalNativeAccepted(window, "SetUILayer", "system")
-    if layerOk ~= true then return RejectRoot(window, owner, "v3 root layer policy rejected") end
-    if layerPresent then self.metrics.systemLayerApplied = (tonumber(self.metrics.systemLayerApplied) or 0) + 1 end
+    -- 维护（2026-09-16，v3-root-layer-policy-3）：主 Shell 现在可由 WindowPreferences
+    -- 请求 normal/system；其它既有调用若不传 requestedLayer 仍默认 system，避免 Healer overlay
+    -- 等特殊根窗口在本轮被意外降层。Native Escape/Modal 仍由 Adapter 统一治理。
+    local layerName = tostring(requestedLayer or "system") == "normal" and "normal" or "system"
+    local layerOk, layerPresent = OptionalNativeAccepted(window, "SetUILayer", layerName)
+    if layerOk ~= true then return RejectRoot(window, owner, "v3 root layer policy rejected:" .. layerName) end
+    if layerPresent then
+        if layerName == "normal" then self.metrics.normalLayerApplied = (tonumber(self.metrics.normalLayerApplied) or 0) + 1
+        else self.metrics.systemLayerApplied = (tonumber(self.metrics.systemLayerApplied) or 0) + 1 end
+    end
     local escapeOk, escapePresent = OptionalNativeAccepted(window, "SetCloseOnEscape", false)
     if escapeOk ~= true then return RejectRoot(window, owner, "v3 root escape policy rejected") end
     if escapePresent then self.metrics.nativeEscapeCloseDisabled = (tonumber(self.metrics.nativeEscapeCloseDisabled) or 0) + 1 end
@@ -102,6 +108,24 @@ function A:CreateRootWindow(logicalId, owner)
     self.consumedById[logicalId] = S.Generation
     self.metrics.rootsCreated = (tonumber(self.metrics.rootsCreated) or 0) + 1
     return window
+end
+
+function A:SetRootLayer(widget, topmostOrLayer)
+    if widget == nil then return false, "widget_required" end
+    local layerName
+    if type(topmostOrLayer) == "string" then
+        layerName = tostring(topmostOrLayer) == "system" and "system" or "normal"
+    else
+        layerName = topmostOrLayer == true and "system" or "normal"
+    end
+    local accepted = OptionalNativeAccepted(widget, "SetUILayer", layerName)
+    if accepted ~= true then
+        self.metrics.layerFailures = (tonumber(self.metrics.layerFailures) or 0) + 1
+        return false, "v3 root layer change rejected:" .. layerName
+    end
+    self.metrics.layerChanges = (tonumber(self.metrics.layerChanges) or 0) + 1
+    widget.rsUiTopmost = layerName == "system"
+    return true, layerName
 end
 
 function A:ApplyRect(widget, owner, x, y, width, height)
@@ -153,6 +177,9 @@ function A:Describe()
         version = self.version,
         rootsCreated = tonumber(self.metrics.rootsCreated) or 0,
         systemLayerApplied = tonumber(self.metrics.systemLayerApplied) or 0,
+        normalLayerApplied = tonumber(self.metrics.normalLayerApplied) or 0,
+        layerChanges = tonumber(self.metrics.layerChanges) or 0,
+        layerFailures = tonumber(self.metrics.layerFailures) or 0,
         nativeEscapeCloseDisabled = tonumber(self.metrics.nativeEscapeCloseDisabled) or 0,
         nativeModalDisabled = tonumber(self.metrics.nativeModalDisabled) or 0,
         consumedRejects = tonumber(self.metrics.consumedRejects) or 0,

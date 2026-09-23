@@ -9,7 +9,7 @@ local S = ReplicatedSuite
 local RSUI = S.RSUI
 if type(RSUI) ~= "table" then return end
 
-S.UIV3Design = { version = 10 }
+S.UIV3Design = { version = 11, diagnosticHeaderContractVersion = 1 }
 local D = S.UIV3Design
 
 local function Text(parent, id, text, size, tone, slot, overflow)
@@ -57,6 +57,59 @@ function D:ScrollablePageRoot(parent, idOrSpec)
     return RSUI:ScrollBox(spec)
 end
 
+-- 维护（module-controls-diag-2）：页面通过此入口领取宿主已创建的总开关。
+-- 原回调、ActionRunner引用、失败回滚继续使用同一实例；只迁移位置，不另造状态/Consumer。
+-- 非PageHost直接构建（独立页面宿主）仍按spec创建，兼容现有隔离页面使用方式。
+function D:ModuleToggleButton(spec)
+    local host = S.UIV3 and S.UIV3.PageHost
+    local context = host and type(host.GetBuildContext) == "function" and host:GetBuildContext() or nil
+    local bar = context and context.controlBar
+    if bar and bar.toggle then
+        -- 中文维护注释（2026-09-20，module-toggle-native-trampoline-1）：模块控制条按钮属于
+        -- PageHost，Native OnClick 在按钮创建时就由控制条安装稳定 trampoline。页面只能把业务动作
+        -- 暂存到 bar.pageAction，禁止再直接替换 toolbar Button 的逻辑回调；部分 RU 客户端在
+        -- 可见按钮创建后再换回调时会出现“诊断按钮能点、启动按钮无响应”的死按钮表现。
+        -- 兼容边界：历史页面若稍后直接写 toggle.onClick/spec.onClick，Finish 仍会识别并接管；
+        -- 这里只收敛通过 DesignSystem 正常传入的 onClick，不改变 FeatureRuntime Authority。
+        if type(spec.onClick) == "function" then bar.pageAction = spec.onClick end
+        return bar.toggle
+    end
+    return RSUI:Button(spec)
+end
+
+function D:ModuleDiagnosticsButton(parent, id, width)
+    -- 中文维护注释（2026-09-18，module-diagnostics-header-2）：所有业务页的诊断入口都必须
+    -- 经过这个共享 helper。标准 PageHeader 自动调用；少数拥有自定义抬头（首页/战斗分析）的页面
+    -- 只负责放置按钮，不得复制 Window:Open、Feature 归属或错误处理逻辑。这样未来诊断入口协议
+    -- 变化只改 DesignSystem，不会在几十个页面里产生分叉。
+    local pageHost = S.UIV3 and S.UIV3.PageHost or nil
+    local buildContext = type(pageHost) == "table" and type(pageHost.GetBuildContext) == "function" and pageHost:GetBuildContext() or nil
+    if buildContext and buildContext.controlBar then return buildContext.controlBar.diagnostics end
+    local moduleId = type(buildContext) == "table" and tostring(buildContext.moduleId or "") or ""
+    local route = type(buildContext) == "table" and tostring(buildContext.route or "") or ""
+    if moduleId == "" or moduleId == "system_diagnostics" or route == "system.diagnostics" then return nil end
+    return RSUI:Button({
+        id = tostring(id or "module_diagnostics"), parent = parent, text = "诊断", compact = true,
+        slot = { size = "fixed", width = tonumber(width) or 76 },
+        onClick = function()
+            -- Authority/生命周期：诊断只能观察。禁止通过按钮 InitializeFeature、SetEnabled、Acquire
+            -- Consumer 或调用业务刷新；关闭/故障模块必须同样可以打开诊断窗口。窗口按点击时解析，
+            -- 因 DesignSystem 的 TOC 顺序早于 Presentation widget，加载期不能缓存 nil。
+            local window = S.UIV3 and S.UIV3.ModuleDiagnosticsWindowV3 or nil
+            if type(window) ~= "table" or type(window.Open) ~= "function" then
+                local diagnostics = S.DiagnosticsManager
+                if type(diagnostics) == "table" and type(diagnostics.Error) == "function" then
+                    diagnostics:Error("ui_v3", "MODULE_DIAGNOSTICS_WINDOW_UNAVAILABLE", "模块诊断窗口不可用", {
+                        feature = moduleId, route = route, owner = "module_diagnostics_header",
+                    })
+                end
+                return false, "模块诊断窗口不可用"
+            end
+            return window:Open(moduleId)
+        end,
+    })
+end
+
 function D:PageHeader(parent, id, title, subtitle, actionText, onAction)
     local block = RSUI:VerticalBox({ id = id, parent = parent, gap = 3, slot = { size = "auto", hAlign = "fill" } })
     local row = RSUI:HorizontalBox({ id = id .. "_row", parent = block, gap = 8, slot = { size = "fixed", height = 30, hAlign = "fill" } })
@@ -64,6 +117,7 @@ function D:PageHeader(parent, id, title, subtitle, actionText, onAction)
     if actionText ~= nil and tostring(actionText) ~= "" then
         RSUI:Button({ id = id .. "_action", parent = row, text = actionText, compact = true, onClick = onAction, slot = { size = "fixed", width = 110 } })
     end
+    self:ModuleDiagnosticsButton(row, id .. "_diagnostics", 76)
     if subtitle ~= nil and tostring(subtitle) ~= "" then
         Text(block, id .. "_subtitle", subtitle, 10, "muted", { size = "auto", hAlign = "fill" }, "wrap")
     end

@@ -18,7 +18,7 @@ if type(UI) ~= "table" or type(RSUI) ~= "table" or type(UI.CreateWindowShell) ~=
 local generation = tonumber(S.Generation) or 0
 if type(RSUI.FloatingSurface) ~= "table" or tonumber(RSUI.FloatingSurface.generation) ~= generation then
     RSUI.FloatingSurface = {
-        version = 11,
+        version = 12,
         generation = generation,
         instances = setmetatable({}, { __mode = "v" }),
         metrics = {
@@ -29,13 +29,14 @@ if type(RSUI.FloatingSurface) ~= "table" or tonumber(RSUI.FloatingSurface.genera
         },
     }
 end
-RSUI.FloatingSurface.version = 11
+RSUI.FloatingSurface.version = 12
 RSUI.FloatingSurface.IdempotentMutationContractVersion = 1
 RSUI.FloatingSurface.CompactMinimizeContractVersion = 1
 RSUI.FloatingSurface.TitleAppearanceContractVersion = 1
 RSUI.FloatingSurface.DetachedStateContractVersion = 1
 RSUI.FloatingSurface.StateMutationTransactionContractVersion = 1
 RSUI.FloatingSurface.ResponsivePlacementIntentContractVersion = 1
+RSUI.FloatingSurface.CommittedGeometryPersistenceContractVersion = 1
 RSUI.FloatingSurface.generation = generation
 local F = RSUI.FloatingSurface
 
@@ -127,6 +128,23 @@ function F:NormalizeState(value, policy)
     }
 end
 
+-- 维护（viewport-recovery-1）：NormalizeState 是现有持久化指纹契约，保持原函数不变。
+-- UI 只读必须用分离副本；原 Read 在没有 setter 时直接补齐 Store，可能污染验签/默认 intent。
+-- 以下仅用于运行时：过滤异常数、兼容未带 userMoved 的早期 xy/edge，不保存任何新字段。
+function F:ReadRuntimeState(value, policy)
+    value = type(value) == "table" and value or {}
+    local copy = {}
+    for k,v in pairs(value) do copy[k]=v end
+    for _,key in ipairs({"width","height","x","y","offsetX","offsetY","savedUiScale","savedLogicalWidth","savedLogicalHeight",
+        "normalizedCenterX","normalizedCenterY","overallOpacity","backgroundOpacity","textOpacity","fontScale"}) do
+        local n=tonumber(copy[key])
+        if n==nil or n~=n or n==math.huge or n==-math.huge then copy[key]=nil else copy[key]=n end
+    end
+    if value.userMoved == nil and (copy.x ~= nil and copy.y ~= nil or value.anchorH ~= nil or value.anchorV ~= nil) then copy.userMoved=true end
+    if copy.x ~= nil and copy.y ~= nil and copy.coordinateSpace == nil then copy.coordinateSpace="logical-free-v2" end
+    return self:NormalizeState(copy,policy)
+end
+
 function F:ApplyNormalizedState(target, normalized)
     if type(target) ~= "table" or type(normalized) ~= "table" then return false end
     for _, key in ipairs(STATE_KEYS) do target[key] = normalized[key] end
@@ -145,7 +163,11 @@ end
 
 local function PersistSpec(spec, reason)
     F.metrics.stateWrites = (tonumber(F.metrics.stateWrites) or 0) + 1
-    local delay = math.max(0, tonumber(spec.persistDelayMs) or 250)
+    -- 维护（2026-09-16，geometry-edge-durability-1）：拖动/缩放结束属于低频用户事务边沿。
+    -- 位置若仍等默认 250ms Dirty 窗口，紧接退出客户端时可能只移动了 Native 却没来得及进入
+    -- 持久化调度。geometry 使用 delay=0 只推进已有 Persistence scheduler，不增加 Tick；透明度/
+    -- 字体等连续调整仍保留去抖，避免高频写入。
+    local delay = tostring(reason or "") == "geometry" and 0 or math.max(0, tonumber(spec.persistDelayMs) or 250)
     local ok, err = SafeCall(spec.persist, tostring(reason or "state"), delay)
     if ok ~= true then
         F.metrics.failures = (tonumber(F.metrics.failures) or 0) + 1
@@ -161,23 +183,34 @@ function F:CreateStateAdapter(spec)
     local function Read()
         local value = type(spec.getState) == "function" and spec.getState() or spec.state
         if type(value) ~= "table" then return nil end
-        local normalized = F:NormalizeState(value, policy)
-        if type(spec.setState) ~= "function" then
-            F:ApplyNormalizedState(value, normalized)
-            return value
-        end
-        return normalized
+        return F:ReadRuntimeState(value, policy)
     end
 
     local function Commit(value, reason)
         if type(value) ~= "table" then return false, "floating surface state unavailable" end
-        if type(spec.setState) ~= "function" then return true end
+        -- 维护：只读不再原地归一化；显式 mutation 才将副本提交回 Feature-owned Store。
+        if type(spec.setState) ~= "function" then
+            local target=type(spec.getState)=="function" and spec.getState() or spec.state
+            return F:ApplyNormalizedState(target,F:NormalizeState(value,policy))
+        end
         local ok, result, err = xpcall(function()
             return spec.setState(F:NormalizeState(value, policy), tostring(reason or "state"))
         end, S.SafeTraceback)
         if ok ~= true then return false, tostring(result or "floating state commit failed") end
         if result == false then return false, tostring(err or "floating state commit rejected") end
         return true
+    end
+
+    -- 维护：Adapter 与已创建 Surface 采用同样的原始快照回滚；失败不能补默认键改变 fingerprint。
+    local function RawSnapshot()
+        local raw=type(spec.getState)=="function" and spec.getState() or spec.state
+        local before={};if type(raw)=="table" then for _,key in ipairs(STATE_KEYS)do before[key]=raw[key] end end
+        return before
+    end
+    local function RestoreRaw(value,reason)
+        if type(spec.setState)=="function" then return pcall(spec.setState,value,reason) end
+        local raw=type(spec.getState)=="function" and spec.getState() or spec.state
+        return F:ApplyNormalizedState(raw,value)
     end
 
     local function State()
@@ -187,14 +220,14 @@ function F:CreateStateAdapter(spec)
     local function Mutate(reason, fn, persist)
         local state = State()
         if state == nil then return false, "floating surface state unavailable" end
-        local before = F:NormalizeState(state, policy)
+        local before = RawSnapshot()
         fn(state)
         local committed, commitErr = Commit(state, reason)
         if committed ~= true then return false, commitErr end
         if persist == false then return true end
         local saved, saveErr = PersistSpec(spec, reason)
         if saved ~= true then
-            Commit(before, tostring(reason or "state") .. ":rollback")
+            RestoreRaw(before, tostring(reason or "state") .. ":rollback")
             return false, saveErr
         end
         return true
@@ -222,13 +255,13 @@ function F:CreateStateAdapter(spec)
         resetLayout = function()
             local state = State()
             if state == nil then return false, "floating surface state unavailable" end
-            local before = F:NormalizeState(state, policy)
+            local before = RawSnapshot()
             F:ResetState(state, policy, { preserveLocked = spec.preserveLockedOnReset ~= false })
             local committed, commitErr = Commit(state, "layout_reset")
             if committed ~= true then return false, commitErr end
             local saved, saveErr = PersistSpec(spec, "layout_reset")
             if saved ~= true then
-                Commit(before, "layout_reset:rollback")
+                RestoreRaw(before, "layout_reset:rollback")
                 return false, saveErr
             end
             return true
@@ -273,17 +306,17 @@ function F:Create(spec)
     local policy = ReadPolicy(spec.statePolicy or spec.sizePolicy)
     local state = type(spec.getState) == "function" and spec.getState() or spec.state
     if type(state) ~= "table" then return nil, "floating surface state unavailable" end
-    state = self:NormalizeState(state, policy)
+    state = self:ReadRuntimeState(state, policy)
 
-    local context = S.Layout and S.Layout:GetContext() or { logicalWidth = 1024, logicalHeight = 768, addonScale = 1 }
+    local context = S.Layout and S.Layout:GetContext(true) or { logicalWidth = 1024, logicalHeight = 768, addonScale = 1 }
     local scale = spec.scaleWithAddon == false and 1 or math.max(0.01, tonumber(context.addonScale) or 1)
     local width = math.max(1, tonumber(state.width) or policy.defaultWidth) * scale
     local height = math.max(1, tonumber(state.height) or policy.defaultHeight) * scale
-    local defaultX, defaultY = ResolveDefaultPosition(spec, context, width, height)
-    local x, y = defaultX, defaultY
-    if state.userMoved == true and S.Layout ~= nil and type(S.Layout.ResolvePlacement) == "function" then
-        x, y = S.Layout:ResolvePlacement(state, width, height, defaultX, defaultY, { mode = tostring(spec.boundaryMode or "free") })
-    end
+    local defaultX, defaultY = ResolveDefaultPosition(spec, context, math.min(width,context.usableWidth),math.min(height,context.usableHeight))
+    local x,y,meta
+    -- 维护：消费 ResolvePlacement 的全部四个几何返回值，过去只取 x/y，尺寸 fit 被丢弃。
+    x,y,width,height,meta = S.Layout:ResolvePlacement(state.userMoved and state or nil,width,height,defaultX,defaultY,
+        {mode=tostring(spec.boundaryMode or "free"),topLevel=true,topReachHeight=tonumber(spec.titleHeight) or 24})
 
     local surface = {
         id = id, owner = owner, spec = spec, statePolicy = policy, visible = false,
@@ -293,18 +326,15 @@ function F:Create(spec)
     local function CurrentState()
         local target = type(spec.getState) == "function" and spec.getState() or spec.state
         if type(target) ~= "table" then return nil end
-        local normalized = F:NormalizeState(target, policy)
-        if type(spec.setState) ~= "function" then
-            F:ApplyNormalizedState(target, normalized)
-            return target
-        end
-        return normalized
+        return F:ReadRuntimeState(target, policy)
     end
 
     local function CommitState(reason, candidate, persist)
         local rawState = type(spec.getState) == "function" and spec.getState() or spec.state
         if type(rawState) ~= "table" then return false, "floating surface state unavailable" end
-        local previous = F:NormalizeState(rawState, policy)
+        -- 维护：失败回滚保留原始字段/缺失键；不能用补默认后的副本覆盖旧 Store。
+        local previous = {}
+        for _,key in ipairs(STATE_KEYS) do previous[key]=rawState[key] end
         local nextState = type(candidate) == "table" and F:NormalizeState(candidate, policy) or F:NormalizeState(rawState, policy)
         if type(nextState) ~= "table" then return false, "floating surface state unavailable" end
 
@@ -379,6 +409,8 @@ function F:Create(spec)
         textOpacity = state.textOpacity,
         fontScale = state.fontScale,
         boundaryMode = tostring(spec.boundaryMode or "free"),
+        placementManagedExternally = true,
+        scaleWithAddon = spec.scaleWithAddon ~= false,
         initialRect = { x = x, y = y, width = width, height = height },
         allowCloseVeto = spec.allowCloseVeto == true,
         onAppearanceReset = function() return surface:ResetLayout(true) end,
@@ -409,32 +441,62 @@ function F:Create(spec)
             target.fontScale = Clamp(snapshot.fontScale, policy.minFontScale, policy.maxFontScale, FirstNonNil(target.fontScale, policy.defaultFontScale))
 
             if reason == "geometry" then
+                -- 维护（2026-09-16，floating-committed-geometry-1）：WindowShell 传入的 snapshot
+                -- 是 Windowing 事务提交后的唯一几何事实。旧代码在这里再次 GetLogicalRect，正是钓鱼
+                -- 等悬浮窗重登漂移的来源。若启用吸附，CommitScreenSnap 也消费同一矩形并把解析后的
+                -- x/y 返回，再以 StorePlacementRect 写入原 Feature-owned widgetWindow。没有新增坐标 Store。
+                local placementX = tonumber(snapshot.x) or 0
+                local placementY = tonumber(snapshot.y) or 0
+                local placementW = math.max(1, tonumber(snapshot.width) or tonumber(snapshot.normalWidth) or width)
+                local placementH = math.max(1, tonumber(snapshot.height) or tonumber(snapshot.normalHeight) or height)
                 if spec.snappable == true and tostring(snapshot.geometryKind or "") == "drag" and type(UI.CommitScreenSnap) == "function" then
                     local snapEnabled = spec.snapEnabled
                     if type(spec.snapEnabledProvider) == "function" then
                         local ok, value = pcall(spec.snapEnabledProvider)
                         snapEnabled = ok and value == true
                     end
-                    local _, _, _, snapped = UI:CommitScreenSnap(surface.snapId, surface.shell.window, {
+                    local committed, resolvedX, resolvedY, snapped = UI:CommitScreenSnap(surface.snapId, surface.shell.window, {
                         owner = owner,
                         enabled = snapEnabled ~= false,
                         group = tostring(spec.snapGroup or "hud_panels"),
                         kind = tostring(spec.snapKind or "window"),
                         distance = tonumber(spec.snapDistance),
                         gap = tonumber(spec.snapGap),
+                        x = placementX, y = placementY, width = placementW, height = placementH,
                     })
+                    -- 维护：拒绝的吸附事务不得保存成成功几何；原 Store 仍是 authoritative intent。
+                    if committed ~= true then return false,"snap_geometry_rejected" end
+                    if committed == true then
+                        placementX = tonumber(resolvedX) or placementX
+                        placementY = tonumber(resolvedY) or placementY
+                    end
                     if snapped == true then F.metrics.snapCommits = (tonumber(F.metrics.snapCommits) or 0) + 1 end
                 end
-                local _, _, nativeW, nativeH = S.Layout:GetLogicalRect(surface.shell.window)
                 local liveContext = S.Layout:GetContext()
                 local liveScale = spec.scaleWithAddon == false and 1 or math.max(0.01, tonumber(liveContext.addonScale) or 1)
-                target.width = math.max(policy.minWidth, (tonumber(snapshot.normalWidth) or tonumber(nativeW) or width) / liveScale)
-                target.height = math.max(policy.minHeight, (tonumber(snapshot.normalHeight) or tonumber(nativeH) or height) / liveScale)
-                if type(S.Layout.StorePlacement) == "function" then S.Layout:StorePlacement(target, surface.shell.window, { mode = tostring(spec.boundaryMode or "free") }) end
+                -- 维护：拖动 compact/低分辨率拟合窗只更新位置，不永久缩小 preferred size。
+                -- addonScale 只在设计尺寸入/出边界一次；uiScale 不参与本次已校准逻辑坐标。
+                if tostring(snapshot.geometryKind) == "resize" then
+                    target.width = math.max(policy.minWidth, (tonumber(snapshot.normalWidth) or placementW) / liveScale)
+                    target.height = math.max(policy.minHeight, (tonumber(snapshot.normalHeight) or placementH) / liveScale)
+                end
+                if type(S.Layout.StorePlacementRect) == "function" then
+                    S.Layout:StorePlacementRect(target, placementX, placementY, placementW, placementH, { mode = tostring(spec.boundaryMode or "free") })
+                elseif type(S.Layout.StorePlacement) == "function" then
+                    -- Compatibility only for a partially-upgraded development tree; release toc always loads StorePlacementRect.
+                    S.Layout:StorePlacement(target, surface.shell.window, { mode = tostring(spec.boundaryMode or "free") })
+                end
                 target.userMoved = true
                 F.metrics.geometryCommits = (tonumber(F.metrics.geometryCommits) or 0) + 1
             end
             local saved = Save(reason, target)
+            -- 维护：用户提交后的元数据立即进入冷诊断快照；不能等下次重排仍报告上次保存的中心。
+            -- 只复制标量，不追加历史，不读取磁盘；迁移本身仍不会触发 Save。
+            if saved==true and reason=="geometry" and surface.shell and surface.shell.placementInfo then
+                local info=surface.shell.placementInfo
+                for _,key in ipairs({"savedUiScale","savedLogicalWidth","savedLogicalHeight","normalizedCenterX","normalizedCenterY"})do info[key]=target[key] end
+                info.lastUserGeometryKind=tostring(snapshot.geometryKind or "")
+            end
             return saved == true
         end,
     })
@@ -445,6 +507,10 @@ function F:Create(spec)
     surface.shell = shell
     surface.window = shell.window
     surface.windowController = shell.windowController
+    shell.placementInfo = meta
+    shell.placementDelegate = function(changed,reason) return surface:ApplyLayout(changed,reason) end
+    shell.resetDelegate = function(persist) return surface:ResetLayout(persist) end
+    function surface:GetPlacementDiagnostics() return self.shell:GetPlacementDiagnostics() end
 
     if spec.snappable == true and type(UI.RegisterScreenSnap) == "function" then
         UI:RegisterScreenSnap(surface.snapId, shell.window, {
@@ -475,20 +541,29 @@ function F:Create(spec)
     function surface:IsLocked() return self.shell:IsLocked() end
     function surface:IsMinimized() return self.shell.minimized == true end
 
-    function surface:ApplyLayout(fromMetricsChange)
-        local target = CurrentState()
+    function surface:ApplyLayout(fromMetricsChange, reason, stateOverride)
+        local target = stateOverride or CurrentState()
         if target == nil or self.shell == nil then return false end
-        if self.windowController ~= nil and self.windowController:IsInteracting() == true then return true end
-        local live = S.Layout:GetContext()
+        if self.windowController ~= nil and self.windowController:IsInteracting() == true then
+            -- 维护：普通内容重排可能来自高频刷新，不得取消手势或采样 metrics。
+            if fromMetricsChange == true then self.windowController.pendingPlacement=true end
+            return true
+        end
+        local live = S.Layout:GetContext(reason == "show" or reason == "explicit_reset")
         local liveScale = spec.scaleWithAddon == false and 1 or math.max(0.01, tonumber(live.addonScale) or 1)
-        local w = math.max(policy.minWidth, tonumber(target.width) or policy.defaultWidth) * liveScale
-        local h = math.max(policy.minHeight, tonumber(target.height) or policy.defaultHeight) * liveScale
-        local dx, dy = ResolveDefaultPosition(spec, live, w, h)
-        local px, py = dx, dy
-        if target.userMoved == true then px, py = S.Layout:ResolvePlacement(target, w, h, dx, dy, { mode = tostring(spec.boundaryMode or "free") }) end
-        UI:SetAnchor(self.shell.window, UIParent, px, py, owner)
-        self.shell.normalWidth, self.shell.normalHeight = w, h
-        self.shell:Layout(w, h)
+        local pw = math.max(policy.minWidth, tonumber(target.width) or policy.defaultWidth) * liveScale
+        local ph = math.max(policy.minHeight, tonumber(target.height) or policy.defaultHeight) * liveScale
+        local w,h = math.min(pw,live.usableWidth),math.min(ph,live.usableHeight)
+        local compact = target.minimized == true and self.shell.minimizeMode == "compact"
+        local placementW,placementH = compact and self.shell.minimizedWidth or pw,compact and self.shell.minimizedSize or ph
+        local dx,dy = ResolveDefaultPosition(spec,live,compact and placementW or w,compact and placementH or h)
+        local px,py,_,_,info = S.Layout:ResolvePlacement(target.userMoved and target or nil,placementW,placementH,dx,dy,
+            {mode=tostring(spec.boundaryMode or "free"),topLevel=true,topReachHeight=tonumber(spec.titleHeight) or 24,reason=reason})
+        info.preferredNormalWidth,info.preferredNormalHeight = pw,ph
+        local previousMin = self.shell.minimized
+        self.shell.minimized = target.minimized == true
+        local placed,placeErr = self.shell:ApplyPlacementRect(px,py,w,h,info,fromMetricsChange==true or reason=="explicit_reset" or reason=="show")
+        if placed ~= true then self.shell.minimized=previousMin;return false,placeErr end
         local lockOk, lockErr = self.shell:SetLocked(target.locked == true, false)
         if lockOk ~= true then return false, lockErr or "floating_lock_apply_failed" end
         local overallOk, overallErr = self.shell:SetOverallOpacity(target.overallOpacity, false)
@@ -505,16 +580,14 @@ function F:Create(spec)
             local minimizeOk, minimizeErr = self.shell:SetMinimized(target.minimized == true, false)
             if minimizeOk ~= true then return false, minimizeErr or "floating_minimize_apply_failed" end
         end
+        self.shell.minimizeButton:SetText(self.shell.minimized and "+" or "—")
         if fromMetricsChange == true then F.metrics.responsiveLayouts = (tonumber(F.metrics.responsiveLayouts) or 0) + 1 end
         return true
     end
 
     function surface:Show(visible)
         local desired = visible ~= false
-        if desired then
-            local layoutOk, layoutErr = self:ApplyLayout(false)
-            if layoutOk ~= true then return false, layoutErr end
-        end
+        -- 维护：Shell Show 调 placementDelegate，一次 fresh sample 即可，不重复采样/重放。
         local shown, showErr = self.shell:Show(desired)
         if shown ~= true then return false, showErr end
         self.visible = desired
@@ -648,22 +721,29 @@ function F:Create(spec)
 
     function surface:ResetLayout(persist)
         local target = CurrentState(); if target == nil then return false end
-        local before = F:NormalizeState(target, policy)
-        local candidate = F:NormalizeState(target, policy)
-        F:ResetState(candidate, policy, { preserveLocked = spec.preserveLockedOnReset ~= false })
-        local stateOk, stateErr = persist ~= false and Save("layout_reset", candidate) or Stage("layout_reset", candidate)
-        if stateOk ~= true then return false, stateErr end
-        local layoutOk, layoutErr = self:ApplyLayout(false)
-        if layoutOk ~= true then
-            if persist ~= false then Save("layout_reset_rollback", before) else Stage("layout_reset_rollback", before) end
-            self:ApplyLayout(false)
-            return false, layoutErr or "floating_reset_layout_failed"
+        -- 维护：硬恢复先 Native 再持久化；清除 placement intent 的完整字段和 minimized，
+        -- 当前 viewport 下重算默认。异常旧 xy/metadata 无法通过缓存再次把窗口拖回屏幕外。
+        -- 失败不改变 Store；仅用户明确 Reset 才正常提交 schema 原有字段。
+        S.Layout:GetContext(true)
+        if self.windowController then self.windowController:CancelInteraction() end
+        local before = F:NormalizeState(target,policy)
+        local candidate = F:NormalizeState(target,policy)
+        F:ResetState(candidate,policy,{preserveLocked=spec.preserveLockedOnReset~=false})
+        candidate.minimized=false
+        local visible = self.visible == true or self.shell.visible == true
+        local ok,err = self:ApplyLayout(true,"explicit_reset",candidate)
+        if ok ~= true then return false,err end
+        if visible then
+            if type(UI.InvalidateNativeState)=="function" then UI:InvalidateNativeState(self.window,"visible") end
+            local shown,_,showErr = UI:EnsureVisible(self.window,true,owner)
+            if shown ~= true then self:ApplyLayout(true,"rollback",before);return false,showErr end
+            self.visible,self.shell.visible=true,true
+            self.windowController:BringToFront()
         end
-        if self.visible == true then
-            local shown, showErr = self.shell:Show(true)
-            if shown ~= true then return false, showErr end
-        end
-        F.metrics.resets = (tonumber(F.metrics.resets) or 0) + 1
+        local saved,saveErr
+        if persist ~= false then saved,saveErr=Save("layout_reset",candidate) else saved,saveErr=Stage("layout_reset",candidate) end
+        if saved ~= true then self:ApplyLayout(true,"rollback",before);return false,saveErr end
+        F.metrics.resets=(tonumber(F.metrics.resets) or 0)+1
         return true
     end
 

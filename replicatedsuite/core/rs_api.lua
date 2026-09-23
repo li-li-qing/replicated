@@ -128,7 +128,7 @@ end
 local function UiNumber(host,name)
     if host==nil or type(host[name])~="function" then return nil end
     local ok,v=pcall(function() return host[name](host) end); v=ok and tonumber(v) or nil
-    if v==nil or v~=v or v<=0 then return nil end return v
+    if v==nil or v~=v or v<=0 or v==math.huge then return nil end return v
 end
 function A:GetUiMetrics()
     -- UIParent:GetExtent() is the reliable logical-coordinate Authority used
@@ -139,13 +139,17 @@ function A:GetUiMetrics()
     local scale=UiNumber(UIParent,"GetUIScale") or UiNumber(UI,"GetUIScale") or 1
     if scale<=0 then scale=1 end
 
+    -- 维护（viewport-recovery-1）：Api 是 UIParent 逻辑单位唯一入口；异常 extent/scale
+    -- 不能进入 Layout 的比较/夹紧，否则 NaN 比较全部失效。返回来源仅供运行时诊断，
+    -- 不写 Store，不把 screen 当成必然的物理单位，更不能对已知 logical 再除 uiScale。
     local logicalW,logicalH=nil,nil
+    local source = "uiparent"
     if UIParent~=nil and type(UIParent.GetExtent)=="function" then
         local ok,w,h=pcall(function() return UIParent:GetExtent() end)
         if ok then
             logicalW=tonumber(w); logicalH=tonumber(h)
-            if logicalW~=nil and logicalW<=0 then logicalW=nil end
-            if logicalH~=nil and logicalH<=0 then logicalH=nil end
+            if logicalW~=nil and (logicalW<=0 or logicalW~=logicalW or logicalW==math.huge) then logicalW=nil end
+            if logicalH~=nil and (logicalH<=0 or logicalH~=logicalH or logicalH==math.huge) then logicalH=nil end
         end
     end
     logicalW=logicalW or UiNumber(UIParent,"GetWidth")
@@ -153,11 +157,12 @@ function A:GetUiMetrics()
 
     local screenW=UiNumber(UI,"GetScreenWidth") or UiNumber(UIParent,"GetScreenWidth")
     local screenH=UiNumber(UI,"GetScreenHeight") or UiNumber(UIParent,"GetScreenHeight")
+    if logicalW==nil or logicalH==nil then source = (screenW and screenH) and "screen_fallback" or "bootstrap_fallback" end
     if logicalW==nil then logicalW=(screenW and screenW/scale) or 1024 end
     if logicalH==nil then logicalH=(screenH and screenH/scale) or 768 end
     screenW=screenW or logicalW*scale
     screenH=screenH or logicalH*scale
-    return screenW,screenH,scale,logicalW,logicalH
+    return screenW,screenH,scale,logicalW,logicalH,{ source=source, ready=source=="uiparent" }
 end
 
 -- Pointer coordinates are requested only by event-driven UI interactions such
@@ -199,4 +204,42 @@ function A:Validate()
     for _,i in ipairs(required) do if i[1]==nil or type(i[1][i[2]])~="function" then return false,i[3].." unavailable" end end
     if S.NativeCapabilities == nil or type(S.NativeCapabilities.Validate) ~= "function" then return false, "NativeCapabilities unavailable" end
     return S.NativeCapabilities:Validate()
+end
+
+-- 维护（viewport-recovery-1）：原生通知归 Api，不替换 UIParent/其它插件的 Handler。
+-- OnScale 在原生 UI 历史脚本中存在，但 RU 权限/触发仍须实测；安装失败由 Layout
+-- 诊断明确暴露，并保留已知 UI_RELOADED/进入世界事件和 create/show/reset 新鲜采样。
+-- 本宿主不持有窗口配置，不增加 OnUpdate；Stop 先废弃 epoch，迟到通知不能重新布局。
+function A:StartUiMetricsNotifications(callback)
+    if type(callback) ~= "function" then return false, "metrics_callback_required" end
+    self:StopUiMetricsNotifications()
+    local factory = S.NativeObjectFactory
+    if type(factory) ~= "table" or type(factory.CreateWindow) ~= "function" then return false, "metrics_host_factory_unavailable" end
+    local host = self.metricsHost
+    if host == nil then
+        host = factory:CreateWindow(S.PhysicalId("ui_metrics_host"), "UIParent", "")
+        self.metricsHost = host
+    end
+    if host == nil or type(host.SetHandler) ~= "function" then return false, "metrics_host_unavailable" end
+    if type(host.Show) == "function" then pcall(function() host:Show(false) end) end
+    local epoch, generation = self.metricsEpoch, S.Generation
+    local ok, result = pcall(function()
+        return host:SetHandler("OnScale", function()
+            if A.metricsEpoch ~= epoch or S.Generation ~= generation or A.metricsListening ~= true then return end
+            callback("native_on_scale")
+        end)
+    end)
+    self.metricsListening = ok and result ~= false
+    -- 维护：Lua 的 true and nil or error 会恒选 error；成功必须显式返回 nil。
+    if self.metricsListening then return true,nil end
+    return false,"native_on_scale_unavailable"
+end
+
+function A:StopUiMetricsNotifications()
+    self.metricsEpoch = (tonumber(self.metricsEpoch) or 0) + 1
+    self.metricsListening = false
+    if self.metricsHost ~= nil and type(self.metricsHost.ReleaseHandler) == "function" then
+        pcall(function() self.metricsHost:ReleaseHandler("OnScale") end)
+    end
+    return true
 end

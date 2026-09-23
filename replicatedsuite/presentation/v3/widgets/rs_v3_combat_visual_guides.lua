@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 3 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Combat Visual Guides Presenter
 --
@@ -15,7 +19,7 @@ if type(UnitFeature) ~= "table" or type(RangeFeature) ~= "table" then return end
 S.UIV3 = S.UIV3 or {}
 S.UIV3.CombatVisualGuidesV3 = S.UIV3.CombatVisualGuidesV3 or {}
 local P = S.UIV3.CombatVisualGuidesV3
-P.version = 12
+P.version = 14
 P.RawViewportSamplingContractVersion = 1
 P.UnitAnchorAcceptanceContractVersion = 1
 P.ScreenCoordinateAuthorityContractVersion = 1
@@ -31,7 +35,8 @@ P.unitHost = P.unitHost or nil
 P.rangeHost = P.rangeHost or nil
 P.unitPools = P.unitPools or {}
 P.unitPool = P.unitPool or {} -- legacy allocation field retained only for diagnostics compatibility
-P.rangePool = P.rangePool or {}
+P.rangePools = P.rangePools or {}
+P.rangePool = P.rangePool or {} -- legacy first-pool alias kept for diagnostics compatibility
 P.eventOwner = P.eventOwner or {}
 P.hostMetrics = P.hostMetrics or {}
 -- Lifecycle watchdog telemetry (v6): the presenter acquires its render lease by
@@ -107,7 +112,10 @@ end
 -- 禁止用GetUiMetrics的logical尺寸或addonScale裁raw坐标；拿不到同源尺寸就保留原坐标。
 -- 裁剪是Presentation的可见采样，不修改Feature端点，也不以裁剪代替Service的behind否决。
 local UNIT_LINE_REFERENCE_LENGTH = 240
-local UNIT_LINE_PAIR_HARD_CAP = 160
+local VISUAL_GUIDE_LIMITS = (S.Constants and S.Constants.VisualGuide) or {}
+local UNIT_LINE_DENSITY_HARD_MIN = math.max(2, math.floor(tonumber(VISUAL_GUIDE_LIMITS.unitLineDensityHardMin) or 2))
+local UNIT_LINE_PAIR_HARD_CAP = math.max(UNIT_LINE_DENSITY_HARD_MIN, math.floor(tonumber(VISUAL_GUIDE_LIMITS.unitLineDensityHardMax) or 160))
+local RANGE_DENSITY_HARD_MAX = math.max(3, math.floor(tonumber(VISUAL_GUIDE_LIMITS.rangeDensityHardMax) or 192))
 local UNIT_LINE_TOTAL_BUDGET_FAST = 256
 local UNIT_LINE_TOTAL_BUDGET_MEDIUM = 320
 local UNIT_LINE_TOTAL_BUDGET_NORMAL = 384
@@ -121,7 +129,7 @@ local UNIT_LINE_PRESSURE_FACTOR = { Normal=1.00, Busy=0.82, Heavy=0.68, Critical
 local UNIT_LINE_POOL_GROWTH = { Normal=48, Busy=32, Heavy=24, Critical=16 }
 
 local function UnitLineTotalBudget(refreshMs)
-    refreshMs=math.max(1,math.min(1000,math.floor(tonumber(refreshMs) or 100)))
+    refreshMs=math.max(1,math.floor(tonumber(refreshMs) or 100))
     if refreshMs <= 16 then return UNIT_LINE_TOTAL_BUDGET_FAST end
     if refreshMs <= 33 then return UNIT_LINE_TOTAL_BUDGET_MEDIUM end
     if refreshMs <= 50 then return UNIT_LINE_TOTAL_BUDGET_NORMAL end
@@ -139,7 +147,7 @@ local function UnitLinePoolGrowthBudget(pressure)
 end
 
 local function DesiredUnitLinePointCount(length, baseCount)
-    baseCount=math.max(8,math.min(48,math.floor(tonumber(baseCount) or 24)))
+    baseCount=math.max(UNIT_LINE_DENSITY_HARD_MIN,math.min(UNIT_LINE_PAIR_HARD_CAP,math.floor(tonumber(baseCount) or 24)))
     length=math.max(0,tonumber(length) or 0)
     -- Preserve the old near-distance look: baseCount remains a floor.  The
     -- reference maps 24 legacy points to roughly 10.4 logical px spacing.
@@ -202,7 +210,8 @@ function P:BuildUnitLineSamplePlan(rows, projection, viewportW, viewportH, press
                     if length==nil then stats.invalidEdges=stats.invalidEdges+1
                     elseif length<1 then stats.shortEdges=stats.shortEdges+1
                     else
-                        local base=math.max(8,math.min(48,math.floor(tonumber(pairPoints[row.pairKey]) or tonumber(projection.pointCount) or 24)))
+                        local base=math.max(UNIT_LINE_DENSITY_HARD_MIN,math.min(UNIT_LINE_PAIR_HARD_CAP,
+                            math.floor(tonumber(pairPoints[row.pairKey]) or tonumber(projection.pointCount) or 24)))
                         local desired=DesiredUnitLinePointCount(length,base)
                         local plan={row=row,x1=x1,y1=y1,x2=x2,y2=y2,length=length,base=base,desired=desired,count=base,clipped=clipped==true}
                         plans[#plans+1]=plan;totalBase=totalBase+base;totalDesired=totalDesired+desired
@@ -241,6 +250,7 @@ P.AdaptiveUnitLineSamplingContractVersion = 2
 P.UnitLineVisibleSegmentClippingContractVersion = 2
 P.UnitLinePressureBudgetContractVersion = 1
 P.UnitLineDiffRenderContractVersion = 1
+P.RangeDiffRenderContractVersion = 1
 P.UnitLineProgressivePoolContractVersion = 1
 function P:EnsureUnitPairPool(pairKey, count, growthLimit)
     pairKey=tostring(pairKey or "target")
@@ -271,24 +281,24 @@ function P:EnsureUnitPairPool(pairKey, count, growthLimit)
     return pool,nil,created,#pool>=count
 end
 
-function P:SetUnitDotVisible(dot, visible)
+function P:SetDotVisible(dot, visible)
     if type(dot)~="table" or dot.root==nil then return false end
     local state=type(dot.renderState)=="table" and dot.renderState or {}; dot.renderState=state
     local value=visible==true
     if state.visible==value then return false end
-    -- Commit the presenter cache ONLY after RSUI accepted the native write.
-    -- Committing unconditionally turned one rejected Show() into a permanent
-    -- desync: every later frame believed the dot was already hidden/shown and
-    -- never retried, leaving pool widgets stuck visible at (0,0) -- the
-    -- reported "screen shows a single dot" failure shape.
-    -- 维护：SetVisible=false既可能no-op也可能失败；EnsureVisible区分accepted/changed。
-    -- 只有Native写入或框架已确认的no-op才能提交本地cache，拒绝时仍可在下帧重试。
+    -- 维护（2026-09-18，range-diff-render-1）：UnitLines 与 RangeAssist 共用可见性 diff。
+    -- 提升范围圆刷新节奏后，禁止每帧对未变化的几十/上百个点重复 Show/Hide；只有 RSUI
+    -- 确认 accepted 后才提交缓存，拒绝时保留旧状态供下一帧重试。
     local accepted,changed
     if type(S.UI.EnsureVisible)=="function" then accepted,changed=S.UI:EnsureVisible(dot.root,value,self.owner)
     else accepted=S.UI:SetVisible(dot.root,value,self.owner);changed=accepted end
     if accepted~=true then return false end
     state.visible=value
     return changed==true
+end
+
+function P:SetUnitDotVisible(dot, visible)
+    return self:SetDotVisible(dot, visible)
 end
 
 function P:HideUnitPools()
@@ -298,7 +308,11 @@ function P:HideUnitPools()
 end
 
 function P:EnsurePool(kind, count)
-    count=math.max(0,math.min(48,math.floor(tonumber(count) or 0)))
+    -- Legacy compatibility helper: honor the same real safety envelopes as the
+    -- active per-pair/per-circle pools so a future caller cannot reintroduce the
+    -- obsolete 48-dot presentation ceiling behind the Feature Authority.
+    local hardCap = kind == "range" and RANGE_DENSITY_HARD_MAX or UNIT_LINE_PAIR_HARD_CAP
+    count=math.max(0,math.min(hardCap,math.floor(tonumber(count) or 0)))
     local pool = kind == "unit" and self.unitPool or self.rangePool
     local host, err = self:EnsureHost(kind); if host == nil then return false, err end
     for index=1,count do
@@ -316,7 +330,40 @@ function P:EnsurePool(kind, count)
 end
 
 function P:HidePool(pool)
-    for _,dot in ipairs(pool) do S.UI:SetVisible(dot.root, false, self.owner) end
+    for _,dot in ipairs(pool) do self:SetDotVisible(dot, false) end
+end
+
+function P:EnsureRangePool(circleKey, count)
+    count = math.max(0, math.min(RANGE_DENSITY_HARD_MAX, math.floor(tonumber(count) or 0)))
+    local host, err = self:EnsureHost("range"); if host == nil then return nil, err end
+    local key = tostring(circleKey or "default"):gsub("[^%w_]", "_")
+    self.rangePools = self.rangePools or {}
+    local pool = self.rangePools[key]
+    if type(pool) ~= "table" then pool = {}; self.rangePools[key] = pool end
+    if self.rangePool == nil or #self.rangePool == 0 then self.rangePool = pool end
+    for index = 1, count do
+        local row = pool[index]
+        if type(row) ~= "table" or row.root == nil then
+            local dot, dotErr = S.UI:CreateLabel(host, "v3_visual_range_" .. key .. "_dot_" .. tostring(index), ".", 0, 0, 1, 1, 15, "strong", "CENTER", false)
+            if dot == nil then return nil, dotErr end
+            row = { root = dot, drawable = nil, label = true }; pool[index] = row
+            S.UI:SetVisible(dot, false, self.owner)
+        end
+    end
+    return pool
+end
+
+function P:HideRangePools(active)
+    self.rangePools = self.rangePools or {}
+    for key, pool in pairs(self.rangePools) do
+        if active == nil or active[key] ~= true then self:HidePool(pool) end
+    end
+end
+
+local function RangePoolDotCount(rangePools)
+    local total = 0
+    for _, pool in pairs(type(rangePools) == "table" and rangePools or {}) do total = total + #pool end
+    return total
 end
 
 local VISUAL_POINT_SIZE_MIN = tonumber(S.Constants and S.Constants.VisualGuide and S.Constants.VisualGuide.pointSizeMin) or 2
@@ -410,28 +457,33 @@ function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b, hostTransfor
 end
 
 function P:PlaceDot(dot, x, y, size, opacity, kind, pairKey, r, g, b, hostTransform)
-    -- Label-dot placement (reference model). Color rides the label style;
-    -- Base 2..10 retains the proven 16..40px mapping; exact values accepted
-    -- above 10 continue monotonically instead of being visually flattened.
+    if type(dot)~="table" or dot.root==nil then return false end
     size=ResolveVisualPointFontSize(size)
     local localX, localY = HostLocalPoint(hostTransform, x, y)
-    -- Range dots use the same 1x1 label-anchor model as Unit Lines. Font size
-    -- changes glyph ink only and must never shift geometry.
-    S.UI:SetAnchor(dot.root, kind == "unit" and self.unitHost or self.rangeHost, math.floor(localX+0.5), math.floor(localY+0.5), self.owner)
-    S.UI:SetFontSize(dot.root, size, self.owner)
-    if kind == "range" then
-        -- r,g,b are passed by RenderRange from the persisted projection color;
-        -- fall back to the original (0.20, 0.82, 1.00) when none is set.
-        S.UI:SetColor(dot.root, r or 0.20, g or 0.82, b or 1.00, math.max(0.1,math.min(1,tonumber(opacity) or 0.68)), self.owner)
-    else
-        local cr, cg, cb = r, g, b
-        if cr == nil then
-            local c = UNIT_COLORS[tostring(pairKey or "target")] or UNIT_COLORS.target
-            cr, cg, cb = c[1], c[2], c[3]
-        end
-        S.UI:SetColor(dot.root, cr, cg, cb, math.max(0.1,math.min(1,tonumber(opacity) or 0.78)),self.owner)
+    local px,py=math.floor(localX+0.5),math.floor(localY+0.5)
+    local cr,cg,cb=r or 0.20,g or 0.82,b or 1.00
+    local alpha=math.max(0.1,math.min(1,tonumber(opacity) or 0.68))
+    local state=type(dot.renderState)=="table" and dot.renderState or {};dot.renderState=state
+    local host=kind=="unit" and self.unitHost or self.rangeHost
+
+    -- 维护（2026-09-18，range-diff-render-1）：RangeAssist 提升镜头跟随节奏后，不能继续每帧对
+    -- 每个点无条件 SetAnchor/SetFontSize/SetColor/Show。位置、样式、可见性分别做 diff；Anchor
+    -- 只有 RSUI 确认 accepted 后才提交缓存，失败保留旧 cache 以便下一帧重试。用户半径/颜色等
+    -- 配置仍由 Feature Authority 提供；这里只减少重复 Native UI 写，不缓存世界或屏幕事实。
+    if state.x~=px or state.y~=py then
+        local accepted,changed
+        if type(S.UI.EnsureAnchor)=="function" then accepted,changed=S.UI:EnsureAnchor(dot.root,host,px,py,self.owner)
+        else accepted=S.UI:SetAnchor(dot.root,host,px,py,self.owner);changed=accepted end
+        if accepted~=true then self:SetDotVisible(dot,false);return false end
+        state.x,state.y=px,py
     end
-    S.UI:SetVisible(dot.root, true, self.owner)
+    if state.size~=size then S.UI:SetFontSize(dot.root,size,self.owner);state.size=size end
+    if state.r~=cr or state.g~=cg or state.b~=cb or state.a~=alpha then
+        S.UI:SetColor(dot.root,cr,cg,cb,alpha,self.owner)
+        state.r,state.g,state.b,state.a=cr,cg,cb,alpha
+    end
+    self:SetDotVisible(dot,true)
+    return true
 end
 
 -- ScreenProjectionV3 already returns coordinates in the same top-left
@@ -516,26 +568,37 @@ function P:RenderUnit()
 end
 
 function P:RenderRange()
-    if self.rangeHeld ~= true then self:HidePool(self.rangePool); S.UI:SetVisible(self.rangeHost,false,self.owner); return true end
-    local projection=RangeFeature:GetProjection() or {}; local row=projection.rows and projection.rows[1] or nil
-    local points=type(row)=="table" and type(row.points)=="table" and row.points or {}
-    if #points<3 then self:HidePool(self.rangePool); S.UI:SetVisible(self.rangeHost,false,self.owner); return true end
-    -- Range line color is now configurable via the page ColorField; fall back to
-    -- the legacy default when no color has been persisted.
-    local rc=type(projection.color)=="table" and projection.color or nil
-    local rr,rg,rb=rc and (tonumber(rc[1]) or 0.20) or 0.20, rc and (tonumber(rc[2]) or 0.82) or 0.82, rc and (tonumber(rc[3]) or 1.00) or 1.00
-    local count=math.min(48,#points); local ok,err=self:EnsurePool("range",count); if ok~=true then return false,err end
+    if self.rangeHeld ~= true then self:HideRangePools(); S.UI:SetVisible(self.rangeHost,false,self.owner); return true end
+    local projection=RangeFeature:GetProjection() or {}; local rows=type(projection.rows)=="table" and projection.rows or {}
+    local active, renderedCircles, totalDots = {}, 0, 0
+    if #rows<1 then self:HideRangePools(); S.UI:SetVisible(self.rangeHost,false,self.owner); return true end
     local hostTransform=self:ResolveHostTransform(self.rangeHost)
-    for i=1,count do
-        self:PlaceDot(self.rangePool[i],points[i].x,points[i].y,projection.pointSize,projection.opacity,"range",nil,rr,rg,rb,hostTransform)
+    local firstPoint = "?"
+    for _, row in ipairs(rows) do
+        local points=type(row)=="table" and type(row.points)=="table" and row.points or {}
+        if #points>=3 then
+            local circleKey=tostring(row.circleKey or row.key or ("range_" .. tostring(renderedCircles + 1)))
+            local pool, err = self:EnsureRangePool(circleKey, math.min(RANGE_DENSITY_HARD_MAX, #points)); if pool == nil then return false, err end
+            active[circleKey:gsub("[^%w_]", "_")] = true
+            local color = type(row.color)=="table" and row.color or nil
+            local rr,rg,rb = color and (tonumber(color[1]) or 0.20) or 0.20, color and (tonumber(color[2]) or 0.82) or 0.82, color and (tonumber(color[3]) or 1.00) or 1.00
+            local count=math.min(RANGE_DENSITY_HARD_MAX,#points)
+            for i=1,count do
+                self:PlaceDot(pool[i],points[i].x,points[i].y,row.pointSize or projection.pointSize,row.opacity or projection.opacity,"range",nil,rr,rg,rb,hostTransform)
+            end
+            for i=count+1,#pool do self:SetDotVisible(pool[i],false) end
+            renderedCircles = renderedCircles + 1
+            totalDots = totalDots + count
+            if firstPoint == "?" and points[1] ~= nil then firstPoint = tostring(math.floor(tonumber(points[1].x) or 0)) .. "," .. tostring(math.floor(tonumber(points[1].y) or 0)) end
+        end
     end
-    for i=count+1,#self.rangePool do S.UI:SetVisible(self.rangePool[i].root,false,self.owner) end
-    S.UI:SetVisible(self.rangeHost,true,self.owner)
+    self:HideRangePools(active)
+    if type(S.UI.EnsureVisible)=="function" then S.UI:EnsureVisible(self.rangeHost,renderedCircles>0,self.owner)
+    else S.UI:SetVisible(self.rangeHost,renderedCircles>0,self.owner) end
     local hostVisible, hostKnown = nil, false
     if type(S.UI.NativeVisibleReadback) == "function" then hostVisible, hostKnown = S.UI:NativeVisibleReadback(self.rangeHost) end
-    self.lastRangeSampling = { points = count, coordinateSpace = "ui_parent_screen_to_host_local",
-        first = (count > 0 and points[1] ~= nil) and (tostring(math.floor(tonumber(points[1].x) or 0)) .. "," .. tostring(math.floor(tonumber(points[1].y) or 0))) or "?",
-        hostOriginX=tonumber(hostTransform.originX) or 0,hostOriginY=tonumber(hostTransform.originY) or 0,hostTransformSource=tostring(hostTransform.source or "identity"),
+    self.lastRangeSampling = { points = totalDots, circles = renderedCircles, totalCircles = tonumber(projection.circleCount) or 0, enabledCircles = tonumber(projection.enabledCircleCount) or 0, coordinateSpace = "ui_parent_screen_to_host_local",
+        first = firstPoint, hostOriginX=tonumber(hostTransform.originX) or 0,hostOriginY=tonumber(hostTransform.originY) or 0,hostTransformSource=tostring(hostTransform.source or "identity"),
         logicalWidth=tonumber(hostTransform.logicalWidth),logicalHeight=tonumber(hostTransform.logicalHeight),uiScale=tonumber(hostTransform.uiScale) or 1,
         hostVisible = hostKnown == true and tostring(hostVisible == true) or "未知" }
     return true
@@ -548,7 +611,7 @@ function P:ReconcileOne(feature,id,token,heldField,kind)
             self:HideUnitPools();S.UI:SetVisible(self.unitHost,false,self.owner)
             -- 禁用路径不再报告上一次已显示采样，不创建/销毁range的资源。
             self.lastUnitSampling={inputEdges=0,visibleEdges=0,visibleDots=0,uniquePositions=0,requestedDots=0}
-        else self:HidePool(self.rangePool) end
+        else self:HideRangePools(); S.UI:SetVisible(self.rangeHost,false,self.owner); self.lastRangeSampling={points=0,circles=0,totalCircles=0,enabledCircles=0} end
         if self[heldField]==true then
             -- 维护：Feature:Disable已先Demand:Clear，旧代码再次Release得到consumer not held，
             -- 使Presenter的held标记无法收敛。租约Authority在Demand；确认已无此token即可清本地影子。
@@ -625,10 +688,20 @@ function P:ConvergeTick()
     self:Reconcile("lifecycle_watchdog")
 end
 
-function P:Describe() local sample=type(self.lastUnitSampling)=="table" and self.lastUnitSampling or {}; return {version=self.version,adaptiveUnitLineSampling=tonumber(self.AdaptiveUnitLineSamplingContractVersion) or 0,unitLinePressureBudget=tonumber(self.UnitLinePressureBudgetContractVersion) or 0,unitLineDiffRender=tonumber(self.UnitLineDiffRenderContractVersion) or 0,unitLineProgressivePool=tonumber(self.UnitLineProgressivePoolContractVersion) or 0,unitHeld=self.unitHeld==true,rangeHeld=self.rangeHeld==true,unitDots=(function() local n=0; for _,pool in pairs(self.unitPools) do n=n+#pool end; return n end)(),unitVisibleDots=tonumber(sample.visibleDots) or 0,unitRequestedDots=tonumber(sample.requestedDots) or 0,unitVisibleEdges=tonumber(sample.visibleEdges) or 0,unitClippedEdges=tonumber(sample.clippedEdges) or 0,unitBudget=tonumber(sample.budget) or 0,unitPressure=tostring(sample.pressure or "Normal"),unitPoolGrowth=tonumber(sample.poolGrowth) or 0,unitAnchorWrites=tonumber(sample.anchorWrites) or 0,unitStyleWrites=tonumber(sample.styleWrites) or 0,unitVisibilityWrites=tonumber(sample.visibilityWrites) or 0,rangeDots=#self.rangePool,
-    lastLifecycle=self.lastLifecycle,reconcileRuns=tonumber(self.reconcileRuns) or 0,watchdogTicks=tonumber(self.watchdogTicks) or 0,
-    acquireAttempts={unit=tonumber(self.acquireAttempts and self.acquireAttempts.unit) or 0,range=tonumber(self.acquireAttempts and self.acquireAttempts.range) or 0},
-    lastAcquireError=self.lastAcquireError} end
+function P:Describe()
+    local sample=type(self.lastUnitSampling)=="table" and self.lastUnitSampling or {}
+    local rangeSample=type(self.lastRangeSampling)=="table" and self.lastRangeSampling or {}
+    return {
+        version=self.version,adaptiveUnitLineSampling=tonumber(self.AdaptiveUnitLineSamplingContractVersion) or 0,unitLinePressureBudget=tonumber(self.UnitLinePressureBudgetContractVersion) or 0,unitLineDiffRender=tonumber(self.UnitLineDiffRenderContractVersion) or 0,unitLineProgressivePool=tonumber(self.UnitLineProgressivePoolContractVersion) or 0,
+        unitHeld=self.unitHeld==true,rangeHeld=self.rangeHeld==true,
+        unitDots=(function() local n=0; for _,pool in pairs(self.unitPools) do n=n+#pool end; return n end)(),
+        unitVisibleDots=tonumber(sample.visibleDots) or 0,unitRequestedDots=tonumber(sample.requestedDots) or 0,unitVisibleEdges=tonumber(sample.visibleEdges) or 0,unitClippedEdges=tonumber(sample.clippedEdges) or 0,unitBudget=tonumber(sample.budget) or 0,unitPressure=tostring(sample.pressure or "Normal"),unitPoolGrowth=tonumber(sample.poolGrowth) or 0,unitAnchorWrites=tonumber(sample.anchorWrites) or 0,unitStyleWrites=tonumber(sample.styleWrites) or 0,unitVisibilityWrites=tonumber(sample.visibilityWrites) or 0,
+        rangeDots=RangePoolDotCount(self.rangePools),rangeCircles=tonumber(rangeSample.circles) or 0,rangeEnabledCircles=tonumber(rangeSample.enabledCircles) or 0,rangeConfiguredCircles=tonumber(rangeSample.totalCircles) or 0,
+        lastLifecycle=self.lastLifecycle,reconcileRuns=tonumber(self.reconcileRuns) or 0,watchdogTicks=tonumber(self.watchdogTicks) or 0,
+        acquireAttempts={unit=tonumber(self.acquireAttempts and self.acquireAttempts.unit) or 0,range=tonumber(self.acquireAttempts and self.acquireAttempts.range) or 0},
+        lastAcquireError=self.lastAcquireError
+    }
+end
 
 if S.Events ~= nil and type(S.Events.SubscribeInternal)=="function" then
     S.Events:SubscribeInternal((S.FeatureRuntime and S.FeatureRuntime.LifecycleTopic) or "v3.feature.lifecycle",P.eventOwner,function(_,featureId,state)

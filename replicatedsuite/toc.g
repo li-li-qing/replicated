@@ -21,6 +21,7 @@ core/rs_demand.lua
 core/rs_api.lua
 core/rs_api_capabilities.lua
 core/rs_diagnostics.lua
+core/rs_module_diagnostics.lua
 core/rs_report_copy_transport.lua
 core/rs_self_check_report.lua
 core/rs_persistence.lua
@@ -35,8 +36,10 @@ core/rs_refresh_coordinator.lua
 core/rs_events.lua
 ui/framework/rs_ui_tokens.lua
 core/rs_theme.lua
+core/rs_workspace_theme.lua
 ui/rs_ui_native_primitives.lua
 ui/rs_ui_framework.lua
+ui/framework/rs_ui_diagnostic_copy_box.lua
 ui/framework/rs_ui_layout_v2.lua
 ui/framework/rs_ui_binding_v2.lua
 ui/framework/rs_ui_component_core.lua
@@ -72,6 +75,7 @@ ui/framework/rs_ui_transform_inspector.lua
 ui/framework/rs_ui_action_runner.lua
 ui/framework/rs_ui_interactions.lua
 ui/framework/rs_ui_windowing.lua
+ui/framework/rs_ui_window_preferences.lua
 ui/framework/rs_ui_window_shell_v3.lua
 ui/framework/rs_ui_floating_surface.lua
 ui/framework/rs_ui_playground.lua
@@ -102,6 +106,7 @@ services/rs_aura_observation_v3.lua
 services/rs_casting_observation_v3.lua
 services/rs_unit_identity_v3.lua
 services/rs_combat_event_bus_v3.lua
+services/rs_cooldown_observation_v3.lua
 services/rs_combat_analytics_v3.lua
 services/rs_team_roster_v3.lua
 services/rs_combat_relation_v3.lua
@@ -109,14 +114,18 @@ services/rs_instance_catalog_v3.lua
 services/rs_quest_progress_v3.lua
 services/rs_gear_service_v3.lua
 services/rs_inventory_snapshot_v3.lua
+services/rs_fishing_hotkey_v3.lua
 services/rs_alerts_service.lua
 services/rs_screen_projection_v3.lua
 services/rs_auction_query_v3.lua
 services/rs_price_quote_queue_v3.lua
 services/rs_auction_surface_v3.lua
+services/rs_auction_search_bridge_v3.lua
+services/rs_auction_session_list_v3.lua
 services/rs_craft_surface_v3.lua
 services/rs_trade_payout_v3.lua
 services/rs_trade_material_identity_v3.lua
+services/rs_daily_auction_materials_v3.lua
 features/rs_feature_registry.lua
 features/rs_feature_runtime.lua
 features/combat/analytics/rs_combat_metric_common.lua
@@ -145,6 +154,10 @@ features/combat/buff_display/rs_buff_display_feature.lua
 features/combat/buff_display/rs_buff_display_management.lua
 features/combat/buff_display/rs_buff_display_transfer_v2.lua
 features/combat/buff_display/rs_buff_display_acceptance.lua
+-- 2026-09-20 nameplate-mark-ratio-3：头标使用 name_tag_mark_size_ratio；Store schema1 保持兼容，禁止页面直写 X2Option。
+features/combat/nameplate_visuals/rs_nameplate_visuals_store.lua
+features/combat/nameplate_visuals/rs_nameplate_visuals_authority.lua
+features/combat/nameplate_visuals/rs_nameplate_visuals_feature.lua
 features/combat/gear/rs_gear_store.lua
 features/combat/gear/rs_gear_authority.lua
 features/combat/gear/rs_gear_feature.lua
@@ -162,8 +175,9 @@ features/life/rs_life_m16_bundle.lua
 features/life/rs_daily_ledger.lua
 features/life/rs_daily_income_source.lua
 features/rs_business_bridge.lua
+features/tools/rs_hotkey_profiles_feature.lua
 features/combat/team_tools/rs_team_tools_visuals.lua
-features/life/craft/rs_craft_planner_extension_v3.lua
+-- 2026-09-15 用户删除“制作规划”：旧扩展文件不再进入 Runtime；tools_craft 仍由独立 surface extension 加载。
 features/life/craft/rs_craft_assistant_surface_extension_v3.lua
 features/tools/instances/rs_instance_authority.lua
 features/tools/instances/rs_instance_feature.lua
@@ -174,6 +188,8 @@ presentation/v3/rs_v3_launcher_store.lua
 presentation/v3/rs_v3_aux_window_store.lua
 presentation/v3/rs_v3_native_adapter.lua
 presentation/v3/navigation/rs_v3_router.lua
+presentation/v3/rs_v3_workspace.lua
+presentation/v3/widgets/rs_v3_module_diagnostics_window.lua
 presentation/v3/widgets/rs_v3_widget_host.lua
 presentation/v3/widgets/rs_v3_alert_hud.lua
 presentation/v3/widgets/rs_v3_combat_visual_guides.lua
@@ -184,6 +200,7 @@ presentation/v3/widgets/rs_v3_bag_quick_overlay.lua
 presentation/v3/widgets/rs_v3_auction_sidecar.lua
 presentation/v3/widgets/rs_v3_craft_sidecar.lua
 presentation/v3/widgets/rs_v3_quest_detail_floating.lua
+presentation/v3/widgets/rs_v3_activity_lists.lua
 presentation/v3/widgets/rs_v3_activity_widget.lua
 presentation/v3/widgets/rs_v3_task_widget.lua
 presentation/v3/widgets/rs_v3_gear_widget.lua
@@ -199,8 +216,10 @@ presentation/v3/shell/rs_v3_modal_host.lua
 presentation/v3/modals/rs_v3_quest_detail_modal.lua
 presentation/v3/modals/rs_v3_gear_quick_settings_modal.lua
 presentation/v3/shell/rs_v3_toast_host.lua
+presentation/v3/shell/rs_v3_module_controls.lua
 presentation/v3/shell/rs_v3_page_host.lua
 presentation/v3/pages/rs_v3_home_overview.lua
+presentation/v3/pages/rs_v3_workspace_page.lua
 presentation/v3/pages/rs_v3_foundation_pages.lua
 presentation/v3/pages/rs_v3_gear_page.lua
 presentation/v3/pages/rs_v3_housing_page.lua
@@ -212,6 +231,8 @@ presentation/v3/pages/rs_v3_combat_analytics_page.lua
 presentation/v3/pages/rs_v3_raid_readiness_page.lua
 presentation/v3/pages/rs_v3_healer_page.lua
 presentation/v3/pages/rs_v3_buff_display_page.lua
+-- 2026-09-20 nameplate-mark-ratio-3：Presentation 只暴露标记倍率/血条尺寸，不再暴露已实机无效的 over_head_marker_*。
+presentation/v3/pages/rs_v3_nameplate_visuals_page.lua
 presentation/v3/pages/rs_v3_activity_page.lua
 presentation/v3/pages/rs_v3_task_page.lua
 presentation/v3/pages/rs_v3_life_m16_pages.lua

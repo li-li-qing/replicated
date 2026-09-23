@@ -11,8 +11,9 @@ S.Services = S.Services or {}
 S.Services.GearV3 = S.Services.GearV3 or {}
 local G = S.Services.GearV3
 
-G.version = 4
+G.version = 5
 G.PartialApplyContractVersion = 1
+G.TitleEffectAuthorityContractVersion = 1
 G.presentationBoundary = "service_only"
 G.BagSlots = 150
 G.MaxBagSlots = 240
@@ -120,11 +121,17 @@ end
 
 function G:TitleText(title)
     if type(title) ~= "table" then return "未读取称号" end
+    -- 中文维护注释（20260921 称号 Effect Authority）：
+    -- 方案中的称号业务含义是“切换效果”，不是恢复保存瞬间的展示称号。旧版本的 displayName
+    -- 通常也来自 effect，但历史 payload 可能同时保存了 showing；展示层必须优先展示 effect
+    -- 自身名称，避免用户误以为方案会把“名字称号”一起切回去。showing 继续保留为旧配置/诊断快照，
+    -- 不再承担换装 Authority。
+    local effectName = type(title.effect) == "table" and Trim(title.effect.name) or ""
+    if effectName ~= "" then return effectName end
     if Trim(title.displayName) ~= "" then return Trim(title.displayName) end
-    local showId = title.showing and title.showing.id or nil
     local effectId = title.effect and title.effect.id or nil
-    if showId ~= nil or effectId ~= nil then return "展示ID " .. tostring(showId or "-") .. " / 效果ID " .. tostring(effectId or "-") end
-    return "未检测到可保存称号"
+    if effectId ~= nil then return "效果ID " .. tostring(effectId) end
+    return "未检测到可保存效果称号"
 end
 
 function G:IsInCombat()
@@ -136,6 +143,29 @@ end
 
 function G:GetEquipped(slot)
     if X2Equipment == nil then return nil, "X2Equipment unavailable" end
+    -- 中文维护注释（.18.263 HUD / 换装读取 Authority 隔离）：
+    -- GetEquipped 是状态显示等“轻量自身 HUD 读取”的公开路径，保留 .18.253 以来的 false
+    -- 选择器，不因换装修复再次改变 HUD 行为。RU 不同构建对 targetEquippedItem 的实现存在
+    -- 历史差异，因此不能再让 HUD 与换装事务共享同一个未经区分的布尔假设。
+    -- Authority/数据流：BuffDisplay(player scope) -> GearV3:GetEquipped -> X2Equipment；
+    -- target HUD 仍禁止把该 API 当目标装备 Authority。
+    local ok, value, err = S.Api:CallCapability("X2Equipment:GetEquippedItemTooltipInfo", X2Equipment, "GetEquippedItemTooltipInfo", slot, false)
+    if ok ~= true then return nil, err end
+    return value, nil
+end
+
+function G:GetLoadoutEquipped(slot)
+    if X2Equipment == nil then return nil, "X2Equipment unavailable" end
+    -- 中文维护注释（.18.263 时装/称号换装回归修复）：
+    -- 问题原因：旧换装长期使用 true 读取自身装备；.18.253 为排查远程 HUD 将共享的
+    -- GetEquipped 改成 false 后，换装 Capture/Validate/Verify 也被一起改变。后续实机诊断
+    -- 证明远程 HUD 的根因是 ranged.enabled=false，并未证明换装选择器应改变。对受影响的
+    -- RU 客户端/封装，false 会使已经穿着的装备被误判为 mismatch；时装槽 28 位于队列尾部，
+    -- 称号又必须等装备队列结束才执行，因此最明显的症状就是“时装/称号不换”。
+    -- Authority/数据流：只有 Gear 换装事务（获取当前/匹配/验证）调用本方法；HUD 继续走
+    -- GetEquipped(false)。这样修复换装时不会再次碰状态显示的读取语义。
+    -- 兼容边界：不增加被动扫描，不改装备槽位/存档；若未来 RU 明确统一参数语义，必须以
+    -- 实机换装事务 + HUD 两套探针同时验收后才能合并这两个读取入口。
     local ok, value, err = S.Api:CallCapability("X2Equipment:GetEquippedItemTooltipInfo", X2Equipment, "GetEquippedItemTooltipInfo", slot, true)
     if ok ~= true then return nil, err end
     return value, nil
@@ -162,12 +192,24 @@ end
 
 function G:CaptureTitle()
     if X2Player == nil then return nil, "X2Player unavailable" end
-    local okShow, showingRaw, showErr = S.Api:CallCapability("X2Player:GetShowingAppellation", X2Player, "GetShowingAppellation")
-    if okShow ~= true then return nil, "读取当前展示称号失败：" .. tostring(showErr) end
+    -- 中文维护注释（20260921 称号 Effect Authority / 保存边界）：
+    -- 问题原因：ArcheAge 把“展示称号(nameType)”与“效果称号(effectType)”分开；用户可以合法地
+    -- 让二者不同。换装方案真正要持久化的是 effectType。旧实现同时把 showing 保存进 payload，
+    -- 后续 ApplyTitle 在当前展示读取为空/0 时还会退回这个历史 showing，导致保存时 A 名称 + B 效果
+    -- 被错误重新拼成一对参数，甚至把合法 nameType=0 当成“缺失”。
+    -- Authority/数据流：GetEffectAppellation -> payload.title.effect 是唯一业务 Authority；
+    -- GetShowingAppellation -> payload.title.showing 只作为兼容/诊断快照。执行时绝不从该快照恢复名字。
+    -- 兼容边界：保留 showing 字段与现有 Store schema，旧方案无需迁移；即使展示称号读取暂时失败，
+    -- 只要 effect 可读仍允许“获取当前”，因为保存方案不应依赖非 Authority 的展示状态。
     local okEffect, effectRaw, effectErr = S.Api:CallCapability("X2Player:GetEffectAppellation", X2Player, "GetEffectAppellation")
     if okEffect ~= true then return nil, "读取当前效果称号失败：" .. tostring(effectErr) end
-    local showing, effect = self:PackAppellation(showingRaw), self:PackAppellation(effectRaw)
-    local name = effect and effect.name or showing and showing.name or nil
+    local effect = self:PackAppellation(effectRaw)
+
+    local showing = nil
+    local okShow, showingRaw = S.Api:CallCapability("X2Player:GetShowingAppellation", X2Player, "GetShowingAppellation")
+    if okShow == true then showing = self:PackAppellation(showingRaw) end
+
+    local name = effect and effect.name or nil
     return { apply = effect ~= nil and effect.id ~= nil, showing = showing, effect = effect, displayName = name }, nil
 end
 
@@ -178,7 +220,7 @@ function G:CapturePayload(previous)
     local hadPrevious = previous.configured == true
     local items = {}
     for _, def in ipairs(self.EquipmentSlots) do
-        local tooltip, err = self:GetEquipped(def.slot)
+        local tooltip, err = self:GetLoadoutEquipped(def.slot)
         if err ~= nil then return nil, "读取" .. def.name .. "失败：" .. tostring(err) end
         local hasItem = type(tooltip) == "table"
         local item = {
@@ -213,7 +255,7 @@ end
 
 function G:CurrentItemMatches(saved)
     if type(saved) ~= "table" or saved.empty == true then return false end
-    local tooltip = self:GetEquipped(saved.slot)
+    local tooltip = self:GetLoadoutEquipped(saved.slot)
     return self:SavedItemMatchesTooltip(saved, tooltip)
 end
 
@@ -224,7 +266,7 @@ function G:CaptureEquippedSnapshot(wantedSlots, needTitle)
     local snapshot = { items = {}, titleEffectId = nil, capturedAt = S.NowMs and S.NowMs() or 0 }
     for _, def in ipairs(self.EquipmentSlots) do
         if type(wantedSlots) ~= "table" or wantedSlots[def.slot] == true then
-            local tooltip, err = self:GetEquipped(def.slot)
+            local tooltip, err = self:GetLoadoutEquipped(def.slot)
             if err ~= nil then return nil, "读取" .. tostring(def.name) .. "失败：" .. tostring(err) end
             snapshot.items[def.slot] = tooltip
         end
@@ -270,21 +312,43 @@ function G:CurrentTitleMatches(payload)
     return tostring(current.id) == tostring(wanted), nil
 end
 
+function G:GetCurrentShowingAppellationType()
+    if X2Player == nil then return nil, "X2Player unavailable" end
+    local ok, raw, err = S.Api:CallCapability("X2Player:GetShowingAppellation", X2Player, "GetShowingAppellation")
+    if ok ~= true then return nil, "读取当前称号展示类型失败：" .. tostring(err) end
+
+    -- 中文维护注释（20260921 nameType=0 合法值）：
+    -- 公开 titleswap 的成熟调用约定是：执行前读取 GetShowingAppellation()[1]；当当前没有展示称号
+    -- 或 getter 返回 nil 时，向 ChangeAppellation 传 0。这里不能复用通用 MeaningfulId()，因为
+    -- MeaningfulId 为装备/效果身份设计，会把 0 过滤掉；但对 ChangeAppellation 的 nameType 来说
+    -- 0 是“当前不展示称号”的合法选择器，而不是数据缺失。
+    -- 重要：这里只读取“执行这一刻”的当前展示状态，绝不回退到 payload.title.showing。这样用户保存
+    -- 时名称 A / 效果 B 是否对应都不会影响之后只切效果，也不会意外恢复旧的展示称号。
+    if raw == nil then return 0, nil end
+    if type(raw) ~= "table" then return nil, "当前称号展示数据格式异常" end
+    local value = Primitive(raw[1])
+    if value == nil then return 0, nil end
+    local numeric = tonumber(value)
+    if numeric == nil then return nil, "当前称号展示类型不是数字：" .. tostring(value) end
+    return numeric, nil
+end
+
 function G:ApplyTitle(payload)
     local title = type(payload) == "table" and payload.title or nil
     if type(title) ~= "table" or title.apply ~= true then return true, "SKIPPED" end
     local matched, reason = self:CurrentTitleMatches(payload); if matched then return true, "ALREADY" end
-    if reason ~= nil and reason ~= "SKIPPED" then -- still continue only when current state was readable
+    if reason ~= nil and reason ~= "SKIPPED" then -- still continue only when current effect state was readable
         if tostring(reason):find("读取当前称号失败", 1, true) then return false, reason end
     end
     local effect = title.effect and MeaningfulId(title.effect.id) or nil
-    if effect == nil then return false, "称号数据不完整" end
-    local ok, raw, err = S.Api:CallCapability("X2Player:GetShowingAppellation", X2Player, "GetShowingAppellation")
-    if ok ~= true then return false, "读取当前称号展示类型失败：" .. tostring(err) end
-    local currentShowing = self:PackAppellation(raw)
-    local showing = currentShowing and MeaningfulId(currentShowing.id) or title.showing and MeaningfulId(title.showing.id) or nil
-    if showing == nil then return false, "无法取得当前称号展示类型" end
-    local callOk, value, callErr = S.Api:CallCapability("X2Player:ChangeAppellation", X2Player, "ChangeAppellation", showing, effect)
+    if effect == nil then return false, "称号效果数据不完整" end
+
+    -- Effect Authority：方案只决定 effectType；nameType 每次执行都从当前角色读取并保持原样。
+    -- saved title.showing 是保存时快照，可能与 effect 不对应，禁止参与动作参数。
+    local showing, showingErr = self:GetCurrentShowingAppellationType()
+    if showing == nil then return false, showingErr or "无法取得当前称号展示类型" end
+    local effectType = tonumber(effect) or effect
+    local callOk, value, callErr = S.Api:CallCapability("X2Player:ChangeAppellation", X2Player, "ChangeAppellation", showing, effectType)
     if callOk ~= true then return false, callErr end
     return true, value
 end

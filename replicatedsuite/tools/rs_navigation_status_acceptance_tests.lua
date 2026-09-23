@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 2 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
 -- Replicated Suite - user acceptance navigation status regression
 --
@@ -10,10 +14,15 @@ local R = assert(ReplicatedSuite.FeatureRegistry, "FeatureRegistry missing")
 
 local expected = {
     ["combat.buff_display"] = { state = "complete", incomplete = false },
-    ["life.craft_planner"] = { state = "incomplete", incomplete = true },
+    ["life.activities"] = { state = "complete", incomplete = false },
+    ["life.trade"] = { state = "complete", incomplete = false },
+    ["life.bonds"] = { state = "complete", incomplete = false },
+    ["life.fishing"] = { state = "complete", incomplete = false },
     ["life.housing"] = { state = "incomplete", incomplete = true },
     ["life.butler"] = { state = "incomplete", incomplete = true },
-    ["tools.auction_favorites"] = { state = "incomplete", incomplete = true },
+    -- 中文维护注释（2026-09-15）：用户已实机确认拍卖收藏进入完成区；该路由仍可能保留
+    -- 原生搜索框“增强同步”的可选验证，但直接 AuctionQuery/收藏/Sidecar/独立开关均已形成产品闭环。
+    ["tools.auction_favorites"] = { state = "complete", incomplete = false },
     ["tools.social"] = { state = "incomplete", incomplete = true },
     ["tools.craft_assist"] = { state = "incomplete", incomplete = true },
 }
@@ -21,6 +30,20 @@ local expected = {
 local byRoute = {}
 for _, row in pairs(R.features or {}) do
     byRoute[row.route] = row
+end
+
+assert(byRoute["life.craft_planner"] == nil, "制作规划已按用户要求删除，不应继续出现在 Registry/导航")
+
+
+local hiddenRoutes = {
+    ["tools.market_analysis"] = true,
+    ["tools.craft_assist"] = true,
+    ["tools.social"] = true,
+    ["life.housing"] = true,
+}
+for route in pairs(hiddenRoutes) do
+    local row = assert(byRoute[route], "missing hidden route: " .. route)
+    assert(row.navigationVisible == false, route .. " must be removed from main navigation")
 end
 
 local checked = 0

@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 4 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 -- 维护：真实 Diagnostics/Bootstrap/API/Page 工厂；仅替换 Native 和外部快照提供者。
 -- 不进 TOC。不能据此声称 RU 聊天/剪贴板/布局实机通过，也不生成用户实档恢复结论。
 -- 维护：旧测试以SetClipboardText可用为前提，与参考Available/not allowed矛盾；
@@ -66,8 +70,8 @@ end
 Test('diagnostics has run print and explicitly requested previous next actions',function()
     local S,D=Boot();local root,h=Page(S);local buttons={}
     for _,v in pairs(h.widgets)do if v.onClick then buttons[#buttons+1]=v.spec.text end end
-    table.sort(buttons);assert(#buttons==4,'visible action count='..#buttons)
-    assert(h.widgets.v3_diag_output.spec.text=='打印自检报告' and h.widgets.v3_diag_full_check.spec.text=='运行自检')
+    table.sort(buttons);assert(#buttons==5,'visible action count='..#buttons)
+    assert(h.widgets.v3_diag_output.spec.text=='打印故障报告' and h.widgets.v3_diag_output_full.spec.text=='完整报告' and h.widgets.v3_diag_full_check.spec.text=='运行自检')
     assert(h.widgets.v3_diag_report_prev.spec.text=='上一页' and h.widgets.v3_diag_report_next.spec.text=='下一页')
 end)
 Test('opening and activating diagnostics does not run checks read disk or copy',function()
@@ -157,12 +161,25 @@ Test('missing backend disables page operation with an explicit error rather than
     local S,D=Boot();local root,h=Page(S);S.DiagnosticsManager=nil
     local btn=h.widgets.v3_diag_output;local ok,err=btn.onClick();assert(ok==false and type(err)=='string')
 end)
-Test('default print populates page one without discarding fenced originals',function()
+Test('default fault print is complete paged fault report and reads every failed-store sample once',function()
     local S,D,io=Boot();Ready(D);local root,h=Page(S)
     assert(h.widgets.v3_diag_output.onClick());assert(h.edit and h.edit.text==S.ReportCopyTransport:GetTextPage(root.selfCheckDelivery,1) and #io.copies==0)
-    -- 维护：新默认先收集全部失败原档，再分页；此处防止倒退为copy_budget丢原档。
+    -- 维护：打印故障报告的 Authority 是一次固定的 BuildPaged 快照；所有故障 Store 各读取一次，
+    -- 之后仅由上一页/下一页切换同一文本，不允许先 Focus 裁剪再分页而丢失根因证据。
     local count=0;for _,n in pairs(io.reads)do count=count+n end
     assert(#io.chat==1 and count==3 and root.selfCheckMeta.kind=='paged')
+    assert(root.selfCheckText:find('RS-SELF-CHECK-1',1,true) and not root.selfCheckText:find('RS-FOCUS-1',1,true))
+end)
+Test('paged fault report preserves full runtime physical-repair probe outside the raw Store snapshot',function()
+    local S,D=Boot();Ready(D)
+    local st=S.Persistence.stores['v3.buff_display']
+    st.lastPhysicalTransportRepairOk=true
+    st.lastPhysicalTransportRepairAt=321
+    st.lastPhysicalTransportRepairProbe='schema8_v4/repairs=6/fallback=fallback_player_catalog_no_candidate/'..string.rep('P',1800)..'/PHYSICAL_PROBE_TAIL'
+    local text,meta=D:BuildPagedSelfCheckReport();assert(text,meta)
+    assert(text:find('[PERSISTENCE_PHYSICAL_REPAIR]',1,true),'runtime physical section missing')
+    assert(text:find('fallback_player_catalog_no_candidate',1,true),'physical fallback reason missing')
+    assert(text:find('PHYSICAL_PROBE_TAIL',1,true),'runtime physical probe was pre-clipped before paging')
 end)
 Test('hiding page clears editor and releases focus without reading another snapshot',function()
     local S,D,io=Boot();Ready(D);local root,h=Page(S);assert(h.widgets.v3_diag_output.onClick())
@@ -253,7 +270,7 @@ Test('read-only report uses three real Store codecs without applying or saving a
     function host.edit:MaxTextLength()return 9215 end
     function host.edit:SetText(value)self.text=value:sub(1,9215)end
     beforeLoads,beforeSaves=loadCount,saveCount
-    assert(host.widgets.v3_diag_output.onClick())
+    assert(host.widgets.v3_diag_output_full.onClick())
     local session=assert(root.selfCheckDelivery);assert(session.parts>1,'real evidence fixture must exercise parts')
     local original=root.selfCheckText;local rows={host.edit.text}
     for i=2,session.parts do
@@ -269,7 +286,7 @@ Test('read-only report uses three real Store codecs without applying or saving a
     root:OnDeactivated()
     function host.edit:SetText(value)self.text=value:gsub('[\r\n]',''):sub(1,4096)end
     beforeLoads,beforeSaves=loadCount,saveCount
-    assert(host.widgets.v3_diag_output.onClick())
+    assert(host.widgets.v3_diag_output_full.onClick())
     assert(root.selfCheckDelivery.wire=='error_pages1' and root.selfCheckDelivery.capacity<=4096)
     local flatRows={host.edit.text};local flatOriginal=root.selfCheckText
     for i=2,root.selfCheckDelivery.parts do

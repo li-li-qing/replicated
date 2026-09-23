@@ -94,7 +94,8 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.208-target-gear-score-api-default-template" -- 中文维护注释：.18.208 不改 schema5/Persistence；按实机 HUD_TEMPLATE_V1 固化已确认的目标装备默认布局，并修复 RU 更新后 UnitGearScore(unit, comma) 第二参数误用与 target-kind 前置门导致敌人装分不可见。装分格式解析统一收敛到 Utils，状态显示/团队战备共用同一 Authority 边界。
+S.BuildTag = "v3-m1.16.0.18.295-trade-native-lease-headroom" -- 维护（trade-native-lease-headroom-1）：根据 18.294 实机诊断修复 native_accepted 后 Consumer 归零导致回执订阅/inFlight 被提前释放；Native 回执改为独立轻量 lease，后台自动刷新预留完整 cooldown 交互空窗，降低收藏路线切换持续撞 5 秒窗口。旧 Store schema、SingleFlight 与 QuoteQueue Authority 不变。
+-- 维护（.18.248）：补齐缺失运行时文件并恢复被 Git 冲突破坏的源码；保留 .247 个人工作台与所有 Store 协议，不清配置。
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}
 S.SaveKey = tostring(S.Config.SaveKey or "replicated_suite_v1")
@@ -759,11 +760,12 @@ function S.InstallRecoveryCommandBar()
     return true
 end
 
-local function ReadRecoveryPosition(button)
+local function ReadRecoveryPosition(button, pinnedScale)
+    -- 维护：恢复入口使用统一 logical 校准；手势冻结单位，禁止无条件 / uiScale。
     if button == nil then return nil, nil end
-    if S.Layout ~= nil and type(S.Layout.GetLogicalRect) == "function" then
+    if S.Layout ~= nil and type(S.Layout.GetWindowLogicalRect) == "function" then
         local ok, x, y = pcall(function()
-            local px, py = S.Layout:GetLogicalRect(button)
+            local px, py = S.Layout:GetWindowLogicalRect(button, pinnedScale)
             return px, py
         end)
         if ok == true and tonumber(x) ~= nil and tonumber(y) ~= nil then return tonumber(x), tonumber(y) end
@@ -858,54 +860,65 @@ local function InstallRecoveryHandlers(button)
     local rightOk, rightResult = pcall(button.SetHandler, button, "OnRButtonUp", RecoveryRightClick)
     local dragStartOk, dragStartResult = pcall(button.SetHandler, button, "OnDragStart", function()
         if type(button.StartMoving) ~= "function" then return false end
-        button.rsDragStartX, button.rsDragStartY = ReadRecoveryPosition(button)
+        -- 维护：早期 Bootstrap 不依赖 V3；可用时仅在开始读一次单位与 viewport 身份。
+        if S.Layout and type(S.Layout.GetWindowLogicalRect)=="function" then
+            local _,_,_,_,unit=S.Layout:GetWindowLogicalRect(button)
+            button.rsGeometryUnitScale=unit and unit.effectiveScale or nil
+            button.rsDragViewport=S.Layout:MakeSignature(S.Layout:GetContext())
+        end
+        button.rsDragStartX, button.rsDragStartY = ReadRecoveryPosition(button,button.rsGeometryUnitScale)
         local ok, result = pcall(function() return button:StartMoving() end)
         button.rsMoving = ok == true and result ~= false
         return button.rsMoving
     end)
     local dragStopOk, dragStopResult = pcall(button.SetHandler, button, "OnDragStop", function()
-        if button.rsMoving == true and type(button.StopMovingOrSizing) == "function" then pcall(function() button:StopMovingOrSizing() end) end
-        local endX, endY = ReadRecoveryPosition(button)
-        local startX, startY = tonumber(button.rsDragStartX), tonumber(button.rsDragStartY)
-        local moved = startX ~= nil and startY ~= nil and endX ~= nil and endY ~= nil
-            and (math.abs(endX - startX) > RECOVERY_DRAG_MOVE_EPSILON or math.abs(endY - startY) > RECOVERY_DRAG_MOVE_EPSILON)
-        button.rsMoving = false
-        button.rsDragStartX, button.rsDragStartY = nil, nil
-        -- Some RU builds emit DragStart/DragStop even for a normal click. Suppress
-        -- the following OnClick only when geometry actually moved; otherwise the
-        -- recovery launcher would consume every click forever.
-        button.rsIgnoreClick = moved == true
-        if moved == true and S.Layout ~= nil and type(S.Layout.StorePlacement) == "function" and S.UIV3 ~= nil and type(S.UIV3.LauncherState) == "table" then
-            -- The launcher participates in the same framework-owned screen-button
-            -- snap group as Gear and future floating buttons.  Snap is resolved
-            -- once at drag stop; there is no Tick/mouse polling.
-            if S.UI ~= nil and type(S.UI.CommitScreenSnap) == "function" then
-                S.UI:CommitScreenSnap("v3_launcher", button, {
-                    enabled = true, group = "screen_buttons", kind = "button", distance = 16, gap = 0, owner = "v3:launcher_snap",
-                })
-            elseif type(S.Layout.ResolveScreenSnap) == "function" and type(S.Layout.GetLogicalRect) == "function" then
-                local currentX, currentY, currentW, currentH = S.Layout:GetLogicalRect(button)
-                local snapX, snapY, snapped = S.Layout:ResolveScreenSnap("v3_launcher", currentX, currentY, currentW, currentH, {
-                    enabled = true, group = "screen_buttons", kind = "button", distance = 16, gap = 0,
-                })
-                if snapped == true and tonumber(snapX) ~= nil and tonumber(snapY) ~= nil then
-                    if type(button.RemoveAllAnchors) == "function" then button:RemoveAllAnchors() end
-                    button:AddAnchor("TOPLEFT", "UIParent", snapX, snapY)
+        -- 维护：Reset 取消后迟到 DragStop 没有写权限，不再次保存旧坐标。
+        if button.rsMoving~=true then return true end
+        if type(button.StopMovingOrSizing)=="function" then pcall(button.StopMovingOrSizing,button) end
+        local endX,endY=ReadRecoveryPosition(button,button.rsGeometryUnitScale)
+        local startX,startY=tonumber(button.rsDragStartX),tonumber(button.rsDragStartY)
+        local moved=startX~=nil and startY~=nil and endX~=nil and endY~=nil
+            and (math.abs(endX-startX)>RECOVERY_DRAG_MOVE_EPSILON or math.abs(endY-startY)>RECOVERY_DRAG_MOVE_EPSILON)
+        button.rsMoving=false;button.rsDragStartX,button.rsDragStartY,button.rsGeometryUnitScale=nil,nil,nil
+        button.rsIgnoreClick=moved==true
+        local L,V=S.Layout,S.UIV3
+        if moved and L and type(L.StorePlacementRect)=="function" and V and type(V.LauncherState)=="table" then
+            local live=L:GetContext(true)
+            local changed=button.rsDragViewport~=nil and button.rsDragViewport~=L:MakeSignature(live)
+            button.rsDragViewport=nil
+            if changed then return V:ApplyLauncherPlacement() end
+            local x,y=endX,endY
+            if type(L.ResolveScreenSnap)=="function" then
+                local sx,sy,snapped=L:ResolveScreenSnap("v3_launcher",x,y,RECOVERY_BUTTON_SIZE,RECOVERY_BUTTON_SIZE,
+                    {enabled=true,group="screen_buttons",kind="button",distance=16,gap=0})
+                if snapped then x,y=sx,sy end
+            end
+            -- 维护：唯一 committed logical rect → 临时 edge intent → Native 接受 → 原 Store。
+            -- 旧链路 StorePlacement 再读 GetLogicalRect，RU 返回 logical effective 值时会重复除缩放。
+            local candidate={userMoved=true}
+            x,y=L:StorePlacementRect(candidate,x,y,RECOVERY_BUTTON_SIZE,RECOVERY_BUTTON_SIZE,{mode="strict"})
+            local windowing=S.RSUI and S.RSUI.Windowing
+            local accepted,err
+            if windowing and type(windowing.ApplyGeometry)=="function" then
+                accepted,err=windowing:ApplyGeometry(button,"v3:launcher",x,y,RECOVERY_BUTTON_SIZE,RECOVERY_BUTTON_SIZE,true)
+            else
+                accepted,err=pcall(function()
+                    if button:RemoveAllAnchors()==false then error("launcher_anchor_clear_rejected") end
+                    if button:AddAnchor("TOPLEFT","UIParent",x,y)==false then error("launcher_anchor_rejected") end
+                end)
+            end
+            if accepted~=true then return false,err end
+            local before={};for k,v in pairs(V.LauncherState)do before[k]=v;V.LauncherState[k]=nil end
+            for k,v in pairs(candidate)do V.LauncherState[k]=v end
+            if type(V.MarkLauncherStoreDirty)=="function" then
+                local called,saved,saveErr=pcall(V.MarkLauncherStoreDirty,V,0,"launcher_drag")
+                if not called or saved==false then
+                    for k in pairs(V.LauncherState)do V.LauncherState[k]=nil end
+                    for k,v in pairs(before)do V.LauncherState[k]=v end
+                    if type(V.ApplyLauncherPlacement)=="function" then V:ApplyLauncherPlacement() end
+                    return false,called and saveErr or saved
                 end
             end
-            local _, _, width, height = S.Layout:GetLogicalRect(button)
-            -- Screen buttons persist nearest-edge intent, not a monitor-specific
-            -- absolute pixel. This keeps the R launcher in the same screen
-            -- region when the user switches 4:3/16:10/16:9 resolutions.
-            local x, y = S.Layout:StorePlacement(S.UIV3.LauncherState, button, {
-                mode = "strict",
-            })
-            S.UIV3.LauncherState.userMoved = true
-            if tonumber(x) ~= nil and tonumber(y) ~= nil then
-                if type(button.RemoveAllAnchors) == "function" then button:RemoveAllAnchors() end
-                button:AddAnchor("TOPLEFT", "UIParent", x, y)
-            end
-            if type(S.UIV3.MarkLauncherStoreDirty) == "function" then pcall(function() S.UIV3:MarkLauncherStoreDirty(150, "launcher_drag") end) end
         end
         return true
     end)

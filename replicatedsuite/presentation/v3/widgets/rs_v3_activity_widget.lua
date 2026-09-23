@@ -74,7 +74,8 @@ local function CreateActivityWidget()
         id = "v3_activity_widget_content", parent = surface:GetContentRoot(), gap = 5,
         slot = { hAlign = "fill", vAlign = "fill" },
     })
-    instance.table = RSUI:TableView({
+    -- ActivityLists 只分配双视口；原 Consumer/开关/保存逻辑保留，区域不再被长时间线挤出。
+    instance.table = S.UIV3.ActivityLists:Create({
         id = "v3_activity_widget_table", parent = content,
         items = instance.rows,
         rowHeight = 24, headerHeight = 22, desiredRows = Feature:GetWidgetRows(), overscan = 1,
@@ -82,12 +83,14 @@ local function CreateActivityWidget()
         selectable = false, columnResize = false, headerInteractive = false, columnGap = 2, cellPaddingX = 4, rowFontSize = 10, headerFontSize = 9,
         onItemActivated = function(item)
             local modal = S.UIV3 and S.UIV3.QuestDetailFloatingV3 or nil
-            if type(modal) ~= "table" or type(modal.Open) ~= "function" then return false end
+            if type(modal) ~= "table" or type(modal.Open) ~= "function" then
+                return false, "QuestDetailFloatingV3 未加载"
+            end
             return modal:Open(item and item.questScope or "event", item and item.questKey or nil, item)
         end,
         columns = {
             { id = "name", title = "活动", field = "shortName", size = "fill", minWidth = 62, absoluteMinWidth = 28, fill = 0.75,
-                getTone = function(item) return item and item.active and "red" or "default" end },
+                getTone = function(item) return "default" end },
             { id = "status", title = "状态 / 时间", field = "status", size = "fill", minWidth = 92, absoluteMinWidth = 46, fill = 1.35,
                 getTone = function(item) return item and item.tone or "muted" end },
             { id = "progress", title = "进度", field = "progressText", size = "fill", minWidth = 38, absoluteMinWidth = 30, fill = 0.65, resizable = false,
@@ -101,8 +104,12 @@ local function CreateActivityWidget()
         -- viewport (not a pre-truncated data slice) owns how many rows are
         -- visible, so vertical window resizing immediately reveals/hides rows.
         local rows, revision = Feature:GetRows()
+        -- 个人关注排序是 Presentation 投影；不修改 Authority 的共享行，首页/悬浮共用一份偏好。
+        local authorityRevision=revision -- 业务修订号与表示偏好版本必须分离，不把复合字符串误记为数值。
+        local workspace=S.UIV3.Workspace
+        if workspace then rows=workspace:ProjectRows("activities",rows);revision=tostring(revision)..":"..workspace.revision end
         self.rows = rows
-        self.lastRevision = tonumber(revision) or self.lastRevision
+        self.lastRevision = tonumber(authorityRevision) or self.lastRevision
         self.table:SetItems(rows, revision)
         if #rows == 0 then
             self.table:SetViewState("empty", { title = "暂无活动", detail = "当前没有可显示的活动；隐藏规则和区域状态变化后会自动刷新。" })
@@ -110,8 +117,10 @@ local function CreateActivityWidget()
             self.table:SetViewState("ready")
         end
         local summary = Feature:GetSummary()
-        self.surface:SetStatus("进行中 " .. tostring(summary.active or 0) .. " · 两小时内 " .. tostring(summary.withinTwoHours or 0),
-            (tonumber(summary.active) or 0) > 0 and "orange" or "muted")
+        -- 中文维护注释（2026-09-18，Activity Timeline v2）：悬浮窗与主页面必须消费同一 Summary 语义；
+        -- 只显示 timelineActive/withinTwoHours/liveZones，禁止再用 summary.active 把 live 战争状态混入“当前活动”。
+        self.surface:SetStatus("当前 " .. tostring(summary.timelineActive or 0) .. " · 两小时内 " .. tostring(summary.withinTwoHours or 0)
+            .. " · 实时 " .. tostring(summary.liveZones or 0), "muted")
         return true
     end
 
@@ -119,6 +128,9 @@ local function CreateActivityWidget()
         if self.subscribed == true then return true end
         if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
             S.Events:SubscribeInternal("v3.activities.updated", self, function() if instance.visible then instance:Refresh() end end)
+            S.Events:SubscribeInternal("v3.workspace.updated", self, function(_,kind)
+                if kind=="lists" and instance.visible then instance:Refresh()end
+            end)
         end
         self.subscribed = true
         return true

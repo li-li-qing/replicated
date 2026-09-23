@@ -129,11 +129,16 @@ G:RegisterSequenceCase("v3_m4_gear_screen_buttons", function()
     if S.UIV3.GearQuickSettingsModalV3 == nil or type(S.UIV3.GearQuickSettingsModalV3.Open) ~= "function" then return Fail("quick_button_settings_modal_contract") end
     local quickSpec = S.UIV3.WidgetHost and S.UIV3.WidgetHost:GetSpec("combat.gear.quick") or nil
     if quickSpec == nil or quickSpec.windowingRequired ~= false then return Fail("quick_button_widget_contract") end
+    -- 维护（gear-selected-delete-1）：删除入口虽然属于 Presentation 可发现性修复，但真正写入必须
+    -- 始终穿过 Commands -> Authority；验收锁住这条链，防止未来 UI 为了“方便”直接 table.remove
+    -- F.State.sets，从而绕过 SaveIndexNow、payload 清理和 QuickButton 同步。Store/schema 不因此升级。
     if type(F.Commands) ~= "table" or type(F.Commands.ApplyQuickSnapEnabled) ~= "function"
         or type(F.Commands.ApplyQuickSnapDistance) ~= "function" or type(F.Commands.ApplyQuickButtonGap) ~= "function"
-        or type(F.Commands.ResetQuickSnapSettings) ~= "function" or type(F.Commands.MarkStoreDirty) ~= "function" then return Fail("presentation_command_contract") end
+        or type(F.Commands.ResetQuickSnapSettings) ~= "function" or type(F.Commands.MarkStoreDirty) ~= "function"
+        or type(F.Commands.DeleteSet) ~= "function" or type(F.Commands.MoveSet) ~= "function" then return Fail("presentation_command_contract") end
     if type(F.Authority) ~= "table" or type(F.Authority.GetQuickRows) ~= "function" or type(F.Authority.DetectCurrentQuickSet) ~= "function"
-        or type(F.Authority.SetQuickPosition) ~= "function" or type(F.Authority.ResetQuickPositions) ~= "function" then return Fail("quick_button_authority_contract") end
+        or type(F.Authority.SetQuickPosition) ~= "function" or type(F.Authority.ResetQuickPositions) ~= "function"
+        or type(F.Authority.DeleteSet) ~= "function" or type(F.Authority.MoveSet) ~= "function" then return Fail("quick_button_authority_contract") end
 
     -- The feature must be genuinely idle when not executing a user-authorized
     -- loadout. No background equipment/bag scan task is allowed.

@@ -270,16 +270,17 @@ function H:HideAll(preserveEntry)
 end
 
 function H:ApplyResponsiveLayout(fromMetricsChange)
-    local host = self:GetActive()
-    if host == nil or host.created ~= true then return false, "active host unavailable" end
-    local ok, err = Call(host, "applyLayout", fromMetricsChange == true)
-    if ok ~= true then return false, err end
-    local widgetHost = S.UIV3 and S.UIV3.WidgetHost or nil
-    if widgetHost ~= nil and type(widgetHost.ApplyResponsiveLayout) == "function" then
-        local widgetOk, widgetErr = widgetHost:ApplyResponsiveLayout(fromMetricsChange == true)
-        if widgetOk ~= true then return false, widgetErr or "floating widget responsive layout failed" end
+    -- 维护（viewport-recovery-1）：主宿主失败不能阻止独立屏幕控件几何恢复。
+    -- WindowShell 已由 Layout 的独立注册表先处理；这里仅桥接主窗与非 Shell Widget。
+    local host=self:GetActive()
+    local ok,err=true,nil
+    if host and host.created==true then ok,err=Call(host,"applyLayout",fromMetricsChange==true) end
+    local widgetHost=S.UIV3 and S.UIV3.WidgetHost
+    if widgetHost and type(widgetHost.ApplyResponsiveLayout)=="function" then
+        local widgetOk,widgetErr=widgetHost:ApplyResponsiveLayout(fromMetricsChange==true)
+        if widgetOk~=true then return false,widgetErr end
     end
-    return true
+    return ok,err
 end
 
 function H:RefreshData(dirty)

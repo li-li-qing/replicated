@@ -108,7 +108,11 @@ local function CreateSidecar()
     instance.refresh = RSUI:Button({ id = "v3_craft_sidecar_refresh", parent = recipeRow, text = "刷新", compact = true, slot = { size = "fixed", width = 52 } })
     instance.quote = RSUI:Button({ id = "v3_craft_sidecar_quote", parent = recipeRow, text = "材料询价", compact = true, enabled = false, slot = { size = "fixed", width = 76 } })
 
-    instance.status = RSUI:Text({ id = "v3_craft_sidecar_status", parent = root,
+    -- 中文维护注释（2026-09-14，Sidecar logical-id 保留边界）：FloatingSurface 的 id 是
+    -- `v3_craft_sidecar`，WindowShellV3 footer 会自动占用 `v3_craft_sidecar_status`。业务内容区反馈
+    -- 必须使用独立 logical id；否则首次构建该 Sidecar 时会触发 Generation quarantine。这里只修
+    -- Presentation 身份，不改变制作 Feature、材料 Projection、询价队列或任何持久化数据。
+    instance.status = RSUI:Text({ id = "v3_craft_sidecar_action_status", parent = root,
         text = "选择制作物后显示材料；普通刷新不会自动查询拍卖行。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
         slot = { size = "fixed", height = 30, hAlign = "fill" } })
 

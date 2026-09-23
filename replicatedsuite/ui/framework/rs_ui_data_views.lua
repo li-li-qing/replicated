@@ -2083,6 +2083,49 @@ end)
 ------------------------------------------------------------------------
 -- TableView / Table
 ------------------------------------------------------------------------
+-- 维护（2026-09-23，table-adaptive-tail-fit-1）：可伸缩 TableView 在视口高度不是 rowHeight
+-- 整数倍时，VirtualList 只能生成完整行，底部会留下明显“空白条”。活动模块此前有一份局部算法，
+-- 导致悬浮窗修了而其他 TableView 继续复现。这里下沉为 opt-in 几何能力；数据/选择/滚动 Authority
+-- 不变，也不会给所有表格全局开启。候选行数按实际 itemCount 评分：近满列表可在 soft min/max 内轻微
+-- 拉伸/压缩吃掉尾部空白；条目少到必须超过 softMax 才能铺满时则保留真实内容不足的空白。
+local function ResolveAdaptiveTailRowHeight(viewportHeight, itemCount, baseRowHeight, rowGap, softMin, softMax)
+    local h = math.max(1, tonumber(viewportHeight) or 1)
+    local count = math.max(0, math.floor(tonumber(itemCount) or 0))
+    local base = math.max(12, tonumber(baseRowHeight) or 28)
+    local gap = math.max(0, tonumber(rowGap) or 0)
+    local minH = math.max(12, tonumber(softMin) or (base - 4))
+    local maxH = math.max(minH, tonumber(softMax) or (base + 4))
+    if count <= 0 then return base, 0, h end
+
+    -- 维护（2026-09-23，table-adaptive-tail-fit-2）：18.291 下沉时把“数据条数 < 基准可见行数”直接
+    -- 当成真正内容不足，漏掉了活动悬浮窗已验证的一类场景：例如 235px 视口只有 8 条数据，26px 基准
+    -- 会留下约 27px 空白，但把 8 行轻微拉到 29.375px 就能完整填满。跑商主页面正会命中这一分支。
+    -- 因此候选行数必须从实际 itemCount 出发评分，而不是先用 floor(base) 截断；只有条目少到必须超过
+    -- softMax 才保留真实内容不足的尾空白。此能力仍是 adaptive_tail opt-in，不影响 fixed TableView。
+    local hardMin = 12
+    local maxCandidate = math.min(count, 32, math.max(1, math.floor((h + gap) / (hardMin + gap))))
+    local bestH, bestRows, bestScore = nil, nil, nil
+    for rows = 1, maxCandidate do
+        local availableForRows = h - math.max(0, rows - 1) * gap
+        local candidate = availableForRows / rows
+        if candidate >= hardMin then
+            local score = math.abs(candidate - base)
+            if candidate < minH then score = score + (minH - candidate) * 2.5 end
+            if candidate > maxH then score = score + (candidate - maxH) * 2.5 end
+            score = score - rows * 0.0001
+            if bestScore == nil or score < bestScore then bestH, bestRows, bestScore = candidate, rows, score end
+        end
+    end
+    if bestRows == nil then
+        local height = math.max(hardMin, math.min(base, h))
+        return height, 1, math.max(0, h - height)
+    end
+
+    if bestH > maxH and count == bestRows then bestH = maxH end
+    local used = bestRows * bestH + math.max(0, bestRows - 1) * gap
+    return bestH, bestRows, math.max(0, h - used)
+end
+
 local function NewTableView(kind, spec)
     local c, err = Host(kind, spec)
     if c == nil then return nil, err end
@@ -2097,10 +2140,23 @@ local function NewTableView(kind, spec)
     c.headerVisible = spec.headerVisible ~= false
     c.headerHeight = math.max(12, tonumber(spec.headerHeight) or Token("size.rowH", 28))
     c.rowHeight = math.max(12, tonumber(spec.rowHeight) or Token("size.rowH", 28))
+    c.baseRowHeight = c.rowHeight
+    c.rowFitMode = tostring(spec.rowFitMode or "fixed"):lower()
+    if c.rowFitMode ~= "adaptive_tail" then c.rowFitMode = "fixed" end
+    c.rowFitMin = math.max(12, tonumber(spec.rowFitMin) or (c.baseRowHeight - 4))
+    c.rowFitMax = math.max(c.rowFitMin, tonumber(spec.rowFitMax) or (c.baseRowHeight + 4))
+    c.rowFitState = { mode = c.rowFitMode, rowHeight = c.rowHeight, visibleRows = 0, tail = 0 }
     c.resolvedWidths = {}
     c.padding = Pad(spec.padding)
     c.headerInteractive = spec.headerInteractive == true
     c.onSortChanged = spec.onSortChanged
+    -- 维护（2026-09-23，table-runtime-callback-bridge-1）：TableView 是内部 ListView 的公开外壳。
+    -- 多个页面会在 TableView 创建完成后再绑定 onSelectionChanged/onItemActivated；旧实现只在构造瞬间
+    -- 把 spec 回调复制给 ListView，导致后绑定在实机完全不生效（跑商表现为单击无法选中、双击无响应，
+    -- 进而“货物详情/关注货物”也无法使用）。这里改为运行时读取 TableView 当前回调，不新增 Tick/轮询，
+    -- 不改变 SelectionModel Authority，同时保留构造期传回调的旧用法。
+    c.onSelectionChanged = spec.onSelectionChanged
+    c.onItemActivated = spec.onItemActivated or spec.onRowActivated
     c.sortColumnId = spec.sortColumnId ~= nil and tostring(spec.sortColumnId) or nil
     c.sortDirection = tostring(spec.sortDirection or "none"):lower()
     if c.sortDirection ~= "asc" and c.sortDirection ~= "desc" then c.sortDirection = "none" end
@@ -2147,13 +2203,20 @@ local function NewTableView(kind, spec)
         selectable = spec.selectable,
         selectionMode = spec.selectionMode,
         selectionModel = spec.selectionModel,
-        onSelectionChanged = type(spec.onSelectionChanged) == "function" and function(index, previousIndex, listView, model, reason, key, selected, context)
-            -- TableView owns the public callback surface; do not leak its inner
-            -- ListView implementation as the View argument. The ListView's own
-            -- SafeCall already fences this wrapper, so do not add a nested fence.
-            return spec.onSelectionChanged(index, previousIndex, c, model, reason, key, selected, context)
-        end or nil,
-        onItemActivated = spec.onItemActivated or spec.onRowActivated,
+        onSelectionChanged = function(index, previousIndex, listView, model, reason, key, selected, context)
+            -- TableView owns the public callback surface; read from `c` at dispatch time so post-construction bindings
+            -- are honored. The inner ListView SafeCall already fences this wrapper.
+            local callback = c.onSelectionChanged
+            if type(callback) ~= "function" then return true end
+            return callback(index, previousIndex, c, model, reason, key, selected, context)
+        end,
+        onItemActivated = function(item, index, key, listView, reason)
+            -- 激活回调同样动态桥接。Trade 的双击识别依赖每次 row_click 都到达页面/悬浮窗实例；
+            -- 旧实现构造时捕获 nil 后，后续赋值永远不会传入内部 ListView。
+            local callback = c.onItemActivated
+            if type(callback) ~= "function" then return false end
+            return callback(item, index, key, c, reason)
+        end,
         viewState = spec.viewState,
         autoEmptyState = spec.autoEmptyState,
         onRetry = spec.onRetry,
@@ -2434,6 +2497,9 @@ local function NewTableView(kind, spec)
     end
 
     function c:GetListView() return self.list end
+    -- 维护（table-runtime-callback-bridge-1）：显式 setter 供后续新代码使用；直接赋值旧写法仍保持兼容。
+    function c:SetOnSelectionChanged(callback) self.onSelectionChanged = callback; return true end
+    function c:SetOnItemActivated(callback) self.onItemActivated = callback; return true end
     function c:GetSelectionModel() return self.list:GetSelectionModel() end
     function c:GetViewState() return self.list:GetViewState() end
     function c:SetViewState(state, options) return self.list:SetViewState(state, options) end
@@ -2600,6 +2666,33 @@ local function NewTableView(kind, spec)
         return false
     end
 
+    -- 维护（2026-09-22，table-runtime-row-height-1）：某些复合视口（例如活动时间/实时区域）
+    -- 需要在已确定的父视口内轻量吸收不足一整行的尾部余数。不能直接修改 TableView.list.rowHeight，
+    -- 否则 TableView 自己的 rowFactory/Measure 仍保留旧值，后续滚动新建 pooled row 时会产生两套行高 Authority。
+    -- 本 API 只更新 Presentation 几何，不改数据、选择、滚动 offset 或持久化；relayout=false 用于父 Layout
+    -- 正在进行时，避免 SetRowHeight -> Layout -> 父失效形成重入。运行时行高仍限制 >=12，与 ListView 契约一致。
+    function c:SetRuntimeRowHeight(value, relayout)
+        local height = math.max(12, tonumber(value) or self.rowHeight)
+        if math.abs(height - (tonumber(self.rowHeight) or height)) <= 0.001
+            and self.list ~= nil and math.abs(height - (tonumber(self.list.rowHeight) or height)) <= 0.001 then
+            return false, height
+        end
+        self.rowHeight = height
+        if self.list ~= nil then
+            self.list.rowHeight = height
+            -- 已存在的 pooled TableRow 最终仍由 Arrange 传入真实高度；同步字段是为了后续
+            -- Measure/新建行/调试快照都只看到一套 rowHeight。数量受 maxPoolSize 严格有界。
+            if type(self.list.ForEachPooledRow) == "function" then
+                self.list:ForEachPooledRow(function(row) if type(row) == "table" then row.rowHeight = height end end)
+            end
+        end
+        if relayout ~= false then
+            self:InvalidateMeasure("runtime_row_height")
+            if self.width and self.height then self:Layout(self.x or 0, self.y or 0, self.width, self.height) end
+        end
+        return true, height
+    end
+
     function c:SetColumnSizeMode(id, mode, value)
         id, mode = tostring(id or ""), tostring(mode or "auto"):lower()
         if mode ~= "fixed" and mode ~= "fill" then mode = "auto" end
@@ -2646,6 +2739,16 @@ local function NewTableView(kind, spec)
         local innerH = math.max(1, height - p.top - p.bottom)
         local listY = p.top + (self.headerVisible and self.headerHeight or 0)
         local listH = math.max(1, innerH - (self.headerVisible and self.headerHeight or 0))
+        if self.list ~= nil then
+            local targetHeight, visibleRows, tail
+            if self.rowFitMode == "adaptive_tail" and type(self.list.GetItemCount) == "function" then
+                targetHeight, visibleRows, tail = ResolveAdaptiveTailRowHeight(listH, self.list:GetItemCount(), self.baseRowHeight, self.list.rowGap, self.rowFitMin, self.rowFitMax)
+            else
+                targetHeight, visibleRows, tail = self.baseRowHeight, 0, 0
+            end
+            self:SetRuntimeRowHeight(targetHeight, false)
+            self.rowFitState = { mode = self.rowFitMode, rowHeight = targetHeight, visibleRows = visibleRows or 0, tail = tail or 0, viewportHeight = listH }
+        end
         local scrollbarReserve = self.list ~= nil and type(self.list.GetScrollbarReserve)=="function" and self.list:GetScrollbarReserve(listH) or 0
         local columnW = math.max(1, innerW - scrollbarReserve)
         self.lastColumnAvailableWidth = columnW
@@ -2729,6 +2832,10 @@ local function ValidateTableViewSpec(spec)
     end
     if (type(spec.getCount) == "function") ~= (type(spec.getItem) == "function") then
         return false, "table_data_provider_pair_required"
+    end
+    if spec.rowFitMode ~= nil then
+        local mode = tostring(spec.rowFitMode):lower()
+        if mode ~= "fixed" and mode ~= "adaptive_tail" then return false, "table_row_fit_mode_invalid" end
     end
     return true
 end

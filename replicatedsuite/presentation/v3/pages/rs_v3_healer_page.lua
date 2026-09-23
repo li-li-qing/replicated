@@ -5,6 +5,8 @@
 -- No X2Unit/X2Team access is allowed here. Runtime facts stay in
 -- TeamRosterV3/AuraObservationV3/Healer Domain; this page owns only UI state.
 ------------------------------------------------------------------------
+-- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local RSUI, D = S.RSUI, S.UIV3Design
@@ -103,7 +105,7 @@ local function BuildPage(parent, route)
 
     local actions = RSUI:HorizontalBox({ id = "v3_healer_actions", parent = root, gap = 6,
         slot = { size = "fixed", height = 31, hAlign = "fill" } })
-    local featureButton = RSUI:Button({ id = "v3_healer_feature_toggle", parent = actions, text = "启用功能", compact = true,
+    local featureButton = D:ModuleToggleButton({ id = "v3_healer_feature_toggle", parent = actions, text = "启用功能", compact = true,
         slot = { size = "fixed", width = 96 } })
     local calibrationButton = RSUI:Button({ id = "v3_healer_raid_calibration_action", parent = actions, text = "校准团队色块", compact = true,
         slot = { size = "fixed", width = 118 } })

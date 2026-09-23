@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 3 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 -- 中文维护注释（2026-09-12）：三个真实 Store 的公共读写契约回归，仅开发期执行，不进 TOC。
 -- 原因：既有测试替代了 S.Api，且只覆盖 actual~=expected 分支，未验证 metadata 业务章。
 -- Authority：生产 Persistence/Store/Utils/API/能力门均原样加载，仅 ADDON.Native 边界为内存盘。
@@ -60,7 +64,8 @@ local function Sample(store)
         v.widgetWindow.userMoved=true;v.widgetWindow.coordinateSpace='logical-free-v2'
         v.widgetWindow.x=0;v.widgetWindow.y=70.25;v.widgetWindow.overallOpacity=0.75
     else
-        v.settings.tracked.buff={21,82};v.settings.tracked.debuff={123};v.settings.tracked.auto={456}
+        v.settings.tracked.player.buff={21,82};v.settings.tracked.player.debuff={123};v.settings.tracked.player.auto={456}
+        v.settings.tracked.target.buff={21,82};v.settings.tracked.target.debuff={123};v.settings.tracked.target.auto={456}
         v.settings.trackedCooldowns.skill={789};v.settings.trackedCooldowns.mate={987}
         v.settings.components.buffs.x=-20;v.settings.targetLayout.components.buffs.x=40
         v.settings.components.buffs.alpha=0.75
@@ -167,7 +172,7 @@ for _,id in ipairs(IDS) do
         local raw=assert(P:DecodePhysicalEnvelope(io.disk[key]))
         if id=='v3.life.trade' then raw.payload.fromZone=20
         elseif id=='v3.death_review' then raw.payload.settings.windowMs=6000
-        else raw.payload.settings.tracked.auto={555} end
+        else raw.payload.settings.tracked.player.auto={555} end
         io.disk[key]=assert(P:EncodePhysicalEnvelope(raw))
         assert(not P:VerifyPersistedValue(st,expected,key),'changed business accepted')
     end)
@@ -175,7 +180,7 @@ for _,id in ipairs(IDS) do
         local _,P,_,st,expected,key=Ready(id)
         if id=='v3.life.trade' then expected.fromZone=20
         elseif id=='v3.death_review' then expected.settings.windowMs=6000
-        else expected.settings.tracked.auto={555} end
+        else expected.settings.tracked.player.auto={555} end
         assert(not P:VerifyPersistedValue(st,expected,key),'wrong expected domain accepted')
     end)
     Test(id..' unsealed metadata and wrong owner rejected before business proof',function()

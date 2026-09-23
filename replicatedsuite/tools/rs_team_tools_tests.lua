@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 5 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Team Tools Test Suite (B10)
 --
@@ -195,7 +199,9 @@ Test("T1: Feature registry metadata & contract versions", function()
 
     -- Contracts
     assert((tonumber(Feature.TeamRoleContractVersion) or 0) >= 2, "TeamRoleContractVersion >= 2")
-    assert((tonumber(Feature.AutoRoleCatalogContractVersion) or 0) >= 1, "AutoRoleCatalogContractVersion >= 1")
+    assert((tonumber(Feature.AutoRoleContractVersion) or 0) >= 3, "AutoRoleContractVersion >= 3")
+    assert((tonumber(Feature.AutoRoleCatalogContractVersion) or 0) >= 2, "AutoRoleCatalogContractVersion >= 2")
+    assert((tonumber(Feature.AutoRoleRosterLeaseContractVersion) or 0) >= 1, "AutoRoleRosterLeaseContractVersion >= 1")
     assert((tonumber(Feature.TeamVisualContractVersion) or 0) >= 2, "TeamVisualContractVersion >= 2")
     assert((tonumber(Feature.TeamMarkerSnapshotContractVersion) or 0) >= 1, "TeamMarkerSnapshotContractVersion >= 1")
     assert((tonumber(Feature.TeamSacContractVersion) or 0) >= 2, "TeamSacContractVersion >= 2")
@@ -333,6 +339,20 @@ Test("T4: Auto-role catalog resolution & automatic application", function()
     assert(Feature.AutoRoleClassKey == "name_6_8_9", "AutoRoleClassKey mismatch")
     assert(Feature.AutoRoleLabel == "远程输出", "AutoRoleLabel mismatch")
 
+    -- 中文维护测试（2026-09-16）：欢乐(14)+暗杀(8)+吟游(9) 是用户确认的治疗职责。
+    -- 测试必须钉死业务目录 Authority，防止 classType=Dancer 被误解成 tank。
+    mockUnit.abilityTemplates["player"] = {
+        { index = 14 }, { index = 8 }, { index = 9 }
+    }
+    mockTeam.roles["1:1"] = _G.TMROLE_NONE
+    mockTeam.currentRole = nil
+    h.ms = h.ms + 600
+    local okDancerHealer = Feature:ApplyAutoRole("test_dancer_healer")
+    assert(okDancerHealer == true, "ApplyAutoRole dancer healer failed")
+    assert(mockTeam.currentRole == _G.TMROLE_HEALER, "8+9+14 must auto-set TMROLE_HEALER")
+    assert(Feature.AutoRoleClassKey == "name_8_9_14", "Dancer healer class key mismatch")
+    assert(Feature.AutoRoleLabel == "治疗", "Dancer healer AutoRoleLabel must be 治疗")
+
     -- Change ability templates to Tank: 3, 4, 5 -> Tank (tank)
     mockUnit.abilityTemplates["player"] = {
         { index = 3 }, { index = 4 }, { index = 5 }
@@ -355,6 +375,80 @@ Test("T4: Auto-role catalog resolution & automatic application", function()
     assert(Feature.State.autoRoleEnabled == false, "autoRoleEnabled should be false")
     Feature.Commands:SetAutoRoleEnabled(true)
     assert(Feature.State.autoRoleEnabled == true, "autoRoleEnabled should be true")
+end)
+
+------------------------------------------------------------------------
+-- Test 4B: Auto-role owns its TeamRoster lease without Presentation
+------------------------------------------------------------------------
+Test("T4B: Auto-role owns roster lease and toggle lifecycle", function()
+    -- 中文维护测试（2026-09-16）：自动职责是独立低开销 Feature 行为，不能依赖团队页面/悬浮窗 Consumer。
+    -- 当 UI Consumer 为 0 时，只要 Feature 已启用且 autoRoleEnabled=true，TeamRosterV3 仍必须由自动职责自己的 token 保持运行。
+    assert(Feature.enabled == true, "team tools must be enabled for auto-role lifecycle test")
+    assert(Feature.State.autoRoleEnabled == true, "auto-role must start enabled in this fixture")
+    assert(Feature.AutoRoleSubscribed == true, "auto-role event observation must be subscribed")
+    assert(Feature.AutoRoleRosterHeld == true, "auto-role must own an independent TeamRosterV3 lease")
+    assert(type(Roster.demand) == "table" and Roster.demand:Has("combat_team_tools:auto_role_roster") == true,
+        "TeamRosterV3 must contain the dedicated auto-role demand token")
+    assert((tonumber(Roster.consumerCount) or 0) >= 1, "TeamRosterV3 must stay demanded without a team-tools UI consumer")
+    assert(Roster.subscribed == true, "TeamRosterV3 native TEAM_MEMBERS_CHANGED listener must stay live")
+
+    local beforeDisableCount = tonumber(Roster.consumerCount) or 0
+    local offOk, offErr = Feature.Commands:SetAutoRoleEnabled(false)
+    assert(offOk == true, "disabling auto-role failed: " .. tostring(offErr))
+    assert(Feature.AutoRoleSubscribed == false, "disabling auto-role must release its event observation")
+    assert(Feature.AutoRoleRosterHeld == false, "disabling auto-role must release its roster lease")
+    assert(Roster.demand:Has("combat_team_tools:auto_role_roster") == false, "auto-role roster token must be released")
+    assert((tonumber(Roster.consumerCount) or 0) == math.max(0, beforeDisableCount - 1),
+        "disabling auto-role must release exactly its own roster consumer without disturbing Sac/UI consumers")
+
+    local onOk, onErr = Feature.Commands:SetAutoRoleEnabled(true)
+    assert(onOk == true, "re-enabling auto-role failed: " .. tostring(onErr))
+    assert(Feature.AutoRoleSubscribed == true, "re-enabling auto-role must rebuild event observation")
+    assert(Feature.AutoRoleRosterHeld == true, "re-enabling auto-role must reacquire TeamRosterV3")
+    assert(Roster.demand:Has("combat_team_tools:auto_role_roster") == true, "re-enabled auto-role must restore its dedicated roster token")
+    assert((tonumber(Roster.consumerCount) or 0) >= beforeDisableCount, "re-enabled auto-role must restore roster demand without dropping other consumers")
+end)
+
+------------------------------------------------------------------------
+-- Test 4C: Team roster performs bounded settle refreshes on join edges
+------------------------------------------------------------------------
+Test("T4C: TeamRoster bounded settle refresh catches late native slots", function()
+    local originalUnitName = mockUnit.UnitName
+    local rosterReady = false
+    local function RunBody()
+        mockUnit.UnitName = function(self, token)
+            if token == "player" then return "LeaderPlayer" end
+            if token == "team01" or token == "team1" then
+                return rosterReady and "LeaderPlayer" or nil
+            end
+            return nil
+        end
+        Roster.members, Roster.ordered = {}, {}
+
+        S.Events:Dispatch("TEAM_MEMBERS_CHANGED", "test_join_edge")
+        assert(type(Roster.settleTask) == "string" and Roster.settleTask ~= "", "TeamRoster settle task contract missing")
+        assert(S.Scheduler.tasks[Roster.refreshTask] ~= nil, "primary roster refresh was not scheduled")
+        assert(S.Scheduler.tasks[Roster.settleTask] ~= nil, "bounded settle refresh was not scheduled")
+
+        assert(S.Scheduler:RunTask(Roster.refreshTask) == true, "primary roster refresh failed")
+        local first = Roster:GetSnapshot()
+        assert(#first.members == 1, "primary early snapshot should contain only the local player seed")
+        assert((tonumber(first.members[1].teamIndex) or 0) == 0, "early player seed must not pretend a real team slot exists")
+
+        rosterReady = true
+        assert(S.Scheduler:RunTask(Roster.settleTask) == true, "settle roster refresh failed")
+        local settled = Roster:GetSnapshot()
+        assert(#settled.members == 1, "settled snapshot should still contain one canonical player row")
+        assert(tonumber(settled.members[1].teamIndex) == 1 and tonumber(settled.members[1].memberIndex) == 1,
+            "settle refresh must enrich the player with the late native team slot")
+        assert((tonumber(Roster.TeamEdgeSettleContractVersion) or 0) >= 1, "TeamEdgeSettleContractVersion missing")
+    end
+    local ok, err = xpcall(RunBody, debug.traceback)
+    mockUnit.UnitName = originalUnitName
+    if S.Scheduler and type(S.Scheduler.RemoveTask) == "function" and type(Roster.settleTask) == "string" then
+        S.Scheduler:RemoveTask(Roster.settleTask)
+    end
+    if not ok then error(err) end
 end)
 
 ------------------------------------------------------------------------
@@ -567,11 +661,17 @@ Test("T10: FoundationGate & Acceptance contract verification", function()
     local teamRoleCatalog = S.Data and S.Data.TeamAutoRoleCatalog or nil
     local archerRole = type(teamRoleCatalog) == "table" and type(teamRoleCatalog.byClassKey) == "table"
         and teamRoleCatalog.byClassKey["name_6_8_9"] or nil
+    local dancerHealerRole = type(teamRoleCatalog) == "table" and type(teamRoleCatalog.byClassKey) == "table"
+        and teamRoleCatalog.byClassKey["name_8_9_14"] or nil
     local teamRoleOk = type(teamTools) == "table" and (tonumber(teamTools.TeamRoleContractVersion) or 0) >= 2
-        and (tonumber(teamTools.AutoRoleCatalogContractVersion) or 0) >= 1
+        and (tonumber(teamTools.AutoRoleContractVersion) or 0) >= 3
+        and (tonumber(teamTools.AutoRoleCatalogContractVersion) or 0) >= 2
         and type(teamTools.Commands) == "table" and type(teamTools.Commands.SetRole) == "function"
-        and type(teamRoleCatalog) == "table" and (tonumber(teamRoleCatalog.version) or 0) >= 2
+        and type(teamRoleCatalog) == "table" and (tonumber(teamRoleCatalog.version) or 0) >= 3
         and type(archerRole) == "table" and tostring(archerRole.role or "") == "ranged"
+        and type(dancerHealerRole) == "table" and tostring(dancerHealerRole.role or "") == "healer"
+        and (tonumber(teamTools.AutoRoleRosterLeaseContractVersion) or 0) >= 1
+        and type(Roster) == "table" and (tonumber(Roster.TeamEdgeSettleContractVersion) or 0) >= 1
     assert(teamRoleOk, "v3_team_role_contract clauses must pass")
 
     local teamSacOverlay = S.UIV3 and S.UIV3.TeamSacOverlay or nil
@@ -593,12 +693,17 @@ Test("T10: FoundationGate & Acceptance contract verification", function()
     local teamTools = S.Features.combat_team_tools
     local teamRoleCatalog = S.Data.TeamAutoRoleCatalog
     local archerRole = teamRoleCatalog.byClassKey["name_6_8_9"]
+    local dancerHealerRole = teamRoleCatalog.byClassKey["name_8_9_14"]
 
     if type(teamTools) ~= "table" or (tonumber(teamTools.TeamRoleContractVersion) or 0) < 2
-        or (tonumber(teamTools.AutoRoleCatalogContractVersion) or 0) < 1
+        or (tonumber(teamTools.AutoRoleContractVersion) or 0) < 3
+        or (tonumber(teamTools.AutoRoleCatalogContractVersion) or 0) < 2
         or type(teamTools.Commands) ~= "table" or type(teamTools.Commands.SetRole) ~= "function"
-        or type(teamRoleCatalog) ~= "table" or (tonumber(teamRoleCatalog.version) or 0) < 2
-        or type(archerRole) ~= "table" or tostring(archerRole.role or "") ~= "ranged" then
+        or type(teamRoleCatalog) ~= "table" or (tonumber(teamRoleCatalog.version) or 0) < 3
+        or type(archerRole) ~= "table" or tostring(archerRole.role or "") ~= "ranged"
+        or type(dancerHealerRole) ~= "table" or tostring(dancerHealerRole.role or "") ~= "healer"
+        or (tonumber(teamTools.AutoRoleRosterLeaseContractVersion) or 0) < 1
+        or type(Roster) ~= "table" or (tonumber(Roster.TeamEdgeSettleContractVersion) or 0) < 1 then
         accFailures[#accFailures + 1] = "team_role_catalog_contract_v3"
     end
 

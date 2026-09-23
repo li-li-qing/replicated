@@ -1,17 +1,17 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 13 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Craft Planner & Craft Assist Test Suite
+-- Replicated Suite V3 - Craft Assist Test Suite
 --
--- Tests Craft Planner (life_craft_planner) and Craft Assist (tools_craft):
+-- Tests Craft Assist (tools_craft) after removal of life_craft_planner:
 --   * Metadata contract & capability gating
 --   * Recipe resolution & user selection (SelectRecipe)
---   * Recipe search & filtering (FindRecipes)
 --   * Backpack held counts & shortage calculation
---   * Recursive recipe graph (BuildCraftRecipeGraph), cycles & unresolved safety
---   * Multi-recipe plan lifecycle (Add/Set/Remove/Clear) & material aggregation
---   * Price quote queue integration (QuotePlanMaterials, QuotePendingMaterials)
+--   * Price quote queue integration (QuotePendingMaterials)
 --   * Native craft surface observation (CraftSurfaceV3) fail-closed geometry
---   * FoundationGate contracts: v3_craft_user_selection_contract,
---     v3_craft_plan_contract, v3_craft_sidecar_contract
+--   * FoundationGate contracts: v3_craft_user_selection_contract and v3_craft_sidecar_contract
 ------------------------------------------------------------------------
 
 unpack = unpack or table.unpack
@@ -30,7 +30,7 @@ local function Test(name, fn)
     end
 end
 
-print("=== Replicated Suite: Craft Planner & Craft Assist Tests ===")
+print("=== Replicated Suite: Craft Assist Tests ===")
 
 local h = dofile("tools/rs_gear_page_test_host.lua")({})
 local S = h.S
@@ -115,32 +115,27 @@ S.FeatureRuntime.SetPreferredEnabled = function(_, id, v) return true end
 -- Load craft services and features
 dofile("services/rs_craft_surface_v3.lua")
 dofile("features/rs_business_bridge.lua")
-dofile("features/life/craft/rs_craft_planner_extension_v3.lua")
 dofile("features/life/craft/rs_craft_assistant_surface_extension_v3.lua")
 dofile("presentation/v3/widgets/rs_v3_craft_sidecar.lua")
 
-local Planner = S.Features and S.Features.life_craft_planner
 local Assist = S.Features and S.Features.tools_craft
 local Surface = S.Services and S.Services.CraftSurfaceV3
 local Sidecar = S.UIV3 and S.UIV3.CraftSidecar
 
-Test("C1: Feature metadata and registry contract", function()
-    assert(Planner ~= nil, "life_craft_planner missing")
+Test("C1: Feature metadata and removed planner contract", function()
+    -- 中文维护测试（2026-09-15）：制作规划删除必须是真删除：Registry/Feature 都不存在；
+    -- 制作台助手保持独立可用，避免删除 life_craft_planner 时误伤共享 CraftRead/CraftProjection。
+    assert(S.Features and S.Features.life_craft_planner == nil, "removed life_craft_planner must not be instantiated")
+    assert(S.FeatureRegistry:Get("life_craft_planner") == nil, "removed life_craft_planner must not remain in registry")
     assert(Assist ~= nil, "tools_craft missing")
     assert(Surface ~= nil, "CraftSurfaceV3 missing")
     assert(Sidecar ~= nil, "CraftSidecar missing")
-
-    local regPlanner = S.FeatureRegistry:Get("life_craft_planner")
-    assert(regPlanner ~= nil, "life_craft_planner not in registry")
-    assert(regPlanner.route == "life.craft_planner", "planner route mismatch")
-    assert(regPlanner.authority == "v3.craft_planner", "planner authority mismatch")
-    assert(regPlanner.navigationDevelopmentState == "incomplete", "planner must remain incomplete after user RU acceptance found missing coverage: " .. tostring(regPlanner.navigationDevelopmentState))
 
     local regAssist = S.FeatureRegistry:Get("tools_craft")
     assert(regAssist ~= nil, "tools_craft not in registry")
     assert(regAssist.route == "tools.craft_assist", "assist route mismatch")
     assert(regAssist.authority == "v3.craft", "assist authority mismatch")
-    assert(regAssist.navigationDevelopmentState == "incomplete", "craft assist must remain incomplete after user RU acceptance found missing coverage: " .. tostring(regAssist.navigationDevelopmentState))
+    assert(regAssist.navigationDevelopmentState == "incomplete", "craft assist development state changed unexpectedly: " .. tostring(regAssist.navigationDevelopmentState))
 end)
 
 Test("C2: Capability permissions & read-only gating", function()
@@ -168,8 +163,8 @@ Test("C2: Capability permissions & read-only gating", function()
 end)
 
 Test("C3: Recipe resolution and user selection", function()
-    Planner:Enable()
-    local options = Planner:GetProjection().recipeOptions
+    Assist:Enable()
+    local options = Assist:GetProjection().recipeOptions
     assert(type(options) == "table" and #options > 0, "recipeOptions should be populated")
 
     local firstOption = options[1]
@@ -177,41 +172,16 @@ Test("C3: Recipe resolution and user selection", function()
     assert(firstOption.craftId ~= nil, "option craftId missing")
 
     -- Select the first recipe
-    local ok, err = Planner.Commands:SelectRecipe(firstOption.value)
+    local ok, err = Assist.Commands:SelectRecipe(firstOption.value)
     assert(ok == true, "SelectRecipe failed: " .. tostring(err))
 
-    local proj = Planner:GetProjection()
+    local proj = Assist:GetProjection()
     assert(proj.selectedRecipeKey == firstOption.value, "selectedRecipeKey mismatch")
-    assert(Planner.State.craftType == firstOption.craftId, "craftType mismatch")
+    assert(Assist.State.craftType == firstOption.craftId, "craftType mismatch")
 
     -- Invalid recipe key rejected
-    local badOk = Planner.Commands:SelectRecipe("non_existent_recipe_key_99999")
+    local badOk = Assist.Commands:SelectRecipe("non_existent_recipe_key_99999")
     assert(badOk == false, "invalid recipe key should be rejected")
-end)
-
-Test("C4: Recipe search via FindRecipes(keyword)", function()
-    assert(type(Planner.Commands.FindRecipes) == "function", "FindRecipes command missing")
-
-    -- Search all
-    local all = Planner.Commands:FindRecipes("")
-    assert(type(all) == "table" and #all > 0, "empty search should return all recipes")
-
-    -- Search by keyword from first item name
-    local first = all[1]
-    local keyword = first.name:sub(1, 4)
-    local filtered = Planner.Commands:FindRecipes(keyword)
-    assert(type(filtered) == "table" and #filtered > 0, "search by keyword should find matches")
-
-    -- Search by craftId
-    local byId = Planner.Commands:FindRecipes(tostring(first.craftId))
-    assert(#byId >= 1, "search by craftId should find record")
-    assert(byId[1].craftId == first.craftId, "craftId mismatch in result")
-
-    -- Search by productItemId if available
-    if first.productItemId then
-        local byItemId = Planner.Commands:FindRecipes(tostring(first.productItemId))
-        assert(#byItemId >= 1, "search by productItemId should find record")
-    end
 end)
 
 Test("C5: Backpack held counts and shortage calculation", function()
@@ -247,14 +217,14 @@ Test("C5: Backpack held counts and shortage calculation", function()
         end,
     }
 
-    Planner.State.craftType = 101
-    Planner.State.itemType = nil
-    Planner.State.selectedRecipeKey = nil
-    Planner:AcquireConsumer("test_c5")
-    local ok = Planner:Refresh("test_held_counts")
-    assert(ok == true, "Planner:Refresh failed")
+    Assist.State.craftType = 101
+    Assist.State.itemType = nil
+    Assist.State.selectedRecipeKey = nil
+    Assist:AcquireConsumer("test_c5")
+    local ok = Assist:Refresh("test_held_counts")
+    assert(ok == true, "Assist:Refresh failed")
 
-    local proj = Planner:GetProjection()
+    local proj = Assist:GetProjection()
     local materials = proj.craft and proj.craft.recipes and proj.craft.recipes[1] and proj.craft.recipes[1].materials and proj.craft.recipes[1].materials.items
     assert(type(materials) == "table" and #materials == 3, "materials items missing")
 
@@ -268,108 +238,14 @@ Test("C5: Backpack held counts and shortage calculation", function()
     assert(m1 ~= nil and m1.held == 25 and m1.shortage == 5, "m1 held/shortage mismatch: held=" .. tostring(m1 and m1.held) .. " shortage=" .. tostring(m1 and m1.shortage))
     assert(m2 ~= nil and m2.held == 5 and m2.shortage == 0, "m2 held/shortage mismatch")
     assert(m3 ~= nil and m3.held == 0 and m3.shortage == 10, "m3 held/shortage mismatch")
-    Planner:ReleaseConsumer("test_c5")
+    Assist:ReleaseConsumer("test_c5")
 end)
 
-Test("C6: Known-record recursive graph and cycle prevention", function()
-    assert(type(S.BuildCraftRecipeGraph) == "function", "BuildCraftRecipeGraph missing")
-
-    -- Recipe 1: produces item 1001, requires item 1002 (count 2)
-    -- Recipe 2: produces item 1002, requires item 1003 (count 3)
-    local records = {
-        {
-            craftType = 1,
-            product = { items = { { itemType = 1001, count = 1 } } },
-            materials = { items = { { itemType = 1002, count = 2 } } },
-        },
-        {
-            craftType = 2,
-            product = { items = { { itemType = 1002, count = 1 } } },
-            materials = { items = { { itemType = 1003, count = 3 } } },
-        },
-    }
-
-    local graph = S.BuildCraftRecipeGraph(records, { { itemType = 1001, quantity = 1 } })
-    assert(graph ~= nil, "graph creation failed")
-    assert(graph.diagnostics.nodes >= 3, "graph should contain at least 3 nodes (1001, 1002, 1003)")
-    assert(graph.diagnostics.edges >= 2, "graph should contain at least 2 edges")
-    assert(graph.diagnostics.cycles == 0, "clean graph should have 0 cycles")
-
-    -- Cyclic recipe: Recipe 1 requires 2002, Recipe 2 requires 2001 (A -> B -> A)
-    local cyclicRecords = {
-        {
-            craftType = 10,
-            product = { items = { { itemType = 2001, count = 1 } } },
-            materials = { items = { { itemType = 2002, count = 1 } } },
-        },
-        {
-            craftType = 20,
-            product = { items = { { itemType = 2002, count = 1 } } },
-            materials = { items = { { itemType = 2001, count = 1 } } },
-        },
-    }
-    local cyclicGraph = S.BuildCraftRecipeGraph(cyclicRecords, { { itemType = 2001, quantity = 1 } })
-    assert(cyclicGraph ~= nil, "cyclicGraph creation failed")
-    assert(cyclicGraph.diagnostics.cycles > 0, "cycle should be detected and logged")
-    assert(cyclicGraph.diagnostics.status == "partial", "cyclic graph status must be partial")
-end)
-
-Test("C7: Multi-recipe plan lifecycle", function()
-    local options = Planner:GetProjection().recipeOptions
-    assert(#options >= 2, "need at least 2 recipes for plan testing")
-    local r1, r2 = options[1].value, options[2].value
-
-    -- Clear plan first
-    Planner.Commands:ClearPlan()
-    local proj0 = Planner:GetProjection()
-    assert(proj0.planRecipeCount == 0, "plan should be empty initially")
-
-    -- Add recipe 1 with quantity 2
-    local ok1, err1 = Planner.Commands:AddPlanRecipe(r1, 2)
-    assert(ok1 == true, "AddPlanRecipe 1 failed: " .. tostring(err1))
-
-    -- Add recipe 1 again with quantity 3 (should merge to 5)
-    local ok2 = Planner.Commands:AddPlanRecipe(r1, 3)
-    assert(ok2 == true, "AddPlanRecipe merge failed")
-    local proj1 = Planner:GetProjection()
-    assert(proj1.planRecipeCount == 1, "planRecipeCount should be 1 after merge")
-    assert(proj1.planRecipeRows[1].quantity == 5, "quantity should be merged to 5, got: " .. tostring(proj1.planRecipeRows[1].quantity))
-
-    -- Add recipe 2 with quantity 1
-    local ok3 = Planner.Commands:AddPlanRecipe(r2, 1)
-    assert(ok3 == true, "AddPlanRecipe 2 failed")
-    local proj2 = Planner:GetProjection()
-    assert(proj2.planRecipeCount == 2, "planRecipeCount should be 2")
-
-    -- Set quantity of recipe 1 to 10
-    local ok4 = Planner.Commands:SetPlanRecipeQuantity(r1, 10)
-    assert(ok4 == true, "SetPlanRecipeQuantity failed")
-    local proj3 = Planner:GetProjection()
-    assert(proj3.planRecipeRows[1].quantity == 10, "quantity should be updated to 10")
-
-    -- Remove recipe 1
-    local ok5 = Planner.Commands:RemovePlanRecipe(r1)
-    assert(ok5 == true, "RemovePlanRecipe failed")
-    local proj4 = Planner:GetProjection()
-    assert(proj4.planRecipeCount == 1, "planRecipeCount should be 1 after remove")
-    assert(proj4.planRecipeRows[1].recipeKey == r2, "remaining recipe mismatch")
-
-    -- Clear plan
-    local ok6 = Planner.Commands:ClearPlan()
-    assert(ok6 == true, "ClearPlan failed")
-    local proj5 = Planner:GetProjection()
-    assert(proj5.planRecipeCount == 0, "plan should be 0 after clear")
-end)
-
-Test("C8: Price quote queue integration", function()
-    -- Set mock PriceQuoteQueueV3
+Test("C8: Explicit material quote queue integration", function()
     local quoteCalls = {}
     S.Services.PriceQuoteQueueV3 = {
         maxQueue = 64,
-        GetPriceByItemType = function(_, itemType, itemGrade)
-            if itemType == 18888 then return 100 end
-            return nil
-        end,
+        GetPriceByItemType = function(_, itemType, itemGrade) return nil end,
         RequestQuote = function(self, tag, itemType, itemGrade, cb)
             quoteCalls[#quoteCalls + 1] = { tag = tag, itemType = itemType, itemGrade = itemGrade }
             if cb then cb() end
@@ -377,25 +253,22 @@ Test("C8: Price quote queue integration", function()
         end,
     }
 
-    -- Refreshing does NOT call RequestQuote (zero auction spam during refresh)
-    Planner:Refresh("test_pricing_refresh")
-    assert(#quoteCalls == 0, "ordinary Refresh must not issue RequestQuote")
+    Assist:Enable()
+    local options = Assist:GetProjection().recipeOptions or {}
+    assert(#options > 0, "craft assistant recipe options missing")
+    local selected, selectErr = Assist.Commands:SelectRecipe(options[1].value)
+    assert(selected == true, "SelectRecipe failed before quote test: " .. tostring(selectErr))
+    Assist:AcquireConsumer("test_c8")
+    Assist:Refresh("test_quote_refresh")
+    assert(#quoteCalls == 0, "ordinary craft Refresh must never fan out auction quotes")
 
-    -- Add a recipe and check material quoting
-    local options = Planner:GetProjection().recipeOptions
-    Planner.Commands:AddPlanRecipe(options[1].value, 1)
-
-    local proj = Planner:GetProjection()
-    assert(type(proj.planMaterialRows) == "table", "planMaterialRows missing")
-
-    -- Trigger explicit QuotePlanMaterials
-    local quoteOk, quoteMsg, reqCount = Planner.Commands:QuotePlanMaterials()
-    if proj.planPendingQuoteCount > 0 then
-        assert(quoteOk == true, "QuotePlanMaterials failed: " .. tostring(quoteMsg))
-        assert(#quoteCalls > 0, "RequestQuote should have been called")
+    local projection = Assist:GetProjection() or {}
+    if (tonumber(projection.pendingQuoteCount) or 0) > 0 then
+        local ok, message = Assist.Commands:QuotePendingMaterials()
+        assert(ok == true, "QuotePendingMaterials failed: " .. tostring(message))
+        assert(#quoteCalls > 0, "explicit QuotePendingMaterials must submit at least one quote")
     end
-
-    Planner.Commands:ClearPlan()
+    Assist:ReleaseConsumer("test_c8")
 end)
 
 Test("C9: CraftSurfaceV3 observation and fail-closed safety", function()
@@ -447,24 +320,20 @@ Test("C9: CraftSurfaceV3 observation and fail-closed safety", function()
     assert(snapD.visible == false, "MainScript visible = false must yield visible = false")
 end)
 
-Test("C10: FoundationGate contracts", function()
+Test("C9B: CraftSidecar content status id does not collide with FloatingSurface footer", function()
+    local sidecarFile = assert(io.open("presentation/v3/widgets/rs_v3_craft_sidecar.lua", "rb"))
+    local sidecarText = sidecarFile:read("*a"); sidecarFile:close()
+    assert(sidecarText:find('id = "v3_craft_sidecar_status"', 1, true) == nil,
+        "craft content status logical id collides with WindowShell-generated v3_craft_sidecar_status")
+    assert(sidecarText:find('id = "v3_craft_sidecar_action_status"', 1, true) ~= nil,
+        "craft sidecar must use a dedicated content/action status logical id")
+end)
+
+Test("C10: FoundationGate craft-assistant contracts", function()
     local gate = S.FoundationGate
     assert(gate ~= nil, "FoundationGate missing")
-
-    -- Test v3_craft_user_selection_contract
-    assert(Planner.CraftUserSelectionContractVersion >= 1, "Planner CraftUserSelectionContractVersion missing")
     assert(Assist.CraftUserSelectionContractVersion >= 1, "Assist CraftUserSelectionContractVersion missing")
-    assert(type(Planner.Commands.SelectRecipe) == "function", "Planner SelectRecipe missing")
     assert(type(Assist.Commands.SelectRecipe) == "function", "Assist SelectRecipe missing")
-
-    -- Test v3_craft_plan_contract
-    assert(Planner.CraftPlanContractVersion >= 1, "CraftPlanContractVersion missing")
-    assert(type(Planner.Commands.AddPlanRecipe) == "function", "AddPlanRecipe missing")
-    assert(type(Planner.Commands.RemovePlanRecipe) == "function", "RemovePlanRecipe missing")
-    assert(type(Planner.Commands.ClearPlan) == "function", "ClearPlan missing")
-    assert(type(Planner.Commands.QuotePlanMaterials) == "function", "QuotePlanMaterials missing")
-
-    -- Test v3_craft_sidecar_contract
     assert(Surface.version >= 1, "Surface version missing")
     assert(Surface.VisibilityContractVersion >= 1, "Surface VisibilityContractVersion missing")
     assert(type(Surface.GetSnapshot) == "function", "Surface GetSnapshot missing")
@@ -475,7 +344,7 @@ Test("C10: FoundationGate contracts", function()
     assert(type(Assist.Commands.SetAutoSidecar) == "function", "SetAutoSidecar missing")
 end)
 
-print(string.format("\nCraft Planner & Assist Test Results: %d/%d passed", passed, total))
+print(string.format("\nCraft Assist Test Results: %d/%d passed", passed, total))
 if passed == total then
     print("ALL TESTS PASSED!")
 else

@@ -1,0 +1,7 @@
+Replicated Suite 本轮物理删除清单（2026-09-15）
+
+请删除：
+features/life/craft/rs_craft_planner_extension_v3.lua
+
+说明：toc.g 已不再加载该文件，因此即使覆盖更新时旧文件暂时残留，也不会进入 Runtime。
+删除它只是让本地项目目录与当前源码保持一致；不要清除 v3.business.life_craft_planner 的旧存档键，避免不可逆删除用户历史数据。

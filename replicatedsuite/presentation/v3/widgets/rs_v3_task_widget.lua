@@ -87,6 +87,9 @@ local function CreateTaskWidget()
 
     function instance:Refresh()
         local rows, revision = Feature:GetWidgetProjection()
+        -- 个人关注排序是 Presentation 投影；不修改 Authority 的共享行，首页/悬浮共用一份偏好。
+        local workspace=S.UIV3.Workspace
+        if workspace then rows=workspace:ProjectRows("tasks",rows);revision=tostring(revision)..":"..workspace.revision end
         self.table:SetItems(rows, "task_widget:" .. tostring(revision))
         if #rows == 0 then
             self.table:SetViewState("empty", { title = "暂无追踪任务", detail = "在“我的任务追踪”中加入日常 / 周常后会显示在这里。" })
@@ -103,6 +106,9 @@ local function CreateTaskWidget()
         if self.subscribed == true then return true end
         if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
             S.Events:SubscribeInternal("v3.tasks.updated", self, function() if instance.visible then instance:Refresh() end end)
+            S.Events:SubscribeInternal("v3.workspace.updated", self, function(_,kind)
+                if kind=="lists" and instance.visible then instance:Refresh()end
+            end)
         end
         self.subscribed = true
         return true

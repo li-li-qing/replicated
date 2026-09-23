@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 24 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 -- 维护：取证报告交付回归；真实 Backend/Page/Codec，Native 仅替换为可控接收端。
 -- 不进入 TOC。验证失效交付的复现，不把模拟结果当作 RU 画面/剪贴板实测。
 local passed, failed = 0, 0
@@ -65,26 +69,26 @@ Test('bundled ADDON not-allowed clipboard API must stay blocked even when a func
     local S,D,calls=Boot({clipboard=true})
     local allowed=S.Api:IsCapabilityAllowed('ADDON:SetClipboardText')
     assert(allowed==false,'SetClipboardText is under Available/not allowed, not Allowed')
-    local root,h=Page(S,calls);assert(h.widgets.v3_diag_output.onClick())
+    local root,h=Page(S,calls);assert(h.widgets.v3_diag_output_full.onClick())
     assert(#calls.copied==0,'non-allowed API invoked')
 end)
 Test('clipboard denied and absent editor must not claim that report is in the editor',function()
     local S,D,calls=Boot();local root,h=Page(S,calls,{noEditor=true})
-    assert(h.widgets.v3_diag_output.onClick()==false)
+    assert(h.widgets.v3_diag_output_full.onClick()==false)
     assert(#calls.chat==1)
     assert(not calls.chat[1]:find('完整报告在页面文本框',1,true),'false delivery claim before editor readiness')
     assert(calls.chat[1]:find('view=failed',1,true),'missing actual failed delivery')
 end)
 Test('receipt follows editor write readback and explicit-click focus',function()
     local S,D,calls=Boot();local root,h=Page(S,calls)
-    assert(h.widgets.v3_diag_output.onClick())
+    assert(h.widgets.v3_diag_output_full.onClick())
     assert(h.focused==h.edit,'print did not reveal and activate the full report')
     assert(calls.order[#calls.order]=='chat','receipt sent before presentation')
     assert(calls.chat[1]:find('view=plain',1,true))
 end)
 Test('short clipboard-denied report is visibly available and focus starts at beginning',function()
     local S,D,calls=Boot();local root,h=Page(S,calls)
-    assert(h.widgets.v3_diag_output.onClick());assert(h.edit.shown==true and h.edit.cursor==0)
+    assert(h.widgets.v3_diag_output_full.onClick());assert(h.edit.shown==true and h.edit.cursor==0)
     assert(h.edit.text:find('RS-SELF-CHECK-1',1,true) and h.edit.text:find('RS-SELF-CHECK-END',1,true))
     assert(h.widgets.v3_diag_report_host.spec.slot.size=='fill','report remains a fixed 280px snapped child')
     assert(h.rootKind=='fill','copy viewport can be wholly hidden by item-snapped ScrollBox')
@@ -96,19 +100,19 @@ Test('108833-byte report uses verified readable pages without clipboard',functio
     assert(#text==108833)
     -- 长度在 screenshot 同量级；内容是合成报告，不宣称是用户实档。
     local S,D,calls=Boot({text=text});local root,h=Page(S,calls,{cap=32768})
-    assert(h.widgets.v3_diag_output.onClick(),'whole report delivery failed')
+    assert(h.widgets.v3_diag_output_full.onClick(),'whole report delivery failed')
     assert(h.edit.text:find('RS-ERROR-PAGE-1',1,true),'large report not encoded')
     assert(#h.edit.text<32768 and #calls.chat==1 and calls.checks==1)
     assert(root.selfCheckText==text,'original snapshot lost')
 end)
 Test('tiny editor cap reports exact failure instead of claiming fallback success',function()
     local S,D,calls=Boot({text=('failure details'):rep(9000)});local root,h=Page(S,calls,{cap=20})
-    assert(h.widgets.v3_diag_output.onClick()==false)
+    assert(h.widgets.v3_diag_output_full.onClick()==false)
     assert(calls.chat[1]:find('view=failed',1,true));assert(#calls.chat[1]<=400)
 end)
 Test('focus failure preserves exact text but instructs user to click it',function()
     local S,D,calls=Boot();local root,h=Page(S,calls,{focusFails=true})
-    assert(h.widgets.v3_diag_output.onClick());assert(#h.edit.text>0)
+    assert(h.widgets.v3_diag_output_full.onClick());assert(#h.edit.text>0)
     assert(calls.chat[1]:find('点报告框',1,true),'focus failure not actionable')
 end)
 Test('calling backend without a presenter must not claim a page exists',function()
@@ -127,7 +131,7 @@ Test('clipboard blocked reason is retained not discarded',function()
     assert(ok and type(meta.clipboardError)=='string' and #meta.clipboardError>0)
 end)
 Test('hiding report releases keyboard and plaintext and encoded content',function()
-    local S,D,calls=Boot();local root,h=Page(S,calls);assert(h.widgets.v3_diag_output.onClick());root:OnDeactivated()
+    local S,D,calls=Boot();local root,h=Page(S,calls);assert(h.widgets.v3_diag_output_full.onClick());root:OnDeactivated()
     assert(h.edit.text=='' and root.selfCheckText==nil and h.deactivated==h.edit)
     assert(calls.checks==1 and #calls.chat==1)
 end)
@@ -219,13 +223,13 @@ Test('actual RSUI layouts keep report visible in small and large page viewports'
         assert(host.viewportVisible~=false and host.root.shown~=false,'whole report host hidden')
         assert(host.height>50 and host.y+host.height<=size[2]+0.01,'report geometry: viewport='..size[2]..' y='..tostring(host.y)..' h='..tostring(host.height))
         assert(UI.testEdit.width==host.width-8 and UI.testEdit.height==host.height-8,'Native editor missed host resize')
-        assert(buttons.v3_diag_output.onClick(),'actual layout report not delivered')
+        assert(buttons.v3_diag_output_full.onClick(),'actual layout report not delivered')
         assert(UI.focused==UI.testEdit)
     end
 end)
 Test('layout-only resize neither reloads snapshot nor changes existing report text',function()
     local S,D,calls=Boot();local root,UI,buttons=LayoutPage(S,calls)
-    root:Layout(0,0,900,600);assert(buttons.v3_diag_output.onClick());local text=UI.testEdit.text
+    root:Layout(0,0,900,600);assert(buttons.v3_diag_output_full.onClick());local text=UI.testEdit.text
     root:Layout(0,0,660,420);root:Refresh();root:Layout(0,0,1000,600)
     assert(UI.testEdit.text==text and calls.checks==1 and #calls.chat==1)
 end)
@@ -233,7 +237,7 @@ Test('visible page records layout transaction rejection before emitting receipt'
     local S,D,calls=Boot();local root,UI,buttons=LayoutPage(S,calls)
     UI.EnsureExtent=function()return false,false,'test_extent_rejected' end
     root:Layout(0,0,660,420)
-    assert(buttons.v3_diag_output.onClick()==false)
+    assert(buttons.v3_diag_output_full.onClick()==false)
     assert(calls.chat[1]:find('code=GEOMETRY_FAILED',1,true))
 end)
 
@@ -250,7 +254,7 @@ end
 Test('screenshot 9215-byte cap delivers first complete part of a varied 109147-byte report',function()
     local text=VariedReport();assert(#text==109147)
     local S,D,calls=Boot({text=text});local root,h=Page(S,calls,{cap=9215})
-    assert(h.widgets.v3_diag_output.onClick(),'known cap must not leave an empty TEXT_LIMIT report')
+    assert(h.widgets.v3_diag_output_full.onClick(),'known cap must not leave an empty TEXT_LIMIT report')
     assert(#h.edit.text<=9215 and h.edit.text:match('^RS%-ERROR%-PAGE%-1;'),'no bounded part envelope')
     assert(h.edit.text:find('RS-ERROR-PAGE-END',1,true) and root.selfCheckText==text)
     assert(root.selfCheckDelivery.parts>1 and root.selfCheckPart==1 and calls.checks==1)
@@ -259,10 +263,10 @@ Test('screenshot 9215-byte cap delivers first complete part of a varied 109147-b
 end)
 Test('explicit next delivers all pages and previous returns without rereading',function()
     local S,D,calls=Boot({text=VariedReport()});local root,h=Page(S,calls,{cap=9215})
-    assert(h.widgets.v3_diag_output.onClick());local session=assert(root.selfCheckDelivery)
+    assert(h.widgets.v3_diag_output_full.onClick());local session=assert(root.selfCheckDelivery)
     local first=h.edit.text;local total=session.parts;local collected={first}
     local buttons=0;for _,w in pairs(h.widgets)do if w.onClick then buttons=buttons+1 end end
-    assert(buttons==4,'explicit pagination actions missing')
+    assert(buttons==5,'explicit pagination actions missing')
     for i=2,total do
         assert(h.widgets.v3_diag_report_next.onClick());assert(root.selfCheckPart==i)
         assert(h.edit.text:find('PAGE='..i..'/'..total,1,true));assert(#h.edit.text<=9215)
@@ -277,15 +281,15 @@ Test('explicit next delivers all pages and previous returns without rereading',f
 end)
 Test('run check starts a new copy session but refresh and opening do not advance it',function()
     local S,D,calls=Boot({text=VariedReport()});D.RunSelfCheck=function()return {status='BLOCKED',blockers=2,warnings=2,checks={}}end
-    local root,h=Page(S,calls,{cap=9215});assert(h.widgets.v3_diag_output.onClick())
+    local root,h=Page(S,calls,{cap=9215});assert(h.widgets.v3_diag_output_full.onClick())
     local first=h.edit.text;root:Refresh();root:OnActivated()
     assert(root.selfCheckPart==1 and h.edit.text==first and calls.checks==1)
     assert(h.widgets.v3_diag_full_check.onClick());assert(root.selfCheckDelivery==nil and root.selfCheckText==nil and h.edit.text=='')
-    assert(h.widgets.v3_diag_output.onClick());assert(calls.checks==2 and root.selfCheckPart==1)
+    assert(h.widgets.v3_diag_output_full.onClick());assert(calls.checks==2 and root.selfCheckPart==1)
 end)
 Test('failed second-part write never skips its index or regenerates the report',function()
     local S,D,calls=Boot({text=VariedReport()});local root,h=Page(S,calls,{cap=9215})
-    assert(h.widgets.v3_diag_output.onClick());local original=h.edit.SetText
+    assert(h.widgets.v3_diag_output_full.onClick());local original=h.edit.SetText
     function h.edit:SetText(text) original(self,#text>10 and text:sub(1,-2)or text) end
     assert(h.widgets.v3_diag_report_next.onClick()==false,'truncated part was accepted')
     assert(root.selfCheckPart==1 and calls.checks==1 and root.selfCheckDelivery)
@@ -294,14 +298,14 @@ Test('failed second-part write never skips its index or regenerates the report',
 end)
 Test('closing multipart view releases encoded snapshot keyboard and part cursor',function()
     local S,D,calls=Boot({text=VariedReport()});local root,h=Page(S,calls,{cap=9215})
-    assert(h.widgets.v3_diag_output.onClick());root:OnDeactivated()
+    assert(h.widgets.v3_diag_output_full.onClick());root:OnDeactivated()
     assert(root.selfCheckText==nil and root.selfCheckDelivery==nil and root.selfCheckPart==nil and h.edit.text=='')
     assert(h.deactivated==h.edit and calls.checks==1)
 end)
 Test('missing native capacity uses a safe bounded fallback and parts instead of assuming 32KiB',function()
     local S,D,calls=Boot({text=VariedReport()});local root,h=Page(S,calls,{cap=9215})
     h.edit.MaxTextLength=nil
-    assert(h.widgets.v3_diag_output.onClick());assert(#h.edit.text<=8192 and root.selfCheckDelivery.parts>1)
+    assert(h.widgets.v3_diag_output_full.onClick());assert(#h.edit.text<=8192 and root.selfCheckDelivery.parts>1)
 end)
 Test('copy session retains legacy plain and packed envelopes when they fit',function()
     local S=Boot();local T=S.ReportCopyTransport;assert(type(T.BuildDelivery)=='function','capacity-aware delivery missing')
@@ -342,7 +346,7 @@ Test('declared 9215 but actual 4096 bytes negotiates exact first part instead of
     local text=VariedReport();local S,D,calls=Boot({text=text});local root,h=Page(S,calls,{cap=9215})
     local writes=0
     function h.edit:SetText(value) self.text=value:sub(1,4096);writes=writes+1 end
-    assert(h.widgets.v3_diag_output.onClick(),'declared limit was mistaken for roundtrip capacity')
+    assert(h.widgets.v3_diag_output_full.onClick(),'declared limit was mistaken for roundtrip capacity')
     assert(root.selfCheckPart==1 and #h.edit.text<=4096 and root.selfCheckText==text)
     assert(root.selfCheckDelivery.capacity<=4096 and calls.checks==1 and #calls.chat==1)
     assert(writes<=10,'unbounded native retries')
@@ -351,7 +355,7 @@ end)
 Test('newline removing native accepts a flat ASCII frame without removing evidence',function()
     local text=VariedReport();local S,D,calls=Boot({text=text});local root,h=Page(S,calls,{cap=9215})
     function h.edit:SetText(value) self.text=value:gsub('[\r\n]',''):sub(1,9215) end
-    assert(h.widgets.v3_diag_output.onClick(),'no newline-independent copy framing')
+    assert(h.widgets.v3_diag_output_full.onClick(),'no newline-independent copy framing')
     assert(h.edit.text:match('^RS%-ERROR%-PAGE%-1;') and root.selfCheckText==text)
     local all={h.edit.text};for i=2,root.selfCheckDelivery.parts do
         assert(h.widgets.v3_diag_report_next.onClick());all[i]=h.edit.text
@@ -367,7 +371,7 @@ Test('flat copy framing tolerates only outer transport whitespace not changes to
             self.text=value:gsub('(.)(.)(.)','%1%2%3\r\n')..'\n'
         else self.text=value:gsub('\n','') end
     end
-    assert(h.widgets.v3_diag_output.onClick(),'ASCII whitespace framing not negotiated')
+    assert(h.widgets.v3_diag_output_full.onClick(),'ASCII whitespace framing not negotiated')
     assert(root.selfCheckPart==1 and root.selfCheckText==VariedReport())
     local T=S.ReportCopyTransport
     local payload=assert(T:GetTextPage(root.selfCheckDelivery,1))
@@ -379,7 +383,7 @@ Test('short report converted by native retries in encoded wire not lossy plain n
     local text='RS-SELF-CHECK-1\nID=1.9\n实际字段 包含 空格\t\r\nRS-SELF-CHECK-END ID=1.9'
     local S,D,calls=Boot({text=text});local root,h=Page(S,calls,{cap=9215})
     function h.edit:SetText(value) self.text=value:gsub('[\r\n]','') end
-    assert(h.widgets.v3_diag_output.onClick(),'short original is not escaped for transformed native')
+    assert(h.widgets.v3_diag_output_full.onClick(),'short original is not escaped for transformed native')
     assert(h.edit.text:match('^RS%-ERROR%-PAGE%-1;') and root.selfCheckText==text)
     assert(root.selfCheckMeta.delivered==true and root.selfCheckMeta.partReady==false)
     local f=assert(io.open('tools/.copy_wire_short.txt','wb'));f:write(h.edit.text);f:close()
@@ -388,7 +392,7 @@ end)
 Test('SetText/GetText disagreement includes lengths types and first mismatch in one receipt',function()
     local S,D,calls=Boot({text=VariedReport()});local root,h=Page(S,calls,{cap=9215});local writes=0
     function h.edit:SetText(value) self.text=value=='' and '' or 'X';writes=writes+1 end
-    assert(h.widgets.v3_diag_output.onClick()==false)
+    assert(h.widgets.v3_diag_output_full.onClick()==false)
     assert(#calls.chat==1 and calls.chat[1]:find('rb=',1,true),'only generic TEXT_READBACK returned')
     assert(calls.chat[1]:find('@1',1,true) and calls.chat[1]:find('END',1,true))
     assert((root.selfCheckPart or 0)==0 and root.selfCheckText and writes<=10)
@@ -399,7 +403,7 @@ Test('getter failure and explicit setter rejection are not described as data tru
         local S,D,calls=Boot({text=VariedReport()});local root,h=Page(S,calls,{cap=9215})
         if case=='getter' then function h.edit:GetText() error('native getter unavailable') end
         else function h.edit:SetText(value) self.text=value;return false end end
-        assert(h.widgets.v3_diag_output.onClick()==false)
+        assert(h.widgets.v3_diag_output_full.onClick()==false)
         local rb=assert(root.selfCheckMeta.presentation.readback,'missing boundary outcome')
         if case=='getter' then assert(rb.readOk==false) else assert(rb.writeRejected==true) end
         assert(calls.chat[1]:find('rb=',1,true))
@@ -411,7 +415,7 @@ Test('native write occurs after viewport reveal and focus so focus cannot erase 
     S.UI.ActivateInputWidget=function(...)
         local accepted=activate(...);h.edit.text='';return accepted
     end
-    assert(h.widgets.v3_diag_output.onClick())
+    assert(h.widgets.v3_diag_output_full.onClick())
     assert(h.edit.text==S.ReportCopyTransport:GetTextPage(root.selfCheckDelivery,1),'native focus erased text after it was claimed verified')
     local lastSet,lastFocus
     for i,v in ipairs(calls.order) do if v=='set' then lastSet=i elseif v=='focus' then lastFocus=i end end
@@ -422,7 +426,7 @@ Test('first failure retries same frozen report and compression is not repeated d
     local encodes=0;local encode=S.ReportCopyTransport.Encode
     S.ReportCopyTransport.Encode=function(self,...)encodes=encodes+1;return encode(self,...)end
     function h.edit:SetText(value) self.text=value:sub(1,3000) end
-    assert(h.widgets.v3_diag_output.onClick());assert(calls.checks==1 and encodes==0)
+    assert(h.widgets.v3_diag_output_full.onClick());assert(calls.checks==1 and encodes==0)
     local session=root.selfCheckDelivery;local original=h.edit.SetText
     function h.edit:SetText(value) original(self,#value>10 and value:sub(1,-2) or value)end
     assert(h.widgets.v3_diag_report_next.onClick()==false)

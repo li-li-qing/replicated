@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 5 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
 -- Replicated Suite - Unified, on-demand self-check report
 -- 维护（2026-09-12）：原诊断页九个按钮分别输出不相交证据，短 Hash 报告又遗漏历史
@@ -220,6 +224,29 @@ local function BuildReport(self, mode)
 
     if mode=='paged' then
         Collect("PERSISTENCE_FAILURES",self,"BuildPersistenceFailureReport")
+        -- 中文维护注释（2026-09-18，.18.237 分页故障证据）：物理 Transport 修复探针属于本次
+        -- Load 的运行时缓存，不存在于 Native LoadData 原表；如果默认按钮从 Focus 切回 BuildPaged
+        -- 却只附 RAW_STORE，就会丢掉 catalog_no_candidate / ambiguous / exact fallback 等决策证据。
+        -- Authority：Persistence/Store 仍是唯一事实来源，这里只复制当前失败 Store 已缓存的
+        -- lastPhysicalTransportRepair* 字段到不可变报告快照；不重新 LoadData、不调用恢复函数、不改
+        -- fingerprint/Fence/Store。Presentation 后续只分页这份固定文本。兼容：健康 Store 不输出，
+        -- Focus 兼容接口保持原样；Format 对单字符串仍有 16KiB 安全上限，而 Store 探针自身受更小
+        -- 的恢复诊断预算约束，因此不会为了分页再次预裁剪。
+        local physicalRows = {}
+        for _, st in pairs(type(S.Persistence)=='table' and S.Persistence.stores or {}) do
+            if type(st)=='table' and (st.writeFenced==true or st.loadStatus=='integrity_failed')
+                and (st.lastPhysicalTransportRepairProbe~=nil or st.lastPhysicalTransportRepairError~=nil) then
+                physicalRows[#physicalRows+1] = {
+                    store=st.id,
+                    ok=st.lastPhysicalTransportRepairOk==true,
+                    at=st.lastPhysicalTransportRepairAt,
+                    probe=st.lastPhysicalTransportRepairProbe,
+                    error=st.lastPhysicalTransportRepairError,
+                }
+            end
+        end
+        table.sort(physicalRows,function(a,b)return Text(a.store)<Text(b.store)end)
+        if #physicalRows>0 then Section("PERSISTENCE_PHYSICAL_REPAIR",physicalRows) end
         -- 维护（report-selection-1）：仅在打印冷路径读取已存在诊断页的有界输入计数，
         -- 不创建页面/抢焦点/读正文/启动轮询；记录供区分失焦和重复布局，非剪贴板成功证明。
         local host=S.UIV3 and S.UIV3.PageHost
@@ -231,6 +258,16 @@ local function BuildReport(self, mode)
         Collect("PAGE_HOST",S.UIV3 and S.UIV3.PageHost,"Describe")
         Collect("ACTIONS",S.ActionRunner,"GetSnapshot")
         Collect("FEATURE_STATUS",self,"BuildFeatureStatusRows")
+        -- 中文维护注释（2026-09-14，拍卖原生同步取证）：只在用户打印报告的冷路径读取已有
+        -- AuctionSearchBridgeV3 snapshot；不探测 Native、不 Acquire、不触发搜索。path/name/type/readback
+        -- 失败原因与 fallbackCount 能区分“直接查询可用”与“原生搜索框未同步”，避免下一轮靠猜 UI。
+        if type(S.Services and S.Services.AuctionSearchBridgeV3) == "table"
+            and type(S.Services.AuctionSearchBridgeV3.GetSnapshot) == "function" then
+            Collect("AUCTION_SEARCH_BRIDGE",S.Services.AuctionSearchBridgeV3,"GetSnapshot")
+        end
+        if type(S.Services and S.Services.DailyAuctionMaterialsV3) == "table" and type(S.Services.DailyAuctionMaterialsV3.GetDiagnosticsSnapshot) == "function" then
+            Collect("DAILY_AUCTION_MATERIALS",S.Services.DailyAuctionMaterialsV3,"GetDiagnosticsSnapshot")
+        end
     else
     local persistence=Collect("PERSISTENCE",S.Persistence,"Describe")
     meta.fenced=type(persistence)=="table" and persistence.fenced or nil
@@ -239,6 +276,13 @@ local function BuildReport(self, mode)
     Collect("RUNTIME",S.Runtime,"Describe")
     Collect("FEATURE_RUNTIME",S.FeatureRuntime,"Describe")
     Collect("FEATURE_STATUS",self,"BuildFeatureStatusRows")
+    if type(S.Services and S.Services.AuctionSearchBridgeV3) == "table"
+        and type(S.Services.AuctionSearchBridgeV3.GetSnapshot) == "function" then
+        Collect("AUCTION_SEARCH_BRIDGE",S.Services.AuctionSearchBridgeV3,"GetSnapshot")
+    end
+    if type(S.Services and S.Services.DailyAuctionMaterialsV3) == "table" and type(S.Services.DailyAuctionMaterialsV3.GetDiagnosticsSnapshot) == "function" then
+        Collect("DAILY_AUCTION_MATERIALS",S.Services.DailyAuctionMaterialsV3,"GetDiagnosticsSnapshot")
+    end
     Collect("SCHEDULER",S.Scheduler,"DescribeBacklog")
     Collect("DEMAND",S.Demand,"Describe")
     Collect("REFRESH",S.RefreshCoordinator,"Describe")
@@ -251,6 +295,9 @@ local function BuildReport(self, mode)
     Collect("UI_AUTHORITY",ui,"GetAuthoritySnapshot")
     Collect("BINDINGS",ui.Binding,"GetSnapshot")
     Collect("VIEW_STATE",rsui.ViewState,"GetSnapshot")
+    -- 中文维护注释（DraftSession V2 diagnostics）：这里只读取 RSUI 输入事务快照，不 Acquire 功能、
+    -- 不读取/输出草稿文本，避免报告泄露用户正在输入的内容；用于实机区分 draft/focus/keyboard 生命周期。
+    Collect("INPUT_DRAFTS",rsui,"GetInputDraftSessionSnapshot")
     Collect("POPUP",self,"BuildPopupPositioningReport")
     Collect("STATUS_HUD",self,"BuildBuffHudReport")
     -- 维护：公共 Service 健康快照按名称排序，未来模块也能进入报告；只调用已存在 getter，
@@ -430,6 +477,24 @@ local function BuildFocused(self)
         local seq=type(st.lastHistoricalRecoveryProbe)=='string' and st.lastHistoricalRecoveryProbe:match('sequence=([^/;]+)')
         if seq then row=row..' seq='..Short(seq,18) end
         if next(ev)==nil then row=row..' reason='..Short(st.lastError or st.loadStatus,72) end
+        -- 维护（2026-09-17 transport 物理恢复取证）：transport decode 在 canonical 之前失败时 ev 为空，
+        -- 旧聚焦报告只给 missing_chunk，无法区分 twin/catalog 候选为何被拒绝，导致仍需整份报告。
+        -- 这里只附加 Core 已缓存的 repair probe/error，不重读 SaveData、不构造 raw、不扩大 Authority。
+        -- 中文维护注释（2026-09-18，.18.236 物理恢复后续门禁取证）：
+        -- .18.235 RU 实机证明 repairPhysicalTransport 可以先成功返回/解码候选，随后才在 canonical
+        -- fingerprint 门禁被拒绝；此时 st.lastError 已经从 transport_* 变成 integrity/fingerprint，
+        -- 旧条件会把 Store 已缓存的 fallback 结果完全隐藏，报告只剩 hook=candidate，维护者无法判断
+        -- catalog_no_candidate / ambiguous / fallback-fingerprint-mismatch。Authority/数据流不变：这里只读
+        -- Persistence 在同一次失败 Load 已缓存的 probe/error，不重新 LoadData、不重算候选、不清 Fence、
+        -- 不写盘；只要存在物理恢复证据就展示。Store 每次 Load 开始会重置这些字段，因此不会串用旧世代证据。
+        local physical=st.lastPhysicalTransportRepairProbe or st.lastPhysicalTransportRepairError
+        if physical then
+            -- 中文维护注释（2026-09-17，transport 深度取证）：连续三轮恢复失败后，72 bytes
+            -- 只够显示 no_candidate 前缀，反而迫使维护者继续猜测。物理恢复函数现在提供最多
+            -- 2300 bytes 的 bounded 证据（缺块索引、twin 关系、首个同 count chunk 差异）；
+            -- 仍受本聚焦报告 3500 bytes 总预算和 Add() 原子行约束，不重读 Native、不输出整份 Store。
+            row=row..' phy='..Short(physical,2300)
+        end
         if not Add(row) then meta.storesOmitted=meta.storesOmitted+1 end
     end
     -- 维护（F2精度取证）：大死亡历史/追踪库装不进3500字节不应再次只剩相同Hash。

@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 5 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Bonds / Resident Board Test Suite
 --
@@ -157,9 +161,89 @@ Test("B1: Registry contract & metadata", function()
     assert(reg ~= nil, "life_bonds not registered")
     assert(reg.route == "life.bonds", "route mismatch")
     assert(reg.authority == "v3.life.bonds", "authority mismatch")
-    assert(reg.navigationDevelopmentState == "implemented_pending_ru", "development state must be implemented_pending_ru, got: " .. tostring(reg.navigationDevelopmentState))
+    assert(reg.navigationDevelopmentState == "complete", "user-accepted bonds must be complete in navigation, got: " .. tostring(reg.navigationDevelopmentState))
     assert(Bonds ~= nil, "Bonds feature missing")
     assert(Bonds.Commands ~= nil, "Bonds commands missing")
+    -- 中文维护注释（2026-09-15，多大陆债券排序契约）：大陆顺序必须是独立设置，不能再复用
+    -- “重复任务保留哪一侧”的 priority。这样排序只改变展示顺序，绝不会隐式删除另一大陆数据。
+    assert(type(Bonds.Commands.SetContinentOrder) == "function", "SetContinentOrder command missing")
+    assert((tonumber(Bonds.MultiContinentSnapshotContractVersion) or 0) >= 1, "multi-continent snapshot contract missing")
+end)
+
+Test("B1b: pre-continentOrder canonical can recover exact historical stamp", function()
+    local store = assert(S.Persistence:GetStore("v3.life.bonds"), "bonds store missing")
+    assert(type(store.rebuildCanonicalForIntegrity) == "function", "bonds historical canonical hook missing")
+
+    -- 中文维护测试：2026-09-15 已上线的旧债券存档 schema=1 不含 continentOrder。
+    -- 新版 NormalizeBondState 默认补 west_first 后会改变 canonical 指纹；恢复桥必须只复原
+    -- 这个旧逻辑形状，并由旧 stamped fingerprint 精确认证，不能放宽未知 mismatch。
+    local legacyDomain = {
+        sortMode = "quantity", showCompleted = true, q20 = true, q60 = true, q100 = true, auroria = true,
+        excludeSame = true, priority = "west", completionDateKey = "2026-09-15", completedMainlandKeys = { ["fabric:20"] = true },
+        dailyDateKey = "2026-09-15", dailySnapshots = {}, widgetVisible = false, widgetWindow = nil,
+    }
+    local legacyCanonical = {
+        sortMode = "quantity", showCompleted = true, q20 = true, q60 = true, q100 = true, auroria = true,
+        excludeSame = true, priority = "west", completionDateKey = "2026-09-15", completedMainlandKeys = { ["fabric:20"] = true },
+        dailyDateKey = "2026-09-15", dailySnapshots = {}, widgetVisible = false, widgetWindow = nil,
+    }
+    local stamped = assert(S.Persistence:FingerprintCanonicalValue(store, legacyCanonical), "legacy fingerprint unavailable")
+    local currentCanonical = assert(S.Persistence:CanonicalIntegrityValue(store, legacyDomain), "current canonical unavailable")
+    assert(currentCanonical.continentOrder == "west_first", "current canonical must add default continentOrder")
+    assert(S.Persistence:FingerprintCanonicalValue(store, currentCanonical) ~= stamped, "test fixture must reproduce canonical drift")
+
+    local historical, recovered = store.rebuildCanonicalForIntegrity(legacyDomain, stamped, currentCanonical, { payload = legacyDomain })
+    assert(type(historical) == "table", "historical candidate missing")
+    assert(historical.continentOrder == nil, "historical candidate must preserve pre-continentOrder shape")
+    assert(S.Persistence:FingerprintCanonicalValue(store, historical) == stamped, "historical candidate must exactly match old stamp")
+    assert(type(recovered) == "table" and recovered.continentOrder == "west_first", "recovered current domain must receive default continentOrder")
+
+    local rejected = store.rebuildCanonicalForIntegrity(legacyDomain, "DEADBEEF", currentCanonical, { payload = legacyDomain })
+    assert(rejected == nil, "unknown fingerprint must remain fail-closed")
+end)
+
+Test("B1c: Persistence LoadStore accepts exact pre-continentOrder envelope and schedules restamp", function()
+    local store = assert(S.Persistence:GetStore("v3.life.bonds"), "bonds store missing")
+    local key = assert(S.Persistence:ResolveStoreKey(store), "bonds store key unavailable")
+
+    -- 中文维护测试（2026-09-15，真实 LoadStore 冷路径）：B1b 证明 Store hook 本身，
+    -- 本用例继续把一个当前合法 envelope 改造成“旧 schema=1 / 无 continentOrder / 旧 canonical stamp”，
+    -- 再走 Persistence 的 Envelope Seal -> current mismatch -> historical exact Hash -> current restamp 全链路。
+    -- 这样可防止出现“hook 单测通过、实际 Fresh Reload 仍因 Core 调用形状不同而写保护”的回归。
+    Bonds.State.sortMode = "quantity"
+    Bonds.State.continentOrder = "west_first"
+    Bonds.State.dailyDateKey = "2026-09-15"
+    Bonds.State.completionDateKey = "2026-09-15"
+    Bonds.State.completedMainlandKeys = { ["fabric:20"] = true }
+    assert(S.Persistence:MarkDirty("v3.life.bonds", "test_pre_continent_order_envelope") == true)
+    assert(S.Persistence:SaveStore("v3.life.bonds", { force = true, verifyReadback = true }) == true)
+
+    local raw = h.Copy(h.disk[key])
+    assert(type(raw) == "table" and type(raw.payload) == "table" and type(raw.__rsmeta) == "table", "saved bonds envelope missing")
+    raw.payload.continentOrder = nil
+    local oldCanonical = assert(S.Persistence:CanonicalIntegrityValue(store, raw.payload), "old canonical probe unavailable")
+    oldCanonical.continentOrder = nil
+    local oldFingerprint = assert(S.Persistence:FingerprintCanonicalValue(store, oldCanonical), "old canonical fingerprint unavailable")
+    raw.__rsmeta.encodedFingerprint = oldFingerprint
+    raw.__rsmeta.envelopeFingerprint = nil
+    raw.__rsmeta.envelopeFingerprint = assert(S.Persistence:FingerprintEnvelopeIntegrity(raw), "legacy envelope seal unavailable")
+    h.disk[key] = h.Copy(raw)
+
+    -- Fresh Reload 会重建 Store 对象；测试宿主复用同一对象，因此显式清理仅属于上一轮 Save 的内存门禁。
+    -- discardUnverified 只模拟“新 Lua generation 没有旧 generation barrier obligation”，不放宽被测的 integrity gate。
+    store.loaded, store.loadStatus = false, nil
+    store.writeFenced, store.writeFenceReason = false, nil
+    store.dirty, store.dueAt = false, 0
+    store.pendingDurableFingerprint, store.pendingDurableKey, store.pendingDurableValue = nil, nil, nil
+    Bonds.State = {}
+    local loaded, _, loadErr = S.Persistence:LoadStore("v3.life.bonds", { discardDirty = true, discardUnverified = true })
+    assert(loaded == true, "exact historical bonds envelope must load: " .. tostring(loadErr))
+    assert(store.writeFenced ~= true, "exact historical bonds envelope must not remain write-fenced")
+    assert(Bonds.State.continentOrder == "west_first", "recovered current Domain must receive west_first default")
+    assert(store.lastIntegrityStatus == "historical_canonical_recovery", "unexpected recovery status: " .. tostring(store.lastIntegrityStatus))
+    assert(store.dirty == true, "historical canonical recovery must schedule current-canonical restamp")
+    -- 后续 B2~B15 验证产品默认排序；恢复用例不能把 quantity 测试状态泄漏给其它测试。
+    Bonds.State.sortMode = "continent"
 end)
 
 Test("B2: Empty vs Unavailable vs Ready status distinction", function()
@@ -227,9 +311,27 @@ Test("B4: Real Quest State tracking with activeIndex", function()
         IsCompleted = function(_, qid) return qid == 9044 end, -- Fabric 20 is completed
         GetActiveQuestListCount = function(_) return 1 end,
         GetActiveQuestType = function(_, idx) return 9152 end, -- Leather 60 is active
+        GetQuestContextMainTitle = function(_, qid) return qid == 9152 and "[特产-西部] 黄金平原的保存特产" or ("任务 " .. tostring(qid)) end,
         IsReadyForCompleteQuest = function(_, qid) return false end,
     }
     progress:Refresh()
+
+    assert(type(progress.GetActiveQuestState) == "function" and type(progress.GetActiveQuestStates) == "function", "QuestProgress detached active-state API missing")
+    local activeFact = progress:GetActiveQuestState(9152)
+    assert(type(activeFact) == "table" and activeFact.questId == 9152 and activeFact.active == true and activeFact.state == "IN_PROGRESS", "single detached active quest fact mismatch")
+    assert(activeFact.index == 1, "detached fact may expose copied active index")
+    local inactiveFact = progress:GetActiveQuestState(9143)
+    assert(type(inactiveFact) == "table" and inactiveFact.active == false, "inactive quest must return detached false fact")
+    local facts = progress:GetActiveQuestStates({ 9152, 9143 })
+    assert(type(facts) == "table" and facts[9152].active == true and facts[9143].active == false, "batch detached active quest facts mismatch")
+    assert(facts ~= progress.activeIndex, "public API must never expose activeIndex table itself")
+    assert(type(progress.GetActiveQuestList) == "function", "detached active quest list API missing")
+    local activeList = progress:GetActiveQuestList()
+    assert(type(activeList) == "table" and #activeList == 1, "active quest list must expose each current active quest once")
+    assert(activeList[1].questId == 9152 and activeList[1].index == 1 and activeList[1].title == "[特产-西部] 黄金平原的保存特产", "active quest list identity/title mismatch")
+    activeList[1].title = "mutated"
+    local activeList2 = progress:GetActiveQuestList()
+    assert(activeList2[1].title == "[特产-西部] 黄金平原的保存特产", "active quest list must return detached values")
 
     Bonds.State.dailySnapshots = {}
     SetMockResident({
@@ -307,11 +409,24 @@ Test("B6: Sorting & filtering options", function()
     Bonds.Commands:SetBondFilterOption("q20", true)
     assert(Bonds:GetBondFilterOption("q20") == true, "q20 should be true")
 
-    -- Test duplicate priority
+    -- Test continent order as an independent sort preference.
+    local orderOk, orderErr = Bonds.Commands:SetContinentOrder("east_first")
+    assert(orderOk == true, "SetContinentOrder east_first failed: " .. tostring(orderErr))
+    assert(Bonds:GetContinentOrder() == "east_first", "continent order should be east_first")
+    orderOk, orderErr = Bonds.Commands:SetContinentOrder("west_first")
+    assert(orderOk == true, "SetContinentOrder west_first failed: " .. tostring(orderErr))
+    assert(Bonds:GetContinentOrder() == "west_first", "continent order should be west_first")
+
+    -- Duplicate priority only chooses the winner *when merge is enabled*. It must
+    -- not silently enable merging, because that was the UI behavior that made the
+    -- other mainland appear to be missing.
+    Bonds.Commands:SetBondFilterOption("excludeSame", false)
     Bonds.Commands:SetDuplicatePriority("east")
     assert(Bonds:GetDuplicatePriority() == "east", "priority should be east")
+    assert(Bonds:GetBondFilterOption("excludeSame") == false, "changing merge priority must not enable merge mode")
     Bonds.Commands:SetDuplicatePriority("west")
     assert(Bonds:GetDuplicatePriority() == "west", "priority should be west")
+    assert(Bonds:GetBondFilterOption("excludeSame") == false, "priority switch must keep all-rows mode unchanged")
 end)
 
 Test("B7: Row lookup and selection commands", function()
@@ -363,6 +478,191 @@ Test("B10: FoundationGate sequence case v3_m1_bonds", function()
     assert(fn ~= nil, "v3_m1_bonds sequence case not registered")
     local ok, err = fn()
     assert(ok == true, "v3_m1_bonds sequence failed: " .. tostring(err))
+end)
+
+Test("B11: QuestProgress publishes arbitrary active quest membership and readiness changes", function()
+    local progress = S.Services.QuestProgressV3
+    local oldEventProgress, oldQuestGroups = S.Data.EventQuestProgress, S.Data.QuestGroups
+    S.Data.EventQuestProgress = {}
+    S.Data.QuestGroups = { daily = {}, weekly = {} }
+
+    local ready = false
+    _G.X2Quest = {
+        IsCompleted = function(_, qid) return false end,
+        GetActiveQuestListCount = function(_) return 1 end,
+        GetActiveQuestType = function(_, index) return index == 1 and 9152 or nil end,
+        GetQuestContextMainTitle = function(_, qid) return "居民债券测试 " .. tostring(qid) end,
+        IsReadyForCompleteQuest = function(_, qid) return ready end,
+    }
+    progress.snapshots = {}
+    progress.scopeSnapshots = { daily = {}, weekly = {} }
+    progress.activeIndex = {}
+    progress.activeQuestStates = {}
+    progress.revision = 0
+
+    assert(progress:Refresh("bond_active_added") == true)
+    assert(progress.revision == 1, "adding an arbitrary active quest must publish even when canonical groups are unchanged")
+    assert(progress.activeQuestStates[9152] == "IN_PROGRESS", "active quest state snapshot missing")
+
+    ready = true
+    assert(progress:Refresh("bond_ready_changed") == true)
+    assert(progress.revision == 2, "ready-to-turn-in transition must publish while active membership stays unchanged")
+    assert(progress.activeQuestStates[9152] == "READY_TO_TURN_IN", "active quest readiness snapshot stale")
+
+    S.Data.EventQuestProgress, S.Data.QuestGroups = oldEventProgress, oldQuestGroups
+end)
+
+Test("B12: Bonds demand owns QuestProgress and refreshes immediately after turn-in", function()
+    local progress = S.Services.QuestProgressV3
+    if Bonds.consumerCount > 0 then Bonds.Demand:Clear("test_reset") end
+    if progress.consumerCount > 0 then progress.Demand:Clear("test_reset") end
+    Bonds.progressConsumerHeld = false
+    Bonds.progressSubscribed = false
+    Bonds.State.completedMainlandKeys = {}
+    Bonds.State.dailySnapshots = {}
+
+    local active, completed = true, false
+    _G.X2Quest = {
+        IsCompleted = function(_, qid) return completed and qid == 9152 end,
+        GetActiveQuestListCount = function(_) return active and 1 or 0 end,
+        GetActiveQuestType = function(_, index) return active and index == 1 and 9152 or nil end,
+        GetQuestContextMainTitle = function(_, qid) return "居民债券测试 " .. tostring(qid) end,
+        IsReadyForCompleteQuest = function(_, qid) return false end,
+    }
+    SetMockResident({
+        GetResidentBoardContent = function(_, index)
+            if index == 2 then return { contents = { "皮革 60" } } end
+            return { contents = {} }
+        end
+    })
+    SetMockUnit({ GetCurrentZoneGroup = function(_) return 1 end })
+    progress.activeIndex = {}
+    progress.activeQuestStates = {}
+    progress.snapshots = {}
+    progress.scopeSnapshots = { daily = {}, weekly = {} }
+
+    local acquired, acquireErr = Bonds:AcquireConsumer("test:bonds-reactive")
+    assert(acquired == true, tostring(acquireErr))
+    assert(Bonds.progressConsumerHeld == true and progress.consumerCount > 0, "Bonds must hold QuestProgress only while observed")
+    assert(Bonds.progressSubscribed == true, "Bonds must subscribe to quest progress updates while observed")
+
+    local before
+    for _, row in ipairs(BA:GetProjection().rows or {}) do if row.materialKey == "leather" then before = row end end
+    assert(before ~= nil and before.statusText == "进行中", "initial bond quest state should be in progress")
+
+    active, completed = false, true
+    assert(progress:Refresh("bond_turn_in") == true)
+    local after
+    for _, row in ipairs(BA:GetProjection().rows or {}) do if row.materialKey == "leather" then after = row end end
+    assert(after ~= nil and after.statusText == "已完成", "turn-in must refresh Bonds from quest event without manual page refresh")
+
+    local released, releaseErr = Bonds:ReleaseConsumer("test:bonds-reactive")
+    assert(released == true, tostring(releaseErr))
+    assert(Bonds.progressConsumerHeld ~= true and Bonds.progressSubscribed ~= true, "Bonds must release QuestProgress lifecycle when no consumers remain")
+end)
+
+
+Test("B13: Bonds floating table exposes material name column", function()
+    local spec = S.UIV3.LifeEconomyContent and S.UIV3.LifeEconomyContent.specs and S.UIV3.LifeEconomyContent.specs.Bonds or nil
+    assert(type(spec) == "table", "Bonds floating content spec missing")
+    local materialColumn = nil
+    for _, column in ipairs(spec.columns or {}) do
+        if column.id == "material" then materialColumn = column; break end
+    end
+    assert(materialColumn ~= nil, "Bonds floating table must include a material column")
+    assert(materialColumn.field == "name", "material column must consume authoritative row.name")
+    assert(materialColumn.title == "材料", "material column title mismatch")
+end)
+
+Test("B14: West and East daily snapshots coexist and sorting never drops a mainland", function()
+    -- 中文维护注释（2026-09-15，西东大陆同日缓存回归）：模拟玩家先在西大陆读取，再移动到
+    -- 东大陆读取。Authority 必须保留两份同日快照并统一投影；默认“全部显示”时即使两大陆
+    -- 出现同材料同数量，也必须同时存在。排序只能调整顺序，不能承担去重副作用。
+    Bonds.State.dailySnapshots = {}
+    Bonds.State.dailyDateKey = nil
+    Bonds.State.excludeSame = false
+    Bonds.State.priority = "west"
+    Bonds.State.sortMode = "continent"
+    Bonds.State.continentOrder = "west_first"
+
+    SetMockUnit({ GetCurrentZoneGroup = function(_) return 1 end }) -- west
+    SetMockResident({
+        GetResidentBoardContent = function(_, index)
+            if index == 1 then return { contents = { "布料 20" } } end
+            return { contents = {} }
+        end
+    })
+    local acquired, acquireErr = Bonds:AcquireConsumer("test:bonds-multicontinent")
+    assert(acquired == true, "multi-continent consumer acquire failed: " .. tostring(acquireErr))
+    assert(BA:Refresh() == true, "west capture failed")
+    local westProjection = BA:GetProjection()
+    assert(westProjection.boardScope == "west", "west refresh must expose west boardScope")
+    assert(type(westProjection.dailySnapshotStatus) == "table" and westProjection.dailySnapshotStatus.west == true, "west daily coverage missing")
+
+    SetMockUnit({ GetCurrentZoneGroup = function(_) return 4 end }) -- east
+    SetMockResident({
+        GetResidentBoardContent = function(_, index)
+            if index == 1 then return { contents = { "布料 20" } } end
+            if index == 2 then return { contents = { "皮革 60" } } end
+            return { contents = {} }
+        end
+    })
+    assert(Bonds:Refresh() == true, "east capture failed")
+    local projection = BA:GetProjection()
+    assert(projection.boardScope == "east", "east refresh must expose east boardScope")
+    assert(projection.snapshotCount == 2, "west+east should produce two cached continents")
+    assert(projection.dailySnapshotStatus.west == true and projection.dailySnapshotStatus.east == true, "both mainland coverage flags must stay loaded")
+
+    local westCount, eastCount = 0, 0
+    for _, row in ipairs(projection.rows or {}) do
+        if row.continentKey == "west" then westCount = westCount + 1 end
+        if row.continentKey == "east" then eastCount = eastCount + 1 end
+    end
+    assert(westCount == 1 and eastCount == 2, "all-rows mode must keep both west/east snapshots: " .. tostring(westCount) .. "/" .. tostring(eastCount))
+
+    local sortOk, sortErr = Bonds.Commands:SetContinentOrder("east_first")
+    assert(sortOk == true, "east-first sorting failed: " .. tostring(sortErr))
+    projection = BA:GetProjection()
+    assert(#projection.rows == 3, "sorting must not remove rows")
+    assert(projection.rows[1].continentKey == "east" and projection.rows[#projection.rows].continentKey == "west", "east-first order not applied")
+
+    -- Selecting the merge winner while still in all-rows mode must remain a pure
+    -- preference. Only the explicit duplicate mode switch may collapse rows.
+    Bonds.Commands:SetBondFilterOption("excludeSame", false)
+    Bonds.Commands:SetDuplicatePriority("east")
+    projection = BA:GetProjection()
+    assert(#projection.rows == 3, "merge priority must not hide rows while duplicate mode is all")
+    Bonds.Commands:SetBondFilterOption("excludeSame", true)
+    projection = BA:GetProjection()
+    assert(#projection.rows == 2, "explicit merge mode should collapse only the duplicate fabric row")
+    local fabric
+    for _, row in ipairs(projection.rows) do if row.materialKey == "fabric" then fabric = row end end
+    assert(fabric ~= nil and fabric.continentKey == "east", "east merge priority must retain the east duplicate")
+
+    -- Restore user-facing default for following tests/runs.
+    Bonds.Commands:SetBondFilterOption("excludeSame", false)
+    Bonds.Commands:SetContinentOrder("west_first")
+    local released, releaseErr = Bonds:ReleaseConsumer("test:bonds-multicontinent")
+    assert(released == true, "multi-continent consumer release failed: " .. tostring(releaseErr))
+end)
+
+Test("B15: Bonds page and floating widget expose unambiguous mainland controls", function()
+    -- 中文维护注释：Presentation 只消费 detached Projection/Commands；这些静态契约断言防止后续
+    -- UI 重构重新出现“去重/优先西/按大陆排序”这种会把排序与数据隐藏混在一起的模糊文案。
+    local pageFile = assert(io.open("presentation/v3/pages/rs_v3_life_m16_pages.lua", "rb"))
+    local pageText = pageFile:read("*a"); pageFile:close()
+    assert(pageText:find('id = "continent", title = "大陆"', 1, true) ~= nil, "main Bonds table must have an explicit continent column")
+    assert(pageText:find('今日已获取：', 1, true) ~= nil, "main Bonds status must show daily west/east coverage")
+    assert(pageText:find('当前位置：', 1, true) ~= nil, "main Bonds status must name the current continent")
+    assert(pageText:find('排序：按大陆', 1, true) ~= nil and pageText:find('排序：按数量', 1, true) ~= nil, "sort mode labels must be explicit")
+    assert(pageText:find('大陆：西→东', 1, true) ~= nil and pageText:find('大陆：东→西', 1, true) ~= nil, "continent order labels must be explicit")
+    assert(pageText:find('重复：全部', 1, true) ~= nil and pageText:find('重复：合并', 1, true) ~= nil, "duplicate mode must state all vs merge")
+
+    local widgetFile = assert(io.open("presentation/v3/widgets/rs_v3_life_economy_widgets.lua", "rb"))
+    local widgetText = widgetFile:read("*a"); widgetFile:close()
+    assert(widgetText:find('SetContinentOrder', 1, true) ~= nil, "floating Bonds controls must support continent order")
+    assert(widgetText:find('{ id = "continent", title = "大陆"', 1, true) ~= nil, "floating Bonds table must have a continent column")
+    assert(widgetText:find('重复：全部', 1, true) ~= nil and widgetText:find('重复：合并', 1, true) ~= nil, "floating duplicate mode wording must match main page")
 end)
 
 print(string.format("\nBonds Test Results: %d/%d passed", passed, total))

@@ -253,6 +253,11 @@ local function CreateButtonComponent(kind, spec, withIcon)
         self.spec.text = value
         return UI:SetText(self.root, value, self.owner)
     end
+    -- 维护（module-controls-diag-2）：仅增加语义状态色，保持原 Click/ActionRunner/输入生命周期。
+    function c:SetStatusTone(tone)
+        if type(UI.SetButtonStatusTone) ~= "function" then return false end
+        return UI:SetButtonStatusTone(self.root, tone, self.owner)
+    end
     function c:SetSelected(selected) self.state.selected = selected == true; return UI:SetButtonActive(self.root, self.state.selected, self.owner) end
     function c:Render(state)
         state = type(state) == "table" and state or {}

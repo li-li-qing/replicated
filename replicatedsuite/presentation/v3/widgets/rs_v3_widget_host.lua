@@ -130,6 +130,7 @@ function W:SetVisible(id, visible, context)
     local nextValue = visible == true
     if self.visible[id] ~= nextValue then self.stats.visibilityChanges = (tonumber(self.stats.visibilityChanges) or 0) + 1 end
     self.visible[id] = nextValue
+    if S.Events and type(S.Events.Publish)=="function" then S.Events:Publish("v3.widgets.changed", id) end
     return true
 end
 
@@ -150,6 +151,7 @@ function W:NotifyWindowClosed(id, context)
 
     if self.visible[id] == true then self.stats.visibilityChanges = (tonumber(self.stats.visibilityChanges) or 0) + 1 end
     self.visible[id] = false
+    if S.Events and type(S.Events.Publish)=="function" then S.Events:Publish("v3.widgets.changed", id) end
     if cleanupOk ~= true then return false, cleanupErr end
     return true
 end
@@ -305,6 +307,24 @@ function W:NotifyProjectionChanged(id, kind)
     end
     if type(instance.Refresh) == "function" then return SafeCall("widget refresh", function() return instance:Refresh() end) end
     return true
+end
+
+-- 个人工作台只读可见性：禁止为列出窗口调用 EnsurePreferences/EnsureInstance。
+-- Host 是创建与可见性 Authority；尚未创建的窗口标为隐藏，不能把偏好当实际显示。
+function W:GetPresentationState(id)
+    local spec, instance = self.specs[id], self.instances[id]
+    if not spec then return nil end
+    local shell = instance and (instance.shell or (instance.surface and instance.surface.shell))
+    local meta = S.FeatureRegistry and S.FeatureRegistry:Get(spec.featureId)
+    local visible = self.visible[id] == true
+    local minimized = shell and shell.minimized == true or false
+    local locked = shell and shell.locked == true or false
+    return { id=id, name=tostring(spec.title or spec.name or (shell and shell.title) or (meta and meta.name) or id),
+        featureId=spec.featureId, route=meta and meta.route, created=instance~=nil, visible=visible,
+        minimized=minimized, locked=locked, state=not visible and "隐藏" or minimized and "收起" or "展开",
+        minimizable=spec.minimizable==true or (instance~=nil and type(instance.SetMinimized)=="function"),
+        lockable=spec.lockable==true or (instance~=nil and type(instance.SetLocked)=="function"),
+        resettable=spec.resettable==true or (instance~=nil and type(instance.ResetLayout)=="function") }
 end
 
 function W:GetState(id)
@@ -508,6 +528,44 @@ function W:SetFontScale(id, fontScale, persist)
     return false, "widget font scale unsupported"
 end
 
+-- 维护（viewport-recovery-1）：按需诊断只读已存在实例，绝不 EnsureInstance/加载偏好/启用模块。
+-- Host 的 visibleRequested 与 Native IsVisible 分开，能识别“模块正常但实际窗口不可见”。
+function W:GetPlacementDiagnostics(id)
+    id=NormalizeId(id)
+    local instance=self.instances[id]
+    local shell=instance and (instance.shell or (instance.surface and instance.surface.shell))
+    local d={windowId=id,visibleRequested=self.visible[id]==true,created=instance~=nil,placementSource="not_created"}
+    if shell and type(shell.GetPlacementDiagnostics)=="function" then
+        d=shell:GetPlacementDiagnostics();d.widgetId=id;d.visibleRequested=self.visible[id]==true
+    elseif instance and type(instance.GetPlacementDiagnostics)=="function" then
+        d=instance:GetPlacementDiagnostics();d.widgetId=id;d.visibleRequested=self.visible[id]==true
+    end
+    return d
+end
+
+local function RevealResetInstance(host,id,instance)
+    if instance==nil then return true end
+    local shell=instance.shell or (instance.surface and instance.surface.shell)
+    if shell and type(shell.RevalidatePlacement)=="function" then
+        local ok,err=shell:RevalidatePlacement(true,"explicit_reset")
+        if ok~=true then return false,err end
+        if host.visible[id]==true then
+            -- 只修已有 Native 几何/可见性，不调用 Feature Show/启用订阅；逻辑请求由 Host 掌握。
+            -- 维护：几何刚刚按 explicit_reset 解析，不再重复 Show 改写诊断来源/触发 wrapper 业务。
+            local ui=S.UI
+            if type(ui.InvalidateNativeState)=="function" then ui:InvalidateNativeState(shell.window,"visible") end
+            local ok,_,err=ui:EnsureVisible(shell.window,true,shell.owner)
+            if ok~=true then return false,err end
+            shell.visible=true;if instance.surface then instance.surface.visible=true end
+            if type(shell.window.Raise)=="function" then pcall(shell.window.Raise,shell.window) end
+            return true
+        end
+    elseif type(instance.ApplyLayout)=="function" then
+        return SafeCall("widget reset reflow",function()return instance:ApplyLayout(true)end)
+    end
+    return true
+end
+
 function W:ResetLayout(id)
     id = NormalizeId(id)
     local spec, instance = self.specs[id], self.instances[id]
@@ -516,11 +574,13 @@ function W:ResetLayout(id)
     if prepared ~= true then return false, prepareErr end
     if instance ~= nil and type(instance.ResetLayout) == "function" then
         local ok, err = SafeCall("widget layout reset", function() return instance:ResetLayout(true) end)
+        if ok then ok,err=RevealResetInstance(self,id,instance) end
         if ok then self.stats.layoutResets = (tonumber(self.stats.layoutResets) or 0) + 1 end
         return ok, err
     end
     if type(spec.resetLayout) == "function" then
         local ok, err = SafeCall("widget layout reset", spec.resetLayout)
+        if ok then ok,err=RevealResetInstance(self,id,instance) end
         if ok then self.stats.layoutResets = (tonumber(self.stats.layoutResets) or 0) + 1 end
         return ok, err
     end
@@ -553,7 +613,10 @@ function W:ApplyResponsiveLayout(fromMetricsChange)
     for _, id in ipairs(self.order) do
         if self.visible[id] == true then
             local instance = self.instances[id]
-            if instance ~= nil and type(instance.ApplyLayout) == "function" then
+            -- 维护：WindowShell 注册表已做纯几何重排；禁止再调用 wrapper.Refresh 启动业务。
+            -- 没有 Shell 的独立屏幕控件（Gear 等）保留其明确的 ApplyLayout 生命周期。
+            local shell=instance and (instance.shell or (instance.surface and instance.surface.shell))
+            if instance ~= nil and not (shell and type(shell.RevalidatePlacement)=="function") and type(instance.ApplyLayout) == "function" then
                 local ok, result, detail = xpcall(function() return instance:ApplyLayout(fromMetricsChange == true) end, S.SafeTraceback)
                 if not ok or result == false then
                     failures[#failures + 1] = id .. ":" .. tostring(ok and detail or result or "layout failed")

@@ -20,11 +20,12 @@ local L = S.Layout
 -- human instruction such as "move this icon upward".
 L.CoordinateSystemContractVersion = 1
 L.RectTransformTransactionContractVersion = 2
-L.ScreenToWidgetLocalContractVersion = 1
+L.ScreenToWidgetLocalContractVersion = 2
 L.ResponsivePlacementIntentContractVersion = 1
 L.ViewportLogicalRectContractVersion = 1
 L.EffectiveGeometryCalibrationContractVersion = 1 -- 中文维护注释：保留 RU Effective Geometry 单位校准契约，供外部原生控件和诊断继续使用。
 L.SuiteOwnedViewportAnchorContractVersion = 1 -- 中文维护注释：从 .18.190 起，Suite 自己创建并由 Diff Authority 布局的控件，Popup 锚点必须优先使用完整 NativeStateCache 父链，而不能继续猜测 GetEffectiveOffset 的单位。
+L.StartupMetricsSettleContractVersion = 1 -- 中文维护注释：启动/重登后的 UIParent 与 UI Scale 允许晚于插件加载稳定；只做有界 one-shot 复采样，不引入永久 Poll/Tick。
 L.coordinateSystem = {
     origin = "top_left",
     xPositive = "right",
@@ -34,8 +35,16 @@ L.coordinateSystem = {
 }
 L.geometryMetrics = { transformBegins = 0, transformPreviews = 0, transformOverrides = 0, transformCommits = 0, transformCancels = 0, transformRejects = 0 }
 
+-- 维护（viewport-recovery-1）：仅在几何入口做有限数过滤；nil/NaN/Infinity 不能
+-- 参与 clamp/signature。读取兼容不写存档，也不改变 Feature 的 canonical Normalize/schema。
+local function Finite(value, fallback)
+    local n = tonumber(value)
+    if n == nil or n ~= n or n == math.huge or n == -math.huge then return fallback end
+    return n
+end
+
 local function Clamp(value, minimum, maximum)
-    local number = tonumber(value) or 0
+    local number = Finite(value, 0)
     if number < minimum then return minimum end
     if number > maximum then return maximum end
     return number
@@ -262,7 +271,10 @@ local function ActiveMainPlacement()
 end
 
 function L:BuildContext()
-    local screenWidth, screenHeight, uiScale, logicalWidth, logicalHeight = S.Api:GetUiMetrics()
+    local screenWidth, screenHeight, uiScale, logicalWidth, logicalHeight, metricsInfo = S.Api:GetUiMetrics()
+    logicalWidth, logicalHeight = math.max(1, Finite(logicalWidth, 1024)), math.max(1, Finite(logicalHeight, 768))
+    uiScale = math.max(0.01, Finite(uiScale, 1))
+    screenWidth, screenHeight = math.max(1, Finite(screenWidth, logicalWidth)), math.max(1, Finite(screenHeight, logicalHeight))
     local addonScale = Clamp(ActiveSettings().addonScale or 1, C.MinAddonScale, C.MaxAddonScale)
     local designWidth = logicalWidth / addonScale
     local designHeight = logicalHeight / addonScale
@@ -283,6 +295,9 @@ function L:BuildContext()
 
     local safe = C.SafeArea
     return {
+        -- 来源是本次读取事实，不持久化；early fallback → 真实 root 也是身份变化。
+        metricsSource = type(metricsInfo) == "table" and metricsInfo.source or "api",
+        metricsReady = type(metricsInfo) ~= "table" or metricsInfo.ready == true,
         screenWidth = screenWidth,
         screenHeight = screenHeight,
         uiScale = uiScale,
@@ -350,6 +365,11 @@ function L:MakeSignature(context)
         tostring(math.floor((context.screenHeight or 0) + 0.5)),
         string.format("%.4f", tonumber(context.uiScale) or 1),
         string.format("%.2f", tonumber(context.addonScale) or 1),
+        -- 维护：物理尺寸与断点不变时 logical viewport 仍可变化。签名必须含完整坐标空间，
+        -- 而不是只比较物理分辨率；比例只作身份依据，绝不再乘除已是 logical 的 x/y。
+        string.format("%.3f", Finite(context.logicalWidth, 0)),
+        string.format("%.3f", Finite(context.logicalHeight, 0)),
+        tostring(context.metricsSource or "api"),
         tostring(context.breakpoint),
         tostring(context.columns),
     }, ":")
@@ -366,6 +386,9 @@ end
 -- Keeping this bridge here prevents resolution/UI-scale changes from falling
 -- through into legacy state-dependent code (S.State 已删除, 不加载).
 function L:ApplyResponsivePresentation(fromMetricsChange)
+    -- 维护：顶层窗注册表独立于主窗口生命周期。以前 main host 缺失会提前 return，
+    -- 使存在但离屏的 FloatingSurface 永远不接收新 viewport。这里只处理几何，无业务刷新。
+    self:RefreshFloatingSafety(fromMetricsChange == true)
     if S.Theme ~= nil and type(S.Theme.RefreshTypography) == "function" then
         S.Theme:RefreshTypography()
     end
@@ -374,7 +397,7 @@ function L:ApplyResponsivePresentation(fromMetricsChange)
     end
     if tostring(S.ArchitectureMode or "") == "v3_rebuild" then
         if S.UIHostManager ~= nil and type(S.UIHostManager.ApplyResponsiveLayout) == "function"
-            and type(S.UIHostManager.GetActive) == "function" and S.UIHostManager:GetActive() ~= nil then
+            then
             return S.UIHostManager:ApplyResponsiveLayout(fromMetricsChange == true)
         end
         return false, "V3 presentation host unavailable"
@@ -386,8 +409,8 @@ function L:ApplyResponsivePresentation(fromMetricsChange)
 end
 
 -- Immediate refresh used by application-level UI settings. It updates the
--- signature now so the scheduler does not perform a duplicate reflow on its
--- next metrics poll.
+-- signature now so the next native/lifecycle event need not repeat an unchanged reflow.
+-- 维护：这里只更新事件身份；不存在后台 metrics poll。
 function L:RefreshNow(fromMetricsChange)
     local fresh = self:GetContext(true)
     self.lastSignature = self:MakeSignature(fresh)
@@ -395,31 +418,135 @@ function L:RefreshNow(fromMetricsChange)
     return self:ApplyResponsivePresentation(fromMetricsChange == true)
 end
 
+-- 维护：保留 PollChanges 名称供旧调用/离线验收；Runtime 已移除周期注册。
+-- 只由生命周期边沿调用；即使签名不变也发布新 context，避免 forced read 与 lastSignature 脱节。
 function L:PollChanges()
     local fresh = self:BuildContext()
     local signature = self:MakeSignature(fresh)
+    local changed = signature ~= self.lastSignature
+    self.context, self.invalidated, self.lastSignature = fresh, false, signature
+    if changed then
+        self.metricsRevision = (tonumber(self.metricsRevision) or 0) + 1
+        self:ApplyResponsivePresentation(true)
+    end
+    return changed
+end
 
-    -- Bootstrap is a real layout transition too. Older builds only remembered
-    -- the first post-load signature and returned without reflowing. If UIParent
-    -- still exposed provisional metrics while the addon was constructing its
-    -- widgets, the dashboard stayed packed against those stale dimensions until
-    -- the user manually resized the window. Treat the first observation as a
-    -- reflow unless Runtime explicitly primed the startup signature.
-    if self.lastSignature == nil then
-        self.lastSignature = signature
-        self.context = fresh
-        self.invalidated = false
-        self:ApplyResponsivePresentation(true)
-        return true
+-- 维护（2026-09-22，relog-floating-placement-settle-1）：ArcheRage RU 登录/切角色期间，
+-- Addon 已经开始恢复悬浮窗时 UIParent:GetExtent()/GetUIScale() 仍可能只是“有效但临时”的值。
+-- 旧实现仅在事件边沿即时采样一次，再固定 150ms 采样一次；若最终 viewport 在 150ms 之后
+-- 才稳定，同时 OnScale/ENTERED_WORLD 又没有再次投递，所有 FloatingSurface 都会停留在临时
+-- viewport 的 normalized projection 上。Store 本身没有被改写，因此下一次重登会按新的加载时序
+-- 再投影一次，用户看到的结果就是“悬浮框每次上下线都会移位”。
+--
+-- Authority / 数据流：Native UIParent -> Api:GetUiMetrics -> Layout context/signature ->
+-- RefreshFloatingSafety/WindowShell placementDelegate；Feature-owned widgetWindow 始终只是持久 intent，
+-- 本稳定窗口绝不调用 StorePlacement/MarkDirty，也绝不把临时投影反写成用户位置。
+--
+-- 实现边界：生命周期 Signal 仍立即采样，但随后开启一个严格有界的 one-shot 序列；每次新 Signal
+-- 都废弃并重启旧序列，使 ENTERED_WORLD/LEFT_LOADING 成为新的稳定观察起点。序列最多 8 次、约
+-- 15.5 秒，足以覆盖慢登录/切角色，同时没有永久 Tick、没有 Feature 扫描循环；签名不变时只读取
+-- 几个 viewport 标量，不触发 Presentation reflow。Generation/epoch/serial 三层隔离保证重载或
+-- Stop 后的迟到回调不能继续改布局。风险仅是启动期增加少量低频 UI metrics 读取。
+local METRICS_SETTLE_DELAYS_MS = { 150, 350, 700, 1200, 1800, 2600, 3600, 5000 }
+
+function L:StartMetricsEvents()
+    if self.metricsEventsRunning then return true end
+    self.metricsEventsEpoch = (tonumber(self.metricsEventsEpoch) or 0) + 1
+    local epoch, generation = self.metricsEventsEpoch, S.Generation
+    self.metricsEventsRunning = true
+    self.metricsSettleSerial = (tonumber(self.metricsSettleSerial) or 0) + 1
+    self.metricsNotifications = {
+        nativeScale = false, nativeScaleDeliveryObserved=false, signals=0, events = {},
+        settleRuns=0, settleAttempts=0, settleScheduleFailures=0, settleCompleted=false,
+        lastReady=false, lastSource="unknown",
+    }
+
+    local function ScheduleSettle(reason)
+        local scheduler = S.Scheduler
+        if scheduler == nil or type(scheduler.AddOneShot) ~= "function" then return false end
+
+        -- 新生命周期边沿拥有新的 settle 序列；即使旧任务正 pending，也不能让旧的 150ms 预算
+        -- 吞掉 ENTERED_WORLD 后真正需要的观察窗口。RemoveTask 只处理同一静态任务名，不泄露元数据。
+        L.metricsSettleSerial = (tonumber(L.metricsSettleSerial) or 0) + 1
+        local serial = L.metricsSettleSerial
+        L.metricsSettlePending = false
+        if type(scheduler.RemoveTask) == "function" then scheduler:RemoveTask("rsui_metrics_settle") end
+        L.metricsNotifications.settleRuns = (tonumber(L.metricsNotifications.settleRuns) or 0) + 1
+        L.metricsNotifications.settleCompleted = false
+        L.metricsNotifications.settleReason = tostring(reason or "unknown")
+
+        local function Queue(attempt)
+            if not L.metricsEventsRunning or L.metricsEventsEpoch ~= epoch or S.Generation ~= generation
+                or L.metricsSettleSerial ~= serial then return false end
+            local delay = METRICS_SETTLE_DELAYS_MS[attempt]
+            if delay == nil then
+                L.metricsSettlePending = false
+                L.metricsNotifications.settleCompleted = true
+                return true
+            end
+            L.metricsSettlePending = true
+            local ok = scheduler:AddOneShot("rsui_metrics_settle", delay, function()
+                if not L.metricsEventsRunning or L.metricsEventsEpoch ~= epoch or S.Generation ~= generation
+                    or L.metricsSettleSerial ~= serial then return true end
+                L.metricsSettlePending = false
+                L:PollChanges()
+                local context = L:GetContext()
+                L.metricsNotifications.settleAttempts = (tonumber(L.metricsNotifications.settleAttempts) or 0) + 1
+                L.metricsNotifications.lastReady = context.metricsReady == true
+                L.metricsNotifications.lastSource = tostring(context.metricsSource or "unknown")
+                L.metricsNotifications.lastLogicalWidth = tonumber(context.logicalWidth)
+                L.metricsNotifications.lastLogicalHeight = tonumber(context.logicalHeight)
+                if METRICS_SETTLE_DELAYS_MS[attempt + 1] == nil then
+                    L.metricsNotifications.settleCompleted = true
+                    return true
+                end
+                Queue(attempt + 1)
+                return true
+            end, L, "P1", 1)
+            if ok ~= true then
+                L.metricsSettlePending = false
+                L.metricsNotifications.settleScheduleFailures = (tonumber(L.metricsNotifications.settleScheduleFailures) or 0) + 1
+                return false
+            end
+            return true
+        end
+        return Queue(1)
     end
-    if signature ~= self.lastSignature then
-        self.lastSignature = signature
-        self.context = fresh
-        self.invalidated = false
-        self:ApplyResponsivePresentation(true)
-        return true
+
+    local function Signal(reason)
+        if not L.metricsEventsRunning or L.metricsEventsEpoch ~= epoch or S.Generation ~= generation then return end
+        L.lastMetricsReason = tostring(reason)
+        -- 维护：绑定成功与实际收到回调是两种证据；只保留计数和末次原因，不存事件历史。
+        L.metricsNotifications.signals=L.metricsNotifications.signals+1
+        if reason=="native_on_scale" then L.metricsNotifications.nativeScaleDeliveryObserved=true end
+        L:PollChanges()
+        ScheduleSettle(reason)
     end
-    return false
+    if S.Api and type(S.Api.StartUiMetricsNotifications) == "function" then
+        local ok, err = S.Api:StartUiMetricsNotifications(Signal)
+        self.metricsNotifications.nativeScale, self.metricsNotifications.nativeError = ok == true, err
+    end
+    if S.Events and type(S.Events.SubscribeOptional) == "function" then
+        for _, name in ipairs({ "UI_RELOADED", "ENTERED_WORLD", "LEFT_LOADING", "OPTION_RESET" }) do
+            local eventName = name -- Lua 5.1 回调捕获稳定副本；不得添加未经证实的分辨率事件枚举。
+            local ok = S.Events:SubscribeOptional(eventName, self, function() Signal(eventName) end)
+            self.metricsNotifications.events[eventName] = ok == true
+        end
+    end
+    Signal("addon_load")
+    return true
+end
+
+function L:StopMetricsEvents()
+    self.metricsEventsRunning = false
+    self.metricsEventsEpoch = (tonumber(self.metricsEventsEpoch) or 0) + 1
+    self.metricsSettleSerial = (tonumber(self.metricsSettleSerial) or 0) + 1
+    self.metricsSettlePending = false
+    if S.Events and type(S.Events.UnsubscribeOwner) == "function" then S.Events:UnsubscribeOwner(self) end
+    if S.Scheduler and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask("rsui_metrics_settle") end
+    if S.Api and type(S.Api.StopUiMetricsNotifications) == "function" then S.Api:StopUiMetricsNotifications() end
+    return true
 end
 
 
@@ -614,6 +741,25 @@ function L:ResolveViewportLogicalRect(widget)
     return nil, nil, nil, nil, { source = "viewport_rect_unavailable", coordinateSpace = "viewport-logical-v1" }
 end
 
+-- 维护（viewport-recovery-1）：Windowing 专用 live geometry，区别于 Popup 的缓存锚点。
+-- BeginInteraction 根据稳定 extent 校准并冻结 effective 单位；resize 中不能拿变化后的
+-- extent 对比旧 Diff cache 再猜比例。最多一次转换，uiScale 不是无条件除数；不写 Store。
+-- 未传冻结值时只允许在 create/show/drag-end/按需诊断等低频边沿调用。
+function L:GetWindowLogicalRect(widget, pinnedScale)
+    local scale = Finite(pinnedScale)
+    if scale ~= nil and scale > 0 then
+        local x, y, posKnown = ReadEffectivePair(widget, "GetEffectiveOffset")
+        local w, h, sizeKnown = ReadEffectivePair(widget, "GetEffectiveExtent")
+        if posKnown and sizeKnown then
+            local ox, oy, originKnown = ReadEffectivePair(UIParent, "GetEffectiveOffset")
+            if not originKnown then ox, oy = 0, 0 end
+            return (x-ox)/scale, (y-oy)/scale, w/scale, h/scale,
+                { effectiveScale=scale, source="gesture_pinned", coordinateSpace="viewport-logical-v1" }
+        end
+    end
+    return self:ResolveViewportLogicalRect(widget)
+end
+
 function L:GetLogicalRect(widget)
     local context = self:GetContext()
     local x, y, width, height = nil, nil, nil, nil
@@ -643,38 +789,24 @@ function L:GetLogicalRect(widget)
 end
 
 
--- Screen/Overlay coordinate adapter v1. ScreenProjectionV3 owns projected
--- UIParent screen coordinates; a Presentation host may still have a non-zero
--- effective origin after Native CorrectOffsetByScreen/resolution handling.
--- Child anchors are host-local, so subtract the live host origin once per
--- render batch instead of accumulating per-resolution magic offsets.
+-- Screen/Overlay coordinate adapter v2. ScreenProjectionV3 owns projected
+-- UIParent-local logical coordinates. The old adapter first called legacy
+-- GetLogicalRect() (which unconditionally divided EffectiveOffset by uiScale)
+-- and then divided UIParent's origin again. On RU clients whose Effective API
+-- is already logical, UI Scale != 1 therefore shifted unit-lines/range points
+-- by a second transform. Reuse the calibrated viewport-logical Authority here:
+-- it subtracts UIParent's raw origin before converting exactly once.
 function L:GetUiParentLocalOrigin(widget)
     if widget == nil then return 0, 0, false, "widget_missing" end
-    local widgetX, widgetY = self:GetLogicalRect(widget)
+    local widgetX, widgetY, _, _, info = self:ResolveViewportLogicalRect(widget)
     widgetX, widgetY = tonumber(widgetX), tonumber(widgetY)
-    if widgetX == nil or widgetY == nil then return 0, 0, false, "origin_unavailable" end
-
-    -- GetEffectiveOffset is screen-relative on the verified RU WidgetBase.
-    -- ScreenProjectionV3 points, however, are UIParent-local.  UIParent is
-    -- normally (0,0), but resolution/UI-scale correction is precisely the
-    -- boundary where assuming that forever becomes unsafe.  Normalize both
-    -- sides into the same logical space, then remove UIParent's own live
-    -- effective origin before exposing the child-host origin.
-    local parentX, parentY = 0, 0
-    if UIParent ~= nil and widget ~= UIParent then
-        local context = self:GetContext()
-        if type(UIParent.GetEffectiveOffset) == "function" then
-            local ok, px, py = pcall(function() return UIParent:GetEffectiveOffset() end)
-            if ok == true and tonumber(px) ~= nil and tonumber(py) ~= nil then
-                local scale = math.max(0.001, tonumber(context.uiScale) or 1)
-                parentX, parentY = tonumber(px) / scale, tonumber(py) / scale
-            end
-        elseif type(UIParent.GetOffset) == "function" then
-            local ok, px, py = pcall(function() return UIParent:GetOffset() end)
-            if ok == true then parentX, parentY = tonumber(px) or 0, tonumber(py) or 0 end
-        end
+    if widgetX == nil or widgetY == nil then
+        return 0, 0, false, type(info) == "table" and tostring(info.source or "origin_unavailable") or "origin_unavailable"
     end
-    return widgetX - parentX, widgetY - parentY, true, nil, parentX, parentY
+    -- 维护（2026-09-22，screen-origin-authority-2）：ResolveViewportLogicalRect 的返回值已经是
+    -- UIParent-local viewport-logical-v1；这里绝不能再减一次 parent origin 或乘除 uiScale。
+    -- parentX/Y 保留为 0 只为兼容 ScreenPointToWidgetLocal 的诊断元数据，不代表丢失 Native 原点。
+    return widgetX, widgetY, true, nil, 0, 0
 end
 
 function L:ScreenPointToWidgetLocal(widget, screenX, screenY)
@@ -787,15 +919,29 @@ function L:ResolveSiblingSnap(x, y, width, height, siblings, options)
     return bestX, bestY, bestScore ~= nil, bestIndex
 end
 
+-- 维护（2026-09-22，viewport-contained-floating-1）：顶层窗口的“完全可见”约束必须
+-- 使用四条独立 SafeInset，而不是把 safeLeft 当作四边统一 edge。ArcheRage RU 在窗口模式、
+-- UI Scale 与部分系统栏组合下四边安全区未必对称；旧实现会在 safeRight/safeBottom 较大时
+-- 仍把窗口夹到物理边缘之外。Authority：Layout context -> runtime geometry only；不写 Store。
+-- 兼容边界：options.edge 仍保留为显式对称覆盖；未传 edge 时严格消费当前四边 safe inset。
 function L:ClampTopLeft(x, y, width, height, options)
     options = type(options) == "table" and options or {}
     local context = self:GetContext()
-    local edge = math.max(0, tonumber(options.edge) or context.safeLeft or C.SafeArea or 12)
+    local explicitEdge = tonumber(options.edge)
+    local fallbackEdge = math.max(0, tonumber(C.SafeArea) or 12)
+    local left = math.max(0, explicitEdge or tonumber(context.safeLeft) or fallbackEdge)
+    local top = math.max(0, explicitEdge or tonumber(context.safeTop) or fallbackEdge)
+    local rightInset = math.max(0, explicitEdge or tonumber(context.safeRight) or fallbackEdge)
+    local bottomInset = math.max(0, explicitEdge or tonumber(context.safeBottom) or fallbackEdge)
     width = math.max(1, tonumber(width) or 1)
     height = math.max(1, tonumber(height) or 1)
-    local maxX = math.max(edge, context.logicalWidth - edge - math.min(width, math.max(1, context.logicalWidth - edge * 2)))
-    local maxY = math.max(edge, context.logicalHeight - edge - math.min(height, math.max(1, context.logicalHeight - edge * 2)))
-    return Clamp(tonumber(x) or edge, edge, maxX), Clamp(tonumber(y) or edge, edge, maxY)
+    local usableW = math.max(1, (tonumber(context.logicalWidth) or width) - left - rightInset)
+    local usableH = math.max(1, (tonumber(context.logicalHeight) or height) - top - bottomInset)
+    local fittedW = math.min(width, usableW)
+    local fittedH = math.min(height, usableH)
+    local maxX = math.max(left, (tonumber(context.logicalWidth) or fittedW) - rightInset - fittedW)
+    local maxY = math.max(top, (tonumber(context.logicalHeight) or fittedH) - bottomInset - fittedH)
+    return Clamp(tonumber(x) or left, left, maxX), Clamp(tonumber(y) or top, top, maxY)
 end
 
 -- V3 free-placement safety. Normal dragging is intentionally NOT clamped to
@@ -944,7 +1090,8 @@ function L:ResolveScreenSnap(id, x, y, width, height, overrides)
             local otherGroup = tostring(opts.snapGroup or "screen_controls")
             local otherKind = tostring(opts.snapKind or "")
             if otherGroup == group and (kind == "" or otherKind == "" or otherKind == kind) then
-                local ox, oy, ow, oh = self:GetLogicalRect(widget)
+                -- 维护：peer 与拖动源必须处于相同 logical 空间；不能一端校准、一端再 /uiScale。
+                local ox, oy, ow, oh = self:GetWindowLogicalRect(widget)
                 if tonumber(ox) ~= nil and tonumber(oy) ~= nil then
                     siblings[#siblings + 1] = { x = ox, y = oy, width = ow, height = oh }
                     siblingIds[#siblings] = tostring(otherId)
@@ -989,7 +1136,8 @@ function L:RefreshFloatingSafety(metricsChanged)
         local options = item and item.options or nil
         if widget ~= nil and type(options) == "table" then
             if type(options.onMetricsChanged) == "function" then
-                pcall(options.onMetricsChanged, metricsChanged == true)
+                local ok, accepted, err = pcall(options.onMetricsChanged, metricsChanged == true)
+                item.lastRevalidateError = (not ok or accepted == false) and tostring(err or accepted or "placement_rejected") or nil
             elseif tostring(options.safetyMode or "free") ~= "free" then
                 self:EnsureWidgetVisible(widget, options)
             end
@@ -1074,11 +1222,17 @@ function L:EndSafeMove(key, cancel)
     return true, x, y, width, height
 end
 
-function L:StorePlacement(target, widget, options)
-    if type(target) ~= "table" or widget == nil then return end
+-- 维护（2026-09-16，committed-geometry-authority-1）：Windowing 在拖动/缩放事务提交时已经
+-- 产生唯一的逻辑坐标 x/y/width/height。此前调用方收到这组值后又通过 GetLogicalRect(widget)
+-- 读取一次 Native，UI Scale/原生坐标更新时序可能让“屏幕上最终位置”和“写入 Store 的位置”不同，
+-- 下次登录便出现悬浮窗漂移。StorePlacementRect 只消费事务已经提交的逻辑矩形；StorePlacement
+-- 保留给没有显式事务矩形的低频兼容调用。Authority：Windowing committed rect -> Layout -> Feature/UI Store。
+-- 兼容边界：持久化字段、coordinateSpace 和响应式中心比例完全不变，不触碰任何 Store schema。
+function L:StorePlacementRect(target, x, y, width, height, options)
+    if type(target) ~= "table" then return end
     options = type(options) == "table" and options or {}
     local context = self:GetContext()
-    local x, y, width, height = self:GetLogicalRect(widget)
+    x, y = tonumber(x) or 0, tonumber(y) or 0
     local mode = tostring(options.mode or "free")
     width = math.max(1, tonumber(width) or 1)
     height = math.max(1, tonumber(height) or 1)
@@ -1151,7 +1305,93 @@ function L:StorePlacement(target, widget, options)
     return x, y, width, height
 end
 
+function L:StorePlacement(target, widget, options)
+    if type(target) ~= "table" or widget == nil then return end
+    local x, y, width, height = self:GetLogicalRect(widget)
+    return self:StorePlacementRect(target, x, y, width, height, options)
+end
+
+-- 维护（viewport-recovery-1）：此策略仅用于 persistent/session 顶层窗口，不替换 Popup/HUD。
+-- x/y 是 UIParent logical；addonScale 已在 preferred size 入口应用，uiScale 只判别 viewport。
+-- 同 viewport 可拖回的部分离屏位置精确保留；跨 viewport/失去标题/显式恢复才严格夹紧。
+-- fitted size 是返回值，绝不写回 placement；每次从原 intent 重新投影，往返不积累漂移。
+function L:IsWindowRecoverable(x, y, width, height, titleHeight)
+    local c = self:GetContext()
+    x, y, width, height = Finite(x), Finite(y), Finite(width), Finite(height)
+    if x == nil or y == nil or width == nil or height == nil or width <= 0 or height <= 0 then return false end
+    local title = math.min(height, math.max(1, Finite(titleHeight, 24)))
+    -- 普通拖动的可恢复性基于真实 viewport，而非迁移时的内边距；否则 -2px 的
+    -- 合法部分离屏标题会在重登时漂移。迁移/Reset 才使用 SafeArea 严格夹紧。
+    local vx = math.min(x+width, c.logicalWidth)-math.max(x,0)
+    local vy = math.min(y+title, c.logicalHeight)-math.max(y,0)
+    return vx >= math.min(72,width,c.usableWidth) and vy >= math.min(14,title,c.usableHeight)
+end
+
+function L:ResolveWindowPlacement(placement, width, height, defaultX, defaultY, options)
+    options = type(options) == "table" and options or {}
+    local c = self:GetContext()
+    local p = type(placement) == "table" and placement or nil
+    local pw, ph = math.max(1, Finite(width, 420)), math.max(1, Finite(height, 286))
+    local w, h = math.min(pw,c.usableWidth), math.min(ph,c.usableHeight)
+    local x, y = Finite(defaultX,c.safeLeft+(c.usableWidth-w)/2), Finite(defaultY,c.safeTop+(c.usableHeight-h)/2)
+    local reason = tostring(options.reason or "restore")
+    local sw, sh = p and Finite(p.savedLogicalWidth), p and Finite(p.savedLogicalHeight)
+    local ss = p and Finite(p.savedUiScale)
+    local known = sw ~= nil and sh ~= nil and sw > 0 and sh > 0
+    local changed = known and (math.abs(sw-c.logicalWidth)>=0.5 or math.abs(sh-c.logicalHeight)>=0.5) or false
+    if ss ~= nil and ss > 0 and math.abs(ss-c.uiScale)>=0.0005 then changed = true end
+    local source = "default"
+    local rx, ry = p and Finite(p.normalizedCenterX), p and Finite(p.normalizedCenterY)
+    if rx ~= nil and (rx < -2 or rx > 3) then rx = nil end
+    if ry ~= nil and (ry < -2 or ry > 3) then ry = nil end
+    local hasXY = p and Finite(p.x) ~= nil and Finite(p.y) ~= nil
+    local intent = p and p.userMoved ~= false and reason ~= "explicit_reset"
+    if intent and hasXY then
+        x, y = Finite(p.x), Finite(p.y)
+        source = known and "same_viewport_exact" or "legacy_recovery"
+        if changed and known and rx ~= nil and ry ~= nil then
+            x, y = rx*c.logicalWidth-w*0.5, ry*c.logicalHeight-h*0.5
+            source = "normalized_reproject"
+        elseif changed then source = "legacy_recovery" end
+    elseif intent and (p.anchorH ~= nil or p.anchorV ~= nil or p.offsetX ~= nil or p.offsetY ~= nil) then
+        local ox, oy = math.max(0,Finite(p.offsetX,0)), math.max(0,Finite(p.offsetY,0))
+        x = p.anchorH == "RIGHT" and c.logicalWidth-c.safeRight-ox-w or c.safeLeft+ox
+        y = p.anchorV == "BOTTOM" and c.logicalHeight-c.safeBottom-oy-h or c.safeTop+oy
+        source = "legacy_recovery"
+    end
+    if reason == "explicit_reset" then source = "explicit_reset" end
+    local recoverable = self:IsWindowRecoverable(x,y,w,h,options.topReachHeight)
+    local fit = w ~= pw or h ~= ph
+    -- 维护（2026-09-22，viewport-contained-floating-1）：普通 FloatingSurface 的 boundaryMode=free
+    -- 只表示“用户可自由拖动/缩放”，不再表示“允许把顶层窗口持久停在屏幕外”。过去 same_viewport_exact
+    -- 与缺少 savedLogicalWidth/Height 的 legacy row 只要标题还剩一小条可抓取就不夹紧，因此切分辨率、
+    -- 窗口模式或旧配置升级后会看到窗口大半甚至主体位于屏幕外。现在 top-level free/strict 都要求
+    -- runtime rect 完整位于 safe viewport；recoverable 模式仍显式保留给确实需要部分离屏的特殊控件。
+    -- 这是运行时投影，不回写 Feature-owned placement；只有真实用户 geometry commit 才更新 Store。
+    local boundaryMode = tostring(options.mode or "free")
+    local legacyIntent = intent and not known
+    local strict = boundaryMode == "free" or boundaryMode == "strict" or changed or legacyIntent
+        or not recoverable or fit or source == "default" or source == "explicit_reset"
+    local bx, by = x, y
+    if strict then x,y = self:ClampTopLeft(x,y,w,h) end
+    local clamped = x ~= bx or y ~= by
+    local recovery = source == "explicit_reset" and "explicit_reset"
+        or (changed and "resolution_migration" or (not recoverable and "legacy_recovery" or (fit and "runtime_size_fit" or "none")))
+    return x,y,w,h,{
+        coordinateSpace="logical-free-v2", placementSource=source, viewportChanged=changed,
+        migrationApplied=changed or clamped or fit, clampApplied=clamped, fitApplied=fit, recoveryReason=recovery,
+        preferredWidth=pw,preferredHeight=ph,savedLogicalWidth=sw,savedLogicalHeight=sh,savedUiScale=ss,
+        normalizedCenterX=rx,normalizedCenterY=ry,currentLogicalWidth=c.logicalWidth,currentLogicalHeight=c.logicalHeight,
+        currentUiScale=c.uiScale,currentScreenWidth=c.screenWidth,currentScreenHeight=c.screenHeight,
+        metricsSource=c.metricsSource,fullyVisible=self:IsRectFullyVisible(x,y,w,h),
+        recoverable=self:IsWindowRecoverable(x,y,w,h,options.topReachHeight), x=x,y=y,width=w,height=h,
+    }
+end
+
 function L:ResolvePlacement(placement, width, height, defaultX, defaultY, options)
+    if type(options) == "table" and options.topLevel == true then
+        return self:ResolveWindowPlacement(placement,width,height,defaultX,defaultY,options)
+    end
     options = type(options) == "table" and options or {}
     local context = self:GetContext()
     local mode = tostring(options.mode or "free")

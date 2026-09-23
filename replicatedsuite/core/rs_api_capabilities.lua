@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 1 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
 -- Replicated Suite - API Capability Registry
 -- Author: Replicated
@@ -15,7 +19,7 @@ local S = ReplicatedSuite
 S.ApiCapabilities = {
     records = {},
     aliases = {},
-    updated = "2026-09-12", -- bounded delta: the two officially enabled quest objective getters only
+    updated = "2026-09-23", -- 中文维护：hotkey-profile-v2 只补入 RU 2025-08-20 官方已开放的 action 验证 getter；不扩大任何写能力。
     server = "ArcheRage RU",
 }
 local R = S.ApiCapabilities
@@ -244,6 +248,10 @@ local CAPABILITIES = {
     -- feature boundary; no write/server action is auto-probed. Only
     -- WorldToScreen stays Unknown (NOT a game API; community global only).
     ["X2Hotkey:GetOptionBinding"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    -- 中文维护（hotkey-profile-v2）：下面两个 getter 只用于显式用户操作前的白名单安全预检；
+    -- Authority 仍在 Feature 事务层，绝不能拿它们去循环猜 action 名、建立后台枚举或绕过战斗写限制。
+    ["X2Hotkey:IsValidActionName"] = { OfficialState="OfficialEnabled", Since="2025-08-20", SideEffectFree=true, Notes="RU official hotkey action validation; used only for explicit bounded whitelist preflight" },
+    ["X2Hotkey:IsOverridableAction"] = { OfficialState="OfficialEnabled", Since="2025-08-20", SideEffectFree=true, Notes="RU official hotkey override validation; used only for explicit bounded whitelist preflight" },
     ["X2Hotkey:BindingToOption"] = { OfficialState="OfficialEnabled", Since="2025-10-08", Risk="write", Restrictions={ combat=true }, Notes="RU 2026-08-19 combat restriction" },
     ["X2Hotkey:OptionToBinding"] = { OfficialState="OfficialEnabled", Since="2026-08-19", Risk="write", Restrictions={ combat=true }, Notes="RU 2026-08-19 current restricted Allowed state" },
     ["X2Hotkey:SetOptionBindingWithIndex"] = { OfficialState="OfficialEnabled", Since="2025-08-20", Risk="write", Restrictions={ combat=true }, Notes="RU 2026-08-19 combat restriction" },
@@ -296,6 +304,11 @@ local CAPABILITIES = {
     ["X2Option:GetOptionItemValue"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="personal portal option read; candidate registration P2" },
     ["X2Option:SetItemFloatValue"] = { OfficialState="OfficialEnabled", Risk="write", Notes="personal portal option write; candidate registration P2" },
     ["X2Map:GetZoneStateInfoByZoneId"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    -- 中文维护注释（2026-09-19，寻宝原生地图定位）：RU 2025-11 后 ShowWorldmapLocation 的首参明确为 zoneGroupId，后接全局 x/y/z。
+    -- 参考 TreasureMapHunter 的实际调用也是 targetZone,targetX,targetY,0；禁止再把首参当成固定 MapContext 魔数。这里仍只登记显式用户点击触发的 UI 定位动作，
+    -- 不允许 Scheduler/Tick 自动调用；250ms 冷却防止双击/连点反复打开地图。Treasure Feature 经 ActionCapability fail-closed，地图定位失败不会污染持久化 Authority。
+    ["X2Map:ShowWorldmapLocation"] = { OfficialState="OfficialEnabled", Cooldown=250, Risk="write", SideEffectFree=false,
+        Source="user-supplied TreasureMapHunter RU addon + bundled api_functions.lua Allowed list", Notes="explicit treasure-map world-map location only" },
     ["X2Quest:GetActiveQuestListCount"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Quest:GetActiveQuestType"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Quest:GetQuestContextMainTitle"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
@@ -305,7 +318,7 @@ local CAPABILITIES = {
     ["X2Quest:GetQuestJournalObjectiveText"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Since="2026-09-09", Source="https://ru.archerage.to/forums/threads/obnovlenie-09-09-2026.17558/" },
     ["X2Quest:IsCompleted"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Achievement:GetTodayAssignmentInfo"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
-    ["X2Equipment:GetEquippedItemTooltipInfo"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="targetEquippedItem flag silently ignored on current RU client: always returns the player's OWN gear (real-machine evidence 2026-09-01); never use for target-scope reads" },
+    ["X2Equipment:GetEquippedItemTooltipInfo"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="RU selector semantics are consumer-sensitive in observed builds: HUD self-read remains false; GearV3 loadout reconciliation uses the legacy-proven true path. Target HUD must not use this API as target Authority." },
     ["X2Auction:GetSearchedItemCount"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Auction:GetSearchedItemInfo"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Resident:GetResidentBoardContent"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
@@ -314,6 +327,11 @@ local CAPABILITIES = {
     ["X2Ability:GetAllMyActabilityInfos"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Ability:GetBuffTooltip"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Risk="expensive", Notes="buff-id -> icon/name resolution fallback, cached" },
     ["X2Skill:GetCooldown"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="skill cooldown query; reserved for cooldown display features" },
+    -- 中文维护注释（2026-09-19，坐骑/战斗宠物 CD）：RU 官方 2025-09 已开放 GetMateCooldown。
+    -- Authority/数据流：只允许 CooldownObservationV3 对用户已追踪 ID 读取本机 Native CD；COMBAT_MSG 仅使用 self 快路，
+    -- 500ms 有界 round-robin 补 mate/无战斗事件/重载中途覆盖，不扫描未追踪库，也不为 CD 开启全场战斗事件。mateType 1=ride/2=battle。
+    -- 它是只读本地事实，不代表远端玩家状态，也禁止静态 expectedSec 伪造。
+    ["X2Skill:GetMateCooldown"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Since="2025-09-16", Notes="mate cooldown query; mateType 1=ride, 2=battle; local cooldown authority only" },
     ["X2Equipment:GetEquippedItemType"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="equip slot type query; reserved for gear/plates rebuilds" },
     ["X2Mate:IsPlayerPetExists"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="pet/mate existence; reserved for healer summon handling" },
     ["X2Store:GetSpecialtyRatioBetween"] = { OfficialState="OfficialEnabled", Risk="server_query" },

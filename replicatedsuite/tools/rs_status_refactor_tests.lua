@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 12 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 -- 中文维护注释：仅开发期执行的真实 Lua 模块回归，不进入 TOC。
 -- Native 游戏事实由合成样本注入；不把此结果当作 RU 返回形态/布局实机证明。
 local passed, failed = 0, 0
@@ -54,17 +58,19 @@ local transfer=loadfile('features/combat/buff_display/rs_buff_display_transfer_v
 local F = S.Features.BuffDisplay
 local store = S.Persistence:GetStore('v3.buff_display')
 assert(store, 'real store registration failed')
-Test('schema6 defaults contain auto and preserve dual HUD', function()
+Test('schema8 defaults contain scoped auto dual HUD and full gear format', function()
     local d = store.default()
-    assert(F.SchemaVersion == 6)
-    assert(type(d.settings.tracked.auto)=='table')
+    assert(F.SchemaVersion == 8)
+    assert(type(d.settings.tracked.player)=='table' and type(d.settings.tracked.target)=='table')
+    assert(type(d.settings.tracked.player.auto)=='table' and type(d.settings.tracked.target.auto)=='table')
     assert(type(d.settings.targetLayout.components)=='table')
+    assert(d.settings.info.gearScoreFormat=='full' and d.settings.targetLayout.info.gearScoreFormat=='full')
 end)
 Test('auto tracked native debuff enters debuff HUD only', function()
-    local settings=F:GetDefaultSettingsSnapshot(); settings.tracked.auto={21}
+    local settings=F:GetDefaultSettingsSnapshot(); settings.tracked.player.auto={21}
     local rows=F.ProjectStatusMap({[21]={id=21,sources={debuff=true},timeLeft=1000}}, {available=true,complete=true,reliable=true},settings,'player',384)
     assert(#rows==1 and rows[1].tracked==true and rows[1].category=='debuff')
-    local hud=F.ProjectPlates({buffRows={},debuffRows=rows},settings)
+    local hud=F.ProjectPlates({buffRows={},debuffRows=rows},settings,nil,'player')
     assert(#hud.debuffs==1 and #hud.buffs==0)
 end)
 Test('management freeze API exists and live rows remain independent', function()
@@ -77,20 +83,26 @@ Test('schema5 historical canonical matches frozen .208 goldens', function()
             {__rsmeta={store='v3.buff_display',owner='v3.buff_display',framework=3,schema=5,transportVersion=2}})
         assert(Equal(old,fixture.canonical),fixture.name..' canonical changed')
         assert(S.Persistence:FingerprintCanonicalValue(store,old)==fixture.fingerprint,fixture.name..' old hash changed')
-        local upgraded=store.migrate(domain,5,6)
-        assert(Equal(upgraded.settings.tracked.buff,fixture.canonical.settings.tracked.buff))
-        assert(Equal(upgraded.settings.tracked.debuff,fixture.canonical.settings.tracked.debuff))
+        local upgraded=store.migrate(domain,5,8)
+        assert(Equal(upgraded.settings.tracked.player.buff,fixture.canonical.settings.tracked.buff))
+        assert(Equal(upgraded.settings.tracked.player.debuff,fixture.canonical.settings.tracked.debuff))
+        assert(Equal(upgraded.settings.tracked.target.buff,fixture.canonical.settings.tracked.buff))
+        assert(Equal(upgraded.settings.tracked.target.debuff,fixture.canonical.settings.tracked.debuff))
         assert(Equal(upgraded.settings.classification,fixture.canonical.settings.classification))
         local target=Copy(upgraded.settings.targetLayout);target.components.cooldowns=nil
-        assert(Equal(target,fixture.canonical.settings.targetLayout),'target HUD changed')
-        assert(upgraded.settings.freezeEnabled==false and #upgraded.settings.tracked.auto==0)
-        assert(Equal(store.migrate(upgraded,6,6),upgraded),'schema6 not idempotent')
+        local expectedTarget=Copy(fixture.canonical.settings.targetLayout)
+        assert(target.info.gearScoreFormat=='full','schema5 target format migration')
+        target.info.gearScoreFormat=nil
+        assert(Equal(target,expectedTarget),'target HUD changed')
+        assert(upgraded.settings.info.gearScoreFormat=='full','schema5 player format migration')
+        assert(upgraded.settings.freezeEnabled==false and #upgraded.settings.tracked.player.auto==0 and #upgraded.settings.tracked.target.auto==0)
+        assert(Equal(store.migrate(upgraded,8,8),upgraded),'schema8 not idempotent')
     end
 end)
 Test('historical hook rejects wrong identity and future generation', function()
     local old=store.rebuildCanonicalForIntegrity({},'bogus',nil,{__rsmeta={store='other',owner='v3.buff_display',framework=3,schema=5}})
     assert(old==nil)
-    old=store.rebuildCanonicalForIntegrity({},'bogus',nil,{__rsmeta={store='v3.buff_display',owner='v3.buff_display',framework=3,schema=7}})
+    old=store.rebuildCanonicalForIntegrity({},'bogus',nil,{__rsmeta={store='v3.buff_display',owner='v3.buff_display',framework=3,schema=9}})
     assert(old==nil)
 end)
 Test('catalog includes 393 effects 14 trees and empty joy', function()
@@ -112,11 +124,12 @@ Test('builtin import is single durable transaction and persistent auto', functio
     Reset();local before=writes
     local ok,err=F:ImportBuiltinPack('all',false);assert(ok,err)
     assert(writes==before+1,'more than one durable write')
-    assert(#F.State.settings.tracked.auto==393)
-    assert(#F.State.settings.tracked.buff==0 and #F.State.settings.tracked.debuff==0)
-    local count=#F.State.settings.tracked.auto
+    assert(#F.State.settings.tracked.player.auto==393 and #F.State.settings.tracked.target.auto==393)
+    assert(#F.State.settings.tracked.player.buff==0 and #F.State.settings.tracked.player.debuff==0
+        and #F.State.settings.tracked.target.buff==0 and #F.State.settings.tracked.target.debuff==0)
+    local count=#F.State.settings.tracked.player.auto
     assert(F:ImportBuiltinPack('all',false))
-    assert(#F.State.settings.tracked.auto==count)
+    assert(#F.State.settings.tracked.player.auto==count and #F.State.settings.tracked.target.auto==count)
 end)
 Test('untracking auto remains removed after supplement and normalization', function()
     assert(F:SetTrackedId(21,'debuff',false))
@@ -125,14 +138,13 @@ Test('untracking auto remains removed after supplement and normalization', funct
     assert(not F:IsTrackedId(21),'supplement re-added removed entry')
     store.apply(store.get());assert(not F:IsTrackedId(21))
 end)
-Test('manual category and auto migration are atomic', function()
-    Reset();assert(F:SetTrackedId(21,'auto',true));assert(F:SetClassification(21,'debuff'))
-    assert(#F.State.settings.tracked.auto==0 and F.State.settings.tracked.debuff[1]==21)
-    assert(F:ClearClassification(21))
-    assert(#F.State.settings.tracked.debuff==0 and F.State.settings.tracked.auto[1]==21)
+Test('manual classification no longer owns scoped tracking placement', function()
+    Reset();assert(F:SetTrackedId(21,'auto',true));local before=Copy(F.State.settings.tracked)
+    assert(F:SetClassification(21,'debuff'));assert(Equal(F.State.settings.tracked,before),'classification moved tracking channels')
+    assert(F:ClearClassification(21));assert(Equal(F.State.settings.tracked,before),'clear classification moved tracking channels')
 end)
 Test('capacity failure rolls back entire library import', function()
-    Reset();for i=1,1024 do F.State.settings.tracked.auto[i]=100000+i end
+    Reset();for i=1,1024 do F.State.settings.tracked.player.auto[i]=100000+i end
     F:InvalidateSettingsCache();local before=store.get()
     local ok=F:ImportBuiltinPack('all',false)
     assert(not ok);assert(Equal(store.get(),before),'partial import survived rollback')
@@ -158,17 +170,18 @@ end)
 Test('tracked view contains inactive entries and uses revision cache', function()
     Reset();assert(F:SetTrackedId(21,'auto',true))
     local rows,key=F:GetManagementProjection({view='tracked'})
-    assert(#rows==1 and rows[1].name~='21' and rows[1].trackedBucket=='auto')
+    assert(#rows==1 and rows[1].name~='21' and rows[1].trackedBucket=='multi'
+        and rows[1].trackedText:find('自身·自动',1,true) and rows[1].trackedText:find('目标·自动',1,true))
     local second,key2=F:GetManagementProjection({view='tracked'})
     assert(rows==second and key==key2)
 end)
-Test('v2 rejects malformed input and retains auto in text round-trip',function()
-    assert(F.TransferFormatVersion==2,'v2 parser missing')
+Test('v3 rejects malformed input and retains scoped auto in text round-trip',function()
+    assert(F.TransferFormatVersion==3,'v3 parser missing')
     Reset();assert(F:SetTrackedId(21,'auto',true))
     local text=F:SerializeExport(F:ExportAll())
     local parsed=F:ParseImportText(text)
     assert(#parsed.errors==0,parsed.errors[1])
-    assert(parsed.data.tracked.auto[1]==21)
+    assert(parsed.data.tracked.player.auto[1]==21 and parsed.data.tracked.target.auto[1]==21)
     local bad=F:ParseImportText('FORMAT=replicatedsuite.buff_display.v2\nAUTO=21,bad')
     assert(#bad.errors>0)
     local before=store.get();local ok=F:ImportAll(bad.data,'merge')
@@ -191,10 +204,11 @@ Test('direct malformed import objects reject without partial mutation',function(
         assert(Equal(before,store.get()))
     end
 end)
-Test('conflicting manual classifications and duplicate bucket IDs reject',function()
-    for _,text in ipairs({'CLASSIFICATION=21:buff\nCLASSIFICATION=21:debuff','BUFF=21\nDEBUFF=21'}) do
-        local parsed=F:ParseImportText(text);assert(#parsed.errors>0,'conflict silently resolved')
-    end
+Test('classification conflict rejects while explicit buff and debuff channels may coexist',function()
+    local conflict=F:ParseImportText('CLASSIFICATION=21:buff\nCLASSIFICATION=21:debuff');assert(#conflict.errors>0,'classification conflict silently resolved')
+    local dual=F:ParseImportText('BUFF=21\nDEBUFF=21');assert(#dual.errors==0,dual.errors[1])
+    assert(dual.data.tracked.player.buff[1]==21 and dual.data.tracked.player.debuff[1]==21
+        and dual.data.tracked.target.buff[1]==21 and dual.data.tracked.target.debuff[1]==21)
 end)
 Test('tracking-only overwrite preserves both HUD layouts and supports v1',function()
     Reset();F.State.settings.plate.x=41;F.State.settings.targetLayout.plate.x=-92;F:InvalidateSettingsCache()
@@ -205,7 +219,9 @@ Test('tracking-only overwrite preserves both HUD layouts and supports v1',functi
     assert(Equal(before,F.Commands:GetHudCalibrationSnapshot()),'tracking import altered HUD')
     local v1=F:ParseImportText('VERSION=5\nBUFF=21\nDEBUFF=82\nCLASSIFICATION=82:debuff')
     assert(#v1.errors==0,v1.errors[1]);assert(F:ImportAll(v1.data,'overwrite'))
-    assert(F:IsTrackedId(21,'buff') and F:IsTrackedId(82,'debuff') and #F.State.settings.tracked.auto==0)
+    assert(F:IsTrackedId(21,'buff') and F:IsTrackedId(82,'debuff')
+        and #F.State.settings.tracked.player.auto==0 and #F.State.settings.tracked.target.auto==0
+        and F:IsTrackedChannel(21,'player','buff') and F:IsTrackedChannel(21,'target','buff'))
 end)
 Test('current management facts survive old category visibility settings',function()
     Reset();F.State.settings.showDebuffs=false;F:InvalidateSettingsCache()
@@ -221,11 +237,14 @@ Test('freeze API failures always release temporary consumers',function()
         GetSnapshot=function() error('synthetic native failure') end,GetStatusMap=function() end}
     assert(not F:CaptureManagementFreeze());assert(leases==0 and not F:GetManagementFreezeState().active)
 end)
-Test('management health exposes schema catalog and explicit unfinished cooldown',function()
+Test('management health exposes schema catalog and cooldown runtime state',function()
     local health=F:GetHealth()
-    assert(health.schemaVersion==6 and type(health.management)=='table')
+    assert(health.schemaVersion==8 and type(health.management)=='table' and type(health.management.tracked.player)=='table')
     assert(health.management.catalog.effectCount==393)
-    assert(health.management.cooldownRuntime=='not_implemented','reserved selections must not imply native support')
+    -- This isolated fixture does not load CooldownObservationV3; the current
+    -- full TOC reports native_v4 (Skill-ID-only Native authority), while this fixture correctly reports unavailable.
+    -- The old event-coupled native_v1/v2/v3 release states are no longer current contracts.
+    assert(health.management.cooldownRuntime=='unavailable' or health.management.cooldownRuntime=='native_v4')
 end)
 -- 中文维护注释：以下使用真实 Persistence 的元数据封印、物理传输、LoadStore/SaveStore 链。
 -- 合成 schema5 样本的 canonical/hash 来自未修改 .208，不等同真实玩家存档采集。
@@ -238,18 +257,20 @@ local function Envelope(fixture)
     raw.__rsmeta.envelopeFingerprint=assert(P:FingerprintEnvelopeIntegrity(raw))
     return assert(P:EncodePhysicalEnvelope(raw))
 end
-Test('schema5 loads through real integrity verifier and restamps schema6',function()
+Test('schema5 loads through real integrity verifier and restamps schema8',function()
     Reset();local P=S.Persistence;local key=assert(P:ResolveStoreKey(store))
     local fixture=dofile('tools/rs_status_schema5_fixtures.lua')[2]
     disk[key]=Envelope(fixture)
     local ok,_,err=P:LoadStore(store.id,{discardDirty=true,discardUnverified=true,revalidateTerminal=true})
     assert(ok,err);F:InvalidateSettingsCache()
-    assert(Equal(F.State.settings.tracked.buff,fixture.canonical.settings.tracked.buff))
-    assert(Equal(F.State.settings.tracked.debuff,fixture.canonical.settings.tracked.debuff))
+    assert(Equal(F.State.settings.tracked.player.buff,fixture.canonical.settings.tracked.buff))
+    assert(Equal(F.State.settings.tracked.player.debuff,fixture.canonical.settings.tracked.debuff))
+    assert(Equal(F.State.settings.tracked.target.buff,fixture.canonical.settings.tracked.buff))
+    assert(Equal(F.State.settings.tracked.target.debuff,fixture.canonical.settings.tracked.debuff))
     assert(F.State.settings.targetLayout.plate.x==fixture.canonical.settings.targetLayout.plate.x)
     assert(not store.writeFenced)
     local saved,saveErr=P:SaveStore(store.id,{force=true});assert(saved,saveErr)
-    local decoded=assert(P:DecodePhysicalEnvelope(disk[key]));assert(decoded.__rsmeta.schema==6)
+    local decoded=assert(P:DecodePhysicalEnvelope(disk[key]));assert(decoded.__rsmeta.schema==8)
     assert(decoded.__rsmeta.encodedFingerprint==P:FingerprintCanonicalValue(store,store.get()))
 end)
 Test('unknown old fingerprint fails closed and protects original disk bytes',function()

@@ -108,6 +108,8 @@ function T:AddPanelBackground(widget, kind)
         bg:AddAnchor("TOPLEFT", widget, inset, inset)
         bg:AddAnchor("BOTTOMRIGHT", widget, -inset, -inset)
     end
+    -- 工作台主题只记录本 Theme 已拥有的背景种类；切换配色不创建新 Drawable。
+    widget.rsThemeBackgroundKind, widget.rsThemeGradient = kind, false
     widget.rsBackground = bg
     widget.rsBackgroundColor = { color[1], color[2], color[3], color[4] }
     return bg
@@ -121,6 +123,7 @@ function T:AddBorder(widget, soft)
         border:AddAnchor("TOPLEFT", widget, 0, 0)
         border:AddAnchor("BOTTOMRIGHT", widget, 0, 0)
     end
+    widget.rsThemeSoftBorder = soft == true
     widget.rsBorder = border
     widget.rsBorderColor = { color[1], color[2], color[3], color[4] }
     return border
@@ -169,6 +172,7 @@ function T:AddGradientBackground(widget, kind, layer)
     if not ok or bg == nil then
         return self:AddPanelBackground(widget, kind)
     end
+    widget.rsThemeBackgroundKind, widget.rsThemeGradient = kind, true
     widget.rsBackground = bg
     -- Gradient drawable keeps its own RGB bands; store white + base alpha so
     -- SetBackgroundOpacity can still fade the whole strip uniformly.
@@ -192,6 +196,7 @@ function T:AddAccentStrip(widget, height, color)
         return d
     end)
     if not ok or strip == nil then return nil end
+    widget.rsThemeDefaultAccent = color == nil
     widget.rsAccentStrip = strip
     widget.rsAccentStripColor = { c[1], c[2], c[3], c[4] }
     return strip
@@ -366,17 +371,40 @@ end
 -- parent refresh/layout pass happens).  While RSUI says the pointer is inside,
 -- paint BOTH native normal/highlight backgrounds with the same hover visual so
 -- that internal state oscillation is visually idempotent instead of flashing.
+-- 维护（module-controls-diag-2）：业务运行态与导航选中态正交。颜色由 Theme 所有的
+-- Drawable 实现，悬停/选中只调亮同色系，不覆盖红绿、不遍历未知Native子节点。
+local STATUS_BANDS = {
+    green = { normal = { {0.06,0.22,0.11}, {0.04,0.17,0.08}, {0.02,0.11,0.05} },
+        bright = { {0.13,0.40,0.20}, {0.08,0.30,0.14}, {0.04,0.21,0.09} } },
+    red = { normal = { {0.30,0.075,0.07}, {0.23,0.045,0.04}, {0.16,0.025,0.025} },
+        bright = { {0.48,0.15,0.13}, {0.37,0.09,0.08}, {0.27,0.045,0.04} } },
+}
 local function RepaintButtonInteractiveState(button)
     if button == nil or type(button.rsButtonBgs) ~= "table" then return false end
     local active = button.rsButtonActive == true
     local hovered = button.rsButtonHovered == true
+    local status = STATUS_BANDS[button.rsButtonStatusTone]
+    if status then
+        local band = (active or hovered) and status.bright or status.normal
+        local changed = false
+        for index = 1, 3 do
+            local b = index == 3 and status.bright or band
+            local accepted
+            if type(button.rsGradientBands) == "table" then accepted = ApplyGradientBand(button.rsButtonBgs[index], b)
+            else accepted = ApplySolidButtonColor(button, index, { b[2][1], b[2][2], b[2][3], 0.99 }) end
+            changed = accepted or changed
+        end
+        return changed
+    end
     if type(button.rsGradientBands) == "table" and button.rsButtonBgs[1] ~= nil and button.rsButtonBgs[2] ~= nil then
         local normalBand
         if hovered or active then normalBand = C.Color.Gradient.buttonHover else normalBand = C.Color.Gradient.button end
         local highlightBand = hovered and normalBand or C.Color.Gradient.buttonHover
         local changedA = ApplyGradientBand(button.rsButtonBgs[1], normalBand)
         local changedB = ApplyGradientBand(button.rsButtonBgs[2], highlightBand)
-        return changedA or changedB
+        -- 维护：移除语义颜色时同时恢复按下态，避免重用按钮仍残留红/绿。原主题拥有默认皮肤。
+        local changedC = ApplyGradientBand(button.rsButtonBgs[3], C.Color.Gradient.buttonPushed)
+        return changedA or changedB or changedC
     end
 
     local buttonTokens = (S.UITokens and S.UITokens.button) or {}
@@ -398,7 +426,17 @@ local function RepaintButtonInteractiveState(button)
     end
     local changedA = ApplySolidButtonColor(button, 1, normalColor)
     local changedB = ApplySolidButtonColor(button, 2, highlightColor)
-    return changedA or changedB
+    -- 与渐变路径一致，正常/高亮/按下三个状态一起回归主题，不影响禁用态及背景透明度。
+    local changedC = ApplySolidButtonColor(button, 3, buttonTokens.pushed or { 0.045, 0.060, 0.078, 0.99 })
+    return changedA or changedB or changedC
+end
+
+function T:SetButtonStatusTone(button, tone)
+    if button == nil or type(button.rsButtonBgs) ~= "table" then return false end
+    tone = STATUS_BANDS[tone] and tone or nil
+    if button.rsButtonStatusTone == tone then return false end
+    button.rsButtonStatusTone = tone
+    return RepaintButtonInteractiveState(button)
 end
 
 function T:SetButtonActive(button, active)

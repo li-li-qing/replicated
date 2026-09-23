@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 3 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Trade / Specialty Route Test Suite
 --
@@ -90,6 +94,7 @@ dofile("features/rs_feature_registry.lua")
 dofile("services/rs_price_quote_queue_v3.lua")
 dofile("services/rs_trade_payout_v3.lua")
 dofile("services/rs_trade_material_identity_v3.lua")
+dofile("services/rs_auction_session_list_v3.lua")
 
 -- Mock RSUI controls
 S.RSUI = S.RSUI or {}
@@ -473,6 +478,11 @@ Test("T7: Material projection, recipe resolution & bounded display", function()
         assert(mat.costStatus ~= nil, "Material must have costStatus")
     end
 
+    local titleResolved = S.Services.TradeMaterialIdentityV3:ResolveStatic("[特产-西部] 黄金平原的保存特产", 22)
+    assert(type(titleResolved) == "table" and type(titleResolved.rows) == "table" and #titleResolved.rows > 0, "localized Golden Plains craft-daily title must resolve a static trade recipe")
+    assert(titleResolved.label == "Halcyona Preserved Specialty", "localized Golden Plains craft-daily title resolved wrong recipe: " .. tostring(titleResolved.label))
+    assert(type(S.GameIds.Zone.ById[22]) == "table" and S.GameIds.Zone.ById[22].nameZh == "黄金平原", "shared zone metadata must expose Chinese Golden Plains name")
+
     TA.inFlight = nil
     TA.pendingRoute = nil
     Trade:ReleaseConsumer("test_t7")
@@ -595,6 +605,17 @@ Test("T10: HUD widget, Floating Detail & FoundationGate / Acceptance verificatio
     assert(detail:Open(row.key) == true, "TradeDetailFloatingV3:Open must succeed")
     assert(detail.visible == true, "Detail floating must be visible")
     assert(detail.rowKey == row.key, "Detail floating rowKey must match")
+    -- Trade detail must explicitly hand detached material facts to the session-only auction list.
+    local sessionList = S.Services.AuctionSessionListV3
+    sessionList:Clear("trade_detail_test")
+    assert(detail.auctionTempButton ~= nil and type(detail.auctionTempButton.onClick) == "function", "Trade detail must expose add-to-auction-temp action")
+    local tempOk, tempErr = detail.auctionTempButton.onClick()
+    assert(tempOk == true, "Add to auction temp failed: " .. tostring(tempErr))
+    local tempSnap = sessionList:GetSnapshot()
+    assert(#tempSnap.groups == 1, "Trade detail must add exactly one temporary group")
+    assert(tempSnap.groups[1].source == "trade" and tempSnap.groups[1].sourceKey == row.key, "Temporary group source identity mismatch")
+    assert(tempSnap.groups[1].productName == row.name, "Temporary group must keep player-facing trade good name")
+    assert(#tempSnap.groups[1].materials == #(row.materialRows or {}), "Temporary group must receive the detached material rows")
     assert(detail:Close() == true, "TradeDetailFloatingV3:Close must succeed")
     assert(detail.visible == false, "Detail floating must be hidden")
 
@@ -706,6 +727,9 @@ Test("T13: floating trade controls expose refresh and use compact three-row head
     assert(type(instance.refreshButton.onClick) == "function", "floating refresh onClick missing")
     assert(instance.routeControlHeight ~= nil and instance.routeControlHeight <= 93, "floating control header must stay within three compact rows; got=" .. tostring(instance.routeControlHeight))
     assert(instance.cancelQuote == nil and instance.fullQuote == nil, "floating HUD must not reserve a dedicated fourth quote-control row")
+    assert(instance.viewDropdown ~= nil and instance.sortDropdown ~= nil, "floating HUD must expose explicit display/sort dropdowns")
+    assert(instance.viewButton == nil and instance.quoteButton == nil and instance.ratioButton == nil and instance.commerceButton == nil,
+        "floating HUD must not use ambiguous cycling/batch-quote buttons")
     local clickOk, clickErr = instance.refreshButton.onClick()
     assert(clickOk == true, tostring(clickErr))
     assert(calls == 1, "floating refresh must call Feature.Commands.Refresh once")
@@ -728,7 +752,7 @@ Test("T14: favorite button says 取消收藏 when current route is favorited", f
         favoriteItems = {}, currentRouteFavorite = true, sortMode = "ratio",
     })
     assert(instance.favoriteButton ~= nil, "favorite button missing")
-    assert(instance.favoriteButton.text == "取消收藏", "favorited route must show explicit 取消收藏 label")
+    assert(instance.favoriteButton.text == "取消收藏路线", "favorited route must show explicit 取消收藏路线 label")
 end)
 
 
@@ -819,18 +843,18 @@ end)
 
 
 ------------------------------------------------------------------------
--- Test 17: Missing callback gets one bounded automatic retry after cooldown
+-- Test 17: Missing callback gets one bounded automatic retry after late-callback drain
 ------------------------------------------------------------------------
-Test("T17: missing specialty callback retries once after native cooldown", function()
+Test("T17: missing specialty callback retries once after callback quarantine", function()
     assert(Trade:AcquireConsumer("test_t17"))
     local TA = Trade.Authority
     Trade.State.fromZone, Trade.State.toZone = nil, nil
-    TA.inFlight, TA.pendingRoute = nil, nil
+    TA.inFlight, TA.pendingRoute, TA.timedOutFlight = nil, nil, nil
     TA:CancelRequestTimeout()
+    if TA.CancelTimeoutDrain then TA:CancelTimeoutDrain() end
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
     TA.nextNativeRequestAt, TA.lastNativeCooldownMs = 0, 0
     TA.pendingRetryCount = nil
-    TA.timeoutRetryCount = 0
     TA:RefreshZones()
     mockStore.ratioCalls = {}
     h.ms = 3000
@@ -847,28 +871,31 @@ Test("T17: missing specialty callback retries once after native cooldown", funct
     local firstTimeout = assert(S.Scheduler.tasks[TA.requestTimeoutTask], "first timeout missing")
     h.ms = h.ms + (tonumber(firstTimeout.intervalMs) or 0) + 1
     assert(S.Scheduler:RunTask(TA.requestTimeoutTask), "first timeout callback failed")
-    assert(#mockStore.ratioCalls == 1, "response timeout must not retry before native cooldown expires")
-    assert(TA.inFlight == nil and TA.status == "cooldown", "bounded timeout should expose cooldown state")
-    local deferred = assert(S.Scheduler.tasks[TA.requestDeferredTask], "deferred retry missing")
-    h.ms = (tonumber(TA.nextNativeRequestAt) or h.ms) + 1
-    assert(S.Scheduler:RunTask(TA.requestDeferredTask), "deferred retry callback failed")
-    assert(#mockStore.ratioCalls == 2, "cooldown expiry must issue exactly one retry")
-    assert(TA.inFlight ~= nil and TA.status == "loading", "deferred retry must own the SingleFlight lane")
+    assert(#mockStore.ratioCalls == 1, "response timeout must not immediately reuse a callback-id-less native lane")
+    assert(TA.inFlight == nil and TA.timedOutFlight ~= nil, "timed-out request must move into callback quarantine")
+    assert(S.Scheduler.tasks[TA.timeoutDrainTask] ~= nil, "late-callback drain task missing")
+    assert(TA.pendingRoute ~= nil and TA.pendingRoute.reason == "timeout_retry", "one bounded retry must be queued")
+
+    h.ms = h.ms + (tonumber(TA.timeoutDrainMs) or 2000) + 1
+    assert(S.Scheduler:RunTask(TA.timeoutDrainTask), "timeout drain callback failed")
+    assert(#mockStore.ratioCalls == 2, "drain expiry must issue exactly one retry when native cooldown has elapsed")
+    assert(TA.inFlight ~= nil and TA.status == "loading", "retry must own the SingleFlight lane")
 
     local secondTimeout = assert(S.Scheduler.tasks[TA.requestTimeoutTask], "retry timeout missing")
     h.ms = h.ms + (tonumber(secondTimeout.intervalMs) or 0) + 1
     assert(S.Scheduler:RunTask(TA.requestTimeoutTask), "second timeout callback failed")
     assert(#mockStore.ratioCalls == 2, "second timeout must not create an unbounded retry loop")
     assert(TA.inFlight == nil and TA.status == "error", "second timeout must surface a stable error")
+    assert(S.Scheduler.tasks[TA.timeoutDrainTask] ~= nil, "second timeout must still quarantine its possible late callback")
 
     X2Store.GetSpecialtyRatioBetween = oldGetRatio
-    TA.inFlight, TA.pendingRoute = nil, nil
+    TA.inFlight, TA.pendingRoute, TA.timedOutFlight = nil, nil, nil
     TA:CancelRequestTimeout()
+    if TA.CancelTimeoutDrain then TA:CancelTimeoutDrain() end
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
-    TA.timeoutRetryCount = 0
+    TA.pendingRetryCount = nil
     Trade:ReleaseConsumer("test_t17")
 end)
-
 
 
 ------------------------------------------------------------------------
@@ -899,12 +926,13 @@ end)
 ------------------------------------------------------------------------
 -- Test 19: A long Native button cooldown must not pin the response lane/loading state
 ------------------------------------------------------------------------
-Test("T19: native cooldown does not extend response wait beyond bounded SLA", function()
+Test("T19: native cooldown stays independent from bounded response wait", function()
     assert(Trade:AcquireConsumer("test_t19"))
     local TA = Trade.Authority
     Trade.State.fromZone, Trade.State.toZone = nil, nil
-    TA.inFlight, TA.pendingRoute = nil, nil
+    TA.inFlight, TA.pendingRoute, TA.timedOutFlight = nil, nil, nil
     TA:CancelRequestTimeout()
+    if TA.CancelTimeoutDrain then TA:CancelTimeoutDrain() end
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
     TA.nextNativeRequestAt, TA.lastNativeCooldownMs = 0, 0
     TA.pendingRetryCount = nil
@@ -927,29 +955,38 @@ Test("T19: native cooldown does not extend response wait beyond bounded SLA", fu
 
     h.ms = h.ms + (tonumber(timeout.intervalMs) or 0) + 1
     assert(S.Scheduler:RunTask(TA.requestTimeoutTask), "bounded response timeout failed")
-    assert(TA.inFlight == nil, "response lane must be released after bounded SLA")
-    assert(TA.status == "cooldown", "remaining Native cooldown should become explicit cooldown state, got=" .. tostring(TA.status))
-    assert(#mockStore.ratioCalls == 1, "must not issue a second native request before cooldown expiry")
+    assert(TA.inFlight == nil and TA.timedOutFlight ~= nil, "response lane must enter bounded quarantine after SLA")
+    assert(#mockStore.ratioCalls == 1, "must not issue a second native request during callback quarantine")
+    assert(S.Scheduler.tasks[TA.requestDeferredTask] == nil, "native cooldown retry must wait until callback quarantine resolves")
+    local drain = assert(S.Scheduler.tasks[TA.timeoutDrainTask], "timeout drain missing")
+
+    h.ms = h.ms + (tonumber(drain.intervalMs) or tonumber(TA.timeoutDrainMs) or 2000) + 1
+    assert(S.Scheduler:RunTask(TA.timeoutDrainTask), "timeout drain failed")
+    assert(TA.status == "cooldown", "remaining Native cooldown should become explicit cooldown state after drain, got=" .. tostring(TA.status))
+    assert(#mockStore.ratioCalls == 1, "drain expiry must still respect remaining Native cooldown")
     assert(S.Scheduler.tasks[TA.requestDeferredTask] ~= nil, "cooldown expiry should schedule one deferred retry")
 
     X2Store.GetSpecialtyRatioBetween = oldGetRatio
-    TA.inFlight, TA.pendingRoute = nil, nil
+    TA.inFlight, TA.pendingRoute, TA.timedOutFlight = nil, nil, nil
     TA:CancelRequestTimeout()
+    if TA.CancelTimeoutDrain then TA:CancelTimeoutDrain() end
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
     TA.nextNativeRequestAt, TA.lastNativeCooldownMs = 0, 0
+    TA.pendingRetryCount = nil
     Trade:ReleaseConsumer("test_t19")
 end)
 
 
 ------------------------------------------------------------------------
--- Test 20: A late callback after bounded SLA is accepted if no newer request exists
+-- Test 20: A late callback inside the quarantine is consumed by the timed-out request
 ------------------------------------------------------------------------
-Test("T20: safe late callback for same route cancels deferred retry", function()
+Test("T20: safe late callback cancels quarantine and queued retry", function()
     assert(Trade:AcquireConsumer("test_t20"))
     local TA = Trade.Authority
     Trade.State.fromZone, Trade.State.toZone = nil, nil
     TA.inFlight, TA.pendingRoute, TA.timedOutFlight = nil, nil, nil
     TA:CancelRequestTimeout()
+    if TA.CancelTimeoutDrain then TA:CancelTimeoutDrain() end
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
     TA.nextNativeRequestAt, TA.lastNativeCooldownMs = 0, 0
     TA.pendingRetryCount = nil
@@ -968,21 +1005,27 @@ Test("T20: safe late callback for same route cancels deferred retry", function()
     local timeout = assert(S.Scheduler.tasks[TA.requestTimeoutTask])
     h.ms = h.ms + (tonumber(timeout.intervalMs) or 0) + 1
     assert(S.Scheduler:RunTask(TA.requestTimeoutTask))
-    assert(TA.inFlight == nil, "bounded SLA should release active lane")
+    assert(TA.inFlight == nil and TA.timedOutFlight ~= nil, "bounded SLA should quarantine the timed-out request")
+    assert(S.Scheduler.tasks[TA.timeoutDrainTask] ~= nil, "late callback window must be armed")
 
     local accepted = TA:OnRatio({
         { name = "迟到但仍可归属的货物", ratio = 123, itemInfo = { name = "迟到但仍可归属的货物", itemType = 24651 } },
     })
-    assert(accepted == true, "same-route late callback should be accepted when no newer request exists")
+    assert(accepted == true, "same-route late callback should be accepted while its quarantine is active")
     assert(TA.status == "ready" and #TA.rows == 1, "late callback must populate the current route")
-    assert(S.Scheduler.tasks[TA.requestDeferredTask] == nil, "accepted late callback must cancel deferred retry")
+    assert(TA.timedOutFlight == nil and S.Scheduler.tasks[TA.timeoutDrainTask] == nil,
+        "accepted late callback must cancel the timeout drain")
+    assert(TA.pendingRoute == nil and S.Scheduler.tasks[TA.requestDeferredTask] == nil,
+        "accepted late callback must cancel its queued retry")
     assert(#mockStore.ratioCalls == 1, "accepted late callback must avoid duplicate native query")
 
     X2Store.GetSpecialtyRatioBetween = oldGetRatio
     TA.inFlight, TA.pendingRoute, TA.timedOutFlight = nil, nil, nil
     TA:CancelRequestTimeout()
+    if TA.CancelTimeoutDrain then TA:CancelTimeoutDrain() end
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
     TA.nextNativeRequestAt, TA.lastNativeCooldownMs = 0, 0
+    TA.pendingRetryCount = nil
     Trade:ReleaseConsumer("test_t20")
 end)
 

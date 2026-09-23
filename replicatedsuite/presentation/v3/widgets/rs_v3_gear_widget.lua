@@ -20,30 +20,13 @@ local function Clamp01(value, fallback)
     return math.max(0, math.min(1, tonumber(value) or tonumber(fallback) or 1))
 end
 
-local function LogicalRect(widget)
-    if S.Layout ~= nil and type(S.Layout.GetLogicalRect) == "function" then
-        local ok, x, y, w, h = pcall(function() return S.Layout:GetLogicalRect(widget) end)
-        if ok then return tonumber(x), tonumber(y), tonumber(w), tonumber(h) end
+-- 维护：屏幕按钮的有效坐标返回单位由 Layout 校准；手势开始冻结单位，结束只换算一次。
+-- Gear 只映射自己的 quick* 存档字段，不再私设屏幕边界/二次除 uiScale。
+local function LogicalRect(widget, pinnedScale)
+    if S.Layout and type(S.Layout.GetWindowLogicalRect)=="function" then
+        return S.Layout:GetWindowLogicalRect(widget,pinnedScale)
     end
-    if widget ~= nil and type(widget.GetEffectiveOffset) == "function" then
-        local ok, x, y = pcall(function() return widget:GetEffectiveOffset() end)
-        if ok then return tonumber(x), tonumber(y), nil, nil end
-    end
-    return nil, nil, nil, nil
-end
-
-local function ScreenContext()
-    local c = S.Layout and S.Layout:GetContext() or nil
-    return tonumber(c and (c.logicalWidth or c.width)) or 1024,
-        tonumber(c and (c.logicalHeight or c.height)) or 768
-end
-
-local function IntersectsScreen(x, y, width, height)
-    x, y = tonumber(x), tonumber(y)
-    if x == nil or y == nil then return false end
-    local sw, sh = ScreenContext()
-    width, height = tonumber(width) or 104, tonumber(height) or 26
-    return x + width > 0 and y + height > 0 and x < sw and y < sh
+    return nil,nil,nil,nil
 end
 
 local function PlacementFromMeta(meta)
@@ -61,29 +44,12 @@ local function PlacementFromMeta(meta)
     }
 end
 
-local function BuildEdgePlacement(x, y, width, height)
-    x, y = tonumber(x), tonumber(y)
-    width, height = math.max(1, tonumber(width) or 104), math.max(1, tonumber(height) or 26)
-    if x == nil or y == nil then return nil end
-    local context = S.Layout and S.Layout:GetContext() or nil
-    local fallbackWidth, fallbackHeight = ScreenContext()
-    local sw = tonumber(context and context.logicalWidth) or fallbackWidth
-    local sh = tonumber(context and context.logicalHeight) or fallbackHeight
-    local safeLeft = tonumber(context and context.safeLeft) or 0
-    local safeTop = tonumber(context and context.safeTop) or 0
-    local safeRight = tonumber(context and context.safeRight) or 0
-    local safeBottom = tonumber(context and context.safeBottom) or 0
-    x = math.max(safeLeft, math.min(math.max(safeLeft, sw - safeRight - width), x))
-    y = math.max(safeTop, math.min(math.max(safeTop, sh - safeBottom - height), y))
-    local anchorH = x + width * 0.5 <= sw * 0.5 and "LEFT" or "RIGHT"
-    local anchorV = y + height * 0.5 <= sh * 0.5 and "TOP" or "BOTTOM"
-    return {
-        coordinateSpace = "logical-edge-v1",
-        anchorH = anchorH,
-        anchorV = anchorV,
-        offsetX = anchorH == "RIGHT" and math.max(0, sw - safeRight - x - width) or math.max(0, x - safeLeft),
-        offsetY = anchorV == "BOTTOM" and math.max(0, sh - safeBottom - y - height) or math.max(0, y - safeTop),
-    }, x, y
+local function BuildEdgePlacement(x,y,width,height)
+    if not (S.Layout and type(S.Layout.StorePlacementRect)=="function") then return nil end
+    -- 维护：这是 RAM 中的 edge intent 捕获，不是 Store 写入；保留既有 quick edge schema。
+    local placement={}
+    local px,py=S.Layout:StorePlacementRect(placement,x,y,width,height,{mode="strict"})
+    return placement,px,py
 end
 
 local function DefaultPosition(index)
@@ -128,35 +94,33 @@ local function CreateGearQuickWidget()
         end
     end
 
-    function instance:ResolvePosition(meta, index, record)
-        local policy = type(Feature.GetQuickButtonPolicy) == "function" and Feature:GetQuickButtonPolicy() or {}
-        local width, height = tonumber(policy.width) or 104, tonumber(policy.height) or 26
-        if meta.quickPositionCustomized == true and tonumber(meta.quickX) ~= nil and tonumber(meta.quickY) ~= nil then
-            local placement = PlacementFromMeta(meta) or (record and record.legacyPlacement or nil)
-            if placement ~= nil and S.Layout ~= nil and type(S.Layout.ResolvePlacement) == "function" then
-                local ok, x, y = pcall(function()
-                    return S.Layout:ResolvePlacement(placement, width, height, meta.quickX, meta.quickY, { mode = "strict" })
-                end)
-                if ok and tonumber(x) ~= nil and tonumber(y) ~= nil then return x, y, true end
-            end
-            -- Historical quickX/quickY rows had no responsive anchor. Preserve
-            -- their current location on first show; EnsureButton captures an
-            -- in-memory edge anchor so later resolution changes still reflow.
-            if IntersectsScreen(meta.quickX, meta.quickY, width, height) then return meta.quickX, meta.quickY, true end
+    function instance:ResolvePosition(meta,index,record)
+        local policy=type(Feature.GetQuickButtonPolicy)=="function" and Feature:GetQuickButtonPolicy() or {}
+        local width,height=tonumber(policy.width) or 104,tonumber(policy.height) or 26
+        local dx,dy=DefaultPosition(index)
+        local customized=meta.quickPositionCustomized==true
+        local placement=customized and (PlacementFromMeta(meta) or (record and record.legacyPlacement)
+            or {x=meta.quickX,y=meta.quickY,userMoved=true,coordinateSpace="logical-free-v2"}) or nil
+        -- 维护：持久屏幕按钮要求完整可见；solver 承担旧值/NaN/超大尺寸恢复，Feature 不判断分辨率。
+        if S.Layout and type(S.Layout.ResolvePlacement)=="function" then
+            local x,y,w,h,info=S.Layout:ResolvePlacement(placement,width,height,dx,dy,{mode="strict",topLevel=true,topReachHeight=height})
+            return x,y,customized,w,h,info
         end
-        local x, y = DefaultPosition(index)
-        return x, y, false
+        return dx,dy,false,width,height
     end
 
-    function instance:PlaceButton(record, meta, index, force)
-        local button = record and record.button or nil
-        if button == nil then return false end
-        if record.dragging == true and force ~= true then return true end
-        local x, y, customized = self:ResolvePosition(meta, index, record)
-        if force == true or record.lastX ~= x or record.lastY ~= y or record.customized ~= customized then
-            UI:SetAnchor(button, UIParent, x, y, "v3:gear_quick_buttons")
-            record.lastX, record.lastY, record.customized = x, y, customized
-        end
+    function instance:PlaceButton(record,meta,index,force)
+        local button=record and record.button
+        if button==nil then return false,"gear_button_unavailable" end
+        -- metrics 遇到捕获不抢锚点；DragStop 对比 viewport 后放弃旧手势，重放用户原 intent。
+        if record.dragging then if force then record.pendingPlacement=true end;return true end
+        local x,y,customized,w,h,info=self:ResolvePosition(meta,index,record)
+        local windowing=S.RSUI and S.RSUI.Windowing
+        if not (windowing and type(windowing.ApplyGeometry)=="function") then return false,"gear_geometry_transaction_unavailable" end
+        local ok,err=windowing:ApplyGeometry(button,"v3:gear_quick_buttons",x,y,w,h,force==true)
+        record.placementInfo=info
+        if ok~=true then return false,err end
+        record.lastX,record.lastY,record.customized=x,y,customized
         return true
     end
 
@@ -233,53 +197,42 @@ local function CreateGearQuickWidget()
             if instance.visible ~= true or instance:GetState().locked == true then return false end
             local moving = UI:TryInteractionCall(button, "StartMoving")
             if moving ~= true then return false end
+            -- 维护：开始时缓存与 Native 尺寸一致，冻结单位；拖动后的旧锚点不能重新参与单位猜测。
+            local _,_,_,_,unit=LogicalRect(button)
+            record.geometryUnitScale=unit and unit.effectiveScale or nil
+            record.dragViewport=S.Layout and S.Layout:MakeSignature(S.Layout:GetContext()) or nil
             record.dragging = true
             record.ignoreClick = false
             return true
         end, "v3_gear_quick:drag_start:" .. physicalKey)
 
         local dragStopBound, dragStopErr = UI:RequireHandler(button, "OnDragStop", function()
-            if type(button.StopMovingOrSizing) == "function" then pcall(function() button:StopMovingOrSizing() end) end
-            record.dragging = false
-            record.ignoreClick = true
-            local x, y = LogicalRect(button)
-            if x ~= nil and y ~= nil then
-                local policy = type(Feature.GetQuickButtonPolicy) == "function" and Feature:GetQuickButtonPolicy() or {}
-                local snap = type(Feature.GetQuickSnapSettings) == "function" and Feature:GetQuickSnapSettings()
-                    or { enabled = true, distance = tonumber(policy.snapDistance) or 16, gap = 0 }
-                instance:RegisterSnapRecord(record)
-                if type(UI.CommitScreenSnap) == "function" then
-                    local committed, resolvedX, resolvedY = UI:CommitScreenSnap(record.snapId, button, {
-                        enabled = snap.enabled == true, group = "screen_buttons", kind = "button",
-                        distance = tonumber(snap.distance) or tonumber(policy.snapDistance) or 16,
-                        gap = tonumber(snap.gap) or 0, owner = "v3:gear_quick_buttons",
-                    })
-                    if committed == true and tonumber(resolvedX) ~= nil and tonumber(resolvedY) ~= nil then x, y = resolvedX, resolvedY end
-                elseif S.Layout ~= nil and type(S.Layout.ResolveScreenSnap) == "function" then
-                    local sx, sy, snapped = S.Layout:ResolveScreenSnap(record.snapId, x, y, tonumber(policy.width) or 104, tonumber(policy.height) or 26, {
-                        enabled = snap.enabled == true, group = "screen_buttons", kind = "button",
-                        distance = tonumber(snap.distance) or tonumber(policy.snapDistance) or 16, gap = tonumber(snap.gap) or 0,
-                    })
-                    if snapped == true then x, y = sx, sy; UI:SetAnchor(button, UIParent, x, y, "v3:gear_quick_buttons") end
-                end
-                local placement = nil
-                if S.Layout ~= nil and type(S.Layout.StorePlacement) == "function" then
-                    local captured = {}
-                    local storedX, storedY = S.Layout:StorePlacement(captured, button, { mode = "strict" })
-                    if tonumber(storedX) ~= nil and tonumber(storedY) ~= nil then
-                        x, y = storedX, storedY
-                        UI:SetAnchor(button, UIParent, x, y, "v3:gear_quick_buttons")
-                    end
-                    if tostring(captured.coordinateSpace or "") == "logical-edge-v1" then placement = captured end
-                end
-                if placement == nil then
-                    placement, x, y = BuildEdgePlacement(x, y, tonumber(policy.width) or 104, tonumber(policy.height) or 26)
-                    if placement ~= nil then UI:SetAnchor(button, UIParent, x, y, "v3:gear_quick_buttons") end
-                end
-                record.legacyPlacement = placement
-                local ok = Feature.Commands:SetQuickPosition(record.setId, x, y, placement)
-                if ok == true then record.lastX, record.lastY, record.customized = math.floor(x + 0.5), math.floor(y + 0.5), true end
+            if record.dragging~=true then return true end
+            if type(button.StopMovingOrSizing)=="function" then pcall(button.StopMovingOrSizing,button) end
+            record.dragging=false;record.ignoreClick=true
+            local x,y,w,h=LogicalRect(button,record.geometryUnitScale)
+            record.geometryUnitScale=nil
+            local context=S.Layout and S.Layout:GetContext(true)
+            local changed=record.pendingPlacement or (context and record.dragViewport~=S.Layout:MakeSignature(context))
+            record.dragViewport,record.pendingPlacement=nil,nil
+            if changed then return instance:ApplyLayout(true) end
+            if x==nil or y==nil then return false,"gear_drag_rect_unavailable" end
+            local snap=type(Feature.GetQuickSnapSettings)=="function" and Feature:GetQuickSnapSettings() or {enabled=true,distance=16,gap=0}
+            if S.Layout and type(S.Layout.ResolveScreenSnap)=="function" then
+                local sx,sy,snapped=S.Layout:ResolveScreenSnap(record.snapId,x,y,w,h,{
+                    enabled=snap.enabled==true,group="screen_buttons",kind="button",distance=tonumber(snap.distance) or 16,gap=tonumber(snap.gap) or 0})
+                if snapped then x,y=sx,sy end
             end
+            -- 维护：使用同一冻结矩形捕获 edge intent，不再 StorePlacement 再读 Native 导致二次缩放。
+            local placement;placement,x,y=BuildEdgePlacement(x,y,w,h)
+            local windowing=S.RSUI and S.RSUI.Windowing
+            if not placement or not windowing then return false,"gear_drag_commit_unavailable" end
+            local accepted,err=windowing:ApplyGeometry(button,"v3:gear_quick_buttons",x,y,w,h,true)
+            if accepted~=true then return false,err end
+            local ok,saveErr=Feature.Commands:SetQuickPosition(record.setId,x,y,placement)
+            if ok~=true then instance:ApplyLayout(true);return false,saveErr end
+            record.legacyPlacement=placement
+            record.lastX,record.lastY,record.customized=x,y,true
             return true
         end, "v3_gear_quick:drag_stop:" .. physicalKey)
 
@@ -407,6 +360,8 @@ local function CreateGearQuickWidget()
     end
 
     function instance:Show()
+        -- 维护：显示是允许的低频采样边沿，普通业务 Refresh 不采样 metrics。
+        if S.Layout then S.Layout:GetContext(true) end
         self.visible = true
         local subscribed, subscribeErr = self:Subscribe()
         if subscribed ~= true then
@@ -461,13 +416,29 @@ local function CreateGearQuickWidget()
     function instance:GetTextOpacity() return Clamp01(self:GetState().textOpacity, 1) end
 
     function instance:ResetLayout()
+        -- 维护：取消旧原生手势，刷新 viewport 后让统一 solver 解析默认位置；不保留旧 RAM edge intent。
+        if S.Layout then S.Layout:GetContext(true) end
+        for _,record in pairs(self.buttons)do
+            if record.dragging and type(record.button.StopMovingOrSizing)=="function" then pcall(record.button.StopMovingOrSizing,record.button) end
+            record.dragging=false;record.geometryUnitScale=nil;record.pendingPlacement=nil;record.dragViewport=nil;record.legacyPlacement=nil
+        end
         local ok, err = Feature.Commands:ResetQuickPositions()
         if ok ~= true then return false, err end
-        return self:Refresh()
+        local refreshed,refreshErr=self:Refresh()
+        if refreshed~=true then return false,refreshErr end
+        return self:ApplyLayout(true)
     end
 
-    function instance:ApplyLayout()
-        return self:Refresh()
+    function instance:ApplyLayout(fromMetrics)
+        -- 维护：分辨率边沿只重排已创建按钮和缓存 rows，不读取装备/称号/投影，不重新订阅事件。
+        for index,meta in ipairs(self.rows)do
+            local record=self.buttons[tostring(meta.id)]
+            if record then
+                local ok,err=self:PlaceButton(record,meta,index,fromMetrics==true)
+                if ok~=true then return false,err end
+            end
+        end
+        return true
     end
 
     return instance

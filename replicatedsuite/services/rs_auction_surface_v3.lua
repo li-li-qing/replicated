@@ -118,8 +118,14 @@ local function ResolveContentRect(content, logicalWidth, logicalHeight)
     local node = content
     for depth = 0, 8 do
         if node == nil then break end
-        if S.Layout ~= nil and type(S.Layout.GetLogicalRect) == "function" then
-            local ok, x, y, width, height = pcall(function() return S.Layout:GetLogicalRect(node) end)
+        if S.Layout ~= nil and (type(S.Layout.ResolveViewportLogicalRect) == "function" or type(S.Layout.GetLogicalRect) == "function") then
+            -- 维护（2026-09-22，external-surface-geometry-1）：外部原生内容坐标最终用于 UIParent 侧栏锚定，
+            -- 必须优先走已校准的 viewport-logical-v1；旧 GetLogicalRect 会在部分 RU UI Scale 语义下
+            -- 重复除缩放。兼容测试/旧引导环境时才退回 legacy helper，不改变 Native ADDON Authority。
+            local ok, x, y, width, height = pcall(function()
+                if type(S.Layout.ResolveViewportLogicalRect) == "function" then return S.Layout:ResolveViewportLogicalRect(node) end
+                return S.Layout:GetLogicalRect(node)
+            end)
             if ok == true and PlausibleRect(x, y, width, height, logicalWidth, logicalHeight) then
                 return Number(x), Number(y), Number(width), Number(height), depth == 0 and "auction-content" or ("auction-parent-" .. tostring(depth))
             end

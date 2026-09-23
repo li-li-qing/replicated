@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 2 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Buff Display Floating Widget
 ------------------------------------------------------------------------
@@ -15,7 +19,7 @@ local function Policy() return { defaultWidth = 430, defaultHeight = 300, minWid
 local function Persist(reason) return Feature.Commands:MarkStoreDirty(250, "widget_" .. tostring(reason or "state")) end
 
 local function CreateWidget()
-    local instance = { id = ID, owner = OWNER, visible = false, subscribed = false, rows = {} }
+    local instance = { id = ID, owner = OWNER, visible = false, subscribed = false, rows = {}, selectedRow = nil, channelButtons = {} }
     local surface, err = Floating:Create({ id = "v3_buff_display_widget", owner = OWNER, title = "状态追踪", status = "--", footer = true, resizable = true, movable = true, minimizeMode = "compact", boundaryMode = "free", defaultPlacement = "top-right", statePolicy = Policy(), getState = function() return Feature:GetWidgetWindowState() end, setState = function(value, reason) return Feature.Commands:SetWidgetWindowState(value, reason) end, persist = Persist, onClosed = function(_, reason) return Host:NotifyWindowClosed(ID, { source = tostring(reason or "widget_close"), persist = true }) end })
     if surface == nil then return nil, err or "状态显示悬浮窗创建失败" end
     instance.surface, instance.shell, instance.window, instance.root, instance.windowController = surface, surface.shell, surface.window, surface.shell.root, surface.windowController
@@ -62,21 +66,54 @@ local function CreateWidget()
         -- 可见行仅入队；Native查询由共享有界Metadata任务执行，render中不直接读API。
         bindRow=function(_,item)if item and item.id then Feature:QueueManagementMetadata(item.id)end end,
         onItemActivated=function(item)
-            if type(item)~="table" or not item.id then return false end
-            local bucket=item.trackedBucket or ((item.category=="buff" or item.category=="debuff") and item.category or "auto")
-            local ok,err=Feature.Commands:SetTrackedId(tonumber(item.id),bucket,item.tracked~=true)
-            if ok then instance:Refresh() else instance.surface:SetStatus("追踪失败："..tostring(err),"warn") end
-            return ok,err
+            if type(item)~="table" or not item.id then return false,"状态行无效" end
+            instance.selectedRow=item
+            if type(instance.RefreshSelectedControls)=="function" then instance:RefreshSelectedControls() end
+            return true
         end,
         columns={
             {id="icon",title="",field="iconPath",cellType="icon",iconSize=16,fallbackIcon="ui/icon/icon_unknown_item.dds",size="fixed",width=22,minWidth=20},
-            {id="name",title="状态 / 点击切换追踪",field="name",size="fill",minWidth=68,fill=1},
+            {id="name",title="状态 / 点击选择",field="name",size="fill",minWidth=68,fill=1},
             {id="source",title="来源",field="scopeText",size="fixed",width=36,minWidth=30},
             {id="type",title="类型",field="effectTypeText",size="fixed",width=50,minWidth=44},
             {id="stack",title="层",field="stack",size="fixed",width=26,minWidth=22},
             {id="time",title="剩余",field="timeText",size="fixed",width=50,minWidth=42},
-            {id="tracked",title="追踪",field="trackedText",size="fixed",width=52,minWidth=46}},
+            {id="tracked",title="追踪位置",field="trackedText",size="fixed",width=112,minWidth=90}},
         slot={size="fill",fill=1,hAlign="fill",vAlign="fill"}})
+    -- 中文维护（tracking-scope-v1）：小窗复用同一四通道命令，不创建第二套追踪状态。
+    -- 行激活仅选择；通道按钮才跨 Persistence boundary。关闭小窗不会影响正式 HUD Consumer。
+    local scopeActions=RSUI:HorizontalBox({id="v3_buff_widget_scope_actions",parent=content,gap=4,slot={size="fixed",height=27,hAlign="fill"}})
+    -- 中文维护（tracking-toggle-label-v1）：悬浮窗与主页面必须读取同一个追踪 Authority，
+    -- 不能各自缓存“是否已追踪”。这里仅把下一次点击的动作显式显示为“设为/取消”，
+    -- Commands:SetTrackedChannel 仍是唯一写边界；关闭窗口、刷新投影或旧存档恢复都不会改变语义。
+    local defs={
+        {id="v3_buff_widget_player_buff",scope="player",category="buff",setLabel="设为自身 Buff",unsetLabel="取消自身 Buff",status="自身·Buff"},
+        {id="v3_buff_widget_player_debuff",scope="player",category="debuff",setLabel="设为自身 Debuff",unsetLabel="取消自身 Debuff",status="自身·Debuff"},
+        {id="v3_buff_widget_target_buff",scope="target",category="buff",setLabel="设为目标 Buff",unsetLabel="取消目标 Buff",status="目标·Buff"},
+        {id="v3_buff_widget_target_debuff",scope="target",category="debuff",setLabel="设为目标 Debuff",unsetLabel="取消目标 Debuff",status="目标·Debuff"},
+    }
+    local function ValidSelected() local r=instance.selectedRow;return type(r)=="table" and r.id~=nil and r.kind~="skill" and r.kind~="mate" end
+    function instance:RefreshSelectedControls()
+        local row=self.selectedRow;local valid=ValidSelected();local labels={}
+        for _,def in ipairs(defs) do
+            local b=self.channelButtons[def.id];local active=valid and Feature:IsTrackedChannel(row.id,def.scope,def.category)==true
+            if b then b:SetEnabled(valid);b:SetText(active and def.unsetLabel or def.setLabel) end
+            if active then labels[#labels+1]=def.status end
+        end
+        if valid and Feature:IsTrackedChannel(row.id,"player","auto") then labels[#labels+1]="自身·自动" end
+        if valid and Feature:IsTrackedChannel(row.id,"target","auto") then labels[#labels+1]="目标·自动" end
+        self.selectedTrackingText=valid and (#labels>0 and table.concat(labels," / ") or "未追踪") or nil
+        return true
+    end
+    local function Toggle(scope,category)
+        if not ValidSelected() then instance:RefreshSelectedControls();return false,"请先点击一个 Buff / Debuff 状态行" end
+        local row=instance.selectedRow;local enabled=not Feature:IsTrackedChannel(row.id,scope,category)
+        local ok,err=Feature.Commands:SetTrackedChannel(row.id,scope,category,enabled)
+        if ok then instance:Refresh() else instance.surface:SetStatus("追踪失败："..tostring(err),"warn") end
+        instance:RefreshSelectedControls();return ok,err
+    end
+    for _,def in ipairs(defs) do local d=def;local b=RSUI:Button({id=d.id,parent=scopeActions,text=d.setLabel,compact=true,
+        onClick=function() return Toggle(d.scope,d.category) end,slot={size="fill",fill=1,minWidth=88}});b:SetEnabled(false);instance.channelButtons[d.id]=b end
     function instance:SetView(view)
         if view~="live" and view~="frozen" and view~="tracked" then return false,"invalid_view" end
         self.view=view
@@ -93,8 +130,10 @@ local function CreateWidget()
         end
         local capture=Feature:GetManagementFreezeState()
         self.captureButton:SetText(capture.active and "停止并清空" or "持续留存")
+        self:RefreshSelectedControls()
+        local selected=self.selectedRow and (" · 所选 "..tostring(self.selectedRow.name or self.selectedRow.id).."："..tostring(self.selectedTrackingText or "不可设置")) or ""
         self.surface:SetStatus((self.view=="tracked" and "已追踪 " or self.view=="frozen" and "留存 " or "当前 ")..#rows
-            ..(capture.active and " · 持续留存中" or "")..(capture.overflow and " · 留存已达上限" or ""),capture.overflow and "warn" or "accent")
+            ..selected..(capture.active and " · 持续留存中" or "")..(capture.overflow and " · 留存已达上限" or ""),capture.overflow and "warn" or "accent")
         return true
     end
     function instance:Subscribe()

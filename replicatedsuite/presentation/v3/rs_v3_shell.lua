@@ -39,9 +39,12 @@ V3.Shell = V3.Shell or {
     contentRoot = nil,
     footer = nil,
     status = nil,
+    topmost = false,
+    topmostButton = nil,
     minimizeButton = nil,
     reloadButton = nil,
     navButtons = {},
+    navFeatureIds = {},
     lastRect = nil,
     lastRoute = nil,
     windowController = nil,
@@ -53,10 +56,12 @@ local Shell = V3.Shell
 Shell.navigationCallbackContractVersion = 1
 Shell.NavigationCallbackCaptureContractVersion = 1
 Shell.StateMutationTransactionContractVersion = 1
+Shell.TopmostLayerContractVersion = 1
+Shell.CommittedGeometryPersistenceContractVersion = 1
 Shell.DevelopmentNavigationPresentationContractVersion = 1 -- 中文维护注释：Shell v1 开始只用 navigationTitle 展示“未完成”后缀，页面 title/route/Feature identity 均保持原语义。
 
 local SCROLL_CATEGORY_ORDER = { "home", "combat", "life", "tools" }
-local SYSTEM_ROUTES = { "system.widgets", "system.features", "system.settings", "system.diagnostics" }
+local SYSTEM_ROUTES = { "system.workspace", "system.widgets", "system.features", "system.settings", "system.diagnostics" }
 
 local function SetButtonSelected(button, selected)
     if button ~= nil and type(button.SetSelected) == "function" then button:SetSelected(selected == true) end
@@ -66,28 +71,30 @@ local function MarkDirty(reason)
     if type(V3.MarkShellStoreDirty) == "function" then V3:MarkShellStoreDirty(350, reason or "shell_changed") end
 end
 
+-- 维护（viewport-recovery-1）：读取主窗配置只过滤运行值；不改 v3.shell schema/历史指纹。
+local function Finite(value,fallback)
+    local n=tonumber(value)
+    if n==nil or n~=n or n==math.huge or n==-math.huge then return fallback end
+    return n
+end
+
 function Shell:ResolveRect(designWidth, designHeight)
     local context = S.Layout:GetContext()
     local scale = math.max(0.01, tonumber(context.addonScale) or 1)
     local state = V3.ShellState or {}
     local size = V3.ShellSizePolicy or { defaultWidth = 1040, defaultHeight = 700, minWidth = 1, minHeight = 1 }
-    local dw = math.max(size.minWidth, tonumber(designWidth) or tonumber(state.width) or size.defaultWidth)
-    local normalDh = math.max(size.minHeight, tonumber(designHeight) or tonumber(state.height) or size.defaultHeight)
+    local dw = math.max(size.minWidth, Finite(designWidth) or Finite(state.width) or size.defaultWidth)
+    local normalDh = math.max(size.minHeight, Finite(designHeight) or Finite(state.height) or size.defaultHeight)
     local width = dw * scale
     local height = normalDh * scale
-    local centerX = ((tonumber(context.logicalWidth) or width) - width) * 0.5
-    local centerY = ((tonumber(context.logicalHeight) or height) - height) * 0.5
-    local x, y
-    if state.userMoved == true and S.Layout ~= nil and type(S.Layout.ResolvePlacement) == "function" then
-        x, y = S.Layout:ResolvePlacement(state, width, height, centerX, centerY, { mode = "free" })
-    else
-        x, y = centerX, centerY
-        -- Keep a fresh/default title bar recoverable even when the chosen size is
-        -- larger than the current viewport; never shrink the requested size.
-        if S.Layout ~= nil and type(S.Layout.ClampRecoverableTopLeft) == "function" then
-            x, y = S.Layout:ClampRecoverableTopLeft(x, y, width, height, { visibleX = 72, visibleY = 18, topReachHeight = 50 })
-        end
-    end
+    -- 维护：主窗保留自己的隐藏式最小化/导航/Modal 生命周期，只共享 placement 求解。
+    -- 消费运行时 fit 的宽高；原设计尺寸 dw/normalDh 不写回，回大屏时仍从原 Store 恢复。
+    local fittedW,fittedH = math.min(width,context.usableWidth),math.min(height,context.usableHeight)
+    local centerX = (context.logicalWidth-fittedW)*0.5
+    local centerY = (context.logicalHeight-fittedH)*0.5
+    local x,y
+    x,y,width,height,self.placementInfo = S.Layout:ResolvePlacement(state.userMoved and state or nil,width,height,centerX,centerY,
+        {mode="free",topLevel=true,topReachHeight=50,reason=self.placementReason})
     return x, y, width, height, dw, normalDh
 end
 
@@ -111,46 +118,79 @@ function Shell:RefreshNavScrollHint()
     return true
 end
 
-function Shell:BuildScrollableNavigation()
-    if self.navScroll == nil then return false end
-    local navParent = self.navScroll
-    for _, categoryId in ipairs(SCROLL_CATEGORY_ORDER) do
-        local category = S.FeatureRegistry and S.FeatureRegistry.categories[categoryId] or nil
-        local routes = Router:List(categoryId)
-        if category ~= nil and #routes > 0 then
-            RSUI:Text({
-                id = "v3_nav_category_" .. categoryId, parent = navParent,
-                text = category.name, fontSize = 10, tone = "muted", overflow = "ellipsis",
-                slot = { size = "fixed", height = 22, hAlign = "fill" },
-            })
-            local previousGroup = nil
-            local groupGapIndex = 0
-            for _, route in ipairs(routes) do
-                -- Navigation callbacks execute long after this Lua 5.1 generic
-                -- loop finishes; capture the concrete route for each button.
-                local routeRef = route
-                local group = tostring(routeRef.group or categoryId)
-                if previousGroup ~= nil and group ~= previousGroup then
-                    groupGapIndex = groupGapIndex + 1
-                    RSUI:Spacer({
-                        id = "v3_nav_group_gap_" .. categoryId .. "_" .. tostring(groupGapIndex),
-                        parent = navParent, height = 4, slot = { size = "fixed", height = 4 },
-                    })
-                end
-                local button = RSUI:Button({
-                    id = "v3_nav_" .. routeRef.id:gsub("[^%w]", "_"),
-                    parent = navParent,
-                    text = tostring(routeRef.navigationTitle or routeRef.title), -- 中文维护注释：左侧主导航显示开发态标签；页面标题仍由 routeRef.title 保持纯业务名称，避免标签渗透其它 UI。
-                    compact = true,
-                    onClick = function() return self:Navigate(routeRef.id, { source = "navigation" }) end,
-                    slot = { size = "fixed", height = 28, hAlign = "fill" },
-                })
-                self.navButtons[routeRef.id] = button
-                previousGroup = group
+-- 维护（module-controls-diag-2）：红绿仅表示FeatureRuntime真实启停，选中态仍由路由决定。
+-- 构建时缓存路由->Feature映射；生命周期事件/导航/按钮事务后刷新，禁止轮询GetHealth。
+function Shell:RefreshFeatureStates(featureId)
+    local controls = V3.ModuleControlsV3
+    if not controls then return true end
+    for route, id in pairs(self.navFeatureIds or {}) do
+        if featureId == nil or featureId == id then
+            local button = self.navButtons[route]
+            if button and type(button.SetStatusTone) == "function" then
+                button:SetStatusTone(controls:ReadState(id).enabled == true and "green" or "red")
             end
-            RSUI:Spacer({ id = "v3_nav_gap_" .. categoryId, parent = navParent, height = 5, slot = { size = "fixed", height = 5 } })
         end
     end
+    -- 启停事件同时刷新“已开启”筛选及顶栏计数；不新增周期性扫描。
+    self:RefreshNavigation(false)
+    self:RefreshRunningSummary()
+    return true
+end
+
+-- 个人工作台：按钮只创建一次。重排使用 RSUI 同父顺序 API，隐藏仅改变导航可见性，
+-- 不启停模块。全部模式忽略用户隐藏，Registry.navigationVisible=false 仍不可复活。
+function Shell:BuildScrollableNavigation()
+    if not self.navScroll then return false end
+    for _, categoryId in ipairs(SCROLL_CATEGORY_ORDER) do
+        for _, route in ipairs(Router:List(categoryId)) do
+            local routeRef = route
+            local button = RSUI:Button({ id="v3_nav_"..routeRef.id:gsub("[^%w]","_"), parent=self.navScroll,
+                text=tostring(routeRef.navigationTitle or routeRef.title), compact=true,
+                onClick=function()return self:Navigate(routeRef.id,{source="navigation"})end,
+                slot={size="fixed",height=28,hAlign="fill"} })
+            self.navButtons[routeRef.id]=button
+            local meta=S.FeatureRegistry:GetByRoute(routeRef.id)
+            self.navFeatureIds[routeRef.id]=V3.ModuleControlsV3 and V3.ModuleControlsV3:ControlId(meta) or nil
+        end
+    end
+    self:RefreshNavigation(true)
+    self:RefreshFeatureStates()
+    return true
+end
+
+function Shell:RefreshNavigation(reset)
+    local preferences=V3.Workspace
+    if not preferences or not self.navScroll then return true end
+    local rows=preferences:GetNavigation(self.navMode or "custom",self.navQuery or "")
+    local wanted,ordered={},{}
+    for _,route in ipairs(rows)do
+        local button=self.navButtons[route.id]
+        if button then
+            wanted[route.id]=true;ordered[#ordered+1]=button
+            local pref=preferences:GetNavPreference(route.id)
+            local id=self.navFeatureIds[route.id]
+            local state=id and preferences:ReadControl(id) or nil
+            local label=(state and (state.enabled and "[开] " or "[关] ") or "")
+                ..(pref.favorite and "常用 · " or "")..tostring(route.navigationTitle or route.title)
+            button:SetText(label)
+        end
+    end
+    for id,button in pairs(self.navButtons)do
+        if button.parentComponent==self.navScroll then button:SetVisible(wanted[id]==true)end
+    end
+    local ok,err=self.navScroll:ReorderChildren(ordered)
+    if not ok then return false,err end
+    if reset then self.navScroll:ScrollToTop()end
+    self.navScroll:InvalidateMeasure("navigation_preferences")
+    self:RefreshNavScrollHint()
+    return true
+end
+
+function Shell:RefreshRunningSummary()
+    if not self.runningButton or not V3.Workspace then return true end
+    local state=V3.Workspace:GetRunningSummary()
+    self.runningButton:SetText("已开启 "..state.enabled.." · 异常 "..state.faulted)
+    if type(self.runningButton.SetStatusTone)=="function"then self.runningButton:SetStatusTone(state.faulted>0 and "red" or state.enabled>0 and "green" or nil)end
     return true
 end
 
@@ -271,7 +311,14 @@ function Shell:CommitWindowGeometry(_, x, y, width, height, reason)
         state.width = math.max(size.minWidth, width / scale)
         state.height = math.max(size.minHeight, height / scale)
     end
-    if S.Layout ~= nil and type(S.Layout.StorePlacement) == "function" then S.Layout:StorePlacement(state, self.window, { mode = "free" }) end
+    -- 维护（2026-09-16，main-shell-committed-geometry-1）：Windowing 已把最终逻辑矩形
+    -- 作为参数交给这里；禁止再次从 Native 读回坐标。主菜单与悬浮窗使用同一 Layout Authority，
+    -- 保持原 free-v2 / normalized-center 持久化格式，旧配置无需迁移。
+    if S.Layout ~= nil and type(S.Layout.StorePlacementRect) == "function" then
+        S.Layout:StorePlacementRect(state, x, y, width, height, { mode = "free" })
+    elseif S.Layout ~= nil and type(S.Layout.StorePlacement) == "function" then
+        S.Layout:StorePlacement(state, self.window, { mode = "free" })
+    end
     state.userMoved = true
     local layoutOk, layoutErr = self:ApplyLayout(false)
     if layoutOk ~= true then
@@ -280,11 +327,41 @@ function Shell:CommitWindowGeometry(_, x, y, width, height, reason)
         pcall(function() self:ApplyLayout(false) end)
         return false, layoutErr or "主窗口几何提交失败"
     end
-    MarkDirty("window_" .. tostring(reason or "geometry"))
+    -- Geometry is a low-frequency commit edge. Mark due immediately so a user
+    -- who drags the window and exits the client right away does not lose the final rect.
+    if type(V3.MarkShellStoreDirty) == "function" then V3:MarkShellStoreDirty(0, "window_" .. tostring(reason or "geometry")) end
     return true
 end
 
+function Shell:SetTopmost(value, persist)
+    local nextValue = value == true
+    local previous = self.topmost == true
+    if previous == nextValue then SetButtonSelected(self.topmostButton, nextValue); return true, nextValue, false end
+    if self.window == nil or type(Adapter.SetRootLayer) ~= "function" then return false, "主窗口层级能力不可用" end
+    local layerOk, layerErr = Adapter:SetRootLayer(self.window, nextValue)
+    if layerOk ~= true then return false, layerErr or "主窗口层级切换失败" end
+    self.topmost = nextValue
+    SetButtonSelected(self.topmostButton, nextValue)
+    if persist ~= false then
+        local prefs = RSUI.WindowPreferences
+        if type(prefs) ~= "table" or type(prefs.SetTopmost) ~= "function" then
+            Adapter:SetRootLayer(self.window, previous); self.topmost = previous; SetButtonSelected(self.topmostButton, previous)
+            return false, "窗口层级偏好存档不可用"
+        end
+        local ok, accepted, detail = pcall(function() return prefs:SetTopmost("main_shell", nextValue, true) end)
+        if ok ~= true or accepted ~= true then
+            Adapter:SetRootLayer(self.window, previous); self.topmost = previous; SetButtonSelected(self.topmostButton, previous)
+            return false, tostring(detail or accepted or "主窗口置顶保存失败")
+        end
+    end
+    if nextValue and type(Adapter.Raise) == "function" then Adapter:Raise(self.window) end
+    return true, nextValue, true
+end
+
+function Shell:GetTopmost() return self.topmost == true end
+
 function Shell:Create()
+    if self.created ~= true then S.Layout:GetContext(true) end -- 维护：首次创建不用启动早期的 provisional context。
     if self.created == true and self.window ~= nil then return true end
     if tonumber(self.failedBuildGeneration) == tonumber(S.Generation) then
         self.buildQuarantinedRejects = (tonumber(self.buildQuarantinedRejects) or 0) + 1
@@ -294,6 +371,11 @@ function Shell:Create()
     if type(V3.EnsureShellStoreLoaded) == "function" then loaded, loadErr = V3:EnsureShellStoreLoaded() end
     if loaded ~= true then return false, loadErr or "主窗口配置读取失败" end
 
+    -- 读取 UI 偏好失败不阻断诊断/恢复入口；写操作仍被新 Store 拒绝。
+    if V3.Workspace then
+        V3.Workspace:EnsureLoaded()
+        if S.Theme and type(S.Theme.ApplyWorkspacePalette)=="function" then S.Theme:ApplyWorkspacePalette(V3.Workspace:GetSettings().appearance) end
+    end
     local scope = type(RSUI.BeginBuildScope) == "function" and RSUI:BeginBuildScope("main_shell") or nil
     local function FailBuild(err)
         if scope ~= nil and type(RSUI.EndBuildScope) == "function" then RSUI:EndBuildScope(scope, false); scope = nil end
@@ -308,11 +390,15 @@ function Shell:Create()
         return false, self.failedBuildError
     end
 
-    local window, createErr = Adapter:CreateRootWindow(self.logicalId, self.owner)
+    -- 维护（2026-09-16，main-shell-topmost-1）：主窗口默认 normal，只有用户显式保存 [顶]
+    -- 才请求 system。偏好由 RSUI.WindowPreferences 独立持久化，避免修改 v3.shell schema。
+    local prefs = RSUI.WindowPreferences
+    self.topmost = type(prefs) == "table" and type(prefs.GetTopmost) == "function" and prefs:GetTopmost("main_shell") == true or false
+    local window, createErr = Adapter:CreateRootWindow(self.logicalId, self.owner, self.topmost and "system" or "normal")
     if window == nil then return FailBuild(createErr) end
     self.window = window
-    -- Explicit layer role keeps the full-screen application below independent
-    -- FloatingSurface windows while both remain in the native system layer.
+    self.window.rsUiTopmost = self.topmost == true
+    -- DrawPriority orders Replicated Suite roots only inside the selected Native layer.
     local shellPriority = (S.UITokens and type(S.UITokens.Number) == "function"
         and S.UITokens:Number("layer.shellPriority", 100)) or 100
     if type(window.SetDrawPriority) == "function" then pcall(function() window:SetDrawPriority(shellPriority) end) end
@@ -341,9 +427,15 @@ function Shell:Create()
     -- 后续维护：联系信息仅在此展示；窄窗沿用省略规则，不扩大拖动命中区或挤占右侧按钮。
     RSUI:Text({ id = "v3_shell_title", parent = brand, text = "作者:Replicated   QQ群:1104129461", fontSize = 15, tone = "accent", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
     RSUI:Text({ id = "v3_shell_subtitle", parent = brand, text = "模块化重构 · 新版界面", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 14 } })
+    self.runningButton=RSUI:Button({id="v3_shell_running",parent=topRow,text="已开启 0 · 异常 0",compact=true,
+        onClick=function()return self:Navigate("system.features",{source="running_summary"})end,slot={size="fixed",width=138}})
     RSUI:Button({ id = "v3_shell_diag_button", parent = topRow, text = "诊断", compact = true,
         onClick = function() return self:Navigate("system.diagnostics", { source = "topbar" }) end,
         slot = { size = "fixed", width = 64 } })
+    self.topmostButton = RSUI:Button({ id = "v3_shell_topmost_button", parent = topRow, text = "顶", compact = true,
+        onClick = function() return self:SetTopmost(not self.topmost, true) end,
+        slot = { size = "fixed", width = 36 } })
+    SetButtonSelected(self.topmostButton, self.topmost == true)
     self.minimizeButton = RSUI:Button({ id = "v3_shell_minimize_button", parent = topRow, text = "—", compact = true,
         onClick = function() return self:ToggleMinimized() end,
         slot = { size = "fixed", width = 36 } })
@@ -355,6 +447,19 @@ function Shell:Create()
 
     self.navFrame = RSUI:Border({ id = "v3_shell_nav_frame", parent = self.body, variant = "soft", padding = 7, slot = { size = "fixed", width = 204, hAlign = "fill", vAlign = "fill" } })
     self.navColumn = RSUI:VerticalBox({ id = "v3_shell_nav_column", parent = self.navFrame, gap = 5, slot = { hAlign = "fill", vAlign = "fill" } })
+    local navTools=RSUI:HorizontalBox({id="v3_nav_tools",parent=self.navColumn,gap=4,slot={size="fixed",height=28,hAlign="fill"}})
+    RSUI:Dropdown({id="v3_nav_mode",parent=navTools,items={{value="custom",text="我的导航"},{value="all",text="显示全部"},{value="favorites",text="常用功能"},{value="enabled",text="已开启"}},
+        get=function()return self.navMode or "custom"end,set=function(value)self.navMode=value;return self:RefreshNavigation(true)end,slot={size="fill",fill=1}})
+    RSUI:Button({id="v3_nav_customize",parent=navTools,text="自定义",compact=true,slot={size="fixed",width=58},
+        onClick=function()V3.WorkspacePage.requestedTab="navigation";return self:Navigate("system.workspace",{source="nav_customize"})end})
+    -- 搜索仅提交后更新当前导航投影，输入草稿期间不重排按钮/抢焦点。
+    local searchRow=RSUI:HorizontalBox({id="v3_nav_search_row",parent=self.navColumn,gap=4,slot={size="fixed",height=27,hAlign="fill"}})
+    local search=RSUI:TextInput({id="v3_nav_search_text",parent=searchRow,placeholder="搜索功能",maxLength=64,allowEmpty=true,submitOnLostFocus=false,
+        get=function()return self.navQuery or ""end,set=function(value)self.navQuery=tostring(value or "");return true end,
+        onSubmit=function()return self:RefreshNavigation(true)end,slot={size="fill",fill=1,minWidth=64}})
+    RSUI:Button({id="v3_nav_search_apply",parent=searchRow,text="查",compact=true,slot={size="fixed",width=28},onClick=function()return search:CommitAndEndEditing("navigation_search")end})
+    RSUI:Button({id="v3_nav_search_clear",parent=searchRow,text="清",compact=true,slot={size="fixed",width=28},onClick=function()
+        search:CancelEditing("navigation_clear");self.navQuery="";search:SetValue("",false);return self:RefreshNavigation(true)end})
     self.navScroll = RSUI:ScrollBox({ id = "v3_shell_nav_scroll", parent = self.navColumn, scrollStep = 2, gap = 3, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
     self.navStack = nil
     self:BuildScrollableNavigation()
@@ -370,8 +475,17 @@ function Shell:Create()
         return changed
     end
 
-    self.systemFrame = RSUI:Border({ id = "v3_shell_system_frame", parent = self.navColumn, variant = "card", padding = 5, slot = { size = "fixed", height = 185, hAlign = "fill" } })
+    self.systemFrame = RSUI:Border({ id = "v3_shell_system_frame", parent = self.navColumn, variant = "card", padding = 5, slot = { size = "fixed", height = 214, hAlign = "fill" } })
     self:BuildSystemNavigation()
+    -- 单个代内订阅；后续热重载由旧 Events/Runtime teardown 释放，不增加周期任务。
+    if S.Events and V3.Workspace then
+        S.Events:SubscribeInternal("v3.workspace.updated",self,function(_,kind)
+            if kind=="navigation" then self:RefreshNavigation(true) end
+            if kind=="appearance" and S.Theme and type(S.Theme.ApplyWorkspacePalette)=="function"then S.Theme:ApplyWorkspacePalette(V3.Workspace:GetSettings().appearance)end
+            self:RefreshRunningSummary()
+        end)
+    end
+    self:RefreshRunningSummary()
 
     self.contentFrame = RSUI:Border({ id = "v3_shell_content_frame", parent = self.body, variant = "card", padding = 14, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
     self.contentRoot = RSUI:Overlay({ id = "v3_shell_content_root", parent = self.contentFrame })
@@ -403,6 +517,8 @@ function Shell:Create()
         onLiveGeometry = function(controller, x, y, width, height, kind) return self:ApplyInteractiveGeometry(x, y, width, height, kind) end,
     })
     if self.windowController == nil then return FailBuild("主窗口拖动/缩放能力创建失败") end
+    -- 维护：手势跨 viewport 后先丢弃旧坐标，再从持久 intent 重排，不能保存混合坐标空间。
+    self.windowController.onPlacementReady=function() return self:ApplyLayout(true) end
 
     self.created = true
     local minimizedOk, minimizedErr = self:ApplyMinimizedState(false)
@@ -442,7 +558,9 @@ function Shell:ApplyLayout(fromMetricsChange, designWidth, designHeight)
     if self.created ~= true or self.window == nil or self.root == nil then return false, "主窗口尚未创建" end
     local x, y, width, height, dw, dh = self:ResolveRect(designWidth, designHeight)
     if self.windowController ~= nil and self.windowController:IsInteracting() == true then
-        local ix, iy, iw, ih = S.Layout:GetLogicalRect(self.window)
+        -- 维护：活动手势沿固定 effective 单位读取；resolution 只标记，停止后再应用。
+        if fromMetricsChange == true then self.windowController.pendingPlacement=true;return true end
+        local ix, iy, iw, ih = self.windowController:GetLogicalRect()
         x, y, width, height = tonumber(ix) or x, tonumber(iy) or y, tonumber(iw) or width, tonumber(ih) or height
         if self.windowController:IsResizing() == true then
             self:ApplyInteractiveGeometry(x, y, width, height, "resize")
@@ -450,7 +568,8 @@ function Shell:ApplyLayout(fromMetricsChange, designWidth, designHeight)
         self.lastRect = { x = x, y = y, width = width, height = height, designWidth = dw, designHeight = dh, metricsChange = fromMetricsChange == true, interacting = true }
         return true, self.lastRect
     end
-    local rectOk, rectErr = Adapter:ApplyRect(self.window, self.owner, x, y, width, height)
+    -- 维护：Native 写入统一走 Windowing；已知 metrics/reset 强制失效几何缓存而非猜测缩放。
+    local rectOk, rectErr = Windowing:ApplyGeometry(self.window,self.owner,x,y,width,height,fromMetricsChange==true or self.placementReason=="explicit_reset")
     if rectOk ~= true then return false, rectErr or "主窗口原生几何应用失败" end
     self.root:LayoutIfNeeded(0, 0, width, height, true)
     if self.windowController ~= nil then
@@ -467,6 +586,8 @@ function Shell:ApplyLayout(fromMetricsChange, designWidth, designHeight)
 end
 
 function Shell:Open()
+    -- 维护：显式打开是允许的采样边沿，防启动 fallback 留在缓存。主窗仍不注册永久 Tick。
+    S.Layout:GetContext(true)
     local created, err = self:Create()
     if created ~= true then return false, err end
     local state = V3.ShellState or {}
@@ -488,6 +609,7 @@ function Shell:Open()
         end
         return false, layoutErr or "主窗口布局应用失败"
     end
+    if type(UI.InvalidateNativeState)=="function" then UI:InvalidateNativeState(self.window,"visible") end
     local shown, showErr = Adapter:SetVisible(self.window, self.owner, true)
     if shown ~= true then
         if wasMinimized then
@@ -499,6 +621,48 @@ function Shell:Open()
     if wasMinimized then MarkDirty("minimized_changed") end
     Adapter:Raise(self.window)
     return true
+end
+
+-- 维护：主窗硬恢复统一入口，设置页只调用它；先当前 viewport Native transaction，
+-- 再标记原 Store dirty，失败恢复原状态。位置/尺寸属 ShellState，Workspace/Modal 不改。
+function Shell:ResetLayout(persist)
+    if self.window == nil or not self.created then return false,"main_window_unavailable" end
+    S.Layout:GetContext(true)
+    if self.windowController then self.windowController:CancelInteraction() end
+    local state=V3.ShellState
+    if type(state)~="table" then return false,"shell_state_unavailable" end
+    local before={};for k,v in pairs(state)do before[k]=v end
+    local shown=Adapter:IsVisible(self.window)
+    local size=V3.ShellSizePolicy or {defaultWidth=1040,defaultHeight=700}
+    state.width,state.height=size.defaultWidth,size.defaultHeight
+    state.userMoved,state.minimized=false,false
+    for _,key in ipairs({"x","y","anchorH","anchorV","offsetX","offsetY","coordinateSpace","savedUiScale",
+        "savedLogicalWidth","savedLogicalHeight","normalizedCenterX","normalizedCenterY"})do state[key]=nil end
+    self.placementReason="explicit_reset"
+    local ok,err=self:ApplyLayout(true)
+    if ok==true and shown then
+        if type(UI.InvalidateNativeState)=="function" then UI:InvalidateNativeState(self.window,"visible") end
+        ok,err=Adapter:SetVisible(self.window,self.owner,true)
+    end
+    if ok==true and persist~=false and type(V3.MarkShellStoreDirty)=="function" then ok,err=V3:MarkShellStoreDirty(0,"shell_layout_reset") end
+    self.placementReason=nil
+    if ok~=true then
+        for k in pairs(state)do state[k]=nil end;for k,v in pairs(before)do state[k]=v end
+        self:ApplyLayout(true)
+        return false,err
+    end
+    return true
+end
+
+function Shell:GetPlacementDiagnostics()
+    local d={};for k,v in pairs(self.placementInfo or {})do d[k]=v end
+    d.windowId="main_shell";d.nativeVisible=Adapter:IsVisible(self.window);d.visibleRequested=d.nativeVisible
+    if self.window then
+        d.x,d.y,d.width,d.height=S.Layout:GetWindowLogicalRect(self.window,self.windowController and self.windowController.geometryUnitScale)
+        d.fullyVisible=S.Layout:IsRectFullyVisible(d.x,d.y,d.width,d.height)
+        d.recoverable=S.Layout:IsWindowRecoverable(d.x,d.y,d.width,d.height,50)
+    end
+    return d
 end
 
 function Shell:Close(reason)
@@ -551,6 +715,7 @@ function Shell:Navigate(routeId, context)
     local navigationRoute = tostring(resolved.navigationParentRoute or "") -- 中文维护注释：优先采用 Registry/Router 明确声明的父导航路由，避免 Shell 写死团队中心等业务标识。
     if navigationRoute == "" or self.navButtons[navigationRoute] == nil then navigationRoute = resolved.id end -- 中文维护注释：没有合法父导航按钮时退回真实路由，保证普通页面和未知元数据继续按旧逻辑工作。
     for route, button in pairs(self.navButtons) do SetButtonSelected(button, route == navigationRoute) end -- 中文维护注释：只切换主导航视觉状态，不触发二次 Navigate、Consumer 获取或 Authority 读取。
+    self:RefreshFeatureStates()
     local state = V3.ShellState or {}
     if state.lastRoute ~= resolved.id then state.lastRoute = resolved.id; MarkDirty("route_changed") end
     self:SetStatus(resolved.title .. " · 新版界面")

@@ -12,21 +12,23 @@ local UI, RSUI = S.UI, S.RSUI
 if type(UI) ~= "table" or type(RSUI) ~= "table" or type(RSUI.Windowing) ~= "table" then return end
 
 local Shell = {
-    version = 24,
+    version = 26,
     visibilityTransactionContract = 1,
     stateMutationTransactionContract = 1,
     stateCallbackTransactionContract = 1,
     idempotentMutationContract = 1,
-    compactMinimizeContract = 1,
+    compactMinimizeContract = 2,
+    compactDragSurfaceContract = 1,
     titleAppearanceContract = 3,
     titleBarInteractionContract = 1,
-    topLevelLayerContractVersion = 1,
+    topLevelLayerContractVersion = 2,
+    topmostPreferenceContractVersion = 1,
     consumedById = {},
     metrics = {
         created = 0, shown = 0, hidden = 0, minimized = 0, restored = 0, destroyed = 0, layouts = 0, failures = 0,
         closeRequests = 0, closeVetoes = 0, closeCallbackFailures = 0, closedCallbacks = 0, quarantinedRejects = 0,
         layoutInvalidations = 0, layoutInvalidationCoalesces = 0, appearancePanelToggles = 0,
-        visibilityFailures = 0, minimizeRollbacks = 0, stateCallbackRejects = 0,
+        visibilityFailures = 0, minimizeRollbacks = 0, stateCallbackRejects = 0, topmostChanges = 0, layerFailures = 0,
     },
 }
 UI.WindowShell = Shell
@@ -52,6 +54,9 @@ end
 local function EnsureWindowVisible(shell, visible, reason)
     if shell == nil or shell.window == nil then return false, "window_unavailable" end
     if type(UI.EnsureVisible) ~= "function" then return false, "visibility_transaction_unavailable" end
+    -- 维护：Show/Reset 是显式 Native 可见性事务，不能让旧 logical visible 缓存屏蔽
+    -- 客户端自行隐藏后的恢复。不改变关闭/最小化语义，不主动启动隐藏模块。
+    if visible == true and type(UI.InvalidateNativeState) == "function" then UI:InvalidateNativeState(shell.window,"visible") end
     local accepted, _, detail = UI:EnsureVisible(shell.window, visible == true, shell.owner)
     if accepted ~= true then
         Shell.metrics.visibilityFailures = (tonumber(Shell.metrics.visibilityFailures) or 0) + 1
@@ -99,6 +104,8 @@ function Shell:Create(spec)
     spec = type(spec) == "table" and spec or {}
     local id = tostring(spec.id or "")
     if id == "" then return nil, "window shell identity required" end
+    -- 维护（viewport-recovery-1）：创建边沿采样，不依赖上次主菜单留下的 context；无轮询。
+    if S.Layout then S.Layout:GetContext(true) end
     if S.NativeObjectFactory == nil or type(S.NativeObjectFactory.CreateWindow) ~= "function" then return nil, "native window factory unavailable" end
     if tonumber(self.consumedById[id]) == tonumber(S.Generation) then
         self.metrics.quarantinedRejects = (tonumber(self.metrics.quarantinedRejects) or 0) + 1
@@ -131,14 +138,32 @@ function Shell:Create(spec)
     window.rsUiOwner = owner
     if type(UI.ClaimNativeAuthority) == "function" then UI:ClaimNativeAuthority(window, owner, "strict") end
 
-    -- Every independent WindowShell is a real top-level V3 surface. Keep it in
-    -- the same native system layer as the application shell so Raise() works
-    -- across roots; use role priority to guarantee Shell < Floating < Popup.
-    local function ApplyRootWindowPolicy()
+    local preferenceId = tostring(spec.topmostPreferenceId or id)
+    local preferences = RSUI.WindowPreferences
+    local initialTopmost = false
+    if type(preferences) == "table" and type(preferences.GetTopmost) == "function" then
+        local ok, value = pcall(function() return preferences:GetTopmost(preferenceId) end)
+        initialTopmost = ok == true and value == true
+    end
+
+    -- 维护（2026-09-16，native-layer-policy-2）：旧版把所有独立窗口固定放进 system，
+    -- 因此普通插件面板会压住客户端 normal/dialog UI。Native layer 现在由独立 WindowPreferences
+    -- Authority 决定：默认 normal，不置顶；用户显式勾选 [顶] 才进入 system。SetDrawPriority 仍只
+    -- 负责 Replicated Suite 自身同层窗口的顺序，不能再冒充跨原生层级的置顶。兼容边界：旧用户
+    -- 没有新偏好记录时 initialTopmost=false；不改 Feature store，不引入 Tick。Native 拒绝层级时
+    -- 构建/切换 fail-closed，避免逻辑状态与实际层级分叉。
+    local function ApplyNativeLayer(topmost)
+        local layerName = topmost == true and "system" or "normal"
         if type(window.SetUILayer) == "function" then
-            local ok, result = pcall(function() return window:SetUILayer("system") end)
-            if ok ~= true or result == false then return false, "window_shell_system_layer_rejected" end
+            local ok, result = pcall(function() return window:SetUILayer(layerName) end)
+            if ok ~= true or result == false then return false, "window_shell_layer_rejected:" .. layerName end
         end
+        return true, nil
+    end
+
+    local function ApplyRootWindowPolicy(topmost)
+        local layerOk, layerErr = ApplyNativeLayer(topmost)
+        if layerOk ~= true then return false, layerErr end
         for _, row in ipairs({
             { method = "SetCloseOnEscape", value = false },
             { method = "SetWindowModal", value = false },
@@ -158,7 +183,7 @@ function Shell:Create(spec)
         window.rsUiLayerPriority = priority
         return true
     end
-    local policyOk, policyErr = ApplyRootWindowPolicy()
+    local policyOk, policyErr = ApplyRootWindowPolicy(initialTopmost)
     if policyOk ~= true then return FailBuild(policyErr) end
 
     local shell = {
@@ -167,10 +192,15 @@ function Shell:Create(spec)
         window = window,
         spec = spec,
         title = tostring(spec.title or id),
+        topmost = initialTopmost,
+        topmostPreferenceId = preferenceId,
         minimized = spec.minimized == true,
         minimizeMode = tostring(spec.minimizeMode or "hide"),
         compactChrome = spec.compactChrome == true,
         minimizedSize = math.max(30, tonumber(spec.minimizedSize) or 32),
+        -- 个人工作台：历史 compact 只留下 + 方块，丢失模块身份。现在只扩展收起宽度，
+        -- 高度/拖动仍属 Windowing，normalWidth/normalHeight 及历史几何 Store 不变。
+        minimizedWidth = math.max(136, tonumber(spec.minimizedWidth) or 156),
         locked = spec.locked == true,
         opacity = Clamp(spec.opacity, 0.00, 1.00, 1.0),
         backgroundOpacity = Clamp(spec.backgroundOpacity, 0.00, 1.00, 1.0),
@@ -208,6 +238,8 @@ function Shell:Create(spec)
         tone = "accent", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
     shell.appearanceButton = spec.appearanceControls == true and RSUI:Button({ id = id .. "_appearance", parent = shell.titleRow, text = "外", compact = true,
         slot = { size = "fixed", width = titleControlWidth } }) or nil
+    shell.topmostButton = spec.topmostControl == false and nil or RSUI:Button({ id = id .. "_topmost", parent = shell.titleRow, text = "顶", compact = true,
+        slot = { size = "fixed", width = titleControlWidth } })
     shell.minimizeButton = RSUI:Button({ id = id .. "_minimize", parent = shell.titleRow, text = "—", compact = true,
         slot = { size = "fixed", width = titleControlWidth } })
     shell.closeButton = spec.closeButton == false and nil or RSUI:Button({ id = id .. "_close", parent = shell.titleRow, text = "×", compact = true,
@@ -240,10 +272,18 @@ function Shell:Create(spec)
         return FailBuild("window shell component create failed")
     end
 
-    function shell:NotifyState(reason, geometryKind)
+    function shell:NotifyState(reason, geometryKind, committedRect)
         if type(self.spec.onStateChanged) ~= "function" then return true, nil end
         local x, y, w, h = 0, 0, self.normalWidth, self.normalHeight
-        if S.Layout ~= nil and type(S.Layout.GetLogicalRect) == "function" then pcall(function() x, y, w, h = S.Layout:GetLogicalRect(self.window) end) end
+        -- 维护（2026-09-16，committed-geometry-authority-2）：几何事务回调必须直接透传
+        -- Windowing 已提交的逻辑矩形。只有非几何状态（锁定/透明度/最小化等）没有事务矩形时
+        -- 才允许读取当前 Native。这样 UI Scale 或 Native 更新时序不会让保存坐标漂移。
+        if type(committedRect) == "table" then
+            x = tonumber(committedRect.x) or x; y = tonumber(committedRect.y) or y
+            w = tonumber(committedRect.width) or w; h = tonumber(committedRect.height) or h
+        elseif S.Layout ~= nil and type(S.Layout.GetWindowLogicalRect) == "function" then
+            pcall(function() x, y, w, h = S.Layout:GetWindowLogicalRect(self.window) end)
+        end
         local ok, accepted, detail = pcall(self.spec.onStateChanged, self, {
             x = tonumber(x) or 0, y = tonumber(y) or 0,
             width = tonumber(w) or self.normalWidth, height = tonumber(h) or self.normalHeight,
@@ -270,10 +310,23 @@ function Shell:Create(spec)
 
     local function ApplyMinimizedChrome(self)
         local compact = IsCompactMinimized(self)
-        local titleOk, titleErr = EnsureComponentVisibility(self.titleText, compact and "collapsed" or "visible", "title_text")
+        -- 中文维护注释（2026-09-15，compact-drag-surface-1）：compact 最小化后 30x30 的“+”按钮
+        -- 会覆盖整个 titleBar。旧实现仍让子 Button 参与命中，导致 Windowing 的共享 titleBar OnDragStart
+        -- 永远收不到鼠标手势，所以所有悬浮窗最小化后位置固定。Authority 仍是 Windowing：这里仅在
+        -- compact 状态把“+”变成纯视觉子控件，让鼠标命中穿透到 titleBar；恢复普通状态立即恢复 Button
+        -- pickability。位置提交仍走 Windowing -> onGeometryChanged -> FloatingSurface StorePlacement，不复制第二套坐标。
+        -- 风险边界：只作用 minimizeMode=compact；普通窗口/非最小化按钮点击行为保持不变。
+        if self.minimizeButton ~= nil and self.minimizeButton.root ~= nil then
+            if type(UI.EnsurePickable) ~= "function" then return false, compact, "compact_drag_pickable_contract_unavailable" end
+            local pickOk, _, pickErr = UI:EnsurePickable(self.minimizeButton.root, compact ~= true, self.owner)
+            if pickOk ~= true then return false, compact, pickErr or "compact_drag_pickable_rejected" end
+        end
+        local titleOk, titleErr = EnsureComponentVisibility(self.titleText, "visible", "title_text")
         if titleOk ~= true then return false, compact, titleErr end
         local appearanceOk, appearanceErr = EnsureComponentVisibility(self.appearanceButton, compact and "collapsed" or "visible", "appearance_button")
         if appearanceOk ~= true then return false, compact, appearanceErr end
+        local topmostOk, topmostErr = EnsureComponentVisibility(self.topmostButton, compact and "collapsed" or "visible", "topmost_button")
+        if topmostOk ~= true then return false, compact, topmostErr end
         local closeOk, closeErr = EnsureComponentVisibility(self.closeButton, compact and "collapsed" or "visible", "close_button")
         if closeOk ~= true then return false, compact, closeErr end
         if self.minimized == true and self.appearanceOpen == true then
@@ -284,12 +337,22 @@ function Shell:Create(spec)
         return true, compact, nil
     end
 
+    -- 中文维护注释（2026-09-15）：compact 状态下恢复点击由 titleBar 自己处理；“+”只负责视觉。
+    -- 这样同一个 30x30 Surface 同时支持“单击恢复”和“按住拖动”，不再让子按钮吞掉 Windowing 手势。
+    -- Border 已拥有单一 OnClick mux，禁止直接 RequireHandler 覆盖 RSUI 的事件治理。
+    if shell.titleBar ~= nil and type(shell.titleBar.SetOnClick) == "function" then
+        shell.titleBar:SetOnClick(function()
+            if IsCompactMinimized(shell) then return shell:SetMinimized(false, true) end
+            return true
+        end)
+    end
+
     function shell:LayoutInteractive(width, height)
         if self.destroyed then return false end
         width, height = math.max(1, tonumber(width) or self.normalWidth), math.max(1, tonumber(height) or self.normalHeight)
         local chromeOk, compact, chromeErr = ApplyMinimizedChrome(self)
         if chromeOk ~= true then return false, chromeErr or "window_chrome_visibility_failed" end
-        local currentW = compact and self.minimizedSize or width
+        local currentW = compact and self.minimizedWidth or width
         local currentH = compact and self.minimizedSize or (self.minimized and titleH or height)
         self.root:Layout(0, 0, currentW, currentH)
         self.chrome:Layout(0, 0, currentW, currentH)
@@ -334,14 +397,16 @@ function Shell:Create(spec)
         height = tonumber(height)
         if width == nil or height == nil then width, height = ReadExtent(self.window, self.normalWidth, self.normalHeight) end
         if self.windowController ~= nil and self.windowController:IsResizing() == true then
-            local _, _, liveW, liveH = S.Layout:GetLogicalRect(self.window)
+            local _, _, liveW, liveH = self.windowController:GetLogicalRect()
             return self:LayoutInteractive(liveW, liveH)
         end
         local chromeOk, compact, chromeErr = ApplyMinimizedChrome(self)
         if chromeOk ~= true then return false, chromeErr or "window_chrome_visibility_failed" end
-        local currentW = compact and self.minimizedSize or width
+        local currentW = compact and self.minimizedWidth or width
         local currentH = compact and self.minimizedSize or (self.minimized and titleH or height)
-        UI:SetExtent(self.window, currentW, currentH, self.owner)
+        -- 维护：顶层 extent 拒绝必须阻断 Layout/Store，不能只判断 diff changed。
+        local extentOk,_,extentErr = UI:EnsureExtent(self.window,currentW,currentH,self.owner)
+        if extentOk ~= true then return false,extentErr or "window_extent_rejected" end
         self.root:Layout(0, 0, currentW, currentH)
         self.chrome:Layout(0, 0, currentW, currentH)
         self.titleBar:Layout(0, 0, currentW, compact and currentH or titleH)
@@ -411,6 +476,85 @@ function Shell:Create(spec)
     function shell:InvalidateLayout(reason) return self:_RequestLayout(reason or "layout") end
     if self.root ~= nil and type(self.root.SetLayoutHost) == "function" then self.root:SetLayoutHost(self) end
 
+    -- 维护（viewport-recovery-1）：统一 Shell 注册只管理 Top-Level Geometry，不进入业务。
+    -- FloatingSurface 的 placementDelegate 拥有持久 intent；普通独立 Shell 仅保留会话 RAM intent。
+    -- 拟合后的 normalWidth/Height 是运行值，preferredWidth/Height 与原 normalized center 不被迁移覆盖。
+    function shell:ApplyPlacementRect(x,y,w,h,meta,force)
+        if self.destroyed then return false,"window_destroyed" end
+        if self.windowController and self.windowController:IsInteracting() then
+            self.windowController.pendingPlacement = true
+            return true
+        end
+        local compact = self.minimized and self.minimizeMode == "compact"
+        local rw = compact and self.minimizedWidth or w
+        local rh = compact and self.minimizedSize or (self.minimized and titleH or h)
+        -- 维护：子布局失败回滚到上次已提交的几何，不把正常内容更新变成 Native 坐标轮询。
+        -- 真正需要强制重放的边沿由 Windowing 一次采集实际 Native，Shell 不重复采样。
+        local cache=UI.NativeStateCache and UI.NativeStateCache[self.window]
+        local bx,by,bw,bh
+        if cache and type(cache.anchorX)=="number" and type(cache.anchorY)=="number"
+            and type(cache.width)=="number" and type(cache.height)=="number" then
+            bx,by,bw,bh=cache.anchorX,cache.anchorY,cache.width,cache.height
+        else bx,by,bw,bh=S.Layout:GetWindowLogicalRect(self.window) end
+        local ok,err = RSUI.Windowing:ApplyGeometry(self.window,self.owner,x,y,rw,rh,force==true)
+        if ok ~= true then self.placementError = err; return false,err end
+        local previousW,previousH = self.normalWidth,self.normalHeight
+        self.normalWidth,self.normalHeight = w,h
+        local layoutOk,layoutErr = self:Layout(w,h)
+        if layoutOk ~= true then
+            self.normalWidth,self.normalHeight = previousW,previousH
+            -- 维护：Native 已接受但内部 chrome 拒绝也是失败；回滚实际矩形，不能只回滚 Lua 字段。
+            local rollbackOk=RSUI.Windowing:ApplyGeometry(self.window,self.owner,bx,by,bw,bh,true)
+            self.placementError = tostring(layoutErr) .. (rollbackOk~=true and ":rollback_rejected" or "")
+            return false,layoutErr
+        end
+        -- 只在几何边沿/实际变化时保留诊断；普通相同内容重排不覆盖上一次 reset/migration 证据。
+        if force==true or self.placementInfo==nil or bx~=x or by~=y or bw~=rw or bh~=rh then self.placementInfo=meta end
+        self.placementError=nil
+        return true
+    end
+
+    function shell:RevalidatePlacement(fromMetrics,reason)
+        if self.destroyed then return false,"window_destroyed" end
+        if self.windowController and self.windowController:IsInteracting() then
+            if fromMetrics == true then self.windowController.pendingPlacement = true end
+            return true
+        end
+        if type(self.placementDelegate) == "function" then return self.placementDelegate(fromMetrics==true,reason) end
+        if S.Layout == nil then return self:Layout(self.normalWidth,self.normalHeight) end
+        if fromMetrics ~= true then S.Layout:GetContext(true) end
+        local dx,dy = DefaultRect(self.spec)
+        local pw,ph = self.preferredWidth or self.normalWidth,self.preferredHeight or self.normalHeight
+        local compact = self.minimized and self.minimizeMode == "compact"
+        local c = S.Layout:GetContext()
+        local w,h = math.min(pw,c.usableWidth),math.min(ph,c.usableHeight)
+        local x,y,_,_,meta = S.Layout:ResolvePlacement(self.placementIntent,compact and self.minimizedWidth or pw,
+            compact and self.minimizedSize or ph,dx,dy,{topLevel=true,mode=tostring(spec.boundaryMode or "free"),topReachHeight=titleH,reason=reason})
+        return self:ApplyPlacementRect(x,y,w,h,meta,fromMetrics==true or reason=="explicit_reset" or reason=="show")
+    end
+
+    function shell:GetPlacementDiagnostics()
+        -- 维护：按需读一次 Native；不 Load Store、不构建窗口、不后台采集，也不改变 intent。
+        local result = {}
+        for k,v in pairs(self.placementInfo or {}) do result[k]=v end
+        result.windowId,result.visibleRequested,result.lastError = self.id,self.visible==true,self.placementError
+        local ok,visible = pcall(function() return self.window:IsVisible() end)
+        result.nativeVisibleKnown = ok and type(visible)=="boolean"
+        result.nativeVisible = result.nativeVisibleKnown and visible or false
+        result.lastMetricsReason = S.Layout.lastMetricsReason
+        local x,y,w,h,info = S.Layout:GetWindowLogicalRect(self.window,
+            self.windowController and self.windowController.geometryUnitScale)
+        result.x,result.y,result.width,result.height = x,y,w,h
+        result.nativeGeometrySource = info and info.source
+        local c = S.Layout:GetContext()
+        result.currentLogicalWidth,result.currentLogicalHeight,result.currentUiScale = c.logicalWidth,c.logicalHeight,c.uiScale
+        result.currentScreenWidth,result.currentScreenHeight = c.screenWidth,c.screenHeight
+        result.fullyVisible = S.Layout:IsRectFullyVisible(x,y,w,h)
+        result.recoverable = S.Layout:IsWindowRecoverable(x,y,w,h,titleH)
+        result.metricsNotifications = S.Layout.metricsNotifications
+        return result
+    end
+
     function shell:Show(visible)
         if self.destroyed then return false, "window_destroyed" end
         local nextValue = visible ~= false
@@ -420,7 +564,7 @@ function Shell:Create(spec)
                 self.minimized = false
                 self.minimizeButton:SetText("—")
             end
-            local layoutOk, layoutErr = self:Layout(self.normalWidth, self.normalHeight)
+            local layoutOk, layoutErr = self:RevalidatePlacement(false,"show")
             if layoutOk ~= true then
                 self.minimized = previousMinimized
                 self.minimizeButton:SetText(self.minimized and "+" or "—")
@@ -491,6 +635,9 @@ function Shell:Create(spec)
     function shell:Destroy()
         if self.destroyed == true then return 0 end
         self.destroyed = true
+        -- 维护：销毁同时释放统一注册回调；避免注册表强引用旧 Shell 和重载后迟到布局。
+        if S.Layout then S.Layout:UnregisterFloating("window_shell:" .. self.id) end
+        self.placementDelegate,self.placementIntent,self.resetDelegate = nil,nil,nil
         self.visible = false
         if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" and self.layoutTaskName ~= nil then
             S.Scheduler:RemoveTask(self.layoutTaskName)
@@ -578,6 +725,8 @@ function Shell:Create(spec)
         end
         if nextValue then Shell.metrics.minimized = (tonumber(Shell.metrics.minimized) or 0) + 1
         else Shell.metrics.restored = (tonumber(Shell.metrics.restored) or 0) + 1 end
+        -- 仅已提交状态广播；管理器只读取 WidgetHost 薄快照，不加载其它窗口或业务 Store。
+        if S.Events then S.Events:Publish("v3.widgets.changed", self.id, "minimized") end
         return true, true
     end
 
@@ -601,6 +750,7 @@ function Shell:Create(spec)
                 return false, stateErr or "window_lock_state_rejected"
             end
         end
+        if S.Events then S.Events:Publish("v3.widgets.changed", self.id, "locked") end
         return true, true
     end
     function shell:IsLocked() return self.locked == true end
@@ -844,6 +994,42 @@ function Shell:Create(spec)
 
     function shell:ToggleAppearance() return self:SetAppearanceOpen(self.appearanceOpen ~= true) end
 
+    local function RefreshTopmostButton(self)
+        if self.topmostButton ~= nil and type(self.topmostButton.SetSelected) == "function" then
+            self.topmostButton:SetSelected(self.topmost == true)
+        end
+    end
+
+    function shell:SetTopmost(value, persist)
+        if self.destroyed == true then return false, "window_destroyed" end
+        local nextValue = value == true
+        local previous = self.topmost == true
+        if previous == nextValue then RefreshTopmostButton(self); return true, nextValue, false end
+        local layerOk, layerErr = ApplyNativeLayer(nextValue)
+        if layerOk ~= true then
+            Shell.metrics.layerFailures = (tonumber(Shell.metrics.layerFailures) or 0) + 1
+            return false, layerErr or "window_layer_rejected"
+        end
+        self.topmost = nextValue
+        self.window.rsUiTopmost = nextValue
+        RefreshTopmostButton(self)
+        if persist ~= false then
+            if type(preferences) ~= "table" or type(preferences.SetTopmost) ~= "function" then
+                ApplyNativeLayer(previous); self.topmost = previous; self.window.rsUiTopmost = previous; RefreshTopmostButton(self)
+                return false, "window_preference_store_unavailable"
+            end
+            local ok, accepted, detail = pcall(function() return preferences:SetTopmost(self.topmostPreferenceId, nextValue, true) end)
+            if ok ~= true or accepted ~= true then
+                ApplyNativeLayer(previous); self.topmost = previous; self.window.rsUiTopmost = previous; RefreshTopmostButton(self)
+                return false, tostring(detail or accepted or "window_topmost_persist_rejected")
+            end
+        end
+        if nextValue and type(self.window.Raise) == "function" then pcall(function() self.window:Raise() end) end
+        Shell.metrics.topmostChanges = (tonumber(Shell.metrics.topmostChanges) or 0) + 1
+        return true, nextValue, true
+    end
+    function shell:GetTopmost() return self.topmost == true end
+
     function shell:SetTitle(text) self.title = tostring(text or ""); self.titleText:SetText(self.title); return true end
     function shell:SetStatus(text, tone)
         if self.statusText == nil then return false end
@@ -862,21 +1048,38 @@ function Shell:Create(spec)
 
     function shell:ResetLayout(persist)
         if self.destroyed == true then return false end
-        local x, y, width, height = DefaultRect(self.spec)
-        self.minimized = false
-        self.appearanceOpen = false
-        if self.appearancePanel ~= nil then self.appearancePanel:SetVisibility("collapsed") end
-        self.normalWidth, self.normalHeight = width, height
-        UI:SetAnchor(self.window, UIParent, x, y, self.owner)
-        UI:SetExtent(self.window, width, height, self.owner)
-        self:Layout(width, height)
-        if persist ~= false then self:NotifyState("reset") end
+        if type(self.resetDelegate) == "function" then return self.resetDelegate(persist) end
+        -- 维护：硬恢复必须刷新 viewport、取消捕获、先 Native 后通知持久化。普通 Shell 的
+        -- 默认 intent 只在会话内清除；不借此删除 Feature Store，不与 Popup/主窗口状态合并。
+        S.Layout:GetContext(true)
+        if self.windowController then self.windowController:CancelInteraction() end
+        local beforeIntent,beforeMin = self.placementIntent,self.minimized
+        self.minimized,self.appearanceOpen = false,false
+        local x,y,w,h = DefaultRect(self.spec)
+        x,y,w,h,self.placementInfo = S.Layout:ResolvePlacement(nil,w,h,x,y,{topLevel=true,reason="explicit_reset",topReachHeight=titleH})
+        local ok,err = self:ApplyPlacementRect(x,y,w,h,self.placementInfo,true)
+        if ok ~= true then self.minimized=beforeMin;return false,err end
+        if self.visible then
+            local showOk,showErr=EnsureWindowVisible(self,true,"explicit_reset")
+            if showOk~=true then self.minimized=beforeMin;self:RevalidatePlacement(true);return false,showErr end
+        end
+        if persist ~= false then
+            local saved,saveErr=self:NotifyState("reset")
+            if saved~=true then self.placementIntent,self.minimized=beforeIntent,beforeMin;self:RevalidatePlacement(true);return false,saveErr end
+        end
+        self.placementIntent=nil
+        self.preferredWidth,self.preferredHeight=tonumber(self.spec.width) or 620,tonumber(self.spec.height) or 520
         return true
     end
 
     if shell.appearanceButton ~= nil then
         shell.appearanceButton.onClick = function() return shell:ToggleAppearance() end
     end
+    if shell.topmostButton ~= nil then
+        RefreshTopmostButton(shell)
+        shell.topmostButton.onClick = function() return shell:SetTopmost(not shell.topmost, true) end
+    end
+    shell.window.rsUiTopmost = shell.topmost == true
     if shell.minimizeButton ~= nil then
         shell.minimizeButton:SetText(shell.minimized and "+" or "—")
         shell.minimizeButton.onClick = function() return shell:SetMinimized(not shell.minimized, true) end
@@ -892,13 +1095,20 @@ function Shell:Create(spec)
         local minH = math.max(1, tonumber(spec.minHeight) or 1)
         local maxW = tonumber(spec.maxWidth); if maxW ~= nil then maxW = math.max(minW, maxW) end
         local maxH = tonumber(spec.maxHeight); if maxH ~= nil then maxH = math.max(minH, maxH) end
-        width = Clamp(spec.initialRect.width, minW, maxW, width)
-        height = Clamp(spec.initialRect.height, minH, maxH, height)
+        -- 维护：外部 placement 已应用运行时 fit，不能再次以持久 min 把窗口撑回屏幕外。
+        width = Clamp(spec.initialRect.width, spec.placementManagedExternally and 1 or minW, maxW, width)
+        height = Clamp(spec.initialRect.height, spec.placementManagedExternally and 1 or minH, maxH, height)
+    end
+    shell.preferredWidth,shell.preferredHeight = width,height
+    if spec.placementManagedExternally ~= true then
+        shell.placementIntent = {}
+        S.Layout:StorePlacementRect(shell.placementIntent,x,y,width,height,{mode="free"})
+        x,y,width,height,shell.placementInfo = S.Layout:ResolvePlacement(shell.placementIntent,width,height,x,y,{topLevel=true,topReachHeight=titleH})
     end
     shell.normalWidth, shell.normalHeight = width, height
     UI:SetAnchor(window, UIParent, x, y, owner)
     local initialCompact = shell.minimized == true and shell.minimizeMode == "compact"
-    UI:SetExtent(window, initialCompact and shell.minimizedSize or width, initialCompact and shell.minimizedSize or (shell.minimized and titleH or height), owner)
+    UI:SetExtent(window, initialCompact and shell.minimizedWidth or width, initialCompact and shell.minimizedSize or (shell.minimized and titleH or height), owner)
     local initialHidden, initialHideErr = EnsureWindowVisible(shell, false, "initial_hide")
     if initialHidden ~= true then return FailBuild("window initial hide failed:" .. tostring(initialHideErr or "unknown")) end
     shell.windowController = RSUI.Windowing:Attach({
@@ -914,12 +1124,13 @@ function Shell:Create(spec)
         maxWidth = tonumber(spec.maxWidth),
         maxHeight = tonumber(spec.maxHeight),
         boundaryMode = tostring(spec.boundaryMode or "free"),
+        scaleWithAddon = spec.scaleWithAddon ~= false,
         canDrag = function() return spec.movable ~= false end,
         recoveryVisibleX = math.max(32, tonumber(spec.recoveryVisibleX) or 72),
         recoveryVisibleY = math.max(8, tonumber(spec.recoveryVisibleY) or 14),
         dragHandleHeight = titleH,
         canResize = function() return shell.minimized ~= true end,
-        onGeometryChanged = function(_, _, _, w, h, geometryKind)
+        onGeometryChanged = function(_, x, y, w, h, geometryKind)
             local previousW, previousH = shell.normalWidth, shell.normalHeight
             if shell.minimized ~= true then shell.normalWidth, shell.normalHeight = w, h end
             local layoutOk, layoutErr = shell:Layout(shell.normalWidth, shell.normalHeight)
@@ -928,11 +1139,17 @@ function Shell:Create(spec)
                 shell:Layout(previousW, previousH)
                 return false, layoutErr or "geometry_layout_rejected"
             end
-            local stateOk, stateErr = shell:NotifyState("geometry", geometryKind)
+            local stateOk, stateErr = shell:NotifyState("geometry", geometryKind, { x = x, y = y, width = w, height = h })
             if stateOk ~= true then
                 shell.normalWidth, shell.normalHeight = previousW, previousH
                 shell:Layout(previousW, previousH)
                 return false, stateErr or "geometry_state_rejected"
+            end
+            -- 维护：只有真实用户提交更新 RAM intent；跨 viewport 重排绝不调用此分支。
+            if spec.placementManagedExternally ~= true then
+                if geometryKind == "resize" then shell.preferredWidth,shell.preferredHeight=w,h end
+                shell.placementIntent = {}
+                S.Layout:StorePlacementRect(shell.placementIntent,x,y,w,h,{mode="free"})
             end
             return true
         end,
@@ -953,6 +1170,14 @@ function Shell:Create(spec)
             return nil, "window shell build transaction commit failed: " .. tostring(commitErr or "unknown")
         end
     end
+    -- 维护：注册在构建成功后，避免失败构建留下幽灵回调；与主菜单是否创建/显示无关。
+    shell.windowController.onPlacementReady = function() return shell:RevalidatePlacement(true,"resolution_migration") end
+    S.Layout:RegisterFloating("window_shell:" .. id,window,{ensureNow=false,
+        -- 维护：冷诊断从已构建实例采样；辅助窗不在 WidgetHost 也可被系统报告找到。
+        getPlacementDiagnostics=function()return shell:GetPlacementDiagnostics()end,
+        onMetricsChanged=function(changed)
+        return shell:RevalidatePlacement(changed,"resolution_migration")
+    end})
     self.metrics.created = (tonumber(self.metrics.created) or 0) + 1
     return shell
 end
@@ -987,6 +1212,9 @@ function Shell:Describe()
         stateMutationTransactionContract = tonumber(self.stateMutationTransactionContract) or 0,
         stateCallbackTransactionContract = tonumber(self.stateCallbackTransactionContract) or 0,
         topLevelLayerContractVersion = tonumber(self.topLevelLayerContractVersion) or 0,
+        topmostPreferenceContractVersion = tonumber(self.topmostPreferenceContractVersion) or 0,
+        topmostChanges = tonumber(self.metrics.topmostChanges) or 0,
+        layerFailures = tonumber(self.metrics.layerFailures) or 0,
         stateCallbackRejects = tonumber(self.metrics.stateCallbackRejects) or 0,
     }
 end

@@ -152,9 +152,19 @@ function P:MakePanel(id)
             local leaseOk = S.UI:BeginNativeGeometryLease(root, P.owner, "healer_raid_calibration")
             if leaseOk ~= true then return false end
         end
+        -- 维护（2026-09-22，geometry-gesture-authority-1）：RU 的 EffectiveOffset/Extent 在不同 UI Scale
+        -- 环境可能返回 logical 或 scaled 单位。治疗面板拖动必须和 Windowing 一样在手势开始时只校准一次，
+        -- 后续 DragStop 只能消费冻结的 effectiveScale；禁止使用旧 GetLogicalRect 无条件除 uiScale。
+        -- viewport 签名只用于阻止跨分辨率手势提交旧坐标，不写 Store，不改变团队/推荐 Authority。
+        if S.Layout ~= nil and type(S.Layout.GetWindowLogicalRect) == "function" then
+            local _, _, _, _, unit = S.Layout:GetWindowLogicalRect(root)
+            panel.geometryUnitScale = type(unit) == "table" and unit.effectiveScale or nil
+            panel.dragViewport = type(S.Layout.MakeSignature) == "function" and S.Layout:MakeSignature(S.Layout:GetContext()) or nil
+        end
         local moving = S.UI:TryInteractionCall(root, "StartMoving")
         if moving ~= true then
             if type(S.UI.EndNativeGeometryLease) == "function" then S.UI:EndNativeGeometryLease(root, P.owner) end
+            panel.geometryUnitScale, panel.dragViewport = nil, nil
             return false
         end
         panel.moving = true
@@ -165,8 +175,23 @@ function P:MakePanel(id)
         if type(root.StopMovingOrSizing) == "function" then pcall(function() root:StopMovingOrSizing() end) end
         if type(S.UI.EndNativeGeometryLease) == "function" then S.UI:EndNativeGeometryLease(root, P.owner) end
         panel.moving = false
-        if S.Layout ~= nil and type(S.Layout.GetLogicalRect) == "function" then
-            local x, y = S.Layout:GetLogicalRect(root)
+        local x, y = nil, nil
+        if S.Layout ~= nil and type(S.Layout.GetWindowLogicalRect) == "function" then
+            x, y = S.Layout:GetWindowLogicalRect(root, panel.geometryUnitScale)
+        end
+        local viewportChanged = false
+        if panel.dragViewport ~= nil and S.Layout ~= nil and type(S.Layout.MakeSignature) == "function" then
+            local context = S.Layout:GetContext(true)
+            viewportChanged = panel.dragViewport ~= S.Layout:MakeSignature(context)
+        end
+        panel.geometryUnitScale, panel.dragViewport = nil, nil
+        if viewportChanged == true then
+            -- 分辨率/UI Scale 在拖动期间改变时，Native 终点与起点已不在同一坐标事实中；
+            -- 直接恢复 Store 中最后一次已提交几何，迟到 DragStop 没有写权限。
+            P:LayoutPanel(id)
+            return true
+        end
+        if tonumber(x) ~= nil and tonumber(y) ~= nil then
             local current = Settings()
             local saved = type(current.panels) == "table" and current.panels[id] or nil
             local geometryNow = type(saved) == "table" and saved.geometry or nil
@@ -479,6 +504,17 @@ function P:Stop(reason)
     if self.taskActive == true then S.Scheduler:RemoveTask(self.taskName); self.taskActive=false end
     if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self.activeOwner) end
     for _, panel in pairs(self.panels) do
+        -- 维护（geometry-gesture-authority-1）：Stop/模式切换必须主动终止 Native move + lease。
+        -- 仅把 moving=false 会让客户端仍保留拖动捕获；迟到 DragStop 可能在重建后再次触碰旧几何。
+        -- 这里先撤销交互再隐藏，且清空冻结单位/viewport，生命周期关闭不写任何用户配置。
+        if panel.moving == true and type(panel.window.StopMovingOrSizing) == "function" then
+            pcall(function() panel.window:StopMovingOrSizing() end)
+        end
+        if panel.moving == true and type(S.UI.EndNativeGeometryLease) == "function" then
+            S.UI:EndNativeGeometryLease(panel.window, self.owner)
+        end
+        panel.moving = false
+        panel.geometryUnitScale, panel.dragViewport = nil, nil
         S.UI:SetVisible(panel.window, false, self.owner)
         if type(S.UI.EnsurePickable) == "function" then S.UI:EnsurePickable(panel.window, false, self.owner) end
     end

@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 2 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 -- 维护（2026-09-12）：物理版本按Store注册策略验收；仍比较完整配置，不放宽业务指纹/重载一致性。
 -- 维护：F2合成旧档回归，不进入TOC；共用真实Store/Persistence/API，仅Native为内存盘。
 -- 数值降精度模型来自已验证跑商样本，但本文件没有两份F2用户原档，不能声称实机修复。
@@ -71,7 +75,24 @@ local function Legacy(id,schema,x,y)
         value.history={serial=7,entries={{serial=7,storageId=2,deathAt=1000,title='kept',killerName='not erased',totalDamage=333}}}
         value=st.migrate(value)
     end
-    local canonical=(id=='v3.buff_display' and schema==5) and Copy(value) or assert(P:CanonicalIntegrityValue(st,value))
+    local canonical
+    if id=='v3.buff_display' and schema==5 then
+        canonical=Copy(value)
+    elseif id=='v3.buff_display' and schema==6 then
+        -- 中文维护注释（schema7 后的历史 F2 夹具）：st.default()/migrate 已是当前 schema7，
+        -- 不能再拿当前 canonical 冒充 schema6 原章，否则会凭空加入 gearScoreFormat 并让
+        -- historical numeric recovery 测到一个现实中从未存在的存档。先移除 schema7 新字段，
+        -- 再调用生产 historical hook 的冻结 schema6 normalizer 构造旧 canonical；fake stamp
+        -- 只用于取得候选，不会写盘/放宽 Hash，后面仍以该 canonical 的真实 fingerprint 盖章。
+        if type(value.settings.info)=='table' then value.settings.info.gearScoreFormat=nil end
+        if type(value.settings.targetLayout)=='table' and type(value.settings.targetLayout.info)=='table' then
+            value.settings.targetLayout.info.gearScoreFormat=nil
+        end
+        local historicalRaw={__rsmeta={framework=3,store=id,owner=st.owner,schema=6,transportVersion=2,integrityVersion=4},payload=Copy(value)}
+        canonical=assert(st.rebuildCanonicalForIntegrity(Copy(value),'00000000',nil,historicalRaw))
+    else
+        canonical=assert(P:CanonicalIntegrityValue(st,value))
+    end
     local fp=assert(P:FingerprintCanonicalValue(st,canonical))
     local raw=st.encode and st.encode(Copy(value)) or {payload=Copy(value)}
     raw.__rsmeta={framework=3,store=id,owner=st.owner,contractVersion=st.contractVersion,lifetime=st.lifetime,
@@ -177,7 +198,11 @@ Test('readback sequence correction preserves cached load numeric evidence',funct
     local raw=assert(P:DecodePhysicalEnvelope(io.disk[key]));raw.payload.settings.tracked.auto={21,82}
     -- 新合成原章先按已证明的源值计算；未改真实用户fixture。
     local origin=Copy(raw.payload);origin.widgetWindow.normalizedCenterX=0.0741236
-    raw.__rsmeta.encodedFingerprint=FP(P,st,origin);io.disk[key]=Reseal(P,raw)
+    -- schema6 原章必须继续使用冻结 schema6 canonical；当前 schema7 FP 会额外加入
+    -- gearScoreFormat，形成现实中不存在的旧存档并让 F2 恢复测试假失败。
+    local historicalRaw={__rsmeta=Copy(raw.__rsmeta),payload=Copy(origin)}
+    local historical=assert(st.rebuildCanonicalForIntegrity(Copy(origin),'00000000',nil,historicalRaw))
+    raw.__rsmeta.encodedFingerprint=assert(P:FingerprintCanonicalValue(st,historical));io.disk[key]=Reseal(P,raw)
     assert(P:LoadStore(st.id));local evidence=Copy(st.lastWindowNumericEvidence)
     local original=ADDON.SaveData
     ADDON.SaveData=function(self,k,v)

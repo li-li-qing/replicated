@@ -18,7 +18,7 @@ if type(RSUI) ~= "table" or type(Floating) ~= "table" or type(AuxStore) ~= "tabl
 S.UIV3 = S.UIV3 or {}
 S.UIV3.TradeDetailFloatingV3 = S.UIV3.TradeDetailFloatingV3 or {
     version = 1,
-    TradeDetailContractVersion = 2,
+    TradeDetailContractVersion = 3,
     id = "v3_trade_detail_floating",
     created = false,
     visible = false,
@@ -67,6 +67,10 @@ local PRICE_STATUS_TEXT = {
     quoted = "已取价",
     quoted_reference = "参考价",
     excluded = "不计入成本",
+    bound_resource = "绑定资源",
+    non_market_resource = "非市场资源",
+    non_market_unpriced = "不可拍卖/未折价",
+    ready_with_resources = "金币成本已齐（另含资源）",
     unavailable = "暂无法估价",
     partial = "部分材料未取到价",
 }
@@ -85,6 +89,9 @@ local function MaterialStatus(row)
     -- be manipulated, so a stored sample must never look like fresh market data.
     if status == "quoted_reference" then return "参考价", "muted" end
     if status == "excluded" then return "不计成本", "muted" end
+    if status == "bound_resource" then return "绑定资源", "accent" end
+    if status == "non_market_resource" then return "非市场资源", "muted" end
+    if status == "non_market_unpriced" then return "不可拍卖", "yellow" end
     if status == "quote_pending" then
         return tostring(row.quoteState) == "inflight" and "询价中" or "询价排队中", "yellow"
     end
@@ -157,17 +164,30 @@ function M:EnsureCreated()
     self.summary = RSUI:Text({ id = self.id .. "_summary", parent = stack, text = "--", fontSize = 10, tone = "default",
         overflow = "wrap", maxLines = 2, slot = { size = "fixed", height = 36, hAlign = "fill" } })
 
+    -- 维护（2026-09-23，trade-detail-actions-fit-1）：详情窗最小宽度仍是历史 470px，新增“关注货物”后
+    -- 若继续把 5 个固定宽按钮塞在同一 HorizontalBox，会在旧用户已保存的小窗口宽度下发生越界/互相覆盖。
+    -- 不抬高 minWidth（避免强制改变旧窗口几何），而是拆成两行；只改变 Presentation 排布，所有动作仍走 Feature Commands。
     local actions = RSUI:HorizontalBox({ id = self.id .. "_actions", parent = stack, gap = 6,
         slot = { size = "fixed", height = 30, hAlign = "fill" } })
     self.quoteButton = RSUI:Button({ id = self.id .. "_quote", parent = actions, text = "询价当前材料", compact = true,
         slot = { size = "fixed", width = 116 } })
-    self.favoriteButton = RSUI:Button({ id = self.id .. "_favorite", parent = actions, text = "收藏路线", compact = true,
-        slot = { size = "fixed", width = 92 } })
+    -- 中文维护注释（2026-09-14，跑商→拍卖临时清单）：这里不让 Presentation 重算配方，也不把
+    -- 临时材料写进 life_trade Store。点击时只把 Trade Authority 已经解析好的 detached row/materialRows
+    -- 交给 AuctionSessionListV3；该 Service 没有 Persistence Store，ReloadAddon 后自然清空。
+    self.auctionTempButton = RSUI:Button({ id = self.id .. "_auction_temp", parent = actions, text = "加入拍卖临时清单", compact = true,
+        slot = { size = "fixed", width = 126 } })
     self.refreshButton = RSUI:Button({ id = self.id .. "_refresh", parent = actions, text = "刷新详情", compact = true,
         slot = { size = "fixed", width = 86 } })
 
+    local manageActions = RSUI:HorizontalBox({ id = self.id .. "_manage_actions", parent = stack, gap = 6,
+        slot = { size = "fixed", height = 30, hAlign = "fill" } })
+    self.favoriteButton = RSUI:Button({ id = self.id .. "_favorite", parent = manageActions, text = "收藏路线", compact = true,
+        slot = { size = "fixed", width = 92 } })
+    self.trackButton = RSUI:Button({ id = self.id .. "_track", parent = manageActions, text = "关注货物", compact = true,
+        slot = { size = "fixed", width = 86 } })
+
     self.table = RSUI:TableView({
-        id = self.id .. "_table", parent = stack, items = {}, rowHeight = 26, headerHeight = 25, desiredRows = 10,
+        id = self.id .. "_table", parent = stack, items = {}, rowHeight = 26, headerHeight = 25, desiredRows = 10, rowFitMode = "adaptive_tail", rowFitMin = 22, rowFitMax = 30,
         scrollbar = true, selectable = false, columnResize = true, headerInteractive = false,
         getKey = function(item, index) return item and item.key or tostring(index or 0) end,
         columns = {
@@ -184,8 +204,8 @@ function M:EnsureCreated()
         text = "材料价格只有在用户显式询价后才读取；普通刷新不会批量请求拍卖行。", fontSize = 9, tone = "muted",
         overflow = "wrap", maxLines = 2, slot = { size = "fixed", height = 34, hAlign = "fill" } })
 
-    if self.route == nil or self.summary == nil or self.quoteButton == nil or self.favoriteButton == nil
-        or self.refreshButton == nil or self.table == nil or self.hint == nil then
+    if self.route == nil or self.summary == nil or self.quoteButton == nil or self.favoriteButton == nil or self.trackButton == nil
+        or self.auctionTempButton == nil or self.refreshButton == nil or self.table == nil or self.hint == nil then
         surface:Destroy()
         self.surface, self.shell = nil, nil
         return false, "贸易品详情悬浮窗内容创建失败"
@@ -208,6 +228,33 @@ function M:EnsureCreated()
         local ok, favoriteErr = feature.Commands:ToggleCurrentFavorite()
         if ok == true then M:Refresh("favorite_changed") end
         return ok, favoriteErr
+    end
+    self.trackButton.onClick = function()
+        local feature = Feature()
+        if type(feature) ~= "table" or type(feature.Commands) ~= "table" or type(feature.Commands.ToggleTrackedProduct) ~= "function" then
+            return false, "贸易品关注命令不可用"
+        end
+        local row = feature:GetRow(M.rowKey)
+        if type(row) ~= "table" or tonumber(row.itemType) == nil then return false, "该贸易品缺少已验证 ItemID" end
+        local ok, trackErr = feature.Commands:ToggleTrackedProduct(row.itemType)
+        if ok == true then M:Refresh("tracked_changed") end
+        return ok, trackErr
+    end
+    self.auctionTempButton.onClick = function()
+        local feature = Feature()
+        local session = S.Services and S.Services.AuctionSessionListV3 or nil
+        if type(feature) ~= "table" or type(feature.GetRow) ~= "function" then return false, "跑商数据不可用" end
+        if type(session) ~= "table" or type(session.AddTradeRow) ~= "function" then return false, "拍卖临时清单服务不可用" end
+        local row = feature:GetRow(M.rowKey)
+        if type(row) ~= "table" then return false, "当前贸易品已失效，请重新选择" end
+        if type(row.materialRows) ~= "table" or #row.materialRows <= 0 then return false, "当前贸易品没有可加入的材料" end
+        local ok, groupOrErr = session:AddTradeRow(row)
+        if ok == true then
+            M.hint:SetText("已加入拍卖助手“临时”选项卡；临时数据只保留到本次插件重载/客户端重启。")
+        else
+            M.hint:SetText("加入拍卖临时清单失败：" .. tostring(groupOrErr or "未执行"))
+        end
+        return ok, groupOrErr
     end
     self.refreshButton.onClick = function() return M:Refresh("manual") end
 
@@ -240,6 +287,8 @@ function M:Refresh(reason)
         self.summary:SetText("请回到跑商列表重新选择贸易品。")
         self.quoteButton:SetEnabled(false)
         self.favoriteButton:SetEnabled(false)
+        self.trackButton:SetEnabled(false)
+        self.auctionTempButton:SetEnabled(false)
         self.surface:SetStatus("结果已更新", "yellow")
         return false, "贸易品已不在当前路线结果中"
     end
@@ -250,8 +299,10 @@ function M:Refresh(reason)
     local payoutFactors = row.priceComplete == true
         and " · 含经商与品类加成"
         or (" · " .. PlayerPriceStatusText(row.priceBreakdown or row.priceEstimateStatus))
+    local resourceCount = math.max(0, tonumber(row.boundResourceCount) or 0) + math.max(0, tonumber(row.nonMarketResourceCount) or 0)
+    local resourceHint = resourceCount > 0 and (" · 另含" .. tostring(resourceCount) .. "项绑定/非市场资源") or ""
     self.summary:SetText("货率 " .. tostring(row.rate or "--") .. " · 预计售价 " .. tostring(row.price or "--") .. payoutFactors
-        .. "\n材料成本 " .. Money(row.materialCostCopper) .. " · 毛利 " .. tostring(row.profit or "--"))
+        .. "\n材料金币成本 " .. Money(row.materialCostCopper) .. resourceHint .. " · 毛利 " .. tostring(row.profit or "--"))
 
     local items, pending, inflight, failed, firstQuoteError = {}, 0, 0, 0, nil
     for index, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
@@ -272,8 +323,8 @@ function M:Refresh(reason)
             -- ("Chopped Produce") straight onto a player-facing table.
             name = tostring(material.name or "材料"),
             countText = "×" .. tostring(math.max(0, tonumber(material.count) or 0)),
-            unitText = material.includeInCost == false and "不计" or Money(material.unitCostCopper),
-            subtotalText = material.includeInCost == false and "不计" or Money(material.totalCostCopper),
+            unitText = material.includeInCost == false and "资源" or Money(material.unitCostCopper),
+            subtotalText = material.includeInCost == false and "--" or Money(material.totalCostCopper),
             statusText = statusText, statusTone = tone,
         }
     end
@@ -285,8 +336,11 @@ function M:Refresh(reason)
     end
     self.quoteButton:SetEnabled(pending > 0)
     self.quoteButton:SetText(pending > 0 and ("询价当前材料(" .. tostring(pending) .. ")") or "材料已询价")
-    self.favoriteButton:SetEnabled(projection.fromZone ~= nil and projection.toZone ~= nil)
-    self.favoriteButton:SetText(projection.currentRouteFavorite == true and "取消路线收藏" or "收藏路线")
+    self.favoriteButton:SetEnabled(row.cargoMode ~= true and projection.fromZone ~= nil and projection.toZone ~= nil)
+    self.favoriteButton:SetText(row.cargoMode == true and "随身扫描" or (projection.currentRouteFavorite == true and "取消路线收藏" or "收藏路线"))
+    self.trackButton:SetEnabled(tonumber(row.itemType) ~= nil)
+    self.trackButton:SetText(row.tracked == true and "取消关注" or "关注货物")
+    self.auctionTempButton:SetEnabled(type(S.Services and S.Services.AuctionSessionListV3) == "table" and #(row.materialRows or {}) > 0)
     local statusSummary = "材料 " .. tostring(#items) .. " 项"
     if pending > 0 then statusSummary = statusSummary .. (" · 待询价 " .. tostring(pending)) end
     if inflight > 0 then statusSummary = statusSummary .. (" · 询价中 " .. tostring(inflight)) end
@@ -298,7 +352,8 @@ function M:Refresh(reason)
     if failed > 0 then
         self.hint:SetText("询价失败原因：" .. (firstQuoteError or "未知；请复制诊断页「报价队列」行给维护者。"))
     else
-        self.hint:SetText("材料价格只有在用户显式询价后才读取；普通刷新不会批量请求拍卖行。")
+        local resourceText = resourceCount > 0 and ("；当前含 " .. tostring(resourceCount) .. " 项绑定/非市场制作资源，不折算金币成本") or ""
+        self.hint:SetText("材料价格只有在用户显式询价后才读取；普通刷新不会批量请求拍卖行" .. resourceText .. "。")
     end
     return true
 end

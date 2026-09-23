@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 5 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
 -- Replicated Suite - Persistence Framework
 --
@@ -77,6 +81,7 @@ S.Persistence = {
     HistoricalCanonicalRecoveryContractVersion = 3,
     KnownLegacyCanonicalRecoveryContractVersion = 1,
     IntegrityRecoveryTraceContractVersion = 1, -- 中文维护注释：.18.200 新增只读恢复状态机轨迹；仅记录版本/世代/分支/候选结果等非业务元数据，用于定位 fingerprint mismatch 到底在哪一层被拒绝，不参与 SaveData、Hash、Apply 或任何 Feature Authority。
+    CurrentFailureSummaryContractVersion = 1, -- 中文维护注释（.18.225）：Describe 区分“当前失败 Store”与历史 incident 累计。只读遍历 GetStoreFailureKind，不重试、不读盘、不清统计；Foundation 用它决定当前发布阻断，历史 durable/readback 仍保留为 warning 证据。
     Lifetime = LIFETIME,
     Scope = SCOPE,
     DefaultBudget = { maxDepth = 12, maxNodes = 4096, maxStringBytes = 65536, maxEntriesPerTable = 1024 },
@@ -519,17 +524,121 @@ local function TransportDecodeValueV4(value,seen)
     end
     seen[value]=nil;return out,nil
 end
-P.SupportedTransportContractVersion=4 -- 可读上限；默认新写仍为3，不启动全项目迁移。
+
+-- 维护（2026-09-17，schema8 六通道实机）：Transport4 在 schema7->8 自动迁移后
+-- 立即回读出现 transport_vector_missing_chunk_v4。旧 v4 用同一表上的 p1..pN
+-- 字符串键承载分块；schema8 把原全局追踪复制到 player/target 后物理体积翻倍，
+-- 实机证明这种表示仍可能被 SaveData 丢失某个 pN 字段。我们只把“字段丢失”
+-- 作为已证事实，不猜 Native 的具体全局容量。
+-- Authority：Core 仍独占物理传输。v5 保留 v3 标量精度保护，把 >32 的连续
+-- 正整数序列编码为 {marker,count,chunks={1..N}}；chunks 最多128项，低于此前
+-- 已实证的 numeric key 189 丢失边界，同时避免 v4 的几十/上百个 pN 字符串键。
+-- Decoder 接受 Native 将 1..N 数字键表示为规范十进制字符串，但拒绝重复、稀疏、
+-- 越界、非法 token 或额外字段。旧 transport1..4 永久保留只读兼容。
+local TRANSPORT_V5_PREFIX = "__rs_t5:"
+local TRANSPORT_V5_STRING = TRANSPORT_V5_PREFIX .. "s"
+local TRANSPORT_V5_ARRAY = TRANSPORT_V5_PREFIX .. "a"
+
+local function TransportEncodeValueV5(value,seen)
+    if type(value)=="string" and value:sub(1,#TRANSPORT_V5_PREFIX)==TRANSPORT_V5_PREFIX then
+        return TRANSPORT_V5_STRING..value,nil
+    end
+    if type(value)~="table" or next(value)==nil then return TransportEncodeValueV3(value) end
+    seen=seen or {};if seen[value] then return nil,"transport_cycle" end;seen[value]=true
+    local count=DensePositiveIntegerCount(value)
+    if count then
+        local chunks={}
+        for first=1,count,VECTOR_CHUNK do
+            local tokens={}
+            for i=first,math.min(count,first+VECTOR_CHUNK-1) do tokens[#tokens+1]=string.format("%.0f",value[i]) end
+            chunks[#chunks+1]=table.concat(tokens,",")
+        end
+        seen[value]=nil
+        return {[TRANSPORT_V5_ARRAY]=1,count=count,chunks=chunks},nil
+    end
+    local out={}
+    for key,child in pairs(value) do
+        if type(key)~="number" and type(key)~="string" then seen[value]=nil;return nil,"transport_key_type_v5" end
+        local ek,ke=TransportEncodeValueV5(key,seen);if ke then seen[value]=nil;return nil,ke end
+        local ev,ve=TransportEncodeValueV5(child,seen);if ve then seen[value]=nil;return nil,ve end
+        if out[ek]~=nil then seen[value]=nil;return nil,"transport_key_collision_v5" end
+        out[ek]=ev
+    end
+    seen[value]=nil;return out,nil
+end
+
+local function DecodePositiveVectorV5(value)
+    local count=value.count
+    if value[TRANSPORT_V5_ARRAY]~=1 or type(count)~="number" or count~=math.floor(count)
+        or count<=32 or count>VECTOR_LIMIT then return nil,"transport_vector_header_v5" end
+    local topFields=0
+    for key in pairs(value) do
+        topFields=topFields+1
+        if key~=TRANSPORT_V5_ARRAY and key~="count" and key~="chunks" then return nil,"transport_vector_extra_key_v5" end
+    end
+    if topFields~=3 or type(value.chunks)~="table" then return nil,"transport_vector_chunks_v5" end
+    local parts=math.ceil(count/VECTOR_CHUNK)
+    local indexed,fields={},0
+    for key,text in pairs(value.chunks) do
+        local kind=type(key);local index=tonumber(key)
+        if (kind~="number" and kind~="string") or index==nil or index~=math.floor(index) or index<1 or index>parts then
+            return nil,"transport_vector_chunk_key_v5"
+        end
+        if kind=="string" and (not key:match("^[1-9]%d*$") or tostring(index)~=key) then return nil,"transport_vector_chunk_key_v5" end
+        if indexed[index]~=nil then return nil,"transport_vector_chunk_collision_v5" end
+        indexed[index]=text;fields=fields+1
+    end
+    if fields~=parts then return nil,"transport_vector_missing_chunk_v5" end
+    local out={}
+    for index=1,parts do
+        local text=indexed[index]
+        if type(text)~="string" or #text>143 or not text:match("^[1-9]%d*[,0-9]*$") then return nil,"transport_vector_chunk_v5:"..index end
+        local tokens={};local expected=math.min(VECTOR_CHUNK,count-(index-1)*VECTOR_CHUNK)
+        for token in text:gmatch("[^,]+") do
+            local n=tonumber(token)
+            if not n or n<1 or n>NATIVE_EXACT_INTEGER_LIMIT or n~=math.floor(n) or string.format("%.0f",n)~=token then return nil,"transport_vector_token_v5:"..index end
+            tokens[#tokens+1]=token;if #tokens>expected then return nil,"transport_vector_count_v5:"..index end
+            out[#out+1]=n
+        end
+        if #tokens~=expected or table.concat(tokens,",")~=text then return nil,"transport_vector_count_v5:"..index end
+    end
+    return out,nil
+end
+
+local function TransportDecodeValueV5(value,seen)
+    if type(value)=="string" and value:sub(1,#TRANSPORT_V5_PREFIX)==TRANSPORT_V5_PREFIX then
+        if value:sub(1,#TRANSPORT_V5_STRING)==TRANSPORT_V5_STRING then
+            local literal=value:sub(#TRANSPORT_V5_STRING+1)
+            if literal:sub(1,#TRANSPORT_V5_PREFIX)==TRANSPORT_V5_PREFIX then return literal,nil end
+            return nil,"invalid_transport_escape_v5"
+        end
+        return nil,"unknown_transport_token_v5"
+    end
+    if type(value)~="table" then return TransportDecodeValueV3(value) end
+    if value[TRANSPORT_V5_ARRAY]~=nil then return DecodePositiveVectorV5(value) end
+    seen=seen or {};if seen[value] then return nil,"transport_cycle" end;seen[value]=true
+    local out={}
+    for key,child in pairs(value) do
+        local dk,ke=TransportDecodeValueV5(key,seen);if ke then seen[value]=nil;return nil,ke end
+        if type(dk)~="number" and type(dk)~="string" then seen[value]=nil;return nil,"transport_key_type_v5" end
+        local dv,ve=TransportDecodeValueV5(child,seen);if ve then seen[value]=nil;return nil,ve end
+        if out[dk]~=nil then seen[value]=nil;return nil,"transport_key_collision_v5" end
+        out[dk]=dv
+    end
+    seen[value]=nil;return out,nil
+end
+P.SupportedTransportContractVersion=5 -- 可读上限；默认新写仍为3，仅显式批量ID Store升级。
 
 function P:EncodePhysicalEnvelope(raw)
     if type(raw) ~= "table" then return nil, "transport_raw_type:" .. tostring(type(raw)) end
-    -- 维护：生产 EncodeValue 按Store注册选择默认3或显式4；旧格式仍原样支持，禁止内容与版本标签不一致。
+    -- 维护：生产 EncodeValue 按Store注册选择默认3或显式4/5；旧格式仍原样支持，禁止内容与版本标签不一致。
     local version = type(raw.__rsmeta) == "table" and tonumber(raw.__rsmeta.transportVersion) or self.TransportContractVersion
     local encoded, err
     if version == 1 then encoded, err = TransportEncodeValueV1(raw)
     elseif version == 2 then encoded, err = TransportEncodeValueV2(raw)
     elseif version == 3 then encoded, err = TransportEncodeValueV3(raw)
     elseif version == 4 then encoded, err = TransportEncodeValueV4(raw)
+    elseif version == 5 then encoded, err = TransportEncodeValueV5(raw)
     else return nil, "transport_contract:" .. tostring(version) .. ">" .. tostring(self.SupportedTransportContractVersion) end
     if encoded == nil then return nil, err end
     -- 中文维护注释：DecodePhysicalEnvelope 必须在完整解码前读取这两个路由字段；它们均为非零整数，不属于已知 serializer omission 类型。
@@ -552,6 +661,7 @@ function P:DecodePhysicalEnvelope(raw)
         -- 维护：先还原精确 number，再进入原 Envelope/Store 校验；未知代际仍 fail-closed。
         if transport == 3 then return TransportDecodeValueV3(raw) end
         if transport == 4 then return TransportDecodeValueV4(raw) end
+        if transport == 5 then return TransportDecodeValueV5(raw) end
         return nil, "transport_contract:" .. tostring(transport) .. ">" .. tostring(self.SupportedTransportContractVersion) -- 中文维护注释：未知/future transport 不猜测，防止旧客户端覆盖新格式。
     end
     -- 中文维护注释：Framework2/无 metadata 的历史存档没有物理哨兵，保持原样进入既有 legacy/schema 迁移。
@@ -969,6 +1079,10 @@ function P:RegisterStore(def)
         -- fingerprint while the independent metadata envelope seal is valid.
         -- This is not a corruption bypass and is never enabled implicitly.
         rebuildEncodedForIntegrity = def.rebuildEncodedForIntegrity,
+        -- 维护（transport物理修复）：仅在 Framework3 transport 解码失败后允许 Store 提供
+        -- 一个“物理表候选”。Core 会重新做预算、transport decode、Envelope/业务指纹全套验真；
+        -- hook 不能 Apply/Save/Clear，也不能绕过任何完整性门。用于有冗余可证明信息的窄恢复。
+        repairPhysicalTransport = def.repairPhysicalTransport,
         -- Optional exact historical-canonical recovery for a current-integrity
         -- stamp produced by an older Store normalizer / a serializer omission
         -- whose lost logical value can be reconstructed from the existing stamp.
@@ -1285,6 +1399,39 @@ end
 -- silently. Verification is explicit/opt-in so ordinary debounced settings do
 -- not double their storage traffic. The readback is decode-only: it never calls
 -- store.apply() and therefore cannot become a second Domain Authority.
+function P:TryRepairPhysicalTransport(store, raw, transportErr)
+    if type(store) ~= "table" or type(raw) ~= "table" or type(store.repairPhysicalTransport) ~= "function" then
+        return nil, transportErr or "transport_decode_failed", nil
+    end
+    store.lastPhysicalTransportRepairOk = false
+    store.lastPhysicalTransportRepairError = nil
+    store.lastPhysicalTransportRepairProbe = nil
+    local ok, candidate, probe = pcall(store.repairPhysicalTransport, DeepCopy(raw), tostring(transportErr or "unknown"))
+    store.lastPhysicalTransportRepairProbe = NonEmptyText(probe)
+    if ok ~= true or type(candidate) ~= "table" then
+        store.lastPhysicalTransportRepairError = ok and tostring(probe or "no_candidate") or tostring(candidate)
+        return nil, transportErr or "transport_decode_failed", nil
+    end
+    local inspection = self:InspectPayload(candidate, store.encodedBudget)
+    if type(inspection) ~= "table" or inspection.ok ~= true then
+        store.lastPhysicalTransportRepairError = "candidate_budget:" .. tostring(inspection and inspection.reason or "unknown")
+        return nil, transportErr or "transport_decode_failed", nil
+    end
+    local decoded, decodeErr = self:DecodePhysicalEnvelope(candidate)
+    if decoded == nil then
+        store.lastPhysicalTransportRepairError = "candidate_decode:" .. tostring(decodeErr or "unknown")
+        return nil, transportErr or "transport_decode_failed", nil
+    end
+    store.lastPhysicalTransportRepairOk = true
+    store.lastPhysicalTransportRepairError = nil
+    store.lastPhysicalTransportRepairAt = NowMs()
+    self.stats.physicalTransportRepairs = (tonumber(self.stats.physicalTransportRepairs) or 0) + 1
+    Emit("warning", "STORE_PHYSICAL_TRANSPORT_REPAIRED", "物理传输表依据 Store 的确定性冗余候选完成重建；仍需通过 Envelope/业务指纹后才允许应用", {
+        store = store.id, transportError = tostring(transportErr or "unknown"), probe = store.lastPhysicalTransportRepairProbe,
+    })
+    return decoded, nil, candidate
+end
+
 function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
     local store = type(storeOrId) == "table" and storeOrId or self:GetStore(storeOrId)
     if store == nil then return false, "unknown store" end
@@ -1300,6 +1447,9 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
     -- 中文维护注释：每次真正回读独立留证，不复用上次成功结果，也不清 Load 探针。
     store.lastReadbackRecoveryProbe = nil
     store.lastReadbackRepresentationRecovered = false
+    store.lastPhysicalTransportRepairOk = false
+    store.lastPhysicalTransportRepairError = nil
+    store.lastPhysicalTransportRepairProbe = nil
     local function Fail(reason)
         reason = tostring(reason or "readback verification failed")
         store.lastVerifyOk = false
@@ -1325,7 +1475,11 @@ function P:VerifyPersistedValue(storeOrId, expectedValue, resolvedKey)
         return Fail("readback_physical_payload_rejected:" .. tostring(physicalInspection and physicalInspection.reason or "unknown"))
     end
     local decodedRaw, transportErr = self:DecodePhysicalEnvelope(raw)
-    if decodedRaw == nil then return Fail("readback_transport_decode_failed:" .. tostring(transportErr or "unknown")) end
+    if decodedRaw == nil then
+        local repaired, repairErr = self:TryRepairPhysicalTransport(store, raw, transportErr)
+        decodedRaw = repaired
+        if decodedRaw == nil then return Fail("readback_transport_decode_failed:" .. tostring(repairErr or transportErr or "unknown")) end
+    end
     raw = decodedRaw
 
     local rawInspection = self:InspectPayload(raw, store.encodedBudget)
@@ -1556,6 +1710,9 @@ function P:LoadStore(id, options)
     store.lastHistoricalRecoveryHookState = "not_called"
     store.lastIntegrityRecoveryTrace = nil
     store.lastIntegrityMismatchEvidence = nil
+    store.lastPhysicalTransportRepairOk = false
+    store.lastPhysicalTransportRepairError = nil
+    store.lastPhysicalTransportRepairProbe = nil
     local raw, loadErr = S.Api:LoadData(resolvedKey)
     store.lastLoadAt = NowMs()
     if loadErr ~= nil then
@@ -1617,6 +1774,7 @@ function P:LoadStore(id, options)
     -- 中文维护注释：Framework3 的第一条读取边界必须是物理预算 + transport decode。
     -- 这一步位于 metadata/canonical/decode/apply 之前；因此所有 Feature 仍只接触原始 Lua boolean/table，
     -- 并且未来版本/损坏 transport 会 fail-closed，不会被当成“空存档”后用默认值覆盖。
+    local physicalTransportRepairNeeded = false
     local physicalLoadInspection = self:InspectPayload(raw, store.encodedBudget)
     store.lastPhysicalInspection = physicalLoadInspection
     if type(physicalLoadInspection) ~= "table" or physicalLoadInspection.ok ~= true then
@@ -1634,14 +1792,20 @@ function P:LoadStore(id, options)
     end
     local transportRaw, transportErr = self:DecodePhysicalEnvelope(raw)
     if transportRaw == nil then
-        store.loaded = true
-        store.loadStatus = "transport_decode_failed"
-        store.lastError = "transport_decode_failed:" .. tostring(transportErr or "unknown")
-        store.writeFenced = true
-        store.writeFenceReason = store.lastError
-        self.stats.loadFailures = (tonumber(self.stats.loadFailures) or 0) + 1
-        Emit("error", "STORE_TRANSPORT_DECODE_FAILED", "Framework3 物理存档传输编码无法还原，已启用写保护", { store = store.id, error = tostring(transportErr or "unknown") })
-        return false, nil, store.lastError
+        local repaired, repairErr = self:TryRepairPhysicalTransport(store, raw, transportErr)
+        if repaired ~= nil then
+            transportRaw = repaired
+            physicalTransportRepairNeeded = true
+        else
+            store.loaded = true
+            store.loadStatus = "transport_decode_failed"
+            store.lastError = "transport_decode_failed:" .. tostring(repairErr or transportErr or "unknown")
+            store.writeFenced = true
+            store.writeFenceReason = store.lastError
+            self.stats.loadFailures = (tonumber(self.stats.loadFailures) or 0) + 1
+            Emit("error", "STORE_TRANSPORT_DECODE_FAILED", "Framework3 物理存档传输编码无法还原，已启用写保护", { store = store.id, error = tostring(repairErr or transportErr or "unknown") })
+            return false, nil, store.lastError
+        end
     end
     raw = transportRaw
 
@@ -2421,6 +2585,13 @@ function P:LoadStore(id, options)
         deferredSaveDelayMs = 0
         self.stats.periodResets = (tonumber(self.stats.periodResets) or 0) + 1
         Emit("info", "STORE_PERIOD_RESET", "独立存档跨周期重置", { store = store.id, oldPeriod = storedPeriod, newPeriod = currentPeriod })
+    end
+
+    if deferredSaveReason == nil and physicalTransportRepairNeeded == true then
+        -- 维护：只有 transport 候选随后通过现有 Envelope/业务指纹、decode/migrate/budget/apply
+        -- 全链路后才来到这里；立即重写为 Store 当前 transport，避免下次重载再次依赖修复。
+        deferredSaveReason = "physical_transport_repair"
+        deferredSaveDelayMs = 0
     end
 
     if deferredSaveReason == nil and meta ~= nil
@@ -3978,6 +4149,7 @@ end
 function P:Describe()
     local rows = {}
     local dirty, fenced, contractV2, contractV3, scopePending, budgetProtected, envelopeBudgetProtected, unloadedDirty, registrationBudgetFailed, barrierPending = 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    local currentFailures, currentFailureKinds = 0, {}
     for _, id in ipairs(self.order) do
         local store = self.stores[id]
         if store ~= nil then
@@ -3987,6 +4159,15 @@ function P:Describe()
             end
             if store.writeFenced == true then fenced = fenced + 1 end
             if store.needsBarrierVerify == true then barrierPending = barrierPending + 1 end
+            -- 中文维护注释（当前健康 Authority）：incident counter 是本次加载以来的历史事实，
+            -- 成功 durable retry / verified Load 后不能清零；发布 Gate 若直接读取累计失败数会把
+            -- 已恢复玩家永久标成 blocker。这里复用 Core 已有 GetStoreFailureKind，只汇总“此刻仍
+            -- 需要人工处理”的 Store。纯内存 O(store count)，Describe 本身只在诊断/验收冷路径调用。
+            local failureKind = self:GetStoreFailureKind(store)
+            if failureKind ~= nil then
+                currentFailures = currentFailures + 1
+                currentFailureKinds[failureKind] = (tonumber(currentFailureKinds[failureKind]) or 0) + 1
+            end
             if tonumber(store.contractVersion) and tonumber(store.contractVersion) >= 2 then contractV2 = contractV2 + 1 end
             if tonumber(store.contractVersion) and tonumber(store.contractVersion) >= 3 then contractV3 = contractV3 + 1 end
             if type(store.budget) == "table" then budgetProtected = budgetProtected + 1 end
@@ -4006,6 +4187,7 @@ function P:Describe()
                 dirty = store.dirty == true,
                 writeFenced = store.writeFenced == true,
                 writeFenceReason = store.writeFenceReason,
+                currentFailureKind = failureKind, -- 只读诊断字段；不进入 Store canonical。
                 periodId = store.periodId,
                 baseKey = store.key,
                 resolvedKey = store.resolvedKey,
@@ -4059,6 +4241,8 @@ function P:Describe()
         registrationBudgetFailed = registrationBudgetFailed,
         unloadedDirty = unloadedDirty,
         barrierPending = barrierPending,
+        currentFailures = currentFailures,
+        currentFailureKinds = DeepCopy(currentFailureKinds),
         frameworkVersion = self.FrameworkVersion,
         transportContractVersion = self.TransportContractVersion,
         transportScalarOmissionProtectionContractVersion = self.TransportScalarOmissionProtectionContractVersion, -- 中文维护注释：把 Transport v2 的 false/空表/0/空字符串保护能力暴露给只读 Foundation/诊断；该字段不参与 Store 保存或任何业务 Authority。
@@ -4075,6 +4259,7 @@ function P:Describe()
         historicalCanonicalRecoveryContractVersion = self.HistoricalCanonicalRecoveryContractVersion,
         knownLegacyCanonicalRecoveryContractVersion = self.KnownLegacyCanonicalRecoveryContractVersion,
         integrityRecoveryTraceContractVersion = self.IntegrityRecoveryTraceContractVersion, -- 中文维护注释：只读能力声明，供 Foundation 验收诊断链没有被未来重构静默删除。
+        currentFailureSummaryContractVersion = self.CurrentFailureSummaryContractVersion,
         lastFlush = DeepCopy(self.lastFlush),
         rows = rows,
         stats = DeepCopy(self.stats),

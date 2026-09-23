@@ -24,6 +24,14 @@ S.UI = {
     -- in-tree Panel remains an emptywidget. This prevents RU cross-root
     -- z-order loss without changing normal component allocation.
     TopLevelTransientWindowContractVersion = 1,
+    -- 中文维护注释（2026-09-17，visual-guide-native-layer-1）：世界空间 HUD 引导（当前仅范围圆/单位连线）
+    -- 与普通插件 Window/Popup 的层级 Authority 分离。CreateOverlayWindow 必须固定进入 game 层，
+    -- 让背包/拍卖/地图等 normal/dialog/system 原生窗口天然覆盖这些点；不能让 Feature/Presenter 自行
+    -- Raise/切 system。数据流：CombatVisualGuides -> CreateOverlayWindow -> Native SetUILayer("game")。
+    -- 兼容边界：只改变这类 non-pickable transient overlay host 的 Native z-layer，不改变投影坐标、
+    -- 点池、Feature 生命周期、刷新频率或 Store。风险：若 RU 客户端未来改变 game 层可见性，需要通过
+    -- 实机诊断升级此契约，而不能回退到 system 以免再次遮挡原生窗口。
+    WorldHudNativeLayerContractVersion = 1,
 }
 local UIX = S.UI
 
@@ -470,13 +478,14 @@ function UIX:CreatePanel(parent, id, x, y, width, height, kind, opts)
 end
 
 -- Non-interactive screen-space overlay host for world-anchored visuals (unit
--- line / range circle dot pools). MUST be a real native WINDOW: this exact
--- primitive previously used a root emptywidget + "system" UILayer, and our own
--- CreatePanel documentation already records that RU clients do not reliably
--- render that combination (rs_ui_native_primitives CreatePanel comment) — the
--- .18.130b field report "投影有行但渲染层 0 个可见点". Both working references
--- build these hosts as top-level windows (rp_ui.lua EnsureLinesHost
--- CreateEmptyWindow; easypull.lua:257 CreateEmptyWindow on UIParent).
+-- line / range circle dot pools). MUST be a real native WINDOW: the historical
+-- emptywidget host was invisible on RU clients, so the proven top-level WINDOW
+-- allocation remains unchanged. 维护（2026-09-17）：WINDOW 类型不等于 system 层。
+-- 这两类点属于 world HUD Presentation，不是可交互插件窗口；system 会让点压住
+-- 背包/拍卖/地图等原生窗口。层级 Authority 因此固定为 game，依靠 Native layer
+-- hierarchy 让 normal/dialog/system 原生 UI 自然覆盖。DrawPriority 仅处理 game 层
+-- 内部稳定排序；host 继续 non-pickable，不能截获鼠标。兼容边界：不改变坐标、
+-- child dot、可见性或生命周期，仅修 Native z-layer。
 function UIX:CreateOverlayWindow(id, explicitOwner)
     local factory = S.NativeObjectFactory
     if type(factory) ~= "table" or type(factory.CreateWindow) ~= "function" then return nil, "overlay_window_factory_unavailable" end
@@ -489,8 +498,11 @@ function UIX:CreateOverlayWindow(id, explicitOwner)
     window.rsUiTransientWindow = true
     local configured, configureErr = pcall(function()
         if type(window.SetUILayer) == "function" then
-            local ok, result = pcall(function() return window:SetUILayer("system") end)
-            if ok ~= true or result == false then error("overlay window layer rejected") end
+            -- 维护（2026-09-17）：范围辅助/单位连线只应覆盖 3D 世界，不应覆盖原生窗口。
+            -- Authority 在本 Primitive：所有 CreateOverlayWindow consumer 统一 game；Presenter 禁止另行升层。
+            -- 若 Native 拒绝 game，fail-closed 隐藏/隔离 host，不能静默回退 system。
+            local ok, result = pcall(function() return window:SetUILayer("game") end)
+            if ok ~= true or result == false then error("overlay window layer rejected:game") end
         end
         for _, row in ipairs({
             { method = "SetCloseOnEscape", value = false },
@@ -575,7 +587,7 @@ function UIX:CreateLabel(parent, id, text, x, y, width, height, fontSize, tone, 
     return self:Register(id, label)
 end
 
-UIX.EditBoxCaretVisualContractVersion = 1
+UIX.EditBoxCaretVisualContractVersion = 2
 UIX.EditBoxNormalSelectionContractVersion = 1
 
 local EDIT_BORDER_IDLE = { 0.34, 0.43, 0.52, 0.98 }
@@ -594,13 +606,24 @@ function UIX:SetEditBoxFocusVisual(edit, focused)
     return true
 end
 
-local function ConfigureEditCaret(edit, height)
-    if edit == nil then return end
-    -- RU exposes caret styling but several EditBox skins default to a caret that
-    -- is extremely short or effectively invisible. Native still owns blinking;
-    -- Suite only makes that native caret visible and readable.
+function UIX:ConfigureEditCaret(edit, height)
+    if edit == nil then return false, nil end
+    -- 中文维护注释（2026-09-14，RU 单行 EditBox caret 几何）：实机 .18.215 证明
+    -- SetCursorHeight(14) 并不是 14px 最终高度，而会渲染为约 29px 的竖线（接近 2*N+1），
+    -- 因此旧实现把“最终像素高度”直接传给 Native，导致 caret 穿过输入框下边界。这里统一把
+    -- 目标视觉高度转换为 Native half-extent，并把最终视觉预算限制在单行输入框内部。Authority
+    -- 仍由 Native 控制闪烁/选择，Suite 只设置颜色和有界几何；不在 Layout/Tick 中重复写。
+    local outer = math.max(18, math.floor(tonumber(height) or 24))
+    local desiredVisual = math.max(11, math.min(19, outer - 6))
+    local nativeHalf = math.max(5, math.min(9, math.floor((desiredVisual - 1) * 0.5)))
     if type(edit.SetCursorColor) == "function" then edit:SetCursorColor(1.00, 0.82, 0.36, 1.00) end
-    if type(edit.SetCursorHeight) == "function" then edit:SetCursorHeight(math.max(10, math.min(20, math.floor((tonumber(height) or 24) - 8)))) end
+    if type(edit.SetCursorHeight) == "function" then
+        edit:SetCursorHeight(nativeHalf)
+        edit.rsUiCursorHalfHeight = nativeHalf
+        edit.rsUiCursorVisualBudget = nativeHalf * 2 + 1
+        return true, nativeHalf
+    end
+    return true, nil
 end
 
 function UIX:CreateEditBox(parent, id, x, y, width, height, maxLength)
@@ -645,7 +668,7 @@ function UIX:CreateEditBox(parent, id, x, y, width, height, maxLength)
             if accepted ~= true then error("editbox readonly state rejected") end
         end
         if edit.UseSelectAllWhenFocused ~= nil then edit:UseSelectAllWhenFocused(false) end
-        ConfigureEditCaret(edit, height)
+        UIX:ConfigureEditCaret(edit, height)
         -- RSUI owns the Draft -> Commit transaction.  Some RU EditBox variants
         -- clear their native text on Enter before the submit handler can read it
         -- unless this verified flag is disabled.
@@ -715,7 +738,7 @@ function UIX:CreateMultiEditBox(parent, id, x, y, width, height, maxLength)
             if accepted ~= true then error("multieditbox readonly state rejected") end
         end
         if edit.UseSelectAllWhenFocused ~= nil then edit:UseSelectAllWhenFocused(false) end
-        ConfigureEditCaret(edit, height)
+        UIX:ConfigureEditCaret(edit, height)
         if edit.SetMaxTextLength ~= nil then edit:SetMaxTextLength(math.max(1, tonumber(maxLength) or 65535)) end
         if edit.style ~= nil then
             if edit.style.SetAlign ~= nil then edit.style:SetAlign(ALIGN_TOP_LEFT or ALIGN_LEFT) end

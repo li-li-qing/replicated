@@ -4,6 +4,8 @@
 -- and bounded actor drill-downs only; metric state/native combat APIs stay behind
 -- the CombatAnalytics Feature/Service boundary.
 ------------------------------------------------------------------------
+-- 维护（module-controls-diag-2）：总开关领取PageHost左上角的同一实例；原Feature/Consumer/保存回滚回调不变。
+-- 只调整呈现归属，禁止在刷新中另造开关状态、重设Native父级或绑定第二个OnClick；局部选项开关保持原位。
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S=ReplicatedSuite
 local RSUI,D=S.RSUI,S.UIV3Design
@@ -118,13 +120,17 @@ local function Build(parent)
     if root==nil then error("战斗分析 PageRoot 创建失败："..tostring(rootErr or "unknown")) end
     root.subscribed=false;root.rows={};root.compareA=nil;root.compareB=nil;root.selectedRow=nil
 
-    RSUI:Text({id="v3_analytics_title",parent=root,text="战斗分析",fontSize=16,tone="strong",slot={size="fixed",height=27}})
+    -- 中文维护注释（2026-09-18）：战斗分析拥有自定义工具栏，不能依赖标准 PageHeader。
+    -- 这里仅提供标题行几何并调用共享 ModuleDiagnosticsButton；诊断 Authority/点击逻辑不得复制到业务页。
+    local titleRow=RSUI:HorizontalBox({id="v3_analytics_title_row",parent=root,gap=8,slot={size="fixed",height=27,hAlign="fill"}})
+    RSUI:Text({id="v3_analytics_title",parent=titleRow,text="战斗分析",fontSize=16,tone="strong",slot={size="fill",fill=1,height=27}})
+    D:ModuleDiagnosticsButton(titleRow,"v3_analytics_diagnostics",76)
     RSUI:Text({id="v3_analytics_subtitle",parent=root,
         text="这是 DPS 之外的战斗行为分析：查看击杀/助攻、技能释放、爆发、控制、演奏、辅助、Buff/Debuff 与 Boss 机制。选择玩家后可继续查看具体明细。",
         fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=34}})
 
     local toolbar=RSUI:HorizontalBox({id="v3_analytics_toolbar",parent=root,gap=6,slot={size="fixed",height=34,hAlign="fill"}})
-    local enable=RSUI:Button({id="v3_analytics_enable",parent=toolbar,text="开始分析",compact=true,slot={size="fixed",width=92}})
+    local enable=D:ModuleToggleButton({id="v3_analytics_enable",parent=toolbar,text="开始分析",compact=true,slot={size="fixed",width=92}})
     local metric,metricErr=RSUI:Dropdown({id="v3_analytics_metric",parent=toolbar,items={},maxVisible=9,
         get=function() return Feature:GetSelectedMetric() end,
         set=function(id) local ok,err=Feature.Commands:SetSelectedMetric(id);if ok==true then root.compareA,root.compareB,root.selectedRow=nil,nil,nil;root:RefreshData() end;return ok,err end,

@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 3 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 -- Maintenance: real Feature/Store/metadata service; Native facts, clock and UI are
 -- controlled adapters. These assertions are not an RU-client acceptance claim.
 local passed,failed=0,0
@@ -82,10 +86,18 @@ Test('library has icon cells and no confusing supplement button',function()
 end)
 Test('one click import clears filters and opens actual tracked selection list',function()
     Reset();local page=assert(host:Build());page.managementFilter='hidden';page.filterText='not found';page:SwitchTab('library');local before=writes
-    assert(host.widgets.v3_buff_library_import.onClick());assert(writes==before+1)
+    assert(host.widgets.v3_buff_library_import.onClick());assert(writes==before+4,'A/B tracking commit must write player/target/meta inactive slots then manifest')
     assert(page.activeTab=='track' and page.managementView=='tracked' and page.managementFilter=='all' and page.filterText=='','import left user looking at unrelated current-state rows')
     local rows=host.widgets.v3_buff_display_tracking_table.items;assert(#rows==#S.Data.StatusTrackingCatalogV3.Packs.recommended.entries)
     for _,row in ipairs(rows) do assert(row.tracked and F:IsTrackedId(row.id)) end
+end)
+Test('repeating one click library import preserves manual target-only placement',function()
+    Reset();local page=assert(host:Build());page:SwitchTab('library');assert(host.widgets.v3_buff_library_import.onClick())
+    assert(F:SetTrackedId(21,'auto',false));assert(F:SetTrackedChannel(21,'target','buff',true))
+    assert(not F:IsTrackedChannel(21,'player','auto') and not F:IsTrackedChannel(21,'player','buff'),'manual target-only setup failed')
+    page:SwitchTab('library');assert(host.widgets.v3_buff_library_import.onClick())
+    assert(F:IsTrackedChannel(21,'target','buff'),'target manual placement lost')
+    assert(not F:IsTrackedChannel(21,'player','auto') and not F:IsTrackedChannel(21,'player','buff') and not F:IsTrackedChannel(21,'player','debuff'),'library reimport resurrected self tracking')
 end)
 Test('one click import error is shown without navigating or losing existing selection',function()
     Reset();assert(F:SetTrackedId(21,'auto',true));local page=assert(host:Build());page:SwitchTab('library');local before=store.get();local save=S.Api.SaveData;S.Api.SaveData=function() return false,'disk unavailable' end
@@ -203,8 +215,9 @@ end)
 Test('diagnostic report exposes committed tracking and retention without native reads',function()
     Reset();assert(F:ImportBuiltinPack('recommended',false));F:CaptureManagementFreeze();dofile('core/rs_diagnostics.lua');local before=scans
     local row;for _,v in ipairs(S.DiagnosticsManager:BuildFeatureStatusRows()) do if v.id=='buff_display' then row=v end end
-    assert(row and row.tracking and row.tracking.patch=='status-retain-library-1','tracking evidence missing')
-    assert(row.tracking.auto==397 and row.tracking.lastImport.ok==true and row.tracking.capture.active==true)
+    assert(row and row.tracking and row.tracking.patch=='status-tracking-scope-1','tracking evidence missing')
+    assert(row.tracking.auto==794 and row.tracking.player.auto==397 and row.tracking.target.auto==397
+        and row.tracking.lastImport.ok==true and row.tracking.capture.active==true)
     assert(scans==before,'diagnostic performed native scan')
 end)
 

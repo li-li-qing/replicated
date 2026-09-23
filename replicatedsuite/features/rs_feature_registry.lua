@@ -22,6 +22,48 @@ S.FeatureRegistry = {
 }
 local R = S.FeatureRegistry
 
+-- 维护（module-controls-diag-2）：这是源码工作负载预估，不是CPU/内存/FPS采样。
+-- 显式登记避免按模块名称猜等级；只在注册时取值，关闭模块也能查看开启成本。
+-- 高密度PVP/圈点数量/团队人数可改变真实开销，后续实测调整元数据而不能改动生命周期。
+local PERFORMANCE_LABELS = { "低", "中", "高", "非常高" }
+local PERFORMANCE_PROFILES = {
+    life_daily_stats = { 1, "低频事件累计今日变化，无全场扫描。" },
+    combat_stats = { 3, "战斗事件量与参与单位、技能明细增加时开销上升。" },
+    combat_analytics = { 4, "多种战斗指标、参与者关系与统计维度会放大高密度战斗处理量。" },
+    combat_healer = { 4, "多人团队生命值、距离、状态与推荐排序持续更新，人数越多开销越高。" },
+    combat_death_review = { 1, "有界死亡前事件历史；战斗密集时事件处理量增加。" },
+    combat_buff_display = { 3, "自身/目标状态观察、图标与HUD更新；追踪数量会影响开销。" },
+    combat_nameplate_visuals = { 1, "仅启停、设置变更和进入世界时写入少量原生显示参数；无持续轮询。" },
+    combat_boss_alerts = { 2, "按需观察首领技能与状态事件，机制与可见提示数量影响开销。" },
+    combat_target_monitor = { 1, "按需观察少量指定目标。" },
+    combat_unit_lines = { 3, "持续投影与连线点绘制；刷新间隔、线条数和密度影响开销。" },
+    combat_range_assist = { 3, "多圆多点投影；圆数、点密度与刷新频率越高开销越大。" },
+    combat_buff_cap = { 1, "自身状态数量低频观察。" },
+    combat_team_tools = { 2, "团队列表投影和可选高亮；多人团队/高亮刷新增加开销。" },
+    combat_raid_readiness = { 2, "显式战备检查时扫描团队，非持续全场扫描。" },
+    combat_raid_recruitment = { 1, "以用户操作和事件处理为主。" },
+    combat_siege_readiness = { 1, "当前运行入口受保护；此等级不表示功能可用。" },
+    combat_gear = { 1, "按用户操作切换装备，不持续扫描所有单位。" },
+    life_activities = { 1, "时间表与低频阶段、倒计时更新。" },
+    life_trade = { 2, "可见页面和显式查询使用报价队列；查询量影响开销。" },
+    life_bonds = { 2, "任务状态及材料列表按需更新。" },
+    life_tasks = { 1, "任务事件与低频进度投影。" },
+    life_treasure = { 2, "开启指引时进行坐标计算与方向更新。" },
+    life_fishing = { 2, "有使用者时才采样；目标数量与刷新频率影响开销。" },
+    life_housing = { 1, "页面打开时读取住宅投影。" },
+    life_butler = { 1, "页面使用期间读取管家信息。" },
+    tools_bag = { 1, "显式整理计划及容器事件；执行计划时有短时增量。" },
+    tools_auction = { 2, "用户搜索与材料列表查询；非持续全量市场扫描。" },
+    tools_market_analysis = { 2, "显式查询和结果分析，数据量越大成本越高。" },
+    tools_craft = { 2, "配方与材料计划计算；复杂计划会增加开销。" },
+    tools_instance_browser = { 1, "按需查询和列表展示。" },
+    tools_social = { 1, "以显式操作和事件为主。" },
+    tools_hotkey_profiles = { 1, "仅在用户保存/应用方案时处理至多19项白名单键位，无常驻采样。" },
+    tools_reinforce_analysis = { 2, "强化事件记录与统计分析。" },
+    tools_portal_profiles = { 1, "当前运行入口受保护；此等级不表示功能可用。" },
+    tools_random_shop = { 1, "默认手动读取，可选可见时低频刷新。" },
+}
+
 local function NormalizeId(value)
     local id = tostring(value or ""):lower():gsub("[^%w_%.%-]", "_"):gsub("_+", "_")
     return id:gsub("^_+", ""):gsub("_+$", "")
@@ -87,6 +129,18 @@ function R:Register(spec)
         status = tostring(spec.status or "planned"),
         lifecycle = tostring(spec.lifecycle or "independent"),
         authority = tostring(spec.authority or "pending"),
+        -- 中文维护注释（2026-09-18，module-diagnostics-source-authority-1）：
+        -- Feature 自己声明“确定属于本模块”的 Diagnostics source 别名。ModuleDiagnosticsHub 只做
+        -- 精确匹配，禁止根据字符串相似度猜模块；这样 buff_display_v3/dps_v3 等历史 source 能进入
+        -- 正确模块报告，同时 FeatureRegistry 仍是唯一模块身份 Authority，不再维护第二张别名表。
+        diagnosticSources = (function()
+            local out, seen = {}, {}
+            for _, value in ipairs(type(spec.diagnosticSources) == "table" and spec.diagnosticSources or {}) do
+                local source = tostring(value or "")
+                if source ~= "" and not seen[source] then seen[source] = true; out[#out + 1] = source end
+            end
+            return out
+        end)(),
         widgetCapable = spec.widgetCapable == true,
         settingsCapable = spec.settingsCapable == true,
         apiDependencies = type(spec.apiDependencies) == "table" and spec.apiDependencies or {},
@@ -104,6 +158,15 @@ function R:Register(spec)
         currentImplementation = tostring(spec.currentImplementation or ""),
         remainingCapability = tostring(spec.remainingCapability or ""),
     }
+    -- 首页控制今日统计；系统管理页无独立工作负载，不能伪造绿色“已开启”。
+    row.controlFeatureId = id == "home" and "life_daily_stats" or (row.lifecycle == "shell" and "" or id)
+    -- 系统管理页面不是独立工作负载，报告也不应凭空标一个“中”等级。
+    if row.controlFeatureId ~= "" then
+        local cost = PERFORMANCE_PROFILES[row.controlFeatureId] or { 2, "尚未专项评估，暂按中等开销预估。" }
+        row.performanceLevel, row.performanceLabel, row.performanceReason = cost[1], PERFORMANCE_LABELS[cost[1]], cost[2]
+        row.performanceEstimated = true
+    end
+    self.registrationRevision = (tonumber(self.registrationRevision) or 0) + 1
     self.features[id] = row
     self.order[#self.order + 1] = id
     self:Resort()
@@ -168,7 +231,7 @@ Add("life_daily_stats", "home.daily_stats", "今日收支", "home", 15, "独立�
 })
 
 Add("combat_stats", "combat.stats", "伤害统计", "combat", 10, "逐事件 PVP/PVE 分类的伤害、承伤与治疗统计；M1.16 起通过 CombatAnalytics 共享唯一 scope=all 战斗事实流。", {
-    status = "migrated_m16", lifecycle = "independent", authority = "v3.dps + v3.combat_analytics",
+    status = "migrated_m16", lifecycle = "independent", authority = "v3.dps + v3.combat_analytics", diagnosticSources = { "dps_v3" },
     widgetCapable = true, settingsCapable = true,
 })
 Add("combat_analytics", "combat.analytics", "战斗分析", "combat", 15, "模块化战斗贡献分析：战斗历史、击杀/助攻、技能、爆发、控制、乐器、辅助、Aura 与 Boss 机制；每个指标独立启停并共享单一 CombatEventBus 消费者。", {
@@ -177,22 +240,41 @@ Add("combat_analytics", "combat.analytics", "战斗分析", "combat", 15, "模�
 })
 Add("combat_healer", "combat.healer", "治疗辅助", "combat", 20, "治疗推荐核心与团队校准/屏幕色块：共享团队名单与 Aura 事实；不再提供无意义的推荐列表悬浮窗，校准可在治疗计算关闭时独立显示。", {
     navigationDevelopmentState = "complete", -- 中文维护注释：2026-09-10 用户已完成实机验收，左侧开发导航将治疗辅助列入“已完成”区域。这里只覆盖 Presentation 完成度；apiReadiness/remainingCapability 仍保留真实工程风险，不会因此放宽 Healer Consumer、Aura/TeamRoster Authority 或 Native API 门。
-    status = "migrated_m16_18", lifecycle = "independent", authority = "v3.healer + v3.team_roster + v3.aura_observation",
+    status = "migrated_m16_18", lifecycle = "independent", authority = "v3.healer + v3.team_roster + v3.aura_observation", diagnosticSources = { "healer_v3" },
     widgetCapable = false, settingsCapable = true, defaultEnabled = false,
     apiDependencies = { "X2Team:GetRole", "X2Unit:UnitHealth", "X2Unit:UnitMaxHealth", "X2Unit:UnitDistance", "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:UnitDeBuffCount", "X2Unit:UnitDeBuff", "X2Unit:UnitHiddenBuffCount", "X2Unit:UnitHiddenBuff", "X2Unit:GetUnitScreenPosition" },
     apiReadiness = "partial", apiPolicy = "read_only_sliced", currentImplementation = "页面策略配置 + 头顶标记 + 团队覆盖层；Raid calibration 是独立 Presentation 模式，不获取治疗 Consumer", remainingCapability = "继续按实机校准团队框位置/颜色，不恢复推荐列表悬浮窗", evidence = "V3 Healer Domain + HeadMarker/RaidOverlay; TeamRosterV3 + AuraObservationV3 shared facts",
 })
 Add("combat_death_review", "combat.death_review", "死亡回顾", "combat", 30, "独立低开销死亡前时间线与历史。", {
-    status = "migrated_m15_2", lifecycle = "independent", authority = "v3.death_review",
+    status = "migrated_m15_2", lifecycle = "independent", authority = "v3.death_review", diagnosticSources = { "death_review_v3" },
     widgetCapable = true, settingsCapable = true,
 })
 Add("combat_buff_display", "combat.buff_display", "状态显示", "combat", 40, "首个 Plates/BUFF V3 消费端：player/target 的增益、减益与隐藏状态 bounded display；事实只来自共享 StatusMap。", {
     navigationDevelopmentState = "complete", -- 中文维护（2026-09-13 用户实机验收）：状态显示按当前产品范围标记完成。这里只改变导航开发态；共享 Aura/StatusMap 的 API 能力说明、按需生命周期与个人配置均保持不变，后续新增能力仍需单独验收。
-    status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.buff_display + v3.aura_observation",
+    -- 中文维护注释（.18.243）：旧 v3.buff_display 已降级为 migration-only 证据源；当前配置
+    -- Authority 是 settings/layout/manifest 指向的 tracking slot。这里必须写清，避免维护者依据 Registry
+    -- 又把 HUD/Tracking 保存接回旧单体 Store。AuraObservation 仍只负责运行时事实，不持有用户配置。
+    status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.buff_display.settings + v3.buff_display.layout + v3.buff_display.tracking.manifest + v3.aura_observation (legacy v3.buff_display migration-only)", diagnosticSources = { "buff_display_v3" },
     widgetCapable = true, settingsCapable = true, defaultEnabled = false,
     apiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:UnitBuffTooltip", "X2Unit:UnitDeBuffCount", "X2Unit:UnitDeBuff", "X2Unit:UnitDeBuffTooltip", "X2Unit:UnitHiddenBuffCount", "X2Unit:UnitHiddenBuff", "X2Unit:UnitHiddenBuffTooltip" },
     apiReadiness = "shared_service_partial", apiPolicy = "read_only_bounded",
     evidence = "AuraObservationV3:GetStatusMap(); V3 Page/Widget projection and lifecycle contract",
+})
+-- 中文维护（2026-09-20，nameplate-mark-ratio-3）：18.272 RU 实机确认 name_tag_hp_* 血条有效，
+-- 同时确认 over_head_marker_width/height/offset Set 后无视觉变化。头顶队伍标记改用
+-- name_tag_mark_size_ratio（客户端 help: name tag mark scale）；旧三项不再写入。仍保留待验收分桶，
+-- 因新 ratio 需要本轮 RU 实机确认。
+Add("combat_nameplate_visuals", "combat.nameplate_visuals", "头顶标记 / 血条", "combat", 45,
+    "调整原生头顶队伍标记倍率与名称血条尺寸；无持续扫描，关闭恢复启用前客户端值。", {
+    navigationDevelopmentState = "implemented_pending_ru", status = "migrated_partial", lifecycle = "event_edge",
+    authority = "v3.nameplate_visuals + X2Option capability boundary", diagnosticSources = { "nameplate_visuals_v3" },
+    widgetCapable = false, settingsCapable = true, defaultEnabled = false,
+    apiDependencies = { "X2Option:GetConsoleVariable", "X2Option:SetConsoleVariable" },
+    apiReadiness = "official_enabled_pending_ru_cvar_runtime", apiPolicy = "bounded_verified_cvar_write",
+    currentImplementation = "6项原生 CVar 事务写入/回读/失败回滚；头标使用 name_tag_mark_size_ratio + overhead_marker_fixed_size，血条使用四项 name_tag_hp_*；ENTERED_WORLD 边沿重应用；Store schema1 不变",
+    remainingCapability = "需 RU 实机确认 name_tag_mark_size_ratio 对 X2Unit:SetOverHeadMarker 1-12 标记的实时缩放、远近距离固定尺寸行为及极端 UI 缩放",
+    verification = "hp_ru_verified_marker_ratio_pending",
+    evidence = "18.272 RU: name_tag_hp_* visual confirmed / over_head_marker_width-height-offset no visual effect; bundled console_vars help says name_tag_mark_size_ratio = name tag mark scale; 2026-03-24 ArcheRage enabled X2Unit:SetOverHeadMarker APIs",
 })
 -- 中文维护（2026-09-12）：登记当前真实实现，不再声称事实桥尚未接入；仅本地回归通过，
 -- 故保留 migrated_partial/未完成分桶。五条现有规则不代表全部首领技能，禁止据此自动宣告实机验收。
@@ -203,7 +285,7 @@ Add("combat_target_monitor", "combat.target_monitor", "目标监控", "combat", 
 Add("combat_unit_lines", "combat.unit_lines", "单位连线", "combat", 70, "当前实现为自己 ↔ 当前目标的独立屏幕连线；不恢复官方禁用的附近单位枚举。", { navigationDevelopmentState = "complete", status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.unit_lines + screen_projection_v3", currentImplementation = "1-1000ms Demand-scoped 四类 token 连线 + 屏幕空间自适应密度/可见段裁剪/帧压力额外点预算 + P1 连续视觉刷新 + Presenter 本地 Diff/渐进点池；旧 pointCount 作为基础密度兼容保留；每线大小/颜色独立设置", remainingCapability = "全单位关系网络仍需要官方允许的单位集合来源；GetUnitsInSight 保持禁用", widgetCapable = false, settingsCapable = true, apiDependencies = { "X2Unit:GetUnitScreenPosition", "X2Unit:GetUnitWorldPositionByTarget" }, apiReadiness = "partial", apiPolicy = "bounded_current_target_only" })
 -- 维护（用户实机确认2026-09-12）：当前约定范围标为完成并上移导航；技术能力限制仍如实保留，
 -- 该展示覆盖不影响启停/调度/存档/允许API，不把附近单位枚举或自动技能半径视为已实现。
-Add("combat_range_assist", "combat.range_assist", "范围辅助", "combat", 80, "以玩家为圆心绘制用户指定半径的范围圆；不猜技能/魔法阵真实范围。", { navigationDevelopmentState = "complete", status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.range_assist + screen_projection_v3", currentImplementation = "50ms Demand-scoped EasyPull 本地世界坐标 + Native→WorldToScreen Camera fallback + 玩家屏幕锚点整批刚性校准 + 12-48 个有界投影点；支持半径/点数/点大小/透明度/颜色并持久化", remainingCapability = "技能/魔法阵自动半径需要独立已验证的技能范围事实；当前只承诺用户自定义半径", widgetCapable = false, settingsCapable = true, apiDependencies = { "X2Unit:GetUnitWorldPositionByTarget", "X2Unit:GetUnitScreenPosition" }, apiReadiness = "partial", apiPolicy = "bounded_user_radius" })
+Add("combat_range_assist", "combat.range_assist", "范围辅助", "combat", 80, "以玩家为圆心绘制用户自建的多个范围圆；默认空配置，不猜技能/魔法阵真实范围。", { navigationDevelopmentState = "complete", status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.range_assist + screen_projection_v3", currentImplementation = "16/32/48ms 自适应 Demand-scoped 范围绘制；所有启用圆每次共享一个刚性投影批次，Native 不完整时整批切换到同一 Camera frame；RangeAssist 专用 Camera basis 会先正交单位化，避免非单位 GetViewCameraDir 导致横纵比例漂移，同时对玩家锚点偏移做会话有界稳定化；Presenter 只提交坐标/样式/可见性差异。半径配置始终保存游戏米，按需以 UnitDistance(target) 校准 worldUnitsPerMeter；支持多圆列表、空默认配置、旧单圆存档迁移，以及每圆独立半径/点数/点大小/透明度/颜色并持久化", remainingCapability = "技能/魔法阵自动半径需要独立已验证的技能范围事实；当前只承诺用户自定义范围圆；无可靠目标校准样本时 fail-closed 使用 1:1 世界单位/投影比例", widgetCapable = false, settingsCapable = true, apiDependencies = { "X2Unit:GetUnitWorldPositionByTarget", "X2Unit:GetUnitScreenPosition", "X2Unit:UnitDistance" }, apiReadiness = "partial", apiPolicy = "bounded_user_radius" })
 -- 中文维护（2026-09-12）：已接入的是计数/采样峰值与个人阈值提醒，不是经过实机证明的容量预警。
 -- 元数据只说明产品/验收范围，不改变原route/Feature/Store身份，不用本地测试自动上移“已完成”。
 Add("combat_buff_cap", "combat.buff_cap", "增益容量监控", "combat", 85, "分别查看自身普通/隐藏增益数量、本次启用峰值；可保存个人数量提醒。个人阈值不代表 RU 容量或顶替规则。", {
@@ -222,7 +304,7 @@ Add("combat_raid_readiness", "combat.raid_readiness", "团队战备检查", "com
     -- 中文维护注释（B11团队战备检查闭环）：按需分片异步扫描团队装分（含RU千分位防御性解析）、职责/职业降级、关键增益（AuraObservationV3共享按需租约，仅扫描期持有）、距离与多状态收敛（ready/failed/unknown/info）、列表过滤（只看问题）、设置防抖持久化已全部闭环；标记为 implemented_pending_ru 待RU实机联调。
     navigationDevelopmentState = "implemented_pending_ru",
     navigationVisible = false, navigationParentRoute = "combat.team_tools", -- 中文维护注释：战备检查仍是独立路由/按需扫描 Feature，但主导航视觉归属团队中心。
-    status = "migrated_m16_14", lifecycle = "on_demand_scan", authority = "v3.raid_readiness + v3.team_roster + v3.aura_observation",
+    status = "migrated_m16_14", lifecycle = "on_demand_scan", authority = "v3.raid_readiness + v3.team_roster + v3.aura_observation", diagnosticSources = { "raid_readiness_v3" },
     widgetCapable = false, settingsCapable = true, defaultEnabled = false,
     apiDependencies = { "X2Team:GetRole", "X2Unit:UnitGearScore", "X2Unit:UnitDistance", "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:UnitHiddenBuffCount", "X2Unit:UnitHiddenBuff" },
     apiReadiness = "partial", apiPolicy = "read_only_on_demand",
@@ -244,7 +326,7 @@ Add("combat_siege_readiness", "combat.siege_readiness", "攻城战备检查", "c
 })
 Add("combat_gear", "combat.gear", "换装 / 称号", "combat", 100,
     "装备、武器、防具、饰品与效果称号使用同一套方案保存和一键切换；每套常用方案可生成一个独立可拖动的屏幕按钮。", {
-    status = "migrated_m4", lifecycle = "independent", authority = "v3.gear",
+    status = "migrated_m4", lifecycle = "independent", authority = "v3.gear", diagnosticSources = { "gear_v3" },
     widgetCapable = true, settingsCapable = true, defaultEnabled = true,
     apiDependencies = {
         "X2Equipment:GetEquippedItemTooltipInfo", "X2Bag:GetBagItemInfo", "X2Bag:Capacity", "X2Bag:EquipBagItem",
@@ -257,9 +339,14 @@ Add("combat_gear", "combat.gear", "换装 / 称号", "combat", 100,
 })
 
 Add("life_activities", "life.activities", "活动", "life", 10, "世界活动、区域阶段、任务/实例参与进度。", {
-    navigationDevelopmentState = "implemented_pending_ru", -- 中文维护注释：2026-09-13 完成实时区域（海之烛台/鲸鱼歌湾）任务组与阶段进度挂接修复、taskTailMinutes 任务尾部持续期保持、以及 7 套单测回归（tools/rs_activity_tests.lua）；代码与单元测试已闭环，保留 implemented_pending_ru 等待 RU 实测证据。
-    currentImplementation = "世界活动与实时区域状态监测；已修复海之烛台/鲸鱼歌湾任务组关联与阶段进度展示；已修复征兆/煦日等活动在任务进行中的尾部持续期保持；通过 rs_activity_tests 与 v3_m1_activities 验收",
-    status = "migrated_m1", lifecycle = "independent", authority = "v3.activity",
+    -- 中文维护注释（2026-09-15，用户验收）：活动按当前产品范围正式进入完成区。
+    -- Authority 仍是 v3.activity，区域状态/服务器时钟/任务进度数据流不变；这里只改变导航开发态，
+    -- 不把“完成”标签用于放宽 X2Map/X2Quest 能力门，也不改既有 Store/隐藏活动/悬浮窗配置兼容。
+    navigationDevelopmentState = "complete",
+    -- 中文维护注释（2026-09-18）：FeatureRegistry 只记录实现契约，不复制排序逻辑。Activity Timeline v2 的 Authority
+    -- 仍在 rs_activity_authority.lua；这里明确性能边界，防止以后为了“更实时”把 timeUntil 的 OnUpdate/Quest 扫描重新接入模块元数据驱动。
+    currentImplementation = "Activity Timeline v2：固定计划与可确定的实时派生活动进入时间线（当前活动按剩余结束时间、未来活动按距离开始时间）；战争/纷争/和平/危险阶段独立放在实时区域段，保持 curated 区域顺序；继续复用 QuestProgressV3、5s 区域采样与1s纯投影，不增加 Native 扫描",
+    status = "migrated_m1", lifecycle = "independent", authority = "v3.activity", diagnosticSources = { "activities_v3" },
     widgetCapable = true, settingsCapable = true,
     apiDependencies = {
         "X2Map:GetZoneStateInfoByZoneId",
@@ -271,21 +358,29 @@ Add("life_activities", "life.activities", "活动", "life", 10, "世界活动、
     defaultEnabled = true,
 })
 Add("life_trade", "life.trade", "跑商", "life", 20, "路线、多货物与实时货率；材料身份/数量可读，材料报价与利润改为独立显式询价后再接回。", {
-    navigationDevelopmentState = "implemented_pending_ru", -- 中文维护注释：2026-09-13 完成路线起终点选择/过滤、SingleFlight+超时防卡、130% 满货率对比模式、经商熟练度预计售价、TradePayoutV3 价格公式、材料显式报价批次限速、路线收藏与 HUD 悬浮窗联动，并通过 10 套闭环单测（tools/rs_trade_tests.lua）；代码与本地验证已完成，保留 implemented_pending_ru 待 RU 实测证据。
-    status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.life.trade", widgetCapable = true, settingsCapable = true,
-    apiDependencies = { "X2Store:GetProductionZoneGroups", "X2Store:GetSellableZoneGroups", "X2Store:GetSpecialtyRatioBetween", "X2Ability:GetAllMyActabilityInfos" },
-    apiReadiness = "official_mixed", apiPolicy = "on_demand_server_query", currentImplementation = "路线/区域/服务器实时货率 + 满货率 130% 本地对比模式（持久化）+ 经商熟练度读取并按已提供旧版工作公式计入预计售价；TradePayoutV3 统一组合静态底价、实时/130% 货率、经商倍率与 TradeNameMultipliers 品类倍率，并恢复 larder/别名价格 Key 解析。路线收藏最多 12 条并由 life.trade 单 Store 持久化，主页面与 life.trade HUD 共用收藏/排序命令（排序为货率/售价/名字三态单选，名字模式 [xx] 前缀货物置顶）；选中贸易品复用 TradeDetailFloatingV3，详情仅在可见期持有独立 Consumer，并通过 QuoteRowMaterials 显式询价当前材料。普通 Refresh 不产生 Auction fan-out。", remainingCapability = "GetLowestPrice 返回形态、RU 生产/可售地区 payload 与静态底价长期一致性仍需实机验证；新增售价拆解需用多路线/多熟练度实售样本继续校准；自动制作台刷新/叛乱记录仍缺安全事件证据", evidence = "V3 Trade Authority + SPECIALTY_RATIO_BETWEEN_INFO + official X2Ability actability list + supplied working Trade payout formula; TradePayoutV3 price-key/larder/category multiplier contracts; bounded favorites + shared TradeDetailFloatingV3 + explicit selected-row material quote",
+    -- 中文维护注释（2026-09-23，trade-live-cargo-focus）：跑商继续使用 v3.life.trade 作为业务 Authority；
+    -- 历史路线/收藏/HUD 仍保留在 v3.life.trade schema1，避免用户升级触发旧指纹迁移。新增的关注/自动刷新/随身扫描偏好
+    -- 单独进入 v3.trade_preferences；查询调度仍维持 SingleFlight，不能因为新增随身扫描而并发 Native 请求。
+    navigationDevelopmentState = "complete",
+    status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.life.trade", diagnosticSources = { "trade_material_identity" }, widgetCapable = true, settingsCapable = true,
+    -- 维护（2026-09-23，trade-runtime-metadata-1）：Feature 实现已把背包槽读取纳入 Authority，Registry 也必须
+    -- 公开相同依赖，避免 Runtime/诊断在实现可用时却把元数据描述成旧能力集合。事件订阅仍由 Demand 生命周期负责。
+    apiDependencies = { "X2Store:GetProductionZoneGroups", "X2Store:GetSellableZoneGroups", "X2Store:GetSpecialtyRatioBetween", "X2Ability:GetAllMyActabilityInfos", "X2Equipment:GetEquippedItemType" },
+    apiReadiness = "official_mixed", apiPolicy = "on_demand_server_query", currentImplementation = "路线/区域/服务器货率 + 满货率 130% 本地对比 + 经商熟练度售价估算；路线请求统一进入 SingleFlight 调度器，用户切线优先尝试 Native、同路线自动刷新遵守本地节流并保留旧数据。新增全部/关注/随身三种投影视图：关注只对可见货物执行材料/利润重投影；随身模式通过 EST_BACKPACK 的已验证 Trade Product ItemID 识别当前贸易包，并用同一 Native lane 串行扫描可售目的地。UNIT_EQUIPMENT_CHANGED 220ms 合并刷新熟练度与背包身份，不使用 Tick。绑定/非市场制作资源保留配方数量但不伪造金币成本。路线/收藏/窗口继续使用历史 v3.life.trade schema1，新偏好独立保存于 v3.trade_preferences。", remainingCapability = "GetLowestPrice 返回形态、RU 生产/可售地区 payload、GetSpecialtyRatioBetween 数值返回的真实节流语义与静态底价长期一致性仍需实机验证；售价拆解需用多路线/多熟练度实售样本继续校准；自动制作台刷新/叛乱记录仍缺安全事件证据", evidence = "V3 Trade Authority + SPECIALTY_RATIO_BETWEEN_INFO + official X2Ability actability list + official X2Equipment:GetEquippedItemType + verified Trade Product ItemID registry; SingleFlight route/cargo scheduler + bounded favorites/tracked projection + shared TradeDetailFloatingV3 + explicit selected-row material quote",
 })
 Add("life_bonds", "life.bonds", "债券 / 居民板", "life", 30, "每日居民板材料、完成状态与背包资源。", {
-    navigationDevelopmentState = "implemented_pending_ru", -- 中文维护注释：2026-09-13 修复居民板 1-7 阶读取与空板/不可用/就绪状态显式区分、修复背包 bagId 1/0 优先与材料统计、接入 activeIndex 解决真实任务未接/进行/可交付/完成状态、实现主页面与悬浮窗交互一致性与详情浮窗联动；并通过完整单测与验收门禁；保留 implemented_pending_ru 待 RU 实测证据。
+    -- 中文维护注释（2026-09-15，用户验收完成）：债券当前产品范围已接受，导航不再标“未完成”。
+    -- 这里只更新 Presentation 开发态；多大陆 dailySnapshots、任务状态、背包资源与 Store Authority 不受影响。
+    -- 存档 historical canonical 修复在 Feature Store 自己声明，不能把“完成”当成绕过完整性检查的理由。
+    navigationDevelopmentState = "complete",
     status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.life.bonds", widgetCapable = true, settingsCapable = true,
     apiDependencies = { "X2Resident:GetResidentBoardContent", "X2Bag:Capacity", "X2Bag:GetBagItemInfo", "X2Quest:IsCompleted", "X2Quest:IsReadyForCompleteQuest" }, apiReadiness = "official_mixed", apiPolicy = "on_demand_read_only",
-    currentImplementation = "单次读取 1-7 居民板，兼容 contents/content/rows/items 与稀疏数字行；按 RU 已验证的 3+4=大陆、5/6=原大陆规则选择分类，显式区分 unavailable/empty/ready；通过 activeIndex 联动任务状态并在主页面与悬浮窗均支持行选择与任务详情浮窗联动",
+    currentImplementation = "按服务器日期分别缓存 west/east/auroria 居民板快照；玩家在各大陆首次刷新后统一合并显示，表格显式标记大陆来源。排序方式（按大陆/按数量）、大陆顺序（西→东/东→西）与重复任务策略（全部/合并）相互独立；合并优先侧不会隐式开启去重。继续兼容 contents/content/rows/items 与稀疏数字行，并通过 activeIndex 联动任务状态。",
     evidence = "V3 Bonds + RU residentboard GetResidentBoardContent(index).contents 行为；未知字段继续 fail-closed；tools/rs_bonds_tests 与 v3_m1_bonds 门禁全绿",
 })
 Add("life_tasks", "life.tasks", "任务追踪", "life", 40, "用户选择的日常与周常任务追踪；支持子任务展开和独立悬浮追踪。", {
     navigationDevelopmentState = "implemented_pending_ru", -- 中文维护注释：2026-09-13 完成子任务选中向父组定位（修复选中子行时无法追踪/无法查看详情）、补全“查看详情”按钮、增加统一服务器日期回退并经 10 套单测（tools/rs_task_tests.lua）与 v3_m1_tasks 门禁验证全绿；保留 implemented_pending_ru 待 RU 实测证据。
-    status = "migrated_m1", lifecycle = "independent", authority = "v3.tasks",
+    status = "migrated_m1", lifecycle = "independent", authority = "v3.tasks", diagnosticSources = { "tasks_v3" },
     widgetCapable = true, settingsCapable = true, defaultEnabled = true,
     apiDependencies = {
         "X2Quest:GetActiveQuestListCount", "X2Quest:GetActiveQuestType",
@@ -295,29 +390,35 @@ Add("life_tasks", "life.tasks", "任务追踪", "life", 40, "用户选择的日�
     currentImplementation = "日常/周常独立选择、父任务逐项加入/取消追踪、仅追踪筛选与悬浮窗复用同一持久追踪集合；.18.119 将逐项操作直接显示为‘✓ 已追踪 / ＋ 可添加’，不再隐藏在选中后的按钮语义里",
     evidence = "V3 QuestProgressService shared projection; no legacy QuestService runtime dependency",
 })
-Add("life_treasure", "life.treasure", "寻宝", "life", 50, "藏宝图坐标、方向与距离。", {
+Add("life_treasure", "life.treasure", "寻宝", "life", 50, "藏宝图坐标、方向、距离与原生世界地图定位。", {
     status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.life.treasure", widgetCapable = true, settingsCapable = true,
-    apiDependencies = { "X2Bag:GetBagItemInfo", "X2Bag:Capacity", "X2Unit:GetUnitWorldPositionByTarget" }, apiReadiness = "official_mixed", apiPolicy = "on_demand_read_only",
-    currentImplementation = "有界背包藏宝图扫描 + 500ms Demand-scoped 玩家位置/方向/距离刷新；Consumer=0 立即停任务",
-    evidence = "V3 Treasure observation contract v1; bounded bag scan + Scheduler position projection; Legacy Resource/Treasure is not loaded",
+    -- 中文维护注释（2026-09-16，寻宝地图定位）：InventorySnapshotV3 仍只提供共享背包事实；ShowWorldmapLocation 仅由用户点击触发。
+    -- 依赖声明用于 FeatureRuntime 惰性导入 BAG/MAP namespace，不代表后台会周期调用 X2Map；500ms Scheduler 仍只读取玩家位置。
+    apiDependencies = { "X2Bag:GetBagItemInfo", "X2Bag:Capacity", "X2Unit:GetUnitWorldPositionByTarget", "X2Unit:GetCurrentZoneGroup", "X2Map:ShowWorldmapLocation" }, apiReadiness = "official_mixed", apiPolicy = "on_demand_read_plus_explicit_ui_action",
+    currentImplementation = "InventorySnapshotV3 bounded 背包扫描 + 坐标字段跨语言藏宝图识别 + 500ms Demand-scoped 玩家位置/方向/距离刷新；世界地图定位使用藏宝图显式 zoneGroupId，缺失时仅在点击定位时读取玩家当前 ZoneGroup，Consumer=0 立即停位置任务",
+    evidence = "V3 Treasure map-location contract v2 + RU API ShowWorldmapLocation(zoneGroupId,globalX,globalY,z) + reference TreasureMapHunter targetZone,targetX,targetY call; fixed context-id 2 removed",
 })
-Add("life_fishing", "life.fishing", "钓鱼", "life", 60, "目标鱼动作 Buff 识别与技能栏推荐；自动 R 热键写入保持 Runtime Blocked，直到 RU 实机完成完整回滚证据。", {
+Add("life_fishing", "life.fishing", "钓鱼", "life", 60, "目标鱼动作识别、技能栏推荐与可逆自动 R；完整写键链已恢复。", {
+  -- 中文维护注释（2026-09-15，用户验收完成）：钓鱼按当前产品范围进入完成区。
+  -- Demand-scoped Buff 观察、FishingHotkeyV3 可逆事务、战斗中延迟恢复和持久恢复快照全部保持原 Authority；
+  -- 这里只改变导航开发态，不把完成标签用于放宽 Native 写键能力门或热键 readback 安全检查。
+  navigationDevelopmentState = "complete",
   status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.life.fishing", widgetCapable = true, settingsCapable = true,
-  currentImplementation = "V3 页面、Demand、TARGET_CHANGED/BUFF_UPDATE 驱动的 bounded 目标 Buff observation 与技能栏推荐；不会读取、覆盖、删除或保存任何游戏快捷键",
-  remainingCapability = "自动 R 仍缺少 verified GetOptionBinding 源槽位集合、明确空绑定语义、写入回读、Reload 恢复及逐写入点故障注入回滚证据；获得 RU Fresh Reload 证据前保持 Runtime Blocked",
-  apiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff" }, apiReadiness = "official_read_only", apiPolicy = "observation_only_hotkey_runtime_blocked",
-  evidence = "Active V3 Fishing observation contract v1 + HotkeyContract v2 runtime-block fence; PRODUCT_COMPLETION_MATRIX locked rows remain SPECIFIC_RUNTIME_BLOCKED",
+  -- 中文维护：Fishing Authority 只在有页面/悬浮窗 Consumer 时观察目标；HotkeyV3 只拥有可逆写键事务，Persistence 仍由 Feature Store 持有，禁止回退成旧版强耦合服务。
+  currentImplementation = "TARGET_CHANGED/BUFF_UPDATE + 100ms Demand-scoped 兜底扫描全部目标 Buff；普通区域/ZoneGroup 49 独立动作映射；HotkeyContract v3 在首次写键前 durable 保存恢复快照，并逐次 Native readback 后才提交状态",
+  -- 中文维护：当前 remainingCapability 只保留 RU 10.0 实机验收，不再把已具备事务/回滚证据的 Auto-R 错标为全局硬禁用；若实机暴露新 API 形态必须重新 fail-closed。
+  remainingCapability = "待 RU 10.0 Fresh Reload 验证实际 R 源槽读取、五种鱼动作连续切换、战斗中延迟恢复、ZoneGroup 49 与异常重载自动恢复；离线通过不等于实机完成",
+  apiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:GetCurrentZoneGroup", "X2Player:PlayerInCombat", "X2Hotkey:GetOptionBinding", "X2Hotkey:BindingToOption", "X2Hotkey:SetOptionBindingWithIndex", "X2Hotkey:RemoveOptionBinding", "X2Hotkey:SaveHotKey" },
+  apiReadiness = "official_mixed_pending_ru", apiPolicy = "demand_scoped_reversible_hotkey_transaction",
+  evidence = "Addon1.2 可用旧版的可逆 R 事务语义 + FishBuddy/Nuzi Fishing 一致动作 Buff IDs + V3 FishingHotkeyV3 transaction/readback/durable-recovery offline regressions; RU final acceptance pending",
 })
-Add("life_craft_planner", "life.craft_planner", "制作规划", "life", 70, "多配方材料、持有量/缺口与已知记录制作链规划；市场成本必须走后续显式限速报价。", {
-    navigationDevelopmentState = "incomplete", -- 中文维护（2026-09-13 用户实测）：制作规划当前功能覆盖仍不全面，继续留在“未完成”区。保留现有检索/持久化/缺口/递归与限速报价实现，不因已有离线测试自动上移完成态。
-    status = "migrated_partial", lifecycle = "explicit_query", authority = "v3.craft_planner", widgetCapable = true, settingsCapable = true,
-    apiDependencies = { "X2Craft:GetCraftBaseInfo", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo", "X2Craft:GetCraftTypeByItemType", "X2Bag:Capacity", "X2Bag:GetBagItemInfo" },
-    apiReadiness = "official_mixed_pending_runtime", verification = "local_contract_verified_pending_ru_runtime", apiPolicy = "on_demand_read_only",
-    currentImplementation = "用户从 98 条已核制作物目录选择配方，内部解析 CraftID；bounded product/material rows、持有量/缺口与 known-record recursive graph；普通 Refresh 不发 Auction 查询；.18.121 新增 CraftPlanV3：最多 12 个稳定 recipeKey 的持久多配方计划，同配方合并数量，按 StaticDataV2 聚合材料/持有量/缺口；计划报价仍只通过用户显式 QuotePlanMaterials -> PriceQuoteQueueV3 批量限速，并分别给出总需求/当前缺口报价小计。",
-    remainingCapability = "非跑商制作目录的用户级检索、RU 原生制作字段一致性，以及未知/歧义 recursive graph 节点的完整递归成本仍待完成",
-    evidence = "CraftPlanContract v1 + governed StaticDataV2 recipe/material identities + shared PriceQuoteQueueV3; no Native recipe enumeration or implicit auction fan-out",
-})
+-- 中文维护注释（2026-09-15，用户删除制作规划）：life.craft_planner 已从产品导航/Feature Registry 移除。
+-- 旧 v3.business.life_craft_planner 存档不会主动清除；升级覆盖时即使磁盘残留旧扩展文件，toc.g 也不再加载它。
+-- “制作台助手（tools_craft）”仍是独立功能，继续复用共享 CraftRead/CraftProjection，不受本删除影响。
 Add("life_housing", "life.housing", "住宅 / 税务", "life", 80, "住宅名称、类型、所有者与当前税务信息；仅在住宅上下文按需读取。", {
+    -- 中文维护注释（2026-09-15，用户删除选项卡）：只从主导航移除住宅/税务入口，不删除 Feature/Authority/Store。
+    -- 这样旧路由、历史配置与后续内部调用仍兼容；用户主菜单不再暴露未完成入口，且不会因“删选项卡”误清用户数据。
+    navigationVisible = false,
     navigationDevelopmentState = "incomplete", -- 中文维护（2026-09-13 用户实测）：住宅/税务当前功能覆盖仍不全面，继续留在“未完成”区。只调整 Presentation 开发态；既有只读 Authority、Demand 生命周期、存档与 API 门禁不变。
     status = "migrated_v3_read_only", lifecycle = "page_scoped", authority = "v3.housing", widgetCapable = false, settingsCapable = false,
     apiDependencies = { "X2House:GetCurrentHousingTaxInfo", "X2House:GetHouseOwnerName", "X2House:GetHouseName", "X2House:GetHouseType" },
@@ -346,21 +447,40 @@ Add("tools_bag", "tools.bag_organizer", "整理背包", "tools", 10, "快速在�
     apiReadiness = "local_contract_verified_pending_native_runtime", verification = "v3_native_window_follow_contract_pending_ru_visual_runtime",
     apiPolicy = "read_plus_explicit_move", evidence = ".18.123 keeps the reference project as behavior evidence only and replaces its scan/queue mechanics with shared InventorySnapshotV3. The service normalizes native rows into detached primitives, prefers verified physical bagId=1 with bounded bagId=0 fallback, and builds identity/category indexes in the same pass. Quick take/put and category batch queue grouped stable intent rather than one record per transient slot, use live slot hints + wraparound revalidation before every write, and only run a bounded population count when the post-write source slot is ambiguous. The old production name+grade+category tuple remains a conservative fallback only when RU omits itemType. All writes stay explicit, 250ms serialized, mutually exclusive and fail-closed on read/verify/window changes. RU visual anchoring and long move timing still require Fresh Reload proof.",
 })
-Add("tools_auction", "tools.auction_favorites", "拍卖收藏", "tools", 20, "拍卖关键词/收藏、当前挂单查询、稳定分页与单物品显式报价；服务器搜索统一走共享查询服务。", {
-    navigationDevelopmentState = "incomplete", -- 中文维护（2026-09-13 用户实测）：拍卖收藏当前产品功能仍不全面，继续留在“未完成”区。保留现有收藏/搜索/单飞/报价/Sidecar 链路，不以离线测试替代产品验收。
-    status = "migrated_partial", lifecycle = "explicit_query", authority = "v3.auction", settingsCapable = true,
+-- 中文维护注释（2026-09-15，拍卖收藏玩家可见说明）：
+-- 问题原因：Registry.description 会直接进入主页面标题说明，旧文案暴露“稳定分页/共享查询服务”等
+-- 实现细节，却没有告诉玩家真正可见的 AuctionSidecar 工作区。Authority/数据流不在 Registry，
+-- 这里只描述产品行为；查询仍由 AuctionQueryV3/AuctionSearchBridgeV3，Sidecar 生命周期仍由
+-- AuctionSurfaceV3 + Presentation Controller 管理。兼容边界：不改 id/route/order/status/default/store/schema。
+-- 实现理由：让主页面首屏先说明“收藏/今日任务/临时清单”与拍卖行助手关系。风险仅为展示文本变更，
+-- 后续若 Sidecar 页签能力调整，应同步此说明，禁止在描述里重新暴露内部 API 契约。
+Add("tools_auction", "tools.auction_favorites", "拍卖收藏", "tools", 20, "拍卖关键词收藏、当前挂单查询与拍卖助手管理；打开拍卖行后可使用收藏、今日任务和临时清单工作区。", {
+    -- 中文维护注释（2026-09-15，用户验收后标记完成）：拍卖收藏的主页面入口、收藏 CRUD、
+    -- Sidecar 三页签、独立悬浮开关与直接 AuctionQuery 降级路径已经形成完整用户闭环，用户明确要求
+    -- 从“未完成”区移出。这里仅更新 Registry 产品/导航元数据，不改变 AuctionQueryV3 Authority、
+    -- Store schema、Sidecar 生命周期或 API 能力门。原生搜索 EditBox 同步仍是可降级增强：失败时直接
+    -- 查询路径保持可用，因此不再作为产品完成态 blocker。未来若核心 CRUD/查询/Sidecar 退化，应重新
+    -- 标记 incomplete，而不是用可选增强的 RU 验证状态反向污染完成态。
+    navigationDevelopmentState = "complete",
+    status = "migrated_m1", lifecycle = "explicit_query", authority = "v3.auction", diagnosticSources = { "auction" }, widgetCapable = true, settingsCapable = true,
     apiDependencies = { "X2Auction:SearchAuctionArticle", "X2Auction:GetSearchedItemCount", "X2Auction:GetSearchedItemInfo", "X2Auction:GetLowestPrice", "ADDON:GetContent", "ADDON:GetContentMainScriptPosVis" },
-    apiReadiness = "official_mixed", verification = "local_contract_verified_pending_ru_runtime", apiPolicy = "explicit_server_query_plus_readonly_native_surface_observation",
-    currentImplementation = "收藏增删/持久化/分页可用；AuctionQueryV3 串行拥有无 token 的 AUCTION_ITEM_SEARCHED；Quote 走共享 PriceQuoteQueueV3；.18.118 新增 AuctionSurfaceV3 v2 + 独立 Sidecar Consumer，打开原生拍卖行时只读跟随其位置/可见性并复用同一收藏/搜索 Authority；兼容 RU MainScript 只返回四个几何值而省略 visible 的构建，并用 ADDON:GetContent 父链可见性/几何作为更强事实，不后台发起搜索。",
-    remainingCapability = "Sidecar 的 RU 视觉跟随/原生拍卖行几何返回仍需 Fresh Reload；RU 搜索结果的全部字段/排序语义与更丰富筛选仍待实机验证；当前结果不能被当成历史成交样本",
-    evidence = "z_api_functions exports UIC_AUCTION + ADDON:GetContent/GetContentMainScriptPosVis; retained old Auction Favorites service proves the RU four-value geometry compatibility and parent-chain behavior; Active V3 uses the existing Favorite Store/AuctionQuery and a read-only 250ms surface observer with no server-query fan-out"
+    apiReadiness = "official_mixed", verification = "user_runtime_accepted_2026_09_15", apiPolicy = "explicit_server_query_plus_readonly_native_surface_observation",
+    currentImplementation = ".18.213+：AuctionSidecar 为收藏/今日任务/临时三页签工作区；主页面可独立启停悬浮助手。DailyAuctionMaterialsV3 结合 QuestProgressV3 detached 活动任务目录与 TradeMaterialIdentityV3 已核配方识别明确区域做货任务；收藏、Session 临时清单和 AuctionSearchBridgeV3 搜索降级语义保持独立。原生搜索框同步属于可选增强，失败时仍直接走 AuctionQueryV3。",
+    remainingCapability = "",
+    evidence = "用户已于 2026-09-15 接受拍卖收藏产品闭环；UIC_AUCTION + ADDON:GetContent/GetContentMainScriptPosVis provide the native-surface fact; AuctionQueryV3 keeps sole un-tokened AUCTION_ITEM_SEARCHED ownership; local tests cover direct/fallback search, persistent Sidecar toggle, CRUD, tab demand release and trade-detail handoff."
 })
 Add("tools_market_analysis", "tools.market_analysis", "拍卖行情", "tools", 25, "显式查询当前拍卖挂单并分页查看价格、数量与卖家；不把当前挂单伪装成历史成交行情，也不后台持续扫拍卖行。", {
+    -- 中文维护注释（2026-09-15，用户删除选项卡）：仅隐藏主导航；AuctionQueryV3 与旧路由保持存在，
+    -- 避免拍卖收藏/诊断或历史配置因 UI 清理而失去共享查询 Authority。
+    navigationVisible = false,
     status = "migrated_partial", currentImplementation = "AuctionQueryV3 提供按需当前挂单查询与 bounded 结果投影；页面明确标记“非历史成交价”，不后台扫拍卖行", remainingCapability = "真正历史行情仍需要稳定的成交/时间样本来源；当前 Search result 只能表示当前挂单", lifecycle = "explicit_query", authority = "v3.market_analysis", widgetCapable = false, settingsCapable = true,
     apiDependencies = { "X2Auction:SearchAuctionArticle", "X2Auction:GetSearchedItemCount", "X2Auction:GetSearchedItemInfo", "X2Auction:GetLowestPrice", "X2Auction:AskMarketPrice" },
     apiReadiness = "official", apiPolicy = "explicit_server_query", evidence = "Retained rs_auction_service.lua 9-parameter SearchInteractive + AuctionQueryV3 serialized completion ownership; history remains explicitly unclaimed",
 })
 Add("tools_craft", "tools.craft_assist", "制作台助手", "tools", 30, "制作台上下文的材料、持有量与缺口辅助；生命周期与跑商解耦，批量市场报价不在普通刷新执行。", {
+    -- 中文维护注释（2026-09-15，用户删除选项卡）：制作台 Sidecar/CraftSurface 仍可能被原生制作窗口使用，
+    -- 因此只删除主导航可见性，不物理删除 Feature/Service/Store；兼容现有设置且避免回退成强耦合。
+    navigationVisible = false,
     navigationDevelopmentState = "incomplete", -- 中文维护（2026-09-13 用户实测）：制作台助手当前功能覆盖仍不全面，继续标记“未完成”。现有原生窗口观察、Sidecar 生命周期和无后台询价边界保持不变。
     status = "migrated_partial", lifecycle = "independent", authority = "v3.craft", widgetCapable = true, settingsCapable = true,
     apiDependencies = { "X2Craft:GetCraftTypeByItemType", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo", "X2Bag:Capacity", "X2Bag:GetBagItemInfo", "ADDON:GetContent", "ADDON:GetContentMainScriptPosVis" },
@@ -375,15 +495,24 @@ Add("tools_instance_browser", "tools.instance_browser", "副本目录", "tools",
     apiReadiness = "official", apiPolicy = "on_demand_read_only", evidence = "ArcheRage RU official addon API update 2026-05-19 + InstanceCatalogV3",
 })
 Add("tools_social", "tools.social", "社交名单", "tools", 50, "好友列表、屏蔽与静音名单的统一查看和管理；写操作遵守 1 秒冷却。", {
+    -- 中文维护注释（2026-09-15，用户删除选项卡）：隐藏主导航但保留原 Feature 与 1 秒写冷却 Authority。
+    -- 不删除旧配置、不改变好友/屏蔽/静音 API 写入边界；未来若重新启用入口无需迁移数据。
+    navigationVisible = false,
     navigationDevelopmentState = "incomplete", -- 中文维护（2026-09-13 用户实测）：社交名单仍有产品能力缺口，显式固定为“未完成”，避免官方 API 完整度被启发式误判为产品已完成。现有 1 秒写冷却与 Authority 边界不变。
     status = "migrated_m16_18", lifecycle = "explicit_action", authority = "v3.social", settingsCapable = true,
     apiDependencies = { "X2Friend:IsMyFriend", "X2Friend:GetFriendList", "X2Friend:GetBlockList", "X2Friend:BlockUser", "X2Friend:UnblockUser", "X2Friend:GetMuteList", "X2Friend:MuteUser", "X2Friend:UnmuteUser" },
     apiReadiness = "official", apiPolicy = "cooldown_writes", evidence = "ArcheRage RU official addon API updates 2026-04-28 / 2026-08-05; central Api CapabilityCooldown contract enforces 1000ms writes",
 })
-Add("tools_hotkey_profiles", "tools.hotkey_profiles", "快捷键方案", "tools", 70, "保存/恢复一组游戏快捷键绑定；所有写操作只允许在非战斗状态执行。", {
-    status = "runtime_blocked", runtimeBlocked = true, runtimeBlocker = "当前 RU API 没有动作名称枚举接口；GetOptionBinding 只能读取已知 action/index，无法安全构造完整快捷键方案", currentImplementation = "V3 页面只显示阻塞原因，不写入未知按键", remainingCapability = "需要官方 action registry 或完整 profile 导出契约", lifecycle = "explicit_action", authority = "v3.hotkey_profiles", settingsCapable = true,
-    apiDependencies = { "X2Hotkey:GetOptionBinding", "X2Hotkey:BindingToOption", "X2Hotkey:OptionToBinding", "X2Hotkey:SetOptionBindingWithIndex", "X2Hotkey:RemoveOptionBinding", "X2Hotkey:SaveHotKey" },
-    apiReadiness = "official_restricted", apiPolicy = "combat_restricted_write", evidence = "ArcheRage RU official hotkey API + 2026-08-19 combat restrictions",
+Add("tools_hotkey_profiles", "tools.hotkey_profiles", "快捷键方案", "tools", 70, "保存安全白名单快捷键方案并跨角色应用；所有写操作仅允许在非战斗状态执行。", {
+    -- 中文维护注释（hotkey-profile-v2）：主动作栏 1..12 继续使用现有 Suite/Fishing 已验证契约；队伍目标 1..4 与
+    -- 头顶标记 1..3 必须在每次保存/应用前同时通过 IsValidActionName + IsOverridableAction，历史 binding.g
+    -- 只提供 arg 范围证据，绝不作为 Runtime Authority。账号级 Store schema2 兼容迁移 v1 方案。
+    status = "migrated_partial", lifecycle = "explicit_action", authority = "v3.hotkey_profiles", settingsCapable = true,
+    navigationDevelopmentState = "incomplete",
+    currentImplementation = "账号级最多8个方案；主动作栏12项固定白名单，并在当前客户端双验证通过时额外保存队伍目标4项、头顶标记3项。应用前耐久保存同范围恢复快照，单事务写入+SaveHotKey+逐项readback，失败自动回滚；战斗中 fail-closed。",
+    remainingCapability = "完整游戏快捷键仍缺官方 action registry/稳定枚举；移动、界面、聊天及 action_bar_button 等未核分类继续不猜、不扫描、不写入。",
+    apiDependencies = { "X2Hotkey:GetOptionBinding", "X2Hotkey:IsValidActionName", "X2Hotkey:IsOverridableAction", "X2Hotkey:BindingToOption", "X2Hotkey:SetOptionBindingWithIndex", "X2Hotkey:RemoveOptionBinding", "X2Hotkey:SaveHotKey", "X2Player:PlayerInCombat", "X2Unit:UnitNameWithWorld" },
+    apiReadiness = "official_restricted_runtime_validated_whitelist", apiPolicy = "explicit_noncombat_transaction_with_readback", evidence = "ArcheRage RU official hotkey API + FishingHotkeyV3 main action-bar contract + bounded runtime validation for team_target/over_head_marker",
 })
 Add("tools_reinforce_analysis", "tools.reinforce_analysis", "装备强化分析", "tools", 80, "读取已验证的强化聚合/套装信息；逐槽位等级与材料详情在合法 equipSlotIndex 契约确认前保持 Runtime Blocked。", {
     status = "migrated_partial", currentImplementation = "V3 只读聚合投影：总强化等级、属性系合计、下一套装档位、套装状态与组合效果上限；不枚举、不探测未知 equipSlotIndex", remainingCapability = "逐槽位强化等级/材料仍为 SPECIFIC_RUNTIME_BLOCKED：需要 RU 实机证明合法 equipSlotIndex 枚举来源及 GetReinforceInfo/GetMaterialInfo 返回结构；写入类强化接口始终不可达", lifecycle = "independent", authority = "v3.reinforce_analysis", settingsCapable = true,
@@ -407,6 +536,8 @@ Add("tools_random_shop", "tools.random_shop", "随机商店计数", "tools", 100
     evidence = "Bundled allowed GetRandomShopStoreRefreshCount() and existing capability entry (2026-08-26); random-shop-observer-1 local regression, no RU acceptance claim",
 })
 
+-- 个人工作台是应用设置页，无独立 Enabled / API / 性能负载，不注册业务实现。
+Add("system_workspace", "system.workspace", "个性化工作台", "system", 5, "导航、首页与关注列表自定义。", { status="foundation", lifecycle="shell", authority="v3.workspace", verification="presentation_only" })
 Add("system_widgets", "system.widgets", "悬浮组件", "system", 10, "统一管理已经迁入新版框架的独立悬浮组件。", { status = "foundation", lifecycle = "shell", authority = "widget_host" })
 Add("system_features", "system.features", "功能模块", "system", 20, "统一查看新版功能目录与各功能的独立运行状态。", { status = "foundation", lifecycle = "shell", authority = "feature_registry" })
 Add("system_settings", "system.settings", "全局设置", "system", 30, "只管理应用级设置；各功能设置由对应功能自己管理。", { status = "foundation", lifecycle = "shell", authority = "v3.shell" })
@@ -433,7 +564,7 @@ AssignGroup("combat_team", 30, { "combat_team_tools", "combat_raid_readiness", "
 AssignGroup("combat_loadout", 40, { "combat_gear" })
 
 AssignGroup("life_schedule", 10, { "life_activities", "life_tasks" })
-AssignGroup("life_economy", 20, { "life_trade", "life_bonds", "life_craft_planner" })
+AssignGroup("life_economy", 20, { "life_trade", "life_bonds" })
 AssignGroup("life_property", 30, { "life_housing", "life_butler" })
 AssignGroup("life_leisure", 40, { "life_treasure", "life_fishing" })
 

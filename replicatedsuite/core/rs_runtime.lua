@@ -100,6 +100,7 @@ function R:Stop()
     if S.Demand ~= nil and type(S.Demand.ClearAll) == "function" then
         pcall(function() S.Demand:ClearAll("runtime_stop") end)
     end
+    if S.Layout and type(S.Layout.StopMetricsEvents) == "function" then pcall(function() S.Layout:StopMetricsEvents() end) end
     if S.Events ~= nil and type(S.Events.Stop) == "function" then pcall(function() S.Events:Stop() end) end
     if S.Scheduler ~= nil and type(S.Scheduler.Stop) == "function" then pcall(function() S.Scheduler:Stop() end) end
     self.escRetryScheduled = false
@@ -128,9 +129,8 @@ function R:InstallSchedulerTasks()
 
     -- One shared scheduler is the only periodic Foundation driver. Features add
     -- bounded lanes to this scheduler instead of creating their own OnUpdate.
-    if Add("v3_layout_metrics", S.Constants.Refresh.layoutMs, function()
-        if S.Layout ~= nil and type(S.Layout.PollChanges) == "function" then S.Layout:PollChanges() end
-    end, true, S.Layout, "P4") ~= true then return false, "layout scheduler task registration failed" end
+    -- 维护（viewport-recovery-1）：移除永久 metrics 轮询。Layout 在事件总线/调度器
+    -- 启动后安装自有事件宿主 + 单次稳定采样；Persistence/Observation 周期不受影响。
 
     if Add("v3_persistence", math.max(200, tonumber(S.Constants.Refresh.storageMs) or 200), function()
         if S.Persistence ~= nil and type(S.Persistence.Tick) == "function" then S.Persistence:Tick() end
@@ -374,6 +374,7 @@ function R:Start()
 
         EnterStage("scheduler_start")
         if S.Scheduler == nil or S.Scheduler:Start() ~= true then error("monotonic scheduler failed to start") end
+        if S.Layout and type(S.Layout.StartMetricsEvents) == "function" then S.Layout:StartMetricsEvents() end
 
         EnterStage("feature_defaults")
         if S.FeatureRuntime ~= nil and type(S.FeatureRuntime.EnableDefaults) == "function" then
@@ -412,6 +413,8 @@ function R:Start()
         if S.FeatureRuntime ~= nil then pcall(function() S.FeatureRuntime:DisableAll("startup_failure") end) end
         if S.RefreshCoordinator ~= nil and type(S.RefreshCoordinator.ClearAll) == "function" then pcall(function() S.RefreshCoordinator:ClearAll() end) end
         if S.Demand ~= nil and type(S.Demand.ClearAll) == "function" then pcall(function() S.Demand:ClearAll("startup_failure") end) end
+        -- 维护：失败回滚也释放通知 owner/单次任务，旧代不能复活窗口。
+        if S.Layout and type(S.Layout.StopMetricsEvents) == "function" then pcall(function() S.Layout:StopMetricsEvents() end) end
         if S.Events ~= nil then pcall(function() S.Events:Stop() end) end
         if S.Scheduler ~= nil then pcall(function() S.Scheduler:Stop() end) end
         if S.UIHostManager ~= nil then pcall(function() S.UIHostManager:HideAll(true) end) end

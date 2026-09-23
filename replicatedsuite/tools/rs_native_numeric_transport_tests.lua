@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 1 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 -- 维护（2026-09-12）：Core已支持物理4，未知版本拒绝样本改5；旧精度/破损拒绝断言保持。
 -- 维护：真实取证 fixture + 独立构造的 Native 数值降精度测试。此工具不进 TOC。
 -- Authority：生产 Store/Persistence/API 原样加载；仅存储为内存盘，不代表 RU 客户端实测。
@@ -198,8 +202,8 @@ Test('v3 rejects unwrapped fractional Native value and unknown future transport'
         local out,err=P:DecodePhysicalEnvelope({__rsmeta={framework=3,transportVersion=3},payload={v=v}})
         assert(out==nil and err=='transport_native_number_v3',err)
     end
-    assert(P:DecodePhysicalEnvelope({__rsmeta={framework=3,transportVersion=5},payload={}})==nil)
-    assert(P:EncodePhysicalEnvelope({__rsmeta={framework=3,transportVersion=5},payload={}})==nil)
+    assert(P:DecodePhysicalEnvelope({__rsmeta={framework=3,transportVersion=6},payload={}})==nil)
+    assert(P:EncodePhysicalEnvelope({__rsmeta={framework=3,transportVersion=6},payload={}})==nil)
 end)
 Test('physical string budget expansion refuses write instead of truncating numeric tokens',function()
     local _,P,io=Boot();local st=P:RegisterV3Store({id='v3.test.numeric.budget',owner='v3.test',scope=P.Scope.Account,

@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 4 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Bonds / Resident Board Acceptance / Sequence Contract
 --
@@ -19,13 +23,19 @@ G:RegisterSequenceCase("v3_m1_bonds", function()
 
     local store = S.Persistence and S.Persistence:GetStore(F.storeId or "v3.life.bonds") or nil
     if store == nil or tostring(store.owner or "") ~= "v3.life.bonds" then return Fail("store_contract") end
+    -- 中文维护注释（2026-09-15，pre-continentOrder 兼容门禁）：债券曾在 schema=1 内新增 canonical 字段。
+    -- Historical bridge 属于 Bonds Store 自己的兼容契约；若未来重构漏注册，旧合法存档会再次被 Core 正确地 fence。
+    -- Acceptance 因此只检查 hook 存在，不在此绕过/模拟 Hash；exact old-stamp 认证仍完全由 Persistence Core 执行。
+    if type(store.rebuildCanonicalForIntegrity) ~= "function" then return Fail("store_historical_canonical_contract") end
 
     if S.UIV3 == nil or S.UIV3.PageHost == nil or S.UIV3.PageHost.factories["life.bonds"] == nil then return Fail("page_contract") end
     if S.UIV3.WidgetHost == nil or S.UIV3.WidgetHost:GetSpec("life.bonds") == nil then return Fail("widget_contract") end
 
-    if type(F.Commands) ~= "table"
+    if (tonumber(F.MultiContinentSnapshotContractVersion) or 0) < 1
+        or type(F.Commands) ~= "table"
         or type(F.Commands.Refresh) ~= "function"
         or type(F.Commands.SetSortMode) ~= "function"
+        or type(F.Commands.SetContinentOrder) ~= "function"
         or type(F.Commands.SetBondFilterOption) ~= "function"
         or type(F.Commands.SetDuplicatePriority) ~= "function"
         or type(F.Commands.SelectRow) ~= "function"
@@ -44,6 +54,14 @@ G:RegisterSequenceCase("v3_m1_bonds", function()
         local ok, err = F:AcquireConsumer(token)
         if ok ~= true then return Fail("consumer_acquire: " .. tostring(err)) end
         acquired = true
+        -- 中文维护注释（bond-progress-lifecycle-acceptance）：债券任务状态的 Authority 在 QuestProgressV3；
+        -- 第一个 Bonds Consumer 必须同步持有该服务并订阅内部更新，否则真实交任务后只能等偶发刷新。
+        local progress = S.Services and S.Services.QuestProgressV3 or nil
+        if type(progress) ~= "table" or F.progressConsumerHeld ~= true or F.progressSubscribed ~= true
+            or (tonumber(progress.consumerCount) or 0) <= 0 then
+            F:ReleaseConsumer(token)
+            return Fail("quest_progress_lifecycle_not_held")
+        end
     end
 
     F.Authority:Refresh()
@@ -84,6 +102,10 @@ G:RegisterSequenceCase("v3_m1_bonds", function()
         end
     end
 
-    if acquired then F:ReleaseConsumer(token) end
+    if acquired then
+        local released, releaseErr = F:ReleaseConsumer(token)
+        if released ~= true then return Fail("consumer_release: " .. tostring(releaseErr)) end
+        if F.progressConsumerHeld == true or F.progressSubscribed == true then return Fail("quest_progress_lifecycle_not_released") end
+    end
     return true
 end)

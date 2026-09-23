@@ -160,6 +160,9 @@ V3 Application Shell / Router / PageHost / WidgetHost / ModalHost
 | `AlertsService` | 短生命周期 Alert 状态 |
 | `ScreenProjectionV3` | Native world/screen → **UIParent 屏幕坐标 Authority** |
 | `AuctionQueryV3` | 当前挂单查询、事件所有权、串行化与限速 |
+| `AuctionSearchBridgeV3` | 显式拍卖查询桥；原生搜索栏只做 bounded/readback 增强同步，失败自动降级到 `AuctionQueryV3` |
+| `DailyAuctionMaterialsV3` | 按需读取当前居民做货任务；历史 QuestId 表作为兼容线，RU 实机明确“地区+特产类型”标题可直接解析已核配方；多候选必须显式选择，绝不累加 |
+| `AuctionSessionListV3` | 纯 Session 临时材料组 CRUD；无 Persistence Store，重载自动清空 |
 | `PriceQuoteQueueV3` | 共享按需报价队列与 bounded quote read-model |
 | `AuctionSurfaceV3` / `CraftSurfaceV3` | 只读观察原生窗口可见性/几何，不拥有业务状态 |
 
@@ -236,6 +239,19 @@ LoadData 校验顺序
 
 **未知 mismatch 始终 fail-closed。** 恢复候选没有信任权，必须逐字命中旧 `encodedFingerprint`。
 
+#### 状态显示持久化边界（.18.243+）
+
+`v3.buff_display` 已降级为 **LegacyMigrationSourceOnly**，只允许首次升级读取，禁止作为正常运行时写 Authority。当前持久化拆分为：
+
+- `v3.buff_display.settings`：小型显示/窗口设置；
+- `v3.buff_display.layout`：自身/目标 HUD 布局、校准、复制自身→目标、Reset；
+- `v3.buff_display.tracking.player.a|b` / `target.a|b` / `meta.a|b`：追踪数据 inactive A/B；
+- `v3.buff_display.tracking.manifest`：唯一 active slot / generation 提交点。
+
+Tracking 修改必须先 durable 写入并回读验证 inactive 的 player/target/meta 三个 Store，**全部成功后**才允许提交 manifest。inactive 写失败或 manifest 写失败都不得改变上一代 Authority；active slot 损坏则 fail-closed，禁止偷偷回退到 inactive 猜用户配置。HUD/settings 保存不得触碰 tracking Store，更不得重新写旧 `v3.buff_display`。
+
+首次迁移的方案 A 是一次性兼容例外：仅当旧 schema8/Transport5 的 `player.auto` 已是实证残片、`target.auto` 为完整 dense 列表且新 manifest 尚不存在时，允许以完整 target Auto 作为 player Auto 迁移基线；迁移完成后该规则退出日常数据流，**不得扩展成 Twin Authority、模糊恢复或 Hash 猜 ID**。
+
 ### 3.8 Static Data / ID
 
 静态身份命名空间**必须分离，互不可替**：
@@ -268,17 +284,17 @@ LoadData 校验顺序
 9. **故障隔离**：单个模块异常不拖垮 Suite
 10. **中文维护注释强制**：所有新增/修改代码行必须说明"为什么存在、属于哪个 Authority/生命周期/安全边界、未来不能破坏什么"
 
-### 4.1 运行时受阻能力（安全护栏，不得静默解除）
+### 4.1 高风险 Native 能力（安全护栏，不得绕过事务）
 
-以下能力当前**必须**保持 `SPECIFIC_RUNTIME_BLOCKED`，Active 实现不得重新引入被阻断的 Native 调用：
+以下能力必须由各自 Authority 的显式契约保护；不得因为旧版“曾经能用”就绕过 Capability / 生命周期 / 恢复边界：
 
-| 能力 | 状态 |
+| 能力 | 当前状态 |
 |---|---|
-| Fishing full R source-slot enumeration/snapshot | SPECIFIC_RUNTIME_BLOCKED |
-| Fishing R write/restore/error recovery | SPECIFIC_RUNTIME_BLOCKED |
+| Fishing full R source-slot enumeration/snapshot | `HotkeyContractVersion = 3`，只在钓鱼 Demand 激活且非战斗时读取；首次写键前必须 durable 保存恢复快照 |
+| Fishing R write/restore/error recovery | `FishingHotkeyV3.TransactionContractVersion = 3`，逐次写入后 readback，关闭/切区/重载恢复失败时保留 recovery 并 fail-closed |
 | Reinforcement slot levels/materials/set effects | SPECIFIC_RUNTIME_BLOCKED |
 
-代码侧对应标记：`Fishing.HotkeyRuntimeBlocked = true`、`Fishing.HotkeyContractVersion = 2`。
+中文维护：Fishing 不再使用 `HotkeyRuntimeBlocked=true` 的全局硬禁用；它仍保持 `migrated_partial`，直到 RU 10.0 Fresh Reload 实钓完成源槽、五动作、ZoneGroup 49、战斗延迟恢复和异常重载恢复验收。离线测试不能升级为“实机完成”。
 
 ---
 
@@ -313,15 +329,26 @@ RU 往返可能让 Lua 表的 sequence 变成稀疏/map。正常 `ipairs()` 会�
 
 - ArcheAge/CryEngine UI 原点在**左上角**：`+X→右`、`+Y→下`（与直觉相反，页面上写"向上"要减 Y）
 - **detached Popup**（Dropdown / ColorField / Tooltip / ContextMenu）逻辑归属 trigger，但物理 root 挂在 `UIParent`。RU 的 `GetEffectiveOffset` 在不同控件/父级下语义不稳定，**禁止业务自己拼绝对坐标**、禁止 `*uiScale` / `/uiScale` 补偿
-- Suite-owned Popup 必须**直接相对 Trigger Native Widget 锚定**；只有外部原生控件才允许进 Effective Geometry 校准车道
-- **坐标 lane 必须显式**：`popup-anchor-v1`（组件 popup）、`external-native-window-v1`（跟随游戏窗口）、`world-projection`（ScreenProjectionV3）、persistent/free-window 互不替代
+- Suite-owned Popup 必须先由统一 `PopupPositioning` 解析 Trigger 几何，但**最终 Anchor 车道按控件类型选择**：Dropdown/Tooltip/ContextMenu 可走 Native-relative；ColorField V2 因 RU 顶层 Window 跨层级 Anchor 到页面 Button 会出现“成功但仍停在(0,0)”的实机故障，必须走 `ResolveAnchorRect → ResolveAnchored → UIParent` 的 viewport-resolved 车道
+- **坐标 lane 必须显式**：`popup-native-relative-v1`（适合 Native-relative 的 detached popup）、`popup-viewport-resolved-v1`（ColorField V2 顶层 Window）、`external-native-window-v1`（跟随游戏窗口）、`world-projection`（ScreenProjectionV3）、persistent/free-window 互不替代
 - `Addon Scale` 只影响控件尺寸，**禁止乘到世界投影位置**
 - 屏幕边缘适配用 `UIBounds:CorrectOffsetByScreen()`，**禁止**为 1024/1280/1920 各写一套 magic offset
+
+### 5.3.1 ColorField V2
+
+- 共享颜色选择器统一使用 `300×270` 的可读布局：当前颜色预览、常用色、0..255 的红/绿/蓝、恢复默认/取消/应用
+- 业务 `get/set` 仍保持 `{r,g,b}` 的 0..1 数据契约，UI 只在 Presentation 层转换成 0..255，禁止为了界面改存档格式
+- 打开颜色面板时建立 Draft；滑块/预设只修改 Draft，**不写 Persistence**；只有点击“应用”才提交一次业务写入
+- “取消”、点击外部关闭、再次点击 Trigger、页面释放都必须丢弃 Draft；“恢复默认”也只是预览，仍需“应用”确认
+- ColorField popup body 不属于普通页面 Layout Tree，构建后和每次打开时都必须显式 `Layout()`，禁止再依赖 1×1 Host 的隐式布局
 
 ### 5.4 输入与焦点
 
 - 所有 Suite 键盘输入按 Native physical id 登记；`ClearFocus` 只有在"global focused id → 已登记 Suite input → 属于正在停用子树"三条同时成立时才执行，**不得误清游戏聊天输入**
 - RU **尚未验证** generic `OnKeyDown` / `OnKeyUp` / `OnTextChanged`，Foundation Audit 直接禁止 Active Runtime 绑定这三类事件
+- **DraftSession V2**：`draftActive`（Lua 草稿事务）与 Native `focused/keyboardArmed` 必须分离。带“应用/添加/搜索”等明确确认动作的输入在 `LostFocus` 时只捕获草稿并释放键盘，不得写 Feature/Store，也不得恢复 Authority 文本；只有 Apply/Enter/业务动作才提交，Cancel/页面 Release 才丢弃。
+- `NumericField` 有 Apply 按钮时必须使用 explicit draft；Slider/± 属于同字段的另一条明确 Authority 写路径，可以显式取代该字段未应用草稿。高频 Feature Presentation 刷新必须查询 `draftActive`，禁止用 Native Focus 判断用户是否仍有未提交输入。
+- Draft 诊断只允许输出 active/focused 数量、控件 logical id 与生命周期计数，**禁止输出用户正在输入的草稿文本**。
 - `StartMoving/StartSizing/StopMovingOrSizing` 是实际 capture/geometry Authority，不允许页面用 Tick + raw mouse delta 建第二套
 
 ### 5.5 其它
@@ -362,11 +389,16 @@ echo "PASS=$pass FAIL=$fail"
 
 **判据**：Audit 输出 `FOUNDATION_AUDIT PASS | toc=N activeLua=N allLua=N`，且 globals/presentation/rawNative/rawScope 等结构违规全为 0。
 
-### 6.2 诊断框架（三层数据源）
+### 6.2 诊断框架（模块优先 + 系统维护）
 
-1. **功能状态行**（「诊断与维护」列表 / 摘要「功能诊断」段）：每 Feature 一行；**「存档·XX」行是数据驱动的**（`rs_diagnostics.lua` `BuildStoreHealthRows`）——任何 Store 写保护或连续保存失败自动出现并附恢复探针，新 Store 无需接入
-2. **Gate 摘要**：第一段（runtime_startup_degradation）**前置注入**写保护 Store 的恢复探针（唯一保证不被聊天截断的证据位）；后段依次为存档故障 / 恢复探针 / 功能诊断
-3. **磁盘取证（最强）**：存档在 `C:\Users\23118\Documents\ArcheRage\USERcb92…/udf\`（RocksDB 文本格式：`str_/num_/bool_/isTable`，数字为 float32）；排查存档类故障时 AI 直接读盘，不依赖用户往返复制
+1. **业务模块默认入口**：每个 Feature 页面右上角统一提供「诊断」。入口由 `PageHost buildContext -> UIV3Design:ModuleDiagnosticsButton()` 自动注入；普通页面禁止自己复制诊断窗口/分页逻辑。少数自定义抬头页面也只能调用同一个 Design helper。
+2. **模块错误 Authority**：`DiagnosticsManager` 仍是全局结构化错误唯一 Authority；`ModuleDiagnosticsHub` 只把可证明归属的错误投影到模块有界环（每模块最多 32 条）。历史 `buff_display_v3` / `dps_v3` 等 source 只能由 `FeatureRegistry.diagnosticSources` 显式精确声明，Hub 禁止模糊猜模块。无法证明归属的共享错误只留在 `system`，不能污染业务报告。用户点击「生成诊断」时才读取 Feature health / 所属 Store / Provider，翻页只消费一次固定 snapshot，不重新采集。
+3. **诊断专用复制框**：模块诊断使用 `DiagnosticCopyBox`。底层仍是已验证的 `EDITBOX_MULTILINE`，但它不进入 DraftSession，也不调用 `BindDeferredInputActivation`；迟到 `OnLostFocus` 只计数，不撤销 Keyboard、不改文本。只有窗口关闭/模块切换/Owner Release 才 Deactivate。**禁止为了修诊断复制修改普通 EditBox/MultiEditBox 生命周期。**
+4. **系统诊断**：`system.diagnostics` 只作为 Core / Foundation / 完整维护报告入口；全量 `RS-SELF-CHECK` 协议继续保留，但普通业务故障优先使用模块诊断，避免复制其它模块无关内容。
+5. **Store 归属**：模块报告只显示 `Persistence:Describe()` 中可由 Store owner / Feature authority 证明属于当前模块的 Store。任何 Store 写保护或连续保存失败仍由 Persistence 自己负责事实状态；模块诊断只读，不解除 Fence、不 Load/Save Store。
+6. **磁盘取证（最强）**：存档在 `C:\Users\23118\Documents\ArcheRage\USERcb92…/udf\`（RocksDB 文本格式：`str_/num_/bool_/isTable`，数字为 float32）；只有模块报告不足以定位物理传输故障时，才升级到完整系统报告/磁盘原始取证。
+
+**模块诊断维护红线**：无新 Tick；Provider 只能在用户点击时调用；禁止诊断启动关闭中的 Feature/Acquire Consumer；禁止翻页重新采集；禁止业务模块自己持有第二个诊断窗口；禁止把报告正文或 moduleId 写入业务 Store。
 
 ### 6.3 环境坑
 
@@ -383,7 +415,7 @@ echo "PASS=$pass FAIL=$fail"
 |---|---|
 | Architecture | V3-only |
 | BuildTag | 见 `replicatedsuite.lua` 的 `S.BuildTag` |
-| Active TOC Lua | 见 §6.1 对账输出（当前 228） |
+| Active TOC Lua | 见 §6.1 对账输出（当前 245） |
 | 运行时 Addon | 仅 `replicatedsuite/` |
 | 门禁 | Lua Parse / Foundation Audit / Python Harness 全绿 |
 

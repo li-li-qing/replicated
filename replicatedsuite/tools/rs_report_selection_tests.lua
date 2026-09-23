@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 1 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 -- 维护（report-selection-1）：生产 Page/输入生命周期/Diff/Native handler，
 -- 仅替换 UI 原生对象与外部诊断来源。选区/剪贴板是确定性模型，不宣称 RU 实机通过。
 -- 模拟同尺寸布局时 Native getter 抖动、迟到失焦通知；无自造键盘事件/API。
@@ -180,7 +184,7 @@ end)
 Test('page next and previous retain report identity and never recapture source data',function()
     local S,UI,page,h,c=Boot()
     S.RecordLog('error','selection_test',('完整诊断证据'):rep(350))
-    assert(h.widgets.v3_diag_output.onClick());assert(page.selfCheckDelivery.parts>1)
+    assert(h.widgets.v3_diag_output_full.onClick());assert(page.selfCheckDelivery.parts>1)
     local checks=c.checks;local text,id=page.selfCheckText,page.selfCheckMeta.id
     assert(h.widgets.v3_diag_report_next.onClick());assert(h.widgets.v3_diag_report_prev.onClick())
     assert(page.selfCheckText==text and page.selfCheckMeta.id==id and c.checks==checks)

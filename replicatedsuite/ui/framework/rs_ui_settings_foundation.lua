@@ -29,7 +29,7 @@ F.styleCardContractVersion = 3
 F.compactToggleContractVersion = 1
 F.scrollSafeCardContractVersion = 2
 F.sectionHierarchyContractVersion = 1
-F.numericSliderContractVersion = 1
+F.numericSliderContractVersion = 2
 
 local function Token(path, fallback)
     if type(Tokens.Number) == "function" then return Tokens:Number(path, fallback) end
@@ -350,9 +350,11 @@ function F:CreateNumericSetting(spec)
 end
 
 -- Explicit standard setting used by feature pages whenever the user should get
--- the full slider + exact edit box + Apply affordance.  This is intentionally a
--- thin policy wrapper over NumericField: Binding, adaptive range, draft fences
--- and persistence remain single-authority in NumericField/NumericRangeStore.
+-- the full slider + exact edit box + Apply affordance. Numeric Slider Contract
+-- v2 treats min/max as recommended presentation bounds: an accepted exact value
+-- outside that window expands the slider and NumericRangeStore remembers the
+-- outward expansion. fixedRange/hard bounds remain explicit safety exceptions.
+-- Binding, draft fences and persistence remain single-authority below this layer.
 function F:CreateNumericSliderSetting(spec)
     spec = Copy(type(spec) == "table" and spec or {})
     spec.slider = true

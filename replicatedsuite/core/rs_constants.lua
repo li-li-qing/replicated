@@ -61,6 +61,18 @@ S.Constants = {
         pointSizeMin = 2,
         pointSizeDefaultMax = 10,
         pointSizeHardMax = 24,
+        -- 2026-09-15 NumericSlider adaptive-range maintenance:
+        -- 8/12..48 are recommended presentation ranges, NOT business maxima.
+        -- These values are the true bounded renderer/domain envelopes. Keeping
+        -- them here prevents Page, Feature and Presenter from silently drifting.
+        unitLineDensityHardMin = 2,
+        unitLineDensityHardMax = 160,
+        rangeDensityHardMin = 3,
+        rangeDensityHardMax = 192,
+        rangeRadiusHardMin = 0.5,
+        rangeRadiusHardMax = 1000,
+        refreshMsHardMin = 1,
+        refreshMsHardMax = 60000,
     },
 
     -- Modern dark theme master switch. When enabled, card/header/soft panels

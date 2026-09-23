@@ -1,13 +1,18 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 7 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Plate Head Renderer (v4)
 --
 -- The health-bar plate is the single layout anchor. Everything is positioned
 -- relative to its rectangle:
 --
---   InfoRow (class · gear · distance)   ← above buffs, auto-raises with rows
+--   InfoRow (class · gear · distance)   ← fixed semantic slot
 --   BuffRow(s)                           ← above the plate, maxRows upward
 --   [LeftEquip] [    plate    ] [RightEquip]  ← equipment flanks the plate
 --   DebuffRow(s)                         ← below the plate, maxRows downward
+--   CastBar                              ← fixed semantic slot below plate
 --
 -- The Feature owns all scheduler lanes; this presenter only keeps bounded
 -- widget pools, computes a cached layout per render, and applies diffs.
@@ -20,7 +25,7 @@ if type(Feature) ~= "table" or type(S.UI) ~= "table" or type(S.Events) ~= "table
 S.UIV3 = S.UIV3 or {}
 S.UIV3.BuffHeadMarkersV3 = S.UIV3.BuffHeadMarkersV3 or {}
 local P = S.UIV3.BuffHeadMarkersV3
-P.version = 9
+P.version = 12
 P.owner = "v3:buff_head_markers"
 P.consumerToken = "presentation:buff_head_markers"
 P.running = P.running == true
@@ -34,6 +39,12 @@ P.calibrationSuppressionCount = tonumber(P.calibrationSuppressionCount) or 0
 P.calibrationRestoreCount = tonumber(P.calibrationRestoreCount) or 0
 P.LiveHudSuppressionContractVersion = 1
 P.EquipmentIndependentOffsetContractVersion = 1
+P.RangedWeaponVisualOrderContractVersion = 1
+P.SplitInfoTextLayoutContractVersion = 3 -- 中文维护注释（.18.264）：自身/目标使用同一套稳定语义槽位；复制 HUD 不再因 scope 走不同几何分支。
+P.TargetDistanceStableSlotContractVersion = 1 -- .18.262：仅 Presentation 几何契约；target 距离不随职业/装分字段缺失重排。
+P.MirroredInfoSlotContractVersion = 1 -- .18.264：player/target 同 profile + 同 facts 必须得到同一 info 几何。
+P.IndependentHudSlotContractVersion = 1 -- .18.265：组件显隐/数据多少/兄弟尺寸不得改变其它组件的基础槽位。
+P.GearScoreFormatContractVersion = 1 -- .18.226：只格式化现有 Projection 数值，full/compact 不新增事实读取。
 -- 维护（pvp-hud-1）：内容dirty与运动分离；指标固定规模，不保存/逐帧打印。
 P.PvpPatch = "pvp-hud-1"
 P.contentDirty = true
@@ -41,7 +52,10 @@ P.motionMetrics = { frames=0, rootWrites=0, contentBuilds=0, textureFailures=0, 
 
 
 local SCOPES = { "player", "target" }
-local RENDERABLE_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar" }
+-- 中文维护注释（2026-09-19，cooldown-only-render-1）：cooldowns 是独立固定槽位，也是合法的
+-- HUD 启动理由。旧列表漏掉它，用户只开启“技能 CD”而关闭其它组件时 BuffHeadMarkers 不会 Acquire
+-- Feature Consumer，进而连 CooldownObservationV3 都不会启动。加入启动 gate 不改变其它组件布局/几何。
+local RENDERABLE_KEYS = { "buffs", "debuffs", "distance", "class", "gearScore", "mainHand", "offHand", "ranged", "wings", "castBar", "cooldowns" }
 local UNKNOWN_ICON = "ui/icon/icon_unknown_item.dds"
 
 local function N(v, fallback) return tonumber(v) or tonumber(fallback) or 0 end
@@ -138,15 +152,28 @@ local function MakeCastBar(scope)
 end
 
 local function MakeInfo(scope)
-    local label, err = S.UI:CreateLabel(P.pools[scope].root, "v3_buff_head_" .. scope .. "_info", "", 0, 0, 220, 16, 10, "default", "CENTER", true)
-    if label == nil then return nil, err end
-    S.UI:SetVisible(label, false, P.owner)
-    -- 中文维护：职业图标是每 scope 一个固定池对象，跟随信息行生命周期；不逐帧分配。
-    -- 独立根便于按组合宽度居中，未知职业/关信息时显式隐藏，避免留下上个目标的图标。
-    local iconRoot = S.UI:CreateEmptyWidget(P.pools[scope].root, "v3_buff_head_" .. scope .. "_class_icon", 0, 0, 16, 16, false, P.owner)
+    local parent = P.pools[scope].root
+    local classLabel, err = S.UI:CreateLabel(parent, "v3_buff_head_" .. scope .. "_info_class", "", 0, 0, 120, 16, 10, "default", "CENTER", true)
+    if classLabel == nil then return nil, err end
+    local gearLabel, gearErr = S.UI:CreateLabel(parent, "v3_buff_head_" .. scope .. "_info_gear", "", 0, 0, 90, 16, 10, "default", "CENTER", true)
+    if gearLabel == nil then S.UI:SetVisible(classLabel, false, P.owner); return nil, gearErr end
+    local distanceLabel, distanceErr = S.UI:CreateLabel(parent, "v3_buff_head_" .. scope .. "_info_distance", "", 0, 0, 90, 16, 10, "default", "CENTER", true)
+    if distanceLabel == nil then
+        S.UI:SetVisible(classLabel, false, P.owner); S.UI:SetVisible(gearLabel, false, P.owner)
+        return nil, distanceErr
+    end
+    S.UI:SetVisible(classLabel, false, P.owner); S.UI:SetVisible(gearLabel, false, P.owner); S.UI:SetVisible(distanceLabel, false, P.owner)
+    -- 中文维护注释（HUD 基础信息拆分，2026-09-17）：旧实现只有一个拼接 label，导致职业名称、
+    -- 装分和距离只能整体移动/改字号。这里仍保持每 scope 固定 3 个 pooled label，不在 50ms
+    -- VisualTick 中创建对象。root 继续别名到 classTextRoot，保护旧测试/诊断引用；gear/distance
+    -- 仅消费 Feature 已有投影，不产生新的 Native 查询、Consumer 或 Scheduler。
+    local iconRoot = S.UI:CreateEmptyWidget(parent, "v3_buff_head_" .. scope .. "_class_icon", 0, 0, 16, 16, false, P.owner)
     local icon = iconRoot and iconRoot.CreateIconDrawable and iconRoot:CreateIconDrawable("artwork") or nil
     if iconRoot then S.UI:SetVisible(iconRoot, false, P.owner) end
-    return { root=label, text="", iconRoot=iconRoot, icon=icon }
+    return {
+        root=classLabel, classTextRoot=classLabel, gearRoot=gearLabel, distanceRoot=distanceLabel,
+        classText="", gearText="", distanceText="", iconRoot=iconRoot, icon=icon,
+    }
 end
 
 local function RequiredIconCount(settings)
@@ -154,9 +181,13 @@ local function RequiredIconCount(settings)
     local components = type(settings.components) == "table" and settings.components or {}
     local buff = components.buffs or {}
     local debuff = components.debuffs or {}
+    local cooldown = components.cooldowns or {}
     local buffMax = math.max(1, math.min(64, math.floor(N(buff.maxPerRow, 8) * N(buff.maxRows, 2))))
     local debuffMax = math.max(1, math.min(64, math.floor(N(debuff.maxPerRow, 8) * N(debuff.maxRows, 2))))
-    return buffMax + debuffMax + 8
+    local cooldownMax = math.max(1, math.min(64, math.floor(N(cooldown.maxPerRow, 8) * N(cooldown.maxRows, 2))))
+    -- 中文维护注释（2026-09-19，图标池容量）：CD 与 Buff/Debuff 共用既有 marker pool，
+    -- 只按用户可见几何上限预分配，不为 256 个收藏技能建控件；装备仍保留 8 个固定余量。
+    return buffMax + debuffMax + cooldownMax + 8
 end
 
 function P:EnsurePools(settings)
@@ -212,7 +243,9 @@ local function HideScope(scope)
     if pool.labels then for _, label in ipairs(pool.labels) do if label.root then S.UI:SetVisible(label.root, false, P.owner) end end end
     if pool.cast then S.UI:SetVisible(pool.cast.root, false, P.owner) end
     if pool.info then
-        S.UI:SetVisible(pool.info.root, false, P.owner)
+        if pool.info.classTextRoot then S.UI:SetVisible(pool.info.classTextRoot, false, P.owner) end
+        if pool.info.gearRoot then S.UI:SetVisible(pool.info.gearRoot, false, P.owner) end
+        if pool.info.distanceRoot then S.UI:SetVisible(pool.info.distanceRoot, false, P.owner) end
         if pool.info.iconRoot then S.UI:SetVisible(pool.info.iconRoot, false, P.owner) end
     end
 end
@@ -412,6 +445,23 @@ local INFO_TO_BAR = 9        -- info bottom -> bar.top when no buffs
 local EQUIP_TO_BAR = 7       -- equipment inner edge -> bar side
 local EQUIP_GAP = 4          -- between two equipment icons
 
+-- 中文维护注释（HUD 独立固定槽位 Authority，2026-09-19）：
+-- 问题原因：旧几何会用“当前实际 Buff 行数/当前实际 Debuff 行数/当前实际装备是否存在”
+-- 推导 Info、Cast 与装备兄弟的位置，所以同一套 HUD 配置在玩家/NPC/Boss、0/多 Buff、
+-- 有/无副手之间会发生视觉跳位；这违反“每个组件只由自己的配置决定位置”的校准语义。
+-- Authority/数据流：HealthBarProxy 仍是唯一总锚点；以下常量只定义发行版基础语义槽，
+-- 每个组件最终位置 = 自己的基础槽 + 自己的 x/y。运行时事实只决定 Show/Hide，绝不参与兄弟
+-- 槽位计算。plateScale 是整套 HUD 的全局缩放，允许统一缩放全部槽位，不属于兄弟挤压。
+-- 兼容边界：不改 Store schema、不改已有 x/y 数值。Info 固定在“默认两行 Buff”时的历史
+-- 基准位置，Cast 固定在“默认两行 Debuff”时旧公式的基准位置；这样优先保留常见已有视觉，
+-- 代价是用户把单个区域尺寸调得极端时可能产生重叠，但其它组件不会被自动推走，用户可用
+-- 该组件自己的 x/y 校准。后续禁止重新用 actualRows/visibleSlots 参与兄弟位置。
+local INFO_RESERVED_BUFF_ROWS = 2
+local INFO_RESERVED_BUFF_SIZE = 29
+local CAST_RESERVED_DEBUFF_ROWS = 2
+local CAST_TO_BAR = 6
+local CLASS_TEXT_RESERVED_WIDTH = 96
+
 -- Pure layout computation. No widgets, no native reads, no store mutation.
 -- Inputs are the projected anchor (unit screen position), settings, and the
 -- actual visible row/equipment counts. Returns a geometry table the renderer
@@ -465,45 +515,56 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
     local debuffRowGap = DEBUFF_ROW_GAP * scale
     local debuffFirstTop = bar.bottom + debuffGap
 
-    -- Info row: above the top-most ACTUAL buff row; above the bar when no buffs.
+    -- Info row: fixed semantic slot. Runtime buff row count must never move it.
+    -- Keep the historical two-row default visual baseline so existing layouts do
+    -- not jump merely because a target currently has 0/1/2 visible buffs.
     local infoFont = math.max(8, math.floor(N(infoCfg.fontSize, 12) * scale))
     local infoH = infoFont + 4
-    local infoGap = (buffActualRows > 0 and INFO_TO_BUFF or INFO_TO_BAR) * scale
-    local infoTop = (buffActualRows > 0 and buffTopMostTop or bar.top) - infoGap - infoH
+    local infoReservedLift = (BUFF_TO_BAR + INFO_RESERVED_BUFF_SIZE
+        + math.max(0, INFO_RESERVED_BUFF_ROWS - 1) * BUFF_ROW_GAP + INFO_TO_BUFF) * scale
+    local infoTop = bar.top - infoReservedLift - infoH
     infoTop = infoTop + math.floor(N(infoCfg.y, 0) * scale)
 
-    -- Equipment flanks. Left: offHand closest to bar, mainHand next, optional
-    -- ranged outermost. Right: wings/back only. Component x/y are
+    -- Equipment flanks. Historical v3 keeps offHand closest -> mainHand -> ranged outermost.
+    -- Release v4 visually reads left-to-right as mainHand -> offHand -> ranged -> plate, so ranged is
+    -- immediately to the RIGHT of offHand as requested by ranged-class players. Right: wings/back only.
+    -- Component x/y are
     -- local micro offsets. Slots are returned UNCLAMPED with their absolute
     -- origin; the renderer clamps each group as a whole (never per-icon).
     local function EquipSlots(edgeStart, direction, keys)
         local slots = {}
-        local edge = edgeStart
-        for _, key in ipairs(keys) do
+        for semanticIndex, key in ipairs(keys) do
             local cfg = components[key] or {}
             local enabled = equip[key] == true
             if enabled then
                 local size = math.max(8, math.floor(N(cfg.size, 26) * scale))
-                local gap = math.max(1, math.floor(N(cfg.gap or cfg.spacing, EQUIP_GAP) * scale))
-                -- 中文维护注释（装备局部位置 Authority，2026-09-11）：旧实现先把当前槽位
-                -- cfg.x 加到最终 x，再用这个“已微调 x”推进 edge，导致 offHand.x 会拖着
-                -- mainHand/ranged 一起移动，mainHand.x 又会继续拖着 ranged。默认槽位顺序本身
-                -- 没问题，错误在于把“用户局部微调”污染成了下一个槽位的布局 Authority。
-                -- 现在先计算不含用户 offset 的 baseX；当前组件最终 x=baseX+cfg.x，但 edge
-                -- 只从 baseX/size 推进。这样默认仍按 offHand→mainHand→ranged 排列，单独移动
-                -- 任一装备只影响自己。兼容边界：size/gap 仍属于基础槽位几何，改变尺寸时外侧
-                -- 槽位会自然重新排布以避免默认重叠；schema5/x/y 数值语义完全不变。
+                local gap = math.max(1, math.floor(EQUIP_GAP * scale))
+                -- 中文维护注释（装备固定语义槽位，2026-09-19）：
+                -- 旧实现只遍历“当前存在”的装备并逐项推进 edge，导致缺副手/缺远程时主手会
+                -- 自动补位；同时内侧装备改 size 会继续推动外侧兄弟。现在 semanticIndex 由
+                -- preset 固定，baseX 只依赖“本组件自己的 size + 固定 slot index”，运行时存在性
+                -- 只决定是否返回/绘制该槽，不再改变任何兄弟位置。公式在所有左侧装备尺寸相同
+                -- 时与旧全装备布局完全一致，保护默认视觉；不同尺寸时允许局部重叠但禁止挤压。
                 local baseX
-                if direction < 0 then baseX = edge - gap - size else baseX = edge + gap end
+                if direction < 0 then
+                    baseX = edgeStart - semanticIndex * (size + gap)
+                else
+                    baseX = edgeStart + gap
+                end
                 local x = baseX + math.floor(N(cfg.x, 0) * scale)
                 local y = bar.centerY - math.floor(size / 2) + math.floor(N(cfg.y, 0) * scale)
-                slots[#slots + 1] = { key = key, x = x, y = y, size = size, baseX = baseX }
-                edge = direction < 0 and baseX or (baseX + size)
+                slots[#slots + 1] = { key = key, x = x, y = y, size = size, baseX = baseX, semanticIndex = semanticIndex }
             end
         end
         return slots
     end
-    local leftSlots = EquipSlots(bar.left, -1, { "offHand", "mainHand", "ranged" })
+    -- 中文维护注释（装备排列版本化）：EquipSlots(direction=-1) 的 keys 是“从血条向外”顺序，
+    -- 所以 v4 传 ranged→offHand→mainHand 后，屏幕从左到右正好是 mainHand→offHand→ranged。
+    -- v3 继续使用历史顺序，保护曾主动调过 ranged 的旧用户；只有 fresh/reset 或“旧默认未动”
+    -- 的兼容升级会进入 v4。单项 cfg.x 仍只影响自己，不恢复旧联动。
+    local presetVersion = math.floor(tonumber(settings.layoutPresetVersion) or 3)
+    local leftOrder = presetVersion >= 4 and { "ranged", "offHand", "mainHand" } or { "offHand", "mainHand", "ranged" }
+    local leftSlots = EquipSlots(bar.left, -1, leftOrder)
     local rightSlots = EquipSlots(bar.right, 1, { "wings" })
     local function GroupRect(slots)
         if #slots == 0 then return nil end
@@ -521,6 +582,9 @@ local function ComputePlateLayout(anchorX, anchorY, settings, buffCount, debuffC
         debuff = { firstTop = debuffFirstTop, rowGap = debuffRowGap, size = debuffSize, spacing = debuffSpacing,
                    maxPerRow = debuffMaxPerRow, maxRows = debuffMaxRows, actualRows = math.min(debuffMaxRows, math.ceil(debuffCount / debuffMaxPerRow)) },
         info = { top = infoTop, font = infoFont, height = infoH },
+        -- Cast keeps its own fixed semantic slot. Debuff count still controls
+        -- only debuff rows themselves; it can no longer push the cast bar.
+        cast = { top = bar.bottom + CAST_RESERVED_DEBUFF_ROWS * DEBUFF_ROW_GAP * scale + CAST_TO_BAR * scale },
         equip = { mainHand = equip.mainHand == true, offHand = equip.offHand == true, ranged = equip.ranged == true, wings = equip.wings == true },
         leftGroup = { slots = leftSlots, rect = GroupRect(leftSlots) },
         rightGroup = { slots = rightSlots, rect = GroupRect(rightSlots) },
@@ -599,58 +663,212 @@ local function ApplyEquipGroup(scope, pool, plates, components, group, slotStart
     return used
 end
 
--- 维护（职业图标校准）：复用schema6已有components.class的x/y/size/alpha。
--- size=0保持旧自动尺寸；偏移/尺寸只改变图标，不推移文字。enabled继续是职业整体开关。
--- 同一纯几何函数供正式Renderer与校准预览使用，杜绝“预览能改、正式HUD忽略”。
-function P.ComputeInfoLayout(plates, infoCfg, components, centerX, y, fontSize, scale)
-    infoCfg, components = infoCfg or {}, components or {}
-    scale = tonumber(scale) or 1
-    local parts = {}
-    local class = type(plates.class)=="table" and plates.class or {}
-    local cfg = components.class or {}
-    local classPart = infoCfg.showClass ~= false and cfg.enabled ~= false and tostring(class.value or "") or ""
-    if classPart ~= "" then parts[#parts+1] = classPart end
-    if infoCfg.showGear ~= false and (components.gearScore or {}).enabled ~= false and plates.gearScore then
-        parts[#parts+1] = tostring(plates.gearScore.value or "")
-    end
-    if infoCfg.showDistance ~= false and (components.distance or {}).enabled ~= false and plates.distance then
-        parts[#parts+1] = tostring(plates.distance.value or "")
-    end
-    local text = table.concat(parts, " · ")
-    local width = math.max(24, TextWidth(text,fontSize))
-    local icon = classPart ~= "" and type(class.icon)=="string" and class.icon ~= "" and class.icon or nil
-    local automaticSize = math.max(12,fontSize+2)
-    local baseGap = icon and (automaticSize+4) or 0
-    local textX = math.floor(centerX+N(infoCfg.x,0)-(width+baseGap)/2)+baseGap
-    local size = N(cfg.size,0)>0 and math.max(8,math.floor(N(cfg.size,0)*scale)) or automaticSize
-    return { text=text, width=width, height=math.max(12,fontSize+4), x=textX, y=math.floor(y),
-        icon=icon, iconX=textX-baseGap+math.floor(N(cfg.x,0)*scale),
-        iconY=math.floor(y+N(cfg.y,0)*scale), iconSize=size, alpha=math.max(.1,math.min(1,N(cfg.alpha,1))) }
+-- 中文维护注释（HUD 信息拆分几何 Authority，2026-09-17）：
+-- Store schema6 已经持久化 info、components.gearScore、components.distance 三套几何字段；
+-- schema7 只在 info 增加 gearScoreFormat，不改变这些几何 Authority。旧 Renderer 把文本先拼成一个
+-- label，后两套字段事实上从未参与正式 HUD。职业名称继续使用 info.x/y/fontSize；装备分数使用
+-- gearScore.x/y/fontSize/alpha；距离使用 distance.x/y/fontSize/alpha；职业图标仍只使用
+-- class.x/y/size/alpha。历史 schema6 canonical 由 Store 冻结验真；schema7 只新增文字格式，
+-- 不会把“图标微调”重新耦合到职业名字。ComputePlateLayout 会把 info.y 预先加进固定
+-- info.top，因此本函数先还原 baseY，再分别应用三项 Y，确保移动职业名称不拖着装分/距离。
+-- 正式 player/target 使用固定语义槽：职业在左、装分居中、距离在右；字段缺失只隐藏自身。
+
+-- 中文维护注释（装备分数显示格式，2026-09-17）：
+-- Renderer 只格式化 Projection 已提供的 gearScore，不读取 Native、不缓存第二份数值 Authority。
+-- compact 只在 >=1000 时使用 K，一位小数四舍五入并去掉 .0；full 保持整数文本。
+-- 非数字输入 fail-soft 原样显示，避免未来诊断占位被错误吞掉。
+function P.FormatGearScoreValue(value, mode)
+    local raw = tostring(value == nil and "" or value)
+    local n = tonumber(raw)
+    if n == nil then return raw end
+    n = math.max(0, math.floor(n + 0.5))
+    if tostring(mode or "full") ~= "compact" or n < 1000 then return tostring(n) end
+    local tenths = math.floor((n / 100) + 0.5)
+    if tenths % 10 == 0 then return tostring(math.floor(tenths / 10)) .. "K" end
+    return string.format("%.1fK", tenths / 10)
 end
+
+function P.ComputeInfoItemsLayout(plates, infoCfg, components, centerX, y, fontSize, scale, scope)
+    plates, infoCfg, components = type(plates)=="table" and plates or {}, infoCfg or {}, components or {}
+    scale = tonumber(scale) or 1
+    local class = type(plates.class)=="table" and plates.class or {}
+    local classCfg = components.class or {}
+    local gearCfg = components.gearScore or {}
+    local distanceCfg = components.distance or {}
+    -- 中文维护注释（职业名称/图标独立 Authority）：showClass 只控制职业名称；class.enabled 只控制
+    -- 职业图标。旧合并 label 曾把二者绑定，拆分后若继续复用同一门会导致“关图标=名字也没了”。
+    local classValue = tostring(class.value or "")
+    local classText = infoCfg.showClass ~= false and classValue or ""
+    local rawGearText = infoCfg.showGear ~= false and gearCfg.enabled ~= false and type(plates.gearScore)=="table" and tostring(plates.gearScore.value or "") or ""
+    local gearText = rawGearText ~= "" and P.FormatGearScoreValue(rawGearText, infoCfg.gearScoreFormat) or ""
+    local distanceText = infoCfg.showDistance ~= false and distanceCfg.enabled ~= false and type(plates.distance)=="table" and tostring(plates.distance.value or "") or ""
+
+    local classFont = math.max(8, math.floor(tonumber(fontSize) or 12))
+    local gearFont = math.max(8, math.floor(N(gearCfg.fontSize, 12) * scale))
+    local distanceFont = math.max(8, math.floor(N(distanceCfg.fontSize, 12) * scale))
+    local specs = {}
+    if classText ~= "" then specs[#specs+1] = { key="classText", raw=classText, font=classFont } end
+    if gearText ~= "" then specs[#specs+1] = { key="gearScore", raw=gearText, font=gearFont } end
+    if distanceText ~= "" then specs[#specs+1] = { key="distance", raw=distanceText, font=distanceFont } end
+    for index, item in ipairs(specs) do
+        -- 中文维护注释（2026-09-19，目标距离文案）：信息行仅用几何间距分隔职业/装分/距离，
+        -- 不再把“· ”写进任何真实显示文本。Authority/数据流：Projection 仍只提供原始 value，
+        -- Renderer 只负责排版；去掉装饰字符不会改变距离/装分读取、缓存或存档。兼容边界：
+        -- 老配置的 x/y/font/alpha 全部继续生效，零偏移时仍保持原有顺序与视觉间距。
+        item.gapBefore = index > 1 and math.max(3, math.floor(item.font * 0.25)) or 0
+        item.text = item.raw
+        item.width = TextWidth(item.text, item.font)
+        item.height = math.max(12, item.font + 4)
+    end
+
+    local icon = classCfg.enabled ~= false and type(class.icon)=="string" and class.icon ~= "" and class.icon or nil
+    local automaticSize = math.max(12, classFont + 2)
+    local iconGap = icon and (automaticSize + 4) or 0
+    local rowWidth = 0
+    for _, item in ipairs(specs) do rowWidth = rowWidth + (item.gapBefore or 0) + item.width end
+    local rowStartX = math.floor(centerX - (rowWidth + iconGap) / 2)
+    local cursorX = rowStartX + iconGap
+    local baseY = math.floor(N(y, 0) - N(infoCfg.y, 0) * scale)
+
+    -- 中文维护注释（自身/目标 HUD 稳定槽位统一，2026-09-19）：
+    -- 问题原因：.18.262 为修复“玩家目标与 NPC 目标切换时距离横跳”，只给 target 使用固定
+    -- 语义槽位，而 player 仍走历史流式居中。校准器“复制自身 → 目标”虽然把 profile 完整 Copy，
+    -- Renderer 却按 scope 走两套不同几何，导致相同配置在实机明显错位。
+    -- Authority/数据流：CalibrationDraft/Store 仍只保存一组 component x/y/size/font/alpha；
+    -- Renderer 对真实 player/target scope 统一使用同一套语义槽位：装分居中、距离固定右侧、职业
+    -- 向左延展，职业图标跟随职业槽。缺少事实只隐藏内容，不回收槽位。这样复制 HUD 后，同 profile
+    -- + 同 facts 必须得到同几何，同时继续保留 .18.262 的目标距离稳定性。
+    -- 兼容边界：不改 Store schema、不改 Native 读取、不补造缺失字段；player/target 已保存的局部
+    -- x/y/font/alpha 微调全部继续生效。无 scope 的只读兼容调用仍保留旧流式布局，避免历史外部
+    -- 工具在未声明 scope 时突然换语义；正式 Renderer/校准预览始终显式传 player/target。
+    local runtimeScope = tostring(scope or "")
+    if runtimeScope == "target" or runtimeScope == "player" then
+        local gap = math.max(3, math.floor(math.max(classFont, gearFont, distanceFont) * 0.25))
+        local gearSlotWidth = TextWidth("000000", gearFont)
+        local gearLeft = math.floor(centerX - gearSlotWidth / 2)
+        local gearRight = gearLeft + gearSlotWidth
+        local classRight = gearLeft - gap
+        local distanceLeft = gearRight + gap
+        local out = { width=0, height=math.max(12,classFont+4), x=centerX, y=baseY, icon=icon }
+        local minX, maxX = nil, nil
+        local function AddBounds(x, width)
+            minX = math.min(minX or x, x)
+            maxX = math.max(maxX or (x + width), x + width)
+        end
+        if classText ~= "" then
+            local width = TextWidth(classText, classFont)
+            local x = math.floor(classRight - width + N(infoCfg.x,0))
+            local yPos = math.floor(baseY + N(infoCfg.y,0) * scale)
+            out.classText = { text=classText, displayText=classText, x=x, y=yPos, width=width, height=math.max(12,classFont+4), font=classFont, alpha=1 }
+            AddBounds(x, width)
+        end
+        if gearText ~= "" then
+            local width = TextWidth(gearText, gearFont)
+            local x = math.floor(centerX - width / 2 + N(gearCfg.x,0) * scale)
+            local yPos = math.floor(baseY + N(gearCfg.y,0) * scale)
+            local alpha = math.max(.1,math.min(1,N(gearCfg.alpha,1)))
+            out.gearScore = { text=gearText, displayText=gearText, x=x, y=yPos, width=width, height=math.max(12,gearFont+4), font=gearFont, alpha=alpha }
+            AddBounds(x, width)
+        end
+        if distanceText ~= "" then
+            local width = TextWidth(distanceText, distanceFont)
+            local x = math.floor(distanceLeft + N(distanceCfg.x,0) * scale)
+            local yPos = math.floor(baseY + N(distanceCfg.y,0) * scale)
+            local alpha = math.max(.1,math.min(1,N(distanceCfg.alpha,1)))
+            out.distance = { text=distanceText, displayText=distanceText, x=x, y=yPos, width=width, height=math.max(12,distanceFont+4), font=distanceFont, alpha=alpha }
+            AddBounds(x, width)
+        end
+        local size = N(classCfg.size,0)>0 and math.max(8,math.floor(N(classCfg.size,0)*scale)) or automaticSize
+        -- 中文维护注释（职业图标固定槽位，2026-09-19）：
+        -- 旧实现把 iconBaseX 锚到 `out.classText.x`，职业名称字数变化就会推动图标；若用户隐藏
+        -- 职业名称，图标又退回另一套基准。现在职业名称仍以 classRight 右对齐，图标则占用
+        -- classRight 左侧固定 96px 语义槽，二者显隐/文字长度互不改变位置。class.x/y 仍只属于
+        -- 图标本身；极长职业名可以覆盖预留区但不能推走图标/装分/距离。
+        local classReservedWidth = math.floor(CLASS_TEXT_RESERVED_WIDTH * scale)
+        local iconBaseX = classRight - classReservedWidth - 4 - automaticSize
+        out.iconX = math.floor(iconBaseX + N(classCfg.x,0)*scale)
+        out.iconY = baseY + math.floor(N(classCfg.y,0)*scale)
+        out.iconSize = size
+        out.iconAlpha = math.max(.1,math.min(1,N(classCfg.alpha,1)))
+        if icon ~= nil then AddBounds(out.iconX, size) end
+        out.x = minX or distanceLeft
+        out.width = math.max(1, (maxX or (out.x + 1)) - out.x)
+        return out
+    end
+
+    local out = { width=rowWidth, height=math.max(12,classFont+4), x=cursorX, y=baseY, icon=icon }
+    for _, item in ipairs(specs) do
+        cursorX = cursorX + (item.gapBefore or 0)
+        local cfg, xOffset, yOffset, alpha = {}, 0, 0, 1
+        if item.key == "classText" then
+            xOffset, yOffset = N(infoCfg.x,0), N(infoCfg.y,0) * scale
+        elseif item.key == "gearScore" then
+            cfg=gearCfg; xOffset=N(cfg.x,0)*scale; yOffset=N(cfg.y,0)*scale; alpha=math.max(.1,math.min(1,N(cfg.alpha,1)))
+        else
+            cfg=distanceCfg; xOffset=N(cfg.x,0)*scale; yOffset=N(cfg.y,0)*scale; alpha=math.max(.1,math.min(1,N(cfg.alpha,1)))
+        end
+        out[item.key] = { text=item.raw, displayText=item.text, x=math.floor(cursorX+xOffset), y=math.floor(baseY+yOffset), width=item.width, height=item.height, font=item.font, alpha=alpha }
+        cursorX = cursorX + item.width
+    end
+    local size = N(classCfg.size,0)>0 and math.max(8,math.floor(N(classCfg.size,0)*scale)) or automaticSize
+    -- 图标锚定于基础信息行的未偏移基准，不消费 info.x/info.y；这样职业名称和职业图标
+    -- 在 HUD 调整器中真正独立。class.x/y 仍只作用图标；schema7 仅新增装分文字格式，不改变图标几何。
+    out.iconX = rowStartX + math.floor(N(classCfg.x,0)*scale)
+    out.iconY = baseY + math.floor(N(classCfg.y,0)*scale)
+    out.iconSize = size
+    out.iconAlpha = math.max(.1,math.min(1,N(classCfg.alpha,1)))
+    return out
+end
+
+-- 兼容只读 API：旧校准/外部测试若仍调用 ComputeInfoLayout，返回三段文字 union，而不是重新
+-- 恢复单 label。新代码应读取 ComputeInfoItemsLayout 的 classText/gearScore/distance 子矩形。
+function P.ComputeInfoLayout(plates, infoCfg, components, centerX, y, fontSize, scale, scope)
+    local g=P.ComputeInfoItemsLayout(plates,infoCfg,components,centerX,y,fontSize,scale,scope)
+    local minX,maxX,minY,maxY=nil,nil,nil,nil;local text={}
+    for _,key in ipairs({"classText","gearScore","distance"}) do
+        local item=g[key]
+        if item then
+            minX=math.min(minX or item.x,item.x);maxX=math.max(maxX or item.x+item.width,item.x+item.width)
+            minY=math.min(minY or item.y,item.y);maxY=math.max(maxY or item.y+item.height,item.y+item.height)
+            text[#text+1]=item.text
+        end
+    end
+    return {text=table.concat(text," "),x=minX or g.x,y=minY or g.y,width=math.max(1,(maxX or g.x+1)-(minX or g.x)),height=math.max(1,(maxY or g.y+1)-(minY or g.y)),icon=g.icon,iconX=g.iconX,iconY=g.iconY,iconSize=g.iconSize,alpha=g.iconAlpha}
+end
+
+local function RenderTextItem(pool, widget, cache, cacheField, item)
+    if widget == nil then return end
+    if item == nil or item.text == "" then S.UI:SetVisible(widget,false,P.owner); cache[cacheField]=""; return end
+    local rendered = item.displayText or item.text
+    if cache[cacheField] ~= rendered then widget:SetText(rendered);cache[cacheField]=rendered end
+    S.UI:SetFontSize(widget,item.font,P.owner)
+    S.UI:SetAlpha(widget,item.alpha or 1,P.owner)
+    S.UI:SetExtent(widget,item.width,item.height,P.owner)
+    Place(pool,widget,item.x,item.y,item.width,item.height)
+    S.UI:SetVisible(widget,true,P.owner)
+end
+
 local function RenderInfo(scope, plates, infoCfg, components, centerX, y, fontSize, scale)
     local pool = P.pools[scope]
     if pool == nil or pool.info == nil then return end
     local info = pool.info
-    local g = P.ComputeInfoLayout(plates,infoCfg,components,centerX,y,fontSize,scale)
-    if g.text ~= info.text or info.fontSize ~= fontSize then
-        info.text, info.fontSize = g.text, fontSize
-        info.root:SetText(g.text); S.UI:SetFontSize(info.root,fontSize,P.owner)
-    end
+    local g = P.ComputeInfoItemsLayout(plates,infoCfg,components,centerX,y,fontSize,scale,scope)
+    RenderTextItem(pool,info.classTextRoot,info,"classText",g.classText)
+    RenderTextItem(pool,info.gearRoot,info,"gearText",g.gearScore)
+    RenderTextItem(pool,info.distanceRoot,info,"distanceText",g.distance)
     if info.iconRoot then
+        -- 职业图标与职业名称是两个独立组件；隐藏名称不能连带隐藏图标。
         local showIcon = g.icon ~= nil and info.icon ~= nil
         if showIcon then
             showIcon = Texture(info,"iconPath",info.icon,g.icon)
             S.UI:SetExtent(info.iconRoot,g.iconSize,g.iconSize,P.owner)
             S.UI:SetExtent(info.icon,g.iconSize,g.iconSize,P.owner)
             S.UI:SetAnchor(info.icon,info.iconRoot,0,0,P.owner)
-            S.UI:SetAlpha(info.iconRoot,g.alpha,P.owner)
+            S.UI:SetAlpha(info.iconRoot,g.iconAlpha,P.owner)
             Place(pool,info.iconRoot,g.iconX,g.iconY,g.iconSize,g.iconSize)
         end
         S.UI:SetVisible(info.iconRoot,showIcon,P.owner)
     end
-    S.UI:SetExtent(info.root,g.width,g.height,P.owner)
-    if g.text ~= "" then Place(pool,info.root,g.x,g.y,g.width,g.height) end
-    S.UI:SetVisible(info.root,g.text ~= "",P.owner)
 end
 
 local function RenderScope(scope, settings)
@@ -667,8 +885,8 @@ local function RenderScope(scope, settings)
     local showStacks = settings.headShowStacks ~= false
     local showTime = settings.headShowTime ~= false
 
-    -- Equipment visibility: collapse slots that have no item. Ranged stays an
-    -- independent opt-in component (default off); wings is the default right slot.
+    -- Equipment visibility: collapse slots that have no item. Ranged remains an independent component;
+    -- fresh/player defaults are ON from layout preset v4, while customized historical profiles keep their stored choice.
     local equip = {}
     for _, key in ipairs({ "mainHand", "offHand", "ranged", "wings" }) do
         local cfg = components[key] or {}
@@ -699,6 +917,21 @@ local function RenderScope(scope, settings)
     if debuffEnabled then
         slot = slot + RenderRows(scope, pool, debuffRows, components.debuffs or {}, bar.centerX, L.debuff.firstTop, showStacks, showTime, slot, L.debuff.size, L.debuff.spacing, L.debuff.maxPerRow, L.debuff.maxRows, L.debuff.rowGap, 1, scale)
     end
+    -- Cooldown rows own a fixed semantic slot relative to the unit anchor.  They
+    -- never participate in Buff/Debuff/Info/Cast sibling geometry, matching the
+    -- HUD rule that one component becoming visible must not push another one.
+    local cooldownCfg = components.cooldowns or {}
+    local cooldownRows = scope == "player" and (plates.cooldowns or {}) or {}
+    if cooldownCfg.enabled ~= false and #cooldownRows > 0 then
+        local cdSize = math.max(8, math.floor(N(cooldownCfg.size, 29) * scale))
+        local cdSpacing = math.max(0, math.floor(N(cooldownCfg.spacing, 2) * scale))
+        local cdMaxPerRow = math.max(1, math.min(16, math.floor(N(cooldownCfg.maxPerRow, 8))))
+        local cdMaxRows = math.max(1, math.min(4, math.floor(N(cooldownCfg.maxRows, 2))))
+        local cdRowGap = math.max(1, math.floor(cdSize + 4 * scale))
+        local cdTop = bar.centerY + math.floor(N(cooldownCfg.y, 90) * scale)
+        slot = slot + RenderRows(scope, pool, cooldownRows, cooldownCfg, bar.centerX, cdTop,
+            false, true, slot, cdSize, cdSpacing, cdMaxPerRow, cdMaxRows, cdRowGap, 1, scale)
+    end
     -- Equipment flanks: pre-computed groups applied as whole units (group clamp).
     slot = slot + ApplyEquipGroup(scope, pool, plates, components, L.leftGroup, slot, scale)
     slot = slot + ApplyEquipGroup(scope, pool, plates, components, L.rightGroup, slot, scale)
@@ -710,16 +943,19 @@ local function RenderScope(scope, settings)
     else
         local info = pool.info
         if info then
-            S.UI:SetVisible(info.root, false, P.owner)
+            if info.classTextRoot then S.UI:SetVisible(info.classTextRoot, false, P.owner) end
+            if info.gearRoot then S.UI:SetVisible(info.gearRoot, false, P.owner) end
+            if info.distanceRoot then S.UI:SetVisible(info.distanceRoot, false, P.owner) end
             if info.iconRoot then S.UI:SetVisible(info.iconRoot, false, P.owner) end
         end
     end
 
-    -- Cast bar below the debuff rows (hidden when not casting).
+    -- Cast bar owns a fixed semantic slot (hidden when not casting). Debuff
+    -- rows can no longer move it; cfg.y remains the cast bar's only local Y
+    -- adjustment through RenderCastBar.
     local castCfg = components.castBar or {}
     if castCfg.enabled ~= false and plates.cast ~= nil then
-        local castY = bar.bottom + (debuffEnabled and (L.debuff.actualRows * L.debuff.rowGap) or 0) + 6 * scale
-        RenderCastBar(scope, plates.cast, castCfg, bar.centerX, castY, scale)
+        RenderCastBar(scope, plates.cast, castCfg, bar.centerX, L.cast.top, scale)
     else
         local cast = pool.cast
         if cast then S.UI:SetVisible(cast.root, false, P.owner) end
@@ -900,6 +1136,7 @@ function P:GetDiagnostics()
         calibrationSuppressionCount = tonumber(self.calibrationSuppressionCount) or 0,
         calibrationRestoreCount = tonumber(self.calibrationRestoreCount) or 0,
         liveHudSuppressionContractVersion = tonumber(self.LiveHudSuppressionContractVersion) or 0,
+        independentHudSlotContractVersion = tonumber(self.IndependentHudSlotContractVersion) or 0,
         poolsAllocated = tonumber(self.metrics.allocated) or 0,
         starts = tonumber(self.metrics.starts) or 0,
         stops = tonumber(self.metrics.stops) or 0,
@@ -924,15 +1161,17 @@ if type(S.Events.SubscribeInternal) == "function" then
 end
 
 -- Contract 6: health-bar proxy anchor layout via pure ComputePlateLayout;
--- class now contributes exact-catalog role icon + localized text; equipment collapses when
--- absent; main/off + optional ranged share the left flank, wings/back owns the
--- right flank; x/y are local offsets.
+-- class now contributes exact-catalog role icon + localized text; main/off + optional ranged
+-- share the left flank, wings/back owns the right flank; x/y are local offsets.
 -- Contract 8 adds authoritative Buff/Debuff fontSize consumption. Startup acceptance checks
 -- the dedicated BuffIconFontSizeContractVersion too so a stale Renderer cannot silently accept
 -- the new calibration UI while ignoring its font controls.
 -- Contract 9 keeps equipment default-slot flow but fences every component x/y as a local offset:
 -- moving offHand/mainHand/ranged/wings can no longer shift sibling slot bases.
+-- Contract 10 makes every HUD component a semantic fixed slot: runtime Buff/Debuff counts,
+-- equipment presence, profession text width and sibling icon sizes can only change their own
+-- rendering and can no longer move any sibling component. Calibration consumes the same geometry.
 -- 中文维护（enemy-loadout-1）：目标武器/防具是可见 Buff 类型投影；现有布局/存档契约不变。
 P.TargetLoadoutPatch = "enemy-loadout-1"
-Feature.BuffHeadMarkerContractVersion = 9
+Feature.BuffHeadMarkerContractVersion = 10
 P:Reconcile("load")

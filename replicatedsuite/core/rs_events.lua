@@ -26,6 +26,10 @@ S.Events = {
     unregisterCapability = nil,
     unregisterSkipped = 0,
     ownerReleaseContractVersion = 1,
+    -- 维护（foundation-lifecycle-1）：Owner 释放立即撤销在途回调，Epoch 隔离同代 Stop/Start。
+    -- 仅治理事件执行权限，不拥有 Feature/UI 状态；不改变 owner-first 参数或 Native 注册策略。
+    dispatchEpoch = 0,
+    lifecycleContractVersion = 1,
 }
 local E = S.Events
 
@@ -120,7 +124,12 @@ function E:Unsubscribe(eventName, owner)
     if type(list) ~= "table" then return 0 end
     local kept, removed = {}, 0
     for _, listener in ipairs(list) do
-        if listener.owner == owner then removed = removed + 1 else kept[#kept + 1] = listener end
+        -- 维护：只换 list 会让旧分发快照继续调用已释放的 Owner；撤销标记由所有快照共享。
+        -- 不清 callback/owner 字段，避免破坏正在执行的回调；当前栈退回后旧记录自然释放。
+        if listener.owner == owner then
+            listener.cancelled = true
+            removed = removed + 1
+        else kept[#kept + 1] = listener end
     end
     if #kept > 0 then
         self.listeners[eventName] = kept
@@ -141,7 +150,12 @@ function E:UnsubscribeOwner(owner)
         if type(list) == "table" then
             local kept = {}
             for _, listener in ipairs(list) do
-                if listener.owner == owner then removed = removed + 1 else kept[#kept + 1] = listener end
+                -- 维护：只换 list 会让旧分发快照继续调用已释放的 Owner；撤销标记由所有快照共享。
+                -- 不清 callback/owner 字段，避免破坏正在执行的回调；当前栈退回后旧记录自然释放。
+                if listener.owner == owner then
+                    listener.cancelled = true
+                    removed = removed + 1
+                else kept[#kept + 1] = listener end
             end
             if #kept > 0 then
                 self.listeners[eventName] = kept
@@ -180,7 +194,12 @@ function E:UnsubscribeInternal(topic, owner)
     if type(list) ~= "table" then return 0 end
     local kept, removed = {}, 0
     for _, listener in ipairs(list) do
-        if listener.owner == owner then removed = removed + 1 else kept[#kept + 1] = listener end
+        -- 维护：只换 list 会让旧分发快照继续调用已释放的 Owner；撤销标记由所有快照共享。
+        -- 不清 callback/owner 字段，避免破坏正在执行的回调；当前栈退回后旧记录自然释放。
+        if listener.owner == owner then
+            listener.cancelled = true
+            removed = removed + 1
+        else kept[#kept + 1] = listener end
     end
     if #kept > 0 then self.internalListeners[topic] = kept else self.internalListeners[topic] = nil end
     return removed
@@ -193,7 +212,12 @@ function E:UnsubscribeInternalOwner(owner)
         if type(list) == "table" then
             local kept = {}
             for _, listener in ipairs(list) do
-                if listener.owner == owner then removed = removed + 1 else kept[#kept + 1] = listener end
+                -- 维护：只换 list 会让旧分发快照继续调用已释放的 Owner；撤销标记由所有快照共享。
+                -- 不清 callback/owner 字段，避免破坏正在执行的回调；当前栈退回后旧记录自然释放。
+                if listener.owner == owner then
+                    listener.cancelled = true
+                    removed = removed + 1
+                else kept[#kept + 1] = listener end
             end
             if #kept > 0 then self.internalListeners[topic] = kept else self.internalListeners[topic] = nil end
         end
@@ -206,11 +230,14 @@ function E:Publish(topic, ...)
     local list = self.internalListeners[topic]
     if type(list) ~= "table" then return 0 end
     local args, argCount = { ... }, select("#", ...)
+    -- 维护：新增订阅延至下一次 Publish；Stop/Generation 变化中断快照，即使同代立即重启。
+    local epoch, generation = self.dispatchEpoch, S.Generation
     local count = #list
     local delivered = 0
     for index = 1, count do
+        if self.dispatchEpoch ~= epoch or S.Generation ~= generation then break end
         local listener = list[index]
-        if listener ~= nil and type(listener.callback) == "function" then
+        if listener ~= nil and listener.cancelled ~= true and type(listener.callback) == "function" then
             local ok, err = xpcall(function()
                 listener.callback(listener.owner, unpack(args, 1, argCount))
             end, S.SafeTraceback)
@@ -273,14 +300,14 @@ function E:Dispatch(eventName, ...)
     if type(list) ~= "table" then return end
     local args = { ... }
     local argCount = select("#", ...)
-    -- Dispatch has snapshot semantics without allocating a second listener table:
-    -- a callback may subscribe another listener, but that new listener must not
-    -- receive the event that is already in flight. UnsubscribeOwner replaces the
-    -- authoritative list, so the current snapshot remains deterministic as well.
+    -- 维护：只冻结本次订阅数量，不冻结生命周期权限；取消立即生效，新增下次分发。
+    -- 复用原 list + 撤销标记，无每事件 listener 副本；重载/Stop/Start 均不能复活旧快照。
+    local epoch, generation = self.dispatchEpoch, S.Generation
     local listenerCount = #list
     for index = 1, listenerCount do
+        if self.dispatchEpoch ~= epoch or S.Generation ~= generation then break end
         local listener = list[index]
-        if listener ~= nil and type(listener.callback) == "function" then
+        if listener ~= nil and listener.cancelled ~= true and type(listener.callback) == "function" then
             local moduleId = tostring(listener.moduleId or listener.label or "suite")
             local label = "event:" .. tostring(eventName) .. ":" .. moduleId
             local token = S.PerformanceMonitor and S.PerformanceMonitor:Begin(label, moduleId) or nil
@@ -301,10 +328,14 @@ function E:Start()
     if host == nil then self.startFailures = self.startFailures + 1; return false end
     if type(host.Show)=="function" then host:Show(false) end
     if type(host.SetHandler)~="function" then self.startFailures = self.startFailures + 1; return false end
+    -- 维护：Generation 只区分重载，不区分同代重启；Native 可能无法解绑旧 Handler。
+    -- Host 身份 + Epoch 是 transport 执行门，不复制模块启停/可见性 Authority。
+    self.dispatchEpoch = self.dispatchEpoch + 1
+    local epoch = self.dispatchEpoch
     local generation = S.Generation
     local handlerOk, handlerResult = pcall(function()
         return host:SetHandler("OnEvent", function(_, eventName, ...)
-            if S.Generation ~= generation or E.running ~= true then return end
+            if S.Generation ~= generation or E.running ~= true or E.host ~= host or E.dispatchEpoch ~= epoch then return end
             E:Dispatch(eventName, ...)
         end)
     end)
@@ -359,10 +390,14 @@ function E:GetHealth()
         unregisterSkipped = tonumber(self.unregisterSkipped) or 0,
         nativeUnregisterSupported = self.unregisterCapability,
         ownerReleaseContractVersion = tonumber(self.ownerReleaseContractVersion) or 0,
+        -- 维护：仅只读契约标识，诊断不触发事件注册、订阅或业务状态变更。
+        lifecycleContractVersion = self.lifecycleContractVersion,
     }
 end
 
 function E:Stop()
+    -- 维护：先撤销在途分发和旧 Native 闭包，再释放订阅；禁止先清表却留下快照可调用。
+    self.dispatchEpoch = self.dispatchEpoch + 1
     self.running = false
     local registeredNames = {}
     for eventName in pairs(self.registered or {}) do registeredNames[#registeredNames + 1] = eventName end

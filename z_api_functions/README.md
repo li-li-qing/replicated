@@ -1,49 +1,178 @@
-# z_api_functions — Developer API Reference / Evidence
+# z_api_functions — ArcheRage RU API Reference
 
-> **定位**：开发者 API 参考与证据库，**不进入 Addon 运行时**。
+> 开发期 API 参考 / 证据库。**不进入 Replicated Suite 运行时，也不应加入 `toc.g`。**
 
-## 这是什么
+## 当前状态
 
-`z_api_functions/` 是 ArcheRage RU 客户端的 **API 参考与证据库**，供开发期核对原生 API 名称、签名、能力状态与控制台变量。**它不是插件运行时的一部分，也不被 `toc.g` 加载。**
-
-- 它**不进入 Addon Runtime**，不参与加载模型（引擎按目录树 + `toc.g` 加载，`z_api_functions/` 不在 active TOC 中）。
-- 它**不是旧 `globals/` 目录的替代或延续**——旧 `globals/` 与 Legacy/Professional 源码已于 2026-09-01/02 全部物理删除，不再随包。
-- **绝对禁止**重新建立 `globals ↔ z_api_functions` 或 `z_api_functions ↔ globals` 这类旧架构依赖关系。
+- 维护日期：**2026-09-18**
+- 官方更新索引已检查至：**2026-09-16**
+- 本轮可直接读取并逐条核对的最新更新正文：**2026-09-09**
+- 最近一次已直接确认影响 Addon API 权限的官方更新：**2026-09-09**
+- Native API 分区：**83**
+- Native Allowed 函数：**358**
+- Native Available / not allowed 函数：**2330**
+- UI API 分区：**44**
+- UI Allowed 函数：**956**
+- 二次审计额外清理 `Drawable` 中残余的 `SetCoords` 同义重复和畸形 `SetSnap( used)`，保留规范签名。
+- 当前已清除：同分区重复/语义重复签名、Allowed / Not allowed 同时重复条目、过期历史快照
 
 ## 文件职责
 
-| 文件 | 职责 |
-|------|------|
-| `api_functions.lua` | RU 客户端导出函数清单（client export manifest）= 官方 **Allowed** 列表；`Global variables` + `Allowed functions` 合集。判断某 Native API 是否「客户端已导出、可调用」以本文件为准。 |
-| `ui_functions.lua` | UI API 参考（`Global variables` + `Allowed functions` for UI，如 Avi 等）。 |
-| `console_vars.lua` | 控制台变量（console variables）参考：`REQUIRE_NET_SYNC` / `SAVEGAME` / `READONLY` 等命令与变量。 |
-| `api_capabilities_ru_20260828.lua` | RU 官方公告叠加快照（status reflects official announcements），**最新且唯一保留在根目录**；记录 enabled/disabled/removed 与 cooldown / 签名歧义 / 核验备注。旧 `_20260815` / `_20260823` 已归档至 `Archive/`。 |
-| `API_CHANGELOG_20260828.md` | API 参考变更日志，**最新且唯一保留在根目录**；旧 `_20260815` / `_20260823` 已归档至 `Archive/`。 |
-| `Archive/api_capabilities_ru_20260815.lua` / `_20260823.lua` / `Archive/API_CHANGELOG_20260815.md` / `_20260823.md` / `Archive/VALIDATION_20260815.json` | 早期 API 快照 / 变更日志 / 静态校验输出（历史，归档不删除）。 |
+| 文件 | 用途 | Authority |
+|---|---|---|
+| `api_functions.lua` | 客户端 Native API 导出参考；按 namespace 分为 `Global variables`、`Allowed functions`、`Available/not allowed functions` | 判断“客户端是否存在/导出” |
+| `ui_functions.lua` | UI Widget / Drawable / EditBox 等 UI API 参考 | UI 接口签名参考 |
+| `api_capabilities_ru.lua` | ArcheRage RU 官方公告能力覆盖层；记录 enabled / disabled / removed / restricted / cooldown | 判断“RU 服务器当前是否允许” |
+| `console_vars.lua` | 客户端控制台变量原始参考 dump | 仅诊断研究，不是 Addon API allow-list |
+| `API_CHANGELOG.md` | 本参考库的同步与清理记录、官方来源 | 维护记录 |
+| `README.md` | 使用规则与判定方法 | 文档入口 |
 
-## 与运行时 Authority 的关系
+## API 可用性判定
+
+不要只看 `api_functions.lua` 的 `Allowed functions`。
+
+正确判定：
 
 ```text
-z_api_functions/api_functions.lua           → 客户端已导出清单（Allowed）
-z_api_functions/api_capabilities_ru_*.lua    → RU 官方能力快照（enabled/disabled/removed）
-        ↓ 二者共同作为「API 是否可用」的官方判定来源
-replicatedsuite/core/rs_api_capabilities.lua → Replicated Suite 真正 Runtime Capability Authority
-        ↓ 所有 Native 调用必经能力门 S.Api:CallCapability
-ArcheAge / ArcheRage RU Native API
+客户端导出/存在
+    api_functions.lua
+        +
+RU 服务器公告状态
+    api_capabilities_ru.lua
+        ↓
+Replicated Suite Runtime Capability Authority
+    replicatedsuite/core/rs_api_capabilities.lua
+        ↓
+S.Api:CallCapability(...)
 ```
 
-- **真正的运行时能力权威是 `replicatedsuite/core/rs_api_capabilities.lua`**（gate `records` 表）。每个被调用的 API 必须在此登记，并经能力门（`S.Api:CallCapability`）调用；未登记的调用会被门阻断。
-- `z_api_functions/` 仅用于**开发期核对签名与官方状态**，是「参考 / 证据」，不是运行时模块。
+因此：
 
-## API 可用性判定（官方方法）
+1. API 必须能在 `api_functions.lua` 中找到。
+2. 再检查 `api_capabilities_ru.lua` 的 last-write-wins 状态。
+3. `official_disabled` / `removed` 不得进入运行时调用。
+4. `official_enabled_restricted` 必须遵守战斗限制 / cooldown 等约束。
+5. `official_enabled` 仍不等于当前客户端已经完成项目内实机验证；关键路径继续通过 Runtime Capability Gate。
 
-某 RU Native API 可用 ⟺ 它出现在 `api_functions.lua`（**EXPORTED**）**且**不在 `api_capabilities_ru_20260828.lua` 的 disabled / removed 列表。
+### 特殊例外：`X2Unit:GetUnitsInSight`
 
-- 全 RU 当前仅 `X2Unit:GetUnitsInSight` 被官方 disabled（2026-08-19），`UNIT_ENTERED_SIGHT` / `UNIT_LEAVED_SIGHT` 被 removed。
-- 参考项目（`供参考的项目/`）里的 `Unknown` 标法**不是 RU 禁用结论**；应以本库 + `rs_api_capabilities.lua` 登记为准，实机验证后改 `OfficialEnabled`。
+`X2Unit:GetUnitsInSight(unitOwner)` 仍存在于客户端导出参考中，但 ArcheRage RU 已在 **2026-08-19** 官方禁用。
 
-## 红线
+所以：
 
-- `z_api_functions/` 不进 `toc.g`，不进运行时。
-- 不把 `z_api_functions` 当成 `globals` 的延续或替代。
-- 不重新接回任何旧 `globals/` / Legacy runtime / 迁移桥（ReadLegacy 等）。
+```text
+EXPORTED = true
+SERVER_ENABLED = false
+RUNTIME_CALL = forbidden
+```
+
+不要因为它还出现在 `api_functions.lua` 就直接调用。
+
+`UNIT_ENTERED_SIGHT` / `UNIT_LEAVED_SIGHT` 同期被移除。
+
+## 2026-09-18 二次审计结论
+
+### 当前最新 API 变动
+
+2026-09-09 的官方 RU 更新正文已再次核对，仍然只有以下三个新增开放接口：
+
+```text
+X2Faction:GetExpeditionMemberCount()
+X2Quest:GetQuestJournalObjectiveCount(idx)
+X2Quest:GetQuestJournalObjectiveText(idx, objIdx)
+```
+
+当前 `api_functions.lua` 已全部放在对应 namespace 的 `Allowed functions` 中。
+
+官方索引已经出现 **2026-09-16** 更新，但本轮联网工具暂时无法直接读取该帖正文；搜索索引也没有发现 `X2` / `Addon` 变更片段。因此本库继续保留 `latest_api_change = 2026-09-09`，同时在 capability 元数据中区分“看到最新官方更新”和“本轮已直接读取正文”，避免把未重新读取的正文写成硬证据。
+
+### 补齐的历史能力链
+
+二次审计发现旧版 `api_capabilities_ru.lua` 从 2025-04 到 2026-02 之间缺少多轮官方记录。已补入：
+
+- 任务追踪 / 单位 ID 查询
+- 拍卖搜索与最低价/市场价
+- 战斗资源 / Craft 查询
+- 9.5 新增的 Unit 世界坐标与 ADDON UI 注册接口
+- ADDON 持久化 GetName / LoadData / SaveData / ClearData 及 2025-07-08 修复记录
+- Hotkey / Skill cooldown / Mate cooldown
+- WorldmapLocation 两次签名演进
+- Mate 装备接口
+- 10.0 的 `X2Resident:RefreshResidentMembers` / `GetResidentMembers`
+
+这些 API 在当前 `api_functions.lua` 中原本就已经位于 `Allowed functions`；本轮主要修复的是 Authority 时间线，不改变当前导出清单。
+
+## 2026-09-09 新开放 API
+
+以下三个函数已从 `Available/not allowed functions` 移到 `Allowed functions`：
+
+```text
+X2Faction:GetExpeditionMemberCount()
+X2Quest:GetQuestJournalObjectiveCount(idx)
+X2Quest:GetQuestJournalObjectiveText(idx, objIdx)
+```
+
+`api_capabilities_ru.lua` 已同步登记。
+
+## 文件格式注意
+
+`api_functions.lua`、`ui_functions.lua`、`console_vars.lua` 是**参考清单 / dump**，不是可执行 Lua 模块。保留 `.lua` 文件名是为了延续项目现有开发工作流和搜索路径，但严禁加入运行时加载链。
+
+## 官方来源
+
+当前同步窗口使用 ArcheRage RU 官方论坛更新：
+
+- 2026-08-19  
+  https://ru.archerage.to/forums/threads/obnovlenie-19-08-2026.17526/
+- 2026-08-26  
+  https://ru.archerage.to/forums/threads/obnovlenie-26-08-2026.17543/
+- 2026-09-02  
+  https://ru.archerage.to/forums/threads/obnovlenija-02-09-2026.17555/
+- 2026-09-09  
+  https://ru.archerage.to/forums/threads/obnovlenie-09-09-2026.17558/
+- 2026-09-16  
+  https://ru.archerage.to/forums/threads/obnovlenie-16-09-2026.17572/
+
+2026-09-09 正文已在本轮再次直接核对。2026-09-16 更新已由官方索引确认存在，但本轮工具无法直接读取该帖正文；因此只把它记为“latest official update seen”，不把“正文无 API 变化”作为本轮独立验证结论。当前没有发现晚于 2026-09-09 的已确认 API 权限变化。
+
+## 本轮补核的关键官方历史来源
+
+- 2025-04-16：Quest tracking / `X2Unit:GetUnitInfoById`
+- 2025-04-30：Ability / Auction Search / CombatResource / Craft / Quest
+- 2025-05-07：Auction searched-item getters
+- 2025-06-08：9.5 custom addon APIs
+- 2025-07-01 / 07-08：ADDON 持久化接口与修复
+- 2025-07-16：`GetUnitWorldPositionByTarget` 签名调整
+- 2025-08-12 / 08-20：Auction price / Hotkey / Skill cooldown
+- 2025-09-17：`SaveHotKey` / `GetMateCooldown`
+- 2025-10-07：Hotkey binding conversion
+- 2025-11-05 / 11-12：World map location 新增与签名调整
+- 2025-12-03：Mate equipment APIs
+- 2026-02-16：10.0 custom `X2Resident` APIs
+
+详细状态以 `api_capabilities_ru.lua -> changes` 为准。
+
+## 清理策略
+
+本版不再在发布目录保留日期快照 `Archive/`。历史状态已经由 `api_capabilities_ru.lua -> changes` 保存，重复的旧快照只会增加 AI / 人工检索噪声。
+
+以后更新只维护稳定文件名：
+
+```text
+api_functions.lua
+ui_functions.lua
+api_capabilities_ru.lua
+console_vars.lua
+API_CHANGELOG.md
+README.md
+```
+
+不要恢复 `api_functions2.lua`、旧日期 capability 副本或 `globals/` 桥接结构。
+
+## Replicated Suite 维护红线
+
+- `z_api_functions/` 永远只做开发证据库。
+- Runtime 原生调用仍由 `replicatedsuite/core/rs_api_capabilities.lua` 统一控制。
+- 禁止 Feature Module 绕过 `S.Api:CallCapability` 直接建立新的 Native 调用路径。
+- 新增官方 API 时，先更新本目录，再更新 Runtime Capability Registry，最后通过实机验证提升为 runtime verified。
+- 官方公告与 bundled signature 冲突时，不猜签名；保留已验证签名并在 capability note / changelog 中记录差异。

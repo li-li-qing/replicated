@@ -377,3 +377,39 @@ end
 
 local ok, err = Runtime:RegisterImplementation(F.Id, F)
 if ok ~= true then error(err) end
+
+-- 个性化关注（2026-09-18）：目录来自静态 QuestGroups，不借 GetGroups 触发日期采样。
+-- Authority 仍为 Tasks Store；进度不由 UI 改写。一次筛选批量只产生一次持久化事务，
+-- 先验证全部 key 再改动；默认全选只在第一次明确编辑时转为 configured，空集合有效。
+function F:GetAttentionCatalog(scope)
+    if VALID_SCOPE[scope] ~= true then return {}, "未知任务周期" end
+    local ok, err = self:EnsureStoreLoaded(); if not ok then return {}, err end
+    local rows = {}
+    for _, group in ipairs(S.Data and S.Data.QuestGroups and S.Data.QuestGroups[scope] or {}) do
+        local key = tostring(group.key or "")
+        if key ~= "" then rows[#rows + 1] = {id=scope..":"..key,key=key,scope=scope,
+            name=tostring(group.title or key),tracked=self:IsTracked(scope,key),category=scope=="weekly" and "周常" or "日常"} end
+    end
+    return rows
+end
+function F.Commands:SetAttention(scope, keys, enabled)
+    if VALID_SCOPE[scope] ~= true or type(keys) ~= "table" or #keys > 512 then return false, "无效任务选择" end
+    local rows, err = F:GetAttentionCatalog(scope); if err then return false, err end
+    local known = {}; for _, row in ipairs(rows) do known[row.key] = true end
+    for _, key in ipairs(keys) do if not known[key] then return false, "未知任务："..tostring(key) end end
+    if #keys == 0 then return true end
+    local ok, why = F:MutateStore(function()
+        local bucket = F:GetTracking(scope)
+        if not bucket.configured then
+            bucket.configured, bucket.keys = true, {}
+            for key in pairs(known) do bucket.keys[key] = true end
+        end
+        for _, key in ipairs(keys) do bucket.keys[key] = enabled == true or nil end
+        return true
+    end, 300, "task_attention_batch", true)
+    if not ok then return false, why end
+    -- 关闭/无消费者时只通知偏好变化；不能仅因勾选目录启动 QuestProgress 或 Native 时钟。
+    if F.enabled and F.consumerCount > 0 then return F.Authority:Refresh("attention_changed") end
+    if S.Events then S.Events:Publish("v3.tasks.updated", nil, "attention_changed") end
+    return true
+end

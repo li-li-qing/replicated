@@ -1,3 +1,7 @@
+-- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 9 处未解决的 Git 合并冲突。
+-- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
+-- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
+-- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Buff HUD Calibration Overlay v3
 --
@@ -64,8 +68,16 @@ local COMPONENTS = {
     { key="plate",    label="血条基准" },
     { key="buffs",    label="Buff" },
     { key="debuffs",  label="Debuff" },
-    { key="info",     label="基础信息" },
-    -- 维护：class一直有持久化布局字段，但旧选择器漏掉它。仅接通图标几何，旧职业整体开关不改义。
+    -- 中文维护注释（Cooldown Runtime V1）：cooldowns 已是 schema8 既有 HUD component，
+    -- 这里只把它暴露给校准器；不新增 Store 字段、不改变旧用户默认 enabled=false。
+    -- Runtime Authority 来自 CooldownObservationV3 的本机 Native 读数，校准预览只画占位，不触发查询。
+    { key="cooldowns", label="技能 CD" },
+    { key="info",     label="职业名称" },
+    { key="gearScore",label="装备分数" },
+    { key="distance", label="距离" },
+    -- 中文维护注释（HUD 信息拆分）：class 保持“职业图标”几何，不复用为职业名称，避免旧图标
+    -- x/y/size/alpha 与文字再次耦合；职业名称继续使用历史 info 字段，装分/距离复用 schema6
+    -- 已存在但旧 Renderer 未消费的 component 字段，因此无需 Store schema 迁移。
     { key="class",    label="职业图标" },
     -- 中文维护：复用校准存档字段，不移动已有用户布局；目标栏表达可见 Buff 类型而非可检查装备。
     { key="mainHand", label="主手/目标武器" },
@@ -166,6 +178,9 @@ C.ContextualControlsContractVersion = 1
 C.GlobalPreviewContractVersion = 1
 C.LiveHudSuppressionContractVersion = 1
 C.TemplateSnapshotContractVersion = 1
+C.SplitInfoTextCalibrationContractVersion = 1 -- 中文维护注释（.18.225）：职业名称/装分/距离各自选择并消费各自现有 schema6 几何字段；职业图标仍独立。
+C.GearScoreFormatCalibrationContractVersion = 1 -- .18.226：装备分数校准项拥有 full/compact 两个 profile-local 草稿选项。
+C.IndependentHudSlotPreviewContractVersion = 1 -- .18.265：校准预览与正式 HUD 共用固定 Info/Cast/Equipment 语义槽位，禁止按实时行数重排。
 
 local function ScreenSize()
     -- 优先使用统一 UI metrics 的逻辑尺寸，避免 UI Scale!=1 时把 panel clamp 到物理像素边界。
@@ -254,14 +269,16 @@ local function CurrentFields()
         fields.width=N(component.width,150); fields.size=N(component.height,20)
     elseif key == "info" then
         fields.font=N(component.fontSize,12)
+    elseif key == "gearScore" or key == "distance" then
+        fields.font=N(component.fontSize,12); fields.alpha=N(component.alpha,1)
     else
         fields.size=N(component.size, key == "castBar" and 7 or 26)
         fields.alpha=N(component.alpha,1)
-        if key == "buffs" or key == "debuffs" or key == "castBar" then
-            local fallbackFont = (key == "buffs" or key == "debuffs") and 11 or 12
+        if key == "buffs" or key == "debuffs" or key == "cooldowns" or key == "castBar" then
+            local fallbackFont = (key == "buffs" or key == "debuffs" or key == "cooldowns") and 11 or 12
             fields.font=N(component.fontSize, fallbackFont)
         end
-        if key == "buffs" or key == "debuffs" then
+        if key == "buffs" or key == "debuffs" or key == "cooldowns" then
             fields.spacing=N(component.spacing,2)
             fields.perRow=N(component.maxPerRow,8)
             fields.rows=N(component.maxRows,2)
@@ -280,26 +297,27 @@ local function ApplyField(name, value)
     elseif name == "y" then
         local lo, hi = -400, 400
         if key == "plate" then lo, hi = -500, 500
-        elseif key == "info" then lo, hi = -120, 120 end
+        elseif key == "info" or key == "gearScore" or key == "distance" then lo, hi = -120, 120 end
         -- value 始终是用户/屏幕语义：负数向上、正数向下。Store 继续保留历史字段语义。
         local currentScreenY = StoredYToScreenY(key, component.y)
         local screenY = Round(Clamp(value, lo, hi, currentScreenY))
         component.y = ScreenYToStoredY(key, screenY)
     elseif name == "size" then
         if key == "plate" then component.height = Round(Clamp(value, 8, 40, component.height or 20))
-        else component.size = Round(Clamp(value, key == "class" and 0 or (key == "castBar" and 4 or 8), 64, component.size or 26)) end
+        elseif key ~= "info" and key ~= "gearScore" and key ~= "distance" then component.size = Round(Clamp(value, key == "class" and 0 or (key == "castBar" and 4 or 8), 64, component.size or 26)) end
     elseif name == "font" then
         if key == "info" then component.fontSize = Round(Clamp(value, 8, 24, component.fontSize or 12))
-        elseif component.fontSize ~= nil or key == "buffs" or key == "debuffs" or key == "castBar" then
+        elseif key == "gearScore" or key == "distance" then component.fontSize = Round(Clamp(value, 8, 24, component.fontSize or 12))
+        elseif component.fontSize ~= nil or key == "buffs" or key == "debuffs" or key == "cooldowns" or key == "castBar" then
             component.fontSize = Round(Clamp(value, 8, 32, component.fontSize or 12))
         end
     elseif name == "alpha" and key ~= "plate" and key ~= "info" then
         component.alpha = Clamp(value, 0.1, 1.0, component.alpha or 1.0)
-    elseif name == "spacing" and (key == "buffs" or key == "debuffs") then
+    elseif name == "spacing" and (key == "buffs" or key == "debuffs" or key == "cooldowns") then
         component.spacing = Round(Clamp(value, 0, 24, component.spacing or 2))
-    elseif name == "perRow" and (key == "buffs" or key == "debuffs") then
+    elseif name == "perRow" and (key == "buffs" or key == "debuffs" or key == "cooldowns") then
         component.maxPerRow = Round(Clamp(value, 1, 16, component.maxPerRow or 8))
-    elseif name == "rows" and (key == "buffs" or key == "debuffs") then
+    elseif name == "rows" and (key == "buffs" or key == "debuffs" or key == "cooldowns") then
         component.maxRows = Round(Clamp(value, 1, 4, component.maxRows or 2))
     elseif name == "width" then
         if key == "plate" then component.width = Round(Clamp(value, 80, 320, component.width or 150))
@@ -313,14 +331,28 @@ end
 local function CurrentEnabled()
     local profile, component = Profile(), Component()
     if C.component == "plate" then return true end -- proxy only; never rendered as a visual element
-    if C.component == "info" then return profile.info.enabled ~= false end
+    if C.component == "info" then return profile.info.enabled ~= false and profile.info.showClass ~= false end
+    if C.component == "gearScore" then return profile.info.enabled ~= false and profile.info.showGear ~= false and component.enabled ~= false end
+    if C.component == "distance" then return profile.info.enabled ~= false and profile.info.showDistance ~= false and component.enabled ~= false end
     return component.enabled ~= false
 end
 
 local function SetCurrentEnabled(value)
-    local profile, component = Profile(), Component()
+    local profile, component = Profile(), Component(); value = value == true
     if C.component == "plate" then return false, "血条基准仅作为锚点，不提供显示开关" end
-    if C.component == "info" then profile.info.enabled = value == true else component.enabled = value == true end
+    -- 中文维护注释（双可见性字段兼容）：旧 Store 同时存在 info.show* 与 component.enabled。
+    -- 独立文字校准不能引入第三套 Authority；开启任一文字时恢复 legacy info master，再同步
+    -- 对应 show* / component 门。职业名称关闭只写 showClass，避免顺手关闭独立职业图标。
+    if C.component == "info" then
+        if value then profile.info.enabled = true end
+        profile.info.showClass = value
+    elseif C.component == "gearScore" then
+        if value then profile.info.enabled = true end
+        profile.info.showGear = value; component.enabled = value
+    elseif C.component == "distance" then
+        if value then profile.info.enabled = true end
+        profile.info.showDistance = value; component.enabled = value
+    else component.enabled = value end
     C.dirty = true
     return C:RefreshControls()
 end
@@ -345,11 +377,15 @@ end
 
 -- 维护：校准显示只读取现有投影，不新增Native查询。职业名称/图标与真实HUD共用
 -- ComputeInfoLayout；无目标时明确使用预览占位。已有schema6的size=0保留随字号自动尺寸。
-local function PreviewPlates()
+local function PreviewPlates(key)
     local plates = type(Feature.GetPlatesProjection)=="function" and Feature:GetPlatesProjection(C.scope) or {}
     if type(plates.class)~="table" or tostring(plates.class.value or "")=="" then
         plates.class={value="职业预览",icon=UNKNOWN_ICON}
     elseif plates.class.icon==nil then plates.class.icon=UNKNOWN_ICON end
+    -- 维护：只为“正在校准但当前事实缺失”的文字项补占位。职业图标/职业名称预览必须
+    -- 保持与实时 HUD 相同的可见项集合，否则额外占位会改变整行居中基线，造成预览/实机偏移。
+    if key=="gearScore" and type(plates.gearScore)~="table" then plates.gearScore={value="12345"} end
+    if key=="distance" and type(plates.distance)~="table" then plates.distance={value="28.4m"} end
     return plates
 end
 
@@ -359,7 +395,7 @@ local function PreviewRect(key)
     local compute = Markers and Markers.ComputePlateLayout or nil
     if type(compute) ~= "function" then return { x=anchorX-70, y=anchorY-20, width=140, height=40 }, liveAnchor end
     key = tostring(key or C.component or "buffs")
-    local plates = (key=="class" or key=="info") and PreviewPlates() or nil
+    local plates = (key=="class" or key=="info" or key=="gearScore" or key=="distance") and PreviewPlates(key) or nil
     local buffCount, debuffCount = 4,4
     if plates then
         buffCount=(profile.components.buffs or {}).enabled~=false and #(plates.buffs or {}) or 0
@@ -377,9 +413,27 @@ local function PreviewRect(key)
         local x = layout.bar.centerX + N(cfg.x, 0) - width / 2
         local y = region.firstTop
         return { x=Round(x), y=Round(y), width=Round(width), height=Round(region.size) }, liveAnchor
-    elseif key == "info" or key == "class" then
-        if type(Markers.ComputeInfoLayout)=="function" then
-            local g=Markers.ComputeInfoLayout(plates,profile.info,profile.components,layout.bar.centerX,layout.info.top,layout.info.font,scale)
+    elseif key == "cooldowns" then
+        -- 中文维护注释：CD 是独立固定语义槽位，绝不能用 Buff/Debuff 实际行数推位置。
+        -- 与正式 Renderer 相同：以血条中心为 Authority，只叠加 cooldown 自身 x/y；因此距离、
+        -- 装备、Buff 数量变化都不会把 CD 挤走。
+        local cfg = profile.components.cooldowns or {}
+        local size = math.max(8, Round(N(cfg.size,29) * scale))
+        local spacing = math.max(0, Round(N(cfg.spacing,2) * scale))
+        local count = math.min(4, math.max(1, Round(N(cfg.maxPerRow,8))))
+        local width = count * size + math.max(0,count-1) * spacing
+        local x = layout.bar.centerX + N(cfg.x,0) * scale - width / 2
+        local y = layout.bar.centerY + N(cfg.y,90) * scale
+        return { x=Round(x), y=Round(y), width=Round(width), height=size }, liveAnchor
+    elseif key == "info" or key == "gearScore" or key == "distance" or key == "class" then
+        if type(Markers.ComputeInfoItemsLayout)=="function" then
+            local g=Markers.ComputeInfoItemsLayout(plates,profile.info,profile.components,layout.bar.centerX,layout.info.top,layout.info.font,scale,C.scope)
+            if key=="class" then return {x=g.iconX,y=g.iconY,width=g.iconSize,height=g.iconSize,iconPath=g.icon or UNKNOWN_ICON},liveAnchor end
+            local item = key=="info" and g.classText or g[key]
+            if item then return {x=item.x,y=item.y,width=item.width,height=item.height,text=item.text,font=item.font,alpha=item.alpha},liveAnchor end
+            return {x=layout.bar.centerX-12,y=layout.info.top,width=24,height=layout.info.height,text=""},liveAnchor
+        elseif type(Markers.ComputeInfoLayout)=="function" then
+            local g=Markers.ComputeInfoLayout(plates,profile.info,profile.components,layout.bar.centerX,layout.info.top,layout.info.font,scale,C.scope)
             if key=="class" then return {x=g.iconX,y=g.iconY,width=g.iconSize,height=g.iconSize,iconPath=g.icon or UNKNOWN_ICON},liveAnchor end
             return {x=g.x,y=g.y,width=g.width,height=g.height,text=g.text},liveAnchor
         end
@@ -388,7 +442,12 @@ local function PreviewRect(key)
         local cfg = profile.components.castBar or {}
         local width = math.max(24, Round(N(cfg.width,120) * scale))
         local height = math.max(12, Round(N(cfg.size,7) * scale) + 16)
-        local y = layout.bar.bottom + (layout.debuff.actualRows * layout.debuff.rowGap) + 6 * scale + N(cfg.y,0) * scale
+        -- 中文维护注释（.18.265，校准/正式 HUD 同一固定槽位）：正式 Renderer 已禁止
+        -- Debuff 行数推动施法条；校准预览必须消费 ComputePlateLayout.cast.top，同样只叠加
+        -- castBar 自己的 y。若这里继续按 actualRows 重算，预览会再次与实机产生位置差异。
+        local castBaseY = type(layout.cast) == "table" and N(layout.cast.top, layout.bar.bottom + 6 * scale)
+            or (layout.bar.bottom + 6 * scale)
+        local y = castBaseY + N(cfg.y,0) * scale
         return { x=Round(layout.bar.centerX + N(cfg.x,0)*scale - width/2), y=Round(y), width=width, height=height }, liveAnchor
     else
         local slot = FindEquipSlot(layout, key)
@@ -444,6 +503,7 @@ function C:LayoutGlobalPreview()
                 local label = row.label
                 if key == "buffs" then label = "Buff ×4"
                 elseif key == "debuffs" then label = "Debuff ×4"
+                elseif key == "cooldowns" then label = "技能 CD ×4"
                 elseif key == "info" then label = "职业 · 12345 · 28m"
                 elseif key == "castBar" then label = "施法条"
                 end
@@ -817,10 +877,11 @@ function C:LayoutPreview()
     S.UI:SetAlpha(self.preview.root, visualFields.alpha or 1, self.owner)
     SafeText(self.preview.caption, ScopeName(self.scope) .. " · " .. tostring(COMPONENT_LABEL[self.component] or self.component))
     local key = self.component
-    if key == "buffs" or key == "debuffs" then
+    if key == "buffs" or key == "debuffs" or key == "cooldowns" then
         SetPreviewChildrenVisible("icons")
         local fields = CurrentFields(); local size = math.max(8, Round(fields.size or 29)); local spacing = math.max(0, Round(fields.spacing or 2))
-        local rows = LivePreviewRows(key == "debuffs" and "debuff" or "buff")
+        -- CD 校准禁止为了预览启动 Runtime/Native 查询；无活动 CD 时使用纯视觉占位。
+        local rows = key == "cooldowns" and {} or LivePreviewRows(key == "debuffs" and "debuff" or "buff")
         for i, icon in ipairs(self.preview.icons) do
             local visible = i <= 4
             SafeVisible(icon.root, visible)
@@ -857,13 +918,10 @@ function C:LayoutPreview()
             end
             SafeText(icon.time,"")
         end
-    elseif key == "info" then
+    elseif key == "info" or key == "gearScore" or key == "distance" then
         SetPreviewChildrenVisible("info")
-        local profile = Profile(); local parts = {}
-        if (profile.components.class or {}).enabled ~= false and profile.info.showClass ~= false then parts[#parts+1] = "职业预览" end
-        if (profile.components.gearScore or {}).enabled ~= false and profile.info.showGear ~= false then parts[#parts+1] = "12345" end
-        if (profile.components.distance or {}).enabled ~= false and profile.info.showDistance ~= false then parts[#parts+1] = "28.4m" end
-        SafeText(self.preview.infoLabel, rect.text or (#parts > 0 and table.concat(parts, " · ") or "基础信息已全部关闭"))
+        local fallback = key=="info" and "职业预览" or (key=="gearScore" and "12345" or "28.4m")
+        SafeText(self.preview.infoLabel, rect.text ~= "" and rect.text or fallback)
         S.UI:SetFontSize(self.preview.infoLabel, math.max(8, Round((CurrentFields().font or 12) * N(Profile().plateScale, 1))), self.owner)
         S.UI:SetAnchor(self.preview.infoLabel, self.preview.root, 0, 0, self.owner)
         S.UI:SetExtent(self.preview.infoLabel, rect.width, rect.height, self.owner)
@@ -894,7 +952,13 @@ function C:LayoutPreview()
         elseif key == "plate" then SetDrawableColor(self.preview.bg, 0.08,0.46,0.72,0.32)
         else SetDrawableColor(self.preview.bg, 0.08,0.36,0.55,0.18) end
     end
-    SafeText(self.anchorHint, self.component=="class" and "尺寸0随字号；XY只移动图标，不移动名称" or (liveAnchor and "锚点：游戏实时位置" or "锚点：当前无单位，使用校准预览位置"))
+    local hint
+    if self.component=="class" then hint="尺寸0随字号；XY只移动图标，不移动职业名称"
+    elseif self.component=="info" then hint="职业名称独立位置/字号；不会拖动装备分数和距离"
+    elseif self.component=="gearScore" then hint="装备分数独立位置/字号/透明度；下方可选完整数值或 K 简写"
+    elseif self.component=="distance" then hint="距离独立位置/字号/透明度"
+    else hint=liveAnchor and "锚点：游戏实时位置" or "锚点：当前无单位，使用校准预览位置" end
+    SafeText(self.anchorHint,hint)
     if type(self.preview.root.Raise) == "function" then pcall(self.preview.root.Raise, self.preview.root) end
     return true
 end
@@ -906,7 +970,15 @@ end
 
 function C:ToggleAux(index)
     local profile = Profile()
-    if self.component == "info" then
+    if self.component == "gearScore" then
+        local i = tonumber(index) or 0
+        if i ~= 1 and i ~= 2 then return true end
+        profile.info = type(profile.info) == "table" and profile.info or {}
+        profile.info.gearScoreFormat = i == 2 and "compact" or "full"
+        self.dirty = true
+        Trace("gear_score_format", { format=profile.info.gearScoreFormat, scope=self.scope, clearError=true })
+        return self:RefreshControls()
+    elseif self.component == "info" then
         local keys = { "class", "gearScore", "distance" }
         local infoFields = { "showClass", "showGear", "showDistance" }
         local i = tonumber(index) or 0
@@ -936,8 +1008,11 @@ local FIELD_VISIBLE = {
     plate   = { x=true,y=true,size=true,width=true,scale=true },
     buffs   = { x=true,y=true,size=true,font=true,spacing=true,perRow=true,rows=true,scale=true,alpha=true },
     debuffs = { x=true,y=true,size=true,font=true,spacing=true,perRow=true,rows=true,scale=true,alpha=true },
-    info    = { x=true,y=true,font=true,scale=true },
-    class   = { x=true,y=true,size=true,scale=true,alpha=true },
+    cooldowns = { x=true,y=true,size=true,font=true,spacing=true,perRow=true,rows=true,scale=true,alpha=true },
+    info      = { x=true,y=true,font=true,scale=true },
+    gearScore = { x=true,y=true,font=true,scale=true,alpha=true },
+    distance  = { x=true,y=true,font=true,scale=true,alpha=true },
+    class     = { x=true,y=true,size=true,scale=true,alpha=true },
     mainHand= { x=true,y=true,size=true,scale=true,alpha=true },
     offHand = { x=true,y=true,size=true,scale=true,alpha=true },
     ranged  = { x=true,y=true,size=true,scale=true,alpha=true },
@@ -1007,26 +1082,22 @@ function C:RefreshControls()
     end
     if self.playerButton ~= nil then S.UI:SetButtonActive(self.playerButton, self.scope == "player", self.owner) end
     if self.targetButton ~= nil then S.UI:SetButtonActive(self.targetButton, self.scope == "target", self.owner) end
-    -- 中文维护注释（旧布局能力兼容）：旧编辑器可独立开关职业/装分/距离并控制
-    -- castBar.showText。新校准器把三项信息合并成一个可拖动“基础信息”区域，但不能因此
-    -- 丢掉这些细粒度开关；辅助按钮只修改 Draft，仍由保存并退出统一提交。
+    -- 中文维护注释（信息拆分）：职业名称/装分/距离现在各自拥有选择项和显示按钮，
+    -- 不再用“基础信息”三个辅助按钮形成第二套 UI Authority；辅助按钮只保留施法文字开关。
     local profile = Profile()
     for i, button in ipairs(self.auxButtons or {}) do
-        local visible = self.component == "info" or (self.component == "castBar" and i == 1)
+        local castVisible = self.component == "castBar" and i == 1
+        local gearVisible = self.component == "gearScore" and i <= 2
+        local visible = castVisible or gearVisible
         SafeVisible(button, visible)
-        if visible then
-            if self.component == "info" then
-                local keys, labels = { "class", "gearScore", "distance" }, { "职业", "装分", "距离" }
-                local infoFields = { "showClass", "showGear", "showDistance" }
-                local item = profile.components[keys[i]] or {}
-                local active = item.enabled ~= false and profile.info[infoFields[i]] ~= false
-                SafeText(button, labels[i] .. (active and "：开" or "：关"))
-                S.UI:SetButtonActive(button, active, self.owner)
-            elseif i == 1 then
-                local cast = profile.components.castBar or {}
-                SafeText(button, cast.showText ~= false and "文字：开" or "文字：关")
-                S.UI:SetButtonActive(button, cast.showText ~= false, self.owner)
-            end
+        if castVisible then
+            local cast = profile.components.castBar or {}
+            SafeText(button, cast.showText ~= false and "文字：开" or "文字：关")
+            S.UI:SetButtonActive(button, cast.showText ~= false, self.owner)
+        elseif gearVisible then
+            local format = tostring((profile.info or {}).gearScoreFormat or "full")
+            SafeText(button, i == 1 and "完整数值" or "K简写")
+            S.UI:SetButtonActive(button, (i == 1 and format ~= "compact") or (i == 2 and format == "compact"), self.owner)
         end
     end
     if self.globalPreviewButton ~= nil then
@@ -1148,6 +1219,10 @@ function C:ResetCurrentComponent()
         end
     else
         profile.components[self.component] = Copy((defaultProfile.components or {})[self.component] or {})
+        if self.component == "gearScore" then
+            profile.info = type(profile.info) == "table" and profile.info or {}
+            profile.info.gearScoreFormat = tostring(type(defaultProfile.info) == "table" and defaultProfile.info.gearScoreFormat or "full") == "compact" and "compact" or "full"
+        end
     end
     self.dirty = true
     self.Diagnostics.resetCount = (tonumber(self.Diagnostics.resetCount) or 0) + 1
@@ -1186,14 +1261,29 @@ end
 function C:HideOverlay()
     -- 维护（hud-template-copy-2）：取消/保存/重载退出均释放本校准的导出快照与键盘，不触碰其他报告。
     self:CloseTemplateCopy()
+    -- 维护（2026-09-22，geometry-gesture-authority-1）：隐藏/保存/取消不等于 Native 拖动自然结束。
+    -- 若退出校准时鼠标仍在拖动，必须先 StopMovingOrSizing + 释放几何 lease，再清状态；否则客户端
+    -- 仍可能保留捕获，重开/分辨率变化后出现“松手又跳一次”的迟到 DragStop。这里只撤销瞬时交互，
+    -- 不提交 panelRect/draft，不触碰用户 Store；后续迟到回调因 dragging=false 直接失去写权限。
+    if self.panelDragging == true and self.panel ~= nil then
+        if type(self.panel.StopMovingOrSizing)=="function" then pcall(function() self.panel:StopMovingOrSizing() end) end
+        if type(S.UI.EndNativeGeometryLease)=="function" then S.UI:EndNativeGeometryLease(self.panel,self.owner) end
+    end
+    if self.dragging == true and self.preview ~= nil and self.preview.root ~= nil then
+        if type(self.preview.root.StopMovingOrSizing)=="function" then pcall(function() self.preview.root:StopMovingOrSizing() end) end
+        if type(S.UI.EndNativeGeometryLease)=="function" then S.UI:EndNativeGeometryLease(self.preview.root,self.owner) end
+    end
+    self.dragging = false
+    self.panelDragging = false
+    self.dragStartRect = nil
+    self.panelGeometryUnitScale, self.panelDragViewport = nil, nil
+    self.previewGeometryUnitScale, self.previewDragViewport = nil, nil
     self.visible = false
     SafeVisible(self.panel, false); SafeVisible(self.preview.root, false)
     for _, item in pairs(type(self.globalPreview) == "table" and type(self.globalPreview.items) == "table" and self.globalPreview.items or {}) do SafeVisible(item.root, false) end
     for _, edit in pairs(self.inputs) do
         if type(S.UI.DeactivateInputWidget) == "function" then pcall(function() S.UI:DeactivateInputWidget(edit, self.owner, "hud_calibration_close") end) end
     end
-    self.dragging = false
-    self.panelDragging = false
     return true
 end
 
@@ -1354,9 +1444,17 @@ function C:EnsureCreated()
             C.Diagnostics.panelDragFailures = (tonumber(C.Diagnostics.panelDragFailures) or 0) + 1
             Trace("panel_drag_lease_failed", { error="geometry_lease_rejected" }); return false
         end
+        -- 维护（geometry-gesture-authority-1）：和 Windowing 共用 viewport-logical-v1 语义，手势开始只
+        -- 校准一次 RU Effective 几何单位。此值只活到 DragStop/HideOverlay，不持久化。
+        if S.Layout ~= nil and type(S.Layout.GetWindowLogicalRect)=="function" then
+            local _,_,_,_,unit=S.Layout:GetWindowLogicalRect(panel)
+            C.panelGeometryUnitScale=type(unit)=="table" and unit.effectiveScale or nil
+            C.panelDragViewport=type(S.Layout.MakeSignature)=="function" and S.Layout:MakeSignature(S.Layout:GetContext()) or nil
+        end
         local moving = S.UI:TryInteractionCall(panel, "StartMoving")
         if moving ~= true then
             if type(S.UI.EndNativeGeometryLease)=="function" then S.UI:EndNativeGeometryLease(panel,C.owner) end
+            C.panelGeometryUnitScale,C.panelDragViewport=nil,nil
             C.Diagnostics.panelDragFailures = (tonumber(C.Diagnostics.panelDragFailures) or 0) + 1
             Trace("panel_drag_start_failed", { error="start_moving_rejected" }); return false
         end
@@ -1369,7 +1467,21 @@ function C:EnsureCreated()
         if type(S.UI.EndNativeGeometryLease)=="function" then S.UI:EndNativeGeometryLease(panel,C.owner) end
         C.panelDragging = false
         local x,y = nil,nil
-        if S.Layout ~= nil and type(S.Layout.GetLogicalRect)=="function" then x,y = S.Layout:GetLogicalRect(panel) end
+        if S.Layout ~= nil and type(S.Layout.GetWindowLogicalRect)=="function" then x,y = S.Layout:GetWindowLogicalRect(panel,C.panelGeometryUnitScale) end
+        local viewportChanged=false
+        if C.panelDragViewport~=nil and S.Layout~=nil and type(S.Layout.MakeSignature)=="function" then
+            viewportChanged=C.panelDragViewport~=S.Layout:MakeSignature(S.Layout:GetContext(true))
+        end
+        C.panelGeometryUnitScale,C.panelDragViewport=nil,nil
+        if viewportChanged==true then
+            -- 跨 viewport 的终点不再与拖动起点同坐标系；保留上次已接受的 transient panelRect，
+            -- 不把混合坐标写回。面板下次 Open 会按新 viewport 再 clamp。
+            local previous=type(C.panelRect)=="table" and C.panelRect or {x=18,y=70}
+            local sw,sh=ScreenSize();local px=math.max(2,math.min(math.max(2,sw-PANEL_W-2),N(previous.x,18)))
+            local py=math.max(2,math.min(math.max(2,sh-PANEL_H-2),N(previous.y,70)))
+            S.UI:SetAnchor(panel,UIParent,px,py,C.owner)
+            return true
+        end
         if tonumber(x)==nil or tonumber(y)==nil then
             C.Diagnostics.panelDragFailures = (tonumber(C.Diagnostics.panelDragFailures) or 0) + 1
             Trace("panel_drag_stop_failed", { error="logical_rect_unavailable" }); return false
@@ -1421,9 +1533,15 @@ function C:EnsureCreated()
             Trace("drag_lease_failed", { error="geometry_lease_rejected" })
             return false
         end
+        if S.Layout ~= nil and type(S.Layout.GetWindowLogicalRect)=="function" then
+            local _,_,_,_,unit=S.Layout:GetWindowLogicalRect(preview)
+            C.previewGeometryUnitScale=type(unit)=="table" and unit.effectiveScale or nil
+            C.previewDragViewport=type(S.Layout.MakeSignature)=="function" and S.Layout:MakeSignature(S.Layout:GetContext()) or nil
+        end
         local moving = S.UI:TryInteractionCall(preview,"StartMoving")
         if moving ~= true then
             if type(S.UI.EndNativeGeometryLease)=="function" then S.UI:EndNativeGeometryLease(preview,C.owner) end
+            C.previewGeometryUnitScale,C.previewDragViewport=nil,nil
             C.Diagnostics.dragFailures = (tonumber(C.Diagnostics.dragFailures) or 0) + 1
             Trace("drag_start_failed", { error="start_moving_rejected" })
             return false
@@ -1436,8 +1554,19 @@ function C:EnsureCreated()
         if type(S.UI.EndNativeGeometryLease)=="function" then S.UI:EndNativeGeometryLease(preview,C.owner) end
         C.dragging=false
         local x,y = nil,nil
-        if S.Layout ~= nil and type(S.Layout.GetLogicalRect)=="function" then x,y = S.Layout:GetLogicalRect(preview) end
+        if S.Layout ~= nil and type(S.Layout.GetWindowLogicalRect)=="function" then x,y = S.Layout:GetWindowLogicalRect(preview,C.previewGeometryUnitScale) end
+        local viewportChanged=false
+        if C.previewDragViewport~=nil and S.Layout~=nil and type(S.Layout.MakeSignature)=="function" then
+            viewportChanged=C.previewDragViewport~=S.Layout:MakeSignature(S.Layout:GetContext(true))
+        end
+        C.previewGeometryUnitScale,C.previewDragViewport=nil,nil
         local before = type(C.dragStartRect)=="table" and C.dragStartRect or C.preview.expectedRect
+        C.dragStartRect=nil
+        if viewportChanged==true then
+            -- viewport 在手势中改变时，dx/dy 已混合两个坐标空间；拒绝把差值写进 HUD draft，
+            -- 直接按当前 draft 重新布局预览，避免一次 DragStop 永久污染自身/目标 HUD 偏移。
+            return C:RefreshControls()
+        end
         if tonumber(x) ~= nil and tonumber(y) ~= nil and type(before)=="table" then
             local dx,dy = tonumber(x)-N(before.x,0), tonumber(y)-N(before.y,0)
             local profile,key = Profile(),C.component; local scale=N(profile.plateScale,1)
@@ -1542,4 +1671,4 @@ function C:GetDraftSnapshot() return Copy(self.draft) end
 
 -- Presentation contract: no feature enable is required to edit layout, and no
 -- transient calibration state is persisted until Save & Exit.
-Feature.HudCalibrationPresentationContractVersion = 5 -- 中文维护注释：v5 在 v4 全局预览/正式 HUD suppression 基础上新增 HUD_TEMPLATE_V1 Draft 快照输出；仍不新增 Scheduler/Consumer，模板输出不写 Store。
+Feature.HudCalibrationPresentationContractVersion = 7 -- 中文维护注释：v7 在信息拆分 v6 基础上为装备分数加入 profile-local full/compact 草稿控制；v5 为 HUD_TEMPLATE_V1 Draft 输出。仍不新增 Scheduler/Consumer，模板输出不写 Store。
