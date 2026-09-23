@@ -93,8 +93,16 @@ function W:EnsureInstance(id, context)
         self.failedInstances[id] = { generation = S.Generation, error = err }
         self.stats.createFailures = (tonumber(self.stats.createFailures) or 0) + 1
         if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Error) == "function" then
+            -- 维护（2026-09-24，widget-feature-diagnostic-route-1）：WidgetHost 是 Presentation Authority，
+            -- 但模块诊断按 FeatureRegistry 身份归属错误。旧日志只有 widget id/source=ui_v3，life_trade
+            -- 报告因此会显示 errors=0，即使该窗口已经被构建隔离。这里补 featureId/route 只用于诊断路由；
+            -- 不改变 Host quarantine、Feature 生命周期或任何持久化状态，也不在刷新热路径执行。
+            local featureMeta = S.FeatureRegistry and type(S.FeatureRegistry.Get) == "function"
+                and S.FeatureRegistry:Get(spec.featureId) or nil
             S.DiagnosticsManager:Error("ui_v3", "V3_WIDGET_BUILD_QUARANTINED", "V3 悬浮组件构建失败，本次 Generation 已隔离重试", {
-                id = id, generation = tostring(S.Generation or ""), error = err,
+                id = id, widgetId = id, featureId = tostring(spec.featureId or ""),
+                route = tostring(featureMeta and featureMeta.route or ""),
+                generation = tostring(S.Generation or ""), error = err,
             })
         end
         return nil, err
@@ -123,8 +131,21 @@ function W:SetVisible(id, visible, context)
         local fn = visible == true and (instance.Show or instance.Open) or (instance.Hide or instance.Close)
         if type(fn) == "function" then
             local ok, result, detail = xpcall(function() return fn(instance, context) end, S.SafeTraceback)
-            if not ok then return false, tostring(result or "widget visibility failed") end
-            if result == false then return false, tostring(detail or "widget visibility failed") end
+            if not ok or result == false then
+                local visibilityErr = tostring(ok and detail or result or "widget visibility failed")
+                -- 维护（2026-09-24，widget-feature-diagnostic-route-1）：可见性失败发生在用户显式动作边沿，
+                -- 允许记录一次完整错误；绝不从 Host 重试 Feature、重建 Native 或修改偏好，避免双 Authority。
+                if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Error) == "function" then
+                    local featureMeta = S.FeatureRegistry and type(S.FeatureRegistry.Get) == "function"
+                        and S.FeatureRegistry:Get(spec.featureId) or nil
+                    S.DiagnosticsManager:Error("ui_v3", "V3_WIDGET_VISIBILITY_FAILED", "V3 悬浮组件可见性切换失败", {
+                        id = id, widgetId = id, featureId = tostring(spec.featureId or ""),
+                        route = tostring(featureMeta and featureMeta.route or ""),
+                        requestedVisible = tostring(visible == true), error = visibilityErr,
+                    })
+                end
+                return false, visibilityErr
+            end
         end
     end
     local nextValue = visible == true
@@ -539,6 +560,17 @@ function W:GetPlacementDiagnostics(id)
         d=shell:GetPlacementDiagnostics();d.widgetId=id;d.visibleRequested=self.visible[id]==true
     elseif instance and type(instance.GetPlacementDiagnostics)=="function" then
         d=instance:GetPlacementDiagnostics();d.widgetId=id;d.visibleRequested=self.visible[id]==true
+    end
+    -- 维护（2026-09-24，widget-quarantine-placement-diagnostic-1）：未创建实例也可能不是“尚未打开”，
+    -- 而是严格 BuildScope 已失败并被本 Generation 隔离。模块诊断原本只看到 created=false，根因被隐藏。
+    -- 这里只读 Host 已有 quarantine，不触发 EnsureInstance/Store Load；故用户点击诊断不会再次分配 Native 控件。
+    local failed=self.failedInstances[id]
+    if type(failed)=="table" and tonumber(failed.generation)==tonumber(S.Generation) then
+        d.buildQuarantined=true
+        d.buildError=tostring(failed.error or "widget build quarantined")
+        d.buildGeneration=tonumber(failed.generation) or failed.generation
+    else
+        d.buildQuarantined=false
     end
     return d
 end

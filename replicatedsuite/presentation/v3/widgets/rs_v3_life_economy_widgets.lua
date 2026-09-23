@@ -48,10 +48,16 @@ local function BuildBody(instance,parent,spec,Feature)
             local controlsOk, controlsErr = spec.buildControls(instance, instance.controls, Feature)
             if controlsOk == false then return nil, controlsErr or (spec.title .. "悬浮窗控制条创建失败") end
         end
+        -- 维护（2026-09-24，trade-floating-native-budget-1）：TableView 的 desiredRows/overscan 会决定首次
+        -- Refresh 时需要建立的可复用 Native 行池。跑商 HUD 高度约 306px，控制条后实际只需要约 7 行；旧值 10+overscan
+        -- 会在用户点击“打开悬浮窗”的同一事务中预建无用行，和多个 Dropdown popup 一起形成明显 Native 峰值。
+        -- 只收紧 Trade Presentation 池大小；ListView 仍通过复用/滚动访问全部数据，Trade Authority/rows 完全不裁剪。
+        local desiredRows = instance.overview and 6 or (spec.featureName == "Trade" and 7 or 10)
+        local overscanRows = spec.featureName == "Trade" and 0 or 1
         instance.table = RSUI:TableView({
-            id = instance.contentPrefix .. "table", parent = content, items = {}, rowHeight = instance.overview and 26 or 24, headerHeight = instance.overview and 26 or 23, desiredRows = 10,
+            id = instance.contentPrefix .. "table", parent = content, items = {}, rowHeight = instance.overview and 26 or 24, headerHeight = instance.overview and 26 or 23, desiredRows = desiredRows,
             rowFitMode = spec.featureName == "Trade" and "adaptive_tail" or "fixed", rowFitMin = instance.overview and 22 or 20, rowFitMax = instance.overview and 30 or 28,
-            overscan = 1, scrollbar = true, selectable = spec.selectable == true, selectionMode = "single", columnResize = true, headerInteractive = false,
+            overscan = overscanRows, scrollbar = true, selectable = spec.selectable == true, selectionMode = "single", columnResize = true, headerInteractive = false,
             columns = S.Utils.DeepCopy(spec.columns), slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
         })
         if spec.selectable == true and type(spec.onSelection) == "function" then
@@ -192,26 +198,78 @@ local function Register(spec)
             if not (S.FeatureRuntime and S.FeatureRuntime:IsEnabled(featureId) == true) then return true end
             return Feature:ReleaseConsumer("widget:" .. spec.token)
         end
+        local function ReportOpenIssue(level, code, message, phase, detail, acquired)
+            local diagnostics = S.DiagnosticsManager
+            local fn = type(diagnostics) == "table" and diagnostics[level] or nil
+            if type(fn) ~= "function" then return false end
+            -- 维护（2026-09-24，life-widget-open-transaction-2）：悬浮窗属于 Presentation，但诊断必须显式带
+            -- featureId/widgetId，才能归属到对应模块。该函数只在用户打开/持久化失败边沿执行，不进入刷新热路径。
+            fn(diagnostics, "ui_v3", code, message, {
+                featureId = featureId, widgetId = tostring(spec.widgetId or ""), route = tostring(spec.widgetId or ""),
+                phase = tostring(phase or "unknown"), consumerAcquired = tostring(acquired == true), error = tostring(detail or ""),
+            })
+            return true
+        end
         function instance:Show(context)
-            if self.visible then self:Refresh(); return self.surface:Show(true) end
+            if self.visible then
+                local shown, showErr = self.surface:Show(true)
+                if shown ~= true then return false, showErr end
+                local refreshOk, refreshResult, refreshErr = xpcall(function() return self:Refresh() end, S.SafeTraceback)
+                if refreshOk ~= true or refreshResult == false then
+                    ReportOpenIssue("Warn", "LIFE_WIDGET_REFRESH_FAILED", spec.title .. "悬浮窗刷新失败，窗口保持打开", "refresh_visible",
+                        refreshOk and refreshErr or refreshResult, true)
+                    self.surface:SetStatus("数据刷新失败，可稍后重试", "yellow")
+                end
+                return true
+            end
+
             local acquired = false
+            local phase = "feature_gate"
+            -- 维护（2026-09-24，life-widget-open-transaction-2）：打开事务只覆盖“Feature 可用 -> 订阅 -> Consumer
+            -- lease -> Native Surface 显示”。数据投影刷新不再属于可见性提交条件。旧顺序先 Refresh 后 Show，任意一次
+            -- Presentation 刷新异常都会回滚 Consumer 并隐藏窗口，外观上就是“按钮无反应”；更严重的是错误细节还被通用
+            -- “悬浮窗显示失败”覆盖。现在先提交可见 Surface，再以独立保护域刷新内容，Authority 与资源释放仍保持对称。
             local ok, openErr = xpcall(function()
                 if not (S.FeatureRuntime and S.FeatureRuntime:IsEnabled(featureId) == true) then error(spec.title .. "功能已关闭") end
-                self:Subscribe()
+                phase = "subscribe"
+                local subscribeOk, subscribeErr = self:Subscribe()
+                if subscribeOk ~= true then error(subscribeErr or (spec.title .. "事件订阅失败")) end
+                phase = "acquire_consumer"
                 local acquireOk, acquireErr = Feature:AcquireConsumer("widget:" .. spec.token)
                 if acquireOk ~= true then error(acquireErr or (spec.title .. " Consumer 获取失败")) end
                 acquired = true
-                self:Refresh()
-                if self.surface:Show(true) ~= true then error(spec.title .. "悬浮窗显示失败") end
+                phase = "surface_show"
+                local shown, showErr = self.surface:Show(true)
+                if shown ~= true then error(spec.title .. "悬浮窗显示失败：" .. tostring(showErr or "unknown")) end
             end, S.SafeTraceback)
             if ok ~= true then
-                self.surface:Show(false); self:Unsubscribe()
+                local rollbackHideOk, rollbackHideErr = self.surface:Show(false)
+                self:Unsubscribe()
                 if acquired then Feature:ReleaseConsumer("widget:" .. spec.token) end
                 self.visible = false
+                ReportOpenIssue("Error", "LIFE_WIDGET_OPEN_FAILED", spec.title .. "悬浮窗打开失败", phase,
+                    tostring(openErr or "unknown") .. (rollbackHideOk ~= true and (" | rollbackHide=" .. tostring(rollbackHideErr or "failed")) or ""), acquired)
                 return false, openErr
             end
+
             self.visible = true
-            if type(context) ~= "table" or context.persist ~= false then Feature.Commands:SetWidgetVisible(true, "show") end
+            phase = "refresh_after_show"
+            local refreshOk, refreshResult, refreshErr = xpcall(function() return self:Refresh() end, S.SafeTraceback)
+            if refreshOk ~= true or refreshResult == false then
+                -- 内容刷新是 Projection 层失败，不能夺走已经成功建立的窗口/Consumer 生命周期。
+                -- 保留窗口让用户仍可关闭/重置布局，并把根因写入模块诊断；后续正常 Feature 更新会再次 Refresh。
+                ReportOpenIssue("Warn", "LIFE_WIDGET_REFRESH_FAILED", spec.title .. "悬浮窗已打开，但首次数据刷新失败", phase,
+                    refreshOk and refreshErr or refreshResult, acquired)
+                self.surface:SetStatus("数据刷新失败，可稍后重试", "yellow")
+            end
+            if type(context) ~= "table" or context.persist ~= false then
+                local persistOk, persistErr = Feature.Commands:SetWidgetVisible(true, "show")
+                if persistOk ~= true then
+                    -- 可见性已经由 Host/Native 成功提交；存档失败只影响下次自动恢复，不能反向隐藏当前窗口造成双 Authority。
+                    ReportOpenIssue("Warn", "LIFE_WIDGET_VISIBILITY_PERSIST_FAILED", spec.title .. "悬浮窗已打开，但可见偏好保存失败",
+                        "persist_visibility", persistErr, acquired)
+                end
+            end
             return true
         end
         function instance:Hide(context)
@@ -302,7 +360,7 @@ local ok, err = Register({
             slot = { size = "fixed", height = 28, hAlign = "fill" },
         })
         instance.fromDropdown = RSUI:Dropdown({
-            id = (instance.contentPrefix or "v3_life_trade_widget_") .. "from", parent = routeRow, items = {}, maxVisible = 10,
+            id = (instance.contentPrefix or "v3_life_trade_widget_") .. "from", parent = routeRow, items = {}, maxVisible = 6,
             popupWidth = 210, placeholder = "起点",
             get = function() return (Feature:GetRouteSettings() or {}).fromZone end,
             set = function(v) return Feature.Commands:SetFrom(v) end,
@@ -313,7 +371,7 @@ local ok, err = Register({
             slot = { size = "fixed", width = 14 },
         })
         instance.toDropdown = RSUI:Dropdown({
-            id = (instance.contentPrefix or "v3_life_trade_widget_") .. "to", parent = routeRow, items = {}, maxVisible = 10,
+            id = (instance.contentPrefix or "v3_life_trade_widget_") .. "to", parent = routeRow, items = {}, maxVisible = 6,
             popupWidth = 210, placeholder = "目的地",
             get = function() return (Feature:GetRouteSettings() or {}).toZone end,
             set = function(v) return Feature.Commands:SetTo(v) end,
@@ -335,7 +393,7 @@ local ok, err = Register({
             slot = { size = "fixed", height = 28, hAlign = "fill" },
         })
         instance.favoriteDropdown = RSUI:Dropdown({
-            id = (instance.contentPrefix or "v3_life_trade_widget_") .. "favorite", parent = quickRow, items = {}, maxVisible = 10,
+            id = (instance.contentPrefix or "v3_life_trade_widget_") .. "favorite", parent = quickRow, items = {}, maxVisible = 6,
             popupWidth = 230, placeholder = "收藏路线",
             get = function()
                 local projection = Feature:GetProjection() or {}
@@ -348,21 +406,24 @@ local ok, err = Register({
             end,
             slot = { size = "fill", fill = 1.25, minWidth = 120 },
         })
-        instance.viewDropdown = RSUI:Dropdown({
+        -- 维护（2026-09-24，trade-floating-native-budget-1）：显示模式固定只有 3 个值，使用 Dropdown 会为它
+        -- 额外创建 1 个顶层 Native Window、上下滚动按钮和 6 个 option，且这些对象在窗口首次打开前就全部分配。
+        -- 改为 SegmentedSelector 后语义完全等价、无需 popup，也更适合 HUD 高频切换；业务仍只调用 SetViewMode。
+        instance.viewSelector = RSUI:SegmentedSelector({
             id = (instance.contentPrefix or "v3_life_trade_widget_") .. "view_mode", parent = quickRow,
             items = {
-                { value = "all", text = "当前路线全部货物" },
-                { value = "tracked", text = "只看关注货物" },
-                { value = "cargo", text = "随身贸易包目的地" },
+                { value = "all", text = "全部" },
+                { value = "tracked", text = "关注" },
+                { value = "cargo", text = "随身" },
             },
-            maxVisible = 6, popupWidth = 200, placeholder = "显示内容",
+            itemWidth = 40, gap = 2, height = 26, fontSize = 9,
             get = function() return (Feature:GetProjection() or {}).viewMode or "all" end,
             set = function(value)
                 local ok, commandErr = Feature.Commands:SetViewMode(value)
                 if ok == true then instance:Refresh() end
                 return ok, commandErr
             end,
-            slot = { size = "fill", fill = 1, minWidth = 104 },
+            slot = { size = "fixed", width = 124, vAlign = "fill" },
         })
         instance.trackButton = RSUI:Button({
             id = (instance.contentPrefix or "v3_life_trade_widget_") .. "track", parent = quickRow, text = "关注货物", compact = true,
@@ -377,7 +438,7 @@ local ok, err = Register({
         end
 
         return instance.fromDropdown ~= nil and instance.toDropdown ~= nil and instance.favoriteDropdown ~= nil
-            and instance.viewDropdown ~= nil and instance.trackButton ~= nil,
+            and instance.viewSelector ~= nil and instance.trackButton ~= nil,
             "跑商悬浮窗紧凑控制条创建失败"
     end,
     refreshControls = function(instance, projection)
@@ -403,9 +464,9 @@ local ok, err = Register({
             instance.favoriteDropdown:SetEnabled(routeControlsEnabled and #favoriteItems > 0)
             instance.favoriteDropdown:Render()
         end
-        if instance.viewDropdown then
-            instance.viewDropdown:SetEnabled(true)
-            instance.viewDropdown:Render()
+        if instance.viewSelector then
+            instance.viewSelector:SetEnabled(true)
+            instance.viewSelector:Render()
         end
         if instance.trackButton then
             local row = type(Feature.GetSelectedRow) == "function" and Feature:GetSelectedRow() or nil

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static/geometry regressions for Trade optimization .18.295.
+"""Static/geometry regressions for Trade optimization .18.296.
 
 These checks intentionally avoid mocking ArcheRage native calls. They protect the
 architecture contracts that can be verified off-client: historical Store
@@ -19,6 +19,7 @@ STATIC = (ROOT / "data/rs_trade_static_v2.lua").read_text(encoding="utf-8")
 TABLE = (ROOT / "ui/framework/rs_ui_data_views.lua").read_text(encoding="utf-8")
 PAGE = (ROOT / "presentation/v3/pages/rs_v3_life_m16_pages.lua").read_text(encoding="utf-8")
 WIDGET = (ROOT / "presentation/v3/widgets/rs_v3_life_economy_widgets.lua").read_text(encoding="utf-8")
+WIDGET_HOST = (ROOT / "presentation/v3/widgets/rs_v3_widget_host.lua").read_text(encoding="utf-8")
 DETAIL = (ROOT / "presentation/v3/widgets/rs_v3_trade_detail_floating.lua").read_text(encoding="utf-8")
 DIAGNOSTICS = (ROOT / "presentation/v3/widgets/rs_v3_trade_diagnostics.lua").read_text(encoding="utf-8")
 REGISTRY = (ROOT / "features/rs_feature_registry.lua").read_text(encoding="utf-8")
@@ -79,7 +80,7 @@ def adaptive_tail(viewport: float, count: int, base: float, gap: float, soft_min
 
 def main() -> int:
     # Build/version and historical Store boundary.
-    require("v3-m1.16.0.18.295-trade-native-lease-headroom" in BOOT, "build tag advanced")
+    require("v3-m1.16.0.18.296-trade-floating-open-recovery" in BOOT, "build tag advanced")
     require('preferenceStoreId = "v3.trade_preferences"' in BUNDLE, "trade preferences split into independent store")
     old_store = section(BUNDLE, 'RegisterStore(Trade.storeId, "v3.life.trade"', 'RegisterStore(Trade.preferenceStoreId')
     require("schemaVersion" not in old_store, "historical trade registration still uses shared schema1 helper")
@@ -254,6 +255,27 @@ def main() -> int:
             "TableView exposes reusable adaptive-tail geometry")
     require('rowFitMode = kind == "trade" and "adaptive_tail" or "fixed"' in PAGE, "main trade table opts into adaptive tail")
     require('rowFitMode = spec.featureName == "Trade" and "adaptive_tail" or "fixed"' in WIDGET, "trade HUD table opts into adaptive tail")
+    require('local desiredRows = instance.overview and 6 or (spec.featureName == "Trade" and 7 or 10)' in WIDGET
+            and 'local overscanRows = spec.featureName == "Trade" and 0 or 1' in WIDGET,
+            "trade HUD bounds its initial row pool to visible capacity")
+    require('instance.viewSelector = RSUI:SegmentedSelector({' in WIDGET and 'instance.viewDropdown = RSUI:Dropdown({' not in WIDGET,
+            "trade HUD fixed three-state view mode does not allocate a popup window")
+    trade_controls = section(WIDGET, 'featureName = "Trade"', 'refreshControls = function(instance, projection)')
+    require(trade_controls.count('maxVisible = 6') >= 3,
+            "trade HUD route/favorite dropdown pools are bounded to six visible rows")
+    open_path = section(WIDGET, 'function instance:Show(context)', 'function instance:Hide(context)')
+    require(open_path.find('self.surface:Show(true)') < open_path.find('refresh_after_show'),
+            "trade widget commits Native visibility before first projection refresh")
+    require('LIFE_WIDGET_REFRESH_FAILED' in open_path and 'LIFE_WIDGET_OPEN_FAILED' in open_path,
+            "trade widget open/refresh failures retain phase-specific diagnostics")
+    require('ReportOpenIssue("Warn", "LIFE_WIDGET_REFRESH_FAILED"' in open_path,
+            "trade widget warnings use the DiagnosticsManager Warn API")
+    require('悬浮窗显示失败：" .. tostring(showErr or "unknown")' in open_path,
+            "trade widget preserves the concrete Native show error")
+    require('V3_WIDGET_BUILD_QUARANTINED' in WIDGET_HOST and 'featureId = tostring(spec.featureId or "")' in WIDGET_HOST,
+            "widget host routes build quarantine into feature diagnostics")
+    require('buildQuarantined=true' in WIDGET_HOST and 'buildError=tostring(failed.error' in WIDGET_HOST,
+            "widget placement diagnostics exposes build quarantine without rebuilding")
     require('rowFitMode = "adaptive_tail"' in DETAIL, "trade detail material table opts into adaptive tail")
     require('local callback = c.onSelectionChanged' in TABLE and 'local callback = c.onItemActivated' in TABLE,
             "TableView dispatch reads post-construction callbacks at runtime")

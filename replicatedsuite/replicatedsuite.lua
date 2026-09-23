@@ -94,7 +94,7 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.295-trade-native-lease-headroom" -- 维护（trade-native-lease-headroom-1）：根据 18.294 实机诊断修复 native_accepted 后 Consumer 归零导致回执订阅/inFlight 被提前释放；Native 回执改为独立轻量 lease，后台自动刷新预留完整 cooldown 交互空窗，降低收藏路线切换持续撞 5 秒窗口。旧 Store schema、SingleFlight 与 QuoteQueue Authority 不变。
+S.BuildTag = "v3-m1.16.0.18.296-trade-floating-open-recovery" -- 维护（trade-floating-open-recovery-1）：根据 18.295 实机“模块/报价正常但悬浮窗打不开”修复 Presentation 打开事务；窗口 Surface 成功显示后不再因一次数据投影刷新失败整体回滚，同时压低跑商 HUD 首次构建的 Native 控件峰值，并把 WidgetHost 构建/显示失败按 featureId 回流模块诊断。旧 Store schema、Trade Authority、Native 回执 lease 与请求冷却协议不变。
 -- 维护（.18.248）：补齐缺失运行时文件并恢复被 Git 冲突破坏的源码；保留 .247 个人工作台与所有 Store 协议，不清配置。
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}
