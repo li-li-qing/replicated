@@ -29,8 +29,10 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
 local Q = {
-    version = 1,
+    version = 2,
     EventAuthorityContractVersion = 1,
+    FallbackIdentityMatchContractVersion = 1,
+    MarketPriceHandshakeContractVersion = 1,
     presentationBoundary = "service_only",
     Topic = "v3.price_quote.completed",
     -- Single pending native call. GetLowestPrice is synchronous, but pacing and
@@ -101,12 +103,18 @@ local Q = {
     -- Debugging observability (.18.168): many RU quotes fail closed; these
     -- bounded records expose WHY without touching the read-model contracts.
     stats = { attempts = 0, ready = 0, failed = 0, merged = 0, cacheHits = 0,
-        cancelled = 0, nativeLastMs = 0, nativeMaxMs = 0 },
+        cancelled = 0, nativeLastMs = 0, nativeMaxMs = 0, fallbackMatches = 0,
+        marketPriceAsks = 0, marketPriceAskFailures = 0 },
     negativeCache = {}, negativeTtlMs = 30000, cacheMax = 512,
     budgetPatch = "trade-budget-1",
     recent = {},        -- newest-first ring of the last completions
     recentMax = 12,
     lastRawReturn = nil, -- bounded shape of the most recent native return
+    -- 维护（2026-09-24，quote-fallback-identity-match-1）：名称搜索本身仍只发一次服务器请求；
+    -- 但读取最多 20 条 detached 结果用于本地 stable itemType/精确名称匹配，避免 fuzzy search 首条并非目标时误判。
+    fallbackSearchLimit = 20,
+    lastFallbackMatch = nil,
+    lastMarketAsk = nil,
 }
 S.Services.PriceQuoteQueueV3 = Q
 
@@ -283,27 +291,74 @@ function Q:GetProtocolProbe()
     return Copy({ done = ProbeState.done, attempts = ProbeState.attempts, results = ProbeState.results })
 end
 
--- After the grade ladder is exhausted, the verified legacy protocol falls back
--- to ONE bounded auction search by the material's localized display name and
--- reads the first row's bid price as a reference estimate. The un-tokened
--- AUCTION_ITEM_SEARCHED completion edge is owned by AuctionQueryV3; this service
--- never subscribes to it directly (shared-fact ownership invariant).
+-- After direct stable-ID lookup is exhausted, use ONE bounded auction name
+-- search as a compatibility fallback. AUCTION_ITEM_SEARCHED remains owned by
+-- AuctionQueryV3; this service only consumes its detached snapshot.
 local function BeginSearchFallback(pending)
     local query = S.Services and S.Services.AuctionQueryV3 or nil
-    if type(query) ~= "table" or type(query.Search) ~= "function" then return false end
+    if type(query) ~= "table" or type(query.Search) ~= "function" then return false, "auction_query_unavailable" end
     local keyword = tostring(pending.searchName or "")
-    if keyword == "" or #keyword > 64 then return false end
+    if keyword == "" or #keyword > 64 then return false, "search_name_unavailable" end
+    -- Shared AuctionQueryV3 owns the un-tokened native completion edge. If a
+    -- user-facing auction search is already in flight, do not steal/cancel it
+    -- and do not fail the quote merely because the shared authority is busy.
+    -- The quote lane retries this *local admission check* on its next paced turn.
+    local describe = type(query.Describe) == "function" and query:Describe() or nil
+    if type(describe) == "table" and describe.pending == true then return false, "auction_query_busy" end
     pending.fallbackState = "searching"
-    local ok = query:Search("price_quote_fallback", keyword, { resultLimit = 1 })
-    return ok == true
+    pending.fallbackDeadlineAt = pending.fallbackDeadlineAt or (NowMs() + 12000)
+    -- 维护（2026-09-24，quote-fallback-identity-match-1）：旧实现 resultLimit=1 后只读 rows[1]。
+    -- SearchAuctionArticle 是名称搜索，首条并不保证就是目标材料；因此“拍卖行有货”也会被错误判成身份不匹配。
+    -- 这里仍只发 ONE 次服务器搜索，但有界读取最多 20 条，再按 stable itemType 优先、精确名称次之匹配。
+    local ok, err = query:Search("price_quote_fallback", keyword, { resultLimit = Q.fallbackSearchLimit })
+    if ok ~= true then pending.fallbackState = "queued" end
+    return ok == true, err
 end
 
 local function FallbackRowPrice(row)
-    if type(row) ~= "table" then return nil end
-    local n = ToMoney(row.bidPrice)
-    if n == nil then n = ToMoney(row.directPrice) end
-    if n ~= nil and n == n and n > 0 then return math.floor(n) end
-    return nil
+    if type(row) ~= "table" then return nil, nil end
+    -- 维护（2026-09-24，auction-fallback-buyout-authority-1）：跑商材料成本需要“现在可以买到”的价格。
+    -- direct/buyout 是可立即成交 Authority；bid 只是当前竞拍价，可能在结束前继续上涨，不能在存在一口价时
+    -- 反过来覆盖它。仅当 RU 结果没有可读 directPrice 时，才把 bidPrice 作为降级参考并明确标记来源。
+    local n = ToMoney(row.directPrice)
+    if n ~= nil and n == n and n > 0 then return math.floor(n), "name_search_direct" end
+    n = ToMoney(row.bidPrice)
+    if n ~= nil and n == n and n > 0 then return math.floor(n), "name_search_bid" end
+    return nil, nil
+end
+
+local function NormalizeSearchIdentityName(value)
+    local text = tostring(value or "")
+    text = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+    text = text:gsub("[%s%c]+", " ")
+    return text:match("^%s*(.-)%s*$") or ""
+end
+
+local function SelectFallbackRow(rows, pending)
+    rows = type(rows) == "table" and rows or {}
+    local expected = tonumber(pending and pending.itemType)
+    expected = expected ~= nil and math.floor(expected) or nil
+    local wantedName = NormalizeSearchIdentityName(pending and pending.searchName)
+    local nameCandidate = nil
+    for index, row in ipairs(rows) do
+        if type(row) == "table" then
+            local rowType = tonumber(row.itemType)
+            rowType = rowType ~= nil and math.floor(rowType) or nil
+            -- Stable item identity is authoritative. A localized display-name
+            -- difference must never reject a row whose itemType already matches.
+            if expected ~= nil and rowType ~= nil and rowType == expected then
+                return row, "itemType", index
+            end
+            local gotName = NormalizeSearchIdentityName(row.name)
+            -- Text is only a fallback when the native row does not prove a
+            -- conflicting stable identity.
+            if wantedName ~= "" and gotName == wantedName and (rowType == nil or expected == nil or rowType == expected) then
+                nameCandidate = nameCandidate or { row = row, index = index }
+            end
+        end
+    end
+    if nameCandidate ~= nil then return nameCandidate.row, "name", nameCandidate.index end
+    return nil, "none", nil
 end
 
 
@@ -414,75 +469,175 @@ function Q:_CheckFallback()
     if type(pending) ~= "table" or pending.fallbackState ~= "searching" then return end
     local query = S.Services and S.Services.AuctionQueryV3 or nil
     if type(query) ~= "table" or type(query.GetSnapshot) ~= "function" then
-        Q:_FailPending("unavailable", "全部 " .. tostring(#(pending.grades or {})) .. " 档品质均无在售挂单（名称搜索兜底不可用）")
+        Q:_FailPending("unavailable", "拍卖名称搜索兜底不可用")
         return
     end
     local snap = query:GetSnapshot("price_quote_fallback")
     local status = type(snap) == "table" and tostring(snap.status or "") or ""
     if status == "waiting" then
-        -- Still awaiting AUCTION_ITEM_SEARCHED. Re-issuing here cannot help:
-        -- AuctionQueryV3:Search rejects a new request while its own pending slot
-        -- is occupied, so an earlier version of this branch burned three retries
-        -- on guaranteed failures and then declared the material unquotable. Just
-        -- wait, bounded by an explicit wall-clock deadline instead of attempt
-        -- counts (auction responses are slower than one 560 ms drain tick).
+        -- AuctionQueryV3 has its own 8s timeout. Keep a slightly wider outer wall
+        -- clock so scheduler budget jitter cannot leave the quote pending forever.
         pending.fallbackDeadlineAt = pending.fallbackDeadlineAt or (NowMs() + 12000)
         if NowMs() < (tonumber(pending.fallbackDeadlineAt) or 0) then return end
-        Q:_FailPending("unavailable", "全部 " .. tostring(#(pending.grades or {})) .. " 档品质均无在售挂单（名称搜索超时）")
+        Q:_FailPending("unavailable", "名称搜索超时")
         return
     end
     if status == "ready" or status == "partial" then
         local rows = type(snap.rows) == "table" and snap.rows or {}
-        local row = rows[1]
-        local expected = tonumber(pending.itemType)
-        local rowType = type(row) == "table" and tonumber(row.itemType) or nil
-        -- Reject a *provably different* stable identity. An unreadable row shape
-        -- (rowType == nil) must not fail closed here: the current RU client does
-        -- not reliably expose itemType on GetSearchedItemInfo, and treating that
-        -- as "identity mismatch" made every fallback die on its own guard. The
-        -- keyword was our own localized material name, so a name-equality check
-        -- is the honest available verification.
-        if expected ~= nil and rowType ~= nil and math.floor(rowType) ~= expected then
-            Q:_FailPending("unavailable", "全部 " .. tostring(#(pending.grades or {})) .. " 档品质均无在售挂单（搜索结果身份不匹配）")
+        local row, matchKind, matchIndex = SelectFallbackRow(rows, pending)
+        Q.lastFallbackMatch = {
+            keyword = tostring(pending.searchName or ""), itemType = pending.itemType,
+            resultCount = #rows, matchKind = matchKind, matchIndex = matchIndex,
+            status = status, at = NowMs(),
+        }
+        if row == nil then
+            Q:_FailPending("unavailable", "名称搜索返回 " .. tostring(#rows) .. " 条，但没有匹配目标物品")
             return
         end
-        local wantName = tostring(pending.searchName or "")
-        local gotName = type(row) == "table" and tostring(row.name or "") or ""
-        if wantName ~= "" and gotName ~= "" and gotName ~= wantName then
-            Q:_FailPending("unavailable", "全部 " .. tostring(#(pending.grades or {})) .. " 档品质均无在售挂单（搜索结果名称不符）")
-            return
-        end
-        local price = FallbackRowPrice(row)
+        local price, priceSource = FallbackRowPrice(row)
         if price ~= nil then
-            CompletePending("ready", { value = price, source = "name_search_bid" }, nil, "fallback")
+            Q.stats.fallbackMatches = (tonumber(Q.stats.fallbackMatches) or 0) + 1
+            CompletePending("ready", { value = price, source = priceSource or "name_search" }, nil, "fallback")
             return
         end
-        Q:_FailPending("unavailable", "全部 " .. tostring(#(pending.grades or {})) .. " 档品质均无在售挂单（搜索结果无参考价）")
+        Q:_FailPending("unavailable", "匹配到目标物品，但搜索结果没有可读参考价")
         return
     end
-    -- empty / failed / idle: the ladder already proved there is no direct listing.
-    Q:_FailPending("unavailable", "全部 " .. tostring(#(pending.grades or {})) .. " 档品质均无在售挂单（名称搜索亦无结果）")
+    local queryError = type(snap) == "table" and snap.error or nil
+    Q.lastFallbackMatch = {
+        keyword = tostring(pending.searchName or ""), itemType = pending.itemType,
+        resultCount = type(snap) == "table" and tonumber(snap.count) or 0,
+        matchKind = "none", status = status ~= "" and status or "unknown", error = queryError, at = NowMs(),
+    }
+    if status == "empty" then
+        Q:_FailPending("unavailable", "名称搜索没有返回在售结果")
+    else
+        Q:_FailPending("unavailable", "名称搜索失败：" .. tostring(queryError or status or "unknown"))
+    end
+end
+
+local function RequeueFront(request)
+    Q.pending = nil
+    table.insert(Q.queue, 1, request)
+end
+
+local function QueueFallbackStart(request)
+    if request.searchName == nil or request.searchName == "" then
+        Q:_FailPending("unavailable", "目标品质没有可读最低价，且缺少名称搜索身份")
+        return
+    end
+    -- GetLowestPrice and SearchAuctionArticle are both server-query capabilities.
+    -- Start the fallback on the *next* paced drain instead of issuing two server
+    -- calls in the same scheduler turn. This keeps PriceQuoteQueueV3's one-lane
+    -- pacing contract intact without increasing request count.
+    request.fallbackState = "queued"
+    request.fallbackDeadlineAt = request.fallbackDeadlineAt or (NowMs() + 12000)
+end
+
+local function AdvanceAfterUnreadableLowestPrice(request, grades)
+    request.marketPriceState = nil
+    request.marketPriceGrade = nil
+    request.gradeIndex = (tonumber(request.gradeIndex) or 1) + 1
+    if request.gradeIndex <= #grades then
+        RequeueFront(request)
+        return
+    end
+    QueueFallbackStart(request)
+end
+
+local function ReadLowestPrice(request, grade, phase)
+    Q.lastNativeCallAt = NowMs()
+    local started = Q.lastNativeCallAt
+    local ok, value, err, b, c, d = S.Api:CallCapability("X2Auction:GetLowestPrice", nil, "GetLowestPrice", request.itemType, grade)
+    Q.stats.nativeLastMs = math.max(0, NowMs() - started)
+    Q.stats.nativeMaxMs = math.max(Q.stats.nativeMaxMs, Q.stats.nativeLastMs)
+    local gradeLabel = "grade " .. tostring(grade) .. "/" .. tostring(#(request.grades or {}))
+    Q.lastRawReturn = ok ~= true and (tostring(phase or "read") .. "_failed:" .. tostring(err or "?"))
+        or (tostring(phase or "read") .. " " .. gradeLabel .. ": " .. ShapeOf(value) .. ", " .. ShapeOf(b) .. ", " .. ShapeOf(c) .. ", " .. ShapeOf(d))
+    if ok ~= true then return false, nil, tostring(err or "报价请求被拒绝") end
+    local price = ScanPrice(value, b, c, d)
+    if price == nil and type(value) == "table" then
+        local quote = NormalizeQuote(value)
+        if quote ~= nil then price = quote.value end
+    end
+    return true, price, nil
 end
 
 local function Drain()
-    -- 维护（trade-budget-1）：普通需求不再附带控制物品协议探针。复用唯一队列并以实际
-    -- 时间节流，一次回调最多一次报价调用；显式维护探针仍共用lastNativeCallAt栅栏。
-    -- 同步Native的单次耗时不能被分帧拆开，nativeLastMs/nativeMaxMs单独记录。
-    local now = NowMs()
+    -- 维护（2026-09-24，auction-market-price-handshake-1）：ArcheRage RU 2025-08-12 同一批次、同为 500ms 冷却
+    -- 放行 AskMarketPrice(itemType,itemGrade,askMarketPriceUi) 与 GetLowestPrice(itemType,itemGrade)。结合实机证据
+    -- “直接 GetLowestPrice 调用成功但全 nil”，报价协议改为显式 Ask -> 下一 paced turn Read；若仍无值才走名称搜索。
+    -- 这里不依赖未验证事件、不轮询：Ask/Read/Search 三类服务器调用共用一个 scheduler lane，每个 turn 最多一次。\n    local now = NowMs()
     if Q.lastNativeCallAt ~= nil and (now - Q.lastNativeCallAt) < Q.intervalMs then return end
 
-    -- 维护：协议探针仅由显式诊断调用；普通用户批次只查所选材料。禁止恢复自动探针。
-    -- An in-flight fallback search legitimately occupies Q.pending while we wait
-    -- for AUCTION_ITEM_SEARCHED. Servicing it must happen *before* the generic
-    -- pending early-return below, otherwise the wait becomes a permanent stall
-    -- (.178: 已报=0/失败=0 because this branch was unreachable).
     if Q.pending ~= nil then
-        if Q.pending.fallbackState == "searching" then
+        local pending = Q.pending
+        local grades = pending.grades or {}
+        local grade = grades[tonumber(pending.gradeIndex) or 1] or pending.itemGrade
+        if pending.marketPriceState == "ask_queued" then
+            if grade == nil then Q:_FailPending("unavailable", "没有可探测的品质档位"); return end
+            Q.lastNativeCallAt = NowMs()
+            local started = Q.lastNativeCallAt
+            local ok, value, err, b, c, d = S.Api:CallCapability("X2Auction:AskMarketPrice", nil, "AskMarketPrice", pending.itemType, grade, false)
+            Q.stats.nativeLastMs = math.max(0, NowMs() - started)
+            Q.stats.nativeMaxMs = math.max(Q.stats.nativeMaxMs, Q.stats.nativeLastMs)
+            Q.stats.marketPriceAsks = (tonumber(Q.stats.marketPriceAsks) or 0) + 1
+            Q.lastMarketAsk = {
+                itemType = pending.itemType, itemGrade = grade, ok = ok == true,
+                shape = ShapeOf(value) .. ", " .. ShapeOf(b) .. ", " .. ShapeOf(c) .. ", " .. ShapeOf(d),
+                error = ok == true and nil or tostring(err or "unknown"), at = NowMs(),
+            }
+            if ok ~= true then
+                Q.stats.marketPriceAskFailures = (tonumber(Q.stats.marketPriceAskFailures) or 0) + 1
+                -- Ask 失败不能污染整个服务；该 grade 退回既有名称搜索/下一 grade 降级链。
+                AdvanceAfterUnreadableLowestPrice(pending, grades)
+                return
+            end
+            pending.marketPriceState = "readback_queued"
+            pending.marketPriceGrade = grade
+            return
+        elseif pending.marketPriceState == "readback_queued" then
+            grade = tonumber(pending.marketPriceGrade) or grade
+            local ok, price, err = ReadLowestPrice(pending, grade, "after_ask")
+            if ok ~= true then
+                Q:_FailPending("failed", tostring(err or "报价读取失败"))
+                return
+            end
+            if price ~= nil then
+                pending.resolvedGrade = grade
+                pending.marketPriceState = nil
+                CompletePending("ready", { value = price, source = "market_price:" .. tostring(grade) }, nil, "direct")
+                return
+            end
+            AdvanceAfterUnreadableLowestPrice(pending, grades)
+            return
+        elseif pending.fallbackState == "queued" then
+            if NowMs() >= (tonumber(pending.fallbackDeadlineAt) or (NowMs() + 1)) then
+                Q:_FailPending("unavailable", "名称搜索等待共享查询通道超时")
+                return
+            end
+            local query = S.Services and S.Services.AuctionQueryV3 or nil
+            local describe = type(query) == "table" and type(query.Describe) == "function" and query:Describe() or nil
+            if type(describe) == "table" and describe.pending == true then
+                return -- shared un-tokened AuctionQuery is busy; retry admission next paced turn
+            end
+            Q.lastNativeCallAt = NowMs()
+            local ok, err = BeginSearchFallback(pending)
+            if ok ~= true then
+                if err == "auction_query_busy" then
+                    pending.fallbackState = "queued"
+                    return
+                end
+                Q:_FailPending("unavailable", "名称搜索启动失败：" .. tostring(err or "unknown"))
+            end
+            return
+        elseif pending.fallbackState == "searching" then
             Q:_CheckFallback()
             if Q.pending == nil and #Q.queue == 0 then Q:_StopLane() end
         end
         return
     end
+
     local request = table.remove(Q.queue, 1)
     if request == nil then
         Q:_StopLane()
@@ -495,9 +650,6 @@ local function Drain()
         return
     end
     Q.pending = request
-    -- Reaching here means the request is fresh from the queue, so it cannot be in
-    -- fallback state (that path is serviced above). Counting attempts only on the
-    -- direct grade probe keeps stats.attempts meaning "GetLowestPrice calls".
     Q.stats.attempts = Q.stats.attempts + 1
     Q.quoteStateByItemType[request.itemType] = {
         status = "inflight", itemGrade = request.itemGrade, requester = request.requester, at = NowMs(),
@@ -508,51 +660,9 @@ local function Drain()
         Q:_FailPending("unavailable", "没有可探测的品质档位")
         return
     end
-    -- CallCapability enforces the 500ms cooldown itself; our 1000ms spacing keeps
-    -- the native call inside a clean window. A false return here means the gate
-    -- (or the native getter) rejected it — fail closed, do not retry blindly.
-    Q.lastNativeCallAt = NowMs()
-    local started = Q.lastNativeCallAt
-    local ok, value, err, b, c, d = S.Api:CallCapability("X2Auction:GetLowestPrice", nil, "GetLowestPrice", request.itemType, grade)
-    Q.stats.nativeLastMs = math.max(0, NowMs() - started)
-    Q.stats.nativeMaxMs = math.max(Q.stats.nativeMaxMs, Q.stats.nativeLastMs)
-    local gradeLabel = "grade " .. tostring(grade) .. "/" .. tostring(#grades)
-    Q.lastRawReturn = ok ~= true and ("call_failed:" .. tostring(err or "?")) or (gradeLabel .. ": " .. ShapeOf(value) .. ", " .. ShapeOf(b) .. ", " .. ShapeOf(c) .. ", " .. ShapeOf(d))
-    if ok ~= true then
-        -- A capability/runtime failure is not evidence about the next grade.
-        Q:_FailPending("failed", tostring(err or "报价请求被拒绝"))
-        return
-    end
-    local price = ScanPrice(value, b, c, d)
-    if price == nil and type(value) == "table" then
-        local quote = NormalizeQuote(value)
-        if quote ~= nil then price = quote.value end
-    end
-    if price ~= nil then
-        -- Legacy-verified semantics: a positive GetLowestPrice return IS the
-        -- lowest listing price (per-grade). The name-search fallback below is
-        -- bidPrice-based and therefore only a reference estimate.
-        request.resolvedGrade = grade
-        CompletePending("ready", { value = price, source = "grade:" .. tostring(grade) }, nil, "direct")
-        return
-    end
-    -- nil here means "no listing at this grade": probe the next grade for the
-    -- SAME request on the next paced tick instead of failing the material.
-    request.gradeIndex = (tonumber(request.gradeIndex) or 1) + 1
-    if request.gradeIndex <= #grades then
-        Q.pending = nil
-        table.insert(Q.queue, 1, request)
-        return
-    end
-    -- Ladder exhausted. Fall back to one bounded name search when the caller
-    -- supplied a display name; otherwise fail with the honest no-listing reason.
-    -- No separate scheduler task: the existing drain lane re-enters this
-    -- request every paced tick and _CheckFallback advances it (single-lane
-    -- contract; a second AddTask would be a parallel authority).
-    if request.searchName ~= nil and request.searchName ~= "" and BeginSearchFallback(request) then
-        return
-    end
-    Q:_FailPending("unavailable", "全部 " .. tostring(#grades) .. " 档品质均无在售挂单")
+    -- 先 Ask，再在下一 paced turn GetLowestPrice。askMarketPriceUi=false 保持纯数据查询，不弹原生市场价 UI。
+    request.marketPriceState = "ask_queued"
+    request.marketPriceGrade = grade
 end
 
 function Q:_FailPending(status, err)
@@ -597,6 +707,7 @@ function Q:_Enqueue(requester, itemType, itemGrade, callback, grades, searchName
         grades = type(grades) == "table" and #grades > 0 and grades or nil,
         gradeIndex = 1,
         searchName = searchName, fallbackState = nil, fallbackAttempts = 0,
+        marketPriceState = nil, marketPriceGrade = nil,
     }
     if #Q.queue >= Q.maxQueue then return false, "报价队列已满，请稍后再试" end
     Q.queue[#Q.queue + 1] = request
@@ -904,7 +1015,8 @@ function Q:GetPriceWithProvenance(itemType, itemGrade)
     local fresh = Q.pricesByItemType[itemType]
     if type(fresh) == "table" and fresh.price ~= nil and (itemGrade==nil or tonumber(fresh.itemGrade)==tonumber(itemGrade)) then
         local age=NowMs()-(tonumber(fresh.completedAt) or 0)
-        local kind=(age>=0 and age<=self.cacheTtlMs and fresh.source~="name_search_bid") and "live" or "reference"
+        local fromNameSearch = tostring(fresh.source or ""):find("^name_search_") ~= nil
+        local kind=(age>=0 and age<=self.cacheTtlMs and not fromNameSearch) and "live" or "reference"
         return tonumber(fresh.price), kind, { source = fresh.source, at = fresh.completedAt, grade = fresh.itemGrade }
     end
     local reference, meta = Q:GetReferencePrice(itemType, itemGrade)
@@ -944,6 +1056,14 @@ function Q:Describe()
         stats = Copy(self.stats),
         recent = recent,
         lastRawReturn = self.lastRawReturn,
+        lastFallbackMatch = self.lastFallbackMatch and Copy(self.lastFallbackMatch) or nil,
+        lastMarketAsk = self.lastMarketAsk and Copy(self.lastMarketAsk) or nil,
+        pendingDetail = type(self.pending) == "table" and {
+            itemType = self.pending.itemType, itemGrade = self.pending.itemGrade, gradeIndex = self.pending.gradeIndex,
+            searchName = self.pending.searchName, fallbackState = self.pending.fallbackState,
+            marketPriceState = self.pending.marketPriceState, marketPriceGrade = self.pending.marketPriceGrade,
+            requestedAt = self.pending.requestedAt,
+        } or nil,
         lastCompleted = self.lastCompleted and Copy(self.lastCompleted) or nil,
         protocolProbe = {
             done = ProbeState.done == true,

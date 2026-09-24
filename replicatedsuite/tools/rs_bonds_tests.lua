@@ -87,8 +87,10 @@ S.RSUI.Text = function(spec)
     return txt
 end
 S.RSUI.Dropdown = function(spec)
-    local dd = { spec = spec, items = spec.items or {} }
+    local dd = { spec = spec, items = spec.items or {}, enabled = true }
     function dd:SetItems(it) self.items = it or {} end
+    function dd:SetEnabled(e) self.enabled = e end
+    function dd:Render() return type(self.spec.get) == "function" and self.spec.get() or nil end
     return dd
 end
 S.RSUI.VerticalBox = function() return {} end
@@ -166,8 +168,12 @@ Test("B1: Registry contract & metadata", function()
     assert(Bonds.Commands ~= nil, "Bonds commands missing")
     -- 中文维护注释（2026-09-15，多大陆债券排序契约）：大陆顺序必须是独立设置，不能再复用
     -- “重复任务保留哪一侧”的 priority。这样排序只改变展示顺序，绝不会隐式删除另一大陆数据。
-    assert(type(Bonds.Commands.SetContinentOrder) == "function", "SetContinentOrder command missing")
-    assert((tonumber(Bonds.MultiContinentSnapshotContractVersion) or 0) >= 1, "multi-continent snapshot contract missing")
+    assert(type(Bonds.Commands.SetContinentOrder) == "function", "SetContinentOrder compatibility command missing")
+    assert(type(Bonds.Commands.SetDisplayOrder) == "function" and type(Bonds.Commands.SetFilterMask) == "function"
+        and type(Bonds.Commands.SetDuplicateMode) == "function", "dropdown atomic commands missing")
+    assert((tonumber(Bonds.MultiContinentSnapshotContractVersion) or 0) >= 3, "multi-continent snapshot v3 contract missing")
+    assert((tonumber(Bonds.ResidentBoardFamilyContractVersion) or 0) >= 1, "resident board family contract missing")
+    assert((tonumber(Bonds.AuroriaMaterialContractVersion) or 0) >= 1, "Auroria material contract missing")
 end)
 
 Test("B1b: pre-continentOrder canonical can recover exact historical stamp", function()
@@ -267,9 +273,9 @@ Test("B2: Empty vs Unavailable vs Ready status distinction", function()
     -- Case 3: readable > 0, contentCount > 0 in West -> ready
     SetMockResident({
         GetResidentBoardContent = function(_, index)
-            if index == 1 then
-                return { contents = { "居民委托：需要布料 20 个" } }
-            end
+            if index == 1 then return { contents = { "居民委托：需要布料 20 个" } } end
+            if index == 3 then return { contents = { "居民委托：需要木材 60 个" } } end
+            if index == 4 then return { contents = { "居民委托：需要铁锭 100 个" } } end
             return { contents = {} }
         end
     })
@@ -339,6 +345,7 @@ Test("B4: Real Quest State tracking with activeIndex", function()
             if index == 1 then return { contents = { "布料 20" } } -- quest 9044
             elseif index == 2 then return { contents = { "皮革 60" } } -- quest 9152
             elseif index == 3 then return { contents = { "木材 100" } } -- quest 9143
+            elseif index == 4 then return { contents = { "铁锭 20" } } -- board-family evidence
             end
             return { contents = {} }
         end
@@ -376,6 +383,8 @@ Test("B5: Bag material count & shortage computation", function()
         GetResidentBoardContent = function(_, index)
             if index == 1 then return { contents = { "布料 20" } }
             elseif index == 2 then return { contents = { "皮革 60" } }
+            elseif index == 3 then return { contents = { "木材 100" } }
+            elseif index == 4 then return { contents = { "铁锭 20" } }
             end
             return { contents = {} }
         end
@@ -427,6 +436,20 @@ Test("B6: Sorting & filtering options", function()
     Bonds.Commands:SetDuplicatePriority("west")
     assert(Bonds:GetDuplicatePriority() == "west", "priority should be west")
     assert(Bonds:GetBondFilterOption("excludeSame") == false, "priority switch must keep all-rows mode unchanged")
+
+    local displayOk, displayErr = Bonds.Commands:SetDisplayOrder("quantity", "east_first")
+    assert(displayOk == true, tostring(displayErr))
+    assert(Bonds:GetDisplayOrderKey() == "quantity:east_first", "combined display order key mismatch")
+    local materialOk, materialErr = Bonds.Commands:SetDisplayOrder("material", "west_first")
+    assert(materialOk == true, tostring(materialErr))
+    assert(Bonds:GetDisplayOrderKey() == "material:west_first", "material display order key mismatch")
+    local maskOk, maskErr = Bonds.Commands:SetFilterMask(15)
+    assert(maskOk == true and Bonds:GetFilterMask() == 15, tostring(maskErr))
+    local dupOk, dupErr = Bonds.Commands:SetDuplicateMode("east")
+    assert(dupOk == true and Bonds:GetDuplicateMode() == "east", tostring(dupErr))
+    assert(Bonds:GetBondFilterOption("excludeSame") == true and Bonds:GetDuplicatePriority() == "east", "combined duplicate mode mismatch")
+    Bonds.Commands:SetDuplicateMode("all")
+    Bonds.Commands:SetDisplayOrder("continent", "west_first")
 end)
 
 Test("B7: Row lookup and selection commands", function()
@@ -532,6 +555,8 @@ Test("B12: Bonds demand owns QuestProgress and refreshes immediately after turn-
     SetMockResident({
         GetResidentBoardContent = function(_, index)
             if index == 2 then return { contents = { "皮革 60" } } end
+            if index == 3 then return { contents = { "木材 100" } } end
+            if index == 4 then return { contents = { "铁锭 20" } } end
             return { contents = {} }
         end
     })
@@ -589,6 +614,8 @@ Test("B14: West and East daily snapshots coexist and sorting never drops a mainl
     SetMockResident({
         GetResidentBoardContent = function(_, index)
             if index == 1 then return { contents = { "布料 20" } } end
+            if index == 3 then return { contents = { "木材 60" } } end
+            if index == 4 then return { contents = { "铁锭 100" } } end
             return { contents = {} }
         end
     })
@@ -604,6 +631,8 @@ Test("B14: West and East daily snapshots coexist and sorting never drops a mainl
         GetResidentBoardContent = function(_, index)
             if index == 1 then return { contents = { "布料 20" } } end
             if index == 2 then return { contents = { "皮革 60" } } end
+            if index == 3 then return { contents = { "木材 100" } } end
+            if index == 4 then return { contents = { "铁锭 60" } } end
             return { contents = {} }
         end
     })
@@ -618,12 +647,12 @@ Test("B14: West and East daily snapshots coexist and sorting never drops a mainl
         if row.continentKey == "west" then westCount = westCount + 1 end
         if row.continentKey == "east" then eastCount = eastCount + 1 end
     end
-    assert(westCount == 1 and eastCount == 2, "all-rows mode must keep both west/east snapshots: " .. tostring(westCount) .. "/" .. tostring(eastCount))
+    assert(westCount == 3 and eastCount == 4, "all-rows mode must keep both west/east snapshots: " .. tostring(westCount) .. "/" .. tostring(eastCount))
 
     local sortOk, sortErr = Bonds.Commands:SetContinentOrder("east_first")
     assert(sortOk == true, "east-first sorting failed: " .. tostring(sortErr))
     projection = BA:GetProjection()
-    assert(#projection.rows == 3, "sorting must not remove rows")
+    assert(#projection.rows == 7, "sorting must not remove rows")
     assert(projection.rows[1].continentKey == "east" and projection.rows[#projection.rows].continentKey == "west", "east-first order not applied")
 
     -- Selecting the merge winner while still in all-rows mode must remain a pure
@@ -631,10 +660,10 @@ Test("B14: West and East daily snapshots coexist and sorting never drops a mainl
     Bonds.Commands:SetBondFilterOption("excludeSame", false)
     Bonds.Commands:SetDuplicatePriority("east")
     projection = BA:GetProjection()
-    assert(#projection.rows == 3, "merge priority must not hide rows while duplicate mode is all")
+    assert(#projection.rows == 7, "merge priority must not hide rows while duplicate mode is all")
     Bonds.Commands:SetBondFilterOption("excludeSame", true)
     projection = BA:GetProjection()
-    assert(#projection.rows == 2, "explicit merge mode should collapse only the duplicate fabric row")
+    assert(#projection.rows == 6, "explicit merge mode should collapse only the duplicate fabric row")
     local fabric
     for _, row in ipairs(projection.rows) do if row.materialKey == "fabric" then fabric = row end end
     assert(fabric ~= nil and fabric.continentKey == "east", "east merge priority must retain the east duplicate")
@@ -654,15 +683,158 @@ Test("B15: Bonds page and floating widget expose unambiguous mainland controls",
     assert(pageText:find('id = "continent", title = "大陆"', 1, true) ~= nil, "main Bonds table must have an explicit continent column")
     assert(pageText:find('今日已获取：', 1, true) ~= nil, "main Bonds status must show daily west/east coverage")
     assert(pageText:find('当前位置：', 1, true) ~= nil, "main Bonds status must name the current continent")
-    assert(pageText:find('排序：按大陆', 1, true) ~= nil and pageText:find('排序：按数量', 1, true) ~= nil, "sort mode labels must be explicit")
-    assert(pageText:find('大陆：西→东', 1, true) ~= nil and pageText:find('大陆：东→西', 1, true) ~= nil, "continent order labels must be explicit")
-    assert(pageText:find('重复：全部', 1, true) ~= nil and pageText:find('重复：合并', 1, true) ~= nil, "duplicate mode must state all vs merge")
+    assert(pageText:find('按大陆 · 西→东', 1, true) ~= nil and pageText:find('按数量 · 少→多', 1, true) ~= nil
+        and pageText:find('按数量 · 多→少', 1, true) ~= nil and pageText:find('按材料 · 正序', 1, true) ~= nil
+        and pageText:find('按材料 · 倒序', 1, true) ~= nil, "Bonds sort dropdown must expose continent/quantity/material ordering")
+    assert(pageText:find('id = "v3_bonds_scope"', 1, true) ~= nil and pageText:find('id = "v3_bonds_duplicate_mode"', 1, true) ~= nil, "main Bonds controls must use scope/duplicate dropdowns")
+    assert(pageText:find('v3_bonds_q20', 1, true) == nil and pageText:find('v3_bonds_sort"', 1, true) == nil, "legacy option buttons must not remain on main Bonds page")
 
     local widgetFile = assert(io.open("presentation/v3/widgets/rs_v3_life_economy_widgets.lua", "rb"))
     local widgetText = widgetFile:read("*a"); widgetFile:close()
-    assert(widgetText:find('SetContinentOrder', 1, true) ~= nil, "floating Bonds controls must support continent order")
+    assert(widgetText:find('SetDisplayOrder', 1, true) ~= nil and widgetText:find('SetFilterMask', 1, true) ~= nil and widgetText:find('SetDuplicateMode', 1, true) ~= nil, "floating Bonds controls must use atomic dropdown commands")
     assert(widgetText:find('{ id = "continent", title = "大陆"', 1, true) ~= nil, "floating Bonds table must have a continent column")
-    assert(widgetText:find('重复：全部', 1, true) ~= nil and widgetText:find('重复：合并', 1, true) ~= nil, "floating duplicate mode wording must match main page")
+    assert(widgetText:find('bondsDropdownControlsContractVersion = 2', 1, true) ~= nil, "floating Bonds dropdown contract missing")
+end)
+
+Test("B16: Unknown Auroria zone is discovered from ResidentBoard family even with mainland cache", function()
+    -- 中文维护测试：用户已缓存西大陆后移动到静态 zone 表未收录的原大陆区域；旧逻辑会因为
+    -- next(dailySnapshots) ~= nil 而完全跳过 ResidentBoard。显式刷新必须探测 5/6 并新增 auroria 快照。
+    Bonds.State.dailySnapshots = {
+        west = { continentKey = "west", faction = "Nuia", boards = {
+            { index = 1, lines = { "布料 20" } }, { index = 3, lines = { "木材 60" } }, { index = 4, lines = { "铁锭 100" } },
+        } },
+    }
+    SetMockUnit({ GetCurrentZoneGroup = function(_) return 777 end })
+    SetMockResident({ GetResidentBoardContent = function(_, index)
+        if index == 5 then return { faction = "Auroria", contents = { "Prince's Coinpurses 30" } } end
+        if index == 6 then return { faction = "Auroria", contents = { "Queen's Crates 8" } } end
+        if index == 7 then return { faction = "Auroria", contents = { "Ancestor's Coinpurses 20" } } end
+        return { faction = "Auroria", contents = {} }
+    end })
+    assert(BA:Refresh("page_manual") == true, "manual unknown-zone Auroria probe failed")
+    local projection = BA:GetProjection()
+    assert(projection.boardScope == "auroria", "ResidentBoard family must override unknown zone")
+    assert(projection.dailySnapshotStatus.west == true and projection.dailySnapshotStatus.auroria == true, "Auroria snapshot must coexist with mainland cache")
+    local desc = Bonds:DescribeDailyCache()
+    assert(type(desc.lastBoardProbe) == "table" and desc.lastBoardProbe.detectedScope == "auroria", "probe diagnostics must expose Auroria detection")
+end)
+
+Test("B17: Empty ResidentBoard probe never overwrites or persists a daily snapshot", function()
+    local good = { continentKey = "west", faction = "Nuia", boards = {
+        { index = 1, lines = { "布料 20" } }, { index = 3, lines = { "木材 60" } }, { index = 4, lines = { "铁锭 100" } },
+    } }
+    Bonds.State.dailySnapshots = { west = good }
+    SetMockUnit({ GetCurrentZoneGroup = function(_) return 1 end })
+    SetMockResident({ GetResidentBoardContent = function() return { contents = {} } end })
+    assert(BA:Refresh("page_manual") == true, "good cache must survive temporary empty Native read")
+    local projection = BA:GetProjection()
+    assert(projection.dailySnapshotStatus.west == true and #projection.rows >= 3, "empty probe must not erase good west cache")
+    local desc = Bonds:DescribeDailyCache()
+    assert(desc.lastBoardProbe.captureAction == "empty_probe" or desc.lastBoardProbe.captureAction == "kept_cache_empty_probe", "empty-probe diagnostic missing")
+
+    Bonds.State.dailySnapshots = {}
+    BA:Refresh("page_manual")
+    assert(Bonds.State.dailySnapshots.west == nil and Bonds.State.dailySnapshots.east == nil and Bonds.State.dailySnapshots.auroria == nil, "empty board shells must never be persisted")
+end)
+
+Test("B18: Auroria rows resolve real material ItemType, quest and shortage", function()
+    _G.X2Bag = {
+        Capacity = function() return 20 end,
+        GetBagItemInfo = function(_, bagId, slot)
+            if bagId == 1 and slot == 1 then return { itemType = 35461, stackCount = 12 } end -- Prince purse
+            if bagId == 1 and slot == 2 then return { itemType = 42077, stackCount = 3 } end -- Queen crate
+            if bagId == 1 and slot == 3 then return { itemType = 43176, stackCount = 5 } end -- Ancestor purse
+            return nil
+        end,
+    }
+    Bonds.State.dailySnapshots = {}
+    SetMockUnit({ GetCurrentZoneGroup = function(_) return 777 end })
+    SetMockResident({ GetResidentBoardContent = function(_, index)
+        if index == 5 then return { contents = { "Prince's Coinpurses 30" } } end
+        if index == 6 then return { contents = { "Queen's Crates 8" } } end
+        if index == 7 then return { contents = { "Ancestor's Coinpurses 20" } } end
+        return { contents = {} }
+    end })
+    BA:Refresh("page_manual")
+    local byMaterial = {}
+    for _, row in ipairs(BA:GetProjection().rows or {}) do byMaterial[row.materialKey] = row end
+    assert(byMaterial.prince_purse and byMaterial.prince_purse.questId == 10504 and byMaterial.prince_purse.requiredCount == 30, "Prince purse mapping mismatch")
+    assert(byMaterial.queen_crate and byMaterial.queen_crate.questId == 10510 and byMaterial.queen_crate.requiredCount == 8, "Queen crate mapping mismatch")
+    assert(byMaterial.ancestor_purse and byMaterial.ancestor_purse.questId == 10512 and byMaterial.ancestor_purse.requiredCount == 20, "Ancestor purse mapping mismatch")
+    -- InventorySnapshot may be unavailable/partial in a stripped test host; whenever ready, counts must use the real Auroria identities.
+    if byMaterial.prince_purse.haveCount ~= nil then
+        assert(byMaterial.prince_purse.haveCount == 12 and byMaterial.prince_purse.shortage == 18, "Prince purse inventory/shortage mismatch")
+        assert(byMaterial.queen_crate.haveCount == 3 and byMaterial.queen_crate.shortage == 5, "Queen crate inventory/shortage mismatch")
+    end
+end)
+
+
+Test("B19: Auroria daily snapshot merges board families instead of replacing the continent", function()
+    -- 中文维护测试（18.302）：原大陆不同区域可能只提供 5/6/7 中一部分有效内容；同日 auroria
+    -- 必须按 board index 增量合并，不能因为 auroria key 已存在就让 zone-boundary/manual probe 白读。
+    Bonds.State.dailySnapshots = {}
+    SetMockUnit({ GetCurrentZoneGroup = function(_) return 777 end })
+    SetMockResident({ GetResidentBoardContent = function(_, index)
+        if index == 5 then return { faction = "Auroria", contents = { "Prince's Coinpurses 30" } } end
+        return { faction = "Auroria", contents = {} }
+    end })
+    assert(BA:Refresh("page_manual") == true, "Prince Auroria capture failed")
+
+    SetMockResident({ GetResidentBoardContent = function(_, index)
+        if index == 6 then return { faction = "Auroria", contents = { "Queen's Crates 8" } } end
+        return { faction = "Auroria", contents = {} }
+    end })
+    assert(BA:Refresh("zone_changed") == true, "Queen Auroria boundary merge failed")
+
+    local projection = BA:GetProjection()
+    local prince, queen = nil, nil
+    for _, row in ipairs(projection.rows or {}) do
+        if row.materialKey == "prince_purse" then prince = row end
+        if row.materialKey == "queen_crate" then queen = row end
+    end
+    assert(prince ~= nil and prince.questId == 10504, "existing Prince board must survive later Auroria probe")
+    assert(queen ~= nil and queen.questId == 10510, "new Queen board must be merged into Auroria cache")
+    local desc = Bonds:DescribeDailyCache()
+    assert(desc.lastBoardProbe.captureAction == "merged_new_board_lines", "merge diagnostic action missing")
+    assert((tonumber(desc.lastBoardProbe.addedLines) or 0) >= 1, "merge diagnostic must report added lines")
+end)
+
+Test("B20: Auroria fallback identity scans all numbers, not only the first number", function()
+    -- RU/其他本地化可能在真正需求量前带阶段/编号。没有 purse/crate 关键词时，90 对 Prince 只可能是
+    -- purse；首个数字 2 不应让身份解析失败。歧义的 30/25/20 仍由生产代码保持 UNKNOWN。
+    Bonds.State.dailySnapshots = {}
+    SetMockUnit({ GetCurrentZoneGroup = function(_) return 777 end })
+    SetMockResident({ GetResidentBoardContent = function(_, index)
+        if index == 5 then return { faction = "Auroria", contents = { "Stage 2 / required 90" } } end
+        return { faction = "Auroria", contents = {} }
+    end })
+    assert(BA:Refresh("page_manual") == true, "Auroria numeric fallback probe failed")
+    local matched = nil
+    for _, row in ipairs(BA:GetProjection().rows or {}) do
+        if row.questId == 10505 then matched = row; break end
+    end
+    assert(matched ~= nil and matched.materialKey == "prince_purse" and matched.requiredCount == 90,
+        "all-number fallback must resolve Prince purse 90 even when first number is unrelated")
+end)
+
+Test("B21: RU Ancestor coinpurse wording resolves the ambiguous 20 requirement", function()
+    -- 中文维护测试（18.302 RU 本地化）：当前俄服数据把 Ancestor's Coinpurse 写作“Котомка эфенского странника”。
+    -- 20 同时也是 ancestor crate 的大额数量，仅靠数量无法裁决；必须识别俄语“Котомка”词根，避免小额钱袋行变 UNKNOWN。
+    Bonds.State.dailySnapshots = {}
+    SetMockUnit({ GetCurrentZoneGroup = function(_) return 777 end })
+    SetMockResident({ GetResidentBoardContent = function(_, index)
+        if index == 7 then return { faction = "Auroria", contents = { "Доставьте 20 котомок эфенского странника председателю совета общины." } } end
+        -- Public ArcheRage board-family behavior requires board 5 or 6 evidence to classify Auroria.
+        if index == 6 then return { faction = "Auroria", contents = { "Расшитые жемчугом кошельки 25" } } end
+        return { faction = "Auroria", contents = {} }
+    end })
+    assert(BA:Refresh("page_manual") == true, "RU Ancestor wording probe failed")
+    local matched = nil
+    for _, row in ipairs(BA:GetProjection().rows or {}) do
+        if row.questId == 10512 then matched = row; break end
+    end
+    assert(matched ~= nil and matched.materialKey == "ancestor_purse" and matched.requiredCount == 20,
+        "Russian 'Котомка' wording must resolve ancestor_purse 20 instead of ambiguous UNKNOWN")
 end)
 
 print(string.format("\nBonds Test Results: %d/%d passed", passed, total))

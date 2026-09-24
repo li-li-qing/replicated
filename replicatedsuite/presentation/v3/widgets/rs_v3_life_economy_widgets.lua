@@ -35,6 +35,38 @@ local function FindZoneName(projection, id)
     return tostring(id)
 end
 
+-- 中文维护注释（2026-09-24，债券悬浮窗筛选下拉）：与主页面共享同一业务 value 语义，
+-- 但 Presentation 实例各自拥有 Native Dropdown；Feature/Store 是唯一状态 Authority，不 Reparent 控件。
+local BOND_ORDER_ITEMS = {
+    { value = "continent:west_first", text = "按大陆 · 西→东" },
+    { value = "continent:east_first", text = "按大陆 · 东→西" },
+    { value = "quantity:west_first", text = "按数量 · 少→多" },
+    { value = "quantity:east_first", text = "按数量 · 多→少" },
+    { value = "material:west_first", text = "按材料 · 正序" },
+    { value = "material:east_first", text = "按材料 · 倒序" },
+}
+local function BondScopeLabel(mask)
+    if mask == 15 then return "全部 · 20/60/100/原陆" end
+    if mask == 7 then return "主大陆 · 20/60/100" end
+    if mask == 8 then return "仅原大陆" end
+    if mask == 0 then return "全部关闭" end
+    local parts = {}
+    if mask % 2 >= 1 then parts[#parts + 1] = "20" end
+    if math.floor(mask / 2) % 2 >= 1 then parts[#parts + 1] = "60" end
+    if math.floor(mask / 4) % 2 >= 1 then parts[#parts + 1] = "100" end
+    if math.floor(mask / 8) % 2 >= 1 then parts[#parts + 1] = "原陆" end
+    return "筛选 · " .. table.concat(parts, "+")
+end
+local BOND_SCOPE_ITEMS = {}
+for _, mask in ipairs({ 15, 7, 8, 1, 2, 4, 3, 5, 6, 9, 10, 12, 11, 13, 14, 0 }) do
+    BOND_SCOPE_ITEMS[#BOND_SCOPE_ITEMS + 1] = { value = mask, text = BondScopeLabel(mask) }
+end
+local BOND_DUPLICATE_ITEMS = {
+    { value = "all", text = "重复 · 全部" },
+    { value = "west", text = "重复 · 留西" },
+    { value = "east", text = "重复 · 留东" },
+}
+
 -- 维护（overview-content-1）：页面与悬浮窗共用内容构建器而非Reparent原生窗口。
 -- 每个实例独立id/owner/控件，Feature投影/Command唯一，构建和刷新绝不发出材料询价。
 local Contents={specs={}}
@@ -48,11 +80,14 @@ local function BuildBody(instance,parent,spec,Feature)
             local controlsOk, controlsErr = spec.buildControls(instance, instance.controls, Feature)
             if controlsOk == false then return nil, controlsErr or (spec.title .. "悬浮窗控制条创建失败") end
         end
-        -- 维护（2026-09-24，trade-floating-native-budget-1）：TableView 的 desiredRows/overscan 会决定首次
-        -- Refresh 时需要建立的可复用 Native 行池。跑商 HUD 高度约 306px，控制条后实际只需要约 7 行；旧值 10+overscan
-        -- 会在用户点击“打开悬浮窗”的同一事务中预建无用行，和多个 Dropdown popup 一起形成明显 Native 峰值。
-        -- 只收紧 Trade Presentation 池大小；ListView 仍通过复用/滚动访问全部数据，Trade Authority/rows 完全不裁剪。
-        local desiredRows = instance.overview and 6 or (spec.featureName == "Trade" and 7 or 10)
+        -- 维护（2026-09-24，trade-floating-native-budget-2）：TableView 的 desiredRows/overscan 会决定首次
+        -- Refresh 时需要建立的可复用 Native 行池。18.298 为跑商悬浮窗恢复“添加/移除收藏”独立行后，数据区比
+        -- 18.297 少约 30px，因此 Trade HUD 行池同步从 7 收到 6，避免为了恢复一个轻量 Button 又把首次 Native
+        -- 分配峰值抬回去。ListView 仍通过复用/滚动访问全部数据，Trade Authority/rows 完全不裁剪。
+        -- 中文维护注释（2026-09-24，债券窄窗预算）：Bonds 控制条现在为两行 Dropdown 以兼容 280px
+        -- 最小悬浮宽度，因此把初始 Native 行池从 10 收到 7；滚动/复用仍可访问全部 rows，不裁业务数据。
+        local desiredRows = instance.overview and 6 or (spec.featureName == "Trade" and 6 or 10)
+        if instance.overview ~= true and spec.featureName == "Bonds" then desiredRows = 7 end
         local overscanRows = spec.featureName == "Trade" and 0 or 1
         instance.table = RSUI:TableView({
             id = instance.contentPrefix .. "table", parent = content, items = {}, rowHeight = instance.overview and 26 or 24, headerHeight = instance.overview and 26 or 23, desiredRows = desiredRows,
@@ -84,7 +119,29 @@ local function RefreshBody(self,spec,Feature)
             local rows = type(spec.rows) == "function" and spec.rows(projection) or (projection.rows or {})
             rows = type(rows) == "table" and rows or {}
             self.table:SetItems(rows, projection.revision or 0)
-            if type(spec.refreshControls) == "function" then spec.refreshControls(self, projection, rows, Feature) end
+            -- 维护（2026-09-24，life-widget-control-refresh-isolation-1）：Feature Projection/rows 与顶部交互控件属于
+            -- 两个不同的 Presentation 子域。18.297 中任一 Dropdown/按钮同步异常都会从 refreshControls 抛出，导致整个
+            -- RefreshBody 中止；即使 Authority 已有正确路线数据，TableView 仍停在默认“暂无数据”，Show() 最终只显示
+            -- “数据刷新失败”。现在单独隔离控件同步：失败只降级顶部控件并记模块诊断，数据表与状态继续消费已经取得的
+            -- detached Projection。这里不吞 Authority/TableView 错误，也不创建轮询/重试，因此不会形成第二数据 Authority。
+            local controlRefreshFailed, controlRefreshError = false, nil
+            if type(spec.refreshControls) == "function" then
+                local controlOk, controlResult, controlErr = xpcall(function()
+                    return spec.refreshControls(self, projection, rows, Feature)
+                end, S.SafeTraceback)
+                if controlOk ~= true or controlResult == false then
+                    controlRefreshFailed = true
+                    controlRefreshError = controlOk and controlErr or controlResult
+                    local diagnostics = S.DiagnosticsManager
+                    if type(diagnostics) == "table" and type(diagnostics.WarnRateLimited) == "function" then
+                        diagnostics:WarnRateLimited("ui_v3", "LIFE_WIDGET_CONTROL_REFRESH_FAILED", 3000,
+                            spec.title .. "悬浮窗顶部控件同步失败；数据表继续显示现有投影", {
+                                featureId = tostring(spec.featureId or ""), widgetId = tostring(spec.widgetId or ""),
+                                phase = "refresh_controls", error = tostring(controlRefreshError or "unknown"),
+                            })
+                    end
+                end
+            end
             if projection.status == "unavailable" or projection.status == "error" then
                 self.table:SetViewState("unavailable", { title = spec.title .. "数据不可用", detail = tostring(projection.error or "事实读取失败") })
             elseif spec.featureName == "Trade" and projection.status == "loading" and #rows == 0 then
@@ -115,7 +172,12 @@ local function RefreshBody(self,spec,Feature)
                         or (" · 每批最多4项"))
                 if projection.status == "error" or projection.status == "unavailable" then statusText=tostring(projection.error or "货率读取失败") end
             end
-            self.surface:SetStatus(statusText, projection.status == "ready" and "accent" or (projection.status == "loading" and "yellow" or "muted"))
+            local statusTone = projection.status == "ready" and "accent" or (projection.status == "loading" and "yellow" or "muted")
+            if controlRefreshFailed then
+                statusText = tostring(statusText or "数据已更新") .. " · 顶部控件同步异常"
+                statusTone = "yellow"
+            end
+            self.surface:SetStatus(statusText, statusTone)
             return true
         end
 
@@ -340,20 +402,23 @@ local ok, err = Register({
     buildControls = function(instance, content, Feature)
         if type(Feature.Commands.SetFrom) ~= "function" or type(Feature.Commands.SetTo) ~= "function"
             or type(Feature.Commands.SetViewMode) ~= "function" or type(Feature.Commands.SelectFavorite) ~= "function"
-            or type(Feature.Commands.ToggleTrackedProduct) ~= "function" or type(Feature.Commands.QuoteRowMaterials) ~= "function" then
-            return false, "跑商悬浮窗 Feature 路线/显示/关注/单行询价命令缺失"
+            or type(Feature.Commands.ToggleCurrentFavorite) ~= "function" or type(Feature.Commands.ToggleTrackedProduct) ~= "function"
+            or type(Feature.Commands.QuoteRowMaterials) ~= "function" then
+            return false, "跑商悬浮窗 Feature 路线/显示/收藏/关注/单行询价命令缺失"
         end
 
-        -- 维护（2026-09-23，trade-floating-compact-2）：悬浮窗的首要任务是“快速选路线 -> 看列表 -> 对某行操作”。
-        -- 18.293 把排序/收藏管理/显示范围拆成三行，顶部固定占 90px，在 300px 左右窗口里反而压缩了数据区。
-        -- 本版收敛为两行：第一行只选起终点+刷新；第二行只保留收藏路线快捷选择、显示范围和当前行关注。
-        -- 排序/新增或取消路线收藏属于完整管理页能力，不在 HUD 复制。所有动作仍只调用 Feature Commands。
+        -- 维护（2026-09-24，trade-floating-favorite-restore-1）：18.297 为压缩 Native 预算把“新增/移除当前路线收藏”
+        -- 从 HUD 一并删掉，只留下收藏路线下拉选择，造成常用闭环断裂。收藏是 Feature Authority 中已经存在的轻量命令，
+        -- 不应为了节省一个 Button 而强迫用户回主页面。浮窗恢复第三个紧凑行：路线；收藏选择+添加/移除；显示范围+关注。
+        -- 首页 overview 继续保持两行密度，不复制收藏管理按钮。所有状态仍来自同一个 Trade Projection/Commands，旧 Store 不变。
+        local floatingFavoriteManagement = instance.overview ~= true
+        local routeControlHeight = floatingFavoriteManagement and 88 or 58
         local routeBox = RSUI:VerticalBox({
             id = (instance.contentPrefix or "v3_life_trade_widget_") .. "route", parent = content, gap = 2,
-            slot = { size = "fixed", height = 58, hAlign = "fill" },
+            slot = { size = "fixed", height = routeControlHeight, hAlign = "fill" },
         })
         instance.routeBox = routeBox
-        instance.routeControlHeight = 58
+        instance.routeControlHeight = routeControlHeight
 
         local routeRow = RSUI:HorizontalBox({
             id = (instance.contentPrefix or "v3_life_trade_widget_") .. "route_row", parent = routeBox, gap = 4,
@@ -388,12 +453,12 @@ local ok, err = Register({
             return ok, refreshErr
         end
 
-        local quickRow = RSUI:HorizontalBox({
-            id = (instance.contentPrefix or "v3_life_trade_widget_") .. "quick_row", parent = routeBox, gap = 4,
+        local favoriteRow = RSUI:HorizontalBox({
+            id = (instance.contentPrefix or "v3_life_trade_widget_") .. "favorite_row", parent = routeBox, gap = 4,
             slot = { size = "fixed", height = 28, hAlign = "fill" },
         })
         instance.favoriteDropdown = RSUI:Dropdown({
-            id = (instance.contentPrefix or "v3_life_trade_widget_") .. "favorite", parent = quickRow, items = {}, maxVisible = 6,
+            id = (instance.contentPrefix or "v3_life_trade_widget_") .. "favorite", parent = favoriteRow, items = {}, maxVisible = 6,
             popupWidth = 230, placeholder = "收藏路线",
             get = function()
                 local projection = Feature:GetProjection() or {}
@@ -406,11 +471,29 @@ local ok, err = Register({
             end,
             slot = { size = "fill", fill = 1.25, minWidth = 120 },
         })
-        -- 维护（2026-09-24，trade-floating-native-budget-1）：显示模式固定只有 3 个值，使用 Dropdown 会为它
-        -- 额外创建 1 个顶层 Native Window、上下滚动按钮和 6 个 option，且这些对象在窗口首次打开前就全部分配。
-        -- 改为 SegmentedSelector 后语义完全等价、无需 popup，也更适合 HUD 高频切换；业务仍只调用 SetViewMode。
+        if floatingFavoriteManagement then
+            instance.favoriteButton = RSUI:Button({
+                id = (instance.contentPrefix or "v3_life_trade_widget_") .. "favorite_toggle", parent = favoriteRow,
+                text = "添加收藏", compact = true, slot = { size = "fixed", width = 82 },
+            })
+            instance.favoriteButton.onClick = function()
+                local ok, favoriteErr = Feature.Commands:ToggleCurrentFavorite()
+                if ok == true then instance:Refresh() end
+                return ok, favoriteErr
+            end
+        end
+
+        local modeRow = favoriteRow
+        if floatingFavoriteManagement then
+            modeRow = RSUI:HorizontalBox({
+                id = (instance.contentPrefix or "v3_life_trade_widget_") .. "mode_row", parent = routeBox, gap = 4,
+                slot = { size = "fixed", height = 28, hAlign = "fill" },
+            })
+        end
+        -- 维护（2026-09-24，trade-floating-native-budget-2）：显示模式固定只有 3 个值，继续使用无 popup 的
+        -- SegmentedSelector。恢复收藏能力只增加一个 Button，不恢复旧排序/显示 Dropdown，避免 Native Window 预算回退。
         instance.viewSelector = RSUI:SegmentedSelector({
-            id = (instance.contentPrefix or "v3_life_trade_widget_") .. "view_mode", parent = quickRow,
+            id = (instance.contentPrefix or "v3_life_trade_widget_") .. "view_mode", parent = modeRow,
             items = {
                 { value = "all", text = "全部" },
                 { value = "tracked", text = "关注" },
@@ -426,7 +509,7 @@ local ok, err = Register({
             slot = { size = "fixed", width = 124, vAlign = "fill" },
         })
         instance.trackButton = RSUI:Button({
-            id = (instance.contentPrefix or "v3_life_trade_widget_") .. "track", parent = quickRow, text = "关注货物", compact = true,
+            id = (instance.contentPrefix or "v3_life_trade_widget_") .. "track", parent = modeRow, text = "关注货物", compact = true,
             slot = { size = "fixed", width = 74 },
         })
         instance.trackButton.onClick = function()
@@ -438,10 +521,15 @@ local ok, err = Register({
         end
 
         return instance.fromDropdown ~= nil and instance.toDropdown ~= nil and instance.favoriteDropdown ~= nil
+            and (instance.overview == true or instance.favoriteButton ~= nil)
             and instance.viewSelector ~= nil and instance.trackButton ~= nil,
             "跑商悬浮窗紧凑控制条创建失败"
     end,
-    refreshControls = function(instance, projection)
+    refreshControls = function(instance, projection, rows, Feature)
+        -- 维护（2026-09-24，trade-widget-feature-arg-1）：RefreshBody 明确以第四参数传入 Feature；
+        -- 18.298 恢复“关注货物”按钮后这里仍保留旧的二参签名，Lua 因而把 Feature 解析成 nil 全局，
+        -- 每次路线/报价 Publish 都会触发 LIFE_WIDGET_CONTROL_REFRESH_FAILED。Presentation 只消费传入的
+        -- Feature Command/read-model，不缓存第二份 Domain 状态；rows 参数保留统一 WidgetSpec 签名但不持有。
         local fromItems, toItems = ZoneItems(projection.zones), ZoneItems(projection.sellableZones)
         local routeControlsEnabled = projection.viewMode ~= "cargo"
         if instance.fromDropdown then
@@ -463,6 +551,13 @@ local ok, err = Register({
             instance.favoriteDropdown:SetItems(favoriteItems)
             instance.favoriteDropdown:SetEnabled(routeControlsEnabled and #favoriteItems > 0)
             instance.favoriteDropdown:Render()
+        end
+        if instance.favoriteButton then
+            -- 维护（2026-09-24，trade-floating-favorite-restore-1）：按钮只提交当前 from/to 的收藏切换；
+            -- 文案完全由 Projection 的 currentRouteFavorite 回读，Presentation 不缓存第二份收藏状态。
+            local canFavorite = routeControlsEnabled and projection.fromZone ~= nil and projection.toZone ~= nil
+            instance.favoriteButton:SetEnabled(canFavorite)
+            instance.favoriteButton:SetText(projection.currentRouteFavorite == true and "移除收藏" or "添加收藏")
         end
         if instance.viewSelector then
             instance.viewSelector:SetEnabled(true)
@@ -563,66 +658,45 @@ ok, err = Register({
         return false
     end,
     buildControls = function(instance, content, Feature)
-        if type(Feature.GetBondFilter) ~= "function" or type(Feature.GetContinentOrder) ~= "function"
-            or type(Feature.Commands.SetSortMode) ~= "function" or type(Feature.Commands.SetContinentOrder) ~= "function"
-            or type(Feature.Commands.SetBondFilterOption) ~= "function" or type(Feature.Commands.SetDuplicatePriority) ~= "function" then
-            return false, "债券悬浮窗筛选命令缺失"
+        if type(Feature.GetDisplayOrderKey) ~= "function" or type(Feature.GetFilterMask) ~= "function" or type(Feature.GetDuplicateMode) ~= "function"
+            or type(Feature.Commands.SetDisplayOrder) ~= "function" or type(Feature.Commands.SetFilterMask) ~= "function"
+            or type(Feature.Commands.SetDuplicateMode) ~= "function" then
+            return false, "债券悬浮窗下拉筛选命令缺失"
         end
-        -- 中文维护注释（2026-09-15，悬浮窗债券语义同步）：悬浮窗必须和主页面使用同一组 Commands，
-        -- 不能继续保留“去重/优先西”旧语义，否则两个 Presentation 会对同一 Store 产生相反预期。
-        -- 500px 窗口使用短标签，但仍明确区分排序方式、大陆顺序、重复显示策略与合并保留侧。
-        local bar = RSUI:HorizontalBox({ id = (instance.contentPrefix or "v3_life_bonds_widget_") .. "toolbar", parent = content, gap = 3, slot = { size = "fixed", height = 28, hAlign = "fill" } })
-        local function Apply(command)
-            local ok, commandErr = command()
-            if ok == true then instance:Refresh() end
-            return ok, commandErr
-        end
-        instance.bondSortButton = RSUI:Button({ id = (instance.contentPrefix or "v3_life_bonds_widget_") .. "sort", parent = bar, text = "排序：大陆", compact = true, slot = { size = "fixed", width = 72 } })
-        instance.bondSortButton.onClick = function()
-            local state = Feature:GetBondFilter()
-            return Apply(function() return Feature.Commands:SetSortMode(state.sortMode == "quantity" and "continent" or "quantity") end)
-        end
-        instance.bondContinentOrderButton = RSUI:Button({ id = (instance.contentPrefix or "v3_life_bonds_widget_") .. "continent_order", parent = bar, text = "西→东", compact = true, slot = { size = "fixed", width = 50 } })
-        instance.bondContinentOrderButton.onClick = function()
-            return Apply(function() return Feature.Commands:SetContinentOrder(Feature:GetContinentOrder() == "east_first" and "west_first" or "east_first") end)
-        end
-        instance.bondFilterButtons = {}
-        local function Toggle(id, label, key, width)
-            local button = RSUI:Button({ id = id, parent = bar, text = label, compact = true, slot = { size = "fixed", width = width or 34 } })
-            button.onClick = function()
-                local state = Feature:GetBondFilter()
-                return Apply(function() return Feature.Commands:SetBondFilterOption(key, not state[key]) end)
-            end
-            instance.bondFilterButtons[key] = button
-            return button
-        end
-        Toggle((instance.contentPrefix or "v3_life_bonds_widget_") .. "q20", "20", "q20", 32)
-        Toggle((instance.contentPrefix or "v3_life_bonds_widget_") .. "q60", "60", "q60", 32)
-        Toggle((instance.contentPrefix or "v3_life_bonds_widget_") .. "q100", "100", "q100", 36)
-        Toggle((instance.contentPrefix or "v3_life_bonds_widget_") .. "auroria", "原陆", "auroria", 42)
-        Toggle((instance.contentPrefix or "v3_life_bonds_widget_") .. "dedupe", "重复：全部", "excludeSame", 76)
-        instance.bondPriorityButton = RSUI:Button({ id = (instance.contentPrefix or "v3_life_bonds_widget_") .. "priority", parent = bar, text = "留西", compact = true, slot = { size = "fixed", width = 42 } })
-        instance.bondPriorityButton.onClick = function()
-            local state = Feature:GetBondFilter()
-            return Apply(function() return Feature.Commands:SetDuplicatePriority(state.priority == "west" and "east" or "west") end)
-        end
+        -- 中文维护注释（2026-09-24，悬浮窗控制收敛）：旧版一行塞 8 个 Button，500px 以下会压缩、
+        -- 语义也难以理解。改为 3 个 Dropdown：排列/显示范围/重复策略。Set 回调只调用原子 Feature Command；
+        -- RSUI Dropdown v4 会先关闭 popup 再提交，同步 Publish 不会重入仍打开的 Native popup。
+        -- 悬浮窗允许用户缩到 280px；三个 Dropdown 若强塞一行，minWidth 总和会超过窗口并再次造成
+        -- 裁切/不可点击。这里用两行：第一行“排列 + 重复策略”，第二行“显示范围”独占整行。
+        local bar = RSUI:VerticalBox({ id = (instance.contentPrefix or "v3_life_bonds_widget_") .. "toolbar", parent = content, gap = 4, slot = { size = "fixed", height = 60, hAlign = "fill" } })
+        local primaryRow = RSUI:HorizontalBox({ id = (instance.contentPrefix or "v3_life_bonds_widget_") .. "toolbar_primary", parent = bar, gap = 4, slot = { size = "fixed", height = 28, hAlign = "fill" } })
+        instance.bondOrderDropdown = RSUI:Dropdown({
+            id = (instance.contentPrefix or "v3_life_bonds_widget_") .. "order", parent = primaryRow, items = BOND_ORDER_ITEMS, maxVisible = 6, popupWidth = 205,
+            get = function() return Feature:GetDisplayOrderKey() end,
+            set = function(value)
+                local mode, order = string.match(tostring(value or ""), "^([^:]+):(.+)$")
+                return Feature.Commands:SetDisplayOrder(mode, order)
+            end,
+            slot = { size = "fill", fill = 1.15, minWidth = 118 },
+        })
+        instance.bondDuplicateDropdown = RSUI:Dropdown({
+            id = (instance.contentPrefix or "v3_life_bonds_widget_") .. "duplicate", parent = primaryRow, items = BOND_DUPLICATE_ITEMS, maxVisible = 3, popupWidth = 180,
+            get = function() return Feature:GetDuplicateMode() end,
+            set = function(value) return Feature.Commands:SetDuplicateMode(value) end,
+            slot = { size = "fill", fill = 0.85, minWidth = 104 },
+        })
+        local scopeRow = RSUI:HorizontalBox({ id = (instance.contentPrefix or "v3_life_bonds_widget_") .. "toolbar_scope", parent = bar, gap = 4, slot = { size = "fixed", height = 28, hAlign = "fill" } })
+        instance.bondScopeDropdown = RSUI:Dropdown({
+            id = (instance.contentPrefix or "v3_life_bonds_widget_") .. "scope", parent = scopeRow, items = BOND_SCOPE_ITEMS, maxVisible = 9, popupWidth = 230,
+            get = function() return Feature:GetFilterMask() end,
+            set = function(value) return Feature.Commands:SetFilterMask(value) end,
+            slot = { size = "fill", fill = 1, minWidth = 180 },
+        })
         return true
     end,
-    refreshControls = function(instance, _, _, Feature)
-        local state = Feature:GetBondFilter()
-        if instance.bondSortButton then instance.bondSortButton:SetText(state.sortMode == "quantity" and "排序：数量" or "排序：大陆") end
-        if instance.bondContinentOrderButton then instance.bondContinentOrderButton:SetText(state.continentOrder == "east_first" and "东→西" or "西→东") end
-        for key, button in pairs(instance.bondFilterButtons or {}) do
-            if key == "excludeSame" then
-                button:SetText(state.excludeSame and "重复：合并" or "重复：全部")
-            else
-                local label = ({ q20 = "20", q60 = "60", q100 = "100", auroria = "原陆" })[key] or key
-                button:SetText(label .. (state[key] and "✓" or "×"))
-            end
-        end
-        if instance.bondPriorityButton then
-            instance.bondPriorityButton:SetText(state.priority == "east" and "留东" or "留西")
-            instance.bondPriorityButton:SetEnabled(state.excludeSame == true)
+    refreshControls = function(instance)
+        for _, dropdown in ipairs({ instance.bondOrderDropdown, instance.bondScopeDropdown, instance.bondDuplicateDropdown }) do
+            if dropdown then dropdown:SetEnabled(true); dropdown:Render() end
         end
     end,
     columns = {
@@ -746,6 +820,7 @@ ok, err = Register({
 if ok ~= true then error(err) end
 
 S.UIV3 = S.UIV3 or {}
--- 中文维护注释（2026-09-16，生活 HUD 契约 v6）：新增寻宝原生地图定位与钓鱼 Auto-R 悬浮控制，仅扩展 Presentation Command surface；
--- Feature Authority/Store schema 不迁移，旧窗口位置与可见性继续沿用。Acceptance 用两个子契约防止后续 UI 重构误删关键按钮。
-S.UIV3.LifeEconomyWidgetsV3 = { version = 6, bondsMaterialColumnContractVersion = 2, bondsMultiContinentContractVersion = 1, treasureMapLocationContractVersion = 2, fishingFloatingAutoRContractVersion = 1, widgetIds = { "life.trade", "life.bonds", "life.treasure", "life.fishing" } }
+-- 中文维护注释（2026-09-24，生活 HUD 契约 v7）：在不改变 Trade Authority/Store 的前提下恢复悬浮窗当前路线
+-- 添加/移除收藏，并把顶部控件刷新故障与数据表投影隔离；旧窗口位置、可见性、收藏与路线配置全部沿用。
+-- 子契约用于 Acceptance/静态回归防止后续“压缩 UI”再次误删收藏闭环或让控件异常遮蔽有效路线数据。
+S.UIV3.LifeEconomyWidgetsV3 = { version = 8, tradeFloatingFavoriteContractVersion = 1, tradeControlRefreshIsolationContractVersion = 1, bondsMaterialColumnContractVersion = 3, bondsMultiContinentContractVersion = 3, bondsDropdownControlsContractVersion = 2, bondsResidentBoardFamilyContractVersion = 1, treasureMapLocationContractVersion = 2, fishingFloatingAutoRContractVersion = 1, widgetIds = { "life.trade", "life.bonds", "life.treasure", "life.fishing" } }

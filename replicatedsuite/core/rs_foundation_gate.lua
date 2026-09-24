@@ -986,7 +986,8 @@ function G:Run(options)
                 and type(uiAdapter.TrySetUILayer) == "function"
                 and type(selectionType) == "table" and type(selectionType.GetPrimaryKey) == "function"
                 and (tonumber(rsui.DataViewSelectionContractVersion) or 0) >= 2
-                and (tonumber(rsui.DropdownContractVersion) or 0) >= 2
+                and (tonumber(rsui.DropdownContractVersion) or 0) >= 4
+                and (tonumber(rsui.DropdownCloseBeforeCommitContractVersion) or 0) >= 1
                 and (tonumber(rsui.DropdownDegradedFailClosedContractVersion) or 0) >= 1
                 and (tonumber(rsui.DropdownRuntimeInteractionContractVersion) or 0) >= 1
                 and (tonumber(rsui.PopupCoordinatorContractVersion) or 0) >= 1
@@ -998,6 +999,7 @@ function G:Run(options)
                 .. "/selection=" .. tostring(type(selectionType) == "table" and type(selectionType.GetPrimaryKey) == "function")
                 .. "/viewContract=" .. tostring(rsui and rsui.DataViewSelectionContractVersion or 0)
                 .. "/dropdown=" .. tostring(rsui and rsui.DropdownContractVersion or 0)
+                .. "/dropCloseCommit=" .. tostring(rsui and rsui.DropdownCloseBeforeCommitContractVersion or 0)
                 .. "/dropFailClosed=" .. tostring(rsui and rsui.DropdownDegradedFailClosedContractVersion or 0)
                 .. "/dropRuntime=" .. tostring(rsui and rsui.DropdownRuntimeInteractionContractVersion or 0)
                 .. "/popupCoordinator=" .. tostring(rsui and rsui.PopupCoordinatorContractVersion or 0)
@@ -2411,7 +2413,20 @@ function G:Run(options)
         or (tonumber(rangeAssist.MetricDistanceContractVersion) or 0) < 1 then usabilityFailures[#usabilityFailures + 1] = "visual_guides" end
     local tradeWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.trade") or nil
     local bondsWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.bonds") or nil
-    if type(lifeWidgets) ~= "table" or (tonumber(lifeWidgets.version) or 0) < 3 or type(tradeWidget) ~= "table" or type(bondsWidget) ~= "table" then usabilityFailures[#usabilityFailures + 1] = "life_widgets" end
+    -- 中文维护注释（2026-09-24，Bonds Presentation/Domain 混载门禁）：v8 必须同时具备
+    -- 多大陆 v3 与 Dropdown v1；Foundation 仅核对静态契约，不触发 ResidentBoard/背包读取。
+    if type(lifeWidgets) ~= "table" or (tonumber(lifeWidgets.version) or 0) < 8
+        or (tonumber(lifeWidgets.bondsMultiContinentContractVersion) or 0) < 3
+        or (tonumber(lifeWidgets.bondsDropdownControlsContractVersion) or 0) < 2
+        or (tonumber(lifeWidgets.bondsResidentBoardFamilyContractVersion) or 0) < 1
+        or type(tradeWidget) ~= "table" or type(bondsWidget) ~= "table"
+        or type(S.Features and S.Features.Bonds) ~= "table"
+        or (tonumber(S.Features.Bonds.MultiContinentSnapshotContractVersion) or 0) < 3
+        or (tonumber(S.Features.Bonds.ResidentBoardFamilyContractVersion) or 0) < 1
+        or (tonumber(S.Features.Bonds.AuroriaMaterialContractVersion) or 0) < 1
+        or (tonumber(S.Features.Bonds.DropdownPresentationContractVersion) or 0) < 1 then
+        usabilityFailures[#usabilityFailures + 1] = "life_widgets"
+    end
     local tradeFeature = S.Features and S.Features.Trade or nil
     local tradePayout = S.Services and S.Services.TradePayoutV3 or nil
     local tradeDetail = S.UIV3 and S.UIV3.TradeDetailFloatingV3 or nil

@@ -16,6 +16,38 @@ local function Items(rows, label)
     return out
 end
 
+-- 中文维护注释（2026-09-24，债券筛选下拉）：选项表只在页面脚本加载时构造一次，
+-- 不在 Refresh/Tick 中反复分配。业务值仍由 Bonds Feature 持久化；Presentation 只提供可读标签。
+local BOND_ORDER_ITEMS = {
+    { value = "continent:west_first", text = "按大陆 · 西→东" },
+    { value = "continent:east_first", text = "按大陆 · 东→西" },
+    { value = "quantity:west_first", text = "按数量 · 少→多" },
+    { value = "quantity:east_first", text = "按数量 · 多→少" },
+    { value = "material:west_first", text = "按材料 · 正序" },
+    { value = "material:east_first", text = "按材料 · 倒序" },
+}
+local function BondScopeLabel(mask)
+    if mask == 15 then return "全部 · 20/60/100/原陆" end
+    if mask == 7 then return "主大陆 · 20/60/100" end
+    if mask == 8 then return "仅原大陆" end
+    if mask == 0 then return "全部关闭" end
+    local parts = {}
+    if mask % 2 >= 1 then parts[#parts + 1] = "20" end
+    if math.floor(mask / 2) % 2 >= 1 then parts[#parts + 1] = "60" end
+    if math.floor(mask / 4) % 2 >= 1 then parts[#parts + 1] = "100" end
+    if math.floor(mask / 8) % 2 >= 1 then parts[#parts + 1] = "原陆" end
+    return "筛选 · " .. table.concat(parts, "+")
+end
+local BOND_SCOPE_ITEMS = {}
+for _, mask in ipairs({ 15, 7, 8, 1, 2, 4, 3, 5, 6, 9, 10, 12, 11, 13, 14, 0 }) do
+    BOND_SCOPE_ITEMS[#BOND_SCOPE_ITEMS + 1] = { value = mask, text = BondScopeLabel(mask) }
+end
+local BOND_DUPLICATE_ITEMS = {
+    { value = "all", text = "重复材料 · 全部显示" },
+    { value = "west", text = "重复材料 · 合并留西" },
+    { value = "east", text = "重复材料 · 合并留东" },
+}
+
 local function ValidateFeatureContract(feature, kind)
     if type(feature) ~= "table" then return false, "生活功能实例缺失: " .. tostring(kind) end
     if type(feature.GetProjection) ~= "function" then return false, "生活功能缺少 GetProjection(): " .. tostring(kind) end
@@ -35,11 +67,10 @@ local function ValidateFeatureContract(feature, kind)
             return false, "跑商页面 Feature 契约不完整"
         end
     elseif kind == "bonds" then
-        if type(feature.GetSortMode) ~= "function" or type(feature.GetContinentOrder) ~= "function" or type(feature.GetBondFilter) ~= "function"
-            or type(commands.SetSortMode) ~= "function" or type(commands.SetContinentOrder) ~= "function" or type(commands.SetBondFilterOption) ~= "function"
-            or type(commands.SetDuplicatePriority) ~= "function" or type(feature.GetWidgetVisible) ~= "function"
-            or type(commands.SetWidgetVisible) ~= "function" then
-            return false, "债券页面 Feature 契约不完整"
+        if type(feature.GetDisplayOrderKey) ~= "function" or type(feature.GetFilterMask) ~= "function" or type(feature.GetDuplicateMode) ~= "function"
+            or type(commands.SetDisplayOrder) ~= "function" or type(commands.SetFilterMask) ~= "function" or type(commands.SetDuplicateMode) ~= "function"
+            or type(feature.GetWidgetVisible) ~= "function" or type(commands.SetWidgetVisible) ~= "function" then
+            return false, "债券页面 Feature 下拉筛选契约不完整"
         end
     elseif kind == "fishing" then
         if type(feature.IsAutoArmed) ~= "function" or type(commands.ArmAuto) ~= "function" or type(commands.DisarmAuto) ~= "function"
@@ -193,42 +224,33 @@ local function Build(parent, route, feature, kind)
         })
         root.tradeRatioModeButton, root.tradeCommerceModeButton, root.tradeDetailButton, root.tradeTrackButton = tradeRatioModeButton, tradeCommerceModeButton, tradeDetailButton, tradeTrackButton
     elseif kind == "bonds" then
-        -- 中文维护注释（2026-09-15，债券控制语义重排）：旧版把排序、数量筛选、去重和“优先西”
-        -- 全塞进通用 actionRow，既拥挤又把两个完全不同的概念混在一起。现在 actionRow 只保留功能/
-        -- 悬浮窗/详情，债券专用选项放到独立一行：排序方式、大陆顺序、数量筛选、重复显示策略。
-        -- 数据 Authority 不变，所有按钮仍只调用 Feature.Commands；1024 宽度下使用短标签避免挤压表格。
-        local bondOptionsRow = RSUI:HorizontalBox({ id = "v3_bonds_options", parent = root, gap = 5, slot = { size = "fixed", height = 30, hAlign = "fill" } })
-        local sortButton = RSUI:Button({ id = "v3_bonds_sort", parent = bondOptionsRow, text = "排序：按大陆", compact = true, slot = { size = "fixed", width = 104 } })
-        root.bondSortButton = sortButton
-        local runBondCommand = function(command)
-            local ok, commandErr = command()
-            if ok == true then root:Refresh() end
-            return ok, commandErr
-        end
-        sortButton.onClick = function() return runBondCommand(function() return feature.Commands:SetSortMode(feature:GetSortMode() == "quantity" and "continent" or "quantity") end) end
-
-        local continentOrderButton = RSUI:Button({ id = "v3_bonds_continent_order", parent = bondOptionsRow, text = "大陆：西→东", compact = true, slot = { size = "fixed", width = 104 } })
-        continentOrderButton.onClick = function()
-            return runBondCommand(function() return feature.Commands:SetContinentOrder(feature:GetContinentOrder() == "east_first" and "west_first" or "east_first") end)
-        end
-        root.bondContinentOrderButton = continentOrderButton
-
-        local bondState = function() return feature:GetBondFilter() end
-        local bondButton = function(id, text, key, width)
-            local button = RSUI:Button({ id = id, parent = bondOptionsRow, text = text, compact = true, slot = { size = "fixed", width = width or 48 } })
-            button.onClick = function() local state = bondState(); return runBondCommand(function() return feature.Commands:SetBondFilterOption(key, not state[key]) end) end
-            return button
-        end
-        root.bondFilterButtons = {
-            q20 = bondButton("v3_bonds_q20", "20", "q20", 42),
-            q60 = bondButton("v3_bonds_q60", "60", "q60", 42),
-            q100 = bondButton("v3_bonds_q100", "100", "q100", 46),
-            auroria = bondButton("v3_bonds_auroria", "原陆", "auroria", 54),
-            excludeSame = bondButton("v3_bonds_exclude", "重复：全部", "excludeSame", 92),
-        }
-        local priorityButton = RSUI:Button({ id = "v3_bonds_priority", parent = bondOptionsRow, text = "合并留西", compact = true, slot = { size = "fixed", width = 76 } })
-        priorityButton.onClick = function() local state = bondState(); return runBondCommand(function() return feature.Commands:SetDuplicatePriority(state.priority == "west" and "east" or "west") end) end
-        root.bondPriorityButton = priorityButton
+        -- 中文维护注释（2026-09-24，债券选项下拉收敛）：旧版 8 个小按钮在 1024/1280 宽度下
+        -- 既拥挤又难理解“排序方式/大陆顺序/数量范围/重复策略”的组合关系。现在收敛为 3 个 Dropdown：
+        -- 排列、显示范围、重复材料。18.303 的“排列”明确区分大陆、数量与材料三种排序维度，并给数量/材料
+        -- 提供正反方向；Dropdown 关闭 popup 后才调用 Feature 原子命令，避免同步 Publish 重入。
+        -- Authority/Store 不在 UI 复制；旧按钮对应的 Feature Commands 仍保留兼容但不再由页面直接使用。
+        local bondOptionsRow = RSUI:HorizontalBox({ id = "v3_bonds_options", parent = root, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
+        root.bondOrderDropdown = RSUI:Dropdown({
+            id = "v3_bonds_order", parent = bondOptionsRow, items = BOND_ORDER_ITEMS, maxVisible = 6, popupWidth = 210,
+            get = function() return feature:GetDisplayOrderKey() end,
+            set = function(value)
+                local mode, order = string.match(tostring(value or ""), "^([^:]+):(.+)$")
+                return feature.Commands:SetDisplayOrder(mode, order)
+            end,
+            slot = { size = "fill", fill = 1, minWidth = 132 },
+        })
+        root.bondScopeDropdown = RSUI:Dropdown({
+            id = "v3_bonds_scope", parent = bondOptionsRow, items = BOND_SCOPE_ITEMS, maxVisible = 10, popupWidth = 238,
+            get = function() return feature:GetFilterMask() end,
+            set = function(value) return feature.Commands:SetFilterMask(value) end,
+            slot = { size = "fill", fill = 1.25, minWidth = 150 },
+        })
+        root.bondDuplicateDropdown = RSUI:Dropdown({
+            id = "v3_bonds_duplicate_mode", parent = bondOptionsRow, items = BOND_DUPLICATE_ITEMS, maxVisible = 3, popupWidth = 210,
+            get = function() return feature:GetDuplicateMode() end,
+            set = function(value) return feature.Commands:SetDuplicateMode(value) end,
+            slot = { size = "fill", fill = 1, minWidth = 138 },
+        })
 
         local detailButton = RSUI:Button({ id = "v3_bonds_detail", parent = actionRow, text = "查看详情", compact = true, slot = { size = "fixed", width = 84 } })
         detailButton.onClick = function()
@@ -540,19 +562,10 @@ local function Build(parent, route, feature, kind)
             local errorText = projection.error and (" · " .. tostring(projection.error)) or ""
             status:SetText(enabled and ((projection.status or "--") .. " · " .. currentText .. " · " .. coverageText
                 .. " · " .. tostring(#(projection.rows or {})) .. " 条" .. diagnostic .. errorText) or "功能已关闭")
-            local bondFilter = feature:GetBondFilter()
-            if root.bondSortButton then root.bondSortButton:SetText(bondFilter.sortMode == "quantity" and "排序：按数量" or "排序：按大陆") end
-            if root.bondContinentOrderButton then root.bondContinentOrderButton:SetText(bondFilter.continentOrder == "east_first" and "大陆：东→西" or "大陆：西→东") end
-            if root.bondFilterButtons then
-                root.bondFilterButtons.q20:SetText(bondFilter.q20 and "20✓" or "20×")
-                root.bondFilterButtons.q60:SetText(bondFilter.q60 and "60✓" or "60×")
-                root.bondFilterButtons.q100:SetText(bondFilter.q100 and "100✓" or "100×")
-                root.bondFilterButtons.auroria:SetText(bondFilter.auroria and "原陆✓" or "原陆×")
-                root.bondFilterButtons.excludeSame:SetText(bondFilter.excludeSame and "重复：合并" or "重复：全部")
-            end
-            if root.bondPriorityButton then
-                root.bondPriorityButton:SetText(bondFilter.priority == "east" and "合并留东" or "合并留西")
-                root.bondPriorityButton:SetEnabled(enabled and bondFilter.excludeSame == true)
+            -- Dropdown 的 Binding 直接回读 Feature；Refresh 只 Render authoritative value，
+            -- 不再在 UI 维护第二份筛选状态，也不会因为按钮文本更新造成额外业务 mutation。
+            for _, dropdown in ipairs({ root.bondOrderDropdown, root.bondScopeDropdown, root.bondDuplicateDropdown }) do
+                if dropdown then dropdown:SetEnabled(enabled); dropdown:Render() end
             end
             if root.bondDetailButton then
                 local selected = type(feature.GetSelectedRow) == "function" and feature:GetSelectedRow() or nil

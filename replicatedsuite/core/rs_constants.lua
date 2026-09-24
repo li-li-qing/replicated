@@ -11,6 +11,7 @@ local ItemIds = GameIds.Item or {}
 local QuestIds = GameIds.Quest or {}
 local ResidentBondQuestIds = QuestIds.ResidentBond or {}
 if ItemIds.BLUE_SALT_BOND == nil or type(ItemIds.BOND_MATERIAL) ~= "table"
+    or type(ItemIds.AURORIA_BOND_MATERIAL) ~= "table"
     or type(ResidentBondQuestIds.MaterialByQuantity) ~= "table"
     or type(ResidentBondQuestIds.AuroriaByTokenQuantity) ~= "table" then
     S.BootError = "shared item/quest ID catalog unavailable"
@@ -28,6 +29,10 @@ S.Constants = {
     -- shared catalog and does not keep a second copy of the numeric IDs.
     BlueSaltBondItemType = ItemIds.BLUE_SALT_BOND,
     BondMaterialItemTypes = ItemIds.BOND_MATERIAL,
+    -- 中文维护注释（2026-09-24，原大陆债券材料共享映射）：与大陆四种加工材料分开保存，
+    -- 避免旧业务把 six-token Auroria 物品误当 fabric/leather/lumber/iron；Bonds InventorySnapshot
+    -- 读取时会合并两张只读 identity map，但 Quest/筛选语义仍保持独立。
+    AuroriaBondMaterialItemTypes = ItemIds.AURORIA_BOND_MATERIAL,
     BondQuestByMaterialQuantity = ResidentBondQuestIds.MaterialByQuantity,
     -- Official/current ArcheRage Auroria resident daily quest mapping.
     -- Resolver matches the resident-board item name and requested quantity.

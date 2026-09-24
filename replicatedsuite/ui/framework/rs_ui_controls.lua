@@ -1048,7 +1048,8 @@ RSUI:RegisterType("Slider", function(spec)
     return c
 end)
 
-RSUI.DropdownContractVersion = 3
+RSUI.DropdownContractVersion = 4
+RSUI.DropdownCloseBeforeCommitContractVersion = 1 -- 中文维护注释（2026-09-24）：Dropdown 必须先关闭/取消 Native popup 交互所有权，再提交同步业务 mutation；防止 Feature Publish -> Refresh -> SetItems 在同一 option click 栈中重入仍打开的 popup。
 RSUI.PopupCoordinateConsumerContractVersion = 3 -- 中文维护注释：Controls v3 按 Popup 类型选择安全车道：Dropdown 保留 Native-relative；ColorField V2 使用 Suite 父链 resolved viewport→UIParent，禁止跨层级顶层 Window→Button Anchor。
 RSUI.PopupCoordinateConsumerLane = "popup-mixed-safe-v1" -- 中文维护注释：这是能力集合标签，不代表所有控件共享同一最终 Anchor 方式。
 RSUI.DropdownDegradedFailClosedContractVersion = 1
@@ -1537,8 +1538,14 @@ RSUI:RegisterType("Dropdown", function(spec)
             local itemIndex = optionButton.rsItemIndex
             local item = itemIndex and c.items[itemIndex] or nil
             if type(item) ~= "table" or optionButton.rsDropdownSelectable ~= true then return false end
+            -- 维护（2026-09-24，dropdown-close-before-commit-1）：Dropdown popup 对 Native 交互的所有权必须先结束，
+            -- 再进入 Binding.Set/Feature Command。许多 Command 会同步 PublishFeatureUpdate，而订阅者会立刻 Refresh 并对
+            -- 同一个 Dropdown 执行 SetItems/Render；旧顺序让 ApplyPopupLayout 在 option 的 OnClick 栈内重入一个仍打开的
+            -- Native popup，RU 客户端可因此抛错并连带中止整块 Presentation。关闭失败时 fail-closed，不提交半个用户意图。
+            local closed, closeErr = c:Close()
+            if closed ~= true then return false, closeErr or "dropdown_close_before_commit_failed" end
             local ok = c:SetSelectedValue(item.value, false, "dropdown")
-            if ok then c:Close() end
+            if ok ~= true then c:Render() end -- 业务拒绝时回读 Authority；popup 已关闭，不再触发重入布局。
             return ok
         end, "rsui:" .. spec.id .. ":option:" .. tostring(optionIndex))
         c:On(optionButton, "OnWheelUp", function() return c:Scroll(-1) end, "rsui:" .. spec.id .. ":option_wheel_up:" .. tostring(optionIndex))

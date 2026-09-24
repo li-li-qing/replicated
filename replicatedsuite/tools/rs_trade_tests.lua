@@ -727,7 +727,9 @@ Test("T13: floating trade controls expose refresh and use compact three-row head
     assert(type(instance.refreshButton.onClick) == "function", "floating refresh onClick missing")
     assert(instance.routeControlHeight ~= nil and instance.routeControlHeight <= 93, "floating control header must stay within three compact rows; got=" .. tostring(instance.routeControlHeight))
     assert(instance.cancelQuote == nil and instance.fullQuote == nil, "floating HUD must not reserve a dedicated fourth quote-control row")
-    assert(instance.viewDropdown ~= nil and instance.sortDropdown ~= nil, "floating HUD must expose explicit display/sort dropdowns")
+    assert(instance.favoriteButton ~= nil, "floating HUD must restore add/remove route favorite button")
+    assert(instance.viewSelector ~= nil and instance.viewDropdown == nil and instance.sortDropdown == nil,
+        "floating HUD must keep popup-free three-state selector and must not restore obsolete sort/view dropdowns")
     assert(instance.viewButton == nil and instance.quoteButton == nil and instance.ratioButton == nil and instance.commerceButton == nil,
         "floating HUD must not use ambiguous cycling/batch-quote buttons")
     local clickOk, clickErr = instance.refreshButton.onClick()
@@ -738,9 +740,9 @@ Test("T13: floating trade controls expose refresh and use compact three-row head
 end)
 
 ------------------------------------------------------------------------
--- Test 14: Favorite button uses explicit cancel-favorite wording
+-- Test 14: Favorite button uses explicit add/remove wording
 ------------------------------------------------------------------------
-Test("T14: favorite button says 取消收藏 when current route is favorited", function()
+Test("T14: favorite button says 移除收藏 when current route is favorited", function()
     local spec = S.UIV3.LifeEconomyContent and S.UIV3.LifeEconomyContent.specs and S.UIV3.LifeEconomyContent.specs.Trade
     local instance = { contentPrefix = "trade_favorite_test_", overview = false, Refresh = function() return true end }
     local ok, err = spec.buildControls(instance, {}, Trade)
@@ -752,7 +754,7 @@ Test("T14: favorite button says 取消收藏 when current route is favorited", f
         favoriteItems = {}, currentRouteFavorite = true, sortMode = "ratio",
     })
     assert(instance.favoriteButton ~= nil, "favorite button missing")
-    assert(instance.favoriteButton.text == "取消收藏路线", "favorited route must show explicit 取消收藏路线 label")
+    assert(instance.favoriteButton.text == "移除收藏", "favorited route must show explicit 移除收藏 label")
 end)
 
 

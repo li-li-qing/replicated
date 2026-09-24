@@ -839,6 +839,17 @@ local function ApplyTradeMaterialProjectionToRow(row)
             elseif material.costStatus == "quote_failed" then hasQuoteFailed = true
             elseif material.costStatus == "explicit_quote_required" then hasQuoteRequired = true end
         end
+        -- 维护（2026-09-24，trade-row-quote-visual-scope-1）：PriceQuoteQueueV3 的 itemType 状态是共享事实；
+        -- 两个贸易品共用同一材料时，用户双击 A 行后 B 行也会看到该材料的 queued/inflight。共享价格事实必须
+        -- 保留，但“询价中…”是用户意图提示，单行批次只能标在被双击的 rowKey 上。完成后的 ready/failed
+        -- 仍会按共享材料事实传播到其它行，避免为了 UI 外观复制第二套报价 Authority。
+        local rowBatch = type(Trade.quoteBatch) == "table" and Trade.quoteBatch or nil
+        local rowScopedPending = rowBatch ~= nil and rowBatch.active == true and rowBatch.scope == "row"
+        local isIntentRow = not rowScopedPending or tostring(rowBatch.rowKey or "") == tostring(row.key or "")
+        if hasQuotePending and not isIntentRow then
+            hasQuotePending = false
+            hasQuoteRequired = true
+        end
         if price == nil then
             row.profitStatus, row.profit = "price_unavailable", "--"
         elseif hasQuotePending then
@@ -2695,7 +2706,15 @@ function Trade:QuoteMaterial(material,mode,batch)
         for grade=0,6 do if not seen[grade] then grades[#grades+1]=grade;seen[grade]=true end end
     end
     local generation=self.quoteGeneration
-    local searchName=mode=="full" and LocalizedTradeItemName(itemType,nil) or nil
+    -- 维护（2026-09-24，trade-basic-quote-fallback-1）：RU 实机已经证明 GetLowestPrice 在大量常用材料上会
+    -- “调用成功但全部返回 nil”，真正可工作的兼容链路是随后按本地化物品名走一次 AuctionQueryV3 名称搜索。
+    -- 2026-09-23 UI 收敛后，主面板/悬浮窗都只调用 QuoteRowMaterials(row.key) 的 basic 模式；旧代码却仅在
+    -- mode=="full" 时传 searchName，等于把当前唯一用户入口的名称兜底永久关闭，最终表现为“询价根本查不到”。
+    -- searchName 只是给 PriceQuoteQueueV3 的失败兜底使用：稳定 itemType + itemGrade 仍是第一 Authority，普通询价
+    -- 仍只探测一个品质档，不恢复旧版 0..6 批量探针；因此不会增加正常成功路径的 Native 调用，也不会绕过共享
+    -- 串行/冷却队列。detached material row 优先携带当前投影已解析出的玩家可见名称，Localization 作为同源兜底。
+    local projectedName=type(material)=="table" and (material.searchName or material.name) or nil
+    local searchName=LocalizedTradeItemName(itemType,projectedName)
     return queue:RequestQuote("life_trade",itemType,itemGrade,function(result)
         if generation~=Trade.quoteGeneration or not Trade.enabled then return end
         if batch and Trade.quoteBatch==batch then
@@ -2729,7 +2748,12 @@ function Trade:_StartMaterialBatch(rows,mode,options)
             if key and not seen[key] and m.auctionable~=false and m.includeInCost~=false and (missing or mode=="full") then
                 seen[key]=true
                 if (cooling and mode~="full") or #selected>=maxItems then deferred=deferred+1
-                else selected[#selected+1]={materialKey=materialKey,itemType=id,itemGrade=grade} end
+                else
+                    -- 维护（trade-basic-quote-fallback-1）：批次队列必须携带 detached 的本地化显示名；否则
+                    -- QuoteMaterial 只能依赖静态 Localization，实时 Craft 解析出来的新材料会再次失去名称搜索兜底。
+                    -- 这里只复制短字符串事实，不保留 UI row/table 引用，避免跨 Feature 生命周期持有可变对象。
+                    selected[#selected+1]={materialKey=materialKey,itemType=id,itemGrade=grade,searchName=m.name}
+                end
             end
         end
     end
@@ -2782,6 +2806,47 @@ end
 -- "状态机诊断不可用" forever.
 function Trade:DescribeRequestState() return TA:DescribeRequestState() end
 function Trade:DescribeIdentityState() return TA:DescribeIdentityState() end
+function Trade:DescribeQuoteState()
+    -- 维护（2026-09-24，trade-quote-diagnostics-2）：模块诊断必须能直接回答“询价为什么失败”，但不能把
+    -- AuctionQueryV3 最多 20 条搜索结果和 QuoteQueue 全部历史原样塞进报告。这里仅读取两个共享 Authority 的
+    -- detached Describe/Snapshot，并压缩成“最近完成/原生返回/fallback 匹配/最多3条候选”证据；不获取 Consumer、
+    -- 不触发 Native API、不改变缓存/存档。完整搜索结果仍由 AuctionQueryV3 自己持有，不复制成第二 Authority。
+    local queue = S.Services and S.Services.PriceQuoteQueueV3 or nil
+    local query = S.Services and S.Services.AuctionQueryV3 or nil
+    local health = type(queue) == "table" and type(queue.Describe) == "function" and queue:Describe() or nil
+    local queueSummary = nil
+    if type(health) == "table" then
+        local recent = {}
+        for index = 1, math.min(4, #(type(health.recent) == "table" and health.recent or {})) do
+            recent[index] = Copy(health.recent[index])
+        end
+        queueSummary = {
+            version = health.version, running = health.running, pending = health.pending,
+            queueLength = health.queueLength, maxQueue = health.maxQueue, intervalMs = health.intervalMs,
+            stats = Copy(health.stats), lastRawReturn = health.lastRawReturn,
+            lastFallbackMatch = Copy(health.lastFallbackMatch), pendingDetail = Copy(health.pendingDetail),
+            lastCompleted = Copy(health.lastCompleted), recent = recent,
+        }
+    end
+    local search = type(query) == "table" and type(query.GetSnapshot) == "function" and query:GetSnapshot("price_quote_fallback") or nil
+    local searchSummary = nil
+    if type(search) == "table" then
+        local candidates = {}
+        local rows = type(search.rows) == "table" and search.rows or {}
+        for index = 1, math.min(3, #rows) do
+            local row = type(rows[index]) == "table" and rows[index] or {}
+            candidates[index] = {
+                resultIndex = row.resultIndex or index, itemType = row.itemType, itemGrade = row.itemGrade,
+                name = row.name, bidPrice = row.bidPrice, directPrice = row.directPrice,
+            }
+        end
+        searchSummary = {
+            status = search.status, keyword = search.keyword, count = search.count, error = search.error,
+            requestedAt = search.requestedAt, completedAt = search.completedAt, candidates = candidates,
+        }
+    end
+    return { batch = Copy(self.quoteBatch or {}), queue = queueSummary, fallbackSearch = searchSummary }
+end
 Trade.Commands = { Refresh = function(_, reason) return Trade:Refresh(reason) end, SetFrom = function(_, id) return Trade:SetFrom(id) end, SetTo = function(_, id) return Trade:SetTo(id) end,
     SetSortMode = function(_, mode) return Trade:SetSortMode(mode) end,
     SetRatioMode = function(_, mode) return Trade:SetRatioMode(mode) end, SetCommerceMode = function(_, mode) return Trade:SetCommerceMode(mode) end,
@@ -2805,7 +2870,9 @@ local ok, err = Runtime:RegisterImplementation(Trade.Id, Trade); if ok ~= true t
 -- Bonds / Resident board
 ------------------------------------------------------------------------
 local Bonds = { Id = "life_bonds", storeId = "v3.life.bonds", enabled = false, storeLoaded = false,
-    progressConsumerToken = "feature:life_bonds:quest_progress", progressConsumerHeld = false, progressSubscribed = false }
+    progressConsumerToken = "feature:life_bonds:quest_progress", progressConsumerHeld = false, progressSubscribed = false,
+    locationSubscribed = false }
+local BONDS_ZONE_REFRESH_TASK = "life_bonds_zone_refresh"
 S.Features.Bonds = Bonds
 Bonds.UpdateTopic = "v3.life.bonds.updated"
 Bonds.State = { sortMode = "continent", continentOrder = "west_first", showCompleted = true, q20 = true, q60 = true, q100 = true, auroria = true, excludeSame = false, priority = "west", completionDateKey = nil, completedMainlandKeys = {}, dailyDateKey = nil, dailySnapshots = {}, widgetVisible = false, widgetWindow = nil }
@@ -2818,21 +2885,77 @@ Bonds.State = { sortMode = "continent", continentOrder = "west_first", showCompl
 -- Presentation 只能调用 Commands，禁止直接读取 State。兼容边界：新增字段缺失时默认 west_first，旧 Store
 -- schema/fingerprint 仍由 NormalizeBondState 兼容；不增加轮询，不跨大陆伪造远程读取。
 -- 风险：未来若增加第四大陆/新阵营，必须同时扩展排序 rank、dailySnapshotStatus 和 UI 标签，不能复用 priority。
-Bonds.MultiContinentSnapshotContractVersion = 1
+-- 中文维护注释（2026-09-24，债券 18.302 契约）：v3 表示多大陆缓存已具备 Native 板族识别、
+-- 空快照拒绝、区域重探测以及按 board index 的同日增量合并；ResidentBoardFamily/AuroriaMaterial/DropdownPresentation 分开打契约，
+-- 让 Foundation/Acceptance 能在用户只覆盖部分文件时 fail-fast，而不是运行到一半才出现“原大陆没数据/按钮旧版”。
+Bonds.MultiContinentSnapshotContractVersion = 3
+Bonds.ResidentBoardFamilyContractVersion = 1
+Bonds.AuroriaMaterialContractVersion = 1
+Bonds.DropdownPresentationContractVersion = 2
 InstallLifeWidgetContract(Bonds, { defaultWidth = 500, defaultHeight = 330, minWidth = 280, minHeight = 150, defaultOverallOpacity = 0.94, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 })
-Bonds.Authority = { version = 2, revision = 0, rows = {}, status = "idle", error = nil, boardScope = "unknown", faction = nil }
+Bonds.Authority = { version = 3, revision = 0, rows = {}, status = "idle", error = nil, boardScope = "unknown", faction = nil }
 local BA = Bonds.Authority
+-- 中文维护注释（2026-09-24，债券 ItemType 反向索引）：大陆 4 种 + 原大陆 6 种材料在脚本加载时
+-- 建一次只读反向表。InventorySnapshotV3 刷新会遍历背包物品，如果每个 item 再 pairs 扫 10 个常量键，
+-- 会把一个 O(n) 背包聚合放大成 O(n*10)。反向索引保持同一 GameIds Authority，只消除热路径重复匹配。
+local BOND_MATERIAL_KEY_BY_ITEM_TYPE = {}
+for key, value in pairs(S.Constants and S.Constants.BondMaterialItemTypes or {}) do
+    if tonumber(value) ~= nil then BOND_MATERIAL_KEY_BY_ITEM_TYPE[tonumber(value)] = key end
+end
+for key, value in pairs(S.Constants and S.Constants.AuroriaBondMaterialItemTypes or {}) do
+    if tonumber(value) ~= nil then BOND_MATERIAL_KEY_BY_ITEM_TYPE[tonumber(value)] = key end
+end
 local function BondMaterialKey(itemType)
-    for key, value in pairs(S.Constants and S.Constants.BondMaterialItemTypes or {}) do
-        if tonumber(value) == tonumber(itemType) then return key end
-    end
-    return nil
+    return BOND_MATERIAL_KEY_BY_ITEM_TYPE[tonumber(itemType)]
 end
 local function BondItemType(item) return item.itemType or item.itemTypeId or item.typeId or item.item_type end
 local function BondItemCount(item) return Number(item.stackCount or item.stack or item.count or item.itemCount or item.amount or item.stackSize or item.quantity) end
 local QUEST_STATUS_TEXT = { COMPLETED = "已完成", READY_TO_TURN_IN = "可交付", IN_PROGRESS = "进行中", NOT_ACCEPTED = "未接", UNKNOWN = "待确认" }
 local QUEST_STATUS_TONE = { COMPLETED = "green", READY_TO_TURN_IN = "orange", IN_PROGRESS = "yellow", NOT_ACCEPTED = "muted", UNKNOWN = "muted" }
-local function BondQuestEvidence(materialKey, text)
+local AURORIA_BOND_LABEL = {
+    prince_purse = "王子的钱袋", prince_crate = "王子的箱子",
+    queen_purse = "女王的钱袋", queen_crate = "女王的箱子",
+    ancestor_purse = "祖先的钱袋", ancestor_crate = "祖先的箱子",
+}
+local function BondTextContainsAny(text, patterns)
+    text = tostring(text or "")
+    local lower = string.lower(text)
+    for _, pattern in ipairs(patterns or {}) do
+        if string.find(text, pattern, 1, true) or string.find(lower, string.lower(pattern), 1, true) then return true end
+    end
+    return false
+end
+local function ResolveAuroriaBondToken(boardIndex, text, quantity)
+    -- 中文维护注释（2026-09-24，原大陆任务解析 / 18.302 复核）：公开 ArcheRage residentboard
+    -- 插件确认板位 5/6/7 分别代表 Prince/Queen/Ancestor。板位只决定家族，文本优先判断钱袋/箱子；
+    -- 若本地化关键词缺失，不能只拿“文本第一个数字”推断，因为区域名/阶段文本可能在需求量之前出现其它数字。
+    -- 这里扫描整行所有数字，并且只有所有命中证据唯一指向 purse 或 crate 时才降级推断；30/25/20 等
+    -- 两类都合法的歧义数量仍保持 UNKNOWN。Authority 不猜任务身份，避免把完成状态锁到错误 QuestId。
+    local family = ({ [5] = "prince", [6] = "queen", [7] = "ancestor" })[tonumber(boardIndex)]
+    if family == nil then return nil end
+    local purse = BondTextContainsAny(text, { "钱袋", "袋", "coinpurse", "purse", "кош", "Кош", "меш", "Меш", "котом", "Котом", "金闪闪" })
+    local crate = BondTextContainsAny(text, { "箱", "盒", "匣", "杂货箱", "杂物箱", "crate", "box", "сунд", "Сунд", "ящ", "Ящ" })
+    if purse and not crate then return family .. "_purse" end
+    if crate and not purse then return family .. "_crate" end
+
+    local maps = S.Constants and S.Constants.AuroriaBondQuestByTokenQuantity or {}
+    local purseMap, crateMap = maps[family .. "_purse"], maps[family .. "_crate"]
+    local observed = {}
+    local q = tonumber(quantity)
+    if q ~= nil then observed[q] = true end
+    for number in string.gmatch(tostring(text or ""), "(%d+)") do
+        q = tonumber(number)
+        if q ~= nil then observed[q] = true end
+    end
+    local purseMatch, crateMatch = false, false
+    for amount in pairs(observed) do
+        purseMatch = purseMatch or (type(purseMap) == "table" and purseMap[amount] ~= nil)
+        crateMatch = crateMatch or (type(crateMap) == "table" and crateMap[amount] ~= nil)
+    end
+    if purseMatch ~= crateMatch then return purseMatch and (family .. "_purse") or (family .. "_crate") end
+    return nil
+end
+local function BondQuestEvidence(materialKey, text, boardIndex)
     local function quantityFromMap(map)
         if type(map) ~= "table" then return nil end
         for number in string.gmatch(tostring(text or ""), "(%d+)") do
@@ -2847,24 +2970,21 @@ local function BondQuestEvidence(materialKey, text)
         local quantity = quantityFromMap(materialMap)
         return quantity and materialMap[quantity] or nil, quantity, nil
     end
-    local line, token = tostring(text or ""), nil
-    if string.find(line, "金闪闪", 1, true) and string.find(line, "袋", 1, true) then token = "golden_bag"
-    elseif string.find(line, "王子", 1, true) and (string.find(line, "杂货箱", 1, true) or string.find(line, "杂物箱", 1, true)) then token = "prince_box"
-    elseif string.find(line, "女王", 1, true) and string.find(line, "袋", 1, true) then token = "queen_bag"
-    elseif string.find(line, "女王", 1, true) and (string.find(line, "杂货箱", 1, true) or string.find(line, "杂物箱", 1, true)) then token = "queen_box"
-    elseif string.find(line, "继承者", 1, true) and string.find(line, "袋", 1, true) then token = "heir_bag"
-    elseif string.find(line, "继承者", 1, true) and (string.find(line, "杂货箱", 1, true) or string.find(line, "杂物箱", 1, true)) then token = "heir_box" end
+
+    local rawQuantity = Number(string.match(tostring(text or ""), "(%d+)"))
+    local token = ResolveAuroriaBondToken(boardIndex, text, rawQuantity)
     local map = token and S.Constants and S.Constants.AuroriaBondQuestByTokenQuantity and S.Constants.AuroriaBondQuestByTokenQuantity[token]
     local quantity = quantityFromMap(map)
     if quantity ~= nil then return map[quantity], quantity, token end
-    return nil, nil, token
+    return nil, rawQuantity, token
 end
 -- BondDateCache removed 2026-09-02: S.State 永远 nil (replicatedsuite.lua 显式置 nil
 -- + foundation_gate 断言), 整个函数返回 nil, 调用方 cache 逻辑不可达.
 -- 大陆债券完成状态由 questStatus 直接决定, 无缓存层.
 local function ReadBondResources()
-    local totals, expected = {}, {}
-    for key in pairs(S.Constants and S.Constants.BondMaterialItemTypes or {}) do totals[key] = 0; expected[key] = true end
+    local totals = {}
+    for key in pairs(S.Constants and S.Constants.BondMaterialItemTypes or {}) do totals[key] = 0 end
+    for key in pairs(S.Constants and S.Constants.AuroriaBondMaterialItemTypes or {}) do totals[key] = 0 end
     local status = "unknown"
     -- 中文维护注释：优先复用 InventorySnapshotV3 统一背包只读快照（含 bagId 1/0 自动试探与数量提取），
     -- 避免各生活模块对物理背包槽位产生第二 Authority 或猜测不同 bagId。
@@ -3010,6 +3130,62 @@ local function CurrentBondContinentKey()
     return nil
 end
 
+local function BondBoardLineCount(boards, index)
+    local board = type(boards) == "table" and boards[index] or nil
+    return #(type(board) == "table" and type(board.contents) == "table" and board.contents or {})
+end
+
+local function DetectResidentBoardFamily(boards)
+    -- 中文维护注释（2026-09-24，ResidentBoard 家族识别）：Strawberry-devs 的公开 ArcheRage
+    -- residentboard 插件使用“3/4 板同时非空 => 主大陆；5/6 任一非空 => 原大陆”的真实客户端行为。
+    -- 旧 Bonds 反过来先相信静态 zoneGroup 表，导致未收录的原大陆区域在已经缓存西/东后完全不再调用
+    -- GetResidentBoardContent，甚至可能把 5/6 的原大陆内容误作为西/东的一张空快照保存。这里把 Native
+    -- ResidentBoard 内容提升为“当前板族”的 Authority，zoneGroup 只负责主大陆西/东分边，不再决定原大陆。
+    local mainlandReady = BondBoardLineCount(boards, 3) > 0 and BondBoardLineCount(boards, 4) > 0
+    if mainlandReady then return "mainland", "boards_3_4" end
+    local auroriaReady = BondBoardLineCount(boards, 5) > 0 or BondBoardLineCount(boards, 6) > 0
+    if auroriaReady then return "auroria", "boards_5_6" end
+    return nil, "insufficient_board_evidence"
+end
+
+local function BondFactionContinentHint(boards)
+    -- zoneGroup 缺失时仅把 faction 当成主大陆的最后辅助提示；未知/新本地化必须返回 nil，禁止猜测。
+    local faction = ""
+    for index = 1, 7 do
+        local raw = type(boards[index]) == "table" and boards[index].raw or nil
+        local value = type(raw) == "table" and Text(raw.faction, "") or ""
+        if value ~= "" then faction = value; break end
+    end
+    local lower = string.lower(faction)
+    if string.find(lower, "nuia", 1, true) or string.find(lower, "nui", 1, true)
+        or string.find(faction, "нуи", 1, true) or string.find(faction, "Нуи", 1, true)
+        or string.find(faction, "西", 1, true) then return "west", faction end
+    if string.find(lower, "haranya", 1, true) or string.find(lower, "harani", 1, true)
+        or string.find(faction, "хар", 1, true) or string.find(faction, "Хар", 1, true)
+        or string.find(faction, "东", 1, true) then return "east", faction end
+    return nil, faction
+end
+
+local function ResolveLiveBondScope(boards, zoneHint)
+    local family, evidence = DetectResidentBoardFamily(boards)
+    if family == "auroria" then return "auroria", family, evidence end
+    if family == "mainland" then
+        if zoneHint == "west" or zoneHint == "east" then return zoneHint, family, evidence .. "+zone" end
+        local factionHint = BondFactionContinentHint(boards)
+        if factionHint ~= nil then return factionHint, family, evidence .. "+faction" end
+        return nil, family, evidence .. "+mainland_side_unknown"
+    end
+    return nil, nil, evidence
+end
+
+local function BondSnapshotLineCount(snapshot)
+    local count = 0
+    for _, board in ipairs(type(snapshot) == "table" and type(snapshot.boards) == "table" and snapshot.boards or {}) do
+        count = count + #(type(board.lines) == "table" and board.lines or {})
+    end
+    return count
+end
+
 local function NormalizeBondSnapshot(value, continentKey)
     if type(value) ~= "table" then return nil end
     if continentKey ~= "west" and continentKey ~= "east" and continentKey ~= "auroria" then return nil end
@@ -3032,7 +3208,11 @@ local function NormalizeBondSnapshot(value, continentKey)
             count = count + 1
         end
     end
-    return #out.boards > 0 and out or nil
+    -- 中文维护注释（2026-09-24，空快照污染修复）：旧 Normalize 只要存在 1..7 的 board 外壳就
+    -- 接受快照，即使所有 lines 都为空。若一次 ResidentBoard 临时读空却被错误大陆提示命中，Store 会把
+    -- “空西大陆/空东大陆”保存整天，后续 Refresh 因 snapshot 已存在不再读取，表现就是“偶尔整天没数据”。
+    -- 现在至少要求 1 条真实居民板文本；旧存档中的空壳会在 Normalize 时自然丢弃，无需清配置或迁移 schema。
+    return BondSnapshotLineCount(out) > 0 and out or nil
 end
 
 local function CaptureBondSnapshot(continentKey, boards)
@@ -3054,6 +3234,56 @@ local function CaptureBondSnapshot(continentKey, boards)
         snapshot.boards[#snapshot.boards + 1] = { index = index, lines = lines }
     end
     return NormalizeBondSnapshot(snapshot, continentKey)
+end
+
+
+-- 中文维护注释（2026-09-24，18.302 每板增量合并）：dailySnapshots 的 Authority 粒度是“服务器日 + 大陆”，
+-- 但一次 Native ResidentBoard 读取只代表玩家当前可见板内容。18.301 把整个 auroria 当成单个原子快照，
+-- 导致已经缓存 Prince 后进入 Queen/Ancestor 区域时，zone-boundary 探测虽然成功却因 previous 已存在而拒绝
+-- 新内容；手动刷新又只按总行数比较，可能同样丢失另一组合法板数据。这里改为按 board index 合并，并对
+-- 每个板的文本做稳定去重。旧行先保留，新探测只追加尚未记录的真实行；空读绝不删除已有行。主大陆也
+-- 复用同一规则，从而抵抗局部 Native 空读。每天日期 rollover 仍由上层清空，因此不会跨天积累陈旧事实。
+local function MergeBondSnapshot(previous, captured, continentKey)
+    previous = NormalizeBondSnapshot(previous, continentKey)
+    captured = NormalizeBondSnapshot(captured, continentKey)
+    if previous == nil then
+        return captured, captured ~= nil, BondSnapshotLineCount(captured)
+    end
+    if captured == nil then
+        return previous, false, 0
+    end
+
+    local firstIndex, lastIndex = 1, 4
+    if continentKey == "auroria" then firstIndex, lastIndex = 5, 7 end
+    local previousByIndex, capturedByIndex = {}, {}
+    for _, board in ipairs(previous.boards or {}) do previousByIndex[tonumber(board.index)] = board end
+    for _, board in ipairs(captured.boards or {}) do capturedByIndex[tonumber(board.index)] = board end
+
+    local merged = {
+        continentKey = continentKey,
+        faction = Text(captured.faction, "") ~= "" and Text(captured.faction, "") or Text(previous.faction, ""),
+        boards = {},
+    }
+    local changed, addedLines = false, 0
+    if merged.faction ~= Text(previous.faction, "") then changed = true end
+    for index = firstIndex, lastIndex do
+        local lines, seen = {}, {}
+        local function append(source, isNewProbe)
+            for _, rawLine in ipairs(type(source) == "table" and type(source.lines) == "table" and source.lines or {}) do
+                if #lines >= BOND_SNAPSHOT_MAX_LINES then break end
+                local line = BoundedBondSnapshotText(rawLine)
+                if line ~= "" and seen[line] ~= true then
+                    seen[line] = true
+                    lines[#lines + 1] = line
+                    if isNewProbe then changed, addedLines = true, addedLines + 1 end
+                end
+            end
+        end
+        append(previousByIndex[index], false)
+        append(capturedByIndex[index], true)
+        merged.boards[#merged.boards + 1] = { index = index, lines = lines }
+    end
+    return NormalizeBondSnapshot(merged, continentKey) or previous, changed, addedLines
 end
 
 local function NormalizeBondWidgetWindow(value)
@@ -3088,7 +3318,11 @@ local function NormalizeBondState(value)
         local snap = NormalizeBondSnapshot(type(value.dailySnapshots) == "table" and value.dailySnapshots[continentKey] or nil, continentKey)
         if snap ~= nil then snapshots[continentKey] = snap end
     end
-    return { sortMode = value.sortMode == "quantity" and "quantity" or "continent",
+    -- 中文维护注释（2026-09-24，排序兼容）：18.303 新增 material 排序，但不新增 Store 字段，避免
+    -- schema=1 的历史 envelope 再次发生 canonical 漂移。已有 continent/quantity 值保持原样；只有用户
+    -- 新选择“按材料”后才会持久化 material。旧版本回退时 material 会安全归一为 continent，不破坏快照。
+    local sortMode = value.sortMode == "quantity" and "quantity" or (value.sortMode == "material" and "material" or "continent")
+    return { sortMode = sortMode,
         continentOrder = value.continentOrder == "east_first" and "east_first" or "west_first",
         showCompleted = value.showCompleted ~= false,
         q20 = value.q20 ~= false, q60 = value.q60 ~= false, q100 = value.q100 ~= false, auroria = value.auroria ~= false,
@@ -3131,8 +3365,13 @@ local function RebuildBondCanonicalForIntegrity(decoded, stampedFingerprint, cur
 end
 
 local function BondCompletionKey(materialKey, quantity, continentKey)
-    if continentKey == "auroria" or materialKey == nil or tonumber(quantity) == nil then return nil end
-    return tostring(materialKey) .. ":" .. tostring(math.floor(tonumber(quantity)))
+    if materialKey == nil or tonumber(quantity) == nil then return nil end
+    -- 中文维护注释（2026-09-24，原大陆完成锁存）：QuestProgress 在任务交付后可能从 activeIndex 中移除，
+    -- 如果只依赖当前 questStatus，原大陆已完成行会从“已完成”退回“待确认”。沿用现有每日完成 Store，
+    -- 但给原大陆 key 加 auroria 前缀，避免和主大陆 material:quantity 的跨大陆共享语义碰撞；不改 schema。
+    local suffix = tostring(materialKey) .. ":" .. tostring(math.floor(tonumber(quantity)))
+    if continentKey == "auroria" then return "auroria:" .. suffix end
+    return suffix
 end
 local function BondContinentKey(line)
     if type(line) ~= "table" then return nil end
@@ -3144,8 +3383,9 @@ local function BondContinentKey(line)
     return nil
 end
 local BOND_TEXT_MATERIAL = { [1] = "fabric", [2] = "leather", [3] = "lumber", [4] = "iron" }
-function BA:Refresh()
+function BA:Refresh(reason)
     local rows = {}
+    reason = tostring(reason or "feature_refresh")
     local state = NormalizeBondState(Bonds.State)
     local completionDirty, snapshotDirty = false, false
     local serverDateKey = S.Utils and type(S.Utils.ServerDateKey) == "function" and tostring(S.Utils.ServerDateKey()) or "unknown"
@@ -3171,15 +3411,54 @@ function BA:Refresh()
     Bonds.State.dailySnapshots = Copy(state.dailySnapshots)
     BA.duplicatePriorityUnresolved = nil
 
-    local resources, resourceStatus = ReadBondResources()
-    local currentKey = CurrentBondContinentKey()
+    -- 中文维护注释（2026-09-24，筛选/排序不重复扫包）：Dropdown 只改变 Presentation 过滤与排序，
+    -- 不改变背包事实。旧实现每次 SetDisplayOrder/SetFilterMask/SetDuplicateMode 都会重新 BuildSnapshot("bag")，
+    -- 大背包下属于不必要的 O(slots) 读取。Authority 现在只在 presentation 重建时复用最近一次 detached 资源
+    -- 汇总；Demand 首开、手动刷新、QuestProgress/其他业务刷新仍重新读取背包，因此交任务/消耗材料后的数量不会
+    -- 被长期缓存。缓存只含 10 个 materialKey->count 与状态，不持有 Native item/slot 引用，也不进入 Store。
+    local resources, resourceStatus
+    if reason == "presentation" and type(self.resourceTotals) == "table" then
+        resources = Copy(self.resourceTotals)
+        resourceStatus = self.resourceReadStatus or "unknown"
+    else
+        resources, resourceStatus = ReadBondResources()
+        self.resourceTotals = Copy(resources)
+        self.resourceReadStatus = resourceStatus
+        self.resourceReads = (tonumber(self.resourceReads) or 0) + 1
+    end
+    local zoneHint = CurrentBondContinentKey()
+    local currentKey = zoneHint
     local currentSnapshot = currentKey and state.dailySnapshots[currentKey] or nil
     local firstError = nil
 
     local lastReadable, lastContentCount = 0, 0
-    -- Capture at most once per continent/server day. Reloading, sorting and
-    -- filtering reuse the persisted snapshot and do not touch ResidentBoard.
-    if currentSnapshot == nil and (currentKey ~= nil or next(state.dailySnapshots) == nil) then
+    local forceRead = reason == "page_manual" or reason == "widget_manual" or reason == "overview_manual" or reason == "manual"
+    -- 中文维护注释（2026-09-24，首次 Consumer 探测）：Demand 0->1 是低频显式生命周期边界。即使静态
+    -- zoneHint 命中且当天已有缓存，也做一次 bounded 1..7 Native 探测，以校正旧/新增 zoneGroup 映射、
+    -- 识别当前位置实际是 mainland 还是 Auroria，并恢复“有缓存却当前位置新数据不显示”的场景。排序、
+    -- 筛选、QuestProgress 等后续刷新仍不读 Native，所以不会形成轮询或 UI 操作放大。
+    local demandProbe = reason == "demand_start" or reason == "initial"
+    -- 中文维护注释（2026-09-24，区域切换一次性重探测）：页面保持打开跨区时 Demand 不会回到 0，
+    -- 仅靠 demand_start 会漏掉“西/东缓存已存在 -> 进入未收录/误映射原大陆”的场景。区域事件经过
+    -- 750ms 同名 one-shot 去抖后只触发一次 bounded 1..7 探测，让 ResidentBoard Native 内容重新裁决板族。
+    -- 这是事件驱动的生命周期边界，不是 Tick/轮询；延迟也避免 ENTER_ANOTHER_ZONEGROUP 刚发出时板数据尚未就绪。
+    local boundaryProbe = reason == "zone_changed" or reason == "entered_world"
+    local shouldRead = forceRead or demandProbe or boundaryProbe
+        or (zoneHint ~= nil and state.dailySnapshots[zoneHint] == nil)
+        or (zoneHint == nil and state.dailySnapshots.west == nil and state.dailySnapshots.east == nil and state.dailySnapshots.auroria == nil)
+    local probe = {
+        reason = reason, zoneHint = zoneHint or "unknown", attempted = shouldRead == true,
+        readable = 0, contentCount = 0, detectedFamily = "none", detectedScope = "none",
+        evidence = "not_probed", captureAction = "cache_reuse", capturedLines = 0, boardCounts = {},
+    }
+
+    -- 中文维护注释（2026-09-24，ResidentBoard Authority/偶发空数据修复）：旧实现只有“当前静态 zoneGroup
+    -- 已识别且该大陆未缓存”或“三大陆缓存完全为空”时才读 1..7。于是用户已缓存西/东后进入未收录的
+    -- 原大陆 zoneGroup，会永远复用旧缓存而不探测 5/6；一次 Native 临时空返回还可能把空壳快照锁到
+    -- 当天。现在页面/悬浮窗显式刷新可强制做一次 bounded 1..7 探测，首次 Demand 0->1 也固定探测一次；
+    -- 排序/筛选/QuestProgress 只重建 Projection，不重复读 Native。板族由 Native 3/4 或 5/6 内容决定，
+    -- 静态 zone 只负责 mainland 的西/东分边。强制刷新若拿到比已有快照更少的行不会覆盖好缓存。
+    if shouldRead then
         local boards, readable, contentCount = {}, 0, 0
         for index = 1, 7 do
             local ok, value, err = Call("X2Resident:GetResidentBoardContent", ResidentApi, "GetResidentBoardContent", index)
@@ -3193,25 +3472,54 @@ function BA:Refresh()
                 boards[index] = { raw = value, contents = {} }
                 if err ~= nil then firstError = firstError or tostring(err) end
             end
+            probe.boardCounts[index] = BondBoardLineCount(boards, index)
         end
         lastReadable, lastContentCount = readable, contentCount
-        -- Auroria is identifiable from its distinct 5/6 board families even if
-        -- the zone-id map does not know the current zone yet.
-        if currentKey == nil then
-            local hasAuroria = #(boards[5].contents or {}) > 0 or #(boards[6].contents or {}) > 0
-            if hasAuroria then currentKey = "auroria" end
-        end
-        if currentKey ~= nil and readable > 0 and contentCount > 0 then
-            local captured = CaptureBondSnapshot(currentKey, boards)
-            if captured ~= nil then
-                state.dailySnapshots[currentKey] = captured
-                Bonds.State.dailySnapshots[currentKey] = Copy(captured)
-                currentSnapshot = captured
-                snapshotDirty = true
+        probe.readable, probe.contentCount = readable, contentCount
+
+        local liveScope, family, evidence = ResolveLiveBondScope(boards, zoneHint)
+        probe.detectedFamily = family or "none"
+        probe.detectedScope = liveScope or "none"
+        probe.evidence = evidence or "none"
+        if liveScope ~= nil then
+            currentKey = liveScope
+            local captured = CaptureBondSnapshot(liveScope, boards)
+            local capturedLines = BondSnapshotLineCount(captured)
+            probe.capturedLines = capturedLines
+            local previous = state.dailySnapshots[liveScope]
+            local merged, changed, addedLines = MergeBondSnapshot(previous, captured, liveScope)
+            probe.addedLines = tonumber(addedLines) or 0
+            probe.mergedLines = BondSnapshotLineCount(merged)
+            if merged ~= nil then
+                currentSnapshot = merged
+                if previous == nil or changed == true then
+                    state.dailySnapshots[liveScope] = merged
+                    Bonds.State.dailySnapshots[liveScope] = Copy(merged)
+                    snapshotDirty = true
+                end
+                if previous == nil then
+                    probe.captureAction = "captured_new"
+                elseif captured == nil then
+                    probe.captureAction = "kept_cache_empty_probe"
+                elseif changed == true then
+                    probe.captureAction = "merged_new_board_lines"
+                else
+                    probe.captureAction = "cache_unchanged"
+                end
+            else
+                currentSnapshot = nil
+                probe.captureAction = captured == nil and "no_snapshot_from_probe" or "capture_rejected"
             end
+        else
+            currentSnapshot = currentKey and state.dailySnapshots[currentKey] or nil
+            probe.captureAction = contentCount > 0 and "scope_unresolved" or "empty_probe"
         end
     end
 
+    -- 只有真实 Native 探测才覆盖 lastBoardProbe；排序/筛选等纯 Presentation 重算保留最近一次
+    -- 可诊断证据，避免用户操作下拉框后再导出报告时只看到 not_probed。
+    if shouldRead then BA.lastBoardProbe = probe end
+    BA.lastRefreshReason = reason
     BA.boardScope = currentKey or "cached"
     BA.faction = currentSnapshot and currentSnapshot.faction or nil
 
@@ -3225,16 +3533,18 @@ function BA:Refresh()
                 for lineIndex, textValue in ipairs(type(board.lines) == "table" and board.lines or {}) do
                     textValue = Text(textValue, "")
                     local materialKey = BOND_TEXT_MATERIAL[index]
-                    if not materialKey and index >= 5 then materialKey = "auroria_token" end
                     local quantity = Number(string.match(textValue, "(%d+)"))
-                    local requiredCount, haveCount = quantity, materialKey and resources[materialKey] or nil
+                    -- 中文维护注释（2026-09-24，原大陆行身份闭环）：板 5/6/7 不再使用一个虚拟
+                    -- auroria_token。ResidentBoard 文本 + 板位先解析成 prince/queen/ancestor purse/crate，
+                    -- 再与共享 ItemType/QuestId 映射汇合。这样原大陆也能显示真实“持有/缺口/完成状态”；
+                    -- 文本不足以区分钱袋与箱子时保持 unknown，绝不为了显示数量而猜错材料/任务。
+                    local questId, mappedQuantity, auroriaToken = BondQuestEvidence(materialKey, textValue, index)
+                    if index >= 5 then materialKey = auroriaToken end
+                    quantity = mappedQuantity or quantity
+                    local requiredCount = quantity
+                    local haveCount = materialKey and resources[materialKey] or nil
                     local rowStatus = materialKey and resourceStatus or "unknown"
                     if resourceStatus == "unknown" or resourceStatus == "partial" then haveCount = nil end
-                    if materialKey == "auroria_token" then haveCount, rowStatus = nil, "unknown" end
-
-                    local questId, mappedQuantity, auroriaToken = BondQuestEvidence(materialKey, textValue)
-                    quantity = mappedQuantity or quantity
-                    requiredCount = mappedQuantity or requiredCount
                     local questStatus = "UNKNOWN"
                     if questId ~= nil and progress and type(progress.QuestState) == "function" then
                         questStatus = tostring(progress:QuestState(questId, activeIndex) or "UNKNOWN")
@@ -3251,7 +3561,7 @@ function BA:Refresh()
                     if (category == nil or state[category]) and (state.showCompleted or completed ~= true) then
                         rows[#rows + 1] = {
                             key = "daily:" .. tostring(continentKey) .. ":" .. tostring(index) .. ":" .. tostring(lineIndex),
-                            board = index, name = BOND_BOARD_NAMES[index] or ("分类" .. tostring(index)),
+                            board = index, name = AURORIA_BOND_LABEL[materialKey] or BOND_BOARD_NAMES[index] or ("分类" .. tostring(index)),
                             continent = BOND_CONTINENT_LABEL[continentKey] or tostring(continentKey), continentKey = continentKey,
                             text = textValue, quantity = quantity, materialKey = materialKey, auroriaToken = auroriaToken,
                             requiredCount = requiredCount, haveCount = haveCount,
@@ -3309,31 +3619,54 @@ function BA:Refresh()
         end
     end
 
-    -- 中文维护注释（2026-09-15，排序只排序不删数据）：continentOrder 与 duplicate priority 完全分离。
-    -- 按大陆模式先比较大陆，按数量模式先比较数量；两种模式都使用同一个确定性 tie-breaker。这样切换
-    -- “西→东/东→西”只改变行顺序，不会触发去重，也不会修改快照。原大陆始终排在两主大陆之后。
-    local continentRank = state.continentOrder == "east_first"
-        and { east = 1, west = 2, auroria = 3 } or { west = 1, east = 2, auroria = 3 }
-    local materialRank = { leather = 1, fabric = 2, lumber = 3, iron = 4 }
+    -- 中文维护注释（2026-09-24，债券三维排序）：18.302 的“按数量 · 西→东/东→西”只改变
+    -- 数量主键、却仍用大陆方向作为第二语义，用户无法表达“数量少→多/多→少”，也没有按材料聚合，
+    -- 因而实际体验会像“少了排序”。18.303 不增加新的 Store 字段：继续复用 sortMode + continentOrder
+    -- 这两个稳定字段，其中 continent 模式解释 order 为大陆方向；quantity/material 模式解释同一二值为
+    -- 正向/反向。Authority 只重排 detached rows，不删行、不改 dailySnapshots、不重扫背包。
+    local forward = state.continentOrder ~= "east_first"
+    local continentRank = state.sortMode == "continent" and (forward
+        and { west = 1, east = 2, auroria = 3 } or { east = 1, west = 2, auroria = 3 })
+        or { west = 1, east = 2, auroria = 3 }
+    -- 材料正序按 ResidentBoard 的稳定业务语义排列，不依赖本地化名称排序，避免中/俄文环境下顺序漂移。
+    local materialRank = {
+        fabric = 1, leather = 2, lumber = 3, iron = 4,
+        prince_purse = 5, prince_crate = 6,
+        queen_purse = 7, queen_crate = 8,
+        ancestor_purse = 9, ancestor_crate = 10,
+    }
     table.sort(rows, function(a, b)
         local ac, bc = continentRank[a.continentKey] or 9, continentRank[b.continentKey] or 9
         local aq, bq = Number(a.quantity), Number(b.quantity)
+        local am, bm = materialRank[a.materialKey] or 99, materialRank[b.materialKey] or 99
         if state.sortMode == "quantity" then
             if aq ~= bq then
                 if aq == nil then return false end
                 if bq == nil then return true end
-                return aq < bq
+                if forward then return aq < bq end
+                return aq > bq
+            end
+            if ac ~= bc then return ac < bc end
+            if am ~= bm then return am < bm end
+        elseif state.sortMode == "material" then
+            if am ~= bm then
+                if forward then return am < bm end
+                return am > bm
+            end
+            if aq ~= bq then
+                if aq == nil then return false end
+                if bq == nil then return true end
+                if forward then return aq < bq end
+                return aq > bq
             end
             if ac ~= bc then return ac < bc end
         else
             if ac ~= bc then return ac < bc end
-            -- 中文维护注释：按大陆模式只负责把同一大陆聚在一起，组内继续保持居民板 1→7 的
-            -- 自然顺序；不能再按数量二次重排，否则“按大陆”仍会改变板位阅读顺序并让语义模糊。
+            -- 按大陆模式只负责把同一大陆聚在一起，组内继续保持居民板 1→7 的自然顺序。
             local ab, bb = Number(a.board) or 99, Number(b.board) or 99
             if ab ~= bb then return ab < bb end
+            if am ~= bm then return am < bm end
         end
-        local am, bm = materialRank[a.materialKey] or 9, materialRank[b.materialKey] or 9
-        if am ~= bm then return am < bm end
         return tostring(a.key) < tostring(b.key)
     end)
 
@@ -3369,6 +3702,7 @@ function BA:GetProjection()
         boardScope = self.boardScope, currentContinentLabel = BOND_CONTINENT_LABEL[self.boardScope], faction = self.faction,
         snapshotDateKey = self.snapshotDateKey, snapshotCount = tonumber(self.snapshotCount) or 0,
         dailySnapshotStatus = coverage,
+        lastBoardProbe = Copy(self.lastBoardProbe),
         selectedKey = Bonds.selectedKey,
     }
 end
@@ -3390,7 +3724,7 @@ function Bonds:SubscribeProgress()
         -- 中文维护注释（bond-quest-reactive-1）：居民板 Store/材料快照仍由 Bonds Authority 持有；这里只在已有
         -- Bonds Consumer 时重算 questStatus，不新增 ResidentBoard 轮询。QuestProgress 的事件由 Native Quest 事件
         -- 合并后发布，因此交任务/变为可交付可以在事件后立即刷新主页面与悬浮窗。
-        if Bonds.enabled == true and Bonds.consumerCount > 0 then BA:Refresh() end
+        if Bonds.enabled == true and Bonds.consumerCount > 0 then BA:Refresh("quest_progress") end
     end)
     if subscribed ~= true then return false, "quest progress internal subscribe failed" end
     self.progressSubscribed = true
@@ -3400,6 +3734,47 @@ function Bonds:UnsubscribeProgress()
     if self.progressSubscribed ~= true then return true end
     if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
     self.progressSubscribed = false
+    return true
+end
+function Bonds:ScheduleLocationRefresh(reason)
+    if self.enabled ~= true or (tonumber(self.consumerCount) or 0) <= 0 then return true end
+    reason = reason == "entered_world" and "entered_world" or "zone_changed"
+    -- 中文维护注释（2026-09-24，区域事件去抖/生命周期）：跨区过程中 Native resident board 可能先发
+    -- 区域事件、后完成板数据装载。使用共享 Scheduler 的单个同名 one-shot，连续事件只保留最后一次；
+    -- Consumer 释放时移除任务。绝不创建独立 OnUpdate/Tick，也不会在窗口隐藏/功能关闭后继续读取。
+    if S.Scheduler ~= nil and type(S.Scheduler.AddOneShot) == "function" then
+        local added = S.Scheduler:AddOneShot(BONDS_ZONE_REFRESH_TASK, 750, function()
+            if Bonds.enabled == true and (tonumber(Bonds.consumerCount) or 0) > 0 then return BA:Refresh(reason) end
+            return true
+        end, self, "P2", 1)
+        if added == true and type(S.Scheduler.SetTaskModule) == "function" then
+            S.Scheduler:SetTaskModule(BONDS_ZONE_REFRESH_TASK, self.Id, false)
+        end
+        return added == true
+    end
+    return BA:Refresh(reason)
+end
+function Bonds:SubscribeLocationEvents()
+    if self.locationSubscribed == true then return true end
+    if S.Events == nil or type(S.Events.SubscribeOptional) ~= "function" then return true end
+    local zoneOk = S.Events:SubscribeOptional("ENTER_ANOTHER_ZONEGROUP", self, function()
+        return Bonds:ScheduleLocationRefresh("zone_changed")
+    end)
+    local worldOk = S.Events:SubscribeOptional("ENTERED_WORLD", self, function()
+        return Bonds:ScheduleLocationRefresh("entered_world")
+    end)
+    -- Optional Native events are an enhancement, not a hard startup dependency. Manual refresh and Demand probe
+    -- remain valid fallback paths if an older RU client cannot register one of them. Track whether any listener landed
+    -- so release can deterministically clean the owner without introducing a second event Authority.
+    self.locationSubscribed = zoneOk == true or worldOk == true
+    return true
+end
+function Bonds:UnsubscribeLocationEvents()
+    if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(BONDS_ZONE_REFRESH_TASK) end
+    if self.locationSubscribed == true and S.Events ~= nil and type(S.Events.UnsubscribeOwner) == "function" then
+        S.Events:UnsubscribeOwner(self)
+    end
+    self.locationSubscribed = false
     return true
 end
 function Bonds:ReconcileDemand(_, before, after)
@@ -3417,9 +3792,11 @@ function Bonds:ReconcileDemand(_, before, after)
             self.progressConsumerHeld = false
             return false, subErr
         end
+        self:SubscribeLocationEvents()
         -- Demand 0->1 在 QuestProgress 已完成一次同步刷新后再重算 Bonds，确保首次打开也使用最新 activeIndex。
-        BA:Refresh()
+        BA:Refresh("demand_start")
     elseif beforeCount > 0 and afterCount <= 0 then
+        self:UnsubscribeLocationEvents()
         self:UnsubscribeProgress()
         if self.progressConsumerHeld == true then
             local progress = S.Services and S.Services.QuestProgressV3 or nil
@@ -3435,7 +3812,7 @@ function Bonds:Enable() self.enabled = true; return true end
 function Bonds:Disable(reason) local ok, err = self.Demand:Clear(reason or "bonds_disable"); if ok ~= true then return false, err end; self.enabled = false; return true end
 function Bonds:AcquireConsumer(token) if not self.enabled then return false, "居民板功能已关闭" end return self.Demand:Acquire(token, {}, "bonds_consumer") end
 function Bonds:ReleaseConsumer(token) return self.Demand:Release(token, "bonds_consumer") end
-function Bonds:Refresh() if not self.enabled or self.consumerCount <= 0 then return true end return BA:Refresh() end
+function Bonds:Refresh(reason) if not self.enabled or self.consumerCount <= 0 then return true end return BA:Refresh(reason or "feature_refresh") end
 -- Presentation must consume a detached Feature read model rather than reaching
 -- through to Bonds.Authority. Keep this facade explicit so the public Feature
 -- contract stays symmetric with Trade/Treasure/Fishing.
@@ -3469,13 +3846,18 @@ function Bonds:DescribeDailyCache()
         snapshotCount = (snapshots.west ~= nil and 1 or 0) + (snapshots.east ~= nil and 1 or 0) + (snapshots.auroria ~= nil and 1 or 0),
         completedCount = (function() local n = 0 for _ in pairs(type(self.State.completedMainlandKeys) == "table" and self.State.completedMainlandKeys or {}) do n = n + 1 end return n end)(),
         boardReads = tonumber(self.boardReads) or 0,
+        resourceReads = tonumber(BA.resourceReads) or 0,
+        -- 中文维护注释（2026-09-24，诊断证据）：只暴露上一次 bounded 1..7 探测摘要，不复制
+        -- ResidentBoard 原始文本，既能判断“没读/读空/板族未识别/保留旧缓存”，又控制诊断体积。
+        lastBoardProbe = Copy(BA.lastBoardProbe),
     }
 end
 function Bonds:GetSortMode() return Bonds.State.sortMode end
 function Bonds:SetSortMode(mode)
-    local persisted, persistErr = PersistLifeMutation(self, "bonds_sort", function(state) state.sortMode = mode == "quantity" and "quantity" or "continent"; return true end)
+    if mode ~= "continent" and mode ~= "quantity" and mode ~= "material" then return false, "债券排序模式无效" end
+    local persisted, persistErr = PersistLifeMutation(self, "bonds_sort", function(state) state.sortMode = mode; return true end)
     if persisted ~= true then return false, persistErr end
-    return self:Refresh()
+    return self:Refresh("presentation")
 end
 function Bonds:GetContinentOrder() return NormalizeBondState(Bonds.State).continentOrder end
 function Bonds:SetContinentOrder(order)
@@ -3484,7 +3866,7 @@ function Bonds:SetContinentOrder(order)
     -- 这样主页面/悬浮窗共享同一顺序。该命令不读 ResidentBoard、不修改 dailySnapshots，也不触发去重。
     local persisted, persistErr = PersistLifeMutation(self, "bonds_continent_order", function(state) state.continentOrder = order; return true end)
     if persisted ~= true then return false, persistErr end
-    return self:Refresh()
+    return self:Refresh("presentation")
 end
 function Bonds:GetBondFilter() return NormalizeBondState(Bonds.State) end
 function Bonds:GetBondFilterOption(key) return Bonds:GetBondFilter()[key] == true end
@@ -3493,7 +3875,7 @@ function Bonds:SetBondFilterOption(key, enabled)
     if key ~= "q20" and key ~= "q60" and key ~= "q100" and key ~= "auroria" and key ~= "excludeSame" then return false, "债券筛选键无效" end
     local persisted, persistErr = PersistLifeMutation(self, "bonds_filter", function(state) state[key] = enabled == true; return true end)
     if persisted ~= true then return false, persistErr end
-    return self:Refresh()
+    return self:Refresh("presentation")
 end
 function Bonds:SetDuplicatePriority(priority)
     if priority ~= "west" and priority ~= "east" then return false, "重复材料优先大陆无效" end
@@ -3502,9 +3884,67 @@ function Bonds:SetDuplicatePriority(priority)
     -- “合并模式下保留哪一侧”，是否合并只能由 SetBondFilterOption(excludeSame) 显式决定。
     local persisted, persistErr = PersistLifeMutation(self, "bonds_priority", function(state) state.priority = priority; return true end)
     if persisted ~= true then return false, persistErr end
-    return self:Refresh()
+    return self:Refresh("presentation")
 end
-Bonds.Commands = { Refresh = function(_, reason) return Bonds:Refresh(reason) end, SetSortMode = function(_, mode) return Bonds:SetSortMode(mode) end, SetContinentOrder = function(_, order) return Bonds:SetContinentOrder(order) end, SetBondFilterOption = function(_, key, enabled) return Bonds:SetBondFilterOption(key, enabled) end, SetDuplicatePriority = function(_, priority) return Bonds:SetDuplicatePriority(priority) end,
+-- 中文维护注释（2026-09-24，债券下拉框原子命令）：主页面与悬浮窗都改为 3 个 Dropdown。
+-- Presentation 不能连续模拟点击多个旧按钮来表达一个选项，否则会产生多次 Store 写入/Projection 发布，
+-- 还可能在 Dropdown popup 未关闭时重入刷新。这里提供组合命令，一次 PersistLifeMutation 原子提交。
+-- 旧 SetSortMode/SetContinentOrder/SetBondFilterOption/SetDuplicatePriority 继续保留，保证升级/扩展兼容。
+function Bonds:GetDisplayOrderKey()
+    local state = NormalizeBondState(Bonds.State)
+    return tostring(state.sortMode) .. ":" .. tostring(state.continentOrder)
+end
+function Bonds:SetDisplayOrder(mode, order)
+    if mode ~= "continent" and mode ~= "quantity" and mode ~= "material" then return false, "债券排序模式无效" end
+    if order ~= "west_first" and order ~= "east_first" then return false, "大陆排序方向无效" end
+    local persisted, persistErr = PersistLifeMutation(self, "bonds_display_order", function(state)
+        state.sortMode, state.continentOrder = mode, order
+        return true
+    end)
+    if persisted ~= true then return false, persistErr end
+    return self:Refresh("presentation")
+end
+function Bonds:GetFilterMask()
+    local state = NormalizeBondState(Bonds.State)
+    local mask = 0
+    if state.q20 then mask = mask + 1 end
+    if state.q60 then mask = mask + 2 end
+    if state.q100 then mask = mask + 4 end
+    if state.auroria then mask = mask + 8 end
+    return mask
+end
+function Bonds:SetFilterMask(mask)
+    mask = tonumber(mask)
+    if mask == nil or mask < 0 or mask > 15 or math.floor(mask) ~= mask then return false, "债券筛选组合无效" end
+    local q20 = (mask % 2) >= 1
+    local q60 = (math.floor(mask / 2) % 2) >= 1
+    local q100 = (math.floor(mask / 4) % 2) >= 1
+    local auroria = (math.floor(mask / 8) % 2) >= 1
+    local persisted, persistErr = PersistLifeMutation(self, "bonds_filter_mask", function(state)
+        state.q20, state.q60, state.q100, state.auroria = q20, q60, q100, auroria
+        return true
+    end)
+    if persisted ~= true then return false, persistErr end
+    return self:Refresh("presentation")
+end
+function Bonds:GetDuplicateMode()
+    local state = NormalizeBondState(Bonds.State)
+    if state.excludeSame ~= true then return "all" end
+    return state.priority == "east" and "east" or "west"
+end
+function Bonds:SetDuplicateMode(mode)
+    if mode ~= "all" and mode ~= "west" and mode ~= "east" then return false, "重复材料显示模式无效" end
+    local persisted, persistErr = PersistLifeMutation(self, "bonds_duplicate_mode", function(state)
+        state.excludeSame = mode ~= "all"
+        -- “全部显示”不改历史 priority；用户以后再次选择合并时仍保留上次偏好。
+        if mode == "west" or mode == "east" then state.priority = mode end
+        return true
+    end)
+    if persisted ~= true then return false, persistErr end
+    return self:Refresh("presentation")
+end
+
+Bonds.Commands = { SetDisplayOrder = function(_, mode, order) return Bonds:SetDisplayOrder(mode, order) end, SetFilterMask = function(_, mask) return Bonds:SetFilterMask(mask) end, SetDuplicateMode = function(_, mode) return Bonds:SetDuplicateMode(mode) end, Refresh = function(_, reason) return Bonds:Refresh(reason) end, SetSortMode = function(_, mode) return Bonds:SetSortMode(mode) end, SetContinentOrder = function(_, order) return Bonds:SetContinentOrder(order) end, SetBondFilterOption = function(_, key, enabled) return Bonds:SetBondFilterOption(key, enabled) end, SetDuplicatePriority = function(_, priority) return Bonds:SetDuplicatePriority(priority) end,
     SelectRow = function(_, key) return Bonds:SelectRow(key) end, GetSelectedRow = function() return Bonds:GetSelectedRow() end, GetRow = function(_, key) return Bonds:GetRow(key) end,
     GetWidgetVisible = function() return Bonds:GetWidgetVisible() end, SetWidgetVisible = function(_, value, reason) return Bonds:SetWidgetVisible(value, reason) end,
     SetWidgetWindowState = function(_, value, reason) return Bonds:SetWidgetWindowState(value, reason) end,

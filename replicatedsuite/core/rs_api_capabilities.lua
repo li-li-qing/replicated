@@ -196,7 +196,7 @@ local CAPABILITIES = {
     ["X2Craft:GetCraftTypeByItemType"] = { OfficialState="OfficialEnabled", Since="2026-06-09", SideEffectFree=true },
     ["X2Auction:SearchAuctionArticle"] = { OfficialState="OfficialEnabled", Risk="server_query" },
     ["X2Auction:GetLowestPrice"] = { OfficialState="OfficialEnabled", Since="2025-08-12", Cooldown=500, Risk="server_query", Notes="stable itemType/itemGrade auction lookup; call only from explicit user quote flow" },
-    ["X2Auction:AskMarketPrice"] = { OfficialState="OfficialEnabled", Risk="server_query", Notes="explicit market-price UI query only; never background-poll" },
+    ["X2Auction:AskMarketPrice"] = { OfficialState="OfficialEnabled", Since="2025-08-12", Cooldown=500, Risk="server_query", Notes="explicit market-price request paired with paced GetLowestPrice readback; askMarketPriceUi=false for addon quotes; never background-poll" },
     ["X2Quest:IsReadyForCompleteQuest"] = { OfficialState="OfficialEnabled", Since="2026-03-31", SideEffectFree=true },
     -- Instance-entrance UI reads (RU 2026-05-19). These power the instance-raid
     -- activity rows (红龙巢穴 / 血之使者卡杜姆): the client exposes the per-account

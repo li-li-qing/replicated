@@ -1086,12 +1086,18 @@ function D:BuildFeatureStatusRows()
             rows[#rows + 1] = FeatureRow("bonds", "债券", "down", "每日缓存诊断不可用", "复制此行给维护者")
         else
             local ok = (tonumber(cache.snapshotCount) or 0) > 0
+            local probe = type(cache.lastBoardProbe) == "table" and cache.lastBoardProbe or nil
+            local probeText = probe and (" · 上次探测=" .. tostring(probe.detectedScope or "none")
+                .. "/" .. tostring(probe.captureAction or "none") .. "/内容" .. tostring(probe.contentCount or 0)) or ""
             rows[#rows + 1] = FeatureRow("bonds", "债券", ok and "ok" or "degraded",
                 "日期=" .. tostring(cache.dayKey)
                 .. " · 已读大陆=" .. tostring(cache.snapshotCount) .. "/3"
                 .. " · 板读取=" .. tostring(cache.boardReads or 0)
-                .. " · 完成=" .. tostring(cache.completedCount or 0),
-                ok == false and "进入西/东大陆可读居民板区域后点刷新；同一天不重复读" or nil)
+                .. " · 完成=" .. tostring(cache.completedCount or 0) .. probeText,
+                ok == false and "进入西/东/原大陆可读居民板区域后点刷新；18.302 会保留空读/板族识别/增量合并证据" or nil)
+            -- 中文维护注释（2026-09-24，债券可观测性）：诊断行附带 detached cache/probe 摘要，
+            -- 只在用户主动生成诊断时序列化，不触发 ResidentBoard Native 读取，也不复制原始居民板文本。
+            rows[#rows].cache = cache
         end
     end
 

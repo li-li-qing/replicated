@@ -31,9 +31,20 @@ G:RegisterSequenceCase("v3_m1_bonds", function()
     if S.UIV3 == nil or S.UIV3.PageHost == nil or S.UIV3.PageHost.factories["life.bonds"] == nil then return Fail("page_contract") end
     if S.UIV3.WidgetHost == nil or S.UIV3.WidgetHost:GetSpec("life.bonds") == nil then return Fail("widget_contract") end
 
-    if (tonumber(F.MultiContinentSnapshotContractVersion) or 0) < 1
+    -- 中文维护注释（2026-09-24，18.303 债券门禁）：原大陆板族识别、六种材料身份与
+    -- Dropdown 原子命令必须整套存在；否则部分覆盖文件会让 UI 看似可用却继续漏原大陆/写多次 Store。
+    if (tonumber(F.MultiContinentSnapshotContractVersion) or 0) < 3
+        or (tonumber(F.ResidentBoardFamilyContractVersion) or 0) < 1
+        or (tonumber(F.AuroriaMaterialContractVersion) or 0) < 1
+        or (tonumber(F.DropdownPresentationContractVersion) or 0) < 2
         or type(F.Commands) ~= "table"
         or type(F.Commands.Refresh) ~= "function"
+        or type(F.Commands.SetDisplayOrder) ~= "function"
+        or type(F.Commands.SetFilterMask) ~= "function"
+        or type(F.Commands.SetDuplicateMode) ~= "function"
+        or type(F.GetDisplayOrderKey) ~= "function"
+        or type(F.GetFilterMask) ~= "function"
+        or type(F.GetDuplicateMode) ~= "function"
         or type(F.Commands.SetSortMode) ~= "function"
         or type(F.Commands.SetContinentOrder) ~= "function"
         or type(F.Commands.SetBondFilterOption) ~= "function"

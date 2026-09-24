@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static/geometry regressions for Trade optimization .18.296.
+"""Static/geometry regressions for Trade optimization .18.299.
 
 These checks intentionally avoid mocking ArcheRage native calls. They protect the
 architecture contracts that can be verified off-client: historical Store
@@ -20,10 +20,15 @@ TABLE = (ROOT / "ui/framework/rs_ui_data_views.lua").read_text(encoding="utf-8")
 PAGE = (ROOT / "presentation/v3/pages/rs_v3_life_m16_pages.lua").read_text(encoding="utf-8")
 WIDGET = (ROOT / "presentation/v3/widgets/rs_v3_life_economy_widgets.lua").read_text(encoding="utf-8")
 WIDGET_HOST = (ROOT / "presentation/v3/widgets/rs_v3_widget_host.lua").read_text(encoding="utf-8")
+CONTROLS = (ROOT / "ui/framework/rs_ui_controls.lua").read_text(encoding="utf-8")
 DETAIL = (ROOT / "presentation/v3/widgets/rs_v3_trade_detail_floating.lua").read_text(encoding="utf-8")
 DIAGNOSTICS = (ROOT / "presentation/v3/widgets/rs_v3_trade_diagnostics.lua").read_text(encoding="utf-8")
+PRICE_QUOTE = (ROOT / "services/rs_price_quote_queue_v3.lua").read_text(encoding="utf-8")
+AUCTION_QUERY = (ROOT / "services/rs_auction_query_v3.lua").read_text(encoding="utf-8")
 REGISTRY = (ROOT / "features/rs_feature_registry.lua").read_text(encoding="utf-8")
 FOUNDATION = (ROOT / "presentation/v3/pages/rs_v3_foundation_pages.lua").read_text(encoding="utf-8")
+CORE_GATE = (ROOT / "core/rs_foundation_gate.lua").read_text(encoding="utf-8")
+ACCEPTANCE = (ROOT / "presentation/v3/rs_v3_acceptance.lua").read_text(encoding="utf-8")
 PRODUCT_IDS = (ROOT / "data/ids/rs_trade_product_ids.lua").read_text(encoding="utf-8")
 MATERIALS = (ROOT / "data/rs_trade_materials.lua").read_text(encoding="utf-8")
 MATERIAL_IDENTITY = (ROOT / "services/rs_trade_material_identity_v3.lua").read_text(encoding="utf-8")
@@ -80,7 +85,7 @@ def adaptive_tail(viewport: float, count: int, base: float, gap: float, soft_min
 
 def main() -> int:
     # Build/version and historical Store boundary.
-    require("v3-m1.16.0.18.296-trade-floating-open-recovery" in BOOT, "build tag advanced")
+    require("v3-m1.16.0.18.303-bonds-material-quantity-sort" in BOOT, "build tag advanced")
     require('preferenceStoreId = "v3.trade_preferences"' in BUNDLE, "trade preferences split into independent store")
     old_store = section(BUNDLE, 'RegisterStore(Trade.storeId, "v3.life.trade"', 'RegisterStore(Trade.preferenceStoreId')
     require("schemaVersion" not in old_store, "historical trade registration still uses shared schema1 helper")
@@ -238,10 +243,51 @@ def main() -> int:
     quote_slice = section(BUNDLE, "local function ResolveTradeQuoteIdentity", "-- Diagnostics reads describe helpers")
     require('itemType, itemGrade = tonumber(material.itemType), tonumber(material.itemGrade)' in quote_slice,
             "material quote identity prefers projected itemType/itemGrade authority")
-    require('selected[#selected+1]={materialKey=materialKey,itemType=id,itemGrade=grade}' in quote_slice,
-            "material quote batch carries live material identities instead of static keys only")
+    require('selected[#selected+1]={materialKey=materialKey,itemType=id,itemGrade=grade,searchName=m.name}' in quote_slice,
+            "material quote batch carries live material identities and localized fallback names")
     require('self:QuoteMaterial(material,mode,batch)' in quote_slice,
             "material quote batch submits detached identity records")
+    require('local searchName=LocalizedTradeItemName(itemType,projectedName)' in quote_slice
+            and 'mode=="full" and LocalizedTradeItemName' not in quote_slice,
+            "basic row quote retains RU name-search fallback when GetLowestPrice returns nil")
+
+    # .18.299 quote-chain regressions from live .18.298 diagnostics.
+    require('refreshControls = function(instance, projection, rows, Feature)' in WIDGET
+            and 'local row = type(Feature.GetSelectedRow) == "function"' in WIDGET,
+            "trade HUD refresh receives Feature explicitly instead of indexing a nil global")
+    require('local rowScopedPending = rowBatch ~= nil and rowBatch.active == true and rowBatch.scope == "row"' in BUNDLE
+            and 'if hasQuotePending and not isIntentRow then' in BUNDLE,
+            "single-row quote pending indicator is scoped to the user-activated row")
+    require('FallbackIdentityMatchContractVersion = 1' in PRICE_QUOTE
+            and 'resultLimit = Q.fallbackSearchLimit' in PRICE_QUOTE
+            and 'if expected ~= nil and rowType ~= nil and rowType == expected then' in PRICE_QUOTE,
+            "auction-name fallback scans a bounded result set and prefers stable itemType identity")
+    require('local row, matchKind, matchIndex = SelectFallbackRow(rows, pending)' in PRICE_QUOTE
+            and 'rows[1]' not in section(PRICE_QUOTE, 'function Q:_CheckFallback()', 'local function RequeueFront'),
+            "quote fallback no longer assumes the first fuzzy-search result is the target")
+    drain = section(PRICE_QUOTE, 'local function Drain()', 'function Q:_FailPending')
+    require('request.fallbackState = "queued"' in PRICE_QUOTE
+            and 'Q.lastNativeCallAt = NowMs()' in drain
+            and 'BeginSearchFallback(pending)' in drain,
+            "GetLowestPrice and fallback SearchAuctionArticle remain on one paced quote lane")
+    require('MarketPriceHandshakeContractVersion = 1' in PRICE_QUOTE
+            and '"X2Auction:AskMarketPrice"' in drain
+            and 'pending.marketPriceState = "readback_queued"' in drain
+            and 'ReadLowestPrice(pending, grade, "after_ask")' in drain,
+            "explicit quote uses paced AskMarketPrice -> GetLowestPrice readback before name-search fallback")
+    require('local fromNameSearch = tostring(fresh.source or ""):find("^name_search_") ~= nil' in PRICE_QUOTE,
+            "name-search fallback prices remain labeled as reference rather than live lowest-price reads")
+    require('local n = ToMoney(row.directPrice)' in PRICE_QUOTE
+            and 'return math.floor(n), "name_search_direct"' in PRICE_QUOTE,
+            "fallback cost prefers immediately purchasable direct price over current bid")
+    require('1, 0, 0, 1, 0, options.exactMatch == true' in AUCTION_QUERY,
+            "auction name search does not retain the stale maxLevel=55 filter")
+    require('local function Money(value)' in AUCTION_QUERY
+            and 'local gold, silver, copper' in AUCTION_QUERY,
+            "auction result prices normalize numeric, formatted-string and money-table shapes centrally")
+    require('function Trade:DescribeQuoteState()' in BUNDLE
+            and '"DescribeQuoteState"' in DIAGNOSTICS,
+            "module diagnostics now expose quote queue and fallback-search failure evidence")
 
     # Automatic refresh is Demand-scoped and one-shot scheduled.
     require('requestAutoTask = "v3_trade_route_auto_refresh"' in BUNDLE, "auto refresh has dedicated scheduler task")
@@ -255,14 +301,34 @@ def main() -> int:
             "TableView exposes reusable adaptive-tail geometry")
     require('rowFitMode = kind == "trade" and "adaptive_tail" or "fixed"' in PAGE, "main trade table opts into adaptive tail")
     require('rowFitMode = spec.featureName == "Trade" and "adaptive_tail" or "fixed"' in WIDGET, "trade HUD table opts into adaptive tail")
-    require('local desiredRows = instance.overview and 6 or (spec.featureName == "Trade" and 7 or 10)' in WIDGET
+    require('local desiredRows = instance.overview and 6 or (spec.featureName == "Trade" and 6 or 10)' in WIDGET
             and 'local overscanRows = spec.featureName == "Trade" and 0 or 1' in WIDGET,
-            "trade HUD bounds its initial row pool to visible capacity")
+            "trade HUD bounds its initial row pool to visible capacity after restoring favorite controls")
     require('instance.viewSelector = RSUI:SegmentedSelector({' in WIDGET and 'instance.viewDropdown = RSUI:Dropdown({' not in WIDGET,
             "trade HUD fixed three-state view mode does not allocate a popup window")
-    trade_controls = section(WIDGET, 'featureName = "Trade"', 'refreshControls = function(instance, projection)')
+    trade_controls = section(WIDGET, 'featureName = "Trade"', 'refreshControls = function(instance, projection, rows, Feature)')
     require(trade_controls.count('maxVisible = 6') >= 3,
             "trade HUD route/favorite dropdown pools are bounded to six visible rows")
+    require('type(Feature.Commands.ToggleCurrentFavorite) ~= "function"' in trade_controls
+            and 'instance.favoriteButton = RSUI:Button({' in trade_controls
+            and 'Feature.Commands:ToggleCurrentFavorite()' in trade_controls,
+            "floating trade HUD restores add/remove current-route favorite through Feature Commands")
+    trade_refresh = section(WIDGET, 'refreshControls = function(instance, projection, rows, Feature)', 'selectable = true,')
+    require('projection.currentRouteFavorite == true and "移除收藏" or "添加收藏"' in trade_refresh,
+            "floating favorite button exposes explicit add/remove wording from projection authority")
+    refresh_body = section(WIDGET, 'local function RefreshBody', '-- overview 仅是显示密度')
+    require('LIFE_WIDGET_CONTROL_REFRESH_FAILED' in refresh_body and 'controlRefreshFailed' in refresh_body
+            and 'self.table:SetViewState("ready")' in refresh_body,
+            "life widget control refresh failure is isolated without masking an already-valid table projection")
+    dropdown_click = section(CONTROLS, 'for index, button in ipairs(c.optionButtons) do', 'local baseRelease = c.Release')
+    require('RSUI.DropdownCloseBeforeCommitContractVersion = 1' in CONTROLS
+            and dropdown_click.find('local closed, closeErr = c:Close()') < dropdown_click.find('c:SetSelectedValue(item.value, false, "dropdown")'),
+            "dropdown closes Native popup before synchronous binding/Feature mutation")
+    require('DropdownCloseBeforeCommitContractVersion' in CORE_GATE and 'DropdownContractVersion) or 0) >= 4' in CORE_GATE,
+            "foundation gate rejects old dropdown implementations that can reenter an open Native popup")
+    require('tradeFloatingFavoriteContractVersion' in ACCEPTANCE and 'tradeControlRefreshIsolationContractVersion' in ACCEPTANCE
+            and '(tonumber(lifeWidgets.version) or 0) < 8' in ACCEPTANCE,
+            "V3 acceptance requires the restored trade favorite and refresh-isolation presentation contracts")
     open_path = section(WIDGET, 'function instance:Show(context)', 'function instance:Hide(context)')
     require(open_path.find('self.surface:Show(true)') < open_path.find('refresh_after_show'),
             "trade widget commits Native visibility before first projection refresh")

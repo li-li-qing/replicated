@@ -161,32 +161,58 @@ Q.ResidentBond.MaterialByQuantity = {
     },
 }
 
+-- 中文维护注释（2026-09-24，原大陆居民板任务身份纠错）：当前 ArcheRage 数据库明确
+-- 10504/10505 是 Prince's Coinpurses，并非旧代码命名的 golden_bag；10512..10515 是
+-- Ancestor/Ancestral，而不是 heir。Quest ID 本身没有变化，所以用户完成状态兼容；这里只修正共享
+-- 语义 key，让 ResidentBoard 文本解析、背包 ItemType 和 QuestProgress 三条 Authority 能以同一身份汇合。
+-- 兼容边界：旧 key 在下方保留 alias，避免其他尚未迁移的模块/外部扩展因命名纠错直接失效。
 Q.ResidentBond.AuroriaByTokenQuantity = {
-    golden_bag = {
-        [30] = RegisterId("AURORIA_BOND_GOLDEN_BAG_30", 10504, nil, { "DAILY", "AURORIA_RESIDENT_BOND" }),
-        [90] = RegisterId("AURORIA_BOND_GOLDEN_BAG_90", 10505, nil, { "DAILY", "AURORIA_RESIDENT_BOND" }),
+    prince_purse = {
+        [30] = RegisterId("AURORIA_BOND_PRINCE_PURSE_30", 10504, "原大陆债券：王子的钱袋30", { "DAILY", "AURORIA_RESIDENT_BOND" }),
+        [90] = RegisterId("AURORIA_BOND_PRINCE_PURSE_90", 10505, "原大陆债券：王子的钱袋90", { "DAILY", "AURORIA_RESIDENT_BOND" }),
     },
-    prince_box = {
-        [10] = RegisterId("AURORIA_BOND_PRINCE_BOX_10", 10506, nil, { "DAILY", "AURORIA_RESIDENT_BOND" }),
-        [30] = RegisterId("AURORIA_BOND_PRINCE_BOX_30", 10507, nil, { "DAILY", "AURORIA_RESIDENT_BOND" }),
+    prince_crate = {
+        [10] = RegisterId("AURORIA_BOND_PRINCE_CRATE_10", 10506, "原大陆债券：王子的箱子10", { "DAILY", "AURORIA_RESIDENT_BOND" }),
+        [30] = RegisterId("AURORIA_BOND_PRINCE_CRATE_30", 10507, "原大陆债券：王子的箱子30", { "DAILY", "AURORIA_RESIDENT_BOND" }),
     },
-    queen_bag = {
-        [25] = RegisterId("AURORIA_BOND_QUEEN_BAG_25", 10508, nil, { "DAILY", "AURORIA_RESIDENT_BOND" }),
-        [75] = RegisterId("AURORIA_BOND_QUEEN_BAG_75", 10509, nil, { "DAILY", "AURORIA_RESIDENT_BOND" }),
+    queen_purse = {
+        [25] = RegisterId("AURORIA_BOND_QUEEN_PURSE_25", 10508, "原大陆债券：女王的钱袋25", { "DAILY", "AURORIA_RESIDENT_BOND" }),
+        [75] = RegisterId("AURORIA_BOND_QUEEN_PURSE_75", 10509, "原大陆债券：女王的钱袋75", { "DAILY", "AURORIA_RESIDENT_BOND" }),
     },
-    queen_box = {
-        [8] = RegisterId("AURORIA_BOND_QUEEN_BOX_8", 10510, nil, { "DAILY", "AURORIA_RESIDENT_BOND" }),
-        [25] = RegisterId("AURORIA_BOND_QUEEN_BOX_25", 10511, nil, { "DAILY", "AURORIA_RESIDENT_BOND" }),
+    queen_crate = {
+        [8] = RegisterId("AURORIA_BOND_QUEEN_CRATE_8", 10510, "原大陆债券：女王的箱子8", { "DAILY", "AURORIA_RESIDENT_BOND" }),
+        [25] = RegisterId("AURORIA_BOND_QUEEN_CRATE_25", 10511, "原大陆债券：女王的箱子25", { "DAILY", "AURORIA_RESIDENT_BOND" }),
     },
-    heir_bag = {
-        [20] = RegisterId("AURORIA_BOND_HEIR_BAG_20", 10512, nil, { "DAILY", "AURORIA_RESIDENT_BOND" }),
-        [60] = RegisterId("AURORIA_BOND_HEIR_BAG_60", 10513, nil, { "DAILY", "AURORIA_RESIDENT_BOND" }),
+    ancestor_purse = {
+        [20] = RegisterId("AURORIA_BOND_ANCESTOR_PURSE_20", 10512, "原大陆债券：祖先的钱袋20", { "DAILY", "AURORIA_RESIDENT_BOND" }),
+        [60] = RegisterId("AURORIA_BOND_ANCESTOR_PURSE_60", 10513, "原大陆债券：祖先的钱袋60", { "DAILY", "AURORIA_RESIDENT_BOND" }),
     },
-    heir_box = {
-        [7] = RegisterId("AURORIA_BOND_HEIR_BOX_7", 10514, nil, { "DAILY", "AURORIA_RESIDENT_BOND" }),
-        [20] = RegisterId("AURORIA_BOND_HEIR_BOX_20", 10515, nil, { "DAILY", "AURORIA_RESIDENT_BOND" }),
+    ancestor_crate = {
+        [7] = RegisterId("AURORIA_BOND_ANCESTOR_CRATE_7", 10514, "原大陆债券：祖先的箱子7", { "DAILY", "AURORIA_RESIDENT_BOND" }),
+        [20] = RegisterId("AURORIA_BOND_ANCESTOR_CRATE_20", 10515, "原大陆债券：祖先的箱子20", { "DAILY", "AURORIA_RESIDENT_BOND" }),
     },
 }
+Q.ResidentBond.AuroriaByTokenQuantity.golden_bag = Q.ResidentBond.AuroriaByTokenQuantity.prince_purse
+Q.ResidentBond.AuroriaByTokenQuantity.prince_box = Q.ResidentBond.AuroriaByTokenQuantity.prince_crate
+Q.ResidentBond.AuroriaByTokenQuantity.queen_bag = Q.ResidentBond.AuroriaByTokenQuantity.queen_purse
+Q.ResidentBond.AuroriaByTokenQuantity.queen_box = Q.ResidentBond.AuroriaByTokenQuantity.queen_crate
+Q.ResidentBond.AuroriaByTokenQuantity.heir_bag = Q.ResidentBond.AuroriaByTokenQuantity.ancestor_purse
+Q.ResidentBond.AuroriaByTokenQuantity.heir_box = Q.ResidentBond.AuroriaByTokenQuantity.ancestor_crate
+
+-- 中文维护注释（2026-09-24，注册表 key 升级兼容）：上面的 table alias 只能兼容直接消费
+-- AuroriaByTokenQuantity 的旧代码；历史扩展也可能通过 GameDataRegistry 的旧 semantic key 查询。
+-- 使用显式 RegisterAlias 继续保留 18.300 以前的 12 个 key，不产生 duplicate-ID warning，也不建立
+-- 第二 record Authority。新代码使用修正后的 purse/crate/ancestor key，旧 lookup 仍解析到同一 QuestId。
+for _, alias in ipairs({
+    { "AURORIA_BOND_GOLDEN_BAG_30", 10504 }, { "AURORIA_BOND_GOLDEN_BAG_90", 10505 },
+    { "AURORIA_BOND_PRINCE_BOX_10", 10506 }, { "AURORIA_BOND_PRINCE_BOX_30", 10507 },
+    { "AURORIA_BOND_QUEEN_BAG_25", 10508 }, { "AURORIA_BOND_QUEEN_BAG_75", 10509 },
+    { "AURORIA_BOND_QUEEN_BOX_8", 10510 }, { "AURORIA_BOND_QUEEN_BOX_25", 10511 },
+    { "AURORIA_BOND_HEIR_BAG_20", 10512 }, { "AURORIA_BOND_HEIR_BAG_60", 10513 },
+    { "AURORIA_BOND_HEIR_BOX_7", 10514 }, { "AURORIA_BOND_HEIR_BOX_20", 10515 },
+}) do
+    Registry:RegisterAlias("quest", alias[1], alias[2])
+end
 
 -- Activity quest sets ---------------------------------------------------------
 Q.Activity.halcy = {

@@ -70,13 +70,32 @@ local function Amount(info)
         return value ~= nil and math.max(1, math.floor(value)) or nil
     end)
 end
+local function Money(value)
+    -- 维护（2026-09-24，auction-money-normalize-1）：RU 的拍卖价格字段并不保证始终是裸 number；
+    -- 历史客户端会出现逗号分组字符串或 gold/silver/copper 复合表。AuctionQueryV3 是搜索结果字段
+    -- normalization Authority，应在这里一次归一为铜币 number，不能让各 Feature 各猜一次返回形状。
+    if type(value) == "number" then return value >= 0 and math.floor(value) or nil end
+    if type(value) == "string" then
+        local n = tonumber((value:gsub(",", ""):gsub("%s", "")))
+        return n ~= nil and n >= 0 and math.floor(n) or nil
+    end
+    if type(value) == "table" then
+        local gold, silver, copper = tonumber(value.gold or value.g), tonumber(value.silver or value.s), tonumber(value.copper or value.c)
+        if gold ~= nil or silver ~= nil or copper ~= nil then
+            local n = (gold or 0) * 10000 + (silver or 0) * 100 + (copper or 0)
+            return n >= 0 and math.floor(n) or nil
+        end
+        for _, key in ipairs({ "value", "amount", "price", "money" }) do
+            local n = Money(value[key]); if n ~= nil then return n end
+        end
+    end
+    return nil
+end
 local function Price(info, keys)
     return Nested(info, function(row)
         for _, key in ipairs(keys) do
-            local raw = row[key]
-            local n = tonumber(raw)
-            if n ~= nil and n >= 0 then return math.floor(n) end
-            if type(raw) == "string" and raw ~= "" then return raw end
+            local n = Money(row[key])
+            if n ~= nil then return n end
         end
         return nil
     end)
@@ -185,8 +204,12 @@ function Q:Search(requester, keyword, options)
     }
     self.snapshots[requester] = { requester = requester, keyword = keyword, exactMatch = options.exactMatch == true, status = "waiting", rows = {}, count = 0 }
     self:_Publish(requester)
+    -- 维护（2026-09-24，auction-search-native-shape-1）：公开 ArcheAge CustomUI 的官方制作书搜索按钮
+    -- 使用 SearchAuctionArticle(1, 0, 0, 1, 0, false, name)。maxLevel=0 表示不施加等级上限；
+    -- 旧值 55 会把名称搜索无意绑定到历史等级上限，未来物品/特殊条目存在被过滤风险。价格范围仍显式传 0/0，
+    -- 保持当前 RU 9 参数能力契约；这里仅修正过滤语义，不改变 AUCTION_ITEM_SEARCHED Authority。
     local ok, value, err = S.Api:CallCapability("X2Auction:SearchAuctionArticle", AuctionApi, "SearchAuctionArticle",
-        1, 0, 55, 1, 0, options.exactMatch == true, keyword, "0", "0")
+        1, 0, 0, 1, 0, options.exactMatch == true, keyword, "0", "0")
     if ok ~= true or value == false then
         local reason = tostring(err or "搜索请求被拒绝")
         self:_Complete("failed", {}, reason)

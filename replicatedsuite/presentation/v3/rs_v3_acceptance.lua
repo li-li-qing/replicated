@@ -572,11 +572,15 @@ function A:RunMatrix()
     local bondsWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.bonds") or nil
     local treasureWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.treasure") or nil
     local fishingWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.fishing") or nil
-    -- 中文维护注释（2026-09-16，生活悬浮窗 v6）：v6 同时要求寻宝“地图定位”和钓鱼 Auto-R 控制。
-    -- 两个子契约只验证 Presentation surface 已加载到同一版本，不创建窗口、不启动 Consumer、不执行 Native 动作；
-    -- 这样旧 rs_v3_life_economy_widgets.lua 与新 Feature 混载时会在启动验收阶段明确阻断，而不是留到玩家钓鱼/寻宝时才发现。
-    if type(lifeWidgets) ~= "table" or (tonumber(lifeWidgets.version) or 0) < 6
-        or (tonumber(lifeWidgets.bondsMultiContinentContractVersion) or 0) < 1
+    -- 中文维护注释（2026-09-24，生活悬浮窗 v8）：在 Trade/寻宝/钓鱼既有契约上，新增 Bonds
+    -- 原大陆 ResidentBoard family 与 3-Dropdown 控制契约。只读版本号，不创建窗口/Consumer/Native 查询；
+    -- 目的是在用户局部覆盖时立即阻断“新 Feature + 旧 Bonds Widget”的混载。
+    if type(lifeWidgets) ~= "table" or (tonumber(lifeWidgets.version) or 0) < 8
+        or (tonumber(lifeWidgets.tradeFloatingFavoriteContractVersion) or 0) < 1
+        or (tonumber(lifeWidgets.tradeControlRefreshIsolationContractVersion) or 0) < 1
+        or (tonumber(lifeWidgets.bondsMultiContinentContractVersion) or 0) < 3
+        or (tonumber(lifeWidgets.bondsDropdownControlsContractVersion) or 0) < 2
+        or (tonumber(lifeWidgets.bondsResidentBoardFamilyContractVersion) or 0) < 1
         or (tonumber(lifeWidgets.treasureMapLocationContractVersion) or 0) < 2
         or (tonumber(lifeWidgets.fishingFloatingAutoRContractVersion) or 0) < 1
         or type(tradeWidget) ~= "table" or tradeWidget.featureId ~= "life_trade"
