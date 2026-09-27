@@ -25,7 +25,7 @@ if type(Feature) ~= "table" or type(S.UI) ~= "table" or type(S.Events) ~= "table
 S.UIV3 = S.UIV3 or {}
 S.UIV3.BuffHeadMarkersV3 = S.UIV3.BuffHeadMarkersV3 or {}
 local P = S.UIV3.BuffHeadMarkersV3
-P.version = 12
+P.version = 13
 P.owner = "v3:buff_head_markers"
 P.consumerToken = "presentation:buff_head_markers"
 P.running = P.running == true
@@ -45,6 +45,8 @@ P.TargetDistanceStableSlotContractVersion = 1 -- .18.262：仅 Presentation 几�
 P.MirroredInfoSlotContractVersion = 1 -- .18.264：player/target 同 profile + 同 facts 必须得到同一 info 几何。
 P.IndependentHudSlotContractVersion = 1 -- .18.265：组件显隐/数据多少/兄弟尺寸不得改变其它组件的基础槽位。
 P.GearScoreFormatContractVersion = 1 -- .18.226：只格式化现有 Projection 数值，full/compact 不新增事实读取。
+P.TargetAliasHudContractVersion = 2 -- .18.322：目标别名升级为可独立校准的 target-only 固定语义槽；Renderer 仍只消费 Projection。
+-- Contract 11：目标别名是 target-only 固定语义槽，独立于 Info/Buff/Cast 几何；开关/名单变化只触发 Reconcile，不新增 Native 热路径。
 -- 维护（pvp-hud-1）：内容dirty与运动分离；指标固定规模，不保存/逐帧打印。
 P.PvpPatch = "pvp-hud-1"
 P.contentDirty = true
@@ -83,8 +85,11 @@ end
 -- Render gate: the head display starts when headEnabled and at least one
 -- component is enabled. Buff/debuff whitelist decisions stay in ProjectPlates;
 -- presentation never owns or bypasses tracking policy.
-local function HasRenderableComponents(settings)
+local function HasRenderableComponents(settings, scope)
     local components = type(settings.components) == "table" and settings.components or {}
+    -- 目标自定义名字是独立可见组件。只有 Store 已有至少一条且显示开关开启时才作为启动理由，
+    -- 空备注库不会额外持有 Renderer Consumer；位置采集由 Feature 同一 gate 配套开启。
+    if scope == "target" and type(Feature.IsTargetAliasHeadEnabled) == "function" and Feature:IsTargetAliasHeadEnabled() then return true end
     -- 中文维护注释：plate 是“原生血条代理锚点”，renderer 从不绘制它，不能把
     -- plate.enabled 当作启动理由；否则用户把所有可视组件关掉后仍会持有 Consumer，
     -- 进而让 Aura lane 因 consumerCount>0 继续运行。真正可见能力只由组件开关决定。
@@ -162,6 +167,16 @@ local function MakeInfo(scope)
         S.UI:SetVisible(classLabel, false, P.owner); S.UI:SetVisible(gearLabel, false, P.owner)
         return nil, distanceErr
     end
+    local aliasLabel = nil
+    if scope == "target" then
+        local aliasErr
+        aliasLabel, aliasErr = S.UI:CreateLabel(parent, "v3_buff_head_target_alias", "", 0, 0, 180, 18, 12, "strong", "CENTER", true)
+        if aliasLabel == nil then
+            S.UI:SetVisible(classLabel, false, P.owner); S.UI:SetVisible(gearLabel, false, P.owner); S.UI:SetVisible(distanceLabel, false, P.owner)
+            return nil, aliasErr
+        end
+        S.UI:SetVisible(aliasLabel, false, P.owner)
+    end
     S.UI:SetVisible(classLabel, false, P.owner); S.UI:SetVisible(gearLabel, false, P.owner); S.UI:SetVisible(distanceLabel, false, P.owner)
     -- 中文维护注释（HUD 基础信息拆分，2026-09-17）：旧实现只有一个拼接 label，导致职业名称、
     -- 装分和距离只能整体移动/改字号。这里仍保持每 scope 固定 3 个 pooled label，不在 50ms
@@ -171,8 +186,8 @@ local function MakeInfo(scope)
     local icon = iconRoot and iconRoot.CreateIconDrawable and iconRoot:CreateIconDrawable("artwork") or nil
     if iconRoot then S.UI:SetVisible(iconRoot, false, P.owner) end
     return {
-        root=classLabel, classTextRoot=classLabel, gearRoot=gearLabel, distanceRoot=distanceLabel,
-        classText="", gearText="", distanceText="", iconRoot=iconRoot, icon=icon,
+        root=classLabel, classTextRoot=classLabel, gearRoot=gearLabel, distanceRoot=distanceLabel, aliasRoot=aliasLabel,
+        classText="", gearText="", distanceText="", aliasText="", iconRoot=iconRoot, icon=icon,
     }
 end
 
@@ -246,6 +261,7 @@ local function HideScope(scope)
         if pool.info.classTextRoot then S.UI:SetVisible(pool.info.classTextRoot, false, P.owner) end
         if pool.info.gearRoot then S.UI:SetVisible(pool.info.gearRoot, false, P.owner) end
         if pool.info.distanceRoot then S.UI:SetVisible(pool.info.distanceRoot, false, P.owner) end
+        if pool.info.aliasRoot then S.UI:SetVisible(pool.info.aliasRoot, false, P.owner) end
         if pool.info.iconRoot then S.UI:SetVisible(pool.info.iconRoot, false, P.owner) end
     end
 end
@@ -350,6 +366,23 @@ end
 
 local function TextWidth(text, fontSize)
     return math.max(24, math.floor(#tostring(text or "") * (fontSize or 10) * 0.62) + 8)
+end
+
+-- 中文维护注释（2026-09-27，target-alias-hud-2）：自定义名字与职业名称/装分/距离一样是
+-- 独立 HUD 组件，但只属于 target。其几何只依赖目标血条中心、target plateScale 与自身 cfg，
+-- 兄弟组件显隐/行数/文字长度绝不能推动它。校准器和正式 Renderer 共用本纯函数，避免“预览一处、
+-- 实机另一处”。这里不访问 Store、不调用 Native API，也不分配持久缓存。
+function P.ComputeTargetAliasLayout(text, cfg, centerX, centerY, scale)
+    text = tostring(text or "")
+    cfg = type(cfg) == "table" and cfg or {}
+    scale = math.max(0.01, tonumber(scale) or 1)
+    local font = math.max(8, math.min(32, math.floor(N(cfg.fontSize, 12) * scale)))
+    local height = math.max(14, font + 5)
+    local width = math.min(360, math.max(48, TextWidth(text ~= "" and text or "自定义名字", font)))
+    local alpha = math.max(0.1, math.min(1, N(cfg.alpha, 1)))
+    local x = math.floor(N(centerX, 0) + N(cfg.x, 0) * scale - width / 2)
+    local y = math.floor(N(centerY, 0) + N(cfg.y, -94) * scale)
+    return { text=text, x=x, y=y, width=width, height=height, font=font, alpha=alpha, enabled=cfg.enabled ~= false }
 end
 
 local function ApplyIcon(marker, row, size, cfg, x, y, showStacks, showTime, scale)
@@ -871,6 +904,31 @@ local function RenderInfo(scope, plates, infoCfg, components, centerX, y, fontSi
     end
 end
 
+-- 目标自定义名字拥有独立 target-only 固定槽位；位置/字号/透明度由 HUD 校准器维护，
+-- 不再借用 info.x/info.y/fontSize。这样用户可以像职业名称、装分一样单独拖动它，同时名字显隐
+-- 不会改变任何兄弟组件几何。Renderer 只消费 Projection 中已脱离 Store 的 hud 快照。
+local function RenderTargetAlias(scope, plates, centerX, centerY, scale)
+    local pool = P.pools[scope]
+    local info = pool and pool.info or nil
+    local root = info and info.aliasRoot or nil
+    if root == nil then return end
+    local alias = scope == "target" and type(plates.alias) == "table" and plates.alias or nil
+    local text = alias and tostring(alias.value or "") or ""
+    local cfg = alias and type(alias.hud) == "table" and alias.hud or nil
+    local g = P.ComputeTargetAliasLayout(text, cfg, centerX, centerY, scale)
+    if text == "" or g.enabled ~= true then
+        info.aliasText = ""
+        S.UI:SetVisible(root, false, P.owner)
+        return
+    end
+    if info.aliasText ~= text then root:SetText(text); info.aliasText = text end
+    S.UI:SetFontSize(root, g.font, P.owner)
+    S.UI:SetAlpha(root, g.alpha, P.owner)
+    S.UI:SetExtent(root, g.width, g.height, P.owner)
+    Place(pool, root, g.x, g.y, g.width, g.height)
+    S.UI:SetVisible(root, true, P.owner)
+end
+
 local function RenderScope(scope, settings)
     local pool = P.pools[scope]
     if pool == nil then return end
@@ -949,6 +1007,7 @@ local function RenderScope(scope, settings)
             if info.iconRoot then S.UI:SetVisible(info.iconRoot, false, P.owner) end
         end
     end
+    RenderTargetAlias(scope, plates, bar.centerX, bar.centerY, scale)
 
     -- Cast bar owns a fixed semantic slot (hidden when not casting). Debuff
     -- rows can no longer move it; cfg.y remains the cast bar's only local Y
@@ -1049,7 +1108,7 @@ function P:VisualTick()
     local rendered = false
     for _, scope in ipairs(SCOPES) do
         local settings = ScopeSettings(scope)
-        if ScopeEnabled(scope, settings) and HasRenderableComponents(settings) then
+        if ScopeEnabled(scope, settings) and HasRenderableComponents(settings, scope) then
             RenderScope(scope, settings); rendered = true
         else HideScope(scope) end
     end
@@ -1061,8 +1120,8 @@ function P:Start()
     if self.running == true then return true end
     if not FeatureEnabled() then return false, "状态显示功能已关闭" end
     local settings = Settings()
-    local playerRenderable = settings.headPlayer ~= false and HasRenderableComponents(ScopeSettings("player"))
-    local targetRenderable = settings.headTarget ~= false and HasRenderableComponents(ScopeSettings("target"))
+    local playerRenderable = settings.headPlayer ~= false and HasRenderableComponents(ScopeSettings("player"), "player")
+    local targetRenderable = settings.headTarget ~= false and HasRenderableComponents(ScopeSettings("target"), "target")
     if settings.headEnabled == false or (playerRenderable ~= true and targetRenderable ~= true) then self:HideAll(); return true end
     local ok, err = self:EnsurePools(settings)
     if ok ~= true then return false, err end
@@ -1105,8 +1164,8 @@ end
 
 function P:Reconcile(reason)
     local settings = Settings()
-    local playerRenderable = settings.headPlayer ~= false and HasRenderableComponents(ScopeSettings("player"))
-    local targetRenderable = settings.headTarget ~= false and HasRenderableComponents(ScopeSettings("target"))
+    local playerRenderable = settings.headPlayer ~= false and HasRenderableComponents(ScopeSettings("player"), "player")
+    local targetRenderable = settings.headTarget ~= false and HasRenderableComponents(ScopeSettings("target"), "target")
     local shouldRun = FeatureEnabled() and settings.headEnabled ~= false and (playerRenderable or targetRenderable)
     if shouldRun then
         if self.running ~= true then return self:Start() end
@@ -1158,6 +1217,7 @@ if type(S.Events.SubscribeInternal) == "function" then
         if tostring(featureId or "") == "combat_buff_display" then P:Reconcile("feature_lifecycle") end
     end)
     S.Events:SubscribeInternal("v3.buff_display.settings", P.lifecycleOwner, function() P:Reconcile("settings_global") end)
+    S.Events:SubscribeInternal("v3.buff_display.target_alias.config", P.lifecycleOwner, function() P:Reconcile("target_alias_config") end)
 end
 
 -- Contract 6: health-bar proxy anchor layout via pure ComputePlateLayout;
@@ -1173,5 +1233,5 @@ end
 -- rendering and can no longer move any sibling component. Calibration consumes the same geometry.
 -- 中文维护（enemy-loadout-1）：目标武器/防具是可见 Buff 类型投影；现有布局/存档契约不变。
 P.TargetLoadoutPatch = "enemy-loadout-1"
-Feature.BuffHeadMarkerContractVersion = 10
+Feature.BuffHeadMarkerContractVersion = 11
 P:Reconcile("load")

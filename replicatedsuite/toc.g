@@ -119,6 +119,7 @@ services/rs_alerts_service.lua
 services/rs_screen_projection_v3.lua
 services/rs_auction_query_v3.lua
 services/rs_price_quote_queue_v3.lua
+services/rs_material_price_service_v3.lua
 services/rs_auction_surface_v3.lua
 services/rs_auction_search_bridge_v3.lua
 services/rs_auction_session_list_v3.lua
@@ -149,6 +150,7 @@ features/combat/healer/rs_healer_health_v3.lua
 features/combat/healer/rs_healer_screen_projection.lua
 features/combat/healer/rs_healer_feature.lua
 features/combat/buff_display/rs_buff_display_store.lua
+features/combat/buff_display/rs_buff_display_alias_store.lua
 features/combat/buff_display/rs_buff_display_projection.lua
 features/combat/buff_display/rs_buff_display_feature.lua
 features/combat/buff_display/rs_buff_display_management.lua
@@ -175,6 +177,7 @@ features/life/rs_life_m16_bundle.lua
 features/life/rs_daily_ledger.lua
 features/life/rs_daily_income_source.lua
 features/rs_business_bridge.lua
+features/tools/rs_feature_profiles_feature.lua
 features/tools/rs_hotkey_profiles_feature.lua
 features/combat/team_tools/rs_team_tools_visuals.lua
 -- 2026-09-15 用户删除“制作规划”：旧扩展文件不再进入 Runtime；tools_craft 仍由独立 surface extension 加载。
@@ -204,6 +207,7 @@ presentation/v3/widgets/rs_v3_activity_lists.lua
 presentation/v3/widgets/rs_v3_activity_widget.lua
 presentation/v3/widgets/rs_v3_task_widget.lua
 presentation/v3/widgets/rs_v3_gear_widget.lua
+presentation/v3/widgets/rs_v3_feature_profiles_widget.lua
 presentation/v3/widgets/rs_v3_death_review_widget.lua
 presentation/v3/widgets/rs_v3_dps_widget.lua
 presentation/v3/widgets/rs_v3_buff_display_widget.lua
@@ -237,6 +241,7 @@ presentation/v3/pages/rs_v3_activity_page.lua
 presentation/v3/pages/rs_v3_task_page.lua
 presentation/v3/pages/rs_v3_life_m16_pages.lua
 presentation/v3/pages/rs_v3_business_pages.lua
+presentation/v3/pages/rs_v3_feature_profiles_page.lua
 presentation/v3/pages/rs_v3_instance_page.lua
 presentation/v3/rs_v3_shell.lua
 presentation/v3/rs_v3_host.lua

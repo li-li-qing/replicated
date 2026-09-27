@@ -734,6 +734,16 @@ local registered, registerErr = Host:Register(WIDGET_ID, {
     opacityAdjustable = false, backgroundOpacityAdjustable = false, textOpacityAdjustable = false,
 })
 if registered ~= true then error(registerErr) end
+-- 中文维护注释（2026-09-25，feature-profile-lifecycle-1）：拍卖 Sidecar 虽注册在 WidgetHost，历史上
+-- 没有绑定 Feature 生命周期。功能方案 Disable 会清掉 tools_auction Demand，但可见 Sidecar 仍保存
+-- acquired=true；再次 Enable 后就可能不重新 Acquire。这里由 WidgetHost 在生命周期边沿统一 Hide/Show，
+-- preference 只组合“原生拍卖行仍可见 + 用户悬浮助手偏好”，不写 Store、不轮询 Native。
+local lifecycleBound, lifecycleErr = Host:BindFeatureLifecycle(WIDGET_ID, {
+    featureId = "tools_auction",
+    enabled = function() return S.FeatureRuntime ~= nil and S.FeatureRuntime:IsEnabled("tools_auction") == true end,
+    preference = function() return Controller.nativeVisible == true and SidecarPreferenceEnabled() == true end,
+})
+if lifecycleBound ~= true then error(lifecycleErr or "auction sidecar lifecycle bind failed") end
 
 local function OnSurface(snapshot)
     snapshot = type(snapshot) == "table" and snapshot or {}

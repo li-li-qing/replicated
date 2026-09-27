@@ -22,6 +22,9 @@ end
 local function BuildTaskPage(parent, route)
     local root, rootErr = D:PageRoot(parent, "v3_page_tasks")
     if root == nil then return nil, "页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
+    root.consumerHeld = false
+    local consumerBinding = { feature = Feature, featureId = "life_tasks", token = "page:tasks",
+        refresh = function(page) return page:Refresh() end }
     D:PageHeader(root, "v3_tasks_header", "任务追踪",
         "日常 / 周常共享同一份只读任务进度；先选中父任务，再点“加入追踪/取消追踪”自定义悬浮窗内容。点击父任务展开，点击子任务看详情。",
         "刷新", function()
@@ -158,27 +161,14 @@ local function BuildTaskPage(parent, route)
         local target = not enabled
         local ok, err = S.FeatureRuntime:SetPreferredEnabled("life_tasks", target, "task_page")
         if ok ~= true then return false, err end
-        if target then
-            local acquired, acquireErr = Feature:AcquireConsumer("page:tasks")
-            if acquired ~= true then
-                local rolledBack, rollbackErr = S.FeatureRuntime:SetPreferredEnabled("life_tasks", false, "task_page_consumer_rollback")
-                root:Refresh()
-                if rolledBack ~= true then
-                    return false, tostring(acquireErr or "任务页面 Consumer 启动失败") .. "；回滚失败：" .. tostring(rollbackErr or "unknown")
-                end
-                return false, acquireErr or "任务页面 Consumer 启动失败"
-            end
-            if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
-                S.Events:UnsubscribeInternalOwner(root)
-                S.Events:SubscribeInternal("v3.tasks.updated", root, function() root:Refresh() end)
-            end
-        else
-            -- FeatureRuntime:Disable already clears the feature Demand transactionally.
-            -- Avoid issuing a second Release against a token that no longer exists.
-            if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(root) end
+        local synced, syncErr = PageHost:SyncFeatureConsumer(root, consumerBinding, "task_page_toggle")
+        if synced ~= true and target == true then
+            local rolledBack, rollbackErr = S.FeatureRuntime:SetPreferredEnabled("life_tasks", false, "task_page_consumer_rollback")
+            root.consumerHeld = false; root:Refresh()
+            if rolledBack ~= true then return false, tostring(syncErr or "任务页面 Consumer 启动失败") .. "；回滚失败：" .. tostring(rollbackErr or "unknown") end
+            return false, syncErr or "任务页面 Consumer 启动失败"
         end
-        root:Refresh()
-        return true
+        return root:Refresh()
     end
     widgetButton.onClick = function()
         local visible = S.UIV3.WidgetHost and S.UIV3.WidgetHost:IsVisible("life.tasks") == true
@@ -243,24 +233,22 @@ local function BuildTaskPage(parent, route)
         return true
     end
 
-    function root:OnActivated()
-        local enabled = S.FeatureRuntime ~= nil and S.FeatureRuntime:IsEnabled("life_tasks") == true
-        if enabled then
-            local ok = Feature:AcquireConsumer("page:tasks")
-            if ok ~= true then return false end
-            if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
-                S.Events:UnsubscribeInternalOwner(self)
-                S.Events:SubscribeInternal("v3.tasks.updated", self, function() root:Refresh() end)
-            end
-        end
-        self:Refresh()
+    function root:BindUpdates()
+        if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then return false, "内部事件总线不可用" end
+        if type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
+        if S.Events:SubscribeInternal("v3.tasks.updated", self, function() root:Refresh() end) ~= true then return false, "任务页面更新事件订阅失败" end
+        local ok, err = PageHost:BindFeatureConsumerLifecycle(self, consumerBinding)
+        if ok ~= true then S.Events:UnsubscribeInternalOwner(self); return false, err end
         return true
+    end
+    function root:OnActivated()
+        local bound, bindErr = self:BindUpdates(); if bound ~= true then return false, bindErr end
+        return PageHost:SyncFeatureConsumer(self, consumerBinding, "page_activated")
     end
 
     function root:OnDeactivated()
         if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
-        Feature:ReleaseConsumer("page:tasks")
-        return true
+        return PageHost:ReleaseFeatureConsumer(self, consumerBinding, "page_deactivated")
     end
 
     function root:RefreshData(dirty)

@@ -53,6 +53,11 @@ local function BuildPage(parent, route)
     if loaded ~= true then return nil, "团队战备设置读取失败：" .. tostring(loadErr or "未知错误") end
     local root, rootErr = D:PageRoot(parent, "v3_page_raid_readiness")
     if root == nil then return nil, "页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
+    root.consumerHeld = false
+    -- 中文维护注释（2026-09-25，feature-profile-lifecycle-1）：战备页 lease 跟随当前页面，而不是功能方案
+    -- 的生命周期 Authority。Disable 已由 Feature 清空 Demand；页面只同步事实，Enable 后再按当前可见性恢复。
+    local consumerBinding = { feature = Feature, featureId = "combat_raid_readiness", token = "page:raid_readiness",
+        refresh = function(page) return page:Refresh() end }
 
     D:PageHeader(root, "v3_raid_readiness_header", "团队中心", -- 中文维护注释：战备页的页面抬头归属团队中心，避免用户误以为进入了另一个主模块。
         "团队管理、战备检查、招募与攻城准备共用同一入口；子功能保持独立生命周期与按需资源。") -- 中文维护注释：文案明确视觉共入口不等于业务强耦合，战备扫描仍按需启动。
@@ -237,12 +242,12 @@ local function BuildPage(parent, route)
             local target = not enabled
             local ok, err = S.FeatureRuntime:SetPreferredEnabled("combat_raid_readiness", target, "raid_readiness_page")
             if ok ~= true then return false, err end
-            if target then
-                local acquired, acquireErr = Feature:AcquireConsumer("page:raid_readiness")
-                if acquired ~= true then
-                    S.FeatureRuntime:SetPreferredEnabled("combat_raid_readiness", false, "raid_readiness_consumer_rollback")
-                    return false, acquireErr
-                end
+            local synced, syncErr = PageHost:SyncFeatureConsumer(root, consumerBinding, "raid_readiness_page_toggle")
+            if synced ~= true and target == true then
+                local rolledBack, rollbackErr = S.FeatureRuntime:SetPreferredEnabled("combat_raid_readiness", false, "raid_readiness_consumer_rollback")
+                root.consumerHeld = false; root:Refresh()
+                if rolledBack ~= true then return false, tostring(syncErr or "团队战备 Consumer 启动失败") .. "；回滚失败：" .. tostring(rollbackErr or "unknown") end
+                return false, syncErr or "团队战备 Consumer 启动失败"
             end
             root:Refresh()
             return true, target and "团队战备检查已启用" or "团队战备检查已关闭"
@@ -284,6 +289,8 @@ local function BuildPage(parent, route)
                 return false, "页面事件订阅失败：" .. tostring(topicRef)
             end
         end
+        local lifecycleOk, lifecycleErr = PageHost:BindFeatureConsumerLifecycle(self, consumerBinding)
+        if lifecycleOk ~= true then S.Events:UnsubscribeInternalOwner(self); return false, lifecycleErr end
         return true
     end
 
@@ -292,13 +299,10 @@ local function BuildPage(parent, route)
         if loaded ~= true then return false, loadErr end
         local subscribed, subscribeErr = self:Subscribe()
         if subscribed ~= true then return false, subscribeErr end
-        local enabled = S.FeatureRuntime ~= nil and S.FeatureRuntime:IsEnabled("combat_raid_readiness") == true
-        if enabled then
-            local ok, err = Feature:AcquireConsumer("page:raid_readiness")
-            if ok ~= true then
-                S.Events:UnsubscribeInternalOwner(self)
-                return false, err
-            end
+        local synced, syncErr = PageHost:SyncFeatureConsumer(self, consumerBinding, "page_activated")
+        if synced ~= true then
+            S.Events:UnsubscribeInternalOwner(self)
+            return false, syncErr
         end
         self:Refresh()
         return true
@@ -307,8 +311,7 @@ local function BuildPage(parent, route)
     function root:OnDeactivated()
         if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
         Feature.Commands:CancelScan("page_deactivated")
-        Feature:ReleaseConsumer("page:raid_readiness")
-        return true
+        return PageHost:ReleaseFeatureConsumer(self, consumerBinding, "page_deactivated")
     end
 
     root.route = route

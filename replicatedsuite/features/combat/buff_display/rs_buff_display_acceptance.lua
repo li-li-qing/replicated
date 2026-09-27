@@ -111,7 +111,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or type(F.GetProjection) ~= "function" or type(F.GetSettingsProjection) ~= "function"
         or type(F.RefreshScope) ~= "function" or type(F.Refresh) ~= "function"
         or type(F.AcquireConsumer) ~= "function" or type(F.ReleaseConsumer) ~= "function"
-        or tonumber(F.SchemaVersion) ~= 8 or (tonumber(F.ProjectPlatesContractVersion) or 0) < 4
+        or tonumber(F.SchemaVersion) ~= 8 or (tonumber(F.ProjectPlatesContractVersion) or 0) < 7
         or (tonumber(F.LayoutAuthorityContractVersion) or 0) < 3
         or (tonumber(F.HudCalibrationContractVersion) or 0) < 1
         or (tonumber(F.HudLayoutStoreContractVersion) or 0) < 1
@@ -132,6 +132,13 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or (tonumber(F.Schema7GearScoreFormatMigrationContractVersion) or 0) < 1
         or (tonumber(F.Schema8TrackingScopeMigrationContractVersion) or 0) < 1
         or (tonumber(F.TargetDefaultTemplateContractVersion) or 0) < 1
+        or (tonumber(F.TargetAliasStoreContractVersion) or 0) < 2
+        or type(F.EnsureTargetAliasStoreLoaded) ~= "function"
+        or type(F.ResolveTargetAlias) ~= "function"
+        or type(F.GetCurrentTargetAliasEditorSnapshot) ~= "function"
+        or (tonumber(F.TargetAliasHudCalibrationContractVersion) or 0) < 1
+        or type(F.GetTargetAliasHudConfigProjection) ~= "function"
+        or type(F.PersistTargetAliasHudCalibration) ~= "function"
         or (tonumber(F.GearScoreApiContractVersion) or 0) < 1
         or type(S.Utils) ~= "table" or (tonumber(S.Utils.GearScoreParseContractVersion) or 0) < 1
         or type(S.Utils.ParseGearScore) ~= "function"
@@ -144,6 +151,12 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or type(F.Commands.GetWidgetVisible) ~= "function" or type(F.Commands.SetWidgetVisible) ~= "function"
         or type(F.Commands.SetTrackedChannel) ~= "function" or type(F.Commands.SetTrackedId) ~= "function" or type(F.Commands.ClearTrackedIds) ~= "function"
         or type(F.Commands.ResetLayoutSettings) ~= "function"
+        or type(F.Commands.GetCurrentTargetAlias) ~= "function"
+        or type(F.Commands.SaveCurrentTargetAlias) ~= "function"
+        or type(F.Commands.RemoveCurrentTargetAlias) ~= "function"
+        or type(F.Commands.SetTargetAliasDisplayEnabled) ~= "function"
+        or type(F.Commands.GetDefaultTargetAliasHudConfig) ~= "function"
+        or type(F.Commands.PersistTargetAliasHudCalibration) ~= "function"
         or type(F.Commands.SetComponentField) ~= "function" or type(F.Commands.ImportTrackedIds) ~= "function"
         or type(F.Commands.GetLayoutSettingsSnapshot) ~= "function"
         or type(F.Commands.GetDefaultLayoutSettingsSnapshot) ~= "function"
@@ -154,7 +167,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or type(F.Commands.PersistLayoutSettingsSnapshot) ~= "function"
         or type(F.Commands.ExportAll) ~= "function" or type(F.Commands.SerializeExport) ~= "function"
         or type(F.Commands.ParseImportText) ~= "function" or type(F.Commands.ImportAll) ~= "function"
-        or (tonumber(F.BuffHeadMarkerContractVersion) or 0) < 10 then return false, "feature_contract" end
+        or (tonumber(F.BuffHeadMarkerContractVersion) or 0) < 11 then return false, "feature_contract" end
     -- 中文维护注释：schema8 必须同包加载 scope Store、管理投影与文本格式 v3；否则半覆盖会
     -- 把 player/target 六通道压回旧全局白名单。这里只检查声明与纯读能力，不写 Store/不取 Consumer。
     local catalog=S.Data and S.Data.StatusTrackingCatalogV3
@@ -178,6 +191,8 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or (tonumber(headMarkers.LiveHudSuppressionContractVersion) or 0) < 1
         or (tonumber(headMarkers.EquipmentIndependentOffsetContractVersion) or 0) < 1
         or (tonumber(headMarkers.IndependentHudSlotContractVersion) or 0) < 1
+        or (tonumber(headMarkers.TargetAliasHudContractVersion) or 0) < 2
+        or type(headMarkers.ComputeTargetAliasLayout) ~= "function"
         or type(headMarkers.SetCalibrationSuppressed) ~= "function" then return false, "head_marker_gate_contract" end
     -- 中文维护注释（HUD 校准交互契约 v3）：.18.206 在方向适配/面板拖动基础上增加全局位置预览，
     -- 并要求正式 Renderer 支持仅 Presentation 层的校准隐藏。Acceptance 只检查声明能力，不创建
@@ -186,8 +201,8 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     -- .18.207 继续要求 equipment local-offset 与 HUD_TEMPLATE_V1 Draft snapshot 两个能力；前者防止
     -- 主手/副手/远程位置串联，后者只读校准 Draft 并分行输出，不取得新的 Consumer、不写 Store。
     local calibration = S.UIV3 and S.UIV3.BuffHudCalibrationV3 or nil
-    if type(calibration) ~= "table" or (tonumber(calibration.version) or 0) < 3
-        or (tonumber(F.HudCalibrationPresentationContractVersion) or 0) < 7
+    if type(calibration) ~= "table" or (tonumber(calibration.version) or 0) < 5
+        or (tonumber(F.HudCalibrationPresentationContractVersion) or 0) < 8
         or (tonumber(calibration.GearScoreFormatCalibrationContractVersion) or 0) < 1
         or (tonumber(calibration.DiagnosticsContractVersion) or 0) < 4
         or (tonumber(calibration.ScreenCoordinateAdapterContractVersion) or 0) < 1
@@ -196,14 +211,17 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or (tonumber(calibration.GlobalPreviewContractVersion) or 0) < 1
         or (tonumber(calibration.LiveHudSuppressionContractVersion) or 0) < 1
         or (tonumber(calibration.IndependentHudSlotPreviewContractVersion) or 0) < 1
+        or (tonumber(calibration.TargetAliasCalibrationContractVersion) or 0) < 1
         or (tonumber(calibration.TemplateSnapshotContractVersion) or 0) < 1
         or type(calibration.BuildTemplateSnapshotLines) ~= "function" or type(calibration.OutputTemplateSnapshot) ~= "function"
         or type(calibration.ToggleGlobalPreview) ~= "function"
         or type(calibration.Open) ~= "function" or type(calibration.Exit) ~= "function"
         or type(calibration.SetScope) ~= "function" or type(calibration.SetComponent) ~= "function"
+        or type(calibration.SaveAliasName) ~= "function" or type(calibration.DeleteAliasName) ~= "function"
         or type(calibration.SyncPlayerToTarget) ~= "function" or type(calibration.GetDraftSnapshot) ~= "function"
         or type(calibration.GetDiagnostics) ~= "function"
-        or (tonumber(F.HudLayoutPageMeasureContractVersion) or 0) < 1 then
+        or (tonumber(F.HudLayoutPageMeasureContractVersion) or 0) < 1
+        or (tonumber(F.TargetAliasPageContractVersion) or 0) < 2 then
         return false, "hud_calibration_presentation_contract"
     end
     local aura = S.Services and S.Services.AuraObservationV3 or nil

@@ -61,6 +61,7 @@ local function BuildPage(parent, route)
     local root, err = D:PageRoot(parent, "v3_page_housing")
     if root == nil then return nil, err end
     root.consumerHeld = false
+    local consumerBinding = { feature = Feature, featureId = "life_housing", token = "page:housing", refresh = function(page) return page:Refresh() end }
     D:PageHeader(root, "v3_housing_header", "住宅 / 税务", "仅在当前住宅上下文按需读取名称、类型、所有者与税务信息；不会执行住宅写操作。", "刷新", function()
         local refreshed, refreshErr = Feature.Commands:Refresh("housing_page_manual")
         if refreshed == true then root:Refresh() end
@@ -95,41 +96,30 @@ local function BuildPage(parent, route)
         local target = S.FeatureRuntime:IsEnabled("life_housing") ~= true
         local changed, changeErr = S.FeatureRuntime:SetPreferredEnabled("life_housing", target, "housing_page_toggle")
         if changed ~= true then return false, changeErr end
-        if target then
-            local acquired, acquireErr = Feature:AcquireConsumer("page:housing")
-            if acquired ~= true then
-                local rolledBack, rollbackErr = S.FeatureRuntime:SetPreferredEnabled("life_housing", false, "housing_page_acquire_rollback")
-                root.consumerHeld = false
-                root:Refresh()
-                if rolledBack ~= true then return false, tostring(acquireErr or "Consumer 启动失败") .. "；回滚失败：" .. tostring(rollbackErr or "unknown") end
-                return false, acquireErr
-            end
-            root.consumerHeld = true
-        else
-            root.consumerHeld = false
+        local synced, syncErr = PageHost:SyncFeatureConsumer(root, consumerBinding, "housing_page_toggle")
+        if synced ~= true and target == true then
+            local rolledBack, rollbackErr = S.FeatureRuntime:SetPreferredEnabled("life_housing", false, "housing_page_acquire_rollback")
+            root.consumerHeld = false; root:Refresh()
+            if rolledBack ~= true then return false, tostring(syncErr or "Consumer 启动失败") .. "；回滚失败：" .. tostring(rollbackErr or "unknown") end
+            return false, syncErr
         end
-        root:Refresh()
+        return root:Refresh()
+    end
+    function root:BindUpdates()
+        if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then return false, "内部事件总线不可用" end
+        if type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
+        if S.Events:SubscribeInternal("v3.housing.updated", self, function() if root.Refresh then root:Refresh() end end) ~= true then return false, "页面更新事件订阅失败" end
+        local ok, err = PageHost:BindFeatureConsumerLifecycle(self, consumerBinding)
+        if ok ~= true then S.Events:UnsubscribeInternalOwner(self); return false, err end
         return true
     end
     function root:OnActivated()
-        if S.FeatureRuntime:IsEnabled("life_housing") ~= true then self.consumerHeld = false; return self:Refresh() end
-        local acquired, acquireErr = Feature:AcquireConsumer("page:housing")
-        if acquired ~= true then return false, acquireErr end
-        self.consumerHeld = true
-        if S.Events and type(S.Events.SubscribeInternal) == "function" and not self.eventSub then
-            self.eventSub = S.Events:SubscribeInternal("v3.housing.updated", root, function()
-                if root.Refresh then root:Refresh() end
-            end)
-        end
-        return self:Refresh()
+        local bound, bindErr = self:BindUpdates(); if bound ~= true then return false, bindErr end
+        return PageHost:SyncFeatureConsumer(self, consumerBinding, "page_activated")
     end
     function root:OnDeactivated()
-        if self.consumerHeld then Feature:ReleaseConsumer("page:housing"); self.consumerHeld = false end
-        if S.Events and type(S.Events.UnsubscribeInternal) == "function" then
-            S.Events:UnsubscribeInternal("v3.housing.updated", root)
-            self.eventSub = nil
-        end
-        return true
+        if S.Events and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
+        return PageHost:ReleaseFeatureConsumer(self, consumerBinding, "page_deactivated")
     end
     root.route = route
     return root

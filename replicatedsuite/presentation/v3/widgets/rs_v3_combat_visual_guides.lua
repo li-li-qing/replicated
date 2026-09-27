@@ -19,13 +19,15 @@ if type(UnitFeature) ~= "table" or type(RangeFeature) ~= "table" then return end
 S.UIV3 = S.UIV3 or {}
 S.UIV3.CombatVisualGuidesV3 = S.UIV3.CombatVisualGuidesV3 or {}
 local P = S.UIV3.CombatVisualGuidesV3
-P.version = 14
+P.version = 15
 P.RawViewportSamplingContractVersion = 1
 P.UnitAnchorAcceptanceContractVersion = 1
 P.ScreenCoordinateAuthorityContractVersion = 1
 P.UnitLineRawProjectedAnchorContractVersion = 2
 P.ScreenToOverlayHostContractVersion = 1
 P.ResolutionIndependentOverlayContractVersion = 1
+P.UiEnvironmentStyleRecoveryContractVersion = 1
+P.ManualPointTypographyContractVersion = 1
 P.owner = "v3:combat_visual_guides"
 P.unitToken = "presentation:unit_lines"
 P.rangeToken = "presentation:range_assist"
@@ -252,6 +254,69 @@ P.UnitLinePressureBudgetContractVersion = 1
 P.UnitLineDiffRenderContractVersion = 1
 P.RangeDiffRenderContractVersion = 1
 P.UnitLineProgressivePoolContractVersion = 1
+
+-- 维护（2026-09-24，visual-guide-resolution-style-recovery-1）：范围点/连线点虽然使用 LABEL
+-- 作为可靠的 RU Native 绘制载体，但它们的 fontSize 语义是“点直径”，不是普通页面字体。
+-- CreateLabel 会登记 rsBaseFontSize=15；若继续交给 Theme:RefreshTypography，切分辨率/画质时
+-- Theme 会按普通字体 10..24 上限把已配置的 16..82px 点重置成小号。这里明确把 Typography
+-- Authority 交给 VisualGuide Presenter；普通 Label 默认仍由 Theme 管理，不扩大 opt-out 范围。
+local function AdoptManualPointTypography(widget)
+    if widget == nil then return false end
+    widget.rsManualTypography = true
+    widget.rsVisualGuidePoint = true
+    return true
+end
+
+local function NativeFontCacheMatches(widget, size)
+    local cache = S.UI and S.UI.NativeStateCache or nil
+    if type(cache) ~= "table" then return nil end
+    local row = cache[widget]
+    if type(row) ~= "table" then return false end
+    return tonumber(row.fontSize) == tonumber(size)
+end
+
+local function InvalidateVisualDot(dot)
+    if type(dot) ~= "table" or dot.root == nil then return 0 end
+    -- Presenter 与 RSUI 各有一层 diff cache；只清其中一层会让另一层继续把失真的 Native
+    -- 状态当成“已应用”。UI 环境边沿是低频事件，因此这里可以一次性清完整 Native cache，
+    -- 下一次正常 Feature projection 刷新会重放 anchor/font/color/visible，无需额外 Tick。
+    dot.renderState = {}
+    if S.UI ~= nil and type(S.UI.InvalidateNativeState) == "function" then
+        S.UI:InvalidateNativeState(dot.root)
+    end
+    AdoptManualPointTypography(dot.root)
+    return 1
+end
+
+function P:InvalidateVisualDotPresentation(reason)
+    local count = 0
+    for _, pool in pairs(type(self.unitPools) == "table" and self.unitPools or {}) do
+        for _, dot in ipairs(pool) do count = count + InvalidateVisualDot(dot) end
+    end
+    for _, pool in pairs(type(self.rangePools) == "table" and self.rangePools or {}) do
+        for _, dot in ipairs(pool) do count = count + InvalidateVisualDot(dot) end
+    end
+    self.styleRecoveryCount = (tonumber(self.styleRecoveryCount) or 0) + 1
+    self.lastStyleRecovery = { reason = tostring(reason or "ui_environment_changed"), dots = count, at = S.NowMs and S.NowMs() or 0 }
+    return count
+end
+
+function P:SyncUiEnvironmentRevision()
+    local revision, reason = 0, "unknown"
+    if S.Layout ~= nil and type(S.Layout.GetUiEnvironmentRevision) == "function" then
+        revision, reason = S.Layout:GetUiEnvironmentRevision()
+    elseif S.Layout ~= nil then
+        revision = tonumber(S.Layout.metricsRevision) or 0
+        reason = "metrics_revision_fallback"
+    end
+    revision = tonumber(revision) or 0
+    if self.lastUiEnvironmentRevision == revision then return false end
+    local previous = self.lastUiEnvironmentRevision
+    self.lastUiEnvironmentRevision = revision
+    self:InvalidateVisualDotPresentation("ui_environment:" .. tostring(reason or "unknown") .. ":" .. tostring(previous or "nil") .. ">" .. tostring(revision))
+    return true
+end
+
 function P:EnsureUnitPairPool(pairKey, count, growthLimit)
     pairKey=tostring(pairKey or "target")
     count=math.max(0,math.min(UNIT_LINE_PAIR_HARD_CAP,math.floor(tonumber(count) or 0)))
@@ -274,6 +339,7 @@ function P:EnsureUnitPairPool(pairKey, count, growthLimit)
         -- offsets the glyph from the anchor point.
         local dot,dotErr=S.UI:CreateLabel(host,"v3_visual_unit_"..pairKey.."_dot_"..tostring(index),".",0,0,1,1,15,"strong","CENTER",false)
         if dot==nil then return nil,dotErr end
+        AdoptManualPointTypography(dot)
         local row={root=dot,drawable=nil,label=true,renderState={visible=false}}; pool[index]=row
         S.UI:SetVisible(dot,false,self.owner)
         created=created+1
@@ -322,6 +388,7 @@ function P:EnsurePool(kind, count)
             -- EnsureUnitPairPool; easypull/rp_ui both draw '.' labels).
             local dot, dotErr = S.UI:CreateLabel(host, "v3_visual_" .. kind .. "_dot_" .. tostring(index), ".", 0, 0, 1, 1, 15, "strong", "CENTER", false)
             if dot == nil then return false, dotErr end
+            AdoptManualPointTypography(dot)
             row={root=dot,drawable=nil,label=true}; pool[index]=row
             S.UI:SetVisible(dot, false, self.owner)
         end
@@ -346,6 +413,7 @@ function P:EnsureRangePool(circleKey, count)
         if type(row) ~= "table" or row.root == nil then
             local dot, dotErr = S.UI:CreateLabel(host, "v3_visual_range_" .. key .. "_dot_" .. tostring(index), ".", 0, 0, 1, 1, 15, "strong", "CENTER", false)
             if dot == nil then return nil, dotErr end
+            AdoptManualPointTypography(dot)
             row = { root = dot, drawable = nil, label = true }; pool[index] = row
             S.UI:SetVisible(dot, false, self.owner)
         end
@@ -444,7 +512,10 @@ function P:PlaceUnitDot(dot, x, y, size, opacity, pairKey, r, g, b, hostTransfor
         if accepted~=true then self:SetUnitDotVisible(dot,false);return 0,0,0,false end
         state.x,state.y=px,py;anchorWrites=changed==true and 1 or 0
     end
-    if state.size~=size then
+    local nativeFontMatches = NativeFontCacheMatches(dot.root, size)
+    if state.size~=size or nativeFontMatches == false then
+        -- 本地 renderState 与 RSUI NativeStateCache 必须同时命中才允许跳过。Theme/外部 UI
+        -- 环境若改写过 Native fontSize，RSUI cache 会暴露差异；环境 revision 失效则两层都清空。
         S.UI:SetFontSize(dot.root,size,self.owner)
         state.size=size; styleWrites=styleWrites+1
     end
@@ -477,7 +548,8 @@ function P:PlaceDot(dot, x, y, size, opacity, kind, pairKey, r, g, b, hostTransf
         if accepted~=true then self:SetDotVisible(dot,false);return false end
         state.x,state.y=px,py
     end
-    if state.size~=size then S.UI:SetFontSize(dot.root,size,self.owner);state.size=size end
+    local nativeFontMatches = NativeFontCacheMatches(dot.root, size)
+    if state.size~=size or nativeFontMatches == false then S.UI:SetFontSize(dot.root,size,self.owner);state.size=size end
     if state.r~=cr or state.g~=cg or state.b~=cb or state.a~=alpha then
         S.UI:SetColor(dot.root,cr,cg,cb,alpha,self.owner)
         state.r,state.g,state.b,state.a=cr,cg,cb,alpha
@@ -494,6 +566,7 @@ end
 -- 1:1; all projection/calibration authority remains in ScreenProjectionV3.
 
 function P:RenderUnit()
+    self:SyncUiEnvironmentRevision()
     -- 维护：先清本帧telemetry再处理空集/关闭，否则上次“176点”在目标消失后仍被报告为可见。
     -- 无跨帧单位缓存；仅有界Native池复用，禁用时隐藏且Feature释放自己的刷新任务。
     self.lastUnitSampling={inputEdges=0,visibleEdges=0,visibleDots=0,uniquePositions=0,requestedDots=0,clippedEdges=0,outsideEdges=0,invalidEdges=0}
@@ -568,6 +641,7 @@ function P:RenderUnit()
 end
 
 function P:RenderRange()
+    self:SyncUiEnvironmentRevision()
     if self.rangeHeld ~= true then self:HideRangePools(); S.UI:SetVisible(self.rangeHost,false,self.owner); return true end
     local projection=RangeFeature:GetProjection() or {}; local rows=type(projection.rows)=="table" and projection.rows or {}
     local active, renderedCircles, totalDots = {}, 0, 0
@@ -698,6 +772,8 @@ function P:Describe()
         unitVisibleDots=tonumber(sample.visibleDots) or 0,unitRequestedDots=tonumber(sample.requestedDots) or 0,unitVisibleEdges=tonumber(sample.visibleEdges) or 0,unitClippedEdges=tonumber(sample.clippedEdges) or 0,unitBudget=tonumber(sample.budget) or 0,unitPressure=tostring(sample.pressure or "Normal"),unitPoolGrowth=tonumber(sample.poolGrowth) or 0,unitAnchorWrites=tonumber(sample.anchorWrites) or 0,unitStyleWrites=tonumber(sample.styleWrites) or 0,unitVisibilityWrites=tonumber(sample.visibilityWrites) or 0,
         rangeDots=RangePoolDotCount(self.rangePools),rangeCircles=tonumber(rangeSample.circles) or 0,rangeEnabledCircles=tonumber(rangeSample.enabledCircles) or 0,rangeConfiguredCircles=tonumber(rangeSample.totalCircles) or 0,
         lastLifecycle=self.lastLifecycle,reconcileRuns=tonumber(self.reconcileRuns) or 0,watchdogTicks=tonumber(self.watchdogTicks) or 0,
+        uiEnvironmentRevision=tonumber(self.lastUiEnvironmentRevision) or 0,styleRecoveryCount=tonumber(self.styleRecoveryCount) or 0,lastStyleRecovery=self.lastStyleRecovery,
+        manualPointTypographyContract=tonumber(self.ManualPointTypographyContractVersion) or 0,uiEnvironmentStyleRecoveryContract=tonumber(self.UiEnvironmentStyleRecoveryContractVersion) or 0,
         acquireAttempts={unit=tonumber(self.acquireAttempts and self.acquireAttempts.unit) or 0,range=tonumber(self.acquireAttempts and self.acquireAttempts.range) or 0},
         lastAcquireError=self.lastAcquireError
     }

@@ -64,6 +64,17 @@ Test('explicit NumericInput refocus restores same draft and Apply commits once',
     assert(c:HasDraftSession()==false,'committed draft session leaked')
 end)
 
+Test('TextInput action read sees visible draft before LostFocus commits Binding',function()
+    local h,c,state=NewInput('text','draft_v2_text_action','',{draftCommitMode='blur'})
+    assert(type(c.GetActionValue)=='function','GetActionValue API missing')
+    assert(c:BeginEditing('test'))
+    c.root.text='生活方案'
+    local authority,writes=state()
+    assert(authority=='' and writes==0,'fixture committed before button action')
+    assert(c:GetValue()=='','GetValue must remain committed Binding authority')
+    assert(c:GetActionValue()=='生活方案','button action did not see visible draft')
+end)
+
 Test('explicit TextInput lost focus preserves draft instead of restore Authority',function()
     local h,c,state=NewInput('text','draft_v2_text_explicit','原值',{submitOnLostFocus=false})
     assert(c:BeginEditing('test'))

@@ -66,10 +66,22 @@ local function FindZoneIdInText(text)
     text = tostring(text or "")
     local bestId, bestLen = nil, 0
     local byId = S.GameIds and S.GameIds.Zone and S.GameIds.Zone.ById or nil
-    for zoneId, zone in pairs(type(byId) == "table" and byId or {}) do
-        local name = type(zone) == "table" and tostring(zone.nameZh or "") or ""
+    local function Consider(zoneId, candidate)
+        local name = tostring(candidate or "")
         if name ~= "" and string.find(text, name, 1, true) ~= nil and #name > bestLen then
             bestId, bestLen = tonumber(zoneId), #name
+        end
+    end
+    for zoneId, zone in pairs(type(byId) == "table" and byId or {}) do
+        if type(zone) == "table" then
+            Consider(zoneId, zone.nameZh)
+            -- 中文维护注释（2026-09-25，daily-trade-zone-alias-1）：地区任务标题来自当前 RU 客户端，
+            -- 而稳定 ZoneId 数据可能保留旧汉化名。别名属于 Zone 静态身份的一部分；这里只做 bounded
+            -- 字符串匹配，不在刷新热路径扫描拍卖数据/价格表，也不根据相似文字猜地区。最长精确命中优先，
+            -- 防止“珊瑚海岸”覆盖“珊瑚海岸北部”这类包含关系。
+            for _, alias in ipairs(type(zone.nameZhAliases) == "table" and zone.nameZhAliases or {}) do
+                Consider(zoneId, alias)
+            end
         end
     end
     return bestId and math.floor(bestId) or nil

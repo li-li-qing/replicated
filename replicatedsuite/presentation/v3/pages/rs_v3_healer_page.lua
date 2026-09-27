@@ -91,6 +91,12 @@ local function BuildPage(parent, route)
     if loaded ~= true then return nil, "治疗辅助设置读取失败：" .. tostring(loadErr or "未知错误") end
     local root, rootErr = D:PageRoot(parent, "v3_page_healer")
     if root == nil then return nil, "页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
+    root.consumerHeld = false
+    -- 中文维护注释（2026-09-25，feature-profile-lifecycle-1）：页面 Consumer 只是一条 Presentation lease；
+    -- FeatureRuntime 仍是启停 Authority。功能方案 Disable 会先 Demand:Clear，因此页面必须以真实 token 为准，
+    -- 不能把本地 boolean 当 Authority；再次 Enable 时由 PageHost 生命周期桥在当前页面自动恢复同一 token。
+    local consumerBinding = { feature = Feature, featureId = FEATURE_ID, token = CONSUMER,
+        refresh = function(page) return page:Refresh(false) end }
 
     D:PageHeader(root, "v3_healer_header", "治疗辅助",
         "以团队色块显示治疗优先级；页面只负责校准与规则设置，不再显示推荐列表悬浮窗/成员明细表。")
@@ -707,12 +713,12 @@ local function BuildPage(parent, route)
             local target = not enabled
             local ok, err = S.FeatureRuntime:SetPreferredEnabled(FEATURE_ID, target, "healer_page")
             if ok ~= true then return false, err end
-            if target then
-                local acquired, acquireErr = Feature:AcquireConsumer(CONSUMER)
-                if acquired ~= true then
-                    S.FeatureRuntime:SetPreferredEnabled(FEATURE_ID, false, "healer_page_consumer_rollback")
-                    return false, acquireErr
-                end
+            local synced, syncErr = PageHost:SyncFeatureConsumer(root, consumerBinding, "healer_page_toggle")
+            if synced ~= true and target == true then
+                local rolledBack, rollbackErr = S.FeatureRuntime:SetPreferredEnabled(FEATURE_ID, false, "healer_page_consumer_rollback")
+                root.consumerHeld = false; root:Refresh(false)
+                if rolledBack ~= true then return false, tostring(syncErr or "治疗辅助 Consumer 启动失败") .. "；回滚失败：" .. tostring(rollbackErr or "unknown") end
+                return false, syncErr or "治疗辅助 Consumer 启动失败"
             end
             root:Refresh(false)
             return true, target and "治疗辅助已启用" or "治疗辅助已关闭"
@@ -762,6 +768,8 @@ local function BuildPage(parent, route)
                 return false, "页面事件订阅失败：" .. tostring(topicRef)
             end
         end
+        local lifecycleOk, lifecycleErr = PageHost:BindFeatureConsumerLifecycle(self, consumerBinding)
+        if lifecycleOk ~= true then S.Events:UnsubscribeInternalOwner(self); return false, lifecycleErr end
         return true
     end
 
@@ -770,13 +778,10 @@ local function BuildPage(parent, route)
         if loadedNow ~= true then return false, errNow end
         local subscribed, subscribeErr = self:Subscribe()
         if subscribed ~= true then return false, subscribeErr end
-        local enabled = S.FeatureRuntime ~= nil and S.FeatureRuntime:IsEnabled(FEATURE_ID) == true
-        if enabled then
-            local acquired, acquireErr = Feature:AcquireConsumer(CONSUMER)
-            if acquired ~= true then
-                S.Events:UnsubscribeInternalOwner(self)
-                return false, acquireErr
-            end
+        local synced, syncErr = PageHost:SyncFeatureConsumer(self, consumerBinding, "page_activated")
+        if synced ~= true then
+            S.Events:UnsubscribeInternalOwner(self)
+            return false, syncErr
         end
         self:Refresh(true)
         return true
@@ -784,8 +789,7 @@ local function BuildPage(parent, route)
 
     function root:OnDeactivated()
         if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
-        Feature:ReleaseConsumer(CONSUMER)
-        return true
+        return PageHost:ReleaseFeatureConsumer(self, consumerBinding, "page_deactivated")
     end
 
     root.route = route

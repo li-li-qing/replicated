@@ -29,7 +29,7 @@ v3_acceptance = read("presentation/v3/rs_v3_acceptance.lua")
 gate = read("core/rs_foundation_gate.lua")
 diagnostics = read("core/rs_diagnostics.lua")
 
-require("v3-m1.16.0.18.303-bonds-material-quantity-sort" in boot, "build tag advanced")
+require("v3-m1.16.0.18.326-trade-freshness-matrix-audit" in boot, "build tag advanced")
 for key, value in {
     "prince_purse": 35461, "prince_crate": 42076, "queen_purse": 40928,
     "queen_crate": 42077, "ancestor_purse": 43176, "ancestor_crate": 43177,
@@ -86,14 +86,19 @@ require('id = "v3_bonds_order"' in page and 'id = "v3_bonds_scope"' in page and 
         "main Bonds page uses three dropdowns")
 require('v3_bonds_q20' not in page and 'v3_bonds_priority' not in page,
         "legacy Bonds option buttons removed from main page")
-require("bondOrderDropdown" in widget and "bondScopeDropdown" in widget and "bondDuplicateDropdown" in widget,
-        "floating Bonds widget uses three dropdowns")
-require('"toolbar_primary"' in widget and '"toolbar_scope"' in widget and 'spec.featureName == "Bonds" then desiredRows = 7' in widget,
-        "floating Bonds dropdowns remain usable at minimum width")
-require("bondsDropdownControlsContractVersion = 2" in widget and "bondsMultiContinentContractVersion = 3" in widget,
-        "floating Bonds v8 sort/dropdown contracts")
+require("bondSettingsDropdown" in widget and 'placeholder = "设置"' in widget,
+        "floating Bonds widget uses the single compact settings dropdown")
+require("bondOrderDropdown" not in widget and "bondScopeDropdown" not in widget and "bondDuplicateDropdown" not in widget,
+        "floating Bonds widget no longer keeps three persistent dropdowns")
+require('text = "排序"' in widget and 'text = "显示范围"' in widget and 'text = "重复材料"' in widget and 'kind = "header"' in widget,
+        "floating Bonds settings menu groups sort/scope/duplicate actions")
+require('"settings_row"' in widget and 'height = 26' in widget and 'spec.featureName == "Bonds" then desiredRows = 9' in widget,
+        "floating Bonds single-row controls restore vertical table budget")
+require("bondsDropdownControlsContractVersion = 3" in widget and "bondsFloatingSettingsMenuContractVersion = 1" in widget
+        and "bondsMultiContinentContractVersion = 3" in widget,
+        "floating Bonds v9 compact settings-menu contracts")
 require("ResidentBoardFamilyContractVersion" in acceptance and "SetFilterMask" in acceptance,
-        "Bonds acceptance requires 18.303 contracts")
+        "Bonds acceptance requires material-sort contracts")
 require("bondsDropdownControlsContractVersion" in v3_acceptance and "bondsResidentBoardFamilyContractVersion" in v3_acceptance,
         "V3 acceptance requires Bonds dropdown/family contracts")
 require("Bonds.ResidentBoardFamilyContractVersion" in gate and "bondsDropdownControlsContractVersion" in gate,

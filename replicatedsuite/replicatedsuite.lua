@@ -94,7 +94,7 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.303-bonds-material-quantity-sort" -- 中文维护（2026-09-24，bonds-material-quantity-sort-1）：基于 18.302 实机反馈补齐真正的债券排序维度；“排列”Dropdown 现在明确支持大陆顺序、数量少→多/多→少、材料正序/倒序。复用既有 sortMode+continentOrder 持久化形状，不新增 Store 字段/Schema；18.302 原大陆快照合并与 18.300 拍卖询价协议均不回退。
+S.BuildTag = "v3-m1.16.0.18.326-trade-freshness-matrix-audit" -- 中文维护（2026-09-27，trade-freshness-matrix-v3）：全面审计贸易售价品类倍率，修正“特供”30%而非15%，补齐无添加、Auroria Coastal/Rich 等遗漏类别，并把倍率覆盖审计接入跑商诊断；不改变 X2Store 货率 Authority、熟练度 Authority 或用户 Store schema。
 -- 维护（.18.248）：补齐缺失运行时文件并恢复被 Git 冲突破坏的源码；保留 .247 个人工作台与所有 Store 协议，不清配置。
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}

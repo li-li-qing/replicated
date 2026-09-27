@@ -16,12 +16,12 @@ S.Services = S.Services or {}
 
 local P = {
     version = 1,
-    PriceFormulaContractVersion = 1,
+    PriceFormulaContractVersion = 3,
     StaticPriceKeyResolverContractVersion = 2,
     CommerceMultiplierContractVersion = 1,
-    PackCategoryMultiplierContractVersion = 1,
+    PackCategoryMultiplierContractVersion = 3,
     presentationBoundary = "service_only",
-    FormulaSource = "supplied_working_trade_v1",
+    FormulaSource = "ru_live_payout_v3_full_freshness_matrix",
     indexes = {},
 }
 S.Services.TradePayoutV3 = P
@@ -193,6 +193,9 @@ function P:ResolvePriceKey(destination, itemName, originZoneName)
 end
 
 function P:GetPackMultiplier(itemName, priceKey)
+    -- 中文维护（2026-09-27，trade-freshness-matrix-v3）：这里解析的是“最高新鲜度/品类奖励”，
+    -- 与 X2Store 返回的实时供需货率严格分离。Authority 只来自维护过的精确 token 表；禁止模糊匹配。
+    -- sourceName 优先，是为了尊重 Native 当前商品身份；静态 priceKey 仅作为本地化/别名兜底。
     local sources = { { value = Text(itemName), source = "source_name" }, { value = Text(priceKey), source = "price_key" } }
     for _, source in ipairs(sources) do
         if source.value ~= "" then
@@ -200,12 +203,51 @@ function P:GetPackMultiplier(itemName, priceKey)
                 local token = Text(multiplier.token)
                 local value = Number(multiplier.value)
                 if token ~= "" and value ~= nil and value > 0 and string.find(source.value, token, 1, true) ~= nil then
-                    return value, token, source.source
+                    return value, token, source.source, Text(multiplier.category), Text(multiplier.label)
                 end
             end
         end
     end
-    return 1, nil, "none"
+    local neutral = S.Data and S.Data.TradeNeutralPayoutNames or nil
+    for _, source in ipairs(sources) do
+        if type(neutral) == "table" and neutral[source.value] == true then
+            return 1, nil, source.source, "neutral", "无新鲜度奖励"
+        end
+    end
+    -- 未分类不是“默认 1.00”的同义词。未来新增贸易品若没有补类别规则，继续给数字会再次静默产出错误售价；
+    -- 因此明确标记 unclassified，让 Estimate fail-closed，并在模块诊断的覆盖审计中暴露名称。
+    return nil, nil, "none", "unclassified", "新鲜度类别未登记"
+end
+
+function P:AuditFreshnessCoverage()
+    -- 冷路径诊断：只在 Describe/测试调用时遍历静态售价表，不参与刷新/排序循环。它保证每次新增贸易品
+    -- 都能看见是否命中类别倍率，避免未来再次出现“某一类名称忘记补倍率却静默按 1.00 计算”。
+    local result = { total = 0, categorized = 0, neutral = 0, byCategory = {}, neutralSamples = {} }
+    for destination, rows in pairs(S.Data and S.Data.TradePrices or {}) do
+        if type(destination) == "number" and type(rows) == "table" then
+            for name, _ in pairs(rows) do
+                result.total = result.total + 1
+                local value, token, _, category = self:GetPackMultiplier(name, name)
+                if token ~= nil and Number(value) ~= nil and Number(value) ~= 1 then
+                    result.categorized = result.categorized + 1
+                    category = category ~= "" and category or token
+                    result.byCategory[category] = (tonumber(result.byCategory[category]) or 0) + 1
+                elseif category == "neutral" then
+                    result.neutral = result.neutral + 1
+                    if #result.neutralSamples < 12 then
+                        result.neutralSamples[#result.neutralSamples + 1] = tostring(name)
+                    end
+                else
+                    result.unclassified = (tonumber(result.unclassified) or 0) + 1
+                    result.unclassifiedSamples = result.unclassifiedSamples or {}
+                    if #result.unclassifiedSamples < 12 then
+                        result.unclassifiedSamples[#result.unclassifiedSamples + 1] = tostring(name)
+                    end
+                end
+            end
+        end
+    end
+    return result
 end
 
 function P:GetCommerceMultiplier(commerceSkill, enabled)
@@ -239,7 +281,13 @@ function P:Estimate(spec)
             baseCopperPerPercent = base, ratio = ratio,
         }
     end
-    local packMultiplier, packToken, packSource = self:GetPackMultiplier(spec.itemName, priceKey)
+    local packMultiplier, packToken, packSource, packCategory, packLabel = self:GetPackMultiplier(spec.itemName, priceKey)
+    if packMultiplier == nil then
+        return nil, {
+            status = "freshness_unclassified", priceKey = priceKey, keyMode = keyMode, ratio = ratio,
+            packCategory = packCategory, packLabel = packLabel, sourceName = Text(spec.itemName),
+        }
+    end
     local baseAtRatio = base * ratio
     local price = baseAtRatio * commerceMultiplier * packMultiplier
     return math.floor(price + 0.5), {
@@ -254,6 +302,8 @@ function P:Estimate(spec)
         commerceApplied = commerceApplied == true,
         packMultiplier = packMultiplier,
         packToken = packToken,
+        packCategory = packCategory,
+        packLabel = packLabel,
         packMultiplierSource = packSource,
     }
 end
@@ -266,5 +316,6 @@ function P:Describe()
         commerceMultiplierContractVersion = self.CommerceMultiplierContractVersion,
         packCategoryMultiplierContractVersion = self.PackCategoryMultiplierContractVersion,
         formulaSource = self.FormulaSource,
+        freshnessCoverage = self:AuditFreshnessCoverage(),
     }
 end

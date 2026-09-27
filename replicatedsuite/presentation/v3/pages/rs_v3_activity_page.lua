@@ -27,6 +27,9 @@ end
 local function BuildActivityPage(parent, route)
     local root, rootErr = D:PageRoot(parent, "v3_page_activities")
     if root == nil then return nil, "页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
+    root.consumerHeld = false
+    local consumerBinding = { feature = Feature, featureId = "life_activities", token = "page:activities",
+        refresh = function(page) return page:Refresh() end }
     local function RunAction(id, button, execute, busyText)
         if S.ActionRunner ~= nil then
             return S.ActionRunner:Run({ id = "activities." .. tostring(id), button = button, busyText = busyText or "处理中…", notify = false, execute = execute })
@@ -67,28 +70,14 @@ local function BuildActivityPage(parent, route)
         local target = not enabled
         local ok, err = S.FeatureRuntime:SetPreferredEnabled("life_activities", target, "activity_page")
         if ok ~= true then return false, err end
-        if target then
-            local acquired, acquireErr = Feature:AcquireConsumer("page:activities")
-            if acquired ~= true then
-                local rolledBack, rollbackErr = S.FeatureRuntime:SetPreferredEnabled("life_activities", false, "activity_page_consumer_rollback")
-                root:Refresh()
-                if rolledBack ~= true then
-                    return false, tostring(acquireErr or "活动页面 Consumer 启动失败") .. "；回滚失败：" .. tostring(rollbackErr or "unknown")
-                end
-                return false, acquireErr or "活动页面 Consumer 启动失败"
-            end
-            if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
-                S.Events:UnsubscribeInternalOwner(root)
-                S.Events:SubscribeInternal("v3.activities.updated", root, function() root:Refresh() end)
-                S.Events:SubscribeInternal("v3.workspace.updated", root, function(_,kind)if kind=="lists" then root:Refresh() end end)
-            end
-        else
-            -- FeatureRuntime:Disable already clears the feature Demand transactionally.
-            -- Avoid issuing a second Release against a token that no longer exists.
-            if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(root) end
+        local synced, syncErr = PageHost:SyncFeatureConsumer(root, consumerBinding, "activity_page_toggle")
+        if synced ~= true and target == true then
+            local rolledBack, rollbackErr = S.FeatureRuntime:SetPreferredEnabled("life_activities", false, "activity_page_consumer_rollback")
+            root.consumerHeld = false; root:Refresh()
+            if rolledBack ~= true then return false, tostring(syncErr or "活动页面 Consumer 启动失败") .. "；回滚失败：" .. tostring(rollbackErr or "unknown") end
+            return false, syncErr or "活动页面 Consumer 启动失败"
         end
-        root:Refresh()
-        return true
+        return root:Refresh()
     end
     local featureExecute = featureButton.onClick
     featureButton.onClick = function()
@@ -199,24 +188,25 @@ local function BuildActivityPage(parent, route)
         return true
     end
 
-    function root:OnActivated()
-        local enabled = S.FeatureRuntime ~= nil and S.FeatureRuntime:IsEnabled("life_activities") == true
-        if enabled then
-            Feature:AcquireConsumer("page:activities")
-            if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
-                S.Events:UnsubscribeInternalOwner(self)
-                S.Events:SubscribeInternal("v3.activities.updated", self, function() root:Refresh() end)
-                S.Events:SubscribeInternal("v3.workspace.updated", self, function(_,kind)if kind=="lists" then root:Refresh() end end)
-            end
+    function root:BindUpdates()
+        if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then return false, "内部事件总线不可用" end
+        if type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
+        if S.Events:SubscribeInternal("v3.activities.updated", self, function() root:Refresh() end) ~= true
+            or S.Events:SubscribeInternal("v3.workspace.updated", self, function(_,kind)if kind=="lists" then root:Refresh() end end) ~= true then
+            S.Events:UnsubscribeInternalOwner(self); return false, "活动页面更新事件订阅失败"
         end
-        self:Refresh()
+        local ok, err = PageHost:BindFeatureConsumerLifecycle(self, consumerBinding)
+        if ok ~= true then S.Events:UnsubscribeInternalOwner(self); return false, err end
         return true
+    end
+    function root:OnActivated()
+        local bound, bindErr = self:BindUpdates(); if bound ~= true then return false, bindErr end
+        return PageHost:SyncFeatureConsumer(self, consumerBinding, "page_activated")
     end
 
     function root:OnDeactivated()
         if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
-        Feature:ReleaseConsumer("page:activities")
-        return true
+        return PageHost:ReleaseFeatureConsumer(self, consumerBinding, "page_deactivated")
     end
 
     function root:RefreshData(dirty)

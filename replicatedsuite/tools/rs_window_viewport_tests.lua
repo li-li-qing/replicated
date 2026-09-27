@@ -73,6 +73,20 @@ Test('physical-only change triggers fresh context without invented coordinate sc
     local old=L.lastSignature;h.sw=2560;h.sh=1440
     assert(L:PollChanges()==true);assert(old~=L.lastSignature);Eq(L:GetContext().logicalWidth,1920)
 end)
+Test('UI environment revision advances on viewport change and explicit responsive refresh',function()
+    local h=Boot({layoutOnly=true});local L=h.S.Layout;L:PrimeCurrentSignature()
+    local r0=select(1,L:GetUiEnvironmentRevision());h:Viewport(1024,768);assert(L:PollChanges()==true)
+    local r1=select(1,L:GetUiEnvironmentRevision());assert(r1>r0,'viewport change did not advance UI environment revision')
+    assert(L:RefreshNow(true)~=nil);local r2=select(1,L:GetUiEnvironmentRevision());assert(r2>r1,'explicit responsive refresh did not advance UI environment revision')
+    assert((tonumber(L.UiEnvironmentRevisionContractVersion) or 0)>=1,'UI environment revision contract missing')
+end)
+Test('same-metrics native UI lifecycle signal still advances environment revision',function()
+    local h=Boot();local L=h.S.Layout;L:StartMetricsEvents();local before=select(1,L:GetUiEnvironmentRevision())
+    h:Fire('UI_RELOADED')
+    local after,reason=L:GetUiEnvironmentRevision();assert(after>before,'same-metrics UI_RELOADED did not advance revision')
+    assert(tostring(reason):find('native_signal',1,true)~=nil or tostring(reason):find('metrics_signature_changed',1,true)~=nil,'unexpected revision reason '..tostring(reason))
+    L:StopMetricsEvents()
+end)
 Test('logical-only change not lost behind rounded physical signature',function()
     local h=Boot({layoutOnly=true});local L=h.S.Layout;L:PrimeCurrentSignature()
     h:Viewport(1800,1000,1,1920,1080);assert(L:PollChanges()==true,'logical dimensions omitted from signature');Eq(L:GetContext().logicalWidth,1800)
@@ -444,6 +458,30 @@ Test('snap target reads share logical units at UI Scale .75',function()
     L:RegisterScreenSnap('peer',n,{snapGroup='screen_buttons',snapKind='button'})
     local x,y,snap=L:ResolveScreenSnap('active',602,300,100,30,{enabled=true,group='screen_buttons',kind='button',distance=16,gap=0})
     assert(snap,'peer moved to wrong coordinate space');Eq(x,600);Eq(y,300)
+end)
+Test('screen snap synthetic acceptance uses NativeStateCache geometry authority',function()
+    local h=Boot();dofile('ui/rs_ui_framework.lua');local S=h.S;local UI=S.UI
+    local a={IsVisible=function()return true end}
+    local b={IsVisible=function()return true end}
+    UI.NativeStateCache[a]={anchorParent=UIParent,anchorX=112,anchorY=100,width=10,height=10}
+    UI.NativeStateCache[b]={anchorParent=UIParent,anchorX=100,anchorY=100,width=10,height=10}
+    assert(UI:RegisterScreenSnap('__accept_a',a,{snapGroup='__accept',snapKind='button'})==true)
+    assert(S.Layout:RegisterScreenSnap('__accept_b',b,{snapGroup='__accept',snapKind='button'})==true)
+    local x,y,snap,target=UI:ResolveScreenSnap('__accept_a',112,100,10,10,{enabled=true,group='__accept',kind='button',distance=4,gap=0})
+    assert(snap==true,'cache-backed peer was not discovered');Eq(x,110);Eq(y,100);assert(target=='__accept_b','wrong peer id')
+    S.Layout:RegisterScreenSnap('__accept_b',b,{snapGroup='__accept',snapKind='button',snapEnabled=false})
+    local _,_,disabled=UI:ResolveScreenSnap('__accept_a',112,100,10,10,{enabled=true,group='__accept',kind='button',distance=4,gap=0})
+    assert(disabled~=true,'disabled peer still participates in snap')
+    UI:UnregisterScreenSnap('__accept_a');S.Layout:UnregisterScreenSnap('__accept_b')
+    UI.NativeStateCache[a],UI.NativeStateCache[b]=nil,nil
+end)
+Test('screen snap acceptance does not reopen ambiguous GetOffset geometry lane',function()
+    local h=Boot();dofile('ui/rs_ui_framework.lua');local S=h.S
+    local peer={GetOffset=function()return 100,100 end,GetWidth=function()return 10 end,GetHeight=function()return 10 end,IsVisible=function()return true end}
+    S.Layout:RegisterScreenSnap('legacy_peer',peer,{snapGroup='__legacy_accept',snapKind='button'})
+    local _,_,snap=S.Layout:ResolveScreenSnap('active',112,100,10,10,{enabled=true,group='__legacy_accept',kind='button',distance=4,gap=0})
+    assert(snap~=true,'un-calibrated GetOffset fallback was accidentally re-enabled')
+    S.Layout:UnregisterScreenSnap('legacy_peer')
 end)
 Test('real snap native refusal is not reported as committed',function()
     local h=Boot();dofile('ui/rs_ui_framework.lua');local UI=h.S.UI

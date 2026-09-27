@@ -198,11 +198,13 @@ local function CreateSidecar()
     function instance:Hide()
         local hidden, hideErr = self.surface:Show(false)
         if hidden ~= true then return false, hideErr end
-        if self.acquired == true then Feature:ReleaseConsumer("widget:craft_sidecar") end
+        -- 中文维护注释（2026-09-25，feature-profile-lifecycle-1）：Feature Disable 会先 Clear Demand，
+        -- WidgetHost 随后的 Hide 只能按真实 token 释放，不能相信 acquired 的旧值触发 strict Demand 二次 Release。
+        if self.acquired == true and Feature:HasConsumer("widget:craft_sidecar") then Feature:ReleaseConsumer("widget:craft_sidecar") end
         self.acquired = false; self.visible = false; self:Unsubscribe(); return true
     end
     function instance:OnWindowClosed()
-        if self.acquired == true then Feature:ReleaseConsumer("widget:craft_sidecar") end
+        if self.acquired == true and Feature:HasConsumer("widget:craft_sidecar") then Feature:ReleaseConsumer("widget:craft_sidecar") end
         self.acquired = false; self.visible = false; self:Unsubscribe(); return true
     end
     function instance:Open(context) return self:Show(context) end
@@ -218,6 +220,15 @@ local registered, registerErr = Host:Register(WIDGET_ID, {
     opacityAdjustable = false, backgroundOpacityAdjustable = false, textOpacityAdjustable = false,
 })
 if registered ~= true then error(registerErr) end
+-- 中文维护注释（2026-09-25，feature-profile-lifecycle-1）：制作台 Sidecar 与原生制作窗口可见性是两条
+-- 不同 Authority。Feature 生命周期只负责资源 gate；原生 Surface 仍决定是否应该显示。绑定后方案关闭会
+-- 立即 Hide 并清理 Consumer，方案再次启用且原生窗口仍在时才按已有 nativeVisible 恢复，不增加扫描。
+local lifecycleBound, lifecycleErr = Host:BindFeatureLifecycle(WIDGET_ID, {
+    featureId = "tools_craft",
+    enabled = function() return S.FeatureRuntime ~= nil and S.FeatureRuntime:IsEnabled("tools_craft") == true end,
+    preference = function() return Controller.nativeVisible == true end,
+})
+if lifecycleBound ~= true then error(lifecycleErr or "craft sidecar lifecycle bind failed") end
 
 local function OnSurface(snapshot)
     snapshot = type(snapshot) == "table" and snapshot or {}

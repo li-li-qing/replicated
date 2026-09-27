@@ -66,6 +66,7 @@ A.migratedPresentation = {
     { route = "tools.auction_favorites" },
     { route = "tools.market_analysis" },
     { route = "tools.social" },
+    { route = "tools.feature_profiles", widget = "tools.feature_profiles.quick" },
     { route = "tools.hotkey_profiles" },
     { route = "tools.portal_profiles" },
     { route = "tools.reinforce_analysis" },
@@ -141,6 +142,25 @@ function A:RunMatrix()
     local pageHost = S.UIV3 and S.UIV3.PageHost or nil
     if pageHost == nil or (tonumber(pageHost.version) or 0) < 4 or (tonumber(pageHost.buildTransactionContractVersion) or 0) < 1 then
         failures[#failures + 1] = "page_host_build_transaction_contract"
+    end
+    -- 中文维护注释（2026-09-25，feature-profile-lifecycle-1）：功能方案页面会调用 PageHost 的共享
+    -- Consumer lease 桥。混装旧 PageHost + 新页面不会在加载期必然报错，而会在首次切方案时才炸；因此 Acceptance
+    -- 必须显式 fence v1 契约与三个公开方法，阻断部分覆盖安装。这里只验证 Presentation 契约，不启停任何 Feature。
+    if pageHost == nil or (tonumber(pageHost.version) or 0) < 6
+            or (tonumber(pageHost.featureConsumerLifecycleContractVersion) or 0) < 1
+            or type(pageHost.SyncFeatureConsumer) ~= "function"
+            or type(pageHost.ReleaseFeatureConsumer) ~= "function"
+            or type(pageHost.BindFeatureConsumerLifecycle) ~= "function" then
+        failures[#failures + 1] = "page_host_feature_consumer_lifecycle_contract"
+    end
+    local lifeM16PagesContract = S.UIV3 and S.UIV3.LifeM16PagesContract or nil
+    -- 中文维护注释（2026-09-25，life-page-consumer-binding-1）：PageHost v6 依赖生活共享页提供真实
+    -- consumerBinding。部分覆盖安装若仍加载旧 LifeM16Pages，会在用户首次打开跑商/钓鱼/寻宝/债券时才
+    -- 报 invalid feature lifecycle binding；Acceptance 在启动期直接 fence 该组合，不执行任何 Feature Acquire。
+    if type(lifeM16PagesContract) ~= "table"
+            or (tonumber(lifeM16PagesContract.version) or 0) < 1
+            or (tonumber(lifeM16PagesContract.featureConsumerBindingContractVersion) or 0) < 1 then
+        failures[#failures + 1] = "life_m16_page_feature_consumer_binding_contract"
     end
     local businessPagesContract = S.UIV3 and S.UIV3.BusinessPagesContract or nil
     if type(businessPagesContract) ~= "table" or (tonumber(businessPagesContract.version) or 0) < 1
@@ -514,7 +534,15 @@ function A:RunMatrix()
     local visualGuides = S.UIV3 and S.UIV3.CombatVisualGuidesV3 or nil
     local unitLines = S.Features and S.Features.combat_unit_lines or nil
     local rangeAssist = S.Features and S.Features.combat_range_assist or nil
-    if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 12 or type(visualGuides.Describe) ~= "function"
+    if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 15 or type(visualGuides.Describe) ~= "function"
+        or (tonumber(visualGuides.UiEnvironmentStyleRecoveryContractVersion) or 0) < 1
+        or (tonumber(visualGuides.ManualPointTypographyContractVersion) or 0) < 1
+        -- 中文维护（2026-09-24，visual-guide-resolution-style-recovery-1）：运行验收必须同时看
+        -- Layout revision + Theme manual typography + Presenter recovery 三段，防止只覆盖一个文件后
+        -- “设置值没变但 Native 点尺寸被重置”的混载回归。这里只读契约，不主动触发画质切换。
+        or type(S.Layout) ~= "table" or (tonumber(S.Layout.UiEnvironmentRevisionContractVersion) or 0) < 1
+        or type(S.Layout.GetUiEnvironmentRevision) ~= "function"
+        or type(S.Theme) ~= "table" or (tonumber(S.Theme.ManualTypographyOwnershipContractVersion) or 0) < 1
         or (tonumber(visualGuides.AdaptiveUnitLineSamplingContractVersion) or 0) < 2
         or (tonumber(visualGuides.UnitLineVisibleSegmentClippingContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLinePressureBudgetContractVersion) or 0) < 1
@@ -572,14 +600,15 @@ function A:RunMatrix()
     local bondsWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.bonds") or nil
     local treasureWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.treasure") or nil
     local fishingWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.fishing") or nil
-    -- 中文维护注释（2026-09-24，生活悬浮窗 v8）：在 Trade/寻宝/钓鱼既有契约上，新增 Bonds
-    -- 原大陆 ResidentBoard family 与 3-Dropdown 控制契约。只读版本号，不创建窗口/Consumer/Native 查询；
-    -- 目的是在用户局部覆盖时立即阻断“新 Feature + 旧 Bonds Widget”的混载。
-    if type(lifeWidgets) ~= "table" or (tonumber(lifeWidgets.version) or 0) < 8
+    -- 中文维护注释（2026-09-24，生活悬浮窗 v9）：在 Trade/寻宝/钓鱼既有契约上，Bonds
+    -- 保留原大陆 ResidentBoard family，同时把悬浮窗 3-Dropdown 收敛为单“设置”菜单。只读版本号，不创建窗口/Consumer/Native 查询；
+    -- 目的是在用户局部覆盖时立即阻断“新 Gate + 旧 Bonds Widget”的混载。
+    if type(lifeWidgets) ~= "table" or (tonumber(lifeWidgets.version) or 0) < 9
         or (tonumber(lifeWidgets.tradeFloatingFavoriteContractVersion) or 0) < 1
         or (tonumber(lifeWidgets.tradeControlRefreshIsolationContractVersion) or 0) < 1
         or (tonumber(lifeWidgets.bondsMultiContinentContractVersion) or 0) < 3
-        or (tonumber(lifeWidgets.bondsDropdownControlsContractVersion) or 0) < 2
+        or (tonumber(lifeWidgets.bondsDropdownControlsContractVersion) or 0) < 3
+        or (tonumber(lifeWidgets.bondsFloatingSettingsMenuContractVersion) or 0) < 1
         or (tonumber(lifeWidgets.bondsResidentBoardFamilyContractVersion) or 0) < 1
         or (tonumber(lifeWidgets.treasureMapLocationContractVersion) or 0) < 2
         or (tonumber(lifeWidgets.fishingFloatingAutoRContractVersion) or 0) < 1
@@ -836,23 +865,57 @@ function A:RunMatrix()
     local tradeProjection = type(tradeFeature) == "table" and type(tradeFeature.GetProjection) == "function"
         and tradeFeature:GetProjection() or nil
     local tradePayout = S.Services and S.Services.TradePayoutV3 or nil
+    local tradeQuoteQueue = S.Services and S.Services.PriceQuoteQueueV3 or nil
+    local materialPrices = S.Services and S.Services.MaterialPriceServiceV3 or nil
+    local auctionQuery = S.Services and S.Services.AuctionQueryV3 or nil
     if type(tradeFeature) ~= "table" or type(tradeFeature.GetRouteSettings) ~= "function"
         or type(tradeFeature.Authority) ~= "table" or (tonumber(tradeFeature.Authority.version) or 0) < 6
         or (tonumber(tradeFeature.Authority.TradePayoutProjectionContractVersion) or 0) < 1
-        or type(tradePayout) ~= "table" or (tonumber(tradePayout.PriceFormulaContractVersion) or 0) < 1
+        or type(tradePayout) ~= "table" or (tonumber(tradePayout.PriceFormulaContractVersion) or 0) < 3
         or (tonumber(tradePayout.StaticPriceKeyResolverContractVersion) or 0) < 2
         or (tonumber(tradePayout.CommerceMultiplierContractVersion) or 0) < 1
-        or (tonumber(tradePayout.PackCategoryMultiplierContractVersion) or 0) < 1
+        or (tonumber(tradePayout.PackCategoryMultiplierContractVersion) or 0) < 3
+        -- 18.313: fallback material quotes require listing quantity -> unit-price normalization on BOTH
+        -- shared Authorities. Reject a partial/mixed update instead of silently restoring the 300x cost bug.
+        or type(auctionQuery) ~= "table" or (tonumber(auctionQuery.ListingUnitPriceContractVersion) or 0) < 1
+        or type(tradeQuoteQueue) ~= "table" or (tonumber(tradeQuoteQueue.FallbackUnitPriceContractVersion) or 0) < 1
+        or (tonumber(tradeQuoteQueue.StoreContractVersion) or 0) < 2
+        -- 18.314: a completed material batch must synchronously converge the visible row model on the terminal callback.
+        -- 18.315: shared/late QuoteQueue completions must also carry stable identity and be consumed by Trade while Demand is active.
+        -- Reject a mixed package where batch=done but a superseded/shared material can leave an old quote_pending row forever.
+        or (tonumber(tradeFeature.QuoteTerminalRefreshContractVersion) or 0) < 2
+        or (tonumber(tradeFeature.QuoteReadModelSyncContractVersion) or 0) < 1
+        or (tonumber(tradeFeature.MultiRowQuoteJobsContractVersion) or 0) < 1
+        or (tonumber(tradeFeature.MaterialPriceCacheContractVersion) or 0) < 1
+        or (tonumber(tradeFeature.BackgroundMaterialRevalidateContractVersion) or 0) < 1
+        or (tonumber(tradeFeature.EconomicsRevisionContractVersion) or 0) < 1
+        or (tonumber(tradeFeature.AutoRefreshBackgroundLeaseContractVersion) or 0) < 2
+        or (tonumber(tradeFeature.AutoRefreshRuntimeContractVersion) or 0) < 1
+        or (tonumber(tradeFeature.Authority.AutoRefreshWatchdogContractVersion) or 0) < 3
+        or (tonumber(tradeFeature.Authority.RatioFastPublishContractVersion) or 0) < 2
+        or type(materialPrices) ~= "table"
+        or (tonumber(materialPrices.ContractVersion) or 0) < 1
+        or (tonumber(materialPrices.StoreContractVersion) or 0) < 1
+        or (tonumber(materialPrices.FreshnessContractVersion) or 0) < 1
+        or (tonumber(materialPrices.BackgroundRevalidateContractVersion) or 0) < 1
+        or (tonumber(materialPrices.AnomalyGuardContractVersion) or 0) < 1
+        or (tonumber(tradeQuoteQueue.EventPayloadContractVersion) or 0) < 1
+        or (tonumber(tradeQuoteQueue.RequestIdentityDedupContractVersion) or 0) < 1
+        or (tonumber(tradeQuoteQueue.MaterialPriceAuthorityContractVersion) or 0) < 1
+        or (tonumber(tradeQuoteQueue.PriorityQueueContractVersion) or 0) < 1
         or (tonumber(tradeFeature.Authority.RouteRefreshRetryContractVersion) or 0) < 1
         or (tonumber(tradeFeature.Authority.RequestTimeoutContractVersion) or 0) < 1
         or type(tradeFeature.Commands) ~= "table" or type(tradeFeature.Commands.SetFrom) ~= "function"
         or type(tradeFeature.Commands.SetTo) ~= "function" or type(tradeFeature.Commands.QuotePendingMaterials) ~= "function"
+        or type(tradeFeature.Commands.QuoteRowMaterials) ~= "function" or type(tradeFeature.Commands.CancelQuoteRowMaterials) ~= "function"
         or type(tradeProjection) ~= "table" or type(tradeProjection.zones) ~= "table"
-        or type(tradeProjection.sellableZones) ~= "table" or tradeProjection.pendingQuoteCount == nil
+        or type(tradeProjection.sellableZones) ~= "table" or tradeProjection.pendingQuoteCount == nil or type(tradeProjection.quoteJobs) ~= "table"
         or tostring(tradeProjection.commercePriceFormulaStatus or "") ~= "supplied_working_v1"
         or tostring(tradeProjection.packPriceMultiplierStatus or "") ~= "supplied_working_v1"
         or type(S.UIV3 and S.UIV3.LifeEconomyWidgetsV3) ~= "table"
-        or (tonumber(S.UIV3.LifeEconomyWidgetsV3.version) or 0) < 3 then
+        or (tonumber(S.UIV3.LifeEconomyWidgetsV3.version) or 0) < 3
+        or type(S.UIV3 and S.UIV3.LifeM16PagesContract) ~= "table"
+        or (tonumber(S.UIV3.LifeM16PagesContract.tradeMultiQuoteUiContractVersion) or 0) < 1 then
         failures[#failures + 1] = "trade_dropdown_quote_preflight_contract"
     end
     local tradeDetail = S.UIV3 and S.UIV3.TradeDetailFloatingV3 or nil
@@ -879,6 +942,7 @@ function A:RunMatrix()
         or type(numericRangeStore) ~= "table" or tostring(numericRangeStore.owner or "") ~= "v3.rsui.numeric_ranges"
         or (tonumber(S.RSUI and S.RSUI.InteractiveDraftContractVersion) or 0) < 4
         or (tonumber(S.RSUI and S.RSUI.InputDraftCommitContractVersion) or 0) < 2
+        or (tonumber(S.RSUI and S.RSUI.InputActionDraftReadContractVersion) or 0) < 1
         or (tonumber(S.RSUI and S.RSUI.NumericInputDraftReadContractVersion) or 0) < 1
         or (tonumber(S.RSUI and S.RSUI.InputFocusVisualContractVersion) or 0) < 1
         or (tonumber(S.RSUI and S.RSUI.InputDisableDraftCleanupContractVersion) or 0) < 1
@@ -1167,18 +1231,31 @@ function A:RunMatrix()
     end
 
     -- Screen Snap is a framework capability, not a Gear-only interaction.  The
-    -- synthetic widgets below exercise cross-owner discovery without creating
-    -- native objects, keeping acceptance bounded and safe to run on demand.
+    -- acceptance widgets remain non-native, but they MUST model the current geometry
+    -- Authority: Suite-owned controls are resolved from the successful NativeStateCache
+    -- anchor chain (or calibrated Effective geometry), never from ambiguous GetOffset().
+    --
+    -- 维护（2026-09-24，screen-snap-acceptance-authority-1）：旧验收 fake 只实现 GetOffset/
+    -- GetWidth/GetHeight；viewport-recovery-1 已有意禁止 GetWindowLogicalRect 回退到这条未校准
+    -- 车道，以避免 UI Scale 下二次换算。结果是生产 ScreenSnap 正常、专项 viewport 测试也正常，
+    -- 但自检永远找不到 fake peer 并误报 blocker。这里不放宽生产几何边界，而是把 synthetic
+    -- peer 写入与真实 RSUI 控件相同的 NativeStateCache 父链，并交叉使用 UI/Layout 两个入口，
+    -- 真正验证“不同 owner 注册后由统一 Registry 发现”的契约。验收结束必须清除临时 cache，
+    -- 禁止污染运行期 Native diff Authority。
     if S.Layout == nil or type(S.Layout.ResolveScreenSnap) ~= "function" or type(S.Layout.GetScreenSnapSnapshot) ~= "function"
         or S.UI == nil or type(S.UI.RegisterScreenSnap) ~= "function" or type(S.UI.ResolveScreenSnap) ~= "function"
-        or type(S.UI.CommitScreenSnap) ~= "function" then
+        or type(S.UI.CommitScreenSnap) ~= "function" or type(S.UI.NativeStateCache) ~= "table" then
         failures[#failures + 1] = "screen_snap_framework_contract"
     else
-        local fakeA = { GetOffset = function() return 112, 100 end, GetWidth = function() return 10 end, GetHeight = function() return 10 end, IsVisible = function() return true end }
-        local fakeB = { GetOffset = function() return 100, 100 end, GetWidth = function() return 10 end, GetHeight = function() return 10 end, IsVisible = function() return true end }
-        S.Layout:RegisterScreenSnap("__v3_snap_accept_a", fakeA, { snapGroup = "__accept", snapKind = "button" })
+        local fakeA = { IsVisible = function() return true end }
+        local fakeB = { IsVisible = function() return true end }
+        local cache = S.UI.NativeStateCache
+        cache[fakeA] = { anchorParent = UIParent, anchorX = 112, anchorY = 100, width = 10, height = 10 }
+        cache[fakeB] = { anchorParent = UIParent, anchorX = 100, anchorY = 100, width = 10, height = 10 }
+
+        S.UI:RegisterScreenSnap("__v3_snap_accept_a", fakeA, { snapGroup = "__accept", snapKind = "button" })
         S.Layout:RegisterScreenSnap("__v3_snap_accept_b", fakeB, { snapGroup = "__accept", snapKind = "button" })
-        local sx, sy, snapped, targetId = S.Layout:ResolveScreenSnap("__v3_snap_accept_a", 112, 100, 10, 10, {
+        local sx, sy, snapped, targetId = S.UI:ResolveScreenSnap("__v3_snap_accept_a", 112, 100, 10, 10, {
             enabled = true, group = "__accept", kind = "button", distance = 4, gap = 0,
         })
         if snapped ~= true or math.abs((tonumber(sx) or 0) - 110) > 0.01 or math.abs((tonumber(sy) or 0) - 100) > 0.01
@@ -1186,12 +1263,13 @@ function A:RunMatrix()
             failures[#failures + 1] = "screen_snap_cross_owner_contract"
         end
         S.Layout:RegisterScreenSnap("__v3_snap_accept_b", fakeB, { snapGroup = "__accept", snapKind = "button", snapEnabled = false })
-        local _, _, disabledTargetSnap = S.Layout:ResolveScreenSnap("__v3_snap_accept_a", 112, 100, 10, 10, {
+        local _, _, disabledTargetSnap = S.UI:ResolveScreenSnap("__v3_snap_accept_a", 112, 100, 10, 10, {
             enabled = true, group = "__accept", kind = "button", distance = 4, gap = 0,
         })
         if disabledTargetSnap == true then failures[#failures + 1] = "screen_snap_disabled_target_contract" end
-        S.Layout:UnregisterScreenSnap("__v3_snap_accept_a")
+        S.UI:UnregisterScreenSnap("__v3_snap_accept_a")
         S.Layout:UnregisterScreenSnap("__v3_snap_accept_b")
+        cache[fakeA], cache[fakeB] = nil, nil
     end
 
     -- Hard design fence: the new shell minimum must fit the project's mandatory

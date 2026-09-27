@@ -75,6 +75,7 @@ end
 RSUI.InteractiveDraftContractVersion = 4
 RSUI.InputDraftCommitContractVersion = 3
 RSUI.InputDraftSessionContractVersion = 2 -- 中文维护注释：DraftSession V2 将 Lua 草稿寿命与 RU Native Focus 分离；显式确认输入失焦只挂起，不再提交/恢复 Authority。
+RSUI.InputActionDraftReadContractVersion = 1 -- 中文维护（2026-09-25）：按钮 OnClick 与 Native OnLostFocus 的先后顺序不是稳定 ABI；业务确认动作必须读取当前草稿/Native 可见值，不能只读尚未提交的 Binding。
 RSUI.NumericInputDraftReadContractVersion = 1
 RSUI.InputFocusVisualContractVersion = 1
 RSUI.InputDisableDraftCleanupContractVersion = 1
@@ -530,6 +531,12 @@ RSUI:RegisterType("TextInput", function(spec)
         end
         return NativeText(self)
     end
+    -- 中文维护（InputActionDraftRead v1）：RU 中“点击按钮”与输入框 OnLostFocus 的派发顺序
+    -- 不稳定。若 Presentation 在按钮回调里调用 GetValue()，可能读到上一次已提交 Binding，
+    -- 即使用户屏幕上已经输入了新文本。ActionValue 的 Authority 是当前用户可见草稿：有 draft
+    -- 时读取 Lua/Native draft，无 draft 时读取 Native 当前文本。它只用于显式业务动作取值，
+    -- 不改变 GetValue() 的“已提交 Binding”语义，避免刷新/校验路径把未提交文本误当持久状态。
+    function c:GetActionValue() return self:GetDraftValue() end
     function c:IsEditing()
         return self.editing == true or (self.root ~= nil and self.root.rsUiKeyboardArmed == true) or IsFocusedDraft(self)
     end

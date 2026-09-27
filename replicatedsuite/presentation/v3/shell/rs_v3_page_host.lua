@@ -11,7 +11,8 @@ if type(RSUI) ~= "table" then return end
 
 S.UIV3 = S.UIV3 or {}
 S.UIV3.PageHost = {
-    version = 5,
+    version = 6,
+    featureConsumerLifecycleContractVersion = 1,
     buildTransactionContractVersion = 1,
     buildContextContractVersion = 1,
     root = nil,
@@ -29,7 +30,12 @@ S.UIV3.PageHost = {
     -- 后一个页面错误继承前一个模块的诊断入口。
     buildContext = nil,
     failedPages = {},
-    stats = { builds = 0, buildFailures = 0, quarantinedRejects = 0 },
+    stats = {
+        builds = 0, buildFailures = 0, quarantinedRejects = 0,
+        consumerAcquires = 0, consumerReleases = 0, consumerReleaseSkips = 0,
+        consumerDisabledSyncs = 0, lifecycleDisableSyncs = 0, lifecycleEnableSyncs = 0,
+        lifecycleReacquireFailures = 0,
+    },
 }
 local H = S.UIV3.PageHost
 
@@ -80,6 +86,119 @@ function H:GetBuildContext()
     -- 返回新的薄表，禁止 DesignSystem/页面工厂反向修改 PageHost 当前上下文。Feature 元数据本身
     -- 来自 FeatureRegistry，只用于读取 id/route/name；诊断按钮不能通过这里启停 Feature。
     return { route = row.route, moduleId = row.moduleId, feature = row.feature, controlBar = row.controlBar }
+end
+
+------------------------------------------------------------------------
+-- Active-page Feature Consumer lifecycle bridge
+--
+-- 中文维护注释（2026-09-25，page-feature-consumer-lifecycle-1）：
+-- FeatureRuntime 是 Enabled/Disabled 唯一 Authority。Feature:Disable() 会先清空其 Demand，随后才发布
+-- `v3.feature.lifecycle=disabled`。过去很多已打开页面只记一份 `consumerHeld=true`，却不监听这个
+-- 生命周期事实；功能方案关闭模块后，真实 Demand 已归零而页面旗标仍为 true，再次启用时页面不会
+-- Acquire，形成“开关显示已开、实际采集/查询没有恢复”的假开启。
+--
+-- 本桥只服务当前可见页面的 Presentation Consumer：
+-- * 不直接启停 Feature，不写 v3.features，不成为第二生命周期 Authority；
+-- * disabled 事件只同步本地 lease 事实并刷新 UI，绝不对已被 Domain 清掉的 token 再 Release；
+-- * enabled 事件在页面仍订阅期间重新 Acquire 同一 token；Demand token 幂等，避免重复 lease；
+-- * 页面离开时优先用 Demand:Has 校验真实持有状态，防止 stale boolean 导致 `consumer not held`；
+-- * 全部发生在页面激活/生命周期边沿，无 Tick、无轮询、无 Native 查询放大。
+------------------------------------------------------------------------
+local function FeatureConsumerHeld(feature, token, fallback)
+    local demand = type(feature) == "table" and feature.Demand or nil
+    if type(demand) == "table" and type(demand.Has) == "function" then
+        return demand:Has(token) == true
+    end
+    return fallback == true
+end
+
+function H:SyncFeatureConsumer(page, options, reason)
+    options = type(options) == "table" and options or {}
+    local feature = options.feature
+    local featureId = tostring(options.featureId or (type(feature) == "table" and feature.Id) or "")
+    local token = tostring(options.token or "")
+    if type(page) ~= "table" or type(feature) ~= "table" or featureId == "" or token == "" then
+        return false, "invalid page feature consumer binding"
+    end
+    if type(feature.AcquireConsumer) ~= "function" then return false, "feature consumer acquire unavailable" end
+    if S.FeatureRuntime == nil or S.FeatureRuntime:IsEnabled(featureId) ~= true then
+        self.stats.consumerDisabledSyncs = (tonumber(self.stats.consumerDisabledSyncs) or 0) + 1
+        page.consumerHeld = false
+        if type(options.onDisabled) == "function" then pcall(options.onDisabled, page, tostring(reason or "disabled")) end
+        if type(options.refresh) == "function" then options.refresh(page, "disabled", reason) end
+        return true
+    end
+
+    local held = FeatureConsumerHeld(feature, token, page.consumerHeld)
+    if held ~= true then
+        local ok, err = feature:AcquireConsumer(token)
+        if ok ~= true then
+            page.consumerHeld = false
+            return false, err or ("Consumer 获取失败: " .. token)
+        end
+        self.stats.consumerAcquires = (tonumber(self.stats.consumerAcquires) or 0) + 1
+    end
+    page.consumerHeld = true
+    if type(options.onEnabled) == "function" then pcall(options.onEnabled, page, tostring(reason or "enabled")) end
+    if type(options.refresh) == "function" then options.refresh(page, "enabled", reason) end
+    return true
+end
+
+function H:ReleaseFeatureConsumer(page, options, reason)
+    options = type(options) == "table" and options or {}
+    local feature = options.feature
+    local featureId = tostring(options.featureId or (type(feature) == "table" and feature.Id) or "")
+    local token = tostring(options.token or "")
+    if type(page) ~= "table" or type(feature) ~= "table" or token == "" then return false, "invalid page feature consumer release" end
+
+    -- Runtime 已关闭时，Feature Disable 契约已经清空 Demand。这里只同步 Presentation 旗标，
+    -- 不能再发一次 Release；否则严格 Demand 会返回 `consumer not held` 并把正常页面退出误判为故障。
+    if featureId ~= "" and S.FeatureRuntime ~= nil and S.FeatureRuntime:IsEnabled(featureId) ~= true then
+        self.stats.consumerReleaseSkips = (tonumber(self.stats.consumerReleaseSkips) or 0) + 1
+        page.consumerHeld = false
+        return true
+    end
+    local held = FeatureConsumerHeld(feature, token, page.consumerHeld)
+    if held ~= true then
+        self.stats.consumerReleaseSkips = (tonumber(self.stats.consumerReleaseSkips) or 0) + 1
+        page.consumerHeld = false
+        return true
+    end
+    if type(feature.ReleaseConsumer) ~= "function" then return false, "feature consumer release unavailable" end
+    local ok, err = feature:ReleaseConsumer(token)
+    if ok ~= true then return false, err or ("Consumer 释放失败: " .. token) end
+    self.stats.consumerReleases = (tonumber(self.stats.consumerReleases) or 0) + 1
+    page.consumerHeld = false
+    return true
+end
+
+function H:BindFeatureConsumerLifecycle(page, options)
+    options = type(options) == "table" and options or {}
+    local feature = options.feature
+    local featureId = tostring(options.featureId or (type(feature) == "table" and feature.Id) or "")
+    if type(page) ~= "table" or type(feature) ~= "table" or featureId == "" then return false, "invalid feature lifecycle binding" end
+    if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then return false, "internal event bus unavailable" end
+    return S.Events:SubscribeInternal((S.FeatureRuntime and S.FeatureRuntime.LifecycleTopic) or "v3.feature.lifecycle", page,
+        function(_, changedId, state, reason)
+            if tostring(changedId or "") ~= featureId then return end
+            state = tostring(state or "")
+            if state == "disabled" then
+                self.stats.lifecycleDisableSyncs = (tonumber(self.stats.lifecycleDisableSyncs) or 0) + 1
+                -- Domain 已完成 Demand:Clear；这里绝不能根据旧 boolean 二次 Release。
+                page.consumerHeld = false
+                if type(options.onDisabled) == "function" then pcall(options.onDisabled, page, tostring(reason or "feature_disable")) end
+                if type(options.refresh) == "function" then options.refresh(page, state, reason) end
+                return
+            end
+            if state ~= "enabled" then return end
+            self.stats.lifecycleEnableSyncs = (tonumber(self.stats.lifecycleEnableSyncs) or 0) + 1
+            local ok, err = H:SyncFeatureConsumer(page, options, "feature_lifecycle:" .. tostring(reason or "enable"))
+            if ok ~= true then
+                self.stats.lifecycleReacquireFailures = (tonumber(self.stats.lifecycleReacquireFailures) or 0) + 1
+                ReportPageFault("V3_PAGE_CONSUMER_REACQUIRE_FAILED", "功能重新启用后页面 Consumer 恢复失败", tostring(page.route or ""),
+                    "feature_lifecycle", tostring(err or "unknown"))
+            end
+        end)
 end
 
 function H:CreatePage(route)
@@ -290,8 +409,19 @@ function H:Describe()
     local quarantined = 0
     for _, row in pairs(self.failedPages or {}) do if type(row) == "table" and tonumber(row.generation) == tonumber(S.Generation) then quarantined = quarantined + 1 end end
     return {
-        version = self.version, buildTransactionContractVersion = self.buildTransactionContractVersion, buildContextContractVersion = self.buildContextContractVersion, registeredFactories = registered, hasFallback = self.fallbackFactory ~= nil,
+        version = self.version, buildTransactionContractVersion = self.buildTransactionContractVersion,
+        buildContextContractVersion = self.buildContextContractVersion,
+        featureConsumerLifecycleContractVersion = self.featureConsumerLifecycleContractVersion,
+        registeredFactories = registered, hasFallback = self.fallbackFactory ~= nil,
         created = #self.pageOrder, activeRoute = self.activeRoute, quarantined = quarantined,
-        builds = tonumber(self.stats.builds) or 0, buildFailures = tonumber(self.stats.buildFailures) or 0, quarantinedRejects = tonumber(self.stats.quarantinedRejects) or 0,
+        builds = tonumber(self.stats.builds) or 0, buildFailures = tonumber(self.stats.buildFailures) or 0,
+        quarantinedRejects = tonumber(self.stats.quarantinedRejects) or 0,
+        consumerAcquires = tonumber(self.stats.consumerAcquires) or 0,
+        consumerReleases = tonumber(self.stats.consumerReleases) or 0,
+        consumerReleaseSkips = tonumber(self.stats.consumerReleaseSkips) or 0,
+        consumerDisabledSyncs = tonumber(self.stats.consumerDisabledSyncs) or 0,
+        lifecycleDisableSyncs = tonumber(self.stats.lifecycleDisableSyncs) or 0,
+        lifecycleEnableSyncs = tonumber(self.stats.lifecycleEnableSyncs) or 0,
+        lifecycleReacquireFailures = tonumber(self.stats.lifecycleReacquireFailures) or 0,
     }
 end

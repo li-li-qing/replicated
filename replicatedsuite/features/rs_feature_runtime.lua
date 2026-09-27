@@ -12,7 +12,7 @@ local P = S.Persistence
 if type(Registry) ~= "table" or type(P) ~= "table" then return end
 
 S.FeatureRuntime = {
-    version = 4,
+    version = 5, -- 2026-09-25: add atomic ApplyPreferenceTargets batch lifecycle/preference transaction.
     implementations = {},
     state = {},
     order = {},
@@ -202,6 +202,93 @@ function F:SetPreferredEnabled(id, enabled, reason)
         return false, tostring(persistErr or "feature preference persistence failed") .. "; rollback failed: " .. tostring(rollbackErr or "unknown")
     end
     return false, persistErr or "feature preference persistence failed"
+end
+
+-- 中文维护注释（2026-09-25，feature-preference-batch-transaction-1）：功能方案需要一次切换多个
+-- Feature。逐项调用 SetPreferredEnabled 会在中途失败时留下“前半已经保存、后半未执行”的混合状态，
+-- 也会把恢复动作拆成多次磁盘提交。这里由 FeatureRuntime（唯一生命周期 Authority）提供受控批量事务：
+-- 先验证全部目标 -> 仅改变 Runtime 生命周期 -> 单次 durable 保存 v3.features；任一步失败都按反向顺序
+-- 恢复已经发生的生命周期变化。Persistence.MutateStore 自己负责 preferences RAM/dirty metadata 回滚。
+-- 该接口只接受明确 boolean target；调用者决定哪些业务 Feature 参与，Runtime 不推断“生活/战斗”等语义。
+function F:ApplyPreferenceTargets(targets, reason)
+    if type(targets) ~= "table" then return false, "feature preference targets required" end
+    local loaded, loadErr = self:EnsurePreferencesLoaded()
+    if loaded ~= true then return false, loadErr end
+    if type(P.CanWrite) ~= "function" then return false, "persistence write preflight unavailable" end
+    local writable, writeErr = P:CanWrite(self.preferenceStoreId)
+    if writable ~= true then return false, writeErr or "feature preference store write-fenced" end
+    if type(P.MutateStore) ~= "function" then return false, "persistence transaction unavailable" end
+
+    local ordered, normalizedTargets = {}, {}
+    for rawId, rawTarget in pairs(targets) do
+        local id = NormalizeId(rawId)
+        if id == "" or Registry:Get(id) == nil then return false, "unknown feature: " .. tostring(rawId) end
+        if self.implementations[id] == nil then return false, "feature not implemented: " .. id end
+        if type(rawTarget) ~= "boolean" then return false, "feature target must be boolean: " .. id end
+        if normalizedTargets[id] ~= nil then return false, "duplicate normalized feature target: " .. id end
+        normalizedTargets[id] = rawTarget
+        ordered[#ordered + 1] = id
+    end
+    table.sort(ordered)
+    if #ordered == 0 then return true, { changed = 0, targets = 0 } end
+
+    local previous, transitioned = {}, {}
+    for _, id in ipairs(ordered) do
+        previous[id] = { enabled = self:IsEnabled(id) }
+    end
+
+    local function RollbackLifecycle(cause)
+        local failures = {}
+        for index = #transitioned, 1, -1 do
+            local id = transitioned[index]
+            local wanted = previous[id] and previous[id].enabled == true or false
+            local ok, err
+            if wanted then ok, err = self:Enable(id, "preference_batch_rollback")
+            else ok, err = self:Disable(id, "preference_batch_rollback") end
+            if ok ~= true then failures[#failures + 1] = id .. ":" .. tostring(err or "rollback failed") end
+        end
+        if #failures > 0 then
+            Emit("error", "FEATURE_PREF_BATCH_ROLLBACK_FAILED", "批量功能开关事务失败且生命周期回滚不完整", {
+                reason = tostring(reason or "batch"), cause = tostring(cause or "unknown"), failures = failures,
+            })
+            return false, table.concat(failures, ";")
+        end
+        return true
+    end
+
+    for _, id in ipairs(ordered) do
+        local target = normalizedTargets[id] == true
+        if self:IsEnabled(id) ~= target then
+            local ok, err
+            if target then ok, err = self:Enable(id, reason or "preference_batch")
+            else ok, err = self:Disable(id, reason or "preference_batch") end
+            if ok ~= true then
+                local rollbackOk, rollbackErr = RollbackLifecycle(err)
+                local message = id .. ":" .. tostring(err or "lifecycle transition failed")
+                if rollbackOk ~= true then message = message .. "; rollback failed: " .. tostring(rollbackErr) end
+                return false, message
+            end
+            transitioned[#transitioned + 1] = id
+        end
+    end
+
+    local persisted, persistErr = P:MutateStore(self.preferenceStoreId, function()
+        for _, id in ipairs(ordered) do self.preferences[id] = normalizedTargets[id] == true end
+        return true
+    end, { durable = true, reason = tostring(reason or "feature_preference_batch") })
+    if persisted ~= true then
+        local rollbackOk, rollbackErr = RollbackLifecycle(persistErr)
+        if rollbackOk ~= true then
+            return false, tostring(persistErr or "feature preference batch persistence failed")
+                .. "; rollback failed: " .. tostring(rollbackErr or "unknown")
+        end
+        return false, persistErr or "feature preference batch persistence failed"
+    end
+
+    Emit("info", "FEATURE_PREF_BATCH_APPLIED", "批量功能开关事务已提交", {
+        reason = tostring(reason or "batch"), targets = #ordered, changed = #transitioned,
+    })
+    return true, { changed = #transitioned, targets = #ordered }
 end
 
 local function Invoke(id, impl, method, ...)

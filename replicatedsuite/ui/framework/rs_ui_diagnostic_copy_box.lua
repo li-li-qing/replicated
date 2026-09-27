@@ -18,7 +18,7 @@ local S = ReplicatedSuite
 local UI = S.UI
 if type(UI) ~= "table" or type(UI.CreateMultiEditBox) ~= "function" then return end
 
-UI.DiagnosticCopyBoxContractVersion = 2
+UI.DiagnosticCopyBoxContractVersion = 3
 
 local function NowMs()
     return type(S.NowMs) == "function" and (tonumber(S.NowMs()) or 0) or 0
@@ -69,7 +69,7 @@ function UI:CreateDiagnosticCopyBox(spec)
 
     local box = {
         version = 1, id = id, owner = owner, edit = edit, text = "", active = false,
-        copyCapacity = math.max(512, math.min(32768, math.floor(tonumber(spec.copyCapacity) or 3500))),
+        copyCapacity = math.max(512, math.min(32768, math.floor(tonumber(spec.copyCapacity) or 2048))),
         geometry = nil,
         stats = { textWrites = 0, geometryWrites = 0, geometrySkips = 0, activations = 0,
             activationFailures = 0, lostFocusNotifications = 0, deactivations = 0, lastReason = "created" },
@@ -194,7 +194,7 @@ function UI:CreateDiagnosticCopyBox(spec)
 
     -- 维护：容量只在用户显式重新分页且成功回读后更新；不写文本，不触碰选区。
     function box:SetCapacity(capacity)
-        self.copyCapacity = math.max(512, math.min(32768, math.floor(tonumber(capacity) or 3500)))
+        self.copyCapacity = math.max(512, math.min(32768, math.floor(tonumber(capacity) or 2048)))
         return true
     end
     function box:GetCapacity() return self.copyCapacity end

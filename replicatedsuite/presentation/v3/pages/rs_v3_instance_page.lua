@@ -16,6 +16,7 @@ local function BuildPage(parent, route)
     local root, rootErr = D:PageRoot(parent, "v3_page_instance_browser")
     if root == nil then return nil, "页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
     root.consumerHeld = false
+    local consumerBinding = { feature = Feature, featureId = "tools_instance_browser", token = "page:instance_browser", refresh = function(page) return page:Refresh() end }
     root.selectedId = nil
     root.filterMode = "all"
 
@@ -153,9 +154,12 @@ local function BuildPage(parent, route)
     end
 
     function root:BindUpdates()
-        if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then return true end
+        if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then return false, "内部事件总线不可用" end
         if type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
-        return S.Events:SubscribeInternal("v3.instance_browser.updated", self, function() root:Refresh() end)
+        if S.Events:SubscribeInternal("v3.instance_browser.updated", self, function() root:Refresh() end) ~= true then return false, "副本目录更新事件订阅失败" end
+        local ok, err = PageHost:BindFeatureConsumerLifecycle(self, consumerBinding)
+        if ok ~= true then S.Events:UnsubscribeInternalOwner(self); return false, err end
+        return true
     end
 
     function root:UnbindUpdates()
@@ -167,40 +171,28 @@ local function BuildPage(parent, route)
         local target = S.FeatureRuntime:IsEnabled("tools_instance_browser") ~= true
         local changed, changeErr = S.FeatureRuntime:SetPreferredEnabled("tools_instance_browser", target, "instance_page_toggle")
         if changed ~= true then return false, changeErr end
-        if target then
-            local acquired, acquireErr = Feature:AcquireConsumer("page:instance_browser")
-            if acquired ~= true then
-                local rolledBack, rollbackErr = S.FeatureRuntime:SetPreferredEnabled("tools_instance_browser", false, "instance_page_acquire_rollback")
-                root.consumerHeld = false
-                root:Refresh()
-                if rolledBack ~= true then return false, tostring(acquireErr or "Consumer 启动失败") .. "；回滚失败：" .. tostring(rollbackErr or "unknown") end
-                return false, acquireErr
-            end
-            root.consumerHeld = true
-            root:BindUpdates()
-        else
-            root.consumerHeld = false
-            root:UnbindUpdates()
+        local synced, syncErr = PageHost:SyncFeatureConsumer(root, consumerBinding, "instance_page_toggle")
+        if synced ~= true and target == true then
+            local rolledBack, rollbackErr = S.FeatureRuntime:SetPreferredEnabled("tools_instance_browser", false, "instance_page_acquire_rollback")
+            root.consumerHeld = false; root:Refresh()
+            if rolledBack ~= true then return false, tostring(syncErr or "Consumer 启动失败") .. "；回滚失败：" .. tostring(rollbackErr or "unknown") end
+            return false, syncErr
         end
-        root:Refresh()
-        return true
+        return root:Refresh()
     end
 
     function root:OnActivated()
         if S.FeatureRuntime == nil then tableView:SetViewState("error", { detail = "FeatureRuntime 不可用" }); return false, "feature runtime unavailable" end
-        if S.FeatureRuntime:IsEnabled("tools_instance_browser") ~= true then self.consumerHeld = false; return self:Refresh() end
-        tableView:SetViewState("loading", { title = "正在读取副本目录…", detail = "正在建立实例目录 Consumer。" })
-        local acquired, acquireErr = Feature:AcquireConsumer("page:instance_browser")
-        if acquired ~= true then tableView:SetViewState("error", { detail = tostring(acquireErr or "副本目录 Consumer 获取失败") }); return false, acquireErr end
-        self.consumerHeld = true
-        self:BindUpdates()
-        return self:Refresh()
+        local bound, bindErr = self:BindUpdates(); if bound ~= true then return false, bindErr end
+        if S.FeatureRuntime:IsEnabled("tools_instance_browser") == true then tableView:SetViewState("loading", { title = "正在读取副本目录…", detail = "正在建立实例目录 Consumer。" }) end
+        local ok, err = PageHost:SyncFeatureConsumer(self, consumerBinding, "page_activated")
+        if ok ~= true then tableView:SetViewState("error", { detail = tostring(err or "副本目录 Consumer 获取失败") }) end
+        return ok, err
     end
 
     function root:OnDeactivated()
         self:UnbindUpdates()
-        if self.consumerHeld then Feature:ReleaseConsumer("page:instance_browser"); self.consumerHeld = false end
-        return true
+        return PageHost:ReleaseFeatureConsumer(self, consumerBinding, "page_deactivated")
     end
 
     function root:RefreshData(dirty)

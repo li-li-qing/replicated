@@ -1290,12 +1290,13 @@ function G:Run(options)
         AddCheck(report, "v3_module_diagnostics_contract",
             type(moduleDiagnosticsHub) == "table" and (tonumber(moduleDiagnosticsHub.contractVersion) or 0) >= 1
                 and type(moduleDiagnosticsHub.Capture) == "function" and type(moduleDiagnosticsHub.GetPage) == "function"
-                and type(S.UI) == "table" and (tonumber(S.UI.DiagnosticCopyBoxContractVersion) or 0) >= 1
+                and type(S.UI) == "table" and (tonumber(S.UI.DiagnosticCopyBoxContractVersion) or 0) >= 3
                 and type(S.UI.CreateDiagnosticCopyBox) == "function"
                 and pageInfo ~= nil and (tonumber(pageInfo.buildContextContractVersion) or 0) >= 1
                 and type(S.UIV3Design) == "table" and (tonumber(S.UIV3Design.diagnosticHeaderContractVersion) or 0) >= 1
                 and type(S.UIV3Design.ModuleDiagnosticsButton) == "function"
-                and type(moduleDiagnosticsWindow) == "table" and (tonumber(moduleDiagnosticsWindow.contractVersion) or 0) >= 1
+                and type(moduleDiagnosticsWindow) == "table" and (tonumber(moduleDiagnosticsWindow.contractVersion) or 0) >= 2
+                and (tonumber(moduleDiagnosticsWindow.AutoReadbackRepageContractVersion) or 0) >= 1
                 and type(moduleDiagnosticsWindow.Open) == "function" and type(moduleDiagnosticsPolicy) == "table"
                 and moduleDiagnosticsRegistryAlias == true,
             "blocker", "hub=" .. tostring(moduleDiagnosticsHub and moduleDiagnosticsHub.contractVersion or 0)
@@ -2386,7 +2387,15 @@ function G:Run(options)
         or type(bossAlerts) ~= "table" or (tonumber(bossAlerts.HudContractVersion) or 0) < 2
         or (tonumber(bossAlerts.RealtimeFactBridgeContractVersion) or 0) < 1
         or type(S.Services and S.Services.CastingObservationV3) ~= "table" then usabilityFailures[#usabilityFailures + 1] = "boss_hud" end
-    if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 11
+    if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 15
+        or (tonumber(visualGuides.UiEnvironmentStyleRecoveryContractVersion) or 0) < 1
+        or (tonumber(visualGuides.ManualPointTypographyContractVersion) or 0) < 1
+        -- 中文维护（2026-09-24，visual-guide-resolution-style-recovery-1）：VisualGuide 点字体由
+        -- Presenter 独占，Layout 必须提供 UI 环境 revision，Theme 必须尊重 manual typography。
+        -- 这是混载门禁：缺任一契约时宁可启动验收阻断，也不要在切画质后静默缩成小点。
+        or type(S.Layout) ~= "table" or (tonumber(S.Layout.UiEnvironmentRevisionContractVersion) or 0) < 1
+        or type(S.Layout.GetUiEnvironmentRevision) ~= "function"
+        or type(S.Theme) ~= "table" or (tonumber(S.Theme.ManualTypographyOwnershipContractVersion) or 0) < 1
         or (tonumber(visualGuides.AdaptiveUnitLineSamplingContractVersion) or 0) < 2
         or (tonumber(visualGuides.UnitLineVisibleSegmentClippingContractVersion) or 0) < 1
         or (tonumber(visualGuides.UnitLinePressureBudgetContractVersion) or 0) < 1
@@ -2413,11 +2422,12 @@ function G:Run(options)
         or (tonumber(rangeAssist.MetricDistanceContractVersion) or 0) < 1 then usabilityFailures[#usabilityFailures + 1] = "visual_guides" end
     local tradeWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.trade") or nil
     local bondsWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.bonds") or nil
-    -- 中文维护注释（2026-09-24，Bonds Presentation/Domain 混载门禁）：v8 必须同时具备
-    -- 多大陆 v3 与 Dropdown v1；Foundation 仅核对静态契约，不触发 ResidentBoard/背包读取。
-    if type(lifeWidgets) ~= "table" or (tonumber(lifeWidgets.version) or 0) < 8
+    -- 中文维护注释（2026-09-24，Bonds Presentation/Domain 混载门禁）：v9 必须同时具备
+    -- 多大陆 v3 与悬浮窗单入口设置菜单 v1；Foundation 仅核对静态契约，不触发 ResidentBoard/背包读取。
+    if type(lifeWidgets) ~= "table" or (tonumber(lifeWidgets.version) or 0) < 9
         or (tonumber(lifeWidgets.bondsMultiContinentContractVersion) or 0) < 3
-        or (tonumber(lifeWidgets.bondsDropdownControlsContractVersion) or 0) < 2
+        or (tonumber(lifeWidgets.bondsDropdownControlsContractVersion) or 0) < 3
+        or (tonumber(lifeWidgets.bondsFloatingSettingsMenuContractVersion) or 0) < 1
         or (tonumber(lifeWidgets.bondsResidentBoardFamilyContractVersion) or 0) < 1
         or type(tradeWidget) ~= "table" or type(bondsWidget) ~= "table"
         or type(S.Features and S.Features.Bonds) ~= "table"
@@ -2432,21 +2442,46 @@ function G:Run(options)
     local tradeDetail = S.UIV3 and S.UIV3.TradeDetailFloatingV3 or nil
     local tradeDetailOk = type(tradeFeature) == "table" and type(tradeFeature.Authority) == "table" and (tonumber(tradeFeature.Authority.version) or 0) >= 6
         and (tonumber(tradeFeature.Authority.TradePayoutProjectionContractVersion) or 0) >= 1
-        and type(tradePayout) == "table" and (tonumber(tradePayout.PriceFormulaContractVersion) or 0) >= 1
+        and type(tradePayout) == "table" and (tonumber(tradePayout.PriceFormulaContractVersion) or 0) >= 3
         and (tonumber(tradePayout.StaticPriceKeyResolverContractVersion) or 0) >= 2
         and (tonumber(tradePayout.CommerceMultiplierContractVersion) or 0) >= 1
-        and (tonumber(tradePayout.PackCategoryMultiplierContractVersion) or 0) >= 1
+        and (tonumber(tradePayout.PackCategoryMultiplierContractVersion) or 0) >= 3
+        -- 维护（2026-09-25，trade-multi-row-quote-mixed-package-gate-1）：多 RowJob 只在 Feature/页面层并存；
+        -- PriceQuoteQueueV3 必须仍是单 Native Authority 且按稳定 itemType+grade 去重。任何一侧漏更新都应在启动门禁
+        -- 阻断，而不是等用户连续双击两个货物后才暴露“上一任务被取消/重复查询”这种隐蔽回归。
+        and (tonumber(tradeFeature.MultiRowQuoteJobsContractVersion) or 0) >= 1
+        and (tonumber(tradeFeature.QuoteTerminalRefreshContractVersion) or 0) >= 2
+        and (tonumber(tradeFeature.MaterialPriceCacheContractVersion) or 0) >= 1
+        and (tonumber(tradeFeature.BackgroundMaterialRevalidateContractVersion) or 0) >= 1
+        and (tonumber(tradeFeature.EconomicsRevisionContractVersion) or 0) >= 1
+        and (tonumber(tradeFeature.AutoRefreshBackgroundLeaseContractVersion) or 0) >= 2
+        and (tonumber(tradeFeature.AutoRefreshRuntimeContractVersion) or 0) >= 1
+        and (tonumber(tradeFeature.Authority.AutoRefreshWatchdogContractVersion) or 0) >= 3
+        and (tonumber(tradeFeature.Authority.RatioFastPublishContractVersion) or 0) >= 2
+        and type(S.Services and S.Services.MaterialPriceServiceV3) == "table"
+        and (tonumber(S.Services.MaterialPriceServiceV3.ContractVersion) or 0) >= 1
+        and (tonumber(S.Services.MaterialPriceServiceV3.FreshnessContractVersion) or 0) >= 1
+        and (tonumber(S.Services.MaterialPriceServiceV3.BackgroundRevalidateContractVersion) or 0) >= 1
+        and (tonumber(S.Services.MaterialPriceServiceV3.AnomalyGuardContractVersion) or 0) >= 1
+        and type(S.Services and S.Services.PriceQuoteQueueV3) == "table"
+        and (tonumber(S.Services.PriceQuoteQueueV3.RequestIdentityDedupContractVersion) or 0) >= 1
+        and (tonumber(S.Services.PriceQuoteQueueV3.EventPayloadContractVersion) or 0) >= 1
+        and (tonumber(S.Services.PriceQuoteQueueV3.MaterialPriceAuthorityContractVersion) or 0) >= 1
+        and (tonumber(S.Services.PriceQuoteQueueV3.PriorityQueueContractVersion) or 0) >= 1
+        and type(S.UIV3 and S.UIV3.LifeM16PagesContract) == "table"
+        and (tonumber(S.UIV3.LifeM16PagesContract.tradeMultiQuoteUiContractVersion) or 0) >= 1
         and (tonumber(tradeFeature.Authority.RouteRefreshRetryContractVersion) or 0) >= 2
         and (tonumber(tradeFeature.Authority.SingleFlightLatestRouteContractVersion) or 0) >= 1
         and (tonumber(tradeFeature.Authority.RequestTimeoutContractVersion) or 0) >= 1
         and type(tradeFeature.Commands) == "table" and type(tradeFeature.Commands.ToggleCurrentFavorite) == "function"
         and type(tradeFeature.Commands.SelectFavorite) == "function" and type(tradeFeature.Commands.SetSortMode) == "function"
         and type(tradeFeature.Commands.SelectRow) == "function" and type(tradeFeature.Commands.QuoteRowMaterials) == "function"
+        and type(tradeFeature.Commands.QuotePendingMaterials) == "function" and type(tradeFeature.Commands.CancelQuoteRowMaterials) == "function"
         and type(tradeFeature.GetFavoriteItems) == "function" and type(tradeFeature.GetRow) == "function"
         and type(tradeDetail) == "table" and (tonumber(tradeDetail.TradeDetailContractVersion) or 0) >= 2
         and type(tradeDetail.Open) == "function" and type(tradeDetail.Close) == "function"
     AddCheck(report, "v3_trade_detail_favorites_contract", tradeDetailOk, "blocker",
-        tradeDetailOk and "TradePayoutV3 formula/key resolver + bounded favorites + explicit row detail/quote workflow present" or "trade payout/detail/favorites contract unavailable")
+        tradeDetailOk and "TradePayoutV3 + durable material-price SWR + economics revisions + multi-row quote jobs present" or "trade payout/material-price/economics/multi-row quote contract unavailable")
     if type(buffHealth2) ~= "table" or (tonumber(buffHealth2.observationContractVersion) or 0) < 2 then usabilityFailures[#usabilityFailures + 1] = "buff_observation" end
     local healerFloatingSpec = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("combat.healer") or nil
     if healerFloatingSpec ~= nil then usabilityFailures[#usabilityFailures + 1] = "healer_recommendation_widget" end

@@ -332,7 +332,10 @@ local CAPABILITIES = {
     -- 500ms 有界 round-robin 补 mate/无战斗事件/重载中途覆盖，不扫描未追踪库，也不为 CD 开启全场战斗事件。mateType 1=ride/2=battle。
     -- 它是只读本地事实，不代表远端玩家状态，也禁止静态 expectedSec 伪造。
     ["X2Skill:GetMateCooldown"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Since="2025-09-16", Notes="mate cooldown query; mateType 1=ride, 2=battle; local cooldown authority only" },
-    ["X2Equipment:GetEquippedItemType"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="equip slot type query; reserved for gear/plates rebuilds" },
+    -- 中文维护注释（2026-09-25，equipment-slot-namespace-1）：该 API 的参数名 equipSlot 指实际 ES_* 槽位编号，
+    -- 返回值才是装备物品 ItemType。EST_* 是 Equip Slot Type 命名空间，不能直接作为 locator；18.307 跑商
+    -- 曾因此把 EST_BACKPACK 当背包槽读取并稳定得到空值。所有新消费者必须优先 ES_*，缺失时只能使用已验证槽号。
+    ["X2Equipment:GetEquippedItemType"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="actual equipment slot index (ES_*) -> equipped itemType; do not pass EST_* slot-type constants" },
     ["X2Mate:IsPlayerPetExists"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="pet/mate existence; reserved for healer summon handling" },
     ["X2Store:GetSpecialtyRatioBetween"] = { OfficialState="OfficialEnabled", Risk="server_query" },
     -- X2House getters (RU 2026-08-19). Candidate registration only: no

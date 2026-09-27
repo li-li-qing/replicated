@@ -216,8 +216,16 @@ function M:EnsureCreated()
         if type(feature) ~= "table" or type(feature.Commands) ~= "table" or type(feature.Commands.QuoteRowMaterials) ~= "function" then
             return false, "贸易品材料询价命令不可用"
         end
-        local ok, quoteErr = feature.Commands:QuoteRowMaterials(M.rowKey)
-        if ok == true then M:Refresh("quote_requested") end
+        local row = type(feature.GetRow) == "function" and feature:GetRow(M.rowKey) or nil
+        local ok, quoteErr
+        if type(row) == "table" and row.quoteJobActive == true and type(feature.Commands.CancelQuoteRowMaterials) == "function" then
+            -- 维护（2026-09-25，trade-row-job-cancel-ui-1）：取消只解绑当前 RowJob requester；共享材料若仍被
+            -- 其它货物使用，PriceQuoteQueueV3 继续完成该 Native 请求。Presentation 不直接操作 Queue。
+            ok, quoteErr = feature.Commands:CancelQuoteRowMaterials(M.rowKey, "trade_detail_user_cancel")
+        else
+            ok, quoteErr = feature.Commands:QuoteRowMaterials(M.rowKey)
+        end
+        if ok == true then M:Refresh("quote_action") end
         return ok, quoteErr
     end
     self.favoriteButton.onClick = function()
@@ -266,10 +274,28 @@ end
 function M:Subscribe()
     if self.subscribed then return true end
     local feature = Feature()
-    if type(feature) == "table" and S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" and type(feature.UpdateTopic) == "string" then
-        S.Events:SubscribeInternal(feature.UpdateTopic, self, function()
+    if type(feature) ~= "table" or S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then
+        return false, "跑商详情内部事件总线不可用"
+    end
+    if type(feature.UpdateTopic) == "string" and feature.UpdateTopic ~= "" then
+        if S.Events:SubscribeInternal(feature.UpdateTopic, self, function()
             if M.visible then M:Refresh("feature_update") end
-        end)
+        end) ~= true then return false, "跑商详情更新事件订阅失败" end
+    end
+    -- 中文维护注释（2026-09-25，feature-profile-lifecycle-1）：详情浮窗不经过 WidgetHost，过去因此
+    -- 不知道功能方案已经 Disable。Trade Feature 会先 Demand:Clear；这里收到 disabled 后只同步 lease
+    -- 事实并隐藏这个瞬时详情面板，绝不二次 Release。详情不做“自动重开”：重新启用跑商后由用户再次
+    -- 选择贸易品，避免旧 rowKey/旧路线在新 Authority 投影上被误恢复。无 Tick、无轮询。
+    local lifecycleTopic = (S.FeatureRuntime and S.FeatureRuntime.LifecycleTopic) or "v3.feature.lifecycle"
+    if S.Events:SubscribeInternal(lifecycleTopic, self, function(_, changedId, state)
+        if tostring(changedId or "") ~= tostring(feature.Id or "") or tostring(state or "") ~= "disabled" then return end
+        M.acquired = false -- Feature Disable 已经 Clear Demand；禁止 Release stale token。
+        M.visible = false
+        if M.surface ~= nil and type(M.surface.Show) == "function" then M.surface:Show(false) end
+        M:Unsubscribe()
+    end) ~= true then
+        if type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
+        return false, "跑商详情生命周期事件订阅失败"
     end
     self.subscribed = true
     return true
@@ -334,8 +360,15 @@ function M:Refresh(reason)
     else
         self.table:SetViewState("ready")
     end
-    self.quoteButton:SetEnabled(pending > 0)
-    self.quoteButton:SetText(pending > 0 and ("询价当前材料(" .. tostring(pending) .. ")") or "材料已询价")
+    -- 维护（2026-09-25，trade-multi-row-detail-progress-1）：详情窗只展示当前 RowJob 进度，不创建第二套任务状态。
+    -- 该行询价中时按钮禁用并显示真实 completed/total；其它货物的 RowJob 不影响当前详情按钮。
+    local rowJobActive = row.quoteJobActive == true
+    self.quoteButton:SetEnabled(rowJobActive or pending > 0)
+    if rowJobActive then
+        self.quoteButton:SetText("取消询价 " .. tostring(row.quoteJobCompleted or 0) .. "/" .. tostring(row.quoteJobTotal or 0))
+    else
+        self.quoteButton:SetText(pending > 0 and ("询价当前材料(" .. tostring(pending) .. ")") or "材料已询价")
+    end
     self.favoriteButton:SetEnabled(row.cargoMode ~= true and projection.fromZone ~= nil and projection.toZone ~= nil)
     self.favoriteButton:SetText(row.cargoMode == true and "随身扫描" or (projection.currentRouteFavorite == true and "取消路线收藏" or "收藏路线"))
     self.trackButton:SetEnabled(tonumber(row.itemType) ~= nil)
@@ -374,7 +407,8 @@ function M:Open(rowKey)
     end
     self.rowKey = tostring(row.key or rowKey or "")
     if type(feature.Commands) == "table" and type(feature.Commands.SelectRow) == "function" then feature.Commands:SelectRow(self.rowKey) end
-    self:Subscribe()
+    local subscribed, subscribeErr = self:Subscribe()
+    if subscribed ~= true then self:ReleaseConsumer("subscribe_failed"); return false, subscribeErr end
     self.visible = true
     self:Refresh("open")
     local restored, restoreErr = self.surface:SetMinimized(false, false)

@@ -196,6 +196,12 @@ local function EnsureScopeSettingsCache()
             info = S.Utils.DeepCopy(profile.info or {}),
             components = S.Utils.DeepCopy(profile.components or {}),
         }
+        -- 中文维护注释（2026-09-27，target-alias-hud-2）：自定义名字只存在于目标 HUD。
+        -- 几何 Authority 位于独立 alias Store，不能塞回 v3.buff_display/layout 的既有 schema；这里
+        -- 只在 settingsRevision 改变时做 O(1) 小快照，Renderer/Projection 热路径不得直接读 Store。
+        if name == "target" and type(F.GetTargetAliasHudConfigProjection) == "function" then
+            scopeSettingsCache[name].targetAlias = F:GetTargetAliasHudConfigProjection()
+        end
     end
     scopeSettingsCacheRevision = revision
 end
@@ -233,6 +239,8 @@ end
 
 local function AnyHeadComponent(scope)
     for _, key in ipairs(COMPONENT_KEYS) do if ComponentEnabled(key, scope) then return true end end
+    -- 自定义名字是目标 HUD 的独立语义槽；当其它目标组件全部关闭时，有已保存别名仍需位置 lane。
+    if scope == "target" and type(F.IsTargetAliasHeadEnabled) == "function" and F:IsTargetAliasHeadEnabled() then return true end
     return false
 end
 
@@ -569,6 +577,114 @@ local function ResolveTargetKind()
 end
 local function TargetIsPlayer()
     return ResolveTargetKind() == "PLAYER"
+end
+
+-- 中文维护注释（2026-09-27，target-alias-1）：
+-- 目标自定义名字只在 TARGET_CHANGED / Consumer 启动 / 用户显式保存删除时读取 UnitName，
+-- 严禁接入 PositionTick、DistanceTick 或 VisualTick。真实 UnitName 是目标身份 Authority；Alias Store
+-- 只是本地展示映射，不能反向修改真实名字、目标选择或任何网络状态。这里不以 TargetIsPlayer()
+-- 作为硬门：RU 的 target kind 曾实机出现延迟/误判，而保存动作本身只影响本地备注；用不可靠 kind
+-- 阻断会让合法玩家目标无法设置。用户未保存的 NPC/物件自然没有 alias，不会额外显示。
+local function ReadCurrentTargetName()
+    local api = Api()
+    if api == nil or type(api.CallCapability) ~= "function" or X2Unit == nil then return nil, "X2Unit 不可用" end
+    local ok, value, err = api:CallCapability("X2Unit:UnitName", X2Unit, "UnitName", "target")
+    if ok ~= true then return nil, tostring(err or "目标名字读取失败") end
+    local name = tostring(value or "")
+    if type(S.Utils) == "table" and type(S.Utils.Trim) == "function" then name = S.Utils.Trim(name)
+    else name = name:match("^%s*(.-)%s*$") end
+    if name == "" then return nil, "当前没有可读目标" end
+    return name
+end
+
+function F:RefreshTargetAliasIdentity(reason)
+    self.laneData.target = self.laneData.target or {}
+    local lane = self.laneData.target
+    local name = ReadCurrentTargetName()
+    local alias = nil
+    if name ~= nil and type(self.ResolveTargetAlias) == "function" then alias = self:ResolveTargetAlias(name) end
+    local changed = lane.targetName ~= name or lane.targetAlias ~= alias
+    lane.targetName, lane.targetAlias = name, alias
+    self.laneData.target = lane
+    if changed then
+        BumpLane("metadata") -- 仅复用内容 revision；不触发 Metadata Native 读取。
+        Publish("v3.buff_display.plates.updated", tostring(reason or "target_alias"))
+    end
+    Publish("v3.buff_display.target_alias", tostring(reason or "target_alias"))
+    return true, name
+end
+
+function F:GetCurrentTargetAliasEditorSnapshot()
+    local storeOk, storeErr = true, nil
+    if type(self.EnsureTargetAliasStoreLoaded) == "function" then storeOk, storeErr = self:EnsureTargetAliasStoreLoaded() end
+    local name, nameErr = ReadCurrentTargetName()
+    local alias = nil
+    if name ~= nil and type(self.ResolveTargetAlias) == "function" then
+        -- 编辑器需要在“显示关闭”时仍能看到已保存别名；直接读索引而不是 Resolve 的显示门。
+        alias = type(self.TargetAliasIndex) == "table" and self.TargetAliasIndex[name] or nil
+    end
+    local snapshotErr = storeOk == true and nameErr or tostring(storeErr or "目标自定义名字存档不可用")
+    if storeOk == true and nameErr == nil then snapshotErr = nil end
+    local hud = type(self.GetTargetAliasHudConfigProjection) == "function" and self:GetTargetAliasHudConfigProjection()
+        or { enabled=true, x=0, y=-94, fontSize=12, alpha=1.0 }
+    return {
+        available = storeOk == true,
+        targetAvailable = name ~= nil,
+        name = name,
+        alias = alias,
+        enabled = hud.enabled ~= false,
+        hud = { x=hud.x, y=hud.y, fontSize=hud.fontSize, alpha=hud.alpha },
+        count = type(self.TargetAliasState) == "table" and #(self.TargetAliasState.entries or {}) or 0,
+        error = snapshotErr,
+    }
+end
+
+function F:SaveCurrentTargetAlias(alias)
+    local name, nameErr = ReadCurrentTargetName()
+    if name == nil then return false, nameErr or "当前没有可读目标" end
+    if type(self.UpsertTargetAlias) ~= "function" then return false, "目标自定义名字 Store 未加载" end
+    local ok, err = self:UpsertTargetAlias(name, alias, "target_alias_save")
+    if ok ~= true then return false, err end
+    self:RefreshTargetAliasIdentity("target_alias_saved")
+    self:ReconcileLanes()
+    Publish("v3.buff_display.target_alias.config", "saved")
+    return true, "已保存 " .. name .. " 的自定义名字"
+end
+
+function F:RemoveCurrentTargetAlias()
+    local name, nameErr = ReadCurrentTargetName()
+    if name == nil then return false, nameErr or "当前没有可读目标" end
+    if type(self.RemoveTargetAlias) ~= "function" then return false, "目标自定义名字 Store 未加载" end
+    local ok, err = self:RemoveTargetAlias(name, "target_alias_remove")
+    if ok ~= true then return false, err end
+    self:RefreshTargetAliasIdentity("target_alias_removed")
+    self:ReconcileLanes()
+    Publish("v3.buff_display.target_alias.config", "removed")
+    return true, "已删除 " .. name .. " 的自定义名字"
+end
+
+function F:SetCurrentTargetAliasDisplayEnabled(value)
+    if type(self.SetTargetAliasDisplayEnabled) ~= "function" then return false, "目标自定义名字 Store 未加载" end
+    local ok, err = self:SetTargetAliasDisplayEnabled(value == true, "target_alias_display")
+    if ok ~= true then return false, err end
+    self:RefreshTargetAliasIdentity("target_alias_display")
+    self:ReconcileLanes()
+    Publish("v3.buff_display.target_alias.config", "display")
+    return true
+end
+
+-- 中文维护注释（target-alias-hud-2，校准提交边界）：HUD 校准器只把 target alias 的
+-- enabled/x/y/fontSize/alpha 草稿提交到独立 alias Store；真实名字映射仍由显式“保存名字/删除名字”
+-- 操作维护。这样取消校准不会写几何，且不会因为 HUD-only 保存重写大型 BuffDisplay Store。
+function F:PersistTargetAliasHudCalibration(value, reason)
+    if type(self.PersistTargetAliasHudConfig) ~= "function" then return false, "目标自定义名字 HUD Store 未加载" end
+    local ok, err = self:PersistTargetAliasHudConfig(value, reason or "target_alias_hud_calibration")
+    if ok ~= true then return false, err end
+    self:RefreshTargetAliasIdentity("target_alias_hud_calibration")
+    self:ReconcileLanes()
+    Publish("v3.buff_display.target_alias.config", "hud")
+    Publish("v3.buff_display.plates.updated", "target_alias_hud")
+    return true
 end
 
 -- 中文维护注释（UnitGearScore 规范化边界，2026-09-11）：
@@ -1215,6 +1331,8 @@ function F:_StartEvents()
         F.pvpMetrics.targetInvalidations = F.pvpMetrics.targetInvalidations + 1
         targetKindCache.kind, targetKindCache.at = nil, 0
         Publish("v3.buff_display.plates.updated", "target_identity_invalidated")
+        -- 名字读取只发生一次事件边；先清旧 target lane，再绑定新目标备注，绝不等 50ms/1s 轮询。
+        if type(F.RefreshTargetAliasIdentity) == "function" then F:RefreshTargetAliasIdentity("target_changed_alias") end
         F.eventEdges = (tonumber(F.eventEdges) or 0) + 1
         -- 中文维护：留存期间在事件边立即读已暴露的事实，不能延迟120ms直到短状态消失。
         -- forceRefresh 仅绕过共享Aura本次缓存，不遍历静态库；无消费者/关闭时不读Native。
@@ -1270,6 +1388,8 @@ function F:ReconcileDemand(before, after)
         ok, err = self:_StartTask()
         if ok ~= true then self:_ReleaseAura(); return false, err end
         self:_StartEvents()
+        -- Consumer 启动时可能游戏里已经有目标而不会再收到 TARGET_CHANGED；只补读一次名字/别名。
+        if type(self.RefreshTargetAliasIdentity) == "function" then self:RefreshTargetAliasIdentity("consumer_start_alias") end
         local laneOk, laneErr = self:ReconcileLanes()
         if laneOk ~= true then
             self:_StopEvents()
@@ -1318,6 +1438,13 @@ F.Demand = demand
 function F:Initialize()
     local ok, err = self:EnsureStoreLoaded()
     if ok ~= true then return false, err end
+    -- 别名是可选 Presentation 数据域：损坏/写保护不能拖垮整个状态显示，只记录并禁用该子能力。
+    if type(self.EnsureTargetAliasStoreLoaded) == "function" then
+        local aliasOk, aliasErr = self:EnsureTargetAliasStoreLoaded()
+        if aliasOk ~= true and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Warn) == "function" then
+            S.DiagnosticsManager:Warn("buff_display_v3", "TARGET_ALIAS_STORE_UNAVAILABLE", "目标自定义名字存档不可用，状态显示本体继续运行", { error = tostring(aliasErr or "unknown") })
+        end
+    end
     local aura = Aura()
     if type(aura) ~= "table" or type(aura.GetSnapshot) ~= "function" or type(aura.GetStatusMap) ~= "function" then
         return false, "AuraObservationV3 unavailable"
@@ -1382,6 +1509,16 @@ function F:GetHealth()
             offHandPresent = type(self.laneData.player and self.laneData.player.offHand) == "table",
             rangedPresent = type(self.laneData.player and self.laneData.player.ranged) == "table",
             wingsPresent = type(self.laneData.player and self.laneData.player.wings) == "table",
+        },
+        -- 中文维护注释（.18.321 目标自定义名字诊断）：这里只暴露已经加载的别名 Store 与 lane 缓存，
+        -- 不读取 UnitName、不遍历别名表、不触发持久化，因此模块诊断不会把冷路径变成 Native/Store 热路径。
+        targetAlias = {
+            storeLoaded = self.TargetAliasStoreLoaded == true,
+            enabled = type(self.TargetAliasState) ~= "table" or self.TargetAliasState.enabled ~= false,
+            count = type(self.TargetAliasState) == "table" and #(self.TargetAliasState.entries or {}) or 0,
+            currentName = self.laneData.target and self.laneData.target.targetName or nil,
+            currentAlias = self.laneData.target and self.laneData.target.targetAlias or nil,
+            error = self.TargetAliasStoreError,
         },
         activeLanes = activeLanes,
         auraConsumers = tonumber(ah.consumers) or 0, taskActive = S.Scheduler ~= nil and S.Scheduler.tasks and S.Scheduler.tasks[self.taskName] ~= nil }
@@ -1961,6 +2098,30 @@ F.Commands = {
             lanePresent = type(lane) == "table", capturedAt = type(S.NowMs) == "function" and S.NowMs() or 0 }
         if S.SafeChat ~= nil then S.SafeChat("[状态诊断] " .. text, "info", "buff_display") end
         return true, text
+    end,
+    GetCurrentTargetAlias = function()
+        return type(F.GetCurrentTargetAliasEditorSnapshot) == "function" and F:GetCurrentTargetAliasEditorSnapshot()
+            or { available=false, targetAvailable=false, error="目标自定义名字接口不可用" }
+    end,
+    SaveCurrentTargetAlias = function(_, alias)
+        if type(F.SaveCurrentTargetAlias) ~= "function" then return false, "目标自定义名字接口不可用" end
+        return F:SaveCurrentTargetAlias(alias)
+    end,
+    RemoveCurrentTargetAlias = function()
+        if type(F.RemoveCurrentTargetAlias) ~= "function" then return false, "目标自定义名字接口不可用" end
+        return F:RemoveCurrentTargetAlias()
+    end,
+    SetTargetAliasDisplayEnabled = function(_, value)
+        if type(F.SetCurrentTargetAliasDisplayEnabled) ~= "function" then return false, "目标自定义名字接口不可用" end
+        return F:SetCurrentTargetAliasDisplayEnabled(value)
+    end,
+    GetDefaultTargetAliasHudConfig = function()
+        return type(F.GetDefaultTargetAliasHudConfig) == "function" and F:GetDefaultTargetAliasHudConfig()
+            or { enabled=true, x=0, y=-94, fontSize=12, alpha=1.0 }
+    end,
+    PersistTargetAliasHudCalibration = function(_, value, reason)
+        if type(F.PersistTargetAliasHudCalibration) ~= "function" then return false, "目标自定义名字 HUD 校准接口不可用" end
+        return F:PersistTargetAliasHudCalibration(value, reason)
     end,
     ResetLayoutSettings = function()
         if type(F.PersistResetLayoutSettings) ~= "function" then return false, "布局重置持久化入口不可用" end

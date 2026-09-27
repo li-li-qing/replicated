@@ -13,6 +13,7 @@ local C = S.Constants
 
 S.Theme = {}
 local T = S.Theme
+T.ManualTypographyOwnershipContractVersion = 1 -- 中文维护（2026-09-24，visual-guide-resolution-style-recovery-1）：允许少数 world-HUD glyph 明确声明 rsManualTypography=true，由专属 Presenter 管理原生字体尺寸。普通页面控件默认仍由 Theme Authority 响应 addon/font scale；仅显式 opt-out 的控件跳过 RefreshTypography，避免分辨率/画质切换把手工字号重置为主题 10..24 范围。
 
 local function Token(path, fallback)
     local tokens = S.UITokens
@@ -540,7 +541,12 @@ function T:RefreshTypography()
     if type(controls) ~= "table" then return 0 end
     local changed = 0
     for _, widget in pairs(controls) do
-        if widget ~= nil and widget.style ~= nil and widget.rsBaseFontSize ~= nil and widget.style.SetFontSize ~= nil then
+        -- 维护（2026-09-24，visual-guide-resolution-style-recovery-1）：Theme 只拥有普通文本的
+        -- responsive typography。范围辅助/单位连线的“.” glyph 把字体大小当作点直径，Presenter
+        -- 会映射到 16..82px，若这里按主题上限 24px 重算就会在切分辨率后瞬间变成小点。
+        -- rsManualTypography 必须由创建该控件的专属 Presenter 显式设置；默认 nil/false 不改变
+        -- 任何既有页面/HUD。Theme 不清理该 flag，也不代替 Presenter 写回用户配置。
+        if widget ~= nil and widget.rsManualTypography ~= true and widget.style ~= nil and widget.rsBaseFontSize ~= nil and widget.style.SetFontSize ~= nil then
             local applied = self:ResolveFontSize(widget.rsBaseFontSize, widget.rsLocalFontScale)
             if widget.rsAppliedFontSize ~= applied then
                 local ok = pcall(function() widget.style:SetFontSize(applied) end)

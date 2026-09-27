@@ -26,6 +26,9 @@ L.ViewportLogicalRectContractVersion = 1
 L.EffectiveGeometryCalibrationContractVersion = 1 -- 中文维护注释：保留 RU Effective Geometry 单位校准契约，供外部原生控件和诊断继续使用。
 L.SuiteOwnedViewportAnchorContractVersion = 1 -- 中文维护注释：从 .18.190 起，Suite 自己创建并由 Diff Authority 布局的控件，Popup 锚点必须优先使用完整 NativeStateCache 父链，而不能继续猜测 GetEffectiveOffset 的单位。
 L.StartupMetricsSettleContractVersion = 1 -- 中文维护注释：启动/重登后的 UIParent 与 UI Scale 允许晚于插件加载稳定；只做有界 one-shot 复采样，不引入永久 Poll/Tick。
+L.UiEnvironmentRevisionContractVersion = 1 -- 中文维护（2026-09-24，visual-guide-resolution-style-recovery-1）：分辨率/UI Scale/原生 UI 重载可能在几何签名不变时仍重置 TextStyle。Layout 只发布“UI 环境已发生边沿”的 session revision，不拥有业务样式；高频 Presenter 可据此一次性失效自己的 Native diff cache，而不是每帧重写字体。
+L.uiEnvironmentRevision = tonumber(L.uiEnvironmentRevision) or 0
+L.lastUiEnvironmentReason = L.lastUiEnvironmentReason or "bootstrap"
 L.coordinateSystem = {
     origin = "top_left",
     xPositive = "right",
@@ -381,6 +384,21 @@ function L:PrimeCurrentSignature()
     return context
 end
 
+-- 维护（2026-09-24，visual-guide-resolution-style-recovery-1）：这个 revision 只表示 Native/UI
+-- 环境出现了可能使“已写入的视觉样式”失真的边沿，不代表 Feature 数据变化。Authority 仍是
+-- Layout 对 viewport/scale 的事实；调用者只能把它用于丢弃 Presentation cache，禁止据此改用户配置。
+-- 之所以不能只看 MakeSignature：切换画质或 UI_RELOADED 可能保持相同分辨率，却让 Native TextStyle
+-- 回到创建时默认字号。revision 是 session-only 标量，不持久化，也不触发任何额外扫描。
+function L:BumpUiEnvironmentRevision(reason)
+    self.uiEnvironmentRevision = (tonumber(self.uiEnvironmentRevision) or 0) + 1
+    self.lastUiEnvironmentReason = tostring(reason or "unknown")
+    return self.uiEnvironmentRevision
+end
+
+function L:GetUiEnvironmentRevision()
+    return tonumber(self.uiEnvironmentRevision) or 0, tostring(self.lastUiEnvironmentReason or "unknown")
+end
+
 -- Apply one responsive presentation transaction. In V3 rebuild mode the
 -- active presentation Authority is UIHostManager, not the legacy UI factory.
 -- Keeping this bridge here prevents resolution/UI-scale changes from falling
@@ -415,6 +433,9 @@ function L:RefreshNow(fromMetricsChange)
     local fresh = self:GetContext(true)
     self.lastSignature = self:MakeSignature(fresh)
     self.invalidated = false
+    -- Application-level UI settings (font/addon scale) can restyle Native labels even when the
+    -- viewport signature itself is unchanged. Publish the visual-environment edge before reflow.
+    self:BumpUiEnvironmentRevision(fromMetricsChange == true and "refresh_now_metrics" or "refresh_now")
     return self:ApplyResponsivePresentation(fromMetricsChange == true)
 end
 
@@ -427,6 +448,7 @@ function L:PollChanges()
     self.context, self.invalidated, self.lastSignature = fresh, false, signature
     if changed then
         self.metricsRevision = (tonumber(self.metricsRevision) or 0) + 1
+        self:BumpUiEnvironmentRevision("metrics_signature_changed")
         self:ApplyResponsivePresentation(true)
     end
     return changed
@@ -520,7 +542,11 @@ function L:StartMetricsEvents()
         -- 维护：绑定成功与实际收到回调是两种证据；只保留计数和末次原因，不存事件历史。
         L.metricsNotifications.signals=L.metricsNotifications.signals+1
         if reason=="native_on_scale" then L.metricsNotifications.nativeScaleDeliveryObserved=true end
-        L:PollChanges()
+        -- PollChanges 在 viewport/signature 真变化时会 bump revision；若签名不变（典型：画质切换
+        -- / UI_RELOADED 只重置 TextStyle），仍必须发布一次 UI 环境 revision，供手工样式 Presenter
+        -- 失效旧 Native cache。禁止在这里直接操作任何 Feature/UI 控件。
+        local changed = L:PollChanges()
+        if changed ~= true then L:BumpUiEnvironmentRevision("native_signal:" .. tostring(reason or "unknown")) end
         ScheduleSettle(reason)
     end
     if S.Api and type(S.Api.StartUiMetricsNotifications) == "function" then
@@ -977,6 +1003,108 @@ function L:ClampRecoverableTopLeft(x, y, width, height, options)
 
     return Clamp(tonumber(x) or left, minX, math.max(minX, maxX)),
         Clamp(tonumber(y) or top, minY, math.max(minY, maxY))
+end
+
+-- 维护（2026-09-25，screen-buttons-deoverlap-1）：独立屏幕按钮（Gear / 功能方案）共享同一
+-- screen_buttons 吸附组，但恢复时每个按钮各自 ResolvePlacement；当新 viewport 比保存时更窄
+-- （或临时 viewport 与最终 viewport 不一致）时，多个 RIGHT/BOTTOM 锚点会被 ClampTopLeft 压到
+-- 完全相同的矩形，用户只能看到最上面的一个。本 solver 只在“已经重叠”时移动矩形：
+-- 输入/输出都是纯数据，不读 Native、不写 Store、不注册任何周期任务，调用方保留几何提交权。
+-- 顺序保持输入顺序（= 方案顺序），候选位移只取相邻 blocker 的右侧/下方/左侧/上方，
+-- 并选择位移最小且完全落在当前 safe viewport 内的解；无解时做有界网格扫描。
+-- 没有重叠时结果与输入逐字节相同，因此“同分辨率精确恢复”不受影响。
+L.ScreenDeoverlapContractVersion = 1
+L.screenDeoverlapMetrics = L.screenDeoverlapMetrics or { solves = 0, adjusted = 0, unresolved = 0 }
+
+local function ScreenRectsOverlap(ax, ay, aw, ah, bx, by, bw, bh, gapX, gapY)
+    return ax < bx + bw + gapX and bx < ax + aw + gapX
+        and ay < by + bh + gapY and by < ay + ah + gapY
+end
+
+function L:DeoverlapScreenRects(items, options)
+    local results = {}
+    if type(items) ~= "table" or #items == 0 then return results end
+    options = type(options) == "table" and options or {}
+    local context = self:GetContext()
+    local gapX = math.max(0, Finite(options.gapX, 0))
+    local gapY = math.max(0, Finite(options.gapY, 0))
+    local clampOptions = tonumber(options.edge) ~= nil and { edge = tonumber(options.edge) } or nil
+    local accepted = {}
+    self.screenDeoverlapMetrics.solves = (tonumber(self.screenDeoverlapMetrics.solves) or 0) + 1
+
+    local function Occupied(x, y, width, height)
+        for _, other in ipairs(accepted) do
+            if ScreenRectsOverlap(x, y, width, height, other.x, other.y, other.width, other.height, gapX, gapY) then
+                return true
+            end
+        end
+        return false
+    end
+
+    for index, item in ipairs(items) do
+        if type(item) ~= "table" then return results end
+        local width = math.max(1, Finite(item.width, 1))
+        local height = math.max(1, Finite(item.height, 1))
+        local x, y = self:ClampTopLeft(Finite(item.x, context.safeLeft), Finite(item.y, context.safeTop), width, height, clampOptions)
+        local candidate = {
+            key = item.key, index = index, order = tonumber(item.order) or index,
+            x = x, y = y, width = width, height = height, adjusted = false,
+        }
+        if Occupied(x, y, width, height) then
+            local best, bestScore = nil, nil
+            local function Consider(cx, cy)
+                local fx, fy = self:ClampTopLeft(cx, cy, width, height, clampOptions)
+                -- 只有“请求点本身就在 safe viewport 内”才接受，避免用 clamp 制造假解。
+                if math.abs(fx - cx) > 0.5 or math.abs(fy - cy) > 0.5 then return end
+                if Occupied(fx, fy, width, height) then return end
+                local dx, dy = fx - x, fy - y
+                local score = dx * dx + dy * dy
+                if bestScore == nil or score < bestScore - 0.0001 then best, bestScore = { x = fx, y = fy }, score end
+            end
+            for _, other in ipairs(accepted) do
+                Consider(other.x + other.width + gapX, y)
+                Consider(x, other.y + other.height + gapY)
+                Consider(other.x - width - gapX, y)
+                Consider(x, other.y - height - gapY)
+            end
+            if best == nil then
+                -- 有界兜底：粗网格从左上到右下找第一个空位，最多 1024 个采样点。
+                local step = math.max(4, math.floor(math.min(width, height) / 2))
+                local maxX = math.max(context.safeLeft, context.logicalWidth - (tonumber(context.safeRight) or 0) - width)
+                local maxY = math.max(context.safeTop, context.logicalHeight - (tonumber(context.safeBottom) or 0) - height)
+                local probes = 0
+                local gx = context.safeLeft
+                while gx <= maxX and best == nil and probes < 1024 do
+                    local gy = context.safeTop
+                    while gy <= maxY and probes < 1024 do
+                        probes = probes + 1
+                        if not Occupied(gx, gy, width, height) then best = { x = gx, y = gy }; break end
+                        gy = gy + step
+                    end
+                    gx = gx + step
+                end
+            end
+            if best ~= nil then
+                candidate.x, candidate.y, candidate.adjusted = best.x, best.y, true
+                self.screenDeoverlapMetrics.adjusted = (tonumber(self.screenDeoverlapMetrics.adjusted) or 0) + 1
+            else
+                -- 实在无解（例如 viewport 比按钮本身还小）时保留原投影，绝不隐藏该按钮。
+                self.screenDeoverlapMetrics.unresolved = (tonumber(self.screenDeoverlapMetrics.unresolved) or 0) + 1
+            end
+        end
+        accepted[#accepted + 1] = candidate
+        results[#results + 1] = candidate
+    end
+    return results
+end
+
+function L:GetScreenDeoverlapSnapshot()
+    return {
+        contractVersion = tonumber(self.ScreenDeoverlapContractVersion) or 0,
+        solves = tonumber(self.screenDeoverlapMetrics.solves) or 0,
+        adjusted = tonumber(self.screenDeoverlapMetrics.adjusted) or 0,
+        unresolved = tonumber(self.screenDeoverlapMetrics.unresolved) or 0,
+    }
 end
 
 function L:IsRectFullyVisible(x, y, width, height, options)

@@ -10,8 +10,12 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 S.Services = S.Services or {}
 local Q = {
-    version = 2,
+    version = 3,
     EventAuthorityContractVersion = 1,
+    -- 中文维护注释（2026-09-25，auction-listing-unit-price-1）：GetSearchedItemInfo 的 direct/bid 是整条
+    -- 拍卖记录价格，而不是材料单价。数量是价格归一 Authority 的必要组成；下游不得再把 listing total
+    -- 当作 unit cost。该契约同时要求兼容 RU 常见 itemStack 字段，避免数量丢失后错误放大材料成本。
+    ListingUnitPriceContractVersion = 1,
     presentationBoundary = "service_only",
     presentationDebt = nil,
     Topic = "v3.auction_query.updated",
@@ -66,7 +70,12 @@ local function ItemName(info)
 end
 local function Amount(info)
     return Nested(info, function(row)
-        local value = tonumber(row.stackCount or row.count or row.amount or row.itemCount)
+        -- 中文维护注释（2026-09-25，auction-listing-unit-price-1）：官方 Auction API 的分割购买接口
+        -- 使用 itemStack 命名，RU 搜索结果也可能沿用该字段。旧实现漏掉 itemStack 后 quantity=nil，
+        -- PriceQuote fallback 只能看到整单 directPrice，最终会把几百/几千件的总价误当成 1 件单价。
+        -- 这里只做 bounded 字段归一，不调用 Native；数量至少为 1，保持 AuctionQuery 为字段 Authority。
+        local value = tonumber(row.itemStack or row.stackCount or row.stack or row.count or row.amount
+            or row.itemCount or row.quantity or row.stackSize)
         return value ~= nil and math.max(1, math.floor(value)) or nil
     end)
 end
@@ -106,6 +115,15 @@ local function ItemGrade(info)
         return value ~= nil and math.floor(value) or nil
     end)
 end
+
+local function UnitPrice(totalPrice, quantity)
+    local total = tonumber(totalPrice)
+    local count = tonumber(quantity)
+    if total == nil or total ~= total or total <= 0 or count == nil or count ~= count or count < 1 then return nil end
+    -- Cost projection is copper-integer based. Ceil is deliberately conservative: a fractional average copper
+    -- must never understate the material cost, and the rounding error is bounded to <1 copper per unit.
+    return math.max(1, math.ceil(total / count))
+end
 local function NormalizeRow(info, index)
     if type(info) ~= "table" then return nil end
     local itemType = ItemType(info)
@@ -114,6 +132,8 @@ local function NormalizeRow(info, index)
     local count = Amount(info)
     local direct = Price(info, { "directPriceStr", "directPrice", "buyoutPriceStr", "buyoutPrice" })
     local bid = Price(info, { "bidPriceStr", "bidPrice", "currentBidPriceStr", "currentBidPrice" })
+    local directUnit = UnitPrice(direct, count)
+    local bidUnit = UnitPrice(bid, count)
     local seller = FirstText(info, { "sellerName", "seller", "ownerName", "characterName" })
     if name == nil and itemType ~= nil and S.Localization ~= nil and type(S.Localization.GetName) == "function" then
         name = S.Localization:GetName("item", itemType, nil)
@@ -128,7 +148,10 @@ local function NormalizeRow(info, index)
     return {
         key = "auction:" .. tostring(index), resultIndex = index, itemType = itemType, itemGrade = itemGrade,
         name = tostring(name), text = table.concat(parts, " · "), statusText = "搜索结果", tone = "default",
-        quantity = count, directPrice = direct, bidPrice = bid, seller = seller,
+        -- directPrice/bidPrice remain raw LISTING totals for the auction UI. unit* fields are the only
+        -- material-cost-safe values and are derived from the same detached row + normalized quantity.
+        quantity = count, directPrice = direct, bidPrice = bid,
+        unitDirectPrice = directUnit, unitBidPrice = bidUnit, seller = seller,
     }
 end
 

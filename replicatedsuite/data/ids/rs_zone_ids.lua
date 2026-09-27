@@ -60,6 +60,13 @@ local DEFINITIONS = {
     { 103, "WHALESONG",     "Whalesong",     "Coastal" },
 }
 
+-- 中文维护注释（2026-09-25，zone-localized-alias-1）：RU 客户端部分贸易地区在不同版本/汉化包中
+-- 使用不同中文名。主 display name 保持历史兼容，aliases 只作为“从实机标题反查稳定 ZoneId”的证据，
+-- 绝不生成第二套 Zone Authority。DailyAuctionMaterialsV3 等消费者应同时匹配 nameZh + aliases。
+local DISPLAY_NAME_ALIASES_ZH = {
+    [93] = { "太初之地" }, -- Ahnimar：当前 RU 做货任务/贸易文本使用“太初之地”；旧静态显示仍可能是“安息之地”。
+}
+
 local DISPLAY_NAME_ZH = {
     [1] = "格威尔森林",
     [2] = "玛瑞诺普",
@@ -105,6 +112,7 @@ for _, def in ipairs(DEFINITIONS) do
         semanticKey = semanticKey,
         nameEn = nameEn,
         nameZh = DISPLAY_NAME_ZH[zoneId],
+        nameZhAliases = DISPLAY_NAME_ALIASES_ZH[zoneId],
         tradeQuality = tradeQuality,
         source = SOURCE,
         confidence = "curated",

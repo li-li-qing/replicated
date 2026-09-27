@@ -702,8 +702,44 @@ S.Data.TradePrices[33] = {
 
 S.Data.TradeOutletNames = { [5]="新月王国", [8]="双冠丘陵", [20]="十字星平原", [4]="索兹里德?", [12]="维拉内尔", [17]="伊尼斯泰尔", [33]="煦日之野" }
 -- Freshness/pack category multipliers retained from the supplied working packratio.
+-- 中文维护（2026-09-25，trade-preserved-freshness-1）：RU 实机“[保存] 新鲜”明确显示出售奖励 +3%。
+-- 18.311 漏掉“保存”类别，导致所有“保存特产/保存特制特产”等售价只计算货率×经商熟练度，
+-- 少乘 1.03。以 [黄金]保存特制特产 -> 双冠丘陵 为实机锚点：332000 经商、113% 货率时，
+-- 静态基价 291257/107 × 113 × 2.66 × 1.03 = 842733 铜，正好对应 84金27银33铜。
+-- Authority 边界：货率仍来自 X2Store，经商熟练度来自 X2Ability；本表只保存由物品类别名称确定的
+-- 静态奖励倍率。禁止把实时 UI 金额反推写回静态基价，也不要在 Tick/循环中做模糊名称扫描。
+-- 维护（2026-09-27，trade-freshness-matrix-v3）：售价表中的“铜/1%货率”基价不包含贸易品
+-- 新鲜度/品类奖励，因此这里必须覆盖所有会出现在 TradePrices / Native 名称中的品类标签。此前表中
+-- “特供”误写为 1.15（实际对应 Luxury +30%），同时遗漏“无添加”（无“发酵”后缀）以及原大陆
+-- Coastal/Rich 名称，造成大量货物稳定低估 15%~30%。规则按最长/最具体 token 在前排列，避免
+-- “无添加发酵”先被“无添加”截获；运行时只遍历这 12 条小表，不扫描 TradePrices。
+-- 语义锚点：Commercial/标准/基本发酵 +5%，Fine/新鲜/无添加 +15%，Luxury/特供/天然发酵 +30%，
+-- Preserved/保存/加工发酵 +3%；Auroria 的 Coastal/Rich 商品在物品说明中同属 Coastal +30%。
+S.Data.TradeNeutralPayoutNames = {
+    ["伊尼斯泰尔时空碎片"] = true, ["十字星平原时空碎片"] = true,
+    ["双冠丘陵伊兹那皇室特产"] = true, ["白雪森林伊兹那皇室特产"] = true,
+    ["哈里洛废墟持国天特产"] = true, ["翡翠谷持国天特产"] = true,
+    ["哈里洛废墟石灯"] = true, ["棋盘石林皮毯"] = true, ["翡翠谷偃月刀"] = true,
+    ["草原之脉精制软膏"] = true, ["地狱沼泽地带加工过的黏合剂"] = true,
+    ["埋骨之地角笛"] = true, ["珊瑚海岸鱼翅"] = true, ["黄金平原尾毛被子"] = true,
+    ["蓝盐商会运输品三大家族"] = true, ["蓝盐商会运输品伊兹那皇室"] = true,
+    ["蓝盐商会运输品伊尼斯泰尔"] = true, ["蓝盐商会运输品十字星平原"] = true,
+    ["蓝盐商会运输品多闻天"] = true, ["蓝盐商会运输品广目天"] = true,
+    ["蓝盐商会运输品持国天"] = true, ["蓝盐商会运输品新月王国"] = true,
+    ["蓝盐商会运输品梦之流放者"] = true, ["蓝盐商会运输品游牧帝国"] = true,
+}
+
 S.Data.TradeNameMultipliers = {
-    { token = "加工发酵", value = 1.03 }, { token = "无添加发酵", value = 1.15 },
-    { token = "基本发酵", value = 1.05 }, { token = "天然发酵", value = 1.30 },
-    { token = "特供", value = 1.15 }, { token = "标准", value = 1.05 }, { token = "新鲜", value = 1.15 },
+    { token = "无添加发酵", value = 1.15, category = "fine", label = "无添加" },
+    { token = "保存发酵", value = 1.03, category = "preserved", label = "保存" },
+    { token = "加工发酵", value = 1.03, category = "preserved", label = "加工" },
+    { token = "基本发酵", value = 1.05, category = "commercial", label = "基本" },
+    { token = "天然发酵", value = 1.30, category = "luxury", label = "天然" },
+    { token = "无添加", value = 1.15, category = "fine", label = "无添加" },
+    { token = "Coastal", value = 1.30, category = "coastal", label = "Coastal" },
+    { token = "Rich", value = 1.30, category = "coastal", label = "Rich/Coastal" },
+    { token = "特供", value = 1.30, category = "luxury", label = "特供" },
+    { token = "标准", value = 1.05, category = "commercial", label = "标准" },
+    { token = "新鲜", value = 1.15, category = "fine", label = "新鲜" },
+    { token = "保存", value = 1.03, category = "preserved", label = "保存" },
 }

@@ -7,10 +7,10 @@ local function Boot(options)
         feature_a={id='feature_a',name='模块A',route='combat.a'},feature_b={id='feature_b',name='模块B',route='life.b'}}}}
     local S=ReplicatedSuite
     function S.FeatureRegistry:Get(id)return self.features[id]end
-    local calls={create=0,show=0,capture=0,getPage=0,repage=0,setText=0,deactivate=0,clear=0,title=0,status=0,captureCaps={},repageCaps={}}
+    local calls={create=0,show=0,capture=0,getPage=0,repage=0,setText=0,deactivate=0,clear=0,title=0,status=0,captureCaps={},repageCaps={},actualBytes=0}
     S.ModuleDiagnosticsHub={}
-    function S.ModuleDiagnosticsHub:Capture(id,cap)calls.capture=calls.capture+1;calls.captureCaps[#calls.captureCaps+1]=cap;return {id='snap'..calls.capture,moduleId=id,parts=3,report=id..':REPORT',session={capacity=cap}}end
-    function S.ModuleDiagnosticsHub:Repage(source,cap)calls.repage=calls.repage+1;calls.repageCaps[#calls.repageCaps+1]=cap;return {id=source.id,moduleId=source.moduleId,parts=2,report=source.report,session={capacity=cap}}end
+    function S.ModuleDiagnosticsHub:Capture(id,cap)calls.capture=calls.capture+1;calls.captureCaps[#calls.captureCaps+1]=cap;return {id='snap'..calls.capture,moduleId=id,parts=3,report=id..':REPORT',session={capacity=cap,bounds={{offset=0,length=10},{offset=10,length=10},{offset=20,length=10}}}}end
+    function S.ModuleDiagnosticsHub:Repage(source,cap)calls.repage=calls.repage+1;calls.repageCaps[#calls.repageCaps+1]=cap;return {id=source.id,moduleId=source.moduleId,parts=2,report=source.report,session={capacity=cap,bounds={{offset=0,length=15},{offset=15,length=15}}}}end
     function S.ModuleDiagnosticsHub:GetPage(snap,index)calls.getPage=calls.getPage+1;return snap.moduleId..':PAGE'..index end
     S.UIV3.AuxWindowStoreV3={}
     function S.UIV3.AuxWindowStoreV3:EnsureLoaded()if options.auxLoadFails then return false,'aux_store_corrupt' end;return true end
@@ -48,12 +48,19 @@ local function Boot(options)
         calls.surface=surface;return surface
     end
     S.UI.CreateDiagnosticCopyBox=function(_,spec)
-        local box={capacity=3500,text='',active=false}
+        local box={capacity=spec.copyCapacity or 2048,text='',active=false}
         function box:GetCapacity()return self.capacity end
         function box:SetCapacity(v)self.capacity=v;return true end
-        function box:SetPageText(v)calls.setText=calls.setText+1;self.text=v;if options.copyWriteFails then return false,'readback_mismatch' end;return true end
+        function box:SetPageText(v)
+            calls.setText=calls.setText+1;self.text=v
+            if options.copyWriteFails then calls.actualBytes=tonumber(options.actualBytes) or 0;return false,'readback_mismatch' end
+            if options.copyWriteFailsOnce and calls.setText==1 then calls.actualBytes=tonumber(options.actualBytes) or 1200;return false,'readback_mismatch' end
+            calls.actualBytes=#v;return true
+        end
+        function box:GetDiagnostics()return {actualBytes=calls.actualBytes,expectedBytes=#(self.text or ''),readbackFailures=(options.copyWriteFails or options.copyWriteFailsOnce) and 1 or 0}end
         function box:Clear()calls.clear=calls.clear+1;self.text='';return true end
         function box:Deactivate()calls.deactivate=calls.deactivate+1;self.active=false;return true end
+        function box:Activate()self.active=true;return true end
         function box:Layout()return true end
         function box:SetVisible()return true end
         calls.copy=box;return box
@@ -82,13 +89,20 @@ Test('generate captures once and next previous only read frozen snapshot',functi
 end)
 
 Test('short pagination can be restored to normal without recapturing',function()
-    local S,W,c=Boot();W:Open('feature_a');assert(W:Generate());assert(c.captureCaps[1]==3500)
-    assert(W:RetrySmallerPages());assert(c.capture==1 and c.repage==1);assert(c.repageCaps[1]==2450);assert(W.snapshot.session.capacity==2450)
-    assert(W:RestoreNormalPages());assert(c.capture==1 and c.repage==2);assert(c.repageCaps[2]==3500);assert(W.snapshot.session.capacity==3500)
+    local S,W,c=Boot();W:Open('feature_a');assert(W:Generate());assert(c.captureCaps[1]==2048)
+    assert(W:RetrySmallerPages());assert(c.capture==1 and c.repage==1);assert(c.repageCaps[1]==1433);assert(W.snapshot.session.capacity==1433)
+    assert(W:RestoreNormalPages());assert(c.capture==1 and c.repage==2);assert(c.repageCaps[2]==2048);assert(W.snapshot.session.capacity==2048)
 end)
-Test('new diagnostic capture always returns to normal pagination',function()
-    local S,W,c=Boot();W:Open('feature_a');assert(W:Generate());assert(W:RetrySmallerPages());assert(W.snapshot.session.capacity<3500)
-    assert(W:Generate());assert(c.capture==2 and c.captureCaps[2]==3500,'new capture inherited shortened capacity')
+Test('new diagnostic capture reuses proven safe pagination in the same load',function()
+    local S,W,c=Boot();W:Open('feature_a');assert(W:Generate());assert(W:RetrySmallerPages());local safe=W.snapshot.session.capacity;assert(safe<2048)
+    assert(W:Generate());assert(c.capture==2 and c.captureCaps[2]==safe,'new capture did not reuse safe capacity')
+end)
+Test('native readback mismatch auto repages the same frozen report without recapture',function()
+    local S,W,c=Boot({copyWriteFailsOnce=true,actualBytes=1200});W:Open('feature_a');local ok,err=W:Generate();assert(ok==true,tostring(err))
+    assert(c.capture==1,'auto fit recaptured diagnostics')
+    assert(c.repage>=1,'auto fit did not repage')
+    assert(W.preferredPageCapacity and W.preferredPageCapacity<2048,'auto fit did not remember measured capacity')
+    assert(W.snapshot and W.snapshot.session.capacity==W.preferredPageCapacity,'auto fit snapshot/capacity diverged')
 end)
 
 Test('module switch deactivates copy authority and clears old snapshot',function()

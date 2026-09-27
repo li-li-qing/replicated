@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static/geometry regressions for Trade optimization .18.299.
+"""Static/geometry regressions for Trade optimization .18.317.
 
 These checks intentionally avoid mocking ArcheRage native calls. They protect the
 architecture contracts that can be verified off-client: historical Store
@@ -24,6 +24,8 @@ CONTROLS = (ROOT / "ui/framework/rs_ui_controls.lua").read_text(encoding="utf-8"
 DETAIL = (ROOT / "presentation/v3/widgets/rs_v3_trade_detail_floating.lua").read_text(encoding="utf-8")
 DIAGNOSTICS = (ROOT / "presentation/v3/widgets/rs_v3_trade_diagnostics.lua").read_text(encoding="utf-8")
 PRICE_QUOTE = (ROOT / "services/rs_price_quote_queue_v3.lua").read_text(encoding="utf-8")
+MATERIAL_PRICE = (ROOT / "services/rs_material_price_service_v3.lua").read_text(encoding="utf-8")
+TOC = (ROOT / "toc.g").read_text(encoding="utf-8")
 AUCTION_QUERY = (ROOT / "services/rs_auction_query_v3.lua").read_text(encoding="utf-8")
 REGISTRY = (ROOT / "features/rs_feature_registry.lua").read_text(encoding="utf-8")
 FOUNDATION = (ROOT / "presentation/v3/pages/rs_v3_foundation_pages.lua").read_text(encoding="utf-8")
@@ -32,6 +34,8 @@ ACCEPTANCE = (ROOT / "presentation/v3/rs_v3_acceptance.lua").read_text(encoding=
 PRODUCT_IDS = (ROOT / "data/ids/rs_trade_product_ids.lua").read_text(encoding="utf-8")
 MATERIALS = (ROOT / "data/rs_trade_materials.lua").read_text(encoding="utf-8")
 MATERIAL_IDENTITY = (ROOT / "services/rs_trade_material_identity_v3.lua").read_text(encoding="utf-8")
+TRADE_PRICES = (ROOT / "data/rs_trade_prices.lua").read_text(encoding="utf-8")
+TRADE_PAYOUT = (ROOT / "services/rs_trade_payout_v3.lua").read_text(encoding="utf-8")
 ZONE_IDS = (ROOT / "data/ids/rs_zone_ids.lua").read_text(encoding="utf-8")
 BOOT = (ROOT / "replicatedsuite.lua").read_text(encoding="utf-8")
 
@@ -85,13 +89,32 @@ def adaptive_tail(viewport: float, count: int, base: float, gap: float, soft_min
 
 def main() -> int:
     # Build/version and historical Store boundary.
-    require("v3-m1.16.0.18.303-bonds-material-quantity-sort" in BOOT, "build tag advanced")
+    require("v3-m1.16.0.18.326-trade-freshness-matrix-audit" in BOOT, "build tag advanced")
+    # 18.310 regression: a literal backslash-n was appended to a Lua `--` comment,
+    # so `local now = NowMs()` was commented out and the scheduler task crashed.
+    require('最多一次。\\n    local now = NowMs()' not in PRICE_QUOTE, "price drain local now is not swallowed by comment")
+    require("local now = NowMs()" in PRICE_QUOTE, "price drain owns a local time snapshot")
     require('preferenceStoreId = "v3.trade_preferences"' in BUNDLE, "trade preferences split into independent store")
     old_store = section(BUNDLE, 'RegisterStore(Trade.storeId, "v3.life.trade"', 'RegisterStore(Trade.preferenceStoreId')
     require("schemaVersion" not in old_store, "historical trade registration still uses shared schema1 helper")
     require("Trade.State.fromZone" in old_store and "Trade.State.widgetWindow" in old_store, "historical route/window fields preserved")
     require('RegisterStore(Trade.preferenceStoreId, "v3.life.trade.preferences"' in BUNDLE, "new preference store registered")
     require('"v3.trade_preferences"' in FOUNDATION, "trade preference store participates in persistence acceptance")
+
+    # .18.312 RU live payout anchor: preserved freshness is a static +3% category multiplier.
+    require('{ token = "保存", value = 1.03' in TRADE_PRICES, "preserved freshness multiplier is 1.03")
+    require('{ token = "特供", value = 1.30' in TRADE_PRICES, "luxury/特供 freshness multiplier is 1.30")
+    require('{ token = "无添加", value = 1.15' in TRADE_PRICES, "no-additive freshness multiplier is 1.15")
+    require('{ token = "Coastal", value = 1.30' in TRADE_PRICES and '{ token = "Rich", value = 1.30' in TRADE_PRICES,
+            "Auroria Coastal/Rich freshness multiplier is 1.30")
+    require('TradeNeutralPayoutNames' in TRADE_PRICES, "neutral non-freshness goods are explicitly allowlisted")
+    require('freshness_unclassified' in TRADE_PAYOUT and 'AuditFreshnessCoverage' in TRADE_PAYOUT,
+            "unknown freshness categories fail closed and are diagnosed")
+    require('PriceFormulaContractVersion = 3' in TRADE_PAYOUT
+            and 'PackCategoryMultiplierContractVersion = 3' in TRADE_PAYOUT,
+            "payout contract advanced for full freshness matrix")
+    preserved = (291257 / 107) * 113 * (1 + 332000 / 10000 * 0.05) * 1.03
+    require(round(preserved) == 842733, "RU live preserved payout anchor is 84g27s33c")
 
     # Bound/non-market resources retain recipe requirements without auction fan-out.
     require(re.search(r'\["Gilda Star"\].*includeInCost=false.*auctionable=false.*costKind="bound_resource".*itemType=23633', STATIC) is not None,
@@ -111,9 +134,17 @@ def main() -> int:
     require("function Trade:SetViewMode" in BUNDLE and "function Trade:ToggleTrackedProduct" in BUNDLE, "tracked/all/cargo commands exist")
     rebuild = section(BUNDLE, "function TA:RebuildDisplayRows", "function TA:RefreshCommerceSkill")
     require('if mode == "all" or Trade:IsTrackedProduct(raw.itemType) then' in rebuild, "tracked view filters before heavy display enrichment")
-    require(rebuild.index('if mode == "all" or Trade:IsTrackedProduct(raw.itemType) then') < rebuild.index('ApplyTradeDisplayModeToRow(row)'),
+    require(rebuild.index('if mode == "all" or Trade:IsTrackedProduct(raw.itemType) then') < rebuild.index('ApplyTradeDisplayModeToRow(row, {'),
             "heavy row projection occurs only after visibility filter")
     require("TA.rawRows" in BUNDLE and "rawRowCount" in BUNDLE, "raw server snapshot separated from display rows")
+    view_mode = section(BUNDLE, "function Trade:SetViewMode", "function Trade:ToggleTrackedProduct")
+    require('CancelQuoteBatch("view_mode_changed")' not in view_mode,
+            "display-mode changes do not cancel explicit material quote batches")
+    cancel_requester = section(PRICE_QUOTE, "function Q:CancelRequester", "function Q:GetSnapshot")
+    require('self.quoteStateByItemType[r.itemType]={' in cancel_requester and 'status="cancelled"' in cancel_requester,
+            "dropping the last pending quote watcher clears the shared inflight lifecycle state")
+    require('r.fallbackState~="searching"' in cancel_requester,
+            "tokenless fallback search keeps pending ownership until completion or timeout")
 
     # Route scheduler: one native lane; RU native cooldown is respected, while cached routes render immediately.
     request = section(BUNDLE, "function TA:Request(force, reason)", "function TA:OnCargoRatio")
@@ -137,11 +168,11 @@ def main() -> int:
             "Consumer release detects an accepted native flight")
     require('consumer_release_preserve_flight' in reconcile and 'TA.inFlight = nil' not in section(reconcile, 'elseif beforeCount > 0 and afterCount <= 0 then', 'end\n    return true'),
             "Consumer release preserves accepted in-flight ownership instead of orphaning the callback")
-    require('stale_callback_consumed_no_consumers' in BUNDLE,
-            "late stale callback cannot launch a background replacement route after consumers disappear")
+    require('stale_callback_consumed_no_runtime' in BUNDLE and 'Trade:ShouldRunAutoRefreshBackground() == true' in BUNDLE,
+            "late stale callback follows the latest route only while UI or background route runtime still owns it")
 
     # Automatic refresh leaves user-interaction headroom instead of continuously occupying a 5s native window.
-    auto = section(BUNDLE, "function TA:ArmAutoRefresh", "function TA:ArmCargoPump")
+    auto = section(BUNDLE, "function TA:GetAutoRefreshTargetMs", "function TA:ArmCargoPump")
     require('TA.autoRefreshTargetMs = 10000' in BUNDLE and 'TA.autoRefreshCooldownFactor = 2' in BUNDLE,
             "automatic route refresh has an explicit interaction headroom budget")
     require('cooldownTarget = math.max(0, tonumber(self.lastNativeCooldownMs) or 0) * math.max(1, tonumber(self.autoRefreshCooldownFactor) or 2)' in auto,
@@ -179,7 +210,16 @@ def main() -> int:
     require('SubscribeOptional("UNIT_EQUIPMENT_CHANGED"' in BUNDLE, "equipment change event subscribed")
     require('AddOneShot(self.equipmentRefreshTask, 220' in BUNDLE, "equipment refresh is debounced")
     require('SubscribeOptional("ENTER_ANOTHER_ZONEGROUP"' in BUNDLE, "zone transition event subscribed")
-    require('X2Equipment:GetEquippedItemType' in BUNDLE and 'EST_BACKPACK' in BUNDLE, "backpack identity uses equipment ItemID authority")
+    backpack_slot = section(BUNDLE, "local function TradeBackpackSlot", "local function TradeEquipmentItemType")
+    cargo_observation = section(BUNDLE, "function TA:RefreshCargoObservation", "function TA:ScheduleEquipmentRefresh")
+    require('rawget(_G, "ES_BACKPACK")' in backpack_slot and 'return 27, "verified_slot_27"' in backpack_slot,
+            "backpack identity uses actual ES_BACKPACK slot with verified slot-27 fallback")
+    require('EST_BACKPACK' not in backpack_slot,
+            "EST_BACKPACK equip-slot type is never used as the equipment locator")
+    require('X2Equipment:GetEquippedItemType' in BUNDLE and 'X2Equipment:GetEquippedItemTooltipInfo' in BUNDLE,
+            "backpack identity has direct ItemType read plus bounded tooltip fallback")
+    require('ReadTradeBackpackIdentity(slot)' in cargo_observation and 'cargo.identityReadSource' in cargo_observation,
+            "cargo observation records the resolved slot/read authority for diagnostics")
     require('not identityChanged and (oldStatus == "scanning" or oldStatus == "complete")' in BUNDLE,
             "unrelated equipment changes preserve active/completed cargo scan state")
     product_names = set(re.findall(r'RegisterProduct\(\d+,\s*"([^"]+)"', PRODUCT_IDS))
@@ -188,6 +228,9 @@ def main() -> int:
     require(len(product_names) == 98 and not (product_names - recipe_names), "all 98 verified trade-product ItemIDs resolve to recipe names")
     require(all(any(name.startswith(zone + " ") for zone in zone_names) for name in product_names),
             "all verified trade products resolve to an origin-zone prefix")
+    require('RegisterProduct(31863, "Halcyona Preserved Specialty")' in PRODUCT_IDS
+            and re.search(r'\{\s*22,\s*"HALCYONA",\s*"Halcyona",\s*"Preserved"', ZONE_IDS) is not None,
+            "reported Golden Plains preserved specialty resolves to verified product/origin identity")
     trade_slice = section(BUNDLE, "-- Trade", "-- Bonds")
     require("OnUpdate" not in trade_slice and "OnTick" not in trade_slice, "trade slice introduces no Tick/OnUpdate polling")
 
@@ -241,12 +284,12 @@ def main() -> int:
 
     # Explicit quotes must accept live-craft materials that have an itemType but no static English key.
     quote_slice = section(BUNDLE, "local function ResolveTradeQuoteIdentity", "-- Diagnostics reads describe helpers")
-    require('itemType, itemGrade = tonumber(material.itemType), tonumber(material.itemGrade)' in quote_slice,
+    require('itemType,itemGrade=tonumber(material.itemType),tonumber(material.itemGrade)' in quote_slice,
             "material quote identity prefers projected itemType/itemGrade authority")
-    require('selected[#selected+1]={materialKey=materialKey,itemType=id,itemGrade=grade,searchName=m.name}' in quote_slice,
-            "material quote batch carries live material identities and localized fallback names")
-    require('self:QuoteMaterial(material,mode,batch)' in quote_slice,
-            "material quote batch submits detached identity records")
+    require('selected[#selected+1]={materialKey=materialKey,itemType=id,itemGrade=grade,searchName=m.name,quoteKey=key}' in quote_slice,
+            "row quote jobs carry live material identities and localized fallback names")
+    require('self:QuoteMaterial(material,mode,job)' in quote_slice,
+            "row quote jobs submit detached identity records through the shared queue")
     require('local searchName=LocalizedTradeItemName(itemType,projectedName)' in quote_slice
             and 'mode=="full" and LocalizedTradeItemName' not in quote_slice,
             "basic row quote retains RU name-search fallback when GetLowestPrice returns nil")
@@ -255,14 +298,15 @@ def main() -> int:
     require('refreshControls = function(instance, projection, rows, Feature)' in WIDGET
             and 'local row = type(Feature.GetSelectedRow) == "function"' in WIDGET,
             "trade HUD refresh receives Feature explicitly instead of indexing a nil global")
-    require('local rowScopedPending = rowBatch ~= nil and rowBatch.active == true and rowBatch.scope == "row"' in BUNDLE
-            and 'if hasQuotePending and not isIntentRow then' in BUNDLE,
-            "single-row quote pending indicator is scoped to the user-activated row")
+    require('local rowJob = type(Trade.quoteJobsByRowKey) == "table"' in BUNDLE
+            and 'local isIntentRow = type(rowJob) == "table" and rowJob.active == true' in BUNDLE
+            and 'if hasQuotePending and not isIntentRow and not hasBackgroundPending then' in BUNDLE,
+            "pending quote visuals are scoped independently to each active row job")
     require('FallbackIdentityMatchContractVersion = 1' in PRICE_QUOTE
             and 'resultLimit = Q.fallbackSearchLimit' in PRICE_QUOTE
             and 'if expected ~= nil and rowType ~= nil and rowType == expected then' in PRICE_QUOTE,
             "auction-name fallback scans a bounded result set and prefers stable itemType identity")
-    require('local row, matchKind, matchIndex = SelectFallbackRow(rows, pending)' in PRICE_QUOTE
+    require('local row, matchKind, matchIndex, price, priceSource, priceReason = SelectFallbackRow(rows, pending)' in PRICE_QUOTE
             and 'rows[1]' not in section(PRICE_QUOTE, 'function Q:_CheckFallback()', 'local function RequeueFront'),
             "quote fallback no longer assumes the first fuzzy-search result is the target")
     drain = section(PRICE_QUOTE, 'local function Drain()', 'function Q:_FailPending')
@@ -277,24 +321,181 @@ def main() -> int:
             "explicit quote uses paced AskMarketPrice -> GetLowestPrice readback before name-search fallback")
     require('local fromNameSearch = tostring(fresh.source or ""):find("^name_search_") ~= nil' in PRICE_QUOTE,
             "name-search fallback prices remain labeled as reference rather than live lowest-price reads")
-    require('local n = ToMoney(row.directPrice)' in PRICE_QUOTE
-            and 'return math.floor(n), "name_search_direct"' in PRICE_QUOTE,
-            "fallback cost prefers immediately purchasable direct price over current bid")
+    require('FallbackUnitPriceContractVersion = 1' in PRICE_QUOTE
+            and 'listing_quantity_unavailable' in PRICE_QUOTE
+            and 'name_search_direct_unit' in PRICE_QUOTE
+            and 'math.ceil(directTotal / quantity)' in PRICE_QUOTE,
+            "fallback cost normalizes listing totals to per-unit prices and fails closed without quantity")
     require('1, 0, 0, 1, 0, options.exactMatch == true' in AUCTION_QUERY,
             "auction name search does not retain the stale maxLevel=55 filter")
     require('local function Money(value)' in AUCTION_QUERY
             and 'local gold, silver, copper' in AUCTION_QUERY,
             "auction result prices normalize numeric, formatted-string and money-table shapes centrally")
+    require('ListingUnitPriceContractVersion = 1' in AUCTION_QUERY
+            and 'row.itemStack or row.stackCount' in AUCTION_QUERY
+            and 'unitDirectPrice = directUnit' in AUCTION_QUERY,
+            "auction query captures RU listing quantity and exposes normalized unit buyout")
+    require('StoreContractVersion = 2' in PRICE_QUOTE and 'poisonedLegacyFallback' in PRICE_QUOTE
+            and 'source ~= "name_search_direct_unit"' in PRICE_QUOTE,
+            "legacy listing-total name-search reference prices are selectively invalidated")
     require('function Trade:DescribeQuoteState()' in BUNDLE
             and '"DescribeQuoteState"' in DIAGNOSTICS,
             "module diagnostics now expose quote queue and fallback-search failure evidence")
+    require('Trade.QuoteTerminalRefreshContractVersion=2' in BUNDLE
+            and 'function Trade:_FlushQuoteRefresh(epoch,reason)' in BUNDLE
+            and 'if terminal==true then return self:_FlushQuoteRefresh(epoch,"row_job_terminal") end' in BUNDLE
+            and 'Trade:_QueueQuoteRefresh(key or materialKey,job.epoch,terminal)' in BUNDLE,
+            "terminal row-job callback synchronously converges task state and visible material projection")
+    require('RemoveTask(QUOTE_REFRESH_TASK)' in section(BUNDLE, 'function Trade:_FlushQuoteRefresh', 'function Trade:_QueueQuoteRefresh'),
+            "terminal quote flush cancels stale coalesced one-shot before rebuilding rows")
+    require('EventPayloadContractVersion = 1' in PRICE_QUOTE
+            and 'S.Events:Publish(Q.Topic, itemType, itemGrade, status, reason)' in PRICE_QUOTE,
+            "quote completion event carries stable item identity for projection reconciliation")
+    require('RequestIdentityDedupContractVersion = 1' in PRICE_QUOTE
+            and 'local requestKey=tostring(itemType)..":"..table.concat(parts,",")' in PRICE_QUOTE
+            and '..":"..tostring(searchName or "")' not in PRICE_QUOTE,
+            "shared material requests dedupe by stable itemType/grade rather than localized fallback name")
+    require('Trade.QuoteReadModelSyncContractVersion=1' in BUNDLE
+            and 'function TA:RefreshQuotedItemType(itemType,itemGrade,status,reason)' in BUNDLE
+            and 'function Trade:EnsurePriceQuoteSubscription()' in BUNDLE
+            and 'self:ReleasePriceQuoteSubscription()' in BUNDLE,
+            "trade Demand subscribes and releases shared quote read-model synchronization")
+    require('m.costStatus=="quote_pending"' in BUNDLE
+            and 'if pending then joinedPending=joinedPending+1 end' in BUNDLE
+            and 'requester="life_trade:rowjob:"' in BUNDLE,
+            "each row job reattaches an independent watcher to already-shared pending materials")
+    cancel_section = section(BUNDLE, 'function Trade:CancelQuoteBatch(reason)', 'function Trade:_FlushQuoteRefresh')
+    require('for _,row in ipairs(TA.rows or {}) do ApplyTradeMaterialProjectionToRow(row) end' in cancel_section,
+            "quote cancellation immediately reconciles cached rows from QuoteQueue authority")
+    start_section = section(BUNDLE, 'function Trade:_StartRowQuoteJob(row,mode,options)', 'function Trade:QuotePendingMaterials')
+    require('ApplyTradeMaterialProjectionToRow(row)' in start_section
+            and 'for _,displayRow in ipairs(TA.rows or {}) do ApplyTradeMaterialProjectionToRow(displayRow) end' in start_section,
+            "each new row job refreshes stale input state and row-scoped visual state without native work")
+    require('Trade.MultiRowQuoteJobsContractVersion=1' in BUNDLE
+            and 'quoteJobsByRowKey={}' in BUNDLE
+            and 'function Trade:QuoteRowMaterials(rowKey,mode)' in BUNDLE
+            and 'row_quote_superseded' not in quote_slice,
+            "multiple row quote jobs coexist instead of superseding the previous row")
+    require('TRADE_MAX_ACTIVE_QUOTE_JOBS=16' in BUNDLE
+            and 'TRADE_BULK_QUOTE_MAX_ROWS=16' in BUNDLE,
+            "multi-row quote orchestration is explicitly bounded")
+    require('function Trade:_ReconcileQuoteJobsByIdentity(itemType,itemGrade,status,reason)' in BUNDLE
+            and 'Trade:_ReconcileQuoteJobsByIdentity(itemType,itemGrade,status,reason)' in BUNDLE,
+            "shared quote completion events reconcile every matching row job idempotently")
+    require('tradeQuoteListButton' in PAGE and 'feature.Commands:QuotePendingMaterials()' in PAGE,
+            "main trade page exposes bounded current-list multi-row quoting")
+    require('row.profit = Money(profit)' in BUNDLE
+            and 'row.profit = Money(profit) .. ((row.boundResourceCount > 0 or row.nonMarketResourceCount > 0) and "*" or "")' not in BUNDLE
+            and '仅扣已折算金币材料' in PAGE,
+            "gold-only profit removes ambiguous star and exposes explicit resource-cost wording")
+    require('QuoteReadModelSyncContractVersion' in ACCEPTANCE and 'EventPayloadContractVersion' in ACCEPTANCE
+            and 'RequestIdentityDedupContractVersion' in ACCEPTANCE
+            and 'MultiRowQuoteJobsContractVersion' in ACCEPTANCE and 'tradeMultiQuoteUiContractVersion' in ACCEPTANCE,
+            "acceptance rejects mixed packages without multi-row quote/read-model/dedup contracts")
+    require('MultiRowQuoteJobsContractVersion' in CORE_GATE
+            and 'RequestIdentityDedupContractVersion' in CORE_GATE
+            and 'tradeMultiQuoteUiContractVersion' in CORE_GATE,
+            "foundation gate blocks mixed old/new multi-row quote packages before user interaction")
 
-    # Automatic refresh is Demand-scoped and one-shot scheduled.
-    require('requestAutoTask = "v3_trade_route_auto_refresh"' in BUNDLE, "auto refresh has dedicated scheduler task")
-    require('AddOneShot(self.requestAutoTask' in BUNDLE and 'TA:Request(false, "auto_refresh")' in BUNDLE,
-            "auto refresh uses one-shot scheduler rather than loop")
-    require("TA:CancelAutoRefresh()" in section(BUNDLE, "function Trade:ReconcileDemand", "function Trade:Enable"),
-            "auto refresh releases when consumers drop to zero")
+    # .18.317 durable material-price Authority + stale-while-revalidate economics.
+    require('services/rs_price_quote_queue_v3.lua' in TOC and 'services/rs_material_price_service_v3.lua' in TOC
+            and TOC.index('services/rs_price_quote_queue_v3.lua') < TOC.index('services/rs_material_price_service_v3.lua') < TOC.index('features/life/rs_life_m16_bundle.lua'),
+            "material price Authority loads after Native quote queue and before Trade feature")
+    require('StoreId = "v3.market.material_prices"' in MATERIAL_PRICE
+            and 'lifetime = P.Lifetime.Permanent' in MATERIAL_PRICE
+            and 'scope = P.Scope.Account' in MATERIAL_PRICE,
+            "material unit prices persist account-wide in an independent permanent store")
+    require('CorruptCacheRecoveryContractVersion = 1' in MATERIAL_PRICE
+            and 'recoverableReplacement = true' in MATERIAL_PRICE
+            and '_RecoverCorruptDerivedCache' in MATERIAL_PRICE,
+            "MaterialPriceService must self-heal only its derived cache after verified integrity fencing")
+    require('freshMinutes = 6 * 60' in MATERIAL_PRICE and 'warmMinutes = 24 * 60' in MATERIAL_PRICE
+            and 'staleMinutes = 7 * 24 * 60' in MATERIAL_PRICE
+            and 'return "old", age, true' in MATERIAL_PRICE,
+            "fresh/warm/stale/old policy preserves old prices instead of invalidating them")
+    require('S.Utils.GetServerTime()' in MATERIAL_PRICE and 'observedMinute = nowMinute' in MATERIAL_PRICE
+            and 'updatedAt = NowMs()' not in MATERIAL_PRICE,
+            "persistent material-price age uses server wall clock rather than reload-local NowMs")
+    require('sessionObservedAtMs' in MATERIAL_PRICE and 'material-price-session-freshness-1' in MATERIAL_PRICE,
+            "fresh quotes remain session-fresh while server calendar is temporarily unavailable after reload")
+    require('anomalyRatio = 8' in MATERIAL_PRICE and 'anomaly_candidate_held' in MATERIAL_PRICE
+            and 'anomalyConfirmTolerance = 0.15' in MATERIAL_PRICE,
+            "large auction-price jumps are held for bounded second-observation confirmation")
+    require('priority = "background"' in MATERIAL_PRICE and 'force = true' in MATERIAL_PRICE
+            and 'PriorityQueueContractVersion = 1' in PRICE_QUOTE
+            and 'if request.priority == "user" then' in PRICE_QUOTE,
+            "background revalidation shares one Native queue while explicit user quotes preempt queued background work")
+    require('Trade.MaterialPriceCacheContractVersion = 1' in BUNDLE
+            and 'Trade.BackgroundMaterialRevalidateContractVersion = 1' in BUNDLE
+            and 'Trade.EconomicsRevisionContractVersion = 1' in BUNDLE
+            and 'function TA:QueueBackgroundMaterialRevalidation(reason)' in BUNDLE,
+            "Trade declares durable cache, background SWR and economics revision contracts")
+    material_projection = section(BUNDLE, 'local function ApplyTradeMaterialProjectionToRow(row)', '-- Actionable quote backlog')
+    require('materialPriceService:GetRevision()' in material_projection
+            and 'row.profitCopper = profit' in material_projection
+            and 'row.profitRate = profit ~= nil and cost ~= nil and cost > 0' in material_projection
+            and 'row.economicsPayoutRevision' in material_projection
+            and 'row.economicsMaterialRevision' in material_projection,
+            "profit and profit rate are derived from current payout and material revisions")
+    display_projection = section(BUNDLE, 'local function ApplyTradeDisplayModeToRow(row, options)', 'local function CopyTradeRouteRow')
+    require(display_projection.index('row.priceCopper = price') < display_projection.index('ApplyTradeMaterialProjectionToRow(row)'),
+            "sell price is committed before material cost/profit is recomputed")
+    on_ratio = section(BUNDLE, 'function TA:OnRatio(info)', 'function TA:DescribeRequestState()')
+    require('self:MarkEconomicsPayoutInput("ratio_result")' in on_ratio
+            and on_ratio.index('self:MarkEconomicsPayoutInput("ratio_result")') < on_ratio.index('self:RebuildDisplayRows("ratio_result", { includeMaterials = false })'),
+            "new route-rate callback advances payout revision before fast-publishing rate rows")
+    rebuild = section(BUNDLE, 'function TA:RebuildDisplayRows(reason, options)', 'function TA:RefreshCommerceSkill')
+    require(rebuild.index('ApplyTradeDisplayModeToRow(row, {') < rebuild.index('self:QueueBackgroundMaterialRevalidation'),
+            "material-enabled route rebuild calculates profit before admitting quiet background refresh")
+    require('MaterialPriceAuthorityContractVersion = 1' in PRICE_QUOTE
+            and 'return materialPrices:ObserveConfirmedPrice(itemType, itemGrade, price, source)' in PRICE_QUOTE,
+            "PriceQuoteQueue serializes Native work but delegates durable unit-price ownership to MaterialPriceService")
+    require('TA.RatioFastPublishContractVersion = 2' in BUNDLE
+            and 'self:RebuildDisplayRows("ratio_result", { includeMaterials = false })' in on_ratio
+            and 'self:ScheduleDeferredMaterialProjection("ratio_result", 60)' in on_ratio
+            and 'materialProjectionTask = "v3_trade_material_projection_deferred"' in BUNDLE
+            and 'ApplyTradeFastMaterialCarryForward' in BUNDLE
+            and 'previousRowsByKey' in BUNDLE
+            and 'row.fastMaterialCarryForward = true' in BUNDLE,
+            "ratio fast-publish must preserve same-row material economics while deferred recalculation converges")
+    require('if quotedPrice == nil and type(quoteQueue) == "table" and type(quoteQueue.GetPriceWithProvenance) == "function" then' in BUNDLE,
+            "degraded MaterialPrice store falls back to the shared QuoteQueue read model")
+    require('MaterialPriceCacheContractVersion' in ACCEPTANCE and 'BackgroundMaterialRevalidateContractVersion' in ACCEPTANCE
+            and 'EconomicsRevisionContractVersion' in ACCEPTANCE and 'MaterialPriceAuthorityContractVersion' in ACCEPTANCE
+            and 'PriorityQueueContractVersion' in ACCEPTANCE,
+            "acceptance rejects mixed packages missing .18.317 cache/economics/priority contracts")
+    require('MaterialPriceCacheContractVersion' in CORE_GATE and 'BackgroundMaterialRevalidateContractVersion' in CORE_GATE
+            and 'EconomicsRevisionContractVersion' in CORE_GATE and 'MaterialPriceAuthorityContractVersion' in CORE_GATE
+            and 'PriorityQueueContractVersion' in CORE_GATE,
+            "foundation gate rejects mixed packages missing durable material-price Authority")
+
+    # Automatic route refresh is a low-frequency scheduler watchdog with an independent lightweight Runtime owner.
+    # It survives page/widget visibility changes WITHOUT keeping the ordinary Trade Demand alive.
+    require('requestAutoTask = "v3_trade_route_auto_refresh_watchdog"' in BUNDLE, "auto refresh has dedicated watchdog task")
+    require('AddTask(self.requestAutoTask' in BUNDLE and 'TA:Request(false, "auto_refresh")' in BUNDLE
+            and 'autoRefreshWatchIntervalMs = 1000' in BUNDLE
+            and 'GetAutoRefreshWatchTaskState' in BUNDLE and 'staleRegisteredTask' in BUNDLE
+            and 'Trade.autoRefreshRuntimeOwner or Trade, "P2", 1' in BUNDLE,
+            "auto refresh uses a self-healing bounded scheduler watchdog and keeps Native queries singleflight")
+    require('Trade.AutoRefreshRuntimeContractVersion = 1' in BUNDLE
+            and 'Trade.autoRefreshRuntimeOwner = { Id = "life_trade.auto_refresh" }' in BUNDLE
+            and 'function Trade:ReconcileAutoRefreshRuntime' in BUNDLE
+            and 'function Trade:StopAutoRefreshRuntime' in BUNDLE
+            and 'autoRefreshConsumerToken' not in BUNDLE,
+            "saved auto-refresh preference owns an independent runtime instead of a fake page Demand consumer")
+    demand_stop = section(BUNDLE, "function Trade:ReconcileDemand", "function Trade:Enable")
+    require('self:ReleasePriceQuoteSubscription()' in demand_stop and 'TA:CancelLiveIdentities()' in demand_stop
+            and 'backgroundActive = self:ShouldRunAutoRefreshBackground() == true' in demand_stop,
+            "page Demand release frees page resources while preserving only the route-refresh runtime")
+    require('self:StopAutoRefreshRuntime("trade_auto_refresh_disabled")' in BUNDLE
+            and 'self:StopAutoRefreshRuntime("trade_view_cargo")' in BUNDLE,
+            "settings/cargo transitions stop the independent runtime")
+    request = section(BUNDLE, 'function TA:Request(force, reason)', 'function TA:OnCargoRatio')
+    require('self:CancelAutoRefresh()' not in request,
+            "issuing one Native request must not destroy the persistent auto-refresh watchdog")
+    require('AutoRefreshRuntimeContractVersion' in ACCEPTANCE and 'AutoRefreshWatchdogContractVersion' in ACCEPTANCE
+            and 'AutoRefreshRuntimeContractVersion' in CORE_GATE and 'AutoRefreshWatchdogContractVersion' in CORE_GATE,
+            "startup gates reject mixed packages missing auto-refresh runtime/watchdog contracts")
 
     # UI tail-fit is reusable but opt-in; trade surfaces opt in.
     require("ResolveAdaptiveTailRowHeight" in TABLE and 'rowFitMode == "adaptive_tail"' in TABLE,
@@ -327,7 +528,7 @@ def main() -> int:
     require('DropdownCloseBeforeCommitContractVersion' in CORE_GATE and 'DropdownContractVersion) or 0) >= 4' in CORE_GATE,
             "foundation gate rejects old dropdown implementations that can reenter an open Native popup")
     require('tradeFloatingFavoriteContractVersion' in ACCEPTANCE and 'tradeControlRefreshIsolationContractVersion' in ACCEPTANCE
-            and '(tonumber(lifeWidgets.version) or 0) < 8' in ACCEPTANCE,
+            and '(tonumber(lifeWidgets.version) or 0) < 9' in ACCEPTANCE,
             "V3 acceptance requires the restored trade favorite and refresh-isolation presentation contracts")
     open_path = section(WIDGET, 'function instance:Show(context)', 'function instance:Hide(context)')
     require(open_path.find('self.surface:Show(true)') < open_path.find('refresh_after_show'),
@@ -362,7 +563,8 @@ def main() -> int:
 
     # Registry metadata matches implementation dependencies.
     life_trade = section(REGISTRY, 'Add("life_trade"', 'Add("life_bonds"')
-    require('"X2Equipment:GetEquippedItemType"' in life_trade, "feature registry exposes equipment dependency")
+    require('"X2Equipment:GetEquippedItemType"' in life_trade and '"X2Equipment:GetEquippedItemTooltipInfo"' in life_trade,
+            "feature registry exposes direct and fallback equipment dependencies")
     require("v3.trade_preferences" in life_trade and "SingleFlight" in life_trade, "feature metadata documents new authority boundaries")
 
     print("TRADE OPTIMIZATION REGRESSION: PASS")

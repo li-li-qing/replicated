@@ -691,9 +691,13 @@ Test("B15: Bonds page and floating widget expose unambiguous mainland controls",
 
     local widgetFile = assert(io.open("presentation/v3/widgets/rs_v3_life_economy_widgets.lua", "rb"))
     local widgetText = widgetFile:read("*a"); widgetFile:close()
-    assert(widgetText:find('SetDisplayOrder', 1, true) ~= nil and widgetText:find('SetFilterMask', 1, true) ~= nil and widgetText:find('SetDuplicateMode', 1, true) ~= nil, "floating Bonds controls must use atomic dropdown commands")
+    assert(widgetText:find('SetDisplayOrder', 1, true) ~= nil and widgetText:find('SetFilterMask', 1, true) ~= nil and widgetText:find('SetDuplicateMode', 1, true) ~= nil, "floating Bonds settings menu must dispatch atomic feature commands")
+    assert(widgetText:find('bondSettingsDropdown', 1, true) ~= nil and widgetText:find('placeholder = "设置"', 1, true) ~= nil, "floating Bonds must expose the single settings dropdown")
+    assert(widgetText:find('kind = "header"', 1, true) ~= nil and widgetText:find('text = "排序"', 1, true) ~= nil
+        and widgetText:find('text = "显示范围"', 1, true) ~= nil and widgetText:find('text = "重复材料"', 1, true) ~= nil, "floating Bonds settings menu must group the three configuration domains")
     assert(widgetText:find('{ id = "continent", title = "大陆"', 1, true) ~= nil, "floating Bonds table must have a continent column")
-    assert(widgetText:find('bondsDropdownControlsContractVersion = 2', 1, true) ~= nil, "floating Bonds dropdown contract missing")
+    assert(widgetText:find('bondsDropdownControlsContractVersion = 3', 1, true) ~= nil
+        and widgetText:find('bondsFloatingSettingsMenuContractVersion = 1', 1, true) ~= nil, "floating Bonds compact settings-menu contract missing")
 end)
 
 Test("B16: Unknown Auroria zone is discovered from ResidentBoard family even with mainland cache", function()

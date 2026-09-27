@@ -8,7 +8,7 @@
 -- Tests Trade Feature, Authority, SingleFlight route request & timeout,
 -- dropped/stale callback handling, ratio & 130% full ratio modes,
 -- Commerce proficiency integration, TradePayoutV3 price calculations,
--- bounded material projection & identity resolution, quote batching (max 4),
+-- bounded material projection & identity resolution, multi-row quote jobs over a shared single Native queue,
 -- route favorites (max 12), HUD widget & TradeDetailFloatingV3,
 -- and FoundationGate / Acceptance contract verification.
 ------------------------------------------------------------------------
@@ -197,6 +197,26 @@ _G.X2Ability = {
     end,
 }
 
+-- 维护（2026-09-25，trade-cargo-slot-authority-1）：随身货物读取必须使用实际 ES_BACKPACK 槽位 27。
+-- 故意把 EST_BACKPACK 设为不同值，确保测试能抓住“装备槽类型被误当装备槽 locator”的回归。
+_G.ES_BACKPACK = 27
+_G.EST_BACKPACK = 127
+local cargoIdentityMode = "direct"
+_G.X2Equipment = {
+    GetEquippedItemType = function(self, slot)
+        assert(slot == 27, "cargo identity must read ES_BACKPACK slot 27")
+        if cargoIdentityMode == "direct" then return 31857 end -- Solzreed Luxury Specialty
+        return nil
+    end,
+    GetEquippedItemTooltipInfo = function(self, slot, targetEquippedItem)
+        assert(slot == 27, "cargo tooltip fallback must read ES_BACKPACK slot 27")
+        if cargoIdentityMode == "tooltip" and targetEquippedItem == false then
+            return { itemType = 31857, name = "Solzreed Luxury Specialty" }
+        end
+        return nil
+    end,
+}
+
 dofile("features/life/rs_life_m16_bundle.lua")
 dofile("presentation/v3/widgets/rs_v3_trade_detail_floating.lua")
 dofile("presentation/v3/widgets/rs_v3_life_economy_widgets.lua")
@@ -218,7 +238,27 @@ Test("T1: Feature registry metadata & contract", function()
     assert(reg.lifecycle == "demand_scoped", "lifecycle must be demand_scoped")
     assert(reg.widgetCapable == true, "widgetCapable must be true")
     assert(reg.settingsCapable == true, "settingsCapable must be true")
-    assert(#reg.apiDependencies == 4, "must declare 4 api dependencies")
+    assert(#reg.apiDependencies == 6, "must declare 6 api dependencies")
+end)
+
+------------------------------------------------------------------------
+-- Test 1B: Cargo equipment-slot Authority / tooltip fallback
+------------------------------------------------------------------------
+Test("T1B: Cargo uses ES_BACKPACK slot and bounded identity fallback", function()
+    local TA = Trade.Authority
+    cargoIdentityMode = "direct"
+    local ok = TA:RefreshCargoObservation("test_direct")
+    assert(ok == true, "direct cargo observation must succeed")
+    assert(TA.cargo.slot == 27 and TA.cargo.slotSource == "ES_BACKPACK", "cargo locator must resolve ES_BACKPACK=27")
+    assert(TA.cargo.legacyEstBackpack == 127, "EST_BACKPACK is diagnostics only")
+    assert(TA.cargo.itemType == 31857 and TA.cargo.identityReadSource == "GetEquippedItemType", "direct ItemType must own cargo identity")
+    assert(TA.cargo.status == "ready", "verified trade product must become ready")
+
+    cargoIdentityMode = "tooltip"
+    ok = TA:RefreshCargoObservation("test_tooltip_fallback")
+    assert(ok == true, "tooltip cargo observation must succeed")
+    assert(TA.cargo.itemType == 31857 and TA.cargo.identityReadSource == "Tooltip(false)", "tooltip fallback must recover stable ItemType")
+    assert(TA.cargo.tooltipName == "Solzreed Luxury Specialty", "tooltip name is retained only as diagnostics evidence")
 end)
 
 ------------------------------------------------------------------------
@@ -431,6 +471,45 @@ Test("T6: Commerce skill reading & TradePayoutV3 calculation", function()
     assert(row.commerceMultiplier ~= nil and row.commerceMultiplier > 1.0, "Commerce multiplier must be > 1.0")
     assert(row.priceComplete == true, "Price estimation must be complete")
 
+    -- 18.312 RU live anchor: preserved specialty freshness must contribute +3%.
+    -- [黄金]保存特制特产 -> 双冠丘陵, 332000 Commerce, 113% ratio:
+    -- (291257/107) * 113 * 2.66 * 1.03 = 842733 copper = 84g27s33c.
+    local payout = S.Services and S.Services.TradePayoutV3 or nil
+    assert(type(payout) == "table" and type(payout.Estimate) == "function", "TradePayoutV3 must exist")
+    local preservedPrice, preservedMeta = payout:Estimate({
+        destination = 8, itemName = "[黄金]保存特制特产", ratio = 113,
+        commerceSkill = 332000, originZoneName = "黄金平原", includeCommerce = true,
+    })
+    assert(preservedPrice == 842733, "Preserved 3% payout mismatch: " .. tostring(preservedPrice))
+    assert(type(preservedMeta) == "table" and preservedMeta.packMultiplier == 1.03, "Preserved multiplier must be 1.03")
+    assert(preservedMeta.packToken == "保存", "Preserved multiplier token must be 保存")
+
+    -- 18.326 full freshness matrix: verify every naming family used by TradePrices.
+    local freshnessCases = {
+        { "[格威尔]标准特产", 1.05, "标准" },
+        { "[玛瑞诺普]新鲜特产", 1.15, "新鲜" },
+        { "[索兹里德]特供特产", 1.30, "特供" },
+        { "[黄金]保存特产", 1.03, "保存" },
+        { "格威尔森林基本发酵蜂蜜", 1.05, "基本发酵" },
+        { "玛瑞诺普无添加发酵蜂蜜", 1.15, "无添加发酵" },
+        { "黎利尔丘陵无添加蜂蜜", 1.15, "无添加" },
+        { "双冠丘陵天然发酵蜂蜜", 1.30, "天然发酵" },
+        { "黄金平原加工发酵蜂蜜", 1.03, "加工发酵" },
+        { "Sungold Coastal特产", 1.30, "Coastal" },
+        { "Aegis Rich发酵蜂蜜", 1.30, "Rich" },
+    }
+    for _, case in ipairs(freshnessCases) do
+        local value, token = payout:GetPackMultiplier(case[1], case[1])
+        assert(math.abs((tonumber(value) or 0) - case[2]) < 0.0001, "Freshness multiplier mismatch for " .. case[1])
+        assert(token == case[3], "Freshness token mismatch for " .. case[1] .. ": " .. tostring(token))
+    end
+    local neutralValue, neutralToken, _, neutralCategory = payout:GetPackMultiplier("黄金平原尾毛被子", "黄金平原尾毛被子")
+    assert(neutralValue == 1 and neutralToken == nil and neutralCategory == "neutral", "Special goods without freshness must remain neutral")
+    local unknownValue, _, _, unknownCategory = payout:GetPackMultiplier("未来新增未登记贸易品", "未来新增未登记贸易品")
+    assert(unknownValue == nil and unknownCategory == "unclassified", "Unknown freshness categories must fail closed")
+    local coverage = payout:AuditFreshnessCoverage()
+    assert(type(coverage) == "table" and tonumber(coverage.unclassified or 0) == 0, "All current static trade price keys must be classified or explicitly neutral")
+
     -- Test turning commerce mode off
     assert(Trade:SetCommerceMode("off"))
     assert(Trade.State.commerceMode == "off")
@@ -489,25 +568,31 @@ Test("T7: Material projection, recipe resolution & bounded display", function()
 end)
 
 ------------------------------------------------------------------------
--- Test 8: Bounded Quote Batching (Max 4) & Cancel
+-- Test 8: Multi-row quote jobs stay bounded while Native queue remains shared
 ------------------------------------------------------------------------
-Test("T8: Bounded quote batching (max 4 per batch) & cancel", function()
+Test("T8: multi-row quote jobs coexist, remain bounded & cancel together", function()
     assert(Trade:AcquireConsumer("test_t8"))
     local queue = S.Services.PriceQuoteQueueV3
     assert(queue ~= nil, "PriceQuoteQueueV3 must be available")
 
-    local ok, msg, batchTotal, deferred = Trade:QuotePendingMaterials()
+    local ok, msg = Trade:QuotePendingMaterials()
     if ok then
         local batch = Trade:GetQuoteBatch()
-        assert(batch.total <= 4, "Batch size must be <= 4")
-        assert(Trade.quoteBatch.active == true, "Batch must be active")
+        local jobs = Trade:GetQuoteJobs()
+        assert(type(jobs) == "table" and type(jobs.jobs) == "table", "Multi-row job snapshot must be available")
+        assert((tonumber(jobs.activeCount) or 0) <= 16, "Active row jobs must stay within the explicit bound")
+        assert((tonumber(batch.activeJobs) or 0) == (tonumber(jobs.activeCount) or 0), "Aggregate must mirror active RowJob count")
 
+        -- Submitting the same visible list again must not supersede/cancel the existing row jobs.
+        local before = tonumber(jobs.activeCount) or 0
         local ok2, msg2 = Trade:QuotePendingMaterials()
-        assert(ok2 == true, "Second call returns active status")
-        assert(Trade:GetQuoteBatch().total <= 4, "Batch total remains bounded")
+        assert(ok2 == true, "Second list submission should be idempotent/merge with active jobs: " .. tostring(msg2))
+        local after = tonumber((Trade:GetQuoteJobs() or {}).activeCount) or 0
+        assert(after >= before, "Second list submission must not cancel an existing active row job")
 
         assert(Trade:CancelQuoteBatch("test_cancel"), "CancelQuoteBatch failed")
-        assert(Trade:GetQuoteBatch().active == false, "Batch must no longer be active")
+        assert(Trade:GetQuoteBatch().active == false, "Aggregate must no longer be active")
+        assert((tonumber((Trade:GetQuoteJobs() or {}).activeCount) or 0) == 0, "All row jobs must be released on route/lifecycle cancel")
     end
 
     Trade:ReleaseConsumer("test_t8")
@@ -625,10 +710,10 @@ Test("T10: HUD widget, Floating Detail & FoundationGate / Acceptance verificatio
     assert(type(tradeFeature) == "table", "tradeFeature must be table")
     assert(type(tradeFeature.Authority) == "table" and (tonumber(tradeFeature.Authority.version) or 0) >= 6, "trade Authority >= 6")
     assert((tonumber(tradeFeature.Authority.TradePayoutProjectionContractVersion) or 0) >= 1, "TradePayoutProjectionContractVersion >= 1")
-    assert(type(tradePayout) == "table" and (tonumber(tradePayout.PriceFormulaContractVersion) or 0) >= 1, "PriceFormulaContractVersion >= 1")
+    assert(type(tradePayout) == "table" and (tonumber(tradePayout.PriceFormulaContractVersion) or 0) >= 3, "PriceFormulaContractVersion >= 3")
     assert((tonumber(tradePayout.StaticPriceKeyResolverContractVersion) or 0) >= 2, "StaticPriceKeyResolverContractVersion >= 2")
     assert((tonumber(tradePayout.CommerceMultiplierContractVersion) or 0) >= 1, "CommerceMultiplierContractVersion >= 1")
-    assert((tonumber(tradePayout.PackCategoryMultiplierContractVersion) or 0) >= 1, "PackCategoryMultiplierContractVersion >= 1")
+    assert((tonumber(tradePayout.PackCategoryMultiplierContractVersion) or 0) >= 3, "PackCategoryMultiplierContractVersion >= 3")
     assert((tonumber(tradeFeature.Authority.RouteRefreshRetryContractVersion) or 0) >= 2, "RouteRefreshRetryContractVersion >= 2")
     assert((tonumber(tradeFeature.Authority.SingleFlightLatestRouteContractVersion) or 0) >= 1, "SingleFlightLatestRouteContractVersion >= 1")
     assert((tonumber(tradeFeature.Authority.RequestTimeoutContractVersion) or 0) >= 1, "RequestTimeoutContractVersion >= 1")

@@ -180,6 +180,7 @@ local function BuildPage(parent, route)
 
     local root, rootErr = D:PageRoot(parent, "v3_page_buff_display")
     if root == nil then return nil, "状态显示页面根组件创建失败：" .. tostring(rootErr or "未知错误") end
+    root.consumerHeld = false
     root.activeTab, root.filterText, root.quickText, root.importCategory, root.importScope = "track", "", "", "auto", "all"
     root.managementView, root.managementFilter, root.managementSort, root.libraryPack = "live", "all", "tracked", "recommended"
 
@@ -561,7 +562,7 @@ local function BuildPage(parent, route)
         minHeight = 112, slot = { size = "auto", minHeight = 112, hAlign = "fill" } })
     local introStack = RSUI:VerticalBox({ id = "v3_buff_display_layout_intro_stack", parent = introCard, gap = 4, slot = { hAlign = "fill" } })
     RSUI:Text({ id = "v3_buff_display_layout_intro_title", parent = introStack, text = "HUD 校准模式", fontSize = 12, tone = "strong", slot = { size = "fixed", height = 22 } })
-    RSUI:Text({ id = "v3_buff_display_layout_intro_text", parent = introStack, text = "点击“调整 HUD”后主菜单会临时最小化。可分别校准自己 / 目标 HUD，拖动预览框或用方向键、数值框精调；目标 HUD 可手动一键同步自身布局。", fontSize = 10, tone = "muted", overflow = "wrap", maxLines = 3, slot = { size = "auto", minHeight = 38, hAlign = "fill" } })
+    RSUI:Text({ id = "v3_buff_display_layout_intro_text", parent = introStack, text = "点击“调整 HUD”后主菜单会临时最小化。可分别校准自己 / 目标 HUD；目标 HUD 中的“自定义名字”可直接保存当前目标备注，并独立调整位置、字号和透明度。", fontSize = 10, tone = "muted", overflow = "wrap", maxLines = 3, slot = { size = "auto", minHeight = 38, hAlign = "fill" } })
     local launchRow = RSUI:HorizontalBox({ id = "v3_buff_display_layout_launch_row", parent = introStack, gap = 8, slot = { size = "fixed", height = 32, hAlign = "fill" } })
     calibrationButton = RSUI:Button({ id = "v3_buff_display_layout_open_calibration", parent = launchRow, text = "调整 HUD", compact = false, slot = { size = "fixed", width = 132 } })
     layoutProfileSummary = RSUI:Text({ id = "v3_buff_display_layout_profile_summary", parent = launchRow, text = "自己 / 目标：独立布局", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1, vAlign = "center" } })
@@ -570,8 +571,8 @@ local function BuildPage(parent, route)
     -- 单行 HorizontalBox，再把刷新滑块塞进同一张 auto-height 卡片；在 1k/0.8 UI Scale 下
     -- 子控件宽度超过内容区且 CompactNumericSetting 自己需要多行高度，最终出现截图中的重叠。
     -- Authority 仍由 Feature Settings 持有；这里只改变 Presentation 排版，不复制任何设置状态。
-    -- 三块职责固定为“校准入口 / 显示策略 / 刷新设置”，以后新增策略优先进入 Grid，禁止重新
-    -- 回到一行固定按钮堆叠。
+    -- 三块职责固定为“校准入口 / 显示策略 / 刷新设置”；目标自定义名字已经收敛到真正的目标 HUD
+    -- 校准器，避免主页面再维护第二套位置/开关 Authority。以后新增策略优先进入 Grid，禁止重新堆叠固定按钮。
     -- 中文维护注释（.18.206 Measure 修复）：RSUI Border:Measure() 读取的是 Border 自身 spec.minHeight，
     -- 不是父 VerticalBox 的 slot.minHeight。.18.205 只把最小高度写进 slot，Native 子控件实际需要更高
     -- 时父布局仍可能按过小 desiredHeight 排下一个卡片，造成截图中的边框/文本重叠。本版把 minHeight
@@ -616,6 +617,10 @@ local function BuildPage(parent, route)
         if toggle ~= nil then layoutPolicyControls[#layoutPolicyControls + 1] = toggle end
     end
     RSUI:Text({ id = "v3_buff_display_layout_policy_hint", parent = policyStack, text = "这里可直接确认远程武器是否被关闭；各组件位置、图标、字号、间距和尺寸统一在“调整 HUD”里设置。", fontSize = 9, tone = "muted", overflow = "wrap", maxLines = 2, slot = { size = "auto", minHeight = 28, hAlign = "fill" } })
+
+    -- 中文维护注释（2026-09-27，target-alias-hud-2）：目标自定义名字的编辑与几何调整已全部
+    -- 收敛到“调整 HUD → 目标 HUD → 自定义名字”。主页面不再创建第二套输入框/开关，避免同一功能
+    -- 出现两个 Presentation Authority；Alias Store 与目标切换事件只由校准器在打开期间按需消费。
 
     local refreshCard = RSUI:Border({ id = "v3_buff_display_layout_refresh_card", parent = tabLayout, padding = 8, variant = "card",
         minHeight = 104, slot = { size = "auto", minHeight = 104, hAlign = "fill" } })
@@ -803,19 +808,42 @@ local function BuildPage(parent, route)
         return true
     end
 
+    -- 中文维护注释（2026-09-25，feature-profile-lifecycle-1）：状态显示页面除了主 Demand token，
+    -- 还持有“管理页元数据 / 技能 CD 管理视图”两条 Presentation-only 活跃标志。功能方案关闭时
+    -- FeatureRuntime 已清空业务 Demand；此处只关闭页面侧元数据任务，避免“功能已关但管理页仍后台补图标”。
+    -- 再启用时先由 PageHost 恢复 page:buff_display token，再按当前 Tab 恢复管理视图，不创建第二 Authority。
+    local consumerBinding = {
+        feature = Feature, featureId = "combat_buff_display", token = "page:buff_display",
+        onDisabled = function()
+            Feature:SetManagementPageActive(false)
+            if type(Feature.SetCooldownManagementActive) == "function" then Feature:SetCooldownManagementActive(false) end
+        end,
+        onEnabled = function(page)
+            Feature:SetManagementPageActive(page.activeTab == "track" or page.activeTab == "library")
+            if type(Feature.SetCooldownManagementActive) == "function" then
+                Feature:SetCooldownManagementActive(page.activeTab == "track" and page.managementView == "cooldowns")
+            end
+        end,
+        refresh = function(page) return page:Refresh() end,
+    }
+
     -- 维护：图标补全属于页面读操作，功能关闭仍需刷新内置库。事件订阅独立于战斗Consumer；
     -- 页面隐藏时整体退订，布局/导入页不被Aura节拍重绘。只响应自己Feature的统一更新事件。
     local function SubscribePageUpdates()
-        if S.Events and type(S.Events.UnsubscribeInternalOwner)=="function" and type(S.Events.SubscribeInternal)=="function" then
-            S.Events:UnsubscribeInternalOwner(root)
-            -- 维护（library-eventbus-2，真实总线回归）：Events:Publish先传owner、再传业务参数。
-            -- 旧function(reason)把root当reason，图标和追踪更新永远不进入library分支；mock漏传owner掩盖错误。
-            -- 库页面只按缓存revision刷新：Aura新学到的图标也可显示，但无变更时不重建397行/不查Native。
-            S.Events:SubscribeInternal("v3.buff_display.updated",root,function(_owner,_reason)
-                if root.activeTab=="track" then root:Refresh()
-                elseif root.activeTab=="library" then root:RefreshLibrary() end
-            end)
+        if S.Events == nil or type(S.Events.UnsubscribeInternalOwner) ~= "function" or type(S.Events.SubscribeInternal) ~= "function" then
+            return false, "内部事件总线不可用"
         end
+        S.Events:UnsubscribeInternalOwner(root)
+        -- 维护（library-eventbus-2，真实总线回归）：Events:Publish先传owner、再传业务参数。
+        -- 旧function(reason)把root当reason，图标和追踪更新永远不进入library分支；mock漏传owner掩盖错误。
+        -- 库页面只按缓存revision刷新：Aura新学到的图标也可显示，但无变更时不重建397行/不查Native。
+        if S.Events:SubscribeInternal("v3.buff_display.updated",root,function(_owner,_reason)
+            if root.activeTab=="track" then root:Refresh()
+            elseif root.activeTab=="library" then root:RefreshLibrary() end
+        end) ~= true then return false, "状态显示页面更新事件订阅失败" end
+        local lifecycleOk, lifecycleErr = PageHost:BindFeatureConsumerLifecycle(root, consumerBinding)
+        if lifecycleOk ~= true then S.Events:UnsubscribeInternalOwner(root); return false, lifecycleErr end
+        return true
     end
 
     ------------------------------------------------------------------
@@ -826,12 +854,14 @@ local function BuildPage(parent, route)
         local target = not enabled
         local ok, err = S.FeatureRuntime:SetPreferredEnabled("combat_buff_display", target, "buff_display_page")
         if ok ~= true then return false, err end
-        if target then
-            local acquired, acquireErr = Feature:AcquireConsumer("page:buff_display")
-            if acquired ~= true then S.FeatureRuntime:SetPreferredEnabled("combat_buff_display", false, "buff_display_consumer_rollback"); root:Refresh(); return false, acquireErr or "状态显示 Consumer 启动失败" end
-            SubscribePageUpdates()
-            Feature.Commands:Refresh("page_enable")
-        else SubscribePageUpdates() end
+        local synced, syncErr = PageHost:SyncFeatureConsumer(root, consumerBinding, "buff_display_page_toggle")
+        if synced ~= true and target == true then
+            local rolledBack, rollbackErr = S.FeatureRuntime:SetPreferredEnabled("combat_buff_display", false, "buff_display_consumer_rollback")
+            root.consumerHeld = false; root:Refresh()
+            if rolledBack ~= true then return false, tostring(syncErr or "状态显示 Consumer 启动失败") .. "；回滚失败：" .. tostring(rollbackErr or "unknown") end
+            return false, syncErr or "状态显示 Consumer 启动失败"
+        end
+        if target then Feature.Commands:Refresh("page_enable") end
         return root:Refresh()
     end
     widgetButton.onClick = function() return WidgetHost:SetVisible("combat.buff_display", not WidgetHost:IsVisible("combat.buff_display"), { source = "buff_display_page" }) end
@@ -901,21 +931,21 @@ local function BuildPage(parent, route)
         persistHint:SetText("配置已读取 · HUD 校准仅在“保存并退出”后写入")
         Feature:SetManagementPageActive(self.activeTab=="track" or self.activeTab=="library")
         if type(Feature.SetCooldownManagementActive)=="function" then Feature:SetCooldownManagementActive(self.activeTab=="track" and self.managementView=="cooldowns") end
-        SubscribePageUpdates()
-        if S.FeatureRuntime:IsEnabled("combat_buff_display") == true then
-            local ok, err = Feature:AcquireConsumer("page:buff_display"); if ok ~= true then return false, err end
-            Feature.Commands:Refresh("page_activated")
-        end
+        local subscribed, subscribeErr = SubscribePageUpdates()
+        if subscribed ~= true then return false, subscribeErr end
+        local synced, syncErr = PageHost:SyncFeatureConsumer(self, consumerBinding, "page_activated")
+        if synced ~= true then S.Events:UnsubscribeInternalOwner(self); return false, syncErr end
+        if S.FeatureRuntime:IsEnabled("combat_buff_display") == true then Feature.Commands:Refresh("page_activated") end
         return self:Refresh()
     end
     function root:OnDeactivated()
         Feature:SetManagementPageActive(false)
         if type(Feature.SetCooldownManagementActive)=="function" then Feature:SetCooldownManagementActive(false) end
         if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
-        if Feature.Demand and Feature.Demand:Has("page:buff_display") then Feature:ReleaseConsumer("page:buff_display") end
+        local released, releaseErr = PageHost:ReleaseFeatureConsumer(self, consumerBinding, "page_deactivated")
         -- 校准器若仍开启，Shell 已被临时最小化，因此正常页面导航不会走到这里；
         -- 即使页面被宿主回收，Detached Draft 仍不会越过 Persistence boundary。
-        return true
+        return released, releaseErr
     end
     function root:RefreshData() return self:Refresh() end
     root.route = route
@@ -926,6 +956,7 @@ end
 -- 而不是只写父 slot。Foundation/Acceptance 只读该声明来阻止热重载残留 .205 页面继续运行；
 -- 不创建额外 UI、不改变 Store Authority。
 Feature.HudLayoutPageMeasureContractVersion = 1
+Feature.TargetAliasPageContractVersion = 2 -- .18.322：主页面不再单独编辑别名，入口统一收敛到目标 HUD 校准器。
 
 local ok, err = PageHost:RegisterFactory(ROUTE, BuildPage)
 if ok ~= true then error(err) end

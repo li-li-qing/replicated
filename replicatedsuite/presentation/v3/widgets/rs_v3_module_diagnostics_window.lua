@@ -28,7 +28,8 @@ S.UIV3.ModuleDiagnosticsWindowV3 = type(previousWindow) == "table"
     and previousWindow.generation == (tonumber(S.Generation) or 0) and previousWindow or {
     generation = tonumber(S.Generation) or 0,
     version = 1,
-    contractVersion = 1,
+    contractVersion = 2,
+    AutoReadbackRepageContractVersion = 1,
     id = "v3_module_diagnostics_window",
     created = false,
     visible = false,
@@ -37,7 +38,13 @@ S.UIV3.ModuleDiagnosticsWindowV3 = type(previousWindow) == "table"
     pageIndex = 0,
 }
 local W = S.UIV3.ModuleDiagnosticsWindowV3
-local NORMAL_PAGE_CAPACITY = 3500
+-- 中文维护（2026-09-25，diagnostic-native-capacity-1）：RU 多行 EditBox 的 SetText/GetText
+-- 往返容量明显小于 maxLength，且不同构建/文本形态会变化。3500 字节在实机出现
+-- expected=3429 / actual=2256 的稳定截断。正常分页改为保守 2048，并在任何回读失败时
+-- 基于本次 Native 实测 actualBytes 自动无损重分页；报告 snapshot 不重新采集。
+local NORMAL_PAGE_CAPACITY = 2048
+local MIN_PAGE_CAPACITY = 512
+local MAX_AUTO_REPAGE_ATTEMPTS = 3
 
 local function ModuleMeta(id)
     local registry = S.FeatureRegistry
@@ -72,7 +79,7 @@ function W:_UpdateNavigation()
     local capacity = type(source) == "table" and type(source.session) == "table"
         and tonumber(source.session.capacity) or NORMAL_PAGE_CAPACITY
     if self.retryButton and type(self.retryButton.SetEnabled) == "function" then
-        self.retryButton:SetEnabled(type(source) == "table" and capacity > 512)
+        self.retryButton:SetEnabled(type(source) == "table" and capacity > MIN_PAGE_CAPACITY)
     end
     if self.normalPageButton and type(self.normalPageButton.SetEnabled) == "function" then
         self.normalPageButton:SetEnabled(type(self.snapshot or self.pendingSnapshot) == "table" and capacity ~= NORMAL_PAGE_CAPACITY)
@@ -242,7 +249,7 @@ function W:EnsureCreated()
     end
     local copyBox, copyErr = UI:CreateDiagnosticCopyBox({ parent = copyHost.root, id = self.id .. "_copy",
         owner = copyHost.owner or "v3:module_diagnostics:floating", width = 600, height = 360,
-        maxLength = 32768, copyCapacity = 3500 })
+        maxLength = 32768, copyCapacity = NORMAL_PAGE_CAPACITY })
     if copyBox == nil then return false, copyErr or "诊断专用复制框创建失败" end
     self.copyBox, self.copyHost = copyBox, copyHost
 
@@ -303,7 +310,59 @@ function W:_ReportFailure(err)
     return false, err
 end
 
-function W:_PresentSnapshot(snapshot, index)
+local function SnapshotPageOffset(snapshot, index)
+    local session = type(snapshot) == "table" and snapshot.session or nil
+    local bounds = type(session) == "table" and session.bounds or nil
+    local row = type(bounds) == "table" and bounds[tonumber(index) or 0] or nil
+    return type(row) == "table" and (tonumber(row.offset) or 0) or 0
+end
+
+local function PageForOffset(snapshot, offset)
+    local session = type(snapshot) == "table" and snapshot.session or nil
+    local bounds = type(session) == "table" and session.bounds or nil
+    offset = math.max(0, tonumber(offset) or 0)
+    if type(bounds) ~= "table" then return 1 end
+    for index, row in ipairs(bounds) do
+        local start = tonumber(row.offset) or 0
+        local finish = start + math.max(0, tonumber(row.length) or 0)
+        if offset >= start and (offset < finish or index == #bounds) then return index end
+    end
+    return math.max(1, math.min(#bounds, 1))
+end
+
+-- 中文维护（2026-09-25，diagnostic-auto-repage-1）：Native 回读失败是 Presentation 容量
+-- 事实，不是诊断采集失败。只允许对同一 immutable report 调 Hub:Repage；不调用 Provider、
+-- Store、Feature 或 Native 业务 API。actualBytes 来自刚完成的 SetText/GetText，取 78% 作为
+-- 安全预算，并同时最多缩到上一预算的 70%，避免 UTF-8/头部形态差异再次触顶。成功后记住
+-- 本加载代容量，后续模块直接用校准预算，用户不必反复点击“缩短分页”。
+function W:_AutoRepageReadback(snapshot, index, depth)
+    depth = tonumber(depth) or 0
+    if depth >= MAX_AUTO_REPAGE_ATTEMPTS or type(snapshot) ~= "table" or type(Hub.Repage) ~= "function" then return false end
+    local copy = self.copyBox and type(self.copyBox.GetDiagnostics) == "function" and self.copyBox:GetDiagnostics() or nil
+    local actual = type(copy) == "table" and tonumber(copy.actualBytes) or nil
+    local oldCapacity = snapshot.session and tonumber(snapshot.session.capacity) or nil
+    if actual == nil or actual <= 0 or oldCapacity == nil or oldCapacity <= MIN_PAGE_CAPACITY then return false end
+    local measuredSafe = math.floor(actual * 0.78)
+    local ratioSafe = math.floor(oldCapacity * 0.70)
+    local nextCapacity = math.max(MIN_PAGE_CAPACITY, math.min(measuredSafe, ratioSafe))
+    if nextCapacity >= oldCapacity then return false end
+    local logicalOffset = SnapshotPageOffset(snapshot, index)
+    self.copyBox:Deactivate("auto_readback_repage")
+    local ok, smaller, err = pcall(Hub.Repage, Hub, snapshot, nextCapacity)
+    if ok ~= true or type(smaller) ~= "table" then return false, ok and err or smaller end
+    self.autoRepageCount = (tonumber(self.autoRepageCount) or 0) + 1
+    self.lastAutoRepageFrom = oldCapacity
+    self.lastAutoRepageTo = nextCapacity
+    self.lastAutoReadbackBytes = actual
+    self.preferredPageCapacity = nextCapacity
+    if type(self.copyBox.SetCapacity) == "function" then self.copyBox:SetCapacity(nextCapacity) end
+    local mappedIndex = PageForOffset(smaller, logicalOffset)
+    self.autoRepageNotice = "检测到当前客户端复制容量约 " .. tostring(actual)
+        .. " 字节，已自动无损调整分页为 " .. tostring(nextCapacity) .. " 字节；未重新采集诊断。"
+    return self:_PresentSnapshot(smaller, mappedIndex, depth + 1)
+end
+
+function W:_PresentSnapshot(snapshot, index, autoDepth)
     local got, text, err = pcall(Hub.GetPage, Hub, snapshot, index)
     if not got or text == nil then return self:_ReportFailure(got and err or text) end
 
@@ -318,6 +377,8 @@ function W:_PresentSnapshot(snapshot, index)
     local accepted, wrote, writeErr = pcall(self.copyBox.SetPageText, self.copyBox, text, "page:" .. tostring(index))
     if not accepted or wrote ~= true then
         self.copyPageValid = false
+        local autoOk, autoDetail = self:_AutoRepageReadback(snapshot, index, tonumber(autoDepth) or 0)
+        if autoOk == true then return true, autoDetail end
         return self:_ReportFailure(accepted and writeErr or wrote)
     end
     self.copyPageValid = true
@@ -326,7 +387,9 @@ function W:_PresentSnapshot(snapshot, index)
     -- 避免还要先点击一次文本区。失败只影响便利性，不把已回读一致的报告判成失败。
     if type(self.copyBox.Activate) == "function" then pcall(self.copyBox.Activate, self.copyBox, "page_ready") end
     if self.surface and type(self.surface.SetStatus) == "function" then
-        self.surface:SetStatus("报告 #" .. tostring(snapshot.id or "?") .. " · " .. tostring(index) .. "/" .. tostring(snapshot.parts)
+        local notice = self.autoRepageNotice
+        self.autoRepageNotice = nil
+        self.surface:SetStatus((notice and (notice .. " ") or "") .. "报告 #" .. tostring(snapshot.id or "?") .. " · " .. tostring(index) .. "/" .. tostring(snapshot.parts)
             .. " 页 · 本页回读一致；点击文本框 Ctrl+A / Ctrl+C，翻页不重新采集。", "accent")
     end
     return true
@@ -335,7 +398,7 @@ end
 function W:Generate()
     if self.moduleId == nil or self.copyBox == nil then return false, "尚未选择模块" end
     self.copyBox:Deactivate("new_capture")
-    local capacity = NORMAL_PAGE_CAPACITY
+    local capacity = math.max(MIN_PAGE_CAPACITY, math.floor(tonumber(self.preferredPageCapacity) or NORMAL_PAGE_CAPACITY))
     local ok, snapshot, err = pcall(Hub.Capture, Hub, self.moduleId, capacity)
     if not ok or snapshot == nil then return self:_ReportFailure("诊断生成失败：" .. tostring(ok and err or snapshot)) end
     self.pendingSnapshot = snapshot
@@ -354,25 +417,29 @@ function W:RetrySmallerPages()
     local source = self.pendingSnapshot or self.snapshot
     if type(source) ~= "table" or type(Hub.Repage) ~= "function" then return self:_ReportFailure("没有可重新分页的报告") end
     local oldCapacity = source.session and tonumber(source.session.capacity) or NORMAL_PAGE_CAPACITY
-    if oldCapacity <= 512 then return self:_ReportFailure("已达到最小分页；当前控件仍未通过回读，请重新加载后检查诊断窗口。") end
-    local capacity = math.max(512, math.floor(oldCapacity * 0.7))
+    if oldCapacity <= MIN_PAGE_CAPACITY then return self:_ReportFailure("已达到最小分页；当前控件仍未通过回读，请重新加载后检查诊断窗口。") end
+    local capacity = math.max(MIN_PAGE_CAPACITY, math.floor(oldCapacity * 0.7))
     self.copyBox:Deactivate("explicit_repage")
     local ok, snapshot, err = pcall(Hub.Repage, Hub, source, capacity)
     if not ok or snapshot == nil then return self:_ReportFailure(ok and err or snapshot) end
     self.pendingSnapshot = snapshot
     local shown, detail = self:_PresentSnapshot(snapshot, 1)
-    if shown and type(self.copyBox.SetCapacity) == "function" then self.copyBox:SetCapacity(capacity) end
+    if shown then
+        self.preferredPageCapacity = capacity
+        if type(self.copyBox.SetCapacity) == "function" then self.copyBox:SetCapacity(capacity) end
+    end
     return shown, detail
 end
 
 -- 正常分页与缩短分页只重新切同一份冻结正文，不重新采集模块、Store 或 Native。
--- 用户误点缩短分页后可随时回到标准 3500 字节；若标准页在 RU 编辑框回读失败，
+-- 用户误点缩短分页后可随时回到标准安全分页；若标准页在 RU 编辑框回读失败，
 -- _PresentSnapshot 会保留此前成功的短分页 snapshot，避免“恢复”操作反而丢掉可复制版本。
 function W:RestoreNormalPages()
     local source = self.snapshot or self.pendingSnapshot
     if type(source) ~= "table" or type(Hub.Repage) ~= "function" then return self:_ReportFailure("没有可恢复正常分页的报告") end
     local oldCapacity = source.session and tonumber(source.session.capacity) or NORMAL_PAGE_CAPACITY
     if oldCapacity == NORMAL_PAGE_CAPACITY then
+        self.preferredPageCapacity = NORMAL_PAGE_CAPACITY
         if type(self.copyBox.SetCapacity) == "function" then self.copyBox:SetCapacity(NORMAL_PAGE_CAPACITY) end
         self:_UpdateNavigation()
         return true, "当前已经是正常分页"
@@ -382,7 +449,10 @@ function W:RestoreNormalPages()
     if not ok or snapshot == nil then return self:_ReportFailure(ok and err or snapshot) end
     self.pendingSnapshot = snapshot
     local shown, detail = self:_PresentSnapshot(snapshot, 1)
-    if shown and type(self.copyBox.SetCapacity) == "function" then self.copyBox:SetCapacity(NORMAL_PAGE_CAPACITY) end
+    if shown then
+        self.preferredPageCapacity = NORMAL_PAGE_CAPACITY
+        if type(self.copyBox.SetCapacity) == "function" then self.copyBox:SetCapacity(NORMAL_PAGE_CAPACITY) end
+    end
     return shown, detail
 end
 
@@ -409,6 +479,9 @@ function W:Describe()
         visible = self.visible == true, moduleId = self.moduleId, pageIndex = tonumber(self.pageIndex) or 0,
         parts = self.snapshot and tonumber(self.snapshot.parts) or 0,
         auxPersistenceDegraded = self.auxPersistenceDegraded == true,
+        preferredPageCapacity = tonumber(self.preferredPageCapacity) or NORMAL_PAGE_CAPACITY,
+        autoRepageCount = tonumber(self.autoRepageCount) or 0, lastAutoRepageFrom = tonumber(self.lastAutoRepageFrom) or 0,
+        lastAutoRepageTo = tonumber(self.lastAutoRepageTo) or 0, lastAutoReadbackBytes = tonumber(self.lastAutoReadbackBytes) or 0,
         copy = self.copyBox and type(self.copyBox.GetDiagnostics) == "function" and self.copyBox:GetDiagnostics() or nil }
 end
 

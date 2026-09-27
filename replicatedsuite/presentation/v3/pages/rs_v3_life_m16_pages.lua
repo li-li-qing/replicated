@@ -9,6 +9,9 @@ local RSUI, D = S.RSUI, S.UIV3Design
 local Host = S.UIV3 and S.UIV3.PageHost or nil
 local WidgetHost = S.UIV3 and S.UIV3.WidgetHost or nil
 if type(RSUI) ~= "table" or type(D) ~= "table" or type(Host) ~= "table" or type(WidgetHost) ~= "table" then return end
+-- 中文维护注释（2026-09-25，life-page-consumer-binding-1）：Acceptance 用此只读契约标记阻止
+-- “新 PageHost + 旧 LifeM16Pages”部分覆盖。它不代表 Consumer 状态，也不得被业务逻辑写入。
+S.UIV3.LifeM16PagesContract = { version = 1, featureConsumerBindingContractVersion = 1, tradeMultiQuoteUiContractVersion = 1 }
 
 local function Items(rows, label)
     local out = {}
@@ -62,7 +65,7 @@ local function ValidateFeatureContract(feature, kind)
         if type(feature.GetRouteSettings) ~= "function" or type(commands.SetFrom) ~= "function" or type(commands.SetTo) ~= "function"
             or type(commands.SetRatioMode) ~= "function" or type(commands.SetCommerceMode) ~= "function"
             or type(commands.SetViewMode) ~= "function" or type(commands.ToggleTrackedProduct) ~= "function" or type(commands.SetAutoRefresh) ~= "function"
-            or type(commands.QuoteRowMaterials) ~= "function"
+            or type(commands.QuotePendingMaterials) ~= "function" or type(commands.QuoteRowMaterials) ~= "function"
             or type(feature.GetWidgetVisible) ~= "function" or type(commands.SetWidgetVisible) ~= "function" then
             return false, "跑商页面 Feature 契约不完整"
         end
@@ -94,6 +97,18 @@ local function Build(parent, route, feature, kind)
     local root, err = D:PageRoot(parent, "v3_page_" .. tostring(kind))
     if root == nil then return nil, err end
     root.consumerHeld = false
+    -- 中文维护注释（2026-09-25，life-page-consumer-binding-1）：life.trade / life.bonds / life.treasure /
+    -- life.fishing 共用本 Builder。18.309 接入 PageHost Feature 生命周期桥时若只替换 Activate/Deactivate，
+    -- 却漏掉这个共享 consumerBinding，BindFeatureConsumerLifecycle 会收到 nil 并让所有生活页在激活阶段报
+    -- `invalid feature lifecycle binding`。这里保留旧版 token `page:<kind>`，避免升级后同时出现新旧 Demand
+    -- 身份；Feature.Id 是 Runtime Authority，Presentation 的 consumerHeld 仅为镜像。Refresh 回调只在生命周期
+    -- 边沿执行，不增加 Tick/轮询，也不直接读取 Native 数据。后续新增生活页必须复用同一 binding。
+    local consumerBinding = {
+        feature = feature,
+        featureId = tostring(feature.Id or ""),
+        token = "page:" .. tostring(kind),
+        refresh = function(page) return page:Refresh() end,
+    }
     local title, subtitle = "", ""
     if kind == "trade" then title, subtitle = "跑商", "选择路线后查看实时货率与预计售价；单击选中货物，双击该行查询它的材料价格并自动计算毛利。"
     elseif kind == "bonds" then title, subtitle = "债券 / 居民板", "分别在西大陆、东大陆（以及原大陆）刷新一次即可保存当天快照；页面会合并显示已读取大陆，排序不会隐藏另一大陆。"
@@ -176,8 +191,17 @@ local function Build(parent, route, feature, kind)
             if ok == true then root:Refresh() end
             return ok, commandErr
         end
-        local tradeViewHint = RSUI:Text({ id = "v3_trade_view_hint", parent = tradeViewRow, text = "", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
-        root.tradeViewSelector, root.tradeAutoRefreshButton, root.tradeViewHint = tradeViewSelector, tradeAutoRefreshButton, tradeViewHint
+        -- 维护（2026-09-25，trade-multi-row-quote-ui-1）：批量入口放在“显示”行而不是继续挤 actionRow，
+        -- 保持 1024×768 等窄宽度下主操作按钮不重叠。它只创建 RowJob，Native 查询仍由共享 Queue 串行/去重。
+        local tradeQuoteListButton = RSUI:Button({ id = "v3_trade_quote_list", parent = tradeViewRow, text = "刷新当前材料", compact = true, slot = { size = "fixed", width = 108 } })
+        tradeQuoteListButton.onClick = function()
+            local ok, quoteErr = feature.Commands:QuotePendingMaterials()
+            if ok == true then root:Refresh()
+            elseif root.tradeInteractionHint then root.tradeInteractionHint:SetText("批量刷新材料失败：" .. tostring(quoteErr or "当前列表没有可刷新材料")) end
+            return ok, quoteErr
+        end
+        local tradeViewHint = RSUI:Text({ id = "v3_trade_view_hint", parent = tradeViewRow, text = "", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1, minWidth = 80 } })
+        root.tradeViewSelector, root.tradeAutoRefreshButton, root.tradeQuoteListButton, root.tradeViewHint = tradeViewSelector, tradeAutoRefreshButton, tradeQuoteListButton, tradeViewHint
 
         local tradeRatioModeButton = RSUI:Button({ id = "v3_trade_ratio_mode", parent = actionRow, text = "货率：实时", compact = true, slot = { size = "fixed", width = 94 } })
         tradeRatioModeButton.onClick = function()
@@ -194,9 +218,9 @@ local function Build(parent, route, feature, kind)
             return ok, modeErr
         end
 
-        -- 维护（2026-09-23，trade-row-double-click-1）：取消“材料询价/扩大询价/取消询价”三套全列表按钮。
-        -- 用户真正关心的是某一货物的毛利；全列表批量命令仍保留在 Feature 兼容边界，但普通页面不再暴露。
-        -- 单击仅选择，详情由显式按钮打开，双击同一行才查询该货物材料，避免第一次点击弹窗截断双击手势。
+        -- 维护（2026-09-25，trade-multi-row-quote-ui-1）：询价任务现在按货物 RowJob 独立存在；
+        -- 用户可以连续双击任意多行，已运行的其它货物不会被 supersede。
+        -- 单击仅选择，详情由显式按钮打开，双击同一行把该行加入独立询价任务，避免第一次点击弹窗截断双击手势。
         local tradeDetailButton = RSUI:Button({ id = "v3_trade_detail", parent = actionRow, text = "货物详情", compact = true, slot = { size = "fixed", width = 92 } })
         tradeDetailButton:SetEnabled(false)
         tradeDetailButton.onClick = function()
@@ -219,10 +243,10 @@ local function Build(parent, route, feature, kind)
         end
         root.tradeInteractionHint = RSUI:Text({
             id = "v3_trade_interaction_hint", parent = root,
-            text = "操作：单击选中 · 双击查询材料并计算毛利 · 可直接关注/取消关注货物",
+            text = "本地材料价即时计算毛利 · 后台自动更新 · 双击货物可强制刷新材料价",
             fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 22, hAlign = "fill" },
         })
-        root.tradeRatioModeButton, root.tradeCommerceModeButton, root.tradeDetailButton, root.tradeTrackButton = tradeRatioModeButton, tradeCommerceModeButton, tradeDetailButton, tradeTrackButton
+        root.tradeRatioModeButton, root.tradeCommerceModeButton, root.tradeQuoteListButton, root.tradeDetailButton, root.tradeTrackButton = tradeRatioModeButton, tradeCommerceModeButton, tradeQuoteListButton, tradeDetailButton, tradeTrackButton
     elseif kind == "bonds" then
         -- 中文维护注释（2026-09-24，债券选项下拉收敛）：旧版 8 个小按钮在 1024/1280 宽度下
         -- 既拥挤又难理解“排序方式/大陆顺序/数量范围/重复策略”的组合关系。现在收敛为 3 个 Dropdown：
@@ -282,22 +306,18 @@ local function Build(parent, route, feature, kind)
         local target = not enabled
         local ok, enableErr = S.FeatureRuntime:SetPreferredEnabled(feature.Id, target, "life_page_toggle")
         if ok ~= true then return false, enableErr end
-        if target then
-            local acquired, acquireErr = feature:AcquireConsumer("page:" .. kind)
-            if acquired ~= true then
-                local rolledBack, rollbackErr = S.FeatureRuntime:SetPreferredEnabled(feature.Id, false, "life_page_acquire_rollback")
-                root.consumerHeld = false
-                root:Refresh()
-                if rolledBack ~= true then return false, tostring(acquireErr or "Consumer 启动失败") .. "；回滚失败：" .. tostring(rollbackErr or "unknown") end
-                return false, acquireErr
-            end
-            root.consumerHeld = true
-        else
-            -- Disable clears the entire Demand lease set transactionally.
+        -- 中文维护注释（page-feature-consumer-lifecycle-1）：生命周期事件会同步恢复当前页面 Consumer；
+        -- 这里再做一次幂等核验只是为了把 Acquire 失败直接反馈给本次点击，并在失败时回滚 Feature。
+        -- 禁止继续只写 consumerHeld boolean；真实持有关系以 Feature.Demand token 为准。
+        local synced, syncErr = Host:SyncFeatureConsumer(root, consumerBinding, "life_page_toggle")
+        if synced ~= true and target == true then
+            local rolledBack, rollbackErr = S.FeatureRuntime:SetPreferredEnabled(feature.Id, false, "life_page_acquire_rollback")
             root.consumerHeld = false
+            root:Refresh()
+            if rolledBack ~= true then return false, tostring(syncErr or "Consumer 启动失败") .. "；回滚失败：" .. tostring(rollbackErr or "unknown") end
+            return false, syncErr
         end
-        root:Refresh()
-        return true
+        return root:Refresh()
     end
     if widgetButton ~= nil then
         widgetButton.onClick = function()
@@ -457,7 +477,10 @@ local function Build(parent, route, feature, kind)
             end
             if root.tradeAutoRefreshButton then
                 root.tradeAutoRefreshButton:SetEnabled(enabled and projection.viewMode ~= "cargo")
-                root.tradeAutoRefreshButton:SetText(projection.autoRefresh == true and "自动刷新：开" or "自动刷新：关")
+                local autoState = type(projection.autoRefreshState) == "table" and projection.autoRefreshState or {}
+                root.tradeAutoRefreshButton:SetText(projection.autoRefresh == true
+                    and (autoState.watchActive == true and "自动刷新：开" or "自动刷新：待机")
+                    or "自动刷新：关")
             end
             if root.tradeViewHint then
                 -- 维护（2026-09-23，trade-view-help-1）：视图名称不再只显示计数，直接解释用途。
@@ -471,7 +494,7 @@ local function Build(parent, route, feature, kind)
                         and (" · 目的地 " .. tostring(cargo.completedCount or 0) .. "/" .. tostring(cargo.queueCount)) or ""
                     root.tradeViewHint:SetText("读取当前背部贸易包并比较不同目的地收益：" .. label .. progress)
                 else
-                    root.tradeViewHint:SetText("显示当前路线服务器返回的全部货物；双击任一货物可查询材料并计算毛利")
+                    root.tradeViewHint:SetText("显示当前路线全部货物；本地材料价立即计算毛利，后台自动更新；双击可强制刷新")
                 end
             end
             if root.tradeRatioModeButton then
@@ -485,22 +508,34 @@ local function Build(parent, route, feature, kind)
                 root.tradeCommerceModeButton:SetText(projection.commerceMode == "off" and "售价：忽略熟练" or "售价：计熟练")
             end
             local selected = type(feature.GetSelectedRow) == "function" and feature:GetSelectedRow() or nil
+            local batch = projection.quoteBatch or {}
+            local quoteJobs = projection.quoteJobs or {}
+            local activeJobs = tonumber(quoteJobs.activeCount) or tonumber(batch.activeJobs) or 0
+            if root.tradeQuoteListButton then
+                root.tradeQuoteListButton:SetEnabled(enabled and #(projection.rows or {}) > 0)
+                root.tradeQuoteListButton:SetText(activeJobs > 0 and ("刷新中(" .. tostring(activeJobs) .. ")") or "刷新当前材料")
+            end
             if root.tradeDetailButton then root.tradeDetailButton:SetEnabled(enabled and selected ~= nil) end
             if root.tradeTrackButton then
                 root.tradeTrackButton:SetEnabled(enabled and selected ~= nil)
                 root.tradeTrackButton:SetText(selected ~= nil and selected.tracked == true and "取消关注" or "关注货物")
             end
 
-            local batch = projection.quoteBatch or {}
             if root.tradeInteractionHint then
-                if batch.active == true and batch.scope == "row" then
-                    root.tradeInteractionHint:SetText("正在查询所选货物材料 "
+                if type(selected) == "table" and selected.quoteJobActive == true then
+                    root.tradeInteractionHint:SetText("当前货物询价 " .. tostring(selected.quoteJobCompleted or 0) .. "/" .. tostring(selected.quoteJobTotal or 0)
+                        .. "；还可以继续双击其它货物加入并行任务")
+                elseif batch.active == true then
+                    root.tradeInteractionHint:SetText("正在查询 " .. tostring(activeJobs) .. " 个货物 · 材料 "
                         .. tostring(batch.completed or 0) .. "/" .. tostring(batch.total or 0)
-                        .. "；完成后毛利会自动更新")
-                elseif tonumber(batch.failed) and tonumber(batch.failed) > 0 and batch.scope == "row" then
-                    root.tradeInteractionHint:SetText("上次材料询价有 " .. tostring(batch.failed) .. " 项失败；双击该货物可重试，详情中可查看材料状态")
+                        .. "；Native 拍卖请求仍单通道串行并自动去重")
+                elseif tonumber(batch.failed) and tonumber(batch.failed) > 0 then
+                    root.tradeInteractionHint:SetText("上次材料询价有 " .. tostring(batch.failed) .. " 项失败；双击对应货物可重试，详情中可查看材料状态")
+                elseif type(selected) == "table" and tostring(selected.materialCostBasis or "") == "gold_only_with_resources" then
+                    local resourceCount = math.max(0, tonumber(selected.boundResourceCount) or 0) + math.max(0, tonumber(selected.nonMarketResourceCount) or 0)
+                    root.tradeInteractionHint:SetText("当前毛利仅扣已折算金币材料；另有 " .. tostring(resourceCount) .. " 项绑定/非市场资源未折价")
                 else
-                    root.tradeInteractionHint:SetText("操作：单击选中 · 双击查询材料并计算毛利 · 可直接关注/取消关注货物")
+                    root.tradeInteractionHint:SetText("本地材料价已直接参与毛利；后台按价格年龄自动更新，双击或点“刷新当前材料”可强制校准")
                 end
             end
 
@@ -515,6 +550,10 @@ local function Build(parent, route, feature, kind)
                 statusParts[#statusParts + 1] = "显示 " .. tostring(shown) .. "/" .. tostring(raw) .. " 种货物"
                 if projection.ratioAgeMs ~= nil then
                     statusParts[#statusParts + 1] = "数据 " .. tostring(math.max(0, math.floor((tonumber(projection.ratioAgeMs) or 0) / 1000))) .. " 秒前"
+                end
+                if projection.autoRefresh == true and type(projection.autoRefreshState) == "table" then
+                    local seconds = math.max(1, math.floor(((tonumber(projection.autoRefreshState.targetMs) or 10000) + 999) / 1000))
+                    statusParts[#statusParts + 1] = projection.autoRefreshState.watchActive == true and ("自动刷新约 " .. tostring(seconds) .. " 秒") or "自动刷新待恢复"
                 end
                 if projection.isRefreshing == true then statusParts[#statusParts + 1] = "刷新中" end
                 if projection.commerceMode == "observe" and projection.commerceStatus == "ready" and projection.commerceSkill ~= nil then
@@ -579,31 +618,33 @@ local function Build(parent, route, feature, kind)
         return true
     end
     function root:BindFeatureUpdates()
-        if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" or type(feature.UpdateTopic) ~= "string" then return true end
+        if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then return false, "内部事件总线不可用" end
         if type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
-        return S.Events:SubscribeInternal(feature.UpdateTopic, self, function() root:Refresh() end)
+        if type(feature.UpdateTopic) == "string" then
+            local updated, updateErr = S.Events:SubscribeInternal(feature.UpdateTopic, self, function() root:Refresh() end)
+            if updated ~= true then return false, updateErr or "生活页面更新事件订阅失败" end
+        end
+        -- Feature Profiles/主开关可在页面保持可见时清空 Demand；必须监听生命周期并按 token 重新 Acquire。
+        local lifecycle, lifecycleErr = Host:BindFeatureConsumerLifecycle(self, consumerBinding)
+        if lifecycle ~= true then
+            if type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
+            return false, lifecycleErr or "生活页面生命周期订阅失败"
+        end
+        return true
     end
     function root:UnbindFeatureUpdates()
         if S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
         return true
     end
     function root:OnActivated()
-        self:BindFeatureUpdates()
-        if S.FeatureRuntime:IsEnabled(feature.Id) ~= true then
-            self.consumerHeld = false
-            return self:Refresh()
-        end
-        local acquired, acquireErr = feature:AcquireConsumer("page:" .. kind)
-        if acquired ~= true then return false, acquireErr end
-        self.consumerHeld = true
-        -- Demand 0->1 performs the initial read. Presentation must not issue a
-        -- duplicate page-enter refresh, especially for server-query features.
-        return self:Refresh()
+        local bound, bindErr = self:BindFeatureUpdates()
+        if bound ~= true then return false, bindErr end
+        -- Demand 0->1 still owns initial Domain read；本函数只建立当前可见页面的 lease 并渲染投影。
+        return Host:SyncFeatureConsumer(self, consumerBinding, "page_activated")
     end
     function root:OnDeactivated()
         self:UnbindFeatureUpdates()
-        if self.consumerHeld then feature:ReleaseConsumer("page:" .. kind); self.consumerHeld = false end
-        return true
+        return Host:ReleaseFeatureConsumer(self, consumerBinding, "page_deactivated")
     end
     root.route, root.tableView = route, tableView
     return root

@@ -58,6 +58,7 @@ local PERFORMANCE_PROFILES = {
     tools_craft = { 2, "配方与材料计划计算；复杂计划会增加开销。" },
     tools_instance_browser = { 1, "按需查询和列表展示。" },
     tools_social = { 1, "以显式操作和事件为主。" },
+    tools_feature_profiles = { 1, "仅在创建/编辑/应用方案与功能生命周期边沿比较开关状态；无 Tick/无持续扫描。" },
     tools_hotkey_profiles = { 1, "仅在用户保存/应用方案时处理至多19项白名单键位，无常驻采样。" },
     tools_reinforce_analysis = { 2, "强化事件记录与统计分析。" },
     tools_portal_profiles = { 1, "当前运行入口受保护；此等级不表示功能可用。" },
@@ -252,11 +253,11 @@ Add("combat_death_review", "combat.death_review", "死亡回顾", "combat", 30, 
 Add("combat_buff_display", "combat.buff_display", "状态显示", "combat", 40, "首个 Plates/BUFF V3 消费端：player/target 的增益、减益与隐藏状态 bounded display；事实只来自共享 StatusMap。", {
     navigationDevelopmentState = "complete", -- 中文维护（2026-09-13 用户实机验收）：状态显示按当前产品范围标记完成。这里只改变导航开发态；共享 Aura/StatusMap 的 API 能力说明、按需生命周期与个人配置均保持不变，后续新增能力仍需单独验收。
     -- 中文维护注释（.18.243）：旧 v3.buff_display 已降级为 migration-only 证据源；当前配置
-    -- Authority 是 settings/layout/manifest 指向的 tracking slot。这里必须写清，避免维护者依据 Registry
+    -- Authority 是 settings/layout/aliases/manifest 指向的 tracking slot。这里必须写清，避免维护者依据 Registry
     -- 又把 HUD/Tracking 保存接回旧单体 Store。AuraObservation 仍只负责运行时事实，不持有用户配置。
-    status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.buff_display.settings + v3.buff_display.layout + v3.buff_display.tracking.manifest + v3.aura_observation (legacy v3.buff_display migration-only)", diagnosticSources = { "buff_display_v3" },
+    status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.buff_display.settings + v3.buff_display.layout + v3.buff_display.aliases + v3.buff_display.tracking.manifest + v3.aura_observation (legacy v3.buff_display migration-only)", diagnosticSources = { "buff_display_v3" },
     widgetCapable = true, settingsCapable = true, defaultEnabled = false,
-    apiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:UnitBuffTooltip", "X2Unit:UnitDeBuffCount", "X2Unit:UnitDeBuff", "X2Unit:UnitDeBuffTooltip", "X2Unit:UnitHiddenBuffCount", "X2Unit:UnitHiddenBuff", "X2Unit:UnitHiddenBuffTooltip" },
+    apiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:UnitBuffTooltip", "X2Unit:UnitDeBuffCount", "X2Unit:UnitDeBuff", "X2Unit:UnitDeBuffTooltip", "X2Unit:UnitHiddenBuffCount", "X2Unit:UnitHiddenBuff", "X2Unit:UnitHiddenBuffTooltip", "X2Unit:UnitName" },
     apiReadiness = "shared_service_partial", apiPolicy = "read_only_bounded",
     evidence = "AuraObservationV3:GetStatusMap(); V3 Page/Widget projection and lifecycle contract",
 })
@@ -357,16 +358,16 @@ Add("life_activities", "life.activities", "活动", "life", 10, "世界活动、
     evidence = "V3 Activity Authority + shared QuestProgressV3; RU X2BattleField getters officially enabled 2026-05-19",
     defaultEnabled = true,
 })
-Add("life_trade", "life.trade", "跑商", "life", 20, "路线、多货物与实时货率；材料身份/数量可读，材料报价与利润改为独立显式询价后再接回。", {
+Add("life_trade", "life.trade", "跑商", "life", 20, "路线、多货物与实时货率；本地材料价立即计算毛利，过期价格后台静默重验，显式多货物询价仍可强制刷新。", {
     -- 中文维护注释（2026-09-23，trade-live-cargo-focus）：跑商继续使用 v3.life.trade 作为业务 Authority；
     -- 历史路线/收藏/HUD 仍保留在 v3.life.trade schema1，避免用户升级触发旧指纹迁移。新增的关注/自动刷新/随身扫描偏好
     -- 单独进入 v3.trade_preferences；查询调度仍维持 SingleFlight，不能因为新增随身扫描而并发 Native 请求。
     navigationDevelopmentState = "complete",
-    status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.life.trade", diagnosticSources = { "trade_material_identity" }, widgetCapable = true, settingsCapable = true,
+    status = "migrated_partial", lifecycle = "demand_scoped_with_background_refresh", authority = "v3.life.trade", diagnosticSources = { "trade_material_identity" }, widgetCapable = true, settingsCapable = true,
     -- 维护（2026-09-23，trade-runtime-metadata-1）：Feature 实现已把背包槽读取纳入 Authority，Registry 也必须
-    -- 公开相同依赖，避免 Runtime/诊断在实现可用时却把元数据描述成旧能力集合。事件订阅仍由 Demand 生命周期负责。
-    apiDependencies = { "X2Store:GetProductionZoneGroups", "X2Store:GetSellableZoneGroups", "X2Store:GetSpecialtyRatioBetween", "X2Ability:GetAllMyActabilityInfos", "X2Equipment:GetEquippedItemType" },
-    apiReadiness = "official_mixed", apiPolicy = "on_demand_server_query", currentImplementation = "路线/区域/服务器货率 + 满货率 130% 本地对比 + 经商熟练度售价估算；路线请求统一进入 SingleFlight 调度器，用户切线优先尝试 Native、同路线自动刷新遵守本地节流并保留旧数据。新增全部/关注/随身三种投影视图：关注只对可见货物执行材料/利润重投影；随身模式通过 EST_BACKPACK 的已验证 Trade Product ItemID 识别当前贸易包，并用同一 Native lane 串行扫描可售目的地。UNIT_EQUIPMENT_CHANGED 220ms 合并刷新熟练度与背包身份，不使用 Tick。绑定/非市场制作资源保留配方数量但不伪造金币成本。路线/收藏/窗口继续使用历史 v3.life.trade schema1，新偏好独立保存于 v3.trade_preferences。", remainingCapability = "GetLowestPrice 返回形态、RU 生产/可售地区 payload、GetSpecialtyRatioBetween 数值返回的真实节流语义与静态底价长期一致性仍需实机验证；售价拆解需用多路线/多熟练度实售样本继续校准；自动制作台刷新/叛乱记录仍缺安全事件证据", evidence = "V3 Trade Authority + SPECIALTY_RATIO_BETWEEN_INFO + official X2Ability actability list + official X2Equipment:GetEquippedItemType + verified Trade Product ItemID registry; SingleFlight route/cargo scheduler + bounded favorites/tracked projection + shared TradeDetailFloatingV3 + explicit selected-row material quote",
+    -- 公开相同依赖，避免 Runtime/诊断在实现可用时却把元数据描述成旧能力集合。页面事件由 Demand 生命周期负责；普通路线自动刷新只额外持有独立轻量 Runtime owner。
+    apiDependencies = { "X2Store:GetProductionZoneGroups", "X2Store:GetSellableZoneGroups", "X2Store:GetSpecialtyRatioBetween", "X2Ability:GetAllMyActabilityInfos", "X2Equipment:GetEquippedItemType", "X2Equipment:GetEquippedItemTooltipInfo" },
+    apiReadiness = "official_mixed", apiPolicy = "on_demand_server_query", currentImplementation = "路线/区域/服务器货率 + 满货率 130% 本地对比 + 经商熟练度售价估算；路线请求统一进入 SingleFlight 调度器；“自动刷新”由独立轻量 Runtime owner 保活，不再伪装成页面 Demand Consumer；该 Runtime 只持有 SPECIALTY_RATIO_BETWEEN_INFO 回执、可选跨区事件与 1 秒低频 Scheduler watchdog，默认约 10 秒（且不短于 2×Native cooldown）才真正请求一次。主页面关闭后仍可持续保持当前路线新鲜，同时 QuoteQueue/装备观察/LiveIdentity 等页面资源会真实释放。材料单位价由独立 MaterialPriceServiceV3 持久化到 v3.market.material_prices：打开/刷新路线先使用最后可信本地单价立即重算材料成本、毛利与毛利率，再按 Fresh/Warm/Stale/Old 对当前可见材料低优先级后台重验；用户双击/批量多 RowJob 为高优先级强制刷新，但所有拍卖 Native 调用仍共用单一 PriceQuoteQueueV3 串行 lane 并按 itemType+grade 去重。货率/熟练度变化推进 payout revision，材料价变化推进 material revision，两者都重新派生利润，禁止保存独立旧毛利。全部/关注/随身三种投影视图继续保留；随身模式通过 ES_BACKPACK（缺失时使用已验证槽位27）识别当前贸易包。UNIT_EQUIPMENT_CHANGED 220ms 合并刷新，不使用 Tick。绑定/非市场制作资源保留配方数量但不伪造金币成本。路线/收藏/窗口继续使用历史 v3.life.trade schema1，新偏好独立保存于 v3.trade_preferences。", remainingCapability = "GetLowestPrice 返回形态、RU 生产/可售地区 payload、GetSpecialtyRatioBetween 数值返回的真实节流语义与静态底价长期一致性仍需实机验证；售价拆解需用多路线/多熟练度实售样本继续校准；自动制作台刷新/叛乱记录仍缺安全事件证据", evidence = "V3 Trade Authority + SPECIALTY_RATIO_BETWEEN_INFO + official X2Ability actability list + official X2Equipment:GetEquippedItemType/GetEquippedItemTooltipInfo + ES_BACKPACK slot authority + verified Trade Product ItemID registry; SingleFlight route/cargo scheduler + bounded favorites/tracked projection + shared TradeDetailFloatingV3 + explicit selected-row material quote",
 })
 Add("life_bonds", "life.bonds", "债券 / 居民板", "life", 30, "每日居民板材料、完成状态与背包资源。", {
     -- 中文维护注释（2026-09-15，用户验收完成）：债券当前产品范围已接受，导航不再标“未完成”。
@@ -503,6 +504,19 @@ Add("tools_social", "tools.social", "社交名单", "tools", 50, "好友列表�
     apiDependencies = { "X2Friend:IsMyFriend", "X2Friend:GetFriendList", "X2Friend:GetBlockList", "X2Friend:BlockUser", "X2Friend:UnblockUser", "X2Friend:GetMuteList", "X2Friend:MuteUser", "X2Friend:UnmuteUser" },
     apiReadiness = "official", apiPolicy = "cooldown_writes", evidence = "ArcheRage RU official addon API updates 2026-04-28 / 2026-08-05; central Api CapabilityCooldown contract enforces 1000ms writes",
 })
+Add("tools_feature_profiles", "tools.feature_profiles", "功能方案", "tools", 65,
+    "自定义一组功能开关并生成屏幕快捷按钮；应用时开启已选功能、关闭其它可控业务功能，但保留各模块自己的配置。", {
+    -- 中文维护注释（2026-09-25，feature-profile-v1）：方案不内置“生活/战斗”等语义；用户名称与选择是唯一配置。
+    -- 应用事务只调用 FeatureRuntime 批量偏好接口，不直接碰其它 Feature Store/Consumer/Native UI。
+    navigationDevelopmentState = "implemented_pending_ru", status = "migrated_m1", lifecycle = "independent",
+    authority = "v3.feature_profiles + FeatureRuntime preference transaction", diagnosticSources = { "feature_profiles_v3" },
+    widgetCapable = true, settingsCapable = true, defaultEnabled = true, apiDependencies = {},
+    apiReadiness = "none", apiPolicy = "feature_lifecycle_only",
+    currentImplementation = "账号级最多16个自定义方案；方案保存开启集合，其余可控业务 Feature 在应用时关闭；FeatureRuntime 单次 durable 偏好事务 + 生命周期失败回滚；可捕获当前状态、重命名/删除/排序、按方案显示独立可拖动屏幕按钮；手动改变模块后显示方案已偏离。",
+    remainingCapability = "需 RU 实机集中验收：多模块混合启停、正在显示页面/悬浮窗的关闭回收、快捷按钮拖动与不同分辨率恢复。",
+    verification = "local_contract_verified_pending_ru_runtime",
+    evidence = "FeatureRuntime is the existing lifecycle/preference Authority; feature-profile-v1 adds no gameplay/native API and local regression covers batch rollback + profile semantics.",
+})
 Add("tools_hotkey_profiles", "tools.hotkey_profiles", "快捷键方案", "tools", 70, "保存安全白名单快捷键方案并跨角色应用；所有写操作仅允许在非战斗状态执行。", {
     -- 中文维护注释（hotkey-profile-v2）：主动作栏 1..12 继续使用现有 Suite/Fishing 已验证契约；队伍目标 1..4 与
     -- 头顶标记 1..3 必须在每次保存/应用前同时通过 IsValidActionName + IsOverridableAction，历史 binding.g
@@ -572,7 +586,7 @@ AssignGroup("tools_inventory", 10, { "tools_bag", "tools_craft" })
 AssignGroup("tools_market", 20, { "tools_auction", "tools_market_analysis" })
 AssignGroup("tools_reference", 30, { "tools_instance_browser" })
 AssignGroup("tools_social", 40, { "tools_social" })
-AssignGroup("tools_profiles", 50, { "tools_hotkey_profiles", "tools_portal_profiles" })
+AssignGroup("tools_profiles", 50, { "tools_feature_profiles", "tools_hotkey_profiles", "tools_portal_profiles" })
 AssignGroup("tools_equipment", 60, { "tools_reinforce_analysis" })
 AssignGroup("tools_shop", 70, { "tools_random_shop" })
 

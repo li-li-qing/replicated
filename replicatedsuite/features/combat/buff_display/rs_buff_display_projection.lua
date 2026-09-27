@@ -260,6 +260,25 @@ function F.ProjectPlates(laneData, settings, trackedIndex, scope)
         out.class = { value = tostring(class.name or ""), icon = class.icon, key = class.key }
     end
     if laneData.gearScore ~= nil then out.gearScore = { value = tostring(math.floor(tonumber(laneData.gearScore) or 0)) } end
+    -- 中文维护注释（target-alias-1）：别名已在 TARGET_CHANGED/用户操作边由 Store O(1) 解析；
+    -- Projection 仅复制字符串，严禁在 HUD 热路径读取 UnitName 或遍历持久化备注表。
+    if scope == "target" and type(laneData.targetAlias) == "string" and laneData.targetAlias ~= "" then
+        -- 中文维护注释（target-alias-hud-2）：别名几何随 scope settings 的小快照进入 Projection；
+        -- Renderer 只消费 detached 值，不直接访问 Persistence。enabled=false 时 Resolve 已让 alias 为空，
+        -- 这里仍携带 hud 只是为了校准/兼容调用保持同一数据结构，不增加 Native 查询。
+        local hud = type(settings.targetAlias) == "table" and settings.targetAlias or {}
+        out.alias = {
+            value = tostring(laneData.targetAlias),
+            targetName = tostring(laneData.targetName or ""),
+            hud = {
+                enabled = hud.enabled ~= false,
+                x = tonumber(hud.x) or 0,
+                y = tonumber(hud.y) or -94,
+                fontSize = tonumber(hud.fontSize) or 12,
+                alpha = tonumber(hud.alpha) or 1.0,
+            },
+        }
+    end
     for _, key in ipairs({ "mainHand", "offHand", "ranged", "wings" }) do
         local item = type(laneData[key]) == "table" and laneData[key] or nil
         -- 中文维护：复用已有目标主/副手的布局开关与位置，避免升级重排用户校准/修改存档规范化。
@@ -286,4 +305,4 @@ function F.ProjectPlates(laneData, settings, trackedIndex, scope)
     return out
 end
 
-F.ProjectPlatesContractVersion = 5
+F.ProjectPlatesContractVersion = 7

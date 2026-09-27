@@ -93,6 +93,10 @@ local function Build(parent, route, id)
     end
     if root == nil then return nil, err end
     root.consumerHeld = false
+    local consumerBinding = {
+        feature = feature, featureId = id, token = "page:" .. id,
+        refresh = function(page) return page:Refresh() end,
+    }
     if id == "combat_buff_cap" then
         -- 中文维护：新增持久设置在构造 Binding 前读取原 Store；失败保持只读保护页，
         -- 不显示可写默认值、不重置存档、不启用观察。普通控件构建错误仍交给 PageHost。
@@ -182,21 +186,17 @@ local function Build(parent, route, id)
             if hint ~= nil then hint:SetText("启用失败：" .. tostring(enableErr or "未知原因")) end
             return false, enableErr
         end
-        if target then
-            local acquired, acquireErr = feature:AcquireConsumer("page:" .. id)
-            if acquired ~= true then
-                local rolledBack, rollbackErr = S.FeatureRuntime:SetPreferredEnabled(id, false, "business_page_acquire_rollback")
-                root.consumerHeld = false
-                root:Refresh()
-                if rolledBack ~= true then return false, tostring(acquireErr or "Consumer 启动失败") .. "；回滚失败：" .. tostring(rollbackErr or "unknown") end
-                return false, acquireErr
-            end
-            root.consumerHeld = true
-        else
+        -- page-feature-consumer-lifecycle-1：FeatureRuntime 改状态后由生命周期桥恢复可见页 lease；
+        -- 本次幂等 Sync 只负责把获取失败反馈给点击事务并回滚，不再维护脱离 Demand 的布尔副本。
+        local synced, syncErr = Host:SyncFeatureConsumer(root, consumerBinding, "business_page_toggle")
+        if synced ~= true and target == true then
+            local rolledBack, rollbackErr = S.FeatureRuntime:SetPreferredEnabled(id, false, "business_page_acquire_rollback")
             root.consumerHeld = false
+            root:Refresh()
+            if rolledBack ~= true then return false, tostring(syncErr or "Consumer 启动失败") .. "；回滚失败：" .. tostring(rollbackErr or "unknown") end
+            return false, syncErr
         end
-        root:Refresh()
-        return true
+        return root:Refresh()
     end
     local craftRecipeDropdown, craftActionStatus, craftQuoteButton
     local specialFields = {}
@@ -1320,7 +1320,7 @@ local function Build(parent, route, id)
             if S.Theme ~= nil and type(S.Theme.SetLabelTone) == "function" then S.Theme:SetLabelTone(hotkeyStatus, tone or "muted") end
         end
         hotkeySaveButton.onClick = function()
-            local name = hotkeyNameInput and type(hotkeyNameInput.GetValue) == "function" and hotkeyNameInput:GetValue() or ""
+            local name = hotkeyNameInput and type(hotkeyNameInput.GetActionValue) == "function" and hotkeyNameInput:GetActionValue() or (hotkeyNameInput and type(hotkeyNameInput.GetDraftValue) == "function" and hotkeyNameInput:GetDraftValue() or (hotkeyNameInput and type(hotkeyNameInput.GetValue) == "function" and hotkeyNameInput:GetValue() or ""))
             local ok, result = feature.Commands:SaveProfile(name)
             if ok ~= true then SetHotkeyStatus("保存失败：" .. tostring(result or "未执行"), "warn"); return false, result end
             hotkeyNameInput:SetValue("", false, "hotkey_profile_saved")
@@ -1763,11 +1763,14 @@ local function Build(parent, route, id)
         return true
     end
     function root:BindFeatureUpdates()
-        if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" or type(feature.UpdateTopic) ~= "string" then return true end
+        if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then return false, "内部事件总线不可用" end
         if type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
         self.featureUpdatesBound = true
-        local subscribed, subscribeErr = S.Events:SubscribeInternal(feature.UpdateTopic, self, function(_, _, reason) return root:RequestFeatureRefresh(reason) end)
-        if subscribed ~= true then return false, subscribeErr end
+        -- UpdateTopic 是业务投影通知，可选；Feature 生命周期订阅是页面 lease 的硬契约，二者不能互相 gating。
+        if type(feature.UpdateTopic) == "string" and feature.UpdateTopic ~= "" then
+            local subscribed, subscribeErr = S.Events:SubscribeInternal(feature.UpdateTopic, self, function(_, _, reason) return root:RequestFeatureRefresh(reason) end)
+            if subscribed ~= true then return false, subscribeErr end
+        end
         -- 中文维护注释（2026-09-15，Sidecar 状态轻量同步）：AuctionSurface 的几何变化不应驱动
         -- 整个业务页重绘。Controller 只在“原生拍卖行开关 / Sidecar 显隐 / 用户恢复”发生变化时发布
         -- ControlTopic；本页只刷新卡片里的状态与按钮，不触发 AuctionQuery，不获取额外 Consumer。
@@ -1785,6 +1788,14 @@ local function Build(parent, route, id)
                 end
             end
         end
+        -- 功能方案可在本页保持打开时启停任意 Business Feature；统一桥接生命周期，
+        -- disabled 只同步 stale lease，enabled 重新 Acquire 同 token，不增加任何 Tick。
+        local lifecycleOk, lifecycleErr = Host:BindFeatureConsumerLifecycle(self, consumerBinding)
+        if lifecycleOk ~= true then
+            self.featureUpdatesBound = false
+            if type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self) end
+            return false, lifecycleErr or "业务页面生命周期订阅失败"
+        end
         return true
     end
     function root:UnbindFeatureUpdates()
@@ -1797,24 +1808,16 @@ local function Build(parent, route, id)
         return true
     end
     function root:OnActivated()
-        self:BindFeatureUpdates()
-        if S.FeatureRuntime:IsEnabled(id) ~= true then
-            self.consumerHeld = false
-            return self:Refresh()
-        end
-        local acquired, acquireErr = feature:AcquireConsumer("page:" .. id)
-        if acquired ~= true then return false, acquireErr end
-        self.consumerHeld = true
-        -- Demand 0->1 owns the initial Authority refresh. Do not immediately
-        -- issue a second server/native query from Presentation.
-        return self:Refresh()
+        local bound, bindErr = self:BindFeatureUpdates()
+        if bound ~= true then return false, bindErr end
+        -- Demand 0->1 仍由 Domain 负责初始读取；这里仅建立当前页面 lease 并渲染现有投影。
+        return Host:SyncFeatureConsumer(self, consumerBinding, "page_activated")
     end
     function root:OnDeactivated()
         -- 中文维护：离开设置页只退出鼠标校准，保留已启用机制的后台观察，避免 HUD 截获战斗点击。
         if id == "combat_boss_alerts" and type(feature.Commands.SetHudEditing) == "function" then feature.Commands:SetHudEditing(false) end
         self:UnbindFeatureUpdates()
-        if self.consumerHeld then feature:ReleaseConsumer("page:" .. id); self.consumerHeld = false end
-        return true
+        return Host:ReleaseFeatureConsumer(self, consumerBinding, "page_deactivated")
     end
     root.route, root.tableView = route, tableView
     return root

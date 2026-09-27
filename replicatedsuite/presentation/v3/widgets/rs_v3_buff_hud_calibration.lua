@@ -23,7 +23,7 @@ if type(Feature) ~= "table" or type(S.UI) ~= "table" then return end
 S.UIV3 = S.UIV3 or {}
 S.UIV3.BuffHudCalibrationV3 = S.UIV3.BuffHudCalibrationV3 or {}
 local C = S.UIV3.BuffHudCalibrationV3
-C.version = 4
+C.version = 5
 C.PvpPatch = "pvp-hud-1"
 C.owner = "v3:buff_hud_calibration"
 C.visible = C.visible == true
@@ -73,6 +73,10 @@ local COMPONENTS = {
     -- Runtime Authority 来自 CooldownObservationV3 的本机 Native 读数，校准预览只画占位，不触发查询。
     { key="cooldowns", label="技能 CD" },
     { key="info",     label="职业名称" },
+    -- 中文维护注释（target-alias-hud-2）：自定义名字是 target-only 固定语义槽。它不进入
+    -- player profile，也不参与兄弟组件布局；按钮仅在“目标 HUD”页出现，位置/字号/透明度由独立
+    -- alias Store 的 CalibrationDraft 控制，避免改动历史 HUD layout schema。
+    { key="alias",    label="自定义名字", targetOnly=true },
     { key="gearScore",label="装备分数" },
     { key="distance", label="距离" },
     -- 中文维护注释（HUD 信息拆分）：class 保持“职业图标”几何，不复用为职业名称，避免旧图标
@@ -181,6 +185,7 @@ C.TemplateSnapshotContractVersion = 1
 C.SplitInfoTextCalibrationContractVersion = 1 -- 中文维护注释（.18.225）：职业名称/装分/距离各自选择并消费各自现有 schema6 几何字段；职业图标仍独立。
 C.GearScoreFormatCalibrationContractVersion = 1 -- .18.226：装备分数校准项拥有 full/compact 两个 profile-local 草稿选项。
 C.IndependentHudSlotPreviewContractVersion = 1 -- .18.265：校准预览与正式 HUD 共用固定 Info/Cast/Equipment 语义槽位，禁止按实时行数重排。
+C.TargetAliasCalibrationContractVersion = 1 -- .18.322：目标自定义名字进入目标 HUD 校准器；名字编辑与 HUD 几何 Authority 分离。
 
 local function ScreenSize()
     -- 优先使用统一 UI metrics 的逻辑尺寸，避免 UI Scale!=1 时把 panel clamp 到物理像素边界。
@@ -253,7 +258,73 @@ local function Profile()
     return profile
 end
 
+-- 中文维护注释（target-alias-hud-2，Draft 分层）：目标自定义名字的 HUD 几何不属于历史
+-- player/target Layout Store，因此校准器持有第二份极小 Draft。aliasDraft.hud 只保存显示开关与几何；
+-- targetName/savedAlias 只是当前目标编辑态。切目标只刷新名字编辑态，不覆盖尚未保存的 HUD 几何。
+local function AliasDraft()
+    C.aliasDraft = type(C.aliasDraft) == "table" and C.aliasDraft or {}
+    C.aliasDraft.hud = type(C.aliasDraft.hud) == "table" and C.aliasDraft.hud or { x=0, y=-94, fontSize=12, alpha=1.0 }
+    if C.aliasDraft.enabled == nil then C.aliasDraft.enabled = true end
+    return C.aliasDraft
+end
+
+local function AliasHud()
+    return AliasDraft().hud
+end
+
+local function AliasInputText()
+    local edit = C.aliasInput
+    if edit ~= nil and type(edit.GetText) == "function" then
+        local ok, value = pcall(edit.GetText, edit)
+        if ok then return tostring(value or "") end
+    end
+    return ""
+end
+
+local function AliasPreviewText()
+    local text = AliasInputText():match("^%s*(.-)%s*$")
+    if text ~= "" then return text end
+    local draft = AliasDraft()
+    text = tostring(draft.savedAlias or "")
+    return text ~= "" and text or "自定义名字"
+end
+
+function C:RefreshAliasEditorSnapshot(forceText)
+    if type(Feature.Commands) ~= "table" or type(Feature.Commands.GetCurrentTargetAlias) ~= "function" then
+        return false, "目标自定义名字接口不可用"
+    end
+    local snapshot = Feature.Commands:GetCurrentTargetAlias()
+    snapshot = type(snapshot) == "table" and snapshot or { available=false, targetAvailable=false, error="目标自定义名字快照不可用" }
+    local draft = AliasDraft()
+    local previousName = draft.targetName
+    draft.available = snapshot.available == true
+    draft.targetAvailable = snapshot.targetAvailable == true
+    draft.targetName = snapshot.name
+    draft.savedAlias = snapshot.alias
+    draft.error = snapshot.error
+    draft.count = tonumber(snapshot.count) or 0
+    -- 只在 Open 首次同步 Store HUD 配置；之后 TARGET_CHANGED 不能覆盖用户正在调整但未保存的草稿。
+    if self.aliasConfigInitialized ~= true then
+        local hud = type(snapshot.hud) == "table" and snapshot.hud or {}
+        draft.enabled = snapshot.enabled ~= false
+        draft.hud = {
+            x = Round(Clamp(hud.x, -400, 400, 0)),
+            y = Round(Clamp(hud.y, -400, 400, -94)),
+            fontSize = Round(Clamp(hud.fontSize, 8, 32, 12)),
+            alpha = Clamp(hud.alpha, 0.1, 1.0, 1.0),
+        }
+        self.aliasPersistedConfig = { enabled=draft.enabled, x=draft.hud.x, y=draft.hud.y, fontSize=draft.hud.fontSize, alpha=draft.hud.alpha }
+        self.aliasConfigInitialized = true
+    end
+    if self.aliasInput ~= nil and type(self.aliasInput.SetText) == "function"
+        and (forceText == true or previousName ~= draft.targetName) then
+        pcall(self.aliasInput.SetText, self.aliasInput, tostring(draft.savedAlias or ""))
+    end
+    return snapshot.available == true, snapshot.error
+end
+
 local function Component()
+    if C.component == "alias" then return AliasHud() end
     local profile = Profile()
     if C.component == "plate" then return profile.plate end
     if C.component == "info" then return profile.info end
@@ -269,6 +340,8 @@ local function CurrentFields()
         fields.width=N(component.width,150); fields.size=N(component.height,20)
     elseif key == "info" then
         fields.font=N(component.fontSize,12)
+    elseif key == "alias" then
+        fields.font=N(component.fontSize,12); fields.alpha=N(component.alpha,1)
     elseif key == "gearScore" or key == "distance" then
         fields.font=N(component.fontSize,12); fields.alpha=N(component.alpha,1)
     else
@@ -304,9 +377,10 @@ local function ApplyField(name, value)
         component.y = ScreenYToStoredY(key, screenY)
     elseif name == "size" then
         if key == "plate" then component.height = Round(Clamp(value, 8, 40, component.height or 20))
-        elseif key ~= "info" and key ~= "gearScore" and key ~= "distance" then component.size = Round(Clamp(value, key == "class" and 0 or (key == "castBar" and 4 or 8), 64, component.size or 26)) end
+        elseif key ~= "info" and key ~= "alias" and key ~= "gearScore" and key ~= "distance" then component.size = Round(Clamp(value, key == "class" and 0 or (key == "castBar" and 4 or 8), 64, component.size or 26)) end
     elseif name == "font" then
         if key == "info" then component.fontSize = Round(Clamp(value, 8, 24, component.fontSize or 12))
+        elseif key == "alias" then component.fontSize = Round(Clamp(value, 8, 32, component.fontSize or 12))
         elseif key == "gearScore" or key == "distance" then component.fontSize = Round(Clamp(value, 8, 24, component.fontSize or 12))
         elseif component.fontSize ~= nil or key == "buffs" or key == "debuffs" or key == "cooldowns" or key == "castBar" then
             component.fontSize = Round(Clamp(value, 8, 32, component.fontSize or 12))
@@ -325,12 +399,15 @@ local function ApplyField(name, value)
     elseif name == "scale" then
         profile.plateScale = Clamp(value, 0.5, 2.0, profile.plateScale or 1.0)
     end
+    if key == "alias" and name ~= "scale" then C.aliasConfigDirty = true
+    else C.layoutDirty = true end
     return true
 end
 
 local function CurrentEnabled()
     local profile, component = Profile(), Component()
     if C.component == "plate" then return true end -- proxy only; never rendered as a visual element
+    if C.component == "alias" then return AliasDraft().enabled ~= false end
     if C.component == "info" then return profile.info.enabled ~= false and profile.info.showClass ~= false end
     if C.component == "gearScore" then return profile.info.enabled ~= false and profile.info.showGear ~= false and component.enabled ~= false end
     if C.component == "distance" then return profile.info.enabled ~= false and profile.info.showDistance ~= false and component.enabled ~= false end
@@ -340,6 +417,12 @@ end
 local function SetCurrentEnabled(value)
     local profile, component = Profile(), Component(); value = value == true
     if C.component == "plate" then return false, "血条基准仅作为锚点，不提供显示开关" end
+    if C.component == "alias" then
+        AliasDraft().enabled = value
+        C.aliasConfigDirty = true
+        C.dirty = true
+        return C:RefreshControls()
+    end
     -- 中文维护注释（双可见性字段兼容）：旧 Store 同时存在 info.show* 与 component.enabled。
     -- 独立文字校准不能引入第三套 Authority；开启任一文字时恢复 legacy info master，再同步
     -- 对应 show* / component 门。职业名称关闭只写 showClass，避免顺手关闭独立职业图标。
@@ -353,6 +436,7 @@ local function SetCurrentEnabled(value)
         if value then profile.info.enabled = true end
         profile.info.showDistance = value; component.enabled = value
     else component.enabled = value end
+    C.layoutDirty = true
     C.dirty = true
     return C:RefreshControls()
 end
@@ -425,6 +509,15 @@ local function PreviewRect(key)
         local x = layout.bar.centerX + N(cfg.x,0) * scale - width / 2
         local y = layout.bar.centerY + N(cfg.y,90) * scale
         return { x=Round(x), y=Round(y), width=Round(width), height=size }, liveAnchor
+    elseif key == "alias" then
+        -- 与正式目标 HUD 共用纯布局函数；alias 不消费 Info 行，也不因 Buff/装备数量变化重排。
+        if type(Markers.ComputeTargetAliasLayout) == "function" then
+            local hud = AliasHud()
+            local cfg = { enabled=AliasDraft().enabled ~= false, x=hud.x, y=hud.y, fontSize=hud.fontSize, alpha=hud.alpha }
+            local g = Markers.ComputeTargetAliasLayout(AliasPreviewText(), cfg, layout.bar.centerX, layout.bar.centerY, scale)
+            return { x=g.x, y=g.y, width=g.width, height=g.height, text=g.text, font=g.font, alpha=g.alpha }, liveAnchor
+        end
+        return { x=layout.bar.centerX-60, y=layout.bar.centerY-94*scale, width=120, height=18, text=AliasPreviewText() }, liveAnchor
     elseif key == "info" or key == "gearScore" or key == "distance" or key == "class" then
         if type(Markers.ComputeInfoItemsLayout)=="function" then
             local g=Markers.ComputeInfoItemsLayout(plates,profile.info,profile.components,layout.bar.centerX,layout.info.top,layout.info.font,scale,C.scope)
@@ -459,6 +552,7 @@ end
 local function ComponentEnabledFor(profile, key)
     profile = type(profile) == "table" and profile or {}
     if key == "plate" then return true end
+    if key == "alias" then return C.scope == "target" and AliasDraft().enabled ~= false end
     if key == "info" then return type(profile.info) ~= "table" or profile.info.enabled ~= false end
     local components = type(profile.components) == "table" and profile.components or {}
     local component = type(components[key]) == "table" and components[key] or nil
@@ -490,7 +584,7 @@ function C:LayoutGlobalPreview()
     local profile = Profile()
     for _, row in ipairs(COMPONENTS) do
         local key, item = row.key, self.globalPreview.items[row.key]
-        local show = self.globalPreviewEnabled == true and key ~= self.component
+        local show = self.globalPreviewEnabled == true and key ~= self.component and not (row.targetOnly == true and self.scope ~= "target")
         if item ~= nil then
             SafeVisible(item.root, show)
             if show then
@@ -505,6 +599,7 @@ function C:LayoutGlobalPreview()
                 elseif key == "debuffs" then label = "Debuff ×4"
                 elseif key == "cooldowns" then label = "技能 CD ×4"
                 elseif key == "info" then label = "职业 · 12345 · 28m"
+                elseif key == "alias" then label = AliasPreviewText()
                 elseif key == "castBar" then label = "施法条"
                 end
                 SafeText(item.label, label .. (enabled and "" or "（关）"))
@@ -628,6 +723,12 @@ function C:BuildTemplateSnapshotLines(meta)
         -- class 的 enabled 与 BASE.info.class 均保留，维护者按现有双开关语义重建，不在导出时做归一化写入。
         lines[#lines+1] = "HUD_TEMPLATE_V1|"..scopeName.."|CLASS|"
             ..TemplateComponent(profile,"class",{size=0})
+        if scopeName == "TARGET" then
+            local alias = AliasDraft(); local hud = AliasHud()
+            lines[#lines+1] = "HUD_TEMPLATE_V1|TARGET|ALIAS|alias{x="..TemplateNumber(hud.x,0)
+                ..",y="..TemplateNumber(hud.y,-94)..",font="..TemplateNumber(hud.fontSize,12)
+                ..",alpha="..TemplateNumber(hud.alpha,1)..",enabled="..TemplateBool(alias.enabled,true).."}"
+        end
     end
     AddScope("PLAYER", draft.player)
     AddScope("TARGET", draft.target)
@@ -918,9 +1019,9 @@ function C:LayoutPreview()
             end
             SafeText(icon.time,"")
         end
-    elseif key == "info" or key == "gearScore" or key == "distance" then
+    elseif key == "alias" or key == "info" or key == "gearScore" or key == "distance" then
         SetPreviewChildrenVisible("info")
-        local fallback = key=="info" and "职业预览" or (key=="gearScore" and "12345" or "28.4m")
+        local fallback = key=="alias" and AliasPreviewText() or (key=="info" and "职业预览" or (key=="gearScore" and "12345" or "28.4m"))
         SafeText(self.preview.infoLabel, rect.text ~= "" and rect.text or fallback)
         S.UI:SetFontSize(self.preview.infoLabel, math.max(8, Round((CurrentFields().font or 12) * N(Profile().plateScale, 1))), self.owner)
         S.UI:SetAnchor(self.preview.infoLabel, self.preview.root, 0, 0, self.owner)
@@ -954,6 +1055,8 @@ function C:LayoutPreview()
     end
     local hint
     if self.component=="class" then hint="尺寸0随字号；XY只移动图标，不移动职业名称"
+    elseif self.component=="alias" then
+        local d=AliasDraft(); hint=d.targetAvailable and ("当前目标："..tostring(d.targetName or "").." · 下方可保存自定义名字") or "当前无可读目标；仍可先调整自定义名字 HUD 位置"
     elseif self.component=="info" then hint="职业名称独立位置/字号；不会拖动装备分数和距离"
     elseif self.component=="gearScore" then hint="装备分数独立位置/字号/透明度；下方可选完整数值或 K 简写"
     elseif self.component=="distance" then hint="距离独立位置/字号/透明度"
@@ -968,6 +1071,34 @@ local function FieldText(name, value)
     if edit ~= nil and type(edit.SetText) == "function" then pcall(edit.SetText, edit, tostring(value == nil and "--" or value)) end
 end
 
+function C:SaveAliasName()
+    if self.scope ~= "target" or self.component ~= "alias" then return false, "请先切换到目标 HUD · 自定义名字" end
+    local draft = AliasDraft()
+    if draft.available ~= true then return false, tostring(draft.error or "目标自定义名字存档不可用") end
+    if draft.targetAvailable ~= true then return false, "当前没有可读目标" end
+    local value = AliasInputText():match("^%s*(.-)%s*$")
+    if value == "" then return false, "自定义名字不能为空" end
+    local ok, message = Feature.Commands:SaveCurrentTargetAlias(value)
+    if ok ~= true then SafeText(self.statusLabel, "名字保存失败："..tostring(message or "未知错误")); return false, message end
+    self:RefreshAliasEditorSnapshot(true)
+    SafeText(self.statusLabel, tostring(message or "自定义名字已保存") .. "；HUD 位置仍需“保存并退出”")
+    Trace("alias_name_saved", { clearError=true })
+    return self:RefreshControls()
+end
+
+function C:DeleteAliasName()
+    if self.scope ~= "target" or self.component ~= "alias" then return false, "请先切换到目标 HUD · 自定义名字" end
+    local draft = AliasDraft()
+    if draft.available ~= true then return false, tostring(draft.error or "目标自定义名字存档不可用") end
+    if draft.targetAvailable ~= true then return false, "当前没有可读目标" end
+    local ok, message = Feature.Commands:RemoveCurrentTargetAlias()
+    if ok ~= true then SafeText(self.statusLabel, "名字删除失败："..tostring(message or "未知错误")); return false, message end
+    self:RefreshAliasEditorSnapshot(true)
+    SafeText(self.statusLabel, tostring(message or "自定义名字已删除"))
+    Trace("alias_name_deleted", { clearError=true })
+    return self:RefreshControls()
+end
+
 function C:ToggleAux(index)
     local profile = Profile()
     if self.component == "gearScore" then
@@ -975,7 +1106,7 @@ function C:ToggleAux(index)
         if i ~= 1 and i ~= 2 then return true end
         profile.info = type(profile.info) == "table" and profile.info or {}
         profile.info.gearScoreFormat = i == 2 and "compact" or "full"
-        self.dirty = true
+        self.layoutDirty = true; self.dirty = true
         Trace("gear_score_format", { format=profile.info.gearScoreFormat, scope=self.scope, clearError=true })
         return self:RefreshControls()
     elseif self.component == "info" then
@@ -991,13 +1122,13 @@ function C:ToggleAux(index)
         -- 避免“按钮显示开启但旧 showClass=false 仍不显示”的双 Authority 迷惑。
         component.enabled = nextValue
         profile.info[infoField] = nextValue
-        self.dirty = true
+        self.layoutDirty = true; self.dirty = true
         return self:RefreshControls()
     elseif self.component == "castBar" and tonumber(index) == 1 then
         local component = profile.components.castBar
         if type(component) ~= "table" then return false, "施法条配置不存在" end
         component.showText = component.showText == false
-        self.dirty = true
+        self.layoutDirty = true; self.dirty = true
         return self:RefreshControls()
     end
     return true
@@ -1010,6 +1141,7 @@ local FIELD_VISIBLE = {
     debuffs = { x=true,y=true,size=true,font=true,spacing=true,perRow=true,rows=true,scale=true,alpha=true },
     cooldowns = { x=true,y=true,size=true,font=true,spacing=true,perRow=true,rows=true,scale=true,alpha=true },
     info      = { x=true,y=true,font=true,scale=true },
+    alias     = { x=true,y=true,font=true,scale=true,alpha=true },
     gearScore = { x=true,y=true,font=true,scale=true,alpha=true },
     distance  = { x=true,y=true,font=true,scale=true,alpha=true },
     class     = { x=true,y=true,size=true,scale=true,alpha=true },
@@ -1076,9 +1208,18 @@ function C:RefreshControls()
             S.UI:SetButtonActive(self.enabledButton, CurrentEnabled(), self.owner)
         end
     end
+    local componentY = 112
     for _, row in ipairs(COMPONENTS) do
         local button = self.controls["component_" .. row.key]
-        if button ~= nil then S.UI:SetButtonActive(button, row.key == self.component, self.owner) end
+        local allowed = row.targetOnly ~= true or self.scope == "target"
+        if button ~= nil then
+            SafeVisible(button, allowed)
+            if allowed then
+                S.UI:SetAnchor(button, self.panel, 12, componentY, self.owner)
+                componentY = componentY + 28
+            end
+            S.UI:SetButtonActive(button, allowed and row.key == self.component, self.owner)
+        end
     end
     if self.playerButton ~= nil then S.UI:SetButtonActive(self.playerButton, self.scope == "player", self.owner) end
     if self.targetButton ~= nil then S.UI:SetButtonActive(self.targetButton, self.scope == "target", self.owner) end
@@ -1099,6 +1240,18 @@ function C:RefreshControls()
             SafeText(button, i == 1 and "完整数值" or "K简写")
             S.UI:SetButtonActive(button, (i == 1 and format ~= "compact") or (i == 2 and format == "compact"), self.owner)
         end
+    end
+    local aliasSelected = self.scope == "target" and self.component == "alias"
+    SafeVisible(self.aliasInput, aliasSelected)
+    SafeVisible(self.aliasSaveButton, aliasSelected)
+    SafeVisible(self.aliasDeleteButton, aliasSelected)
+    if aliasSelected then
+        local aliasDraft = AliasDraft()
+        if self.aliasSaveButton ~= nil then S.UI:SetEnabled(self.aliasSaveButton, aliasDraft.available == true and aliasDraft.targetAvailable == true, self.owner) end
+        if self.aliasDeleteButton ~= nil then S.UI:SetEnabled(self.aliasDeleteButton, aliasDraft.available == true and aliasDraft.targetAvailable == true and tostring(aliasDraft.savedAlias or "") ~= "", self.owner) end
+        if self.aliasInput ~= nil and type(S.UI.EnsureEnabled) == "function" then S.UI:EnsureEnabled(self.aliasInput, aliasDraft.available == true and aliasDraft.targetAvailable == true, self.owner) end
+    elseif self.aliasInput ~= nil and type(S.UI.DeactivateInputWidget) == "function" then
+        pcall(function() S.UI:DeactivateInputWidget(self.aliasInput, self.owner, "hud_calibration_alias_hide") end)
     end
     if self.globalPreviewButton ~= nil then
         SafeText(self.globalPreviewButton, self.globalPreviewEnabled == true and "全局：开" or "全局：关")
@@ -1177,13 +1330,17 @@ end
 function C:SetScope(scope)
     scope = scope == "target" and "target" or "player"
     self.scope = scope
+    -- target-only 自定义名字不能泄漏到自身 HUD；切回自身时选择一个通用组件并隐藏编辑框。
+    if scope ~= "target" and self.component == "alias" then self.component = "buffs" end
     if type(self.Diagnostics) == "table" then self.Diagnostics.lastScope = scope end
     Trace("scope_changed", { scope=scope, clearError=true })
     return self:RefreshControls()
 end
 function C:SetComponent(key)
     if COMPONENT_LABEL[key] == nil then return false, "未知 HUD 组件" end
+    if key == "alias" and self.scope ~= "target" then return false, "自定义名字仅属于目标 HUD" end
     self.component = key
+    if key == "alias" then self:RefreshAliasEditorSnapshot(false) end
     if type(self.Diagnostics) == "table" then self.Diagnostics.lastComponent = key end
     Trace("component_changed", { component=key, clearError=true })
     return self:RefreshControls()
@@ -1194,7 +1351,7 @@ function C:SyncPlayerToTarget()
         return false, "自身 HUD 草稿不存在"
     end
     self.draft.target = Copy(self.draft.player)
-    self.scope = "target"; self.dirty = true
+    self.scope = "target"; self.layoutDirty = true; self.dirty = true
     self.Diagnostics.syncCount = (tonumber(self.Diagnostics.syncCount) or 0) + 1
     Trace("sync_player_to_target", { clearError=true })
     SafeText(self.statusLabel, "已复制 自身 → 目标（尚未保存）")
@@ -1208,7 +1365,14 @@ function C:ResetCurrentComponent()
         return false, "默认 HUD 配置不可用"
     end
     local profile = Profile()
-    if self.component == "plate" then
+    if self.component == "alias" then
+        local defaultAlias = type(Feature.Commands.GetDefaultTargetAliasHudConfig) == "function" and Feature.Commands:GetDefaultTargetAliasHudConfig()
+            or { enabled=true, x=0, y=-94, fontSize=12, alpha=1.0 }
+        local draft = AliasDraft()
+        draft.enabled = defaultAlias.enabled ~= false
+        draft.hud = { x=N(defaultAlias.x,0), y=N(defaultAlias.y,-94), fontSize=N(defaultAlias.fontSize,12), alpha=N(defaultAlias.alpha,1) }
+        self.aliasConfigDirty = true
+    elseif self.component == "plate" then
         profile.plate = Copy(defaultProfile.plate or {})
     elseif self.component == "info" then
         profile.info = Copy(defaultProfile.info or {})
@@ -1224,6 +1388,7 @@ function C:ResetCurrentComponent()
             profile.info.gearScoreFormat = tostring(type(defaultProfile.info) == "table" and defaultProfile.info.gearScoreFormat or "full") == "compact" and "compact" or "full"
         end
     end
+    if self.component ~= "alias" then self.layoutDirty = true end
     self.dirty = true
     self.Diagnostics.resetCount = (tonumber(self.Diagnostics.resetCount) or 0) + 1
     Trace("reset_component", { clearError=true })
@@ -1237,7 +1402,17 @@ function C:ResetCurrentScope()
         Trace("reset_failed", { error="默认 HUD 配置不可用" })
         return false, "默认 HUD 配置不可用"
     end
-    self.draft[self.scope] = Copy(defaults[self.scope]); self.dirty = true
+    self.draft[self.scope] = Copy(defaults[self.scope])
+    if self.scope == "target" then
+        local defaultAlias = type(Feature.Commands.GetDefaultTargetAliasHudConfig) == "function" and Feature.Commands:GetDefaultTargetAliasHudConfig()
+            or { enabled=true, x=0, y=-94, fontSize=12, alpha=1.0 }
+        local alias = AliasDraft()
+        alias.enabled = defaultAlias.enabled ~= false
+        alias.hud = { x=N(defaultAlias.x,0), y=N(defaultAlias.y,-94), fontSize=N(defaultAlias.fontSize,12), alpha=N(defaultAlias.alpha,1) }
+        self.aliasConfigDirty = true
+    end
+    self.layoutDirty = true
+    self.dirty = true
     self.Diagnostics.resetCount = (tonumber(self.Diagnostics.resetCount) or 0) + 1
     Trace("reset_scope", { clearError=true })
     SafeText(self.statusLabel, ScopeName(self.scope) .. " 已恢复默认（尚未保存）")
@@ -1284,26 +1459,61 @@ function C:HideOverlay()
     for _, edit in pairs(self.inputs) do
         if type(S.UI.DeactivateInputWidget) == "function" then pcall(function() S.UI:DeactivateInputWidget(edit, self.owner, "hud_calibration_close") end) end
     end
+    if self.aliasInput ~= nil and type(S.UI.DeactivateInputWidget) == "function" then
+        pcall(function() S.UI:DeactivateInputWidget(self.aliasInput, self.owner, "hud_calibration_alias_close") end)
+    end
+    if self.aliasEventOwner ~= nil and S.Events ~= nil and type(S.Events.UnsubscribeInternalOwner) == "function" then
+        S.Events:UnsubscribeInternalOwner(self.aliasEventOwner)
+        self.aliasEventSubscribed = false
+    end
     return true
 end
 
 function C:Exit(save)
-    -- 中文维护注释（保存/退出诊断边界）：Save 失败时校准器必须保持打开，方便用户修复存档后
-    -- 再次保存；只有持久化成功或明确取消后才隐藏 Overlay。Shell 恢复失败与 Store 保存失败分开
-    -- 计数，避免摘要把“配置没写入”和“主菜单没回来”混成同一故障。
+    -- 中文维护注释（target-alias-hud-2，双 Store 提交）：HUD Layout 与 Alias HUD 是两个独立
+    -- 小 Store。Save 先提交 alias，再提交 layout；若 layout 事务失败则把 alias HUD 配置回滚到 Open
+    -- 时快照。名字映射不在本事务内，因为“保存名字/删除名字”是用户显式即时动作。取消退出两份几何
+    -- Draft 都不写 Store。这样既不污染大型 v3.buff_display，也避免一半 HUD 几何永久落盘。
     if save == true then
-        local canWrite, writeErr = Feature.Commands:CanPersistLayoutSettings()
-        if canWrite ~= true then
-            self.Diagnostics.saveFailures = (tonumber(self.Diagnostics.saveFailures) or 0) + 1
-            Trace("save_blocked", { error=tostring(writeErr or "存档不可写") })
-            SafeText(self.statusLabel, "保存失败：" .. tostring(writeErr or "存档不可写")); return false, writeErr
+        if self.layoutDirty == true then
+            local canWrite, writeErr = Feature.Commands:CanPersistLayoutSettings()
+            if canWrite ~= true then
+                self.Diagnostics.saveFailures = (tonumber(self.Diagnostics.saveFailures) or 0) + 1
+                Trace("save_blocked", { error=tostring(writeErr or "HUD 布局存档不可写") })
+                SafeText(self.statusLabel, "保存失败：" .. tostring(writeErr or "HUD 布局存档不可写")); return false, writeErr
+            end
         end
-        local ok, err = Feature.Commands:PersistHudCalibrationSnapshot(self.draft, "hud_calibration_save_exit")
-        if ok ~= true then
-            self.Diagnostics.saveFailures = (tonumber(self.Diagnostics.saveFailures) or 0) + 1
-            Trace("save_failed", { error=tostring(err or "未知错误") })
-            SafeText(self.statusLabel, "保存失败：" .. tostring(err or "未知错误")); return false, err
+
+        local aliasCommitted = false
+        if self.aliasConfigDirty == true then
+            local alias = AliasDraft(); local hud = AliasHud()
+            local aliasValue = { enabled=alias.enabled ~= false, x=hud.x, y=hud.y, fontSize=hud.fontSize, alpha=hud.alpha }
+            local aliasOk, aliasErr = Feature.Commands:PersistTargetAliasHudCalibration(aliasValue, "hud_calibration_alias_save_exit")
+            if aliasOk ~= true then
+                self.Diagnostics.saveFailures = (tonumber(self.Diagnostics.saveFailures) or 0) + 1
+                Trace("alias_save_failed", { error=tostring(aliasErr or "目标自定义名字 HUD 保存失败") })
+                SafeText(self.statusLabel, "保存失败：" .. tostring(aliasErr or "目标自定义名字 HUD 保存失败")); return false, aliasErr
+            end
+            aliasCommitted = true
         end
+
+        if self.layoutDirty == true then
+            local ok, err = Feature.Commands:PersistHudCalibrationSnapshot(self.draft, "hud_calibration_save_exit")
+            if ok ~= true then
+                local rollbackText = ""
+                if aliasCommitted == true and type(self.aliasPersistedConfig) == "table" then
+                    local rollbackOk, rollbackErr = Feature.Commands:PersistTargetAliasHudCalibration(self.aliasPersistedConfig, "hud_calibration_alias_rollback")
+                    if rollbackOk ~= true then rollbackText = "；别名 HUD 回滚失败："..tostring(rollbackErr or "未知错误")
+                    else rollbackText = "；别名 HUD 已回滚" end
+                end
+                self.Diagnostics.saveFailures = (tonumber(self.Diagnostics.saveFailures) or 0) + 1
+                Trace("save_failed", { error=tostring(err or "未知错误")..rollbackText })
+                SafeText(self.statusLabel, "保存失败：" .. tostring(err or "未知错误") .. rollbackText); return false, err
+            end
+        end
+
+        local alias = AliasDraft(); local hud = AliasHud()
+        self.aliasPersistedConfig = { enabled=alias.enabled ~= false, x=hud.x, y=hud.y, fontSize=hud.fontSize, alpha=hud.alpha }
         self.Diagnostics.saveCount = (tonumber(self.Diagnostics.saveCount) or 0) + 1
         Trace("save_committed", { clearError=true })
     else
@@ -1326,6 +1536,8 @@ function C:Exit(save)
     end
     local exitCallback = self.exitCallback
     self.draft, self.previousShell, self.exitCallback, self.dirty = nil, nil, nil, false
+    self.layoutDirty, self.aliasConfigDirty = false, false
+    self.aliasDraft, self.aliasPersistedConfig, self.aliasConfigInitialized = nil, nil, false
     self.Diagnostics.dirty = false; self.Diagnostics.visible = false
     -- Callback runs only after the Shell is restored so the page may safely
     -- refresh its persisted summary; callback failure must not re-open editor state.
@@ -1409,6 +1621,13 @@ function C:EnsureCreated()
         local index = i
         self.auxButtons[i] = MakeButton(panel, "v3_buff_hud_calibration_aux_"..tostring(i), "", rx + (i-1)*72, 490, 68, 26, function() return C:ToggleAux(index) end)
     end
+    -- 中文维护注释（target-alias-hud-2，目标名字编辑）：复用辅助按钮这一行，不扩大面板高度。
+    -- TextInput 只在 target/alias 选中时显示；保存/删除是显式映射操作，HUD 几何仍由底部“保存并退出”
+    -- 提交。这样切换目标时只刷新编辑态，不把键盘输入/名字查询放入 Renderer Tick。
+    self.aliasInput = MakeInput(panel, "v3_buff_hud_calibration_alias_input", rx, 490, 120, 26)
+    self.aliasSaveButton = MakeButton(panel, "v3_buff_hud_calibration_alias_save", "保存名字", rx+124, 490, 72, 26, function() return C:SaveAliasName() end)
+    self.aliasDeleteButton = MakeButton(panel, "v3_buff_hud_calibration_alias_delete", "删除名字", rx+200, 490, 72, 26, function() return C:DeleteAliasName() end)
+    SafeVisible(self.aliasInput, false); SafeVisible(self.aliasSaveButton, false); SafeVisible(self.aliasDeleteButton, false)
     self.anchorHint = S.UI:CreateLabel(panel, "v3_buff_hud_calibration_anchor_hint", "", rx, 522, 276, 18, 9, "muted", "LEFT", false)
     self.statusLabel = S.UI:CreateLabel(panel, "v3_buff_hud_calibration_status", "拖动预览框或使用按钮微调", 12, 544, 396, 18, 9, "muted", "LEFT", false)
     MakeButton(panel, "v3_buff_hud_calibration_default_component", "恢复当前组件", 12, 568, 116, 26, function() return C:ResetCurrentComponent() end)
@@ -1622,6 +1841,11 @@ function C:Open(context)
         return false,"HUD 双配置快照不可用"
     end
     self.draft=Copy(snapshot); self.scope=type(context)=="table" and context.scope=="target" and "target" or "player"; self.component="buffs"; self.step=1; self.dirty=false
+    self.layoutDirty, self.aliasConfigDirty = false, false
+    self.aliasDraft, self.aliasPersistedConfig, self.aliasConfigInitialized = nil, nil, false
+    -- Alias Store 故障不能阻断整个状态显示 HUD 校准；这里只尽力读取，小 Store 不可用时对应组件
+    -- 会显示错误并禁用名字保存，其他 HUD 组件仍可正常调整/保存。
+    self:RefreshAliasEditorSnapshot(true)
     self.globalPreviewEnabled = true
     self.Diagnostics.globalPreviewEnabled = true
     self.exitCallback = type(context) == "table" and context.onExit or nil
@@ -1651,6 +1875,15 @@ function C:Open(context)
         end
     end
     self.visible=true; SafeVisible(self.panel,true); SafeVisible(self.preview.root,true)
+    if S.Events ~= nil and type(S.Events.SubscribeInternal) == "function" then
+        self.aliasEventOwner = self.aliasEventOwner or {}
+        if type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self.aliasEventOwner) end
+        self.aliasEventSubscribed = S.Events:SubscribeInternal("v3.buff_display.target_alias", self.aliasEventOwner, function()
+            if C.visible ~= true then return true end
+            C:RefreshAliasEditorSnapshot(false)
+            return C:RefreshControls()
+        end) == true
+    end
     if type(self.panelRect)=="table" then
         local sw,sh=ScreenSize(); local pw,ph=N(self.panelRect.width,420),N(self.panelRect.height,640)
         local px=math.max(2,math.min(math.max(2,sw-pw-2),N(self.panelRect.x,18)))
@@ -1671,4 +1904,4 @@ function C:GetDraftSnapshot() return Copy(self.draft) end
 
 -- Presentation contract: no feature enable is required to edit layout, and no
 -- transient calibration state is persisted until Save & Exit.
-Feature.HudCalibrationPresentationContractVersion = 7 -- 中文维护注释：v7 在信息拆分 v6 基础上为装备分数加入 profile-local full/compact 草稿控制；v5 为 HUD_TEMPLATE_V1 Draft 输出。仍不新增 Scheduler/Consumer，模板输出不写 Store。
+Feature.HudCalibrationPresentationContractVersion = 8 -- 中文维护注释：v8 将目标自定义名字收敛进 target HUD 校准器并提供独立几何 Draft；仍不新增 Scheduler/Consumer，模板输出不写 Store。
