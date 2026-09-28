@@ -14,7 +14,9 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-BUNDLE = (ROOT / "features/life/rs_life_m16_bundle.lua").read_text(encoding="utf-8")
+# 中文维护注释（2026-09-28，Phase 2 Step 4）：life_trade 已搬到独立源码单元，
+# rs_life_m16_bundle.lua 已退役；探针改读 features/life/trade/rs_trade_feature.lua。
+BUNDLE = (ROOT / "features/life/trade/rs_trade_feature.lua").read_text(encoding="utf-8")
 STATIC = (ROOT / "data/rs_trade_static_v2.lua").read_text(encoding="utf-8")
 TABLE = (ROOT / "ui/framework/rs_ui_data_views.lua").read_text(encoding="utf-8")
 PAGE = (ROOT / "presentation/v3/pages/rs_v3_life_m16_pages.lua").read_text(encoding="utf-8")
@@ -89,7 +91,10 @@ def adaptive_tail(viewport: float, count: int, base: float, gap: float, soft_min
 
 def main() -> int:
     # Build/version and historical Store boundary.
-    require("v3-m1.16.0.18.329-native-dependency-policy" in BOOT, "build tag advanced")
+    # 中文维护注释（2026-09-28，Phase 2 Step 4）：本条按 §30 分类 B（旧硬编码 version）更新。
+    # Authority：BuildTag 已按 Phase 0（.330）、Phase 1（.331）、Phase 2 首轮（.332）连续合法推进。
+    require("v3-m1.16.0.18.332-phase2-life-bundle-slice-complete" in BOOT,
+            "build tag must carry the current cumulative baseline")
     # 18.310 regression: a literal backslash-n was appended to a Lua `--` comment,
     # so `local now = NowMs()` was commented out and the scheduler task crashed.
     require('最多一次。\\n    local now = NowMs()' not in PRICE_QUOTE, "price drain local now is not swallowed by comment")
@@ -231,7 +236,11 @@ def main() -> int:
     require('RegisterProduct(31863, "Halcyona Preserved Specialty")' in PRODUCT_IDS
             and re.search(r'\{\s*22,\s*"HALCYONA",\s*"Halcyona",\s*"Preserved"', ZONE_IDS) is not None,
             "reported Golden Plains preserved specialty resolves to verified product/origin identity")
-    trade_slice = section(BUNDLE, "-- Trade", "-- Bonds")
+    # 中文维护注释（2026-09-28，Phase 2 Step 4）：原探针用 section(BUNDLE, "-- Trade", "-- Bonds")
+    # 切出 Trade 段；life_bonds 在 Step 3 拆走后 bundle 里已没有 "-- Bonds" 标记，这条探针从那时起
+    # 就以 ValueError 失败（属 §30 分类 B 的旧源码探针漂移）。现在 features/life/trade/rs_trade_feature.lua
+    # 本身就是 Trade 源码单元，直接用整个文件即可 —— 范围比旧切片更完整，断言强度不降。
+    trade_slice = BUNDLE
     require("OnUpdate" not in trade_slice and "OnTick" not in trade_slice, "trade slice introduces no Tick/OnUpdate polling")
 
     # Cargo route scan shares the same inFlight lane and is serial/cooldown paced.
@@ -399,7 +408,7 @@ def main() -> int:
 
     # .18.317 durable material-price Authority + stale-while-revalidate economics.
     require('services/rs_price_quote_queue_v3.lua' in TOC and 'services/rs_material_price_service_v3.lua' in TOC
-            and TOC.index('services/rs_price_quote_queue_v3.lua') < TOC.index('services/rs_material_price_service_v3.lua') < TOC.index('features/life/rs_life_m16_bundle.lua'),
+            and TOC.index('services/rs_price_quote_queue_v3.lua') < TOC.index('services/rs_material_price_service_v3.lua') < TOC.index('features/life/trade/rs_trade_feature.lua'),
             "material price Authority loads after Native quote queue and before Trade feature")
     require('StoreId = "v3.market.material_prices"' in MATERIAL_PRICE
             and 'lifetime = P.Lifetime.Permanent' in MATERIAL_PRICE

@@ -104,7 +104,8 @@ assert(type(S.Services and S.Services.FishingHotkeyV3) == "table", "FishingHotke
 
 dofile("features/life/shared/rs_life_slice_factory.lua")
 
-dofile("features/life/rs_life_m16_bundle.lua")
+-- 中文维护注释（2026-09-28，Phase 2 Step 4）：life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役删除。
+dofile("features/life/trade/rs_trade_feature.lua")
 
 dofile("features/life/fishing/rs_fishing_feature.lua")
 

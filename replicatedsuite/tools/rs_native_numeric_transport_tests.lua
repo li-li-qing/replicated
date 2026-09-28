@@ -52,7 +52,9 @@ local function Boot(disk,loss)
     dofile('ui/framework/rs_ui_floating_surface.lua')
     dofile('features/combat/buff_display/rs_buff_display_store.lua')
     dofile('features/combat/death_review/rs_death_review_store.lua')
-    dofile('features/life/rs_life_m16_bundle.lua')
+    -- 中文维护注释（2026-09-28，Phase 2 Step 4）：life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役。
+    dofile('features/life/shared/rs_life_slice_factory.lua')
+    dofile('features/life/trade/rs_trade_feature.lua')
     return S,S.Persistence,io
 end
 local fixture=dofile('tools/fixtures/trade_native_numeric_20260912.lua')

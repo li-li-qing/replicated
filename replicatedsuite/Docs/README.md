@@ -390,32 +390,34 @@ RU 往返可能让 Lua 表的 sequence 变成稀疏/map。正常 `ipairs()` 会�
 
 ### 6.1 门禁（改完必跑）
 
+真实 Lua 5.1 工具链必须先在 PATH 上可用。**不得用系统 `luac`（多为 5.4）冒充通过** ——
+Lua 5.4 syntax PASS 不等于 Lua 5.1 compile PASS（规划文档 §21 红线）。
+
 ```bash
 cd replicatedsuite
+# 本机示例：Lua for Windows 5.1.5 建立 luac5.1/lua5.1 别名后挂进 PATH
+export PATH="$HOME/.workbuddy/binaries/luabin:$PATH"
+luac5.1 -v   # 必须打印 Lua 5.1.5
 
-# 1) 语法（排除 toc.g，它是 TOC 清单不是 Lua）
-for f in $(find . -name "*.lua" -not -path "./.workbuddy/*"); do luac -p "$f" || echo "FAIL $f"; done
-
-# 2) TOC ↔ 磁盘 Lua 双向对账（0 差异才算通过）
-python - <<'PY'
-import os
-toc=[l.strip() for l in open('toc.g',encoding='utf-8') if l.strip() and not l.strip().startswith('#')]
-allf={os.path.relpath(os.path.join(r,f),'.').replace('\\','/')
-      for r,d,fs in os.walk('.') if '.git' not in r and '.workbuddy' not in r
-      for f in fs if f.endswith('.lua')}
-print("TOC",len(toc),"MISSING",[t for t in toc if t not in allf],"NOT IN TOC",len(allf-set(toc)))
-PY
-
-# 3) Foundation Audit（约 3 分钟；改代码前后各跑一次）
-python tools/rs_foundation_audit.py
-
-# 4) 全量 Harness（以退出码为准，不要用 grep 判定）
-pass=0; fail=0
-for f in tools/*harness*.py; do python "$f" >/dev/null 2>&1 && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL $f"; }; done
-echo "PASS=$pass FAIL=$fail"
+python tools/rs_check_installation.py .            # TOC ↔ 磁盘双向对账（282/282，0 conflict）
+python tools/rs_lua51_compile_gate.py              # 真实 luac5.1 -p，逐个 shipped Lua
+python tools/rs_status_refactor_test_runner.py --syntax          # 真实 Lua 5.1 runtime
+python tools/rs_native_dependency_audit.py         # 0 ERROR / 0 BLOCKER / 0 WARN
+python tools/rs_architecture_audit.py              # 既有债务数不得增加
+python tools/rs_test_dependency_audit.py           # 离线套件依赖闭包完整
+python tools/rs_status_refactor_test_runner.py --unfinished-closure
+python tools/rs_status_refactor_test_runner.py --feature-split   # §31 前后对照断言
+python tools/rs_status_refactor_test_runner.py     # 默认 Full Runner，以退出码为准
 ```
 
-**判据**：Audit 输出 `FOUNDATION_AUDIT PASS | toc=N activeLua=N allLua=N`，且 globals/presentation/rawNative/rawScope 等结构违规全为 0。
+还有一组不在 Full Runner 内的 Python 专项（改动涉及对应模块时必跑）：
+`rs_trade_optimization_tests` / `rs_trade_auto_refresh_watchdog_tests` / `rs_bonds_auroria_regression_tests` /
+`rs_bonds_sort_extracted_runtime_test` / `rs_bonds_floating_settings_menu*` / `rs_feature_consumer_lifecycle_tests` /
+`rs_input_draft_diag_regression_tests` / `test_rs_treasure_fishing_widget` / `test_rs_range_assist_editor`。
+
+**判据**：Full Runner `exit=0` 且 0 FAIL；`--feature-split` / `--unfinished-closure` 全 PASS；两个 Audit 无新增债务。
+离线套件会在 `tools/` 下产生 `.copy_*` / `.focus_*` 运行残留（已 gitignore），
+但 `.self_check_real_evidence.txt` 是被读取的既有证据文件，跑完要用 `git checkout --` 还原。
 
 ### 6.2 诊断框架（模块优先 + 系统维护）
 
@@ -430,7 +432,7 @@ echo "PASS=$pass FAIL=$fail"
 
 ### 6.3 环境坑
 
-- 本机可能没有 `texlua`：`tools/rs_lua_runner.py` 会回落到 `lua5.4`，并已在共享层注入 Lua 5.1 兼容垫片（`unpack` / `table.getn` / `math.mod` / `loadstring`）。**不要给单个 harness 手加垫片，也不要硬编码 `texlua`**
+- Lua 运行时选择：优先真实 Lua 5.1（`texlua` → `lua5.1` → `lua51` → `luajit` → `lua` 顺序探测）。**不要硬编码 `texlua`**（本机没有它，硬编码会直接 WinError 2）；一个可用运行时都找不到时应显式 `BLOCKED` 退出，**不允许用“跳过=通过”掩盖**。注意系统 `luac` 通常是 5.4，不能用来声称 Lua 5.1 编译通过
 - 工程全 CRLF；跨平台比对文本前先归一 `\r\n → \n`
 - `replicatedsuite/.workbuddy/tmp/` 里的 `.lua` 会被 Audit 计入 `allLua` 并报 `Disk Lua not in Active TOC`——放探针前先 `mkdir -p`，跑 Audit 前先清掉
 - 这是**多 Agent 工作区**：`git status` 的 M 数会随后台会话变化。开工前和收尾时各跑一次，并用 `stat -c '%y'` 看 mtime 是否成批（同一秒 = 批量写入，通常不是你的改动）
@@ -443,8 +445,8 @@ echo "PASS=$pass FAIL=$fail"
 |---|---|
 | Architecture | V3-only |
 | BuildTag | 见 `replicatedsuite.lua` 的 `S.BuildTag` |
-| Active TOC Lua | 见 §6.1 对账输出（当前 245） |
+| Active TOC Lua | 见 `tools/rs_check_installation.py`（当前 282，0 conflict） |
 | 运行时 Addon | 仅 `replicatedsuite/` |
-| 门禁 | Lua Parse / Foundation Audit / Python Harness 全绿 |
+| 门禁 | §6.1 全绿（Install / Lua 5.1 compile / Full Runner / 两个 Audit） |
 
 > 该表格刻意只放"随时可自查"的项。逐版本历史、能力完成度、待办队列、RU 验收清单不再单独维护文档——**需要时直接看代码、看诊断输出、看用户实测反馈**。

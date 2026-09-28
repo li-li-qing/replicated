@@ -2,7 +2,7 @@
 
 > 原始架构审查基线：`v3-m1.16.0.18.326-trade-freshness-matrix-audit`
 >
-> 当前累计施工基线：`v3-m1.16.0.18.331-phase1-feature-slice-complete`（累计链：`.327 Trade Native ownership` → `.328 Bonds X2Quest ownership` → `.329 BuffDisplay Native dependency policy` → `.330 Phase 0 基线闭合` → `.331 Phase 1 Business Bridge 拆分完成；bridge 已退役`；`.327–.330` 是连续增量，`.331` 依赖 `.330` 之后的全部拆分文件）
+> 当前累计施工基线：`v3-m1.16.0.18.332-phase2-life-bundle-slice-complete`（累计链：`.327 Trade Native ownership` → `.328 Bonds X2Quest ownership` → `.329 BuffDisplay Native dependency policy` → `.330 Phase 0 基线闭合` → `.331 Phase 1 Business Bridge 拆分完成；bridge 已退役` → `.332 Phase 2 首轮 Life Bundle 拆分完成；life bundle 已退役`；`.327–.330` 是连续增量，`.331` 依赖 `.330` 之后的全部拆分文件，`.332` 依赖 `.331` 之后的全部拆分文件）
 >
 > 文档性质：**架构审查结论 + 长期重构执行计划 + Agent 施工规范**。从本版本开始，除定义问题、边界、顺序、验收与风险外，同时定义 Workbuddy / DeepSeek 等本地 Agent 的可执行工作包、停止条件和交付证据。
 >
@@ -1916,7 +1916,7 @@ ReloadAddon PASS
 |---|---|---|---|---|
 | Phase 0 测试/编译基线 | **已完成** | 18.326 | 18.330 | 第六轮闭合：真实 Lua 5.1 编译门禁（261 files，luac5.1 5.1.5）+ 真实 Lua 5.1 运行环境；两个历史证据 fixture 按 byte-for-byte 从 18.244 归档恢复；X2Skill numeric API_TYPE 由 globals/apitypes.lua 证据链确认为 35，Native audit 收敛为 0/0/0；默认 Full Runner 端到端 PASS；Install 261/261、Unfinished Closure 14/14、Architecture 仍 49 债务。仅剩 X2Skill RU 实机行为验收（Phase 3 收口项） |
 | Phase 1 Business Bridge 拆分 | **已完成（Batch A–E 全部完成）** | 18.330 | 18.331 | 15 个 Feature 全部独立成文件；rs_business_bridge.lua（5223 行 / 188 slots）退役删除；新增装配工厂 + SharedBounds + 拍卖读模型；主 chunk slots 187→104→（bridge 不复存在，各文件 16–98）；`--feature-split` 59/59 并入默认 Full Runner；audit 0/0/0；Architecture 债务 49→48；BuildTag 推进到 `v3-m1.16.0.18.331-phase1-feature-slice-complete` |
-| Phase 2 Life Bundle 拆分 | 进行中（Step 1：工厂 + Treasure 已完成） | - | - | P0 |
+| Phase 2 Life Bundle 拆分 | **已完成（Step 1–4，首轮“一 Feature 一文件”闭合）** | 18.331 | 18.332 | 4 个 life Feature（Treasure / Fishing / Bonds / Trade）全部独立成文件；`rs_life_m16_bundle.lua`（5633 行 / 4 Feature）退役删除；新增 `features/life/shared/rs_life_slice_factory.lua`（life 版装配 helper，未与 Phase 1 工厂合并）；`--feature-split` 59→66 断言（新增 7 条 life 契约）；BuildTag 推进到 `v3-m1.16.0.18.332-phase2-life-bundle-slice-complete`。**§24.4 的 Trade 第二轮进一步拆分仍未开始**（前置条件：RU 实机一轮 Fresh Reload / 老配置 / 自动刷新 / 报价 / 材料缓存实测） |
 | Phase 3 Contract / Dependency Ownership | 未开始 | - | - | Core→Feature inversion + Feature/Service Native dependency ownership |
 | Phase 4 Scheduler/Event 热路径 | 未开始 | - | - | P1 |
 | Phase 5 Presentation 边界 | 未开始 | - | - | P1 |
@@ -3553,6 +3553,108 @@ rs_life_m16_bundle.lua   5633 → 5412 行；RegisterImplementation(Treasure.Id)
 ```
 
 下一批（Phase 2 Step 2）：`life_fishing`（470 行，Auto-R 事务契约冻结，§24.3）。
+
+---
+
+## 24.6 Phase 2 Step 2–4 施工记录与 Phase 2 首轮闭合（2026-09-28）
+
+Build：Step 2/3 中间不推进；**Step 4 完成时唯一一次正式推进**到
+`v3-m1.16.0.18.332-phase2-life-bundle-slice-complete`。
+
+### 24.6.1 范围与结果
+
+```text
+Step 2  features/life/fishing/rs_fishing_feature.lua（493 行）  bundle 5412 → 4944
+Step 3  features/life/bonds/rs_bonds_feature.lua（1119 行）     bundle 4944 → 3852
+Step 4  features/life/trade/rs_trade_feature.lua（3719 行）     bundle 删除（退役收口）
+```
+
+Step 4 是 Phase 2 的收口动作：Trade 搬走后 bundle 只剩头部 helper 与注释，
+按 Phase 1 退役 `rs_business_bridge.lua` 的同一纪律**整体删除**而非留空壳 ——
+“文件不存在”是最强的禁止回填契约。`toc.g` 同步移除 bundle 行、登记 Trade 文件。
+
+### 24.6.2 §31 前后对照（真实取证，不是照抄拆分后源码）
+
+用同一支离线探针分别在**拆分前**的 bundle（`269d939:features/life/rs_life_m16_bundle.lua`，
+5633 行）与**拆分后**的四个文件上运行，dump 每个 Feature 的
+`Id / storeId / preferenceStoreId / UpdateTopic / enabled 默认值 / Demand id 与 owner 身份 /
+Commands 集合 / ApiDependencies 集合 / 全部 ContractVersion`，再对源码做 Scheduler 任务名、
+Event topic、Store 字面量扫描：
+
+```text
+44 行契约面 —— diff 结果 0 差异
+（唯一刻意不同的一行是探针自报的 sources 列表）
+```
+
+该对照已固化为 `tools/rs_feature_slice_split_tests.lua` 的 7 条 Phase 2 断言
+（`--feature-split` 59 → 66），其中包含一条**静态不变量**：
+逐行读 `toc.g`，任何 `features/` 下的 `.lua` 出现第二次 `RegisterImplementation`
+即判失败 —— 防止将来有人把拆开的 Feature 又塞回共享 chunk。
+
+### 24.6.3 契约冻结未动（§24.3 红线逐条确认）
+
+```text
+Store ID / schema      v3.life.treasure / v3.life.fishing / v3.life.bonds /
+                       v3.life.trade(schema1) / v3.trade_preferences(schema1) 全部不变
+Feature ID / route     life_treasure / life_fishing / life_bonds / life_trade 不变
+UpdateTopic            v3.life.<domain>.updated 不变
+Demand id / owner      feature:life_<domain>，owner 仍是 Feature 自身
+Scheduler 任务名        v3_trade_route_timeout / _timeout_drain / _route_deferred /
+                       _route_auto_refresh_watchdog / _equipment_refresh / _cargo_pump /
+                       _cargo_rescan / _material_projection_deferred / _quote_refresh；
+                       life_bonds_zone_refresh —— 9 + 1 条全部不变
+Event topic            SPECIALTY_RATIO_BETWEEN_INFO / ENTER_ANOTHER_ZONEGROUP /
+                       UNIT_EQUIPMENT_CHANGED / ENTERED_WORLD 不变
+Bonds X2Quest ownership 仍在 Registry 的 .328 声明（拆文件不改变 Native 权限）
+Treasure 地图权限         ShowWorldmapLocation 仍是唯一写调用，未因拆文件扩大
+Fishing Auto-R           hotkey transaction/recovery 契约随文件搬走，未重写
+Trade 业务算法            货率 / freshness / payout / MaterialPrice SWR 零修改；
+                       TradePayoutV3 / TradeMaterialIdentityV3 / PriceQuoteQueueV3 /
+                       MaterialPriceServiceV3 仍各自是唯一 Authority，未因拆目录重新实现
+注册失败语义             `if ok ~= true then error(err) end` 保持原样
+```
+
+### 24.6.4 连带收口（全部是“重定向”，没有删除断言）
+
+```text
+1. 5 个只依赖 bundle 做 Store 注册的宿主（focus_report / native_numeric_transport /
+   persistence_pipeline_audit / self_check_report / window_numeric_recovery）改为
+   按 toc 顺序 dofile life 工厂 + Trade；
+2. trade / bonds / fishing 三个 life 套件改为加载工厂 + 四个独立 Feature；
+3. rs_bonds_auroria_regression_tests.py / rs_bonds_sort_extracted_runtime_test.py 探针
+   重定向到 features/life/bonds/rs_bonds_feature.lua（Step 3 拆走后它们已在读空内容）；
+4. rs_trade_optimization_tests.py / rs_trade_auto_refresh_watchdog_tests.py 探针
+   重定向到 features/life/trade/rs_trade_feature.lua；
+5. rs_native_dependency_audit.py 删除已成死代码的 bundle 白名单分支
+   （Phase 1/2 之后不存在“一个源码单元注册多个 Feature”，该边由 1:1 文件归属机械推出）。
+```
+
+### 24.6.5 门禁（真实执行）
+
+```text
+Install Integrity         PASS  282/282，0 conflict
+Lua 5.1 Compile Gate      PASS  282 shipped Lua files（真实 luac5.1 5.1.5）
+Lua compatibility syntax  PASS  402 files（runtime = 真实 Lua 5.1）
+Native Dependency Audit   PASS  0 ERROR / 0 BLOCKER / 0 WARN
+Architecture Audit        PASS  47 既有债务（41 CORE_FEATURE / 5 PRESENTATION_STATE / 1 GIANT_FILE）
+Test Dependency Audit     PASS  25 reachable files
+Unfinished Closure        PASS  14 isolated suites
+--feature-split           PASS  66/66（59 → 66）
+默认 Full Runner          PASS  exit=0，0 FAIL（519 PASS 行）
+11 个 Python 专项          PASS  0 失败
+```
+
+### 24.6.6 遗留
+
+```text
+1. 全部为离线契约证明；四个 Feature 的 RU 实机验收仍待用户侧确认（Phase 3 收口）。
+2. §24.4：Trade 第二轮进一步拆分（orchestration / payout / material identity /
+   quote queue / material price cache / diagnostics 分离）未开始，前置条件是
+   rs_trade_feature.lua 独立后的 RU 实机一轮 Fresh Reload / 老配置 / 自动刷新 /
+   报价 / 材料缓存实测。
+3. 剩余 47 项 Architecture 债务（41 Core→Feature 硬编码 + 5 Presentation 读 State +
+   core/rs_persistence.lua 4267 行）属 Phase 3/5/7 范围，本轮只要求“无新增”。
+```
 
 ---
 

@@ -219,8 +219,8 @@ _G.X2Equipment = {
 
 dofile("features/life/shared/rs_life_slice_factory.lua")
 
-dofile("features/life/rs_life_m16_bundle.lua")
-
+-- 中文维护注释（2026-09-28，Phase 2 Step 4）：life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役删除。
+dofile("features/life/trade/rs_trade_feature.lua")
 
 dofile("features/life/fishing/rs_fishing_feature.lua")
 
@@ -229,9 +229,7 @@ dofile("features/life/treasure/rs_treasure_feature.lua")
 dofile("features/life/bonds/rs_bonds_feature.lua")
 
 -- 中文维护注释（2026-09-28，Phase 2 Step 1）：life_treasure 已拆出独立文件；
-
 -- economy widgets 在加载期要求全部 life Feature 在场。
-
 
 dofile("presentation/v3/widgets/rs_v3_trade_detail_floating.lua")
 dofile("presentation/v3/widgets/rs_v3_life_economy_widgets.lua")

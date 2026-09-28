@@ -20,7 +20,8 @@ return function(options)
  -- :700 要求债券具备 GetDisplayOrderKey/GetFilterMask/GetDuplicateMode + SetDisplayOrder/SetFilterMask/SetDuplicateMode。
  -- 本 stub 是 .298 时代的旧命令集，缺 SetViewMode/ToggleTrackedProduct/QuoteRowMaterials 与全部债券设置项，
  -- 于是 LifeEconomyContent:Create 直接返回“命令缺失”，home 套件 6 项拿不到内容卡（v3_home_trade_table=nil）。
- -- 这些命令在 features/life/rs_life_m16_bundle.lua 中均真实存在，故只补桩，不改生产契约。
+ -- 这些命令在 features/life/trade/rs_trade_feature.lua 与 features/life/bonds/rs_bonds_feature.lua 中均真实存在，
+ -- （2026-09-28，Phase 2 Step 4：原 features/life/rs_life_m16_bundle.lua 已退役）故只补桩，不改生产契约。
  function F:GetDisplayOrderKey()return 'default'end;function F:GetFilterMask()return 7 end;function F:GetDuplicateMode()return 'keep'end
  for _,k in ipairs({'SetFrom','SetTo','SetSortMode','SetRatioMode','SetCommerceMode','SetViewMode','ToggleCurrentFavorite','ToggleTrackedProduct','SelectFavorite','QuoteRowMaterials','SetBondFilterOption','SetContinentOrder','SetDuplicatePriority','SetDisplayOrder','SetFilterMask','SetDuplicateMode','SetWidgetWindowState','MarkStoreDirty','SetWidgetVisible'}) do F.Commands[k]=function()return true end end
   F.Commands.QuotePendingMaterials=function(_,mode)counts.quotes=counts.quotes+1;counts.lastMode=mode;return true end

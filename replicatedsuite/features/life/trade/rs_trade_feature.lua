@@ -1,162 +1,39 @@
--- 维护（2026-09-18，startup-source-recovery）：本文件在故障包中有 2 处未解决的 Git 合并冲突。
--- 已对照用户此前完整 V3 工程恢复有效实现；Authority、调用数据流和存档协议仍由下方原实现负责，
--- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
--- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 ------------------------------------------------------------------------
--- Replicated Suite V3 - Life vertical slice (Trade / Bonds / Treasure / Fishing)
+-- Replicated Suite V3 - life_trade Feature Authority
 --
--- This file is deliberately self-contained: the four domains own their
--- projections, commands, persistence and lifecycle.  Legacy services are not
--- imported or started.  Every game read/write crosses S.Api and every API
--- shape is normalized before it reaches Presentation.
+-- Phase 2 Step 4（2026-09-28，§24.1 固定顺序第四步）：从 features/life/rs_life_m16_bundle.lua
+-- 机械搬迁。只改变源码边界，不改业务行为：Feature ID、Store ID/Schema、UpdateTopic、Demand owner、
+-- Commands、Projection shape、ApiDependencies、Scheduler 任务名、Event topic、悬浮窗窗口策略
+-- 全部与被搬迁前逐字一致。
+--
+-- §24.3 红线（随文件搬走，不得借拆分改动）：
+--   * 货率 / freshness / payout / MaterialPrice SWR 逻辑冻结；
+--   * Store v3.life.trade schema1 与 v3.trade_preferences schema1 冻结；
+--   * 售价公式仍唯一由 TradePayoutV3、材料身份由 TradeMaterialIdentityV3、材料报价串行由
+--     PriceQuoteQueueV3、材料价格缓存由 MaterialPriceServiceV3 负责，本文件不重新实现它们；
+--   * `if ok ~= true then error(err) end` 的注册失败语义保持原样，不顺手重写。
+-- 共享装配 helper 来自 features/life/shared/rs_life_slice_factory.lua（toc.g 已保证先加载）。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local P, Runtime, Demand = S.Persistence, S.FeatureRuntime, S.Demand
 if type(P) ~= "table" or type(Runtime) ~= "table" or type(Demand) ~= "table" then return end
--- Active V3 code never resolves game namespaces as bare globals.  Capture the
--- host objects once through the guarded global table; every later call still
--- crosses S.Api and therefore remains capability-gated.
+-- 只捕获本 Feature 实际调用的 namespace（与 Treasure/Fishing/Bonds 同一纪律）：X2Store 的
+-- 货率/可售区域、X2Ability 的经商熟练度、X2Equipment 的装备槽。拍卖调用全部经
+-- S.Services.PriceQuoteQueueV3，不在本文件直接 rawget X2Auction。
 local StoreApi = rawget(_G, "X2Store")
-local AuctionApi = rawget(_G, "X2Auction")
-local ResidentApi = rawget(_G, "X2Resident")
-local BagApi = rawget(_G, "X2Bag")
-local UnitApi = rawget(_G, "X2Unit")
 local AbilityApi = rawget(_G, "X2Ability")
 local EquipmentApi = rawget(_G, "X2Equipment")
+local LF = S.LifeSliceFactory
+if type(LF) ~= "table" then error("LifeSliceFactory unavailable for life_trade") end
+local Copy, Call, Action = LF.Copy, LF.Call, LF.Action
+local Number, Text, Money = LF.Number, LF.Text, LF.Money
+local InstallLifeWidgetContract, PublishFeatureUpdate = LF.InstallLifeWidgetContract, LF.PublishFeatureUpdate
+local RegisterStore, LoadStore, PersistLifeMutation = LF.RegisterStore, LF.LoadStore, LF.PersistLifeMutation
 
+-- 中文维护注释：Feature 注册表在更早的 Feature 文件里已经建立；这里保持与搬迁前 bundle 头部
+-- 相同的防御语义，避免本文件被单独加载时因为 S.Features 缺失而中断整个 chunk。
 S.Features = S.Features or {}
-
-local function Copy(value)
-    if S.Utils and type(S.Utils.DeepCopy) == "function" then return S.Utils.DeepCopy(value) end
-    return value
-end
-
-local function Call(capability, object, method, ...)
-    if S.Api == nil or type(S.Api.CallCapability) ~= "function" then
-        return false, nil, "API boundary unavailable"
-    end
-    -- API namespaces are imported lazily by FeatureRuntime after this file is
-    -- loaded. A load-time rawget may therefore be nil even though the namespace
-    -- becomes valid before the first feature read. Let the central API boundary
-    -- resolve a nil host from the registered capability at call time.
-    local host = object
-    if host == nil or (method and host[method] == nil) then
-        local ns = capability:match("^([^:]+)")
-        if ns then host = rawget(_G, ns) or host end
-    end
-    return S.Api:CallCapability(capability, host, method, ...)
-end
-
-local function Action(capability, object, method, ...)
-    if S.Api == nil or type(S.Api.ActionCapability) ~= "function" then
-        return false, "API boundary unavailable"
-    end
-    local host = object
-    if host == nil or (method and host[method] == nil) then
-        local ns = capability:match("^([^:]+)")
-        if ns then host = rawget(_G, ns) or host end
-    end
-    return S.Api:ActionCapability(capability, host, method, ...)
-end
-
-local function PersistLifeMutation(feature, reason, mutator)
-    if type(P.MutateStore) ~= "function" then return false, "Persistence mutation transaction unavailable" end
-    return P:MutateStore(feature.storeId, function()
-        return mutator(feature.State)
-    end, { delayMs = 300, reason = reason or "life_feature_changed" })
-end
-
-local function InstallLifeWidgetContract(feature, policy)
-    feature.WidgetWindowPolicy = policy
-    function feature:GetWidgetWindowPolicy() return Copy(self.WidgetWindowPolicy) end
-    function feature:GetWidgetVisible() return self.State and self.State.widgetVisible == true or false end
-    function feature:GetWidgetWindowState()
-        local value = self.State and self.State.widgetWindow or nil
-        local floating = S.RSUI and S.RSUI.FloatingSurface or nil
-        if type(floating) == "table" and type(floating.NormalizeState) == "function" then
-            return Copy(floating:NormalizeState(value, self:GetWidgetWindowPolicy()))
-        end
-        return Copy(value)
-    end
-    function feature:SetWidgetWindowState(value, reason)
-        if type(value) ~= "table" or type(self.State) ~= "table" then return false, "生活悬浮窗状态不可用" end
-        if type(P.PrepareWrite) == "function" then
-            local prepared, prepareErr = P:PrepareWrite(self.storeId)
-            if prepared ~= true then return false, prepareErr or "生活悬浮窗配置尚未安全读取" end
-        end
-        local floating = S.RSUI and S.RSUI.FloatingSurface or nil
-        self.State.widgetWindow = type(floating) == "table" and type(floating.NormalizeState) == "function"
-            and floating:NormalizeState(value, self:GetWidgetWindowPolicy()) or Copy(value)
-        return true
-    end
-    function feature:SetWidgetVisible(value, reason)
-        return PersistLifeMutation(self, "widget_" .. tostring(reason or "visibility"), function(state)
-            state.widgetVisible = value == true
-            return true
-        end)
-    end
-    function feature:MarkStoreDirty(delayMs, reason)
-        if P and type(P.MarkDirty) == "function" then return P:MarkDirty(self.storeId, tonumber(delayMs) or 250, reason or "life_widget_state") end
-        return false, "persistence unavailable"
-    end
-end
-
-local function PublishFeatureUpdate(feature, revision, reason)
-    if type(feature) ~= "table" or type(feature.UpdateTopic) ~= "string" then return false end
-    if S.Events ~= nil and type(S.Events.Publish) == "function" then
-        return S.Events:Publish(feature.UpdateTopic, tonumber(revision) or 0, tostring(reason or "refresh"))
-    end
-    return false
-end
-
--- migrate MUST be a pure per-value normalizer: it doubles as the Integrity v3
--- canonical function. The old `migrate = default` passed a function that
--- IGNORES its input and always builds a fresh default table, which made the
--- canonical fingerprint CONTENT-BLIND (every value hashed to the default
--- shape, so real corruption verified as healthy).
--- 维护：历史桥作为 Store 声明注册，不在运行中偷偷修改 Core/其他模块。旧调用参数仍兼容。
-local function RegisterStore(id, owner, default, get, apply, migrate, budget, rebuildCanonicalForIntegrity)
-    if P:GetStore(id) == nil then
-        local store, err = P:RegisterV3Store({
-            id = id, owner = owner, scope = P.Scope.Account, lifetime = P.Lifetime.Permanent,
-            schemaVersion = 1, legacySchemaVersion = 0, key = P.V3KeyPrefix .. id:gsub("[^%w]", "_"),
-            budget = budget or { maxDepth = 6, maxNodes = 320, maxStringBytes = 8192, maxEntriesPerTable = 160 },
-            default = default, get = get, apply = apply, migrate = migrate or default,
-            rebuildCanonicalForIntegrity = rebuildCanonicalForIntegrity, -- 维护：仅显式声明的 Store 启用；其他生活模块不受影响。
-        })
-        if store == nil then error(err or ("store register failed: " .. id)) end
-    end
-end
-
-local function LoadStore(feature)
-    if feature.storeLoaded == true then return true end
-    if P:GetStore(feature.storeId) == nil then return false, "store unavailable: " .. feature.storeId end
-    local status, _, err = P:LoadStore(feature.storeId)
-    if status ~= true and status ~= "empty" then return false, err or tostring(status or "store load failed") end
-    feature.storeLoaded = true
-    return true
-end
-
-local function Number(v) return tonumber(v) end
-local function Text(v, fallback)
-    if v == nil then return fallback or "" end
-    return tostring(v)
-end
-
-local function Money(v, fallback)
-    if v == nil then return fallback or "--" end
-    local utils = S.Utils
-    if type(utils) == "table" and type(utils.FormatMoney) == "function" then
-        local n = tonumber(v)
-        if n ~= nil then
-            local ok, text = pcall(utils.FormatMoney, n)
-            if ok and type(text) == "string" and text ~= "" then return text end
-        end
-    end
-    return tostring(v)
-end
-
 ------------------------------------------------------------------------
 -- Trade
 ------------------------------------------------------------------------
@@ -3840,13 +3717,3 @@ local tradeDemand, tradeErr = Demand:Create({ id = "feature:" .. Trade.Id, owner
 if tradeDemand == nil then error(tradeErr) end
 Trade.Demand = tradeDemand
 local ok, err = Runtime:RegisterImplementation(Trade.Id, Trade); if ok ~= true then error(err) end
-
--- 中文维护注释（2026-09-28，Phase 2 Step 3）：life_bonds 已机械搬迁到
--- features/life/bonds/rs_bonds_feature.lua（toc.g 只登记一次；X2Quest ownership 仍在 Registry 的 .328 声明）。
-
--- 中文维护注释（2026-09-28，Phase 2 Step 1）：life_treasure 已机械搬迁到
--- features/life/treasure/rs_treasure_feature.lua（toc.g 只登记一次；§24.3 的地图权限红线随文件搬走）。
--- 共享装配 helper 已收敛到 features/life/shared/rs_life_slice_factory.lua。
-
--- 中文维护注释（2026-09-28，Phase 2 Step 2）：life_fishing 已机械搬迁到
--- features/life/fishing/rs_fishing_feature.lua（toc.g 只登记一次；§24.3 的 Auto-R 事务契约随文件搬走）。

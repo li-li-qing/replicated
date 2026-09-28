@@ -26,6 +26,16 @@
 - `PHASE1_BATCH_D_SLICE_REPORT_2026-09-28.md` ← **Batch D（team_tools + craft + auction + SharedBounds）**
 - `PHASE1_BATCH_E_AND_CLOSURE_REPORT_2026-09-28.md` ← **Batch E + Phase 1 闭合（bag + unit_lines + range_assist；bridge 退役）**
 
+## Phase 2 施工证据
+
+Phase 2（Life Bundle 拆分）的完整施工记录写在主规划文档 **§24.5（Step 1）与 §24.6（Step 2–4 与首轮闭合）**，
+不另开重复文件。要点：
+
+- Step 1 `life_treasure` + life 共享装配工厂 → §24.5
+- Step 2 `life_fishing` → §24.6
+- Step 3 `life_bonds` → §24.6
+- Step 4 `life_trade` + `rs_life_m16_bundle.lua` 退役 → §24.6（含 §31 前后对照的真实 diff 证据）
+
 ## 兼容规划别名
 
 - `Replicated_Suite_底层框架重构规划_v1.md` ← **实际存在于磁盘的 Authority 文件名**

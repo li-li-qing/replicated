@@ -12,11 +12,12 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-BUNDLE = (ROOT / "features/life/rs_life_m16_bundle.lua").read_text(encoding="utf-8")
+# 中文维护注释（2026-09-28，Phase 2 Step 3）：life_bonds 已搬到独立源码单元，探针随之重定向。
+BONDS = (ROOT / "features/life/bonds/rs_bonds_feature.lua").read_text(encoding="utf-8")
 
 match = re.search(
     r'(    local forward = state\.continentOrder ~= "east_first".*?    end\)\n)\n    local capturedCount',
-    BUNDLE,
+    BONDS,
     re.S,
 )
 if not match:

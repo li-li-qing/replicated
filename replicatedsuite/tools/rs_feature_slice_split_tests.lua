@@ -1015,6 +1015,242 @@ Test('BatchE：静态 —— bridge 文件已退役，且 15 个 Feature 全部�
     assert(seen == 30, 'unexpected extra registrations: ' .. tostring(seen))
 end)
 
+------------------------------------------------------------------------
+-- Phase 2（2026-09-28）：life bundle 拆分契约 —— 同样对应 §31 前后对照表
+--
+-- Phase 2 Step 1–4 把 features/life/rs_life_m16_bundle.lua（5633 行 / 4 个 Feature）拆成
+-- life_treasure / life_fishing / life_bonds / life_trade 四个独立源码单元并退役删除 bundle。
+-- 下面每一项的期望值都不是“照着拆分后源码反抄”，而是同一探针在**拆分前**的 bundle 与
+-- **拆分后**的四个文件上分别跑出来再逐项比对的（44 行契约面 0 差异，见 Phase 2 报告）。
+------------------------------------------------------------------------
+local LifeConfigured = true
+
+local lifeRegistrations = {}
+local S2
+do
+    local bootOk, bootedS = pcall(H.Boot)
+    if bootOk and type(bootedS) == 'table' then
+        S2 = bootedS
+        S2.FeatureRuntime = {
+            RegisterImplementation = function(_, id, impl)
+                lifeRegistrations[id] = (lifeRegistrations[id] or 0) + 1
+                lifeRegistrations[id .. ':impl'] = impl
+                return true
+            end,
+            IsEnabled = function() return true end,
+            SetTaskModule = function() return true end,
+        }
+        local factoryOk, factoryErr = pcall(dofile, 'features/life/shared/rs_life_slice_factory.lua')
+        if not factoryOk then
+            LifeConfigured = false
+            print('FAIL split Phase2 factory load: ' .. tostring(factoryErr))
+        end
+        for _, path in ipairs({
+            'features/life/treasure/rs_treasure_feature.lua',
+            'features/life/fishing/rs_fishing_feature.lua',
+            'features/life/bonds/rs_bonds_feature.lua',
+            'features/life/trade/rs_trade_feature.lua',
+        }) do
+            local ok, err = pcall(dofile, path)
+            if not ok then LifeConfigured = false; print('FAIL split Phase2 load ' .. path .. ': ' .. tostring(err)) end
+        end
+    else
+        LifeConfigured = false
+        print('FAIL split Phase2 host boot: ' .. tostring(bootedS))
+    end
+end
+
+local LifeSlices = {
+    life_treasure = {
+        storeId = 'v3.life.treasure', topic = 'v3.life.treasure.updated',
+        commands = { 'Refresh', 'Select', 'ShowSelectedOnMap', 'GetWidgetVisible', 'SetWidgetVisible',
+            'SetWidgetWindowState', 'MarkStoreDirty' },
+        apiDependencies = { 'X2Bag:GetBagItemInfo', 'X2Bag:Capacity', 'X2Unit:GetUnitWorldPositionByTarget',
+            'X2Unit:GetCurrentZoneGroup', 'X2Map:ShowWorldmapLocation' },
+        contractVersions = { ObservationContractVersion = 2, MapLocationContractVersion = 2 },
+    },
+    life_fishing = {
+        storeId = 'v3.life.fishing', topic = 'v3.life.fishing.updated',
+        commands = { 'Refresh', 'ArmAuto', 'DisarmAuto', 'GetWidgetVisible', 'SetWidgetVisible',
+            'SetWidgetWindowState', 'MarkStoreDirty' },
+        apiDependencies = { 'X2Hotkey:GetOptionBinding', 'X2Hotkey:SetOptionBindingWithIndex',
+            'X2Hotkey:RemoveOptionBinding', 'X2Hotkey:BindingToOption', 'X2Hotkey:SaveHotKey',
+            'X2Player:PlayerInCombat', 'X2Unit:UnitBuff', 'X2Unit:UnitBuffCount', 'X2Unit:GetCurrentZoneGroup' },
+        contractVersions = { HotkeyContractVersion = 3, ObservationContractVersion = 2 },
+    },
+    life_bonds = {
+        storeId = 'v3.life.bonds', topic = 'v3.life.bonds.updated',
+        commands = { 'Refresh', 'SelectRow', 'GetRow', 'GetSelectedRow', 'SetSortMode', 'SetBondFilterOption',
+            'SetContinentOrder', 'SetDuplicatePriority', 'SetDisplayOrder', 'SetFilterMask', 'SetDuplicateMode',
+            'GetWidgetVisible', 'SetWidgetVisible', 'SetWidgetWindowState', 'MarkStoreDirty' },
+        apiDependencies = { 'X2Resident:GetResidentBoardContent', 'X2Bag:GetBagItemInfo', 'X2Bag:Capacity',
+            'X2Quest:GetActiveQuestListCount', 'X2Quest:GetActiveQuestType', 'X2Quest:IsCompleted',
+            'X2Quest:IsReadyForCompleteQuest', 'X2Unit:GetCurrentZoneGroup' },
+        contractVersions = { ResidentBoardFamilyContractVersion = 1, MultiContinentSnapshotContractVersion = 3,
+            AuroriaMaterialContractVersion = 1, DropdownPresentationContractVersion = 2 },
+    },
+    life_trade = {
+        storeId = 'v3.life.trade', preferenceStoreId = 'v3.trade_preferences', topic = 'v3.life.trade.updated',
+        commands = { 'Refresh', 'SetFrom', 'SetTo', 'SetSortMode', 'SetRatioMode', 'SetCommerceMode', 'SetViewMode',
+            'ToggleTrackedProduct', 'SetAutoRefresh', 'SetCargoScan', 'ToggleCurrentFavorite', 'SelectFavorite',
+            'SelectRow', 'QuoteMaterial', 'QuotePendingMaterials', 'QuoteRowMaterials', 'CancelQuoteRowMaterials',
+            'CancelQuoteBatch', 'CycleFrom', 'CycleTo', 'GetWidgetVisible', 'SetWidgetVisible',
+            'SetWidgetWindowState', 'MarkStoreDirty' },
+        apiDependencies = { 'X2Store:GetProductionZoneGroups', 'X2Store:GetSellableZoneGroups',
+            'X2Store:GetSpecialtyRatioBetween', 'X2Ability:GetAllMyActabilityInfos',
+            'X2Equipment:GetEquippedItemType', 'X2Equipment:GetEquippedItemTooltipInfo',
+            'X2Craft:GetCraftTypeByItemType', 'X2Craft:GetCraftMaterialInfo', 'X2Craft:GetCraftProductInfo',
+            'X2Auction:AskMarketPrice', 'X2Auction:GetLowestPrice', 'X2Auction:SearchAuctionArticle',
+            'X2Auction:GetSearchedItemCount', 'X2Auction:GetSearchedItemInfo' },
+        contractVersions = {
+            AutoRefreshRuntimeContractVersion = 1, AutoRefreshBackgroundLeaseContractVersion = 2,
+            MaterialPriceCacheContractVersion = 1, MultiRowQuoteJobsContractVersion = 1,
+            QuoteTerminalRefreshContractVersion = 2, QuoteReadModelSyncContractVersion = 1,
+            EconomicsRevisionContractVersion = 1, BackgroundMaterialRevalidateContractVersion = 1,
+        },
+        authorityContractVersions = {
+            RouteRefreshRetryContractVersion = 3, SingleFlightLatestRouteContractVersion = 1,
+            RequestTimeoutContractVersion = 3, NativeCooldownContractVersion = 4, QuerySchedulerContractVersion = 2,
+            AutoRefreshContractVersion = 3, AutoRefreshWatchdogContractVersion = 3, RatioFastPublishContractVersion = 2,
+            TradePayoutProjectionContractVersion = 1, PreferenceProjectionContractVersion = 1,
+            CargoObservationContractVersion = 2, NativeCallbackLeaseContractVersion = 1,
+        },
+    },
+}
+
+local function LifeFeature(id)
+    return type(S2) == 'table' and S2.Features and S2.Features[
+        ({ life_treasure = 'Treasure', life_fishing = 'Fishing', life_bonds = 'Bonds', life_trade = 'Trade' })[id]]
+        or nil
+end
+
+Test('Phase2：life 工厂是唯一装配 Authority，四个 Feature 各自独立注册且只注册一次', function()
+    assert(LifeConfigured, 'life features failed to load')
+    assert(type(S2.LifeSliceFactory) == 'table', 'S.LifeSliceFactory missing')
+    local expected = { life_treasure = 1, life_fishing = 1, life_bonds = 1, life_trade = 1 }
+    for id, count in pairs(expected) do
+        assert(lifeRegistrations[id] == count, id .. ' registration count changed: ' .. tostring(lifeRegistrations[id]))
+    end
+    local seen = 0
+    for _ in pairs(lifeRegistrations) do seen = seen + 1 end
+    -- 每个 Feature 占两个键（id 与 id:impl），因此期望 8 个键；多出来的就是有人把 Feature 又塞回了共享 chunk
+    assert(seen == 8, 'unexpected extra life registrations: ' .. tostring(seen))
+end)
+
+Test('Phase2：Feature ID / Store ID / preference Store / UpdateTopic / Demand id 不变', function()
+    for id, spec in pairs(LifeSlices) do
+        local feature = assert(LifeFeature(id), id .. ' not registered by its own file')
+        assert(feature.Id == id, id .. ' Feature ID changed: ' .. tostring(feature.Id))
+        assert(feature.storeId == spec.storeId, id .. ' Store ID changed: ' .. tostring(feature.storeId))
+        assert(feature.UpdateTopic == spec.topic, id .. ' UpdateTopic changed: ' .. tostring(feature.UpdateTopic))
+        assert(feature.enabled == false, id .. ' default enabled state changed')
+        if spec.preferenceStoreId then
+            assert(feature.preferenceStoreId == spec.preferenceStoreId, id .. ' preference Store ID changed')
+        end
+        assert(type(feature.Demand) == 'table' and feature.Demand.id == 'feature:' .. id,
+            id .. ' Demand id changed')
+        assert(feature.Demand.owner == feature, id .. ' Demand owner changed')
+    end
+end)
+
+Test('Phase2：公开 Commands 精确集合不变', function()
+    for id, spec in pairs(LifeSlices) do
+        local feature = assert(LifeFeature(id), id .. ' not registered')
+        local wanted = {}
+        for _, name in ipairs(spec.commands) do wanted[name] = true end
+        for _, name in ipairs(spec.commands) do
+            assert(type(feature.Commands[name]) == 'function', id .. ' command missing: ' .. name)
+        end
+        local count = 0
+        for name in pairs(feature.Commands) do
+            assert(wanted[name] == true, id .. ' unexpected command: ' .. tostring(name))
+            count = count + 1
+        end
+        assert(count == #spec.commands, id .. ' command surface size changed: ' .. tostring(count))
+    end
+end)
+
+Test('Phase2：ApiDependencies 精确集合不变', function()
+    for id, spec in pairs(LifeSlices) do
+        local feature = assert(LifeFeature(id), id .. ' not registered')
+        local have = {}
+        for _, value in ipairs(feature.ApiDependencies) do have[value] = true end
+        for _, value in ipairs(spec.apiDependencies) do
+            assert(have[value] == true, id .. ' missing api dependency ' .. value)
+        end
+        local count = 0
+        for _ in pairs(have) do count = count + 1 end
+        assert(count == #spec.apiDependencies, id .. ' api dependency set changed: ' .. tostring(count))
+    end
+end)
+
+Test('Phase2：跨升级契约版本号不变', function()
+    for id, spec in pairs(LifeSlices) do
+        local feature = assert(LifeFeature(id), id .. ' not registered')
+        for name, value in pairs(spec.contractVersions) do
+            assert(feature[name] == value, id .. ' ' .. name .. ' changed: ' .. tostring(feature[name]))
+        end
+        for name, value in pairs(spec.authorityContractVersions or {}) do
+            assert(feature.Authority[name] == value,
+                id .. ' Authority.' .. name .. ' changed: ' .. tostring(feature.Authority[name]))
+        end
+    end
+end)
+
+Test('Phase2：静态 —— bundle 已退役，且没有任何源码单元注册多个 Feature', function()
+    local retired = io.open('features/life/rs_life_m16_bundle.lua', 'rb')
+    if retired ~= nil then retired:close() end
+    assert(retired == nil, 'rs_life_m16_bundle.lua must stay retired')
+    -- 逐行读 toc.g（跳过注释行），任何 .lua 文件都不允许出现第二次 RegisterImplementation：
+    -- 否则“单个 Feature 源码失败不再因为同一 chunk 天然吞掉其它实现”这个 Phase 1/2 目标就被撤销了。
+    local toc = assert(io.open('toc.g', 'rb'))
+    local text = toc:read('*a'); toc:close()
+    local checked = 0
+    for line in text:gmatch('[^\r\n]+') do
+        local path = line:match('^([^%-][^%s]*%.lua)%s*$')
+        if path and path:match('^features/') then
+            local handle = io.open(path, 'rb')
+            if handle ~= nil then
+                local source = handle:read('*a'); handle:close()
+                local first = source:find('RegisterImplementation', 1, true)
+                if first ~= nil then
+                    checked = checked + 1
+                    local second = source:find('RegisterImplementation', first + 1, true)
+                    assert(second == nil, path .. ' registers more than one Feature implementation')
+                end
+            end
+        end
+    end
+    assert(checked >= 19, 'expected at least 19 feature units to register an implementation, saw ' .. tostring(checked))
+end)
+
+Test('Phase2：静态 —— Trade / Bonds 的 Scheduler 任务名与 Native topic 不变', function()
+    local function read(path)
+        local handle = io.open(path, 'rb')
+        if handle == nil then return '' end
+        local text = handle:read('*a'); handle:close()
+        return text
+    end
+    local trade = read('features/life/trade/rs_trade_feature.lua')
+    for _, task in ipairs({ 'v3_trade_route_timeout', 'v3_trade_timeout_drain', 'v3_trade_route_deferred',
+        'v3_trade_route_auto_refresh_watchdog', 'v3_trade_equipment_refresh', 'v3_trade_cargo_pump',
+        'v3_trade_cargo_rescan', 'v3_trade_material_projection_deferred', 'v3_trade_quote_refresh' }) do
+        assert(trade:find('"' .. task .. '"', 1, true) ~= nil, 'trade task name changed: ' .. task)
+    end
+    for _, topic in ipairs({ 'SPECIALTY_RATIO_BETWEEN_INFO', 'ENTER_ANOTHER_ZONEGROUP', 'UNIT_EQUIPMENT_CHANGED' }) do
+        assert(trade:find(topic, 1, true) ~= nil, 'trade event topic changed: ' .. topic)
+    end
+    local bonds = read('features/life/bonds/rs_bonds_feature.lua')
+    assert(bonds:find('"life_bonds_zone_refresh"', 1, true) ~= nil, 'bonds zone refresh task name changed')
+    for _, topic in ipairs({ 'ENTER_ANOTHER_ZONEGROUP', 'ENTERED_WORLD' }) do
+        assert(bonds:find(topic, 1, true) ~= nil, 'bonds event topic changed: ' .. topic)
+    end
+    -- §24.3 红线：Trade 不得因为拆文件重新实现共享 Authority
+    for _, foreign in ipairs({ 'function PriceQuoteQueueV3', 'function TradePayoutV3', 'function MaterialPriceServiceV3' }) do
+        assert(trade:find(foreign, 1, true) == nil, 'trade must not re-implement shared authority: ' .. foreign)
+    end
+end)
+
 assert(#F.ApiDependencies == 8, 'tools_social api dependency count changed')
 assert(#Market.ApiDependencies == 3, 'tools_market_analysis api dependency count changed')
 print(string.format('FEATURE SPLIT RESULT %d passed / %d failed', passed, failed))

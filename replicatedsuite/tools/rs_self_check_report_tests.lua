@@ -248,7 +248,9 @@ Test('read-only report uses three real Store codecs without applying or saving a
     ADDON.ClearData=function()clearCount=clearCount+1;error('must not clear')end
     dofile('core/rs_demand.lua');dofile('core/rs_persistence.lua');dofile('ui/framework/rs_ui_floating_surface.lua')
     dofile('features/combat/buff_display/rs_buff_display_store.lua');dofile('features/combat/death_review/rs_death_review_store.lua')
-    dofile('features/life/rs_life_m16_bundle.lua')
+    -- 中文维护注释（2026-09-28，Phase 2 Step 4）：life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役。
+    dofile('features/life/shared/rs_life_slice_factory.lua')
+    dofile('features/life/trade/rs_trade_feature.lua')
     local P=S.Persistence;local ids={'v3.buff_display','v3.death_review','v3.life.trade'}
     for _,id in ipairs(ids)do
         local st=assert(P:GetStore(id));assert(P:LoadStore(id));st.apply(st.default());assert(P:SaveStore(id,{force=true,verifyAfterSave=true}))

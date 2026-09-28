@@ -176,13 +176,14 @@ features/life/tasks/rs_task_feature.lua
 -- 2026-09-28 Phase 2 Step 1：life 共享装配 helper（§24 固定顺序：Treasure→Fishing→Bonds→Trade）。
 -- 语义与 Phase 1 工厂不同（migrate/canonical/budget 是 §24.3 冻结契约），故为独立模块。
 features/life/shared/rs_life_slice_factory.lua
-features/life/rs_life_m16_bundle.lua
 -- 2026-09-28 Phase 2 Step 1：life_treasure 已拆出；后续 Fishing/Bonds/Trade 逐批跟进。
 features/life/treasure/rs_treasure_feature.lua
 -- 2026-09-28 Phase 2 Step 2：life_fishing 拆出（Auto-R 事务契约冻结）。
 features/life/fishing/rs_fishing_feature.lua
 -- 2026-09-28 Phase 2 Step 3：life_bonds 拆出（X2Quest ownership 仍在 Registry .328 声明）。
 features/life/bonds/rs_bonds_feature.lua
+-- 2026-09-28 Phase 2 Step 4：life_trade 拆出；rs_life_m16_bundle.lua 已退役删除（不得回填）。
+features/life/trade/rs_trade_feature.lua
 features/life/rs_daily_ledger.lua
 features/life/rs_daily_income_source.lua
 -- 2026-09-28 Phase 1 Batch A：通用 Feature 装配骨架（无业务状态）必须先于它的消费者加载。

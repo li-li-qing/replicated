@@ -407,11 +407,11 @@ def feature_service_refs(feature_sources: Dict[str, str]) -> Dict[str, Set[str]]
         if len(feature_ids) == 1:
             out[feature_ids[0]].update(refs)
             continue
-        # Shared bundles cannot be safely attributed by file-wide grep. Record only
-        # the currently proven cross-service edge that motivated FND-016; Phase 1/2
-        # vertical slicing will make the remaining ownership mechanically auditable.
-        if source.endswith("features/life/rs_life_m16_bundle.lua") and "life_bonds" in feature_ids and "QuestProgressV3" in refs:
-            out["life_bonds"].add("QuestProgressV3")
+        # 中文维护注释（2026-09-28，Phase 2 Step 4）：Phase 1/2 之后已经不存在“一个源码单元注册多个
+        # Feature”的情况，原先为 life_bonds→QuestProgressV3 写死的 bundle 特例已成为死代码并删除 ——
+        # 那个边现在由 1:1 文件归属机械推出，不再需要人工白名单。若将来又出现共享 chunk，
+        # 这里保持“不归属、不猜测”的安全语义，并由 --feature-split 的静态断言直接报出。
+        continue
     return out
 
 
