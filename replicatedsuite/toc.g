@@ -181,6 +181,8 @@ features/life/rs_life_m16_bundle.lua
 features/life/treasure/rs_treasure_feature.lua
 -- 2026-09-28 Phase 2 Step 2：life_fishing 拆出（Auto-R 事务契约冻结）。
 features/life/fishing/rs_fishing_feature.lua
+-- 2026-09-28 Phase 2 Step 3：life_bonds 拆出（X2Quest ownership 仍在 Registry .328 声明）。
+features/life/bonds/rs_bonds_feature.lua
 features/life/rs_daily_ledger.lua
 features/life/rs_daily_income_source.lua
 -- 2026-09-28 Phase 1 Batch A：通用 Feature 装配骨架（无业务状态）必须先于它的消费者加载。
