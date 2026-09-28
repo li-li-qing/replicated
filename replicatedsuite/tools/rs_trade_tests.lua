@@ -221,6 +221,8 @@ dofile("features/life/shared/rs_life_slice_factory.lua")
 
 dofile("features/life/rs_life_m16_bundle.lua")
 
+dofile("features/life/fishing/rs_fishing_feature.lua")
+
 -- 中文维护注释（2026-09-28，Phase 2 Step 1）：life_treasure 已拆出独立文件；
 
 -- economy widgets 在加载期要求全部 life Feature 在场。

@@ -105,6 +105,8 @@ assert(type(S.Services and S.Services.FishingHotkeyV3) == "table", "FishingHotke
 dofile("features/life/shared/rs_life_slice_factory.lua")
 
 dofile("features/life/rs_life_m16_bundle.lua")
+dofile("features/life/fishing/rs_fishing_feature.lua")
+
 local Fishing = assert(S.Features.Fishing, "Fishing feature failed to load")
 Fishing.enabled = true
 assert(Fishing:Initialize(), "Fishing Initialize failed")

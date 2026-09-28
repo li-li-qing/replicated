@@ -179,6 +179,8 @@ features/life/shared/rs_life_slice_factory.lua
 features/life/rs_life_m16_bundle.lua
 -- 2026-09-28 Phase 2 Step 1：life_treasure 已拆出；后续 Fishing/Bonds/Trade 逐批跟进。
 features/life/treasure/rs_treasure_feature.lua
+-- 2026-09-28 Phase 2 Step 2：life_fishing 拆出（Auto-R 事务契约冻结）。
+features/life/fishing/rs_fishing_feature.lua
 features/life/rs_daily_ledger.lua
 features/life/rs_daily_income_source.lua
 -- 2026-09-28 Phase 1 Batch A：通用 Feature 装配骨架（无业务状态）必须先于它的消费者加载。
