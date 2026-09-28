@@ -105,10 +105,13 @@ Test('historical hook rejects wrong identity and future generation', function()
     old=store.rebuildCanonicalForIntegrity({},'bogus',nil,{__rsmeta={store='v3.buff_display',owner='v3.buff_display',framework=3,schema=9}})
     assert(old==nil)
 end)
-Test('catalog includes 393 effects 14 trees and empty joy', function()
+Test('catalog includes current 425 effects 14 trees and 463 skills', function()
     local c=S.Data.StatusTrackingCatalogV3
-    assert(c.counts.effects==393,'effect count '..tostring(c.counts.effects))
-    assert(c.counts.trees==14 and c.counts.skills==464)
+    -- Phase 0 baseline refresh (2026-09-28): current data authority contains the later
+    -- manually verified status IDs and control-immunity entries. Keep exact counts as a
+    -- regression tripwire; do not retain the 2026-09-12 393/464 snapshot as current truth.
+    assert(c.counts.effects==425,'effect count '..tostring(c.counts.effects))
+    assert(c.counts.trees==14 and c.counts.skills==463,'catalog counts drifted')
     assert(c.Packs['tree:joy'] and #c.Packs['tree:joy'].entries==0)
     assert(#c.Packs.control.entries>0)
     assert(c.ByEffectId[21].category=='unknown')
@@ -120,13 +123,17 @@ assert(F:EnsureStoreLoaded())
 local function Reset()
     store.apply(store.default());F:InvalidateSettingsCache();F:ClearFrozenRows()
 end
-Test('builtin import is single durable transaction and persistent auto', function()
+Test('builtin import uses four-write generation transaction and persistent scoped tracking', function()
     Reset();local before=writes
-    local ok,err=F:ImportBuiltinPack('all',false);assert(ok,err)
-    assert(writes==before+1,'more than one durable write')
-    assert(#F.State.settings.tracked.player.auto==393 and #F.State.settings.tracked.target.auto==393)
-    assert(#F.State.settings.tracked.player.buff==0 and #F.State.settings.tracked.player.debuff==0
-        and #F.State.settings.tracked.target.buff==0 and #F.State.settings.tracked.target.debuff==0)
+    local ok,err,result=F:ImportBuiltinPack('all',false);assert(ok,err)
+    -- .18.243+ Tracking Authority writes inactive player/target/meta plus manifest.
+    -- Four physical writes are intentional; manifest publication is the commit point.
+    assert(writes==before+4,'tracking generation transaction write count changed: '..tostring(writes-before))
+    assert(type(result)=='table' and result.total==850,'current all-pack channel total changed')
+    assert(#F.State.settings.tracked.player.auto==388 and #F.State.settings.tracked.target.auto==388)
+    assert(#F.State.settings.tracked.player.buff==25 and #F.State.settings.tracked.player.debuff==12
+        and #F.State.settings.tracked.target.buff==25 and #F.State.settings.tracked.target.debuff==12,
+        'current classified/auto lane split changed')
     local count=#F.State.settings.tracked.player.auto
     assert(F:ImportBuiltinPack('all',false))
     assert(#F.State.settings.tracked.player.auto==count and #F.State.settings.tracked.target.auto==count)
@@ -240,7 +247,7 @@ end)
 Test('management health exposes schema catalog and cooldown runtime state',function()
     local health=F:GetHealth()
     assert(health.schemaVersion==8 and type(health.management)=='table' and type(health.management.tracked.player)=='table')
-    assert(health.management.catalog.effectCount==393)
+    assert(health.management.catalog.effectCount==425)
     -- This isolated fixture does not load CooldownObservationV3; the current
     -- full TOC reports native_v4 (Skill-ID-only Native authority), while this fixture correctly reports unavailable.
     -- The old event-coupled native_v1/v2/v3 release states are no longer current contracts.
@@ -307,7 +314,7 @@ Test('static tracked cache survives interleaved live page and widget reads',func
     local tracked=F:GetManagementProjection({view='tracked'})
     F:GetManagementProjection({view='live'})
     local again=F:GetManagementProjection({view='tracked'})
-    assert(again==tracked,'live consumer evicted 393-row static cache')
+    assert(again==tracked,'live consumer evicted static tracked cache')
 end)
 Test('v2 full round-trip preserves custom dual HUD and tracking',function()
     Reset();assert(F:SetTrackedId(21,'auto',true));assert(F:SetTrackedId(82,'debuff',true))

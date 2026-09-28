@@ -44,6 +44,34 @@ def require_test_files(paths: list[str]) -> bool:
     return False
 
 
+
+
+def require_transitive_test_dependencies(paths: list[str]) -> bool:
+    # Phase 0 baseline gate: top-level existence is insufficient when historical suites
+    # still dofile nested hosts/fixtures. Audit literal repository-relative dependencies
+    # before running anything so one early failure cannot hide the remaining blockers.
+    try:
+        from rs_test_dependency_audit import audit
+    except ImportError:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("rs_test_dependency_audit", ROOT / "tools/rs_test_dependency_audit.py")
+        if spec is None or spec.loader is None:
+            print("BLOCKED: cannot load transitive test dependency audit", file=sys.stderr)
+            return False
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        audit = module.audit
+    _, missing = audit(paths)
+    if not missing:
+        return True
+    print("BLOCKED: nested regression dependency file(s) missing; no full-suite success claim is allowed:", file=sys.stderr)
+    for path, parents in missing.items():
+        print(f"  - {path}", file=sys.stderr)
+        for parent in parents[:4]:
+            print(f"      required by {parent}", file=sys.stderr)
+        if len(parents) > 4:
+            print(f"      ... +{len(parents)-4} more parent(s)", file=sys.stderr)
+    return False
+
 def lua_dofiles(paths: list[str]) -> str:
     return "; ".join(f'dofile("{path}")' for path in paths)
 
@@ -165,6 +193,7 @@ def main() -> int:
         # 维护（unfinished-closure-1）：B1~B11 与钓鱼 Hotkey v3 专项必须进入统一入口；implemented_pending_ru 仍属待 RU 验收，
         # 本地 PASS 只能证明离线契约，不得把导航状态提升为 complete。
         if not require_test_files(UNFINISHED_CLOSURE_TESTS): return 2
+        if not require_transitive_test_dependencies(UNFINISHED_CLOSURE_TESTS): return 2
         try:
             run_lua_files_isolated(UNFINISHED_CLOSURE_TESTS, prelude)
         except RuntimeError as error:
@@ -247,6 +276,7 @@ def main() -> int:
         ]
         required = legacy + UNFINISHED_CLOSURE_TESTS
         if not require_test_files(required): return 2
+        if not require_transitive_test_dependencies(required): return 2
         source = prelude + lua_dofiles(legacy)
         isolated_after = UNFINISHED_CLOSURE_TESTS
     try:
