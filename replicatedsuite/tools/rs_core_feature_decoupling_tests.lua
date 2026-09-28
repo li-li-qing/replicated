@@ -141,5 +141,57 @@ Test('静态：core/*.lua 不得再点名 RaidReadiness 的硬编码访问', fun
         'Foundation must not hard-code the raid readiness feature id either')
 end)
 
+------------------------------------------------------------------------
+-- Phase 3 Batch B：DeathReview（core/rs_foundation_gate.lua 的
+-- death_review_v3_contract + death_review_runtime_scope 已删除）
+--
+-- 该 Feature 的 acceptance 本来就比 Foundation 更严（多查 store.lifetime、migrate 的**实际归一化结果**、
+-- Framework2/schema2 零值省略的真实恢复执行 probe、record/index 预算探针），所以本批的搬迁补齐点主要是
+-- “实现缺失不再静默 return”。这里用最小替身证明 case 真的在跑，并覆盖 Foundation 原有的一处判定。
+------------------------------------------------------------------------
+local DEATH_CASE = 'v3_m15_2h_death_review_contract'
+
+local function BootDeath(overrides)
+    overrides = type(overrides) == 'table' and overrides or {}
+    local cases = {}
+    local S = { Features = {}, SafeTraceback = debug and debug.traceback or function(m) return m end, FoundationGate = {} }
+    function S.FoundationGate:RegisterSequenceCase(id, fn) cases[tostring(id)] = fn; return true end
+    S.FeatureRegistry = { Get = function(_, id)
+        if id ~= 'combat_death_review' then return nil end
+        return { status = 'migrated_m15_2', lifecycle = 'independent', authority = 'v3.death_review',
+            widgetCapable = true, settingsCapable = true, defaultEnabled = false } end }
+    S.Persistence = { Scope = { Account = 'Account' }, Lifetime = { Permanent = 'Permanent' },
+        HistoricalCanonicalRecoveryContractVersion = 3, KnownLegacyCanonicalRecoveryContractVersion = 1,
+        GetStore = function() return nil end }
+    S.FeatureRuntime = { IsImplemented = function(_, id) return id == 'combat_death_review' end }
+    S.UIV3 = { PageHost = { factories = {} }, WidgetHost = { GetSpec = function() return nil end } }
+    local F = { StoreId = 'v3.death_review' }
+    if overrides.noFeature == true then F = nil end
+    S.Features.DeathReview = F
+    ReplicatedSuite = S
+    dofile('features/combat/death_review/rs_death_review_acceptance.lua')
+    return cases
+end
+
+Test('DeathReview：实现未注册时仍注册 case 并失败（搬迁补齐）', function()
+    local cases = BootDeath({ noFeature = true })
+    assert(type(cases[DEATH_CASE]) == 'function', 'case must register even when the Feature is missing')
+    local ok, reason = cases[DEATH_CASE]()
+    assert(ok == false and tostring(reason) == 'implementation_not_registered', 'reason=' .. tostring(reason))
+end)
+
+Test('DeathReview：Index Store 缺失 → store_contract（Foundation 原判定之一）', function()
+    local cases = BootDeath(nil)
+    local ok, reason = cases[DEATH_CASE]()
+    assert(ok == false and tostring(reason) == 'store_contract', 'reason=' .. tostring(reason))
+end)
+
+Test('DeathReview：静态 —— core/*.lua 不得再点名该 Feature', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    assert(text:find('S.Features.DeathReview', 1, true) == nil, 'Foundation must not hard-code DeathReview')
+    assert(text:find('combat_death_review', 1, true) == nil, 'Foundation must not hard-code the death review feature id')
+end)
+
 print(string.format('CORE-FEATURE-DECOUPLING RESULT %d passed / %d failed', passed, failed))
 if failed > 0 then error('core/feature decoupling regressions: ' .. tostring(failed)) end

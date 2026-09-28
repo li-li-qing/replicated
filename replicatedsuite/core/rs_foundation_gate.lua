@@ -1819,49 +1819,18 @@ function G:Run(options)
             .. "/units=" .. tostring(relationHealth.units or 0)
             .. "/rosterHeld=" .. tostring(relationHealth.rosterHeld == true)) or "missing")
 
-    local deathReview = S.Features and S.Features.DeathReview or nil
-    local deathHealth = deathReview and type(deathReview.GetHealth) == "function" and deathReview:GetHealth() or nil
-    local deathStore = S.Persistence and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.death_review") or nil
-    local deathMeta = S.FeatureRegistry and S.FeatureRegistry:Get("combat_death_review") or nil
-    local deathPage = S.UIV3 and S.UIV3.PageHost and S.UIV3.PageHost.factories and S.UIV3.PageHost.factories["combat.death_review"] or nil
-    local deathWidget = S.UIV3 and S.UIV3.WidgetHost and type(S.UIV3.WidgetHost.GetSpec) == "function" and S.UIV3.WidgetHost:GetSpec("combat.death_review") or nil
-    AddCheck(report, "death_review_v3_contract", deathReview ~= nil and type(deathReview.Authority) == "table"
-            and type(deathReview.Authority.RequestFinalizeDeath) == "function"
-            and type(deathReview.GetProjection) == "function" and type(deathReview.Commands) == "table"
-            and type(deathReview.Commands.ApplyAutoShow) == "function" and type(deathReview.Commands.ApplyShowDebuffs) == "function"
-            and type(deathReview.Commands.ApplyWindowMs) == "function" and type(deathReview.Commands.ApplyMinDamage) == "function"
-            and type(deathReview.Commands.SetMaxHistory) == "function" and type(deathReview.Commands.MarkStoreDirty) == "function"
-            and type(deathReview.Commands.SetEnabled) == "function" and type(deathReview.Commands.ClearHistory) == "function"
-            and (tonumber(deathReview.PersistenceCanonicalWindowContractVersion) or 0) >= 7 -- 中文维护注释：Foundation 要求 Store-owned 窗口字段投影 v7，防止共享 FloatingSurface 未来加字段再次污染既有 Index canonical。
-            and (tonumber(deathReview.PersistenceIndexSchemaContractVersion) or 0) >= 2 -- 中文维护注释：DeathReview Index 必须明确处于 schema2；record 分片仍独立 schema1，不在此合并。
-            and (tonumber(deathReview.PersistenceKnownLegacyRecoveryContractVersion) or 0) >= 5 -- 中文维护注释：DeathReview recovery v5 要求 Framework2/schema2 与 Transport v1 共用 exact 零值恢复，并组合 history 表形；旧 known pair 只保留给真正不可逆的早期事故。
-            and (tonumber(deathReview.PersistenceSchema2Framework2RecoveryContractVersion) or 0) >= 2 -- 中文维护注释：Framework2/schema2 exact-recovery 继续覆盖 sequence/map 与合法数值 0 省略，但 `.18.200` 实机证据已将 73DF7418 归入 schema1；Foundation 这里只校验通用结构化能力，不再把该事故错误绑定到 schema2。
-            and (tonumber(deathReview.PersistenceTransportV1ZeroOmissionRecoveryContractVersion) or 0) >= 2 -- 中文维护注释：v2 要求候选集合只包含 nil/0 真正影响 canonical 的 10 个字段，避免 offsetX/offsetY 造成 2^12 候选爆炸后跳过真实恢复。
-            and (tonumber(deathReview.PersistenceIndexCodecVersion) or 0) >= 1 -- 中文维护注释：codec1 继续是 Index 稳定物理编码，schema bump 不等于强制换 codec。
-            and (tonumber(S.Persistence.HistoricalCanonicalRecoveryContractVersion) or 0) >= 3 -- 中文维护注释：Core exact historical canonical 恢复必须存在且先于 known-stamp 迁移。
-            and type(deathReview.WidgetWindowSizePolicy) == "table" and deathReview.Demand ~= nil -- 中文维护注释：Presentation policy 与独立 Demand 生命周期必须同时保持，持久化修复不得耦合高频战斗模块。
-            and deathStore ~= nil and tonumber(deathStore.schemaVersion) == 2 and type(deathStore.migrate) == "function" -- 中文维护注释：注册 Store 的真实 schema2 与纯 migrate 必须同时匹配 Feature 声明。
-            and type(deathStore.rebuildCanonicalForIntegrity) == "function" -- 中文维护注释：先以旧 stamp 精确证明历史 canonical，未知形状不能直接接受。
-            and type(deathStore.recoverKnownLegacyCanonical) == "function" -- 中文维护注释：实机固定 fingerprint pair 仅由 DeathReview Store 自己判定，Core 不持有业务 allowlist。
-            and (tonumber(S.Persistence.KnownLegacyCanonicalRecoveryContractVersion) or 0) >= 1 -- 中文维护注释：Persistence Core 必须提供 bounded known-stamp 框架并在恢复后立即重盖当前 canonical。
-            and deathPage ~= nil and deathWidget ~= nil
-            and deathMeta ~= nil and tostring(deathMeta.status) == "migrated_m15_2" and tostring(deathMeta.authority) == "v3.death_review",
-        "blocker", deathHealth and ("enabled=" .. tostring(deathReview.enabled == true)
-            .. "/consumer=" .. tostring(deathHealth.consumers or 0)
-            .. "/scope=" .. tostring(deathHealth.busScope or "none")
-            .. "/deferred=" .. tostring(deathHealth.debuffDeferred or 0)
-            .. "/ferFail=" .. tostring(deathHealth.debuffDeferFailures or 0)
-            .. "/history=" .. tostring(deathHealth.history or 0)) or "missing")
-    AddCheck(report, "death_review_runtime_scope", deathHealth ~= nil
-            and (deathReview.enabled ~= true or (deathHealth.busSubscribed == true and tostring(deathHealth.busScope) == "self"))
-            and (deathReview.enabled == true or (tonumber(deathHealth.consumers) or 0) == 0)
-            and (tonumber(deathHealth.deferredFinalizeFailures) or 0) == 0,
-        "warning", deathHealth and ("enabled=" .. tostring(deathReview.enabled == true)
-            .. "/bus=" .. tostring(deathHealth.busSubscribed == true)
-            .. "/scope=" .. tostring(deathHealth.busScope or "none")
-            .. "/aura=" .. tostring(deathHealth.auraConsumer == true)
-            .. "/pending=" .. tostring(deathHealth.pendingDeath == true)
-            .. "/deferredFail=" .. tostring(deathHealth.deferredFinalizeFailures or 0)) or "missing")
+    -- 中文维护注释（Phase 3 Batch B，2026-09-29，core-feature-decoupling-1）：这里原先有两处 AddCheck
+    -- （death_review_v3_contract / death_review_runtime_scope）直接点名读取 DeathReview 的 Feature 实现表，
+    -- 复述它的 Authority/Commands 函数面、7 项 Persistence 契约版本、Store migrate/recovery 能力与 Runtime
+    -- scope 语义 —— 典型的 Core 硬编码认识具体业务 Feature（注意：注释里也不要写成带点号的表名+字段形式，
+    -- rs_architecture_audit 是行级正则且不跳过注释，会把说明文字重新计成 CORE_FEATURE 债务）。
+    -- 契约 Authority 现已唯一收敛到 features/combat/death_review/rs_death_review_acceptance.lua 的
+    -- v3_m15_2h_death_review_contract，且该 case 是原判定的**严格超集**：除 7 项 Persistence 契约版本、
+    -- Core 的两个 recovery 框架版本、Store migrate/rebuildCanonicalForIntegrity/recoverKnownLegacyCanonical 与
+    -- 窗口策略外，还多查了 store.lifetime、migrate 的**实际归一化结果**(470x330/透明度/锁定/最小化)、
+    -- Framework2/schema2 零值省略的真实恢复执行 probe、以及 record/index 预算探针；实现缺失也不再静默
+    -- return，而是 Fail("implementation_not_registered")。sequence case 失败同样落 blocker（见 sequence_harness），
+    -- 因此整段删除不降低启动门槛。
     local dpsFeature = S.Features and S.Features.DPS or nil
     local dpsMeta = S.FeatureRegistry and S.FeatureRegistry:Get("combat_stats") or nil
     local dpsPage = S.UIV3 and S.UIV3.PageHost and S.UIV3.PageHost.factories and S.UIV3.PageHost.factories["combat.stats"] or nil
