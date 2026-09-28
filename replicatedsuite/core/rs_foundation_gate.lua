@@ -1689,35 +1689,20 @@ function G:Run(options)
             .. "/aura=" .. tostring(buffDisplayHealth.auraHeld == true)
             .. "/task=" .. tostring(buffDisplayHealth.taskActive == true)) or "missing")
 
-    local readiness = S.Features and S.Features.RaidReadiness or nil
-    local readinessHealth = readiness and type(readiness.GetHealth) == "function" and readiness:GetHealth() or nil
-    local readinessMeta = S.FeatureRegistry and S.FeatureRegistry:Get("combat_raid_readiness") or nil
-    local readinessStore = S.Persistence and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.raid_readiness") or nil
-    local readinessPage = S.UIV3 and S.UIV3.PageHost and S.UIV3.PageHost.factories and S.UIV3.PageHost.factories["combat.raid_readiness"] or nil
-    local teamNative = S.NativeContract and type(S.NativeContract.GetApi) == "function" and S.NativeContract:GetApi("TEAM") or nil
-    AddCheck(report, "raid_readiness_v3_contract", readiness ~= nil and type(readiness.Authority) == "table"
-            and (tonumber(readiness.Authority.version) or 0) >= 1 and type(readiness.RunScan) == "function"
-            and type(readiness.Authority.StartScan) == "function" and type(readiness.Authority.CancelScan) == "function"
-            and type(readiness.Commands) == "table" and type(readiness.Commands.ApplySettingFromBinding) == "function"
-            and type(readiness.Commands.MarkStoreDirty) == "function"
-            and readiness.Demand ~= nil and readinessStore ~= nil and readinessPage ~= nil
-            and readinessMeta ~= nil and tostring(readinessMeta.status) == "migrated_m16_14"
-            and tostring(readinessMeta.lifecycle) == "on_demand_scan"
-            and type(teamNative) == "table" and tonumber(teamNative.id) == 38,
-        "blocker", readinessHealth and ("enabled=" .. tostring(readiness.enabled == true)
-            .. "/consumer=" .. tostring(readinessHealth.consumers or 0)
-            .. "/scan=" .. tostring(readinessHealth.scanning == true)
-            .. "/roster=" .. tostring(readinessHealth.rosterHeld == true)
-            .. "/aura=" .. tostring(readinessHealth.auraHeld == true)) or "missing")
-    AddCheck(report, "raid_readiness_runtime_scope", readinessHealth ~= nil
-            and ((tonumber(readinessHealth.consumers) or 0) > 0 or (readinessHealth.rosterHeld ~= true and readinessHealth.auraHeld ~= true and readinessHealth.scanning ~= true))
-            and (readinessHealth.scanning ~= true or readinessHealth.rosterHeld == true)
-            and (readinessHealth.auraHeld ~= true or readinessHealth.scanning == true),
-        "warning", readinessHealth and ("consumer=" .. tostring(readinessHealth.consumers or 0)
-            .. "/scan=" .. tostring(readinessHealth.scanning == true)
-            .. "/roster=" .. tostring(readinessHealth.rosterHeld == true)
-            .. "/aura=" .. tostring(readinessHealth.auraHeld == true)
-            .. "/members=" .. tostring(readinessHealth.rosterMembers or 0)) or "missing")
+    -- 中文维护注释（Phase 3 Batch A，2026-09-29，core-feature-decoupling-1）：这里原先有两处 AddCheck
+    -- （raid_readiness_v3_contract / raid_readiness_runtime_scope）直接点名读取 RaidReadiness 的 Feature
+    -- 实现表并逐条复述它的契约字段与 Aura/roster lease 语义 —— 典型的 Core 硬编码认识具体业务 Feature。
+    -- 注意：注释里也不要写成“表名.字段”的点号形式，rs_architecture_audit 是**行级正则且不跳过注释**，
+    -- 会把说明文字重新计成 CORE_FEATURE 债务（本行就曾因此让债务数停在 47 不下降）。
+    -- 契约 Authority 现已唯一收敛到 features/combat/raid_readiness/rs_raid_readiness_acceptance.lua 的
+    -- v3_m16_14_raid_readiness_contract，且该 case 是原判定的**严格超集**：
+    --   * 多查 TeamRosterV3 / AuraObservationV3 的版本与函数面；
+    --   * store 检查从“非 nil”提升到 owner + scope + schemaVersion；
+    --   * native 检查从 id 提升到 id + nativeName == "X2Team"；
+    --   * dormant 判定补齐 rosterHeld / scanning 三个租约与它们之间的依赖顺序；
+    --   * 实现缺失不再静默 return，而是明确 Fail("implementation_not_registered")。
+    -- sequence case 失败同样落 blocker（见本文件后面的 sequence_harness 检查），因此这里整段删除不会
+    -- 降低启动门槛；若 RaidReadiness 契约回退，仍然会在 Foundation 自检里阻断。
 
     local healer = S.Features and S.Features.Healer or nil
     local healerAuraBridge = S.Features and S.Features.HealerAuraBridge or nil

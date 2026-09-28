@@ -42,6 +42,14 @@ FEATURE_SPLIT_TESTS = [
     "tools/rs_feature_slice_split_tests.lua",
 ]
 
+# Phase 3 源码契约收口的契约回归（2026-09-29，Batch A）。
+# 每个批次把 Foundation 里“点名具体业务 Feature”的硬编码门禁搬回 Feature 自己的 acceptance 文件，
+# 这里证明搬迁是**无损且严格加强**的：逐条触发搬迁过程中补齐的强度点，并静态断言 core/*.lua
+# 不再出现该 Feature 的硬编码访问。与 FEATURE_SPLIT_TESTS 分开计数，语义不同。
+CORE_FEATURE_DECOUPLING_TESTS = [
+    "tools/rs_core_feature_decoupling_tests.lua",
+]
+
 
 def require_test_files(paths: list[str]) -> bool:
     missing = [path for path in paths if not (ROOT / path).is_file()]
@@ -297,6 +305,18 @@ def main() -> int:
             return 1
         print(f"FEATURE_SPLIT PASS: {len(FEATURE_SPLIT_TESTS)} suite(s)")
         return 0
+    elif "--core-feature-decoupling" in sys.argv:
+        # Phase 3 Batch A：只跑“Core 不再硬编码认识业务 Feature”的搬迁契约。独立进程，
+        # 避免上一个套件的 ReplicatedSuite 替身污染本套件的最小离线宿主。
+        if not require_test_files(CORE_FEATURE_DECOUPLING_TESTS): return 2
+        if not require_transitive_test_dependencies(CORE_FEATURE_DECOUPLING_TESTS): return 2
+        try:
+            run_lua_files_isolated(CORE_FEATURE_DECOUPLING_TESTS, prelude)
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+            return 1
+        print(f"CORE_FEATURE_DECOUPLING PASS: {len(CORE_FEATURE_DECOUPLING_TESTS)} suite(s)")
+        return 0
     else:
         # 维护（full-runner-proof-1）：默认入口先确认所有声明为“全量”所依赖的测试文件真实存在。
         # 缺历史夹具时明确 BLOCKED 并非零退出；禁止跳过缺失文件后仍宣称“全量全绿”。B1~B11 与钓鱼 Hotkey v3 专项同时纳入默认集合。
@@ -310,11 +330,11 @@ def main() -> int:
             "tools/rs_daily_income_source_tests.lua", "tools/rs_home_overview_tests.lua", "tools/rs_overview_v2_tests.lua", "tools/rs_quest_journal_detail_tests.lua",
             "tools/rs_ledger_projection_v2_tests.lua",
         ]
-        required = legacy + UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS
+        required = legacy + UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS + CORE_FEATURE_DECOUPLING_TESTS
         if not require_test_files(required): return 2
         if not require_transitive_test_dependencies(required): return 2
         source = prelude + lua_dofiles(legacy)
-        isolated_after = UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS
+        isolated_after = UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS + CORE_FEATURE_DECOUPLING_TESTS
     try:
         run_lua(source)
         if isolated_after:
