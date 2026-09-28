@@ -78,7 +78,17 @@ local M = {
     maxSamples = 6,
     maxBackgroundPerAdmission = 12,
     backgroundRetryMs = 60000,
-    anomalyRatio = 8,
+    -- 维护（2026-09-28，material-price-anomaly-jump-1）：本条阈值原来是 8，只防“数量级错误”
+    -- （例如拍卖把整组总价当单价，×100）。实机取证（`USER<id>/udf` 的 v3.market.material_prices，
+    -- 38 次写入 + 22 条材料）发现真正的故障模式是另一种：**拍卖行临时缺货、只剩一个高价挂单**，
+    -- 于是最低一口价单价一次性跳 2~3 倍并被直接落库。实例：「捣碎的香料」(30901) 前 34 次写入
+    -- 稳定 559 铜，随后一次跳到 1,499 铜（2.68 倍，无中间值）；它占 `[玛瑞诺普]新鲜特产`
+    -- 配方成本的 93.7%（180/198 件），把该行从 +16 金 26 银 直接算成 −66 银 04 铜。
+    -- 同族 6 个加工品当时都在 385~576 铜，只有它 3 倍偏离，说明这不是市场整体涨价。
+    -- 因此把阈值收紧到 2.5：2.5 倍以上的跳变必须先进入候选观察、第二次一致观测才落库；
+    -- 代价是真实市场突变时价格生效晚一个观测周期（SWR 本来就容忍 stale，可接受）。
+    -- 注意：正常波动不受影响 —— 本次 22 条里除该例外，其余倍率都在 0.72~1.11。
+    anomalyRatio = 2.5,
     anomalyConfirmTolerance = 0.15,
     refreshPending = {},
     lastRefreshAttemptMs = {},
@@ -90,7 +100,7 @@ local M = {
         reads = 0, hits = 0, misses = 0, writes = 0, imported = 0,
         backgroundSubmitted = 0, backgroundSkippedFresh = 0,
         backgroundJoined = 0, backgroundFailed = 0, backgroundStoreUnavailable = 0,
-        anomalyHeld = 0, anomalyConfirmed = 0,
+        anomalyHeld = 0, anomalyConfirmed = 0, anomalyRevertedToKnown = 0,
     },
 }
 S.Services.MaterialPriceServiceV3 = M
@@ -449,7 +459,21 @@ function M:ObserveConfirmedPrice(itemType, itemGrade, price, source)
         local previous = tonumber(entry.price)
         local ratio = math.max(previous, rounded) / math.max(1, math.min(previous, rounded))
         if ratio >= self.anomalyRatio then
-            if entry.candidatePrice ~= nil and SimilarPrice(entry.candidatePrice, rounded, self.anomalyConfirmTolerance) then
+            -- 维护（2026-09-28，material-price-anomaly-jump-1）：跳变方向必须区分。若新价其实是回到了
+            -- **已知历史样本区间**内，那它是“回归正常”，不是“新的市场常态”，必须立即采纳 —— 否则一旦
+            -- 被“缺货一次性高价”污染（本例 559→1499），之后修正价又会因为 2.68 倍同样越限而被反复挡在
+            -- 候选区，玩家要询价两次才看到正确毛利。只有“越限且与所有已知样本都不相似”才是真正的候选。
+            local revertedToKnown = false
+            for _, sample in ipairs(type(entry.samples) == "table" and entry.samples or {}) do
+                local samplePrice = tonumber(type(sample) == "table" and sample.price or sample)
+                if SimilarPrice(samplePrice, rounded, self.anomalyConfirmTolerance) then
+                    revertedToKnown = true
+                    break
+                end
+            end
+            if revertedToKnown == true then
+                self.stats.anomalyRevertedToKnown = (tonumber(self.stats.anomalyRevertedToKnown) or 0) + 1
+            elseif entry.candidatePrice ~= nil and SimilarPrice(entry.candidatePrice, rounded, self.anomalyConfirmTolerance) then
                 entry.candidateCount = (tonumber(entry.candidateCount) or 1) + 1
                 self.stats.anomalyConfirmed = (tonumber(self.stats.anomalyConfirmed) or 0) + 1
                 -- second consistent observation confirms the market regime change

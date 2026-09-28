@@ -121,6 +121,30 @@ price, meta = M:GetPrice(30902, 1)
 Eq(price, 63000, "confirmed anomaly becomes stable price")
 Eq(meta.freshness, "fresh", "confirmed replacement fresh")
 
+-- 维护（2026-09-28，material-price-anomaly-jump-1）：下面这组是**实机取证**得到的真实故障模式，
+-- 不再是假设。从 `USER<id>/udf` 的 v3.market.material_prices（38 次写入 / 22 条材料）还原：
+-- 「捣碎的香料」(30901) 前 34 次写入稳定 559 铜，随后**一次**跳到 1,499 铜（2.68 倍，无中间值）；
+-- 同族 6 个加工品当时都在 385~576 铜，只有它 3 倍偏离 —— 典型的“拍卖行临时缺货、只剩一个高价挂单”。
+-- 它占 `[玛瑞诺普]新鲜特产` 配方成本的 93.7%（180/198 件），于是把一趟 +16 金 26 银 的跑商
+-- 直接算成 −66 银 04 铜。旧阈值 8 只防数量级错误，让这种 2~3 倍跳变直接落库，因此收紧到 2.5。
+server = { year = 2026, month = 10, day = 4, hour = 15, minute = 2 }
+accepted = M:ObserveConfirmedPrice(30901, 1, 559, "name_search_direct_unit")
+assert(accepted == true, "baseline spice price accepted")
+accepted, reason = M:ObserveConfirmedPrice(30901, 1, 1499, "name_search_direct_unit")
+assert(accepted == false and reason == "anomaly_candidate_held",
+    "2.68x shortage spike must not land directly (was accepted under the old 8x threshold)")
+price = M:GetPrice(30901, 1)
+Eq(price, 559, "held shortage spike cannot poison the stable spice price")
+-- 第二次一致观测才确认市场真的变了（保持原有语义不变）。
+accepted = M:ObserveConfirmedPrice(30901, 1, 1499, "name_search_direct_unit")
+assert(accepted == true, "second consistent spike confirms regime change")
+Eq(M:GetPrice(30901, 1), 1499, "confirmed spike becomes the stable price")
+-- 关键：**回归已知历史样本必须立即采纳**。否则修正价会因为同一个 2.68 倍而被再次挡在候选区，
+-- 玩家要询价两次才看到正确毛利；而“回到已知样本区间”本来就不是市场新常态。
+accepted, reason = M:ObserveConfirmedPrice(30901, 1, 559, "name_search_direct_unit")
+assert(accepted == true, "reverting to a known historic sample is accepted immediately: " .. tostring(reason))
+Eq(M:GetPrice(30901, 1), 559, "reverted price is live again in one observation")
+
 -- If server calendar is unavailable immediately after a confirmed quote, session acceptance time prevents requeue storms.
 server = nil
 nowMs = nowMs + 1000
