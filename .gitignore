@@ -10,6 +10,11 @@ Thumbs.db
 # Temp files
 *.tmp
 
+# 中文维护注释（2026-09-28，Phase 2）：离线套件的运行残留（纯输出，会被套件重新生成）。
+# .self_check_real_evidence.txt 除外 —— 它是被 rs_report_delivery_tests.lua 读取的既有证据文件。
+replicatedsuite/tools/.copy_*
+replicatedsuite/tools/.focus_*
+
 # Packaged builds / archives
 *.zip
 
