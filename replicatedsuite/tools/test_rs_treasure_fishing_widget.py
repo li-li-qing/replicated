@@ -25,8 +25,9 @@ class TreasureFishingSurfaceContractTests(unittest.TestCase):
         self.assertIn('if armed then', block)
 
     def test_treasure_scan_uses_shared_inventory_authority_not_fixed_bag_zero_name_filter(self):
-        text = read("features/life/rs_life_m16_bundle.lua")
-        block = text.split("-- Treasure maps", 1)[1].split("-- Fishing", 1)[0]
+        # 中文维护注释（2026-09-28，Phase 2 Step 1）：life_treasure 已拆到独立文件，探针随之重定向。
+        text = read("features/life/treasure/rs_treasure_feature.lua")
+        block = text.split("-- Treasure maps", 1)[1]
         self.assertIn("InventorySnapshotV3", block)
         self.assertIn(':BuildSnapshot("bag"', block)
         self.assertIn("ReadPhysicalBagSlot", block)
@@ -34,14 +35,14 @@ class TreasureFishingSurfaceContractTests(unittest.TestCase):
         self.assertNotIn('string.find(name, "藏宝图"', block)
 
     def test_treasure_map_key_keeps_legacy_coordinate_slot_shape_for_saved_selection_compatibility(self):
-        text = read("features/life/rs_life_m16_bundle.lua")
-        block = text.split("-- Treasure maps", 1)[1].split("-- Fishing", 1)[0]
+        text = read("features/life/treasure/rs_treasure_feature.lua")
+        block = text.split("-- Treasure maps", 1)[1]
         self.assertIn('key = text .. ":" .. tostring(slot)', block)
         self.assertNotIn('key = text .. ":" .. tostring(row and row.itemType', block)
 
     def test_treasure_feature_exposes_capability_gated_world_map_location_command(self):
-        feature = read("features/life/rs_life_m16_bundle.lua")
-        block = feature.split("-- Treasure maps", 1)[1].split("-- Fishing", 1)[0]
+        feature = read("features/life/treasure/rs_treasure_feature.lua")
+        block = feature.split("-- Treasure maps", 1)[1]
         self.assertIn("ShowSelectedOnMap", block)
         self.assertIn('Action("X2Map:ShowWorldmapLocation"', block)
         self.assertIn('"X2Map:ShowWorldmapLocation"', block)

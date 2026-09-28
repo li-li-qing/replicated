@@ -102,6 +102,8 @@ local serviceOk, serviceErr = pcall(dofile, "services/rs_fishing_hotkey_v3.lua")
 assert(serviceOk, "FishingHotkeyV3 service must exist: " .. tostring(serviceErr))
 assert(type(S.Services and S.Services.FishingHotkeyV3) == "table", "FishingHotkeyV3 service must register")
 
+dofile("features/life/shared/rs_life_slice_factory.lua")
+
 dofile("features/life/rs_life_m16_bundle.lua")
 local Fishing = assert(S.Features.Fishing, "Fishing feature failed to load")
 Fishing.enabled = true

@@ -1916,7 +1916,7 @@ ReloadAddon PASS
 |---|---|---|---|---|
 | Phase 0 测试/编译基线 | **已完成** | 18.326 | 18.330 | 第六轮闭合：真实 Lua 5.1 编译门禁（261 files，luac5.1 5.1.5）+ 真实 Lua 5.1 运行环境；两个历史证据 fixture 按 byte-for-byte 从 18.244 归档恢复；X2Skill numeric API_TYPE 由 globals/apitypes.lua 证据链确认为 35，Native audit 收敛为 0/0/0；默认 Full Runner 端到端 PASS；Install 261/261、Unfinished Closure 14/14、Architecture 仍 49 债务。仅剩 X2Skill RU 实机行为验收（Phase 3 收口项） |
 | Phase 1 Business Bridge 拆分 | **已完成（Batch A–E 全部完成）** | 18.330 | 18.331 | 15 个 Feature 全部独立成文件；rs_business_bridge.lua（5223 行 / 188 slots）退役删除；新增装配工厂 + SharedBounds + 拍卖读模型；主 chunk slots 187→104→（bridge 不复存在，各文件 16–98）；`--feature-split` 59/59 并入默认 Full Runner；audit 0/0/0；Architecture 债务 49→48；BuildTag 推进到 `v3-m1.16.0.18.331-phase1-feature-slice-complete` |
-| Phase 2 Life Bundle 拆分 | 未开始 | - | - | P0 |
+| Phase 2 Life Bundle 拆分 | 进行中（Step 1：工厂 + Treasure 已完成） | - | - | P0 |
 | Phase 3 Contract / Dependency Ownership | 未开始 | - | - | Core→Feature inversion + Feature/Service Native dependency ownership |
 | Phase 4 Scheduler/Event 热路径 | 未开始 | - | - | P1 |
 | Phase 5 Presentation 边界 | 未开始 | - | - | P1 |
@@ -3518,6 +3518,41 @@ MaterialPriceServiceV3 = 唯一材料价格缓存 Authority
 ```
 
 不要因为拆目录重新实现这些 Service。
+
+---
+
+## 24.5 Phase 2 Step 1 施工记录（2026-09-28）：life 共享工厂 + life_treasure 拆出
+
+Build：仍为 `v3-m1.16.0.18.331-phase1-feature-slice-complete`（Phase 2 进行中，未推进新 BuildTag）。
+
+```text
+新增 features/life/shared/rs_life_slice_factory.lua（158 行）
+     = bundle 头部 11 个共享装配 helper 原样收敛（Copy/Call/Action/PersistLifeMutation/
+       InstallLifeWidgetContract/PublishFeatureUpdate/RegisterStore/LoadStore/Number/Text/Money）
+     -> S.LifeSliceFactory
+新增 features/life/treasure/rs_treasure_feature.lua（248 行）= life_treasure 机械搬迁（§24.1 第一步）
+rs_life_m16_bundle.lua   5633 → 5412 行；RegisterImplementation(Treasure.Id) 唯一注册点在新文件
+```
+
+要点：
+
+```text
+1. life 工厂**没有**与 Phase 1 的 rs_feature_slice_factory.lua 合并：life 版的
+   RegisterStore(migrate/budget/rebuildCanonicalForIntegrity)、Copy、LoadStore 语义不同，
+   且 §24.3 把它们列为冻结契约 —— 合并就是改行为。
+2. 依赖分析（修正版，兼容 local function/多赋值）确认 Treasure 的外部依赖只有
+   11 个共享 helper + S/P/Runtime/Demand/UnitApi，无其它 bundle 内部引用。
+3. 连带收口：test_rs_treasure_fishing_widget.py 的 3 个源码探针重定向到新文件（7/7 OK）；
+   4 个加载 economy widgets 的宿主补 life 工厂 + Treasure dofile
+   （economy widgets 在加载期要求全部 life Feature 在场）。
+4. 门禁：compile gate 280 / install 280/280 / audit 0/0/0 / feature-split 59/59 /
+   unfinished closure 14/14 / full runner exit=0。
+5. 契约冻结未动：Store ID/Schema（v3.life.treasure）、Feature ID、UpdateTopic、
+   ObservationContractVersion=2、MapLocationContractVersion=2、悬浮窗窗口策略、
+   ShowWorldmapLocation 唯一写调用（§24.3 地图权限红线随文件搬走）。
+```
+
+下一批（Phase 2 Step 2）：`life_fishing`（470 行，Auto-R 事务契约冻结，§24.3）。
 
 ---
 
