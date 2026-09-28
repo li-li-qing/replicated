@@ -687,6 +687,44 @@ end -- 中文维护注释：结束 Framework3/Transport v1 零值省略结构化
 -- Envelope Seal 的 raw payload，按原序号无损重建，重新用原 Decode/Encode，比对整份旧章。
 -- Authority：Store 只产候选，Core 决定验真与 Apply；不打开/修改任何 record 分片，不猜缺失记录。
 -- 只接受完整 1..N（最多 MAX_HISTORY），拒绝重复/稀疏/非法序号；内容变了仍继续写保护。
+-- 维护（2026-09-29，death-review-dangling-entry-1）：实机 self-check（RS-SELF-CHECK-1 / ID=1.1）
+-- 出现 v3.death_review 索引 `history.entries` 的**第 27 条只包含 lethalSource / windowMs 两个字段、
+-- 并且没有 storageId**（其余 26 条都是完整 11 字段）。而 NormalizeIndexWithWindow 本来就要求
+-- `tonumber(row.storageId) ~= nil` 才纳入 —— 于是“归一化后的 canonical”与“磁盘 raw”的形状**必然不等**。
+-- 后果：下面两个精度桥都会先做“整表形状严格相等”对照（RebuildRoundedHistoryTimeCanonical 的
+-- Equal(canonical.payload, rawEnvelope.payload)），形状不等即 Probe('shape') 返回 nil；
+-- RebuildTransportV2SequenceCanonical 也只能报 sequence=unchanged。三条桥 + known-pair 全 miss →
+-- hook=no_candidate → Store 被 Fence，死亡回顾停用，并连带 persistence_v2 / reliability_v4 / v6 三个 blocker。
+-- 这里补一个**结构候选**：剔除无 storageId 的悬空条目后再重建，与归一化既有语义完全一致。
+-- 安全性：候选仍由 Core 用旧 stamped fingerprint 做 exact Hash 认证，不命中不会误放行；
+-- 且仅当磁盘上确实存在悬空条目时才产出（dropped == 0 直接返回 nil，正常存档不受影响）。
+local function RebuildPrunedDanglingEntriesCanonical(rawEnvelope, stampedFingerprint)
+    local store = P:GetStore(INDEX_STORE)
+    local payload = type(rawEnvelope) == "table" and type(rawEnvelope.payload) == "table" and rawEnvelope.payload or nil
+    local history = payload and type(payload.history) == "table" and payload.history or nil
+    local source = history and type(history.entries) == "table" and history.entries or nil
+    if type(source) ~= "table" then return nil end
+    local kept, dropped = {}, 0
+    for _, row in ipairs(source) do
+        if type(row) == "table" and tonumber(row.storageId) ~= nil then
+            kept[#kept + 1] = row
+        else
+            dropped = dropped + 1
+        end
+    end
+    if dropped == 0 or #kept == #source then return nil end -- 正常存档没有悬空条目，不产候选
+    local recoveredRaw = DeepCopy(rawEnvelope)
+    recoveredRaw.payload.history.entries = kept
+    local recovered = DecodeIndex(recoveredRaw)
+    if recovered == nil then return nil end
+    local canonical = EncodeIndex(recovered)
+    if type(store) == "table" then
+        store.lastHistoricalRecoveryProbe = "pruned/dropped=" .. tostring(dropped) .. "/rows=" .. tostring(#kept)
+            .. "/hfp=" .. tostring(P:FingerprintCanonicalValue(store, canonical)) .. "/old=" .. tostring(stampedFingerprint)
+    end
+    return canonical, recovered
+end
+
 local function RebuildTransportV2SequenceCanonical(rawEnvelope, stampedFingerprint)
     -- 维护：v3 只解决标量精度，不改变序列键风险；已解码 v2/v3 共用严格索引重建。
     -- 这里不是死亡回顾未知数值指纹的恢复；仍须整表原指纹精确一致。
@@ -800,6 +838,11 @@ local function RebuildHistoricalIndexCanonical(value, stampedFingerprint, curren
         and tonumber(rawEnvelope.codec) == INDEX_CODEC_VERSION then
         local candidate, domain, sequenceUnchanged = RebuildTransportV2SequenceCanonical(rawEnvelope, stampedFingerprint)
         if candidate ~= nil then return candidate, domain end
+        -- 维护（2026-09-29，death-review-dangling-entry-1）：**结构优先于精度**。
+        -- 磁盘上存在无 storageId 的悬空条目时，归一化会删掉它，于是任何要求“整表形状严格相等”
+        -- 的精度桥（固定6窗口 / 时间舍入）都进不去。先试结构候选，命中即恢复；不命中再走精度桥。
+        local prunedCandidate, prunedDomain = RebuildPrunedDanglingEntriesCanonical(rawEnvelope, stampedFingerprint)
+        if prunedCandidate ~= nil then return prunedCandidate, prunedDomain end
         -- 维护（F2窗口精度）：codec1的原指纹覆盖{codec,payload}，不能拿Domain直接算。
         -- 严格序列已证明未改变时才尝试两个既有中心比例；稀疏/坏序列不得借窗口桥丢掉历史。
         -- Core验旧章后才Apply；不读record分片、不依赖DPS、不变更schema2或history排序。
