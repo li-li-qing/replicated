@@ -1917,7 +1917,7 @@ ReloadAddon PASS
 | Phase 0 测试/编译基线 | **已完成** | 18.326 | 18.330 | 第六轮闭合：真实 Lua 5.1 编译门禁（261 files，luac5.1 5.1.5）+ 真实 Lua 5.1 运行环境；两个历史证据 fixture 按 byte-for-byte 从 18.244 归档恢复；X2Skill numeric API_TYPE 由 globals/apitypes.lua 证据链确认为 35，Native audit 收敛为 0/0/0；默认 Full Runner 端到端 PASS；Install 261/261、Unfinished Closure 14/14、Architecture 仍 49 债务。仅剩 X2Skill RU 实机行为验收（Phase 3 收口项） |
 | Phase 1 Business Bridge 拆分 | **已完成（Batch A–E 全部完成）** | 18.330 | 18.331 | 15 个 Feature 全部独立成文件；rs_business_bridge.lua（5223 行 / 188 slots）退役删除；新增装配工厂 + SharedBounds + 拍卖读模型；主 chunk slots 187→104→（bridge 不复存在，各文件 16–98）；`--feature-split` 59/59 并入默认 Full Runner；audit 0/0/0；Architecture 债务 49→48；BuildTag 推进到 `v3-m1.16.0.18.331-phase1-feature-slice-complete` |
 | Phase 2 Life Bundle 拆分 | **已完成（Step 1–4，首轮“一 Feature 一文件”闭合）** | 18.331 | 18.332 | 4 个 life Feature（Treasure / Fishing / Bonds / Trade）全部独立成文件；`rs_life_m16_bundle.lua`（5633 行 / 4 Feature）退役删除；新增 `features/life/shared/rs_life_slice_factory.lua`（life 版装配 helper，未与 Phase 1 工厂合并）；`--feature-split` 59→66 断言（新增 7 条 life 契约）；BuildTag 推进到 `v3-m1.16.0.18.332-phase2-life-bundle-slice-complete`。**§24.4 的 Trade 第二轮进一步拆分仍未开始**（前置条件：RU 实机一轮 Fresh Reload / 老配置 / 自动刷新 / 报价 / 材料缓存实测） |
-| Phase 3 Contract / Dependency Ownership | 未开始 | - | - | Core→Feature inversion + Feature/Service Native dependency ownership |
+| Phase 3 Contract / Dependency Ownership | **进行中（Batch A/B 已完成）** | - | - | Core→Feature inversion + Feature/Service Native dependency ownership。**已落地**：把 Foundation 里点名具体业务 Feature 的硬编码契约门禁搬回 Feature 自己的 `*_acceptance.lua`（sequence case 与 AddCheck 同为 blocker 级别），并在搬迁前先把 acceptance 补齐成原判定的严格超集。Batch A = RaidReadiness、Batch B = DeathReview；新增 `--core-feature-decoupling` 门禁入口（并入默认 Full Runner）。Architecture 债务 47 → 45（CORE_FEATURE 41 → 39）。剩余 39 处 CORE_FEATURE 按同一模板继续分批 |
 | Phase 4 Scheduler/Event 热路径 | 未开始 | - | - | P1 |
 | Phase 5 Presentation 边界 | 未开始 | - | - | P1 |
 | Phase 6 Diagnostics/Acceptance | 未开始 | - | - | P1 |
@@ -3732,6 +3732,107 @@ core/*.lua
 - Feature 不替 Service“代持”与自身无关的 namespace；
 - `S.NativeImports` 仍是唯一 ImportAPI Authority；
 - 不实现不存在的 Native Unimport。
+
+---
+
+## 25.6 Phase 3 施工记录（2026-09-29）：Batch A / Batch B 与可复用模板
+
+Build：仍为 `v3-m1.16.0.18.332-phase2-life-bundle-slice-complete`（Phase 3 进行中，不推进 BuildTag）。
+
+### 25.6.1 关键机制发现（决定了本 Phase 的落地形态）
+
+排查 `S.Features.<业务Feature>` 的 41 处命中后发现：**项目里已经存在 Feature 自证契约的成熟模式** ——
+`features/**/rs_*_acceptance.lua` 通过 `S.FoundationGate:RegisterSequenceCase(id, fn)` 注册自证用例。
+而 `RunSequences()` 就在 Foundation Gate 的评估路径里（见 `core/rs_foundation_gate.lua` 的
+`sequence_harness` 检查）：**任一 sequence case 失败 → blocker**，与 `AddCheck(..., "blocker", ...)` 同级。
+
+因此 §25.4 的“删除旧硬编码分支”不需要先发明一套 descriptor DSL：**只要证明某个 Feature 的
+acceptance 用例是其 Foundation 硬编码断言的严格超集，就可以整段删除后者**，强度不降。
+
+### 25.6.2 单批模板（后续批次照此执行）
+
+```text
+1. 选一批（1~3 个 Feature）：优先选“有 acceptance + Foundation 断言同形”的
+2. 对照：逐条比对 Foundation 的 AddCheck 与 acceptance 的 case，列出 acceptance 的缺口
+3. 补齐：把缺口补进 acceptance，使其成为**严格超集**；共同的必补点是
+   “实现缺失（Feature 为 nil）时旧 acceptance 静默 return = 没有检查”，
+   必须改为无条件注册 case + Fail("implementation_not_registered")
+4. 删除：整段删除 Foundation 里的对应 AddCheck 与专用局部变量，留下搬迁说明注释
+5. 固化：在 tools/rs_core_feature_decoupling_tests.lua 增加断言
+   （合规必过 + 每个补齐点各一条反例 + 静态断言 core/*.lua 不再点名该 Feature）
+6. 反例验证：把补齐点临时还原成旧形态，确认测试**精确失败**，再还原
+7. 门禁：Architecture 债务必须单调下降；全量门禁绿
+```
+
+**批内红线**：
+
+- 不得只删不补：删除前必须使 acceptance ≥ 原判定（宁可多查，不可少查）。
+- 不得改动断言语义：搬迁是“换 Authority 位置”，不是“放松门槛”。
+- 注释里不要写出带点号的“表名.字段”形式 —— `rs_architecture_audit` 的 CORE_FEATURE 规则是
+  **行级正则且不跳过注释**，说明文字会被重新计成债务（Batch A 踩过一次）。
+
+### 25.6.3 Batch A：RaidReadiness
+
+```text
+删除  core/rs_foundation_gate.lua
+      raid_readiness_v3_contract   （blocker）
+      raid_readiness_runtime_scope （warning）
+收敛  features/combat/raid_readiness/rs_raid_readiness_acceptance.lua
+      v3_m16_14_raid_readiness_contract
+补齐  1. 实现未注册时无条件注册 case 并失败
+      2. dormant 判定补齐 rosterHeld / scanning（旧 acceptance 只查 auraHeld）
+      3. 补齐 lease 依赖顺序：scanning 必须有 roster；auraHeld 必须正在 scanning
+```
+
+（acceptance 本来就更严：多查 TeamRosterV3 / AuraObservationV3 契约、store owner+scope+schemaVersion、
+`X2Team` nativeName。）
+
+### 25.6.4 Batch B：DeathReview
+
+```text
+删除  core/rs_foundation_gate.lua
+      death_review_v3_contract   （blocker）
+      death_review_runtime_scope （warning）—— 共 43 行整段删除
+收敛  features/combat/death_review/rs_death_review_acceptance.lua
+      v3_m15_2h_death_review_contract
+补齐  实现未注册时无条件注册 case 并失败
+```
+
+（acceptance 本来就更严：7 项 Persistence 契约版本 + Core 两个 recovery 框架版本之外，
+还查 store.lifetime、migrate 的**实际归一化结果**（470x330 / 透明度 0.96 / locked / minimized /
+userMoved）、Framework2-schema2 零值省略的**真实恢复执行 probe**、record/index 预算探针。）
+
+### 25.6.5 门禁与指标
+
+```text
+新增入口  python tools/rs_status_refactor_test_runner.py --core-feature-decoupling
+          （CORE_FEATURE_DECOUPLING_TESTS，已并入默认 Full Runner，与 feature-split 分开计数）
+契约测试  tools/rs_core_feature_decoupling_tests.lua   12 条断言（Batch A 9 + Batch B 3）
+债务      Architecture 47 → 46（Batch A）→ 45（Batch B）；CORE_FEATURE 41 → 40 → 39
+门禁      Install 282/282、Lua 5.1 compile 282、syntax 403、Native audit 0/0/0、
+          Test Dependency Audit、Unfinished Closure 14/14、feature-split、
+          core-feature-decoupling 12/12、默认 Full Runner exit=0
+```
+
+反例验证（两批都做）：Batch A 用临时阈值/桩触发，Batch B 把 acceptance 的 guard 还原成旧的
+“F 定义在前 + 静默 return”形态 —— 测试**恰好 1 条 FAIL**，且失败信息精确指向补齐点；还原后 12/12 PASS。
+
+### 25.6.6 剩余工作
+
+```text
+1. 余下 39 处 CORE_FEATURE 债务，按 §25.6.2 模板继续分批。按“有 acceptance + 同形”排序，优先候选：
+   DPS（Foundation 的 dps_v3_contract / dps_skill_proxy_source_contract / dps_v3_runtime_scope 三段交织，
+   需先拆清依赖）、BuffDisplay、Tasks/Activities、Gear、Bonds（Binding 的 5 条版本检查）、
+   Trade 段（20+ 契约字段，跨 Feature/Service/UI，需单独设计）。
+2. 没有 acceptance 的 Feature（如 tools_bag / tools_craft / tools_auction / combat_unit_lines /
+   combat_range_assist / combat_boss_alerts / combat_team_tools / tools_reinforce_analysis /
+   combat_target_monitor / combat_buff_cap / life_treasure / life_fishing / life_trade 等）
+   需要先补一个 acceptance 用例承载契约，再删 Foundation 分支 —— 每批工作量更大。
+3. core/rs_diagnostics.lua 的 6 处 CORE_FEATURE 属 §28（Phase 6 Diagnostics 收敛），
+   但可用同一模板提前收口。
+4. §25.2 的 descriptor（RequiredServices / RequiredStores / NativeCapabilities / RuntimeHealthProvider）
+   尚未引入；本阶段先完成“契约 Authority 归位”，descriptor 留给后续批次按需引入，不要一次做成复杂 DSL。
+```
 
 ---
 
