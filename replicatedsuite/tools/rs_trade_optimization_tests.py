@@ -89,7 +89,7 @@ def adaptive_tail(viewport: float, count: int, base: float, gap: float, soft_min
 
 def main() -> int:
     # Build/version and historical Store boundary.
-    require("v3-m1.16.0.18.326-trade-freshness-matrix-audit" in BOOT, "build tag advanced")
+    require("v3-m1.16.0.18.329-native-dependency-policy" in BOOT, "build tag advanced")
     # 18.310 regression: a literal backslash-n was appended to a Lua `--` comment,
     # so `local now = NowMs()` was commented out and the scheduler task crashed.
     require('最多一次。\\n    local now = NowMs()' not in PRICE_QUOTE, "price drain local now is not swallowed by comment")

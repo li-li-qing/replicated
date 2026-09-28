@@ -35,7 +35,7 @@ local h = dofile("tools/rs_gear_page_test_host.lua")({})
 local S = h.S
 
 S.Layout = S.Layout or {
-    GetContext = function() return { logicalWidth = 1280, logicalHeight = 768, addonScale = 1, uiScale = 1 } end,
+    GetContext = function() return { logicalWidth = 1280, logicalHeight = 768, usableWidth = 1280, usableHeight = 768, addonScale = 1, uiScale = 1 } end,
     ResolvePlacement = function(_, target, w, h, dx, dy) return dx or 100, dy or 100 end,
 }
 
@@ -235,10 +235,22 @@ Test("T1: Feature registry metadata & contract", function()
     assert(reg.route == "life.trade", "route must be life.trade")
     assert(reg.category == "life", "category must be life")
     assert(reg.authority == "v3.life.trade", "authority must be v3.life.trade")
-    assert(reg.lifecycle == "demand_scoped", "lifecycle must be demand_scoped")
+    assert(reg.lifecycle == "demand_scoped_with_background_refresh", "lifecycle must expose demand-scoped page resources plus background auto-refresh")
     assert(reg.widgetCapable == true, "widgetCapable must be true")
     assert(reg.settingsCapable == true, "settingsCapable must be true")
-    assert(#reg.apiDependencies == 6, "must declare 6 api dependencies")
+    assert(#reg.apiDependencies == 14, "must declare all 14 direct/transitive Native dependencies")
+    local required = {
+        "X2Craft:GetCraftTypeByItemType", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo",
+        "X2Auction:AskMarketPrice", "X2Auction:GetLowestPrice", "X2Auction:SearchAuctionArticle",
+        "X2Auction:GetSearchedItemCount", "X2Auction:GetSearchedItemInfo",
+    }
+    local registryDeps, implementationDeps = {}, {}
+    for _, name in ipairs(reg.apiDependencies or {}) do registryDeps[name] = true end
+    for _, name in ipairs(Trade.ApiDependencies or {}) do implementationDeps[name] = true end
+    for _, name in ipairs(required) do
+        assert(registryDeps[name] == true, "registry missing Trade-owned dependency: " .. name)
+        assert(implementationDeps[name] == true, "implementation missing Trade-owned dependency: " .. name)
+    end
 end)
 
 ------------------------------------------------------------------------
@@ -307,6 +319,8 @@ Test("T3: Route selection, SingleFlight lane & request timeout guard", function(
     Trade.State.fromZone, Trade.State.toZone = nil, nil
     TA.inFlight = nil
     TA.pendingRoute = nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:RefreshZones()
     mockStore.ratioCalls = {}
 
@@ -342,6 +356,8 @@ Test("T3: Route selection, SingleFlight lane & request timeout guard", function(
 
     TA.inFlight = nil
     TA.pendingRoute = nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     Trade:ReleaseConsumer("test_t3")
 end)
 
@@ -354,6 +370,8 @@ Test("T4: Dropped and stale callback protection", function()
     Trade.State.fromZone, Trade.State.toZone = nil, nil
     TA.inFlight = nil
     TA.pendingRoute = nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:RefreshZones()
 
     -- Simulate dropped callback when inFlight is nil
@@ -373,6 +391,8 @@ Test("T4: Dropped and stale callback protection", function()
 
     TA.inFlight = nil
     TA.pendingRoute = nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     Trade:ReleaseConsumer("test_t4")
 end)
 
@@ -385,6 +405,8 @@ Test("T5: Ratio event processing, 130% full mode & sorting", function()
     Trade.State.fromZone, Trade.State.toZone = nil, nil
     TA.inFlight = nil
     TA.pendingRoute = nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:RefreshZones()
 
     assert(Trade:SetFrom(1))
@@ -435,6 +457,8 @@ Test("T5: Ratio event processing, 130% full mode & sorting", function()
 
     TA.inFlight = nil
     TA.pendingRoute = nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     Trade:ReleaseConsumer("test_t5")
 end)
 
@@ -447,6 +471,8 @@ Test("T6: Commerce skill reading & TradePayoutV3 calculation", function()
     Trade.State.fromZone, Trade.State.toZone = nil, nil
     TA.inFlight = nil
     TA.pendingRoute = nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:RefreshZones()
     assert(Trade:SetFrom(1))
     assert(Trade:SetTo(5))
@@ -520,6 +546,8 @@ Test("T6: Commerce skill reading & TradePayoutV3 calculation", function()
 
     TA.inFlight = nil
     TA.pendingRoute = nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     Trade:ReleaseConsumer("test_t6")
 end)
 
@@ -532,18 +560,21 @@ Test("T7: Material projection, recipe resolution & bounded display", function()
     Trade.State.fromZone, Trade.State.toZone = nil, nil
     TA.inFlight = nil
     TA.pendingRoute = nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:RefreshZones()
     assert(Trade:SetFrom(1))
     assert(Trade:SetTo(5))
 
     local mockRatioInfo = {
         {
-            name = "[格威尔]标准特产",
+            name = "Solzreed Luxury Specialty",
             ratio = 120,
-            itemInfo = { name = "[格威尔]标准特产", itemType = 24651 },
+            itemInfo = { name = "Solzreed Luxury Specialty", itemType = 31857 },
         },
     }
     assert(TA:OnRatio(mockRatioInfo))
+    if S.Scheduler.tasks[TA.materialProjectionTask] then assert(S.Scheduler:RunTask(TA.materialProjectionTask), "deferred material projection failed") end
 
     local row = TA.rows[1]
     assert(row ~= nil, "Must have a row")
@@ -564,6 +595,8 @@ Test("T7: Material projection, recipe resolution & bounded display", function()
 
     TA.inFlight = nil
     TA.pendingRoute = nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     Trade:ReleaseConsumer("test_t7")
 end)
 
@@ -607,6 +640,8 @@ Test("T9: Route favorites toggle, 12-route bound & selection", function()
     Trade.State.fromZone, Trade.State.toZone = nil, nil
     TA.inFlight = nil
     TA.pendingRoute = nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:RefreshZones()
 
     assert(Trade:SetFrom(1))
@@ -647,6 +682,8 @@ Test("T9: Route favorites toggle, 12-route bound & selection", function()
 
     TA.inFlight = nil
     TA.pendingRoute = nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     Trade:ReleaseConsumer("test_t9")
 end)
 
@@ -659,18 +696,21 @@ Test("T10: HUD widget, Floating Detail & FoundationGate / Acceptance verificatio
     Trade.State.fromZone, Trade.State.toZone = nil, nil
     TA.inFlight = nil
     TA.pendingRoute = nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:RefreshZones()
     assert(Trade:SetFrom(1))
     assert(Trade:SetTo(5))
 
     local mockRatioInfo = {
         {
-            name = "[格威尔]标准特产",
+            name = "Solzreed Luxury Specialty",
             ratio = 120,
-            itemInfo = { name = "[格威尔]标准特产", itemType = 24651 },
+            itemInfo = { name = "Solzreed Luxury Specialty", itemType = 31857 },
         },
     }
     assert(TA:OnRatio(mockRatioInfo))
+    if S.Scheduler.tasks[TA.materialProjectionTask] then assert(S.Scheduler:RunTask(TA.materialProjectionTask), "deferred material projection failed") end
 
     -- Widget window state compatibility
     Trade.State.widgetWindow = { width = 470, height = 374, x = 100, y = 100 }
@@ -758,6 +798,8 @@ Test("T11: destination change clears previous route rows before new callback", f
     Trade.State.fromZone, Trade.State.toZone = nil, nil
     TA.inFlight = nil
     TA.pendingRoute = nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA.rows = {}
     TA:RefreshZones()
     assert(Trade:SetFrom(1))
@@ -772,6 +814,8 @@ Test("T11: destination change clears previous route rows before new callback", f
 
     TA.inFlight = nil
     TA.pendingRoute = nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     Trade:ReleaseConsumer("test_t11")
 end)
 
@@ -837,7 +881,7 @@ Test("T14: favorite button says 移除收藏 when current route is favorited", f
         pendingQuoteCount = 0, ratioMode = "current", commerceMode = "off",
         quoteBatch = { active = false, completed = 0, total = 0, failed = 0 },
         favoriteItems = {}, currentRouteFavorite = true, sortMode = "ratio",
-    })
+    }, {}, Trade)
     assert(instance.favoriteButton ~= nil, "favorite button missing")
     assert(instance.favoriteButton.text == "移除收藏", "favorited route must show explicit 移除收藏 label")
 end)
@@ -852,6 +896,8 @@ Test("T15: native specialty cooldown is recorded but does not extend response SL
     local TA = Trade.Authority
     Trade.State.fromZone, Trade.State.toZone = nil, nil
     TA.inFlight, TA.pendingRoute = nil, nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:CancelRequestTimeout()
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
     TA:RefreshZones()
@@ -873,6 +919,8 @@ Test("T15: native specialty cooldown is recorded but does not extend response SL
 
     X2Store.GetSpecialtyRatioBetween = oldGetRatio
     TA.inFlight, TA.pendingRoute = nil, nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:CancelRequestTimeout()
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
     Trade:ReleaseConsumer("test_t15")
@@ -886,6 +934,8 @@ Test("T16: refresh during native cooldown defers request until allowed", functio
     local TA = Trade.Authority
     Trade.State.fromZone, Trade.State.toZone = nil, nil
     TA.inFlight, TA.pendingRoute = nil, nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:CancelRequestTimeout()
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
     TA.nextNativeRequestAt, TA.lastNativeCooldownMs = 0, 0
@@ -917,11 +967,13 @@ Test("T16: refresh during native cooldown defers request until allowed", functio
     h.ms = (tonumber(TA.nextNativeRequestAt) or h.ms) + 1
     assert(S.Scheduler:RunTask(TA.requestDeferredTask), "deferred route task must run")
     assert(#mockStore.ratioCalls == 2, "deferred refresh must issue exactly one native request when cooldown expires")
-    assert(TA.status == "loading", "actual deferred native request must enter loading")
-    assert(#TA.rows == 0, "rows should clear only when deferred native request is actually sent")
+    assert(TA.status == "refreshing", "same-route SWR refresh must retain rows and enter refreshing; got=" .. tostring(TA.status))
+    assert(#TA.rows == 1, "same-route SWR refresh must retain the last trusted row while Native refresh is in flight")
 
     X2Store.GetSpecialtyRatioBetween = oldGetRatio
     TA.inFlight, TA.pendingRoute = nil, nil
+    TA.timedOutFlight = nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:CancelRequestTimeout()
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
     Trade:ReleaseConsumer("test_t16")
@@ -937,6 +989,7 @@ Test("T17: missing specialty callback retries once after callback quarantine", f
     local TA = Trade.Authority
     Trade.State.fromZone, Trade.State.toZone = nil, nil
     TA.inFlight, TA.pendingRoute, TA.timedOutFlight = nil, nil, nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:CancelRequestTimeout()
     if TA.CancelTimeoutDrain then TA:CancelTimeoutDrain() end
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
@@ -977,6 +1030,7 @@ Test("T17: missing specialty callback retries once after callback quarantine", f
 
     X2Store.GetSpecialtyRatioBetween = oldGetRatio
     TA.inFlight, TA.pendingRoute, TA.timedOutFlight = nil, nil, nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:CancelRequestTimeout()
     if TA.CancelTimeoutDrain then TA:CancelTimeoutDrain() end
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
@@ -1018,6 +1072,7 @@ Test("T19: native cooldown stays independent from bounded response wait", functi
     local TA = Trade.Authority
     Trade.State.fromZone, Trade.State.toZone = nil, nil
     TA.inFlight, TA.pendingRoute, TA.timedOutFlight = nil, nil, nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:CancelRequestTimeout()
     if TA.CancelTimeoutDrain then TA:CancelTimeoutDrain() end
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
@@ -1055,6 +1110,7 @@ Test("T19: native cooldown stays independent from bounded response wait", functi
 
     X2Store.GetSpecialtyRatioBetween = oldGetRatio
     TA.inFlight, TA.pendingRoute, TA.timedOutFlight = nil, nil, nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:CancelRequestTimeout()
     if TA.CancelTimeoutDrain then TA:CancelTimeoutDrain() end
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
@@ -1072,6 +1128,7 @@ Test("T20: safe late callback cancels quarantine and queued retry", function()
     local TA = Trade.Authority
     Trade.State.fromZone, Trade.State.toZone = nil, nil
     TA.inFlight, TA.pendingRoute, TA.timedOutFlight = nil, nil, nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:CancelRequestTimeout()
     if TA.CancelTimeoutDrain then TA:CancelTimeoutDrain() end
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
@@ -1108,6 +1165,7 @@ Test("T20: safe late callback cancels quarantine and queued retry", function()
 
     X2Store.GetSpecialtyRatioBetween = oldGetRatio
     TA.inFlight, TA.pendingRoute, TA.timedOutFlight = nil, nil, nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:CancelRequestTimeout()
     if TA.CancelTimeoutDrain then TA:CancelTimeoutDrain() end
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
@@ -1127,7 +1185,8 @@ Test("T21: first consumer auto-queries persisted complete route", function()
     assert((tonumber(Trade.consumerCount) or 0) == 0, "test requires no pre-existing consumers")
     Trade.State.fromZone, Trade.State.toZone = 5, 8
     TA.inFlight, TA.pendingRoute, TA.timedOutFlight = nil, nil, nil
-    TA.rows, TA.sellableZones = {}, {}
+    TA.rawRows, TA.rows, TA.sellableZones = {}, {}, {}
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA.nextNativeRequestAt, TA.lastNativeCooldownMs = 0, 0
     TA:CancelRequestTimeout()
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
@@ -1147,6 +1206,7 @@ Test("T21: first consumer auto-queries persisted complete route", function()
 
     X2Store.GetSpecialtyRatioBetween = oldGetRatio
     TA.inFlight, TA.pendingRoute, TA.timedOutFlight = nil, nil, nil
+    TA.routeCache, TA.routeCacheOrder = {}, {}
     TA:CancelRequestTimeout()
     if TA.CancelDeferredRequest then TA:CancelDeferredRequest() end
     Trade:ReleaseConsumer("test_t21")

@@ -286,7 +286,18 @@ Test('unknown old fingerprint fails closed and protects original disk bytes',fun
     disk[key]=Envelope(fixture);local original=Copy(disk[key])
     local ok,_,err=P:LoadStore(store.id,{discardDirty=true,discardUnverified=true,revalidateTerminal=true})
     assert(not ok and store.writeFenced==true,tostring(err))
-    assert(not F:ImportBuiltinPack('all',false),'write fence bypassed')
+    -- 中文维护注释（2026-09-28，Phase 0 测试基线校正，对应 .18.243 收口）：
+    -- 旧断言 `assert(not F:ImportBuiltinPack('all',false))` 已随架构正式失效。旧 `v3.buff_display` 被
+    -- 永久降级为 LegacyMigrationSourceOnly：manifest 已建立后，启动与 tracking 写入都不再经过该 Store
+    -- （Authority 见 rs_buff_display_store.lua:2857 的 .18.243 Runtime Authority 注释与 README §3.7）。
+    -- 因此“旧大 Store 被写保护 ⇒ 追踪导入必须失败”不再是当前契约，而旧 key 损坏只作为证据保留。
+    -- 但“写保护不得被绕过”仍是红线，所以改为在真正的写入 Authority —— tracking manifest 提交点 —— 上验证。
+    local manifestStore=P:GetStore(F.TrackingManifestStoreId);assert(manifestStore,'tracking manifest store unavailable')
+    local manifestFenceBefore={manifestStore.writeFenced,manifestStore.writeFenceReason}
+    manifestStore.writeFenced,manifestStore.writeFenceReason=true,'phase0_test_fence'
+    local fencedImport,_,fencedErr=F:ImportBuiltinPack('all',false)
+    manifestStore.writeFenced,manifestStore.writeFenceReason=manifestFenceBefore[1],manifestFenceBefore[2]
+    assert(not fencedImport,'write fence bypassed on tracking manifest authority: '..tostring(fencedErr))
     assert(Equal(disk[key],original),'rejected old payload overwritten')
     -- 恢复测试隔离环境，使用合法旧 envelope 重新验证，而不是直接关闭 Core 写保护。
     disk[key]=Envelope(dofile('tools/rs_status_schema5_fixtures.lua')[1])
@@ -344,7 +355,12 @@ Test('page builds four tabs and browses inactive tracked entries',function()
     -- 当前默认推荐并集包含隐藏/特殊状态；旧all包仍单独保持393职业效果兼容。
     assert(#uiHost.widgets.v3_buff_library_table.items==#S.Data.StatusTrackingCatalogV3.Packs.recommended.entries)
     assert(uiHost.widgets.v3_buff_library_pack.spec.set('all'))
-    assert(#uiHost.widgets.v3_buff_library_table.items==393)
+    -- 中文维护注释（2026-09-28，Phase 0 测试基线校正）：393 是 .18.2xx 之前旧目录 all 包的效果数，
+    -- 已失效。当前 Authority（data/rs_status_tracking_catalog.lua，version 2）all 包为 425 effects，
+    -- 与本文件上方的 result.total==850（425 通道 × player/target 两 scope）一致。这里同时保留
+    -- “表格行数 == Authority 包条目数”的机械契约与一个显式 pin，防止目录被无意改动。
+    assert(#uiHost.widgets.v3_buff_library_table.items==#S.Data.StatusTrackingCatalogV3.Packs.all.entries)
+    assert(#S.Data.StatusTrackingCatalogV3.Packs.all.entries==425,'catalog all-pack effect count changed')
     assert(uiHost.widgets.v3_buff_library_pack.spec.set('tree:joy'))
     assert(uiHost.widgets.v3_buff_library_import.enabled==false)
 end)
@@ -354,7 +370,12 @@ Test('text import requires preview then confirmation without early write',functi
     assert(uiHost.widgets.v3_buff_display_transfer_import.onClick())
     assert(writes==before and not F:IsTrackedId(21),'preview wrote to Store')
     assert(uiHost.widgets.v3_buff_display_transfer_import.onClick())
-    assert(writes==before+1 and F:IsTrackedId(21),'confirmation did not commit once')
+    -- 中文维护注释（2026-09-28，Phase 0 测试基线校正）：旧断言 `writes==before+1` 属于 .18.243 拆分前的
+    -- 单 Store 写入模型。当前 Tracking 一次提交 = inactive player/target/meta 三次 durable 写 + manifest
+    -- 一次提交，共 4 次（与本文件顶部 'builtin import uses four-write generation transaction' 的契约一致）。
+    -- 这里断言“恰好一个 tracking generation”，而不是旧的物理写次数。
+    local delta=writes-before
+    assert(delta==4 and F:IsTrackedId(21),'confirmation did not commit exactly one tracking generation: delta='..tostring(delta)..' tracked='..tostring(F:IsTrackedId(21)))
 end)
 Test('unavailable multiline input disables all text actions',function()
     uiHost.nativeEnabled=false;local page=assert(uiHost:Build());uiHost.nativeEnabled=true

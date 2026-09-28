@@ -35,8 +35,17 @@ S.UI = S.UI or {}
 S.UI.SetAnchor = function() return true end
 S.UI.CreateWindowShell = function(self, spec)
     local mockWin = {}
-    return {
+    local minimizeButton = { text = "—", root = {} }
+    function minimizeButton:SetText(value) self.text = tostring(value or "") return true end
+    local shell = {
         window = mockWin,
+        minimized = false,
+        locked = false,
+        overallOpacity = 1,
+        backgroundOpacity = 1,
+        textOpacity = 1,
+        fontScale = 1,
+        minimizeButton = minimizeButton,
         windowController = {
             IsInteracting = function() return false end,
         },
@@ -54,25 +63,27 @@ S.UI.CreateWindowShell = function(self, spec)
         SetMinimizeHandler = function() return true end,
         SetLockHandler = function() return true end,
         SetOpacity = function() return true end,
-        SetOverallOpacity = function() return true end,
-        SetBackgroundOpacity = function() return true end,
-        SetTextOpacity = function() return true end,
-        SetFontScale = function() return true end,
-        SetMinimized = function() return true end,
-        SetLocked = function() return true end,
-        IsLocked = function() return false end,
+        SetOverallOpacity = function(self, value) self.overallOpacity = value return true end,
+        SetBackgroundOpacity = function(self, value) self.backgroundOpacity = value return true end,
+        SetTextOpacity = function(self, value) self.textOpacity = value return true end,
+        SetFontScale = function(self, value) self.fontScale = value return true end,
+        SetMinimized = function(self, value) self.minimized = value == true; self.minimizeButton:SetText(self.minimized and "+" or "—"); return true end,
+        SetLocked = function(self, value) self.locked = value == true return true end,
+        IsLocked = function(self) return self.locked == true end,
         SetExtent = function() return true end,
+        ApplyPlacementRect = function(self, x, y, w, h, info) self.x,self.y,self.width,self.height=x,y,w,h; return true end,
         Layout = function() return true end,
         Show = function() return true end,
         Hide = function() return true end,
         Close = function() return true end,
     }
+    return shell
 end
 
 -- Layout context mock
 S.Layout = S.Layout or {}
 S.Layout.GetContext = function()
-    return { logicalWidth = 1920, logicalHeight = 1080, safeLeft = 0, safeTop = 0, safeRight = 0, safeBottom = 0 }
+    return { logicalWidth = 1920, logicalHeight = 1080, usableWidth = 1920, usableHeight = 1080, addonScale = 1, uiScale = 1, safeLeft = 0, safeTop = 0, safeRight = 0, safeBottom = 0 }
 end
 S.Layout.GetLogicalRect = function(node)
     if type(node) == "table" and node.rect then
@@ -83,7 +94,7 @@ end
 S.Layout.ResolvePlacement = function(self, state, w, h, dx, dy, options)
     local x = tonumber(state and state.x) or dx or 0
     local y = tonumber(state and state.y) or dy or 0
-    return x, y
+    return x, y, w, h, { x = x, y = y, width = w, height = h, screenW = 1920, screenH = 1080 }
 end
 
 -- Native UI mock
@@ -123,6 +134,9 @@ mockAuction = {
     GetSearchedItemInfo = function(self, index)
         return mockAuction.searchedItems[index]
     end,
+    AskMarketPrice = function(self, itemType, grade, askMarketPriceUi)
+        return true
+    end,
     GetLowestPrice = function(self, itemType, grade)
         return 125000 -- 12g 50s
     end,
@@ -134,6 +148,7 @@ S.Api.allowedCapabilities = S.Api.allowedCapabilities or {}
 S.Api.allowedCapabilities["X2Auction:SearchAuctionArticle"] = true
 S.Api.allowedCapabilities["X2Auction:GetSearchedItemCount"] = true
 S.Api.allowedCapabilities["X2Auction:GetSearchedItemInfo"] = true
+S.Api.allowedCapabilities["X2Auction:AskMarketPrice"] = true
 S.Api.allowedCapabilities["X2Auction:GetLowestPrice"] = true
 S.Api.allowedCapabilities["ADDON:GetContent"] = true
 S.Api.allowedCapabilities["ADDON:GetContentMainScriptPosVis"] = true
@@ -177,7 +192,16 @@ S.Services.DailyAuctionMaterialsV3 = {
 }
 
 -- Business bridge (defines tools_auction and tools_market_analysis)
-dofile("features/rs_business_bridge.lua")
+-- 中文维护注释（2026-09-28，Phase 1 Batch A）：bridge 现在依赖 toc.g 中先加载的通用装配骨架，
+-- 离线宿主必须复现同一加载顺序，否则 FeatureRuntime/Store 注册路径与真实运行时不一致。
+dofile("features/shared/rs_feature_slice_factory.lua")
+dofile("features/shared/rs_shared_bounds.lua")
+dofile("features/tools/auction/rs_auction_read_model.lua")
+-- 中文维护注释（2026-09-28，Phase 1 Batch E）：bridge 已退役；按 toc.g 顺序加载本套件需要的 Feature。
+dofile("features/tools/market_analysis/rs_market_analysis_feature.lua")
+dofile("features/tools/auction/rs_auction_feature.lua")
+-- 中文维护注释（2026-09-28，Phase 1 Batch A/D）：tools_market_analysis 与 tools_auction 已从 bridge 拆出，
+-- 本套件同时覆盖两者，因此必须按 toc.g 顺序把它们也加载进来。
 
 -- UI Framework and WidgetHost for Sidecar
 S.RSUI = S.RSUI or {}
@@ -238,6 +262,11 @@ S.UIV3.WidgetHost = {
     instances = {},
     Register = function(self, id, spec)
         self.specs[id] = spec
+        return true
+    end,
+    BindFeatureLifecycle = function(self, id, options)
+        self.lifecycle = self.lifecycle or {}
+        self.lifecycle[id] = options
         return true
     end,
     GetSpec = function(self, id) return self.specs[id] end,
@@ -492,7 +521,7 @@ Test("T3: AuctionQueryV3: 9-parameter call, SingleFlight & timeout guard", funct
 
     local call = mockAuction.searchCalls[1]
     assert(call.page == 1, "page must be 1")
-    assert(call.minLevel == 0 and call.maxLevel == 55, "level range must be 0-55")
+    assert(call.minLevel == 0 and call.maxLevel == 0, "level range must be 0-0 (no level cap)")
     assert(call.category == 1 and call.subCategory == 0, "category must be 1, 0")
     assert(call.exact == true, "exactMatch must be true")
     assert(call.keyword == "原木", "keyword mismatch")
@@ -714,6 +743,11 @@ Test("T7: Explicit lowest-price quote via PriceQuoteQueueV3", function()
     local taskKey = QuoteQueue.taskId or QuoteQueue.taskName
     assert(S.Scheduler.tasks[taskKey] ~= nil, "Quote task must be scheduled")
     local quoteTask = S.Scheduler.tasks[taskKey]
+    -- Current RU quote protocol is paced: dequeue -> AskMarketPrice -> GetLowestPrice readback.
+    quoteTask.callback()
+    h.ms = h.ms + QuoteQueue.intervalMs
+    quoteTask.callback()
+    h.ms = h.ms + QuoteQueue.intervalMs
     quoteTask.callback()
 
     -- Completed quote should have recorded the mock lowest price (125000 = 12g 50s)

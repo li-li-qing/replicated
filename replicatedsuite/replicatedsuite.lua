@@ -94,7 +94,7 @@ S.ReloadRestorePending = false
 S.Author = "Replicated"
 S.Name = "Replicated Suite"
 S.Version = "1.2"
-S.BuildTag = "v3-m1.16.0.18.326-trade-freshness-matrix-audit" -- 中文维护（2026-09-27，trade-freshness-matrix-v3）：全面审计贸易售价品类倍率，修正“特供”30%而非15%，补齐无添加、Auroria Coastal/Rich 等遗漏类别，并把倍率覆盖审计接入跑商诊断；不改变 X2Store 货率 Authority、熟练度 Authority 或用户 Store schema。
+S.BuildTag = "v3-m1.16.0.18.331-phase1-feature-slice-complete" -- 中文维护（2026-09-28，phase1-slices-5）：Phase 1 闭合：rs_business_bridge.lua（5223 行 / 15 个 Feature / 188 chunk slots）已全部拆成 15 个独立 Feature 源码单元并退役删除；新增 features/shared/rs_feature_slice_factory.lua（唯一装配骨架）与 rs_shared_bounds.lua（跨 Feature 共享有界常量）与拍卖共享读模型；主 chunk local 预算从 188 slots 降到 104 slots；拆出文件共 18 个（含读模型/边界模块）；每个 Feature 在 toc.g 只登记一次。门禁：Install 278/278、默认 Full Runner 端到端 PASS（0 FAIL）、--feature-split 59/59、Lua 5.1 compile gate 278、Native audit 0/0/0、Architecture 48（bridge 不再在列）。未改 Store ID/Schema、Feature ID、route、Commands、Projection shape、用户配置语义。
 -- 维护（.18.248）：补齐缺失运行时文件并恢复被 Git 冲突破坏的源码；保留 .247 个人工作台与所有 Store 协议，不清配置。
 S.Generation = (tonumber(S.Generation) or 0) + 1
 S.Config = type(ReplicatedSuiteConfig) == "table" and ReplicatedSuiteConfig or {}

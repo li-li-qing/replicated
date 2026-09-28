@@ -54,6 +54,7 @@ dofile("features/rs_feature_registry.lua")
 S.UIV3 = S.UIV3 or {}
 S.UIV3.WidgetHost = {
     Register = function(self, id, spec) return true end,
+    BindFeatureLifecycle = function(self, id, options) return true end,
     IsVisible = function(self, id) return false end,
     SetVisible = function(self, id, visible, opts) return true end,
     NotifyWindowClosed = function() return true end,
@@ -114,7 +115,13 @@ S.FeatureRuntime.SetPreferredEnabled = function(_, id, v) return true end
 
 -- Load craft services and features
 dofile("services/rs_craft_surface_v3.lua")
-dofile("features/rs_business_bridge.lua")
+-- 中文维护注释（2026-09-28，Phase 1 Batch A）：复现 toc.g 顺序，先加载通用装配骨架。
+dofile("features/shared/rs_feature_slice_factory.lua")
+dofile("features/shared/rs_shared_bounds.lua")
+dofile("features/tools/auction/rs_auction_read_model.lua")
+-- 中文维护注释（2026-09-28，Phase 1 Batch E）：bridge 已退役；按 toc.g 顺序加载本套件需要的 Feature。
+dofile("features/tools/craft/rs_craft_feature.lua")
+-- 中文维护注释（2026-09-28，Phase 1 Batch D）：tools_craft 已从 bridge 拆出；按 toc.g 顺序加载它。
 dofile("features/life/craft/rs_craft_assistant_surface_extension_v3.lua")
 dofile("presentation/v3/widgets/rs_v3_craft_sidecar.lua")
 

@@ -434,7 +434,9 @@ Test('calibration drag consumers freeze viewport units and cancel native leases 
     assert(hud:find('self.panel:StopMovingOrSizing()',1,true) and hud:find('self.preview.root:StopMovingOrSizing()',1,true),'HUD HideOverlay does not cancel native moves')
 end)
 Test('external native sidecar fallbacks prefer calibrated viewport logical rect',function()
-    for _,path in ipairs({'features/rs_business_bridge.lua','services/rs_auction_surface_v3.lua','services/rs_craft_surface_v3.lua'})do
+    -- 中文维护注释（2026-09-28，Phase 1 Batch E）：rs_business_bridge.lua 已退役；
+    -- 外部内容几何的校准读取现在由 features/tools/bag/rs_bag_feature.lua 拥有。
+    for _,path in ipairs({'features/tools/bag/rs_bag_feature.lua','services/rs_auction_surface_v3.lua','services/rs_craft_surface_v3.lua'})do
         local f=assert(io.open(path,'rb'));local v=f:read('*a');f:close()
         assert(v:find('S.Layout:ResolveViewportLogicalRect(node)',1,true),path..' still uses uncalibrated external content geometry')
     end

@@ -117,7 +117,7 @@ def main() -> None:
 
     require(
         "replicatedsuite.lua",
-        'v3-m1.16.0.18.326-trade-freshness-matrix-audit',
+        'v3-m1.16.0.18.329-native-dependency-policy',
     )
 
     print("PASS: feature consumer lifecycle regression contract")

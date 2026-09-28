@@ -33,6 +33,15 @@ UNFINISHED_CLOSURE_TESTS = [
     "tools/rs_navigation_status_acceptance_tests.lua",
 ]
 
+# Phase 1 源码故障域拆分的契约回归（2026-09-28，Batch A）。
+# 每个被拆出的 Feature 都必须在这里证明：Feature ID / Store ID / UpdateTopic / Demand owner /
+# Commands / Projection shape / ApiDependencies 与拆分前一致，而且只注册一次。
+# 中文维护注释：该清单属于默认全量门禁，不并入 UNFINISHED_CLOSURE_TESTS，
+# 避免把“拆分契约”与“未完成能力收口”两种语义混在同一个计数里。
+FEATURE_SPLIT_TESTS = [
+    "tools/rs_feature_slice_split_tests.lua",
+]
+
 
 def require_test_files(paths: list[str]) -> bool:
     missing = [path for path in paths if not (ROOT / path).is_file()]
@@ -129,7 +138,22 @@ def main() -> int:
     os.chdir(ROOT)
     prelude = 'unpack=unpack or table.unpack; loadstring=loadstring or load; table.getn=table.getn or function(t) return #t end;\n'
     isolated_after: list[str] = []
-    if "--syntax" in sys.argv:
+    if "--native-dependency" in sys.argv:
+        # Phase 0 FND-016: implementation/Registry Native ownership parity + shared-service inventory.
+        # A return code of 2 means the audit ran but a verified NativeContract namespace is still missing.
+        try:
+            from rs_native_dependency_audit import main as native_dependency_main
+        except ImportError:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("rs_native_dependency_audit", ROOT / "tools/rs_native_dependency_audit.py")
+            if spec is None or spec.loader is None:
+                print("BLOCKED: cannot load native dependency audit", file=sys.stderr)
+                return 2
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            native_dependency_main = module.main
+        return int(native_dependency_main())
+    elif "--syntax" in sys.argv:
         paths = sorted(ROOT.rglob("*.lua"))
         source = prelude
         for path in paths:
@@ -261,6 +285,18 @@ def main() -> int:
     elif "--pipeline" in sys.argv:
         # 维护：独立复查三个 Store 的真实 API/能力门/存档链路，Native 仅用合成内存盘。
         source = prelude + 'dofile("tools/rs_persistence_pipeline_audit.lua")'
+    elif "--feature-split" in sys.argv:
+        # Phase 1 Batch A：只跑“源码故障域拆分契约”。每个 Feature 独立进程，
+        # 避免上一个套件的 Store/FeatureRuntime 替身污染下一个 Feature 的契约断言。
+        if not require_test_files(FEATURE_SPLIT_TESTS): return 2
+        if not require_transitive_test_dependencies(FEATURE_SPLIT_TESTS): return 2
+        try:
+            run_lua_files_isolated(FEATURE_SPLIT_TESTS, prelude)
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+            return 1
+        print(f"FEATURE_SPLIT PASS: {len(FEATURE_SPLIT_TESTS)} suite(s)")
+        return 0
     else:
         # 维护（full-runner-proof-1）：默认入口先确认所有声明为“全量”所依赖的测试文件真实存在。
         # 缺历史夹具时明确 BLOCKED 并非零退出；禁止跳过缺失文件后仍宣称“全量全绿”。B1~B11 与钓鱼 Hotkey v3 专项同时纳入默认集合。
@@ -274,11 +310,11 @@ def main() -> int:
             "tools/rs_daily_income_source_tests.lua", "tools/rs_home_overview_tests.lua", "tools/rs_overview_v2_tests.lua", "tools/rs_quest_journal_detail_tests.lua",
             "tools/rs_ledger_projection_v2_tests.lua",
         ]
-        required = legacy + UNFINISHED_CLOSURE_TESTS
+        required = legacy + UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS
         if not require_test_files(required): return 2
         if not require_transitive_test_dependencies(required): return 2
         source = prelude + lua_dofiles(legacy)
-        isolated_after = UNFINISHED_CLOSURE_TESTS
+        isolated_after = UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS
     try:
         run_lua(source)
         if isolated_after:

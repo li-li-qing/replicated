@@ -161,7 +161,13 @@ dofile("services/rs_aura_observation_v3.lua")
 dofile("services/rs_screen_projection_v3.lua")
 
 -- Load business bridge and team visuals extension
-dofile("features/rs_business_bridge.lua")
+-- 中文维护注释（2026-09-28，Phase 1 Batch A）：复现 toc.g 顺序，先加载通用装配骨架。
+dofile("features/shared/rs_feature_slice_factory.lua")
+dofile("features/shared/rs_shared_bounds.lua")
+dofile("features/tools/auction/rs_auction_read_model.lua")
+-- 中文维护注释（2026-09-28，Phase 1 Batch E）：bridge 已退役；按 toc.g 顺序加载本套件需要的 Feature。
+dofile("features/combat/team_tools/rs_team_tools_feature.lua")
+-- 中文维护注释（2026-09-28，Phase 1 Batch D）：combat_team_tools 已从 bridge 拆出；按 toc.g 顺序加载它。
 dofile("features/combat/team_tools/rs_team_tools_visuals.lua")
 
 -- Presentation widgets and pages

@@ -27,11 +27,16 @@ Test('disabled bonds shows off and does not start native collection',function()
 end)
 Test('same content builder supports unique widget and home control identities',function()
  local S,p,n,c=Boot();assert(n.v3_home_trade_from and n.v3_home_trade_to)
- -- Named home controls remain unique; advanced searches are intentionally only
- -- on full trade views. Ordinary click retains the default bounded batch.
- assert(n.v3_home_trade_quote and not n.v3_home_trade_cancel_quote)
- assert(not n.v3_home_trade_full_quote)
- assert(n.v3_home_trade_quote.onClick());assert(c.quotes==1 and c.lastMode==nil)
+ -- 中文维护注释（2026-09-28，Phase 0 测试基线校正）：本用例原先断言首页卡存在 `v3_home_trade_quote`
+ -- 且不存在 cancel/full 变体，然后点击它并期望一次批量询价。当前 Authority
+ -- （presentation/v3/widgets/rs_v3_life_economy_widgets.lua:105 “构建和刷新绝不发出材料询价”、
+ -- :443 只要求“单行询价” QuoteRowMaterials）已不再在首页卡提供批量询价按钮：批量/高级询价只属于
+ -- 完整跑商页（rs_v3_business_pages.lua:1002 / rs_v3_life_m16_pages.lua:198）。核对 .298 归档里的同名
+ -- 模块后发现当时同样没有 `_quote` 控件（QuotePendingMaterials 引用为 0），因此这是长期存在的过期断言，
+ -- 不是本轮回归。改为证明当前契约：首页卡只暴露有界默认动作，绝不伪造批量/高级询价入口。
+ assert(not n.v3_home_trade_quote and not n.v3_home_trade_cancel_quote and not n.v3_home_trade_full_quote)
+ assert(n.v3_home_trade_table,'home trade card lost its data table')
+ assert(c.quotes==0,'building the home card issued a batch quote')
 end)
 Test('small viewport exposes each configured card through row scrolling',function()
  local S,p,n=Boot();Show(S,p,{'daily','weekly','activities','bonds','trade'});local grid=p.grid

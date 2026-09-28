@@ -133,4 +133,36 @@ assert(next(C.metadata)==nil and next(C.mateTypeById)==nil and next(C.nativeEvid
 assert(C:AcquireConsumer("empty",{skillIds={},mateIds={}}))
 assert(C.trackedCount==0 and C.taskActive==false and C.probeTaskActive==false,"empty selection must stay zero-cost")
 assert(C:ReleaseConsumer("empty"))
+
+-- 中文维护注释（2026-09-28，native-dependency-ownership-4，FND-016 收口）：
+-- 本段新增 X2Skill lazy ownership 覆盖。上面所有断言运行时 S.ApiImports 不存在，服务按 fail-soft
+-- 记录 imports_unavailable 并继续工作（这正是“诊断环境不该假造导入能力”的期望行为）。
+-- 这里显式提供 Imports 替身，证明：
+--   (1) 第一个 consumer 进入时服务自己取得 X2Skill owner；
+--   (2) 幂等，不重复 AcquireApi；
+--   (3) 导入失败保持 fail-soft，消费需求仍然建立。
+local acquireCalls={}
+S.ApiImports={}
+function S.ApiImports:AcquireApi(owner,name)
+    acquireCalls[#acquireCalls+1]={owner=owner,name=name}
+    if self.failNext then return false,"synthetic_import_failure" end
+    return true
+end
+C.nativeSkillLease,C.nativeSkillLeaseState,C.nativeSkillLeaseError=false,"idle",nil
+assert(C:AcquireConsumer("lease",{skillIds={},mateIds={}}),"consumer acquire must not depend on native import")
+assert(C.nativeSkillLease==true and C.nativeSkillLeaseState=="acquired","lazy X2Skill owner not acquired")
+assert(#acquireCalls==1 and acquireCalls[1].owner=="service.cooldown_observation_v3" and acquireCalls[1].name=="X2Skill",
+    "X2Skill must be acquired once by the service itself: "..tostring(acquireCalls[1] and acquireCalls[1].name))
+assert(C:GetHealth().nativeSkillLease==true and C:GetHealth().nativeSkillLeaseState=="acquired","lease not surfaced in health")
+assert(C:AcquireConsumer("lease2",{skillIds={},mateIds={}}))
+assert(#acquireCalls==1,"acquired lease must be idempotent")
+assert(C:ReleaseConsumer("lease2"))
+assert(C:ReleaseConsumer("lease"))
+
+C.nativeSkillLease,C.nativeSkillLeaseState,C.nativeSkillLeaseError=false,"idle",nil
+S.ApiImports.failNext=true
+assert(C:AcquireConsumer("leasefail",{skillIds={},mateIds={}}),"native import failure must stay fail-soft")
+assert(C.nativeSkillLease==false and C.nativeSkillLeaseState=="failed","failed import must stay recorded")
+assert(tostring(C:GetHealth().nativeSkillLeaseError):find("synthetic_import_failure",1,true)~=nil,"failure reason lost")
+assert(C:ReleaseConsumer("leasefail"))
 print("COOLDOWN_OBSERVATION_V4 PASS")

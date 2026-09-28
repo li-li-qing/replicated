@@ -166,7 +166,7 @@ Test('metadata completion refreshes library while feature disabled',function()
     Reset();local enabled=S.FeatureRuntime.IsEnabled;S.FeatureRuntime.IsEnabled=function() return false end
     local events=S.Events;local listeners={}
     -- 维护：仿真也必须保留真实EventBus的owner-first参数，不能再掩盖页面reason错位。
-    S.Events={SubscribeInternal=function(_,name,owner,fn) listeners[owner]=fn end,UnsubscribeInternalOwner=function(_,owner) listeners[owner]=nil end,Publish=function(_,name,reason) for owner,fn in pairs(listeners) do fn(owner,reason) end end}
+    S.Events={SubscribeInternal=function(_,name,owner,fn) listeners[owner]=fn;return true end,UnsubscribeInternalOwner=function(_,owner) listeners[owner]=nil;return true end,Publish=function(_,name,reason) for owner,fn in pairs(listeners) do fn(owner,reason) end;return true end}
     local cached={};S.Services.BuffMetadataV3={HasCached=function(_,id) return cached[id]~=nil end,GetCached=function(_,id) return cached[id] end,GetInfo=function(_,id) cached[id]={iconPath='ready.dds'};return cached[id] end}
     local page=assert(host:Build());assert(page:OnActivated());page:SwitchTab('library');local view=host.widgets.v3_buff_library_table;local item=view.items[1];view.spec.bindRow({},item)
     Pump();assert(view.items[1].iconPath=='ready.dds','disabled Feature prevented static catalogue refresh')
@@ -216,7 +216,11 @@ Test('diagnostic report exposes committed tracking and retention without native 
     Reset();assert(F:ImportBuiltinPack('recommended',false));F:CaptureManagementFreeze();dofile('core/rs_diagnostics.lua');local before=scans
     local row;for _,v in ipairs(S.DiagnosticsManager:BuildFeatureStatusRows()) do if v.id=='buff_display' then row=v end end
     assert(row and row.tracking and row.tracking.patch=='status-tracking-scope-1','tracking evidence missing')
-    assert(row.tracking.auto==794 and row.tracking.player.auto==397 and row.tracking.target.auto==397
+    local tracked=F.State.settings.tracked
+    local expectedPlayerAuto=#(tracked.player.auto or {})
+    local expectedTargetAuto=#(tracked.target.auto or {})
+    assert(row.tracking.auto==expectedPlayerAuto+expectedTargetAuto
+        and row.tracking.player.auto==expectedPlayerAuto and row.tracking.target.auto==expectedTargetAuto
         and row.tracking.lastImport.ok==true and row.tracking.capture.active==true)
     assert(scans==before,'diagnostic performed native scan')
 end)

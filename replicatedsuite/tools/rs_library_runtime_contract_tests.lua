@@ -75,7 +75,7 @@ Test('real API and EventBus import recommended package through one manifest tran
     local S,F,p,h,c=Boot();local before=c.writes
     local ok,err=h.widgets.v3_buff_library_import.onClick();assert(ok,err)
     assert(c.writes==before+4 and p.managementView=='tracked' and p.activeTab=='track')
-    local rows=h.widgets.v3_buff_display_tracking_table.items;assert(#rows==397)
+    local rows=h.widgets.v3_buff_display_tracking_table.items;assert(#rows==#S.Data.StatusTrackingCatalogV3.Packs.recommended.entries)
     for _,row in ipairs(rows)do assert(row.tracked and F:IsTrackedId(row.id),'uncommitted row '..row.id)end
     local expected=Copy(F.State.settings.tracked)
     local _,fresh=Boot({disk=c.disk});assert(Same(fresh.State.settings.tracked,expected),'durable list changed on reload')
@@ -127,7 +127,7 @@ Test('actual Button factory dispatch finds callback installed after construction
     local S,F,p,h,c=Boot({productionButtons=true});local button=h.widgets.v3_buff_library_import
     assert(type(button.root.events.OnClick)=='function')
     local before=c.writes;assert(button.root.events.OnClick(button.root,'LeftButton'))
-    assert(c.writes==before+4 and #h.widgets.v3_buff_display_tracking_table.items==397 and F.lastLibraryImport.ok)
+    assert(c.writes==before+4 and #h.widgets.v3_buff_display_tracking_table.items==#S.Data.StatusTrackingCatalogV3.Packs.recommended.entries and F.lastLibraryImport.ok)
     p:SwitchTab('library');local prior=c.writes;button:SetEnabled(false)
     assert(not button.root.events.OnClick(button.root,'LeftButton') and c.writes==prior,'disabled button still wrote')
 end)
@@ -136,7 +136,9 @@ Test('duplicates preserve custom tracked entries without changing their classifi
     assert(F:ImportBuiltinPack('recommended',false));local first=Copy(F.State.settings.tracked)
     assert(F:ImportBuiltinPack('recommended',false))
     assert(Same(F.State.settings.tracked,first) and F:IsTrackedId(900000,'debuff'))
-    assert(F.lastLibraryImport.result.existing==794 and F.lastLibraryImport.result.total==796)
+    local total=0
+    for _,scope in ipairs({'player','target'}) do for _,category in ipairs({'buff','debuff','auto'}) do total=total+#(F.State.settings.tracked[scope][category] or {}) end end
+    assert(F.lastLibraryImport.result.existing==total-2 and F.lastLibraryImport.result.total==total)
     assert(F.Commands:SetTrackedId(82,'auto',false));local kept=Copy(F.State.settings.tracked)
     local _,fresh=Boot({disk=c.disk})
     assert(Same(kept,fresh.State.settings.tracked) and not fresh:IsTrackedId(82),'reloading reimported a removed entry')

@@ -257,7 +257,7 @@ Add("combat_buff_display", "combat.buff_display", "状态显示", "combat", 40, 
     -- 又把 HUD/Tracking 保存接回旧单体 Store。AuraObservation 仍只负责运行时事实，不持有用户配置。
     status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.buff_display.settings + v3.buff_display.layout + v3.buff_display.aliases + v3.buff_display.tracking.manifest + v3.aura_observation (legacy v3.buff_display migration-only)", diagnosticSources = { "buff_display_v3" },
     widgetCapable = true, settingsCapable = true, defaultEnabled = false,
-    apiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:UnitBuffTooltip", "X2Unit:UnitDeBuffCount", "X2Unit:UnitDeBuff", "X2Unit:UnitDeBuffTooltip", "X2Unit:UnitHiddenBuffCount", "X2Unit:UnitHiddenBuff", "X2Unit:UnitHiddenBuffTooltip", "X2Unit:UnitName" },
+    apiDependencies = { "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:UnitBuffTooltip", "X2Unit:UnitDeBuffCount", "X2Unit:UnitDeBuff", "X2Unit:UnitDeBuffTooltip", "X2Unit:UnitHiddenBuffCount", "X2Unit:UnitHiddenBuff", "X2Unit:UnitHiddenBuffTooltip", "X2Unit:UnitName", "X2Ability:GetBuffTooltip", "X2Equipment:GetEquippedItemType", "X2Equipment:GetEquippedItemTooltipInfo" },
     apiReadiness = "shared_service_partial", apiPolicy = "read_only_bounded",
     evidence = "AuraObservationV3:GetStatusMap(); V3 Page/Widget projection and lifecycle contract",
 })
@@ -366,7 +366,17 @@ Add("life_trade", "life.trade", "跑商", "life", 20, "路线、多货物与实�
     status = "migrated_partial", lifecycle = "demand_scoped_with_background_refresh", authority = "v3.life.trade", diagnosticSources = { "trade_material_identity" }, widgetCapable = true, settingsCapable = true,
     -- 维护（2026-09-23，trade-runtime-metadata-1）：Feature 实现已把背包槽读取纳入 Authority，Registry 也必须
     -- 公开相同依赖，避免 Runtime/诊断在实现可用时却把元数据描述成旧能力集合。页面事件由 Demand 生命周期负责；普通路线自动刷新只额外持有独立轻量 Runtime owner。
-    apiDependencies = { "X2Store:GetProductionZoneGroups", "X2Store:GetSellableZoneGroups", "X2Store:GetSpecialtyRatioBetween", "X2Ability:GetAllMyActabilityInfos", "X2Equipment:GetEquippedItemType", "X2Equipment:GetEquippedItemTooltipInfo" },
+    apiDependencies = {
+        -- 维护（2026-09-28，trade-native-dependency-ownership-1）：Registry 必须与 Trade 实现层保持同一完整依赖。
+        -- 材料身份读取属于 X2Craft；材料价格的 Ask/Read 与名称 fallback 属于 X2Auction。禁止再依赖其它 Feature
+        -- 偶然先导入这些 namespace，否则“只开启跑商”会出现 host_global_missing/报价全失败。
+        "X2Store:GetProductionZoneGroups", "X2Store:GetSellableZoneGroups", "X2Store:GetSpecialtyRatioBetween",
+        "X2Ability:GetAllMyActabilityInfos",
+        "X2Equipment:GetEquippedItemType", "X2Equipment:GetEquippedItemTooltipInfo",
+        "X2Craft:GetCraftTypeByItemType", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo",
+        "X2Auction:AskMarketPrice", "X2Auction:GetLowestPrice", "X2Auction:SearchAuctionArticle",
+        "X2Auction:GetSearchedItemCount", "X2Auction:GetSearchedItemInfo",
+    },
     apiReadiness = "official_mixed", apiPolicy = "on_demand_server_query", currentImplementation = "路线/区域/服务器货率 + 满货率 130% 本地对比 + 经商熟练度售价估算；路线请求统一进入 SingleFlight 调度器；“自动刷新”由独立轻量 Runtime owner 保活，不再伪装成页面 Demand Consumer；该 Runtime 只持有 SPECIALTY_RATIO_BETWEEN_INFO 回执、可选跨区事件与 1 秒低频 Scheduler watchdog，默认约 10 秒（且不短于 2×Native cooldown）才真正请求一次。主页面关闭后仍可持续保持当前路线新鲜，同时 QuoteQueue/装备观察/LiveIdentity 等页面资源会真实释放。材料单位价由独立 MaterialPriceServiceV3 持久化到 v3.market.material_prices：打开/刷新路线先使用最后可信本地单价立即重算材料成本、毛利与毛利率，再按 Fresh/Warm/Stale/Old 对当前可见材料低优先级后台重验；用户双击/批量多 RowJob 为高优先级强制刷新，但所有拍卖 Native 调用仍共用单一 PriceQuoteQueueV3 串行 lane 并按 itemType+grade 去重。货率/熟练度变化推进 payout revision，材料价变化推进 material revision，两者都重新派生利润，禁止保存独立旧毛利。全部/关注/随身三种投影视图继续保留；随身模式通过 ES_BACKPACK（缺失时使用已验证槽位27）识别当前贸易包。UNIT_EQUIPMENT_CHANGED 220ms 合并刷新，不使用 Tick。绑定/非市场制作资源保留配方数量但不伪造金币成本。路线/收藏/窗口继续使用历史 v3.life.trade schema1，新偏好独立保存于 v3.trade_preferences。", remainingCapability = "GetLowestPrice 返回形态、RU 生产/可售地区 payload、GetSpecialtyRatioBetween 数值返回的真实节流语义与静态底价长期一致性仍需实机验证；售价拆解需用多路线/多熟练度实售样本继续校准；自动制作台刷新/叛乱记录仍缺安全事件证据", evidence = "V3 Trade Authority + SPECIALTY_RATIO_BETWEEN_INFO + official X2Ability actability list + official X2Equipment:GetEquippedItemType/GetEquippedItemTooltipInfo + ES_BACKPACK slot authority + verified Trade Product ItemID registry; SingleFlight route/cargo scheduler + bounded favorites/tracked projection + shared TradeDetailFloatingV3 + explicit selected-row material quote",
 })
 Add("life_bonds", "life.bonds", "债券 / 居民板", "life", 30, "每日居民板材料、完成状态与背包资源。", {
@@ -375,7 +385,11 @@ Add("life_bonds", "life.bonds", "债券 / 居民板", "life", 30, "每日居民�
     -- 存档 historical canonical 修复在 Feature Store 自己声明，不能把“完成”当成绕过完整性检查的理由。
     navigationDevelopmentState = "complete",
     status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.life.bonds", widgetCapable = true, settingsCapable = true,
-    apiDependencies = { "X2Resident:GetResidentBoardContent", "X2Bag:Capacity", "X2Bag:GetBagItemInfo", "X2Quest:IsCompleted", "X2Quest:IsReadyForCompleteQuest" }, apiReadiness = "official_mixed", apiPolicy = "on_demand_read_only",
+    apiDependencies = {
+        "X2Resident:GetResidentBoardContent", "X2Bag:Capacity", "X2Bag:GetBagItemInfo",
+        "X2Quest:GetActiveQuestListCount", "X2Quest:GetActiveQuestType",
+        "X2Quest:IsCompleted", "X2Quest:IsReadyForCompleteQuest",
+    }, apiReadiness = "official_mixed", apiPolicy = "on_demand_read_only",
     currentImplementation = "按服务器日期分别缓存 west/east/auroria 居民板快照；玩家在各大陆首次刷新后统一合并显示，表格显式标记大陆来源。排序方式（按大陆/按数量）、大陆顺序（西→东/东→西）与重复任务策略（全部/合并）相互独立；合并优先侧不会隐式开启去重。继续兼容 contents/content/rows/items 与稀疏数字行，并通过 activeIndex 联动任务状态。",
     evidence = "V3 Bonds + RU residentboard GetResidentBoardContent(index).contents 行为；未知字段继续 fail-closed；tools/rs_bonds_tests 与 v3_m1_bonds 门禁全绿",
 })

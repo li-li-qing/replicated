@@ -29,7 +29,7 @@ v3_acceptance = read("presentation/v3/rs_v3_acceptance.lua")
 gate = read("core/rs_foundation_gate.lua")
 diagnostics = read("core/rs_diagnostics.lua")
 
-require("v3-m1.16.0.18.326-trade-freshness-matrix-audit" in boot, "build tag advanced")
+require("v3-m1.16.0.18.329-native-dependency-policy" in boot, "build tag advanced")
 for key, value in {
     "prince_purse": 35461, "prince_crate": 42076, "queen_purse": 40928,
     "queen_crate": 42077, "ancestor_purse": 43176, "ancestor_crate": 43177,

@@ -84,10 +84,15 @@ Test('hidden task changes do no page work; visible trade updates locally',functi
  S.Events:Publish('v3.life.trade.updated');assert(c.reads>before)
  assert(not S.Scheduler.tasks.v3_home_refresh,'trade-local update queued unrelated cards')
 end)
-Test('overview keeps bounded manual quote and no automatic query',function()
- local S,p,n,c=HomeBoot({visible={'trade'}});p:OnActivated()
- assert(n.v3_home_trade_quote and n.v3_home_trade_from and not n.v3_home_trade_full_quote and c.quotes==0)
-end)
+ Test('overview keeps bounded manual quote and no automatic query',function()
+  local S,p,n,c=HomeBoot({visible={'trade'}});p:OnActivated()
+  -- 中文维护注释（2026-09-28，Phase 0 测试基线校正）：与 rs_home_overview_tests.lua 同源的过期断言。
+  -- 首页卡当前的 Authority（rs_v3_life_economy_widgets.lua:105 “构建和刷新绝不发出材料询价”、
+  -- :443 只要求单行询价 QuoteRowMaterials）已不提供 `v3_home_trade_quote` 批量询价按钮；批量/高级
+  -- 询价只属于完整跑商页。这里保留本用例真正要证明的“有界、非自动”契约，不再要求不存在的控件。
+  assert(n.v3_home_trade_from and not n.v3_home_trade_quote and not n.v3_home_trade_full_quote)
+  assert(c.quotes==0,'overview activation issued an automatic query')
+ end)
 Test('hiding home does not alter task attention',function()
  local S,p,n,c=HomeBoot();local changes=0
  S.Features.Tasks.Commands.ToggleTracked=function()changes=changes+1;return true end

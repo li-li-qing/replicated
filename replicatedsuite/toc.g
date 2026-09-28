@@ -176,7 +176,31 @@ features/life/tasks/rs_task_feature.lua
 features/life/rs_life_m16_bundle.lua
 features/life/rs_daily_ledger.lua
 features/life/rs_daily_income_source.lua
-features/rs_business_bridge.lua
+-- 2026-09-28 Phase 1 Batch A：通用 Feature 装配骨架（无业务状态）必须先于它的消费者加载。
+features/shared/rs_feature_slice_factory.lua
+-- 2026-09-28 Phase 1 Batch D：跨 Feature 共享的有界常量（如背包扫描上界）的唯一 Authority。
+features/shared/rs_shared_bounds.lua
+-- 2026-09-28 Phase 1 Batch A：拍卖共享读模型（tools_auction 与 tools_market_analysis 共用），
+-- 必须早于消费它的 Feature 文件；它不拥有事实，事实仍在 services/rs_auction_query_v3.lua 等。
+features/tools/auction/rs_auction_read_model.lua
+-- 2026-09-28 Phase 1 Batch E：rs_business_bridge.lua 已全部拆完并退役（文件删除）。
+-- 以下是从它拆出的全部独立 Feature 源码单元；每个 Feature 只在这里登记一次。
+features/tools/social/rs_social_feature.lua
+features/tools/market_analysis/rs_market_analysis_feature.lua
+features/combat/siege_readiness/rs_siege_readiness_feature.lua
+features/tools/reinforce_analysis/rs_reinforce_analysis_feature.lua
+features/tools/portal_profiles/rs_portal_profiles_feature.lua
+features/combat/boss_alerts/rs_boss_alerts_feature.lua
+features/combat/target_monitor/rs_target_monitor_feature.lua
+features/combat/buff_cap/rs_buff_cap_feature.lua
+features/combat/raid_recruitment/rs_raid_recruitment_feature.lua
+features/combat/team_tools/rs_team_tools_feature.lua
+features/tools/craft/rs_craft_feature.lua
+features/tools/auction/rs_auction_feature.lua
+-- 2026-09-28 Phase 1 Batch E：最后一批（bag / unit_lines / range_assist）。
+features/tools/bag/rs_bag_feature.lua
+features/combat/unit_lines/rs_unit_lines_feature.lua
+features/combat/range_assist/rs_range_assist_feature.lua
 features/tools/rs_feature_profiles_feature.lua
 features/tools/rs_hotkey_profiles_feature.lua
 features/combat/team_tools/rs_team_tools_visuals.lua

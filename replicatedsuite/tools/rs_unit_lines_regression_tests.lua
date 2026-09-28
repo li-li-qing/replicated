@@ -36,7 +36,12 @@ local function Boot()
     UI.EnsureAnchor=function(_,w,parent,x,y)if c.failAnchor then return false,false,'rejected' end;local change=w.x~=x or w.y~=y;if change then c.anchors=c.anchors+1;w.x,w.y=x,y end;return true,change end
     UI.SetFontSize=function()return true end;UI.SetColor=function()return true end
     dofile('services/rs_screen_projection_v3.lua')
-    dofile('features/rs_business_bridge.lua')
+    dofile('features/shared/rs_feature_slice_factory.lua')
+    dofile('features/shared/rs_shared_bounds.lua')
+    dofile('features/tools/auction/rs_auction_read_model.lua')
+    -- 中文维护注释（2026-09-28，Phase 1 Batch E）：bridge 已退役；按 toc.g 顺序加载本套件需要的 Feature。
+    dofile('features/combat/unit_lines/rs_unit_lines_feature.lua')
+    dofile('features/combat/range_assist/rs_range_assist_feature.lua')
     dofile('presentation/v3/widgets/rs_v3_combat_visual_guides.lua')
     dofile('core/rs_diagnostics.lua')
     return S,S.Services.ScreenProjectionV3,S.UIV3.CombatVisualGuidesV3,S.Features.combat_unit_lines,c,io

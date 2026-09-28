@@ -217,7 +217,9 @@ Test('camera fallback applies one rigid metric screen scale around native player
 end)
 
 Test('range feature consumes metric calibration without changing persisted meter radius',function()
-    local f=assert(io.open('features/rs_business_bridge.lua','r'));local text=f:read('*a');f:close()
+    -- 中文维护注释（2026-09-28，Phase 1 Batch E）：rs_business_bridge.lua 已退役，
+    -- combat_range_assist 现在由 features/combat/range_assist/rs_range_assist_feature.lua 拥有。
+    local f=assert(io.open('features/combat/range_assist/rs_range_assist_feature.lua','r'));local text=f:read('*a');f:close()
     assert(text:find('GetRangeMetricCalibration',1,true),'range feature does not request metric calibration')
     assert(text:find('worldUnitsPerMeter',1,true),'range feature does not expose/use worldUnitsPerMeter')
     assert(text:find('metricScreenScale',1,true),'range feature does not pass metricScreenScale')

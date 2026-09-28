@@ -2794,7 +2794,18 @@ RegisterStore(Trade.preferenceStoreId, "v3.life.trade.preferences", function() r
         Trade:RefreshTrackedProductSet()
     end, NormalizeTradePreferences, { maxDepth = 4, maxNodes = 192, maxStringBytes = 1024, maxEntriesPerTable = 144 })
 
-Trade.ApiDependencies = { "X2Store:GetProductionZoneGroups", "X2Store:GetSellableZoneGroups", "X2Store:GetSpecialtyRatioBetween", "X2Ability:GetAllMyActabilityInfos", "X2Equipment:GetEquippedItemType" }
+Trade.ApiDependencies = {
+    -- 维护（2026-09-28，trade-native-dependency-ownership-1）：Trade 的材料身份与材料报价不能借用
+    -- tools_craft/tools_auction 是否恰好启用来获得 X2Craft/X2Auction namespace。FeatureRuntime 以实现层
+    -- ApiDependencies 为导入 Authority，所以这里必须声明 Trade 实际调用链的完整 Native 依赖。只导入 namespace，
+    -- 不新增轮询/事件；QuoteQueue 仍是拍卖服务器查询的唯一串行 Authority。
+    "X2Store:GetProductionZoneGroups", "X2Store:GetSellableZoneGroups", "X2Store:GetSpecialtyRatioBetween",
+    "X2Ability:GetAllMyActabilityInfos",
+    "X2Equipment:GetEquippedItemType", "X2Equipment:GetEquippedItemTooltipInfo",
+    "X2Craft:GetCraftTypeByItemType", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo",
+    "X2Auction:AskMarketPrice", "X2Auction:GetLowestPrice", "X2Auction:SearchAuctionArticle",
+    "X2Auction:GetSearchedItemCount", "X2Auction:GetSearchedItemInfo",
+}
 function Trade:Initialize()
     if type(S.Services and S.Services.TradePayoutV3) ~= "table" then return false, "跑商售价计算服务不可用" end
     local ok, err = LoadStore(self)
@@ -4679,7 +4690,14 @@ RegisterStore(Bonds.storeId, "v3.life.bonds", function() return NormalizeBondSta
     NormalizeBondState,
     { maxDepth = 8, maxNodes = 960, maxStringBytes = 24576, maxEntriesPerTable = 192 },
     RebuildBondCanonicalForIntegrity) -- 中文维护注释：仅 Bonds 注册 pre-continentOrder exact historical bridge；Core 规则不放宽。
-Bonds.ApiDependencies = { "X2Resident:GetResidentBoardContent", "X2Bag:Capacity", "X2Bag:GetBagItemInfo", "X2Unit:GetCurrentZoneGroup" }
+Bonds.ApiDependencies = {
+    "X2Resident:GetResidentBoardContent", "X2Bag:Capacity", "X2Bag:GetBagItemInfo", "X2Unit:GetCurrentZoneGroup",
+    -- 中文维护注释（2026-09-28，native-dependency-ownership-2）：Bonds AcquireConsumer 会启动共享 QuestProgressV3，
+    -- 其基础 Refresh 必须读取活动任务索引与完成/可交付状态。FeatureRuntime 以实现层 ApiDependencies 优先，
+    -- 因此这里必须由 Bonds 自己声明 X2Quest，禁止借用 Activities/Tasks 偶然已经导入的 namespace。
+    "X2Quest:GetActiveQuestListCount", "X2Quest:GetActiveQuestType",
+    "X2Quest:IsCompleted", "X2Quest:IsReadyForCompleteQuest",
+}
 function Bonds:Initialize() return LoadStore(self) end
 function Bonds:SubscribeProgress()
     if self.progressSubscribed == true then return true end

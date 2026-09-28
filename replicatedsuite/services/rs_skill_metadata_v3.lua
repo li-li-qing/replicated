@@ -24,6 +24,12 @@ local M = {
     nativeLookups = 0,
     nativeFailures = 0,
     evictions = 0,
+    -- 中文维护注释（2026-09-28，native-dependency-ownership-4）：X2Skill 是 lazy 子能力，
+    -- 只在用户真正打开技能明细/刷新时导入；owner 由本服务自己持有，失败 fail-soft。
+    nativeOwnerId = "service.skill_metadata_v3",
+    nativeSkillLease = false,
+    nativeSkillLeaseState = "idle",
+    nativeSkillLeaseError = nil,
 }
 M.presentationBoundary = "service_only"
 S.Services.SkillMetadataV3 = M
@@ -104,6 +110,28 @@ function M:_Store(id, row)
     self.order[#self.order + 1] = { key = key, serial = self.serial }
     return row
 end
+-- 中文维护注释（2026-09-28，native-dependency-ownership-4，FND-016 收口）：X2Skill namespace 的
+-- ImportAPI numeric id 已由客户端 API_TYPE 枚举副本确认为 35（证据链见 native/rs_native_contract.lua 的
+-- SKILL 行）。这里在“真正需要 Native 明细”时 lazy 取得 owner，成功才可能有 X2Skill 全局；
+-- 失败仍然只用 catalog/fallback 结果，不抛错、不阻断状态 HUD 或页面构建。
+function M:_EnsureNativeSkillLease()
+    if self.nativeSkillLease == true then return true end
+    local imports = S.ApiImports
+    if type(imports) ~= "table" or type(imports.AcquireApi) ~= "function" then
+        self.nativeSkillLeaseState = "imports_unavailable"
+        return false
+    end
+    local ok, err = imports:AcquireApi(self.nativeOwnerId, "X2Skill")
+    if ok ~= true then
+        self.nativeSkillLeaseState = "failed"
+        self.nativeSkillLeaseError = tostring(err or "x2skill_import_failed")
+        return false
+    end
+    self.nativeSkillLease = true
+    self.nativeSkillLeaseState = "acquired"
+    self.nativeSkillLeaseError = nil
+    return true
+end
 function M:GetSkillInfo(skillId, fallbackName)
     local id = NormalizeId(skillId)
     if id == nil then
@@ -127,6 +155,8 @@ function M:GetSkillInfo(skillId, fallbackName)
     local source = type(static) == "table" and "catalog" or "fallback"
     local nativeResolved = false
 
+    -- 维护：native 明细路径才需要 X2Skill；缓存命中/无 id 路径不付出任何导入成本。
+    self:_EnsureNativeSkillLease()
     if X2Skill ~= nil then
         if type(X2Skill.Info) == "function" then
             self.nativeLookups = self.nativeLookups + 1
@@ -178,5 +208,10 @@ function M:GetHealth()
         evictions = self.evictions,
         x2Info = X2Skill ~= nil and type(X2Skill.Info) == "function",
         x2Tooltip = X2Skill ~= nil and type(X2Skill.GetSkillTooltip) == "function",
+        -- 中文维护注释：暴露 lazy Native ownership 事实，供诊断区分“未需要/已取得/导入失败”。
+        nativeSkillLease = self.nativeSkillLease == true,
+        nativeSkillLeaseState = self.nativeSkillLeaseState,
+        nativeSkillLeaseError = self.nativeSkillLeaseError,
+        nativeSkillOwner = self.nativeOwnerId,
     }
 end

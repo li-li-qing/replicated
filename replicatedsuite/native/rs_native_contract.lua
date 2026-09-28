@@ -41,6 +41,16 @@ S.NativeContract = {
         HOUSE                = { id = 20, nativeName = "X2House",               feature = true },
         PLAYER               = { id = 32, nativeName = "X2Player",              feature = true },
         QUEST                = { id = 33, nativeName = "X2Quest",               feature = true },
+        -- 中文维护注释（2026-09-28，native-dependency-ownership-4）：SKILL=35 不再是猜测，而是取自
+        -- 本机历史资产中的客户端 API_TYPE 枚举表副本：Addon.zip / Addon1.2.zip 内的 globals/apitypes.lua
+        -- （SHA-256 df8475b7cb31… / 08d3f2383908…）第 82 行 `SKILL = { id = 35, apiname = "X2Skill" }`。
+        -- 该表与本工程此前已核的 24 个 namespace 100% 一致（含 UNIT=42 / CHAT=8 / ABILITY=3 / STORE=37 /
+        -- AUCTION=51 / RESIDENT=73 / EQUIPMENT=13 / CRAFT=9），并且本项目旧 Professional 模块
+        -- （Addon1.2.zip!replicatedsuite/modules/professional/plates/replicatedplates.lua）确实以
+        -- `ADDON:ImportAPI(API_TYPE.SKILL.id)` 导入该 namespace。因此 35 是对应 X2Skill 的已验证 ABI 值。
+        -- 使用方必须是 lazy 子能力（CooldownObservationV3 / SkillMetadataV3），不得升成所有 BuffDisplay/DPS
+        -- 消费者的 hard dependency。
+        SKILL                = { id = 35, nativeName = "X2Skill",               feature = true },
         STORE                = { id = 37, nativeName = "X2Store",               feature = true },
         TEAM                 = { id = 38, nativeName = "X2Team",                feature = true },
         BANK                 = { id = 47, nativeName = "X2Bank",                feature = true },

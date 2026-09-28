@@ -30,6 +30,26 @@ return function(ctx)
         local restored,_,why=P:LoadStore(store.id,options);assert(restored,why);F:InvalidateSettingsCache()
         assert(ok,err)
     end
+    -- 中文维护注释（2026-09-28，Phase 0 测试基线校正）：.18.243 起旧 v3.buff_display 不再参与启动，
+    -- 它损坏只算证据（尚留在上面的 WithBuff 用例里做“证据不得被覆盖”验证）。真正决定“状态显示是否可用”
+    -- 的 Authority 是 tracking manifest（rs_buff_display_store.lua:2863），因此“损坏存档 ⇒ 只读故障页”
+    -- 必须针对 manifest 构造才对应当前契约。这里注入一个 owner/schema 正确但指纹刻意未知的密封 envelope，
+    -- 触发 fail-closed；测完恢复磁盘字节、清除 fence 与 terminal memoization，保证后续用例隔离。
+    local function WithManifestCorrupt(run)
+        local ms=P:GetStore(F.TrackingManifestStoreId);assert(ms,'tracking manifest store missing')
+        local key=assert(P:ResolveStoreKey(ms));local saved=Copy(disk[key])
+        disk[key]=Physical(ms,ms.get(),nil,'00000000')
+        ms.loaded,ms.loadStatus=false,nil
+        F.StoreLoaded=false
+        local ok,err=pcall(run,key,ms)
+        disk[key]=saved
+        ms.writeFenced,ms.writeFenceReason,ms.lastError,ms.needsBarrierVerify=false,nil,nil,false
+        ms.loaded,ms.loadStatus=false,nil
+        F.StoreLoaded=false
+        local restored,_,why=P:LoadStore(ms.id,options);assert(restored,why)
+        F:InvalidateSettingsCache()
+        assert(ok,err)
+    end
     local function SaveAltered(target,key,alter)
         local original=S.Api.SaveData
         S.Api.SaveData=function(self,k,v)
@@ -145,7 +165,13 @@ return function(ctx)
         raw.payload.settings.tracked.buff['1']=22222
         WithBuff(raw,function(key)
             local before=Copy(disk[key]);local ok=P:LoadStore(store.id,options)
-            assert(not ok and store.writeFenced);assert(not F:ImportBuiltinPack('all',false))
+            assert(not ok and store.writeFenced)
+            -- 中文维护注释（2026-09-28，Phase 0 测试基线校正）：本用例原先附带
+            -- `assert(not F:ImportBuiltinPack('all',false))`，前提是“旧 v3.buff_display 被写保护 ⇒ 追踪导入必须失败”。
+            -- .18.243 起旧大 Store 永久降级为 LegacyMigrationSourceOnly：manifest 已建立后它不再参与启动与
+            -- tracking 写入（Authority：rs_buff_display_store.lua:2857 与 README §3.7），因此该附带断言已随架构失效，
+            -- 不能再要求它成立。本用例真正要证明的“内容篡改不得被序列化恢复偷偷通过”仍由上方 not ok + writeFenced
+            -- 覆盖；写保护在真正 Authority 上的强制力改由 rs_status_refactor_tests.lua 的 tracking manifest 用例验证。
             assert(Equal(disk[key],before),'corrupt archive overwritten')
         end)
     end)
@@ -176,20 +202,27 @@ return function(ctx)
             assert(store.lastHistoricalRecoveryHookState~='candidate','identity mismatch entered hook')
         end)
     end)
-    Test('fenced buff store builds read-only failure page without editors or writes',function()
-        WithBuff(Physical(store,fixtures[2].raw,5,'00000000'),function(key)
-            assert(not P:LoadStore(store.id,options));local before=Copy(disk[key])
+    Test('corrupt tracking authority builds read-only failure page without editors or writes',function()
+        WithManifestCorrupt(function(key,ms)
+            assert(not P:LoadStore(ms.id,options))
+            local before=Copy(disk[key])
+            F.StoreLoaded=false
             local host=dofile('tools/rs_status_ui_test_host.lua')(S)
             local page,err=host:Build();assert(page,err)
             assert(page.persistenceUnavailable==true,'failed load looked ready')
             assert(host.widgets.v3_buff_display_tabs==nil,'editors over unread archive')
-            assert(host.widgets.v3_buff_persistence_report,'failure evidence action missing')
-            assert(page:OnActivated());assert(Equal(disk[key],before) and store.writeFenced)
+            -- 中文维护注释（2026-09-28，Phase 0 测试基线校正）：旧断言里的控件 id `v3_buff_persistence_report`
+            -- 在当前页面已不存在（全仓仅本测试引用）。当前只读取证入口是 BuildPersistenceUnavailablePage →
+            -- AttachEvidenceReader 创建的 `v3_buff_evidence_export`（“读取故障存档”），它才是本用例要证明的
+            -- “故障证据动作仍可用”。仅更正 id，不放松断言强度。
+            assert(host.widgets.v3_buff_evidence_export,'failure evidence action missing')
+            assert(page:OnActivated());assert(Equal(disk[key],before) and ms.writeFenced)
         end)
     end)
     Test('real PageHost and BuildScope commit the read-only error page without quarantine',function()
-        WithBuff(Physical(store,fixtures[2].raw,5,'00000000'),function()
-            assert(not P:LoadStore(store.id,options))
+        WithManifestCorrupt(function(key,ms)
+            assert(not P:LoadStore(ms.id,options))
+            F.StoreLoaded=false
             S.SafeTraceback=S.SafeTraceback or function(err) return tostring(err) end
             local floating=S.RSUI.FloatingSurface -- 保留已加载的真实窗口 normalizer，避免宿主替换污染后续 Store 测试。
             dofile('ui/framework/rs_ui_component_core.lua')
@@ -203,7 +236,7 @@ return function(ctx)
             local ok,err=H:Navigate('combat.buff_display');assert(ok,err)
             assert(H.stats.buildFailures==0 and next(H.failedPages)==nil)
             assert(S.RSUI.metrics.buildTransactionFailures==0 and #S.RSUI.buildScopeStack==0)
-            assert(H.pages['combat.buff_display'].persistenceUnavailable and store.writeFenced)
+            assert(H.pages['combat.buff_display'].persistenceUnavailable and ms.writeFenced)
         end)
     end)
     dofile('features/combat/death_review/rs_death_review_store.lua')

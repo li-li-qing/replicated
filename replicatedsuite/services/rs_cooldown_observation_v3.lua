@@ -59,6 +59,13 @@ local C = {
     probeHits = 0,
     nativeReads = 0,
     nativeFailures = 0,
+    -- 中文维护注释（2026-09-28，native-dependency-ownership-4）：X2Skill 是 lazy 子能力。
+    -- 没有 consumer 时本服务不 Import 该 namespace；第一个 consumer 进入时由服务自己取得 owner，
+    -- 失败保持 fail-soft（冷却读数降级为 unavailable），绝不因为能力缺失让无关 HUD 初始化失败。
+    nativeOwnerId = "service.cooldown_observation_v3",
+    nativeSkillLease = false,
+    nativeSkillLeaseState = "idle",
+    nativeSkillLeaseError = nil,
     activations = 0,
     completions = 0,
     mateRideResolved = 0,
@@ -493,8 +500,35 @@ function C:_Reconcile(before, after)
     return true
 end
 
+-- 中文维护注释（2026-09-28，native-dependency-ownership-4，FND-016 收口）：
+-- X2Skill 的 ADDON:ImportAPI numeric id 已由客户端 API_TYPE 枚举副本确认为 35（native/rs_native_contract.lua
+-- 的 SKILL 行记录了完整证据链）。该 namespace 只在“用户真的启用冷却追踪”时才需要，因此这里提供 lazy
+-- 取得入口，由本服务自己持有 owner，而不是要求 BuffDisplay/DPS 等消费者代为 Import。
+-- 语义约定：成功返回 true；不可用/失败返回 false 且只记录诊断，不抛错——冷却读数本来就允许不可用。
+function C:EnsureNativeSkillLease()
+    if self.nativeSkillLease == true then return true end
+    local imports = S.ApiImports
+    if type(imports) ~= "table" or type(imports.AcquireApi) ~= "function" then
+        self.nativeSkillLeaseState = "imports_unavailable"
+        return false
+    end
+    local ok, err = imports:AcquireApi(self.nativeOwnerId, "X2Skill")
+    if ok ~= true then
+        self.nativeSkillLeaseState = "failed"
+        self.nativeSkillLeaseError = tostring(err or "x2skill_import_failed")
+        return false
+    end
+    self.nativeSkillLease = true
+    self.nativeSkillLeaseState = "acquired"
+    self.nativeSkillLeaseError = nil
+    return true
+end
+
 function C:AcquireConsumer(token, options)
     if self.Demand == nil then return false, "cooldown demand unavailable" end
+    -- 维护：在这里（而不是模块加载期）取得 Native 子能力 owner，符合“消费需求才导入”的
+    -- dependency ownership；失败不回滚消费需求，因为冷却不可用只是功能降级，不是 Feature 故障。
+    self:EnsureNativeSkillLease()
     return self.Demand:Acquire(token, options, "cooldown_consumer")
 end
 function C:ReleaseConsumer(token)
@@ -578,6 +612,10 @@ function C:GetHealth()
         probeCycles=self.probeCycles,probeQueries=self.probeQueries,probeHits=self.probeHits,
         metadataCache=CountSet(self.metadata),mateTypeCache=CountSet(self.mateTypeById),
         nativeReads=self.nativeReads,nativeFailures=self.nativeFailures,parseFailures=self.parseFailures,
+        -- 中文维护注释：暴露 lazy Native ownership 事实（未取得/已取得/失败原因），供模块诊断区分
+        -- “没有消费者所以没导入”与“导入失败”，不触发任何新的 Native 读取。
+        nativeSkillLease=self.nativeSkillLease==true,nativeSkillLeaseState=self.nativeSkillLeaseState,
+        nativeSkillLeaseError=self.nativeSkillLeaseError,nativeSkillOwner=self.nativeOwnerId,
         activations=self.activations,completions=self.completions,mateRideResolved=self.mateRideResolved,mateBattleResolved=self.mateBattleResolved,
         pendingExpired=0,pendingMaxAttempts=0,activeReadGaps=self.activeReadGaps,estimatedExpirations=self.estimatedExpirations,
         nativeEvidenceContract=self.NativeEvidenceContractVersion,nativeEvidence=self:GetNativeEvidence(16),
