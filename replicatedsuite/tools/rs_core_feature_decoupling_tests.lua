@@ -942,5 +942,125 @@ Test('BatchK 静态：core/*.lua 不得再点名 team_tools，但 Service/Data/U
         'teamVisualOk must still be derived from the TeamSacOverlay UI contract')
 end)
 
+------------------------------------------------------------------------
+-- Phase 3 Batch L：Activities / Tasks 的 Persistence 契约组
+--   （Foundation 里 v3_activity_persistence_recovery_contract 的 Feature 部分、
+--     v3_feature_persistence_mutation_contract、v3_task_persistence_stable_codec_contract 已处置）
+--   **Store 侧的 activityStore 契约留在 Foundation** —— 那是 Core 的 Persistence 边界。
+--   活动侧还有一个「下限取齐」动作：KnownLegacyCanonicalRecoveryContractVersion 从 1 提到 3。
+------------------------------------------------------------------------
+local ACTIVITY_PATH = 'features/life/activities/rs_activity_acceptance.lua'
+local TASK_PATH = 'features/life/tasks/rs_task_acceptance.lua'
+local TASK_PERSIST_CASE = 'v3_life_tasks_persistence_contract'
+
+local function ActivityFeature()
+    return {
+        StoreId = 'v3.activities',
+        Authority = { ActivityTimelineSortContractVersion = 2, PriorityStageSortContractVersion = 1,
+            GetTimelineRows = function() end, GetLiveRows = function() end },
+        PersistenceStoreSchemaContractVersion = 8, PersistenceWindowCanonicalContractVersion = 1,
+        KnownLegacyCanonicalRecoveryContractVersion = 3,
+        TransportV1ZeroOmissionRecoveryContractVersion = 1,
+        PersistenceMutationContractVersion = 2,
+        Commands = { MarkStoreDirty = function() end, SetWidgetWindowState = function() end },
+    }
+end
+
+local function BootActivity(overrides)
+    local feature = ActivityFeature()
+    for key, value in pairs(overrides or {}) do
+        if key == 'Authority' then
+            for innerKey, innerValue in pairs(value) do feature.Authority[innerKey] = innerValue end
+        else
+            feature[key] = value
+        end
+    end
+    local cases = {}
+    local S = { Features = { Activities = feature }, SafeTraceback = debug and debug.traceback or function(m) return m end,
+        FoundationGate = {} }
+    function S.FoundationGate:RegisterSequenceCase(id, fn) cases[tostring(id)] = fn; return true end
+    S.FeatureRegistry = { Get = function(_, id)
+        if id ~= 'life_activities' then return nil end
+        return { status = 'migrated_m1', authority = 'v3.activity' } end }
+    S.FeatureRuntime = { IsImplemented = function() return true end, IsEnabled = function() return false end }
+    S.Persistence = { GetStore = function() return { owner = 'v3.activities', schemaVersion = 8,
+        rebuildCanonicalForIntegrity = function() end, recoverKnownLegacyCanonical = function() end,
+        allowIntegrityUpgrade = true } end }
+    ReplicatedSuite = S
+    dofile(ACTIVITY_PATH)
+    return cases['v3_m1_activities']
+end
+
+Test('BatchL 活动：KnownLegacyCanonicalRecoveryContractVersion 下限已取齐到 3', function()
+    -- 本批把该契约的下限从 1 提到 3（与原判定取齐）。2 必须被拒绝 —— 这是“取齐”的证据点。
+    local okBad, reasonBad = BootActivity({ KnownLegacyCanonicalRecoveryContractVersion = 2 })()
+    assert(okBad == false and tostring(reasonBad) == 'store_contract', 'reason=' .. tostring(reasonBad))
+    -- 3 不得因为这个契约被拒。注：本宿主没有模拟 case 后段的 Service/UIV3 依赖，
+    -- 所以这里只断言“失败原因不是 store_contract”，而不是断言整个 case 通过 ——
+    -- 其余依赖链属于运行期，不在本批搬迁范围内。
+    local _, reasonGood = BootActivity({})()
+    assert(tostring(reasonGood) ~= 'store_contract',
+        'contract version 3 must not be rejected by the store contract, got ' .. tostring(reasonGood))
+end)
+
+Test('BatchL 活动：排序分带 / Transport v1 零值恢复 / 持久化变更契约都必须被查', function()
+    local cases = {
+        { label = '排序分带契约', overrides = { Authority = { PriorityStageSortContractVersion = 0 } },
+            reason = 'activity_priority_stage_sort_contract_version' },
+        { label = 'Transport v1 零值恢复契约', overrides = { TransportV1ZeroOmissionRecoveryContractVersion = 0 },
+            reason = 'activity_transport_v1_zero_omission_recovery_contract_version' },
+        { label = '持久化变更契约', overrides = { PersistenceMutationContractVersion = 1 },
+            reason = 'activity_persistence_mutation_contract_version' },
+    }
+    for _, item in ipairs(cases) do
+        local ok, reason = BootActivity(item.overrides)()
+        assert(ok == false and tostring(reason) == item.reason,
+            item.label .. ' expected ' .. item.reason .. ', got ' .. tostring(reason))
+    end
+end)
+
+Test('BatchL 任务：Persistence 契约 case 的三态', function()
+    local cases = BootTruth('Tasks', TASK_PATH, nil)
+    assert(type(cases[TASK_PERSIST_CASE]) == 'function', 'case must register even when missing')
+    local okMissing, reasonMissing = cases[TASK_PERSIST_CASE]()
+    assert(okMissing == false and tostring(reasonMissing) == 'implementation_not_registered',
+        'reason=' .. tostring(reasonMissing))
+
+    local okGood, reasonGood = BootTruth('Tasks', TASK_PATH,
+        { PersistenceMutationContractVersion = 2, PersistenceCodecVersion = 2 })[TASK_PERSIST_CASE]()
+    assert(okGood == true, 'compliant task persistence contract must pass, got ' .. tostring(reasonGood))
+
+    local okMutation, reasonMutation = BootTruth('Tasks', TASK_PATH,
+        { PersistenceMutationContractVersion = 1, PersistenceCodecVersion = 2 })[TASK_PERSIST_CASE]()
+    assert(okMutation == false and tostring(reasonMutation) == 'task_persistence_mutation_contract_version',
+        'reason=' .. tostring(reasonMutation))
+
+    local okCodec, reasonCodec = BootTruth('Tasks', TASK_PATH,
+        { PersistenceMutationContractVersion = 2, PersistenceCodecVersion = 1 })[TASK_PERSIST_CASE]()
+    assert(okCodec == false and tostring(reasonCodec) == 'task_persistence_codec_version',
+        'reason=' .. tostring(reasonCodec))
+end)
+
+Test('BatchL 静态：core/*.lua 不得再点名 Activities/Tasks，但 Store 侧必须保留', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    -- ① 完整实现表访问串
+    for _, pattern in ipairs({ 'S.Features.Activities', 'S.Features.Tasks' }) do
+        assert(text:find(pattern, 1, true) == nil, 'Foundation must not read the feature table for: ' .. pattern)
+    end
+    -- ② 带点号的字段访问 / 已删除的判定壳子
+    for _, pattern in ipairs({ 'activities.', 'tasks.', 'persistenceMutationOk', 'taskCodecOk',
+        'PriorityStageSortContractVersion', 'TransportV1ZeroOmissionRecoveryContractVersion',
+        'PersistenceMutationContractVersion', 'PersistenceCodecVersion' }) do
+        assert(text:find(pattern, 1, true) == nil, 'Foundation still references: ' .. pattern)
+    end
+    -- ③ Store 侧（Core 的 Persistence 边界）必须保留，且推导链仍在
+    assert(text:find('local activityRecoveryOk = type(activityStore) == "table"', 1, true) ~= nil,
+        'the Store-side recovery judgement must remain derived from activityStore')
+    for _, pattern in ipairs({ 'recoverKnownLegacyCanonical', 'allowIntegrityUpgrade' }) do
+        assert(text:find(pattern, 1, true) ~= nil, 'the Store-side contract must stay in Foundation: ' .. pattern)
+    end
+end)
+
 print(string.format('CORE-FEATURE-DECOUPLING RESULT %d passed / %d failed', passed, failed))
 if failed > 0 then error('core/feature decoupling regressions: ' .. tostring(failed)) end

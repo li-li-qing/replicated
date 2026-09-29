@@ -66,3 +66,20 @@ G:RegisterSequenceCase("v3_m1_tasks", function()
     if tonumber(progress.consumerCount) ~= beforeProgressConsumers then return Fail("progress_consumer_leak") end
     return true
 end)
+
+-- Phase 3 Batch L（2026-09-29，core-feature-decoupling-1）：任务侧的持久化契约。
+-- 原先由 core/rs_foundation_gate.lua 的 v3_feature_persistence_mutation_contract（活动/任务各一半）
+-- 与 v3_task_persistence_stable_codec_contract 直接点名实现表检查；搬到这里之后 Core 不再认识
+-- 具体业务 Feature。判定与旧版**逐条等价**：
+--   * PersistenceMutationContractVersion >= 2 —— 任务专属持久化变更必须在 Store 拒绝时回滚
+--   * PersistenceCodecVersion >= 2 —— 追踪成员必须以确定性 codec v2 序列持久化
+G:RegisterSequenceCase("v3_life_tasks_persistence_contract", function()
+    if type(F) ~= "table" then return Fail("implementation_not_registered") end
+    if (tonumber(F.PersistenceMutationContractVersion) or 0) < 2 then
+        return Fail("task_persistence_mutation_contract_version")
+    end
+    if (tonumber(F.PersistenceCodecVersion) or 0) < 2 then
+        return Fail("task_persistence_codec_version")
+    end
+    return true
+end)

@@ -2545,27 +2545,25 @@ function G:Run(options)
     AddCheck(report, "v3_team_visual_marker_contract", teamVisualOk, "blocker",
         teamVisualOk and "bounded Sac overlay + persistent marker snapshot/verified serial restore present" or "team visual/marker contract unavailable")
 
-    local activities = S.Features and S.Features.Activities or nil
+    -- 中文维护注释（Phase 3 Batch L，2026-09-29，core-feature-decoupling-1）：这里原先还并列了活动
+    -- Feature 侧的持久化契约（排序分带、schema8 声明、历史 canonical 恢复版本、Transport v1 零值恢复）。
+    -- 它们已收敛到 features/life/activities/rs_activity_acceptance.lua 的 store_contract 块，
+    -- 判定逐条等价（其中 KnownLegacyCanonicalRecoveryContractVersion 的下限在那边从 1 提到 3，与原判定取齐）。
+    -- **本判定只保留 Store 侧事实**（Store 的 schemaVersion / 恢复 hook / 完整性升级许可）——
+    -- 那是 Core 的 Persistence 边界，不是 Feature 债，不要顺手搬走。
     local activityStore = S.Persistence ~= nil and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.activities") or nil -- 中文维护注释：只读取已注册 Store spec，不触发 LoadData；用于证明 .18.197 的 schema8 exact-pair 恢复桥实际挂在 Store Authority 上。
-    local activityRecoveryOk = type(activities) == "table"
-        and type(activities.Authority) == "table" and (tonumber(activities.Authority.PriorityStageSortContractVersion) or 0) >= 1 -- 中文维护注释（2026-09-16）：鲸鱼/烛台阶段的 3h 排序分带必须随 Activities Authority 一起存在；只查声明，不改变 Store/排序数据。
-        and (tonumber(activities.PersistenceStoreSchemaContractVersion) or 0) >= 8 -- 中文维护注释：Activities 当前 canonical generation 必须仍是 schema8，禁止用降 schema 绕过 6963CEA5→109696BD。
-        and (tonumber(activities.KnownLegacyCanonicalRecoveryContractVersion) or 0) >= 3 -- 中文维护注释：v3 明确包含 schema8/Framework3/Transport-v1 的**零值省略结构化恢复**，未知 pair 仍必须 Fence。
-        and (tonumber(activities.TransportV1ZeroOmissionRecoveryContractVersion) or 0) >= 1 -- 中文维护注释：`.18.198` 要求活动 Store 的 Transport v1 零值恢复必须随包存在，防止窗口 x/y=0 的用户被永久 write fence。
-        and type(activityStore) == "table" and tonumber(activityStore.schemaVersion) == 8
+    local activityRecoveryOk = type(activityStore) == "table" and tonumber(activityStore.schemaVersion) == 8
         and type(activityStore.recoverKnownLegacyCanonical) == "function" and activityStore.allowIntegrityUpgrade == true -- 中文维护注释：恢复资格必须由 Store-owned hook + Core exact fingerprint 验真组合完成，Feature/UI 不得直接放行。
     AddCheck(report, "v3_activity_persistence_recovery_contract", activityRecoveryOk, "blocker",
         activityRecoveryOk and "schema8 exact canonical/Transport-v1 incident recovery + Transport v2 rewrite present" or "activity persistence recovery contract unavailable")
 
-    local tasks = S.Features and S.Features.Tasks or nil
-    local persistenceMutationOk = type(activities) == "table" and (tonumber(activities.PersistenceMutationContractVersion) or 0) >= 2
-        and type(tasks) == "table" and (tonumber(tasks.PersistenceMutationContractVersion) or 0) >= 2
-    AddCheck(report, "v3_feature_persistence_mutation_contract", persistenceMutationOk, "blocker",
-        persistenceMutationOk and "activity/task specialized mutations roll back on store rejection" or "specialized persistence mutation contract v2 unavailable")
-
-    local taskCodecOk = type(tasks) == "table" and (tonumber(tasks.PersistenceCodecVersion) or 0) >= 2
-    AddCheck(report, "v3_task_persistence_stable_codec_contract", taskCodecOk, "blocker",
-        taskCodecOk and "task tracking membership persists as deterministic codec v2 sequences" or "task persistence codec v2 unavailable")
+    -- 中文维护注释（Phase 3 Batch L，2026-09-29，core-feature-decoupling-1）：这里原先还有两条判定 ——
+    -- v3_feature_persistence_mutation_contract（活动/任务各一半）与 v3_task_persistence_stable_codec_contract，
+    -- 它们**整条都由业务 Feature 的实现表构成**，现已整条搬到：
+    --   features/life/activities/rs_activity_acceptance.lua（活动侧 persistence_mutation 契约）
+    --   features/life/tasks/rs_task_acceptance.lua 的 v3_life_tasks_persistence_contract（任务侧两项）
+    -- 判定逐条等价，故两条 AddCheck 整条删除、Core 不再认识这两个业务 Feature。
+    -- sequence case 失败同样落 blocker（见后续 sequence_harness 检查），因此不降低启动门槛。
 
     AddCheck(report, "diagnostics", S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Snapshot) == "function", "blocker", "structured diagnostics")
 
