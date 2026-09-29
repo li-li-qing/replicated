@@ -58,7 +58,7 @@ end
 
 local function SidecarPreferenceEnabled()
     -- 中文维护注释（2026-09-15，Sidecar 偏好读取边界）：悬浮助手是否启用属于
-    -- tools_auction Feature 永久偏好，Controller 只读公开 facade，不直接读取 Feature.State/Store。
+    -- tools_auction Feature 永久偏好，Controller 只读公开 facade，不直接读取 Feature 的私有 State / Store。
     -- facade 缺失时仅为旧实现兼容而默认 true；当前 Gate 会阻断正式包缺失该契约。
     if type(Feature.IsSidecarEnabled) ~= "function" then return true end
     return Feature:IsSidecarEnabled() == true
@@ -121,7 +121,10 @@ local function FavoriteRows()
     local out = {}
     -- 中文维护注释（2026-09-14，收藏稳定选择）：永久 Store 仍是历史 string[]，这里用 keyword 生成
     -- Presentation key，而不是 favoriteIndex。排序后 index 会变化，但 keyword 唯一，所以删除/移动不会误操作别行。
-    for _, keyword in ipairs(type(Feature.State) == "table" and type(Feature.State.favorites) == "table" and Feature.State.favorites or {}) do
+    -- 中文维护注释（2026-09-30，presentation-private-state-1）：收藏列表改走 Feature 的公开只读
+    -- facade，不再直接读 State 私有字段 —— Presentation 只消费投影/公开入口，不碰事实本体。
+    -- 返回的已是重新归一后的新表，改它不会写回持久化。
+    for _, keyword in ipairs(type(Feature) == "table" and type(Feature.GetFavorites) == "function" and Feature:GetFavorites() or {}) do
         keyword = tostring(keyword or "")
         if keyword ~= "" then
             out[#out + 1] = {

@@ -168,6 +168,9 @@ local AuctionFavorites = NewFeature("tools_auction",{apiDependencies=AUCTION_API
 -- Feature.State；这个只读 facade 让 Sidecar Controller 在 250ms Surface 事件上 O(1) 获取偏好，
 -- 不必调用 GetProjection() 深拷贝当前拍卖结果。它不返回 Store 本体，也不允许反向写状态。
 function AuctionFavorites:IsSidecarEnabled() return self.State.sidecarEnabled~=false end
+-- 中文维护注释（2026-09-30，presentation-private-state-1）：收藏列表的公开只读 facade。
+-- 走共享读模型的归一逻辑，返回新表；Presentation 应调这个方法，而不是直接读 State。
+function AuctionFavorites:GetFavorites() return ARM.Favorites(self) end
 AuctionFavorites.SidecarPreferenceContractVersion=1
 function AuctionFavorites:Search(value) return self.Commands:Search(value) end
 function AuctionFavorites:AddFavorite(value) return self.Commands:AddFavorite(value) end

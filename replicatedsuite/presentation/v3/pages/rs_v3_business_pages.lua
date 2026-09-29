@@ -204,7 +204,7 @@ local function Build(parent, route, id)
     -- 中文维护注释（range-selected-editor-1）：范围圆是可增删的持久业务实体，不能在 Page Build 时按
     -- `#circles` 静态生成一套控件。旧实现首次打开为空列表时只构建“空状态”，之后 AddCircle 仅调用
     -- root:Refresh；Refresh 只刷新现有组件和 TableView，不会新增 Card，结果就是用户能看到新圆投影行，
-    -- 却永远没有对应的编辑/删除控件。Presentation 改为“稳定列表 + 单一选中圆编辑器”：Feature.State.circles
+    -- 却永远没有对应的编辑/删除控件。Presentation 改为“稳定列表 + 单一选中圆编辑器”：feature 私有 State 的 circles
     -- 仍是唯一 Authority，Table 只保存本页 selected circle id，不复制业务配置；增删不需要重建 Page/Generation。
     -- 兼容边界：既有 circles/name/id/数值存档格式完全不改；页面关闭后选择状态不持久化。风险：选择必须按
     -- 稳定 circleId 而不是行 index 绑定，所以刷新/删除后都重新按 id 对齐，禁止以后改回按构建时 index 捕获。
@@ -797,7 +797,7 @@ local function Build(parent, route, id)
         -- 用户无法知道“收藏/今日任务/临时清单”工作区存在；手动关闭 Sidecar 后也没有重新显示入口。
         -- Authority/数据流：这里是纯 Presentation。拍卖行可见性和 Sidecar 生命周期只读取
         -- S.UIV3.AuctionSidecar:GetControlState()；显示动作只调用 RequestShow。页面不直接访问 WidgetHost、
-        -- AuctionSurfaceV3、Feature.State 或任何 Store 私有字段。收藏仍由 tools_auction，今日任务仍由
+        -- AuctionSurfaceV3、Feature 的私有 State 或任何 Store 私有字段。收藏仍由 tools_auction，今日任务仍由
         -- DailyAuctionMaterialsV3，临时清单仍由 AuctionSessionListV3 持有。
         -- 兼容边界：新增 sidecarEnabled 永久偏好，但不改收藏数组、分页或查询契约；旧 payload 缺字段
         -- 默认 true，保持升级前“打开拍卖行自动出现”的历史行为。关闭只停 Sidecar/AuctionSurface 观察，不删除收藏。

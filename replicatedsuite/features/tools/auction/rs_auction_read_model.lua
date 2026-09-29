@@ -44,6 +44,15 @@ function R.NormalizeAuctionFavorites(value)
     return out
 end
 
+-- 中文维护注释（2026-09-30，presentation-private-state-1）：收藏列表的**公开只读入口**。
+-- 原先 Presentation 层（rs_v3_auction_sidecar 的 FavoriteRows）直接读 feature.State.favorites ——
+-- 那是 Feature 的私有状态，Presentation 不该碰。这里返回一个重新归一后的**新表**，
+-- 调用方拿不到 State 本体，改它也不会写回持久化事实。
+function R.Favorites(feature)
+    if type(feature) ~= "table" then return {} end
+    return R.NormalizeAuctionFavorites(feature.State and feature.State.favorites)
+end
+
 function R.NormalizeAuctionResultLimit(value)
     local n=tonumber(value); if n==nil or n~=math.floor(n) then return nil end
     return math.max(5,math.min(R.AUCTION_RESULT_LIMIT_MAX,math.floor(n)))

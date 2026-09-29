@@ -849,9 +849,14 @@ function A:RunMatrix()
     end
     local dpsVisible = type(dpsFeature) == "table" and type(dpsFeature.GetWidgetVisible) == "function"
         and dpsFeature:GetWidgetVisible() == true or false
+    -- 中文维护注释（2026-09-30，presentation-private-state-1）：原先这里还断言了 DPS 私有
+    -- State 的 widgetVisible 字段形状。那条契约已唯一归位到
+    -- features/combat/dps/rs_dps_acceptance.lua（那边覆盖更全：widgetWindow + widgetVisible +
+    -- GetWidgetVisible + SetWidgetVisible），这里重复读私有 State 只是让 Presentation 越界，
+    -- 因此删掉；Presentation 侧只保留 Store schema、公开入口与偏好一致性这三条自己的契约。
     if type(dpsStore) ~= "table" or tonumber(dpsStore.schemaVersion) ~= 4
-        or type(dpsFeature) ~= "table" or type(dpsFeature.State) ~= "table" or type(dpsFeature.State.widgetVisible) ~= "boolean"
-        or type(dpsFeature.GetWidgetVisible) ~= "function" or type(dpsFeature.Commands) ~= "table"
+        or type(dpsFeature) ~= "table" or type(dpsFeature.GetWidgetVisible) ~= "function"
+        or type(dpsFeature.Commands) ~= "table"
         or type(dpsFeature.Commands.SetWidgetVisible) ~= "function"
         or dpsPreferenceOk ~= true or (dpsPreference == true) ~= dpsVisible then
         failures[#failures + 1] = "dps_widget_visibility_preference_contract"
