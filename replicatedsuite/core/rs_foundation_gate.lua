@@ -119,11 +119,10 @@ function G:EvaluateBagActionContract()
         if ok ~= true then missing[#missing + 1] = tostring(token) end
     end
 
+    -- 中文维护注释（Phase 3 Batch N，2026-09-29，core-feature-decoupling-1）：本方法原先还有 36 条 tools_bag 的 Require（25 个契约版本下限 + 10 条命令），已整段搬到 features/tools/bag/rs_bag_acceptance.lua 的 v3_tools_bag_action_contract，判定逐条等价。 本方法只保留 Service / UIV3 侧契约（InventorySnapshotV3 / BagQuickOverlay / BusinessPagesContract）—— 它们不是 Feature 债。注意：注释里也不要写出带点号的“表名+字段”形式，rs_architecture_audit 是行级正则且不跳过注释。
     local inventorySnapshot = S.Services and S.Services.InventorySnapshotV3 or nil
-    local bagTools = S.Features and S.Features.tools_bag or nil
     local bagQuickPresenter = S.UIV3 and S.UIV3.BagQuickOverlay or nil
     local businessPagesContract = S.UIV3 and S.UIV3.BusinessPagesContract or nil
-    local commands = type(bagTools) == "table" and bagTools.Commands or nil
 
     Require(type(inventorySnapshot) == "table", "inventory.service")
     Require(type(inventorySnapshot) == "table" and (tonumber(inventorySnapshot.SnapshotContractVersion) or 0) >= 1, "inventory.snapshot_v1")
@@ -135,43 +134,7 @@ function G:EvaluateBagActionContract()
     Require(type(inventorySnapshot) == "table" and type(inventorySnapshot.CountLive) == "function", "inventory.CountLive")
     Require(type(inventorySnapshot) == "table" and type(inventorySnapshot.ReadPhysicalBagSlot) == "function", "inventory.ReadPhysicalBagSlot")
 
-    Require(type(bagTools) == "table", "bag.feature")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.BagMoveContractVersion) or 0) >= 8, "bag.move_v8")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.BatchLifecycleContractVersion) or 0) >= 5, "bag.batch_lifecycle_v5")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.NativeWindowQuickContractVersion) or 0) >= 7, "bag.native_quick_v7")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.ReloadQuickObserverContractVersion) or 0) >= 3, "bag.reload_observer_v3")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.ResponsiveWindowObserverContractVersion) or 0) >= 1, "bag.responsive_observer_v1")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.ProductBlacklistUxContractVersion) or 0) >= 1, "bag.product_blacklist_v1")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.BlacklistNameMetadataContractVersion) or 0) >= 1, "bag.blacklist_name_meta_v1")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.BlacklistExplicitLookupContractVersion) or 0) >= 1, "bag.blacklist_lookup_v1")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.RUFourValueWindowVisibilityContractVersion) or 0) >= 2, "bag.ru_visibility_v2")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.NativeVisibilityShapeContractVersion) or 0) >= 1, "bag.visibility_shape_v1")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.SurfaceVisibilitySplitContractVersion) or 0) >= 1, "bag.surface_split_v1")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.StorageSessionBagSurfaceContractVersion) or 0) >= 1, "bag.storage_session_surface_v1")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.BagActionPhysicalReadAuthorityContractVersion) or 0) >= 1, "bag.physical_read_authority_v1")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.VisiblePresenterRetryContractVersion) or 0) >= 1, "bag.presenter_retry_v1")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.DynamicSourceResolutionContractVersion) or 0) >= 3, "bag.dynamic_source_v3")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.QuickIdentityFallbackContractVersion) or 0) >= 1, "bag.identity_fallback_v1")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.BagTaskMutexContractVersion) or 0) >= 2, "bag.mutex_v2")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.QuickRunSelfHealContractVersion) or 0) >= 1, "bag.self_heal_v1")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.QuickTwoButtonContractVersion) or 0) >= 1, "bag.two_button_v1")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.QuickReasonVisibilityContractVersion) or 0) >= 1, "bag.reason_visibility_v1")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.QuickStatusTimestampContractVersion) or 0) >= 1, "bag.status_timestamp_v1")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.InventorySnapshotContractVersion) or 0) >= 1, "bag.inventory_bridge_v1")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.GroupedIntentQueueContractVersion) or 0) >= 1, "bag.grouped_intent_v1")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.FullStorageContinuationContractVersion) or 0) >= 1, "bag.full_storage_continue_v1")
-    Require(type(bagTools) == "table" and (tonumber(bagTools.BatchTargetAutoContractVersion) or 0) >= 1, "bag.batch_target_auto_v1")
 
-    Require(type(commands) == "table" and type(commands.QuickWithdraw) == "function", "command.QuickWithdraw")
-    Require(type(commands) == "table" and type(commands.QuickDeposit) == "function", "command.QuickDeposit")
-    Require(type(commands) == "table" and type(commands.QuickCancel) == "function", "command.QuickCancel")
-    Require(type(commands) == "table" and type(commands.ResolveAndAddBlacklistItem) == "function", "command.ResolveAndAddBlacklistItem")
-    Require(type(commands) == "table" and type(commands.AddGlobalBlacklistItem) == "function", "command.AddGlobalBlacklistItem")
-    Require(type(commands) == "table" and type(commands.RemoveGlobalBlacklistItem) == "function", "command.RemoveGlobalBlacklistItem")
-    Require(type(commands) == "table" and type(commands.SetBatchCategory) == "function", "command.SetBatchCategory")
-    Require(type(commands) == "table" and type(commands.SetBatchTarget) == "function", "command.SetBatchTarget")
-    Require(type(commands) == "table" and type(commands.SetBatchLimit) == "function", "command.SetBatchLimit")
-    Require(type(commands) == "table" and type(commands.DepositCategoryCurrent) == "function", "command.DepositCategoryCurrent")
 
     Require(type(businessPagesContract) == "table" and (tonumber(businessPagesContract.bagProductUxContractVersion) or 0) >= 2, "pages.bag_product_ux_v2")
     Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.version) or 0) >= 9, "presenter.v9")

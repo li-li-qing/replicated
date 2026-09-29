@@ -1144,5 +1144,97 @@ Test('BatchM 静态：acceptance 已补齐两条只存在于 Foundation 的契�
         'acceptance must keep the stricter layout-authority floor (>= 3)')
 end)
 
+------------------------------------------------------------------------
+-- Phase 3 Batch N：tools_bag 的动作契约
+--   （core/rs_foundation_gate.lua 的 EvaluateBagActionContract 里 36 条 Feature Require 已删除；
+--     InventorySnapshotV3 / BagQuickOverlay / BusinessPagesContract 的 Service/UIV3 侧保留在 Foundation）
+--   本批用脚本从 Foundation 机械生成 acceptance（25 个契约版本下限 + 10 条命令），避免手抄 36 条出错。
+------------------------------------------------------------------------
+local BAG_PATH = 'features/tools/bag/rs_bag_acceptance.lua'
+local BAG_CASE = 'v3_tools_bag_action_contract'
+
+local function BagFeature()
+    -- 下限清单与 acceptance 逐条对齐（25 项），避免 stub 少字段导致误报。
+    local feature = {
+        BagMoveContractVersion = 8,
+        BatchLifecycleContractVersion = 5,
+        NativeWindowQuickContractVersion = 7,
+        ReloadQuickObserverContractVersion = 3,
+        ResponsiveWindowObserverContractVersion = 1,
+        ProductBlacklistUxContractVersion = 1,
+        BlacklistNameMetadataContractVersion = 1,
+        BlacklistExplicitLookupContractVersion = 1,
+        RUFourValueWindowVisibilityContractVersion = 2,
+        NativeVisibilityShapeContractVersion = 1,
+        SurfaceVisibilitySplitContractVersion = 1,
+        StorageSessionBagSurfaceContractVersion = 1,
+        BagActionPhysicalReadAuthorityContractVersion = 1,
+        VisiblePresenterRetryContractVersion = 1,
+        DynamicSourceResolutionContractVersion = 3,
+        QuickIdentityFallbackContractVersion = 1,
+        BagTaskMutexContractVersion = 2,
+        QuickRunSelfHealContractVersion = 1,
+        QuickTwoButtonContractVersion = 1,
+        QuickReasonVisibilityContractVersion = 1,
+        QuickStatusTimestampContractVersion = 1,
+        InventorySnapshotContractVersion = 1,
+        GroupedIntentQueueContractVersion = 1,
+        FullStorageContinuationContractVersion = 1,
+        BatchTargetAutoContractVersion = 1,
+    }
+    feature.Commands = { QuickWithdraw = function() end, QuickDeposit = function() end,
+        QuickCancel = function() end, ResolveAndAddBlacklistItem = function() end,
+        AddGlobalBlacklistItem = function() end, RemoveGlobalBlacklistItem = function() end,
+        SetBatchCategory = function() end, SetBatchTarget = function() end,
+        SetBatchLimit = function() end, DepositCategoryCurrent = function() end }
+    return feature
+end
+
+Test('BatchN tools_bag：实现未注册 → case 仍注册且失败', function()
+    local cases = BootTruth('tools_bag', BAG_PATH, nil)
+    assert(type(cases[BAG_CASE]) == 'function', 'case must register even when missing')
+    local ok, reason = cases[BAG_CASE]()
+    assert(ok == false and tostring(reason) == 'implementation_not_registered', 'reason=' .. tostring(reason))
+end)
+
+Test('BatchN tools_bag：合规契约通过（36 条搬迁未误伤）', function()
+    local ok, reason = BootTruth('tools_bag', BAG_PATH, BagFeature())[BAG_CASE]()
+    assert(ok == true, 'compliant feature must pass, got ' .. tostring(reason))
+end)
+
+Test('BatchN tools_bag：契约回退与缺命令必须被拒', function()
+    local function Reject(mutate, label)
+        local feature = BagFeature()
+        mutate(feature)
+        local ok, reason = BootTruth('tools_bag', BAG_PATH, feature)[BAG_CASE]()
+        assert(ok == false, label .. ' must be rejected')
+        assert(reason ~= nil and tostring(reason) ~= '', 'rejection must carry a reason')
+    end
+    Reject(function(f) f.BagMoveContractVersion = 7 end, 'bag.move_v8 下限')
+    Reject(function(f) f.BatchLifecycleContractVersion = 4 end, 'bag.batch_lifecycle_v5 下限')
+    Reject(function(f) f.Commands = nil end, '命令表缺失')
+    Reject(function(f) f.Commands.QuickWithdraw = nil end, '缺 QuickWithdraw')
+    Reject(function(f) f.Commands.DepositCategoryCurrent = nil end, '缺 DepositCategoryCurrent')
+end)
+
+Test('BatchN 静态：core 不得再点名 tools_bag，但 Service/UIV3 侧必须保留且推导链仍在', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    -- ① 完整实现表访问串 / 已删除的判定壳子
+    for _, pattern in ipairs({ 'S.Features.tools_bag', 'bagTools', 'bag.move_v8', 'bag.batch_lifecycle_v5',
+        'command.QuickWithdraw', 'command.DepositCategoryCurrent' }) do
+        assert(text:find(pattern, 1, true) == nil, 'Foundation still references: ' .. pattern)
+    end
+    -- ② 非 Feature 侧必须保留（Service / UIV3）
+    for _, pattern in ipairs({ 'InventorySnapshotV3', 'PhysicalBagAuthorityContractVersion',
+        'BagQuickOverlay', 'BusinessPagesContract', 'pages.bag_product_ux_v2' }) do
+        assert(text:find(pattern, 1, true) ~= nil, 'non-Feature counterpart must stay: ' .. pattern)
+    end
+    -- ③ 推导链：判定必须仍由 Service 侧推导，不能被改成常量
+
+    assert(text:find('Require(type(inventorySnapshot) == "table", "inventory.service")', 1, true) ~= nil,
+        'the inventory-side judgement chain must remain')
+end)
+
 print(string.format('CORE-FEATURE-DECOUPLING RESULT %d passed / %d failed', passed, failed))
 if failed > 0 then error('core/feature decoupling regressions: ' .. tostring(failed)) end
