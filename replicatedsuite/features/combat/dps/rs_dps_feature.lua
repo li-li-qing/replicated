@@ -494,3 +494,25 @@ end
 
 local ok, err = Runtime:RegisterImplementation(F.Id, F)
 if ok ~= true then error(err) end
+
+-- 中文维护注释（Phase 3 Batch P，2026-09-29，core-feature-decoupling-1）：把本 Feature 的健康投影与
+-- 运行期状态投影注册到 Core 的取值表。原先 core/rs_foundation_gate.lua 直接按 id 读取本 Feature 的
+-- 实现表（health、enabled、busSubscribed、Domain 版本），既用于契约 detail 也用于运行期生命周期判定；
+-- 现在 Core 只读投影 —— **契约本身已归位到 rs_dps_acceptance.lua，诊断可观察性不降级**。
+-- provider 每次实时调用、不缓存，与旧取值时机和新鲜度一致。
+local providers = S.FeatureHealthProviders
+if type(providers) == "table" then
+    providers:Register("dps_health", function()
+        local feature = S.Features and S.Features.DPS or nil
+        return type(feature) == "table" and type(feature.GetHealth) == "function" and feature:GetHealth() or nil
+    end)
+    providers:Register("dps_runtime_snapshot", function()
+        local feature = S.Features and S.Features.DPS or nil
+        if type(feature) ~= "table" then return nil end
+        return {
+            enabled = feature.enabled == true,
+            busSubscribed = feature.busSubscribed == true,
+            domainVersion = type(feature.Domain) == "table" and (tonumber(feature.Domain.version) or 0) or 0,
+        }
+    end)
+end

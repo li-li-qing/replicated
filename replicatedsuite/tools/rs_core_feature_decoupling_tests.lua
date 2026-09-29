@@ -1314,5 +1314,66 @@ Test('BatchO 静态：acceptance 无条件注册 + 补齐 3 项 + schema 取齐�
         'acceptance must keep the stricter store schema (6), not the old 3')
 end)
 
+------------------------------------------------------------------------
+-- Phase 3 Batch P：DPS（三个 AddCheck 共约 47 行）
+--   （dps_v3_contract 的 Feature 条件已删；dps_skill_proxy_source_contract 与
+--     dps_v3_runtime_scope 的运行期读数改从投影取值表读取）
+--   **保留**：dpsStore（Core Store）、dpsMeta（Registry）、dpsPage / dpsWidget（UIV3）、
+--     proxyCatalog / fountainProxy（Data）、CombatRelationV3 / CombatAnalyticsV3（Service）
+--   差集扫描的结论很干净：命令面**无缺口**、Domain 版本下限两边都是 7 —— 可直接搬迁。
+------------------------------------------------------------------------
+local DPS_PATH = 'features/combat/dps/rs_dps_feature.lua'
+local DPS_ACC = 'features/combat/dps/rs_dps_acceptance.lua'
+
+Test('BatchP 静态：core 不得再按 id 读 DPS（两种回填形态都查）', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    assert(text:find('S.Features.DPS', 1, true) == nil, 'Foundation must not read the DPS feature table')
+    local bare = 0
+    for _ in text:gmatch('[^A-Za-z_]dpsFeature%.[A-Za-z_]') do bare = bare + 1 end
+    assert(bare == 0, 'Foundation must not dereference the bare dpsFeature binding, found ' .. tostring(bare))
+    assert(text:find('dpsFeature', 1, true) == nil, 'the dpsFeature binding must be gone entirely')
+end)
+
+Test('BatchP 静态：非 Feature 侧必须保留，且投影读数的推导链仍在', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    -- Service / Data / UIV3 / Registry / Core Store 五类对端都在
+    for _, pattern in ipairs({ 'dpsStore', 'dpsMeta', 'combat.stats', 'combat.dps',
+        'CombatSourceProxyCatalog', 'PLAYER_PLACED_SKILL_PROXY', 'CombatRelationV3', 'CombatAnalyticsV3' }) do
+        assert(text:find(pattern, 1, true) ~= nil, 'non-Feature counterpart must stay: ' .. pattern)
+    end
+    -- 三条判定都还在（没有被整条删掉 —— 它们各自仍承载非 Feature 侧的契约）
+    for _, name in ipairs({ 'dps_v3_contract', 'dps_skill_proxy_source_contract', 'dps_v3_runtime_scope' }) do
+        assert(text:find(name, 1, true) ~= nil, 'the judgement must remain: ' .. name)
+    end
+    -- 运行期读数改从投影
+    for _, pattern in ipairs({ 'dps_health', 'dps_runtime_snapshot' }) do
+        assert(text:find(pattern, 1, true) ~= nil, 'readings must go through the projection: ' .. pattern)
+    end
+    assert(text:find('local dpsHealth = S.FeatureHealthProviders', 1, true) ~= nil,
+        'dpsHealth must be derived from the projection')
+end)
+
+Test('BatchP 静态：两个投影已在 DPS Feature 侧注册', function()
+    local f = assert(io.open(DPS_PATH, 'rb'))
+    local text = f:read('*a'); f:close()
+    for _, pattern in ipairs({ 'dps_health', 'dps_runtime_snapshot' }) do
+        assert(text:find(pattern, 1, true) ~= nil, 'DPS feature must register: ' .. pattern)
+    end
+    -- 运行期状态投影必须覆盖原来被直接读取的三个字段
+    for _, field in ipairs({ 'enabled', 'busSubscribed', 'domainVersion' }) do
+        assert(text:find(field, 1, true) ~= nil, 'runtime snapshot must expose: ' .. field)
+    end
+end)
+
+Test('BatchP 静态：acceptance 的 Domain 版本下限与搬迁前一致（7）', function()
+    local f = assert(io.open(DPS_ACC, 'rb'))
+    local text = f:read('*a'); f:close()
+    -- 搬迁前 Foundation 要求 >= 7；取齐后这里必须仍是 < 7（即 >= 7）
+    assert(text:find('F.Domain.version) or 0) < 7', 1, true) ~= nil,
+        'acceptance must keep the domain version floor at 7')
+end)
+
 print(string.format('CORE-FEATURE-DECOUPLING RESULT %d passed / %d failed', passed, failed))
 if failed > 0 then error('core/feature decoupling regressions: ' .. tostring(failed)) end

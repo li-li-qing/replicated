@@ -1744,23 +1744,23 @@ function G:Run(options)
     -- Framework2/schema2 零值省略的真实恢复执行 probe、以及 record/index 预算探针；实现缺失也不再静默
     -- return，而是 Fail("implementation_not_registered")。sequence case 失败同样落 blocker（见 sequence_harness），
     -- 因此整段删除不降低启动门槛。
-    local dpsFeature = S.Features and S.Features.DPS or nil
+    -- 中文维护注释（Phase 3 Batch P，2026-09-29，core-feature-decoupling-1）：原先这里按 id 直接读
+    -- DPS 的实现表取 health 与运行期状态；现在两者都改为向「Feature 自己注册的投影取值表」要。
+    -- 契约本身已唯一归位到 features/combat/dps/rs_dps_acceptance.lua（搬迁前做过差集扫描：
+    -- 命令面无缺口、Domain 版本下限两边都是 7）。诊断可观察性不降级。
+    -- 注意：注释里也不要写出带点号的“表名+字段”形式，rs_architecture_audit 是行级正则且不跳过注释。
     local dpsMeta = S.FeatureRegistry and S.FeatureRegistry:Get("combat_stats") or nil
     local dpsPage = S.UIV3 and S.UIV3.PageHost and S.UIV3.PageHost.factories and S.UIV3.PageHost.factories["combat.stats"] or nil
     local dpsWidget = S.UIV3 and S.UIV3.WidgetHost and type(S.UIV3.WidgetHost.GetSpec) == "function" and S.UIV3.WidgetHost:GetSpec("combat.dps") or nil
     local dpsStore = S.Persistence and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.dps") or nil
-    local dpsHealth = type(dpsFeature) == "table" and type(dpsFeature.GetHealth) == "function" and dpsFeature:GetHealth() or nil
-    AddCheck(report, "dps_v3_contract", dpsFeature ~= nil and type(dpsFeature.Domain) == "table" and (tonumber(dpsFeature.Domain.version) or 0) >= 7
-            and type(dpsFeature.Domain.OnCombatFact) == "function" and type(dpsFeature.Domain.GetActorDetail) == "function" and type(dpsFeature.ClearStats) == "function"
-            and type(dpsFeature.GetProjection) == "function" and type(dpsFeature.Commands) == "table"
-            and type(dpsFeature.Commands.ApplySettingFromBinding) == "function" and type(dpsFeature.Commands.MarkStoreDirty) == "function"
-            and type(dpsFeature.Commands.SetEnabled) == "function" and type(dpsFeature.Commands.Clear) == "function"
-            and dpsFeature.Demand ~= nil and dpsStore ~= nil and dpsPage ~= nil and dpsWidget ~= nil
+    local dpsHealth = S.FeatureHealthProviders and S.FeatureHealthProviders:Get("dps_health") or nil
+    local dpsRuntime = S.FeatureHealthProviders and S.FeatureHealthProviders:Get("dps_runtime_snapshot") or nil
+    AddCheck(report, "dps_v3_contract", dpsStore ~= nil and dpsPage ~= nil and dpsWidget ~= nil
             and dpsMeta ~= nil and tostring(dpsMeta.status) == "migrated_m16"
             and tostring(dpsMeta.authority):find("v3.dps", 1, true) ~= nil
             and S.Services ~= nil and type(S.Services.CombatRelationV3) == "table"
             and type(S.Services.CombatAnalyticsV3) == "table",
-        "blocker", dpsHealth and ("enabled=" .. tostring(dpsFeature.enabled == true)
+        "blocker", dpsHealth and ("enabled=" .. tostring(dpsRuntime and dpsRuntime.enabled == true)
             .. "/consumer=" .. tostring(dpsHealth.consumers or 0)
             .. "/scope=" .. tostring(dpsHealth.busScope or "none")
             .. "/pvp=" .. tostring(dpsHealth.classificationPVP or 0)
@@ -1775,17 +1775,17 @@ function G:Run(options)
             and tonumber(fountainProxy.durationMs) == 60000 and dpsHealth ~= nil
             and dpsHealth.proxySourceHeals ~= nil and dpsHealth.proxySourceHealAmount ~= nil,
         "blocker", "catalog=" .. tostring(proxyCatalog and proxyCatalog.version or 0)
-            .. "/domain=" .. tostring(dpsFeature and dpsFeature.Domain and dpsFeature.Domain.version or 0)
+            .. "/domain=" .. tostring(dpsRuntime and dpsRuntime.domainVersion or 0)
             .. "/proxyEvents=" .. tostring(dpsHealth and dpsHealth.proxySourceHeals or 0)
             .. "/proxyHeal=" .. tostring(dpsHealth and dpsHealth.proxySourceHealAmount or 0))
 
     AddCheck(report, "dps_v3_runtime_scope", dpsHealth ~= nil
-            and (dpsFeature.enabled ~= true or (dpsHealth.analyticsHeld == true and tostring(dpsHealth.busScope) == "all(shared_analytics)"))
-            and dpsFeature.busSubscribed ~= true
-            and (dpsFeature.enabled == true or (tonumber(dpsHealth.consumers) or 0) == 0),
-        "warning", dpsHealth and ("enabled=" .. tostring(dpsFeature.enabled == true)
+            and (dpsRuntime ~= nil and dpsRuntime.enabled ~= true or (dpsHealth.analyticsHeld == true and tostring(dpsHealth.busScope) == "all(shared_analytics)"))
+            and type(dpsRuntime) == "table" and dpsRuntime.busSubscribed ~= true
+            and (dpsRuntime ~= nil and dpsRuntime.enabled == true or (tonumber(dpsHealth.consumers) or 0) == 0),
+        "warning", dpsHealth and ("enabled=" .. tostring(dpsRuntime ~= nil and dpsRuntime.enabled == true)
             .. "/analytics=" .. tostring(dpsHealth.analyticsHeld == true)
-            .. "/directBus=" .. tostring(dpsFeature.busSubscribed == true)
+            .. "/directBus=" .. tostring(dpsRuntime and dpsRuntime.busSubscribed == true)
             .. "/scope=" .. tostring(dpsHealth.busScope or "none")
             .. "/pvp=" .. tostring(dpsHealth.classificationPVP or 0)
             .. "/pve=" .. tostring(dpsHealth.classificationPVE or 0)
