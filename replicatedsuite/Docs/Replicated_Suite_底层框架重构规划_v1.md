@@ -1917,7 +1917,7 @@ ReloadAddon PASS
 | Phase 0 测试/编译基线 | **已完成** | 18.326 | 18.330 | 第六轮闭合：真实 Lua 5.1 编译门禁（261 files，luac5.1 5.1.5）+ 真实 Lua 5.1 运行环境；两个历史证据 fixture 按 byte-for-byte 从 18.244 归档恢复；X2Skill numeric API_TYPE 由 globals/apitypes.lua 证据链确认为 35，Native audit 收敛为 0/0/0；默认 Full Runner 端到端 PASS；Install 261/261、Unfinished Closure 14/14、Architecture 仍 49 债务。仅剩 X2Skill RU 实机行为验收（Phase 3 收口项） |
 | Phase 1 Business Bridge 拆分 | **已完成（Batch A–E 全部完成）** | 18.330 | 18.331 | 15 个 Feature 全部独立成文件；rs_business_bridge.lua（5223 行 / 188 slots）退役删除；新增装配工厂 + SharedBounds + 拍卖读模型；主 chunk slots 187→104→（bridge 不复存在，各文件 16–98）；`--feature-split` 59/59 并入默认 Full Runner；audit 0/0/0；Architecture 债务 49→48；BuildTag 推进到 `v3-m1.16.0.18.331-phase1-feature-slice-complete` |
 | Phase 2 Life Bundle 拆分 | **已完成（Step 1–4，首轮“一 Feature 一文件”闭合）** | 18.331 | 18.332 | 4 个 life Feature（Treasure / Fishing / Bonds / Trade）全部独立成文件；`rs_life_m16_bundle.lua`（5633 行 / 4 Feature）退役删除；新增 `features/life/shared/rs_life_slice_factory.lua`（life 版装配 helper，未与 Phase 1 工厂合并）；`--feature-split` 59→66 断言（新增 7 条 life 契约）；BuildTag 推进到 `v3-m1.16.0.18.332-phase2-life-bundle-slice-complete`。**§24.4 的 Trade 第二轮进一步拆分仍未开始**（前置条件：RU 实机一轮 Fresh Reload / 老配置 / 自动刷新 / 报价 / 材料缓存实测） |
-| Phase 3 Contract / Dependency Ownership | **进行中（Batch A–H 已完成）** | - | - | Core→Feature inversion + Feature/Service Native dependency ownership。**已落地**：把 Foundation 里点名具体业务 Feature 的硬编码契约门禁搬回 Feature 自己的 `*_acceptance.lua`（sequence case 与 AddCheck 同为 blocker 级别），搬迁前先把 acceptance 补齐成原判定的严格超集；没有 acceptance 的 Feature 则**新建** acceptance 并登记 `toc.g`。Batch A = RaidReadiness、B = DeathReview、C = life_bonds、D = Tasks/Activities/Gear 命令面、E = 四份观察契约、F = Fishing Auto-R + reinforce 真值、G = Core 诊断改用 Feature 自注册的投影取值表（`RuntimeHealthProvider` 的首个落地）、H = usability 契约里 boss_alerts/unit_lines/range_assist/buff_display 四组判定、I = 拍卖/行情/制作三个模块的 Feature 侧契约、J = Gear 快速启动意图契约、K = combat_team_tools 的角色 + 视觉/标记契约、L = Activities/Tasks 的 Persistence 契约组、M = BuffDisplay 的 HUD 校准/健康聚合段。新增 `--core-feature-decoupling` 门禁入口（并入默认 Full Runner）。Architecture 债务 47 → 12（CORE_FEATURE 41 → 6） |
+| Phase 3 Contract / Dependency Ownership | **进行中（Batch A–H 已完成）** | - | - | Core→Feature inversion + Feature/Service Native dependency ownership。**已落地**：把 Foundation 里点名具体业务 Feature 的硬编码契约门禁搬回 Feature 自己的 `*_acceptance.lua`（sequence case 与 AddCheck 同为 blocker 级别），搬迁前先把 acceptance 补齐成原判定的严格超集；没有 acceptance 的 Feature 则**新建** acceptance 并登记 `toc.g`。Batch A = RaidReadiness、B = DeathReview、C = life_bonds、D = Tasks/Activities/Gear 命令面、E = 四份观察契约、F = Fishing Auto-R + reinforce 真值、G = Core 诊断改用 Feature 自注册的投影取值表（`RuntimeHealthProvider` 的首个落地）、H = usability 契约里 boss_alerts/unit_lines/range_assist/buff_display 四组判定、I = 拍卖/行情/制作三个模块的 Feature 侧契约、J = Gear 快速启动意图契约、K = combat_team_tools 的角色 + 视觉/标记契约、L = Activities/Tasks 的 Persistence 契约组、M = BuffDisplay 的 HUD 校准/健康聚合段、N = tools_bag 的动作契约。新增 `--core-feature-decoupling` 门禁入口（并入默认 Full Runner）。Architecture 债务 47 → 11（CORE_FEATURE 41 → 5） |
 | Phase 4 Scheduler/Event 热路径 | 未开始 | - | - | P1 |
 | Phase 5 Presentation 边界 | 未开始 | - | - | P1 |
 | Phase 6 Diagnostics/Acceptance | 未开始 | - | - | P1 |
@@ -4022,61 +4022,73 @@ case 后段的 Service/UIV3 依赖链属于运行期，不在本批搬迁范围�
 投影（复用 Batch G 的 `S.FeatureHealthProviders`），detail 改走 `BuffContract("<key>")`。
 契约测试里专门有一条守着这个调用形式，反例（改成常量）能抓到。
 
-### 25.6.14 门禁与指标
+### 25.6.14 Batch N：tools_bag 的动作契约
+
+```text
+规模    EvaluateBagActionContract 方法里的 36 条 Feature Require（25 个契约版本下限 + 10 条命令），
+        已整段删除；同一条判定里的 InventorySnapshotV3 / BagQuickOverlay / BusinessPagesContract
+        （Service / UIV3 侧）全部保留在 Foundation
+收敛    新建 features/tools/bag/rs_bag_acceptance.lua → v3_tools_bag_action_contract
+        **用脚本从 Foundation 机械生成**（25 条下限 + 10 条命令逐条提取），避免手抄 36 条出错
+债务    12 → 11
+```
+
+**两个新的操作要点**：
+
+1. **用脚本机械生成大批量 acceptance**：契约条目多时（本批 36 条），手工抄写容易漏。
+   脚本按正则从 Foundation 提取 `(字段, 下限, token)` 三元组直接生成 Lua —— 生成后立刻 `luac -p`，
+   并用一条“合规通过（36 条搬迁未误伤）”断言兜底。测试侧的 stub 同样由脚本从 acceptance
+   **反向提取**生成，两边互为镜像，任何一侧漏了都会被“合规通过”或“回退必拒”抓到。
+2. **行号断言要写两端点**：脚本第一版的 assert 行号写错（命令段实际是 165-174，
+   断言写成了 173 行含 SetBatchLimit），导致整个脚本提前中止且**什么都没改**。
+   行号断言要两端点 + 中间点都验；脚本中止比静默改错好，但别让它白跑。
+   另外用脚本生成代码块时 `{` 的闭合容易被替换逻辑吃掉，生成后必须立刻 `luac -p`。
+
+### 25.6.15 门禁与指标
 
 ```text
 新增入口  python tools/rs_status_refactor_test_runner.py --core-feature-decoupling
           （CORE_FEATURE_DECOUPLING_TESTS，已并入默认 Full Runner，与 feature-split 分开计数）
-契约测试  tools/rs_core_feature_decoupling_tests.lua   111 条断言（…L:4 M:4）
-债务      Architecture 47→…→13(L)→12(M)；CORE_FEATURE 41 → 6
-          （core/rs_diagnostics.lua 已清零，余 6 处全部在 core/rs_foundation_gate.lua）
+契约测试  tools/rs_core_feature_decoupling_tests.lua   115 条断言（…M:4 N:4）
+债务      Architecture 47→…→12(M)→11(N)；CORE_FEATURE 41 → 5
+          （core/rs_diagnostics.lua 已清零，余 5 处全部在 core/rs_foundation_gate.lua）
+shipped   Lua 5.1 compile 296（Batch E–N 新增 15 个文件，均已登记 toc 对账）
 shipped   Lua 5.1 compile 295（Batch E–K 新增 13 个文件，均已登记 toc 对账）
 门禁      Install 282/282、syntax 416、Native audit 0/0/0、Test Dependency Audit、
-          Unfinished Closure 14/14、feature-split、core-feature-decoupling 111/111、
+          Unfinished Closure 14/14、feature-split、core-feature-decoupling 115/115、
           fishing tests 19/19、默认 Full Runner exit=0
 ```
 
-反例验证（十三批都做）：A 用临时桩触发；B/C/D 还原 acceptance 的旧 guard 形态；E 去掉新加的
+反例验证（十四批都做）：A 用临时桩触发；B/C/D 还原 acceptance 的旧 guard 形态；E 去掉新加的
 “topic 非空 / Demand 存在”（每文件 2 条）；F 去掉 `auto_r_hard_blocked` 与
 `slot_probe_runtime_block_missing`；G 改掉 unit_lines 的注册 key（1 条）+ 把诊断一处改回按 id 直读（2 条）；
 H 放宽一个下限（1 条）+ **把完整实现表访问形式回填回 Foundation**（补强断言后 1 条）；
 I / J 两种形态各一次（回填整行 / 放宽下限）；K 又加了第三种：
 **“搬太多”（把非 Feature 侧的判定也改掉）** —— 这条是第一版断言漏掉、补强后才抓住的；
-L 按三层各做一次，其中②与①一起注入时会被前一个 assert 掩盖，**必须单独注入才验证得到**。
+L 按三层各做一次，其中②与①一起注入时会被前一个 assert 掩盖，**必须单独注入才验证得到**；
+N 两种形态各一次（回填 / 放宽下限），各精确 1 条。
 **每次都精确命中、且只命中该改动对应的那几条**，还原后全绿。
 
-### 25.6.15 剩余工作（余 6 处 CORE_FEATURE，全在 `core/rs_foundation_gate.lua`）
+### 25.6.16 剩余工作（余 5 处 CORE_FEATURE，全在 `core/rs_foundation_gate.lua`）
 
 ```text
 1. 分布（行号随批次推进变化，以 audit 输出为准）：
-     123   tools_bag（v3_bag_action_contract，独立方法 EvaluateBagActionContract，约 35 条 Feature 条件）
      1706 / 1707 / 1770  Healer 家族（Healer / HealerAuraBridge / HealerScreenProjection）
      1833  DPS（该段三个 AddCheck 共约 47 行，需先拆依赖）
      2386  Trade（v3_trade_detail_favorites_contract，20+ 契约字段，跨 Feature/Service/UI）
-2. 建议顺序：a) tools_bag（独立方法、边界最清楚）→ b) Healer 家族（3 处，需要新建
-   Healer / HealerScreenProjection 的 acceptance，HealerAuraBridge 已有部分覆盖）→
-   c) DPS（47 行、三条判定交织）→ d) Trade（20+ 契约字段跨 Feature/Service/UI，最后单独设计）。
-3. **每批开工前先跑一次「契约覆盖差集扫描」**（Batch M 的方法，见 §25.6.13）：
-   正则提取 Foundation 的 <var>.* 与 acceptance 的 F.* 求差，再逐个对比两边下限。
-   不要靠肉眼读巨型布尔表达式 —— 本批证明 95 行判定的真正缺口只有 2 个。
-   注意**误报**：同一个字段在 acceptance 的不同 case 里下限可能不同，
-   只要存在一条更严的就够，**不要看到不一致就改 acceptance**。
-4. **诊断可观察性不能悄悄降级**（Batch M 的教训）：detail 串里如果读了 Feature 的契约版本，
-   删掉前必须给替代来源 —— 让 Feature 注册 `*_contract_versions` 投影（复用
-   S.FeatureHealthProviders），detail 改走 BuffContract("<key>")；契约测试要守着这个调用形式。
-5. **搬哪些、留哪些（Batch J/K/L/M）**：Core 框架契约、Service/Data/UIV3 契约、
-   Core 的 Store 边界契约都**不要搬走**。判断标准：**主语是 Feature 还是 Core/Service**。
-6. **静态断言的三层要求**，缺一层就有一条绕过路径：
-   ① Feature 侧不得出现 —— 两种回填形态都要查（完整实现表访问串 + 带点号的字段名）
-   ② 非 Feature 侧必须保留
-   ③ 非 Feature 侧的**推导链**必须仍在
-   另外**不要查裸 feature id**（truthExpected 真值表里合法保留着这些 id）。
-7. **反例要分开注入**：一条 Test 里多个 assert，前一个失败会让后面的断言根本没执行，
-   看起来像“没抓住”（Batch L 与 M 都遇到过）。
-8. §25.2 descriptor 其余字段（RequiredServices / RequiredStores / NativeCapabilities）尚未引入；
-   RuntimeHealthProvider 已在 Batch G 以 S.FeatureHealthProviders 落地。
-9. 每批固定动作：**搬完立刻跑全量门禁** —— 既有测试可能钉住旧位置，必须把断言改成
-   “旧位置不得再拥有 + 新位置必须拥有”。
+2. 建议顺序：a) Healer 家族（3 处，需新建 Healer / HealerScreenProjection 的 acceptance，
+   HealerAuraBridge 已有部分覆盖）→ b) DPS（47 行、三条判定交织）→
+   c) Trade（20+ 契约字段跨 Feature/Service/UI，最后单独设计一批）。
+3. 每批开工前先跑一次「契约覆盖差集扫描」+ 逐个对比两边下限（§25.6.13/§25.6.14）。
+4. **大批量契约用脚本机械生成 acceptance，stub 由脚本从 acceptance 反向提取**（Batch N 方法），
+   两边互为镜像；生成后立刻 luac -p。
+5. 诊断可观察性不能悄悄降级（Batch M）：detail 串读 Feature 契约版本的，删掉前给替代来源
+   （注册 <feature>_contract_versions 投影），并守着调用形式的断言。
+6. 搬哪些、留哪些：Core 框架契约、Service/Data/UIV3 契约、Core 的 Store 边界契约都不搬。
+   判断标准：主语是 Feature 还是 Core/Service。
+7. 静态断言的三层要求：① Feature 侧不得出现（两种回填形态）② 非 Feature 侧必须保留
+   ③ 推导链必须仍在。不要查裸 feature id。
+8. 反例分开注入；每批搬完立刻跑全量门禁。
 ```
 1. 分布：core/rs_foundation_gate.lua（19 处）与 core/rs_diagnostics.lua（6 处）。
    diagnostics 那 6 处属 §28（Phase 6 Diagnostics 收敛），可用同一模板提前收口。
