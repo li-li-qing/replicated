@@ -16,7 +16,7 @@ return function(options)
     X2Player={GetShowingAppellation=function()return {42,'测试称号'}end,GetEffectAppellation=function()return {42,'测试称号'}end,PlayerInCombat=function()return false end}
     ReplicatedSuite={Features={},Services={},Generation=1,Config={settings={}},NowMs=function()return h.ms end,SafeTraceback=function(e)return tostring(e)..'\n'..debug.traceback()end}
     local S=ReplicatedSuite;h.S=S
-    dofile('core/rs_utils.lua');dofile('core/rs_reuse.lua');dofile('core/rs_events.lua');dofile('core/rs_scheduler.lua');dofile('core/rs_api.lua');dofile('core/rs_api_capabilities.lua');dofile('core/rs_persistence.lua')
+    dofile('core/rs_utils.lua');dofile('core/rs_reuse.lua');dofile('core/rs_events.lua');dofile('core/rs_scheduler.lua');dofile('core/rs_api.lua');dofile('core/rs_api_capabilities.lua');dofile('core/rs_persistence_transport.lua');dofile('core/rs_persistence.lua')
     S.DiagnosticsManager={Record=function(_,a,b,c,d,e)h.logs[#h.logs+1]={b,d,c,e}end,Error=function(_,a,b,c,d)h.logs[#h.logs+1]={a,b,c,d}end,Warn=function(_,a,b,c,d)h.logs[#h.logs+1]={a,b,c,d}end}
     S.FeatureRuntime={RegisterImplementation=function()return true end,IsEnabled=function()return true end,GetPreferredEnabled=function()return true end,
         Enable=function()return true end,Disable=function()return true end,SetEnabled=function()return true end}

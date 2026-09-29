@@ -71,7 +71,7 @@ local function Boot(disk)
         NowMs = function() return 1000 end,
     }
     dofile("core/rs_utils.lua"); dofile("core/rs_reuse.lua"); dofile("core/rs_demand.lua")
-    dofile("core/rs_api.lua"); dofile("core/rs_api_capabilities.lua"); dofile("core/rs_persistence.lua")
+    dofile("core/rs_api.lua"); dofile("core/rs_api_capabilities.lua"); dofile("core/rs_persistence_transport.lua"); dofile("core/rs_persistence.lua")
     return ReplicatedSuite, ReplicatedSuite.Persistence, io
 end
 

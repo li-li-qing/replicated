@@ -48,7 +48,7 @@ local function Boot(disk,loss)
         NowMs=function()return 1000 end,FeatureRuntime={RegisterImplementation=function()return true end}}
     local S=ReplicatedSuite
     dofile('core/rs_utils.lua');dofile('core/rs_reuse.lua');dofile('core/rs_demand.lua')
-    dofile('core/rs_api.lua');dofile('core/rs_api_capabilities.lua');dofile('core/rs_persistence.lua')
+    dofile('core/rs_api.lua');dofile('core/rs_api_capabilities.lua');dofile('core/rs_persistence_transport.lua');dofile('core/rs_persistence.lua')
     dofile('ui/framework/rs_ui_floating_surface.lua')
     dofile('features/combat/buff_display/rs_buff_display_store.lua')
     dofile('features/combat/death_review/rs_death_review_store.lua')

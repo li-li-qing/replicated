@@ -51,7 +51,7 @@ local function Boot(real)
         ADDON.LoadData=function(_,key)calls.reads[#calls.reads+1]=key;return Copy(disk[key])end
         ADDON.SaveData=function(_,key,value)calls.writes=calls.writes+1;disk[key]=Copy(value);return true end
         ADDON.ClearData=function()error('must not clear')end
-        dofile('core/rs_demand.lua');dofile('core/rs_persistence.lua');dofile('ui/framework/rs_ui_floating_surface.lua')
+        dofile('core/rs_demand.lua');dofile('core/rs_persistence_transport.lua');dofile('core/rs_persistence.lua');dofile('ui/framework/rs_ui_floating_surface.lua')
         dofile('features/combat/buff_display/rs_buff_display_store.lua');dofile('features/combat/death_review/rs_death_review_store.lua')
         -- 中文维护注释（2026-09-28，Phase 2 Step 4）：life_trade 已拆到独立文件，rs_life_m16_bundle.lua 退役；
         -- 本宿主只需要 v3.life.trade / v3.trade_preferences 的 Store 注册，因此按 toc 顺序补工厂 + Trade。

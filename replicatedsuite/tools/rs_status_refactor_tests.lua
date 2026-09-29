@@ -47,6 +47,7 @@ Test('manual classification outranks native lane', function()
     assert(C:ClassifyEntry({id=21,sources={debuff=true}},{[21]='buff'}).category == 'buff')
 end)
 -- Use the real persistence and floating-state normalizers, not test versions.
+dofile('core/rs_persistence_transport.lua')
 dofile('core/rs_persistence.lua')
 dofile('core/rs_demand.lua')
 dofile('ui/framework/rs_ui_floating_surface.lua')

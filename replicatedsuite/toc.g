@@ -25,6 +25,7 @@ core/rs_diagnostics.lua
 core/rs_module_diagnostics.lua
 core/rs_report_copy_transport.lua
 core/rs_self_check_report.lua
+core/rs_persistence_transport.lua
 core/rs_persistence.lua
 core/rs_app_state_v3.lua
 core/rs_ui_host_manager.lua

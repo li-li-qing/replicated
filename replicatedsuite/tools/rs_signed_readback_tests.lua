@@ -57,7 +57,7 @@ local function Boot(options)
     local S=ReplicatedSuite
     S.RecordLog=function(level,source,message)S.LogSequence=S.LogSequence+1;S.LogBuffer[#S.LogBuffer+1]={level=level,source=source,message=message,seq=S.LogSequence,at=io.now}end
     for _,path in ipairs({'core/rs_utils.lua','core/rs_reuse.lua','core/rs_api.lua','core/rs_api_capabilities.lua',
-        'core/rs_diagnostics.lua','core/rs_persistence.lua','ui/framework/rs_ui_floating_surface.lua',
+        'core/rs_diagnostics.lua','core/rs_persistence_transport.lua','core/rs_persistence.lua','ui/framework/rs_ui_floating_surface.lua',
         'features/combat/buff_display/rs_buff_display_store.lua','core/rs_report_copy_transport.lua','core/rs_self_check_report.lua'}) do dofile(path) end
     S.FoundationGate={Run=function()return {status='BLOCKED',blockers=1,warnings=1,checks={},sequences={skipped=true}}end}
     S.Runtime={Describe=function()return {}end};S.UIV3={PageHost={Describe=function()return {}end}}

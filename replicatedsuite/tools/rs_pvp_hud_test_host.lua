@@ -29,7 +29,7 @@ return function(options)
     function S.Api:IsCapabilityAllowed()return true end
     function S.Api:GetCharacterId()return 'phase0-test-character'end
     function S.Api:GetCharacterName()return 'Phase0'end
-    for _,f in ipairs({'data/rs_data_registry.lua','data/rs_skill_effects.lua','data/rs_combat_ability_catalog.lua','data/ids/rs_buff_ids.lua','data/ids/rs_plates_ids.lua','services/rs_status_classification_v3.lua','data/rs_status_tracking_catalog.lua','core/rs_persistence.lua','core/rs_demand.lua','ui/framework/rs_ui_floating_surface.lua','features/combat/buff_display/rs_buff_display_store.lua','features/combat/buff_display/rs_buff_display_projection.lua','features/combat/buff_display/rs_buff_display_feature.lua','features/combat/buff_display/rs_buff_display_management.lua'})do dofile(f)end
+    for _,f in ipairs({'data/rs_data_registry.lua','data/rs_skill_effects.lua','data/rs_combat_ability_catalog.lua','data/ids/rs_buff_ids.lua','data/ids/rs_plates_ids.lua','services/rs_status_classification_v3.lua','data/rs_status_tracking_catalog.lua','core/rs_persistence_transport.lua','core/rs_persistence.lua','core/rs_demand.lua','ui/framework/rs_ui_floating_surface.lua','features/combat/buff_display/rs_buff_display_store.lua','features/combat/buff_display/rs_buff_display_projection.lua','features/combat/buff_display/rs_buff_display_feature.lua','features/combat/buff_display/rs_buff_display_management.lua'})do dofile(f)end
     local F=assert(S.Features.BuffDisplay,'BuffDisplay feature missing')
     S.Services.AuraObservationV3=S.Services.AuraObservationV3 or {GetSnapshot=function()return nil,'test_no_native_aura'end}
     local h={S=S,P=S.Persistence,io=io,disk=io.disk}
