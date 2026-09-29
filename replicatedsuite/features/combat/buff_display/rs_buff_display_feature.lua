@@ -2265,4 +2265,35 @@ if type(providers) == "table" then
         return type(feature) == "table" and type(feature.GetHudCalibrationSnapshot) == "function"
             and feature:GetHudCalibrationSnapshot() or nil
     end)
+    -- 中文维护注释（Phase 3 Batch M，2026-09-29，core-feature-decoupling-1）：契约版本诊断投影。
+    -- core/rs_foundation_gate.lua 的 buff_display_v3_statusmap_contract 原先在 detail 串里直接复述
+    -- 本 Feature 的 20 个契约版本字段；把 Feature 访问搬走之后，那些字段改由本投影提供 ——
+    -- 诊断可观察性不降级，而 Core 不再认识这个业务 Feature。
+    providers:Register("buff_display_contract_versions", function()
+        local feature = S.Features and S.Features.BuffDisplay or nil
+        if type(feature) ~= "table" then return nil end
+        local function N(value) return tonumber(value) or 0 end
+        return {
+            buffHeadMarker = N(feature.BuffHeadMarkerContractVersion),
+            gearScoreApi = N(feature.GearScoreApiContractVersion),
+            hudCalibration = N(feature.HudCalibrationContractVersion),
+            hudLayoutPageMeasure = N(feature.HudLayoutPageMeasureContractVersion),
+            hudLayoutStore = N(feature.HudLayoutStoreContractVersion),
+            hudLayoutStoreIdMatches = tostring(feature.HudLayoutStoreId or "") == "v3.buff_display.layout",
+            layoutAuthority = N(feature.LayoutAuthorityContractVersion),
+            layoutPersistenceBoundary = N(feature.LayoutPersistenceBoundaryContractVersion),
+            managementProjection = N(feature.ManagementProjectionContractVersion),
+            schema5DualHudMigration = N(feature.Schema5DualHudMigrationContractVersion),
+            schema6TrackingMigration = N(feature.Schema6TrackingMigrationContractVersion),
+            schema7GearScoreFormatMigration = N(feature.Schema7GearScoreFormatMigrationContractVersion),
+            schema8KnownTransport4IncidentRecovery = N(feature.Schema8KnownTransport4IncidentRecoveryContractVersion),
+            schema8TrackingScopeMigration = N(feature.Schema8TrackingScopeMigrationContractVersion),
+            schema8Transport4RecoveryProbe = N(feature.Schema8Transport4RecoveryProbeContractVersion),
+            schema8Transport5DistanceXOmissionRecovery = N(feature.Schema8Transport5DistanceXOmissionRecoveryContractVersion),
+            schema8Transport5Recovery = N(feature.Schema8Transport5RecoveryContractVersion),
+            schema8Transport5ScopedPrefixRecovery = N(feature.Schema8Transport5ScopedPrefixRecoveryContractVersion),
+            targetDefaultTemplate = N(feature.TargetDefaultTemplateContractVersion),
+            transferFormat = N(feature.TransferFormatVersion),
+        }
+    end)
 end

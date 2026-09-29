@@ -1062,5 +1062,87 @@ Test('BatchL 静态：core/*.lua 不得再点名 Activities/Tasks，但 Store �
     end
 end)
 
+------------------------------------------------------------------------
+-- Phase 3 Batch M：BuffDisplay 的 HUD 校准/健康聚合段
+--   （core/rs_foundation_gate.lua 的 buff_display_v3_statusmap_contract 里的 Feature 条件已删除，
+--     buff_display_v3_runtime_scope 改为读取 Feature 自注册的 health 投影）
+--   **Store 侧（两个 Store）、UIV3 侧（HeadMarkers / HudCalibration）、FeatureRegistry 元数据、
+--     页面与悬浮窗注册全部保留在 Foundation**
+--   搬迁前先做了契约覆盖差集扫描：发现 2 个字段只在 Foundation 存在（已补进 acceptance）。
+------------------------------------------------------------------------
+local BUFF_PATH = 'features/combat/buff_display/rs_buff_display_feature.lua'
+local BUFF_ACC = 'features/combat/buff_display/rs_buff_display_acceptance.lua'
+
+local function BuffContractFeature()
+    local names = { 'BuffHeadMarkerContractVersion', 'GearScoreApiContractVersion',
+        'HudCalibrationContractVersion', 'HudLayoutPageMeasureContractVersion', 'HudLayoutStoreContractVersion',
+        'LayoutAuthorityContractVersion', 'LayoutPersistenceBoundaryContractVersion',
+        'ManagementProjectionContractVersion', 'Schema5DualHudMigrationContractVersion',
+        'Schema6TrackingMigrationContractVersion', 'Schema7GearScoreFormatMigrationContractVersion',
+        'Schema8KnownTransport4IncidentRecoveryContractVersion', 'Schema8TrackingScopeMigrationContractVersion',
+        'Schema8Transport4RecoveryProbeContractVersion',
+        'Schema8Transport5DistanceXOmissionRecoveryContractVersion', 'Schema8Transport5RecoveryContractVersion',
+        'Schema8Transport5ScopedPrefixRecoveryContractVersion', 'TargetDefaultTemplateContractVersion' }
+    local feature = { HudLayoutStoreId = 'v3.buff_display.layout', TransferFormatVersion = 3 }
+    for index, name in ipairs(names) do feature[name] = index end
+    return feature
+end
+
+Test('BatchM 静态：契约版本投影已注册且暴露 20 项（可观察性不降级）', function()
+    -- 注意：不能 dofile 真文件 —— buff_display 的 feature 文件需要完整启动环境，离线宿主加载不了。
+    -- 所以这里做静态核对：注册块存在、键名正确、字段数 20、实现缺失时降级为 nil。
+    local f = assert(io.open(BUFF_PATH, 'rb'))
+    local text = f:read('*a'); f:close()
+    assert(text:find('buff_display_contract_versions', 1, true) ~= nil, 'the projection must be registered')
+    assert(text:find('if type(feature) ~= "table" then return nil end', 1, true) ~= nil,
+        'the projection must degrade to nil when the implementation is missing')
+    -- 直接在注册块里数字段：19 个 N(feature...) + 1 个布尔字段 = 20
+    local _, versions = text:gsub('N%(feature%.', '')
+    local _, boolField = text:gsub('hudLayoutStoreIdMatches', '')
+    assert(versions + boolField == 20,
+        'projection must expose 20 entries, got ' .. tostring(versions + boolField))
+end)
+
+Test('BatchM 静态：core 不得再按 id 读 BuffDisplay（两种回填形态都查）', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    assert(text:find('S.Features.BuffDisplay', 1, true) == nil,
+        'Foundation must not read the BuffDisplay feature table')
+    -- 裸标识符的字段访问（排除 Store / Meta / Page / Widget / Health / Contracts 这些合法局部名）
+    local bare = 0
+    for _ in text:gmatch('buffDisplay%.[A-Za-z_]') do bare = bare + 1 end
+    assert(bare == 0, 'Foundation must not dereference the bare buffDisplay binding, found ' .. tostring(bare))
+end)
+
+Test('BatchM 静态：非 Feature 侧必须保留，且推导链仍在', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    for _, pattern in ipairs({ 'v3.buff_display.layout', 'buffDisplayStore',
+        'rebuildCanonicalForIntegrity', 'recoverKnownLegacyCanonical',
+        'BuffIconFontSizeContractVersion', 'buffHudCalibration.version', 'GetDiagnostics' }) do
+        assert(text:find(pattern, 1, true) ~= nil, 'non-Feature counterpart must stay: ' .. pattern)
+    end
+    -- 推导链：两个 Store 的判定仍从 Store 侧对象推导，而不是被换成常量
+    assert(text:find('local buffDisplayLayoutStore = S.Persistence', 1, true) ~= nil,
+        'layout store judgement must stay derived from Persistence')
+    -- detail 必须改从投影取值（否则就是把可观察性降级成常量）
+    assert(text:find('buff_display_contract_versions', 1, true) ~= nil,
+        'detail must read the contract-version projection')
+    assert(text:find('BuffContract("schema8Transport5Recovery")', 1, true) ~= nil,
+        'detail must resolve contract versions through the projection')
+end)
+
+Test('BatchM 静态：acceptance 已补齐两条只存在于 Foundation 的契约', function()
+    local f = assert(io.open(BUFF_ACC, 'rb'))
+    local text = f:read('*a'); f:close()
+    assert(text:find('Schema8Transport4RecoveryProbeContractVersion', 1, true) ~= nil,
+        'acceptance must carry the transport-v4 probe recovery contract')
+    assert(text:find('Schema8KnownTransport4IncidentRecoveryContractVersion', 1, true) ~= nil,
+        'acceptance must carry the known transport-v4 incident recovery contract')
+    -- 下限取齐：LayoutAuthorityContractVersion 在两边都必须是 >= 3
+    assert(text:find('(tonumber(F.LayoutAuthorityContractVersion) or 0) < 3', 1, true) ~= nil,
+        'acceptance must keep the stricter layout-authority floor (>= 3)')
+end)
+
 print(string.format('CORE-FEATURE-DECOUPLING RESULT %d passed / %d failed', passed, failed))
 if failed > 0 then error('core/feature decoupling regressions: ' .. tostring(failed)) end

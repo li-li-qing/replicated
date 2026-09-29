@@ -125,6 +125,11 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or (tonumber(F.Schema8Transport5RecoveryContractVersion) or 0) < 8
         or (tonumber(F.Schema8Transport5DistanceXOmissionRecoveryContractVersion) or 0) < 1
         or (tonumber(F.Schema8Transport5ScopedPrefixRecoveryContractVersion) or 0) < 2
+        -- 中文维护注释（Phase 3 Batch M，2026-09-29，core-feature-decoupling-1）：以下两项原先只在
+        -- core/rs_foundation_gate.lua 的 buff_display_v3_statusmap_contract 里检查，acceptance 缺；
+        -- 搬迁前补齐，避免删掉 Foundation 分支时把这两条恢复契约一起丢掉。
+        or (tonumber(F.Schema8Transport4RecoveryProbeContractVersion) or 0) < 4
+        or (tonumber(F.Schema8KnownTransport4IncidentRecoveryContractVersion) or 0) < 1
         or tostring(F.HudLayoutStoreId or "") ~= "v3.buff_display.layout"
         or type(F.GetTrackingPersistenceHealth) ~= "function"
         or type(F.CommitTrackingSnapshot) ~= "function"
