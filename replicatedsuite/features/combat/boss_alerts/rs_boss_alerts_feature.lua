@@ -460,3 +460,14 @@ do
     BossAlerts.RealtimeFactBridgeContractVersion = 2
     BossAlerts.RuleManagementContractVersion = 1
 end
+
+-- 中文维护注释（Phase 3 Batch G，2026-09-29，core-feature-decoupling-1）：把首领机制的诊断投影
+-- 注册到 Core 的取值表。原先 core/rs_diagnostics.lua 直接按 id 读取它（属 CORE_FEATURE 债务）；
+-- 现在 Core 只按“用途名”取值，业务 Feature id 只出现在本目录。provider 每次实时调用、不缓存。
+local providers = S.FeatureHealthProviders
+if type(providers) == "table" then
+    providers:Register("boss_alerts_diagnostics", function()
+        local feature = S.Features and S.Features.combat_boss_alerts or nil
+        return type(feature) == "table" and type(feature._bossDiag) == "table" and feature._bossDiag or nil
+    end)
+end

@@ -438,8 +438,11 @@ function D:BuildBuffHudReport()
     else
         lines[#lines + 1] = "HUD存档：Store不可用"
     end
-    local feature = S.Features and S.Features.BuffDisplay or nil
-    local hud = type(feature) == "table" and type(feature.GetHudCalibrationSnapshot) == "function" and feature:GetHudCalibrationSnapshot() or nil
+    -- 中文维护注释（Phase 3 Batch G，2026-09-29，core-feature-decoupling-1）：原先这里按 id 直接读
+    -- BuffDisplay 的实现表取 HUD 校准快照 —— CORE_FEATURE 债务。现在改为向「Feature 自己注册的投影
+    -- 取值表」要，Core 不再认识任何业务 Feature（注释里也不要写出带点号的“表名+字段”形式：
+    -- rs_architecture_audit 是行级正则且不跳过注释，说明文字会被重新计成 CORE_FEATURE 债务）。
+    local hud = S.FeatureHealthProviders and S.FeatureHealthProviders:Get("buff_hud_calibration") or nil
     local function ProfileLine(label, profile)
         profile = type(profile) == "table" and profile or {}
         local plate = type(profile.plate) == "table" and profile.plate or {}
@@ -480,8 +483,8 @@ function D:BuildBuffHudReport()
 end
 
 function D.UnitLineLine(snap)
-    local feature = S.Features and S.Features.combat_unit_lines or nil
-    local dia = feature and feature.Diagnostics or nil
+    -- 同上（Phase 3 Batch G）：改向 Feature 注册的投影取值表要，Core 不认识具体业务 Feature。
+    local dia = S.FeatureHealthProviders and S.FeatureHealthProviders:Get("unit_lines_diagnostics") or nil
     if dia == nil then return "UnitLines：诊断不可用（功能未加载）" end
     local projection = snap.screenProjection or {}
     return "UnitLines：enabled=" .. tostring(dia.enabled == true)
@@ -1154,20 +1157,20 @@ function D:Snapshot()
         demand = S.Demand and type(S.Demand.Describe)=="function" and S.Demand:Describe() or nil,
         refreshCoordinator = S.RefreshCoordinator and type(S.RefreshCoordinator.Describe)=="function" and S.RefreshCoordinator:Describe() or nil,
         auraObservation = S.Services and S.Services.AuraObservationV3 and type(S.Services.AuraObservationV3.GetHealth)=="function" and S.Services.AuraObservationV3:GetHealth() or nil,
-        buffDisplay = S.Features and S.Features.BuffDisplay and type(S.Features.BuffDisplay.GetHealth)=="function" and S.Features.BuffDisplay:GetHealth() or nil,
+        buffDisplay = S.FeatureHealthProviders and S.FeatureHealthProviders:Get("buff_display_health") or nil,
         -- 中文维护注释：HUD 校准属于 Presentation 诊断 Authority，不能塞进 BuffDisplay Store/Health；
         -- Snapshot 只在用户请求诊断时读取 detached 快照，避免 Domain 反向依赖 Presentation。
         buffHudCalibration = S.UIV3 and S.UIV3.BuffHudCalibrationV3 and type(S.UIV3.BuffHudCalibrationV3.GetDiagnostics)=="function" and S.UIV3.BuffHudCalibrationV3:GetDiagnostics() or nil,
         buffHeadMarkers = S.UIV3 and S.UIV3.BuffHeadMarkersV3 and type(S.UIV3.BuffHeadMarkersV3.GetDiagnostics)=="function" and S.UIV3.BuffHeadMarkersV3:GetDiagnostics() or nil,
-        unitLines = S.Features and S.Features.combat_unit_lines and type(S.Features.combat_unit_lines.Diagnostics)=="table" and S.Features.combat_unit_lines.Diagnostics or nil,
-        bossAlerts = S.Features and S.Features.combat_boss_alerts and type(S.Features.combat_boss_alerts._bossDiag)=="table" and S.Features.combat_boss_alerts._bossDiag or nil,
+        unitLines = S.FeatureHealthProviders and S.FeatureHealthProviders:Get("unit_lines_diagnostics") or nil,
+        bossAlerts = S.FeatureHealthProviders and S.FeatureHealthProviders:Get("boss_alerts_diagnostics") or nil,
         unitIdentity = S.Services and S.Services.UnitIdentityV3 and type(S.Services.UnitIdentityV3.GetHealth)=="function" and S.Services.UnitIdentityV3:GetHealth() or nil,
         combatRelation = S.Services and S.Services.CombatRelationV3 and type(S.Services.CombatRelationV3.GetHealth)=="function" and S.Services.CombatRelationV3:GetHealth() or nil,
         teamRoster = S.Services and S.Services.TeamRosterV3 and type(S.Services.TeamRosterV3.GetHealth)=="function" and S.Services.TeamRosterV3:GetHealth() or nil,
         screenProjection = S.Services and S.Services.ScreenProjectionV3 and type(S.Services.ScreenProjectionV3.GetHealth)=="function" and S.Services.ScreenProjectionV3:GetHealth() or nil,
         combatEventBus = S.Services and S.Services.CombatEventBusV3 and type(S.Services.CombatEventBusV3.GetHealth)=="function" and S.Services.CombatEventBusV3:GetHealth() or nil,
         priceQuoteQueue = S.Services and S.Services.PriceQuoteQueueV3 and type(S.Services.PriceQuoteQueueV3.GetHealth)=="function" and S.Services.PriceQuoteQueueV3:GetHealth() or nil,
-        deathReview = S.Features and S.Features.DeathReview and type(S.Features.DeathReview.GetHealth)=="function" and S.Features.DeathReview:GetHealth() or nil,
+        deathReview = S.FeatureHealthProviders and S.FeatureHealthProviders:Get("death_review_health") or nil,
         ui = S.UI and type(S.UI.GetFrameworkSnapshot)=="function" and S.UI:GetFrameworkSnapshot() or nil,
         uiFoundation = {
             viewState = S.RSUI and S.RSUI.ViewState and type(S.RSUI.ViewState.GetSnapshot) == "function" and S.RSUI.ViewState:GetSnapshot() or nil,

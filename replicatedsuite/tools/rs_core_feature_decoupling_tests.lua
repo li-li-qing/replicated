@@ -495,5 +495,95 @@ Test('BatchF 静态：core/*.lua 不得再点名这两处真值契约', function
         'Foundation must not read the fishing hotkey service any more')
 end)
 
+------------------------------------------------------------------------
+-- Phase 3 Batch G：Core 诊断不再按 id 读业务 Feature
+--   新增 core/rs_feature_health_providers.lua（Feature 自注册的“投影取值表”），
+--   core/rs_diagnostics.lua 的 6 处按 id 访问全部改为按用途名取值。
+--   这也是 §25.2 descriptor 里 RuntimeHealthProvider 字段的第一个实际用例。
+------------------------------------------------------------------------
+local FHP_PATH = 'core/rs_feature_health_providers.lua'
+
+local function BootFHP()
+    local S = { Generation = 1 }
+    ReplicatedSuite = S
+    dofile(FHP_PATH)
+    return S.FeatureHealthProviders
+end
+
+Test('BatchG 取值表：注册后可取值，未注册为 nil', function()
+    local R = BootFHP()
+    assert(type(R) == 'table' and tonumber(R.ContractVersion) == 1, 'registry contract version changed')
+    assert(R:Get('missing_key') == nil, 'unregistered key must read nil')
+    assert(R:Has('missing_key') == false, 'unregistered key must not report Has')
+    assert(R:Register('k', function() return { rows = 3 } end) == true, 'register must succeed')
+    assert(type(R:Get('k')) == 'table' and R:Get('k').rows == 3, 'registered provider must be called')
+    assert(R:Has('k') == true, 'registered key must report Has')
+end)
+
+Test('BatchG 取值表：无效注册被拒', function()
+    local R = BootFHP()
+    assert(R:Register('', function() end) == false, 'empty key must be rejected')
+    assert(R:Register('k', nil) == false, 'non-function provider must be rejected')
+end)
+
+Test('BatchG 取值表：provider 抛错隔离为 nil 并计数（单模块坏掉不拖垮整份快照）', function()
+    local R = BootFHP()
+    R:Register('boom', function() error('provider exploded') end)
+    assert(R:Get('boom') == nil, 'a throwing provider must degrade to nil instead of breaking the snapshot')
+    local described = R:Describe()
+    assert(tonumber(described.errors) >= 1 and described.lastErrorKey == 'boom', 'throwing provider must be counted')
+end)
+
+Test('BatchG 取值表：重复注册以最后一次为准（重载语义）', function()
+    local R = BootFHP()
+    R:Register('same', function() return 'first' end)
+    R:Register('same', function() return 'second' end)
+    assert(R:Get('same') == 'second', 'last registration must win')
+    assert(tonumber(R:Describe().registered) == 1, 'duplicate key must not be counted twice')
+end)
+
+Test('BatchG 静态：core 诊断不得再按 id 读业务 Feature', function()
+    local f = assert(io.open('core/rs_diagnostics.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    assert(text:find('S.Features.', 1, true) == nil,
+        'core/rs_diagnostics.lua must not access the feature implementation table any more')
+end)
+
+Test('BatchG 静态：五个投影由各自 Feature 文件注册', function()
+    local expected = {
+        { path = 'features/combat/buff_display/rs_buff_display_feature.lua',
+            keys = { 'buff_display_health', 'buff_hud_calibration' } },
+        { path = 'features/combat/unit_lines/rs_unit_lines_feature.lua', keys = { 'unit_lines_diagnostics' } },
+        { path = 'features/combat/boss_alerts/rs_boss_alerts_feature.lua', keys = { 'boss_alerts_diagnostics' } },
+        { path = 'features/combat/death_review/rs_death_review_feature.lua', keys = { 'death_review_health' } },
+    }
+    for _, item in ipairs(expected) do
+        local f = assert(io.open(item.path, 'rb'))
+        local text = f:read('*a'); f:close()
+        assert(text:find('FeatureHealthProviders', 1, true) ~= nil, item.path .. ' must register its projection')
+        for _, key in ipairs(item.keys) do
+            assert(text:find('"' .. key .. '"', 1, true) ~= nil, item.path .. ' must register key ' .. key)
+        end
+    end
+end)
+
+Test('BatchG 静态：诊断侧确实改用了取值表的用途名', function()
+    local f = assert(io.open('core/rs_diagnostics.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    for _, key in ipairs({ 'buff_hud_calibration', 'unit_lines_diagnostics', 'buff_display_health',
+        'boss_alerts_diagnostics', 'death_review_health' }) do
+        assert(text:find('Get("' .. key .. '")', 1, true) ~= nil, 'diagnostics must read key ' .. key)
+    end
+end)
+
+Test('BatchG 静态：取值表已登记进 toc.g 且排在诊断之前', function()
+    local f = assert(io.open('toc.g', 'rb'))
+    local text = f:read('*a'); f:close()
+    local registry = text:find('core/rs_feature_health_providers.lua', 1, true)
+    local diagnostics = text:find('core/rs_diagnostics.lua', 1, true)
+    assert(registry ~= nil, 'the registry must be in toc.g')
+    assert(diagnostics ~= nil and registry < diagnostics, 'the registry must load before diagnostics')
+end)
+
 print(string.format('CORE-FEATURE-DECOUPLING RESULT %d passed / %d failed', passed, failed))
 if failed > 0 then error('core/feature decoupling regressions: ' .. tostring(failed)) end

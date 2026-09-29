@@ -20,6 +20,7 @@ core/rs_reuse.lua
 core/rs_demand.lua
 core/rs_api.lua
 core/rs_api_capabilities.lua
+core/rs_feature_health_providers.lua
 core/rs_diagnostics.lua
 core/rs_module_diagnostics.lua
 core/rs_report_copy_transport.lua

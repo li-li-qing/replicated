@@ -2249,3 +2249,20 @@ F.Commands = {
 
 local ok, err = Runtime:RegisterImplementation(F.Id, F)
 if ok ~= true then error(err) end
+
+-- 中文维护注释（Phase 3 Batch G，2026-09-29，core-feature-decoupling-1）：把本 Feature 的两个诊断
+-- 投影注册到 Core 的取值表。原先 core/rs_diagnostics.lua 直接按 id 读取它们（属 CORE_FEATURE 债务）；
+-- 现在 Core 只按“用途名”取值，业务 Feature id 只出现在本目录。
+-- provider 每次实时调用、不缓存 —— 与旧取值时机和新鲜度一致，不引入第二份事实。
+local providers = S.FeatureHealthProviders
+if type(providers) == "table" then
+    providers:Register("buff_display_health", function()
+        local feature = S.Features and S.Features.BuffDisplay or nil
+        return type(feature) == "table" and type(feature.GetHealth) == "function" and feature:GetHealth() or nil
+    end)
+    providers:Register("buff_hud_calibration", function()
+        local feature = S.Features and S.Features.BuffDisplay or nil
+        return type(feature) == "table" and type(feature.GetHudCalibrationSnapshot) == "function"
+            and feature:GetHudCalibrationSnapshot() or nil
+    end)
+end
