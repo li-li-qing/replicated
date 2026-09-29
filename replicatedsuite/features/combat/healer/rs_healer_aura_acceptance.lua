@@ -10,11 +10,17 @@ local S = ReplicatedSuite
 local G = S.FoundationGate
 local F = S.Features and S.Features.Healer or nil
 local B = S.Features and S.Features.HealerAuraBridge or nil
-if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" or type(F) ~= "table" or type(B) ~= "table" then return end
+if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
+-- 中文维护注释（Phase 3 Batch O，2026-09-29，core-feature-decoupling-1）：本文件是 Healer 与
+-- HealerAuraBridge 的**唯一契约 Authority**。原先 F 或 B 缺失时这里静默 return，把“实现根本没注册”
+-- 留给 Foundation 的硬编码断言兜底；Phase 3 正在删掉那处硬编码，所以这里必须**无条件注册** case，
+-- 并在实现缺失时明确失败（见 case 开头的两处守卫）。
 
 local function Fail(message) return false, tostring(message or "healer_runtime_acceptance_failed") end
 
 G:RegisterSequenceCase("v3_m16_18_healer_visual_consumers_contract", function()
+    if type(F) ~= "table" then return Fail("implementation_not_registered") end
+    if type(B) ~= "table" then return Fail("aura_bridge_not_registered") end
     local meta = S.FeatureRegistry and S.FeatureRegistry:Get("combat_healer") or nil
     if meta == nil or tostring(meta.status) ~= "migrated_m16_18"
         or tostring(meta.lifecycle) ~= "independent"
@@ -25,7 +31,10 @@ G:RegisterSequenceCase("v3_m16_18_healer_visual_consumers_contract", function()
     if S.FeatureRuntime == nil or S.FeatureRuntime:IsImplemented("combat_healer") ~= true then return Fail("implementation_missing") end
 
     local store = S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.healer") or nil
-    if store == nil or tostring(store.owner or "") ~= "v3.healer" or tonumber(store.schemaVersion) ~= 3 then
+    -- 中文维护注释（Phase 3 Batch O，2026-09-29）：schema 版本从 3 取齐到 **6**。
+    -- 原 acceptance 只要 3，而 Foundation 的 healer 呈现判定要求 6；如果直接删掉 Foundation 分支
+    -- 而不取齐，等于悄悄把强度降回 3（这正是 Batch L 踩过的坑）。
+    if store == nil or tostring(store.owner or "") ~= "v3.healer" or tonumber(store.schemaVersion) ~= 6 then
         return Fail("store_contract")
     end
     if type(F.Roster) ~= "table" or (tonumber(F.Roster.version) or 0) < 1
@@ -54,7 +63,11 @@ G:RegisterSequenceCase("v3_m16_18_healer_visual_consumers_contract", function()
         or type(F.Commands.AddTrackedBuff) ~= "function" or type(F.Commands.RemoveTrackedBuff) ~= "function"
         or type(F.Commands.SetHealerColor) ~= "function" or type(F.Commands.SetRaidPanelRect) ~= "function"
         or type(F.Commands.ResetRaidLayout) ~= "function" or type(F.Commands.RequestRosterRefresh) ~= "function"
+        or type(F.Commands.MarkStoreDirty) ~= "function" -- 中文维护注释（Phase 3 Batch O）：原先只由 Foundation 检查。
         or type(F.GetMemberDetail) ~= "function"
+        -- 中文维护注释（Phase 3 Batch O）：以下两项原先也只由 Foundation 检查（注意是**函数面**，
+        -- 与上面的 Commands.ApplySettingFromBinding 不是同一条）。
+        or type(F.ApplySettingFromBinding) ~= "function" or type(F.GetProjection) ~= "function"
         or type(F.GetWidgetWindowState) ~= "function" or type(F:GetWidgetWindowState()) ~= "table"
         or type(F.GetPresentationSettings) ~= "function" or type(F.SetPresentationSetting) ~= "function"
         or type(F.SetRaidPanelRect) ~= "function" or type(F.GetRosterProjection) ~= "function"

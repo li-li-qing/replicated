@@ -361,3 +361,21 @@ end
 
 local ok, err = Runtime:RegisterImplementation(F.Id, F)
 if ok ~= true then error(err) end
+
+-- 中文维护注释（Phase 3 Batch O，2026-09-29，core-feature-decoupling-1）：把本 Feature 的健康投影
+-- 注册到 Core 的取值表。原先 core/rs_foundation_gate.lua 的诊断 detail 直接按 id 读取实现表取 health；
+-- 搬到这里之后 Core 不再认识这个业务 Feature，而**诊断可观察性不降级**。provider 每次实时调用、不缓存。
+local providers = S.FeatureHealthProviders
+if type(providers) == "table" then
+    providers:Register("healer_health", function()
+        local feature = S.Features and S.Features.Healer or nil
+        return type(feature) == "table" and type(feature.GetHealth) == "function" and feature:GetHealth() or nil
+    end)
+    -- 呈现设置（head / raid 两块）同样只由本 Feature 提供；Foundation 的运行期生命周期判定
+    -- 需要读到它，但不应因此去认识本 Feature 的实现表。
+    providers:Register("healer_presentation", function()
+        local feature = S.Features and S.Features.Healer or nil
+        return type(feature) == "table" and type(feature.GetPresentationSettings) == "function"
+            and feature:GetPresentationSettings() or nil
+    end)
+end

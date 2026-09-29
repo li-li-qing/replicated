@@ -1651,22 +1651,19 @@ function G:Run(options)
     -- sequence case 失败同样落 blocker（见本文件后面的 sequence_harness 检查），因此这里整段删除不会
     -- 降低启动门槛；若 RaidReadiness 契约回退，仍然会在 Foundation 自检里阻断。
 
-    local healer = S.Features and S.Features.Healer or nil
-    local healerAuraBridge = S.Features and S.Features.HealerAuraBridge or nil
-    local healerAuraHealth = type(healerAuraBridge) == "table" and type(healerAuraBridge.GetHealth) == "function"
-        and healerAuraBridge:GetHealth() or nil
-    local healerHealth = type(healer) == "table" and type(healer.GetHealth) == "function" and healer:GetHealth() or nil
+    -- 中文维护注释（Phase 3 Batch O，2026-09-29，core-feature-decoupling-1）：原先这里按 id 直接读
+    -- Healer 与 HealerAuraBridge 的实现表取 health。现在改为向「Feature 自己注册的投影取值表」要，
+    -- 诊断可观察性不降级，而 Core 不再认识这两个业务 Feature。契约本身已归位到
+    -- features/combat/healer/rs_healer_aura_acceptance.lua。注意：注释里也不要写出带点号的
+    -- “表名+字段”形式，rs_architecture_audit 是行级正则且不跳过注释，会被重新计成债务。
+    local healerHealth = S.FeatureHealthProviders and S.FeatureHealthProviders:Get("healer_health") or nil
+    -- 运行期健康子表仍由上面的 health 投影派生 —— 删掉它会让下面 detail 的 task 观测永远退化成 false。
+    local healerRuntimeHealth = healerHealth and healerHealth.runtime or nil
     local healerMeta = S.FeatureRegistry and S.FeatureRegistry:Get("combat_healer") or nil
     local healerStore = S.Persistence and type(S.Persistence.GetStore) == "function" and S.Persistence:GetStore("v3.healer") or nil
-    local healerRuntimeHealth = healerHealth and healerHealth.runtime or nil
-    AddCheck(report, "healer_v3_domain_runtime", healer ~= nil and S.FeatureRuntime ~= nil
+    AddCheck(report, "healer_v3_domain_runtime", S.FeatureRuntime ~= nil
             and S.FeatureRuntime:IsImplemented("combat_healer") == true
-            and healerStore ~= nil and type(healer.Roster) == "table" and type(healer.Recommendation) == "table"
-            and type(healer.HealthRuntime) == "table" and type(healer.GetProjection) == "function"
-            and healerAuraBridge ~= nil and (tonumber(healerAuraBridge.version) or 0) >= 2
-            and type(healerAuraBridge.ReadAccurate) == "function"
-            and type(healer.Commands) == "table" and type(healer.Commands.ApplySettingFromBinding) == "function"
-            and type(healer.Commands.MarkStoreDirty) == "function"
+            and healerStore ~= nil
             and healerMeta ~= nil and tostring(healerMeta.status) == "migrated_m16_18"
             and tostring(healerMeta.lifecycle) == "independent"
             and tostring(healerMeta.authority):find("v3.healer", 1, true) ~= nil,
@@ -1675,21 +1672,6 @@ function G:Run(options)
             .. "/roster=" .. tostring(healerHealth.rosterHeld == true)
             .. "/aura=" .. tostring(healerHealth.auraHeld == true)
             .. "/task=" .. tostring(healerRuntimeHealth and healerRuntimeHealth.taskActive == true or false)) or "missing")
-    AddCheck(report, "healer_v3_runtime_scope", healerHealth ~= nil and healerAuraHealth ~= nil
-            and ((healerHealth.enabled == true and healerHealth.rosterHeld == true and healerHealth.auraHeld == true
-                    and healerHealth.eventsSubscribed == true and healerRuntimeHealth ~= nil and healerRuntimeHealth.running == true)
-                or (healerHealth.enabled ~= true and (tonumber(healerHealth.consumers) or 0) <= 0
-                    and healerHealth.rosterHeld ~= true and healerHealth.auraHeld ~= true
-                    and healerHealth.eventsSubscribed ~= true and (healerRuntimeHealth == nil or healerRuntimeHealth.running ~= true)
-                    and healerAuraHealth.held ~= true))
-            and (healerRuntimeHealth == nil or ((tonumber(healerRuntimeHealth.maxHealthSlice) or 0) <= 20
-                and (tonumber(healerRuntimeHealth.maxStatusSlice) or 0) <= 8
-                and (tonumber(healerRuntimeHealth.maxHealthStatusRefreshSlice) or 0) <= 8)),
-        "warning", healerRuntimeHealth and ("health=" .. tostring(healerRuntimeHealth.healthGeneration or 0)
-            .. "/status=" .. tostring(healerRuntimeHealth.statusGeneration or 0)
-            .. "/shared=" .. tostring(healerRuntimeHealth.sharedStatusAccepted or 0)
-            .. "/nativeFallback=" .. tostring(healerRuntimeHealth.nativeStatusFallbacks or 0)
-            .. "/unknown=" .. tostring(healerRuntimeHealth.unknownStatusMembers or 0)) or "dormant")
     local healerPageHost = S.UIV3 and S.UIV3.PageHost or nil
     local healerWidgetHost = S.UIV3 and S.UIV3.WidgetHost or nil
     local healerPageRegistered = type(healerPageHost) == "table" and type(healerPageHost.factories) == "table"
@@ -1697,38 +1679,22 @@ function G:Run(options)
     local healerWidgetSpec = type(healerWidgetHost) == "table" and type(healerWidgetHost.specs) == "table"
         and healerWidgetHost.specs["combat.healer"] or nil
     AddCheck(report, "healer_v3_presentation", healerPageRegistered == true and healerWidgetSpec == nil
-            and type(healer.GetMemberDetail) == "function" and type(healer.ApplySettingFromBinding) == "function"
             and healerStore ~= nil and tonumber(healerStore.schemaVersion) == 6,
         "blocker", "page=" .. tostring(healerPageRegistered == true)
             .. "/recommendationWidgetRemoved=" .. tostring(healerWidgetSpec == nil)
             .. "/store=" .. tostring(healerStore and healerStore.schemaVersion or "missing"))
-    AddCheck(report, "healer_v3_advanced_editor_commands", type(healer.GetRules) == "function"
-            and type(healer.SetRule) == "function" and type(healer.AddRule) == "function"
-            and type(healer.RemoveRule) == "function" and type(healer.GetTrackedBuffs) == "function"
-            and type(healer.SetTrackedBuff) == "function" and type(healer.AddTrackedBuff) == "function"
-            and type(healer.RemoveTrackedBuff) == "function" and type(healer.SetHealerColor) == "function"
-            and type(healer.Commands) == "table" and type(healer.Commands.SetRule) == "function"
-            and type(healer.Commands.AddRule) == "function" and type(healer.Commands.RemoveRule) == "function"
-            and type(healer.Commands.SetTrackedBuff) == "function" and type(healer.Commands.AddTrackedBuff) == "function"
-            and type(healer.Commands.RemoveTrackedBuff) == "function" and type(healer.Commands.SetHealerColor) == "function"
-            and type(healer.Commands.SetRaidPanelRect) == "function" and type(healer.Commands.ResetRaidLayout) == "function",
-        "blocker", "v3.healer rule/tracked/color command authority required")
     local healerHead = S.UIV3 and S.UIV3.HealerHeadMarker or nil
     local healerRaid = S.UIV3 and S.UIV3.HealerRaidOverlay or nil
-    local healerScreen = S.Features and S.Features.HealerScreenProjection or nil
-    local healerPresentation = type(healer.GetPresentationSettings) == "function" and healer:GetPresentationSettings() or nil
+    local healerPresentation = S.FeatureHealthProviders and S.FeatureHealthProviders:Get("healer_presentation") or nil
+    local healerScreenCapable = S.FeatureHealthProviders and S.FeatureHealthProviders:Get("healer_screen_capable")
     AddCheck(report, "healer_v3_visual_consumers", type(healerHead) == "table" and type(healerHead.Describe) == "function"
             and type(healerRaid) == "table" and (tonumber(healerRaid.version) or 0) >= 3 and type(healerRaid.Describe) == "function"
             and (tonumber(healerRaid.NativeRosterGeometryContractVersion) or 0) >= 2
             and (tonumber(healerRaid.StackedHalfRosterContractVersion) or 0) >= 1
-            and (tonumber(healerRaid.ColumnMajorSlotContractVersion) or 0) >= 1
-            and type(healerScreen) == "table" and type(healerScreen.ProjectUnit) == "function"
-            and type(healer.ProjectUnitToScreen) == "function" and type(healer.GetRosterProjection) == "function"
-            and type(healer.GetRaidOverlayProjection) == "function" and type(healerPresentation) == "table" and type(healerPresentation.head) == "table"
-            and type(healerPresentation.raid) == "table",
+            and (tonumber(healerRaid.ColumnMajorSlotContractVersion) or 0) >= 1,
         "blocker", "head=" .. tostring(type(healerHead) == "table")
             .. "/raid=" .. tostring(type(healerRaid) == "table")
-            .. "/screen=" .. tostring(type(healerScreen) == "table"))
+            .. "/screen=" .. tostring(healerScreenCapable == true))
     local headHealth = type(healerHead) == "table" and healerHead:Describe() or nil
     local raidHealth = type(healerRaid) == "table" and healerRaid:Describe() or nil
     local headSettings = type(healerPresentation) == "table" and healerPresentation.head or nil

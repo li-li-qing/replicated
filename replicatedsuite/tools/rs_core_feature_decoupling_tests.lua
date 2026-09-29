@@ -1236,5 +1236,83 @@ Test('BatchN 静态：core 不得再点名 tools_bag，但 Service/UIV3 侧必�
         'the inventory-side judgement chain must remain')
 end)
 
+------------------------------------------------------------------------
+-- Phase 3 Batch O：Healer 家族（Healer / HealerAuraBridge / HealerScreenProjection）
+--   （Foundation 里 healer_v3_domain_runtime 的 Feature 条件、healer_v3_presentation 的 Feature 条件、
+--     healer_v3_visual_consumers 的 Feature 条件已删除；
+--     healer_v3_runtime_scope 与 healer_v3_advanced_editor_commands 两条**整条**删除 ——
+--     它们纯由 Feature 派生/纯 Feature，acceptance 已覆盖同语义）
+--   **保留**：healerStore（Core Store）、healerMeta（Registry 元数据）、
+--     healerHead / healerRaid / 页面与悬浮窗（UIV3）
+--   运行期生命周期判定仍需读 Feature 的运行期状态 —— 用投影取值表（healer_health /
+--     healer_presentation / healer_screen_capable）而不是直接读实现表。
+------------------------------------------------------------------------
+local HEALER_PATH = 'features/combat/healer/rs_healer_feature.lua'
+local HEALER_SCREEN_PATH = 'features/combat/healer/rs_healer_screen_projection.lua'
+local HEALER_ACC = 'features/combat/healer/rs_healer_aura_acceptance.lua'
+
+Test('BatchO 静态：core 不得再按 id 读这三个 Feature（两种回填形态都查）', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    for _, pattern in ipairs({ 'S.Features.Healer', 'S.Features.HealerAuraBridge',
+        'S.Features.HealerScreenProjection' }) do
+        assert(text:find(pattern, 1, true) == nil, 'Foundation must not read the feature table for: ' .. pattern)
+    end
+    -- 裸标识符的字段访问（排除 Store / Meta / Head / Raid / Page / Widget 这些合法局部名）
+    local bare = 0
+    for _ in text:gmatch('[^A-Za-z_]healer%.[A-Za-z_]') do bare = bare + 1 end
+    assert(bare == 0, 'Foundation must not dereference the bare healer binding, found ' .. tostring(bare))
+    local bareScreen = 0
+    for _ in text:gmatch('[^A-Za-z_]healerScreen%.[A-Za-z_]') do bareScreen = bareScreen + 1 end
+    assert(bareScreen == 0, 'Foundation must not dereference the bare healerScreen binding')
+end)
+
+Test('BatchO 静态：非 Feature 侧必须保留，且推导链仍在', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    for _, pattern in ipairs({ 'healerStore', 'healerMeta', 'HealerHeadMarker', 'HealerRaidOverlay',
+        'combat.healer', 'NativeRosterGeometryContractVersion' }) do
+        assert(text:find(pattern, 1, true) ~= nil, 'non-Feature counterpart must stay: ' .. pattern)
+    end
+    assert(text:find('local healerStore = S.Persistence', 1, true) ~= nil,
+        'the Store-side judgement must stay derived from Persistence')
+    -- 运行期生命周期判定改从投影读，而不是直接读实现表
+    for _, pattern in ipairs({ 'healer_health', 'healer_presentation', 'healer_screen_capable' }) do
+        assert(text:find(pattern, 1, true) ~= nil, 'detail/lifecycle must read the projection: ' .. pattern)
+    end
+end)
+
+Test('BatchO 静态：三个投影已在 Feature 侧注册', function()
+    local feat = assert(io.open(HEALER_PATH, 'rb'))
+    local featText = feat:read('*a'); feat:close()
+    for _, pattern in ipairs({ 'healer_health', 'healer_presentation' }) do
+        assert(featText:find(pattern, 1, true) ~= nil, 'healer feature must register: ' .. pattern)
+    end
+    local screen = assert(io.open(HEALER_SCREEN_PATH, 'rb'))
+    local screenText = screen:read('*a'); screen:close()
+    assert(screenText:find('healer_screen_capable', 1, true) ~= nil,
+        'screen projection feature must register: healer_screen_capable')
+end)
+
+Test('BatchO 静态：acceptance 无条件注册 + 补齐 3 项 + schema 取齐到 6', function()
+    local f = assert(io.open(HEALER_ACC, 'rb'))
+    local text = f:read('*a'); f:close()
+    -- guard 不再因 F/B 缺失而静默 return
+    assert(text:find('or type(F) ~= "table" or type(B) ~= "table" then return end', 1, true) == nil,
+        'the guard must not bail out when the implementations are missing')
+    assert(text:find('implementation_not_registered', 1, true) ~= nil, 'missing Healer must fail explicitly')
+    assert(text:find('aura_bridge_not_registered', 1, true) ~= nil, 'missing AuraBridge must fail explicitly')
+    -- 搬迁前补齐的三项
+    assert(text:find('type(F.Commands.MarkStoreDirty) ~= "function"', 1, true) ~= nil,
+        'acceptance must carry the MarkStoreDirty command')
+    assert(text:find('type(F.ApplySettingFromBinding) ~= "function"', 1, true) ~= nil,
+        'acceptance must carry the ApplySettingFromBinding function surface')
+    assert(text:find('type(F.GetProjection) ~= "function"', 1, true) ~= nil,
+        'acceptance must carry the GetProjection function surface')
+    -- 下限/取值取齐：Foundation 要求 schemaVersion == 6，acceptance 必须同样严格
+    assert(text:find('tonumber(store.schemaVersion) ~= 6', 1, true) ~= nil,
+        'acceptance must keep the stricter store schema (6), not the old 3')
+end)
+
 print(string.format('CORE-FEATURE-DECOUPLING RESULT %d passed / %d failed', passed, failed))
 if failed > 0 then error('core/feature decoupling regressions: ' .. tostring(failed)) end

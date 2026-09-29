@@ -38,3 +38,16 @@ function B:GetHealth()
         unavailable = tonumber(self.metrics.unavailable) or 0,
     }
 end
+
+-- 中文维护注释（Phase 3 Batch O，2026-09-29，core-feature-decoupling-1）：把“屏幕投影能力是否就绪”
+-- 注册到 Core 的取值表。原先 core/rs_foundation_gate.lua 直接按 id 读取本 Feature 的实现表验证
+-- ProjectUnit 这个契约函数；契约检查本身已归位到
+-- features/combat/healer/rs_healer_aura_acceptance.lua（visual_consumer_contract），
+-- 这里只保留**诊断可观察性**：让 Foundation 的 detail 串仍能反映该能力是否就绪，而不认识本 Feature。
+local providers = S.FeatureHealthProviders
+if type(providers) == "table" then
+    providers:Register("healer_screen_capable", function()
+        local feature = S.Features and S.Features.HealerScreenProjection or nil
+        return type(feature) == "table" and type(feature.ProjectUnit) == "function" or false
+    end)
+end
