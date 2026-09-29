@@ -1917,7 +1917,7 @@ ReloadAddon PASS
 | Phase 0 测试/编译基线 | **已完成** | 18.326 | 18.330 | 第六轮闭合：真实 Lua 5.1 编译门禁（261 files，luac5.1 5.1.5）+ 真实 Lua 5.1 运行环境；两个历史证据 fixture 按 byte-for-byte 从 18.244 归档恢复；X2Skill numeric API_TYPE 由 globals/apitypes.lua 证据链确认为 35，Native audit 收敛为 0/0/0；默认 Full Runner 端到端 PASS；Install 261/261、Unfinished Closure 14/14、Architecture 仍 49 债务。仅剩 X2Skill RU 实机行为验收（Phase 3 收口项） |
 | Phase 1 Business Bridge 拆分 | **已完成（Batch A–E 全部完成）** | 18.330 | 18.331 | 15 个 Feature 全部独立成文件；rs_business_bridge.lua（5223 行 / 188 slots）退役删除；新增装配工厂 + SharedBounds + 拍卖读模型；主 chunk slots 187→104→（bridge 不复存在，各文件 16–98）；`--feature-split` 59/59 并入默认 Full Runner；audit 0/0/0；Architecture 债务 49→48；BuildTag 推进到 `v3-m1.16.0.18.331-phase1-feature-slice-complete` |
 | Phase 2 Life Bundle 拆分 | **已完成（Step 1–4，首轮“一 Feature 一文件”闭合）** | 18.331 | 18.332 | 4 个 life Feature（Treasure / Fishing / Bonds / Trade）全部独立成文件；`rs_life_m16_bundle.lua`（5633 行 / 4 Feature）退役删除；新增 `features/life/shared/rs_life_slice_factory.lua`（life 版装配 helper，未与 Phase 1 工厂合并）；`--feature-split` 59→66 断言（新增 7 条 life 契约）；BuildTag 推进到 `v3-m1.16.0.18.332-phase2-life-bundle-slice-complete`。**§24.4 的 Trade 第二轮进一步拆分仍未开始**（前置条件：RU 实机一轮 Fresh Reload / 老配置 / 自动刷新 / 报价 / 材料缓存实测） |
-| Phase 3 Contract / Dependency Ownership | **进行中（Batch A–G 已完成）** | - | - | Core→Feature inversion + Feature/Service Native dependency ownership。**已落地**：把 Foundation 里点名具体业务 Feature 的硬编码契约门禁搬回 Feature 自己的 `*_acceptance.lua`（sequence case 与 AddCheck 同为 blocker 级别），搬迁前先把 acceptance 补齐成原判定的严格超集；没有 acceptance 的 Feature 则**新建** acceptance 并登记 `toc.g`。Batch A = RaidReadiness、B = DeathReview、C = life_bonds、D = Tasks/Activities/Gear 命令面、E = 四份观察契约、F = Fishing Auto-R + reinforce 真值、**G = Core 诊断改用 Feature 自注册的投影取值表（`RuntimeHealthProvider` 的首个落地）**。新增 `--core-feature-decoupling` 门禁入口（并入默认 Full Runner）。Architecture 债务 47 → 25（CORE_FEATURE 41 → 19，`core/rs_diagnostics.lua` 已清零） |
+| Phase 3 Contract / Dependency Ownership | **进行中（Batch A–H 已完成）** | - | - | Core→Feature inversion + Feature/Service Native dependency ownership。**已落地**：把 Foundation 里点名具体业务 Feature 的硬编码契约门禁搬回 Feature 自己的 `*_acceptance.lua`（sequence case 与 AddCheck 同为 blocker 级别），搬迁前先把 acceptance 补齐成原判定的严格超集；没有 acceptance 的 Feature 则**新建** acceptance 并登记 `toc.g`。Batch A = RaidReadiness、B = DeathReview、C = life_bonds、D = Tasks/Activities/Gear 命令面、E = 四份观察契约、F = Fishing Auto-R + reinforce 真值、G = Core 诊断改用 Feature 自注册的投影取值表（`RuntimeHealthProvider` 的首个落地）、H = usability 契约里 boss_alerts/unit_lines/range_assist/buff_display 四组判定。新增 `--core-feature-decoupling` 门禁入口（并入默认 Full Runner）。Architecture 债务 47 → 21（CORE_FEATURE 41 → 15） |
 | Phase 4 Scheduler/Event 热路径 | 未开始 | - | - | P1 |
 | Phase 5 Presentation 边界 | 未开始 | - | - | P1 |
 | Phase 6 Diagnostics/Acceptance | 未开始 | - | - | P1 |
@@ -3888,27 +3888,53 @@ Batch F  Fishing Auto-R 事务契约 + reinforce 运行时阻塞真值（v3_feat
 **操作要点**：新组件必须登记 `toc.g`，且这里要求它排在 `core/rs_diagnostics.lua` **之前** ——
 已用静态断言守住这个顺序，避免以后有人挪动 toc 顺序时静默失效。
 
-### 25.6.8 门禁与指标
+### 25.6.8 Batch H：usability 契约里的四组业务 Feature 判定
+
+```text
+靶子    core/rs_foundation_gate.lua 的 v3_combat_life_usability_contract 内
+        boss_hud         → combat_boss_alerts 的 HUD 契约 + 实时事实桥契约
+        visual_guides    → combat_unit_lines 的 5 个契约 + combat_range_assist 的 5 个契约
+        buff_observation → BuffDisplay 的 health.observationContractVersion
+        **同一条 AddCheck 里的 Service/UIV3 契约全部保持原样**（它们不是 Feature 债）
+收敛    3 个新建 acceptance（boss_alerts / unit_lines / range_assist，均登记 toc.g）
+        + buff_display acceptance 追加 observation 契约 case 并补齐 guard
+判定    逐条等价（下限照搬）+ 实现缺失不再静默 return
+债务    25 → 21
+```
+
+**本批最大收获：反例验证发现并修掉了一个真实的防护缺口。**
+第一版静态断言只查“带点号的短名”（如 `unitLines.`），结果把
+`local unitLines = <实现表>.combat_unit_lines` 这种**完整实现表访问形式的回填**漏了过去 ——
+实测“把该行加回 Foundation，测试仍然全绿”。补上对三个精确串（`S.Features.combat_unit_lines` /
+`.combat_boss_alerts` / `.combat_range_assist`）的断言后，回填能被精确抓到。
+
+> **这条对后续批次是硬要求**：静态断言必须**同时**覆盖
+> ① 带点号的字段访问（防复述契约）② 完整实现表访问串（防把判定整体搬回去）。
+> 只写 ① 会被 ② 绕过 —— 只有真正做反例验证才会发现。
+> 另：`truthExpected` 真值表里的 feature id 是**合法保留**的（那是 Registry 真值表，不是实现表访问），
+> 所以断言不能简单查裸 id，会误伤。
+
+### 25.6.9 门禁与指标
 
 ```text
 新增入口  python tools/rs_status_refactor_test_runner.py --core-feature-decoupling
           （CORE_FEATURE_DECOUPLING_TESTS，已并入默认 Full Runner，与 feature-split 分开计数）
-契约测试  tools/rs_core_feature_decoupling_tests.lua   55 条断言（A:9 B:3 C:5 D:4 E:17 F:9 G:8）
-债务      Architecture 47→46(A)→45(B)→40(C)→37(D)→33(E)→31(F)→25(G)；CORE_FEATURE 41 → 19
-          （core/rs_diagnostics.lua 已清零，余 19 处全部在 core/rs_foundation_gate.lua）
-shipped   Lua 5.1 compile 288（Batch E/F/G 新增 6 个文件，均已登记 toc 对账）
-门禁      Install 282/282、syntax 409、Native audit 0/0/0、Test Dependency Audit、
-          Unfinished Closure 14/14、feature-split、core-feature-decoupling 55/55、
+契约测试  tools/rs_core_feature_decoupling_tests.lua   76 条断言（A:9 B:3 C:5 D:4 E:17 F:9 G:8 H:21）
+债务      Architecture 47→46(A)→45(B)→40(C)→37(D)→33(E)→31(F)→25(G)→21(H)；CORE_FEATURE 41 → 15
+          （core/rs_diagnostics.lua 已清零，余 15 处全部在 core/rs_foundation_gate.lua）
+shipped   Lua 5.1 compile 291（Batch E/F/G/H 新增 9 个文件，均已登记 toc 对账）
+门禁      Install 282/282、syntax 412、Native audit 0/0/0、Test Dependency Audit、
+          Unfinished Closure 14/14、feature-split、core-feature-decoupling 76/76、
           fishing tests 19/19、默认 Full Runner exit=0
 ```
 
-反例验证（七批都做）：A 用临时桩触发；B/C/D 还原 acceptance 的旧 guard 形态；E 去掉新加的
+反例验证（八批都做）：A 用临时桩触发；B/C/D 还原 acceptance 的旧 guard 形态；E 去掉新加的
 “topic 非空 / Demand 存在”（每文件 2 条）；F 去掉 `auto_r_hard_blocked` 与
-`slot_probe_runtime_block_missing`；G 改掉 unit_lines 的注册 key（命中 1 条）+ 把诊断一处改回按 id
-直读（命中 2 条静态）。
+`slot_probe_runtime_block_missing`；G 改掉 unit_lines 的注册 key（1 条）+ 把诊断一处改回按 id 直读（2 条）；
+H 放宽一个下限（1 条）+ **把完整实现表访问形式回填回 Foundation**（补强断言后 1 条）。
 **每次都精确命中、且只命中该改动对应的那几条**，还原后全绿。
 
-### 25.6.9 剩余工作（余 19 处 CORE_FEATURE，全在 `core/rs_foundation_gate.lua`）
+### 25.6.10 剩余工作（余 15 处 CORE_FEATURE，全在 `core/rs_foundation_gate.lua`）
 
 ```text
 1. 分布（按当前行号）：
