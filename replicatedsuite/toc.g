@@ -299,4 +299,5 @@ features/combat/target_monitor/rs_target_monitor_acceptance.lua
 features/combat/buff_cap/rs_buff_cap_acceptance.lua
 features/life/treasure/rs_treasure_acceptance.lua
 features/life/fishing/rs_fishing_acceptance.lua
+features/tools/reinforce_analysis/rs_reinforce_analysis_acceptance.lua
 core/rs_runtime.lua

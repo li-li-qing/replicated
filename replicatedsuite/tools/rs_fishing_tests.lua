@@ -329,11 +329,22 @@ Test("T11: Registry exposes reversible Auto-R instead of runtime-block metadata"
     assert(block:find("demand_scoped_reversible_hotkey_transaction", 1, true) ~= nil, "registry must expose transaction policy")
 end)
 
-Test("T12: Foundation gate requires Fishing Hotkey v3 transaction instead of old block fence", function()
-    local text = ReadText("core/rs_foundation_gate.lua")
-    assert(text:find("life_fishing:auto_r_runtime_block", 1, true) == nil, "old runtime-block gate must be removed")
-    assert(text:find("life_fishing:auto_r_transaction", 1, true) ~= nil, "foundation must enforce the v3 transaction contract")
-    assert(text:find("FishingHotkeyV3", 1, true) ~= nil, "foundation must validate the transaction service")
+Test("T12: Fishing Hotkey v3 transaction is owned by the Feature acceptance, not the Foundation gate", function()
+    local gate = ReadText("core/rs_foundation_gate.lua")
+    assert(gate:find("life_fishing:auto_r_runtime_block", 1, true) == nil, "old runtime-block gate must be removed")
+    -- 中文维护注释（Phase 3 Batch F，2026-09-29，core-feature-decoupling-1）：该契约的 Authority 已从
+    -- Foundation 搬到 Feature 自己的 acceptance。断言强度不变，只是换成"Foundation 不得再拥有它，
+    -- 而 acceptance 必须拥有它"——原来只证明契约存在，现在同时证明 Core 不再认识这个业务 Feature。
+    assert(gate:find("life_fishing:auto_r_transaction", 1, true) == nil,
+        "foundation must no longer own the fishing auto-R transaction contract")
+    assert(gate:find("FishingHotkeyV3", 1, true) == nil,
+        "foundation must no longer read the fishing hotkey service")
+    local acceptance = ReadText("features/life/fishing/rs_fishing_acceptance.lua")
+    assert(acceptance:find("v3_life_fishing_auto_r_transaction_contract", 1, true) ~= nil,
+        "the acceptance must own the Auto-R transaction contract")
+    assert(acceptance:find("FishingHotkeyV3", 1, true) ~= nil, "the acceptance must validate the transaction service")
+    assert(acceptance:find("HotkeyContractVersion", 1, true) ~= nil, "the acceptance must validate the hotkey contract version")
+    assert(acceptance:find("auto_r_hard_blocked", 1, true) ~= nil, "the acceptance must keep the no-hard-block assertion")
 end)
 
 Test("T13: Fishing page presents Auto-R as usable capability, not blocked copy", function()

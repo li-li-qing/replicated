@@ -33,3 +33,20 @@ G:RegisterSequenceCase("v3_life_fishing_observation_contract", function()
     end
     return true
 end)
+
+-- Phase 3 Batch F（2026-09-29，core-feature-decoupling-1）：Auto-R 事务契约。
+-- 原先由 core/rs_foundation_gate.lua 的 v3_feature_truth_contract 硬编码点名 Fishing 检查；
+-- 搬到这里之后 Core 不再认识具体业务 Feature。判定与旧版**逐条等价**：
+--   * Auto-R 不得被硬阻塞（旧 gate 曾把“必须硬阻塞”当真值，导致真实事务恢复后仍被基础验收判失败）
+--   * Feature 侧热键契约 >= v3；独立热键事务服务的 TransactionContractVersion >= v3
+-- 兼容边界不变：这里只验证契约存在，**不执行任何 Native 热键读写**；RU 写键行为仍由
+-- FishingHotkeyV3 的 capability gate / 战斗门 / 持久恢复快照保护。
+G:RegisterSequenceCase("v3_life_fishing_auto_r_transaction_contract", function()
+    if type(F) ~= "table" then return Fail("implementation_not_registered") end
+    if F.HotkeyRuntimeBlocked == true then return Fail("auto_r_hard_blocked") end
+    if (tonumber(F.HotkeyContractVersion) or 0) < 3 then return Fail("hotkey_contract_version") end
+    local hotkey = S.Services and S.Services.FishingHotkeyV3 or nil
+    if type(hotkey) ~= "table" then return Fail("fishing_hotkey_service_missing") end
+    if (tonumber(hotkey.TransactionContractVersion) or 0) < 3 then return Fail("hotkey_transaction_contract_version") end
+    return true
+end)

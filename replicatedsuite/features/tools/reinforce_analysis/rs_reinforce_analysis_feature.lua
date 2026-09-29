@@ -10,8 +10,11 @@
 --     GetReinforceInfo/GetMaterialInfo 的返回契约也未确认 —— 本文件**禁止**枚举或探测任何整数范围；
 --   * 只允许无参 getter，以及参数是已导出 ESRA_* 属性常量的 getter；
 --   * 强化写入类接口始终不可达；
---   * S.Features.tools_reinforce_analysis.SlotProbeRuntimeBlocked 是 core/rs_foundation_gate.lua
---     的 blocker 级断言依赖（v3_feature_truth_contract），必须保持 true，不能因为拆分而丢失。
+--   * 本 Feature 的 SlotProbeRuntimeBlocked 标志是**本目录 acceptance 文件**
+--     （rs_reinforce_analysis_acceptance.lua 的 v3_tools_reinforce_analysis_runtime_block_contract）
+--     依赖的 blocker 级断言，必须保持 true，不能因为拆分而丢失。
+--     中文维护注释（Phase 3 Batch F，2026-09-29）：该断言原先挂在 core/rs_foundation_gate.lua 的
+--     v3_feature_truth_contract 上；Phase 3 已把它搬回 Feature 自己的 acceptance，Core 不再认识本 Feature。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite

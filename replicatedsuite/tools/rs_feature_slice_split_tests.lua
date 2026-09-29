@@ -512,12 +512,22 @@ Test('BatchB：ESRA_* 常量未导出时如实标注，不伪造数值', functio
     assert(support.statusText == '未提供', 'missing constant status changed: ' .. tostring(support.statusText))
 end)
 
-Test('BatchB：SlotProbeRuntimeBlocked 仍为 true（FoundationGate blocker 依赖）', function()
+Test('BatchB：SlotProbeRuntimeBlocked 仍为 true，且 Authority 已在 Feature acceptance', function()
     assert(ReinforceFeature.SlotProbeRuntimeBlocked == true, 'SlotProbeRuntimeBlocked must stay true')
+    -- 中文维护注释（Phase 3 Batch F，2026-09-29，core-feature-decoupling-1）：该真值原先由 FoundationGate
+    -- 的 v3_feature_truth_contract 直接检查；Authority 已搬到 Feature 自己的 acceptance。断言改成
+    -- “Foundation 不得再引用、acceptance 必须引用”——强度不变，而 Core 不再认识这个业务 Feature。
     local handle = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
-    local text = handle:read('*a'); handle:close()
-    assert(text:find('SlotProbeRuntimeBlocked', 1, true) ~= nil and text:find('slot_probe_runtime_block', 1, true) ~= nil,
-        'FoundationGate truth contract no longer references the flag')
+    local gate = handle:read('*a'); handle:close()
+    assert(gate:find('SlotProbeRuntimeBlocked', 1, true) == nil,
+        'FoundationGate must no longer reference the reinforce runtime-block flag')
+    assert(gate:find('slot_probe_runtime_block', 1, true) == nil,
+        'FoundationGate must no longer own the reinforce truth contract')
+    local acc = assert(io.open('features/tools/reinforce_analysis/rs_reinforce_analysis_acceptance.lua', 'rb'))
+    local accText = acc:read('*a'); acc:close()
+    assert(accText:find('SlotProbeRuntimeBlocked', 1, true) ~= nil
+        and accText:find('slot_probe_runtime_block', 1, true) ~= nil,
+        'the reinforce acceptance must own the runtime-block truth contract')
 end)
 
 Test('BatchB：X2EquipSlotReinforce 未导出时 fail-closed 为 unavailable', function()

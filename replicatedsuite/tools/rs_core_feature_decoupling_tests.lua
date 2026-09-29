@@ -392,5 +392,108 @@ Test('BatchE 静态：core/*.lua 不得再点名这四份观察契约', function
     end
 end)
 
+------------------------------------------------------------------------
+-- Phase 3 Batch F：life_fishing 的 Auto-R 事务契约 + tools_reinforce_analysis 的运行时阻塞真值
+-- （core/rs_foundation_gate.lua 的 v3_feature_truth_contract 里那两段点名断言已删除；
+--  该 AddCheck 的 Registry 真值表循环保持原样）
+--
+-- 一个 Feature 是把契约**追加**进已存在的 acceptance（fishing），另一个是**新建** acceptance（reinforce）。
+------------------------------------------------------------------------
+local FISHING_PATH = 'features/life/fishing/rs_fishing_acceptance.lua'
+local REINFORCE_PATH = 'features/tools/reinforce_analysis/rs_reinforce_analysis_acceptance.lua'
+local FISHING_AUTO_R = 'v3_life_fishing_auto_r_transaction_contract'
+local REINFORCE_CASE = 'v3_tools_reinforce_analysis_runtime_block_contract'
+
+local function BootTruth(key, path, feature, services)
+    local cases = {}
+    local S = { Features = {}, Services = services or {}, FoundationGate = {},
+        SafeTraceback = debug and debug.traceback or function(m) return m end }
+    function S.FoundationGate:RegisterSequenceCase(id, fn) cases[tostring(id)] = fn; return true end
+    if feature ~= nil then S.Features[key] = feature end
+    ReplicatedSuite = S
+    dofile(path)
+    return cases
+end
+
+local function FishingTruthFeature()
+    return { HotkeyRuntimeBlocked = false, HotkeyContractVersion = 3 }
+end
+
+local function FishingHotkeyService(version)
+    return { TransactionContractVersion = version == nil and 3 or version }
+end
+
+Test('BatchF life_fishing：Auto-R 契约 —— 实现未注册时仍注册 case 并失败', function()
+    local cases = BootTruth('Fishing', FISHING_PATH, nil)
+    assert(type(cases[FISHING_AUTO_R]) == 'function', 'case must register even when the Feature is missing')
+    local ok, reason = cases[FISHING_AUTO_R]()
+    assert(ok == false and tostring(reason) == 'implementation_not_registered', 'reason=' .. tostring(reason))
+end)
+
+Test('BatchF life_fishing：Auto-R 契约 —— 合规通过（搬迁未误伤）', function()
+    local cases = BootTruth('Fishing', FISHING_PATH, FishingTruthFeature(),
+        { FishingHotkeyV3 = FishingHotkeyService() })
+    local ok, reason = cases[FISHING_AUTO_R]()
+    assert(ok == true, 'compliant contract must pass, got ' .. tostring(reason))
+end)
+
+Test('BatchF life_fishing：Auto-R 被硬阻塞必须失败', function()
+    local feature = FishingTruthFeature(); feature.HotkeyRuntimeBlocked = true
+    local cases = BootTruth('Fishing', FISHING_PATH, feature, { FishingHotkeyV3 = FishingHotkeyService() })
+    local ok, reason = cases[FISHING_AUTO_R]()
+    assert(ok == false and tostring(reason) == 'auto_r_hard_blocked', 'reason=' .. tostring(reason))
+end)
+
+Test('BatchF life_fishing：热键契约版本回退必须失败', function()
+    local feature = FishingTruthFeature(); feature.HotkeyContractVersion = 2
+    local cases = BootTruth('Fishing', FISHING_PATH, feature, { FishingHotkeyV3 = FishingHotkeyService() })
+    local ok, reason = cases[FISHING_AUTO_R]()
+    assert(ok == false and tostring(reason) == 'hotkey_contract_version', 'reason=' .. tostring(reason))
+end)
+
+Test('BatchF life_fishing：独立热键事务服务缺失/版本不足必须失败', function()
+    local cases = BootTruth('Fishing', FISHING_PATH, FishingTruthFeature(), nil)
+    local ok, reason = cases[FISHING_AUTO_R]()
+    assert(ok == false and tostring(reason) == 'fishing_hotkey_service_missing', 'reason=' .. tostring(reason))
+    local cases2 = BootTruth('Fishing', FISHING_PATH, FishingTruthFeature(),
+        { FishingHotkeyV3 = FishingHotkeyService(2) })
+    local ok2, reason2 = cases2[FISHING_AUTO_R]()
+    assert(ok2 == false and tostring(reason2) == 'hotkey_transaction_contract_version', 'reason=' .. tostring(reason2))
+end)
+
+Test('BatchF tools_reinforce_analysis：实现未注册时仍注册 case 并失败', function()
+    local cases = BootTruth('tools_reinforce_analysis', REINFORCE_PATH, nil)
+    assert(type(cases[REINFORCE_CASE]) == 'function', 'case must register even when the Feature is missing')
+    local ok, reason = cases[REINFORCE_CASE]()
+    assert(ok == false and tostring(reason) == 'implementation_not_registered', 'reason=' .. tostring(reason))
+end)
+
+Test('BatchF tools_reinforce_analysis：显式声明硬阻塞才通过', function()
+    local okFeature, reasonFeature = BootTruth('tools_reinforce_analysis', REINFORCE_PATH,
+        { SlotProbeRuntimeBlocked = true })[REINFORCE_CASE]()
+    assert(okFeature == true, 'declared block must pass, got ' .. tostring(reasonFeature))
+end)
+
+Test('BatchF tools_reinforce_analysis：未声明硬阻塞必须失败', function()
+    local ok, reason = BootTruth('tools_reinforce_analysis', REINFORCE_PATH,
+        { SlotProbeRuntimeBlocked = false })[REINFORCE_CASE]()
+    assert(ok == false and tostring(reason) == 'slot_probe_runtime_block_missing', 'reason=' .. tostring(reason))
+end)
+
+Test('BatchF 静态：core/*.lua 不得再点名这两处真值契约', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    -- 注意：v3_feature_truth_contract 这个 AddCheck **仍然保留**（它同时承载 Registry 真值表），
+    -- 所以只能断言“被删掉的那两条失败原因串 / 那个被读走的标志”不再出现。
+    assert(text:find('life_fishing:auto_r_transaction', 1, true) == nil,
+        'the removed fishing auto-R truth check must not come back')
+    assert(text:find('tools_reinforce_analysis:slot_probe_runtime_block', 1, true) == nil,
+        'the removed reinforce truth check must not come back')
+    assert(text:find('SlotProbeRuntimeBlocked', 1, true) == nil,
+        'Foundation must not read the reinforce runtime-block flag any more')
+    assert(text:find('FishingHotkeyV3', 1, true) == nil,
+        'Foundation must not read the fishing hotkey service any more')
+end)
+
 print(string.format('CORE-FEATURE-DECOUPLING RESULT %d passed / %d failed', passed, failed))
 if failed > 0 then error('core/feature decoupling regressions: ' .. tostring(failed)) end

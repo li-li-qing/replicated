@@ -2272,19 +2272,18 @@ function G:Run(options)
         local row = S.FeatureRegistry and S.FeatureRegistry:Get(id) or nil
         if row == nil or tostring(row.status or "") ~= expected then truthFailures[#truthFailures + 1] = id .. ":" .. tostring(row and row.status or "missing") end
     end
-    local fishingTruth = S.Features and S.Features.Fishing or nil
-    local fishingHotkey = S.Services and S.Services.FishingHotkeyV3 or nil
-    -- 中文维护：旧 gate 把“Auto-R 必须硬阻塞”当作真值，导致真实事务恢复后仍被基础验收判失败；现在 Authority 是 HotkeyContract v3 + 独立事务服务。
-    -- 兼容边界：这里仅验证契约存在，不执行任何 Native 热键读写；RU 写键行为仍由 FishingHotkeyV3 capability gate/战斗门/持久恢复快照保护。
-    if type(fishingTruth) ~= "table" or fishingTruth.HotkeyRuntimeBlocked == true
-        or (tonumber(fishingTruth.HotkeyContractVersion) or 0) < 3
-        or type(fishingHotkey) ~= "table" or (tonumber(fishingHotkey.TransactionContractVersion) or 0) < 3 then
-        truthFailures[#truthFailures + 1] = "life_fishing:auto_r_transaction"
-    end
-    local reinforceTruth = S.Features and S.Features.tools_reinforce_analysis or nil
-    if type(reinforceTruth) ~= "table" or reinforceTruth.SlotProbeRuntimeBlocked ~= true then
-        truthFailures[#truthFailures + 1] = "tools_reinforce_analysis:slot_probe_runtime_block"
-    end
+    -- 中文维护注释（Phase 3 Batch F，2026-09-29，core-feature-decoupling-1）：这里原先还并列了两段
+    -- 直接点名具体业务 Feature 的“运行时真值”检查（life_fishing 的 Auto-R 事务契约、
+    -- tools_reinforce_analysis 的 slot-probe 硬阻塞声明）—— 典型的 Core 硬编码认识具体业务 Feature
+    -- （注释里也不要写出带点号的“表名+字段”形式：rs_architecture_audit 是行级正则且不跳过注释，
+    -- 说明文字会被重新计成 CORE_FEATURE 债务）。
+    -- 两段判定现已各自收敛到对应 Feature 的 acceptance：
+    --   features/life/fishing/rs_fishing_acceptance.lua
+    --     → v3_life_fishing_auto_r_transaction_contract（Auto-R 不得被硬阻塞 + 热键契约 v3 + 事务服务 v3）
+    --   features/tools/reinforce_analysis/rs_reinforce_analysis_acceptance.lua
+    --     → v3_tools_reinforce_analysis_runtime_block_contract（必须显式声明 slot-probe 被硬阻塞）
+    -- 判定逐条等价，边界不变（仍只验证契约存在，不执行任何 Native 热键读写）。
+    -- sequence case 失败同样落 blocker，故整段删除；上面的 Registry 真值表循环保持原样。
     table.sort(truthFailures)
     AddCheck(report, "v3_feature_truth_contract", #truthFailures == 0, "blocker", #truthFailures == 0 and "partial capabilities labeled honestly; risky Native transactions fail closed" or ("invalid=" .. Join(truthFailures, 8)))
 
