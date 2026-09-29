@@ -2297,11 +2297,10 @@ function G:Run(options)
         or type(tradeWidget) ~= "table" or type(bondsWidget) ~= "table" then
         usabilityFailures[#usabilityFailures + 1] = "life_widgets"
     end
-    local tradeFeature = S.Features and S.Features.Trade or nil
+    -- 中文维护注释（Phase 3 Batch Q，2026-09-29，core-feature-decoupling-1）：本判定原先还并列了 23 条 Trade 的 Feature 契约（Authority 与自身的 14 个版本下限、7 条命令、2 个读取函数），现整段搬到 features/life/trade/rs_trade_acceptance.lua 的 v3_life_trade_detail_favorites_contract，判定逐条等价。**TradePayoutV3 / MaterialPriceServiceV3 / PriceQuoteQueueV3 / TradeDetailFloatingV3 / LifeM16PagesContract 这些 Service 与 UIV3 侧契约留在 Foundation** —— 它们不是 Feature 债。注意：注释里也不要写出带点号的“表名+字段”形式，rs_architecture_audit 是行级正则且不跳过注释。
     local tradePayout = S.Services and S.Services.TradePayoutV3 or nil
     local tradeDetail = S.UIV3 and S.UIV3.TradeDetailFloatingV3 or nil
-    local tradeDetailOk = type(tradeFeature) == "table" and type(tradeFeature.Authority) == "table" and (tonumber(tradeFeature.Authority.version) or 0) >= 6
-        and (tonumber(tradeFeature.Authority.TradePayoutProjectionContractVersion) or 0) >= 1
+    local tradeDetailOk = type(tradePayout) == "table" and (tonumber(tradePayout.PriceFormulaContractVersion) or 0) >= 3
         and type(tradePayout) == "table" and (tonumber(tradePayout.PriceFormulaContractVersion) or 0) >= 3
         and (tonumber(tradePayout.StaticPriceKeyResolverContractVersion) or 0) >= 2
         and (tonumber(tradePayout.CommerceMultiplierContractVersion) or 0) >= 1
@@ -2309,15 +2308,6 @@ function G:Run(options)
         -- 维护（2026-09-25，trade-multi-row-quote-mixed-package-gate-1）：多 RowJob 只在 Feature/页面层并存；
         -- PriceQuoteQueueV3 必须仍是单 Native Authority 且按稳定 itemType+grade 去重。任何一侧漏更新都应在启动门禁
         -- 阻断，而不是等用户连续双击两个货物后才暴露“上一任务被取消/重复查询”这种隐蔽回归。
-        and (tonumber(tradeFeature.MultiRowQuoteJobsContractVersion) or 0) >= 1
-        and (tonumber(tradeFeature.QuoteTerminalRefreshContractVersion) or 0) >= 2
-        and (tonumber(tradeFeature.MaterialPriceCacheContractVersion) or 0) >= 1
-        and (tonumber(tradeFeature.BackgroundMaterialRevalidateContractVersion) or 0) >= 1
-        and (tonumber(tradeFeature.EconomicsRevisionContractVersion) or 0) >= 1
-        and (tonumber(tradeFeature.AutoRefreshBackgroundLeaseContractVersion) or 0) >= 2
-        and (tonumber(tradeFeature.AutoRefreshRuntimeContractVersion) or 0) >= 1
-        and (tonumber(tradeFeature.Authority.AutoRefreshWatchdogContractVersion) or 0) >= 3
-        and (tonumber(tradeFeature.Authority.RatioFastPublishContractVersion) or 0) >= 2
         and type(S.Services and S.Services.MaterialPriceServiceV3) == "table"
         and (tonumber(S.Services.MaterialPriceServiceV3.ContractVersion) or 0) >= 1
         and (tonumber(S.Services.MaterialPriceServiceV3.FreshnessContractVersion) or 0) >= 1
@@ -2330,14 +2320,6 @@ function G:Run(options)
         and (tonumber(S.Services.PriceQuoteQueueV3.PriorityQueueContractVersion) or 0) >= 1
         and type(S.UIV3 and S.UIV3.LifeM16PagesContract) == "table"
         and (tonumber(S.UIV3.LifeM16PagesContract.tradeMultiQuoteUiContractVersion) or 0) >= 1
-        and (tonumber(tradeFeature.Authority.RouteRefreshRetryContractVersion) or 0) >= 2
-        and (tonumber(tradeFeature.Authority.SingleFlightLatestRouteContractVersion) or 0) >= 1
-        and (tonumber(tradeFeature.Authority.RequestTimeoutContractVersion) or 0) >= 1
-        and type(tradeFeature.Commands) == "table" and type(tradeFeature.Commands.ToggleCurrentFavorite) == "function"
-        and type(tradeFeature.Commands.SelectFavorite) == "function" and type(tradeFeature.Commands.SetSortMode) == "function"
-        and type(tradeFeature.Commands.SelectRow) == "function" and type(tradeFeature.Commands.QuoteRowMaterials) == "function"
-        and type(tradeFeature.Commands.QuotePendingMaterials) == "function" and type(tradeFeature.Commands.CancelQuoteRowMaterials) == "function"
-        and type(tradeFeature.GetFavoriteItems) == "function" and type(tradeFeature.GetRow) == "function"
         and type(tradeDetail) == "table" and (tonumber(tradeDetail.TradeDetailContractVersion) or 0) >= 2
         and type(tradeDetail.Open) == "function" and type(tradeDetail.Close) == "function"
     AddCheck(report, "v3_trade_detail_favorites_contract", tradeDetailOk, "blocker",

@@ -308,5 +308,6 @@ features/tools/auction/rs_auction_acceptance.lua
 features/tools/market_analysis/rs_market_analysis_acceptance.lua
 features/tools/craft/rs_craft_acceptance.lua
 features/tools/bag/rs_bag_acceptance.lua
+features/life/trade/rs_trade_acceptance.lua
 features/combat/team_tools/rs_team_tools_acceptance.lua
 core/rs_runtime.lua

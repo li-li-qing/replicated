@@ -1375,5 +1375,100 @@ Test('BatchP 静态：acceptance 的 Domain 版本下限与搬迁前一致（7�
         'acceptance must keep the domain version floor at 7')
 end)
 
+
+------------------------------------------------------------------------
+-- Phase 3 Batch Q：Trade 的详情/收藏契约（最后 1 处 CORE_FEATURE）
+--   （v3_trade_detail_favorites_contract 里的 23 条 Feature 条件已删除；
+--     TradePayoutV3 / MaterialPriceServiceV3 / PriceQuoteQueueV3 /
+--     TradeDetailFloatingV3 / LifeM16PagesContract 的 Service 与 UIV3 侧契约留在 Foundation）
+--   本批是本阶段**最后一处**：至此 CORE_FEATURE 债务清零，
+--   剩余 audit 项已全部是 PRESENTATION_STATE 与 GIANT_FILE（别的 Phase 的范围）。
+------------------------------------------------------------------------
+local TRADE_PATH = 'features/life/trade/rs_trade_acceptance.lua'
+local TRADE_CASE = 'v3_life_trade_detail_favorites_contract'
+local function TradeFeature()
+    -- 下限清单由脚本从 acceptance 反向提取，与之一一对齐（14 个版本 + 2 个函数 + 7 条命令）。
+    local authority = {
+        version = 6,
+        TradePayoutProjectionContractVersion = 1,
+        AutoRefreshWatchdogContractVersion = 3,
+        RatioFastPublishContractVersion = 2,
+        RouteRefreshRetryContractVersion = 2,
+        SingleFlightLatestRouteContractVersion = 1,
+        RequestTimeoutContractVersion = 1,
+    }
+    local feature = {
+        MultiRowQuoteJobsContractVersion = 1,
+        QuoteTerminalRefreshContractVersion = 2,
+        MaterialPriceCacheContractVersion = 1,
+        BackgroundMaterialRevalidateContractVersion = 1,
+        EconomicsRevisionContractVersion = 1,
+        AutoRefreshBackgroundLeaseContractVersion = 2,
+        AutoRefreshRuntimeContractVersion = 1,
+        Authority = authority,
+        GetFavoriteItems = function() return nil end,
+        GetRow = function() return nil end,
+        Commands = {
+            ToggleCurrentFavorite = function() end,
+            SelectFavorite = function() end,
+            SetSortMode = function() end,
+            SelectRow = function() end,
+            QuoteRowMaterials = function() end,
+            QuotePendingMaterials = function() end,
+            CancelQuoteRowMaterials = function() end,
+        },
+    }
+    return feature
+end
+
+Test('BatchQ Trade：实现未注册 → case 仍注册且失败', function()
+    local cases = BootTruth('Trade', TRADE_PATH, nil)
+    assert(type(cases[TRADE_CASE]) == 'function', 'case must register even when missing')
+    local ok, reason = cases[TRADE_CASE]()
+    assert(ok == false and tostring(reason) == 'implementation_not_registered', 'reason=' .. tostring(reason))
+end)
+
+Test('BatchQ Trade：合规契约通过（23 条搬迁未误伤）', function()
+    local ok, reason = BootTruth('Trade', TRADE_PATH, TradeFeature())[TRADE_CASE]()
+    assert(ok == true, 'compliant feature must pass, got ' .. tostring(reason))
+end)
+
+Test('BatchQ Trade：版本回退 / Authority 缺失 / 缺命令缺函数必须被拒', function()
+    local function Reject(mutate, label)
+        local feature = TradeFeature()
+        mutate(feature)
+        local ok, reason = BootTruth('Trade', TRADE_PATH, feature)[TRADE_CASE]()
+        assert(ok == false, label .. ' must be rejected')
+        assert(reason ~= nil and tostring(reason) ~= '', 'rejection must carry a reason')
+    end
+    Reject(function(f) f.Authority.version = 5 end, 'Authority.version 下限')
+    Reject(function(f) f.Authority = nil end, 'Authority 缺失')
+    Reject(function(f) f.MaterialPriceCacheContractVersion = 0 end, '材料价缓存契约下限')
+    Reject(function(f) f.Commands = nil end, '命令表缺失')
+    Reject(function(f) f.Commands.QuoteRowMaterials = nil end, '缺 QuoteRowMaterials')
+    Reject(function(f) f.GetFavoriteItems = nil end, '缺 GetFavoriteItems')
+end)
+
+Test('BatchQ 静态：core 不得再按 id 读 Trade（两种回填形态都查）', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    assert(text:find('S.Features.Trade', 1, true) == nil, 'Foundation must not read the Trade feature table')
+    local bare = 0
+    for _ in text:gmatch('[^A-Za-z_]tradeFeature%.[A-Za-z_]') do bare = bare + 1 end
+    assert(bare == 0, 'Foundation must not dereference the bare tradeFeature binding, found ' .. tostring(bare))
+end)
+
+Test('BatchQ 静态：Service / UIV3 侧必须保留，且推导链仍在', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    for _, pattern in ipairs({ 'TradePayoutV3', 'PriceFormulaContractVersion',
+        'MaterialPriceServiceV3', 'PriceQuoteQueueV3', 'TradeDetailFloatingV3',
+        'LifeM16PagesContract', 'v3_trade_detail_favorites_contract' }) do
+        assert(text:find(pattern, 1, true) ~= nil, 'non-Feature counterpart must stay: ' .. pattern)
+    end
+    assert(text:find('local tradeDetailOk = type(tradePayout)', 1, true) ~= nil,
+        'the judgement must remain derived from the TradePayout service')
+end)
+
 print(string.format('CORE-FEATURE-DECOUPLING RESULT %d passed / %d failed', passed, failed))
 if failed > 0 then error('core/feature decoupling regressions: ' .. tostring(failed)) end
