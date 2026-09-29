@@ -1917,7 +1917,7 @@ ReloadAddon PASS
 | Phase 0 测试/编译基线 | **已完成** | 18.326 | 18.330 | 第六轮闭合：真实 Lua 5.1 编译门禁（261 files，luac5.1 5.1.5）+ 真实 Lua 5.1 运行环境；两个历史证据 fixture 按 byte-for-byte 从 18.244 归档恢复；X2Skill numeric API_TYPE 由 globals/apitypes.lua 证据链确认为 35，Native audit 收敛为 0/0/0；默认 Full Runner 端到端 PASS；Install 261/261、Unfinished Closure 14/14、Architecture 仍 49 债务。仅剩 X2Skill RU 实机行为验收（Phase 3 收口项） |
 | Phase 1 Business Bridge 拆分 | **已完成（Batch A–E 全部完成）** | 18.330 | 18.331 | 15 个 Feature 全部独立成文件；rs_business_bridge.lua（5223 行 / 188 slots）退役删除；新增装配工厂 + SharedBounds + 拍卖读模型；主 chunk slots 187→104→（bridge 不复存在，各文件 16–98）；`--feature-split` 59/59 并入默认 Full Runner；audit 0/0/0；Architecture 债务 49→48；BuildTag 推进到 `v3-m1.16.0.18.331-phase1-feature-slice-complete` |
 | Phase 2 Life Bundle 拆分 | **已完成（Step 1–4，首轮“一 Feature 一文件”闭合）** | 18.331 | 18.332 | 4 个 life Feature（Treasure / Fishing / Bonds / Trade）全部独立成文件；`rs_life_m16_bundle.lua`（5633 行 / 4 Feature）退役删除；新增 `features/life/shared/rs_life_slice_factory.lua`（life 版装配 helper，未与 Phase 1 工厂合并）；`--feature-split` 59→66 断言（新增 7 条 life 契约）；BuildTag 推进到 `v3-m1.16.0.18.332-phase2-life-bundle-slice-complete`。**§24.4 的 Trade 第二轮进一步拆分仍未开始**（前置条件：RU 实机一轮 Fresh Reload / 老配置 / 自动刷新 / 报价 / 材料缓存实测） |
-| Phase 3 Contract / Dependency Ownership | **进行中（Batch A/B 已完成）** | - | - | Core→Feature inversion + Feature/Service Native dependency ownership。**已落地**：把 Foundation 里点名具体业务 Feature 的硬编码契约门禁搬回 Feature 自己的 `*_acceptance.lua`（sequence case 与 AddCheck 同为 blocker 级别），并在搬迁前先把 acceptance 补齐成原判定的严格超集。Batch A = RaidReadiness、Batch B = DeathReview；新增 `--core-feature-decoupling` 门禁入口（并入默认 Full Runner）。Architecture 债务 47 → 45（CORE_FEATURE 41 → 39）。剩余 39 处 CORE_FEATURE 按同一模板继续分批 |
+| Phase 3 Contract / Dependency Ownership | **进行中（Batch A–D 已完成）** | - | - | Core→Feature inversion + Feature/Service Native dependency ownership。**已落地**：把 Foundation 里点名具体业务 Feature 的硬编码契约门禁搬回 Feature 自己的 `*_acceptance.lua`（sequence case 与 AddCheck 同为 blocker 级别），并在搬迁前先把 acceptance 补齐成原判定的严格超集。Batch A = RaidReadiness、B = DeathReview、C = life_bonds（5 行）、D = Tasks/Activities/Gear 悬浮窗命令面；新增 `--core-feature-decoupling` 门禁入口（并入默认 Full Runner）。Architecture 债务 47 → 37（CORE_FEATURE 41 → 31）。**剩余 31 处的 Feature 均无现成 acceptance（或覆盖不足），从下一批起需先新写 acceptance 用例承载契约再删旧分支** |
 | Phase 4 Scheduler/Event 热路径 | 未开始 | - | - | P1 |
 | Phase 5 Presentation 边界 | 未开始 | - | - | P1 |
 | Phase 6 Diagnostics/Acceptance | 未开始 | - | - | P1 |
@@ -3802,35 +3802,81 @@ acceptance 用例是其 Foundation 硬编码断言的严格超集，就可以整
 还查 store.lifetime、migrate 的**实际归一化结果**（470x330 / 透明度 0.96 / locked / minimized /
 userMoved）、Framework2-schema2 零值省略的**真实恢复执行 probe**、record/index 预算探针。）
 
-### 25.6.5 门禁与指标
+### 25.6.5 Batch C / Batch D（2026-09-29 续）
+
+```text
+Batch C  life_bonds（5 行债，效率最高的一组）
+删除  core/rs_foundation_gate.lua 的 life_widgets 判定里 5 条点名 life_bonds 实现的契约版本条件
+收敛  features/life/bonds/rs_bonds_acceptance.lua 的 v3_m1_bonds
+特点  acceptance **不止覆盖而且更严**：DropdownPresentationContractVersion 要求 >=2（原判定只要 >=1）
+      → 契约测试专门用 “=1” 做区分度证据：旧判定放行、新 Authority 拒绝
+债务  45 → 40
+
+Batch D  life_tasks / life_activities / combat_gear 的悬浮窗命令面
+删除  core/rs_foundation_gate.lua 的 v3_presentation_feature_api_contract 整块（13 行）
+收敛  features/life/tasks/rs_task_acceptance.lua → presentation_command_contract
+      features/life/activities/rs_activity_acceptance.lua → 同类命令面检查
+      features/combat/gear/rs_gear_acceptance.lua → quick_button_snap_settings_contract
+债务  40 → 37
+```
+
+三个 Feature 的 acceptance guard 一并补齐；反例验证逐个做（每次**恰好 1 条 FAIL**）。
+契约测试从 12 条扩到 21 条。
+
+**新增踩坑记录（写契约测试时会遇到）**：
+
+- 静态断言不要匹配“check id 的名字出现”，要匹配**真正的 `AddCheck(report, "…"` 调用** ——
+  搬迁说明注释里会写到该 id，宽匹配会把注释判成违规（Batch D 踩过一次）。
+- 静态断言也不要顺手断言“某个 Feature 的实现表访问为 0”，如果那处访问属于**后续批次**的范围
+  （Batch D 里 Tasks/Activities 的 Persistence 契约组仍合法存在）—— 断言要严格限定在本批删除范围。
+- **不是所有文件都是 CRLF**：`rs_bonds_acceptance.lua` 等 acceptance 文件在仓库里就是 LF。
+  改完要看 `git diff --stat` 是否只是几行（git 会归一化行尾，所以 CRLF↔LF 不产生噪音），
+  但**不要盲目“统一 CRLF”**，那会制造无意义的行尾改动。
+
+### 25.6.6 门禁与指标
 
 ```text
 新增入口  python tools/rs_status_refactor_test_runner.py --core-feature-decoupling
           （CORE_FEATURE_DECOUPLING_TESTS，已并入默认 Full Runner，与 feature-split 分开计数）
-契约测试  tools/rs_core_feature_decoupling_tests.lua   12 条断言（Batch A 9 + Batch B 3）
-债务      Architecture 47 → 46（Batch A）→ 45（Batch B）；CORE_FEATURE 41 → 40 → 39
+契约测试  tools/rs_core_feature_decoupling_tests.lua   21 条断言（A:9 B:3 C:5 D:4）
+债务      Architecture 47 → 46(A) → 45(B) → 40(C) → 37(D)；CORE_FEATURE 41 → 31
 门禁      Install 282/282、Lua 5.1 compile 282、syntax 403、Native audit 0/0/0、
           Test Dependency Audit、Unfinished Closure 14/14、feature-split、
-          core-feature-decoupling 12/12、默认 Full Runner exit=0
+          core-feature-decoupling 21/21、默认 Full Runner exit=0
 ```
 
-反例验证（两批都做）：Batch A 用临时阈值/桩触发，Batch B 把 acceptance 的 guard 还原成旧的
-“F 定义在前 + 静默 return”形态 —— 测试**恰好 1 条 FAIL**，且失败信息精确指向补齐点；还原后 12/12 PASS。
+反例验证（四批都做）：Batch A 用临时桩触发，B/C/D 把 acceptance 的 guard 还原成旧的
+“F 定义在前 + 静默 return”形态 —— 每次测试都**恰好 1 条 FAIL**，且失败信息精确指向对应补齐点；
+还原后全绿。Batch D 逐个 Feature 各做一次。
 
-### 25.6.6 剩余工作
+### 25.6.7 剩余工作
 
 ```text
-1. 余下 39 处 CORE_FEATURE 债务，按 §25.6.2 模板继续分批。按“有 acceptance + 同形”排序，优先候选：
-   DPS（Foundation 的 dps_v3_contract / dps_skill_proxy_source_contract / dps_v3_runtime_scope 三段交织，
-   需先拆清依赖）、BuffDisplay、Tasks/Activities、Gear、Bonds（Binding 的 5 条版本检查）、
-   Trade 段（20+ 契约字段，跨 Feature/Service/UI，需单独设计）。
-2. 没有 acceptance 的 Feature（如 tools_bag / tools_craft / tools_auction / combat_unit_lines /
-   combat_range_assist / combat_boss_alerts / combat_team_tools / tools_reinforce_analysis /
-   combat_target_monitor / combat_buff_cap / life_treasure / life_fishing / life_trade 等）
-   需要先补一个 acceptance 用例承载契约，再删 Foundation 分支 —— 每批工作量更大。
-3. core/rs_diagnostics.lua 的 6 处 CORE_FEATURE 属 §28（Phase 6 Diagnostics 收敛），
-   但可用同一模板提前收口。
-4. §25.2 的 descriptor（RequiredServices / RequiredStores / NativeCapabilities / RuntimeHealthProvider）
+1. 余下 31 处 CORE_FEATURE，全部集中在两个文件：
+   core/rs_foundation_gate.lua（25 处）与 core/rs_diagnostics.lua（6 处，属 §28 Phase 6，可用同一模板提前收口）。
+2. **工作性质从“删冗余”变成“先建 Authority”**：剩余 Feature 都没有 acceptance 或覆盖不足，必须先写
+   acceptance 用例承载契约、并使它成为原判定的**严格超集**，才能删 Foundation 分支。已确认的覆盖缺口举例：
+   - Healer 家族（Healer / HealerAuraBridge / HealerScreenProjection）：现只有 rs_healer_aura_acceptance
+     覆盖了 AuraBridge 的 version/ReadAccurate/GetHealth，Healer 的 Commands 面、ScreenProjection、
+     healerPresentation 均无覆盖。
+   - Tasks/Activities 的 Persistence 契约组（v3_activity_persistence_recovery_contract /
+     v3_feature_persistence_mutation_contract / v3_task_persistence_stable_codec_contract）：
+     activities 缺 PriorityStageSort / TransportV1ZeroOmission / allowIntegrityUpgrade，tasks 完全没有；
+     且 KnownLegacyCanonicalRecoveryContractVersion 下限不一致（旧判定 >=3、acceptance 只要 >=1，补时取更严）。
+   - BuffDisplay：acceptance 有 525 行、覆盖极广，但没有 observationContractVersion / HudContractVersion
+     这两处 Foundation 判定，需补。
+3. 完全没有 acceptance 的 Feature（需要新建文件）：tools_bag / tools_craft / tools_auction /
+   tools_market_analysis / combat_unit_lines / combat_range_assist / combat_boss_alerts /
+   combat_team_tools / tools_reinforce_analysis / combat_target_monitor / combat_buff_cap /
+   life_treasure / life_fishing / life_trade。
+   建议按“同一条 AddCheck 里的多个 Feature”成组处理，减少 acceptance 文件数量，例如：
+     v3_dynamic_observation_contract（target_monitor / buff_cap / treasure / fishing，4 个合同形检查）
+     v3_combat_life_usability_contract（boss_alerts / unit_lines / range_assist / buff_display，4 个）
+     v3_feature_truth_contract（fishing auto-R 事务 + reinforce slot-probe 阻塞标志）
+   注意：这些 Feature 彼此没有依赖，但**同一条 AddCheck 必须整条处理**，不能只搬其中几个，
+   否则剩下的条件会失去语义。
+4. Trade 段（20+ 契约字段，跨 Feature/Service/UI）与 craft/bag 的动作契约建议单独设计，不要硬塞进模板。
+5. §25.2 的 descriptor（RequiredServices / RequiredStores / NativeCapabilities / RuntimeHealthProvider）
    尚未引入；本阶段先完成“契约 Authority 归位”，descriptor 留给后续批次按需引入，不要一次做成复杂 DSL。
 ```
 
