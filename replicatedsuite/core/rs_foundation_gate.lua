@@ -1307,19 +1307,18 @@ function G:Run(options)
                 .. "/policy=" .. tostring(type(moduleDiagnosticsPolicy) == "table")
                 .. "/registryAlias=" .. tostring(moduleDiagnosticsRegistryAlias))
 
-        local tasksFeature = S.Features and S.Features.Tasks or nil
-        local activitiesFeature = S.Features and S.Features.Activities or nil
-        local gearFeature = S.Features and S.Features.Gear or nil
-        local tasksCommands = type(tasksFeature) == "table" and tasksFeature.Commands or nil
-        local activitiesCommands = type(activitiesFeature) == "table" and activitiesFeature.Commands or nil
-        local gearCommands = type(gearFeature) == "table" and gearFeature.Commands or nil
-        AddCheck(report, "v3_presentation_feature_api_contract",
-            type(tasksCommands) == "table" and type(tasksCommands.SetWidgetWindowState) == "function"
-                and type(activitiesCommands) == "table" and type(activitiesCommands.SetWidgetWindowState) == "function"
-                and type(gearCommands) == "table" and type(gearCommands.ResetQuickSnapSettings) == "function",
-            "blocker", "tasksWindow=" .. tostring(type(tasksCommands) == "table" and type(tasksCommands.SetWidgetWindowState) == "function")
-                .. "/activitiesWindow=" .. tostring(type(activitiesCommands) == "table" and type(activitiesCommands.SetWidgetWindowState) == "function")
-                .. "/gearReset=" .. tostring(type(gearCommands) == "table" and type(gearCommands.ResetQuickSnapSettings) == "function"))
+        -- 中文维护注释（Phase 3 Batch D，2026-09-29，core-feature-decoupling-1）：这里原先有
+        -- v3_presentation_feature_api_contract —— 直接点名 Tasks / Activities / Gear 三个业务 Feature 的
+        -- 实现表，检查它们各自 Commands 上的一个悬浮窗/快速复位命令是否存在。这是典型的 Core 硬编码认识
+        -- 具体业务 Feature（注释里也不要写出带点号的“表名+字段”形式：rs_architecture_audit 是行级正则
+        -- 且不跳过注释，说明文字会被重新计成 CORE_FEATURE 债务）。
+        -- 三处判定现已分别由各自的唯一契约 Authority 覆盖，且都是**严格超集**：
+        --   features/life/tasks/rs_task_acceptance.lua       → presentation_command_contract
+        --   features/life/activities/rs_activity_acceptance.lua → 同类命令面检查
+        --   features/combat/gear/rs_gear_acceptance.lua      → quick_button_snap_settings_contract
+        -- sequence case 失败同样落 blocker（见后续 sequence_harness 检查），故整块删除。
+        -- 注意：Gear 的 quick-startup-intent 那一组检查**不在这里**，它由下面的
+        -- v3_quick_surface_reload_reconcile_contract 单独负责，删除范围不要顺手扩大。
         local gearService = S.Services and S.Services.GearV3 or nil
         AddCheck(report, "gear_partial_apply_contract", type(gearService) == "table" and (tonumber(gearService.version) or 0) >= 5
                 and (tonumber(gearService.PartialApplyContractVersion) or 0) >= 1

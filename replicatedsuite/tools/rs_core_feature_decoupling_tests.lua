@@ -269,5 +269,54 @@ Test('life_bonds：静态 —— core/*.lua 不得再点名该 Feature', functio
     assert(text:find('S.Features and S.Features.Bonds', 1, true) == nil, 'Foundation must not hard-code life_bonds')
 end)
 
+------------------------------------------------------------------------
+-- Phase 3 Batch D：life_tasks / life_activities / combat_gear 的悬浮窗命令面
+-- （core/rs_foundation_gate.lua 的 v3_presentation_feature_api_contract 整块已删除）
+--
+-- 原先 Foundation 点名三个业务 Feature 的实现表，各查一条 Commands 命令是否存在。
+-- 三处判定现在分别由各自 acceptance 覆盖（tasks: presentation_command_contract；
+-- activities: 同类命令面检查；gear: quick_button_snap_settings_contract）。
+-- 搬迁补齐点一致：实现缺失时旧 acceptance 静默 return = 没有检查。
+------------------------------------------------------------------------
+local function BootForMissingFeature(featureKey, acceptancePath)
+    local cases = {}
+    local S = { Features = {}, FoundationGate = {},
+        SafeTraceback = debug and debug.traceback or function(m) return m end }
+    function S.FoundationGate:RegisterSequenceCase(id, fn) cases[tostring(id)] = fn; return true end
+    S.Features[featureKey] = nil -- 故意让实现缺失：这是本批要证明的场景
+    ReplicatedSuite = S
+    dofile(acceptancePath)
+    return cases
+end
+
+local BatchDMissing = {
+    { key = 'Tasks', case = 'v3_m1_tasks', path = 'features/life/tasks/rs_task_acceptance.lua' },
+    { key = 'Activities', case = 'v3_m1_activities', path = 'features/life/activities/rs_activity_acceptance.lua' },
+    { key = 'Gear', case = 'v3_m4_gear_screen_buttons', path = 'features/combat/gear/rs_gear_acceptance.lua' },
+}
+
+for _, item in ipairs(BatchDMissing) do
+    Test('BatchD ' .. item.key .. '：实现未注册时仍注册 case 并失败（搬迁补齐）', function()
+        local cases = BootForMissingFeature(item.key, item.path)
+        assert(type(cases[item.case]) == 'function', item.case .. ' must register even when the Feature is missing')
+        local ok, reason = cases[item.case]()
+        assert(ok == false and tostring(reason) == 'implementation_not_registered', 'reason=' .. tostring(reason))
+    end)
+end
+
+Test('BatchD 静态：core/*.lua 不得再点名这三个 Feature', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    -- 注意：搬迁说明注释里会写出被删掉的 check id，所以这里必须匹配**真正的 AddCheck 调用**，
+    -- 而不是名字出现（否则注释会把自己的说明文字判成违规）。
+    assert(text:find('AddCheck(report, "v3_presentation_feature_api_contract"', 1, true) == nil,
+        'the removed presentation API contract must not come back')
+    -- 只断言**本批删掉的**内容：那两个 Command 名在 Foundation 里已无任何合法用处。
+    -- Tasks / Activities 的实现表访问在 Batch E 范围里仍合法存在，这里不越界断言。
+    for _, pattern in ipairs({ 'SetWidgetWindowState', 'ResetQuickSnapSettings' }) do
+        assert(text:find(pattern, 1, true) == nil, 'Foundation still references: ' .. pattern)
+    end
+end)
+
 print(string.format('CORE-FEATURE-DECOUPLING RESULT %d passed / %d failed', passed, failed))
 if failed > 0 then error('core/feature decoupling regressions: ' .. tostring(failed)) end

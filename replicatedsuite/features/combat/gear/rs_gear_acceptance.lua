@@ -4,12 +4,16 @@
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
+if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
+-- 中文维护注释（Phase 3 Batch D，2026-09-29，core-feature-decoupling-1）：本文件是 combat_gear 的
+-- **唯一契约 Authority**。原先 F 缺失时这里静默 return，把“实现根本没注册”留给 Foundation 的硬编码
+-- 断言兜底；Phase 3 正在删掉那处硬编码，所以这里必须**无条件注册** case，并在实现缺失时明确失败。
 local F = S.Features and S.Features.Gear or nil
-if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" or type(F) ~= "table" then return end
 
 local function Fail(message) return false, tostring(message or "gear_acceptance_failed") end
 
 G:RegisterSequenceCase("v3_m4_gear_screen_buttons", function()
+    if type(F) ~= "table" then return Fail("implementation_not_registered") end
     local meta = S.FeatureRegistry and S.FeatureRegistry:Get("combat_gear") or nil
     if meta == nil or tostring(meta.status) ~= "migrated_m4" or tostring(meta.authority) ~= "v3.gear" or meta.widgetCapable ~= true or meta.defaultEnabled ~= true then return Fail("metadata_contract") end
     if S.FeatureRuntime == nil or S.FeatureRuntime:IsImplemented("combat_gear") ~= true then return Fail("implementation_missing") end
