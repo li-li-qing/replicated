@@ -4113,9 +4113,8 @@ N 两种形态各一次（回填 / 放宽下限）；O 两种（回填 / 把取�
 1. **CORE_FEATURE 债务已清零**（41 → 0）。core/rs_diagnostics.lua 与
    core/rs_foundation_gate.lua 两处都已完成；contract Authority 全部归位到 features/** 的
    *_acceptance.lua（sequence case 与 AddCheck 同为 blocker 级别）。
-2. 剩余 6 项审计项**均已不是 CORE_FEATURE**，属别的 Phase：
-     PRESENTATION_STATE ×5  → Presentation 层直接读 Feature.State（Phase 4/5 的范围）
-     GIANT_FILE        ×1  → core/rs_persistence.lua 4267 行（Phase 0/后续拆分的范围）
+2. 后续又清掉了 PRESENTATION_STATE（5 → 0），详见 §25.7。
+   **当前只剩 1 项**：GIANT_FILE —— core/rs_persistence.lua 4267 行（Phase 0/后续拆分的范围）。
 3. 沉淀下来、后续 Phase 继续沿用的工作法（详见 §25.6.13–§25.6.16 与各批小结）：
    * 差集扫描定位缺口（不靠肉眼读巨型布尔表达式）；误报要会识别（变量名差异 / 不同 case）
    * 逐个核对取值与下限，取更严的一方（Batch L、O 各踩到一次“悄悄降强度”）
@@ -4442,6 +4441,33 @@ Store owner/schema 漂移
    -> STOP
 ```
 
+### 25.7 PRESENTATION_STATE 清零（2026-09-30）
+
+```text
+起点    Phase 3 收官后 5 处；定性复查后**真违规只有 2 处**
+误报    3 处注释文字 —— 规则 `if 'Feature.State' in line` 是裸串匹配、不跳过注释
+结果    5 → 0；Architecture 债务 6 → 1
+```
+
+**第一条经验：先定性，再动手。** 5 处里 3 处是注释、1 处是变量名前缀命中
+（`dpsFeature.State` 里含子串 `Feature.State`）。直接照单全改会改到不该改的地方。
+
+**两处真违规的修法（都不降强度）**：
+
+1. **sidecar 收藏列表 → 走公开只读 facade**
+   投影里只有 `favoriteCount`（数量）、**没有列表**，所以不能复用 `GetProjection`，
+   必须新开入口：读模型加 `R.Favorites(feature)`（返回重新归一后的**新表**，
+   调用方拿不到 State 本体）+ Feature 暴露 `GetFavorites()`，Presentation 改用它。
+2. **rs_v3_acceptance.lua 的私有字段断言 → 删除重复项**
+   核对后发现 DPS 自己的 acceptance 已有**同语义且更全**的断言
+   （widgetWindow + widgetVisible + GetWidgetVisible + SetWidgetVisible），
+   所以这里删掉不降强度，只是不再越界。
+
+**没有改审计工具**（标准口径变更需单独确认）；3 处注释误报用改措辞处理，
+与 Phase 3 处理 CORE_FEATURE 注释误报的做法保持一致。
+
+> 待用户确认的事项：审计规则 `'Feature.State' in line` 建议改为
+> **跳过注释行 + 用词边界 `\bFeature\.State`**，可以消除这类误报（但会改变债务统计口径）。
 ### 特别禁止
 
 ```text
