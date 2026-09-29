@@ -304,4 +304,7 @@ features/combat/boss_alerts/rs_boss_alerts_acceptance.lua
 features/combat/unit_lines/rs_unit_lines_acceptance.lua
 features/combat/range_assist/rs_range_assist_acceptance.lua
 features/tools/reinforce_analysis/rs_reinforce_analysis_acceptance.lua
+features/tools/auction/rs_auction_acceptance.lua
+features/tools/market_analysis/rs_market_analysis_acceptance.lua
+features/tools/craft/rs_craft_acceptance.lua
 core/rs_runtime.lua

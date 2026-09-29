@@ -2448,13 +2448,15 @@ function G:Run(options)
             or "quick-surface reload reconcile contract unavailable")
 
     local auctionQuery = S.Services and S.Services.AuctionQueryV3 or nil
-    local auction = S.Features and S.Features.tools_auction or nil
-    local market = S.Features and S.Features.tools_market_analysis or nil
+    -- 中文维护注释（Phase 3 Batch I，2026-09-29，core-feature-decoupling-1）：这里原先还并列了
+    -- tools_auction / tools_market_analysis 两个业务 Feature 的实现表检查。它们现已收敛到
+    -- features/tools/auction/rs_auction_acceptance.lua 与
+    -- features/tools/market_analysis/rs_market_analysis_acceptance.lua，判定逐条等价。
+    -- 本判定只保留 AuctionQueryV3 Service 侧契约（它不是 Feature 债）。注释里也不要写出带点号的
+    -- “表名+字段”形式：rs_architecture_audit 是行级正则且不跳过注释，说明文字会被重新计成债务。
     local auctionQueryOk = type(auctionQuery) == "table" and (tonumber(auctionQuery.version) or 0) >= 2
         and (tonumber(auctionQuery.EventAuthorityContractVersion) or 0) >= 1
         and tostring(auctionQuery.presentationBoundary or "") == "service_only" and type(auctionQuery.Search) == "function" and type(auctionQuery.GetSnapshot) == "function"
-        and type(auction) == "table" and (tonumber(auction.AuctionQueryContractVersion) or 0) >= 1 and type(auction.Commands.Search) == "function"
-        and type(market) == "table" and (tonumber(market.AuctionQueryContractVersion) or 0) >= 1 and type(market.Commands.Search) == "function"
     AddCheck(report, "v3_auction_query_contract", auctionQueryOk, "blocker",
         auctionQueryOk and "single event Authority + timeout-fenced explicit current-listing query" or "auction query contract v2 unavailable")
 
@@ -2465,8 +2467,6 @@ function G:Run(options)
         and type(auctionSurface.GetSnapshot) == "function" and type(auctionSurface.Start) == "function" and type(auctionSurface.Stop) == "function"
         and type(auctionSidecar) == "table" and (tonumber(auctionSidecar.SidecarControlContractVersion) or 0) >= 2
         and type(auctionSidecar.GetControlState) == "function" and type(auctionSidecar.RequestShow) == "function"
-        and type(auction) == "table" and (tonumber(auction.SidecarPreferenceContractVersion) or 0) >= 1
-        and type(auction.IsSidecarEnabled) == "function" and type(auction.Commands) == "table" and type(auction.Commands.SetSidecarEnabled) == "function"
     AddCheck(report, "v3_auction_sidecar_contract", auctionSidecarOk, "blocker",
         auctionSidecarOk and "native-auction observer + persistent user-controlled sidecar lifecycle present" or "auction sidecar control contract unavailable")
 
@@ -2484,9 +2484,6 @@ function G:Run(options)
         and type(auctionDaily.AcquireConsumer) == "function" and type(auctionDaily.ReleaseConsumer) == "function"
         and type(auctionDaily.SelectRecipe) == "function" and type(auctionDaily.GetSnapshot) == "function"
         and type(questProgress) == "table" and type(questProgress.GetActiveQuestStates) == "function" and type(questProgress.GetActiveQuestList) == "function"
-        and type(auction) == "table" and type(auction.Commands) == "table"
-        and type(auction.Commands.RenameFavorite) == "function" and type(auction.Commands.MoveFavorite) == "function"
-        and type(auction.Commands.RemoveFavoriteByKeyword) == "function" and type(auction.Commands.ClearFavorites) == "function"
     AddCheck(report, "v3_auction_workspace_contract", auctionWorkspaceOk, "blocker",
         auctionWorkspaceOk and "favorites CRUD + demand-scoped daily materials + session-only temporary groups + three-tab sidecar present"
             or "auction workspace contract v2 unavailable")
@@ -2501,21 +2498,19 @@ function G:Run(options)
 
     -- 中文维护注释（2026-09-15，删除制作规划）：制作相关 Foundation blocker 只覆盖仍在产品中的 tools_craft。
     -- 不保留 v3_craft_plan_contract 空壳检查；否则旧功能删除后会永久制造 blocker，迫使 Runtime 重新注册无用 Store。
-    local craftFeature = S.Features and S.Features.tools_craft or nil
-    local craftSelectionOk = type(craftFeature) == "table" and (tonumber(craftFeature.CraftUserSelectionContractVersion) or 0) >= 1
-        and type(craftFeature.Commands) == "table" and type(craftFeature.Commands.SelectRecipe) == "function"
-    AddCheck(report, "v3_craft_user_selection_contract", craftSelectionOk, "blocker",
-        craftSelectionOk and "craft assistant selects verified craft entry; raw ids are internal" or "craft assistant user-selection contract unavailable")
+    -- 2026-09-29（Phase 3 Batch I，core-feature-decoupling-1）：原先这里的 v3_craft_user_selection_contract
+    -- 整条判定都由 tools_craft 的实现表构成，现已整条搬到
+    -- features/tools/craft/rs_craft_acceptance.lua 的 v3_tools_craft_contract（用户选择契约那一段），
+    -- 判定逐条等价，故整条 AddCheck 删除、Core 不再认识这个业务 Feature。
 
     local craftSurface = S.Services and S.Services.CraftSurfaceV3 or nil
     local craftSidecar = S.UIV3 and S.UIV3.CraftSidecar or nil
-    local craftAssistant = S.Features and S.Features.tools_craft or nil
+    -- 中文维护注释（Phase 3 Batch I）：制作助手侧的契约（侧车契约版本 + 自动侧车命令）已收敛到
+    -- features/tools/craft/rs_craft_acceptance.lua；本判定只保留 Service / UIV3 侧。
     local craftSidecarOk = type(craftSurface) == "table" and (tonumber(craftSurface.version) or 0) >= 1
         and (tonumber(craftSurface.VisibilityContractVersion) or 0) >= 1
         and type(craftSurface.GetSnapshot) == "function" and type(craftSurface.Start) == "function" and type(craftSurface.Stop) == "function"
-        and type(craftSidecar) == "table" and type(craftAssistant) == "table"
-        and (tonumber(craftAssistant.CraftSidecarContractVersion) or 0) >= 1
-        and type(craftAssistant.Commands) == "table" and type(craftAssistant.Commands.SetAutoSidecar) == "function"
+        and type(craftSidecar) == "table"
     AddCheck(report, "v3_craft_sidecar_contract", craftSidecarOk, "blocker",
         craftSidecarOk and "bounded native-craft observer + shared-authority sidecar present" or "craft sidecar contract unavailable")
 

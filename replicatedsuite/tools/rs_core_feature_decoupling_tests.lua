@@ -692,5 +692,103 @@ Test('BatchH 静态：core/*.lua 不得再点名这四个 Feature，且 buff_obs
     end
 end)
 
+------------------------------------------------------------------------
+-- Phase 3 Batch I：tools_auction / tools_market_analysis / tools_craft
+--   三个 Feature 原先都没有 acceptance；它们的契约散在 Foundation 的三个 AddCheck 里
+--   （v3_auction_query_contract / v3_auction_sidecar_contract / v3_auction_workspace_contract /
+--    v3_craft_user_selection_contract / v3_craft_sidecar_contract）。
+--   **同一条 AddCheck 里的 Service / UIV3 契约留在 Foundation** —— 它们不是 Feature 债。
+------------------------------------------------------------------------
+local ToolCases = {
+    { key = 'tools_auction', path = 'features/tools/auction/rs_auction_acceptance.lua',
+        case = 'v3_tools_auction_contract',
+        good = { AuctionQueryContractVersion = 1, SidecarPreferenceContractVersion = 1,
+            IsSidecarEnabled = function() return true end,
+            Commands = { Search = function() end, SetSidecarEnabled = function() end,
+                RenameFavorite = function() end, MoveFavorite = function() end,
+                RemoveFavoriteByKeyword = function() end, ClearFavorites = function() end } },
+        checks = {
+            { label = 'AuctionQueryContractVersion 回退', mutate = function(f) f.AuctionQueryContractVersion = 0 end },
+            { label = '缺少 Search 命令', mutate = function(f) f.Commands.Search = nil end },
+            { label = 'SidecarPreferenceContractVersion 回退', mutate = function(f) f.SidecarPreferenceContractVersion = 0 end },
+            { label = '缺少 SetSidecarEnabled 命令', mutate = function(f) f.Commands.SetSidecarEnabled = nil end },
+            { label = '缺少收藏 CRUD 命令', mutate = function(f) f.Commands.ClearFavorites = nil end },
+        } },
+    { key = 'tools_market_analysis', path = 'features/tools/market_analysis/rs_market_analysis_acceptance.lua',
+        case = 'v3_tools_market_analysis_contract',
+        good = { AuctionQueryContractVersion = 1, Commands = { Search = function() end } },
+        checks = {
+            { label = 'AuctionQueryContractVersion 回退', mutate = function(f) f.AuctionQueryContractVersion = 0 end },
+            { label = '缺少 Search 命令', mutate = function(f) f.Commands.Search = nil end },
+        } },
+    { key = 'tools_craft', path = 'features/tools/craft/rs_craft_acceptance.lua',
+        case = 'v3_tools_craft_contract',
+        good = { CraftUserSelectionContractVersion = 1, CraftSidecarContractVersion = 1,
+            Commands = { SelectRecipe = function() end, SetAutoSidecar = function() end } },
+        checks = {
+            { label = 'CraftUserSelectionContractVersion 回退', mutate = function(f) f.CraftUserSelectionContractVersion = 0 end },
+            { label = '缺少 SelectRecipe 命令', mutate = function(f) f.Commands.SelectRecipe = nil end },
+            { label = 'CraftSidecarContractVersion 回退', mutate = function(f) f.CraftSidecarContractVersion = 0 end },
+            { label = '缺少 SetAutoSidecar 命令', mutate = function(f) f.Commands.SetAutoSidecar = nil end },
+        } },
+}
+
+local function DeepCopySmall(source)
+    local out = {}
+    for key, value in pairs(source or {}) do
+        if type(value) == 'table' then
+            local nested = {}
+            for innerKey, innerValue in pairs(value) do nested[innerKey] = innerValue end
+            out[key] = nested
+        else
+            out[key] = value
+        end
+    end
+    return out
+end
+
+for _, item in ipairs(ToolCases) do
+    Test('BatchI ' .. item.key .. '：实现未注册 → case 仍注册且失败', function()
+        local cases = BootTruth(item.key, item.path, nil)
+        assert(type(cases[item.case]) == 'function', item.case .. ' must register even when missing')
+        local ok, reason = cases[item.case]()
+        assert(ok == false and tostring(reason) == 'implementation_not_registered', 'reason=' .. tostring(reason))
+    end)
+
+    Test('BatchI ' .. item.key .. '：合规契约通过（搬迁未误伤）', function()
+        local ok, reason = BootTruth(item.key, item.path, DeepCopySmall(item.good))[item.case]()
+        assert(ok == true, 'compliant feature must pass, got ' .. tostring(reason))
+    end)
+
+    for _, check in ipairs(item.checks) do
+        Test('BatchI ' .. item.key .. '：' .. check.label .. ' 必须被拒', function()
+            local feature = DeepCopySmall(item.good)
+            check.mutate(feature)
+            local ok, reason = BootTruth(item.key, item.path, feature)[item.case]()
+            assert(ok == false, check.label .. ' must be rejected')
+            assert(reason ~= nil and tostring(reason) ~= '', 'rejection must carry a reason')
+        end)
+    end
+end
+
+Test('BatchI 静态：core/*.lua 不得再点名这三个 Feature（同时覆盖两种回填形态）', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    -- ① 完整实现表访问串（防“把判定整体搬回去”）
+    for _, pattern in ipairs({ 'S.Features.tools_auction', 'S.Features.tools_market_analysis',
+        'S.Features.tools_craft' }) do
+        assert(text:find(pattern, 1, true) == nil, 'Foundation must not read the feature table for: ' .. pattern)
+    end
+    -- ② 带点号的字段访问（防“复述契约”）
+    for _, pattern in ipairs({ 'AuctionQueryContractVersion', 'SidecarPreferenceContractVersion',
+        'CraftUserSelectionContractVersion', 'CraftSidecarContractVersion' }) do
+        assert(text:find(pattern, 1, true) == nil, 'Foundation still references contract field: ' .. pattern)
+    end
+    -- 已删除的判定壳子不得回来（auctionQueryOk 仍然合法存在 —— 它现在还承载 Service 侧契约）
+    for _, pattern in ipairs({ 'craftSelectionOk', 'craftAssistant' }) do
+        assert(text:find(pattern, 1, true) == nil, 'removed binding must not come back: ' .. pattern)
+    end
+end)
+
 print(string.format('CORE-FEATURE-DECOUPLING RESULT %d passed / %d failed', passed, failed))
 if failed > 0 then error('core/feature decoupling regressions: ' .. tostring(failed)) end
