@@ -790,5 +790,59 @@ Test('BatchI 静态：core/*.lua 不得再点名这三个 Feature（同时覆盖
     end
 end)
 
+------------------------------------------------------------------------
+-- Phase 3 Batch J：Gear 的快速启动意图契约
+--   （core/rs_foundation_gate.lua 的 v3_quick_surface_reload_reconcile_contract 里的 Feature 部分已删除；
+--     FeatureRuntime 侧的启动意图契约版本留在 Foundation —— 那是 Core 自己的框架，不是 Feature 债）
+------------------------------------------------------------------------
+local GEAR_QUICK_PATH = 'features/combat/gear/rs_gear_acceptance.lua'
+local GEAR_QUICK_CASE = 'v3_m4_gear_quick_startup_intent_contract'
+
+local function GearQuickFeature()
+    return { QuickStartupIntentContractVersion = 1, GetStartupEnableIntent = function() end,
+        OnStartupEnableIntentCommitted = function() end, ShouldShowQuickButtons = function() return false end }
+end
+
+Test('BatchJ Gear：实现未注册 → case 仍注册且失败', function()
+    local cases = BootTruth('Gear', GEAR_QUICK_PATH, nil)
+    assert(type(cases[GEAR_QUICK_CASE]) == 'function', 'case must register even when missing')
+    local ok, reason = cases[GEAR_QUICK_CASE]()
+    assert(ok == false and tostring(reason) == 'implementation_not_registered', 'reason=' .. tostring(reason))
+end)
+
+Test('BatchJ Gear：合规契约通过（搬迁未误伤）', function()
+    local ok, reason = BootTruth('Gear', GEAR_QUICK_PATH, GearQuickFeature())[GEAR_QUICK_CASE]()
+    assert(ok == true, 'compliant feature must pass, got ' .. tostring(reason))
+end)
+
+Test('BatchJ Gear：契约版本回退 / 缺任一函数都必须被拒', function()
+    local function Reject(mutate, label)
+        local feature = GearQuickFeature()
+        mutate(feature)
+        local ok, reason = BootTruth('Gear', GEAR_QUICK_PATH, feature)[GEAR_QUICK_CASE]()
+        assert(ok == false, label .. ' must be rejected')
+        assert(reason ~= nil and tostring(reason) ~= '', 'rejection must carry a reason')
+    end
+    Reject(function(f) f.QuickStartupIntentContractVersion = 0 end, '契约版本回退')
+    Reject(function(f) f.GetStartupEnableIntent = nil end, '缺 GetStartupEnableIntent')
+    Reject(function(f) f.OnStartupEnableIntentCommitted = nil end, '缺 OnStartupEnableIntentCommitted')
+    Reject(function(f) f.ShouldShowQuickButtons = nil end, '缺 ShouldShowQuickButtons')
+end)
+
+Test('BatchJ 静态：core/*.lua 不得再点名 Gear 的快速启动意图（同时覆盖两种回填形态）', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    -- ① 完整实现表访问串
+    assert(text:find('S.Features.Gear', 1, true) == nil, 'Foundation must not read the Gear feature table')
+    -- ② 带点号的字段访问 / 已删除的判定壳子
+    for _, pattern in ipairs({ 'gearFeature', 'QuickStartupIntentContractVersion', 'GetStartupEnableIntent',
+        'OnStartupEnableIntentCommitted', 'ShouldShowQuickButtons' }) do
+        assert(text:find(pattern, 1, true) == nil, 'Foundation still references: ' .. pattern)
+    end
+    -- FeatureRuntime 侧的契约必须**保留**（它是 Core 框架，不是 Feature 债）
+    assert(text:find('StartupEnableIntentContractVersion', 1, true) ~= nil,
+        'the FeatureRuntime startup-intent contract must stay in Foundation')
+end)
+
 print(string.format('CORE-FEATURE-DECOUPLING RESULT %d passed / %d failed', passed, failed))
 if failed > 0 then error('core/feature decoupling regressions: ' .. tostring(failed)) end

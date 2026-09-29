@@ -2438,11 +2438,12 @@ function G:Run(options)
 
     local bagContractOk, bagContractDetail = self:EvaluateBagActionContract()
     AddCheck(report, "v3_bag_action_contract", bagContractOk, "blocker", bagContractDetail)
-    local gearFeature = S.Features and S.Features.Gear or nil
+    -- 中文维护注释（Phase 3 Batch J，2026-09-29，core-feature-decoupling-1）：这里原先还并列了 Gear 的
+    -- 快速启动意图契约（契约版本 + 三个函数）—— 典型的 Core 硬编码认识具体业务 Feature。它已收敛到
+    -- features/combat/gear/rs_gear_acceptance.lua 的 v3_m4_gear_quick_startup_intent_contract，判定逐条等价。
+    -- 本判定只保留 FeatureRuntime 侧的契约（Core 自己的启动意图框架，不是 Feature 债）。
+    -- 注释里也不要写出带点号的“表名+字段”形式：rs_architecture_audit 是行级正则且不跳过注释。
     local startupIntentOk = type(S.FeatureRuntime) == "table" and (tonumber(S.FeatureRuntime.StartupEnableIntentContractVersion) or 0) >= 1
-        and type(gearFeature) == "table" and (tonumber(gearFeature.QuickStartupIntentContractVersion) or 0) >= 1
-        and type(gearFeature.GetStartupEnableIntent) == "function" and type(gearFeature.OnStartupEnableIntentCommitted) == "function"
-        and type(gearFeature.ShouldShowQuickButtons) == "function"
     AddCheck(report, "v3_quick_surface_reload_reconcile_contract", startupIntentOk, "blocker",
         startupIntentOk and "Gear legacy quick intent is one-time repaired and persistent quick visibility remains preference-authoritative"
             or "quick-surface reload reconcile contract unavailable")

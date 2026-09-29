@@ -154,3 +154,19 @@ G:RegisterSequenceCase("v3_m4_gear_screen_buttons", function()
     end
     return true
 end)
+
+-- Phase 3 Batch J（2026-09-29，core-feature-decoupling-1）：快速入口启动意图契约。
+-- 原先由 core/rs_foundation_gate.lua 的 v3_quick_surface_reload_reconcile_contract 直接点名实现表检查；
+-- 搬到这里之后 Core 不再认识具体业务 Feature。判定与旧版**逐条等价**：
+--   * 快速启动意图契约版本 >= 1
+--   * GetStartupEnableIntent / OnStartupEnableIntentCommitted / ShouldShowQuickButtons 三个函数存在
+-- 语义保持：Gear 的旧版快速意图只做一次性修复，持久化的快速按钮可见性仍以用户偏好为 Authority。
+-- 边界：同一判定里的 FeatureRuntime 启动意图契约版本留在 Foundation（那是 Core 侧，不是 Feature 债）。
+G:RegisterSequenceCase("v3_m4_gear_quick_startup_intent_contract", function()
+    if type(F) ~= "table" then return Fail("implementation_not_registered") end
+    if (tonumber(F.QuickStartupIntentContractVersion) or 0) < 1 then return Fail("quick_startup_intent_contract_version") end
+    if type(F.GetStartupEnableIntent) ~= "function" then return Fail("startup_enable_intent_reader") end
+    if type(F.OnStartupEnableIntentCommitted) ~= "function" then return Fail("startup_enable_intent_commit_hook") end
+    if type(F.ShouldShowQuickButtons) ~= "function" then return Fail("quick_buttons_visibility_reader") end
+    return true
+end)
