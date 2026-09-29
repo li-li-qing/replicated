@@ -2378,17 +2378,17 @@ function G:Run(options)
     local bondsWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.bonds") or nil
     -- 中文维护注释（2026-09-24，Bonds Presentation/Domain 混载门禁）：v9 必须同时具备
     -- 多大陆 v3 与悬浮窗单入口设置菜单 v1；Foundation 仅核对静态契约，不触发 ResidentBoard/背包读取。
+    -- 2026-09-29（Phase 3 Batch C，core-feature-decoupling-1）：原先这里还并列了 5 条直接点名 life_bonds
+    -- 实现的契约版本条件（含其实现表访问）—— 典型的 Core 硬编码认识具体业务 Feature。它们与
+    -- features/life/bonds/rs_bonds_acceptance.lua 的 v3_m1_bonds case 完全重合，且后者**更严**
+    -- （DropdownPresentationContractVersion 要求 >=2，此处只要求 >=1）；sequence case 失败同样落 blocker
+    -- （见后续 sequence_harness 检查），故整段删除，契约 Authority 唯一收敛到 acceptance 文件。
     if type(lifeWidgets) ~= "table" or (tonumber(lifeWidgets.version) or 0) < 9
         or (tonumber(lifeWidgets.bondsMultiContinentContractVersion) or 0) < 3
         or (tonumber(lifeWidgets.bondsDropdownControlsContractVersion) or 0) < 3
         or (tonumber(lifeWidgets.bondsFloatingSettingsMenuContractVersion) or 0) < 1
         or (tonumber(lifeWidgets.bondsResidentBoardFamilyContractVersion) or 0) < 1
-        or type(tradeWidget) ~= "table" or type(bondsWidget) ~= "table"
-        or type(S.Features and S.Features.Bonds) ~= "table"
-        or (tonumber(S.Features.Bonds.MultiContinentSnapshotContractVersion) or 0) < 3
-        or (tonumber(S.Features.Bonds.ResidentBoardFamilyContractVersion) or 0) < 1
-        or (tonumber(S.Features.Bonds.AuroriaMaterialContractVersion) or 0) < 1
-        or (tonumber(S.Features.Bonds.DropdownPresentationContractVersion) or 0) < 1 then
+        or type(tradeWidget) ~= "table" or type(bondsWidget) ~= "table" then
         usabilityFailures[#usabilityFailures + 1] = "life_widgets"
     end
     local tradeFeature = S.Features and S.Features.Trade or nil

@@ -193,5 +193,81 @@ Test('DeathReview：静态 —— core/*.lua 不得再点名该 Feature', functi
     assert(text:find('combat_death_review', 1, true) == nil, 'Foundation must not hard-code the death review feature id')
 end)
 
+------------------------------------------------------------------------
+-- Phase 3 Batch C：life_bonds
+-- （core/rs_foundation_gate.lua 里 5 条点名 life_bonds 实现的契约版本条件已删除）
+--
+-- 该 Feature 的 acceptance 不仅覆盖原判定，而且**更严**：DropdownPresentationContractVersion
+-- Foundation 只要 >=1，acceptance 要求 >=2。下面专门用“=1”做区分度证据：旧判定放行、新 Authority 拒绝。
+-- 搬迁补齐点同样是“实现缺失不再静默 return”。
+------------------------------------------------------------------------
+local BONDS_CASE = 'v3_m1_bonds'
+
+local function BootBonds(overrides)
+    overrides = type(overrides) == 'table' and overrides or {}
+    local cases = {}
+    local S = { Features = {}, SafeTraceback = debug and debug.traceback or function(m) return m end, FoundationGate = {} }
+    function S.FoundationGate:RegisterSequenceCase(id, fn) cases[tostring(id)] = fn; return true end
+    S.FeatureRegistry = { Get = function(_, id)
+        if id ~= 'life_bonds' then return nil end
+        return { authority = 'v3.life.bonds' } end }
+    -- 本批只覆盖到「静态契约块」为止：acceptance 在 IsEnabled ~= true 时会提前返回 true，
+    -- 其后的 consumer/projection 运行时检查不属于本批搬迁范围，也不在离线宿主里模拟。
+    S.FeatureRuntime = { IsImplemented = function(_, id) return id == 'life_bonds' end,
+        IsEnabled = function() return false end }
+    S.Persistence = { GetStore = function() return { owner = 'v3.life.bonds', rebuildCanonicalForIntegrity = function() end } end }
+    S.UIV3 = { PageHost = { factories = { ['life.bonds'] = function() end } },
+        WidgetHost = { GetSpec = function(_, id) if id == 'life.bonds' then return {} end return nil end } }
+    local function fn() end
+    local F = {
+        storeId = 'v3.life.bonds',
+        MultiContinentSnapshotContractVersion = 3, ResidentBoardFamilyContractVersion = 1,
+        AuroriaMaterialContractVersion = 1, DropdownPresentationContractVersion = 2,
+        GetDisplayOrderKey = fn, GetFilterMask = fn, GetDuplicateMode = fn,
+        Commands = { Refresh = fn, SetDisplayOrder = fn, SetFilterMask = fn, SetDuplicateMode = fn,
+            SetSortMode = fn, SetContinentOrder = fn, SetBondFilterOption = fn, SetDuplicatePriority = fn,
+            SelectRow = fn, GetSelectedRow = fn, GetRow = fn, MarkStoreDirty = fn, SetWidgetWindowState = fn },
+    }
+    if overrides.noFeature == true then F = nil end
+    for key, value in pairs(overrides.feature or {}) do F[key] = value end
+    S.Features.Bonds = F
+    ReplicatedSuite = S
+    dofile('features/life/bonds/rs_bonds_acceptance.lua')
+    return cases
+end
+
+Test('life_bonds：实现未注册时仍注册 case 并失败（搬迁补齐）', function()
+    local cases = BootBonds({ noFeature = true })
+    assert(type(cases[BONDS_CASE]) == 'function', 'case must register even when the Feature is missing')
+    local ok, reason = cases[BONDS_CASE]()
+    assert(ok == false and tostring(reason) == 'implementation_not_registered', 'reason=' .. tostring(reason))
+end)
+
+Test('life_bonds：完备实现通过（搬迁未误伤）', function()
+    local cases = BootBonds(nil)
+    local ok, reason = cases[BONDS_CASE]()
+    assert(ok == true, 'compliant feature must pass, got ' .. tostring(reason))
+end)
+
+Test('life_bonds：DropdownPresentationContractVersion=1 必须被拒（新 Authority 严于旧判定）', function()
+    -- 旧 Foundation 判定的下限是 >=1，这一形态会被放行；acceptance 要求 >=2，必须拒绝。
+    local cases = BootBonds({ feature = { DropdownPresentationContractVersion = 1 } })
+    local ok, reason = cases[BONDS_CASE]()
+    assert(ok == false and tostring(reason) == 'presentation_command_contract', 'reason=' .. tostring(reason))
+end)
+
+Test('life_bonds：MultiContinentSnapshotContractVersion=2 必须被拒', function()
+    local cases = BootBonds({ feature = { MultiContinentSnapshotContractVersion = 2 } })
+    local ok, reason = cases[BONDS_CASE]()
+    assert(ok == false and tostring(reason) == 'presentation_command_contract', 'reason=' .. tostring(reason))
+end)
+
+Test('life_bonds：静态 —— core/*.lua 不得再点名该 Feature', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    assert(text:find('S.Features.Bonds', 1, true) == nil, 'Foundation must not hard-code life_bonds')
+    assert(text:find('S.Features and S.Features.Bonds', 1, true) == nil, 'Foundation must not hard-code life_bonds')
+end)
+
 print(string.format('CORE-FEATURE-DECOUPLING RESULT %d passed / %d failed', passed, failed))
 if failed > 0 then error('core/feature decoupling regressions: ' .. tostring(failed)) end
