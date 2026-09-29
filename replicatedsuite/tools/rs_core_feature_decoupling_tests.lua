@@ -318,5 +318,79 @@ Test('BatchD 静态：core/*.lua 不得再点名这三个 Feature', function()
     end
 end)
 
+------------------------------------------------------------------------
+-- Phase 3 Batch E：观察契约（combat_target_monitor / combat_buff_cap / Treasure / Fishing）
+-- （core/rs_foundation_gate.lua 的 v3_dynamic_observation_contract 整块已删除）
+--
+-- 这四个 Feature 原先**没有 acceptance**，所以本批是"先建 Authority 再删旧分支"：
+-- 为每个新建 rs_*_acceptance.lua 承载观察契约，并让它成为原判定的严格超集。
+-- 两个"更严"点：旧判定允许空 topic（消费方无法订阅），也不要求 Demand 存在
+-- （没有 Demand 就没有订阅生命周期，topic 形同虚设）。
+------------------------------------------------------------------------
+local ObservationFeatures = {
+    { key = 'combat_target_monitor', case = 'v3_combat_target_monitor_observation_contract',
+        path = 'features/combat/target_monitor/rs_target_monitor_acceptance.lua' },
+    { key = 'combat_buff_cap', case = 'v3_combat_buff_cap_observation_contract',
+        path = 'features/combat/buff_cap/rs_buff_cap_acceptance.lua' },
+    { key = 'Treasure', case = 'v3_life_treasure_observation_contract',
+        path = 'features/life/treasure/rs_treasure_acceptance.lua' },
+    { key = 'Fishing', case = 'v3_life_fishing_observation_contract',
+        path = 'features/life/fishing/rs_fishing_acceptance.lua' },
+}
+
+local function BootObservation(item, feature)
+    local cases = {}
+    local S = { Features = {}, FoundationGate = {},
+        SafeTraceback = debug and debug.traceback or function(m) return m end }
+    function S.FoundationGate:RegisterSequenceCase(id, fn) cases[tostring(id)] = fn; return true end
+    if feature ~= nil then S.Features[item.key] = feature end
+    ReplicatedSuite = S
+    dofile(item.path)
+    return cases
+end
+
+local function GoodObservation()
+    return { ObservationContractVersion = 1, UpdateTopic = 'v3.test.topic',
+        Demand = { Acquire = function() end, Release = function() end } }
+end
+
+for _, item in ipairs(ObservationFeatures) do
+    Test('BatchE ' .. item.key .. '：实现未注册 → case 仍注册且失败', function()
+        local cases = BootObservation(item, nil)
+        assert(type(cases[item.case]) == 'function', item.case .. ' must register even when missing')
+        local ok, reason = cases[item.case]()
+        assert(ok == false and tostring(reason) == 'implementation_not_registered', 'reason=' .. tostring(reason))
+    end)
+
+    Test('BatchE ' .. item.key .. '：合规观察契约通过（搬迁未误伤）', function()
+        local ok, reason = BootObservation(item, GoodObservation())[item.case]()
+        assert(ok == true, 'compliant feature must pass, got ' .. tostring(reason))
+    end)
+
+    Test('BatchE ' .. item.key .. '：空 UpdateTopic 必须被拒（新 Authority 严于旧判定）', function()
+        local feature = GoodObservation(); feature.UpdateTopic = ''
+        local ok, reason = BootObservation(item, feature)[item.case]()
+        assert(ok == false and tostring(reason) == 'observation_update_topic_empty', 'reason=' .. tostring(reason))
+    end)
+
+    Test('BatchE ' .. item.key .. '：Demand 缺失必须被拒（新 Authority 严于旧判定）', function()
+        local feature = GoodObservation(); feature.Demand = nil
+        local ok, reason = BootObservation(item, feature)[item.case]()
+        assert(ok == false and tostring(reason) == 'demand_missing', 'reason=' .. tostring(reason))
+    end)
+end
+
+Test('BatchE 静态：core/*.lua 不得再点名这四份观察契约', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    assert(text:find('AddCheck(report, "v3_dynamic_observation_contract"', 1, true) == nil,
+        'the removed observation contract must not come back')
+    -- 只断言本批删除的三个（Fishing 的实现表访问在 Batch F 的 truth 契约里仍合法存在）。
+    for _, pattern in ipairs({ 'S.Features and S.Features.combat_target_monitor',
+        'S.Features and S.Features.combat_buff_cap', 'S.Features and S.Features.Treasure' }) do
+        assert(text:find(pattern, 1, true) == nil, 'Foundation still references: ' .. pattern)
+    end
+end)
+
 print(string.format('CORE-FEATURE-DECOUPLING RESULT %d passed / %d failed', passed, failed))
 if failed > 0 then error('core/feature decoupling regressions: ' .. tostring(failed)) end

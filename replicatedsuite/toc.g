@@ -295,4 +295,8 @@ features/combat/dps/rs_dps_acceptance.lua
 features/combat/analytics/rs_combat_analytics_acceptance.lua
 features/combat/raid_readiness/rs_raid_readiness_acceptance.lua
 features/combat/healer/rs_healer_aura_acceptance.lua
+features/combat/target_monitor/rs_target_monitor_acceptance.lua
+features/combat/buff_cap/rs_buff_cap_acceptance.lua
+features/life/treasure/rs_treasure_acceptance.lua
+features/life/fishing/rs_fishing_acceptance.lua
 core/rs_runtime.lua

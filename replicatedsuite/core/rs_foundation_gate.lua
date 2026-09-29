@@ -2293,17 +2293,19 @@ function G:Run(options)
     AddCheck(report, "api_capability_cooldown_contract", apiCooldownOk, "blocker",
         apiCooldownOk and "registered capability cooldowns enforced centrally" or "central capability cooldown fence unavailable")
 
-    local targetMonitor = S.Features and S.Features.combat_target_monitor or nil
-    local buffCap = S.Features and S.Features.combat_buff_cap or nil
-    local treasure = S.Features and S.Features.Treasure or nil
-    local fishing = S.Features and S.Features.Fishing or nil
-    local observationFailures = {}
-    if type(targetMonitor) ~= "table" or (tonumber(targetMonitor.ObservationContractVersion) or 0) < 1 or type(targetMonitor.UpdateTopic) ~= "string" then observationFailures[#observationFailures + 1] = "target" end
-    if type(buffCap) ~= "table" or (tonumber(buffCap.ObservationContractVersion) or 0) < 1 or type(buffCap.UpdateTopic) ~= "string" then observationFailures[#observationFailures + 1] = "buff_cap" end
-    if type(treasure) ~= "table" or (tonumber(treasure.ObservationContractVersion) or 0) < 1 or type(treasure.UpdateTopic) ~= "string" then observationFailures[#observationFailures + 1] = "treasure" end
-    if type(fishing) ~= "table" or (tonumber(fishing.ObservationContractVersion) or 0) < 1 or type(fishing.UpdateTopic) ~= "string" then observationFailures[#observationFailures + 1] = "fishing" end
-    AddCheck(report, "v3_dynamic_observation_contract", #observationFailures == 0, "blocker",
-        #observationFailures == 0 and "target/buff-cap/treasure/fishing demand observation contracts present" or ("missing=" .. Join(observationFailures, 8)))
+    -- 中文维护注释（Phase 3 Batch E，2026-09-29，core-feature-decoupling-1）：这里原先有
+    -- v3_dynamic_observation_contract —— 直接点名 combat_target_monitor / combat_buff_cap /
+    -- Treasure / Fishing 四个业务 Feature 的实现表，逐个检查它们的观察契约（契约版本 + 更新主题）。
+    -- 这是典型的 Core 硬编码认识具体业务 Feature（注释里也不要写出带点号的“表名+字段”形式：
+    -- rs_architecture_audit 是行级正则且不跳过注释，说明文字会被重新计成 CORE_FEATURE 债务）。
+    -- 四份观察契约现已各自收敛到对应 Feature 的 acceptance 文件，判定**等价或更严**：
+    --   features/combat/target_monitor/rs_target_monitor_acceptance.lua
+    --   features/combat/buff_cap/rs_buff_cap_acceptance.lua
+    --   features/life/treasure/rs_treasure_acceptance.lua
+    --   features/life/fishing/rs_fishing_acceptance.lua
+    -- 除原有的“版本 >= 1 + topic 是字符串”外，还要求 topic 非空、Demand 存在且具备 Acquire/Release
+    -- 生命周期（没有 Demand 就没有订阅生命周期，topic 形同虚设）；实现缺失也不再静默 return。
+    -- sequence case 失败同样落 blocker（见后续 sequence_harness 检查），故整段删除。
 
     local usabilityFailures = {}
     local screenProjection = S.Services and S.Services.ScreenProjectionV3 or nil
