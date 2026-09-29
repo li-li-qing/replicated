@@ -4113,8 +4113,8 @@ N 两种形态各一次（回填 / 放宽下限）；O 两种（回填 / 把取�
 1. **CORE_FEATURE 债务已清零**（41 → 0）。core/rs_diagnostics.lua 与
    core/rs_foundation_gate.lua 两处都已完成；contract Authority 全部归位到 features/** 的
    *_acceptance.lua（sequence case 与 AddCheck 同为 blocker 级别）。
-2. 后续又清掉了 PRESENTATION_STATE（5 → 0），详见 §25.7。
-   **当前只剩 1 项**：GIANT_FILE —— core/rs_persistence.lua 4267 行（Phase 0/后续拆分的范围）。
+2. 后续又清掉了 PRESENTATION_STATE（5 → 0，§25.7）与 GIANT_FILE（§25.8）。
+   **ARCHITECTURE AUDIT 已全部清零：0 known issue(s)。**
 3. 沉淀下来、后续 Phase 继续沿用的工作法（详见 §25.6.13–§25.6.16 与各批小结）：
    * 差集扫描定位缺口（不靠肉眼读巨型布尔表达式）；误报要会识别（变量名差异 / 不同 case）
    * 逐个核对取值与下限，取更严的一方（Batch L、O 各踩到一次“悄悄降强度”）
@@ -4468,6 +4468,26 @@ Store owner/schema 漂移
 
 > 待用户确认的事项：审计规则 `'Feature.State' in line` 建议改为
 > **跳过注释行 + 用词边界 `\bFeature\.State`**，可以消除这类误报（但会改变债务统计口径）。
+### 25.8 GIANT_FILE 清零：拆出 Transport 编解码层（2026-09-30）
+
+```text
+靶子    core/rs_persistence.lua 的 203-629 段（427 行）：Transport v1-v5 编解码 + 辅助
+前提    段内零外部依赖（除一处元数据赋值留在主文件）—— 拆分前脚本核对
+方式    **纯移动**：函数体与递归逐字保留；persistence 侧 T.<名> 引用；toc 顺序在前
+等价性  ROUNDTRIP 65 次验证（v1-v5 × 13 用例，深度比较）
+连带    20 个离线测试宿主的加载顺序 + 2 个 fixture 的参数被挤坏（按 git 原貌恢复）
+结果    rs_persistence.lua 4267 → 3848；**ARCHITECTURE AUDIT 0 known issue(s)**
+```
+
+**磁盘数据格式代码的拆分铁律**：迁移这类代码只允许「移动」不允许「顺手改写」，
+且必须配一个**深度往返等价测试**（decode(encode(v)) 与 v 递归相等）作为唯一证据。
+本次验证脚本第一版把「透传」当失败、用浅比较查嵌套表 —— FAIL 全是断言错，不是行为错；
+**写验证脚本本身也要防「断言假设错误」**。
+
+**连带修复面比拆分本身大**：20 个离线测试宿主各自 dofile 模块（三种书写形式），
+第一轮排查漏了分号连写与 ipairs 列表两种，第二轮全项目宽松排查才找齐；
+另有两个 Phase 0 fixture 的 `H.Contains` 参数被插入行挤坏，按 git 原貌恢复。
+**拆文件时，"谁会加载它" 的排查范围必须大于"谁引用它"。**
 ### 特别禁止
 
 ```text
