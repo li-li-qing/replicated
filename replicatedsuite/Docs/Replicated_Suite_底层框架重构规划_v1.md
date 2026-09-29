@@ -3937,38 +3937,39 @@ H 放宽一个下限（1 条）+ **把完整实现表访问形式回填回 Found
 ### 25.6.10 剩余工作（余 15 处 CORE_FEATURE，全在 `core/rs_foundation_gate.lua`）
 
 ```text
-1. 分布（按当前行号）：
-     123  tools_bag                    1518  BuffDisplay（HUD 校准/健康聚合）
-     1706/1707/1770  Healer 家族         1833  DPS
-     2316-2319  boss_alerts / unit_lines / range_assist / buff_display2（同一条 usability AddCheck）
-     2394  Trade（v3_trade_detail_favorites_contract，20+ 契约字段，跨 Feature/Service/UI）
-     2447  Gear（v3_quick_surface_reload_reconcile_contract）
-     2457/2458  tools_auction / tools_market_analysis
-     2510/2518  tools_craft（两处）      2528  combat_team_tools
-     2564/2576  Activities / Tasks（Persistence 契约组）
-2. **工作性质早已是“先建 Authority”**：除 BuffDisplay / Gear / DPS / Healer-aura 外都没有 acceptance，
-   必须先写或补 acceptance 用例承载契约、使其成为原判定的**严格超集**，才能删 Foundation 分支。
-3. 成组边界（**一条 AddCheck 必须整条处理**，不能只搬其中几个，否则剩下的条件失去语义）：
-   - v3_combat_life_usability_contract（boss_alerts / unit_lines / range_assist / buff_display，4 个）
+1. 分布（\u4f59 15 处）：
+     tools_bag（v3_bag_action_contract，独立方法 EvaluateBagActionContract）
+     BuffDisplay 1518（HUD 校准/健康聚合段）
+     Healer 家族 1706/1707/1770（Healer / HealerAuraBridge / HealerScreenProjection）
+     DPS 1833（+ dps_skill_proxy_source_contract / dps_v3_runtime_scope 两段）
+     Trade 2394（v3_trade_detail_favorites_contract，20+ 契约字段，跨 Feature/Service/UI）
+     Gear 2447（v3_quick_surface_reload_reconcile_contract）
+     tools_auction / tools_market_analysis 2457/2458
+     tools_craft 2510/2518（两处）  combat_team_tools 2528
+     Activities / Tasks 2564/2576（Persistence 契约组）
+2. 除 BuffDisplay / Gear / DPS / Healer-aura 外都没有 acceptance，必须先建 Authority 才能删。
+3. 成组边界（**一条 AddCheck 必须整条处理**）：
    - v3_trade_detail_favorites_contract（Trade —— 建议单独设计一批）
-   - v3_quick_surface_reload_reconcile_contract（Gear 的 quick-startup-intent 组）
+   - v3_quick_surface_reload_reconcile_contract（Gear quick-startup-intent 组）
    - v3_bag_action_contract / auction / market / craft / v3_team_visual_marker_contract
    - v3_activity_persistence_recovery_contract / v3_feature_persistence_mutation_contract /
      v3_task_persistence_stable_codec_contract
-   - DPS 三段（dps_v3_contract / dps_skill_proxy_source_contract / dps_v3_runtime_scope，需先拆依赖）
-   - Healer 家族（Healer / HealerAuraBridge / HealerScreenProjection）+ BuffDisplay 的 observation/Hud 两处
+   - DPS 三段（需先拆依赖）
+   - Healer 家族 + BuffDisplay 的 HUD 校准/健康聚合段
 4. 已确认的 acceptance 覆盖缺口（补的时候要取更严的下限）：
    - Healer 家族：现只有 rs_healer_aura_acceptance 覆盖 AuraBridge 的 version/ReadAccurate/GetHealth，
      Healer 的 Commands 面、ScreenProjection、healerPresentation 均无覆盖。
    - Tasks/Activities 的 Persistence 契约组：activities 缺 PriorityStageSort /
      TransportV1ZeroOmission / allowIntegrityUpgrade，tasks 完全没有；且
      KnownLegacyCanonicalRecoveryContractVersion 下限不一致（旧判定 >=3、acceptance 只要 >=1）。
-   - BuffDisplay：acceptance 有 525 行、覆盖极广，但缺 observationContractVersion / HudContractVersion。
-5. §25.2 的 descriptor 其余字段（RequiredServices / RequiredStores / NativeCapabilities）尚未引入；
-   `RuntimeHealthProvider` 已在 Batch G 以 `S.FeatureHealthProviders` 的形式落地，后续可按同一思路继续，
-   但**不要一次做成复杂 DSL**。
-6. 每批固定动作：**搬完立刻跑全量门禁** —— 既有测试可能钉住旧位置
-   （fishing tests / feature-slice split tests 都出现过），必须把断言改成“旧位置不得再拥有 + 新位置必须拥有”。
+   - BuffDisplay：acceptance 覆盖极广，但缺 HudContractVersion 那一段。
+5. **静态断言的硬要求（Batch H 的教训）**：必须同时覆盖
+   ① 带点号的字段访问 ② 完整实现表访问串 —— 只写 ① 会被“把判定整体搬回去”绕过。
+   且**不要查裸 feature id**：truthExpected 真值表里合法保留着这些 id，会误伤。
+6. §25.2 descriptor 其余字段（RequiredServices / RequiredStores / NativeCapabilities）尚未引入；
+   RuntimeHealthProvider 已在 Batch G 以 S.FeatureHealthProviders 落地，后续可按同一思路继续。
+7. 每批固定动作：**搬完立刻跑全量门禁** —— 既有测试可能钉住旧位置，必须把断言改成
+   “旧位置不得再拥有 + 新位置必须拥有”。
 ```
 1. 分布：core/rs_foundation_gate.lua（19 处）与 core/rs_diagnostics.lua（6 处）。
    diagnostics 那 6 处属 §28（Phase 6 Diagnostics 收敛），可用同一模板提前收口。
