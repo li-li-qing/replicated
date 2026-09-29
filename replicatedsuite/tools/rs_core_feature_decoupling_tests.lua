@@ -844,5 +844,103 @@ Test('BatchJ 静态：core/*.lua 不得再点名 Gear 的快速启动意图（�
         'the FeatureRuntime startup-intent contract must stay in Foundation')
 end)
 
+------------------------------------------------------------------------
+-- Phase 3 Batch K：combat_team_tools 的角色契约 + 视觉/标记契约
+--   （core/rs_foundation_gate.lua 的两条判定 v3_team_role_contract /
+--     v3_team_visual_marker_contract 里的 Feature 部分已删除）
+--   **同一条判定里的 Service / Data / UIV3 契约留在 Foundation**（TeamRosterV3 的团队边沿 settle、
+--     静态职责目录及两个已确认职业组合、TeamSacOverlay 的呈现契约）—— 这不是 Feature 债。
+------------------------------------------------------------------------
+local TEAM_PATH = 'features/combat/team_tools/rs_team_tools_acceptance.lua'
+local TEAM_ROLE_CASE = 'v3_combat_team_tools_role_contract'
+local TEAM_VISUAL_CASE = 'v3_combat_team_tools_visual_marker_contract'
+
+local function TeamToolsFeature()
+    return {
+        TeamRoleContractVersion = 2, AutoRoleContractVersion = 3,
+        AutoRoleCatalogContractVersion = 2, AutoRoleRosterLeaseContractVersion = 1,
+        TeamVisualContractVersion = 2, TeamMarkerSnapshotContractVersion = 1,
+        TeamSacContractVersion = 2, AutoRoleDefaultOnContractVersion = 1,
+        Commands = { SetRole = function() end, SetSacHighlightEnabled = function() end,
+            SaveRaidMarkers = function() end, RestoreRaidMarkers = function() end,
+            ClearSavedRaidMarkers = function() end },
+    }
+end
+
+Test('BatchK team_tools：实现未注册 → 两个 case 都注册且失败', function()
+    local cases = BootTruth('combat_team_tools', TEAM_PATH, nil)
+    for _, name in ipairs({ TEAM_ROLE_CASE, TEAM_VISUAL_CASE }) do
+        assert(type(cases[name]) == 'function', name .. ' must register even when missing')
+        local ok, reason = cases[name]()
+        assert(ok == false and tostring(reason) == 'implementation_not_registered', 'reason=' .. tostring(reason))
+    end
+end)
+
+Test('BatchK team_tools：合规契约两个 case 都通过（搬迁未误伤）', function()
+    for _, name in ipairs({ TEAM_ROLE_CASE, TEAM_VISUAL_CASE }) do
+        local ok, reason = BootTruth('combat_team_tools', TEAM_PATH, TeamToolsFeature())[name]()
+        assert(ok == true, name .. ' must pass for a compliant feature, got ' .. tostring(reason))
+    end
+end)
+
+Test('BatchK team_tools：角色契约的每一项回退都必须被拒', function()
+    local fields = { { 'TeamRoleContractVersion', 2 }, { 'AutoRoleContractVersion', 3 },
+        { 'AutoRoleCatalogContractVersion', 2 }, { 'AutoRoleRosterLeaseContractVersion', 1 } }
+    for _, field in ipairs(fields) do
+        local feature = TeamToolsFeature()
+        feature[field[1]] = field[2] - 1
+        local ok, reason = BootTruth('combat_team_tools', TEAM_PATH, feature)[TEAM_ROLE_CASE]()
+        assert(ok == false, field[1] .. ' below the floor must be rejected')
+        assert(reason ~= nil and tostring(reason) ~= '', 'rejection must carry a reason')
+    end
+    local feature = TeamToolsFeature(); feature.Commands.SetRole = nil
+    local ok, reason = BootTruth('combat_team_tools', TEAM_PATH, feature)[TEAM_ROLE_CASE]()
+    assert(ok == false and tostring(reason) == 'set_role_command', 'reason=' .. tostring(reason))
+end)
+
+Test('BatchK team_tools：视觉/标记契约的每一项回退与缺命令都必须被拒', function()
+    local fields = { { 'TeamVisualContractVersion', 2 }, { 'TeamMarkerSnapshotContractVersion', 1 },
+        { 'TeamSacContractVersion', 2 }, { 'AutoRoleDefaultOnContractVersion', 1 } }
+    for _, field in ipairs(fields) do
+        local feature = TeamToolsFeature()
+        feature[field[1]] = field[2] - 1
+        local ok, reason = BootTruth('combat_team_tools', TEAM_PATH, feature)[TEAM_VISUAL_CASE]()
+        assert(ok == false, field[1] .. ' below the floor must be rejected')
+        assert(reason ~= nil and tostring(reason) ~= '', 'rejection must carry a reason')
+    end
+    for _, name in ipairs({ 'SetSacHighlightEnabled', 'SaveRaidMarkers', 'RestoreRaidMarkers', 'ClearSavedRaidMarkers' }) do
+        local feature = TeamToolsFeature(); feature.Commands[name] = nil
+        local ok, reason = BootTruth('combat_team_tools', TEAM_PATH, feature)[TEAM_VISUAL_CASE]()
+        assert(ok == false, 'missing ' .. name .. ' must be rejected')
+        assert(reason ~= nil and tostring(reason) ~= '', 'rejection must carry a reason')
+    end
+end)
+
+Test('BatchK 静态：core/*.lua 不得再点名 team_tools，但 Service/Data/UIV3 侧必须保留', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    -- ① 完整实现表访问串
+    assert(text:find('S.Features.combat_team_tools', 1, true) == nil,
+        'Foundation must not read the team_tools feature table')
+    -- ② 带点号的字段访问 / 已删除的判定壳子
+    for _, pattern in ipairs({ 'teamTools.', 'TeamRoleContractVersion', 'AutoRoleContractVersion',
+        'AutoRoleCatalogContractVersion', 'AutoRoleRosterLeaseContractVersion', 'TeamVisualContractVersion',
+        'TeamMarkerSnapshotContractVersion', 'TeamSacContractVersion', 'AutoRoleDefaultOnContractVersion',
+        'SetSacHighlightEnabled', 'SaveRaidMarkers', 'RestoreRaidMarkers', 'ClearSavedRaidMarkers' }) do
+        assert(text:find(pattern, 1, true) == nil, 'Foundation still references: ' .. pattern)
+    end
+    -- 边界：这三侧的契约**必须留在 Foundation**（主语是 Service/Data/UIV3，不是 Feature）
+    for _, pattern in ipairs({ 'TeamRosterV3', 'TeamEdgeSettleContractVersion', 'TeamAutoRoleCatalog',
+        'TeamSacOverlay', 'TeamSacPresentationContractVersion' }) do
+        assert(text:find(pattern, 1, true) ~= nil, 'the non-Feature counterpart must stay in Foundation: ' .. pattern)
+    end
+    -- 只查“字符串还在”不够 —— 还要确认判定**确实仍由 Service 侧推导**：
+    -- 否则把整行改成 `local teamRoleOk = true`（搬太多）也能骗过上面那条。
+    assert(text:find('local teamRoleOk = type(teamRoster) == "table"', 1, true) ~= nil,
+        'teamRoleOk must still be derived from the TeamRoster service contract')
+    assert(text:find('local teamVisualOk = type(teamSacOverlay) == "table"', 1, true) ~= nil,
+        'teamVisualOk must still be derived from the TeamSacOverlay UI contract')
+end)
+
 print(string.format('CORE-FEATURE-DECOUPLING RESULT %d passed / %d failed', passed, failed))
 if failed > 0 then error('core/feature decoupling regressions: ' .. tostring(failed)) end

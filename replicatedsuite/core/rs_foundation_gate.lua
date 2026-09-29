@@ -2515,7 +2515,12 @@ function G:Run(options)
     AddCheck(report, "v3_craft_sidecar_contract", craftSidecarOk, "blocker",
         craftSidecarOk and "bounded native-craft observer + shared-authority sidecar present" or "craft sidecar contract unavailable")
 
-    local teamTools = S.Features and S.Features.combat_team_tools or nil
+    -- 中文维护注释（Phase 3 Batch K，2026-09-29，core-feature-decoupling-1）：这里原先还定义了
+    -- combat_team_tools 的实现表引用，并在下面两条判定里复述它的契约版本与命令面。那些判定现已
+    -- 收敛到 features/combat/team_tools/rs_team_tools_acceptance.lua 的两个 case，判定逐条等价。
+    -- 两条判定改为只覆盖 Service / Data / UIV3 侧契约（TeamRosterV3 的团队边沿 settle、静态职责目录
+    -- 及其两个已确认职业组合、TeamSacOverlay 的呈现契约）—— 它们不是 Feature 债。
+    -- 注意：注释里也不要写出带点号的“表名+字段”形式，rs_architecture_audit 是行级正则且不跳过注释。
     local teamRoster = S.Services and S.Services.TeamRosterV3 or nil
     local teamRoleCatalog = S.Data and S.Data.TeamAutoRoleCatalog or nil
     local archerRole = type(teamRoleCatalog) == "table" and type(teamRoleCatalog.byClassKey) == "table"
@@ -2524,12 +2529,9 @@ function G:Run(options)
         and teamRoleCatalog.byClassKey["name_8_9_14"] or nil
     -- 中文维护注释（2026-09-16，团队职责发布门禁）：同时钉死两个用户已确认职业组合，以及自动职责自己的 TeamRoster lease/团队边沿 settle。
     -- Gate 只读取声明与静态目录，不触发 X2Team 写入/名单扫描；目的是防止增量包只改角色表却漏掉“关闭页面后不再监听入团”的生命周期根因。
-    local teamRoleOk = type(teamTools) == "table" and (tonumber(teamTools.TeamRoleContractVersion) or 0) >= 2
-        and (tonumber(teamTools.AutoRoleContractVersion) or 0) >= 3 -- 中文维护注释（2026-09-16）：v3 才包含独立 Event owner/roster lease 与关→开重建观察，不能只看目录版本。
-        and (tonumber(teamTools.AutoRoleCatalogContractVersion) or 0) >= 2
-        and (tonumber(teamTools.AutoRoleRosterLeaseContractVersion) or 0) >= 1
-        and type(teamTools.Commands) == "table" and type(teamTools.Commands.SetRole) == "function"
-        and type(teamRoster) == "table" and (tonumber(teamRoster.TeamEdgeSettleContractVersion) or 0) >= 1
+    -- 2026-09-29（Phase 3 Batch K）：自动职责本体的契约版本与 SetRole 命令已搬到 team_tools 的 acceptance，
+    -- 这里只保留 TeamRoster 侧与静态目录侧的检查。
+    local teamRoleOk = type(teamRoster) == "table" and (tonumber(teamRoster.TeamEdgeSettleContractVersion) or 0) >= 1
         and type(teamRoleCatalog) == "table" and (tonumber(teamRoleCatalog.version) or 0) >= 3
         and type(archerRole) == "table" and tostring(archerRole.role or "") == "ranged"
         and type(dancerHealerRole) == "table" and tostring(dancerHealerRole.role or "") == "healer"
@@ -2537,17 +2539,9 @@ function G:Run(options)
         teamRoleOk and "independent roster lease + bounded team-edge settle + ranged/healer exact class-role semantics present" or "team role/catalog lifecycle contract unavailable")
 
     local teamSacOverlay = S.UIV3 and S.UIV3.TeamSacOverlay or nil
-    local teamVisualOk = type(teamTools) == "table"
-        and (tonumber(teamTools.TeamVisualContractVersion) or 0) >= 2 -- 中文维护注释：v2 固化“牺牲之舞 fresh default=on + schema1 旧关闭语义迁移”；不等于扩大 Aura/TeamRoster 生命周期。
-        and (tonumber(teamTools.TeamMarkerSnapshotContractVersion) or 0) >= 1 -- 中文维护注释：标记快照仍沿用串行写入/回读确认契约；本轮不改变 Native marker Authority。
-        and (tonumber(teamTools.TeamSacContractVersion) or 0) >= 2 -- 中文维护注释：发布必须要求 schema2/default-on Store，否则新用户与旧用户升级语义可能混淆。
-        and (tonumber(teamTools.AutoRoleDefaultOnContractVersion) or 0) >= 1 -- 中文维护注释：自动职责 fresh Store 默认开启，但旧用户显式 false 必须继续由 v3.team_tools Store 持久化；Gate 只查声明，不写用户配置。
-        and type(teamTools.Commands) == "table"
-        and type(teamTools.Commands.SetSacHighlightEnabled) == "function"
-        and type(teamTools.Commands.SaveRaidMarkers) == "function"
-        and type(teamTools.Commands.RestoreRaidMarkers) == "function"
-        and type(teamTools.Commands.ClearSavedRaidMarkers) == "function"
-        and type(teamSacOverlay) == "table" and (tonumber(teamSacOverlay.TeamSacPresentationContractVersion) or 0) >= 1
+    -- 中文维护注释（Phase 3 Batch K）：标记/牺牲之舞/自动职责默认开启这一组 Feature 契约与四条命令
+    -- 已搬到 team_tools 的 acceptance；这里只保留 UIV3 侧呈现契约。
+    local teamVisualOk = type(teamSacOverlay) == "table" and (tonumber(teamSacOverlay.TeamSacPresentationContractVersion) or 0) >= 1
     AddCheck(report, "v3_team_visual_marker_contract", teamVisualOk, "blocker",
         teamVisualOk and "bounded Sac overlay + persistent marker snapshot/verified serial restore present" or "team visual/marker contract unavailable")
 
