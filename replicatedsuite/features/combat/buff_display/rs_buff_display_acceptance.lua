@@ -22,8 +22,11 @@
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
+if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
+-- 中文维护注释（Phase 3 Batch H，2026-09-29，core-feature-decoupling-1）：本文件是 combat_buff_display
+-- 的**唯一契约 Authority**。原先 F 缺失时这里静默 return，把“实现根本没注册”留给 Foundation 的硬编码
+-- 断言兜底；Phase 3 正在删掉那处硬编码，所以这里必须**无条件注册** case，并在实现缺失时明确失败。
 local F = S.Features and S.Features.BuffDisplay or nil
-if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" or type(F) ~= "table" then return end
 
 G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     local meta = S.FeatureRegistry and S.FeatureRegistry:Get("combat_buff_display") or nil
@@ -521,5 +524,17 @@ G:RegisterSequenceCase("v3_m16_18_buff_display_plate_geometry", function()
         return false, "compact_time_format_wrong:" .. tostring(timeRows[1] and timeRows[1].timeText)
     end
 
+    return true
+end)
+
+-- Phase 3 Batch H（2026-09-29，core-feature-decoupling-1）：观察契约版本。
+-- 原先由 core/rs_foundation_gate.lua 的 v3_combat_life_usability_contract 里的 buff_observation 判定
+-- 点名检查（取实现表的 GetHealth 再读 observationContractVersion）；搬到这里之后 Core 不再认识
+-- 具体业务 Feature。判定与旧版**逐条等价**：health 可取 + observationContractVersion >= 2。
+G:RegisterSequenceCase("v3_combat_buff_display_observation_contract", function()
+    if type(F) ~= "table" then return false, "implementation_not_registered" end
+    local health = type(F.GetHealth) == "function" and F:GetHealth() or nil
+    if type(health) ~= "table" then return false, "health_unavailable" end
+    if (tonumber(health.observationContractVersion) or 0) < 2 then return false, "observation_contract_version" end
     return true
 end)

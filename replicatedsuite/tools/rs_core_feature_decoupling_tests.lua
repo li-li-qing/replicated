@@ -585,5 +585,112 @@ Test('BatchG 静态：取值表已登记进 toc.g 且排在诊断之前', functi
     assert(diagnostics ~= nil and registry < diagnostics, 'the registry must load before diagnostics')
 end)
 
+------------------------------------------------------------------------
+-- Phase 3 Batch H：v3_combat_life_usability_contract 里的四个业务 Feature 判定
+--   boss_alerts / unit_lines / range_assist 三个**新建** acceptance；
+--   buff_display 是给已存在的 acceptance **追加**一个 observation 契约 case。
+--   同一条 AddCheck 里的 Service / UIV3 契约（screenProjection / alerts / visualGuides /
+--   lifeWidgets / trade-bonds widget）保持原样不动 —— 它们不是 Feature 债。
+------------------------------------------------------------------------
+local ContractCases = {
+    { key = 'combat_boss_alerts', path = 'features/combat/boss_alerts/rs_boss_alerts_acceptance.lua',
+        case = 'v3_combat_boss_alerts_hud_contract',
+        good = { HudContractVersion = 4, RealtimeFactBridgeContractVersion = 2, _bossDiag = {} },
+        fields = { { 'HudContractVersion', 2 }, { 'RealtimeFactBridgeContractVersion', 1 } } },
+    { key = 'combat_unit_lines', path = 'features/combat/unit_lines/rs_unit_lines_acceptance.lua',
+        case = 'v3_combat_unit_lines_visual_guide_contract',
+        good = { VisualGuideContractVersion = 5, AdaptiveDensityContractVersion = 2, SmoothRefreshContractVersion = 1,
+            FrontHemisphereContractVersion = 1, ProjectionConsistencyContractVersion = 1 },
+        fields = { { 'VisualGuideContractVersion', 5 }, { 'AdaptiveDensityContractVersion', 2 },
+            { 'SmoothRefreshContractVersion', 1 }, { 'FrontHemisphereContractVersion', 1 },
+            { 'ProjectionConsistencyContractVersion', 1 } } },
+    { key = 'combat_range_assist', path = 'features/combat/range_assist/rs_range_assist_acceptance.lua',
+        case = 'v3_combat_range_assist_visual_guide_contract',
+        good = { VisualGuideContractVersion = 9, WorldSpaceContractVersion = 3, ProjectionFactsContractVersion = 7,
+            AnchorCalibrationContractVersion = 2, MetricDistanceContractVersion = 1 },
+        fields = { { 'VisualGuideContractVersion', 9 }, { 'WorldSpaceContractVersion', 3 },
+            { 'ProjectionFactsContractVersion', 7 }, { 'AnchorCalibrationContractVersion', 2 },
+            { 'MetricDistanceContractVersion', 1 } } },
+}
+
+local function CopyTable(source)
+    local out = {}
+    for key, value in pairs(source or {}) do out[key] = value end
+    return out
+end
+
+for _, item in ipairs(ContractCases) do
+    Test('BatchH ' .. item.key .. '：实现未注册 → case 仍注册且失败', function()
+        local cases = BootTruth(item.key, item.path, nil)
+        assert(type(cases[item.case]) == 'function', item.case .. ' must register even when missing')
+        local ok, reason = cases[item.case]()
+        assert(ok == false and tostring(reason) == 'implementation_not_registered', 'reason=' .. tostring(reason))
+    end)
+
+    Test('BatchH ' .. item.key .. '：合规契约通过（搬迁未误伤）', function()
+        local ok, reason = BootTruth(item.key, item.path, CopyTable(item.good))[item.case]()
+        assert(ok == true, 'compliant feature must pass, got ' .. tostring(reason))
+    end)
+
+    for _, field in ipairs(item.fields) do
+        Test('BatchH ' .. item.key .. '：' .. field[1] .. ' 回退到 ' .. tostring(field[2] - 1) .. ' 必须被拒', function()
+            local feature = CopyTable(item.good)
+            feature[field[1]] = field[2] - 1
+            local ok, reason = BootTruth(item.key, item.path, feature)[item.case]()
+            assert(ok == false, field[1] .. ' below the floor must be rejected')
+            assert(tostring(reason) ~= '' and reason ~= nil, 'rejection must carry a reason')
+        end)
+    end
+end
+
+Test('BatchH combat_buff_display：观察契约 —— 实现未注册时失败', function()
+    local cases = BootTruth('BuffDisplay', 'features/combat/buff_display/rs_buff_display_acceptance.lua', nil)
+    local case = 'v3_combat_buff_display_observation_contract'
+    assert(type(cases[case]) == 'function', 'observation case must register even when missing')
+    local ok, reason = cases[case]()
+    assert(ok == false and tostring(reason) == 'implementation_not_registered', 'reason=' .. tostring(reason))
+end)
+
+Test('BatchH combat_buff_display：观察契约 —— 合规通过 / health 不可用 / 版本回退', function()
+    local path = 'features/combat/buff_display/rs_buff_display_acceptance.lua'
+    local case = 'v3_combat_buff_display_observation_contract'
+    local okGood, reasonGood = BootTruth('BuffDisplay', path,
+        { GetHealth = function() return { observationContractVersion = 2 } end })[case]()
+    assert(okGood == true, 'compliant observation contract must pass, got ' .. tostring(reasonGood))
+
+    local okNoHealth, reasonNoHealth = BootTruth('BuffDisplay', path, {})[case]()
+    assert(okNoHealth == false and tostring(reasonNoHealth) == 'health_unavailable', 'reason=' .. tostring(reasonNoHealth))
+
+    local okOld, reasonOld = BootTruth('BuffDisplay', path,
+        { GetHealth = function() return { observationContractVersion = 1 } end })[case]()
+    assert(okOld == false and tostring(reasonOld) == 'observation_contract_version', 'reason=' .. tostring(reasonOld))
+end)
+
+Test('BatchH 静态：core/*.lua 不得再点名这四个 Feature，且 buff_observation 判定已撤', function()
+    local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
+    local text = f:read('*a'); f:close()
+    -- 断言用**带点号/带引号的精确形态**，理由是：
+    --   * 带点号 -> 只匹配“读该 Feature 实现表的字段”，不会误伤 screenProjection 侧的同名字段
+    --     （例如 UnitProjectionConsistencyContractVersion 是 Service 的、不是 unit_lines 的）；
+    --   * 带引号 -> 不会把搬迁说明注释里的裸词判成违规。
+    for _, pattern in ipairs({ 'bossAlerts.', 'unitLines.', 'rangeAssist.', 'buffDisplay2.', 'buffHealth2.',
+        '"buff_observation"' }) do
+        assert(text:find(pattern, 1, true) == nil, 'Foundation still references: ' .. pattern)
+    end
+    -- 还必须挡住“用完整实现表访问把判定回填回去”这条路径：只断言字段名不够 ——
+    -- 例如重新写 `local unitLines = <实现表>.combat_unit_lines` 就绕过了上面的点号断言。
+    -- （BuffDisplay 不在这一组里 —— 它在 §25.6.9 的另一处判定里仍有合法引用，留待后续批次。）
+    for _, pattern in ipairs({ 'S.Features.combat_unit_lines', 'S.Features.combat_boss_alerts',
+        'S.Features.combat_range_assist' }) do
+        assert(text:find(pattern, 1, true) == nil, 'Foundation must not read the feature table for: ' .. pattern)
+    end
+    -- 这几个契约字段在 Foundation 里已无任何合法用处，可作无歧义断言。
+    for _, field in ipairs({ 'HudContractVersion', 'RealtimeFactBridgeContractVersion',
+        'AdaptiveDensityContractVersion', 'FrontHemisphereContractVersion',
+        'WorldSpaceContractVersion', 'ProjectionFactsContractVersion', 'MetricDistanceContractVersion' }) do
+        assert(text:find(field, 1, true) == nil, 'Foundation still references contract field: ' .. field)
+    end
+end)
+
 print(string.format('CORE-FEATURE-DECOUPLING RESULT %d passed / %d failed', passed, failed))
 if failed > 0 then error('core/feature decoupling regressions: ' .. tostring(failed)) end

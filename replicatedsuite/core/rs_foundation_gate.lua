@@ -2313,11 +2313,15 @@ function G:Run(options)
     local visualGuides = S.UIV3 and S.UIV3.CombatVisualGuidesV3 or nil
     local lifeWidgets = S.UIV3 and S.UIV3.LifeEconomyWidgetsV3 or nil
     local widgetHost = S.UIV3 and S.UIV3.WidgetHost or nil
-    local bossAlerts = S.Features and S.Features.combat_boss_alerts or nil
-    local unitLines = S.Features and S.Features.combat_unit_lines or nil
-    local rangeAssist = S.Features and S.Features.combat_range_assist or nil
-    local buffDisplay2 = S.Features and S.Features.BuffDisplay or nil
-    local buffHealth2 = type(buffDisplay2) == "table" and type(buffDisplay2.GetHealth) == "function" and buffDisplay2:GetHealth() or nil
+    -- 中文维护注释（Phase 3 Batch H，2026-09-29，core-feature-decoupling-1）：这里原先还定义了四个
+    -- 业务 Feature 的实现表引用（首领机制 / 单位连线 / 范围辅助 / BuffDisplay），用于在下面的
+    -- usability 判定里复述它们的契约版本。那些判定现已各自收敛到对应 Feature 的 acceptance：
+    --   features/combat/boss_alerts/rs_boss_alerts_acceptance.lua
+    --   features/combat/unit_lines/rs_unit_lines_acceptance.lua
+    --   features/combat/range_assist/rs_range_assist_acceptance.lua
+    --   features/combat/buff_display/rs_buff_display_acceptance.lua（新增 observation 契约 case）
+    -- 本段只保留 Service / UIV3 侧的契约检查（它们不是 Feature 债）。注意：注释里也不要写出带点号的
+    -- “表名+字段”形式，rs_architecture_audit 是行级正则且不跳过注释，说明文字会被重新计成债务。
     -- 中文维护注释（2026-09-15，range-real-meter-foundation-1）：这里仅门禁投影/米数契约，
     -- 不在 Foundation 自检读取 target。真实 UnitDistance 样本只由 RangeAssist Demand 在运行期按需采集。
     if type(screenProjection) ~= "table" or (tonumber(screenProjection.version) or 0) < 15 or tostring(screenProjection.presentationBoundary or "") ~= "service_only"
@@ -2338,8 +2342,6 @@ function G:Run(options)
         or (tonumber(screenProjection.UiParentScreenCoordinateContractVersion) or 0) < 1
         or type(screenProjection.ProjectWorld) ~= "function" or type(screenProjection.ProjectWorldBatch) ~= "function" then usabilityFailures[#usabilityFailures + 1] = "screen_projection" end
     if type(alerts) ~= "table" or type(alerts.Push) ~= "function" or type(alertHud) ~= "table" or (tonumber(alertHud.version) or 0) < 1
-        or type(bossAlerts) ~= "table" or (tonumber(bossAlerts.HudContractVersion) or 0) < 2
-        or (tonumber(bossAlerts.RealtimeFactBridgeContractVersion) or 0) < 1
         or type(S.Services and S.Services.CastingObservationV3) ~= "table" then usabilityFailures[#usabilityFailures + 1] = "boss_hud" end
     if type(visualGuides) ~= "table" or (tonumber(visualGuides.version) or 0) < 15
         or (tonumber(visualGuides.UiEnvironmentStyleRecoveryContractVersion) or 0) < 1
@@ -2363,17 +2365,7 @@ function G:Run(options)
         -- 这是 Foundation 对“点不遮挡原生窗口”的启动门禁，只读契约版本，不创建窗口、不触发 Native 调用。
         -- 数据流/所有权仍为 Presenter -> UI Primitive；若版本缺失则明确降级，而不是让 system 层问题静默复发。
         or (tonumber(S.UI and S.UI.WorldHudNativeLayerContractVersion) or 0) < 1
-        or type(visualGuides.BuildUnitLineSamplePlan) ~= "function"
-        or type(unitLines) ~= "table" or (tonumber(unitLines.VisualGuideContractVersion) or 0) < 5
-        or (tonumber(unitLines.AdaptiveDensityContractVersion) or 0) < 2
-        or (tonumber(unitLines.SmoothRefreshContractVersion) or 0) < 1
-        or (tonumber(unitLines.FrontHemisphereContractVersion) or 0) < 1
-        or (tonumber(unitLines.ProjectionConsistencyContractVersion) or 0) < 1
-        or type(rangeAssist) ~= "table" or (tonumber(rangeAssist.VisualGuideContractVersion) or 0) < 9
-        or (tonumber(rangeAssist.WorldSpaceContractVersion) or 0) < 3
-        or (tonumber(rangeAssist.ProjectionFactsContractVersion) or 0) < 7
-        or (tonumber(rangeAssist.AnchorCalibrationContractVersion) or 0) < 2
-        or (tonumber(rangeAssist.MetricDistanceContractVersion) or 0) < 1 then usabilityFailures[#usabilityFailures + 1] = "visual_guides" end
+        or type(visualGuides.BuildUnitLineSamplePlan) ~= "function" then usabilityFailures[#usabilityFailures + 1] = "visual_guides" end
     local tradeWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.trade") or nil
     local bondsWidget = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("life.bonds") or nil
     -- 中文维护注释（2026-09-24，Bonds Presentation/Domain 混载门禁）：v9 必须同时具备
@@ -2436,7 +2428,9 @@ function G:Run(options)
         and type(tradeDetail.Open) == "function" and type(tradeDetail.Close) == "function"
     AddCheck(report, "v3_trade_detail_favorites_contract", tradeDetailOk, "blocker",
         tradeDetailOk and "TradePayoutV3 + durable material-price SWR + economics revisions + multi-row quote jobs present" or "trade payout/material-price/economics/multi-row quote contract unavailable")
-    if type(buffHealth2) ~= "table" or (tonumber(buffHealth2.observationContractVersion) or 0) < 2 then usabilityFailures[#usabilityFailures + 1] = "buff_observation" end
+    -- 中文维护注释（Phase 3 Batch H）：原先这里还有 buff_observation 判定（取 BuffDisplay 的 health
+    -- 再读观察契约版本）。该判定已搬到 features/combat/buff_display/rs_buff_display_acceptance.lua 的
+    -- v3_combat_buff_display_observation_contract，判定逐条等价，故整行删除。
     local healerFloatingSpec = type(widgetHost) == "table" and type(widgetHost.GetSpec) == "function" and widgetHost:GetSpec("combat.healer") or nil
     if healerFloatingSpec ~= nil then usabilityFailures[#usabilityFailures + 1] = "healer_recommendation_widget" end
     AddCheck(report, "v3_combat_life_usability_contract", #usabilityFailures == 0, "blocker",
