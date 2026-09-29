@@ -3937,7 +3937,7 @@ H 放宽一个下限（1 条）+ **把完整实现表访问形式回填回 Found
 ### 25.6.10 剩余工作（余 15 处 CORE_FEATURE，全在 `core/rs_foundation_gate.lua`）
 
 ```text
-1. 分布（\u4f59 15 处）：
+1. 分布（共 15 处）：
      tools_bag（v3_bag_action_contract，独立方法 EvaluateBagActionContract）
      BuffDisplay 1518（HUD 校准/健康聚合段）
      Healer 家族 1706/1707/1770（Healer / HealerAuraBridge / HealerScreenProjection）
