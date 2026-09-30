@@ -19,6 +19,7 @@ local F = S.Features and S.Features.combat_buff_cap or nil
 
 local function Fail(message) return false, tostring(message or "buff_cap_observation_failed") end
 
+-- 维护（2026-09-30，refactor-live-gate-1）：显式接回只读运行时诊断；完整序列仍保留给离线验收。
 G:RegisterSequenceCase("v3_combat_buff_cap_observation_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if (tonumber(F.ObservationContractVersion) or 0) < 1 then return Fail("observation_contract_version") end
@@ -29,4 +30,4 @@ G:RegisterSequenceCase("v3_combat_buff_cap_observation_contract", function()
         return Fail("demand_lifecycle_contract")
     end
     return true
-end)
+end, { runtime = true })

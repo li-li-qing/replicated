@@ -17,6 +17,7 @@ S.FoundationGate = {
     last = nil,
     sequenceCases = {},
     sequenceOrder = {},
+    runtimeCases = {}, -- 只保存同一 case 的只读资格，不建立第二份业务判定。
 }
 local G = S.FoundationGate
 
@@ -36,12 +37,38 @@ local function Join(values, maxItems)
     return table.concat(out, ",")
 end
 
-function G:RegisterSequenceCase(id, fn)
+-- 维护（2026-09-30，refactor-live-gate-1）：Phase 3 把业务判定搬成 sequence 后，
+-- 玩家诊断 skipSequences=true 会一起跳过它们。只有 Feature 显式声明 runtime=true 的
+-- case 才可进入只读通道；传 true 要求它跳过恢复探针、Consumer、刷新和状态修改。
+-- 未声明的历史序列绝不在玩家诊断执行，防止清空战斗统计/改写用户配置。
+function G:RegisterSequenceCase(id, fn, options)
     id = tostring(id or "")
     if id == "" or type(fn) ~= "function" then return false end
     if self.sequenceCases[id] == nil then self.sequenceOrder[#self.sequenceOrder+1] = id; table.sort(self.sequenceOrder) end
     self.sequenceCases[id] = fn
+    self.runtimeCases[id] = type(options) == "table" and options.runtime == true or nil
     return true
+end
+
+function G:RunRuntimeContracts(report)
+    local result = { total=0, passed=0, failed=0, failures={} }
+    for _, id in ipairs(self.sequenceOrder) do
+        if self.runtimeCases[id] == true then
+            result.total = result.total + 1
+            -- Lua 5.1 的 xpcall 不转发附加参数，必须用闭包传只读模式。
+            local ok, value, detail = xpcall(function() return self.sequenceCases[id](true) end, S.SafeTraceback)
+            local passed = ok and value == true -- nil/异常不能伪装成健康。
+            local reason = ok and tostring(detail or (passed and "readonly_contract_ok" or "returned_non_true")) or tostring(value)
+            if passed then result.passed = result.passed + 1
+            else
+                result.failed = result.failed + 1
+                result.failures[#result.failures+1] = id .. ":" .. reason
+            end
+            AddCheck(report, "runtime_contract:" .. id, passed, "blocker", reason)
+        end
+    end
+    report.runtimeContracts = result
+    return result
 end
 
 function G:RunSequences()
@@ -2459,12 +2486,14 @@ function G:Run(options)
     --   features/life/activities/rs_activity_acceptance.lua（活动侧 persistence_mutation 契约）
     --   features/life/tasks/rs_task_acceptance.lua 的 v3_life_tasks_persistence_contract（任务侧两项）
     -- 判定逐条等价，故两条 AddCheck 整条删除、Core 不再认识这两个业务 Feature。
-    -- sequence case 失败同样落 blocker（见后续 sequence_harness 检查），因此不降低启动门槛。
+    -- 维护（2026-09-30）：这些 case 必须显式声明只读运行时资格，否则玩家诊断会跳过它们。
 
     AddCheck(report, "diagnostics", S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Snapshot) == "function", "blocker", "structured diagnostics")
 
     local sequenceAuthorityBefore = ui and type(ui.GetAuthoritySnapshot) == "function" and ui:GetAuthoritySnapshot() or nil
     local sequenceRegistryBefore = ui and type(ui.GetRegistrySnapshot) == "function" and ui:GetRegistrySnapshot() or nil
+    -- 同一次只读报告包含业务门禁，不能用“序列未执行”代替“业务已通过”。
+    self:RunRuntimeContracts(report)
     local sequences
     local registeredSequenceCount = #(self.sequenceOrder or {})
     if options.skipSequences == true then

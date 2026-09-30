@@ -30,6 +30,8 @@ local Bonds = { Id = "life_bonds", storeId = "v3.life.bonds", enabled = false, s
     progressConsumerToken = "feature:life_bonds:quest_progress", progressConsumerHeld = false, progressSubscribed = false,
     locationSubscribed = false }
 local BONDS_ZONE_REFRESH_TASK = "life_bonds_zone_refresh"
+local BONDS_LOCATION_DELAYS = { 750, 1500, 3000 }
+Bonds.CrossContinentPatch = "bonds-cross-continent-1"
 S.Features.Bonds = Bonds
 Bonds.UpdateTopic = "v3.life.bonds.updated"
 Bonds.State = { sortMode = "continent", continentOrder = "west_first", showCompleted = true, q20 = true, q60 = true, q100 = true, auroria = true, excludeSame = false, priority = "west", completionDateKey = nil, completedMainlandKeys = {}, dailyDateKey = nil, dailySnapshots = {}, widgetVisible = false, widgetWindow = nil }
@@ -216,38 +218,39 @@ local BOND_BOARD_NAMES = {
     [1] = "布料", [2] = "皮革", [3] = "木材", [4] = "铁锭",
     [5] = "王子的物品", [6] = "女王的物品", [7] = "祖先的物品",
 }
+-- 维护（2026-09-30，跨大陆读取）：Native 行表和持久化序列不是同一个边界。
+-- Native 允许稀疏/十进制字符串索引；旧 ipairs 会截断后半段，且 tonumber(key) 后再
+-- source[number] 取不到原 string key。现在保留实际键值，按数值顺序读取，元数据不当行。
+-- 单板最多检查 192 项；别名碰撞/过大输入整体拒绝，不按 pairs 的不确定顺序选赢家。
 local function NormalizeResidentBoardContents(value)
     if type(value) == "string" or type(value) == "number" then
-        local text = Text(value)
-        return text ~= "" and { value } or {}
+        return Text(value) ~= "" and { value } or {}
     end
     if type(value) ~= "table" then return {} end
-
-    local source = value.contents
-    if source == nil then source = value.content or value.rows or value.items end
-    if source == nil and value[1] ~= nil then source = value end
+    local source = value.contents or value.content or value.rows or value.items
+    if source == nil then source = value end
     if type(source) == "string" or type(source) == "number" then
-        local text = Text(source)
-        return text ~= "" and { source } or {}
+        return Text(source) ~= "" and { source } or {}
     end
     if type(source) ~= "table" then return {} end
-
-    local result = {}
-    for index, entry in ipairs(source) do
-        if BondRowText(entry) ~= "" then result[#result + 1] = entry end
-    end
-    -- Some RU builds may expose sparse numeric indices. Preserve deterministic
-    -- numeric order without treating metadata keys as resident-board rows.
-    if #result == 0 then
-        local numericKeys = {}
-        for key in pairs(source) do
-            local n = tonumber(key)
-            if n ~= nil and n >= 1 and math.floor(n) == n then numericKeys[#numericKeys + 1] = n end
+    local indexed, keys, scanned = {}, {}, 0
+    for key, entry in pairs(source) do
+        scanned = scanned + 1
+        if scanned > 192 then return {}, "native_board_entry_limit" end
+        local kind, n = type(key), tonumber(key)
+        local canonical = kind == "number" or (kind == "string" and key:match("^[1-9]%d*$") ~= nil)
+        if canonical and n ~= nil and n >= 1 and n <= 192 and n == math.floor(n) then
+            if indexed[n] ~= nil then return {}, "native_board_duplicate_index" end
+            indexed[n], keys[#keys + 1] = entry, n
         end
-        table.sort(numericKeys)
-        for _, key in ipairs(numericKeys) do
-            local entry = source[key]
-            if BondRowText(entry) ~= "" then result[#result + 1] = entry end
+    end
+    table.sort(keys)
+    local result = {}
+    for _, key in ipairs(keys) do
+        local entry = indexed[key]
+        local kind = type(entry)
+        if (kind == "string" or kind == "number" or kind == "table") and BondRowText(entry) ~= "" then
+            result[#result + 1] = entry
         end
     end
     return result
@@ -298,38 +301,65 @@ local function DetectResidentBoardFamily(boards)
     -- 旧 Bonds 反过来先相信静态 zoneGroup 表，导致未收录的原大陆区域在已经缓存西/东后完全不再调用
     -- GetResidentBoardContent，甚至可能把 5/6 的原大陆内容误作为西/东的一张空快照保存。这里把 Native
     -- ResidentBoard 内容提升为“当前板族”的 Authority，zoneGroup 只负责主大陆西/东分边，不再决定原大陆。
-    local mainlandReady = BondBoardLineCount(boards, 3) > 0 and BondBoardLineCount(boards, 4) > 0
-    if mainlandReady then return "mainland", "boards_3_4" end
-    local auroriaReady = BondBoardLineCount(boards, 5) > 0 or BondBoardLineCount(boards, 6) > 0
-    if auroriaReady then return "auroria", "boards_5_6" end
+    -- 维护（2026-09-30）：3/4 同时非空是充分条件而非必要条件。局部加载的 1/2
+    -- 以及原大陆单独第 7 板也携带真实内容；主大陆仍必须另有明确的西/东归属证据。
+    local mainlandReady, auroriaReady = false, false
+    for index = 1, 4 do mainlandReady = mainlandReady or BondBoardLineCount(boards, index) > 0 end
+    for index = 5, 7 do auroriaReady = auroriaReady or BondBoardLineCount(boards, index) > 0 end
+    if mainlandReady and auroriaReady then return "mixed", "mixed_board_families" end
+    if mainlandReady then return "mainland", "boards_1_4" end
+    if auroriaReady then return "auroria", "boards_5_7" end
     return nil, "insufficient_board_evidence"
 end
 
-local function BondFactionContinentHint(boards)
-    -- zoneGroup 缺失时仅把 faction 当成主大陆的最后辅助提示；未知/新本地化必须返回 nil，禁止猜测。
-    local faction = ""
-    for index = 1, 7 do
+local function BondFactionContinentHint(boards, includeEmpty)
+    -- 维护（2026-09-30）：优先检查有内容的主大陆板。跨区时 zone 可能已更新，而内容
+    -- 仍是上一大陆；冲突不得把旧板标成新大陆。空板 faction 仅保留旧版未知区域
+    -- 的 locator 兜底，不得覆盖已知所在地或内容板的明确证据。
+    local hint, faction = nil, ""
+    for index = 1, 4 do
         local raw = type(boards[index]) == "table" and boards[index].raw or nil
-        local value = type(raw) == "table" and Text(raw.faction, "") or ""
-        if value ~= "" then faction = value; break end
+        local value = (includeEmpty == true or BondBoardLineCount(boards, index) > 0) and type(raw) == "table" and Text(raw.faction, "") or ""
+        if value ~= "" then
+            faction = value
+            local lower, candidate = string.lower(value), nil
+            if string.find(lower, "nuia", 1, true) or string.find(lower, "nui", 1, true)
+                or string.find(value, "нуи", 1, true) or string.find(value, "Нуи", 1, true)
+                or string.find(value, "西", 1, true) then candidate = "west" end
+            if string.find(lower, "haranya", 1, true) or string.find(lower, "harani", 1, true)
+                or string.find(value, "хар", 1, true) or string.find(value, "Хар", 1, true)
+                or string.find(value, "东", 1, true) then
+                if candidate ~= nil then return nil, faction, true end
+                candidate = "east"
+            end
+            if candidate ~= nil then
+                if hint ~= nil and hint ~= candidate then return nil, faction, true end
+                hint = candidate
+            end
+        end
     end
-    local lower = string.lower(faction)
-    if string.find(lower, "nuia", 1, true) or string.find(lower, "nui", 1, true)
-        or string.find(faction, "нуи", 1, true) or string.find(faction, "Нуи", 1, true)
-        or string.find(faction, "西", 1, true) then return "west", faction end
-    if string.find(lower, "haranya", 1, true) or string.find(lower, "harani", 1, true)
-        or string.find(faction, "хар", 1, true) or string.find(faction, "Хар", 1, true)
-        or string.find(faction, "东", 1, true) then return "east", faction end
-    return nil, faction
+    return hint, faction, false
 end
 
 local function ResolveLiveBondScope(boards, zoneHint)
     local family, evidence = DetectResidentBoardFamily(boards)
+    -- 同时出现两族不一定是坏数据：Native 可能保留另一族缓存。已知所在地只采对应
+    -- 板区间，保留原本 1..4 + 第5板同时返回的兼容场景；未知位置才等待归属证据。
+    if family == "mixed" then
+        if zoneHint == "auroria" then return "auroria", "auroria", evidence .. "+zone" end
+        if zoneHint == "west" or zoneHint == "east" then family = "mainland"
+        else return nil, family, evidence .. "+location_unknown" end
+    end
     if family == "auroria" then return "auroria", family, evidence end
     if family == "mainland" then
+        local factionHint, _, conflict = BondFactionContinentHint(boards)
+        if conflict or ((zoneHint == "west" or zoneHint == "east") and factionHint ~= nil and factionHint ~= zoneHint) then
+            return nil, family, evidence .. "+location_faction_conflict"
+        end
         if zoneHint == "west" or zoneHint == "east" then return zoneHint, family, evidence .. "+zone" end
-        local factionHint = BondFactionContinentHint(boards)
         if factionHint ~= nil then return factionHint, family, evidence .. "+faction" end
+        factionHint, _, conflict = BondFactionContinentHint(boards, true)
+        if factionHint ~= nil and conflict ~= true then return factionHint, family, evidence .. "+faction_locator" end
         return nil, family, evidence .. "+mainland_side_unknown"
     end
     return nil, nil, evidence
@@ -343,18 +373,33 @@ local function BondSnapshotLineCount(snapshot)
     return count
 end
 
+-- 维护（2026-09-30，保存/重登表示差异）：仅 boards / lines 是已声明序列。
+-- 遇到字符串数字索引，复用 Core 的完整 1..N 重建；缺口、碰撞、非规范数字键不补齐。
+-- 普通数字数组的 canonical 形状完全不改；原 envelope/stamped hash 必须继续通过。
+-- 该候选归一不绕过读回校验，不迁移 Schema，不扩大 Core 对其他 Store 的容错。
+local function BondStoredSequence(value, limit)
+    if type(value) ~= "table" then return {} end
+    for key in pairs(value) do
+        if type(key) == "string" and tonumber(key) ~= nil then
+            if type(P.RebuildDenseSequenceForIntegrity) ~= "function" then return {} end
+            return P:RebuildDenseSequenceForIntegrity(value, limit) or {}
+        end
+    end
+    return value
+end
+
 local function NormalizeBondSnapshot(value, continentKey)
     if type(value) ~= "table" then return nil end
     if continentKey ~= "west" and continentKey ~= "east" and continentKey ~= "auroria" then return nil end
     local out = { continentKey = continentKey, faction = Text(value.faction, ""), boards = {} }
     local count = 0
-    for _, rawBoard in ipairs(type(value.boards) == "table" and value.boards or {}) do
+    for _, rawBoard in ipairs(BondStoredSequence(value.boards, 7)) do
         if count >= 7 then break end
         local board = type(rawBoard) == "table" and rawBoard or {}
         local index = math.floor(Number(board.index or board.board) or 0)
         if index >= 1 and index <= 7 then
             local lines = {}
-            for _, rawLine in ipairs(type(board.lines) == "table" and board.lines or {}) do
+            for _, rawLine in ipairs(BondStoredSequence(board.lines, BOND_SNAPSHOT_MAX_LINES)) do
                 if #lines >= BOND_SNAPSHOT_MAX_LINES then break end
                 local line = BoundedBondSnapshotText(rawLine)
                 if line ~= "" then
@@ -550,7 +595,11 @@ function BA:Refresh(reason)
     -- Daily resident-board contents are stable for the server day. Keep the
     -- restored cache during the cold unknown-date window; only a proven date
     -- rollover is allowed to invalidate snapshots/completion latches.
-    if serverDateKey ~= "unknown" then
+    local dateReady = string.match(serverDateKey, "^%d%d%d%d%-%d%d%-%d%d$") ~= nil
+    self.serverDateKey = dateReady and serverDateKey or "unknown"
+    -- 维护（2026-09-30）：日期未知时只展示已恢复的快照，不把新板混入昨日快照，
+    -- 也不保存无日期快照再于下一次日期就绪时清掉。有限恢复探测等待可信服务器日期。
+    if dateReady then
         if state.completionDateKey ~= serverDateKey then
             state.completionDateKey = serverDateKey
             state.completedMainlandKeys = {}
@@ -599,10 +648,11 @@ function BA:Refresh(reason)
     -- 仅靠 demand_start 会漏掉“西/东缓存已存在 -> 进入未收录/误映射原大陆”的场景。区域事件经过
     -- 750ms 同名 one-shot 去抖后只触发一次 bounded 1..7 探测，让 ResidentBoard Native 内容重新裁决板族。
     -- 这是事件驱动的生命周期边界，不是 Tick/轮询；延迟也避免 ENTER_ANOTHER_ZONEGROUP 刚发出时板数据尚未就绪。
-    local boundaryProbe = reason == "zone_changed" or reason == "entered_world"
-    local shouldRead = forceRead or demandProbe or boundaryProbe
+    local boundaryProbe = reason == "zone_changed" or reason == "entered_world" or reason == "location_retry" or reason == "left_loading"
+    local projectionOnly = reason == "presentation" or reason == "quest_progress"
+    local shouldRead = not projectionOnly and dateReady and (forceRead or demandProbe or boundaryProbe
         or (zoneHint ~= nil and state.dailySnapshots[zoneHint] == nil)
-        or (zoneHint == nil and state.dailySnapshots.west == nil and state.dailySnapshots.east == nil and state.dailySnapshots.auroria == nil)
+        or (zoneHint == nil and state.dailySnapshots.west == nil and state.dailySnapshots.east == nil and state.dailySnapshots.auroria == nil))
     local probe = {
         reason = reason, zoneHint = zoneHint or "unknown", attempted = shouldRead == true,
         readable = 0, contentCount = 0, detectedFamily = "none", detectedScope = "none",
@@ -622,7 +672,8 @@ function BA:Refresh(reason)
             Bonds.boardReads = (tonumber(Bonds.boardReads) or 0) + 1
             if ok == true and value ~= nil then
                 readable = readable + 1
-                local contents = NormalizeResidentBoardContents(value)
+                local contents, shapeError = NormalizeResidentBoardContents(value)
+                if shapeError ~= nil then probe.shapeError = probe.shapeError or shapeError end
                 boards[index] = { raw = value, contents = contents }
                 contentCount = contentCount + #contents
             else
@@ -635,6 +686,13 @@ function BA:Refresh(reason)
         probe.readable, probe.contentCount = readable, contentCount
 
         local liveScope, family, evidence = ResolveLiveBondScope(boards, zoneHint)
+        probe.needsRetry = liveScope == nil or readable < 7 or probe.shapeError ~= nil
+        if liveScope ~= nil then
+            local firstIndex, lastIndex = liveScope == "auroria" and 5 or 1, liveScope == "auroria" and 7 or 4
+            for index = firstIndex, lastIndex do
+                if BondBoardLineCount(boards, index) == 0 then probe.needsRetry = true end
+            end
+        end
         probe.detectedFamily = family or "none"
         probe.detectedScope = liveScope or "none"
         probe.evidence = evidence or "none"
@@ -675,7 +733,13 @@ function BA:Refresh(reason)
 
     -- 只有真实 Native 探测才覆盖 lastBoardProbe；排序/筛选等纯 Presentation 重算保留最近一次
     -- 可诊断证据，避免用户操作下拉框后再导出报告时只看到 not_probed。
-    if shouldRead then BA.lastBoardProbe = probe end
+    if not projectionOnly then
+        if not dateReady then
+            probe.evidence, probe.captureAction, probe.needsRetry = "server_date_unknown", "waiting_server_date", true
+        end
+        self.needsLocationRetry = probe.needsRetry == true
+        if shouldRead or not dateReady then BA.lastBoardProbe = probe end
+    end
     BA.lastRefreshReason = reason
     BA.boardScope = currentKey or "cached"
     BA.faction = currentSnapshot and currentSnapshot.faction or nil
@@ -707,7 +771,8 @@ function BA:Refresh(reason)
                         questStatus = tostring(progress:QuestState(questId, activeIndex) or "UNKNOWN")
                     end
                     local completionKey = BondCompletionKey(materialKey, quantity, continentKey)
-                    if questStatus == "COMPLETED" and completionKey ~= nil and state.completedMainlandKeys[completionKey] ~= true then
+                    -- 日期未知时可以投影实时完成态，但不得把它持久化到旧日期的完成锁存。
+                    if dateReady and questStatus == "COMPLETED" and completionKey ~= nil and state.completedMainlandKeys[completionKey] ~= true then
                         state.completedMainlandKeys[completionKey] = true
                         Bonds.State.completedMainlandKeys[completionKey] = true
                         completionDirty = true
@@ -841,7 +906,8 @@ function BA:Refresh(reason)
     self.snapshotDateKey, self.snapshotCount = state.dailyDateKey, capturedCount
     self.revision = self.revision + 1
     if (completionDirty or snapshotDirty) and type(Bonds.MarkStoreDirty) == "function" then
-        Bonds:MarkStoreDirty(150, completionDirty and "bond_daily_completion_or_snapshot" or "bond_daily_snapshot")
+        local marked, markError = Bonds:MarkStoreDirty(150, completionDirty and "bond_daily_completion_or_snapshot" or "bond_daily_snapshot")
+        self.lastSaveIntent = { accepted = marked == true, error = marked ~= true and tostring(markError or "mark_dirty_failed") or nil }
     end
     PublishFeatureUpdate(Bonds, self.revision, "bonds_refresh")
     return capturedCount > 0
@@ -900,23 +966,38 @@ function Bonds:UnsubscribeProgress()
     self.progressSubscribed = false
     return true
 end
-function Bonds:ScheduleLocationRefresh(reason)
+function Bonds:ScheduleLocationRefresh(reason, continuing)
     if self.enabled ~= true or (tonumber(self.consumerCount) or 0) <= 0 then return true end
-    reason = reason == "entered_world" and "entered_world" or "zone_changed"
-    -- 中文维护注释（2026-09-24，区域事件去抖/生命周期）：跨区过程中 Native resident board 可能先发
-    -- 区域事件、后完成板数据装载。使用共享 Scheduler 的单个同名 one-shot，连续事件只保留最后一次；
-    -- Consumer 释放时移除任务。绝不创建独立 OnUpdate/Tick，也不会在窗口隐藏/功能关闭后继续读取。
-    if S.Scheduler ~= nil and type(S.Scheduler.AddOneShot) == "function" then
-        local added = S.Scheduler:AddOneShot(BONDS_ZONE_REFRESH_TASK, 750, function()
-            if Bonds.enabled == true and (tonumber(Bonds.consumerCount) or 0) > 0 then return BA:Refresh(reason) end
-            return true
-        end, self, "P2", 1)
-        if added == true and type(S.Scheduler.SetTaskModule) == "function" then
-            S.Scheduler:SetTaskModule(BONDS_ZONE_REFRESH_TASK, self.Id, false)
-        end
-        return added == true
+    -- 维护（2026-09-30）：只在需求首开/显式刷新/地图生命周期边界启动有限恢复序列。
+    -- 一次 750ms 探测可能早于慢客户端加载；最多再做 1500/3000ms 两次，不创建永久轮询。
+    -- 新地图事件使旧 epoch 失效；退出需求或热重载后，迟到回调无权读取或保存新场景。
+    if continuing ~= true then
+        self.locationEpoch = (tonumber(self.locationEpoch) or 0) + 1
+        self.locationAttempt, self.locationReason = 0, tostring(reason or "zone_changed")
     end
-    return BA:Refresh(reason)
+    local attempt = (tonumber(self.locationAttempt) or 0) + 1
+    local delay = BONDS_LOCATION_DELAYS[attempt]
+    if delay == nil then self.locationRecoveryStatus = "exhausted"; return true end
+    self.locationAttempt = attempt
+    if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then
+        self.locationRecoveryStatus = "scheduler_unavailable"
+        return true -- 首读/手动刷新仍有效；不可在缺调度器时递归伪造等待。
+    end
+    local epoch, generation = self.locationEpoch, S.Generation
+    local added = S.Scheduler:AddOneShot(BONDS_ZONE_REFRESH_TASK, delay, function()
+        if ReplicatedSuite ~= S or S.Generation ~= generation or Bonds.locationEpoch ~= epoch
+            or Bonds.enabled ~= true or (tonumber(Bonds.consumerCount) or 0) <= 0 then return true end
+        BA:Refresh("location_retry")
+        if Bonds.locationEpoch ~= epoch then return true end
+        if BA.needsLocationRetry then return Bonds:ScheduleLocationRefresh(Bonds.locationReason, true) end
+        Bonds.locationRecoveryStatus = "complete"
+        return true
+    end, self, "P2", 1)
+    self.locationRecoveryStatus = added == true and "pending" or "schedule_failed"
+    if added == true and type(S.Scheduler.SetTaskModule) == "function" then
+        S.Scheduler:SetTaskModule(BONDS_ZONE_REFRESH_TASK, self.Id, false)
+    end
+    return added == true
 end
 function Bonds:SubscribeLocationEvents()
     if self.locationSubscribed == true then return true end
@@ -930,10 +1011,16 @@ function Bonds:SubscribeLocationEvents()
     -- Optional Native events are an enhancement, not a hard startup dependency. Manual refresh and Demand probe
     -- remain valid fallback paths if an older RU client cannot register one of them. Track whether any listener landed
     -- so release can deterministically clean the owner without introducing a second event Authority.
-    self.locationSubscribed = zoneOk == true or worldOk == true
+    -- 已有客户端加载结束事件；仍为 optional，旧客户端不支持时手动刷新和有限恢复可用。
+    local loadingOk = S.Events:SubscribeOptional("LEFT_LOADING", self, function()
+        return Bonds:ScheduleLocationRefresh("left_loading")
+    end)
+    self.locationSubscribed = zoneOk == true or worldOk == true or loadingOk == true
     return true
 end
 function Bonds:UnsubscribeLocationEvents()
+    self.locationEpoch = (tonumber(self.locationEpoch) or 0) + 1
+    self.locationRecoveryStatus = "cancelled"
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(BONDS_ZONE_REFRESH_TASK) end
     if self.locationSubscribed == true and S.Events ~= nil and type(S.Events.UnsubscribeOwner) == "function" then
         S.Events:UnsubscribeOwner(self)
@@ -959,6 +1046,7 @@ function Bonds:ReconcileDemand(_, before, after)
         self:SubscribeLocationEvents()
         -- Demand 0->1 在 QuestProgress 已完成一次同步刷新后再重算 Bonds，确保首次打开也使用最新 activeIndex。
         BA:Refresh("demand_start")
+        if BA.needsLocationRetry then self:ScheduleLocationRefresh("demand_start") end
     elseif beforeCount > 0 and afterCount <= 0 then
         self:UnsubscribeLocationEvents()
         self:UnsubscribeProgress()
@@ -976,7 +1064,15 @@ function Bonds:Enable() self.enabled = true; return true end
 function Bonds:Disable(reason) local ok, err = self.Demand:Clear(reason or "bonds_disable"); if ok ~= true then return false, err end; self.enabled = false; return true end
 function Bonds:AcquireConsumer(token) if not self.enabled then return false, "居民板功能已关闭" end return self.Demand:Acquire(token, {}, "bonds_consumer") end
 function Bonds:ReleaseConsumer(token) return self.Demand:Release(token, "bonds_consumer") end
-function Bonds:Refresh(reason) if not self.enabled or self.consumerCount <= 0 then return true end return BA:Refresh(reason or "feature_refresh") end
+function Bonds:Refresh(reason)
+    if not self.enabled or self.consumerCount <= 0 then return true end
+    reason = tostring(reason or "feature_refresh")
+    local result = BA:Refresh(reason)
+    if reason ~= "presentation" and reason ~= "quest_progress" and BA.needsLocationRetry then
+        self:ScheduleLocationRefresh(reason)
+    end
+    return result
+end
 -- Presentation must consume a detached Feature read model rather than reaching
 -- through to Bonds.Authority. Keep this facade explicit so the public Feature
 -- contract stays symmetric with Trade/Treasure/Fishing.
@@ -1002,7 +1098,30 @@ end
 -- board read counter) for the acceptance snapshot. Reads only live state.
 function Bonds:DescribeDailyCache()
     local snapshots = type(self.State.dailySnapshots) == "table" and self.State.dailySnapshots or {}
+    -- 维护（2026-09-30）：区分“未采集 / 已缓存但被合并筛选隐藏 / 等待落盘 / 写入失败”。
+    -- 只读已加载 State、Projection 和 Core 元数据；不 Load/Save/探测，也不解除任何 fence。
+    local coverage = {}
+    for _, key in ipairs({ "west", "east", "auroria" }) do
+        coverage[key] = { lines = BondSnapshotLineCount(snapshots[key]), visibleRows = 0 }
+    end
+    for _, row in ipairs(BA.rows or {}) do
+        if coverage[row.continentKey] then coverage[row.continentKey].visibleRows = coverage[row.continentKey].visibleRows + 1 end
+    end
+    local store = type(P.GetStore) == "function" and P:GetStore(self.storeId) or nil
+    local persistence = type(store) == "table" and {
+        loaded = store.loaded == true, loadStatus = store.loadStatus, dirty = store.dirty == true,
+        writeFenced = store.writeFenced == true, lastError = store.lastError or store.writeFenceReason,
+        failure = type(P.GetStoreFailureKind) == "function" and P:GetStoreFailureKind(store) or nil,
+        needsBarrierVerify = store.needsBarrierVerify == true, lastVerifyOk = store.lastVerifyOk,
+        dirtyRevision = store.dirtyRevision, lastSavedRevision = store.lastSavedRevision, lastSaveAt = store.lastSaveAt,
+    } or { loaded = false, loadStatus = "unavailable" }
     return {
+        patch = self.CrossContinentPatch, serverDateKey = BA.serverDateKey or "unknown",
+        coverage = coverage, persistence = persistence, lastSaveIntent = Copy(BA.lastSaveIntent),
+        recovery = { status = self.locationRecoveryStatus or "idle", attempt = tonumber(self.locationAttempt) or 0,
+            maxAttempts = #BONDS_LOCATION_DELAYS, reason = self.locationReason },
+        filters = { q20 = self.State.q20, q60 = self.State.q60, q100 = self.State.q100, auroria = self.State.auroria,
+            showCompleted = self.State.showCompleted, excludeSame = self.State.excludeSame, priority = self.State.priority },
         dayKey = tostring(self.State.dailyDateKey or "-"),
         westLoaded = snapshots.west ~= nil,
         eastLoaded = snapshots.east ~= nil,
@@ -1015,6 +1134,11 @@ function Bonds:DescribeDailyCache()
         -- ResidentBoard 原始文本，既能判断“没读/读空/板族未识别/保留旧缓存”，又控制诊断体积。
         lastBoardProbe = Copy(BA.lastBoardProbe),
     }
+end
+function Bonds:GetHealth()
+    return { patch = self.CrossContinentPatch, enabled = self.enabled == true,
+        consumerCount = tonumber(self.consumerCount) or 0, status = BA.status,
+        error = BA.error, dailyCache = self:DescribeDailyCache() }
 end
 function Bonds:GetSortMode() return Bonds.State.sortMode end
 function Bonds:SetSortMode(mode)

@@ -43,6 +43,7 @@ local P = {
     safetyTask = "v3_quest_progress_safety",
     refreshFailures = 0,
     ActiveQuestListContractVersion = 1,
+    ActiveQuestTitleAvailabilityContractVersion = 1,
     -- Activity consumers may personalize x/y only when detached per-objective facts are present.
     ActivityObjectiveFactsContractVersion = 1,
 }
@@ -594,6 +595,10 @@ function P:GetActiveQuestState(questId)
     if id == nil or id ~= math.floor(id) or id < 1 then return nil end
     id = math.floor(id)
     local index = type(self.activeIndex) == "table" and tonumber(self.activeIndex[id]) or nil
+    -- 中文维护注释（2026-09-30，daily-auction-title-recovery-1）：活动 ID 可能先于标题就绪。
+    -- 生成的“任务 #id”不是 Native 标题事实；显式投影可用性，让消费者在既有 refreshed 纪元
+    -- 中只补读缺失标题。保留原字符串 API 与缓存策略，不增加 Native 轮询或伪造进度变化。
+    local title = index ~= nil and self:QuestTitle(id, "居民做货任务 #" .. tostring(id)) or nil
     return {
         questId = id,
         active = index ~= nil,
@@ -601,7 +606,8 @@ function P:GetActiveQuestState(questId)
         state = self:QuestState(id, self.activeIndex),
         -- 中文维护注释：标题仍由 QuestProgressV3 经已允许的 X2Quest 能力读取并缓存；只有当前活动任务
         -- 才请求标题，批量检查未接任务不会产生额外 Native 调用。消费者拿到的是 detached string。
-        title = index ~= nil and self:QuestTitle(id, "居民做货任务 #" .. tostring(id)) or nil,
+        title = title,
+        titleAvailable = index ~= nil and type(self.questTitleCache[id]) == "string" and self.questTitleCache[id] ~= "",
     }
 end
 
@@ -623,10 +629,12 @@ function P:GetActiveQuestList()
         local id, index = tonumber(rawId), tonumber(rawIndex)
         if id ~= nil and index ~= nil then
             id, index = math.floor(id), math.floor(index)
+            local title = self:QuestTitle(id, "任务 " .. tostring(id))
             rows[#rows + 1] = {
                 questId = id, index = index, active = true,
                 state = self:QuestState(id, self.activeIndex),
-                title = self:QuestTitle(id, "任务 " .. tostring(id)),
+                title = title,
+                titleAvailable = type(self.questTitleCache[id]) == "string" and self.questTitleCache[id] ~= "",
             }
         end
     end

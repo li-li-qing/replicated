@@ -1,12 +1,14 @@
 # Replicated Suite — Docs 总入口
 
+> **2026-09-30 复核入口：**先读 `REFACTOR_REVIEW_2026-09-30.md`。本轮修复与待验项以该报告核对；长期施工合同仍是实际主规划，不要把旧 .329 开工提示当当前基线。
+
 > 本目录同时承担**项目背景/框架说明、长期重构执行计划、Phase 证据报告**。
 > 不再采用“只有一份文档”的旧约定。Workbuddy / DeepSeek 等本地 Agent 必须按下列优先级读取，禁止把历史报告当成当前施工计划。
 
 ## Agent 必读顺序与 Authority
 
 1. **`WORKBUDDY_START_HERE.md`** — Agent 启动入口、当前施工方式与硬性禁止项。
-2. **`Replicated_Suite_底层框架重构规划_v1_Workbuddy执行版.md`** — 当前重构的最高优先级施工合同、Work Package、STOP 条件、验收标准。
+2. **`Replicated_Suite_底层框架重构规划_v1.md`** — 当前重构的最高优先级施工合同、Work Package、STOP 条件、验收标准。
 3. **本 `README.md`** — 项目背景、运行时框架、长期 Authority 与既有工程约束。
 4. **`PHASE0_*_REPORT_*.md` / `TRADE_NATIVE_DEPENDENCY_FIX_*.md`** — 历史施工证据与回归结果，只能用于取证，不得覆盖当前执行版。
 5. 其它历史规划副本/兼容文件 — 仅供追溯。若与 Workbuddy 执行版冲突，以执行版为准。

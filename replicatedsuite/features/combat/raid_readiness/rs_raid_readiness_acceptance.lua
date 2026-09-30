@@ -16,6 +16,7 @@ local F = S.Features and S.Features.RaidReadiness or nil
 
 local function Fail(message) return false, tostring(message or "raid_readiness_acceptance_failed") end
 
+-- 维护（2026-09-30，refactor-live-gate-1）：显式接回只读运行时诊断；完整序列仍保留给离线验收。
 G:RegisterSequenceCase("v3_m16_14_raid_readiness_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     local meta = S.FeatureRegistry and S.FeatureRegistry:Get("combat_raid_readiness") or nil
@@ -85,4 +86,4 @@ G:RegisterSequenceCase("v3_m16_14_raid_readiness_contract", function()
     if F.scanning == true and F.rosterHeld ~= true then return Fail("scan_without_roster_lease") end
     if F.auraHeld == true and F.scanning ~= true then return Fail("aura_without_scan") end
     return true
-end)
+end, { runtime = true })

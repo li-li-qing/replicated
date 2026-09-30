@@ -20,6 +20,7 @@ S.Services = S.Services or {}
 local V = {
     version = 2,
     VisibilityContractVersion = 2,
+    InteractionVisibilityContractVersion = 1, -- 2026-09-30: stopped observer != native window closed.
     topic = "v3.auction_surface.updated",
     taskId = "v3_auction_surface_observer",
     started = false,
@@ -82,7 +83,8 @@ end
 local function ReadWidgetVisible(widget)
     if widget == nil or type(widget.IsVisible) ~= "function" then return false, false end
     local ok, visible = pcall(function() return widget:IsVisible() end)
-    if ok ~= true then return false, false end
+    -- 维护（auction-user-priority-1）：nil/数字/字符串不构成“已关闭”证据，未知形状保持 unknown。
+    if ok ~= true or type(visible) ~= "boolean" then return false, false end
     return true, visible == true
 end
 
@@ -92,7 +94,8 @@ end
 local function ReadContentChainVisible(content)
     local node, anyKnown = content, false
     for _ = 0, 8 do
-        if node == nil then break end
+        -- 维护（auction-user-priority-1）：UIParent 永远可见，不能把桌面本身当成拍卖窗口打开的证据。
+        if node == nil or node == rawget(_G, "UIParent") then break end
         local known, visible = ReadWidgetVisible(node)
         if known == true then
             anyKnown = true
@@ -136,6 +139,34 @@ local function ResolveContentRect(content, logicalWidth, logicalHeight)
         node = parent
     end
     return nil
+end
+
+-- 维护（2026-09-30，auction-user-priority-1）：后台名称搜索会替换原生拍卖结果，不能把
+-- 侧栏关闭后的 idle/stopped 缓存视为玩家没在用拍卖行。此入口只按需读取可见性，不启动观察任务、
+-- 不 Publish、不更新几何快照；显式 boolean 优先于几何，兼容四返回值时才读短父链。
+-- 可见性不可证实时返回 known=false，由搜索 Authority 保守暂停，而不是猜“已关闭”。
+function V:ReadVisibility()
+    local addon, contentId = rawget(_G, "ADDON"), rawget(_G, "UIC_AUCTION")
+    if addon == nil or contentId == nil or S.Api == nil or type(S.Api.IsCapabilityAllowed) ~= "function" then
+        return false, false, "auction_visibility_api_unavailable"
+    end
+    local ok, x, y, width, height, visible = pcall(function()
+        if S.Api:IsCapabilityAllowed("ADDON:GetContentMainScriptPosVis") ~= true
+            or type(addon.GetContentMainScriptPosVis) ~= "function" then error("auction_visibility_not_allowed") end
+        return addon:GetContentMainScriptPosVis(contentId)
+    end)
+    if ok == true and type(visible) == "boolean" then return true, visible, "main-script" end
+    local contentOk, content = pcall(ReadAuctionContent, addon, contentId)
+    local readOk, known, contentVisible = false, false, false
+    if contentOk == true and content ~= nil then
+        readOk, known, contentVisible = pcall(ReadContentChainVisible, content)
+    end
+    if readOk == true and known == true then return true, contentVisible == true, "content-vis" end
+    local logicalWidth, logicalHeight = LayoutBounds()
+    if ok == true and PlausibleRect(x, y, width, height, logicalWidth, logicalHeight) then
+        return true, true, "main-script-geometry"
+    end
+    return false, false, "auction_visibility_unknown"
 end
 
 function V:_Read()

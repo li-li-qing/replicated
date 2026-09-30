@@ -5,6 +5,8 @@ ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = (ROOT / "features/life/trade/rs_trade_feature.lua").read_text(encoding="utf-8")
 PAGE = (ROOT / "presentation/v3/pages/rs_v3_life_m16_pages.lua").read_text(encoding="utf-8")
 ACCEPTANCE = (ROOT / "presentation/v3/rs_v3_acceptance.lua").read_text(encoding="utf-8")
+# 维护（2026-09-30）：业务判定迁至 Feature acceptance；保留 live gate 接线断言，不删门禁。
+FEATURE_ACCEPTANCE = (ROOT / "features/life/trade/rs_trade_acceptance.lua").read_text(encoding="utf-8")
 FOUNDATION = (ROOT / "core/rs_foundation_gate.lua").read_text(encoding="utf-8")
 
 
@@ -57,6 +59,7 @@ require('autoRefreshState = self:GetAutoRefreshState()' in BUNDLE, "projection m
 require('自动刷新约 ' in PAGE and '自动刷新：待机' in PAGE, "UI must expose watchdog liveness without extra polling")
 require('AutoRefreshRuntimeContractVersion' in ACCEPTANCE and 'AutoRefreshWatchdogContractVersion' in ACCEPTANCE,
         "acceptance must reject mixed old/new auto-refresh runtime packages")
-require('AutoRefreshRuntimeContractVersion' in FOUNDATION and 'AutoRefreshWatchdogContractVersion' in FOUNDATION,
+require('AutoRefreshRuntimeContractVersion' in FEATURE_ACCEPTANCE and 'AutoRefreshWatchdogContractVersion' in FEATURE_ACCEPTANCE
+        and 'runtime = true' in FEATURE_ACCEPTANCE and 'self:RunRuntimeContracts(report)' in FOUNDATION,
         "foundation gate must reject mixed old/new auto-refresh runtime packages")
 print("PASS: trade auto-refresh independent runtime / watchdog contracts")

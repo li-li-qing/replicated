@@ -20,7 +20,7 @@ local F = S.Features and S.Features.Bonds or nil
 
 local function Fail(message) return false, tostring(message or "bonds_acceptance_failed") end
 
-G:RegisterSequenceCase("v3_m1_bonds", function()
+G:RegisterSequenceCase("v3_m1_bonds", function(runtimeOnly)
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     local meta = S.FeatureRegistry and S.FeatureRegistry:Get("life_bonds") or nil
     if meta == nil or tostring(meta.authority) ~= "v3.life.bonds" then return Fail("metadata_contract") end
@@ -62,6 +62,8 @@ G:RegisterSequenceCase("v3_m1_bonds", function()
         return Fail("presentation_command_contract")
     end
 
+    -- 维护（2026-09-30）：玩家诊断到此只读返回；下方租约/刷新/选择测试仅离线执行。
+    if runtimeOnly == true then return true end
     if S.FeatureRuntime:IsEnabled("life_bonds") ~= true then return true end
 
     local beforeConsumers = tonumber(F.consumerCount) or 0
@@ -124,4 +126,4 @@ G:RegisterSequenceCase("v3_m1_bonds", function()
         if F.progressConsumerHeld == true or F.progressSubscribed == true then return Fail("quest_progress_lifecycle_not_released") end
     end
     return true
-end)
+end, { runtime = true })

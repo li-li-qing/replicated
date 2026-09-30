@@ -21,6 +21,7 @@ local F = S.Features and S.Features.tools_craft or nil
 
 local function Fail(message) return false, tostring(message or "craft_acceptance_failed") end
 
+-- 维护（2026-09-30，refactor-live-gate-1）：显式接回只读运行时诊断；完整序列仍保留给离线验收。
 G:RegisterSequenceCase("v3_tools_craft_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     -- v3_craft_user_selection_contract 的 Feature 侧
@@ -30,4 +31,4 @@ G:RegisterSequenceCase("v3_tools_craft_contract", function()
     if (tonumber(F.CraftSidecarContractVersion) or 0) < 1 then return Fail("craft_sidecar_contract_version") end
     if type(F.Commands.SetAutoSidecar) ~= "function" then return Fail("craft_auto_sidecar_command") end
     return true
-end)
+end, { runtime = true })

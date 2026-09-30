@@ -31,6 +31,10 @@ S.Services = S.Services or {}
 local Q = {
     version = 3,
     EventAuthorityContractVersion = 1,
+    NativeUserPriorityContractVersion = 1,
+    ActivityTopic = "v3.price_quote.activity",
+    activityPatch = "auction-user-priority-1",
+    paused = false, pauseReason = nil, pauseStartedAt = nil, resumeAfter = nil,
     EventPayloadContractVersion = 1, -- 18.315: completion event carries itemType/itemGrade/status/reason for bounded projection sync.
     RequestIdentityDedupContractVersion = 1, -- 18.316: stable itemType+grade ladder is request identity; localized searchName is fallback metadata only.
     MaterialPriceAuthorityContractVersion = 1, -- 18.317: durable material price ownership moves to MaterialPriceServiceV3; this queue remains Native serialization Authority.
@@ -142,6 +146,52 @@ end
 local function PositiveInt(value)
     local n = tonumber(value); if n == nil or n ~= math.floor(n) or n < 1 then return nil end
     return math.floor(n)
+end
+
+-- 维护（2026-09-30，auction-user-priority-1）：暂停不属于报价终态，必须使用独立 topic。
+-- price_quote.completed 会驱动 Trade 的 RowJob 完成计数，禁止用它发送 paused/resumed。
+local PAUSE_REASONS = {
+    native_auction_visible = "拍卖行使用中，材料名称查询已暂停；关闭拍卖行后自动继续",
+    native_auction_visibility_unknown = "暂时无法确认拍卖行已关闭，材料名称查询等待中",
+    auction_user_search_pending = "正在等待手动拍卖搜索完成，材料名称查询已暂停",
+    auction_response_drain = "正在隔离旧拍卖查询回包，材料名称查询稍后继续",
+    auction_query_busy = "正在等待共享拍卖搜索通道，材料名称查询已暂停",
+}
+function Q:GetActivitySnapshot()
+    return { patch = self.activityPatch, paused = self.paused == true, reason = self.pauseReason,
+        pausedAt = self.pauseStartedAt, resumeAfter = self.resumeAfter,
+        text = self.paused == true and PAUSE_REASONS[self.pauseReason] or nil }
+end
+function Q:_SetPaused(paused, reason)
+    paused = paused == true
+    reason = paused and tostring(reason or "native_auction_visibility_unknown") or nil
+    if self.paused == paused and self.pauseReason == reason then return false end
+    if paused and not self.paused then self.pauseStartedAt = NowMs() end
+    if not paused then self.pauseStartedAt = nil end
+    self.paused, self.pauseReason = paused, reason
+    if S.Events ~= nil and type(S.Events.Publish) == "function" then
+        S.Events:Publish(self.ActivityTopic, self:GetActivitySnapshot())
+    end
+    return true
+end
+local function PauseFallback(request, reason)
+    if request.fallbackState == "searching" then
+        local query = S.Services and S.Services.AuctionQueryV3 or nil
+        if type(query) == "table" and type(query.YieldBackgroundSearch) == "function" then query:YieldBackgroundSearch(reason) end
+        request.fallbackState = "queued"
+    end
+    -- 最后一个 watcher 可能在“在飞但尚未暂停”的时刻已取消。转为本地等待后必须释放它，
+    -- 不能关窗又重发无人需要的请求；原 Native 隔离占位仍由 AuctionQuery 的有限 timeout 回收。
+    if type(request.watchers) == "table" and next(request.watchers) == nil then
+        Q.pending = nil
+        Q.quoteStateByItemType[request.itemType] = { status = "cancelled", itemGrade = request.itemGrade, at = NowMs() }
+        if #Q.queue == 0 then Q:_StopLane() else Q:_SetPaused(false) end
+        return
+    end
+    -- 只冻结当前未完成材料；不改 watcher、报价缓存、负缓存、请求身份和完成计数。
+    request.fallbackDeadlineAt = nil
+    Q.resumeAfter = nil
+    Q:_SetPaused(true, reason)
 end
 
 -- Normalize a native GetLowestPrice return into a bounded, honest quote. The RU
@@ -322,7 +372,7 @@ local function BeginSearchFallback(pending)
     -- 维护（2026-09-24，quote-fallback-identity-match-1）：旧实现 resultLimit=1 后只读 rows[1]。
     -- SearchAuctionArticle 是名称搜索，首条并不保证就是目标材料；因此“拍卖行有货”也会被错误判成身份不匹配。
     -- 这里仍只发 ONE 次服务器搜索，但有界读取最多 20 条，再按 stable itemType 优先、精确名称次之匹配。
-    local ok, err = query:Search("price_quote_fallback", keyword, { resultLimit = Q.fallbackSearchLimit })
+    local ok, err = query:Search("price_quote_fallback", keyword, { resultLimit = Q.fallbackSearchLimit, background = true })
     if ok ~= true then pending.fallbackState = "queued" end
     return ok == true, err
 end
@@ -522,6 +572,10 @@ function Q:_CheckFallback()
     end
     local snap = query:GetSnapshot("price_quote_fallback")
     local status = type(snap) == "table" and tostring(snap.status or "") or ""
+    if status == "interrupted" then
+        PauseFallback(pending, "auction_response_drain")
+        return
+    end
     if status == "waiting" then
         -- AuctionQueryV3 has its own 8s timeout. Keep a slightly wider outer wall
         -- clock so scheduler budget jitter cannot leave the quote pending forever.
@@ -631,9 +685,25 @@ local function Drain()
     -- 必须保持 now 为 Drain 每次调用的局部快照；禁止改成模块缓存或 Tick 外共享时间，避免并发状态漂移。
     local now = NowMs()
     if Q.lastNativeCallAt ~= nil and (now - Q.lastNativeCallAt) < Q.intervalMs then return end
+    if Q.resumeAfter ~= nil and now < Q.resumeAfter then return end
 
     if Q.pending ~= nil then
         local pending = Q.pending
+        if pending.fallbackState == "queued" or pending.fallbackState == "searching" then
+            local query = S.Services and S.Services.AuctionQueryV3 or nil
+            local allowed, reason = false, "native_auction_visibility_unknown"
+            if type(query) == "table" and type(query.CanBackgroundSearch) == "function" then
+                allowed, reason = query:CanBackgroundSearch()
+            end
+            if allowed ~= true then PauseFallback(pending, reason); return end
+            if Q.paused == true then
+                -- 玩家占用时间不计入 12s admission 超时；关窗/回包排空后至少再经过原有节流间隔。
+                pending.fallbackDeadlineAt = now + 12000
+                Q.resumeAfter = now + Q.intervalMs
+                Q:_SetPaused(false)
+                return
+            end
+        end
         local grades = pending.grades or {}
         local grade = grades[tonumber(pending.gradeIndex) or 1] or pending.itemGrade
         if pending.marketPriceState == "ask_queued" then
@@ -686,8 +756,8 @@ local function Drain()
             Q.lastNativeCallAt = NowMs()
             local ok, err = BeginSearchFallback(pending)
             if ok ~= true then
-                if err == "auction_query_busy" then
-                    pending.fallbackState = "queued"
+                if PAUSE_REASONS[err] ~= nil then
+                    PauseFallback(pending, err)
                     return
                 end
                 Q:_FailPending("unavailable", "名称搜索启动失败：" .. tostring(err or "unknown"))
@@ -746,9 +816,10 @@ function Q:_StartLane()
 end
 
 function Q:_StopLane()
-    if Q.running ~= true then return end
-    if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(Q.taskName) end
+    if Q.running == true and S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(Q.taskName) end
     Q.running = false
+    Q.resumeAfter = nil
+    Q:_SetPaused(false) -- 最后一个需求取消/完成后，不遗留暂停提示或额外观察任务。
 end
 
 function Q:_Enqueue(requester, itemType, itemGrade, callback, grades, searchName, requestKey, priority)
@@ -1188,6 +1259,7 @@ function Q:Describe()
     end
     return {
         version = self.version, patch=self.budgetPatch, running = self.running == true,
+        activity = self:GetActivitySnapshot(),
         pending = self.pending ~= nil, queueLength = #self.queue,
         maxQueue = self.maxQueue, intervalMs = self.intervalMs,
         pricedItemTypes = priced,

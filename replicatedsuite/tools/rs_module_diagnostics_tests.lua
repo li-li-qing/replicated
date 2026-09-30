@@ -122,5 +122,17 @@ Test('real feature registry declares exact aliases for legacy module diagnostic 
     end
 end)
 
+Test('module report samples copy-controller evidence without creating an editor',function()
+    local S=Boot();local reads=0
+    S.UIV3={ModuleDiagnosticsWindowV3={moduleId='feature_a',Describe=function()reads=reads+1;return {copyBeforeCapture={patch='diagnostic-copy-selection-1',focused=true},copy={active=false}}end}}
+    local snap=assert(S.ModuleDiagnosticsHub:Capture('feature_a',900))
+    assert(snap.report:find('[DIAGNOSTIC_COPY]',1,true) and snap.report:find('diagnostic-copy-selection-1',1,true),'copy-controller evidence missing')
+    assert(reads==1);S.ModuleDiagnosticsHub:GetPage(snap,1);assert(reads==1,'paging recaptured focus')
+end)
+Test('copy diagnostic sampling failure does not destroy remaining report',function()
+    local S=Boot();S.UIV3={ModuleDiagnosticsWindowV3={moduleId='feature_a',Describe=function()error('copy_probe_failure')end}}
+    local text=assert(S.ModuleDiagnosticsHub:BuildReport('feature_a'))
+    assert(text:find('copy_probe_failure',1,true) and text:find('RS-MODULE-DIAG-END',1,true),'failure not isolated')
+end)
 print('MODULE DIAGNOSTICS RESULT '..passed..' passed / '..failed..' failed ('.._VERSION..')')
 if failed>0 then error('module diagnostics failures: '..failed)end

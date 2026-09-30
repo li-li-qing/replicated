@@ -19,8 +19,9 @@ local F = S.Features and S.Features.tools_reinforce_analysis or nil
 
 local function Fail(message) return false, tostring(message or "reinforce_analysis_truth_failed") end
 
+-- 维护（2026-09-30，refactor-live-gate-1）：显式接回只读运行时诊断；完整序列仍保留给离线验收。
 G:RegisterSequenceCase("v3_tools_reinforce_analysis_runtime_block_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if F.SlotProbeRuntimeBlocked ~= true then return Fail("slot_probe_runtime_block_missing") end
     return true
-end)
+end, { runtime = true })

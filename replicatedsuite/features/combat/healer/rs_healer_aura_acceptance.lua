@@ -18,6 +18,7 @@ if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return 
 
 local function Fail(message) return false, tostring(message or "healer_runtime_acceptance_failed") end
 
+-- 维护（2026-09-30，refactor-live-gate-1）：显式接回只读运行时诊断；完整序列仍保留给离线验收。
 G:RegisterSequenceCase("v3_m16_18_healer_visual_consumers_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if type(B) ~= "table" then return Fail("aura_bridge_not_registered") end
@@ -157,4 +158,4 @@ G:RegisterSequenceCase("v3_m16_18_healer_visual_consumers_contract", function()
         end
     end
     return true
-end)
+end, { runtime = true })

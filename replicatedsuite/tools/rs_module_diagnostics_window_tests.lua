@@ -65,6 +65,29 @@ local function Boot(options)
         function box:SetVisible()return true end
         calls.copy=box;return box
     end
+    if options.realCopyBox then
+        -- Production CopyBox + Window, only native edit object is a model.
+        -- The existing global report-delivery regression has this same native
+        -- focus-clears-buffer boundary; module diagnostics must respect it too.
+        GetFocusedWidgetId=function()return calls.focusId end
+        S.UI.CreateMultiEditBox=function(_,parent,id)
+            local edit={text='',events={},rsNativePhysicalId='native_'..id,rsNativeGeneration=1}
+            function edit:SetText(v)self.text=v;self.selected=false;calls.setText=calls.setText+1 end
+            function edit:GetText()return self.text end
+            function edit:SetReadOnly()end
+            function edit:SetCursorOffset()self.selected=false end
+            function edit:EnableKeyboard(v)self.keyboard=v;return true end
+            function edit:SetFocus()
+                calls.focusId=self.rsNativePhysicalId;self.text='';self.selected=false
+                if options.rejectFocus then return false end
+                return true
+            end
+            function edit:ClearFocus()calls.focusId=nil end
+            calls.edit=edit;return edit
+        end
+        S.UI.SafeHandler=function(_,edit,event,fn)edit.events[event]=fn;return true end
+        dofile('ui/framework/rs_ui_diagnostic_copy_box.lua')
+    end
     dofile('presentation/v3/widgets/rs_v3_module_diagnostics_window.lua')
     return S,S.UIV3.ModuleDiagnosticsWindowV3,calls
 end
@@ -134,5 +157,41 @@ Test('copy verification failure keeps immutable pagination navigable',function()
     assert(W.pageIndex==2 and W.copyBox.text=='feature_a:PAGE2')
 end)
 
+Test('capture retains copy state before Generate deactivates keyboard',function()
+    local S,W,c=Boot();W:Open('feature_a');W:Generate();c.copy.active=true
+    c.copy.GetDiagnostics=function(self)return {active=self.active,patch='diagnostic-copy-selection-1'}end
+    assert(W:Generate());local d=W:Describe()
+    assert(d.copyBeforeCapture and d.copyBeforeCapture.active==true,'pre-capture copy state was discarded')
+    local before=d.copyBeforeCapture;assert(W:ShowPage(2));assert(W:Describe().copyBeforeCapture==before,'page changed frozen pre-capture evidence')
+end)
+Test('module switch drops previous module copy evidence',function()
+    local S,W,c=Boot();W:Open('feature_a');W.copyBeforeCapture={active=true}
+    assert(W:Open('feature_b'));assert(W:Describe().copyBeforeCapture==nil and W.copyBeforeCapture==nil)
+end)
+Test('activation failure does not pretend copy-ready or lose report navigation',function()
+    local S,W,c=Boot();W:Open('feature_a');c.copy.Activate=function()return false,'focus_rejected' end
+    assert(W:Generate());assert(W.snapshot and W.copyPageValid==true,'verified text should remain pageable')
+    assert(W:Describe().copyActivationError=='focus_rejected','activation rejection swallowed')
+    assert(c.surface.status:find('焦点',1,true),'footer must explain failure rather than say copy-ready')
+    assert(W:ShowPage(2) and c.capture==1)
+end)
+Test('real copy box commits text after focus promotion not before it',function()
+    local S,W,c=Boot({realCopyBox=true});assert(W:Open('feature_a'));assert(W:Generate())
+    assert(c.edit.text=='feature_a:PAGE1','focus cleared the already-verified report buffer')
+    assert(W.copyPageValid==true and W.copyBox:GetDiagnostics().actualBytes==#c.edit.text)
+    c.edit.selected=true;c.edit.events.OnClick()
+    assert(c.edit.selected and c.edit.text=='feature_a:PAGE1','repeat click destroyed verified copy selection')
+end)
+Test('real next-page focus promotion cannot erase the frozen page',function()
+    local S,W,c=Boot({realCopyBox=true});assert(W:Open('feature_a'));assert(W:Generate())
+    c.focusId='next_button';assert(W:ShowPage(2))
+    assert(c.edit.text=='feature_a:PAGE2' and c.capture==1,'page focus erased data or caused recapture')
+end)
+Test('rejected focus still publishes complete text without false activation success',function()
+    local S,W,c=Boot({realCopyBox=true,rejectFocus=true});assert(W:Open('feature_a'));assert(W:Generate())
+    assert(c.edit.text=='feature_a:PAGE1','failed focus cleared the page after verification')
+    assert(W.copyPageValid==true and W.copyActivationError~=nil)
+    assert(c.surface.status:find('焦点激活失败',1,true),'focus failure was hidden')
+end)
 print('MODULE DIAGNOSTICS WINDOW RESULT '..passed..' passed / '..failed..' failed ('.._VERSION..')')
 if failed>0 then error('module diagnostics window failures: '..failed)end

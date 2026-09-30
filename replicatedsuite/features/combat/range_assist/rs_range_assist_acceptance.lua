@@ -19,6 +19,7 @@ local F = S.Features and S.Features.combat_range_assist or nil
 
 local function Fail(message) return false, tostring(message or "range_assist_acceptance_failed") end
 
+-- 维护（2026-09-30，refactor-live-gate-1）：显式接回只读运行时诊断；完整序列仍保留给离线验收。
 G:RegisterSequenceCase("v3_combat_range_assist_visual_guide_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if (tonumber(F.VisualGuideContractVersion) or 0) < 9 then return Fail("visual_guide_contract_version") end
@@ -27,4 +28,4 @@ G:RegisterSequenceCase("v3_combat_range_assist_visual_guide_contract", function(
     if (tonumber(F.AnchorCalibrationContractVersion) or 0) < 2 then return Fail("anchor_calibration_contract_version") end
     if (tonumber(F.MetricDistanceContractVersion) or 0) < 1 then return Fail("metric_distance_contract_version") end
     return true
-end)
+end, { runtime = true })

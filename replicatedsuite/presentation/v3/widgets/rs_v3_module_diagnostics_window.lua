@@ -90,6 +90,7 @@ end
 function W:_ResetSnapshot(reason)
     if self.copyBox ~= nil and type(self.copyBox.Deactivate) == "function" then self.copyBox:Deactivate(reason or "snapshot_reset") end
     self.snapshot, self.pageIndex, self.pendingSnapshot, self.copyPageValid = nil, 0, nil, nil
+    self.copyBeforeCapture, self.copyActivationError = nil, nil
     if self.copyBox ~= nil and type(self.copyBox.Clear) == "function" then self.copyBox:Clear(reason or "snapshot_reset") end
     self:_UpdateNavigation()
     if self.surface ~= nil and type(self.surface.SetStatus) == "function" then
@@ -374,6 +375,17 @@ function W:_PresentSnapshot(snapshot, index, autoDepth)
     self.copyPageValid = nil
     self:_UpdateNavigation()
 
+    -- 修复（2026-09-30，diagnostic-copy-selection-1）：与全局报告已有交付顺序一致，
+    -- 先激活焦点、再写入并验证正文。原先 SetText/GetText 成功后又 SetFocus，Native
+    -- 可能重置缓冲/选区，使“回读一致”失效。焦点失败仍继续交付正文并明确提示，不重采集。
+    self.copyActivationError = nil
+    if type(self.copyBox.Activate) == "function" then
+        local activated, result, detail = pcall(self.copyBox.Activate, self.copyBox, "page_ready")
+        if not activated or result ~= true then
+            self.copyActivationError = tostring(activated and (detail or "activation_rejected") or result):sub(1, 160)
+        end
+    else self.copyActivationError = "activation_unavailable" end
+
     local accepted, wrote, writeErr = pcall(self.copyBox.SetPageText, self.copyBox, text, "page:" .. tostring(index))
     if not accepted or wrote ~= true then
         self.copyPageValid = false
@@ -383,20 +395,27 @@ function W:_PresentSnapshot(snapshot, index, autoDepth)
     end
     self.copyPageValid = true
     self:_UpdateNavigation()
-    -- 用户刚点击“生成/翻页/分页”，这是显式复制动作边界；让 RU 编辑框立即取得键盘焦点，
-    -- 避免还要先点击一次文本区。失败只影响便利性，不把已回读一致的报告判成失败。
-    if type(self.copyBox.Activate) == "function" then pcall(self.copyBox.Activate, self.copyBox, "page_ready") end
     if self.surface and type(self.surface.SetStatus) == "function" then
         local notice = self.autoRepageNotice
         self.autoRepageNotice = nil
+        -- 回读一致只证明缓冲完整，不证明焦点/系统剪贴板成功；不吞掉 Activate 的 false。
+        local copyHint = self.copyActivationError and " · 文本完整，但焦点激活失败；请点击文本框重试，翻页仍可用。"
+            or " · 本页回读一致；点击文本框 Ctrl+A / Ctrl+C，翻页不重新采集。"
         self.surface:SetStatus((notice and (notice .. " ") or "") .. "报告 #" .. tostring(snapshot.id or "?") .. " · " .. tostring(index) .. "/" .. tostring(snapshot.parts)
-            .. " 页 · 本页回读一致；点击文本框 Ctrl+A / Ctrl+C，翻页不重新采集。", "accent")
+            .. " 页" .. copyHint, self.copyActivationError and "yellow" or "accent")
     end
     return true
 end
 
 function W:Generate()
     if self.moduleId == nil or self.copyBox == nil then return false, "尚未选择模块" end
+    -- 修复（2026-09-30，diagnostic-copy-selection-1）：先保留用户复制失败后的只读输入状态，
+    -- 再撤权采集。否则报告永远只能看到 Generate 主动制造的 inactive，无法定位原失焦。
+    -- 翻页不更新此证据；不读取报告正文/系统剪贴板，也不引入轮询或普通输入生命周期。
+    if type(self.copyBox.GetDiagnostics) == "function" then
+        local ok, value = pcall(self.copyBox.GetDiagnostics, self.copyBox)
+        self.copyBeforeCapture = ok and value or { error = tostring(value):sub(1, 160) }
+    else self.copyBeforeCapture = { available = false } end
     self.copyBox:Deactivate("new_capture")
     local capacity = math.max(MIN_PAGE_CAPACITY, math.floor(tonumber(self.preferredPageCapacity) or NORMAL_PAGE_CAPACITY))
     local ok, snapshot, err = pcall(Hub.Capture, Hub, self.moduleId, capacity)
@@ -478,6 +497,7 @@ function W:Describe()
     return { version = self.version, contractVersion = self.contractVersion, created = self.created == true,
         visible = self.visible == true, moduleId = self.moduleId, pageIndex = tonumber(self.pageIndex) or 0,
         parts = self.snapshot and tonumber(self.snapshot.parts) or 0,
+        copyBeforeCapture = self.copyBeforeCapture, copyActivationError = self.copyActivationError,
         auxPersistenceDegraded = self.auxPersistenceDegraded == true,
         preferredPageCapacity = tonumber(self.preferredPageCapacity) or NORMAL_PAGE_CAPACITY,
         autoRepageCount = tonumber(self.autoRepageCount) or 0, lastAutoRepageFrom = tonumber(self.lastAutoRepageFrom) or 0,

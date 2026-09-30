@@ -178,3 +178,14 @@ function AuctionFavorites:RemoveFavorite(index) return self.Commands:RemoveFavor
 function AuctionFavorites:HasConsumer(token) return self.Demand ~= nil and type(self.Demand.Has) == "function" and self.Demand:Has(token) == true end
 
 AuctionFavorites.AuctionQueryContractVersion = 1
+
+-- 中文维护注释（2026-09-30，daily-auction-title-recovery-1）：模块右上角诊断需能解释
+-- “两个任务只识别一个”。只收集 Daily 服务当前快照，不读 Native、不刷新、不创建窗口，
+-- 不依赖服务已取得 Consumer；全局报告与模块报告使用同一个诊断读模型。
+if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.RegisterProvider) == "function" then
+    S.ModuleDiagnosticsHub:RegisterProvider(AuctionFavorites.Id, "daily_materials", function()
+        local daily = S.Services and S.Services.DailyAuctionMaterialsV3 or nil
+        if type(daily) == "table" and type(daily.GetDiagnosticsSnapshot) == "function" then return daily:GetDiagnosticsSnapshot() end
+        return { status="unavailable", reason="daily_service_unavailable" }
+    end, 30)
+end

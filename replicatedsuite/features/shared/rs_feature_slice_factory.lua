@@ -147,8 +147,11 @@ function F.NewFeature(id, spec)
         -- 中文维护注释：apply 与 get 必须使用同一字段契约。显式 nullable 字段在存档缺失时
         -- 恢复 nil，而不是保留本会话旧选择；非 nil 默认值继续按原默认恢复。
         for key in pairs(feature._persistentKeys) do
-            local default = type(spec.default) == "table" and spec.default[key] or nil
-            state[key] = value[key] == nil and F.Copy(default) or F.Copy(value[key])
+            -- 维护（2026-09-30）：and/or 不能模拟含 false 的三元选择；缺字段应恢复
+            -- false 默认，显式 false/0/空串也必须保留，nullable 缺省仍清为 nil。
+            local saved = value[key]
+            if saved == nil and type(spec.default) == "table" then saved = spec.default[key] end
+            state[key] = F.Copy(saved)
         end
     end)
     feature.ApiDependencies = spec.apiDependencies or {}

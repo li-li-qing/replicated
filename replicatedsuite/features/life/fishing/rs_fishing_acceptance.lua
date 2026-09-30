@@ -22,6 +22,7 @@ local F = S.Features and S.Features.Fishing or nil
 
 local function Fail(message) return false, tostring(message or "fishing_observation_failed") end
 
+-- 维护（2026-09-30，refactor-live-gate-1）：显式接回只读运行时诊断；完整序列仍保留给离线验收。
 G:RegisterSequenceCase("v3_life_fishing_observation_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if (tonumber(F.ObservationContractVersion) or 0) < 1 then return Fail("observation_contract_version") end
@@ -32,7 +33,7 @@ G:RegisterSequenceCase("v3_life_fishing_observation_contract", function()
         return Fail("demand_lifecycle_contract")
     end
     return true
-end)
+end, { runtime = true })
 
 -- Phase 3 Batch F（2026-09-29，core-feature-decoupling-1）：Auto-R 事务契约。
 -- 原先由 core/rs_foundation_gate.lua 的 v3_feature_truth_contract 硬编码点名 Fishing 检查；
@@ -49,4 +50,4 @@ G:RegisterSequenceCase("v3_life_fishing_auto_r_transaction_contract", function()
     if type(hotkey) ~= "table" then return Fail("fishing_hotkey_service_missing") end
     if (tonumber(hotkey.TransactionContractVersion) or 0) < 3 then return Fail("hotkey_transaction_contract_version") end
     return true
-end)
+end, { runtime = true })

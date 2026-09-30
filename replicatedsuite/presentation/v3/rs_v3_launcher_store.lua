@@ -134,6 +134,10 @@ function V3:ApplyLauncherPlacement()
     if S.Layout and type(S.Layout.RegisterFloating)=="function" and S.RecoveryEntry then
         S.Layout:RegisterFloating("v3_launcher",S.RecoveryEntry,{
             ensureNow=false,onlyWhenVisible=true,
+            -- 维护（ui-position-reload-1）：R 入口复用全局有界恢复，但绝不接管原生拖动。
+            positionOwner="v3:launcher",
+            isPositionInteracting=function()return S.RecoveryEntry.rsMoving==true end,
+            getPlacementDiagnostics=function()return V3.LauncherPlacementInfo end,
             onMetricsChanged=function()return ApplyLauncherRect(V3.LauncherState,"resolution_migration",false)end,
         })
     end

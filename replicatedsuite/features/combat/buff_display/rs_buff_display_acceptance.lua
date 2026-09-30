@@ -28,7 +28,8 @@ if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return 
 -- 断言兜底；Phase 3 正在删掉那处硬编码，所以这里必须**无条件注册** case，并在实现缺失时明确失败。
 local F = S.Features and S.Features.BuffDisplay or nil
 
-G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
+G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(runtimeOnly)
+    if type(F) ~= "table" then return false, "implementation_not_registered" end
     local meta = S.FeatureRegistry and S.FeatureRegistry:Get("combat_buff_display") or nil
     if meta == nil or tostring(meta.status) ~= "migrated_m16_18"
         or tostring(meta.lifecycle) ~= "demand_scoped"
@@ -74,30 +75,33 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     -- 中文维护注释（非破坏性 schema4→5 验收）：构造一个“不含 targetLayout”的旧单 HUD
     -- Domain，要求 historical hook 返回仍不含新字段的旧 canonical；随后正式 migrate 必须补出
     -- targetLayout。这里只验证纯函数边界，不 Apply、不保存、不取得 Consumer。
-    local legacyProbeSettings = type(F.GetDefaultSettingsSnapshot) == "function" and F:GetDefaultSettingsSnapshot() or nil
-    if type(legacyProbeSettings) ~= "table" then return false, "schema5_migration_probe_defaults_missing" end
-    legacyProbeSettings = S.Utils.DeepCopy(legacyProbeSettings)
-    legacyProbeSettings.targetLayout = nil
-    legacyProbeSettings.plate = type(legacyProbeSettings.plate) == "table" and legacyProbeSettings.plate or {}
-    legacyProbeSettings.plate.y = nil -- 旧 schema4 对“plate table 存在但 y 缺失”的 fallback 是 0；用于防止只删 targetLayout 的伪恢复。
-    local legacyProbe = { settings = legacyProbeSettings, widgetVisible = false }
-    local previousHistoricalProbe = store.lastHistoricalRecoveryProbe
-    local historicalProbe, recoveredProbe = store.rebuildCanonicalForIntegrity(legacyProbe, "ACCEPTANCE", nil, {
-        __rsmeta = { store = "v3.buff_display", owner = "v3.buff_display", framework = 3, schema = 4, transportVersion = 1 },
-    })
-    -- 中文维护注释：Acceptance 不得污染实机恢复诊断。hook 为了真实故障会写 runtime-only
-    -- probe，因此合成验收完成后必须原样恢复旧值，保证“恢复探针”只反映真实 LoadStore。
-    store.lastHistoricalRecoveryProbe = previousHistoricalProbe
-    if type(historicalProbe) ~= "table" or type(historicalProbe.settings) ~= "table"
-        or historicalProbe.settings.targetLayout ~= nil or tonumber(historicalProbe.settings.plate and historicalProbe.settings.plate.y) ~= 0
-        or type(recoveredProbe) ~= "table" then return false, "schema4_historical_canonical_rebuild" end
-    local migratedProbe = store.migrate(recoveredProbe, 4, 8)
-    if type(migratedProbe) ~= "table" or type(migratedProbe.settings) ~= "table"
-        or type(migratedProbe.settings.targetLayout) ~= "table"
-        or type(migratedProbe.settings.targetLayout.components) ~= "table"
-        or type(migratedProbe.settings.tracked) ~= "table"
-        or type(migratedProbe.settings.tracked.player) ~= "table"
-        or type(migratedProbe.settings.tracked.target) ~= "table" then return false, "schema4_to_8_scoped_migration" end
+    -- 维护（2026-09-30）：历史恢复 hook 会写探针，合成迁移不属于玩家只读诊断。
+    if runtimeOnly ~= true then
+        local legacyProbeSettings = type(F.GetDefaultSettingsSnapshot) == "function" and F:GetDefaultSettingsSnapshot() or nil
+        if type(legacyProbeSettings) ~= "table" then return false, "schema5_migration_probe_defaults_missing" end
+        legacyProbeSettings = S.Utils.DeepCopy(legacyProbeSettings)
+        legacyProbeSettings.targetLayout = nil
+        legacyProbeSettings.plate = type(legacyProbeSettings.plate) == "table" and legacyProbeSettings.plate or {}
+        legacyProbeSettings.plate.y = nil -- 旧 schema4 对“plate table 存在但 y 缺失”的 fallback 是 0；用于防止只删 targetLayout 的伪恢复。
+        local legacyProbe = { settings = legacyProbeSettings, widgetVisible = false }
+        local previousHistoricalProbe = store.lastHistoricalRecoveryProbe
+        local historicalProbe, recoveredProbe = store.rebuildCanonicalForIntegrity(legacyProbe, "ACCEPTANCE", nil, {
+            __rsmeta = { store = "v3.buff_display", owner = "v3.buff_display", framework = 3, schema = 4, transportVersion = 1 },
+        })
+        -- 中文维护注释：Acceptance 不得污染实机恢复诊断。hook 为了真实故障会写 runtime-only
+        -- probe，因此合成验收完成后必须原样恢复旧值，保证“恢复探针”只反映真实 LoadStore。
+        store.lastHistoricalRecoveryProbe = previousHistoricalProbe
+        if type(historicalProbe) ~= "table" or type(historicalProbe.settings) ~= "table"
+            or historicalProbe.settings.targetLayout ~= nil or tonumber(historicalProbe.settings.plate and historicalProbe.settings.plate.y) ~= 0
+            or type(recoveredProbe) ~= "table" then return false, "schema4_historical_canonical_rebuild" end
+        local migratedProbe = store.migrate(recoveredProbe, 4, 8)
+        if type(migratedProbe) ~= "table" or type(migratedProbe.settings) ~= "table"
+            or type(migratedProbe.settings.targetLayout) ~= "table"
+            or type(migratedProbe.settings.targetLayout.components) ~= "table"
+            or type(migratedProbe.settings.tracked) ~= "table"
+            or type(migratedProbe.settings.tracked.player) ~= "table"
+            or type(migratedProbe.settings.tracked.target) ~= "table" then return false, "schema4_to_8_scoped_migration" end
+    end
     -- Shared classification service (schema 4+ Authority; schema5 only adds dual-HUD persistence).
     local classification = S.Services and S.Services.StatusClassificationV3 or nil
     if type(classification) ~= "table" or (tonumber(classification.version) or 0) < 2
@@ -184,8 +188,22 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or (tonumber(F.Schema8TrackingScopeMigrationContractVersion) or 0)<1
         or (tonumber(F.ManagementProjectionContractVersion) or 0)<2 or F.TransferFormatVersion~=3
         or type(F.GetManagementProjection)~="function" or type(F.CaptureManagementFreeze)~="function"
-        or type(F.Commands.ImportBuiltinPack)~="function" or type(F.Commands.PreviewImport)~="function"
-        or type(catalog)~="table" or catalog.version~=1 then return false,"schema8_tracking_modules_missing" end
+        or type(F.Commands.ImportBuiltinPack)~="function" or type(F.Commands.PreviewImport)~="function" then
+        return false,"schema8_tracking_modules_missing"
+    end
+    -- 维护（2026-09-30，live-contract-state-1）：Catalog.version 是内置条目的增量导入
+    -- 水位，不是 Store schema 或交换格式。目录已升为 v2（853 introducedVersion=2），
+    -- 写死 ==1 会误报完整安装。允许兼容的正整数数据修订，并验证消费者依赖的索引；
+    -- 不降目录版本、不重置 importedPacks、不改 schema8/transfer v3 的精确门禁。
+    if type(catalog) ~= "table" then return false, "schema8_tracking_catalog_missing" end
+    local catalogVersion = catalog.version
+    if type(catalogVersion) ~= "number" or catalogVersion ~= catalogVersion
+        or catalogVersion < 1 or catalogVersion == math.huge or catalogVersion ~= math.floor(catalogVersion) then
+        return false, "schema8_tracking_catalog_version_invalid:" .. tostring(catalogVersion)
+    end
+    for _, key in ipairs({ "ByEffectId", "ByKey", "Packs", "PackOrder" }) do
+        if type(catalog[key]) ~= "table" then return false, "schema8_tracking_catalog_index_missing:" .. key end
+    end
     -- Head renderer gate contract: tracked-independent start (HasRenderableComponents
     -- gate) + GetDiagnostics triage surface + anchorFailure trail on hidden scopes.
     local headMarkers = S.UIV3 and S.UIV3.BuffHeadMarkersV3 or nil
@@ -239,6 +257,8 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
     if type(pageHost) ~= "table" or type(pageHost.factories) ~= "table" or type(pageHost.factories["combat.buff_display"]) ~= "function" then return false, "page_registration" end
     if type(widgetHost) ~= "table" or type(widgetHost.specs) ~= "table" or type(widgetHost.specs["combat.buff_display"]) ~= "table" then return false, "widget_registration" end
     if (tonumber(F.consumerCount) or 0) <= 0 and (F.auraHeld == true or (S.Scheduler and S.Scheduler.tasks and S.Scheduler.tasks[F.taskName] ~= nil)) then return false, "dormant_resource_contract" end
+    -- 维护（2026-09-30）：后续投影/快照别名探针仅离线运行，不扰动实机状态。
+    if runtimeOnly == true then return true end
     -- Schema 4 projection: hidden is a detection source; the hidden-sourced
     -- entry classifies as debuff. Explicit overrides keep this deterministic
     -- regardless of the seeded registry.
@@ -351,7 +371,7 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function()
         or type(rtHud.target.components) ~= "table" or type(rtHud.target.components.buffs) ~= "table"
         or tonumber(rtHud.target.components.buffs.maxPerRow) ~= 9 then return false, "dual_hud_export_roundtrip_regression" end
     return true
-end)
+end, { runtime = true })
 
 ------------------------------------------------------------------------
 -- v6: HealthBarProxy anchor layout geometry (pure function contract).
@@ -542,4 +562,4 @@ G:RegisterSequenceCase("v3_combat_buff_display_observation_contract", function()
     if type(health) ~= "table" then return false, "health_unavailable" end
     if (tonumber(health.observationContractVersion) or 0) < 2 then return false, "observation_contract_version" end
     return true
-end)
+end, { runtime = true })

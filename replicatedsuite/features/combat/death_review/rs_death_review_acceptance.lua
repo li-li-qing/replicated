@@ -12,7 +12,7 @@ local F = S.Features and S.Features.DeathReview or nil
 
 local function Fail(message) return false, tostring(message or "death_review_acceptance_failed") end
 
-G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function()
+G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function(runtimeOnly)
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     local meta = S.FeatureRegistry and S.FeatureRegistry:Get("combat_death_review") or nil
     if meta == nil or tostring(meta.status) ~= "migrated_m15_2" or tostring(meta.lifecycle) ~= "independent"
@@ -52,7 +52,8 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function()
     -- 场景模拟 Framework2/schema2 在 RU SaveData 往返后吞掉 free 布局的 x=0 与 normalizedCenterX=0：
     -- 旧盖章来自完整 canonical，磁盘 raw 缺这两个字段；恢复器必须先保留/恢复 history 表形，再枚举合法 0，
     -- 最终候选 Hash 必须逐字等于旧盖章。测试只用本地纯表，不写 SaveData、不 Apply F.State、不创建 Native UI。
-    do
+    -- 维护（2026-09-30）：恢复 hook 合成探针只离线运行，保留真实故障诊断。
+    if runtimeOnly ~= true then
         local syntheticDomain = {
             settings = { autoShow = true, windowMs = 10000, maxHistory = 10, minDamage = 0, showDebuffs = true },
             history = { serial = 0, entries = {} },
@@ -120,26 +121,30 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function()
         return Fail("settings_range")
     end
 
-    local syntheticEvents = {}
-    for index = 1, 96 do
-        syntheticEvents[index] = { time = index, source = "预算测试来源", ability = "预算测试技能", amount = 9999, environmental = false }
-    end
-    local syntheticDebuffs = {}
-    for index = 1, 10 do syntheticDebuffs[index] = { effectId = index, name = "预算测试减益", stack = 1, path = "ui/test" } end
-    local syntheticRecord = {
-        schemaVersion = 1, serial = 30, time = 1000, noticeTime = 1000, clock = "12:34:56", windowMs = 10000, totalDamage = 999999,
-        lethal = syntheticEvents[#syntheticEvents], events = syntheticEvents, debuffs = syntheticDebuffs,
-    }
-    local recordProbe = S.Persistence:InspectPayload({ payload = syntheticRecord, __rsmeta = { framework = S.Persistence.FrameworkVersion, store = "v3.death_review.record.1", owner = "v3.death_review", contractVersion = 3, lifetime = "Permanent", scope = "Account", schema = 1 } }, F.RecordBudget)
-    if type(recordProbe) ~= "table" or recordProbe.ok ~= true then return Fail("record_budget:" .. tostring(recordProbe and recordProbe.reason)) end
+    -- 维护（2026-09-30）：预算压力样本留在完整序列，玩家诊断不构造合成死亡记录。
+    if runtimeOnly ~= true then
+        local syntheticEvents = {}
+        for index = 1, 96 do
+            syntheticEvents[index] = { time = index, source = "预算测试来源", ability = "预算测试技能", amount = 9999, environmental = false }
+        end
+        local syntheticDebuffs = {}
+        for index = 1, 10 do syntheticDebuffs[index] = { effectId = index, name = "预算测试减益", stack = 1, path = "ui/test" } end
+        local syntheticRecord = {
+            schemaVersion = 1, serial = 30, time = 1000, noticeTime = 1000, clock = "12:34:56", windowMs = 10000, totalDamage = 999999,
+            lethal = syntheticEvents[#syntheticEvents], events = syntheticEvents, debuffs = syntheticDebuffs,
+        }
+        local recordProbe = S.Persistence:InspectPayload({ payload = syntheticRecord, __rsmeta = { framework = S.Persistence.FrameworkVersion, store = "v3.death_review.record.1", owner = "v3.death_review", contractVersion = 3, lifetime = "Permanent", scope = "Account", schema = 1 } }, F.RecordBudget)
+        if type(recordProbe) ~= "table" or recordProbe.ok ~= true then return Fail("record_budget:" .. tostring(recordProbe and recordProbe.reason)) end
 
-    local summaries = {}
-    for index = 1, 30 do
-        summaries[index] = { serial = index, storageId = index, time = index, clock = "12:34:56", windowMs = 10000, totalDamage = 999999, lethalSource = "预算测试来源", lethalAbility = "预算测试技能", lethalAmount = 9999, eventCount = 96, debuffCount = 10 }
+        local summaries = {}
+        for index = 1, 30 do
+            summaries[index] = { serial = index, storageId = index, time = index, clock = "12:34:56", windowMs = 10000, totalDamage = 999999, lethalSource = "预算测试来源", lethalAbility = "预算测试技能", lethalAmount = 9999, eventCount = 96, debuffCount = 10 }
+        end
+        local syntheticIndex = { settings = settings, history = { serial = 30, entries = summaries }, widgetWindow = { x = 100, y = 100, width = 470, height = 330 } }
+        local indexProbe = S.Persistence:InspectPayload({ payload = syntheticIndex, __rsmeta = { framework = S.Persistence.FrameworkVersion, store = "v3.death_review", owner = "v3.death_review", contractVersion = 3, lifetime = "Permanent", scope = "Account", schema = 2 } }, F.IndexBudget) -- 中文维护注释：当前 Index 预算样本使用 schema2 元数据；record 分片仍保持 schema1，二者升级边界必须严格区分。
+        if type(indexProbe) ~= "table" or indexProbe.ok ~= true then return Fail("index_budget:" .. tostring(indexProbe and indexProbe.reason)) end
+
     end
-    local syntheticIndex = { settings = settings, history = { serial = 30, entries = summaries }, widgetWindow = { x = 100, y = 100, width = 470, height = 330 } }
-    local indexProbe = S.Persistence:InspectPayload({ payload = syntheticIndex, __rsmeta = { framework = S.Persistence.FrameworkVersion, store = "v3.death_review", owner = "v3.death_review", contractVersion = 3, lifetime = "Permanent", scope = "Account", schema = 2 } }, F.IndexBudget) -- 中文维护注释：当前 Index 预算样本使用 schema2 元数据；record 分片仍保持 schema1，二者升级边界必须严格区分。
-    if type(indexProbe) ~= "table" or indexProbe.ok ~= true then return Fail("index_budget:" .. tostring(indexProbe and indexProbe.reason)) end
 
     local bus = S.Services and S.Services.CombatEventBusV3 or nil
     local aura = S.Services and S.Services.AuraObservationV3 or nil
@@ -163,7 +168,7 @@ G:RegisterSequenceCase("v3_m15_2h_death_review_contract", function()
         return Fail("runtime_scope_contract")
     end
     return true
-end)
+end, { runtime = true })
 
 
 G:RegisterSequenceCase("v3_m15_2h_death_review_widget_close", function()

@@ -31,6 +31,8 @@ TOC = (ROOT / "toc.g").read_text(encoding="utf-8")
 AUCTION_QUERY = (ROOT / "services/rs_auction_query_v3.lua").read_text(encoding="utf-8")
 REGISTRY = (ROOT / "features/rs_feature_registry.lua").read_text(encoding="utf-8")
 FOUNDATION = (ROOT / "presentation/v3/pages/rs_v3_foundation_pages.lua").read_text(encoding="utf-8")
+# 维护（2026-09-30）：仅将已迁移的 Feature 条件改查真实 owner；Service/UIV3 条件仍在 Core。
+FEATURE_ACCEPTANCE = (ROOT / "features/life/trade/rs_trade_acceptance.lua").read_text(encoding="utf-8")
 CORE_GATE = (ROOT / "core/rs_foundation_gate.lua").read_text(encoding="utf-8")
 ACCEPTANCE = (ROOT / "presentation/v3/rs_v3_acceptance.lua").read_text(encoding="utf-8")
 PRODUCT_IDS = (ROOT / "data/ids/rs_trade_product_ids.lua").read_text(encoding="utf-8")
@@ -90,6 +92,8 @@ def adaptive_tail(viewport: float, count: int, base: float, gap: float, soft_min
 
 
 def main() -> int:
+    require('runtime = true' in FEATURE_ACCEPTANCE and 'self:RunRuntimeContracts(report)' in CORE_GATE,
+            "migrated Trade contracts remain in live diagnostics, not only skipped offline sequences")
     # Build/version and historical Store boundary.
     # 中文维护注释（2026-09-28，Phase 2 Step 4）：本条按 §30 分类 B（旧硬编码 version）更新。
     # Authority：BuildTag 已按 Phase 0（.330）、Phase 1（.331）、Phase 2 首轮（.332）连续合法推进。
@@ -401,7 +405,7 @@ def main() -> int:
             and 'RequestIdentityDedupContractVersion' in ACCEPTANCE
             and 'MultiRowQuoteJobsContractVersion' in ACCEPTANCE and 'tradeMultiQuoteUiContractVersion' in ACCEPTANCE,
             "acceptance rejects mixed packages without multi-row quote/read-model/dedup contracts")
-    require('MultiRowQuoteJobsContractVersion' in CORE_GATE
+    require('MultiRowQuoteJobsContractVersion' in FEATURE_ACCEPTANCE
             and 'RequestIdentityDedupContractVersion' in CORE_GATE
             and 'tradeMultiQuoteUiContractVersion' in CORE_GATE,
             "foundation gate blocks mixed old/new multi-row quote packages before user interaction")
@@ -427,7 +431,9 @@ def main() -> int:
             "persistent material-price age uses server wall clock rather than reload-local NowMs")
     require('sessionObservedAtMs' in MATERIAL_PRICE and 'material-price-session-freshness-1' in MATERIAL_PRICE,
             "fresh quotes remain session-fresh while server calendar is temporarily unavailable after reload")
-    require('anomalyRatio = 8' in MATERIAL_PRICE and 'anomaly_candidate_held' in MATERIAL_PRICE
+    # 维护（2026-09-30）：已有 2026-09-28 SWR 行为测试固定 559→1499 的候选/确认/回归；
+    # 该保护已收紧至 2.5，本静态脚本不能继续强迫恢复旧 8 倍阈值。未修改价格算法。
+    require('anomalyRatio = 2.5' in MATERIAL_PRICE and 'anomaly_candidate_held' in MATERIAL_PRICE
             and 'anomalyConfirmTolerance = 0.15' in MATERIAL_PRICE,
             "large auction-price jumps are held for bounded second-observation confirmation")
     require('priority = "background"' in MATERIAL_PRICE and 'force = true' in MATERIAL_PRICE
@@ -473,8 +479,8 @@ def main() -> int:
             and 'EconomicsRevisionContractVersion' in ACCEPTANCE and 'MaterialPriceAuthorityContractVersion' in ACCEPTANCE
             and 'PriorityQueueContractVersion' in ACCEPTANCE,
             "acceptance rejects mixed packages missing .18.317 cache/economics/priority contracts")
-    require('MaterialPriceCacheContractVersion' in CORE_GATE and 'BackgroundMaterialRevalidateContractVersion' in CORE_GATE
-            and 'EconomicsRevisionContractVersion' in CORE_GATE and 'MaterialPriceAuthorityContractVersion' in CORE_GATE
+    require('MaterialPriceCacheContractVersion' in FEATURE_ACCEPTANCE and 'BackgroundMaterialRevalidateContractVersion' in FEATURE_ACCEPTANCE
+            and 'EconomicsRevisionContractVersion' in FEATURE_ACCEPTANCE and 'MaterialPriceAuthorityContractVersion' in CORE_GATE
             and 'PriorityQueueContractVersion' in CORE_GATE,
             "foundation gate rejects mixed packages missing durable material-price Authority")
 
@@ -503,7 +509,7 @@ def main() -> int:
     require('self:CancelAutoRefresh()' not in request,
             "issuing one Native request must not destroy the persistent auto-refresh watchdog")
     require('AutoRefreshRuntimeContractVersion' in ACCEPTANCE and 'AutoRefreshWatchdogContractVersion' in ACCEPTANCE
-            and 'AutoRefreshRuntimeContractVersion' in CORE_GATE and 'AutoRefreshWatchdogContractVersion' in CORE_GATE,
+            and 'AutoRefreshRuntimeContractVersion' in FEATURE_ACCEPTANCE and 'AutoRefreshWatchdogContractVersion' in FEATURE_ACCEPTANCE,
             "startup gates reject mixed packages missing auto-refresh runtime/watchdog contracts")
 
     # UI tail-fit is reusable but opt-in; trade surfaces opt in.

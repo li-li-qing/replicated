@@ -5,11 +5,14 @@ if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
 local G = S.FoundationGate
 local F = S.Features and S.Features.DPS or nil
-if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" or type(F) ~= "table" then return end
+if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
 
 local function Fail(message) return false, tostring(message or "dps_acceptance_failed") end
 
+-- 维护（2026-09-30）：缺失实现也必须注册失败证据；仅这一只读声明/健康检查进入玩家诊断。
+-- 后续技能归属等序列会清空统计，保持未声明 runtime，绝不能混入诊断。
 G:RegisterSequenceCase("v3_m16_dps_shared_analytics_contract", function()
+    if type(F) ~= "table" then return Fail("implementation_not_registered") end
     local meta = S.FeatureRegistry and S.FeatureRegistry:Get("combat_stats") or nil
     if meta == nil or tostring(meta.status) ~= "migrated_m16" or tostring(meta.lifecycle) ~= "independent"
         or tostring(meta.authority):find("v3.dps", 1, true) == nil or meta.widgetCapable ~= true or meta.settingsCapable ~= true then
@@ -107,7 +110,7 @@ G:RegisterSequenceCase("v3_m16_dps_shared_analytics_contract", function()
         return Fail("runtime_consumer_contract")
     end
     return true
-end)
+end, { runtime = true })
 
 G:RegisterSequenceCase("v3_m16_dps_skill_proxy_source", function()
     local F2 = S.Features and S.Features.DPS or nil

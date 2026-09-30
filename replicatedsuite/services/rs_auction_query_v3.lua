@@ -12,6 +12,10 @@ S.Services = S.Services or {}
 local Q = {
     version = 3,
     EventAuthorityContractVersion = 1,
+    NativeUserPriorityContractVersion = 1,
+    priorityPatch = "auction-user-priority-1",
+    surfaceTopic = "v3.auction_surface.updated",
+    interruptions = 0, discardedCompletions = 0,
     -- 中文维护注释（2026-09-25，auction-listing-unit-price-1）：GetSearchedItemInfo 的 direct/bid 是整条
     -- 拍卖记录价格，而不是材料单价。数量是价格归一 Authority 的必要组成；下游不得再把 listing total
     -- 当作 unit cost。该契约同时要求兼容 RU 常见 itemStack 字段，避免数量丢失后错误放大材料成本。
@@ -166,16 +170,57 @@ function Q:_Publish(requester)
     end
 end
 
+-- 维护（2026-09-30，auction-user-priority-1）：toc.g 中 Surface 晚于 Query，必须调用时
+-- 解析依赖。不能读取旧 snapshot，也不能把 Trade 的 priority=user 当成原生搜索授权。
+-- 该方法仅在请求/回包/活动询价调度中读取 Native；Describe 仍是无副作用快照。
+function Q:CanBackgroundSearch()
+    local surface = S.Services and S.Services.AuctionSurfaceV3 or nil
+    local ok, known, visible, source = false, false, false, "surface_unavailable"
+    if type(surface) == "table" and type(surface.ReadVisibility) == "function" then
+        ok, known, visible, source = pcall(surface.ReadVisibility, surface)
+    end
+    self.lastVisibility = { known = ok == true and known == true, visible = ok == true and visible == true,
+        source = ok == true and tostring(source or "unknown") or "visibility_read_failed" }
+    if ok ~= true or known ~= true then return false, "native_auction_visibility_unknown" end
+    if visible == true then return false, "native_auction_visible" end
+    if self.pending ~= nil then
+        if self.pending.discarded == true then return false, "auction_response_drain" end
+        if self.pending.background ~= true then return false, "auction_user_search_pending" end
+    end
+    return true
+end
+
+-- 已发出的 Native 查询没有取消/请求令牌 ABI。失去归属后保留原 timeout 占位；期间所有完成边
+-- 都丢弃，不读结果、不缩短隔离期，避免把玩家自己的搜索回包当成“旧请求已排空”。
+function Q:YieldBackgroundSearch(reason)
+    local pending = self.pending
+    if type(pending) ~= "table" or pending.background ~= true then return false end
+    if pending.discarded == true then return true end
+    pending.discarded = true
+    pending.discardReason = tostring(reason or "native_auction_visible")
+    self.interruptions = (tonumber(self.interruptions) or 0) + 1
+    self.snapshots[pending.requester] = { requester = pending.requester, keyword = pending.keyword,
+        status = "interrupted", rows = {}, count = 0, error = pending.discardReason,
+        requestedAt = pending.requestedAt, drainUntil = pending.expiresAt }
+    self:_Publish(pending.requester)
+    return true
+end
+
 function Q:_CleanupNativeEdge()
     if S.Scheduler ~= nil then S.Scheduler:RemoveTask(self.timeoutTask) end
     if self.eventBound == true and S.Events ~= nil then S.Events:Unsubscribe("AUCTION_ITEM_SEARCHED", self.owner) end
     self.eventBound = false
+    if self.surfaceBound == true and S.Events ~= nil and type(S.Events.UnsubscribeInternal) == "function" then
+        S.Events:UnsubscribeInternal(self.surfaceTopic, self.owner)
+    end
+    self.surfaceBound = false
 end
 
 function Q:_Complete(status, rows, err)
     local pending = self.pending
     if type(pending) ~= "table" then return false end
     local requester = pending.requester
+    if pending.discarded == true then status, rows, err = "interrupted", {}, pending.discardReason end
     self:_CleanupNativeEdge()
     self.pending = nil
     self.snapshots[requester] = {
@@ -189,9 +234,17 @@ function Q:_Complete(status, rows, err)
     return true
 end
 
-function Q:_OnSearched()
+function Q:_OnSearched(expected)
     local pending = self.pending
-    if type(pending) ~= "table" then return false end
+    if type(pending) ~= "table" or (expected ~= nil and expected ~= pending) then return false end
+    if pending.background == true then
+        local allowed, reason = self:CanBackgroundSearch()
+        if allowed ~= true then self:YieldBackgroundSearch(reason) end
+        if pending.discarded == true then
+            self.discardedCompletions = (tonumber(self.discardedCompletions) or 0) + 1
+            return true
+        end
+    end
     local okCount, countValue, countErr = S.Api:CallCapability("X2Auction:GetSearchedItemCount", AuctionApi, "GetSearchedItemCount")
     if okCount ~= true then return self:_Complete("failed", {}, "结果数量读取失败：" .. tostring(countErr or "unknown")) end
     local sourceCount = math.max(0, math.floor(tonumber(countValue) or 0))
@@ -214,46 +267,83 @@ function Q:Search(requester, keyword, options)
     options = type(options) == "table" and options or {}
     if requester == "" then return false, "查询来源不能为空" end
     if keyword == "" or #keyword > 64 or keyword:find("[%c]") ~= nil then return false, "搜索关键词必须是 1-64 个可见字符" end
-    if self.pending ~= nil then return false, "上一个拍卖搜索仍在等待服务器返回，请稍后再试" end
+    local background = options.background == true or requester == "price_quote_fallback"
+    if background then
+        local allowed, reason = self:CanBackgroundSearch()
+        if allowed ~= true then return false, reason end
+    end
+    if self.pending ~= nil then
+        -- 只使旧报价失去结果归属，不强行并发新的无 token 查询。原生手动操作完全不经过此门。
+        if not background then self:YieldBackgroundSearch("auction_user_search_pending") end
+        return false, "上一个拍卖搜索仍在等待服务器返回，请稍后再试"
+    end
     if S.Events == nil or type(S.Events.SubscribeOptional) ~= "function" then return false, "拍卖完成事件总线不可用" end
+    if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return false, "拍卖查询超时保护不可用" end
     S.Events:BindOwner(self.owner, "AuctionQueryV3")
-    local subscribed = S.Events:SubscribeOptional("AUCTION_ITEM_SEARCHED", self.owner, function() return Q:_OnSearched() end)
-    if subscribed ~= true then return false, "AUCTION_ITEM_SEARCHED 当前不可订阅" end
+    local requestedAt = type(S.NowMs) == "function" and S.NowMs() or 0
+    local pending = { requester = requester, keyword = keyword, exactMatch = options.exactMatch == true,
+        background = background, requestedAt = requestedAt, expiresAt = requestedAt + self.timeoutMs,
+        resultLimit = math.max(1, math.min(self.maxRows, tonumber(options.resultLimit) or 20)) }
+    self.pending = pending
+    self.snapshots[requester] = { requester = requester, keyword = keyword, exactMatch = pending.exactMatch,
+        status = "waiting", rows = {}, count = 0 }
+    local subscribed = S.Events:SubscribeOptional("AUCTION_ITEM_SEARCHED", self.owner, function() return Q:_OnSearched(pending) end)
+    if subscribed ~= true then
+        self:_Complete("failed", {}, "AUCTION_ITEM_SEARCHED 当前不可订阅")
+        return false, "AUCTION_ITEM_SEARCHED 当前不可订阅"
+    end
     self.eventBound = true
-    self.pending = {
-        requester = requester, keyword = keyword, exactMatch = options.exactMatch == true,
-        resultLimit = math.max(1, math.min(self.maxRows, tonumber(options.resultLimit) or 20)),
-        requestedAt = type(S.NowMs) == "function" and S.NowMs() or 0,
-    }
-    self.snapshots[requester] = { requester = requester, keyword = keyword, exactMatch = options.exactMatch == true, status = "waiting", rows = {}, count = 0 }
-    self:_Publish(requester)
-    -- 维护（2026-09-24，auction-search-native-shape-1）：公开 ArcheAge CustomUI 的官方制作书搜索按钮
-    -- 使用 SearchAuctionArticle(1, 0, 0, 1, 0, false, name)。maxLevel=0 表示不施加等级上限；
-    -- 旧值 55 会把名称搜索无意绑定到历史等级上限，未来物品/特殊条目存在被过滤风险。价格范围仍显式传 0/0，
-    -- 保持当前 RU 9 参数能力契约；这里仅修正过滤语义，不改变 AUCTION_ITEM_SEARCHED Authority。
-    local ok, value, err = S.Api:CallCapability("X2Auction:SearchAuctionArticle", AuctionApi, "SearchAuctionArticle",
-        1, 0, 0, 1, 0, options.exactMatch == true, keyword, "0", "0")
-    if ok ~= true or value == false then
-        local reason = tostring(err or "搜索请求被拒绝")
-        self:_Complete("failed", {}, reason)
-        return false, reason
+    if background and type(S.Events.SubscribeInternal) == "function" then
+        self.surfaceBound = S.Events:SubscribeInternal(self.surfaceTopic, self.owner, function(_, snapshot)
+            if Q.pending == pending and type(snapshot) == "table" and snapshot.visible == true then
+                Q:YieldBackgroundSearch("native_auction_visible")
+            end
+        end) == true
     end
-    if S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then
-        self:_Complete("failed", {}, "拍卖查询超时保护不可用，已安全停止等待")
-        return false, "拍卖查询超时保护不可用"
-    end
+    -- 维护：先建立 timeout 再发 Native；回调绑定本次请求，不能误结束下一次查询。
+    -- Native 同步完成也会清除此任务，避免“完成后再注册”遗留计时器。
     S.Scheduler:RemoveTask(self.timeoutTask)
     local added = S.Scheduler:AddOneShot(self.timeoutTask, self.timeoutMs, function()
-        if Q.pending ~= nil then Q:_Complete("failed", {}, "等待拍卖服务器返回超时") end
+        if Q.pending ~= pending then return end
+        if pending.background == true then
+            local allowed, reason = Q:CanBackgroundSearch()
+            if allowed ~= true then Q:YieldBackgroundSearch(reason) end
+        end
+        Q:_Complete("failed", {}, "等待拍卖服务器返回超时")
     end, self.owner, "P2", 1)
     if added ~= true then
         self:_Complete("failed", {}, "拍卖查询超时保护任务创建失败，已安全停止等待")
         return false, "拍卖查询超时保护任务创建失败"
     end
     if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(self.timeoutTask, "AuctionQueryV3", true) end
+    self:_Publish(requester)
+    if background then
+        local allowed, reason = self:CanBackgroundSearch()
+        if allowed ~= true or pending.discarded == true then
+            reason = pending.discardReason or reason
+            self:YieldBackgroundSearch(reason)
+            self:_Complete("interrupted", {}, reason) -- 尚未发包，无需保留 Native 占位。
+            return false, reason
+        end
+    end
+    -- 保持已核验 RU 9 参数签名和过滤语义：maxLevel=0；不新增 Native 查询或 UI 搜索框写入。
+    local ok, value, err = S.Api:CallCapability("X2Auction:SearchAuctionArticle", AuctionApi, "SearchAuctionArticle",
+        1, 0, 0, 1, 0, options.exactMatch == true, keyword, "0", "0")
+    if ok ~= true or value == false then
+        local reason = tostring(err or "搜索请求被拒绝")
+        if self.pending == pending then self:_Complete("failed", {}, reason) end
+        return false, reason
+    end
     return true, "waiting"
 end
 
 function Q:Describe()
-    return { version = self.version, pending = self.pending ~= nil, eventBound = self.eventBound == true, maxRows = self.maxRows, timeoutMs = self.timeoutMs }
+    return { version = self.version, pending = self.pending ~= nil, eventBound = self.eventBound == true,
+        maxRows = self.maxRows, timeoutMs = self.timeoutMs, patch = self.priorityPatch,
+        nativeUserPriorityContractVersion = self.NativeUserPriorityContractVersion,
+        background = self.pending ~= nil and self.pending.background == true,
+        discarded = self.pending ~= nil and self.pending.discarded == true,
+        drainUntil = self.pending ~= nil and self.pending.discarded == true and self.pending.expiresAt or nil,
+        interruptions = self.interruptions, discardedCompletions = self.discardedCompletions,
+        visibility = Copy(self.lastVisibility) }
 end

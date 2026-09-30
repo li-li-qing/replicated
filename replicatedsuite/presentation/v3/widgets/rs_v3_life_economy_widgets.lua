@@ -208,6 +208,13 @@ local function RefreshBody(self,spec,Feature)
                         or (" · 可同时加入多个货物"))
                 if projection.status == "error" or projection.status == "unavailable" then statusText=tostring(projection.error or "货率读取失败") end
             end
+            -- 维护（2026-09-30，auction-user-priority-1）：首页/悬浮窗都通过 Feature 投影呈现暂停，
+            -- 不再把“等待玩家关拍卖行”显示成持续询价；保留来源错误的更高显示优先级。
+            local activity = projection.quoteActivity
+            if spec.featureName == "Trade" and type(activity) == "table" and activity.paused == true
+                and projection.status ~= "error" and projection.status ~= "unavailable" then
+                statusText = tostring(activity.text or "材料名称查询已暂停")
+            end
             local statusTone = projection.status == "ready" and "accent" or (projection.status == "loading" and "yellow" or "muted")
             if controlRefreshFailed then
                 statusText = tostring(statusText or "数据已更新") .. " · 顶部控件同步异常"
@@ -651,6 +658,8 @@ local ok, err = Register({
         if projection.status == "error" or projection.status == "unavailable" then
             return tostring(projection.error or "跑商数据不可用")
         end
+        local activity = projection.quoteActivity
+        if type(activity) == "table" and activity.paused == true then return tostring(activity.text or "材料名称查询已暂停") end
         local batch = projection.quoteBatch or {}
         if batch.active == true then
             local activeJobs = tonumber((projection.quoteJobs or {}).activeCount) or tonumber(batch.activeJobs) or 1

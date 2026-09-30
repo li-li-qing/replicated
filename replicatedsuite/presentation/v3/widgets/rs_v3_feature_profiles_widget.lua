@@ -112,7 +112,12 @@ local function CreateWidget()
         if record.snapRegistered == true then return true end
         local snapId = tostring(record.snapId or "")
         if snapId == "" then return false end
-        local options = { ensureNow = false, snapGroup = "screen_buttons", snapKind = "button" }
+        -- 维护（ui-position-reload-1）：与 WindowShell 使用同一恢复边沿，不重新扫描/应用功能方案。
+        local options = { ensureNow = false, snapGroup = "screen_buttons", snapKind = "button",
+            positionOwner = OWNER,
+            isPositionInteracting = function() return record.dragging == true end,
+            getPlacementDiagnostics = function() return record.placementInfo end,
+        }
         local ok = false
         if type(UI.RegisterScreenSnap) == "function" then
             ok = UI:RegisterScreenSnap(snapId, record.button, options) == true

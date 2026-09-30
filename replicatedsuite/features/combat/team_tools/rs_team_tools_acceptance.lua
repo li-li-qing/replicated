@@ -21,6 +21,7 @@ local F = S.Features and S.Features.combat_team_tools or nil
 
 local function Fail(message) return false, tostring(message or "team_tools_acceptance_failed") end
 
+-- 维护（2026-09-30，refactor-live-gate-1）：显式接回只读运行时诊断；完整序列仍保留给离线验收。
 G:RegisterSequenceCase("v3_combat_team_tools_role_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     -- 中文维护注释（2026-09-16）：v3 才包含独立 Event owner/roster lease 与关→开重建观察，
@@ -31,7 +32,7 @@ G:RegisterSequenceCase("v3_combat_team_tools_role_contract", function()
     if (tonumber(F.AutoRoleRosterLeaseContractVersion) or 0) < 1 then return Fail("auto_role_roster_lease_contract_version") end
     if type(F.Commands) ~= "table" or type(F.Commands.SetRole) ~= "function" then return Fail("set_role_command") end
     return true
-end)
+end, { runtime = true })
 
 G:RegisterSequenceCase("v3_combat_team_tools_visual_marker_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
@@ -48,4 +49,4 @@ G:RegisterSequenceCase("v3_combat_team_tools_visual_marker_contract", function()
         if type(F.Commands[name]) ~= "function" then return Fail("team_visual_command:" .. name) end
     end
     return true
-end)
+end, { runtime = true })

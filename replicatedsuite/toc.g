@@ -157,7 +157,6 @@ features/combat/buff_display/rs_buff_display_projection.lua
 features/combat/buff_display/rs_buff_display_feature.lua
 features/combat/buff_display/rs_buff_display_management.lua
 features/combat/buff_display/rs_buff_display_transfer_v2.lua
-features/combat/buff_display/rs_buff_display_acceptance.lua
 -- 2026-09-20 nameplate-mark-ratio-3：头标使用 name_tag_mark_size_ratio；Store schema1 保持兼容，禁止页面直写 X2Option。
 features/combat/nameplate_visuals/rs_nameplate_visuals_store.lua
 features/combat/nameplate_visuals/rs_nameplate_visuals_authority.lua
@@ -283,6 +282,7 @@ presentation/v3/rs_v3_shell.lua
 presentation/v3/rs_v3_host.lua
 presentation/v3/rs_v3_acceptance.lua
 core/rs_foundation_gate.lua
+features/combat/buff_display/rs_buff_display_acceptance.lua
 presentation/v3/rs_v3_sequence_cases.lua
 features/life/activities/rs_activity_acceptance.lua
 features/life/housing/rs_housing_acceptance.lua

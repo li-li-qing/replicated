@@ -22,6 +22,7 @@ local F = S.Features and S.Features.Trade or nil
 
 local function Fail(message) return false, tostring(message or "trade_acceptance_failed") end
 
+-- 维护（2026-09-30，refactor-live-gate-1）：显式接回只读运行时诊断；完整序列仍保留给离线验收。
 G:RegisterSequenceCase("v3_life_trade_detail_favorites_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if type(F.Authority) ~= "table" then return Fail("authority_missing") end
@@ -46,4 +47,4 @@ G:RegisterSequenceCase("v3_life_trade_detail_favorites_contract", function()
         if type(F.Commands[name]) ~= "function" then return Fail("command." .. name) end
     end
     return true
-end)
+end, { runtime = true })

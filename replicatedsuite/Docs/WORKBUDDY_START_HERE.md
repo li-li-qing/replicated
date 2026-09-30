@@ -7,7 +7,7 @@
 先完整阅读：
 
 ```text
-Replicated_Suite_底层框架重构规划_v1_Workbuddy执行版.md
+Replicated_Suite_底层框架重构规划_v1.md
 ```
 
 这份文档是本轮施工的唯一主计划和边界合同。
@@ -24,30 +24,21 @@ Replicated_Suite_底层框架重构规划_v1_Workbuddy执行版.md
 33. 自动执行策略
 ```
 
-## 当前起点
+## 当前起点（2026-09-30 复核后）
 
-当前累计施工基线应为：
+先读 `REFACTOR_REVIEW_2026-09-30.md`，再对照本地主规划和真实代码；不要重演旧入口的 Phase 0 开工流程。
 
-```text
-v3-m1.16.0.18.329-native-dependency-policy
-```
+本轮审查基线是 `Addon(20260929-172837).zip`，提交包 BuildTag 为 `.18.332-phase2-life-bundle-slice-complete`。
+已叠加 `refactor-live-gate-1` 复核补丁：修复验收加载顺序、接回 27 项只读业务检查、缺失实现漏检与 false 默认值恢复。
+这是缺陷修复，不是新的存档版本；BuildTag 未人为升级，补丁范围见复核报告与 SHA256 清单。
 
-它必须累计包含：
-
-```text
-.327 Trade 自己拥有 X2Craft / X2Auction Native dependency
-.328 Bonds 自己拥有 X2Quest Native dependency
-.329 BuffDisplay 直接 Native dependency + required/optional/lazy policy
-```
-
-注意：这些是连续增量修改。不要拿最后一个 patch 覆盖旧工程后就认为当前树完整。
-
-**必须以我当前本地实际项目文件为准。**
+主规划现有状态表把 Phase 0–3 标为完成、Phase 4–7 标为未开始，Phase 2 深拆仍有待验项；不要因为架构 audit 为零就把整份规划勾完。
+先完成当前补丁的真实 Lua 5.1 编译与 RU 实机只读诊断回归。既有历史报告不能代替当前字节的验证，也不要从旧 .329 基线覆盖回来。
 
 ## 执行方式
 
 1. 先读取真实源码、toc、Registry、FeatureRuntime、相关 Services、测试与当前 git/worktree 状态。
-2. 先按执行版文档的 P0-A 重建 baseline，不要直接开始重构。
+2. 先验证当前提交包与复核补丁的累计 baseline，不重做已完成的 Phase；未过验收不得进入下一阶段。
 3. 按文档规定的 Phase / Work Package 顺序持续执行。
 4. 普通文件读取、搜索、编译、测试、git diff 等本地只读/正常开发命令无需反复向我询问确认；在已有权限允许范围内直接执行。
 5. 不要每完成一个小修改就停下来汇报。一个 Work Package 完整完成并验证后继续；命中 STOP 条件才停止。
@@ -69,16 +60,13 @@ v3-m1.16.0.18.329-native-dependency-policy
 - 不把 optional/lazy capability 为了消 warning 全部升级成 Feature hard dependency。
 - 不使用 `git reset --hard`、`git clean -fd` 或覆盖我的未提交修改。
 
-## 当前 Phase 0 已知剩余硬门禁
+## 当前复核待验项
 
-```text
-1. X2Skill numeric API_TYPE ABI 真实证据
-2. tools/fixtures/trade_native_numeric_20260912.lua 原始历史 fixture
-3. tools/rs_status_schema5_fixtures.lua 原始历史 fixture
-4. 真实 luac5.1 / luac-5.1 compile gate
-```
+本地必须运行真实 `luac5.1` / `luac-5.1` 编译门禁及默认回归，并交回命令、版本和退出码。
+本轮离线环境只有 Lua 5.4 兼容运行时，真实 Lua 5.1 门禁明确 BLOCKED；不能改脚本绕过。
+RU 实机需要冷启动后检查诊断不会取得 Consumer、刷新行情、清空 DPS 或写入配置，再验证原功能正常。
 
-找不到真实证据时必须保持 BLOCKED，不允许猜测绕过。
+Phase 0 的 Native ABI 与历史 fixture 闭合证据保留在主规划 §22 及第六轮报告中，本轮未篡改这些文件；不要再把旧入口中的三项缺件视为当前已证实缺失，也不能拿历史闭合冒充当前编译通过。
 
 ## 测试失败处理
 
@@ -124,4 +112,4 @@ changed files / git diff 证据
 本轮 Agent 报告
 ```
 
-现在开始：**先完整阅读主计划与当前本地代码，执行 Phase 0 的 baseline 重建，然后按执行版继续。**
+现在开始：**先阅读本轮复核报告、主计划和当前代码，完成当前补丁的 Lua 5.1 与 RU 验收，再按真实阶段状态继续。**

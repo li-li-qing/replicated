@@ -130,6 +130,10 @@ local function CreateGearQuickWidget()
         if snapId == "" then return false end
         local options = {
             ensureNow = false,
+            -- 维护（ui-position-reload-1）：仅恢复已有 Native 按钮；不读取方案、不刷新装备。
+            positionOwner = "v3:gear_quick_buttons",
+            isPositionInteracting = function() return record.dragging == true end,
+            getPlacementDiagnostics = function() return record.placementInfo end,
             snapGroup = "screen_buttons",
             snapKind = "button",
             snapEnabledProvider = function()

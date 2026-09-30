@@ -31,6 +31,10 @@ print("=== Replicated Suite: Bonds / Resident Board Tests ===")
 
 local h = dofile("tools/rs_gear_page_test_host.lua")({})
 local S = h.S
+-- 2026-09-30: Native clock is part of the valid-day fixture, not an implicit unknown.
+-- Undated startup/rollover paths are exercised separately in rs_bonds_cross_continent_tests.lua.
+UIParent = UIParent or {}
+UIParent.GetServerTimeTable = function() return { year = 2026, month = 9, day = 15 } end
 S.UI = S.UI or {}
 S.UI.CreateWindowShell = function()
     return {

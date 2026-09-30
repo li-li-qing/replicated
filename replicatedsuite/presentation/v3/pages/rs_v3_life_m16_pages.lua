@@ -522,7 +522,11 @@ local function Build(parent, route, feature, kind)
             end
 
             if root.tradeInteractionHint then
-                if type(selected) == "table" and selected.quoteJobActive == true then
+                -- 维护（2026-09-30，auction-user-priority-1）：暂停提示来自 Feature，只改文案，保留任务/配置。
+                local activity = projection.quoteActivity
+                if type(activity) == "table" and activity.paused == true then
+                    root.tradeInteractionHint:SetText(tostring(activity.text or "材料名称查询已暂停"))
+                elseif type(selected) == "table" and selected.quoteJobActive == true then
                     root.tradeInteractionHint:SetText("当前货物询价 " .. tostring(selected.quoteJobCompleted or 0) .. "/" .. tostring(selected.quoteJobTotal or 0)
                         .. "；还可以继续双击其它货物加入并行任务")
                 elseif batch.active == true then

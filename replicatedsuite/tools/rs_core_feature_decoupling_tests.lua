@@ -411,6 +411,15 @@ local function BootTruth(key, path, feature, services)
     function S.FoundationGate:RegisterSequenceCase(id, fn) cases[tostring(id)] = fn; return true end
     if feature ~= nil then S.Features[key] = feature end
     ReplicatedSuite = S
+    -- 维护（2026-09-30，live-contract-state-1）：Boss 门禁现在同时验证 provider 接线。
+    -- 此处仍是能力回退单测；真实冷启动/启停状态由 rs_live_contract_state_tests 覆盖，
+    -- 不再把手填 _bossDiag 的理想替身当作完整生命周期验收。
+    if key == 'combat_boss_alerts' then
+        dofile('core/rs_feature_health_providers.lua')
+        S.FeatureHealthProviders:Register('boss_alerts_diagnostics', function()
+            return type(feature) == 'table' and feature._bossDiag or nil
+        end)
+    end
     dofile(path)
     return cases
 end

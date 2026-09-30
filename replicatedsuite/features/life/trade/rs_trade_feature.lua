@@ -539,7 +539,11 @@ local function BuildTradeMaterialProjection(row)
         -- the later detailText read would silently resolve a global named
         -- `priceProvenance` instead. That exact leak was caught by the full
         -- Foundation Audit while sealing `.18.188`.
-        local priceProvenance = nil
+        -- 修复（2026-09-30，trade-selected-economics-1）：priceMeta 同样必须属于整个材料迭代。
+        -- 旧声明位于 else 子块，构造 materialRows 时已经越过作用域，读到的是同名全局；
+        -- 单价仍参与计算，但来源/缓存年龄/重验状态全丢失，无法核实可疑毛利。只修复来源投影，
+        -- 不改币值单位、材料数量、缓存策略或售价/毛利公式。
+        local priceProvenance, priceMeta = nil, nil
 
         if not includeInCost then
             -- 维护（2026-09-23，trade-bound-resource-cost-1）：绑定资源/非市场凭证仍是配方真实需求，
@@ -568,7 +572,7 @@ local function BuildTradeMaterialProjection(row)
             -- presented as current market data.
             local quoteQueue = S.Services ~= nil and S.Services.PriceQuoteQueueV3 or nil
             local materialPrices = S.Services ~= nil and S.Services.MaterialPriceServiceV3 or nil
-            local quotedPrice, priceMeta = nil, nil
+            local quotedPrice = nil
             if type(quoteQueue) == "table" and type(quoteQueue.GetQuoteStateByItemType) == "function" then
                 quoteState = quoteQueue:GetQuoteStateByItemType(itemType, itemGrade)
             end
@@ -2757,6 +2761,20 @@ function Trade:EnsurePriceQuoteSubscription()
         return TA:RefreshQuotedItemType(itemType,itemGrade,status,reason)
     end)
     if ok~=true then return false,"报价完成事件订阅失败" end
+    -- 维护（auction-user-priority-1）：活动变化只通知已有 UI 重新读投影；绝不走上面的材料终态对账。
+    if type(queue.ActivityTopic)=="string" then
+        local activityOk=S.Events:SubscribeInternal(queue.ActivityTopic,self,function()
+            if Trade.enabled~=true or (tonumber(Trade.consumerCount) or 0)<=0 then return true end
+            TA.revision=TA.revision+1
+            PublishFeatureUpdate(Trade,TA.revision,"quote_activity")
+            return true
+        end)
+        if activityOk~=true then
+            S.Events:UnsubscribeInternal(queue.Topic,self)
+            return false,"报价活动事件订阅失败"
+        end
+        self.PriceQuoteActivityTopic=queue.ActivityTopic
+    end
     self.PriceQuoteSubscribed=true
     return true
 end
@@ -2766,6 +2784,10 @@ function Trade:ReleasePriceQuoteSubscription()
     if S.Events~=nil and type(S.Events.UnsubscribeInternal)=="function" and type(queue)=="table" and type(queue.Topic)=="string" then
         S.Events:UnsubscribeInternal(queue.Topic,self)
     end
+    if self.PriceQuoteActivityTopic~=nil and S.Events~=nil and type(S.Events.UnsubscribeInternal)=="function" then
+        S.Events:UnsubscribeInternal(self.PriceQuoteActivityTopic,self)
+    end
+    self.PriceQuoteActivityTopic=nil
     self.PriceQuoteSubscribed=false
     return true
 end
@@ -2996,6 +3018,9 @@ function Trade:GetProjection()
     local projection=TA:GetProjection()
     projection.quoteBatch=self:GetQuoteBatch() -- 兼容旧 UI/诊断的聚合只读快照。
     projection.quoteJobs=self:GetQuoteJobs()
+    -- 维护（2026-09-30，auction-user-priority-1）：仅投影共享队列活动状态，不把暂停写进价格/RowJob 终态。
+    local queue=S.Services and S.Services.PriceQuoteQueueV3 or nil
+    projection.quoteActivity=type(queue)=="table" and type(queue.GetActivitySnapshot)=="function" and queue:GetActivitySnapshot() or nil
     return projection
 end
 function Trade:GetRouteSettings() return { fromZone = Trade.State.fromZone, toZone = Trade.State.toZone, sortMode = Trade.State.sortMode, ratioMode = Trade.State.ratioMode, commerceMode = Trade.State.commerceMode, viewMode = self:GetViewMode() } end
@@ -3649,6 +3674,53 @@ end
 -- "状态机诊断不可用" forever.
 function Trade:DescribeRequestState() return TA:DescribeRequestState() end
 function Trade:DescribeIdentityState() return TA:DescribeIdentityState() end
+-- 维护（2026-09-30，trade-selected-economics-1）：模块诊断需要“具体哪一行扣了哪些成本”，
+-- 不能用全局最后一次报价代替所选货物。只读当前 Display ReadModel，不重算/重询价、不取得
+-- Consumer、不读 Native/Store，分页由 Hub 冻结。金额全部用铜，避免 UI 金/银省略铜位掩盖差额。
+-- 每个材料投影为有界标量证据行（最多与展示相同的 32 行），避免嵌套字段耗尽 Hub 节点预算。
+function Trade:DescribeSelectedEconomics()
+    local row = self:GetSelectedRow()
+    if type(row) ~= "table" then
+        return { patch = "trade-selected-economics-1", available = false, reason = "select_trade_row",
+            rowCount = #(type(TA.rows) == "table" and TA.rows or {}) }
+    end
+    local materialRows = type(row.materialRows) == "table" and row.materialRows or {}
+    local materials = {}
+    for index = 1, math.min(TRADE_MATERIAL_MAX_ROWS, #materialRows) do
+        local m = type(materialRows[index]) == "table" and materialRows[index] or {}
+        materials[index] = "itemType=" .. tostring(m.itemType) .. " grade=" .. tostring(m.itemGrade)
+            .. " count=" .. tostring(m.count) .. " unitCostCopper=" .. tostring(m.unitCostCopper)
+            .. " totalCostCopper=" .. tostring(m.totalCostCopper) .. " includeInCost=" .. tostring(m.includeInCost)
+            .. " priceSource=" .. BoundedTradeText(m.priceSource, "unknown", 48)
+            .. " freshness=" .. BoundedTradeText(m.priceFreshness, "unknown", 24)
+            .. " ageMinutes=" .. tostring(m.priceAgeMinutes) .. " refreshing=" .. tostring(m.priceRefreshing == true)
+            .. " status=" .. BoundedTradeText(m.costStatus, "unknown", 32)
+            .. " key=" .. BoundedTradeText(m.materialKey, "unknown", 64)
+    end
+    local price, cost, profit = Number(row.priceCopper), Number(row.materialCostCopper), Number(row.profitCopper)
+    local delta = nil
+    if price ~= nil and cost ~= nil and profit ~= nil then delta = profit - (price - cost) end
+    return {
+        patch = "trade-selected-economics-1", available = true, currencyUnit = "copper",
+        row = { key = row.key, name = row.name, itemType = row.itemType, originZone = row.originZone,
+            destinationZone = row.destinationZone, currentRatio = row.currentRatio, displayRatio = row.ratio,
+            ratioUpdatedAt = row.ratioUpdatedAt },
+        recipe = { label = row.recipeLabel, source = row.identitySource, status = row.identityStatus },
+        economics = { priceCopper = price, materialCostCopper = cost, profitCopper = profit,
+            profitRate = row.profitRate, profitStatus = row.profitStatus, materialCostStatus = row.materialCostStatus,
+            materialCostComplete = row.materialCostComplete, materialCostBasis = row.materialCostBasis,
+            arithmeticDeltaCopper = delta, boundResourceCount = row.boundResourceCount,
+            nonMarketResourceCount = row.nonMarketResourceCount },
+        payout = { priceKey = row.priceKey, formulaSource = row.priceFormulaSource, status = row.priceEstimateStatus,
+            baseAtRatioCopper = row.priceBaseAtRatioCopper, commerceMultiplier = row.commerceMultiplier,
+            commerceApplied = row.commerceApplied, packMultiplier = row.packMultiplier,
+            packCategory = row.packCategory, packMultiplierSource = row.packMultiplierSource },
+        materials = materials, materialCount = #materialRows,
+        materialsOmitted = math.max(0, #materialRows - #materials),
+        projectionTruncated = row.materialsTruncated == true,
+    }
+end
+
 function Trade:DescribeQuoteState()
     -- 维护（2026-09-24，trade-quote-diagnostics-2）：模块诊断必须能直接回答“询价为什么失败”，但不能把
     -- AuctionQueryV3 最多 20 条搜索结果和 QuoteQueue 全部历史原样塞进报告。这里仅读取两个共享 Authority 的
@@ -3668,6 +3740,7 @@ function Trade:DescribeQuoteState()
             version = health.version, running = health.running, pending = health.pending,
             queueLength = health.queueLength, maxQueue = health.maxQueue, intervalMs = health.intervalMs,
             stats = Copy(health.stats), lastRawReturn = health.lastRawReturn,
+            activity = Copy(health.activity), -- 暂停理由独立于失败/完成，不触发 Native。
             lastFallbackMatch = Copy(health.lastFallbackMatch), pendingDetail = Copy(health.pendingDetail),
             lastCompleted = Copy(health.lastCompleted), recent = recent,
         }
@@ -3693,6 +3766,7 @@ function Trade:DescribeQuoteState()
     return {
         batch = self:GetQuoteBatch(), jobs = self:GetQuoteJobs(), queue = queueSummary,
         fallbackSearch = searchSummary, readModelSync = Copy(TA.quoteReadModelSync or {}),
+        auctionOwnership = type(query)=="table" and type(query.Describe)=="function" and query:Describe() or nil,
         materialPriceCache = type(materialPrices) == "table" and type(materialPrices.Describe) == "function" and materialPrices:Describe() or nil,
         economics = Copy(TA.economics or {}), materialRevalidate = Copy(TA.materialRevalidateDiagnostics or {}),
         payout = (S.Services and S.Services.TradePayoutV3 and type(S.Services.TradePayoutV3.Describe) == "function") and S.Services.TradePayoutV3:Describe() or nil,

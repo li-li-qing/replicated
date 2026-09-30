@@ -563,5 +563,26 @@ Test('L on-demand diagnostics expose per-button placement and native geometry ev
     end
 end)
 
+
+-- 2026-09-30: lifecycle native reset without a viewport change, not just resolution migration.
+Test('M same-metrics reload repairs every existing profile button without Store writes',function()
+    local ctx=BootSession(nil,{1280,960,.8,1024,768});local h,S=ctx.h,ctx.S
+    PlaceAll(ctx,{[1]={300,150},[2]={430,150},[3]={560,150}})
+    local before=Snap(S.Persistence.disk);local writes=S.Persistence.writes
+    assert(S.Layout:StartMetricsEvents())
+    local records=Records(ctx)
+    for _,entry in ipairs(records)do entry.record.button.x=entry.record.button.x+100 end
+    h:Drain()
+    for i,entry in ipairs(records)do Eq(entry.record.button.x,entry.x,'M restored x')end
+    Eq(S.Persistence.writes,writes);assert(Snap(S.Persistence.disk)==before)
+end)
+Test('N same-metrics repair leaves an in-progress profile drag untouched',function()
+    local ctx=BootSession(nil,{1920,1080});local h,S=ctx.h,ctx.S
+    local record=Records(ctx)[1].record;record.button.handlers.OnDragStart();record.button.x=400
+    local writes=S.Persistence.writes;assert(S.Layout:StartMetricsEvents());h:Drain()
+    Eq(record.button.x,400);Truth(record.dragging==true);Eq(S.Persistence.writes,writes)
+    record.button.handlers.OnDragStop();local committed=record.button.x;for _=1,9 do h:Drain()end;Eq(record.button.x,committed)
+end)
+
 print(string.format('FEATURE_PROFILES_QUICK_GEOMETRY RESULT %d passed / %d failed (%s)', pass, fail, _VERSION))
 assert(fail == 0, 'feature profile quick geometry regression failures: ' .. tostring(fail))

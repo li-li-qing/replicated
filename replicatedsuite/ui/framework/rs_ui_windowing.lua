@@ -23,6 +23,7 @@ RSUI.Windowing.StateMutationTransactionContractVersion = 1
 RSUI.Windowing.GeometryCallbackTransactionContractVersion = 1
 RSUI.Windowing.IdempotentStateContractVersion = 1
 RSUI.Windowing.CallbackCaptureContractVersion = 1
+RSUI.Windowing.ReloadPositionReconciliationContractVersion = 1
 RSUI.Windowing.CriticalInteractionContractVersion = 3
 RSUI.Windowing.DragSurfaceHitTestContractVersion = 1
 RSUI.Windowing.ExplicitDragConditionContractVersion = 1
@@ -77,6 +78,8 @@ function W:ApplyGeometry(window, owner, x, y, width, height, force)
     -- 维护：内容刷新可能很频繁，常规布局只用 DiffRenderer 已提交矩形作为回滚基线。
     -- 只有 create（无缓存）/show/reset/metrics/手势结束 force 边沿读取 Native，禁止变相逐帧读坐标。
     local row=UI.NativeStateCache and UI.NativeStateCache[window]
+    -- 新的布局/手势提交取代旧重试；EndNativeGeometryLease 清空该行也会取消重试。
+    if row then row.positionPending = nil end
     local bx,by,bw,bh
     if force~=true and row and type(row.anchorX)=="number" and type(row.anchorY)=="number"
         and type(row.width)=="number" and type(row.height)=="number" then
@@ -97,6 +100,218 @@ function W:ApplyGeometry(window, owner, x, y, width, height, force)
         return false, tostring(err or "native_geometry_rejected") .. ((sizeOk ~= true or anchorOk ~= true) and ":rollback_rejected" or "")
     end
     return true,x,y,width,height
+end
+
+-- 维护（2026-09-30，ui-position-reload-1）：UI_RELOADED/重登可以只重置 Native 锚点，
+-- 而 UIParent 尺寸与 UI Scale 完全不变。此前 settle 只比较 metrics 签名，这种位移永远不会恢复。
+-- 这里只在生命周期与已有的 8 次 one-shot 中检查“已创建、可见、无手势”的顶层控件。
+-- Authority 仍是 Diff 已成功提交的逻辑矩形；Native 读数只用于比对，绝不反写用户位置/尺寸。
+-- 无变化不布局；真正偏移才强制重放同一矩形，不调用 geometry/state/business 回调。
+local function PositionNumber(value)
+    local n = tonumber(value)
+    if n == nil or n ~= n or n == math.huge or n == -math.huge then return nil end
+    return n
+end
+
+local function CachedTopLevelRect(window)
+    local row = UI.NativeStateCache and UI.NativeStateCache[window]
+    if type(row) ~= "table" then return nil end
+    local legacy = type(row.anchorTopLeft) == "table" and row.anchorTopLeft or {}
+    local parent = row.anchorParent or legacy.parent
+    if parent ~= UIParent and parent ~= "UIParent" then return nil end
+    local x, y = PositionNumber(row.anchorX or legacy.x), PositionNumber(row.anchorY or legacy.y)
+    local w, h = PositionNumber(row.width), PositionNumber(row.height)
+    if x == nil or y == nil or w == nil or h == nil or w <= 0 or h <= 0 then return nil end
+    return x, y, w, h
+end
+
+local function LivePositionRect(window)
+    local layout = S.Layout
+    if layout == nil or type(layout.GetWindowLogicalRect) ~= "function" then return nil end
+    local ok, x, y, w, h, info = pcall(layout.GetWindowLogicalRect, layout, window)
+    -- 缓存回退不能用来证明缓存本身与 Native 一致；没有可靠 Effective 读数时保留未知，等下一边沿。
+    if not ok or type(info) ~= "table" or info.source ~= "effective_calibrated" then return nil end
+    x, y, w, h = PositionNumber(x), PositionNumber(y), PositionNumber(w), PositionNumber(h)
+    if x == nil or y == nil or w == nil or h == nil or w <= 0 or h <= 0 then return nil end
+    return x, y, w, h, info
+end
+
+function W:ReconcileIdleGeometry(reason)
+    local seen, repaired, failed = {}, 0, 0
+    local function Check(window, owner, id, busy)
+        if window == nil or seen[window] then return end
+        seen[window] = true
+        if busy == true or (type(UI.GetNativeGeometryLease) == "function" and UI:GetNativeGeometryLease(window) ~= nil) then
+            W.metrics.positionBusySkips = (tonumber(W.metrics.positionBusySkips) or 0) + 1
+            return
+        end
+        local visibleOk, visible = pcall(function() return window:IsVisible() end)
+        if not visibleOk or visible ~= true then return end
+        local ex, ey, ew, eh = CachedTopLevelRect(window)
+        local cacheRow = UI.NativeStateCache and UI.NativeStateCache[window]
+        local pending = type(cacheRow) == "table" and cacheRow.positionPending or nil
+        -- Native 拒绝后 ApplyGeometry 会回滚到观察到的矩形（可能正是偏移位置）。
+        -- 仅在同一缓存行保留这个尚未完成的请求供有限 settle 重试，不能把回滚位置当用户意图。
+        -- 它不是持久位置：新的布局/手势、缓存释放、成功恢复都会丢弃该请求。
+        if type(pending) == "table" then ex, ey, ew, eh = pending.x, pending.y, pending.width, pending.height end
+        if ex == nil then
+            W.metrics.positionReadUnavailable = (tonumber(W.metrics.positionReadUnavailable) or 0) + 1
+            return
+        end
+        local x, y, w, h, info = LivePositionRect(window)
+        W.metrics.positionChecks = (tonumber(W.metrics.positionChecks) or 0) + 1
+        if x == nil then
+            W.metrics.positionReadUnavailable = (tonumber(W.metrics.positionReadUnavailable) or 0) + 1
+            return
+        end
+        -- 允许一个 Native 像素的舍入误差，不把整数 readback 当作新的持久坐标。
+        local epsilon = math.max(1, 1 / math.max(0.01, tonumber(info.effectiveScale) or 1))
+        local function Matches(ax, ay, aw, ah)
+            return ax ~= nil and math.abs(ax-ex) <= epsilon and math.abs(ay-ey) <= epsilon
+                and math.abs(aw-ew) <= epsilon and math.abs(ah-eh) <= epsilon
+        end
+        -- 即使 Native 自己延迟恢复了目标，尚未完成的请求也要走提交边沿重新 prime 镜像；
+        -- 不能清掉 pending 却留下旧回滚坐标，否则下一次 settle 会把正确位置再推回去。
+        if Matches(x,y,w,h) and pending == nil then return end
+        local record = { id=tostring(id), reason=tostring(reason or "native_geometry"),
+            expectedX=ex, expectedY=ey, expectedWidth=ew, expectedHeight=eh,
+            observedX=x, observedY=y, observedWidth=w, observedHeight=h,
+            effectiveScale=info.effectiveScale, generation=S.Generation }
+        local called, accepted, detail = pcall(W.ApplyGeometry, W, window, owner, ex, ey, ew, eh, true)
+        if called and accepted == true then
+            local ax, ay, aw, ah = LivePositionRect(window)
+            accepted = Matches(ax,ay,aw,ah)
+            if not accepted then detail = "native_geometry_readback_unconfirmed" end
+        end
+        if not called or accepted ~= true then
+            failed = failed + 1
+            W.metrics.positionRepairFailures = (tonumber(W.metrics.positionRepairFailures) or 0) + 1
+            record.error = tostring(called and detail or accepted or "native_geometry_repair_failed")
+        else
+            repaired = repaired + 1
+            W.metrics.positionRepairs = (tonumber(W.metrics.positionRepairs) or 0) + 1
+            record.verified = true
+        end
+        -- 每控件最多一条冷路径证据；不留历史、不持有旧 generation，也不是第二套位置 Authority。
+        local row = UI.NativeStateCache and UI.NativeStateCache[window]
+        if row then
+            row.positionRecovery = record
+            if not called or accepted ~= true then
+                row.positionPending = { x=ex, y=ey, width=ew, height=eh }
+            else row.positionPending = nil end
+        end
+        W.metrics.positionLastRecovery = record
+    end
+    for id, controller in pairs(self.bindings or {}) do
+        if controller.enabled == true then Check(controller.window, controller.owner, id, controller:IsInteracting()) end
+    end
+    -- 独立屏幕按钮只可由其拥有者显式加入；Core 不点名 Gear/方案等业务，也不扫描 Feature。
+    local function Registered(registry)
+        for id, item in pairs(registry or {}) do
+            local opts = item and item.options
+            if type(opts) == "table" and type(opts.positionOwner) == "string" and opts.positionOwner ~= ""
+                and type(opts.isPositionInteracting) == "function" then
+                local ok, busy = pcall(opts.isPositionInteracting)
+                Check(item.widget, opts.positionOwner, id, not ok or busy ~= false)
+            end
+        end
+    end
+    Registered(S.Layout and S.Layout.floatingRegistry)
+    Registered(S.Layout and S.Layout.screenSnapRegistry)
+    return failed == 0, repaired, failed
+end
+
+-- 按需取证：只复制标量，不把 Native 对象、回调、用户档或缓存引用交给报告。
+local function PositionScalars(source)
+    local out = {}
+    for key, value in pairs(type(source) == "table" and source or {}) do
+        local kind = type(value)
+        if type(key) == "string" and (kind == "number" or kind == "boolean" or kind == "string") then out[key] = value end
+    end
+    return out
+end
+
+local function PositionRawPair(widget, method, a, b)
+    if widget == nil or type(widget[method]) ~= "function" then return { known=false, error="unavailable" } end
+    local ok, first, second = pcall(widget[method], widget)
+    if not ok then return { known=false, error=tostring(first):sub(1,240) } end
+    first, second = PositionNumber(first), PositionNumber(second)
+    if first == nil or second == nil then return { known=false, error="non_finite_pair" } end
+    return { known=true, [a]=first, [b]=second }
+end
+
+function W:GetGeometryDiagnostics(window)
+    local x,y,w,h = CachedTopLevelRect(window)
+    local ax,ay,aw,ah,info = LivePositionRect(window)
+    local row = UI.NativeStateCache and UI.NativeStateCache[window]
+    local out = { patch="ui-position-reload-1", expected={known=x~=nil,x=x,y=y,width=w,height=h},
+        observed={known=ax~=nil,x=ax,y=ay,width=aw,height=ah},
+        rawOffset=PositionRawPair(window,"GetOffset","x","y"),
+        rawExtent=PositionRawPair(window,"GetExtent","width","height"),
+        effectiveOffset=PositionRawPair(window,"GetEffectiveOffset","x","y"),
+        effectiveExtent=PositionRawPair(window,"GetEffectiveExtent","width","height") }
+    if info then out.observed.source=info.source;out.observed.effectiveScale=info.effectiveScale;out.observed.scaleSource=info.scaleSource end
+    if x~=nil and ax~=nil then
+        local epsilon=math.max(1,1/math.max(.01,tonumber(info and info.effectiveScale) or 1))
+        out.deltaX,out.deltaY=ax-x,ay-y
+        out.drifted=math.abs(ax-x)>epsilon or math.abs(ay-y)>epsilon or math.abs(aw-w)>epsilon or math.abs(ah-h)>epsilon
+    end
+    if type(row)=="table" then
+        if row.positionRecovery then out.lastRecovery=PositionScalars(row.positionRecovery) end
+        if row.positionPending then out.pendingRetry=PositionScalars(row.positionPending) end
+    end
+    return out
+end
+
+function W:GetPositionDiagnostics()
+    local entries, seen, providers = {}, {}, {}
+    local layout = S.Layout
+    local out = { patch="ui-position-reload-1", generation=S.Generation, contractVersion=self.ReloadPositionReconciliationContractVersion,
+        metrics=PositionScalars(self.metrics), windows={}, providerFailures=0,
+        environment=PositionScalars(layout and layout:GetContext()),
+        notifications=PositionScalars(layout and layout.metricsNotifications),
+        rootOffset=PositionRawPair(UIParent,"GetEffectiveOffset","x","y"),
+        rootExtent=PositionRawPair(UIParent,"GetEffectiveExtent","width","height"),
+        rootLogicalExtent=PositionRawPair(UIParent,"GetExtent","width","height") }
+    local function Add(id,window,owner,busy)
+        if window==nil or seen[window] then return end
+        seen[window]=true;entries[#entries+1]={id=tostring(id),window=window,owner=owner,interacting=busy}
+    end
+    -- 已创建的 Shell/主窗 + 显式注册的独立按钮；不 EnsureLoaded/Acquire/Create/Apply。
+    for id,controller in pairs(self.bindings or {}) do Add(id,controller.window,controller.owner,controller:IsInteracting()) end
+    for _,registry in ipairs({layout and layout.floatingRegistry or {},layout and layout.screenSnapRegistry or {}}) do
+        for id,item in pairs(registry) do
+            local opts=item.options or {}
+            if type(opts.getPlacementDiagnostics)=="function" then providers[item.widget]=opts.getPlacementDiagnostics end
+            if type(opts.positionOwner)=="string" and type(opts.isPositionInteracting)=="function" then
+                local ok,busy=pcall(opts.isPositionInteracting)
+                Add(id,item.widget,opts.positionOwner,not ok or busy~=false)
+            end
+        end
+    end
+    table.sort(entries,function(a,b)return a.id<b.id end)
+    out.total=#entries;out.omitted=math.max(0,#entries-64)
+    for i=1,math.min(#entries,64) do
+        local entry=entries[i];local window=entry.window
+        local row={id=entry.id,owner=entry.owner,interacting=entry.interacting}
+        local ok,visible=pcall(function()return window:IsVisible()end)
+        row.visibleKnown=ok and type(visible)=="boolean";row.visible=row.visibleKnown and visible or false
+        local provider=providers[window]
+        if provider then
+            local accepted,placement=pcall(provider)
+            if accepted and type(placement)=="table" then
+                row.placement=PositionScalars(placement)
+                -- Shell 已读取相同 Native 证据时直接消费该新快照，避免重复取样。
+                if type(placement.geometry)=="table" then row.geometry=placement.geometry end
+            else
+                out.providerFailures=out.providerFailures+1
+                row.placementError=tostring(accepted and "placement_snapshot_unavailable" or placement):sub(1,240)
+            end
+        end
+        if not row.geometry then row.geometry=self:GetGeometryDiagnostics(window) end
+        out.windows[#out.windows+1]=row
+    end
+    return out
 end
 
 local function ReconcileWindow(controller, window, owner, x, y, width, height)

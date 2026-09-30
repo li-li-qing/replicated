@@ -318,6 +318,22 @@ local function BuildReport(self, mode)
         end
     end
     end
+    -- 维护（ui-position-reload-1）：普通分页诊断也保留窗口位置证据，不要求先打开各模块。
+    -- 只读取现有 Native/缓存，不移动窗口、不改存档；逐窗分节，避免一个大数组先被 32KiB 截断。
+    local windowing=S.RSUI and S.RSUI.Windowing
+    if windowing and type(windowing.GetPositionDiagnostics)=="function" then
+        local ok,positions=pcall(windowing.GetPositionDiagnostics,windowing)
+        if ok and type(positions)=="table" then
+            local summary={};for key,value in pairs(positions)do if key~="windows" then summary[key]=value end end
+            Section("UI_POSITION",summary)
+            for _,row in ipairs(type(positions.windows)=="table" and positions.windows or {})do Section("UI_WINDOW",row)end
+            if (tonumber(positions.omitted)or 0)>0 or (tonumber(positions.providerFailures)or 0)>0 then meta.partial=true end
+            meta.providersFailed=meta.providersFailed+(tonumber(positions.providerFailures)or 0)
+        else
+            meta.partial=true;meta.providersFailed=meta.providersFailed+1
+            Add("[UI_POSITION] ERROR "..Clip(positions,4096))
+        end
+    end
     -- 维护：点击“打印”即显式只读取证请求。枚举当前加载/保存失败 Store，无需切换页面逐个
     -- 复制；每个最多一次 Native LoadData，失败独立记录。Core 仍检查 scope/预算/权限。
     local ok,choices=pcall(self.GetPersistenceFailureChoices,self)

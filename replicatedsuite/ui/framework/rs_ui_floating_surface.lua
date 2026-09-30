@@ -494,6 +494,8 @@ function F:Create(spec)
             -- 只复制标量，不追加历史，不读取磁盘；迁移本身仍不会触发 Save。
             if saved==true and reason=="geometry" and surface.shell and surface.shell.placementInfo then
                 local info=surface.shell.placementInfo
+                -- 维护（ui-position-reload-1）：只更新诊断镜像；真实 x/y 已由原 StorePlacementRect 提交。
+                info.savedX,info.savedY=target.x,target.y
                 for _,key in ipairs({"savedUiScale","savedLogicalWidth","savedLogicalHeight","normalizedCenterX","normalizedCenterY"})do info[key]=target[key] end
                 info.lastUserGeometryKind=tostring(snapshot.geometryKind or "")
             end

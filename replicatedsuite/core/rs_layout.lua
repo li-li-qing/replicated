@@ -468,9 +468,24 @@ end
 -- 实现边界：生命周期 Signal 仍立即采样，但随后开启一个严格有界的 one-shot 序列；每次新 Signal
 -- 都废弃并重启旧序列，使 ENTERED_WORLD/LEFT_LOADING 成为新的稳定观察起点。序列最多 8 次、约
 -- 15.5 秒，足以覆盖慢登录/切角色，同时没有永久 Tick、没有 Feature 扫描循环；签名不变时只读取
--- 几个 viewport 标量，不触发 Presentation reflow。Generation/epoch/serial 三层隔离保证重载或
+-- viewport 与已存在窗口的只读几何；仅发现偏移才重放同一矩形，不触发业务刷新。
+-- Generation/epoch/serial 三层隔离保证重载或
 -- Stop 后的迟到回调不能继续改布局。风险仅是启动期增加少量低频 UI metrics 读取。
 local METRICS_SETTLE_DELAYS_MS = { 150, 350, 700, 1200, 1800, 2600, 3600, 5000 }
+
+-- 维护（2026-09-30，ui-position-reload-1）：尺寸签名相同不等于 Native 窗口未被重置。
+-- 复用 Windowing 现有 owner/cache，在启动有界观察窗口内独立核对几何；不启用业务、不保存位置。
+function L:ReconcileWindowGeometry(reason)
+    local windowing = S.RSUI and S.RSUI.Windowing
+    if not windowing or type(windowing.ReconcileIdleGeometry) ~= "function" then return true end
+    local ok, accepted, repaired, failures = pcall(windowing.ReconcileIdleGeometry, windowing, reason)
+    if type(self.metricsNotifications) == "table" then
+        self.metricsNotifications.geometryReconciles = (tonumber(self.metricsNotifications.geometryReconciles) or 0) + 1
+        self.metricsNotifications.geometryReconcileError = (not ok or accepted ~= true)
+            and tostring(ok and failures or accepted or "geometry_reconcile_failed") or nil
+    end
+    return ok and accepted == true, repaired, failures
+end
 
 function L:StartMetricsEvents()
     if self.metricsEventsRunning then return true end
@@ -512,7 +527,8 @@ function L:StartMetricsEvents()
                 if not L.metricsEventsRunning or L.metricsEventsEpoch ~= epoch or S.Generation ~= generation
                     or L.metricsSettleSerial ~= serial then return true end
                 L.metricsSettlePending = false
-                L:PollChanges()
+                local changed = L:PollChanges()
+                if changed ~= true then L:ReconcileWindowGeometry("metrics_settle:" .. tostring(attempt)) end
                 local context = L:GetContext()
                 L.metricsNotifications.settleAttempts = (tonumber(L.metricsNotifications.settleAttempts) or 0) + 1
                 L.metricsNotifications.lastReady = context.metricsReady == true
@@ -546,7 +562,10 @@ function L:StartMetricsEvents()
         -- / UI_RELOADED 只重置 TextStyle），仍必须发布一次 UI 环境 revision，供手工样式 Presenter
         -- 失效旧 Native cache。禁止在这里直接操作任何 Feature/UI 控件。
         local changed = L:PollChanges()
-        if changed ~= true then L:BumpUiEnvironmentRevision("native_signal:" .. tostring(reason or "unknown")) end
+        if changed ~= true then
+            L:BumpUiEnvironmentRevision("native_signal:" .. tostring(reason or "unknown"))
+            L:ReconcileWindowGeometry("native_signal:" .. tostring(reason or "unknown"))
+        end
         ScheduleSettle(reason)
     end
     if S.Api and type(S.Api.StartUiMetricsNotifications) == "function" then
@@ -1466,8 +1485,13 @@ function L:ResolveWindowPlacement(placement, width, height, defaultX, defaultY, 
     local sw, sh = p and Finite(p.savedLogicalWidth), p and Finite(p.savedLogicalHeight)
     local ss = p and Finite(p.savedUiScale)
     local known = sw ~= nil and sh ~= nil and sw > 0 and sh > 0
-    local changed = known and (math.abs(sw-c.logicalWidth)>=0.5 or math.abs(sh-c.logicalHeight)>=0.5) or false
-    if ss ~= nil and ss > 0 and math.abs(ss-c.uiScale)>=0.0005 then changed = true end
+    -- 维护（ui-position-reload-1）：UIParent 整数 extent 的像素级舍入（如 1280/1279）
+    -- 不能触发“旧展开中心 - 当前 compact 半宽”，否则 1px 度量差会放大为上百像素位移。
+    -- 容差仅吞掉约一个原生像素；真实分辨率迁移仍按中心比例，边界安全夹紧仍照常执行。
+    local roundingTolerance = math.max(1,1/math.max(.2,c.uiScale),1/math.max(.2,ss or c.uiScale))
+    local logicalChanged = known and (math.abs(sw-c.logicalWidth)>roundingTolerance or math.abs(sh-c.logicalHeight)>roundingTolerance) or false
+    local scaleChanged = ss ~= nil and ss > 0 and math.abs(ss-c.uiScale)>=0.0005 or false
+    local changed = logicalChanged or scaleChanged
     local source = "default"
     local rx, ry = p and Finite(p.normalizedCenterX), p and Finite(p.normalizedCenterY)
     if rx ~= nil and (rx < -2 or rx > 3) then rx = nil end
@@ -1477,10 +1501,13 @@ function L:ResolveWindowPlacement(placement, width, height, defaultX, defaultY, 
     if intent and hasXY then
         x, y = Finite(p.x), Finite(p.y)
         source = known and "same_viewport_exact" or "legacy_recovery"
-        if changed and known and rx ~= nil and ry ~= nil then
+        -- 维护（2026-09-30，ui-position-reload-1）：只有逻辑视口变化才重投影中心。
+        -- UI Scale 变化但 logical canvas 相同，x/y 本来就是同一单位；若上次保存时为展开窗、
+        -- 此时已最小化，拿旧中心减新半宽会凭空右移 (旧宽-新宽)/2。反向展开也会左移。
+        if logicalChanged and rx ~= nil and ry ~= nil then
             x, y = rx*c.logicalWidth-w*0.5, ry*c.logicalHeight-h*0.5
             source = "normalized_reproject"
-        elseif changed then source = "legacy_recovery" end
+        elseif changed and not known then source = "legacy_recovery" end
     elseif intent and (p.anchorH ~= nil or p.anchorV ~= nil or p.offsetX ~= nil or p.offsetY ~= nil) then
         local ox, oy = math.max(0,Finite(p.offsetX,0)), math.max(0,Finite(p.offsetY,0))
         x = p.anchorH == "RIGHT" and c.logicalWidth-c.safeRight-ox-w or c.safeLeft+ox
@@ -1507,6 +1534,8 @@ function L:ResolveWindowPlacement(placement, width, height, defaultX, defaultY, 
         or (changed and "resolution_migration" or (not recoverable and "legacy_recovery" or (fit and "runtime_size_fit" or "none")))
     return x,y,w,h,{
         coordinateSpace="logical-free-v2", placementSource=source, viewportChanged=changed,
+        logicalViewportChanged=logicalChanged, uiScaleChanged=scaleChanged, logicalRoundingTolerance=roundingTolerance,
+        savedX=p and Finite(p.x), savedY=p and Finite(p.y),
         migrationApplied=changed or clamped or fit, clampApplied=clamped, fitApplied=fit, recoveryReason=recovery,
         preferredWidth=pw,preferredHeight=ph,savedLogicalWidth=sw,savedLogicalHeight=sh,savedUiScale=ss,
         normalizedCenterX=rx,normalizedCenterY=ry,currentLogicalWidth=c.logicalWidth,currentLogicalHeight=c.logicalHeight,

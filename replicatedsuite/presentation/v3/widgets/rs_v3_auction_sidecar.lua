@@ -149,11 +149,18 @@ local function DailyRows()
         local taskTitle = Trim(task.title)
         if taskTitle == "" then taskTitle = qid > 0 and ("居民做货任务 #" .. tostring(qid)) or "居民做货任务" end
         local recipes = type(task.recipes) == "table" and task.recipes or {}
+        -- 中文维护注释（2026-09-30，daily-auction-title-recovery-1）：保留未匹配任务的标题，
+        -- 但不能把已选配方当作“材料已解析”。本层只显示服务结论，不猜材料、不发后台拍卖搜索。
+        local taskStatus = "等待材料"
+        if task.materialStatus == "unresolved" then
+            taskStatus = task.matchReason == "zone_unmatched" and "地区待匹配" or "配方待匹配"
+        elseif task.requiresSelection == true then taskStatus = "请选择货物 · " .. tostring(#recipes) .. "候选"
+        elseif #(task.materials or {}) > 0 then taskStatus = "材料已解析"
+        elseif task.selectedRecipe ~= nil then taskStatus = "材料未就绪" end
         rows[#rows + 1] = {
             key = "daily:task:" .. tostring(qid), kind = "daily_task", questId = qid,
             name = taskTitle,
-            status = task.requiresSelection == true and ("请选择货物 · " .. tostring(#recipes) .. "候选")
-                or (task.selectedRecipe ~= nil and "材料已解析" or "等待材料"),
+            status = taskStatus,
         }
         -- 中文维护注释（多候选任务 UI）：recipes 是“任选其一”的候选集合。列表只提供候选选择，绝不把
         -- 候选配方材料求和。recipeOptions 若有已本地化名称则优先使用；否则只显示“候选货物 N”，禁止把
@@ -650,7 +657,12 @@ local function CreateSidecar()
         if #rows == 0 then
             local title, detail = "暂无数据", ""
             if self.activeTab == "favorites" then title, detail = "暂无收藏", "输入物品名称后点击“添加”。"
-            elseif self.activeTab == "daily" then title, detail = "今日没有已识别的做货任务", "只读取当前活动任务；多候选任务需要先选择本次制作货物。"
+            elseif self.activeTab == "daily" then
+                if (tonumber(projection.pendingTitleCount) or 0) > 0 then
+                    title, detail = "任务标题尚未就绪", tostring(projection.pendingTitleCount) .. " 个活动任务标题等待游戏数据更新；不会猜测做货材料。"
+                elseif projection.status == "unavailable" then
+                    title, detail = "任务数据暂不可用", tostring(projection.error or "请查看拍卖助手诊断。")
+                else title, detail = "今日没有已识别的做货任务", "只读取当前活动任务；多候选任务需要先选择本次制作货物。" end
             else title, detail = "临时清单为空", "可从跑商详情加入材料，或在上方手工添加。" end
             self.table:SetViewState("empty", { title = title, detail = detail })
         else self.table:SetViewState("ready") end
@@ -662,7 +674,13 @@ local function CreateSidecar()
         end
         UpdateActionButtons()
         local label = self.activeTab == "favorites" and "收藏" or (self.activeTab == "daily" and "今日任务" or "临时")
-        self.surface:SetStatus(label .. " · " .. tostring(#rows) .. " 行", "muted")
+        local footer = label .. " · " .. tostring(#rows) .. " 行"
+        if self.activeTab == "daily" then
+            footer = label .. " · " .. tostring(#(projection.tasks or {})) .. " 项任务"
+            if (tonumber(projection.unresolvedTaskCount) or 0) > 0 then footer = footer .. " · " .. tostring(projection.unresolvedTaskCount) .. " 待匹配" end
+            if (tonumber(projection.pendingTitleCount) or 0) > 0 then footer = footer .. " · " .. tostring(projection.pendingTitleCount) .. " 待标题" end
+        end
+        self.surface:SetStatus(footer, "muted")
         return true
     end
 

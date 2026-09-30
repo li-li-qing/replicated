@@ -16,7 +16,7 @@ local function Boot()
         function e:GetText()return self.text end
         function e:SetReadOnly(v)calls.readonly=calls.readonly+1;self.readonly=v;return true end
         function e:EnableKeyboard(v)calls.keyboard=calls.keyboard+1;self.keyboard=v;return true end
-        function e:SetFocus()calls.focus=calls.focus+1;focusId=self.rsNativePhysicalId;return true end
+        function e:SetFocus()calls.focus=calls.focus+1;focusId=self.rsNativePhysicalId;self.selected=false;return true end
         function e:ClearFocus()calls.clear=calls.clear+1;if focusId==self.rsNativePhysicalId then focusId=nil end;return true end
         function e:Show(v)self.visible=v;return true end
         function e:SetExtent(ww,hh)calls.extent=calls.extent+1;self.w,self.h=ww,hh;self.selected=false;return true end
@@ -62,6 +62,60 @@ end)
 Test('telemetry never includes report body',function()
     local S,UI,box,c=Boot();box:SetPageText('SECRET_REPORT_BODY');c.edit.handlers.OnClick();c.edit.handlers.OnLostFocus();local d=box:GetDiagnostics()
     assert(d.text==nil and d.report==nil and d.body==nil and d.textWrites==1 and d.lostFocusNotifications==1)
+end)
+-- Native boundary deliberately collapses selection on SetFocus, like the existing
+-- ordinary report host. This proves we do not depend on redundant focus being harmless.
+Test('repeat click does not replay focus or keyboard while selection belongs to this box',function()
+    local S,UI,box,c=Boot();box:SetPageText('PERSIST_SELECTION');box:Activate('page_ready');c.edit:SelectForTest()
+    local f,k=c.focus,c.keyboard;assert(c.edit.handlers.OnClick())
+    assert(c.edit:CopyForTest()=='PERSIST_SELECTION','repeat OnClick destroyed selected report')
+    assert(c.focus==f and c.keyboard==k,'repeat activation must perform zero Native focus/keyboard writes')
+end)
+Test('many duplicate activation notifications do not collapse a selected page',function()
+    local S,UI,box,c=Boot();box:SetPageText('ALL_BYTES');box:Activate();c.edit:SelectForTest()
+    for i=1,20 do assert(box:Activate('click'));assert(c.edit.handlers.OnLostFocus()) end
+    assert(c.edit:CopyForTest()=='ALL_BYTES','selection collapsed by duplicate activation')
+    assert(c.schedule==0 and c.text==1)
+end)
+Test('focus published before keyboard promotion still requires a new SetFocus',function()
+    local S,UI,box,c=Boot();GetFocusedWidgetId=function()return c.edit.rsNativePhysicalId end
+    c.edit.rsUiKeyboardArmed=false;local f=c.focus
+    assert(box:Activate());assert(c.focus==f+1 and c.edit.keyboard,'first promotion skipped edit-mode focus')
+end)
+Test('known logical focus identity preserves selection without replay',function()
+    local S,UI,box,c=Boot();c.edit.rsNativeLogicalId='logical_diag';box:SetPageText('LOGICAL');box:Activate();c.edit:SelectForTest()
+    GetFocusedWidgetId=function()return 'logical_diag' end
+    local f,k=c.focus,c.keyboard;assert(box:Activate());assert(c.focus==f and c.keyboard==k,'logical focus was not recognised')
+end)
+Test('external focus requires explicit reacquisition but not another keyboard toggle',function()
+    local S,UI,box,c=Boot();box:Activate();GetFocusedWidgetId=function()return 'native_chat' end
+    local f,k=c.focus,c.keyboard;assert(box:Activate('click'))
+    assert(c.focus==f+1 and c.keyboard==k,'reacquire must not replay keyboard true')
+end)
+Test('focus query failure never invents an already focused fast path',function()
+    local S,UI,box,c=Boot();box:Activate();GetFocusedWidgetId=function()error('focus unavailable')end
+    local f=c.focus;assert(box:Activate());assert(c.focus==f+1)
+    assert(box:GetDiagnostics().focusKnown==false,'unknown focus must be explicit')
+end)
+Test('diagnostics distinguishes selected-buffer readiness from clipboard success',function()
+    local S,UI,box,c=Boot();box:SetPageText('NO_BODY_EXPORT');box:Activate();box:Activate()
+    local d=box:GetDiagnostics();assert(d.patch=='diagnostic-copy-selection-1' and d.focusKnown==true and d.focused==true)
+    assert(d.reusedFocus==1 and d.text==nil and d.clipboardVerified==false,'must not claim OS clipboard verification')
+end)
+Test('retired copy widget cannot rearm from a delayed click',function()
+    local S,UI,box,c=Boot();box:Activate();box:Destroy();local f,k=c.focus,c.keyboard
+    assert(c.edit.handlers.OnClick()==false,'destroyed box reactivated');assert(c.focus==f and c.keyboard==k)
+end)
+Test('ordinary-input retirement is also honoured by copy activation',function()
+    local S,UI,box,c=Boot();c.edit.rsUiInputLifecycleRetired=true
+    assert(box:Activate()==false and c.focus==0 and c.keyboard==0)
+end)
+Test('rejected keyboard activation and focus failure remain visible failures',function()
+    local S,UI,box,c=Boot();c.edit.EnableKeyboard=function()return false end
+    assert(box:Activate()==false and c.focus==0)
+    assert(box:GetDiagnostics().lastActivationError~=nil,'error evidence omitted')
+    S,UI,box,c=Boot();c.edit.SetFocus=function()return false end
+    assert(box:Activate()==false and c.edit.rsUiKeyboardArmed==false)
 end)
 print('DIAGNOSTIC COPY BOX RESULT '..passed..' passed / '..failed..' failed ('.._VERSION..')')
 if failed>0 then error('diagnostic copy box failures: '..failed)end

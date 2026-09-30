@@ -162,6 +162,7 @@ end)
 --   * GetStartupEnableIntent / OnStartupEnableIntentCommitted / ShouldShowQuickButtons 三个函数存在
 -- 语义保持：Gear 的旧版快速意图只做一次性修复，持久化的快速按钮可见性仍以用户偏好为 Authority。
 -- 边界：同一判定里的 FeatureRuntime 启动意图契约版本留在 Foundation（那是 Core 侧，不是 Feature 债）。
+-- 维护（2026-09-30，refactor-live-gate-1）：显式接回只读运行时诊断；完整序列仍保留给离线验收。
 G:RegisterSequenceCase("v3_m4_gear_quick_startup_intent_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if (tonumber(F.QuickStartupIntentContractVersion) or 0) < 1 then return Fail("quick_startup_intent_contract_version") end
@@ -169,4 +170,4 @@ G:RegisterSequenceCase("v3_m4_gear_quick_startup_intent_contract", function()
     if type(F.OnStartupEnableIntentCommitted) ~= "function" then return Fail("startup_enable_intent_commit_hook") end
     if type(F.ShouldShowQuickButtons) ~= "function" then return Fail("quick_buttons_visibility_reader") end
     return true
-end)
+end, { runtime = true })

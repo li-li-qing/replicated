@@ -54,17 +54,20 @@ require('reason == "presentation" and type(self.resourceTotals) == "table"' in b
         and 'self.resourceReads = (tonumber(self.resourceReads) or 0) + 1' in bonds
         and 'resourceReads = tonumber(BA.resourceReads) or 0' in bonds,
         "presentation-only dropdown refresh reuses cached resource totals")
-require('BondBoardLineCount(boards, 3) > 0 and BondBoardLineCount(boards, 4) > 0' in bonds,
-        "mainland family uses boards 3/4 evidence")
-require('BondBoardLineCount(boards, 5) > 0 or BondBoardLineCount(boards, 6) > 0' in bonds,
-        "Auroria family uses boards 5/6 evidence")
+# 2026-09-30: 3/4 and 5/6 were sufficient examples, not exclusive requirements.
+# Behavior (partial input, mixed families, stale faction, retries) runs in the default Lua suite.
+require('for index = 1, 4 do mainlandReady' in bonds and 'for index = 5, 7 do auroriaReady' in bonds
+        and 'mixed_board_families' in bonds and 'location_faction_conflict' in bonds,
+        "partial board families require unambiguous continent evidence")
 require('forceRead = reason == "page_manual"' in bonds and 'demandProbe = reason == "demand_start" or reason == "initial"' in bonds
         and 'boundaryProbe = reason == "zone_changed" or reason == "entered_world"' in bonds
-        and 'local shouldRead = forceRead or demandProbe or boundaryProbe' in bonds,
-        "manual, Demand 0->1 and zone-boundary board probing")
+        and 'local shouldRead = not projectionOnly and dateReady' in bonds,
+        "board probing excludes pure projection events and undated observations")
 require('SubscribeOptional("ENTER_ANOTHER_ZONEGROUP"' in bonds and 'SubscribeOptional("ENTERED_WORLD"' in bonds
-        and 'AddOneShot(BONDS_ZONE_REFRESH_TASK, 750' in bonds and 'RemoveTask(BONDS_ZONE_REFRESH_TASK)' in bonds,
-        "resident-board zone transitions use one debounced scheduler one-shot")
+        and 'SubscribeOptional("LEFT_LOADING"' in bonds and 'BONDS_LOCATION_DELAYS = { 750, 1500, 3000 }' in bonds
+        and 'AddOneShot(BONDS_ZONE_REFRESH_TASK, delay' in bonds and 'RemoveTask(BONDS_ZONE_REFRESH_TASK)' in bonds
+        and 'S.Generation ~= generation' in bonds and 'Bonds.locationEpoch ~= epoch' in bonds,
+        "resident-board recovery is bounded, cancellable and generation guarded")
 require("BondSnapshotLineCount(out) > 0 and out or nil" in bonds, "empty snapshots rejected")
 require("local function MergeBondSnapshot(previous, captured, continentKey)" in bonds
         and 'probe.captureAction = "merged_new_board_lines"' in bonds
@@ -106,8 +109,10 @@ require("ResidentBoardFamilyContractVersion" in acceptance and "SetFilterMask" i
         "Bonds acceptance requires material-sort contracts")
 require("bondsDropdownControlsContractVersion" in v3_acceptance and "bondsResidentBoardFamilyContractVersion" in v3_acceptance,
         "V3 acceptance requires Bonds dropdown/family contracts")
-require("Bonds.ResidentBoardFamilyContractVersion" in gate and "bondsDropdownControlsContractVersion" in gate,
-        "Foundation gate rejects mixed old/new Bonds files")
+# 维护（2026-09-30）：Phase 3 的 Feature 判定归 acceptance；Core 仍验 UIV3，且必须执行只读通道。
+require("F.ResidentBoardFamilyContractVersion" in acceptance and "runtime = true" in acceptance
+        and "bondsDropdownControlsContractVersion" in gate and "self:RunRuntimeContracts(report)" in gate,
+        "feature-owned live gate and Core presentation gate reject mixed old/new Bonds files")
 require("进入西/东/原大陆可读居民板区域后点刷新" in diagnostics and "cache.lastBoardProbe" in diagnostics,
         "Bonds diagnostics exposes Auroria probe evidence")
 

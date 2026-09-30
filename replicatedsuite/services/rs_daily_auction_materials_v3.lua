@@ -12,6 +12,10 @@ S.Services = S.Services or {}
 local D = {
     version = 1,
     DailyMaterialContractVersion = 2,
+    patch = "daily-auction-title-recovery-1",
+    pendingTitles = {}, lastQuestRefreshEpoch = nil,
+    titleRetryReads = 0, titleRecoveries = 0,
+    nativeQuestLease = false, nativeQuestLeaseState = "idle",
     Id = "v3.daily_auction_materials",
     Topic = "v3.daily_auction_materials.updated",
     presentationBoundary = "service_only",
@@ -102,10 +106,26 @@ end
 
 function D:GetSnapshot() return Copy(self.snapshot) end
 function D:GetDiagnosticsSnapshot()
-    local snap = self.snapshot or {}
-    return { version=1, status=snap.status, consumerCount=self.consumerCount, activeQuestCount=snap.activeQuestCount or 0,
+    -- 仅返回已采集证据；打印报告不能触发任务刷新、材料搜索或取得 Consumer。
+    local snap, tasks = self.snapshot or {}, {}
+    for _, task in ipairs(snap.tasks or {}) do
+        local hiddenCount = 0
+        for _, row in ipairs(task.materials or {}) do if row.hidden == true then hiddenCount = hiddenCount + 1 end end
+        if #tasks < 12 then
+            tasks[#tasks + 1] = { questId=task.questId, title=task.title, originZoneId=task.originZoneId,
+                discoverySource=task.discoverySource, materialStatus=task.materialStatus, matchReason=task.matchReason,
+                selectedRecipe=task.selectedRecipe, requiresSelection=task.requiresSelection == true,
+                materialCount=#(task.materials or {}), hiddenMaterialCount=hiddenCount }
+        end
+    end
+    return { version=1, patch=self.patch, status=snap.status, consumerCount=self.consumerCount, activeQuestCount=snap.activeQuestCount or 0,
         knownActiveCount=snap.knownActiveCount or 0, titleMatchedCount=snap.titleMatchedCount or 0, unresolvedTradeLikeCount=snap.unresolvedTradeLikeCount or 0,
-        unresolvedTradeLike=Copy(snap.unresolvedTradeLike or {}), reason=snap.reason }
+        unresolvedTradeLike=Copy(snap.unresolvedTradeLike or {}), unresolvedTaskCount=snap.unresolvedTaskCount or 0,
+        pendingTitleCount=snap.pendingTitleCount or 0, pendingTitles=Copy(snap.pendingTitles or {}),
+        taskCount=#(snap.tasks or {}), tasks=tasks, tasksOmitted=math.max(0, #(snap.tasks or {}) - #tasks),
+        titleRetryReads=self.titleRetryReads, titleRecoveries=self.titleRecoveries,
+        nativeQuestLeaseState=self.nativeQuestLeaseState, nativeQuestLeaseError=self.nativeQuestLeaseError,
+        lastQuestRefreshEpoch=self.lastQuestRefreshEpoch, reason=snap.reason }
 end
 
 function D:Refresh(reason)
@@ -121,6 +141,7 @@ function D:Refresh(reason)
         self.snapshot = { status = "unavailable", tasks = {}, revision = self.revision, error = "TradeMaterialIdentityV3 不可用" }
         Publish(self); return false, self.snapshot.error
     end
+    self.lastQuestRefreshEpoch = tonumber(quest.refreshEpoch)
     local configs = S.Data and S.Data.DailyTradePackQuestRecipes or {}
     local ids = {}; for _, entry in ipairs(configs) do if tonumber(entry.questId) ~= nil then ids[#ids + 1] = math.floor(tonumber(entry.questId)) end end
     local facts = quest:GetActiveQuestStates(ids) or {}
@@ -153,7 +174,7 @@ function D:Refresh(reason)
             if selected ~= nil then
                 local resolved = identity:ResolveStatic(selected, nil)
                 if type(resolved) == "table" and type(resolved.rows) == "table" then
-task.materials = BuildMaterialRows(self, identity, qid, selected, resolved)
+                    task.materials = BuildMaterialRows(self, identity, qid, selected, resolved)
                     task.materialStatus = #task.materials > 0 and "ready" or "empty"
                 else
                     task.materialStatus = "unavailable"
@@ -166,40 +187,66 @@ task.materials = BuildMaterialRows(self, identity, qid, selected, resolved)
     -- 已核交付 QuestId，但实机任务“[特产-西部] 黄金平原的保存特产”属于明确区域+品类的制作日常，
     -- 其 QuestId 不应靠猜补白名单。这里消费 QuestProgressV3 detached 活动任务标题，以共享 Zone.nameZh
     -- 识别地区，再交给 TradeMaterialIdentityV3:ResolveStatic(title, zoneId) 证明真实配方；只有能解析出
-    -- 静态材料的任务才进入 UI。这样 ID 改版不会漏识别，也不会把普通任务误当做做货任务。
-    local knownIds = {}; for _, entry in ipairs(configs) do knownIds[math.floor(tonumber(entry.questId) or 0)] = true end
+    -- 静态材料的任务才显示采购行。2026-09-30：带“特产”证据但无法匹配的任务保留待匹配标题，
+    -- 不生成材料；普通任务仍不纳入做货清单，避免把“暂未匹配”伪装成“没有第二项任务”。
+    local taskById = {}; for _, task in ipairs(tasks) do taskById[task.questId] = task end
     local activeList = type(quest.GetActiveQuestList) == "function" and (quest:GetActiveQuestList() or {}) or {}
     local titleMatchedCount, unresolvedTradeLike, activeQuestCount = 0, {}, #activeList
+    local pendingTitles, pendingSamples, unresolvedCount, unresolvedTaskCount = {}, {}, 0, 0
     for _, fact in ipairs(activeList) do
         local qid = math.floor(tonumber(fact.questId) or 0)
         local title = tostring(fact.title or "")
         if qid > 0 and fact.active ~= false then
-            local zoneId = FindZoneIdInText(title)
+            -- 只有 QuestProgress 明确声明的“标题未就绪”才重试；普通未识别任务不猜成做货。
+            -- pending 保留全部当前 ID，诊断只采前 6 个样本，不能用样本长度充当总数。
+            if fact.titleAvailable == false then
+                pendingTitles[#pendingTitles + 1] = qid
+                if #pendingSamples < 6 then pendingSamples[#pendingSamples + 1] = { questId=qid, title=title, index=fact.index } end
+            end
             local tradeLike = string.find(title, "特产", 1, true) ~= nil
+            local zoneId = tradeLike and FindZoneIdInText(title) or nil
             local resolved = zoneId ~= nil and tradeLike and identity:ResolveStatic(title, zoneId) or nil
-            if type(resolved) == "table" and type(resolved.rows) == "table" and #resolved.rows > 0 then
-                local recipe = tostring(resolved.label or "")
-                if recipe ~= "" then
-                    local rows = BuildMaterialRows(self, identity, qid, recipe, resolved)
-                    -- 中文维护注释：实时标题给出了“地区 + 货物类型”时，它比历史 QuestId→候选集合证据更强。
-                    -- 即使这个 qid 恰好也存在旧白名单，也要用实机明确货物替换泛化候选，避免要求用户再次猜选。
-                    for i = #tasks, 1, -1 do if tonumber(tasks[i].questId) == qid then table.remove(tasks, i) end end
-                    tasks[#tasks + 1] = { questId=qid, title=title ~= "" and title or ("做货任务 #"..tostring(qid)), state=tostring(fact.state or "IN_PROGRESS"),
-                        active=true, recipes={recipe}, recipeOptions={}, selectedRecipe=recipe, requiresSelection=false, materials=rows,
-                        materialStatus=#rows>0 and "ready" or "empty", discoverySource="active_title", originZoneId=zoneId }
-                    titleMatchedCount = titleMatchedCount + 1
-                end
+            local recipe = type(resolved) == "table" and tostring(resolved.label or "") or ""
+            if recipe ~= "" and type(resolved.rows) == "table" and #resolved.rows > 0 then
+                local rows = BuildMaterialRows(self, identity, qid, recipe, resolved)
+                -- 明确标题优先于历史泛化候选，但每个 QuestId 独立保留，不能按货物/材料去重任务。
+                for i = #tasks, 1, -1 do if tonumber(tasks[i].questId) == qid then table.remove(tasks, i) end end
+                local task = { questId=qid, title=title ~= "" and title or ("做货任务 #"..tostring(qid)), state=tostring(fact.state or "IN_PROGRESS"),
+                    active=true, recipes={recipe}, recipeOptions={}, selectedRecipe=recipe, requiresSelection=false, materials=rows,
+                    materialStatus=#rows>0 and "ready" or "empty", discoverySource="active_title", originZoneId=zoneId }
+                tasks[#tasks + 1] = task; taskById[qid] = task
+                titleMatchedCount = titleMatchedCount + 1
             elseif tradeLike then
-                unresolvedTradeLike[#unresolvedTradeLike + 1] = { questId=qid, title=title, zoneId=zoneId }
-                if #unresolvedTradeLike > 6 then table.remove(unresolvedTradeLike) end
+                local matchReason = zoneId == nil and "zone_unmatched" or "recipe_unmatched"
+                unresolvedCount = unresolvedCount + 1
+                if #unresolvedTradeLike < 6 then
+                    unresolvedTradeLike[#unresolvedTradeLike + 1] = { questId=qid, title=title, zoneId=zoneId,
+                        reason=matchReason, knownMappingRetained=taskById[qid] ~= nil }
+                end
+                -- 中文维护注释（2026-09-30，daily-auction-title-recovery-1）：未匹配的特产任务原先
+                -- 被整个丢弃，玩家只能看到另一项。保留无材料的待匹配行，不猜地区/配方，也不覆盖
+                -- 已核 QuestId 的候选列表；采购搜索始终只允许已证明的材料行。
+                if taskById[qid] == nil then
+                    local task = { questId=qid, title=title, state=tostring(fact.state or "IN_PROGRESS"), active=true,
+                        recipes={}, recipeOptions={}, requiresSelection=false, materials={}, materialStatus="unresolved",
+                        discoverySource="unresolved_title", originZoneId=zoneId, matchReason=matchReason }
+                    tasks[#tasks + 1] = task; taskById[qid] = task; unresolvedTaskCount = unresolvedTaskCount + 1
+                end
             end
         end
     end
-    local knownActiveCount = 0; for _, task in ipairs(tasks) do if task.discoverySource ~= "active_title" then knownActiveCount = knownActiveCount + 1 end end
+    local knownActiveCount = 0
+    for _, task in ipairs(tasks) do
+        if task.discoverySource ~= "active_title" and task.discoverySource ~= "unresolved_title" then knownActiveCount = knownActiveCount + 1 end
+    end
+    self.pendingTitles = pendingTitles
     self.revision = self.revision + 1
-    self.snapshot = { status = #tasks > 0 and "ready" or "empty", tasks = tasks, revision = self.revision, reason = tostring(reason or "refresh"),
+    local status = #tasks > 0 and "ready" or "empty"
+    if #pendingTitles > 0 or unresolvedTaskCount > 0 then status = #tasks > 0 and "partial" or "waiting_titles" end
+    self.snapshot = { status = status, tasks = tasks, revision = self.revision, reason = tostring(reason or "refresh"),
         activeQuestCount=activeQuestCount, knownActiveCount=knownActiveCount, titleMatchedCount=titleMatchedCount,
-        unresolvedTradeLikeCount=#unresolvedTradeLike, unresolvedTradeLike=unresolvedTradeLike }
+        unresolvedTradeLikeCount=unresolvedCount, unresolvedTradeLike=unresolvedTradeLike, unresolvedTaskCount=unresolvedTaskCount,
+        pendingTitleCount=#pendingTitles, pendingTitles=pendingSamples }
     Publish(self)
     return true
 end
@@ -242,24 +289,81 @@ function D:MoveMaterial(questId, recipe, materialKey, direction)
     return self:Refresh("move_material")
 end
 
+local function IsCurrentConsumer(self)
+    return ReplicatedSuite == S and S.Services.DailyAuctionMaterialsV3 == self
+        and self.subscribed == true and self.consumerCount > 0
+end
+
+function D:RetryPendingTitles(epoch)
+    -- 中文维护注释（2026-09-30，daily-auction-title-recovery-1）：Quest ID/完成状态不变时
+    -- updated 不发布，但 Native 标题可能已就绪。复用 QuestProgress 的事件/15s safety refreshed
+    -- 纪元，只读 pending ID；未变化不重算配方、不发布 UI。无第二轮询、无拍卖查询、无永久任务。
+    if not IsCurrentConsumer(self) or #self.pendingTitles == 0 then return true end
+    epoch = tonumber(epoch)
+    if epoch ~= nil and self.lastQuestRefreshEpoch == epoch then return true end
+    self.lastQuestRefreshEpoch = epoch
+    local quest = S.Services and S.Services.QuestProgressV3 or nil
+    if type(quest) ~= "table" or type(quest.GetActiveQuestState) ~= "function" then return false, "任务标题事实不可用" end
+    local changed, recovered = false, 0
+    for _, qid in ipairs(self.pendingTitles) do
+        self.titleRetryReads = self.titleRetryReads + 1
+        local fact = quest:GetActiveQuestState(qid)
+        if type(fact) == "table" then
+            if fact.active == false then changed = true
+            elseif fact.titleAvailable == true then changed = true; recovered = recovered + 1 end
+        end
+    end
+    if changed then
+        self.titleRecoveries = self.titleRecoveries + recovered
+        return self:Refresh("quest_title_ready")
+    end
+    return true
+end
+
+local function UnsubscribeQuestEvents(self)
+    if type(S.Events) == "table" and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self)
+    elseif type(S.Events) == "table" and type(S.Events.UnsubscribeInternal) == "function" then
+        S.Events:UnsubscribeInternal("v3.quest_progress.updated", self)
+        S.Events:UnsubscribeInternal("v3.quest_progress.refreshed", self)
+    end
+    self.subscribed = false
+end
+
 function D:_Subscribe()
     if self.subscribed == true then return true end
-    if type(S.Events) == "table" and type(S.Events.SubscribeInternal) == "function" then
-        local ok = S.Events:SubscribeInternal("v3.quest_progress.updated", self, function() if D.consumerCount > 0 then return D:Refresh("quest_progress_updated") end end)
-        if ok ~= true then return false, "任务更新订阅失败" end
-    end
+    if type(S.Events) ~= "table" or type(S.Events.SubscribeInternal) ~= "function" then return false, "任务更新内部事件不可用" end
+    local ok = S.Events:SubscribeInternal("v3.quest_progress.updated", self, function()
+        if IsCurrentConsumer(D) then return D:Refresh("quest_progress_updated") end
+    end)
+    if ok ~= true then return false, "任务更新订阅失败" end
+    ok = S.Events:SubscribeInternal("v3.quest_progress.refreshed", self, function(_, epoch)
+        return D:RetryPendingTitles(epoch)
+    end)
+    if ok ~= true then UnsubscribeQuestEvents(self); return false, "任务标题恢复订阅失败" end
     self.subscribed = true; return true
 end
 function D:_Unsubscribe()
-    if self.subscribed ~= true then return true end
-    if type(S.Events) == "table" and type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self)
-    elseif type(S.Events) == "table" and type(S.Events.UnsubscribeInternal) == "function" then S.Events:UnsubscribeInternal("v3.quest_progress.updated", self) end
-    self.subscribed = false; return true
+    if self.subscribed == true then UnsubscribeQuestEvents(self) end
+    self.pendingTitles = {}; self.lastQuestRefreshEpoch = nil
+    return true
 end
 function D:_AcquireQuest()
     if self.questHeld then return true end
     local quest = S.Services and S.Services.QuestProgressV3 or nil
     if type(quest) ~= "table" or type(quest.AcquireConsumer) ~= "function" then return false, "QuestProgressV3 Consumer 不可用" end
+    -- 中文维护注释（2026-09-30，daily-auction-title-recovery-1）：拍卖 Feature 本身只需
+    -- X2Auction，不能假定活动/债券已替“今日任务”导入 X2Quest。仅在本服务首个消费者进入时，
+    -- 通过唯一 NativeImports Authority 取得已核 X2Quest namespace；不在模块加载/诊断时导入。
+    -- Native 注册表无卸载接口，导入身份沿用当前 Generation；任务监听仍随最后 Consumer 释放。
+    -- 无 imports 的离线宿主可继续提供 detached QuestProgress 替身，不能由这里直接 ImportAPI。
+    local imports = S.ApiImports
+    if self.nativeQuestLease ~= true and type(imports) == "table" and type(imports.AcquireApi) == "function" then
+        local imported, importErr = imports:AcquireApi(self.Id, "X2Quest")
+        self.nativeQuestLeaseState = imported == true and "acquired" or "failed"
+        self.nativeQuestLeaseError = imported ~= true and tostring(importErr or "quest_import_failed") or nil
+        if imported ~= true then return false, "任务接口导入失败：" .. self.nativeQuestLeaseError end
+        self.nativeQuestLease = true
+    end
     local ok, err = quest:AcquireConsumer(self.questConsumerToken, { instances = false })
     if ok ~= true then return false, err end
     self.questHeld = true; return true

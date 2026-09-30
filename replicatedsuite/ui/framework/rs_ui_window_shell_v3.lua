@@ -552,6 +552,11 @@ function Shell:Create(spec)
         result.fullyVisible = S.Layout:IsRectFullyVisible(x,y,w,h)
         result.recoverable = S.Layout:IsWindowRecoverable(x,y,w,h,titleH)
         result.metricsNotifications = S.Layout.metricsNotifications
+        -- 维护（ui-position-reload-1）：展示保存/期望/实际三者，不能仅用 Native x/y 覆盖诊断的唯一坐标。
+        local windowing = RSUI.Windowing
+        if windowing and type(windowing.GetGeometryDiagnostics)=="function" then
+            result.geometry = windowing:GetGeometryDiagnostics(self.window)
+        end
         return result
     end
 

@@ -48,6 +48,47 @@ FEATURE_SPLIT_TESTS = [
 # 不再出现该 Feature 的硬编码访问。与 FEATURE_SPLIT_TESTS 分开计数，语义不同。
 CORE_FEATURE_DECOUPLING_TESTS = [
     "tools/rs_core_feature_decoupling_tests.lua",
+    "tools/rs_refactor_live_gate_tests.lua",
+    # 2026-09-30: real dormant/active feature states and catalog data revisions.
+    "tools/rs_live_contract_state_tests.lua",
+]
+
+
+# 2026-09-30: same-viewport reload recovery, genuine scale/viewport migration,
+# and independent profile buttons must be in the default gate, not optional-only.
+WINDOW_POSITION_TESTS = [
+    "tools/rs_window_viewport_tests.lua",
+    "tools/rs_window_reload_position_tests.lua",
+    "tools/rs_feature_profiles_quick_geometry_tests.lua",
+]
+
+
+# 2026-09-30: actual shared auction services + Trade activity projection; required in full gate.
+# Cross-continent Native readiness / actual persistence roundtrip regressions.
+BONDS_CROSS_CONTINENT_TESTS = ["tools/rs_bonds_cross_continent_tests.lua"]
+
+AUCTION_USER_PRIORITY_TESTS = [
+    "tools/rs_auction_user_priority_tests.lua",
+    "tools/rs_auction_user_priority_trade_tests.lua",
+]
+
+
+# 2026-09-30: real quest-title readiness + original alias/candidate/detail boundaries.
+DAILY_AUCTION_TESTS = [
+    "tools/rs_daily_auction_title_readiness_tests.lua",
+    "tools/rs_daily_auction_multi_quest_tests.lua",
+    "tools/rs_auction_workspace_tests.lua",
+    "tools/rs_quest_progress_detail_refresh_tests.lua",
+]
+
+
+# 2026-09-30: keep the dedicated copy buffer and economics evidence in the
+# default gate. These use real controllers/projections, with Native-only boundaries.
+TRADE_COPY_EVIDENCE_TESTS = [
+    "tools/rs_diagnostic_copy_box_tests.lua",
+    "tools/rs_module_diagnostics_window_tests.lua",
+    "tools/rs_module_diagnostics_tests.lua",
+    "tools/rs_trade_economics_evidence_tests.lua",
 ]
 
 
@@ -168,6 +209,36 @@ def main() -> int:
             import json
             source += f'assert(loadfile({json.dumps(str(path), ensure_ascii=False)}));\n'
         source += f'print("SYNTAX PASS: {len(paths)} Lua files (runtime=" .. _VERSION .. ")")'
+    elif "--bonds-cross-continent" in sys.argv:
+        if not require_test_files(BONDS_CROSS_CONTINENT_TESTS): return 2
+        if not require_transitive_test_dependencies(BONDS_CROSS_CONTINENT_TESTS): return 2
+        try:
+            run_lua_files_isolated(BONDS_CROSS_CONTINENT_TESTS, prelude)
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+            return 1
+        print(f"BONDS_CROSS_CONTINENT PASS: {len(BONDS_CROSS_CONTINENT_TESTS)} suite(s)")
+        return 0
+    elif "--auction-user-priority" in sys.argv:
+        if not require_test_files(AUCTION_USER_PRIORITY_TESTS): return 2
+        if not require_transitive_test_dependencies(AUCTION_USER_PRIORITY_TESTS): return 2
+        try:
+            run_lua_files_isolated(AUCTION_USER_PRIORITY_TESTS, prelude)
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+            return 1
+        print(f"AUCTION_USER_PRIORITY PASS: {len(AUCTION_USER_PRIORITY_TESTS)} suite(s)")
+        return 0
+    elif "--window-reload-position" in sys.argv:
+        if not require_test_files(WINDOW_POSITION_TESTS): return 2
+        if not require_transitive_test_dependencies(WINDOW_POSITION_TESTS): return 2
+        try:
+            run_lua_files_isolated(WINDOW_POSITION_TESTS, prelude)
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+            return 1
+        print(f"WINDOW_POSITION PASS: {len(WINDOW_POSITION_TESTS)} suite(s)")
+        return 0
     elif "--window-viewport" in sys.argv:
         # 维护：独立 Native 窗口模型执行真实 Api/Layout/Windowing/Shell/Surface 与完整 viewport 矩阵。
         # 不替换缺失历史夹具，不改变默认全量的 BLOCKED 判据；通过不等同 RU Native/OnScale 验收。
@@ -305,6 +376,16 @@ def main() -> int:
             return 1
         print(f"FEATURE_SPLIT PASS: {len(FEATURE_SPLIT_TESTS)} suite(s)")
         return 0
+    elif "--daily-auction" in sys.argv:
+        if not require_test_files(DAILY_AUCTION_TESTS): return 2
+        if not require_transitive_test_dependencies(DAILY_AUCTION_TESTS): return 2
+        try:
+            run_lua_files_isolated(DAILY_AUCTION_TESTS, prelude)
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+            return 1
+        print(f"DAILY_AUCTION PASS: {len(DAILY_AUCTION_TESTS)} suite(s)")
+        return 0
     elif "--core-feature-decoupling" in sys.argv:
         # Phase 3 Batch A：只跑“Core 不再硬编码认识业务 Feature”的搬迁契约。独立进程，
         # 避免上一个套件的 ReplicatedSuite 替身污染本套件的最小离线宿主。
@@ -330,11 +411,11 @@ def main() -> int:
             "tools/rs_daily_income_source_tests.lua", "tools/rs_home_overview_tests.lua", "tools/rs_overview_v2_tests.lua", "tools/rs_quest_journal_detail_tests.lua",
             "tools/rs_ledger_projection_v2_tests.lua",
         ]
-        required = legacy + UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS + CORE_FEATURE_DECOUPLING_TESTS
+        required = legacy + UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS + CORE_FEATURE_DECOUPLING_TESTS + WINDOW_POSITION_TESTS + AUCTION_USER_PRIORITY_TESTS + BONDS_CROSS_CONTINENT_TESTS + DAILY_AUCTION_TESTS + TRADE_COPY_EVIDENCE_TESTS
         if not require_test_files(required): return 2
         if not require_transitive_test_dependencies(required): return 2
         source = prelude + lua_dofiles(legacy)
-        isolated_after = UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS + CORE_FEATURE_DECOUPLING_TESTS
+        isolated_after = UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS + CORE_FEATURE_DECOUPLING_TESTS + WINDOW_POSITION_TESTS + AUCTION_USER_PRIORITY_TESTS + BONDS_CROSS_CONTINENT_TESTS + DAILY_AUCTION_TESTS + TRADE_COPY_EVIDENCE_TESTS
     try:
         run_lua(source)
         if isolated_after:

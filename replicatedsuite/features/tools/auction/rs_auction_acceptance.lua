@@ -20,6 +20,7 @@ local F = S.Features and S.Features.tools_auction or nil
 
 local function Fail(message) return false, tostring(message or "auction_acceptance_failed") end
 
+-- 维护（2026-09-30，refactor-live-gate-1）：显式接回只读运行时诊断；完整序列仍保留给离线验收。
 G:RegisterSequenceCase("v3_tools_auction_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     -- v3_auction_query_contract 的 Feature 侧
@@ -34,4 +35,4 @@ G:RegisterSequenceCase("v3_tools_auction_contract", function()
         if type(F.Commands[name]) ~= "function" then return Fail("favorites_command:" .. name) end
     end
     return true
-end)
+end, { runtime = true })

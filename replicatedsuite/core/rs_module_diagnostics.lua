@@ -352,6 +352,19 @@ function H:BuildReport(moduleId)
         end
     end
 
+    -- 2026-09-30：通用复制缓冲证据只读现有窗口，不创建输入，不修改正文/选区。
+    -- beforeCapture 由窗口在 Generate 撤权前冻结；不能把 SetText/GetText 成功当作系统复制成功。
+    lines[#lines + 1] = "[DIAGNOSTIC_COPY]"
+    local copyWindow = S.UIV3 and S.UIV3.ModuleDiagnosticsWindowV3
+    if type(copyWindow) == "table" and copyWindow.moduleId == moduleId and type(copyWindow.Describe) == "function" then
+        local ok, value = pcall(copyWindow.Describe, copyWindow)
+        if ok and type(value) == "table" then lines[#lines + 1] = ValueText(value)
+        else
+            providerFailures = providerFailures + 1
+            lines[#lines + 1] = "copyProbeError=" .. Clip(value, 360)
+        end
+    else lines[#lines + 1] = "not_created_or_other_module" end
+
     -- 维护（viewport-recovery-1）：只在用户生成报告时采样已存在窗口，按模块隔离。
     -- 不运行 EnsurePreferences/GetState，不加载未启用业务；当前几何与持久 intent 分列。
     -- 系统诊断额外覆盖主窗及未挂 WidgetHost 的辅助窗，避免 errors=0 掩盖离屏。

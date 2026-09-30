@@ -12,7 +12,7 @@ local F = S.Features and S.Features.Tasks or nil
 
 local function Fail(message) return false, tostring(message or "task_acceptance_failed") end
 
-G:RegisterSequenceCase("v3_m1_tasks", function()
+G:RegisterSequenceCase("v3_m1_tasks", function(runtimeOnly)
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     local meta = S.FeatureRegistry and S.FeatureRegistry:Get("life_tasks") or nil
     if meta == nil or tostring(meta.status) ~= "migrated_m1" or tostring(meta.authority) ~= "v3.tasks" then return Fail("metadata_contract") end
@@ -28,6 +28,8 @@ G:RegisterSequenceCase("v3_m1_tasks", function()
     if type(F.Commands) ~= "table" or type(F.Commands.MarkStoreDirty) ~= "function"
         or type(F.Commands.SetWidgetWindowState) ~= "function" then return Fail("presentation_command_contract") end
 
+    -- 维护（2026-09-30）：玩家诊断到此只读返回；下方租约/刷新/选择测试仅离线执行。
+    if runtimeOnly == true then return true end
     if S.FeatureRuntime:IsEnabled("life_tasks") ~= true then return true end
 
     local beforeFeatureConsumers = tonumber(F.consumerCount) or 0
@@ -65,7 +67,7 @@ G:RegisterSequenceCase("v3_m1_tasks", function()
     if beforeFeatureConsumers == 0 and tonumber(F.consumerCount) ~= 0 then return Fail("feature_consumer_leak") end
     if tonumber(progress.consumerCount) ~= beforeProgressConsumers then return Fail("progress_consumer_leak") end
     return true
-end)
+end, { runtime = true })
 
 -- Phase 3 Batch L（2026-09-29，core-feature-decoupling-1）：任务侧的持久化契约。
 -- 原先由 core/rs_foundation_gate.lua 的 v3_feature_persistence_mutation_contract（活动/任务各一半）
@@ -82,4 +84,4 @@ G:RegisterSequenceCase("v3_life_tasks_persistence_contract", function()
         return Fail("task_persistence_codec_version")
     end
     return true
-end)
+end, { runtime = true })

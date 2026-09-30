@@ -29,11 +29,29 @@ local function PhysicalId(widget)
     return widget.rsNativePhysicalId or widget.rsUiPhysicalId or widget.rsPhysicalId
 end
 
+-- 仅复用焦点身份读取，不绑定普通 DraftSession/LostFocus 生命周期。
+-- 同一 Native 输入可返回 logical/physical ID；只接受精确身份，不根据窗口名猜测。
 local function IsOwnFocus(widget)
-    local id = PhysicalId(widget)
-    if id == nil or type(GetFocusedWidgetId) ~= "function" then return false end
+    if widget == nil then return false, false end
+    if type(UI.IsInputWidgetFocused) == "function" then
+        local ok, focused, err = pcall(UI.IsInputWidgetFocused, UI, widget)
+        if ok and err == nil and focused == true then return true, true end
+    end
+    if type(GetFocusedWidgetId) ~= "function" then return false, false end
     local ok, focused = pcall(GetFocusedWidgetId)
-    return ok == true and focused ~= nil and tostring(focused) == tostring(id)
+    if not ok then return false, false end
+    if focused == nil or tostring(focused) == "" then return false, true end
+    focused = tostring(focused)
+    local physical = PhysicalId(widget)
+    return (physical ~= nil and focused == tostring(physical))
+        or (widget.rsNativeLogicalId ~= nil and focused == tostring(widget.rsNativeLogicalId))
+        or (widget.rsUiLogicalId ~= nil and focused == tostring(widget.rsUiLogicalId)), true
+end
+
+local function Retired(box)
+    return box.destroyed == true or box.edit.rsUiInputLifecycleRetired == true
+        or (box.edit.rsNativeGeneration ~= nil
+            and tonumber(box.edit.rsNativeGeneration) ~= tonumber(S.Generation))
 end
 
 local function AcceptedCall(widget, method, ...)
@@ -80,7 +98,7 @@ function UI:CreateDiagnosticCopyBox(spec)
         -- 维护（module-controls-diag-2）：只在显式翻页/生成时写 Native。旧代控件不能触碰；
         -- SetText 返回成功不代表未被 RU 字数上限截短，正文必须完整回读一致后才提交缓存。
         -- 失败不伪报已复制；不绑定普通 EditBox、不轮询 GetText，保证等待复制时选区稳定。
-        if self.edit.rsNativeGeneration ~= nil and tonumber(self.edit.rsNativeGeneration) ~= tonumber(S.Generation) then
+        if Retired(self) then
             return false, "diagnostic editor generation retired"
         end
         if self.text == text and self.textVerified ~= false then
@@ -117,20 +135,36 @@ function UI:CreateDiagnosticCopyBox(spec)
     end
 
     function box:Activate(reason)
-        if self.edit.rsNativeGeneration ~= nil and tonumber(self.edit.rsNativeGeneration) ~= tonumber(S.Generation) then
-            return false, "diagnostic editor generation retired"
-        end
-        local armed, armErr = AcceptedCall(self.edit, "EnableKeyboard", true)
-        if armed ~= true then
+        if Retired(self) then return false, "diagnostic editor generation retired" end
+        local function Failure(err)
             self.stats.activationFailures = (tonumber(self.stats.activationFailures) or 0) + 1
-            return false, armErr
+            self.stats.lastActivationError = tostring(err or "activation_failed"):sub(1, 160)
+            return false, err
         end
-        self.edit.rsUiKeyboardArmed = true
+        local wasArmed = self.edit.rsUiKeyboardArmed == true
+        local ownFocus, focusKnown = IsOwnFocus(self.edit)
+        self.stats.lastFocusBefore = not focusKnown and "unknown" or (ownFocus and "own" or "other_or_none")
+        self.stats.lastActivationError = nil
+        -- 修复（2026-09-30，diagnostic-copy-selection-1）：独立 CopyBox 丢失了普通输入已有的
+        -- armed+focused 快路径。生成页已 SetFocus，用户再次点击/选区后重复 OnClick 又重放
+        -- EnableKeyboard(true)+SetFocus；Native 可以因此折叠选区。只有首次键盘提升或实际失焦
+        -- 才重新 SetFocus。不能仅看焦点 ID：RU 可能先发布 ID、后激活键盘，首次提升仍须聚焦。
+        if wasArmed and ownFocus then
+            self.active = true
+            self.stats.reusedFocus = (tonumber(self.stats.reusedFocus) or 0) + 1
+            self.stats.lastReason = tostring(reason or "activate")
+            return true
+        end
+        if not wasArmed then
+            local armed, armErr = AcceptedCall(self.edit, "EnableKeyboard", true)
+            if armed ~= true then return Failure(armErr) end
+            self.edit.rsUiKeyboardArmed = true
+        end
         local focused, focusErr = AcceptedCall(self.edit, "SetFocus")
         if focused ~= true then
             AcceptedCall(self.edit, "EnableKeyboard", false); self.edit.rsUiKeyboardArmed = false
-            self.stats.activationFailures = (tonumber(self.stats.activationFailures) or 0) + 1
-            return false, focusErr
+            self.active = false
+            return Failure(focusErr)
         end
         self.active = true
         self.stats.activations = (tonumber(self.stats.activations) or 0) + 1
@@ -200,7 +234,12 @@ function UI:CreateDiagnosticCopyBox(spec)
     function box:GetCapacity() return self.copyCapacity end
 
     function box:GetDiagnostics()
+        local focused, focusKnown = IsOwnFocus(self.edit)
         return {
+            patch = "diagnostic-copy-selection-1", focused = focused, focusKnown = focusKnown,
+            retired = Retired(self), clipboardVerified = false,
+            reusedFocus = tonumber(self.stats.reusedFocus) or 0,
+            lastFocusBefore = self.stats.lastFocusBefore, lastActivationError = self.stats.lastActivationError,
             version = self.version, active = self.active == true, keyboardArmed = self.edit.rsUiKeyboardArmed == true,
             textWrites = tonumber(self.stats.textWrites) or 0, geometryWrites = tonumber(self.stats.geometryWrites) or 0,
             geometrySkips = tonumber(self.stats.geometrySkips) or 0, activations = tonumber(self.stats.activations) or 0,
@@ -213,6 +252,7 @@ function UI:CreateDiagnosticCopyBox(spec)
     end
 
     function box:Destroy(reason)
+        self.destroyed = true
         self:Deactivate(reason or "destroy")
         if type(UI.RetireInputWidget) == "function" then pcall(UI.RetireInputWidget, UI, self.edit, owner, "diagnostic_copy_destroy") end
         if type(self.edit.Show) == "function" then pcall(self.edit.Show, self.edit, false) end

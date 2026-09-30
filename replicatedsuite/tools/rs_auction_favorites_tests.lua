@@ -166,6 +166,7 @@ dofile("core/rs_demand.lua")
 dofile("core/rs_foundation_gate.lua")
 dofile("features/rs_feature_registry.lua")
 dofile("features/rs_feature_runtime.lua")
+dofile("core/rs_module_diagnostics.lua")
 
 -- Services
 dofile("services/rs_price_quote_queue_v3.lua")
@@ -1141,6 +1142,90 @@ Test("T10: FoundationGate & Acceptance contract verification", function()
     assert(acceptanceText:find("auction_workspace_contract_v2", 1, true) ~= nil, "Acceptance must verify auction workspace contract")
     assert(reportText:find("AUCTION_SEARCH_BRIDGE", 1, true) ~= nil, "Self-check report must expose native auction search sync evidence")
     assert(reportText:find("DAILY_AUCTION_MATERIALS", 1, true) ~= nil, "Self-check report must expose daily trade task discovery evidence")
+end)
+
+------------------------------------------------------------------------
+-- 2026-09-30: real Sidecar projection/render contract for partial daily tasks.
+-- Native UI primitives remain test doubles; no automatic auction search allowed.
+------------------------------------------------------------------------
+Test("Daily UI keeps unmatched second task and identifies the match failure", function()
+    local daily = S.Services.DailyAuctionMaterialsV3
+    local old = daily.snapshot
+    daily.snapshot = { status="partial", revision=9001, pendingTitleCount=0, unresolvedTaskCount=1, tasks={
+        {questId=990011,title="[特产-西部] 珊瑚海岸的保存特产",recipes={},selectedRecipe="Sanddeep Preserved Specialty",materialStatus="ready",materials={
+            {key="item:30902",name="研磨谷物",count=200,itemType=30902,searchable=true}}},
+        {questId=990012,title="[特产-西部] 未收录测试区域的保存特产",recipes={},materials={},materialStatus="unresolved",matchReason="zone_unmatched"},
+    }}
+    local instance = assert(S.UIV3.WidgetHost:GetInstance("tools.auction_sidecar"))
+    local before = #mockAuction.searchCalls
+    assert(instance:SetTab("daily")); assert(instance:Refresh())
+    local headers, unknown = 0, nil
+    for _, row in ipairs(instance.currentRows) do
+        if row.kind=="daily_task" then headers=headers+1; if row.questId==990012 then unknown=row end end
+        assert(not (row.kind=="daily_material" and row.questId==990012), "unmatched task acquired fabricated materials")
+    end
+    assert(headers==2 and unknown, "second task header disappeared")
+    assert(unknown.status=="地区待匹配", "unmatched title reason not visible to user")
+    instance.table.spec.onItemActivated(unknown, 3, unknown.key, instance.table, "row_click")
+    assert(#mockAuction.searchCalls==before, "unmatched task must never trigger native search")
+    daily.snapshot=old; assert(instance:SetTab("temp"))
+end)
+
+Test("Daily UI explains title readiness instead of claiming no daily tasks", function()
+    local daily=S.Services.DailyAuctionMaterialsV3; local old=daily.snapshot
+    daily.snapshot={status="waiting_titles",revision=9002,pendingTitleCount=2,tasks={}}
+    local instance=assert(S.UIV3.WidgetHost:GetInstance("tools.auction_sidecar"))
+    assert(instance:SetTab("daily")); assert(instance:Refresh())
+    assert(instance.table.viewInfo and instance.table.viewInfo.title=="任务标题尚未就绪", "unready data falsely displayed as no tasks")
+    assert(tostring(instance.table.viewInfo.detail):find("2",1,true), "pending title count missing")
+    daily.snapshot=old; assert(instance:SetTab("temp"))
+end)
+
+Test("Daily UI does not label empty selected recipe as parsed materials", function()
+    local daily=S.Services.DailyAuctionMaterialsV3; local old=daily.snapshot
+    daily.snapshot={status="ready",revision=9003,tasks={{questId=990012,title="已核任务",recipes={},selectedRecipe="test-recipe",materialStatus="empty",materials={}}}}
+    local instance=assert(S.UIV3.WidgetHost:GetInstance("tools.auction_sidecar"))
+    assert(instance:SetTab("daily")); assert(instance:Refresh())
+    assert(instance.currentRows[1].status=="材料未就绪", "selected recipe without rows must not claim parsed")
+    daily.snapshot=old; assert(instance:SetTab("temp"))
+end)
+
+Test("Daily UI footer counts tasks and unresolved entries, not just material rows", function()
+    local daily=S.Services.DailyAuctionMaterialsV3; local old=daily.snapshot
+    daily.snapshot={status="partial",revision=9004,pendingTitleCount=0,unresolvedTaskCount=1,tasks={
+        {questId=990011,title="已核任务",recipes={},materials={}},
+        {questId=990012,title="未匹配任务",recipes={},materials={},materialStatus="unresolved",matchReason="recipe_unmatched"},
+    }}
+    local instance=assert(S.UIV3.WidgetHost:GetInstance("tools.auction_sidecar"))
+    local original=instance.surface.SetStatus; local footer
+    instance.surface.SetStatus=function(self,text,tone) footer=text; return original(self,text,tone) end
+    assert(instance:SetTab("daily")); assert(instance:Refresh())
+    assert(tostring(footer):find("2 项任务",1,true), "footer lacks total task count")
+    assert(tostring(footer):find("1 待匹配",1,true), "footer hides pending-match count")
+    local found=false
+    for _, row in ipairs(instance.currentRows) do if row.questId==990012 and row.kind=="daily_task" then found=row.status=="配方待匹配" end end
+    assert(found, "missing recipe not distinguished from missing region")
+    instance.surface.SetStatus=original; daily.snapshot=old; assert(instance:SetTab("temp"))
+end)
+
+Test("Auction module diagnostic includes real daily proof without acquiring or querying", function()
+    local hub=assert(S.ModuleDiagnosticsHub)
+    local provider
+    for _, row in ipairs(hub.providers.tools_auction or {}) do if row.id=="daily_materials" then provider=row end end
+    assert(provider, "auction module report has no daily materials provider")
+    local old=S.Services.DailyAuctionMaterialsV3
+    dofile("services/rs_daily_auction_materials_v3.lua")
+    local daily=assert(S.Services.DailyAuctionMaterialsV3)
+    daily.snapshot={status="partial",revision=1,activeQuestCount=2,pendingTitleCount=1,
+        pendingTitles={{questId=990012,title="任务 990012"}},tasks={{questId=990011,title="已识别任务",materialStatus="ready",materials={{name="研磨谷物"}}}}}
+    local before=#mockAuction.searchCalls
+    local diag=provider.fn()
+    assert(diag.patch=="daily-auction-title-recovery-1" and diag.pendingTitleCount==1)
+    assert(diag.tasks[1].questId==990011 and diag.taskCount==1)
+    local report=assert(hub:BuildReport("tools_auction"))
+    assert(report:find("provider.daily_materials=",1,true) and report:find("daily-auction-title-recovery-1",1,true), "module report omitted actual daily proof")
+    assert(daily.consumerCount==0 and #mockAuction.searchCalls==before, "diagnostic acquired/queried")
+    S.Services.DailyAuctionMaterialsV3=old
 end)
 
 print(string.format("\nAuction Favorites & Query Test Results: %d/%d passed", passed, total))

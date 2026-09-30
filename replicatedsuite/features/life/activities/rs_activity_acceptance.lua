@@ -17,7 +17,7 @@ local F = S.Features and S.Features.Activities or nil
 
 local function Fail(message) return false, tostring(message or "activity_acceptance_failed") end
 
-G:RegisterSequenceCase("v3_m1_activities", function()
+G:RegisterSequenceCase("v3_m1_activities", function(runtimeOnly)
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     local meta = S.FeatureRegistry and S.FeatureRegistry:Get("life_activities") or nil
     if meta == nil or tostring(meta.status) ~= "migrated_m1" or tostring(meta.authority) ~= "v3.activity" then
@@ -81,6 +81,8 @@ G:RegisterSequenceCase("v3_m1_activities", function()
         return Fail("presentation_command_contract")
     end
 
+    -- 维护（2026-09-30）：玩家诊断到此只读返回；下方租约/刷新/选择测试仅离线执行。
+    if runtimeOnly == true then return true end
     if S.FeatureRuntime:IsEnabled("life_activities") ~= true then
         -- A user-disabled Feature is valid. The contracts above are still
         -- checked, while no gameplay API is touched just to satisfy diagnostics.
@@ -144,4 +146,4 @@ G:RegisterSequenceCase("v3_m1_activities", function()
         if timer == nil or zones == nil or timer.enabled == true or zones.enabled == true then return Fail("idle_tasks_not_released") end
     end
     return true
-end)
+end, { runtime = true })

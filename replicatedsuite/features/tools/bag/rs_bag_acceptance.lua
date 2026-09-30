@@ -19,6 +19,7 @@ local F = S.Features and S.Features.tools_bag or nil
 
 local function Fail(message) return false, tostring(message or "bag_acceptance_failed") end
 
+-- 维护（2026-09-30，refactor-live-gate-1）：显式接回只读运行时诊断；完整序列仍保留给离线验收。
 G:RegisterSequenceCase("v3_tools_bag_action_contract", function()
     if type(F) ~= "table" then return Fail("implementation_not_registered") end
     if (tonumber(F.BagMoveContractVersion) or 0) < 8 then return Fail("bag.move_v8") end
@@ -51,4 +52,4 @@ G:RegisterSequenceCase("v3_tools_bag_action_contract", function()
         if type(F.Commands[name]) ~= "function" then return Fail("command." .. name) end
     end
     return true
-end)
+end, { runtime = true })
