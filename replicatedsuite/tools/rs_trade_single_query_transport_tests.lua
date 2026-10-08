@@ -74,12 +74,12 @@ Test('native opens between absent admission and query boundary so no search is s
  end
  assert(Strict(h,'user',101));Eq(h:count('SearchAuctionArticle'),0);Eq(#h.deliveries,1);Eq(h.deliveries[1].status,'blocked')
 end)
-Test('singleQuery sends one nine-argument search and compares the complete bounded list by unit buyout',function()
+Test('singleQuery sends one nine-argument search and compares at most three sampled unit buyouts',function()
  local h=Boot();h.syncComplete=true
  h.onSearch=function()return {Listing(999,1),Listing(101,20,3),Listing(101,70),Listing(101,1)}end
  assert(Strict(h,'user',101));h:advance(1000)
  Eq(h:count('AskMarketPrice'),0);Eq(h:count('GetLowestPrice'),0);Eq(h:count('SearchAuctionArticle'),1)
- Eq(h:count('GetSearchedItemInfo'),4);Eq(h:count('GetSearchedItemTotalCount'),1);Eq(#h.deliveries,1);Eq(h.deliveries[1].price,1)
+ Eq(h:count('GetSearchedItemInfo'),3);Eq(h:count('GetSearchedItemTotalCount'),0);Eq(#h.deliveries,1);Eq(h.deliveries[1].price,70)
  -- 名称是候选筛选，精确身份在真实 Query 的 firstValidBuyout 边界验证；不强制 Native exact 名称。
  local args=h.calls[1].args;Eq(#args,9);Eq(args[1],1);Eq(args[4],1);Eq(args[5],0);Eq(args[6],false)
  Eq(h.deliveries[1].singleQuery,true);Eq(h.queue.running,false)
@@ -317,17 +317,17 @@ Test('price evidence ring is bounded detached and survives strict snapshot relea
  Eq(#selected.requests,1);Eq(selected.requests[1].itemType,120)
  Eq(next(h.query.snapshots),nil,'strict snapshots have been released')
 end)
-Test('detail retains every already-read rejected listing including unfamiliar fields without extra native calls',function()
+Test('detail retains only three already-read rejected listings including unfamiliar fields',function()
  local h=Boot();h.syncComplete=true
  h.onSearch=function()
   local rows={};for i=1,20 do rows[i]={itemType=101,itemGrade=1,itemStack=10,
    unknown_direct_money=123,mysteryDetails={qualityTier=i},sellerName='PRIVATE_SELLER'}end;return rows
  end
  assert(Strict(h,'user',101));h:advance(5000)
- Eq(h.queue.fallbackSearchLimit,20);Eq(h:count('GetSearchedItemInfo'),20);local calls=#h.calls
+ Eq(h.queue.fallbackSearchLimit,20);Eq(h:count('GetSearchedItemInfo'),3);local calls=#h.calls
  local d=h.query:DescribePriceEvidenceDetail();local r=d.requests[1]
- Eq(r.sourceCount,20);Eq(r.unreadRows,0);Eq(#r.listingDetails,20);Eq(r.listingDetails[20].reason,'buyout_invalid')
- Eq(r.listingDetails[20].raw.unknown_direct_money,123);Eq(r.listingDetails[20].raw.mysteryDetails.qualityTier,20)
+ Eq(r.sourceCount,20);Eq(r.unreadRows,17);Eq(#r.listingDetails,3);Eq(r.listingDetails[3].reason,'buyout_invalid')
+ Eq(r.listingDetails[3].raw.unknown_direct_money,123);Eq(r.listingDetails[3].raw.mysteryDetails.qualityTier,3)
  Eq(r.listingDetails[1].raw.sellerName,nil);r.listingDetails[1].raw.itemType=999
  Eq(h.query:DescribePriceEvidenceDetail().requests[1].listingDetails[1].raw.itemType,101);Eq(#h.calls,calls)
  Eq(h.deliveries[1].price,nil)
@@ -384,7 +384,7 @@ Test('name candidate filtering cannot replace strict item identity or suppress a
  -- 中文维护（发布审查）：名称召回独立验证已知身份；未知品质另案必须阻止最低价提交。
  local otherGrade=Listing(101,3,2);otherGrade.name='新鲜苹果'
  local accepted=Listing(101,70);accepted.name='新鲜苹果'
- local market={wrong,grade,otherGrade,accepted}
+ local market={wrong,grade,accepted,otherGrade}
  h.onSearch=function(keyword,_,args)
   local rows={};for _,row in ipairs(market)do
    if args[6] and row.name==keyword or not args[6] and row.name:find(keyword,1,true)then rows[#rows+1]=row end
@@ -392,22 +392,22 @@ Test('name candidate filtering cannot replace strict item identity or suppress a
  end
  assert(Strict(h,'qualified-name',101,{searchName='苹果'}));h:advance(1000)
  Eq(h.deliveries[1].status,'ready');Eq(h.deliveries[1].price,70)
- Eq(h:count('SearchAuctionArticle'),1);Eq(h:count('GetSearchedItemInfo'),4)
+ Eq(h:count('SearchAuctionArticle'),1);Eq(h:count('GetSearchedItemInfo'),3)
  local r=h.query:DescribePriceEvidenceDetail().requests[1]
- Eq(r.searchArguments.exactMatch,false);Eq(r.reasons.id_mismatch,1);Eq(r.reasons.grade_mismatch,2)
- Eq(r.acceptedIndex,4)
+ Eq(r.searchArguments.exactMatch,false);Eq(r.reasons.id_mismatch,1);Eq(r.reasons.grade_mismatch,1)
+ Eq(r.acceptedIndex,3)
 end)
-Test('qualified-name recall cannot hide an unknown-grade lower buyout behind a trusted row',function()
+Test('unknown-grade row is excluded while a known valid row remains a reference',function()
  local h=Boot();h.syncComplete=true
  local missing=Listing(101,3);missing.name='新鲜苹果';missing.itemGrade=nil
  local accepted=Listing(101,70);accepted.name='新鲜苹果'
  h.onSearch=function()return {missing,accepted}end
  assert(Strict(h,'qualified-name-unknown',101,{searchName='苹果'}));h:advance(1000)
- Eq(h.deliveries[1].status,'unavailable');Eq(h.deliveries[1].price,nil)
+ Eq(h.deliveries[1].status,'ready');Eq(h.deliveries[1].price,70)
  Eq(h:count('SearchAuctionArticle'),1);Eq(h:count('GetSearchedItemInfo'),2)
- Eq(h.queue:GetPriceByItemType(101,1),nil)
+ Eq(h.queue:GetPriceByItemType(101,1),70)
  local r=h.query:DescribePriceEvidenceDetail().requests[1]
- Eq(r.searchArguments.exactMatch,false);Eq(r.reasons.grade_missing,1);Eq(r.acceptedIndex,nil)
+ Eq(r.searchArguments.exactMatch,false);Eq(r.reasons.grade_missing,1);Eq(r.acceptedIndex,2)
 end)
 -- 中文维护：分阶段计时只放宽有限本地排队，不能延长发包后响应、抢占已有 Native 或追加重试。
 Test('Trade staged wait survives queue time then retains five-second native response limit',function()

@@ -39,6 +39,8 @@ V3.Shell = V3.Shell or {
     contentRoot = nil,
     footer = nil,
     status = nil,
+    menuTip = nil,
+    menuTipIndex = 0,
     topmost = false,
     topmostButton = nil,
     minimizeButton = nil,
@@ -62,6 +64,16 @@ Shell.DevelopmentNavigationPresentationContractVersion = 1 -- 中文维护注释
 
 local SCROLL_CATEGORY_ORDER = { "home", "combat", "life", "tools" }
 local SYSTEM_ROUTES = { "system.workspace", "system.widgets", "system.features", "system.settings", "system.diagnostics" }
+-- 中文维护：提示仅是主菜单展示内容，按成功的隐藏→显示边沿循环；不读取 Feature 状态，也不写入配置。
+local MENU_TIPS = {
+    "“债券功能”需要在西、东大陆任意一个区域，方可获取到本地区的所有的债券信息",
+    "装备升级或者翻新之后，记得在“换装”中重新保存应用喔",
+    "血条太大挡视野？团战人数太多看不到标记？不妨点开“头顶标记/血条”看看呢",
+    "想给朋友取别称吗？状态显示中可对目标添加自定义名称",
+    "经常被圣所盾聚到？看看范围辅助呢",
+    "整理背包怕放错物品，可以添加黑名单",
+    "死于不明吗？打开死亡回顾看看吧",
+}
 
 local function SetButtonSelected(button, selected)
     if button ~= nil and type(button.SetSelected) == "function" then button:SetSelected(selected == true) end
@@ -103,6 +115,16 @@ function Shell:SetStatus(text, tone)
         self.status:SetText(tostring(text or ""))
         if tone ~= nil and type(self.status.SetTone) == "function" then self.status:SetTone(tone) end
     end
+end
+
+function Shell:AdvanceMenuTip()
+    if self.menuTip == nil then return false end
+    local nextIndex = ((tonumber(self.menuTipIndex) or 0) % #MENU_TIPS) + 1
+    -- 中文维护：先写当前可见文本，再推进索引；失败时下次打开仍显示这一条，不让轮换越过未展示内容。
+    if self.menuTip:SetText("小提示：" .. MENU_TIPS[nextIndex]) ~= true then return false end
+    self.menuTipIndex = nextIndex
+    if type(RSUI.FlushLayoutQueue) == "function" then RSUI:FlushLayoutQueue(16) end
+    return true
 end
 
 function Shell:RefreshNavScrollHint()
@@ -469,11 +491,14 @@ function Shell:Create()
     })
     local topRow = RSUI:HorizontalBox({ id = "v3_shell_top_row", parent = self.topBar, gap = 4 })
     local brand = RSUI:VerticalBox({ id = "v3_shell_brand", parent = topRow, gap = 1, slot = { size = "fill", fill = 1 } })
-    -- 维护（2026-09-12）：按发行界面要求，仅将主菜单标题替换为作者与 QQ 群信息。
+    -- 维护：发行标记紧跟 QQ 群；第二行只是联系文案，不添加邮件发送或业务写入口。
     -- Authority / 数据流：仍由 v3:shell 经 RSUI:Text 创建展示文本，不直接写 Native 或业务 Store。
     -- 兼容边界：保留逻辑 ID、响应式宽度及样式；不改 ESC 注册名、聊天前缀或用户配置，无迁移。
     -- 后续维护：联系信息仅在此展示；窄窗沿用省略规则，不扩大拖动命中区或挤占右侧按钮。
-    self.brandTitle=RSUI:Text({ id = "v3_shell_title", parent = brand, text = "作者:Replicated   QQ群:1104129461", fontSize = 15, tone = "accent", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
+    self.brandTitle=RSUI:Text({ id = "v3_shell_title", parent = brand, text = "作者:Replicated   QQ群:1104129461   正式版5.0", fontSize = 15, tone = "accent", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
+    self.supportText=RSUI:Text({ id = "v3_shell_support_text", parent = brand, text = "如果觉得功能好用，可以邮件给作者提供一点打赏", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 14 } })
+    -- 中文维护：窄窗可省略顶栏文字，悬停时仍能读到完整文案；不改变右侧按钮的命中区域。
+    if RSUI.Tooltip and type(RSUI.Tooltip.BindOverflowText) == "function" then RSUI.Tooltip:BindOverflowText(self.brandTitle,self.brandTitle,{cursorFollow=true,maxWidth=440}); RSUI.Tooltip:BindOverflowText(self.supportText,self.supportText,{cursorFollow=true,maxWidth=440}) end
     self.runningButton=RSUI:Button({id="v3_shell_running",parent=topRow,text="已开启 0 · 异常 0",compact=true,
         onClick=function()return self:Navigate("system.features",{source="running_summary"})end,slot={size="fixed",width=138}})
     -- 中文维护（2026-10-05）：外观快捷入口移到 Shell 标题栏，从任意模块复用工作台原页面与保存路径。
@@ -546,9 +571,13 @@ function Shell:Create()
     self.contentRoot = RSUI:Overlay({ id = "v3_shell_content_root", parent = self.contentFrame })
     if PageHost:Attach(self.contentRoot) ~= true then return FailBuild("页面宿主挂载失败") end
 
-    self.footer = RSUI:Border({ id = "v3_shell_footer", parent = self.appStack, variant = "soft", padding = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
+    -- 中文维护：底栏增加两行提示空间；状态保留左侧，提示占右侧剩余宽度，缩窗时由 Text 有界换行。
+    self.footer = RSUI:Border({ id = "v3_shell_footer", parent = self.appStack, variant = "soft", padding = 6, slot = { size = "fixed", height = 44, hAlign = "fill" } })
     local footerRow = RSUI:HorizontalBox({ id = "v3_shell_footer_row", parent = self.footer, gap = 8 })
-    self.status = RSUI:Text({ id = "v3_shell_status", parent = footerRow, text = "就绪", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
+    self.status = RSUI:Text({ id = "v3_shell_status", parent = footerRow, text = "就绪", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", width = 150 } })
+    self.menuTip = RSUI:Text({ id = "v3_shell_menu_tip", parent = footerRow, text = "小提示：", fontSize = 9, tone = "muted", overflow = "wrap", maxLines = 2, slot = { size = "fill", fill = 1, hAlign = "fill" } })
+    -- 中文维护：两行仍截断时才显示悬停全文，不把提示铺到页面内容或覆盖窗口操作区。
+    if RSUI.Tooltip and type(RSUI.Tooltip.BindOverflowText) == "function" then RSUI.Tooltip:BindOverflowText(self.menuTip,self.menuTip,{cursorFollow=true,maxWidth=440}) end
 
     -- Toast is above normal page chrome but below the modal scrim. This keeps
     -- notifications visible without allowing them to bypass a blocking modal.
@@ -621,6 +650,8 @@ function Shell:ApplyLayout(fromMetricsChange, designWidth, designHeight)
     local font=math.max(1,tonumber(self.mainAppearance and self.mainAppearance.fontScale) or 1)
     if self.topBar then self.topBar.slot.height=math.ceil(50*font)end
     if self.brandTitle then self.brandTitle.slot.height=math.ceil(20*font)end
+    if self.supportText then self.supportText.slot.height=math.ceil(14*font)end
+    if self.footer then self.footer.slot.height=math.ceil(44*font)end
     if self.windowController then self.windowController.dragHandleHeight=math.ceil(50*font)end
     -- 布局偏好由页面声明；普通页面恢复原边距，保留同一个内容 Border/Native parent。
     local contentPadding = PageHost.compactPageChrome == true and 6 or 14
@@ -709,6 +740,8 @@ function Shell:Open()
             return false, detail
         end
     end
+    -- 中文维护：Navigate 也会调用 Open；只有本次真正从隐藏变为可见才轮换，显示失败不消费提示。
+    if not wasVisible then self:AdvanceMenuTip() end
     if wasMinimized then MarkDirty("minimized_changed") end
     Adapter:Raise(self.window)
     return true

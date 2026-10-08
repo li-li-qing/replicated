@@ -591,12 +591,14 @@ local function BuildTradeMaterialProjection(row)
             end
             if quotedPrice ~= nil then
                 unitCost, totalCost = quotedPrice, quotedPrice * count
-                status = priceProvenance == "local_fresh" and "quoted" or "quoted_reference"
+                status = (type(priceMeta) == "table" and (priceMeta.source == "name_search_sampled_direct_unit"
+                    or priceMeta.source == "name_search_sampled_lower_unit"))
+                    and "quoted_reference" or (priceProvenance == "local_fresh" and "quoted" or "quoted_reference")
             elseif quoteState ~= nil and (quoteState.status == "queued" or quoteState.status == "inflight") then
                 complete, status = false, "quote_pending"
             elseif quoteState ~= nil and (quoteState.status == "failed" or quoteState.status == "blocked") then
                 -- 维护（2026-10-01，auction-full-lane-safety-1）：受阻是明确终态，不回退成无记录/待询价。
-                quoteError = type(quoteState.error) == "string" and quoteState.error or tostring(quoteState.code or "报价失败")
+                quoteError = type(quoteState.error) == "string" and quoteState.error or tostring(quoteState.code or "暂未取到报价")
                 complete, status = false, quoteState.status == "blocked" and "quote_blocked" or "quote_failed"
             else
                 complete, status = false, "explicit_quote_required"
@@ -636,7 +638,7 @@ local function BuildTradeMaterialProjection(row)
             costCopper = totalCost,
             costStatus = status,
             quoteState = status == "quote_pending" and tostring(quoteState.status) or nil,
-            quoteError = quoteError ~= nil and BoundedTradeText(quoteError, "报价失败", 96) or nil,
+            quoteError = quoteError ~= nil and BoundedTradeText(quoteError, "暂未取到报价", 96) or nil,
             priceFreshness = type(priceMeta) == "table" and tostring(priceMeta.freshness or "unknown") or nil,
             priceAgeMinutes = type(priceMeta) == "table" and tonumber(priceMeta.ageMinutes) or nil,
             priceSource = type(priceMeta) == "table" and tostring(priceMeta.source or "") or nil,
@@ -665,13 +667,18 @@ local function BuildTradeMaterialProjection(row)
             elseif priceProvenance == "local_cached" then ageText = "，本地历史价" end
             if row.priceRefreshing == true then ageText = ageText .. "，后台更新中" end
             if row.priceCandidateCopper ~= nil then ageText = ageText .. "，异常候选价待复核，仍用原价" end
+            if row.priceSource == "name_search_sampled_lower_unit" then
+                ageText = ageText .. "，拍卖前三条存在更低报价，已采用较低样本；建议检查拍卖排序"
+            elseif row.priceSource == "name_search_sampled_direct_unit" then
+                ageText = ageText .. "，拍卖前三条样本参考价"
+            end
             row.detailText = row.detailText .. "（单价 " .. Money(unitCost) .. " / 小计 " .. Money(totalCost) .. ageText .. "）"
         elseif status == "quote_pending" then
             row.detailText = row.detailText .. "（询价" .. (row.quoteState == "inflight" and "中" or "排队中") .. "）"
         elseif status == "quote_blocked" then
             row.detailText = row.detailText .. "（询价受阻，原价未更新）"
         elseif status == "quote_failed" then
-            row.detailText = row.detailText .. "（询价失败）"
+            row.detailText = row.detailText .. "（暂未取到报价，可重试）"
         elseif row.priceSortUnverified then
             row.detailText = row.detailText .. "（旧缓存未核验挂单排序，请双击重新询价）"
         else
@@ -740,8 +747,26 @@ local function ApplyTradeQuoteJobProjection(row)
         -- 旧代码漏掉该分支，已失败的货物仍显示后台询价。保留未知成本，不把缺价当0或删除真实材料。
         row.profitStatus = row.quoteJobState == "blocked" and "revalidate_blocked" or "revalidate_failed"
         if row.profitCopper == nil then row.profit = row.quoteJobState == "blocked" and "询价受阻" or "部分材料价未知" end
-        row.profitNote = tostring(row.quoteJobReason or "部分材料价格未知；保留已知价格")
+        row.profitNote = row.quoteJobState == "blocked"
+            and tostring(row.quoteJobReason or "询价受阻；可稍后重试")
+            or "部分材料暂未取到报价；可重试或导出诊断"
     end
+end
+
+local function TradeProfitNote(row)
+    local notes = {}
+    for _, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
+        if material.priceSource == "name_search_sampled_direct_unit"
+            or material.priceSource == "name_search_sampled_lower_unit" then
+            notes[#notes + 1] = "毛利按拍卖前三条样本参考价估算"
+            break
+        end
+    end
+    local extraResources = (tonumber(row.boundResourceCount) or 0) + (tonumber(row.nonMarketResourceCount) or 0)
+    if extraResources > 0 then
+        notes[#notes + 1] = "仅扣已折算金币材料；另有 " .. tostring(extraResources) .. " 项绑定/非市场资源未折价"
+    end
+    return #notes > 0 and table.concat(notes, "；") or nil
 end
 
 local function ApplyTradeMaterialProjectionToRow(row)
@@ -790,8 +815,7 @@ local function ApplyTradeMaterialProjectionToRow(row)
         -- 制作资源未折算金币，但列表没有脚注，用户会误以为是货币/公式异常。紧凑列只显示真实金币口径数字；
         -- 是否“仅金币成本”由结构化 materialCostBasis/profitNote 投影，并在选中提示/详情明确说明。
         row.profit = Money(profit)
-        local extraResources = row.boundResourceCount + row.nonMarketResourceCount
-        row.profitNote = extraResources > 0 and ("仅扣已折算金币材料；另有 " .. tostring(extraResources) .. " 项绑定/非市场资源未折价") or nil
+        row.profitNote = TradeProfitNote(row)
     else
         -- 维护（2026-09-23，trade-row-actionable-profit-1）：紧凑列表中的毛利列必须告诉玩家“下一步做什么”。
         -- 旧文案“缺材料价（拍卖行无返回）”既过长又像永久故障，且无法解释显式询价模型。这里仅消费已经
@@ -826,7 +850,7 @@ local function ApplyTradeMaterialProjectionToRow(row)
         elseif hasQuoteBlocked then
             row.profitStatus, row.profit = "quote_blocked", "询价受阻"
         elseif hasQuoteFailed then
-            row.profitStatus, row.profit = "quote_failed", "询价失败"
+            row.profitStatus, row.profit = "quote_failed", "暂无报价"
         elseif hasQuoteRequired then
             row.profitStatus, row.profit = "quote_required", "双击询价"
         elseif materialProjection.identityStatus == "live_pending" then
@@ -886,8 +910,7 @@ local function ApplyTradeFastMaterialCarryForward(row, previous)
         row.profitRate = cost > 0 and (profit / cost * 100) or nil
         row.profitStatus = "ready"
         row.profit = Money(profit)
-        local extraResources = (tonumber(row.boundResourceCount) or 0) + (tonumber(row.nonMarketResourceCount) or 0)
-        row.profitNote = extraResources > 0 and ("仅扣已折算金币材料；另有 " .. tostring(extraResources) .. " 项绑定/非市场资源未折价") or nil
+        row.profitNote = TradeProfitNote(row)
     else
         -- 成本尚未完整时保留可操作状态（后台询价/双击询价/材料未识别），但绝不能复制与旧售价绑定的 profitCopper。
         row.profitCopper, row.profitRate = nil, nil
@@ -2702,7 +2725,7 @@ Trade.ApiDependencies = {
     "X2Equipment:GetEquippedItemType", "X2Equipment:GetEquippedItemTooltipInfo",
     "X2Craft:GetCraftTypeByItemType", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo",
     "X2Auction:AskMarketPrice", "X2Auction:GetLowestPrice", "X2Auction:SearchAuctionArticle",
-    "X2Auction:GetSearchedItemCount", "X2Auction:GetSearchedItemTotalCount", "X2Auction:GetSearchedItemInfo",
+    "X2Auction:GetSearchedItemCount", "X2Auction:GetSearchedItemInfo",
 }
 function Trade:Initialize()
     if type(S.Services and S.Services.TradePayoutV3) ~= "table" then return false, "跑商售价计算服务不可用" end

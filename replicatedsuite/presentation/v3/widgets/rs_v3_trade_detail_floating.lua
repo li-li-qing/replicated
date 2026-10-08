@@ -61,7 +61,7 @@ end
 local PRICE_STATUS_TEXT = {
     explicit_quote_required = "价格需询价",
     quote_pending = "正在询价",
-    quote_failed = "询价失败",
+    quote_failed = "暂未取到报价",
     price_pending = "价格待确认",
     identity_pending = "材料待确认",
     quoted = "已取价",
@@ -95,7 +95,7 @@ local function MaterialStatus(row)
     if status == "quote_pending" then
         return tostring(row.quoteState) == "inflight" and "询价中" or "询价排队中", "yellow"
     end
-    if status == "quote_failed" then return "询价失败", "red" end
+    if status == "quote_failed" then return "暂无报价", "yellow" end
     if status == "explicit_quote_required" then return "待询价", "yellow" end
     if status == "identity_pending" then return "身份待确认", "muted" end
     return "待确认", "muted"
@@ -330,7 +330,7 @@ function M:Refresh(reason)
     self.summary:SetText("货率 " .. tostring(row.rate or "--") .. " · 预计售价 " .. tostring(row.price or "--") .. payoutFactors
         .. "\n材料金币成本 " .. Money(row.materialCostCopper) .. resourceHint .. " · 毛利 " .. tostring(row.profit or "--"))
 
-    local items, pending, inflight, failed, firstQuoteError, marketCount = {}, 0, 0, 0, nil, 0
+    local items, pending, inflight, failed, marketCount = {}, 0, 0, 0, 0
     for index, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
         local statusText, tone = MaterialStatus(material)
         local costStatus = tostring(material.costStatus or "")
@@ -342,7 +342,6 @@ function M:Refresh(reason)
         if costStatus == "quote_pending" then inflight = inflight + 1 end
         if costStatus == "quote_failed" then
             failed = failed + 1
-            if firstQuoteError == nil and material.quoteError ~= nil then firstQuoteError = tostring(material.quoteError) end
         end
         items[#items + 1] = {
             -- key is an internal row handle for the table widget, not display text.
@@ -380,7 +379,7 @@ function M:Refresh(reason)
     local statusSummary = "材料 " .. tostring(#items) .. " 项"
     if pending > 0 then statusSummary = statusSummary .. (" · 待询价 " .. tostring(pending)) end
     if inflight > 0 then statusSummary = statusSummary .. (" · 询价中 " .. tostring(inflight)) end
-    if failed > 0 then statusSummary = statusSummary .. (" · 询价失败 " .. tostring(failed)) end
+    if failed > 0 then statusSummary = statusSummary .. (" · 未取到报价 " .. tostring(failed)) end
     local jobFailed = row.quoteJobState == "blocked" or row.quoteJobState == "failed" or row.quoteJobState == "partial"
     local activity = type(projection.quoteActivity) == "table" and projection.quoteActivity or {}
     if rowJobActive then
@@ -397,10 +396,10 @@ function M:Refresh(reason)
     elseif rowJobActive or jobFailed then
         self.hint:SetText(tostring(row.profitNote or row.quoteJobReason or "部分材料价格未知"))
     elseif failed > 0 then
-        self.hint:SetText("询价失败原因：" .. (firstQuoteError or "未知；请复制诊断页「报价队列」行给维护者。"))
+        self.hint:SetText("本次未取到可核验报价，可重试；详情可导出诊断。")
     else
         local resourceText = resourceCount > 0 and ("；当前含 " .. tostring(resourceCount) .. " 项绑定/非市场制作资源，不折算金币成本") or ""
-        self.hint:SetText("已有材料价即时计算；双击仅查询缺失价格；6小时以上缓存后台更新，单次操作最多等待5秒" .. resourceText .. "。")
+        self.hint:SetText(tostring(row.profitNote or ("已有材料价即时计算；双击仅查询缺失价格；6小时以上缓存后台更新，单次操作最多等待5秒" .. resourceText .. "。")))
     end
     return true
 end

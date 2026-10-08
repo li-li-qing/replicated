@@ -66,7 +66,10 @@ Test('descending native listings repair old sort-dependent cache through the act
  assert(h.T:QuoteRowMaterials(h.row.key));h:advance(5000)
  Eq(h.row.materialCostComplete,true);Eq(h.row.materialCostCopper,124520);Eq(h.row.profitCopper,129380)
  Eq(h:count('SearchAuctionArticle'),2);Eq(h:count('GetSearchedItemInfo'),4)
- Eq(h.row.quoteJobState,'ready');Eq(h.m.entries['30901:0'].source,'name_search_min_direct_unit')
+ Eq(h.row.quoteJobState,'ready');Eq(h.m.entries['30901:0'].source,'name_search_sampled_lower_unit')
+ assert(h.row.materialRows[1].detailText:find('拍卖前三条存在更低报价，已采用较低样本',1,true))
+ Eq(h.row.materialRows[1].costStatus,'quoted_reference')
+ assert(h.row.profitNote:find('毛利按拍卖前三条样本参考价估算',1,true))
 end)
 -- 中文维护注释（2026-10-02）：整条跑商消费者链必须在真实报告的“两个 getter 成功全空”条件下
 -- 得到两份可靠报价并更新成本/利润，不能只证明底层 known=false 被改成 known=true。
@@ -362,6 +365,8 @@ Test('empty listing for a market transport ingredient remains unknown',function(
  Eq(h:count('SearchAuctionArticle'),3);Eq(h.row.materialCostComplete,false);Eq(h.row.profitCopper,nil)
  local missing=h.row.materialRows[3];Eq(missing.itemType,19449);Eq(missing.includeInCost,true)
  Eq(missing.auctionable,true);Eq(missing.costKind,'market');Eq(missing.unitCostCopper,nil)
+ assert(not tostring(missing.detailText):find('失败',1,true))
+ assert(not tostring(h.row.profit):find('失败',1,true))
 end)
 print('TRADE REQUOTE E2E '..passed..'/'..total..' '.._VERSION)
 assert(passed==total,'trade requote end-to-end failures')

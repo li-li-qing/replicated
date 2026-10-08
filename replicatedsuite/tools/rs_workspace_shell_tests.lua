@@ -125,6 +125,32 @@ Test('appearance shortcut stays clickable in the main title bar and opens the ac
  assert(shell:Close('test'));assert(shell:Open());assert(shortcut.root.events.OnClick(shortcut.root,'LeftButton'))
  assert(H.pages['system.workspace'].tab=='appearance')
 end)
+Test('release label, support line and menu tips use visible open edges',function()
+ local shell,S,h,n=Boot()
+ assert(shell.brandTitle.text:find('QQ群:1104129461   正式版5.0',1,true),'release label missing beside QQ group')
+ assert(n.v3_shell_support_text.text=='如果觉得功能好用，可以邮件给作者提供一点打赏','support line missing')
+ local tips={
+  '债券功能','装备升级或者翻新','血条太大挡视野','想给朋友取别称吗',
+  '经常被圣所盾聚到','整理背包怕放错物品','死于不明吗',
+ }
+ local seen={}
+ for i=1,#tips do
+  local displayed=assert(n.v3_shell_menu_tip).text
+  assert(displayed:find(tips[i],1,true),'wrong tip on open '..i..': '..displayed)
+  assert(not seen[displayed],'tip repeated before all seven appeared')
+  seen[displayed]=true
+  assert(shell:Navigate('home'))
+  assert(n.v3_shell_menu_tip.text==displayed,'navigation rotated tip while menu was already visible')
+  assert(shell:Close('tip_test'))
+  assert(shell:Open())
+ end
+ assert(n.v3_shell_menu_tip.text:find(tips[1],1,true),'tips did not cycle after seven opens')
+ assert(h.writes==0,'tip rotation wrote configuration')
+ for _,width in ipairs({400,1000}) do
+  assert(shell:ApplyLayout(false,width,700))
+  assert(n.v3_shell_menu_tip.x+n.v3_shell_menu_tip.width<=n.v3_shell_menu_tip.parentComponent.width+1,'tip escaped footer')
+ end
+end)
 Test('main menu appearance entry exposes actual numeric controls and preview writes nothing',function()
  local shell,S,h,n=Boot({actualWorkspaceHost=true,mainAppearance=true})
  assert(n.v3_shell_appearance_button.root.events.OnClick(n.v3_shell_appearance_button.root,'LeftButton'))

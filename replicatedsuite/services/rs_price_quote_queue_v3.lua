@@ -765,14 +765,18 @@ function Q:_CheckSingle(request)
     -- 维护（2026-10-02）：原生 Count=0 与有结果却无可靠一口价是两个断点；空搜索不是已证实无货。
     if snap.status == "empty" then return FinishSingle(request, "unavailable", nil, "auction_search_empty") end
     if snap.status == "ready" or snap.status == "partial" then
-        if snap.coverageComplete ~= true or snap.listingSelection ~= "lowest_unit_buyout" then
-            request.failureCode = "auction_search_coverage_incomplete"
-            return FinishSingle(request, "unavailable", nil, "搜索结果未完整返回，无法确认最低单价")
+        if snap.listingSelection ~= "sampled_unit_buyout" then
+            request.failureCode = "auction_sample_missing"
+            return FinishSingle(request, "unavailable", nil, "未返回可核验的拍卖样本")
         end
         for _, row in ipairs(snap.rows or {}) do
             if row.itemType == request.itemType and row.itemGrade == request.itemGrade then
                 local price, source = FallbackRowPrice(row, true)
-                if price ~= nil then return FinishSingle(request, "ready", { value = price, source = "name_search_min_direct_unit" }) end
+                if price ~= nil then
+                    return FinishSingle(request, "ready", { value = price,
+                        source = snap.sampleLowerLater == true and "name_search_sampled_lower_unit"
+                            or "name_search_sampled_direct_unit" })
+                end
             end
         end
         return FinishSingle(request, "unavailable", nil, "strict_buyout_not_found")
@@ -824,10 +828,10 @@ local function StartSingle(request)
     -- 维护（2026-10-02，material-name-candidates-1）：211943 实机证明搜索返回空且事件不含行数据；
     -- 中文静态显示名并不是已核验的 Native 完整索引名，强制 exactMatch 可能在 ID 校验前排除候选。
     -- 单次材料查询用普通名称筛选；firstValidBuyout 要求真实 ID/品质、正数量和有效一口价，
-    -- 并在完整有界结果内选最低单价，不能再把用户当前排序的第一条视为市场报价。
-    -- 不靠同名或默认品质接受报价。等级参数/20条上限/一包上限/人用拍卖优先级均保持既有契约。
+    -- 并在本页最多三条样本中选较低单价，作为参考价；不声称是全市场最低。
+    -- 不靠同名或默认品质接受报价。等级参数/单包上限/玩家拍卖优先级保持既有契约。
     local ok, err = query:Search(request.queryRequester, request.searchName, {
-        background = true, exactMatch = false, resultLimit = Q.fallbackSearchLimit,
+        background = true, exactMatch = false, resultLimit = 3,
         firstValidBuyout = { itemType = request.itemType, itemGrade = request.itemGrade },
         searchGeneration = request.searchGeneration,
     })
@@ -1475,7 +1479,8 @@ function Q:RecordReferencePrice(itemType, itemGrade, price, source)
     -- Only the quantity-normalized direct fallback may become a long-lived reference. Bid prices remain
     -- non-final estimates; legacy unnormalized name_search_* sources are explicitly rejected.
     if source == "name_search_bid_unit" or (source:find("^name_search") ~= nil
-        and source ~= "name_search_direct_unit" and source ~= "name_search_min_direct_unit") then
+        and source ~= "name_search_direct_unit" and source ~= "name_search_min_direct_unit"
+        and source ~= "name_search_sampled_direct_unit" and source ~= "name_search_sampled_lower_unit") then
         return false, "estimate_or_legacy_fallback_not_persisted"
     end
     local key = ReferenceKey(itemType, itemGrade)

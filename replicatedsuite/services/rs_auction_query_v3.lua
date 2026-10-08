@@ -23,8 +23,8 @@ local Q = {
     -- 拍卖记录价格，而不是材料单价。数量是价格归一 Authority 的必要组成；下游不得再把 listing total
     -- 当作 unit cost。该契约同时要求兼容 RU 常见 itemStack 字段，避免数量丢失后错误放大材料成本。
     ListingUnitPriceContractVersion = 1,
-    SortIndependentUnitPriceContractVersion = 1,
-    sortPatch = "auction-sort-independent-1",
+    SampledUnitPriceContractVersion = 1,
+    sortPatch = "auction-three-sample-1",
     presentationBoundary = "service_only",
     presentationDebt = nil,
     Topic = "v3.auction_query.updated",
@@ -287,7 +287,7 @@ end
 
 function Q:DescribePriceEvidenceDetail()
     return { patch='auction-search-packet-evidence-1', requests=Copy(self.priceEvidence), ringLimit=16,
-        coverage='only_already_read_native_rows; first_valid_buyout_stops_reads; no_extra_search_or_pages',
+        coverage='strict_quote_reads_at_most_three_current_page_rows; not_a_global_market_minimum',
         rawLimits={nodesPerRow=128,depth=4,keys=64,stringBytes=512},
         -- 回包取证不追加搜索或 getter；超限由 Detach 明确写出 OMITTED，而不是声称完整无遗漏。
         packetLimits={arguments=8,nodes=512,depth=6,keys=64,stringBytes=1024},
@@ -391,11 +391,6 @@ function Q:_Complete(status, rows, err)
     local requester = pending.requester
     if pending.discarded == true then status, rows, err = "interrupted", {}, pending.discardReason end
     local errorCode
-    if err == "auction_search_coverage_incomplete" then
-        errorCode, err = err, "搜索结果未完整返回，无法确认最低单价，本页价格未采纳"
-    elseif err == "auction_search_total_count_invalid" then
-        errorCode, err = err, "搜索总数不可核验，无法确认报价范围"
-    end
     if pending.evidence ~= nil then
         pending.evidence.status, pending.evidence.error = status, err
         pending.evidence.errorCode = errorCode
@@ -410,6 +405,7 @@ function Q:_Complete(status, rows, err)
         count = type(rows) == "table" and #rows or 0, error = err, errorCode = errorCode,
         requestedAt = pending.requestedAt, completedAt = type(S.NowMs) == "function" and S.NowMs() or nil,
         listingSelection = pending.listingSelection, coverageComplete = pending.coverageComplete,
+        sampleLowerLater = pending.sampleLowerLater == true,
         contract = "9参数显式搜索；结果字段按当前 RU 返回做 bounded normalization，不作为历史成交样本",
     }
     self:_Publish(requester)
@@ -452,26 +448,16 @@ function Q:_OnSearched(expected, ...)
     end
     local limit = math.min(sourceCount, math.max(1, math.min(self.maxRows, tonumber(pending.resultLimit) or 20)))
     if pending.firstValidBuyout ~= nil then
-        -- 维护（2026-10-07，auction-sort-independent-1）：首条可靠挂单不等于最低单价。
-        -- 先核验结果是否完整：高到低排序的第一页、未读完的有界前缀不能冒充最低价。
-        -- 总数 getter 已由 RU 07.05.2025 开放；缺失/失败时降级为不可报价，不猜排序 ABI/翻页。
-        local okTotal, totalValue, totalError = S.Api:CallCapability("X2Auction:GetSearchedItemTotalCount", nil, "GetSearchedItemTotalCount")
-        local totalCount = tonumber(totalValue)
+        -- 三条样本只提供参考单价。无论拍卖行当前是升序还是降序，最多读取本页前三条，
+        -- 以同身份、同品质的有效一口单价中较低者展示；不声称这是全市场最低价。
+        limit = math.min(limit, 3)
+        pending.coverageComplete = limit == sourceCount
+        pending.listingSelection = "sampled_unit_buyout"
         if pending.evidence then
-            pending.evidence.totalCountCallOk, pending.evidence.totalCountError = okTotal == true, totalError
-            pending.evidence.totalCountReturn = EvidenceClip(EvidenceScalar(totalValue), 96)
-            pending.evidence.selection = "lowest_unit_buyout"
+            pending.evidence.selection = pending.listingSelection
+            pending.evidence.coverageComplete = pending.coverageComplete
+            pending.evidence.sampleLimit = 3
         end
-        if okTotal ~= true or totalCount == nil or totalCount ~= totalCount or totalCount == math.huge
-            or totalCount < sourceCount or totalCount ~= math.floor(totalCount) then
-            return self:_Complete("failed", {}, "auction_search_total_count_invalid")
-        end
-        pending.coverageComplete = totalCount == sourceCount and limit == sourceCount
-        if pending.evidence then
-            pending.evidence.totalCount, pending.evidence.coverageComplete = totalCount, pending.coverageComplete
-        end
-        if not pending.coverageComplete then return self:_Complete("failed", {}, "auction_search_coverage_incomplete") end
-        pending.listingSelection = "lowest_unit_buyout"
     end
     if sourceCount == 0 then return self:_Complete("empty", {}, nil) end
     local rows, failures, bestBuyout = {}, 0, nil
@@ -481,7 +467,7 @@ function Q:_OnSearched(expected, ...)
             local row = NormalizeRow(info, index)
             if pending.firstValidBuyout ~= nil then
                 -- firstValidBuyout 保留历史调用字段名，仅作为精确身份过滤条件。
-                -- 完整有界列表按每件一口价比较，升序/降序/数量排序均得到同一结果；仍只发一次搜索。
+                -- 比较至多三条已核验样本；相同单价保留先读到的第一条。
                 local wanted = pending.firstValidBuyout
                 local exactId = Nested(info, function(value) return tonumber(value.itemType or value.itemTypeId or value.item_type) end)
                 local exactGrade = Nested(info, function(value) return tonumber(value.itemGrade or value.grade or value.item_grade or value.item_grade_id) end)
@@ -489,24 +475,16 @@ function Q:_OnSearched(expected, ...)
                     and row.itemType == wanted.itemType and row.itemGrade == wanted.itemGrade
                     and row.unitDirectPrice ~= nil and row.unitDirectPrice > 0 then
                     EvidenceRead(pending, index, "candidate", info, row)
+                    if pending.firstSampleUnitPrice == nil then pending.firstSampleUnitPrice = row.unitDirectPrice
+                    elseif row.unitDirectPrice < pending.firstSampleUnitPrice then pending.sampleLowerLater = true end
                     if bestBuyout == nil or row.unitDirectPrice < bestBuyout.unitDirectPrice then bestBuyout = row end
                 else
                     local reason = exactId == nil and "id_missing" or exactId ~= wanted.itemType and "id_mismatch"
                         or exactGrade == nil and "grade_missing" or exactGrade ~= wanted.itemGrade and "grade_mismatch"
                         or row == nil and "info_shape_invalid" or row.quantity == nil and "quantity_invalid" or "buyout_invalid"
                     EvidenceRead(pending, index, reason, info, row)
-                    -- 中文维护（发布审查）：完整页不等于每条报价可核验。未知身份、数量或一口价
-                    -- 可能遮住更低单价，必须使本次最低价不可提交；只有已证不同身份/品质、明确无
-                    -- 一口价的竞拍挂单可排除。仅消费本行既有字段，不新增 Native 读取或查询。
-                    local validId = exactId ~= nil and exactId > 0 and exactId < math.huge and exactId == math.floor(exactId)
-                    local validGrade = exactGrade ~= nil and exactGrade >= 0 and exactGrade <= 20 and exactGrade == math.floor(exactGrade)
-                    local foreign = (validId and exactId ~= wanted.itemType) or (validGrade and exactGrade ~= wanted.itemGrade)
-                    local hasDirectField = Nested(info, function(value)
-                        if value.directPriceStr ~= nil or value.directPrice ~= nil or value.buyoutPriceStr ~= nil or value.buyoutPrice ~= nil then return true end
-                    end)
-                    local bidOnly = row ~= nil and (row.directPrice == 0 or (hasDirectField ~= true
-                        and row.bidPrice ~= nil and row.bidPrice > 0 and row.bidPrice < math.huge))
-                    if not foreign and not bidOnly then failures = failures + 1 end
+                    -- 未知字段不能变成价格；其它可读样本仍可提供明确标注的参考价。
+                    failures = failures + 1
                 end
             elseif row ~= nil then rows[#rows + 1] = row else failures = failures + 1 end
         else
@@ -515,13 +493,15 @@ function Q:_OnSearched(expected, ...)
         end
     end
     if pending.firstValidBuyout ~= nil then
-        if bestBuyout ~= nil and failures == 0 then rows[1] = bestBuyout end
+        if bestBuyout ~= nil then rows[1] = bestBuyout end
         if pending.evidence then
             pending.evidence.acceptedIndex = rows[1] and rows[1].resultIndex or nil
             pending.evidence.selectedUnitPrice = rows[1] and rows[1].unitDirectPrice or nil
+            pending.evidence.sampleLowerLater = pending.sampleLowerLater == true
         end
     end
-    local status = failures > 0 and (#rows > 0 and "partial" or "failed") or "ready"
+    local status = pending.firstValidBuyout ~= nil and (#rows > 0 and "ready" or "failed")
+        or (failures > 0 and (#rows > 0 and "partial" or "failed") or "ready")
     if pending.evidence then pending.evidence.unreadRows = math.max(0, sourceCount-pending.evidence.readCount) end
     local err = failures > 0 and ("有 " .. tostring(failures) .. " 条结果字段不可读") or nil
     return self:_Complete(status, rows, err)
@@ -638,7 +618,7 @@ function Q:Describe()
     return { version = self.version, pending = self.pending ~= nil, eventBound = self.eventBound == true,
         maxRows = self.maxRows, timeoutMs = self.timeoutMs, patch = self.priorityPatch,
         nativeUserPriorityContractVersion = self.NativeUserPriorityContractVersion,
-        sortPatch = self.sortPatch, sortIndependentUnitPriceContractVersion = self.SortIndependentUnitPriceContractVersion,
+        sortPatch = self.sortPatch, sampledUnitPriceContractVersion = self.SampledUnitPriceContractVersion,
         requester = self.pending ~= nil and self.pending.requester or nil,
         searchGeneration = self.pending ~= nil and self.pending.searchGeneration or nil,
         background = self.pending ~= nil and self.pending.background == true,

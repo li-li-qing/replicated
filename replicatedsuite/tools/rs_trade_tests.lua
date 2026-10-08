@@ -253,11 +253,11 @@ Test("T1: Feature registry metadata & contract", function()
     assert(reg.lifecycle == "demand_scoped_with_background_refresh", "lifecycle must expose demand-scoped page resources plus background auto-refresh")
     assert(reg.widgetCapable == true, "widgetCapable must be true")
     assert(reg.settingsCapable == true, "settingsCapable must be true")
-    assert(#reg.apiDependencies == 15, "must own the 14 existing dependencies plus total-count coverage verification")
+    assert(#reg.apiDependencies == 14, "must own the 14 Trade dependencies")
     local required = {
         "X2Craft:GetCraftTypeByItemType", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo",
         "X2Auction:AskMarketPrice", "X2Auction:GetLowestPrice", "X2Auction:SearchAuctionArticle",
-        "X2Auction:GetSearchedItemCount", "X2Auction:GetSearchedItemTotalCount", "X2Auction:GetSearchedItemInfo",
+        "X2Auction:GetSearchedItemCount", "X2Auction:GetSearchedItemInfo",
     }
     local registryDeps, implementationDeps = {}, {}
     for _, name in ipairs(reg.apiDependencies or {}) do registryDeps[name] = true end

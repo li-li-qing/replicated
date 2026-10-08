@@ -470,14 +470,15 @@ function M:RequestQuoteOnce(material, callback, options)
     if not queue or type(queue.RequestQuote) ~= "function" then return false, "price_quote_queue_unavailable" end
     return queue:RequestQuote(options.requester, material.itemType, material.itemGrade, callback, { material.itemGrade }, {
         searchName = material.searchName or material.name, singleQuery = true,
-        -- 中文维护（215703）：跑商显式传递有界排队期限；共享 Queue 拥有发包后五秒计时，价格层不计时。
+        -- 跑商显式传递有界排队期限；共享 Queue 拥有发包后五秒计时，价格层不计时。
         priority = options.priority or "user", deadlineAt = options.deadlineAt, waitForDispatch = options.waitForDispatch == true,
     })
 end
 
 local function TrustedSource(source)
     source = tostring(source or "")
-    if source == "name_search_direct_unit" or source == "name_search_min_direct_unit" then return true end
+    if source == "name_search_direct_unit" or source == "name_search_min_direct_unit"
+        or source == "name_search_sampled_direct_unit" or source == "name_search_sampled_lower_unit" then return true end
     if source:find("^market_price:") ~= nil then return true end
     return false
 end
@@ -498,7 +499,9 @@ function M:ObserveConfirmedPrice(itemType, itemGrade, price, source)
     local entry = self.entries[key]
     local rounded = math.floor(price)
     local nowMinute = ServerMinuteStamp()
-    local replacesUnverified = source == "name_search_min_direct_unit" and type(entry) == "table" and SortDependentSource(entry.source)
+    local replacesUnverified = (source == "name_search_min_direct_unit"
+        or source == "name_search_sampled_direct_unit" or source == "name_search_sampled_lower_unit")
+        and type(entry) == "table" and SortDependentSource(entry.source)
 
     if not replacesUnverified and type(entry) == "table" and tonumber(entry.price) ~= nil and tonumber(entry.price) > 0 then
         local previous = tonumber(entry.price)
@@ -727,7 +730,7 @@ function M:Describe()
     end
     return {
         version = self.version, contractVersion = self.ContractVersion, requotePatch = "trade-requote-2",
-        sortPatch = "auction-sort-independent-1", tradeSortUnverifiedEntries = sortUnverified,
+        sortPatch = "auction-three-sample-1", tradeSortUnverifiedEntries = sortUnverified,
         storeId = self.StoreId, storeLoaded = self.storeLoaded == true,
         storeLoadAttempts = tonumber(self.storeLoadAttempts) or 0,
         storeLoadFailures = tonumber(self.storeLoadFailures) or 0,

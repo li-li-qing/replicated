@@ -927,7 +927,7 @@ local LifeSlices = {
             'X2Equipment:GetEquippedItemType', 'X2Equipment:GetEquippedItemTooltipInfo',
             'X2Craft:GetCraftTypeByItemType', 'X2Craft:GetCraftMaterialInfo', 'X2Craft:GetCraftProductInfo',
             'X2Auction:AskMarketPrice', 'X2Auction:GetLowestPrice', 'X2Auction:SearchAuctionArticle',
-            'X2Auction:GetSearchedItemCount', 'X2Auction:GetSearchedItemTotalCount', 'X2Auction:GetSearchedItemInfo' },
+            'X2Auction:GetSearchedItemCount', 'X2Auction:GetSearchedItemInfo' },
         contractVersions = {
             AutoRefreshRuntimeContractVersion = 1, AutoRefreshBackgroundLeaseContractVersion = 2,
             MaterialPriceCacheContractVersion = 1, MultiRowQuoteJobsContractVersion = 1,
