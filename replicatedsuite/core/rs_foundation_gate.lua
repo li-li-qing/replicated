@@ -149,6 +149,7 @@ function G:EvaluateBagActionContract()
     -- 中文维护注释（Phase 3 Batch N，2026-09-29，core-feature-decoupling-1）：本方法原先还有 36 条 tools_bag 的 Require（25 个契约版本下限 + 10 条命令），已整段搬到 features/tools/bag/rs_bag_acceptance.lua 的 v3_tools_bag_action_contract，判定逐条等价。 本方法只保留 Service / UIV3 侧契约（InventorySnapshotV3 / BagQuickOverlay / BusinessPagesContract）—— 它们不是 Feature 债。注意：注释里也不要写出带点号的“表名+字段”形式，rs_architecture_audit 是行级正则且不跳过注释。
     local inventorySnapshot = S.Services and S.Services.InventorySnapshotV3 or nil
     local bagQuickPresenter = S.UIV3 and S.UIV3.BagQuickOverlay or nil
+    local bagSettingsPresenter = S.UIV3 and S.UIV3.BagSettingsFloatingV3 or nil
     local businessPagesContract = S.UIV3 and S.UIV3.BusinessPagesContract or nil
 
     Require(type(inventorySnapshot) == "table", "inventory.service")
@@ -164,7 +165,7 @@ function G:EvaluateBagActionContract()
 
 
     Require(type(businessPagesContract) == "table" and (tonumber(businessPagesContract.bagProductUxContractVersion) or 0) >= 2, "pages.bag_product_ux_v2")
-    Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.version) or 0) >= 9, "presenter.v9")
+    Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.version) or 0) >= 10, "presenter.v10")
     Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.ReleasedRootRecoveryContractVersion) or 0) >= 1, "presenter.root_recovery_v1")
     Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.ReloadVisibilityContractVersion) or 0) >= 2, "presenter.reload_visibility_v2")
     Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.NativeTransientHostContractVersion) or 0) >= 1, "presenter.native_host_v1")
@@ -173,10 +174,18 @@ function G:EvaluateBagActionContract()
     Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.DiffRenderContractVersion) or 0) >= 1, "presenter.diff_render_v1")
     Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.HintYieldContractVersion) or 0) >= 1, "presenter.hint_yield_v1")
     Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.QuietByDefaultContractVersion) or 0) >= 1, "presenter.quiet_default_v1")
-    Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.ExternalNativeWindowGeometryContractVersion) or 0) >= 1, "presenter.external_native_geometry_v1")
+    Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.FreePlacementContractVersion) or 0) >= 1, "presenter.free_placement_v1")
+    Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.FourButtonContractVersion) or 0) >= 1, "presenter.four_button_v1")
+    Require(type(bagQuickPresenter) == "table" and (tonumber(bagQuickPresenter.DurablePlacementContractVersion) or 0) >= 1, "presenter.durable_placement_v1")
+    Require(type(bagQuickPresenter) == "table" and type(bagQuickPresenter.ResetPosition) == "function"
+        and type(bagQuickPresenter.CommitPosition) == "function", "presenter.placement_commands")
+    local positionStore = S.Persistence and type(S.Persistence.GetStore) == "function"
+        and S.Persistence:GetStore("v3.presentation.bag_quick_overlay") or nil
+    Require(type(positionStore) == "table" and positionStore.registrationBudgetOk == true, "presenter.placement_store")
+    Require(type(bagSettingsPresenter) == "table" and type(bagSettingsPresenter.Open) == "function" and type(bagSettingsPresenter.GetHealth) == "function", "presenter.bag_settings")
 
     if #missing == 0 then
-        return true, "shared physical-bag snapshot + storage-session Presentation fallback + explicit external-native-window geometry lane + physical-read action Authority + grouped-intent quick/category queues + live slot revalidation + empty-plan/self-heal mutex release + two-button start/stop/switch + product blacklist UX present"
+        return true, "shared physical-bag snapshot + durable free placement + four-button overlay + grouped-intent quick/category queues + live slot revalidation + start/stop/switch + floating blacklist settings present"
     end
     return false, "missing=" .. Join(missing, 16)
 end
@@ -1346,16 +1355,23 @@ function G:Run(options)
                 .. "/reload=" .. tostring(shell and shell.reloadButton ~= nil))
 
         local pageHost = S.UIV3 and S.UIV3.PageHost or nil
+        -- 统一统计只保留一个主导航，分析/历史是页内视图；旧双按钮断言会把正确整合误报为阻断。
         AddCheck(report, "v3_combat_navigation_contract", shell ~= nil and shell.navButtons ~= nil
-                and shell.navButtons["combat.stats"] ~= nil and shell.navButtons["combat.analytics"] ~= nil
+                and shell.navButtons["combat.stats"] ~= nil and shell.navButtons["combat.analytics"] == nil
+                and shell.navButtons["combat.personal_history"] == nil
+                and shell.navButtons["combat.statistics_settings"] == nil
                 and pageHost ~= nil and type(pageHost.factories) == "table"
                 and type(pageHost.factories["combat.stats"]) == "function"
                 and type(pageHost.factories["combat.analytics"]) == "function"
+                and type(pageHost.factories["combat.personal_history"]) == "function"
+                and type(pageHost.factories["combat.statistics_settings"]) == "function"
                 and S.UIV3Acceptance ~= nil and (tonumber(S.UIV3Acceptance.version) or 0) >= 34,
             "blocker", "dpsButton=" .. tostring(shell and shell.navButtons and shell.navButtons["combat.stats"] ~= nil)
                 .. "/analyticsButton=" .. tostring(shell and shell.navButtons and shell.navButtons["combat.analytics"] ~= nil)
                 .. "/dpsFactory=" .. tostring(pageHost and pageHost.factories and type(pageHost.factories["combat.stats"]) == "function")
-                .. "/analyticsFactory=" .. tostring(pageHost and pageHost.factories and type(pageHost.factories["combat.analytics"]) == "function"))
+                .. "/analyticsFactory=" .. tostring(pageHost and pageHost.factories and type(pageHost.factories["combat.analytics"]) == "function")
+                .. "/historyFactory=" .. tostring(pageHost and pageHost.factories and type(pageHost.factories["combat.personal_history"]) == "function")
+                .. "/settingsFactory=" .. tostring(pageHost and pageHost.factories and type(pageHost.factories["combat.statistics_settings"]) == "function"))
         AddCheck(report, "v3_reload_authority", type(S.ReloadCodeFromDisk) == "function"
                 and S.Persistence ~= nil and type(S.Persistence.Flush) == "function"
                 and (tonumber(S.RecoveryReloadContractVersion) or 0) >= 1,
@@ -1807,7 +1823,7 @@ function G:Run(options)
             .. "/proxyHeal=" .. tostring(dpsHealth and dpsHealth.proxySourceHealAmount or 0))
 
     AddCheck(report, "dps_v3_runtime_scope", dpsHealth ~= nil
-            and (dpsRuntime ~= nil and dpsRuntime.enabled ~= true or (dpsHealth.analyticsHeld == true and tostring(dpsHealth.busScope) == "all(shared_analytics)"))
+            and (dpsRuntime ~= nil and dpsRuntime.enabled ~= true or (dpsHealth.analyticsHeld == true and (tostring(dpsHealth.busScope) == "self" or tostring(dpsHealth.busScope) == "all")))
             and type(dpsRuntime) == "table" and dpsRuntime.busSubscribed ~= true
             and (dpsRuntime ~= nil and dpsRuntime.enabled == true or (tonumber(dpsHealth.consumers) or 0) == 0),
         "warning", dpsHealth and ("enabled=" .. tostring(dpsRuntime ~= nil and dpsRuntime.enabled == true)

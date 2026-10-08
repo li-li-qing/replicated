@@ -193,7 +193,7 @@ local function Build(parent, route, feature, kind)
         end
         -- 维护（2026-09-25，trade-multi-row-quote-ui-1）：批量入口放在“显示”行而不是继续挤 actionRow，
         -- 保持 1024×768 等窄宽度下主操作按钮不重叠。它只创建 RowJob，Native 查询仍由共享 Queue 串行/去重。
-        local tradeQuoteListButton = RSUI:Button({ id = "v3_trade_quote_list", parent = tradeViewRow, text = "刷新当前材料", compact = true, slot = { size = "fixed", width = 108 } })
+        local tradeQuoteListButton = RSUI:Button({ id = "v3_trade_quote_list", parent = tradeViewRow, text = "查询当前材料", compact = true, slot = { size = "fixed", width = 108 } })
         tradeQuoteListButton.onClick = function()
             local ok, quoteErr = feature.Commands:QuotePendingMaterials()
             if ok == true then root:Refresh()
@@ -337,6 +337,15 @@ local function Build(parent, route, feature, kind)
         scrollbar = true, selectable = kind == "treasure" or kind == "trade" or kind == "bonds", selectionMode = "single", columnResize = true, headerInteractive = false,
         columns = kind == "trade" and {
             { id = "name", title = "货物", field = "name", size = "fill", minWidth = 150 },
+            { id = "detail", title = "", cellType = "button", getText = function() return "详情" end,
+                size = "fixed", width = 46, minWidth = 46, absoluteMinWidth = 46, sortable = false, resizable = false,
+                onClick = function(row)
+                    root.tradeLastActivateKey, root.tradeLastActivateAt = nil, 0
+                    local detail = S.UIV3 and S.UIV3.TradeDetailFloatingV3
+                    if type(row) ~= "table" or row.key == nil then return false, "货物已失效" end
+                    if type(detail) ~= "table" or type(detail.Open) ~= "function" then return false, "货物详情浮窗不可用" end
+                    return detail:Open(row.key)
+                end },
             { id = "rate", title = "货率", field = "rate", size = "fixed", width = 70, minWidth = 60, getTone = function(item) return item and item.tone or "muted" end },
             { id = "price", title = "预计售价", field = "price", size = "fixed", width = 100, minWidth = 80 },
             { id = "materials", title = "材料", field = "materials", size = "fill", minWidth = 160 },
@@ -494,7 +503,7 @@ local function Build(parent, route, feature, kind)
                         and (" · 目的地 " .. tostring(cargo.completedCount or 0) .. "/" .. tostring(cargo.queueCount)) or ""
                     root.tradeViewHint:SetText("读取当前背部贸易包并比较不同目的地收益：" .. label .. progress)
                 else
-                    root.tradeViewHint:SetText("显示当前路线全部货物；本地材料价立即计算毛利，后台自动更新；双击可强制刷新")
+                    root.tradeViewHint:SetText("显示当前路线全部货物；本地材料价立即计算毛利，后台自动更新；双击查询缺失材料")
                 end
             end
             if root.tradeRatioModeButton then
@@ -513,7 +522,7 @@ local function Build(parent, route, feature, kind)
             local activeJobs = tonumber(quoteJobs.activeCount) or tonumber(batch.activeJobs) or 0
             if root.tradeQuoteListButton then
                 root.tradeQuoteListButton:SetEnabled(enabled and #(projection.rows or {}) > 0)
-                root.tradeQuoteListButton:SetText(activeJobs > 0 and ("刷新中(" .. tostring(activeJobs) .. ")") or "刷新当前材料")
+                root.tradeQuoteListButton:SetText(activeJobs > 0 and ("刷新中(" .. tostring(activeJobs) .. ")") or "查询当前材料")
             end
             if root.tradeDetailButton then root.tradeDetailButton:SetEnabled(enabled and selected ~= nil) end
             if root.tradeTrackButton then
@@ -534,12 +543,12 @@ local function Build(parent, route, feature, kind)
                         .. tostring(batch.completed or 0) .. "/" .. tostring(batch.total or 0)
                         .. "；Native 拍卖请求仍单通道串行并自动去重")
                 elseif tonumber(batch.failed) and tonumber(batch.failed) > 0 then
-                    root.tradeInteractionHint:SetText("上次材料询价有 " .. tostring(batch.failed) .. " 项失败；双击对应货物可重试，详情中可查看材料状态")
+                    root.tradeInteractionHint:SetText(tostring(batch.lastJobReason or ("上次材料查询有 " .. tostring(batch.failed) .. " 项失败；旧价保留，双击对应货物重试")))
                 elseif type(selected) == "table" and tostring(selected.materialCostBasis or "") == "gold_only_with_resources" then
                     local resourceCount = math.max(0, tonumber(selected.boundResourceCount) or 0) + math.max(0, tonumber(selected.nonMarketResourceCount) or 0)
                     root.tradeInteractionHint:SetText("当前毛利仅扣已折算金币材料；另有 " .. tostring(resourceCount) .. " 项绑定/非市场资源未折价")
                 else
-                    root.tradeInteractionHint:SetText("本地材料价已直接参与毛利；后台按价格年龄自动更新，双击或点“刷新当前材料”可强制校准")
+                    root.tradeInteractionHint:SetText("本地材料价已直接参与毛利；后台按价格年龄自动更新，双击或点“查询当前材料”查询缺失材料")
                 end
             end
 
@@ -598,11 +607,13 @@ local function Build(parent, route, feature, kind)
             local currentText = projection.boardScope == "west" and "当前位置：西大陆"
                 or (projection.boardScope == "east" and "当前位置：东大陆"
                 or (projection.boardScope == "auroria" and "当前位置：原大陆"
-                or "当前位置：未识别（显示今日缓存）"))
+                or "当前位置：未识别（显示缓存）"))
             local coverage = type(projection.dailySnapshotStatus) == "table" and projection.dailySnapshotStatus or {}
-            local coverageText = "今日已获取：西" .. (coverage.west and "✓" or "×")
+            local dayText = projection.snapshotDateVerified == false and ("缓存" .. tostring(projection.snapshotDateKey or "--") .. "（待核对日期）") or "今日"
+            local coverageText = dayText .. "已获取：西" .. (coverage.west and "✓" or "×")
                 .. " 东" .. (coverage.east and "✓" or "×") .. " 原" .. (coverage.auroria and "✓" or "×")
-            local errorText = projection.error and (" · " .. tostring(projection.error)) or ""
+            local saveText = projection.dailySaveStatus == "failed" and " · 本地保存失败" or (projection.dailySaveStatus == "pending" and " · 等待保存" or "")
+            local errorText = projection.error and (" · " .. tostring(projection.error)) or saveText
             status:SetText(enabled and ((projection.status or "--") .. " · " .. currentText .. " · " .. coverageText
                 .. " · " .. tostring(#(projection.rows or {})) .. " 条" .. diagnostic .. errorText) or "功能已关闭")
             -- Dropdown 的 Binding 直接回读 Feature；Refresh 只 Render authoritative value，

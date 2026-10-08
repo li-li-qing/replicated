@@ -147,12 +147,16 @@ Test("explicit layout reset preserves tracking and nonlayout state",function()
     end
     Eq(F.State.widgetWindow,old.widgetWindow);assert(F.State.widgetVisible==old.widgetVisible)
 end)
-Test("default report reexports exact user body and checksum",function()
+Test("default report preserves verified user body and appends independent alias HUD",function()
     local h,S,F,P,C=Open({width=2560,height=1440})
     assert(C:ResetCurrentScope());assert(C:SetScope("target"));assert(C:ResetCurrentScope())
     S.BuildTag="v3-m1.16.0.18.208-target-gear-score-api-default-template"
-    assert(h:Click());assert(C.templateCopy.text==RAW,"default export differs from verified 11-record report")
-    assert(#C.templateCopy.text==1539 and S.ReportCopyTransport:CopyChecksum(C.templateCopy.text)=="37FAF052")
+    -- 中文维护：原11条用户报告与历史 checksum 保持不动；当前新增的 Alias 记录单独声明，
+    -- 不从生产输出重造旧 golden，不允许追加字段掩盖旧坐标/默认值变化。
+    local expected=RAW:gsub("LINES=11;", "LINES=12;"):gsub("\nRS%-HUD%-TEMPLATE%-END$",
+        "\nHUD_TEMPLATE_V2;TARGET;ALIAS;alias{x=0,y=-94,font=12,alpha=1,enabled=1}\nRS-HUD-TEMPLATE-END")
+    assert(h:Click());assert(C.templateCopy.text==expected,"default export changed verified fields or alias defaults")
+    assert(#RAW==1539 and S.ReportCopyTransport:CopyChecksum(RAW)=="37FAF052","historical user report changed")
 end)
 Test("reset target only affects draft and not player or Store",function()
     local h,S,F,P,C=Open();assert(C:SetComponent("class"));C:Nudge(21,-7)

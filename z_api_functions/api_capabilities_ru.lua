@@ -1,15 +1,15 @@
 -- ArcheRage RU addon API capability overlay
--- Maintained 2026-09-18; official update index checked through 2026-09-16.
--- Latest update body directly reverified in this pass: 2026-09-09.
+-- Maintained 2026-10-05; official update index checked through 2026-10-05.
+-- Latest update body directly verified: EN maintenance 2026-09-29 (RU restart 2026-09-30).
 -- status reflects official announcements; runtime_verified=false means the project has not yet
 -- independently sampled the function on the current client in this update pass.
 return {
   meta = {
-    updated = "2026-09-18",
-    checked_through = "2026-09-16",
-    latest_api_change = "2026-09-09",
-    latest_official_update_seen = "2026-09-16",
-    latest_update_body_verified_this_pass = "2026-09-09",
+    updated = "2026-10-05",
+    checked_through = "2026-10-05",
+    latest_api_change = "2026-09-29",
+    latest_official_update_seen = "2026-09-30",
+    latest_update_body_verified_this_pass = "2026-09-29",
     server = "ArcheRage RU",
     policy = "official announcements overlay bundled snapshot; runtime evidence may override for safety",
     date_key_note = "Historical keys preserve the date label used by the source pass; EN maintenance posts can be one calendar day earlier than the RU/MSK restart date. Treat keys as chronology labels, not timezone-normalized timestamps.",
@@ -17,6 +17,9 @@ return {
   },
 
   changes = {
+    ["2026-09-29"] = {
+      { api="X2Map:ShowWorldmapLocation", status="official_changed", note="Optional fifth isGlobal argument added; default true. Existing four-argument callers remain compatible. Source: https://ru.archerage.to/forums/threads/technical-restart-29-09-2026.17596/" },
+    },
     ["2025-04-15"] = {
       { api="X2Quest:GetActiveQuestListCount", status="official_enabled" },
       { api="X2Quest:GetActiveQuestType", status="official_enabled" },

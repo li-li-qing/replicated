@@ -4,7 +4,7 @@
 -- Phase 2 Step 2（2026-09-28，§24.1 固定顺序第二步）：从 features/life/rs_life_m16_bundle.lua
 -- 机械搬迁。只改变源码边界，不改业务行为：Feature ID、Store ID/Schema（v3.life.fishing）、
 -- UpdateTopic、Demand owner、Commands、Projection shape、ApiDependencies、
--- Patch=fishing-auto-r-transaction-1 与 Auto-R 事务/恢复契约全部逐字一致。
+-- 拆分时 Patch=fishing-auto-r-transaction-1 与 Auto-R 事务/恢复契约全部逐字一致。
 --
 -- §24.3 红线：Fishing Auto-R 的 hotkey transaction/recovery 契约冻结；
 -- 共享装配 helper 来自 features/life/shared/rs_life_slice_factory.lua（toc.g 已保证先加载）。
@@ -26,7 +26,7 @@ local RegisterStore, LoadStore = LF.RegisterStore, LF.LoadStore
 ------------------------------------------------------------------------
 local Fishing = { Id = "life_fishing", storeId = "v3.life.fishing", enabled = false, storeLoaded = false, autoArmed = false, autoLeaseHeld = false, recoveryNativeRestored = false } -- 中文维护：Fishing Feature 继续拥有业务生命周期；Auto-R 会话状态只在本模块存活，持久恢复证据进入 v3.life.fishing Store。
 S.Features.Fishing = Fishing -- 中文维护：保持现有 FeatureRuntime/Presentation Authority 名称，用户升级无需迁移导航或 Consumer token。
-Fishing.Patch = "fishing-auto-r-transaction-1" -- 中文维护：实机诊断必须能区分本轮完整 Auto-R 事务与旧 Runtime-Blocked 版本，避免覆盖错误时继续猜根因。
+Fishing.Patch = "fishing-auto-r-target-recheck-1" -- 中文维护（2026-10-07）：诊断区分多鱼切换同槽复核与旧版缓存直接跳过；持久恢复/战斗保护契约不变。
 Fishing.UpdateTopic = "v3.life.fishing.updated" -- 中文维护：页面与悬浮窗继续消费同一更新主题；识别/改键不能创建第二套 UI 状态源。
 Fishing.ObservationContractVersion = 2 -- 中文维护：v2 表示 TARGET/BUFF 事件 + 100ms Demand-scoped 兜底扫描；避免 RU 漏 BUFF_UPDATE 时长期不刷新。
 Fishing.HotkeyContractVersion = 3 -- 中文维护：v3 表示恢复旧版已验证的完整 R 快照/恢复事务，并要求持久化 durability barrier + Native readback。

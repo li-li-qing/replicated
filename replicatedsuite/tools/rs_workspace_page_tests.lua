@@ -23,7 +23,7 @@ end)
 Test('home empty list keeps a recovery editor and layout fits',function()
  local root,S,h=Boot();assert(root:SetTab('home'))
  for _,c in ipairs(S.UIV3.Workspace:GetCards(true))do root:SelectId(c.id);assert(root:PerformAction(1))end
- assert(#S.UIV3.Workspace:GetCards()==0 and #root.rows==5)
+ assert(#S.UIV3.Workspace:GetCards()==0 and #root.rows==7)
  root:Layout(0,0,440,410)
  for _,button in ipairs(root.actionButtons)do if button.visible then assert(button.width>0 and button.x+button.width<=button.parentComponent.width+1)end end
 end)
@@ -32,5 +32,40 @@ Test('feature view omits shell and health never queried',function()
  assert(root:SetTab('features'));assert(#root.rows==1 and root.rows[1].id=='life_tasks')
  assert(root:SetFilter('all'));assert(#root.rows>10)
  assert(root:SetTab('appearance'));root:SelectId('gold');assert(root:PerformAction(1));assert(S.UIV3.Workspace:GetSettings().appearance=='gold')
+end)
+Test('appearance page exposes and applies neutral light theme',function()
+ local root,S=Boot();assert(root:SetTab('appearance'));assert(root:SelectId('light'),'light theme missing from appearance list')
+ assert(root:PerformAction(1));assert(S.UIV3.Workspace:GetSettings().appearance=='light')
+end)
+Test('appearance dropdown remains usable after moving the shortcut to the main title bar',function()
+ local root,S,h=Boot()
+ local function Find(node,id)
+  if node.id==id then return node end
+  for _,child in ipairs(node.children or {})do local found=Find(child,id);if found then return found end end
+ end
+ assert(not Find(root,'v3_workspace_appearance_shortcut'),'moved appearance button still duplicated inside the page')
+ local selector=assert(Find(root,'v3_workspace_tabs'))
+ for _,width in ipairs({440,620})do
+  for _,tab in ipairs({'navigation','home','lists','windows','features','appearance'})do
+   assert(root:SetTab(tab));root:Layout(0,0,width,410)
+   assert(selector.visible and selector.enabled,'workspace selector hidden or disabled in '..tab)
+   local visible,why=h:VisibleRect(selector);assert(visible,why)
+   assert(selector:SetSelectedValue('appearance',false,'test'))
+   assert(root.tab=='appearance' and root:SelectId('light'),'selector did not open the theme list')
+  end
+ end
+ assert(root:PerformAction(1));assert(S.UIV3.Workspace:GetSettings().appearance=='light')
+end)
+Test('partial native theme repaint is not reported as fully applied',function()
+ local root,S=Boot();assert(root:SetTab('appearance'));assert(root:SelectId('light'))
+ S.Theme={workspacePaletteFailures=1};local ok,why=root:PerformAction(1)
+ assert(ok==false and why:find('主题已保存',1,true));assert(S.UIV3.Workspace:GetSettings().appearance=='light')
+end)
+Test('all new palette choices are reachable and applicable through the appearance page',function()
+ local root,S=Boot();assert(root:SetTab('appearance'));assert(#root.rows==8,'incomplete appearance catalog')
+ for _,name in ipairs({'nord','dusk','dawn','sage'})do
+  assert(root:SelectId(name),'new palette missing from appearance page: '..name)
+  assert(root:PerformAction(1));assert(S.UIV3.Workspace:GetSettings().appearance==name)
+ end
 end)
 print('WORKSPACE PAGE RESULT '..passed..' passed / '..failed..' failed');if failed>0 then error('workspace page failures')end

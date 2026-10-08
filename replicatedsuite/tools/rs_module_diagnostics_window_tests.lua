@@ -193,5 +193,48 @@ Test('rejected focus still publishes complete text without false activation succ
     assert(W.copyPageValid==true and W.copyActivationError~=nil)
     assert(c.surface.status:find('焦点激活失败',1,true),'focus failure was hidden')
 end)
+-- 中文维护：导出复用完整快照；Native 正文失败不应迫使用户逐页复制或重新采集业务。
+Test('file export uses frozen complete report without editor reads or recapture',function()
+    local S,W,c=Boot();assert(W:Open('feature_a'));assert(W:Generate())
+    S.DiagnosticsManager={ExportReport=function(_,text,meta)c.exportText=text;c.exportId=meta.id;return true,'saved' end}
+    assert(W:ExportFile());assert(c.exportText=='feature_a:REPORT' and c.capture==1)
+    assert(c.exportId==W.snapshot.id)
+end)
+Test('file export captures only on explicit click when no snapshot exists',function()
+    local S,W,c=Boot();assert(W:Open('feature_a'))
+    S.DiagnosticsManager={ExportReport=function(_,text)c.exportText=text;return true,'saved' end}
+    assert(c.capture==0);assert(W:ExportFile());assert(c.capture==1 and c.exportText=='feature_a:REPORT')
+end)
+-- 中文维护：沿真实模块控制条 -> 共享窗口 -> 创建时绑定的导出回调执行，
+-- 模块切换必须清掉旧报告；复制框失败仍能导出当前模块完整的 pending snapshot。
+Test('module toolbar export button follows module switches and survives editor failures',function()
+    local S,W,c=Boot({copyWriteFails=true,actualBytes=0})
+    dofile('presentation/v3/shell/rs_v3_module_controls.lua')
+    local exports={}
+    S.DiagnosticsManager={ExportReport=function(_,text,meta)exports[#exports+1]=text;return true,'saved' end}
+    local controls=S.UIV3.ModuleControlsV3
+    local a=assert(controls:Create(nil,'combat.a',S.FeatureRegistry:Get('feature_a')))
+    local b=assert(controls:Create(nil,'life.b',S.FeatureRegistry:Get('feature_b')))
+    assert(a.diagnostics.spec.onClick() and c.capture==0)
+    local button=W.exportButton
+    assert(type(button.spec.onClick)=='function','Native creation lacks file export callback')
+    assert(W:Generate()==false and type(W.pendingSnapshot or W.snapshot)=='table')
+    assert(button.spec.onClick() and exports[1]=='feature_a:REPORT' and c.capture==1)
+    assert(b.diagnostics.spec.onClick() and W.pendingSnapshot==nil and W.snapshot==nil)
+    assert(W.exportButton==button and c.create==1,'module switch duplicated the shared export window')
+    assert(button.spec.onClick() and exports[2]=='feature_b:REPORT' and c.capture==2)
+    assert(a.diagnostics.spec.onClick() and button.spec.onClick())
+    assert(exports[3]=='feature_a:REPORT' and c.capture==3)
+end)
+Test('TXT prefers detailed frozen evidence and repeated exports reuse a direct capture',function()
+ local S,W,c=Boot();assert(W:Open('feature_a'))
+ local capture=S.ModuleDiagnosticsHub.Capture
+ S.ModuleDiagnosticsHub.Capture=function(self,...)
+  local result=capture(self,...);result.exportReport='FULL_DETAIL';return result
+ end
+ S.DiagnosticsManager={ExportReport=function(_,text)c.exportText=text;return true,'saved' end}
+ assert(W:ExportFile());assert(c.exportText=='FULL_DETAIL' and c.capture==1)
+ assert(W:ExportFile());assert(c.exportText=='FULL_DETAIL' and c.capture==1)
+end)
 print('MODULE DIAGNOSTICS WINDOW RESULT '..passed..' passed / '..failed..' failed ('.._VERSION..')')
 if failed>0 then error('module diagnostics window failures: '..failed)end

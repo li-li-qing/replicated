@@ -20,6 +20,7 @@ return function(S)
         function n:GetDraftValue() return self.value~=nil and self.value or (type(self.spec.get)=='function' and self.spec.get() or '') end
         function n:GetItem(i) return self.items and self.items[i] or nil end
         function n:Render() if type(self.spec.get)=='function' then self.value=self.spec.get() end; return true end
+        function n:InvalidateMeasure(reason) self.measureDirty=true;self.layoutDirty=true;self.invalidationReason=reason;return true end
         function n:SetActiveIndex(i) self.activeIndex=i; return true end
         function n:Layout(x,y,w,h) self.x,self.y,self.width,self.height=x,y,w,h; return true end
         function n:AddAnchor() return true end
@@ -35,7 +36,7 @@ return function(S)
     end
     local R=S.RSUI or {};S.RSUI=R
     local function C(_,spec) return H.Node(spec) end
-    for _,name in ipairs({'Border','Button','Dropdown','HorizontalBox','SegmentedSelector','Text','TextInput','Toggle','UniformGrid','VerticalBox'}) do R[name]=C end
+    for _,name in ipairs({'Border','Button','Dropdown','HorizontalBox','ScrollBox','SegmentedSelector','Text','TextInput','Toggle','UniformGrid','VerticalBox'}) do R[name]=C end
     function R:WidgetSwitcher(spec) local n=H.Node(spec);n.activeIndex=spec.activeIndex or 1;return n end
     function R:TableView(spec) return H.Node(spec) end
     S.UIV3Design=S.UIV3Design or {};local D=S.UIV3Design

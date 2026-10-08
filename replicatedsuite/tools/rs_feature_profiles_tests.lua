@@ -18,6 +18,9 @@ ReplicatedSuite = {
 }
 local S = ReplicatedSuite
 
+local diagnosticProviders = {}
+S.ModuleDiagnosticsHub = { RegisterProvider=function(_, _, name, fn) diagnosticProviders[name]=fn;return true end }
+
 -- Minimal internal event bus with the same owner-first callback contract used by the suite.
 S.Events = { listeners = {} }
 function S.Events:SubscribeInternal(topic, owner, cb)
@@ -201,4 +204,144 @@ truth(Runtime:IsEnabled('combat_unit_lines'),'battle opens unit lines')
 truth(Runtime:IsEnabled('tools_feature_profiles'),'profile feature remains enabled after battle')
 
 eq(#Profiles:GetQuickRows(),2,'both user-created profiles default to quick buttons')
+-- 维护（2026-09-30，feature-profile-failure-evidence-1）：原子事务遇到坏业务 Store 时，
+-- 应准确报告失败目标/阶段/回滚结果，不自动删掉方案所选项，也不把未完成回滚写成成功。
+local failures, addedPassed = 0, 0
+local function Case(name, fn)
+    local success, err = pcall(fn)
+    if success then addedPassed=addedPassed+1; print('PASS profile-failure '..name)
+    else failures=failures+1; print('FAIL profile-failure '..name..': '..tostring(err)) end
+end
+local deathMeta={id='combat_death_review',route='combat.death_review',name='死亡回顾',category='combat',
+    lifecycle='independent',controlFeatureId='combat_death_review',defaultEnabled=false}
+metas[#metas+1]=deathMeta;byId[deathMeta.id]=deathMeta
+local death={enabled=false,initializations=0}
+function death:Initialize() self.initializations=self.initializations+1;return false,'integrity_failed:fingerprint_mismatch:SYNTHETIC' end
+function death:Enable() error('fenced Store must not enable') end
+function death:Disable() self.enabled=false;return true end
+truth(Runtime:RegisterImplementation(deathMeta.id,death))
+truth(Profiles.Commands:SetModule(livingId,deathMeta.id,true))
+Case('failed target is structured and saved profile choices stay intact',function()
+    local states=snapshotStates();local preferences=deepcopy(Runtime.preferences)
+    local ok, message=Profiles.Commands:ApplyProfile(livingId);eq(ok,false)
+    assertStates(states,'failed Store rollback')
+    for id,v in pairs(preferences) do eq(Runtime.preferences[id],v,'unchanged preference') end
+    local failure=Profiles:GetProjection().lastApplyFailure
+    truth(type(failure)=='table','missing structured failure')
+    eq(failure.featureId,deathMeta.id);eq(failure.featureName,'死亡回顾')
+    eq(failure.route,'combat.death_review');eq(failure.targetEnabled,true)
+    eq(failure.stage,'lifecycle');eq(failure.rollbackSucceeded,true)
+    truth(failure.error:find('integrity_failed',1,true)~=nil)
+    truth(message:find('死亡回顾',1,true)~=nil,'user error must name the actual module')
+    eq(Profiles:GetProjection().applyStatus,'failed')
+    local stored=P.disk[Profiles.storeId];local found
+    for _,pr in ipairs(stored.profiles) do if pr.id==livingId then found=pr.modules[deathMeta.id] end end
+    eq(found,true,'must not auto-remove failed module from saved profile')
+    failure.featureId='changed by caller'
+    eq(Profiles:GetProjection().lastApplyFailure.featureId,deathMeta.id,'projection must be detached')
+end)
+Case('failure diagnostic is detached and does not load or initialize the target',function()
+    local oldLoad,oldInit=P.LoadStore,Runtime.Initialize
+    P.LoadStore=function()error('diagnostic must not load stores')end
+    Runtime.Initialize=function()error('diagnostic must not initialize features')end
+    local ok,report=pcall(diagnosticProviders.feature_profile_state)
+    P.LoadStore,Runtime.Initialize=oldLoad,oldInit
+    truth(ok,tostring(report));eq(report.lastApplyFailure.featureId,deathMeta.id)
+    eq(report.applyStatus,'failed');eq(Profiles:GetHealth().applyStatus,'failed')
+    report.lastApplyFailure.featureId='caller mutation'
+    eq(Profiles:GetProjection().lastApplyFailure.featureId,deathMeta.id)
+end)
+Case('explicitly excluding the failed feature permits other requested features',function()
+    truth(Profiles.Commands:SetModule(livingId,deathMeta.id,false))
+    local attempts=death.initializations
+    truth(Profiles.Commands:ApplyProfile(livingId),'unselected fenced feature must not block')
+    eq(death.initializations,attempts,'must not initialize disabled target')
+    eq(Runtime:IsEnabled(deathMeta.id),false)
+    truth(Runtime:IsEnabled('life_trade'));truth(Runtime:IsEnabled('life_bonds'))
+    eq(Profiles:GetProjection().lastApplyFailure,nil);eq(Profiles:GetProjection().applyStatus,'applied')
+end)
+Case('preference persistence failure identifies phase without inventing a feature',function()
+    local states=snapshotStates();P.failNext['v3.features']=true
+    eq(Profiles.Commands:ApplyProfile(battleId),false);assertStates(states,'save failure rollback')
+    local failure=Profiles:GetProjection().lastApplyFailure
+    truth(type(failure)=='table');eq(failure.stage,'persist');eq(failure.featureId,nil)
+    eq(failure.rollbackSucceeded,true)
+    truth(Profiles.Commands:ApplyProfile(battleId),'retry remains available')
+end)
+Case('runtime distinguishes preflight and preserves false disable targets',function()
+    local writes=P.mutateCount['v3.features'] or 0
+    local ok,err,detail=Runtime:ApplyPreferenceTargets({life_trade='invalid'})
+    eq(ok,false);truth(err:find('boolean',1,true)~=nil);eq(detail.stage,'preflight')
+    eq(P.mutateCount['v3.features'] or 0,writes,'preflight must not persist')
+    local wasEnabled=Runtime:IsEnabled('life_trade');truth(Runtime:Enable('life_trade'))
+    fake.life_trade.failDisable=true
+    ok,err,detail=Runtime:ApplyPreferenceTargets({life_trade=false})
+    fake.life_trade.failDisable=false
+    if not wasEnabled then truth(Runtime:Disable('life_trade')) end
+    eq(ok,false);truth(err:find('life_trade:',1,true)~=nil,'legacy second return changed')
+    eq(detail.stage,'lifecycle');eq(detail.targetEnabled,false,'false must not become nil')
+    eq(detail.rollbackAttempted,false);eq(detail.rollbackSucceeded,true)
+end)
+Case('incomplete rollback is reported as incomplete rather than success',function()
+    local m={id='aaa_probe',route='tools.probe',name='回滚样本',category='tools',lifecycle='independent',controlFeatureId='aaa_probe'}
+    metas[#metas+1]=m;byId[m.id]=m;RegisterFake(m.id)
+    truth(Runtime:Enable(m.id));fake[m.id].failEnable=true
+    truth(Profiles.Commands:SetModule(livingId,deathMeta.id,true))
+    local ok,message=Profiles.Commands:ApplyProfile(livingId);eq(ok,false)
+    local failure=Profiles:GetProjection().lastApplyFailure
+    truth(type(failure)=='table');eq(failure.rollbackSucceeded,false)
+    truth(failure.rollbackError:find('aaa_probe',1,true)~=nil)
+    truth(message:find('回滚未完成',1,true)~=nil,'message falsely claims rollback success')
+    fake[m.id].failEnable=false
+end)
+print('FEATURE_PROFILES_FAILURE_TESTS: '..addedPassed..' passed / '..failures..' failed')
+assert(failures==0,'feature profile failure regressions')
 print('FEATURE_PROFILES_RUNTIME_TEST PASS')
+
+-- 中文维护（2026-10-02）：使用真实 Router/Workspace 验证名单、标签、个人排序/隐藏，
+-- 并检查旧团队开启位的兼容解释与独立关闭的持久表达；不按实现代码硬造期望名单。
+do
+    local function Add(meta)
+        metas[#metas+1]=meta;byId[meta.id]=meta
+        if meta.lifecycle~='shell' then RegisterFake(meta.id) end
+    end
+    Add({id='combat_team_tools',route='combat.team_tools',name='职责设置',category='combat',lifecycle='independent',controlFeatureId='combat_team_tools'})
+    Add({id='combat_sac_highlight',route='combat.sac_highlight',name='牺牲之舞',category='combat',lifecycle='independent',controlFeatureId='combat_sac_highlight'})
+    Add({id='life_butler',route='life.butler',name='管家助手',category='life',lifecycle='independent',navigationVisible=false})
+    Add({id='home',route='home',name='今日总览',category='home',lifecycle='shell',controlFeatureId=''})
+    function S.FeatureRegistry:GetByRoute(route)
+        for _,meta in ipairs(metas)do if meta.route==route then return meta end end
+    end
+    dofile('presentation/v3/navigation/rs_v3_router.lua')
+    dofile('presentation/v3/rs_v3_workspace.lua')
+    local W=S.UIV3.Workspace;truth(W:EnsureLoaded())
+    truth(W:SetNavigation('combat.sac_highlight','favorite',true))
+    truth(W:SetNavigation('combat.unit_lines','hidden',true))
+    local expected=W:GetNavigation('custom');local actual=Profiles:GetNavigationFeatureRows()
+    eq(#actual,#expected,'same visible directory')
+    for i,row in ipairs(expected)do
+        eq(actual[i].id,row.featureId,'same order');eq(actual[i].name,row.navigationTitle,'same label')
+    end
+    local ok,id=Profiles.Commands:CreateProfile('拆分回归');truth(ok)
+    local profile;for _,p in ipairs(Profiles.State.profiles)do if p.id==id then profile=p end end
+    profile.modules={combat_team_tools=true} -- 原存档 canonical；加载时不增加链接字段。
+    Profiles.Authority:Refresh('legacy_split')
+    local projections=Profiles:GetProjection().moduleRows;local sac,own
+    for _,row in ipairs(projections)do
+        if row.featureId=='combat_sac_highlight'then sac=row end
+        if row.featureId=='tools_feature_profiles'then own=row end
+        assert(row.featureId~='life_butler' and row.featureId~='combat_unit_lines')
+    end
+    truth(sac.targetEnabled,'legacy combined intent');eq(profile.modules.team_feature_split_linked,nil,'read cannot alter canonical')
+    eq(own.controllable,false,'own page stays read-only')
+    truth(Profiles.Commands:SetModule(id,'combat_sac_highlight',false))
+    eq(profile.modules.combat_team_tools,true);eq(profile.modules.combat_sac_highlight,nil)
+    truth(profile.modules.team_feature_split_linked)
+    local capture;local apply=Runtime.ApplyPreferenceTargets
+    Runtime.ApplyPreferenceTargets=function(_,targets)capture=targets;return true end
+    truth(Profiles.Commands:ApplyProfile(id));Runtime.ApplyPreferenceTargets=apply
+    eq(capture.combat_team_tools,true);eq(capture.combat_sac_highlight,false)
+    eq(capture.life_butler,nil);eq(capture.combat_unit_lines,nil);eq(capture.tools_feature_profiles,nil)
+    eq(Profiles.Commands:SetModule(id,'life_butler',true),false)
+    print('FEATURE_PROFILE_NAVIGATION_AND_SPLIT_COMPATIBILITY PASS')
+end

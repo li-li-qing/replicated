@@ -175,7 +175,8 @@ Test('many fences report omissions and never output half a fingerprint',function
 end)
 Test('default page prints complete paged faults while focused format stays compatibility-only',function()
     local S,D,c=Boot();local root,h=Page(S,c)
-    local buttons=0;for _,w in pairs(h.widgets) do if w.onClick then buttons=buttons+1 end end;assert(buttons==5)
+    local buttons=0;for _,w in pairs(h.widgets) do if w.onClick then buttons=buttons+1 end end
+    assert(buttons==6 and h.widgets.v3_diag_export_file and type(h.widgets.v3_diag_export_file.onClick)=='function','run/fault/full/export/previous/next actions must remain available')
     assert(h.widgets.v3_diag_output.onClick());assert(root.selfCheckMeta.kind=='paged','default print must be paged')
     assert(root.selfCheckDelivery.parts>=1 and h.edit.text:find('RS-ERROR-PAGE-END',1,true))
     assert(root.selfCheckText:find('RS-SELF-CHECK-1',1,true) and not root.selfCheckText:find('RS-FOCUS-1',1,true))
@@ -302,7 +303,7 @@ Test('default paged fault report retains oversized failed-store evidence instead
     end
     local root,h=Page(S,c);assert(h.widgets.v3_diag_output.onClick())
     local buttons=0;for _,w in pairs(h.widgets)do if w.onClick then buttons=buttons+1 end end
-    assert(buttons==5 and root.selfCheckMeta.kind=='paged' and #c.reads==3)
+    assert(buttons==6 and h.widgets.v3_diag_export_file and root.selfCheckMeta.kind=='paged' and #c.reads==3)
     assert(root.selfCheckDelivery.parts>1 and root.selfCheckText:find(('x'):rep(50000),1,true))
 end)
 

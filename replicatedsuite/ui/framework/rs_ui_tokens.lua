@@ -6,7 +6,7 @@ local S = ReplicatedSuite
 local C = S.Constants or {}
 
 local Tokens = {
-    version = 8,
+    version = 10,
     spacing = { xxs = 2, xs = 4, sm = 8, md = 12, lg = 16, xl = 24, xxl = 32 },
     font = { caption = 9, small = 10, body = 11, bodyLarge = 12, section = 13, title = 15, hero = 18 },
     size = {
@@ -16,6 +16,16 @@ local Tokens = {
         formLabelW = 116, formControlW = 180,
     },
     alpha = { disabled = 0.45, muted = 0.68, panel = 0.94, card = 0.92, normal = 1.0 },
+    -- 共享滚动位置指示：滑块与深色轨道同色系，仅略浅，避免突出的高对比色块。
+    -- 保持实色且显式不透明，不依赖客户端渐变的默认 alpha。
+    scrollbar = { track = { 0.015, 0.035, 0.042, 1 }, thumb = { 0.065, 0.090, 0.102, 1 } },
+    -- 中文维护：输入及滑杆归主题所有；保留原深色值，浅色切换原位更新。
+    input = { background = {0.015,0.022,0.032,0.995}, text = {1,0.96,0.84,1},
+        placeholder = {0.61,0.66,0.67,1}, border = {0.34,0.43,0.52,0.98}, focus = {0.88,0.68,0.28,1}, caret = {1,0.82,0.36,1} },
+    slider = { track = {0.26,0.31,0.37,0.95}, disabled = {0.16,0.18,0.21,0.55},
+        thumbBorder = {0.82,0.68,0.34,1}, thumb = {0.18,0.21,0.25,0.98} },
+    resize = { accent = {0.84,0.68,0.28,1} },
+    decorations = { separator = {.08,.28,.31,.58}, split = {.08,.28,.31,.72}, hover = {.2,.74,.84,1} },
     -- Top-level z-order is explicit. All values are within the shared "system"
     -- UI layer; native Raise() remains the recency tiebreaker inside each role.
     -- Main application shell must stay below independent HUD windows, while

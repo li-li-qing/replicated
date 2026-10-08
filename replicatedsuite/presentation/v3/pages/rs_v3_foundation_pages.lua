@@ -712,6 +712,8 @@ local function BuildDiagnostics(parent, route)
     local runButton=RSUI:Button({id="v3_diag_full_check",parent=actions,text="运行自检",compact=true,slot={size="fixed",width=120}})
     local printButton=RSUI:Button({id="v3_diag_output",parent=actions,text="打印故障报告",compact=true,slot={size="fixed",width=144}})
     local fullReportButton=RSUI:Button({id="v3_diag_output_full",parent=actions,text="完整报告",compact=true,slot={size="fixed",width=112}})
+    -- 中文维护：导出完整冻结原文，不读取当前编辑页；独立快照 key 不更改业务配置。
+    local exportButton=RSUI:Button({id="v3_diag_export_file",parent=actions,text="导出文件",compact=true,slot={size="fixed",width=100}})
     local card=D:InfoCard(root,{id="v3_diag_gate",title="自检结果",value="尚未运行",
         detail="不会清除历史错误、修改配置或解除写保护。",slot={size="fixed",height=60,hAlign="fill"}})
     local status=RSUI:Text({id="v3_diag_report_status",parent=root,fontSize=10,tone="accent",overflow="wrap",maxLines=3,
@@ -889,6 +891,19 @@ local function BuildDiagnostics(parent, route)
         end
         WriteReportText("","delivery_failed") -- 维护：失败交付显式清空，不能留着截断页冒充成功。
         return {state='failed',code='TEXT_READBACK',readback=trace,error=transport:FormatReadback(trace)}
+    end
+    -- 中文维护：没有已生成报告时先只读生成完整自检；文件出口不依赖编辑框交付成功或分页容量。
+    exportButton.onClick=function()
+        return Execute('export_self_check',function()
+            local diagnostic,err=Backend('ExportReport');if not diagnostic then status:SetText(err);return false,err end
+            local text,meta=root.selfCheckText,root.selfCheckMeta
+            if type(text)~='string' or text=='' or type(meta)~='table' then
+                text,meta=diagnostic:BuildSelfCheckReport()
+                if type(text)=='string' and type(meta)=='table' then root.selfCheckText,root.selfCheckMeta=text,meta end
+            end
+            local ok,message=diagnostic:ExportReport(type(meta)=='table' and meta.exportReport or text,meta)
+            status:SetText(tostring(message));return ok,message
+        end)
     end
     runButton.onClick=function()
         return Execute('run_self_check',function()

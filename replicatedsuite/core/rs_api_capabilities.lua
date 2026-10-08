@@ -19,7 +19,7 @@ local S = ReplicatedSuite
 S.ApiCapabilities = {
     records = {},
     aliases = {},
-    updated = "2026-09-23", -- 中文维护：hotkey-profile-v2 只补入 RU 2025-08-20 官方已开放的 action 验证 getter；不扩大任何写能力。
+    updated = "2026-10-07", -- 用户删除快捷键方案，撤下其独用目录探测登记；共享键位能力保留战斗写限制。
     server = "ArcheRage RU",
 }
 local R = S.ApiCapabilities
@@ -135,6 +135,7 @@ local CAPABILITIES = {
     ["ADDON:AddEscMenuButton"] = { OfficialState="OfficialChanged", Notes="4-arg form remains current project compatibility path" },
     ["ADDON:UpdateEscMenuButton"] = { OfficialState="OfficialEnabled" },
     ["ADDON:GetContent"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    ["ADDON:ShowContent"] = { OfficialState="OfficialEnabled", Risk="ui", Notes="static Allowed UI entry; hotkey profiles open the native settings only on explicit click" },
     ["ADDON:GetContentMainScriptPosVis"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="authoritative native content position/visibility; used for bag/bank overlay detection" },
     ["ADDON:RegisterContentTriggerFunc"] = { OfficialState="OfficialEnabled", Risk="callback_registration" },
     ["UI:SetEventHandler"] = { OfficialState="OfficialEnabled", Risk="callback_registration", Notes="static Allowed callback registration; CombatEventBus uses only while an all-scope consumer is active" },
@@ -248,7 +249,11 @@ local CAPABILITIES = {
     -- feature boundary; no write/server action is auto-probed. Only
     -- WorldToScreen stays Unknown (NOT a game API; community global only).
     ["X2Hotkey:GetOptionBinding"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
-    -- 中文维护（hotkey-profile-v2）：下面两个 getter 只用于显式用户操作前的白名单安全预检；
+    -- RU 2025-08-20 开放的宠物按钮读写；能力登记保留官方事实，不会自动调用接口。
+    -- 官方按钮 setter 文档漏列 index；原生设置页使用第三参 manager 1/2，所有写入仍须非战斗+读回。
+    ["X2Hotkey:GetOptionBindingButton"] = { OfficialState="OfficialEnabled", Since="2025-08-20", SideEffectFree=true },
+    ["X2Hotkey:SetOptionBindingButtonWithIndex"] = { OfficialState="OfficialEnabled", Since="2025-08-20", Risk="write", Restrictions={ combat=true }, Notes="RU 2026-08-19 combat restriction; third manager argument follows native UI, requires full readback" },
+    -- 下面两个 getter 只用于显式用户操作前的白名单安全预检；
     -- Authority 仍在 Feature 事务层，绝不能拿它们去循环猜 action 名、建立后台枚举或绕过战斗写限制。
     ["X2Hotkey:IsValidActionName"] = { OfficialState="OfficialEnabled", Since="2025-08-20", SideEffectFree=true, Notes="RU official hotkey action validation; used only for explicit bounded whitelist preflight" },
     ["X2Hotkey:IsOverridableAction"] = { OfficialState="OfficialEnabled", Since="2025-08-20", SideEffectFree=true, Notes="RU official hotkey override validation; used only for explicit bounded whitelist preflight" },
@@ -286,7 +291,7 @@ local CAPABILITIES = {
     ["ConvertWorldToScreen"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Method="ConvertWorldToScreen", Source="api_functions.lua:5377 global function", Note="Projection fallback for plate anchoring; runtime verification pending" },
     ["UIParent:GetViewCameraPos"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Source="api_functions.lua:351", Notes="camera projection fallback only; no polling outside active visual consumers" },
     ["UIParent:GetViewCameraDir"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Source="api_functions.lua:352", Notes="camera projection fallback only; no polling outside active visual consumers" },
-    ["UIParent:GetViewCameraFov"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Source="api_functions.lua:361", Notes="camera projection fallback only; default FOV is used when unavailable" },
+    ["UIParent:GetViewCameraFov"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Source="api_functions.lua:361", Notes="camera projection fallback only; RangeAssist requires a verified FOV; legacy projection keeps its default fallback" },
     -- NOTE: the community "WorldToScreen" global (globals/WorldToScreen.lua,
     -- easypull dependency) is a CUSTOM camera-projection helper, NOT a game
     -- API. Suite does NOT depend on the global symbol: ScreenProjectionV3 contains an
@@ -320,6 +325,8 @@ local CAPABILITIES = {
     ["X2Achievement:GetTodayAssignmentInfo"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Equipment:GetEquippedItemTooltipInfo"] = { OfficialState="OfficialEnabled", SideEffectFree=true, Notes="RU selector semantics are consumer-sensitive in observed builds: HUD self-read remains false; GearV3 loadout reconciliation uses the legacy-proven true path. Target HUD must not use this API as target Authority." },
     ["X2Auction:GetSearchedItemCount"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
+    -- Allowed reference + RU official update 07.05.2025: total search coverage, no sorting mutation.
+    ["X2Auction:GetSearchedItemTotalCount"] = { OfficialState="OfficialEnabled", Since="2025-05-07", SideEffectFree=true },
     ["X2Auction:GetSearchedItemInfo"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Resident:GetResidentBoardContent"] = { OfficialState="OfficialEnabled", SideEffectFree=true },
     ["X2Store:GetProductionZoneGroups"] = { OfficialState="OfficialEnabled", SideEffectFree=true },

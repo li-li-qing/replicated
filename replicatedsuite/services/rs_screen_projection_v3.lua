@@ -24,7 +24,7 @@ local P = S.Services.ScreenProjectionV3
 -- space. Suite addonScale is deliberately excluded from this coordinate path.
 -- v9+ returns raw coordinates, culls camera-behind via depth, and records the
 -- exact failure reason for every rejected read.
-P.version = 17
+P.version = 19
 -- 维护 2026-09-12：本轮只修正批量投影的事实依赖/深度否决，不改raw坐标尺度。
 P.NativeScreenIndependentWorldContractVersion = 1
 P.NativeDepthVetoContractVersion = 1
@@ -35,6 +35,8 @@ P.RangeMetricScreenScaleContractVersion = 1
 P.RangeRigidBatchContractVersion = 1
 P.RangeAnchorStabilityContractVersion = 1
 P.RangeAspectSafeCameraContractVersion = 1
+P.RangeProjectionStabilityContractVersion = 1
+P.RangeCameraPlaneFactsContractVersion = 1
 P.UiParentScreenCoordinateContractVersion = 1
 P.presentationDebt = nil
 P.metrics = P.metrics or { unitReads=0, worldReads=0, distanceReads=0, nativeProjects=0, cameraProjects=0, cameraBatches=0, failures=0,
@@ -232,7 +234,8 @@ function P:_BuildEasyPullCameraFrame()
 
     local fov=1.57
     local okF,fovValue=S.Api:CallCapability("UIParent:GetViewCameraFov", UIParent, "GetViewCameraFov")
-    if okF==true and N(fovValue)~=nil then fov=N(fovValue) end
+    local fovVerified=okF==true and N(fovValue)~=nil
+    if fovVerified then fov=N(fovValue) end
     local tanHalf=math.tan(fov/2)
     if tanHalf==0 or tanHalf~=tanHalf then return nil,"camera_fov_invalid" end
 
@@ -245,16 +248,17 @@ function P:_BuildEasyPullCameraFrame()
     local uy=rz*fx-rx*fz
     local uz=rx*fy-ry*fx
     return { cx=cx,cy=cy,cz=cz,fx=fx,fy=fy,fz=fz,rx=rx,ry=ry,rz=rz,ux=ux,uy=uy,uz=uz,
-        screenW=screenW,screenH=screenH,focal=1/tanHalf }
+        screenW=screenW,screenH=screenH,focal=1/tanHalf,fov=fov,fovVerified=fovVerified }
 end
 
 function P:_ProjectWithEasyPullCameraFrame(frame, wx, wy, wz)
-    if type(frame)~="table" then return nil,nil,nil end
+    if type(frame)~="table" then return nil,nil,nil,"camera_frame_unavailable" end
     local dx,dy,dz=wx-frame.cx,wy-frame.cy,wz-frame.cz
     local distance=math.sqrt(dx*dx+dy*dy+dz*dz)
-    if distance<0.1 then return nil,nil,nil end
+    if distance<0.1 then return nil,nil,nil,"camera_point_too_close" end
     local forward=dx*frame.fx+dy*frame.fy+dz*frame.fz
-    if forward<=0.001 then return nil,nil,nil end
+    if forward<=0 then return nil,nil,nil,"behind_camera" end
+    if forward<=0.001 then return nil,nil,nil,"camera_forward_too_small" end
     local rightComponent=dx*frame.rx+dy*frame.ry+dz*frame.rz
     local upComponent=dx*frame.ux+dy*frame.uy+dz*frame.uz
     local screenX=(frame.screenW/2)+((rightComponent/forward)*frame.focal*(frame.screenH/2))
@@ -273,6 +277,11 @@ end
 function P:_BuildRangeAspectSafeCameraFrame()
     local base, err = self:_BuildEasyPullCameraFrame()
     if type(base) ~= "table" then return nil, err end
+    -- 维护（2026-10-07，range-projection-stability-1）：副本切换/镜头过渡时 FOV 可能暂不可读。
+    -- 不能以 EasyPull 的 1.57 默认值画另一尺寸的圈；范围 Camera 缺事实则不绘制并保留诊断原因。
+    -- 仅收紧 Range 专用 frame，其它兼容调用仍保留原默认；Native 整批成功不依赖 Camera/FOV。
+    if base.fovVerified~=true then return nil,"camera_fov_unavailable" end
+    if N(base.fov)==nil or base.fov<0.2 or base.fov>3 then return nil,"camera_fov_invalid" end
     local fx,fy,fz=N(base.fx),N(base.fy),N(base.fz)
     if fx==nil or fy==nil or fz==nil then return nil,"camera_basis_invalid" end
     local dirLen=math.sqrt(fx*fx+fy*fy+fz*fz)
@@ -288,7 +297,7 @@ function P:_BuildRangeAspectSafeCameraFrame()
     return {
         cx=base.cx,cy=base.cy,cz=base.cz,fx=fx,fy=fy,fz=fz,
         rx=rx,ry=ry,rz=rz,ux=ux,uy=uy,uz=uz,
-        screenW=base.screenW,screenH=base.screenH,focal=base.focal,
+        screenW=base.screenW,screenH=base.screenH,focal=base.focal,fov=base.fov,fovVerified=true,
         rawCameraDirLength=dirLen,aspectSafe=true,
     }
 end
@@ -297,8 +306,8 @@ end
 -- Authority：gameDistanceMeters 来自 X2Unit:UnitDistance；worldUnitsPerMeter 由同一时刻 player/target
 -- 世界坐标比值得到；projectionScale 仅比较 Camera fallback 与 Native unit-screen 的相对向量。
 -- 数据流：RangeAssist Demand(16/32/48ms 自适应) -> 本 Service 每 <=500ms 一次受控采样 -> bounded median ->
--- 世界半径换算 + Camera batch 围绕玩家 Native 锚点等比缩放。兼容边界：无目标、陡峭高度差、
--- 屏幕向量太短/方向残差过大时 fail-closed 到既有 1:1 投影；不写死倍率、不保存到用户配置。
+-- 世界半径换算 + Camera batch 围绕玩家 Native 锚点等比缩放。无目标、高差/距离不可靠的样本
+-- 不更新任何比例，保留会话已核验值（从未校准时 1:1）；不写死倍率、不保存到用户配置。
 function P:MeasureRangeMetricCalibration(options)
     options = type(options) == "table" and options or {}
     self.metrics.rangeMetricSamples = (tonumber(self.metrics.rangeMetricSamples) or 0) + 1
@@ -367,11 +376,18 @@ function P:MeasureRangeMetricCalibration(options)
         if okMetrics == true and N(scale) ~= nil then uiScale = N(scale) end
     end
     if type(frame) == "table" then
-        sample.projectionContextKey = string.format("%dx%d/f%.8f/u%.4f/a%d",
-            math.floor(N(frame.screenW) or 0), math.floor(N(frame.screenH) or 0), N(frame.focal) or 0, uiScale, aspectSafeCamera and 1 or 0)
+        -- 维护：FOV 已进入每次 Camera 透视计算，不是 raw screen 坐标比例的失效条件。
+        -- 旧 key 包含精确 focal；无目标时镜头变化会把已校准比例瞬间重置为 1，导致圈跳缩。
+        sample.projectionContextKey = string.format("%dx%d/u%.4f/a%d",
+            math.floor(N(frame.screenW) or 0), math.floor(N(frame.screenH) or 0), uiScale, aspectSafeCamera and 1 or 0)
+        sample.cameraFov = N(frame.fov)
     end
 
-    if type(frame) == "table" and awx ~= nil and awy ~= nil and awz ~= nil and twx ~= nil and twy ~= nil and twz ~= nil then
+    if sample.worldScaleStatus ~= "accepted" then
+        -- 高度差/近距离已被米标定拒绝的样本，不能绕到屏幕比例去放大/缩小整圈。
+        sample.projectionScaleStatus = sample.worldScaleStatus=="rejected" and "rejected" or "unavailable"
+        sample.projectionScaleReason = frameErr or sample.worldScaleReason or "world_metric_unverified"
+    elseif type(frame) == "table" and awx ~= nil and awy ~= nil and awz ~= nil and twx ~= nil and twy ~= nil and twz ~= nil then
         local nativeAnchorX,nativeAnchorY,_,anchorScreenErr = self:ProjectUnit(anchorUnit)
         local nativeTargetX,nativeTargetY,_,targetScreenErr = self:ProjectUnit(targetUnit)
         local cameraAnchorX,cameraAnchorY = self:_ProjectWithEasyPullCameraFrame(frame,awx,awy,awz+worldZOffset)
@@ -454,7 +470,7 @@ function P:GetRangeMetricCalibration(options)
     state.lastSample=sample
     local sampleContext=type(sample)=="table" and sample.projectionContextKey or nil
     if sampleContext~=nil and state.projectionContextKey~=nil and sampleContext~=state.projectionContextKey then
-        -- 维护：分辨率/FOV/UI Scale 改变后旧 screen scale 立即失效；worldUnitsPerMeter 是游戏世界单位事实，保留。
+        -- 分辨率/UI Scale/投影算法改变使旧 screen scale 失效；FOV 由本帧透视处理，世界单位保留。
         state.projectionSamples={}; state.projectionScale=1; state.projectionScaleStatus="default"
     end
     if sampleContext~=nil then state.projectionContextKey=sampleContext end
@@ -501,6 +517,7 @@ function P:ProjectWorldBatch(points, options)
     local nativeAvailable = S.Api~=nil and type(S.Api.CallGlobalCapability)=="function"
     local frame, frameErr, frameTried = nil, nil, false
     local nativeAccepted, cameraAccepted, nativeRejected, cameraRejected = 0, 0, 0, 0
+    local cameraRejectedBehind, cameraRejectedNear = 0, 0
     local depthMin, depthMax = nil, nil
     local rigidSource = nil
 
@@ -539,9 +556,9 @@ function P:ProjectWorldBatch(points, options)
             for index=1,#source do
                 local point=source[index]
                 local wx,wy,wz=N(point and point.x),N(point and point.y),N(point and point.z)
-                local sx,sy,depth
+                local sx,sy,depth,pointErr
                 if frame~=nil and wx~=nil and wy~=nil and wz~=nil then
-                    if easyPullCompat then sx,sy,depth=self:_ProjectWithEasyPullCameraFrame(frame,wx,wy,wz)
+                    if easyPullCompat then sx,sy,depth,pointErr=self:_ProjectWithEasyPullCameraFrame(frame,wx,wy,wz)
                     else sx,sy,depth=self:_ProjectWithCameraFrame(frame,wx,wy,wz) end
                 end
                 if sx~=nil and sy~=nil and depth~=nil and depth>0 then
@@ -552,7 +569,9 @@ function P:ProjectWorldBatch(points, options)
                     self.metrics.cameraProjects=(tonumber(self.metrics.cameraProjects) or 0)+1
                 else
                     cameraRejected=cameraRejected+1
-                    out[index]={visible=false,reason=frameErr or "camera_projection_unavailable"}
+                    if pointErr=="behind_camera" then cameraRejectedBehind=cameraRejectedBehind+1
+                    elseif pointErr=="camera_forward_too_small" or pointErr=="camera_point_too_close" then cameraRejectedNear=cameraRejectedNear+1 end
+                    out[index]={visible=false,reason=frameErr or pointErr or "camera_projection_unavailable"}
                 end
             end
         end
@@ -731,15 +750,30 @@ function P:ProjectWorldBatch(points, options)
     local mode=easyPullCompat and "easypull_native_then_worldtoscreen" or (nativeOnly and "native_only" or "native_then_camera")
     local facts={ at=(S.NowMs and S.NowMs() or 0), total=#source, native=nativeAccepted,
         camera=cameraAccepted, nativeRejected=nativeRejected, cameraRejected=cameraRejected, frameErr=frameErr,
+        cameraRejectedBehind=cameraRejectedBehind, cameraRejectedNear=cameraRejectedNear,
         depthMin=depthMin, depthMax=depthMax, mode=mode, calibrationStatus=calibrationStatus,
         calibrationDx=calibrationDx, calibrationDy=calibrationDy, calibrationErr=calibrationErr,
         calibrationRawDx=calibrationRawDx, calibrationRawDy=calibrationRawDy,
         calibrationStableDx=calibrationStableDx, calibrationStableDy=calibrationStableDy, calibrationStableSamples=calibrationStableSamples,
         rigidBatch=rigidBatch, rigidSource=rigidSource,
         aspectSafeCamera=aspectSafeCamera, rawCameraDirLength=type(frame)=="table" and N(frame.rawCameraDirLength) or nil,
+        cameraFov=type(frame)=="table" and N(frame.fov) or nil,
+        cameraPosition=type(frame)=="table" and {x=frame.cx,y=frame.cy,z=frame.cz} or nil,
+        cameraDirection=type(frame)=="table" and {x=frame.fx,y=frame.fy,z=frame.fz} or nil,
+        anchorWorld=anchorWorld and {x=N(anchorWorld.x),y=N(anchorWorld.y),z=N(anchorWorld.z)} or nil,
+        viewportWidth=type(frame)=="table" and N(frame.screenW) or nil,
+        viewportHeight=type(frame)=="table" and N(frame.screenH) or nil,
+        anchorWorldZ=anchorWorld and N(anchorWorld.z) or nil,
         metricScreenScale=metricScreenScale, metricScreenScaleStatus=metricScreenScaleStatus,
         metricAnchorX=metricAnchorX, metricAnchorY=metricAnchorY,
         sample=(out[1]~=nil) and (tostring(math.floor(tonumber(out[1].x) or 0))..","..tostring(math.floor(tonumber(out[1].y) or 0)).."/"..tostring(out[1].source or (out[1].visible==true and "native" or out[1].reason))) or nil }
+    -- 只从本批已有 frame/anchor 取证，诊断不追加 Native 读数；可区分镜头碰撞拉近与错误缩放。
+    local ax,ay,az=anchorWorld and N(anchorWorld.x),anchorWorld and N(anchorWorld.y),anchorWorld and N(anchorWorld.z)
+    if type(frame)=="table" and ax~=nil and ay~=nil and az~=nil then
+        local dx,dy,dz=ax-frame.cx,ay-frame.cy,az-frame.cz
+        facts.cameraAnchorDistance=math.sqrt(dx*dx+dy*dy+dz*dz)
+        facts.cameraAnchorForward=dx*frame.fx+dy*frame.fy+dz*frame.fz
+    end
     self.lastWorldBatch=facts
     if nativeAccepted<=0 and cameraAccepted<=0 then
         local failure=nativeOnly and "native_world_projection_unavailable" or (frameErr or "world_projection_unavailable")

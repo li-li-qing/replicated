@@ -687,42 +687,36 @@ end -- 中文维护注释：结束 Framework3/Transport v1 零值省略结构化
 -- Envelope Seal 的 raw payload，按原序号无损重建，重新用原 Decode/Encode，比对整份旧章。
 -- Authority：Store 只产候选，Core 决定验真与 Apply；不打开/修改任何 record 分片，不猜缺失记录。
 -- 只接受完整 1..N（最多 MAX_HISTORY），拒绝重复/稀疏/非法序号；内容变了仍继续写保护。
--- 维护（2026-09-29，death-review-dangling-entry-1）：实机 self-check（RS-SELF-CHECK-1 / ID=1.1）
--- 出现 v3.death_review 索引 `history.entries` 的**第 27 条只包含 lethalSource / windowMs 两个字段、
--- 并且没有 storageId**（其余 26 条都是完整 11 字段）。而 NormalizeIndexWithWindow 本来就要求
--- `tonumber(row.storageId) ~= nil` 才纳入 —— 于是“归一化后的 canonical”与“磁盘 raw”的形状**必然不等**。
--- 后果：下面两个精度桥都会先做“整表形状严格相等”对照（RebuildRoundedHistoryTimeCanonical 的
--- Equal(canonical.payload, rawEnvelope.payload)），形状不等即 Probe('shape') 返回 nil；
--- RebuildTransportV2SequenceCanonical 也只能报 sequence=unchanged。三条桥 + known-pair 全 miss →
--- hook=no_candidate → Store 被 Fence，死亡回顾停用，并连带 persistence_v2 / reliability_v4 / v6 三个 blocker。
--- 这里补一个**结构候选**：剔除无 storageId 的悬空条目后再重建，与归一化既有语义完全一致。
--- 安全性：候选仍由 Core 用旧 stamped fingerprint 做 exact Hash 认证，不命中不会误放行；
--- 且仅当磁盘上确实存在悬空条目时才产出（dropped == 0 直接返回 nil，正常存档不受影响）。
-local function RebuildPrunedDanglingEntriesCanonical(rawEnvelope, stampedFingerprint)
-    local store = P:GetStore(INDEX_STORE)
-    local payload = type(rawEnvelope) == "table" and type(rawEnvelope.payload) == "table" and rawEnvelope.payload or nil
-    local history = payload and type(payload.history) == "table" and payload.history or nil
-    local source = history and type(history.entries) == "table" and history.entries or nil
-    if type(source) ~= "table" then return nil end
-    local kept, dropped = {}, 0
-    for _, row in ipairs(source) do
-        if type(row) == "table" and tonumber(row.storageId) ~= nil then
-            kept[#kept + 1] = row
-        else
-            dropped = dropped + 1
+-- 维护（2026-09-30，death-index-proof-1）：不能把“删掉无 storageId 的行”当成恢复。
+-- DecodeIndex 本来就会丢弃这些行，再 Encode 只会得到刚刚失败的同一 canonical；旧实现
+-- 仍返回这个不匹配候选，既提前结束恢复链，又把真正的残缺记录掩盖成 pruned 候选。
+-- 本函数只提供有界结构证据：不补 serial/storageId、不读分片、不改 raw/Domain、不保存。
+-- 只有原章精确命中的候选才有恢复资格；引用字段丢失而无法证明原内容时继续 fail-closed。
+local function DescribeIncompleteHistory(rawEnvelope)
+    local payload = type(rawEnvelope) == "table" and rawEnvelope.payload or nil
+    local history = type(payload) == "table" and payload.history or nil
+    if type(history) ~= "table" or type(P.RebuildDenseSequenceForIntegrity) ~= "function" then return nil end
+    local rows = P:RebuildDenseSequenceForIntegrity(history.entries, MAX_HISTORY)
+    if type(rows) ~= "table" then return nil end -- 非法/稀疏序列的拒绝证据由既有 sequence 门保留。
+    local bad, first, fieldCount, missing = 0, nil, 0, {}
+    for index, row in ipairs(rows) do
+        local sid = type(row) == "table" and tonumber(row.storageId) or nil
+        if sid == nil or sid ~= sid or sid < 1 or sid > RECORD_SLOTS or sid ~= math.floor(sid) then
+            bad = bad + 1
+            if first == nil then
+                first = index
+                for _ in pairs(type(row) == "table" and row or {}) do fieldCount = fieldCount + 1 end
+                for _, key in ipairs({ "serial", "storageId", "time", "clock", "windowMs", "totalDamage",
+                    "lethalSource", "lethalAbility", "lethalAmount", "eventCount", "debuffCount" }) do
+                    if type(row) ~= "table" or row[key] == nil then missing[#missing + 1] = key end
+                end
+            end
         end
     end
-    if dropped == 0 or #kept == #source then return nil end -- 正常存档没有悬空条目，不产候选
-    local recoveredRaw = DeepCopy(rawEnvelope)
-    recoveredRaw.payload.history.entries = kept
-    local recovered = DecodeIndex(recoveredRaw)
-    if recovered == nil then return nil end
-    local canonical = EncodeIndex(recovered)
-    if type(store) == "table" then
-        store.lastHistoricalRecoveryProbe = "pruned/dropped=" .. tostring(dropped) .. "/rows=" .. tostring(#kept)
-            .. "/hfp=" .. tostring(P:FingerprintCanonicalValue(store, canonical)) .. "/old=" .. tostring(stampedFingerprint)
-    end
-    return canonical, recovered
+    if bad == 0 then return nil end
+    return "history=incomplete/rows=" .. tostring(#rows) .. "/kept=" .. tostring(#rows - bad)
+        .. "/invalid=" .. tostring(bad) .. "/row=" .. tostring(first) .. "/fields=" .. tostring(fieldCount)
+        .. "/missing=" .. table.concat(missing, "+")
 end
 
 local function RebuildTransportV2SequenceCanonical(rawEnvelope, stampedFingerprint)
@@ -751,8 +745,13 @@ local function RebuildTransportV2SequenceCanonical(rawEnvelope, stampedFingerpri
         return nil
     end
     local canonical = EncodeIndex(recovered)
+    local fingerprint = store and P:FingerprintCanonicalValue(store, canonical) or nil
+    local matched = fingerprint ~= nil and tostring(fingerprint) == tostring(stampedFingerprint)
     if store then store.lastHistoricalRecoveryProbe = probe .. "/rows=" .. tostring(#rows)
-        .. "/hfp=" .. tostring(P:FingerprintCanonicalValue(store, canonical)) .. "/old=" .. tostring(stampedFingerprint) end
+        .. "/hfp=" .. tostring(fingerprint) .. "/old=" .. tostring(stampedFingerprint) .. "/matched=" .. tostring(matched) end
+    -- 维护（death-index-proof-1）：表形重建不是内容认证；不匹配时不得提前返回候选。
+    -- false 明确表示序列发生过变化，不能借后续“未变序列”精度桥组合猜测多个损失。
+    if not matched then return nil, nil, false end
     return canonical, recovered
 end
 
@@ -815,6 +814,58 @@ local function RebuildRoundedHistoryTimeCanonical(value, stamp, canonical, rawEn
     return nil
 end
 
+-- 中文维护（真实截断恢复）：仅 settings 与摘要尾部同时丢失的 schema2/tv3 冷路径，
+-- 经 Persistence 验证最多31个记录分片。保留字段逐项相同、序列完整、唯一原指纹命中
+-- 才返回候选；Core仍拥有最终Apply/重写/回读/Fence。正常加载不扫描、未知损坏不默认化。
+local function RebuildTruncatedIndexFromRecords(raw, stamp)
+    local st=P:GetStore(INDEX_STORE)
+    local meta=type(raw)=='table' and raw.__rsmeta or nil
+    local payload=type(raw)=='table' and raw.payload or nil
+    local history=type(payload)=='table' and payload.history or nil
+    if type(meta)~='table' or meta.store~=INDEX_STORE or meta.owner~='v3.death_review'
+        or meta.framework~=3 or meta.schema~=2 or meta.transportVersion~=3 or meta.integrityVersion~=4
+        or raw.codec~=1 or type(payload)~='table' or payload.settings~=nil
+        or type(history)~='table' or type(history.serial)~='number' or history.serial<MAX_HISTORY or history.serial>16777216
+        or history.serial~=math.floor(history.serial) or type(F.LoadRecord)~='function'
+        or P:FingerprintEnvelopeIntegrity(raw)~=meta.envelopeFingerprint then return nil end
+    local rows=P:RebuildDenseSequenceForIntegrity(history.entries,MAX_HISTORY)
+    if type(rows)~='table' or #rows<1 or #rows>=MAX_HISTORY then return nil end
+    local function Probe(reason)st.lastHistoricalRecoveryProbe=tostring(st.lastHistoricalRecoveryProbe or '')..'/shard_rebuild='..reason end
+    local bySerial,entries={},{}
+    for slot=1,RECORD_SLOTS do
+        local record,err=F:LoadRecord(slot)
+        if record==nil and err~=nil then Probe('record_rejected:'..slot);return nil end
+        if record and record.serial>history.serial-MAX_HISTORY and record.serial<=history.serial then
+            if bySerial[record.serial] then Probe('duplicate_serial');return nil end
+            bySerial[record.serial]=SummaryFromRecord(record,slot)
+        end
+    end
+    for serial=history.serial-MAX_HISTORY+1,history.serial do
+        local row=bySerial[serial]
+        if row==nil then Probe('missing_serial:'..serial);return nil end
+        entries[#entries+1]=row
+    end
+    for i,row in ipairs(rows) do
+        if type(row)~='table' then Probe('retained_row_type');return nil end
+        for key,v in pairs(row) do
+            if entries[i][key]==nil or entries[i][key]~=v then Probe('retained_mismatch:'..i..':'..tostring(key));return nil end
+        end
+    end
+    local windowMs=entries[1].windowMs
+    for _,row in ipairs(entries) do if row.windowMs~=windowMs then Probe('mixed_window');return nil end end
+    local hits,matched,domain=0,nil,nil
+    for mask=0,3 do
+        local candidateDomain={settings={maxHistory=MAX_HISTORY,windowMs=windowMs,minDamage=0,
+            autoShow=mask%2==0,showDebuffs=math.floor(mask/2)%2==0},widgetWindow=DeepCopy(payload.widgetWindow),
+            history={serial=history.serial,entries=DeepCopy(entries)}}
+        local candidate=EncodeIndex(candidateDomain)
+        if P:FingerprintCanonicalValue(st,candidate)==stamp then hits=hits+1;matched=candidate;domain=candidateDomain end
+    end
+    Probe('rows='..#entries..'/hits='..hits)
+    if hits==1 then return matched,domain end
+    return nil
+end
+
 local function RebuildHistoricalIndexCanonical(value, stampedFingerprint, currentCanonical, rawEnvelope) -- 中文维护注释：统一 Index 历史恢复入口，按 schema/framework/codec 明确分代，避免内容相关 known-pair 继续承担可以结构化证明的兼容职责。
     local meta = type(rawEnvelope) == "table" and rawEnvelope.__rsmeta or nil -- 中文维护注释：历史候选必须绑定已通过 Envelope Seal 的真实 schema/framework 元数据。
     -- 中文维护注释：`.18.198` 入口即写 probe。此前只有进入具体分支才写，而所有分支都不命中时
@@ -834,15 +885,18 @@ local function RebuildHistoricalIndexCanonical(value, stampedFingerprint, curren
     if type(meta) == "table" and meta.store == INDEX_STORE and meta.owner == "v3.death_review"
         and tonumber(meta.schema) == INDEX_SCHEMA and tonumber(meta.framework) == 3
         -- 维护：数值传输升级后保留原 schema/codec/owner 门，不能让已修复的字符串序号回读回归。
-        and (tonumber(meta.transportVersion) == 2 or tonumber(meta.transportVersion) == 3)
+        and (tonumber(meta.transportVersion) == 2 or tonumber(meta.transportVersion) == 3 or tonumber(meta.transportVersion) == 6)
         and tonumber(rawEnvelope.codec) == INDEX_CODEC_VERSION then
         local candidate, domain, sequenceUnchanged = RebuildTransportV2SequenceCanonical(rawEnvelope, stampedFingerprint)
         if candidate ~= nil then return candidate, domain end
-        -- 维护（2026-09-29，death-review-dangling-entry-1）：**结构优先于精度**。
-        -- 磁盘上存在无 storageId 的悬空条目时，归一化会删掉它，于是任何要求“整表形状严格相等”
-        -- 的精度桥（固定6窗口 / 时间舍入）都进不去。先试结构候选，命中即恢复；不命中再走精度桥。
-        local prunedCandidate, prunedDomain = RebuildPrunedDanglingEntriesCanonical(rawEnvelope, stampedFingerprint)
-        if prunedCandidate ~= nil then return prunedCandidate, prunedDomain end
+        -- 维护（death-index-proof-1）：缺引用是残缺索引，不是可以凭删除行修复的数值误差。
+        -- 这里明确报告首次残缺行及缺字段；正常序列继续走原有精度桥，未知内容仍保留写保护。
+        local incomplete = DescribeIncompleteHistory(rawEnvelope)
+        if incomplete ~= nil then
+            local failedStore = P:GetStore(INDEX_STORE)
+            if failedStore then failedStore.lastHistoricalRecoveryProbe = tostring(failedStore.lastHistoricalRecoveryProbe or "") .. "/" .. incomplete end
+            return RebuildTruncatedIndexFromRecords(rawEnvelope,stampedFingerprint)
+        end
         -- 维护（F2窗口精度）：codec1的原指纹覆盖{codec,payload}，不能拿Domain直接算。
         -- 严格序列已证明未改变时才尝试两个既有中心比例；稀疏/坏序列不得借窗口桥丢掉历史。
         -- Core验旧章后才Apply；不读record分片、不依赖DPS、不变更schema2或history排序。
@@ -1092,6 +1146,8 @@ if P:GetStore(INDEX_STORE) == nil then
         legacySchemaVersion = 0, -- 中文维护注释：保留无元数据历史档的原 fallback 口径，带元数据 schema1 由正式 migrate/hook 迁移到 schema2。
         key = P.V3KeyPrefix .. "death_review_index",
         budget = INDEX_BUDGET,
+        transportVersion = 6, -- 中文维护：仅物理摘要压紧；历史1..5解码永久兼容，Domain/schema/指纹不变。
+        nativeByteBudget = 14336, -- 中文维护：预留实机16383字节边界余量，超预算先拒绝再写入。
         default = function() return NormalizeIndex(nil) end,
         get = function() return NormalizeIndex(F.State) end,
         apply = ApplyIndex,
@@ -1141,6 +1197,7 @@ function F:EnsureRecordStore(storageId)
         legacySchemaVersion = 0,
         key = RECORD_PREFIX .. tostring(sid),
         budget = RECORD_BUDGET,
+        nativeByteBudget = 14336,
         default = function() return nil end,
         get = function() return self.Records[sid] ~= nil and NormalizeRecord(self.Records[sid]) or nil end,
         apply = function(value) self.Records[sid] = type(value) == "table" and NormalizeRecord(value) or nil end,
@@ -1171,7 +1228,9 @@ function F:SaveRecord(storageId, record)
     if id == nil then return false, regErr end
     local previous = self.Records[storageId] ~= nil and DeepCopy(self.Records[storageId]) or nil
     self.Records[storageId] = NormalizeRecord(record)
-    local ok, err = P:SaveStore(id, { consumeDirty = true, allowUnloadedWrite = true, reason = "death_review_record" })
+    -- 维护（death-index-proof-1）：分片必须立即回读验真后才能把引用提交到索引。
+    -- 只对本次事务写启用验证；不更改 Store 注册 flag，避免改变旧 integrity 世代的兼容门。
+    local ok, err = P:SaveStore(id, { consumeDirty = true, allowUnloadedWrite = true, verifyAfterSave = true, reason = "death_review_record" })
     if ok ~= true then self.Records[storageId] = previous; return false, err end
     return true
 end
@@ -1209,7 +1268,9 @@ function F:CommitDeathRecord(record)
     self.State.history.entries[#self.State.history.entries + 1] = SummaryFromRecord(record, storageId)
     local maximum = ClampInt(self.State.settings.maxHistory, 1, MAX_HISTORY, 10)
     while #self.State.history.entries > maximum do table.remove(self.State.history.entries, 1) end
-    local indexOk, indexErr = P:SaveStore(INDEX_STORE, { consumeDirty = true, reason = "death_review_index_commit" })
+    -- 维护（death-index-proof-1）：SaveData=true 不代表完整落盘。Core 回读失败保留物理写入
+    -- 未验证证据，下面只回滚 RAM；不能声称已经还原磁盘，也不能向调用者发布“提交成功”。
+    local indexOk, indexErr = P:SaveStore(INDEX_STORE, { consumeDirty = true, verifyAfterSave = true, reason = "death_review_index_commit" })
     if indexOk ~= true then
         self.State.history = previousIndex
         return false, indexErr
@@ -1218,6 +1279,10 @@ function F:CommitDeathRecord(record)
 end
 
 function F:MarkStoreDirty(delayMs, reason)
+    -- 中文维护（2026-10-04）：只保存既有轻量索引，位置/折叠完成时即时回读，不重写死亡记录分片。
+    if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" then
+        return P:SaveStore(INDEX_STORE, { durable=true, consumeDirty=true, reason=reason })
+    end
     return P:MarkDirty(INDEX_STORE, tonumber(delayMs) or 350, reason or "death_review_changed")
 end
 
@@ -1228,14 +1293,23 @@ function F:MutateStore(mutator, delayMs, reason, durable)
 end
 
 function F:EnsureStoreLoaded()
-    if type(P.IsStoreLoaded) == "function" and P:IsStoreLoaded(INDEX_STORE) == true then self.StoreLoaded = true; return true end
+    -- 中文维护：分片重建已获旧章认证后，必须立即经 Core 写入紧凑格式并完整回读，
+    -- 再向 Feature 发布 ready；不把仅 RAM 恢复或 SaveData=true 当作磁盘恢复成功。
+    local function Finish()
+        local st=P:GetStore(INDEX_STORE)
+        if st and st.dirty==true and tostring(st.lastHistoricalRecoveryProbe or ''):find('/shard_rebuild=rows=30/hits=1',1,true) then
+            local ok,err=P:SaveStore(INDEX_STORE,{consumeDirty=true,verifyAfterSave=true,reason='death_index_truncation_recovery'})
+            if ok~=true then self.StoreLoaded=false;return false,err end
+        end
+        self.StoreLoaded=true;return true
+    end
+    if type(P.IsStoreLoaded) == "function" and P:IsStoreLoaded(INDEX_STORE) == true then return Finish() end
     local store = P:GetStore(INDEX_STORE)
     if store == nil then return false, "死亡回顾索引存档不可用" end
     local status, _, err = P:LoadStore(INDEX_STORE)
     if status ~= true and status ~= "empty" then return false, err or tostring(status or "读取失败") end
     if status == "empty" then ApplyIndex(nil) end
-    self.StoreLoaded = true
-    return true
+    return Finish()
 end
 
 function F:GetSettings() return self.State.settings end
@@ -1303,7 +1377,9 @@ function F:ClearHistoryStore()
     if loaded ~= true then return false, loadErr or "死亡回顾设置读取失败" end
     local previous = DeepCopy(self.State.history)
     self.State.history = { serial = math.max(0, tonumber(previous and previous.serial) or 0), entries = {} }
-    local ok, err = P:SaveStore(INDEX_STORE, { consumeDirty = true, reason = "death_review_clear_history" })
+    -- 维护（death-index-proof-1）：只有空索引立即回读通过，才允许清理后面的记录分片；
+    -- 否则旧索引可能仍引用这些分片，提前 ClearData 会把可诊断故障扩大成不可逆数据丢失。
+    local ok, err = P:SaveStore(INDEX_STORE, { consumeDirty = true, verifyAfterSave = true, reason = "death_review_clear_history" })
     if ok ~= true then self.State.history = previous; return false, err end
 
     -- The authoritative index is already empty. Physical shards are then

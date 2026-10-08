@@ -91,6 +91,11 @@ local M = {
     anomalyRatio = 2.5,
     anomalyConfirmTolerance = 0.15,
     refreshPending = {},
+    -- 维护（2026-10-01，auction-full-lane-safety-1）：后台请求必须有生命周期 owner。
+    -- 价格仍共享，只在最后一个 owner 离开时解绑 bg watcher；不误取消其它 Feature/显式货物任务。
+    refreshRequests = {},
+    backgroundBlockReason = nil,
+    backgroundInteractionPatch = "auction-full-lane-safety-1",
     lastRefreshAttemptMs = {},
     -- Session-only acceptance clock. Server wall time can be briefly unavailable immediately after UI reload;
     -- a quote confirmed in this generation must still be treated as fresh instead of being re-enqueued every rebuild.
@@ -431,9 +436,48 @@ function M:GetPrice(itemType, itemGrade)
     }
 end
 
+-- 维护（trade-single-quote-1）：跑商缓存有效窗为七天；不改变共享 Store/schema 或其它消费者政策。
+-- Store 故障时只回退本 generation 的真实 session 观察，不能复活无年龄的旧 reference。
+local function SortDependentSource(source)
+    return tostring(source or ""):gsub("^legacy:", "") == "name_search_direct_unit"
+end
+function M:GetTradePrice(itemType, itemGrade)
+    local price, meta = self:GetPrice(itemType, itemGrade)
+    -- 维护（2026-10-07）：旧来源无法区分“首条高价”与完整最低价，不再进入跑商成本。
+    -- 仅改变读取政策，保留历史 payload/canonical；用户重新询价后由可信新观察替换该条。
+    if meta and SortDependentSource(meta.source) then
+        meta.sortUnverified, meta.needsRefresh, meta.freshness = true, true, "sort_unverified"
+        meta.previousReferencePrice = price
+        return nil, meta
+    end
+    if price ~= nil and (meta.freshness == "fresh" or meta.freshness == "warm" or meta.freshness == "stale") then return price, meta end
+    local queue = S.Services and S.Services.PriceQuoteQueueV3
+    local current, source, completedAt
+    if queue and type(queue.GetPriceByItemType) == "function" then current, source, completedAt = queue:GetPriceByItemType(itemType, itemGrade) end
+    if tonumber(current) and tonumber(completedAt) and not tostring(source or ""):match("^reference:") and not SortDependentSource(source) then
+        local age = NowMs() - completedAt
+        if age >= 0 and age < self.freshMinutes * 60000 then
+            return current, { freshness = "fresh", ageMinutes = math.floor(age / 60000), source = source, needsRefresh = false }
+        end
+    end
+    return nil, meta or { freshness = "missing", needsRefresh = true }
+end
+
+-- 报价传输只发一次；价格接受/候选隔离仍经 Queue 的既有 RecordReferencePrice 单一入口。
+function M:RequestQuoteOnce(material, callback, options)
+    options = type(options) == "table" and options or {}
+    local queue = S.Services and S.Services.PriceQuoteQueueV3
+    if not queue or type(queue.RequestQuote) ~= "function" then return false, "price_quote_queue_unavailable" end
+    return queue:RequestQuote(options.requester, material.itemType, material.itemGrade, callback, { material.itemGrade }, {
+        searchName = material.searchName or material.name, singleQuery = true,
+        -- 中文维护（215703）：跑商显式传递有界排队期限；共享 Queue 拥有发包后五秒计时，价格层不计时。
+        priority = options.priority or "user", deadlineAt = options.deadlineAt, waitForDispatch = options.waitForDispatch == true,
+    })
+end
+
 local function TrustedSource(source)
     source = tostring(source or "")
-    if source == "name_search_direct_unit" then return true end
+    if source == "name_search_direct_unit" or source == "name_search_min_direct_unit" then return true end
     if source:find("^market_price:") ~= nil then return true end
     return false
 end
@@ -454,8 +498,9 @@ function M:ObserveConfirmedPrice(itemType, itemGrade, price, source)
     local entry = self.entries[key]
     local rounded = math.floor(price)
     local nowMinute = ServerMinuteStamp()
+    local replacesUnverified = source == "name_search_min_direct_unit" and type(entry) == "table" and SortDependentSource(entry.source)
 
-    if type(entry) == "table" and tonumber(entry.price) ~= nil and tonumber(entry.price) > 0 then
+    if not replacesUnverified and type(entry) == "table" and tonumber(entry.price) ~= nil and tonumber(entry.price) > 0 then
         local previous = tonumber(entry.price)
         local ratio = math.max(previous, rounded) / math.max(1, math.min(previous, rounded))
         if ratio >= self.anomalyRatio then
@@ -489,7 +534,7 @@ function M:ObserveConfirmedPrice(itemType, itemGrade, price, source)
     end
 
     local samples = {}
-    if type(entry) == "table" and tonumber(entry.price) ~= nil and tonumber(entry.price) > 0 then
+    if not replacesUnverified and type(entry) == "table" and tonumber(entry.price) ~= nil and tonumber(entry.price) > 0 then
         samples[#samples + 1] = { price = math.floor(tonumber(entry.price)), observedMinute = tonumber(entry.observedMinute) }
         for index = 1, math.min(self.maxSamples - 1, #(entry.samples or {})) do
             local sample = entry.samples[index]
@@ -517,6 +562,36 @@ function M:ObserveConfirmedPrice(itemType, itemGrade, price, source)
     return true
 end
 
+-- 维护（auction-full-lane-safety-1）：unknown 到达明确 blocked 后，不允许下一次货率刷新
+-- 每60秒复活同一批后台任务。仅现有调用边沿检查恢复证据，不新建 Tick，不清价格、不伪造失败价。
+function M:_CanResumeBlockedRevalidation()
+    if self.backgroundBlockReason == nil then return true end
+    local queue = S.Services and S.Services.PriceQuoteQueueV3 or nil
+    if type(queue) == "table" and type(queue.CanNativeQuote) == "function" then
+        local allowed = queue:CanNativeQuote()
+        if allowed == true then self.backgroundBlockReason = nil; return true end
+    end
+    self.stats.backgroundSuppressed = (tonumber(self.stats.backgroundSuppressed) or 0) + 1
+    return false
+end
+
+function M:CancelRevalidationOwner(owner)
+    owner = tostring(owner or "material_price")
+    local queue = S.Services and S.Services.PriceQuoteQueueV3 or nil
+    local cancelled = 0
+    for key, request in pairs(self.refreshRequests) do
+        request.owners[owner] = nil
+        if next(request.owners) == nil then
+            -- 先撤销本地请求身份，晚到/重入回调不能清掉同材料下一代请求。
+            self.refreshRequests[key], self.refreshPending[key] = nil, nil
+            if queue and type(queue.CancelRequester) == "function" then queue:CancelRequester(request.requester) end
+            cancelled = cancelled + 1
+        end
+    end
+    self.stats.backgroundCancelled = (tonumber(self.stats.backgroundCancelled) or 0) + cancelled
+    return true, cancelled
+end
+
 function M:RequestRevalidate(material, options)
     material = type(material) == "table" and material or {}
     options = type(options) == "table" and options or {}
@@ -534,10 +609,14 @@ function M:RequestRevalidate(material, options)
         self.stats.backgroundSkippedFresh = (tonumber(self.stats.backgroundSkippedFresh) or 0) + 1
         return true, "fresh"
     end
+    local owner = tostring(options.owner or "material_price")
     if self.refreshPending[key] == true then
+        local request = self.refreshRequests[key]
+        if request ~= nil then request.owners[owner] = true end
         self.stats.backgroundJoined = (tonumber(self.stats.backgroundJoined) or 0) + 1
         return true, "pending"
     end
+    if self:_CanResumeBlockedRevalidation() ~= true then return true, "interaction_blocked" end
     local now = NowMs()
     local lastAttempt = tonumber(self.lastRefreshAttemptMs[key]) or -1000000000
     if options.force ~= true and now >= lastAttempt and (now - lastAttempt) < self.backgroundRetryMs then return true, "retry_throttled" end
@@ -546,10 +625,17 @@ function M:RequestRevalidate(material, options)
     self.lastRefreshAttemptMs[key] = now
     self.refreshPending[key] = true
     local requester = "material_price:bg:" .. key
+    local request = { requester = requester, owners = { [owner] = true } }
+    self.refreshRequests[key] = request
     local searchName = tostring(material.searchName or material.name or "")
     if searchName == "" then searchName = nil end
     local ok, err = queue:RequestQuote(requester, itemType, itemGrade, function(snapshot)
-        M.refreshPending[key] = nil
+        if M.refreshRequests[key] ~= request then return end
+        M.refreshRequests[key], M.refreshPending[key] = nil, nil
+        if type(snapshot) == "table" and snapshot.status == "blocked"
+            and snapshot.blockReason == "native_auction_visibility_unknown" then
+            M.backgroundBlockReason = snapshot.blockReason
+        end
         if type(snapshot) ~= "table" or tostring(snapshot.status or "") ~= "ready" then
             M.stats.backgroundFailed = (tonumber(M.stats.backgroundFailed) or 0) + 1
         end
@@ -558,9 +644,10 @@ function M:RequestRevalidate(material, options)
         force = true,
         priority = "background",
         background = true,
+        singleQuery = options.singleQuery == true,
     })
     if ok ~= true then
-        self.refreshPending[key] = nil
+        if self.refreshRequests[key] == request then self.refreshRequests[key], self.refreshPending[key] = nil, nil end
         self.stats.backgroundFailed = (tonumber(self.stats.backgroundFailed) or 0) + 1
         return false, err
     end
@@ -584,8 +671,13 @@ function M:QueueRevalidate(materials, options)
             storeUnavailable = true, error = tostring(loadErr or "store_unavailable"),
         }
     end
+    if self:_CanResumeBlockedRevalidation() ~= true then
+        return true, { candidates = 0, submitted = 0, skipped = 0, failed = 0,
+            interactionBlocked = true, blockReason = self.backgroundBlockReason }
+    end
     local unique, candidates = {}, {}
-    local rank = { missing = 1, old = 2, unknown = 3, stale = 4, warm = 5, fresh = 99 }
+    local rank = options.cachedOnly == true and { warm = 1, stale = 2, fresh = 99 }
+        or { missing = 1, old = 2, unknown = 3, stale = 4, warm = 5, fresh = 99 }
     for _, material in ipairs(materials) do
         if type(material) == "table" then
             local itemType, itemGrade = PositiveInt(material.itemType), Grade(material.itemGrade)
@@ -594,7 +686,8 @@ function M:QueueRevalidate(materials, options)
                 unique[key] = true
                 local _, meta = self:GetPrice(itemType, itemGrade)
                 local freshness = tostring(meta and meta.freshness or "missing")
-                if options.force == true or freshness ~= "fresh" then
+                if (options.cachedOnly ~= true and (options.force == true or freshness ~= "fresh"))
+                    or (options.cachedOnly == true and (freshness == "warm" or freshness == "stale")) then
                     candidates[#candidates + 1] = {
                         itemType = itemType, itemGrade = itemGrade,
                         name = material.name, searchName = material.searchName or material.name,
@@ -613,7 +706,7 @@ function M:QueueRevalidate(materials, options)
     local submitted, skipped, failed = 0, 0, 0
     for index = 1, math.min(limit, #candidates) do
         local ok, state = self:RequestRevalidate(candidates[index], options)
-        if ok == true and state ~= "fresh" and state ~= "retry_throttled" and state ~= "pending" then submitted = submitted + 1
+        if ok == true and state ~= "fresh" and state ~= "retry_throttled" and state ~= "pending" and state ~= "interaction_blocked" then submitted = submitted + 1
         elseif ok == true then skipped = skipped + 1
         else failed = failed + 1 end
     end
@@ -621,17 +714,20 @@ function M:QueueRevalidate(materials, options)
 end
 
 function M:Describe()
-    self:EnsureStoreLoaded()
+    -- 维护（trade-requote-2）：诊断不能发起首次存档加载/迁移；只报告最近已经采样的事实。
     local freshness = { fresh = 0, warm = 0, stale = 0, old = 0, unknown = 0 }
-    local count, pending = 0, 0
+    local count, pending, sortUnverified = 0, 0, 0
+    -- 缺价材料尚无 entries，但仍可能占着 pending；不能只遍历 entries 得出0。
+    for _, active in pairs(self.refreshPending or {}) do if active == true then pending = pending + 1 end end
     for key, entry in pairs(self.entries or {}) do
         count = count + 1
         local state = self:_Freshness(entry, key)
         freshness[state] = (tonumber(freshness[state]) or 0) + 1
-        if self.refreshPending[key] == true then pending = pending + 1 end
+        if SortDependentSource(entry.source) then sortUnverified = sortUnverified + 1 end
     end
     return {
-        version = self.version, contractVersion = self.ContractVersion,
+        version = self.version, contractVersion = self.ContractVersion, requotePatch = "trade-requote-2",
+        sortPatch = "auction-sort-independent-1", tradeSortUnverifiedEntries = sortUnverified,
         storeId = self.StoreId, storeLoaded = self.storeLoaded == true,
         storeLoadAttempts = tonumber(self.storeLoadAttempts) or 0,
         storeLoadFailures = tonumber(self.storeLoadFailures) or 0,
@@ -646,6 +742,7 @@ function M:Describe()
         lastCacheRecoveryReason = self.lastCacheRecoveryReason,
         lastCacheRecoveryError = self.lastCacheRecoveryError,
         entries = count, revision = self.revision,
+        backgroundInteractionPatch = self.backgroundInteractionPatch, backgroundBlockReason = self.backgroundBlockReason,
         freshness = freshness, refreshPending = pending,
         thresholdsMinutes = { fresh = self.freshMinutes, warm = self.warmMinutes, stale = self.staleMinutes },
         stats = Copy(self.stats),

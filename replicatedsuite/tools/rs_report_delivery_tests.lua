@@ -266,7 +266,7 @@ Test('explicit next delivers all pages and previous returns without rereading',f
     assert(h.widgets.v3_diag_output_full.onClick());local session=assert(root.selfCheckDelivery)
     local first=h.edit.text;local total=session.parts;local collected={first}
     local buttons=0;for _,w in pairs(h.widgets)do if w.onClick then buttons=buttons+1 end end
-    assert(buttons==5,'explicit pagination actions missing')
+    assert(buttons==6 and h.widgets.v3_diag_export_file,'pagination and independent file export actions missing') -- 中文维护：导出按钮加入后仍须保留五个既有操作。
     for i=2,total do
         assert(h.widgets.v3_diag_report_next.onClick());assert(root.selfCheckPart==i)
         assert(h.edit.text:find('PAGE='..i..'/'..total,1,true));assert(#h.edit.text<=9215)
@@ -433,5 +433,17 @@ Test('first failure retries same frozen report and compression is not repeated d
     assert(root.selfCheckDelivery==session and root.selfCheckPart==1 and calls.checks==1 and encodes==0)
 end)
 
+-- 中文维护：文件出口须独立于旧 Native 编辑框，无编辑框也能保存完整冻结报告。
+Test('file export works without native editor and captures complete report once',function()
+    local S,D,calls=Boot({text=('中文完整报告\n'):rep(2000)})
+    local saved
+    S.Persistence={}
+    S.Api.SaveData=function(_,key,value)saved=value;return true end
+    S.Api.LoadData=function()return saved end
+    dofile('core/rs_diagnostic_export.lua')
+    local root,h=Page(S,calls,{noEditor=true})
+    assert(h.widgets.v3_diag_export_file.onClick())
+    assert(calls.checks==1 and tonumber(saved.byte_count)>32768,'exported text was truncated or recaptured')
+end)
 print('DELIVERY RESULT '..passed..' passed / '..failed..' failed ('.._VERSION..')')
 assert(failed==0,'report delivery regression failures')

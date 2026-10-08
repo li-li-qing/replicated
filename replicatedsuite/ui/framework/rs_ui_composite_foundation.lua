@@ -92,6 +92,7 @@ RSUI:RegisterType("StatusChip", function(spec)
         end
     end
     c.background = background
+    if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(c.root,background,c.tone,c.alpha) end
 
     local label = RSUI:Text({
         id = tostring(spec.id) .. "_label",
@@ -119,7 +120,10 @@ RSUI:RegisterType("StatusChip", function(spec)
         self.statusText = text ~= nil and tostring(text) or nil
         self.tone = tostring(tone or (STATUS[status] and STATUS[status].tone) or "muted")
         local color = Tone(self.tone, { 0.35, 0.40, 0.46, 1 }) or { 0.35, 0.40, 0.46, 1 }
-        if self.background ~= nil then UI:SetColor(self.background, color[1], color[2], color[3], self.alpha, self.owner) end
+        if self.background ~= nil then
+            if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(self.root,self.background,self.tone,self.alpha)
+            else UI:SetColor(self.background,color[1],color[2],color[3],self.alpha,self.owner) end
+        end
         self.label:SetTone(self.tone)
         self.label:SetText(ResolveText(self))
         self:InvalidateMeasure("status_chip")

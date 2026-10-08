@@ -532,6 +532,7 @@ if type(UI) == "table" and type(RSUI.RegisterType) == "function" then
         if host == nil or type(host.CreateColorDrawable) ~= "function" then return nil end
         local r, g, b, a = AccentRGBA(0.96)
         local draw = host:CreateColorDrawable(r, g, b, a, "overlay")
+        if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(host,draw,'accent',.96) end
         if draw == nil or type(draw.AddAnchor) ~= "function" then return draw end
         draw.rsUiOwner = owner
         if side == "top" then
@@ -603,6 +604,7 @@ if type(UI) == "table" and type(RSUI.RegisterType) == "function" then
             if type(handle.CreateColorDrawable) == "function" then
                 local r, g, b, a = AccentRGBA(1.0)
                 fill = handle:CreateColorDrawable(r, g, b, a, "overlay")
+                if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(handle,fill,'accent',1) end
                 if fill ~= nil and type(fill.AddAnchor) == "function" then
                     fill.rsUiOwner = c.owner
                     fill:AddAnchor("TOPLEFT", handle, c.handleHitSlop, c.handleHitSlop)
@@ -710,6 +712,7 @@ if type(UI) == "table" and type(RSUI.RegisterType) == "function" then
         if type(line.CreateColorDrawable) == "function" then
             local r, g, b, a = AccentRGBA(0.82)
             local fill = line:CreateColorDrawable(r, g, b, a, "overlay")
+            if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(line,fill,'accent',.82) end
             if fill ~= nil and type(fill.AddAnchor) == "function" then
                 fill.rsUiOwner = owner
                 fill:AddAnchor("TOPLEFT", line, 0, 0)

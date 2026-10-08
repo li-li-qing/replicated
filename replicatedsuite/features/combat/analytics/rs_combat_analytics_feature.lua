@@ -15,22 +15,14 @@ F.consumerToken="combat_analytics_feature"
 F.analyticsHeld=F.analyticsHeld==true
 
 local VALUE_OPTIONS={
-    encounter={{value="durationMs",text="战斗时长"},{value="damage",text="战斗伤害"},{value="healing",text="战斗治疗"},{value="deaths",text="死亡"}},
-    kills={{value="kills",text="击杀"},{value="assists",text="助攻"},{value="deaths",text="死亡"}},
-    casts={{value="skillActivities",text="技能活动"},{value="exactCasts",text="本机精确施法"}},
-    performance={{value="peak5sDps",text="5秒峰值DPS"},{value="peak5sDamage",text="5秒峰值伤害"},{value="highestHit",text="最高单击"},{value="damage",text="总伤害"},{value="deaths",text="死亡"}},
-    control={{value="controlHits",text="控制命中"},{value="controlActivities",text="控制释放"},{value="controlMs",text="控制时长"},{value="controlled",text="被控次数"},{value="controlledMs",text="被控时长"}},
-    songcraft={{value="songMs",text="演奏时长"},{value="songStarts",text="开始演奏"},{value="songSwitches",text="切歌"},{value="songActivities",text="演奏活动"},{value="songBuffMs",text="歌曲覆盖时长"},{value="songBuffApplies",text="歌曲覆盖次数"}},
-    utility={{value="utilityActivities",text="辅助技能活动"},{value="utilityExact",text="本机精确使用"},{value="interrupt",text="打断技能活动"},{value="dispel",text="驱散技能活动"},{value="cleanse",text="净化/解控技能活动"},{value="resurrection",text="复活技能活动"},{value="defensive",text="防御技能活动"}},
-    aura={{value="buffUptimeMs",text="Buff观察时长"},{value="debuffUptimeMs",text="Debuff观察时长"},{value="buffApplies",text="Buff施加"},{value="debuffApplies",text="Debuff施加"}},
-    mechanics={{value="mechanics",text="机制命中"}},
+    kills={{value="kills",text="击杀玩家"},{value="deaths",text="死亡"}},
 }
 local function Analytics() return S.Services and S.Services.CombatAnalyticsV3 or nil end
 local function PublicSet() local out={};for _,id in ipairs(F.PublicMetricIds or {}) do out[id]=true end;return out end
 local PUBLIC_SET=PublicSet()
 local function ValidMetric(id) id=tostring(id or "");return PUBLIC_SET[id] and id or "kills" end
 local function EmitUpdated(reason) if S.Events and type(S.Events.Publish)=="function" then S.Events:Publish("v3.combat_analytics.feature_updated",tostring(reason or "updated")) end end
-function F:GetValueOptions(id) id=ValidMetric(id);return type(S.Utils)=="table" and S.Utils.DeepCopy(VALUE_OPTIONS[id] or {}) or (VALUE_OPTIONS[id] or {}) end
+function F:GetValueOptions(id) return type(S.Utils)=="table" and S.Utils.DeepCopy(VALUE_OPTIONS[id] or {}) or (VALUE_OPTIONS[id] or {}) end
 function F:GetValueSelectorModels()
     local out={}
     for _,metricId in ipairs(self.PublicMetricIds or {}) do
@@ -49,7 +41,7 @@ end
 function F:_AcquireOrUpdate(reason)
     local a=Analytics();if type(a)~="table" then return false,"Combat Analytics unavailable" end
     local ids=self:GetEnabledMetricIds()
-    local ok,err=a:UpdateConsumer(self.consumerToken,{metrics=ids},reason or "analytics_update")
+    local ok,err=a:AcquireStatisticsConsumer(self.consumerToken,reason or "analytics_update")
     if ok~=true then return false,err end
     self.analyticsHeld=#ids>0
     if type(a.HasConsumer)=="function" then self.analyticsHeld=a:HasConsumer(self.consumerToken) end
@@ -77,34 +69,34 @@ local function PersistTransaction(apply,reason)
     return F:MutateAnalyticsStore(function() return apply() end,300,reason)
 end
 function F:SetSelectedMetric(id)
-    id=ValidMetric(id)
+    if not PUBLIC_SET[id] then return false,"metric suspended" end
     return PersistTransaction(function() return self:ApplyStoreRaw("selectedMetric",nil,id) end,"analytics_selected_metric")
 end
 function F:SetSelectedValueKey(id,key)
-    id=ValidMetric(id)
+    if not PUBLIC_SET[id] then return false,"metric suspended" end
     return PersistTransaction(function() return self:ApplyStoreRaw("selectedValue",id,key) end,"analytics_value:"..id)
 end
 function F:SetMetricEnabled(id,enabled)
-    id=ValidMetric(id);local old=self.State.metricEnabled[id];local target=enabled==true
+    if not PUBLIC_SET[id] then return false,"metric suspended" end
+    local old=self.State.metricEnabled[id];local target=enabled==true
     if old==target then return true end
     local mutationOk,mutationErr=self:MutateAnalyticsStore(function()
         local ok,err=self:ApplyStoreRaw("metricEnabled",id,target);if ok~=true then return false,err end
-        if self.enabled==true then
-            local runtimeOk,runtimeErr=self:_AcquireOrUpdate("metric_toggle:"..id)
-            if runtimeOk~=true then return false,runtimeErr end
-        end
+        local runtimeOk,runtimeErr=Analytics():RefreshStatisticsConsumers("metric_toggle:"..id)
+        if runtimeOk~=true then return false,runtimeErr end
         return true
     end,300,"analytics_metric:"..id)
     if mutationOk==true then EmitUpdated("metric:"..id);return true end
-    if self.enabled==true then
-        local rollbackOk,rollbackErr=self:_AcquireOrUpdate("metric_persist_rollback:"..id)
+    do
+        local rollbackOk,rollbackErr=Analytics():RefreshStatisticsConsumers("metric_persist_rollback:"..id)
         if rollbackOk~=true then return false,tostring(mutationErr or "persist failed").."; runtime rollback failed: "..tostring(rollbackErr) end
     end
     return false,mutationErr or "指标设置保存排队失败"
 end
 
 function F:ClearMetric(id)
-    id=ValidMetric(id);local a=Analytics();if type(a)~="table" then return false,"Combat Analytics unavailable" end
+    if not PUBLIC_SET[id] then return false,"metric suspended" end
+    local a=Analytics();if type(a)~="table" then return false,"Combat Analytics unavailable" end
     return a:ResetMetric(id,"user_clear")
 end
 function F:ClearAll()
@@ -116,7 +108,8 @@ function F:GetProjection(metricId,options)
     if options.valueKey==nil then options.valueKey=self:GetSelectedValueKey(metricId) end
     local a=Analytics();local p,err
     if type(a)=="table" then p,err=a:GetMetricProjection(metricId,options) else err="Combat Analytics unavailable" end
-    local runtime=S.FeatureRuntime and S.FeatureRuntime:GetSnapshot(self.Id) or nil
+    local runtime=S.FeatureRuntime and S.FeatureRuntime:GetSnapshot("combat_stats") or nil
+    if not (runtime and runtime.enabled == true) then runtime=S.FeatureRuntime and S.FeatureRuntime:GetSnapshot(self.Id) or nil end
     return {enabled=runtime and runtime.enabled==true or false,metricId=metricId,metricEnabled=self:IsMetricPreferenceEnabled(metricId),settings=self:GetAnalyticsSettings(),metrics=type(a)=="table" and a:ListMetrics(false) or {},projection=p,error=err,health=type(a)=="table" and a:GetHealth() or nil}
 end
 function F:GetActorDetail(metricId, actorKey, options)
@@ -137,8 +130,60 @@ end
 function F:GetHealth()
     local a=Analytics();return {ok=self.enabled==true,analyticsHeld=self.analyticsHeld==true,enabledMetrics=#self:GetEnabledMetricIds(),analytics=type(a)=="table" and a:GetHealth() or nil}
 end
+-- 中文维护（2026-10-06）：合并后的伤害统计诊断必须包含击杀/死亡与个人历史。
+-- 这里只读已加载状态，不调用 EnsureLoaded、GetProjection、Record 或任何战斗回调。
+function F:DescribeDiagnosticDetail()
+    local a=Analytics()
+    local kills=a and a:GetMetric("kills")
+    local bus=S.Services and S.Services.CombatEventBusV3
+    local history=self.PersonalHistory
+    local totals=history and history.state and history.state.totals or {}
+    local hub=S.ModuleDiagnosticsHub
+    return {available=true,scope=a and a:GetCollectionScope(),enabled=self.enabled==true,
+        analytics=a and a:GetHealth(),
+        kills=kills and type(kills.GetDiagnosticDetail)=="function" and kills:GetDiagnosticDetail() or {available=false},
+        bus=bus and type(bus.GetDiagnosticDetail)=="function" and bus:GetDiagnosticDetail()
+            or {health=bus and type(bus.GetHealth)=="function" and bus:GetHealth()},
+        relatedErrors=hub and type(hub.GetRecent)=="function" and hub:GetRecent(self.Id) or {},
+        history={storeId=history and history.StoreId,loaded=history and history.loaded==true,revision=history and history.revision,
+            error=history and history.lastError,failures=history and history.failures,
+            totals={kills=totals.kills,inferredKills=totals.inferredKills,
+                deaths=totals.deaths,damage=totals.damage,taken=totals.taken,healing=totals.healing}}}
+end
 F.Commands=F.Commands or {}
-function F.Commands:SetEnabled(value,reason) return S.FeatureRuntime:SetPreferredEnabled(F.Id,value==true,reason or "combat_analytics_page") end
+function F.Commands:SetEnabled(value,reason) return S.FeatureRuntime:ApplyPreferenceTargets({combat_stats=value==true,combat_analytics=value==true},reason or "combat_statistics_page") end
+function F:SetCollectionScope(scope)
+    if scope ~= "self" and scope ~= "all" then return false,"invalid collection scope" end
+    local loaded,loadErr=self:EnsureStoreLoaded();if loaded~=true then return false,loadErr end
+    local old=self:GetCollectionScope();if old==scope then return true end
+    local a=Analytics()
+    local ok,err=self:MutateAnalyticsStore(function()
+        self.State.collectionScope=scope
+        return a:ApplyCollectionScope(scope)
+    end,300,"statistics_scope",true)
+    if ok~=true then
+        local restored,restoreErr=a:ApplyCollectionScope(old)
+        if restored~=true then return false,tostring(err).."; scope rollback: "..tostring(restoreErr) end
+        return false,err
+    end
+    local resetOk,resetErr=a:ResetAll("collection_scope_changed")
+    if resetOk~=true then return false,resetErr end
+    EmitUpdated("scope")
+    return true
+end
+function F.Commands:SetCollectionScope(scope) return F:SetCollectionScope(scope) end
+function F:GetPersonalHistoryProjection(options)
+    return self.PersonalHistory and self.PersonalHistory:GetProjection(options) or {available=false,error="个人历史不可用"}
+end
+Analytics():SetStatisticsPolicy(function()
+    local ok,err=F:EnsureStoreLoaded();if ok~=true then return nil,err end
+    if not F.PersonalHistory then return nil,"personal history unavailable" end
+    ok,err=F.PersonalHistory:EnsureLoaded(true);if ok~=true then return nil,err end
+    local ids={"personal_history","kills"}
+    if Analytics():GetMetric("dps_core")~=nil then ids[#ids+1]="dps_core" end
+    -- 固定五项：金额统计与击杀/死亡共用原事实流，不受旧高级指标偏好影响。
+    return {metrics=ids,scope=F:GetCollectionScope()}
+end)
 function F.Commands:SetMetricEnabled(id,value) return F:SetMetricEnabled(id,value) end
 function F.Commands:SetSelectedMetric(id) return F:SetSelectedMetric(id) end
 function F.Commands:SetSelectedValue(id,key) return F:SetSelectedValueKey(id,key) end
@@ -147,3 +192,14 @@ function F.Commands:ClearAll() return F:ClearAll() end
 function F.Commands:GetActorDetail(id,key,options) return F:GetActorDetail(id,key,options) end
 
 local ok,err=Runtime:RegisterImplementation(F.Id,F);if ok~=true then error(err) end
+local hub=S.ModuleDiagnosticsHub
+if hub and type(hub.RegisterProvider)=="function" then
+    for _,moduleId in ipairs({"combat_stats",F.Id}) do
+        hub:RegisterProvider(moduleId,"combat_statistics",function()return F:DescribeDiagnosticDetail()end,30,{detailOnly=true})
+    end
+    -- 隐藏的旧分析入口与主入口共享 Store，明确绑定到用户实际导出的主模块。
+    if type(hub.RegisterStoreOwner)=="function" then
+        hub:RegisterStoreOwner("combat_stats",F.StoreId)
+        if F.PersonalHistory then hub:RegisterStoreOwner("combat_stats",F.PersonalHistory.StoreId) end
+    end
+end

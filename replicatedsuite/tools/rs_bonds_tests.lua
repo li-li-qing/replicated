@@ -58,6 +58,8 @@ end
 dofile("core/rs_demand.lua")
 dofile("ui/framework/rs_ui_floating_surface.lua")
 dofile("data/rs_data_registry.lua")
+dofile("data/rs_static_data_v2.lua")
+dofile("data/ids/rs_zone_ids.lua")
 dofile("data/ids/rs_item_ids.lua")
 dofile("data/ids/rs_quest_ids.lua")
 dofile("data/ids/rs_instance_ids.lua")
@@ -693,7 +695,8 @@ Test("B15: Bonds page and floating widget expose unambiguous mainland controls",
     local pageFile = assert(io.open("presentation/v3/pages/rs_v3_life_m16_pages.lua", "rb"))
     local pageText = pageFile:read("*a"); pageFile:close()
     assert(pageText:find('id = "continent", title = "大陆"', 1, true) ~= nil, "main Bonds table must have an explicit continent column")
-    assert(pageText:find('今日已获取：', 1, true) ~= nil, "main Bonds status must show daily west/east coverage")
+    assert(pageText:find('已获取：西', 1, true) ~= nil and pageText:find('snapshotDateVerified', 1, true) ~= nil
+        and pageText:find('待核对日期', 1, true) ~= nil, "main Bonds coverage must distinguish verified today from unverified cache")
     assert(pageText:find('当前位置：', 1, true) ~= nil, "main Bonds status must name the current continent")
     assert(pageText:find('按大陆 · 西→东', 1, true) ~= nil and pageText:find('按数量 · 少→多', 1, true) ~= nil
         and pageText:find('按数量 · 多→少', 1, true) ~= nil and pageText:find('按材料 · 正序', 1, true) ~= nil

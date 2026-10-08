@@ -21,6 +21,13 @@ end
 
 local SERVICE_DIR = 'services'
 local ALLOWED = { service_only = true, event_host_only = true }
+local function DeclaresAllowedBoundary(text)
+    -- Lua 两种引号语义相同；必须成对匹配，取值仍受既有门禁词表限制。
+    for quote, boundary in text:gmatch("presentationBoundary%s*=%s*(['\"])([%w_]+)%1") do
+        if ALLOWED[boundary] == true then return true end
+    end
+    return false
+end
 
 local function ReadFile(path)
     local handle = assert(io.open(path, 'rb'))
@@ -68,8 +75,7 @@ Test('every services/*.lua registry owner declares an allowed presentationBounda
     local registered = 0
     for _, path in ipairs(files) do
         local text = ReadFile(path)
-        local declares = text:find('presentationBoundary%s*=%s*"service_only"') ~= nil
-            or text:find('presentationBoundary%s*=%s*"event_host_only"') ~= nil
+        local declares = DeclaresAllowedBoundary(text)
         local hasRegistration = text:find('S%.Services%.[%w_]+%s*=') ~= nil
         if hasRegistration then
             registered = registered + 1
@@ -78,6 +84,14 @@ Test('every services/*.lua registry owner declares an allowed presentationBounda
     end
     assert(registered > 0, 'no S.Services registry owner found under services/')
     assert(#offenders == 0, 'services missing presentationBoundary (would BLOCK the in-game self check): ' .. table.concat(offenders, ', '))
+end)
+
+Test('static declaration check accepts both Lua quote forms without widening the contract', function()
+    assert(DeclaresAllowedBoundary([[presentationBoundary = 'service_only']]))
+    assert(DeclaresAllowedBoundary([[presentationBoundary = "service_only"]]))
+    assert(DeclaresAllowedBoundary([[presentationBoundary = 'event_host_only']]))
+    assert(not DeclaresAllowedBoundary([[presentationBoundary = 'presentation_owner']]))
+    assert(not DeclaresAllowedBoundary([[presentationBoundary = 'service_only"]]))
 end)
 
 Test('gate loop semantics flag exactly the non-declaring service', function()

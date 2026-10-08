@@ -223,6 +223,7 @@ end
 
 local function IsControllable(meta)
     if type(meta) ~= "table" then return false end
+    if meta.navigationVisible == false or meta.category == "system" then return false end -- 中文维护：已从左侧删除的内部 Feature 不再被方案隐式开启/关闭。
     local id = NormalizeId(meta.id)
     if id == "" or id == F.Id then return false end
     if tostring(meta.lifecycle or "") == "shell" or tostring(meta.controlFeatureId or id) == "" then return false end
@@ -230,19 +231,66 @@ local function IsControllable(meta)
     return Runtime:IsImplemented(id) == true
 end
 
-function F:GetControllableFeatureRows()
+-- 中文维护（2026-10-02）：展示目录使用与左栏相同的 Workspace/Router 投影，
+-- 名称含同一开发态标签，顺序跟随个人重排/隐藏；基础页/本方案仍展示但只读。
+-- 初始化早于 UI 装配时只用 Registry 可见目录降级，不读取游戏 API，不另存名单。
+function F:GetNavigationFeatureRows()
     local rows = {}
-    for _, meta in ipairs(Registry:List()) do
-        if IsControllable(meta) then
+    local workspace = S.UIV3 and S.UIV3.Workspace or nil
+    local nav = type(workspace) == "table" and type(workspace.GetNavigation) == "function" and workspace:GetNavigation("custom") or nil
+    local catalog = nav or Registry:List()
+    for _, entry in ipairs(catalog) do
+        local meta = nav and Registry:Get(entry.featureId) or entry
+        if meta and meta.navigationVisible ~= false and meta.category ~= "system" then
             local category = Registry.categories and Registry.categories[meta.category] or nil
             rows[#rows + 1] = {
                 id = meta.id,
-                name = tostring(meta.name or meta.id),
+                name = tostring(entry.navigationTitle or (meta.name .. (meta.navigationIncomplete == true and "（未完成）" or ""))),
                 category = tostring(meta.category or ""),
                 categoryName = tostring(category and category.name or meta.category or ""),
                 route = tostring(meta.route or ""),
+                controllable = IsControllable(meta), controlId = meta.controlFeatureId or meta.id,
             }
         end
+    end
+    return rows
+end
+function F:GetControllableFeatureRows()
+    local rows = {}
+    for _, row in ipairs(self:GetNavigationFeatureRows()) do if row.controllable then rows[#rows + 1] = row end end
+    return rows
+end
+
+-- 中文维护：旧方案只保存团队中心一个开启位，拆分前同时启用职责/视觉。
+-- 读取时解释历史意图，不改 canonical；用户编辑或捕获时才提交独立链接位，
+-- 使“职责开、牺牲关”可持久表达，且旧指纹无需猜测/批量重写。
+local function ProfileTarget(profile, id)
+    local modules = type(profile) == "table" and profile.modules or {}
+    -- 合并功能以 Registry 的组元数据解释旧开启集合，不改旧方案存档。
+    -- 旧方案只选分析子页时，主功能应继承开启意图；以后捕获只保存一个可见功能。
+    local meta=Registry:Get(id)
+    local group=meta and meta.preferenceGroup
+    if type(group)=="table" and group[1]==id then
+        for _,member in ipairs(group) do if modules[member]==true then return true end end
+        return false
+    end
+    if id == "combat_sac_highlight" and modules.team_feature_split_linked ~= true then
+        return modules.combat_sac_highlight == true or modules.combat_team_tools == true
+    end
+    return modules[id] == true
+end
+
+local function BuildModuleRows(selected,navigationRows)
+    local rows={}
+    for _,row in ipairs(navigationRows)do
+        local target=row.controllable and ProfileTarget(selected,row.id) or false
+        local current=Runtime:IsEnabled(row.controlId)==true
+        rows[#rows+1]={
+            featureId=row.id,name=row.name,category=row.categoryName,controllable=row.controllable,
+            targetEnabled=target,targetText=row.controllable and (target and "开启" or "关闭") or "不参与",
+            runtimeEnabled=current,runtimeText=current and "已开" or "已关",
+            matches=not row.controllable or target==current,tone=target and "success" or "muted",
+        }
     end
     return rows
 end
@@ -250,7 +298,7 @@ end
 local function BuildTargets(profile)
     local targets = {}
     for _, row in ipairs(F:GetControllableFeatureRows()) do
-        targets[row.id] = type(profile) == "table" and type(profile.modules) == "table" and profile.modules[row.id] == true or false
+        targets[row.id] = ProfileTarget(profile, row.id)
     end
     return targets
 end
@@ -258,7 +306,7 @@ end
 local function ProfileMatchesRuntime(profile, controllable)
     if type(profile) ~= "table" then return false end
     for _, row in ipairs(controllable or F:GetControllableFeatureRows()) do
-        local target = type(profile.modules) == "table" and profile.modules[row.id] == true or false
+        local target = ProfileTarget(profile, row.id)
         if Runtime:IsEnabled(row.id) ~= target then return false end
     end
     return true
@@ -308,7 +356,7 @@ function F.Authority:Refresh(reason)
     local rows = {}
     for _, profile in ipairs(F.State.profiles or {}) do
         local enabledCount = 0
-        for _, row in ipairs(controllable) do if profile.modules[row.id] == true then enabledCount = enabledCount + 1 end end
+        for _, row in ipairs(controllable) do if ProfileTarget(profile, row.id) then enabledCount = enabledCount + 1 end end
         local active = tonumber(F.RuntimeState.activeProfileId) == tonumber(profile.id)
         local dirty = tonumber(F.RuntimeState.lastAppliedId) == tonumber(profile.id) and F.RuntimeState.dirty == true
         rows[#rows + 1] = {
@@ -335,18 +383,7 @@ function F.Authority:Refresh(reason)
             quickNormalizedCenterY = profile.quickNormalizedCenterY,
         }
     end
-    local moduleRows = {}
-    for _, row in ipairs(controllable) do
-        local target = selected ~= nil and selected.modules[row.id] == true or false
-        local current = Runtime:IsEnabled(row.id) == true
-        moduleRows[#moduleRows + 1] = {
-            featureId = row.id, name = row.name, category = row.categoryName,
-            targetEnabled = target, targetText = target and "开启" or "关闭",
-            runtimeEnabled = current, runtimeText = current and "已开" or "已关",
-            matches = target == current,
-            tone = target and "success" or "muted",
-        }
-    end
+    local moduleRows = BuildModuleRows(selected,F:GetNavigationFeatureRows())
     self.rows, self.moduleRows = rows, moduleRows
     self.status = #rows > 0 and "ready" or "empty"
     self.error = nil
@@ -358,9 +395,24 @@ end
 function F:GetProjection()
     if self.storeLoaded ~= true then self:EnsureStoreLoaded() end
     local selected = ProfileById(self.State.selectedId)
+    -- 2026-10-06：Disable 会释放导航订阅；不能继续返回上次事件留下的旧 moduleRows。
+    -- Projection 按请求从同一个 Registry/Workspace/Runtime 只读投影名单与开关，启用/关闭均一致。
+    -- 不为了名单更新重新启用模块、订阅事件、写Store或注册轮询；不从这里 Publish 造成页面重入。
+    local navigationRows=self:GetNavigationFeatureRows()
+    local controllableCount=0
+    for _,row in ipairs(navigationRows)do if row.controllable then controllableCount=controllableCount+1 end end
+    local rows=Copy(self.Authority.rows)
+    for _,row in ipairs(rows or {})do
+        local profile=ProfileById(row.profileId);local enabledCount=0
+        for _,module in ipairs(navigationRows)do
+            if module.controllable and ProfileTarget(profile,module.id) then enabledCount=enabledCount+1 end
+        end
+        row.moduleCount,row.totalModuleCount=enabledCount,controllableCount
+        row.moduleText=enabledCount.."/"..controllableCount
+    end
     return {
         revision = self.Authority.revision,
-        rows = Copy(self.Authority.rows), moduleRows = Copy(self.Authority.moduleRows),
+        rows = rows, moduleRows = BuildModuleRows(selected,navigationRows),
         status = self.Authority.status, error = self.Authority.error,
         selectedId = self.State.selectedId,
         selectedName = selected and selected.name or nil,
@@ -368,8 +420,12 @@ function F:GetProjection()
         activeProfileId = self.RuntimeState.activeProfileId,
         lastAppliedId = self.RuntimeState.lastAppliedId,
         dirty = self.RuntimeState.dirty == true,
-        controllableCount = #(self:GetControllableFeatureRows()),
+        controllableCount = controllableCount,
         lastOperation = self.Authority.lastOperation,
+        -- 维护（feature-profile-failure-evidence-1）：管理页 ready 不等于上次应用成功；
+        -- 分开投影最后一次操作结果，且返回分离副本，UI/诊断不能改写 Domain 证据。
+        applyStatus = self.applying == true and "applying" or (self.RuntimeState.lastApplyFailure ~= nil and "failed" or (self.RuntimeState.lastAppliedId ~= nil and "applied" or "idle")),
+        lastApplyFailure = Copy(self.RuntimeState.lastApplyFailure),
         enabled = self.enabled == true,
     }
 end
@@ -398,6 +454,12 @@ function F:_SubscribeLifecycle()
         F.Authority:Refresh("feature_lifecycle")
     end)
     if ok ~= true then return false, "feature lifecycle subscribe failed" end
+    -- 中文维护：个人导航隐藏/排序修改后立即重建同源目录；只在已启用方案时订阅，
+    -- 复用现有 owner 清理，不新增轮询或另外一份导航持久事实。
+    local navOk = S.Events:SubscribeInternal("v3.workspace.updated", self, function(_, kind)
+        if kind == "navigation" then F.Authority:Refresh("navigation_updated") end
+    end)
+    if navOk ~= true then self:_UnsubscribeLifecycle(); return false, "navigation lifecycle subscribe failed" end
     self.lifecycleSubscribed = true
     return true
 end
@@ -490,7 +552,7 @@ function F.Commands:CreateProfile(name)
     if #(F.State.profiles or {}) >= MAX_PROFILES then return false, "最多创建 " .. tostring(MAX_PROFILES) .. " 个方案" end
     local newId = math.max(1, math.floor(tonumber(F.State.nextId) or 1))
     local ok, err = F:Persist("feature_profile_create", function(state)
-        state.profiles[#state.profiles + 1] = { id = newId, name = name, modules = {}, quick = true }
+        state.profiles[#state.profiles + 1] = { id = newId, name = name, modules = { team_feature_split_linked = true }, quick = true } -- 中文维护：新方案独立记录两个团队功能，标记不属于可控模块。
         state.nextId, state.selectedId = newId + 1, newId
         return true
     end)
@@ -534,9 +596,16 @@ function F.Commands:SetModule(profileId, featureId, enabled)
     featureId = NormalizeId(featureId)
     local meta = Registry:Get(featureId)
     if IsControllable(meta) ~= true then return false, "该功能不允许加入方案控制：" .. tostring(featureId) end
+    local visible = false
+    for _, row in ipairs(F:GetControllableFeatureRows()) do if row.id == featureId then visible = true; break end end
+    if not visible then return false, "该功能已从当前左侧导航隐藏" end -- 中文维护：旧页面选择/陈旧调用不得越过当前导航目录。
     local target = enabled == true
     local ok, err = F:Persist("feature_profile_module:" .. featureId, function()
         profile.modules = type(profile.modules) == "table" and profile.modules or {}
+        if profile.modules.team_feature_split_linked ~= true then
+            if ProfileTarget(profile, "combat_sac_highlight") then profile.modules.combat_sac_highlight = true end
+            profile.modules.team_feature_split_linked = true -- 中文维护：先保留历史双开语义，再修改当前用户指定的单个功能。
+        end
         if target then profile.modules[featureId] = true else profile.modules[featureId] = nil end
         return true
     end)
@@ -548,12 +617,20 @@ function F.Commands:SetModule(profileId, featureId, enabled)
 end
 function F.Commands:CaptureCurrent(profileId)
     local profile = ProfileById(profileId); if profile == nil then return false, "请先选择方案" end
-    local nextModules = {}
-    for _, row in ipairs(F:GetControllableFeatureRows()) do if Runtime:IsEnabled(row.id) == true then nextModules[row.id] = true end end
+    -- 2026-10-06：获取当前始终重读同源导航目录，不复用上一次页面 moduleRows。
+    -- 删除/合并模块、完成标签和个人隐藏由 Registry/Workspace 解释；显式捕获才替换旧开启集合。
+    -- 功能方案仍只捕获 FeatureRuntime 开关，不跨权威读取/写入游戏键位或业务配置。
+    local currentRows=F:GetControllableFeatureRows()
+    local enabledCount=0
+    local nextModules = { team_feature_split_linked = true } -- 中文维护：捕获真实独立开关，不借旧团队中心位推断视觉开关。
+    for _, row in ipairs(currentRows) do
+        if Runtime:IsEnabled(row.id) == true then nextModules[row.id] = true;enabledCount=enabledCount+1 end
+    end
     local ok, err = F:Persist("feature_profile_capture_current", function() profile.modules = nextModules; return true end)
     if ok == true then
-        F.Authority.lastOperation = "已把当前可控功能开关捕获到方案“" .. tostring(profile.name) .. "”。"
+        F.Authority.lastOperation = "已按最新功能目录同步方案“"..tostring(profile.name).."”：开启 "..enabledCount.."/"..#currentRows.." 项。"
         F.Authority:Refresh("profile_captured")
+        return true,F.Authority.lastOperation
     end
     return ok, err
 end
@@ -584,17 +661,40 @@ function F.Commands:ApplyProfile(profileId)
     if type(Runtime.ApplyPreferenceTargets) ~= "function" then return false, "FeatureRuntime 批量事务能力不可用" end
     local targets = BuildTargets(profile)
     F.applying, F.pendingLifecycleRefresh = true, false
-    local ok, detail = Runtime:ApplyPreferenceTargets(targets, "feature_profile:" .. tostring(profile.id))
+    local ok, detail, failure = Runtime:ApplyPreferenceTargets(targets, "feature_profile:" .. tostring(profile.id))
     F.applying = false
     if ok ~= true then
         F.Stats.applyFailures = (tonumber(F.Stats.applyFailures) or 0) + 1
-        F.Authority.lastOperation = "应用失败：" .. tostring(detail or "未知原因")
-        Emit("error", "FEATURE_PROFILE_APPLY_FAILED", "功能方案应用失败；FeatureRuntime 已负责回滚", {
-            profileId = profile.id, name = profile.name, error = tostring(detail or "unknown"),
+        -- 维护（feature-profile-failure-evidence-1）：失败目标由 Runtime 的结构化结果给出，
+        -- 不从错误字符串猜 id，不忽略故障模块，也不偷偷取消用户的方案勾选。
+        failure = type(failure) == "table" and Copy(failure) or { stage = "unknown" }
+        failure.profileId, failure.profileName = profile.id, profile.name
+        failure.error = tostring(detail or "未知原因")
+        local meta = failure.featureId ~= nil and Registry:Get(failure.featureId) or nil
+        failure.featureName = meta and tostring(meta.name or failure.featureId) or failure.featureId
+        failure.route = meta and tostring(meta.route or "") or nil
+        local message
+        if failure.featureName ~= nil then
+            message = "应用失败：" .. failure.featureName .. (failure.targetEnabled == true and "无法开启" or "无法关闭")
+        elseif failure.stage == "persist" then message = "应用失败：功能开关保存失败"
+        elseif failure.stage == "preflight" then message = "应用未开始：功能开关预检失败"
+        else message = "应用失败：请查看模块诊断" end
+        if failure.rollbackSucceeded == false then message = message .. "；回滚未完成，请检查诊断。"
+        elseif failure.rollbackSucceeded == true and failure.rollbackAttempted == true then message = message .. "；已回滚本次开关变更。"
+        elseif failure.rollbackSucceeded == true then message = message .. "；未提交开关变更。" end
+        failure.message = message
+        F.RuntimeState.lastApplyFailure = failure
+        F.Authority.lastOperation = message
+        F.pendingLifecycleRefresh = false
+        Emit("error", "FEATURE_PROFILE_APPLY_FAILED", "功能方案应用失败；失败目标与回滚结果见证据", {
+            profileId = profile.id, name = profile.name, error = failure.error,
+            featureId = failure.featureId, targetEnabled = failure.targetEnabled, stage = failure.stage,
+            rollbackSucceeded = failure.rollbackSucceeded, rollbackError = failure.rollbackError,
         })
         F.Authority:Refresh("profile_apply_failed")
-        return false, detail
+        return false, message, Copy(failure)
     end
+    F.RuntimeState.lastApplyFailure = nil -- 只在实际应用成功后解除上次失败状态；历史错误池不清除。
     F.State.selectedId = profile.id
     F.RuntimeState.lastAppliedId = profile.id
     F.Stats.applies = (tonumber(F.Stats.applies) or 0) + 1
@@ -661,6 +761,7 @@ function F:GetHealth()
         consumerCount = tonumber(self.consumerCount) or 0,
         applies = tonumber(self.Stats.applies) or 0,
         applyFailures = tonumber(self.Stats.applyFailures) or 0,
+        applyStatus = self.RuntimeState.lastApplyFailure ~= nil and "failed" or (self.RuntimeState.lastAppliedId ~= nil and "applied" or "idle"),
         lastOperation = self.Authority.lastOperation,
     }
 end
@@ -722,6 +823,10 @@ if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.Regis
             controllableCount = #(F:GetControllableFeatureRows()),
             applies = tonumber(F.Stats.applies) or 0,
             applyFailures = tonumber(F.Stats.applyFailures) or 0,
+            -- 维护（feature-profile-failure-evidence-1）：只读本次会话已有证据；不为收集
+            -- 失败目标而 GetHealth/LoadStore/Initialize，也不把本模块正常 Store 当作故障来源。
+            applyStatus = F.RuntimeState.lastApplyFailure ~= nil and "failed" or (F.RuntimeState.lastAppliedId ~= nil and "applied" or "idle"),
+            lastApplyFailure = Copy(F.RuntimeState.lastApplyFailure),
             mutations = tonumber(F.Stats.mutations) or 0,
             lastOperation = F.Authority.lastOperation,
             lastError = F.Authority.error,

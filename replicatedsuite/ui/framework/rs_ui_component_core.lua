@@ -1410,6 +1410,10 @@ function Base:On(widget, eventName, fn, label)
         local currentWidgetMux = component._eventMux and component._eventMux[widget]
         local current = currentWidgetMux and currentWidgetMux[eventKey]
         if current == nil then return false end
+        -- 外部点击先结束顶层弹层交互，再执行业务动作；沿用同一Native事件mux，避免重复OnClick绑定。
+        if eventKey=="OnClick" and RSUI.PopupCoordinator and type(RSUI.PopupCoordinator.BeforeComponentClick)=="function" then
+            RSUI.PopupCoordinator:BeforeComponentClick(component)
+        end
         RSUI.metrics.eventDispatches = (tonumber(RSUI.metrics.eventDispatches) or 0) + 1
         RSUI:_Count(component.kind, "events", 1)
         local result = nil

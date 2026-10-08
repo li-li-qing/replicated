@@ -393,16 +393,14 @@ Test('BatchE 静态：core/*.lua 不得再点名这四份观察契约', function
 end)
 
 ------------------------------------------------------------------------
--- Phase 3 Batch F：life_fishing 的 Auto-R 事务契约 + tools_reinforce_analysis 的运行时阻塞真值
+-- Phase 3 Batch F：life_fishing 的 Auto-R 事务契约；强化分析已按 2026-10-06 用户要求退役。
 -- （core/rs_foundation_gate.lua 的 v3_feature_truth_contract 里那两段点名断言已删除；
 --  该 AddCheck 的 Registry 真值表循环保持原样）
 --
--- 一个 Feature 是把契约**追加**进已存在的 acceptance（fishing），另一个是**新建** acceptance（reinforce）。
+-- Fishing 契约追加在自己的 acceptance 内，Core 仍只消费通用 Registry 真值表。
 ------------------------------------------------------------------------
 local FISHING_PATH = 'features/life/fishing/rs_fishing_acceptance.lua'
-local REINFORCE_PATH = 'features/tools/reinforce_analysis/rs_reinforce_analysis_acceptance.lua'
 local FISHING_AUTO_R = 'v3_life_fishing_auto_r_transaction_contract'
-local REINFORCE_CASE = 'v3_tools_reinforce_analysis_runtime_block_contract'
 
 local function BootTruth(key, path, feature, services)
     local cases = {}
@@ -470,24 +468,7 @@ Test('BatchF life_fishing：独立热键事务服务缺失/版本不足必须失
     assert(ok2 == false and tostring(reason2) == 'hotkey_transaction_contract_version', 'reason=' .. tostring(reason2))
 end)
 
-Test('BatchF tools_reinforce_analysis：实现未注册时仍注册 case 并失败', function()
-    local cases = BootTruth('tools_reinforce_analysis', REINFORCE_PATH, nil)
-    assert(type(cases[REINFORCE_CASE]) == 'function', 'case must register even when the Feature is missing')
-    local ok, reason = cases[REINFORCE_CASE]()
-    assert(ok == false and tostring(reason) == 'implementation_not_registered', 'reason=' .. tostring(reason))
-end)
-
-Test('BatchF tools_reinforce_analysis：显式声明硬阻塞才通过', function()
-    local okFeature, reasonFeature = BootTruth('tools_reinforce_analysis', REINFORCE_PATH,
-        { SlotProbeRuntimeBlocked = true })[REINFORCE_CASE]()
-    assert(okFeature == true, 'declared block must pass, got ' .. tostring(reasonFeature))
-end)
-
-Test('BatchF tools_reinforce_analysis：未声明硬阻塞必须失败', function()
-    local ok, reason = BootTruth('tools_reinforce_analysis', REINFORCE_PATH,
-        { SlotProbeRuntimeBlocked = false })[REINFORCE_CASE]()
-    assert(ok == false and tostring(reason) == 'slot_probe_runtime_block_missing', 'reason=' .. tostring(reason))
-end)
+-- 2026-10-06 用户删除强化分析，其独立验收随 Feature 退役；目录/TOC 清理由 rs_feature_retirement_tests.lua 验证。
 
 Test('BatchF 静态：core/*.lua 不得再点名这两处真值契约', function()
     local f = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
@@ -881,20 +862,22 @@ Test('BatchK team_tools：实现未注册 → 两个 case 都注册且失败', f
     for _, name in ipairs({ TEAM_ROLE_CASE, TEAM_VISUAL_CASE }) do
         assert(type(cases[name]) == 'function', name .. ' must register even when missing')
         local ok, reason = cases[name]()
-        assert(ok == false and tostring(reason) == 'implementation_not_registered', 'reason=' .. tostring(reason))
+        local expected = name == TEAM_VISUAL_CASE and 'visual_implementation_not_registered' or 'implementation_not_registered'
+        assert(ok == false and tostring(reason) == expected, 'reason=' .. tostring(reason))
     end
 end)
 
 Test('BatchK team_tools：合规契约两个 case 都通过（搬迁未误伤）', function()
     for _, name in ipairs({ TEAM_ROLE_CASE, TEAM_VISUAL_CASE }) do
-        local ok, reason = BootTruth('combat_team_tools', TEAM_PATH, TeamToolsFeature())[name]()
+        local owner = name == TEAM_VISUAL_CASE and 'combat_sac_highlight' or 'combat_team_tools'
+        local ok, reason = BootTruth(owner, TEAM_PATH, TeamToolsFeature())[name]()
         assert(ok == true, name .. ' must pass for a compliant feature, got ' .. tostring(reason))
     end
 end)
 
 Test('BatchK team_tools：角色契约的每一项回退都必须被拒', function()
     local fields = { { 'TeamRoleContractVersion', 2 }, { 'AutoRoleContractVersion', 3 },
-        { 'AutoRoleCatalogContractVersion', 2 }, { 'AutoRoleRosterLeaseContractVersion', 1 } }
+        { 'AutoRoleCatalogContractVersion', 2 }, { 'AutoRoleRosterLeaseContractVersion', 1 }, { 'AutoRoleDefaultOnContractVersion', 1 } }
     for _, field in ipairs(fields) do
         local feature = TeamToolsFeature()
         feature[field[1]] = field[2] - 1
@@ -909,17 +892,17 @@ end)
 
 Test('BatchK team_tools：视觉/标记契约的每一项回退与缺命令都必须被拒', function()
     local fields = { { 'TeamVisualContractVersion', 2 }, { 'TeamMarkerSnapshotContractVersion', 1 },
-        { 'TeamSacContractVersion', 2 }, { 'AutoRoleDefaultOnContractVersion', 1 } }
+        { 'TeamSacContractVersion', 2 } }
     for _, field in ipairs(fields) do
         local feature = TeamToolsFeature()
         feature[field[1]] = field[2] - 1
-        local ok, reason = BootTruth('combat_team_tools', TEAM_PATH, feature)[TEAM_VISUAL_CASE]()
+        local ok, reason = BootTruth('combat_sac_highlight', TEAM_PATH, feature)[TEAM_VISUAL_CASE]()
         assert(ok == false, field[1] .. ' below the floor must be rejected')
         assert(reason ~= nil and tostring(reason) ~= '', 'rejection must carry a reason')
     end
     for _, name in ipairs({ 'SetSacHighlightEnabled', 'SaveRaidMarkers', 'RestoreRaidMarkers', 'ClearSavedRaidMarkers' }) do
         local feature = TeamToolsFeature(); feature.Commands[name] = nil
-        local ok, reason = BootTruth('combat_team_tools', TEAM_PATH, feature)[TEAM_VISUAL_CASE]()
+        local ok, reason = BootTruth('combat_sac_highlight', TEAM_PATH, feature)[TEAM_VISUAL_CASE]()
         assert(ok == false, 'missing ' .. name .. ' must be rejected')
         assert(reason ~= nil and tostring(reason) ~= '', 'rejection must carry a reason')
     end
@@ -1163,7 +1146,7 @@ local BAG_PATH = 'features/tools/bag/rs_bag_acceptance.lua'
 local BAG_CASE = 'v3_tools_bag_action_contract'
 
 local function BagFeature()
-    -- 下限清单与 acceptance 逐条对齐（25 项），避免 stub 少字段导致误报。
+    -- 下限清单与当前 acceptance 对齐，包含全放及保留的原生锚点读取接口。
     local feature = {
         BagMoveContractVersion = 8,
         BatchLifecycleContractVersion = 5,
@@ -1190,8 +1173,11 @@ local function BagFeature()
         GroupedIntentQueueContractVersion = 1,
         FullStorageContinuationContractVersion = 1,
         BatchTargetAutoContractVersion = 1,
+        AllDepositContractVersion = 1,
+        NativeBagAnchorContractVersion = 1,
+        GetQuickBagAnchor = function() end,
     }
-    feature.Commands = { QuickWithdraw = function() end, QuickDeposit = function() end,
+    feature.Commands = { QuickWithdraw = function() end, QuickDeposit = function() end, QuickDepositAll = function() end,
         QuickCancel = function() end, ResolveAndAddBlacklistItem = function() end,
         AddGlobalBlacklistItem = function() end, RemoveGlobalBlacklistItem = function() end,
         SetBatchCategory = function() end, SetBatchTarget = function() end,
@@ -1223,6 +1209,9 @@ Test('BatchN tools_bag：契约回退与缺命令必须被拒', function()
     Reject(function(f) f.BatchLifecycleContractVersion = 4 end, 'bag.batch_lifecycle_v5 下限')
     Reject(function(f) f.Commands = nil end, '命令表缺失')
     Reject(function(f) f.Commands.QuickWithdraw = nil end, '缺 QuickWithdraw')
+    Reject(function(f) f.AllDepositContractVersion = 0 end, '全放契约缺失')
+    Reject(function(f) f.Commands.QuickDepositAll = nil end, '缺 QuickDepositAll')
+    Reject(function(f) f.GetQuickBagAnchor = nil end, '缺原生锚点读取接口')
     Reject(function(f) f.Commands.DepositCategoryCurrent = nil end, '缺 DepositCategoryCurrent')
 end)
 

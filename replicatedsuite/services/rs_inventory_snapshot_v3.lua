@@ -306,6 +306,16 @@ function I:FindLiveRow(scope, matcher, options)
     end
 
     local readErrors = 0
+    -- 维护（2026-10-04）：队列下一组的旧槽提示可能因上一项移动而整体偏移。
+    -- 先核对刚腾出的实际槽，再按原提示有界查找；提示只优化读取，matcher
+    -- 仍负责身份/黑名单，不能把旧槽号当作身份或无条件移动。
+    local alternateSlot = tonumber(options.alternateSlot)
+    if alternateSlot ~= nil and alternateSlot == math.floor(alternateSlot)
+        and alternateSlot >= 1 and alternateSlot <= scanSlots and alternateSlot ~= startSlot then
+        local row, readErr = Probe(alternateSlot)
+        if type(row) == "table" then return row, nil, nil end
+        if type(readErr) == "string" then readErrors = readErrors + 1 end
+    end
     for slot = startSlot, scanSlots do
         local row, readErr = Probe(slot)
         if type(row) == "table" then return row, nil, nil end

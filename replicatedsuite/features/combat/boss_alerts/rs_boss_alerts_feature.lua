@@ -55,6 +55,7 @@ do
         if alerts and type(alerts.HideOwner) == "function" then return alerts:HideOwner(feature.Id, key) end
         return true -- 中文维护：旧服务无按 owner 隐藏时不退回全局 Hide，避免清除别的业务提示。
     end
+    local function BossTestKey(key) return "__boss_test:" .. tostring(key) end
     -- 中文维护（boss-hud-clock-1）：可选字段避免改动旧 HUD-only 存档的缺省形状；
     -- Feature 是设置 Authority，服务/Presenter 接收分离配置，不得反向写 State。
     local function BossHudConfig(feature)
@@ -78,7 +79,7 @@ do
         if n == nil or n ~= n or n == math.huge or n == -math.huge then return nil end
         return math.floor(math.max(low, math.min(high, n)))
     end
-    local function BossPush(feature, rule, remainingMs)
+    local function BossPush(feature, rule, remainingMs, alertKey)
         if feature.State.hudEnabled ~= true then return false, "请先启用首领机制 HUD" end
         if type(rule) ~= "table" then return false, "首领规则不存在" end
         if not BossRuleEnabled(feature, rule.key) then return false, "该规则已关闭" end
@@ -91,7 +92,7 @@ do
         if style == "countdown" and remaining > 0 then duration = remaining end
         -- 中文维护：不把显示时长当作读条剩余时间；来源/key 让停用只回收当前规则的提示。
         return alerts:Push({ text = tostring(rule.alert or rule.key), style = style, durationMs = duration,
-            remainingMs = style == "countdown" and remaining or 0, ownerKey = feature.Id, alertKey = rule.key,
+            remainingMs = style == "countdown" and remaining or 0, ownerKey = feature.Id, alertKey = alertKey or rule.key,
             presentationConfig = BossHudConfig(feature) })
     end
     local function BossDeliver(feature, rule, remaining, source)
@@ -295,7 +296,11 @@ do
             return true
         end, {durable = true, reason = "boss_rule_settings"})
         if ok ~= true then return false, err end
-        if enabled ~= true then BossHide(feature, key) end
+        if enabled ~= true then
+            BossHide(feature, key)
+            -- 中文维护（2026-10-07）：逐条关闭同时取消对应测试；nil key 已按 owner 清除全部提示。
+            if key ~= nil then BossHide(feature, BossTestKey(key)) end
+        end
         -- 中文维护：重新启用可提示仍在观察到的当前机制；这是设置操作边沿，不修改事实或伪造状态。
         for _, rule in ipairs(BossRules) do
             if key == nil or rule.key == key then
@@ -316,8 +321,9 @@ do
             end
         end
         if rule == nil or (kind ~= nil and rule.kind ~= kind) then return false, "未找到可测试的对应规则" end
-        -- 中文维护：仿真只验证目录到 Presenter 的路径；不写真实观察诊断，也不能证明 RU Boss 已触发。
-        return BossPush(feature, rule, rule.kind == "cast" and 6000 or 0)
+        -- 中文维护（2026-10-07）：仿真独立提示 key，让真实“未施法”观察不能在下个 tick 撤掉测试。
+        -- 寿命仍归共享 Alerts 的原截止点；不写真实观察事实/诊断，不自建计时或证明 RU Boss 已触发。
+        return BossPush(feature, rule, rule.kind == "cast" and 6000 or 0, BossTestKey(rule.key))
     end
 
     -- 中文维护：静态规则配置不依赖启用/消费租约；首次打开已关闭功能也要能配置。

@@ -135,6 +135,22 @@ function C:GetBuff(id) return self.ByBuffId[tonumber(id)] end
 function C:GetSongSkillForBuff(id) return self.SongSkillByBuffId[tonumber(id)] end
 function C:IsControlSkill(id) local row = self:GetSkill(id); return row ~= nil and #row.controlTypes > 0 end
 function C:IsSongSkill(id) local row = self:GetSkill(id); return row ~= nil and row.songcraft == true end
+-- 中文维护（2026-10-05）：参考规则共用静态索引；不合并到已确认分类，
+-- 不把参考名称覆盖中文 SkillEffects，不改变原控制/辅助指标的判定。
+function C:GetRecognitionMatches(namespace, id)
+    local reference = S.Data.CombatRecognitionCatalog
+    return reference and reference:GetMatches(namespace, id) or nil
+end
+function C:GetRecognitionGroup(key)
+    local reference = S.Data.CombatRecognitionCatalog
+    return reference and reference:GetGroup(key) or nil
+end
+function C:GetRecognitionByName(name)
+    local reference = S.Data.CombatRecognitionCatalog
+    return reference and reference:GetByName(name) or nil
+end
 function C:GetHealth()
-    return { version = self.version, skills = self.counts.skills, buffs = self.counts.buffs, songs = self.counts.songs, control = self.counts.control, utility = self.counts.utility }
+    local reference = S.Data.CombatRecognitionCatalog
+    return { version = self.version, skills = self.counts.skills, buffs = self.counts.buffs, songs = self.counts.songs, control = self.counts.control, utility = self.counts.utility,
+        reference = reference and reference:GetHealth() or nil }
 end

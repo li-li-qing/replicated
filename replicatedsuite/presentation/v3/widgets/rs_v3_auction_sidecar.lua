@@ -1,8 +1,9 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Auction Workspace Sidecar
 --
--- Presentation-only companion to the native Auction House. Geometry comes
--- from AuctionSurfaceV3; persistent favorites remain owned by tools_auction;
+-- Presentation-only companion to the native Auction House. Initial placement
+-- and visibility come from AuctionSurfaceV3; user placement has its own Store.
+-- Persistent favorites remain owned by tools_auction;
 -- daily quest facts remain owned by QuestProgressV3/DailyAuctionMaterialsV3;
 -- temporary shopping groups remain owned by AuctionSessionListV3.
 --
@@ -26,7 +27,9 @@ local WIDTH, HEIGHT = 300, 440
 local DAILY_TOKEN = "widget:auction_sidecar:daily"
 
 local Controller = {
-    version = 4,
+    version = 6,
+    ScaledPlacementContractVersion = 1,
+    FreePlacementContractVersion = 1, DurablePlacementContractVersion = 1,
     AuctionWorkspaceContractVersion = 1,
     SidecarControlContractVersion = 2,
     ControlTopic = "v3.auction_sidecar.control_state",
@@ -36,6 +39,53 @@ local Controller = {
 }
 S.UIV3 = S.UIV3 or {}
 S.UIV3.AuctionSidecar = Controller
+
+-- 独立 Presentation 布局档，不改收藏业务档或 AuxWindow 历史 canonical。
+local Persistence=S.Persistence
+local POSITION_STORE="v3.presentation.auction_sidecar_position"
+local function NormalizePosition(value)
+    value=type(value)=="table" and value or {}
+    local out={userMoved=value.userMoved==true}
+    if out.userMoved then
+        out.coordinateSpace="logical-free-v2"
+        for _,key in ipairs({"x","y","savedUiScale","savedLogicalWidth","savedLogicalHeight","normalizedCenterX","normalizedCenterY"})do
+            local n=tonumber(value[key])
+            if n and n==n and n~=math.huge and n~=-math.huge then out[key]=n end
+        end
+        if out.x==nil or out.y==nil then return {userMoved=false} end
+    end
+    return out
+end
+Controller.positionState=NormalizePosition(nil)
+Controller.positionStore=POSITION_STORE
+if type(Persistence)=="table" and type(Persistence.RegisterV3Store)=="function" then
+    local store,err=Persistence:RegisterV3Store({
+        id=POSITION_STORE,owner=POSITION_STORE,scope=Persistence.Scope.Account,lifetime=Persistence.Lifetime.Permanent,
+        schemaVersion=1,key=Persistence.V3KeyPrefix.."presentation_auction_sidecar_position",
+        budget={maxDepth=3,maxNodes=32,maxStringBytes=256,maxEntriesPerTable=16},
+        default=function()return NormalizePosition(nil) end,
+        get=function()return NormalizePosition(Controller.positionState) end,
+        apply=function(value)Controller.positionState=NormalizePosition(value) end,
+    })
+    if store==nil then Controller.positionError=tostring(err or "拍卖助手位置存档注册失败") end
+else Controller.positionError="拍卖助手位置存档不可用" end
+function Controller:EnsurePositionLoaded()
+    if type(Persistence)~="table" then return false,self.positionError end
+    if Persistence:IsStoreLoaded(POSITION_STORE)==true then return true end
+    if self.positionLoadAttempted then return false,self.positionError end
+    self.positionLoadAttempted=true
+    local status,_,err=Persistence:LoadStore(POSITION_STORE)
+    if status~=true and status~="empty" then self.positionError=tostring(err or status or "位置读取失败");return false,self.positionError end
+    self.positionError=nil;return true
+end
+function Controller:GetHealth()
+    return {version=self.version,movable=true,positionStore=POSITION_STORE,
+        positionLoaded=Persistence and Persistence:IsStoreLoaded(POSITION_STORE)==true or false,
+        positionError=self.positionError,positionState=NormalizePosition(self.positionState)}
+end
+if type(S.ModuleDiagnosticsHub)=="table" and type(S.ModuleDiagnosticsHub.RegisterProvider)=="function" then
+    S.ModuleDiagnosticsHub:RegisterProvider("tools_auction","auction_free_position",function()return Controller:GetHealth() end,55,{detailOnly=true})
+end
 
 local function Trim(value)
     return (tostring(value or ""):match("^%s*(.-)%s*$")) or ""
@@ -149,31 +199,27 @@ local function DailyRows()
         local taskTitle = Trim(task.title)
         if taskTitle == "" then taskTitle = qid > 0 and ("居民做货任务 #" .. tostring(qid)) or "居民做货任务" end
         local recipes = type(task.recipes) == "table" and task.recipes or {}
-        -- 中文维护注释（2026-09-30，daily-auction-title-recovery-1）：保留未匹配任务的标题，
-        -- 但不能把已选配方当作“材料已解析”。本层只显示服务结论，不猜材料、不发后台拍卖搜索。
-        local taskStatus = "等待材料"
-        if task.materialStatus == "unresolved" then
-            taskStatus = task.matchReason == "zone_unmatched" and "地区待匹配" or "配方待匹配"
-        elseif task.requiresSelection == true then taskStatus = "请选择货物 · " .. tostring(#recipes) .. "候选"
-        elseif #(task.materials or {}) > 0 then taskStatus = "材料已解析"
-        elseif task.selectedRecipe ~= nil then taskStatus = "材料未就绪" end
+        -- 中文维护（2026-10-04）：今日任务用于采购，正常任务直接接材料行。
+        -- 解析原因留在共享服务诊断；真正缺材料的任务仍提示不可用，不能伪造材料或空成功。
+        local taskStatus = ""
+        if task.requiresSelection == true then taskStatus = "请选择制作货物"
+        elseif #(task.materials or {}) == 0 then taskStatus = "材料暂不可用" end
         rows[#rows + 1] = {
             key = "daily:task:" .. tostring(qid), kind = "daily_task", questId = qid,
             name = taskTitle,
             status = taskStatus,
         }
-        -- 中文维护注释（多候选任务 UI）：recipes 是“任选其一”的候选集合。列表只提供候选选择，绝不把
-        -- 候选配方材料求和。recipeOptions 若有已本地化名称则优先使用；否则只显示“候选货物 N”，禁止把
-        -- 内部英文 legacyName 暴露给玩家。
+        -- 只有真正任选其一的任务才需要货物选择；唯一配方不能再多占一行“候选货物”。
+        -- 多配方沿用服务本地化名称与选择入口，绝不累计所有配方材料或暴露内部英文键。
         local optionByRecipe = {}
         for _, option in ipairs(type(task.recipeOptions) == "table" and task.recipeOptions or {}) do
             if type(option) == "table" and tostring(option.recipe or "") ~= "" then optionByRecipe[tostring(option.recipe)] = option end
         end
-        for index, recipe in ipairs(recipes) do
+        for index, recipe in ipairs(#recipes > 1 and recipes or {}) do
             recipe = tostring(recipe or "")
             local option = optionByRecipe[recipe]
             local displayName = type(option) == "table" and Trim(option.name) or ""
-            if displayName == "" then displayName = "候选货物 " .. tostring(index) end
+            if displayName == "" or displayName:find("^候选货物") then displayName = "制作方案 " .. tostring(index) end
             rows[#rows + 1] = {
                 key = "daily:recipe:" .. tostring(qid) .. ":" .. tostring(index), kind = "daily_recipe",
                 questId = qid, recipe = recipe,
@@ -231,21 +277,46 @@ local function SidecarPosition(snapshot)
     local auctionX = tonumber(snapshot.x) or safeLeft
     local auctionY = tonumber(snapshot.y) or safeTop
     local auctionWidth = math.max(1, tonumber(snapshot.width) or 1)
+    local auctionHeight = math.max(1, tonumber(snapshot.height) or 1)
+    -- FloatingSurface 会应用插件缩放一次；这里必须用同一实际显示尺寸留出距离。
+    local scale=math.max(0.01,tonumber(context.addonScale) or 1)
+    local width=math.min(WIDTH*scale,math.max(1,logicalWidth-safeLeft-safeRight))
+    local height=math.min(HEIGHT*scale,math.max(1,logicalHeight-safeTop-safeBottom))
+    local right,bottom=logicalWidth-safeRight,logicalHeight-safeBottom
     local gap = 8
-    local x = auctionX - WIDTH - gap
-    if x < safeLeft then x = auctionX + auctionWidth + gap end
-    x = math.max(safeLeft, math.min(x, logicalWidth - safeRight - WIDTH))
-    local y = math.max(safeTop, math.min(auctionY, logicalHeight - safeBottom - HEIGHT))
+    local x,y=auctionX-width-gap,auctionY
+    if x<safeLeft then
+        x=auctionX+auctionWidth+gap
+        if x+width>right then
+            -- 横向放不下时先尝试下方/上方，避免夹紧到拍卖行里面。
+            x=auctionX
+            if auctionY+auctionHeight+gap+height<=bottom then y=auctionY+auctionHeight+gap
+            elseif auctionY-height-gap>=safeTop then y=auctionY-height-gap
+            else
+                local leftSpace,rightSpace=auctionX-safeLeft,right-auctionX-auctionWidth
+                x=leftSpace>=rightSpace and safeLeft or right-width
+            end
+        end
+    end
+    x = math.max(safeLeft, math.min(x, right-width))
+    y = math.max(safeTop, math.min(y, bottom-height))
     return math.floor(x + 0.5), math.floor(y + 0.5)
 end
 
 local function CreateSidecar()
+    Controller:EnsurePositionLoaded()
+    S.Layout:GetContext(true)
     local x, y = SidecarPosition(Controller.snapshot)
     local state = {
-        width = WIDTH, height = HEIGHT, minimized = false, locked = true,
+        width = WIDTH, height = HEIGHT, minimized = false, locked = false,
         overallOpacity = 0.96, backgroundOpacity = 1.0, textOpacity = 1.0, fontScale = 1.0,
-        userMoved = true, x = x, y = y, coordinateSpace = "logical-free-v2",
+        userMoved = false, x = x, y = y, coordinateSpace = "logical-free-v2",
     }
+    for key,value in pairs(Controller.positionState)do state[key]=value end
+    local defaultIntent={userMoved=true}
+    local context=S.Layout:GetContext()
+    local scale=math.max(.01,tonumber(context.addonScale) or 1)
+    S.Layout:StorePlacementRect(defaultIntent,x,y,math.min(WIDTH*scale,context.usableWidth),math.min(HEIGHT*scale,context.usableHeight),{mode="free"})
     local instance = {
         visible = false, acquired = false, subscribed = false, dailyAcquired = false,
         selectedIndex = nil, selectedKey = nil, selectedRow = nil, activeTab = "favorites",
@@ -253,18 +324,30 @@ local function CreateSidecar()
     }
 
     local surface, surfaceErr = Floating:Create({
-        id = "v3_auction_sidecar", owner = OWNER, title = "拍卖助手", status = "随拍卖行显示",
+        id = "v3_auction_sidecar", owner = OWNER, title = "拍卖助手", status = "拖动标题调整位置",
         width = WIDTH, height = HEIGHT, minWidth = WIDTH, minHeight = HEIGHT, maxWidth = WIDTH, maxHeight = HEIGHT,
-        resizable = false, movable = false, footer = true, closeButton = true, appearanceControls = false,
+        resizable = false, movable = true, footer = true, closeButton = true, appearanceControls = false,
+        defaultPosition=function(_,width,height)
+            return S.Layout:ResolvePlacement(defaultIntent,width,height,x,y,{mode="free",topLevel=true,topReachHeight=24})
+        end,
         minimizeMode = "compact", boundaryMode = "free",
         statePolicy = { defaultWidth = WIDTH, defaultHeight = HEIGHT, minWidth = WIDTH, minHeight = HEIGHT, maxWidth = WIDTH, maxHeight = HEIGHT,
-            defaultLocked = true, defaultOverallOpacity = 0.96, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 },
+            defaultLocked = false, defaultOverallOpacity = 0.96, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 },
         getState = function() return instance.state end,
         setState = function(value)
             if type(value) ~= "table" then return false, "sidecar state invalid" end
-            CopyState(instance.state, value); instance.state.locked = true; return true
+            CopyState(instance.state, value)
+            Controller.positionState=NormalizePosition(instance.state)
+            return true
         end,
-        persist = function() return true end,
+        persist = function(reason)
+            if reason~="geometry" and reason~="layout_reset" then return true end
+            local loaded,loadErr=Controller:EnsurePositionLoaded()
+            if loaded~=true then return false,loadErr end
+            local saved,saveErr=Persistence:SaveStore(POSITION_STORE,{durable=true,consumeDirty=true,reason="auction_sidecar:"..tostring(reason)})
+            Controller.positionError=saved~=true and tostring(saveErr or "位置保存失败") or nil
+            return saved,saveErr
+        end,
         onClosed = function(_, reason)
             Controller.dismissed = true
             local closed, closeErr = Host:NotifyWindowClosed(WIDGET_ID, { persist = false, source = tostring(reason or "auction_sidecar_close") })
@@ -469,6 +552,7 @@ local function CreateSidecar()
             self.editButton:SetText("修改")
             self.removeButton:SetText("隐藏")
             self.clearButton:SetText("恢复隐藏")
+            self.status:SetText("点击材料名称，在拍卖行搜索")
         else
             self.input.spec.placeholder = "临时材料名称"
             self.addButton:SetText("添加")
@@ -587,7 +671,7 @@ local function CreateSidecar()
             local qty = Quantity(); if qty == nil then return false, "临时材料数量无效" end
             local name = Keyword(); if name == "" then name = tostring(row.searchKeyword or "材料") end
             ok, editErr = service:UpdateMaterial(row.groupId, row.materialKey, { name = name, count = qty })
-        else return false, "任务事实不允许修改；可隐藏材料或切换候选货物" end
+        else return false, "任务材料自动生成；可隐藏材料或选择制作货物" end
         instance.status:SetText(ok == true and "修改已保存" or ("修改失败：" .. tostring(editErr or "未执行")))
         if ok == true and row.kind == "favorite" then Feature:Refresh("auction_sidecar_rename") end
         instance:Refresh(); return ok, editErr
@@ -640,9 +724,8 @@ local function CreateSidecar()
 
     function instance:ApplyAnchor(snapshot)
         if type(snapshot) == "table" then Controller.snapshot = snapshot end
-        local nextX, nextY = SidecarPosition(Controller.snapshot)
-        self.state.userMoved = true; self.state.coordinateSpace = "logical-free-v2"
-        self.state.x, self.state.y, self.state.width, self.state.height = nextX, nextY, WIDTH, HEIGHT
+        -- 原生观察只控制显示；首次默认位置及用户保存的位置均不被后续窗口移动覆盖。
+        if self.windowController and self.windowController:IsInteracting()==true then return true end
         return self.surface:ApplyLayout(false)
     end
 
@@ -662,7 +745,7 @@ local function CreateSidecar()
                     title, detail = "任务标题尚未就绪", tostring(projection.pendingTitleCount) .. " 个活动任务标题等待游戏数据更新；不会猜测做货材料。"
                 elseif projection.status == "unavailable" then
                     title, detail = "任务数据暂不可用", tostring(projection.error or "请查看拍卖助手诊断。")
-                else title, detail = "今日没有已识别的做货任务", "只读取当前活动任务；多候选任务需要先选择本次制作货物。" end
+                else title, detail = "暂无今日制作任务材料", "接取地区制作任务后，这里会列出所需材料；点击材料名称即可搜索。" end
             else title, detail = "临时清单为空", "可从跑商详情加入材料，或在上方手工添加。" end
             self.table:SetViewState("empty", { title = title, detail = detail })
         else self.table:SetViewState("ready") end
@@ -677,8 +760,9 @@ local function CreateSidecar()
         local footer = label .. " · " .. tostring(#rows) .. " 行"
         if self.activeTab == "daily" then
             footer = label .. " · " .. tostring(#(projection.tasks or {})) .. " 项任务"
-            if (tonumber(projection.unresolvedTaskCount) or 0) > 0 then footer = footer .. " · " .. tostring(projection.unresolvedTaskCount) .. " 待匹配" end
-            if (tonumber(projection.pendingTitleCount) or 0) > 0 then footer = footer .. " · " .. tostring(projection.pendingTitleCount) .. " 待标题" end
+            local materialCount = 0
+            for _, row in ipairs(rows) do if row.kind == "daily_material" then materialCount = materialCount + 1 end end
+            footer = footer .. " · " .. tostring(materialCount) .. " 项材料"
         end
         self.surface:SetStatus(footer, "muted")
         return true

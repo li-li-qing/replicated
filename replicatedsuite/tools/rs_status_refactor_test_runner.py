@@ -70,6 +70,9 @@ BONDS_CROSS_CONTINENT_TESTS = ["tools/rs_bonds_cross_continent_tests.lua"]
 AUCTION_USER_PRIORITY_TESTS = [
     "tools/rs_auction_user_priority_tests.lua",
     "tools/rs_auction_user_priority_trade_tests.lua",
+    # 维护（2026-10-01）：整条原生询价保护、SWR 阻断与后台需求释放必须进入默认门禁。
+    "tools/rs_auction_full_lane_safety_tests.lua",
+    "tools/rs_auction_full_lane_trade_tests.lua",
 ]
 
 
@@ -89,6 +92,80 @@ TRADE_COPY_EVIDENCE_TESTS = [
     "tools/rs_module_diagnostics_window_tests.lua",
     "tools/rs_module_diagnostics_tests.lua",
     "tools/rs_trade_economics_evidence_tests.lua",
+]
+
+
+# 维护（2026-09-30，feature-profile-failure-evidence-1）：坏业务索引不得假恢复；
+# 功能方案失败证据与死亡记录事务回读必须进入默认门禁，而不是只保留可选脚本。
+FEATURE_PROFILE_FAILURE_TESTS = [
+    "tools/rs_feature_profiles_tests.lua",
+    "tools/rs_death_review_integrity_failure_tests.lua",
+]
+
+
+# 维护（2026-09-30，range-continuity-1）：低帧率刷新、总点预算和只读诊断进入默认门禁。
+RANGE_CONTINUITY_TESTS = [
+    "tools/rs_range_assist_continuity_tests.lua",
+    "tools/rs_range_metric_calibration_tests.lua",
+    "tools/rs_visual_guide_resolution_recovery_tests.lua",
+    "tools/rs_visual_overlay_layer_tests.lua",
+    "tools/rs_visual_settings_input_tests.lua",
+]
+
+
+# 2026-09-30: cold Trade imports, quote recovery/unit-price authority and best-effort Gear transactions.
+# Native-only boundary models; these gates do not substitute RU game acceptance.
+TRADE_GEAR_RELIABILITY_TESTS = [
+    "tools/rs_trade_quote_isolation_price_safety_tests.lua",
+    "tools/rs_trade_cost_retry_tests.lua",
+    "tools/rs_gear_partial_continuation_tests.lua",
+    "tools/rs_trade_quote_unit_price_tests.lua",
+    "tools/rs_material_price_swr_tests.lua",
+    "tools/rs_gear_costume_title_apply_tests.lua",
+    "tools/rs_gear_costume_title_regression_tests.lua",
+    "tools/rs_gear_title_effect_authority_tests.lua",
+]
+
+
+# 2026-10-01: legacy shared queue and the cache-first Trade path both remain required.
+# Production service tests cover bounded native counts, cache ages and cancellation ownership.
+TRADE_REQUOTE_TESTS = [
+    "tools/rs_trade_single_query_transport_tests.lua",
+    "tools/rs_trade_material_quote_service_tests.lua",
+    "tools/rs_trade_requote_pipeline_tests.lua",
+    "tools/rs_trade_requote_e2e_tests.lua",
+]
+
+# 2026-10-07 release gate: recent user-visible behavior and migration safety
+# must remain mandatory, not silently disappear behind a passing legacy group.
+# Native boundaries are models; this gate does not certify live RU behavior.
+RELEASE_READINESS_TESTS = [
+    "tools/rs_buff_tracking_ux_tests.lua",
+    "tools/rs_status_tracking_grid_tests.lua",
+    "tools/rs_unified_cooldown_tests.lua",
+    "tools/rs_batch_import_authority_tests.lua",
+    "tools/rs_signed_readback_tests.lua",
+    "tools/rs_transport4_dual_loss_recovery_tests.lua",
+    "tools/rs_cooldown_auto_discovery_tests.lua",
+    "tools/rs_cooldown_hud_pipeline_tests.lua",
+    "tools/rs_bonds_daily_cache_tests.lua",
+    "tools/rs_combat_basic_statistics_tests.lua",
+    "tools/rs_combat_basic_statistics_ui_tests.lua",
+    "tools/rs_combat_history_integrity_tests.lua",
+    "tools/rs_combat_kill_diagnostics_tests.lua",
+    "tools/rs_combat_statistics_layout_tests.lua",
+    "tools/rs_hud_all_preview_tests.lua",
+    "tools/rs_gear_score_format_tests.lua",
+    "tools/rs_hud_default_template_tests.lua",
+    "tools/rs_pvp_hud_tests.lua",
+    "tools/rs_ranged_weapon_default_tests.lua",
+    "tools/rs_feature_profiles_catalog_sync_tests.lua",
+    "tools/rs_feature_retirement_tests.lua",
+    "tools/rs_trade_auction_sort_tests.lua",
+    "tools/rs_diagnostic_export_tests.lua",
+    "tools/rs_boss_simulation_lifetime_tests.lua",
+    "tools/rs_main_shell_visibility_tests.lua",
+    "tools/rs_bag_settings_page_tests.lua",
 ]
 
 
@@ -278,9 +355,8 @@ def main() -> int:
         # 独立入口不改变历史分组；Lua5.4兼容垫片测试不能冒充RU Lua5.1/屏幕实测。
         source = prelude + 'dofile("tools/rs_enemy_loadout_tests.lua"); dofile("tools/rs_loadout_hud_ui_tests.lua"); dofile("tools/rs_boss_hud_tests.lua")'
     elif "--random-shop" in sys.argv:
-        # 维护：已有只读getter、独立设置事务、Demand/调度和真实RSUI；Native/磁盘为替身。
-        # 单独分组保留原默认入口，不把未执行的RU客户端或缺失历史夹具统计为通过。
-        source = prelude + 'dofile("tools/rs_random_shop_tests.lua"); dofile("tools/rs_random_shop_ui_tests.lua")'
+        # 2026-10-06 用户删除随机商店计数；旧快捷入口改为验证功能退役，而非装载已删除源码。
+        source = prelude + 'dofile("tools/rs_feature_retirement_tests.lua")'
     elif "--persistence-copy" in sys.argv:
         # 维护：真实Core负坐标传输/耐久失败只读取证和诊断页输入生命周期；独立Native模型，非RU实机。
         # 此入口不改变默认历史分组，不写用户存档；测试夹具/临时产物不得放入运行时TOC或补丁。
@@ -386,6 +462,46 @@ def main() -> int:
             return 1
         print(f"DAILY_AUCTION PASS: {len(DAILY_AUCTION_TESTS)} suite(s)")
         return 0
+    elif "--trade-requote" in sys.argv:
+        if not require_test_files(TRADE_REQUOTE_TESTS): return 2
+        if not require_transitive_test_dependencies(TRADE_REQUOTE_TESTS): return 2
+        try:
+            run_lua_files_isolated(TRADE_REQUOTE_TESTS, prelude)
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+            return 1
+        print(f"TRADE_REQUOTE PASS: {len(TRADE_REQUOTE_TESTS)} suite(s)")
+        return 0
+    elif "--trade-gear-reliability" in sys.argv:
+        if not require_test_files(TRADE_GEAR_RELIABILITY_TESTS): return 2
+        if not require_transitive_test_dependencies(TRADE_GEAR_RELIABILITY_TESTS): return 2
+        try:
+            run_lua_files_isolated(TRADE_GEAR_RELIABILITY_TESTS, prelude)
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+            return 1
+        print(f"TRADE_GEAR_RELIABILITY PASS: {len(TRADE_GEAR_RELIABILITY_TESTS)} suite(s)")
+        return 0
+    elif "--range-continuity" in sys.argv:
+        if not require_test_files(RANGE_CONTINUITY_TESTS): return 2
+        if not require_transitive_test_dependencies(RANGE_CONTINUITY_TESTS): return 2
+        try:
+            run_lua_files_isolated(RANGE_CONTINUITY_TESTS, prelude)
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+            return 1
+        print(f"RANGE_CONTINUITY PASS: {len(RANGE_CONTINUITY_TESTS)} suite(s)")
+        return 0
+    elif "--feature-profile-failure" in sys.argv:
+        if not require_test_files(FEATURE_PROFILE_FAILURE_TESTS): return 2
+        if not require_transitive_test_dependencies(FEATURE_PROFILE_FAILURE_TESTS): return 2
+        try:
+            run_lua_files_isolated(FEATURE_PROFILE_FAILURE_TESTS, prelude)
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+            return 1
+        print(f"FEATURE_PROFILE_FAILURE PASS: {len(FEATURE_PROFILE_FAILURE_TESTS)} suite(s)")
+        return 0
     elif "--core-feature-decoupling" in sys.argv:
         # Phase 3 Batch A：只跑“Core 不再硬编码认识业务 Feature”的搬迁契约。独立进程，
         # 避免上一个套件的 ReplicatedSuite 替身污染本套件的最小离线宿主。
@@ -411,11 +527,11 @@ def main() -> int:
             "tools/rs_daily_income_source_tests.lua", "tools/rs_home_overview_tests.lua", "tools/rs_overview_v2_tests.lua", "tools/rs_quest_journal_detail_tests.lua",
             "tools/rs_ledger_projection_v2_tests.lua",
         ]
-        required = legacy + UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS + CORE_FEATURE_DECOUPLING_TESTS + WINDOW_POSITION_TESTS + AUCTION_USER_PRIORITY_TESTS + BONDS_CROSS_CONTINENT_TESTS + DAILY_AUCTION_TESTS + TRADE_COPY_EVIDENCE_TESTS
+        required = legacy + UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS + CORE_FEATURE_DECOUPLING_TESTS + WINDOW_POSITION_TESTS + AUCTION_USER_PRIORITY_TESTS + BONDS_CROSS_CONTINENT_TESTS + DAILY_AUCTION_TESTS + TRADE_COPY_EVIDENCE_TESTS + FEATURE_PROFILE_FAILURE_TESTS + RANGE_CONTINUITY_TESTS + TRADE_GEAR_RELIABILITY_TESTS + TRADE_REQUOTE_TESTS + RELEASE_READINESS_TESTS
         if not require_test_files(required): return 2
         if not require_transitive_test_dependencies(required): return 2
         source = prelude + lua_dofiles(legacy)
-        isolated_after = UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS + CORE_FEATURE_DECOUPLING_TESTS + WINDOW_POSITION_TESTS + AUCTION_USER_PRIORITY_TESTS + BONDS_CROSS_CONTINENT_TESTS + DAILY_AUCTION_TESTS + TRADE_COPY_EVIDENCE_TESTS
+        isolated_after = UNFINISHED_CLOSURE_TESTS + FEATURE_SPLIT_TESTS + CORE_FEATURE_DECOUPLING_TESTS + WINDOW_POSITION_TESTS + AUCTION_USER_PRIORITY_TESTS + BONDS_CROSS_CONTINENT_TESTS + DAILY_AUCTION_TESTS + TRADE_COPY_EVIDENCE_TESTS + FEATURE_PROFILE_FAILURE_TESTS + RANGE_CONTINUITY_TESTS + TRADE_GEAR_RELIABILITY_TESTS + TRADE_REQUOTE_TESTS + RELEASE_READINESS_TESTS
     try:
         run_lua(source)
         if isolated_after:

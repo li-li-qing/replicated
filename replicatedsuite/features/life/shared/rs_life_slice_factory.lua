@@ -87,6 +87,11 @@ local function InstallLifeWidgetContract(feature, policy)
         end)
     end
     function feature:MarkStoreDirty(delayMs, reason)
+        -- 中文维护（2026-10-04）：跑商/钓鱼/债券/藏宝共享的位置事务必须在返回前落盘回读。
+        -- 精确限定用户窗口边沿，业务快照和连续外观调整继续走既有 debounce。
+        if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" then
+            return P:SaveStore(self.storeId, { durable=true, consumeDirty=true, reason=reason })
+        end
         if P and type(P.MarkDirty) == "function" then return P:MarkDirty(self.storeId, tonumber(delayMs) or 250, reason or "life_widget_state") end
         return false, "persistence unavailable"
     end
@@ -122,8 +127,10 @@ end
 local function LoadStore(feature)
     if feature.storeLoaded == true then return true end
     if P:GetStore(feature.storeId) == nil then return false, "store unavailable: " .. feature.storeId end
-    local status, _, err = P:LoadStore(feature.storeId)
-    if status ~= true and status ~= "empty" then return false, err or tostring(status or "store load failed") end
+    -- 维护（2026-10-07）：设置页可能先完成回读/修改。启动只要求 Domain 就绪，
+    -- 不能再次物理 Load 覆盖未提交设置或触发 unverified store reload rejected。
+    local status, err = P:PrepareRead(feature.storeId)
+    if status ~= true then return false, err or "store read preparation failed" end
     feature.storeLoaded = true
     return true
 end

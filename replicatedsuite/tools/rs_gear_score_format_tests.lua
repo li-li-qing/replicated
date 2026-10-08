@@ -10,7 +10,7 @@ end
 local Boot = dofile('tools/rs_pvp_hud_test_host.lua')
 
 Test('full mode renders raw integer and never prefixes gear with middle dot', function()
-    local h,S,F,P = Boot()
+    local h,S,F,P = Boot({runtimeHud=true})
     F.laneData.player.class={name='Bard',icon='role.dds'}
     F.laneData.player.gearScore=15200
     F:InvalidateSettingsCache(); P:VisualTick()
@@ -24,7 +24,7 @@ Test('full mode renders raw integer and never prefixes gear with middle dot', fu
 end)
 
 Test('compact mode formats K with one decimal and trims trailing zero', function()
-    local _,_,F,P = Boot()
+    local _,_,F,P = Boot({runtimeHud=true})
     local profile=F:GetScopeLayoutSettings('player')
     profile.info.gearScoreFormat='compact'
     local function Format(value)

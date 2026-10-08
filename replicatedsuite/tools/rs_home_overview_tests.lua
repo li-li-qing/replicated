@@ -26,7 +26,7 @@ Test('disabled bonds shows off and does not start native collection',function()
  local S,p,n,c=Boot();p:OnActivated();Show(S,p,{'daily','bonds'});assert(not next(S.Features.Bonds.consumers));assert(n.v3_home_bonds_table:GetViewState()=='empty' or n.v3_home_bonds_table:GetViewState()=='unavailable')
 end)
 Test('same content builder supports unique widget and home control identities',function()
- local S,p,n,c=Boot();assert(n.v3_home_trade_from and n.v3_home_trade_to)
+ local S,p,n,c=Boot();assert(n.v3_home_trade_settings and not n.v3_home_trade_from and not n.v3_home_trade_to)
  -- 中文维护注释（2026-09-28，Phase 0 测试基线校正）：本用例原先断言首页卡存在 `v3_home_trade_quote`
  -- 且不存在 cancel/full 变体，然后点击它并期望一次批量询价。当前 Authority
  -- （presentation/v3/widgets/rs_v3_life_economy_widgets.lua:105 “构建和刷新绝不发出材料询价”、
@@ -55,11 +55,11 @@ Test('small viewport exposes each configured card through row scrolling',functio
  end
 end)
 Test('unconnected gains never render fabricated zero',function()
- local S,p,n=Boot();p:OnActivated();assert(n.v3_home_stat_gold.text=='—')
+ local S,p,n=Boot();p:OnActivated();assert(n.v3_home_stat_gold.text=='--')
 end)
-Test('economy body fills card and keeps useful visible rows',function()
+Test('one-row economy body fits actual content instead of reserving empty rows',function()
  local S,p,n,c=Boot();p:OnActivated();p:Layout(0,0,850,700)
- assert(n.v3_home_trade_table.height>150,'economy body shrank to only one row')
+ assert(n.v3_home_trade_table.height>=48 and n.v3_home_trade_table.height<=70,'one-row economy kept oversized empty space')
 end)
 Test('home navigation uses Shell authority instead of missing UIV3.Navigate shim',function()
  local S,p,n=Boot();local route
@@ -99,8 +99,28 @@ Test('registered native delta source stays probing until first real change',func
    {key='experience',status='unconnected',value=nil},{key='living',status='probing',value=nil}}}
  end
  assert(p:OnActivated())
- assert(n.v3_home_stat_gold.text=='—')
- assert(n.v3_home_stat_living.text=='—' and not n.v3_home_stat_source_gold)
+ assert(n.v3_home_stat_gold.text=='--')
+ assert(n.v3_home_stat_living.text=='--' and not n.v3_home_stat_source_gold)
+end)
+
+Test('statistic signs retain copper totals and distinguish unknown from genuine zero',function()
+ local S,p,n,c=Boot();local value=-123456
+ S.Features.DailyLedger.GetProjection=function()
+  return {day='2026-10-04',enabled=true,paused=false,rows={
+   {key='gold',status='ready',value=value},{key='honor',status='ready',value=-19},
+   {key='experience',status='unconnected'},{key='living',status='ready',value=0}}}
+ end
+ assert(p:OnActivated())
+ assert(n.v3_home_stat_gold.text=='-12金34银56铜' and n.v3_home_stat_gold.state.tone=='orange')
+ assert(n.v3_home_stat_honor.text=='-19' and n.v3_home_stat_experience.text=='--' and n.v3_home_stat_living.text=='+0')
+ value=-10000;assert(p:RefreshStats());assert(n.v3_home_stat_gold.text=='-1金0银')
+ value=-1;assert(p:RefreshStats());assert(n.v3_home_stat_gold.text=='-0金0银1铜')
+ value=1611;assert(p:RefreshStats());assert(n.v3_home_stat_gold.text=='+0金16银11铜')
+ value=0;assert(p:RefreshStats());assert(n.v3_home_stat_gold.text=='0金')
+ value=-520000000;assert(p:RefreshStats());assert(n.v3_home_stat_gold.text=='-52000金0银')
+ S.Features.DailyLedger.GetProjection=function()return {rows={}}end
+ assert(p:RefreshStats());assert(n.v3_home_stat_gold.text=='--' and n.v3_home_stat_living.text=='--')
+ assert(c.pauseWrites==0 and c.enabledWrites==0,'presentation changed statistic preferences')
 end)
 
 Test('daily ledger update refreshes statistic cards immediately without scheduler delay',function()
@@ -141,5 +161,223 @@ Test('explicit enable-and-open rolls back only the newly enabled feature on wind
  assert(n.v3_home_bonds_widget.onClick()==false);assert(enabled.life_bonds==false and c.enabledWrites==2)
  local before=c.enabledWrites;assert(n.v3_home_trade_widget.onClick()==false)
  assert(enabled.life_trade==true and c.enabledWrites==before,'opening failure stopped an existing feature')
+end)
+Test('compact home adds harvest and reminder cards with three responsive columns',function()
+ local S,p,n,c=Host();assert(p:OnActivated());p:Layout(0,0,1160,780);p:RefreshData()
+ assert(#p.cards==7 and p.cardByKey.stats and p.cardByKey.reminders,'missing compact cards')
+ assert(p.grid:ResolveColumns(1160)==3 and p.grid:ResolveColumns(850)==2 and p.grid:ResolveColumns(440)==1)
+ assert(n.v3_home_stats_title.text=='今日收获' and n.v3_home_reminders_title.text=='装备与每日提醒')
+ assert(n.v3_home_stat_gold and n.v3_home_reminder_costume and n.v3_home_reminder_underwear)
+ assert(n.v3_home_reminder_daily and n.v3_home_reminder_guild)
+ assert(p.cardByKey.stats.panel.height<=200 and p.cardByKey.reminders.panel.height<=200)
+ assert(p.cardByKey.trade.panel.height<=110,'one-row trade retained a large fixed card')
+ assert(c.enabledWrites==0 and c.quotes==0,'compact layout changed business state')
+end)
+Test('all seven compact cards remain accessible without overlap or native reparenting',function()
+ local S,p,n=Host();assert(p:OnActivated());local parents={}
+ for _,card in ipairs(p.cards)do parents[card.spec.key]=card.panel.root.parent end
+ for _,size in ipairs({{440,470},{850,700},{1160,780},{1700,950}})do
+  p:Layout(0,0,size[1],size[2]);local seen={}
+  for offset=0,p.grid.maxScrollOffset do
+   p.grid:SetScrollOffset(offset);p:RefreshData();local visible={}
+   for _,card in ipairs(p.cards)do if card.panel.viewportVisible then
+    seen[card.spec.key]=true;visible[#visible+1]=card.panel
+    assert(card.panel.y>=0 and card.panel.y+card.panel.height<=p.grid.height+0.1,'card escaped viewport')
+    assert(card.panel.root.parent==parents[card.spec.key],'card reparented')
+    local t=card.table or card.content and card.content.table
+    if t then assert(t.height>=48,'unusable compact table '..card.spec.key)end
+   end end
+   for i,a in ipairs(visible)do for j=i+1,#visible do local b=visible[j]
+    assert(a.x+a.width<=b.x+0.1 or b.x+b.width<=a.x+0.1 or a.y+a.height<=b.y+0.1 or b.y+b.height<=a.y+0.1,'overlapping compact cards')
+   end end
+  end
+  for _,card in ipairs(p.cards)do assert(seen[card.spec.key],'unreachable '..card.spec.key)end
+ end
+end)
+local function ReminderFixture(h)
+ ES_COSPLAY,ES_UNDERPANTS='costume','underwear';TADT_TODAY,TADT_EXPEDITION='daily','guild'
+ h.reminderReads=0
+ X2Equipment.GetEquippedItemTooltipInfo=function(_,slot,selector)
+  h.reminderReads=h.reminderReads+1;assert(selector==false)
+  return {name='测试装备',evolvingInfo={remainTime={year=0,month=0,day=slot=='costume' and 2 or 0,hour=0,minute=0,second=0}}}
+ end
+ X2Achievement={GetTodayAssignmentInfo=function(_,kind,index)
+  h.reminderReads=h.reminderReads+1;return {status=kind=='daily' and index==1 and 1 or 2}
+ end}
+end
+Test('visible reminder card paints actual read model and manual refresh without enabling features',function()
+ local S,p,n,c,_,h=Host({visible={'stats','reminders'},configureReminders=ReminderFixture,skipLayout=true})
+ assert(h.reminderReads==0);p:OnActivated();assert(h.reminderReads==0,'unmeasured card scanned Native')
+ p:Layout(0,0,850,700);p:RefreshData();assert(h.reminderReads==16)
+ assert(n.v3_home_reminder_costume.text=='剩余 2天' and n.v3_home_reminder_underwear.text=='已到期')
+ assert(n.v3_home_reminder_daily.text=='还有 1项未接' and n.v3_home_reminder_guild.text=='已接 7/7')
+ assert(n.v3_home_reminders_refresh.onClick() and h.reminderReads==32)
+ assert(c.enabledWrites==0 and c.quotes==0 and c.pauseWrites==0)
+end)
+Test('hiding reminders immediately releases reads and does not restart on layout or snapshots',function()
+ local S,p,n,c,_,h=Host({visible={'stats','reminders'},configureReminders=ReminderFixture})
+ assert(p:OnActivated());local C=S.Services.HomeRemindersV3;assert(C.running)
+ for _,size in ipairs({{440,650},{1160,780},{850,700}})do p:Layout(0,0,size[1],size[2]);p:RefreshData()end
+ assert(h.reminderReads==16,'layout re-acquired a held reminder lease')
+ local reads=h.reminderReads;assert(S.UIV3.Workspace:SetCardVisible('reminders',false))
+ assert(not C.running and not S.Scheduler.tasks[C.taskName],'hidden card retained Native task')
+ assert(n.v3_home_reminders_refresh.onClick()==false)
+ p:RefreshData();C:GetHealth();assert(h.reminderReads==reads)
+ assert(S.UIV3.Workspace:SetCardVisible('reminders',true));p:RefreshData();assert(C.running and h.reminderReads==reads+16)
+ assert(p:OnDeactivated());assert(not C.running and not S.Scheduler.tasks[C.taskName])
+end)
+Test('permanent costume and underwear paint permanent text in the visible compact card',function()
+ local S,p,n,c,_,h=Host({visible={'reminders'},configureReminders=function(host)
+  ReminderFixture(host)
+  X2Equipment.GetEquippedItemTooltipInfo=function(_,slot,selector)
+   host.reminderReads=host.reminderReads+1;assert(selector==false)
+   return {itemType=90001,name='永久装备',evolvingInfo={modifier={}}}
+  end
+ end})
+ assert(p:OnActivated());assert(n.v3_home_reminder_costume.text=='永久' and n.v3_home_reminder_underwear.text=='永久')
+ assert(h.reminderReads==16 and c.enabledWrites==0 and c.pauseWrites==0)
+ assert(S.Services.HomeRemindersV3:GetHealth().rows[1].expirationEvidence.policy=='identified_item_without_countdown')
+end)
+Test('legacy statistics option hides the compact harvest card without pausing the ledger',function()
+ local S,p,n,c=Host({visible={'stats','reminders'}});assert(p:OnActivated())
+ assert(p.cardByKey.stats.panel.viewportVisible);assert(S.UIV3.Workspace:SetOption('stats',false))
+ assert(not p.cardByKey.stats.panel.viewportVisible and c.pauseWrites==0 and c.enabledWrites==0)
+ assert(S.UIV3.Workspace:SetCardVisible('stats',true));assert(p.cardByKey.stats.panel.viewportVisible)
+end)
+Test('complete diagnostics include reminder raw expiry and assignment evidence without getters or writes',function()
+ local S,p,n,c,_,h=Host({visible={'reminders'},configureReminders=ReminderFixture,diagnostics=true})
+ assert(p:OnActivated());local reads,writes=h.reminderReads,h.writes
+ local report,err,full=S.ModuleDiagnosticsHub:BuildReport('life_daily_stats',{detailed=true});assert(report,err)
+ assert(full:find('home_reminders',1,true) and full:find('expirationEvidence',1,true) and full:find('samples',1,true),'reminder evidence absent')
+ assert(h.reminderReads==reads and h.writes==writes,'diagnostics changed live state')
+ assert(p:OnDeactivated());S.ModuleDiagnosticsHub:BuildReport('life_daily_stats',{detailed=true})
+ assert(h.reminderReads==reads and not S.Services.HomeRemindersV3.running,'hidden diagnostics started reminders')
+end)
+Test('compact activity card retains separately scrollable timeline and live regions',function()
+ local S,p=Host({visible={'activities'}});local rows={}
+ for i=1,12 do rows[#rows+1]={key='time'..i,shortName='活动'..i,status='1分钟',progressText='0/4'}end
+ for i=1,5 do rows[#rows+1]={key='live'..i,shortName='实时'..i,status='进行中',progressText='0/4',presentationSection='live'}end
+ S.Features.Activities.GetRows=function()return rows,2 end;assert(p:OnActivated())
+ for _,size in ipairs({{440,470},{850,700},{1160,780}})do
+  p:Layout(0,0,size[1],size[2]);p:RefreshData();local t=p.cardByKey.activities.table
+  assert(t.timeline and t.live and t:GetItemCount()==17,'activity sections/data lost')
+  assert(t.timeline.height>=t.timeline.headerHeight+t.timeline.rowHeight and t.live.height>=t.live.headerHeight+t.live.rowHeight,'unusable activity section')
+  t.timeline:SetScrollOffset(11);t.live:SetScrollOffset(4)
+  assert(t.timeline.list.scrollOffset>0 or t.timeline.list.visibleCapacity>=12,'timeline neither fits nor scrolls')
+  local liveOffset=t.live.list.scrollOffset
+  assert(liveOffset>0 or t.live.list.visibleCapacity>=5,'live regions neither fit nor scroll')
+  t.timeline:SetScrollOffset(0);assert(t.live.list.scrollOffset==liveOffset,'timeline reset scrolled live section')
+ end
+end)
+Test('screenshot-sized home has no body toolbars and uses free height for actual rows',function()
+ local S,p,n,c=Host({enabled={life_tasks=true,life_trade=true,life_bonds=true,life_activities=true,life_daily_stats=true}})
+ S.Features.Tasks.GetOverviewProjection=function(_,opts)local rows={};for i=1,(opts.scope=='daily' and 20 or 4)do rows[i]={id=opts.scope..i,scope=opts.scope,rawName='任务'..i,status='进行中',progressText='0/1'}end;return {rows=rows,revision=2}end
+ for _,name in ipairs({'Trade','Bonds'})do local F=S.Features[name];local old=F.GetProjection
+  F.GetProjection=function(self)local result=old(self);result.rows={};for i=1,(name=='Trade' and 8 or 3)do result.rows[i]={key=name..i,name='货物'..i,text='居民板'..i,rate='105%',price='1金',profit='--'}end;return result end
+ end
+ S.Features.Activities.GetRows=function()local rows={};for i=1,8 do rows[i]={key='activity'..i,shortName='活动'..i,status='进行中',presentationSection=i>3 and 'live' or nil}end;return rows,2 end
+ assert(p:OnActivated());p:Layout(0,0,845,700);for i=1,3 do p:RefreshData()end
+ for _,card in ipairs(p.cards)do assert(card.panel.viewportVisible,'compact screenshot still hides '..card.spec.key)end
+ assert(p.cardByKey.stats.panel.height<=140 and p.cardByKey.bonds.panel.height<=145,'short cards retained empty space')
+ assert(p.cardByKey.weekly.panel.height<=160,'short weekly list retained empty space')
+ assert(p.cardByKey.daily.table.list.visibleCapacity>=8,'free column height did not reveal more daily tasks')
+ assert(p.cardByKey.trade.content.table.list.visibleCapacity>=8,'eight cargo rows still require scrolling')
+ assert(p.grid.height-p.grid.totalContentHeight<22,'a usable whole row remains unused below the cards')
+ assert(n.v3_home_trade_settings and n.v3_home_bonds_settings,'title settings missing')
+ assert(not n.v3_home_trade_route and not n.v3_home_bonds_settings_row,'toolbar still inside content')
+ assert(p.cardByKey.trade.content.controls.parentComponent==n.v3_home_trade_header)
+ assert(p.cardByKey.bonds.content.controls.parentComponent==n.v3_home_bonds_header)
+ assert(c.quotes==0 and c.enabledWrites==0,'density update changed business state')
+end)
+Test('single line home header keeps actions reachable at narrow and wide widths',function()
+ local S,p,n,c,_,h=Host({visible={'reminders'}});assert(p:OnActivated())
+ assert(p.compactPageChrome==true,'home did not request compact host spacing')
+ for _,width in ipairs({310,440,700,845,1160})do
+  p.parent.width=width;p:Layout(0,0,width,700)
+  assert(p.grid.y<=28,'home header still occupies two rows')
+  for _,id in ipairs({'v3_home_customize','v3_home_previous','v3_home_next'})do
+   local ok,why=h:VisibleRect(n[id]);assert(ok,id..':'..tostring(why))
+  end
+ end
+ assert(c.quotes==0 and c.enabledWrites==0)
+end)
+Test('actual home and module host share a compact header and retain native controls',function()
+ local S,old,n,c,_,h=Host({deferBuild=true})
+ dofile('presentation/v3/shell/rs_v3_module_controls.lua');dofile('presentation/v3/shell/rs_v3_page_host.lua')
+ local H=S.UIV3.PageHost;local native=h.Native(nil,'home_host_native',0,0,845,700)
+ local frame=S.RSUI:Border({id='home_host_border',parent=native,padding=6})
+ local parent=S.RSUI:Overlay({id='home_host_root',parent=frame});assert(H:Attach(parent))
+ H:RegisterFactory('home',function(p)return S.UIV3.HomeOverview:Build(p,'home')end)
+ assert(H:Navigate('home'));frame:Layout(0,0,845,700)
+ local p=H.pages.home;assert(p:RefreshData());S.RSUI:FlushLayoutQueue(32)
+ local nodes={};local function Walk(node)nodes[node.id]=node;for _,child in ipairs(node.children or {})do Walk(child)end end;Walk(frame)
+ local ok,rect=h:VisibleRect(p.grid);assert(ok,tostring(rect));assert(rect.y<=58,'shared host still leaves the large top band')
+ local bar=H.moduleControls.home
+ for _,control in ipairs({bar.toggle,bar.diagnostics,nodes.v3_home_customize,nodes.v3_home_next})do
+  local shown,reason=h:VisibleRect(control);assert(shown,tostring(reason))
+ end
+ assert(nodes.v3_home_diagnostics==nil,'compact header duplicated the shared diagnostics button')
+ assert(c.quotes==0 and c.enabledWrites==0,'host spacing changed business state')
+ H:RegisterFactory('life.tasks',function(parent)return S.RSUI:VerticalBox({id='home_host_tasks',parent=parent})end)
+ assert(H:Navigate('life.tasks'));assert(p.active==false and not H.compactPageChrome)
+end)
+Test('equipment and quest reminders occupy two paired rows without overlap',function()
+ local S,p,n,c,_,h=Host({visible={'reminders'},configureReminders=ReminderFixture});assert(p:OnActivated())
+ for _,width in ipairs({440,845,1160})do
+  p.parent.width=width;p:Layout(0,0,width,700)
+  local function Rect(key)local ok,rect=h:VisibleRect(n['v3_home_reminder_'..key]);assert(ok,tostring(rect));return rect end
+  local a,b,d,g=Rect('costume'),Rect('underwear'),Rect('daily'),Rect('guild')
+  assert(a.y==b.y and d.y==g.y and d.y>a.y,'reminders still occupy four rows')
+  assert(a.x+a.w<=b.x and d.x+d.w<=g.x,'paired reminder fields overlap')
+  assert(p.cardByKey.reminders.panel.height<=80,'two-row reminder card retained empty space')
+  assert(not n.v3_home_reminders_status.visible,'normal reminders reserve an unnecessary footer')
+ end
+ assert(n.v3_home_reminder_costume.text=='剩余 2天' and n.v3_home_reminder_daily.text=='还有 1项未接')
+ assert(h.reminderReads==16 and c.enabledWrites==0,'layout read Native or wrote business preferences')
+end)
+Test('reminder failures appear on demand and release their height after recovery',function()
+ local S,p,n,c=Host({visible={'reminders'},configureReminders=ReminderFixture})
+ local service=S.Services.HomeRemindersV3;local acquire=service.AcquireConsumer
+ service.AcquireConsumer=function()return false,'test_failure'end
+ assert(p:OnActivated());assert(n.v3_home_reminders_status.visible and n.v3_home_reminders_status.text:find('test_failure',1,true))
+ assert(p.cardByKey.reminders.panel.height>=90,'compact card clipped its failure message')
+ service.AcquireConsumer=acquire;assert(p:RefreshData())
+ assert(not n.v3_home_reminders_status.visible and p.cardByKey.reminders.panel.height<=80,'recovered reminders kept failure space')
+end)
+Test('more rows reflow from cached projections and short lists shrink again',function()
+ local S,p,n,c=Host({visible={'daily','stats'}});local count=5
+ S.Features.Tasks.GetOverviewProjection=function(_,opts)local rows={};for i=1,count do rows[i]={id=opts.scope..i,rawName='任务'..i,status='进行中',progressText='0/1'}end;return {rows=rows,revision=count}end
+ assert(p:OnActivated());p:RefreshData();local before=p.cardByKey.daily.panel.height
+ count=12;p:RefreshData();assert(p.cardByKey.daily.panel.height>before and p.cardByKey.daily.table.list.visibleCapacity>=12,'new rows above the baseline cap did not reflow')
+ count=1;p:RefreshData();assert(p.cardByKey.daily.panel.height<=105,'short list kept expanded height')
+ assert(c.quotes==0 and c.enabledWrites==0)
+end)
+Test('settings form triggers remain reachable without putting fields into the home cards',function()
+ local S,p,n,c,_,h=Host({visible={'trade','bonds'},enabled={life_trade=true,life_bonds=true}});assert(p:OnActivated())
+ p:RefreshData();local trade=n.v3_home_trade_settings;local bonds=n.v3_home_bonds_settings
+ -- 平铺菜单动作覆盖迁移至 rs_home_economy_settings_tests.lua，验证独立表单的绑定与关闭链。
+ assert(type(trade.onClick)=='function' and type(bonds.onClick)=='function','settings form trigger missing')
+ assert(trade.root.text:find('设置',1,true) and bonds.root.text:find('设置',1,true),'settings trigger lost its label')
+ assert(not p.cardByKey.trade.content.headerSettings and not p.cardByKey.bonds.content.headerSettings,'home eagerly created form controls')
+ for _,key in ipairs({'v3_home_trade_settings','v3_home_bonds_settings','v3_home_trade_open','v3_home_trade_widget'})do local ok,why=h:VisibleRect(n[key]);assert(ok,key..':'..tostring(why))end
+ assert(c.quotes==0 and c.enabledWrites==0)
+end)
+Test('compact trade retains double-click quoting and separate materials details',function()
+ local S,p,n,c,_,h=Host({visible={'trade'}});assert(p:OnActivated());local view=p.cardByKey.trade.content.table
+ local quoted,opened=0,0;S.Features.Trade.Commands.QuoteRowMaterials=function(_,key)assert(key=='a');quoted=quoted+1;return true end
+ S.UIV3.TradeDetailFloatingV3={Open=function(_,key)assert(key=='a');opened=opened+1;return true end}
+ local row=view:GetItem(1);assert(view.onItemActivated(row,1,'a') and quoted==0)
+ h.ms=h.ms+100;assert(view.onItemActivated(row,1,'a') and quoted==1)
+ local detail;for _,column in ipairs(view.columns)do if column.id=='detail'then detail=column end end
+ assert(detail and detail.onClick(row) and opened==1 and quoted==1,'materials button quoted instead of opening')
+ assert(view.onItemActivated(row,1,'a') and quoted==1,'details failed to reset double click')
+end)
+Test('price-only updates preserve card rectangles and table scroll position',function()
+ local S,p=Host({visible={'trade','stats','reminders'}});local rows={};for i=1,12 do rows[i]={key='cargo'..i,name='货物',rate='100%',price='1金',profit='--'}end
+ local F=S.Features.Trade;local projection=F.GetProjection;F.GetProjection=function(self)local value=projection(self);value.rows=rows;return value end
+ assert(p:OnActivated());p:RefreshData();local card=p.cardByKey.trade;local view=card.content.table;view:SetScrollOffset(3)
+ local before=card.panel.x..':'..card.panel.y..':'..card.panel.height;local offset=view.list.scrollOffset
+ for i=1,20 do rows[1].profit=i..'金';S.Events:Publish('v3.life.trade.updated')end
+ assert(card.panel.x..':'..card.panel.y..':'..card.panel.height==before and view.list.scrollOffset==offset,'quote repaint moved cards or reset scroll')
 end)
 print('HOME RESULT '..pass..' passed / '..fail..' failed');if fail>0 then error('home tests failed')end

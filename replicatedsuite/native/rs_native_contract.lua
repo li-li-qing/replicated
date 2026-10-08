@@ -32,6 +32,10 @@ S.NativeContract = {
         -- (for example X2Friend:GetFriendList). NativeImports resolves the
         -- method dependency to one of these namespace rows before ImportAPI.
         ABILITY              = { id = 3,  nativeName = "X2Ability",             feature = true },
+        -- 中文维护（2026-10-04）：ACHIEVEMENT=67 来自用户工作版本 Addon1.2.zip
+        -- 的 globals/apitypes.lua:114，SHA-256 08d3f23839086e97304383d1a4ebbf9926dba196a105f391c36879031a36d8a6。
+        -- 仅给可见提醒的 lazy NativeImports 使用；不是 Foundation 或全部功能的必需依赖。
+        ACHIEVEMENT          = { id = 67, nativeName = "X2Achievement",         feature = true },
         BAG                  = { id = 5,  nativeName = "X2Bag",                 feature = true },
         BATTLE_FIELD         = { id = 6,  nativeName = "X2BattleField",         feature = true },
         CRAFT                = { id = 9,  nativeName = "X2Craft",               feature = true },

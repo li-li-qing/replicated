@@ -73,9 +73,13 @@ RSUI:RegisterType("Divider", function(spec)
     if fill ~= nil then fill.rsUiOwner = root.rsUiOwner end
     local c = RSUI:NewComponent("Divider", spec, root)
     c.fill = fill
+    if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(root,fill,spec.tone or 'muted',tonumber(spec.alpha)) end
     function c:SetTone(tone, alpha)
         local nextColor = Tokens.Color and Tokens:Color(tone or "muted", color) or color
-        if self.fill ~= nil then return UI:SetColor(self.fill, nextColor[1], nextColor[2], nextColor[3], tonumber(alpha) or nextColor[4] or 1, self.owner) end
+        if self.fill ~= nil then
+            if S.Theme and S.Theme.BindColorDrawable then return S.Theme:BindColorDrawable(self.root,self.fill,tone or 'muted',tonumber(alpha)) end
+            return UI:SetColor(self.fill,nextColor[1],nextColor[2],nextColor[3],tonumber(alpha) or nextColor[4] or 1,self.owner)
+        end
         return false
     end
     return c
@@ -764,6 +768,10 @@ RSUI:RegisterType("ProgressBar", function(spec)
     if fill and fill.AddAnchor then fill:AddAnchor("TOPLEFT",root,0,0); fill.rsUiOwner=root.rsUiOwner end
     local c = RSUI:NewComponent("ProgressBar", spec, root)
     c.background, c.fill = bg, fill
+    if S.Theme and S.Theme.BindColorDrawable then
+        S.Theme:BindColorDrawable(root,bg,spec.backgroundTone or 'muted',tonumber(spec.backgroundAlpha))
+        S.Theme:BindColorDrawable(root,fill,spec.tone or 'accent',tonumber(spec.alpha))
+    end
     c.percent = math.max(0, math.min(1, tonumber(spec.percent or spec.value) or 0))
     function c:SetPercent(value)
         value = math.max(0, math.min(1, tonumber(value) or 0))

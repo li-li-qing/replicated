@@ -15,7 +15,7 @@ local Static = S.StaticDataV2
 if type(Registry) ~= "table" or type(Static) ~= "table" then return end
 
 S.GameIds = S.GameIds or {}
-local Z = { ById = {}, ByKey = {} }
+local Z = { ById = {}, ByKey = {}, ContinentContractVersion = 1 }
 S.GameIds.Zone = Z
 
 if Static:GetCatalog("zone") == nil then
@@ -60,11 +60,28 @@ local DEFINITIONS = {
     { 103, "WHALESONG",     "Whalesong",     "Coastal" },
 }
 
--- 中文维护注释（2026-09-25，zone-localized-alias-1）：RU 客户端部分贸易地区在不同版本/汉化包中
--- 使用不同中文名。主 display name 保持历史兼容，aliases 只作为“从实机标题反查稳定 ZoneId”的证据，
--- 绝不生成第二套 Zone Authority。DailyAuctionMaterialsV3 等消费者应同时匹配 nameZh + aliases。
+-- 中文维护注释（2026-10-04）：大陆是地区的静态事实，不是采集居民板时的所在地。
+-- RU 官方数据库的 Nuia/Haranya/Auroria 地区目录逐项核对；Airain（10）与 Aubre（21）
+-- 都属于西大陆。债券与所在地判断共同消费本表，禁止在 Feature 再维护另一份地区分边。
+-- https://wiki.archerage.to/ru-en/db/achievements/655
+local CONTINENT_BY_ZONE = {
+    [1]="west", [2]="west", [3]="west", [5]="west", [6]="west", [8]="west",
+    [10]="west", [18]="west", [19]="west", [20]="west", [21]="west", [22]="west",
+    [26]="west", [27]="west", [93]="west",
+    [4]="east", [7]="east", [9]="east", [11]="east", [12]="east", [13]="east",
+    [14]="east", [15]="east", [16]="east", [17]="east", [23]="east", [24]="east",
+    [25]="east", [99]="east",
+    [54]="auroria", [56]="auroria", [57]="auroria", [102]="auroria", [103]="auroria",
+}
+
+-- 中文维护注释（2026-10-02）：地区中文名参与任务→ZoneId→配方解析，不能只当显示文案。
+-- 对照 RU 中英文 Commerce 数据库的相同 CraftId：6243=草原/Windscour，6244=哈里洛/Perinoor，
+-- 6245=棋盘/Rookborne，9332=青铜/Airain，9336=太初/Aubre，9340=西风/Ahnimar。
+-- https://wiki.archerage.to/ru-cn/db/crafts/commerce-vocation
+-- https://wiki.archerage.to/ru-en/db/crafts/commerce-vocation
+-- 旧“太初→93”是串区错误，不能保留为别名；这里只保留不冲突的旧汉化名，稳定数值 ID 不变。
 local DISPLAY_NAME_ALIASES_ZH = {
-    [93] = { "太初之地" }, -- Ahnimar：当前 RU 做货任务/贸易文本使用“太初之地”；旧静态显示仍可能是“安息之地”。
+    [16] = { "洛卡棋盘" }, -- Rookborne 的旧汉化；当前制作日常与制作台使用“棋盘石林”。
 }
 
 local DISPLAY_NAME_ZH = {
@@ -77,18 +94,18 @@ local DISPLAY_NAME_ZH = {
     [7] = "彩虹荒野",
     [8] = "双冠丘陵",
     [9] = "摩哈特比",
-    [10] = "空气之原",
+    [10] = "青铜岩石山",
     [11] = "猎鹰高原",
     [12] = "咏唱之地",
     [13] = "烈日峡谷",
-    [14] = "风刃废墟",
-    [15] = "棋盘石林",
-    [16] = "洛卡棋盘",
+    [14] = "草原之脉",
+    [15] = "哈里洛废墟",
+    [16] = "棋盘石林",
     [17] = "伊尼斯泰尔",
     [18] = "白雪森林",
     [19] = "埋骨之地",
     [20] = "十字星平原",
-    [21] = "珊瑚海岸北部",
+    [21] = "太初之地",
     [22] = "黄金平原",
     [23] = "翡翠谷",
     [24] = "虎脊山脉",
@@ -98,7 +115,7 @@ local DISPLAY_NAME_ZH = {
     [54] = "墟境之口",
     [56] = "煦日之野",
     [57] = "黄金废墟",
-    [93] = "安息之地",
+    [93] = "西风脊",
     [99] = "洛卡山脉",
     [102] = "海之烛台",
     [103] = "鲸鱼歌湾",
@@ -113,6 +130,7 @@ for _, def in ipairs(DEFINITIONS) do
         nameEn = nameEn,
         nameZh = DISPLAY_NAME_ZH[zoneId],
         nameZhAliases = DISPLAY_NAME_ALIASES_ZH[zoneId],
+        continentKey = CONTINENT_BY_ZONE[zoneId],
         tradeQuality = tradeQuality,
         source = SOURCE,
         confidence = "curated",

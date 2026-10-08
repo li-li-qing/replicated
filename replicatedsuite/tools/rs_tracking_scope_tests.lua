@@ -82,5 +82,23 @@ T('quick import scope target overwrite does not alter player channels',function(
  assert(F:IsTrackedChannel(99,'player','buff'),'player changed by target overwrite')
  assert(F:IsTrackedChannel(21,'target','buff') and not F:IsTrackedChannel(88,'target','buff'),'target overwrite incorrect')
 end)
+T('verified Debuff cannot be copied into Buff by saved opposite or dual channels',function()
+ local h,S,F=Boot({runtimeHud=true,noRenderer=true});dofile('services/rs_status_classification_v3.lua')
+ assert(F:SetTrackedChannel(21,'player','buff',true));assert(F:SetTrackedChannel(21,'player','debuff',true))
+ h.facts.player[21]={id=21,name='倒地',sources={debuff=true},timeLeft=5,iconPath='control.dds'}
+ assert(F:RefreshScope('player',true));local live=F:GetPlatesProjection('player')
+ assert(#live.buffs==0 and #live.debuffs==1 and live.debuffs[1].category=='debuff','known Debuff was relabeled Buff by tracking')
+ assert(F:IsTrackedChannel(21,'player','buff') and F:IsTrackedChannel(21,'player','debuff'),'repair rewrote saved intent')
+end)
+T('verified Buff stays Buff while unclassified explicit placement remains configurable',function()
+ local h,S,F=Boot({runtimeHud=true,noRenderer=true});dofile('services/rs_status_classification_v3.lua')
+ assert(F:SetTrackedChannel(127,'player','buff',true));assert(F:SetTrackedChannel(127,'player','debuff',true))
+ h.facts.player[127]={id=127,name='意志高昂',sources={buff=true},timeLeft=5,iconPath='positive.dds'}
+ assert(F:RefreshScope('player',true));local live=F:GetPlatesProjection('player')
+ assert(#live.buffs==1 and #live.debuffs==0,'known Buff was relabeled Debuff')
+ assert(F:SetTrackedChannel(987654321,'target','debuff',true))
+ h.facts.target[987654321]={id=987654321,name='未确认状态',sources={hidden=true},timeLeft=3}
+ assert(F:RefreshScope('target',true));assert(#F:GetPlatesProjection('target').debuffs==1,'unknown manual display placement lost')
+end)
 if failed>0 then error(('TRACKING_SCOPE_RESULT passed=%d failed=%d'):format(passed,failed))end
 print(('TRACKING_SCOPE_RESULT passed=%d failed=%d'):format(passed,failed))

@@ -15,11 +15,11 @@ local function BootStore()
     return S, P, F, io, P:GetStore('v3.buff_display')
 end
 
-Test('fresh player HUD enables ranged weapon and uses release preset v4', function()
+Test('fresh player HUD enables ranged weapon and uses release preset v5', function()
     local _, _, F = BootStore()
     local d = F:GetDefaultSettingsSnapshot()
     assert(d.components.ranged.enabled == true, 'fresh ranged weapon must be enabled')
-    assert(tonumber(d.layoutPresetVersion) == 4, 'fresh layout preset must be v4')
+    assert(tonumber(d.layoutPresetVersion) == 5, 'fresh layout preset must be v5')
     assert(d.targetLayout.components.ranged.enabled == false, 'target HUD release template must remain unchanged')
 end)
 
@@ -36,11 +36,11 @@ Test('old untouched ranged default upgrades once without changing its geometry',
     assert(s.components.ranged.enabled == true, 'upgrade did not enable ranged')
     assert(s.components.ranged.x == 0 and s.components.ranged.y == 0 and s.components.ranged.size == 26 and s.components.ranged.alpha == 1,
         'upgrade changed user geometry')
-    assert(s.layoutPresetVersion == 4, 'upgrade did not stamp preset v4')
+    assert(s.layoutPresetVersion == 5, 'upgrade did not stamp preset v5')
     -- A user may disable it after upgrading; the version stamp must prevent re-enabling on next load.
     s.components.ranged.enabled = false
     local ok2, changed2 = F:UpgradeRangedWeaponReleaseDefault(false)
-    assert(ok2 == true and changed2 == false and s.components.ranged.enabled == false, 'v4 user choice was overwritten')
+    assert(ok2 == true and changed2 == false and s.components.ranged.enabled == false, 'v5 user choice was overwritten')
 end)
 
 Test('customized old ranged component is preserved and not auto-enabled', function()
@@ -62,25 +62,27 @@ Test('EnsureStoreLoaded durably upgrades a persisted untouched v3 player profile
     F1.State.settings.layoutPresetVersion = 3
     local r = F1.State.settings.components.ranged
     r.enabled=false; r.x=0; r.y=0; r.size=26; r.fontSize=0; r.alpha=1
-    assert(P1:SaveStore(st1.id, {force=true, durable=true}))
+    -- 中文维护：v3.buff_display 已仅作一次迁移源，当前布局耐久写经实际 layout Authority；
+    -- 此处保存合法旧 preset 字段来验证升级，绝不反造历史 Envelope/canonical 指纹。
+    assert(F1:MutateHudLayoutStore(function() return true end,0,'seed_untouched_v3_layout',true))
     local writesBefore = io1.writes
     local disk = H.Copy(io1.disk)
     local S2, P2, io2 = H.Boot(disk)
     local F2 = S2.Features.BuffDisplay
     assert(F2:EnsureStoreLoaded())
     assert(F2.State.settings.components.ranged.enabled == true, 'load migration did not enable untouched ranged')
-    assert(F2.State.settings.layoutPresetVersion == 4, 'load migration did not stamp v4')
+    assert(F2.State.settings.layoutPresetVersion == 5, 'load migration did not stamp v5')
     assert(io2.writes == 1, 'load migration must perform exactly one durable compatibility write')
     local S3, P3, io3 = H.Boot(H.Copy(io2.disk))
     local F3 = S3.Features.BuffDisplay
     assert(F3:EnsureStoreLoaded())
-    assert(F3.State.settings.components.ranged.enabled == true and F3.State.settings.layoutPresetVersion == 4)
-    assert(io3.writes == 0, 'already-upgraded v4 save wrote again')
+    assert(F3.State.settings.components.ranged.enabled == true and F3.State.settings.layoutPresetVersion == 5)
+    assert(io3.writes == 0, 'already-upgraded v5 save wrote again')
 end)
 
 Test('v4 visual order is mainhand then offhand then ranged from left to right', function()
     local Host = dofile('tools/rs_pvp_hud_test_host.lua')
-    local _, _, F, P = Host({noRenderer=false})
+    local _, _, F, P = Host({runtimeHud=true,noRenderer=false})
     local settings = F:GetDefaultSettingsSnapshot()
     settings.layoutPresetVersion = 4
     local L = P.ComputePlateLayout(500, 400, settings, 0, 0, {mainHand=true, offHand=true, ranged=true, wings=true})
@@ -92,7 +94,7 @@ end)
 
 Test('v3 customized layouts keep historical equipment order', function()
     local Host = dofile('tools/rs_pvp_hud_test_host.lua')
-    local _, _, F, P = Host({noRenderer=false})
+    local _, _, F, P = Host({runtimeHud=true,noRenderer=false})
     local settings = F:GetDefaultSettingsSnapshot()
     settings.layoutPresetVersion = 3
     local L = P.ComputePlateLayout(500, 400, settings, 0, 0, {mainHand=true, offHand=true, ranged=true, wings=true})

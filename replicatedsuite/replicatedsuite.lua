@@ -272,9 +272,9 @@ end
 -- native identity must remain distinct even when the client normalizes/truncates
 -- names internally.
 --
--- Keep logical IDs readable in RSUI, but project them to a compact deterministic
--- native identity.  Generation participates in both the visible token and the
--- hash so hot reloads cannot alias a previous native generation.  The reverse
+-- Keep logical IDs readable in RSUI, but project them to a compact opaque
+-- native identity. Full generation plus a generation-local sequence prevents
+-- hot reload aliasing without spending 23 bytes at every nested widget. The reverse
 -- map is diagnostic-only; business/presentation code must never depend on the
 -- physical value.
 local function Base36(value, width)
@@ -291,29 +291,14 @@ local function Base36(value, width)
     return out
 end
 
-local function IdentityHash(text, multiplier, seed, modulus)
-    text = tostring(text or "")
-    local hash = tonumber(seed) or 17
-    local mul = tonumber(multiplier) or 131
-    local mod = tonumber(modulus) or 2147483647
-    for index = 1, #text do
-        -- All intermediate integers stay far below IEEE-754's exact-integer
-        -- ceiling, so this is deterministic on the client's number-only Lua.
-        hash = (hash * mul + string.byte(text, index) + index) % mod
-    end
-    return math.floor(hash)
-end
-
-local function IdentityHint(logicalId)
-    local clean = tostring(logicalId or "widget"):lower():gsub("[^%w_]+", "_")
-    local tail = clean:match("([%w]+)$") or clean
-    if tail == "" then tail = "widget" end
-    return tail:sub(1, 5)
-end
-
 S.NativeIdentity = {
-    version = 2,
-    maxPhysicalLength = 23,
+    -- 2026-10-06：实机重复警告的深层路径全部显示为259字节。单节23字节的旧策略
+    -- 没有控制祖先路径累加。使用当前 generation + 唯一递增序号，普通节点约5..8字节。
+    -- 逻辑ID/窗口Store/owner不变，不重设父级；只在新建时分配，反向映射继续供诊断使用。
+    -- 259是观察到的日志边界，不宣称已验证Native内部上限；截断模型及实机回归分开。
+    version = 3,
+    maxPhysicalLength = 15,
+    sequence = 0,
     logicalToPhysical = {},
     physicalToLogical = {},
     requests = 0,
@@ -322,20 +307,10 @@ S.NativeIdentity = {
 }
 
 function S.NativeIdentity:Build(logicalId, generation, collisionSalt)
-    local logical = tostring(logicalId or "widget")
     local gen = math.max(0, math.floor(tonumber(generation) or 0))
-    local salt = math.max(0, math.floor(tonumber(collisionSalt) or 0))
-    local source = logical .. "#g" .. tostring(gen) .. (salt > 0 and ("#c" .. tostring(salt)) or "")
-    local genToken = Base36(gen % 1296, 2)
-    local hint = IdentityHint(logical)
-    local h1 = Base36(IdentityHash(source, 131, 17, 2147483647), 6)
-    local h2 = Base36(IdentityHash(source, 137, 53, 2147483629), 6)
-    local physical = "rs" .. genToken .. "_" .. hint .. "_" .. h1 .. h2
-    -- Defensive assertion kept local instead of throwing through bootstrap.
-    if #physical > self.maxPhysicalLength then
-        physical = physical:sub(1, self.maxPhysicalLength)
-    end
-    return physical
+    self.sequence=(tonumber(self.sequence) or 0)+1
+    -- 不取 generation 模、不截断名字；极端超长值仍由 NativeObjectFactory 原有长度门拒绝。
+    return "rs"..Base36(gen).."_"..Base36(self.sequence)
 end
 
 function S.PhysicalId(id)
@@ -356,7 +331,7 @@ function S.PhysicalId(id)
         physical = nil
     end
     if physical == nil then
-        -- Practically unreachable with two independent 31-bit hashes.  Fail
+        -- Practically unreachable with a generation-local unique sequence. Fail
         -- deterministically rather than falling back to the unsafe long ID.
         physical = registry:Build("identity_collision_" .. logical, S.Generation, 31)
     end

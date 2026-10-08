@@ -83,6 +83,10 @@ function SelectionVisual:_Ensure(component)
     end
 
     component.rsSelectionVisual = { fill = fill, accent = accent, selected = nil }
+    if S.Theme and S.Theme.BindColorDrawable then
+        S.Theme:BindColorDrawable(root,fill,'button.active',.88)
+        S.Theme:BindColorDrawable(root,accent,'accent')
+    end
     if S.UI ~= nil and type(S.UI.SetVisible) == "function" then
         if fill ~= nil then S.UI:SetVisible(fill, false, component.owner) end
         if accent ~= nil then S.UI:SetVisible(accent, false, component.owner) end

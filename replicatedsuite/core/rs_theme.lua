@@ -13,6 +13,13 @@ local C = S.Constants
 
 S.Theme = {}
 local T = S.Theme
+T.PaletteContractVersion = 2
+-- 中文维护（2026-10-05）：world-HUD 保持原深色文字/阴影；存副本，不能引用会被主题原位更新的色表。
+local worldColors = {}
+local worldToneAliases={default='text',strong='text',muted='textMuted',info='blue',success='green',warning='yellow',caution='orange',danger='red'}
+for key,color in pairs(C.Color or {}) do
+    if type(color)=='table' and type(color[1])=='number' then worldColors[key]={unpack(color)} end
+end
 T.ManualTypographyOwnershipContractVersion = 1 -- 中文维护（2026-09-24，visual-guide-resolution-style-recovery-1）：允许少数 world-HUD glyph 明确声明 rsManualTypography=true，由专属 Presenter 管理原生字体尺寸。普通页面控件默认仍由 Theme Authority 响应 addon/font scale；仅显式 opt-out 的控件跳过 RefreshTypography，避免分辨率/画质切换把手工字号重置为主题 10..24 范围。
 
 local function Token(path, fallback)
@@ -76,10 +83,16 @@ local function ApplyTextColor(widget, baseColor, opacity)
     SafeColor(widget.style, { base[1], base[2], base[3], base[4] * value })
     widget.rsTextBaseColor = base
     widget.rsTextOpacity = value
+    if S.UI and type(S.UI.PrimeNativeState)=='function' then
+        S.UI:PrimeNativeState(widget,{colorR=base[1],colorG=base[2],colorB=base[3],colorA=base[4]*value})
+    end
     return true
 end
 
-function T:ToneColor(tone)
+function T:ToneColor(tone, widget)
+    if widget and widget.rsWorldTextPalette == true then
+        return worldColors[worldToneAliases[tone] or tone] or worldColors.text
+    end
     local tokens = S.UITokens
     if tokens ~= nil and type(tokens.Color) == "function" then
         local value = tokens:Color(tone)
@@ -99,6 +112,54 @@ end
 
 function T:Token(path, fallback) return Token(path, fallback) end
 function T:Metric(path, fallback) return TokenNumber(path, fallback) end
+function T:IsLightWorkspacePalette() return self.workspacePaletteMode=='light' or self.workspacePalette=='light' end
+
+-- 一个 Theme Authority 管理组件自己创建的实色装饰。只记录 owner 已拥有的 Drawable，
+-- 不遍历 Native 父子链、不新建背景、不改几何/输入/滚动事务；每次显式切换原位重绘。
+function T:ColorRole(role)
+    return (C.Color or {})[role] or Token(role,nil) or self:ToneColor(role)
+end
+function T:BindColorDrawable(widget, drawable, role, alpha)
+    if not widget or not drawable or type(drawable.SetColor)~='function' then return false end
+    if type(drawable.ChangeColor1)=='function' then return false end -- 渐变仍由 ChangeColor1/2/3 专属路径处理。
+    widget.rsThemeColorDrawables=widget.rsThemeColorDrawables or {}
+    local binding=widget.rsThemeColorDrawables[drawable] or {}
+    binding.role,binding.alpha=tostring(role),alpha
+    widget.rsThemeColorDrawables[drawable]=binding
+    local color=self:ColorRole(binding.role)
+    local a=alpha~=nil and alpha or color[4] or 1
+    local accepted=drawable:SetColor(color[1],color[2],color[3],a)
+    if accepted==false then error('theme_drawable_color_rejected:'..binding.role) end
+    if S.UI and type(S.UI.PrimeNativeState)=='function' then
+        S.UI:PrimeNativeState(drawable,{colorR=color[1],colorG=color[2],colorB=color[3],colorA=a})
+    end
+    return true
+end
+function T:RefreshColorDrawables(widget)
+    for drawable,binding in pairs(widget.rsThemeColorDrawables or {}) do
+        self:BindColorDrawable(widget,drawable,binding.role,binding.alpha)
+    end
+end
+function T:RefreshTextColor(widget)
+    if not widget or not widget.style or widget.rsManualTextColor==true or widget.rsManualTypography==true then return false end
+    local role=widget.rsThemeTextRole
+    local color=role and self:ColorRole(role) or self:ToneColor(widget.rsLabelTone or 'default',widget)
+    if (self:IsLightWorkspacePalette() or self.workspaceStatusBands) and widget.rsButtonStatusTone then color=self:ToneColor(widget.rsButtonStatusTone,widget) end
+    ApplyTextColor(widget,color,widget.rsTextOpacity)
+    if widget.rsThemeShadowWanted~=nil and type(widget.style.SetShadow)=='function' then
+        widget.style:SetShadow(widget.rsThemeShadowWanted and (not self:IsLightWorkspacePalette() or widget.rsWorldTextPalette==true))
+    end
+    if widget.rsThemeTextRole=='input.text' and widget.guideTextStyle and type(widget.guideTextStyle.SetColor)=='function' then
+        SafeColor(widget.guideTextStyle,self:ColorRole('input.placeholder'))
+    end
+    if widget.rsThemeTextRole=='input.text' and type(widget.SetCursorColor)=='function' then widget:SetCursorColor(unpack(self:ColorRole('input.caret'))) end
+    return true
+end
+function T:SetWorldTextPalette(widget)
+    if not widget then return false end
+    widget.rsWorldTextPalette=true
+    return self:RefreshTextColor(widget)
+end
 
 function T:AddPanelBackground(widget, kind)
     if widget == nil or widget.CreateColorDrawable == nil then return nil end
@@ -110,7 +171,7 @@ function T:AddPanelBackground(widget, kind)
         bg:AddAnchor("BOTTOMRIGHT", widget, -inset, -inset)
     end
     -- 工作台主题只记录本 Theme 已拥有的背景种类；切换配色不创建新 Drawable。
-    widget.rsThemeBackgroundKind, widget.rsThemeGradient = kind, false
+    widget.rsThemeBackgroundKind, widget.rsThemeGradient = kind or 'panel', false
     widget.rsBackground = bg
     widget.rsBackgroundColor = { color[1], color[2], color[3], color[4] }
     return bg
@@ -173,7 +234,7 @@ function T:AddGradientBackground(widget, kind, layer)
     if not ok or bg == nil then
         return self:AddPanelBackground(widget, kind)
     end
-    widget.rsThemeBackgroundKind, widget.rsThemeGradient = kind, true
+    widget.rsThemeBackgroundKind, widget.rsThemeGradient = kind or 'panel', true
     widget.rsBackground = bg
     -- Gradient drawable keeps its own RGB bands; store white + base alpha so
     -- SetBackgroundOpacity can still fade the whole strip uniformly.
@@ -221,6 +282,7 @@ function T:AddDivider(widget, y, soft)
     end)
     if not ok or line == nil then return nil end
     widget.rsDivider = line
+    self:BindColorDrawable(widget,line,soft and 'dividerSoft' or 'divider')
     return line
 end
 
@@ -234,11 +296,9 @@ function T:StyleLabel(label, size, tone, align, shadow)
     end
     if label.style.SetAlign ~= nil then label.style:SetAlign(ResolveAlign(align)) end
     label.rsLabelTone = tostring(tone or "default")
-    ApplyTextColor(label, self:ToneColor(tone), label.rsTextOpacity)
+    label.rsThemeShadowWanted=shadow==true
+    self:RefreshTextColor(label)
     if label.style.SetEllipsis ~= nil then pcall(function() label.style:SetEllipsis(false) end); label.rsEllipsis = false end
-    if shadow == true and label.style.SetShadow ~= nil then
-        pcall(function() label.style:SetShadow(true) end)
-    end
 end
 
 function T:StyleButton(button, width, height, fontSize, active, useGradient)
@@ -336,7 +396,8 @@ function T:StyleButton(button, width, height, fontSize, active, useGradient)
             button.style:SetFontSize(applied)
             button.rsAppliedFontSize = applied
         end
-        ApplyTextColor(button, C.Color.text, button.rsTextOpacity)
+        button.rsThemeTextRole='text'
+        self:RefreshTextColor(button)
         if button.style.SetEllipsis ~= nil then pcall(function() button.style:SetEllipsis(false) end); button.rsEllipsis = false end
     end
     button.rsButtonActive = active == true
@@ -380,11 +441,16 @@ local STATUS_BANDS = {
     red = { normal = { {0.30,0.075,0.07}, {0.23,0.045,0.04}, {0.16,0.025,0.025} },
         bright = { {0.48,0.15,0.13}, {0.37,0.09,0.08}, {0.27,0.045,0.04} } },
 }
+local LIGHT_STATUS_BANDS = {
+    green = {normal={{0.89,0.94,0.90},{0.85,0.91,0.86},{0.82,0.89,0.83}},bright={{0.86,0.92,0.87},{0.83,0.90,0.85},{0.80,0.88,0.82}}},
+    red = {normal={{0.97,0.92,0.90},{0.96,0.90,0.88},{0.95,0.88,0.86}},bright={{0.95,0.88,0.86},{0.94,0.86,0.84},{0.93,0.84,0.82}}},
+}
 local function RepaintButtonInteractiveState(button)
     if button == nil or type(button.rsButtonBgs) ~= "table" then return false end
     local active = button.rsButtonActive == true
     local hovered = button.rsButtonHovered == true
-    local status = STATUS_BANDS[button.rsButtonStatusTone]
+    local status = (T.workspaceStatusBands or (T:IsLightWorkspacePalette() and LIGHT_STATUS_BANDS or STATUS_BANDS))[button.rsButtonStatusTone]
+    T:RefreshTextColor(button)
     if status then
         local band = (active or hovered) and status.bright or status.normal
         local changed = false
@@ -534,7 +600,7 @@ function T:SetLabelTone(label, tone)
     local key = tostring(tone or "default")
     if label.rsLabelTone == key then return false end
     label.rsLabelTone = key
-    return ApplyTextColor(label, self:ToneColor(tone), label.rsTextOpacity)
+    return self:RefreshTextColor(label)
 end
 function T:RefreshTypography()
     local controls = S.UI and S.UI.controls or nil

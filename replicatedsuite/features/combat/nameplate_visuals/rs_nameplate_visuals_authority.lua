@@ -94,6 +94,50 @@ local SPECS = {
 }
 A.Specs = SPECS
 
+-- 中文维护（2026-10-07，native-combat-text-access-1）：RU参考的原生飘字使用 combatTextFrame.combatTexts
+-- 和 combatTextLocale.fontSize，但主脚本变量未必暴露给 addon。只在显式模块诊断时查看这两个已知入口，
+-- 最多30个控件；不调用控件方法/CVar、不扫描全局、不修改字体或动画，也不把方法存在视为可用性验证。
+-- 数据所有者仍为客户端；本 Authority 只返回 primitive 候选证据，原生写入路径与 schema1 保持不变。
+local function CombatTextMember(value, key)
+    if type(value) ~= "table" and type(value) ~= "userdata" then return nil end
+    local ok, member = pcall(function() return value[key] end)
+    return ok and member or nil
+end
+
+function A:InspectCombatTextAccess()
+    local frame = rawget(_G, "combatTextFrame")
+    local locale = rawget(_G, "combatTextLocale")
+    local texts = CombatTextMember(frame, "combatTexts")
+    local out = {
+        patch = "native-combat-text-access-1", readOnly = true, resizeVerified = false,
+        frameType = type(frame), textListType = type(texts), localeType = type(locale),
+        animationTablePresent = type(rawget(_G, "COMBAT_TEXT_ANIMATION")) == "table",
+        scanBudget = 30, widgetsPresent = 0, mainStyleSetters = 0, extraStyleSetters = 0,
+        requestedRoute = "combat.nameplate_visuals",
+    }
+    local fontSize = NativeNumber(CombatTextMember(locale, "fontSize"))
+    if fontSize ~= nil and fontSize > 0 then out.nominalFontSize = fontSize end
+    if type(frame) ~= "table" and type(frame) ~= "userdata" then out.state = "frame_not_exposed"
+    elseif type(texts) ~= "table" then out.state = "text_list_not_exposed"
+    else
+        for i = 1, out.scanBudget do
+            local widget = rawget(texts, i)
+            if type(widget) == "table" or type(widget) == "userdata" then
+                out.widgetsPresent = out.widgetsPresent + 1
+                if type(CombatTextMember(CombatTextMember(widget, "style"), "SetFontSize")) == "function" then
+                    out.mainStyleSetters = out.mainStyleSetters + 1
+                end
+                if type(CombatTextMember(CombatTextMember(widget, "extraStyle"), "SetFontSize")) == "function" then
+                    out.extraStyleSetters = out.extraStyleSetters + 1
+                end
+            end
+        end
+        out.state = out.widgetsPresent > 0 and out.mainStyleSetters == out.widgetsPresent
+            and out.extraStyleSetters == out.widgetsPresent and "candidate_only" or "font_access_incomplete"
+    end
+    return out
+end
+
 local function SpecValue(spec, raw)
     local n = NativeNumber(raw)
     if n == nil then return nil end

@@ -352,7 +352,8 @@ Test('page builds four tabs and browses inactive tracked entries',function()
     assert(#uiHost.widgets.v3_buff_display_tab_switcher.children==4)
     assert(uiHost.widgets.v3_buff_manage_view.spec.set('tracked'))
     assert(#uiHost.widgets.v3_buff_display_tracking_table.items==1)
-    assert(page:SwitchTab('library'));assert(page.activeTab=='library','programmatic switch did not update model')
+    page.libraryPack='recommended' -- explicitly browse catalog through the single source picker
+    assert(page:SwitchTab('library'));assert(page.activeTab=='library','programmatic source switch did not update model')
     -- 当前默认推荐并集包含隐藏/特殊状态；旧all包仍单独保持393职业效果兼容。
     assert(#uiHost.widgets.v3_buff_library_table.items==#S.Data.StatusTrackingCatalogV3.Packs.recommended.entries)
     assert(uiHost.widgets.v3_buff_library_pack.spec.set('all'))
@@ -363,24 +364,22 @@ Test('page builds four tabs and browses inactive tracked entries',function()
     assert(#uiHost.widgets.v3_buff_library_table.items==#S.Data.StatusTrackingCatalogV3.Packs.all.entries)
     assert(#S.Data.StatusTrackingCatalogV3.Packs.all.entries==425,'catalog all-pack effect count changed')
     assert(uiHost.widgets.v3_buff_library_pack.spec.set('tree:joy'))
-    assert(uiHost.widgets.v3_buff_library_import.enabled==false)
+    assert(#uiHost.widgets.v3_buff_library_table.items==0 and uiHost.widgets.v3_buff_library_import.enabled==false)
 end)
-Test('text import requires preview then confirmation without early write',function()
+Test('simple text import commits exactly one tracking generation on its first click',function()
     Reset();local page=assert(uiHost:Build());local before=writes
     uiHost.edit.text='AUTO=21'
-    assert(uiHost.widgets.v3_buff_display_transfer_import.onClick())
-    assert(writes==before and not F:IsTrackedId(21),'preview wrote to Store')
     assert(uiHost.widgets.v3_buff_display_transfer_import.onClick())
     -- 中文维护注释（2026-09-28，Phase 0 测试基线校正）：旧断言 `writes==before+1` 属于 .18.243 拆分前的
     -- 单 Store 写入模型。当前 Tracking 一次提交 = inactive player/target/meta 三次 durable 写 + manifest
     -- 一次提交，共 4 次（与本文件顶部 'builtin import uses four-write generation transaction' 的契约一致）。
     -- 这里断言“恰好一个 tracking generation”，而不是旧的物理写次数。
     local delta=writes-before
-    assert(delta==4 and F:IsTrackedId(21),'confirmation did not commit exactly one tracking generation: delta='..tostring(delta)..' tracked='..tostring(F:IsTrackedId(21)))
+    assert(delta==4 and F:IsTrackedId(21),'single import did not commit exactly one tracking generation: delta='..tostring(delta)..' tracked='..tostring(F:IsTrackedId(21)))
 end)
 Test('unavailable multiline input disables all text actions',function()
     uiHost.nativeEnabled=false;local page=assert(uiHost:Build());uiHost.nativeEnabled=true
-    for _,id in ipairs({'v3_buff_display_transfer_export','v3_buff_display_transfer_import','v3_buff_export_tracking','v3_buff_display_transfer_clear'}) do
+    for _,id in ipairs({'v3_buff_display_transfer_export','v3_buff_display_transfer_import'}) do
         assert(uiHost.widgets[id].enabled==false,id..' left active')
     end
 end)

@@ -547,5 +547,12 @@ Test('free FloatingSurface drag commit cannot persist an offscreen window',funct
     Full(h.S.Layout:GetContext(),n.x,n.y,n.w,n.h)
     Full(h.S.Layout:GetContext(),state.x,state.y,n.w,n.h)
 end)
+-- 中文维护：与功能方案相同的空拖动必须保留 Gear 点击，不得为静止手势写位置。
+Test('Gear stationary native drag does not suppress click or persist placement',function()
+    local h=Boot();local gear,row=BootGear(h);gear.visible=true
+    local record=assert(gear:EnsureButton(row,1));gear.rows={row}
+    record.button.handlers.OnDragStart();record.button.handlers.OnDragStop()
+    assert(record.ignoreClick==false and h.writes==0,'stationary Gear gesture was treated as movement')
+end)
 print(string.format('VIEWPORT RESULT %d passed / %d failed (%s)',pass,fail,_VERSION))
 assert(fail==0,'viewport regression failures: '..fail)

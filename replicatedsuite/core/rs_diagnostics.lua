@@ -1009,6 +1009,7 @@ function D:BuildFeatureStatusRows()
                 .. " · 扫描=" .. tostring(projection.polls or 0) .. "/事件" .. tostring(projection.nativeEventRefreshes or 0)
                 .. " · writeFailures=" .. tostring(writeFailures)
                 .. " · Move=" .. tostring(hotkeyStats.moveAttempts or 0) .. "/" .. tostring(hotkeyStats.moveFailures or 0)
+                .. " · R复核=" .. tostring(hotkeyStats.sameSlotChecks or 0) .. "/漂移" .. tostring(hotkeyStats.bindingDrifts or 0) -- 中文维护（多鱼切换）：只展示服务计数，导出诊断不读取/修改原生键位。
                 .. " · Restore=" .. tostring(hotkeyStats.restoreAttempts or 0) .. "/" .. tostring(hotkeyStats.restoreFailures or 0)
                 .. " · Hotkey=" .. tostring(hotkey.currentSlot or "-") .. "/src" .. tostring(hotkey.sourceSlot or "-")
                 .. (projection.lastWriteError and (" · last=" .. tostring(projection.lastWriteError)) or ""),

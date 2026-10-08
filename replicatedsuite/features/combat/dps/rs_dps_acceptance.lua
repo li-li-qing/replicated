@@ -42,9 +42,9 @@ G:RegisterSequenceCase("v3_m16_dps_shared_analytics_contract", function()
         or type(F.Domain.ClearStats) ~= "function" or type(F.Domain.ResetTransient) ~= "function"
         or type(F.Domain.ReplayPending) ~= "function" or type(F.Domain.GetProjection) ~= "function"
         or (tonumber(F.Domain.version) or 0) < 7 or type(F.Domain.GetActorDetail) ~= "function" or type(F.GetActorDetail) ~= "function"
-        or type(F.GetProjection) ~= "function" or type(F.Commands) ~= "table"
+        or type(F.GetProjection) ~= "function" or type(F.GetCombatOverview) ~= "function" or type(F.Commands) ~= "table"
         or type(F.Commands.ApplySettingFromBinding) ~= "function" or type(F.Commands.MarkStoreDirty) ~= "function"
-        or type(F.Commands.SetEnabled) ~= "function" or type(F.Commands.Clear) ~= "function"
+        or type(F.Commands.SetEnabled) ~= "function" or type(F.Commands.Clear) ~= "function" or type(F.Commands.ClearOverview) ~= "function"
         or type(F.Commands.SetMode) ~= "function" or type(F.Commands.SetSide) ~= "function"
         or type(F.Commands.SetMetric) ~= "function" or type(F.Commands.GetActorDetail) ~= "function"
         or type(F.Commands.SetDisplayRows) ~= "function" or type(F.Commands.SetAlwaysShowSelf) ~= "function"
@@ -105,7 +105,8 @@ G:RegisterSequenceCase("v3_m16_dps_shared_analytics_contract", function()
 
     local health = F:GetHealth()
     if F.enabled == true then
-        if tostring(health.busScope) ~= "all(shared_analytics)" or health.analyticsHeld ~= true or health.busSubscribed == true or health.relationHeld ~= true then return Fail("runtime_scope_contract") end
+        local analytics=S.Services and S.Services.CombatAnalyticsV3
+        if analytics==nil or tostring(health.busScope) ~= analytics:GetCollectionScope() or health.analyticsHeld ~= true or health.busSubscribed == true or health.relationHeld ~= true then return Fail("runtime_scope_contract") end
     elseif (tonumber(health.consumers) or 0) ~= 0 then
         return Fail("runtime_consumer_contract")
     end

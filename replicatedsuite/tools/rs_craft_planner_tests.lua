@@ -191,6 +191,26 @@ Test("C3: Recipe resolution and user selection", function()
     assert(badOk == false, "invalid recipe key should be rejected")
 end)
 
+-- 中文维护注释（2026-10-02）：检查玩家实际选择/显示的文本，防止共享地区表改好后 UI 私有副本仍串区。
+Test("C4: Shared region labels and selected recipe display agree", function()
+    assert(Assist:AcquireConsumer("test_region_labels"))
+    local expected = {[6245]="棋盘石林", [6244]="哈里洛废墟", [6243]="草原之脉", [9332]="青铜岩石山", [9336]="太初之地", [9340]="西风脊"}
+    local found = 0
+    for _, option in ipairs(Assist:GetProjection().recipeOptions) do
+        local zoneName = expected[option.craftId]
+        if zoneName then
+            assert(option.text == zoneName .. " · 特产", "wrong localized choice for " .. option.craftId .. ": " .. tostring(option.text))
+            assert(Assist.Commands:SelectRecipe(option.value))
+            local current
+            for _, row in ipairs(Assist:GetProjection().rows or {}) do if row.key == "craft:resolution" then current = row end end
+            assert(current and current.text == option.text, "selected recipe display must share the same region identity")
+            found = found + 1
+        end
+    end
+    assert(found == 6, "all corrected regions must remain selectable")
+    Assist:ReleaseConsumer("test_region_labels")
+end)
+
 Test("C5: Backpack held counts and shortage calculation", function()
     -- Set mock X2Bag with specific items
     local mockBag = {

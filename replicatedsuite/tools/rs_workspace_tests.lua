@@ -33,7 +33,7 @@ Test('failed write rollback',function()
 end)
 Test('empty cards remain empty and resets isolated',function()
  local W=Boot();assert(W:SetNavigation('life.tasks','favorite',true));for _,c in ipairs(W:GetCards(true))do assert(W:SetCardVisible(c.id,false))end
- assert(#W:GetCards()==0);assert(W:Reset('home'));assert(#W:GetCards()==5);assert(W:GetNavPreference('life.tasks').favorite)
+ assert(#W:GetCards()==0);assert(W:Reset('home'));assert(#W:GetCards()==7);assert(W:GetNavPreference('life.tasks').favorite)
 end)
 Test('list sorting preserves authority rows',function()
  local W=Boot();local rows={{id='daily:a',rawName='甲',status='未接'},{id='daily:b',rawName='乙',status='已完成'}}
@@ -66,5 +66,37 @@ Test('enabled navigation still reveals a deliberately hidden running feature',fu
  local W=Boot();assert(W:SetNavigation('life.tasks','hidden',true))
  local found=false;for _,r in ipairs(W:GetNavigation('enabled'))do if r.id=='life.tasks'then found=true end end
  assert(found,'enabled filter masked an actually running hidden feature')
+end)
+Test('legacy card ordering and statistics preferences roundtrip without store migration',function()
+ local W,S,h=Boot();assert(W:Change('home',function()
+  W.state.home.order={'trade','activities','bonds','weekly','daily'};W.state.home.stats=false
+  W.state.home.hidden.weekly=true;return true
+ end))
+ local disk=h.Copy(h.disk);local canonical=S.Persistence:GetStore(W.storeId).lastIntegrityFingerprint
+ local W2,S2,h2=Boot(disk);local writes=h2.writes
+ assert(S2.Persistence:GetStore(W2.storeId).lastIntegrityFingerprint==canonical and canonical~=nil,'home catalog changed stored canonical')
+ local cards=W2:GetCards(true);assert(cards[1].id=='trade' and cards[2].id=='activities' and cards[5].id=='daily')
+ assert(not cards[4].visible and W2.state.home.stats==false and not cards[6].visible)
+ assert(cards[7].id=='reminders' and h2.writes==writes,'read model migrated or wrote preferences')
+end)
+Test('light appearance durable reload and failure rollback keep other preferences',function()
+ local W,S,h=Boot();assert(W:SetNavigation('life.tasks','favorite',true));assert(W:SetOption('density','compact'))
+ assert(W:SetOption('appearance','light'),'light appearance rejected');local W2,S2,h2=Boot(h.disk)
+ assert(W2:GetSettings().appearance=='light' and W2:GetSettings().density=='compact' and W2:GetNavPreference('life.tasks').favorite)
+ h2.failSave=true;assert(W2:SetOption('appearance','dark')==false);assert(W2:GetSettings().appearance=='light')
+ assert(W.Normalize({appearance='future'}).appearance=='dark')
+end)
+Test('new palette preferences all survive durable reload without changing other workspace state',function()
+ local W,S,h=Boot();assert(W:SetNavigation('life.tasks','favorite',true));assert(W:SetOption('density','compact'))
+ for _,name in ipairs({'nord','dusk','dawn','sage'})do
+  assert(W:SetOption('appearance',name),'new appearance rejected: '..name)
+  local W2,S2,h2=Boot(h.disk)
+  assert(W2:GetSettings().appearance==name and W2:GetSettings().density=='compact' and W2:GetNavPreference('life.tasks').favorite)
+  h2.failSave=true;assert(W2:SetOption('appearance','dark')==false);assert(W2:GetSettings().appearance==name)
+  W,S,h=Boot(h.disk)
+ end
+ local options=W:GetAppearanceOptions();assert(#options==8)
+ options[1].id='invalid';assert(W:GetAppearanceOptions()[1].id=='dark','appearance catalog aliases caller state')
+ assert(W.Normalize({appearance='future'}).appearance=='dark')
 end)
 print('WORKSPACE RESULT '..pass..' passed / '..fail..' failed ('.._VERSION..')');if fail>0 then error('workspace failures '..fail)end

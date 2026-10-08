@@ -360,209 +360,24 @@ Test('静态：bridge 不再注册 tools_market_analysis / tools_auction 仍由 
 end)
 
 ------------------------------------------------------------------------
--- Phase 1 Batch B：combat_siege_readiness / tools_reinforce_analysis / tools_portal_profiles
-------------------------------------------------------------------------
-local reinforceCalls = {}
-local reinforceHost = {
-    GetTotalReinforceLevel = function(_, ...) reinforceCalls[#reinforceCalls+1] = { 'GetTotalReinforceLevel', ... }; return 137 end,
-    SuitableLevelForEquipSlotReinforce = function(_, ...) reinforceCalls[#reinforceCalls+1] = { 'SuitableLevelForEquipSlotReinforce', ... }; return 120 end,
-    GetAttributeTotalLevel = function(_, attributeType, ...) reinforceCalls[#reinforceCalls+1] = { 'GetAttributeTotalLevel', attributeType, ... }; return 48 end,
-    GetNextSetApplyLevel = function(_, attributeType, ...) reinforceCalls[#reinforceCalls+1] = { 'GetNextSetApplyLevel', attributeType, ... }; return 50 end,
-    HasNextSetEffect = function(_, attributeType, ...) reinforceCalls[#reinforceCalls+1] = { 'HasNextSetEffect', attributeType, ... }; return true end,
-    GetBundleEffectTopLevel = function(_, ...) reinforceCalls[#reinforceCalls+1] = { 'GetBundleEffectTopLevel', ... }; return 7 end,
-}
-_G.ESRA_OFFENCE, _G.ESRA_DEFENCE, _G.ESRA_SUPPORT = 'ESRA_OFFENCE', 'ESRA_DEFENCE', 'ESRA_SUPPORT'
-_G.X2EquipSlotReinforce = reinforceHost
+-- Phase 1 Batch B：保留 Siege 通用装配契约；2026-10-06 用户删除强化分析/传送配置。
 dofile('features/combat/siege_readiness/rs_siege_readiness_feature.lua')
-dofile('features/tools/reinforce_analysis/rs_reinforce_analysis_feature.lua')
-dofile('features/tools/portal_profiles/rs_portal_profiles_feature.lua')
-local Siege = S.Features.combat_siege_readiness
-local ReinforceFeature = S.Features.tools_reinforce_analysis
-local Portal = S.Features.tools_portal_profiles
-
-Test('BatchB：三个 Feature 各自独立注册且都只注册一次', function()
-    for id, feature in pairs({ combat_siege_readiness = Siege, tools_reinforce_analysis = ReinforceFeature, tools_portal_profiles = Portal }) do
-        assert(type(feature) == 'table', id .. ' not registered by its own file')
-        assert(registrations[id] == 1, id .. ' expected exactly one registration, got ' .. tostring(registrations[id]))
-        assert(registrations[id .. ':impl'] == feature, id .. ' registered implementation mismatch')
+local Siege=S.Features.combat_siege_readiness
+Test('BatchB：保留的 Siege 独立注册且身份与阻塞边界不变',function()
+    assert(Siege and registrations.combat_siege_readiness==1)
+    assert(Siege.Id=='combat_siege_readiness' and Siege.storeId=='v3.business.combat_siege_readiness')
+    assert(Siege.UpdateTopic=='v3.business.combat_siege_readiness.updated')
+    local store=assert(P:GetStore(Siege.storeId));assert(store.owner=='v3.combat_siege_readiness' and store.schemaVersion==1)
+    assert(#Siege.ApiDependencies==0 and Siege.Commands.Refresh)
+    assert(Siege.Authority:Refresh('test') and Siege.Authority.status=='runtime_blocked')
+    assert(#Siege.Authority.rows==1 and Siege.Authority.rows[1].key==Siege.Id..':blocked')
+end)
+Test('BatchB：删除的工具不再装配或保留业务源码',function()
+    for _,id in ipairs({'tools_reinforce_analysis','tools_portal_profiles'})do assert(not S.Features[id] and not registrations[id])end
+    for _,path in ipairs({'features/tools/reinforce_analysis/rs_reinforce_analysis_feature.lua','features/tools/portal_profiles/rs_portal_profiles_feature.lua'})do
+        local f=io.open(path,'rb');if f then f:close();error('retired source remains '..path)end
     end
-end)
-
-Test('BatchB：Feature ID / Store ID / UpdateTopic / Demand owner 不变', function()
-    local cases = {
-        { Siege, 'combat_siege_readiness', 'v3.business.combat_siege_readiness', 'v3.combat_siege_readiness' },
-        { ReinforceFeature, 'tools_reinforce_analysis', 'v3.business.tools_reinforce_analysis', 'v3.tools_reinforce_analysis' },
-        { Portal, 'tools_portal_profiles', 'v3.business.tools_portal_profiles', 'v3.tools_portal_profiles' },
-    }
-    for _, case in ipairs(cases) do
-        local feature, id, storeId, owner = case[1], case[2], case[3], case[4]
-        assert(feature.Id == id, 'Feature Id changed: ' .. tostring(feature.Id))
-        assert(feature.storeId == storeId, id .. ' storeId changed: ' .. tostring(feature.storeId))
-        assert(feature.UpdateTopic == 'v3.business.' .. id .. '.updated', id .. ' UpdateTopic changed')
-        local store = assert(P:GetStore(storeId), id .. ' store not registered')
-        assert(store.owner == owner, id .. ' store owner changed: ' .. tostring(store.owner))
-        assert(store.schemaVersion == 1 and store.lifetime == P.Lifetime.Permanent, id .. ' store schema/lifetime changed')
-        assert(type(feature.Demand) == 'table', id .. ' Demand lease missing')
-    end
-end)
-
-Test('BatchB：命令面只有 Refresh，且不新增 Scheduler 任务/事件订阅', function()
-    for _, feature in ipairs({ Siege, ReinforceFeature, Portal }) do
-        local count = 0
-        for name, fn in pairs(feature.Commands) do
-            count = count + 1
-            assert(name == 'Refresh' and type(fn) == 'function', feature.Id .. ' unexpected command: ' .. tostring(name))
-        end
-        assert(count == 1, feature.Id .. ' command surface changed: ' .. tostring(count))
-    end
-    local tasks = 0
-    for _ in pairs(S.Scheduler.tasks or {}) do tasks = tasks + 1 end
-    assert(tasks == 0, 'Batch B split created scheduler tasks: ' .. tostring(tasks))
-end)
-
-Test('BatchB：Runtime Blocked 两个 Feature 暴露精确阻塞原因而不是空壳', function()
-    for _, case in ipairs({
-        { Siege, 'GetEquippedItemTooltipInfo 的槽位/装分字段和攻城上下文未在当前 RU 实机确认；不猜测装备状态' },
-        { Portal, 'X2Option optionType/返回值语义和个人传送候选集合未在当前 RU 客户端验证；禁止执行猜测写入' },
-    }) do
-        local feature, blocker = case[1], case[2]
-        assert(feature.Authority:Refresh('test'))
-        assert(feature.Authority.status == 'runtime_blocked', feature.Id .. ' status changed: ' .. tostring(feature.Authority.status))
-        assert(feature.Authority.error == blocker, feature.Id .. ' blocker text changed')
-        assert(#feature.Authority.rows == 1 and feature.Authority.rows[1].key == feature.Id .. ':blocked', feature.Id .. ' blocker row shape changed')
-        assert(feature.Authority.rows[1].text == blocker, feature.Id .. ' blocker row text changed')
-        assert(feature.Authority.rows[1].statusText == 'Runtime Blocked', feature.Id .. ' blocker row label changed')
-        local projection = feature:GetProjection()
-        assert(projection.status == 'runtime_blocked' and projection.revision >= 1, feature.Id .. ' projection does not surface the blocker')
-    end
-end)
-
-Test('BatchB：被阻塞 Feature 不声明实现层依赖，Registry 才是它们的依赖 Authority', function()
-    -- 中文维护注释：这两个 Feature 是 blocker-only spec，没有实现层 override，
-    -- 因此 feature.ApiDependencies 为空、FeatureRuntime 走 Registry 声明（native audit 已校验 parity）。
-    assert(#Siege.ApiDependencies == 0, 'siege must not override api dependencies')
-    assert(#Portal.ApiDependencies == 0, 'portal must not override api dependencies')
-    local want = { 'X2EquipSlotReinforce:GetTotalReinforceLevel', 'X2EquipSlotReinforce:GetAttributeTotalLevel',
-        'X2EquipSlotReinforce:GetNextSetApplyLevel', 'X2EquipSlotReinforce:HasNextSetEffect',
-        'X2EquipSlotReinforce:SuitableLevelForEquipSlotReinforce', 'X2EquipSlotReinforce:GetBundleEffectTopLevel' }
-    local have = {}
-    for _, value in ipairs(ReinforceFeature.ApiDependencies) do have[value] = true end
-    for _, value in ipairs(want) do assert(have[value] == true, 'reinforce missing api dependency ' .. value) end
-    local count = 0
-    for _ in pairs(have) do count = count + 1 end
-    assert(count == #want, 'reinforce api dependency set changed: ' .. tostring(count))
-end)
-
-Test('BatchB：强化聚合读取 ready 阶梯，且逐槽位始终 Runtime Blocked', function()
-    assert(ReinforceFeature:Initialize(), 'reinforce store load failed')
-    reinforceCalls = {}
-    assert(ReinforceFeature.Authority:Refresh('test'))
-    assert(ReinforceFeature.Authority.status == 'ready', 'expected ready, got ' .. tostring(ReinforceFeature.Authority.status))
-    local byKey = {}
-    for _, row in ipairs(ReinforceFeature.Authority.rows) do byKey[row.key] = row end
-    for _, key in ipairs({ 'reinforce:total', 'reinforce:suitable', 'reinforce:attr:offence', 'reinforce:attr:defence',
-        'reinforce:attr:support', 'reinforce:bundle', 'reinforce:slot_blocked' }) do
-        assert(byKey[key] ~= nil, 'missing aggregate row: ' .. key)
-    end
-    assert(byKey['reinforce:total'].text:find('等级 137', 1, true) ~= nil, 'total level not projected')
-    assert(byKey['reinforce:attr:offence'].text:find('合计等级 48', 1, true) ~= nil, 'attribute total not projected')
-    assert(byKey['reinforce:attr:offence'].text:find('下一套装档位 50', 1, true) ~= nil, 'next set level not projected')
-    assert(byKey['reinforce:attr:offence'].text:find('存在下一档套装效果', 1, true) ~= nil, 'set effect state not projected')
-    assert(byKey['reinforce:slot_blocked'].statusText == 'Runtime Blocked', 'per-slot row must stay Runtime Blocked')
-    assert(tostring(byKey['reinforce:slot_blocked'].text):find('不会枚举或猜测槽位', 1, true) ~= nil, 'per-slot honesty note changed')
-end)
-
-Test('BatchB：强化读取从不探测 equipSlotIndex（安全边界）', function()
-    -- 中文维护注释：这是搬迁前就成立的安全契约 —— 只允许无参 getter 与 ESRA_* 常参 getter。
-    -- 断言方式：记录每次 Native 调用的实参，全部必须是空或已导出的 ESRA_* 常量，绝不出现整数槽位。
-    local allowed = { ESRA_OFFENCE = true, ESRA_DEFENCE = true, ESRA_SUPPORT = true }
-    assert(#reinforceCalls > 0, 'no native call was recorded')
-    for _, call in ipairs(reinforceCalls) do
-        for index = 2, #call do
-            local value = call[index]
-            assert(allowed[value] == true,
-                'forbidden argument probed in ' .. tostring(call[1]) .. ': ' .. tostring(value))
-        end
-    end
-end)
-
-Test('BatchB：任一聚合 getter 失败降级为 partial 并给出失败明细', function()
-    local original = reinforceHost.GetAttributeTotalLevel
-    reinforceHost.GetAttributeTotalLevel = function() error('reinforce_host_unavailable') end
-    assert(ReinforceFeature.Authority:Refresh('test'))
-    reinforceHost.GetAttributeTotalLevel = original
-    assert(ReinforceFeature.Authority.status == 'partial', 'expected partial, got ' .. tostring(ReinforceFeature.Authority.status))
-    local errorText = tostring(ReinforceFeature.Authority.error)
-    assert(errorText:find('读取失败', 1, true) ~= nil, 'failure detail missing: ' .. errorText)
-    assert(errorText:find('Runtime Blocked', 1, true) ~= nil, 'per-slot honesty note missing from notes')
-    local byKey = {}
-    for _, row in ipairs(ReinforceFeature.Authority.rows) do byKey[row.key] = row end
-    assert(byKey['reinforce:slot_blocked'] ~= nil, 'per-slot row must survive a partial read')
-end)
-
-Test('BatchB：ESRA_* 常量未导出时如实标注，不伪造数值', function()
-    local saved = _G.ESRA_SUPPORT
-    _G.ESRA_SUPPORT = nil
-    assert(ReinforceFeature.Authority:Refresh('test'))
-    _G.ESRA_SUPPORT = saved
-    local support
-    for _, row in ipairs(ReinforceFeature.Authority.rows) do if row.key == 'reinforce:attr:support' then support = row end end
-    assert(support ~= nil, 'support row lost when the constant is missing')
-    assert(tostring(support.text):find('未导出', 1, true) ~= nil, 'missing constant must be labeled, not fabricated')
-    assert(support.statusText == '未提供', 'missing constant status changed: ' .. tostring(support.statusText))
-end)
-
-Test('BatchB：SlotProbeRuntimeBlocked 仍为 true，且 Authority 已在 Feature acceptance', function()
-    assert(ReinforceFeature.SlotProbeRuntimeBlocked == true, 'SlotProbeRuntimeBlocked must stay true')
-    -- 中文维护注释（Phase 3 Batch F，2026-09-29，core-feature-decoupling-1）：该真值原先由 FoundationGate
-    -- 的 v3_feature_truth_contract 直接检查；Authority 已搬到 Feature 自己的 acceptance。断言改成
-    -- “Foundation 不得再引用、acceptance 必须引用”——强度不变，而 Core 不再认识这个业务 Feature。
-    local handle = assert(io.open('core/rs_foundation_gate.lua', 'rb'))
-    local gate = handle:read('*a'); handle:close()
-    assert(gate:find('SlotProbeRuntimeBlocked', 1, true) == nil,
-        'FoundationGate must no longer reference the reinforce runtime-block flag')
-    assert(gate:find('slot_probe_runtime_block', 1, true) == nil,
-        'FoundationGate must no longer own the reinforce truth contract')
-    local acc = assert(io.open('features/tools/reinforce_analysis/rs_reinforce_analysis_acceptance.lua', 'rb'))
-    local accText = acc:read('*a'); acc:close()
-    assert(accText:find('SlotProbeRuntimeBlocked', 1, true) ~= nil
-        and accText:find('slot_probe_runtime_block', 1, true) ~= nil,
-        'the reinforce acceptance must own the runtime-block truth contract')
-end)
-
-Test('BatchB：X2EquipSlotReinforce 未导出时 fail-closed 为 unavailable', function()
-    -- 中文维护注释：`ReinforceApi` 是加载期捕获的宿主引用，无法在已加载的实例上改。
-    -- 因此用第二个独立 ReplicatedSuite（H.Boot 重建）验证“宿主未导出”这一 fail-closed 分支，
-    -- 测完立刻恢复全局，避免影响其它断言。
-    local outerSuite = ReplicatedSuite
-    local savedHost = _G.X2EquipSlotReinforce
-    local probeSuite = H.Boot()
-    _G.X2EquipSlotReinforce = nil
-    ReplicatedSuite = probeSuite
-    dofile('features/shared/rs_feature_slice_factory.lua')
-    dofile('features/tools/reinforce_analysis/rs_reinforce_analysis_feature.lua')
-    local probeFeature = probeSuite.Features.tools_reinforce_analysis
-    -- 中文维护注释：Authority:Refresh 只返回 true，状态/错误必须从 Authority.status / .error 读取。
-    assert(probeFeature.Authority:Refresh('test'))
-    local status, err = probeFeature.Authority.status, probeFeature.Authority.error
-    ReplicatedSuite = outerSuite
-    _G.X2EquipSlotReinforce = savedHost
-    assert(status == 'unavailable', 'missing host must fail closed, got ' .. tostring(status))
-    assert(tostring(err):find('未导出', 1, true) ~= nil, 'missing host reason changed: ' .. tostring(err))
-    assert(#probeFeature.Authority.rows == 0, 'missing host must not fabricate rows')
-    assert(probeFeature.SlotProbeRuntimeBlocked == true, 'flag must be set even when the host is missing')
-end)
-
-Test('静态：bridge 不再注册 Batch B 三个 Feature', function()
-    assert(bridge_retired(), 'rs_business_bridge.lua must stay retired')
-    for _, id in ipairs({ 'combat_siege_readiness', 'tools_reinforce_analysis', 'tools_portal_profiles' }) do
-        assert(registrations[id] == 1, id .. ' must stay registered exactly once')
-    end
-    for _, path in ipairs({ 'features/combat/siege_readiness/rs_siege_readiness_feature.lua',
-        'features/tools/reinforce_analysis/rs_reinforce_analysis_feature.lua',
-        'features/tools/portal_profiles/rs_portal_profiles_feature.lua' }) do
-        local probe = assert(io.open(path, 'rb')); probe:close()
-    end
+    assert(bridge_retired())
 end)
 
 ------------------------------------------------------------------------
@@ -951,10 +766,11 @@ Test('BatchE：Feature ID / Store ID / owner / UpdateTopic 不变', function()
     assert(RangeAssistSplit.MultiCircleContractVersion == 1, 'range MultiCircleContractVersion changed')
 end)
 
-Test('BatchE：公开 Commands 精确集合不变', function()
+-- 2026-10-03 用户新增“全放”；保留全部原命令，新增一个公开动作，Native 依赖不变。
+Test('BatchE：公开 Commands 集合含全放且保留原动作', function()
     local expected = {
         { BagToolsSplit, { 'Refresh', 'DepositBank', 'DepositCoffer', 'WithdrawBank', 'WithdrawCoffer', 'QuickWithdraw',
-            'QuickDeposit', 'QuickCancel', 'DepositCategoryBank', 'DepositCategoryCoffer', 'DepositCategoryCurrent',
+            'QuickDeposit', 'QuickDepositAll', 'QuickCancel', 'DepositCategoryBank', 'DepositCategoryCoffer', 'DepositCategoryCurrent',
             'CancelCategoryBatch', 'SetBatchConfig', 'SetBatchCategory', 'SetBatchTarget', 'SetBatchLimit',
             'SetBlacklistEnabled', 'SetBlacklistScope', 'AddBlacklistItem', 'RemoveBlacklistItem', 'AddBlacklistCategory',
             'RemoveBlacklistCategory', 'AddGlobalBlacklistItem', 'RemoveGlobalBlacklistItem', 'ResolveAndAddBlacklistItem' } },
@@ -1010,10 +826,10 @@ Test('BatchE：bag 的三个任务名与共享扫描上界保持唯一 Authority
     assert(text:find('local function RestoreState', 1, true) == nil, 'dead RestoreState must not come back')
 end)
 
-Test('BatchE：静态 —— bridge 文件已退役，且 15 个 Feature 全部只注册一次', function()
+Test('BatchE：静态 —— bridge 文件已退役，且保留的 13 个 Feature 全部只注册一次', function()
     assert(bridge_retired(), 'rs_business_bridge.lua must stay retired')
-    local expected = { tools_social = 1, tools_market_analysis = 1, combat_siege_readiness = 1, tools_reinforce_analysis = 1,
-        tools_portal_profiles = 1, combat_boss_alerts = 1, combat_target_monitor = 1, combat_buff_cap = 1,
+    local expected = { tools_social = 1, tools_market_analysis = 1, combat_siege_readiness = 1,
+        combat_boss_alerts = 1, combat_target_monitor = 1, combat_buff_cap = 1,
         combat_raid_recruitment = 1, combat_team_tools = 1, tools_craft = 1, tools_auction = 1,
         tools_bag = 1, combat_unit_lines = 1, combat_range_assist = 1 }
     for id, count in pairs(expected) do
@@ -1021,8 +837,8 @@ Test('BatchE：静态 —— bridge 文件已退役，且 15 个 Feature 全部�
     end
     local seen = 0
     for _ in pairs(registrations) do seen = seen + 1 end
-    -- registrations 里每个 Feature 占两个键（id 与 id:impl），因此期望 30 个键
-    assert(seen == 30, 'unexpected extra registrations: ' .. tostring(seen))
+    -- registrations 里每个 Feature 占两个键（id 与 id:impl），因此期望 26 个键
+    assert(seen == 26, 'unexpected extra registrations: ' .. tostring(seen))
 end)
 
 ------------------------------------------------------------------------
@@ -1111,7 +927,7 @@ local LifeSlices = {
             'X2Equipment:GetEquippedItemType', 'X2Equipment:GetEquippedItemTooltipInfo',
             'X2Craft:GetCraftTypeByItemType', 'X2Craft:GetCraftMaterialInfo', 'X2Craft:GetCraftProductInfo',
             'X2Auction:AskMarketPrice', 'X2Auction:GetLowestPrice', 'X2Auction:SearchAuctionArticle',
-            'X2Auction:GetSearchedItemCount', 'X2Auction:GetSearchedItemInfo' },
+            'X2Auction:GetSearchedItemCount', 'X2Auction:GetSearchedItemTotalCount', 'X2Auction:GetSearchedItemInfo' },
         contractVersions = {
             AutoRefreshRuntimeContractVersion = 1, AutoRefreshBackgroundLeaseContractVersion = 2,
             MaterialPriceCacheContractVersion = 1, MultiRowQuoteJobsContractVersion = 1,

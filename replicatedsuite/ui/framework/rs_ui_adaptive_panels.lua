@@ -656,6 +656,7 @@ RSUI:RegisterType("SplitView", function(spec)
         local color = (S.VisualTokens and S.VisualTokens:Color("separator")) or {0.08,0.28,0.31,0.72}
         local d = dividerVisual:CreateColorDrawable(color[1],color[2],color[3],color[4] or 0.72,"overlay")
         if d and d.AddAnchor then d:AddAnchor("TOPLEFT",dividerVisual,0,0); d:AddAnchor("BOTTOMRIGHT",dividerVisual,0,0) end
+        if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(dividerVisual,d,'decorations.split') end
     end
     if dividerDrag == nil then
         c.rsUiDegraded, c.rsUiDegradedReason = true, "split_divider_drag_create_failed"

@@ -9,9 +9,15 @@ local function Test(name, fn)
     else failed=failed+1; print('FAIL visual-settings-input '..name..': '..tostring(err)) end
 end
 
-local function Boot(id)
-    local h=Base({width=980,height=760}); assert(h.page:OnDeactivated())
+local function Boot(id, reused, strict)
+    local h=reused or Base({width=980,height=760})
+    if not reused then assert(h.page:OnDeactivated()) end
     local S=h.S
+    if not reused then -- 中文维护：连续开页回归保留同一 Generation/RSUI 消耗 ID 表，不重建宿主掩盖碰撞。
+    -- 维护（2026-09-30，range-continuity-1）：Gear 的旧测试宿主只有 RegisterFactory，
+    -- Business Page 已采用真实 PageHost Consumer 生命周期桥；补齐生产加载顺序，
+    -- 不用返回 true 的空桩掩盖订阅/租约行为，也不改生产输入逻辑来迁就过期测试宿主。
+    dofile('presentation/v3/shell/rs_v3_page_host.lua')
     if type(S.UI.CreateSlider) ~= 'function' then
         S.UI.CreateSlider=function(_,parent,wid,x,y,w,ht,min,max,step,value)
             local n=h.Native(parent,wid,x,y,w,ht);n.value=tonumber(value) or tonumber(min) or 0;n.min,n.max,n.step=min,max,step;n.pickable=true
@@ -34,11 +40,16 @@ local function Boot(id)
         end
     end
     dofile('ui/framework/rs_ui_settings_foundation.lua')
+    end
     local projection
     if id=='combat_unit_lines' then
         projection={revision=1,status='ready',rows={},pointCount=24,pointSize=4,opacity=0.78,refreshMs=50,
             showTarget=true,showTargetTarget=true,showFocusTarget=true,showFocusTargetTarget=true,
             pairPoints={},pairSizes={},colors={}}
+    elseif id=='combat_team_tools' then
+        projection={revision=1,status='ready',rows={},roleOptions={{value=2,text='治疗'}},autoRoleEnabled=true}
+    elseif id=='combat_sac_highlight' then
+        projection={revision=1,status='ready',rows={},sacEnabled=true,savedMarkerCount=1}
     else
         projection={revision=1,status='ready',rows={{circleId=1,statusText='实时',tone='success'}},circleCount=1,enabledCircleCount=1,
             circles={{id=1,name='范围圆 1',enabled=true,radius=17,pointCount=24,pointSize=15,opacity=0.68,color={0.2,0.82,1}}}}
@@ -62,6 +73,14 @@ local function Boot(id)
         F.Commands.SetPairPoints=function(_,key,v)projection.pairPoints[key]=v;return true end
         F.Commands.SetPairSize=function(_,key,v)projection.pairSizes[key]=v;return true end
         F.Commands.SetPairColor=function(_,key,r,g,b)projection.colors[key]={r,g,b};return true end
+    elseif id=='combat_team_tools' then
+        F.Commands.SetRole=function(_,role)h.lastRole=role;return true end
+        F.Commands.SetAutoRoleEnabled=function(_,value)projection.autoRoleEnabled=value;return true end
+    elseif id=='combat_sac_highlight' then
+        F.Commands.SetSacHighlightEnabled=function(_,value)projection.sacEnabled=value;return true end
+        F.Commands.SaveRaidMarkers=function()return true,1 end
+        F.Commands.RestoreRaidMarkers=function()return true,1 end
+        F.Commands.ClearSavedRaidMarkers=function()projection.savedMarkerCount=0;return true end
     else
         local function C() return projection.circles[1] end
         F.Commands.AddCircle=function(_)return true end
@@ -74,13 +93,20 @@ local function Boot(id)
         F.Commands.SetCircleColor=function(_,circleId,r,g,b)C().color={r,g,b};return true end
     end
     S.Features[id]=F
-    S.FeatureRegistry={Get=function(_,wanted) if wanted==id then return {name=id,description='test'} end return {name=wanted,description='test'} end}
-    S.FeatureRuntime={IsEnabled=function(_,wanted)return wanted==id end,
-        SetPreferredEnabled=function(_,wanted,v)F.enabled=v;return true end}
-    dofile('presentation/v3/pages/rs_v3_business_pages.lua')
+    S.FeatureRegistry={Get=function(_,wanted)return {id=wanted,name=wanted,description='test'} end,
+        GetByRoute=function(_,route)return {id=route=='combat.team_tools' and 'combat_team_tools' or 'combat_sac_highlight',name=route} end}
+    S.FeatureRuntime={IsEnabled=function(_,wanted)return S.Features[wanted] and S.Features[wanted].enabled==true end,
+        SetPreferredEnabled=function(_,wanted,v)S.Features[wanted].enabled=v;return true end}
+    if not reused then dofile('presentation/v3/pages/rs_v3_business_pages.lua') end
     local ext=h.Native(nil,'visual_settings_external_'..id,0,0,980,760)
-    local route=id=='combat_unit_lines' and 'combat.unit_lines' or 'combat.range_assist'
-    local root,err=S.UIV3.PageHost.factories[route](ext,route);assert(root,err)
+    local route=({combat_unit_lines='combat.unit_lines',combat_range_assist='combat.range_assist',combat_team_tools='combat.team_tools',combat_sac_highlight='combat.sac_highlight'})[id]
+    local root,err
+    if strict then
+        local host=S.UIV3.PageHost
+        if not reused then assert(host:Attach(ext)) end
+        root,err=host:CreatePage(route) -- 中文维护：执行生产严格构建/失败隔离路径，而非单独调用页面工厂。
+    else root,err=S.UIV3.PageHost.factories[route](ext,route) end
+    assert(root,err)
     h.page=root;h.widgets={}
     local function Index(n)h.widgets[n.id]=n;for _,ch in ipairs(n.children or {})do Index(ch)end end
     root:Layout(0,0,980,760);Index(root);assert(root:OnActivated())
@@ -242,5 +268,36 @@ Test('fixed normalized opacity remains bounded and never expands',function()
     assert(minValue==0.1 and maxValue==1,'fixed opacity slider expanded unexpectedly')
 end)
 
+Test('role and Sac pages build separate controls and dispatch their own commands',function()
+    local role=Boot('combat_team_tools')
+    assert(role.widgets.v3_business_combat_team_tools_role_group)
+    assert(not role.widgets.v3_business_combat_team_tools_assist_group)
+    local dropdown=assert(role.widgets.v3_business_combat_team_tools_role_input)
+    dropdown:SetValue(2)
+    assert(role.widgets.v3_business_combat_team_tools_set_role.onClick())
+    assert(role.lastRole==2,'role dropdown callback lost its local binding')
+    assert(role.widgets.v3_business_combat_team_tools_auto_role.onClick())
+    assert(role.projection.autoRoleEnabled==false)
+    assert(role.page:OnDeactivated())
+    local sac=Boot('combat_sac_highlight')
+    assert(not sac.widgets.v3_business_combat_sac_highlight_role_group)
+    assert(sac.widgets.v3_business_combat_sac_highlight_assist_group)
+    assert(sac.widgets.v3_business_combat_sac_highlight_sac_toggle.onClick())
+    assert(sac.projection.sacEnabled==false)
+    assert(sac.widgets.v3_business_combat_sac_highlight_mark_save.onClick())
+    assert(sac.widgets.v3_business_combat_sac_highlight_mark_restore.onClick())
+    assert(sac.page:OnDeactivated())
+end)
+Test('both team pages coexist and reopen in one generation in either order',function()
+    for _,order in ipairs({{'combat_team_tools','combat_sac_highlight'},{'combat_sac_highlight','combat_team_tools'}})do
+        local h=Boot(order[1],nil,true);local first=h.page;local firstRoute=h.route
+        assert(first:OnDeactivated())
+        h=Boot(order[2],h,true)
+        local host=h.S.UIV3.PageHost
+        assert(host.stats.buildFailures==0 and next(host.failedPages)==nil,'second page was quarantined')
+        assert(first~=h.page and host:CreatePage(firstRoute)==first,'reopen must reuse its own cached page')
+        assert(h.page:OnDeactivated());assert(first:OnActivated());assert(first:Refresh());assert(first:OnDeactivated())
+    end
+end)
 print('VISUAL SETTINGS INPUT RESULTS: '..passed..' passed / '..failed..' failed')
 assert(failed==0,tostring(failed)..' visual settings input regressions')

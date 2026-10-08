@@ -165,8 +165,9 @@ local function PersistSpec(spec, reason)
     F.metrics.stateWrites = (tonumber(F.metrics.stateWrites) or 0) + 1
     -- 维护（2026-09-16，geometry-edge-durability-1）：拖动/缩放结束属于低频用户事务边沿。
     -- 位置若仍等默认 250ms Dirty 窗口，紧接退出客户端时可能只移动了 Native 却没来得及进入
-    -- 持久化调度。geometry 使用 delay=0 只推进已有 Persistence scheduler，不增加 Tick；透明度/
-    -- 字体等连续调整仍保留去抖，避免高频写入。
+    -- 持久化调度。geometry 传入 delay=0，但真正耐久由所属 Feature/Aux Store 在 geometry/
+    -- layout_reset/minimized 边沿 SaveStore + 回读完成；MarkDirty(0) 本身不会写盘。
+    -- 透明度/字体等连续调整仍保留去抖，避免高频写入。
     local delay = tostring(reason or "") == "geometry" and 0 or math.max(0, tonumber(spec.persistDelayMs) or 250)
     local ok, err = SafeCall(spec.persist, tostring(reason or "state"), delay)
     if ok ~= true then

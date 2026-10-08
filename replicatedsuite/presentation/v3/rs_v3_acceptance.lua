@@ -48,7 +48,7 @@ A.migratedPresentation = {
     { route = "combat.unit_lines" },
     { route = "combat.range_assist" },
     { route = "combat.buff_cap" },
-    { route = "combat.team_tools" },
+    { route = "combat.team_tools" }, { route = "combat.sac_highlight" }, -- 中文维护：职责/牺牲独立页面都必须有工厂。
     { route = "combat.raid_recruitment" },
     { route = "combat.siege_readiness" },
     { route = "combat.gear", widget = "combat.gear.quick", modal = "v3_gear_quick_settings_modal" },
@@ -58,7 +58,6 @@ A.migratedPresentation = {
     { route = "life.treasure" },
     { route = "life.fishing" },
     { route = "life.housing" },
-    { route = "life.butler" },
     { route = "life.tasks", widget = "life.tasks" },
     { route = "tools.instance_browser" },
     { route = "tools.bag_organizer" },
@@ -67,10 +66,6 @@ A.migratedPresentation = {
     { route = "tools.market_analysis" },
     { route = "tools.social" },
     { route = "tools.feature_profiles", widget = "tools.feature_profiles.quick" },
-    { route = "tools.hotkey_profiles" },
-    { route = "tools.portal_profiles" },
-    { route = "tools.reinforce_analysis" },
-    { route = "tools.random_shop" },
     { route = "combat.raid_readiness" },
 }
 
@@ -281,6 +276,7 @@ function A:RunMatrix()
 
     local bagTools = S.Features and S.Features.tools_bag or nil
     local bagQuickPresenter = S.UIV3 and S.UIV3.BagQuickOverlay or nil
+    local bagSettingsPresenter = S.UIV3 and S.UIV3.BagSettingsFloatingV3 or nil
     local inventorySnapshot = S.Services and S.Services.InventorySnapshotV3 or nil
     if type(inventorySnapshot) ~= "table" or (tonumber(inventorySnapshot.SnapshotContractVersion) or 0) < 1
         or (tonumber(inventorySnapshot.PhysicalBagAuthorityContractVersion) or 0) < 1
@@ -293,6 +289,14 @@ function A:RunMatrix()
         or (tonumber(bagTools.ProductBlacklistUxContractVersion) or 0) < 1
         or (tonumber(bagTools.BlacklistNameMetadataContractVersion) or 0) < 1
         or (tonumber(bagTools.BlacklistExplicitLookupContractVersion) or 0) < 1
+        or (tonumber(bagTools.AllDepositContractVersion) or 0) < 1
+        or (tonumber(bagTools.NativeBagAnchorContractVersion) or 0) < 1 or type(bagTools.GetQuickBagAnchor) ~= "function"
+        or type(bagTools.Commands) ~= "table" or type(bagTools.Commands.QuickDepositAll) ~= "function"
+        or type(bagSettingsPresenter) ~= "table" or type(bagSettingsPresenter.Open) ~= "function"
+        or type(bagQuickPresenter) ~= "table" or (tonumber(bagQuickPresenter.FourButtonContractVersion) or 0) < 1
+        or (tonumber(bagQuickPresenter.FreePlacementContractVersion) or 0) < 1
+        or (tonumber(bagQuickPresenter.DurablePlacementContractVersion) or 0) < 1
+        or type(bagQuickPresenter.ResetPosition) ~= "function"
         or (tonumber(bagTools.RUFourValueWindowVisibilityContractVersion) or 0) < 2
         or (tonumber(bagTools.NativeVisibilityShapeContractVersion) or 0) < 1
         or (tonumber(bagTools.SurfaceVisibilitySplitContractVersion) or 0) < 1
@@ -323,7 +327,7 @@ function A:RunMatrix()
         or type(bagTools.Commands.DepositCategoryCurrent) ~= "function"
         or (tonumber(bagTools.BatchTargetAutoContractVersion) or 0) < 1
         or type(businessPagesContract) ~= "table" or (tonumber(businessPagesContract.bagProductUxContractVersion) or 0) < 2
-        or type(bagQuickPresenter) ~= "table" or (tonumber(bagQuickPresenter.version) or 0) < 9
+        or type(bagQuickPresenter) ~= "table" or (tonumber(bagQuickPresenter.version) or 0) < 10
         or (tonumber(bagQuickPresenter.ReleasedRootRecoveryContractVersion) or 0) < 1
         or (tonumber(bagQuickPresenter.ReloadVisibilityContractVersion) or 0) < 2
         or (tonumber(bagQuickPresenter.NativeTransientHostContractVersion) or 0) < 2
@@ -414,6 +418,7 @@ function A:RunMatrix()
     -- 中文维护注释（2026-09-16）：Acceptance 与 FoundationGate 使用同一职责/生命周期最小契约；
     -- 避免页面能打开但 auto-role 因未持有 TeamRoster 或 8+9+14 仍映射 tank 而静默失效。验收只读，不执行 Native 写。
     if type(teamTools) ~= "table" or (tonumber(teamTools.TeamRoleContractVersion) or 0) < 2
+        or (tonumber(teamTools.AutoRoleDefaultOnContractVersion) or 0) < 1 -- 中文维护：默认职责语义归职责验收，牺牲之舞验收不借用另一 Feature。
         or (tonumber(teamTools.AutoRoleContractVersion) or 0) < 3 -- 中文维护注释（2026-09-16）：确保自动职责生命周期修复本体随包存在，而非只有静态映射。
         or (tonumber(teamTools.AutoRoleCatalogContractVersion) or 0) < 2
         or (tonumber(teamTools.AutoRoleRosterLeaseContractVersion) or 0) < 1
@@ -424,20 +429,20 @@ function A:RunMatrix()
         or type(dancerHealerRole) ~= "table" or tostring(dancerHealerRole.role or "") ~= "healer" then
         failures[#failures + 1] = "team_role_catalog_lifecycle_contract_v4"
     end
+    local teamVisual = S.Features and S.Features.combat_sac_highlight or nil -- 中文维护：视觉验收检查独立 Feature，职责验收仍在原段。
     local teamSacOverlay = S.UIV3 and S.UIV3.TeamSacOverlay or nil
-    if type(teamTools) ~= "table" or (tonumber(teamTools.TeamVisualContractVersion) or 0) < 2 -- 中文维护注释：v2 要求新用户牺牲之舞默认开启且 schema1 旧关闭可迁移；Consumer 生命周期仍由 Feature Demand 控制。
-        or (tonumber(teamTools.TeamMarkerSnapshotContractVersion) or 0) < 1 -- 中文维护注释：标记恢复继续执行原串行 readback 校验，本轮不改写 marker 权限边界。
-        or (tonumber(teamTools.TeamSacContractVersion) or 0) < 2 -- 中文维护注释：拒绝遗漏 schema2/default-on Store 的增量包。
-        or (tonumber(teamTools.AutoRoleDefaultOnContractVersion) or 0) < 1 -- 中文维护注释：自动职责空 Store 默认 true 与旧 false 保留必须同时存在。
-        or type(teamTools.Commands) ~= "table"
-        or type(teamTools.Commands.SetSacHighlightEnabled) ~= "function"
-        or type(teamTools.Commands.SaveRaidMarkers) ~= "function"
-        or type(teamTools.Commands.RestoreRaidMarkers) ~= "function"
+    if type(teamVisual) ~= "table" or (tonumber(teamVisual.TeamVisualContractVersion) or 0) < 2 -- 中文维护注释：v2 要求新用户牺牲之舞默认开启且 schema1 旧关闭可迁移；Consumer 生命周期仍由 Feature Demand 控制。
+        or (tonumber(teamVisual.TeamMarkerSnapshotContractVersion) or 0) < 1 -- 中文维护注释：标记恢复继续执行原串行 readback 校验，本轮不改写 marker 权限边界。
+        or (tonumber(teamVisual.TeamSacContractVersion) or 0) < 2 -- 中文维护注释：拒绝遗漏 schema2/default-on Store 的增量包。
+        or type(teamVisual.Commands) ~= "table"
+        or type(teamVisual.Commands.SetSacHighlightEnabled) ~= "function"
+        or type(teamVisual.Commands.SaveRaidMarkers) ~= "function"
+        or type(teamVisual.Commands.RestoreRaidMarkers) ~= "function"
         or type(teamSacOverlay) ~= "table" or (tonumber(teamSacOverlay.TeamSacPresentationContractVersion) or 0) < 1 then
         failures[#failures + 1] = "team_visual_marker_contract_v2" -- 中文维护注释：故障键升 v2，实机诊断可直接区分“旧视觉契约缺失”与“.18.197 默认值/迁移遗漏”。
     end
     local businessPagesContract = S.UIV3 and S.UIV3.BusinessPagesContract or nil -- 中文维护注释：团队中心布局属于 Presentation contract；这里只验证分区版本，不把页面结构反向作为 TeamTools Domain Authority。
-    if type(businessPagesContract) ~= "table" or (tonumber(businessPagesContract.teamCenterLayoutContractVersion) or 0) < 1 then
+    if type(businessPagesContract) ~= "table" or (tonumber(businessPagesContract.teamFeatureSplitContractVersion) or 0) < 1 then
         failures[#failures + 1] = "team_center_layout_contract_v1" -- 中文维护注释：防止后续页面合并时重新露出已安全停用的成员移动表单或恢复无意义成本列。
     end
 

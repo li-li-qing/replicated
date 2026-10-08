@@ -518,7 +518,10 @@ function UIX:CreateOverlayWindow(id, explicitOwner)
         -- application/world and every child dot renders invisible.
         local priority = S.UITokens and type(S.UITokens.Number) == "function" and S.UITokens:Number("layer.popupPriority", 10000) or 10000
         if type(window.SetDrawPriority) == "function" then pcall(function() window:SetDrawPriority(priority) end) end
-        if window.AddAnchor ~= nil then window:AddAnchor("TOPLEFT", UIParent, 0, 0) end
+        -- 维护（overlay-root-anchor-1）：实机日志在此拒绝 UIParent Table 参数。
+        -- 复用同文件的根锚点转换，Native 用 "UIParent"，下方 Diff 缓存仍持有真实对象；
+        -- 不改变层级、拾取、坐标或刷新频率。避免构造被隔离而影响世界 HUD 显示。
+        if window.AddAnchor ~= nil then window:AddAnchor("TOPLEFT", RootAnchorParent(UIParent), 0, 0) end
         -- Reference hosts stay small; child dot anchors overflow the extent
         -- freely (rp_ui.lua EnsureLinesHost SetExtent(200,200)).
         if window.SetExtent ~= nil then window:SetExtent(200, 200) end
@@ -599,8 +602,10 @@ function UIX:SetEditBoxFocusVisual(edit, focused)
     edit.rsUiInputFocusVisual = focused
     local border = edit.rsUiEditBorderDrawable
     if border ~= nil and type(border.SetColor) == "function" then
-        local c = focused and EDIT_BORDER_FOCUS or EDIT_BORDER_IDLE
-        local ok = pcall(function() border:SetColor(c[1], c[2], c[3], c[4]) end)
+        local ok = pcall(function()
+            if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(edit,border,focused and 'input.focus' or 'input.border')
+            else local c = focused and EDIT_BORDER_FOCUS or EDIT_BORDER_IDLE;border:SetColor(c[1],c[2],c[3],c[4]) end
+        end)
         if ok ~= true then return false end
     end
     return true
@@ -616,7 +621,9 @@ function UIX:ConfigureEditCaret(edit, height)
     local outer = math.max(18, math.floor(tonumber(height) or 24))
     local desiredVisual = math.max(11, math.min(19, outer - 6))
     local nativeHalf = math.max(5, math.min(9, math.floor((desiredVisual - 1) * 0.5)))
-    if type(edit.SetCursorColor) == "function" then edit:SetCursorColor(1.00, 0.82, 0.36, 1.00) end
+    if type(edit.SetCursorColor) == "function" then
+        local c=S.UITokens and S.UITokens.input and S.UITokens.input.caret or {1,.82,.36,1};edit:SetCursorColor(unpack(c))
+    end
     if type(edit.SetCursorHeight) == "function" then
         edit:SetCursorHeight(nativeHalf)
         edit.rsUiCursorHalfHeight = nativeHalf
@@ -686,8 +693,11 @@ function UIX:CreateEditBox(parent, id, x, y, width, height, maxLength)
             edit.rsUiEditBorderDrawable = border
             if border and border.AddAnchor then border:AddAnchor("TOPLEFT",edit,0,0); border:AddAnchor("BOTTOMRIGHT",edit,0,0) end
             local bg=edit:CreateColorDrawable(0.015,0.022,0.032,0.995,"background")
+            edit.rsUiEditBackgroundDrawable=bg
             if bg and bg.AddAnchor then bg:AddAnchor("TOPLEFT",edit,1,1); bg:AddAnchor("BOTTOMRIGHT",edit,-1,-1) end
+            if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(edit,bg,'input.background') end
         end
+        if S.Theme and S.Theme.RefreshTextColor then edit.rsThemeTextRole='input.text';S.Theme:RefreshTextColor(edit) end
         edit:AddAnchor("TOPLEFT", anchorParent, x or 0, y or 0)
         edit:Show(true)
         UIX:SetEditBoxFocusVisual(edit, false)
@@ -752,8 +762,11 @@ function UIX:CreateMultiEditBox(parent, id, x, y, width, height, maxLength)
             edit.rsUiEditBorderDrawable = border
             if border and border.AddAnchor then border:AddAnchor("TOPLEFT",edit,0,0); border:AddAnchor("BOTTOMRIGHT",edit,0,0) end
             local bg=edit:CreateColorDrawable(0.015,0.022,0.032,0.995,"background")
+            edit.rsUiEditBackgroundDrawable=bg
             if bg and bg.AddAnchor then bg:AddAnchor("TOPLEFT",edit,1,1); bg:AddAnchor("BOTTOMRIGHT",edit,-1,-1) end
+            if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(edit,bg,'input.background') end
         end
+        if S.Theme and S.Theme.RefreshTextColor then edit.rsThemeTextRole='input.text';S.Theme:RefreshTextColor(edit) end
         edit:AddAnchor("TOPLEFT", anchorParent, x or 0, y or 0)
         edit:Show(true)
         UIX:SetEditBoxFocusVisual(edit, false)
@@ -886,6 +899,7 @@ function UIX:CreateSlider(parent, id, x, y, width, height, minimum, maximum, ste
         if slider.CreateColorDrawable ~= nil then
             local track = slider:CreateColorDrawable(0.26, 0.31, 0.37, 0.95, "background")
             slider.rsTrack = track
+            if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(slider,track,'slider.track') end
         end
 
         local thumb = S.NativeObjectFactory:CreateChild(slider, "emptywidget", S.PhysicalId(id .. "_thumb"), 0, true)
@@ -897,6 +911,9 @@ function UIX:CreateSlider(parent, id, x, y, width, height, minimum, maximum, ste
             if outer and outer.AddAnchor then outer:AddAnchor("TOPLEFT", thumb, 0, 0); outer:AddAnchor("BOTTOMRIGHT", thumb, 0, 0) end
             local inner = thumb:CreateColorDrawable(0.18, 0.21, 0.25, 0.98, "artwork")
             if inner and inner.AddAnchor then inner:AddAnchor("TOPLEFT", thumb, 2, 2); inner:AddAnchor("BOTTOMRIGHT", thumb, -2, -2) end
+            if S.Theme and S.Theme.BindColorDrawable then
+                S.Theme:BindColorDrawable(slider,outer,'slider.thumbBorder');S.Theme:BindColorDrawable(slider,inner,'slider.thumb')
+            end
         end
         slider.rsThumbButton = thumb
         thumb:Show(true)
@@ -983,7 +1000,8 @@ function UIX:CreateSlider(parent, id, x, y, width, height, minimum, maximum, ste
             if accepted ~= true then error("slider drag Enable rejected") end
             if ConfigureNativePickable(drag, target.rsEnabled) ~= true then error("slider drag hit-test unavailable") end
             if target.rsTrack ~= nil and type(target.rsTrack.SetColor) == "function" then
-                if target.rsEnabled then target.rsTrack:SetColor(0.26, 0.31, 0.37, 0.95)
+                if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(target,target.rsTrack,target.rsEnabled and 'slider.track' or 'slider.disabled')
+                elseif target.rsEnabled then target.rsTrack:SetColor(0.26, 0.31, 0.37, 0.95)
                 else target.rsTrack:SetColor(0.16, 0.18, 0.21, 0.55) end
             end
             if target.rsThumbButton ~= nil and target.rsThumbButton.Show ~= nil then target.rsThumbButton:Show(true) end

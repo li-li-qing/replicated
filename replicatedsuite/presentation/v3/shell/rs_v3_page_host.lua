@@ -213,6 +213,11 @@ function H:CreatePage(route)
     end
 
     local feature = S.FeatureRegistry and S.FeatureRegistry:GetByRoute(route) or nil
+    -- 同一功能的隐藏语义视图可以复用 Router 的 featureId；不另造功能或启停 Authority。
+    if feature==nil and S.FeatureRegistry and type(S.FeatureRegistry.Get)=="function" and S.UIV3 and S.UIV3.Router and type(S.UIV3.Router.Get)=="function" then
+        local routed=S.UIV3.Router:Get(route)
+        if routed and routed.featureId then feature=S.FeatureRegistry:Get(routed.featureId) end
+    end
     local factory = self.factories[route] or self.fallbackFactory
     if type(factory) ~= "function" then return nil, "page factory unavailable: " .. tostring(route) end
 
@@ -257,6 +262,18 @@ function H:CreatePage(route)
 end
 
 function H:ActivateControls(route)
+    local page = self.pages[route]
+    local compact = page ~= nil and page.compactPageChrome == true
+    if self.compactPageChrome ~= compact then
+        self.compactPageChrome = compact
+        if self.frame then
+            self.frame.gap = compact and 2 or 6
+            self.frame:InvalidateMeasure("page_chrome_changed")
+        end
+        if self.controlsSwitcher then
+            self.controlsSwitcher:SetSlot({ size = "fixed", height = compact and 24 or 32, hAlign = "fill" })
+        end
+    end
     local bar = self.moduleControls[route]
     if not bar or not self.controlsSwitcher then return true end
     if self.activeControlsRoute ~= route then

@@ -11,12 +11,14 @@
 --      + GetCraftMaterialInfo keyed by the ratio row's product itemType. The
 --      craft is trusted only after its product side names the queried itemType.
 --      On-demand, serialized at 250ms, cached per itemType for the session.
---   2. Shared static families by localized keyword (larder 蜂蜜/奶酪/药材,
+--   2. Verified product ItemID, then exact legacy name, select a complete static
+--      recipe; a conflicting origin or database signature rejects that recipe.
+--   3. Shared static families by localized keyword (larder 发酵/陈化蜂蜜/奶酪/药材,
 --      肥料/时空碎片/蓝盐运输) — recipes identical in every zone.
---   3. Region Authority + localized family tail: originZoneId picks the zone
+--   4. Region Authority + localized family tail: originZoneId picks the zone
 --      (nameEn + tradeQuality from the shared zone catalog); localized text
 --      only selects the family tail (特制特产=Gilda / 传统特产=Local /
---      特产=Specialty). Localized text must NEVER choose the region — the
+--      保存/标准/新鲜/特供特产=Specialty). Localized text must NEVER choose the region — the
 --      legacy "[十字星]→Hasla" hard-map once made Cinderstone packs display
 --      Hasla's recipe.
 --
@@ -84,9 +86,11 @@ end
 -- current S.Data.TradeMaterialResources table).
 local FAMILY_TABLES = {
     { token = "肥料特产", fallback = "Fertilizer Specialty", template = "template.fertilizer", label = "肥料特产" },
-    { counts = { 2, 4, 20, 1 }, ids = { 62, 63, 64, 65 }, token = "蜂蜜", fallback = "Aged Honey", label = "陈化蜂蜜" },
-    { counts = { 2, 50, 30, 1 }, ids = { 62, 12, 48, 65 }, token = "奶酪", fallback = "Aged Cheese", label = "陈化奶酪" },
-    { counts = { 2, 20, 30, 1 }, ids = { 62, 66, 13, 65 }, token = "药材", fallback = "Aged Salve", label = "陈化药材" },
+    -- 中文维护注释（2026-10-02）：蜂蜜/奶酪/药材是材料名称，不是任意货物属于发酵货的证据。
+    -- 保留已存在的“基本/加工/无添加发酵”和陈化文案，避免未知特产借到整个发酵配方。
+    { counts = { 2, 4, 20, 1 }, ids = { 62, 63, 64, 65 }, token = "发酵蜂蜜", alternate = "陈化蜂蜜", fallback = "Aged Honey", label = "陈化蜂蜜" },
+    { counts = { 2, 50, 30, 1 }, ids = { 62, 12, 48, 65 }, token = "发酵奶酪", alternate = "陈化奶酪", fallback = "Aged Cheese", label = "陈化奶酪" },
+    { counts = { 2, 20, 30, 1 }, ids = { 62, 66, 13, 65 }, token = "发酵药材", alternate = "陈化药材", fallback = "Aged Salve", label = "陈化药材" },
     { token = "时空碎片", fallback = "Space-Time Fragment", template = "template.fragment", label = "时空碎片运输品" },
     { token = "蓝盐商会运输品", fallback = "Bluesalt Transport", template = "template.transport", label = "蓝盐商会运输品" },
 }
@@ -151,6 +155,21 @@ function M:ResolveProductDisplayName(itemType, fallbackLabel)
     return "贸易品"
 end
 
+function M:ResolveRecipeDisplayName(legacyName)
+    local recipe = StaticFacade and type(StaticFacade.GetRecipeByLegacyName) == "function"
+        and StaticFacade:GetRecipeByLegacyName(legacyName) or nil
+    if type(recipe) ~= "table" then return nil, "recipe_unknown" end
+    local productName = LocalizedItemName(recipe.productItemId)
+    if productName ~= nil then return productName, "native_item_name" end
+    -- 中文维护（2026-10-03）：没有产品 ItemID/客户端名称不等于地区未知。今日任务
+    -- 沿用 1.2 的地区显示思路，只读已核配方的 originZoneId；不输出英文键、不猜物品 ID。
+    local zones = S.GameIds and S.GameIds.Zone and S.GameIds.Zone.ById or {}
+    local zone = zones[tonumber(recipe.originZoneId)]
+    local name = type(zone) == "table" and tostring(zone.nameZh or "") or ""
+    if name ~= "" then return "[" .. name .. "]特产", "static_origin_zone" end
+    return nil, "origin_unknown"
+end
+
 local function GetMaterialRecord(ingredient)
     if type(StaticFacade) ~= "table" then return nil end
     local byEn = type(StaticFacade.GetMaterialByLegacyName) == "function" and StaticFacade:GetMaterialByLegacyName(ingredient.materialKey) or nil
@@ -201,22 +220,28 @@ local function BuildIngredientRow(ingredient)
 end
 
 local function RowsFromIngredients(ingredients)
+    -- 中文维护注释（2026-10-02）：缺一个材料也不能把剩余材料标成完整配方。
+    -- 静态配方只接受真实 ItemID 与正整数需求；绑定资源仍保留，只禁止询价。
+    if type(ingredients) ~= "table" then return {} end
     local rows = {}
-    for _, ingredient in ipairs(type(ingredients) == "table" and ingredients or {}) do
+    for _, ingredient in ipairs(ingredients) do
         local row = BuildIngredientRow(ingredient)
-        if row ~= nil then rows[#rows + 1] = row end
+        if row == nil or row.itemType == nil or row.itemType <= 0 or row.itemType ~= math.floor(row.itemType)
+            or row.count <= 0 or row.count ~= math.floor(row.count) or row.count == math.huge then return {} end
+        rows[#rows + 1] = row
     end
     return rows
 end
 
 local function RowsFromFamilyTable(family)
-    local rows = {}
     local counts, ids = family.counts or {}, family.ids or {}
-    for index = 1, math.min(#counts, #ids) do
-        local row = BuildIngredientRow({ materialKey = nil, compactId = ids[index], count = counts[index] })
-        if row ~= nil then rows[#rows + 1] = row end
+    -- 中文维护注释：共享发酵配方同样必须全部材料可证明，不能用 min 静默吃掉未登记尾项。
+    if #counts ~= #ids then return {} end
+    local ingredients = {}
+    for index = 1, #counts do
+        ingredients[#ingredients + 1] = { compactId = ids[index], count = counts[index] }
     end
-    return rows
+    return RowsFromIngredients(ingredients)
 end
 
 local function GetTemplateRecord(key)
@@ -226,26 +251,42 @@ local function GetTemplateRecord(key)
 end
 
 -- Layer 2 + 3. Pure data: no native calls, safe inside projection builders.
-function M:ResolveStatic(sourceName, originZoneId)
+function M:ResolveStatic(sourceName, originZoneId, productItemType)
     local raw = tostring(sourceName or "")
-    if raw == "" or type(StaticFacade) ~= "table" or type(StaticFacade.GetRecipeByLegacyName) ~= "function" then return nil end
+    if type(StaticFacade) ~= "table" or type(StaticFacade.GetRecipeByLegacyName) ~= "function" then return nil end
 
     local function RecipeResult(recipe, label)
+        -- 中文维护注释：登记时已发现的数据库签名冲突不得在消费端升级成可信材料。
+        -- 货物与路由地区相矛盾时也不借用另一区域；让既有 Live/待匹配路径继续取证。
+        if type(recipe) ~= "table" or recipe.ingredientStatus == "database_mismatch" then return nil end
+        if tonumber(originZoneId) ~= nil and tonumber(recipe.originZoneId) ~= nil
+            and tonumber(originZoneId) ~= tonumber(recipe.originZoneId) then return nil end
         local rows = RowsFromIngredients(recipe and recipe.ingredients or nil)
         if #rows == 0 then return nil end
         return { rows = rows, label = label, source = "static_recipe" }
     end
 
+    -- 中文维护注释（2026-10-02）：货率回执已提供真实商品 ItemID 时，先查已核 TradeProduct
+    -- 的精确配方身份，不因汉化变更/货物名中的“特产”猜品类。纯任务标题没有 ItemID，仍走地区链。
+    local products = S.GameIds and S.GameIds.TradeProduct
+    local product = type(products) == "table" and type(products.GetByItemId) == "function"
+        and tonumber(productItemType) ~= nil and products:GetByItemId(productItemType) or nil
+    if type(product) == "table" then
+        local recipe = StaticFacade:GetRecipeByLegacyName(product.legacyName)
+        if type(recipe) ~= "table" or tonumber(recipe.productItemId) ~= tonumber(productItemType) then return nil end
+        return RecipeResult(recipe, tostring(recipe.legacyName))
+    end
+    if raw == "" then return nil end
+
     -- Direct legacy-name hit (server identity may some day match directly).
     local direct = StaticFacade:GetRecipeByLegacyName(raw)
     if direct ~= nil then
-        local result = RecipeResult(direct, tostring(direct.legacyName or raw))
-        if result ~= nil then return result end
+        return RecipeResult(direct, tostring(direct.legacyName or raw))
     end
 
     -- Shared families: keyword only, identical recipe in every zone.
     for _, family in ipairs(FAMILY_TABLES) do
-        if Contains(raw, family.token) or Contains(raw, family.fallback or "") then
+        if Contains(raw, family.token) or (family.alternate ~= nil and Contains(raw, family.alternate)) or Contains(raw, family.fallback or "") then
             local rows
             if family.template ~= nil then
                 local record = GetTemplateRecord(family.template)
@@ -265,8 +306,21 @@ function M:ResolveStatic(sourceName, originZoneId)
     local quality = type(zone) == "table" and tostring(zone.tradeQuality or "") or ""
     if zoneEn == "" or quality == "" then return nil end
     local tail = nil
+    local suffix = raw:match("^%s*(.-)%s*$") or raw
     for _, rule in ipairs(TAIL_RULES) do
-        if Contains(raw, rule.token) or Contains(raw, rule.tail) then tail = rule.tail; break end
+        -- 中文维护注释（2026-10-02）：日常标题开头的“[特产]”与自定义“皮毯特产”不是标准货物品类。
+        -- 中文普通特产需证明保存/标准/新鲜/特供后缀；更具体的传统/特制仍优先，英文保持完整词尾匹配。
+        local localized = suffix:sub(-#rule.token) == rule.token
+        if rule.tail == "Specialty" and localized then
+            localized = false
+            for _, qualityZh in ipairs({ "保存", "标准", "新鲜", "特供" }) do
+                local ending = qualityZh .. rule.token
+                if suffix:sub(-#ending) == ending then localized = true; break end
+            end
+            if quality == "Coastal" and Contains(raw, zoneEn .. " Coastal") then localized = true end
+        end
+        local english = suffix:sub(-#rule.tail) == rule.tail
+        if localized or english then tail = rule.tail; break end
     end
     if tail == nil then return nil end
     local candidates = { zoneEn .. " " .. quality .. " " .. tail }

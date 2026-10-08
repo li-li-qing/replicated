@@ -223,6 +223,13 @@ function W:EnsureCreated()
         slot = { size = "fixed", width = 76 } })
     self.moduleText = RSUI:Text({ id = self.id .. "_module", parent = actions, text = "", fontSize = 10, tone = "muted",
         overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
+    -- 中文维护：单独一行保持窄窗口不溢出；文件按钮直接使用 Hub immutable 原文，复制框失败也可导出。
+    local exportActions = RSUI:HorizontalBox({ id = self.id .. "_export_actions", parent = stack, gap = 6,
+        slot = { size = "fixed", height = 28, hAlign = "fill" } })
+    self.exportButton = RSUI:Button({ id = self.id .. "_export_file", parent = exportActions, text = "导出 .txt", compact = true,
+        slot = { size = "fixed", width = 100 }, onClick = function() return W:ExportFile() end })
+    RSUI:Text({ id = self.id .. "_export_hint", parent = exportActions, text = "先运行插件文件夹内“开始自动保存诊断.cmd”", fontSize = 10,
+        tone = "muted", slot = { size = "fill", fill = 1 } })
     -- 先展示用户可理解的启停/故障/窗口事实；不调用 Hub、GetHealth 或业务采样。
     -- 文本仅 Open 时更新，不触碰已经冻结的报告/选区；无错误标记不等于模块验收通过。
     self.stateText = RSUI:Text({id=self.id.."_state",parent=stack,text="",fontSize=10,tone="muted",overflow="ellipsis",
@@ -245,7 +252,7 @@ function W:EnsureCreated()
     local copyHost = RSUI:Border({ id = self.id .. "_copy_host", parent = stack, variant = "card", padding = 4,
         slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
     if self.generateButton == nil or self.previousButton == nil or self.pageLabel == nil or self.nextButton == nil
-        or self.normalPageButton == nil or self.retryButton == nil or self.moduleText == nil or copyHost == nil or copyHost.root == nil then
+        or self.normalPageButton == nil or self.retryButton == nil or self.exportButton == nil or self.moduleText == nil or copyHost == nil or copyHost.root == nil then
         return false, "模块诊断窗口控件创建失败"
     end
     local copyBox, copyErr = UI:CreateDiagnosticCopyBox({ parent = copyHost.root, id = self.id .. "_copy",
@@ -405,6 +412,24 @@ function W:_PresentSnapshot(snapshot, index, autoDepth)
             .. " 页" .. copyHint, self.copyActivationError and "yellow" or "accent")
     end
     return true
+end
+
+-- 中文维护：只有用户点击才采集/保存。既有冻结报告优先复用；没有报告才显式 Capture，
+-- 不读当前编辑框，不重分段，不修改业务 Store，也不因复制失败丢弃完整正文。
+function W:ExportFile()
+    local diagnostic = S.DiagnosticsManager
+    if type(diagnostic) ~= "table" or type(diagnostic.ExportReport) ~= "function" then return self:_ReportFailure("文件导出接口不可用，请重新加载插件") end
+    local snapshot = self.pendingSnapshot or self.snapshot
+    if type(snapshot) ~= "table" then
+        local captured, result, err = pcall(Hub.Capture, Hub, self.moduleId, NORMAL_PAGE_CAPACITY)
+        if captured ~= true or type(result) ~= "table" then return self:_ReportFailure("报告生成失败：" .. tostring(captured and err or result)) end
+        snapshot = result
+        self.pendingSnapshot = snapshot
+    end
+    local ok, message = diagnostic:ExportReport(snapshot.exportReport or snapshot.report, { id = snapshot.id })
+    if ok ~= true then return self:_ReportFailure(message) end
+    if self.surface and type(self.surface.SetStatus) == "function" then self.surface:SetStatus(message, "accent") end
+    return true, message
 end
 
 function W:Generate()

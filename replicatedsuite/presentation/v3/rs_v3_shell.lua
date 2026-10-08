@@ -360,6 +360,54 @@ end
 
 function Shell:GetTopmost() return self.topmost == true end
 
+-- 主菜单复用悬浮窗的 Windowing alpha 和 RSUI 局部外观通道。提交失败恢复已保存值，
+-- 不修改旧 ShellState，也不扫描其它顶层窗口；新建页面/虚拟行由 AddChild 继承这些通道。
+function Shell:ApplyAppearanceSettings(settings)
+    if not self.created or not self.root or not self.window then return false,"主窗口尚未创建"end
+    local previous=self.mainAppearance or {}
+    if previous.overallOpacity~=settings.overallOpacity then
+        local ok,err
+        if self.windowController and type(self.windowController.SetOpacity)=="function"then
+            local value,changed;ok,value,changed,err=self.windowController:SetOpacity(settings.overallOpacity)
+        elseif type(UI.EnsureAlpha)=="function"then
+            local _;ok,_,err=UI:EnsureAlpha(self.window,settings.overallOpacity,self.owner)
+        else return false,"主窗口透明度能力不可用"end
+        if ok~=true then return false,err or "主窗口透明度应用失败"end
+    end
+    if previous.backgroundOpacity~=settings.backgroundOpacity or previous.textOpacity~=settings.textOpacity then
+        if RSUI:ApplyOpacityChannels(self.root,settings.backgroundOpacity,settings.textOpacity)~=true then return false,"主窗口背景或文字透明度应用失败"end
+    end
+    if previous.fontScale~=settings.fontScale then
+        if RSUI:ApplyFontScale(self.root,settings.fontScale)~=true then return false,"主窗口字号应用失败"end
+    end
+    self.mainAppearance={overallOpacity=settings.overallOpacity,backgroundOpacity=settings.backgroundOpacity,textOpacity=settings.textOpacity,fontScale=settings.fontScale}
+    if previous.fontScale~=settings.fontScale then
+        local ok,err=self:ApplyLayout(false);if ok~=true then return false,err end
+    end
+    return true
+end
+function Shell:SetAppearance(patch,persist)
+    local appearance=V3.MainAppearance
+    if not appearance then return false,"主菜单外观设置不可用"end
+    local loaded,err=appearance:EnsureLoaded();if loaded~=true then return false,err end
+    local previous=appearance:GetSettings()
+    local candidate;candidate,err=appearance:Candidate(patch);if not candidate then return false,err end
+    local ok;ok,err=self:ApplyAppearanceSettings(candidate)
+    if ok==true and persist~=false then ok,err=appearance:Save(candidate)end
+    if ok~=true then
+        -- 失败可能发生在任一通道；清理镜像后完整撤回，不能用“值相同”短路漏掉部分 Native 写入。
+        self.mainAppearance=nil
+        local restored,restoreErr=self:ApplyAppearanceSettings(previous)
+        if restored~=true then return false,tostring(err).."；外观恢复失败："..tostring(restoreErr)end
+    end
+    return ok,err
+end
+function Shell:RestoreAppearancePreview()
+    if not V3.MainAppearance or not self.created then return true end
+    return self:ApplyAppearanceSettings(V3.MainAppearance:GetSettings())
+end
+function Shell:ResetAppearance()return self:SetAppearance({overallOpacity=1,backgroundOpacity=1,textOpacity=1,fontScale=1},true)end
+
 function Shell:Create()
     if self.created ~= true then S.Layout:GetContext(true) end -- 维护：首次创建不用启动早期的 provisional context。
     if self.created == true and self.window ~= nil then return true end
@@ -419,16 +467,23 @@ function Shell:Create()
         id = "v3_shell_top_bar", parent = self.appStack, variant = "header", padding = 6, pickable = true,
         slot = { size = "fixed", height = 50, hAlign = "fill" },
     })
-    local topRow = RSUI:HorizontalBox({ id = "v3_shell_top_row", parent = self.topBar, gap = 8 })
+    local topRow = RSUI:HorizontalBox({ id = "v3_shell_top_row", parent = self.topBar, gap = 4 })
     local brand = RSUI:VerticalBox({ id = "v3_shell_brand", parent = topRow, gap = 1, slot = { size = "fill", fill = 1 } })
     -- 维护（2026-09-12）：按发行界面要求，仅将主菜单标题替换为作者与 QQ 群信息。
     -- Authority / 数据流：仍由 v3:shell 经 RSUI:Text 创建展示文本，不直接写 Native 或业务 Store。
     -- 兼容边界：保留逻辑 ID、响应式宽度及样式；不改 ESC 注册名、聊天前缀或用户配置，无迁移。
     -- 后续维护：联系信息仅在此展示；窄窗沿用省略规则，不扩大拖动命中区或挤占右侧按钮。
-    RSUI:Text({ id = "v3_shell_title", parent = brand, text = "作者:Replicated   QQ群:1104129461", fontSize = 15, tone = "accent", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
-    RSUI:Text({ id = "v3_shell_subtitle", parent = brand, text = "模块化重构 · 新版界面", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 14 } })
+    self.brandTitle=RSUI:Text({ id = "v3_shell_title", parent = brand, text = "作者:Replicated   QQ群:1104129461", fontSize = 15, tone = "accent", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
     self.runningButton=RSUI:Button({id="v3_shell_running",parent=topRow,text="已开启 0 · 异常 0",compact=true,
         onClick=function()return self:Navigate("system.features",{source="running_summary"})end,slot={size="fixed",width=138}})
+    -- 中文维护（2026-10-05）：外观快捷入口移到 Shell 标题栏，从任意模块复用工作台原页面与保存路径。
+    -- 窄窗只允许此按钮在 50..78 内收缩，既有诊断/置顶/关闭尺寸和标题省略规则保持不变；不扩大拖动命中区。
+    RSUI:Button({id="v3_shell_appearance_button",parent=topRow,text="界面外观",compact=true,
+        slot={size="auto",minWidth=50,maxWidth=78},onClick=function()
+            if not V3.WorkspacePage then return false,"外观设置页面不可用" end
+            V3.WorkspacePage.requestedTab="appearance"
+            return self:Navigate("system.workspace",{source="topbar"})
+        end})
     RSUI:Button({ id = "v3_shell_diag_button", parent = topRow, text = "诊断", compact = true,
         onClick = function() return self:Navigate("system.diagnostics", { source = "topbar" }) end,
         slot = { size = "fixed", width = 64 } })
@@ -493,8 +548,7 @@ function Shell:Create()
 
     self.footer = RSUI:Border({ id = "v3_shell_footer", parent = self.appStack, variant = "soft", padding = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
     local footerRow = RSUI:HorizontalBox({ id = "v3_shell_footer_row", parent = self.footer, gap = 8 })
-    self.status = RSUI:Text({ id = "v3_shell_status", parent = footerRow, text = "新版框架 · 活动模块已迁移", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
-    RSUI:Text({ id = "v3_shell_mode", parent = footerRow, text = "旧界面已停用", fontSize = 9, tone = "accent", overflow = "ellipsis", slot = { size = "auto" } })
+    self.status = RSUI:Text({ id = "v3_shell_status", parent = footerRow, text = "就绪", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
 
     -- Toast is above normal page chrome but below the modal scrim. This keeps
     -- notifications visible without allowing them to bypass a blocking modal.
@@ -521,6 +575,13 @@ function Shell:Create()
     self.windowController.onPlacementReady=function() return self:ApplyLayout(true) end
 
     self.created = true
+    if V3.MainAppearance then
+        local ready,appearanceErr=V3.MainAppearance:EnsureLoaded()
+        self.mainAppearanceLoadError=ready~=true and appearanceErr or nil
+        self.mainAppearance=nil
+        local applied,applyErr=self:ApplyAppearanceSettings(V3.MainAppearance:GetSettings())
+        if applied~=true then return FailBuild(applyErr)end
+    end
     local minimizedOk, minimizedErr = self:ApplyMinimizedState(false)
     if minimizedOk ~= true then return FailBuild(minimizedErr or "主窗口初始状态应用失败") end
     local ok, layoutErr = self:ApplyLayout(false)
@@ -556,6 +617,18 @@ end
 
 function Shell:ApplyLayout(fromMetricsChange, designWidth, designHeight)
     if self.created ~= true or self.window == nil or self.root == nil then return false, "主窗口尚未创建" end
+    -- 局部字号放大不能仍塞进固定 20px 标题行；只扩展标题 chrome，不改持久窗口大小。
+    local font=math.max(1,tonumber(self.mainAppearance and self.mainAppearance.fontScale) or 1)
+    if self.topBar then self.topBar.slot.height=math.ceil(50*font)end
+    if self.brandTitle then self.brandTitle.slot.height=math.ceil(20*font)end
+    if self.windowController then self.windowController.dragHandleHeight=math.ceil(50*font)end
+    -- 布局偏好由页面声明；普通页面恢复原边距，保留同一个内容 Border/Native parent。
+    local contentPadding = PageHost.compactPageChrome == true and 6 or 14
+    if self.contentFrame and self.contentFrame.padding.top ~= contentPadding then
+        self.contentFrame.padding = { left = contentPadding, right = contentPadding, top = contentPadding, bottom = contentPadding }
+        self.contentFrame.spec.padding = contentPadding
+        self.contentFrame:InvalidateMeasure("page_chrome_changed")
+    end
     local x, y, width, height, dw, dh = self:ResolveRect(designWidth, designHeight)
     if self.windowController ~= nil and self.windowController:IsInteracting() == true then
         -- 维护：活动手势沿固定 effective 单位读取；resolution 只标记，停止后再应用。
@@ -590,6 +663,7 @@ function Shell:Open()
     S.Layout:GetContext(true)
     local created, err = self:Create()
     if created ~= true then return false, err end
+    local wasVisible = Adapter:IsVisible(self.window)
     local state = V3.ShellState or {}
     local wasMinimized = state.minimized == true
     if wasMinimized then
@@ -609,7 +683,7 @@ function Shell:Open()
         end
         return false, layoutErr or "主窗口布局应用失败"
     end
-    if type(UI.InvalidateNativeState)=="function" then UI:InvalidateNativeState(self.window,"visible") end
+    if not wasVisible and type(UI.InvalidateNativeState)=="function" then UI:InvalidateNativeState(self.window,"visible") end
     local shown, showErr = Adapter:SetVisible(self.window, self.owner, true)
     if shown ~= true then
         if wasMinimized then
@@ -617,6 +691,23 @@ function Shell:Open()
             self:ApplyMinimizedState(false)
         end
         return false, showErr or "主窗口显示失败"
+    end
+    if not wasVisible then
+        -- 中文维护（2026-10-05）：隐藏时的布局已建立 Diff 镜像，但 Native Show 仍可能
+        -- 调整出生锚点。只在真实显示边沿通过 Windowing 重新提交同一矩形；不能等到
+        -- 下一次导航才把这个合法交接记为 strict 越权，也不能强制跳过可见窗口的校验。
+        local rect = self.lastRect
+        local rectOk, rectErr = Windowing:ApplyGeometry(self.window,self.owner,rect.x,rect.y,rect.width,rect.height,true)
+        if rectOk ~= true then
+            local hidden, hideErr = Adapter:SetVisible(self.window,self.owner,false)
+            if wasMinimized then
+                state.minimized = true
+                self:ApplyMinimizedState(false)
+            end
+            local detail = tostring(rectErr or "主窗口显示后位置应用失败")
+            if hidden ~= true then detail = detail .. ":visibility_rollback_rejected:" .. tostring(hideErr) end
+            return false, detail
+        end
     end
     if wasMinimized then MarkDirty("minimized_changed") end
     Adapter:Raise(self.window)
@@ -670,6 +761,8 @@ function Shell:Close(reason)
         RSUI.DropdownService:CloseAll()
     end
     if self.window == nil then return true end
+    local restored,restoreErr=self:RestoreAppearancePreview()
+    if restored~=true then return false,restoreErr end
     local hidden, hideErr = Adapter:SetVisible(self.window, self.owner, false)
     if hidden ~= true then return false, hideErr or "主窗口隐藏失败" end
     self.lastCloseReason = tostring(reason or "close")
@@ -718,7 +811,7 @@ function Shell:Navigate(routeId, context)
     self:RefreshFeatureStates()
     local state = V3.ShellState or {}
     if state.lastRoute ~= resolved.id then state.lastRoute = resolved.id; MarkDirty("route_changed") end
-    self:SetStatus(resolved.title .. " · 新版界面")
+    self:SetStatus(resolved.title)
     if context.keepHidden ~= true then return self:Open() end
     local layoutOk, layoutErr = self:ApplyLayout(false)
     if layoutOk ~= true then return false, layoutErr end

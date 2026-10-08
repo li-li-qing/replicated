@@ -445,6 +445,9 @@ function F:GetHealth()
         busy = runtime.busy,
         stage = runtime.stage,
         pendingSetId = runtime.pendingSetId,
+        -- 只读会话证据进入模块诊断；Service 快照已复制，不额外读取装备。
+        outcome = runtime.outcome,
+        performance = runtime.performance,
     }
 end
 

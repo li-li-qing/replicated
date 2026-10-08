@@ -51,7 +51,7 @@ local SCALAR_LABELS={
     buffUptimeMs="Buff观察时长",debuffUptimeMs="Debuff观察时长",buffApplies="Buff施加",debuffApplies="Debuff施加",mechanics="机制命中",
 }
 local SECTION_LABELS={
-    killTargets="击杀目标",killAbilities="击杀技能",assistTargets="助攻目标",
+    killTargets="击杀玩家",killAbilities="玩家击杀技能",assistTargets="助攻目标",
     skills="技能活动",exactSkills="精确施法",
     controlActivityTypes="控制释放类型",controlHitTypes="控制命中类型",controlDurationByAura="控制时长",
     songDurationBySkill="演奏时长",songs="演奏技能",songBuffs="歌曲Buff",songBuffDuration="歌曲覆盖时长",nativeSongs="精确演奏",
@@ -102,7 +102,7 @@ local function CoverageText(value)
         OBSERVED_AURA_EVENTS_ONLY="仅统计客户端实际观察到的 Buff/Debuff 事件",
         EXACT_CATALOG_MATCH_TARGET_FIRST="按已核验技能/机制目录匹配，目标信息优先",
         DIRECT_DAMAGE_BOUNDED_5S_WINDOW="直接伤害事件；使用有界 5 秒窗口计算爆发",
-        DIRECT_DEATH_PLUS_BOUNDED_DAMAGE_INFERENCE="死亡事件直接确认；助攻由死亡前有界伤害窗口推断",
+        DIRECT_DEATH_ATTRIBUTION_ONLY="仅统计明确归属的玩家击杀；缺少击杀者时不计击杀",
         DIRECT_COMBAT_FACTS_ANCHORED_BY_DAMAGE_HEAL_DEATH="按伤害、治疗、死亡事件划分并汇总战斗段",
     }
     return known[value] or value
@@ -123,32 +123,35 @@ local function Build(parent)
     -- 中文维护注释（2026-09-18）：战斗分析拥有自定义工具栏，不能依赖标准 PageHeader。
     -- 这里仅提供标题行几何并调用共享 ModuleDiagnosticsButton；诊断 Authority/点击逻辑不得复制到业务页。
     local titleRow=RSUI:HorizontalBox({id="v3_analytics_title_row",parent=root,gap=8,slot={size="fixed",height=27,hAlign="fill"}})
-    RSUI:Text({id="v3_analytics_title",parent=titleRow,text="战斗分析",fontSize=16,tone="strong",slot={size="fill",fill=1,height=27}})
+    RSUI:Text({id="v3_analytics_title",parent=titleRow,text="战斗统计与分析 · 专项分析",fontSize=16,tone="strong",slot={size="fill",fill=1,height=27}})
     D:ModuleDiagnosticsButton(titleRow,"v3_analytics_diagnostics",76)
     RSUI:Text({id="v3_analytics_subtitle",parent=root,
-        text="这是 DPS 之外的战斗行为分析：查看击杀/助攻、技能释放、爆发、控制、演奏、辅助、Buff/Debuff 与 Boss 机制。选择玩家后可继续查看具体明细。",
-        fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=34}})
+        text="伤害、治疗、承伤、击杀、死亡在“战斗总览”按玩家一起显示；这里仅保留击杀、死亡明细。",
+        fontSize=9,tone="muted",overflow="wrap",slot={size="auto",minHeight=20}})
+    local statisticsScope=D:CombatStatisticsControls(root,"analysis")
 
-    local toolbar=RSUI:HorizontalBox({id="v3_analytics_toolbar",parent=root,gap=6,slot={size="fixed",height=34,hAlign="fill"}})
-    local enable=D:ModuleToggleButton({id="v3_analytics_enable",parent=toolbar,text="开始分析",compact=true,slot={size="fixed",width=92}})
-    local metric,metricErr=RSUI:Dropdown({id="v3_analytics_metric",parent=toolbar,items={},maxVisible=9,
+    local toolbar=RSUI:UniformGrid({id="v3_analytics_toolbar",parent=root,columnGap=6,rowGap=4,minCellWidth=100,minCellHeight=30,maxColumns=4,preferredColumns=4,slot={size="auto",hAlign="fill"}})
+    local enable=D:ModuleToggleButton({id="v3_analytics_enable",parent=toolbar,text="开始统计",compact=true,slot={hAlign="fill",vAlign="fill"}})
+    local metricRow=RSUI:HorizontalBox({id="v3_analytics_metric_row",parent=root,gap=6,slot={size="fixed",height=30,hAlign="fill"}})
+    RSUI:Text({id="v3_analytics_metric_label",parent=metricRow,text="分析项目",fontSize=9,tone="muted",slot={size="fixed",width=60}})
+    local metric,metricErr=RSUI:Dropdown({id="v3_analytics_metric",parent=metricRow,items={},maxVisible=9,
         get=function() return Feature:GetSelectedMetric() end,
         set=function(id) local ok,err=Feature.Commands:SetSelectedMetric(id);if ok==true then root.compareA,root.compareB,root.selectedRow=nil,nil,nil;root:RefreshData() end;return ok,err end,
-        slot={size="fixed",width=170}})
+        slot={size="fill",fill=1}})
     if metric==nil then error("战斗分析项目下拉框创建失败："..tostring(metricErr or "unknown")) end
     -- Metric value is a direct one-of-many choice, not a nested menu.  The old
     -- Dropdown made the visible "击杀" trigger look like a button but depended
     -- on a second popup interaction, which was both easy to miss and unreliable
-    -- in some RU layers. Build one bounded segmented selector per metric and only
+    -- in some RU layers. Build one bounded adaptive button grid per metric and only
     -- show the active metric's selector; every segment writes through the same
     -- Feature Command / Store authority.
-    local metricToggle=RSUI:Button({id="v3_analytics_metric_toggle",parent=toolbar,text="暂停当前项目",compact=true,slot={size="fixed",width=112}})
-    local clear=RSUI:Button({id="v3_analytics_clear",parent=toolbar,text="清空当前",compact=true,slot={size="fixed",width=88}})
-    local clearAll=RSUI:Button({id="v3_analytics_clear_all",parent=toolbar,text="清空全部",compact=true,slot={size="fixed",width=88}})
+    local metricToggle=RSUI:Button({id="v3_analytics_metric_toggle",parent=toolbar,text="统计设置",compact=true,slot={hAlign="fill",vAlign="fill"}})
+    local clear=RSUI:Button({id="v3_analytics_clear",parent=toolbar,text="清空当前",compact=true,slot={hAlign="fill",vAlign="fill"}})
+    local clearAll=RSUI:Button({id="v3_analytics_clear_all",parent=toolbar,text="清空实时战绩",compact=true,slot={hAlign="fill",vAlign="fill"}})
 
-    local valueStrip=RSUI:HorizontalBox({id="v3_analytics_value_strip",parent=root,gap=6,slot={size="fixed",height=30,hAlign="fill"}})
-    RSUI:Text({id="v3_analytics_value_label",parent=valueStrip,text="排行：",fontSize=9,tone="muted",slot={size="fixed",width=42,vAlign="center"}})
-    local valueHost=RSUI:Overlay({id="v3_analytics_value_host",parent=valueStrip,slot={size="fill",fill=1,hAlign="fill",vAlign="fill"}})
+    local valueStrip=RSUI:VerticalBox({id="v3_analytics_value_strip",parent=root,gap=3,slot={size="auto",hAlign="fill"}})
+    RSUI:Text({id="v3_analytics_value_label",parent=valueStrip,text="查看数值",fontSize=9,tone="muted",slot={size="fixed",height=16}})
+    local valueHost=RSUI:Overlay({id="v3_analytics_value_host",parent=valueStrip,slot={size="auto",hAlign="fill"}})
     root.valueSelectors={}
     local selectorModels=type(Feature.GetValueSelectorModels)=="function" and Feature:GetValueSelectorModels() or {}
     if type(selectorModels)~="table" or #selectorModels==0 then error("战斗分析排行切换模型不可用") end
@@ -156,23 +159,37 @@ local function Build(parent)
         local capturedMetric=tostring(selectorModel and selectorModel.id or "")
         local options=type(selectorModel)=="table" and selectorModel.options or nil
         if type(options)=="table" and #options>=2 then
-            local segmentItems={}
-            for _,option in ipairs(options) do
-                local text=tostring(option.text or option.value or "")
-                local width=math.max(48,math.min(104,34+#text*7))
-                segmentItems[#segmentItems+1]={value=option.value,text=text,width=width}
+            -- 数值按钮沿用 Commands，UniformGrid 只负责换行，避免8个辅助维度横向越界。
+            local selector=RSUI:UniformGrid({id="v3_analytics_value_"..capturedMetric,parent=valueHost,
+                minCellWidth=100,minCellHeight=28,maxColumns=6,preferredColumns=6,columnGap=3,rowGap=3,
+                slot={hAlign="fill",vAlign="fill"}})
+            selector.items={};selector.buttons={}
+            function selector:SetValue(key)
+                for _,item in ipairs(self.items) do
+                    if item.value==key and item.enabled~=false then
+                        local ok,err=Feature.Commands:SetSelectedValue(capturedMetric,key)
+                        if ok==true then root:RefreshData() end
+                        return ok,err
+                    end
+                end
+                return false,"数值选项当前不可用"
             end
-            local selector,selectorErr=RSUI:SegmentedSelector({
-                id="v3_analytics_value_"..capturedMetric,parent=valueHost,items=segmentItems,maxItems=8,gap=2,height=25,fontSize=9,
-                get=function() return Feature:GetSelectedValueKey(capturedMetric) end,
-                set=function(key)
-                    local ok,err=Feature.Commands:SetSelectedValue(capturedMetric,key)
-                    if ok==true then root:RefreshData() end
-                    return ok,err
-                end,
-                slot={hAlign="left",vAlign="center"},
-            })
-            if selector==nil then error("战斗分析数值切换器创建失败："..capturedMetric.." · "..tostring(selectorErr or "unknown")) end
+            function selector:Render(value)
+                value=value or Feature:GetSelectedValueKey(capturedMetric)
+                for index,item in ipairs(self.items) do
+                    local button=self.buttons[index]
+                    button:SetEnabled(item.enabled~=false)
+                    button:Render({text=item.text,selected=value==item.value})
+                end
+                return value
+            end
+            for index,option in ipairs(options) do
+                local key=option.value
+                selector.items[index]={value=key,text=tostring(option.text or key),enabled=true}
+                selector.buttons[index]=RSUI:Button({id="v3_analytics_value_"..capturedMetric.."_segment_"..index,parent=selector,
+                    text=tostring(option.text or key),compact=true,fontSize=9,
+                    onClick=function() return selector:SetValue(key) end,slot={hAlign="fill",vAlign="fill"}})
+            end
             selector:SetVisibility("collapsed")
             root.valueSelectors[capturedMetric]=selector
         elseif type(options)=="table" and #options==1 then
@@ -223,20 +240,22 @@ local function Build(parent)
         return true
     end
     function root:RefreshDetail(row)
-        if row==nil then detailTitle:SetText("玩家明细：选择排行中的玩家");detailTable:SetItems({},"analytics:detail:empty");return true end
+        if row==nil then detailTitle:SetText("选择排行中的玩家后显示明细");detailTable:SetVisible(false);detailTable:SetItems({},"analytics:detail:empty");return true end
         if row.source==nil or tostring(row.key or ""):find("encounter:",1,true)==1 then
-            detailTitle:SetText("战斗明细："..tostring(row.name).." · "..tostring(row.extra or ""));detailTable:SetItems({},"analytics:detail:encounter");return true
+            detailTitle:SetText("战斗明细："..tostring(row.name).." · "..tostring(row.extra or ""));detailTable:SetVisible(false);detailTable:SetItems({},"analytics:detail:encounter");return true
         end
         local id=Feature:GetSelectedMetric();local actorKey=tostring(row.source.key or row.key or "")
         local detail,err=Feature:GetActorDetail(id,actorKey,{limit=24,maxSections=8})
-        if type(detail)~="table" then detailTitle:SetText("玩家明细："..tostring(row.name).." · "..tostring(err or "暂无可展开明细"));detailTable:SetItems({},"analytics:detail:missing");return true end
+        if type(detail)~="table" then detailTitle:SetText("玩家明细："..tostring(row.name).." · "..tostring(err or "暂无可展开明细"));detailTable:SetVisible(false);detailTable:SetItems({},"analytics:detail:missing");return true end
         local summary=ScalarSummary(detail)
         detailTitle:SetText("玩家明细 · "..tostring(detail.actor and detail.actor.name or row.name)..(summary~="" and (" · "..summary) or ""))
         local rows=DetailRows(detail)
+        detailTable:SetVisible(#rows>0)
         detailTable:SetItems(rows,"analytics:detail:"..id..":"..actorKey..":"..tostring(detail.revision or 0))
         return true
     end
     function root:RefreshData()
+        statisticsScope:Render()
         local id=Feature:GetSelectedMetric();local result=Feature:GetProjection(id,{valueKey=Feature:GetSelectedValueKey(id)})
         local p=type(result.projection)=="table" and result.projection or {}
         metric:SetItems(MetricItems(result.metrics));metric:SetSelectedValue(id,true,"render")
@@ -246,18 +265,28 @@ local function Build(parent)
             selector:SetVisibility(active and "visible" or "collapsed")
             if active and type(selector.Render)=="function" then selector:Render(selectedValue) end
         end
-        enable:SetText(result.enabled==true and "暂停分析" or "开始分析")
-        metricToggle:SetText(result.metricEnabled==true and "暂停当前项目" or "启用当前项目")
+        enable:SetText(result.enabled==true and "暂停统计" or "开始统计")
+        metricToggle:SetText("统计设置")
         local metricDescription=""
         for _,info in ipairs(type(result.metrics)=="table" and result.metrics or {}) do if info.id==id then metricDescription=tostring(info.description or "");break end end
         explanation:SetText("用途："..(metricDescription~="" and metricDescription or "当前分析项用于补充 DPS 无法表达的战斗行为。"))
         local key=p.valueKey or selectedValue;local rows=id=="encounter" and HistoryRows(p,key) or RankingRows(p)
         for _,row in ipairs(rows) do row.valueText=FormatValue(key,row.value);row.extra=row.extra or "" end
         self.rows=rows;tableView:SetItems(rows,"analytics:"..id..":"..tostring(p.revision or 0)..":"..key)
+        local selfOnly=Feature:GetCollectionScope()=="self"
+        compare:SetVisible(not selfOnly)
+        local compact=selfOnly and id~="encounter"
+        if self.compactRanking~=compact then
+            self.compactRanking=compact
+            tableView:SetSlot({size="fixed",height=compact and 100 or 280,hAlign="fill"})
+        end
+        local selected
+        for _,row in ipairs(rows) do if self.selectedRow and row.key==self.selectedRow.key then selected=row;break end end
+        self.selectedRow=selected or (selfOnly and rows[1] or nil)
         local current=p.current;local currentText=type(current)=="table" and (" · 当前战斗 "..string.format("%.1fs",(tonumber(current.durationMs) or 0)/1000)) or ""
-        coverage:SetText("采集覆盖："..CoverageText(p.coverage or p.nativeCoverage)..currentText)
-        if result.enabled~=true then emptyHint:SetText("战斗分析尚未开始。点击“开始分析”后才会采集这些扩展指标。")
-        elseif result.metricEnabled~=true then emptyHint:SetText("当前分析项目已暂停采集。点击“启用当前项目”即可恢复。")
+        coverage:SetText("采集范围："..(Feature:GetCollectionScope()=="self" and "只统计自己（自身事件）" or "所有人（客户端可见事件）").." · "..CoverageText(p.coverage or p.nativeCoverage)..currentText)
+        if result.enabled~=true then emptyHint:SetText("统计尚未开始。点击“开始统计”后同时采集伤害排行、分析指标和个人历史。")
+        elseif result.metricEnabled~=true then emptyHint:SetText(id=="kills" and "实时排行已暂停，个人历史继续记录战绩。到“统计设置”启用此项目。" or "当前项目已关闭。到“统计设置”启用此项目。")
         elseif #rows==0 then emptyHint:SetText("当前项目正在采集，暂时没有匹配到可显示的战斗事件。")
         else emptyHint:SetText("") end
         local h=result.health or {};health:SetText("运行状态："..(result.enabled==true and "分析中" or "已暂停").." · 已启用项目 "..tostring(h.activeMetrics or 0).." · 已接收事件 "..tostring(h.factsReceived or 0).." · 分析错误 "..tostring(h.metricErrors or 0))
@@ -279,12 +308,11 @@ local function Build(parent)
     function root:OnDeactivated() self:Unsubscribe();return true end
 
     enable.spec.onClick=function()
-        local snap=S.FeatureRuntime:GetSnapshot(FEATURE_ID);local target=not (snap and snap.enabled==true)
+        local snap=S.FeatureRuntime:GetSnapshot("combat_stats");local target=not (snap and snap.enabled==true)
         return RunAction("toggle",enable,target and "战斗分析已开始" or "战斗分析已暂停",function() return Feature.Commands:SetEnabled(target,"analytics_page") end,function() root:RefreshData() end)
     end
     metricToggle.spec.onClick=function()
-        local id=Feature:GetSelectedMetric();local target=not Feature:IsMetricPreferenceEnabled(id)
-        return RunAction("metric_toggle",metricToggle,target and "当前分析项目已启用" or "当前分析项目已暂停",function() return Feature.Commands:SetMetricEnabled(id,target) end,function() root:RefreshData() end)
+        return S.UIV3.Shell:Navigate("combat.statistics_settings",{source="analytics_settings"})
     end
     clear.spec.onClick=function()
         local id=Feature:GetSelectedMetric()

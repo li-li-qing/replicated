@@ -79,31 +79,42 @@ Test('recommended catalog includes every effect but excludes unfinished cooldown
     for id in pairs(catalog.ByEffectId) do assert(ids[id],'effect missing from one click pack') end
 end)
 local host=dofile('tools/rs_status_ui_test_host.lua')(S)
+-- These regressions test the built-in source specifically; Add Status now opens current facts by default.
+local BuildLibraryHost=host.Build
+function host:Build()
+    local page,err=BuildLibraryHost(self)
+    if page then page.librarySource='library';page.libraryPack='recommended' end
+    return page,err
+end
 Test('library has icon cells and no confusing supplement button',function()
     Reset();assert(host:Build());local columns=host.widgets.v3_buff_library_table.spec.columns;local icon
     for _,c in ipairs(columns) do if c.cellType=='icon' then icon=c end end
     assert(icon and icon.field=='iconPath','icon column missing');assert(host.widgets.v3_buff_library_supplement==nil)
 end)
-Test('one click import clears filters and opens actual tracked selection list',function()
-    Reset();local page=assert(host:Build());page.managementFilter='hidden';page.filterText='not found';page:SwitchTab('library');local before=writes
-    assert(host.widgets.v3_buff_library_import.onClick());assert(writes==before+4,'A/B tracking commit must write player/target/meta inactive slots then manifest')
-    assert(page.activeTab=='track' and page.managementView=='tracked' and page.managementFilter=='all' and page.filterText=='','import left user looking at unrelated current-state rows')
+Test('explicit domain library import preserves atomic transaction and optional tracked source',function()
+    Reset();local page=assert(host:Build());page:SwitchTab('library');local before=writes
+    assert(host.widgets.v3_buff_library_import.spec.parent.id=='v3_buff_library_actions','bulk action is not owned by the library tab')
+    assert(host.widgets.v3_buff_library_import.onClick());assert(writes==before+4,'tracking manifest transaction changed')
+    assert(host.widgets.v3_buff_manage_view.spec.set('tracked'))
     local rows=host.widgets.v3_buff_display_tracking_table.items;assert(#rows==#S.Data.StatusTrackingCatalogV3.Packs.recommended.entries)
-    for _,row in ipairs(rows) do assert(row.tracked and F:IsTrackedId(row.id)) end
+    for _,row in ipairs(rows)do assert(row.tracked and F:IsTrackedId(row.id))end
 end)
-Test('repeating one click library import preserves manual target-only placement',function()
-    Reset();local page=assert(host:Build());page:SwitchTab('library');assert(host.widgets.v3_buff_library_import.onClick())
+Test('incremental domain library import preserves manual target-only placement',function()
+    Reset();local page=assert(host:Build());page:SwitchTab('library');assert(F.Commands:ImportBuiltinPack('recommended',true))
     assert(F:SetTrackedId(21,'auto',false));assert(F:SetTrackedChannel(21,'target','buff',true))
     assert(not F:IsTrackedChannel(21,'player','auto') and not F:IsTrackedChannel(21,'player','buff'),'manual target-only setup failed')
-    page:SwitchTab('library');assert(host.widgets.v3_buff_library_import.onClick())
+    page:SwitchTab('library');assert(F.Commands:ImportBuiltinPack('recommended',true))
     assert(F:IsTrackedChannel(21,'target','buff'),'target manual placement lost')
     assert(not F:IsTrackedChannel(21,'player','auto') and not F:IsTrackedChannel(21,'player','buff') and not F:IsTrackedChannel(21,'player','debuff'),'library reimport resurrected self tracking')
 end)
-Test('one click import error is shown without navigating or losing existing selection',function()
-    Reset();assert(F:SetTrackedId(21,'auto',true));local page=assert(host:Build());page:SwitchTab('library');local before=store.get();local save=S.Api.SaveData;S.Api.SaveData=function() return false,'disk unavailable' end
-    assert(not host.widgets.v3_buff_library_import.onClick());S.Api.SaveData=save
-    assert(page.activeTab=='library' and Equal(before,store.get()))
-    assert(host.widgets.v3_buff_library_hint.text:find('失败',1,true),'no explicit failure feedback')
+Test('row write failure preserves committed selection and reports an error without navigation',function()
+    Reset();assert(F:SetTrackedPlacement(21,'player','buff',true));local page=assert(host:Build());page:SwitchTab('library')
+    local row=Find(host.widgets.v3_buff_library_table.items,21);assert(row)
+    local col;for _,c in ipairs(host.widgets.v3_buff_library_table.spec.columns)do if c.id=='player_buff'then col=c end end
+    local before=store.get();local save=S.Api.SaveData;S.Api.SaveData=function()return false,'disk unavailable'end
+    local ok=col.onClick(row);S.Api.SaveData=save
+    assert(ok==false and page.activeTab=='library' and Equal(before,store.get()))
+    assert(host.widgets.v3_buff_library_status.text:find('失败',1,true))
 end)
 Test('import then reload retains selections and a removed item stays removed',function()
     Reset();assert(F:ImportBuiltinPack('recommended',false));local n=#F:GetManagementProjection({view='tracked'});assert(n>393)
@@ -162,15 +173,46 @@ Test('missing icon probe is cached and does not retry each row bind',function()
     local info=M:GetInfo(21,true);assert(info and info.name=='valid name');assert(count==3 and M:HasCached(21,true))
     M:GetInfo(21,true);assert(count==3)
 end)
+-- 中文维护（2026-10-07，release-metadata-lifecycle）：同一 owner 订阅多个 topic 的行为必须
+-- 使用真实 Events；旧 listeners[owner] mock 会把库刷新回调覆盖成 settings 回调。
+-- 生命周期也沿用真实 PageHost 的 disabled 同步，确保静态目录需求不被业务停用一并清掉。
+local function WithRealPageLifecycle(fn)
+    local events,pageHost=S.Events,S.UIV3.PageHost
+    local enabled=S.FeatureRuntime.IsEnabled
+    local methods={SyncFeatureConsumer=pageHost.SyncFeatureConsumer,ReleaseFeatureConsumer=pageHost.ReleaseFeatureConsumer,
+        BindFeatureConsumerLifecycle=pageHost.BindFeatureConsumerLifecycle}
+    dofile('core/rs_events.lua');dofile('presentation/v3/shell/rs_v3_page_host.lua')
+    local realHost=S.UIV3.PageHost;S.UIV3.PageHost=pageHost
+    for key in pairs(methods) do pageHost[key]=realHost[key] end
+    local ok,err=pcall(fn)
+    for key,value in pairs(methods) do pageHost[key]=value end
+    S.Events=events;S.FeatureRuntime.IsEnabled=enabled
+    assert(ok,err)
+end
 Test('metadata completion refreshes library while feature disabled',function()
-    Reset();local enabled=S.FeatureRuntime.IsEnabled;S.FeatureRuntime.IsEnabled=function() return false end
-    local events=S.Events;local listeners={}
-    -- 维护：仿真也必须保留真实EventBus的owner-first参数，不能再掩盖页面reason错位。
-    S.Events={SubscribeInternal=function(_,name,owner,fn) listeners[owner]=fn;return true end,UnsubscribeInternalOwner=function(_,owner) listeners[owner]=nil;return true end,Publish=function(_,name,reason) for owner,fn in pairs(listeners) do fn(owner,reason) end;return true end}
-    local cached={};S.Services.BuffMetadataV3={HasCached=function(_,id) return cached[id]~=nil end,GetCached=function(_,id) return cached[id] end,GetInfo=function(_,id) cached[id]={iconPath='ready.dds'};return cached[id] end}
-    local page=assert(host:Build());assert(page:OnActivated());page:SwitchTab('library');local view=host.widgets.v3_buff_library_table;local item=view.items[1];view.spec.bindRow({},item)
-    Pump();assert(view.items[1].iconPath=='ready.dds','disabled Feature prevented static catalogue refresh')
-    page:OnDeactivated();S.Events=events;S.FeatureRuntime.IsEnabled=enabled
+    Reset();WithRealPageLifecycle(function()
+        S.FeatureRuntime.IsEnabled=function() return false end
+        local cached={};S.Services.BuffMetadataV3={HasCached=function(_,id) return cached[id]~=nil end,GetCached=function(_,id) return cached[id] end,GetInfo=function(_,id) cached[id]={iconPath='ready.dds'};return cached[id] end}
+        local page=assert(host:Build());assert(page:OnActivated());page:SwitchTab('library');local view=host.widgets.v3_buff_library_table;local item=view.items[1];view.spec.bindRow({},item)
+        Pump();assert(view.items[1].iconPath=='ready.dds','disabled Feature prevented static catalogue refresh')
+        assert(F.consumerCount==0,'static catalogue acquired business Aura demand')
+        assert(page:OnDeactivated());assert(not F.managementMetadata.active and not tasks.v3_buff_management_metadata)
+    end)
+end)
+Test('visible library metadata survives feature disabled lifecycle and releases on page hide',function()
+    Reset();WithRealPageLifecycle(function()
+        S.FeatureRuntime.IsEnabled=function() return false end
+        local cached={};S.Services.BuffMetadataV3={HasCached=function(_,id) return cached[id]~=nil end,GetCached=function(_,id) return cached[id] end,GetInfo=function(_,id) cached[id]={name='native catalogue name',iconPath='ready.dds'};return cached[id] end}
+        local page=assert(host:Build());assert(page:OnActivated());assert(page:SwitchTab('library'))
+        local view=host.widgets.v3_buff_library_table;local item=view.items[1];view.spec.bindRow({},item)
+        assert(tasks.v3_buff_management_metadata,'visible library did not queue metadata')
+        S.Events:Publish('v3.feature.lifecycle','combat_buff_display','disabled','test_feature_disable')
+        assert(F.managementMetadata.active and tasks.v3_buff_management_metadata,'feature disable cancelled visible catalogue metadata')
+        Pump();local updated=assert(Find(view.items,item.id),'resolved row vanished after name sort')
+        assert(updated.iconPath=='ready.dds' and updated.name=='native catalogue name','visible disabled library did not receive completed metadata')
+        assert(F.consumerCount==0 and F.cooldownManagementActive==false,'static metadata restarted business demand')
+        assert(page:OnDeactivated());assert(not F.managementMetadata.active and not tasks.v3_buff_management_metadata)
+    end)
 end)
 Test('metadata callbacks from hidden generation cannot act after reopening',function()
     Reset();local reads=0;S.Services.BuffMetadataV3={GetInfo=function() reads=reads+1 end};F:SetManagementPageActive(true);F:QueueManagementMetadata(21)
@@ -226,12 +268,11 @@ Test('diagnostic report exposes committed tracking and retention without native 
 end)
 
 -- 兼容边界：默认推荐库仅含状态，但旧技能CD收藏包仍可选，不能被新的成功导航隐藏。
-Test('legacy cooldown library imports remain visible in the cooldown collection view',function()
-    Reset();local page=assert(host:Build());page.libraryPack='cooldown:skill';page:SwitchTab('library')
-    assert(host.widgets.v3_buff_library_import.onClick())
-    assert(page.activeTab=='track' and page.managementView=='cooldowns','old cooldown package hidden by import navigation')
-    assert(#host.widgets.v3_buff_display_tracking_table.items>0)
-    for _,row in ipairs(host.widgets.v3_buff_display_tracking_table.items) do assert(row.tracked and row.kind=='skill') end
+Test('legacy cooldown package command remains supported by the unified CD source',function()
+    Reset();local page=assert(host:Build());assert(F.Commands:ImportBuiltinPack('cooldown:skill',false))
+    assert(host.widgets.v3_buff_manage_view.spec.set('cooldowns'));assert(page.activeTab=='track' and page.managementView=='cooldowns')
+    assert(#host.widgets.v3_buff_cooldown_table.items>0)
+    for _,row in ipairs(host.widgets.v3_buff_cooldown_table.items)do assert(row.tracked and F:IsUnifiedCooldownTracked(row.id))end
 end)
 
 print(string.format('CAPTURE LIBRARY RESULT %d passed / %d failed (%s)',passed,failed,_VERSION));if failed>0 then error('capture/library regression failed') end

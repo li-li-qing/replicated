@@ -19,8 +19,8 @@ local RANGE_RADIUS_HARD_MIN = tonumber(VISUAL_LIMITS.rangeRadiusHardMin) or 0.5
 local RANGE_RADIUS_HARD_MAX = tonumber(VISUAL_LIMITS.rangeRadiusHardMax) or 1000
 local REFRESH_HARD_MIN = tonumber(VISUAL_LIMITS.refreshMsHardMin) or 1
 local REFRESH_HARD_MAX = tonumber(VISUAL_LIMITS.refreshMsHardMax) or 60000
-S.UIV3.BusinessPagesContract = { version = 11, componentIdContractVersion = 1, bagProductUxContractVersion = 2, auctionCurrentListingUxContractVersion = 1, auctionSidecarEntryContractVersion = 2, craftSidecarUxContractVersion = 1, unitLineSettingsFoundationConsumerContractVersion = 3,
-    teamCenterLayoutContractVersion = 1, -- 中文维护注释：.18.197 团队中心把职责/团队辅助分组，并移除主视图中永远不可执行的成员移动表单；只改变 Presentation 层级与列定义，不改变 v3.team_tools / v3.team_visuals Authority、命令安全门或 Store。
+S.UIV3.BusinessPagesContract = { version = 11, componentIdContractVersion = 1, bagProductUxContractVersion = 3, auctionCurrentListingUxContractVersion = 1, auctionSidecarEntryContractVersion = 2, craftSidecarUxContractVersion = 1, unitLineSettingsFoundationConsumerContractVersion = 3,
+    teamCenterLayoutContractVersion = 1, teamFeatureSplitContractVersion = 1, -- 中文维护注释：.18.197 团队中心把职责/团队辅助分组，并移除主视图中永远不可执行的成员移动表单；只改变 Presentation 层级与列定义，不改变 v3.team_tools / v3.team_visuals Authority、命令安全门或 Store。
     rangeAssistEditorLayoutContractVersion = 1, -- 中文维护注释：.18.210 只整理范围辅助选中圆编辑器的布局层次，避免标题/动作/控件在窄屏下互相挤压；业务数据、Store schema 与命令路由不变。
     visualSettingsInputFenceContractVersion = 1, -- 中文维护注释：.18.218 UnitLines/RangeAssist 的 visual_tick 继续按原频率绘制，但用户持有输入草稿时禁止整页 Presentation Refresh；结束编辑后由下一次 visual_tick 自动追平。
 }
@@ -29,13 +29,12 @@ local ROUTES = {
     { route = "combat.boss_alerts", id = "combat_boss_alerts" }, { route = "combat.target_monitor", id = "combat_target_monitor" },
     { route = "combat.unit_lines", id = "combat_unit_lines" }, { route = "combat.range_assist", id = "combat_range_assist" },
     { route = "combat.buff_cap", id = "combat_buff_cap" }, { route = "combat.team_tools", id = "combat_team_tools" },
+    { route = "combat.sac_highlight", id = "combat_sac_highlight" }, -- 中文维护：独立牺牲之舞页与独立 Feature 总开关。
     { route = "combat.raid_recruitment", id = "combat_raid_recruitment" }, { route = "combat.siege_readiness", id = "combat_siege_readiness" },
     -- 中文维护注释（2026-09-15）：制作规划已删除；Business Page 不再注册其 Route，避免旧页面工厂继续持有无用 Feature/Store。
     { route = "tools.bag_organizer", id = "tools_bag" },
     { route = "tools.auction_favorites", id = "tools_auction" }, { route = "tools.market_analysis", id = "tools_market_analysis" },
     { route = "tools.craft_assist", id = "tools_craft" }, { route = "tools.social", id = "tools_social" },
-    { route = "tools.hotkey_profiles", id = "tools_hotkey_profiles" }, { route = "tools.reinforce_analysis", id = "tools_reinforce_analysis" },
-    { route = "tools.portal_profiles", id = "tools_portal_profiles" },
 }
 
 local BUSINESS_STATUS_ZH = {
@@ -66,7 +65,7 @@ local function Build(parent, route, id)
     local contractOk, contractErr = ValidateBusinessFeature(feature, id)
     if contractOk ~= true then return nil, contractErr end
     -- 中文维护：增益计数页也使用连续滚动，窄屏表单不用逐项跳页；不改变其它页面的滚动语义。
-    local rootSpec = (id == "combat_unit_lines" or id == "combat_boss_alerts" or id == "combat_buff_cap") and {
+    local rootSpec = id == "tools_bag" and { id="v3_page_business_tools_bag",gap=4,padding=2 } or (id == "combat_unit_lines" or id == "combat_boss_alerts" or id == "combat_buff_cap") and {
         id = "v3_page_business_" .. tostring(id), gap = 7, padding = 2, scrollStep = 1,
     } or ("v3_page_business_" .. tostring(id))
     local root, err
@@ -143,41 +142,21 @@ local function Build(parent, route, id)
         if hint == nil then return nil, "unit_line_settings_summary_failed" end
     else
         D:PageHeader(root, "v3_business_" .. id .. "_header", meta and meta.name or id,
-            meta and meta.description or "V3 业务功能页；数据读取由独立 Authority 完成。", "刷新", function()
+            meta and meta.description or "V3 业务功能页；数据读取由独立 Authority 完成。", id=="tools_bag" and "刷新背包" or "刷新", function()
                 local ok, refreshErr = feature.Commands:Refresh("page_manual")
                 if ok == true then root:Refresh() end
                 return ok, refreshErr
             end)
     end
 
-    local teamCenterIds = {
-        combat_team_tools = { route = "combat.team_tools", text = "团队管理" },
-        combat_raid_readiness = { route = "combat.raid_readiness", text = "战备检查" },
-        combat_raid_recruitment = { route = "combat.raid_recruitment", text = "招募助手" },
-        combat_siege_readiness = { route = "combat.siege_readiness", text = "攻城战备" },
-    }
-    if teamCenterIds[id] ~= nil then
-        local tabs = RSUI:HorizontalBox({ id = "v3_team_center_tabs_" .. id, parent = root, gap = 5, slot = { size = "fixed", height = 31, hAlign = "fill" } })
-        for _, teamId in ipairs({ "combat_team_tools", "combat_raid_readiness", "combat_raid_recruitment", "combat_siege_readiness" }) do
-            local tab = teamCenterIds[teamId]
-            local tabRef = tab
-            local button = RSUI:Button({ id = "v3_team_center_tab_" .. id .. "_" .. teamId, parent = tabs,
-                text = (teamId == id and "● " or "") .. tabRef.text, compact = true,
-                slot = { size = "fixed", width = teamId == "combat_raid_recruitment" and 96 or 88 } })
-            button.onClick = function()
-                local shell = S.UIV3 and S.UIV3.Shell or nil
-                if type(shell) ~= "table" or type(shell.Navigate) ~= "function" then return false, "团队中心导航不可用" end
-                return shell:Navigate(tabRef.route, { source = "team_center_tab" })
-            end
-        end
-    end
-
+    -- 中文维护：删除团队中心局部导航；职责与牺牲之舞由左侧独立入口切换。
     if unitLineSettingsPage ~= true then
         local actionRow = RSUI:HorizontalBox({ id = "v3_business_" .. id .. "_actions", parent = root, gap = 6, slot = { size = "fixed", height = 31, hAlign = "fill" } })
         toggle = D:ModuleToggleButton({ id = "v3_business_" .. id .. "_toggle", parent = actionRow, text = "关闭功能", compact = true, slot = { size = "fixed", width = 96 } })
         hint = RSUI:Text({ id = "v3_business_" .. id .. "_hint", parent = root, text = "", fontSize = 9, tone = "muted", overflow = "wrap", slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
     end
     if toggle == nil or hint == nil then return nil, "business_page_primary_controls_failed:" .. tostring(id) end
+    if id=="tools_bag" then hint:SetVisible(false)end -- 当前仓储状态由下方同一行显示，取消重复说明。
     toggle.onClick = function()
         local enabled = S.FeatureRuntime:IsEnabled(id) == true
         local target = not enabled
@@ -1019,32 +998,33 @@ local function Build(parent, route, id)
                 slot = { size = "fill", fill = 1 } })
         end
     end
-    local bagQuickStatus, blacklistStatus, blacklistToggle, blacklistPicker, itemInput
-    local selectedBlacklistItem = nil
-    if id == "tools_bag" then
-        RSUI:Text({ id="v3_business_tools_bag_quick_title", parent=root,
-            text="快速整理", fontSize=10, tone="strong", overflow="ellipsis",
-            slot={size="fixed",height=22,hAlign="fill"} })
-        local quickRow = RSUI:HorizontalBox({ id="v3_business_tools_bag_quick_row", parent=root, gap=8,
-            slot={size="fixed",height=36,hAlign="fill"} })
-        -- Product page mirrors the floating surface but uses explicit wording.
-        -- Same-button stop / other-button switch remains owned by tools_bag.
-        local quickTake=RSUI:Button({ id="v3_business_tools_bag_quick_take", parent=quickRow, text="取出同类", compact=true, slot={size="fixed",width=118} })
-        local quickPut=RSUI:Button({ id="v3_business_tools_bag_quick_put", parent=quickRow, text="存入同类", compact=true, slot={size="fixed",width=118} })
-        RSUI:Text({ id="v3_business_tools_bag_quick_help", parent=quickRow,
-            text="只移动背包与当前仓储两边都存在的同类物品。", fontSize=8, tone="muted", overflow="wrap", maxLines=2,
-            slot={size="fill",fill=1,minWidth=180} })
-        bagQuickStatus=RSUI:Text({ id="v3_business_tools_bag_quick_status", parent=root,
-            text="当前：请先打开银行或保管箱。", fontSize=8, tone="muted", overflow="wrap", maxLines=2,
-            slot={size="auto",minHeight=22,hAlign="fill"} })
+    local bagQuickStatus,blacklistStatus,blacklistToggle,itemInput,BuildBagSettingsRows
+    if id=="tools_bag" then
+        -- 与背包悬浮设置保持相同交互：取放仍走原Commands，黑名单在下方逐行加入/移出。
+        local quickRow=RSUI:HorizontalBox({id="v3_business_tools_bag_quick_row",parent=root,gap=5,slot={size="fixed",height=30,hAlign="fill"}})
         local function Quick(command)
-            local fn=feature.Commands[command]; if type(fn)~="function" then return false,"快捷取放命令不可用" end
-            local ok,result=fn(feature.Commands)
-            if ok~=true and bagQuickStatus~=nil then bagQuickStatus:SetText("操作失败："..tostring(result or "未执行")) end
-            root:Refresh(); return ok,result
+            local fn=feature.Commands[command];if type(fn)~="function" then return false,"快捷取放命令不可用"end
+            local ok,result=fn(feature.Commands);root:Refresh()
+            if ok~=true then bagQuickStatus:SetText("操作失败："..tostring(result or "未执行"))end
+            return ok,result
         end
-        quickTake.onClick=function() return Quick("QuickWithdraw") end
-        quickPut.onClick=function() return Quick("QuickDeposit") end
+        local take=RSUI:Button({id="v3_business_tools_bag_quick_take",parent=quickRow,text="取出同类",compact=true,slot={size="fixed",width=80}})
+        local put=RSUI:Button({id="v3_business_tools_bag_quick_put",parent=quickRow,text="存入同类",compact=true,slot={size="fixed",width=80}})
+        local all=RSUI:Button({id="v3_business_tools_bag_quick_all_put",parent=quickRow,text="全放",compact=true,slot={size="fixed",width=54}})
+        take.onClick=function()return Quick("QuickWithdraw")end
+        put.onClick=function()return Quick("QuickDeposit")end
+        all.onClick=function()return Quick("QuickDepositAll")end
+        if S.Tooltip and type(S.Tooltip.Bind)=="function" then
+            S.Tooltip:Bind(all,{text="尝试存入所有非黑名单物品；运行中再点同一动作停止。",cursorFollow=true,maxWidth=320})
+        end
+        local reset=RSUI:Button({id="v3_business_tools_bag_reset_position",parent=quickRow,text="重置悬浮栏位置",compact=true,slot={size="fixed",width=114}})
+        reset.onClick=function()
+            local bar=S.UIV3 and S.UIV3.BagQuickOverlay
+            if type(bar)~="table" or type(bar.ResetPosition)~="function" then return false,"悬浮栏不可用"end
+            local ok,err=bar:ResetPosition();bagQuickStatus:SetText(ok and "悬浮栏位置已重置。" or "重置失败："..tostring(err or "未保存"));return ok,err
+        end
+        bagQuickStatus=RSUI:Text({id="v3_business_tools_bag_quick_status",parent=root,text="请先打开银行或保管箱。",fontSize=9,tone="muted",
+            overflow="wrap",maxLines=2,slot={size="fixed",height=24,hAlign="fill"}})
     end
     local socialInput, socialStatus = nil, nil
     if id == "tools_social" then
@@ -1089,142 +1069,85 @@ local function Build(parent, route, id)
         end
     end
 
-    local function SetBlacklistStatus(text, tone)
-        if blacklistStatus ~= nil then
-            blacklistStatus:SetText(tostring(text or ""))
-            if S.Theme ~= nil and type(S.Theme.SetLabelTone) == "function" then S.Theme:SetLabelTone(blacklistStatus, tone or "muted") end
-        end
+    local function SetBlacklistStatus(text,tone)
+        root.blacklistFeedback=tostring(text or "")
+        if blacklistStatus then blacklistStatus:SetText(root.blacklistFeedback);if type(blacklistStatus.SetTone)=="function" then blacklistStatus:SetTone(tone or "muted")end end
     end
-    if id == "tools_bag" then
-        RSUI:Text({ id = "v3_business_tools_bag_blacklist_title", parent = root, text = "整理黑名单", fontSize = 10,
-            tone = "strong", overflow = "ellipsis", slot = { size = "fixed", height = 22, hAlign = "fill" } })
-        blacklistStatus = RSUI:Text({ id = "v3_business_tools_bag_blacklist_status", parent = root,
-            text = "加入黑名单的物品不会参与取出或存入。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
-            slot = { size = "auto", minHeight = 22, hAlign = "fill" } })
-
-        local addRow = RSUI:HorizontalBox({ id = "v3_business_tools_bag_blacklist_add_row", parent = root, gap = 6,
-            slot = { size = "fixed", height = 31, hAlign = "fill" } })
-        itemInput = RSUI:TextInput({ id = "v3_business_tools_bag_blacklist_item_input", parent = addRow, value = "", maxLength = 96,
-            allowEmpty = true, submitOnLostFocus = false, placeholder = "输入物品ID或当前背包/仓储中的物品名称",
-            slot = { size = "fill", fill = 1, minWidth = 220 } })
-        local addItemButton = RSUI:Button({ id = "v3_business_tools_bag_blacklist_item_add", parent = addRow, text = "加入黑名单", compact = true,
-            slot = { size = "fixed", width = 96 } })
-        blacklistToggle = RSUI:Button({ id = "v3_business_tools_bag_blacklist_toggle", parent = addRow, text = "黑名单：开", compact = true,
-            slot = { size = "fixed", width = 82 } })
-
-        local listRow = RSUI:HorizontalBox({ id = "v3_business_tools_bag_blacklist_list_row", parent = root, gap = 6,
-            slot = { size = "fixed", height = 31, hAlign = "fill" } })
-        RSUI:Text({ id = "v3_business_tools_bag_blacklist_list_label", parent = listRow, text = "当前黑名单", fontSize = 9,
-            tone = "strong", overflow = "ellipsis", slot = { size = "fixed", width = 72 } })
-        blacklistPicker = RSUI:Dropdown({ id = "v3_business_tools_bag_blacklist_picker", parent = listRow, items = {}, maxVisible = 8, popupWidth = 320,
-            get = function() return selectedBlacklistItem end,
-            set = function(value) selectedBlacklistItem = value ~= nil and tostring(value) or nil; return true end,
-            placeholder = "暂无黑名单物品", slot = { size = "fill", fill = 1, minWidth = 220 } })
-        local removeItemButton = RSUI:Button({ id = "v3_business_tools_bag_blacklist_item_remove", parent = listRow, text = "删除选中", compact = true,
-            slot = { size = "fixed", width = 82 } })
-
-        RSUI:Text({ id = "v3_business_tools_bag_blacklist_help", parent = root,
-            text = "也可以直接点击下方“当前背包物品”中的一行，物品ID会自动填入上面的输入框。名称搜索只在你主动添加时读取当前背包和已打开的仓储，不会后台扫描。",
-            fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
-            slot = { size = "auto", minHeight = 26, hAlign = "fill" } })
-
-        addItemButton.onClick = function()
-            local query = itemInput ~= nil and type(itemInput.GetDraftValue) == "function" and tostring(itemInput:GetDraftValue() or "") or ""
-            local command = feature.Commands.ResolveAndAddBlacklistItem
-            if type(command) ~= "function" then SetBlacklistStatus("添加失败：黑名单匹配命令不可用", "warn"); return false, "黑名单匹配命令不可用" end
-            local ok, result = command(feature.Commands, query)
-            if ok ~= true then SetBlacklistStatus("添加失败：" .. tostring(result or "未执行"), "warn"); return false, result end
-            if itemInput ~= nil and type(itemInput.SetValue) == "function" then itemInput:SetValue("", false, "bag_blacklist_add_success") end
-            root:Refresh()
-            SetBlacklistStatus("已加入黑名单；对银行和保管箱同时生效。", "success")
-            return true
-        end
-        blacklistToggle.onClick = function()
-            local projection = feature:GetProjection() or {}
-            local config = type(projection.blacklist) == "table" and projection.blacklist or {}
-            local ok, result = feature.Commands:SetBlacklistEnabled(config.enabled ~= true)
-            if ok ~= true then SetBlacklistStatus("设置失败：" .. tostring(result or "未执行"), "warn"); return false, result end
-            root:Refresh(); return true
-        end
-        removeItemButton.onClick = function()
-            if selectedBlacklistItem == nil or tostring(selectedBlacklistItem) == "" then
-                SetBlacklistStatus("请先从“当前黑名单”选择一个物品。", "warn"); return false, "未选择黑名单物品"
+    if id=="tools_bag" then
+        root.bagSettingsView,root.bagSettingsFilter="bag",""
+        -- 只筛选已有detached快照；不持有第二份黑名单、不在UI刷新或筛选中读取背包API。
+        BuildBagSettingsRows=function(projection)
+            local blocked,quantities,rows={}, {}, {}
+            for _,entry in ipairs(projection.blacklistRows or {})do blocked[tostring(entry.itemType)]=true end
+            for _,entry in ipairs(projection.bagItemRows or {})do quantities[tostring(entry.itemType)]=entry.stack end
+            local query=tostring(root.bagSettingsFilter or ""):lower()
+            local entries=root.bagSettingsView=="blacklist" and projection.blacklistRows or projection.bagItemRows
+            for _,entry in ipairs(entries or {})do
+                local itemType=tonumber(entry.itemType);local key=tostring(entry.itemType or "")
+                local name=tostring(entry.itemName or entry.name or key)
+                if query=="" or name:lower():find(query,1,true) or key:find(query,1,true) then
+                    local inList=blocked[key]==true
+                    rows[#rows+1]={key="bag_settings:"..key,itemType=itemType,name=name,quantity=quantities[key],blocked=inList,stateText=inList and "在名单" or "可整理"}
+                end
             end
-            local command = feature.Commands.RemoveGlobalBlacklistItem
-            if type(command) ~= "function" then SetBlacklistStatus("删除失败：黑名单删除命令不可用", "warn"); return false, "黑名单删除命令不可用" end
-            local ok, result = command(feature.Commands, selectedBlacklistItem)
-            if ok ~= true then SetBlacklistStatus("删除失败：" .. tostring(result or "未执行"), "warn"); return false, result end
-            selectedBlacklistItem = nil
-            root:Refresh()
-            SetBlacklistStatus("已从整理黑名单删除。", "success")
-            return true
+            return rows
         end
-
+        local controls=RSUI:HorizontalBox({id="v3_business_tools_bag_settings_controls",parent=root,gap=5,slot={size="fixed",height=28,hAlign="fill"}})
+        RSUI:SegmentedSelector({id="v3_business_tools_bag_settings_tabs",parent=controls,
+            items={{value="bag",text="背包物品",width=76},{value="blacklist",text="黑名单",width=76}},maxItems=2,height=26,gap=3,
+            get=function()return root.bagSettingsView end,set=function(value)
+                if value~="bag" and value~="blacklist" then return false,"未知物品列表"end
+                root.bagSettingsView=value;root.blacklistFeedback=nil;return root:Refresh()
+            end,slot={size="fixed",width=155}})
+        blacklistToggle=RSUI:Button({id="v3_business_tools_bag_blacklist_toggle",parent=controls,text="黑名单：开",compact=true,slot={size="fixed",width=94}})
+        blacklistToggle.onClick=function()
+            local p=feature:GetProjection() or {};local ok,err=feature.Commands:SetBlacklistEnabled((p.blacklist or {}).enabled~=true)
+            if ok~=true then SetBlacklistStatus("保存失败："..tostring(err or "未提交"),"warn");return false,err end
+            root:Refresh();SetBlacklistStatus((feature:GetProjection().blacklist or {}).enabled==true and "黑名单已开启。" or "黑名单已关闭，整理时不再排除名单物品。");return true
+        end
+        local search=RSUI:HorizontalBox({id="v3_business_tools_bag_settings_search",parent=root,gap=5,slot={size="fixed",height=28,hAlign="fill"}})
+        itemInput=RSUI:TextInput({id="v3_business_tools_bag_blacklist_item_input",parent=search,value="",maxLength=96,commitMode="explicit",
+            placeholder="筛选名称或 ID，也可输入添加",slot={size="fill",fill=1,minWidth=130}})
+        local apply=RSUI:Button({id="v3_business_tools_bag_filter_apply",parent=search,text="筛选",compact=true,slot={size="fixed",width=48}})
+        local clear=RSUI:Button({id="v3_business_tools_bag_filter_clear",parent=search,text="清除",compact=true,slot={size="fixed",width=48}})
+        local add=RSUI:Button({id="v3_business_tools_bag_blacklist_item_add",parent=search,text="输入添加",compact=true,slot={size="fixed",width=76}})
+        apply.onClick=function()root.bagSettingsFilter=tostring(itemInput:GetDraftValue() or ""):match("^%s*(.-)%s*$");root.blacklistFeedback=nil;return root:Refresh()end
+        clear.onClick=function()root.bagSettingsFilter="";itemInput:SetValue("",false,"bag_filter_clear");root.blacklistFeedback=nil;return root:Refresh()end
+        add.onClick=function()
+            local ok,err=feature.Commands:ResolveAndAddBlacklistItem(tostring(itemInput:GetDraftValue() or ""))
+            if ok~=true then SetBlacklistStatus("添加失败："..tostring(err or "未提交"),"warn");return false,err end
+            root:Refresh();SetBlacklistStatus("已保存到黑名单，对银行和箱子同时生效。");return true
+        end
+        blacklistStatus=RSUI:Text({id="v3_business_tools_bag_blacklist_status",parent=root,text="点击行内“加入 / 移出”配置黑名单。",fontSize=9,tone="muted",
+            overflow="wrap",maxLines=2,slot={size="fixed",height=24,hAlign="fill"}})
+        function root:ToggleBlacklistItem(row)
+            if self.featureUpdatesBound~=true or S.FeatureRuntime:IsEnabled(id)~=true then return false,"请先启用整理背包并打开页面"end
+            local itemType=tonumber(row and row.itemType)
+            if not itemType or itemType<=0 then SetBlacklistStatus("物品 ID 尚未取得，请刷新背包。","warn");return false,"物品 ID 未知"end
+            local ok,err
+            if row.blocked==true then ok,err=feature.Commands:RemoveGlobalBlacklistItem(itemType)
+            else ok,err=feature.Commands:AddGlobalBlacklistItem(itemType,row.name)end
+            if ok~=true then SetBlacklistStatus("保存失败："..tostring(err or "未提交"),"warn");return false,err end
+            self:Refresh();SetBlacklistStatus(row.blocked==true and "已移出黑名单。" or "已加入黑名单，对银行和箱子同时生效。");return true
+        end
         function root:RefreshBlacklistEditor(projection)
-            local config = type(projection) == "table" and projection.blacklist or nil
-            config = type(config) == "table" and config or {}
-            local enabledNow = config.enabled == true
-            local options = type(projection.blacklistOptions) == "table" and projection.blacklistOptions or {}
-            blacklistToggle:SetText(enabledNow and "黑名单：开" or "黑名单：关")
-            if type(blacklistPicker.SetItems) == "function" then blacklistPicker:SetItems(options) else blacklistPicker.items = options end
-            if selectedBlacklistItem ~= nil then
-                local found = false
-                for _, option in ipairs(options) do if tostring(option.value or "") == tostring(selectedBlacklistItem) then found = true; break end end
-                if found ~= true then selectedBlacklistItem = nil end
+            local config=type(projection.blacklist)=="table" and projection.blacklist or {}
+            blacklistToggle:SetText(config.enabled==true and "黑名单：开" or "黑名单：关")
+            if self.blacklistFeedback==nil then
+                local legacy=math.max(0,tonumber(projection.blacklistLegacyCategoryCount) or 0)
+                blacklistStatus:SetText("点击行内“加入 / 移出”；名单 "..tostring(#(projection.blacklistRows or {})).." 项，对银行和箱子生效。"
+                    ..(legacy>0 and " 旧分类规则仍保留。" or ""))
             end
-            if type(blacklistPicker.Render) == "function" then blacklistPicker:Render() end
-            local legacyCount = math.max(0, tonumber(projection.blacklistLegacyCategoryCount) or 0)
-            local suffix = legacyCount > 0 and (" · 兼容旧分类规则 " .. tostring(legacyCount) .. " 项仍生效") or ""
-            SetBlacklistStatus((enabledNow and "黑名单保护已开启" or "黑名单保护已关闭") .. " · 物品 " .. tostring(#options) .. " 项" .. suffix,
-                enabledNow and "muted" or "warn")
         end
     end
     local teamRoleInput, teamActionStatus, teamAutoRoleButton, teamExtra
-    if id == "combat_team_tools" then
-        -- 中文维护注释（2026-09-10，团队中心布局）：旧版把“职责、两个已禁用的成员移动表单、牺牲之舞/头标”连续堆在同一层，既占据大量垂直空间，也让不可执行的 Native 写能力看起来像可配置功能。这里仅重组 Presentation：v3.team_tools 继续拥有职责/自动职责 Authority，v3.team_visuals 继续拥有牺牲之舞与头标 Store/Consumer；成员移动命令仍保留在 Domain 并 fail-closed，等未来获得合法队长权限 getter 后再单独恢复 UI。禁止以后为了“把按钮放回来”绕过 Domain 权限安全门。
-        local roleGroup = RSUI:GroupBox({ id = "v3_business_combat_team_tools_role_group", parent = root, title = "职责设置", variant = "soft", gap = 5, padding = 8,
-            slot = { size = "auto", hAlign = "fill" } }) -- 中文维护注释：GroupBox 使用 RSUI 布局而非手算像素，窗口缩放/不同分辨率由 Measure/Arrange 统一处理，避免 1280×768 下控件挤压。
-        local roleInner = RSUI:VerticalBox({ id = "v3_business_combat_team_tools_role_inner", parent = roleGroup, gap = 5 }) -- 中文维护注释：职责组内部只承载当前玩家可执行的设置；全队职责表仍是只读投影，不与写入控件共享 Authority。
-        local roleRow = RSUI:HorizontalBox({ id = "v3_business_combat_team_tools_role_row", parent = roleInner, gap = 6,
-            slot = { size = "fixed", height = 31, hAlign = "fill" } })
-        RSUI:Text({ id = "v3_business_combat_team_tools_role_label", parent = roleRow, text = "我的职责", fontSize = 9, tone = "strong",
-            overflow = "ellipsis", slot = { size = "fixed", width = 58 } })
-        local roleProjection = feature:GetProjection() or {} -- 中文维护注释：下拉选项只读取 Feature detached projection，不直接调用 X2Team；Native 读写仍集中在 TeamTools Domain。
-        local roleItems = {}
-        for _, item in ipairs(type(roleProjection.roleOptions) == "table" and roleProjection.roleOptions or {}) do
-            roleItems[#roleItems + 1] = { value = item.value, text = tostring(item.text or item.key or item.value) }
-        end
-        local teamRoleValue = nil
-        teamRoleInput = RSUI:Dropdown({ id = "v3_business_combat_team_tools_role_input", parent = roleRow, items = roleItems, maxVisible = 5,
-            get = function() return teamRoleValue end, set = function(value) teamRoleValue = value; return true end,
-            placeholder = #roleItems > 0 and "选择职责" or "职责不可用", slot = { size = "fixed", width = 126 } })
-        local setRoleButton = RSUI:Button({ id = "v3_business_combat_team_tools_set_role", parent = roleRow, text = "设置我的职责", compact = true,
-            slot = { size = "fixed", width = 96 } })
-        teamAutoRoleButton = RSUI:Button({ id = "v3_business_combat_team_tools_auto_role", parent = roleRow, text = "自动职责：开", compact = true,
-            slot = { size = "fixed", width = 108 } }) -- 中文维护注释：初始文案与 Domain 新安装默认 true 对齐；Refresh 仍以 projection 为最终事实，旧用户保存 false 不会被 UI 初始文字反向写入。
-        local roleStatus = RSUI:Text({ id = "v3_business_combat_team_tools_role_status", parent = roleInner,
-            text = "自动职责默认开启；进入团队或职业组合变化后按已验证职业表匹配。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
-            slot = { size = "auto", minHeight = 20, hAlign = "fill" } }) -- 中文维护注释：这是只读说明/状态文本，不参与 Store，避免把运行时识别结果误写成永久配置。
-
-        teamExtra = {}
-        local assistGroup = RSUI:GroupBox({ id = "v3_business_combat_team_tools_assist_group", parent = root, title = "团队辅助", variant = "soft", gap = 5, padding = 8,
-            slot = { size = "auto", hAlign = "fill" } }) -- 中文维护注释：团队视觉辅助与职责写入分组，明确它们由不同子 Authority 管理；分组本身不获取额外 Consumer。
-        local assistInner = RSUI:VerticalBox({ id = "v3_business_combat_team_tools_assist_inner", parent = assistGroup, gap = 5 })
-        local visualRow = RSUI:HorizontalBox({ id = "v3_business_combat_team_tools_visual_row", parent = assistInner, gap = 6,
-            slot = { size = "fixed", height = 31, hAlign = "fill" } })
-        teamExtra.sacButton = RSUI:Button({ id = "v3_business_combat_team_tools_sac_toggle", parent = visualRow, text = "牺牲之舞：开", compact = true,
-            slot = { size = "fixed", width = 108 } }) -- 中文维护注释：仅默认显示“开”；真实状态由 TeamVisuals Store schema2 projection 刷新，旧 schema1 的关闭状态会立即显示回“关”。
-        teamExtra.saveMarks = RSUI:Button({ id = "v3_business_combat_team_tools_mark_save", parent = visualRow, text = "保存头标", compact = true,
-            slot = { size = "fixed", width = 78 } })
-        teamExtra.restoreMarks = RSUI:Button({ id = "v3_business_combat_team_tools_mark_restore", parent = visualRow, text = "恢复头标", compact = true,
-            slot = { size = "fixed", width = 78 } })
-        teamExtra.clearMarks = RSUI:Button({ id = "v3_business_combat_team_tools_mark_clear", parent = visualRow, text = "清空保存", compact = true,
-            slot = { size = "fixed", width = 78 } })
-        teamExtra.status = RSUI:Text({ id = "v3_business_combat_team_tools_visual_status", parent = assistInner,
-            text = "牺牲之舞高亮默认开启 · 尚未保存团队头标", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
-            slot = { size = "auto", minHeight = 22, hAlign = "fill" } }) -- 中文维护注释：只展示 TeamVisuals detached projection，不进行 Aura/Marker Native 读取；高频事实仍由共享 Service + 按需 Consumer 提供。
-
-        teamActionStatus = RSUI:Text({ id = "v3_business_combat_team_tools_action_status", parent = root,
+    if id == "combat_team_tools" or id == "combat_sac_highlight" then
+        -- 中文维护（2026-10-02）：独立页面只创建所属功能的控件；共享动作状态仅属于当前页。
+        -- 中文维护（232017 TXT）：PageHost 保留同代两个页面，逻辑 ID 一旦消耗不能重用。
+        -- 整组控件按当前 Feature 分配命名空间；不能沿用旧聚合页前缀，也不能放宽 RSUI
+        -- 重复 ID/构建隔离保护。该 ID 只属于 Presentation，不改变职责/视觉存档身份。
+        local teamComponentPrefix = "v3_business_" .. id .. "_"
+        teamActionStatus = RSUI:Text({ id = teamComponentPrefix .. "action_status", parent = root,
             text = "全队职责只读；职责写入只作用于当前玩家。成员移动因缺少合法队长权限读取契约继续安全停用。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
             slot = { size = "auto", minHeight = 24, hAlign = "fill" } }) -- 中文维护注释：用一条明确能力说明替代两组永久禁用输入框，减少视觉噪声；Domain 的 MoveMember/MoveMemberToParty 仍存在并拒绝执行，兼容未来功能恢复与旧调用方。
 
@@ -1245,6 +1168,33 @@ local function Build(parent, route, id)
             end
             return true
         end
+        teamExtra = {}
+        if id == "combat_team_tools" then
+        -- 中文维护注释（2026-09-10，团队中心布局）：旧版把“职责、两个已禁用的成员移动表单、牺牲之舞/头标”连续堆在同一层，既占据大量垂直空间，也让不可执行的 Native 写能力看起来像可配置功能。这里仅重组 Presentation：v3.team_tools 继续拥有职责/自动职责 Authority，v3.team_visuals 继续拥有牺牲之舞与头标 Store/Consumer；成员移动命令仍保留在 Domain 并 fail-closed，等未来获得合法队长权限 getter 后再单独恢复 UI。禁止以后为了“把按钮放回来”绕过 Domain 权限安全门。
+        local roleGroup = RSUI:GroupBox({ id = teamComponentPrefix .. "role_group", parent = root, title = "职责设置", variant = "soft", gap = 5, padding = 8,
+            slot = { size = "auto", hAlign = "fill" } }) -- 中文维护注释：GroupBox 使用 RSUI 布局而非手算像素，窗口缩放/不同分辨率由 Measure/Arrange 统一处理，避免 1280×768 下控件挤压。
+        local roleInner = RSUI:VerticalBox({ id = teamComponentPrefix .. "role_inner", parent = roleGroup, gap = 5 }) -- 中文维护注释：职责组内部只承载当前玩家可执行的设置；全队职责表仍是只读投影，不与写入控件共享 Authority。
+        local roleRow = RSUI:HorizontalBox({ id = teamComponentPrefix .. "role_row", parent = roleInner, gap = 6,
+            slot = { size = "fixed", height = 31, hAlign = "fill" } })
+        RSUI:Text({ id = teamComponentPrefix .. "role_label", parent = roleRow, text = "我的职责", fontSize = 9, tone = "strong",
+            overflow = "ellipsis", slot = { size = "fixed", width = 58 } })
+        local roleProjection = feature:GetProjection() or {} -- 中文维护注释：下拉选项只读取 Feature detached projection，不直接调用 X2Team；Native 读写仍集中在 TeamTools Domain。
+        local roleItems = {}
+        for _, item in ipairs(type(roleProjection.roleOptions) == "table" and roleProjection.roleOptions or {}) do
+            roleItems[#roleItems + 1] = { value = item.value, text = tostring(item.text or item.key or item.value) }
+        end
+        local teamRoleValue = nil
+        teamRoleInput = RSUI:Dropdown({ id = teamComponentPrefix .. "role_input", parent = roleRow, items = roleItems, maxVisible = 5,
+            get = function() return teamRoleValue end, set = function(value) teamRoleValue = value; return true end,
+            placeholder = #roleItems > 0 and "选择职责" or "职责不可用", slot = { size = "fixed", width = 126 } })
+        local setRoleButton = RSUI:Button({ id = teamComponentPrefix .. "set_role", parent = roleRow, text = "设置我的职责", compact = true,
+            slot = { size = "fixed", width = 96 } })
+        teamAutoRoleButton = RSUI:Button({ id = teamComponentPrefix .. "auto_role", parent = roleRow, text = "自动职责：开", compact = true,
+            slot = { size = "fixed", width = 108 } }) -- 中文维护注释：初始文案与 Domain 新安装默认 true 对齐；Refresh 仍以 projection 为最终事实，旧用户保存 false 不会被 UI 初始文字反向写入。
+        local roleStatus = RSUI:Text({ id = teamComponentPrefix .. "role_status", parent = roleInner,
+            text = "自动职责默认开启；进入团队或职业组合变化后按已验证职业表匹配。", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
+            slot = { size = "auto", minHeight = 20, hAlign = "fill" } }) -- 中文维护注释：这是只读说明/状态文本，不参与 Store，避免把运行时识别结果误写成永久配置。
+
         teamAutoRoleButton.onClick = function()
             local projection = feature:GetProjection() or {} -- 中文维护注释：按钮切换以前一份 Feature projection 为事实，不使用本地按钮文案推断状态，避免 UI 与 Store 脱节。
             local nextValue = projection.autoRoleEnabled == false
@@ -1261,8 +1211,31 @@ local function Build(parent, route, id)
             if ok ~= true then SetTeamActionStatus("失败：" .. tostring(err or "职责设置未执行"), "warn"); return false, err end
             local refreshed, refreshErr = RefreshTeamAction("team_tools_set_role")
             if refreshed ~= true then SetTeamActionStatus(refreshErr, "warn"); return false, refreshErr end
-            SetTeamActionStatus("当前玩家职责设置成功", "success"); return true
+            SetTeamActionStatus("已提交当前玩家职责；等待团队同步确认", "success"); return true -- 中文维护：Action 接受与服务端同步是两个边界，后续只读确认和诊断归职责 Feature。
         end
+        if #roleItems <= 0 then teamRoleInput:SetEnabled(false); setRoleButton:SetEnabled(false) end
+        teamExtra.roleStatus = roleStatus
+        end -- 中文维护：职责控件不进入牺牲之舞页。
+        if id == "combat_sac_highlight" then
+        local assistGroup = RSUI:GroupBox({ id = teamComponentPrefix .. "assist_group", parent = root, title = "牺牲之舞 / 团队头标", variant = "soft", gap = 5, padding = 8,
+            slot = { size = "auto", hAlign = "fill" } }) -- 中文维护注释：团队视觉辅助与职责写入分组，明确它们由不同子 Authority 管理；分组本身不获取额外 Consumer。
+        local assistInner = RSUI:VerticalBox({ id = teamComponentPrefix .. "assist_inner", parent = assistGroup, gap = 5 })
+        local visualRow = RSUI:HorizontalBox({ id = teamComponentPrefix .. "visual_row", parent = assistInner, gap = 6,
+            slot = { size = "fixed", height = 31, hAlign = "fill" } })
+        teamExtra.sacButton = RSUI:Button({ id = teamComponentPrefix .. "sac_toggle", parent = visualRow, text = "牺牲之舞：开", compact = true,
+            slot = { size = "fixed", width = 108 } }) -- 中文维护注释：仅默认显示“开”；真实状态由 TeamVisuals Store schema2 projection 刷新，旧 schema1 的关闭状态会立即显示回“关”。
+        teamExtra.saveMarks = RSUI:Button({ id = teamComponentPrefix .. "mark_save", parent = visualRow, text = "保存头标", compact = true,
+            slot = { size = "fixed", width = 78 } })
+        teamExtra.restoreMarks = RSUI:Button({ id = teamComponentPrefix .. "mark_restore", parent = visualRow, text = "恢复头标", compact = true,
+            slot = { size = "fixed", width = 78 } })
+        teamExtra.clearMarks = RSUI:Button({ id = teamComponentPrefix .. "mark_clear", parent = visualRow, text = "清空保存", compact = true,
+            slot = { size = "fixed", width = 78 } })
+        teamExtra.status = RSUI:Text({ id = teamComponentPrefix .. "visual_status", parent = assistInner,
+            text = "牺牲之舞高亮默认开启 · 尚未保存团队头标", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
+            slot = { size = "auto", minHeight = 22, hAlign = "fill" } }) -- 中文维护注释：只展示 TeamVisuals detached projection，不进行 Aura/Marker Native 读取；高频事实仍由共享 Service + 按需 Consumer 提供。
+
+        end -- 中文维护：视觉与头标控件不进入职责页。
+        if id == "combat_sac_highlight" then
         teamExtra.sacButton.onClick = function()
             local projection = feature:GetProjection() or {} -- 中文维护注释：牺牲之舞开关只消费 TeamVisuals projection；候选扫描/Aura 事实不由页面直接读取。
             local nextValue = projection.sacEnabled ~= true
@@ -1287,73 +1260,8 @@ local function Build(parent, route, id)
             if ok ~= true then SetTeamActionStatus("清空保存失败：" .. tostring(err or "未执行"), "warn"); return false, err end
             root:Refresh(); SetTeamActionStatus("已清空插件保存的头标方案；不会清除当前游戏头标", "muted"); return true
         end
-        if #roleItems <= 0 then teamRoleInput:SetEnabled(false); setRoleButton:SetEnabled(false) end -- 中文维护注释：客户端 TMROLE 枚举不可用时 fail-closed，只禁用职责写 UI，不影响团队名单只读投影。
-        SetTeamActionStatus("全队职责只读；仅可设置当前玩家职责。成员移动等待合法队长/权限读取契约", "muted")
-        teamExtra.roleStatus = roleStatus -- 中文维护注释：保留引用供 Refresh 更新自动职责运行说明；只属于当前页面生命周期，不跨重载持久化。
-    end
-    local hotkeyNameInput, hotkeySaveButton, hotkeyApplyButton, hotkeyDeleteButton, hotkeyRecoverButton, hotkeyStatus
-    local hotkeySelectedId = nil
-    if id == "tools_hotkey_profiles" then
-        -- 中文维护注释（2026-09-23，hotkey-profile-v2 UI）：页面仍只提交 profileId/名称；白名单探测、组级读取、
-        -- durable recovery、Native 写入与 readback 全部属于 Feature Authority。Presentation 不判断 team_target/marker
-        -- 是否可写，也不直接调用 X2Hotkey，避免跨角色恢复边界与 Fishing Auto-R 出现双 Authority。
-        local editor = RSUI:GroupBox({ id = "v3_business_tools_hotkey_profiles_editor", parent = root, title = "快捷键方案（安全白名单）", variant = "soft", gap = 5, padding = 8,
-            slot = { size = "auto", hAlign = "fill" } })
-        local editorInner = RSUI:VerticalBox({ id = "v3_business_tools_hotkey_profiles_editor_inner", parent = editor, gap = 5 })
-        local row = RSUI:HorizontalBox({ id = "v3_business_tools_hotkey_profiles_editor_row", parent = editorInner, gap = 6,
-            slot = { size = "fixed", height = 31, hAlign = "fill" } })
-        hotkeyNameInput = RSUI:TextInput({ id = "v3_business_tools_hotkey_profiles_name", parent = row, value = "", maxLength = 32,
-            allowEmpty = false, placeholder = "方案名称，例如：奶妈 / 输出", slot = { size = "fill", fill = 1, minWidth = 140 } })
-        hotkeySaveButton = RSUI:Button({ id = "v3_business_tools_hotkey_profiles_save", parent = row, text = "保存当前", compact = true,
-            slot = { size = "fixed", width = 82 } })
-        hotkeyApplyButton = RSUI:Button({ id = "v3_business_tools_hotkey_profiles_apply", parent = row, text = "应用选择", compact = true,
-            slot = { size = "fixed", width = 82 } })
-        hotkeyDeleteButton = RSUI:Button({ id = "v3_business_tools_hotkey_profiles_delete", parent = row, text = "删除选择", compact = true,
-            slot = { size = "fixed", width = 82 } })
-        hotkeyRecoverButton = RSUI:Button({ id = "v3_business_tools_hotkey_profiles_recover", parent = row, text = "恢复应用前", compact = true,
-            slot = { size = "fixed", width = 92 } })
-        hotkeyStatus = RSUI:Text({ id = "v3_business_tools_hotkey_profiles_status", parent = editorInner,
-            text = "保存主动作栏 1-12；若当前客户端确认 action 有效且可覆盖，还会加入队伍目标 1-4 与头顶标记 1-3。方案按账号保存，可跨角色应用。",
-            fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 3, slot = { size = "auto", minHeight = 28, hAlign = "fill" } })
-        local function SetHotkeyStatus(text, tone)
-            hotkeyStatus:SetText(tostring(text or ""))
-            if S.Theme ~= nil and type(S.Theme.SetLabelTone) == "function" then S.Theme:SetLabelTone(hotkeyStatus, tone or "muted") end
-        end
-        hotkeySaveButton.onClick = function()
-            local name = hotkeyNameInput and type(hotkeyNameInput.GetActionValue) == "function" and hotkeyNameInput:GetActionValue() or (hotkeyNameInput and type(hotkeyNameInput.GetDraftValue) == "function" and hotkeyNameInput:GetDraftValue() or (hotkeyNameInput and type(hotkeyNameInput.GetValue) == "function" and hotkeyNameInput:GetValue() or ""))
-            local ok, result = feature.Commands:SaveProfile(name)
-            if ok ~= true then SetHotkeyStatus("保存失败：" .. tostring(result or "未执行"), "warn"); return false, result end
-            hotkeyNameInput:SetValue("", false, "hotkey_profile_saved")
-            root:Refresh(); SetHotkeyStatus(tostring(result or "已保存当前角色快捷键方案，可切换角色后应用。"), "success")
-            return true
-        end
-        hotkeyApplyButton.onClick = function()
-            if hotkeySelectedId == nil then local err = "请先在下方选择一个方案"; SetHotkeyStatus(err, "warn"); return false, err end
-            local ok, result = feature.Commands:ApplyProfile(hotkeySelectedId)
-            if ok ~= true then SetHotkeyStatus("应用失败：" .. tostring(result or "未执行"), "warn"); root:Refresh(); return false, result end
-            root:Refresh(); SetHotkeyStatus(tostring(result or "方案已应用并完成读回校验。"), "success"); return true
-        end
-        hotkeyDeleteButton.onClick = function()
-            if hotkeySelectedId == nil then local err = "请先选择要删除的方案"; SetHotkeyStatus(err, "warn"); return false, err end
-            local ok, err = feature.Commands:DeleteProfile(hotkeySelectedId)
-            if ok ~= true then SetHotkeyStatus("删除失败：" .. tostring(err or "未执行"), "warn"); return false, err end
-            hotkeySelectedId = nil; root:Refresh(); SetHotkeyStatus("方案已删除；不会修改当前游戏键位。", "muted"); return true
-        end
-        hotkeyRecoverButton.onClick = function()
-            local ok, err = feature.Commands:RecoverPending()
-            if ok ~= true then SetHotkeyStatus("恢复失败：" .. tostring(err or "未执行"), "warn"); return false, err end
-            root:Refresh(); SetHotkeyStatus("已恢复本角色应用前的键位并通过读回校验。", "success"); return true
-        end
-        root.RefreshHotkeyProfileEditor = function(self, projection)
-            projection = projection or {}
-            hotkeySelectedId = hotkeySelectedId or projection.selectedId
-            if hotkeyApplyButton and type(hotkeyApplyButton.SetEnabled) == "function" then hotkeyApplyButton:SetEnabled(hotkeySelectedId ~= nil) end
-            if hotkeyDeleteButton and type(hotkeyDeleteButton.SetEnabled) == "function" then hotkeyDeleteButton:SetEnabled(hotkeySelectedId ~= nil) end
-            if hotkeyRecoverButton and type(hotkeyRecoverButton.SetEnabled) == "function" then hotkeyRecoverButton:SetEnabled(projection.pendingRecovery == true) end
-            if projection.pendingRecovery == true then
-                SetHotkeyStatus("检测到未完成的快捷键事务；恢复记录归属：" .. tostring(projection.pendingRecoveryOwner or "未知") .. "。仅同一角色可执行恢复。", "warn")
-            end
-        end
+        end -- 中文维护：独立视觉命令绑定结束。
+        SetTeamActionStatus(id == "combat_team_tools" and "仅设置当前玩家职责；全队名单只读" or "高亮与头标使用独立开关；恢复按冷却串行并读回核验", "muted")
     end
     local tableView
     local tableParent = unitLineSettingsPage and unitLineDiagnostics and unitLineDiagnostics.content or root
@@ -1366,12 +1274,12 @@ local function Build(parent, route, id)
     if id == "combat_boss_alerts" then tableSlot = { size = "fixed", height = 180, hAlign = "fill" } end
     -- 中文维护：计数只有两行，不让通用十四行成本表把设置挤出窄屏；滚动仍由外层负责。
     if id == "combat_buff_cap" then tableSlot = { size = "fixed", height = 100, hAlign = "fill" }; tableDesiredRows = 2 end
-    tableView = RSUI:TableView({ id = "v3_business_" .. id .. "_table", parent = tableParent, items = {}, rowHeight = 26, headerHeight = 27, desiredRows = tableDesiredRows, scrollbar = true, selectable = id == "combat_boss_alerts" or id == "combat_range_assist" or id == "tools_bag" or id == "tools_auction" or id == "tools_market_analysis" or id == "tools_social" or id == "tools_hotkey_profiles", selectionMode = "single", columnResize = true,
+    tableView = RSUI:TableView({ id = "v3_business_" .. id .. "_table", parent = tableParent, items = {}, rowHeight = 26, headerHeight = 27, desiredRows = tableDesiredRows, scrollbar = true, selectable = id == "combat_boss_alerts" or id == "combat_range_assist" or id == "tools_auction" or id == "tools_market_analysis" or id == "tools_social", selectionMode = "single", columnResize = true,
         -- 中文维护注释（range-selected-editor-3）：范围圆列表的选择键必须是持久稳定 circleId。
         -- Authority 刷新会改变可见点/status，删除也会改变行位置；若使用默认 index key，用户可能在刷新后编辑错圆。
         getKey = id == "combat_range_assist" and function(row) return row and row.circleId end
             or id == "combat_boss_alerts" and function(row) return row and row.key end
-            or id == "tools_hotkey_profiles" and function(row) return row and row.profileId end or nil,
+            or nil,
         onSelectionChanged = id == "combat_range_assist" and function(index, _, view)
             local row = index ~= nil and view:GetItem(index) or nil
             rangeSelectedCircleId = row ~= nil and tonumber(row.circleId) or nil
@@ -1406,13 +1314,12 @@ local function Build(parent, route, id)
             { id = "name", title = "机制规则", field = "name", size = "fixed", width = 150, minWidth = 110 },
             { id = "text", title = "触发条件", field = "text", size = "fill", minWidth = 140 },
             { id = "status", title = "追踪状态 / 提示", field = "statusText", size = "fixed", width = 145, minWidth = 120, getTone = function(item) return item and item.tone or "muted" end },
-        } or id == "tools_hotkey_profiles" and {
-            { id = "name", title = "方案", field = "name", size = "fixed", width = 180, minWidth = 120 },
-            { id = "text", title = "保存范围 / 已绑定", field = "text", size = "fill", minWidth = 220 },
-            { id = "status", title = "状态", field = "statusText", size = "fixed", width = 100, minWidth = 82, getTone = function(item) return item and item.tone or "muted" end },
         } or id == "tools_bag" and {
-            { id = "name", title = "当前背包物品（ID · 名称）", field = "name", size = "fill", minWidth = 300 },
-            { id = "status", title = "数量", field = "statusText", size = "fixed", width = 82, minWidth = 64, getTone = function(item) return item and item.tone or "muted" end },
+            {id="name",title="物品",field="name",size="fill",minWidth=150},
+            {id="quantity",title="持有",size="fixed",width=58,minWidth=48,getText=function(row)return row.quantity~=nil and tostring(row.quantity) or "--"end},
+            {id="state",title="状态",field="stateText",size="fixed",width=66,minWidth=60},
+            {id="action",title="操作",cellType="button",size="fixed",width=64,minWidth=64,absoluteMinWidth=64,sortable=false,resizable=false,
+                getText=function(row)return row and row.blocked==true and "移出" or "加入"end,onClick=function(row)return root:ToggleBlacklistItem(row)end},
         } or id == "combat_team_tools" and { -- 中文维护注释：团队职责行没有 craft cost 语义；使用专用三列避免“成本/持有/缺口”空列长期浪费宽度。只改变 detached row 的 Presentation 映射，ReadTeamRoleRoster 数据结构/Authority 不变。
             { id = "name", title = "团队成员", field = "name", size = "fixed", width = 180, minWidth = 120 }, -- 中文维护注释：成员名固定列保证 1280×768 仍有足够职责说明空间；不缓存 Unit 对象或身份指针。
             { id = "text", title = "位置 / 职责", field = "text", size = "fill", minWidth = 260 }, -- 中文维护注释：复用 Domain 已生成的 team/member/role 文本，不在 Table 渲染循环重复调用 X2Team:GetRole。
@@ -1427,24 +1334,6 @@ local function Build(parent, route, id)
             end },
             { id = "status", title = "状态", field = "statusText", size = "fixed", width = 110, minWidth = 82, getTone = function(item) return item and item.tone or "muted" end },
         }, slot = tableSlot })
-    if id == "tools_hotkey_profiles" then
-        tableView.onSelectionChanged = function(index)
-            local row = tableView:GetItem(index)
-            hotkeySelectedId = row and row.profileId or nil
-            if hotkeySelectedId ~= nil then feature.Commands:SelectProfile(hotkeySelectedId) end
-            if root.RefreshHotkeyProfileEditor then root:RefreshHotkeyProfileEditor(feature:GetProjection() or {}) end
-        end
-    end
-    if id == "tools_bag" then
-        tableView.onSelectionChanged = function(index)
-            local row = tableView:GetItem(index)
-            if row == nil or row.itemType == nil then return end
-            if itemInput ~= nil and type(itemInput.SetValue) == "function" then
-                itemInput:SetValue(tostring(row.itemType), false, "bag_item_row_select")
-            end
-            SetBlacklistStatus("已选择：" .. tostring(row.name or row.itemType) .. "；点击“加入黑名单”即可。", "muted")
-        end
-    end
     if id == "tools_auction" then
         tableView.onSelectionChanged = function(index)
             local row = tableView:GetItem(index)
@@ -1476,9 +1365,30 @@ local function Build(parent, route, id)
             if socialStatus ~= nil then socialStatus:SetText("已载入 " .. tostring(row.memberName) .. "（" .. tostring(row.listKind or "名单") .. "），可执行显式名单操作。") end
         end
     end
+    function root:RefreshBagQuickStatus(projection)
+        if bagQuickStatus==nil then return true end
+            local overlay = type(projection.quickOverlay) == "table" and projection.quickOverlay or {}
+            local storage = overlay.storageKind == "coffer" and "保管箱" or (overlay.storageKind == "bank" and "银行" or nil)
+            local text
+            if overlay.running == true then
+                local action = overlay.direction == "withdraw" and "取出同类" or "存入同类"
+                text = "正在" .. action .. " · 已移动 " .. tostring(overlay.moved or 0) .. " · 队列 " .. tostring(overlay.queued or 0) .. " · 再点一次可停止"
+            elseif overlay.visible == true and storage ~= nil then
+                text = "当前：已识别" .. storage .. " · 可以取出或存入同类物品"
+                if (tonumber(overlay.moved) or 0) > 0 then text = text .. " · 上次移动 " .. tostring(overlay.moved) end
+            else
+                text = "当前：请先打开银行或保管箱。打开后背包上方会自动出现“取 / 放”。"
+            end
+            if overlay.error ~= nil and tostring(overlay.error) ~= "" then text = text .. " · " .. tostring(overlay.error) end
+            bagQuickStatus:SetText(text)
+            if S.Theme ~= nil and type(S.Theme.SetLabelTone) == "function" then
+                S.Theme:SetLabelTone(bagQuickStatus, overlay.error ~= nil and "warn" or (overlay.running == true and "success" or "muted"))
+            end
+        return true
+    end
     function root:Refresh()
         local projection = feature:GetProjection() or {}
-        local rows = id == "tools_bag" and (projection.bagItemRows or {})
+        local rows = id == "tools_bag" and BuildBagSettingsRows(projection)
             or id == "combat_range_assist" and BuildRangeCircleRows(projection)
             or (projection.rows or {})
         -- 中文维护注释（range-selected-editor-4）：先按当前 detached circles 校验选择，再 Render Binding；
@@ -1486,7 +1396,13 @@ local function Build(parent, route, id)
         if id == "combat_range_assist" and SyncRangeCircleEditor ~= nil then SyncRangeCircleEditor(projection, false) end
         for _, field in ipairs(specialFields) do if type(field.Render) == "function" then field:Render() end end
         if SyncAuctionSidecarControls ~= nil then SyncAuctionSidecarControls() end
-        if (id == "tools_auction" or id == "tools_market_analysis") and self.RefreshAuctionPaging then self:RefreshAuctionPaging(projection, tableView) else tableView:SetItems(rows, projection.revision or 0) end
+        if (id == "tools_auction" or id == "tools_market_analysis") and self.RefreshAuctionPaging then self:RefreshAuctionPaging(projection, tableView)
+        else
+            local revision=projection.revision or 0
+            -- 来源/筛选会改变可见行，但不改变业务revision；必须让复用按钮重新绑定当前物品ID。
+            if id=="tools_bag" then self.bagSettingsRenderRevision=(self.bagSettingsRenderRevision or 0)+1;revision=self.bagSettingsRenderRevision end
+            tableView:SetItems(rows,revision)
+        end
         if id == "combat_range_assist" then
             local selectedIndex = nil
             for rowIndex, row in ipairs(rows) do
@@ -1547,27 +1463,8 @@ local function Build(parent, route, id)
                 if S.Theme ~= nil and type(S.Theme.SetLabelTone) == "function" then S.Theme:SetLabelTone(craftActionStatus, craftError and "warn" or "muted") end
             end
         end
-        if id == "tools_hotkey_profiles" and type(self.RefreshHotkeyProfileEditor) == "function" then self:RefreshHotkeyProfileEditor(projection) end
         if id == "tools_bag" and type(self.RefreshBlacklistEditor) == "function" then self:RefreshBlacklistEditor(projection) end
-        if id == "tools_bag" and bagQuickStatus ~= nil then
-            local overlay = type(projection.quickOverlay) == "table" and projection.quickOverlay or {}
-            local storage = overlay.storageKind == "coffer" and "保管箱" or (overlay.storageKind == "bank" and "银行" or nil)
-            local text
-            if overlay.running == true then
-                local action = overlay.direction == "withdraw" and "取出同类" or "存入同类"
-                text = "正在" .. action .. " · 已移动 " .. tostring(overlay.moved or 0) .. " · 队列 " .. tostring(overlay.queued or 0) .. " · 再点一次可停止"
-            elseif overlay.visible == true and storage ~= nil then
-                text = "当前：已识别" .. storage .. " · 可以取出或存入同类物品"
-                if (tonumber(overlay.moved) or 0) > 0 then text = text .. " · 上次移动 " .. tostring(overlay.moved) end
-            else
-                text = "当前：请先打开银行或保管箱。打开后背包上方会自动出现“取 / 放”。"
-            end
-            if overlay.error ~= nil and tostring(overlay.error) ~= "" then text = text .. " · " .. tostring(overlay.error) end
-            bagQuickStatus:SetText(text)
-            if S.Theme ~= nil and type(S.Theme.SetLabelTone) == "function" then
-                S.Theme:SetLabelTone(bagQuickStatus, overlay.error ~= nil and "warn" or (overlay.running == true and "success" or "muted"))
-            end
-        end
+        if id=="tools_bag" then self:RefreshBagQuickStatus(projection)end
         if id == "combat_team_tools" and teamAutoRoleButton ~= nil then
             teamAutoRoleButton:SetText(projection.autoRoleEnabled == false and "自动职责：关" or "自动职责：开") -- 中文维护注释：投影是显示 Authority，旧用户显式 false 会覆盖初始“开”文案；这里不触发任何持久化写入。
             if type(teamExtra) == "table" and teamExtra.roleStatus ~= nil then
@@ -1575,6 +1472,8 @@ local function Build(parent, route, id)
                 local roleLabel = projection.autoRoleLabel and (" · 识别：" .. tostring(projection.autoRoleLabel)) or ""
                 teamExtra.roleStatus:SetText((projection.autoRoleEnabled == false and "自动职责已关闭" or "自动职责已开启") .. " · " .. roleRuntime .. roleLabel)
             end
+        end
+        if id == "combat_sac_highlight" then
             if type(teamExtra) == "table" and teamExtra.sacButton ~= nil then
                 teamExtra.sacButton:SetText(projection.sacEnabled == true and "牺牲之舞：开" or "牺牲之舞：关")
                 local enabledNow = S.FeatureRuntime:IsEnabled(id) == true
@@ -1695,7 +1594,7 @@ local function Build(parent, route, id)
                 tvState = "ready"
             end
         elseif #rows == 0 then
-            tvState, tvOpts = "empty", { title = id == "tools_bag" and "当前背包没有可识别物品" or "暂无数据", detail = id == "tools_bag" and "刷新页面或放入物品后会显示“物品ID · 名称”。" or ((meta and meta.name or id) .. " 启用并读取后，结果会显示在这里。") }
+            tvState, tvOpts = "empty", { title = id == "tools_bag" and (root.bagSettingsView=="blacklist" and "黑名单为空或无匹配物品" or "未找到背包物品") or "暂无数据", detail = id == "tools_bag" and "可清除筛选，或点击刷新背包。" or ((meta and meta.name or id) .. " 启用并读取后，结果会显示在这里。") }
         else
             tvState = "ready"
         end
@@ -1728,6 +1627,8 @@ local function Build(parent, route, id)
     end
     function root:RequestFeatureRefresh(reason)
         reason = tostring(reason or "update")
+        -- 背包几何心跳只更新取放状态，不重绑整张物品表；物品快照/名单变化仍走原更新。
+        if id=="tools_bag" and reason:sub(1,10)=="bag_quick_" then return self:RefreshBagQuickStatus(feature:GetProjection() or {})end
         if visualSettingsPage ~= true or (reason ~= "visual_tick" and reason ~= "visual_tick_error") then
             return self:Refresh()
         end

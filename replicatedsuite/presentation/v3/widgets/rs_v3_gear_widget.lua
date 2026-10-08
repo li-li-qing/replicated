@@ -202,7 +202,9 @@ local function CreateGearQuickWidget()
             local moving = UI:TryInteractionCall(button, "StartMoving")
             if moving ~= true then return false end
             -- 维护：开始时缓存与 Native 尺寸一致，冻结单位；拖动后的旧锚点不能重新参与单位猜测。
-            local _,_,_,_,unit=LogicalRect(button)
+            -- 中文维护：同源修复——以实际 Native 起点区分 Gear 点击与真实位移，不因空拖动吃掉按钮。
+            local startX,startY,_,_,unit=LogicalRect(button)
+            record.dragStartX,record.dragStartY=startX,startY
             record.geometryUnitScale=unit and unit.effectiveScale or nil
             record.dragViewport=S.Layout and S.Layout:MakeSignature(S.Layout:GetContext()) or nil
             record.dragging = true
@@ -215,12 +217,18 @@ local function CreateGearQuickWidget()
             if type(button.StopMovingOrSizing)=="function" then pcall(button.StopMovingOrSizing,button) end
             record.dragging=false;record.ignoreClick=true
             local x,y,w,h=LogicalRect(button,record.geometryUnitScale)
+            -- 中文维护：3 个逻辑像素阈值与功能方案一致；未移动时不保存用户位置或抑制点击。
+            local moved=x~=nil and y~=nil and record.dragStartX~=nil and record.dragStartY~=nil
+                and (math.abs(x-record.dragStartX)>=3 or math.abs(y-record.dragStartY)>=3)
+            record.ignoreClick=moved==true
+            record.dragStartX,record.dragStartY=nil,nil
             record.geometryUnitScale=nil
             local context=S.Layout and S.Layout:GetContext(true)
             local changed=record.pendingPlacement or (context and record.dragViewport~=S.Layout:MakeSignature(context))
             record.dragViewport,record.pendingPlacement=nil,nil
             if changed then return instance:ApplyLayout(true) end
             if x==nil or y==nil then return false,"gear_drag_rect_unavailable" end
+            if moved~=true then return true end -- 中文维护：保持原来的位置配置，静止手势不是拖动提交。
             local snap=type(Feature.GetQuickSnapSettings)=="function" and Feature:GetQuickSnapSettings() or {enabled=true,distance=16,gap=0}
             if S.Layout and type(S.Layout.ResolveScreenSnap)=="function" then
                 local sx,sy,snapped=S.Layout:ResolveScreenSnap(record.snapId,x,y,w,h,{

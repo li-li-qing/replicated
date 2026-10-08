@@ -21,20 +21,46 @@ local function Boot(options)
  local F=S.Features.BuffDisplay;return S,F,S.Persistence,io
 end
 
+-- 中文维护（2026-10-07）：旧 transport 恢复用例直接验证仍注册的 Legacy Store/Core，
+-- 不再把当前 ImportBuiltinPack 的 A/B 提交误当旧 monolith 保存。这里只生成合成故障夹具，
+-- 不替代 schema5 冻结 canonical/hash 金样，也不修改原章或 production Feature mutation。
+local function LegacyLoad(P)
+ local ok,_,why=P:LoadStore('v3.buff_display');return ok==true or ok=='empty',why
+end
+local function LegacyMutate(P,mutator,delayMs,reason,durable)
+ return P:MutateStore('v3.buff_display',mutator,{delayMs=delayMs or 0,reason=reason or 'synthetic_legacy_fixture',durable=durable~=false})
+end
+local function LegacyPackFixture(F,P,key)
+ local catalog=ReplicatedSuite.Data.StatusTrackingCatalogV3;local pack=assert(catalog.Packs[key])
+ return LegacyMutate(P,function()
+  for _,entry in ipairs(pack.entries)do
+   if entry.kind=='effect'then
+    local category=entry.category;if category~='buff'and category~='debuff'then category='auto'end
+    for _,scope in ipairs({'player','target'})do
+     local list=F.State.settings.tracked[scope][category];local exists=false
+     for _,id in ipairs(list)do if id==entry.id then exists=true;break end end
+     if not exists then list[#list+1]=entry.id end
+    end
+   end
+  end
+  F.State.settings.library.catalogVersion=catalog.version;F.State.settings.library.importedPacks[key]=catalog.version
+  return true
+ end)
+end
 Test('both migrated scope twins missing same v4 chunk recover from exact imported catalog candidate',function()
- local _,F,P,io=Boot();assert(F:EnsureStoreLoaded())
+ local _,F,P,io=Boot();assert(LegacyLoad(P))
  local st=P:GetStore('v3.buff_display');st.transportVersion=4
- assert(F:ImportBuiltinPack('recommended',false))
+ assert(LegacyPackFixture(F,P,'recommended',false))
  local key=st.resolvedKey;local raw=io.disk[key]
  assert(raw.__rsmeta.schema==8 and raw.__rsmeta.transportVersion==4)
- assert(raw.payload.settings.library.importedPacks.recommended==1)
+ assert(raw.payload.settings.library.importedPacks.recommended==2)
  local pa=raw.payload.settings.tracked.player.auto
  local ta=raw.payload.settings.tracked.target.auto
- assert(pa and ta and pa.p25 and ta.p25 and pa.count==397 and ta.count==397)
+ assert(pa and ta and pa.p25 and ta.p25 and pa.count==392 and ta.count==392)
  pa.p25=nil;ta.p25=nil
  local _,fresh,freshP,fio=Boot({disk=io.disk})
- local ok,why=fresh:EnsureStoreLoaded();assert(ok,why)
- assert(#fresh.State.settings.tracked.player.auto==397 and #fresh.State.settings.tracked.target.auto==397)
+ local ok,why=LegacyLoad(freshP);assert(ok,why)
+ assert(#fresh.State.settings.tracked.player.auto==392 and #fresh.State.settings.tracked.target.auto==392)
  local freshStore=freshP:GetStore('v3.buff_display')
  assert(freshStore.lastPhysicalTransportRepairOk==true)
  assert(tostring(freshStore.lastPhysicalTransportRepairProbe or ''):find('catalog',1,true),'catalog recovery probe missing')
@@ -43,11 +69,11 @@ Test('both migrated scope twins missing same v4 chunk recover from exact importe
 end)
 
 
-Test('legacy all watermark with 397-vector recovers from exact recommended superset candidate',function()
- local _,F,P,io=Boot();assert(F:EnsureStoreLoaded())
+Test('legacy all watermark with 392-vector recovers from exact recommended superset candidate',function()
+ local _,F,P,io=Boot();assert(LegacyLoad(P))
  local st=P:GetStore('v3.buff_display');st.transportVersion=4
- assert(F:ImportBuiltinPack('recommended',false))
- assert(F:MutateStore(function()
+ assert(LegacyPackFixture(F,P,'recommended',false))
+ assert(LegacyMutate(P,function()
   F.State.settings.library.importedPacks={all=1}
   F.State.settings.library.catalogVersion=1
   return true
@@ -56,11 +82,11 @@ Test('legacy all watermark with 397-vector recovers from exact recommended super
  assert(raw.payload.settings.library.importedPacks.all==1 and raw.payload.settings.library.importedPacks.recommended==nil)
  local pa=raw.payload.settings.tracked.player.auto
  local ta=raw.payload.settings.tracked.target.auto
- assert(pa and ta and pa.count==397 and ta.count==397 and pa.p25 and ta.p25)
+ assert(pa and ta and pa.count==392 and ta.count==392 and pa.p25 and ta.p25)
  pa.p25=nil;ta.p25=nil
  local _,fresh,freshP,fio=Boot({disk=io.disk})
- local ok,why=fresh:EnsureStoreLoaded();assert(ok,why)
- assert(#fresh.State.settings.tracked.player.auto==397 and #fresh.State.settings.tracked.target.auto==397)
+ local ok,why=LegacyLoad(freshP);assert(ok,why)
+ assert(#fresh.State.settings.tracked.player.auto==392 and #fresh.State.settings.tracked.target.auto==392)
  local fs=freshP:GetStore('v3.buff_display')
  assert(fs.lastPhysicalTransportRepairOk==true)
  local probe=tostring(fs.lastPhysicalTransportRepairProbe or '')
@@ -71,10 +97,10 @@ end)
 
 
 Test('legacy all fallback refuses same-count candidate when surviving chunks differ',function()
- local _,F,P,io=Boot();assert(F:EnsureStoreLoaded())
+ local _,F,P,io=Boot();assert(LegacyLoad(P))
  local st=P:GetStore('v3.buff_display');st.transportVersion=4
- assert(F:ImportBuiltinPack('recommended',false))
- assert(F:MutateStore(function()
+ assert(LegacyPackFixture(F,P,'recommended',false))
+ assert(LegacyMutate(P,function()
   F.State.settings.library.importedPacks={all=1}
   F.State.settings.library.catalogVersion=1
   return true
@@ -84,36 +110,36 @@ Test('legacy all fallback refuses same-count candidate when surviving chunks dif
  local ta=raw.payload.settings.tracked.target.auto
  pa.p1=pa.p1:gsub('^%d+','99999');pa.p25=nil;ta.p25=nil
  local _,fresh,freshP,fio=Boot({disk=io.disk})
- local ok=fresh:EnsureStoreLoaded();assert(ok~=true)
+ local ok=LegacyLoad(freshP);assert(ok~=true)
  local fs=freshP:GetStore('v3.buff_display')
  assert(fs.writeFenced==true and fio.writes==0 and fio.clears==0)
 end)
 
 Test('catalog candidate never repairs when surviving chunks do not match catalog',function()
- local _,F,P,io=Boot();assert(F:EnsureStoreLoaded())
+ local _,F,P,io=Boot();assert(LegacyLoad(P))
  local st=P:GetStore('v3.buff_display');st.transportVersion=4
- assert(F:ImportBuiltinPack('recommended',false))
+ assert(LegacyPackFixture(F,P,'recommended',false))
  local raw=io.disk[st.resolvedKey]
  raw.payload.settings.tracked.player.auto.p1=raw.payload.settings.tracked.player.auto.p1:gsub('^%d+','99999')
  raw.payload.settings.tracked.player.auto.p25=nil
  raw.payload.settings.tracked.target.auto.p25=nil
  local _,fresh,freshP,fio=Boot({disk=io.disk})
- local ok=fresh:EnsureStoreLoaded();assert(ok~=true)
+ local ok=LegacyLoad(freshP);assert(ok~=true)
  local fs=freshP:GetStore('v3.buff_display')
  assert(fs.writeFenced==true and fio.writes==0 and fio.clears==0)
 end)
 
 
-Test('real RU 230 shape: imported watermarks union 397 but tracked vector 393 recovers exact all pack',function()
- local _,F,P,io=Boot();assert(F:EnsureStoreLoaded())
+Test('synthetic current catalog: imported watermarks union 392 but tracked vector 388 recovers exact all pack',function()
+ local _,F,P,io=Boot();assert(LegacyLoad(P))
  local st=P:GetStore('v3.buff_display');st.transportVersion=4
  -- Reproduce the real persistence semantics instead of treating importedPacks as the current selection:
  -- the user once imported all + hidden (watermarks remain), then explicitly removed hidden ids.
- assert(F:ImportBuiltinPack('all',false))
- assert(F:ImportBuiltinPack('hidden',false))
+ assert(LegacyPackFixture(F,P,'all',false))
+ assert(LegacyPackFixture(F,P,'hidden',false))
  local hidden=ReplicatedSuite.Data.StatusTrackingCatalogV3.Packs.hidden
  assert(hidden and #hidden.entries==4)
- assert(F:MutateStore(function()
+ assert(LegacyMutate(P,function()
   local remove={};for _,entry in ipairs(hidden.entries) do remove[entry.id]=true end
   for _,scope in ipairs({'player','target'}) do
    local out={};for _,id in ipairs(F.State.settings.tracked[scope].auto) do if not remove[id] then out[#out+1]=id end end
@@ -122,15 +148,15 @@ Test('real RU 230 shape: imported watermarks union 397 but tracked vector 393 re
   return true
  end,0,'fixture-user-untracked-hidden',true))
  local raw=io.disk[st.resolvedKey]
- assert(raw.payload.settings.library.importedPacks.all==1)
- assert(raw.payload.settings.library.importedPacks.hidden==1)
+ assert(raw.payload.settings.library.importedPacks.all==2)
+ assert(raw.payload.settings.library.importedPacks.hidden==2)
  local pa=raw.payload.settings.tracked.player.auto
  local ta=raw.payload.settings.tracked.target.auto
- assert(pa and ta and pa.count==393 and ta.count==393 and pa.p25 and ta.p25)
+ assert(pa and ta and pa.count==388 and ta.count==388 and pa.p25 and ta.p25)
  pa.p25=nil;ta.p25=nil
  local _,fresh,freshP,fio=Boot({disk=io.disk})
- local ok,why=fresh:EnsureStoreLoaded();assert(ok,why)
- assert(#fresh.State.settings.tracked.player.auto==393 and #fresh.State.settings.tracked.target.auto==393)
+ local ok,why=LegacyLoad(freshP);assert(ok,why)
+ assert(#fresh.State.settings.tracked.player.auto==388 and #fresh.State.settings.tracked.target.auto==388)
  local fs=freshP:GetStore('v3.buff_display')
  assert(fs.lastPhysicalTransportRepairOk==true)
  local probe=tostring(fs.lastPhysicalTransportRepairProbe or '')
@@ -141,13 +167,13 @@ end)
 
 
 Test('static all candidate cannot overwrite a user change hidden entirely inside the missing chunk',function()
- local _,F,P,io=Boot();assert(F:EnsureStoreLoaded())
+ local _,F,P,io=Boot();assert(LegacyLoad(P))
  local st=P:GetStore('v3.buff_display');st.transportVersion=4
- assert(F:ImportBuiltinPack('all',false))
- assert(F:MutateStore(function()
+ assert(LegacyPackFixture(F,P,'all',false))
+ assert(LegacyMutate(P,function()
   for _,scope in ipairs({'player','target'}) do
    local list=F.State.settings.tracked[scope].auto
-   assert(#list==393)
+   assert(#list==388)
    list[#list]=16000000
   end
   return true
@@ -155,11 +181,11 @@ Test('static all candidate cannot overwrite a user change hidden entirely inside
  local raw=io.disk[st.resolvedKey]
  local pa=raw.payload.settings.tracked.player.auto
  local ta=raw.payload.settings.tracked.target.auto
- assert(pa.count==393 and ta.count==393 and pa.p25 and ta.p25)
+ assert(pa.count==388 and ta.count==388 and pa.p25 and ta.p25)
  -- All surviving p1..p24 still match the static all pack; only the lost p25 contained the user's change.
  pa.p25=nil;ta.p25=nil
  local _,fresh,freshP,fio=Boot({disk=io.disk})
- local ok=fresh:EnsureStoreLoaded();assert(ok~=true)
+ local ok=LegacyLoad(freshP);assert(ok~=true)
  local fs=freshP:GetStore('v3.buff_display')
  assert(fs.writeFenced==true and fio.writes==0 and fio.clears==0)
  assert(tostring(fs.lastError or ''):find('fingerprint',1,true),'Core fingerprint must reject reconstructed static content: '..tostring(fs.lastError))
@@ -167,25 +193,25 @@ end)
 
 
 Test('no-candidate failure records bounded vector and first chunk mismatch evidence',function()
- local _,F,P,io=Boot();assert(F:EnsureStoreLoaded())
+ local _,F,P,io=Boot();assert(LegacyLoad(P))
  local st=P:GetStore('v3.buff_display');st.transportVersion=4
- assert(F:ImportBuiltinPack('all',false))
+ assert(LegacyPackFixture(F,P,'all',false))
  local raw=io.disk[st.resolvedKey]
  local pa=raw.payload.settings.tracked.player.auto
  local ta=raw.payload.settings.tracked.target.auto
- assert(pa.count==393 and ta.count==393 and pa.p25 and ta.p25)
+ assert(pa.count==388 and ta.count==388 and pa.p25 and ta.p25)
  -- Simulate the real class of failure: both copies lose one chunk while at least one surviving
  -- chunk differs from the current static all pack. Recovery must stay fenced, but diagnostics
  -- must tell us the vector topology and the first concrete mismatch instead of only no_candidate.
  pa.p1=pa.p1:gsub('^%d+','99999');ta.p1=pa.p1
  pa.p25=nil;ta.p25=nil
  local _,fresh,freshP,fio=Boot({disk=io.disk})
- local ok=fresh:EnsureStoreLoaded();assert(ok~=true)
+ local ok=LegacyLoad(freshP);assert(ok~=true)
  local fs=freshP:GetStore('v3.buff_display')
  local e=tostring(fs.lastPhysicalTransportRepairError or '')
  assert(fs.writeFenced==true and fio.writes==0 and fio.clears==0)
  assert(e:find('bucket=player.auto',1,true),'bucket topology missing: '..e)
- assert(e:find('count=393',1,true),'vector count missing: '..e)
+ assert(e:find('count=388',1,true),'vector count missing: '..e)
  assert(e:find('missing=p25',1,true),'missing chunk index missing: '..e)
  assert(e:find('sameCount=pack:all',1,true),'same-count candidate missing: '..e)
  assert(e:find('mis=p1',1,true),'first mismatching chunk missing: '..e)
@@ -194,13 +220,13 @@ end)
 
 
 Test('deep probe audits missing and malformed chunks on both scoped twins',function()
- local _,F,P,io=Boot();assert(F:EnsureStoreLoaded())
+ local _,F,P,io=Boot();assert(LegacyLoad(P))
  local st=P:GetStore('v3.buff_display');st.transportVersion=4
- assert(F:ImportBuiltinPack('all',false))
+ assert(LegacyPackFixture(F,P,'all',false))
  local raw=io.disk[st.resolvedKey]
  local pa=raw.payload.settings.tracked.player.auto
  local ta=raw.payload.settings.tracked.target.auto
- assert(pa.count==393 and ta.count==393)
+ assert(pa.count==388 and ta.count==388)
  local function FirstTokens(text,n)
   local out={};for tok in tostring(text):gmatch('[^,]+') do out[#out+1]=tok;if #out>=n then break end end
   return table.concat(out,',')
@@ -210,7 +236,7 @@ Test('deep probe audits missing and malformed chunks on both scoped twins',funct
  ta.p2=nil;ta.p7=nil;ta.p19=nil
  ta.p5=FirstTokens(ta.p5,12)
  local _,fresh,freshP,fio=Boot({disk=io.disk})
- local ok=fresh:EnsureStoreLoaded();assert(ok~=true)
+ local ok=LegacyLoad(freshP);assert(ok~=true)
  local fs=freshP:GetStore('v3.buff_display')
  local e=tostring(fs.lastPhysicalTransportRepairError or '')
  assert(fs.writeFenced==true and fio.writes==0 and fio.clears==0)
@@ -225,14 +251,14 @@ Test('deep probe audits missing and malformed chunks on both scoped twins',funct
 end)
 
 
-Test('real RU 233 shape: intact target twin repairs player missing and truncated chunks before fingerprint verification',function()
- local _,F,P,io=Boot();assert(F:EnsureStoreLoaded())
+Test('observed RU 233 loss topology on current catalog: intact target twin repairs player before fingerprint verification',function()
+ local _,F,P,io=Boot();assert(LegacyLoad(P))
  local st=P:GetStore('v3.buff_display');st.transportVersion=4
- assert(F:ImportBuiltinPack('all',false))
- -- Historical/custom selection: keep 393 ids but make p5 differ from today's static all catalog.
- assert(F:MutateStore(function()
+ assert(LegacyPackFixture(F,P,'all',false))
+ -- Historical/custom selection: keep 388 ids but make p5 differ from today's static all catalog.
+ assert(LegacyMutate(P,function()
   local base={};for i,id in ipairs(F.State.settings.tracked.player.auto) do base[i]=id end
-  assert(#base==393);base[65]=16000002
+  assert(#base==388);base[65]=16000002
   local clone={};for i,id in ipairs(base) do clone[i]=id end
   F.State.settings.tracked.player.auto=base
   F.State.settings.tracked.target.auto=clone
@@ -241,7 +267,7 @@ Test('real RU 233 shape: intact target twin repairs player missing and truncated
  local raw=io.disk[st.resolvedKey]
  local pa=raw.payload.settings.tracked.player.auto
  local ta=raw.payload.settings.tracked.target.auto
- assert(pa.count==393 and ta.count==393 and pa.p5==ta.p5)
+ assert(pa.count==388 and ta.count==388 and pa.p5==ta.p5)
  local function FirstTokens(text,n)
   local out={};for tok in tostring(text):gmatch('[^,]+') do out[#out+1]=tok;if #out>=n then break end end
   return table.concat(out,',')
@@ -250,8 +276,8 @@ Test('real RU 233 shape: intact target twin repairs player missing and truncated
  pa.p5=FirstTokens(pa.p5,10)
  -- Exact RU evidence shape: target is structurally complete; player has 5 missing chunks + truncated p5.
  local _,fresh,freshP,fio=Boot({disk=io.disk})
- local ok,why=fresh:EnsureStoreLoaded();assert(ok,why)
- assert(#fresh.State.settings.tracked.player.auto==393 and #fresh.State.settings.tracked.target.auto==393)
+ local ok,why=LegacyLoad(freshP);assert(ok,why)
+ assert(#fresh.State.settings.tracked.player.auto==388 and #fresh.State.settings.tracked.target.auto==388)
  assert(fresh.State.settings.tracked.player.auto[65]==fresh.State.settings.tracked.target.auto[65])
  local fs=freshP:GetStore('v3.buff_display')
  assert(fs.lastPhysicalTransportRepairOk==true)
@@ -262,12 +288,12 @@ Test('real RU 233 shape: intact target twin repairs player missing and truncated
 end)
 
 Test('intact twin candidate cannot overwrite legitimate scoped divergence hidden inside damaged player chunks',function()
- local _,F,P,io=Boot();assert(F:EnsureStoreLoaded())
+ local _,F,P,io=Boot();assert(LegacyLoad(P))
  local st=P:GetStore('v3.buff_display');st.transportVersion=4
- assert(F:ImportBuiltinPack('all',false))
- assert(F:MutateStore(function()
+ assert(LegacyPackFixture(F,P,'all',false))
+ assert(LegacyMutate(P,function()
   local base={};for i,id in ipairs(F.State.settings.tracked.player.auto) do base[i]=id end
-  assert(#base==393)
+  assert(#base==388)
   local p={};local t={};for i,id in ipairs(base) do p[i]=id;t[i]=id end
   -- Schema8 allows scope divergence. Put the user's player-only edit inside p1, which will later vanish physically.
   p[1]=22
@@ -278,7 +304,7 @@ Test('intact twin candidate cannot overwrite legitimate scoped divergence hidden
  local raw=io.disk[st.resolvedKey]
  local pa=raw.payload.settings.tracked.player.auto
  local ta=raw.payload.settings.tracked.target.auto
- assert(pa.count==393 and ta.count==393 and pa.p1~=ta.p1)
+ assert(pa.count==388 and ta.count==388 and pa.p1~=ta.p1)
  pa.p1=nil;pa.p2=nil;pa.p3=nil;pa.p4=nil;pa.p19=nil
  local function FirstTokens(text,n)
   local out={};for tok in tostring(text):gmatch('[^,]+') do out[#out+1]=tok;if #out>=n then break end end
@@ -286,7 +312,7 @@ Test('intact twin candidate cannot overwrite legitimate scoped divergence hidden
  end
  pa.p5=FirstTokens(pa.p5,10)
  local _,fresh,freshP,fio=Boot({disk=io.disk})
- local ok=fresh:EnsureStoreLoaded();assert(ok~=true)
+ local ok=LegacyLoad(freshP);assert(ok~=true)
  local fs=freshP:GetStore('v3.buff_display')
  assert(fs.writeFenced==true and fio.writes==0 and fio.clears==0)
  assert(fs.lastPhysicalTransportRepairOk==true,'twin physical candidate should decode before logical fingerprint rejection'); assert(tostring(fs.lastError or ''):find('fingerprint',1,true) or tostring(fs.lastIntegrityError or ''):find('fingerprint',1,true),'original fingerprint must reject wrong twin reconstruction: '..tostring(fs.lastError)..' / '..tostring(fs.lastIntegrityError))
@@ -294,13 +320,13 @@ end)
 
 
 Test('fingerprint mismatch on healthy twin falls back to exact catalog reconstruction',function()
- local _,F,P,io=Boot();assert(F:EnsureStoreLoaded())
+ local _,F,P,io=Boot();assert(LegacyLoad(P))
  local st=P:GetStore('v3.buff_display');st.transportVersion=4
- assert(F:ImportBuiltinPack('all',false))
+ assert(LegacyPackFixture(F,P,'all',false))
  local originalPlayer,originalTarget
- assert(F:MutateStore(function()
+ assert(LegacyMutate(P,function()
   local base={};for i,id in ipairs(F.State.settings.tracked.player.auto) do base[i]=id end
-  assert(#base==393)
+  assert(#base==388)
   local index=nil
   for i=1,15 do if base[i]+1<base[i+1] then index=i;break end end
   assert(index,'fixture needs one stable gap inside p1')
@@ -314,7 +340,7 @@ Test('fingerprint mismatch on healthy twin falls back to exact catalog reconstru
  local raw=io.disk[st.resolvedKey]
  local pa=raw.payload.settings.tracked.player.auto
  local ta=raw.payload.settings.tracked.target.auto
- assert(pa.count==393 and ta.count==393 and pa.p1~=ta.p1)
+ assert(pa.count==388 and ta.count==388 and pa.p1~=ta.p1)
  for i=2,25 do assert(pa['p'..i]==ta['p'..i],'fixture divergence escaped missing chunk p1') end
  pa.p1=nil;pa.p2=nil;pa.p3=nil;pa.p4=nil;pa.p19=nil
  local function FirstTokens(text,n)
@@ -323,8 +349,8 @@ Test('fingerprint mismatch on healthy twin falls back to exact catalog reconstru
  end
  pa.p5=FirstTokens(pa.p5,10)
  local _,fresh,freshP,fio=Boot({disk=io.disk})
- local ok,why=fresh:EnsureStoreLoaded();assert(ok,why)
- assert(#fresh.State.settings.tracked.player.auto==393 and #fresh.State.settings.tracked.target.auto==393)
+ local ok,why=LegacyLoad(freshP);assert(ok,why)
+ assert(#fresh.State.settings.tracked.player.auto==388 and #fresh.State.settings.tracked.target.auto==388)
  for i,id in ipairs(originalPlayer) do assert(fresh.State.settings.tracked.player.auto[i]==id,'player catalog reconstruction changed at '..i) end
  for i,id in ipairs(originalTarget) do assert(fresh.State.settings.tracked.target.auto[i]==id,'target healthy scope changed at '..i) end
  local fs=freshP:GetStore('v3.buff_display')

@@ -251,6 +251,10 @@ end
 -- 对象状态，不触发 Initialize、LoadStore 或 Native CVar。即使启动按钮在 FeatureRuntime 前置检查阶段
 -- 被拒绝，模块诊断也能区分“按钮没进 Feature”与“Feature 已开始但 Native 阶段失败”。
 if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.RegisterProvider) == "function" then
+    -- 中文维护（2026-10-07）：用户希望可行时将飘字大小放在本页；先取原生句柄证据，不增加无效设置。
+    S.ModuleDiagnosticsHub:RegisterProvider(F.Id, "native_combat_text_access", function()
+        return F.Authority:InspectCombatTextAccess()
+    end, 36)
     S.ModuleDiagnosticsHub:RegisterProvider(F.Id, "nameplate_startup", function()
         local preferenceStore = type(P.GetStore) == "function" and P:GetStore(Runtime.preferenceStoreId) or nil
         local option = rawget(_G, "X2Option")

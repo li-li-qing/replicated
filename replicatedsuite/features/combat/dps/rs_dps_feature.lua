@@ -1,7 +1,7 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - DPS Feature
 --
--- V3 combat statistics feature. It is a CombatEventBus scope=all consumer only;
+-- V3 combat statistics feature. It consumes the shared self/all statistics stream;
 -- it owns NO native COMBAT_MSG handler (the bus owns that) and no persistence of
 -- running totals. Per-event PVP/PVE classification and accumulation live in the
 -- Domain (rs_dps_domain.lua); relation facts live in CombatRelationV3; this file
@@ -16,6 +16,7 @@ local F = S.Features.DPS
 if type(Runtime) ~= "table" then return end
 
 F.Id = "combat_stats"
+F.combatOverviewToken,F.combatOverview=nil,nil
 F.enabled = F.enabled == true
 F.consumers = {}
 F.consumerCount = 0
@@ -68,7 +69,10 @@ function F:_EnsureAnalyticsMetric()
             end
             return consumed == true
         end,
-        Reset = function()
+        Reset = function(_, reason)
+            -- 新范围必须从空实时排行开始，不能把全员旧行带进自身模式。
+            -- 暂停 / 释放指标仍只结束战斗段；永久个人历史由独立 Store 保留。
+            if reason == "collection_scope_changed" then return F:ClearStats(reason) end
             local d = Domain()
             if type(d) == "table" and type(d.ResetTransient) == "function" then d:ResetTransient("dps_metric_inactive") end
             return true
@@ -97,7 +101,7 @@ function F:_AcquireAnalytics()
     local ok, err = self:_EnsureAnalyticsMetric()
     if ok ~= true then return false, err end
     local analytics = Analytics()
-    ok, err = analytics:AcquireConsumer("dps_core", { metrics = { "dps_core" } }, "dps_enable")
+    ok, err = analytics:AcquireStatisticsConsumer("dps_core", "dps_enable")
     if ok ~= true then return false, err end
     self.analyticsHeld = true
     return true
@@ -369,11 +373,18 @@ function F:Refresh(reason) return true end
 ------------------------------------------------------------------------
 F.Commands = F.Commands or {}
 function F.Commands:SetEnabled(enabled, reason)
-    return S.FeatureRuntime:SetPreferredEnabled(F.Id, enabled == true, reason or "dps_command")
+    return S.FeatureRuntime:ApplyPreferenceTargets({combat_stats=enabled==true,combat_analytics=enabled==true}, reason or "dps_command")
 end
 function F.Commands:ApplySettingFromBinding(key, value) return F:ApplySettingFromBinding(key, value) end
 function F.Commands:MarkStoreDirty(delayMs, reason) return F:MarkStoreDirty(delayMs, reason) end
 function F.Commands:Clear(reason) return F:ClearStats(reason) end
+function F.Commands:ClearOverview(reason)
+    local a,d=Analytics(),Domain()
+    if not a or type(a.ResetMetric)~="function" or not d or type(d.ClearStats)~="function" then return false,"战斗总览清空不可用" end
+    local ok,err=a:ResetMetric("kills",reason or "user_clear_overview")
+    if ok~=true then return false,err end
+    return F:ClearStats(reason or "user_clear_overview")
+end
 function F.Commands:SetMode(mode) return F:SetMode(mode) end
 function F.Commands:SetSide(side) return F:SetSide(side) end
 function F.Commands:SetMetric(metric) return F:SetMetric(metric) end
@@ -387,6 +398,7 @@ function F.Commands:SetWidgetVisible(value, reason) return F:SetWidgetVisible(va
 
 
 function F:GetActorDetail(request)
+    request=type(request)=="table" and request or {}
     local d = Domain()
     if type(d) ~= "table" or type(d.GetActorDetail) ~= "function" then
         return { actor = nil, abilities = {}, counterparts = {}, revision = 0 }
@@ -397,6 +409,7 @@ function F:GetActorDetail(request)
     -- caches positive/negative results so repeated detail refreshes stay cheap.
     local metadata = S.Services and S.Services.SkillMetadataV3 or nil
     for _, row in ipairs(type(detail.abilities) == "table" and detail.abilities or {}) do
+        row.nativeAbilityName=row.name
         if type(metadata) == "table" and type(metadata.GetSkillInfo) == "function" then
             local info = metadata:GetSkillInfo(row.abilityId, row.name)
             if type(info) == "table" then
@@ -409,6 +422,37 @@ function F:GetActorDetail(request)
             row.skillId = tonumber(row.abilityId)
             row.iconPath = "ui/icon/icon_unknown_item.dds"
         end
+    end
+    -- 明细只读组合两个 Authority 的投影；无新 Consumer/Getter/持久化写入。
+    -- 伤害筛选影响金额，技能的玩家击杀始终覆盖当前统计期；缺技能单列，不借伤害技能猜归属。
+    local analytics=Analytics()
+    local scores=analytics and analytics:GetMetricProjection("kills",{actorKey=request.actorKey,
+        actorName=(detail.actor and detail.actor.name) or request.actorName}) or {}
+    detail.killSkills=scores.skills or {};detail.killRevision=scores.dataRevision or 0
+    detail.skillKillsAvailable=scores.statsAvailable==true
+    if not detail.actor and scores.actor then
+        detail.actor={key=request.actorKey,name=scores.actor.name,damage=0,heal=0,taken=0,hits=0}
+    end
+    local byId,byName={},{}
+    detail.abilities=detail.abilities or {}
+    for _,row in ipairs(detail.abilities) do
+        row.kills=0;row.killTargets={}
+        local id=tonumber(row.skillId or row.abilityId)
+        if id and id>0 then
+            if byId[id]==nil then byId[id]=row else byId[id]=false end
+        end
+        local name=tostring(row.nativeAbilityName or row.name or "")
+        if byName[name]==nil then byName[name]=row else byName[name]=false end
+    end
+    for _,skill in ipairs(detail.killSkills) do
+        local row=skill.abilityId and byId[skill.abilityId] or nil
+        if not skill.abilityId and skill.key~="__unknown_skill__" and skill.key~="__other_skills__" then row=byName[skill.name] end
+        if not row then
+            row={key="kill:"..skill.key,name=skill.name,abilityId=skill.abilityId,skillId=skill.abilityId,
+                iconPath="ui/icon/icon_unknown_item.dds",amount=0,events=0,killOnly=true}
+            detail.abilities[#detail.abilities+1]=row
+        end
+        row.kills=skill.kills;row.killTargets=skill.targets;row.killSkillKey=skill.key;row.killDetailOmitted=skill.omittedTargets
     end
     return detail
 end
@@ -424,8 +468,8 @@ function F:GetProjection(request)
         enabled = runtime ~= nil and runtime.enabled == true or false,
         settings = S.Utils.DeepCopy(self:GetSettings()),
         bossNames = self:GetBossNames(),
-        coverageState = type(busHealth) == "table" and tostring(busHealth.coverageState or "INACTIVE") or "INACTIVE",
-        busScope = self.analyticsHeld == true and "all(shared_analytics)" or "none",
+        coverageState = self.analyticsHeld and Analytics():GetCollectionScope()=="self" and "SELF_ONLY" or (type(busHealth) == "table" and tostring(busHealth.coverageState or "INACTIVE") or "INACTIVE"),
+        busScope = self.analyticsHeld == true and Analytics():GetCollectionScope() or "none",
         projection = projection,
         health = S.Utils.DeepCopy(self:GetHealth()),
     }
@@ -433,6 +477,52 @@ end
 
 function F:GetSettingsProjection()
     return S.Utils.DeepCopy(self:GetSettings() or {})
+end
+
+-- 总览是只读组合投影，不新建累计表或 Native Consumer。按精确名字/世界保守连接。
+-- PVP/PVE 的伤害与承伤相加；共享治疗只取一次，击杀/死亡来自同一采集期。
+function F:GetCombatOverview()
+    local d,a=Domain(),Analytics()
+    if not d or not a then return {rows={},revision="unavailable",statsAvailable=false,assistsAvailable=false} end
+    local scores=a:GetMetricProjection("kills",{valueKey="kills",includeZero=true,limit=512}) or {}
+    local token=tostring(S.Generation)..":"..tostring(d.revision)..":"..tostring(scores.dataRevision)..":"..a:GetCollectionScope()..":"..tostring(scores.statsAvailable)
+    if self.combatOverviewToken==token then return self.combatOverview end
+    local byKey,rows={},{}
+    local function Touch(key,name,side)
+        key=string.lower(tostring(key or ""));if key=="" then return nil end
+        local row=byKey[key]
+        if not row then
+            row={key=key,name=tostring(name or key),damage=0,heal=0,taken=0,kills=0,deaths=0,
+                assistsAvailable=false,statsAvailable=scores.statsAvailable==true,side=side or "unknown",modeSides={},modeValues={}}
+            row.self=a:IsSelfActor(row.name);byKey[key]=row;rows[#rows+1]=row
+        elseif side and row.side~=side then row.side="unknown" end
+        return row
+    end
+    for _,mode in ipairs({"PVP","PVE"}) do
+        local p=d:GetProjection({mode=mode,metric="damage",displayRows=512,includeZero=true,overview=true})
+        for _,side in ipairs({"friendly","enemy","unknown"}) do
+            for _,source in ipairs(p.sides[side].rows or {}) do
+                local row=Touch(source.key,source.name,side)
+                row.damage=row.damage+(tonumber(source.damage) or 0);row.taken=row.taken+(tonumber(source.taken) or 0)
+                row.heal=math.max(row.heal,tonumber(source.heal) or 0)
+                row.modeSides[mode]=side
+                row.modeValues[mode]={damage=source.damage,taken=source.taken,heal=source.heal}
+            end
+        end
+    end
+    local relation=Relation()
+    for _,source in ipairs(scores.rows or {}) do
+        local key=string.lower(tostring(source.key or ""));local side
+        if not byKey[key] then
+            local rel=a:IsSelfActor(source.name) and "SELF" or (relation and type(relation.GetRelationAt)=="function" and relation:GetRelationAt(source.name,source.lastAt) or "UNKNOWN")
+            side=(rel=="SELF" or rel=="FRIENDLY" or rel=="TEAM") and "friendly" or (rel=="OPPONENT" and "enemy" or "unknown")
+        end
+        local row=Touch(source.key,source.name,side)
+        if row then row.kills=tonumber(source.kills) or 0;row.deaths=tonumber(source.deaths) or 0 end
+    end
+    self.combatOverviewToken=token
+    self.combatOverview={rows=rows,revision=token,statsAvailable=scores.statsAvailable==true,assistsAvailable=false}
+    return self.combatOverview
 end
 
 function F:GetHealth()
@@ -449,7 +539,7 @@ function F:GetHealth()
         consumers = self.consumerCount,
         busSubscribed = false,
         analyticsHeld = self.analyticsHeld == true,
-        busScope = self.analyticsHeld == true and "all(shared_analytics)" or "none",
+        busScope = self.analyticsHeld == true and Analytics():GetCollectionScope() or "none",
         relationHeld = self.relationHeld == true,
         classificationPVP = domain and domain.classifiedPVP or 0,
         classificationPVE = domain and domain.classifiedPVE or 0,

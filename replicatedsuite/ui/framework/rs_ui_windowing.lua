@@ -24,6 +24,7 @@ RSUI.Windowing.GeometryCallbackTransactionContractVersion = 1
 RSUI.Windowing.IdempotentStateContractVersion = 1
 RSUI.Windowing.CallbackCaptureContractVersion = 1
 RSUI.Windowing.ReloadPositionReconciliationContractVersion = 1
+RSUI.Windowing.CalibratedAnchorReadbackContractVersion = 1
 RSUI.Windowing.CriticalInteractionContractVersion = 3
 RSUI.Windowing.DragSurfaceHitTestContractVersion = 1
 RSUI.Windowing.ExplicitDragConditionContractVersion = 1
@@ -75,6 +76,13 @@ function W:ApplyGeometry(window, owner, x, y, width, height, force)
     end
     if x == nil or y == nil or width == nil or height == nil or width <= 0 or height <= 0 then return false, "invalid_window_rect" end
     if type(UI.EnsureAnchor) ~= "function" or type(UI.EnsureExtent) ~= "function" then return false,"geometry_transaction_unavailable" end
+    -- 中文维护（2026-10-04）：Primitive 首次 Show 后 Native 可能调整出生锚点，
+    -- 随后首次进入 Windowing 才建立校准后的几何基线。这个初始化交接必须失效旧几何镜像，
+    -- 否则被误报为 strict 外部写入（换装/功能方案启动各按钮一次）。后续非 force 校验仍严格
+    -- 记录真实越权位移；不清历史违规、不改变 Gate。仅顶层窗口进入该车道，HUD 不加入。
+    local previousReadback = window.rsUiWindowGeometryReadback
+    local firstGeometryCommit = previousReadback ~= true
+    window.rsUiWindowGeometryReadback = true
     -- 维护：内容刷新可能很频繁，常规布局只用 DiffRenderer 已提交矩形作为回滚基线。
     -- 只有 create（无缓存）/show/reset/metrics/手势结束 force 边沿读取 Native，禁止变相逐帧读坐标。
     local row=UI.NativeStateCache and UI.NativeStateCache[window]
@@ -90,13 +98,15 @@ function W:ApplyGeometry(window, owner, x, y, width, height, force)
             for _,field in ipairs({"width","height","anchorParent","anchorX","anchorY","anchorTopLeft"}) do UI:InvalidateNativeState(window,field) end
         end
     end
-    if force == true then Invalidate() end
+    if force == true or firstGeometryCommit then Invalidate() end
     local ok,_,err = UI:EnsureExtent(window,width,height,owner)
     if ok == true then ok,_,err = UI:EnsureAnchor(window,UIParent,x,y,owner) end
     if ok ~= true then
         Invalidate()
         local sizeOk = UI:EnsureExtent(window,bw,bh,owner)
         local anchorOk = UI:EnsureAnchor(window,UIParent,bx,by,owner)
+        -- 首次 Native 拒绝仍是未完成的初始化；重试不能把失败回滚当已建立的 strict 基线。
+        if firstGeometryCommit then window.rsUiWindowGeometryReadback = previousReadback end
         return false, tostring(err or "native_geometry_rejected") .. ((sizeOk ~= true or anchorOk ~= true) and ":rollback_rejected" or "")
     end
     return true,x,y,width,height
@@ -244,7 +254,8 @@ function W:GetGeometryDiagnostics(window)
     local x,y,w,h = CachedTopLevelRect(window)
     local ax,ay,aw,ah,info = LivePositionRect(window)
     local row = UI.NativeStateCache and UI.NativeStateCache[window]
-    local out = { patch="ui-position-reload-1", expected={known=x~=nil,x=x,y=y,width=w,height=h},
+    local out = { patch="ui-position-reload-1", calibratedAnchorReadback=window and window.rsUiWindowGeometryReadback==true,
+        expected={known=x~=nil,x=x,y=y,width=w,height=h},
         observed={known=ax~=nil,x=ax,y=ay,width=aw,height=ah},
         rawOffset=PositionRawPair(window,"GetOffset","x","y"),
         rawExtent=PositionRawPair(window,"GetExtent","width","height"),
@@ -806,6 +817,7 @@ function W:Attach(spec)
                     -- 子控件组合下命中不稳定。0.001 是肉眼不可见的 Native hit plane，与自定义 Slider 已验证
                     -- 的透明拖动面保持一致；hover 才提高到 0.72。该 Drawable 不拥有几何或持久化。
                     hoverLine = handle:CreateColorDrawable(0.84, 0.68, 0.28, 0.001, "overlay")
+                    if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(handle,hoverLine,'resize.accent',.001) end
                     if hoverLine ~= nil and type(hoverLine.AddAnchor) == "function" then
                         hoverLine:AddAnchor("TOPLEFT", handle, 0, 0)
                         hoverLine:AddAnchor("BOTTOMRIGHT", handle, 0, 0)
@@ -813,7 +825,10 @@ function W:Attach(spec)
                 end
                 local function SetResizeHover(active)
                     if hoverLine ~= nil and type(hoverLine.SetColor) == "function" then
-                        pcall(function() hoverLine:SetColor(0.84, 0.68, 0.28, active and 0.72 or 0.001) end)
+                        pcall(function()
+                            if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(handle,hoverLine,'resize.accent',active and .72 or .001)
+                            else hoverLine:SetColor(0.84,0.68,0.28,active and .72 or .001) end
+                        end)
                     end
                     if active then W.metrics.resizeHover = (tonumber(W.metrics.resizeHover) or 0) + 1 end
                 end

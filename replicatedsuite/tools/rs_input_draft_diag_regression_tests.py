@@ -22,7 +22,11 @@ require("InputActionDraftReadContractVersion = 1" in controls, "TextInput action
 require("function c:GetActionValue() return self:GetDraftValue() end" in controls, "TextInput action read does not use current draft")
 require("local name = ReadActionText(createInput)" in profiles, "feature profile create still reads committed binding")
 require("local name = ReadActionText(renameInput)" in profiles, "feature profile rename still reads committed binding")
-require("hotkeyNameInput.GetActionValue" in business, "hotkey profile save still risks stale TextInput binding")
+# 2026-10-07: user removed hotkey profiles; preserve active profile draft checks
+# above and assert the retired input/native feature cannot silently return.
+require("hotkeyNameInput" not in business, "retired hotkey profile input remains")
+require('Add("tools_hotkey_profiles"' not in read("features/rs_feature_registry.lua"), "retired hotkey feature returned")
+require("features/tools/rs_hotkey_profiles_feature.lua" not in read("toc.g"), "retired hotkey feature still loads")
 require("local NORMAL_PAGE_CAPACITY = 2048" in diag, "diagnostic safe default capacity missing")
 require("function W:_AutoRepageReadback" in diag, "diagnostic automatic readback repage missing")
 require("Hub.Repage" in diag and "actualBytes" in diag, "diagnostic auto fit is not based on immutable repage/native readback")

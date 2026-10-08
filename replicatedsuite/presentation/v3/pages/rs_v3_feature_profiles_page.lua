@@ -148,6 +148,7 @@ local function BuildPage(parent, route)
         end,
         onItemActivated = function(item)
             if type(item) ~= "table" or root.selectedProfileId == nil then return false, "请先选择方案" end
+            if item.controllable ~= true then return false, "该页面不参与方案开关" end -- 中文维护：基础页同名展示，但双击不得绕过 Runtime 安全范围。
             local ok, err = Feature.Commands:SetModule(root.selectedProfileId, item.featureId, item.targetEnabled ~= true)
             if ok ~= true then root:SetActionStatus("修改失败：" .. tostring(err or "未执行"), "warn") end
             return ok, err
@@ -173,7 +174,7 @@ local function BuildPage(parent, route)
     moduleDisableButton = RSUI:Button({ id = "v3_feature_profiles_module_disable", parent = moduleActions, text = "设为关闭", compact = true, enabled = false,
         slot = { size = "fixed", width = 90 } })
     local moduleActionHint = RSUI:Text({ id = "v3_feature_profiles_module_action_hint", parent = moduleActions,
-        text = "未勾选的可控功能在应用方案时会关闭；基础设施与本功能自身不进入此列表。", fontSize = 8, tone = "muted", overflow = "ellipsis",
+        text = "列表与左侧导航一致；“不参与”页面只读，未选的可控功能在应用时关闭。", fontSize = 8, tone = "muted", overflow = "wrap",
         slot = { size = "fill", fill = 1 } })
 
     local function ProfileRow(projection, profileId)
@@ -222,7 +223,10 @@ local function BuildPage(parent, route)
             for i, module in ipairs(projection.moduleRows or {}) do if tostring(module.featureId) == tostring(self.selectedFeatureId) then selectedIndex = i; break end end
             if selectedIndex ~= nil and moduleTable:GetSelectedKey() ~= self.selectedFeatureId then moduleTable:SetSelectedIndex(selectedIndex) end
         end
-        local hasModule = self.selectedFeatureId ~= nil
+        local hasModule = false -- 中文维护：选择基础页面时禁用开/关按钮，不能以“已有选择”代替控制资格。
+        for _, module in ipairs(projection.moduleRows or {}) do
+            if module.featureId == self.selectedFeatureId and module.controllable == true then hasModule = true; break end
+        end
         moduleEnableButton:SetEnabled(hasModule)
         moduleDisableButton:SetEnabled(hasModule)
         return true
@@ -276,9 +280,9 @@ local function BuildPage(parent, route)
     end
     captureButton.onClick = function()
         local id, guardErr = RequireProfile(); if id == nil then return false, guardErr end
-        local ok, err = Feature.Commands:CaptureCurrent(id)
-        root:Refresh(); root:SetActionStatus(ok == true and "已把当前可控功能开关覆盖到该方案。" or ("捕获失败：" .. tostring(err or "未执行")), ok == true and "success" or "warn")
-        return ok, err
+        local ok, result = Feature.Commands:CaptureCurrent(id)
+        root:Refresh(); root:SetActionStatus(ok == true and tostring(result or "已按最新功能目录同步当前开关。") or ("捕获失败：" .. tostring(result or "未执行")), ok == true and "success" or "warn")
+        return ok, result
     end
     quickButton.onClick = function()
         local id, guardErr = RequireProfile(); if id == nil then return false, guardErr end

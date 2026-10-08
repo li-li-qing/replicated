@@ -27,6 +27,7 @@ DETAIL = (ROOT / "presentation/v3/widgets/rs_v3_trade_detail_floating.lua").read
 DIAGNOSTICS = (ROOT / "presentation/v3/widgets/rs_v3_trade_diagnostics.lua").read_text(encoding="utf-8")
 PRICE_QUOTE = (ROOT / "services/rs_price_quote_queue_v3.lua").read_text(encoding="utf-8")
 MATERIAL_PRICE = (ROOT / "services/rs_material_price_service_v3.lua").read_text(encoding="utf-8")
+TRADE_QUOTE = (ROOT / "services/rs_trade_material_quote_service_v3.lua").read_text(encoding="utf-8")
 TOC = (ROOT / "toc.g").read_text(encoding="utf-8")
 AUCTION_QUERY = (ROOT / "services/rs_auction_query_v3.lua").read_text(encoding="utf-8")
 REGISTRY = (ROOT / "features/rs_feature_registry.lua").read_text(encoding="utf-8")
@@ -299,13 +300,15 @@ def main() -> int:
     quote_slice = section(BUNDLE, "local function ResolveTradeQuoteIdentity", "-- Diagnostics reads describe helpers")
     require('itemType,itemGrade=tonumber(material.itemType),tonumber(material.itemGrade)' in quote_slice,
             "material quote identity prefers projected itemType/itemGrade authority")
-    require('selected[#selected+1]={materialKey=materialKey,itemType=id,itemGrade=grade,searchName=m.name,quoteKey=key}' in quote_slice,
+    require('selected[#selected+1]={materialKey=materialKey,itemType=id,itemGrade=grade,' in quote_slice
+            and 'searchName=LocalizedTradeItemName(id,m.name),quoteKey=key' in quote_slice,
             "row quote jobs carry live material identities and localized fallback names")
-    require('self:QuoteMaterial(material,mode,job)' in quote_slice,
-            "row quote jobs submit detached identity records through the shared queue")
-    require('local searchName=LocalizedTradeItemName(itemType,projectedName)' in quote_slice
-            and 'mode=="full" and LocalizedTradeItemName' not in quote_slice,
-            "basic row quote retains RU name-search fallback when GetLowestPrice returns nil")
+    require('service:RequestRecipe(job.requester,selected,function(snapshot)' in quote_slice
+            and 'self:QuoteMaterial(material,mode,job)' not in quote_slice,
+            "row jobs submit one detached recipe to the cache-first service")
+    require('searchName=LocalizedTradeItemName(id,m.name)' in quote_slice
+            and 'searchName = material.searchName or material.name, singleQuery = true' in MATERIAL_PRICE,
+            "Trade single-query transport preserves localized material search identity")
 
     # .18.299 quote-chain regressions from live .18.298 diagnostics.
     require('refreshControls = function(instance, projection, rows, Feature)' in WIDGET
@@ -317,7 +320,8 @@ def main() -> int:
             "pending quote visuals are scoped independently to each active row job")
     require('FallbackIdentityMatchContractVersion = 1' in PRICE_QUOTE
             and 'resultLimit = Q.fallbackSearchLimit' in PRICE_QUOTE
-            and 'if expected ~= nil and rowType ~= nil and rowType == expected then' in PRICE_QUOTE,
+            and 'if gradeMatches and expected ~= nil and rowType ~= nil and rowType == expected then' in PRICE_QUOTE
+            and 'tonumber(row.itemGrade) == tonumber(pending.itemGrade)' in PRICE_QUOTE,
             "auction-name fallback scans a bounded result set and prefers stable itemType identity")
     require('local row, matchKind, matchIndex, price, priceSource, priceReason = SelectFallbackRow(rows, pending)' in PRICE_QUOTE
             and 'rows[1]' not in section(PRICE_QUOTE, 'function Q:_CheckFallback()', 'local function RequeueFront'),
@@ -331,7 +335,11 @@ def main() -> int:
             and '"X2Auction:AskMarketPrice"' in drain
             and 'pending.marketPriceState = "readback_queued"' in drain
             and 'ReadLowestPrice(pending, grade, "after_ask")' in drain,
-            "explicit quote uses paced AskMarketPrice -> GetLowestPrice readback before name-search fallback")
+            "non-listing request retains paced AskMarketPrice -> GetLowestPrice compatibility before fallback")
+    require('singleQuery = true' in MATERIAL_PRICE
+            and 'if request.singleQuery == true then StartSingle(request); return end' in drain
+            and 'request.requireListing == true or request.fallbackState == "queued"' in drain,
+            "missing Trade prices use bounded single-query transport while legacy listing protocol remains intact")
     require('local fromNameSearch = tostring(fresh.source or ""):find("^name_search_") ~= nil' in PRICE_QUOTE,
             "name-search fallback prices remain labeled as reference rather than live lowest-price reads")
     require('FallbackUnitPriceContractVersion = 1' in PRICE_QUOTE
@@ -341,7 +349,9 @@ def main() -> int:
             "fallback cost normalizes listing totals to per-unit prices and fails closed without quantity")
     require('1, 0, 0, 1, 0, options.exactMatch == true' in AUCTION_QUERY,
             "auction name search does not retain the stale maxLevel=55 filter")
-    require('local function Money(value)' in AUCTION_QUERY
+    # 2026-09-30: the normalizer now carries bounded recursion depth; keep the numeric/currency guard.
+    require('local function Money(value, depth)' in AUCTION_QUERY
+            and 'if depth > 4 then return nil end' in AUCTION_QUERY
             and 'local gold, silver, copper' in AUCTION_QUERY,
             "auction result prices normalize numeric, formatted-string and money-table shapes centrally")
     require('ListingUnitPriceContractVersion = 1' in AUCTION_QUERY
@@ -357,7 +367,7 @@ def main() -> int:
     require('Trade.QuoteTerminalRefreshContractVersion=2' in BUNDLE
             and 'function Trade:_FlushQuoteRefresh(epoch,reason)' in BUNDLE
             and 'if terminal==true then return self:_FlushQuoteRefresh(epoch,"row_job_terminal") end' in BUNDLE
-            and 'Trade:_QueueQuoteRefresh(key or materialKey,job.epoch,terminal)' in BUNDLE,
+            and 'Trade:_QueueQuoteRefresh(materialKey,job.epoch,terminal)' in BUNDLE,
             "terminal row-job callback synchronously converges task state and visible material projection")
     require('RemoveTask(QUOTE_REFRESH_TASK)' in section(BUNDLE, 'function Trade:_FlushQuoteRefresh', 'function Trade:_QueueQuoteRefresh'),
             "terminal quote flush cancels stale coalesced one-shot before rebuilding rows")
@@ -373,16 +383,16 @@ def main() -> int:
             and 'function Trade:EnsurePriceQuoteSubscription()' in BUNDLE
             and 'self:ReleasePriceQuoteSubscription()' in BUNDLE,
             "trade Demand subscribes and releases shared quote read-model synchronization")
-    require('m.costStatus=="quote_pending"' in BUNDLE
-            and 'if pending then joinedPending=joinedPending+1 end' in BUNDLE
-            and 'requester="life_trade:rowjob:"' in BUNDLE,
-            "each row job reattaches an independent watcher to already-shared pending materials")
+    require('requester="life_trade:rowjob:"' in BUNDLE
+            and 'self.operations[requester]=op' in TRADE_QUOTE
+            and 'request.watchers[requester] = watcher' in PRICE_QUOTE,
+            "each row operation keeps independent ownership while queue shares material work")
     cancel_section = section(BUNDLE, 'function Trade:CancelQuoteBatch(reason)', 'function Trade:_FlushQuoteRefresh')
     require('for _,row in ipairs(TA.rows or {}) do ApplyTradeMaterialProjectionToRow(row) end' in cancel_section,
             "quote cancellation immediately reconciles cached rows from QuoteQueue authority")
     start_section = section(BUNDLE, 'function Trade:_StartRowQuoteJob(row,mode,options)', 'function Trade:QuotePendingMaterials')
     require('ApplyTradeMaterialProjectionToRow(row)' in start_section
-            and 'for _,displayRow in ipairs(TA.rows or {}) do ApplyTradeMaterialProjectionToRow(displayRow) end' in start_section,
+            and re.search(r'for _,displayRow in ipairs\(TA.rows or {}\)\s*do ApplyTradeMaterialProjectionToRow\(displayRow\)\s*end', start_section),
             "each new row job refreshes stale input state and row-scoped visual state without native work")
     require('Trade.MultiRowQuoteJobsContractVersion=1' in BUNDLE
             and 'quoteJobsByRowKey={}' in BUNDLE
@@ -392,9 +402,11 @@ def main() -> int:
     require('TRADE_MAX_ACTIVE_QUOTE_JOBS=16' in BUNDLE
             and 'TRADE_BULK_QUOTE_MAX_ROWS=16' in BUNDLE,
             "multi-row quote orchestration is explicitly bounded")
-    require('function Trade:_ReconcileQuoteJobsByIdentity(itemType,itemGrade,status,reason)' in BUNDLE
-            and 'Trade:_ReconcileQuoteJobsByIdentity(itemType,itemGrade,status,reason)' in BUNDLE,
-            "shared quote completion events reconcile every matching row job idempotently")
+    require('_ReconcileQuoteJobsByIdentity' not in BUNDLE
+            and 'Trade.quoteJobsByRowKey[rowKey]~=job' in start_section
+            and 'Trade:_CompleteQuoteJobMaterial(job,key,result.status' in start_section
+            and 'T.operations[op.requester] ~= op' in TRADE_QUOTE,
+            "only operation-owned callbacks complete row jobs; global identity events cannot forge completion")
     require('tradeQuoteListButton' in PAGE and 'feature.Commands:QuotePendingMaterials()' in PAGE,
             "main trade page exposes bounded current-list multi-row quoting")
     require('row.profit = Money(profit)' in BUNDLE
@@ -473,8 +485,11 @@ def main() -> int:
             and 'previousRowsByKey' in BUNDLE
             and 'row.fastMaterialCarryForward = true' in BUNDLE,
             "ratio fast-publish must preserve same-row material economics while deferred recalculation converges")
-    require('if quotedPrice == nil and type(quoteQueue) == "table" and type(quoteQueue.GetPriceWithProvenance) == "function" then' in BUNDLE,
-            "degraded MaterialPrice store falls back to the shared QuoteQueue read model")
+    require('quotedPrice, priceMeta = materialPrices:GetTradePrice(itemType, itemGrade)' in BUNDLE
+            and 'elseif type(quoteQueue) == "table" and type(quoteQueue.GetPriceWithProvenance) == "function" then' in BUNDLE
+            and 'queue:GetPriceByItemType(itemType, itemGrade)' in MATERIAL_PRICE
+            and 'age >= 0 and age < self.freshMinutes * 60000' in MATERIAL_PRICE,
+            "Trade uses accepted age-bounded cache; degraded store may only reuse genuine fresh session prices")
     require('MaterialPriceCacheContractVersion' in ACCEPTANCE and 'BackgroundMaterialRevalidateContractVersion' in ACCEPTANCE
             and 'EconomicsRevisionContractVersion' in ACCEPTANCE and 'MaterialPriceAuthorityContractVersion' in ACCEPTANCE
             and 'PriorityQueueContractVersion' in ACCEPTANCE,

@@ -177,6 +177,8 @@ local function BuildReport(self, mode)
     local meta = {id=tostring(S.Generation or 0).."."..reportSequence, check=check, partial=check.status=="ERROR",
         providersFailed=0, evidenceIncluded=0, evidenceFailed=0, evidenceOmitted=0, kind=mode}
     local parts, bytes, detailBytes = {}, 0, 0
+    local detailWriter = type(S.DiagnosticDetail)=='table' and S.DiagnosticDetail:New() or nil
+    if detailWriter then detailWriter:Add('selfCheck.allChecks',check) end
     local function Add(str, raw)
         str = Text(str) .. "\n"
         if #str + bytes > REPORT_MAX - 2048 or (not raw and #str + detailBytes > DETAIL_MAX) then
@@ -188,15 +190,18 @@ local function BuildReport(self, mode)
         return true
     end
     local function Section(label, value)
+        if detailWriter then detailWriter:Add(label, value) end
         local str, incomplete = Format(value);meta.partial=meta.partial or incomplete
         return Add("["..label.."]\n"..str)
     end
     local function Collect(label, object, method, ...)
         if type(object) ~= "table" or type(object[method]) ~= "function" then
+            if detailWriter then detailWriter:Add(label,{available=false,reason='provider_unavailable',method=method}) end
             Add("["..label.."] unavailable");return nil
         end
         local ok, result, err = pcall(object[method],object,...)
         if not ok or result == nil or result == false then
+            if detailWriter then detailWriter:Add(label,{available=false,error=not ok and result or err or 'no_snapshot'}) end
             meta.providersFailed=meta.providersFailed+1;meta.partial=true
             Add("["..label.."] ERROR "..Clip(not ok and result or err or "no_snapshot",4096))
             return nil
@@ -221,6 +226,41 @@ local function BuildReport(self, mode)
         .." clippedMessages="..history.clippedMessages.." suppressed="..history.suppressed.." captureFailures="..history.captureFailures)
     if history.evicted>0 or history.clippedMessages>0 or history.captureFailures>0 or (tonumber(S.LogDropped)or 0)>0 then meta.partial=true end
     for _,row in ipairs(history.rows) do Section("RECORDED_ERROR",row) end
+
+    -- 维护（mouse-load-evidence-1）：页面“完整报告”实际走 paged，过去未收集已经运行的
+    -- 性能监控/调度/输入计数，导致 TXT 无法核对周期负载。只在显式打印的冷路径读缓存；
+    -- 不启动计时、不刷新药品、不抢焦点、不增添 Tick，也不把帧间隔或零计时当回调耗时。
+    local performance = Collect("PERFORMANCE",S.PerformanceMonitor,"Snapshot")
+    Section("PERFORMANCE_COVERAGE",{
+        patch="mouse-load-evidence-1",capturedAtMs=Now(),
+        callbackTimingCaptured=type(performance)=="table" and performance.capture~=nil and performance.timerAvailable==true,
+        interpretation="帧间隔不是原生 API 耗时；未启动详细捕获时，零耗时不代表调用免费；标签关联不能证明视角突转根因。",
+    })
+    Collect("SCHEDULER_RUNTIME",S.Scheduler,"DescribeBacklog")
+    -- 只枚举名字，任务字段通过既有公开 GetTaskState；不导出 callback/owner 或 Native 对象。
+    local scheduler=S.Scheduler
+    if type(scheduler)=="table" and type(scheduler.tasks)=="table" and type(scheduler.GetTaskState)=="function" then
+        local names={};for name in pairs(scheduler.tasks)do names[#names+1]=tostring(name)end
+        table.sort(names)
+        for index=1,math.min(#names,128)do Collect("SCHEDULER_TASK:"..names[index],scheduler,"GetTaskState",names[index])end
+        if #names>128 then meta.partial=true;Section("SCHEDULER_TASK_COVERAGE",{total=#names,omitted=#names-128})end
+    end
+    Collect("UI_INPUT_AND_WRITES",S.UI,"GetFrameworkSnapshot")
+    -- 独立插件是可选被观察对象；只复制当前代次标量，不调用它的 Sample/Update/Save/UI。
+    local potion=rawget(_G,"LCotPotionSignal")
+    if type(potion)=="table" then
+        local rows={}
+        for index=1,3 do
+            local row=type(potion.rows)=="table" and potion.rows[index] or nil
+            if type(row)=="table" then rows[index]={itemId=row.itemId,skillId=row.skillId,slot=row.slot,
+                stock=row.stock,remaining=row.remaining,at=row.at,emptyScanAt=row.emptyScanAt,emptyConfirmed=row.emptyConfirmed}end
+        end
+        Section("LCOT_POTION_RUNTIME",{present=true,generation=potion.generation,running=potion.running,
+            enabled=potion.enabled,panelOpen=potion.panelOpen,error=potion.error,nowMs=potion.now,
+            bagDirty=potion.bagDirty,bagScanAt=potion.bagScanAt,signalIndex=potion.signalIndex,signalVisible=potion.signalVisible,
+            recording=potion.arm~=nil,crossRecording=potion.armCross~=nil,rows=rows,
+            coverage="仅插件缓存状态；不包含外部 LCot 程序、鼠标位移或药品 API 执行耗时。"})
+    else Section("LCOT_POTION_RUNTIME",{present=false,coverage="全局实例未观察到，不证明外部 LCot 程序是否运行。"})end
 
     if mode=='paged' then
         Collect("PERSISTENCE_FAILURES",self,"BuildPersistenceFailureReport")
@@ -292,6 +332,7 @@ local function BuildReport(self, mode)
     Collect("WIDGET_HOST",v3.WidgetHost,"Describe")
     Collect("ACTIONS",S.ActionRunner,"GetSnapshot")
     Collect("UI",ui,"GetFrameworkSnapshot")
+    Collect("UI_THEME",S.Theme,"GetPaletteDiagnostics")
     Collect("UI_AUTHORITY",ui,"GetAuthoritySnapshot")
     Collect("BINDINGS",ui.Binding,"GetSnapshot")
     Collect("VIEW_STATE",rsui.ViewState,"GetSnapshot")
@@ -371,6 +412,12 @@ local function BuildReport(self, mode)
     parts[#parts+1]=footer.."\nBODY_BYTES="..bytes.."\nRS-SELF-CHECK-END ID="..meta.id
     local text=table.concat(parts)
     meta.bytes=#text
+    if detailWriter then
+        detailWriter:Add('diagnostics.retention',{recent=self.recent,counters=self.counters,sequence=self.sequence,
+            suppressed=self.suppressed,issueEvicted=history.evicted,clippedMessages=history.clippedMessages})
+        meta.exportReport,meta.detail=detailWriter:Finish(text)
+        meta.exportBytes=#meta.exportReport
+    end
     return text,meta
 end
 

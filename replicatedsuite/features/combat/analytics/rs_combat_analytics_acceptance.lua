@@ -10,16 +10,55 @@ local C=F and F.MetricCommon or nil
 if type(G)~="table" or type(G.RegisterSequenceCase)~="function" or type(F)~="table" or type(A)~="table" or type(C)~="table" then return end
 local function Fail(v) return false,tostring(v or "combat_analytics_acceptance_failed") end
 
+-- 中文维护（2026-10-05）：只读数据接入门禁，不触发采集/Native/存储。
+G:RegisterSequenceCase("v3_combat_recognition_reference_contract",function()
+    local catalog=S.Data and S.Data.CombatRecognitionCatalog
+    local ability=S.Data and S.Data.CombatAbilityCatalog
+    if type(catalog)~="table" or type(ability)~="table" or type(ability.GetRecognitionMatches)~="function" then return Fail("recognition_catalog_missing") end
+    local health=catalog:GetHealth()
+    if health.ok~=true or health.sourceFiles~=35 or health.trees~=14 or health.specs~=364
+        or health.verification~="reference_unverified_ru" then return Fail("recognition_catalog_incomplete") end
+    local silence=ability:GetRecognitionGroup("silencedDebuffIds")
+    if type(silence)~="table" or #silence.buffIds~=52 or silence.verification~="reference_unverified_ru" then return Fail("recognition_silence_group") end
+    if ability:GetRecognitionMatches("skill",0)~=nil or ability:GetRecognitionMatches("buff",24543)==nil then return Fail("recognition_id_namespace") end
+    return true
+end)
+
+G:RegisterSequenceCase("v3_combat_statistics_personal_history_contract",function()
+    local history=F.PersonalHistory
+    local store=history and S.Persistence and S.Persistence:GetStore(history.StoreId) or nil
+    -- 中文维护（2026-10-07）：删除NPC击杀后仍保留schema2用于旧档校验；schema1原档仍经Persistence验证后迁移。
+    if store==nil or store.owner~="v3.combat_personal_history" or tonumber(store.schemaVersion)~=2
+        or store.scope~=S.Persistence.Scope.Character or store.lifetime~=S.Persistence.Lifetime.Permanent then return Fail("personal_history_store") end
+    if type(A.AcquireStatisticsConsumer)~="function" or type(A.GetCollectionScope)~="function" or type(F.Commands.SetCollectionScope)~="function"
+        or type(F.GetPersonalHistoryProjection)~="function" then return Fail("unified_statistics_commands") end
+    local metric=A:GetMetric("personal_history")
+    if metric==nil or metric.hidden~=true then return Fail("personal_history_metric") end
+    local main=S.FeatureRegistry and S.FeatureRegistry:Get("combat_stats")
+    local analysis=S.FeatureRegistry and S.FeatureRegistry:Get("combat_analytics")
+    if not main or not analysis or type(main.preferenceGroup)~="table" or main.preferenceGroup[1]~="combat_stats"
+        or main.preferenceGroup[2]~="combat_analytics" or analysis.navigationVisible~=false then return Fail("unified_navigation") end
+    local factories=S.UIV3 and S.UIV3.PageHost and S.UIV3.PageHost.factories
+    if not factories or type(factories["combat.personal_history"])~="function" then return Fail("history_page") end
+    if type(factories["combat.statistics_settings"])~="function" then return Fail("statistics_settings_page") end
+    return true
+end,{runtime=true})
+
 G:RegisterSequenceCase("v3_m16_combat_analytics_contract",function()
     local meta=S.FeatureRegistry and S.FeatureRegistry:Get("combat_analytics") or nil
     if meta==nil or tostring(meta.status)~="migrated_m16_foundation" or tostring(meta.authority)~="v3.combat_analytics" then return Fail("metadata") end
     if S.FeatureRuntime==nil or S.FeatureRuntime:IsImplemented("combat_analytics")~=true then return Fail("feature_implementation") end
     local store=S.Persistence and S.Persistence:GetStore(F.StoreId or "v3.combat_analytics") or nil
-    if store==nil or tonumber(store.schemaVersion)~=1 or tostring(store.owner)~="v3.combat_analytics" then return Fail("store") end
+    if store==nil or tonumber(store.schemaVersion)~=2 or tostring(store.owner)~="v3.combat_analytics" then return Fail("store") end
     if (tonumber(A.version) or 0)<3 or type(A.RegisterMetric)~="function" or type(A.AcquireConsumer)~="function" or type(A.GetMetricProjection)~="function" or type(A.GetMetricActorDetail)~="function" or type(A.ResetMetrics)~="function" or type(A.HasConsumer)~="function" or type(A.NotifyMetricChanged)~="function" then return Fail("authority") end
     local required={"encounter","kills","casts","performance","control","songcraft","utility","aura","mechanics"}
-    for _,id in ipairs(required) do if A:GetMetric(id)==nil then return Fail("metric_missing:"..id) end end
-    if #A:ListMetrics(false)<9 then return Fail("public_metric_count") end
+    for _,id in ipairs(required) do
+        local metric=A:GetMetric(id)
+        if metric==nil then return Fail("metric_missing:"..id) end
+        if id~="kills" and (metric.suspended~=true or A.activeMetrics[id]==true) then return Fail("advanced_metric_not_suspended:"..id) end
+    end
+    local public=A:ListMetrics(false)
+    if #public~=1 or public[1].id~="kills" then return Fail("basic_public_metric_set") end
     local catalog=S.Data and S.Data.CombatAbilityCatalog or nil;local ch=type(catalog)=="table" and catalog:GetHealth() or nil
     if type(ch)~="table" or (tonumber(ch.skills) or 0)<100 or (tonumber(ch.songs) or 0)<4 then return Fail("ability_catalog") end
     local mechanics=S.Data and S.Data.CombatMechanicCatalog or nil;if type(mechanics)~="table" or type(mechanics.FindCast)~="function" then return Fail("mechanic_catalog") end
@@ -42,10 +81,14 @@ G:RegisterSequenceCase("v3_m16_18_15_analytics_value_switch_contract",function()
     local state=F.State
     if type(state)~="table" or type(state.selectedValues)~="table" then return Fail("value_switch_state") end
     local previous=state.selectedValues.kills
-    local ok,err=F:ApplyStoreRaw("selectedValue","kills","assists")
-    if ok~=true or F:GetSelectedValueKey("kills")~="assists" then state.selectedValues.kills=previous;return Fail(err or "kills_assists_switch") end
+    local ok,err=F:ApplyStoreRaw("selectedValue","kills","deaths")
+    if ok~=true or F:GetSelectedValueKey("kills")~="deaths" then state.selectedValues.kills=previous;return Fail(err or "kills_deaths_switch") end
+    ok,err=F:ApplyStoreRaw("selectedValue","kills","npcKills")
+    if ok~=false or F:GetSelectedValueKey("kills")~="deaths" then state.selectedValues.kills=previous;return Fail("retired_npc_value_must_reject") end
+    local assist=F:ApplyStoreRaw("selectedValue","kills","assists")
     local invalid=F:ApplyStoreRaw("selectedValue","kills","not_a_metric_value")
     state.selectedValues.kills=previous
+    if assist==true then return Fail("assist_value_must_reject") end
     if invalid==true then return Fail("invalid_value_must_reject") end
     return true
 end)

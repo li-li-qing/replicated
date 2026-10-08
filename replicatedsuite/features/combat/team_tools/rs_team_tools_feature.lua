@@ -17,7 +17,7 @@ local Action, Call, Copy, Number, Text, NewFeature = FSF.Action, FSF.Call, FSF.C
 local Trim = FSF.Trim
 local PersistStateMutation = FSF.PersistStateMutation
 local Demand = S.Demand
-local TeamApi = rawget(_G, "X2Team")
+local function TeamApi() return rawget(_G, "X2Team") end -- 中文维护：接口在 Feature 初始化时按需导入，调用时取当前代，避免复用重载前的 Native 对象；能力门仍由 FSF 管理。
 
 -- 中文维护注释（2026-09-28，Phase 1 Batch D 补漏）：成员序号校验是本 Feature 专属的输入契约
 -- （1..maximum 的正整数），从 bridge 原样搬入；bridge 已删除副本，避免第二份 Authority。
@@ -109,7 +109,7 @@ local function TeamRoleReadRow(member, ordinal, slotCounts)
         return result, "invalid"
     end
 
-    local ok, role, err = Call("X2Team:GetRole", TeamApi, "GetRole", teamIndex, memberIndex)
+    local ok, role, err = Call("X2Team:GetRole", TeamApi(), "GetRole", teamIndex, memberIndex)
     if ok ~= true then
         result.roleStatus = "read_failed"
         result.roleText, result.statusText = "读取失败", "职责读取失败"
@@ -304,10 +304,13 @@ local TeamTools = NewFeature("combat_team_tools", { apiDependencies = { "X2Team:
             end
             return true
         end,
-        SetRole = function(_, role)
+        SetRole = function(feature, role)
             local value = NormalizeTeamRole(role)
             if value == nil then return false, "职责必须来自当前客户端 TMROLE_* 枚举" end
-            return Action("X2Team:SetRole", TeamApi, "SetRole", value)
+            local ok, err = Action("X2Team:SetRole", TeamApi(), "SetRole", value)
+            feature.ManualRoleEvidence={at=S.NowMs and S.NowMs(),requested=value,accepted=ok==true,error=ok~=true and err or nil} -- 中文维护：Native 接受不冒充同步成功；只记录本玩家显式动作，不写其它成员。
+            if ok==true then feature:ScheduleRoleVerification(value,feature.ManualRoleEvidence,false) end -- 中文维护：写后只读一次同步结果，不能把 Action 返回 true 当作职责已生效。
+            return ok, err
         end,
         MoveMember = function(_, from, to)
             local fromMember, err = TeamCommandInteger(from, "源成员", 50); if fromMember == nil then return false, err end
@@ -335,13 +338,17 @@ local TEAM_AUTO_ROLE_TASK="v3_team_auto_role_apply"
 local function TeamAutoRoleCatalog() return S.Data and S.Data.TeamAutoRoleCatalog or nil end
 local function ResolveAutoRole(feature)
     local ok,templates,err=Call("X2Unit:GetTargetAbilityTemplates",rawget(_G,"X2Unit"),"GetTargetAbilityTemplates","player")
+    feature.AutoRoleEvidence = feature.AutoRoleEvidence or {}
+    feature.AutoRoleEvidence.templates=Copy(templates) -- 中文维护：冻结实际三天赋返回；仅现有自动职责观察读 Native，导出不再读取或写入。
+    feature.AutoRoleEvidence.abilityReadOk=ok==true
+    feature.AutoRoleEvidence.abilityError=err
     if ok~=true or type(templates)~="table" then return nil,nil,nil,"职业树不可读："..tostring(err or "unknown") end
     local indices={}
     for i=1,3 do local n=tonumber(type(templates[i])=="table" and templates[i].index or nil); if n==nil then return nil,nil,nil,"职业树返回不完整" end; indices[#indices+1]=math.floor(n) end
     table.sort(indices)
     local key=string.format("name_%d_%d_%d",indices[1],indices[2],indices[3])
     local catalog=TeamAutoRoleCatalog(); local row=type(catalog)=="table" and type(catalog.byClassKey)=="table" and catalog.byClassKey[key] or nil
-    if type(row)~="table" then return NormalizeTeamRole(rawget(_G,"TMROLE_NONE")),key,"未标记","职业组合尚未登记" end
+    if type(row)~="table" then return nil,key,nil,"职业组合尚未登记；保留当前职责" end -- 中文维护：目录没有记录只代表未知，绝不能据此 SetRole(NONE) 清掉用户现有职责。
     local globalByRole={tank="TMROLE_TANKER",healer="TMROLE_HEALER",dealer="TMROLE_DEALER",ranged="TMROLE_RANGED_DEALER",none="TMROLE_NONE"}
     local role=NormalizeTeamRole(rawget(_G,globalByRole[row.role] or "TMROLE_NONE"))
     return role,key,({tank="坦克",healer="治疗",dealer="输出",ranged="远程输出",none="未标记"})[row.role] or "未标记",nil
@@ -354,7 +361,7 @@ local function FindPlayerRoleSlot()
     local snap=roster:GetSnapshot()
     for _,member in ipairs(type(snap)=="table" and type(snap.members)=="table" and snap.members or {}) do
         local memberName=string.lower(tostring(member.name or ""))
-        if memberName==wanted then
+        if member.unitToken=="player" or memberName==wanted then -- 中文维护：共享名单的 player token 已证明本地身份；显示名可能带 @World，不能让显示文本差异阻断已确认槽位。
             local teamIndex,memberIndex=tonumber(member.teamIndex),tonumber(member.memberIndex)
             -- 中文维护注释（2026-09-16，入团竞态）：TeamRosterV3 总会先以 player/0/0 种下本地身份，0/0 只证明“玩家存在”，
             -- 不能证明 native team slot 已稳定。旧代码把 0/0 当有效槽位，可能在 TEAM_MEMBERS_CHANGED 过早到达时调用 GetRole(0,0)/SetRole，
@@ -366,19 +373,59 @@ local function FindPlayerRoleSlot()
     end
     return nil,nil,"当前玩家尚未进入团队名单"
 end
-function TeamTools:ApplyAutoRole(reason)
+local function PublishRoleStatus(feature)
+    if S.Events and type(S.Events.Publish)=="function" then S.Events:Publish(feature.UpdateTopic,feature.Authority.revision,"auto_role_status") end -- 中文维护：事件任务完成后让页面立即显示最新匹配状态；展示层不轮询 Native。
+end
+function TeamTools:ScheduleRoleVerification(desired,evidence,automatic)
+    -- 中文维护：600ms 后仅确认本玩家真实槽位的职责；不循环重写、不触及其他成员。新请求替换旧确认，禁用 Feature 清理任务。
+    local scheduler=S.Scheduler
+    if not scheduler or type(scheduler.AddOneShot)~="function" then evidence.verificationError="scheduler_unavailable"; return false end
+    local ok=scheduler:AddOneShot("v3_team_role_verify",600,function()
+        if TeamTools.enabled~=true then return end
+        local team,member,err=FindPlayerRoleSlot()
+        local readOk,value,readErr=false,nil,err
+        if team and member then readOk,value,readErr=Call("X2Team:GetRole",TeamApi(),"GetRole",team,member) end
+        evidence.verifiedAt=S.NowMs and S.NowMs()
+        evidence.readback=value
+        evidence.confirmed=readOk==true and tonumber(value)==tonumber(desired)
+        evidence.verificationError=readErr
+        if automatic and TeamTools.AutoRoleEvidence==evidence then
+            TeamTools.AutoRoleStatus=evidence.confirmed and ("已确认："..tostring(TeamTools.AutoRoleLabel)) or "职责同步尚未确认；请查看诊断"
+            evidence.status=TeamTools.AutoRoleStatus
+        end
+        PublishRoleStatus(TeamTools)
+    end,self,"P2",1)
+    if ok and scheduler.SetTaskModule then scheduler:SetTaskModule("v3_team_role_verify",self.Id,true) end
+    if ok~=true then evidence.verificationError="verification_schedule_failed" end
+    return ok==true
+end
+local function ApplyAutoRole(feature,reason)
+    local self=feature
     if self.enabled~=true or self.State.autoRoleEnabled==false then self.AutoRoleStatus="自动职责已关闭"; return true end
     local desired,classKey,label,resolveErr=ResolveAutoRole(self)
     self.AutoRoleClassKey,self.AutoRoleLabel=classKey,label
     if desired==nil then self.AutoRoleStatus=resolveErr or "无法识别职责"; return false,self.AutoRoleStatus end
     local teamIndex,memberIndex,slotErr=FindPlayerRoleSlot()
     if teamIndex==nil or memberIndex==nil then self.AutoRoleStatus=slotErr or "未在团队"; return true end
-    local ok,current,currentErr=Call("X2Team:GetRole",TeamApi,"GetRole",teamIndex,memberIndex)
-    if ok==true and tonumber(current)==tonumber(desired) then self.AutoRoleStatus="已匹配："..tostring(label); return true end
-    local wrote,writeErr=Action("X2Team:SetRole",TeamApi,"SetRole",desired)
+    self.AutoRoleEvidence.teamIndex,self.AutoRoleEvidence.memberIndex=teamIndex,memberIndex
+    local ok,current,currentErr=Call("X2Team:GetRole",TeamApi(),"GetRole",teamIndex,memberIndex)
+    self.AutoRoleEvidence.currentRole,self.AutoRoleEvidence.currentReadOk,self.AutoRoleEvidence.currentError=current,ok==true,currentErr
+    self.AutoRoleEvidence.desiredRole=desired
+    if ok==true and tonumber(current)==tonumber(desired) then self.AutoRoleEvidence.confirmed=true; self.AutoRoleStatus="已匹配："..tostring(label); return true end -- 中文维护：已匹配来自真实槽位只读证据，无需再写或排队确认。
+    local wrote,writeErr=Action("X2Team:SetRole",TeamApi(),"SetRole",desired)
+    self.AutoRoleEvidence.writeAccepted,self.AutoRoleEvidence.writeError=wrote==true,wrote~=true and writeErr or nil -- 中文维护：Action 成功的第二返回值是 Native 结果，不能当作错误记录。
     if wrote~=true then self.AutoRoleStatus="设置失败："..tostring(writeErr or currentErr or "unknown"); return false,writeErr end
     self.AutoRoleStatus="已请求："..tostring(label).."（等待团队同步）"
+    self:ScheduleRoleVerification(desired,self.AutoRoleEvidence,true)
     return true
+end
+function TeamTools:ApplyAutoRole(reason)
+    self.AutoRoleEvidence={at=S.NowMs and S.NowMs(),reason=reason} -- 中文维护：单次决策快照，不能把上次成功字段混入本次未执行的写入。
+    local ok,err=ApplyAutoRole(self,reason)
+    self.AutoRoleEvidence.status=self.AutoRoleStatus
+    self.AutoRoleEvidence.classKey=self.AutoRoleClassKey
+    PublishRoleStatus(self)
+    return ok,err
 end
 function TeamTools:ScheduleAutoRole(reason,delayMs)
     if self.enabled~=true or self.State.autoRoleEnabled==false then return true end
@@ -458,6 +505,7 @@ function TeamTools:Enable(reason)
     return true
 end
 function TeamTools:Disable(reason)
+    if S.Scheduler then S.Scheduler:RemoveTask("v3_team_role_verify") end -- 中文维护：写后确认只属于本次模块生命周期，关闭后不得继续查询 Native。
     local stopOk, stopErr = self:StopAutoRoleObservation()
     local baseOk, baseErr = TeamToolsBaseDisable(self,reason)
     if baseOk ~= true then return false, baseErr end
@@ -465,3 +513,25 @@ function TeamTools:Disable(reason)
     return true
 end
 TeamTools.AutoRoleContractVersion=3 -- 中文维护注释（2026-09-16）：v3 固化独立 TeamRoster lease、独立 Event owner、关→开重建观察与真实>0团队槽位门；仍为事件驱动，不增加周期轮询。
+
+-- 中文维护：详细报告只导出现有 Authority/名单/观察租约/决策结果，绝不因诊断执行 SetRole 或额外查询成员。
+function TeamTools:DescribeDiagnosticDetail()
+    local roster,scheduler=TeamRosterV3(),S.Scheduler
+    return Copy({projection=self:GetProjection(),settings=self.State,autoRole=self.AutoRoleEvidence or {available=false,reason="not_applied"},
+        manualRole=self.ManualRoleEvidence,autoRoleRosterHeld=self.AutoRoleRosterHeld,autoRoleSubscribed=self.AutoRoleSubscribed,
+        pageRosterHeld=self.TeamRoleRosterHeld,pageRosterSubscribed=self.TeamRoleRosterSubscribed,
+        roster=roster and roster:GetSnapshot(),rosterHealth=roster and roster.GetHealth and roster:GetHealth(),
+        scheduler=scheduler and scheduler.GetHealth and scheduler:GetHealth(),backlog=scheduler and scheduler.DescribeBacklog and scheduler:DescribeBacklog(),
+        roleOptions=TeamRoleValues()})
+end
+function TeamTools:RegisterDiagnosticProviders()
+    local hub=S.ModuleDiagnosticsHub
+    if type(hub)~="table" then return false end
+    hub:RegisterStoreOwner(self.Id,self.storeId) -- 中文维护：物理业务 Store ID 与注册 Authority 名不同，必须显式归属才能导出写保护和加载证据。
+    return hub:RegisterProvider(self.Id,"team_role_evidence",function()return TeamTools:DescribeDiagnosticDetail()end,30,{detailOnly=true})
+end
+function TeamTools:GetHealth()
+    return {autoRoleEnabled=self.State.autoRoleEnabled~=false,status=self.AutoRoleStatus,classKey=self.AutoRoleClassKey,
+        autoRoleRosterHeld=self.AutoRoleRosterHeld,autoRoleSubscribed=self.AutoRoleSubscribed,teamRoleScan=Copy(self.TeamRoleScan)} -- 中文维护：模块摘要显示职业匹配/槽位状态，不再仅提示“未采样”。
+end
+TeamTools:RegisterDiagnosticProviders()

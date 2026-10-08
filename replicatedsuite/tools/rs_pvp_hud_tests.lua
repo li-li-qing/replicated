@@ -6,7 +6,9 @@
 -- 显示位置用父链计算；Native纹理拒写是明确模型，不代替 RU 的渲染/网络时延测量。
 local passed,failed=0,0
 local function Test(name,fn)local ok,e=pcall(fn);if ok then passed=passed+1;print('PASS pvp-hud '..name)else failed=failed+1;print('FAIL pvp-hud '..name..': '..tostring(e))end end
-local Boot=dofile('tools/rs_pvp_hud_test_host.lua')
+-- 中文维护：本套件实际验证事件/Scheduler/Renderer，显式选择完整宿主，领域测试默认不变。
+local Host=dofile('tools/rs_pvp_hud_test_host.lua')
+local function Boot(options) options=options or {};options.runtimeHud=true;return Host(options) end
 Test('continuous aura events cannot erase or postpone weapon invalidation',function()
     local h,S,F=Boot({noRenderer=true});h.weapon='new-weapon.dds'
     h:Event('UNIT_EQUIPMENT_CHANGED')

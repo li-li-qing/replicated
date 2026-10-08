@@ -34,7 +34,8 @@ check('onChanged = function(_, _, control)' in bonds and 'control:Render()' in b
 
 # 布局预算：常驻高度 26px，并恢复更多表格行池。
 check('height = 26' in bonds, "floating settings row is not compact")
-check('slot = { size = "fixed", width = 112, minWidth = 100 }' in bonds, "settings trigger width budget changed")
+check("slot = instance.headerMode and {size='fill',fill=1,hAlign='fill'} or { size = \"fixed\", width = 112, minWidth = 100 }" in bonds,
+      "floating settings must retain 112px while only the home header uses its parent width")
 check('spec.featureName == "Bonds" then desiredRows = 9' in widget, "Bonds table row budget was not restored")
 check('"toolbar_primary"' not in bonds and '"toolbar_scope"' not in bonds, "old two-row toolbar remains")
 

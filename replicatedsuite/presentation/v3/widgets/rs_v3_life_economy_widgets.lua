@@ -105,11 +105,151 @@ end
 -- 每个实例独立id/owner/控件，Feature投影/Command唯一，构建和刷新绝不发出材料询价。
 local Contents={specs={}}
 S.UIV3.LifeEconomyContent=Contents
+-- 首页标题栏保留单入口；首次点击才创建独立字段表单，复用 FloatingSurface/Dropdown 的原生生命周期。
+-- 子 Dropdown 继续由 PopupCoordinator 管理，父表单不注册为 Dropdown，避免打开选项时把表单关掉。
+-- 表单只读 Feature 投影并分派原有 Command；不增加消费者、询价任务或业务设置副本。
+local function CloseSettingsChoices(instance)
+    local panel=instance.headerSettings
+    for _,control in ipairs(panel and panel.choices or {})do if control.open then control:Close()end end
+    return true
+end
+local function SettingsRow(panel,key,title)
+    local row=RSUI:HorizontalBox({id=panel.prefix..key..'_row',parent=panel.body,gap=6,
+        slot={size='fixed',height=28,hAlign='fill'}})
+    RSUI:Text({id=panel.prefix..key..'_label',parent=row,text=title,fontSize=10,tone='muted',
+        slot={size='fixed',width=64,vAlign='fill'}})
+    return row
+end
+local function SettingsChoice(panel,key,title,items,get,set)
+    local control=RSUI:Dropdown({id=panel.prefix..key,parent=SettingsRow(panel,key,title),items=items or {},
+        placeholder='请选择',maxVisible=8,popupWidth=300,get=get,set=set,
+        slot={size='fill',fill=1,minWidth=100,hAlign='fill'}})
+    if control then panel.choices[#panel.choices+1]=control end
+    return control
+end
+local function ApplySettingsCommand(instance,Feature,command,...)
+    local fn=Feature.Commands[command]
+    local ok,err
+    if type(fn)=='function'then ok,err=fn(Feature.Commands,...)else ok,err=false,'设置命令不可用'end
+    if ok==true then instance:Refresh()end
+    local panel=instance.headerSettings
+    if panel then panel.surface:SetStatus(ok==true and '设置已生效' or tostring(err or '设置未保存'),ok==true and 'muted' or 'yellow')end
+    return ok,err
+end
+local function BuildTradeSettings(instance,panel,Feature)
+    local controls=panel.controls
+    local function Projection()return Feature:GetProjection() or {}end
+    local function RouteCommand(command,value)
+        if Projection().viewMode=='cargo'then return false,'请先切换到全部或关注货物'end
+        return ApplySettingsCommand(instance,Feature,command,value)
+    end
+    controls.fromDropdown=SettingsChoice(panel,'from','起始地',{},function()return Projection().fromZone end,
+        function(value)return RouteCommand('SetFrom',value)end)
+    controls.toDropdown=SettingsChoice(panel,'to','目的地',{},function()return Projection().toZone end,
+        function(value)return RouteCommand('SetTo',value)end)
+    controls.favoriteDropdown=SettingsChoice(panel,'favorite','收藏路线',{},function()return Projection().currentFavoriteKey end,
+        function(value)return RouteCommand('SelectFavorite',value)end)
+    controls.viewSelector=RSUI:SegmentedSelector({id=panel.prefix..'view_mode',parent=SettingsRow(panel,'view','显示货物'),
+        items={{value='all',text='全部'},{value='tracked',text='关注'},{value='cargo',text='随身'}},itemWidth=58,height=26,gap=3,
+        get=function()return Projection().viewMode or 'all'end,
+        set=function(value)return ApplySettingsCommand(instance,Feature,'SetViewMode',value)end,
+        slot={size='fill',fill=1,hAlign='fill'}})
+    local actions=RSUI:HorizontalBox({id=panel.prefix..'actions',parent=panel.body,gap=5,slot={size='fixed',height=28,hAlign='fill'}})
+    controls.refreshButton=RSUI:Button({id=panel.prefix..'refresh',parent=actions,text='刷新货率',compact=true,
+        slot={size='fill',fill=1,minWidth=70},onClick=function()
+            local p=Projection()
+            if p.isRefreshing or p.viewMode~='cargo' and (p.fromZone==nil or p.toZone==nil)then return false,'路线未就绪'end
+            return ApplySettingsCommand(instance,Feature,'Refresh','overview_manual')
+        end})
+    controls.favoriteButton=RSUI:Button({id=panel.prefix..'favorite_toggle',parent=actions,text='添加收藏',compact=true,
+        slot={size='fill',fill=1,minWidth=70},onClick=function()return RouteCommand('ToggleCurrentFavorite')end})
+    controls.trackButton=RSUI:Button({id=panel.prefix..'track',parent=actions,text='关注货物',compact=true,
+        slot={size='fill',fill=1,minWidth=70},onClick=function()
+            local row=type(Feature.GetSelectedRow)=='function' and Feature:GetSelectedRow() or nil
+            if type(row)~='table' or row.key==nil then return false,'请先在首页选择一个货物'end
+            return ApplySettingsCommand(instance,Feature,'ToggleTrackedProduct',row.itemType or row.key)
+        end})
+    panel.refresh=function(projection)
+        Contents.specs.Trade.refreshControls(controls,projection,projection.rows or {},Feature)
+        controls.refreshButton:SetEnabled(projection.isRefreshing~=true and (projection.viewMode=='cargo' or projection.fromZone~=nil and projection.toZone~=nil))
+        controls.refreshButton:SetText(projection.isRefreshing and '刷新中' or '刷新货率')
+        return true
+    end
+    return controls.fromDropdown~=nil and controls.toDropdown~=nil and controls.favoriteDropdown~=nil
+        and controls.viewSelector~=nil and controls.refreshButton~=nil and controls.favoriteButton~=nil and controls.trackButton~=nil
+end
+local function BuildBondSettings(instance,panel,Feature)
+    local controls=panel.controls
+    controls.orderDropdown=SettingsChoice(panel,'order','排序',BOND_ORDER_ITEMS,function()return Feature:GetDisplayOrderKey()end,
+        function(value)
+            local mode,order=tostring(value or ''):match('^([^:]+):(.+)$')
+            if not mode or not order then return false,'债券排序设置无效'end
+            return ApplySettingsCommand(instance,Feature,'SetDisplayOrder',mode,order)
+        end)
+    controls.scopeDropdown=SettingsChoice(panel,'scope','显示范围',BOND_SCOPE_ITEMS,function()return Feature:GetFilterMask()end,
+        function(value)return ApplySettingsCommand(instance,Feature,'SetFilterMask',value)end)
+    controls.duplicateDropdown=SettingsChoice(panel,'duplicate','重复材料',BOND_DUPLICATE_ITEMS,function()return Feature:GetDuplicateMode()end,
+        function(value)return ApplySettingsCommand(instance,Feature,'SetDuplicateMode',value)end)
+    panel.refresh=function()
+        for _,control in ipairs(panel.choices)do control:Render()end
+        return true
+    end
+    return controls.orderDropdown~=nil and controls.scopeDropdown~=nil and controls.duplicateDropdown~=nil
+end
+local function BuildSettingsHeader(instance,parent,Feature,name)
+    instance.settingsButton=RSUI:Button({id=instance.contentPrefix..'settings',parent=parent,text='设置',compact=true,
+        slot={size='fill',fill=1,hAlign='fill'},onClick=function()
+            if instance.headerSettings and instance.headerSettings.surface.visible then return instance:CloseHeaderSettings()end
+            local panel=instance.headerSettings
+            if not panel then
+                local state={} -- 只保留本次会话的窗口几何，不保存第二份业务设置。
+                local prefix=instance.contentPrefix..'settings_'
+                local surface,err=Floating:Create({id=prefix..'window',owner='v3:'..prefix,title=name=='Trade' and '贸易设置' or '债券设置',
+                    movable=true,resizable=false,appearanceControls=false,footer=true,boundaryMode='clamp',defaultPlacement='center',
+                    statePolicy={defaultWidth=380,defaultHeight=name=='Trade' and 286 or 210,minWidth=320,minHeight=name=='Trade' and 260 or 190},
+                    getState=function()return state end,setState=function(value)state=value;return true end,persist=function()return true end,
+                    onStateChanged=function(_,value)if value.minimized then CloseSettingsChoices(instance)end end,
+                    onClosed=function()
+                        if Contents.openHeaderSettings==instance then Contents.openHeaderSettings=nil end
+                        return CloseSettingsChoices(instance)
+                    end})
+                if not surface then return false,err end
+                panel={surface=surface,prefix=prefix,controls={},choices={}}
+                instance.headerSettings=panel
+                panel.body=RSUI:VerticalBox({id=prefix..'content',parent=surface:GetContentRoot(),gap=6,
+                    slot={size='fill',fill=1,hAlign='fill',vAlign='fill'}})
+                RSUI:Text({id=prefix..'help',parent=panel.body,fontSize=9,tone='muted',overflow='wrap',
+                    text=name=='Trade' and '选择后立即生效；随身模式下不使用路线设置。' or '选择后立即生效，首页与债券页面同步。',
+                    slot={size='fixed',height=28,hAlign='fill'}})
+                local built=name=='Trade' and BuildTradeSettings(instance,panel,Feature) or name=='Bonds' and BuildBondSettings(instance,panel,Feature)
+                if not built then
+                    CloseSettingsChoices(instance);surface:Destroy();instance.headerSettings=nil
+                    return false,'经济设置控件创建失败'
+                end
+            end
+            if Contents.openHeaderSettings and Contents.openHeaderSettings~=instance then Contents.openHeaderSettings:CloseHeaderSettings()end
+            panel.refresh(Feature:GetProjection() or {})
+            panel.surface:SetStatus('选择后立即生效','muted')
+            local minimized,minimizeErr=panel.surface:SetMinimized(false,false)
+            if minimized~=true then return false,minimizeErr end
+            local shown,showErr=panel.surface:Show(true)
+            if shown==true then Contents.openHeaderSettings=instance else instance:CloseHeaderSettings()end
+            return shown,showErr
+        end})
+    return instance.settingsButton~=nil,'经济标题栏设置创建失败'
+end
+local function RefreshSettingsHeader(instance,projection)
+    local panel=instance.headerSettings
+    if panel and panel.surface.visible then return panel.refresh(projection)end
+    return true
+end
 local function BuildBody(instance,parent,spec,Feature)
-        local content = RSUI:VerticalBox({ id = instance.contentPrefix .. "content", parent = parent, gap = 4,
+        local content = RSUI:VerticalBox({ id = instance.contentPrefix .. "content", parent = parent, gap = instance.headerMode and 2 or 4,
             slot = { size="fill", fill=1, hAlign = "fill", vAlign = "fill" } }) -- 填满卡片余量，否则auto只给空表一行高度。
         instance.content=content
-        instance.controls=RSUI:VerticalBox({id=instance.contentPrefix.."controls",parent=content,gap=3,slot={size="auto",hAlign="fill"}})
+        if instance.headerMode then
+            instance.controls=RSUI:HorizontalBox({id=instance.contentPrefix..'controls',parent=instance.headerParent,gap=0,slot={size='fixed',width=50,vAlign='fill'}})
+        else instance.controls=RSUI:VerticalBox({id=instance.contentPrefix.."controls",parent=content,gap=3,slot={size="auto",hAlign="fill"}})end
         if type(spec.buildControls) == "function" then
             local controlsOk, controlsErr = spec.buildControls(instance, instance.controls, Feature)
             if controlsOk == false then return nil, controlsErr or (spec.title .. "悬浮窗控制条创建失败") end
@@ -124,11 +264,23 @@ local function BuildBody(instance,parent,spec,Feature)
         local desiredRows = instance.overview and 6 or (spec.featureName == "Trade" and 6 or 10)
         if instance.overview ~= true and spec.featureName == "Bonds" then desiredRows = 9 end
         local overscanRows = spec.featureName == "Trade" and 0 or 1
+        local columns = S.Utils.DeepCopy(spec.columns)
+        if spec.featureName == "Trade" then
+            for _, column in ipairs(columns) do
+                if column.id == "detail" and type(column.onClick) == "function" then
+                    local openDetail = column.onClick
+                    column.onClick = function(...)
+                        instance.tradeLastActivateKey, instance.tradeLastActivateAt = nil, 0
+                        return openDetail(...)
+                    end
+                end
+            end
+        end
         instance.table = RSUI:TableView({
-            id = instance.contentPrefix .. "table", parent = content, items = {}, rowHeight = instance.overview and 26 or 24, headerHeight = instance.overview and 26 or 23, desiredRows = desiredRows,
-            rowFitMode = spec.featureName == "Trade" and "adaptive_tail" or "fixed", rowFitMin = instance.overview and 22 or 20, rowFitMax = instance.overview and 30 or 28,
+            id = instance.contentPrefix .. "table", parent = content, items = {}, rowHeight = instance.headerMode and 22 or instance.overview and 26 or 24, headerHeight = instance.headerMode and 20 or instance.overview and 26 or 23, desiredRows = desiredRows,
+            rowFitMode = spec.featureName == "Trade" and "adaptive_tail" or "fixed", rowFitMin = instance.headerMode and 20 or instance.overview and 22 or 20, rowFitMax = instance.headerMode and 22 or instance.overview and 30 or 28,
             overscan = overscanRows, scrollbar = true, selectable = spec.selectable == true, selectionMode = "single", columnResize = true, headerInteractive = false,
-            columns = S.Utils.DeepCopy(spec.columns), slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
+            columns = columns, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
         })
         if spec.selectable == true and type(spec.onSelection) == "function" then
             instance.table.onSelectionChanged = function(index)
@@ -229,12 +381,29 @@ local function RefreshBody(self,spec,Feature)
 function Contents:Create(parent,name,prefix,options)
     local spec=self.specs[name];local Feature=S.Features and S.Features[name]
     if not spec or not Feature then return nil,"经济内容不可用："..tostring(name) end
-    local instance={contentPrefix=prefix,visible=true,overview=type(options)=="table" and options.overview==true}
+    options=options or {}
+    local instance={contentPrefix=prefix,visible=true,overview=options.overview==true,headerParent=options.headerParent,
+        headerMode=options.overview==true and options.headerParent~=nil}
     local ok,err=BuildBody(instance,parent,spec,Feature);if not ok then return nil,err end
-    local status=RSUI:Text({id=prefix.."status",parent=instance.content,text="--",fontSize=9,tone="muted",overflow="ellipsis",slot={size="fixed",height=18}})
+    local status=RSUI:Text({id=prefix.."status",parent=instance.content,text="--",fontSize=9,tone="muted",overflow="ellipsis",slot={size="fixed",height=instance.headerMode and 16 or 18}})
     instance.surface={SetStatus=function(_,v)status:SetText(v);return true end}
     function instance:Refresh()return RefreshBody(self,spec,Feature)end
+    function instance:CloseHeaderSettings()
+        CloseSettingsChoices(self)
+        if self.headerSettings and self.headerSettings.surface.visible then self.headerSettings.surface:Close('home_exit')end
+        if Contents.openHeaderSettings==self then Contents.openHeaderSettings=nil end
+        for _,key in ipairs({'tradeSettingsDropdown','bondSettingsDropdown'})do
+            local dropdown=self[key];if dropdown and dropdown.open==true then dropdown:Close()end
+        end
+        return true
+    end
+    function instance:DisposeHeaderSettings()
+        self:CloseHeaderSettings()
+        if self.headerSettings then self.headerSettings.surface:Destroy();self.headerSettings=nil end
+        return true
+    end
     function instance:SetAvailable(available,reason)
+        if not available then self:CloseHeaderSettings()end
         self.controls:SetVisible(available)
         if available then return self:Refresh() end
         self.table:SetItems({},"unavailable");self.table:SetViewState("empty",{title=reason or "未启用",detail="点击右上角打开功能页面；首页不会自动启用模块。"})
@@ -449,6 +618,7 @@ local ok, err = Register({
             or type(Feature.Commands.QuoteRowMaterials) ~= "function" then
             return false, "跑商悬浮窗 Feature 路线/显示/收藏/关注/单行询价命令缺失"
         end
+        if instance.headerMode then return BuildSettingsHeader(instance,content,Feature,'Trade')end
 
         -- 维护（2026-09-24，trade-floating-favorite-restore-1）：18.297 为压缩 Native 预算把“新增/移除当前路线收藏”
         -- 从 HUD 一并删掉，只留下收藏路线下拉选择，造成常用闭环断裂。收藏是 Feature Authority 中已经存在的轻量命令，
@@ -573,6 +743,10 @@ local ok, err = Register({
         -- 18.298 恢复“关注货物”按钮后这里仍保留旧的二参签名，Lua 因而把 Feature 解析成 nil 全局，
         -- 每次路线/报价 Publish 都会触发 LIFE_WIDGET_CONTROL_REFRESH_FAILED。Presentation 只消费传入的
         -- Feature Command/read-model，不缓存第二份 Domain 状态；rows 参数保留统一 WidgetSpec 签名但不持有。
+        if instance.headerMode then
+            instance.routeTitle=FindZoneName(projection,projection.fromZone)..' → '..FindZoneName(projection,projection.toZone)
+            return RefreshSettingsHeader(instance,projection)
+        end
         local fromItems, toItems = ZoneItems(projection.zones), ZoneItems(projection.sellableZones)
         local routeControlsEnabled = projection.viewMode ~= "cargo"
         if instance.fromDropdown then
@@ -625,6 +799,7 @@ local ok, err = Register({
             instance.trackButton:SetEnabled(type(selected) == "table")
             instance.trackButton:SetText(type(selected) == "table" and selected.tracked == true and "取消关注" or "关注货物")
         end
+        if ok == true and instance.headerMode then instance:Refresh()end
         return ok, selectErr
     end,
     onItemActivated = function(instance, row, Feature)
@@ -647,6 +822,14 @@ local ok, err = Register({
         return ok, quoteErr
     end,
     columns = {
+        { id = "detail", title = "", cellType = "button", getText = function() return "详情" end,
+            size = "fixed", width = 44, minWidth = 44, absoluteMinWidth = 44, sortable = false, resizable = false,
+            onClick = function(row)
+                local detail = S.UIV3 and S.UIV3.TradeDetailFloatingV3
+                if type(row) ~= "table" or row.key == nil then return false, "货物已失效" end
+                if type(detail) ~= "table" or type(detail.Open) ~= "function" then return false, "货物详情浮窗不可用" end
+                return detail:Open(row.key)
+            end },
         { id = "name", title = "货物", field = "name", size = "fill", minWidth = 108, fill = 1 }, -- 中文维护注释：货物列仍负责吸收剩余宽度，仅略降最小值以支持 320px 紧凑窗口。
         { id = "rate", title = "货率", field = "rate", size = "fixed", width = 54, minWidth = 48, getTone = function(item) return item and item.tone or "muted" end }, -- 中文维护注释：货率列收紧但保留原 tone 规则，不改变 130%/实时货率业务判断。
         { id = "price", title = "售价", field = "price", size = "fixed", width = 74, minWidth = 60 }, -- 中文维护注释：售价列缩窄到可读金币文本预算，字段来源仍是 Authority 已计算结果。
@@ -666,12 +849,16 @@ local ok, err = Register({
             return "正在查询 " .. tostring(activeJobs) .. " 个货物 · 材料 " .. tostring(batch.completed or 0) .. "/" .. tostring(batch.total or 0)
                 .. " · 可继续双击其它货物加入"
         end
+        -- 维护（trade-requote-2）：队列停机后的失败原因仍应可见，不能恢复成“已自动更新”的通用提示。
+        if (tonumber(batch.failed) or 0) > 0 then
+            return tostring(batch.lastJobReason or "部分材料价格未知；双击可重试")
+        end
         local remaining = math.max(0, tonumber(projection.cooldownRemainingMs) or 0)
         if projection.routeStatus == "cooldown" and remaining > 0 then
             return "路线已切换 · 服务器冷却约 " .. tostring(math.ceil(remaining / 1000)) .. " 秒后自动读取"
         end
         if projection.isRefreshing == true then return "正在刷新货率 · 当前列表会保留上一份可用数据" end
-        if projection.viewMode == "tracked" then return "只看关注货物 · 本地材料价即时计算 · 双击可强制刷新材料价" end
+        if projection.viewMode == "tracked" then return "只看关注货物 · 本地材料价即时计算 · 双击查询缺失材料价" end
         if projection.viewMode == "cargo" then
             local cargo = projection.cargo or {}
             return "随身贸易包：" .. tostring(cargo.name or cargo.legacyName or "未识别") .. " · 自动比较目的地"
@@ -680,7 +867,7 @@ local ok, err = Register({
         local ageText = age ~= nil and age >= 10000 and (" · 数据" .. tostring(math.floor(age / 1000)) .. "秒前") or ""
         local autoState = type(projection.autoRefreshState) == "table" and projection.autoRefreshState or {}
         local autoText = projection.autoRefresh == true and (autoState.watchActive == true and " · 货率自动刷新" or " · 自动刷新待机") or ""
-        return "本地材料价即时计算毛利 · 后台自动更新 · 双击强制刷新" .. autoText .. ageText
+        return "本地材料价即时计算毛利 · 后台自动更新 · 双击查询缺失材料" .. autoText .. ageText
     end,
 })
 if ok ~= true then error(err) end
@@ -711,12 +898,13 @@ ok, err = Register({
             or type(Feature.Commands.SetDuplicateMode) ~= "function" then
             return false, "债券悬浮窗设置菜单命令缺失"
         end
+        if instance.headerMode then return BuildSettingsHeader(instance,content,Feature,'Bonds')end
         -- 中文维护注释（2026-09-24，悬浮窗方案 B）：主页面继续保留 3 个完整 Dropdown；悬浮窗只保留
         -- 一个“设置”Dropdown，内部通过不可选 Header 分组排序/显示范围/重复材料。这样配置能力不减少，
         -- 但常驻高度从约 60px 降到 26px，表格立即获得更多垂直空间。菜单 value 只是 Presentation action token，
         -- 不持久化；实际 mutation 始终交给 Bonds Feature 原子 Command。Dropdown v4 先 Close 再 Set，
         -- 同步 Publish/Refresh 不会重入正在点击的 Native popup。
-        local row = RSUI:HorizontalBox({
+        local row = instance.headerMode and content or RSUI:HorizontalBox({
             id = (instance.contentPrefix or "v3_life_bonds_widget_") .. "settings_row", parent = content, gap = 4,
             slot = { size = "fixed", height = 26, hAlign = "fill" },
         })
@@ -749,11 +937,12 @@ ok, err = Register({
                     control:Render()
                 end
             end,
-            slot = { size = "fixed", width = 112, minWidth = 100 },
+            slot = instance.headerMode and {size='fill',fill=1,hAlign='fill'} or { size = "fixed", width = 112, minWidth = 100 },
         })
         return true
     end,
     refreshControls = function(instance, projection, rows, Feature)
+        if instance.headerMode then return RefreshSettingsHeader(instance,projection)end
         local dropdown = instance.bondSettingsDropdown
         if dropdown ~= nil then
             dropdown:SetItems(BuildBondFloatingSettingsItems(Feature))
@@ -775,8 +964,11 @@ ok, err = Register({
     status = function(projection, rows)
         local coverage = type(projection.dailySnapshotStatus) == "table" and projection.dailySnapshotStatus or {}
         local current = projection.boardScope == "west" and "西" or (projection.boardScope == "east" and "东" or (projection.boardScope == "auroria" and "原" or "?"))
-        return tostring(#rows) .. "条 · 当前" .. current .. " · 今日 西" .. (coverage.west and "✓" or "×")
+        local dayText = projection.snapshotDateVerified == false and ("缓存" .. tostring(projection.snapshotDateKey or "--") .. "（待核对日期）") or "今日"
+        local saveText = projection.dailySaveStatus == "failed" and " · 本地保存失败" or (projection.dailySaveStatus == "pending" and " · 等待保存" or "")
+        return tostring(#rows) .. "条 · 当前" .. current .. " · " .. dayText .. " 西" .. (coverage.west and "✓" or "×")
             .. " 东" .. (coverage.east and "✓" or "×") .. " 原" .. (coverage.auroria and "✓" or "×")
+            .. saveText
     end,
 })
 if ok ~= true then error(err) end

@@ -2214,8 +2214,8 @@ end
 --
 -- 数据流：启动先读 manifest。已有 manifest 时只读 new stores，完全不 Load/Apply 旧大 Store；
 -- manifest 为空时才执行一次 Legacy 迁移。用户已明确批准方案 A：若 legacy schema8/T5 中
--- player.auto 是已观测残片而 target.auto 是完整 dense 列表，则仅在这次迁移中以 target.auto
--- 作为 player.auto 基线。该选择不是通用 twin Authority，迁移完成后永不再次执行。
+-- player.auto 是已观测残片而 target.auto 是完整 dense 列表，必须先由已注册 recovery hook
+-- 证明完整旧 Store 原章，再以该候选迁移；未知差异仍 fail-closed。迁移完成后永不再次执行。
 --
 -- 兼容边界：旧 Store 不自动 Clear，保留取证/回退证据；new tracking slot 使用 Transport5，
 -- 但任何 inactive 写损坏只会让本次 mutation 失败，active manifest 仍指向上一份可靠 generation。
@@ -2503,60 +2503,23 @@ function F:GetTrackingPersistenceHealth()
     }
 end
 
-local function IsDensePositiveIds(value, limit)
-    if type(P.RebuildDenseSequenceForIntegrity) ~= "function" then return nil end
-    local rows, reason, changed = P:RebuildDenseSequenceForIntegrity(value, limit or 1024)
-    if type(rows) ~= "table" or changed == true then return nil, reason end
-    for index = 1, #rows do
-        local id = rows[index]
-        if type(id) ~= "number" or id < 1 or id ~= math.floor(id) then return nil, "invalid_id" end
-    end
-    return rows
-end
-
 local function BuildLegacyMigrationCandidate()
     local legacy = P:GetStore(STORE_ID)
-    if type(legacy) ~= "table" then return NormalizeState(nil), "legacy_missing_default" end
-    local key, keyErr = P:ResolveStoreKey(legacy)
-    if key == nil then return nil, keyErr or "legacy key unavailable" end
-    if S.Api == nil or type(S.Api.LoadData) ~= "function" then return nil, "LoadData unavailable" end
-    local raw, loadErr = S.Api:LoadData(key)
-    if loadErr ~= nil then return nil, tostring(loadErr) end
-    if raw == nil then return NormalizeState(nil), "legacy_empty_default" end
-    if type(raw) ~= "table" then return nil, "legacy raw type invalid" end
-    local decoded, decodeErr = P:DecodePhysicalEnvelope(raw)
-    if decoded == nil then return nil, "legacy transport decode failed:" .. tostring(decodeErr or "unknown") end
-    local meta = type(decoded.__rsmeta) == "table" and decoded.__rsmeta or nil
-    if type(meta) ~= "table" or tostring(meta.store or "") ~= STORE_ID or tostring(meta.owner or "") ~= "v3.buff_display" then
-        return nil, "legacy envelope identity mismatch"
+    if type(legacy) ~= "table" then return nil, "legacy migration store unavailable" end
+    -- 中文维护（2026-10-07，首次迁移完整性）：物理解码不等于旧配置验真。原路径直接 normalize
+    -- raw payload，能把未知 Hash/损坏 seal/旧 canonical 差异静默迁成新 Authority。复用 Core 的
+    -- seal、schema、historical canonical、注册 recovery hook 与 budget 全链路；apply=false 保证
+    -- 不改当前 Domain、不排队旧 Store 重盖章，旧字节继续保留取证。失败前不得写任何 split Store。
+    local loaded, candidate, loadErr = P:LoadStore(STORE_ID, { apply = false })
+    if loaded == "empty" then return NormalizeState(nil), "legacy_empty_default" end
+    if loaded ~= true or type(candidate) ~= "table" then
+        return nil, loadErr or "legacy integrity validation failed"
     end
-    local payload = type(decoded.payload) == "table" and decoded.payload or nil
-    if payload == nil then return nil, "legacy payload missing" end
-
-    local candidate = NormalizeState(payload)
-    local rawTracked = type(payload.settings) == "table" and type(payload.settings.tracked) == "table" and payload.settings.tracked or nil
-    local playerRaw = type(rawTracked) == "table" and type(rawTracked.player) == "table" and rawTracked.player.auto or nil
-    local targetRaw = type(rawTracked) == "table" and type(rawTracked.target) == "table" and rawTracked.target.auto or nil
-    local playerRows = IsDensePositiveIds(playerRaw, 1024)
-    local targetRows = IsDensePositiveIds(targetRaw, 1024)
-    local usedApprovedA = false
-
-    -- 中文维护注释（用户确认方案 A，一次性迁移边界）：
-    -- 当前实机 legacy schema8/T5 已物理丢失 player.auto 后半段，旧 Hash 无法恢复用户可能存在的
-    -- player-only 差异。用户明确选择“以完整 target.auto 作为一次性 player.auto 迁移基线”。
-    -- 这里只在 manifest 尚未建立的 LegacyMigrationSourceOnly 路径执行，并要求：schema8/T5、
-    -- target.auto 是完整 dense 列表、player.auto 不是完整 dense、且坏侧仍是已观测 `{chunks=...}`
-    -- 残片。迁移完成后该分支永不再运行，也不得被复用为日常双向同步或 readback 恢复规则。
-    -- 风险：已永久丢失的 player-only Auto 差异无法证明性恢复；这是用户已知并批准的取舍。
-    if playerRows == nil and type(targetRows) == "table" and #targetRows > 32
-        and tonumber(meta.schema) == 8 and tonumber(meta.transportVersion) == 5
-        and type(playerRaw) == "table" and type(playerRaw.chunks) == "table" then
-        candidate.settings.tracked.player.auto = Copy(targetRows)
-        usedApprovedA = true
-    end
-    if type(targetRows) == "table" then candidate.settings.tracked.target.auto = Copy(targetRows) end
-    if type(playerRows) == "table" then candidate.settings.tracked.player.auto = Copy(playerRows) end
-    candidate = NormalizeState(candidate)
+    -- 中文维护：方案 A 的 player.auto 残片只复用已注册的精确前缀恢复证明；Core 已核旧 seal
+    -- 与整 Store 原章，未知 scope 差异仍拒绝。此状态标签不是额外恢复权限，也不触发第二次读取。
+    local probe = tostring(legacy.lastHistoricalRecoveryProbe or "")
+    local usedApprovedA = legacy.lastIntegrityStatus == "verified_canonical_recovered_representation"
+        and probe:find("t5_prefix_auto=player<-target", 1, true) ~= nil
     return candidate, usedApprovedA and "legacy_schema8_t5_user_approved_A" or "legacy_decoded"
 end
 
@@ -2582,8 +2545,14 @@ function F:MigrateLegacyBuffDisplayOnce()
     local beforeState = Copy(self.State)
     self.State = NormalizeState(candidate)
 
-    local settingsOk = EnsureSplitStoreLoaded(SETTINGS_STORE_ID, true)
+    -- 中文维护（2026-10-07）：空 settings Store 的 factory defaults 不能覆盖刚验真的旧显示/窗口
+    -- 配置；仅现存 split settings 拥有更高优先级。先只读加载，再按是否已有 Authority 应用。
+    local settingsOk, settingsStatus, settingsValue = EnsureSplitStoreLoaded(SETTINGS_STORE_ID, false)
     if settingsOk ~= true then self.State = beforeState; return false, "settings store load failed" end
+    if settingsStatus ~= "empty" then
+        local existingSettings = type(settingsValue) == "table" and settingsValue or self.SettingsStoreSnapshot
+        if type(existingSettings) == "table" then ApplySettingsAuthoritySnapshot(existingSettings) end
+    end
     local savedSettings, settingsErr = P:MutateStore(SETTINGS_STORE_ID, function() return true end,
         { delayMs = 0, reason = "buff_display_legacy_migration_settings", durable = true })
     if savedSettings ~= true then self.State = beforeState; return false, settingsErr end
@@ -2636,6 +2605,84 @@ function F:GetHudCalibrationSnapshot()
     local player = self:GetScopeLayoutSettings("player")
     local target = self:GetScopeLayoutSettings("target")
     return { player = Copy(player), target = Copy(target) }
+end
+
+-- 中文维护（2026-10-03）：精确显隐复用已有 profile 字段和 layout 小 Store。
+-- 名称与图标是两个用户意图；页面仅读此投影，不另存显示状态或改追踪集合。
+F.ScopedHudVisibilityContractVersion = 1
+F.HudVisibilityDefinitions = {
+    {key="className",label="职业名称",kind="text"},
+    {key="gearScore",label="装备分数",kind="text"},
+    {key="distance",label="距离",kind="text"},
+    {key="classIcon",label="职业图标",kind="image",component="class"},
+    {key="mainHand",label="主手图标",kind="image",component="mainHand"},
+    {key="offHand",label="副手图标",kind="image",component="offHand"},
+    {key="ranged",label="远程武器",kind="image",component="ranged"},
+    {key="wings",label="背部图标",kind="image",component="wings"},
+    {key="buffs",label="Buff 图标",kind="image",component="buffs"},
+    {key="debuffs",label="Debuff 图标",kind="image",component="debuffs"},
+    {key="cooldowns",label="技能 CD",kind="image",component="cooldowns"},
+    {key="castBar",label="施法条",kind="bar",component="castBar"},
+    {key="alias",label="自定义名字",kind="text",targetOnly=true},
+}
+
+function F:GetHudVisibilityProjection(scope)
+    if scope~="player" and scope~="target" then return nil,"HUD 范围无效" end
+    local profile=self:GetScopeLayoutSettings(scope)
+    local info,components=profile.info or {},profile.components or {}
+    local projection={scope=scope,items={}}
+    for _,definition in ipairs(self.HudVisibilityDefinitions) do
+        local item=Copy(definition)
+        item.available=not item.targetOnly or scope=="target"
+        local component=components[item.component or item.key] or {}
+        if item.key=="className" then item.visible=info.enabled~=false and info.showClass~=false
+        elseif item.key=="gearScore" then item.visible=info.enabled~=false and info.showGear~=false and component.enabled~=false
+        elseif item.key=="distance" then item.visible=info.enabled~=false and info.showDistance~=false and component.enabled~=false
+        elseif item.key=="classIcon" then item.visible=info.enabled~=false and component.enabled~=false
+        elseif item.key=="alias" then
+            local alias=type(self.GetTargetAliasHudConfigProjection)=="function" and self:GetTargetAliasHudConfigProjection() or nil
+            item.available=item.available and alias~=nil
+            item.visible=item.available and alias.enabled~=false
+        else item.visible=component.enabled~=false end
+        projection.items[#projection.items+1]=item
+    end
+    return projection
+end
+
+function F:SetHudVisibility(scope,key,value)
+    if scope~="player" and scope~="target" then return false,"HUD 范围无效" end
+    if type(value)~="boolean" then return false,"显示状态必须为开或关" end
+    local definition
+    for _,item in ipairs(self.HudVisibilityDefinitions) do if item.key==key then definition=item;break end end
+    if key~="images" and definition==nil then return false,"未知显示项" end
+    if key=="alias" then
+        if scope~="target" then return false,"自定义名字仅用于目标 HUD" end
+        if type(self.SetCurrentTargetAliasDisplayEnabled)~="function" then return false,"目标自定义名字接口不可用" end
+        return self:SetCurrentTargetAliasDisplayEnabled(value)
+    end
+    local ready,err=self:CanPersistLayoutSettings()
+    if ready~=true then return false,err end
+    local profile=self:GetScopeLayoutSettings(scope)
+    local info,components=profile.info,profile.components
+    local function ActivateInfo()
+        if info.enabled==false then
+            -- 旧 master 关闭时四项均隐藏。只恢复所选项，不能顺带复活其他文字/图标。
+            info.showClass,info.showGear,info.showDistance=false,false,false
+            components.class.enabled,components.gearScore.enabled,components.distance.enabled=false,false,false
+            info.enabled=true
+        end
+    end
+    local function Apply(item)
+        if value and (item.key=="className" or item.key=="classIcon" or item.key=="gearScore" or item.key=="distance") then ActivateInfo() end
+        if item.key=="className" then info.showClass=value
+        elseif item.key=="gearScore" then info.showGear=value;components.gearScore.enabled=value
+        elseif item.key=="distance" then info.showDistance=value;components.distance.enabled=value
+        else components[item.component].enabled=value end
+    end
+    if key=="images" then
+        for _,item in ipairs(self.HudVisibilityDefinitions) do if item.kind=="image" then Apply(item) end end
+    else Apply(definition) end
+    return self:PersistHudCalibrationSnapshot({[scope]=profile},"hud_visibility:"..scope..":"..key)
 end
 
 function F:GetDefaultHudCalibrationSnapshot()
@@ -2893,6 +2940,10 @@ function F:MarkStoreDirty(delayMs, reason)
     -- 中文维护注释（Legacy 主 Store 禁写）：该兼容入口现在只允许标记 settings 小 Store。
     -- 历史调用若仍把它理解成 v3.buff_display 全量保存，会重新把 HUD/追踪带回同一故障域。
     if type(F.InvalidateSettingsCache) == "function" then F:InvalidateSettingsCache() end
+    -- 中文维护（2026-10-04）：窗口位置/折叠当场保存到 settings 小 Store；禁止触碰 HUD/追踪旧大表。
+    if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" then
+        return P:SaveStore(SETTINGS_STORE_ID, { durable=true, consumeDirty=true, reason=reason })
+    end
     return P:MarkDirty(SETTINGS_STORE_ID, tonumber(delayMs) or 300, reason or "buff_display_settings_changed")
 end
 
@@ -3100,6 +3151,30 @@ function F:IsTrackedId(id, category, scope)
         end
     end
     return false
+end
+
+-- 中文维护（buff-tracking-ux）：基础“自己/目标”开关按 scope 管理完整选择；开启时保留已有
+-- 人工类别，否则加入 Auto；关闭一次移除该 scope 的三个桶。独立于高级四通道放置，不能
+-- 借 SetTrackedChannel 的显式类别分支清另一 scope 的 Auto。仍由原 A/B manifest 单事务提交。
+function F:SetTrackedScope(id, scope, enabled)
+    id = tonumber(id)
+    if id == nil or id ~= math.floor(id) or id <= 0 or id > 2147483647 then return false, "状态 ID 无效" end
+    if scope ~= "player" and scope ~= "target" then return false, "追踪范围必须是 player 或 target" end
+    local loaded, loadErr = self:EnsureStoreLoaded()
+    if loaded ~= true then return false, loadErr end
+    if self:IsTrackedId(id, nil, scope) == (enabled == true) then return true end
+    local ok, err = self:MutateTrackingStore(function()
+        local scoped = ScopedTracked(self.State.settings, scope)
+        if enabled == true then
+            if #scoped.auto >= 1024 then return false, "该追踪通道最多 1024 个状态" end
+            scoped.auto[#scoped.auto + 1] = id; table.sort(scoped.auto)
+        else
+            for _, category in ipairs(TRACKING_CATEGORIES) do scoped[category] = RemoveId(scoped[category], id) end
+        end
+        return true
+    end, "tracked_scope_" .. scope .. "_" .. tostring(id))
+    if ok == true and S.Events and type(S.Events.Publish) == "function" then S.Events:Publish("v3.buff_display.settings", "tracked") end
+    return ok, err
 end
 
 function F:SetTrackedChannel(id, scope, category, enabled)

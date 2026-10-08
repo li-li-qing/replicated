@@ -173,6 +173,8 @@ G:RegisterSequenceCase("v3_m16_18_4_buff_display_statusmap_contract", function(r
         or type(F.Commands.GetLayoutSettingsSnapshot) ~= "function"
         or type(F.Commands.GetDefaultLayoutSettingsSnapshot) ~= "function"
         or type(F.Commands.GetHudCalibrationSnapshot) ~= "function"
+        or (tonumber(F.ScopedHudVisibilityContractVersion) or 0) < 1
+        or type(F.Commands.GetHudVisibilityProjection) ~= "function" or type(F.Commands.SetHudVisibility) ~= "function"
         or type(F.Commands.GetDefaultHudCalibrationSnapshot) ~= "function"
         or type(F.Commands.PersistHudCalibrationSnapshot) ~= "function"
         or type(F.Commands.CanPersistLayoutSettings) ~= "function"

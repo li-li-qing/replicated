@@ -279,7 +279,7 @@ function H:_CollectReportRecent(moduleId)
     return out
 end
 
-function H:RegisterProvider(moduleId, id, provider, priority)
+function H:RegisterProvider(moduleId, id, provider, priority, options)
     moduleId, id = Normalize(moduleId), Normalize(id)
     if Meta(moduleId) == nil then return false, "unknown module" end
     if id == "" or type(provider) ~= "function" then return false, "provider identity required" end
@@ -287,7 +287,10 @@ function H:RegisterProvider(moduleId, id, provider, priority)
     if type(rows) ~= "table" then rows = {}; self.providers[moduleId] = rows end
     for _, row in ipairs(rows) do if row.id == id then return false, "duplicate provider" end end
     if #rows >= PROVIDER_MAX then return false, "provider limit" end
-    rows[#rows + 1] = { id = id, fn = provider, priority = tonumber(priority) or 100 }
+    rows[#rows + 1] = { id = id, fn = provider, priority = tonumber(priority) or 100,
+        detailOnly = type(options) == 'table' and options.detailOnly == true,
+        -- 中文维护：大原始证据延后序列化；采集仍隔离一次，核心状态优先占用总文件预算。
+        detailDeferred = type(options) == 'table' and options.detailDeferred == true }
     table.sort(rows, function(a, b) if a.priority ~= b.priority then return a.priority < b.priority end return a.id < b.id end)
     return true
 end
@@ -311,12 +314,24 @@ local function RuntimeState(moduleId)
     }
 end
 
-function H:BuildReport(moduleId)
+function H:BuildReport(moduleId, options)
     moduleId = Normalize(moduleId)
     local meta = Meta(moduleId)
     if meta == nil then return nil, "unknown module: " .. tostring(moduleId) end
     local runtime = RuntimeState(moduleId)
+    local detail = type(options) == 'table' and options.detailed == true and type(S.DiagnosticDetail) == 'table'
+        and S.DiagnosticDetail:New() or nil
+    local function Render(value, path)
+        if detail then detail:Add(path or 'sample', value) end
+        return ValueText(value)
+    end
+    if detail then
+        detail:Add('environment',{lua=_VERSION,build=S.BuildTag,version=S.Version,generation=S.Generation,ready=S.Ready,bootStage=S.BootStage})
+        detail:Add('feature.metadata', meta); detail:Add('feature.runtime', runtime)
+        detail:Add('feature.lifecycle', S.FeatureRuntime and S.FeatureRuntime.state and S.FeatureRuntime.state[moduleId] or {available=false})
+    end
     local providerFailures = 0
+    local deferredDetails = {}
     local lines = {
         "RS-MODULE-DIAG-1",
         "BUILD=" .. tostring(S.BuildTag or "?"),
@@ -336,19 +351,30 @@ function H:BuildReport(moduleId)
     if runtime.initialized and type(impl) == "table" and type(impl.GetHealth) == "function" then
         local ok, value = xpcall(function() return impl:GetHealth() end, S.SafeTraceback or tostring)
         if not ok or value == nil or value == false then providerFailures = providerFailures + 1 end
-        lines[#lines + 1] = ok and ("featureHealth=" .. ValueText(value)) or ("featureHealthError=" .. Clip(value))
+        lines[#lines + 1] = ok and ("featureHealth=" .. Render(value, 'feature.health')) or ("featureHealthError=" .. Clip(value))
+        if detail and not ok then detail:Add('feature.health_error', value) end
     else
         lines[#lines + 1] = "featureHealth=not_sampled(uninitialized_or_unavailable)"
     end
 
     for _, row in ipairs(self.providers[moduleId] or {}) do
-        local ok, value, detail = xpcall(function() return row.fn(moduleId, meta) end, S.SafeTraceback or tostring)
-        if ok and value ~= false and value ~= nil then
-            lines[#lines + 1] = "provider." .. row.id .. "=" .. ValueText(value)
+        if row.detailOnly and not detail then
+            lines[#lines + 1] = 'provider.' .. row.id .. '=available_in_detailed_txt'
         else
-            providerFailures = providerFailures + 1
-            self.stats.providerFailures = (tonumber(self.stats.providerFailures) or 0) + 1
-            lines[#lines + 1] = "provider." .. row.id .. "=<failed:" .. Clip(ok and detail or value, 360) .. ">"
+            local ok, value, providerErr = xpcall(function() return row.fn(moduleId, meta) end, S.SafeTraceback or tostring)
+            if ok and value ~= false and value ~= nil then
+                if row.detailOnly then
+                    if row.detailDeferred then deferredDetails[#deferredDetails+1]={label='provider.'..row.id,value=value}
+                    else detail:Add('provider.' .. row.id, value) end
+                    lines[#lines + 1] = 'provider.' .. row.id .. '=included_in_detailed_txt'
+                else lines[#lines + 1] = 'provider.' .. row.id .. '=' .. Render(value, 'provider.' .. row.id) end
+            else
+                providerFailures = providerFailures + 1
+                self.stats.providerFailures = (tonumber(self.stats.providerFailures) or 0) + 1
+                local failure = ok and providerErr or value
+                lines[#lines + 1] = 'provider.' .. row.id .. '=<failed:' .. Clip(failure, 360) .. '>'
+                Render({available=false,error=failure}, 'provider.' .. row.id .. '.failure')
+            end
         end
     end
 
@@ -358,7 +384,7 @@ function H:BuildReport(moduleId)
     local copyWindow = S.UIV3 and S.UIV3.ModuleDiagnosticsWindowV3
     if type(copyWindow) == "table" and copyWindow.moduleId == moduleId and type(copyWindow.Describe) == "function" then
         local ok, value = pcall(copyWindow.Describe, copyWindow)
-        if ok and type(value) == "table" then lines[#lines + 1] = ValueText(value)
+        if ok and type(value) == "table" then lines[#lines + 1] = Render(value, 'ui.copy')
         else
             providerFailures = providerFailures + 1
             lines[#lines + 1] = "copyProbeError=" .. Clip(value, 360)
@@ -380,7 +406,7 @@ function H:BuildReport(moduleId)
             local widgetSpec=widgetHost.specs[id]
             if widgetSpec and (widgetSpec.featureId==moduleId or moduleId=="system_diagnostics") then
                 local ok,value=pcall(function()return widgetHost:GetPlacementDiagnostics(id)end)
-                lines[#lines+1]="widget."..tostring(id).."="..(ok and ValueText(value) or ("<failed:"..Clip(value)..">"))
+                lines[#lines+1]="widget."..tostring(id).."="..(ok and Render(value, 'ui.widget.' .. tostring(id)) or ("<failed:"..Clip(value)..">"))
                 if not ok then providerFailures=providerFailures+1 end
                 windowCount=windowCount+1
             end
@@ -390,7 +416,7 @@ function H:BuildReport(moduleId)
         local main=S.UIV3 and S.UIV3.Shell
         if main and type(main.GetPlacementDiagnostics)=="function" then
             local ok,value=pcall(function()return main:GetPlacementDiagnostics()end)
-            lines[#lines+1]="main="..(ok and ValueText(value) or ("<failed:"..Clip(value)..">"))
+            lines[#lines+1]="main="..(ok and Render(value, 'ui.main') or ("<failed:"..Clip(value)..">"))
             if not ok then providerFailures=providerFailures+1 end
         end
         local registry=S.Layout and S.Layout.floatingRegistry or {}
@@ -399,19 +425,20 @@ function H:BuildReport(moduleId)
             local item=registry[id]
             if item and item.options and type(item.options.getPlacementDiagnostics)=="function" then
                 local ok,value=pcall(item.options.getPlacementDiagnostics)
-                lines[#lines+1]="aux."..tostring(id).."="..(ok and ValueText(value) or ("<failed:"..Clip(value)..">"))
+                lines[#lines+1]="aux."..tostring(id).."="..(ok and Render(value, 'ui.aux.' .. tostring(id)) or ("<failed:"..Clip(value)..">"))
                 if not ok then providerFailures=providerFailures+1 end
             end
             if item and item.lastRevalidateError then lines[#lines+1]="revalidate."..tostring(id).."="..Clip(item.lastRevalidateError) end
         end
-        if S.Layout then lines[#lines+1]="metricsNotifications="..ValueText(S.Layout.metricsNotifications) end
+        if S.Layout then lines[#lines+1]="metricsNotifications="..Render(S.Layout.metricsNotifications, 'ui.metricsNotifications') end
         local launcher=S.UIV3 and S.UIV3.LauncherPlacementInfo
-        if launcher then lines[#lines+1]="launcher.lastPlacement="..ValueText(launcher) end
+        if launcher then lines[#lines+1]="launcher.lastPlacement="..Render(launcher, 'ui.launcher') end
     end
     if windowCount==0 then lines[#lines+1]="widgets=none_registered_for_module" end
 
     lines[#lines + 1] = "[MODULE_ERRORS]"
     local recent = self:_CollectReportRecent(moduleId)
+    if detail then detail:Add('errors.retained', recent) end
     if #recent == 0 then lines[#lines + 1] = "none" end
     for _, row in ipairs(recent) do
         lines[#lines + 1] = string.format("#%s %s/%s %s%s", tostring(row.seq or "?"), tostring(row.level or "?"),
@@ -513,11 +540,47 @@ function H:BuildReport(moduleId)
         .. " warnings=" .. tostring(warnings) .. " stores=" .. tostring(storeCount)
         .. " collection=" .. (providerFailures > 0 and "INCOMPLETE" or "captured_available_sources")
     lines[#lines + 1] = "RS-MODULE-DIAG-END"
-    return table.concat(lines, "\n")
+    local report = table.concat(lines, "\n")
+    if detail then
+        detail:Add('feature.cachedState', type(impl)=='table' and impl.State or {available=false})
+        detail:Add('feature.preferences', type(impl)=='table' and impl.Preferences or {available=false})
+        local stores = {}
+        for _, row in ipairs(type(describe)=='table' and describe.rows or {}) do
+            if self:_StoreBelongs(moduleId, row) then stores[#stores+1]=row end
+        end
+        detail:Add('persistence.ownedStores', stores)
+        detail:Add('ui.controlActions', type(controlBar)=='table' and controlBar.actionMetrics or {available=false})
+        detail:Add('ui.preferenceStore', type(preferenceStore)=='table' and {
+            id=preferenceStore.id, loaded=preferenceStore.loaded, loadStatus=preferenceStore.loadStatus,
+            writeFenced=preferenceStore.writeFenced, writeFenceReason=preferenceStore.writeFenceReason,
+            lastError=preferenceStore.lastError, lastIntegrityMismatchEvidence=preferenceStore.lastIntegrityMismatchEvidence } or {available=false})
+        detail:Add('retention.module', counters)
+        local capabilities = {}
+        for _, name in ipairs(type(meta.apiDependencies)=='table' and meta.apiDependencies or {}) do
+            if type(name)=='string' then capabilities[name]=S.ApiCapabilities and S.ApiCapabilities.records
+                and S.ApiCapabilities.records[name] or {available=false,reason='capability_record_not_registered'} end
+        end
+        detail:Add('native.declaredCapabilities', capabilities)
+        local tasks = {}
+        if S.Scheduler and type(S.Scheduler.GetTaskState)=='function' then
+            for name, owner in pairs(S.Scheduler.taskModules or {}) do
+                if owner==moduleId then
+                    local ok,value=pcall(S.Scheduler.GetTaskState,S.Scheduler,name)
+                    tasks[name]=ok and value or {available=false,error=tostring(value)}
+                end
+            end
+        end
+        detail:Add('scheduler.ownedTasks', tasks)
+        -- 中文维护：所有核心来源先写；原始挂单超限仍明确 OMITTED，不提高一 MiB 传输上限。
+        for _,source in ipairs(deferredDetails) do detail:Add(source.label,source.value) end
+        local exportReport, detailMeta = detail:Finish(report)
+        return report, nil, exportReport, detailMeta
+    end
+    return report
 end
 
 function H:Capture(moduleId, capacity)
-    local report, err = self:BuildReport(moduleId)
+    local report, err, exportReport, detailMeta = self:BuildReport(moduleId, {detailed=true})
     if report == nil then return nil, err end
     local transport = S.ReportCopyTransport
     if type(transport) ~= "table" or type(transport.BuildTextPages) ~= "function" then return nil, "report paging unavailable" end
@@ -526,7 +589,8 @@ function H:Capture(moduleId, capacity)
     local session, pageErr = transport:BuildTextPages(report, tonumber(capacity) or 3500, id)
     if session == nil then return nil, pageErr end
     self.stats.captures = (tonumber(self.stats.captures) or 0) + 1
-    return { version = 1, id = id, moduleId = Normalize(moduleId), report = report, session = session,
+    return { version = 1, id = id, moduleId = Normalize(moduleId), report = report, exportReport = exportReport or report,
+        detail = detailMeta, session = session,
         parts = tonumber(session.parts) or 1, capturedAt = type(S.NowMs) == "function" and S.NowMs() or 0 }
 end
 
@@ -541,7 +605,8 @@ function H:Repage(snapshot, capacity)
     local session, err = transport:BuildTextPages(snapshot.report, capacity, id)
     if session == nil then return nil, err end
     return { version = snapshot.version, id = id, baseId = baseId, pageRevision = revision, moduleId = snapshot.moduleId,
-        report = snapshot.report, capturedAt = snapshot.capturedAt, session = session, parts = session.parts }
+        report = snapshot.report, exportReport = snapshot.exportReport, detail = snapshot.detail,
+        capturedAt = snapshot.capturedAt, session = session, parts = session.parts }
 end
 
 function H:GetPage(snapshot, index)

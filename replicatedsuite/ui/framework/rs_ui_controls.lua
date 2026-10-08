@@ -1094,6 +1094,23 @@ function PopupCoordinator:CloseAll(except)
     return closed
 end
 
+-- 中文维护（外部点击收起弹层）：普通按钮/输入事件也要结束其它弹层的交互所有权。
+-- 下拉选项、颜色预设/应用按钮属于弹层自身，沿逻辑父链识别，不能提前取消它们的草稿。
+-- 仅现有OnClick边调用，无全局鼠标钩子/轮询/新增Native事件。
+function PopupCoordinator:BeforeComponentClick(component)
+    local ancestors,guard={},0
+    local current=component
+    while type(current)=="table" and guard<64 and not ancestors[current] do
+        ancestors[current]=true;guard=guard+1;current=current.parentComponent
+    end
+    local except
+    for popup in pairs(self.instances)do
+        if ancestors[popup] or popup.popupBody and ancestors[popup.popupBody] then except=popup;break end
+    end
+    return self:CloseAll(except)
+end
+RSUI.PopupOutsideComponentClickContractVersion=1
+
 local function DropdownFindValue(items, value)
     if value == nil then return nil end
     for index, item in ipairs(type(items) == "table" and items or {}) do

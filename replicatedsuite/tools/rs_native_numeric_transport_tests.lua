@@ -204,8 +204,8 @@ Test('v3 rejects unwrapped fractional Native value and unknown future transport'
         local out,err=P:DecodePhysicalEnvelope({__rsmeta={framework=3,transportVersion=3},payload={v=v}})
         assert(out==nil and err=='transport_native_number_v3',err)
     end
-    assert(P:DecodePhysicalEnvelope({__rsmeta={framework=3,transportVersion=6},payload={}})==nil)
-    assert(P:EncodePhysicalEnvelope({__rsmeta={framework=3,transportVersion=6},payload={}})==nil)
+    assert(P:DecodePhysicalEnvelope({__rsmeta={framework=3,transportVersion=7},payload={}})==nil)
+    assert(P:EncodePhysicalEnvelope({__rsmeta={framework=3,transportVersion=7},payload={}})==nil)
 end)
 Test('physical string budget expansion refuses write instead of truncating numeric tokens',function()
     local _,P,io=Boot();local st=P:RegisterV3Store({id='v3.test.numeric.budget',owner='v3.test',scope=P.Scope.Account,

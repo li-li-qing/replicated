@@ -38,6 +38,7 @@ local function Boot()
     end
     function S.ReportCopyTransport:GetTextPage(session,index)return session.pages[index] end
     dofile('core/rs_diagnostics.lua')
+    dofile('core/rs_diagnostic_detail.lua')
     dofile('core/rs_module_diagnostics.lua')
     return S
 end
@@ -133,6 +134,39 @@ Test('copy diagnostic sampling failure does not destroy remaining report',functi
     local S=Boot();S.UIV3={ModuleDiagnosticsWindowV3={moduleId='feature_a',Describe=function()error('copy_probe_failure')end}}
     local text=assert(S.ModuleDiagnosticsHub:BuildReport('feature_a'))
     assert(text:find('copy_probe_failure',1,true) and text:find('RS-MODULE-DIAG-END',1,true),'failure not isolated')
+end)
+Test('file detail preserves deep large provider tail once and remains frozen when repaged',function()
+ local S=Boot();local H=S.ModuleDiagnosticsHub;local calls=0
+ local payload={rows={}};for i=1,80 do payload.rows[i]={nested={deeper={reason='tail_'..i}},text=string.rep('中',900)}end
+ assert(H:RegisterProvider('feature_a','large',function()calls=calls+1;return payload end))
+ local snap=assert(H:Capture('feature_a',900));assert(calls==1)
+ assert(type(snap.exportReport)=='string' and snap.exportReport:find('tail_80',1,true))
+ assert(snap.exportReport:find('RS-DIAGNOSTIC-DETAIL-1',1,true))
+ payload.rows[80].nested.deeper.reason='CHANGED_LIVE';local re=assert(H:Repage(snap,700))
+ assert(re.exportReport==snap.exportReport and calls==1);assert(not re.exportReport:find('CHANGED_LIVE',1,true))
+end)
+Test('detail-only provider is isolated from summary and its failure preserves other file sources',function()
+ local S=Boot();local H=S.ModuleDiagnosticsHub;local calls=0
+ assert(H:RegisterProvider('feature_a','detail_only',function()calls=calls+1;error('DETAIL_FAIL')end,100,{detailOnly=true}))
+ local summary=assert(H:BuildReport('feature_a'));assert(calls==0 and not summary:find('DETAIL_FAIL',1,true))
+ assert(H:RegisterProvider('feature_a','healthy',function()return {proof='SURVIVING_PROOF'}end))
+ local snap=assert(H:Capture('feature_a',900));assert(calls==1)
+ assert(snap.exportReport:find('DETAIL_FAIL',1,true) and snap.exportReport:find('SURVIVING_PROOF',1,true))
+ assert(snap.exportReport:find('feature.metadata',1,true) and snap.exportReport:find('persistence',1,true))
+end)
+Test('detail writer bounds cyclic oversized values and reports exact omission paths',function()
+ local S=Boot();local w=S.DiagnosticDetail:New({totalBytes=14000,sourceBytes=10000,nodes=20,stringBytes=160})
+ local v={long=string.rep('中文',1000),rows={}};v.self=v;for i=1,80 do v.rows[i]={id=i}end
+ w:Add('cyclic',v);w:Add('last_source',{proof='LAST_PROOF'})
+ local text,meta=w:Finish('HEADER')
+ assert(#text<=14000 and meta.partial==true)
+ assert(text:find('OMITTED',1,true) and text:find('cyclic',1,true) and text:find('LAST_PROOF',1,true))
+ local copy=S.DiagnosticDetail:Detach(v,{nodes=20,stringBytes=160})
+ assert(copy~=v and copy.rows~=v.rows and copy.__diagnosticOmitted=='node_limit')
+ local cyclic={};cyclic.self=cyclic;assert(S.DiagnosticDetail:Detach(cyclic).self=='<cycle>')
+ local native=setmetatable({broken=string.char(228,184)}, {__tostring=function()error('native_object_was_touched')end})
+ w=S.DiagnosticDetail:New();w:Add('native',native);text=w:Finish('HEADER '..string.char(228,184)..'\n')
+ assert(text:find('\\xE4\\xB8',1,true) and not text:find(string.char(228,184)..'"',1,true))
 end)
 print('MODULE DIAGNOSTICS RESULT '..passed..' passed / '..failed..' failed ('.._VERSION..')')
 if failed>0 then error('module diagnostics failures: '..failed)end

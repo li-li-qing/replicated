@@ -20,7 +20,7 @@ local function Boot(options)
     dofile('replicatedsuite.lua');local S=ReplicatedSuite;S.RSUI={};S.UI={}
     dofile('core/rs_utils.lua');dofile('core/rs_reuse.lua');dofile('core/rs_api.lua');dofile('core/rs_api_capabilities.lua')
     if options.early then S.RecordLog('error','bootstrap','EARLY_BOOT_FAILURE') end
-    dofile('core/rs_diagnostics.lua');dofile('core/rs_report_copy_transport.lua')
+    dofile('core/rs_diagnostics.lua');dofile('core/rs_diagnostic_detail.lua');dofile('core/rs_report_copy_transport.lua')
     local load=loadfile('core/rs_self_check_report.lua');if load then load() end
     local D=S.DiagnosticsManager
     S.BuildTag='v3-m1.16.0.18.208-test';S.Ready=true
@@ -70,7 +70,8 @@ end
 Test('diagnostics has run print and explicitly requested previous next actions',function()
     local S,D=Boot();local root,h=Page(S);local buttons={}
     for _,v in pairs(h.widgets)do if v.onClick then buttons[#buttons+1]=v.spec.text end end
-    table.sort(buttons);assert(#buttons==5,'visible action count='..#buttons)
+    table.sort(buttons);assert(#buttons==6,'visible action count='..#buttons)
+    assert(h.widgets.v3_diag_export_file.spec.text=='导出文件','explicit file export action missing')
     assert(h.widgets.v3_diag_output.spec.text=='打印故障报告' and h.widgets.v3_diag_output_full.spec.text=='完整报告' and h.widgets.v3_diag_full_check.spec.text=='运行自检')
     assert(h.widgets.v3_diag_report_prev.spec.text=='上一页' and h.widgets.v3_diag_report_next.spec.text=='下一页')
 end)
@@ -307,6 +308,55 @@ Test('malformed UTF8 from an older truncated log is byte-escaped for clipboard t
     local text=assert(D:BuildSelfCheckReport())
     assert(not text:find(string.char(228,184)..' tail',1,true),'invalid UTF8 leaked to Native clipboard')
     assert(text:find('\\xE4\\xB8',1,true),'original malformed bytes not explained')
+end)
+Test('TXT exports full frozen selfcheck values and never repeats provider or native evidence reads',function()
+ local S,D,io=Boot();Ready(D);local count=0
+ S.Runtime.Describe=function()count=count+1;return {deep={nested={proof='FULL_PROVIDER_PROOF'}},large=string.rep('中',6000)}end
+ local root,h=Page(S);assert(h.widgets.v3_diag_output_full.onClick())
+ local checks,reads=io.checks,0;for _,n in pairs(io.reads)do reads=reads+n end
+ local received;D.ExportReport=function(_,text)received=text;return true,'saved' end
+ assert(h.widgets.v3_diag_export_file.onClick())
+ assert(received==root.selfCheckMeta.exportReport and received:find('RS-DIAGNOSTIC-DETAIL-1',1,true))
+ assert(received:find('FULL_PROVIDER_PROOF',1,true));assert(count==1 and io.checks==checks)
+ local after=0;for _,n in pairs(io.reads)do after=after+n end;assert(after==reads)
+ assert(#received<=1048576)
+end)
+Test('paged full report retains cached performance/task/input/potion evidence without polling or timing',function()
+ local S,D=Boot();Ready(D);local sampled=0
+ S.PerformanceMonitor={Snapshot=function()return {lastFrameMs=16,maxFrameMs=87,timerAvailable=true,top={{label='task:fixture',calls=19,totalMs=0}}}end,
+  StartCapture=function()error('report must not start capture')end}
+ S.Scheduler={tasks={fixture={callback=function()error('must not execute')end}},DescribeBacklog=function()return {pending=1}end,
+  GetTaskState=function(_,name)assert(name=='fixture');return {name=name,intervalMs=2000,runCount=19}end}
+ S.UI.GetFrameworkSnapshot=function()return {lifecycle={focusClears=3,armedInputs=0},nativeCalls=17}end
+ LCotPotionSignal={generation=2,running=true,enabled=true,panelOpen=false,now=3000,bagScanAt=2000,
+  signalVisible=false,rows={{itemId=42043,slot=1,stock=4}},Sample=function()sampled=sampled+1;error('must not poll')end}
+ local root,h=Page(S);assert(h.widgets.v3_diag_output_full.onClick())
+ local text=assert(root.selfCheckMeta.exportReport)
+ assert(text:find('[PERFORMANCE]',1,true) and text:find('maxFrameMs=87',1,true))
+ assert(text:find('[SCHEDULER_TASK:fixture]',1,true) and text:find('intervalMs=2000',1,true))
+ assert(text:find('[UI_INPUT_AND_WRITES]',1,true) and text:find('focusClears=3',1,true))
+ assert(text:find('[LCOT_POTION_RUNTIME]',1,true) and text:find('bagScanAt=2000',1,true))
+ assert(text:find('callbackTimingCaptured=false',1,true) and sampled==0)
+ LCotPotionSignal=nil
+end)
+Test('runtime evidence remains available without an independent potion addon or native timer',function()
+ local S,D=Boot();LCotPotionSignal=nil
+ S.PerformanceMonitor={Snapshot=function()return {timerAvailable=false,timerName='unavailable'}end}
+ local text=assert(D:BuildSelfCheckReport())
+ assert(text:find('[PERFORMANCE]',1,true) and text:find('timerAvailable=false',1,true))
+ assert(text:find('[LCOT_POTION_RUNTIME]',1,true) and text:find('present=false',1,true))
+ assert(text:find('callbackTimingCaptured=false',1,true))
+end)
+Test('runtime task evidence is bounded and a failed timer provider does not hide other evidence',function()
+ local S,D=Boot();local reads=0
+ S.PerformanceMonitor={Snapshot=function()error('TIMER_PROVIDER_FAILED')end}
+ S.Scheduler={tasks={},DescribeBacklog=function()return {pending=0}end,
+  GetTaskState=function(_,name)reads=reads+1;return {name=name,registered=true}end}
+ for index=1,129 do S.Scheduler.tasks[string.format('fixture_%03d',index)]={}end
+ local text,meta=D:BuildPagedSelfCheckReport()
+ assert(type(text)=='string' and meta.partial==true and meta.providersFailed==1)
+ assert(reads==128 and text:find('[SCHEDULER_TASK_COVERAGE]',1,true) and text:find('omitted=1',1,true))
+ assert(text:find('TIMER_PROVIDER_FAILED',1,true) and text:find('FEATURE_FAILURE',1,true))
 end)
 print('SELF CHECK RESULT '..passed..' passed / '..failed..' failed ('.._VERSION..'); Native simulated')
 assert(failed==0,'self-check regression failures')

@@ -118,11 +118,16 @@ function P:MakePanel(id)
     local calibrationBg = NewColorDrawable(root, "artwork")
     local borders = { NewColorDrawable(root,"overlay"), NewColorDrawable(root,"overlay"), NewColorDrawable(root,"overlay"), NewColorDrawable(root,"overlay") }
     local title = S.UI:CreateLabel(root, "v3_healer_raid_title_" .. tostring(id), "队伍面板 " .. tostring(id), 5, 2, 180, 18, 10, "strong", "LEFT", true)
+    if S.Theme and S.Theme.SetWorldTextPalette then S.Theme:SetWorldTextPalette(title) end
     local slots, ranks, calibrationLabels = {}, {}, {}
     for localIndex = 1, SLOTS_PER_PANEL do
         slots[localIndex] = NewColorDrawable(root, "overlay")
         ranks[localIndex] = S.UI:CreateLabel(root, "v3_healer_raid_rank_" .. tostring(id) .. "_" .. tostring(localIndex), "", 0, 0, 24, 14, 10, "strong", "CENTER", true)
         calibrationLabels[localIndex] = S.UI:CreateLabel(root, "v3_healer_raid_cal_" .. tostring(id) .. "_" .. tostring(localIndex), tostring(localIndex), 0, 0, 24, 14, 8, "muted", "CENTER", false)
+        if S.Theme and S.Theme.SetWorldTextPalette then
+            S.Theme:SetWorldTextPalette(ranks[localIndex]);S.Theme:SetWorldTextPalette(calibrationLabels[localIndex])
+        end
+        if ranks[localIndex] then ranks[localIndex].rsManualTextColor=true end -- 数字 alpha 由治疗 HUD 用户配置所有。
         if slots[localIndex] == nil or ranks[localIndex] == nil or calibrationLabels[localIndex] == nil then
             S.UI:SetVisible(root, false, P.owner)
             return nil, "raid_overlay_child_create_failed"

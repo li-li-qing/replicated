@@ -92,6 +92,8 @@ dofile("core/rs_constants.lua")
 dofile("core/rs_foundation_gate.lua")
 dofile("features/rs_feature_registry.lua")
 dofile("services/rs_price_quote_queue_v3.lua")
+dofile("services/rs_material_price_service_v3.lua")
+dofile("services/rs_trade_material_quote_service_v3.lua")
 dofile("services/rs_trade_payout_v3.lua")
 dofile("services/rs_trade_material_identity_v3.lua")
 dofile("services/rs_auction_session_list_v3.lua")
@@ -251,11 +253,11 @@ Test("T1: Feature registry metadata & contract", function()
     assert(reg.lifecycle == "demand_scoped_with_background_refresh", "lifecycle must expose demand-scoped page resources plus background auto-refresh")
     assert(reg.widgetCapable == true, "widgetCapable must be true")
     assert(reg.settingsCapable == true, "settingsCapable must be true")
-    assert(#reg.apiDependencies == 14, "must declare all 14 direct/transitive Native dependencies")
+    assert(#reg.apiDependencies == 15, "must own the 14 existing dependencies plus total-count coverage verification")
     local required = {
         "X2Craft:GetCraftTypeByItemType", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo",
         "X2Auction:AskMarketPrice", "X2Auction:GetLowestPrice", "X2Auction:SearchAuctionArticle",
-        "X2Auction:GetSearchedItemCount", "X2Auction:GetSearchedItemInfo",
+        "X2Auction:GetSearchedItemCount", "X2Auction:GetSearchedItemTotalCount", "X2Auction:GetSearchedItemInfo",
     }
     local registryDeps, implementationDeps = {}, {}
     for _, name in ipairs(reg.apiDependencies or {}) do registryDeps[name] = true end
@@ -581,9 +583,11 @@ Test("T7: Material projection, recipe resolution & bounded display", function()
 
     local mockRatioInfo = {
         {
-            name = "Solzreed Luxury Specialty",
+            -- 中文维护注释（2026-10-02）：此处来源选的是地区 1，必须用真实 Gweonid 产品，
+            -- 原用地区 5 的 Solzreed 导致材料验证依赖错误的跨区接受，并可能空循环假通过。
+            name = "Gweonid Commercial Specialty",
             ratio = 120,
-            itemInfo = { name = "Solzreed Luxury Specialty", itemType = 31857 },
+            itemInfo = { name = "Gweonid Commercial Specialty", itemType = 31854 },
         },
     }
     assert(TA:OnRatio(mockRatioInfo))
@@ -593,6 +597,7 @@ Test("T7: Material projection, recipe resolution & bounded display", function()
     assert(row ~= nil, "Must have a row")
     assert(type(row.materials) == "string", "materials summary text must be present")
     assert(type(row.materialRows) == "table", "materialRows table must exist")
+    assert(#row.materialRows == 2 and row.identityStatus == "resolved", "real recipe must resolve before checking material rows")
     assert(row.materialLimit == 32, "Material rows limit must be 32")
 
     for _, mat in ipairs(row.materialRows) do
@@ -717,9 +722,10 @@ Test("T10: HUD widget, Floating Detail & FoundationGate / Acceptance verificatio
 
     local mockRatioInfo = {
         {
-            name = "Solzreed Luxury Specialty",
+            -- 中文维护注释：与 T7 同源，地区 1 的回执用真实地区 1 商品，不能依赖串区材料。
+            name = "Gweonid Commercial Specialty",
             ratio = 120,
-            itemInfo = { name = "Solzreed Luxury Specialty", itemType = 31857 },
+            itemInfo = { name = "Gweonid Commercial Specialty", itemType = 31854 },
         },
     }
     assert(TA:OnRatio(mockRatioInfo))

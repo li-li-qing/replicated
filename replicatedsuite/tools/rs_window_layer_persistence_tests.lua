@@ -14,11 +14,13 @@ local function ShellHost(initialTopmost)
     S.PhysicalId = function(value) return tostring(value) end
     UIParent = h.Native(nil, "UIParent", 0, 0, 1280, 768)
     local poison = { x = 901, y = 902, w = 903, h = 904 }
-    S.Layout = {
-        GetContext = function() return { logicalWidth=1280, logicalHeight=768, safeLeft=0, safeTop=0, safeRight=0, safeBottom=0, addonScale=1, uiScale=1, usableWidth=1280, usableHeight=768 } end,
-        GetLogicalRect = function() return poison.x, poison.y, poison.w, poison.h end,
-        ClampRecoverableTopLeft = function(_, x, y) return x, y end,
-    }
+    -- 2026-10-07：当前 WindowShell 初始化已有 StorePlacementRect/ResolvePlacement 合同。
+    -- 原宿主少了这两个方法；使用真实 Layout，仅固定视口并保留“禁止几何回读”的毒值。
+    dofile("data/rs_data_registry.lua");dofile("data/rs_static_data_v2.lua")
+    dofile("data/ids/rs_item_ids.lua");dofile("data/ids/rs_quest_ids.lua");dofile("core/rs_constants.lua")
+    dofile("core/rs_layout.lua")
+    S.Layout.GetContext = function() return { logicalWidth=1280, logicalHeight=768, safeLeft=0, safeTop=0, safeRight=0, safeBottom=0, addonScale=1, uiScale=1, usableWidth=1280, usableHeight=768 } end
+    S.Layout.GetLogicalRect = function() return poison.x, poison.y, poison.w, poison.h end
     S.NativeObjectFactory = { CreateWindow = function(_, id)
         local n = h.Native(UIParent, id, 0, 0, 1, 1)
         function n:SetUILayer(v) self.layer=v; return true end

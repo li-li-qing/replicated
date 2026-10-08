@@ -128,15 +128,13 @@ local CRAFT_STATUS_ZH = {
     opaque = "字段待核", partial = "部分可用", unavailable = "不可用", resolved = "已匹配",
     missing = "字段不完整", idle = "等待选择",
 }
-local CRAFT_ZONE_ZH = {
-    [1]="格威尔森林", [2]="玛瑞诺普", [3]="碎石平原", [4]="黎明半岛", [5]="索兹里德半岛",
-    [6]="黎利尔丘陵", [7]="彩虹荒野", [8]="双冠丘陵", [9]="摩哈特比", [10]="空气之原",
-    [11]="猎鹰高原", [12]="咏唱之地", [13]="烈日峡谷", [14]="风刃废墟", [15]="棋盘石林",
-    [16]="洛卡棋盘", [17]="伊尼斯泰尔", [18]="白雪森林", [19]="埋骨之地", [20]="十字星平原",
-    [21]="珊瑚海岸北部", [22]="黄金平原", [23]="翡翠谷", [24]="虎脊山脉", [25]="古代森林",
-    [26]="地狱沼泽", [27]="珊瑚海岸", [54]="墟境之口", [56]="煦日之野", [57]="黄金废墟",
-    [93]="安息之地", [99]="洛卡山脉", [102]="海之烛台", [103]="鲸鱼歌湾",
-}
+-- 中文维护注释（2026-10-02）：制作下拉框/当前制作物与拍卖日常共用唯一 Zone 名称 Authority。
+-- 此处曾复制同一份错误中文映射，修共享表后仍会把 Perinoor 显示成棋盘；禁止再次内置地区表。
+local function CraftZoneName(zoneId)
+    local zones = S.GameIds and S.GameIds.Zone and S.GameIds.Zone.ById
+    local zone = type(zones) == "table" and zones[tonumber(zoneId)] or nil
+    return type(zone) == "table" and type(zone.nameZh) == "string" and zone.nameZh ~= "" and zone.nameZh or "已核地区"
+end
 local function CraftStatusText(value) return CRAFT_STATUS_ZH[tostring(value or "")] or tostring(value or "未知") end
 local function CraftItemName(itemType, nativeName)
     local id = tonumber(itemType)
@@ -163,7 +161,7 @@ local function CraftRecipeOptions()
         for _, record in ipairs(static:List("trade_recipe")) do
             local craftId = tonumber(record and record.craftId)
             if craftId ~= nil and type(record.key)=="string" then
-                local zone = CRAFT_ZONE_ZH[tonumber(record.originZoneId)] or "已核地区"
+                local zone = CraftZoneName(record.originZoneId)
                 rows[#rows+1] = { value=record.key, text=zone .. " · " .. CraftFamilyLabel(record), craftId=math.floor(craftId) }
             end
         end
@@ -502,7 +500,7 @@ local function CraftRead(feature)
         feature.CraftProjection = { context = resolution, recipes = {}, source = resolution.source, status = resolution.status, error = resolution.error }
         return rows, resolution.status == "empty" and "empty" or "unavailable", resolution.error
     end
-    rows[#rows + 1] = { key = "craft:resolution", name = "当前制作物", text = selectedRecipe ~= nil and ((CRAFT_ZONE_ZH[tonumber(selectedRecipe.originZoneId)] or "已核地区") .. " · " .. CraftFamilyLabel(selectedRecipe)) or "已读取当前制作上下文", statusText = "已匹配", tone = "default", source = resolution.source, itemType = resolution.itemType, craftTypes = Copy(craftTypes) }
+    rows[#rows + 1] = { key = "craft:resolution", name = "当前制作物", text = selectedRecipe ~= nil and (CraftZoneName(selectedRecipe.originZoneId) .. " · " .. CraftFamilyLabel(selectedRecipe)) or "已读取当前制作上下文", statusText = "已匹配", tone = "default", source = resolution.source, itemType = resolution.itemType, craftTypes = Copy(craftTypes) }
     local anyReadable, anyReady, errors = false, false, {}
     local held, bagDiagnostics = CraftHeldCounts()
     local doodadId = feature.State.doodadId == nil and 0 or CraftInteger(feature.State.doodadId, true)

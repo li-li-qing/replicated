@@ -13,22 +13,16 @@ local function Build()
     S.FeatureRuntime.IsEnabled=function() return false end
     local ui=dofile('tools/rs_status_ui_test_host.lua')(S)
     local page=assert(ui:Build());assert(page:Refresh())
+    page.managementView='live';assert(page:Refresh())
     return S,F,ui,page
 end
-Test('main list activation only selects and four buttons toggle independent channels',function()
-    local S,F,ui,page=Build()
-    local tableView=assert(ui.widgets.v3_buff_display_tracking_table);local row=assert(tableView.items[1])
-    assert(tableView.spec.onItemActivated(row))
-    assert(page.selectedManagementRow and page.selectedManagementRow.id==21,'row not selected')
-    assert(not F:IsTrackedChannel(21,'player','buff') and not F:IsTrackedChannel(21,'target','buff'),'selection mutated tracking')
-    for _,id in ipairs({'v3_buff_track_player_buff','v3_buff_track_player_debuff','v3_buff_track_target_buff','v3_buff_track_target_debuff'}) do assert(ui.widgets[id],id..' missing') end
-    local targetButton=ui.widgets.v3_buff_track_target_buff
-    assert(targetButton.onClick())
-    assert(F:IsTrackedChannel(21,'target','buff') and not F:IsTrackedChannel(21,'player','buff'),'target-only toggle leaked to self')
-    assert(targetButton.text=='所选取消目标 Buff' or (type(targetButton.GetText)=='function' and targetButton:GetText()=='所选取消目标 Buff'),'tracked target buff did not expose cancel action')
-    assert(targetButton.onClick())
-    assert(not F:IsTrackedChannel(21,'target','buff'),'second click did not remove target channel')
-    assert(targetButton.text=='所选设为目标 Buff' or (type(targetButton.GetText)=='function' and targetButton:GetText()=='所选设为目标 Buff'),'removed target buff did not restore set action')
+Test('list activation only selects and four inline buttons independently toggle',function()
+    local S,F,ui,page=Build();local view=ui.widgets.v3_buff_display_tracking_table;local row=view.items[1];assert(view.spec.onItemActivated(row))
+    assert(page.selectedManagementRow.id==21 and not F:IsTrackedId(21),'selection mutated tracking')
+    local columns={};for _,c in ipairs(view.spec.columns)do columns[c.id]=c end
+    for _,id in ipairs({'player_buff','player_debuff','target_buff','target_debuff'})do assert(columns[id].cellType=='button')end
+    local target=columns.target_buff;assert(target.onClick(row));assert(F:IsTrackedPlacement(21,'target','buff') and not F:IsTrackedPlacement(21,'player','buff'))
+    assert(target.getTone(row)=='green');assert(target.onClick(row));assert(not F:IsTrackedPlacement(21,'target','buff') and target.getTone(row)=='red')
 end)
 Test('library row activation selects without importing or toggling tracking',function()
     local S,F,ui,page=Build();page:SwitchTab('library');assert(page:RefreshLibrary())
@@ -36,31 +30,24 @@ Test('library row activation selects without importing or toggling tracking',fun
     assert(t.spec.onItemActivated(row));assert(page.selectedManagementRow and page.selectedManagementRow.id==id)
     assert(not F:IsTrackedId(id),'library row activation changed persistent tracking')
 end)
-Test('tracking column is wide enough for multi-channel labels',function()
-    local S,F,ui=Build();local cols=ui.widgets.v3_buff_display_tracking_table.spec.columns;local width
-    for _,c in ipairs(cols) do if c.id=='tracked' then width=c.width end end
-    assert((width or 0)>=150,'tracked column still sized for yes/no text')
+Test('four tracking placements have dedicated readable columns',function()
+    local S,F,ui=Build();local columns={};for _,c in ipairs(ui.widgets.v3_buff_display_tracking_table.spec.columns)do columns[c.id]=c end
+    for _,id in ipairs({'player_buff','player_debuff','target_buff','target_debuff'})do assert(columns[id] and columns[id].width>=56 and columns[id].cellType=='button')end
+    assert(not columns.cancel,'redundant global cancellation remains')
 end)
-Test('quick import exposes self target both scope selector and respects target-only choice',function()
+Test('simple share import preserves encoded target-only scope without extra selectors',function()
     local S,F,ui,page=Build();page:SwitchTab('transfer')
-    local scope=assert(ui.widgets.v3_buff_display_transfer_scope,'scope selector missing')
-    assert(scope.spec.set('target'));page.quickText='21';ui.widgets.v3_buff_display_transfer_quick_input.value='21'
-    assert(ui.widgets.v3_buff_display_transfer_quick_import.onClick())
-    assert(F:IsTrackedChannel(21,'target','auto') and not F:IsTrackedChannel(21,'player','auto'),'quick import scope ignored')
-    page:RefreshTransferStatus();local text=ui.widgets.v3_buff_display_transfer_status.text
-    assert(text:find('自身',1,true) and text:find('目标',1,true),'scoped counts missing')
+    assert(ui.widgets.v3_buff_display_transfer_scope==nil and ui.widgets.v3_buff_display_transfer_category==nil,'extra sharing selectors remain')
+    ui.edit.text='TARGET_AUTO=21';assert(ui.widgets.v3_buff_display_transfer_import.onClick())
+    assert(F:IsTrackedChannel(21,'target','auto') and not F:IsTrackedChannel(21,'player','auto'),'share import scope ignored')
+    page:RefreshTransferStatus();assert(ui.widgets.v3_buff_display_transfer_status.text:find('导入成功',1,true),'saved feedback lost on refresh')
 end)
 
-Test('four channel labels use explicit self target wording and classification controls remain separate',function()
-    local S,F,ui=Build()
-    local expected={
-        v3_buff_track_player_buff='所选设为自身 Buff',
-        v3_buff_track_player_debuff='所选设为自身 Debuff',
-        v3_buff_track_target_buff='所选设为目标 Buff',
-        v3_buff_track_target_debuff='所选设为目标 Debuff',
-    }
-    for id,label in pairs(expected) do local w=assert(ui.widgets[id],id..' missing');assert(w.text==label or (type(w.GetText)=='function' and w:GetText()==label),id..' label') end
-    assert(ui.widgets.v3_buff_classify_buff and ui.widgets.v3_buff_classify_debuff and ui.widgets.v3_buff_classify_auto,'classification correction controls lost')
+Test('four column labels distinguish self target without category correction mutation',function()
+    local S,F,ui=Build();local labels={player_buff='自身 Buff',player_debuff='自身 Debuff',target_buff='目标 Buff',target_debuff='目标 Debuff'}
+    for _,c in ipairs(ui.widgets.v3_buff_display_tracking_table.spec.columns)do if labels[c.id]then assert(c.title==labels[c.id])end end
+    assert(ui.widgets.v3_buff_classify_buff==nil,'manual selected-row controls crowd the grid')
+    assert(F:SetClassification(21,'debuff'));assert(F:SetTrackedPlacement(21,'player','buff',true));assert(F:GetClassification()[21]=='debuff','placement rewrote metadata')
 end)
 Test('compact tracker source uses selection-first four-channel contract',function()
     local f=assert(io.open('presentation/v3/widgets/rs_v3_buff_display_widget.lua','rb'));local source=f:read('*a');f:close()

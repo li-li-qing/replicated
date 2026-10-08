@@ -384,6 +384,11 @@ end
 local function AddSourceTargetContributions(row, sourceBucket, targetBucket, trackActivity)
     local out = {}
     local sourceKey, targetKey = ActorKey(row.sourceName), ActorKey(row.targetName)
+    local analytics = S.Services and S.Services.CombatAnalyticsV3
+    if analytics and type(analytics.GetCollectionScope) == "function" and analytics:GetCollectionScope() == "self" then
+        if analytics:IsSelfActor(row.sourceName) ~= true then sourceKey = nil end
+        if analytics:IsSelfActor(row.targetName) ~= true then targetKey = nil end
+    end
     if row.category == "damage" then
         if sourceKey ~= nil then
             out[#out + 1] = AddContribution(sourceBucket, sourceKey, row.sourceName, "damage", row.amount, row.at, row.abilityName, row.abilityId, row.targetName, trackActivity)
@@ -737,7 +742,7 @@ local function NormalizeMetric(value)
     return value
 end
 
-local function ProjectBucket(bucket, sharedHealBucket, limit, alwaysShowSelf, metric)
+local function ProjectBucket(bucket, sharedHealBucket, limit, alwaysShowSelf, metric, includeZero)
     metric = NormalizeMetric(metric)
     bucket = type(bucket) == "table" and bucket or NewBucket()
     sharedHealBucket = type(sharedHealBucket) == "table" and sharedHealBucket or nil
@@ -781,7 +786,7 @@ local function ProjectBucket(bucket, sharedHealBucket, limit, alwaysShowSelf, me
 
     local rows = {}
     for _, row in pairs(merged) do
-        if (tonumber(row[metric]) or 0) > 0 then rows[#rows + 1] = row end
+        if includeZero==true or (tonumber(row[metric]) or 0) > 0 then rows[#rows + 1] = row end
     end
     table.sort(rows, function(a, b)
         local av, bv = tonumber(a[metric]) or 0, tonumber(b[metric]) or 0
@@ -898,7 +903,9 @@ end
 function A:GetProjection(request)
     request = type(request) == "table" and request or {}
     local settings = F:GetSettings()
-    local limit = math.max(1, math.min(A.Const.MAX_RANKING_ROWS,
+    -- 总览读取有界候选集后统一排序，不把零伤害治疗者或仅承伤单位提前筛掉。
+    local maxRows=request.overview==true and 512 or A.Const.MAX_RANKING_ROWS
+    local limit = math.max(1, math.min(maxRows,
         math.floor(tonumber(request.displayRows) or tonumber(settings.displayRows) or A.Const.DEFAULT_DISPLAY_ROWS)))
     local modeName = tostring(request.mode or settings.mode or "PVE")
     if modeName ~= "PVP" and modeName ~= "PVE" then modeName = "PVE" end
@@ -907,9 +914,9 @@ function A:GetProjection(request)
     local metric = NormalizeMetric(request.metric or settings.metric)
 
     local m = EnsureMode(modeName)
-    local friendly = ProjectBucket(m.friendly, self.healing.friendly, limit, settings.alwaysShowSelf == true, metric)
-    local enemy = ProjectBucket(m.enemy, self.healing.enemy, limit, false, metric)
-    local unknown = ProjectBucket(m.unknown, self.healing.unknown, limit, false, metric)
+    local friendly = ProjectBucket(m.friendly, self.healing.friendly, limit, settings.alwaysShowSelf == true, metric, request.includeZero)
+    local enemy = ProjectBucket(m.enemy, self.healing.enemy, limit, false, metric, request.includeZero)
+    local unknown = ProjectBucket(m.unknown, self.healing.unknown, limit, false, metric, request.includeZero)
     local unresolved = ProjectBucket(self.unclassified, nil, limit, false, metric)
     local selected = sideName == "enemy" and enemy or (sideName == "unknown" and unknown or friendly)
     local durationMs = m.startedAt > 0 and math.max(0, (tonumber(m.lastEventAt) or 0) - (tonumber(m.startedAt) or 0)) or 0

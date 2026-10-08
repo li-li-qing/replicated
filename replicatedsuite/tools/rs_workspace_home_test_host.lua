@@ -38,11 +38,22 @@ return function(options)
   SetVisible=function(_,id,value,context)counts.widgetWrites=counts.widgetWrites+1;counts.lastWidget=id;widgetVisible[id]=value==true;return true end
  }
  S.RSUI.FloatingSurface={CreateStateAdapter=function()return {}end}
+ if not S.Demand then dofile('core/rs_demand.lua')end
+ dofile('core/rs_refresh_coordinator.lua')
+ if options.configureReminders then
+  ADDON.ImportAPI=function()return true end;ADDON.ImportObject=function()return true end
+  dofile('native/rs_native_contract.lua');dofile('native/rs_native_imports.lua')
+  options.configureReminders(h,S)
+ end
+ dofile('services/rs_home_reminders_v3.lua')
  dofile('presentation/v3/widgets/rs_v3_life_economy_widgets.lua')
  dofile('features/rs_feature_registry.lua');dofile('presentation/v3/navigation/rs_v3_router.lua')
+ if options.diagnostics then dofile('core/rs_diagnostic_detail.lua');dofile('core/rs_module_diagnostics.lua')end
+ dofile('presentation/v3/widgets/rs_v3_activity_lists.lua')
  dofile('presentation/v3/rs_v3_workspace.lua')
  if options.visible then assert(S.UIV3.Workspace:Change('home',function()local v={};for _,key in ipairs(options.visible)do v[key]=true end;for _,card in ipairs(S.UIV3.Workspace:GetCards(true))do S.UIV3.Workspace.state.home.hidden[card.id]=not v[card.id] or nil end;return true end))end
  dofile('presentation/v3/pages/rs_v3_home_overview.lua')
+ if options.deferBuild then return S,nil,{},counts,enabled,h end -- 让真实 PageHost 在自己的构建事务内首次创建首页。
  local parent=h.Native(nil,'home_parent',0,0,850,700)
  local page=assert(S.UIV3.HomeOverview:Build(parent,'home'));if not options.skipLayout then page:Layout(0,0,850,700)end
  local index={};local function Walk(n)index[n.id]=n;for _,v in ipairs(n.children or {})do Walk(v)end end;Walk(page)

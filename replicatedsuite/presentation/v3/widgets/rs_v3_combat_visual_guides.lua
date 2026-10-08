@@ -19,7 +19,7 @@ if type(UnitFeature) ~= "table" or type(RangeFeature) ~= "table" then return end
 S.UIV3 = S.UIV3 or {}
 S.UIV3.CombatVisualGuidesV3 = S.UIV3.CombatVisualGuidesV3 or {}
 local P = S.UIV3.CombatVisualGuidesV3
-P.version = 15
+P.version = 16
 P.RawViewportSamplingContractVersion = 1
 P.UnitAnchorAcceptanceContractVersion = 1
 P.ScreenCoordinateAuthorityContractVersion = 1
@@ -253,6 +253,7 @@ P.UnitLineVisibleSegmentClippingContractVersion = 2
 P.UnitLinePressureBudgetContractVersion = 1
 P.UnitLineDiffRenderContractVersion = 1
 P.RangeDiffRenderContractVersion = 1
+P.RangeViewportVisibilityContractVersion = 1
 P.UnitLineProgressivePoolContractVersion = 1
 
 -- 维护（2026-09-24，visual-guide-resolution-style-recovery-1）：范围点/连线点虽然使用 LABEL
@@ -555,7 +556,8 @@ function P:PlaceDot(dot, x, y, size, opacity, kind, pairKey, r, g, b, hostTransf
         state.r,state.g,state.b,state.a=cr,cg,cb,alpha
     end
     self:SetDotVisible(dot,true)
-    return true
+    -- 维护（range-continuity-1）：Show 被拒绝时不能把请求点计为已接受的可见点。
+    return state.visible==true
 end
 
 -- ScreenProjectionV3 already returns coordinates in the same top-left
@@ -641,40 +643,79 @@ function P:RenderUnit()
 end
 
 function P:RenderRange()
+    -- 维护（range-continuity-1）：每帧先清证据。空集/异常不能沿用上一帧“可见点”；
+    -- 记录的是本次 Native 已接受的放置数，不是屏幕截图验证，更不是池容量。
+    local sample = { points=0, circles=0, requestedPoints=0, placementFailures=0, totalCircles=0, enabledCircles=0,
+        offscreenPoints=0, invalidPoints=0, visibilityPatch="range-viewport-visibility-1",
+        status="rendering", frameAtMs=(S.NowMs and S.NowMs() or 0) }
+    self.lastRangeSampling = sample
     self:SyncUiEnvironmentRevision()
-    if self.rangeHeld ~= true then self:HideRangePools(); S.UI:SetVisible(self.rangeHost,false,self.owner); return true end
+    if self.rangeHeld ~= true then
+        self:HideRangePools(); S.UI:SetVisible(self.rangeHost,false,self.owner); sample.status="no_consumer"; return true
+    end
     local projection=RangeFeature:GetProjection() or {}; local rows=type(projection.rows)=="table" and projection.rows or {}
-    local active, renderedCircles, totalDots = {}, 0, 0
+    sample.totalCircles, sample.enabledCircles = tonumber(projection.circleCount) or 0, tonumber(projection.enabledCircleCount) or 0
+    sample.status = tostring(projection.status or "ready")
     if #rows<1 then self:HideRangePools(); S.UI:SetVisible(self.rangeHost,false,self.owner); return true end
+    local viewportW,viewportH=FinitePointNumber(projection.viewportWidth),FinitePointNumber(projection.viewportHeight)
+    if viewportW==nil or viewportH==nil or viewportW<=1 or viewportH<=1 then viewportW,viewportH=self:ReadUnitViewport() end
+    sample.viewportKnown=viewportW~=nil and viewportH~=nil
+    sample.viewportWidth,sample.viewportHeight=viewportW,viewportH
+    local active, renderedCircles, totalDots = {}, 0, 0
     local hostTransform=self:ResolveHostTransform(self.rangeHost)
     local firstPoint = "?"
     for _, row in ipairs(rows) do
         local points=type(row)=="table" and type(row.points)=="table" and row.points or {}
         if #points>=3 then
             local circleKey=tostring(row.circleKey or row.key or ("range_" .. tostring(renderedCircles + 1)))
-            local pool, err = self:EnsureRangePool(circleKey, math.min(RANGE_DENSITY_HARD_MAX, #points)); if pool == nil then return false, err end
+            local count=math.min(RANGE_DENSITY_HARD_MAX,#points)
+            sample.requestedPoints = sample.requestedPoints + count
+            local pool, err = self:EnsureRangePool(circleKey, count)
+            if pool == nil then
+                self:HideRangePools(); S.UI:SetVisible(self.rangeHost,false,self.owner)
+                sample.status, sample.lastError = "unavailable", tostring(err or "range_pool_unavailable")
+                return false, err
+            end
             active[circleKey:gsub("[^%w_]", "_")] = true
             local color = type(row.color)=="table" and row.color or nil
             local rr,rg,rb = color and (tonumber(color[1]) or 0.20) or 0.20, color and (tonumber(color[2]) or 0.82) or 0.82, color and (tonumber(color[3]) or 1.00) or 1.00
-            local count=math.min(RANGE_DENSITY_HARD_MAX,#points)
+            local acceptedCount = 0
             for i=1,count do
-                self:PlaceDot(pool[i],points[i].x,points[i].y,row.pointSize or projection.pointSize,row.opacity or projection.opacity,"range",nil,rr,rg,rb,hostTransform)
+                local px,py=FinitePointNumber(points[i].x),FinitePointNumber(points[i].y)
+                -- 维护（2026-10-07，range-viewport-visibility-1）：R22 大圈比近镜头距离更大时，
+                -- 部分点会跨过镜头平面，附近点虽在前方却会得到7425等屏外坐标。只显示本帧
+                -- 可见范围弧段，不把屏外坐标写入Native、不夹到屏幕边缘、不改世界半径。
+                if px==nil or py==nil then
+                    self:SetDotVisible(pool[i],false);sample.invalidPoints=sample.invalidPoints+1
+                elseif sample.viewportKnown and (px<0 or py<0 or px>viewportW or py>viewportH) then
+                    self:SetDotVisible(pool[i],false);sample.offscreenPoints=sample.offscreenPoints+1
+                elseif self:PlaceDot(pool[i],px,py,row.pointSize or projection.pointSize,row.opacity or projection.opacity,"range",nil,rr,rg,rb,hostTransform)==true then
+                    acceptedCount = acceptedCount + 1
+                    if firstPoint == "?" then firstPoint = tostring(math.floor(tonumber(points[i].x) or 0)) .. "," .. tostring(math.floor(tonumber(points[i].y) or 0)) end
+                else sample.placementFailures = sample.placementFailures + 1 end
             end
             for i=count+1,#pool do self:SetDotVisible(pool[i],false) end
-            renderedCircles = renderedCircles + 1
-            totalDots = totalDots + count
-            if firstPoint == "?" and points[1] ~= nil then firstPoint = tostring(math.floor(tonumber(points[1].x) or 0)) .. "," .. tostring(math.floor(tonumber(points[1].y) or 0)) end
+            if acceptedCount > 0 then renderedCircles = renderedCircles + 1 end
+            totalDots = totalDots + acceptedCount
         end
     end
     self:HideRangePools(active)
-    if type(S.UI.EnsureVisible)=="function" then S.UI:EnsureVisible(self.rangeHost,renderedCircles>0,self.owner)
+    local hostAccepted = true
+    if type(S.UI.EnsureVisible)=="function" then hostAccepted=S.UI:EnsureVisible(self.rangeHost,renderedCircles>0,self.owner)
     else S.UI:SetVisible(self.rangeHost,renderedCircles>0,self.owner) end
     local hostVisible, hostKnown = nil, false
     if type(S.UI.NativeVisibleReadback) == "function" then hostVisible, hostKnown = S.UI:NativeVisibleReadback(self.rangeHost) end
-    self.lastRangeSampling = { points = totalDots, circles = renderedCircles, totalCircles = tonumber(projection.circleCount) or 0, enabledCircles = tonumber(projection.enabledCircleCount) or 0, coordinateSpace = "ui_parent_screen_to_host_local",
-        first = firstPoint, hostOriginX=tonumber(hostTransform.originX) or 0,hostOriginY=tonumber(hostTransform.originY) or 0,hostTransformSource=tostring(hostTransform.source or "identity"),
-        logicalWidth=tonumber(hostTransform.logicalWidth),logicalHeight=tonumber(hostTransform.logicalHeight),uiScale=tonumber(hostTransform.uiScale) or 1,
-        hostVisible = hostKnown == true and tostring(hostVisible == true) or "未知" }
+    if hostAccepted ~= true or (hostKnown == true and hostVisible ~= true) then
+        totalDots, renderedCircles = 0, 0
+        if sample.requestedPoints > 0 then sample.lastError="range_host_not_visible" end
+    end
+    sample.points, sample.circles, sample.first = totalDots, renderedCircles, firstPoint
+    sample.coordinateSpace = "ui_parent_screen_to_host_local"
+    sample.hostOriginX, sample.hostOriginY = tonumber(hostTransform.originX) or 0, tonumber(hostTransform.originY) or 0
+    sample.hostTransformSource = tostring(hostTransform.source or "identity")
+    sample.logicalWidth, sample.logicalHeight, sample.uiScale = tonumber(hostTransform.logicalWidth), tonumber(hostTransform.logicalHeight), tonumber(hostTransform.uiScale) or 1
+    sample.hostVisible = hostKnown == true and tostring(hostVisible == true) or "未知"
+    if sample.placementFailures > 0 or sample.invalidPoints > 0 or sample.lastError ~= nil then sample.status = "partial" end
     return true
 end
 
@@ -798,4 +839,17 @@ end
 P:Reconcile("bootstrap")
 if S.Scheduler ~= nil and type(S.Scheduler.AddTask) == "function" then
     S.Scheduler:AddTask(P.watchdogTask, 1000, function() P:ConvergeTick() end, false, P, "P3", 1)
+end
+
+-- 模块诊断只复制本模块现有采样；不调用 Render/GetProjection/NativeVisibleReadback，也不创建控件。
+-- 不把共享 Presenter 的 UnitLines 池/投影批次误归属给 RangeAssist。
+if S.ModuleDiagnosticsHub ~= nil and type(S.ModuleDiagnosticsHub.RegisterProvider) == "function" then
+    S.ModuleDiagnosticsHub:RegisterProvider(RangeFeature.Id, "range_render", function()
+        local copy = S.FeatureSliceFactory.Copy
+        return { patch="range-continuity-1", held=P.rangeHeld==true,
+            poolDots=RangePoolDotCount(P.rangePools), sampling=copy(P.lastRangeSampling or {}),
+            acquireAttempts=tonumber(P.acquireAttempts and P.acquireAttempts.range) or 0,
+            acquireError=copy(P.lastAcquireError and P.lastAcquireError.range or {}),
+            uiEnvironmentRevision=tonumber(P.lastUiEnvironmentRevision) or 0 }
+    end)
 end

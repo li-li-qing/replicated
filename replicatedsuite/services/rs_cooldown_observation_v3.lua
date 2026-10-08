@@ -4,12 +4,13 @@
 -- Cooldown Authority is deliberately independent from Aura/Buff tracking.
 -- A Buff/Effect id proves only that a status exists; X2Skill cooldown APIs
 -- require the actual Skill id.  This service therefore consumes explicit
--- tracked Skill ids only and never promotes COMBAT_MSG aura ids into cooldown
--- ids.
+-- manually tracked Skill ids and verified self cast-success Skill ids only;
+-- COMBAT_MSG Aura/Effect ids never become cooldown ids.
 --
 -- Runtime contract:
---   * no CombatEventBus / AuraObservation dependency for normal cooldown work;
---   * tracked Skill ids are probed through Native cooldown getters only;
+--   * manual tracking needs no CombatEventBus / AuraObservation;
+--   * optional automatic discovery leases only SELF cast-success transport;
+--   * discovered ids are ephemeral; both paths use Native cooldown getters only;
 --   * ordinary / glider / wing skills use X2Skill:GetCooldown;
 --   * ride / battle-pet skills use X2Skill:GetMateCooldown and mateType is
 --     cached only after a positive Native cooldown observation;
@@ -35,7 +36,7 @@ S.Services = S.Services or {}
 
 local C = {
     Id = "v3.cooldown_observation",
-    version = 4,
+    version = 5,
     taskName = "v3_cooldown_observation_active",
     intervalMs = 100,
     probeTaskName = "v3_cooldown_observation_probe",
@@ -43,6 +44,21 @@ local C = {
     probeBudget = 8,
     tracked = { skill = {}, mate = {} },
     trackedCount = 0,
+    manualTracked = { skill = {}, mate = {} },
+    localIds = {},
+    localSourceById = {},
+    discoveredSkills = {},
+    autoProbePending = {},
+    autoProbeSerial = 0,
+    automaticEnabled = false,
+    autoSubscribed = false,
+    autoEpoch = 0,
+    autoLimit = 64,
+    autoEvents = 0,
+    autoIgnored = 0,
+    autoEvicted = 0,
+    autoDropped = 0,
+    autoError = nil,
     active = {},
     mateTypeById = {},
     metadata = {},
@@ -80,6 +96,7 @@ C.LocalNativeAuthorityContractVersion = 4
 C.FallbackProbeContractVersion = 3
 C.NativeEvidenceContractVersion = 2
 C.NativeSkillIdContractVersion = 1
+C.AutomaticDiscoveryContractVersion = 1
 S.Services.CooldownObservationV3 = C
 
 local UNKNOWN_ICON = "ui/icon/icon_unknown_item.dds"
@@ -221,8 +238,35 @@ function C:_QueryMate(skillId)
             firstError = err
         end
     end
-    if sawValidReady then return 0, nil, "mate", cached, nil end
+    if sawValidReady and firstError==nil then return 0, nil, "mate", cached, nil end
     return nil, nil, "mate", cached, firstError or "mate_cooldown_unavailable"
+end
+
+-- 中文维护（统一本机 CD）：界面只选技能 ID，不要求玩家猜自身/坐骑来源。
+-- 未确认时只在既有 Native 预算内查两个已验证 Getter；正读数才确认来源，Ready/未知绝不启动计时。
+-- 只缓存本次 Runtime 的来源，不迁移保存桶、不读目标 CD；确认后 active lane 只读该来源。
+function C:_QueryLocal(skillId)
+    local known=self.localSourceById[skillId]
+    if known=="skill" then return self:_QuerySkill(skillId) end
+    if known=="mate" then return self:_QueryMate(skillId) end
+    local own,total,source,mateType,err=self:_QuerySkill(skillId)
+    if own and own>0 then self.localSourceById[skillId]="skill";return own,total,source,mateType,err end
+    local mate,mateTotal,mateSource,resolvedType,mateError=self:_QueryMate(skillId)
+    if mate and mate>0 then self.localSourceById[skillId]="mate";return mate,mateTotal,mateSource,resolvedType,mateError end
+    -- 来源未确认时，一个 Getter 的零值不能掩盖其他候选来源的读取失败。
+    if own~=nil and mate~=nil then return 0,total,source,mateType,nil end
+    return nil,nil,"local",nil,err or mateError or "local_cooldown_partial_coverage"
+end
+
+function C:_ProbeCost(kind,id)
+    if kind=="mate" then return self.mateTypeById[id]~=nil and 1 or 2 end
+    if self.localIds[id] then
+        local known=self.localSourceById[id]
+        if known=="skill" then return 1 end
+        if known=="mate" then return self.mateTypeById[id]~=nil and 1 or 2 end
+        return 3
+    end
+    return 1
 end
 
 function C:_RecordNativeEvidence(kind, skillId, remaining, total, source, mateType, err)
@@ -239,7 +283,8 @@ end
 
 function C:_Query(kind, skillId)
     local remaining,total,source,mateType,err
-    if kind == "mate" then remaining,total,source,mateType,err = self:_QueryMate(skillId)
+    if kind=="skill" and self.localIds[skillId] then remaining,total,source,mateType,err=self:_QueryLocal(skillId)
+    elseif kind == "mate" then remaining,total,source,mateType,err = self:_QueryMate(skillId)
     else remaining,total,source,mateType,err = self:_QuerySkill(skillId) end
     self:_RecordNativeEvidence(kind, skillId, remaining, total, source, mateType, err)
     return remaining,total,source,mateType,err
@@ -249,7 +294,8 @@ function C:_ResolveMetadata(kind, skillId, fallbackName)
     local key = kind .. ":" .. tostring(skillId)
     local cached = self.metadata[key]
     if cached ~= nil then return cached end
-    local name, iconPath = tostring(fallbackName or ""), UNKNOWN_ICON
+    local discovered=kind=="skill" and self.discoveredSkills[skillId] or nil
+    local name, iconPath = tostring(fallbackName or (discovered and discovered.name) or ""), UNKNOWN_ICON
     local catalog = S.Data and S.Data.StatusTrackingCatalogV3 or nil
     local entry = type(catalog) == "table" and type(catalog.ByKey) == "table" and catalog.ByKey["cooldown:" .. kind .. ":" .. tostring(skillId)] or nil
     if type(entry) == "table" and tostring(entry.name or "") ~= "" then name = tostring(entry.name) end
@@ -371,6 +417,16 @@ end
 
 -- Event-independent READY discovery. The budget is measured in Native calls;
 -- unclassified mate ids may cost two calls (ride+battle).
+function C:_ProbeTrackedReady(kind,id)
+    self.probeQueries=self.probeQueries+1
+    local remaining,totalMs,source,mateType=self:_Query(kind,id)
+    if remaining~=nil and remaining>0 then
+        self.probeHits=self.probeHits+1
+        self:_SetActive(kind,id,remaining,totalMs,source,mateType)
+        self:_EnsureTask()
+    end
+end
+
 function C:ProbeReady(reason, budget)
     local order = self.probeOrder
     local total = type(order) == "table" and #order or 0
@@ -378,6 +434,23 @@ function C:ProbeReady(reason, budget)
     budget = math.max(1, math.floor(tonumber(budget) or self.probeBudget))
     local visited, readsAtStart = 0, self.nativeReads
     self.probeCycles = self.probeCycles + 1
+    -- 刚施放的自身技能优先确认，避免64个 Ready 项把短 CD 拖过期。
+    -- 最多使用原8次预算中的4次，余量继续轮询；待查表最多64项，不增加调度任务或总查询量。
+    local urgent,queried=0,{}
+    while urgent<math.min(4,budget) do
+        local id,serial
+        for candidate,order in pairs(self.autoProbePending) do
+            if serial==nil or order<serial then id,serial=candidate,order end
+        end
+        if not id then break end
+        local cost=self:_ProbeCost("skill",id)
+        if self.tracked.skill[id] and not self.active["skill:"..id] and (self.nativeReads-readsAtStart)+cost>math.min(4,budget) then break end
+        self.autoProbePending[id]=nil;urgent=urgent+1
+        if self.tracked.skill[id] and not self.active["skill:"..id] then
+            queried[id]=true
+            self:_ProbeTrackedReady("skill",id)
+        end
+    end
     while visited < total and (self.nativeReads - readsAtStart) < budget do
         if self.probeCursor > total then self.probeCursor = 1 end
         local candidate = order[self.probeCursor]
@@ -385,16 +458,14 @@ function C:ProbeReady(reason, budget)
         visited = visited + 1
         if type(candidate) == "table" and self.tracked[candidate.kind][candidate.id] == true then
             local key = candidate.kind .. ":" .. tostring(candidate.id)
-            if self.active[key] == nil then
-                local estimatedCost = candidate.kind == "mate" and (self.mateTypeById[candidate.id] ~= nil and 1 or 2) or 1
-                if (self.nativeReads - readsAtStart) + estimatedCost > budget then break end
-                self.probeQueries = self.probeQueries + 1
-                local remaining, totalMs, source, mateType = self:_Query(candidate.kind, candidate.id)
-                if remaining ~= nil and remaining > 0 then
-                    self.probeHits = self.probeHits + 1
-                    self:_SetActive(candidate.kind, candidate.id, remaining, totalMs, source, mateType)
-                    self:_EnsureTask()
+            if self.active[key] == nil and not (candidate.kind=="skill" and queried[candidate.id]) then
+                local estimatedCost = self:_ProbeCost(candidate.kind,candidate.id)
+                if (self.nativeReads - readsAtStart) + estimatedCost > budget then
+                    -- 预算不足的候选留到下个周期；提前消耗游标会让每轮末尾同一 ID 永久漏采。
+                    self.probeCursor=self.probeCursor-1
+                    break
                 end
+                self:_ProbeTrackedReady(candidate.kind,candidate.id)
             end
         end
     end
@@ -463,13 +534,106 @@ function C:_ApplyTracked(skillSet, mateSet)
     end
     for key in pairs(self.metadata) do if validKeys[key] ~= true then self.metadata[key]=nil end end
     for key in pairs(self.nativeEvidence) do if validKeys[key] ~= true then self.nativeEvidence[key]=nil end end
-    for id in pairs(self.mateTypeById) do if mateSet[id] ~= true then self.mateTypeById[id]=nil end end
+    for id in pairs(self.autoProbePending) do if skillSet[id]~=true then self.autoProbePending[id]=nil end end
+    for id in pairs(self.mateTypeById) do if mateSet[id] ~= true and self.localIds[id]~=true then self.mateTypeById[id]=nil end end
+    for id in pairs(self.localSourceById) do if self.localIds[id]~=true then self.localSourceById[id]=nil end end
     self:_RebuildProbeOrder()
     if changed then self:_PublishUpdate("tracked_set") end
 end
 
+-- 中文维护（2026-10-07，self-cooldown-discovery-1）：空手动列表开启 CD 过去永远无数据。
+-- 自身施放成功事件只证明 Skill ID，不提供倒计时；实际 CD 仍由既有 Native probe/active lane 确认。
+-- 不扫描技能库/他人、不在事件回调查询 Native、不把发现集合写回用户 Store。最多64个本会话技能，
+-- 新技能只淘汰最久未使用且非活动项；已知活动项保持到原生结束。手动选择不受自动集合回收影响。
+function C:_MergedTracked()
+    local skills,mates={},{}
+    for id in pairs(self.manualTracked.skill) do skills[id]=true end
+    for id in pairs(self.manualTracked.mate) do mates[id]=true end
+    if self.automaticEnabled then for id in pairs(self.discoveredSkills) do skills[id]=true end end
+    return skills,mates
+end
+
+function C:_QueueAutomaticProbe(id)
+    if not self.active["skill:"..id] and not self.autoProbePending[id] then
+        self.autoProbeSerial=self.autoProbeSerial+1
+        self.autoProbePending[id]=self.autoProbeSerial
+    end
+    local ok,err=self:_EnsureProbeTask()
+    self.autoError=not ok and tostring(err or "auto_probe_unavailable") or nil
+    return ok
+end
+
+function C:_ObserveAutomaticSkill(fact)
+    if not self.automaticEnabled or not self.autoSubscribed or self.Demand.count<=0 or type(fact)~="table" then return true end
+    local event=string.upper(tostring(fact.rawEventType or ""))
+    -- CamelCase CastSuccess 已有 RU 原始样本；SPELL_CAST_SUCCESS 有客户端参考消费端。
+    -- CastStart/伤害/状态应用不作为自动 ID 入口，防止取消施法及 Buff/Skill namespace 混淆。
+    if event~="CASTSUCCESS" and event~="SPELL_CAST_SUCCESS" then return true end
+    self.autoEvents=self.autoEvents+1
+    local identity=S.Services and S.Services.UnitIdentityV3
+    if type(identity)~="table" or type(identity.IsPlayerIdentityReady)~="function" or not identity:IsPlayerIdentityReady()
+        or type(identity.IsPlayerName)~="function" or not identity:IsPlayerName(fact.sourceName) then
+        self.autoIgnored=self.autoIgnored+1;return true
+    end
+    local number=FiniteNumber(fact.rawAbilityId)
+    local id=NormalizeId(number)
+    if not id or number~=id then self.autoIgnored=self.autoIgnored+1;return true end
+    local known=self.discoveredSkills[id]
+    if known then known.lastAt=NowMs();self:_QueueAutomaticProbe(id);return true end
+    if CountSet(self.discoveredSkills)>=self.autoLimit then
+        local oldest,oldestAt
+        for candidate,row in pairs(self.discoveredSkills) do
+            if self.active["skill:"..candidate]==nil and (oldestAt==nil or row.lastAt<oldestAt) then oldest,oldestAt=candidate,row.lastAt end
+        end
+        if not oldest then self.autoDropped=self.autoDropped+1;return true end
+        self.discoveredSkills[oldest]=nil;self.autoEvicted=self.autoEvicted+1
+    end
+    local name=tostring(fact.abilityName or "")
+    if #name>256 then name="" end
+    self.discoveredSkills[id]={name=name,lastAt=NowMs()}
+    local skills,mates=self:_MergedTracked()
+    self:_ApplyTracked(skills,mates)
+    self:_QueueAutomaticProbe(id)
+    self:_PublishUpdate("auto_discovered")
+    return true
+end
+
+function C:_SetAutomaticDiscovery(enabled)
+    enabled=enabled==true
+    local bus=S.Services and S.Services.CombatEventBusV3
+    if not enabled then
+        -- 先使已捕获回调失效；释放被拒绝交回真实 Demand rollback，不能谎称 lease 已释放。
+        self.automaticEnabled=false;self.autoEpoch=self.autoEpoch+1
+        if self.autoSubscribed then
+            if type(bus)~="table" or type(bus.Unsubscribe)~="function" then return false,"auto_discovery_release_unavailable" end
+            local ok,err=bus:Unsubscribe(self)
+            if not ok then self.autoError=tostring(err or "auto_discovery_release_failed");return false,self.autoError end
+            self.autoSubscribed=false
+        end
+        self.autoError=nil
+        return true
+    end
+    if self.automaticEnabled and self.autoSubscribed then return true end
+    self.automaticEnabled=true;self.autoEpoch=self.autoEpoch+1
+    if type(bus)~="table" or type(bus.Subscribe)~="function" then self.autoError="auto_discovery_bus_unavailable";return true end
+    local epoch,generation=self.autoEpoch,S.Generation
+    local ok,err=bus:Subscribe(self,function(_,fact)
+        if C.autoEpoch~=epoch or S.Generation~=generation or S.Services.CooldownObservationV3~=C then return true end
+        return C:_ObserveAutomaticSkill(fact)
+    end,{scope="self"})
+    self.autoSubscribed=ok==true
+    self.autoError=not ok and tostring(err or "auto_discovery_subscribe_failed") or nil
+    -- 发现入口不可用只使自动识别降级，不阻断已手动追踪的 Native CD 或无关 HUD。
+    return true
+end
+
 function C:_ResetRuntime(publishReason)
+    local released,err=self:_SetAutomaticDiscovery(false)
+    if not released then return false,err end
     self:_StopTask(); self:_StopProbeTask()
+    self.discoveredSkills={};self.manualTracked={skill={},mate={}}
+    self.localIds={};self.localSourceById={}
+    self.autoProbePending={};self.autoProbeSerial=0
     self.tracked, self.trackedCount = { skill={}, mate={} }, 0
     self.probeOrder, self.probeCursor = {}, 1
     self.active, self.metadata, self.mateTypeById, self.nativeEvidence = {}, {}, {}, {}
@@ -480,14 +644,22 @@ end
 function C:_Reconcile(before, after)
     local afterCount = tonumber(after and after.count) or 0
     if afterCount <= 0 then return self:_ResetRuntime("release") end
-    local skills, mates = {}, {}
+    local skills, mates, locals, automatic = {}, {}, {}, false
     for _, options in pairs(type(after.consumers)=="table" and after.consumers or {}) do
         if type(options)=="table" then
+            automatic=automatic or options.automatic==true
             for id in pairs(type(options.skillIds)=="table" and options.skillIds or {}) do skills[id]=true end
             for id in pairs(type(options.mateIds)=="table" and options.mateIds or {}) do mates[id]=true end
+            for id in pairs(type(options.localIds)=="table" and options.localIds or {}) do locals[id]=true;skills[id]=true end
         end
     end
-    self:_ApplyTracked(skills, mates)
+    local ok,err=self:_SetAutomaticDiscovery(automatic)
+    if not ok then return false,err end
+    self.manualTracked={skill=skills,mate=mates}
+    self.localIds=locals
+    if not automatic then self.discoveredSkills={};self.autoProbePending={};self.autoProbeSerial=0 end
+    local mergedSkills,mergedMates=self:_MergedTracked()
+    self:_ApplyTracked(mergedSkills,mergedMates)
     if self.trackedCount <= 0 then
         self:_StopTask(); self:_StopProbeTask()
         self.active, self.metadata, self.mateTypeById, self.nativeEvidence = {}, {}, {}, {}
@@ -529,7 +701,9 @@ function C:AcquireConsumer(token, options)
     -- 维护：在这里（而不是模块加载期）取得 Native 子能力 owner，符合“消费需求才导入”的
     -- dependency ownership；失败不回滚消费需求，因为冷却不可用只是功能降级，不是 Feature 故障。
     self:EnsureNativeSkillLease()
-    return self.Demand:Acquire(token, options, "cooldown_consumer")
+    local ok,err=self.Demand:Acquire(token, options, "cooldown_consumer")
+    if ok and self.automaticEnabled and not self.autoSubscribed then self:_SetAutomaticDiscovery(true) end
+    return ok,err
 end
 function C:ReleaseConsumer(token)
     if self.Demand == nil then return false, "cooldown demand unavailable" end
@@ -544,7 +718,9 @@ function C:GetActiveRows()
             key=row.key,id=row.id,skillId=row.skillId,kind=row.kind,source=row.source,mateType=row.mateType,
             name=row.name,iconPath=row.iconPath,remainingMs=row.remainingMs,totalMs=row.totalMs,
             timeLeft=row.remainingMs,timeText=FormatTime(row.remainingMs),authority=row.authority,updatedAt=row.updatedAt,stale=row.stale==true,
-            active=true,ready=false,tracked=true,trackedText="已追踪",idType="skill",
+            active=true,ready=false,tracked=self.manualTracked[row.kind][row.id]==true,
+            automatic=row.kind=="skill" and self.discoveredSkills[row.id]~=nil,
+            trackedText=self.manualTracked[row.kind][row.id] and "已追踪" or "自动识别",idType="skill",
         }
     end
     table.sort(rows,function(a,b)
@@ -575,7 +751,9 @@ function C:GetTrackedRows()
                 remainingMs=live and live.remainingMs or 0,totalMs=live and live.totalMs or (evidence and evidence.total) or nil,
                 timeLeft=live and live.remainingMs or nil,timeText=live and FormatTime(live.remainingMs) or idleText,
                 authority=live and live.authority or idleAuthority,stale=live and live.stale==true or false,
-                active=live~=nil,ready=live~=nil and false or idleReady,tracked=true,trackedText="已追踪",
+                active=live~=nil,ready=live~=nil and false or idleReady,tracked=self.manualTracked[kind][id]==true,
+                automatic=kind=="skill" and self.discoveredSkills[id]~=nil,
+                trackedText=self.manualTracked[kind][id] and "已追踪" or "自动识别",
                 nativeStatus=evidence and evidence.status or "unseen",nativeError=evidence and evidence.error or nil,
                 skillIdentityResolved=meta.resolved==true,skillIdentitySource=meta.source,
             }
@@ -589,23 +767,45 @@ function C:GetTrackedRows()
     return rows,self.revision
 end
 
-function C:GetNativeEvidence(limit)
+function C:GetNativeEvidence(limit, manualFirst)
     limit=math.max(1,math.min(32,math.floor(tonumber(limit) or 16)))
     local rows={}
     for _,row in pairs(self.nativeEvidence or {}) do
+        local metadata=self.metadata[row.key]
         rows[#rows+1]={key=row.key,kind=row.kind,id=row.id,status=row.status,remaining=row.remaining,total=row.total,
-            source=row.source,mateType=row.mateType,error=row.error,lastAt=row.lastAt,queries=row.queries,positives=row.positives,ready=row.ready,unknown=row.unknown}
+            source=row.source,mateType=row.mateType,error=row.error,lastAt=row.lastAt,queries=row.queries,positives=row.positives,ready=row.ready,unknown=row.unknown,
+            tracked=self.manualTracked[row.kind] and self.manualTracked[row.kind][row.id]==true,
+            iconPath=metadata and metadata.iconPath or nil}
     end
-    table.sort(rows,function(a,b) if a.kind~=b.kind then return a.kind<b.kind end return a.id<b.id end)
+    -- 中文维护（CD 显示链诊断）：显式诊断优先保留已保存技能，避免低 ID 自动候选挤掉高 ID 追踪项。
+    -- 这里只复制 Native/元数据缓存，绝不借 GetTrackedRows 触发元数据解析或额外 Native 查询。
+    table.sort(rows,function(a,b)
+        if manualFirst==true and a.tracked~=b.tracked then return a.tracked==true end
+        if a.kind~=b.kind then return a.kind<b.kind end return a.id<b.id
+    end)
+    local count=#rows
     while #rows>limit do rows[#rows]=nil end
-    return rows
+    return rows,count
+end
+
+-- 给页面的有界状态投影，不复制逐 ID 诊断证据，也不采集 Native。
+function C:GetDiscoveryState()
+    return {enabled=self.automaticEnabled==true,subscribed=self.autoSubscribed==true,
+        discovered=CountSet(self.discoveredSkills),active=CountSet(self.active),error=self.autoError}
 end
 
 function C:GetHealth()
     return {
         version=self.version,ok=self.Demand~=nil,consumers=self.Demand and self.Demand.count or 0,
         tracked=self.trackedCount,skillTracked=CountSet(self.tracked.skill),mateTracked=CountSet(self.tracked.mate),
-        active=CountSet(self.active),pending=0,busScope="none",subscribed=false,eventIndependent=true,
+        localTracked=CountSet(self.localIds),localSourcesResolved=CountSet(self.localSourceById),localSourceContract=1,
+        active=CountSet(self.active),pending=0,busScope=self.autoSubscribed and "self" or "none",
+        subscribed=self.autoSubscribed==true,eventIndependent=self.automaticEnabled~=true,
+        nativeTimerEventIndependent=true,automatic=self.automaticEnabled==true,
+        autoDiscovered=CountSet(self.discoveredSkills),autoLimit=self.autoLimit,autoEvents=self.autoEvents,
+        autoProbePending=CountSet(self.autoProbePending),
+        autoIgnored=self.autoIgnored,autoEvicted=self.autoEvicted,autoDropped=self.autoDropped,autoError=self.autoError,
+        automaticDiscoveryContract=self.AutomaticDiscoveryContractVersion,
         idContract="skill_id_only",nativeSkillIdContract=self.NativeSkillIdContractVersion,rejectedEffectIds=self.rejectedEffectIds,
         taskActive=self.taskActive==true,intervalMs=self.intervalMs,revision=self.revision,
         probeTaskActive=self.probeTaskActive==true,probeIntervalMs=self.probeIntervalMs,probeBudget=self.probeBudget,
@@ -631,7 +831,8 @@ local demand,demandErr = S.Demand:Create({
         options=type(options)=="table" and options or {}
         local skills=select(1,CopySet(options.skillIds,256))
         local mates=select(1,CopySet(options.mateIds,256))
-        return {skillIds=skills,mateIds=mates,purpose=tostring(options.purpose or "generic")}
+        local locals=select(1,CopySet(options.localIds,512)) -- 旧保存 own/mate 各 256，合并后不丢已有选择。
+        return {skillIds=skills,mateIds=mates,localIds=locals,automatic=options.automatic==true,purpose=tostring(options.purpose or "generic")}
     end,
     reconcile=function(_,before,after) return C:_Reconcile(before,after) end,
     quiesce=function() return C:_ResetRuntime(nil) end,

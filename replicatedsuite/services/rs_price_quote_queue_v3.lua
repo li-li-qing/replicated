@@ -32,6 +32,8 @@ local Q = {
     version = 3,
     EventAuthorityContractVersion = 1,
     NativeUserPriorityContractVersion = 1,
+    NativeInteractionContractVersion = 1,
+    nativeInteractionPatch = "auction-full-lane-safety-1",
     ActivityTopic = "v3.price_quote.activity",
     activityPatch = "auction-user-priority-1",
     paused = false, pauseReason = nil, pauseStartedAt = nil, resumeAfter = nil,
@@ -41,6 +43,17 @@ local Q = {
     PriorityQueueContractVersion = 1, -- 18.317: explicit user quote jobs insert ahead of background SWR requests without preempting the active Native call.
     FallbackIdentityMatchContractVersion = 1,
     MarketPriceHandshakeContractVersion = 1,
+    PriceSafetyContractVersion = 1,
+    RequoteContractVersion = 2,
+    SingleQueryContractVersion = 1,
+    singleQuerySequence = 0, singleQueryWatchers = {},
+    requotePatch = "trade-requote-2",
+    -- 维护（trade-requote-2）：准入等待不是 Native 在途。最多64项共享容量、单一既有1s lane；
+    -- unknown 最多宽限45s后明确 blocked，已确认玩家打开拍卖行仍等待关闭，不抢结果。
+    admissionWaiting = {},
+    unknownAdmissionWaitMs = 45000,
+    maxListingObservations = 2,
+    priceSafetyPatch = "trade-quote-price-safety-1",
     -- 中文维护注释（2026-09-25，trade-fallback-unit-price-1）：名称搜索 fallback 只能消费
     -- AuctionQueryV3 已按 listing quantity 归一后的单价；禁止把整单 directPrice/bidPrice 作为 unit cost。
     -- 同 itemType 多条结果按最低“可立即购买单价”选择，数量缺失则 fail-closed。
@@ -130,8 +143,6 @@ local Q = {
 }
 S.Services.PriceQuoteQueueV3 = Q
 
-local AuctionApi = rawget(_G, "X2Auction")
-
 local function NowMs()
     if type(S.NowMs) == "function" then return math.max(0, tonumber(S.NowMs()) or 0) end
     return 0
@@ -151,8 +162,8 @@ end
 -- 维护（2026-09-30，auction-user-priority-1）：暂停不属于报价终态，必须使用独立 topic。
 -- price_quote.completed 会驱动 Trade 的 RowJob 完成计数，禁止用它发送 paused/resumed。
 local PAUSE_REASONS = {
-    native_auction_visible = "拍卖行使用中，材料名称查询已暂停；关闭拍卖行后自动继续",
-    native_auction_visibility_unknown = "暂时无法确认拍卖行已关闭，材料名称查询等待中",
+    native_auction_visible = "拍卖行使用中，材料询价已暂停；关闭拍卖行后自动继续",
+    native_auction_visibility_unknown = "无法确认拍卖行已关闭，材料询价已暂停；持续不可读将停止本次询价",
     auction_user_search_pending = "正在等待手动拍卖搜索完成，材料名称查询已暂停",
     auction_response_drain = "正在隔离旧拍卖查询回包，材料名称查询稍后继续",
     auction_query_busy = "正在等待共享拍卖搜索通道，材料名称查询已暂停",
@@ -160,7 +171,10 @@ local PAUSE_REASONS = {
 function Q:GetActivitySnapshot()
     return { patch = self.activityPatch, paused = self.paused == true, reason = self.pauseReason,
         pausedAt = self.pauseStartedAt, resumeAfter = self.resumeAfter,
-        text = self.paused == true and PAUSE_REASONS[self.pauseReason] or nil }
+        text = self.paused == true and PAUSE_REASONS[self.pauseReason] or nil,
+        requotePatch = self.requotePatch, admissionWaiting = #self.admissionWaiting,
+        verifying = self.pending ~= nil and self.pending.verifying == true,
+        lastBlocked = Copy(self.lastBlocked) }
 end
 function Q:_SetPaused(paused, reason)
     paused = paused == true
@@ -174,7 +188,75 @@ function Q:_SetPaused(paused, reason)
     end
     return true
 end
+-- 维护（trade-requote-2）：只让出尚未占用原生搜索通道的本地请求。已发包的无令牌响应
+-- 必须继续由 AuctionQuery 原 timeout 隔离；不能为了让队列前进而把它当成已取消。
+local function HasWork()
+    return Q.pending ~= nil or #Q.queue > 0 or #Q.admissionWaiting > 0
+end
+-- 同一身份已有显式重验时，普通调用者也必须加入该请求；不能先用旧 TTL 发 ready，
+-- 否则共享完成事件会提前结算 Trade RowJob。只在请求入队边沿扫描总计<=64项，无 Tick 扫描。
+local function HasCurrentListingRequest(requestKey)
+    if Q.pending and Q.pending.requestKey == requestKey and Q.pending.requireListing == true then return true end
+    for _, request in ipairs(Q.queue) do
+        if request.requestKey == requestKey and request.requireListing == true then return true end
+    end
+    for _, request in ipairs(Q.admissionWaiting) do
+        if request.requestKey == requestKey and request.requireListing == true then return true end
+    end
+    return false
+end
+local function InsertByPriority(list, request)
+    local index = #list + 1
+    if request.priority == "user" then
+        for i = 1, #list do
+            if tostring(list[i].priority or "normal") == "background" then index = i; break end
+        end
+    end
+    table.insert(list, index, request)
+end
+-- 维护（2026-10-01，auction-full-lane-safety-1）：保护覆盖整个 Ask/Read/Search 协议，
+-- 不是只有名称 fallback。诊断已证实 unknown 时前半段仍反复 Ask；false UI 参数不证明无共享占用。
+-- 只在现有需求 lane/显式探针边沿采样；缺 Authority 或读失败均不允许发送原生询价。
+function Q:CanNativeQuote()
+    local query = S.Services and S.Services.AuctionQueryV3 or nil
+    local allowed, reason = false, "native_auction_visibility_unknown"
+    if type(query) == "table" and type(query.CanBackgroundSearch) == "function" then
+        local ok, value, why = pcall(query.CanBackgroundSearch, query)
+        if ok == true then allowed, reason = value == true, why end
+    end
+    if allowed and type(query.Describe) == "function" then
+        local state = query:Describe()
+        if type(state) == "table" and state.pending == true
+            and not (self.pending and self.pending.fallbackState == "searching") then
+            allowed, reason = false, "auction_query_busy"
+        end
+    end
+    if allowed then reason = nil else reason = tostring(reason or "native_auction_visibility_unknown") end
+    self.nativeAdmission = { allowed = allowed, reason = reason, at = NowMs() }
+    return allowed, reason
+end
+local function ParkAdmission(request, reason)
+    local query = S.Services and S.Services.AuctionQueryV3 or nil
+    local state = query and type(query.Describe) == "function" and query:Describe() or nil
+    -- 维护（auction-full-lane-safety-1）：只有正在让出无 token 在途查询的 pending 需保留隔离。
+    -- 其它未发包请求可以停在本地等待区，不能因为原生手动查询忙就占住/反复派发它们。
+    if Q.pending == request and type(state) == "table" and state.pending == true then return false end
+    if request.fallbackState == "searching" then return false end
+    request.admissionReason = reason
+    request.unknownSince = reason == "native_auction_visibility_unknown" and (request.unknownSince or NowMs()) or nil
+    request.fallbackDeadlineAt = nil
+    if Q.pending == request then Q.pending = nil end
+    InsertByPriority(Q.admissionWaiting, request)
+    Q.resumeAfter = nil
+    Q:_SetPaused(Q.pending == nil and #Q.queue == 0, reason)
+    return true
+end
 local function PauseFallback(request, reason)
+    -- 维护（auction-full-lane-safety-1）：玩家介入 Ask 与 Read 之间后，不接受共享 Native 旧快照。
+    -- 恢复时先重新 Ask，再按原节流 Read；已获得的本地确认价完全不动。
+    if request.marketPriceState == "readback_queued" then
+        request.marketPriceState, request.marketPriceGrade = "ask_queued", nil
+    end
     if request.fallbackState == "searching" then
         local query = S.Services and S.Services.AuctionQueryV3 or nil
         if type(query) == "table" and type(query.YieldBackgroundSearch) == "function" then query:YieldBackgroundSearch(reason) end
@@ -185,10 +267,11 @@ local function PauseFallback(request, reason)
     if type(request.watchers) == "table" and next(request.watchers) == nil then
         Q.pending = nil
         Q.quoteStateByItemType[request.itemType] = { status = "cancelled", itemGrade = request.itemGrade, at = NowMs() }
-        if #Q.queue == 0 then Q:_StopLane() else Q:_SetPaused(false) end
+        if not HasWork() then Q:_StopLane() else Q:_SetPaused(false) end
         return
     end
-    -- 只冻结当前未完成材料；不改 watcher、报价缓存、负缓存、请求身份和完成计数。
+    if ParkAdmission(request, reason) then return end
+    -- 已发 Native 尚在隔离时保留 pending；未发包的等待已由上方分离。
     request.fallbackDeadlineAt = nil
     Q.resumeAfter = nil
     Q:_SetPaused(true, reason)
@@ -204,24 +287,39 @@ end
 -- misclassify a real listing as "no listing". Every price extraction path uses
 -- this, never raw tonumber(). Declared before all users; assigned to the local
 -- name after definition so the table-recursion branch resolves correctly.
-local function ToMoney(value)
-    if type(value) == "number" then return value end
+local function ToMoney(value, depth)
+    -- 维护（2026-09-30，trade-quote-price-safety-1）：GetLowestPrice 的“单价”不得从
+    -- listing 总价/数量/bidPrice 猜测。带堆叠或挂单字段的未验证对象交给既有名称搜索，
+    -- 由 AuctionQuery 在同一结果中确认数量与总价；只保留已支持的标量/币值/显式价格包装。
+    -- 有界递归避免异常自引用返回让共享报价 lane 栈溢出，最大4层，不追加 Native 探针。
+    depth = tonumber(depth) or 0
+    if depth > 4 then return nil end
+    if type(value) == "number" then
+        if value ~= value or value == math.huge or value == -math.huge then return nil end
+        return value
+    end
     if type(value) == "string" then
         local cleaned = value:gsub(",", ""):gsub("%s", "")
-        return tonumber(cleaned)
+        return ToMoney(tonumber(cleaned), depth + 1)
     end
     if type(value) == "table" then
+        for _, key in ipairs({ "itemStack", "stackCount", "stack", "count", "quantity", "itemCount", "stackSize",
+            "directPrice", "directPriceStr", "buyoutPrice", "buyoutPriceStr", "bidPrice", "bidPriceStr" }) do
+            if value[key] ~= nil then return nil end
+        end
         local gold = tonumber(value.gold or value.g)
         local silver = tonumber(value.silver or value.s)
         local copper = tonumber(value.copper or value.c)
         if gold ~= nil or silver ~= nil or copper ~= nil then
-            return math.floor((gold or 0) * 10000 + (silver or 0) * 100 + (copper or 0))
+            for _, component in ipairs({ gold or 0, silver or 0, copper or 0 }) do
+                if component ~= component or component < 0 or component == math.huge then return nil end
+            end
+            return ToMoney((gold or 0) * 10000 + (silver or 0) * 100 + (copper or 0), depth + 1)
         end
         for _, key in ipairs({
-            "value", "amount", "price", "money", "lowestPrice", "lowest_price",
-            "directPrice", "directPriceStr", "bidPrice", "bidPriceStr", "buyoutPrice", "buyoutPriceStr",
+            "value", "price", "money", "lowestPrice", "lowest_price",
         }) do
-            local n = ToMoney(value[key]); if n ~= nil then return n end
+            local n = ToMoney(value[key], depth + 1); if n ~= nil then return n end
         end
     end
     return nil
@@ -240,7 +338,7 @@ end
 local function NormalizeQuote(raw)
     if raw == nil then return nil end
     local price = ToMoney(raw)
-    if price == nil or price < 0 then return nil end
+    if price == nil or price ~= price or price == math.huge or price < 1 then return nil end
     return { value = math.floor(price), source = type(raw) == "table" and "money_field" or type(raw) }
 end
 
@@ -274,7 +372,7 @@ local function ScanPrice(...)
     local count = select("#", ...)
     for index = 1, count do
         local n = ToMoney(select(index, ...))
-        if n ~= nil and n == n and n ~= math.huge and n > 0 then return math.floor(n) end
+        if n ~= nil and n == n and n ~= math.huge and n >= 1 then return math.floor(n) end
     end
     return nil
 end
@@ -324,6 +422,11 @@ local ProbeState = { done = false, results = {}, attempts = 0, maxAttempts = 6 }
 function Q:RunProtocolProbe()
     if ProbeState.done == true then return true end
     if S.Api == nil or type(S.Api.CallCapability) ~= "function" then return false end
+    -- 维护（auction-full-lane-safety-1）：手动协议探针也不得绕过原生优先级或挤占正在工作的 lane。
+    if HasWork() then return false, "price_quote_busy" end
+    local allowed, reason = self:CanNativeQuote()
+    if allowed ~= true then return false, reason end
+    if Q.lastNativeCallAt ~= nil and NowMs() - Q.lastNativeCallAt < Q.intervalMs then return false, "quote_cooldown" end
     if ProbeState.attempts >= ProbeState.maxAttempts then
         ProbeState.done = true
         return true
@@ -372,20 +475,22 @@ local function BeginSearchFallback(pending)
     -- 维护（2026-09-24，quote-fallback-identity-match-1）：旧实现 resultLimit=1 后只读 rows[1]。
     -- SearchAuctionArticle 是名称搜索，首条并不保证就是目标材料；因此“拍卖行有货”也会被错误判成身份不匹配。
     -- 这里仍只发 ONE 次服务器搜索，但有界读取最多 20 条，再按 stable itemType 优先、精确名称次之匹配。
-    local ok, err = query:Search("price_quote_fallback", keyword, { resultLimit = Q.fallbackSearchLimit, background = true })
+    -- 维护（2026-10-02，material-name-candidates-1）：requireListing 约束价格来源，不是 Native 的名称
+    -- 精确匹配开关。名称只负责召回候选；返回后仍由既有 SelectFallbackRow/FallbackRowPrice 核对事实。
+    -- 不为同一材料追加重试/翻页，拍卖助手自己的显式精确搜索继续尊重其设置。
+    local ok, err = query:Search("price_quote_fallback", keyword, { resultLimit = Q.fallbackSearchLimit, background = true, exactMatch = false })
     if ok ~= true then pending.fallbackState = "queued" end
     return ok == true, err
 end
 
-local function FallbackRowPrice(row)
+local function FallbackRowPrice(row, requireListing)
     if type(row) ~= "table" then return nil, nil, "row_unavailable" end
     -- 中文维护注释（2026-09-25，trade-fallback-unit-price-1）：AuctionQueryV3 的 directPrice/bidPrice
     -- 是整条 listing 的总价。旧实现直接把总价乘配方数量，例如“谷物细粉 x300”会再放大 300 倍，
     -- 产生 -10万金级假毛利。PriceQuoteQueue 作为价格 Authority 必须消费 unit* 字段；为了兼容同版本
     -- 内的旧 detached snapshot，可在 quantity 存在时本地重算，但 quantity 缺失时绝不猜测。
     local quantity = tonumber(row.quantity)
-    if quantity == nil or quantity ~= quantity or quantity < 1 then return nil, nil, "listing_quantity_unavailable" end
-    quantity = math.max(1, math.floor(quantity))
+    if quantity == nil or quantity ~= quantity or quantity == math.huge or quantity < 1 or quantity ~= math.floor(quantity) then return nil, nil, "listing_quantity_unavailable" end
     local directUnit = ToMoney(row.unitDirectPrice)
     if directUnit == nil then
         local directTotal = ToMoney(row.directPrice)
@@ -394,6 +499,8 @@ local function FallbackRowPrice(row)
     if directUnit ~= nil and directUnit == directUnit and directUnit > 0 then
         return math.floor(directUnit), "name_search_direct_unit", nil
     end
+    -- 显式货物重验以本次同物品一口价为准；竞拍起价不是可直接购入成本。
+    if requireListing == true then return nil, nil, "buyout_unavailable" end
     local bidUnit = ToMoney(row.unitBidPrice)
     if bidUnit == nil then
         local bidTotal = ToMoney(row.bidPrice)
@@ -422,12 +529,14 @@ local function SelectFallbackRow(rows, pending)
         if type(row) == "table" then
             local rowType = tonumber(row.itemType)
             rowType = rowType ~= nil and math.floor(rowType) or nil
-            if expected ~= nil and rowType ~= nil and rowType == expected then
+            local gradeMatches = pending.requireListing ~= true or row.itemGrade == nil
+                or tonumber(row.itemGrade) == tonumber(pending.itemGrade)
+            if gradeMatches and expected ~= nil and rowType ~= nil and rowType == expected then
                 typed[#typed + 1] = { row = row, index = index, kind = "itemType" }
             else
                 local gotName = NormalizeSearchIdentityName(row.name)
                 -- Text may only bridge a missing stable identity, never override a conflicting one.
-                if wantedName ~= "" and gotName == wantedName and (rowType == nil or expected == nil) then
+                if gradeMatches and wantedName ~= "" and gotName == wantedName and (rowType == nil or expected == nil) then
                     named[#named + 1] = { row = row, index = index, kind = "name" }
                 end
             end
@@ -441,7 +550,7 @@ local function SelectFallbackRow(rows, pending)
     -- matching direct/buyout listing has a usable quantity. No additional Native/server call is issued.
     local bestDirect, bestBid, firstReason = nil, nil, nil
     for _, candidate in ipairs(pool) do
-        local price, source, reason = FallbackRowPrice(candidate.row)
+        local price, source, reason = FallbackRowPrice(candidate.row, pending.requireListing)
         firstReason = firstReason or reason
         if price ~= nil then
             local target = source == "name_search_direct_unit" and "direct" or "bid"
@@ -463,7 +572,11 @@ end
 -- 维护：会话缓存有界，取消仅移除请求者需求；不能清除其它模块共享的事实。
 local function CachePut(cache, key, value)
     local count, oldest, at = 0, nil, math.huge
-    for k, v in pairs(cache) do count=count+1;if (tonumber(v.at) or 0)<at then oldest,at=k,tonumber(v.at) or 0 end end
+    for k, v in pairs(cache) do
+        count = count + 1
+        local activeStrict = cache == Q.snapshots and Q.singleQueryWatchers[k] ~= nil
+        if not activeStrict and (tonumber(v.at) or 0) < at then oldest, at = k, tonumber(v.at) or 0 end
+    end
     if cache[key]==nil and count>=Q.cacheMax and oldest then cache[oldest]=nil end
     cache[key]=value
 end
@@ -476,11 +589,51 @@ local function Deliver(requester, callback, snapshot)
     end
 end
 
-local function CompletePending(status, quote, err, origin)
-    local pending = Q.pending
+local function CompletePending(status, quote, err, origin, waitingRequest)
+    local pending = waitingRequest or Q.pending
     if type(pending) ~= "table" then return false end
     local requester = pending.requester
-    Q.pending = nil
+    if Q.pending == pending then Q.pending = nil end
+    local observedPrice = quote and quote.value or nil
+    local priceHeld, referenceStored, priceDecision = false, false, nil
+    if status == "ready" and quote ~= nil and pending.itemType ~= nil then
+        -- 维护（2026-09-30，trade-quote-price-safety-1）：价格服务是接受/隔离的唯一 Authority。
+        -- 旧代码先写 session/TTL 再忽略 ObserveConfirmedPrice 返回；异常候选价因此能绕过已接受参考价。
+        -- 一次 Native 回包只登记一次观察；隔离候选不进 session/TTL，也不延长旧参考价的新鲜度。
+        referenceStored, priceDecision = Q:RecordReferencePrice(pending.itemType,
+            pending.resolvedGrade or pending.itemGrade, quote.value, quote.source)
+        priceHeld = referenceStored ~= true and priceDecision == "anomaly_candidate_held"
+        if priceHeld and pending.singleQuery == true then
+            -- 维护（trade-material-single-query-1）：严格单次查询不负责二次验证；候选价不冒充已确认价。
+            status, quote, err = "review_required", nil, "anomaly_candidate_held"
+        elseif priceHeld and pending.requireListing == true and type(pending.watchers) == "table" and next(pending.watchers) == nil then
+            -- 已发出的首个观察可自然收尾，但最后消费者离开后不得追加第二次确认搜索。
+            status, quote, err = "cancelled", nil, "requesters_released"
+        elseif priceHeld and pending.requireListing == true then
+            -- 一次双击内部最多两个独立名称查询；不能靠复用同一快照、重复 Observe 来凑两次确认。
+            -- 首次候选保留原价但不发 completed/ready；下一 paced turn 重新发 Native 请求。
+            pending.heldObservations = (tonumber(pending.heldObservations) or 0) + 1
+            if pending.heldObservations < Q.maxListingObservations then
+                pending.marketPriceState, pending.marketPriceGrade = nil, nil
+                pending.fallbackState, pending.fallbackDeadlineAt = "queued", NowMs() + 12000
+                pending.verifying = true
+                Q.pending = pending
+                Q.quoteStateByItemType[pending.itemType] = { status = "verifying", itemGrade = pending.itemGrade,
+                    candidatePrice = observedPrice, at = NowMs() }
+                if S.Events and type(S.Events.Publish) == "function" then S.Events:Publish(Q.ActivityTopic, Q:GetActivitySnapshot()) end
+                return false
+            end
+            status, quote, err = "review_required", nil, "两次一口价观察不一致，旧价保留；材料价需复核"
+        elseif priceHeld then
+            local materialPrices = S.Services and S.Services.MaterialPriceServiceV3 or nil
+            local accepted, meta
+            if materialPrices and type(materialPrices.GetPrice) == "function" then
+                accepted, meta = materialPrices:GetPrice(pending.itemType, pending.resolvedGrade or pending.itemGrade)
+            end
+            if accepted ~= nil then quote = { value = accepted, source = meta and meta.source or "retained_reference" }
+            else status, quote, err = "unavailable", nil, "anomaly_candidate_without_reference" end
+        end
+    end
     local snapshot = {
         requester = requester,
         itemType = pending.itemType,
@@ -489,9 +642,17 @@ local function CompletePending(status, quote, err, origin)
         price = quote ~= nil and quote.value or nil,
         priceSource = quote ~= nil and quote.source or nil,
         error = err,
+        observedPrice = observedPrice, priceAccepted = status == "ready" and not priceHeld,
+        referenceStored = referenceStored == true, priceDecision = priceDecision,
+        marketError = pending.marketError, requireListing = pending.requireListing == true,
+        -- 中文维护：冻结排队/响应阶段事实，TXT 不再把没发出的搜索笼统报告成 Native 响应超时。
+        singleQuery = pending.singleQuery == true, searchGeneration = pending.searchGeneration,
+        dispatchedAt=pending.dispatchedAt, queueDeadlineAt=pending.queueDeadlineAt, deadlineAt=pending.deadlineAt,
+        blockReason = status == "blocked" and pending.admissionReason or nil,
         requestedAt = pending.requestedAt,
         completedAt = NowMs(),
         contract = "显式+异步报价；串行限速；结果字段按当前 RU 返回做 bounded normalization，未验证字段不作为成交样本",
+        errorCode = pending.failureCode,
     }
     snapshot.at = snapshot.completedAt
     -- Shared per-itemType lifecycle state. "ready" mirrors pricesByItemType;
@@ -505,7 +666,7 @@ local function CompletePending(status, quote, err, origin)
             }
         else
             Q.quoteStateByItemType[pending.itemType] = {
-                status = "failed", code = tostring(status or "failed"), error = err,
+                status = (status == "blocked" or status == "cancelled") and status or "failed", code = tostring(status or "failed"), error = err,
                 itemGrade = pending.resolvedGrade or pending.itemGrade, requester = requester, at = snapshot.completedAt,
             }
         end
@@ -514,12 +675,20 @@ local function CompletePending(status, quote, err, origin)
         requester = requester, itemType = pending.itemType, itemGrade = pending.itemGrade,
         status = snapshot.status, price = snapshot.price, priceSource = snapshot.priceSource,
         error = err, rawShape = Q.lastRawReturn, requestedAt = pending.requestedAt, at = snapshot.completedAt,
+        -- 中文维护：最近完成环也保留两阶段时间；操作结束后原 active operation 已被释放。
+        dispatchedAt=pending.dispatchedAt, queueDeadlineAt=pending.queueDeadlineAt, deadlineAt=pending.deadlineAt,
+        observedPrice = observedPrice, priceAccepted = snapshot.priceAccepted, priceDecision = priceDecision,
+        marketError = pending.marketError,
     }
     if status == "ready" then Q.stats.ready = Q.stats.ready + 1 else Q.stats.failed = Q.stats.failed + 1 end
     table.insert(Q.recent, 1, {
         requester = requester, itemType = pending.itemType, itemGrade = pending.itemGrade,
         status = snapshot.status, price = snapshot.price, priceSource = snapshot.priceSource,
         error = err, rawShape = Q.lastRawReturn, at = snapshot.completedAt,
+        requestedAt=pending.requestedAt, dispatchedAt=pending.dispatchedAt,
+        queueDeadlineAt=pending.queueDeadlineAt, deadlineAt=pending.deadlineAt,
+        observedPrice = observedPrice, priceAccepted = snapshot.priceAccepted, priceDecision = priceDecision,
+        marketError = pending.marketError,
     })
     if #Q.recent > Q.recentMax then table.remove(Q.recent) end
     -- Index a completed (ready) quote by itemType so other Features can resolve
@@ -527,15 +696,18 @@ local function CompletePending(status, quote, err, origin)
     -- completions must NOT overwrite a previously good price: fail-closed means
     -- we preserve the last trustworthy value rather than clearing it to a bogus
     -- "unknown" that a projection might misrender as zero.
-    if status == "ready" and quote ~= nil and pending.itemType ~= nil then
+    if status == "ready" and quote ~= nil and pending.itemType ~= nil and not priceHeld then
         Q.pricesByItemType[pending.itemType] = {
             price = quote.value, source = quote.source, itemGrade = pending.resolvedGrade or pending.itemGrade,
             completedAt = snapshot.completedAt,
         }
-        -- Persist the grade that actually answered (resolvedGrade), not the hint
-        -- we happened to ask about first.
-        Q:RecordReferencePrice(pending.itemType, pending.resolvedGrade or pending.itemGrade,
-            quote.value, quote.source)
+        -- 维护（trade-requote-2）：新挂单已验真时，同身份旧 TTL/负缓存失效；不能在下一次
+        -- 普通请求中回放修正前价格。只失效当前品质，不清其它材料，也不把名称样本伪装成直接实时缓存。
+        if pending.requireListing == true then
+            local grade = tonumber(pending.resolvedGrade) or tonumber(pending.itemGrade)
+            if grade ~= nil then Q.cache[tostring(pending.itemType) .. ":" .. tostring(grade)] = nil end
+            if pending.requestKey ~= nil then Q.negativeCache[pending.requestKey] = nil end
+        end
         -- Only direct stable-ID quotes enter the TTL cache; a name-search bid
         -- price is a reference estimate and must not be reused as a fresh quote
         -- on a later passive refresh.
@@ -547,16 +719,158 @@ local function CompletePending(status, quote, err, origin)
             end
         end
     end
-    if status ~= "ready" and pending.requestKey then
+    if status ~= "ready" and status ~= "blocked" and status ~= "review_required" and status ~= "cancelled" and pending.requestKey then
         CachePut(Q.negativeCache, pending.requestKey, {at=NowMs(),snapshot=Copy(snapshot)})
     end
     -- 每个消费者各接收一次；取消的页面不再回调。快照在回调前复制，不能跨Feature共享可写表。
     for token, watcher in pairs(pending.watchers or {[requester]={callback=pending.callback}}) do
-        Deliver(token,watcher.callback,snapshot)
+        if pending.singleQuery ~= true or Q.singleQueryWatchers[token] == watcher then
+            if pending.singleQuery == true then Q.singleQueryWatchers[token] = nil end
+            Deliver(token,watcher.callback,snapshot)
+        end
     end
-    if #Q.queue==0 and Q.pending==nil then Q:_StopLane() end
+    if not HasWork() then Q:_StopLane() end
     Publish(pending.itemType, pending.resolvedGrade or pending.itemGrade, snapshot.status, tostring(origin or "completed"))
     return true
+end
+
+-- 维护（trade-material-single-query-1 / 215703）：严格路径只拥有一次 Search；默认前台总计五秒，
+-- 跑商有界排队与发包后五秒分别计时；后台仅未发包时可等待准入。
+-- 完成/取消先解绑自身通知，再让出自己的无 token Native 请求；原 AuctionQuery timeout 继续隔离晚包。
+local function FinishSingle(request, status, quote, reason)
+    if request.finished == true then return false end
+    request.finished = true
+    if S.Scheduler and request.deadlineTask then S.Scheduler:RemoveTask(request.deadlineTask) end
+    local query = S.Services and S.Services.AuctionQueryV3 or nil
+    if request.queryOwner and S.Events and type(S.Events.UnsubscribeInternal) == "function" then
+        S.Events:UnsubscribeInternal(query and query.Topic or "v3.auction_query.updated", request.queryOwner)
+    end
+    if query and type(query.YieldBackgroundSearch) == "function" and request.fallbackState == "searching" then
+        query:YieldBackgroundSearch(reason or status, request.queryRequester, request.searchGeneration)
+    end
+    if query and type(query.ReleaseSnapshot) == "function" then query:ReleaseSnapshot(request.queryRequester, request.searchGeneration) end
+    for i = #Q.queue, 1, -1 do if Q.queue[i] == request then table.remove(Q.queue, i) end end
+    for i = #Q.admissionWaiting, 1, -1 do if Q.admissionWaiting[i] == request then table.remove(Q.admissionWaiting, i) end end
+    request.admissionReason = status == "blocked" and reason or nil
+    return CompletePending(status, quote, reason, "fallback", request)
+end
+
+function Q:_CheckSingle(request)
+    request = request or self.pending
+    if not request or request.singleQuery ~= true or request.finished or request.fallbackState ~= "searching" then return end
+    local query = S.Services and S.Services.AuctionQueryV3 or nil
+    local snap = query and type(query.GetSnapshot) == "function" and query:GetSnapshot(request.queryRequester) or nil
+    if type(snap) ~= "table" or snap.searchGeneration ~= request.searchGeneration then return end
+    if snap.status == "waiting" or snap.status == "idle" then return end
+    -- 维护（2026-10-02）：原生 Count=0 与有结果却无可靠一口价是两个断点；空搜索不是已证实无货。
+    if snap.status == "empty" then return FinishSingle(request, "unavailable", nil, "auction_search_empty") end
+    if snap.status == "ready" or snap.status == "partial" then
+        if snap.coverageComplete ~= true or snap.listingSelection ~= "lowest_unit_buyout" then
+            request.failureCode = "auction_search_coverage_incomplete"
+            return FinishSingle(request, "unavailable", nil, "搜索结果未完整返回，无法确认最低单价")
+        end
+        for _, row in ipairs(snap.rows or {}) do
+            if row.itemType == request.itemType and row.itemGrade == request.itemGrade then
+                local price, source = FallbackRowPrice(row, true)
+                if price ~= nil then return FinishSingle(request, "ready", { value = price, source = "name_search_min_direct_unit" }) end
+            end
+        end
+        return FinishSingle(request, "unavailable", nil, "strict_buyout_not_found")
+    end
+    request.failureCode = snap.errorCode
+    return FinishSingle(request, snap.status == "interrupted" and "blocked" or "unavailable", nil,
+        snap.error or "strict_buyout_not_found")
+end
+
+local function ArmSingleDeadline(request, deadline)
+    local scheduler = S.Scheduler
+    if not scheduler or type(scheduler.AddOneShot) ~= "function" then return false end
+    request.deadlineAt = deadline
+    scheduler:RemoveTask(request.deadlineTask)
+    local added = scheduler:AddOneShot(request.deadlineTask, math.max(0, deadline - NowMs()), function()
+        if request.finished ~= true then
+            local reason=request.queueDeadlineAt and request.deferDeadline and 'quote_queue_wait_timeout' or 'quote_deadline'
+            FinishSingle(request, "timeout", nil, reason)
+        end
+    end, Q.owner, "P2", 1)
+    if added and type(scheduler.SetTaskModule) == "function" then scheduler:SetTaskModule(request.deadlineTask, "PriceQuoteQueueV3", true) end
+    return added == true
+end
+
+local function StartSingle(request)
+    if request.finished then return end
+    if request.deferDeadline == true then
+        request.deferDeadline = false
+        -- 中文维护（215703）：排队期与 Native 响应期分开。跑商的本地等待有自己的硬期限；
+        -- 真正取得 lane 后响应仍最多五秒，且不超过等待阶段的上界。后台原有准入策略保持不变。
+        local responseDeadline=math.min(NowMs()+5000,request.queueDeadlineAt or math.huge)
+        if not ArmSingleDeadline(request, responseDeadline) then return FinishSingle(request, "unavailable", nil, "quote_deadline_unavailable") end
+    end
+    if NowMs() >= request.deadlineAt then return FinishSingle(request, "timeout", nil, "quote_deadline") end
+    local query = S.Services and S.Services.AuctionQueryV3 or nil
+    if type(query) ~= "table" or type(query.Search) ~= "function" then
+        return FinishSingle(request, "unavailable", nil, "auction_query_unavailable")
+    end
+    request.fallbackState = "searching"
+    request.queryOwner = {}
+    if S.Events and type(S.Events.SubscribeInternal) == "function" then
+        S.Events:BindOwner(request.queryOwner, "PriceQuoteQueueV3")
+        S.Events:SubscribeInternal(query.Topic, request.queryOwner, function(_, requester)
+            if requester == request.queryRequester and Q.pending == request and request.finished ~= true then Q:_CheckSingle(request) end
+        end)
+    end
+    Q.lastNativeCallAt = NowMs()
+    request.dispatchedAt=Q.lastNativeCallAt
+    -- 维护（2026-10-02，material-name-candidates-1）：211943 实机证明搜索返回空且事件不含行数据；
+    -- 中文静态显示名并不是已核验的 Native 完整索引名，强制 exactMatch 可能在 ID 校验前排除候选。
+    -- 单次材料查询用普通名称筛选；firstValidBuyout 要求真实 ID/品质、正数量和有效一口价，
+    -- 并在完整有界结果内选最低单价，不能再把用户当前排序的第一条视为市场报价。
+    -- 不靠同名或默认品质接受报价。等级参数/20条上限/一包上限/人用拍卖优先级均保持既有契约。
+    local ok, err = query:Search(request.queryRequester, request.searchName, {
+        background = true, exactMatch = false, resultLimit = Q.fallbackSearchLimit,
+        firstValidBuyout = { itemType = request.itemType, itemGrade = request.itemGrade },
+        searchGeneration = request.searchGeneration,
+    })
+    if request.finished then return end -- Native may finish synchronously inside Search.
+    if ok ~= true then
+        return FinishSingle(request, PAUSE_REASONS[err] and "blocked" or "unavailable", nil, err or "search_rejected")
+    end
+    Q:_CheckSingle(request)
+end
+
+-- 维护（trade-requote-2）：只在既有需求 lane 中处理有界等待队列；不新建永久观察者。
+-- 维护（auction-full-lane-safety-1）：缺少可见性证据时整条询价协议只停留在本地等待区，
+-- 不占用 Native 查询；blocked 不写“无货”负缓存。恢复后仍按用户优先级/同级 FIFO 发包。
+local function PollAdmissionWaiting(allowed, reason)
+    if #Q.admissionWaiting == 0 then return end
+    local now, expired, promoted = NowMs(), {}, {}
+    for index = #Q.admissionWaiting, 1, -1 do
+        local request = Q.admissionWaiting[index]
+        if allowed == true then
+            table.remove(Q.admissionWaiting, index)
+            request.admissionReason, request.unknownSince = nil, nil
+            request.fallbackDeadlineAt = now + 12000
+            promoted[#promoted + 1] = request
+        else
+            request.admissionReason = reason
+            if reason == "native_auction_visibility_unknown" then
+                request.unknownSince = request.unknownSince or now
+                if now - request.unknownSince >= Q.unknownAdmissionWaitMs then
+                    table.remove(Q.admissionWaiting, index)
+                    expired[#expired + 1] = request
+                end
+            else request.unknownSince = nil end
+        end
+    end
+    -- 倒序移除避免漏项，但恢复同级任务必须还原原始 FIFO，不能让最后排队的材料先查。
+    for index = #promoted, 1, -1 do InsertByPriority(Q.queue, promoted[index]) end
+    for _, request in ipairs(expired) do
+        local message = "材料重验受阻：无法确认原生拍卖窗口已关闭；已停止本次询价，原价未更新。确认拍卖行关闭后可双击重试"
+        Q.lastBlocked = { itemType = request.itemType, reason = "native_auction_visibility_unknown", at = now }
+        Q.stats.admissionBlocked = (tonumber(Q.stats.admissionBlocked) or 0) + 1
+        if request.singleQuery then FinishSingle(request, "blocked", nil, "native_auction_visibility_unknown")
+        else CompletePending("blocked", nil, message, "admission", request) end
+    end
 end
 
 -- Called from the drain lane every paced tick while a fallback search owns the
@@ -684,26 +998,46 @@ local function Drain()
     -- `now - lastNativeCallAt` 因 now=nil 让 v3_price_quote_drain 连续异常并被 Scheduler 退避暂停。
     -- 必须保持 now 为 Drain 每次调用的局部快照；禁止改成模块缓存或 Tick 外共享时间，避免并发状态漂移。
     local now = NowMs()
+    if Q.pending and Q.pending.singleQuery == true then
+        Q:_CheckSingle(Q.pending)
+        if Q.pending and Q.pending.singleQuery == true then
+            local allowed, reason = Q:CanNativeQuote()
+            if not allowed then FinishSingle(Q.pending, "blocked", nil, reason) end
+            return
+        end
+    end
+    local wasPaused = Q.paused == true
+    local allowed, reason = Q:CanNativeQuote()
+    PollAdmissionWaiting(allowed, reason)
+    if allowed ~= true then
+        if Q.pending ~= nil then PauseFallback(Q.pending, reason) end
+        -- 维护（auction-full-lane-safety-1）：一次把<=64个未发包请求转入等待，unknown 宽限从
+        -- 同一暂停边沿计时。不能逐材料先 Ask/Read 再等待，也不能让队尾多等数分钟才开始超时。
+        local waiting = Q.queue
+        Q.queue = {}
+        for _, request in ipairs(waiting) do
+            if request.singleQuery and request.priority ~= "background" then FinishSingle(request, "blocked", nil, reason)
+            else ParkAdmission(request, reason) end
+        end
+        if HasWork() then Q:_SetPaused(true, reason) else Q:_StopLane() end
+        return
+    end
+    if not HasWork() then Q:_StopLane(); return end
+    if wasPaused then
+        if Q.pending ~= nil then Q.pending.fallbackDeadlineAt = now + 12000 end
+        Q.resumeAfter = now + Q.intervalMs
+        Q:_SetPaused(false)
+        return
+    end
     if Q.lastNativeCallAt ~= nil and (now - Q.lastNativeCallAt) < Q.intervalMs then return end
     if Q.resumeAfter ~= nil and now < Q.resumeAfter then return end
 
     if Q.pending ~= nil then
         local pending = Q.pending
-        if pending.fallbackState == "queued" or pending.fallbackState == "searching" then
-            local query = S.Services and S.Services.AuctionQueryV3 or nil
-            local allowed, reason = false, "native_auction_visibility_unknown"
-            if type(query) == "table" and type(query.CanBackgroundSearch) == "function" then
-                allowed, reason = query:CanBackgroundSearch()
-            end
-            if allowed ~= true then PauseFallback(pending, reason); return end
-            if Q.paused == true then
-                -- 玩家占用时间不计入 12s admission 超时；关窗/回包排空后至少再经过原有节流间隔。
-                pending.fallbackDeadlineAt = now + 12000
-                Q.resumeAfter = now + Q.intervalMs
-                Q:_SetPaused(false)
-                return
-            end
-        end
+        -- 维护（auction-full-lane-safety-1）：终态发布/恢复通知可能同步触发用户操作，
+        -- 真正派发前再次验证；市场价与名称价一视同仁，不能从“直接 ID 报价”绕过保护。
+        local stillAllowed, why = Q:CanNativeQuote()
+        if stillAllowed ~= true then PauseFallback(pending, why); return end
         local grades = pending.grades or {}
         local grade = grades[tonumber(pending.gradeIndex) or 1] or pending.itemGrade
         if pending.marketPriceState == "ask_queued" then
@@ -719,7 +1053,9 @@ local function Drain()
                 shape = ShapeOf(value) .. ", " .. ShapeOf(b) .. ", " .. ShapeOf(c) .. ", " .. ShapeOf(d),
                 error = ok == true and nil or tostring(err or "unknown"), at = NowMs(),
             }
-            if ok ~= true then
+            if ok ~= true or value == false then
+                pending.marketError = tostring(err or "AskMarketPrice rejected")
+                Q.lastMarketAsk.ok, Q.lastMarketAsk.error = false, pending.marketError
                 Q.stats.marketPriceAskFailures = (tonumber(Q.stats.marketPriceAskFailures) or 0) + 1
                 -- Ask 失败不能污染整个服务；该 grade 退回既有名称搜索/下一 grade 降级链。
                 AdvanceAfterUnreadableLowestPrice(pending, grades)
@@ -732,7 +1068,11 @@ local function Drain()
             grade = tonumber(pending.marketPriceGrade) or grade
             local ok, price, err = ReadLowestPrice(pending, grade, "after_ask")
             if ok ~= true then
-                Q:_FailPending("failed", tostring(err or "报价读取失败"))
+                -- 单独开启跑商时 getter 未就绪/被拒绝，不应绕过已存在的独立名称搜索降级链。
+                -- 仍执行原 grade 上限、单 lane 节流、原生拍卖窗口所有权保护；不启动拍卖助手。
+                pending.marketError = tostring(err or "报价读取失败")
+                Q.stats.marketPriceReadFailures = (tonumber(Q.stats.marketPriceReadFailures) or 0) + 1
+                AdvanceAfterUnreadableLowestPrice(pending, grades)
                 return
             end
             if price ~= nil then
@@ -765,14 +1105,14 @@ local function Drain()
             return
         elseif pending.fallbackState == "searching" then
             Q:_CheckFallback()
-            if Q.pending == nil and #Q.queue == 0 then Q:_StopLane() end
+            if not HasWork() then Q:_StopLane() end
         end
         return
     end
 
     local request = table.remove(Q.queue, 1)
     if request == nil then
-        Q:_StopLane()
+        if not HasWork() then Q:_StopLane() end
         return
     end
     if S.Api == nil or type(S.Api.CallCapability) ~= "function" then
@@ -782,14 +1122,22 @@ local function Drain()
         return
     end
     Q.pending = request
-    Q.stats.attempts = Q.stats.attempts + 1
+    if request.started ~= true then Q.stats.attempts = Q.stats.attempts + 1; request.started = true end
     Q.quoteStateByItemType[request.itemType] = {
         status = "inflight", itemGrade = request.itemGrade, requester = request.requester, at = NowMs(),
     }
+    if request.singleQuery == true then StartSingle(request); return end
     local grades = request.grades or {}
     local grade = grades[tonumber(request.gradeIndex) or 1] or request.itemGrade
     if grade == nil then
         Q:_FailPending("unavailable", "没有可探测的品质档位")
+        return
+    end
+    -- 显式行重验不能以 GetLowestPrice 的旧 Native 快照或 TTL 命中宣告刷新。
+    -- 只消费本次受归属保护的名称搜索一口价，普通后台路径保留原 Ask/Read 协议。
+    if request.requireListing == true or request.fallbackState == "queued" then
+        request.marketPriceState, request.marketPriceGrade = nil, nil
+        QueueFallbackStart(request)
         return
     end
     -- 先 Ask，再在下一 paced turn GetLowestPrice。askMarketPriceUi=false 保持纯数据查询，不弹原生市场价 UI。
@@ -822,7 +1170,7 @@ function Q:_StopLane()
     Q:_SetPaused(false) -- 最后一个需求取消/完成后，不遗留暂停提示或额外观察任务。
 end
 
-function Q:_Enqueue(requester, itemType, itemGrade, callback, grades, searchName, requestKey, priority)
+function Q:_Enqueue(requester, itemType, itemGrade, callback, grades, searchName, requestKey, priority, requireListing)
     local function Share(request)
         if request and request.requestKey==requestKey then
             request.watchers=request.watchers or {}
@@ -831,16 +1179,28 @@ function Q:_Enqueue(requester, itemType, itemGrade, callback, grades, searchName
             -- fallback 元数据，绝不能参与请求身份。两个货物共用同 itemType/grade 时必须合并成一个 Native 请求；
             -- 如果第一个 watcher 没有可用本地化名称，后加入 watcher 可以补全 fallback 名，但不能改写稳定身份。
             if (request.searchName==nil or request.searchName=="") and searchName~=nil and searchName~="" then request.searchName=searchName end
+            if requireListing == true and request.requireListing ~= true then
+                request.requireListing = true
+                if request.fallbackState ~= "searching" then
+                    request.marketPriceState, request.marketPriceGrade = nil, nil
+                    request.fallbackState, request.fallbackDeadlineAt = "queued", NowMs() + 12000
+                end
+            end
+            if priority == "user" then request.priority = "user" end
             self.stats.merged=self.stats.merged+1
             return true
         end
     end
     if Share(self.pending) then return true,"shared" end
+    for _, request in ipairs(self.admissionWaiting) do
+        if Share(request) then return true, "shared_waiting" end
+    end
     for index, request in ipairs(self.queue) do
+        local oldPriority = request.priority
         if Share(request) then
             -- User intent may join a request that was admitted earlier as low-priority SWR. Promote that queued request
             -- ahead of remaining background work without touching the active Native pending request.
-            if tostring(priority or "normal") == "user" and tostring(request.priority or "normal") == "background" then
+            if tostring(priority or "normal") == "user" and tostring(oldPriority or "normal") == "background" then
                 request.priority = "user"
                 table.remove(self.queue, index)
                 local insertAt = #self.queue + 1
@@ -858,9 +1218,9 @@ function Q:_Enqueue(requester, itemType, itemGrade, callback, grades, searchName
         gradeIndex = 1,
         searchName = searchName, fallbackState = nil, fallbackAttempts = 0,
         marketPriceState = nil, marketPriceGrade = nil,
-        priority = tostring(priority or "normal"),
+        priority = tostring(priority or "normal"), requireListing = requireListing == true,
     }
-    if #Q.queue >= Q.maxQueue then return false, "报价队列已满，请稍后再试" end
+    if #Q.queue + #Q.admissionWaiting + (Q.pending ~= nil and 1 or 0) >= Q.maxQueue then return false, "报价队列已满，请稍后再试" end
     -- 维护（2026-09-25，material-price-swr-priority-1）：后台 stale-while-revalidate 只能占用等待队列尾部；
     -- 用户明确双击/批量询价属于交互高优先级，必须插到尚未开始的 background 请求之前。当前 pending Native
     -- 调用不可抢占，因为 AUCTION_ITEM_SEARCHED/市场价协议没有 request-id；这里仅调整本地等待顺序。
@@ -885,6 +1245,100 @@ function Q:_Enqueue(requester, itemType, itemGrade, callback, grades, searchName
     return true
 end
 
+local function YieldUnsentBackground(priority)
+    local pending = Q.pending
+    if priority == "user" and pending and pending.priority == "background"
+        and pending.fallbackState ~= "searching" and pending.marketPriceState ~= "readback_queued" then
+        Q.pending = nil; InsertByPriority(Q.queue, pending)
+    end
+end
+
+-- strict 身份与 legacy grade ladder 隔离，绝不加入更弱的 Ask/Get/名称回退请求。
+function Q:_RequestSingle(requester, itemType, itemGrade, callback, options)
+    local now = NowMs()
+    local priority = options.priority == "background" and "background" or "user"
+    local deadline = tonumber(options.deadlineAt)
+    if deadline == nil or deadline ~= deadline or deadline == math.huge then deadline = now + 5000 end
+    -- 中文维护：默认消费者仍总计五秒；仅明确请求分阶段计时的材料操作允许有界本地排队。
+    local waitForDispatch = options.waitForDispatch == true and priority == "user"
+    if not waitForDispatch then deadline = math.min(now + 5000, deadline)
+    else
+        -- 有界契约不能依赖调用者传入任意巨大数字：最多共享容量个旧隔离槽及一次响应预算。
+        local query=S.Services and S.Services.AuctionQueryV3
+        local waitCap=5000+(self.maxQueue+1)*((query and tonumber(query.timeoutMs) or 8000)+self.intervalMs)
+        deadline=math.min(deadline,now+waitCap)
+    end
+    local key = "single:" .. tostring(itemType) .. ":" .. tostring(itemGrade)
+    local watcher = { callback = callback }
+    local request
+    if self.pending and self.pending.requestKey == key then request = self.pending end
+    if not request then for _, candidate in ipairs(self.queue) do if candidate.requestKey == key then request = candidate; break end end end
+    if not request then for _, candidate in ipairs(self.admissionWaiting) do if candidate.requestKey == key then request = candidate; break end end end
+    if not request and #self.queue + #self.admissionWaiting + (self.pending and 1 or 0) >= self.maxQueue then return false, "报价队列已满，请稍后再试" end
+    self.singleQueryWatchers[requester] = watcher
+    if request then
+        request.watchers[requester] = watcher
+        if priority == "user" then
+            request.priority = "user"
+            for i = #self.queue, 1, -1 do if self.queue[i] == request then table.remove(self.queue, i); InsertByPriority(self.queue, request); break end end
+            for i = #self.admissionWaiting, 1, -1 do
+                if self.admissionWaiting[i] == request then table.remove(self.admissionWaiting, i); InsertByPriority(self.queue, request); break end
+            end
+        end
+        if request.searchName == "" then request.searchName = TrimToKeyword(options.searchName) end
+        self.stats.merged = self.stats.merged + 1
+        CachePut(self.snapshots, requester, { requester = requester, itemType = itemType, itemGrade = itemGrade,
+            status = "queued", singleQuery = true, at = now })
+        local allowed, reason = self:CanNativeQuote()
+        if request.priority == "user" then
+            if not allowed and (reason == "native_auction_visible" or reason == "native_auction_visibility_unknown") then
+                FinishSingle(request, "blocked", nil, reason)
+            elseif deadline <= now then FinishSingle(request, "timeout", nil, "quote_deadline")
+            elseif (request.deferDeadline == true and not waitForDispatch) or deadline < request.deadlineAt then
+                -- 共享不得延长先来的响应期限；默认五秒消费者仍可收紧等待中的请求。
+                if not waitForDispatch then request.deferDeadline = false end
+                if request.deferDeadline then request.queueDeadlineAt=deadline end
+                if not ArmSingleDeadline(request, deadline) then FinishSingle(request, "unavailable", nil, "quote_deadline_unavailable") end
+            end
+        end
+        if not request.finished and priority == "user" then YieldUnsentBackground(priority); Drain() end
+        return true, "shared"
+    end
+    self.singleQuerySequence = self.singleQuerySequence + 1
+    request = { requester = requester, itemType = itemType, itemGrade = itemGrade, requestedAt = now,
+        singleQuery = true, requireListing = true, requestKey = key, deadlineAt = deadline,
+        searchGeneration = self.singleQuerySequence, queryRequester = "price_quote_single:" .. tostring(self.singleQuerySequence),
+        searchName = TrimToKeyword(options.searchName), priority = priority, deferDeadline = priority == "background" or waitForDispatch,
+        queueDeadlineAt = waitForDispatch and deadline or nil,
+        watchers = { [requester] = watcher }, deadlineTask = "v3_price_quote_single_deadline:" .. tostring(self.singleQuerySequence) }
+    CachePut(self.snapshots, requester, { requester = requester, itemType = itemType, itemGrade = itemGrade,
+        status = "queued", singleQuery = true, requestedAt = now, at = now })
+    self.quoteStateByItemType[itemType] = { status = "queued", itemGrade = itemGrade, requester = requester, at = now }
+    local allowed, reason = self:CanNativeQuote()
+    if deadline <= now then FinishSingle(request, "timeout", nil, "quote_deadline"); return true, "timeout" end
+    if not allowed and (reason == "native_auction_visible" or reason == "native_auction_visibility_unknown") then
+        if priority == "background" then
+            -- 只允许尚未发包的后台 SWR 等待关闭；unknown 沿既有45秒边界结束，用户请求不进入停车区。
+            ParkAdmission(request, reason)
+            local started, err = self:_StartLane()
+            if not started then FinishSingle(request, "unavailable", nil, err) end
+            return true, "waiting"
+        end
+        FinishSingle(request, "blocked", nil, reason); return true, "blocked"
+    end
+    if request.searchName == "" then FinishSingle(request, "unavailable", nil, "search_name_unavailable"); return true, "unavailable" end
+    if priority ~= "background" and not ArmSingleDeadline(request, deadline) then
+        FinishSingle(request, "unavailable", nil, "quote_deadline_unavailable"); return true, "unavailable"
+    end
+    -- 用户优先只让出尚未发出的后台协议步；已发搜索必须保持原归属直到结束/隔离期满。
+    YieldUnsentBackground(request.priority)
+    InsertByPriority(self.queue, request)
+    local started, err = self:_StartLane()
+    if not started then FinishSingle(request, "unavailable", nil, err); return true, "unavailable" end
+    Drain() -- 第一项可立即发出；后继仍受同一 lastNativeCallAt 冷却约束。
+    return true, "queued"
+end
+
 -- ---------------------------------------------------------------------
 -- Persistent reference prices (see Q.referencePrices above for the design).
 -- All mutations go through Persistence transactions so a failed save can never
@@ -900,7 +1354,7 @@ local function ReferenceKey(itemType, itemGrade)
     return tostring(id) .. ":" .. tostring(grade or -1)
 end
 
-local function NormalizeReferenceState(value)
+local function NormalizeReferenceState(value, preserveLegacyFallback)
     local out = {}
     if type(value) ~= "table" then return out end
     local rows = type(value.entries) == "table" and value.entries or value
@@ -916,7 +1370,7 @@ local function NormalizeReferenceState(value)
             -- 代码仍显示 -10万金级旧毛利。只丢弃这些已知语义错误来源；GetLowestPrice/新 unit fallback
             -- 的历史证据继续保留，避免粗暴清空整个用户参考价 Store。
             local poisonedLegacyFallback = source == "name_search_direct" or source == "name_search_bid" or source == "name_search"
-            if not poisonedLegacyFallback and price ~= nil and price == price and price > 0 and itemType ~= nil and grade ~= nil then
+            if (preserveLegacyFallback == true or not poisonedLegacyFallback) and price ~= nil and price == price and price > 0 and itemType ~= nil and grade ~= nil then
                 local samples = {}
                 if type(entry.samples) == "table" then
                     for index = 1, math.min(MAX_REFERENCE_SAMPLES, #entry.samples) do
@@ -940,6 +1394,17 @@ local function NormalizeReferenceState(value)
     return out
 end
 
+-- 2026-10-05 导出证明：旧 schema1 曾把 name_search_direct 的整单价计入原章。
+-- 旧投影仅用于精确校验（含原有 updatedAt 取整）；Apply 仍过滤这些已证实错误的价格来源。
+-- 不清档、不白名单放行 Hash；Core 必须验证旧候选与原章完全相同才能迁移并重新保存。
+local function RebuildLegacyReferenceCanonical(value,_,_,raw)
+    local meta=type(raw)=="table" and raw.__rsmeta or nil
+    if type(meta)~="table" or meta.store~=Q.StoreId or meta.owner~=Q.StoreId or tonumber(meta.schema)~=1
+        or type(value)~="table" or tonumber(value.contractVersion)~=1 then return nil end
+    return {entries=NormalizeReferenceState(value,true),contractVersion=1},
+        {entries=NormalizeReferenceState(value),contractVersion=Q.StoreContractVersion}
+end
+
 function Q:_EnsureStoreRegistered()
     local P = S.Persistence
     if type(P) ~= "table" or type(P.RegisterV3Store) ~= "function" then return false, "persistence_unavailable" end
@@ -952,6 +1417,7 @@ function Q:_EnsureStoreRegistered()
         schemaVersion = 1,
         legacySchemaVersion = 0,
         key = (P.V3KeyPrefix or "") .. "trade_reference_prices",
+        rebuildCanonicalForIntegrity = RebuildLegacyReferenceCanonical,
         budget = { maxDepth = 5, maxNodes = 4096, maxStringBytes = 16000, maxEntriesPerTable = 512 },
         default = function() return { entries = {}, contractVersion = Q.StoreContractVersion } end,
         get = function()
@@ -1008,7 +1474,8 @@ function Q:RecordReferencePrice(itemType, itemGrade, price, source)
     end
     -- Only the quantity-normalized direct fallback may become a long-lived reference. Bid prices remain
     -- non-final estimates; legacy unnormalized name_search_* sources are explicitly rejected.
-    if source == "name_search_bid_unit" or (source:find("^name_search") ~= nil and source ~= "name_search_direct_unit") then
+    if source == "name_search_bid_unit" or (source:find("^name_search") ~= nil
+        and source ~= "name_search_direct_unit" and source ~= "name_search_min_direct_unit") then
         return false, "estimate_or_legacy_fallback_not_persisted"
     end
     local key = ReferenceKey(itemType, itemGrade)
@@ -1071,6 +1538,9 @@ end
 -- "no listing" answer, so the request walks the ladder before failing.
 -- `options.searchName` enables the verified legacy name-search fallback after
 -- the whole ladder returns no listing; without it the request fails honestly.
+-- `options.singleQuery=true` opts into one ID+grade-verified first-valid buyout search,
+-- with no Ask/Get/ladder/retry. Foreground honors deadlineAt <= now+5s; background may
+-- wait for safe admission, then owns a 5s result deadline. Cancellation keeps Native quarantine.
 function Q:RequestQuote(requester, itemType, itemGrade, callback, gradeCandidates, options)
     requester = tostring(requester or "")
     itemType = PositiveInt(itemType)
@@ -1079,6 +1549,7 @@ function Q:RequestQuote(requester, itemType, itemGrade, callback, gradeCandidate
     itemGrade = tonumber(itemGrade)
     if itemGrade==nil or itemGrade~=math.floor(itemGrade) or itemGrade<0 or itemGrade>20 then itemGrade=1 end
     options = type(options) == "table" and options or {}
+    if options.singleQuery == true then return self:_RequestSingle(requester, itemType, itemGrade, callback, options) end
     local searchName = TrimToKeyword(options.searchName)
     local grades = {}
     local seenGrades = {}
@@ -1102,7 +1573,7 @@ function Q:RequestQuote(requester, itemType, itemGrade, callback, gradeCandidate
     -- localized searchName 不属于业务身份；把它拼进 key 会让同一红薯仅因两个调用者的显示名不同而重复查服务器。
     local requestKey=tostring(itemType)..":"..table.concat(parts,",")
     -- 显式force只跳过缓存，仍遵守串行/去重。正常点击不反复查询刚完成/刚失败的材料。
-    if options.force ~= true then
+    if options.force ~= true and options.requireListing ~= true and not HasCurrentListingRequest(requestKey) then
         local price,at=Q:PeekCached(itemType,grades[1])
         if price~=nil then
             self.stats.cacheHits=self.stats.cacheHits+1
@@ -1115,7 +1586,7 @@ function Q:RequestQuote(requester, itemType, itemGrade, callback, gradeCandidate
             Deliver(requester,callback,snap);Publish(itemType,grades[1],tostring(snap.status or "failed"),"cached_negative");return true,"cached_negative"
         end
     end
-    local ok, err = Q:_Enqueue(requester, itemType, itemGrade, callback, grades, searchName, requestKey, options.priority)
+    local ok, err = Q:_Enqueue(requester, itemType, itemGrade, callback, grades, searchName, requestKey, options.priority, options.requireListing)
     if ok ~= true then return ok, err end
     -- Mark the requester "queued" so its projection can render an honest
     -- pending state instead of a stale previous price.
@@ -1136,19 +1607,32 @@ end
 -- 已发出的同步调用不能撤回；名称搜索保留占位到其结束/超时，避免晚到无token事件误配下次请求。
 function Q:CancelRequester(requester)
     requester=tostring(requester or "")
+    self.singleQueryWatchers[requester] = nil
     local removed=0
+    for i=#self.admissionWaiting,1,-1 do
+        local request=self.admissionWaiting[i]
+        if request.watchers and request.watchers[requester] then request.watchers[requester]=nil;removed=removed+1 end
+        if not next(request.watchers or {}) then
+            if request.singleQuery then FinishSingle(request, "cancelled", nil, "requesters_released")
+            else table.remove(self.admissionWaiting,i) end
+            self.quoteStateByItemType[request.itemType]={status="cancelled",itemGrade=request.itemGrade,at=NowMs()}
+        end
+    end
     for i=#self.queue,1,-1 do
         local r=self.queue[i]
         if r.watchers and r.watchers[requester] then r.watchers[requester]=nil;removed=removed+1 end
         if not next(r.watchers or {}) then
-            table.remove(self.queue,i)
+            if r.singleQuery then FinishSingle(r, "cancelled", nil, "requesters_released")
+            else table.remove(self.queue,i) end
             self.quoteStateByItemType[r.itemType]={status="cancelled",itemGrade=r.itemGrade,at=NowMs()}
         end
     end
     local r=self.pending
     if r and r.watchers and r.watchers[requester] then
         r.watchers[requester]=nil;removed=removed+1
-        if not next(r.watchers) and r.fallbackState~="searching" then
+        if not next(r.watchers) and r.singleQuery then
+            FinishSingle(r, "cancelled", nil, "requesters_released")
+        elseif not next(r.watchers) and r.fallbackState~="searching" then
             -- 维护（2026-09-25，quote-pending-cancel-state-1）：pending 与 queue 必须遵守同一生命周期收敛。
             -- 18.307 只把 self.pending 清空，却没有把 quoteStateByItemType 的 queued/inflight 状态撤销；
             -- Trade 的材料投影因此会在批次已经取消、队列已经为空后仍永久渲染“询价中…”。这里仅在最后
@@ -1163,7 +1647,7 @@ function Q:CancelRequester(requester)
     end
     self.stats.cancelled=self.stats.cancelled+removed
     self.snapshots[requester]={status="cancelled",requester=requester,at=NowMs()}
-    if #self.queue==0 and self.pending==nil then self:_StopLane() end
+    if not HasWork() then self:_StopLane() end
     return true,removed
 end
 
@@ -1259,6 +1743,11 @@ function Q:Describe()
     end
     return {
         version = self.version, patch=self.budgetPatch, running = self.running == true,
+        priceSafetyPatch = self.priceSafetyPatch, requotePatch = self.requotePatch,
+        nativeInteractionPatch = self.nativeInteractionPatch,
+        nativeInteractionContractVersion = self.NativeInteractionContractVersion,
+        nativeAdmission = Copy(self.nativeAdmission),
+        admissionWaiting = #self.admissionWaiting, unknownAdmissionWaitMs = self.unknownAdmissionWaitMs,
         activity = self:GetActivitySnapshot(),
         pending = self.pending ~= nil, queueLength = #self.queue,
         maxQueue = self.maxQueue, intervalMs = self.intervalMs,
@@ -1269,10 +1758,16 @@ function Q:Describe()
         lastFallbackMatch = self.lastFallbackMatch and Copy(self.lastFallbackMatch) or nil,
         lastMarketAsk = self.lastMarketAsk and Copy(self.lastMarketAsk) or nil,
         pendingDetail = type(self.pending) == "table" and {
+            -- 中文维护：只读当前阶段，诊断生成不启动/续期 deadline，也不发补查。
+            requestedAt=self.pending.requestedAt, dispatchedAt=self.pending.dispatchedAt,
+            deadlineAt=self.pending.deadlineAt, queueDeadlineAt=self.pending.queueDeadlineAt,
+            deadlinePhase=self.pending.deferDeadline and 'queue_wait' or 'response_or_default',
             itemType = self.pending.itemType, itemGrade = self.pending.itemGrade, gradeIndex = self.pending.gradeIndex,
             searchName = self.pending.searchName, fallbackState = self.pending.fallbackState, priority = self.pending.priority,
             marketPriceState = self.pending.marketPriceState, marketPriceGrade = self.pending.marketPriceGrade,
-            requestedAt = self.pending.requestedAt,
+            requestedAt = self.pending.requestedAt, marketError = self.pending.marketError,
+            requireListing = self.pending.requireListing == true, heldObservations = self.pending.heldObservations,
+            verifying = self.pending.verifying == true,
         } or nil,
         lastCompleted = self.lastCompleted and Copy(self.lastCompleted) or nil,
         protocolProbe = {

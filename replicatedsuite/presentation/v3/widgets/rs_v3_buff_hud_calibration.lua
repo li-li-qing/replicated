@@ -7,7 +7,7 @@
 --
 -- Transient editor for player/target head HUD profiles.  It deliberately
 -- owns no Scheduler task and no Aura/Combat consumer: the preview uses bounded
--- synthetic rows plus the already-known screen anchor when available.
+-- cached public projections, bounded samples and the already-known screen anchor.
 --
 -- Persistence boundary:
 --   Store -> detached CalibrationDraft -> preview/control edits -> Save only
@@ -23,7 +23,7 @@ if type(Feature) ~= "table" or type(S.UI) ~= "table" then return end
 S.UIV3 = S.UIV3 or {}
 S.UIV3.BuffHudCalibrationV3 = S.UIV3.BuffHudCalibrationV3 or {}
 local C = S.UIV3.BuffHudCalibrationV3
-C.version = 5
+C.version = 7
 C.PvpPatch = "pvp-hud-1"
 C.owner = "v3:buff_hud_calibration"
 C.visible = C.visible == true
@@ -35,6 +35,7 @@ C.inputs = C.inputs or {}
 C.preview = C.preview or { icons = {} }
 C.globalPreview = C.globalPreview or { items = {} }
 C.globalPreviewEnabled = C.globalPreviewEnabled ~= false
+C.allPreviewEnabled = false
 C.dragging = false
 
 -- 中文维护注释（HUD 校准专项诊断，2026-09-11）：
@@ -46,8 +47,8 @@ C.dragging = false
 -- 热路径、不输出逐帧聊天。实现理由：保留 12 条以内事件轨迹和聚合计数，实机一次“输出诊断摘要”
 -- 即可定位。潜在风险：新增动作时必须只在用户事件边界 Trace，禁止从 LayoutPreview Tick 化采样。
 -- .18.206 追加 global preview 与 live HUD suppression：校准期间正式 Renderer 只隐藏 Presentation，
--- 不释放 Consumer/Aura/位置 Lane；全局预览仅由 Draft + 既有 anchor 计算，禁止形成第二套业务数据源。
-C.DiagnosticsContractVersion = 4
+-- 不释放 Consumer/Aura/位置 Lane；预览只用 Draft、公开缓存投影与既有 anchor，不形成第二套业务数据源。
+C.DiagnosticsContractVersion = 6
 C.Diagnostics = C.Diagnostics or {
     contractVersion = 3, openCount = 0, openFailures = 0, saveCount = 0, saveFailures = 0,
     cancelCount = 0, syncCount = 0, resetCount = 0, dragCommitCount = 0, dragFailures = 0,
@@ -63,14 +64,20 @@ C.Diagnostics = C.Diagnostics or {
     trace = {}, traceMax = 12,
 }
 
-local UNKNOWN_ICON = "ui/icon/icon_unknown_item.dds"
+-- 已有生产职业目录使用的资源；仅补校准缺项，不查询技能/物品元数据。
+local SAMPLE_ICONS = {
+    buffs={"ui/icon/icon_skill_love01.dds","ui/icon/icon_skill_romance15.dds","ui/icon/icon_skill_adamant15.dds","ui/icon/icon_skill_wild35.dds"},
+    debuffs={"ui/icon/icon_skill_hatred25.dds","ui/icon/icon_skill_magic40.dds","ui/icon/icon_skill_assassin43.dds","ui/icon/icon_skill_madness07.dds"},
+    cooldowns={"ui/icon/icon_skill_fight37.dds","ui/icon/icon_skill_wild35.dds","ui/icon/icon_skill_magic40.dds","ui/icon/icon_skill_pleasure02.dds"},
+}
+local SAMPLE_GLYPHS = {mainHand="主",offHand="副",ranged="远",wings="背",class="职",buffs="增",debuffs="减",cooldowns="技"}
 local COMPONENTS = {
     { key="plate",    label="血条基准" },
     { key="buffs",    label="Buff" },
     { key="debuffs",  label="Debuff" },
     -- 中文维护注释（Cooldown Runtime V1）：cooldowns 已是 schema8 既有 HUD component，
     -- 这里只把它暴露给校准器；不新增 Store 字段、不改变旧用户默认 enabled=false。
-    -- Runtime Authority 来自 CooldownObservationV3 的本机 Native 读数，校准预览只画占位，不触发查询。
+    -- Runtime Authority 来自 CooldownObservationV3 的本机 Native 读数；校准复用已采集快照，缺项才补样本，不触发查询。
     { key="cooldowns", label="技能 CD" },
     { key="info",     label="职业名称" },
     -- 中文维护注释（target-alias-hud-2）：自定义名字是 target-only 固定语义槽。它不进入
@@ -139,6 +146,7 @@ function C:GetDiagnostics()
     d.lastScope = tostring(self.scope or d.lastScope or "player")
     d.lastComponent = tostring(self.component or d.lastComponent or "buffs")
     d.globalPreviewEnabled = self.globalPreviewEnabled == true
+    d.allPreviewEnabled = self.allPreviewEnabled == true
     d.liveHudSuppressed = Markers ~= nil and type(Markers.IsCalibrationSuppressed) == "function" and Markers:IsCalibrationSuppressed() == true or false
     return Copy(d)
 end
@@ -180,6 +188,7 @@ C.ScreenCoordinateAdapterContractVersion = 1
 C.PanelDragContractVersion = 1
 C.ContextualControlsContractVersion = 1
 C.GlobalPreviewContractVersion = 1
+C.AllPreviewContractVersion = 2 -- 当前scope有界缓存/缺项模拟及无填充遮挡，仅属于瞬时Presentation。
 C.LiveHudSuppressionContractVersion = 1
 C.TemplateSnapshotContractVersion = 1
 C.SplitInfoTextCalibrationContractVersion = 1 -- 中文维护注释（.18.225）：职业名称/装分/距离各自选择并消费各自现有 schema6 几何字段；职业图标仍独立。
@@ -323,18 +332,19 @@ function C:RefreshAliasEditorSnapshot(forceText)
     return snapshot.available == true, snapshot.error
 end
 
-local function Component()
-    if C.component == "alias" then return AliasHud() end
+local function Component(key)
+    key=key or C.component
+    if key == "alias" then return AliasHud() end
     local profile = Profile()
-    if C.component == "plate" then return profile.plate end
-    if C.component == "info" then return profile.info end
-    profile.components[C.component] = type(profile.components[C.component]) == "table" and profile.components[C.component] or {}
-    return profile.components[C.component]
+    if key == "plate" then return profile.plate end
+    if key == "info" then return profile.info end
+    profile.components[key] = type(profile.components[key]) == "table" and profile.components[key] or {}
+    return profile.components[key]
 end
 
-local function CurrentFields()
-    local profile, component = Profile(), Component()
-    local key = C.component
+local function CurrentFields(key)
+    key=key or C.component
+    local profile, component = Profile(), Component(key)
     local fields = { x=N(component.x,0), y=StoredYToScreenY(key, component.y), size=nil, font=nil, alpha=nil, spacing=nil, perRow=nil, rows=nil, width=nil, scale=N(profile.plateScale,1) }
     if key == "plate" then
         fields.width=N(component.width,150); fields.size=N(component.height,20)
@@ -459,22 +469,48 @@ local function FindEquipSlot(layout, key)
     return nil
 end
 
--- 维护：校准显示只读取现有投影，不新增Native查询。职业名称/图标与真实HUD共用
--- ComputeInfoLayout；无目标时明确使用预览占位。已有schema6的size=0保留随字号自动尺寸。
-local function PreviewPlates(key)
+-- 每次用户动作只读取当前 scope 的既有公开投影一次，再有界复制供全部组件共用。
+-- 不激活 Consumer/Lane，不读 Feature 私有事实，不把自身装备/CD借给目标，也不写 Draft。
+local function CapturePreviewContent()
     local plates = type(Feature.GetPlatesProjection)=="function" and Feature:GetPlatesProjection(C.scope) or {}
-    if type(plates.class)~="table" or tostring(plates.class.value or "")=="" then
-        plates.class={value="职业预览",icon=UNKNOWN_ICON}
-    elseif plates.class.icon==nil then plates.class.icon=UNKNOWN_ICON end
-    -- 维护：只为“正在校准但当前事实缺失”的文字项补占位。职业图标/职业名称预览必须
-    -- 保持与实时 HUD 相同的可见项集合，否则额外占位会改变整行居中基线，造成预览/实机偏移。
-    if key=="gearScore" and type(plates.gearScore)~="table" then plates.gearScore={value="12345"} end
-    if key=="distance" and type(plates.distance)~="table" then plates.distance={value="28.4m"} end
+    local out = {}
+    for _,key in ipairs({"class","gearScore","distance","mainHand","offHand","ranged","wings","cast"}) do
+        if type(plates[key])=="table" then out[key]=Copy(plates[key]) end
+    end
+    for _,key in ipairs({"buffs","debuffs","cooldowns"}) do
+        out[key]={}
+        for i,row in ipairs(type(plates[key])=="table" and plates[key] or {}) do
+            if i>4 then break end
+            out[key][i]=Copy(row)
+        end
+    end
+    local policy=type(Feature.GetHeadPolicyProjection)=="function" and Feature:GetHeadPolicyProjection() or {}
+    out.showStacks=policy.headShowStacks~=false;out.showTime=policy.headShowTime~=false
+    C.previewContent=out
+end
+
+local function PreviewPlates(key)
+    local plates=Copy(C.previewContent or {})
+    if type(plates.class)~="table" then plates.class={icon=SAMPLE_ICONS.buffs[3]} end
+    if tostring(plates.class.value or "")=="" then plates.class.value="职业预览" end
+    -- 缺项只补当前单项；全部预览补齐全部文字槽。保持原布局/配置的 Authority。
+    if (C.allPreviewEnabled or key=="gearScore") and type(plates.gearScore)~="table" then plates.gearScore={value="12345"} end
+    if (C.allPreviewEnabled or key=="distance") and type(plates.distance)~="table" then plates.distance={value="28.4m"} end
     return plates
 end
 
-local function PreviewRect(key)
-    local profile = Profile()
+local function PreviewLayoutProfile()
+    local profile=Profile()
+    if C.allPreviewEnabled ~= true then return profile end
+    -- 关闭的组件也能校准，但强制可见只发生在独立的绘制副本，不改Draft或保存开关。
+    profile=Copy(profile)
+    profile.info.enabled=true;profile.info.showClass=true;profile.info.showGear=true;profile.info.showDistance=true
+    for _,component in pairs(profile.components) do component.enabled=true end
+    return profile
+end
+
+local function PreviewRect(key,previewProfile)
+    local profile = previewProfile or PreviewLayoutProfile()
     local anchorX, anchorY, liveAnchor = PreviewAnchor(C.scope)
     local compute = Markers and Markers.ComputePlateLayout or nil
     if type(compute) ~= "function" then return { x=anchorX-70, y=anchorY-20, width=140, height=40 }, liveAnchor end
@@ -513,7 +549,7 @@ local function PreviewRect(key)
         -- 与正式目标 HUD 共用纯布局函数；alias 不消费 Info 行，也不因 Buff/装备数量变化重排。
         if type(Markers.ComputeTargetAliasLayout) == "function" then
             local hud = AliasHud()
-            local cfg = { enabled=AliasDraft().enabled ~= false, x=hud.x, y=hud.y, fontSize=hud.fontSize, alpha=hud.alpha }
+            local cfg = { enabled=C.allPreviewEnabled == true or AliasDraft().enabled ~= false, x=hud.x, y=hud.y, fontSize=hud.fontSize, alpha=hud.alpha }
             local g = Markers.ComputeTargetAliasLayout(AliasPreviewText(), cfg, layout.bar.centerX, layout.bar.centerY, scale)
             return { x=g.x, y=g.y, width=g.width, height=g.height, text=g.text, font=g.font, alpha=g.alpha }, liveAnchor
         end
@@ -521,13 +557,13 @@ local function PreviewRect(key)
     elseif key == "info" or key == "gearScore" or key == "distance" or key == "class" then
         if type(Markers.ComputeInfoItemsLayout)=="function" then
             local g=Markers.ComputeInfoItemsLayout(plates,profile.info,profile.components,layout.bar.centerX,layout.info.top,layout.info.font,scale,C.scope)
-            if key=="class" then return {x=g.iconX,y=g.iconY,width=g.iconSize,height=g.iconSize,iconPath=g.icon or UNKNOWN_ICON},liveAnchor end
+            if key=="class" then return {x=g.iconX,y=g.iconY,width=g.iconSize,height=g.iconSize,iconPath=g.icon or SAMPLE_ICONS.buffs[3]},liveAnchor end
             local item = key=="info" and g.classText or g[key]
             if item then return {x=item.x,y=item.y,width=item.width,height=item.height,text=item.text,font=item.font,alpha=item.alpha},liveAnchor end
             return {x=layout.bar.centerX-12,y=layout.info.top,width=24,height=layout.info.height,text=""},liveAnchor
         elseif type(Markers.ComputeInfoLayout)=="function" then
             local g=Markers.ComputeInfoLayout(plates,profile.info,profile.components,layout.bar.centerX,layout.info.top,layout.info.font,scale,C.scope)
-            if key=="class" then return {x=g.iconX,y=g.iconY,width=g.iconSize,height=g.iconSize,iconPath=g.icon or UNKNOWN_ICON},liveAnchor end
+            if key=="class" then return {x=g.iconX,y=g.iconY,width=g.iconSize,height=g.iconSize,iconPath=g.icon or SAMPLE_ICONS.buffs[3]},liveAnchor end
             return {x=g.x,y=g.y,width=g.width,height=g.height,text=g.text},liveAnchor
         end
         return {x=layout.bar.centerX-110,y=layout.info.top,width=220,height=layout.info.height},liveAnchor
@@ -559,6 +595,109 @@ local function ComponentEnabledFor(profile, key)
     return component == nil or component.enabled ~= false
 end
 
+-- 纹理/层数/空标签必须显式锚定与隐藏，不能依赖 Native 创建时的默认位置。
+local function EnsurePreviewIconDetails(icon,prefix)
+    if not icon.root then return false end
+    if not icon.stack then icon.stack=S.UI:CreateLabel(icon.root,prefix.."_stack","",0,0,27,13,8,"strong","RIGHT",true) end
+    if not icon.fallback then icon.fallback=S.UI:CreateLabel(icon.root,prefix.."_fallback","",0,0,29,29,12,"strong","CENTER",true) end
+    if not icon.stack or not icon.fallback then return false end
+    if S.Theme and S.Theme.SetWorldTextPalette then
+        S.Theme:SetWorldTextPalette(icon.stack);S.Theme:SetWorldTextPalette(icon.fallback)
+    end
+    SafeVisible(icon.stack,false);SafeVisible(icon.fallback,false);SafeVisible(icon.time,false)
+    return true
+end
+
+local function EnsurePreviewOutline(preview)
+    preview.outline=preview.outline or {}
+    for i=1,4 do
+        if not preview.outline[i] and preview.root.CreateColorDrawable then
+            preview.outline[i]=preview.root:CreateColorDrawable(0.35,0.78,0.86,0.85,"overlay")
+        end
+        if not preview.outline[i] then return false end
+        SafeVisible(preview.outline[i],false)
+    end
+    return true
+end
+
+-- 初次创建或失败重试只补缺失控件；拖动 handler 在创建装饰前完成，避免重开时缺绑定。
+local function EnsureSelectedPreviewVisuals()
+    local preview=C.preview
+    local parent,prefix=preview.root,"v3_buff_hud_calibration_preview"
+    if not parent then return false,"校准预览框不可用" end
+    preview.bg=preview.bg or MakeFill(parent,"background",0.08,0.36,0.55,0.18)
+    if not EnsurePreviewOutline(preview) then return false,"校准选中边框创建失败" end
+    preview.caption=preview.caption or S.UI:CreateLabel(parent,prefix.."_caption","",0,-18,220,16,9,"strong","LEFT",true)
+    preview.infoLabel=preview.infoLabel or S.UI:CreateLabel(parent,prefix.."_info","",0,0,220,18,12,"strong","CENTER",true)
+    preview.castBg=preview.castBg or (parent.CreateColorDrawable and parent:CreateColorDrawable(0.10,0.10,0.12,0.90,"overlay"))
+    preview.castFill=preview.castFill or (parent.CreateColorDrawable and parent:CreateColorDrawable(0.96,0.72,0.12,0.95,"overlay"))
+    preview.castText=preview.castText or S.UI:CreateLabel(parent,prefix.."_cast_text","施法预览",0,8,120,15,10,"default","CENTER",true)
+    if not preview.caption or not preview.infoLabel or not preview.castBg or not preview.castFill or not preview.castText then return false,"校准预览内容创建失败" end
+    if S.Theme and S.Theme.SetWorldTextPalette then
+        S.Theme:SetWorldTextPalette(preview.infoLabel);S.Theme:SetWorldTextPalette(preview.castText)
+    end
+    for i=1,4 do
+        local icon=preview.icons[i] or {};preview.icons[i]=icon
+        if not icon.root then icon.root=S.UI:CreateEmptyWidget(parent,prefix.."_icon_"..i,0,0,29,29,false,C.owner) end
+        if not icon.root then return false,"校准图标框创建失败" end
+        if not icon.texture and icon.root.CreateIconDrawable then icon.texture=icon.root:CreateIconDrawable("artwork") end
+        if not icon.time then icon.time=S.UI:CreateLabel(icon.root,prefix.."_time_"..i,"",0,16,29,13,8,"strong","RIGHT",true) end
+        if S.Theme and S.Theme.SetWorldTextPalette then S.Theme:SetWorldTextPalette(icon.time) end
+        if not icon.texture or not icon.time or not EnsurePreviewIconDetails(icon,prefix.."_"..i) then return false,"校准图标创建失败" end
+    end
+    return true
+end
+
+local function LayoutPreviewOutline(preview,rect,visible)
+    for i,edge in ipairs(preview.outline or {}) do
+        SafeVisible(edge,visible)
+        if visible then
+            local w,h=math.max(1,rect.width),math.max(1,rect.height)
+            local x,y,ew,eh=0,0,w,1
+            if i==2 then y=h-1 elseif i==3 then ew,eh=1,h elseif i==4 then x,ew,eh=w-1,1,h end
+            S.UI:SetAnchor(edge,preview.root,x,y,C.owner);S.UI:SetExtent(edge,ew,eh,C.owner)
+        end
+    end
+end
+
+local RenderPreviewVisuals,SetPreviewChildrenVisible
+local function EnsureAllPreviewVisuals(item,key)
+    local preview=item.preview
+    if not preview then preview={root=item.root,bg=item.bg,icons={}};item.preview=preview end
+    local parent,prefix=item.root,"v3_buff_hud_calibration_all_"..key
+    if key=="plate" then
+        if not EnsurePreviewOutline(preview) then return false,"校准基准边框创建失败" end
+    elseif key=="info" or key=="gearScore" or key=="distance" or key=="alias" then
+        if not preview.infoLabel then
+            preview.infoLabel=S.UI:CreateLabel(parent,prefix.."_text","",0,0,120,18,12,"strong","CENTER",true)
+            if S.Theme and S.Theme.SetWorldTextPalette then S.Theme:SetWorldTextPalette(preview.infoLabel) end
+        end
+        if not preview.infoLabel then return false,"全部模拟文字创建失败" end
+    elseif key=="castBar" then
+        preview.castBg=preview.castBg or (parent.CreateColorDrawable and parent:CreateColorDrawable(0.10,0.10,0.12,0.90,"overlay"))
+        preview.castFill=preview.castFill or (parent.CreateColorDrawable and parent:CreateColorDrawable(0.96,0.72,0.12,0.95,"overlay"))
+        if not preview.castText then
+            preview.castText=S.UI:CreateLabel(parent,prefix.."_text","施法预览",0,8,120,15,10,"default","CENTER",true)
+            if S.Theme and S.Theme.SetWorldTextPalette then S.Theme:SetWorldTextPalette(preview.castText) end
+        end
+        if not preview.castBg or not preview.castFill or not preview.castText then return false,"全部模拟施法条创建失败" end
+    elseif key~="plate" then
+        local count=(key=="buffs" or key=="debuffs" or key=="cooldowns") and 4 or 1
+        for i=1,count do
+            local icon=preview.icons[i] or {};preview.icons[i]=icon
+            if not icon.root then icon.root=S.UI:CreateEmptyWidget(parent,prefix.."_icon_"..i,0,0,29,29,false,C.owner) end
+            if not icon.root then return false,"全部模拟图标创建失败" end
+            if not icon.texture and icon.root.CreateIconDrawable then icon.texture=icon.root:CreateIconDrawable("artwork") end
+            if not icon.time then
+                icon.time=S.UI:CreateLabel(icon.root,prefix.."_time_"..i,"",0,16,29,13,8,"strong","RIGHT",true)
+                if S.Theme and S.Theme.SetWorldTextPalette then S.Theme:SetWorldTextPalette(icon.time) end
+            end
+            if not icon.texture or not icon.time or not EnsurePreviewIconDetails(icon,prefix.."_"..i) then return false,"全部模拟图标内容创建失败" end
+        end
+    end
+    return true
+end
+
 local function EnsureGlobalPreviewWidgets()
     C.globalPreview = type(C.globalPreview) == "table" and C.globalPreview or { items = {} }
     C.globalPreview.items = type(C.globalPreview.items) == "table" and C.globalPreview.items or {}
@@ -570,6 +709,7 @@ local function EnsureGlobalPreviewWidgets()
             root.rsUiOwner = C.owner
             local bg = MakeFill(root, "background", key == "debuffs" and 0.45 or 0.08, key == "debuffs" and 0.08 or 0.34, 0.52, 0.18)
             local label = S.UI:CreateLabel(root, "v3_buff_hud_calibration_global_label_" .. key, row.label, 2, 2, 120, 16, 8, "strong", "CENTER", true)
+            if S.Theme and S.Theme.SetWorldTextPalette then S.Theme:SetWorldTextPalette(label) end
             C.globalPreview.items[key] = { root = root, bg = bg, label = label }
             SafeVisible(root, false)
         end
@@ -582,47 +722,81 @@ function C:LayoutGlobalPreview()
     local created, createErr = EnsureGlobalPreviewWidgets()
     if created ~= true then return false, createErr end
     local profile = Profile()
+    local previewProfile=PreviewLayoutProfile()
+    local simulated=self.allPreviewEnabled == true and 1 or 0
     for _, row in ipairs(COMPONENTS) do
         local key, item = row.key, self.globalPreview.items[row.key]
         local show = self.globalPreviewEnabled == true and key ~= self.component and not (row.targetOnly == true and self.scope ~= "target")
         if item ~= nil then
             SafeVisible(item.root, show)
             if show then
-                local rect = select(1, PreviewRect(key))
-                local w, h = math.max(18, N(rect.width, 40)), math.max(16, N(rect.height, 24))
+                local rect = select(1, PreviewRect(key,previewProfile))
+                local w = math.max(self.allPreviewEnabled == true and 1 or 18,N(rect.width,40))
+                local h = math.max(self.allPreviewEnabled == true and 1 or 16,N(rect.height,24))
                 S.UI:SetAnchor(item.root, UIParent, N(rect.x,0), N(rect.y,0), self.owner)
                 S.UI:SetExtent(item.root, w, h, self.owner)
-                local enabled = ComponentEnabledFor(profile, key)
-                S.UI:SetAlpha(item.root, enabled and 0.62 or 0.28, self.owner)
-                local label = row.label
-                if key == "buffs" then label = "Buff ×4"
-                elseif key == "debuffs" then label = "Debuff ×4"
-                elseif key == "cooldowns" then label = "技能 CD ×4"
-                elseif key == "info" then label = "职业 · 12345 · 28m"
-                elseif key == "alias" then label = AliasPreviewText()
-                elseif key == "castBar" then label = "施法条"
-                end
-                SafeText(item.label, label .. (enabled and "" or "（关）"))
-                S.UI:SetAnchor(item.label, item.root, 1, math.max(0, math.floor((h-16)/2)), self.owner)
-                S.UI:SetExtent(item.label, math.max(16,w-2), 16, self.owner)
-                if item.bg ~= nil then
-                    if key == "debuffs" then SetDrawableColor(item.bg,0.50,0.08,0.08,0.22)
-                    elseif key == "plate" then SetDrawableColor(item.bg,0.08,0.46,0.72,0.34)
-                    else SetDrawableColor(item.bg,0.08,0.36,0.55,0.22) end
+                SafeVisible(item.label,self.allPreviewEnabled ~= true)
+                if self.allPreviewEnabled == true then
+                    local ready,err=EnsureAllPreviewVisuals(item,key)
+                    if ready ~= true then return false,err end
+                    RenderPreviewVisuals(item.preview,key,rect)
+                    simulated=simulated+1
+                else
+                    if item.preview then SetPreviewChildrenVisible(item.preview,"none") end
+                    local enabled = ComponentEnabledFor(profile, key)
+                    S.UI:SetAlpha(item.root, enabled and 0.62 or 0.28, self.owner)
+                    local label = row.label
+                    if key == "buffs" then label = "Buff ×4"
+                    elseif key == "debuffs" then label = "Debuff ×4"
+                    elseif key == "cooldowns" then label = "技能 CD ×4"
+                    elseif key == "info" then label = "职业 · 12345 · 28m"
+                    elseif key == "alias" then label = AliasPreviewText()
+                    elseif key == "castBar" then label = "施法条"
+                    end
+                    SafeText(item.label, label .. (enabled and "" or "（关）"))
+                    S.UI:SetAnchor(item.label, item.root, 1, math.max(0, math.floor((h-16)/2)), self.owner)
+                    S.UI:SetExtent(item.label, math.max(16,w-2), 16, self.owner)
+                    SafeVisible(item.bg,true)
+                    LayoutPreviewOutline(item.preview or {},rect,false)
+                    if item.bg ~= nil then
+                        if key == "debuffs" then SetDrawableColor(item.bg,0.50,0.08,0.08,0.22)
+                        elseif key == "plate" then SetDrawableColor(item.bg,0.08,0.46,0.72,0.34)
+                        else SetDrawableColor(item.bg,0.08,0.36,0.55,0.22) end
+                    end
                 end
             end
         end
     end
     self.Diagnostics.globalPreviewEnabled = self.globalPreviewEnabled == true
+    self.Diagnostics.allPreviewEnabled = self.allPreviewEnabled == true
+    self.Diagnostics.simulatedComponents = simulated
     self.Diagnostics.globalPreviewRefreshes = (tonumber(self.Diagnostics.globalPreviewRefreshes) or 0) + 1
     return true
 end
 
 function C:ToggleGlobalPreview()
     self.globalPreviewEnabled = self.globalPreviewEnabled ~= true
+    if self.globalPreviewEnabled ~= true then self.allPreviewEnabled=false end
     self.Diagnostics.globalPreviewEnabled = self.globalPreviewEnabled == true
     Trace("global_preview_toggle", { globalPreview=self.globalPreviewEnabled == true, clearError=true })
+    SafeText(self.statusLabel,self.globalPreviewEnabled and "位置参考已显示 · 选择左侧项目进行调整" or "位置参考已隐藏 · 仅显示当前模拟")
     return self:RefreshControls()
+end
+
+function C:ToggleAllPreview()
+    if self.visible ~= true then return false,"请先打开HUD校准" end
+    if self.dragging == true then return false,"请先结束当前预览拖动" end
+    self.allPreviewEnabled=self.allPreviewEnabled ~= true
+    if self.allPreviewEnabled then self.globalPreviewEnabled=true end
+    local ok,err=self:RefreshControls()
+    if ok ~= true then
+        self.allPreviewEnabled=false;self:RefreshControls()
+        Trace("all_preview_failed",{error=tostring(err or "全部模拟不可用")})
+        SafeText(self.statusLabel,tostring(err or "全部模拟不可用"));return false,err
+    end
+    Trace("all_preview_toggle",{allPreview=self.allPreviewEnabled,clearError=true})
+    SafeText(self.statusLabel,self.allPreviewEnabled and "全部模拟已显示 · 选择左侧项目后拖动当前组件" or "已恢复单项模拟 · 选择左侧项目进行调整")
+    return true
 end
 
 -- 中文维护注释（发行模板快照，2026-09-11）：用户会在 RU 客户端把自己/目标 HUD 调整到
@@ -942,21 +1116,104 @@ local function SetLiveHudSuppressed(value, reason)
     return true
 end
 
-local function SetPreviewChildrenVisible(kind)
-    for _, icon in ipairs(C.preview.icons or {}) do SafeVisible(icon.root, kind == "icons") end
-    SafeVisible(C.preview.infoLabel, kind == "info")
-    SafeVisible(C.preview.castBg, kind == "cast")
-    SafeVisible(C.preview.castFill, kind == "cast")
-    SafeVisible(C.preview.castText, kind == "cast")
+SetPreviewChildrenVisible = function(preview,kind)
+    for _, icon in ipairs(preview.icons or {}) do SafeVisible(icon.root, kind == "icons") end
+    SafeVisible(preview.infoLabel, kind == "info")
+    SafeVisible(preview.castBg, kind == "cast")
+    SafeVisible(preview.castFill, kind == "cast")
+    SafeVisible(preview.castText, kind == "cast")
 end
 
-local function LivePreviewRows(category)
-    local rows = type(Feature.GetProjection) == "function" and select(1, Feature:GetProjection(C.scope, 12)) or {}
-    local out = {}
-    for _, row in ipairs(type(rows) == "table" and rows or {}) do
-        if tostring(row.category or "buff") == category then out[#out+1] = row; if #out >= 4 then break end end
+local function ApplyPreviewTexture(drawable,path)
+    if not drawable then return false end
+    path=tostring(path or "")
+    if path=="" then SafeVisible(drawable,false);return false end
+    local ok=false
+    if type(S.UI.EnsureIconTexture)=="function" then ok=S.UI:EnsureIconTexture(drawable,path,C.owner)
+    elseif type(S.UI.SetIconTexture)=="function" then ok=S.UI:SetIconTexture(drawable,path,C.owner) end
+    SafeVisible(drawable,ok==true)
+    return ok==true
+end
+
+local function RenderPreviewIcon(icon,row,key,size,fields)
+    row=type(row)=="table" and row or {}
+    if icon.texture then
+        S.UI:SetAnchor(icon.texture,icon.root,0,0,C.owner);S.UI:SetExtent(icon.texture,size,size,C.owner)
     end
-    return out
+    local path=row.iconPath or row.icon
+    local loaded=ApplyPreviewTexture(icon.texture,path)
+    SafeVisible(icon.fallback,not loaded)
+    SafeText(icon.fallback,SAMPLE_GLYPHS[key] or "图")
+    S.UI:SetAnchor(icon.fallback,icon.root,0,0,C.owner);S.UI:SetExtent(icon.fallback,size,size,C.owner)
+    S.UI:SetFontSize(icon.fallback,math.max(8,math.floor(size*0.55)),C.owner)
+    local gradePath=tostring(row.gradeIconPath or "")
+    if loaded and gradePath~="" and not icon.grade and icon.root.CreateIconDrawable then icon.grade=icon.root:CreateIconDrawable("artwork") end
+    if icon.grade then
+        S.UI:SetAnchor(icon.grade,icon.root,0,0,C.owner);S.UI:SetExtent(icon.grade,size,size,C.owner)
+        ApplyPreviewTexture(icon.grade,loaded and gradePath or "")
+    end
+    local content=C.previewContent or {}
+    local time=tostring(row.timeText or "")
+    SafeText(icon.time,time);SafeVisible(icon.time,content.showTime~=false and time~="")
+    local font=math.max(8,Round((fields.font or 11)*N(Profile().plateScale,1)))
+    local labelH=math.max(10,font+2)
+    S.UI:SetFontSize(icon.time,font,C.owner)
+    S.UI:SetAnchor(icon.time,icon.root,0,math.max(0,size-labelH),C.owner);S.UI:SetExtent(icon.time,size,labelH,C.owner)
+    local stack=math.floor(N(row.stack,1))
+    SafeText(icon.stack,stack>1 and tostring(stack) or "")
+    SafeVisible(icon.stack,content.showStacks~=false and stack>1)
+    S.UI:SetFontSize(icon.stack,font,C.owner)
+    S.UI:SetAnchor(icon.stack,icon.root,0,0,C.owner);S.UI:SetExtent(icon.stack,math.max(1,size-2),labelH,C.owner)
+end
+
+-- 单项/全部共用同一绘制；仅选中项有细边框，血条基准只画轮廓，不制造额外遮挡。
+RenderPreviewVisuals = function(preview,key,rect)
+    local fields=CurrentFields(key)
+    S.UI:SetAlpha(preview.root,fields.alpha or 1,C.owner)
+    SafeVisible(preview.bg,false)
+    LayoutPreviewOutline(preview,rect,preview==C.preview or key=="plate")
+    if key=="buffs" or key=="debuffs" or key=="cooldowns" then
+        SetPreviewChildrenVisible(preview,"icons")
+        local size=math.max(8,Round(rect.height))
+        local spacing=math.max(0,Round((fields.spacing or 2)*N(Profile().plateScale,1)))
+        local rows=(C.previewContent or {})[key] or {}
+        local count=math.min(4,math.max(1,Round(fields.perRow or 8)))
+        for i,icon in ipairs(preview.icons) do
+            SafeVisible(icon.root,i<=count)
+            if i<=count then
+                S.UI:SetAnchor(icon.root,preview.root,(i-1)*(size+spacing),0,C.owner);S.UI:SetExtent(icon.root,size,size,C.owner)
+                local row=rows[i] or {iconPath=SAMPLE_ICONS[key][i],timeText=({"12.4","8.0","25.7","1.2"})[i],stack=(i==1 and key~="cooldowns") and 3 or 1}
+                RenderPreviewIcon(icon,row,key,size,fields)
+            end
+        end
+    elseif key=="class" or SAMPLE_GLYPHS[key] then
+        SetPreviewChildrenVisible(preview,"icons")
+        for i,icon in ipairs(preview.icons) do SafeVisible(icon.root,i==1) end
+        local icon=preview.icons[1]
+        if icon then
+            local size=math.max(8,Round(rect.width))
+            S.UI:SetAnchor(icon.root,preview.root,0,0,C.owner);S.UI:SetExtent(icon.root,size,size,C.owner)
+            local row=key=="class" and {iconPath=rect.iconPath} or (C.previewContent or {})[key]
+            RenderPreviewIcon(icon,row,key,size,fields)
+        end
+    elseif key=="alias" or key=="info" or key=="gearScore" or key=="distance" then
+        SetPreviewChildrenVisible(preview,"info")
+        local fallback=key=="alias" and AliasPreviewText() or (key=="info" and "职业预览" or (key=="gearScore" and "12345" or "28.4m"))
+        SafeText(preview.infoLabel,rect.text and rect.text~="" and rect.text or fallback)
+        S.UI:SetFontSize(preview.infoLabel,math.max(8,Round((fields.font or 12)*N(Profile().plateScale,1))),C.owner)
+        S.UI:SetAnchor(preview.infoLabel,preview.root,0,0,C.owner);S.UI:SetExtent(preview.infoLabel,rect.width,rect.height,C.owner)
+    elseif key=="castBar" then
+        SetPreviewChildrenVisible(preview,"cast")
+        local cast=(C.previewContent or {}).cast or {}
+        local fraction=cast.totalMs and Clamp(N(cast.currMs,0)/math.max(1,N(cast.totalMs,1)),0,1,0.62) or 0.62
+        local barH=math.max(4,Round((fields.size or 7)*N(Profile().plateScale,1)))
+        S.UI:SetAnchor(preview.castBg,preview.root,0,0,C.owner);S.UI:SetExtent(preview.castBg,rect.width,barH,C.owner)
+        S.UI:SetAnchor(preview.castFill,preview.root,0,0,C.owner);S.UI:SetExtent(preview.castFill,math.max(1,Round(rect.width*fraction)),barH,C.owner)
+        SafeText(preview.castText,tostring(cast.spellName or "")~="" and cast.spellName or "施法预览")
+        SafeVisible(preview.castText,(Profile().components.castBar or {}).showText~=false)
+        S.UI:SetFontSize(preview.castText,math.max(8,Round((fields.font or 12)*N(Profile().plateScale,1))),C.owner)
+        S.UI:SetAnchor(preview.castText,preview.root,0,barH+1,C.owner);S.UI:SetExtent(preview.castText,rect.width,15,C.owner)
+    else SetPreviewChildrenVisible(preview,"none") end
 end
 
 function C:LayoutPreview()
@@ -974,85 +1231,9 @@ function C:LayoutPreview()
     end
     S.UI:SetAnchor(self.preview.root, UIParent, rect.x, rect.y, self.owner)
     S.UI:SetExtent(self.preview.root, math.max(1, rect.width), math.max(1, rect.height), self.owner)
-    local visualFields = CurrentFields()
-    S.UI:SetAlpha(self.preview.root, visualFields.alpha or 1, self.owner)
+    RenderPreviewVisuals(self.preview,self.component,rect)
+    SafeVisible(self.preview.caption,self.allPreviewEnabled~=true)
     SafeText(self.preview.caption, ScopeName(self.scope) .. " · " .. tostring(COMPONENT_LABEL[self.component] or self.component))
-    local key = self.component
-    if key == "buffs" or key == "debuffs" or key == "cooldowns" then
-        SetPreviewChildrenVisible("icons")
-        local fields = CurrentFields(); local size = math.max(8, Round(fields.size or 29)); local spacing = math.max(0, Round(fields.spacing or 2))
-        -- CD 校准禁止为了预览启动 Runtime/Native 查询；无活动 CD 时使用纯视觉占位。
-        local rows = key == "cooldowns" and {} or LivePreviewRows(key == "debuffs" and "debuff" or "buff")
-        for i, icon in ipairs(self.preview.icons) do
-            local visible = i <= 4
-            SafeVisible(icon.root, visible)
-            if visible then
-                S.UI:SetAnchor(icon.root, self.preview.root, (i-1)*(size+spacing), 0, self.owner)
-                S.UI:SetExtent(icon.root, size, size, self.owner)
-                if icon.texture ~= nil then
-                    local path = rows[i] and rows[i].iconPath or UNKNOWN_ICON
-                    S.UI:SetIconTexture(icon.texture, tostring(path or UNKNOWN_ICON), self.owner)
-                    if type(icon.texture.SetExtent) == "function" then icon.texture:SetExtent(size, size) end
-                    if type(icon.texture.RemoveAllAnchors) == "function" then icon.texture:RemoveAllAnchors() end
-                    if type(icon.texture.AddAnchor) == "function" then icon.texture:AddAnchor("TOPLEFT", icon.root, 0, 0) end
-                end
-                SafeText(icon.time, rows[i] and rows[i].timeText or ({"12.4","8.0","25.7","1.20"})[i])
-                -- 中文维护注释（预览/正式渲染一致性）：fontSize 与正式 Renderer 一样属于
-                -- profile 的逻辑字体尺寸，最终必须乘 plateScale；否则校准框看到的大小和保存后
-                -- 世界 HUD 不一致。这里仅做预览数值换算，不读取/写入 Store。
-                S.UI:SetFontSize(icon.time, math.max(8, Round((fields.font or 11) * N(Profile().plateScale, 1))), self.owner)
-                S.UI:SetAnchor(icon.time, icon.root, 0, math.max(0, size-13), self.owner)
-                S.UI:SetExtent(icon.time, size, 13, self.owner)
-            end
-        end
-    elseif key == "class" then
-        SetPreviewChildrenVisible("icons")
-        for i,icon in ipairs(self.preview.icons) do SafeVisible(icon.root,i==1) end
-        local icon=self.preview.icons[1]
-        if icon then
-            S.UI:SetAnchor(icon.root,self.preview.root,0,0,self.owner)
-            S.UI:SetExtent(icon.root,rect.width,rect.height,self.owner)
-            if icon.texture then
-                S.UI:SetIconTexture(icon.texture,rect.iconPath or UNKNOWN_ICON,self.owner)
-                S.UI:SetExtent(icon.texture,rect.width,rect.height,self.owner)
-                S.UI:SetAnchor(icon.texture,icon.root,0,0,self.owner)
-            end
-            SafeText(icon.time,"")
-        end
-    elseif key == "alias" or key == "info" or key == "gearScore" or key == "distance" then
-        SetPreviewChildrenVisible("info")
-        local fallback = key=="alias" and AliasPreviewText() or (key=="info" and "职业预览" or (key=="gearScore" and "12345" or "28.4m"))
-        SafeText(self.preview.infoLabel, rect.text ~= "" and rect.text or fallback)
-        S.UI:SetFontSize(self.preview.infoLabel, math.max(8, Round((CurrentFields().font or 12) * N(Profile().plateScale, 1))), self.owner)
-        S.UI:SetAnchor(self.preview.infoLabel, self.preview.root, 0, 0, self.owner)
-        S.UI:SetExtent(self.preview.infoLabel, rect.width, rect.height, self.owner)
-    elseif key == "castBar" then
-        SetPreviewChildrenVisible("cast")
-        local barH = math.max(4, Round((CurrentFields().size or 7) * N(Profile().plateScale,1)))
-        S.UI:SetAnchor(self.preview.castBg, self.preview.root, 0, 0, self.owner); S.UI:SetExtent(self.preview.castBg, rect.width, barH, self.owner)
-        S.UI:SetAnchor(self.preview.castFill, self.preview.root, 0, 0, self.owner); S.UI:SetExtent(self.preview.castFill, math.max(1, Round(rect.width*0.62)), barH, self.owner)
-        SafeText(self.preview.castText, "施法预览")
-        SafeVisible(self.preview.castText, (Profile().components.castBar or {}).showText ~= false)
-        S.UI:SetFontSize(self.preview.castText, math.max(8, Round((CurrentFields().font or 12) * N(Profile().plateScale, 1))), self.owner)
-        S.UI:SetAnchor(self.preview.castText, self.preview.root, 0, barH+1, self.owner); S.UI:SetExtent(self.preview.castText, rect.width, 15, self.owner)
-    elseif key == "plate" then
-        SetPreviewChildrenVisible("none")
-    else
-        SetPreviewChildrenVisible("icons")
-        for i, icon in ipairs(self.preview.icons) do SafeVisible(icon.root, i == 1) end
-        local icon = self.preview.icons[1]
-        local size = math.max(8, Round(CurrentFields().size or 26))
-        if icon ~= nil then
-            S.UI:SetAnchor(icon.root, self.preview.root, 0, 0, self.owner); S.UI:SetExtent(icon.root, size, size, self.owner)
-            if icon.texture ~= nil then S.UI:SetIconTexture(icon.texture, UNKNOWN_ICON, self.owner); if type(icon.texture.SetExtent)=="function" then icon.texture:SetExtent(size,size) end end
-            SafeText(icon.time, "")
-        end
-    end
-    if self.preview.bg ~= nil then
-        if key == "debuffs" then SetDrawableColor(self.preview.bg, 0.50,0.08,0.08,0.20)
-        elseif key == "plate" then SetDrawableColor(self.preview.bg, 0.08,0.46,0.72,0.32)
-        else SetDrawableColor(self.preview.bg, 0.08,0.36,0.55,0.18) end
-    end
     local hint
     if self.component=="class" then hint="尺寸0随字号；XY只移动图标，不移动职业名称"
     elseif self.component=="alias" then
@@ -1179,6 +1360,7 @@ end
 
 function C:RefreshControls()
     if self.visible ~= true then return true end
+    CapturePreviewContent()
     SafeText(self.scopeLabel, "当前：" .. ScopeName(self.scope))
     SafeText(self.componentLabel, tostring(COMPONENT_LABEL[self.component] or self.component))
     for value, button in pairs(self.stepButtons or {}) do
@@ -1257,7 +1439,12 @@ function C:RefreshControls()
         SafeText(self.globalPreviewButton, self.globalPreviewEnabled == true and "全局：开" or "全局：关")
         S.UI:SetButtonActive(self.globalPreviewButton, self.globalPreviewEnabled == true, self.owner)
     end
-    self:LayoutGlobalPreview()
+    if self.allPreviewButton ~= nil then
+        SafeText(self.allPreviewButton,self.allPreviewEnabled == true and "单项模拟" or "显示全部")
+        S.UI:SetButtonActive(self.allPreviewButton,self.allPreviewEnabled == true,self.owner)
+    end
+    local globalOk,globalErr=self:LayoutGlobalPreview()
+    if globalOk ~= true then return false,globalErr end
     self:LayoutPreview()
     return true
 end
@@ -1454,6 +1641,9 @@ function C:HideOverlay()
     self.panelGeometryUnitScale, self.panelDragViewport = nil, nil
     self.previewGeometryUnitScale, self.previewDragViewport = nil, nil
     self.visible = false
+    self.allPreviewEnabled = false
+    self.previewContent = nil
+    self.Diagnostics.allPreviewEnabled=false;self.Diagnostics.simulatedComponents=0
     SafeVisible(self.panel, false); SafeVisible(self.preview.root, false)
     for _, item in pairs(type(self.globalPreview) == "table" and type(self.globalPreview.items) == "table" and self.globalPreview.items or {}) do SafeVisible(item.root, false) end
     for _, edit in pairs(self.inputs) do
@@ -1549,6 +1739,8 @@ end
 
 function C:EnsureCreated()
     if self.panel ~= nil and self.preview.root ~= nil then
+        local ready,err=EnsureSelectedPreviewVisuals()
+        if not ready then return false,err end
         return EnsureGlobalPreviewWidgets()
     end
     if UIParent == nil then return false, "UIParent 不可用" end
@@ -1574,6 +1766,8 @@ function C:EnsureCreated()
     self.targetButton = MakeButton(panel, "v3_buff_hud_calibration_target", "目标 HUD", 100, 56, 84, 26, function() return C:SetScope("target") end)
     self.syncButton = MakeButton(panel, "v3_buff_hud_calibration_sync", "复制自身 → 目标", 190, 56, 132, 26, function() return C:SyncPlayerToTarget() end)
     self.globalPreviewButton = MakeButton(panel, "v3_buff_hud_calibration_global_preview", "全局：开", 326, 56, 82, 26, function() return C:ToggleGlobalPreview() end)
+    self.allPreviewButton = MakeButton(panel, "v3_buff_hud_calibration_all_preview", "显示全部", 326, 86, 82, 24, function() return C:ToggleAllPreview() end)
+    if not self.allPreviewButton then return false,"全部模拟按钮创建失败" end
 
     self.componentLabel = S.UI:CreateLabel(panel, "v3_buff_hud_calibration_component_label", "", 12, 90, 100, 18, 10, "strong", "LEFT", false)
     local cy = 112
@@ -1584,7 +1778,7 @@ function C:EnsureCreated()
     end
 
     local rx = 126
-    S.UI:CreateLabel(panel, "v3_buff_hud_calibration_position", "位置微调（↑永远向屏幕上）", rx, 90, 220, 18, 10, "strong", "LEFT", false)
+    S.UI:CreateLabel(panel, "v3_buff_hud_calibration_position", "位置微调（↑永远向屏幕上）", rx, 90, 194, 18, 10, "strong", "LEFT", false)
     MakeButton(panel, "v3_buff_hud_calibration_up", "↑", rx+42, 112, 42, 26, function() return C:Nudge(0,-1) end)
     MakeButton(panel, "v3_buff_hud_calibration_left", "←", rx, 141, 42, 26, function() return C:Nudge(-1,0) end)
     MakeButton(panel, "v3_buff_hud_calibration_right", "→", rx+84, 141, 42, 26, function() return C:Nudge(1,0) end)
@@ -1720,18 +1914,6 @@ function C:EnsureCreated()
     local preview, previewErr = S.UI:CreateEmptyWidget(UIParent, "v3_buff_hud_calibration_preview", 0, 0, 120, 40, true, self.owner)
     if preview == nil then return false, previewErr or "HUD 校准预览框创建失败" end
     self.preview.root = preview; preview.rsUiOwner = self.owner
-    self.preview.bg = MakeFill(preview, "background", 0.08,0.36,0.55,0.18)
-    self.preview.caption = S.UI:CreateLabel(preview, "v3_buff_hud_calibration_preview_caption", "", 0, -18, 220, 16, 9, "strong", "LEFT", true)
-    self.preview.infoLabel = S.UI:CreateLabel(preview, "v3_buff_hud_calibration_preview_info", "职业预览 · 12345 · 28.4m", 0, 0, 220, 18, 12, "strong", "CENTER", true)
-    self.preview.castBg = preview.CreateColorDrawable and preview:CreateColorDrawable(0.10,0.10,0.12,0.90,"overlay") or nil
-    self.preview.castFill = preview.CreateColorDrawable and preview:CreateColorDrawable(0.96,0.72,0.12,0.95,"overlay") or nil
-    self.preview.castText = S.UI:CreateLabel(preview, "v3_buff_hud_calibration_preview_cast_text", "施法预览", 0, 8, 120, 15, 10, "default", "CENTER", true)
-    for i=1,4 do
-        local iconRoot = S.UI:CreateEmptyWidget(preview, "v3_buff_hud_calibration_preview_icon_"..tostring(i), 0,0,29,29,false,self.owner)
-        local texture = iconRoot and iconRoot.CreateIconDrawable and iconRoot:CreateIconDrawable("artwork") or nil
-        local time = iconRoot and S.UI:CreateLabel(iconRoot, "v3_buff_hud_calibration_preview_time_"..tostring(i), "", 0,16,29,13,8,"strong","RIGHT",true) or nil
-        self.preview.icons[i] = { root=iconRoot, texture=texture, time=time }
-    end
     local globalOk, globalErr = EnsureGlobalPreviewWidgets()
     if globalOk ~= true then return false, globalErr end
     if type(S.UI.EnsurePickable) ~= "function" or type(S.UI.TryInteractionCall) ~= "function" or type(S.UI.RequireHandler) ~= "function" then
@@ -1811,7 +1993,7 @@ function C:EnsureCreated()
     end, "buff_hud_calibration:preview_drag_stop")
     if startOk ~= true or stopOk ~= true then return false, tostring(startErr or stopErr or "HUD 校准拖动绑定失败") end
     self:HideOverlay()
-    return true
+    return EnsureSelectedPreviewVisuals()
 end
 
 function C:Open(context)
@@ -1830,6 +2012,7 @@ function C:Open(context)
     end
     local created, createErr = self:EnsureCreated()
     if created ~= true then
+        self:HideOverlay()
         self.Diagnostics.openFailures = (tonumber(self.Diagnostics.openFailures) or 0) + 1
         Trace("open_create_failed", { error=tostring(createErr or "校准 UI 创建失败") })
         return false, createErr
@@ -1847,6 +2030,7 @@ function C:Open(context)
     -- 会显示错误并禁用名字保存，其他 HUD 组件仍可正常调整/保存。
     self:RefreshAliasEditorSnapshot(true)
     self.globalPreviewEnabled = true
+    self.allPreviewEnabled = false
     self.Diagnostics.globalPreviewEnabled = true
     self.exitCallback = type(context) == "table" and context.onExit or nil
     local suppressed, suppressErr = SetLiveHudSuppressed(true, "hud_calibration_open")
@@ -1904,4 +2088,4 @@ function C:GetDraftSnapshot() return Copy(self.draft) end
 
 -- Presentation contract: no feature enable is required to edit layout, and no
 -- transient calibration state is persisted until Save & Exit.
-Feature.HudCalibrationPresentationContractVersion = 8 -- 中文维护注释：v8 将目标自定义名字收敛进 target HUD 校准器并提供独立几何 Draft；仍不新增 Scheduler/Consumer，模板输出不写 Store。
+Feature.HudCalibrationPresentationContractVersion = 10 -- v10 复用当前scope缓存、补缺项样本与纹理锚点，去除全览辅助遮挡；无新增Scheduler/Consumer，不保存模拟模式。

@@ -11,18 +11,33 @@ S.UIV3 = S.UIV3 or {}
 local W = { version=1, revision=0, loaded=false, storeId='v3.workspace' }
 S.UIV3.Workspace = W
 local P = S.Persistence
+-- 中文维护：外观名称与可选目录由 Workspace 统一声明，保存校验和页面选项共用此表，避免只加色表却遗漏入口。
+local APPEARANCES={
+ {id='dark',name='经典深色',detail='保留原有默认风格'},
+ {id='light',name='柔和浅色',detail='中性灰白底与低饱和蓝灰强调'},
+ {id='nord',name='极地蓝灰',detail='冷调蓝灰深底与冰蓝强调；轻渐变'},
+ {id='dusk',name='夜幕紫灰',detail='紫灰深底与柔和薰衣草强调；轻渐变'},
+ {id='dawn',name='暖雾米白',detail='暖米白底与烟紫强调；轻渐变'},
+ {id='sage',name='晨雾青绿',detail='灰绿浅底与低饱和青绿强调；轻渐变'},
+ {id='gold',name='暖金深色',detail='深色底与暖金强调'},
+ {id='contrast',name='高对比',detail='提高文字与边界对比'},
+}
+local KNOWN_APPEARANCES={};for _,option in ipairs(APPEARANCES)do KNOWN_APPEARANCES[option.id]=true end
 local CARDS = {
  {id='daily',name='日常任务',feature='Tasks',featureId='life_tasks',route='life.tasks',widget='life.tasks',scope='daily'},
  {id='weekly',name='周常任务',feature='Tasks',featureId='life_tasks',route='life.tasks',widget='life.tasks',scope='weekly'},
- {id='activities',name='活动 / 世界状态',feature='Activities',featureId='life_activities',route='life.activities',widget='life.activities'},
- {id='bonds',name='债券 / 居民板',feature='Bonds',featureId='life_bonds',route='life.bonds',widget='life.bonds'},
+ {id='stats',name='今日收获',kind='stats'},
  {id='trade',name='当前跑商路线',feature='Trade',featureId='life_trade',route='life.trade',widget='life.trade'},
+ {id='bonds',name='债券 / 居民板',feature='Bonds',featureId='life_bonds',route='life.bonds',widget='life.bonds'},
+ {id='activities',name='活动 / 世界状态',feature='Activities',featureId='life_activities',route='life.activities',widget='life.activities'},
+ {id='reminders',name='装备与每日提醒',kind='reminders'},
 }
 local CATEGORIES={home=1,combat=2,life=3,tools=4,system=5}
 local function Copy(v)
  if type(v)~='table' then return v end
  local out={};for k,x in pairs(v)do out[k]=Copy(x)end;return out
 end
+function W:GetAppearanceOptions()return Copy(APPEARANCES)end
 local function Key(v) return type(v)=='string' and #v>0 and #v<=192 and not v:find('[\r\n%z]') end
 local function Map(v)
  local out,n={},0
@@ -43,7 +58,7 @@ local function Normalize(v)
  local home=type(v.home)=='table' and v.home or {};local lists=type(v.lists)=='table' and v.lists or {}
  local out={navigation={favorite=Map(nav.favorite),hidden=Map(nav.hidden),order=Order(nav.order)},
   home={hidden=Map(home.hidden),order=Order(home.order),stats=home.stats~=false},lists={},
-  appearance=({dark=true,gold=true,contrast=true})[v.appearance] and v.appearance or 'dark',
+  appearance=KNOWN_APPEARANCES[v.appearance] and v.appearance or 'dark',
   density=v.density=='compact' and 'compact' or 'standard'}
  out.navigation.hidden.home=nil
  for _,id in ipairs({'tasks','activities'})do
@@ -151,19 +166,24 @@ function W:MoveNavigation(id,delta)
 end
 function W:GetCards(includeHidden)
  self:EnsureLoaded();local rows=Ranked(Copy(CARDS),self.state.home.order,function(r)return r.id end);local out={}
- for _,r in ipairs(rows)do r.visible=not self.state.home.hidden[r.id];if includeHidden or r.visible then out[#out+1]=r end end
+ for _,r in ipairs(rows)do r.visible=not self.state.home.hidden[r.id] and (r.id~='stats' or self.state.home.stats);if includeHidden or r.visible then out[#out+1]=r end end
  return out
 end
 function W:SetCardVisible(id,value)
  local known=false;for _,r in ipairs(CARDS)do if r.id==id then known=true end end;if not known then return false,'未知卡片'end
- return self:Change('home',function()self.state.home.hidden[id]=value~=true or nil;return true end)
+ return self:Change('home',function()
+  -- 中文维护（2026-10-04）：今日收获进入卡片网格，但沿用 schema1 的 home.stats 开关，
+  -- 不迁移/清理用户旧排序与隐藏偏好，不扩张 canonical 形状或改变旧存档指纹。
+  if id=='stats'then self.state.home.stats=value==true;self.state.home.hidden.stats=nil
+  else self.state.home.hidden[id]=value~=true or nil end;return true
+ end)
 end
 function W:MoveCard(id,delta)
  local order,err=Moved(self:GetCards(true),id,delta,function(r)return r.id end);if not order then return false,err end
  return self:Change('home',function()self.state.home.order=order;return true end)
 end
 function W:SetOption(key,value)
- if key=='appearance' and not ({dark=true,gold=true,contrast=true})[value]then return false,'未知主题'end
+ if key=='appearance' and not KNOWN_APPEARANCES[value]then return false,'未知主题'end
  if key=='density' and value~='compact' and value~='standard'then return false,'未知密度'end
  if key~='appearance' and key~='density' and key~='stats'then return false,'未知选项'end
  return self:Change(key=='stats' and 'home' or key,function()

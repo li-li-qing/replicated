@@ -26,6 +26,7 @@ local function fresh(options)
     X2Bag = {Capacity=function()return 0 end,GetBagItemInfo=function()return nil end}
     dofile('core/rs_demand.lua')
     dofile('data/rs_data_registry.lua');dofile('data/ids/rs_item_ids.lua');dofile('data/ids/rs_quest_ids.lua')
+    dofile('data/rs_static_data_v2.lua');dofile('data/ids/rs_zone_ids.lua')
     dofile('data/ids/rs_instance_ids.lua');dofile('data/rs_event_data.lua');dofile('data/rs_quest_data.lua');dofile('core/rs_constants.lua')
     dofile('services/rs_quest_progress_v3.lua')
     dofile('features/life/shared/rs_life_slice_factory.lua')
@@ -313,5 +314,130 @@ test('empty board faction metadata cannot override a known current zone',functio
     h.boards={[1]={faction='Nuia',contents={}},[3]={contents={'Lumber 100'}},[4]={contents={'Iron 20'}}}
     assert(h.A:Refresh('manual') and h:Coverage('east') and not h:Coverage('west'))
 end)
+local WEST_REGION_IDS={1,2,3,5,6,8,10,18,19,20,21,22,26,27,93}
+local EAST_REGION_IDS={4,7,9,11,12,13,14,15,16,17,23,24,25,99}
+local AURORIA_REGION_IDS={54,56,57,102,103}
+local function stateFingerprint(h)
+    return assert(h.S.Persistence:FingerprintCanonicalValue(h.S.Persistence:GetStore(h.B.storeId), h.B.State))
+end
+local function regionRow(h, source, text, board)
+    h.zone=source=='west' and 1 or (source=='east' and 4 or 54)
+    h.boards={[board or 2]={contents={text}}}
+    assert(h.A:Refresh('manual'))
+    return assert(h.B:GetProjection().rows[1], 'missing regional row')
+end
+
+test('all 34 curated regions have one authoritative continent',function()
+    local h=fresh();local expected={}
+    for _,id in ipairs(WEST_REGION_IDS) do expected[id]='west' end
+    for _,id in ipairs(EAST_REGION_IDS) do expected[id]='east' end
+    for _,id in ipairs(AURORIA_REGION_IDS) do expected[id]='auroria' end
+    local n=0
+    for id,zone in pairs(h.S.GameIds.Zone.ById) do
+        n=n+1;assert(zone.continentKey==expected[id], 'wrong catalog continent: '..tostring(id))
+    end
+    assert(n==34,'incomplete region coverage')
+end)
+
+test('current location correctly captures Airain and Aubre as west',function()
+    for _,id in ipairs({10,21}) do
+        local h=fresh({zone=id});h.boards={[2]={faction='Nuia',contents={'Leather 100'}}}
+        assert(h.A:Refresh('manual') and h:Coverage('west') and not h:Coverage('east'),'west location rejected: '..id)
+    end
+end)
+
+test('all mainland Chinese region names override the opposite capture location',function()
+    for _,group in ipairs({{WEST_REGION_IDS,'west','east'},{EAST_REGION_IDS,'east','west'}}) do
+        for _,id in ipairs(group[1]) do
+            local h=fresh();local zone=h.S.GameIds.Zone.ById[id]
+            local row=regionRow(h,group[3],zone.nameZh..': 100个')
+            assert(row.continentKey==group[2] and row.regionZoneId==id,'wrong task region: '..zone.nameZh)
+            assert(row.sourceContinentKey==group[3] and row.continentEvidence=='region_text','lost capture evidence')
+            assert(row.materialKey=='leather' and row.quantity==100,'changed material or quantity')
+        end
+    end
+end)
+
+test('all mainland English names and the old Rookborne alias classify correctly',function()
+    for _,group in ipairs({{WEST_REGION_IDS,'west','east'},{EAST_REGION_IDS,'east','west'}}) do
+        for _,id in ipairs(group[1]) do
+            local h=fresh();local zone=h.S.GameIds.Zone.ById[id]
+            local row=regionRow(h,group[3],string.upper(zone.nameEn)..': 20')
+            assert(row.continentKey==group[2] and row.regionZoneId==id,'wrong English task region: '..zone.nameEn)
+        end
+    end
+    local h=fresh();assert(regionRow(h,'west','洛卡棋盘: 60个').continentKey=='east')
+end)
+
+test('screenshot districts always display west regardless of capture location',function()
+    for _,name in ipairs({'珊瑚海岸','索兹里德半岛','黎利尔丘陵','埋骨之地'}) do
+        local h=fresh();local row=regionRow(h,'east',name..': 100个')
+        assert(row.continent=='西大陆','screenshot regression: '..name)
+    end
+end)
+
+test('same regional task cached on both sides is shown once even without optional merge',function()
+    local h=fresh();regionRow(h,'west','珊瑚海岸: 100个');regionRow(h,'east','珊瑚海岸: 100个')
+    local p=h.B:GetProjection();assert(h.B.State.excludeSame==false and #p.rows==1,'cross-cache duplicate left visible')
+    assert(p.rows[1].continentKey=='west')
+    assert(p.regionClassification.duplicatesRemoved==1,'missing duplicate diagnostic')
+    assert(h:Coverage('west') and h:Coverage('east'),'capture evidence erased')
+end)
+
+test('duplicate winner prefers the source matching an east task and survives fresh reload',function()
+    local h=fresh();regionRow(h,'west','黎明半岛: 100个');regionRow(h,'east','黎明半岛: 100个')
+    local disk=h:Save();local r=fresh({disk=disk});assert(r.A:Refresh('presentation'))
+    local p=r.B:GetProjection();assert(#p.rows==1 and p.rows[1].continentKey=='east')
+    assert(p.rows[1].sourceContinentKey=='east','duplicate retained mislabeled source key')
+    assert(p.regionClassification.duplicatesRemoved==1)
+    assert(r:Coverage('west') and r:Coverage('east'),'reload destroyed source snapshots')
+end)
+
+test('same quantity at different regions and different quantities at one region are retained',function()
+    local h=fresh();regionRow(h,'east','珊瑚海岸: 100个')
+    h.boards[2].contents={'埋骨之地: 100个','珊瑚海岸: 60个'};assert(h.A:Refresh('manual'))
+    assert(#h.B:GetProjection().rows==3,'unrelated regional task collapsed')
+end)
+
+test('unknown or ambiguous names retain capture evidence without invented zone',function()
+    for _,text in ipairs({'未知新地区: 100个','珊瑚海岸/黎明半岛: 100个','珊瑚海岸/埋骨之地: 100个','Sanddeepness: 100'}) do
+        local h=fresh();local row=regionRow(h,'east',text)
+        assert(row.continentKey=='east' and row.regionZoneId==nil,'guessed ambiguous/unknown district: '..text)
+        assert(row.sourceContinentKey=='east','lost source fallback')
+    end
+end)
+
+test('Auroria board family remains Auroria and cannot acquire a mainland label',function()
+    local h=fresh();local row=regionRow(h,'auroria','Prince Coinpurses 30 (珊瑚海岸)',5)
+    assert(row.continentKey=='auroria' and row.materialKey=='prince_purse')
+end)
+
+test('legacy stamped cache displays corrected districts after fresh LoadStore without a rewrite',function()
+    local h=fresh();regionRow(h,'east','珊瑚海岸: 100个');local disk=h:Save()
+    local r=fresh({disk=disk,zone=4});local before=stateFingerprint(r)
+    local reads=r.boardCalls;assert(r.A:Refresh('presentation'))
+    assert(r.B:GetProjection().rows[1].continentKey=='west','restored cache still mislabeled')
+    assert(r.B.State.dailySnapshots.east~=nil and r.B.State.dailySnapshots.west==nil,'persisted observation moved')
+    assert(stateFingerprint(r)==before,'projection rewrote store')
+    assert(r.S.Persistence:GetStore(r.B.storeId).dirty~=true and r.boardCalls==reads,'projection wrote/probed')
+    assert(r.S.Persistence:GetStore(r.B.storeId).writeFenced~=true,'valid old cache fenced')
+end)
+
+test('sort and optional merge use task geography while diagnostics remain read only',function()
+    local h=fresh();h.zone=4;h.boards={[2]={contents={'珊瑚海岸: 100个','黎明半岛: 100个'}}}
+    assert(h.B:AcquireConsumer('regional_sort_test'))
+    assert(h.A:Refresh('manual'))
+    assert(h.B:SetContinentOrder('west_first'))
+    assert(h.B:GetProjection().rows[1].continentKey=='west','sort used capture geography')
+    assert(h.B:SetContinentOrder('east_first'))
+    assert(h.B:GetProjection().rows[1].continentKey=='east')
+    assert(h.B:SetDuplicateMode('west'))
+    assert(#h.B:GetProjection().rows==1 and h.B:GetProjection().rows[1].continentKey=='west','merge priority used source')
+    local reads=h.boardCalls;local before=stateFingerprint(h)
+    local health=h.B:GetHealth()
+    assert(health.dailyCache.regionClassification.correctedRows==1,'missing correction diagnostic')
+    assert(h.boardCalls==reads and stateFingerprint(h)==before,'diagnostic mutated/probed')
+end)
+
 print(string.format('BONDS_CROSS_CONTINENT: %d/%d passed (runtime=%s)',passed,total,_VERSION))
 if passed~=total then error('Bonds cross-continent regression failures') end

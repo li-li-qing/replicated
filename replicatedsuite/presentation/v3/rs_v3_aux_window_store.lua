@@ -66,6 +66,11 @@ local HISTORICAL_POLICY_SETS = {
     -- 发布过的 Presentation policy 代际；候选只有重新计算后精确命中旧 stamped fingerprint 才能恢复。
     { id = "pre_quest_detail", policies = { "trade_detail", "trade_diagnostics", "module_diagnostics" } },
     { id = "pre_module_diagnostics", policies = { "trade_detail", "trade_diagnostics" } },
+    -- 中文维护注释（2026-10-02）：实机自检 RS-20261002-195813-365029-1.2 的 schema1
+    -- 实际已有 quest_detail，却没有 module_diagnostics；旧两个历史集合漏掉此发布形态。
+    -- 其三窗 canonical 精确重现旧章 782943CD，而补第四窗后为 188C8DDF，Transport3 数值本身未丢失。
+    -- 只补这个有原档证据的 policy 集合，不白名单指纹、不删窗/清档；已有模块窗内容时禁止忽略它求匹配。
+    { id = "schema1_quest_without_module", policies = { "trade_detail", "trade_diagnostics", "quest_detail" }, absentWindow = "module_diagnostics" },
 }
 
 local function NormalizeStateWithPolicies(value, ids)
@@ -91,7 +96,10 @@ local function RebuildHistoricalCanonical(decoded, stampedFingerprint, _currentC
         return nil
     end
     for _, candidateSpec in ipairs(HISTORICAL_POLICY_SETS) do
-        local candidate = NormalizeStateWithPolicies(decoded, candidateSpec.policies)
+        -- 中文维护注释：缺失窗口是这代结构的前置条件；只在真实缺失时构造历史见证。
+        -- Core 仍负责整份旧章、身份/envelope/预算校验，匹配后才允许迁移并恢复原有写入生命周期。
+        local eligible = candidateSpec.absentWindow == nil or (type(decoded) == "table" and decoded[candidateSpec.absentWindow] == nil)
+        local candidate = eligible and NormalizeStateWithPolicies(decoded, candidateSpec.policies) or nil
         local fingerprint = P:FingerprintCanonicalValue(store, candidate)
         if fingerprint ~= nil and tostring(fingerprint) == tostring(stampedFingerprint) then
             store.lastHistoricalRecoveryProbe = "aux_policy/" .. tostring(candidateSpec.id) .. "/match"
@@ -182,6 +190,10 @@ function A:PersistWindow(id, reason, delayMs)
     if POLICIES[id] == nil then return false, "unknown auxiliary window: " .. id end
     local ok, err = self:EnsureLoaded()
     if ok ~= true then return false, err end
+    -- 中文维护（2026-10-04）：详情/诊断窗也必须跨立即重载保留位置；不依赖下一次保存心跳。
+    if reason == "geometry" or reason == "layout_reset" or reason == "minimized" then
+        return P:SaveStore(STORE_ID, { durable=true, consumeDirty=true, reason="aux_window:" .. id .. ":" .. reason })
+    end
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 250,
         "aux_window:" .. id .. ":" .. tostring(reason or "state"))
 end

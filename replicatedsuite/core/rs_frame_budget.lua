@@ -146,6 +146,15 @@ function B:_OwnerStats(owner)
     return stats, owner
 end
 
+-- 中文维护（2026-10-03，scheduler-starvation-fairness）：饥饿阈值只归预算 Broker；Scheduler 排序和 Request
+-- 必须用同一判定，否则 P2 长期抢走唯一 starvation escape，P3 候选/P4 高亮永远等待。纯函数不记统计/不分配表。
+function B:IsStarving(priority, deferCount, lateRatio)
+    local p=NormalizePriority(priority)
+    if p<=1 then return false end
+    return math.max(0,Finite(deferCount,0)) >= (MAX_DEFER_FRAMES[p] or 8)
+        or math.max(0,Finite(lateRatio,0)) >= (STARVATION_LATE_RATIO[p] or 3.0)
+end
+
 function B:Request(owner, priority, costUnits, deferCount, lateRatio)
     local p = NormalizePriority(priority)
     local cost = NormalizeCost(costUnits)
@@ -194,8 +203,7 @@ function B:Request(owner, priority, costUnits, deferCount, lateRatio)
     -- One starvation escape per rendered frame. This is deliberately bounded:
     -- allowing every old task to escape together would recreate the hitch the
     -- broker exists to prevent.
-    local starving = deferCount >= (MAX_DEFER_FRAMES[p] or 8)
-        or lateRatio >= (STARVATION_LATE_RATIO[p] or 3.0)
+    local starving = self:IsStarving(p,deferCount,lateRatio) -- 中文维护：只轮转“已达旧阈值”的任务；仍严格每帧最多一个 escape，不放宽 credits/maxExecutions。
     if starving and current.starvationRuns < 1 then
         current.granted = current.granted + 1
         current.starvationRuns = current.starvationRuns + 1

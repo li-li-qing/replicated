@@ -443,6 +443,96 @@ local function TransportDecodeValueV5(value,seen)
 end
 
 -- 导出（供 rs_persistence.lua 以 T.<名> 调用）
+-- 中文维护（实机 16383 字节截断）：v6 仅压紧完整的死亡摘要标量树。
+-- Domain、codec1、schema2 与指纹均不改变；所有其他值仍经过 v3 的精确数值/假值保护。
+-- 固定字段顺序 + 数值往返文本 + 字符串 HEX 消除每行 11 个键/缩进的 Native 开销。
+local V6_PREFIX = '__rs_t6:'
+local ROW_FIELDS = {'serial','storageId','time','clock','windowMs','totalDamage','lethalSource','lethalAbility','lethalAmount','eventCount','debuffCount'}
+local ROW_STRINGS = {clock=true,lethalSource=true,lethalAbility=true}
+local function CompactV6(value, decode, seen)
+    if type(value)=='string' then
+        if not decode then
+            if value:sub(1,#V6_PREFIX)==V6_PREFIX then return V6_PREFIX..'s'..value end
+            return value
+        end
+        if value:sub(1,#V6_PREFIX)~=V6_PREFIX then return value end
+        if value:sub(1,#V6_PREFIX+1)==V6_PREFIX..'s' then return value:sub(#V6_PREFIX+2) end
+        if value:sub(1,#V6_PREFIX+1)~=V6_PREFIX..'r' or #value>4096 then return nil,'transport_row_token_v6' end
+        local tokens={}
+        for token in (value:sub(#V6_PREFIX+2)..';'):gmatch('(.-);') do tokens[#tokens+1]=token end
+        if #tokens~=#ROW_FIELDS then return nil,'transport_row_count_v6' end
+        local row={}
+        for i,key in ipairs(ROW_FIELDS) do
+            local token=tokens[i]
+            if ROW_STRINGS[key] then
+                if #token%2~=0 or token:find('[^0-9A-F]') then return nil,'transport_row_hex_v6' end
+                row[key]=(token:gsub('..',function(pair)return string.char(tonumber(pair,16))end))
+            else
+                local n=tonumber(token)
+                if not n or n~=n or n==math.huge or n==-math.huge or string.format('%.17g',n)~=token then return nil,'transport_row_number_v6' end
+                row[key]=n
+            end
+        end
+        return row
+    end
+    if type(value)~='table' then return value end
+    seen=seen or {};if seen[value] then return nil,'transport_cycle' end;seen[value]=true
+    if not decode then
+        local count=0;for _ in pairs(value) do count=count+1 end
+        local complete=count==#ROW_FIELDS
+        for _,key in ipairs(ROW_FIELDS) do
+            local v=value[key]
+            if ROW_STRINGS[key] then complete=complete and type(v)=='string'
+            else complete=complete and type(v)=='number' and v==v and v~=math.huge and v~=-math.huge end
+        end
+        if complete then
+            local tokens={}
+            for i,key in ipairs(ROW_FIELDS) do
+                local v=value[key]
+                tokens[i]=ROW_STRINGS[key] and (v:gsub('.',function(c)return string.format('%02X',string.byte(c))end)) or string.format('%.17g',v)
+            end
+            seen[value]=nil
+            local packed=V6_PREFIX..'r'..table.concat(tokens,';')
+            if #packed>4096 then return nil,'transport_row_limit_v6' end
+            return packed
+        end
+    end
+    local out={}
+    for key,child in pairs(value) do
+        local k,ke=CompactV6(key,decode,seen);if ke then seen[value]=nil;return nil,ke end
+        local v,ve=CompactV6(child,decode,seen);if ve then seen[value]=nil;return nil,ve end
+        if (type(k)~='string' and type(k)~='number') or out[k]~=nil then seen[value]=nil;return nil,'transport_key_collision_v6' end
+        out[k]=v
+    end
+    seen[value]=nil;return out
+end
+function T.EncodeV6(value)
+    local compact,err=CompactV6(value,false);if err then return nil,err end
+    return TransportEncodeValueV3(compact)
+end
+function T.DecodeV6(value)
+    local decoded,err=TransportDecodeValueV3(value);if err then return nil,err end
+    return CompactV6(decoded,true)
+end
+
+-- 中文维护：Native 的文本标签、固定六位数、引号/转义、每层四空格均计入保守预算。
+-- 每个字段按最占空间的另起一行估算；在 SaveData 之前拒绝，不能等截断后才回滚 RAM。
+function T.EstimateNativeBytes(value, depth)
+    depth=depth or 0
+    local indent=depth*4
+    local function Scalar(v)
+        if type(v)=='number' then return 4+#string.format('%.6f',v) end
+        if type(v)=='boolean' then return 16 end
+        local text=tostring(v)
+        local _,escapes=text:gsub('[%c"\\]','')
+        return 4+#text+escapes+2
+    end
+    if type(value)~='table' then return indent+Scalar(value)+2 end
+    local size=indent+14
+    for key,child in pairs(value) do size=size+indent+Scalar(key)+2+T.EstimateNativeBytes(child,depth+1) end
+    return size
+end
+
 T.EncodeV1 = TransportEncodeValueV1
 T.DecodeV1 = TransportDecodeValueV1
 T.EncodeV2 = TransportEncodeValueV2

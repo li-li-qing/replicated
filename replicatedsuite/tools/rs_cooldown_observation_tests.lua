@@ -68,7 +68,7 @@ end
 
 dofile("services/rs_cooldown_observation_v3.lua")
 local C=S.Services.CooldownObservationV3
-assert(C.version==4 and C.NativeSkillIdContractVersion==1,"corrected cooldown contracts missing")
+assert(C.version==5 and C.NativeSkillIdContractVersion==1 and C.AutomaticDiscoveryContractVersion==1,"corrected cooldown contracts missing")
 local health=C:GetHealth()
 assert(health.eventIndependent==true and health.subscribed==false and health.busScope=="none","cooldown runtime must not depend on CombatEventBus")
 assert(health.idContract=="skill_id_only","cooldown id namespace must be explicit")
@@ -165,4 +165,4 @@ assert(C:AcquireConsumer("leasefail",{skillIds={},mateIds={}}),"native import fa
 assert(C.nativeSkillLease==false and C.nativeSkillLeaseState=="failed","failed import must stay recorded")
 assert(tostring(C:GetHealth().nativeSkillLeaseError):find("synthetic_import_failure",1,true)~=nil,"failure reason lost")
 assert(C:ReleaseConsumer("leasefail"))
-print("COOLDOWN_OBSERVATION_V4 PASS")
+print("COOLDOWN_OBSERVATION_V5 MANUAL CONTRACT PASS")

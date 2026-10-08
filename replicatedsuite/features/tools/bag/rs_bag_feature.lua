@@ -32,6 +32,10 @@ local BAG_BATCH_TASK = "v3_business_bag_category_batch"
 local BAG_QUICK_OBSERVE_TASK = "v3_business_bag_quick_observe"
 local BAG_QUICK_MOVE_TASK = "v3_business_bag_quick_move"
 local BAG_QUICK_LIMIT = 40
+-- 对齐当前 Capability Registry 的 MoveToEmpty* 200ms 冷却；仍通过 Api
+-- 能力门执行，首拍也先读剩余冷却，不能把快速开始误判为物品拒收。
+local BAG_MOVE_INTERVAL_MS = 200
+local BAG_VERIFY_GRACE_MS = 250
 
 -- The active V3 contract can safely observe the native bag window, but it
 -- does not prove a supported native parent/embedding operation. Keep this
@@ -99,20 +103,45 @@ local function ReadBagWindowContext()
         end
         return anyKnown, false
     end
-    local function ContentRect(content)
-        local node = content
+    local function ContentRect(content, mainX, mainY, mainWidth, mainHeight)
+        local node, candidate = content, nil
+        local function MatchesMainRect(rx, ry, rw, rh)
+            return mainX ~= nil and mainY ~= nil and mainWidth ~= nil and mainHeight ~= nil
+                and math.abs(mainX-rx)<=2 and math.abs(mainY-ry)<=2
+                and math.abs(mainWidth-rw)<=2 and math.abs(mainHeight-rh)<=2
+        end
         for depth = 0, 8 do
-            if node == nil then break end
+            if node == nil or node == UIParent then break end
             if S.Layout ~= nil and (type(S.Layout.ResolveViewportLogicalRect) == "function" or type(S.Layout.GetLogicalRect) == "function") then
                 -- 维护（2026-09-22，external-surface-geometry-1）：外部原生内容坐标最终用于 UIParent 侧栏锚定，
                 -- 必须优先走已校准的 viewport-logical-v1；旧 GetLogicalRect 会在部分 RU UI Scale 语义下
                 -- 重复除缩放。兼容测试/旧引导环境时才退回 legacy helper，不改变 Native ADDON Authority。
-                local ok, x, y, width, height = pcall(function()
+                local ok, x, y, width, height, geometry = pcall(function()
                     if type(S.Layout.ResolveViewportLogicalRect) == "function" then return S.Layout:ResolveViewportLogicalRect(node) end
                     return S.Layout:GetLogicalRect(node)
                 end)
-                if ok == true and PlausibleRect(x, y, width, height) then
-                    return Number(x), Number(y), Number(width), Number(height), depth == 0 and "bag-content" or ("bag-parent-" .. tostring(depth))
+                -- 中文维护（2026-10-03）：UIC_BAG 可能是零点/全屏代理，不能把它或
+                -- UIParent 当成背包。最多向上找 8 层实际窗口，坐标只由 Layout 校准一次。
+                local scale=type(geometry)=="table" and tonumber(geometry.effectiveScale) or 1
+                scale=scale or 1
+                local rootX=type(geometry)=="table" and tonumber(geometry.uiParentRawX) or 0
+                local rootY=type(geometry)=="table" and tonumber(geometry.uiParentRawY) or 0
+                local originIsActual=x==0 and y==0 and (
+                    MatchesMainRect(0,0,tonumber(width) or 0,tonumber(height) or 0)
+                    or MatchesMainRect(rootX or 0,rootY or 0,(tonumber(width) or 0)*scale,(tonumber(height) or 0)*scale))
+                local proxyOrigin = x == 0 and y == 0 and not originIsActual
+                local viewportSized = (tonumber(width) or 0) >= logicalWidth - 2 and (tonumber(height) or 0) >= logicalHeight - 2
+                if ok == true and PlausibleRect(x, y, width, height)
+                    and (tonumber(width) or 0) >= 32 and (tonumber(height) or 0) >= 32 and not proxyOrigin and not viewportSized then
+                    -- 中文维护（2026-10-04）：GetContent 也可能返回有效但带内边距的物品格子。
+                    -- 优先匹配 MainScript 外窗矩形（逻辑或已校准 Native 单位），否则继续沿同一
+                    -- 父链选最外层有效窗；不能见到第一个非零矩形就把内部区域当背包左上角。
+                    candidate = { x=Number(x), y=Number(y), width=Number(width), height=Number(height),
+                        source=depth == 0 and "bag-content" or ("bag-parent-" .. tostring(depth)), geometry=geometry, node=node }
+                    local matches = MatchesMainRect(x,y,width,height)
+                        or MatchesMainRect((rootX or 0)+x*scale,(rootY or 0)+y*scale,width*scale,height*scale)
+                    if type(geometry)=="table" then geometry.bagAnchorSelection=matches and "main-script-match" or "outermost-content-parent" end
+                    if matches then return candidate.x,candidate.y,candidate.width,candidate.height,candidate.source,geometry,node end
                 end
             end
             if type(node.GetParent) ~= "function" then break end
@@ -120,6 +149,7 @@ local function ReadBagWindowContext()
             if ok ~= true or parent == nil or parent == node then break end
             node = parent
         end
+        if candidate then return candidate.x,candidate.y,candidate.width,candidate.height,candidate.source,candidate.geometry,candidate.node end
         return nil
     end
 
@@ -154,20 +184,27 @@ local function ReadBagWindowContext()
     -- remains authoritative for every inventory write (`visible`).
     local surfaceVisible = nativeVisible == true or contentVisible == true
         or (nativeKnown ~= true and mainRect == true)
+    local px, py, pw, ph, source, geometry, anchor = ContentRect(content, x, y, width, height)
     if mainRect == true then
         context.status, context.visible, context.surfaceVisible = "ready", resolvedVisible, surfaceVisible
         context.visibilityConflict = surfaceVisible == true and resolvedVisible ~= true
-        context.x, context.y, context.width, context.height = x, y, width, height
+        context.mainScriptRect = { x = x, y = y, width = width, height = height }
+        -- 中文维护（2026-10-03）：MainScript 继续决定可见性和搬运安全；摆放优先
+        -- 使用实际 Native 窗口的 viewport-logical 几何。没有可证明控件时保留既有
+        -- MainScript 回退并在诊断中明确标为未校准，不能对未知单位一律再除 UI Scale。
+        context.x, context.y, context.width, context.height = px or x, py or y, pw or width, ph or height
+        context.geometrySource = source or "main-script-unverified-fallback"
+        context.geometry = geometry
         context.source = nativeKnown and "main-script" or (contentVisible and "main-script+content-visible" or (contentKnown and "main-script-geometry-over-proxy" or "main-script-geometry"))
         context.surfaceSource = context.visibilityConflict and "content-visible-over-native-hidden" or context.source
-        return context
+        return context, anchor
     end
 
-    local px, py, pw, ph, source = ContentRect(content)
     if px ~= nil then
         context.status, context.visible, context.surfaceVisible = "ready", contentVisible == true, contentVisible == true
         context.x, context.y, context.width, context.height, context.source, context.surfaceSource = px, py, pw, ph, source, source
-        return context
+        context.geometrySource, context.geometry = source, geometry
+        return context, anchor
     end
     if contentKnown == true and contentVisible ~= true then
         context.status, context.visible, context.surfaceVisible, context.source, context.surfaceSource, context.reason = "ready", false, false, "content-hidden", "content-hidden", nil
@@ -421,8 +458,14 @@ local function MutateBlacklist(feature, reason, mutator)
         local result, changedOrError = mutator(feature.State.blacklist)
         if result ~= true then return false, tostring(changedOrError or "黑名单修改失败") end
         return true, nil, changedOrError == true
-    end, { delayMs = 300, reason = tostring(reason or "blacklist_changed") })
+    -- 中文维护（2026-10-03）：黑名单是全放的保护条件；点击成功时必须耐久保存，
+    -- 不能在退出后悄悄失去保护。共享事件只发布已提交事实，不在此增加背包扫描。
+    end, { durable = true, reason = tostring(reason or "blacklist_changed") })
     if marked ~= true then return false, tostring(mutationErr or "黑名单未保存，已回滚") end
+    if changed == true and S.Events ~= nil then
+        feature.Authority.revision = (tonumber(feature.Authority.revision) or 0) + 1
+        S.Events:Publish(feature.UpdateTopic, feature.Authority.revision, "blacklist_changed")
+    end
     return true, nil, changed
 end
 
@@ -706,7 +749,7 @@ end
 -- released and the reason published; the next click rebuilds the plan from live
 -- container state, which is how every single step already works.
 BagMoveRuntime.QuickRunStaleMs = 8000
-BagMoveRuntime.QuickDirectionLabel = { withdraw = "取出", deposit = "存入" }
+BagMoveRuntime.QuickDirectionLabel = { withdraw = "取出", deposit = "存入", deposit_all = "全部存入" }
 
 function BagMoveRuntime.QuickRunEvidence(feature)
     local state = (S.Scheduler ~= nil and type(S.Scheduler.GetTaskState) == "function")
@@ -894,9 +937,9 @@ local function BatchProjection(feature)
         windowContext = windowContext,
         quickOverlay = quickOverlay,
         quickButtons = {
-            mode = "native_window_follow_v3", status = "ready", requiresSourceSlot = false,
-            reason = "打开银行/箱子时在背包上方只提供「取 / 放」两个按钮：空闲=开始，运行中点同一个=停止，点另一个=切换方向；显式点击才扫描物品",
-            actions = { "QuickWithdraw", "QuickDeposit" },
+            mode = "free_floating_bar_v1", status = "ready", requiresSourceSlot = false,
+            reason = "打开仓库/箱子后显示取、放、全放和设置；拖动左侧 ≡ 调整并保存位置；放只移同类，全放尝试所有非黑名单物品；运行中再点同一个动作停止，点另一个切换",
+            actions = { "QuickWithdraw", "QuickDeposit", "QuickDepositAll" },
         }, }
 end
 -- 中文维护注释（2026-09-28，Phase 1 Batch A）：原 `local PersistStateMutation` 前向声明已删除，
@@ -939,6 +982,10 @@ local function StopBagBatch(feature, status, errorText)
     feature.State.batch = type(feature.State.batch) == "table" and feature.State.batch or { moved = 0, skipped = 0, queued = 0 }
     feature.State.batch.status = status or "stopped"
     feature.State.batch.error = errorText
+    local performance = feature.State.batch.performance
+    if type(performance) == "table" then
+        performance.elapsedMs = math.max(0, (type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0) - performance.startedAt)
+    end
     return true
 end
 
@@ -949,10 +996,24 @@ local function PublishBagOverlay(feature, reason)
 end
 
 local function StopBagQuick(feature, status, errorText)
+    local overlay = type(feature._quickOverlay)=="table" and feature._quickOverlay or {}
+    if feature._quickDirection~=nil then
+        -- 有界 Session 摘要留给完整诊断；不是永久配置，也不增加历史队列。
+        overlay.lastRun={direction=feature._quickDirection,status=status or "停止",planned=tonumber(overlay.queued) or 0,
+            moved=tonumber(overlay.moved) or 0,skipped=tonumber(overlay.skipped) or 0,
+            reason=errorText or overlay.error,finishedAt=type(S.NowMs)=="function" and tonumber(S.NowMs()) or 0}
+        if type(feature._quickPerformance) == "table" then
+            local performance = Copy(feature._quickPerformance)
+            performance.elapsedMs = math.max(0, overlay.lastRun.finishedAt - performance.startedAt)
+            overlay.lastRun.performance = performance
+        end
+    end
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask)=="function" then S.Scheduler:RemoveTask(BAG_QUICK_MOVE_TASK) end
     feature._quickQueue, feature._quickIndex, feature._quickPending, feature._quickSourceCounts, feature._quickBagId = nil, nil, nil, nil, nil
     feature._quickDirection, feature._quickLastStepAt = nil, nil
-    feature._quickOverlay = type(feature._quickOverlay)=="table" and feature._quickOverlay or {}
+    feature._quickSlotHint = nil
+    feature._quickPerformance = nil
+    feature._quickOverlay = overlay
     feature._quickOverlay.status = status or "停止"
     feature._quickOverlay.error = errorText
     feature._quickOverlay.queued = 0
@@ -1026,7 +1087,7 @@ end
 -- stable identity/category intent plus a scan hint.  InventorySnapshotV3 checks
 -- the hinted slot first and wraps through the bounded container only when the
 -- hint is stale; slot numbers never become persistent identity.
-function BagMoveRuntime.FindLiveMoveSource(feature, sourceScope, blacklistScope, identity, category, bagId, startSlot, blockedIdentities)
+function BagMoveRuntime.FindLiveMoveSource(feature, sourceScope, blacklistScope, identity, category, bagId, startSlot, blockedIdentities, alternateSlot)
     local inventory = S.Services and S.Services.InventorySnapshotV3 or nil
     if type(inventory) ~= "table" or type(inventory.FindLiveRow) ~= "function" then
         return nil, nil, "InventorySnapshotV3 unavailable"
@@ -1037,7 +1098,7 @@ function BagMoveRuntime.FindLiveMoveSource(feature, sourceScope, blacklistScope,
         if identityMatch ~= true then return false end
         local allowed = CheckBlacklist(feature, blacklistScope, candidate)
         return allowed == true
-    end, { bagId = bagId, startSlot = startSlot, maxSlots = BAG_SCAN_LIMIT })
+    end, { bagId = bagId, startSlot = startSlot, alternateSlot = alternateSlot, maxSlots = BAG_SCAN_LIMIT })
     if type(row) ~= "table" then return nil, nil, err end
     return row.slot, row, nil
 end
@@ -1095,10 +1156,20 @@ function BagMoveRuntime.IssueQuickMove(entry, target, slot)
     return Action("X2Coffer:MoveToEmptyBagSlot", CofferApi, "MoveToEmptyBagSlot", slot)
 end
 
+function BagMoveRuntime.MoveReady(source, target)
+    local capability = source == "bag" and (target == "bank" and "X2Bag:MoveToEmptyBankSlot" or "X2Bag:MoveToEmptyCofferSlot")
+        or (source == "bank" and "X2Bank:MoveToEmptyBagSlot" or "X2Coffer:MoveToEmptyBagSlot")
+    if S.Api ~= nil and type(S.Api.GetCapabilityCooldownState) == "function" then
+        local cooldown = S.Api:GetCapabilityCooldownState(capability)
+        if type(cooldown) == "table" and (tonumber(cooldown.remainingMs) or 0) > 0 then return false end
+    end
+    return true
+end
+
 local function BeginBagQuick(feature, direction)
     if BagBatchRunning(feature) then return false, "高级整理正在运行，请先停止批量" end
     -- Last-resort guard: StartBagQuick resolves a live run by stop/switch before
-    -- reaching here, so hitting this means a caller bypassed the two-button path.
+    -- reaching here, so hitting this means a caller bypassed the action path.
     if BagQuickRunning(feature) then return false, "快捷取放正在运行，再点一次「取」或「放」可停止" end
     local storage = CurrentStorageContext()
     if type(storage) ~= "table" then return false, "请先打开银行或箱子（窗口刚打开时请稍后再试）" end
@@ -1110,6 +1181,7 @@ local function BeginBagQuick(feature, direction)
     -- bounded InventorySnapshot had a chance to prove it. If either container
     -- is unreadable, BagIdentitySet still fails closed before any native write.
     local target = storage.kind
+    local planLimit = direction == "deposit_all" and BAG_SCAN_LIMIT or BAG_QUICK_LIMIT
     local bagSet, bagRows, bagErrors, bagErr, bagCounts, bagId = BagIdentitySet("bag")
     local storageSet, storageRows, storageErrors, storageErr, storageCounts = BagIdentitySet(target)
     if bagSet == nil or storageSet == nil then return false, bagErr or storageErr or "容器读取失败" end
@@ -1121,7 +1193,7 @@ local function BeginBagQuick(feature, direction)
     -- write.  This survives slot compaction and avoids a large duplicate queue.
     local queue, queueByIdentity, sourceCounts, plannedMoves = {}, {}, nil, 0
     local function AddIntent(row, source, dest)
-        if plannedMoves >= BAG_QUICK_LIMIT or type(row) ~= "table" or row.identity == nil then return end
+        if plannedMoves >= planLimit or type(row) ~= "table" or row.identity == nil then return end
         local allowed = CheckBlacklist(feature, target, row.info)
         if allowed ~= true then return end
         local index = queueByIdentity[row.identity]
@@ -1144,11 +1216,11 @@ local function BeginBagQuick(feature, direction)
             if row.identity ~= nil and bagSet[row.identity] == true then AddIntent(row, target, "bag") end
             if plannedMoves >= BAG_QUICK_LIMIT then break end
         end
-    elseif direction == "deposit" then
+    elseif direction == "deposit" or direction == "deposit_all" then
         sourceCounts = bagCounts or {}
         for _, row in ipairs(bagRows) do
-            if row.identity ~= nil and storageSet[row.identity] == true then AddIntent(row, "bag", target) end
-            if plannedMoves >= BAG_QUICK_LIMIT then break end
+            if row.identity ~= nil and (direction == "deposit_all" or storageSet[row.identity] == true) then AddIntent(row, "bag", target) end
+            if plannedMoves >= planLimit then break end
         end
     else
         return false, "未知快捷动作"
@@ -1166,9 +1238,10 @@ local function BeginBagQuick(feature, direction)
         feature._quickQueue, feature._quickIndex, feature._quickPending = nil, nil, nil
         feature._quickSourceCounts, feature._quickBagId = nil, nil
         feature._quickDirection, feature._quickLastStepAt = nil, nil
-        feature._quickOverlay.status = "没有同类物品"
+        feature._quickOverlay.status = direction == "deposit_all" and "没有可存物品" or "没有同类物品"
         feature._quickOverlay.statusAt = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0
-        feature._quickOverlay.error = "背包与" .. (target == "coffer" and "箱子" or "银行")
+        feature._quickOverlay.error = direction == "deposit_all" and "背包中没有可识别且未被黑名单排除的物品"
+            or "背包与" .. (target == "coffer" and "箱子" or "银行")
             .. "没有共同的同类物品；快捷取放只移动两边都存在的同类，整类收纳请用下方「高级整理」"
         PublishBagOverlay(feature, "bag_quick_empty_plan")
         return true, 0
@@ -1179,7 +1252,11 @@ local function BeginBagQuick(feature, direction)
     feature._quickSourceCounts = Copy(sourceCounts)
     feature._quickBagId = bagId
     feature._quickDirection = direction
+    feature._quickSlotHint = nil
     feature._quickLastStepAt = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0
+    -- 单次会话的有界证据，只进入完整诊断；不存档、不新增后台采样。
+    feature._quickPerformance = { startedAt = feature._quickLastStepAt, intervalMs = BAG_MOVE_INTERVAL_MS,
+        actionAttempts = 0, verificationScans = 0, retries = 0 }
     PublishBagOverlay(feature, "bag_quick_start")
     if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then
         StopBagQuick(feature, "已停止", "调度器不可用")
@@ -1187,7 +1264,7 @@ local function BeginBagQuick(feature, direction)
     end
 
     S.Scheduler:RemoveTask(BAG_QUICK_MOVE_TASK)
-    local added = S.Scheduler:AddTask(BAG_QUICK_MOVE_TASK, 250, function()
+    local added = S.Scheduler:AddTask(BAG_QUICK_MOVE_TASK, BAG_MOVE_INTERVAL_MS, function()
         feature._quickLastStepAt = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0
         local current = CurrentStorageContext()
         if type(current) ~= "table" or current.kind ~= target then
@@ -1211,6 +1288,7 @@ local function BeginBagQuick(feature, direction)
                 -- reached in the no-progress case.
                 local liveCount, countErr = BagMoveRuntime.CountLiveMatches(
                     pending.source, pending.identity, nil, pending.bagId, pending.beforeCount)
+                feature._quickPerformance.verificationScans = feature._quickPerformance.verificationScans + 1
                 if liveCount == nil then
                     StopBagQuick(feature, "已停止", countErr or "移动结果无法确认")
                     return
@@ -1218,15 +1296,20 @@ local function BeginBagQuick(feature, direction)
                 moved = liveCount < (tonumber(pending.beforeCount) or 0)
             end
             if moved ~= true then
+                -- 200ms 动作节奏不缩短旧的未生效确认窗口；冷却等待不是失败。
+                local now = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0
+                if now < (tonumber(pending.verifyAt) or 0) or BagMoveRuntime.MoveReady(pending.source, target) ~= true then return end
                 local retries = tonumber(pending.retries) or 0
                 if retries < 2 then
+                    feature._quickPerformance.actionAttempts = feature._quickPerformance.actionAttempts + 1
+                    feature._quickPerformance.retries = feature._quickPerformance.retries + 1
                     local retryOk, retryErr = BagMoveRuntime.IssueQuickMove({ source = pending.source }, target, pending.slot)
                     if retryOk ~= true then
                         local group = type(feature._quickQueue) == "table" and feature._quickQueue[pending.queueIndex] or nil
                         if group ~= nil then
                             group.queueIndex = pending.queueIndex
                             if BagMoveRuntime.IsNativeMoveRejected(retryErr) then
-                                BagMoveRuntime.SkipQuickIdentity(feature, group, "该类物品目标堆已满，已跳过并继续后续物品")
+                                BagMoveRuntime.SkipQuickIdentity(feature, group, "该类物品当前无法放入目标容器，已跳过并继续后续物品")
                             else
                                 BagMoveRuntime.SkipQuickIdentity(feature, group, "移动重试异常，已跳过该类物品并继续：" .. tostring(retryErr or "unknown"))
                             end
@@ -1236,6 +1319,7 @@ local function BeginBagQuick(feature, direction)
                         return
                     end
                     pending.retries = retries + 1
+                    pending.verifyAt = now + BAG_VERIFY_GRACE_MS
                     PublishBagOverlay(feature, "bag_quick_retry")
                     return
                 end
@@ -1264,6 +1348,7 @@ local function BeginBagQuick(feature, direction)
                 feature._quickIndex = math.max(feature._quickIndex or 0, pending.queueIndex or 0)
             end
             feature._quickPending = nil
+            feature._quickSlotHint = pending.slot
         end
 
         local entry = feature._quickQueue[feature._quickIndex + 1]
@@ -1275,8 +1360,9 @@ local function BeginBagQuick(feature, direction)
         end
 
         local sourceBagId = entry.source == "bag" and feature._quickBagId or nil
+        if BagMoveRuntime.MoveReady(entry.source, target) ~= true then return end
         local slot, _, sourceErr = BagMoveRuntime.FindLiveMoveSource(
-            feature, entry.source, target, entry.identity, nil, sourceBagId, entry.slotHint)
+            feature, entry.source, target, entry.identity, nil, sourceBagId, entry.slotHint, nil, feature._quickSlotHint)
         if slot == nil then
             entry.remaining = 0
             feature._quickIndex = feature._quickIndex + 1
@@ -1297,11 +1383,12 @@ local function BeginBagQuick(feature, direction)
             counts[entry.identity] = liveCount
             feature._quickSourceCounts = counts
         end
+        feature._quickPerformance.actionAttempts = feature._quickPerformance.actionAttempts + 1
         local actionOk, actionErr = BagMoveRuntime.IssueQuickMove(entry, target, slot)
         if actionOk ~= true then
             entry.queueIndex = feature._quickIndex + 1
             if BagMoveRuntime.IsNativeMoveRejected(actionErr) then
-                BagMoveRuntime.SkipQuickIdentity(feature, entry, "该类物品目标堆已满，已跳过并继续后续物品")
+                BagMoveRuntime.SkipQuickIdentity(feature, entry, "该类物品当前无法放入目标容器，已跳过并继续后续物品")
                 return
             end
             -- Uncertain dispatch failure (pcall/capability error text): the
@@ -1314,10 +1401,11 @@ local function BeginBagQuick(feature, direction)
         feature._quickPending = {
             slot = slot, identity = entry.identity, identityMode = entry.identityMode, itemType = entry.itemType,
             source = entry.source, beforeCount = beforeCount, retries = 0, bagId = sourceBagId,
+            verifyAt = feature._quickLastStepAt + BAG_VERIFY_GRACE_MS,
             queueIndex = feature._quickIndex + 1,
         }
         PublishBagOverlay(feature, "bag_quick_step")
-    end, false, feature, "P1")
+    end, true, feature, "P1")
     if added ~= true then
         StopBagQuick(feature, "已停止", "快捷取放任务创建失败")
         return false, "快捷取放任务创建失败"
@@ -1331,7 +1419,9 @@ local function RefreshBagQuickOverlay(feature)
     -- and no new scheduler task, and an orphaned mutex can never outlive its
     -- task (see BagMoveRuntime.ReclaimStaleBagQuickRun).
     BagMoveRuntime.ReclaimStaleBagQuickRun(feature)
-    local bag=ReadBagWindowContext()
+    local bag, bagAnchor=ReadBagWindowContext()
+    -- 仅保存当代 Native 锚点引用，不进入 Projection/Store/诊断序列化。
+    feature._quickBagAnchor=bagAnchor
     local bank=ReadStorageWindowContext("bank")
     local coffer=ReadStorageWindowContext("coffer")
     -- Surface visibility is presentation evidence only. Native move Authority
@@ -1370,6 +1460,10 @@ local function RefreshBagQuickOverlay(feature)
     nextState.bagSurfaceSource=bag and bag.surfaceSource or "none"
     nextState.bagSurfaceEffectiveSource=bagSurfaceEffectiveSource
     nextState.bagReason=bag and bag.reason or nil
+    nextState.bagRect=bag and { x=bag.x, y=bag.y, width=bag.width, height=bag.height } or nil
+    nextState.bagGeometrySource=bag and bag.geometrySource or nil
+    nextState.bagGeometry=bag and Copy(bag.geometry) or nil
+    nextState.bagMainScriptRect=bag and Copy(bag.mainScriptRect) or nil
     nextState.bankStatus=bank and bank.status or "unknown"
     nextState.bankVisible=bank and bank.visible==true or false
     nextState.bankSurfaceVisible=bank and bank.surfaceVisible==true or false
@@ -1385,7 +1479,7 @@ local function RefreshBagQuickOverlay(feature)
     nextState.cofferSurfaceSource=coffer and coffer.surfaceSource or "none"
     nextState.cofferReason=coffer and coffer.reason or nil
     if visible then
-        nextState.x=bag.x; nextState.y=math.max(0,(tonumber(bag.y) or 0)-36); nextState.width=math.max(240,math.min(300,tonumber(bag.width) or 240)); nextState.height=32
+        nextState.x=bag.x; nextState.y=bag.y; nextState.width=math.max(240,math.min(300,tonumber(bag.width) or 240)); nextState.height=32
         if nextState.status==nil or nextState.status=="等待仓库/箱子" then nextState.status="可快捷取放" end
     elseif nextState.status~="正在取出" and nextState.status~="正在放入" then nextState.status="等待仓库/箱子" end
     local changed = old.visible~=nextState.visible or old.storageKind~=nextState.storageKind or old.x~=nextState.x or old.y~=nextState.y or old.width~=nextState.width
@@ -1402,13 +1496,10 @@ local function RefreshBagQuickOverlay(feature)
     return true
 end
 
--- Two-button contract: the floating bar (and the page row) only ever offer
--- 「取」 and 「放」.  A click therefore means *start* when idle, *stop* when this
--- same direction is running, *switch* when the other one is running.  The old
--- refusal ("已经在运行，请先停止") is what made a click look dead, and the third
--- 停 button was reported as useless; both go away while cancel stays reachable.
+-- 取/放/全放共用动作契约：空闲点击开始，同动作再点停止，其他动作切换。
+-- 设置入口只打开独立设置菜单，不改变正在运行的搬运方向。
 local function StartBagQuick(feature, direction)
-    if direction ~= "withdraw" and direction ~= "deposit" then return false,"未知快捷动作" end
+    if direction ~= "withdraw" and direction ~= "deposit" and direction ~= "deposit_all" then return false,"未知快捷动作" end
     BagMoveRuntime.ReclaimStaleBagQuickRun(feature)
     if BagBatchRunning(feature) then return false,"高级整理正在运行，请先停止批量" end
     local switchNote = nil
@@ -1511,6 +1602,8 @@ local function BeginBatchMove(feature, target, category, requestedLimit)
     feature.State.batch = {
         status = plannedMoves == 0 and "empty" or "running",
         moved = 0, skipped = skipped, queued = plannedMoves, error = nil,
+        performance = { startedAt = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0,
+            intervalMs = BAG_MOVE_INTERVAL_MS, actionAttempts = 0, verificationScans = 0, baselineScans = 0, retries = 0 },
     }
     feature._batchQueue, feature._batchIndex, feature._batchTarget, feature._batchPending = queue, 0, target, nil
     feature._batchSourceCount = sourceCategoryCount
@@ -1523,7 +1616,7 @@ local function BeginBatchMove(feature, target, category, requestedLimit)
     end
 
     S.Scheduler:RemoveTask(BAG_BATCH_TASK)
-    local taskAdded = S.Scheduler:AddTask(BAG_BATCH_TASK, 250, function()
+    local taskAdded = S.Scheduler:AddTask(BAG_BATCH_TASK, BAG_MOVE_INTERVAL_MS, function()
         if feature.State.batch.status ~= "running" then S.Scheduler:RemoveTask(BAG_BATCH_TASK); return end
         local schedulerWindowOk, schedulerWindowErr = RequireStorageWindow(feature._batchTarget)
         if schedulerWindowOk ~= true then
@@ -1540,11 +1633,12 @@ local function BeginBatchMove(feature, target, category, requestedLimit)
                 feature.Authority:Refresh("batch_verify_read_stop")
                 return
             end
-            local _, afterCategory = SourceIdentity(info)
-            local moved = IsEmptyBagInfo(info) or afterCategory ~= pending.category
+            local afterIdentity = StableItemIdentity(info)
+            local moved = IsEmptyBagInfo(info) or afterIdentity ~= pending.identity
             if moved ~= true then
                 local liveCount, countErr = BagMoveRuntime.CountLiveMatches(
                     "bag", pending.identity, nil, pending.bagId, pending.beforeCount)
+                feature.State.batch.performance.verificationScans = feature.State.batch.performance.verificationScans + 1
                 if liveCount == nil then
                     StopBagBatch(feature, "stopped", countErr or "移动结果无法确认")
                     feature.Authority:Refresh("batch_verify_count_stop")
@@ -1553,8 +1647,12 @@ local function BeginBatchMove(feature, target, category, requestedLimit)
                 moved = liveCount < (tonumber(pending.beforeCount) or 0)
             end
             if moved ~= true then
+                local now = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0
+                if now < (tonumber(pending.verifyAt) or 0) or BagMoveRuntime.MoveReady("bag", target) ~= true then return end
                 local retries = tonumber(pending.retries) or 0
                 if retries < 2 then
+                    feature.State.batch.performance.actionAttempts = feature.State.batch.performance.actionAttempts + 1
+                    feature.State.batch.performance.retries = feature.State.batch.performance.retries + 1
                     local capability = target == "bank" and "X2Bag:MoveToEmptyBankSlot" or "X2Bag:MoveToEmptyCofferSlot"
                     local retryOk, retryErr = Action(capability, BagApi, target == "bank" and "MoveToEmptyBankSlot" or "MoveToEmptyCofferSlot", pending.slot)
                     if retryOk ~= true then
@@ -1571,7 +1669,8 @@ local function BeginBatchMove(feature, target, category, requestedLimit)
                         return
                     end
                     pending.retries = retries + 1
-                    feature.Authority:Refresh("batch_retry")
+                    pending.verifyAt = now + BAG_VERIFY_GRACE_MS
+                    PublishBagOverlay(feature, "batch_retry")
                     return
                 end
                 local group = type(feature._batchQueue) == "table" and feature._batchQueue[pending.queueIndex] or nil
@@ -1604,10 +1703,11 @@ local function BeginBatchMove(feature, target, category, requestedLimit)
         end
         if (tonumber(entry.remaining) or 0) <= 0 then
             feature._batchIndex = feature._batchIndex + 1
-            feature.Authority:Refresh("batch_group_complete")
+            PublishBagOverlay(feature, "batch_group_complete")
             return
         end
 
+        if BagMoveRuntime.MoveReady("bag", target) ~= true then return end
         local slot, sourceRow, sourceErr = BagMoveRuntime.FindLiveMoveSource(
             feature, "bag", target, nil, category, feature._batchBagId, entry.slotHint, feature._batchBlockedIdentities)
         if slot == nil then
@@ -1630,12 +1730,14 @@ local function BeginBatchMove(feature, target, category, requestedLimit)
             return
         end
         local beforeCount, countErr = BagMoveRuntime.CountLiveMatches("bag", sourceIdentity, nil, feature._batchBagId, nil)
+        feature.State.batch.performance.baselineScans = feature.State.batch.performance.baselineScans + 1
         if beforeCount == nil then
             StopBagBatch(feature, "stopped", countErr or "源物品数量不可读")
             feature.Authority:Refresh("batch_count_stop")
             return
         end
         local capability = target == "bank" and "X2Bag:MoveToEmptyBankSlot" or "X2Bag:MoveToEmptyCofferSlot"
+        feature.State.batch.performance.actionAttempts = feature.State.batch.performance.actionAttempts + 1
         local actionOk, actionErr = Action(capability, BagApi, target == "bank" and "MoveToEmptyBankSlot" or "MoveToEmptyCofferSlot", slot)
         if actionOk ~= true then
             local skipReason = BagMoveRuntime.IsNativeMoveRejected(actionErr)
@@ -1649,10 +1751,13 @@ local function BeginBatchMove(feature, target, category, requestedLimit)
         end
         feature._batchPending = {
             slot = slot, identity = sourceIdentity, category = category, beforeCount = beforeCount, retries = 0,
+            verifyAt = (type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0) + BAG_VERIFY_GRACE_MS,
             bagId = feature._batchBagId, queueIndex = feature._batchIndex + 1,
         }
-        feature.Authority:Refresh("batch_step")
-    end, false, feature, "P1")
+        -- 进度是 State.batch 的临时事实。每拍只发布进度，结束/停止仍完整
+        -- 刷新背包读模型；避免为每次进度显示再扫描所有槽位。
+        PublishBagOverlay(feature, "batch_step")
+    end, true, feature, "P1")
     if taskAdded ~= true then
         StopBagBatch(feature, "stopped", "批量队列任务创建失败，已清理运行态")
         return false, "批量队列任务创建失败，安全拒绝"
@@ -1789,7 +1894,8 @@ local BagTools = NewFeature("tools_bag", { apiDependencies = {
     "X2Bank:GetBagItemInfo", "X2Bank:Capacity", "X2Bank:MoveToEmptyBagSlot",
     "X2Coffer:GetBagItemInfo", "X2Coffer:Capacity", "X2Coffer:MoveToEmptyBagSlot",
     "ADDON:GetContent", "ADDON:GetContentMainScriptPosVis",
-}, state = { blacklist = BlacklistDefault(), batchCategory = nil, batchTarget = "bank", batchLimit = BATCH_DEFAULT_LIMIT }, default = { blacklist = BlacklistDefault(), batchCategory = nil, batchTarget = "bank", batchLimit = BATCH_DEFAULT_LIMIT }, persistentKeys = { "batchCategory" }, apply = ApplyBagState,
+}, persistenceBudget = { maxDepth = 5, maxNodes = 768, maxStringBytes = 16384, maxEntriesPerTable = 96 },
+state = { blacklist = BlacklistDefault(), batchCategory = nil, batchTarget = "bank", batchLimit = BATCH_DEFAULT_LIMIT }, default = { blacklist = BlacklistDefault(), batchCategory = nil, batchTarget = "bank", batchLimit = BATCH_DEFAULT_LIMIT }, persistentKeys = { "batchCategory" }, apply = ApplyBagState,
 onEnable = function(feature) return StartBagQuickObserver(feature) end,
 onDisable = function(feature) StopBagBatch(feature, "stopped", "功能关闭，批量任务已释放"); return StopBagQuickAll(feature, "功能关闭，快捷取放已释放") end,
 projection = BatchProjection, read = function()
@@ -1858,6 +1964,7 @@ end, commands = {
     CancelCategoryBatch = function(feature) return StopBagBatch(feature, "cancelled", "用户取消") end,
     QuickWithdraw = function(feature) return StartBagQuick(feature,"withdraw") end,
     QuickDeposit = function(feature) return StartBagQuick(feature,"deposit") end,
+    QuickDepositAll = function(feature) return StartBagQuick(feature,"deposit_all") end,
     QuickCancel = function(feature) return StopBagQuick(feature,"已取消","用户取消") end,
     SetBatchConfig = SetBatchConfig,
     SetBatchCategory = SetBatchCategory,
@@ -1894,6 +2001,12 @@ BagTools.QuickIdentityFallbackContractVersion = 1
 BagTools.BagTaskMutexContractVersion = 2
 BagTools.QuickRunSelfHealContractVersion = 1
 BagTools.QuickTwoButtonContractVersion = 1
+BagTools.AllDepositContractVersion = 1
+BagTools.NativeBagAnchorContractVersion = 1
+function BagTools:GetQuickBagAnchor()
+    if self.enabled == true and type(self._quickOverlay) == "table" and self._quickOverlay.visible == true then return self._quickBagAnchor end
+    return nil
+end
 -- Refusal text is split into a short overlay `status` plus a long diagnostic
 -- `error`; a click is never a silent no-op.
 BagTools.QuickReasonVisibilityContractVersion = 1
@@ -1905,6 +2018,14 @@ BagTools.QuickStatusTimestampContractVersion = 1
 BagTools.BatchTargetAutoContractVersion = 1
 BagTools.InventorySnapshotContractVersion = 1
 BagTools.GroupedIntentQueueContractVersion = 1
+-- 模块完整 TXT 收录单次搬运证据；只复制缓存，不为导出再扫描物品。
+if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.RegisterProvider) == "function" then
+    S.ModuleDiagnosticsHub:RegisterProvider(BagTools.Id, "bag_transfer_runtime", function()
+        return { batch = Copy(BagTools.State.batch),
+            quickLastRun = Copy(BagTools._quickOverlay and BagTools._quickOverlay.lastRun),
+            quickActivePerformance = Copy(BagTools._quickPerformance) }
+    end, 50, { detailOnly = true })
+end
 -- 中文维护注释（2026-09-28，Phase 1 Batch D）：tools_auction 已机械搬迁到 features/tools/auction/rs_auction_feature.lua；
 -- toc.g 只登记一次，禁止在此重新注册。
 -- 中文维护注释（2026-09-28，Phase 1 Batch A）：tools_market_analysis 已机械搬迁到

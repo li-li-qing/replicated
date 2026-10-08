@@ -94,6 +94,9 @@ function M:NewActorState(maxActors)
 end
 function M:EnsureActor(state, name, stableId)
     if type(state) ~= "table" then return nil end
+    local analytics = S.Services and S.Services.CombatAnalyticsV3
+    if analytics and type(analytics.GetCollectionScope) == "function" and analytics:GetCollectionScope() == "self"
+        and analytics:IsSelfActor(name, stableId) ~= true then return nil end
     local key = self:ActorKey(name, stableId)
     if key == nil then return nil end
     local actor = state.actors[key]

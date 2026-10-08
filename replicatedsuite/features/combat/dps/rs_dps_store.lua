@@ -196,6 +196,10 @@ function F:EnsureStoreLoaded()
 end
 
 function F:MarkStoreDirty(delayMs, reason)
+    -- 中文维护（2026-10-04）：拖动后立即重载不能只留下 dirty；失败交给 Floating 事务回滚。
+    if reason == "widget_geometry" or reason == "widget_layout_reset" or reason == "widget_minimized" then
+        return P:SaveStore(STORE_ID, { durable=true, consumeDirty=true, reason=reason })
+    end
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 300, reason or "dps_changed")
 end
 

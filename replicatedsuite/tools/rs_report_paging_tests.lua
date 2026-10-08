@@ -32,7 +32,8 @@ local function Data(text)local n=tonumber(text:match(';DATA_BYTES=(%d+);'));loca
 local function Unescape(s)return (s:gsub('\\(.)',function(c)return ({n='\n',r='\r',['\\']='\\'})[c] or error('bad escape')end))end
 Test('explicit previous and next accompany focused and full report actions',function()
  local S,D,c,r,h=Boot();local n=0;for _,v in pairs(h.widgets)do if v.onClick then n=n+1 end end
- assert(n==5,'expected run/fault/full/previous/next');assert(h.widgets.v3_diag_report_prev.spec.text=='上一页');assert(h.widgets.v3_diag_report_next.spec.text=='下一页')
+ -- 维护（2026-10-07）：诊断已新增显式文件导出；保留原五项并验证导出入口，不把新版正常按钮误判为多余。
+ assert(n==6 and h.widgets.v3_diag_export_file and type(h.widgets.v3_diag_export_file.onClick)=='function','expected run/fault/full/export/previous/next');assert(h.widgets.v3_diag_report_prev.spec.text=='上一页');assert(h.widgets.v3_diag_report_next.spec.text=='下一页')
  assert(c.checks==0 and c.reads==0 and c.chats==0)
 end)
 Test('normal builder includes all fenced originals without copy budget deletion',function()

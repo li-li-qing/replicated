@@ -147,13 +147,25 @@ end
 
 function F:GetPreferredEnabled(id)
     id = NormalizeId(id)
+    local meta = Registry:Get(id)
+    local group = meta and meta.preferenceGroup
+    if type(group)=="table" and #group>1 then
+        local primary=self.preferences[group[1]]
+        if type(primary)=="boolean" then return primary,true end
+        -- 仅旧分析开关有显式偏好时保留开启意图；读取不写回存档。
+        for _,member in ipairs(group) do if self.preferences[member]==true then return true,true end end
+    end
     local explicit = self.preferences[id]
     if type(explicit) == "boolean" then return explicit, true end
-    local meta = Registry:Get(id)
     return meta ~= nil and meta.defaultEnabled == true or false, false
 end
 
 function F:SetPreferredEnabled(id, enabled, reason)
+    -- Registry 的组合元数据声明一次用户开关涉及哪些内部切片；事务仍由 Runtime 独占。
+    local groupMeta = Registry:Get(id)
+    if groupMeta and type(groupMeta.preferenceGroup)=="table" and #groupMeta.preferenceGroup>1 then
+        return self:ApplyPreferenceTargets({[id]=enabled==true}, reason or "group_toggle")
+    end
     id = NormalizeId(id)
     if Registry:Get(id) == nil then return false, "unknown feature" end
     if self.implementations[id] == nil then return false, "feature not implemented" end
@@ -164,6 +176,7 @@ function F:SetPreferredEnabled(id, enabled, reason)
     if writable ~= true then return false, writeErr or "feature preference store write-fenced" end
 
     local target = enabled == true
+    local previousPreference = self.preferences[id]
     local previousEnabled = self:IsEnabled(id)
     local ok, err
     if target then ok, err = self:Enable(id, reason or "user_enable")
@@ -179,10 +192,16 @@ function F:SetPreferredEnabled(id, enabled, reason)
         persisted, persistErr = P:MutateStore(self.preferenceStoreId, function()
             self.preferences[id] = target
             return true
-        end, { delayMs = 350, reason = "feature_preference:" .. id })
+        -- 中文维护（2026-10-03）：单个开关与批量方案采用同一耐久事务。旧 350ms
+        -- 延迟只代表已排期，点击后马上下线/重载可能尚未写入；成功必须已保存并回读验证。
+        end, { durable = true, reason = "feature_preference:" .. id })
     else
         self.preferences[id] = target
-        persisted, persistErr = P:MarkDirty(self.preferenceStoreId, 350, "feature_preference:" .. id)
+        if type(P.SaveStore) == "function" then
+            persisted, persistErr = P:SaveStore(self.preferenceStoreId, { durable = true, verifyAfterSave = true,
+                consumeDirty = true, reason = "feature_preference:" .. id })
+        else persisted, persistErr = false, "durable feature preference save unavailable" end
+        if persisted ~= true then self.preferences[id] = previousPreference end
     end
     if persisted == true then return true end
 
@@ -211,21 +230,57 @@ end
 -- 恢复已经发生的生命周期变化。Persistence.MutateStore 自己负责 preferences RAM/dirty metadata 回滚。
 -- 该接口只接受明确 boolean target；调用者决定哪些业务 Feature 参与，Runtime 不推断“生活/战斗”等语义。
 function F:ApplyPreferenceTargets(targets, reason)
-    if type(targets) ~= "table" then return false, "feature preference targets required" end
+    -- 维护（2026-09-30，feature-profile-failure-evidence-1）：前两个返回值保持兼容；第三值
+    -- 提供真实失败阶段/目标/回滚结果。调用者不得解析本地化错误文本判断失败模块，
+    -- 也不能在 rollback 失败时声称“已负责回滚”。只创建本次调用结果，不持久化或扫描 Store。
+    local function Failed(message, stage, id, target, rollbackOk, rollbackErr, changed, cause)
+        local targetValue
+        if type(target) == "boolean" then targetValue = target end
+        return false, message, {
+            contractVersion = 1, stage = stage, featureId = id,
+            targetEnabled = targetValue,
+            error = tostring(message), cause = tostring(cause or message),
+            rollbackAttempted = (tonumber(changed) or 0) > 0,
+            rollbackSucceeded = rollbackOk == true, rollbackError = rollbackErr,
+            changed = tonumber(changed) or 0,
+        }
+    end
+    if type(targets) ~= "table" then return Failed("feature preference targets required", "preflight", nil, nil, true) end
     local loaded, loadErr = self:EnsurePreferencesLoaded()
-    if loaded ~= true then return false, loadErr end
-    if type(P.CanWrite) ~= "function" then return false, "persistence write preflight unavailable" end
+    if loaded ~= true then return Failed(loadErr, "preflight", nil, nil, true) end
+    if type(P.CanWrite) ~= "function" then return Failed("persistence write preflight unavailable", "preflight", nil, nil, true) end
     local writable, writeErr = P:CanWrite(self.preferenceStoreId)
-    if writable ~= true then return false, writeErr or "feature preference store write-fenced" end
-    if type(P.MutateStore) ~= "function" then return false, "persistence transaction unavailable" end
+    if writable ~= true then return Failed(writeErr or "feature preference store write-fenced", "preflight", nil, nil, true) end
+    if type(P.MutateStore) ~= "function" then return Failed("persistence transaction unavailable", "preflight", nil, nil, true) end
 
+    -- 旧方案可能同时含主功能=true、旧隐藏子页=false；以组合第一个（主功能）为准。
+    -- 只扩展 Registry 明确声明的组，绝不在 Core 点名业务 Feature。
+    local requested={}
+    for rawId,target in pairs(targets) do
+        local id=NormalizeId(rawId)
+        if id=="" or Registry:Get(id)==nil then return Failed("unknown feature: "..tostring(rawId),"preflight",id,target,true) end
+        if type(target)~="boolean" then return Failed("feature target must be boolean: "..id,"preflight",id,target,true) end
+        if requested[id]~=nil then return Failed("duplicate normalized feature target: "..id,"preflight",id,target,true) end
+        requested[id]=target
+    end
+    local expanded={};for id,target in pairs(requested) do expanded[id]=target end
+    for id,target in pairs(requested) do
+        local meta=Registry:Get(id)
+        local group=meta and meta.preferenceGroup
+        if type(group)=="table" and #group>1 then
+            local primary=requested[group[1]]
+            if primary==nil then primary=target end
+            for _,member in ipairs(group) do expanded[member]=primary end
+        end
+    end
+    targets=expanded
     local ordered, normalizedTargets = {}, {}
     for rawId, rawTarget in pairs(targets) do
         local id = NormalizeId(rawId)
-        if id == "" or Registry:Get(id) == nil then return false, "unknown feature: " .. tostring(rawId) end
-        if self.implementations[id] == nil then return false, "feature not implemented: " .. id end
-        if type(rawTarget) ~= "boolean" then return false, "feature target must be boolean: " .. id end
-        if normalizedTargets[id] ~= nil then return false, "duplicate normalized feature target: " .. id end
+        if id == "" or Registry:Get(id) == nil then return Failed("unknown feature: " .. tostring(rawId), "preflight", id, rawTarget, true) end
+        if self.implementations[id] == nil then return Failed("feature not implemented: " .. id, "preflight", id, rawTarget, true) end
+        if type(rawTarget) ~= "boolean" then return Failed("feature target must be boolean: " .. id, "preflight", id, rawTarget, true) end
+        if normalizedTargets[id] ~= nil then return Failed("duplicate normalized feature target: " .. id, "preflight", id, rawTarget, true) end
         normalizedTargets[id] = rawTarget
         ordered[#ordered + 1] = id
     end
@@ -266,7 +321,7 @@ function F:ApplyPreferenceTargets(targets, reason)
                 local rollbackOk, rollbackErr = RollbackLifecycle(err)
                 local message = id .. ":" .. tostring(err or "lifecycle transition failed")
                 if rollbackOk ~= true then message = message .. "; rollback failed: " .. tostring(rollbackErr) end
-                return false, message
+                return Failed(message, "lifecycle", id, target, rollbackOk, rollbackErr, #transitioned, err)
             end
             transitioned[#transitioned + 1] = id
         end
@@ -278,11 +333,9 @@ function F:ApplyPreferenceTargets(targets, reason)
     end, { durable = true, reason = tostring(reason or "feature_preference_batch") })
     if persisted ~= true then
         local rollbackOk, rollbackErr = RollbackLifecycle(persistErr)
-        if rollbackOk ~= true then
-            return false, tostring(persistErr or "feature preference batch persistence failed")
-                .. "; rollback failed: " .. tostring(rollbackErr or "unknown")
-        end
-        return false, persistErr or "feature preference batch persistence failed"
+        local message = persistErr or "feature preference batch persistence failed"
+        if rollbackOk ~= true then message = tostring(message) .. "; rollback failed: " .. tostring(rollbackErr or "unknown") end
+        return Failed(message, "persist", nil, nil, rollbackOk, rollbackErr, #transitioned, persistErr)
     end
 
     Emit("info", "FEATURE_PREF_BATCH_APPLIED", "批量功能开关事务已提交", {

@@ -177,7 +177,8 @@ dofile("presentation/v3/rs_v3_acceptance.lua")
 
 local Feature = S.Features.combat_team_tools
 local Roster = S.Services.TeamRosterV3
-local Visuals = Feature.TeamVisuals
+local Sac = assert(S.Features.combat_sac_highlight) -- 中文维护：真实分离两个 Runtime 实例。
+local Visuals = Sac.TeamVisuals
 
 ------------------------------------------------------------------------
 -- Test 1: Feature Registry Metadata & Contract Versions
@@ -187,12 +188,12 @@ Test("T1: Feature registry metadata & contract versions", function()
     assert(reg ~= nil, "combat_team_tools must be registered in FeatureRegistry")
     assert(reg.id == "combat_team_tools", "id mismatch")
     assert(reg.route == "combat.team_tools", "route mismatch")
-    assert(reg.name == "团队中心", "name mismatch")
+    assert(reg.name == "职责设置", "name mismatch")
     assert(reg.category == "combat", "category mismatch")
     assert(reg.lifecycle == "explicit_action", "lifecycle mismatch")
 
     local deps = reg.apiDependencies
-    assert(#deps >= 7, "Must declare at least 7 API dependencies")
+    assert(#deps >= 4, "Must declare at least 7 API dependencies")
     local hasGetRole, hasSetRole, hasMarkers = false, false, false
     for _, d in ipairs(deps) do
         if d == "X2Team:GetRole" then hasGetRole = true end
@@ -201,25 +202,25 @@ Test("T1: Feature registry metadata & contract versions", function()
     end
     assert(hasGetRole, "X2Team:GetRole missing from dependencies")
     assert(hasSetRole, "X2Team:SetRole missing from dependencies")
-    assert(hasMarkers, "X2Unit:SetOverHeadMarker missing from dependencies")
+    assert(not hasMarkers, "X2Unit:SetOverHeadMarker missing from dependencies")
 
     -- Contracts
     assert((tonumber(Feature.TeamRoleContractVersion) or 0) >= 2, "TeamRoleContractVersion >= 2")
     assert((tonumber(Feature.AutoRoleContractVersion) or 0) >= 3, "AutoRoleContractVersion >= 3")
     assert((tonumber(Feature.AutoRoleCatalogContractVersion) or 0) >= 2, "AutoRoleCatalogContractVersion >= 2")
     assert((tonumber(Feature.AutoRoleRosterLeaseContractVersion) or 0) >= 1, "AutoRoleRosterLeaseContractVersion >= 1")
-    assert((tonumber(Feature.TeamVisualContractVersion) or 0) >= 2, "TeamVisualContractVersion >= 2")
-    assert((tonumber(Feature.TeamMarkerSnapshotContractVersion) or 0) >= 1, "TeamMarkerSnapshotContractVersion >= 1")
-    assert((tonumber(Feature.TeamSacContractVersion) or 0) >= 2, "TeamSacContractVersion >= 2")
+    assert((tonumber(Sac.TeamVisualContractVersion) or 0) >= 2, "TeamVisualContractVersion >= 2")
+    assert((tonumber(Sac.TeamMarkerSnapshotContractVersion) or 0) >= 1, "TeamMarkerSnapshotContractVersion >= 1")
+    assert((tonumber(Sac.TeamSacContractVersion) or 0) >= 2, "TeamSacContractVersion >= 2")
     assert((tonumber(Feature.AutoRoleDefaultOnContractVersion) or 0) >= 1, "AutoRoleDefaultOnContractVersion >= 1")
     assert(type(Feature.Commands.SetRole) == "function", "SetRole command missing")
     assert(type(Feature.Commands.SetAutoRoleEnabled) == "function", "SetAutoRoleEnabled command missing")
     assert(type(Feature.Commands.MoveMember) == "function", "MoveMember command missing")
     assert(type(Feature.Commands.MoveMemberToParty) == "function", "MoveMemberToParty command missing")
-    assert(type(Feature.Commands.SetSacHighlightEnabled) == "function", "SetSacHighlightEnabled missing")
-    assert(type(Feature.Commands.SaveRaidMarkers) == "function", "SaveRaidMarkers missing")
-    assert(type(Feature.Commands.RestoreRaidMarkers) == "function", "RestoreSavedRaidMarkers missing")
-    assert(type(Feature.Commands.ClearSavedRaidMarkers) == "function", "ClearSavedRaidMarkers missing")
+    assert(type(Sac.Commands.SetSacHighlightEnabled) == "function", "SetSacHighlightEnabled missing")
+    assert(type(Sac.Commands.SaveRaidMarkers) == "function", "SaveRaidMarkers missing")
+    assert(type(Sac.Commands.RestoreRaidMarkers) == "function", "RestoreSavedRaidMarkers missing")
+    assert(type(Sac.Commands.ClearSavedRaidMarkers) == "function", "ClearSavedRaidMarkers missing")
 end)
 
 ------------------------------------------------------------------------
@@ -479,7 +480,7 @@ end)
 -- Test 6: Spelldance Candidate Discovery & Aura Tracking
 ------------------------------------------------------------------------
 Test("T6: Spelldance candidate discovery & aura tracking", function()
-    Feature:Enable("test_t6")
+    Sac:Enable("test_t6")
     Visuals.running = true
 
     -- Setup Roster: Player 1 has Spelldance (14), Player 2 does not
@@ -493,7 +494,7 @@ Test("T6: Spelldance candidate discovery & aura tracking", function()
     mockUnit.abilityTemplates["team_1_2"] = { { index = 3 }, { index = 4 }, { index = 5 } }   -- No Spelldance
 
     -- Scan candidates
-    local okScan = Feature:ScanSacCandidates("test_scan")
+    local okScan = Sac:ScanSacCandidates("test_scan")
     assert(okScan == true, "ScanSacCandidates failed")
     assert(Visuals.candidateCount == 1, "Should have 1 candidate with Spelldance")
     assert(Visuals.candidates["team_1_1"] ~= nil, "DancerOne should be a candidate")
@@ -508,7 +509,7 @@ Test("T6: Spelldance candidate discovery & aura tracking", function()
     }
     -- Invalidate Aura cache and scan
     S.Services.AuraObservationV3.cache = {}
-    Feature:ScanSacAuras("test_aura_active")
+    Sac:ScanSacAuras("test_aura_active")
     assert(Visuals.activeCount == 1, "Active sac count should be 1")
     assert(Visuals.active["team_1_1"] ~= nil, "DancerOne should be active")
     assert(Visuals.active["team_1_1"].name == "DancerOne", "Active name mismatch")
@@ -516,13 +517,13 @@ Test("T6: Spelldance candidate discovery & aura tracking", function()
     -- Remove Buff -> active cleared
     mockUnit.buffs["team_1_1"] = {}
     S.Services.AuraObservationV3.cache = {}
-    Feature:ScanSacAuras("test_aura_removed")
+    Sac:ScanSacAuras("test_aura_removed")
     assert(Visuals.activeCount == 0, "Active sac count should return to 0 after buff removal")
 
     -- Toggle Command
-    Feature.Commands:SetSacHighlightEnabled(false)
+    Sac.Commands:SetSacHighlightEnabled(false)
     assert(Visuals.state.sacEnabled == false, "sacEnabled should be false after toggle")
-    Feature.Commands:SetSacHighlightEnabled(true)
+    Sac.Commands:SetSacHighlightEnabled(true)
     assert(Visuals.state.sacEnabled == true, "sacEnabled should be true after toggle")
 end)
 
@@ -530,7 +531,7 @@ end)
 -- Test 7: Team Marker Snapshot Save & Capacity Bounds
 ------------------------------------------------------------------------
 Test("T7: Team marker snapshot save & capacity bounds", function()
-    Feature:Enable("test_t7")
+    Sac:Enable("test_t7")
 
     -- Setup roster members with markers
     Roster.ordered = {
@@ -543,7 +544,7 @@ Test("T7: Team marker snapshot save & capacity bounds", function()
     mockUnit.markers["team_1_3"] = 0 -- No marker
 
     -- Save markers
-    local okSave, count = Feature.Commands:SaveRaidMarkers()
+    local okSave, count = Sac.Commands:SaveRaidMarkers()
     assert(okSave == true, "SaveRaidMarkers failed: " .. tostring(count))
     assert(count == 2, "Saved marker count should be 2 (Alpha and Beta)")
     assert(Visuals.markerStatus == "saved", "markerStatus should be saved")
@@ -555,23 +556,23 @@ Test("T7: Team marker snapshot save & capacity bounds", function()
     assert(saved[2].name == "Beta" and saved[2].markerIndex == 2, "Second saved mark mismatch")
 
     -- Projection check
-    local proj = Feature:GetProjection()
+    local proj = Sac:GetProjection()
     assert(proj.savedMarkerCount == 2, "proj.savedMarkerCount mismatch")
     assert(proj.markerStatus == "saved", "proj.markerStatus mismatch")
 
     -- Clear saved markers
-    local okClear = Feature.Commands:ClearSavedRaidMarkers()
+    local okClear = Sac.Commands:ClearSavedRaidMarkers()
     assert(okClear == true, "ClearSavedRaidMarkers failed")
     assert(#Visuals.state.savedMarks == 0, "savedMarks should be empty after clear")
-    assert(Feature:GetProjection().savedMarkerCount == 0, "Projection saved count should be 0")
+    assert(Sac:GetProjection().savedMarkerCount == 0, "Projection saved count should be 0")
 end)
 
 ------------------------------------------------------------------------
 -- Test 8: Team Marker 1100ms Paced Serial Restore & Readback Verification
 ------------------------------------------------------------------------
 Test("T8: Team marker 1100ms paced serial restore & readback verification", function()
-    S.FeatureRuntime:Enable("combat_team_tools", "test_t8")
-    Feature:Enable("test_t8")
+    S.FeatureRuntime:Enable("combat_sac_highlight", "test_t8")
+    Sac:Enable("test_t8")
 
     -- Pre-populate saved marks: Alpha -> Marker 1, Beta -> Marker 2
     Visuals.state.savedMarks = {
@@ -588,7 +589,7 @@ Test("T8: Team marker 1100ms paced serial restore & readback verification", func
     mockUnit.markers["team_1_2"] = 0
 
     -- Initiate restore
-    local okRestore, queuedCount = Feature.Commands:RestoreRaidMarkers()
+    local okRestore, queuedCount = Sac.Commands:RestoreRaidMarkers()
     assert(okRestore == true, "RestoreRaidMarkers failed: " .. tostring(queuedCount))
     assert(queuedCount == 2, "Queued count should be 2")
     assert(Visuals.markerStatus == "restoring", "markerStatus should be restoring")
@@ -620,7 +621,7 @@ Test("T8: Team marker 1100ms paced serial restore & readback verification", func
     assert(Visuals.restoreQueue == nil, "Queue should be cleared upon completion")
 
     -- Projection check
-    local proj = Feature:GetProjection()
+    local proj = Sac:GetProjection()
     assert(proj.markerStatus == "complete", "proj.markerStatus mismatch")
     assert(proj.markerApplied == 2, "proj.markerApplied mismatch")
     assert(proj.markerRestoreRunning == false, "markerRestoreRunning should be false")
@@ -639,8 +640,8 @@ Test("T9: TeamSacOverlay presentation widget & tick cadence", function()
     assert(#Overlay.pool == 4, "Pool should have 4 markers allocated")
 
     -- Active sac candidate present
-    S.FeatureRuntime:Enable("combat_team_tools", "test_t9")
-    Feature:Enable("test_t9")
+    S.FeatureRuntime:Enable("combat_sac_highlight", "test_t9")
+    Sac:Enable("test_t9")
     Visuals.state.sacEnabled = true
     Visuals.active = {
         ["team_1_1"] = { unitToken = "team_1_1", name = "DancerOne", verifiedAt = h.ms }
@@ -682,15 +683,15 @@ Test("T10: FoundationGate & Acceptance contract verification", function()
 
     local teamSacOverlay = S.UIV3 and S.UIV3.TeamSacOverlay or nil
     local teamVisualOk = type(teamTools) == "table"
-        and (tonumber(teamTools.TeamVisualContractVersion) or 0) >= 2
-        and (tonumber(teamTools.TeamMarkerSnapshotContractVersion) or 0) >= 1
-        and (tonumber(teamTools.TeamSacContractVersion) or 0) >= 2
+        and (tonumber(Sac.TeamVisualContractVersion) or 0) >= 2
+        and (tonumber(Sac.TeamMarkerSnapshotContractVersion) or 0) >= 1
+        and (tonumber(Sac.TeamSacContractVersion) or 0) >= 2
         and (tonumber(teamTools.AutoRoleDefaultOnContractVersion) or 0) >= 1
         and type(teamTools.Commands) == "table"
-        and type(teamTools.Commands.SetSacHighlightEnabled) == "function"
-        and type(teamTools.Commands.SaveRaidMarkers) == "function"
-        and type(teamTools.Commands.RestoreRaidMarkers) == "function"
-        and type(teamTools.Commands.ClearSavedRaidMarkers) == "function"
+        and type(Sac.Commands.SetSacHighlightEnabled) == "function"
+        and type(Sac.Commands.SaveRaidMarkers) == "function"
+        and type(Sac.Commands.RestoreRaidMarkers) == "function"
+        and type(Sac.Commands.ClearSavedRaidMarkers) == "function"
         and type(teamSacOverlay) == "table" and (tonumber(teamSacOverlay.TeamSacPresentationContractVersion) or 0) >= 1
     assert(teamVisualOk, "v3_team_visual_marker_contract clauses must pass")
 
@@ -714,19 +715,176 @@ Test("T10: FoundationGate & Acceptance contract verification", function()
     end
 
     local teamSacOverlay = S.UIV3.TeamSacOverlay
-    if type(teamTools) ~= "table" or (tonumber(teamTools.TeamVisualContractVersion) or 0) < 2
-        or (tonumber(teamTools.TeamMarkerSnapshotContractVersion) or 0) < 1
-        or (tonumber(teamTools.TeamSacContractVersion) or 0) < 2
+    if type(teamTools) ~= "table" or (tonumber(Sac.TeamVisualContractVersion) or 0) < 2
+        or (tonumber(Sac.TeamMarkerSnapshotContractVersion) or 0) < 1
+        or (tonumber(Sac.TeamSacContractVersion) or 0) < 2
         or (tonumber(teamTools.AutoRoleDefaultOnContractVersion) or 0) < 1
         or type(teamTools.Commands) ~= "table"
-        or type(teamTools.Commands.SetSacHighlightEnabled) ~= "function"
-        or type(teamTools.Commands.SaveRaidMarkers) ~= "function"
-        or type(teamTools.Commands.RestoreRaidMarkers) ~= "function"
+        or type(Sac.Commands.SetSacHighlightEnabled) ~= "function"
+        or type(Sac.Commands.SaveRaidMarkers) ~= "function"
+        or type(Sac.Commands.RestoreRaidMarkers) ~= "function"
         or type(teamSacOverlay) ~= "table" or (tonumber(teamSacOverlay.TeamSacPresentationContractVersion) or 0) < 1 then
         accFailures[#accFailures + 1] = "team_visual_marker_contract_v2"
     end
 
     assert(#accFailures == 0, "Acceptance checks failed: " .. table.concat(accFailures, ", "))
+end)
+
+Test("T11: independent role and Sac switches release only their own consumers", function()
+    assert(S.FeatureRuntime:Enable("combat_team_tools", "split_test"))
+    assert(S.FeatureRuntime:Enable("combat_sac_highlight", "split_test"))
+    assert(Sac.Commands:SetSacHighlightEnabled(true))
+    assert(Feature.AutoRoleRosterHeld and Visuals.running)
+    assert(S.FeatureRuntime:Disable("combat_team_tools", "split_role_off"))
+    assert(not Feature.AutoRoleRosterHeld and Visuals.running, "role off stopped Sac")
+    assert(S.FeatureRuntime:Enable("combat_team_tools", "split_role_on"))
+    assert(S.FeatureRuntime:Disable("combat_sac_highlight", "split_sac_off"))
+    assert(Feature.AutoRoleRosterHeld and not Visuals.running, "Sac off stopped role")
+    assert(Feature.Commands.SetSacHighlightEnabled == nil and Sac.Commands.SetRole == nil)
+    assert(Feature:GetProjection().sacEnabled == nil)
+    assert(S.Persistence:GetStore("v3.combat.team_tools.visuals") ~= nil)
+    assert(Sac:GetStartupEnableIntent(false, true) == false, "explicit off must stay off")
+    assert(S.FeatureRuntime:SetPreferredEnabled("combat_team_tools", true, "legacy_split_intent"))
+    Visuals.state.sacEnabled = true
+    assert(Sac:GetStartupEnableIntent(false, false) == true, "legacy running visual intent must migrate")
+    Visuals.state.sacEnabled = false
+    assert(Sac:GetStartupEnableIntent(false, false) == false, "legacy visual off must stay off")
+    -- 中文维护：执行真实只读验收注册，确保门禁已检查拆分后的两个所有者。
+    local cases={}
+    S.FoundationGate={RegisterSequenceCase=function(_,name,fn)cases[name]=fn;return true end}
+    dofile('features/combat/team_tools/rs_team_tools_acceptance.lua')
+    assert(cases.v3_combat_team_tools_role_contract())
+    assert(cases.v3_combat_team_tools_visual_marker_contract())
+end)
+
+-- 中文维护：覆盖真机未显示时的边界，不能仅手工塞 active 表证明渲染链路正常。
+Test("T12: repeated candidates retain aura timer; incomplete trees are observable", function()
+    assert(S.FeatureRuntime:Enable(Sac.Id, "regression"))
+    assert(Sac.Commands:SetSacHighlightEnabled(true))
+    Roster.ordered = {{name="DancerOne",unitToken="team_1_1",teamIndex=1,memberIndex=1}}
+    mockUnit.abilityTemplates.team_1_1 = {{index=14},{index=1},{index=2}}
+    Sac:ScanSacCandidates("first")
+    local timer = assert(S.Scheduler.tasks.v3_team_tools_sac_aura)
+    Sac:ScanSacCandidates("unchanged_roster")
+    assert(S.Scheduler.tasks.v3_team_tools_sac_aura == timer, "candidate refresh restarted pending aura timer")
+    mockUnit.abilityTemplates.team_1_1 = {}
+    Sac:ScanSacCandidates("cold_class")
+    assert(Visuals.scanFailures == 1, "empty class tree was silently classified as not a dancer")
+    local evidence = Sac:DescribeDiagnosticDetail()
+    assert(evidence.candidateScan.members[1].error == "ability_templates_incomplete")
+    mockUnit.abilityTemplates.team_1_1={{index=14},{index=1},{index=2}}
+    Sac:ScanSacCandidates("valid_again")
+    S.Events:Dispatch("BUFF_UPDATE")
+    local edge=assert(S.Scheduler.tasks.v3_team_tools_sac_aura_edge)
+    S.Events:Dispatch("BUFF_UPDATE")
+    assert(S.Scheduler.tasks.v3_team_tools_sac_aura_edge==edge,"rapid buff edges indefinitely postpone scan")
+end)
+
+Test("T13: canonical player token resolves qualified-name role slot", function()
+    assert(S.FeatureRuntime:Enable(Feature.Id, "regression"))
+    Feature.State.autoRoleEnabled = true
+    mockUnit.names.player = "LeaderPlayer"
+    mockUnit.abilityTemplates.player = {{index=8},{index=9},{index=14}}
+    Roster.ordered = {{name="LeaderPlayer@World",unitToken="player",teamIndex=1,memberIndex=2}}
+    mockTeam.roles["1:2"] = TMROLE_NONE
+    mockTeam.currentRole = nil
+    assert(Feature:ApplyAutoRole("canonical_player"))
+    assert(mockTeam.currentRole == TMROLE_HEALER, "canonical player identity rejected by display-name mismatch")
+    local evidence=Feature.AutoRoleEvidence
+    mockTeam.roles["1:2"]=TMROLE_HEALER
+    assert(S.Scheduler:RunTask("v3_team_role_verify"))
+    assert(evidence.confirmed and evidence.readback==TMROLE_HEALER,"accepted request was not read back from the real slot")
+end)
+
+Test("T14: unregistered class cannot clear a player's existing role", function()
+    Roster.ordered = {{name="LeaderPlayer",unitToken="player",teamIndex=1,memberIndex=2}}
+    mockUnit.abilityTemplates.player = {{index=97},{index=98},{index=99}}
+    mockTeam.roles["1:2"] = TMROLE_TANKER
+    mockTeam.currentRole = TMROLE_TANKER
+    Feature:ApplyAutoRole("unknown_class")
+    assert(mockTeam.currentRole == TMROLE_TANKER, "unknown class overwrote a confirmed manual role")
+    assert(Feature.AutoRoleStatus:find("尚未登记", 1, true))
+end)
+
+Test("T15: real detailed module export includes observation, rendering and role decisions", function()
+    dofile("core/rs_diagnostic_detail.lua")
+    dofile("core/rs_module_diagnostics.lua")
+    -- 中文维护：重载注册 Provider，采集必须仅消费已有事实，不启动模块或再执行职责写入。
+    assert(Sac:RegisterDiagnosticProviders())
+    assert(Feature:RegisterDiagnosticProviders())
+    local before = mockTeam.currentRole
+    local originalCall=S.Api.CallCapability
+    local reads=0
+    S.Api.CallCapability=function(...) reads=reads+1;return originalCall(...) end -- 中文维护：实际报告冻结期间不能偷偷补 Native 读数，否则“导出”会改变业务采样时序。
+    local _,_,sacText = S.ModuleDiagnosticsHub:BuildReport(Sac.Id, {detailed=true})
+    local _,_,roleText = S.ModuleDiagnosticsHub:BuildReport(Feature.Id, {detailed=true})
+    S.Api.CallCapability=originalCall
+    assert(reads==0,"diagnostic export queried native API")
+    assert(sacText and roleText, "detailed TXT was not generated")
+    assert(sacText:find("provider.team_sac_evidence", 1, true))
+    assert(sacText:find("candidateScan", 1, true) and sacText:find("overlay", 1, true))
+    assert(roleText:find("provider.team_role_evidence", 1, true) and roleText:find("autoRole", 1, true))
+    assert(mockTeam.currentRole == before, "diagnostic export changed native role")
+    assert(sacText:find("v3.combat.team_tools.visuals",1,true),"split visual store is missing from diagnostic ownership")
+end)
+
+Test("T16: roster to aura event to visible overlay, then buff removal hides it", function()
+    assert(S.FeatureRuntime:Enable(Sac.Id,"full_chain"))
+    assert(Sac.Commands:SetSacHighlightEnabled(true))
+    Roster.ordered={{name="DancerOne",unitToken="team_1_1",teamIndex=1,memberIndex=1}}
+    mockUnit.abilityTemplates.team_1_1={{index=14},{index=1},{index=2}}
+    mockUnit.buffs.team_1_1={{buff_id=30098,name="牺牲之舞"}}
+    S.Services.AuraObservationV3.cache={}
+    Sac:ScanSacCandidates("full_chain")
+    local overlay=S.UIV3.TeamSacOverlay
+    assert(Visuals.activeCount==1 and overlay.running and #overlay.active==1,"matched aura did not reach overlay")
+    assert(overlay.lastVisible==1,"native screen point did not produce a visible overlay")
+    mockUnit.buffs.team_1_1={}
+    S.Services.AuraObservationV3.cache={}
+    Sac:ScanSacAuras("skill_end")
+    assert(not overlay.running and overlay.lastVisible==0,"ended skill left stale marker")
+    assert(Sac:DescribeDiagnosticDetail().lastMatched.team_1_1,"ended skill lost its diagnostic evidence")
+    Roster.ordered={}
+    Sac:ScanSacCandidates("leave_team")
+    assert(next(Visuals.lastMatched)==nil,"roster changes retained unbounded old identities")
+end)
+
+-- 中文维护（2026-10-03）：真机报告已命中技能，却因相机世界空间 forward=-2026.44 被隐藏；复现“相机接口存在”而非此前的缺相机回退路径。
+Test("T17: valid native player/raid points survive mismatched camera space", function()
+    local originalPos,originalDir,originalFov=UIParent.GetViewCameraPos,UIParent.GetViewCameraDir,UIParent.GetViewCameraFov
+    local originalScreen=mockUnit.GetUnitScreenPosition
+    local function RunBody()
+        UIParent.GetViewCameraPos=function()return {x=3026.44,y=2000,z=50}end
+        UIParent.GetViewCameraDir=function()return {x=1,y=0,z=0}end
+        UIParent.GetViewCameraFov=function()return 1.57 end
+        mockUnit.GetUnitScreenPosition=function()return 500,300,10 end
+        for _,name in ipairs({"UIParent:GetViewCameraPos","UIParent:GetViewCameraDir","UIParent:GetViewCameraFov"}) do S.Api.allowedCapabilities[name]=true end
+        local strict=S.Services.ScreenProjectionV3:ProjectUnitBatch({"player"},{requireFrontHemisphere=true})
+        assert(strict.player.reason=="behind_camera","fixture must reproduce the live camera-space rejection")
+        assert(S.FeatureRuntime:Enable(Sac.Id,"camera_space_regression"))
+        assert(Sac.Commands:SetSacHighlightEnabled(true))
+        Roster.ordered={{name="LeaderPlayer",unitToken="player",teamIndex=1,memberIndex=1},{name="DancerOne",unitToken="team_1_1",teamIndex=1,memberIndex=2}}
+        mockUnit.abilityTemplates.player={{index=14},{index=8},{index=6}}
+        mockUnit.abilityTemplates.team_1_1={{index=14},{index=1},{index=2}}
+        mockUnit.buffs.player={{buff_id=30098,name="牺牲之舞"}}
+        mockUnit.buffs.team_1_1={{buff_id=30137,name="牺牲之舞"}}
+        S.Services.AuraObservationV3.cache={}
+        Sac:ScanSacCandidates("camera_space_regression")
+        local overlay=S.UIV3.TeamSacOverlay
+        assert(Visuals.activeCount==2,"both native buffs must match before testing visibility")
+        assert(overlay.lastVisible==2,"valid player/raid screen points were suppressed by camera-space math")
+        assert(overlay.pool[1].window.shown and overlay.pool[2].window.shown,"markers were not shown")
+        mockUnit.GetUnitScreenPosition=function()return 500,300,-1 end
+        overlay:VisualTick()
+        assert(overlay.lastVisible==0,"native negative depth must still hide behind-camera units")
+        mockUnit.GetUnitScreenPosition=function()return nil,nil,nil end
+        overlay:VisualTick()
+        assert(overlay.lastVisible==0,"missing native screen point must not invent a visible marker")
+    end
+    local ok,err=xpcall(RunBody,debug.traceback)
+    UIParent.GetViewCameraPos,UIParent.GetViewCameraDir,UIParent.GetViewCameraFov=originalPos,originalDir,originalFov
+    mockUnit.GetUnitScreenPosition=originalScreen
+    if not ok then error(err) end
 end)
 
 print(string.format("\nTeam Tools & Visuals Test Results: %d/%d passed", passed, total))

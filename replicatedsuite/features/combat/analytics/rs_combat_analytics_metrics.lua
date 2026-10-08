@@ -29,6 +29,13 @@ local function TargetName(fact)
     return C:Trim(fact.subjectName)
 end
 local function TargetActor(state,fact) return C:EnsureActor(state,TargetName(fact),fact and fact.targetId) end
+local function KnownKind(name,kind)
+    if kind~=nil and kind~="" and kind~="UNKNOWN" then return kind end
+    local relation=S.Services and S.Services.CombatRelationV3
+    local unit=relation and type(relation.GetUnit)=="function" and relation:GetUnit(name) or nil
+    return type(unit)=="table" and unit.kind or nil
+end
+local function KnownPlayer(name,kind) return KnownKind(name,kind)=="PLAYER" end
 local function AddDetail(actor,bucket,key,amount)
     if actor==nil then return false end
     actor.details=actor.details or {}; actor.details[bucket]=actor.details[bucket] or {}
@@ -67,7 +74,7 @@ do
             return true
         end,metric,"P3",1)
     end
-    Analytics:RegisterMetric({id="encounter",title="战斗历史",category="timeline",order=10,factCategories={"damage","heal","death","aura"},state=metric.state,
+    Analytics:RegisterMetric({id="encounter",suspended=true,title="战斗历史",category="timeline",order=10,factCategories={"damage","heal","death","aura"},state=metric.state,
         description="当前战斗、最近20场摘要和当前有界时间线；Aura 不单独开启或延长战斗。",
         OnFact=function(self,fact)
             local anchor=IsAnchor(fact); if anchor~=true and fact.category~="aura" then return false end
@@ -107,11 +114,37 @@ do
 end
 
 ------------------------------------------------------------------------
--- 2. Kills / inferred assists / deaths
+-- 2. Kills / deaths. 只保留目标类型/伤害观察时间，合并死亡与明确归属；不维护助攻集合。
 ------------------------------------------------------------------------
 do
     local metric={state=C:NewActorState(MAX_ACTORS)}
-    local function Init(state) state.targets={};state.targetOrder=C:NewBoundedQueue(512);state.targetCount=0;state.deathOrder=C:NewBoundedQueue(512);state.lastDeath={} end
+    -- 中文维护（2026-10-06）：漏记击杀需要死亡原文与判定证据，errors=0 不能说明已计数。
+    -- 只在死亡/通知分支保留32条标量记录；普通伤害不建诊断快照，不开全场桥/新任务。
+    -- 证据属于本次加载，停用或清空实时计数不抹掉它；导出时才复制，不能触发结算。
+    local evidence={events=C:NewBoundedQueue(32),counters={}}
+    local function Scalar(value)
+        local kind=type(value)
+        if kind=="nil" or kind=="number" or kind=="boolean" then return value end
+        if kind~="string" then return "<"..kind..">" end
+        if #value<=512 then return value end
+        local finish=512
+        while finish>0 and (value:byte(finish+1) or 0)>=128 and (value:byte(finish+1) or 0)<192 do finish=finish-1 end
+        return value:sub(1,finish).."<clipped>"
+    end
+    local function Evidence(fact,phase,reason,victim,killer,extra)
+        fact=fact or {}
+        local row={at=At(fact),processedAt=C:NowMs(),phase=phase,reason=reason,scope=Analytics:GetCollectionScope(),
+            victim=Scalar(victim or TargetName(fact)),killer=Scalar(killer or fact.sourceName),kind=Scalar(fact.kind),
+            transport=Scalar(fact.transport),sequence=Scalar(fact.sequence),rawEventType=Scalar(fact.rawEventType),
+            sourceKind=Scalar(fact.sourceKind),targetKind=Scalar(fact.targetKind),boundRole=Scalar(fact.boundRole),
+            rawUnitId=Scalar(fact.rawUnitId),rawNotice2=Scalar(fact.rawNotice2),rawNotice3=Scalar(fact.rawNotice3),
+            rawAbilityId=Scalar(fact.rawAbilityId or fact.abilityId),abilityName=Scalar(fact.abilityName),
+            rawNotice4=Scalar(fact.rawNotice4),rawNotice5=Scalar(fact.rawNotice5)}
+        for key,value in pairs(extra or {}) do row[key]=Scalar(value) end
+        C:QueuePush(evidence.events,row)
+        evidence.counters[reason]=(tonumber(evidence.counters[reason]) or 0)+1
+    end
+    local function Init(state) state.targets={};state.targetOrder=C:NewBoundedQueue(512);state.targetCount=0;state.deathOrder=C:NewBoundedQueue(512);state.lastDeath={};state.deathByName={};state.notices={};state.noticeCount=0;state.noticeScheduled=false end
     Init(metric.state)
     local function EnsureTarget(state,name)
         name=C:Trim(name); if name=="" then return nil end
@@ -121,37 +154,196 @@ do
             C:QueueEach(state.targetOrder,function(candidate) if victim==nil and candidate.active==true then victim=candidate end end)
             if victim then state.targets[victim.name]=nil;victim.active=false;state.targetCount=state.targetCount-1 end
         end
-        row={name=name,active=true,sources={},sourceCount=0,sourceOverflow=0};state.targets[name]=row;state.targetCount=state.targetCount+1;C:QueuePush(state.targetOrder,row);return row
+        row={name=name,active=true};state.targets[name]=row;state.targetCount=state.targetCount+1;C:QueuePush(state.targetOrder,row);return row
     end
     local function RecordDamage(state,fact)
         if fact.category~="damage" or (tonumber(fact.amount) or 0)<=0 then return false end
-        local target=EnsureTarget(state,fact.targetName);local source=C:Trim(fact.sourceName);if target==nil or source=="" then return false end
-        local row=target.sources[source]
-        if row==nil then if target.sourceCount>=64 then target.sourceOverflow=target.sourceOverflow+1;return false end;row={};target.sources[source]=row;target.sourceCount=target.sourceCount+1 end
-        row.at=At(fact);row.sourceName=source;row.sourceId=fact.sourceId;row.ability=AbilityName(fact);row.amount=tonumber(fact.amount) or 0;return false
+        local kind=KnownKind(fact.targetName,fact.targetKind)
+        if kind=="NPC" then return false end
+        local source=C:Trim(fact.sourceName);if source=="" then return false end
+        local target=EnsureTarget(state,fact.targetName);if target==nil then return false end
+        target.lastDamageAt=At(fact)
+        if Analytics:IsSelfActor(source,fact.sourceId) then target.selfDamageObserved=true end
+        if kind=="PLAYER" then target.victimKind=kind end
+        return false
     end
-    local function CreditDeath(state,victimName,victimId,directKiller,directAbility,now,confidence)
-        victimName=C:Trim(victimName);if victimName=="" then return false end
-        local last=tonumber(state.lastDeath[victimName]) or -999999;if now-last<1200 then return false end
-        state.lastDeath[victimName]=now;local _,evicted=C:QueuePush(state.deathOrder,{victim=victimName,at=now});if evicted and state.lastDeath[evicted.victim]==evicted.at then state.lastDeath[evicted.victim]=nil end
-        local victim=C:EnsureActor(state,victimName,victimId);if victim then C:AddCounter(victim,"deaths",1);C:Touch(victim,now) end
-        local ledger=state.targets[victimName];local latest;local eligible={}
-        if ledger then for sourceName,row in pairs(ledger.sources) do if now-(tonumber(row.at) or 0)<=10000 then eligible[sourceName]=row;if latest==nil or row.at>latest.at then latest=row end end end end
-        local killer=C:Trim(directKiller);local ability=C:Trim(directAbility)
-        if killer=="" and latest and now-(tonumber(latest.at) or 0)<=8000 then killer,ability,confidence=latest.sourceName,latest.ability,"inferred_recent_damage" end
-        if killer~="" then
-            local actor=C:EnsureActor(state,killer,latest and latest.sourceId or nil);if actor then C:AddCounter(actor,"kills",1);C:Touch(actor,now);actor.lastKillConfidence=confidence or "direct_death_source";AddDetail(actor,"killTargets",victimName,1);AddDetail(actor,"killAbilities",ability~="" and ability or "未知技能",1) end
-            for sourceName in pairs(eligible) do if sourceName~=killer then local assist=C:EnsureActor(state,sourceName,nil);if assist then C:AddCounter(assist,"assists",1);C:Touch(assist,now);AddDetail(assist,"assistTargets",victimName,1) end end end
+    -- 2026-10-07：技能只取确认击杀事实本身的字段；绝不借最近伤害推断最后一击技能。
+    -- 当前原生玩家通知没有已接入的技能字段，统一落入“技能未确认”；仅在确认击杀时建记录。
+    -- 每个角色最多64个具体技能、128个技能/玩家组合，容量外保留合计与遗漏数。
+    local function RecordSkillKill(actor,fact,victim)
+        local id=C:Finite(AbilityId(fact),nil)
+        if not id or id<=0 or id~=math.floor(id) then id=nil end
+        local name=C:Trim(fact and fact.abilityName)
+        local key=id and ("id:"..tostring(id)) or (name~="" and ("name:"..name) or "__unknown_skill__")
+        if name=="" then name=id and AbilityName(fact) or "技能未确认" end
+        actor.skillKills=actor.skillKills or {}
+        local row=actor.skillKills[key]
+        if not row and key~="__unknown_skill__" and (tonumber(actor.skillKillCount) or 0)>=64 then
+            key,id,name="__other_skills__",nil,"其他技能（容量已满）";row=actor.skillKills[key]
         end
+        if not row then
+            row={key=key,name=name,abilityId=id,kills=0,targets={},omittedTargets=0}
+            actor.skillKills[key]=row
+            if key~="__unknown_skill__" and key~="__other_skills__" then actor.skillKillCount=(tonumber(actor.skillKillCount) or 0)+1 end
+        end
+        row.kills=row.kills+1
+        if row.targets[victim]~=nil then row.targets[victim]=row.targets[victim]+1
+        elseif (tonumber(actor.skillKillTargetCount) or 0)<128 then
+            row.targets[victim]=1;actor.skillKillTargetCount=(tonumber(actor.skillKillTargetCount) or 0)+1
+        else row.omittedTargets=row.omittedTargets+1 end
+    end
+    local function SkillKillProjection(state,opt)
+        local actor=state.actors[tostring(opt.actorKey or "")]
+        if not actor and C:Trim(opt.actorName)~="" then actor=state.actors[C:ActorKey(opt.actorName)] end
+        local rows={}
+        for _,row in pairs(actor and actor.skillKills or {}) do
+            rows[#rows+1]={key=row.key,name=row.name,abilityId=row.abilityId,kills=row.kills,
+                targets=C:MapRows(row.targets,128,"kills"),omittedTargets=row.omittedTargets}
+        end
+        table.sort(rows,function(a,b)if a.kills~=b.kills then return a.kills>b.kills end return a.key<b.key end)
+        return {actor=actor and {key=actor.key,name=actor.name,kills=actor.kills or 0} or nil,skills=rows,
+            retainedTargets=actor and actor.skillKillTargetCount or 0,dataRevision=tonumber(state.revision) or 0,
+            statsAvailable=Feature:IsMetricPreferenceEnabled("kills"),coverage="CONFIRMED_PLAYER_KILLS_SKILL_FROM_DEATH_FACT_ONLY"}
+    end
+    local function CreditDeath(state,victimName,victimId,directKiller,directAbility,now,confidence,victimKind,killerKind,fact)
+        victimName=C:Trim(victimName);if victimName=="" then Evidence(fact,"decision","missing_victim_name",victimName,directKiller);return false end
+        local deathKey=victimId~=nil and ("id:"..tostring(victimId)) or ("name:"..victimName)
+        local ledger=state.targets[victimName]
+        local previous=state.lastDeath[deathKey]
+        local named=state.deathByName[victimName]
+        if fact and fact.kind=="kill_notice" then previous=named or previous
+        elseif not previous and named and named.key=="name:"..victimName then previous=named end
+        -- 通知结算后才到达的明确归属可以补计；已计的双通知不能再计一次。
+        -- 新伤害表示可能已复活；不同已验证 ID 按不同死亡去重。
+        local confirmed=fact and fact.kind~="death_notice" and C:Trim(directKiller)~=""
+        local newNativeKill=confirmed and fact.kind=="kill_notice" and previous and previous.nativeStreak~=nil
+            and fact.rawNotice2~=nil and fact.rawNotice2~=previous.nativeStreak and previous.nativeKiller==C:Trim(directKiller)
+        local sameDeath=previous and ((now-previous.at<1200) or (confirmed and now-previous.at<=8000
+            and not newNativeKill and not (ledger and (tonumber(ledger.lastDamageAt) or 0)>previous.at)))
+        local upgrade=sameDeath and confirmed and C:Trim(directKiller)~="" and not previous.liveKill and not previous.historyKill
+        if sameDeath and not upgrade then Evidence(fact,"decision","duplicate_death",victimName,directKiller);return false end
+        local death=upgrade and previous or {key=deathKey,victim=victimName,at=now}
+        if not upgrade then
+            state.lastDeath[deathKey]=death;state.deathByName[victimName]=death
+            local _,evicted=C:QueuePush(state.deathOrder,death)
+            if evicted then
+                if state.lastDeath[evicted.key]==evicted then state.lastDeath[evicted.key]=nil end
+                if state.deathByName[evicted.victim]==evicted then state.deathByName[evicted.victim]=nil end
+            end
+        end
+        if fact and fact.kind=="kill_notice" then death.nativeStreak=fact.rawNotice2;death.nativeKiller=C:Trim(directKiller) end
+        local trackLive=type(Feature.IsMetricPreferenceEnabled)~="function" or Feature:IsMetricPreferenceEnabled("kills")
+        local resolvedKind=KnownKind(victimName,victimKind)
+        if resolvedKind~="PLAYER" and resolvedKind~="NPC" then resolvedKind=(ledger and ledger.victimKind) or death.victimKind end
+        local playerVictim=Analytics:IsSelfActor(victimName,victimId) or resolvedKind=="PLAYER"
+        death.victimKind=playerVictim and "PLAYER" or nil
+        local victim=not upgrade and trackLive and playerVictim and C:EnsureActor(state,victimName,victimId) or nil;if victim then C:AddCounter(victim,"deaths",1);C:Touch(victim,now) end
+        local killer=C:Trim(directKiller);local ability=C:Trim(directAbility)
+        -- 2026-10-07 用户明确选择只计归属：self/all 都不能把最近伤害当最后一击。
+        -- 伤害账本仅帮助分类/合并；缺击杀者的死亡保留诊断，等待明确归属补证。
+        local killerId=fact and fact.sourceId or nil
+        local playerKiller=Analytics:IsSelfActor(killer,killerId) or KnownPlayer(killer,killerKind)
+        if killer==victimName then playerKiller=false end
+        local liveKill,historyKill=false,false
+        if killer~="" and trackLive and playerVictim and playerKiller then
+            local actor=C:EnsureActor(state,killer,killerId);if actor then C:AddCounter(actor,"kills",1);liveKill=true;C:Touch(actor,now);actor.lastKillConfidence=confidence or "direct_death_source";AddDetail(actor,"killTargets",victimName,1);AddDetail(actor,"killAbilities",ability~="" and ability or "未知技能",1);RecordSkillKill(actor,fact,victimName) end
+        end
+        local h=Feature.PersonalHistory
+        if h then
+            local delta={}
+            if not upgrade and Analytics:IsSelfActor(victimName,victimId) then delta.deaths=1
+            elseif playerVictim and Analytics:IsSelfActor(killer,killerId) then
+                delta.kills=1
+            end
+            if next(delta)~=nil then historyKill=h:Record(delta)==true and delta.kills==1 end
+        end
+        local reason
+        if liveKill or historyKill then reason="kill_credited"
+        elseif Analytics:IsSelfActor(victimName,victimId) then reason="self_death"
+        elseif killer=="" then reason="missing_killer_source"
+        elseif not playerVictim then reason="unknown_victim_kind"
+        elseif not playerKiller then reason="unknown_killer_kind"
+        elseif Analytics:GetCollectionScope()=="self" and not Analytics:IsSelfActor(killer) then reason="other_killer"
+        else reason="live_credit_unavailable" end
+        Evidence(fact,"decision",reason,victimName,killer,{confidence=confidence,playerVictim=playerVictim==true,
+            selfDamageObserved=ledger and ledger.selfDamageObserved==true or false,liveKill=liveKill,historyKill=historyKill,upgraded=upgrade==true})
+        death.liveKill=death.liveKill or liveKill;death.historyKill=death.historyKill or historyKill
         state.targets[victimName]=nil;if ledger and ledger.active then ledger.active=false;state.targetCount=math.max(0,state.targetCount-1) end
+        state.revision=(tonumber(state.revision) or 0)+1
         return true
     end
-    Analytics:RegisterMetric({id="kills",title="击杀 / 助攻 / 死亡",category="combat",order=20,factCategories={"damage","death"},state=metric.state,
-        description="死亡为直接事实；缺少直接击杀源时，以最近8秒伤害推导最后一击，助攻为最近10秒参与伤害推导。",
-        OnFact=function(self,fact) if fact.category=="damage" then return RecordDamage(self.state,fact) end;local now=At(fact);if fact.kind=="death_notice" then return CreditDeath(self.state,fact.subjectName,nil,nil,nil,now,"death_notice") end;return CreditDeath(self.state,(fact.targetName and fact.targetName~="" and fact.targetName) or fact.subjectName,fact.targetId,fact.sourceName,AbilityName(fact),now,"direct_death_source") end,
-        GetProjection=function(self,opt) local key=tostring(opt and opt.valueKey or "kills");if key~="kills" and key~="assists" and key~="deaths" then key="kills" end;return {valueKey=key,rows=Rank(self,key,{"kills","assists","deaths","lastKillConfidence"},100),coverage="DIRECT_DEATH_PLUS_BOUNDED_DAMAGE_INFERENCE"} end,
-        Reset=function(self) self.state=C:NewActorState(MAX_ACTORS);Init(self.state);metric.state=self.state;return true end,
-        GetHealth=function(self) return {actors=self.state.actorCount,recentTargets=self.state.targetCount,actorOverflow=self.state.actorOverflow} end})
+    -- notice 可能先于带最后一击来源的 COMBAT_MSG。先保留1.5秒，直接事实到达即取消通知，
+    -- 缺归属时只确认死亡，明确来源晚到仍可补证；所有通知共用一个有界 one-shot。
+    local function ScheduleNotices(self)
+        if self.state.noticeScheduled or self.state.noticeCount<=0 then return true end
+        local scheduler=S.Scheduler
+        if not scheduler or type(scheduler.AddOneShot)~="function" then return false end
+        self.state.noticeScheduled=true
+        local nextAt
+        for _,row in pairs(self.state.notices) do if not nextAt or row.dueAt<nextAt then nextAt=row.dueAt end end
+        if type(scheduler.SetTaskModule)=="function" then scheduler:SetTaskModule("v3_combat_kills_notices","combat_analytics",true) end
+        local ok=scheduler:AddOneShot("v3_combat_kills_notices",math.max(50,(nextAt or C:NowMs())-C:NowMs()),function()
+            self.state.noticeScheduled=false
+            local now=C:NowMs();local changed=false
+            for name,row in pairs(self.state.notices) do
+                if row.dueAt<=now then
+                    self.state.notices[name]=nil;self.state.noticeCount=math.max(0,self.state.noticeCount-1)
+                    changed=CreditDeath(self.state,name,nil,nil,nil,row.at,"death_notice",nil,nil,
+                        {kind="death_notice",subjectName=name,receivedAt=row.at,transport="private"}) or changed
+                end
+            end
+            if changed then Analytics:NotifyMetricChanged("death_notices") end
+            ScheduleNotices(self);return true
+        end,self,"P3",1)
+        if ok~=true then self.state.noticeScheduled=false end
+        return ok==true
+    end
+    Analytics:RegisterMetric({id="kills",title="击杀玩家 / 死亡",category="combat",order=20,factCategories={"damage","death"},state=metric.state,
+        description="玩家击杀仅计明确归属；自身和所有人模式缺少击杀者时均不计击杀，两种模式均不计算助攻。",
+        OnFact=function(self,fact)
+            if fact.category=="damage" then return RecordDamage(self.state,fact) end
+            local now=At(fact);local victim=TargetName(fact)
+            -- NPC击杀已删除；只忽略NPC作为死者，自身被怪物击杀仍记录死亡。
+            if KnownKind(victim,fact.targetKind)=="NPC" and not Analytics:IsSelfActor(victim,fact.targetId) then return false end
+            if fact.kind=="death_notice" and not Analytics:IsSelfActor(victim) then
+                local last=self.state.deathByName[victim]
+                if last and now-last.at<1200 then Evidence(fact,"notice","duplicate_death",victim);return false end
+                if self.state.notices[victim] then Evidence(fact,"notice","duplicate_notice",victim);return false end
+                if self.state.noticeCount<512 then
+                    self.state.notices[victim]={at=now,dueAt=now+1500};self.state.noticeCount=self.state.noticeCount+1
+                    if ScheduleNotices(self) then Evidence(fact,"notice","notice_waiting",victim);return false end
+                    Evidence(fact,"notice","notice_schedule_failed",victim)
+                    self.state.notices[victim]=nil;self.state.noticeCount=self.state.noticeCount-1
+                end
+            end
+            if self.state.notices[victim] then self.state.notices[victim]=nil;self.state.noticeCount=math.max(0,self.state.noticeCount-1) end
+            return CreditDeath(self.state,victim,fact.targetId,fact.kind~="death_notice" and fact.sourceName or nil,AbilityName(fact),now,
+                fact.kind=="death_notice" and "death_notice" or (fact.kind=="kill_notice" and "native_kill_notice" or "direct_death_source"),fact.targetKind,fact.sourceKind,fact)
+        end,
+        GetDiagnosticDetail=function(self)
+            local rows,counters={},{}
+            C:QueueEach(evidence.events,function(row)local copy={} for key,value in pairs(row) do copy[key]=value end rows[#rows+1]=copy end)
+            for key,value in pairs(evidence.counters) do counters[key]=value end
+            return {available=true,scope=Analytics:GetCollectionScope(),events=rows,counters=counters,
+                evicted=evidence.events.evicted,limit=32,pendingNotices=self.state.noticeCount,trackedTargets=self.state.targetCount,
+                coverage="本次加载保留的死亡/击杀判定；缺失来源不补算击杀；未收到或已淘汰事件不能恢复。"}
+        end,
+        GetProjection=function(self,opt)
+            if opt and opt.actorKey~=nil then return SkillKillProjection(self.state,opt) end
+            local key=tostring(opt and opt.valueKey or "kills");if key~="kills" and key~="deaths" then key="kills" end
+            local limit=math.max(1,math.min(MAX_ACTORS,tonumber(opt and opt.limit) or 100))
+            return {valueKey=key,rows=Rank(self,key,{"kills","deaths","lastKillConfidence"},limit,{includeZero=opt and opt.includeZero==true}),
+                dataRevision=tonumber(self.state.revision) or 0,statsAvailable=Feature:IsMetricPreferenceEnabled("kills"),
+                assistsAvailable=false,coverage="DIRECT_DEATH_ATTRIBUTION_ONLY"}
+        end,
+        Reset=function(self,reason,resetKind)
+            if S.Scheduler then S.Scheduler:RemoveTask("v3_combat_kills_notices") end
+            -- 停用仅释放最近一击和通知任务，五项总览的实时战绩保留；显式清空或换范围才归零。
+            if resetKind=="inactive" then Init(self.state);return true end
+            local revision=(tonumber(self.state.revision) or 0)+1
+            self.state=C:NewActorState(MAX_ACTORS);self.state.revision=revision;Init(self.state);metric.state=self.state;return true
+        end,
+        GetHealth=function(self) return {actors=self.state.actorCount,recentTargets=self.state.targetCount,pendingDeathNotices=self.state.noticeCount,actorOverflow=self.state.actorOverflow} end})
 end
 
 ------------------------------------------------------------------------
@@ -176,7 +368,7 @@ do
         end
         return true
     end
-    Analytics:RegisterMetric({id="casts",title="技能释放 / 起手",category="combat",order=30,factCategories={"damage","heal","other"},nativeEvents={"SPELLCAST_START"},state=metric.state,
+    Analytics:RegisterMetric({id="casts",suspended=true,title="技能释放 / 起手",category="combat",order=30,factCategories={"damage","heal","other"},nativeEvents={"SPELLCAST_START"},state=metric.state,
         description="团队技能次数由战斗活动保守推导；本机 SPELLCAST_START+静态技能ID命中提供精确施法证据。",
         OnFact=function(self,fact) return Activity(self,fact,false) end,
         OnNativeFact=function(self,fact) if fact.kind~="cast_start" or fact.abilityId==nil then return false end;return Activity(self,fact,true) end,
@@ -206,7 +398,7 @@ do
         if last and last.at==bucketAt then last.amount=last.amount+amount else local _,evicted=C:QueuePush(actor.burstBuckets,{at=bucketAt,amount=amount});if evicted then actor.burstSum=math.max(0,actor.burstSum-(tonumber(evicted.amount) or 0)) end end
         actor.burstSum=actor.burstSum+amount;actor.peak5sDamage=math.max(tonumber(actor.peak5sDamage) or 0,actor.burstSum);actor.peak5sDps=math.floor((actor.peak5sDamage/5)+0.5);return true
     end
-    Analytics:RegisterMetric({id="performance",title="爆发 / 生存",category="combat",order=40,factCategories={"damage","death"},state=metric.state,
+    Analytics:RegisterMetric({id="performance",suspended=true,title="爆发 / 生存",category="combat",order=40,factCategories={"damage","death"},state=metric.state,
         description="最高单击与5秒滚动爆发使用100ms有界桶；死亡/观察跨度用于生存分析。",
         OnFact=function(self,fact)
             if fact.category=="damage" then return AddDamage(self,fact) end
@@ -237,7 +429,7 @@ do
         elseif fact.kind=="aura_remove" then local open=self.state.activeAuras[key];if open==nil then return false end;self.state.activeAuras[key]=nil;self.state.activeAuraCount=math.max(0,self.state.activeAuraCount-1);local duration=math.max(0,now-(tonumber(open.at) or now));local source=open.sourceKey and self.state.actors[open.sourceKey] or nil;local target=open.targetKey and self.state.actors[open.targetKey] or nil;if source then C:AddCounter(source,"controlMs",duration);AddDetail(source,"controlDurationByAura",open.auraName,duration) end;if target then C:AddCounter(target,"controlledMs",duration) end;return true end
         return false
     end
-    Analytics:RegisterMetric({id="control",title="控制",category="utility",order=50,factCategories={"damage","heal","other","aura"},state=metric.state,
+    Analytics:RegisterMetric({id="control",suspended=true,title="控制",category="utility",order=50,factCategories={"damage","heal","other","aura"},state=metric.state,
         description="控制技能活动、观察命中和观察持续时间；持续时间只来自明确 Aura apply/remove。",
         OnFact=function(self,fact) if fact.category=="aura" then return Aura(self,fact) end;return SkillActivity(self,fact) end,
         GetProjection=function(self,opt)
@@ -272,7 +464,7 @@ do
     local function CloseSelf(self,now,reason)
         local open=self.state.selfActiveSong;if open==nil then return false end;local actor=self.state.actors[open.actorKey];if actor then local duration=math.max(0,now-(tonumber(open.at) or now));C:AddCounter(actor,"songMs",duration);AddDetail(actor,"songDurationBySkill",open.name,duration);actor.lastSongStopReason=reason end;self.state.selfActiveSong=nil;return true
     end
-    Analytics:RegisterMetric({id="songcraft",title="乐器 / 演奏",category="support",order=60,factCategories={"damage","heal","other","aura"},nativeEvents={"SPELLCAST_START","SPELLCAST_STOP"},state=metric.state,
+    Analytics:RegisterMetric({id="songcraft",suspended=true,title="乐器 / 演奏",category="support",order=60,factCategories={"damage","heal","other","aura"},nativeEvents={"SPELLCAST_START","SPELLCAST_STOP"},state=metric.state,
         description="演奏活动、SELF精确开始/停止/切歌、各歌曲观察时间与歌曲Buff覆盖。Native不完整时明确降级。",
         OnFact=function(self,fact)
             local changed=false;local song=Song(AbilityId(fact));local now=At(fact)
@@ -317,7 +509,7 @@ do
         local row=type(AbilityCatalog)=="table" and AbilityCatalog:GetSkill(AbilityId(fact)) or nil;if row==nil or #row.utilityTypes==0 then return false end
         local actor=C:EnsureActor(self.state,fact.sourceName,fact.sourceId);if actor==nil then return false end;local now=At(fact);actor.utilityLast=actor.utilityLast or {};if exact~=true and now-(tonumber(actor.utilityLast[row.id]) or -999999)<300 then return false end;actor.utilityLast[row.id]=now;C:Touch(actor,now);C:AddCounter(actor,exact and "utilityExact" or "utilityActivities",1);for _,t in ipairs(row.utilityTypes) do C:AddCounter(actor,t,1);AddDetail(actor,"utilityTypes",t,1) end;AddDetail(actor,exact and "utilitySkillsExact" or "utilitySkills",row.name,1);actor.utilityConfidence=exact and "self_native_catalog_match" or row.utilityConfidence;return true
     end
-    Analytics:RegisterMetric({id="utility",title="辅助贡献",category="utility",order=70,factCategories={"damage","heal","other"},nativeEvents={"SPELLCAST_START"},state=metric.state,
+    Analytics:RegisterMetric({id="utility",suspended=true,title="辅助贡献",category="utility",order=70,factCategories={"damage","heal","other"},nativeEvents={"SPELLCAST_START"},state=metric.state,
         description="打断、驱散/净化、复活、防御技能的使用活动；成功效果需要后续更强事件证据，本机Native只证明施法。",
         OnFact=function(self,fact) return Apply(self,fact,false) end,OnNativeFact=function(self,fact) if fact.kind~="cast_start" then return false end;return Apply(self,fact,true) end,
         GetProjection=function(self,opt) local key=tostring(opt and opt.valueKey or "utilityActivities");local allowed={utilityActivities=true,utilityExact=true,interrupt=true,dispel=true,cleanse=true,resurrection=true,defensive=true};if not allowed[key] then key="utilityActivities" end;return {valueKey=key,rows=Rank(self,key,{"utilityActivities","utilityExact","interrupt","dispel","cleanse","resurrection","defensive","utilityConfidence"},100),coverage="CATALOG_ACTIVITY_SELF_NATIVE_ENRICHMENT"} end,
@@ -329,7 +521,7 @@ end
 ------------------------------------------------------------------------
 do
     local metric={state=C:NewActorState(MAX_ACTORS)};metric.state.active={};metric.state.activeCount=0;metric.state.activeOverflow=0
-    Analytics:RegisterMetric({id="aura",title="Buff / Debuff 覆盖",category="support",order=80,factCategories={"aura"},state=metric.state,
+    Analytics:RegisterMetric({id="aura",suspended=true,title="Buff / Debuff 覆盖",category="support",order=80,factCategories={"aura"},state=metric.state,
         description="只统计明确观察到的Aura施加/移除；没观察到不等于0%覆盖。",
         OnFact=function(self,fact)
             if fact.category~="aura" or fact.auraId==nil then return false end;local targetKey=C:ActorKey(fact.targetName,fact.targetId);if targetKey==nil then return false end;local key=targetKey.."|"..tostring(fact.auraId);local actor=TargetActor(self.state,fact);if actor==nil then return false end;local now=At(fact);C:Touch(actor,now)
@@ -370,7 +562,7 @@ do
         actor.lastMechanicConfidence=confidence;actor.lastMechanicRole=affected~="" and "affected_target" or "source_fallback"
         self.state.total=self.state.total+1;C:AddMapValue(self.state.byMechanic,mechanic.key,1,128,self.state,"mechanicCount","mechanicOverflow");return true
     end
-    Analytics:RegisterMetric({id="mechanics",title="Boss 机制",category="mechanics",order=90,factCategories={"damage","heal","other","aura"},state=metric.state,
+    Analytics:RegisterMetric({id="mechanics",suspended=true,title="Boss 机制",category="mechanics",order=90,factCategories={"damage","heal","other","aura"},state=metric.state,
         description="复用BossAlerts，只记录精确技能名或已知Debuff ID；有明确目标时统计受影响单位，无目标才回退来源，热路径不做模糊匹配。",
         OnFact=function(self,fact)
             if type(MechanicCatalog)~="table" then return false end

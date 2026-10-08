@@ -47,6 +47,7 @@ local H = {
         reads = 0, writes = 0, removes = 0, saves = 0,
         readbackChecks = 0, readbackFailures = 0,
         moveAttempts = 0, moveFailures = 0,
+        sameSlotChecks = 0, bindingDrifts = 0,
         restoreAttempts = 0, restoreFailures = 0,
     },
 }
@@ -127,17 +128,21 @@ end
 
 function H:ReadActionSlotBinding(slot)
     slot = tonumber(slot)
-    if slot == nil or self:IsCapabilityAllowed("X2Hotkey:GetOptionBinding") ~= true then return nil end
+    if slot == nil or self:IsCapabilityAllowed("X2Hotkey:GetOptionBinding") ~= true then return nil, false end
     slot = math.floor(slot)
+    local readSucceeded = false
     for _, option in ipairs(self.ReadOptions) do
         self.stats.reads = (tonumber(self.stats.reads) or 0) + 1
         local ok, value = Call("X2Hotkey:GetOptionBinding", "X2Hotkey", "GetOptionBinding", self.ActionBar, 1, option, slot)
+        if ok == true then readSucceeded = true end
         if ok == true and value ~= nil then
             local text = self:NormalizeBinding(value)
-            if text ~= nil then return text end
+            if text ~= nil then return text, true end
         end
     end
-    return nil
+    -- 中文维护（2026-10-07）：第二返回值区分“确实未绑定”和“Getter 全部失败”。
+    -- 原有快照调用仍取第一返回值；同槽复核不能把读取失败当成缺键授权重写。
+    return nil, readSucceeded
 end
 
 function H:FindOriginalRSlot()
@@ -198,17 +203,22 @@ function H:BuildSessionSnapshot(originalRSlot)
     if originalRSlot == nil then return nil, "原 R 槽位无效" end
     originalRSlot = math.floor(originalRSlot)
 
+    -- 中文维护（2026-10-07，发布复核）：恢复依据必须是成功读取的原键位，
+    -- 不把 Getter 失败补成 R/空槽；否则关闭时可能删除用户原有的非 R 按键。
+    local sourceBinding, sourceReadOk = self:ReadActionSlotBinding(originalRSlot)
+    if sourceReadOk ~= true then return nil, "原 R 槽位读取失败，拒绝建立恢复快照" end
+    if self:IsR(sourceBinding) ~= true then return nil, "原 R 槽位读回不一致" end
+
     local snapshot = {
         contractVersion = self.SnapshotContractVersion,
         sourceSlot = originalRSlot,
-        sourceBinding = self:ReadActionSlotBinding(originalRSlot) or "R",
+        sourceBinding = sourceBinding,
         slots = {},
         touched = {},
     }
-    if self:IsR(snapshot.sourceBinding) ~= true then return nil, "原 R 槽位读回不一致" end
-
     for _, slot in ipairs(self.FishingSlots) do
-        local binding = self:ReadActionSlotBinding(slot)
+        local binding, readOk = self:ReadActionSlotBinding(slot)
+        if readOk ~= true then return nil, "槽位 " .. tostring(slot) .. " 读取失败，拒绝建立恢复快照" end
         if binding == nil and slot ~= originalRSlot and self:CanRemoveSlotBinding() ~= true then
             return nil, "槽位 " .. tostring(slot) .. " 原本未绑定按键，且 RemoveOptionBinding 不可用"
         end
@@ -233,7 +243,13 @@ end
 
 function H:BindingMatches(slot, expected)
     self.stats.readbackChecks = (tonumber(self.stats.readbackChecks) or 0) + 1
-    local actual = self:ReadActionSlotBinding(slot)
+    local actual, readOk = self:ReadActionSlotBinding(slot)
+    -- 中文维护（发布复核）：未能读回与“确认空槽”不同；不能凭失败 nil
+    -- 宣告恢复成功并清除 durable 快照，等待原生读回可验证后再完成恢复。
+    if readOk ~= true then
+        self.stats.readbackFailures = (tonumber(self.stats.readbackFailures) or 0) + 1
+        return false, actual
+    end
     local wanted = self:NormalizeBinding(expected)
     local ok
     if wanted == nil then ok = actual == nil
@@ -320,7 +336,20 @@ function H:MoveR(slot, persistTouch)
     slot = math.floor(slot)
     local snapshot = self.sessionSnapshot
     if type(snapshot) ~= "table" then self.stats.moveFailures = self.stats.moveFailures + 1; return false, "缺少钓鱼改键恢复快照" end
-    if tonumber(self.currentSlot) == slot then return true end
+    -- 中文维护（2026-10-07，多鱼切换）：currentSlot 只记录上次成功事务，不证明原生
+    -- 动作栏仍保留 R。切到另一条鱼（含相同 Buff），或切换事件后动作栏才重设时，
+    -- 由现有 Feature 事件/100ms 兜底复核当前槽位；保持 R 时只读，丢失时重走原事务。
+    -- 不清 currentSlot：它仍负责恢复上一槽位；不建新轮询，也不重复写稳定键位。
+    if tonumber(self.currentSlot) == slot then
+        self.stats.sameSlotChecks = (tonumber(self.stats.sameSlotChecks) or 0) + 1
+        local binding, readOk = self:ReadActionSlotBinding(slot)
+        if readOk ~= true then
+            self.stats.moveFailures = self.stats.moveFailures + 1
+            return false, "当前 R 槽位读取失败，拒绝重写"
+        end
+        if self:IsR(binding) then return true end
+        self.stats.bindingDrifts = (tonumber(self.stats.bindingDrifts) or 0) + 1
+    end
     if self:InCombat() then self.pendingRecovery = true; self.stats.moveFailures = self.stats.moveFailures + 1; return false, "战斗中不能修改按键" end
 
     local sourceSlot = tonumber(snapshot.sourceSlot)

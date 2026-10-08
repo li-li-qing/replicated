@@ -98,9 +98,9 @@ end
 Test('both real historical titles resolve with real recipe data', function()
     local h = Boot(); local snap = h:Open()
     Eq(#snap.tasks, 2); Eq(h:Task(QA).selectedRecipe, 'Sanddeep Preserved Specialty')
-    Eq(h:Task(QB).selectedRecipe, 'Ahnimar Preserved Specialty')
+    Eq(h:Task(QB).selectedRecipe, 'Aubre Commercial Specialty')
     Eq(#h:Task(QA).materials, 2); Eq(#h:Task(QB).materials, 2)
-    Eq(h:Task(QA).originZoneId, 27); Eq(h:Task(QB).originZoneId, 93)
+    Eq(h:Task(QA).originZoneId, 27); Eq(h:Task(QB).originZoneId, 21)
     Eq(h.S.Services.TradeMaterialIdentityV3.liveReads, 0)
 end)
 Test('late second title recovers on objective event with unchanged quest membership and state', function()
@@ -109,7 +109,7 @@ Test('late second title recovers on objective event with unchanged quest members
     h.titles[QB] = TB; h:NativeEvent('QUEST_CONTEXT_OBJECTIVE_EVENT')
     Eq(h.P.revision, rev, 'title-only change must not fake quest progress'); Eq(h:EventCount('v3.quest_progress.updated'), before)
     Eq(#h.D:GetSnapshot().tasks, 2, 'late second title remained dropped')
-    Eq(h:Task(QB).selectedRecipe, 'Ahnimar Preserved Specialty')
+    Eq(h:Task(QB).selectedRecipe, 'Aubre Commercial Specialty')
 end)
 Test('unready title capability failure recovers through existing safety refresh', function()
     local h = Boot(); h.titleFailures[QB] = true; Eq(#h:Open().tasks, 1)
@@ -193,11 +193,28 @@ Test('unmatched trade title stays visible without fabricated materials', functio
     Eq(task.materialStatus, 'unresolved'); Eq(task.matchReason, 'zone_unmatched'); Eq(#task.materials, 0)
     Eq(#h.D:GetSnapshot().tasks, 2); Eq(h.D:GetSnapshot().status, 'partial')
 end)
+Test('generic inland trade title stays in diagnostics without a shopping task', function()
+    local h = Boot(); h.titles[QB] = '内陆特产'; h:Open()
+    Eq(#h.D:GetSnapshot().tasks, 1, 'generic trade title polluted daily shopping list')
+    assert(h:Task(QB) == nil, 'generic title acquired a recipe or placeholder task')
+    local diag = h.D:GetDiagnosticsSnapshot()
+    Eq(diag.unresolvedTradeLikeCount, 1); Eq(diag.unresolvedTaskCount, 0)
+    Eq(diag.unresolvedTradeLike[1].questId, QB); Eq(diag.unresolvedTradeLike[1].title, '内陆特产')
+    Eq(diag.unresolvedTradeLike[1].purchaseTaskEligible, false)
+    Eq(diag.unresolvedTradeLike[1].exclusionReason, 'generic_trade_title')
+    Eq(h.S.Services.TradeMaterialIdentityV3.liveReads, 0)
+end)
+Test('only a generic trade quest is an empty shopping list, not missing recipe data', function()
+    local h = Boot(); h.ids = { QB }; h.titles[QB] = '内陆特产'; h:Open()
+    local snap = h.D:GetSnapshot()
+    Eq(#snap.tasks, 0); Eq(snap.status, 'empty'); Eq(snap.unresolvedTaskCount, 0)
+    Eq(h.D:GetDiagnosticsSnapshot().unresolvedTradeLike[1].exclusionReason, 'generic_trade_title')
+end)
 Test('missing static recipe preserves task with recipe reason, not wrong region material', function()
     local h = Boot(); local static = h.S.Data.TradeStaticV2; local original = static.GetRecipeByLegacyName
-    static.GetRecipeByLegacyName = function(self, key) if key == 'Ahnimar Preserved Specialty' then return nil end; return original(self, key) end
+    static.GetRecipeByLegacyName = function(self, key) if key == 'Aubre Commercial Specialty' then return nil end; return original(self, key) end
     h:Open(); local task = assert(h:Task(QB), 'missing recipe dropped entire task')
-    Eq(task.matchReason, 'recipe_unmatched'); Eq(task.originZoneId, 93); Eq(#task.materials, 0)
+    Eq(task.matchReason, 'recipe_unmatched'); Eq(task.originZoneId, 21); Eq(#task.materials, 0)
 end)
 Test('known multi-candidate task still requires one selection, never sums candidates', function()
     local h = Boot(); local config
@@ -227,6 +244,128 @@ Test('unresolved count is total, not truncated sample length', function()
     h:Open(); local diag = h.D:GetDiagnosticsSnapshot()
     Eq(diag.unresolvedTradeLikeCount, 9); Eq(#diag.unresolvedTradeLike, 6); Eq(#h.D:GetSnapshot().tasks, 9)
     Eq(diag.knownActiveCount, 0, 'unresolved placeholders must not count as known quest mapping')
+end)
+
+-- 中文维护注释（2026-10-02）：地区名称必须按同一个 CraftId 对照 RU 中英文数据库，
+-- 不能从待测 Zone.nameZh 反造标题，否则错误别名也会获得绿灯。
+-- https://wiki.archerage.to/ru-cn/db/crafts/commerce-vocation
+-- https://wiki.archerage.to/ru-en/db/crafts/commerce-vocation
+-- 第一列是真实 ZoneId；后面的中文名称/英文配方前缀是独立核对的身份期望。
+local REGION_CASES = {
+    {1,'格威尔森林','Gweonid Commercial','标准'}, {2,'玛瑞诺普','Marianople Fine','新鲜'},
+    {3,'碎石平原','Dewstone Fine','新鲜'}, {4,'黎明半岛','Solis Luxury','特供'},
+    {5,'索兹里德半岛','Solzreed Luxury','特供'}, {6,'黎利尔丘陵','Lilyut Fine','新鲜'},
+    {7,'彩虹荒野','Arcum Iris Commercial','标准'}, {8,'双冠丘陵','Two Crowns Luxury','特供'},
+    {9,'摩哈特比','Mahadevi Fine','新鲜'}, {10,'青铜岩石山','Airain Commercial','标准'},
+    {11,'猎鹰高原','Falcorth Fine','新鲜'}, {12,'咏唱之地','Villanelle Luxury','特供'},
+    {13,'烈日峡谷','Sunbite Commercial','标准'}, {14,'草原之脉','Windscour Preserved','保存'},
+    {15,'哈里洛废墟','Perinoor Preserved','保存'}, {16,'棋盘石林','Rookborne Preserved','保存'},
+    {17,'伊尼斯泰尔','Ynystere Commercial','标准'}, {18,'白雪森林','White Arden Commercial','标准'},
+    {19,'埋骨之地','Karkasse Commercial','标准'}, {20,'十字星平原','Cinderstone Luxury','特供'},
+    {21,'太初之地','Aubre Commercial','标准'}, {22,'黄金平原','Halcyona Preserved','保存'},
+    {23,'翡翠谷','Hasla Preserved','保存'}, {24,'虎脊山脉','Tigerspine Fine','新鲜'},
+    {25,'古代森林','Silent Forest Commercial','标准'}, {26,'地狱沼泽','Hellswamp Preserved','保存'},
+    {27,'珊瑚海岸','Sanddeep Preserved','保存'}, {93,'西风脊','Ahnimar Preserved','保存'},
+    {99,'洛卡山脉','Rokhala Preserved','保存'},
+}
+local function RowSignature(rows)
+    local out = {}; for _, row in ipairs(rows or {}) do
+        assert(row.itemType and row.itemType > 0 and row.count > 0, 'material identity/count missing')
+        out[#out + 1] = tostring(row.itemType) .. ':' .. tostring(row.count)
+    end
+    table.sort(out); return table.concat(out, '|')
+end
+for _, region in ipairs(REGION_CASES) do
+    Test('independent region and all four families: ' .. region[2], function()
+        local h = Boot(); h.ids = {}; h.titles = {}
+        local families = {{'特产','Specialty'}, {'特制特产','Gilda Specialty'}, {'传统特产','Local Specialty'}, {'肥料特产','Fertilizer Specialty'}}
+        for index, family in ipairs(families) do
+            local qid = 992000 + index; h.ids[index] = qid
+            h.titles[qid] = '[特产] ' .. region[2] .. '的' .. region[4] .. family[1]
+        end
+        h:Open(); Eq(#h.D:GetSnapshot().tasks, 4)
+        for index, family in ipairs(families) do
+            local task = assert(h:Task(992000 + index)); Eq(task.originZoneId, region[1], region[2])
+            Eq(task.materialStatus, 'ready', family[1])
+            local expected = assert(h.S.Services.TradeMaterialIdentityV3:ResolveStatic(region[3] .. ' ' .. family[2], region[1]))
+            Eq(task.selectedRecipe, expected.label, 'family identity'); Eq(RowSignature(task.materials), RowSignature(expected.rows), 'material IDs/counts')
+        end
+        Eq(h.S.Services.TradeMaterialIdentityV3.liveReads, 0, 'passive daily lookup must stay pure')
+    end)
+end
+Test('user screenshot and independently verified neighboring recipes retain exact material counts', function()
+    local h = Boot(); h.ids = {}; h.titles = {}
+    -- 中文维护注释：数量直接来自截图与官方 RU Craft 6245/6244/9336/9340/9332/6243，
+    -- 不从当前材料表生成期望，才能发现“名字和材料一起串到邻区”的问题。
+    local cases = {
+        {'棋盘石林','保存','30898:200|773:5'}, {'哈里洛废墟','保存','30899:200|7992:15'},
+        {'太初之地','标准','30903:180|8013:15'}, {'西风脊','保存','14630:15|30898:200'},
+        {'青铜岩石山','标准','30905:180|8005:15'}, {'草原之脉','保存','14629:6|30903:200'},
+    }
+    for i, case in ipairs(cases) do h.ids[i] = 993000 + i; h.titles[h.ids[i]] = '[特产] ' .. case[1] .. '的' .. case[2] .. '特产' end
+    h:Open()
+    for i, case in ipairs(cases) do Eq(RowSignature(assert(h:Task(h.ids[i])).materials), case[3], case[1]) end
+end)
+Test('two different region names in one title never choose arbitrary longest region', function()
+    local h = Boot(); h.titles[QB] = '[特产] 棋盘石林与哈里洛废墟的保存特产'; h:Open()
+    local task = assert(h:Task(QB)); Eq(#task.materials, 0); Eq(task.matchReason, 'zone_ambiguous')
+end)
+Test('unknown named specialty cannot borrow the ordinary recipe solely from 特产', function()
+    local h = Boot(); h.titles[QB] = '[特产] 棋盘石林皮毯特产'; h:Open()
+    local task = assert(h:Task(QB)); Eq(#task.materials, 0); Eq(task.matchReason, 'recipe_unmatched')
+end)
+Test('all database signature recipes preserve every ingredient through the real resolver', function()
+    local h = Boot(); local count = 0
+    for craftId, expected in pairs(h.S.GameIds.TradeCraft.VerifiedIngredientSignatures) do
+        local craft = assert(h.S.GameIds.TradeCraft:GetByCraftId(craftId))
+        local recipe = assert(h.S.Data.TradeStaticV2:GetRecipeByLegacyName(craft.legacyName))
+        Eq(recipe.ingredientSignature, expected, 'database signature craft ' .. craftId)
+        Eq(recipe.ingredientVerified, true, craft.legacyName)
+        local resolved = assert(h.S.Services.TradeMaterialIdentityV3:ResolveStatic(craft.legacyName, recipe.originZoneId))
+        Eq(#resolved.rows, #recipe.ingredients, 'ingredient loss ' .. craft.legacyName)
+        RowSignature(resolved.rows)
+        count = count + 1
+    end
+    Eq(count, 98, 'verified recipe coverage'); Eq(h.S.Services.TradeMaterialIdentityV3.liveReads, 0)
+end)
+Test('missing one ingredient or database mismatch never publishes a partial recipe as complete', function()
+    local h = Boot(); local static = h.S.Data.TradeStaticV2; local original = static.GetRecipeByLegacyName
+    static.GetRecipeByLegacyName = function(self, name)
+        local recipe = original(self, name)
+        if recipe and name == 'Rookborne Preserved Specialty' then
+            recipe = Copy(recipe); recipe.ingredients[2] = { materialKey='unverified_test_resource', count=5 }
+        end
+        return recipe
+    end
+    Eq(h.S.Services.TradeMaterialIdentityV3:ResolveStatic('[棋盘]保存特产', 16), nil, 'partial ingredient result')
+    static.GetRecipeByLegacyName = function(self, name)
+        local recipe = original(self, name)
+        if recipe and name == 'Rookborne Preserved Specialty' then recipe=Copy(recipe); recipe.ingredientStatus='database_mismatch' end
+        return recipe
+    end
+    Eq(h.S.Services.TradeMaterialIdentityV3:ResolveStatic('[棋盘]保存特产', 16), nil, 'contradictory signature')
+end)
+Test('material words alone never classify an unknown pack as a larder', function()
+    local h = Boot(); local identity = h.S.Services.TradeMaterialIdentityV3
+    for _, name in ipairs({'棋盘石林蜂蜜特产','棋盘石林奶酪特产','棋盘石林药材特产'}) do
+        Eq(identity:ResolveStatic(name, 16), nil, name)
+    end
+    for _, name in ipairs({'棋盘石林基本发酵蜂蜜','棋盘石林加工发酵奶酪','棋盘石林无添加发酵药材','陈化蜂蜜'}) do
+        Eq(assert(identity:ResolveStatic(name, 16)).source, 'static_family', name)
+    end
+end)
+Test('verified product ItemID wins over localized or misleading product text', function()
+    local h = Boot(); local identity = h.S.Services.TradeMaterialIdentityV3; local count = 0
+    for _, recipe in ipairs(h.S.StaticDataV2:List('trade_recipe')) do
+        if recipe.productItemId then
+            local resolved = assert(identity:ResolveStatic('本地化名称尚未就绪', recipe.originZoneId, recipe.productItemId), recipe.legacyName)
+            Eq(resolved.label, recipe.legacyName); count = count + 1
+        end
+    end
+    assert(count >= 90, 'verified product coverage too small: ' .. count)
+    local resolved = assert(identity:ResolveStatic('Perinoor Preserved Specialty', 16, 31874))
+    Eq(resolved.label, 'Rookborne Preserved Specialty'); Eq(RowSignature(resolved.rows), '30898:200|773:5')
+    Eq(identity:ResolveStatic('[棋盘]保存特产', 15, 31874), nil, 'product/route region conflict')
 end)
 
 -- Real import manager: title data must not depend on Bonds/Activities having

@@ -1,6 +1,6 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Combat Analytics Store
--- Permanent preferences only. Live combat analytics remains session-only.
+-- 永久指标偏好与统一采集范围；个人战绩归独立 Character Store，实时排行仍为会话数据。
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
@@ -13,7 +13,7 @@ local F = S.Features.CombatAnalytics
 local U = S.Utils
 
 local STORE_ID = "v3.combat_analytics"
-local SCHEMA = 1
+local SCHEMA = 2
 local PUBLIC_METRICS = { "encounter", "kills", "casts", "performance", "control", "songcraft", "utility", "aura", "mechanics" }
 local METRIC_SET = {}; for _, id in ipairs(PUBLIC_METRICS) do METRIC_SET[id] = true end
 local DEFAULT_VALUES = {
@@ -22,7 +22,8 @@ local DEFAULT_VALUES = {
 }
 local VALID_VALUES = {
     encounter={durationMs=true,damage=true,healing=true,deaths=true},
-    kills={kills=true,assists=true,deaths=true},
+    -- 已删除的NPC/助攻选项只参与旧档规范化，保持原指纹；运行期由 IsAnalyticsValueKey 拒绝。
+    kills={kills=true,npcKills=true,assists=true,deaths=true},
     casts={skillActivities=true,exactCasts=true},
     performance={peak5sDps=true,peak5sDamage=true,highestHit=true,damage=true,deaths=true},
     control={controlHits=true,controlActivities=true,controlMs=true,controlled=true,controlledMs=true},
@@ -52,6 +53,7 @@ local function NormalizeState(value)
         selectedValues[id] = ValueKey(id, sourceValues[id])
     end
     return {
+        collectionScope = value.collectionScope == "all" and "all" or "self",
         selectedMetric = MetricId(value.selectedMetric),
         metricEnabled = enabled,
         selectedValues = selectedValues,
@@ -59,10 +61,22 @@ local function NormalizeState(value)
 end
 
 F.StoreId=STORE_ID
-F.PublicMetricIds=PUBLIC_METRICS
+-- 保留 schema2 的完整规范化字段以兼容旧指纹；运行期只开放击杀/死亡。
+-- 伤害、治疗、承伤沿用 dps_core，历史偏好不能重新启动已暂停的分析。
+F.PublicMetricIds={"kills"}
 F.State=NormalizeState(F.State)
 F.StoreLoaded=F.StoreLoaded==true
 local function Apply(value) F.State=NormalizeState(value) end
+
+-- schema1 的原指纹不含 collectionScope。先按旧固定字段投影复现原章，再迁移为默认 self；
+-- 仅返回候选，Envelope/预算/旧指纹精确匹配与重新保存均由 Persistence 负责，未知损坏仍写保护。
+local function RebuildSchema1Canonical(value,_,_,raw)
+    local meta=type(raw)=="table" and raw.__rsmeta or nil
+    if type(meta)~="table" or meta.store~=STORE_ID or meta.owner~=STORE_ID or tonumber(meta.schema)~=1
+        or type(value)~="table" or value.collectionScope~=nil then return nil end
+    local historical=NormalizeState(value);historical.collectionScope=nil
+    return historical,NormalizeState(value)
+end
 
 if P:GetStore(STORE_ID)==nil then
     local store,err=P:RegisterV3Store({
@@ -71,6 +85,7 @@ if P:GetStore(STORE_ID)==nil then
         schemaVersion=SCHEMA, legacySchemaVersion=0,
         key=P.V3KeyPrefix and (P.V3KeyPrefix.."combat_analytics") or STORE_ID,
         budget={maxDepth=5,maxNodes=320,maxStringBytes=5000,maxEntriesPerTable=48},
+        rebuildCanonicalForIntegrity=RebuildSchema1Canonical,
         default=function() return NormalizeState(nil) end,
         get=function() return NormalizeState(F.State) end,
         apply=Apply, migrate=function(v) return NormalizeState(v) end,
@@ -89,18 +104,33 @@ function F:EnsureStoreLoaded()
     self.StoreLoaded=true
     return true
 end
-function F:GetAnalyticsSettings() return Copy(self.State) end
-function F:IsMetricPreferenceEnabled(id) id=MetricId(id); return self.State.metricEnabled[id]~=false end
-function F:GetSelectedMetric() return MetricId(self.State.selectedMetric) end
-function F:IsAnalyticsValueKey(id,value)
-    id=MetricId(id);local raw=tostring(value or "")
-    return VALID_VALUES[id]~=nil and VALID_VALUES[id][raw]==true
+function F:GetAnalyticsSettings()
+    local out=Copy(self.State)
+    -- DeepCopy不可用时也不能让公开选项回退改写用于校验的原偏好。
+    if out==self.State then
+        out={};for key,value in pairs(self.State) do out[key]=value end
+        out.selectedValues={};for key,value in pairs(self.State.selectedValues) do out.selectedValues[key]=value end
+    end
+    out.selectedValues.kills=self:GetSelectedValueKey("kills")
+    return out
 end
-function F:GetSelectedValueKey(id) id=MetricId(id); return ValueKey(id, self.State.selectedValues[id]) end
+function F:GetCollectionScope() return self.State.collectionScope == "all" and "all" or "self" end
+function F:IsMetricPreferenceEnabled(id) return id=="kills" and self.State.metricEnabled.kills~=false end
+function F:GetSelectedMetric() return "kills" end
+function F:IsAnalyticsValueKey(id,value)
+    return id=="kills" and (value=="kills" or value=="deaths")
+end
+function F:GetSelectedValueKey(id)
+    local value=id=="kills" and self.State.selectedValues.kills or nil
+    return self:IsAnalyticsValueKey(id,value) and value or "kills"
+end
 function F:ApplyStoreRaw(kind,id,value)
     kind=tostring(kind or "")
-    if kind=="selectedMetric" then self.State.selectedMetric=MetricId(value);return true end
-    id=MetricId(id)
+    if kind=="selectedMetric" then
+        if value~="kills" then return false,"metric suspended" end
+        self.State.selectedMetric="kills";return true
+    end
+    if id~="kills" then return false,"metric suspended" end
     if kind=="metricEnabled" then self.State.metricEnabled[id]=value==true;return true end
     if kind=="selectedValue" then
         local v=tostring(value or "")

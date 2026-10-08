@@ -39,7 +39,10 @@ function X2Player:ChangeAppellation(nameType, effectType)
     lastNameType, lastEffectType = nameType, effectType
     -- This deliberately rejects the stale save-time display title.  The current
     -- character is showing no title, represented by the valid selector 0.
-    if tonumber(nameType) ~= 0 then return false end
+    -- 维护（2026-09-30）：每个场景允许“当前”展示名，包括后续456；拒绝保存时12345。
+    -- 原替身硬编码只接受0，第二场景实际上拒绝了动作，却被生产层忽略false掩盖。
+    local expectedNameType = type(currentShowingRaw) == "table" and tonumber(currentShowingRaw[1]) or 0
+    if tonumber(nameType) ~= expectedNameType then return false end
     currentEffect = tonumber(effectType) or effectType
     return true
 end
@@ -80,6 +83,7 @@ local ok2, reason2 = G:ApplyTitle(payload)
 assert(ok2 == true, 'FAIL: current-display preservation failed: ' .. tostring(reason2))
 assert(lastNameType == 456, 'FAIL: current display title was not preserved: ' .. tostring(lastNameType))
 assert(lastEffectType == 99, 'FAIL: second effectType mismatch: ' .. tostring(lastEffectType))
+assert(currentEffect == 99, 'FAIL: second title action did not apply')
 
 -- Successful getter returning nil means no visible title; mirror the proven
 -- titleswap behavior and use selector 0 instead of replaying saved showing.
@@ -102,4 +106,4 @@ assert(captured.apply == true and captured.effect and captured.effect.id == 222,
 assert(captured.showing == nil, 'FAIL: failed showing read should remain non-authoritative nil snapshot')
 X2Player.GetShowingAppellation = originalShowing
 
-print('GEAR TITLE EFFECT AUTHORITY RESULT 12 passed / 0 failed')
+print('GEAR TITLE EFFECT AUTHORITY: PASS')

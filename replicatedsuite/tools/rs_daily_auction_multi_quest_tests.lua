@@ -50,15 +50,13 @@ function S.StaticDataV2:Register(catalogId, key, row)
     return stored
 end
 
--- Load the real zone authority so the test fails if current RU aliases are lost.
+-- 中文维护注释（2026-10-02）：太初对应 RU 制作 9336/Aubre，西风对应 9340/Ahnimar。
+-- 测试曾要求保留错误“太初→93”别名；以同 CraftId 的官方中英文记录修正期望。
 dofile(ROOT .. "data/ids/rs_zone_ids.lua")
 Assert(type(S.GameIds) == "table" and type(S.GameIds.Zone) == "table", "zone authority did not load")
 Eq(S.GameIds.Zone.ById[27].nameZh, "珊瑚海岸", "Coral Coast primary localized name")
-local aliasFound = false
-for _, alias in ipairs(S.GameIds.Zone.ById[93].nameZhAliases or {}) do
-    if alias == "太初之地" then aliasFound = true; break end
-end
-Assert(aliasFound, "Ahnimar current RU alias 太初之地 missing")
+Eq(S.GameIds.Zone.ById[21].nameZh, "太初之地", "Aubre current RU localized name")
+Eq(S.GameIds.Zone.ById[93].nameZh, "西风脊", "Ahnimar current RU localized name")
 
 S.Demand = {}
 function S.Demand:Create(spec)
@@ -106,12 +104,12 @@ S.Services.QuestProgressV3 = {
 
 local resolvedByZone = {
     [27] = { label = "Sanddeep Preserved Specialty", rows = { { itemType = 1001, count = 5 }, { itemType = 1002, count = 25 } } },
-    [93] = { label = "Ahnimar Preserved Specialty", rows = { { itemType = 2001, count = 15 }, { itemType = 2002, count = 23 } } },
+    [21] = { label = "Aubre Commercial Specialty", rows = { { itemType = 2001, count = 15 }, { itemType = 2002, count = 23 } } },
 }
 S.Services.TradeMaterialIdentityV3 = {
     ResolveStatic = function(_, title, zoneId)
         if zoneId == 27 and tostring(title):find("珊瑚海岸", 1, true) then return Copy(resolvedByZone[27]) end
-        if zoneId == 93 and tostring(title):find("太初之地", 1, true) then return Copy(resolvedByZone[93]) end
+        if zoneId == 21 and tostring(title):find("太初之地", 1, true) then return Copy(resolvedByZone[21]) end
         return nil
     end,
     ResolveMaterialDisplayName = function(_, row) return "材料#" .. tostring(row.itemType) end,
@@ -130,7 +128,7 @@ for _, task in ipairs(snapshot.tasks or {}) do byId[task.questId] = task end
 Assert(byId[990011] ~= nil, "珊瑚海岸 quest missing")
 Assert(byId[990012] ~= nil, "太初之地 quest missing")
 Eq(byId[990011].originZoneId, 27, "珊瑚海岸 stable zone id")
-Eq(byId[990012].originZoneId, 93, "太初之地 stable Ahnimar zone id")
+Eq(byId[990012].originZoneId, 21, "太初之地 stable Aubre zone id")
 Eq(#(byId[990011].materials or {}), 2, "珊瑚海岸 materials missing")
 Eq(#(byId[990012].materials or {}), 2, "太初之地 materials missing")
 

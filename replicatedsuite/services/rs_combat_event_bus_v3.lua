@@ -27,11 +27,14 @@ S.Services = S.Services or {}
 
 local C = {
     Id = "v3.combat_event_bus",
-    version = 6,
+    version = 9,
     running = false,
     privateHost = nil,
     privateHandlerAttached = false,
     privateEvents = {},
+    optionalKillEvents = {},
+    killNoticeRows = 0,
+    killNoticeRejected = 0,
     privateParked = false,
     globalHandlers = {},
     globalActive = false,
@@ -47,6 +50,9 @@ local C = {
     delivered = 0,
     callbackErrors = 0,
     unknownKinds = 0,
+    unknownEvidence = {},
+    unknownEvidenceCount = 0,
+    unknownTypeDropped = 0,
     privateRows = 0,
     globalRows = 0,
     globalSelfFiltered = 0,
@@ -105,6 +111,28 @@ local function EmitRateLimited(level, code, message, context)
 end
 
 local EVENT_TYPE_CACHE, EVENT_TYPE_CACHE_COUNT, EVENT_TYPE_CACHE_MAX = {}, 0, 128
+local UNKNOWN_EVIDENCE_FIELDS={"transport","sourceName","targetName","abilityName","rawEventType","rawUnitId",
+    "rawAbilityId","rawDamageType","rawEffectType","rawIsActive","rawMore1","rawMore2","rawMore3","rawMore4","rawMore5"}
+local function DiagnosticScalar(value)
+    local kind=type(value)
+    if kind=="nil" or kind=="number" or kind=="boolean" then return value end
+    if kind~="string" then return "<"..kind..">" end
+    if #value<=512 then return value end
+    local finish=512
+    while finish>0 and (value:byte(finish+1) or 0)>=128 and (value:byte(finish+1) or 0)<192 do finish=finish-1 end
+    return value:sub(1,finish).."<clipped>"
+end
+-- 中文维护（2026-10-06）：未知 Native 类型可能藏着漏记的死亡 ABI，不能只导出 unknownKinds。
+-- 每种类型仅首次保留一份标量样本（最多32种），后续只加计数；已识别伤害无额外快照。
+function C:_RecordUnrecognizedFact(fact)
+    local key=tostring(DiagnosticScalar(fact.rawEventType) or "")
+    local row=self.unknownEvidence[key]
+    if row then row.count=row.count+1;row.lastAt=fact.receivedAt;return end
+    if self.unknownEvidenceCount>=32 then self.unknownTypeDropped=self.unknownTypeDropped+1;return end
+    row={count=1,firstAt=fact.receivedAt,lastAt=fact.receivedAt}
+    for _,field in ipairs(UNKNOWN_EVIDENCE_FIELDS) do row[field]=DiagnosticScalar(fact[field]) end
+    self.unknownEvidence[key]=row;self.unknownEvidenceCount=self.unknownEvidenceCount+1
+end
 local function MatchesQualified(upper, token)
     if upper == token then return true end
     if #upper <= #token then return false end
@@ -130,7 +158,7 @@ function C:DescribeEventType(eventType)
         row.kind, row.category, row.auraType = "aura_remove", "aura", "buff"
     elseif string.find(upper, "MELEE_DAMAGE", 1, true) ~= nil then
         row.kind, row.category = "melee_damage", "damage"
-    elseif string.find(upper, "SPELL_DAMAGE", 1, true) ~= nil then
+    elseif string.find(upper, "SPELL_DAMAGE", 1, true) ~= nil or upper == "SPELL_DOT_DAMAGE" then
         row.kind, row.category = "spell_damage", "damage"
     elseif MatchesQualified(upper, "ENVIRONMENTAL_DAMAGE") or MatchesQualified(upper, "ENVIRONMENTAL_DMANAGE") then
         row.kind, row.category, row.environmental = "environmental_damage", "damage", true
@@ -182,7 +210,11 @@ function C:_ReleasePrivateHost()
             local ok, result = pcall(host.UnregisterEvent, host, eventName)
             if ok ~= true or result == false then
                 remaining[eventName] = true
-                errors[#errors + 1] = "UnregisterEvent(" .. tostring(eventName) .. ")=" .. tostring(ok and result or "error")
+                if self.optionalKillEvents[eventName]~=nil then
+                    -- 可选通知的释放缺口只停放，不让新增入口阻断基础采集的关闭。
+                    -- 仍保留实际注册和代次/running防护；诊断如实展示 retained。
+                    retainedEvents=true;self.optionalKillEvents[eventName]="retained"
+                else errors[#errors + 1] = "UnregisterEvent(" .. tostring(eventName) .. ")=" .. tostring(ok and result or "error") end
             end
         else
             -- Case B: this RU build simply does not expose the release API.
@@ -247,14 +279,16 @@ function C:_StartPrivateHost()
     if type(host.EnablePick) == "function" then pcall(function() host:EnablePick(false) end) end
     if self.privateHandlerAttached ~= true then
         local generation = S.Generation
-        local ok, result = pcall(host.SetHandler, host, "OnEvent", function(_, eventName,
-            a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15)
+        local ok, result = pcall(host.SetHandler, host, "OnEvent", function(_, eventName,...)
             if C:_IsCurrentGeneration(generation) ~= true or C.running ~= true then return end
+            local a1,a2,a3,a4,a5,a6,a7,a8,a9,a10,a11,a12,a13,a14,a15=...
             if eventName == "COMBAT_MSG" then
                 C.privateRows = C.privateRows + 1
                 C:_OnCombatRaw("private", a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15)
             elseif eventName == "UNIT_DEAD_NOTICE" then
                 C:_OnDeathNotice(a1, a2, a3, a4, a5)
+            elseif eventName == "INSTANT_GAME_KILL" or eventName == "UNIT_KILL_STREAK" then
+                C:_OnKillNotice(eventName, a1)
             end
         end)
         if ok ~= true or result == false then
@@ -270,6 +304,15 @@ function C:_StartPrivateHost()
                 return false, eventName .. " registration failed: " .. tostring(registerOk and "returned false" or registerResult)
             end
             self.privateEvents[eventName] = true
+        end
+    end
+    -- 玩家击杀归属通知共用原私有Host；可选注册失败不阻断基础采集。
+    -- 来源：Strawberry-devs/ArcheRage-Scriptsbin@945dcab，chat_msg_event/center_message_manager。
+    for _, eventName in ipairs({ "INSTANT_GAME_KILL", "UNIT_KILL_STREAK" }) do
+        if self.privateEvents[eventName] ~= true and self.optionalKillEvents[eventName] ~= "unavailable" then
+            local ok, result = pcall(host.RegisterEvent, host, eventName)
+            if ok and result ~= false then self.privateEvents[eventName]=true;self.optionalKillEvents[eventName]="registered"
+            else self.optionalKillEvents[eventName]="unavailable" end
         end
     end
     self.privateParked = false
@@ -742,7 +785,10 @@ function C:_NormalizeCombatFact(transport, unitId, eventType, sourceName, target
         auraName = descriptor.category == "aura" and Trim(abilityName) or nil,
         auraEvidence = descriptor.category == "aura" and "event_type" or nil,
     }
-    if descriptor.kind == "other" then self.unknownKinds = self.unknownKinds + 1 end
+    if descriptor.kind == "other" then
+        self.unknownKinds = self.unknownKinds + 1
+        self:_RecordUnrecognizedFact(fact)
+    end
     if Identity ~= nil and type(Identity.ResolveCombatEndpoint) == "function" then
         local binding = Identity:ResolveCombatEndpoint(unitId, fact.sourceName, fact.targetName)
         if binding ~= nil then
@@ -878,6 +924,43 @@ function C:_OnDeathNotice(info1, info2, info3, info4, info5)
         rawNotice5 = info5,
     }
     return self:_DispatchFact(fact)
+end
+
+-- 原生死亡通知只有姓名；这两个原生战场通知另外给出明确的击杀者。
+-- 不解析聊天译文、不猜最后一击、不扩大全场 COMBAT_MSG 订阅，不保留原生 table。
+function C:_OnKillNotice(eventName, payload)
+    if self.running ~= true then return 0 end
+    self.killNoticeRows=self.killNoticeRows+1
+    local killer,victim,streak,mode
+    if type(payload)=="table" then
+        if eventName=="INSTANT_GAME_KILL" then
+            killer,victim,streak,mode=payload.killer,payload.victim,payload.killerKillstreak,payload.ruleMode
+        elseif eventName=="UNIT_KILL_STREAK" then
+            killer,victim,streak,mode=payload.killerName,payload.victimName,payload.killerKillStreak,payload.gameType
+        end
+    end
+    if type(killer)~="string" or type(victim)~="string" or #killer>512 or #victim>512
+        or Trim(killer)=="" or Trim(victim)=="" or Trim(killer)==Trim(victim) then
+        self.killNoticeRejected=self.killNoticeRejected+1;return 0
+    end
+    self.sequence=self.sequence+1
+    return self:_DispatchFact({schemaVersion=1,sequence=self.sequence,receivedAt=NowMs(),transport="private",
+        kind="kill_notice",category="death",rawEventType=eventName,sourceName=Trim(killer),targetName=Trim(victim),
+        -- 这些是原生 BattleField 玩家击杀通知；常规 COMBAT_MSG 的类型仍由单位事实确认。
+        sourceKind="PLAYER",targetKind="PLAYER",rawNotice2=DiagnosticScalar(streak),rawNotice3=DiagnosticScalar(mode)})
+end
+
+function C:GetDiagnosticDetail()
+    local keys,rows={},{}
+    for key in pairs(self.unknownEvidence) do keys[#keys+1]=key end
+    table.sort(keys)
+    for _,key in ipairs(keys) do
+        local copy={};for field,value in pairs(self.unknownEvidence[key]) do copy[field]=value end
+        rows[#rows+1]=copy
+    end
+    local events={};for key,value in pairs(self.optionalKillEvents) do events[key]=value end
+    return {health=self:GetHealth(),killNotifications={registrations=events,running=self.running,received=self.killNoticeRows,rejected=self.killNoticeRejected},unknownEvents=rows,unknownTypeDropped=self.unknownTypeDropped,unknownTypeLimit=32,
+        coverage="未知类型仅保留本次加载每种类型的首次标量样本；不改变类型解释或击杀归属。"}
 end
 
 function C:_ReconcileDemand(_, before, after, context)

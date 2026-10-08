@@ -85,9 +85,15 @@ end
 -- Scratch 数组只保存实例引用且每帧清空，不创建每帧表/比较闭包，也不延长 Owner 生命周期。
 local function CompareDueTasks(a, b)
     local pa, pb = a.priority, b.priority
-    if pa ~= pb then return pa < pb end
+    -- 中文维护（2026-10-03）：P0/P1 先行，普通任务保持原优先级；只有 Broker 认定已饥饿的
+    -- P2..P5 按本次等待起点轮转，否则高频 P2 会每帧独占逃生名额，实际候选/视觉任务数十秒不执行。
+    if pa<=1 or pb<=1 then
+        if pa~=pb then return pa<pb end
+    elseif a.starvationDue~=b.starvationDue then return a.starvationDue==true
+    elseif a.starvationDue~=true and pa~=pb then return pa<pb end
     local da, db = tonumber(a.dueSinceMs) or 0, tonumber(b.dueSinceMs) or 0
     if da ~= db then return da < db end
+    if pa~=pb then return pa<pb end -- 中文维护：同一等待时刻仍以优先级打破平局；没有随机排序或额外执行配额。
     return a.name < b.name
 end
 
@@ -306,6 +312,7 @@ function Scheduler:GetTaskState(name)
         name=name, registered=true, enabled=task.enabled == true, manuallyDisabled=task.manuallyDisabled == true, lane=tostring(task.lane or "background"),
         intervalMs=tonumber(task.intervalMs) or 0, priority=tonumber(task.priority) or 3,
         pending=task.pending == true, runCount=tonumber(task.runCount) or 0,
+        elapsedMs=tonumber(task.elapsedMs) or 0,dueSinceMs=task.dueSinceMs,deferCount=tonumber(task.deferCount) or 0,starvationDue=task.pending==true and task.starvationDue==true, -- 中文维护：只读等待证据，让 TXT 能区分未到期、连续被预算延期和已满足公平执行阈值；已执行任务不能保留“仍在等待”的标志。
         failureCount=tonumber(task.failureCount) or 0, failureTotal=tonumber(task.failureTotal) or 0,
         faultedAtMs=tonumber(task.faultedAtMs), resumeCount=tonumber(task.resumeCount) or 0,
         lastRunAtMs=tonumber(task.lastRunAtMs), lastSuccessAtMs=tonumber(task.lastSuccessAtMs),
@@ -395,6 +402,9 @@ function Scheduler:Start()
                         task.dueSinceMs = now
                     end
                     dueTasks[#dueTasks + 1] = task
+                    local budget=S.FrameBudget
+                    task.starvationDue=budget~=nil and type(budget.IsStarving)=="function"
+                        and budget:IsStarving(task.priority,task.deferCount,math.max(0,task.elapsedMs-interval)/interval)==true -- 中文维护：在同一 due 集合内缓存排序键，判定仍归 Broker；不在比较器中修改统计或读取时钟。
                     -- High-frequency tasks are due every frame by construction;
                     -- counting their lateness would permanently poison the
                     -- shared backlog health classification.

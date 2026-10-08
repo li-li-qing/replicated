@@ -239,7 +239,9 @@ local function CreateWidget()
             if instance.visible ~= true then return false end
             local moving = UI:TryInteractionCall(button, "StartMoving")
             if moving ~= true then return false end
-            local _, _, _, _, unit = LogicalRect(button)
+            -- 中文维护：以 Native 实际起点判断移动；未移动的 drag 通知仍属于一次普通点击。
+            local startX, startY, _, _, unit = LogicalRect(button)
+            record.dragStartX, record.dragStartY = startX, startY
             record.geometryUnitScale = unit and unit.effectiveScale or nil
             record.dragViewport = S.Layout and S.Layout:MakeSignature(S.Layout:GetContext()) or nil
             record.dragging, record.ignoreClick = true, false
@@ -251,12 +253,18 @@ local function CreateWidget()
             if type(button.StopMovingOrSizing) == "function" then pcall(button.StopMovingOrSizing, button) end
             record.dragging, record.ignoreClick = false, true
             local x2, y2, width, height = LogicalRect(button, record.geometryUnitScale)
+            -- 中文维护：只有位移超过 3 个逻辑像素才抑制拖动后的点击；静止手势不写位置存档。
+            local moved = x2 ~= nil and y2 ~= nil and record.dragStartX ~= nil and record.dragStartY ~= nil
+                and (math.abs(x2 - record.dragStartX) >= 3 or math.abs(y2 - record.dragStartY) >= 3)
+            record.ignoreClick = moved == true
+            record.dragStartX, record.dragStartY = nil, nil
             record.geometryUnitScale = nil
             local context = S.Layout and S.Layout:GetContext(true) or nil
             local changed = record.pendingPlacement or (context and record.dragViewport ~= S.Layout:MakeSignature(context))
             record.dragViewport, record.pendingPlacement = nil, nil
             if changed then return instance:ApplyLayout(true) end
             if x2 == nil or y2 == nil then return false, "feature_profile_drag_rect_unavailable" end
+            if moved ~= true then return true end -- 中文维护：不把点击引起的空拖动保存为用户自定义位置。
             if S.Layout ~= nil and type(S.Layout.ResolveScreenSnap) == "function" then
                 local sx, sy, snapped = S.Layout:ResolveScreenSnap(record.snapId, x2, y2, width, height, {
                     group = "screen_buttons", kind = "button",
@@ -286,6 +294,9 @@ local function CreateWidget()
             if record.dragging == true then return false end
             if record.ignoreClick == true then record.ignoreClick = false; return false end
             local ok, applyErr = Feature.Commands:ApplyProfile(record.profileId)
+            -- 中文维护：屏幕按钮无页面状态栏；显式操作必须给出成功/真实失败原因，不能只返回 false。
+            instance:PushDiagnostic("apply_result", { profileId = record.profileId, ok = ok == true, error = ok ~= true and applyErr or nil })
+            if type(S.SafeChat) == "function" then S.SafeChat(tostring(applyErr or (ok == true and "功能方案已应用" or "功能方案应用失败，请查看模块诊断")), "info", "feature_profiles_v3") end
             instance:Refresh()
             return ok, applyErr
         end, "v3_feature_profile_quick:click:" .. id)

@@ -175,7 +175,7 @@ Test('real TOC retains all 27 migrated runtime checks even with missing implemen
         'v3_m1_bonds', 'v3_m1_tasks', 'v3_life_tasks_persistence_contract', 'v3_m1_activities',
         'v3_life_fishing_observation_contract', 'v3_life_fishing_auto_r_transaction_contract',
         'v3_tools_auction_contract', 'v3_tools_craft_contract', 'v3_tools_bag_action_contract',
-        'v3_tools_market_analysis_contract', 'v3_tools_reinforce_analysis_runtime_block_contract',
+        'v3_tools_market_analysis_contract',
         'v3_m16_18_healer_visual_consumers_contract', 'v3_combat_target_monitor_observation_contract',
         'v3_m16_18_4_buff_display_statusmap_contract', 'v3_combat_buff_display_observation_contract',
         'v3_m4_gear_quick_startup_intent_contract', 'v3_m16_14_raid_readiness_contract',
@@ -188,7 +188,9 @@ Test('real TOC retains all 27 migrated runtime checks even with missing implemen
     assert(report.runtimeContracts.total == #required and report.runtimeContracts.failed == #required)
     for _, id in ipairs(required) do
         local row = Find(report, 'runtime_contract:' .. id)
-        assert(row and not row.ok and row.detail == 'implementation_not_registered', id .. ' silently omitted or wrong failure')
+        -- 职责/牺牲之舞已拆分：视觉实现缺失由独立 visual 错误码报告；保留逐项严格失败断言。
+        local expected = id == 'v3_combat_team_tools_visual_marker_contract' and 'visual_implementation_not_registered' or 'implementation_not_registered'
+        assert(row and not row.ok and row.detail == expected, id .. ' silently omitted or wrong failure')
     end
     for _, id in ipairs({'v3_m16_dps_skill_proxy_source','v3_m15_2h_death_review_widget_close','v3_m16_18_buff_display_plate_geometry'}) do
         assert(type(g.sequenceCases[id]) == 'function', 'original offline sequence removed: ' .. id)

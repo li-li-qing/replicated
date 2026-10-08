@@ -60,6 +60,7 @@ function P:EnsureCreated()
     if root == nil then return false, err or "alert_hud_root_create_failed" end
     local ok, bg = pcall(function() return root:CreateColorDrawable(0.02, 0.04, 0.05, 0.82, "artwork") end)
     local label = S.UI:CreateLabel(root, "v3_alert_hud_label", "", 8, 6, 704, 72, 34, "strong", "CENTER", true)
+    if S.Theme and S.Theme.SetWorldTextPalette then S.Theme:SetWorldTextPalette(label) end -- 战斗提示保留深底亮字。
     if not ok or bg == nil or label == nil then
         Visible(root, false)
         if type(S.UI.ReleaseOwner) == "function" then S.UI:ReleaseOwner(self.owner) end

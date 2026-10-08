@@ -12,11 +12,14 @@ local function Boot()
     S.Generation = 901
     S.PhysicalId = function(value) return tostring(value) end
     UIParent = h.Native(nil, "UIParent", 0, 0, 1280, 768)
-    S.Layout = {
-        GetContext = function() return { logicalWidth=1280, logicalHeight=768, safeLeft=0, safeTop=0, safeRight=0, safeBottom=0, addonScale=1 } end,
-        GetLogicalRect = function(_, w) return w.x or 0, w.y or 0, w.width or 1, w.height or 1 end,
-        ClampRecoverableTopLeft = function(_, x, y) return x, y end,
-    }
+    -- 中文维护：WindowShell 现已调用真实 placement Authority；旧三方法桩缺
+    -- StorePlacementRect/ResolvePlacement。只替换本测试的 Native 视口和几何读取，不反造定位算法。
+    dofile("data/rs_data_registry.lua")
+    dofile("data/ids/rs_item_ids.lua");dofile("data/ids/rs_quest_ids.lua");dofile("core/rs_constants.lua")
+    dofile("core/rs_layout.lua")
+    S.Layout.GetContext = function() return { logicalWidth=1280, logicalHeight=768, usableWidth=1280, usableHeight=768,
+        safeLeft=0, safeTop=0, safeRight=0, safeBottom=0, addonScale=1, uiScale=1, effectiveScale=1 } end
+    S.Layout.GetLogicalRect = function(_, w) return w.x or 0, w.y or 0, w.width or 1, w.height or 1 end
     S.NativeObjectFactory = { CreateWindow = function(_, id)
         local n = h.Native(UIParent, id, 0, 0, 1, 1)
         function n:SetUILayer() return true end
@@ -33,12 +36,15 @@ local function Boot()
     R.ApplyFontScale = function() return true end
     -- Windowing itself is already separately tested. Here we preserve the real dragHandle
     -- identity and verify compact chrome hit testing exposes that handle to it.
+    dofile("ui/framework/rs_ui_windowing.lua")
+    local applyGeometry = R.Windowing.ApplyGeometry
     R.Windowing = {
+        ApplyGeometry = applyGeometry,
         Attach = function(_, spec)
             S.testWindowingSpec = spec
             return {
                 id=spec.id, dragHandle=spec.dragHandle.root or spec.dragHandle,
-                LayoutHandles=function()return true end, BringToFront=function()return true end, IsResizing=function()return false end,
+                LayoutHandles=function()return true end, BringToFront=function()return true end, IsResizing=function()return false end, IsInteracting=function()return false end,
                 SetLocked=function(_,v)return true,v,true end, SetOpacity=function(_,v)return true,v,true end,
             }
         end,

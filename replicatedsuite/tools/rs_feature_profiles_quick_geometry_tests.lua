@@ -584,5 +584,29 @@ Test('N same-metrics repair leaves an in-progress profile drag untouched',functi
     record.button.handlers.OnDragStop();local committed=record.button.x;for _=1,9 do h:Drain()end;Eq(record.button.x,committed)
 end)
 
+-- 中文维护：真实 Native 可在未移动时发布拖动开始/结束；这种点击必须仍能应用方案。
+Test('stationary drag gesture still applies profile and reports result', function()
+    local ctx = BootSession(SeedStore({}), {1920,1080,1920,1080,1})
+    local instance = ctx.S.UIV3.WidgetHost._instance
+    local record = instance.buttons['1']
+    local messages = {}
+    ctx.S.SafeChat = function(message) messages[#messages+1] = message end
+    record.button.handlers.OnDragStart()
+    record.button.handlers.OnDragStop()
+    record.button.handlers.OnClick()
+    Eq(ctx.S.Features.FeatureProfiles.Stats.applies, 1, 'stationary gesture must not swallow click')
+    assert(#messages == 1, 'screen click needs visible operation feedback')
+end)
+-- 中文维护：失败保持事务回滚，但屏幕快捷入口必须把真实原因交给用户而非只返回 Lua false。
+Test('quick apply rejection shows reason without claiming success', function()
+    local ctx = BootSession(SeedStore({}), {1920,1080,1920,1080,1})
+    local record = ctx.S.UIV3.WidgetHost._instance.buttons['1']
+    local messages = {}
+    ctx.S.SafeChat = function(message) messages[#messages+1] = message end
+    ctx.S.Features.FeatureProfiles.Commands.ApplyProfile = function() return false, '应用失败：故障目标' end
+    record.button.handlers.OnClick()
+    Eq(#messages, 1, 'failure needs one visible notice')
+    assert(messages[1]:find('故障目标', 1, true), 'notice must retain actual failure reason')
+end)
 print(string.format('FEATURE_PROFILES_QUICK_GEOMETRY RESULT %d passed / %d failed (%s)', pass, fail, _VERSION))
 assert(fail == 0, 'feature profile quick geometry regression failures: ' .. tostring(fail))

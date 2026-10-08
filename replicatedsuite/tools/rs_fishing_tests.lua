@@ -38,6 +38,8 @@ local bindings = { [1] = "R", [2] = "2", [3] = "3", [4] = "4", [5] = "5", [6] = 
 local nativeLog = {}
 local failSetSlot = nil
 local failSaveHotkey = false
+local failBindingRead = false
+local failBindingReadSlot = nil
 
 local function Copy(value)
     if type(value) ~= "table" then return value end
@@ -54,6 +56,8 @@ local function resetNative()
     nativeLog = {}
     failSetSlot = nil
     failSaveHotkey = false
+    failBindingRead = false
+    failBindingReadSlot = nil
 end
 
 _G.X2Player = {
@@ -68,6 +72,7 @@ _G.X2Unit = {
 _G.X2Hotkey = {
     GetOptionBinding = function(_, action, index, option, slot)
         nativeLog[#nativeLog + 1] = { op = "read", slot = slot, option = option }
+        if failBindingRead or tonumber(failBindingReadSlot) == tonumber(slot) then error("injected binding read failure") end
         return bindings[slot]
     end,
     BindingToOption = function()
@@ -137,7 +142,7 @@ local function assertBindings(expected)
 end
 
 Test("T1: Auto-R is runtime-enabled behind transaction contract", function()
-    assert(Fishing.Patch == "fishing-auto-r-transaction-1", "fishing patch marker must identify the Auto-R transaction build")
+    assert(Fishing.Patch == "fishing-auto-r-target-recheck-1", "fishing patch marker must identify the target recheck build")
     assert(Fishing.HotkeyRuntimeBlocked == false, "Auto-R must no longer be hard-blocked")
     assert((tonumber(Fishing.HotkeyContractVersion) or 0) >= 3, "HotkeyContractVersion must be >=3")
     assert((tonumber(Hotkey.TransactionContractVersion) or 0) >= 3, "transaction service contract must be >=3")
@@ -198,6 +203,37 @@ Test("T3: ArmAuto durably stores recovery before first hotkey write", function()
     assert(Fishing:ReleaseConsumer("test:t3"))
 end)
 
+Test("T3b: Failed source read cannot synthesize R in a recovery snapshot", function()
+    resetNative()
+    failBindingReadSlot = 1
+    local snapshot = Hotkey:BuildSessionSnapshot(1)
+    failBindingReadSlot = nil
+    assert(snapshot == nil, "source getter failure must not fall back to an invented R")
+end)
+
+Test("T3c: Unreadable nonempty destination prevents arming without any write", function()
+    resetNative()
+    bindings[4] = "Q"
+    setFishBuff(5264)
+    assert(Fishing:AcquireConsumer("test:preflight-read-failure"))
+    failBindingReadSlot = 4
+    local ok = Fishing:ArmAuto()
+    local writes = findLog("set") ~= nil or findLog("remove") ~= nil or findLog("save_hotkey") ~= nil
+    failBindingReadSlot = nil
+    assert(Fishing:DisarmAuto(true))
+    assert(Fishing:ReleaseConsumer("test:preflight-read-failure"))
+    assert(ok ~= true and not writes, "unverified destination must refuse the transaction before mutation")
+    assert(bindings[4] == "Q", "original Q must survive unreadable destination preflight")
+end)
+
+Test("T3d: Failed getter cannot certify restoration of an originally empty slot", function()
+    resetNative()
+    failBindingReadSlot = 4
+    local matches = Hotkey:BindingMatches(4, nil)
+    failBindingReadSlot = nil
+    assert(matches == false, "restore verification must distinguish unreadable from confirmed empty")
+end)
+
 Test("T4: Active action moves R and action changes restore previous destination", function()
     resetNative()
     setFishBuff(5264)
@@ -227,6 +263,168 @@ Test("T4b: Armed Auto-R owns a demand lease after the page consumer closes", fun
     assert(armedAfterPageClose, "Auto-R must remain armed after the main page consumer closes")
     assert(pollStillRunning, "Auto-R lease must keep the demand-scoped observation task alive")
     assert(pollReleasedAfterDisarm, "disarming the last Auto-R consumer must release the observation task")
+end)
+
+-- 中文维护：真实 Events / Scheduler / Demand / Store / 热键服务驱动两条鱼切换。
+-- Native 桩只模拟“动作栏键位被客户端重设”，不能把离线模型称为 RU 实测。
+local function WithArmedFishing(token, fn)
+    resetNative()
+    setFishBuff(5264)
+    assert(Fishing:AcquireConsumer(token))
+    assert(Fishing:ArmAuto())
+    local ok, err = xpcall(fn, debug.traceback)
+    combat, failSetSlot, failSaveHotkey, failBindingRead, h.failSave = false, nil, false, false, false
+    assert(Fishing:DisarmAuto(true))
+    assert(Fishing:ReleaseConsumer(token))
+    assertBindings({ [1] = "R", [3] = "3", [4] = "4", [5] = "5" })
+    assert(Fishing.consumerCount == 0 and S.Scheduler.tasks["v3_life_fishing_poll"] == nil)
+    if not ok then error(err) end
+end
+
+local function ResetMappedR()
+    -- Fish A and fish B can request the same action while the native bar changes.
+    bindings[4], bindings[1] = "4", "R"
+end
+
+Test("T4c: Switching fish with the same buff rechecks and repairs native R", function()
+    WithArmedFishing("test:same-buff-target", function()
+        local driftsBefore = Hotkey.stats.bindingDrifts or 0
+        ResetMappedR()
+        S.Events:Dispatch("TARGET_CHANGED", "target")
+        local p = Fishing:GetProjection()
+        assert(p.lastRefreshReason == "target_changed" and p.buffId == 5264)
+        assert(bindings[4] == "R", "same action on another fish must repair the lost R mapping")
+        assert(Fishing:IsAutoArmed() == true)
+        assert(p.hotkey.stats.bindingDrifts == driftsBefore + 1, "diagnostic projection must record detected R drift")
+    end)
+end)
+
+Test("T4d: Poll repairs a bar reset occurring after the target event", function()
+    WithArmedFishing("test:delayed-bar-reset", function()
+        S.Events:Dispatch("TARGET_CHANGED", "target")
+        ResetMappedR()
+        assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
+        assert(bindings[4] == "R", "late native resets must be detected by the existing poll")
+        assert(Fishing:GetProjection().lastRefreshReason == "poll")
+    end)
+end)
+
+Test("T4e: Empty target then delayed buffs keeps Auto-R armed for both fish", function()
+    WithArmedFishing("test:two-fish-buff-gap", function()
+        setFishBuff(nil)
+        ResetMappedR()
+        local writesBefore = Hotkey.stats.writes
+        S.Events:Dispatch("TARGET_CHANGED", "target")
+        assert(Fishing:IsAutoArmed() == true and Fishing:GetProjection().slot == nil)
+        assert(Hotkey.stats.writes == writesBefore, "a target without a fish action must not trigger new writes")
+        setFishBuff(5264)
+        S.Events:Dispatch("BUFF_UPDATE", "target")
+        assert(S.Scheduler:RunTask("v3_life_fishing_event_refresh"))
+        assert(bindings[4] == "R", "delayed buff arrival must repair the same cached slot")
+        setFishBuff(5265)
+        S.Events:Dispatch("TARGET_CHANGED", "target")
+        assert(bindings[3] == "R" and bindings[4] == "4")
+        setFishBuff(5264)
+        S.Events:Dispatch("TARGET_CHANGED", "target")
+        assert(bindings[4] == "R" and bindings[3] == "3")
+    end)
+end)
+
+Test("T4f: Stable native R only reads and never rewrites or resaves", function()
+    WithArmedFishing("test:stable-bar", function()
+        local writesBefore, savesBefore, diskBefore = Hotkey.stats.writes, Hotkey.stats.saves, h.writes
+        local readsBefore = Hotkey.stats.reads
+        for _ = 1, 10 do assert(S.Scheduler:RunTask("v3_life_fishing_poll")) end
+        assert(Hotkey.stats.reads == readsBefore + 10, "stable R should use one bounded slot read per refresh")
+        assert(Hotkey.stats.writes == writesBefore and Hotkey.stats.saves == savesBefore and h.writes == diskBefore)
+    end)
+end)
+
+Test("T4g: Drift during combat performs zero writes and recovers after combat", function()
+    WithArmedFishing("test:drift-combat", function()
+        ResetMappedR()
+        combat = true
+        local writesBefore, savesBefore = Hotkey.stats.writes, Hotkey.stats.saves
+        S.Events:Dispatch("TARGET_CHANGED", "target")
+        assert(Hotkey.stats.writes == writesBefore and Hotkey.stats.saves == savesBefore)
+        assert(Fishing:IsAutoArmed() == false and Fishing:IsRecoveryPending() == true)
+        combat = false
+        assert(S.Scheduler:RunTask("v3_life_fishing_recovery"))
+        assertBindings({ [1] = "R", [4] = "4" })
+        assert(Fishing:IsRecoveryPending() == false)
+    end)
+end)
+
+Test("T4h: Unreadable cached binding cannot authorize a new hotkey write", function()
+    WithArmedFishing("test:binding-unreadable", function()
+        failBindingRead = true
+        local writesBefore, savesBefore = Hotkey.stats.writes, Hotkey.stats.saves
+        local ok = Hotkey:MoveR(4, function() error("existing touched slot must not repersist") end)
+        assert(ok ~= true, "unknown native binding must surface a verification failure")
+        assert(Hotkey.stats.writes == writesBefore and Hotkey.stats.saves == savesBefore)
+        assert(Fishing:IsRecoveryPending() == true, "read failure must retain the durable restore record")
+    end)
+end)
+
+Test("T4i: First touch of another fish action stays durable before writing", function()
+    WithArmedFishing("test:touch-persist-failure", function()
+        h.failSave = true
+        setFishBuff(5267)
+        local ok = Fishing:Refresh("target_changed")
+        assert(ok ~= true and Fishing:IsAutoArmed() == false)
+        for _, row in ipairs(nativeLog) do
+            assert(not (row.op == "set" and row.slot == 5), "failed durable backup must prevent touching the new action")
+        end
+        assert(bindings[5] == "5")
+        assert(Fishing:IsRecoveryPending() == true)
+    end)
+end)
+
+Test("T4j: All five fish actions switch repeatedly in normal and Mirage bars", function()
+    WithArmedFishing("test:all-fish-actions", function()
+        local actions = { { 5264, 4 }, { 5265, 3 }, { 5267, 5 }, { 5266, 6 }, { 5508, 7 } }
+        for _, zone in ipairs({ 1, 49 }) do
+            zoneGroup = zone
+            for _, action in ipairs(actions) do
+                local slot = action[2] - (zone == 49 and 1 or 0)
+                setFishBuff(action[1])
+                S.Events:Dispatch("TARGET_CHANGED", "target")
+                assert(Fishing:IsAutoArmed() == true and bindings[slot] == "R")
+                -- Another fish requests exactly the same action after a bar reset.
+                bindings[slot], bindings[1] = tostring(slot), "R"
+                S.Events:Dispatch("TARGET_CHANGED", "target")
+                assert(bindings[slot] == "R" and Fishing:GetProjection().slot == slot)
+            end
+        end
+        assert(Fishing:DisarmAuto(true))
+        assertBindings({ [1] = "R", [2] = "2", [3] = "3", [4] = "4", [5] = "5", [6] = "6", [7] = "7" })
+    end)
+end)
+
+Test("T4k: Confirmed unbound R destination is repaired; KEY_R stays read-only", function()
+    WithArmedFishing("test:empty-native-binding", function()
+        bindings[4], bindings[1] = nil, "R"
+        S.Events:Dispatch("TARGET_CHANGED", "target")
+        assert(Fishing:IsAutoArmed() == true and bindings[4] == "R")
+        bindings[4] = "KEY_R"
+        local writesBefore, savesBefore = Hotkey.stats.writes, Hotkey.stats.saves
+        assert(S.Scheduler:RunTask("v3_life_fishing_poll"))
+        assert(Hotkey.stats.writes == writesBefore and Hotkey.stats.saves == savesBefore)
+    end)
+end)
+
+Test("T4l: Failed same-slot repair stops mapping and retains exact recovery", function()
+    WithArmedFishing("test:repair-write-fault", function()
+        ResetMappedR()
+        failSetSlot = 4
+        S.Events:Dispatch("TARGET_CHANGED", "target")
+        assert(Fishing:IsAutoArmed() == false and Fishing:IsRecoveryPending() == true)
+        assert(type(Fishing.State.recovery) == "table" and Fishing.State.recovery.pending == true)
+        failSetSlot = nil
+        assert(Fishing:ProcessPendingRecovery(true, "test_repair_fault_cleared"))
+        assertBindings({ [1] = "R", [4] = "4" })
+        assert(Fishing:IsRecoveryPending() == false)
+    end)
 end)
 
 Test("T5: Originally unbound fishing slot is restored to unbound", function()
@@ -373,7 +571,7 @@ Test("T15: Diagnostics exposes fishing observation and hotkey recovery state", f
 end)
 
 Test("T16: Documentation no longer lists fishing Auto-R as SPECIFIC_RUNTIME_BLOCKED", function()
-    local text = ReadText("Docs/README.md")
+    local text = ReadText("../Docs/README.md") -- Current documentation root is outside the runtime addon.
     assert(text:find("Fishing full R source-slot enumeration/snapshot | SPECIFIC_RUNTIME_BLOCKED", 1, true) == nil, "README must remove obsolete fishing blocker")
     assert(text:find("HotkeyContractVersion = 3", 1, true) ~= nil, "README must record the v3 reversible transaction contract")
 end)

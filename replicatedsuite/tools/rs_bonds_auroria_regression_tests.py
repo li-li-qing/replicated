@@ -59,10 +59,11 @@ require('reason == "presentation" and type(self.resourceTotals) == "table"' in b
 require('for index = 1, 4 do mainlandReady' in bonds and 'for index = 5, 7 do auroriaReady' in bonds
         and 'mixed_board_families' in bonds and 'location_faction_conflict' in bonds,
         "partial board families require unambiguous continent evidence")
-require('forceRead = reason == "page_manual"' in bonds and 'demandProbe = reason == "demand_start" or reason == "initial"' in bonds
+require('forceRead = reason == "page_manual"' in bonds and 'local needsCurrentSnapshot' in bonds
         and 'boundaryProbe = reason == "zone_changed" or reason == "entered_world"' in bonds
-        and 'local shouldRead = not projectionOnly and dateReady' in bonds,
-        "board probing excludes pure projection events and undated observations")
+        and 'local shouldRead = not projectionOnly and dateReady' in bonds
+        and 'forceRead or needsCurrentSnapshot' in bonds and 'boundaryProbe and not allComplete' in bonds,
+        "board probing excludes projection/undated observations and reuses complete same-day local snapshots")
 require('SubscribeOptional("ENTER_ANOTHER_ZONEGROUP"' in bonds and 'SubscribeOptional("ENTERED_WORLD"' in bonds
         and 'SubscribeOptional("LEFT_LOADING"' in bonds and 'BONDS_LOCATION_DELAYS = { 750, 1500, 3000 }' in bonds
         and 'AddOneShot(BONDS_ZONE_REFRESH_TASK, delay' in bonds and 'RemoveTask(BONDS_ZONE_REFRESH_TASK)' in bonds

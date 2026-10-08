@@ -1,8 +1,8 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Team Tools visual/marker extension (.18.122)
 --
--- Extends the existing combat_team_tools Feature without creating a second
--- navigation/runtime authority.  The permanent sub-store contains only user
+-- 中文维护（2026-10-02）：牺牲之舞独立于职责 Feature；沿用旧视觉 Store 身份与 schema，
+-- 不复制 Aura/团队事实，不让职责开关继续控制视觉消费者。The permanent sub-store contains only user
 -- choices and stable marker identities; roster/aura/native window facts remain
 -- transient.
 --
@@ -17,9 +17,16 @@
 ------------------------------------------------------------------------
 if ReplicatedSuite == nil or ReplicatedSuite.BootError ~= nil then return end
 local S = ReplicatedSuite
-local Feature = S.Features and S.Features.combat_team_tools or nil
 local P = S.Persistence
-if type(Feature) ~= "table" or type(P) ~= "table" then return end
+local factory = S.FeatureSliceFactory
+if type(factory) ~= "table" or type(P) ~= "table" then return end
+-- 中文维护：独立总开关由 FeatureRuntime 拥有；持久视觉配置仍在原 STORE_ID，
+-- 通用空状态 Store 只满足 Feature 生命周期装配，不另存 sacEnabled/savedMarks。
+local Feature = factory.NewFeature("combat_sac_highlight", {
+    state = {}, default = {},
+    apiDependencies = { "X2Unit:GetTargetAbilityTemplates", "X2Unit:UnitBuffCount", "X2Unit:UnitBuff", "X2Unit:GetOverHeadMarker", "X2Unit:SetOverHeadMarker" },
+    read = function() return {}, "ready" end,
+})
 
 local STORE_ID = "v3.combat.team_tools.visuals"
 local STORE_SCHEMA = 2 -- 中文维护注释：schema2 只表达“新安装默认开启牺牲之舞”的默认语义变化；物理 key/owner/savedMarks 形状不变，旧 schema1 用户选择必须迁移保留。
@@ -199,11 +206,16 @@ end
 local function HasSpelldance(unitToken)
     if S.Api == nil or type(S.Api.CallCapability) ~= "function" then return false, "api_unavailable" end
     local ok, templates, err = S.Api:CallCapability("X2Unit:GetTargetAbilityTemplates", rawget(_G, "X2Unit"), "GetTargetAbilityTemplates", unitToken)
-    if ok ~= true or type(templates) ~= "table" then return false, tostring(err or "ability_templates_unavailable") end
-    for index = 1, math.min(3, #templates) do
-        if tonumber(type(templates[index]) == "table" and templates[index].index or nil) == SPELLEDANCE_ABILITY_INDEX then return true end
+    if ok ~= true or type(templates) ~= "table" then return false, tostring(err or "ability_templates_unavailable"), templates end
+    -- 中文维护（sac-observation-evidence）：冷启动/不可查看的职业常返回空表；它不是“无舞蹈天赋”的证据。
+    -- 三槽必须完整才判定职业，原生返回只冻结在本模块有界诊断中，不加入永久配置。
+    local matched = false
+    for index = 1, 3 do
+        local value = tonumber(type(templates[index]) == "table" and templates[index].index or nil)
+        if value == nil then return false, "ability_templates_incomplete", templates end
+        if value == SPELLEDANCE_ABILITY_INDEX then matched = true end
     end
-    return false, nil
+    return matched, nil, templates
 end
 
 local function SameIdentitySet(left, right)
@@ -224,6 +236,9 @@ local function EnsureAuraTask()
         S.Scheduler:RemoveTask(AURA_TASK)
         return true
     end
+    -- 中文维护：稳定候选更新不得替换周期任务，否则反复名单边沿重置 elapsed/pending，Buff 安全扫描可能一直推迟。
+    -- 已存在任务保留调度器自己的手动暂停/熔断状态；停止模块时仍由 Quiesce 回收。
+    if S.Scheduler.tasks and S.Scheduler.tasks[AURA_TASK] ~= nil then return true end
     local ok = S.Scheduler:AddTask(AURA_TASK, 1200, function()
         if V.running == true then Feature:ScanSacAuras("safety") end
     end, false, Feature, "P2", 1)
@@ -238,13 +253,15 @@ function Feature:ScanSacCandidates(reason)
     local snapshot = roster:GetSnapshot()
     local members = type(snapshot) == "table" and type(snapshot.members) == "table" and snapshot.members or {}
     local nextCandidates, failures, count = {}, 0, 0
+    local evidence = {at=NowMs(),reason=reason,rosterCount=#members,rosterRevision=snapshot and snapshot.revision,members={},truncated=#members>MAX_ROSTER}
     for index = 1, math.min(MAX_ROSTER, #members) do
-        if count >= MAX_CANDIDATES then break end
+        if count >= MAX_CANDIDATES then evidence.truncated=true; evidence.stopReason="candidate_limit"; break end
         local member = members[index]
         local token = Trim(type(member) == "table" and member.unitToken or nil)
         local name = Trim(type(member) == "table" and member.name or nil)
         if token ~= "" then
-            local matched, err = HasSpelldance(token)
+            local matched, err, templates = HasSpelldance(token)
+            evidence.members[#evidence.members+1] = {unitToken=token,name=name,matched=matched,error=err,templates=DeepCopy(templates)} -- 中文维护：最多100人，每次替换快照；保留原始三天赋便于区分读不到和确实不匹配。
             if matched == true then
                 count = count + 1
                 nextCandidates[token] = { unitToken = token, name = name ~= "" and name or token }
@@ -252,9 +269,14 @@ function Feature:ScanSacCandidates(reason)
         end
     end
     local changed = not SameIdentitySet(V.candidates, nextCandidates)
+    local previousError = V.lastError
+    for token, row in pairs(V.lastMatched or {}) do
+        if nextCandidates[token] == nil or nextCandidates[token].name ~= row.name then V.lastMatched[token]=nil end -- 中文维护：候选离团/换人即去掉旧命中，历史表不随队伍更换无限增长。
+    end
     V.candidates, V.candidateCount = nextCandidates, count
     V.rosterRevision = tonumber(type(snapshot) == "table" and snapshot.revision) or 0
     V.scanFailures = failures
+    V.candidateScan = evidence -- 中文维护：只在既有扫描写入，不为生成报告再请求职业/团队 Native。
     V.lastError = failures > 0 and ("职业读取失败 " .. tostring(failures) .. " 人；其余成员继续使用") or nil
 
     -- Drop active rows that are no longer valid candidates immediately.
@@ -267,7 +289,7 @@ function Feature:ScanSacCandidates(reason)
     V.activeCount = activeCount
     local taskOk, taskErr = EnsureAuraTask()
     if taskOk ~= true then V.lastError = taskErr end
-    if changed or activeChanged then Publish(reason or "candidate_scan") end
+    if changed or activeChanged or previousError ~= V.lastError then Publish(reason or "candidate_scan") end -- 中文维护：候选仍为0时也必须把“职业读取失败”推送页面，不能让错误停留在后台。
     if count > 0 then self:ScanSacAuras("candidate_scan") end
     return true
 end
@@ -289,13 +311,17 @@ function Feature:ScanSacAuras(reason)
     local now = NowMs()
     local nextActive = {}
     local failures = 0
+    local evidence = {at=now,reason=reason,members={}}
     for token, candidate in pairs(V.candidates) do
         local snapshot = aura:GetSnapshot(token, { buff = true, debuff = false, hidden = false, buffLimit = MAX_AURAS, ttlMs = 100 })
         if type(snapshot) == "table" then
             local map, meta = aura:GetStatusMap(snapshot, { buff = true, debuff = false, hidden = false })
+            evidence.members[token] = {snapshot=snapshot,statusMap=map,meta=meta,matched=StatusMapHasSac(map)} -- 中文维护：共享服务已返回 detached 快照，每次替换最多16候选×96 Buff；不在扫描热路径再深拷贝同一批事实。
             if type(meta) == "table" and meta.available == true then
                 if StatusMapHasSac(map) then
                     nextActive[token] = { unitToken = token, name = candidate.name, verifiedAt = now }
+                    V.lastMatched = V.lastMatched or {}
+                    V.lastMatched[token] = {name=candidate.name,at=now} -- 中文维护：技能结束后保留最近命中事实；候选变动时移除旧身份，最大16条，不是第二份活跃 Authority。
                 end
             else
                 failures = failures + 1
@@ -305,6 +331,7 @@ function Feature:ScanSacAuras(reason)
                 end
             end
         else
+            evidence.members[token] = {available=false,error="aura_snapshot_unavailable"}
             failures = failures + 1
             local previous = V.active[token]
             if type(previous) == "table" and now - (tonumber(previous.verifiedAt) or 0) <= ACTIVE_STALE_MS then
@@ -317,15 +344,45 @@ function Feature:ScanSacAuras(reason)
     local activeCount = 0
     for _ in pairs(nextActive) do activeCount = activeCount + 1 end
     V.activeCount = activeCount
+    V.auraScan = evidence
     if failures > 0 then V.lastError = "Sac Aura 读取失败 " .. tostring(failures) .. " 个候选；短暂保留最近已验证状态"
     elseif V.scanFailures <= 0 then V.lastError = nil end
     if changed then Publish(reason or "aura_scan") end
     return true
 end
 
+-- 中文维护：完整 TXT 投影只能读缓存，不 Acquire/Initialize/改职责/强制采样；报表包含整条链路而非仅 Runtime.enabled。
+function Feature:DescribeDiagnosticDetail()
+    local roster, aura = TeamRoster(), Aura()
+    local scheduler = S.Scheduler
+    local overlay = S.UIV3 and S.UIV3.TeamSacOverlay
+    return DeepCopy({projection=self:GetProjection(),settings=V.state,loaded=V.loaded,rosterHeld=V.rosterHeld,auraHeld=V.auraHeld,
+        candidateScan=V.candidateScan or {available=false,reason="not_scanned"},auraScan=V.auraScan or {available=false,reason="not_scanned"},
+        candidates=V.candidates,lastMatched=V.lastMatched,roster=roster and roster:GetSnapshot(),
+        rosterHealth=roster and roster.GetHealth and roster:GetHealth(),auraHealth=aura and aura.GetHealth and aura:GetHealth(),
+        scheduler=scheduler and scheduler.GetHealth and scheduler:GetHealth(),backlog=scheduler and scheduler.DescribeBacklog and scheduler:DescribeBacklog(),
+        overlay=overlay and overlay:Describe(),expectedBuffIds=SAC_BUFF_IDS,
+        limits={roster=MAX_ROSTER,candidates=MAX_CANDIDATES,auras=MAX_AURAS,staleMs=ACTIVE_STALE_MS}})
+end
+
+function Feature:GetHealth()
+    return {running=V.running==true,candidates=V.candidateCount,active=V.activeCount,error=V.lastError,
+        rosterHeld=V.rosterHeld,auraHeld=V.auraHeld,lastCandidateScan=V.candidateScan and V.candidateScan.at,
+        lastAuraScan=V.auraScan and V.auraScan.at} -- 中文维护：摘要直出真实观察状态，不把模块 enabled 当作技能已经识别/显示。
+end
+
+function Feature:RegisterDiagnosticProviders()
+    local hub = S.ModuleDiagnosticsHub
+    if type(hub) ~= "table" then return false end
+    hub:RegisterStoreOwner(self.Id, STORE_ID) -- 中文维护：分离后旧物理视觉 Store 必须归牺牲之舞；不修改物理 key/schema/指纹。
+    hub:RegisterStoreOwner(self.Id, self.storeId)
+    return hub:RegisterProvider(self.Id,"team_sac_evidence",function() return Feature:DescribeDiagnosticDetail() end,30,{detailOnly=true})
+end
+Feature:RegisterDiagnosticProviders()
+
 local function ScheduleAuraEdge()
     if V.running ~= true or V.candidateCount <= 0 or S.Scheduler == nil or type(S.Scheduler.AddOneShot) ~= "function" then return true end
-    S.Scheduler:RemoveTask(AURA_EDGE_TASK)
+    if S.Scheduler.tasks and S.Scheduler.tasks[AURA_EDGE_TASK] ~= nil then return true end -- 中文维护：Buff 高频边沿合并到第一次到达后的120ms，不能反复重置延迟导致任务永远等不到执行。
     local ok = S.Scheduler:AddOneShot(AURA_EDGE_TASK, 120, function()
         if V.running == true then Feature:ScanSacAuras("buff_update") end
     end, Feature, "P2", 1)
@@ -528,7 +585,7 @@ function Feature:RestoreSavedRaidMarkers()
     V.markerStatus, V.markerError = "restoring", nil
     V.markerQueued, V.markerApplied, V.markerSkipped = #queue, 0, skipped
     local ok = S.Scheduler:AddTask(MARK_RESTORE_TASK, 1100, function()
-        if S.FeatureRuntime == nil or S.FeatureRuntime:IsEnabled(Feature.Id) ~= true then StopMarkerRestore("stopped", "团队中心已关闭，标记恢复停止"); return end
+        if S.FeatureRuntime == nil or S.FeatureRuntime:IsEnabled(Feature.Id) ~= true then StopMarkerRestore("stopped", "牺牲之舞功能已关闭，标记恢复停止"); return end
         if V.restorePending ~= nil then
             local pending = V.restorePending
             local readOk, current = S.Api:CallCapability("X2Unit:GetOverHeadMarker", rawget(_G, "X2Unit"), "GetOverHeadMarker", pending.unitToken)
@@ -603,7 +660,7 @@ function Feature:Enable(reason)
 end
 
 function Feature:Disable(reason)
-    if V.restoreQueue ~= nil then StopMarkerRestore("stopped", "团队中心已关闭，标记恢复停止") end
+    if V.restoreQueue ~= nil then StopMarkerRestore("stopped", "牺牲之舞功能已关闭，标记恢复停止") end
     local stopped, stopErr = self:StopSacObservation("feature_disable")
     if stopped ~= true then return false, stopErr end
     return BaseDisable(self, reason)
@@ -678,4 +735,15 @@ end
 
 Feature.TeamVisualContractVersion = 2 -- 中文维护注释：v2 公开默认开启 + schema1 兼容迁移契约；不表示扩大 Native 权限或扫描范围。
 Feature.TeamMarkerSnapshotContractVersion = 1
-Feature.TeamSacContractVersion = 2 -- 中文维护注释：牺牲之舞新用户默认开启，但 Consumer 仍严格随 combat_team_tools Feature 生命周期按需获取/释放。
+Feature.TeamSacContractVersion = 2 -- 中文维护：Consumer 只随独立 combat_sac_highlight 生命周期释放，职责关闭不再影响高亮。
+-- 中文维护：旧团队中心显式开且 sacEnabled 开，证明历史视觉启动意图；复用 Runtime 的
+-- 一次启动链接事务。新功能已有显式关闭时绝不重开，不改变旧 Store canonical/指纹。
+function Feature:GetStartupEnableIntent(_, explicit)
+    if explicit == true then return false end
+    local runtime = S.FeatureRuntime
+    local previous = runtime and runtime:GetPreferredEnabled("combat_team_tools") == true
+    if not previous then return false end -- 中文维护：没有旧团队启用意图就不冷读视觉 Store，关闭功能的历史数据问题不拖累启动。
+    local initialized, err = self:Initialize()
+    if initialized ~= true then error(err or "牺牲之舞配置读取失败") end
+    return previous and V.state.sacEnabled == true, "team_visual_split"
+end

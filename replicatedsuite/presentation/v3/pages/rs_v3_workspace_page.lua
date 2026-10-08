@@ -50,6 +50,10 @@ function Page:Build(parent,route,initialTab)
   query:CancelEditing('workspace_clear');root.query='';query:SetValue('',false);return root:Refresh()end})
  local filter=R:Dropdown({id=prefix..'filter',parent=filters,items=FILTERS,maxVisible=5,get=function()return root.filter end,
   set=function(v)return root:SetFilter(v)end,slot={size='fixed',width=132}})
+ -- 主菜单外观只占外观页；沿用悬浮窗的四个 NumericField 通道，按首次打开惰性构建。
+ local mainAppearance=R:GroupBox({id=prefix..'main_appearance',parent=root,title='主菜单外观',variant='soft',padding=6,gap=3,
+  slot={size='auto',hAlign='fill'}})
+ mainAppearance:SetVisibility('collapsed');root.mainAppearanceFields={}
  local list=R:TableView({id=prefix..'list',parent=root,items={},rowHeight=28,headerHeight=27,desiredRows=12,overscan=1,
   scrollbar=true,selectable=true,selectionMode='single',columnResize=true,headerInteractive=false,
   getKey=function(item)return item and item.id end,
@@ -73,6 +77,61 @@ function Page:Build(parent,route,initialTab)
  end
  local message=Text(root,prefix..'message','修改即保存；只改变界面或明确选中的功能，不隐式启动其他模块。',26)
  root.message=message
+ function root:EnsureMainAppearanceFields()
+  if self.mainAppearanceBuilt then return true end
+  if self.mainAppearanceBuildError then return false,self.mainAppearanceBuildError end
+  if not V.MainAppearance or not V.Shell or type(V.Shell.SetAppearance)~='function' or type(R.NumericField)~='function'then return false end
+  local scope=type(R.BeginBuildScope)=='function' and R:BeginBuildScope('main_appearance:'..prefix) or nil
+  local function Failed(why)
+   self.mainAppearanceBuildError=tostring(why or '主菜单外观面板创建失败')
+   if scope then R:EndBuildScope(scope,false);scope=nil end
+   self.mainAppearanceFields={};self.mainAppearanceLock=nil
+   return false,self.mainAppearanceBuildError
+  end
+  local stack=R:VerticalBox({id=prefix..'main_appearance_stack',parent=mainAppearance,gap=3})
+  if not stack then return Failed('主菜单外观容器创建失败')end
+  for _,option in ipairs({{key='overallOpacity',label='整体',min=10,max=100},{key='backgroundOpacity',label='背景',min=0,max=100},
+    {key='textOpacity',label='文字',min=10,max=100},{key='fontScale',label='字号',min=50,max=200}})do
+   local key=option.key
+   local function Apply(value,persist)
+    local ok,why=V.Shell:SetAppearance({[key]=(tonumber(value) or 100)/100},persist)
+    if not ok then message:SetText('外观调整未完成：'..tostring(why));message:SetTone('red')end
+    return ok,why
+   end
+   local field,fieldErr=R:NumericField({id=prefix..'main_'..key,parent=stack,label=option.label,inline=true,slider=true,
+    min=option.min,max=option.max,step=1,integer=true,unit='%',commitOnFinal=true,
+    padding=1,labelFontSize=9,labelWidth=40,labelMinWidth=36,labelMaxShare=0.26,inputWidth=46,inputMinWidth=42,
+    sliderMinWidth=52,sliderPreferredShare=0.46,controlGap=2,controlHeight=24,minHeight=31,
+    get=function()return math.floor(V.MainAppearance:GetSettings()[key]*100+0.5)end,
+    set=function(value)return Apply(value,true)end,onPreview=function(value)return Apply(value,false)end,
+    slot={size='fixed',height=31,hAlign='fill'},buildOptional=true})
+   if not field then return Failed(fieldErr)end
+   self.mainAppearanceFields[key]=field
+  end
+  local actions=R:HorizontalBox({id=prefix..'main_appearance_actions',parent=stack,gap=4,slot={size='fixed',height=27,hAlign='fill'}})
+  if not actions then return Failed('主菜单外观操作栏创建失败')end
+  self.mainAppearanceLock=R:Button({id=prefix..'main_appearance_lock',parent=actions,text='锁定',compact=true,slot={size='fill',fill=1,minWidth=40},
+   onClick=function()local ok,why=V.Shell:SetLocked(not V.Shell:IsLocked(),true);self:RefreshMainAppearanceFields();return ok,why end})
+  local reset=R:Button({id=prefix..'main_appearance_reset',parent=actions,text='恢复外观',compact=true,slot={size='fill',fill=1,minWidth=50},onClick=function()
+   local ok,why=V.Shell:ResetAppearance();self:RefreshMainAppearanceFields()
+   message:SetText(ok and '主菜单外观已恢复默认。' or ('恢复未完成：'..tostring(why)));message:SetTone(ok and 'muted' or 'red');return ok,why
+  end})
+  local position=R:Button({id=prefix..'main_appearance_position',parent=actions,text='复位位置',compact=true,slot={size='fill',fill=1,minWidth=50},
+   onClick=function()return V.Shell:ResetLayout(true)end})
+  if not self.mainAppearanceLock or not reset or not position then return Failed('主菜单外观按钮创建失败')end
+  if scope then local committed,why=R:EndBuildScope(scope,true);scope=nil;if not committed then return Failed(why)end end
+  self.mainAppearanceBuilt=true
+  return true
+ end
+ function root:RefreshMainAppearanceFields()
+  for _,field in pairs(self.mainAppearanceFields)do field:Render()end
+  if self.mainAppearanceLock then self.mainAppearanceLock:SetText(V.Shell:IsLocked() and '解锁' or '锁定')end
+ end
+ function root:RestoreMainAppearancePreview()
+  if self.tab~='appearance' or not self.mainAppearanceBuilt then return true end
+  for _,field in pairs(self.mainAppearanceFields)do if field.input then field.input:CancelEditing('main_appearance_hidden')end end
+  return V.Shell:RestoreAppearancePreview()
+ end
  function root:Selected()for _,row in ipairs(self.rows)do if row.id==self.selectedId then return row end end end
  function root:SelectId(id)
   for index,row in ipairs(self.rows)do if row.id==id then self.selectedId=id;self.list:SetSelectedIndex(index);self:RefreshActions();return true end end
@@ -80,6 +139,11 @@ function Page:Build(parent,route,initialTab)
  end
  function root:SetTab(tab)
   local known=false;for _,item in ipairs(TABS)do if item.value==tab then known=true end end;if not known then return false,'未知页面'end
+  -- 中文维护：标题栏入口可以切换已打开的工作台，分类切换统一关闭本页弹层，避免旧菜单遮住主题列表。
+  for _,control in ipairs({tabs,source,filter})do
+   if control.open then local ok,why=control:Close();if ok~=true then return false,why end end
+  end
+  self:RestoreMainAppearancePreview()
   query:CancelEditing('workspace_tab');self.tab=tab;self.filter=tab=='features' and 'enabled' or 'all';self.query='';self.selectedId=nil
   query:SetValue('',false);tabs:Render();return self:Refresh()
  end
@@ -125,8 +189,8 @@ function Page:Build(parent,route,initialTab)
    rows=W:GetWindowRows();for _,r in ipairs(rows)do r.tone=r.visible and 'green' or 'muted';r.detail=(r.locked and '已锁定' or '可拖动')..' · '..r.id end
   else
    local settings=W:GetSettings()
-   for _,v in ipairs({{'dark','经典深色','保留原有默认风格'},{'gold','暖金深色','深色底与暖金强调'},{'contrast','高对比','提高文字与边界对比'}})do
-    rows[#rows+1]={id=v[1],name=v[2],state=settings.appearance==v[1] and '使用中' or '可选择',detail=v[3],tone=settings.appearance==v[1] and 'green' or 'muted'}
+   for _,v in ipairs(W:GetAppearanceOptions())do
+    rows[#rows+1]={id=v.id,name=v.name,state=settings.appearance==v.id and '使用中' or '可选择',detail=v.detail,tone=settings.appearance==v.id and 'green' or 'muted'}
    end
   end
   local out={};for _,row in ipairs(rows)do if tab=='appearance' or tab=='home' or Matches(row)then out[#out+1]=row end end
@@ -181,10 +245,16 @@ function Page:Build(parent,route,initialTab)
    Add('模块设置',Route,has and item.route~=nil)
    Add('精细外观设置',function()return Navigate('system.widgets')end)
   else
-   Add('应用选中主题',function()return W:SetOption('appearance',item.id)end,has)
+   Add('应用选中主题',function()
+    local ok,why=W:SetOption('appearance',item.id)
+    if ok and S.Theme and (tonumber(S.Theme.workspacePaletteFailures) or 0)>0 then
+     return false,'主题已保存，但部分控件配色更新失败；可再次应用或查看完整诊断。'
+    end
+    return ok,why
+   end,has)
    Add('紧凑密度',function()return W:SetOption('density','compact')end)
    Add('标准密度',function()return W:SetOption('density','standard')end)
-   Add('恢复默认外观',function()return W:Reset('appearance')end)
+   Add('恢复默认主题',function()return W:Reset('appearance')end)
    Add('全局字号 / 缩放',function()return Navigate('system.settings')end)
   end
   self.actions=actions
@@ -212,6 +282,12 @@ function Page:Build(parent,route,initialTab)
   self.rows=rows
   if not self:Selected()then self.selectedId=nil end
   source:SetVisible(self.tab=='lists');source:Render();tabs:Render();filter:SetVisible(self.tab~='appearance' and self.tab~='home');filter:Render()
+  local showMain,mainErr=false,nil
+  if self.tab=='appearance' then showMain,mainErr=self:EnsureMainAppearanceFields()end
+  mainAppearance:SetVisibility(showMain and 'visible' or 'collapsed')
+  if showMain then self:RefreshMainAppearanceFields()end
+  if mainErr then message:SetText('主菜单外观暂不可用：'..tostring(mainErr));message:SetTone('red')end
+  filters:SetVisibility(self.tab=='appearance' and 'collapsed' or 'visible')
   -- 行密度只改变本页池化 ListView 的度量，不覆盖业务窗口字号/存档。
   if list.list and list.list.SetRowHeight then list.list:SetRowHeight(W:GetSettings().density=='compact' and 24 or 30)end
   list:SetItems(rows,self.revision)
@@ -222,7 +298,7 @@ function Page:Build(parent,route,initialTab)
    lists='批量仅改变当前搜索/筛选结果；日常与周常独立，置顶和排列与悬浮窗共享。',
    windows='隐藏 / 收起不等于停用。未启用的模块请从“模块设置”明确开启。',
    features='只读取实际启停和故障标记，不执行全量自检。性能等级为预估。',
-   appearance='主题只改变配色。密度作用于工作台与首页，不覆盖各窗口字号、位置、透明度。'}
+   appearance='上方调整主菜单透明度和字号；下方选择主题。悬浮窗口保留各自外观。'}
   summary:SetText(tostring(#rows)..' 项 · '..notices[self.tab]);self.refreshing=false;self:RefreshActions()
   if why then message:SetText('读取受保护：'..tostring(why));message:SetTone('red')end
   return true
@@ -250,7 +326,7 @@ function Page:Build(parent,route,initialTab)
   end end
   return self:Refresh()
  end
- function root:OnDeactivated()self.active=false;query:CancelEditing('workspace_hidden');if S.Events then S.Events:UnsubscribeInternalOwner(self)end;return true end
+ function root:OnDeactivated()self:RestoreMainAppearancePreview();self.active=false;query:CancelEditing('workspace_hidden');if S.Events then S.Events:UnsubscribeInternalOwner(self)end;return true end
  root.OnDispose=root.OnDeactivated;root.route=route
  return root
 end

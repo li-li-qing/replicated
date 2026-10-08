@@ -13,6 +13,8 @@ local G = S.Services.GearV3
 
 G.version = 5
 G.PartialApplyContractVersion = 1
+G.ContinuationContractVersion = 1
+G.continuationPatch = "gear-partial-continuation-1"
 G.TitleEffectAuthorityContractVersion = 1
 G.presentationBoundary = "service_only"
 G.BagSlots = 150
@@ -245,6 +247,10 @@ function G:SavedItemMatchesTooltip(saved, tooltip)
     if type(saved) ~= "table" or saved.empty == true or type(tooltip) ~= "table" then return false end
     local wantedName, currentName = self:NormalizeItemName(saved.name), self:NormalizeItemName(tooltip.name)
     if wantedName == "" or currentName == "" or wantedName ~= currentName then return false end
+    -- 维护（2026-09-30）：稳定ID都存在时冲突必须失败，不能只因同名同品质判定已匹配。
+    -- 旧方案未保存ID时保留原有名称/品质/属性指纹兼容，不回写用户配置。
+    local currentType = self:ExtractBagType(tooltip)
+    if saved.itemType ~= nil and currentType ~= nil and tostring(saved.itemType) ~= tostring(currentType) then return false end
     local wantedGrade, currentGrade = tonumber(saved.grade), self:ExtractGrade(tooltip)
     if wantedGrade ~= nil and currentGrade ~= nil and wantedGrade ~= currentGrade then return false end
     local wantedMods = Trim(saved.modifierSignature)
@@ -255,8 +261,11 @@ end
 
 function G:CurrentItemMatches(saved)
     if type(saved) ~= "table" or saved.empty == true then return false end
-    local tooltip = self:GetLoadoutEquipped(saved.slot)
-    return self:SavedItemMatchesTooltip(saved, tooltip)
+    -- 维护（2026-09-30，gear-partial-continuation-1）：读取失败不是普通“不匹配”。
+    -- 保留第二返回值给显式换装事务：该槽不可验证时跳过，不能用未知状态授权装备动作。
+    local tooltip, err = self:GetLoadoutEquipped(saved.slot)
+    if err ~= nil then return false, err end
+    return self:SavedItemMatchesTooltip(saved, tooltip), nil
 end
 
 -- One 19-slot read can evaluate every quick loadout in memory. This avoids the
@@ -350,6 +359,7 @@ function G:ApplyTitle(payload)
     local effectType = tonumber(effect) or effect
     local callOk, value, callErr = S.Api:CallCapability("X2Player:ChangeAppellation", X2Player, "ChangeAppellation", showing, effectType)
     if callOk ~= true then return false, callErr end
+    if value == false then return false, "ChangeAppellation rejected" end
     return true, value
 end
 
@@ -442,6 +452,8 @@ function G:CandidateMatches(saved, candidate)
     if type(saved) ~= "table" or type(candidate) ~= "table" then return false, 0 end
     local wantedName, gotName = self:NormalizeItemName(saved.name), candidate.normalizedName
     if wantedName == "" or gotName == "" or wantedName ~= gotName then return false, 0 end
+    -- 同名不同ID不能用“低分候选”降级选中；该项跳过，不影响其它已确认项目。
+    if saved.itemType ~= nil and candidate.itemType ~= nil and tostring(saved.itemType) ~= tostring(candidate.itemType) then return false, 0 end
     local wantedGrade, gotGrade = tonumber(saved.grade), tonumber(candidate.grade)
     if wantedGrade ~= nil and gotGrade ~= nil and wantedGrade ~= gotGrade then return false, 0 end
     local wantedMods, gotMods = Trim(saved.modifierSignature), Trim(candidate.modifierSignature)
@@ -521,7 +533,9 @@ function G:BuildSession(setId, payload, mismatchRows, options)
         if candidate == nil then blocked[#blocked + 1] = { slot = saved.slot, slotName = saved.slotName, name = saved.name, reason = reason, code = reasonCode }
         else
             reserved[tonumber(candidate.slot)] = true
-            queue[#queue + 1] = { saved = saved, bagSlot = candidate.slot, bagId = snapshot.bagId, alternative = saved.alternative == true, attempts = 0, verifyPolls = 0 }
+            queue[#queue + 1] = { saved = saved, bagSlot = candidate.slot, bagId = snapshot.bagId,
+                candidateFingerprint = self:CandidateFingerprint(candidate), candidateItemType = candidate.itemType,
+                alternative = saved.alternative == true, attempts = 0, verifyPolls = 0 }
         end
     end
     table.sort(queue, function(a, b)
@@ -543,11 +557,25 @@ function G:BuildSession(setId, payload, mismatchRows, options)
 end
 
 function G:RefreshStepCandidate(step, session)
+    if type(session.performance) == "table" then session.performance.rescans = session.performance.rescans + 1 end
     local snapshot = self:BuildBagSnapshot()
     local candidate, reason, reasonCode = self:FindCandidate(step.saved, snapshot, {})
     if candidate == nil then return false, reason, reasonCode end
     step.bagSlot, step.bagId = candidate.slot, snapshot.bagId
+    step.candidateFingerprint, step.candidateItemType = self:CandidateFingerprint(candidate), candidate.itemType
     return true
+end
+
+function G:ValidateStepCandidate(step, session)
+    -- 维护（2026-09-30，gear-partial-continuation-1）：前项换装/背包操作可能改变物理槽。
+    -- 动作前只回读当前候选的一个槽；指纹变化才进入现有有界扫描，不对旧槽盲目 Equip。
+    -- 继续后项不等于放宽身份校验；歧义、缺失、读错仍交给 SkipRuntimeStep 留证后跳过。
+    local info = self:GetBagItem(step.bagId, step.bagSlot)
+    local candidate = self:BuildBagCandidate(step.bagId, step.bagSlot, info)
+    if candidate ~= nil and self:CandidateMatches(step.saved, candidate)
+        and self:CandidateFingerprint(candidate) == step.candidateFingerprint
+        and tostring(candidate.itemType or "") == tostring(step.candidateItemType or "") then return true end
+    return self:RefreshStepCandidate(step, session)
 end
 
 function G:AddSkippedStep(session, saved, reason, reasonCode)
@@ -594,13 +622,29 @@ function G:PartialSummary(session, prefix)
     local blocked = type(session) == "table" and session.blocked or {}
     if #blocked <= 0 then return tostring(prefix or "换装完成") end
     local first = blocked[1]
-    return tostring(prefix or "换装部分完成") .. "；跳过 " .. tostring(#blocked) .. " 件未找到装备"
-        .. (first and ("（首项：" .. tostring(first.slotName or first.name or "装备") .. "）") or "")
+    return tostring(prefix or "换装部分完成") .. "；跳过 " .. tostring(#blocked) .. " 项无法完成的装备"
+        .. (first and ("（首项：" .. tostring(first.slotName or first.name or "装备") .. "：" .. tostring(first.reason or first.code or "无法识别") .. "）") or "")
+end
+
+function G:SkipRuntimeStep(session, step, reason, reasonCode)
+    -- 仅隔离当前项目；不重启队列、不取消其它装备/称号，不把错误伪装成成功。
+    self:AddSkippedStep(session, step.saved, reason, reasonCode)
+    self.runtime.index = self.runtime.index + 1
+    self.runtime.stage = "ACTION"
+    self.runtime.message = self:PartialSummary(session, "继续换装")
+    Publish("step_failed_skipped")
+    return true
 end
 
 function G:StopRuntime(reason)
     if S.Scheduler ~= nil then S.Scheduler:RemoveTask(self.taskName) end
     local r = self.runtime
+    if r.session and type(r.session.performance) == "table" then
+        r.session.performance.elapsedMs = math.max(0, (S.NowMs and S.NowMs() or 0) - r.session.performance.startedAt)
+        r.lastPerformance = DeepCopy(r.session.performance)
+    end
+    r.skipped = DeepCopy(r.session and r.session.blocked or r.skipped or {})
+    r.outcome = "stopped"
     r.busy, r.session, r.stage, r.index = false, nil, "IDLE", 0
     if reason ~= nil then r.message = tostring(reason) end
     Publish("runtime_stopped")
@@ -608,8 +652,15 @@ end
 
 function G:FinishRuntime(ok, message)
     local session = self.runtime.session
+    if session and type(session.performance) == "table" then
+        session.performance.elapsedMs = math.max(0, (S.NowMs and S.NowMs() or 0) - session.performance.startedAt)
+        self.runtime.lastPerformance = DeepCopy(session.performance)
+    end
     if S.Scheduler ~= nil then S.Scheduler:RemoveTask(self.taskName) end
     self.runtime.busy = false
+    self.runtime.skipped = DeepCopy(session and session.blocked or {})
+    self.runtime.outcome = not ok and "failed"
+        or ((#self.runtime.skipped > 0 or self.runtime.pendingSetId ~= nil) and "partial" or "complete")
     self.runtime.stage = ok and "DONE" or "FAILED"
     self.runtime.message = tostring(message or (ok and "换装完成" or "换装失败"))
     self.runtime.lastSetId = session and session.setId or self.runtime.lastSetId
@@ -625,7 +676,10 @@ end
 function G:RuntimeTick()
     local r, session = self.runtime, self.runtime.session
     if r.busy ~= true or type(session) ~= "table" then self:StopRuntime(); return true end
-    local inCombat = self:IsInCombat()
+    if type(session.performance) == "table" then session.performance.ticks = session.performance.ticks + 1 end
+    local inCombat, combatErr = self:IsInCombat()
+    -- 全局安全门保持强制停止，不能把“无法确认战斗状态”当成某一件识别失败而继续写装备。
+    if combatErr ~= nil then return self:FinishRuntime(false, "无法确认战斗状态，换装已停止：" .. tostring(combatErr)) end
     if inCombat == true and session.weaponOnly ~= true then
         r.pendingSetId = session.setId
         return self:FinishRuntime(true, "战斗开始，剩余防具/饰品/称号已暂停；脱战后可再次执行")
@@ -633,6 +687,19 @@ function G:RuntimeTick()
     if (S.NowMs and S.NowMs() or 0) - (session.startedAt or 0) > 60000 then return self:FinishRuntime(false, "换装总超时，已停止") end
 
     local step = session.queue[r.index]
+    -- 维护（2026-10-04）：真实装备回读确认后，同一拍进入下一项；旧流程每件
+    -- 都单独空等一个 220ms 拍。循环只消费已匹配项目，动作分支仍立即 return，
+    -- 每拍最多一次原生写入；候选指纹、战斗门和未生效的验证预算均保留。
+    while step ~= nil do
+        local itemMatched, equippedErr = self:CurrentItemMatches(step.saved)
+        -- Native 回读可能同步触发取消/停用；旧会话不能继续下一项。
+        if r.busy ~= true or r.session ~= session then return true end
+        if equippedErr ~= nil then return self:SkipRuntimeStep(session, step, equippedErr, "equipped_read_error") end
+        if itemMatched ~= true then break end
+        r.index = r.index + 1
+        r.stage = "ACTION"
+        step = session.queue[r.index]
+    end
     if step == nil then
         if session.weaponOnly == true then
             local reachableMatched, reachableMismatches = self:ValidateReachableSession(session)
@@ -672,31 +739,27 @@ function G:RuntimeTick()
         return self:FinishRuntime(true, "换装 / 称号完成")
     end
 
-    if self:CurrentItemMatches(step.saved) then r.index = r.index + 1; r.stage = "ACTION"; Publish("step_skip"); return true end
     if r.stage == "VERIFY" then
+        if type(session.performance) == "table" then session.performance.verificationWaits = session.performance.verificationWaits + 1 end
         step.verifyPolls = (step.verifyPolls or 0) + 1
         if step.verifyPolls <= 7 then return true end
-        if step.attempts >= 3 then return self:FinishRuntime(false, tostring(step.saved.slotName) .. "连续多次未生效") end
-        local found, reason, reasonCode = self:RefreshStepCandidate(step, session)
-        if found ~= true then
-            if reasonCode == "not_found" then
-                self:AddSkippedStep(session, step.saved, reason, reasonCode)
-                r.index = r.index + 1
-                r.stage = "ACTION"
-                step.verifyPolls = 0
-                r.message = self:PartialSummary(session, "继续换装")
-                Publish("step_missing_skipped")
-                return true
-            end
-            return self:FinishRuntime(false, tostring(step.saved.slotName) .. "重试查找失败：" .. tostring(reason))
+        if step.attempts >= 3 then
+            return self:SkipRuntimeStep(session, step, "连续多次未生效（已达到3次动作上限）", "verify_failed")
         end
+        local found, reason, reasonCode = self:RefreshStepCandidate(step, session)
+        if found ~= true then return self:SkipRuntimeStep(session, step, reason, reasonCode) end
         r.stage = "ACTION"; step.verifyPolls = 0; return true
     end
 
     r.stage = "ACTION"
+    local candidateOk, candidateErr, candidateCode = self:ValidateStepCandidate(step, session)
+    if r.busy ~= true or r.session ~= session then return true end
+    if candidateOk ~= true then return self:SkipRuntimeStep(session, step, candidateErr, candidateCode) end
     step.attempts = (step.attempts or 0) + 1
-    local ok, _, err = S.Api:CallCapability("X2Bag:EquipBagItem", X2Bag, "EquipBagItem", step.bagSlot, step.alternative == true)
-    if ok ~= true then return self:FinishRuntime(false, tostring(step.saved.slotName) .. "换装调用失败：" .. tostring(err)) end
+    if type(session.performance) == "table" then session.performance.actionAttempts = session.performance.actionAttempts + 1 end
+    local ok, value, err = S.Api:CallCapability("X2Bag:EquipBagItem", X2Bag, "EquipBagItem", step.bagSlot, step.alternative == true)
+    if ok ~= true then return self:SkipRuntimeStep(session, step, tostring(err or "换装调用失败"), "action_error") end
+    if value == false then return self:SkipRuntimeStep(session, step, "EquipBagItem rejected", "action_rejected") end
     r.stage = "VERIFY"; step.verifyPolls = 0
     Publish("step_action")
     return true
@@ -707,14 +770,19 @@ function G:Start(setId, payload)
     if self.runtime.busy == true then return false, "已有换装任务正在执行" end
     local inCombat, combatErr = self:IsInCombat()
     if combatErr ~= nil then return false, "无法确认战斗状态：" .. tostring(combatErr) end
+    self.runtime.skipped, self.runtime.outcome = {}, "not_applied"
+    self.runtime.lastPerformance = nil
+    self.runtime.pendingSetId = nil
     local matched, mismatches = self:ValidatePayload(payload)
-    if matched == true then self.runtime.message = "当前已经是目标方案"; Publish("already_matched"); return true end
+    if matched == true then self.runtime.outcome = "complete"; self.runtime.message = "当前已经是目标方案"; Publish("already_matched"); return true end
 
     -- RU实机历史已经确认：战斗中防具/饰品通常会被客户端拒绝，
     -- 但主手/副手/远程/乐器仍允许换装。不要用一个全局战斗门把
     -- 可用的武器路径一起阻断；战斗模式只构建武器 mismatch 队列。
     local weaponOnly = inCombat == true
     local session = self:BuildSession(setId, payload, mismatches, { weaponOnly = weaponOnly })
+    session.performance = { startedAt = session.startedAt, intervalMs = 220,
+        ticks = 0, actionAttempts = 0, rescans = 0, verificationWaits = 0 }
     if session.preflightError ~= nil then return false, tostring(session.preflightError) end
     if weaponOnly == true and #session.queue == 0 and #session.blocked == 0 then
         self.runtime.pendingSetId = tostring(setId)
@@ -722,21 +790,20 @@ function G:Start(setId, payload)
         Publish("combat_non_weapon_deferred")
         return true
     end
-    for _, blocked in ipairs(session.blocked or {}) do
-        if blocked.code ~= "not_found" then
-            return false, tostring(blocked.slotName or "装备") .. "：" .. tostring(blocked.reason or "无法安全定位")
-        end
-    end
+    -- 维护（2026-09-30，gear-partial-continuation-1）：预检只生成可明确定位的动作。
+    -- not_found/read_error/ambiguous 全部保留为跳过证据，不能因一件无法识别阻断其它项目。
+    self.runtime.skipped = DeepCopy(session.blocked or {})
     if #session.queue == 0 and session.titlePending ~= true then
         local first = session.blocked[1]
-        self.runtime.message = first and ("未找到 " .. tostring(#session.blocked) .. " 件目标装备；无其它可执行项目") or "没有需要执行的换装项目"
+        self.runtime.message = first and ("有 " .. tostring(#session.blocked) .. " 件目标装备无法安全定位；无其它可执行项目") or "没有需要执行的换装项目"
         Publish("nothing_reachable")
         return false, self.runtime.message
     end
     self.runtime.busy, self.runtime.session, self.runtime.stage, self.runtime.index = true, session, "ACTION", 1
+    self.runtime.outcome = "running"
     self.runtime.pendingSetId = nil
     self.runtime.message = weaponOnly and ("战斗中正在优先切换“" .. tostring(setId) .. "”的武器") or ("正在切换“" .. tostring(setId) .. "”")
-    if #session.blocked > 0 then self.runtime.message = self.runtime.message .. "；" .. tostring(#session.blocked) .. " 件未找到将跳过" end
+    if #session.blocked > 0 then self.runtime.message = self.runtime.message .. "；" .. tostring(#session.blocked) .. " 件无法识别将跳过" end
     if S.Scheduler == nil or type(S.Scheduler.AddTask) ~= "function" then self:StopRuntime("调度器不可用"); return false, self.runtime.message end
     S.Scheduler:SetTaskModule(self.taskName, "gear")
     local added = S.Scheduler:AddTask(self.taskName, 220, function() return G:RuntimeTick() end, true, self, "P1", 2)
@@ -759,5 +826,13 @@ function G:GetRuntimeSnapshot()
         index = tonumber(r.index) or 0, total = session and #(session.queue or {}) or 0,
         setId = session and session.setId or r.lastSetId, pendingSetId = r.pendingSetId,
         message = tostring(r.message or ""),
+        patch = self.continuationPatch, outcome = tostring(r.outcome or "idle"),
+        skippedCount = #(session and session.blocked or r.skipped or {}),
+        skipped = DeepCopy(session and session.blocked or r.skipped or {}),
+        performance = DeepCopy(session and session.performance or r.lastPerformance),
     }
 end
+
+-- 完整自检自动采集公共 Service 健康快照；这里只复制会话证据，不读取
+-- 背包/装备、不创建任务，避免诊断自身扰动性能测量。
+function G:GetHealth() return self:GetRuntimeSnapshot() end

@@ -16,13 +16,20 @@ local function Test(name, fn)
     end
 end
 
-local function NewNative(id)
+local function NewNative(id, options)
+    options = options or {}
     local n = { id = id, shown = nil, layer = nil, pickable = nil, clickable = nil }
     function n:SetUILayer(value) self.layer = value; return true end
     function n:SetCloseOnEscape(value) self.closeOnEscape = value; return true end
     function n:SetWindowModal(value) self.modal = value; return true end
     function n:SetDrawPriority(value) self.priority = value; return true end
-    function n:AddAnchor(...) self.anchor = { ... }; return true end
+    function n:AddAnchor(point, parent, x, y)
+        if parent == UIParent then error('RU root AddAnchor rejects UIParent table') end
+        assert(parent == 'UIParent', 'root anchor must use the existing literal-root contract')
+        assert(point == 'TOPLEFT' and x == 0 and y == 0, 'overlay root geometry changed')
+        if options.rejectAnchor then error('fixture root anchor rejected') end
+        self.anchor = { point, parent, x, y }; return true
+    end
     function n:SetExtent(w, h) self.width, self.height = w, h; return true end
     function n:EnablePick(value) self.pickable = value; return value end
     function n:Clickable(value) self.clickable = value; return value end
@@ -31,7 +38,7 @@ local function NewNative(id)
     return n
 end
 
-local function LoadHost()
+local function LoadHost(options)
     UIParent = NewNative("UIParent")
     ReplicatedSuite = {
         BootError = nil,
@@ -40,7 +47,11 @@ local function LoadHost()
         UITokens = { Number = function(_, key, fallback) return fallback end },
         NativeObjectFactory = {
             CreateWindow = function(_, id, parent, template)
-                return NewNative(id)
+                local widget = NewNative(id, options)
+                -- Match NativeObjectFactory:CreateWindow: all new windows start hidden.
+                widget:Show(false)
+                ReplicatedSuite.lastCreatedWindow = widget
+                return widget
             end,
         },
     }
@@ -53,6 +64,13 @@ Test("unit-line overlay host stays below native windows", function()
     local host = assert(S.UI:CreateOverlayWindow("v3_visual_unit_host", "v3:combat_visual_guides"))
     assert(host.layer == "game", "unit-line overlay must use game layer, got " .. tostring(host.layer))
     assert(host.pickable == false and host.clickable == false, "unit-line overlay must remain non-pickable")
+end)
+
+Test("root anchor rejection keeps the host hidden and degraded", function()
+    local S = LoadHost({rejectAnchor=true})
+    local host, err = S.UI:CreateOverlayWindow("v3_visual_unit_host", "v3:combat_visual_guides")
+    assert(host == nil and tostring(err):find('fixture root anchor rejected',1,true))
+    assert(S.lastCreatedWindow.shown == false and S.lastCreatedWindow.rsUiDegraded == true)
 end)
 
 Test("range-assist overlay host stays below native windows", function()

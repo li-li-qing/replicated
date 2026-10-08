@@ -47,6 +47,7 @@ F.auraHeld = false
 F.castingHeld = false
 F.cooldownHeld = false
 F.cooldownRevision = tonumber(F.cooldownRevision) or 0
+F.cooldownHudEvidence = {ticks=0,nonemptyTicks=0,lastActive={}}
 F.taskName = "v3_buff_display_refresh"          -- aura lane task (contract kept)
 F.eventTaskName = "v3_buff_display_event_refresh"
 F.eventSubscribed = false
@@ -135,12 +136,29 @@ local function CopySettings()
 end
 local settingsCache, settingsCacheRevision = nil, -1
 local scopeSettingsCache, scopeSettingsCacheRevision = {}, -1
+local cooldownSelectionIndex, cooldownSelectionRevision = {skill={},mate={}}, -1
 local function SettingsRevision() return tonumber(F.settingsRevision) or 0 end
 function F:InvalidateSettingsCache()
     self.settingsRevision = SettingsRevision() + 1
     settingsCache, settingsCacheRevision = nil, -1
     scopeSettingsCache, scopeSettingsCacheRevision = {}, -1
+    cooldownSelectionRevision = -1
     return true
+end
+
+-- 与 Buff 通道一样，用户保存的选择决定 HUD；自动发现只提供可选技能，不能自动恢复已取消的追踪。
+function F:IsTrackedCooldownId(id, kind)
+    if kind ~= "skill" and kind ~= "mate" then return false end
+    local revision = SettingsRevision()
+    if cooldownSelectionRevision ~= revision then
+        local tracked = type(Settings().trackedCooldowns) == "table" and Settings().trackedCooldowns or {}
+        cooldownSelectionIndex = {skill={},mate={}}
+        for _, key in ipairs({"skill","mate"}) do
+            for _, value in ipairs(tracked[key] or {}) do cooldownSelectionIndex[key][value] = true end
+        end
+        cooldownSelectionRevision = revision
+    end
+    return cooldownSelectionIndex[kind][tonumber(id)] == true
 end
 
 local HUD_SCOPES = { "player", "target" } -- 帧位置路径复用，不逐帧创建单位列表
@@ -219,16 +237,20 @@ local function ComponentEnabled(key, scope)
     if scope ~= nil then
         local layout = ScopeLayout(scope)
         local component = type(layout.components) == "table" and layout.components[key] or nil
+        -- 职业元数据同时服务名称和图标；任一可见都需要采集，关图标不能关名字，反之亦然。
+        if key=="class" then
+            local info=type(layout.info)=="table" and layout.info or {}
+            return info.enabled~=false and (info.showClass~=false or (component~=nil and component.enabled~=false))
+        end
         if component == nil or component.enabled == false then return false end
-        -- 中文维护注释（Info 生命周期门，2026-09-11）：distance/class/gearScore 都只会
-        -- 被绘制到 info 行。旧逻辑即使 info.enabled=false 仍会让 50ms distance、1s
-        -- metadata/equipment lane 继续采集，造成“UI 已关闭但后台仍轮询”。Authority 仍由
+        -- 中文维护注释（Info 生命周期门，2026-09-11）：distance/gearScore 都只会
+        -- 被绘制到 info 行。旧逻辑即使 info.enabled=false 仍会让 distance/equipment
+        -- lane 继续采集，造成“UI 已关闭但后台仍轮询”。职业元数据的双显示门见上方。Authority 仍由
         -- 当前 scope 的 HUD profile 决定；这里只做运行时需求投影，不改 Store。兼容边界：
         -- Buff/Debuff/装备/施法条不受此门影响，重新开启 info 后 lane 会由 Reconcile 恢复。
-        if key == "distance" or key == "class" or key == "gearScore" then
+        if key == "distance" or key == "gearScore" then
             local info = type(layout.info) == "table" and layout.info or {}
             if info.enabled == false then return false end
-            if key == "class" then return info.showClass ~= false end
             if key == "gearScore" then return info.showGear ~= false end
             return info.showDistance ~= false
         end
@@ -384,14 +406,15 @@ function F:RefreshScope(scope, forceRefresh)
     end
     for _, row in ipairs(rows) do
         local id=math.floor(tonumber(row.id) or 0)
-        -- Preserve the factual lane for show-all and Auto semantics. Explicit schema8 channels may additionally
-        -- route the same fact into the opposite lane; this is deliberate because the four user buttons are independent.
+        -- 中文维护（已确认类型不被追踪翻转）：四列是独立追踪选择，不是正负面分类覆盖。
+        -- 已确定Buff/Debuff只进入自身事实lane；只有尚未分类的状态保留用户指定展示位置。
+        -- 旧保存选择不清除、不迁移，真正分类纠错仍由原classification override负责。
         if row.category == "debuff" and settings.showDebuffs ~= false then lane.debuffRows[#lane.debuffRows + 1] = row
         elseif row.category == "buff" and settings.showBuffs ~= false then lane.buffRows[#lane.buffRows + 1] = row end
-        if id>0 and scopedIndex.buff and scopedIndex.buff[id] and row.category~="buff" and settings.showBuffs ~= false then
+        if id>0 and scopedIndex.buff and scopedIndex.buff[id] and row.category=="unknown" and settings.showBuffs ~= false then
             AddLane(lane.buffRows,row,"buff")
         end
-        if id>0 and scopedIndex.debuff and scopedIndex.debuff[id] and row.category~="debuff" and settings.showDebuffs ~= false then
+        if id>0 and scopedIndex.debuff and scopedIndex.debuff[id] and row.category=="unknown" and settings.showDebuffs ~= false then
             AddLane(lane.debuffRows,row,"debuff")
         end
     end
@@ -1007,7 +1030,8 @@ local function CooldownRuntimeNeeded()
     -- 中文维护注释（2026-09-19，cooldown-skill-id-only-1）：追踪 CD 本身就是功能需求，不能把
     -- Native Runtime 生命周期绑到“管理页是否打开”或“CD HUD 是否显示”。更重要的是 V4 已把 Buff/Aura
     -- 与 CD Authority 彻底分离：Store.trackedCooldowns 只能保存 Skill ID，CooldownObservationV3 直接读取
-    -- GetCooldown/GetMateCooldown，不再等待 COMBAT_MSG 或 Buff 出现。只要 Feature 有合法 Consumer 且存在
+    -- GetCooldown/GetMateCooldown，手动追踪不等待 COMBAT_MSG 或 Buff 出现。自己 CD HUD/管理页开启时，
+    -- 自动发现仅用自身施放成功事件提供 Skill ID，Native 仍独立提供真实剩余时间。只要存在合法 Consumer 与
     -- trackedCooldowns，就保持低频有界探测；HUD 隐藏只停止 Presentation。真正 Feature disable / 最后
     -- Consumer 释放会回收 Scheduler 与 ephemeral cache。target cooldowns 仍禁止消费本机 LocalNative。
     if HasTrackedCooldowns() then return true end
@@ -1019,8 +1043,14 @@ function F:_AcquireCooldowns()
     local service = Cooldowns()
     if type(service) ~= "table" or type(service.AcquireConsumer) ~= "function" then return false, "共享 Cooldown 服务不可用" end
     local tracked = type(Settings().trackedCooldowns) == "table" and Settings().trackedCooldowns or {}
+    -- 自己 CD HUD 开启或 CD 管理页可见即发现本机施放的 Skill ID；目标 HUD 不消费本机 CD。
+    -- 关闭 HUD 后只有显式手动追踪继续读 Native，不为不可见自动预览持有 CombatBus。
+    local automatic = F.cooldownManagementActive == true
+        or (Settings().headEnabled ~= false and ScopeHeadEnabled("player") and ComponentEnabled("cooldowns", "player"))
+    local localIds,seen={},{}
+    for _,kind in ipairs({"skill","mate"}) do for _,id in ipairs(tracked[kind] or {}) do if not seen[id] then seen[id]=true;localIds[#localIds+1]=id end end end
     local ok, err = service:AcquireConsumer("buff_display:cooldowns", {
-        skillIds = tracked.skill or {}, mateIds = tracked.mate or {}, purpose = "buff_display",
+        localIds=localIds, automatic = automatic, purpose = "buff_display",
     })
     if ok ~= true then return false, err end
     self.cooldownHeld = true
@@ -1043,11 +1073,39 @@ function F:_ReleaseCooldowns()
     return true
 end
 
+function F:GetCooldownStatusProjection()
+    local service=Cooldowns()
+    if type(service)=="table" and type(service.GetDiscoveryState)=="function" then return service:GetDiscoveryState() end
+    return {enabled=false,subscribed=false,discovered=0,active=0}
+end
+
 function F:CooldownTick(reason)
     local service = Cooldowns()
     self.laneData.player = self.laneData.player or {}
     local rows = type(service) == "table" and type(service.GetActiveRows) == "function" and select(1, service:GetActiveRows()) or {}
-    self.laneData.player.cooldownRows = rows
+    -- 本机事实与追踪选择分离；按 settings revision 缓存的索引过滤，不逐帧扫描保存名单。
+    -- 服务仍可提供自动发现列表，但 HUD 仅显示显式选择，取消后再次施放也不会自己加回来。
+    local selected,seen = {},{}
+    for _, row in ipairs(rows) do
+        if (self:IsTrackedCooldownId(row.id,"skill") or self:IsTrackedCooldownId(row.id,"mate")) and not seen[row.id] then
+            seen[row.id]=true
+            -- 统一收藏仍保留 Native 的真实来源/坐骑类型供 HUD 与诊断取证，不把目标当成本机。
+            if row.source=="mate" then row.kind="mate" end
+            selected[#selected+1] = row
+        end
+    end
+    self.laneData.player.cooldownRows = selected
+    -- 中文维护（CD 显示链诊断）：只留常数规模的最后正读数，导出晚于冷却结束仍能确认曾进入 HUD 队列。
+    -- 不写 Store、不打印逐帧日志；完整当前条目在用户显式诊断时从缓存限量复制。
+    local evidence=self.cooldownHudEvidence
+    evidence.ticks=evidence.ticks+1
+    if #selected>0 then
+        evidence.nonemptyTicks=evidence.nonemptyTicks+1
+        evidence.lastActiveAt=S.NowMs and S.NowMs() or 0
+        evidence.lastActiveCount=#selected
+        local row=selected[1];local last=evidence.lastActive
+        last.id,last.kind,last.remainingMs,last.iconPath=row.id,row.kind,row.remainingMs,row.iconPath
+    end
     self.laneData.target = self.laneData.target or {}
     self.laneData.target.cooldownRows = {}
     -- CD owns an independent projection revision; never bump the Aura lane just
@@ -1057,6 +1115,31 @@ function F:CooldownTick(reason)
     Publish("v3.buff_display.plates.updated", tostring(reason or "cooldown"))
     Publish("v3.buff_display.updated", "cooldown")
     return true
+end
+
+function F:GetCooldownHudDiagnostics()
+    local service=Cooldowns()
+    local active=type(service)=="table" and type(service.GetActiveRows)=="function" and service:GetActiveRows() or {}
+    local native,nativeCount={},0
+    if type(service)=="table" and type(service.GetNativeEvidence)=="function" then native,nativeCount=service:GetNativeEvidence(32,true) end
+    nativeCount=tonumber(nativeCount) or #native
+    local tracked=Settings().trackedCooldowns or {}
+    local selected=(self.laneData.player or {}).cooldownRows or {}
+    local samples={}
+    for i=1,math.min(16,#active) do
+        local row=active[i]
+        samples[#samples+1]={id=row.id,kind=row.kind,source=row.source,remainingMs=row.remainingMs,iconPath=row.iconPath,
+            selected=self:IsTrackedCooldownId(row.id,"skill") or self:IsTrackedCooldownId(row.id,"mate"),trackedOwn=self:IsTrackedCooldownId(row.id,"skill"),
+            trackedMate=self:IsTrackedCooldownId(row.id,"mate"),authority=row.authority,stale=row.stale==true}
+    end
+    local evidence=self.cooldownHudEvidence
+    return {contractVersion=1,enabled=self.enabled==true,runtimeHeld=self.cooldownHeld==true,
+        headEnabled=Settings().headEnabled~=false,headPlayer=ScopeHeadEnabled("player"),componentEnabled=ComponentEnabled("cooldowns","player"),
+        savedOwn=#(tracked.skill or {}),savedMate=#(tracked.mate or {}),serviceActive=#active,selectedActive=#selected,
+        projected=#(self:GetPlatesProjection("player").cooldowns or {}),activeRows=samples,activeSampleTruncated=#active>#samples,
+        nativeEvidence=native,nativeSampleCount=#native,nativeEvidenceCount=nativeCount,nativeSampleTruncated=nativeCount>#native,
+        revision=self.cooldownRevision,ticks=evidence.ticks,nonemptyTicks=evidence.nonemptyTicks,
+        lastActiveAt=evidence.lastActiveAt,lastActiveCount=evidence.lastActiveCount,lastActive=S.Utils.DeepCopy(evidence.lastActive)}
 end
 
 function F:ReconcileLanes()
@@ -1521,6 +1604,10 @@ function F:GetHealth()
             error = self.TargetAliasStoreError,
         },
         activeLanes = activeLanes,
+        -- 显式诊断只读已加载布局；便于区分隐藏偏好、总开关与当前无数据，不触发 Native。
+        hudVisibility = { contractVersion=self.ScopedHudVisibilityContractVersion,
+            headEnabled=Settings().headEnabled~=false,headPlayer=Settings().headPlayer~=false,headTarget=Settings().headTarget~=false,
+            player=self:GetHudVisibilityProjection("player"),target=self:GetHudVisibilityProjection("target") },
         auraConsumers = tonumber(ah.consumers) or 0, taskActive = S.Scheduler ~= nil and S.Scheduler.tasks and S.Scheduler.tasks[self.taskName] ~= nil }
 end
 
@@ -2155,6 +2242,18 @@ F.Commands = {
         if ok==true then F:ReconcileLanes() end
         return ok,err
     end,
+    -- 中文维护（buff-tracking-ux）：逐行基础开关和全通道取消只重新标记已采集的投影；
+    -- 用户设置不是 Aura 变化，不在点击/失败/功能关闭时额外 Native 扫描。HUD 既有 lane 使用新 index。
+    SetTrackedScope = function(_, id, scope, enabled)
+        local ok, err = F:SetTrackedScope(id, scope, enabled)
+        if ok == true then F.trackedIndex = F:BuildTrackedIndex(Settings()); F:SyncTrackedProjectionFlags() end
+        return ok, err
+    end,
+    RemoveTrackedEffect = function(_, id)
+        local ok, err = F:SetTrackedId(id, "auto", false)
+        if ok == true then F.trackedIndex = F:BuildTrackedIndex(Settings()); F:SyncTrackedProjectionFlags() end
+        return ok, err
+    end,
     SetTrackedChannel = function(_, id, scope, category, enabled)
         -- 维护（合并残留修复）：这里的 Authority 是六通道 tracking 提交；返回该提交的 ok/err。
         -- 旧 SetSetting 结尾误合并至此会再次用未定义 key/value 写设置，掩盖真实提交结果。
@@ -2202,6 +2301,8 @@ F.Commands = {
     GetHudCalibrationSnapshot = function()
         return type(F.GetHudCalibrationSnapshot) == "function" and F:GetHudCalibrationSnapshot() or { player={}, target={} }
     end,
+    GetHudVisibilityProjection = function(_,scope) return F:GetHudVisibilityProjection(scope) end,
+    SetHudVisibility = function(_,scope,key,value) return F:SetHudVisibility(scope,key,value) end,
     GetDefaultHudCalibrationSnapshot = function()
         return type(F.GetDefaultHudCalibrationSnapshot) == "function" and F:GetDefaultHudCalibrationSnapshot() or { player={}, target={} }
     end,

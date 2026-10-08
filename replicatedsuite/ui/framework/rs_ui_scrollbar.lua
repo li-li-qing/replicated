@@ -15,8 +15,20 @@ local S = ReplicatedSuite
 local UI, RSUI = S.UI, S.RSUI
 if type(UI) ~= "table" or type(RSUI) ~= "table" then return end
 
-local Scrollbar = { version = 5, criticalInteractionContractVersion = 1, enabledStateContractVersion = 1 }
+local Scrollbar = { version = 6, criticalInteractionContractVersion = 1, enabledStateContractVersion = 1, visibleThumbContractVersion = 1 }
 RSUI.ScrollbarBehavior = Scrollbar
+
+local function ColorFill(widget, color, layer)
+    if widget == nil or type(widget.CreateColorDrawable) ~= 'function' then return nil end
+    local ok, drawable = pcall(function()
+        local fill = widget:CreateColorDrawable(color[1], color[2], color[3], color[4], layer)
+        if fill == nil or type(fill.AddAnchor) ~= 'function' then return nil end
+        fill:AddAnchor('TOPLEFT', widget, 0, 0)
+        fill:AddAnchor('BOTTOMRIGHT', widget, 0, 0)
+        return fill
+    end)
+    return ok and drawable or nil
+end
 
 local function Clamp(value, lo, hi)
     local v = tonumber(value) or 0
@@ -110,31 +122,27 @@ function Scrollbar:Attach(host, spec)
         end
     end
 
-    if type(track.CreateColorDrawable) == "function" then
-        local bg = (S.VisualTokens and S.VisualTokens:Color("cardInset")) or {0.01, 0.03, 0.04, 0.90}
-        local drawable = track:CreateColorDrawable(bg[1], bg[2], bg[3], math.min(0.78, bg[4] or 0.72), "background")
-        if drawable and drawable.AddAnchor then drawable:AddAnchor("TOPLEFT", track, 0, 0); drawable:AddAnchor("BOTTOMRIGHT", track, 0, 0) end
+    -- 中文维护（2026-10-05）：ChangeColor1/2/3 只接收 RGB，不能传第四参设置 alpha；
+    -- 原实现也在渐变 factory 返回 nil 时跳过实色回退，导致只见黑轨道。所有滚动容器
+    -- 统一采用已在原生 Slider 验证的 ColorDrawable，双锚点随滑块实际尺寸变化。
+    -- 绘制不跟随输入代理移动，不在 Layout/拖动中反复分配 Drawable。
+    local palette = S.UITokens and S.UITokens.scrollbar or {}
+    local trackDrawable = ColorFill(track, palette.track or {0.015, 0.035, 0.042, 1}, 'background')
+    local thumbDrawable = ColorFill(thumb, palette.thumb or {0.065, 0.090, 0.102, 1}, 'artwork')
+    if S.Theme and S.Theme.BindColorDrawable then
+        S.Theme:BindColorDrawable(track,trackDrawable,'scrollbar.track')
+        S.Theme:BindColorDrawable(thumb,thumbDrawable,'scrollbar.thumb')
     end
-    if type(thumb.CreateThreeColorDrawable) == "function" then
-        local drawable = thumb:CreateThreeColorDrawable(thickness, minThumb, "artwork")
-        if drawable ~= nil then
-            if drawable.AddAnchor then drawable:AddAnchor("TOPLEFT", thumb, 1, 0); drawable:AddAnchor("BOTTOMRIGHT", thumb, -1, 0) end
-            local a = (S.VisualTokens and S.VisualTokens:Color("cyanSoft")) or {0.13,0.49,0.57,0.88}
-            local b = (S.VisualTokens and S.VisualTokens:Color("cyanDim")) or {0.08,0.28,0.33,0.72}
-            if drawable.ChangeColor1 then drawable:ChangeColor1(a[1],a[2],a[3],a[4] or 1) end
-            if drawable.ChangeColor2 then drawable:ChangeColor2(b[1],b[2],b[3],b[4] or 1) end
-            if drawable.ChangeColor3 then drawable:ChangeColor3(a[1],a[2],a[3],a[4] or 1) end
-        end
-    elseif type(thumb.CreateColorDrawable) == "function" then
-        local a = (S.VisualTokens and S.VisualTokens:Color("cyanSoft")) or {0.13,0.49,0.57,0.88}
-        local drawable = thumb:CreateColorDrawable(a[1],a[2],a[3],a[4] or 0.88,"artwork")
-        if drawable and drawable.AddAnchor then drawable:AddAnchor("TOPLEFT",thumb,1,0); drawable:AddAnchor("BOTTOMRIGHT",thumb,-1,0) end
+    if thumbDrawable == nil then
+        UI:SetVisible(track, false, host.owner); UI:SetVisible(thumb, false, host.owner); UI:SetVisible(drag, false, host.owner)
+        return nil, 'scrollbar_thumb_drawable_unavailable'
     end
 
     local behavior = {
-        version = 3, id = id, host = host, owner = host.owner,
+        version = 4, id = id, host = host, owner = host.owner,
         orientation = orientation, thickness = thickness, minThumb = minThumb,
         hitPadding = hitPadding, track = track, thumb = thumb, dragProxy = drag,
+        trackDrawable = trackDrawable, thumbDrawable = thumbDrawable,
         dragging = false, enabled = true, travel = 0, maxOffset = 0, offset = 0,
         taskName = "rsui_scrollbar_drag:" .. id,
         getMaxOffset = spec.getMaxOffset,

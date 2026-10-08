@@ -208,7 +208,7 @@ end
     if type(T) ~= "table" or type(T.EncodeV3) ~= "function" or type(T.DecodeV3) ~= "function" then
         error("PersistenceTransport unavailable for rs_persistence")
     end
-P.SupportedTransportContractVersion=5 -- 可读上限；默认新写仍为3，仅显式批量ID Store升级。
+P.SupportedTransportContractVersion=6 -- 默认新写仍为3；v6 仅由死亡索引显式选择。
 
 function P:EncodePhysicalEnvelope(raw)
     if type(raw) ~= "table" then return nil, "transport_raw_type:" .. tostring(type(raw)) end
@@ -220,6 +220,7 @@ function P:EncodePhysicalEnvelope(raw)
     elseif version == 3 then encoded, err = T.EncodeV3(raw)
     elseif version == 4 then encoded, err = T.EncodeV4(raw)
     elseif version == 5 then encoded, err = T.EncodeV5(raw)
+    elseif version == 6 then encoded, err = T.EncodeV6(raw)
     else return nil, "transport_contract:" .. tostring(version) .. ">" .. tostring(self.SupportedTransportContractVersion) end
     if encoded == nil then return nil, err end
     -- 中文维护注释：DecodePhysicalEnvelope 必须在完整解码前读取这两个路由字段；它们均为非零整数，不属于已知 serializer omission 类型。
@@ -243,6 +244,7 @@ function P:DecodePhysicalEnvelope(raw)
         if transport == 3 then return T.DecodeV3(raw) end
         if transport == 4 then return T.DecodeV4(raw) end
         if transport == 5 then return T.DecodeV5(raw) end
+        if transport == 6 then return T.DecodeV6(raw) end
         return nil, "transport_contract:" .. tostring(transport) .. ">" .. tostring(self.SupportedTransportContractVersion) -- 中文维护注释：未知/future transport 不猜测，防止旧客户端覆盖新格式。
     end
     -- 中文维护注释：Framework2/无 metadata 的历史存档没有物理哨兵，保持原样进入既有 legacy/schema 迁移。
@@ -588,6 +590,8 @@ local function ValidateDefinition(def)
     if SCOPE[scope] == nil then return nil, "invalid scope: " .. scope end
     -- 维护：只允许注册时明确选择已实现的物理格式；未知版本禁止写入。
     local tv=def.transportVersion
+    if def.nativeByteBudget~=nil and (type(def.nativeByteBudget)~='number' or def.nativeByteBudget~=def.nativeByteBudget
+        or def.nativeByteBudget<1024 or def.nativeByteBudget>65536 or def.nativeByteBudget~=math.floor(def.nativeByteBudget)) then return nil,'invalid native byte budget' end
     if tv~=nil and (type(tv)~="number" or tv~=math.floor(tv) or tv<1 or tv>P.SupportedTransportContractVersion) then return nil,"unsupported store transport" end
     local contractVersion = math.max(1, math.floor(tonumber(def.contractVersion) or 1))
     if contractVersion >= 2 then
@@ -643,6 +647,7 @@ function P:RegisterStore(def)
         schemaVersion = math.max(1, math.floor(tonumber(def.schemaVersion) or 1)),
         -- 维护：仅批量ID Store选择v4；其他Store继续原有v3，schema和canonical不变。
         transportVersion = def.transportVersion or P.TransportContractVersion,
+        nativeByteBudget = def.nativeByteBudget,
         legacySchemaVersion = math.max(0, math.floor(tonumber(def.legacySchemaVersion) or 0)),
         key = NonEmptyText(def.key),
         resolvedKey = nil,
@@ -2449,6 +2454,18 @@ function P:SaveValue(id, value, options)
         return false, store.lastError
     end
 
+    -- 中文维护（RU 实机 16383 字节截断）：显式声明的物理预算包括 Native 标签与缩进，
+    -- 不是只计算字符串正文；拒绝发生在 Native 写入前，既有物理值不会因此被截坏。
+    if store.nativeByteBudget~=nil then
+        local bytes=T.EstimateNativeBytes(physicalRaw)
+        store.lastNativeByteEstimate=bytes
+        if bytes>store.nativeByteBudget then
+            store.lastError='native_byte_budget_exceeded:'..bytes..'>'..store.nativeByteBudget
+            self.stats.saveFailures=(tonumber(self.stats.saveFailures) or 0)+1
+            Emit('error','STORE_NATIVE_BYTE_BUDGET_REJECTED','存档超过 Native 物理文本预算，已阻止写入',{store=store.id,error=store.lastError})
+            return false,store.lastError
+        end
+    end
     local ok, saveErr
     if type(store.save) == "function" then
         -- 中文维护注释：custom save 也属于物理写入边界，因此必须收到 transport 后 envelope；第三参数仍保留原 Domain 快照供事务型分片实现使用。

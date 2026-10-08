@@ -407,6 +407,17 @@ function Shell:Create(spec)
         -- 维护：顶层 extent 拒绝必须阻断 Layout/Store，不能只判断 diff changed。
         local extentOk,_,extentErr = UI:EnsureExtent(self.window,currentW,currentH,self.owner)
         if extentOk ~= true then return false,extentErr or "window_extent_rejected" end
+        -- 中文维护（2026-10-04）：首次真正可见的布局核对强制摆放后的原生锚点；隐藏时的
+        -- Native 返回值不能确认显示后的结果。复用现有布局，不另开任务；一次验证后内容刷新
+        -- 不再探测顶层坐标。活动手势/隐藏窗保留 pending，不能抢用户拖动或写 Feature。
+        local cache=UI.NativeStateCache and UI.NativeStateCache[self.window]
+        if self.visible==true and self.anchorReadbackPending==true
+            and not (self.windowController and self.windowController:IsInteracting())
+            and cache and type(cache.anchorX)=="number" and type(cache.anchorY)=="number" then
+            local anchorOk,_,anchorErr=UI:EnsureAnchor(self.window,cache.anchorParent or UIParent,cache.anchorX,cache.anchorY,self.owner)
+            if anchorOk~=true then return false,anchorErr or "window_anchor_revalidation_rejected" end
+            self.anchorReadbackPending=nil
+        end
         self.root:Layout(0, 0, currentW, currentH)
         self.chrome:Layout(0, 0, currentW, currentH)
         self.titleBar:Layout(0, 0, currentW, compact and currentH or titleH)
@@ -498,6 +509,7 @@ function Shell:Create(spec)
         else bx,by,bw,bh=S.Layout:GetWindowLogicalRect(self.window) end
         local ok,err = RSUI.Windowing:ApplyGeometry(self.window,self.owner,x,y,rw,rh,force==true)
         if ok ~= true then self.placementError = err; return false,err end
+        if force==true then self.anchorReadbackPending=true end
         local previousW,previousH = self.normalWidth,self.normalHeight
         self.normalWidth,self.normalHeight = w,h
         local layoutOk,layoutErr = self:Layout(w,h)

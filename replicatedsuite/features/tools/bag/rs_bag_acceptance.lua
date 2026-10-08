@@ -47,8 +47,10 @@ G:RegisterSequenceCase("v3_tools_bag_action_contract", function()
     if (tonumber(F.GroupedIntentQueueContractVersion) or 0) < 1 then return Fail("bag.grouped_intent_v1") end
     if (tonumber(F.FullStorageContinuationContractVersion) or 0) < 1 then return Fail("bag.full_storage_continue_v1") end
     if (tonumber(F.BatchTargetAutoContractVersion) or 0) < 1 then return Fail("bag.batch_target_auto_v1") end
+    if (tonumber(F.AllDepositContractVersion) or 0) < 1 then return Fail("bag.deposit_all_v1") end
+    if (tonumber(F.NativeBagAnchorContractVersion) or 0) < 1 or type(F.GetQuickBagAnchor) ~= "function" then return Fail("bag.native_anchor_v1") end
     if type(F.Commands) ~= "table" then return Fail("commands_table_missing") end
-    for _, name in ipairs({ "QuickWithdraw", "QuickDeposit", "QuickCancel", "ResolveAndAddBlacklistItem", "AddGlobalBlacklistItem", "RemoveGlobalBlacklistItem", "SetBatchCategory", "SetBatchTarget", "SetBatchLimit", "DepositCategoryCurrent" }) do
+    for _, name in ipairs({ "QuickWithdraw", "QuickDeposit", "QuickDepositAll", "QuickCancel", "ResolveAndAddBlacklistItem", "AddGlobalBlacklistItem", "RemoveGlobalBlacklistItem", "SetBatchCategory", "SetBatchTarget", "SetBatchLimit", "DepositCategoryCurrent" }) do
         if type(F.Commands[name]) ~= "function" then return Fail("command." .. name) end
     end
     return true

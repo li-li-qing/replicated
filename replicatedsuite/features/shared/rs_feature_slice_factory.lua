@@ -82,11 +82,11 @@ function F.Scalar(value)
 end
 
 -- 通用 Store 注册：参数/Schema 与拆分前逐字一致。业务 Feature 只声明 id/owner/get/apply。
-function F.RegisterStore(id, owner, default, get, apply)
+function F.RegisterStore(id, owner, default, get, apply, budget)
     if P:GetStore(id) == nil then
         local store, err = P:RegisterV3Store({ id = id, owner = owner, scope = P.Scope.Account, lifetime = P.Lifetime.Permanent,
             schemaVersion = 1, legacySchemaVersion = 0, key = P.V3KeyPrefix .. id:gsub("[^%w]", "_"),
-            budget = { maxDepth = 5, maxNodes = 240, maxStringBytes = 4096, maxEntriesPerTable = 96 },
+            budget = F.Copy(budget or { maxDepth = 5, maxNodes = 240, maxStringBytes = 4096, maxEntriesPerTable = 96 }),
             default = default, get = get, apply = apply, migrate = function(value) return value end })
         if store == nil then error(err or id .. " store register failed") end
     end
@@ -94,8 +94,12 @@ end
 
 function F.Load(feature)
     if feature.storeLoaded then return true end
-    local status, _, err = P:LoadStore(feature.storeId)
-    if status ~= true and status ~= "empty" then return false, err or tostring(status or "store load failed") end
+    -- 2026-10-07：设置页可先 PrepareRead/MutateStore，再由用户启动 Feature。
+    -- 此时 Domain 已加载，但 feature.storeLoaded 仍为 false；重复 LoadStore 会撞上
+    -- dirty/unverified reload fence。复用 Persistence 的只读就绪入口，保留最新内存值
+    -- 和待验证写入；冷存档仍正常加载，损坏/未来版本仍拒绝，不放宽 Core 保护门。
+    local status, err = P:PrepareRead(feature.storeId)
+    if status ~= true then return false, err or "store read preparation failed" end
     feature.storeLoaded = true
     return true
 end
@@ -153,7 +157,7 @@ function F.NewFeature(id, spec)
             if saved == nil and type(spec.default) == "table" then saved = spec.default[key] end
             state[key] = F.Copy(saved)
         end
-    end)
+    end, spec.persistenceBudget)
     feature.ApiDependencies = spec.apiDependencies or {}
     function authority:Refresh(reason)
         if spec.blocker ~= nil then

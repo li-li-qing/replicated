@@ -47,7 +47,6 @@ def main() -> None:
         "presentation/v3/pages/rs_v3_business_pages.lua",
         "presentation/v3/pages/rs_v3_activity_page.lua",
         "presentation/v3/pages/rs_v3_task_page.lua",
-        "presentation/v3/pages/rs_v3_butler_page.lua",
         "presentation/v3/pages/rs_v3_housing_page.lua",
         "presentation/v3/pages/rs_v3_instance_page.lua",
         "presentation/v3/pages/rs_v3_healer_page.lua",
@@ -56,6 +55,11 @@ def main() -> None:
     ]
     for rel in bridged_pages:
         require(rel, "BindFeatureConsumerLifecycle", "SyncFeatureConsumer", "ReleaseFeatureConsumer")
+
+    # User retired Butler on 2026-10-02. Its old lifecycle must not be revived.
+    assert not (ROOT / "presentation/v3/pages/rs_v3_butler_page.lua").exists()
+    forbid("features/rs_feature_registry.lua", 'Add("life_butler"')
+    forbid("toc.g", "features/life/butler/rs_butler_feature.lua")
 
     # The four M1.16 life routes share one Build() closure. Marker-only checks were
     # insufficient: 18.310 contained lifecycle calls but no local binding object,

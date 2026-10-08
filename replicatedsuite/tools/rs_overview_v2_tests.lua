@@ -44,14 +44,14 @@ local function Show(S,p,keys)
  p:Layout(0,0,p.width,p.height);p:RefreshData()
 end
 local function Drain(S,p)S.Scheduler:RemoveTask('v3_home_refresh');p.refreshQueued=false;p:RefreshData()end
-Test('five named home cards replace mutually exclusive legacy workspace tabs',function()
- local S,p,n=HomeBoot();assert(not n.v3_home_workspace_tabs and #p.cards==5)
+Test('seven named compact home cards replace mutually exclusive legacy workspace tabs',function()
+ local S,p,n=HomeBoot();assert(not n.v3_home_workspace_tabs and #p.cards==7)
  assert(n.v3_home_daily_title.text=='日常任务' and n.v3_home_weekly_title.text=='周常任务')
  assert(n.v3_home_customize and n.v3_home_previous and n.v3_home_next)
 end)
 Test('compact KPIs preserve unknown amounts without repeated source paragraphs',function()
- local S,p,n=HomeBoot();p:OnActivated();assert(n.v3_home_stat_gold.text=='—')
- assert(n.v3_home_stats_grid.height<=60 and not n.v3_home_stat_source_gold)
+ local S,p,n=HomeBoot();p:OnActivated();assert(n.v3_home_stat_gold.text=='--')
+ assert(n.v3_home_stats_grid.height<=110 and p.cardByKey.stats.panel.height<=200 and not n.v3_home_stat_source_gold)
 end)
 Test('only arranged visible cards retain leases; hidden page leaves other views alive',function()
  local S,p,n,c=HomeBoot();S.Features.Tasks.consumers['widget:tasks']=true;p:OnActivated()
@@ -66,7 +66,7 @@ Test('all widths retain bounded cards and readable tables through scrolling',fun
   p:Layout(0,0,width,640)
   for offset=0,p.grid.maxScrollOffset do p.grid:SetScrollOffset(offset);p:RefreshData()
    for _,card in ipairs(p.cards)do if card.panel.viewportVisible then
-    local t=card.table or card.content.table;assert(t.height>=90,'table collapsed '..width..' '..card.spec.key)
+    local t=card.table or card.content and card.content.table;if t then assert(t.height>=48,'table collapsed '..width..' '..card.spec.key)end
     assert(card.panel.y>=0 and card.panel.y+card.panel.height<=p.grid.height+0.1);assert(card.panel.width>=300)
    end end
   end
@@ -90,7 +90,7 @@ end)
   -- 首页卡当前的 Authority（rs_v3_life_economy_widgets.lua:105 “构建和刷新绝不发出材料询价”、
   -- :443 只要求单行询价 QuoteRowMaterials）已不提供 `v3_home_trade_quote` 批量询价按钮；批量/高级
   -- 询价只属于完整跑商页。这里保留本用例真正要证明的“有界、非自动”契约，不再要求不存在的控件。
-  assert(n.v3_home_trade_from and not n.v3_home_trade_quote and not n.v3_home_trade_full_quote)
+  assert(n.v3_home_trade_settings and not n.v3_home_trade_from and not n.v3_home_trade_quote and not n.v3_home_trade_full_quote)
   assert(c.quotes==0,'overview activation issued an automatic query')
  end)
 Test('hiding home does not alter task attention',function()

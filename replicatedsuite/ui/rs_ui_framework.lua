@@ -744,6 +744,20 @@ local function TryNativeAnchorMatches(widget, parent, x, y)
         -- ancestor is hidden on RU clients; defer verification until visible.
         return nil, false
     end
+    -- 中文维护（2026-10-04）：Windowing 顶层窗必须用已校准的逻辑矩形核对位置。
+    -- RU 的 UIParent 可能只有字符串身份，没有 GetEffectiveOffset；且 raw/scaled 两者
+    -- 任意命中会把 x/uiScale 的真实偏移当成正确。仅此显式窗口车道使用 Layout readback，
+    -- 不增加 HUD 热路径探测；缓存回退不能证明缓存本身正确。
+    if widget.rsUiWindowGeometryReadback == true and (parent == UIParent or parent == "UIParent")
+        and S.Layout ~= nil and type(S.Layout.GetWindowLogicalRect) == "function" then
+        local ok, lx, ly, _, _, info = pcall(S.Layout.GetWindowLogicalRect, S.Layout, widget)
+        if ok and type(info) == "table" and info.source == "effective_calibrated"
+            and type(lx) == "number" and type(ly) == "number" then
+            local epsilon=math.max(1,1/math.max(0.01,tonumber(info.effectiveScale) or 1))
+            return math.abs(lx-(tonumber(x) or 0))<=epsilon and math.abs(ly-(tonumber(y) or 0))<=epsilon,true
+        end
+        return nil,false
+    end
     if type(widget.GetEffectiveOffset) ~= "function" or type(parent.GetEffectiveOffset) ~= "function" then return nil, false end
     local okWidget, wx, wy = pcall(function() return widget:GetEffectiveOffset() end)
     local okParent, px, py = pcall(function() return parent:GetEffectiveOffset() end)

@@ -22,11 +22,13 @@ core/rs_api.lua
 core/rs_api_capabilities.lua
 core/rs_feature_health_providers.lua
 core/rs_diagnostics.lua
+core/rs_diagnostic_detail.lua
 core/rs_module_diagnostics.lua
 core/rs_report_copy_transport.lua
 core/rs_self_check_report.lua
 core/rs_persistence_transport.lua
 core/rs_persistence.lua
+core/rs_diagnostic_export.lua
 core/rs_app_state_v3.lua
 core/rs_ui_host_manager.lua
 core/rs_performance.lua
@@ -93,6 +95,8 @@ data/rs_category_names.lua
 data/rs_boss_alerts.lua
 data/rs_trade_crafter_locations.lua
 data/rs_skill_effects.lua
+data/rs_combat_recognition_data.lua
+data/rs_combat_recognition_catalog.lua
 data/rs_combat_ability_catalog.lua
 data/rs_combat_source_proxy_catalog.lua
 data/rs_team_auto_role_catalog.lua
@@ -115,6 +119,7 @@ services/rs_combat_relation_v3.lua
 services/rs_instance_catalog_v3.lua
 services/rs_quest_progress_v3.lua
 services/rs_gear_service_v3.lua
+services/rs_home_reminders_v3.lua
 services/rs_inventory_snapshot_v3.lua
 services/rs_fishing_hotkey_v3.lua
 services/rs_alerts_service.lua
@@ -122,6 +127,7 @@ services/rs_screen_projection_v3.lua
 services/rs_auction_query_v3.lua
 services/rs_price_quote_queue_v3.lua
 services/rs_material_price_service_v3.lua
+services/rs_trade_material_quote_service_v3.lua
 services/rs_auction_surface_v3.lua
 services/rs_auction_search_bridge_v3.lua
 services/rs_auction_session_list_v3.lua
@@ -134,6 +140,7 @@ features/rs_feature_runtime.lua
 features/combat/analytics/rs_combat_metric_common.lua
 features/combat/analytics/rs_combat_analytics_metrics.lua
 features/combat/analytics/rs_combat_analytics_store.lua
+features/combat/analytics/rs_combat_personal_history.lua
 features/combat/analytics/rs_combat_analytics_feature.lua
 features/combat/death_review/rs_death_review_store.lua
 features/combat/death_review/rs_death_review_authority.lua
@@ -169,8 +176,6 @@ features/life/activities/rs_activity_authority.lua
 features/life/activities/rs_activity_feature.lua
 features/life/housing/rs_housing_authority.lua
 features/life/housing/rs_housing_feature.lua
-features/life/butler/rs_butler_authority.lua
-features/life/butler/rs_butler_feature.lua
 features/life/tasks/rs_task_store.lua
 features/life/tasks/rs_task_authority.lua
 features/life/tasks/rs_task_feature.lua
@@ -199,8 +204,6 @@ features/tools/auction/rs_auction_read_model.lua
 features/tools/social/rs_social_feature.lua
 features/tools/market_analysis/rs_market_analysis_feature.lua
 features/combat/siege_readiness/rs_siege_readiness_feature.lua
-features/tools/reinforce_analysis/rs_reinforce_analysis_feature.lua
-features/tools/portal_profiles/rs_portal_profiles_feature.lua
 features/combat/boss_alerts/rs_boss_alerts_feature.lua
 features/combat/target_monitor/rs_target_monitor_feature.lua
 features/combat/buff_cap/rs_buff_cap_feature.lua
@@ -213,15 +216,13 @@ features/tools/bag/rs_bag_feature.lua
 features/combat/unit_lines/rs_unit_lines_feature.lua
 features/combat/range_assist/rs_range_assist_feature.lua
 features/tools/rs_feature_profiles_feature.lua
-features/tools/rs_hotkey_profiles_feature.lua
 features/combat/team_tools/rs_team_tools_visuals.lua
 -- 2026-09-15 用户删除“制作规划”：旧扩展文件不再进入 Runtime；tools_craft 仍由独立 surface extension 加载。
 features/life/craft/rs_craft_assistant_surface_extension_v3.lua
 features/tools/instances/rs_instance_authority.lua
 features/tools/instances/rs_instance_feature.lua
-features/tools/random_shop/rs_random_shop_authority.lua
-features/tools/random_shop/rs_random_shop_feature.lua
 presentation/v3/rs_v3_shell_store.lua
+presentation/v3/rs_v3_main_appearance_store.lua
 presentation/v3/rs_v3_launcher_store.lua
 presentation/v3/rs_v3_aux_window_store.lua
 presentation/v3/rs_v3_native_adapter.lua
@@ -234,6 +235,7 @@ presentation/v3/widgets/rs_v3_combat_visual_guides.lua
 presentation/v3/widgets/rs_v3_life_economy_widgets.lua
 presentation/v3/widgets/rs_v3_trade_detail_floating.lua
 presentation/v3/widgets/rs_v3_trade_diagnostics.lua
+presentation/v3/widgets/rs_v3_bag_settings_floating.lua
 presentation/v3/widgets/rs_v3_bag_quick_overlay.lua
 presentation/v3/widgets/rs_v3_auction_sidecar.lua
 presentation/v3/widgets/rs_v3_craft_sidecar.lua
@@ -262,9 +264,10 @@ presentation/v3/pages/rs_v3_workspace_page.lua
 presentation/v3/pages/rs_v3_foundation_pages.lua
 presentation/v3/pages/rs_v3_gear_page.lua
 presentation/v3/pages/rs_v3_housing_page.lua
-presentation/v3/pages/rs_v3_random_shop_page.lua
-presentation/v3/pages/rs_v3_butler_page.lua
 presentation/v3/pages/rs_v3_death_review_page.lua
+presentation/v3/pages/rs_v3_combat_statistics_controls.lua
+presentation/v3/pages/rs_v3_combat_personal_history_page.lua
+presentation/v3/pages/rs_v3_combat_statistics_settings_page.lua
 presentation/v3/pages/rs_v3_dps_page.lua
 presentation/v3/pages/rs_v3_combat_analytics_page.lua
 presentation/v3/pages/rs_v3_raid_readiness_page.lua
@@ -286,11 +289,9 @@ features/combat/buff_display/rs_buff_display_acceptance.lua
 presentation/v3/rs_v3_sequence_cases.lua
 features/life/activities/rs_activity_acceptance.lua
 features/life/housing/rs_housing_acceptance.lua
-features/life/butler/rs_butler_acceptance.lua
 features/life/tasks/rs_task_acceptance.lua
 features/life/bonds/rs_bonds_acceptance.lua
 features/tools/instances/rs_instance_acceptance.lua
-features/tools/random_shop/rs_random_shop_acceptance.lua
 features/combat/gear/rs_gear_acceptance.lua
 features/combat/death_review/rs_death_review_acceptance.lua
 features/combat/dps/rs_dps_acceptance.lua
@@ -304,7 +305,6 @@ features/life/fishing/rs_fishing_acceptance.lua
 features/combat/boss_alerts/rs_boss_alerts_acceptance.lua
 features/combat/unit_lines/rs_unit_lines_acceptance.lua
 features/combat/range_assist/rs_range_assist_acceptance.lua
-features/tools/reinforce_analysis/rs_reinforce_analysis_acceptance.lua
 features/tools/auction/rs_auction_acceptance.lua
 features/tools/market_analysis/rs_market_analysis_acceptance.lua
 features/tools/craft/rs_craft_acceptance.lua

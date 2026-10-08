@@ -480,7 +480,18 @@ end
 -- 每个只读Describe独立隔离；不获取Consumer、不发查询、不启用Feature，不导出其他模块的报价行。
 -- 旧面板仍保留兼容入口，但正常页面只打开统一诊断窗口。
 if type(S.ModuleDiagnosticsHub) == "table" and type(S.ModuleDiagnosticsHub.RegisterProvider) == "function" then
-    for _, method in ipairs({ "DescribeRequestState", "DescribeIdentityState", "DescribeInitTrace", "DescribeQuoteState", "DescribeSelectedEconomics" }) do
+    S.ModuleDiagnosticsHub:RegisterProvider('life_trade','DescribeDiagnosticDetail',function()
+        local feature=Feature()
+        if type(feature)~='table' or type(feature.DescribeDiagnosticDetail)~='function' then return {available=false} end
+        return feature:DescribeDiagnosticDetail()
+    end, 110, {detailOnly=true})
+    -- 中文维护：raw 独立来源且晚于 Hub 核心状态；只读已采集挂单，新请求优先输出。
+    S.ModuleDiagnosticsHub:RegisterProvider('life_trade','DescribeAuctionListingDetail',function()
+        local feature=Feature()
+        if type(feature)~='table' or type(feature.DescribeAuctionListingDetail)~='function' then return {available=false} end
+        return feature:DescribeAuctionListingDetail()
+    end, 111, {detailOnly=true,detailDeferred=true})
+    for _, method in ipairs({ "DescribeRequestState", "DescribeIdentityState", "DescribeInitTrace", "DescribeQuoteState", "DescribeSelectedEconomics", "DescribePriceEvidence" }) do
         local methodName = method
         S.ModuleDiagnosticsHub:RegisterProvider("life_trade", methodName, function()
             local feature = Feature()

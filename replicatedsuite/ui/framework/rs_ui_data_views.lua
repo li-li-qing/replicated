@@ -28,6 +28,7 @@ RSUI.DataViewCallbackCaptureContractVersion = 1
 RSUI.DataViewWheelInteractionContractVersion = 2
 RSUI.DataViewEnabledPropagationContractVersion = 1
 RSUI.DataViewResizePreviewAuthorityContractVersion = 2
+RSUI.DataViewScrollbarViewportContractVersion = 1
 local U = RSUI.LayoutUtil
 if type(U) ~= "table" then return end
 local N, Pad, Arrange, Host = U.N, U.Pad, U.Arrange, U.Host
@@ -136,9 +137,12 @@ local function NormalizeColumn(column, index)
         align = column.align,
         tone = column.tone,
         headerTone = column.headerTone,
+        overflow = column.overflow == "wrap" and "wrap" or "ellipsis",
+        maxLines = math.max(1, math.min(8, math.floor(tonumber(column.maxLines) or 2))),
         getText = column.getText or column.value,
         getTone = column.getTone,
         getIcon = column.getIcon or column.getIconPath,
+        onClick = column.onClick,
         cellType = tostring(column.cellType or column.type or (column.icon == true and "icon" or "text")):lower(),
         iconSize = math.max(8, tonumber(column.iconSize) or 20),
         fallbackIcon = column.fallbackIcon,
@@ -437,6 +441,9 @@ local function NewVirtualList(kind, spec)
     c.scrollbarWidth = math.max(6, tonumber(spec.scrollbarWidth) or 14)
     c.scrollbarGap = math.max(2, tonumber(spec.scrollbarGap) or 4)
     c.scrollbarMinThumb = math.max(6, tonumber(spec.scrollbarMinThumb) or 12)
+    -- TableView 的滚动输入/行偏移仍归 ListView，轨道则覆盖表头与正文的完整可视区域。
+    -- 在构造期选定原生父节点；不通过重设锚点冒充 reparent，也不改变正文行容量。
+    c.scrollbarViewport = RSUI:IsComponent(spec.scrollbarViewport) and spec.scrollbarViewport or nil
 
     -- ArcheRage RU dispatches wheel input to the native widget currently under
     -- the cursor. A virtualized row therefore cannot rely on the ListView root
@@ -497,6 +504,7 @@ local function NewVirtualList(kind, spec)
     if c.scrollbarEnabled and type(RSUI.ScrollbarBehavior) == "table" and type(RSUI.ScrollbarBehavior.Attach) == "function" then
         local scrollbar, scrollbarErr = RSUI.ScrollbarBehavior:Attach(c, {
             id = c.id .. "_scrollbar",
+            parent = c.scrollbarViewport and c.scrollbarViewport.root or c.root,
             orientation = "vertical",
             thickness = c.scrollbarWidth,
             minThumb = c.scrollbarMinThumb,
@@ -510,6 +518,12 @@ local function NewVirtualList(kind, spec)
         if scrollbar == nil then
             c.rsUiDegraded = true
             c.rsUiDegradedReason = "scrollbar_attach_failed:" .. tostring(scrollbarErr or "unknown")
+        else
+            -- RU 原生滚轮不保证冒泡；在轨道/滑块上滚动也必须进入同一行偏移入口。
+            for _, target in ipairs({ scrollbar.track, scrollbar.thumb, scrollbar.dragProxy }) do
+                local wheelOk, wheelErr = c:BindWheelTarget(target)
+                if wheelOk ~= true then scrollbar:Release(); return c, wheelErr end
+            end
         end
     end
 
@@ -1060,7 +1074,18 @@ local function NewVirtualList(kind, spec)
             else
                 scrollbarX = p.left + innerW + self.scrollbarGap
             end
-            self.scrollbar:Layout(scrollbarX, p.top, self.scrollbarWidth, innerH, capacity, math.max(1, count))
+            local scrollbarY, scrollbarH = p.top, innerH
+            local viewport = self.scrollbarViewport
+            if viewport ~= nil then
+                -- 自身 x 是在 TableView 中的正文偏移，轨道的父节点已是 TableView。
+                -- 每次正文独立滚动/刷新都使用完整表格高度，避免只在父布局时对齐、
+                -- 一滚动就又缩回表头下面。可见比例仍使用正文 capacity / item count。
+                local viewportPadding = Pad(viewport.spec.padding)
+                scrollbarX = (tonumber(self.x) or 0) + scrollbarX
+                scrollbarY = viewportPadding.top
+                scrollbarH = math.max(1, (tonumber(viewport.height) or height) - viewportPadding.top - viewportPadding.bottom)
+            end
+            self.scrollbar:Layout(scrollbarX, scrollbarY, self.scrollbarWidth, scrollbarH, capacity, math.max(1, count))
         end
 
         local dataVisible = self.viewState == nil or self.viewState:IsDataVisible()
@@ -1812,10 +1837,12 @@ local function NewTableRow(kind, spec)
             if bottom.SetHeight ~= nil then bottom:SetHeight(1) end
         end
         c.bottomGridLine = bottom
+        if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(c.root,bottom,c.header and 'divider' or 'dividerSoft') end
         for i = 1, math.max(0, #c.columns - 1) do
             local line = c.root:CreateColorDrawable(gridColor[1], gridColor[2], gridColor[3], gridColor[4], "artwork")
             if line ~= nil and line.SetWidth ~= nil then line:SetWidth(1) end
             c.gridLines[i] = line
+            if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(c.root,line,c.header and 'divider' or 'dividerSoft') end
         end
     end
 
@@ -1845,7 +1872,9 @@ local function NewTableRow(kind, spec)
             width = 1,
             fontSize = c.rowFontSize,
             tone = c.header and (columnRef.headerTone or spec.headerTone or "tableHeader") or (columnRef.tone or spec.tone or "default"),
-            overflow = "ellipsis",
+            -- 仅明确声明的正文列使用既有有界Wrap组件；表头和其它列保持原单行契约。
+            overflow = not c.header and columnRef.overflow or "ellipsis",
+            maxLines = not c.header and columnRef.maxLines or nil,
             align = columnRef.align,
             height = c.rowHeight,
         }
@@ -1855,6 +1884,18 @@ local function NewTableRow(kind, spec)
                 id = common.id, parent = c, path = "", size = columnRef.iconSize,
                 width = columnRef.iconSize, height = columnRef.iconSize, pickable = false,
             })
+        elseif not c.header and columnRef.cellType == "button" then
+            -- 中文维护（2026-10-03）：动作单元格跟随虚拟行复用；点击时读取当前 item，
+            -- 不捕获创建时的货物，也不触发行选择/双击激活。隐藏池行不能执行动作。
+            common.compact = true
+            common.onClick = function()
+                if c.visible ~= true or c.viewportVisible == false or c.enabled == false or c.item == nil then return false end
+                local ok, result, detail = SafeCall("rsui:" .. c.id .. ":cell_action:" .. columnRef.id,
+                    columnRef.onClick, c.item, c.itemIndex, columnRef.source, c)
+                if ok ~= true then return false, result end
+                return result, detail
+            end
+            cell = RSUI:Button(common)
         elseif c.interactiveHeader then
             common.compact = true
             common.enabled = columnRef.sortable ~= false
@@ -1996,7 +2037,12 @@ local function NewTableRow(kind, spec)
                         local ok, value = SafeCall("rsui:" .. self.id .. ":tone:" .. column.id, column.getTone, item, index, column.source, self)
                         if ok and value ~= nil then tone = value end
                     end
-                    if type(cell.SetTone) == "function" then cell:SetTone(tone) end
+                    if type(cell.SetTone) == "function" then cell:SetTone(tone)
+                    elseif column.cellType=="button" and type(cell.SetStatusTone)=="function" then
+                        -- 中文维护（紧凑追踪表）：Button 使用语义状态色门面；没有 Text.SetTone。
+                        -- 绑定复用时每列提交当前颜色，Theme 继续拥有悬停/选中/明暗配色与差分写入。
+                        cell:SetStatusTone(tone)
+                    end
                 end
             end
         end
@@ -2191,6 +2237,7 @@ local function NewTableView(kind, spec)
         rowHeight = c.rowHeight,
         rowGap = tonumber(spec.rowGap) or 0,
         tableOwner = c,
+        scrollbarViewport = c,
         overscan = spec.overscan,
         maxPoolSize = spec.maxPoolSize,
         desiredRows = spec.desiredRows,
@@ -2341,11 +2388,13 @@ local function NewTableView(kind, spec)
                         line=handle:CreateColorDrawable(color[1],color[2],color[3],color[4] or 0.58,"overlay")
                         if line and line.SetWidth then line:SetWidth(1) end
                         if line and line.AddAnchor then line:AddAnchor("TOP",handle,0,2);line:AddAnchor("BOTTOM",handle,0,-2) end
+                        if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(handle,line,'decorations.separator') end
                     end
                     local record={root=handle,line=line,index=index,column=column,dragging=false,geometryLeased=false}
                     c.columnResizeHandles[#c.columnResizeHandles+1]=record
                     local function SetLine(active)
                         if line and line.SetColor then
+                            if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(handle,line,active and 'decorations.hover' or 'decorations.separator');return end
                             local color=(S.VisualTokens and S.VisualTokens:Color(active and "cyan" or "separator")) or (active and {0.2,0.74,0.84,1} or {0.08,0.28,0.31,0.58})
                             pcall(function() line:SetColor(color[1],color[2],color[3],color[4] or 1) end)
                         end

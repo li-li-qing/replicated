@@ -47,16 +47,22 @@ local function TotalsText(label, projected, shownRows)
 end
 
 local function RankingColumns()
+    local function Score(field)
+        return function(row)
+            return row.statsAvailable and tostring(N(row[field])) or "关闭"
+        end
+    end
     return {
-        { id = "rank", title = "#", field = "rank", size = "fixed", width = 30, minWidth = 26, sortable = false,
+        { id = "rank", title = "#", field = "rank", size = "fixed", width = 26, minWidth = 20, sortable = false,
             getTone = function(row) return row.self == true and "accent" or "default" end },
-        { id = "name", title = "单位", field = "name", size = "fill", minWidth = 86, fill = 1 },
-        { id = "damage", title = "伤害", field = "damage", size = "fixed", width = 68, minWidth = 48,
+        { id = "name", title = "玩家 / 单位", field = "name", size = "fill", minWidth = 60, fill = 1 },
+        { id = "damage", title = "伤害", field = "damage", size = "fixed", width = 76, minWidth = 42,
             format = CompactNumber, getTone = function() return "red" end },
-        { id = "dps", title = "DPS", field = "dps", size = "fixed", width = 56, minWidth = 42, format = CompactNumber },
-        { id = "taken", title = "承伤", field = "taken", size = "fixed", width = 64, minWidth = 48, format = CompactNumber },
-        { id = "heal", title = "治疗", field = "heal", size = "fixed", width = 64, minWidth = 48,
+        { id = "kills", title = "击杀玩家", field = "kills", size = "fixed", width = 76, minWidth = 56, getText=Score("kills") },
+        { id = "heal", title = "治疗", field = "heal", size = "fixed", width = 76, minWidth = 42,
             format = CompactNumber, getTone = function() return "green" end },
+        { id = "taken", title = "承伤", field = "taken", size = "fixed", width = 76, minWidth = 42, format = CompactNumber },
+        { id = "deaths", title = "死亡", field = "deaths", size = "fixed", width = 46, minWidth = 28, getText=Score("deaths") },
     }
 end
 
@@ -75,9 +81,13 @@ local function AbilityColumns()
             size = "fixed", width = 26, minWidth = 24, sortable = false, resizable = false },
         { id = "name", title = "技能", field = "name", size = "fill", minWidth = 88, fill = 1 },
         { id = "skillId", title = "技能ID", field = "skillIdText", size = "fixed", width = 62, minWidth = 52 },
-        { id = "amount", title = "数值", field = "amount", size = "fixed", width = 70, minWidth = 56, format = CompactNumber },
+        { id = "amount", title = "数值", field = "amount", size = "fixed", width = 70, minWidth = 56,
+            getText=function(row)return row.killOnly and "—" or CompactNumber(row.amount)end },
         { id = "share", title = "占比", field = "shareText", size = "fixed", width = 50, minWidth = 44 },
-        { id = "events", title = "次数", field = "events", size = "fixed", width = 46, minWidth = 40 },
+        { id = "events", title = "次数", field = "events", size = "fixed", width = 46, minWidth = 40,
+            getText=function(row)return row.killOnly and "—" or tostring(N(row.events))end },
+        { id = "kills", title = "击杀玩家", field = "kills", size = "fixed", width = 74, minWidth = 54,
+            getText=function(row)return row.skillKillsAvailable==false and "—" or tostring(N(row.kills))end },
     }
 end
 
@@ -97,10 +107,10 @@ local function CopyAndSortRows(source, sortState, limit)
             local av, bv
             if columnId == "name" then
                 av, bv = tostring(a.name or a.key or ""), tostring(b.name or b.key or "")
-                if av ~= bv then return sign > 0 and av < bv or av > bv end
+                if av ~= bv then if sign>0 then return av<bv else return av>bv end end
             else
                 av, bv = tonumber(a[columnId]) or 0, tonumber(b[columnId]) or 0
-                if av ~= bv then return sign > 0 and av < bv or av > bv end
+                if av ~= bv then if sign>0 then return av<bv else return av>bv end end
             end
             return tostring(a.name or a.key or "") < tostring(b.name or b.key or "")
         end)
@@ -124,148 +134,164 @@ local function PendingRows(projected, metric)
     return rows
 end
 
+local function SetTableItems(view,rows,token)
+    -- 同一投影/选择版本不重复触发 ListView 的 items_changed 排版；新事件、排序、模式仍重新提交。
+    if view.dpsItemsToken==token then return true end
+    local ok=view:SetItems(rows,token)
+    if ok==true then view.dpsItemsToken=token end
+    return ok
+end
+
 local function Build(parent, route)
-    local root, rootErr = D:PageRoot(parent, "v3_page_dps")
+    local loaded,loadErr=Feature:EnsureStoreLoaded()
+    if loaded~=true then error("战斗统计设置读取失败："..tostring(loadErr)) end
+    local root, rootErr = D:PageRoot(parent, {id="v3_page_dps",gap=7,padding=4})
     if root == nil then error("DPS PageRoot 创建失败：" .. tostring(rootErr or "unknown")) end
     root.route = route
     root.subscribed = false
     root.clearConfirmUntil = 0
-    root.selectedBoss = ""
-    root.lastBossToken = ""
     root.selectedActorKey = nil
     root.selectedSide = nil
     root.pendingView = false
-    root.rankingRows = { friendly = {}, enemy = {} }
-    root.rankingSort = { friendly = { columnId = "damage", direction = "desc" }, enemy = { columnId = "damage", direction = "desc" } }
-    root.lastMetric = nil
+    root.detailView = "skills"
+    root.selectedSkillKillKey=nil
+    root.rankingSide = "all"
+    root.overviewRows = {}
+    root.rankingSort = { columnId = "damage", direction = "desc" }
+    root.detailMode=Settings().mode or "PVE"
 
-    D:PageHeader(root, "v3_dps_header", "伤害统计",
-        "逐事件统计伤害、DPS、承伤与治疗；PVP/PVE 独立归类。点击排行单位可查看技能与目标/来源明细。")
+    D:PageHeader(root, "v3_dps_header", "战斗统计与分析 · 战斗总览",
+        "每人一行显示伤害、治疗、承伤、击杀玩家、死亡；汇总当前统计期，点击行查看技能明细。")
+    local statisticsScope=D:CombatStatisticsControls(root,"damage")
 
     local function NowMs() return math.max(0, tonumber(S.NowMs and S.NowMs()) or 0) end
     local clear
     local function RefreshClearButton()
         local confirming = (tonumber(root.clearConfirmUntil) or 0) >= NowMs()
-        if clear ~= nil then clear:SetText(confirming and "再次点击确认清空" or "清空统计") end
+        if clear ~= nil then clear:SetText(confirming and "确认清空" or "清空实时") end
         return confirming
     end
 
-    local top = RSUI:HorizontalBox({ id = "v3_dps_top", parent = root, gap = 8,
-        slot = { size = "fixed", height = 34, hAlign = "fill" } })
+    local top = RSUI:UniformGrid({ id = "v3_dps_top", parent = root, columnGap=6,rowGap=4,minCellWidth=100,minCellHeight=30,maxColumns=5,preferredColumns=5,
+        slot = { size = "auto", hAlign = "fill" } })
     local enableBtn = D:ModuleToggleButton({ id = "v3_dps_enable", parent = top, text = "启用伤害统计", compact = true,
-        slot = { size = "fixed", width = 124 } })
+        slot = { hAlign = "fill",vAlign="fill" } })
     -- FloatingSurface already owns logical id `v3_dps_widget`.  Page controls
     -- must never alias a floating root because V3 component IDs are ownership
     -- identities, not labels.
     local showWidget = RSUI:Button({ id = "v3_dps_widget_toggle", parent = top, text = "显示悬浮窗", compact = true,
-        slot = { size = "fixed", width = 110 } })
+        slot = { hAlign="fill",vAlign="fill" } })
     clear = RSUI:Button({ id = "v3_dps_clear", parent = top, text = "清空统计", compact = true,
-        slot = { size = "fixed", width = 106 } })
+        slot = { hAlign="fill",vAlign="fill" } })
     local pendingBtn = RSUI:Button({ id = "v3_dps_pending_view", parent = top, text = "查看待确认", compact = true,
-        slot = { size = "fixed", width = 104 } })
-    local advancedBtn = RSUI:Button({ id = "v3_dps_advanced_toggle", parent = top, text = "展开高级", compact = true,
-        slot = { size = "fixed", width = 88 } })
-    local healthText = RSUI:Text({ id = "v3_dps_health", parent = top, text = "--", fontSize = 9, tone = "muted",
-        overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
+        slot = { hAlign="fill",vAlign="fill" } })
+    local advancedBtn = RSUI:Button({ id = "v3_dps_advanced_toggle", parent = top, text = "统计设置", compact = true,
+        slot = { hAlign="fill",vAlign="fill" } })
+    local healthText = RSUI:Text({ id = "v3_dps_health", parent = root, text = "--", fontSize = 9, tone = "muted",
+        overflow = "ellipsis", slot = { size="fixed",height=18,hAlign="fill" } })
 
-    -- NumericField gets its own row so label/hint can never share the slider's
-    -- native hit box. This is intentionally not a compact 34px toolbar control.
-    local settings = RSUI:VerticalBox({ id = "v3_dps_settings", parent = root, gap = 5,
-        slot = { size = "auto", hAlign = "fill" } })
-    local settingsTop = RSUI:HorizontalBox({ id = "v3_dps_settings_top", parent = settings, gap = 6,
-        slot = { size = "fixed", height = 36, hAlign = "fill" } })
-    local settingsRows = RSUI:HorizontalBox({ id = "v3_dps_settings_rows", parent = settings, gap = 6,
-        slot = { size = "auto", hAlign = "fill" } })
-
-    local modeToggle = RSUI:Toggle({
-        id = "v3_dps_mode", parent = settingsTop, onText = "统计模式：PVE", offText = "统计模式：PVP",
-        get = function() return Settings().mode == "PVE" end,
-        set = function(v) return Feature.Commands:ApplySettingFromBinding("mode", v and "PVE" or "PVP") end,
-        storeId = STORE_ID, persistDelayMs = 300, persistReason = "dps_mode",
-        slot = { size = "fixed", width = 150 },
-    })
-    local metricSelector, metricSelectorErr = RSUI:SegmentedSelector({
-        id = "v3_dps_metric", parent = settingsTop, itemWidth = 50, gap = 2,
-        items = {
-            { value = "damage", text = "伤害" },
-            { value = "taken", text = "承伤" },
-            { value = "heal", text = "治疗" },
-        },
-        get = function() return Settings().metric or "damage" end,
-        set = function(v) return Feature.Commands:ApplySettingFromBinding("metric", v) end,
-        storeId = STORE_ID, persistDelayMs = 300, persistReason = "dps_metric",
-        slot = { size = "fixed", width = 154 },
-    })
-    if metricSelector == nil then error("DPS 排序选择器创建失败：" .. tostring(metricSelectorErr or "unknown")) end
-    local sideToggle = RSUI:Toggle({
-        id = "v3_dps_side", parent = settingsTop, onText = "悬浮：敌方", offText = "悬浮：友方",
-        get = function() return Settings().side == "enemy" end,
-        set = function(v) return Feature.Commands:ApplySettingFromBinding("side", v and "enemy" or "friendly") end,
-        storeId = STORE_ID, persistDelayMs = 300, persistReason = "dps_side",
-        slot = { size = "fixed", width = 130 },
-    })
-    local selfToggle = RSUI:Toggle({
-        id = "v3_dps_self", parent = settingsTop, onText = "始终显示自己：开", offText = "始终显示自己：关",
-        get = function() return Settings().alwaysShowSelf == true end,
-        set = function(v) return Feature.Commands:ApplySettingFromBinding("alwaysShowSelf", v == true) end,
-        storeId = STORE_ID, persistDelayMs = 300, persistReason = "dps_self",
-        slot = { size = "fill", fill = 1 },
-    })
-    local rows = D:NumericSetting(settingsRows, {
-        id = "v3_dps_rows", label = "显示行数", hint = "仅限制页面和悬浮窗显示；后台累计不截断，上限 150 名。",
-        min = 1, max = 150, step = 1, integer = true, unit = " 名", slider = true, stepButtons = false,
-        get = function() return Settings().displayRows end,
-        set = function(v) return Feature.Commands:ApplySettingFromBinding("displayRows", v) end,
-        storeId = STORE_ID, persistDelayMs = 300, persistReason = "dps_rows",
-        slot = { size = "fill", fill = 1, hAlign = "fill" },
-    })
-    root.advancedVisible = false
-    settingsRows:SetVisible(false)
+    local modeToggle,metricSelector
 
     local body = RSUI:VerticalBox({ id = "v3_dps_body", parent = root, gap = 6,
         slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
-    -- At 1024x768, stacking friendly/enemy/detail as three vertical regions
-    -- starves the ranking tables. Keep both sides visible horizontally and give
-    -- the remaining vertical budget to rows + drill-down details.
+    -- 基础统计共用一个全宽列表，阵营只是过滤条件，不再拆两张窄表。
+    local rankingSideSelector = RSUI:SegmentedSelector({
+        id="v3_dps_ranking_side",parent=body,itemWidth=100,gap=3,
+        items={{value="all",text="全部单位"},{value="friendly",text="友方 / 自己"},{value="enemy",text="敌方 / 目标"}},
+        get=function() return root.rankingSide end,
+        set=function(value)
+            root.rankingSide=value=="enemy" and "enemy" or (value=="friendly" and "friendly" or "all")
+            return root:RefreshStats()
+        end,
+        slot={size="fixed",height=28,hAlign="fill"},
+    })
     local rankings = RSUI:HorizontalBox({ id = "v3_dps_rankings", parent = body, gap = 6,
         slot = { size = "fill", fill = 1.35, hAlign = "fill", vAlign = "fill" } })
 
-    local friendlyPanel, enemyPanel
-    local function RankingPanel(id, title, side)
-        local panel = RSUI:Border({ id = id .. "_panel", parent = rankings, padding = 5, variant = "card",
+    local function RankingPanel()
+        local panel = RSUI:Border({ id = "v3_dps_overview_panel", parent = rankings, padding = 4, variant = "card",
             slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
-        local stack = RSUI:VerticalBox({ id = id .. "_stack", parent = panel, gap = 3 })
-        local summary = RSUI:Text({ id = id .. "_summary", parent = stack, text = title .. " · 尚无数据",
+        local stack = RSUI:VerticalBox({ id = "v3_dps_overview_stack", parent = panel, gap = 3 })
+        local summary = RSUI:Text({ id = "v3_dps_overview_summary", parent = stack, text = "当前统计期 · 尚无数据",
             fontSize = 10, tone = "strong", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
         local tableView = RSUI:TableView({
-            id = id .. "_table", parent = stack, items = {}, rowHeight = 22, headerHeight = 22, desiredRows = 6,
+            id = "v3_dps_overview_table", parent = stack, items = {}, rowHeight = 24, headerHeight = 24, desiredRows = 6,
+            columnGap=1,cellPaddingX=2,rowFontSize=10,headerFontSize=9,
             scrollbar = true, selectable = true, selectionMode = "single", columnResize = true, headerInteractive = true, columns = RankingColumns(),
             onSortChanged = function(columnId, direction, view)
-                if type(root.ApplyRankingSort) == "function" then return root:ApplyRankingSort(side, columnId, direction, view) end
+                if type(root.ApplyRankingSort) == "function" then return root:ApplyRankingSort(columnId, direction, view) end
                 return false
             end,
             onSelectionChanged = function(index)
-                if index ~= nil and type(root.SelectActor) == "function" then root:SelectActor(side, index) end
+                if index ~= nil and type(root.SelectActor) == "function" then root:SelectActor(index) end
             end,
             slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
         })
         return { panel = panel, summary = summary, table = tableView }
     end
 
-    friendlyPanel = RankingPanel("v3_dps_friendly", "友方/自己", "friendly")
-    enemyPanel = RankingPanel("v3_dps_enemy", "敌方/目标", "enemy")
+    local overviewPanel=RankingPanel()
+    overviewPanel.table:SetSortState("damage","desc",false)
+
+    function root:UpdateRankingLayout(selfOnly)
+        -- 中文维护（2026-10-07）：短正文先保住一个玩家行，再给可滚动明细留空间；不改表格列/采集。
+        local rankingHeight=116
+        if selfOnly and self.detailExpanded and tonumber(self.lastBodyHeight) then
+            rankingHeight=math.max(80,math.min(116,self.lastBodyHeight-102))
+        end
+        local token=tostring(selfOnly)..":"..tostring(rankingHeight)
+        if self.rankingLayoutToken==token then return true end
+        self.rankingLayoutToken=token
+        rankingSideSelector:SetVisible(not selfOnly)
+        rankings:SetSlot(selfOnly and {size="fixed",height=rankingHeight,hAlign="fill"}
+            or {size="fill",fill=1.35,hAlign="fill",vAlign="fill"})
+        rankingSideSelector:Render()
+        return true
+    end
 
     local detailPanel = RSUI:Border({ id = "v3_dps_detail_panel", parent = body, padding = 5, variant = "card",
         slot = { size = "fill", fill = 0.85, hAlign = "fill", vAlign = "fill" } })
-    local detailStack = RSUI:VerticalBox({ id = "v3_dps_detail_stack", parent = detailPanel, gap = 3 })
+    -- 中文维护：明细头部和表格在高度不足时逐项滚动，不能把固定控件压进 1px 的表格中。
+    local detailStack = RSUI:ScrollBox({ id = "v3_dps_detail_stack", parent = detailPanel, gap = 3,
+        scrollStep=1,scrollbar=true,scrollbarWidth=14,scrollbarGap=4 })
     local detailSummary = RSUI:Text({ id = "v3_dps_detail_summary", parent = detailStack,
-        text = "明细：点击上方任意单位", fontSize = 10, tone = "strong", overflow = "ellipsis",
+        text = "明细：点击上方任意单位", fontSize = 10, tone = "strong", overflow = "ellipsis",minHeight=20,
         slot = { size = "fixed", height = 20 } })
-    local detailTables = RSUI:HorizontalBox({ id = "v3_dps_detail_tables", parent = detailStack, gap = 6,
+    -- 类型筛选属于所选人的技能明细，主列表的基础统计始终一起显示。
+    local detailFilters=RSUI:HorizontalBox({id="v3_dps_detail_filters",parent=detailStack,gap=6,minHeight=30,slot={size="fixed",height=30,hAlign="fill"}})
+    modeToggle=RSUI:Toggle({id="v3_dps_mode",parent=detailFilters,onText="明细模式：PVE",offText="明细模式：PVP",
+        get=function()return root.detailMode=="PVE"end,set=function(v)root.detailMode=v and "PVE" or "PVP";return root:RefreshDetail()end,
+        slot={size="fixed",width=150}})
+    metricSelector=RSUI:SegmentedSelector({id="v3_dps_metric",parent=detailFilters,itemWidth=50,gap=2,
+        items={{value="damage",text="伤害"},{value="taken",text="承伤"},{value="heal",text="治疗"}},
+        get=function()return Settings().metric or "damage"end,
+        set=function(v)return Feature.Commands:ApplySettingFromBinding("metric",v)end,
+        storeId=STORE_ID,persistDelayMs=300,persistReason="dps_metric",slot={size="fixed",width=154}})
+    if not metricSelector then error("技能明细选择器创建失败") end
+    local detailSelector=RSUI:SegmentedSelector({id="v3_dps_detail_selector",parent=detailStack,itemWidth=100,gap=3,minHeight=28,
+        items={{value="skills",text="技能明细"},{value="counterparts",text="目标 / 来源"},{value="kill_targets",text="击杀名单"}},
+        get=function() return root.detailView end,set=function(value)
+            root.detailView=value
+            if value=="kill_targets" then root.selectedSkillKillKey=nil end
+            return root:RefreshDetail()
+        end,
+        slot={size="fixed",height=28,hAlign="fill"}})
+    local detailViewport=RSUI:SizeBox({id="v3_dps_detail_viewport",parent=detailStack,heightOverride=127,
+        slot={size="auto",hAlign="fill"}})
+    local detailTables = RSUI:HorizontalBox({ id = "v3_dps_detail_tables", parent = detailViewport, gap = 6,
         slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
+    function root:SelectKillSkill(index)
+        local row=index and self.abilityRows and self.abilityRows[index]
+        if not row or not row.killSkillKey or (tonumber(row.kills) or 0)<=0 then return false end
+        if self.selectedSkillKillKey==row.killSkillKey and self.detailView=="kill_targets" then return true end
+        self.selectedSkillKillKey=row.killSkillKey;self.detailView="kill_targets"
+        return self:RefreshDetail()
+    end
     local abilityTable = RSUI:TableView({
         id = "v3_dps_ability_table", parent = detailTables, items = {}, rowHeight = 21, headerHeight = 22, desiredRows = 5,
-        scrollbar = true, selectable = false, columnResize = true, columns = AbilityColumns(),
+        scrollbar = true, selectable = true, selectionMode="single", columnResize = true, columns = AbilityColumns(),
+        onSelectionChanged=function(index)return root:SelectKillSkill(index)end,
+        onItemActivated=function(_,index)return root:SelectKillSkill(index)end,
         slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
     })
     local counterpartTable = RSUI:TableView({
@@ -274,6 +300,7 @@ local function Build(parent, route)
         slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
     })
     local pendingModeTable = RSUI:TableView({
+        -- 其它待确认表继续只显示金额，不参与玩家击杀归属。
         id = "v3_dps_pending_mode_table", parent = detailTables, items = {}, rowHeight = 21, headerHeight = 22, desiredRows = 5,
         scrollbar = true, selectable = false, columnResize = true, columns = CounterpartColumns("模式未定单位"),
         slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
@@ -285,100 +312,39 @@ local function Build(parent, route)
     })
     pendingModeTable:SetVisible(false)
     pendingSideTable:SetVisible(false)
+    local skillKillTargetsTable=RSUI:TableView({id="v3_dps_skill_kill_targets_table",parent=detailTables,items={},
+        rowHeight=21,headerHeight=22,desiredRows=5,scrollbar=true,selectable=false,columnResize=true,
+        columns={{id="name",title="被击杀玩家",field="name",size="fill",fill=1,minWidth=90},
+            {id="skill",title="技能",field="skillName",size="fill",fill=1,minWidth=100},
+            {id="kills",title="击杀次数",field="kills",size="fixed",width=74,minWidth=54}},
+        slot={size="fill",fill=1,hAlign="fill",vAlign="fill"}})
+    skillKillTargetsTable:SetVisible(false)
 
-    local statusPanel = RSUI:Border({ id = "v3_dps_status_panel", parent = body, padding = 5, variant = "card",
-        slot = { size = "fixed", height = 102, hAlign = "fill" } })
-    local statusStack = RSUI:VerticalBox({ id = "v3_dps_status_stack", parent = statusPanel, gap = 2 })
-    local coverageText = RSUI:Text({ id = "v3_dps_coverage", parent = statusStack, text = "覆盖：--", fontSize = 9,
-        tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 18 } })
-    local unresolvedText = RSUI:Text({ id = "v3_dps_unresolved", parent = statusStack, text = "待确认保留：0",
-        fontSize = 9, tone = "muted", overflow = "wrap", slot = { size = "fixed", height = 30 } })
-    local busText = RSUI:Text({ id = "v3_dps_bus_health", parent = statusStack, text = "事件总线：--",
-        fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 18 } })
-    local relationText = RSUI:Text({ id = "v3_dps_relation_health", parent = statusStack, text = "关系/团队：--",
-        fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 18 } })
-
-    local bossPanel = RSUI:VerticalBox({ id = "v3_dps_boss_panel", parent = root, gap = 4,
-        slot = { size = "fixed", height = 66, hAlign = "fill" } })
-    local bossAddRow = RSUI:HorizontalBox({ id = "v3_dps_boss_add_row", parent = bossPanel, gap = 6,
-        slot = { size = "fixed", height = 29, hAlign = "fill" } })
-    local bossInput, bossInputErr = RSUI:TextInput({ id = "v3_dps_boss_input", parent = bossAddRow, value = "", maxLength = 64, buildOptional = true,
-        allowEmpty = true, submitOnLostFocus = false,
-        onSubmit = function(value)
-            if type(root.AddBossFromInput) == "function" then return root:AddBossFromInput(value) end
-            return false
-        end,
-        slot = { size = "fill", fill = 1, hAlign = "fill" } })
-    local bossInputAvailable = bossInput ~= nil
-    if bossInputAvailable ~= true then
-        -- X2_EDITBOX/EDITBOX is optional on ArcheRage RU builds. Manual Boss
-        -- name entry may degrade, but a missing optional text field must never
-        -- abort construction of the whole DPS page.
-        bossInput = RSUI:Text({ id = "v3_dps_boss_input_unavailable", parent = bossAddRow,
-            text = "当前客户端文本输入框不可用", fontSize = 9, tone = "warn", overflow = "ellipsis",
-            slot = { size = "fill", fill = 1, hAlign = "fill" } })
-        if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarningRateLimited) == "function" then
-            S.DiagnosticsManager:WarningRateLimited("dps_v3", "DPS_BOSS_TEXT_INPUT_UNAVAILABLE", 5000,
-                "DPS 首领名称输入框不可用；页面已降级继续打开", { error = tostring(bossInputErr or "native editbox unavailable") })
-        end
+    local bodyLayout,detailLayout=body.Layout,detailStack.Layout
+    function body:Layout(x,y,width,height)
+        root.lastBodyHeight=tonumber(height)
+        root:UpdateRankingLayout(statisticsScope:GetValue()=="self")
+        return bodyLayout(self,x,y,width,height)
     end
-    local addBoss = RSUI:Button({ id = "v3_dps_boss_add", parent = bossAddRow, text = "添加首领名称", compact = true,
-        enabled = bossInputAvailable, slot = { size = "fixed", width = 112 } })
-    local bossManageRow = RSUI:HorizontalBox({ id = "v3_dps_boss_manage_row", parent = bossPanel, gap = 6,
-        slot = { size = "fixed", height = 29, hAlign = "fill" } })
-    local bossSummary = RSUI:Text({ id = "v3_dps_boss_summary", parent = bossManageRow, text = "首领标记：无", fontSize = 9,
-        tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
-    local bossDropdown, bossDropdownErr = RSUI:Dropdown({
-        id = "v3_dps_boss_dropdown", parent = bossManageRow, items = {}, value = "", maxVisible = 8,
-        get = function() return root.selectedBoss end,
-        set = function(v) root.selectedBoss = tostring(v or ""); return true end,
-        onChanged = function(value)
-            root.selectedBoss = tostring(value or "")
-            if type(root.RefreshBossList) == "function" then root:RefreshBossList() end
-        end,
-        slot = { size = "fixed", width = 190 },
-    })
-    if bossDropdown == nil then error("DPS Boss 下拉框创建失败：" .. tostring(bossDropdownErr or "unknown")) end
-    local removeBoss = RSUI:Button({ id = "v3_dps_boss_remove", parent = bossManageRow, text = "移除首领标记", compact = true,
-        slot = { size = "fixed", width = 112 } })
-    statusPanel:SetVisible(false)
-    bossPanel:SetVisible(false)
-
-    function root:SetAdvancedVisible(visible)
-        self.advancedVisible = visible == true
-        settingsRows:SetVisible(self.advancedVisible)
-        statusPanel:SetVisible(self.advancedVisible)
-        bossPanel:SetVisible(self.advancedVisible)
-        advancedBtn:SetText(self.advancedVisible and "收起高级" or "展开高级")
-        return true
-    end
-
-    function root:RefreshBossList()
-        local names = Feature:GetBossNames() or {}
-        local tokenParts, items = {}, {}
-        local found = false
-        for _, name in ipairs(names) do
-            local text = tostring(name or "")
-            if text ~= "" then
-                tokenParts[#tokenParts + 1] = text
-                items[#items + 1] = { value = text, text = text }
-                if text == self.selectedBoss then found = true end
+    function detailStack:Layout(x,y,width,height)
+        -- 明细表格正常时填满剩余空间；短面板保留表头/至少一行（空状态也需32px），其它行可滚动。
+        local fixed,count=0,0
+        for _,entry in ipairs(self.slots)do
+            if entry.child.visible~=false and entry.child~=detailViewport then
+                local _,h=RSUI.LayoutUtil.Measure(entry.child,width,nil)
+                fixed=fixed+math.max(tonumber(entry.slot.height)or 0,h);count=count+1
             end
         end
-        local token = table.concat(tokenParts, "\31")
-        if token ~= self.lastBossToken then
-            self.lastBossToken = token
-            if found ~= true then self.selectedBoss = items[1] and tostring(items[1].value) or "" end
-            bossDropdown:SetItems(items)
-            bossDropdown:Render()
+        local target=math.min(math.max(1,tonumber(height)or 1),math.max(64,(tonumber(height)or 1)-fixed-self.gap*count))
+        if detailViewport.spec.heightOverride~=target then
+            detailViewport.spec.heightOverride=target;detailViewport:InvalidateMeasure("detail_viewport_height")
         end
-        bossSummary:SetText(#items == 0 and "首领标记：无" or ("首领标记 " .. tostring(#items) .. " 个 · 已选：" .. tostring(self.selectedBoss)))
-        removeBoss:SetEnabled(self.selectedBoss ~= "")
-        return true
+        return detailLayout(self,x,y,width,height)
     end
 
-    function root:ApplyRankingSort(side, columnId, direction, view)
-        side = side == "enemy" and "enemy" or "friendly"
+    -- 采集校验由模块诊断展示；HUD/首领配置归统计设置，结果页不堆叠低频控制。
+
+    function root:ApplyRankingSort(columnId, direction, view)
         columnId = tostring(columnId or "")
         direction = tostring(direction or "none")
         -- Ranking headers use a two-state sort. Generic TableView cycles
@@ -387,45 +353,72 @@ local function Build(parent, route)
         -- transition as ascending on the previous column. The next click then
         -- becomes descending again: desc <-> asc with visible feedback.
         if direction == "none" then
-            local previous = type(self.rankingSort[side]) == "table" and self.rankingSort[side].columnId or nil
+            local previous = self.rankingSort.columnId
             columnId = tostring(previous or Settings().metric or "damage")
             direction = "asc"
             if view ~= nil and type(view.SetSortState) == "function" then
                 view:SetSortState(columnId, direction, false)
             end
         end
+        local supported={name=true,damage=true,taken=true,heal=true,kills=true,deaths=true}
+        if not supported[columnId] then return false,"统计列不可用" end
         if columnId == "damage" or columnId == "taken" or columnId == "heal" then
             local settingsValue = Settings()
             if tostring(settingsValue.metric or "damage") ~= columnId then
                 local ok, err = Feature.Commands:SetMetric(columnId)
                 if ok ~= true then return false, err end
-                self.rankingSort.friendly = { columnId = columnId, direction = "desc" }
-                self.rankingSort.enemy = { columnId = columnId, direction = "desc" }
-                friendlyPanel.table:SetSortState(columnId, "desc", false)
-                enemyPanel.table:SetSortState(columnId, "desc", false)
-                return self:RefreshStats()
             end
         end
-        self.rankingSort[side] = { columnId = columnId ~= "" and columnId or nil, direction = direction }
+        local overview=Feature:GetCombatOverview()
+        if (columnId=="kills" or columnId=="deaths") and not overview.statsAvailable then
+            if view then view:SetSortState(self.rankingSort.columnId,self.rankingSort.direction,false) end
+            return false,"当前战绩数值未采集"
+        end
+        self.rankingSort = { columnId = columnId ~= "" and columnId or nil, direction = direction }
+        overviewPanel.table:SetSortState(columnId,direction,false)
         return self:RefreshStats()
     end
 
-    function root:SelectActor(side, index)
-        local list = self.rankingRows[side] or {}
-        local row = list[index]
+    function root:SelectActor(index)
+        local row = self.overviewRows[index]
         if row == nil then return false end
         self.pendingView = false
         pendingBtn:SetText("查看待确认")
-        self.selectedSide = side
+        self.selectedSide = row.side
+        if self.selectedActorKey~=row.key then self.selectedSkillKillKey=nil end
         self.selectedActorKey = row.key
-        if side == "friendly" and enemyPanel.table ~= nil then enemyPanel.table:ClearSelection() end
-        if side == "enemy" and friendlyPanel.table ~= nil then friendlyPanel.table:ClearSelection() end
+        self.selectedRow=row
+        local metric=Settings().metric or "damage"
+        local values=row.modeValues[self.detailMode] or {}
+        local otherMode=self.detailMode=="PVP" and "PVE" or "PVP"
+        if (tonumber(values[metric]) or 0)==0 and (tonumber((row.modeValues[otherMode] or {})[metric]) or 0)>0 then self.detailMode=otherMode end
+        modeToggle:Render()
         return self:RefreshDetail()
+    end
+
+    function root:SetDetailExpanded(expanded)
+        expanded=expanded==true
+        self.detailExpanded=expanded
+        local filtersVisible=self.selectedRow~=nil and not self.pendingView
+        local token=tostring(expanded)..":"..tostring(filtersVisible)
+        if self.detailLayoutToken~=token then
+            self.detailLayoutToken=token
+            detailPanel:SetSlot(expanded and {size="fill",fill=0.85,hAlign="fill",vAlign="fill"}
+                or {size="fixed",height=filtersVisible and 70 or 34,hAlign="fill"})
+        end
+        detailFilters:SetVisible(filtersVisible)
+        detailTables:SetVisible(expanded)
+        detailViewport:SetVisible(expanded)
+        detailSelector:SetVisible(expanded and not self.pendingView)
+        return true
     end
 
     function root:RefreshDetail()
         local settingsValue = Settings()
         if self.pendingView == true then
+            skillKillTargetsTable:SetVisible(false)
+            self:SetDetailExpanded(true)
+            detailSelector:SetVisible(false)
             abilityTable:SetVisible(false)
             counterpartTable:SetVisible(false)
             pendingModeTable:SetVisible(true)
@@ -439,133 +432,136 @@ local function Build(parent, route)
             local unresolved = type(p.unresolved) == "table" and p.unresolved or {}
             local sideUnknown = type(sides.unknown) == "table" and sides.unknown or {}
             local token = tostring(p.revision or 0) .. ":" .. tostring(p.mode or "") .. ":" .. tostring(p.metric or "")
-            pendingModeTable:SetItems(PendingRows(unresolved, p.metric), "dps:pending:mode:" .. token)
-            pendingSideTable:SetItems(PendingRows(sideUnknown, p.metric), "dps:pending:side:" .. token)
+            SetTableItems(pendingModeTable,PendingRows(unresolved, p.metric), "dps:pending:mode:" .. token)
+            SetTableItems(pendingSideTable,PendingRows(sideUnknown, p.metric), "dps:pending:side:" .. token)
             detailSummary:SetText("待确认明细 · " .. ModeText(settingsValue.mode) .. " · 按" .. MetricText(settingsValue.metric)
                 .. "排序 · 左：PVP/PVE 模式未定 · 右：阵营未定（数据均已保留，不代表丢失）")
             return true
         end
 
-        abilityTable:SetVisible(true)
-        counterpartTable:SetVisible(true)
+        abilityTable:SetVisible(self.detailView=="skills")
+        counterpartTable:SetVisible(self.detailView=="counterparts")
+        skillKillTargetsTable:SetVisible(self.detailView=="kill_targets")
         pendingModeTable:SetVisible(false)
         pendingSideTable:SetVisible(false)
         pendingBtn:SetText("查看待确认")
         local key = tostring(self.selectedActorKey or "")
         if key == "" or self.selectedSide == nil then
-            detailSummary:SetText("明细：点击上方任意单位，或点击“查看待确认”检查未决数据")
-            abilityTable:SetItems({}, "dps:detail:empty")
-            counterpartTable:SetItems({}, "dps:detail:empty")
+            self:SetDetailExpanded(false)
+            detailSummary:SetText("选择单位后显示技能与目标 / 来源明细")
+            SetTableItems(abilityTable,{}, "dps:detail:empty")
+            SetTableItems(counterpartTable,{}, "dps:detail:empty")
+            SetTableItems(skillKillTargetsTable,{}, "dps:detail:empty")
             return true
         end
         local detail = Feature:GetActorDetail({
-            mode = settingsValue.mode, side = self.selectedSide, metric = settingsValue.metric, actorKey = key, limit = 100,
+            mode = self.detailMode, side = (self.selectedRow and self.selectedRow.modeSides[self.detailMode]) or self.selectedSide,
+            metric = settingsValue.metric, actorKey = key, limit = 100,
+            actorName=self.selectedRow and self.selectedRow.name,
         })
         local actor = detail and detail.actor or nil
         if actor == nil then
-            self.selectedActorKey, self.selectedSide = nil, nil
-            detailSummary:SetText("明细：所选单位已不在当前模式/排序中")
-            abilityTable:SetItems({}, "dps:detail:missing")
-            counterpartTable:SetItems({}, "dps:detail:missing")
+            self:SetDetailExpanded(false)
+            detailSummary:SetText("明细 · "..tostring(self.selectedRow and self.selectedRow.name or key).." · "..ModeText(self.detailMode).." 暂无伤害/治疗技能记录")
+            SetTableItems(abilityTable,{}, "dps:detail:missing")
+            SetTableItems(counterpartTable,{}, "dps:detail:missing")
+            SetTableItems(skillKillTargetsTable,{}, "dps:detail:missing")
             return true
         end
+        self:SetDetailExpanded(true)
+        detailSelector:SetVisible(true);detailSelector:Render()
         local metricText = MetricText(detail.metric)
-        detailSummary:SetText("明细 · " .. tostring(actor.name or actor.key) .. " · " .. ModeText(settingsValue.mode)
+        local summaryText="明细 · " .. tostring(actor.name or actor.key) .. " · " .. ModeText(self.detailMode)
             .. " · " .. (self.selectedSide == "enemy" and "敌方" or "友方") .. " · " .. metricText
-            .. " " .. CompactNumber(actor[detail.metric]))
-        local token = tostring(detail.revision or 0) .. ":" .. tostring(actor.key) .. ":" .. tostring(detail.metric)
+            .. " " .. CompactNumber(actor[detail.metric])
+        local token = tostring(detail.revision or 0) .. ":" .. tostring(actor.key) .. ":" .. tostring(detail.metric)..":"..self.detailMode..":"..tostring(detail.killRevision)
         local abilityRows = type(detail.abilities) == "table" and detail.abilities or {}
         local metricTotal = math.max(0, tonumber(actor[detail.metric]) or 0)
         for _, row in ipairs(abilityRows) do
             local skillId = tonumber(row.skillId or row.abilityId)
             row.skillIdText = skillId ~= nil and tostring(math.floor(skillId + 0.5)) or "—"
             row.iconPath = tostring(row.iconPath or "ui/icon/icon_unknown_item.dds")
-            row.shareText = metricTotal > 0 and string.format("%.1f%%", (math.max(0, tonumber(row.amount) or 0) / metricTotal) * 100) or "0%"
+            row.shareText = row.killOnly and "—" or (metricTotal > 0 and string.format("%.1f%%", (math.max(0, tonumber(row.amount) or 0) / metricTotal) * 100) or "0%")
+            row.skillKillsAvailable=detail.skillKillsAvailable
         end
-        abilityTable:SetItems(abilityRows, "dps:ability:" .. token)
-        counterpartTable:SetItems(type(detail.counterparts) == "table" and detail.counterparts or {}, "dps:counterpart:" .. token)
+        self.abilityRows=abilityRows
+        SetTableItems(abilityTable,abilityRows, "dps:ability:" .. token)
+        SetTableItems(counterpartTable,type(detail.counterparts) == "table" and detail.counterparts or {}, "dps:counterpart:" .. token)
+        local targets,omitted,selectedName={},0,nil
+        for _,skill in ipairs(detail.killSkills or {}) do
+            if self.selectedSkillKillKey==nil or self.selectedSkillKillKey==skill.key then
+                selectedName=self.selectedSkillKillKey and skill.name or selectedName
+                omitted=omitted+(tonumber(skill.omittedTargets) or 0)
+                for _,target in ipairs(skill.targets or {}) do
+                    targets[#targets+1]={name=target.name,skillName=skill.name,kills=target.kills}
+                end
+            end
+        end
+        table.sort(targets,function(a,b)if a.kills~=b.kills then return a.kills>b.kills end
+            if a.name~=b.name then return a.name<b.name end return a.skillName<b.skillName end)
+        SetTableItems(skillKillTargetsTable,targets,"dps:kill_targets:"..token..":"..tostring(self.selectedSkillKillKey))
+        if self.detailView=="kill_targets" then
+            detailSummary:SetText("击杀名单 · "..tostring(actor.name).." · "..tostring(selectedName or "全部技能").." · 当前统计期"
+                ..(omitted>0 and (" · 容量外 "..tostring(omitted).." 次未保留姓名") or ""))
+        else
+            detailSummary:SetText(summaryText.." · 击杀按本期；点技能看名单")
+        end
         return true
     end
 
     function root:RefreshStats()
         local settingsValue = Settings()
-        -- Fetch the bounded full ranking projection (Domain max 150) and apply
-        -- view sorting before slicing to displayRows. This makes header sorting
-        -- affect the whole visible ranking instead of only the previously cut set.
+        -- 单人一行的汇总先组合/排序，再按显示行数截取。
         local projection = Feature:GetProjection({ mode = settingsValue.mode, metric = settingsValue.metric, displayRows = 150 })
         local p = projection.projection or {}
         local sides = type(p.sides) == "table" and p.sides or {}
-        local friendly = type(sides.friendly) == "table" and sides.friendly or {}
-        local enemy = type(sides.enemy) == "table" and sides.enemy or {}
         local sideUnknown = type(sides.unknown) == "table" and sides.unknown or {}
         local unresolved = type(p.unresolved) == "table" and p.unresolved or {}
-        if self.lastMetric ~= tostring(settingsValue.metric or "damage") then
-            self.lastMetric = tostring(settingsValue.metric or "damage")
-            self.rankingSort.friendly = { columnId = self.lastMetric, direction = "desc" }
-            self.rankingSort.enemy = { columnId = self.lastMetric, direction = "desc" }
-            friendlyPanel.table:SetSortState(self.lastMetric, "desc", false)
-            enemyPanel.table:SetSortState(self.lastMetric, "desc", false)
+        local selfOnly=statisticsScope:GetValue()=="self"
+        local overview=Feature:GetCombatOverview()
+        local candidates,totals={},{damage=0,heal=0,taken=0}
+        for _,row in ipairs(overview.rows or {}) do
+            if selfOnly or self.rankingSide=="all" or row.side==self.rankingSide then
+                candidates[#candidates+1]=row
+                for _,key in ipairs({"damage","heal","taken"}) do totals[key]=totals[key]+(tonumber(row[key]) or 0) end
+            end
         end
-        self.rankingRows.friendly = CopyAndSortRows(friendly.rows, self.rankingSort.friendly, settingsValue.displayRows)
-        self.rankingRows.enemy = CopyAndSortRows(enemy.rows, self.rankingSort.enemy, settingsValue.displayRows)
-        local token = tostring(p.revision or 0) .. ":" .. tostring(p.mode or "") .. ":" .. tostring(p.metric or "")
-        friendlyPanel.table:SetItems(self.rankingRows.friendly, "dps:f:" .. token)
-        enemyPanel.table:SetItems(self.rankingRows.enemy, "dps:e:" .. token)
-        local function SortLabel(sideName)
-            local state = self.rankingSort[sideName] or {}
-            local label = state.columnId == "name" and "名称" or (state.columnId == "dps" and "DPS" or MetricText(state.columnId or p.metric))
-            return label .. (state.direction == "asc" and "↑" or "↓")
+        totals.actorCount=#candidates
+        self.overviewRows=CopyAndSortRows(candidates,self.rankingSort,settingsValue.displayRows)
+        local token=tostring(overview.revision)..":"..tostring(self.rankingSort.columnId)..":"..tostring(self.rankingSort.direction)..":"..self.rankingSide..":"..tostring(settingsValue.displayRows)
+        SetTableItems(overviewPanel.table,self.overviewRows,"dps:overview:"..token)
+        self:UpdateRankingLayout(selfOnly)
+        local found
+        if not self.pendingView then
+            for index,row in ipairs(self.overviewRows) do
+                if (selfOnly and row.self==true) or row.key==self.selectedActorKey then
+                    found=true;self.selectedRow=row;self.selectedSide=row.side
+                    if overviewPanel.table:GetSelectedIndex()~=index then overviewPanel.table:SetSelectedIndex(index) end
+                    if self.selectedActorKey~=row.key then self:SelectActor(index) end
+                    break
+                end
+            end
+            if not found then self.selectedActorKey,self.selectedSide,self.selectedRow=nil,nil,nil;overviewPanel.table:ClearSelection() end
         end
-        friendlyPanel.summary:SetText(TotalsText("友方/自己 · " .. SortLabel("friendly"), friendly, #self.rankingRows.friendly))
-        enemyPanel.summary:SetText(TotalsText("敌方/目标 · " .. SortLabel("enemy"), enemy, #self.rankingRows.enemy))
+        local labels={name="名称",damage="伤害",taken="承伤",heal="治疗",kills="击杀玩家",deaths="死亡"}
+        local label=(labels[self.rankingSort.columnId] or "伤害")..(self.rankingSort.direction=="asc" and "↑" or "↓")
+        overviewPanel.summary:SetText(TotalsText((selfOnly and "我的战斗总览 · " or "战斗总览 · ")..label,{totals=totals,totalRows=#candidates},#self.overviewRows))
 
-        local coverage = tostring(projection.coverageState or "INACTIVE")
-        coverageText:SetText("事件覆盖：" .. coverage .. (coverage == "FULL" and " · 完整" or " · 当前客户端事件源不是完整覆盖"))
-        coverageText:SetTone(coverage == "FULL" and "muted" or "warn")
         local unresolvedTotals = type(unresolved.totals) == "table" and unresolved.totals or {}
         local sideUnknownTotals = type(sideUnknown.totals) == "table" and sideUnknown.totals or {}
         local h = projection.health or {}
         local unresolvedAmount = N(unresolvedTotals.damage) + N(unresolvedTotals.taken) + N(unresolvedTotals.heal)
             + N(sideUnknownTotals.damage) + N(sideUnknownTotals.taken) + N(sideUnknownTotals.heal)
-        unresolvedText:SetText("待确认：模式未知[伤 " .. CompactNumber(unresolvedTotals.damage)
-            .. "/承 " .. CompactNumber(unresolvedTotals.taken)
-            .. "/治 " .. CompactNumber(unresolvedTotals.heal)
-            .. "] · 阵营未知[伤 " .. CompactNumber(sideUnknownTotals.damage)
-            .. "/承 " .. CompactNumber(sideUnknownTotals.taken)
-            .. "/治 " .. CompactNumber(sideUnknownTotals.heal)
-            .. "] · 技能代理未归属[治 " .. CompactNumber(h.proxySourceHealAmount)
-            .. "/件 " .. tostring(N(h.proxySourceHeals))
-            .. "] · Replay " .. tostring(N(h.pendingRows)) .. "/" .. tostring(N(h.pendingLedgerSlots))
-            .. " · 淘汰 " .. tostring(N(h.pendingEvicted))
-            .. " · 重分类 " .. tostring(N(h.replayReclassifications)))
-        unresolvedText:SetTone((unresolvedAmount > 0 or N(h.proxySourceHealAmount) > 0 or N(h.pendingEvicted) > 0) and "warn" or "muted")
-        busText:SetText("总线：Private " .. tostring(N(h.busPrivateRows))
-            .. " · Global " .. tostring(N(h.busGlobalRows))
-            .. " · Global SELF过滤 " .. tostring(N(h.busGlobalSelfFiltered))
-            .. " · UI双Host去重 " .. tostring(N(h.busCrossHostDuplicates))
-            .. " · 去重待配 " .. tostring(N(h.busCrossHostPending))
-            .. " · 去重淘汰 " .. tostring(N(h.busCrossHostEvicted))
-            .. " · Journal丢弃 " .. tostring(N(h.busJournalDropped))
-            .. " · Fact修改 " .. tostring(N(h.busFactMutationErrors)))
-        busText:SetTone((N(h.busJournalDropped) > 0 or N(h.busFactMutationErrors) > 0 or N(h.busCrossHostEvicted) > 0) and "warn" or "muted")
-        relationText:SetText("关系：单位 " .. tostring(N(h.relationUnits))
-            .. " · 未知 " .. tostring(N(h.relationUnknown))
-            .. " · 证据 " .. tostring(N(h.relationEvidenceApplied))
-            .. " · 冲突 " .. tostring(N(h.relationConflicts))
-            .. " · 团队 " .. tostring(N(h.teamMembers))
-            .. " · 扫描 " .. tostring(N(h.teamScans))
-            .. " · 失败 " .. tostring(N(h.teamScanFailures))
-            .. " · 重试 " .. tostring(N(h.teamRetries)))
-        relationText:SetTone((N(h.relationConflicts) > 0 or N(h.teamScanFailures) > 0) and "warn" or "muted")
+        pendingBtn:SetText(self.pendingView and "返回单位明细" or (unresolvedAmount > 0 and "查看待确认 !" or "查看待确认"))
 
-        enableBtn:SetText(projection.enabled == true and "停用伤害统计" or "启用伤害统计")
+        enableBtn:SetText(projection.enabled == true and "暂停统计" or "开始统计")
         local widgetVisible = WidgetHost:IsVisible("combat.dps") == true
         showWidget:SetText(widgetVisible and "隐藏悬浮窗" or "显示悬浮窗")
         showWidget:SetEnabled(projection.enabled == true)
-        healthText:SetText(ModeText(settingsValue.mode) .. " · " .. MetricText(settingsValue.metric) .. "排序 · PVP " .. tostring(N(h.classificationPVP))
+        healthText:SetText("当前统计期 · 伤害汇总 PVP/PVE · 战绩"..(overview.statsAvailable and "开启" or "已关闭").." · PVP " .. tostring(N(h.classificationPVP))
             .. " · PVE " .. tostring(N(h.classificationPVE)) .. " · 治疗 " .. tostring(N(h.classificationHeal))
             .. " · 未知 " .. tostring(N(h.classificationUnknown)) .. " · 事件 " .. tostring(N(h.events)))
-        modeToggle:Render(); metricSelector:Render(); sideToggle:Render(); selfToggle:Render(); rows:Render()
+        statisticsScope:Render();modeToggle:Render(); metricSelector:Render()
         RefreshClearButton()
         self:RefreshDetail()
         return true
@@ -573,7 +569,6 @@ local function Build(parent, route)
 
     function root:Refresh()
         self:RefreshStats()
-        self:RefreshBossList()
         return true
     end
 
@@ -581,9 +576,10 @@ local function Build(parent, route)
         if self.subscribed then return true end
         if S.Events and type(S.Events.SubscribeInternal) == "function" then
             S.Events:SubscribeInternal("v3.dps.updated", self, function() root:RefreshStats() end)
+            S.Events:SubscribeInternal("v3.combat_analytics.updated", self, function() root:RefreshStats() end)
+            S.Events:SubscribeInternal("v3.combat_analytics.feature_updated", self, function() root:RefreshStats() end)
             S.Events:SubscribeInternal("v3.dps.settings", self, function(_, key)
                 root:RefreshStats()
-                if tostring(key or "") == "bossNames" then root:RefreshBossList() end
             end)
             S.Events:SubscribeInternal((S.FeatureRuntime and S.FeatureRuntime.LifecycleTopic) or "v3.feature.lifecycle", self,
                 function(_, featureId) if tostring(featureId or "") == FEATURE_ID then root:RefreshStats() end end)
@@ -629,14 +625,13 @@ local function Build(parent, route)
     end
 
     advancedBtn.spec.onClick = function()
-        return root:SetAdvancedVisible(not root.advancedVisible)
+        return S.UIV3.Shell:Navigate("combat.statistics_settings",{source="dps_settings"})
     end
 
     pendingBtn.spec.onClick = function()
         root.pendingView = root.pendingView ~= true
         if root.pendingView == true then
-            if friendlyPanel.table ~= nil then friendlyPanel.table:ClearSelection() end
-            if enemyPanel.table ~= nil then enemyPanel.table:ClearSelection() end
+            overviewPanel.table:ClearSelection()
         end
         return root:RefreshDetail()
     end
@@ -672,60 +667,51 @@ local function Build(parent, route)
         root.clearConfirmUntil = 0
         return S.ActionRunner:Run({
             id = "dps.clear", button = clear, idleText = clear.text, busyText = "清空中…", notify = true,
-            successText = "DPS 统计已清空。", errorText = function(reason) return tostring(reason or "清空失败") end,
-            execute = function() return Feature.Commands:Clear("dps_page") end,
+            successText = "实时战斗总览已清空，个人历史保留。", errorText = function(reason) return tostring(reason or "清空失败") end,
+            execute = function() return Feature.Commands:ClearOverview("dps_page") end,
             onSuccess = function()
                 root.selectedActorKey, root.selectedSide = nil, nil
-                friendlyPanel.table:ClearSelection(); enemyPanel.table:ClearSelection()
+                root.selectedRow=nil;overviewPanel.table:ClearSelection()
                 root:RefreshStats()
             end,
         })
     end
-
-    function root:AddBossFromInput(submittedName)
-        if bossInputAvailable ~= true then return false, "当前客户端不支持首领名称文本输入框" end
-        local name = tostring(submittedName or "")
-        if name == "" and type(bossInput.GetDraftValue) == "function" then name = bossInput:GetDraftValue() end
-        if tostring(name or "") == "" then return false, "请输入首领名称" end
-        return S.ActionRunner:Run({
-            id = "dps.add_boss", button = addBoss, idleText = addBoss.text, busyText = "添加中…", notify = true,
-            successText = "已添加首领名称。", errorText = function(reason) return tostring(reason or "添加失败") end,
-            execute = function() return Feature.Commands:AddBossName(name) end,
-            onSuccess = function()
-                if type(bossInput.SetValue) == "function" then bossInput:SetValue("", false, "boss_added") end
-                root.lastBossToken = ""
-                root:RefreshBossList(); root:RefreshStats()
-            end,
-        })
+    local layout=root.Layout
+    local function Rect(node)
+        return {x=node.x,y=node.y,width=node.width,height=node.height,visible=node.visible~=false,
+            viewportVisible=node.viewportVisible~=false,measureDirty=node.measureDirty==true,layoutDirty=node.layoutDirty==true}
     end
-    -- Button and Enter share the TextInput Submit path so a focused EditBox
-    -- commits the live draft before AddBossFromInput reads it.
-    addBoss.spec.onClick = function()
-        if bossInputAvailable ~= true or type(bossInput.Submit) ~= "function" then
-            return false, "当前客户端不支持首领名称文本输入框"
-        end
-        return bossInput:Submit("button")
+    local function LayoutFacts()
+        return {page=Rect(root),toolbar=Rect(top),body=Rect(body),ranking=Rect(rankings),overview=Rect(overviewPanel.table),
+            detailPanel=Rect(detailPanel),detailStack=Rect(detailStack),detailViewport=Rect(detailViewport),
+            ability=Rect(abilityTable),counterpart=Rect(counterpartTable),
+            detailExpanded=root.detailExpanded==true,detailScrollOffset=detailStack.scrollOffset,
+            detailMaxScrollOffset=detailStack.maxScrollOffset,rankingLayoutToken=root.rankingLayoutToken}
     end
-
-    removeBoss.spec.onClick = function()
-        local selected = tostring(root.selectedBoss or "")
-        return S.ActionRunner:Run({
-            id = "dps.remove_boss", button = removeBoss, idleText = removeBoss.text, busyText = "处理中…", notify = true,
-            successText = "已移除首领标记。", errorText = function(reason) return tostring(reason or "移除失败") end,
-            execute = function()
-                if selected == "" then return false, "请先选择首领标记" end
-                return Feature.Commands:RemoveBossName(selected)
-            end,
-            onSuccess = function()
-                root.selectedBoss = ""
-                root.lastBossToken = ""
-                root:RefreshBossList(); root:RefreshStats()
-            end,
-        })
+    function root:GetLayoutDiagnostic()
+        return {version=1,patch="combat-statistics-first-layout-1",layoutPasses=self.statisticsLayoutPasses or 0,
+            firstLayout=S.Utils.DeepCopy(self.firstStatisticsLayout),current=LayoutFacts()}
     end
-
+    function root:Layout(x,y,width,height)
+        self:UpdateRankingLayout(statisticsScope:GetValue()=="self")
+        local result=layout(self,x,y,width,height)
+        self.statisticsLayoutPasses=(self.statisticsLayoutPasses or 0)+1
+        if self.firstStatisticsLayout==nil then self.firstStatisticsLayout=LayoutFacts()end
+        return result
+    end
+    -- PageHost 的 WidgetSwitcher 会在 OnActivated 之前同步排版新页；先准备真实投影和显隐。
+    -- 仅消费已有事实，不获取采集 Consumer，也不等待下一次战斗事件才修正首屏。
+    root:RefreshStats()
     return root
 end
 
 local ok, err = PageHost:RegisterFactory("combat.stats", Build)
 if ok ~= true then error(err) end
+local diagnostics=S.ModuleDiagnosticsHub
+if diagnostics and type(diagnostics.RegisterProvider)=="function" then
+    diagnostics:RegisterProvider(FEATURE_ID,"combat_statistics_layout",function()
+        local page=PageHost.pages and PageHost.pages["combat.stats"]
+        if page and type(page.GetLayoutDiagnostic)=="function" then return page:GetLayoutDiagnostic()end
+        return {version=1,created=false}
+    end,35,{detailOnly=true}) -- 纯读已存在的逻辑几何；不创建页面、不执行 Layout 或 Native getter。
+end

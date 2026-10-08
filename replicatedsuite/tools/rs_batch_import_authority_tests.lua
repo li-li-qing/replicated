@@ -22,9 +22,9 @@ local function LimitNative(v)
  local o={};for k,x in pairs(v)do if type(k)~='number' or k<189 then o[k]=LimitNative(x)end end;return o
 end
 local function Boot(options)
- options=options or {};local io={disk=Copy(options.disk or {}),writes=0,reads=0,clears=0}
+ options=options or {};local io={disk=Copy(options.disk or {}),writes=0,reads=0,readKeys={},clears=0}
  ADDON={SaveData=function(_,k,v)io.writes=io.writes+1;io.disk[k]=options.loss==false and Copy(v)or LimitNative(v);if io.damage then io.damage(io.disk[k])end;return true end,
- LoadData=function(_,k)io.reads=io.reads+1;return Copy(io.disk[k])end,ClearData=function()io.clears=io.clears+1;error('unexpected clear')end}
+ LoadData=function(_,k)io.reads=io.reads+1;io.readKeys[k]=(io.readKeys[k]or 0)+1;return Copy(io.disk[k])end,ClearData=function()io.clears=io.clears+1;error('unexpected clear')end}
  ReplicatedSuite={Features={},Services={},RSUI={},UI={CreateWindowShell=function()end},NowMs=function()return 1000 end,Generation=1,
  SafeTraceback=function(e)return tostring(e)end,FeatureRuntime={RegisterImplementation=function()return true end,IsEnabled=function()return false end}}
  local S=ReplicatedSuite
@@ -33,17 +33,115 @@ local function Boot(options)
  'features/combat/buff_display/rs_buff_display_store.lua','features/combat/buff_display/rs_buff_display_projection.lua','features/combat/buff_display/rs_buff_display_feature.lua','features/combat/buff_display/rs_buff_display_management.lua','features/combat/buff_display/rs_buff_display_transfer_v2.lua'})do dofile(f)end
  local F=S.Features.BuffDisplay;return S,F,S.Persistence,io
 end
+-- 中文维护（2026-10-07）：旧 transport 恢复用例直接验证仍注册的 Legacy Store/Core，
+-- 不再把当前 ImportBuiltinPack 的 A/B 提交误当旧 monolith 保存。这里只生成合成故障夹具，
+-- 不替代 schema5 冻结 canonical/hash 金样，也不修改原章或 production Feature mutation。
+local function LegacyLoad(P)
+ local ok,_,why=P:LoadStore('v3.buff_display');return ok==true or ok=='empty',why
+end
+local function LegacyMutate(P,mutator,delayMs,reason,durable)
+ return P:MutateStore('v3.buff_display',mutator,{delayMs=delayMs or 0,reason=reason or 'synthetic_legacy_fixture',durable=durable~=false})
+end
+local function LegacyPackFixture(F,P,key)
+ local catalog=ReplicatedSuite.Data.StatusTrackingCatalogV3;local pack=assert(catalog.Packs[key])
+ return LegacyMutate(P,function()
+  for _,entry in ipairs(pack.entries)do
+   if entry.kind=='effect'then
+    local category=entry.category;if category~='buff'and category~='debuff'then category='auto'end
+    for _,scope in ipairs({'player','target'})do
+     local list=F.State.settings.tracked[scope][category];local exists=false
+     for _,id in ipairs(list)do if id==entry.id then exists=true;break end end
+     if not exists then list[#list+1]=entry.id end
+    end
+   end
+  end
+  F.State.settings.library.catalogVersion=catalog.version;F.State.settings.library.importedPacks[key]=catalog.version
+  return true
+ end)
+end
+-- 中文维护（2026-10-07）：此处用真实 SaveStore 生成合成旧 Store 故障，原 fingerprint 不重盖；
+-- 首次迁移也必须经 Persistence 验真，失败前不得建立 split Authority 或更改原始磁盘证据。
+Test('first migration rejects legacy canonical tamper before writing any split authority',function()
+ local _,F,P,io=Boot({loss=false});assert(P:LoadStore('v3.buff_display')=='empty')
+ F.State.settings.showBuffs=false
+ assert(P:SaveStore('v3.buff_display',{durable=true,consumeDirty=true}))
+ local key=P:GetStore('v3.buff_display').resolvedKey
+ io.disk[key].payload.settings.showBuffs=true
+ local before=Copy(io.disk)
+ local _,fresh,freshP,fio=Boot({disk=io.disk,loss=false})
+ local ok,why=fresh:EnsureStoreLoaded()
+ assert(not ok and tostring(why):find('fingerprint',1,true),'tampered legacy canonical was accepted: '..tostring(why))
+ assert(freshP:GetStore('v3.buff_display').writeFenced==true)
+ assert(fio.writes==0 and fio.clears==0 and Equal(before,fio.disk),'rejected migration changed disk evidence')
+ assert(fresh:GetTrackingPersistenceHealth().generation==0,'rejected migration established a manifest')
+end)
+Test('first migration preserves verified legacy settings without restamping the old store',function()
+ local _,F,P,io=Boot({loss=false});assert(P:LoadStore('v3.buff_display')=='empty')
+ F.State.settings.showBuffs=false;F.State.settings.refreshMs=173;F.State.widgetVisible=true
+ assert(P:SaveStore('v3.buff_display',{durable=true,consumeDirty=true}))
+ local key=P:GetStore('v3.buff_display').resolvedKey;local legacy=Copy(io.disk[key])
+ local _,fresh,_,fio=Boot({disk=io.disk,loss=false});local ok,why=fresh:EnsureStoreLoaded();assert(ok,why)
+ assert(fresh.State.settings.showBuffs==false and fresh.State.settings.refreshMs==173 and fresh.State.widgetVisible==true,'empty split settings replaced authenticated legacy settings')
+ assert(Equal(legacy,fio.disk[key]),'migration restamped its legacy source')
+end)
+-- 中文维护：原章与 seal 是两道独立门禁；前缀后藏着合法 player-only 差异时也不能借 target 覆盖。
+Test('first migration rejects invalid legacy seal before establishing new authority',function()
+ local _,F,P,io=Boot({loss=false});assert(P:LoadStore('v3.buff_display')=='empty')
+ assert(P:SaveStore('v3.buff_display',{durable=true,consumeDirty=true}))
+ local key=P:GetStore('v3.buff_display').resolvedKey;io.disk[key].__rsmeta.envelopeFingerprint='00000000'
+ local before=Copy(io.disk);local _,fresh,_,fio=Boot({disk=io.disk,loss=false})
+ local ok,why=fresh:EnsureStoreLoaded();assert(not ok and tostring(why):find('envelope',1,true),why)
+ assert(fio.writes==0 and fio.clears==0 and Equal(before,fio.disk),'invalid legacy seal changed disk')
+end)
+Test('first migration cannot hide scoped divergence behind observed auto prefix truncation',function()
+ local _,F,P,io=Boot({loss=false});assert(LegacyLoad(P));assert(LegacyPackFixture(F,P,'recommended'))
+ assert(LegacyMutate(P,function()F.State.settings.tracked.player.auto[350]=999999;return true end))
+ local key=P:GetStore('v3.buff_display').resolvedKey;local player=io.disk[key].payload.settings.tracked.player.auto
+ player['__rs_t5:a']=nil;player.count=nil;for index=20,25 do player.chunks[index]=nil end
+ player.chunks[19]=player.chunks[19]:sub(1,#player.chunks[19]-2)
+ local before=Copy(io.disk);local _,fresh,_,fio=Boot({disk=io.disk,loss=false})
+ local ok,why=fresh:EnsureStoreLoaded();assert(not ok and tostring(why):find('fingerprint',1,true),why)
+ assert(fio.writes==0 and fio.clears==0 and Equal(before,fio.disk),'unproven twin repair committed a new generation')
+end)
+-- 中文维护：中断后的首次迁移可能已有 settings Authority；磁盘新读与当前代已加载缓存两条路径
+-- 都必须优先该小 Store，禁止旧候选覆盖。有效 manifest 出现后则不再读取任何 Legacy 字节。
+for _,preloaded in ipairs({false,true})do
+ Test('verified split settings take priority during first migration with preloaded='..tostring(preloaded),function()
+  local _,legacyF,legacyP,legacyIo=Boot({loss=false});assert(LegacyLoad(legacyP))
+  legacyF.State.settings.showBuffs=true;legacyF.State.settings.refreshMs=173;legacyF.State.widgetVisible=true
+  assert(legacyP:SaveStore('v3.buff_display',{durable=true,consumeDirty=true}))
+  local legacyKey=legacyP:GetStore('v3.buff_display').resolvedKey;local legacyRaw=Copy(legacyIo.disk[legacyKey])
+  local _,F,P,io=Boot({loss=false});assert(F:EnsureStoreLoaded())
+  assert(F:MutateStore(function()F.State.settings.showBuffs=false;F.State.settings.refreshMs=321;F.State.widgetVisible=false;return true end,0,'verified_split_fixture',true))
+  local manifestKey=P:GetStore(F.TrackingManifestStoreId).resolvedKey
+  io.disk[manifestKey]=nil;io.disk[legacyKey]=Copy(legacyRaw)
+  local _,fresh,freshP,fio=Boot({disk=io.disk,loss=false})
+  if preloaded then assert(freshP:LoadStore(fresh.SettingsStoreId))end
+  local ok,why=fresh:EnsureStoreLoaded();assert(ok,why)
+  assert(fresh.State.settings.showBuffs==false and fresh.State.settings.refreshMs==321 and fresh.State.widgetVisible==false,'verified split settings lost precedence')
+  assert(Equal(legacyRaw,fio.disk[legacyKey]),'migration changed valid legacy source bytes')
+ end)
+end
+Test('existing verified manifest skips damaged legacy source without reading or writing it',function()
+ local _,F,P,io=Boot({loss=false});assert(F:EnsureStoreLoaded());assert(F:SetTrackedId(123456,'auto',true))
+ local before=Copy(F.State);local legacyKey=assert(P:ResolveStoreKey(P:GetStore('v3.buff_display')))
+ io.disk[legacyKey]={broken='legacy evidence'}
+ local _,fresh,_,fio=Boot({disk=io.disk,loss=false});local ok,why=fresh:EnsureStoreLoaded();assert(ok,why)
+ assert(Equal(before,fresh.State)and fio.writes==0 and fio.clears==0)
+ assert((fio.readKeys[legacyKey]or 0)==0 and Equal(fio.disk[legacyKey],io.disk[legacyKey]),'manifest startup touched retired legacy source')
+end)
+
 Test('existing schema8 transport4 disk repairs one missing scoped chunk from its exact twin then rewrites transport5',function()
- local _,F,P,io=Boot({loss=false});assert(F:EnsureStoreLoaded());local st=P:GetStore('v3.buff_display');st.transportVersion=4
- assert(F:ImportBuiltinPack('recommended',false));local key=st.resolvedKey;assert(io.disk[key].__rsmeta.transportVersion==4)
+ local _,F,P,io=Boot({loss=false});assert(LegacyLoad(P));local st=P:GetStore('v3.buff_display');st.transportVersion=4
+ assert(LegacyPackFixture(F,P,'recommended',false));local key=st.resolvedKey;assert(io.disk[key].__rsmeta.transportVersion==4)
  local victim=io.disk[key].payload.settings.tracked.target.auto;assert(victim and victim.p25);victim.p25=nil
- local _,fresh,freshP,fio=Boot({disk=io.disk,loss=false});local ok,why=fresh:EnsureStoreLoaded();assert(ok,why)
- assert(#fresh.State.settings.tracked.player.auto==397 and #fresh.State.settings.tracked.target.auto==397)
+ local _,fresh,freshP,fio=Boot({disk=io.disk,loss=false});local ok,why=LegacyLoad(freshP);assert(ok,why)
+ assert(#fresh.State.settings.tracked.player.auto==392 and #fresh.State.settings.tracked.target.auto==392)
  local freshStore=freshP:GetStore('v3.buff_display');assert(freshStore.transportVersion==5 and freshStore.lastPhysicalTransportRepairOk==true)
  assert(freshP:Flush('v3.buff_display'));assert(fio.disk[freshStore.resolvedKey].__rsmeta.transportVersion==5)
 end)
 Test('transport5 readback reconstructs one physically omitted scoped auto field only by exact sibling plus stamped fingerprint',function()
- local _,F,P,io=Boot({loss=false});assert(F:EnsureStoreLoaded())
+ local _,F,P,io=Boot({loss=false});assert(LegacyLoad(P))
  local damaged=false
  io.damage=function(raw)
   if damaged then return end
@@ -51,22 +149,22 @@ Test('transport5 readback reconstructs one physically omitted scoped auto field 
   assert(raw.__rsmeta.transportVersion==5,'fixture must exercise transport5')
   raw.payload.settings.tracked.player.auto=nil
  end
- local ok,why=F:ImportBuiltinPack('recommended',false)
+ local ok,why=LegacyPackFixture(F,P,'recommended',false)
  assert(ok,why)
- assert(#F.State.settings.tracked.player.auto==397 and #F.State.settings.tracked.target.auto==397)
+ assert(#F.State.settings.tracked.player.auto==392 and #F.State.settings.tracked.target.auto==392)
  local st=P:GetStore('v3.buff_display')
  assert(st.lastVerifyOk==true,'current core must prove exact readback recovery')
  assert(st.lastReadbackRepresentationRecovered==true,'omitted field must be recovered only inside verification proof')
  local saved=Copy(io.disk[st.resolvedKey])
  assert(saved.payload.settings.tracked.player.auto==nil,'fixture must retain the physical omission on disk')
  local savedDisk={[st.resolvedKey]=saved}
- local _,fresh,freshP=Boot({disk=savedDisk,loss=false});local loaded,loadWhy=fresh:EnsureStoreLoaded();assert(loaded,loadWhy)
- assert(#fresh.State.settings.tracked.player.auto==397 and #fresh.State.settings.tracked.target.auto==397)
+ local _,fresh,freshP=Boot({disk=savedDisk,loss=false});local loaded,loadWhy=LegacyLoad(freshP);assert(loaded,loadWhy)
+ assert(#fresh.State.settings.tracked.player.auto==392 and #fresh.State.settings.tracked.target.auto==392)
  local fst=freshP:GetStore('v3.buff_display')
  assert(fst.lastIntegrityStatus=='verified_canonical_recovered_representation','load must record exact representational recovery')
 end)
 Test('transport5 readback reconstructs observed scoped auto prefix truncation only by exact sibling plus stamped fingerprint',function()
- local _,F,P,io=Boot({loss=false});assert(F:EnsureStoreLoaded())
+ local _,F,P,io=Boot({loss=false});assert(LegacyLoad(P))
  local damaged=false
  io.damage=function(raw)
   if damaged then return end
@@ -75,7 +173,7 @@ Test('transport5 readback reconstructs observed scoped auto prefix truncation on
   local player=raw.payload.settings.tracked.player.auto
   local target=raw.payload.settings.tracked.target.auto
   assert(player and target and player['__rs_t5:a']==1 and target['__rs_t5:a']==1)
-  assert(player.count==397 and target.count==397 and type(player.chunks)=='table' and type(target.chunks)=='table')
+  assert(player.count==392 and target.count==392 and type(player.chunks)=='table' and type(target.chunks)=='table')
   -- 中文维护注释（.18.240 RED fixture）：复刻 .239 实机 RAW_STORE：player.auto 的
   -- marker/count 被 Native 整体省略，chunks 只保留前 19 块，且第 19 块再丢最后一个 token；
   -- target.auto 仍完整。此夹具只验证“严格物理前缀 + twin + stamped 全 Store 指纹”恢复，
@@ -85,14 +183,14 @@ Test('transport5 readback reconstructs observed scoped auto prefix truncation on
   for index=20,25 do player.chunks[index]=nil end
   player.chunks[19]=assert(player.chunks[19]):gsub(',[^,]+$','')
  end
- local ok,why=F:ImportBuiltinPack('recommended',false)
+ local ok,why=LegacyPackFixture(F,P,'recommended',false)
  assert(ok,why)
  local st=P:GetStore('v3.buff_display')
  assert(st.lastVerifyOk==true,'observed t5 prefix truncation must be recoverable only for readback proof')
  assert(st.lastReadbackRepresentationRecovered==true,'prefix truncation recovery proof was not recorded')
 end)
 Test('transport5 readback accepts a final chunk truncated inside the last numeric token only under exact whole-store fingerprint proof',function()
- local _,F,P,io=Boot({loss=false});assert(F:EnsureStoreLoaded())
+ local _,F,P,io=Boot({loss=false});assert(LegacyLoad(P))
  local damaged=false
  io.damage=function(raw)
   if damaged then return end
@@ -107,47 +205,47 @@ Test('transport5 readback accepts a final chunk truncated inside the last numeri
   player.chunks[19]=full:sub(1,#full-2) -- .241 实机：最后一个 ID 在数字中间被 Native 截断，而不是只丢完整 token。
   assert(target.chunks[19]:sub(1,#player.chunks[19])==player.chunks[19],'fixture must be a strict byte prefix of intact twin')
  end
- local ok,why=F:ImportBuiltinPack('recommended',false);assert(ok,why)
+ local ok,why=LegacyPackFixture(F,P,'recommended',false);assert(ok,why)
  local st=P:GetStore('v3.buff_display')
  assert(st.lastVerifyOk==true,'mid-token prefix truncation must be recoverable only by exact whole-store fingerprint proof')
  assert(st.lastReadbackRepresentationRecovered==true,'mid-token readback recovery proof was not recorded')
  assert(tostring(st.lastReadbackRecoveryProbe or ''):find('mode=byte',1,true),'probe must distinguish byte-prefix truncation from token-boundary loss')
 end)
 Test('transport5 fresh load accepts the .241 mid-token scoped auto truncation but still requires the original stamped fingerprint',function()
- local _,F,P,io=Boot({loss=false});assert(F:EnsureStoreLoaded());assert(F:ImportBuiltinPack('recommended',false))
+ local _,F,P,io=Boot({loss=false});assert(LegacyLoad(P));assert(LegacyPackFixture(F,P,'recommended',false))
  local st=P:GetStore('v3.buff_display');local key=st.resolvedKey
  local saved=Copy(io.disk[key]);local player=saved.payload.settings.tracked.player.auto
  local target=saved.payload.settings.tracked.target.auto
- assert(player and target and player['__rs_t5:a']==1 and player.count==397 and type(player.chunks)=='table')
+ assert(player and target and player['__rs_t5:a']==1 and player.count==392 and type(player.chunks)=='table')
  player['__rs_t5:a']=nil;player.count=nil
  for index=20,25 do player.chunks[index]=nil end
  local full=assert(player.chunks[19]);player.chunks[19]=full:sub(1,#full-2)
- local _,fresh,freshP=Boot({disk={[key]=saved},loss=false});local ok,why=fresh:EnsureStoreLoaded();assert(ok,why)
- assert(#fresh.State.settings.tracked.player.auto==397 and #fresh.State.settings.tracked.target.auto==397)
+ local _,fresh,freshP=Boot({disk={[key]=saved},loss=false});local ok,why=LegacyLoad(freshP);assert(ok,why)
+ assert(#fresh.State.settings.tracked.player.auto==392 and #fresh.State.settings.tracked.target.auto==392)
  local fst=freshP:GetStore('v3.buff_display')
  assert(fst.lastIntegrityStatus=='verified_canonical_recovered_representation','fresh load must authenticate byte-prefix repair with the original stamp')
  assert(tostring(fst.lastHistoricalRecoveryProbe or ''):find('mode=byte',1,true),'load probe must show the mid-token byte-prefix path')
 end)
 Test('transport5 fresh load reconstructs observed scoped auto prefix truncation from exact sibling plus stamped fingerprint',function()
- local _,F,P,io=Boot({loss=false});assert(F:EnsureStoreLoaded());assert(F:ImportBuiltinPack('recommended',false))
+ local _,F,P,io=Boot({loss=false});assert(LegacyLoad(P));assert(LegacyPackFixture(F,P,'recommended',false))
  local st=P:GetStore('v3.buff_display');local key=st.resolvedKey
  local saved=Copy(io.disk[key]);local player=saved.payload.settings.tracked.player.auto
- assert(player and player['__rs_t5:a']==1 and player.count==397 and type(player.chunks)=='table')
+ assert(player and player['__rs_t5:a']==1 and player.count==392 and type(player.chunks)=='table')
  player['__rs_t5:a']=nil;player.count=nil
  for index=20,25 do player.chunks[index]=nil end
  player.chunks[19]=assert(player.chunks[19]):gsub(',[^,]+$','')
- local _,fresh,freshP=Boot({disk={[key]=saved},loss=false});local ok,why=fresh:EnsureStoreLoaded();assert(ok,why)
- assert(#fresh.State.settings.tracked.player.auto==397 and #fresh.State.settings.tracked.target.auto==397)
+ local _,fresh,freshP=Boot({disk={[key]=saved},loss=false});local ok,why=LegacyLoad(freshP);assert(ok,why)
+ assert(#fresh.State.settings.tracked.player.auto==392 and #fresh.State.settings.tracked.target.auto==392)
  local fst=freshP:GetStore('v3.buff_display')
  assert(fst.lastIntegrityStatus=='verified_canonical_recovered_representation','fresh load must authenticate prefix repair with stamped fingerprint')
 end)
 Test('transport5 prefix truncation cannot borrow sibling when scoped auto legitimately diverged',function()
- local _,F,P,io=Boot({loss=false});assert(F:EnsureStoreLoaded());assert(F:ImportBuiltinPack('recommended',false))
- assert(F:MutateStore(function()
+ local _,F,P,io=Boot({loss=false});assert(LegacyLoad(P));assert(LegacyPackFixture(F,P,'recommended',false))
+ assert(LegacyMutate(P,function()
   table.remove(F.State.settings.tracked.player.auto,1)
   return true
  end,0,'scope-auto-prefix-divergence',true))
- assert(#F.State.settings.tracked.player.auto==396 and #F.State.settings.tracked.target.auto==397)
+ assert(#F.State.settings.tracked.player.auto==391 and #F.State.settings.tracked.target.auto==392)
  local damaged=false
  io.damage=function(raw)
   if damaged then return end
@@ -166,12 +264,12 @@ Test('transport5 prefix truncation cannot borrow sibling when scoped auto legiti
  assert(tostring(st.lastVerifyError or ''):find('readback_fingerprint_mismatch',1,true),'must remain fail-closed on fingerprint mismatch')
 end)
 Test('transport5 prefix truncation cannot erase hidden same-prefix scoped divergence',function()
- local _,F,P,io=Boot({loss=false});assert(F:EnsureStoreLoaded());assert(F:ImportBuiltinPack('recommended',false))
- assert(F:MutateStore(function()
+ local _,F,P,io=Boot({loss=false});assert(LegacyLoad(P));assert(LegacyPackFixture(F,P,'recommended',false))
+ assert(LegacyMutate(P,function()
   F.State.settings.tracked.player.auto[350]=999999
   return true
  end,0,'scope-auto-hidden-prefix-divergence',true))
- assert(#F.State.settings.tracked.player.auto==397 and #F.State.settings.tracked.target.auto==397)
+ assert(#F.State.settings.tracked.player.auto==392 and #F.State.settings.tracked.target.auto==392)
  local damaged=false
  io.damage=function(raw)
   if damaged then return end
@@ -188,12 +286,12 @@ Test('transport5 prefix truncation cannot erase hidden same-prefix scoped diverg
  assert(tostring(st.lastVerifyError or ''):find('readback_fingerprint_mismatch',1,true),'whole-store fingerprint must reject hidden divergence')
 end)
 Test('transport5 omitted auto cannot borrow sibling when scoped auto legitimately diverged',function()
- local _,F,P,io=Boot({loss=false});assert(F:EnsureStoreLoaded());assert(F:ImportBuiltinPack('recommended',false))
- assert(F:MutateStore(function()
+ local _,F,P,io=Boot({loss=false});assert(LegacyLoad(P));assert(LegacyPackFixture(F,P,'recommended',false))
+ assert(LegacyMutate(P,function()
   table.remove(F.State.settings.tracked.player.auto,1)
   return true
  end,0,'scope-auto-divergence',true))
- assert(#F.State.settings.tracked.player.auto==396 and #F.State.settings.tracked.target.auto==397)
+ assert(#F.State.settings.tracked.player.auto==391 and #F.State.settings.tracked.target.auto==392)
  local damaged=false
  io.damage=function(raw)
   if damaged then return end
@@ -207,54 +305,55 @@ Test('transport5 omitted auto cannot borrow sibling when scoped auto legitimatel
  assert(tostring(st.lastVerifyError or ''):find('readback_fingerprint_mismatch',1,true),'must remain fail-closed on exact fingerprint mismatch')
 end)
 Test('transport5 target auto omission is symmetric when both scopes are identical',function()
- local _,F,P,io=Boot({loss=false});assert(F:EnsureStoreLoaded())
+ local _,F,P,io=Boot({loss=false});assert(LegacyLoad(P))
  local damaged=false
  io.damage=function(raw)
   if damaged then return end
   damaged=true
   raw.payload.settings.tracked.target.auto=nil
  end
- local ok,why=F:ImportBuiltinPack('recommended',false);assert(ok,why)
- assert(#F.State.settings.tracked.player.auto==397 and #F.State.settings.tracked.target.auto==397)
+ local ok,why=LegacyPackFixture(F,P,'recommended',false);assert(ok,why)
+ assert(#F.State.settings.tracked.player.auto==392 and #F.State.settings.tracked.target.auto==392)
  local st=P:GetStore('v3.buff_display');assert(st.lastReadbackRepresentationRecovered==true)
 end)
 Test('transport4 recovery ignores complete scoped categories that legitimately differ',function()
- local _,F,P,io=Boot({loss=false});assert(F:EnsureStoreLoaded());local st=P:GetStore('v3.buff_display');st.transportVersion=4
- assert(F:ImportBuiltinPack('recommended',false))
- assert(F:MutateStore(function()
+ local _,F,P,io=Boot({loss=false});assert(LegacyLoad(P));local st=P:GetStore('v3.buff_display');st.transportVersion=4
+ assert(LegacyPackFixture(F,P,'recommended',false))
+ assert(LegacyMutate(P,function()
   F.State.settings.tracked.player.buff={};F.State.settings.tracked.target.buff={}
   for i=1,40 do F.State.settings.tracked.player.buff[i]=1000+i;F.State.settings.tracked.target.buff[i]=2000+i end
   return true
  end,0,'scope-difference-v4',true))
  local key=st.resolvedKey;local victim=io.disk[key].payload.settings.tracked.target.auto;assert(victim and victim.p25);victim.p25=nil
- local _,fresh=Boot({disk=io.disk,loss=false});local ok,why=fresh:EnsureStoreLoaded();assert(ok,why)
+ local _,fresh,freshP=Boot({disk=io.disk,loss=false});local ok,why=LegacyLoad(freshP);assert(ok,why)
  assert(fresh.State.settings.tracked.player.buff[1]==1001 and fresh.State.settings.tracked.target.buff[1]==2001)
- assert(#fresh.State.settings.tracked.player.auto==397 and #fresh.State.settings.tracked.target.auto==397)
+ assert(#fresh.State.settings.tracked.player.auto==392 and #fresh.State.settings.tracked.target.auto==392)
 end)
 Test('schema8 scoped tracking survives observed v4 p-chunk omission with transport5',function()
  local S,F,P,io=Boot({loss=false});io.damage=function(raw)local damaged=DropObservedV4ChunkField(raw);for k in pairs(raw)do raw[k]=nil end;for k,v in pairs(damaged)do raw[k]=v end end
  assert(F:EnsureStoreLoaded());local ok,why=F:ImportBuiltinPack('recommended',false);assert(ok,why)
  local st=P:GetStore('v3.buff_display');assert(st.transportVersion==5,'buff store must use transport5 after real v4 missing-chunk evidence')
- assert(#F.State.settings.tracked.player.auto==397 and #F.State.settings.tracked.target.auto==397)
- local _,fresh=Boot({disk=io.disk,loss=false});assert(fresh:EnsureStoreLoaded());assert(#fresh.State.settings.tracked.player.auto==397 and #fresh.State.settings.tracked.target.auto==397)
+ assert(#F.State.settings.tracked.player.auto==392 and #F.State.settings.tracked.target.auto==392)
+ local _,fresh=Boot({disk=io.disk,loss=false});assert(fresh:EnsureStoreLoaded());assert(#fresh.State.settings.tracked.player.auto==392 and #fresh.State.settings.tracked.target.auto==392)
 end)
-Test('397 recommended IDs survive native loss starting at array index 189',function()
+-- 中文维护：当前目录推荐 auto=392；一次真实导入先验 inactive 三片，再提交 manifest，共四写。
+Test('392 recommended auto IDs survive native loss starting at array index 189 through split authority',function()
  local S,F,P,io=Boot();assert(F:EnsureStoreLoaded());local before=io.writes
  local ok,why=F:ImportBuiltinPack('recommended',false);assert(ok,why)
- assert(#F.State.settings.tracked.player.auto==397 and #F.State.settings.tracked.target.auto==397 and io.writes==before+1)
- local st=P:GetStore('v3.buff_display');local expected=Copy(F.State);local saved=io.disk[st.resolvedKey]
+ assert(#F.State.settings.tracked.player.auto==392 and #F.State.settings.tracked.target.auto==392 and io.writes==before+4)
+ local st=P:GetStore('v3.buff_display.tracking.player.'..F:GetTrackingPersistenceHealth().slot);local expected=Copy(F.State);local saved=io.disk[st.resolvedKey]
  assert(saved.__rsmeta.transportVersion==5,'status store must explicitly select bounded-vector transport')
  local _,fresh,_,fio=Boot({disk=io.disk});assert(fresh:EnsureStoreLoaded());assert(Equal(expected,fresh.State));assert(fio.writes==0 and fio.clears==0)
 end)
 Test('repeat import is idempotent and remove survives fresh reload',function()
  local _,F,P,io=Boot();assert(F:EnsureStoreLoaded());assert(F:ImportBuiltinPack('recommended',false));assert(F:ImportBuiltinPack('recommended',false))
- assert(#F.State.settings.tracked.player.auto==397 and #F.State.settings.tracked.target.auto==397);local id=F.State.settings.tracked.player.auto[189];assert(F:SetTrackedId(id,'auto',false));assert(P:Flush('v3.buff_display'))
- local _,nextF=Boot({disk=io.disk});assert(nextF:EnsureStoreLoaded());assert(not nextF:IsTrackedId(id) and #nextF.State.settings.tracked.player.auto==396 and #nextF.State.settings.tracked.target.auto==396)
+ assert(#F.State.settings.tracked.player.auto==392 and #F.State.settings.tracked.target.auto==392);local id=F.State.settings.tracked.player.auto[189];assert(F:SetTrackedId(id,'auto',false));assert(P:Flush(F.TrackingManifestStoreId))
+ local _,nextF=Boot({disk=io.disk});assert(nextF:EnsureStoreLoaded());assert(not nextF:IsTrackedId(id) and #nextF.State.settings.tracked.player.auto==391 and #nextF.State.settings.tracked.target.auto==391)
 end)
 Test('legacy transport3 remains readable with full tracked list and no forced save',function()
- local _,F,P,io=Boot({loss=false});assert(F:EnsureStoreLoaded());local st=P:GetStore('v3.buff_display');st.transportVersion=3
- assert(F:ImportBuiltinPack('recommended',false));assert(io.disk[st.resolvedKey].__rsmeta.transportVersion==3)
- local _,fresh,_,fio=Boot({disk=io.disk});assert(fresh:EnsureStoreLoaded());assert(#fresh.State.settings.tracked.player.auto==397 and #fresh.State.settings.tracked.target.auto==397 and fio.writes==0)
+ local _,F,P,io=Boot({loss=false});assert(LegacyLoad(P));local st=P:GetStore('v3.buff_display');st.transportVersion=3
+ assert(LegacyPackFixture(F,P,'recommended',false));assert(io.disk[st.resolvedKey].__rsmeta.transportVersion==3)
+ local _,fresh,freshP,fio=Boot({disk=io.disk});assert(LegacyLoad(freshP));assert(#fresh.State.settings.tracked.player.auto==392 and #fresh.State.settings.tracked.target.auto==392 and fio.writes==0)
 end)
 Test('transport4 physical layout reconstructs exact canonical values and escapes marker collisions',function()
  local _,_,P=Boot()
@@ -266,18 +365,21 @@ Test('transport4 physical layout reconstructs exact canonical values and escapes
 end)
 Test('missing chunk is rejected before applying or normalizing a partial list',function()
  local _,F,P,io=Boot();assert(F:EnsureStoreLoaded());local before=Copy(F.State)
- io.damage=function(raw)local a=raw.payload.settings.tracked.player.auto;a.chunks[2]=nil end
+ -- 中文维护：真实写入目标是 inactive player 分片；损坏仍必须导致导入回滚与 manifest 不变。
+ local manifest=Copy(F:GetTrackingPersistenceHealth())
+ io.damage=function(raw)if tostring(raw.__rsmeta.store):find('v3.buff_display.tracking.player.',1,true)then raw.payload.auto.chunks[2]=nil end end
  local ok,why=F:ImportBuiltinPack('recommended',false);assert(not ok and tostring(why):find('transport',1,true),why)
  assert(Equal(before,F.State) and io.clears==0 and F.lastLibraryImport.ok==false)
+ assert(Equal(manifest,F:GetTrackingPersistenceHealth()),'failed chunk write advanced the manifest')
 end)
 Test('same-length corrupt ID is rejected by original whole-config fingerprint',function()
  local _,F,P,io=Boot();assert(F:EnsureStoreLoaded());local before=Copy(F.State)
- io.damage=function(raw)local a=raw.payload.settings.tracked.player.auto;if a.chunks and a.chunks[1] then a.chunks[1]=a.chunks[1]:gsub('^%d+','99999')end end
+ io.damage=function(raw)if tostring(raw.__rsmeta.store):find('v3.buff_display.tracking.player.',1,true)then local a=raw.payload.auto;if a.chunks and a.chunks[1] then a.chunks[1]=a.chunks[1]:gsub('^%d+','99999')end end end
  local ok,why=F:ImportBuiltinPack('recommended',false);assert(not ok and tostring(why):find('mismatch',1,true),why);assert(Equal(before,F.State))
 end)
 Test('legacy truncated save still fences instead of inventing missing IDs',function()
- local _,F,P,io=Boot({loss=false});assert(F:EnsureStoreLoaded());local st=P:GetStore('v3.buff_display');st.transportVersion=3;assert(F:ImportBuiltinPack('recommended',false))
- io.disk[st.resolvedKey]=LimitNative(io.disk[st.resolvedKey]);local _,fresh,_,fio=Boot({disk=io.disk});assert(not fresh:EnsureStoreLoaded());assert(fio.writes==0 and fio.clears==0)
+ local _,F,P,io=Boot({loss=false});assert(LegacyLoad(P));local st=P:GetStore('v3.buff_display');st.transportVersion=3;assert(LegacyPackFixture(F,P,'recommended',false))
+ io.disk[st.resolvedKey]=LimitNative(io.disk[st.resolvedKey]);local _,fresh,freshP,fio=Boot({disk=io.disk});assert(not LegacyLoad(freshP));assert(fio.writes==0 and fio.clears==0)
 end)
 Test('other stores keep default physical transport3',function()
  local S,F,P,io=Boot();local value={n=1};local st=assert(P:RegisterV3Store({id='v3.test_default',owner='v3.test_default',key=P.V3KeyPrefix..'test_default',scope=P.Scope.Account,lifetime=P.Lifetime.Permanent,schemaVersion=1,budget={maxDepth=4,maxNodes=128,maxStringBytes=2048,maxEntriesPerTable=64},default=function()return value end,get=function()return value end,apply=function(v)value=v end}))
@@ -308,12 +410,13 @@ Test('mixed sparse and non-ID arrays remain exact without vector coercion',funct
 end)
 Test('all six scoped tracking buckets round-trip without 188-entry truncation',function()
  local _,F,P,io=Boot();assert(F:EnsureStoreLoaded())
- assert(F:MutateStore(function()for scopeIndex,scope in ipairs({'player','target'})do for offset,bucket in ipairs({'buff','debuff','auto'})do for i=1,512 do F.State.settings.tracked[scope][bucket][i]=100000*scopeIndex+10000*offset+i end end end;return true end,0,'six-bucket-test',true))
+ assert(F:MutateTrackingStore(function()for scopeIndex,scope in ipairs({'player','target'})do for offset,bucket in ipairs({'buff','debuff','auto'})do for i=1,512 do F.State.settings.tracked[scope][bucket][i]=100000*scopeIndex+10000*offset+i end end end;return true end,'six-bucket-test'))
  local state=Copy(F.State);local _,fresh=Boot({disk=io.disk});assert(fresh:EnsureStoreLoaded());assert(Equal(state,fresh.State))
 end)
-Test('old failed import rollback is no longer rewritten by unrelated HUD save',function()
+Test('synthetic legacy failed durable write rollback is no longer rewritten by unrelated HUD save',function()
  local _,F,P,io=Boot();assert(F:EnsureStoreLoaded());local st=P:GetStore('v3.buff_display');st.transportVersion=3
- local before=Copy(F.State);local ok,err=F:ImportBuiltinPack('recommended',false)
+ assert(P:LoadStore('v3.buff_display',{apply=false})=='empty')
+ local before=Copy(F.State);local ok,err=LegacyPackFixture(F,P,'recommended')
  assert(not ok and err:find('player.auto.189',1,true),err);assert(Equal(before,F.State))
  local bad=Copy(io.disk);local mainKey=st.resolvedKey
  -- .18.241 Authority 边界：HUD 保存只能写 v3.buff_display.layout，不能再利用“顺手重写主 Store”
@@ -321,7 +424,7 @@ Test('old failed import rollback is no longer rewritten by unrelated HUD save',f
  -- 也不碰主 Store 失败证据。需要修主 Store 时必须经过主 Store 自己的 Persistence Authority。
  assert(F:PersistHudCalibrationSnapshot(F:GetHudCalibrationSnapshot(),'before_reload'))
  assert(Equal(before,F.State) and Equal(io.disk[mainKey],bad[mainKey]),'HUD save rewrote failed tracking Store')
- local _,broken=Boot({disk=bad});assert(not broken:EnsureStoreLoaded(),'legacy bad tracking disk was accidentally hidden')
+ local _,broken=Boot({disk={[mainKey]=bad[mainKey]}});assert(not broken:EnsureStoreLoaded(),'legacy bad tracking disk was accidentally hidden')
  -- 这个夹具故意模拟已经淘汰的 Transport3 + 189 截断；.241 不再允许 HUD 越权把它
  -- “顺手修好”。当前 Transport5 的正式恢复能力由上方 scoped omission/prefix 用例独立证明。
 end)

@@ -1,7 +1,7 @@
 ------------------------------------------------------------------------
 -- Replicated Suite V3 - Combat Analytics Runtime / Metric Registry
 --
--- One all-scope CombatEventBus consumer fans borrowed immutable facts into
+-- One self/all CombatEventBus consumer fans borrowed immutable facts into
 -- independent, bounded metric plugins. Optional native enrichment is shared and
 -- may degrade without failing the combat fact pipeline.
 ------------------------------------------------------------------------
@@ -11,7 +11,8 @@ S.Services = S.Services or {}
 
 local A = {
     Id = "v3.combat_analytics",
-    version = 3,
+    version = 4,
+    collectionScope = "self", busScope = nil, statisticsConsumers = {},
     metrics = {}, metricOrder = {},
     activeMetrics = {}, activeMetricOrder = {},
     factPlans = {}, nativePlans = {},
@@ -26,9 +27,9 @@ S.Services.CombatAnalyticsV3 = A
 
 local FACT_CATEGORIES = { "damage", "heal", "death", "aura", "miss", "other" }
 local function Trace(err) return type(S.SafeTraceback) == "function" and S.SafeTraceback(err) or tostring(err) end
-local function RunMetricReset(metric, reason)
+local function RunMetricReset(metric, reason, resetKind)
     if type(metric) ~= "table" or type(metric.Reset) ~= "function" then return false, "metric reset unavailable" end
-    local ok, result, err = xpcall(function() return metric.Reset(metric, reason or "reset") end, Trace)
+    local ok, result, err = xpcall(function() return metric.Reset(metric, reason or "reset", resetKind) end, Trace)
     if ok ~= true then return false, result end
     if result == false then return false, err or "metric reset rejected" end
     return true
@@ -91,12 +92,14 @@ function A:RegisterMetric(spec)
     local row = {
         id = id, title = tostring(spec.title or id), description = tostring(spec.description or ""),
         category = tostring(spec.category or "general"), order = tonumber(spec.order) or 100, hidden = spec.hidden == true,
+        suspended = spec.suspended == true,
         nativeEvents = type(spec.nativeEvents) == "table" and spec.nativeEvents or {}, factCategories = NormalizeCategorySet(spec.factCategories),
         OnFact = type(spec.OnFact) == "function" and spec.OnFact or nil,
         OnNativeFact = type(spec.OnNativeFact) == "function" and spec.OnNativeFact or nil,
         GetProjection = type(spec.GetProjection) == "function" and spec.GetProjection or nil,
         Reset = type(spec.Reset) == "function" and spec.Reset or nil,
         GetHealth = type(spec.GetHealth) == "function" and spec.GetHealth or nil,
+        GetDiagnosticDetail = type(spec.GetDiagnosticDetail) == "function" and spec.GetDiagnosticDetail or nil,
         state = type(spec.state) == "table" and spec.state or {}, owner = spec.owner,
     }
     self.metrics[id] = row
@@ -122,7 +125,7 @@ function A:ListMetrics(includeHidden)
     local rows = {}
     for _, id in ipairs(self.metricOrder) do
         local metric = self.metrics[id]
-        if metric ~= nil and (includeHidden == true or metric.hidden ~= true) then
+        if metric ~= nil and (includeHidden == true or (metric.hidden ~= true and metric.suspended ~= true)) then
             rows[#rows + 1] = { id=id, title=metric.title, description=metric.description, category=metric.category, order=metric.order, active=self.activeMetrics[id] == true }
         end
     end
@@ -178,6 +181,11 @@ local function CombatFactChanged(fact, v)
 end
 function A:_DispatchFact(fact)
     if type(fact) ~= "table" then return false end
+    -- 无活动指标的类别直接退出，避免状态/施法等事件分配 borrowed fact 保护快照。
+    local plan = self.factPlans[tostring(fact.category or "other"):lower()] or self.factPlans.other
+    if type(plan) ~= "table" or #plan == 0 then return false end
+    -- 在指标分发之前过滤；其它模块的全场 Consumer 不扩大本统计的处理范围。
+    if self:GetCollectionScope() == "self" and self:IsRelevantSelfFact(fact) ~= true then return false end
     self.factsReceived = self.factsReceived + 1
     -- One compact scalar snapshot protects sibling metrics from each other. The
     -- parent CombatEventBus still applies its own full consumer fence as well.
@@ -193,7 +201,6 @@ function A:_DispatchFact(fact)
         subjectName=fact.subjectName, rawNotice2=fact.rawNotice2, rawNotice3=fact.rawNotice3, rawNotice4=fact.rawNotice4, rawNotice5=fact.rawNotice5,
         auraType=fact.auraType, auraId=fact.auraId, auraName=fact.auraName, auraEvidence=fact.auraEvidence,
     }
-    local plan = self.factPlans[tostring(fact.category or "other"):lower()] or self.factPlans.other or {}
     local changed = false
     for _, id in ipairs(plan) do
         local metric = self.metrics[id]
@@ -275,12 +282,13 @@ function A:_OnNativeEvent(eventName, ...)
 end
 
 function A:_SubscribeBus()
-    if self.busSubscribed == true then return true end
+    if self.busSubscribed == true and self.busScope == self.collectionScope then return true end
     local bus = S.Services and S.Services.CombatEventBusV3 or nil
     if type(bus) ~= "table" or type(bus.Subscribe) ~= "function" then return false, "CombatEventBus unavailable" end
-    local ok, err = bus:Subscribe(self, function(_, fact) A:_DispatchFact(fact) end, { scope="all" })
+    local ok, err = bus:Subscribe(self, function(_, fact) A:_DispatchFact(fact) end, { scope=self.collectionScope })
     if ok ~= true then return false, err end
     self.busSubscribed = true
+    self.busScope = self.collectionScope
     return true
 end
 function A:_UnsubscribeBus()
@@ -290,6 +298,7 @@ function A:_UnsubscribeBus()
     local ok, err = bus:Unsubscribe(self)
     if ok ~= true then return false, err end
     self.busSubscribed = false
+    self.busScope = nil
     return true
 end
 function A:_ReconcileNative(activeSet)
@@ -342,7 +351,7 @@ function A:_ApplyActiveSet(activeSet, reason)
         if activeSet[id] ~= true then
             local metric = self.metrics[id]
             if metric and type(metric.Reset) == "function" then
-                local ok, err = RunMetricReset(metric, reason or "disabled")
+                local ok, err = RunMetricReset(metric, reason or "disabled", "inactive")
                 if ok ~= true then
                     self.metricErrors=self.metricErrors+1
                     Emit("error","COMBAT_METRIC_RESET_FAILED","战斗指标释放状态失败",{metric=id,error=tostring(err)})
@@ -359,7 +368,10 @@ end
 function A:_ReconcileDemand(_, before, after, context)
     local beforeCount, afterCount = tonumber(before and before.count) or 0, tonumber(after and after.count) or 0
     local activeSet = BuildActiveSet(after)
-    for id in pairs(activeSet) do if self.metrics[id] == nil then return false, "unknown combat metric: " .. tostring(id) end end
+    for id in pairs(activeSet) do
+        if self.metrics[id] == nil then return false, "unknown combat metric: " .. tostring(id) end
+        if self.metrics[id].suspended then return false, "combat metric suspended: " .. tostring(id) end
+    end
     if beforeCount <= 0 and afterCount > 0 then
         local ok, err = self:_SubscribeBus(); if ok ~= true then return false, err end
     end
@@ -384,7 +396,7 @@ local lease, leaseErr = S.Demand:Create({
         for _, id in ipairs(A.metricOrder) do
             local metric=A.metrics[id]
             if metric and type(metric.Reset)=="function" then
-                local resetOk = RunMetricReset(metric,"quiesce")
+                local resetOk = RunMetricReset(metric,"quiesce","inactive")
                 if resetOk ~= true then ok = false end
             end
         end
@@ -414,7 +426,9 @@ end
 function A:ReleaseConsumer(token, reason)
     token = tostring(token or "")
     if token == "" or self.Demand:Has(token) ~= true then return true end
-    return self.Demand:Release(token, reason or "analytics_release")
+    local ok,err=self.Demand:Release(token, reason or "analytics_release")
+    if ok==true then self.statisticsConsumers[token]=nil end
+    return ok,err
 end
 function A:UpdateConsumer(token, options, reason)
     token = tostring(token or "")
@@ -428,10 +442,60 @@ function A:UpdateConsumer(token, options, reason)
 end
 function A:GetMetricProjection(id, options)
     local metric=self.metrics[NormalizeId(id)]; if metric==nil then return nil,"metric missing" end
+    if metric.suspended then return nil,"metric suspended" end
     local value={}
     if type(metric.GetProjection)=="function" then local ok,result=xpcall(function() return metric.GetProjection(metric,options or {},self) end,Trace); if ok~=true then return nil,result end; value=type(result)=="table" and result or {} end
     value.id,value.title,value.revision,value.active=metric.id,metric.title,self.projectionRevision,self.activeMetrics[metric.id]==true
     return value
+end
+
+-- Feature 提供指标偏好；共享服务协调唯一事实流，不读取业务存档。
+function A:SetStatisticsPolicy(provider) self.statisticsPolicy = provider; return true end
+function A:GetCollectionScope() return self.collectionScope == "all" and "all" or "self" end
+function A:IsSelfActor(name, id)
+    local identity = S.Services and S.Services.UnitIdentityV3
+    if not identity then return false end
+    if type(identity.IsPlayerName) == "function" and identity:IsPlayerName(name) then return true end
+    return id ~= nil and type(identity.player) == "table" and identity.player.id ~= nil and tostring(id) == tostring(identity.player.id)
+end
+function A:IsRelevantSelfFact(fact)
+    local target = (fact.targetName and fact.targetName ~= "" and fact.targetName) or fact.subjectName
+    if self:IsSelfActor(fact.sourceName, fact.sourceId) or self:IsSelfActor(target, fact.targetId) then return true end
+    -- 自己打过的目标死亡通知用于等待直接击杀事实，不能为此打开全场桥。
+    local kills = self.metrics.kills
+    local victim = tostring((fact.targetName and fact.targetName ~= "" and fact.targetName) or fact.subjectName or "")
+    return fact.category == "death" and kills ~= nil and kills.state.targets ~= nil and kills.state.targets[victim] ~= nil
+end
+function A:ApplyCollectionScope(scope)
+    if scope ~= "self" and scope ~= "all" then return false, "invalid collection scope" end
+    local previous = self.collectionScope
+    self.collectionScope = scope
+    if self.busSubscribed then
+        local ok, err = self:_SubscribeBus()
+        if ok ~= true then self.collectionScope = previous; return false, err end
+    end
+    return true
+end
+function A:AcquireStatisticsConsumer(token, reason)
+    if type(self.statisticsPolicy) ~= "function" then return false, "statistics policy unavailable" end
+    local options, err = self.statisticsPolicy()
+    if type(options) ~= "table" then return false, err end
+    local ok, scopeErr = self:ApplyCollectionScope(options.scope)
+    if ok ~= true then return false, scopeErr end
+    local identity = S.Services and S.Services.UnitIdentityV3
+    if identity and type(identity.RefreshPlayerIdentity) == "function" then identity:RefreshPlayerIdentity(false) end
+    ok, err = self:UpdateConsumer(token, options, reason or "statistics_acquire")
+    if ok == true then self.statisticsConsumers[token] = true end
+    return ok, err
+end
+function A:RefreshStatisticsConsumers(reason)
+    for token in pairs(self.statisticsConsumers) do
+        if self:HasConsumer(token) then
+            local ok, err = self:AcquireStatisticsConsumer(token, reason)
+            if ok ~= true then return false, err end
+        else self.statisticsConsumers[token] = nil end
+    end
+    return true
 end
 
 -- Bounded actor drill-down projection. Metric plugin state stays private to the
@@ -535,8 +599,8 @@ function A:GetHealth()
         if type(options) ~= "table" or type(options.metrics) ~= "table" or #options.metrics <= 0 then emptyConsumers = emptyConsumers + 1 end
     end
     local bus=S.Services and S.Services.CombatEventBusV3 or nil; local bh=type(bus)=="table" and type(bus.GetHealth)=="function" and bus:GetHealth() or {}
-    return { version=self.version, consumers=tonumber(self.consumerCount) or 0, emptyConsumers=emptyConsumers, registeredMetrics=#self.metricOrder, activeMetrics=#self.activeMetricOrder,
+    return { version=self.version, collectionScope=self:GetCollectionScope(), consumers=tonumber(self.consumerCount) or 0, emptyConsumers=emptyConsumers, registeredMetrics=#self.metricOrder, activeMetrics=#self.activeMetricOrder,
         damageDispatchMetrics=#(self.factPlans.damage or {}), auraDispatchMetrics=#(self.factPlans.aura or {}), busSubscribed=self.busSubscribed==true,
-        busCoverage=tostring(bh.coverageState or "INACTIVE"), factsReceived=self.factsReceived, metricDispatches=self.metricDispatches,
+        busCoverage=self.busSubscribed and self:GetCollectionScope()=="self" and "SELF_ONLY" or tostring(bh.coverageState or "INACTIVE"), factsReceived=self.factsReceived, metricDispatches=self.metricDispatches,
         metricErrors=self.metricErrors, metricMutations=self.metricMutations, nativeFacts=self.nativeFacts, nativeCoverage=self.nativeCoverage, metrics=metricHealth }
 end

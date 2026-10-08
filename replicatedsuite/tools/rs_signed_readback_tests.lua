@@ -84,11 +84,13 @@ for _,version in ipairs({3,4,5}) do
 end
 Test('real HUD apply keeps negative player and target offsets after new generation',function()
     local _,P,F,io=Boot({loss='omit'});assert(F:EnsureStoreLoaded())
+    -- 中文维护（2026-10-07）：fresh startup 先建立 split Authority；HUD 本次仍只增加一次 layout 写。
+    local writes=io.writes
     local snapshot=F:GetHudCalibrationSnapshot()
     snapshot.player.components.buffs.y=-2;snapshot.player.components.buffs.x=-21
     snapshot.target.components.buffs.y=-31;snapshot.target.components.buffs.x=-77
     local ok,why=F:PersistHudCalibrationSnapshot(snapshot,'signed-test');assert(ok,why)
-    local expected=Copy(F.State);assert(io.writes==1 and io.clears==0)
+    local expected=Copy(F.State);assert(io.writes==writes+1 and io.clears==0)
     local _,fresh,freshF,fio=Boot({disk=io.disk,loss='omit'});assert(freshF:EnsureStoreLoaded())
     assert(Equal(expected,freshF.State),'reload changed unrelated configuration: '..tostring(FirstDiff(expected,freshF.State) or 'none'))
     assert(fio.writes==0 and fresh:GetStore('v3.buff_display').schemaVersion==8)
@@ -126,7 +128,9 @@ Test('cold load recovers the proven schema8 transport5 distance.x omission witho
         local distance=type(settings)=='table' and type(settings.components)=='table' and settings.components.distance or nil
         if type(distance)=='table' then distance.x=nil end
     end
-    local _,P,F,io=Boot({damage=OmitDistanceX});assert(F:EnsureStoreLoaded())
+    -- 中文维护：旧 schema8/T5 scalar 恢复属于注册 Legacy Store 的 Core 证据链，
+    -- 当前 Feature startup 已走 split manifest，不能用它冒充历史 LoadStore 验真。
+    local _,P,F,io=Boot({damage=OmitDistanceX});assert(P:LoadStore('v3.buff_display')=='empty')
     F.State.settings.components.distance.x=-1
     -- 模拟 .240 已经发生、而 .241 尚未安装时留下的失败写入：临时撤掉 Store recovery hook，
     -- 让当前测试环境精确生成旧版本的 readback mismatch 磁盘形状；fresh Boot 再由 .241 恢复。
@@ -137,7 +141,7 @@ Test('cold load recovers the proven schema8 transport5 distance.x omission witho
     assert(not ok and why:find('$.settings.components.distance.x: number(-1) vs number(0)',1,true),why)
     assert(io.disk[mainKey]~=nil,'synthetic failed write did not leave the real-world corrupted disk shape')
     local _,freshP,freshF,fio=Boot({disk=io.disk})
-    local loaded,loadErr=freshF:EnsureStoreLoaded();assert(loaded,loadErr)
+    local loaded,_,loadErr=freshP:LoadStore('v3.buff_display');assert(loaded,loadErr)
     assert(freshF.State.settings.components.distance.x==-1,'stamped scalar omission was not recovered')
     local freshStore=freshP:GetStore('v3.buff_display')
     assert(not freshStore.writeFenced and freshStore.lastIntegrityStatus=='verified_canonical_recovered_representation','recovery did not stay inside exact canonical proof')
@@ -152,7 +156,7 @@ Test('distance.x omission recovery rejects when any unrelated field also changed
         local distance=type(components)=='table' and components.distance or nil
         if type(distance)=='table' then distance.x=nil;distance.y=123 end
     end
-    local _,P,F,io=Boot({damage=DamageTwoFields});assert(F:EnsureStoreLoaded())
+    local _,P,F,io=Boot({damage=DamageTwoFields});assert(P:LoadStore('v3.buff_display')=='empty')
     F.State.settings.components.distance.x=-1
     local st=assert(P:GetStore('v3.buff_display'));local rebuild=st.rebuildCanonicalForIntegrity
     st.rebuildCanonicalForIntegrity=nil
@@ -160,7 +164,7 @@ Test('distance.x omission recovery rejects when any unrelated field also changed
     st.rebuildCanonicalForIntegrity=rebuild
     assert(not ok and io.disk[mainKey]~=nil,'failed-write fixture was not created')
     local _,freshP,freshF=Boot({disk=io.disk})
-    local loaded=freshF:EnsureStoreLoaded();assert(not loaded,'whole-Store fingerprint must reject x recovery when another field also drifted')
+    local loaded=freshP:LoadStore('v3.buff_display');assert(not loaded,'whole-Store fingerprint must reject x recovery when another field also drifted')
     local failed=freshP:GetStore('v3.buff_display')
     assert(failed.writeFenced and tostring(failed.lastError or ''):find('fingerprint_mismatch',1,true),'unrelated drift bypassed fail-closed integrity')
 end)
@@ -241,8 +245,9 @@ Test('paged report attaches durable-failure evidence without rerunning save or r
     assert(io.reads==r+1 and io.writes==w and io.clears==0)
 end)
 Test('healthy normal save awaiting barrier is not a failed store and exports nothing',function()
-    local S,P,F,io=Boot();assert(F:EnsureStoreLoaded());assert(P:SaveStore('v3.buff_display',{force=true}))
-    local st=P:GetStore('v3.buff_display');assert(st.needsBarrierVerify and not st.writeFenced)
+    -- 中文维护：普通窗口配置写入的活跃 Authority 是 settings 小 Store，隐私证据选择规则不变。
+    local S,P,F,io=Boot();assert(F:EnsureStoreLoaded());assert(P:SaveStore(F.SettingsStoreId,{force=true}))
+    local st=P:GetStore(F.SettingsStoreId);assert(st.needsBarrierVerify and not st.writeFenced)
     local r=io.reads;assert(#S.DiagnosticsManager:GetPersistenceFailureChoices()==0)
     local value,err=P:BuildFailedStoreEvidenceText(st.id);assert(not value and err=='store_not_fenced')
     assert(io.reads==r)
@@ -275,9 +280,10 @@ end)
 -- 维护：成功重新读取合法存档可清除当前错误，但历史连续计数/lastVerify未必归零；
 -- 不允许仅凭历史计数越过“只导出当前失败”隐私边界。使用真实Save/Load而非直接清故障标志。
 Test('successful verified load suppresses historical save counters from current failure exports',function()
-    local S,P,F,io=Boot();assert(F:EnsureStoreLoaded());assert(P:SaveStore('v3.buff_display',{force=true,durable=true}))
-    local st=P:GetStore('v3.buff_display');local good=Copy(io.disk[st.resolvedKey])
-    io.damage=function(raw)raw.payload.settings.components.buffs.y=99 end
+    -- 中文维护：真实 HUD 保存/回读故障只作用于 layout Store，历史计数不能扩张当前导出范围。
+    local S,P,F,io=Boot();assert(F:EnsureStoreLoaded());assert(P:SaveStore(F.HudLayoutStoreId,{force=true,durable=true}))
+    local st=P:GetStore(F.HudLayoutStoreId);local good=Copy(io.disk[st.resolvedKey])
+    io.damage=function(raw)raw.payload.components.buffs.y=99 end
     assert(not P:SaveStore(st.id,{force=true,durable=true}));assert(st.consecutiveSaveFailures>0)
     io.damage=nil;io.disk[st.resolvedKey]=good
     local ok,_,why=P:LoadStore(st.id,{discardDirty=true,discardUnverified=true,revalidateTerminal=true});assert(ok,why)

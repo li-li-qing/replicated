@@ -53,7 +53,11 @@ return function(ctx)
     local function SaveAltered(target,key,alter)
         local original=S.Api.SaveData
         S.Api.SaveData=function(self,k,v)
-            local payload=Copy(v);if k==key then alter(payload) end
+            local payload=Copy(v)
+            if k==key then
+                local replacement=alter(payload)
+                if replacement~=nil then payload=replacement end
+            end
             return original(self,k,payload)
         end
         local ran,ok,err=pcall(P.SaveStore,P,target.id,{force=true,verifyAfterSave=true})
@@ -276,8 +280,13 @@ return function(ctx)
     Test('durable death readback rejects changed summary content',function()
         disk[deathKey]=Copy(healthyDeath);assert(P:LoadStore(ds.id,options))
         local ok=SaveAltered(ds,deathKey,function(raw)
-            raw.payload.history.entries=StringKeys(raw.payload.history.entries)
-            raw.payload.history.entries['1'].totalDamage=99999
+            -- 中文维护注释：当前死亡索引的传输层会把记录编码为字符串；先用生产 codec 还原再注入损坏。
+            -- 编码回物理边界时保留原业务与 envelope 指纹，不因夹具格式升级重新盖章或放宽校验。
+            local decoded=assert(P:DecodePhysicalEnvelope(raw))
+            decoded.payload.history.entries[1].totalDamage=99999
+            local physical=assert(P:EncodePhysicalEnvelope(decoded))
+            physical.payload.history.entries=StringKeys(physical.payload.history.entries)
+            return physical
         end)
         assert(not ok and ds.lastVerifyOk==false)
         disk[deathKey]=Copy(healthyDeath);assert(P:LoadStore(ds.id,options))

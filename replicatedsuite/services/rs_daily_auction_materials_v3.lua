@@ -68,12 +68,14 @@ end
 
 local function FindZoneIdInText(text)
     text = tostring(text or "")
-    local bestId, bestLen = nil, 0
+    local bestId, bestLen, bestName = nil, 0, nil
+    local matches = {}
     local byId = S.GameIds and S.GameIds.Zone and S.GameIds.Zone.ById or nil
     local function Consider(zoneId, candidate)
         local name = tostring(candidate or "")
-        if name ~= "" and string.find(text, name, 1, true) ~= nil and #name > bestLen then
-            bestId, bestLen = tonumber(zoneId), #name
+        if name ~= "" and string.find(text, name, 1, true) ~= nil then
+            matches[#matches + 1] = { zoneId=tonumber(zoneId), name=name }
+            if #name > bestLen then bestId, bestLen, bestName = tonumber(zoneId), #name, name end
         end
     end
     for zoneId, zone in pairs(type(byId) == "table" and byId or {}) do
@@ -86,6 +88,13 @@ local function FindZoneIdInText(text)
             for _, alias in ipairs(type(zone.nameZhAliases) == "table" and zone.nameZhAliases or {}) do
                 Consider(zoneId, alias)
             end
+        end
+    end
+    -- 中文维护注释（2026-10-02）：最长命中只用于消除名称包含关系。两个独立地区同时出现
+    -- 不提供唯一来源证据，禁止按 pairs 顺序/汉字字数选一个地区并展示错误材料。
+    for _, match in ipairs(matches) do
+        if match.zoneId ~= bestId and (match.name == bestName or string.find(bestName, match.name, 1, true) == nil) then
+            return nil, "zone_ambiguous"
         end
     end
     return bestId and math.floor(bestId) or nil
@@ -104,6 +113,18 @@ local function BuildMaterialRows(self, identity, questId, recipe, resolved)
     return ApplyOrder(rows, self.materialOrder[scope])
 end
 
+local CRAFT_TITLE_ENDINGS = { "保存特产", "标准特产", "新鲜特产", "特供特产", "特制特产", "传统特产", "肥料特产" }
+local function HasCraftTitleEvidence(title, zoneId, zoneReason)
+    -- 中文维护（2026-10-04）：仅含“特产”的活动标题不证明有固定制作材料。
+    -- “内陆特产”等泛化任务只留诊断；明确制作标签、地区或货物品类的失败仍须保留，
+    -- 不能把真实制作任务缺材料伪装成没有任务。已核 QuestId 映射在调用处另行保留。
+    if zoneId ~= nil or zoneReason == "zone_ambiguous" or string.find(title, "[特产", 1, true) ~= nil then return true end
+    for _, ending in ipairs(CRAFT_TITLE_ENDINGS) do
+        if title:sub(-#ending) == ending then return true end
+    end
+    return false
+end
+
 function D:GetSnapshot() return Copy(self.snapshot) end
 function D:GetDiagnosticsSnapshot()
     -- 仅返回已采集证据；打印报告不能触发任务刷新、材料搜索或取得 Consumer。
@@ -115,6 +136,7 @@ function D:GetDiagnosticsSnapshot()
             tasks[#tasks + 1] = { questId=task.questId, title=task.title, originZoneId=task.originZoneId,
                 discoverySource=task.discoverySource, materialStatus=task.materialStatus, matchReason=task.matchReason,
                 selectedRecipe=task.selectedRecipe, requiresSelection=task.requiresSelection == true,
+                recipeOptions=Copy(task.recipeOptions),
                 materialCount=#(task.materials or {}), hiddenMaterialCount=hiddenCount }
         end
     end
@@ -151,17 +173,18 @@ function D:Refresh(reason)
         local fact = facts[qid]
         if qid > 0 and type(fact) == "table" and fact.active == true then
             local recipes = {}; for _, recipe in ipairs(type(entry.recipes) == "table" and entry.recipes or {}) do recipes[#recipes + 1] = tostring(recipe) end
-            -- 中文维护注释（2026-09-14，候选货物显示名）：DailyTradePackQuestRecipes 保存的是内部 legacyName，
-            -- 它只能作为静态配方身份，不能直接显示给玩家。这里优先通过已核 recipe.productItemId +
-            -- TradeMaterialIdentityV3 的本地化 resolver 得到客户端物品名；无法证明时只显示“候选货物 N”，
-            -- 宁可信息少一些，也不把英文内部键泄露到 UI。raw recipe 仍只作为 SelectRecipe 的稳定参数。
+            -- 中文维护（2026-10-03）：客户端物品名尚不可用时，共享 Identity resolver
+            -- 用已核配方地区显示“[地区]特产”；只有地区也未知才保留候选占位。稳定 recipe 参数不变。
             local recipeOptions = {}
             local staticTrade = S.Data and S.Data.TradeStaticV2 or nil
             for recipeIndex, recipe in ipairs(recipes) do
                 local record = type(staticTrade) == "table" and type(staticTrade.GetRecipeByLegacyName) == "function" and staticTrade:GetRecipeByLegacyName(recipe) or nil
-                local label = type(identity.ResolveProductDisplayName) == "function" and identity:ResolveProductDisplayName(type(record) == "table" and record.productItemId or nil, nil) or nil
+                local label, labelSource
+                if type(identity.ResolveRecipeDisplayName) == "function" then label, labelSource = identity:ResolveRecipeDisplayName(recipe)
+                elseif type(identity.ResolveProductDisplayName) == "function" then label = identity:ResolveProductDisplayName(type(record) == "table" and record.productItemId or nil, nil) end
                 if type(label) ~= "string" or label == "" or label == "贸易品" then label = "候选货物 " .. tostring(recipeIndex) end
-                recipeOptions[#recipeOptions + 1] = { recipe = recipe, name = label }
+                recipeOptions[#recipeOptions + 1] = { recipe = recipe, name = label, nameSource = labelSource,
+                    originZoneId = type(record) == "table" and record.originZoneId or nil }
             end
             local selected = self.selectedRecipes[qid]
             if #recipes == 1 then selected = recipes[1]
@@ -204,7 +227,8 @@ function D:Refresh(reason)
                 if #pendingSamples < 6 then pendingSamples[#pendingSamples + 1] = { questId=qid, title=title, index=fact.index } end
             end
             local tradeLike = string.find(title, "特产", 1, true) ~= nil
-            local zoneId = tradeLike and FindZoneIdInText(title) or nil
+            local zoneId, zoneReason
+            if tradeLike then zoneId, zoneReason = FindZoneIdInText(title) end
             local resolved = zoneId ~= nil and tradeLike and identity:ResolveStatic(title, zoneId) or nil
             local recipe = type(resolved) == "table" and tostring(resolved.label or "") or ""
             if recipe ~= "" and type(resolved.rows) == "table" and #resolved.rows > 0 then
@@ -217,16 +241,17 @@ function D:Refresh(reason)
                 tasks[#tasks + 1] = task; taskById[qid] = task
                 titleMatchedCount = titleMatchedCount + 1
             elseif tradeLike then
-                local matchReason = zoneId == nil and "zone_unmatched" or "recipe_unmatched"
+                local matchReason = zoneReason or (zoneId == nil and "zone_unmatched" or "recipe_unmatched")
+                local purchaseTaskEligible = taskById[qid] ~= nil or HasCraftTitleEvidence(title, zoneId, zoneReason)
                 unresolvedCount = unresolvedCount + 1
                 if #unresolvedTradeLike < 6 then
                     unresolvedTradeLike[#unresolvedTradeLike + 1] = { questId=qid, title=title, zoneId=zoneId,
-                        reason=matchReason, knownMappingRetained=taskById[qid] ~= nil }
+                        reason=matchReason, knownMappingRetained=taskById[qid] ~= nil,
+                        purchaseTaskEligible=purchaseTaskEligible, exclusionReason=purchaseTaskEligible ~= true and "generic_trade_title" or nil }
                 end
-                -- 中文维护注释（2026-09-30，daily-auction-title-recovery-1）：未匹配的特产任务原先
-                -- 被整个丢弃，玩家只能看到另一项。保留无材料的待匹配行，不猜地区/配方，也不覆盖
-                -- 已核 QuestId 的候选列表；采购搜索始终只允许已证明的材料行。
-                if taskById[qid] == nil then
+                -- 明确制作任务的解析失败保留在采购投影，泛化特产标题仅保留上面的诊断证据。
+                -- 不猜地区/配方，不覆盖已核 QuestId 候选；搜索仍只允许已证明的材料。
+                if taskById[qid] == nil and purchaseTaskEligible == true then
                     local task = { questId=qid, title=title, state=tostring(fact.state or "IN_PROGRESS"), active=true,
                         recipes={}, recipeOptions={}, requiresSelection=false, materials={}, materialStatus="unresolved",
                         discoverySource="unresolved_title", originZoneId=zoneId, matchReason=matchReason }

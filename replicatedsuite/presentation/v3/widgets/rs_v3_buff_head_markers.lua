@@ -51,6 +51,7 @@ P.TargetAliasHudContractVersion = 2 -- .18.322：目标别名升级为可独立�
 P.PvpPatch = "pvp-hud-1"
 P.contentDirty = true
 P.motionMetrics = { frames=0, rootWrites=0, contentBuilds=0, textureFailures=0, anchorFailures=0 }
+P.cooldownEvidence = {inputRows=0,drawn=0,rejected=0,nonemptyRenders=0}
 
 
 local SCOPES = { "player", "target" }
@@ -95,15 +96,18 @@ local function HasRenderableComponents(settings, scope)
     -- 进而让 Aura lane 因 consumerCount>0 继续运行。真正可见能力只由组件开关决定。
     for _, key in ipairs(RENDERABLE_KEYS) do
         local component = components[key]
-        if component == nil or component.enabled ~= false then
-            -- 中文维护注释（Info 可见性门，2026-09-11）：distance/class/gearScore 没有
-            -- 独立绘制区域，info 关闭后它们不能作为 Renderer/Consumer 的启动理由。这样
+        -- 名称没有 component.enabled；职业图标关闭时，文字仍可独立启动 HUD Consumer。
+        if key=="class" then
+            local info=type(settings.info)=="table" and settings.info or {}
+            if info.enabled~=false and (info.showClass~=false or (component~=nil and component.enabled~=false)) then return true end
+        elseif component == nil or component.enabled ~= false then
+            -- 中文维护注释（Info 可见性门，2026-09-11）：distance/gearScore 没有
+            -- 独立绘制区域，info 关闭后它们不能作为 Renderer/Consumer 的启动理由。职业的双显示门见上方。这样
             -- 与 Feature 的 scope lane gate 保持同一 Authority，避免隐藏 HUD 仍保持 50ms
             -- 数据路径；其他组件继续按自己的 enabled 独立启停。
-            if key ~= "distance" and key ~= "class" and key ~= "gearScore" then return true end
+            if key ~= "distance" and key ~= "gearScore" then return true end
             local info = type(settings.info) == "table" and settings.info or {}
             if info.enabled ~= false then
-                if key == "class" and info.showClass ~= false then return true end
                 if key == "gearScore" and info.showGear ~= false then return true end
                 if key == "distance" and info.showDistance ~= false then return true end
             end
@@ -126,6 +130,7 @@ local function MakeIcon(scope, index)
     -- so ordinary Aura-only slots do not pay an extra drawable allocation.
     local stack = S.UI:CreateLabel(root, "v3_buff_head_" .. scope .. "_stack_" .. tostring(index), "", 0, 0, 18, 14, 9, "strong", "RIGHT", true)
     local time = S.UI:CreateLabel(root, "v3_buff_head_" .. scope .. "_time_" .. tostring(index), "", 0, 0, 40, 12, 8, "default", "RIGHT", true)
+    if S.Theme and S.Theme.SetWorldTextPalette then S.Theme:SetWorldTextPalette(stack);S.Theme:SetWorldTextPalette(time) end
     if icon == nil or stack == nil or time == nil then
         S.UI:SetVisible(root, false, P.owner)
         return nil, "buff_head_marker_child_create_failed"
@@ -137,6 +142,7 @@ end
 local function MakeLabel(scope, index)
     local label, err = S.UI:CreateLabel(UIParent, "v3_buff_head_" .. scope .. "_label_" .. tostring(index), "", 0, 0, 120, 16, 10, "strong", "CENTER", true)
     if label == nil then return nil, err end
+    if S.Theme and S.Theme.SetWorldTextPalette then S.Theme:SetWorldTextPalette(label) end
     S.UI:SetVisible(label, false, P.owner)
     return { root=label, text="" }
 end
@@ -148,6 +154,7 @@ local function MakeCastBar(scope)
     local bg = root.CreateColorDrawable and root:CreateColorDrawable(0.10, 0.10, 0.12, 0.85, "overlay") or nil
     local fill = root.CreateColorDrawable and root:CreateColorDrawable(0.96, 0.72, 0.12, 0.95, "overlay") or nil
     local text = S.UI:CreateLabel(root, "v3_buff_head_" .. scope .. "_cast_text", "", 0, 0, 120, 14, 10, "default", "CENTER", true)
+    if S.Theme and S.Theme.SetWorldTextPalette then S.Theme:SetWorldTextPalette(text) end
     if bg == nil or fill == nil or text == nil then
         S.UI:SetVisible(root, false, P.owner)
         return nil, "buff_head_castbar_child_create_failed"
@@ -176,6 +183,9 @@ local function MakeInfo(scope)
             return nil, aliasErr
         end
         S.UI:SetVisible(aliasLabel, false, P.owner)
+    end
+    if S.Theme and S.Theme.SetWorldTextPalette then
+        S.Theme:SetWorldTextPalette(classLabel);S.Theme:SetWorldTextPalette(gearLabel);S.Theme:SetWorldTextPalette(distanceLabel);S.Theme:SetWorldTextPalette(aliasLabel)
     end
     S.UI:SetVisible(classLabel, false, P.owner); S.UI:SetVisible(gearLabel, false, P.owner); S.UI:SetVisible(distanceLabel, false, P.owner)
     -- 中文维护注释（HUD 基础信息拆分，2026-09-17）：旧实现只有一个拼接 label，导致职业名称、
@@ -247,12 +257,19 @@ function P:EnsurePools(settings)
 end
 
 local function HideIcon(marker)
-    if marker and marker.root then S.UI:SetVisible(marker.root, false, P.owner) end
+    if marker and marker.root then S.UI:SetVisible(marker.root, false, P.owner);marker.contentCommitted=false end
 end
 local function HideScope(scope)
     local pool = P.pools[scope]
     if pool == nil then return end
-    if pool.root then S.UI:SetVisible(pool.root, false, P.owner) end
+    if pool.root then
+        pool.visibilityRequested=false
+        if type(S.UI.EnsureVisible)=="function" then
+            pool.rootVisibilityAccepted=S.UI:EnsureVisible(pool.root,false,P.owner)==true
+            if pool.rootVisibilityAccepted then pool.rootVisible=false else pool.rootVisible=nil end
+        else S.UI:SetVisible(pool.root,false,P.owner);pool.rootVisible=nil;pool.rootVisibilityAccepted=nil end
+    end
+    pool.rootVisibilityReason=pool.rootVisibilityAccepted==false and "visibility_write_rejected" or "scope_hidden"
     pool.ready = false
     for _, marker in ipairs(pool.icons) do HideIcon(marker) end
     if pool.labels then for _, label in ipairs(pool.labels) do if label.root then S.UI:SetVisible(label.root, false, P.owner) end end end
@@ -419,7 +436,10 @@ local function ApplyIcon(marker, row, size, cfg, x, y, showStacks, showTime, sca
     -- Group-level clamping already kept the whole row/group inside the screen;
     -- each icon is placed at its exact computed slot so members never pile up.
     Place(P.pools[marker.scope], marker.root, x, y, size, size)
-    S.UI:SetVisible(marker.root, true, P.owner)
+    -- SetVisible 的 false 也表示无需重复写入；EnsureVisible 才能区分已接受与明确拒写。
+    -- 记录的是 RSUI 提交状态，不把它当作 GPU 像素读回。无该门面的旧测试宿主仍保持原绘制行为。
+    if type(S.UI.EnsureVisible)=="function" then marker.contentCommitted=S.UI:EnsureVisible(marker.root,true,P.owner)==true
+    else S.UI:SetVisible(marker.root,true,P.owner);marker.contentCommitted=nil end
 end
 
 -- Render a horizontal icon row for a component; returns how many slots used.
@@ -980,6 +1000,11 @@ local function RenderScope(scope, settings)
     -- HUD rule that one component becoming visible must not push another one.
     local cooldownCfg = components.cooldowns or {}
     local cooldownRows = scope == "player" and (plates.cooldowns or {}) or {}
+    if scope=="player" then
+        P.cooldownEvidence.lastRenderAt=S.NowMs and S.NowMs() or 0
+        P.cooldownEvidence.inputRows=#cooldownRows
+        P.cooldownEvidence.drawn,P.cooldownEvidence.rejected=0,0
+    end
     if cooldownCfg.enabled ~= false and #cooldownRows > 0 then
         local cdSize = math.max(8, math.floor(N(cooldownCfg.size, 29) * scale))
         local cdSpacing = math.max(0, math.floor(N(cooldownCfg.spacing, 2) * scale))
@@ -987,8 +1012,18 @@ local function RenderScope(scope, settings)
         local cdMaxRows = math.max(1, math.min(4, math.floor(N(cooldownCfg.maxRows, 2))))
         local cdRowGap = math.max(1, math.floor(cdSize + 4 * scale))
         local cdTop = bar.centerY + math.floor(N(cooldownCfg.y, 90) * scale)
+        local firstSlot=slot+1
         slot = slot + RenderRows(scope, pool, cooldownRows, cooldownCfg, bar.centerX, cdTop,
             false, true, slot, cdSize, cdSpacing, cdMaxPerRow, cdMaxRows, cdRowGap, 1, scale)
+        -- 常数规模计数，不保存所有图标/Native 对象；仅用户导出时读取这一份现有绘制证据。
+        for index=firstSlot,slot do
+            if pool.icons[index].contentCommitted==true then P.cooldownEvidence.drawn=P.cooldownEvidence.drawn+1
+            elseif pool.icons[index].contentCommitted==false then P.cooldownEvidence.rejected=P.cooldownEvidence.rejected+1 end
+        end
+        local evidence=P.cooldownEvidence
+        evidence.nonemptyRenders=evidence.nonemptyRenders+1
+        evidence.lastNonemptyAt=S.NowMs and S.NowMs() or 0
+        evidence.lastNonemptyInput,evidence.lastNonemptyDrawn=#cooldownRows,evidence.drawn
     end
     -- Equipment flanks: pre-computed groups applied as whole units (group clamp).
     slot = slot + ApplyEquipGroup(scope, pool, plates, components, L.leftGroup, slot, scale)
@@ -1065,6 +1100,7 @@ local function MoveRoots()
             pool.lastAnchorFailure=reason
         elseif pool then pool.lastAnchorFailure=nil end
         local show=pool and pool.ready==true and valid
+        local visibilityReason=not valid and "native_anchor_unavailable" or not (pool and pool.ready) and "layout_not_ready" or "visible"
         if show then
             x,y=x+pool.offsetX,y+pool.offsetY
             if w and h and w>0 and h>0 then
@@ -1081,10 +1117,20 @@ local function MoveRoots()
                     P.motionMetrics.rootWrites=P.motionMetrics.rootWrites+1
                 else
                     show=false;P.motionMetrics.anchorFailures=P.motionMetrics.anchorFailures+1
+                    visibilityReason="anchor_write_rejected"
                 end
             end
         end
-        if pool and pool.root then S.UI:SetVisible(pool.root,show==true,P.owner) end
+        if pool and pool.root then
+            pool.visibilityRequested=show==true
+            if type(S.UI.EnsureVisible)=="function" then
+                local accepted=S.UI:EnsureVisible(pool.root,show==true,P.owner)
+                pool.rootVisibilityAccepted=accepted==true
+                if accepted==true then pool.rootVisible=show==true else pool.rootVisible=nil end
+                if accepted~=true then visibilityReason="visibility_write_rejected" end
+            else S.UI:SetVisible(pool.root,show==true,P.owner);pool.rootVisible=nil;pool.rootVisibilityAccepted=nil end
+            pool.rootVisibilityReason=visibilityReason
+        end
     end
 end
 function P:MotionTick()
@@ -1181,6 +1227,7 @@ end
 function P:GetDiagnostics()
     local laneData = Feature and Feature.laneData or nil
     local function Lane(scope) return type(laneData) == "table" and laneData[scope] or nil end
+    local pool=self.pools.player or {};local lane=Lane("player") or {};local evidence=self.cooldownEvidence
     return {
         version = self.version,
         pvp = { patch=self.PvpPatch, frames=self.motionMetrics.frames, rootWrites=self.motionMetrics.rootWrites,
@@ -1191,6 +1238,15 @@ function P:GetDiagnostics()
         running = self.running == true,
         consumerHeld = self.consumerHeld == true,
         calibrationSuppressed = self.calibrationSuppressed == true,
+        cooldowns = {contractVersion=1,inputRows=evidence.inputRows,drawn=evidence.drawn,rejected=evidence.rejected,
+            lastRenderAt=evidence.lastRenderAt,
+            nonemptyRenders=evidence.nonemptyRenders,lastNonemptyAt=evidence.lastNonemptyAt,
+            lastNonemptyInput=evidence.lastNonemptyInput,lastNonemptyDrawn=evidence.lastNonemptyDrawn,
+            visibilityAuthority="RSUI accepted submission",rootReady=pool.ready==true,rootVisible=pool.rootVisible,
+            rootVisibilityAccepted=pool.rootVisibilityAccepted,
+            rootVisibilityRequested=pool.visibilityRequested,rootVisibilityReason=pool.rootVisibilityReason,
+            placementCount=pool.placementCount,screenX=pool.screenX,screenY=pool.screenY,width=pool.width,height=pool.height,
+            anchorX=lane.x,anchorY=lane.y,depth=lane.depth,projectError=lane.projectErr},
         calibrationSuppressionReason = self.calibrationSuppressionReason,
         calibrationSuppressionCount = tonumber(self.calibrationSuppressionCount) or 0,
         calibrationRestoreCount = tonumber(self.calibrationRestoreCount) or 0,
@@ -1209,6 +1265,15 @@ function P:GetDiagnostics()
         projectError = { player = Lane("player") and Lane("player").projectErr or nil,
                          target = Lane("target") and Lane("target").projectErr or nil },
     }
+end
+
+-- 中文维护（CD 显示链诊断）：复用模块导出的冷路径，仅取服务/Feature/Renderer缓存。
+-- 不创建控件、不取 Consumer、不调用 Native 可见性读回，也不写用户存档。
+if S.ModuleDiagnosticsHub and type(S.ModuleDiagnosticsHub.RegisterProvider)=="function" then
+    S.ModuleDiagnosticsHub:RegisterProvider("combat_buff_display","cooldown_hud_pipeline",function()
+        return {feature=type(Feature.GetCooldownHudDiagnostics)=="function" and Feature:GetCooldownHudDiagnostics() or {available=false},
+            renderer=P:GetDiagnostics()}
+    end,55,{detailOnly=true})
 end
 
 if type(S.Events.SubscribeInternal) == "function" then

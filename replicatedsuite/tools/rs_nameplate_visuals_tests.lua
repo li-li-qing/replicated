@@ -106,10 +106,57 @@ S.Events={
     end,
 }
 
+dofile("features/rs_feature_registry.lua")
+dofile("core/rs_module_diagnostics.lua")
 dofile("features/combat/nameplate_visuals/rs_nameplate_visuals_store.lua")
 dofile("features/combat/nameplate_visuals/rs_nameplate_visuals_authority.lua")
 dofile("features/combat/nameplate_visuals/rs_nameplate_visuals_feature.lua")
 local F=assert(S.Features.NameplateVisuals)
+
+Test("native combat text absent is reported without claiming resize support",function()
+    combatTextFrame=nil;combatTextLocale=nil;COMBAT_TEXT_ANIMATION=nil
+    local inspect=assert(F.Authority.InspectCombatTextAccess,"native combat text access diagnostic missing")
+    local p=inspect(F.Authority)
+    Eq(p.patch,"native-combat-text-access-1");Eq(p.state,"frame_not_exposed")
+    Eq(p.resizeVerified,false);Eq(p.widgetsPresent,0);Eq(p.readOnly,true)
+end)
+
+Test("visible native styles are candidates and diagnostic never invokes their setters",function()
+    local setters=0
+    local function ForbiddenSetter() setters=setters+1;error("diagnostic attempted font mutation") end
+    local frame={combatTexts={}}
+    for i=1,31 do frame.combatTexts[i]={style={SetFontSize=ForbiddenSetter},extraStyle={SetFontSize=ForbiddenSetter}} end
+    combatTextFrame=frame;combatTextLocale={fontSize=28};COMBAT_TEXT_ANIMATION={};COMBAT_TEXT_MAX_COUNT=1000000
+    local before={reads=F.Authority.metrics.reads,writes=F.Authority.metrics.writes,loaded=stores[F.StoreId].loaded,enabled=F.enabled}
+    local p=F.Authority:InspectCombatTextAccess()
+    Eq(p.state,"candidate_only");Eq(p.resizeVerified,false);Eq(p.nominalFontSize,28)
+    Eq(p.widgetsPresent,30);Eq(p.mainStyleSetters,30);Eq(p.extraStyleSetters,30);Eq(p.scanBudget,30)
+    Eq(setters,0);Eq(F.Authority.metrics.reads,before.reads);Eq(F.Authority.metrics.writes,before.writes)
+    Eq(stores[F.StoreId].loaded,before.loaded);Eq(F.enabled,before.enabled)
+    for _,v in pairs(p) do assert(type(v)~="table" and type(v)~="function" and type(v)~="userdata","native reference leaked to report") end
+    p.widgetsPresent=999;Eq(F.Authority:InspectCombatTextAccess().widgetsPresent,30,"diagnostic snapshot aliases native state")
+end)
+
+Test("partial or inaccessible native proxies do not block nameplate diagnostics",function()
+    local hostile=setmetatable({},{__index=function() error("synthetic inaccessible proxy") end})
+    combatTextFrame={combatTexts={{style=hostile,extraStyle={}}}};combatTextLocale={fontSize=0/0}
+    local p=F.Authority:InspectCombatTextAccess()
+    Eq(p.widgetsPresent,1);Eq(p.mainStyleSetters,0);Eq(p.extraStyleSetters,0);Eq(p.nominalFontSize,nil)
+    Eq(p.state,"font_access_incomplete");Eq(p.resizeVerified,false)
+    combatTextFrame=hostile
+    Eq(F.Authority:InspectCombatTextAccess().state,"text_list_not_exposed")
+end)
+
+Test("actual module report contains the native combat text access probe while disabled",function()
+    combatTextFrame=nil;combatTextLocale=nil;COMBAT_TEXT_ANIMATION=nil;COMBAT_TEXT_MAX_COUNT=nil
+    local reads,writes=F.Authority.metrics.reads,F.Authority.metrics.writes
+    local report,err=S.ModuleDiagnosticsHub:BuildReport(F.Id)
+    assert(report,err);assert(report:find("provider.native_combat_text_access=",1,true),"module export omits access probe")
+    assert(report:find('frame_not_exposed',1,true));assert(report:find('resizeVerified=false',1,true))
+    Eq(S.ModuleDiagnosticsHub.stats.providerFailures,0)
+    Eq(F.Authority.metrics.reads,reads);Eq(F.Authority.metrics.writes,writes);Eq(F.enabled,false)
+    Eq(stores[F.StoreId].loaded,false,"diagnostic unexpectedly loaded settings")
+end)
 
 Test("schema1 canonical remains unchanged for 18.270-18.272 saves",function()
     Eq(F.StoreSchema,1)

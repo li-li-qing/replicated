@@ -18,6 +18,7 @@ local S = ReplicatedSuite
 local G = S.FoundationGate
 if type(G) ~= "table" or type(G.RegisterSequenceCase) ~= "function" then return end
 local F = S.Features and S.Features.combat_team_tools or nil
+local Visual = S.Features and S.Features.combat_sac_highlight or nil -- 中文维护：拆分后的契约各自检查真实实现，不用职责 Feature 代理视觉能力。
 
 local function Fail(message) return false, tostring(message or "team_tools_acceptance_failed") end
 
@@ -30,23 +31,23 @@ G:RegisterSequenceCase("v3_combat_team_tools_role_contract", function()
     if (tonumber(F.AutoRoleContractVersion) or 0) < 3 then return Fail("auto_role_contract_version") end
     if (tonumber(F.AutoRoleCatalogContractVersion) or 0) < 2 then return Fail("auto_role_catalog_contract_version") end
     if (tonumber(F.AutoRoleRosterLeaseContractVersion) or 0) < 1 then return Fail("auto_role_roster_lease_contract_version") end
+    if (tonumber(F.AutoRoleDefaultOnContractVersion) or 0) < 1 then return Fail("auto_role_default_on_contract_version") end -- 中文维护：默认职责语义只归职责 Feature，视觉门禁不再依赖另一实现。
     if type(F.Commands) ~= "table" or type(F.Commands.SetRole) ~= "function" then return Fail("set_role_command") end
     return true
 end, { runtime = true })
 
 G:RegisterSequenceCase("v3_combat_team_tools_visual_marker_contract", function()
-    if type(F) ~= "table" then return Fail("implementation_not_registered") end
+    if type(Visual) ~= "table" then return Fail("visual_implementation_not_registered") end
     -- 中文维护注释：visual v2 固化“牺牲之舞 fresh default=on + schema1 旧关闭语义迁移”；
     -- marker 快照沿用串行写入/回读确认契约；sac 要求 schema2/default-on Store；
     -- 自动职责 fresh Store 默认开启，但旧用户显式 false 必须继续由 Store 持久化（本文件只查声明）。
-    if (tonumber(F.TeamVisualContractVersion) or 0) < 2 then return Fail("team_visual_contract_version") end
-    if (tonumber(F.TeamMarkerSnapshotContractVersion) or 0) < 1 then return Fail("team_marker_snapshot_contract_version") end
-    if (tonumber(F.TeamSacContractVersion) or 0) < 2 then return Fail("team_sac_contract_version") end
-    if (tonumber(F.AutoRoleDefaultOnContractVersion) or 0) < 1 then return Fail("auto_role_default_on_contract_version") end
-    if type(F.Commands) ~= "table" then return Fail("commands_table_missing") end
+    if (tonumber(Visual.TeamVisualContractVersion) or 0) < 2 then return Fail("team_visual_contract_version") end
+    if (tonumber(Visual.TeamMarkerSnapshotContractVersion) or 0) < 1 then return Fail("team_marker_snapshot_contract_version") end
+    if (tonumber(Visual.TeamSacContractVersion) or 0) < 2 then return Fail("team_sac_contract_version") end
+    if type(Visual.Commands) ~= "table" then return Fail("commands_table_missing") end
     for _, name in ipairs({ "SetSacHighlightEnabled", "SaveRaidMarkers", "RestoreRaidMarkers",
         "ClearSavedRaidMarkers" }) do
-        if type(F.Commands[name]) ~= "function" then return Fail("team_visual_command:" .. name) end
+        if type(Visual.Commands[name]) ~= "function" then return Fail("team_visual_command:" .. name) end
     end
     return true
 end, { runtime = true })

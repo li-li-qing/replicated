@@ -190,6 +190,10 @@ function F:EnsureStoreLoaded()
 end
 
 function F:MarkStoreDirty(delayMs, reason)
+    -- 中文维护（2026-10-04）：位置/折叠提交当场写入并回读；delay=0 仍是待保存，不能保证重载耐久。
+    if reason == "task_widget_geometry" or reason == "task_widget_layout_reset" or reason == "task_widget_minimized" then
+        return P:SaveStore(STORE_ID, { durable=true, consumeDirty=true, reason=reason })
+    end
     return P:MarkDirty(STORE_ID, tonumber(delayMs) or 350, reason or "task_tracking_changed")
 end
 

@@ -14,6 +14,7 @@ local function Test(name,fn)
 end
 local function Copy(v)if type(v)~='table'then return v end;local t={};for k,x in pairs(v)do t[k]=Copy(x)end;return t end
 local function Same(a,b)if type(a)~=type(b)then return false end;if type(a)~='table'then return a==b end;for k,v in pairs(a)do if not Same(v,b[k])then return false end end;for k in pairs(b)do if a[k]==nil then return false end end;return true end
+local function Find(rows,id)for _,row in ipairs(rows)do if row.id==id then return row end end;error('missing library row '..id)end
 local function Boot(options)
     options=options or {};local c={reads=0,writes=0,tooltip=0,logs={},clock=1000,disk=Copy(options.disk or {}),failWrites=false}
     ADDON={LoadData=function(_,k)c.reads=c.reads+1;return Copy(c.disk[k])end,
@@ -51,7 +52,7 @@ local function Boot(options)
         dofile('ui/framework/rs_ui_primitives.lua')
         S.RSUI.Button=function(_,spec)return factories.Button(spec)end
     end
-    local page=assert(h:Build());assert(page:OnActivated());page:SwitchTab('library')
+    local page=assert(h:Build());page.librarySource='library';assert(page:OnActivated());page:SwitchTab('library')
     local function Pump()
         local n=0
         while S.Scheduler.tasks.v3_buff_management_metadata and n<40 do n=n+1;assert(S.Scheduler:RunTask('v3_buff_management_metadata'),S.LastSchedulerError and S.LastSchedulerError.error)end
@@ -64,7 +65,7 @@ Test('real owner-first event refreshes resolved library icons',function()
     local first=view.items[1];assert(not first.iconPath or first.iconPath=='')
     view.spec.bindRow({},first);assert(c.tooltip==0,'native call inside row render')
     Pump();assert(S.Services.BuffMetadataV3:GetCached(first.id).iconPath~='')
-    assert(view.items[1].iconPath~='','resolved cache never reached library row through owner-first EventBus')
+    assert(Find(view.items,first.id).iconPath~='','resolved cache never reached library row through owner-first EventBus')
 end)
 Test('real owner-first event refreshes committed tracking from outside page button',function()
     local S,F,p,h=Boot();local first=h.widgets.v3_buff_library_table.items[1]
@@ -73,30 +74,30 @@ Test('real owner-first event refreshes committed tracking from outside page butt
 end)
 Test('real API and EventBus import recommended package through one manifest transaction',function()
     local S,F,p,h,c=Boot();local before=c.writes
-    local ok,err=h.widgets.v3_buff_library_import.onClick();assert(ok,err)
-    assert(c.writes==before+4 and p.managementView=='tracked' and p.activeTab=='track')
-    local rows=h.widgets.v3_buff_display_tracking_table.items;assert(#rows==#S.Data.StatusTrackingCatalogV3.Packs.recommended.entries)
+    local ok,err=F.Commands:ImportBuiltinPack('recommended',true);assert(ok,err)
+    assert(c.writes==before+4 and p.activeTab=='library')
+    assert(h.widgets.v3_buff_manage_view.spec.set('tracked'));local rows=h.widgets.v3_buff_display_tracking_table.items;assert(#rows==#S.Data.StatusTrackingCatalogV3.Packs.recommended.entries)
     for _,row in ipairs(rows)do assert(row.tracked and F:IsTrackedId(row.id),'uncommitted row '..row.id)end
     local expected=Copy(F.State.settings.tracked)
     local _,fresh=Boot({disk=c.disk});assert(Same(fresh.State.settings.tracked,expected),'durable list changed on reload')
 end)
 Test('native SaveData rejection is visible and logged with transaction stage',function()
     local S,F,p,h,c=Boot({saveFail=true});local before=Copy(F.State.settings.tracked);c.failWrites=true
-    assert(not h.widgets.v3_buff_library_import.onClick());assert(Same(F.State.settings.tracked,before) and p.activeTab=='library')
+    assert(not F.Commands:ImportBuiltinPack('recommended',true));assert(Same(F.State.settings.tracked,before) and p.activeTab=='library')
     local hit;for _,v in ipairs(c.logs)do if v.code=='BUFF_LIBRARY_IMPORT_FAILED'then hit=v end end
     assert(hit and hit.context.pack=='recommended' and hit.context.stage=='commit','silent bulk import failure')
-    assert(h.widgets.v3_buff_library_hint.text:find('失败',1,true))
+    assert(F.lastLibraryImport.ok==false and F.lastLibraryImport.error)
 end)
 Test('rejected unknown pack also records attempted import rather than old success',function()
     local _,F=Boot();assert(F:ImportBuiltinPack('recommended',false));assert(not F:ImportBuiltinPack('no-such-pack',false))
     assert(F.lastLibraryImport and F.lastLibraryImport.pack=='no-such-pack' and F.lastLibraryImport.ok==false and F.lastLibraryImport.stage=='validate')
 end)
-Test('page command exception stays visible and enters diagnostic history',function()
-    local S,F,p,h,c=Boot();F.Commands.ImportBuiltinPack=function()error('injected_import_exception')end
-    local callOk,result=pcall(h.widgets.v3_buff_library_import.onClick)
-    assert(callOk and result==false,'exception escaped without user feedback')
-    assert(h.widgets.v3_buff_library_hint.text:find('injected_import_exception',1,true))
-    local hit;for _,v in ipairs(c.logs)do if v.code=='BUFF_LIBRARY_IMPORT_UI_FAILED'then hit=v end end;assert(hit,'missing UI exception log')
+Test('inline tracking command exception stays visible and enters diagnostic history',function()
+    local S,F,p,h,c=Boot();F.Commands.SetTrackedPlacement=function()error('injected_tracking_exception')end
+    local view=h.widgets.v3_buff_library_table;local col;for _,v in ipairs(view.spec.columns)do if v.id=='player_buff'then col=v end end
+    local callOk,result=pcall(col.onClick,view.items[1]);assert(callOk and result==false,'exception escaped without feedback')
+    assert(h.widgets.v3_buff_library_status.text:find('injected_tracking_exception',1,true))
+    local hit;for _,v in ipairs(c.logs)do if v.code=='BUFF_TRACKING_COMMAND_FAILED'then hit=v end end;assert(hit and hit.context.stage=='command')
 end)
 Test('name-only native tooltip stays marked unresolved with bounded raw shape evidence',function()
     local S,F,p,h,c,Pump=Boot({tooltip=function()return {name='known name',description='text only'}end})
@@ -123,13 +124,12 @@ Test('page deactivation cancels job and removes actual internal listeners',funct
     assert(c.tooltip==0 and S.Events.internalListeners['v3.buff_display.updated']==nil)
 end)
 
-Test('actual Button factory dispatch finds callback installed after construction',function()
-    local S,F,p,h,c=Boot({productionButtons=true});local button=h.widgets.v3_buff_library_import
-    assert(type(button.root.events.OnClick)=='function')
-    local before=c.writes;assert(button.root.events.OnClick(button.root,'LeftButton'))
-    assert(c.writes==before+4 and #h.widgets.v3_buff_display_tracking_table.items==#S.Data.StatusTrackingCatalogV3.Packs.recommended.entries and F.lastLibraryImport.ok)
-    p:SwitchTab('library');local prior=c.writes;button:SetEnabled(false)
-    assert(not button.root.events.OnClick(button.root,'LeftButton') and c.writes==prior,'disabled button still wrote')
+Test('actual manual CD Button dispatch finds its callback installed after construction',function()
+    local S,F,p,h,c=Boot({productionButtons=true});assert(h.widgets.v3_buff_manage_view.spec.set('cooldowns'))
+    local button=h.widgets.v3_buff_cooldown_add;h.widgets.v3_buff_cooldown_skill_id:SetValue('99001',false)
+    assert(type(button.root.events.OnClick)=='function');local before=c.writes;assert(button.root.events.OnClick(button.root,'LeftButton'))
+    assert(c.writes==before+4 and F:IsUnifiedCooldownTracked(99001),'late callback did not commit')
+    local prior=c.writes;button:SetEnabled(false);assert(not button.root.events.OnClick(button.root,'LeftButton') and c.writes==prior,'disabled button still wrote')
 end)
 Test('duplicates preserve custom tracked entries without changing their classification',function()
     local S,F,p,h,c=Boot();assert(F.Commands:SetTrackedId(900000,'debuff',true))
@@ -145,7 +145,7 @@ Test('duplicates preserve custom tracked entries without changing their classifi
 end)
 Test('prepare failure logs failing stage without calling SaveData',function()
     local S,F,p,h,c=Boot();local before=c.writes;F.EnsureStoreLoaded=function()return false,'integrity_failed:test' end
-    assert(not h.widgets.v3_buff_library_import.onClick());assert(c.writes==before)
+    assert(not F.Commands:ImportBuiltinPack('recommended',true));assert(c.writes==before)
     assert(F.lastLibraryImport.stage=='prepare' and F.lastLibraryImport.error=='integrity_failed:test')
     local log=c.logs[#c.logs];assert(log.code=='BUFF_LIBRARY_IMPORT_FAILED' and log.context.stage=='prepare')
 end)
@@ -157,13 +157,13 @@ Test('capacity rejection restores configuration and does not perform partial sav
     assert(Same(before,F.State.settings) and writes==c.writes and F.lastLibraryImport.stage=='mutate')
     assert(F.lastLibraryImport.result.rejected==1)
 end)
-Test('post-commit view exception reports saved status rather than rollback',function()
-    local S,F,p,h,c=Boot();p.SwitchTab=function()error('injected_view_exception')end
-    assert(not h.widgets.v3_buff_library_import.onClick())
-    assert(F.lastLibraryImport.ok and F.lastLibraryImport.stage=='committed' and c.writes>=4)
-    local tr=F.State.settings.tracked;assert(#tr.player.auto>390 and #tr.target.auto>390)
-    assert(h.widgets.v3_buff_library_hint.text:find('追踪已保存',1,true))
-    local log=c.logs[#c.logs];assert(log.code=='BUFF_LIBRARY_VIEW_FAILED' and log.context.committed==true)
+Test('post-commit inline view exception reports durable saved status',function()
+    local S,F,p,h,c=Boot();local view=h.widgets.v3_buff_library_table;local row=view.items[1]
+    view.SetItems=function()error('injected_view_exception')end
+    local col;for _,v in ipairs(view.spec.columns)do if v.id=='player_buff'then col=v end end
+    assert(col.onClick(row)==true and F:IsTrackedPlacement(row.id,'player','buff') and c.writes>=4)
+    assert(h.widgets.v3_buff_library_status.text:find('追踪已保存',1,true))
+    local log=c.logs[#c.logs];assert(log.code=='BUFF_TRACKING_UI_FAILED' and log.context.committed==true)
 end)
 Test('unchanged owner-first aura events do not rebind table or query Native',function()
     local S,F,p,h,c,Pump=Boot();local view=h.widgets.v3_buff_library_table
@@ -198,14 +198,14 @@ Test('failed UI rebind does not mark revision as displayed forever',function()
     view.SetItems=function(self,...)if once then once=false;error('injected_setitems_failure')end;return base(self,...)end
     S.Services.BuffMetadataV3:Remember(first.id,'icon','ui/icon/retry.dds')
     assert(not pcall(function()p:RefreshLibrary()end))
-    assert(p:RefreshLibrary());assert(view.items[1].iconPath=='ui/icon/retry.dds','revision acknowledged before UI accepted it')
+    assert(p:RefreshLibrary());assert(Find(view.items,first.id).iconPath=='ui/icon/retry.dds','revision acknowledged before UI accepted it')
 end)
-Test('search reset exception after commit is not mislabeled as an unwritten import',function()
-    local S,F,p,h,c=Boot()
-    h.widgets.v3_buff_display_search.SetValue=function()error('search_reset_failed')end
-    local ok,result=pcall(h.widgets.v3_buff_library_import.onClick)
-    assert(ok and result==false and c.writes>=4 and F.lastLibraryImport.ok)
-    assert(c.logs[#c.logs].code=='BUFF_LIBRARY_VIEW_FAILED' and c.logs[#c.logs].context.committed)
+Test('manual input reset exception after commit does not claim tracking was unwritten',function()
+    local S,F,p,h,c=Boot();assert(h.widgets.v3_buff_manage_view.spec.set('cooldowns'))
+    local input=h.widgets.v3_buff_cooldown_skill_id;input:SetValue('99003',false);input.SetValue=function()error('input_reset_failed')end
+    local ok,result=pcall(h.widgets.v3_buff_cooldown_add.onClick)
+    assert(ok and result==true and c.writes>=4 and F:IsUnifiedCooldownTracked(99003))
+    assert(h.widgets.v3_buff_tracking_status.text:find('已保存',1,true) and c.logs[#c.logs].code=='BUFF_TRACKING_UI_FAILED' and c.logs[#c.logs].context.committed)
 end)
 Test('bulk import preserves numeric window configuration through Transport3 loss model',function()
     local model=dofile('tools/rs_udf_numeric_test_host.lua')
@@ -214,7 +214,7 @@ Test('bulk import preserves numeric window configuration through Transport3 loss
     assert(F:MutateStore(function()
         F.State.widgetWindow.userMoved=true;F.State.widgetWindow.coordinateSpace='logical-free-v2';F.State.widgetWindow.x=100;F.State.widgetWindow.y=120;F.State.widgetWindow.normalizedCenterX=0.82991701364517212;F.State.widgetWindow.normalizedCenterY=0.19861100614070892;return true
     end,0,'numeric_window_fixture',true))
-    assert(h.widgets.v3_buff_library_import.root.events.OnClick())
+    assert(F.Commands:ImportBuiltinPack('recommended',true))
     local before=Copy(F.State);assert(#before.settings.tracked.player.auto>390 and #before.settings.tracked.target.auto>390)
     local _,fresh=Boot({disk=c.disk})
     assert(math.abs(fresh.State.widgetWindow.normalizedCenterX-before.widgetWindow.normalizedCenterX)<0.000001)
@@ -237,7 +237,7 @@ Test('real paged self-check includes import failure stage and Native shape witho
     end
     dofile('core/rs_report_copy_transport.lua');dofile('core/rs_self_check_report.lua')
     local view=h.widgets.v3_buff_library_table;view.spec.bindRow({},view.items[1]);Pump()
-    assert(not h.widgets.v3_buff_library_import.onClick())
+    assert(not F.Commands:ImportBuiltinPack('recommended',true))
     local calls=c.tooltip;local writes=c.writes
     local text,info=S.DiagnosticsManager:BuildPagedSelfCheckReport();assert(text,info)
     assert(text:find('status-library-eventbus-2',1,true) and text:find('stage="commit"',1,true))

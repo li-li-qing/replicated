@@ -60,6 +60,7 @@ local function MakeMarker(rank)
     local infoBg = NewColorDrawable(root, "artwork")
     local rankLabel = S.UI:CreateLabel(root, "v3_healer_head_rank_" .. tostring(rank), tostring(rank), 0, 0, 36, 36, 14, "strong", "CENTER", true)
     local infoLabel = S.UI:CreateLabel(root, "v3_healer_head_info_" .. tostring(rank), "", 40, 0, 110, 36, 10, "default", "LEFT", true)
+    if S.Theme and S.Theme.SetWorldTextPalette then S.Theme:SetWorldTextPalette(rankLabel);S.Theme:SetWorldTextPalette(infoLabel) end
     if rankLabel == nil or infoLabel == nil or infoBg == nil or parts[1] == nil or parts[2] == nil or parts[3] == nil or parts[4] == nil then
         S.UI:SetVisible(root, false, P.owner)
         return nil, "head_marker_child_create_failed"

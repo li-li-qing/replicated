@@ -81,6 +81,8 @@ S.UI.CreateWindowShell = function(self, spec)
 end
 
 -- Layout context mock
+S.Constants={SafeArea=12,MinAddonScale=.5,MaxAddonScale=2,Breakpoint={COMPACT=1150,STANDARD=1700,WIDE=2300,NARROW_ONE_COLUMN=760}}
+dofile('core/rs_layout.lua') -- Real placement metadata writer; legacy viewport/geometry leaves below remain fixed.
 S.Layout = S.Layout or {}
 S.Layout.GetContext = function()
     return { logicalWidth = 1920, logicalHeight = 1080, usableWidth = 1920, usableHeight = 1080, addonScale = 1, uiScale = 1, safeLeft = 0, safeTop = 0, safeRight = 0, safeBottom = 0 }
@@ -744,12 +746,19 @@ Test("T7: Explicit lowest-price quote via PriceQuoteQueueV3", function()
     local taskKey = QuoteQueue.taskId or QuoteQueue.taskName
     assert(S.Scheduler.tasks[taskKey] ~= nil, "Quote task must be scheduled")
     local quoteTask = S.Scheduler.tasks[taskKey]
-    -- Current RU quote protocol is paced: dequeue -> AskMarketPrice -> GetLowestPrice readback.
+    -- 维护（auction-full-lane-safety-1）：显式“报价”也不能侵占已打开的原生拍卖行。
+    -- 原测试在 visible=true 时要求请求成功，漏掉了本轮整条协议的资源边界。
     quoteTask.callback()
-    h.ms = h.ms + QuoteQueue.intervalMs
-    quoteTask.callback()
-    h.ms = h.ms + QuoteQueue.intervalMs
-    quoteTask.callback()
+    assert(QuoteQueue:GetActivitySnapshot().paused == true, "Quote must pause while native auction is visible")
+    assert(QuoteQueue:GetSnapshot("tools_auction").status ~= "ready", "Visible native auction cannot admit a quote")
+    local oldPosVis = _G.ADDON.GetContentMainScriptPosVis
+    _G.ADDON.GetContentMainScriptPosVis = function() return nil, nil, nil, nil, false end
+    -- Resume edge -> dequeue -> AskMarketPrice -> GetLowestPrice; retain the actual price/projection checks below.
+    for _ = 1, 6 do
+        h.ms = h.ms + QuoteQueue.intervalMs
+        quoteTask.callback()
+    end
+    _G.ADDON.GetContentMainScriptPosVis = oldPosVis
 
     -- Completed quote should have recorded the mock lowest price (125000 = 12g 50s)
     local compSnap = QuoteQueue:GetSnapshot("tools_auction")
@@ -824,7 +833,7 @@ end)
 ------------------------------------------------------------------------
 -- Test 9: AuctionSidecar Widget: Native Window Tracking & Anchoring
 ------------------------------------------------------------------------
-Test("T9: AuctionSidecar widget: native window tracking & anchoring", function()
+Test("T9: AuctionSidecar widget: independent placement & native visibility lifecycle", function()
     local sidecarSpec = S.UIV3.WidgetHost:GetSpec("tools.auction_sidecar")
     assert(sidecarSpec ~= nil, "tools.auction_sidecar widget spec must be registered")
     assert(sidecarSpec.featureId == "tools_auction", "featureId mismatch")
@@ -833,6 +842,8 @@ Test("T9: AuctionSidecar widget: native window tracking & anchoring", function()
     assert(SidecarController ~= nil, "AuctionSidecar controller missing")
 
     -- 1. Native window opens -> Sidecar becomes visible
+    local previousInstance=S.UIV3.WidgetHost:GetInstance("tools.auction_sidecar")
+    local previousX,previousY=previousInstance and previousInstance.shell.x,previousInstance and previousInstance.shell.y
     local openSnapshot = { status = "ready", visible = true, x = 400, y = 200, width = 800, height = 600, revision = 10 }
     S.Events:Publish("v3.auction_surface.updated", openSnapshot)
 
@@ -845,8 +856,12 @@ Test("T9: AuctionSidecar widget: native window tracking & anchoring", function()
 
     -- 2. Anchoring check: sidecar should be placed adjacent to the auction window
     -- Window is 300px wide, auctionX is 400 -> x = 400 - 300 - 8 = 92
-    assert(instance.state.x == 92, "Sidecar X coordinate should be 92, got: " .. tostring(instance.state.x))
-    assert(instance.state.y == 200, "Sidecar Y coordinate should align with auction Y (200)")
+    if previousInstance then
+        assert(instance.shell.x==previousX and instance.shell.y==previousY,"native update cannot move independent sidecar")
+    else
+        assert(instance.shell.x==92 and instance.shell.y==200,"first default must be left of native auction")
+    end
+    assert(instance.surface.spec.movable==true and instance.state.userMoved==false,"unmodified default must allow dragging")
 
     -- 3. Native window closes -> Sidecar hides
     local closeSnapshot = { status = "ready", visible = false, x = 0, y = 0, width = 0, height = 0, revision = 11 }
@@ -1148,7 +1163,7 @@ end)
 -- 2026-09-30: real Sidecar projection/render contract for partial daily tasks.
 -- Native UI primitives remain test doubles; no automatic auction search allowed.
 ------------------------------------------------------------------------
-Test("Daily UI keeps unmatched second task and identifies the match failure", function()
+Test("Daily UI keeps real missing task materials without internal match reasons", function()
     local daily = S.Services.DailyAuctionMaterialsV3
     local old = daily.snapshot
     daily.snapshot = { status="partial", revision=9001, pendingTitleCount=0, unresolvedTaskCount=1, tasks={
@@ -1165,7 +1180,7 @@ Test("Daily UI keeps unmatched second task and identifies the match failure", fu
         assert(not (row.kind=="daily_material" and row.questId==990012), "unmatched task acquired fabricated materials")
     end
     assert(headers==2 and unknown, "second task header disappeared")
-    assert(unknown.status=="地区待匹配", "unmatched title reason not visible to user")
+    assert(unknown.status=="材料暂不可用", "missing materials must have a player-facing state")
     instance.table.spec.onItemActivated(unknown, 3, unknown.key, instance.table, "row_click")
     assert(#mockAuction.searchCalls==before, "unmatched task must never trigger native search")
     daily.snapshot=old; assert(instance:SetTab("temp"))
@@ -1186,11 +1201,11 @@ Test("Daily UI does not label empty selected recipe as parsed materials", functi
     daily.snapshot={status="ready",revision=9003,tasks={{questId=990012,title="已核任务",recipes={},selectedRecipe="test-recipe",materialStatus="empty",materials={}}}}
     local instance=assert(S.UIV3.WidgetHost:GetInstance("tools.auction_sidecar"))
     assert(instance:SetTab("daily")); assert(instance:Refresh())
-    assert(instance.currentRows[1].status=="材料未就绪", "selected recipe without rows must not claim parsed")
+    assert(instance.currentRows[1].status=="材料暂不可用", "selected recipe without rows must not claim parsed")
     daily.snapshot=old; assert(instance:SetTab("temp"))
 end)
 
-Test("Daily UI footer counts tasks and unresolved entries, not just material rows", function()
+Test("Daily UI footer counts shopping tasks and materials without parser status", function()
     local daily=S.Services.DailyAuctionMaterialsV3; local old=daily.snapshot
     daily.snapshot={status="partial",revision=9004,pendingTitleCount=0,unresolvedTaskCount=1,tasks={
         {questId=990011,title="已核任务",recipes={},materials={}},
@@ -1201,11 +1216,54 @@ Test("Daily UI footer counts tasks and unresolved entries, not just material row
     instance.surface.SetStatus=function(self,text,tone) footer=text; return original(self,text,tone) end
     assert(instance:SetTab("daily")); assert(instance:Refresh())
     assert(tostring(footer):find("2 项任务",1,true), "footer lacks total task count")
-    assert(tostring(footer):find("1 待匹配",1,true), "footer hides pending-match count")
+    assert(tostring(footer):find("0 项材料",1,true), "footer lacks actual material count")
+    assert(not tostring(footer):find("待匹配",1,true), "parser status leaked into shopping footer")
     local found=false
-    for _, row in ipairs(instance.currentRows) do if row.questId==990012 and row.kind=="daily_task" then found=row.status=="配方待匹配" end end
-    assert(found, "missing recipe not distinguished from missing region")
+    for _, row in ipairs(instance.currentRows) do if row.questId==990012 and row.kind=="daily_task" then found=row.status=="材料暂不可用" end end
+    assert(found, "missing materials falsely appeared ready")
     instance.surface.SetStatus=original; daily.snapshot=old; assert(instance:SetTab("temp"))
+end)
+
+Test("Daily shopping shows only a fixed task and its ingredients, then clicks search", function()
+    local daily=S.Services.DailyAuctionMaterialsV3; local old=daily.snapshot
+    daily.snapshot={status="ready",revision=9010,tasks={{questId=990014,
+        title="[特产-东部] 草原之脉的保存特制特产",recipes={"Windscour Preserved Gilda Specialty"},
+        selectedRecipe="Windscour Preserved Gilda Specialty",requiresSelection=false,materialStatus="ready",materials={
+            {key="item:1",name="干净的肉串",count=300,searchable=true},
+            {key="item:2",name="辣木树果实",count=3,searchable=true},
+            {key="item:3",name="德翡纳之星",count=2,searchable=false},
+        }}}}
+    local instance=assert(S.UIV3.WidgetHost:GetInstance("tools.auction_sidecar"))
+    local before=#mockAuction.searchCalls
+    assert(instance:SetTab("daily")); assert(instance:Refresh())
+    assert(#instance.currentRows==4, "fixed recipe added a redundant choice row")
+    assert(instance.currentRows[1].kind=="daily_task" and instance.currentRows[1].status=="", "parsed-state clutter remains")
+    for i=2,4 do assert(instance.currentRows[i].kind=="daily_material") end
+    assert(instance.currentRows[2].status=="×300" and instance.currentRows[3].status=="×3" and instance.currentRows[4].status=="×2")
+    assert(#mockAuction.searchCalls==before, "rendering performed an auction query")
+    Query:_CleanupNativeEdge(); Query.pending=nil; mockAuction.searchCalls={}
+    assert(instance.table.spec.onItemActivated(instance.currentRows[2]))
+    assert(#mockAuction.searchCalls==1 and mockAuction.searchCalls[1].keyword=="干净的肉串", "shopping material click lost native search")
+    mockAuction.searchedItems={}; Query:_OnSearched()
+    local starOk=instance.table.spec.onItemActivated(instance.currentRows[4])
+    assert(starOk==false and #mockAuction.searchCalls==1, "bound resource searched auction")
+    daily.snapshot=old; assert(instance:SetTab("temp"))
+end)
+
+Test("Daily choices use actual product names only when recipes are alternatives", function()
+    local daily=S.Services.DailyAuctionMaterialsV3; local old=daily.snapshot
+    daily.snapshot={status="ready",revision=9011,tasks={{questId=990015,title="居民交付任务",
+        recipes={"recipe-a","recipe-b"},requiresSelection=true,materials={},materialStatus="waiting_selection",
+        recipeOptions={{recipe="recipe-a",name="[虎脊山脉]特产"},{recipe="recipe-b",name="[摩哈特比]特产"}},
+    }}}
+    local instance=assert(S.UIV3.WidgetHost:GetInstance("tools.auction_sidecar"))
+    assert(instance:SetTab("daily")); assert(instance:Refresh())
+    assert(instance.currentRows[1].status=="请选择制作货物")
+    assert(#instance.currentRows==3 and instance.currentRows[2].kind=="daily_recipe")
+    assert(instance.currentRows[2].name=="  [虎脊山脉]特产" and instance.currentRows[3].name=="  [摩哈特比]特产")
+    assert(instance.table.spec.onItemActivated(instance.currentRows[3]))
+    assert(daily.selectedRecipe=="recipe-b", "choice bypassed service")
+    daily.snapshot=old; assert(instance:SetTab("temp"))
 end)
 
 Test("Auction module diagnostic includes real daily proof without acquiring or querying", function()

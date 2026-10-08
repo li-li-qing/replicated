@@ -330,11 +330,14 @@ function M:Refresh(reason)
     self.summary:SetText("货率 " .. tostring(row.rate or "--") .. " · 预计售价 " .. tostring(row.price or "--") .. payoutFactors
         .. "\n材料金币成本 " .. Money(row.materialCostCopper) .. resourceHint .. " · 毛利 " .. tostring(row.profit or "--"))
 
-    local items, pending, inflight, failed, firstQuoteError = {}, 0, 0, 0, nil
+    local items, pending, inflight, failed, firstQuoteError, marketCount = {}, 0, 0, 0, nil, 0
     for index, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
         local statusText, tone = MaterialStatus(material)
         local costStatus = tostring(material.costStatus or "")
-        -- Actionable backlog for the quote button: never-quoted + failed retries.
+        -- 维护（trade-requote-2）：是否可询价由材料能力决定，不由“是否已经有价”决定。
+        if material.includeInCost ~= false and material.auctionable ~= false
+            and (tonumber(material.itemType) or 0) > 0 then marketCount = marketCount + 1 end
+        -- Separate missing-price counts from the explicit refresh action.
         if costStatus == "explicit_quote_required" or costStatus == "quote_failed" then pending = pending + 1 end
         if costStatus == "quote_pending" then inflight = inflight + 1 end
         if costStatus == "quote_failed" then
@@ -361,13 +364,13 @@ function M:Refresh(reason)
         self.table:SetViewState("ready")
     end
     -- 维护（2026-09-25，trade-multi-row-detail-progress-1）：详情窗只展示当前 RowJob 进度，不创建第二套任务状态。
-    -- 该行询价中时按钮禁用并显示真实 completed/total；其它货物的 RowJob 不影响当前详情按钮。
+    -- 活跃时允许取消；终态可再操作，但 Fresh 价格直接复用，其它货物的 RowJob 不影响当前详情按钮。
     local rowJobActive = row.quoteJobActive == true
-    self.quoteButton:SetEnabled(rowJobActive or pending > 0)
+    self.quoteButton:SetEnabled(rowJobActive or marketCount > 0)
     if rowJobActive then
         self.quoteButton:SetText("取消询价 " .. tostring(row.quoteJobCompleted or 0) .. "/" .. tostring(row.quoteJobTotal or 0))
     else
-        self.quoteButton:SetText(pending > 0 and ("询价当前材料(" .. tostring(pending) .. ")") or "材料已询价")
+        self.quoteButton:SetText(marketCount > 0 and ("查询当前材料(" .. tostring(marketCount) .. ")") or "无可询价材料")
     end
     self.favoriteButton:SetEnabled(row.cargoMode ~= true and projection.fromZone ~= nil and projection.toZone ~= nil)
     self.favoriteButton:SetText(row.cargoMode == true and "随身扫描" or (projection.currentRouteFavorite == true and "取消路线收藏" or "收藏路线"))
@@ -378,15 +381,26 @@ function M:Refresh(reason)
     if pending > 0 then statusSummary = statusSummary .. (" · 待询价 " .. tostring(pending)) end
     if inflight > 0 then statusSummary = statusSummary .. (" · 询价中 " .. tostring(inflight)) end
     if failed > 0 then statusSummary = statusSummary .. (" · 询价失败 " .. tostring(failed)) end
-    if pending == 0 and inflight == 0 and failed == 0 then statusSummary = statusSummary .. " · 价格已齐/无需询价" end
-    self.surface:SetStatus(statusSummary, failed > 0 and "red" or (pending > 0 and "yellow" or "accent"))
-    -- Surface the first real failure reason directly where the user clicked;
-    -- the diagnostics "报价队列" row carries the queue-wide last result.
-    if failed > 0 then
+    local jobFailed = row.quoteJobState == "blocked" or row.quoteJobState == "failed" or row.quoteJobState == "partial"
+    local activity = type(projection.quoteActivity) == "table" and projection.quoteActivity or {}
+    if rowJobActive then
+        statusSummary = statusSummary .. " · 正在询价 " .. tostring(row.quoteJobCompleted or 0) .. "/" .. tostring(row.quoteJobTotal or 0)
+    elseif jobFailed then
+        statusSummary = statusSummary .. " · 部分材料价格未知"
+    elseif pending == 0 and inflight == 0 and failed == 0 then
+        statusSummary = statusSummary .. (marketCount > 0 and " · 价格已缓存" or " · 无可询价材料")
+    end
+    self.surface:SetStatus(statusSummary, (failed > 0 or jobFailed) and "red" or ((pending > 0 or rowJobActive) and "yellow" or "accent"))
+    -- 维护（trade-requote-2）：部分材料失败需要保留明确终态；错误与进度来自同一 RowJob Authority。
+    if rowJobActive and activity.paused == true then
+        self.hint:SetText(tostring(activity.text or "材料查询已暂停"))
+    elseif rowJobActive or jobFailed then
+        self.hint:SetText(tostring(row.profitNote or row.quoteJobReason or "部分材料价格未知"))
+    elseif failed > 0 then
         self.hint:SetText("询价失败原因：" .. (firstQuoteError or "未知；请复制诊断页「报价队列」行给维护者。"))
     else
         local resourceText = resourceCount > 0 and ("；当前含 " .. tostring(resourceCount) .. " 项绑定/非市场制作资源，不折算金币成本") or ""
-        self.hint:SetText("材料价格只有在用户显式询价后才读取；普通刷新不会批量请求拍卖行" .. resourceText .. "。")
+        self.hint:SetText("已有材料价即时计算；双击仅查询缺失价格；6小时以上缓存后台更新，单次操作最多等待5秒" .. resourceText .. "。")
     end
     return true
 end

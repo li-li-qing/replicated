@@ -129,8 +129,8 @@ end
 -- 维护（2026-09-18，range-motion-cadence-1）：范围圆以前固定 50ms（20Hz）刷新，镜头旋转时即使
 -- 投影坐标本身正确，也会表现为每 3 帧左右跳一次。Scheduler 仍只保留一个 16ms 高频任务，真正
 -- Authority 刷新根据本次启用点总量自适应：常规 <=48 点跟随帧级；中等密度 32ms；高密度 48ms。
--- 32/48 都是 16ms Scheduler lane 可实现的整数倍，避免配置“25/33ms”却实际只能在 32/48ms 才调度，
--- 让诊断显示与真实节奏一致。
+-- 维护（2026-09-30，range-continuity-1）：16ms 是调度下限，不保证回调间隔；低帧率时
+-- Scheduler 每个游戏帧最多回调一次。32/48ms 档必须按经过时间控制，不能再按回调次数除以 2/3。
 -- 数据流：Demand Consumer -> 单 Scheduler task -> Authority Refresh；关闭/无 Consumer 仍释放任务。
 -- 这里只控制会话刷新节奏，不改 circle.pointCount 持久配置，也不在循环内做额外 Static/API 查找。
 local function RangeAssistRefreshInterval(feature)
@@ -149,6 +149,151 @@ local function RangeAssistRefreshInterval(feature)
     if total <= 48 then return 16 end
     if total <= 96 then return 32 end
     return 48
+end
+
+
+-- 维护（range-continuity-1）：缓存只包含拓扑、单位方向和世界点工作区，不保存跨帧屏幕事实。
+-- 配置替换/增删/启停/点数变化时重建；半径/圆心/米标定仍在每次 read 时重新应用。
+-- 最后一个 Consumer 释放后清理缓存，不改任何持久配置，不新增 Scheduler 或 Native 依赖。
+local function RangeAssistGeometry(feature, circles)
+    local cached = feature.RangeGeometry
+    local valid = type(cached) == "table" and cached.circles == circles and #cached.sources == #circles
+    if valid then
+        for index, circle in ipairs(circles) do
+            local source = cached.sources[index]
+            if source.circle ~= circle or source.enabled ~= (circle.enabled ~= false) or source.count ~= circle.pointCount then
+                valid = false; break
+            end
+        end
+    end
+    if valid then return cached end
+    cached = { circles=circles, sources={}, plans={}, worldPoints={}, totalRequested=0, budgetLimitedCircles=0 }
+    local eligibleCount, extraDemand = 0, 0
+    local circleBudget = math.floor(RANGE_ASSIST_TOTAL_POINT_BUDGET / RANGE_ASSIST_POINT_HARD_MIN)
+    for index, circle in ipairs(circles) do
+        cached.sources[index] = { circle=circle, enabled=circle.enabled~=false, count=circle.pointCount }
+        if circle.enabled ~= false then
+            local requested = math.max(RANGE_ASSIST_POINT_HARD_MIN, math.min(RANGE_ASSIST_POINT_HARD_MAX,
+                math.floor(tonumber(circle.pointCount) or RANGE_ASSIST_DEFAULT_POINT_COUNT)))
+            cached.totalRequested = cached.totalRequested + requested
+            local plan = { circle=circle, requestedCount=requested, renderCount=0, directions={} }
+            cached.plans[#cached.plans+1] = plan
+            if #cached.plans <= circleBudget then
+                eligibleCount = eligibleCount + 1
+                extraDemand = extraDemand + requested - RANGE_ASSIST_POINT_HARD_MIN
+            end
+        end
+    end
+    -- 先为预算内的圆预留三点，再按剩余需求分配；每次扣除已分配预算和需求。
+    -- 禁止对每个圆独立四舍五入导致总量超过 192；超过 64 个三点圆的配置保留但明确限流。
+    local extraBudget = math.min(extraDemand, RANGE_ASSIST_TOTAL_POINT_BUDGET - eligibleCount * RANGE_ASSIST_POINT_HARD_MIN)
+    for index, plan in ipairs(cached.plans) do
+        if index <= eligibleCount then
+            local demand = plan.requestedCount - RANGE_ASSIST_POINT_HARD_MIN
+            local extra = extraDemand > 0 and math.min(demand, math.floor(extraBudget * demand / extraDemand)) or 0
+            plan.renderCount = RANGE_ASSIST_POINT_HARD_MIN + extra
+            extraBudget, extraDemand = extraBudget - extra, extraDemand - demand
+        end
+        if plan.renderCount < plan.requestedCount then cached.budgetLimitedCircles = cached.budgetLimitedCircles + 1 end
+        plan.firstIndex = #cached.worldPoints + 1
+        for pointIndex = 1, plan.renderCount do
+            local angle = ((pointIndex - 1) / plan.renderCount) * math.pi * 2
+            plan.directions[pointIndex] = { x=math.cos(angle), y=math.sin(angle) }
+            cached.worldPoints[#cached.worldPoints+1] = { x=0, y=0, z=0 }
+        end
+    end
+    feature.RangeGeometry = cached
+    feature.RangeGeometryRebuilds = (tonumber(feature.RangeGeometryRebuilds) or 0) + 1
+    return cached
+end
+
+local function RangeAssistFrameResult(feature, rows, status, reason, batch)
+    local health = feature.RangeFrameHealth
+    if type(health) ~= "table" then health = { frames=0, projectionFailures=0, sourceChanges=0 }; feature.RangeFrameHealth=health end
+    health.frames = health.frames + 1
+    health.status, health.lastFrameReason = status, reason or ""
+    health.visiblePoints, health.renderPoints = 0, 0
+    local projectionFailed = status == "unavailable"
+    for _, row in ipairs(rows) do
+        local visible, rendered = tonumber(row.visibleCount) or 0, tonumber(row.renderPointCount) or 0
+        health.visiblePoints = health.visiblePoints + visible
+        health.renderPoints = health.renderPoints + rendered
+        if rendered > 0 and visible < 3 then projectionFailed = true end
+    end
+    -- 总预算主动省略的圆不属于 Native 投影失败，单独由 budgetLimitedCircles 解释。
+    if projectionFailed then health.projectionFailures = health.projectionFailures + 1 end
+    local source = type(batch) == "table" and tostring(batch.rigidSource or "unknown") or "none"
+    if source == "native" or source == "camera" then
+        if health.lastValidSource ~= nil and health.lastValidSource ~= source then health.sourceChanges = health.sourceChanges + 1 end
+        health.lastValidSource = source
+    end
+    health.projectorSource = source
+    -- 保存本模块刚返回的批次，而不是读取可能已被 UnitLines 覆盖的 service.lastWorldBatch。
+    feature.RangeLastBatch = batch
+    -- 维护（2026-10-07）：只保存已有批次/标定事实，最多 12 条、通常 500ms 一条；无新 Native 调用。
+    -- 暂缺 FOV、比例变化立即留一条，导出时可分辨镜头拉近、角色高度变化与标定跳缩。
+    if type(batch)=="table" then
+        local now=tonumber(batch.at) or 0
+        local samples=feature.RangeProjectionSamples or {}
+        local last=samples[#samples]
+        local metric=feature.RangeMetricFacts or {}
+        if last==nil or now<last.at or now-last.at>=500 or last.frameErr~=batch.frameErr
+            or last.worldUnitsPerMeter~=metric.worldUnitsPerMeter or last.projectionScale~=metric.projectionScale then
+            samples[#samples+1]={at=now,source=batch.rigidSource,frameErr=batch.frameErr,
+                cameraFov=batch.cameraFov,cameraAnchorForward=batch.cameraAnchorForward,
+                cameraAnchorDistance=batch.cameraAnchorDistance,anchorWorldZ=batch.anchorWorldZ,
+                cameraPosition=Copy(batch.cameraPosition),cameraDirection=Copy(batch.cameraDirection),
+                anchorWorld=Copy(batch.anchorWorld),cameraRejectedBehind=batch.cameraRejectedBehind,
+                worldUnitsPerMeter=metric.worldUnitsPerMeter,projectionScale=metric.projectionScale,
+                worldScaleStatus=metric.worldScaleStatus,projectionScaleStatus=metric.projectionScaleStatus}
+            while #samples>12 do table.remove(samples,1) end
+        end
+        feature.RangeProjectionSamples=samples
+    end
+    return rows, status, reason
+end
+
+local function RangeAssistResetSession(feature)
+    feature.RangeGeometry, feature.RangeLastBatch = nil, nil
+    feature.RangeMetricFacts, feature.RangeProjectionSamples = nil, nil
+    local health = feature.RangeRefreshHealth
+    if type(health) == "table" then
+        health.lastCallbackAtMs, health.lastDispatchAtMs, health.elapsedMs = nil, nil, 0
+        health.cadenceDivisor, health.lastGapMs = nil, nil
+    end
+    local frame = feature.RangeFrameHealth
+    if type(frame) == "table" then
+        frame.visiblePoints, frame.renderPoints, frame.status = 0, 0, "idle"
+        frame.projectorSource, frame.lastValidSource, frame.lastFrameReason = "none", nil, "no_consumer"
+    end
+end
+
+-- 只读现有 Suite 时钟；不可用/倒退时只采用回调的保守名义间隔，并显式记录，不能停住渲染。
+local function RangeAssistShouldRefresh(feature, health)
+    local targetInterval = RangeAssistRefreshInterval(feature)
+    local divisor = math.max(1, math.floor(targetInterval / RANGE_ASSIST_REFRESH_MS + 0.5))
+    local now = type(S.NowMs) == "function" and tonumber(S.NowMs()) or nil
+    if now ~= nil and (now ~= now or now < 0 or now == math.huge) then now = nil end
+    local last = health.lastCallbackAtMs
+    local gap = now ~= nil and last ~= nil and now - last or RANGE_ASSIST_REFRESH_MS
+    health.clockStatus = now == nil and "unavailable" or (gap < 0 and "reset" or (gap == 0 and "stalled" or "ready"))
+    if gap <= 0 then gap = RANGE_ASSIST_REFRESH_MS; health.lastDispatchAtMs=nil end
+    health.lastCallbackAtMs = now
+    local restart = health.cadenceDivisor ~= divisor
+    health.targetIntervalMs, health.cadenceDivisor = targetInterval, divisor
+    local elapsed = (tonumber(health.elapsedMs) or 0) + gap
+    local tolerance = math.min(1, targetInterval * 0.02)
+    if not restart and divisor > 1 and gap < targetInterval and elapsed + tolerance < targetInterval then
+        health.elapsedMs = elapsed
+        health.skippedByCadence = (tonumber(health.skippedByCadence) or 0) + 1
+        return false
+    end
+    -- 首帧/档位变更/长帧直接采当前事实，不追赶已错过的旧画面；微抖保留不足一帧的余量。
+    health.elapsedMs = (restart or divisor == 1 or gap >= targetInterval) and 0 or math.max(0, elapsed - targetInterval)
+    health.lastGapMs = now ~= nil and health.lastDispatchAtMs ~= nil and math.max(0, now - health.lastDispatchAtMs) or nil
+    if health.lastGapMs ~= nil then health.maxGapMs = math.max(tonumber(health.maxGapMs) or 0, health.lastGapMs) end
+    health.lastDispatchAtMs = now
+    return true
 end
 
 return NewFeature("combat_range_assist", {
@@ -183,30 +328,13 @@ return NewFeature("combat_range_assist", {
         local b, a = tonumber(before and before.count) or 0, tonumber(after and after.count) or 0
         if b <= 0 and a > 0 then
             if S.Scheduler == nil or type(S.Scheduler.AddHighFrequencyTask) ~= "function" then return false, "范围辅助高频 Scheduler 不可用" end
+            RangeAssistResetSession(feature)
             local added = S.Scheduler:AddHighFrequencyTask(RANGE_ASSIST_TASK, RANGE_ASSIST_REFRESH_MS, function()
                 if feature.enabled ~= true or (tonumber(feature.consumerCount) or 0) <= 0 then return true end
                 feature.RangeRefreshHealth = type(feature.RangeRefreshHealth) == "table" and feature.RangeRefreshHealth
                     or { attempts=0, successes=0, failures=0, consecutiveFailures=0, skippedByCadence=0 }
                 local health=feature.RangeRefreshHealth
-                local targetInterval=RangeAssistRefreshInterval(feature)
-                local cadenceDivisor=math.max(1,math.floor((targetInterval/RANGE_ASSIST_REFRESH_MS)+0.5))
-                health.targetIntervalMs=targetInterval
-                -- 维护（range-motion-cadence-2）：Scheduler 已经负责约 16ms 基础节奏；低密度不再额外用
-                -- NowMs 做第二道 >=16ms 门，否则 15.xms 的正常调度抖动会被放大成 30ms 视觉卡顿。
-                -- 中/高密度按 2/3 个 Scheduler callback 分频，避免“目标32/48ms”因墙钟微抖再多跳一帧。
-                -- 这里只保存三个数字，不分配表、不读取 Native；密度档位变化时从下一次回调立即重新起相位。
-                if tonumber(health.cadenceDivisor)~=cadenceDivisor then
-                    health.cadenceDivisor=cadenceDivisor
-                    health.cadencePhase=0
-                end
-                local cadencePhase=math.max(0,math.floor(tonumber(health.cadencePhase) or 0))
-                if cadencePhase>0 then
-                    health.cadencePhase=cadencePhase-1
-                    health.skippedByCadence=(tonumber(health.skippedByCadence) or 0)+1
-                    return true
-                end
-                health.cadencePhase=cadenceDivisor-1
-                health.lastDispatchAtMs=S.NowMs and math.max(0,tonumber(S.NowMs()) or 0) or 0
+                if not RangeAssistShouldRefresh(feature, health) then return true end
                 health.attempts=(tonumber(health.attempts) or 0)+1
                 local callOk, refreshResult = xpcall(function()
                     return feature.Authority:Refresh("visual_tick")
@@ -222,6 +350,7 @@ return NewFeature("combat_range_assist", {
                 health.consecutiveFailures=(tonumber(health.consecutiveFailures) or 0)+1
                 health.lastErrorAtMs=S.NowMs and S.NowMs() or 0
                 health.lastError=tostring(refreshResult or "unknown")
+                RangeAssistFrameResult(feature, {}, "unavailable", "refresh_exception:" .. health.lastError)
                 if health.consecutiveFailures==1 then
                     feature.Authority.rows={}
                     feature.Authority.status="unavailable"
@@ -233,37 +362,39 @@ return NewFeature("combat_range_assist", {
                 end
                 if S.DiagnosticsManager~=nil and type(S.DiagnosticsManager.WarnRateLimited)=="function" then
                     S.DiagnosticsManager:WarnRateLimited("range_assist","REFRESH_EXCEPTION",10000,
-                        "范围辅助刷新异常，已隐藏旧圆并保持自适应高频重试",{error=health.lastError})
+                        "范围辅助刷新异常，已隐藏旧圆并保持自适应高频重试",{moduleId=feature.Id,error=health.lastError})
                 end
                 return true
             end, false, feature, "P1", 1)
             if added ~= true then return false, "范围辅助刷新任务创建失败" end
             if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(RANGE_ASSIST_TASK, feature.Id) end
-        elseif b > 0 and a <= 0 and S.Scheduler ~= nil then S.Scheduler:RemoveTask(RANGE_ASSIST_TASK) end
+        elseif b > 0 and a <= 0 then
+            if S.Scheduler ~= nil then S.Scheduler:RemoveTask(RANGE_ASSIST_TASK) end
+            RangeAssistResetSession(feature)
+        end
         return true
     end,
-    onDisable = function() if S.Scheduler ~= nil then S.Scheduler:RemoveTask(RANGE_ASSIST_TASK) end return true end,
+    onDisable = function(feature)
+        if S.Scheduler ~= nil then S.Scheduler:RemoveTask(RANGE_ASSIST_TASK) end
+        RangeAssistResetSession(feature)
+        return true
+    end,
     read = function(feature)
         local projection = S.Services and S.Services.ScreenProjectionV3 or nil
-        if type(projection) ~= "table" or type(projection.GetUnitWorldPosition) ~= "function" or type(projection.ProjectWorldBatch) ~= "function" then return {}, "unavailable", "ScreenProjectionV3 不可用" end
-        -- 高频读取只消费加载/配置事务已经归一化的 circles；禁止每帧复制并回写配置数组。
-        local circles = type(feature.State) == "table" and type(feature.State.circles) == "table" and feature.State.circles or {}
-        local enabledCircles = {}
-        local totalRequestedPoints = 0
-        for _, circle in ipairs(circles) do
-            if circle.enabled ~= false then
-                enabledCircles[#enabledCircles + 1] = circle
-                totalRequestedPoints = totalRequestedPoints + (tonumber(circle.pointCount) or 0)
-            end
+        if type(projection) ~= "table" or type(projection.GetUnitWorldPosition) ~= "function" or type(projection.ProjectWorldBatch) ~= "function" then
+            return RangeAssistFrameResult(feature, {}, "unavailable", "ScreenProjectionV3 不可用")
         end
-        if #enabledCircles <= 0 then return {}, "ready" end
+        -- 高频路径只比较拓扑快照，不逐帧归一化/回写配置或重算 sin/cos。
+        local circles = type(feature.State) == "table" and type(feature.State.circles) == "table" and feature.State.circles or {}
+        local geometry = RangeAssistGeometry(feature, circles)
+        if #geometry.plans <= 0 then return RangeAssistFrameResult(feature, {}, "ready", "no_enabled_circle") end
         local px,py,pz,posErr = projection:GetUnitWorldPosition("player", true)
-        if px == nil then return {}, "unavailable", "自身世界坐标不可读：" .. tostring(posErr or "unknown") end
+        if px == nil then return RangeAssistFrameResult(feature, {}, "unavailable", "自身世界坐标不可读：" .. tostring(posErr or "unknown")) end
         -- 中文维护注释（2026-09-15，range-real-meter-1）：配置里的 circle.radius 永远保存“游戏米”，
         -- 不把历史用户配置迁移成世界单位。真正绘制前才向 ScreenProjectionV3 请求受控标定：
         -- UnitDistance(target) 是米数 Authority，player/target world delta 只计算 worldUnitsPerMeter；
-        -- Camera fallback 的 screen scale 也是 Session-only 校准。无目标/样本不可信时都回退 1:1，
-        -- 因而旧配置、无目标场景和 Native ConvertWorldToScreen 可用场景不会被错误永久放大/缩小。
+        -- Camera fallback 的 screen scale 也是 Session-only 校准。无目标/样本不可信时保留已核验值，
+        -- 从未校准时才使用 1:1；镜头 FOV 在当帧透视处理，不再重置这一坐标比例。
         local metricCalibration = { worldUnitsPerMeter=1, projectionScale=1, worldScaleStatus="default", projectionScaleStatus="default",
             worldSampleCount=0, projectionSampleCount=0 }
         if type(projection.GetRangeMetricCalibration) == "function" then
@@ -273,30 +404,20 @@ return NewFeature("combat_range_assist", {
             })
             if okMetric == true and type(measured) == "table" then metricCalibration = measured end
         end
+        feature.RangeMetricFacts=metricCalibration
         local worldUnitsPerMeter = tonumber(metricCalibration.worldUnitsPerMeter) or 1
         if worldUnitsPerMeter <= 0 or worldUnitsPerMeter ~= worldUnitsPerMeter then worldUnitsPerMeter = 1 end
         local metricScreenScale = tonumber(metricCalibration.projectionScale) or 1
         if metricScreenScale <= 0 or metricScreenScale ~= metricScreenScale then metricScreenScale = 1 end
-        local budgetScale = totalRequestedPoints > RANGE_ASSIST_TOTAL_POINT_BUDGET
-            and (RANGE_ASSIST_TOTAL_POINT_BUDGET / math.max(1, totalRequestedPoints)) or 1
         local rows, partialCount = {}, 0
-        local plans, allWorldPoints = {}, {}
-        for _, circle in ipairs(enabledCircles) do
-            local requestedCount = math.max(RANGE_ASSIST_POINT_HARD_MIN, math.min(RANGE_ASSIST_POINT_HARD_MAX,
-                math.floor(tonumber(circle.pointCount) or RANGE_ASSIST_DEFAULT_POINT_COUNT)))
-            local renderCount = requestedCount
-            if budgetScale < 1 then
-                renderCount = math.max(RANGE_ASSIST_POINT_HARD_MIN, math.min(requestedCount, math.floor(requestedCount * budgetScale + 0.5)))
+        local plans, allWorldPoints = geometry.plans, geometry.worldPoints
+        for _, plan in ipairs(plans) do
+            local worldRadius = plan.circle.radius * worldUnitsPerMeter
+            plan.worldRadius = worldRadius
+            for index, direction in ipairs(plan.directions) do
+                local world = allWorldPoints[plan.firstIndex + index - 1]
+                world.x, world.y, world.z = px + direction.x * worldRadius, py + direction.y * worldRadius, pz + 0.25
             end
-            renderCount = math.max(RANGE_ASSIST_POINT_HARD_MIN, math.min(RANGE_ASSIST_POINT_HARD_MAX, renderCount))
-            local worldRadius = circle.radius * worldUnitsPerMeter
-            local firstIndex = #allWorldPoints + 1
-            for index = 1, renderCount do
-                local angle = ((index - 1) / renderCount) * math.pi * 2
-                allWorldPoints[#allWorldPoints + 1] = { x = px + math.cos(angle) * worldRadius, y = py + math.sin(angle) * worldRadius, z = pz + 0.25 }
-            end
-            plans[#plans + 1] = { circle=circle, requestedCount=requestedCount, renderCount=renderCount,
-                worldRadius=worldRadius, firstIndex=firstIndex }
         end
 
         -- 维护（2026-09-18，range-rigid-frame-1）：所有启用圆在同一次 Authority 刷新中必须共享
@@ -356,7 +477,7 @@ return NewFeature("combat_range_assist", {
             rows[#rows + 1] = {
                 key = "self_radius_" .. tostring(circle.id), circleId = circle.id, circleKey = "circle_" .. tostring(circle.id),
                 name = tostring(circle.name or ("范围圆 " .. tostring(circle.id))),
-                text = string.format("半径 %.1fm · 可见点 %d/%d · %s", circle.radius, #points, plan.renderCount, tostring(batchSource or "projection")),
+                text = string.format("半径 %.1fm · 投影点 %d/%d · %s", circle.radius, #points, plan.renderCount, tostring(batchSource or "projection")),
                 statusText = #points >= 3 and (metricVerified and "实时 · 米已校准" or "实时 · 待米校准") or "投影不足",
                 tone = #points >= 3 and (metricVerified and "green" or "warn") or "warn",
                 points = points, radius = circle.radius, worldRadius = plan.worldRadius, calibration = calibration, projFacts = projFacts,
@@ -367,11 +488,14 @@ return NewFeature("combat_range_assist", {
                 requestedPointCount = plan.requestedCount, renderPointCount = plan.renderCount, visibleCount = #points,
             }
         end
-        if #rows <= 0 then return {}, "ready" end
         if partialCount > 0 then
-            return rows, "partial", "部分范围圆投影点不足；已保留有效圆并按自适应高频节奏继续重试"
+            local reason = "部分范围圆投影点不足；已保留有效圆并按自适应高频节奏继续重试"
+            if #plans > math.floor(RANGE_ASSIST_TOTAL_POINT_BUDGET / RANGE_ASSIST_POINT_HARD_MIN) then
+                reason = "启用圆数超出总点预算，超出部分暂不绘制；配置已保留"
+            end
+            return RangeAssistFrameResult(feature, rows, "partial", reason, batch)
         end
-        return rows, "ready"
+        return RangeAssistFrameResult(feature, rows, "ready", nil, batch)
     end,
     projection = function(feature)
         -- Presentation projection 同样是只读路径，不在刷新时重写配置 Authority。
@@ -393,6 +517,9 @@ return NewFeature("combat_range_assist", {
             enabledCircleCount = enabledCircleCount,
             totalConfiguredPoints = totalConfiguredPoints,
             totalPointBudget = RANGE_ASSIST_TOTAL_POINT_BUDGET,
+            -- 原始 UIParent 视口，复用本批 Camera frame；不能拿 Layout logical 尺寸代替。
+            viewportWidth = feature.RangeLastBatch and feature.RangeLastBatch.viewportWidth,
+            viewportHeight = feature.RangeLastBatch and feature.RangeLastBatch.viewportHeight,
             refreshMs = tonumber(feature.RangeRefreshHealth and feature.RangeRefreshHealth.targetIntervalMs) or RangeAssistRefreshInterval(feature),
             pointCountHardMin = RANGE_ASSIST_POINT_HARD_MIN, pointCountHardMax = RANGE_ASSIST_POINT_HARD_MAX,
             radiusHardMin = RANGE_ASSIST_RADIUS_HARD_MIN, radiusHardMax = RANGE_ASSIST_RADIUS_HARD_MAX,
@@ -507,3 +634,30 @@ RangeAssist.AspectSafeProjectionContractVersion = 1
 RangeAssist.AnchorCalibrationContractVersion = 2
 RangeAssist.MetricDistanceContractVersion = 1
 RangeAssist.MultiCircleContractVersion = 1
+
+-- 维护（range-continuity-1）：采集只读会话事实；不 Initialize、不 Acquire、不刷新投影或查询 Native。
+-- 原模块没有 GetHealth 且 Store Owner 未归属，导致错误为零也完全看不到实际刷新/投影状态。
+RangeAssist.ContinuityContractVersion = 1
+RangeAssist.ProjectionStabilityContractVersion = 1
+function RangeAssist:GetHealth()
+    local frame = type(self.RangeFrameHealth) == "table" and self.RangeFrameHealth or {}
+    local geometry = type(self.RangeGeometry) == "table" and self.RangeGeometry or {}
+    local circles = type(self.State) == "table" and type(self.State.circles) == "table" and self.State.circles or {}
+    local task
+    if S.Scheduler ~= nil and type(S.Scheduler.GetTaskState) == "function" then task = S.Scheduler:GetTaskState(RANGE_ASSIST_TASK) end
+    return {
+        patch="range-continuity-1", enabled=self.enabled==true, consumerCount=tonumber(self.consumerCount) or 0,
+        status=tostring(frame.status or self.Authority.status or "not_sampled"), lastFrameReason=tostring(frame.lastFrameReason or ""),
+        circleCount=#circles, renderedPointBudget=192, budgetLimitedCircles=tonumber(geometry.budgetLimitedCircles) or 0,
+        geometryRebuilds=tonumber(self.RangeGeometryRebuilds) or 0, geometryCached=self.RangeGeometry~=nil,
+        visiblePoints=tonumber(frame.visiblePoints) or 0, renderPoints=tonumber(frame.renderPoints) or 0,
+        frames=tonumber(frame.frames) or 0, projectionFailures=tonumber(frame.projectionFailures) or 0,
+        projectorSource=tostring(frame.projectorSource or "none"), sourceChanges=tonumber(frame.sourceChanges) or 0,
+        refresh=Copy(self.RangeRefreshHealth or {}), batch=Copy(self.RangeLastBatch or {}), task=task,
+        projectionPatch="range-projection-stability-1", metric=Copy(self.RangeMetricFacts or {}),
+        projectionSamples=Copy(self.RangeProjectionSamples or {}),
+    }
+end
+if S.ModuleDiagnosticsHub ~= nil and type(S.ModuleDiagnosticsHub.RegisterStoreOwner) == "function" then
+    S.ModuleDiagnosticsHub:RegisterStoreOwner(RangeAssist.Id, RangeAssist.storeId)
+end

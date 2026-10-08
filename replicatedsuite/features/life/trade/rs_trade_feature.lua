@@ -462,15 +462,18 @@ end
 local function BuildTradeMaterialProjection(row)
     row = type(row) == "table" and row or {}
     local name = tostring(row.sourceName or row.name or "")
-    local static = S.Data and S.Data.TradeStaticV2
     local identity = S.Services and S.Services.TradeMaterialIdentityV3 or nil
-    local recipe = static and type(static.GetRecipeByLegacyName) == "function" and static:GetRecipeByLegacyName(name) or nil
-    local ingredients = type(recipe) == "table" and recipe.ingredients or nil
-    local recipeLabel = type(recipe) == "table" and tostring(recipe.legacyName or name) or nil
+    -- 中文维护（222712）：材料记录 accessor 与注册器是两张表，投影必须明确读取前者。
+    -- 此前 static 未定义，统一资源规则被跳过，绑定货币错误标成可拍卖；所有静态/Live 材料按
+    -- EN/compactId/ItemID 共用同一 COST_POLICY，不能只凭 includeInCost 或搜索空结果猜交易性。
+    local static = S.Data and S.Data.TradeStaticV2 or nil
+    -- 中文维护注释（2026-10-02）：配方证明统一交给 Identity 服务，避免本层按名字直接取材料
+    -- 绕过商品 ItemID、地区冲突与材料完整性检查；读取仍是静态 O(1)，不增加 Native 扫描。
+    local ingredients, recipeLabel
     -- Diagnostics-only trace (source ids / craftType). Kept off every rendered
     -- row so pages show Chinese product wording and nothing else.
     local identityDetail = nil
-    local identitySource = type(recipe) == "table" and "static_recipe" or nil
+    local identitySource = nil
     local result = {
         rows = {}, materialRows = {}, summary = "材料待确认", sourceCount = 0,
         truncated = false, costCopper = nil, subtotalCopper = 0,
@@ -483,7 +486,7 @@ local function BuildTradeMaterialProjection(row)
     -- then the live craft cache (read-only peek; native reads run only in the
     -- identity service's bounded queue).
     if type(ingredients) ~= "table" and type(identity) == "table" and type(identity.ResolveStatic) == "function" then
-        local resolved = identity:ResolveStatic(name, row.originZone)
+        local resolved = identity:ResolveStatic(name, row.originZone, row.itemType)
         if type(resolved) == "table" and type(resolved.rows) == "table" and #resolved.rows > 0 then
             ingredients = resolved.rows
             recipeLabel, identitySource = tostring(resolved.label or "?"), tostring(resolved.source or "static")
@@ -541,7 +544,7 @@ local function BuildTradeMaterialProjection(row)
         -- Foundation Audit while sealing `.18.188`.
         -- 修复（2026-09-30，trade-selected-economics-1）：priceMeta 同样必须属于整个材料迭代。
         -- 旧声明位于 else 子块，构造 materialRows 时已经越过作用域，读到的是同名全局；
-        -- 单价仍参与计算，但来源/缓存年龄/重验状态全丢失，无法核实可疑毛利。只修复来源投影，
+        -- 单价仍参与计算，但来源/缓存年龄/刷新状态全丢失，无法核实可疑毛利。只修复来源投影，
         -- 不改币值单位、材料数量、缓存策略或售价/毛利公式。
         local priceProvenance, priceMeta = nil, nil
 
@@ -576,36 +579,25 @@ local function BuildTradeMaterialProjection(row)
             if type(quoteQueue) == "table" and type(quoteQueue.GetQuoteStateByItemType) == "function" then
                 quoteState = quoteQueue:GetQuoteStateByItemType(itemType, itemGrade)
             end
-            -- 维护（2026-09-25，material-price-swr-1）：材料成本首先读取持久化 MaterialPriceServiceV3。
-            -- 本地值无论 fresh/warm/stale/old 都可立即参与毛利；年龄只决定后台是否重验，绝不能因为过期把
-            -- 已知成本清成 nil。PriceQuoteQueueV3 仍只负责 Native 串行和当前请求状态，禁止 Presentation/Trade
-            -- 自己保存第二份材料单价。混装旧包时才回退 Queue 旧接口。
-            if type(materialPrices) == "table" and type(materialPrices.GetPrice) == "function" then
-                quotedPrice, priceMeta = materialPrices:GetPrice(itemType, itemGrade)
-                if quotedPrice ~= nil then
-                    priceProvenance = tostring(priceMeta and priceMeta.freshness or "unknown") == "fresh" and "local_fresh" or "local_cached"
-                end
-            end
-            -- 维护（2026-09-27，trade-material-store-degraded-fallback-1）：MaterialPriceServiceV3 存在并不代表
-            -- 它的 Store 一定可读。实机诊断已经出现 storeLoaded=false / 0 writes；旧版因为上面是 if/elseif，
-            -- 服务表只要存在就会吞掉 PriceQuoteQueueV3 已完成的会话报价，导致材料长期“待询价”。持久 Authority
-            -- 不可用/未命中时只读回退共享 QuoteQueue read-model；不复制价格、不发 Native 请求，Store 恢复后仍优先它。
-            if quotedPrice == nil and type(quoteQueue) == "table" and type(quoteQueue.GetPriceWithProvenance) == "function" then
-                local legacyProvenance, legacyMeta
-                quotedPrice, legacyProvenance, legacyMeta = quoteQueue:GetPriceWithProvenance(itemType, itemGrade)
-                if quotedPrice ~= nil then
-                    priceMeta = legacyMeta
-                    priceProvenance = legacyProvenance == "live" and "local_fresh" or "local_cached"
-                end
+            -- 维护（trade-single-quote-1）：七天内已接受单价直接算成本；更旧/无年龄记录为缺价。
+            -- 正式新服务存在时不回退无年龄 legacy reference，避免将过期价格重新当 fresh。
+            if type(materialPrices) == "table" and type(materialPrices.GetTradePrice) == "function" then
+                quotedPrice, priceMeta = materialPrices:GetTradePrice(itemType, itemGrade)
+                if quotedPrice ~= nil then priceProvenance = priceMeta.freshness == "fresh" and "local_fresh" or "local_cached" end
+            elseif type(quoteQueue) == "table" and type(quoteQueue.GetPriceWithProvenance) == "function" then
+                local provenance
+                quotedPrice, provenance, priceMeta = quoteQueue:GetPriceWithProvenance(itemType, itemGrade)
+                priceProvenance = provenance == "live" and "local_fresh" or "local_cached"
             end
             if quotedPrice ~= nil then
                 unitCost, totalCost = quotedPrice, quotedPrice * count
                 status = priceProvenance == "local_fresh" and "quoted" or "quoted_reference"
             elseif quoteState ~= nil and (quoteState.status == "queued" or quoteState.status == "inflight") then
                 complete, status = false, "quote_pending"
-            elseif quoteState ~= nil and quoteState.status == "failed" then
+            elseif quoteState ~= nil and (quoteState.status == "failed" or quoteState.status == "blocked") then
+                -- 维护（2026-10-01，auction-full-lane-safety-1）：受阻是明确终态，不回退成无记录/待询价。
                 quoteError = type(quoteState.error) == "string" and quoteState.error or tostring(quoteState.code or "报价失败")
-                complete, status = false, "quote_failed"
+                complete, status = false, quoteState.status == "blocked" and "quote_blocked" or "quote_failed"
             else
                 complete, status = false, "explicit_quote_required"
             end
@@ -649,6 +641,10 @@ local function BuildTradeMaterialProjection(row)
             priceAgeMinutes = type(priceMeta) == "table" and tonumber(priceMeta.ageMinutes) or nil,
             priceSource = type(priceMeta) == "table" and tostring(priceMeta.source or "") or nil,
             priceRefreshing = type(priceMeta) == "table" and priceMeta.refreshing == true or false,
+            -- 候选价仅是诊断/展示证据；unitCost/totalCost 始终使用 MaterialPrice 已接受价格。
+            priceCandidateCopper = type(priceMeta) == "table" and tonumber(priceMeta.candidatePrice) or nil,
+            priceCandidateCount = type(priceMeta) == "table" and tonumber(priceMeta.candidateCount) or nil,
+            priceSortUnverified = type(priceMeta) == "table" and priceMeta.sortUnverified == true,
         }
         -- Compact cell text: name × count only. Per-material price/status detail
         -- lives on the row fields below (consumed by the detail window and the
@@ -668,11 +664,16 @@ local function BuildTradeMaterialProjection(row)
                 else ageText = "，本地" .. tostring(math.floor(row.priceAgeMinutes / 1440)) .. "天前" end
             elseif priceProvenance == "local_cached" then ageText = "，本地历史价" end
             if row.priceRefreshing == true then ageText = ageText .. "，后台更新中" end
+            if row.priceCandidateCopper ~= nil then ageText = ageText .. "，异常候选价待复核，仍用原价" end
             row.detailText = row.detailText .. "（单价 " .. Money(unitCost) .. " / 小计 " .. Money(totalCost) .. ageText .. "）"
         elseif status == "quote_pending" then
             row.detailText = row.detailText .. "（询价" .. (row.quoteState == "inflight" and "中" or "排队中") .. "）"
+        elseif status == "quote_blocked" then
+            row.detailText = row.detailText .. "（询价受阻，原价未更新）"
         elseif status == "quote_failed" then
             row.detailText = row.detailText .. "（询价失败）"
+        elseif row.priceSortUnverified then
+            row.detailText = row.detailText .. "（旧缓存未核验挂单排序，请双击重新询价）"
         else
             row.detailText = row.detailText .. (status == "explicit_quote_required" and "（价格需显式询价）" or "（单价待确认）")
         end
@@ -715,6 +716,32 @@ local function BuildTradeMaterialProjection(row)
     result.costCopper = result.costComplete and result.subtotalCopper or nil
     result.count = #result.materialRows
     return result
+end
+
+-- 维护（trade-requote-2）：完整材料投影与货率 fast-publish 共用任务展示，避免10秒货率刷新擦掉本次询价终态。
+local function ApplyTradeQuoteJobProjection(row)
+    -- RowJob 元数据只用于 Presentation 展示进度/按钮状态；材料价格本身由 MaterialPriceServiceV3 Authority 提供。
+    local displayJob = type(Trade.quoteJobsByRowKey) == "table" and Trade.quoteJobsByRowKey[tostring(row.key or "")] or nil
+    row.quoteJobActive = type(displayJob) == "table" and displayJob.active == true
+    row.quoteJobState = type(displayJob) == "table" and tostring(displayJob.state or (displayJob.active and "quoting" or "idle")) or "idle"
+    row.quoteJobCompleted = type(displayJob) == "table" and (tonumber(displayJob.completed) or 0) or 0
+    row.quoteJobTotal = type(displayJob) == "table" and (tonumber(displayJob.total) or 0) or 0
+    row.quoteJobReady = type(displayJob) == "table" and (tonumber(displayJob.ready) or 0) or 0
+    row.quoteJobFailed = type(displayJob) == "table" and (tonumber(displayJob.failed) or 0) or 0
+    row.quoteJobReason = type(displayJob) == "table" and displayJob.reason or nil
+    -- 维护（trade-requote-2）：已有部分价格不代表全部材料已报价。保留数字，但不能把 active/blocked/failed
+    -- 隐藏在 profit~=nil 的 ready 分支。所有视图共用本行状态，不清旧价、不伪造0或正利润。
+    if row.quoteJobActive then
+        if row.profitCopper ~= nil then row.profitStatus = "revalidating" end
+        row.profitNote = "正在查询缺失材料价 " .. tostring(row.quoteJobCompleted) .. "/" .. tostring(row.quoteJobTotal)
+            .. (row.profitCopper ~= nil and "；当前毛利暂按旧价" or "")
+    elseif row.quoteJobState == "blocked" or row.quoteJobState == "failed" or row.quoteJobState == "partial" then
+        -- 维护（auction-full-lane-safety-1）：缺少蓝盐债券等任一材料价时 profitCopper=nil，
+        -- 旧代码漏掉该分支，已失败的货物仍显示后台询价。保留未知成本，不把缺价当0或删除真实材料。
+        row.profitStatus = row.quoteJobState == "blocked" and "revalidate_blocked" or "revalidate_failed"
+        if row.profitCopper == nil then row.profit = row.quoteJobState == "blocked" and "询价受阻" or "部分材料价未知" end
+        row.profitNote = tostring(row.quoteJobReason or "部分材料价格未知；保留已知价格")
+    end
 end
 
 local function ApplyTradeMaterialProjectionToRow(row)
@@ -770,9 +797,11 @@ local function ApplyTradeMaterialProjectionToRow(row)
         -- 旧文案“缺材料价（拍卖行无返回）”既过长又像永久故障，且无法解释显式询价模型。这里仅消费已经
         -- 解析好的材料状态，不发 Native 请求；双击行为仍由 Presentation -> QuoteRowMaterials 明确触发。
         local hasQuotePending, hasQuoteFailed, hasQuoteRequired, hasBackgroundPending = false, false, false, false
+        local hasQuoteBlocked = false
         for _, material in ipairs(type(materialProjection.materialRows) == "table" and materialProjection.materialRows or {}) do
             if material.costStatus == "quote_pending" then hasQuotePending = true
             elseif material.costStatus == "quote_failed" then hasQuoteFailed = true
+            elseif material.costStatus == "quote_blocked" then hasQuoteBlocked = true
             elseif material.costStatus == "explicit_quote_required" then hasQuoteRequired = true end
             if material.priceRefreshing == true then hasBackgroundPending = true end
         end
@@ -794,6 +823,8 @@ local function ApplyTradeMaterialProjectionToRow(row)
             else
                 row.profitStatus, row.profit = "quote_pending", "询价中…"
             end
+        elseif hasQuoteBlocked then
+            row.profitStatus, row.profit = "quote_blocked", "询价受阻"
         elseif hasQuoteFailed then
             row.profitStatus, row.profit = "quote_failed", "询价失败"
         elseif hasQuoteRequired then
@@ -808,14 +839,7 @@ local function ApplyTradeMaterialProjectionToRow(row)
             row.profitStatus, row.profit = "partial", "材料价不全"
         end
     end
-    -- RowJob 元数据只用于 Presentation 展示进度/按钮状态；材料价格本身由 MaterialPriceServiceV3 Authority 提供。
-    local displayJob = type(Trade.quoteJobsByRowKey) == "table" and Trade.quoteJobsByRowKey[tostring(row.key or "")] or nil
-    row.quoteJobActive = type(displayJob) == "table" and displayJob.active == true
-    row.quoteJobState = type(displayJob) == "table" and tostring(displayJob.state or (displayJob.active and "quoting" or "idle")) or "idle"
-    row.quoteJobCompleted = type(displayJob) == "table" and (tonumber(displayJob.completed) or 0) or 0
-    row.quoteJobTotal = type(displayJob) == "table" and (tonumber(displayJob.total) or 0) or 0
-    row.quoteJobReady = type(displayJob) == "table" and (tonumber(displayJob.ready) or 0) or 0
-    row.quoteJobFailed = type(displayJob) == "table" and (tonumber(displayJob.failed) or 0) or 0
+    ApplyTradeQuoteJobProjection(row)
     return true
 end
 
@@ -873,14 +897,7 @@ local function ApplyTradeFastMaterialCarryForward(row, previous)
         if row.profitStatus == "ready" then row.profitStatus, row.profit = "partial", "材料价不全" end
     end
 
-    -- RowJob 是当前会话用户意图，不从旧 row 快照继承；按稳定 rowKey 重新读取现行任务状态。
-    local displayJob = type(Trade.quoteJobsByRowKey) == "table" and Trade.quoteJobsByRowKey[tostring(row.key or "")] or nil
-    row.quoteJobActive = type(displayJob) == "table" and displayJob.active == true
-    row.quoteJobState = type(displayJob) == "table" and tostring(displayJob.state or (displayJob.active and "quoting" or "idle")) or "idle"
-    row.quoteJobCompleted = type(displayJob) == "table" and (tonumber(displayJob.completed) or 0) or 0
-    row.quoteJobTotal = type(displayJob) == "table" and (tonumber(displayJob.total) or 0) or 0
-    row.quoteJobReady = type(displayJob) == "table" and (tonumber(displayJob.ready) or 0) or 0
-    row.quoteJobFailed = type(displayJob) == "table" and (tonumber(displayJob.failed) or 0) or 0
+    ApplyTradeQuoteJobProjection(row)
     row.fastMaterialCarryForward = true
     return true
 end
@@ -1054,11 +1071,11 @@ end
 
 function TA:QueueBackgroundMaterialRevalidation(reason)
     -- 维护（2026-09-25，material-price-swr-1）：普通路线刷新先用本地价完成毛利，再把当前可见行中
-    -- Missing/Warm/Stale/Old 材料交给 MaterialPriceServiceV3。这里只提交“刷新意图”，Native 仍由
+    -- Warm/Stale 缓存材料交给独立 TradeMaterialQuoteServiceV3；缺价仅由主动操作处理。Native 仍由
     -- PriceQuoteQueueV3 单通道串行；fresh 材料不会重复查，服务还会按 itemType+grade 去重/节流。
     if Trade.enabled ~= true or (tonumber(Trade.consumerCount) or 0) <= 0 then return false, "no_consumers" end
-    local service = S.Services and S.Services.MaterialPriceServiceV3 or nil
-    if type(service) ~= "table" or type(service.QueueRevalidate) ~= "function" then return false, "material_price_service_unavailable" end
+    local service = S.Services and S.Services.TradeMaterialQuoteServiceV3 or nil
+    if type(service) ~= "table" or type(service.QueueRefresh) ~= "function" then return false, "material_quote_service_unavailable" end
     local materials = {}
     for _, row in ipairs(type(self.rows) == "table" and self.rows or {}) do
         for _, material in ipairs(type(row.materialRows) == "table" and row.materialRows or {}) do
@@ -1070,13 +1087,13 @@ function TA:QueueBackgroundMaterialRevalidation(reason)
             end
         end
     end
-    local ok, result = service:QueueRevalidate(materials, { reason = tostring(reason or "trade_visible_rows"), maxItems = 12 })
+    -- 维护（auction-full-lane-safety-1）：后台 SWR 属于本 Feature 的可见需求，不能成为无主后台任务。
+    local ok, result = service:QueueRefresh(materials, { owner = "life_trade", reason = tostring(reason or "trade_visible_rows"), maxItems = 12 })
     self.materialRevalidateDiagnostics = type(result) == "table" and Copy(result) or { error = tostring(result or "unknown") }
     self.materialRevalidateDiagnostics.reason = tostring(reason or "trade_visible_rows")
     self.materialRevalidateDiagnostics.at = type(S.NowMs) == "function" and tonumber(S.NowMs()) or 0
     if ok == true and type(result) == "table" and (tonumber(result.submitted) or 0) > 0 then
-        -- Missing rows should immediately reflect queued/inflight state. Cached rows keep their existing cost/profit while
-        -- background refresh runs, which is the core stale-while-revalidate guarantee.
+        -- 后台仅刷新已有旧价；本次行成本继续立即使用缓存，不制造缺价后台任务。
         for _, row in ipairs(self.rows or {}) do ApplyTradeMaterialProjectionToRow(row) end
     end
     return ok, result
@@ -2685,7 +2702,7 @@ Trade.ApiDependencies = {
     "X2Equipment:GetEquippedItemType", "X2Equipment:GetEquippedItemTooltipInfo",
     "X2Craft:GetCraftTypeByItemType", "X2Craft:GetCraftMaterialInfo", "X2Craft:GetCraftProductInfo",
     "X2Auction:AskMarketPrice", "X2Auction:GetLowestPrice", "X2Auction:SearchAuctionArticle",
-    "X2Auction:GetSearchedItemCount", "X2Auction:GetSearchedItemInfo",
+    "X2Auction:GetSearchedItemCount", "X2Auction:GetSearchedItemTotalCount", "X2Auction:GetSearchedItemInfo",
 }
 function Trade:Initialize()
     if type(S.Services and S.Services.TradePayoutV3) ~= "table" then return false, "跑商售价计算服务不可用" end
@@ -2754,10 +2771,7 @@ function Trade:EnsurePriceQuoteSubscription()
     if S.Events==nil or type(S.Events.SubscribeInternal)~="function" then return false,"内部报价事件总线不可用" end
     local ok=S.Events:SubscribeInternal(queue.Topic,self,function(_,itemType,itemGrade,status,reason)
         if Trade.enabled~=true or (tonumber(Trade.consumerCount) or 0)<=0 then return true end
-        -- 维护（2026-09-25，trade-multi-row-quote-event-reconcile-1）：先用共享 QuoteQueue 的稳定身份
-        -- 收敛所有命中的 RowJob，再刷新可见行 read-model。正常 requester callback 会先完成并把 item.done=true，
-        -- 因此这里是幂等 backstop；生命周期边沿若丢失单个 callback，也不会留下永远 active 的货物任务。
-        if type(Trade._ReconcileQuoteJobsByIdentity)=="function" then Trade:_ReconcileQuoteJobsByIdentity(itemType,itemGrade,status,reason) end
+        -- 共享价格事件只失效 read-model；没有 operation/requester 身份，不能结算当前行任务。
         return TA:RefreshQuotedItemType(itemType,itemGrade,status,reason)
     end)
     if ok~=true then return false,"报价完成事件订阅失败" end
@@ -3345,6 +3359,7 @@ function Trade:_RefreshQuoteAggregate(reason)
         summary.failed=tonumber(self.lastQuoteJob.failed) or 0
         summary.rowKey=self.lastQuoteJob.rowKey;summary.label=self.lastQuoteJob.label
         summary.scope="row";summary.lastJobState=self.lastQuoteJob.state
+        summary.lastJobReason=self.lastQuoteJob.reason
     end
     self.quoteBatch=summary
     return summary
@@ -3412,8 +3427,8 @@ function Trade:CancelQuoteRowMaterials(rowKey,reason)
     if type(job)~="table" or job.active~=true then return false,"该货物当前没有询价任务" end
     job.active=false;job.state="cancelled";job.reason=tostring(reason or "user_cancelled")
     job.completedAt=type(S.NowMs)=="function" and S.NowMs() or 0
-    local queue=S.Services and S.Services.PriceQuoteQueueV3
-    if queue and type(queue.CancelRequester)=="function" then queue:CancelRequester(job.requester) end
+    local service=S.Services and S.Services.TradeMaterialQuoteServiceV3
+    if service then service:CancelRequester(job.requester) end
     self.lastQuoteJob=QuoteJobSummary(job)
     self:_RefreshQuoteAggregate("row_cancelled")
     for _,row in ipairs(TA.rows or {}) do ApplyTradeMaterialProjectionToRow(row) end
@@ -3425,17 +3440,17 @@ function Trade:CancelQuoteBatch(reason)
     -- 兼容旧命令名：现在表示取消本 Feature 的全部 RowJob。每个 requester 精确解绑；共享材料若仍有别的
     -- RowJob/Feature watcher，PriceQuoteQueueV3 会继续处理，不会因为某个货物取消而杀掉其它任务。
     self.quoteEpoch=(tonumber(self.quoteEpoch) or 0)+1
-    local queue=S.Services and S.Services.PriceQuoteQueueV3
+    local service=S.Services and S.Services.TradeMaterialQuoteServiceV3
     for _,job in pairs(type(self.quoteJobsByRowKey)=="table" and self.quoteJobsByRowKey or {}) do
         if type(job)=="table" and job.active==true then
             job.active=false;job.state="cancelled";job.reason=tostring(reason or "cancelled")
             job.completedAt=type(S.NowMs)=="function" and S.NowMs() or 0
-            if queue and type(queue.CancelRequester)=="function" then queue:CancelRequester(job.requester) end
+            if service then service:CancelRequester(job.requester) end
             self.lastQuoteJob=QuoteJobSummary(job)
         end
     end
-    -- 热重载兼容：18.315 以前可能仍存在旧 requester 名称。
-    if queue and type(queue.CancelRequester)=="function" then queue:CancelRequester("life_trade") end
+    -- consumer归零/换路线/禁用同时释放本 Feature 的前台与 SWR owner。
+    if service then service:CancelOwner("life_trade") end
     if S.Scheduler then S.Scheduler:RemoveTask(QUOTE_REFRESH_TASK) end
     self.quoteRefreshPending=false;self.quoteMaterialKeys={}
     self.quoteJobsByRowKey={};self.quoteJobOrder={};self.lastQuoteJob=nil
@@ -3477,7 +3492,7 @@ function Trade:_QueueQuoteRefresh(materialKey,epoch,terminal)
 end
 
 local function ResolveTradeQuoteIdentity(material)
-    local materialKey,itemType,itemGrade,gradeOffset
+    local materialKey,itemType,itemGrade
     if type(material)=="table" then
         materialKey=tostring(material.materialKey or material.internalKey or "")
         itemType,itemGrade=tonumber(material.itemType),tonumber(material.itemGrade)
@@ -3485,11 +3500,12 @@ local function ResolveTradeQuoteIdentity(material)
     local metaTable=S.Data and S.Data.TradeMaterialAuctionMeta
     local meta=type(metaTable)=="table" and metaTable[materialKey] or nil
     if type(meta)=="table" then
-        itemType=itemType or tonumber(meta.itemType);itemGrade=itemGrade or tonumber(meta.itemGrade);gradeOffset=tonumber(meta.gradeOffset)
+        itemType=itemType or tonumber(meta.itemType);itemGrade=itemGrade or tonumber(meta.itemGrade)
     end
-    if itemType==nil or itemType<=0 then return materialKey,nil,nil end
-    itemType=math.floor(itemType);itemGrade=itemGrade or (gradeOffset~=nil and gradeOffset+1) or 1
-    itemGrade=math.max(0,math.min(20,math.floor(tonumber(itemGrade) or 1)))
+    -- 中文维护：只消费材料元数据或配方的明确 Native 品质；显示偏移不是品质 Authority。
+    -- 未知或损坏身份交给报价服务保持未知，不做取整/夹紧伪造另一份有效身份。
+    if itemType==nil or itemType~=itemType or itemType==math.huge or itemType<=0 or itemType~=math.floor(itemType) then return materialKey,nil,nil end
+    if itemGrade==nil or itemGrade~=itemGrade or itemGrade<0 or itemGrade>20 or itemGrade~=math.floor(itemGrade) then itemGrade=nil end
     if materialKey=="" then materialKey="item:"..tostring(itemType) end
     return materialKey,itemType,itemGrade
 end
@@ -3500,61 +3516,37 @@ function Trade:_CompleteQuoteJobMaterial(job,quoteKey,status,reason)
     local item=type(job.items)=="table" and job.items[quoteKey] or nil
     if type(item)~="table" or item.done==true then return false,false,nil end
     item.done=true;item.status=tostring(status or "failed");item.reason=tostring(reason or "completed")
+    if item.status ~= "ready" then
+        job.reason=item.reason
+        if item.status == "blocked" then job.blocked=(tonumber(job.blocked) or 0)+1 end
+    end
     job.completed=(tonumber(job.completed) or 0)+1
     if item.status=="ready" then job.ready=(tonumber(job.ready) or 0)+1 else job.failed=(tonumber(job.failed) or 0)+1 end
     local terminal=job.completed>=job.total
     if terminal then
         job.active=false;job.completedAt=type(S.NowMs)=="function" and S.NowMs() or 0
         if (tonumber(job.failed) or 0)<=0 then job.state="ready"
-        elseif (tonumber(job.ready) or 0)>0 then job.state="partial" else job.state="failed" end
+        elseif (tonumber(job.ready) or 0)>0 then job.state="partial"
+        elseif (tonumber(job.blocked) or 0)>0 then job.state="blocked" else job.state="failed" end
         self.lastQuoteJob=QuoteJobSummary(job)
     else job.state="quoting" end
     self:_RefreshQuoteAggregate(terminal and "row_terminal" or "row_progress")
     return true,terminal,item.materialKey
 end
 
-function Trade:_ReconcileQuoteJobsByIdentity(itemType,itemGrade,status,reason)
-    -- Queue completion event is the shared Authority backstop. Normal callbacks arrive first, so done=true makes this idempotent;
-    -- if a requester callback is lost during a lifecycle edge, the stable item identity still converges every affected RowJob.
-    local id=tonumber(itemType);if id==nil or id<=0 then return false end
-    id=math.floor(id);local grade=tonumber(itemGrade);if grade~=nil then grade=math.floor(grade) end
-    local changed=false;local terminal=false;local materialKeys={}
-    for _,job in pairs(type(self.quoteJobsByRowKey)=="table" and self.quoteJobsByRowKey or {}) do
-        if type(job)=="table" and job.active==true and type(job.items)=="table" then
-            for quoteKey,item in pairs(job.items) do
-                if item.done~=true and tonumber(item.itemType)==id
-                    and (grade==nil or tonumber(item.itemGrade)==nil or math.floor(tonumber(item.itemGrade))==grade) then
-                    local did,ended,key=self:_CompleteQuoteJobMaterial(job,quoteKey,status,reason or "queue_event")
-                    if did then changed=true;terminal=terminal or ended;if key then materialKeys[key]=true end end
-                end
-            end
-        end
-    end
-    if changed then
-        for key in pairs(materialKeys) do self.quoteMaterialKeys[key]=true end
-        if terminal then self:_FlushQuoteRefresh(self.quoteEpoch,"queue_event_terminal") end
-    end
-    return changed
-end
-
+-- 维护（trade-single-quote-1）：一行操作由业务服务统一决策缓存/缺价/截止时间。
+-- 已替换 identity-only 全局终态对账和逐材料 force/grade ladder 重验路径。
 function Trade:QuoteMaterial(material,mode,job)
-    if not self.enabled then return false,"跑商功能已关闭" end
-    if type(job)~="table" or job.active~=true then return false,"货物询价任务已失效" end
-    local materialKey,itemType,itemGrade=ResolveTradeQuoteIdentity(material)
-    if not itemType then return false,"该材料没有已验证的拍卖行身份，无法询价" end
-    local queue=S.Services and S.Services.PriceQuoteQueueV3
-    if not queue or type(queue.RequestQuote)~="function" then return false,"报价服务不可用" end
-    local grades={itemGrade};local seen={[itemGrade]=true}
-    if mode=="full" then for grade=0,6 do if not seen[grade] then grades[#grades+1]=grade;seen[grade]=true end end end
-    local projectedName=type(material)=="table" and (material.searchName or material.name) or nil
-    local searchName=LocalizedTradeItemName(itemType,projectedName)
-    local quoteKey=tostring(itemType)..":"..tostring(itemGrade)
-    return queue:RequestQuote(job.requester,itemType,itemGrade,function(result)
-        if job.epoch~=Trade.quoteEpoch or not Trade.enabled then return end
-        if Trade.quoteJobsByRowKey[tostring(job.rowKey or "")]~=job then return end
-        local did,terminal,key=Trade:_CompleteQuoteJobMaterial(job,quoteKey,tostring(result and result.status or "failed"),result and (result.error or result.priceSource) or "callback")
-        if did then Trade:_QueueQuoteRefresh(key or materialKey,job.epoch,terminal) end
-    end,grades,{searchName=searchName,force=true,priority="user"})
+    if not self.enabled or type(job)~="table" or job.active~=true then return false,"货物询价任务已失效" end
+    local service=S.Services and S.Services.TradeMaterialQuoteServiceV3
+    if not service then return false,"材料报价服务不可用" end
+    return service:RequestRecipe(job.requester,{material},function(snapshot)
+        if job.epoch~=Trade.quoteEpoch or not Trade.enabled or Trade.quoteJobsByRowKey[job.rowKey]~=job then return end
+        for key,result in pairs(snapshot.results or {}) do
+            local did,terminal,materialKey=Trade:_CompleteQuoteJobMaterial(job,key,result.status,result.error or (result.cached and "价格已缓存" or "报价完成"))
+            if did then Trade:_QueueQuoteRefresh(materialKey,job.epoch,terminal) end
+        end
+    end,{owner="life_trade"})
 end
 
 function Trade:_StartRowQuoteJob(row,mode,options)
@@ -3563,66 +3555,50 @@ function Trade:_StartRowQuoteJob(row,mode,options)
     options=type(options)=="table" and options or {}
     local rowKey=tostring(row.key)
     local existing=self.quoteJobsByRowKey[rowKey]
-    if type(existing)=="table" and existing.active==true then
-        return true,"正在查询该货物材料 "..tostring(existing.completed or 0).."/"..tostring(existing.total or 0),0,tonumber(existing.deferred) or 0
-    end
-    if self:_CountActiveQuoteJobs()>=TRADE_MAX_ACTIVE_QUOTE_JOBS then return false,"同时询价货物已达到 "..tostring(TRADE_MAX_ACTIVE_QUOTE_JOBS).." 个，请等待部分完成" end
-    local queue=S.Services and S.Services.PriceQuoteQueueV3
-    if not queue then return false,"报价服务不可用" end
-    local maxItems=math.max(1,math.min(TRADE_MATERIAL_MAX_ROWS,math.floor(tonumber(options.maxItems) or TRADE_ROW_QUOTE_BATCH_MAX)))
-    local now=type(S.NowMs)=="function" and S.NowMs() or 0
+    if type(existing)=="table" and existing.active==true then return true,"正在查询该货物材料",0,0 end
+    if self:_CountActiveQuoteJobs()>=TRADE_MAX_ACTIVE_QUOTE_JOBS then return false,"同时询价货物已达到上限，请等待部分完成" end
+    local service=S.Services and S.Services.TradeMaterialQuoteServiceV3
+    if not service then return false,"材料报价服务不可用" end
     ApplyTradeMaterialProjectionToRow(row)
-    local selected,seen,deferred,joinedPending={}, {},0,0
+    local selected,seen={},{}
     for _,m in ipairs(row.materialRows or {}) do
-        local materialKey,id,grade=ResolveTradeQuoteIdentity(m);local key=id and (tostring(id)..":"..tostring(grade))
-        local state=id and queue:GetQuoteStateByItemType(id,grade)
-        local cooling=state and state.status=="failed" and now-(state.at or 0)>=0 and now-(state.at or 0)<queue.negativeTtlMs
-        local pending=state and (state.status=="queued" or state.status=="inflight")
-        local missing=m.costStatus=="explicit_quote_required" or m.costStatus=="quote_failed" or m.costStatus=="quoted_reference" or m.costStatus=="quote_pending"
-        -- 双击/显式 RowJob 的语义是“强制校准这个货物”，即使本地价格仍 fresh 也允许重验；
-        -- PriceQuoteQueueV3 会按 itemType+grade 去重并把 user 请求排在 background 前，不会并发打 Native。
-        local explicitlyRequested = options.force ~= false
-        if key and not seen[key] and m.auctionable~=false and m.includeInCost~=false and (explicitlyRequested or missing or mode=="full") then
+        local materialKey,id,grade=ResolveTradeQuoteIdentity(m)
+        local key=id and (tostring(id)..":"..tostring(grade)) or ("unknown:"..tostring(#selected+1))
+        if not seen[key] and m.auctionable~=false and m.includeInCost~=false then
             seen[key]=true
-            if (cooling and mode~="full") or #selected>=maxItems then deferred=deferred+1
-            else
-                if pending then joinedPending=joinedPending+1 end
-                selected[#selected+1]={materialKey=materialKey,itemType=id,itemGrade=grade,searchName=m.name,quoteKey=key}
-            end
+            selected[#selected+1]={materialKey=materialKey,itemType=id,itemGrade=grade,
+                searchName=LocalizedTradeItemName(id,m.name),quoteKey=key,auctionable=true,includeInCost=true}
         end
     end
-    if #selected==0 then
-        if row.materialCostComplete==true and row.materialCostCopper~=nil then return true,"该货物材料价格已可用，毛利已更新",0,deferred end
-        return false,"没有可询价材料；已有有效报价、失败冷却中，或材料本身不可拍卖",0,deferred
-    end
+    if #selected==0 then return row.materialCostComplete==true,"没有可询价的市场材料",0,0 end
     self.quoteJobSequence=(tonumber(self.quoteJobSequence) or 0)+1
-    local job={
-        id=self.quoteJobSequence,epoch=self.quoteEpoch,rowKey=rowKey,label=tostring(row.name or "货物"),
-        requester="life_trade:rowjob:"..tostring(self.quoteJobSequence),mode=mode or "basic",state="queued",active=true,
-        total=#selected,completed=0,ready=0,failed=0,deferred=deferred,joinedPending=joinedPending,maxItems=maxItems,
-        createdAt=now,items={},
-    }
-    for _,material in ipairs(selected) do
-        job.items[material.quoteKey]={materialKey=material.materialKey,itemType=material.itemType,itemGrade=material.itemGrade,done=false,status="queued"}
-    end
+    local job={id=self.quoteJobSequence,epoch=self.quoteEpoch,rowKey=rowKey,label=tostring(row.name or "货物"),
+        requester="life_trade:rowjob:"..tostring(self.quoteJobSequence),mode="basic",state="queued",active=true,
+        total=#selected,completed=0,ready=0,failed=0,deferred=0,joinedPending=0,maxItems=#selected,
+        createdAt=type(S.NowMs)=="function" and S.NowMs() or 0,items={}}
+    for _,m in ipairs(selected)do job.items[m.quoteKey]={materialKey=m.materialKey,itemType=m.itemType,itemGrade=m.itemGrade,done=false,status="queued"}end
     self.quoteJobsByRowKey[rowKey]=job
-    local nextOrder={}
-    for _,key in ipairs(self.quoteJobOrder or {}) do if key~=rowKey then nextOrder[#nextOrder+1]=key end end
+    local nextOrder={};for _,key in ipairs(self.quoteJobOrder or {})do if key~=rowKey then nextOrder[#nextOrder+1]=key end end
     nextOrder[#nextOrder+1]=rowKey;self.quoteJobOrder=nextOrder
     self:_PruneQuoteJobHistory();self:_RefreshQuoteAggregate("row_started")
-    for _,material in ipairs(selected) do
-        local ok,err=self:QuoteMaterial(material,mode,job)
-        if ok~=true then
-            local did,terminal,key=self:_CompleteQuoteJobMaterial(job,material.quoteKey,"failed",err)
-            if did then self:_QueueQuoteRefresh(key or material.materialKey,job.epoch,terminal) end
+    local ok,err=service:RequestRecipe(job.requester,selected,function(snapshot)
+        if job.epoch~=Trade.quoteEpoch or not Trade.enabled or Trade.quoteJobsByRowKey[rowKey]~=job then return end
+        for key,result in pairs(snapshot.results or {})do
+            local did,terminal,materialKey=Trade:_CompleteQuoteJobMaterial(job,key,result.status,result.error or (result.cached and "价格已缓存" or "报价完成"))
+            if did then Trade:_QueueQuoteRefresh(materialKey,job.epoch,terminal) end
+        end
+    end,{owner="life_trade"})
+    if ok~=true then
+        for key in pairs(job.items)do
+            local did,terminal,materialKey=self:_CompleteQuoteJobMaterial(job,key,"failed",tostring(err or "材料报价服务不可用"))
+            if did then self:_QueueQuoteRefresh(materialKey,job.epoch,terminal)end
         end
     end
-    -- 单行入口立即重投影；批量列表入口延迟到所有 RowJob 建好后只做一次全表重投影，避免 O(rows²) UI 重建。
     if options.deferPublish~=true then
-        for _,displayRow in ipairs(TA.rows or {}) do ApplyTradeMaterialProjectionToRow(displayRow) end
+        for _,displayRow in ipairs(TA.rows or {})do ApplyTradeMaterialProjectionToRow(displayRow)end
         TA.revision=TA.revision+1;PublishFeatureUpdate(self,TA.revision,"quote_row_job_started")
     end
-    return true,"已加入询价："..job.label.." · "..tostring(job.total).." 项材料"..(joinedPending>0 and (" · 共享等待 "..tostring(joinedPending)) or "")..(deferred>0 and (" · 延后 "..tostring(deferred)) or ""),job.total,deferred
+    return ok,job.active and ("正在查询缺失材料："..job.label) or (job.failed==0 and "价格已缓存，毛利已更新" or "部分材料价格未知"),job.total,0
 end
 
 function Trade:QuotePendingMaterials(mode)
@@ -3663,7 +3639,7 @@ end
 function Trade:QuoteRowMaterials(rowKey,mode)
     local row=self:GetRow(rowKey);if not row then return false,"贸易品已不在当前路线结果中" end
     -- 与旧版不同：双击另一行不再 supersede 之前的 RowJob。多个业务任务并存，底层材料请求仍由 Queue 去重/串行。
-    return self:_StartRowQuoteJob(row,mode,{maxItems=TRADE_ROW_QUOTE_BATCH_MAX,scope="row",force=true})
+    return self:_StartRowQuoteJob(row,mode,{scope="row"})
 end
 
 
@@ -3694,6 +3670,7 @@ function Trade:DescribeSelectedEconomics()
             .. " priceSource=" .. BoundedTradeText(m.priceSource, "unknown", 48)
             .. " freshness=" .. BoundedTradeText(m.priceFreshness, "unknown", 24)
             .. " ageMinutes=" .. tostring(m.priceAgeMinutes) .. " refreshing=" .. tostring(m.priceRefreshing == true)
+            .. " candidateCopper=" .. tostring(m.priceCandidateCopper) .. " candidateCount=" .. tostring(m.priceCandidateCount)
             .. " status=" .. BoundedTradeText(m.costStatus, "unknown", 32)
             .. " key=" .. BoundedTradeText(m.materialKey, "unknown", 64)
     end
@@ -3721,6 +3698,59 @@ function Trade:DescribeSelectedEconomics()
     }
 end
 
+-- 只读共享回包证据；与大型队列快照分开导出，所选货物的材料优先保留。
+function Trade:DescribePriceEvidence()
+    local query = S.Services and S.Services.AuctionQueryV3 or nil
+    if type(query) ~= "table" or type(query.DescribePriceEvidence) ~= "function" then return { available = false } end
+    local row = self:GetSelectedRow()
+    local itemTypes = {}
+    for _, material in ipairs(type(row) == "table" and type(row.materialRows) == "table" and row.materialRows or {}) do
+        if material.itemType ~= nil then itemTypes[material.itemType] = true end
+    end
+    local evidence = query:DescribePriceEvidence(next(itemTypes) ~= nil and itemTypes or nil)
+    evidence.selectedRowKey = type(row) == "table" and row.key or nil
+    return evidence
+end
+
+-- TXT 专用只读大快照：全部当前货物/材料、任务、队列历史和已读 Native 回包。
+-- 不重算成本、不补读游戏；详细格式器分别标识来源、字段类型与未保留的证据。
+function Trade:DescribeDiagnosticDetail()
+    local services = S.Services or {}
+    local function ReadService(name, method)
+        local service = services[name]
+        if type(service)~='table' or type(service[method])~='function' then
+            return {available=false,reason='service_diagnostics_unavailable',service=name,method=method}
+        end
+        local ok, value = pcall(service[method], service)
+        if ok and type(value)=='table' then return value end
+        return {available=false,error=tostring(value),service=name,method=method}
+    end
+    return {
+        patch='trade-diagnostic-detail-1', selectedRowKey=TA.selectedKey,
+        rows=type(S.DiagnosticDetail)=='table' and S.DiagnosticDetail:Detach(TA.rows) or {},
+        rawRouteRows=type(S.DiagnosticDetail)=='table' and S.DiagnosticDetail:Detach(TA.rawRows) or {},
+        quoteJobs=self:GetQuoteJobs(), quoteBatch=self:GetQuoteBatch(),
+        queue=ReadService('PriceQuoteQueueV3','Describe'),
+        materialOperations=ReadService('TradeMaterialQuoteServiceV3','DescribeDiagnostics'),
+        -- 中文维护：原始挂单独立延后输出；关键任务/货物不能被历史 raw 字段挤掉单来源预算。
+        auctionRequests=ReadService('AuctionQueryV3','DescribePriceEvidenceOverview'),
+        readModelSync=Copy(TA.quoteReadModelSync or {}), economics=Copy(TA.economics or {}),
+        materialRevalidate=Copy(TA.materialRevalidateDiagnostics or {}),
+        coverage='cached_current_route_and_retained_operations; no_native_reads_or_price_recalculation',
+    }
+end
+
+-- 中文维护：只导出已采集的 Native 证据，新请求优先；不查询、不延长缓存或改变队列生命周期。
+function Trade:DescribeAuctionListingDetail()
+    local query=S.Services and S.Services.AuctionQueryV3
+    if type(query)~='table' or type(query.DescribePriceEvidenceDetail)~='function' then return {available=false} end
+    local value=query:DescribePriceEvidenceDetail()
+    local reversed={}
+    for index=#value.requests,1,-1 do reversed[#reversed+1]=value.requests[index] end
+    value.requests=reversed;value.requestOrder='newest_first'
+    return value
+end
+
 function Trade:DescribeQuoteState()
     -- 维护（2026-09-24，trade-quote-diagnostics-2）：模块诊断必须能直接回答“询价为什么失败”，但不能把
     -- AuctionQueryV3 最多 20 条搜索结果和 QuoteQueue 全部历史原样塞进报告。这里仅读取两个共享 Authority 的
@@ -3737,10 +3767,14 @@ function Trade:DescribeQuoteState()
             recent[index] = Copy(health.recent[index])
         end
         queueSummary = {
-            version = health.version, running = health.running, pending = health.pending,
+            version = health.version, priceSafetyPatch = health.priceSafetyPatch, running = health.running, pending = health.pending,
+            -- 维护（auction-full-lane-safety-1）：模块诊断必须保留队列保护证据；仅读取缓存，不触发新探针。
+            nativeInteractionPatch = health.nativeInteractionPatch, nativeAdmission = Copy(health.nativeAdmission),
             queueLength = health.queueLength, maxQueue = health.maxQueue, intervalMs = health.intervalMs,
             stats = Copy(health.stats), lastRawReturn = health.lastRawReturn,
             activity = Copy(health.activity), -- 暂停理由独立于失败/完成，不触发 Native。
+            requotePatch = health.requotePatch, admissionWaiting = health.admissionWaiting,
+            unknownAdmissionWaitMs = health.unknownAdmissionWaitMs,
             lastFallbackMatch = Copy(health.lastFallbackMatch), pendingDetail = Copy(health.pendingDetail),
             lastCompleted = Copy(health.lastCompleted), recent = recent,
         }
