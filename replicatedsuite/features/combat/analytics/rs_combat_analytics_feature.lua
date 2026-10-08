@@ -141,6 +141,8 @@ function F:DescribeDiagnosticDetail()
     local hub=S.ModuleDiagnosticsHub
     return {available=true,scope=a and a:GetCollectionScope(),enabled=self.enabled==true,
         analytics=a and a:GetHealth(),
+        -- 中文维护（2026-10-08）：只读连接 Bus 原生入口→Analytics 过滤→kills 结算；生成报告不能补计或启动采集。
+        ingress=a and type(a.GetDeathIngressDiagnostics)=="function" and a:GetDeathIngressDiagnostics() or {available=false},
         kills=kills and type(kills.GetDiagnosticDetail)=="function" and kills:GetDiagnosticDetail() or {available=false},
         bus=bus and type(bus.GetDiagnosticDetail)=="function" and bus:GetDiagnosticDetail()
             or {health=bus and type(bus.GetHealth)=="function" and bus:GetHealth()},

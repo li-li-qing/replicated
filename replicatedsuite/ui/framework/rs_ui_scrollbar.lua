@@ -130,8 +130,10 @@ function Scrollbar:Attach(host, spec)
     local trackDrawable = ColorFill(track, palette.track or {0.015, 0.035, 0.042, 1}, 'background')
     local thumbDrawable = ColorFill(thumb, palette.thumb or {0.065, 0.090, 0.102, 1}, 'artwork')
     if S.Theme and S.Theme.BindColorDrawable then
-        S.Theme:BindColorDrawable(track,trackDrawable,'scrollbar.track')
-        S.Theme:BindColorDrawable(thumb,thumbDrawable,'scrollbar.thumb')
+        -- 中文维护（2026-10-08）：轨道/滑块的绘制仍锚定原 Native，外观绑定交给 RSUI 宿主 root。
+        -- 宿主在悬浮框组件树内，背景透明度、晚创建及主题切换都走同一通道；拖动代理保持独立可用。
+        S.Theme:BindColorDrawable(host.root,trackDrawable,'scrollbar.track',nil,'background')
+        S.Theme:BindColorDrawable(host.root,thumbDrawable,'scrollbar.thumb',nil,'background')
     end
     if thumbDrawable == nil then
         UI:SetVisible(track, false, host.owner); UI:SetVisible(thumb, false, host.owner); UI:SetVisible(drag, false, host.owner)

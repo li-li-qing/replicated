@@ -122,6 +122,27 @@ local function DiagnosticScalar(value)
     while finish>0 and (value:byte(finish+1) or 0)>=128 and (value:byte(finish+1) or 0)<192 do finish=finish-1 end
     return value:sub(1,finish).."<clipped>"
 end
+-- 中文维护（2026-10-08）：原生死亡/归属入口先留证据，再交消费者过滤。仅低频通知分配标量行，
+-- 64槽环形覆盖是 O(1)，不持有原生 payload；跨停用保留本代现场，普通伤害不能写入此环。
+local noticeEvidence={rows={},next=1,count=0,evicted=0}
+local function RecordNoticeEvidence(fact,reason)
+    local row={at=fact.receivedAt,sequence=fact.sequence,kind=fact.kind,reason=reason,
+        rawEventType=fact.rawEventType,killer=DiagnosticScalar(fact.sourceName),
+        victim=DiagnosticScalar(fact.targetName or fact.subjectName),rawNotice2=DiagnosticScalar(fact.rawNotice2),
+        rawNotice3=DiagnosticScalar(fact.rawNotice3),rawNotice4=DiagnosticScalar(fact.rawNotice4),rawNotice5=DiagnosticScalar(fact.rawNotice5)}
+    noticeEvidence.rows[noticeEvidence.next]=row
+    noticeEvidence.next=noticeEvidence.next%64+1
+    if noticeEvidence.count<64 then noticeEvidence.count=noticeEvidence.count+1 else noticeEvidence.evicted=noticeEvidence.evicted+1 end
+end
+local function CopyNoticeEvidence()
+    -- 中文维护：只在导出时按先后复制，不暴露现场表、不消费通知，不触发 Native 或结算。
+    local rows={};local first=noticeEvidence.count==64 and noticeEvidence.next or 1
+    for offset=0,noticeEvidence.count-1 do
+        local copy={};for key,value in pairs(noticeEvidence.rows[(first+offset-1)%64+1]) do copy[key]=value end
+        rows[#rows+1]=copy
+    end
+    return rows
+end
 -- 中文维护（2026-10-06）：未知 Native 类型可能藏着漏记的死亡 ABI，不能只导出 unknownKinds。
 -- 每种类型仅首次保留一份标量样本（最多32种），后续只加计数；已识别伤害无额外快照。
 function C:_RecordUnrecognizedFact(fact)
@@ -923,6 +944,7 @@ function C:_OnDeathNotice(info1, info2, info3, info4, info5)
         rawNotice4 = info4,
         rawNotice5 = info5,
     }
+    RecordNoticeEvidence(fact,"normalized") -- 中文维护：即使无自身伤害账本，也要证明原生姓名死亡通知曾到达。
     return self:_DispatchFact(fact)
 end
 
@@ -941,13 +963,18 @@ function C:_OnKillNotice(eventName, payload)
     end
     if type(killer)~="string" or type(victim)~="string" or #killer>512 or #victim>512
         or Trim(killer)=="" or Trim(victim)=="" or Trim(killer)==Trim(victim) then
+        -- 中文维护：非法字段仅留类型/截断标量，不放宽击杀 ABI；未形成 CombatFact 的行没有 sequence。
+        RecordNoticeEvidence({receivedAt=NowMs(),kind="kill_notice",rawEventType=eventName,sourceName=killer,targetName=victim,
+            rawNotice2=streak,rawNotice3=mode},"invalid_payload")
         self.killNoticeRejected=self.killNoticeRejected+1;return 0
     end
     self.sequence=self.sequence+1
-    return self:_DispatchFact({schemaVersion=1,sequence=self.sequence,receivedAt=NowMs(),transport="private",
+    local fact={schemaVersion=1,sequence=self.sequence,receivedAt=NowMs(),transport="private",
         kind="kill_notice",category="death",rawEventType=eventName,sourceName=Trim(killer),targetName=Trim(victim),
         -- 这些是原生 BattleField 玩家击杀通知；常规 COMBAT_MSG 的类型仍由单位事实确认。
-        sourceKind="PLAYER",targetKind="PLAYER",rawNotice2=DiagnosticScalar(streak),rawNotice3=DiagnosticScalar(mode)})
+        sourceKind="PLAYER",targetKind="PLAYER",rawNotice2=DiagnosticScalar(streak),rawNotice3=DiagnosticScalar(mode)}
+    RecordNoticeEvidence(fact,"normalized") -- 中文维护：sequence 连接入口、Analytics 过滤与最终计数，不能借日志补算。
+    return self:_DispatchFact(fact)
 end
 
 function C:GetDiagnosticDetail()
@@ -959,7 +986,9 @@ function C:GetDiagnosticDetail()
         rows[#rows+1]=copy
     end
     local events={};for key,value in pairs(self.optionalKillEvents) do events[key]=value end
-    return {health=self:GetHealth(),killNotifications={registrations=events,running=self.running,received=self.killNoticeRows,rejected=self.killNoticeRejected},unknownEvents=rows,unknownTypeDropped=self.unknownTypeDropped,unknownTypeLimit=32,
+    -- 中文维护：received/rejected 仍只统计原生归属；events 同时含姓名死亡通知，显式给出覆盖淘汰数。
+    return {health=self:GetHealth(),killNotifications={registrations=events,running=self.running,received=self.killNoticeRows,rejected=self.killNoticeRejected,
+        events=CopyNoticeEvidence(),evicted=noticeEvidence.evicted,limit=64},unknownEvents=rows,unknownTypeDropped=self.unknownTypeDropped,unknownTypeLimit=32,
         coverage="未知类型仅保留本次加载每种类型的首次标量样本；不改变类型解释或击杀归属。"}
 end
 

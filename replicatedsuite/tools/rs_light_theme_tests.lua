@@ -93,6 +93,43 @@ Test('all scroll families repaint existing rails and thumbs and preserve exact o
  end
  assert(S.Theme:ApplyWorkspacePalette('dark'));for _,v in ipairs(bars)do Eq(v.bar.thumbDrawable.rgba,S.UITokens.scrollbar.thumb)end
 end)
+-- 中文维护（2026-10-08）：滚动装饰属于宿主的背景通道；透明/半透明/恢复、文字独立及切主题都不能改滚动事务。
+Test('all scrollbar families follow background opacity through palette changes',function()
+ local h=Boot();local S,R=h.S,h.R;local views={}
+ for _,kind in ipairs({'ScrollBox','ListView','TableView','TileView'})do
+  local spec={id='opacity_'..kind,parent=UIParent,items=Items(),rowHeight=20,tileWidth=60,tileHeight=20,viewState=false,padding=0,itemText=function(r)return r.name end}
+  local c
+  if kind=='ScrollBox'then c=assert(R:ScrollBox(spec));for i=1,60 do c:AddChild(assert(R:Text({id='opacity_row'..i,parent=c,text='Row '..i,height=20})),{height=20})end
+  elseif kind=='TableView'then spec.columns={{key='name',title='Name'}};c=assert(R:TableView(spec))
+  else c=assert(R[kind](R,spec))end
+  c:Layout(0,0,260,120);local host=c.list or c;host:SetScrollOffset(3)
+  views[#views+1]={view=c,host=host,bar=assert(host.scrollbar),offset=host.scrollOffset,y=host.scrollbar.thumb.y}
+ end
+ local count,geometry=h.drawables,h.geometry
+ for _,opacity in ipairs({0,.35,1})do
+  for _,v in ipairs(views)do assert(R:ApplyOpacityChannels(v.view,opacity,.7))end
+  for _,palette in ipairs({'light','nord','dark'})do
+   assert(S.Theme:ApplyWorkspacePalette(palette))
+   for _,v in ipairs(views)do
+    local rail,thumb=S.UITokens.scrollbar.track,S.UITokens.scrollbar.thumb
+    Eq(v.bar.trackDrawable.rgba,{rail[1],rail[2],rail[3],rail[4]*opacity})
+    Eq(v.bar.thumbDrawable.rgba,{thumb[1],thumb[2],thumb[3],thumb[4]*opacity})
+    assert(v.host.scrollOffset==v.offset and v.bar.thumb.y==v.y and v.bar.dragProxy.pickable,'opacity changed scrollbar input or position')
+    assert(R:ApplyOpacityChannels(v.view,nil,.2));assert(v.bar.thumbDrawable.rgba[4]==thumb[4]*opacity,'text opacity changed scrollbar')
+   end
+   assert(h.drawables==count and h.geometry==geometry,'opacity rebuilt or laid out scrollbar')
+  end
+ end
+end)
+Test('late scrollbar binding inherits the existing host background opacity',function()
+ local h=Boot();local S,R=h.S,h.R
+ local c=assert(R:ListView({id='late_opacity',parent=UIParent,items=Items(),viewState=false,rowHeight=20}))
+ assert(R:ApplyOpacityChannels(c,0,nil));c.scrollbar:Release()
+ local bar=assert(R.ScrollbarBehavior:Attach(c,{id='late_opacity_bar',getMaxOffset=function()return 20 end,getOffset=function()return 0 end,setOffset=function()return true end}))
+ assert(bar.trackDrawable.rgba[4]==0 and bar.thumbDrawable.rgba[4]==0,'new scrollbar flashed opaque on transparent host')
+ assert(R:ApplyOpacityChannels(c,.5,nil));assert(bar.trackDrawable.rgba[4]==S.UITokens.scrollbar.track[4]*.5)
+ bar:Release()
+end)
 Test('selected pooled rows and grids update in place without rebinding data',function()
  local h=Boot();local S,R=h.S,h.R;local data=Items()
  local c=assert(R:TableView({id='table',parent=UIParent,items=data,rowHeight=20,selectable=true,viewState=false,columns={{key='name',title='Name'},{key='key',title='ID'}}}))

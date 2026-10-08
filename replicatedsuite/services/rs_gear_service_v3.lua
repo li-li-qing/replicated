@@ -217,9 +217,15 @@ end
 
 function G:CapturePayload(previous)
     previous = type(previous) == "table" and previous or {}
-    local previousManaged = {}
-    for _, item in ipairs(previous.items or {}) do previousManaged[tonumber(item.slot)] = item.managed ~= false end
-    local hadPrevious = previous.configured == true
+    local previousUnchecked = {}
+    -- 中文维护注释（2026-10-08，旧方案副手重新获取）：旧方案的空槽会以 managed=false 保存。
+    -- 后来穿上副手再点“获取当前”时，不能把这个由空槽产生的 false 当作用户主动取消勾选，
+    -- 否则新读取到的副手仍被排除在换装方案外。只继承“原来有装备且主动取消”的选择。
+    if previous.configured == true then
+        for _, item in ipairs(previous.items or {}) do
+            previousUnchecked[tonumber(item.slot)] = item.empty ~= true and item.managed == false
+        end
+    end
     local items = {}
     for _, def in ipairs(self.EquipmentSlots) do
         local tooltip, err = self:GetLoadoutEquipped(def.slot)
@@ -228,7 +234,7 @@ function G:CapturePayload(previous)
         local item = {
             slot = def.slot, key = def.key, slotName = def.name, alternative = def.alternative == true,
             empty = not hasItem,
-            managed = hasItem and (not hadPrevious or previousManaged[def.slot] ~= false) or false,
+            managed = hasItem and previousUnchecked[def.slot] ~= true or false,
         }
         if hasItem then
             item.name = Trim(tooltip.name)

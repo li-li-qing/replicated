@@ -179,13 +179,46 @@ local function CombatFactChanged(fact, v)
         or fact.subjectName ~= v.subjectName or fact.rawNotice2 ~= v.rawNotice2 or fact.rawNotice3 ~= v.rawNotice3 or fact.rawNotice4 ~= v.rawNotice4 or fact.rawNotice5 ~= v.rawNotice5
         or fact.auraType ~= v.auraType or fact.auraId ~= v.auraId or fact.auraName ~= v.auraName or fact.auraEvidence ~= v.auraEvidence
 end
+-- 中文维护（2026-10-08）：首个指标前的过滤过去没有死者证据。只为 death 类记录32槽标量环，
+-- 由 Analytics 自己解释采集范围；不扩大自身 Actor、伤害账本或订阅，计数保留本代全部过滤原因。
+local deathIngress={rows={},next=1,count=0,evicted=0,counters={}}
+local function IngressScalar(value)
+    local kind=type(value)
+    if kind=="nil" or kind=="number" or kind=="boolean" then return value end
+    if kind~="string" then return "<"..kind..">" end
+    if #value<=512 then return value end
+    local finish=512;while finish>0 and (value:byte(finish+1) or 0)>=128 and (value:byte(finish+1) or 0)<192 do finish=finish-1 end
+    return value:sub(1,finish).."<clipped>"
+end
+local function RecordDeathIngress(runtime,fact,reason)
+    if fact.category~="death" then return end -- 中文维护：团战伤害热路禁止生成逐事件诊断行。
+    deathIngress.counters[reason]=(deathIngress.counters[reason] or 0)+1
+    deathIngress.rows[deathIngress.next]={at=IngressScalar(fact.receivedAt),sequence=IngressScalar(fact.sequence),
+        kind=IngressScalar(fact.kind),rawEventType=IngressScalar(fact.rawEventType),reason=reason,scope=runtime:GetCollectionScope(),
+        killer=IngressScalar(fact.sourceName),victim=IngressScalar((fact.targetName and fact.targetName~="" and fact.targetName) or fact.subjectName),
+        transport=IngressScalar(fact.transport),killMetricActive=runtime.activeMetrics.kills==true}
+    deathIngress.next=deathIngress.next%32+1
+    if deathIngress.count<32 then deathIngress.count=deathIngress.count+1 else deathIngress.evicted=deathIngress.evicted+1 end
+end
+function A:GetDeathIngressDiagnostics()
+    -- 中文维护：导出取得脱离现场的副本；停用/清空实时统计不删除排障现场，不做惰性加载或写存档。
+    local rows,counters={},{};local first=deathIngress.count==32 and deathIngress.next or 1
+    for offset=0,deathIngress.count-1 do
+        local copy={};for key,value in pairs(deathIngress.rows[(first+offset-1)%32+1]) do copy[key]=value end
+        rows[#rows+1]=copy
+    end
+    for key,value in pairs(deathIngress.counters) do counters[key]=value end
+    return {events=rows,counters=counters,evicted=deathIngress.evicted,limit=32,
+        coverage="死亡类事实在指标分发前的接收/范围过滤；accepted 只表示通过过滤，不表示已计击杀。"}
+end
 function A:_DispatchFact(fact)
     if type(fact) ~= "table" then return false end
     -- 无活动指标的类别直接退出，避免状态/施法等事件分配 borrowed fact 保护快照。
     local plan = self.factPlans[tostring(fact.category or "other"):lower()] or self.factPlans.other
-    if type(plan) ~= "table" or #plan == 0 then return false end
+    if type(plan) ~= "table" or #plan == 0 then RecordDeathIngress(self,fact,"no_active_metrics");return false end -- 中文维护：无指标与缺通知必须可区分。
     -- 在指标分发之前过滤；其它模块的全场 Consumer 不扩大本统计的处理范围。
-    if self:GetCollectionScope() == "self" and self:IsRelevantSelfFact(fact) ~= true then return false end
+    if self:GetCollectionScope() == "self" and self:IsRelevantSelfFact(fact) ~= true then RecordDeathIngress(self,fact,"self_scope_filtered");return false end -- 中文维护：排除他人仍保留有界死亡入口证据。
+    RecordDeathIngress(self,fact,"accepted") -- 中文维护：只证明进入指标链，最终归属仍以 kills 的 decision 为准。
     self.factsReceived = self.factsReceived + 1
     -- One compact scalar snapshot protects sibling metrics from each other. The
     -- parent CombatEventBus still applies its own full consumer fence as well.

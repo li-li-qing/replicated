@@ -119,15 +119,19 @@ function T:IsLightWorkspacePalette() return self.workspacePaletteMode=='light' o
 function T:ColorRole(role)
     return (C.Color or {})[role] or Token(role,nil) or self:ToneColor(role)
 end
-function T:BindColorDrawable(widget, drawable, role, alpha)
+function T:BindColorDrawable(widget, drawable, role, alpha, opacityChannel)
     if not widget or not drawable or type(drawable.SetColor)~='function' then return false end
     if type(drawable.ChangeColor1)=='function' then return false end -- 渐变仍由 ChangeColor1/2/3 专属路径处理。
     widget.rsThemeColorDrawables=widget.rsThemeColorDrawables or {}
     local binding=widget.rsThemeColorDrawables[drawable] or {}
     binding.role,binding.alpha=tostring(role),alpha
+    -- 中文维护（2026-10-08）：可选通道由逻辑宿主拥有；滚动条等辅助 Native 不在组件树里，
+    -- 显式登记为 background 才随背景透明度变化。旧绑定保持原语义，切主题刷新不能丢掉通道。
+    if opacityChannel~=nil then binding.opacityChannel=opacityChannel end
     widget.rsThemeColorDrawables[drawable]=binding
     local color=self:ColorRole(binding.role)
     local a=alpha~=nil and alpha or color[4] or 1
+    if binding.opacityChannel=='background' then a=a*math.max(0,math.min(1,tonumber(widget.rsBackgroundOpacity) or 1)) end -- 中文维护：始终从主题原始 alpha 乘算，反复调整不能累乘变暗。
     local accepted=drawable:SetColor(color[1],color[2],color[3],a)
     if accepted==false then error('theme_drawable_color_rejected:'..binding.role) end
     if S.UI and type(S.UI.PrimeNativeState)=='function' then
@@ -574,6 +578,10 @@ function T:SetBackgroundOpacity(widget, opacity)
         end
     end
     widget.rsBackgroundOpacity = value
+    -- 中文维护：只刷新显式归入背景通道的宿主装饰；复用现有 Drawable，不碰文字、几何或输入代理。
+    for drawable,binding in pairs(widget.rsThemeColorDrawables or {}) do
+        if binding.opacityChannel=='background' then self:BindColorDrawable(widget,drawable,binding.role,binding.alpha) end
+    end
 end
 
 function T:SetTextOpacity(widget, opacity)
