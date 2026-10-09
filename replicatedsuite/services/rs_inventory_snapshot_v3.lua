@@ -258,6 +258,12 @@ function I:BuildSnapshot(scope, options)
 
     local preferredId = math.floor(tonumber(options.bagId) or self.PreferredBagId)
     local preferred, preferredErr = self:_BuildScopeWithBagId("bag", preferredId, requestedMax)
+    -- 中文维护（2026-10-09）：消费者已在本次会话确认物理背包时，可以显式锁定视图。
+    -- 成功的空结果也是事实，不能切到 bagId=0 缓存把消耗的物品复活；默认策略仍为首次探测提供兼容回退。
+    if options.allowBagFallback == false then
+        if preferred ~= nil then preferred.fallbackUsed = preferredId ~= self.PreferredBagId end
+        return preferred, preferredErr
+    end
     if preferred ~= nil and #preferred.rows > 0 then
         preferred.fallbackUsed = false
         return preferred

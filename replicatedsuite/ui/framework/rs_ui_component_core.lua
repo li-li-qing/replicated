@@ -763,7 +763,9 @@ function RSUI:ApplyOpacityChannels(component, backgroundOpacity, textOpacity)
         visited = visited + 1
         if background ~= nil then
             node.appearanceBackgroundOpacity = background
-            if theme ~= nil and type(theme.SetBackgroundOpacity) == "function" then theme:SetBackgroundOpacity(node.root, background) end
+            -- 中文维护（2026-10-09）：包装式多行 Text 的 Native 子行不在逻辑 children 中，交给组件一起继承透明描边。
+            if type(node.ApplyBackgroundOpacity) == "function" then node:ApplyBackgroundOpacity(background)
+            elseif theme ~= nil and type(theme.SetBackgroundOpacity) == "function" then theme:SetBackgroundOpacity(node.root, background) end
         end
         if text ~= nil then
             node.appearanceTextOpacity = text

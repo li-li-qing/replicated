@@ -9,6 +9,7 @@ local function Boot()
   h.widgets=h.widgets+1
   local n={id=id,parent=parent,width=500,height=500,x=0,y=0,shown=true,enabled=true,text='',events={},draws={}}
   n.style={SetColor=function(self,...)self.rgba={...}end,SetShadow=function(self,v)self.shadow=v end,
+   SetOutline=function(self,v)self.outline=v end, -- 中文维护（2026-10-09）：模拟原生描边值，验证真实 Theme 与包装子行继承。
    SetAlign=function()end,SetFontSize=function(self,v)self.font=v end,SetEllipsis=function()end}
   n.guideTextStyle={SetColor=n.style.SetColor,SetAlign=function()end}
   function n:SetExtent(w,ht)h.geometry=h.geometry+1;self.width=w;self.height=ht end
@@ -160,5 +161,16 @@ Test('late controls use saved active palette and manual HUD points are never rec
  local before={unpack(world.style.rgba)};local point=assert(UI:CreateLabel(UIParent,'point','.',0,0,10,10,15));point.rsManualTypography=true
  point.style:SetColor(.3,.8,.2,.6);local custom={unpack(point.style.rgba)}
  assert(S.Theme:ApplyWorkspacePalette('dark'));assert(S.Theme:ApplyWorkspacePalette('light'));Eq(world.style.rgba,before);Eq(point.style.rgba,custom)
+end)
+Test('transparent outline reaches existing and lazy wrapped lines and resets without new widgets',function()
+ -- 中文维护：使用真实 RSUI 换行池/外观继承/调色板；缺陷反例是 root 已透明而子行仍无描边。
+ local h=Boot();local S,R=h.S,h.R
+ local c=assert(R:Text({id='transparent_wrap',parent=UIParent,text='first',overflow='wrap',fontSize=12,maxLines=4,nativeLineLimit=4}))
+ c:Layout(0,0,180,80);local first=assert(c.lineLabels[1]);assert(R:ApplyOpacityChannels(c,0,1))
+ assert(first.style.outline==true)
+ local late=assert(c:_EnsureLine(2));assert(late.style.outline==true,'late wrapped line did not inherit outline')
+ local count=h.widgets;assert(S.Theme:ApplyWorkspacePalette('light'));assert(S.Theme:ApplyWorkspacePalette('dark'))
+ assert(first.style.outline and late.style.outline and h.widgets==count)
+ assert(R:ApplyOpacityChannels(c,1,nil));assert(first.style.outline==false and late.style.outline==false)
 end)
 print('LIGHT THEME RESULT '..passed..' passed / '..failed..' failed');if failed>0 then error('light theme failures')end

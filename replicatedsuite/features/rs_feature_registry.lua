@@ -424,9 +424,9 @@ Add("life_tasks", "life.tasks", "任务追踪", "life", 40, "用户选择的日�
 Add("life_treasure", "life.treasure", "寻宝", "life", 50, "藏宝图坐标、方向、距离与原生世界地图定位。", {
     status = "migrated_m16_18", lifecycle = "demand_scoped", authority = "v3.life.treasure", widgetCapable = true, settingsCapable = true,
     -- 中文维护注释（2026-09-16，寻宝地图定位）：InventorySnapshotV3 仍只提供共享背包事实；ShowWorldmapLocation 仅由用户点击触发。
-    -- 依赖声明用于 FeatureRuntime 惰性导入 BAG/MAP namespace，不代表后台会周期调用 X2Map；500ms Scheduler 仍只读取玩家位置。
-    apiDependencies = { "X2Bag:GetBagItemInfo", "X2Bag:Capacity", "X2Unit:GetUnitWorldPositionByTarget", "X2Unit:GetCurrentZoneGroup", "X2Map:ShowWorldmapLocation" }, apiReadiness = "official_mixed", apiPolicy = "on_demand_read_plus_explicit_ui_action",
-    currentImplementation = "InventorySnapshotV3 bounded 背包扫描 + 坐标字段跨语言藏宝图识别 + 500ms Demand-scoped 玩家位置/方向/距离刷新；世界地图定位使用藏宝图显式 zoneGroupId，缺失时仅在点击定位时读取玩家当前 ZoneGroup，Consumer=0 立即停位置任务",
+    -- 中文维护（2026-10-09）：声明与实现保持一致；UnitScreen 只用于罗盘锚定，位置任务核对单槽，地图写仍须显式点击。
+    apiDependencies = { "X2Bag:GetBagItemInfo", "X2Bag:Capacity", "X2Unit:GetUnitWorldPositionByTarget", "X2Unit:GetUnitScreenPosition", "X2Unit:GetCurrentZoneGroup", "X2Map:ShowWorldmapLocation" }, apiReadiness = "official_mixed", apiPolicy = "on_demand_read_plus_explicit_ui_action",
+    currentImplementation = "InventorySnapshotV3 有限扫描 + 坐标字段识别 + 500ms 单槽核对/方向/距离 + 3 秒补采 + 33ms 共享刚性投影圆环/箭头；地图定位仅显式点击，Consumer=0 立即停两条任务并隐藏标记",
     evidence = "V3 Treasure map-location contract v2 + RU API ShowWorldmapLocation(zoneGroupId,globalX,globalY,z) + reference TreasureMapHunter targetZone,targetX,targetY call; fixed context-id 2 removed",
 })
 Add("life_fishing", "life.fishing", "钓鱼", "life", 60, "目标鱼动作识别、技能栏推荐与可逆自动 R；完整写键链已恢复。", {

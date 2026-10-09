@@ -399,6 +399,10 @@ local function CreateWrappedText(spec)
         end
         label.rsLocalFontScale = tonumber(self.appearanceFontScale) or tonumber(self.root and self.root.rsLocalFontScale) or 1.0
         self.lineLabels[index] = label
+        -- 中文维护（2026-10-09）：延迟创建的换行子 Label 继承背景通道及其描边，避免首次布局后新行仍看不清。
+        if self.appearanceBackgroundOpacity ~= nil and S.Theme and type(S.Theme.SetBackgroundOpacity) == "function" then
+            S.Theme:SetBackgroundOpacity(label, self.appearanceBackgroundOpacity)
+        end
         return label
     end
 
@@ -448,6 +452,14 @@ local function CreateWrappedText(spec)
         return changed
     end
 
+    function c:ApplyBackgroundOpacity(value)
+        -- 中文维护：透明文字策略跟随现有外观继承；已分配的子行复用，无需重建文本或额外树扫描。
+        local theme = S.Theme
+        if type(theme) ~= "table" or type(theme.SetBackgroundOpacity) ~= "function" then return false end
+        theme:SetBackgroundOpacity(self.root, value)
+        for _, label in ipairs(self.lineLabels) do theme:SetBackgroundOpacity(label, value) end
+        return true
+    end
     function c:ApplyTextOpacity(value)
         local theme = S.Theme
         if type(theme) ~= "table" or type(theme.SetTextOpacity) ~= "function" then return false end

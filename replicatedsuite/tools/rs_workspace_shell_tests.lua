@@ -151,6 +151,30 @@ Test('release label, support line and menu tips use visible open edges',function
   assert(n.v3_shell_menu_tip.x+n.v3_shell_menu_tip.width<=n.v3_shell_menu_tip.parentComponent.width+1,'tip escaped footer')
  end
 end)
+Test('first appearance click arranges four nonoverlapping slider rows before returning',function()
+ -- 中文维护（2026-10-09）：反例必须检查首次点击，不能先手工 ApplyLayout，后者会掩盖惰性创建控件还未排版的问题。
+ local shell,S,h,n=Boot({actualWorkspaceHost=true,mainAppearance=true})
+ assert(n.v3_shell_appearance_button.root.events.OnClick(n.v3_shell_appearance_button.root,'LeftButton'))
+ local page=S.UIV3.PageHost.pages['system.workspace'];local bottom=nil
+ for _,key in ipairs({'overallOpacity','backgroundOpacity','textOpacity','fontScale'})do
+  local field=assert(page.mainAppearanceFields[key]);local y=tonumber(field.y) or 0
+  assert(field.height>=31 and (bottom==nil or y>=bottom),'first-open appearance rows overlap: '..key)
+  assert(field.slider.width>=52,'first-open slider has not been arranged: '..key)
+  bottom=y+field.height
+ end
+end)
+Test('first appearance tab switch arranges lazy slider rows without waiting for scheduler',function()
+ -- 中文维护：已经打开工作台后首次切页走 SetTab，不经过 Shell:Navigate 的额外布局；必须覆盖真实的第二条打开路径。
+ local shell,S,h=Boot({actualWorkspaceHost=true,mainAppearance=true})
+ assert(shell:Navigate('system.workspace'));local page=S.UIV3.PageHost.pages['system.workspace']
+ assert(page:SetTab('appearance'));local bottom=nil
+ for _,key in ipairs({'overallOpacity','backgroundOpacity','textOpacity','fontScale'})do
+  local field=assert(page.mainAppearanceFields[key]);local y=tonumber(field.y) or 0
+  assert((tonumber(field.height) or 0)>=31 and (bottom==nil or y>=bottom),'appearance tab rows overlap: '..key)
+  assert(field.slider.width>=52,'appearance tab slider has not been arranged: '..key)
+  bottom=y+field.height
+ end
+end)
 Test('main menu appearance entry exposes actual numeric controls and preview writes nothing',function()
  local shell,S,h,n=Boot({actualWorkspaceHost=true,mainAppearance=true})
  assert(n.v3_shell_appearance_button.root.events.OnClick(n.v3_shell_appearance_button.root,'LeftButton'))

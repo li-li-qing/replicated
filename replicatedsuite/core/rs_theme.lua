@@ -150,6 +150,8 @@ function T:RefreshTextColor(widget)
     local color=role and self:ColorRole(role) or self:ToneColor(widget.rsLabelTone or 'default',widget)
     if (self:IsLightWorkspacePalette() or self.workspaceStatusBands) and widget.rsButtonStatusTone then color=self:ToneColor(widget.rsButtonStatusTone,widget) end
     ApplyTextColor(widget,color,widget.rsTextOpacity)
+    -- 中文维护（2026-10-09）：调色板刷新也恢复透明背景描边；显式手工 HUD 字形仍由专属 Presenter 管理。
+    if widget.rsTransparentTextOutline ~= nil then self:SetTextOutline(widget, widget.rsTransparentTextOutline) end
     if widget.rsThemeShadowWanted~=nil and type(widget.style.SetShadow)=='function' then
         widget.style:SetShadow(widget.rsThemeShadowWanted and (not self:IsLightWorkspacePalette() or widget.rsWorldTextPalette==true))
     end
@@ -566,6 +568,17 @@ local function ApplyOwnedDrawableAlpha(drawable, color, opacity)
     end)
 end
 
+function T:SetTextOutline(widget, enabled)
+    -- 中文维护（2026-10-09）：只用原生字体描边，保持原有文字颜色/透明度与焦点；没有该能力的客户端安全降级。
+    -- 接受后的值才进入缓存，Native 拒写时保留下次设置/主题刷新重试机会；禁止每帧叠加影子 Label。
+    if widget == nil or widget.style == nil or type(widget.style.SetOutline) ~= "function" then return false end
+    local wanted = enabled == true
+    if widget.rsAppliedTextOutline == wanted then return true end
+    local ok, result = pcall(widget.style.SetOutline, widget.style, wanted)
+    if ok ~= true or result == false and wanted then return false end
+    widget.rsAppliedTextOutline = wanted
+    return true
+end
 function T:SetBackgroundOpacity(widget, opacity)
     if widget == nil then return end
     local value = math.max(0.0, math.min(1.0, tonumber(opacity) or 1.0))
@@ -578,6 +591,9 @@ function T:SetBackgroundOpacity(widget, opacity)
         end
     end
     widget.rsBackgroundOpacity = value
+    -- 中文维护：背景趋于透明时自动开描边，恢复背景即撤销此自动样式；设置/继承驱动，无新的轮询或存档字段。
+    widget.rsTransparentTextOutline = value <= 0.01
+    self:SetTextOutline(widget, widget.rsTransparentTextOutline)
     -- 中文维护：只刷新显式归入背景通道的宿主装饰；复用现有 Drawable，不碰文字、几何或输入代理。
     for drawable,binding in pairs(widget.rsThemeColorDrawables or {}) do
         if binding.opacityChannel=='background' then self:BindColorDrawable(widget,drawable,binding.role,binding.alpha) end

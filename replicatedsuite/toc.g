@@ -233,6 +233,8 @@ presentation/v3/widgets/rs_v3_widget_host.lua
 presentation/v3/widgets/rs_v3_alert_hud.lua
 presentation/v3/widgets/rs_v3_combat_visual_guides.lua
 presentation/v3/widgets/rs_v3_life_economy_widgets.lua
+-- 中文维护（2026-10-09）：寻宝圈/箭头在 Feature 与 UI Primitive 就绪后订阅独立帧，不引入另一套插件入口。
+presentation/v3/widgets/rs_v3_treasure_compass.lua
 presentation/v3/widgets/rs_v3_trade_detail_floating.lua
 presentation/v3/widgets/rs_v3_trade_diagnostics.lua
 presentation/v3/widgets/rs_v3_bag_settings_floating.lua
