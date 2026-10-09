@@ -15,6 +15,9 @@ local MAX_FRAME_LABELS = 12
 local MAX_LABELS = 128
 local JANK_MS = 50
 local CLOCK_GAP_TOLERANCE_MS = 25
+-- 中文维护（continuous-performance-1）：持续采集属于现有 Monitor；内存历史固定 30 个分钟窗口，
+-- 会话累计只保留有界标签/模块统计。无新 Tick、无后台写盘、无业务开关或刷新参数改动。
+local WINDOW_MS, WINDOW_LIMIT = 60000, 30
 
 local function Finite(value)
     value = tonumber(value)
@@ -106,8 +109,9 @@ function P:_Stats(label, detailed)
     if stats ~= nil then return stats, label end
     local count = 0
     for _ in pairs(container) do count = count + 1 end
-    if count >= MAX_LABELS then label = "other"; stats = container[label]; if stats ~= nil then return stats, label end end
-    stats = { calls = 0, totalMs = 0, maxMs = 0, jankHits = 0 }
+    -- 中文维护：预留 other 桶，防止达到 128 后再插入第 129 个标签；新增来源只合并计数。
+    if count >= MAX_LABELS - 1 then label = "other"; stats = container[label]; if stats ~= nil then return stats, label end end
+    stats = { calls = 0, timedCalls = 0, totalMs = 0, selfMs = 0, maxMs = 0, jankHits = 0 }
     container[label] = stats
     return stats, label
 end
@@ -147,10 +151,18 @@ function P:_ModuleStats(moduleId)
     local stats = capture.modules[moduleId]
     if stats == nil then
         local count = 0; for _ in pairs(capture.modules) do count = count + 1 end
-        if count >= MAX_LABELS then moduleId = "other"; stats = capture.modules[moduleId] end
-        if stats == nil then stats = { calls = 0, totalMs = 0, maxMs = 0, jankHits = 0 }; capture.modules[moduleId] = stats end
+        if count >= MAX_LABELS - 1 then moduleId = "other"; stats = capture.modules[moduleId] end
+        if stats == nil then stats = { calls = 0, timedCalls = 0, totalMs = 0, selfMs = 0, maxMs = 0, jankHits = 0 }; capture.modules[moduleId] = stats end
     end
     return stats, moduleId
+end
+
+-- 中文维护：一分钟桶复用累计已归一的有界 key，避免每次计时再建立临时数组/元组增加 GC 负担。
+local function WindowStats(container,key)
+    local row=container[key]
+    if not row then row={calls=0,timedCalls=0,totalMs=0,selfMs=0,maxMs=0,jankHits=0};container[key]=row end
+    row.calls=row.calls+1
+    return row
 end
 
 function P:_CopyCompletedFrame()
@@ -224,32 +236,58 @@ function P:Begin(label, moduleId)
     end
     local capture = self.capture
     if capture == nil or capture.finished == true then return nil end
-    local detail = self:_Stats(normalized, true)
+    local detail, detailLabel = self:_Stats(normalized, true)
     if detail ~= nil then detail.calls = detail.calls + 1 end
     local moduleStats, normalizedModule = self:_ModuleStats(moduleId)
     if moduleStats ~= nil then moduleStats.calls = moduleStats.calls + 1 end
     local started = self.timer and self.timer() or nil
-    return { label = normalized, moduleId = normalizedModule, started = started }
+    -- 中文维护：token 绑定采集对象，Stop/重新开始不能让旧回调串入新记录。嵌套计时用父 token
+    -- 扣除子调用时间；包含耗时仍保留，但帧内实测总量与排名使用 selfMs，禁止重复加父子耗时。
+    local token = { label = detailLabel, moduleId = normalizedModule, started = started,
+        capture = capture, parent = self.activeToken, childMs = 0 }
+    self.activeToken = token
+    if capture.continuous then
+        local window = capture.window
+        token.windowLabel=WindowStats(window.labels,detailLabel)
+        token.windowModule=WindowStats(window.modules,normalizedModule)
+    end
+    return token
 end
 
 function P:End(token)
-    if token == nil or self.capture == nil then return end
+    if token == nil then return end
+    if self.activeToken == token then self.activeToken = token.parent end
+    if self.capture == nil or token.capture ~= self.capture or self.capture.finished then return end
     local detail = self:_Stats(token.label, true)
     if detail == nil or token.started == nil or self.timer == nil then return end
     local finished = self.timer()
     if finished == nil or finished < token.started then return end
     local elapsed = math.max(0, finished - token.started)
+    local ownMs = math.max(0, elapsed - token.childMs)
+    if token.parent and token.parent.capture == token.capture then token.parent.childMs = token.parent.childMs + elapsed end
     detail.totalMs = detail.totalMs + elapsed
+    detail.selfMs = detail.selfMs + ownMs
+    detail.timedCalls = detail.timedCalls + 1
     if elapsed > detail.maxMs then detail.maxMs = elapsed end
     local moduleStats = self:_ModuleStats(token.moduleId)
     if moduleStats ~= nil then
         moduleStats.totalMs = moduleStats.totalMs + elapsed
+        moduleStats.selfMs = moduleStats.selfMs + ownMs
+        moduleStats.timedCalls = moduleStats.timedCalls + 1
         if elapsed > moduleStats.maxMs then moduleStats.maxMs = elapsed end
     end
     if self.frameActive == true then
-        self.current.measuredMs = (self.current.measuredMs or 0) + elapsed
+        self.current.measuredMs = (self.current.measuredMs or 0) + ownMs
     else
-        self.outside.measuredMs = (self.outside.measuredMs or 0) + elapsed
+        self.outside.measuredMs = (self.outside.measuredMs or 0) + ownMs
+    end
+    if self.capture.continuous then
+        local window = self.capture.window
+        local a,b=token.windowLabel,token.windowModule
+        a.totalMs,a.selfMs,a.timedCalls=a.totalMs+elapsed,a.selfMs+ownMs,a.timedCalls+1;a.maxMs=math.max(a.maxMs,elapsed)
+        b.totalMs,b.selfMs,b.timedCalls=b.totalMs+elapsed,b.selfMs+ownMs,b.timedCalls+1;b.maxMs=math.max(b.maxMs,elapsed)
+        self.capture.scriptSelfMs=self.capture.scriptSelfMs+ownMs
+        window.scriptSelfMs=window.scriptSelfMs+ownMs
     end
 end
 
@@ -276,7 +314,9 @@ function P:EndFrame(dtMs, backlog)
     local measured = tonumber(source.measuredMs) or 0
     local intervalUnmeasured = self.timer ~= nil and elapsed >= self.jankThresholdMs
         and math.max(0, elapsed - measured) or 0
-    local suppressAssociation = clockDominant or intervalUnmeasured >= self.jankThresholdMs
+    -- 中文维护：未开启详细计时/客户端没有可用时钟时，只能记录帧卡顿，不能暗示某模块是根因。
+    local timingCovered = self.capture ~= nil and self.capture.finished ~= true and self.timer ~= nil
+    local suppressAssociation = not timingCovered or clockDominant or intervalUnmeasured >= self.jankThresholdMs
     local kind = clockDominant and "脚本时钟间隔异常（未归因）"
         or (suppressAssociation and "原生帧间隔异常（Suite 回调未覆盖）" or "关联上一帧 Suite 回调")
     if observed >= self.jankThresholdMs then
@@ -316,63 +356,129 @@ function P:EndFrame(dtMs, backlog)
         end
     end
     local capture = self.capture
-    if capture ~= nil and (S.NowMs and S.NowMs() or 0) >= capture.endsAt then capture.finished = true end
+    if capture and capture.continuous and not capture.finished then
+        -- 中文维护：帧统计只属于手动开始后的本次记录；全会话旧卡顿不能污染本次累计。
+        capture.frames,capture.totalFrameMs=capture.frames+1,capture.totalFrameMs+elapsed
+        capture.maxFrameMs=math.max(capture.maxFrameMs,elapsed)
+        local window=capture.window
+        window.frames,window.totalFrameMs=window.frames+1,window.totalFrameMs+elapsed
+        window.maxFrameMs=math.max(window.maxFrameMs,elapsed)
+        if observed>=self.jankThresholdMs then
+            capture.jankCount,window.jankCount=capture.jankCount+1,window.jankCount+1
+            if suppressAssociation then capture.unattributedStalls=capture.unattributedStalls+1;window.unattributedStalls=window.unattributedStalls+1 end
+            local record={at=S.NowMs and S.NowMs() or 0,dtMs=observed,nativeDtMs=elapsed,
+                measuredMs=measured,kind=kind,labels=self.jankRing[self.jankCursor].labels,modules=self.jankRing[self.jankCursor].modules,pending=frame.pending}
+            capture.recentJanks[#capture.recentJanks+1]=record
+            if #capture.recentJanks>JANK_RING_SIZE then table.remove(capture.recentJanks,1) end
+            if not capture.worstJank or observed>capture.worstJank.dtMs then capture.worstJank=record end
+        end
+        self:_FinishWindow(S.NowMs and S.NowMs() or 0,false)
+    elseif capture and not capture.finished and (S.NowMs and S.NowMs() or 0)>=capture.endsAt then capture.finished=true;self.activeToken=nil end
     self.current.completed = true
     self.frameActive = false
 end
 
+function P:ResetRecordingFrames()
+    -- 中文维护：新记录边界隔离帧关联缓存；旧回调即使发生在同一加载代，也不得污染新记录。
+    -- 不清全加载的帧卡顿历史/任务事实，只清用于回调归因的 current/previous/outside 临时数据。
+    self.activeToken=nil
+    for _,record in ipairs({self.current,self.previous,self.outside}) do
+        for _,list in ipairs({record.labels,record.modules})do for i=#list,1,-1 do list[i]=nil end end
+        if record.seen then for key in pairs(record.seen)do record.seen[key]=nil end end
+        if record.moduleSeen then for key in pairs(record.moduleSeen)do record.moduleSeen[key]=nil end end
+        record.measuredMs,record.executed,record.completed,record.valid=0,0,false,false
+    end
+end
 function P:StartCapture(seconds)
     if self.capture ~= nil and self.capture.finished ~= true then return false, "详细捕获已在进行" end
     local duration = math.max(5, math.min(120, math.floor(tonumber(seconds) or 30)))
     self.capture = { startedAt = S.NowMs and S.NowMs() or 0, endsAt = (S.NowMs and S.NowMs() or 0) + duration * 1000,
         durationSeconds = duration, labels = {}, modules = {}, finished = false }
+    self:ResetRecordingFrames()
     return true, self.timer ~= nil and ("已开始 " .. tostring(duration) .. " 秒详细捕获") or "已开始计数捕获；客户端不支持回调耗时计时"
 end
 
 function P:StopCapture()
     if self.capture == nil then return false, "当前没有详细捕获" end
+    if self.capture.finished then return true, "诊断已停止，记录保留" end
+    if self.capture.continuous then self:_FinishWindow(S.NowMs and S.NowMs() or 0,true) end
     self.capture.finished = true
     self.capture.endsAt = S.NowMs and S.NowMs() or 0
+    self.activeToken = nil -- 中文维护：停止时冻结记录；尚未结束的 token 只能丢弃，不能写入完成快照。
     return true, "详细捕获已停止"
 end
 
 function P:ClearCapture()
+    if self.capture and not self.capture.finished then return false, "请先停止诊断再清空" end -- 中文维护：用户不能误清仍在记录的证据。
     self.capture = nil
     return true
 end
 
-function P:GetTop(limit)
-    local capture = self.capture
-    if capture == nil then return {} end
+-- 中文维护：排名/窗口摘要统一消费有界统计；selfMs 为剔除嵌套的实测时间，totalMs 为包含子调用的
+-- 回调完整耗时。计时失败时 averageMs 缺失而不是假造 0ms；调用次数仍有意义。
+local function RankedStats(container,key,limit)
     local rows = {}
-    for label, stat in pairs(capture.labels) do
-        rows[#rows + 1] = { label = label, calls = stat.calls, totalMs = stat.totalMs, maxMs = stat.maxMs, jankHits = stat.jankHits }
+    for id, stat in pairs(container or {}) do
+        local row={calls=stat.calls,timedCalls=stat.timedCalls,totalMs=stat.totalMs,selfMs=stat.selfMs,maxMs=stat.maxMs,jankHits=stat.jankHits,
+            averageMs=stat.timedCalls>0 and stat.totalMs/stat.timedCalls or nil}
+        row[key]=id;rows[#rows+1]=row
     end
     table.sort(rows, function(a, b)
-        if a.totalMs ~= b.totalMs then return a.totalMs > b.totalMs end
+        if a.selfMs ~= b.selfMs then return a.selfMs > b.selfMs end
         if a.jankHits ~= b.jankHits then return a.jankHits > b.jankHits end
-        return a.calls > b.calls
+        if a.calls~=b.calls then return a.calls>b.calls end
+        return a[key]<b[key]
     end)
     local count = math.max(1, math.floor(tonumber(limit) or 6))
     while #rows > count do table.remove(rows) end
     return rows
 end
-
+function P:GetTop(limit) return RankedStats(self.capture and self.capture.labels,"label",limit) end
 function P:GetTopModules(limit)
-    local capture = self.capture
-    if capture == nil then return {} end
-    local rows = {}
-    for moduleId, stat in pairs(capture.modules or {}) do
-        rows[#rows + 1] = { moduleId = moduleId, calls = stat.calls, totalMs = stat.totalMs, maxMs = stat.maxMs, jankHits = stat.jankHits }
+    return RankedStats(self.capture and self.capture.modules,"moduleId",limit)
+end
+
+local function NewWindow(now)
+    return {startedAt=now,frames=0,totalFrameMs=0,maxFrameMs=0,jankCount=0,unattributedStalls=0,scriptSelfMs=0,labels={},modules={}}
+end
+function P:StartContinuous()
+    if self.capture and not self.capture.finished then return false,"诊断已在记录，先停止后再开始新记录" end
+    local now=S.NowMs and S.NowMs() or 0
+    -- 中文维护：只有显式按钮开始；重载得到新的 Monitor 对象且默认关闭。内存记录不进入业务 Store。
+    self.capture={continuous=true,startedAt=now,labels={},modules={},finished=false,frames=0,totalFrameMs=0,
+        maxFrameMs=0,jankCount=0,unattributedStalls=0,scriptSelfMs=0,history={},windowsEvicted=0,recentJanks={},window=NewWindow(now)}
+    self:ResetRecordingFrames()
+    return true,self.timer and "持续诊断已开始；关闭页面后继续记录" or "持续诊断已开始；计时不可用，仅记录次数和帧卡顿"
+end
+function P:_FinishWindow(now,flush)
+    local capture=self.capture
+    if not capture or not capture.continuous or capture.finished then return end
+    local window=capture.window
+    if not flush and now-window.startedAt<WINDOW_MS then return end
+    if window.frames>0 or next(window.labels) then
+        capture.history[#capture.history+1]={startedAt=window.startedAt,endedAt=now,frames=window.frames,
+            averageFrameMs=window.frames>0 and window.totalFrameMs/window.frames or nil,maxFrameMs=window.maxFrameMs,
+            jankCount=window.jankCount,unattributedStalls=window.unattributedStalls,scriptSelfMs=window.scriptSelfMs,
+            top=RankedStats(window.labels,"label",6),topModules=RankedStats(window.modules,"moduleId",6)}
+        if #capture.history>WINDOW_LIMIT then table.remove(capture.history,1);capture.windowsEvicted=capture.windowsEvicted+1 end
     end
-    table.sort(rows, function(a, b)
-        if a.totalMs ~= b.totalMs then return a.totalMs > b.totalMs end
-        if a.jankHits ~= b.jankHits then return a.jankHits > b.jankHits end
-        return a.calls > b.calls
-    end)
-    local count = math.max(1, math.floor(tonumber(limit) or 6))
-    while #rows > count do table.remove(rows) end
-    return rows
+    capture.window=NewWindow(now)
+end
+-- 中文维护：快照递归复制有限统计，不向 UI/导出泄漏可写的历史表；只在明确查看/导出的冷路径调用。
+local function Detached(value)
+    if type(value)~="table" then return value end
+    local out={};for key,item in pairs(value)do out[key]=Detached(item)end;return out
+end
+function P:GetMonitoringSnapshot()
+    local c=self.capture
+    if not c or not c.continuous then return nil end
+    local now=c.finished and c.endsAt or (S.NowMs and S.NowMs() or 0)
+    return {patch="continuous-performance-1",active=not c.finished,elapsedMs=math.max(0,now-c.startedAt),frames=c.frames,
+        averageFrameMs=c.frames>0 and c.totalFrameMs/c.frames or nil,maxFrameMs=c.maxFrameMs,jankCount=c.jankCount,
+        unattributedStalls=c.unattributedStalls,scriptSelfMs=c.scriptSelfMs,windowMs=WINDOW_MS,historyLimit=WINDOW_LIMIT,
+        windowsEvicted=c.windowsEvicted,history=Detached(c.history),worstJank=Detached(c.worstJank),recentJanks=Detached(c.recentJanks),
+        currentWindow={startedAt=c.window.startedAt,frames=c.window.frames,maxFrameMs=c.window.maxFrameMs,
+            jankCount=c.window.jankCount,scriptSelfMs=c.window.scriptSelfMs,top=RankedStats(c.window.labels,"label",6)}}
 end
 
 function P:GetWorstJank(limit)
@@ -396,8 +502,10 @@ function P:Snapshot()
             kind = jank.kind, labels = jank.labels, pending = jank.pending } or nil,
         timerAvailable = self.timer ~= nil, timerName = self.timerName, timerReason = self.timerReason,
         capture = capture and { active = capture.finished ~= true, finished = capture.finished == true,
-            secondsRemaining = math.max(0, math.ceil(((capture.endsAt or 0) - (S.NowMs and S.NowMs() or 0)) / 1000)),
+            continuous=capture.continuous==true,startedAt=capture.startedAt,
+            secondsRemaining = not capture.continuous and math.max(0, math.ceil(((capture.endsAt or 0) - (S.NowMs and S.NowMs() or 0)) / 1000)) or nil,
             durationSeconds = capture.durationSeconds } or nil,
+        monitoring=self:GetMonitoringSnapshot(), -- 中文维护：系统完整报告沿用 Snapshot 即可携带同一份持续记录。
         top = self:GetTop(6), topModules = self:GetTopModules(6), worstJank = self:GetWorstJank(3), startup = self:GetStartup(),
     }
 end
@@ -413,10 +521,42 @@ function P:BuildSummary()
     if (tonumber(snap.unattributedStalls) or 0) > 0 then
         text = text .. " · 未归因卡顿 " .. tostring(snap.unattributedStalls)
     end
-    if snap.capture ~= nil then text = text .. " · 捕获：" .. (snap.capture.active and ("进行中 " .. tostring(snap.capture.secondsRemaining) .. "s") or "已完成") end
+    if snap.capture ~= nil then text = text .. " · 捕获：" .. (snap.capture.active and (snap.capture.continuous and "持续记录中" or ("进行中 " .. tostring(snap.capture.secondsRemaining) .. "s")) or "已完成") end
     local latestStartup = snap.startup and snap.startup[#snap.startup] or nil
     if latestStartup ~= nil then text = text .. " · 启动 " .. string.format("%.1f", tonumber(latestStartup.elapsedMs) or 0) .. "ms" end
     return text
+end
+
+function P:BuildReport()
+    -- 中文维护：专用性能导出每次读取新快照，不能复用诊断页之前冻结的自检原文；不运行 Gate、
+    -- 不查询世界、不启停采样、不 Apply Store。序列化/传输继续使用既有 DiagnosticDetail/Persistence。
+    if not self.capture then return nil,"请先开始持续诊断并复现卡顿" end
+    if not S.DiagnosticDetail or type(S.DiagnosticDetail.New)~="function" then return nil,"性能报告格式器不可用" end
+    self.reportSequence=(self.reportSequence or 0)+1
+    local now=S.NowMs and S.NowMs() or 0
+    local id="PERF-"..tostring(S.Generation or 0).."-"..tostring(math.floor(now)).."-"..self.reportSequence
+    local writer=S.DiagnosticDetail:New()
+    writer:Add("PERFORMANCE",self:Snapshot())
+    writer:Add("ALL_CALLBACKS",self:GetTop(MAX_LABELS))
+    writer:Add("ALL_MODULES",self:GetTopModules(MAX_LABELS))
+    local failures={}
+    local function Collect(label,object,method,...)
+        if type(object)~="table" or type(object[method])~="function" then failures[#failures+1]=label..":unavailable";return end
+        local ok,value=pcall(object[method],object,...)
+        if ok then writer:Add(label,value)else failures[#failures+1]=label..":"..tostring(value)end
+    end
+    Collect("FRAME_BUDGET",S.FrameBudget,"Describe")
+    Collect("SCHEDULER_RUNTIME",S.Scheduler,"DescribeBacklog")
+    Collect("UI_INPUT_AND_WRITES",S.UI,"GetFrameworkSnapshot")
+    if S.Scheduler and type(S.Scheduler.tasks)=="table" then
+        local names={};for name in pairs(S.Scheduler.tasks)do names[#names+1]=name end;table.sort(names)
+        for i=1,math.min(#names,MAX_LABELS)do Collect("TASK:"..names[i],S.Scheduler,"GetTaskState",names[i])end
+        if #names>MAX_LABELS then failures[#failures+1]="tasks_omitted:"..(#names-MAX_LABELS) end
+    end
+    writer:Add("COLLECTION_COVERAGE",{failures=failures,timerAvailable=self.timer~=nil,
+        interpretation="monitoring 是手动本次记录；外层帧历史为本次加载累计。selfMs 排名剔除嵌套；totalMs/averageMs 包含子调用。帧间隔不是 API 耗时；未归因/同时运行不证明根因。其他插件与客户端内部执行不在 Suite 回调覆盖范围。"})
+    local text,detail=writer:Finish("RS-PERFORMANCE-DIAG-1\nID="..id.."\nBUILD="..tostring(S.BuildTag or "unknown").."\n"..self:BuildSummary())
+    return text,{id=id,partial=detail.partial or #failures>0,capturedAtMs=now,detail=detail}
 end
 
 P:Initialize()

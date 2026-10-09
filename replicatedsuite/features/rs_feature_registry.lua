@@ -38,6 +38,8 @@ local PERFORMANCE_PROFILES = {
     combat_target_monitor = { 1, "按需观察少量指定目标。" },
     combat_unit_lines = { 3, "持续投影与连线点绘制；刷新间隔、线条数和密度影响开销。" },
     combat_range_assist = { 3, "多圆多点投影；圆数、点密度与刷新频率越高开销越大。" },
+    -- 中文维护（2026-10-09）：工作负载只含当前目标的两个弧，开关关闭/无显示租约不采样。
+    combat_facing_indicator = { 2, "当前目标朝向与36个有界点/文字按帧投影；关闭时停止观测。" },
     combat_buff_cap = { 1, "自身状态数量低频观察。" },
     combat_team_tools = { 2, "团队列表投影和可选高亮；多人团队/高亮刷新增加开销。" },
     combat_raid_readiness = { 2, "显式战备检查时扫描团队，非持续全场扫描。" },
@@ -104,6 +106,12 @@ function R:Register(spec)
     if self.categories[category] == nil then return nil, "unknown feature category: " .. category end
     local route = tostring(spec.route or id)
     local navigationDevelopmentState = ResolveNavigationDevelopmentState(spec) -- 中文维护注释：在注册时冻结本次 Feature 的导航开发态，Router 只消费结果，禁止再复制一套判定规则造成排序漂移。
+    -- 中文维护（manual-feature-access-1）：启动时冻结手工配置，Registry 是唯一开放判断来源。
+    -- 配置表中出现的功能也成为受限功能；仅 true 开放，缺失/字符串/数字不得意外解锁。
+    -- 与 navigationVisible 分离，避免把原有隐藏语义子页误禁用；修改文件后重载，不做热轮询。
+    local access = type(ReplicatedSuiteFeatureAccess) == "table" and ReplicatedSuiteFeatureAccess[id] or nil
+    local accessConfigured = type(ReplicatedSuiteFeatureAccess) == "table" and ReplicatedSuiteFeatureAccess[id] ~= nil
+    local manualAccessRequired = spec.manualAccessRequired == true or accessConfigured
     local row = {
         id = id,
         route = route,
@@ -115,6 +123,7 @@ function R:Register(spec)
         groupOrder = tonumber(spec.groupOrder) or 100,
         groupItemOrder = tonumber(spec.groupItemOrder) or tonumber(spec.order) or 100,
         navigationVisible = spec.navigationVisible ~= false,
+        manualAccessAllowed = not manualAccessRequired or access == true, -- 中文维护：Runtime、路由、功能目录共享此冻结结果，不允许存档或 UI 改写它。
         navigationParentRoute = tostring(spec.navigationParentRoute or ""), -- 中文维护注释：隐藏语义子页可声明主导航父路由；这里只存展示元数据，绝不能改变 Feature 生命周期或 Authority。
         preferenceGroup = type(spec.preferenceGroup)=="table" and spec.preferenceGroup or nil,
         navigationDevelopmentState = navigationDevelopmentState, -- 中文维护注释：唯一导航开发态结果只用于 Router/Shell 展示；FeatureRuntime、Persistence 与页面业务不得读取它做功能决策。
@@ -189,6 +198,20 @@ function R:List(category)
     for _, id in ipairs(self.order) do
         local row = self.features[id]
         if category == nil or row.category == category then rows[#rows + 1] = row end
+    end
+    return rows
+end
+
+-- 中文维护：List 保留完整元数据用于内部诊断/实现注册；用户可选目录必须使用此过滤接口。
+-- 被限制的原有偏好与参数仍可安全加载，禁止通过删除注册项导致存档归一丢失旧配置。
+function R:IsAccessible(id)
+    local meta = self:Get(id)
+    return meta ~= nil and meta.manualAccessAllowed == true
+end
+function R:ListAccessible(category)
+    local rows = {}
+    for _, meta in ipairs(self:List(category)) do
+        if self:IsAccessible(meta.id) then rows[#rows + 1] = meta end
     end
     return rows
 end
@@ -292,6 +315,19 @@ Add("combat_unit_lines", "combat.unit_lines", "单位连线", "combat", 70, "当
 Add("combat_range_assist", "combat.range_assist", "范围辅助", "combat", 80, "以玩家为圆心绘制用户自建的多个范围圆；默认空配置，不猜技能/魔法阵真实范围。", { navigationDevelopmentState = "complete", status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.range_assist + screen_projection_v3", currentImplementation = "16/32/48ms 自适应 Demand-scoped 范围绘制；所有启用圆每次共享一个刚性投影批次，Native 不完整时整批切换到同一 Camera frame；RangeAssist 专用 Camera basis 正交单位化并要求有效 FOV，读数缺失时暂不绘制，恢复后继续；镜头 FOV 变化只参与当前透视，不重置已校准坐标比例；对玩家锚点偏移做会话有界稳定化。Presenter 按 raw UIParent 视口隐藏屏外点，保留可见范围弧段，未知视口保持有限坐标；只提交坐标/样式/可见性差异。半径配置始终保存游戏米，按需以 UnitDistance(target) 校准 worldUnitsPerMeter，高差或距离被拒绝的样本不更新屏幕比例；保留最多12条镜头位置/方向/圆心/比例诊断，分别记录镜头后方与投影平面附近的点；支持多圆列表、空默认配置、旧单圆存档迁移，以及每圆独立半径/点数/点大小/透明度/颜色并持久化", remainingCapability = "技能/魔法阵自动半径需要独立已验证的技能范围事实；当前只承诺用户自定义范围圆；无可靠目标样本时保留会话已核验值，从未校准时使用1:1；正常镜头远近/高度导致的透视变化仍保留，副本与高低差待RU实机复测", widgetCapable = false, settingsCapable = true, apiDependencies = { "X2Unit:GetUnitWorldPositionByTarget", "X2Unit:GetUnitScreenPosition", "X2Unit:UnitDistance" }, apiReadiness = "partial", apiPolicy = "bounded_user_radius" })
 -- 中文维护（2026-09-12）：已接入的是计数/采样峰值与个人阈值提醒，不是经过实机证明的容量预警。
 -- 元数据只说明产品/验收范围，不改变原route/Feature/Store身份，不用本地测试自动上移“已完成”。
+-- 中文维护（2026-10-09）：Registry 统一提供导航/模块开关/方案/诊断身份。代码已落地但朝向轴与
+-- 目标脚底投影尚待 RU 实机验收，继续标为未完成；不能以离线数学/Native 模型通过冒充实机。
+Add("combat_facing_indicator", "combat.facing_indicator", "正面／背面指示器", "combat", 82,
+    "当前目标脚下的红色正面弧与绿色背面弧，随目标移动和转身更新。", {
+    navigationDevelopmentState="implemented_pending_ru", status="implemented_pending_ru", lifecycle="demand_scoped",
+    authority="v3.facing_indicator + screen_projection_v3", widgetCapable=false, settingsCapable=true,
+    manualAccessRequired=true, -- 中文维护：此功能默认隐藏；只有 rs_feature_access.lua 明确 true 才开放，存档已开启也不能绕过。
+    diagnosticSources={"facing_indicator"}, -- 中文维护：采样/显示的限速错误源必须精确归属模块，不能在模块报告中静默漏掉。
+    apiDependencies={"X2Unit:GetTargetUnitId","X2Unit:GetUnitWorldPositionByTarget","X2Unit:GetUnitScreenPosition","X2Unit:UnitDistance"},
+    apiReadiness="official_enabled", apiPolicy="bounded_current_target_only", verification="pending_ru_facing_projection",
+    currentImplementation="16ms Demand-scoped 当前目标两侧弧线和文字；单帧投影、目标身份校验、空朝向隐藏；半径/弧长/点大小/透明度/朝向校准永久设置",
+    remainingCapability="目标模型与角度轴、玩家/NPC/首领脚底投影及镜头缩放待 RU 实机验收；弧长不是技能背击判定范围",
+})
 Add("combat_buff_cap", "combat.buff_cap", "增益容量监控", "combat", 85, "分别查看自身普通/隐藏增益数量、本次启用峰值；可保存个人数量提醒。个人阈值不代表 RU 容量或顶替规则。", {
     navigationDevelopmentState = "complete", -- 2026-10-06 用户要求标记完成；只影响导航展示。
     status = "migrated_partial", lifecycle = "demand_scoped", authority = "v3.buff_cap", widgetCapable = true, settingsCapable = true,
@@ -569,7 +605,7 @@ end
 
 AssignGroup("home", 10, { "home" })
 AssignGroup("combat_analysis", 10, { "combat_stats", "combat_analytics", "combat_death_review" })
-AssignGroup("combat_assist", 20, { "combat_healer", "combat_buff_display", "combat_buff_cap", "combat_boss_alerts", "combat_target_monitor", "combat_unit_lines", "combat_range_assist" })
+AssignGroup("combat_assist", 20, { "combat_healer", "combat_buff_display", "combat_buff_cap", "combat_boss_alerts", "combat_target_monitor", "combat_unit_lines", "combat_range_assist", "combat_facing_indicator" }) -- 中文维护：新功能归入现有战斗辅助组，不增加顶层导航分类。
 AssignGroup("combat_team", 30, { "combat_team_tools", "combat_sac_highlight", "combat_raid_readiness", "combat_raid_recruitment", "combat_siege_readiness" })
 AssignGroup("combat_loadout", 40, { "combat_gear" })
 

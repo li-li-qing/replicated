@@ -96,8 +96,9 @@ function A:CallGlobalCapability(name, ...)
     if type(fn) ~= "function" then return false, nil, "global capability unavailable: " .. tostring(name) end
     local paced, paceErr = self:ConsumeCapabilityCooldown(name)
     if paced ~= true then return false, nil, paceErr end
-    local args, argCount = { ... }, select("#", ...)
-    local ok, a, b, c, d = pcall(function() return fn(unpack(args, 1, argCount)) end)
+    -- 中文维护（performance-hotpath-1）：Lua5.1 pcall 原样接收变参（含中间/尾部nil），
+    -- 不为每次只读调用分配参数表和闭包；权限、冷却及四个数据返回位保持原契约。
+    local ok, a, b, c, d = pcall(fn, ...)
     if not ok then return false, nil, tostring(a) end
     return true, a, nil, b, c, d
 end
@@ -105,8 +106,8 @@ end
 function A:Call(object, methodName, ...)
     if object==nil then return false,nil,"object unavailable" end
     local method=object[methodName]; if type(method)~="function" then return false,nil,methodName.." unavailable" end
-    local args={...}; local argCount=select("#", ...)
-    local ok,a,b,c,d=pcall(function() return method(object,unpack(args,1,argCount)) end)
+    -- 中文维护：method仍显式传self；protected call和错误返回不变，避免每帧制造临时垃圾。
+    local ok,a,b,c,d=pcall(method,object,...)
     if not ok then return false,nil,tostring(a) end
     return true,a,nil,b,c,d
 end

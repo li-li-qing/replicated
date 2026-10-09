@@ -238,10 +238,10 @@ function F:GetNavigationFeatureRows()
     local rows = {}
     local workspace = S.UIV3 and S.UIV3.Workspace or nil
     local nav = type(workspace) == "table" and type(workspace.GetNavigation) == "function" and workspace:GetNavigation("custom") or nil
-    local catalog = nav or Registry:List()
+    local catalog = nav or Registry:ListAccessible() -- 中文维护：无工作台的回退目录也遵守手工开放，方案不应列出隐藏模块。
     for _, entry in ipairs(catalog) do
         local meta = nav and Registry:Get(entry.featureId) or entry
-        if meta and meta.navigationVisible ~= false and meta.category ~= "system" then
+        if meta and Registry:IsAccessible(meta.id) and meta.navigationVisible ~= false and meta.category ~= "system" then -- 中文维护：旧导航输入同样不能恢复受限条目。
             local category = Registry.categories and Registry.categories[meta.category] or nil
             rows[#rows + 1] = {
                 id = meta.id,

@@ -220,6 +220,29 @@ function F.ProjectTargetLoadout(statusMap)
     return { weapon = weapon, armor = armor, weaponConflict = weaponConflict, armorConflict = armorConflict }
 end
 
+-- 中文维护（dynamic-hud-1）：距离/施法的格式化共用同一纯投影；局部读取不复制Buff、
+-- 装备、追踪配置，不读取Native。返回新的小表，不暴露lane facts给Renderer反向修改。
+function F.ProjectDynamicPlates(laneData)
+    laneData=type(laneData)=="table" and laneData or {}
+    local out={}
+    local distance = tonumber(laneData.distance)
+    if distance ~= nil then
+        if distance < 1000 then
+            out.distance = { value = string.format("%.1f", distance) .. "m" }
+        else
+            out.distance = { value = string.format("%.2f", distance / 1000) .. "km" }
+        end
+    end
+    if type(laneData.cast) == "table" and laneData.cast.casting == true then
+        out.cast = {
+            spellName = tostring(laneData.cast.spellName or ""),
+            currMs = math.max(0, math.floor(tonumber(laneData.cast.currMs) or 0)),
+            totalMs = math.max(1, math.floor(tonumber(laneData.cast.totalMs) or 1)),
+        }
+    end
+    return out
+end
+
 function F.ProjectPlates(laneData, settings, trackedIndex, scope)
     laneData, settings = type(laneData) == "table" and laneData or {}, type(settings) == "table" and settings or {}
     local components = CopyComponents(settings.components)
@@ -228,6 +251,8 @@ function F.ProjectPlates(laneData, settings, trackedIndex, scope)
     -- 并从 settings.tracked 构建，保持旧 acceptance/调用方兼容。
     trackedIndex = type(trackedIndex) == "table" and trackedIndex or BuildTrackedIndex(settings)
     local out = { components = components, buffs = {}, debuffs = {}, cooldowns = {} }
+    local dynamic=F.ProjectDynamicPlates(laneData)
+    out.distance,out.cast=dynamic.distance,dynamic.cast
     out.buffs = BoundedTracked(laneData.buffRows, settings, "buff", trackedIndex, scope)
     out.debuffs = BoundedTracked(laneData.debuffRows, settings, "debuff", trackedIndex, scope)
     -- 中文维护注释（2026-09-19，本机 CD HUD 投影）：cooldownRows 已由 CooldownObservationV3
@@ -246,14 +271,6 @@ function F.ProjectPlates(laneData, settings, trackedIndex, scope)
         end
     end
 
-    local distance = tonumber(laneData.distance)
-    if distance ~= nil then
-        if distance < 1000 then
-            out.distance = { value = string.format("%.1f", distance) .. "m" }
-        else
-            out.distance = { value = string.format("%.2f", distance / 1000) .. "km" }
-        end
-    end
     if laneData.class ~= nil then
         local class = type(laneData.class) == "table" and laneData.class or { name = laneData.class }
         -- 中文维护：职业中文名和职业类别图标来自同一个 Metadata 快照；未知类别只显示文字。
@@ -294,13 +311,6 @@ function F.ProjectPlates(laneData, settings, trackedIndex, scope)
                 name = tostring(item.name or ""), source = item.source, buffId = item.buffId,
             }
         end
-    end
-    if type(laneData.cast) == "table" and laneData.cast.casting == true then
-        out.cast = {
-            spellName = tostring(laneData.cast.spellName or ""),
-            currMs = math.max(0, math.floor(tonumber(laneData.cast.currMs) or 0)),
-            totalMs = math.max(1, math.floor(tonumber(laneData.cast.totalMs) or 1)),
-        }
     end
     return out
 end

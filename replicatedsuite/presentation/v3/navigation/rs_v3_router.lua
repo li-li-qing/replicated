@@ -46,7 +46,12 @@ function R:Register(route, spec)
     return row
 end
 
-function R:Get(route) return self.routes[Normalize(route)] end
+-- 中文维护：语义子页、收藏、旧启动路由也必须经 Registry 开放边界；不把普通隐藏导航当受限功能。
+function R:Get(route)
+    local row = self.routes[Normalize(route)]
+    if row and row.featureId and not Features:IsAccessible(row.featureId) then return nil end
+    return row
+end
 function R:Resolve(value)
     value = tostring(value or "")
     if value:match("^page:") then value = value:sub(6) end
@@ -59,7 +64,8 @@ function R:List(category)
     local rows = {}
     for _, route in ipairs(self.order) do
         local row = self.routes[route]
-        if row.visible and (category == nil or row.category == category) then rows[#rows + 1] = row end
+        -- 中文维护：自定义导航/收藏/方案均消费同一可见目录，用户存档不能重新展示受限项。
+        if row.visible and (not row.featureId or Features:IsAccessible(row.featureId)) and (category == nil or row.category == category) then rows[#rows + 1] = row end
     end
     table.sort(rows, function(a, b)
         if a.navigationIncomplete ~= b.navigationIncomplete then return a.navigationIncomplete ~= true end -- 中文维护注释：同一分类先展示已完成功能，再展示开发中功能；只重排左侧展示，不改变 route 注册顺序或 Feature 生命周期。

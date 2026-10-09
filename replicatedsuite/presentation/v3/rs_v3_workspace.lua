@@ -251,7 +251,8 @@ function W:Reset(section)
 end
 function W:GetFeatureRows(mode,query)
  local rows={};query=tostring(query or ''):lower()
- for _,meta in ipairs(S.FeatureRegistry and S.FeatureRegistry:List() or {})do
+ -- 中文维护：功能管理同样只呈现手动配置已开放的模块；内部 Registry 仍保留完整身份与旧存档。
+ for _,meta in ipairs(S.FeatureRegistry and S.FeatureRegistry:ListAccessible() or {})do
   if meta.lifecycle~='shell' then
    local state=self:ReadControl(meta.id);local pref=self:GetNavPreference(meta.route)
    local include=mode=='all' or mode==nil or mode=='enabled' and state.enabled or mode=='faulted' and state.faulted or mode=='favorites' and pref.favorite

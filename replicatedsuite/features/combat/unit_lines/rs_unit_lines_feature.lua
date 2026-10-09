@@ -260,6 +260,20 @@ UnitLines.AdaptiveDensityContractVersion = 2
 UnitLines.SmoothRefreshContractVersion = 1
 UnitLines.FrontHemisphereContractVersion = 1
 UnitLines.ProjectionConsistencyContractVersion = 1
+-- 中文维护（performance-visual-hotpath-1）：绘制只复制端点、密度和样式；完整页面投影仍
+-- 使用原GetProjection。每次独立快照不暴露Authority/State，不缓存玩家或目标的实时事实。
+UnitLines.RenderProjectionContractVersion = 1
+function UnitLines:GetRenderProjection()
+    local state=self.State
+    local snapshot={revision=self.Authority.revision,status=self.Authority.status,error=self.Authority.error,
+        rows={},pointCount=state.pointCount,pointSize=state.pointSize,opacity=state.opacity,
+        refreshMs=UnitLineInterval(self),colors=NormalizeUnitLineColors(state.colors),
+        pairPoints=Copy(state.pairPoints or {}),pairSizes=Copy(state.pairSizes or {})}
+    for i,row in ipairs(self.Authority.rows) do
+        snapshot.rows[i]={key=row.key,pairKey=row.pairKey,x1=row.x1,y1=row.y1,x2=row.x2,y2=row.y2}
+    end
+    return snapshot
+end
 -- UnitLines.Diagnostics is attached lazily by read() (Lua 5.1 main-chunk local budget)
 
 -- 中文维护注释（Phase 3 Batch G，2026-09-29，core-feature-decoupling-1）：把 Diagnostics 投影注册到

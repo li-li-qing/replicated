@@ -112,9 +112,11 @@ local function BuildFeatures(parent, route)
     local preferenceText = RSUI:Text({ id = "v3_features_preference", parent = actionRow, text = "", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
 
     local list = nil
+    -- 中文维护：隔离宿主的旧管理页也消费开放目录；不改变 Registry 的完整诊断/实现身份。
+    local accessibleFeatures = S.FeatureRegistry:ListAccessible()
     local function ItemAt(index)
-        local id = S.FeatureRegistry.order[index]
-        local feature = id and S.FeatureRegistry.features[id] or nil
+        local feature = accessibleFeatures[index]
+        local id = feature and feature.id
         if feature == nil then return nil end
         local snapshot = S.FeatureRuntime and S.FeatureRuntime:GetSnapshot(id) or nil
         local runState
@@ -127,7 +129,7 @@ local function BuildFeatures(parent, route)
 
     list = RSUI:ListView({
         id = "v3_features_list", parent = root, rowHeight = 28, overscan = 1, selectable = true, selectionMode = "single", scrollbar = true,
-        getCount = function() return #(S.FeatureRegistry and S.FeatureRegistry.order or {}) end,
+        getCount = function() return #accessibleFeatures end,
         getItem = function(index) return ItemAt(index) end,
         getKey = function(item) return item and item.id or nil end,
         itemText = function(item) return item and item.text or "" end,
@@ -714,6 +716,21 @@ local function BuildDiagnostics(parent, route)
     local fullReportButton=RSUI:Button({id="v3_diag_output_full",parent=actions,text="完整报告",compact=true,slot={size="fixed",width=112}})
     -- 中文维护：导出完整冻结原文，不读取当前编辑页；独立快照 key 不更改业务配置。
     local exportButton=RSUI:Button({id="v3_diag_export_file",parent=actions,text="导出文件",compact=true,slot={size="fixed",width=100}})
+    local perfEntry -- 中文维护：入口放在下方翻页行，避免500px窄视口顶部固定按钮挤出可点击范围。
+    -- 中文维护（continuous-performance-1）：持续诊断只经已有 Monitor 手动开始/停止，页面关闭不
+    -- 停采集；没有 UI Tick、自动业务查询或自动写盘。刷新仅消费快照，不碰下方报告选区。
+    local perfActions=RSUI:HorizontalBox({id="v3_diag_perf_actions",parent=root,gap=7,slot={size="fixed",height=30,hAlign="fill"}})
+    -- 中文维护：按钮按可用宽度分配 Fill，预留可读最小宽；固定548px会让500px窗口的导出按钮越界。
+    local perfStart=RSUI:Button({id="v3_diag_perf_start",parent=perfActions,text="开始持续诊断",compact=true,fontSize=10,slot={size="fill",fill=1.35,minWidth=90}})
+    local perfStop=RSUI:Button({id="v3_diag_perf_stop",parent=perfActions,text="停止诊断",compact=true,fontSize=10,slot={size="fill",fill=1,minWidth=70}})
+    local perfRefresh=RSUI:Button({id="v3_diag_perf_refresh",parent=perfActions,text="刷新分析",compact=true,fontSize=10,slot={size="fill",fill=1,minWidth=70}})
+    local perfClear=RSUI:Button({id="v3_diag_perf_clear",parent=perfActions,text="清空记录",compact=true,fontSize=10,slot={size="fill",fill=1,minWidth=70}})
+    local perfExport=RSUI:Button({id="v3_diag_perf_export",parent=perfActions,text="导出性能",compact=true,fontSize=10,slot={size="fill",fill=1,minWidth=70}})
+    local perfText=RSUI:Text({id="v3_diag_perf_status",parent=root,fontSize=9,tone="muted",overflow="wrap",maxLines=16,
+        text="持续诊断默认关闭；手动开始后记录到停止/重载，再次开始会建立新记录。",slot={size="fill",fill=1,hAlign="fill"}})
+    -- 中文维护：诊断/性能切换复用同页空间，默认折叠性能区。新控件不能把 340px 小视口报告框
+    -- 挤成 1px；性能模式隐藏报告区，但保留冻结正文/页码，回到系统诊断仍可继续复制。
+    perfActions:SetVisible(false);perfText:SetVisible(false)
     local card=D:InfoCard(root,{id="v3_diag_gate",title="自检结果",value="尚未运行",
         detail="不会清除历史错误、修改配置或解除写保护。",slot={size="fixed",height=60,hAlign="fill"}})
     local status=RSUI:Text({id="v3_diag_report_status",parent=root,fontSize=10,tone="accent",overflow="wrap",maxLines=3,
@@ -725,6 +742,7 @@ local function BuildDiagnostics(parent, route)
     local previousButton=RSUI:Button({id="v3_diag_report_prev",parent=navigation,text="上一页",compact=true,slot={size="fixed",width=96}})
     local pageLabel=RSUI:Text({id="v3_diag_report_page",parent=navigation,text="0 / 0",slot={size="fixed",width=90}})
     local nextButton=RSUI:Button({id="v3_diag_report_next",parent=navigation,text="下一页",compact=true,slot={size="fixed",width=96}})
+    perfEntry=RSUI:Button({id="v3_diag_perf_entry",parent=navigation,text="性能诊断",compact=true,slot={size="fixed",width=100}})
     local host=RSUI:Border({id="v3_diag_report_host",parent=root,padding=4,variant="card",
         slot={size="fill",fill=1,hAlign="fill",vAlign="fill"}})
     local ui=S.UI
@@ -810,6 +828,67 @@ local function BuildDiagnostics(parent, route)
         if not ok then status:SetText("诊断操作异常："..tostring(a));return false,tostring(a) end
         return a,b
     end
+    function root:ShowPerformance(value)
+        value=value==true;self.performanceView=value
+        perfActions:SetVisible(value);perfText:SetVisible(value)
+        card:SetVisible(not value);host:SetVisible(not value)
+        previousButton:SetVisible(not value);pageLabel:SetVisible(not value);nextButton:SetVisible(not value)
+        perfEntry:SetText(value and "系统诊断" or "性能诊断")
+        if value and editor and type(ui.DeactivateInputWidget)=="function" then
+            pcall(ui.DeactivateInputWidget,ui,editor,host.owner,"performance_view_opened")
+        end
+        self:RefreshPerformance()
+        return true -- 中文维护：视图切换已完成；监控缺失只显示不可用提示，不能阻断返回系统报告。
+    end
+    perfEntry.onClick=function()return root:ShowPerformance(not root.performanceView)end
+    function root:RefreshPerformance()
+        local monitor=S.PerformanceMonitor
+        if type(monitor)~="table" or type(monitor.Snapshot)~="function" then
+            perfStart:SetEnabled(false);perfStop:SetEnabled(false);perfClear:SetEnabled(false);perfExport:SetEnabled(false)
+            perfText:SetText("性能监控不可用，请完整加载插件。");return false
+        end
+        local snap=monitor:Snapshot();local capture=snap.capture;local active=capture and capture.active==true
+        perfStart:SetEnabled(not active);perfStop:SetEnabled(active==true)
+        perfClear:SetEnabled(capture~=nil and not active);perfExport:SetEnabled(capture~=nil)
+        if not capture then perfText:SetText("持续诊断未开始；开启后关闭页面仍会记录，重载后停止。再次开始会建立新记录。");return true end
+        local record=snap.monitoring
+        local text=active and "诊断记录中" or "诊断已停止，证据保留"
+        if record then text=text..string.format(" · %.0f秒 · %d帧 · 最慢 %.1fms · 卡顿 %d",record.elapsedMs/1000,record.frames,record.maxFrameMs,record.jankCount) end
+        local parts={}
+        for i=1,math.min(6,#(snap.topModules or {})) do
+            local row=snap.topModules[i];local meta=S.FeatureRegistry and S.FeatureRegistry:Get(row.moduleId)
+            local name=meta and meta.name or row.moduleId
+            parts[#parts+1]=name..((snap.timerAvailable and row.timedCalls>0) and string.format(" %.1fms自身耗时/%d次",row.selfMs,row.calls) or (" "..row.calls.."次，计时未采集"))
+        end
+        text=text.."\n"..(#parts>0 and ("累计排名（剔除嵌套）：\n"..table.concat(parts,"\n")) or "等待采集回调。")
+        perfText:SetText(text.."\n每60秒汇总，保留最近30个窗口及累计排名；用“导出性能”获取最新证据。")
+        return true
+    end
+    local function PerfAction(method)
+        return Execute("performance_"..method,function()
+            local monitor=S.PerformanceMonitor
+            if not monitor or type(monitor[method])~="function" then status:SetText("性能操作不可用");return false end
+            local ok,message=monitor[method](monitor);root:RefreshPerformance()
+            status:SetText(tostring(message or (ok and "性能诊断操作完成" or "性能诊断操作失败")));return ok,message
+        end)
+    end
+    perfStart.onClick=function()return PerfAction("StartContinuous")end
+    perfStop.onClick=function()return PerfAction("StopCapture")end
+    perfClear.onClick=function()return PerfAction("ClearCapture")end
+    perfRefresh.onClick=function()return root:RefreshPerformance()end
+    perfExport.onClick=function()
+        return Execute("export_performance",function()
+            local diagnostic,err=Backend("ExportReport");if not diagnostic then status:SetText(err);return false,err end
+            local monitor=S.PerformanceMonitor
+            if not monitor or type(monitor.BuildReport)~="function" then status:SetText("性能报告不可用");return false end
+            -- 中文维护：每次导出构造新性能快照，不使用 selfCheckText/selfCheckMeta，也不依赖
+            -- 原生复制框是否可用。导出中的采集状态保持原样，记录可继续运行。
+            local text,meta=monitor:BuildReport()
+            if not text then status:SetText(tostring(meta));return false,meta end
+            local ok,message=diagnostic:ExportReport(text,meta)
+            root:RefreshPerformance();status:SetText(tostring(message));return ok,message
+        end)
+    end
     function root:Refresh(result)
         -- 显示/刷新结果不回填正文、不自动读盘，不破坏用户选区和本次打印快照。
         local diagnostic=S.DiagnosticsManager
@@ -818,6 +897,7 @@ local function BuildDiagnostics(parent, route)
         elseif check.status=="ERROR" then card:SetData({value="自检执行异常",detail="仍可打印其余证据；执行异常不等于检查通过。"})
         else card:SetData({value=(tonumber(check.blockers)or 0)>0 and "需要处理" or ((tonumber(check.warnings)or 0)>0 and "存在警告" or "检查通过"),
             detail="阻断 "..tostring(check.blockers or 0).." · 警告 "..tostring(check.warnings or 0).." · 检查项 "..tostring(#(check.checks or {}))}) end
+        self:RefreshPerformance() -- 中文维护：只有页面显式刷新更新性能显示，不创建常驻页面刷新任务。
         return true
     end
     -- 维护：一个Native编辑框承载多份独立页文本。快照/边界在首次打印确定，上一页/下一页
@@ -925,6 +1005,7 @@ local function BuildDiagnostics(parent, route)
     -- 页数增加不能通过重新引入预裁剪来“优化”。
     printButton.onClick=function()
         return Execute('print_self_check',function()
+            root:ShowPerformance(false) -- 中文维护：用户打印自检时回到报告视图，不停止持续采集。
             local diagnostic,err=Backend('PrintPagedSelfCheckReport');if not diagnostic then status:SetText(err);return false,err end
             ClearReport();Navigation()
             local ok,text,meta=diagnostic:PrintPagedSelfCheckReport(Present)
@@ -935,6 +1016,7 @@ local function BuildDiagnostics(parent, route)
     end
     fullReportButton.onClick=function()
         return Execute('print_full_self_check',function()
+            root:ShowPerformance(false) -- 中文维护：性能视图与冻结报告共享空间，打印必须露出真实复制框。
             local diagnostic,err=Backend('PrintPagedSelfCheckReport');if not diagnostic then status:SetText(err);return false,err end
             ClearReport();Navigation()
             local ok,text,meta=diagnostic:PrintPagedSelfCheckReport(Present)

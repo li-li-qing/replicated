@@ -1230,16 +1230,23 @@ function F:GetScopeSettingsProjection(scope)
 end
 
 -- Head plates projection for the renderer: enabled components + bounded rows.
-function F:GetPlatesProjection(scope)
+function F:GetPlatesProjection(scope, settingsProjection)
     scope = tostring(scope or "player")
     local laneData = self.laneData[scope] or {}
-    local plates = self.ProjectPlates(laneData, self:GetScopeSettingsProjection(scope), self.trackedIndex, scope)
+    -- 中文维护（performance-visual-hotpath-1）：Renderer已取得本次独立scope布局时复用它，
+    -- 避免同一内容重建复制两份profile。旧调用不传第二参仍取得独立快照；不缓存单位事实。
+    local settings = type(settingsProjection)=="table" and settingsProjection or self:GetScopeSettingsProjection(scope)
+    local plates = self.ProjectPlates(laneData, settings, self.trackedIndex, scope)
     local maxRevision = tonumber(self.cooldownRevision) or 0
     for _, lane in pairs(self.lanes) do maxRevision = math.max(maxRevision, tonumber(lane.revision) or 0) end
     return plates, maxRevision
 end
 
 -- 维护（pvp-hud-1）：原生UIParent屏幕坐标，不除以UI缩放；第五返回为只读失败原因，前四参保持兼容。
+function F:GetDynamicPlatesProjection(scope)
+    return self.ProjectDynamicPlates(self.laneData[tostring(scope or "player")] or {})
+end
+
 function F:GetPlatesAnchor(scope)
     scope = tostring(scope or "player")
     local lane = self.laneData[scope] or {}

@@ -280,6 +280,8 @@ function F:ApplyPreferenceTargets(targets, reason)
         if id == "" or Registry:Get(id) == nil then return Failed("unknown feature: " .. tostring(rawId), "preflight", id, rawTarget, true) end
         if self.implementations[id] == nil then return Failed("feature not implemented: " .. id, "preflight", id, rawTarget, true) end
         if type(rawTarget) ~= "boolean" then return Failed("feature target must be boolean: " .. id, "preflight", id, rawTarget, true) end
+        -- 中文维护：方案事务在任何生命周期变化/持久化前检查手工开放；拒绝整批，不能留下半应用状态。
+        if rawTarget == true and Registry:IsAccessible(id) ~= true then return Failed("功能未在手动配置中开放：" .. id, "preflight", id, rawTarget, true) end
         if normalizedTargets[id] ~= nil then return Failed("duplicate normalized feature target: " .. id, "preflight", id, rawTarget, true) end
         normalizedTargets[id] = rawTarget
         ordered[#ordered + 1] = id
@@ -412,6 +414,9 @@ end
 
 function F:Enable(id, reason)
     id = NormalizeId(id)
+    -- 中文维护：唯一 Runtime 启动边界先拒绝受限功能，禁止收藏、旧存档、批量方案绕过菜单隐藏。
+    -- 在 Initialize/API Acquire 前检查，正常限制不是 fault；Disable 仍可用于可靠清理。
+    if Registry:IsAccessible(id) ~= true then return false, "功能未在手动配置中开放：" .. id end
     local impl, row = self.implementations[id], self.state[id]
     if impl == nil or row == nil then return false, "feature not implemented" end
     if row.enabled == true then return true end
@@ -506,7 +511,8 @@ function F:EnableDefaults(reason)
     local failures = {}
     for _, id in ipairs(self.order) do
         local impl = self.implementations[id]
-        if impl ~= nil then
+        -- 中文维护：启动跳过受限模块，保留磁盘偏好；正常隐藏不能制造启动失败或触发旧启用意图修复。
+        if impl ~= nil and Registry:IsAccessible(id) then
             local preferred, explicit = self:GetPreferredEnabled(id)
 
             -- Some persistent screen surfaces predate the Feature preference

@@ -1,4 +1,5 @@
 config/rs_config.lua
+config/rs_feature_access.lua
 replicatedsuite.lua
 native/rs_native_contract.lua
 native/rs_native_imports.lua
@@ -215,6 +216,8 @@ features/tools/auction/rs_auction_feature.lua
 features/tools/bag/rs_bag_feature.lua
 features/combat/unit_lines/rs_unit_lines_feature.lua
 features/combat/range_assist/rs_range_assist_feature.lua
+-- 中文维护（2026-10-09）：独立正背面 Feature 在工厂/共享投影之后、显示层之前加载。
+features/combat/facing_indicator/rs_facing_indicator_feature.lua
 features/tools/rs_feature_profiles_feature.lua
 features/combat/team_tools/rs_team_tools_visuals.lua
 -- 2026-09-15 用户删除“制作规划”：旧扩展文件不再进入 Runtime；tools_craft 仍由独立 surface extension 加载。
@@ -232,6 +235,7 @@ presentation/v3/widgets/rs_v3_module_diagnostics_window.lua
 presentation/v3/widgets/rs_v3_widget_host.lua
 presentation/v3/widgets/rs_v3_alert_hud.lua
 presentation/v3/widgets/rs_v3_combat_visual_guides.lua
+presentation/v3/widgets/rs_v3_facing_indicator.lua
 presentation/v3/widgets/rs_v3_life_economy_widgets.lua
 -- 中文维护（2026-10-09）：寻宝圈/箭头在 Feature 与 UI Primitive 就绪后订阅独立帧，不引入另一套插件入口。
 presentation/v3/widgets/rs_v3_treasure_compass.lua
@@ -275,6 +279,7 @@ presentation/v3/pages/rs_v3_combat_analytics_page.lua
 presentation/v3/pages/rs_v3_raid_readiness_page.lua
 presentation/v3/pages/rs_v3_healer_page.lua
 presentation/v3/pages/rs_v3_buff_display_page.lua
+presentation/v3/pages/rs_v3_facing_indicator_page.lua
 -- 2026-09-20 nameplate-mark-ratio-3：Presentation 只暴露标记倍率/血条尺寸，不再暴露已实机无效的 over_head_marker_*。
 presentation/v3/pages/rs_v3_nameplate_visuals_page.lua
 presentation/v3/pages/rs_v3_activity_page.lua
@@ -307,6 +312,7 @@ features/life/fishing/rs_fishing_acceptance.lua
 features/combat/boss_alerts/rs_boss_alerts_acceptance.lua
 features/combat/unit_lines/rs_unit_lines_acceptance.lua
 features/combat/range_assist/rs_range_assist_acceptance.lua
+features/combat/facing_indicator/rs_facing_indicator_acceptance.lua
 features/tools/auction/rs_auction_acceptance.lua
 features/tools/market_analysis/rs_market_analysis_acceptance.lua
 features/tools/craft/rs_craft_acceptance.lua

@@ -83,6 +83,7 @@ S.FrameBudget = {
         pressure="Normal", frameDtMs=0, pendingBefore=0,
         creditsTotal=10, creditsRemaining=10, maxExecutions=10,
         granted=0, deferred=0, criticalGranted=0, starvationRuns=0,
+        budgetedGranted=0, budgetedCostUnits=0, visualGranted=0, visualCostUnits=0, backgroundReserveRuns=0,
     },
     previous = nil,
     totals = { frames=0, requests=0, granted=0, deferred=0, criticalGranted=0, starvationRuns=0 },
@@ -108,6 +109,11 @@ function B:BeginFrame(frameDtMs, backlogHealth, pendingBefore)
         granted = old.granted,
         deferred = old.deferred,
         criticalGranted = old.criticalGranted,
+        budgetedGranted = old.budgetedGranted,
+        budgetedCostUnits = old.budgetedCostUnits,
+        visualGranted = old.visualGranted,
+        visualCostUnits = old.visualCostUnits,
+        backgroundReserveRuns = old.backgroundReserveRuns,
         starvationRuns = old.starvationRuns,
     }
 
@@ -124,6 +130,11 @@ function B:BeginFrame(frameDtMs, backlogHealth, pendingBefore)
         granted = 0,
         deferred = 0,
         criticalGranted = 0,
+        budgetedGranted = 0,
+        budgetedCostUnits = 0,
+        visualGranted = 0,
+        visualCostUnits = 0,
+        backgroundReserveRuns = 0,
         starvationRuns = 0,
     }
     self.totals.frames = (tonumber(self.totals.frames) or 0) + 1
@@ -155,7 +166,7 @@ function B:IsStarving(priority, deferCount, lateRatio)
         or math.max(0,Finite(lateRatio,0)) >= (STARVATION_LATE_RATIO[p] or 3.0)
 end
 
-function B:Request(owner, priority, costUnits, deferCount, lateRatio)
+function B:Request(owner, priority, costUnits, deferCount, lateRatio, lane)
     local p = NormalizePriority(priority)
     local cost = NormalizeCost(costUnits)
     local current = self.current
@@ -178,6 +189,17 @@ function B:Request(owner, priority, costUnits, deferCount, lateRatio)
     if p <= 1 then
         current.granted = current.granted + 1
         current.criticalGranted = current.criticalGranted + 1
+        -- 中文维护（performance-hotpath-1）：P1连续视觉由HF车道保证每帧最多一次。
+        -- 旧账本把4个HF的执行量扣进Critical的3credits/4slots，后台只剩1个饥饿逃生，
+        -- 单次停顿即可让lateRatio长期Critical。视觉与普通工作分账，用于下方有限预留；
+        -- 所有工作仍扣原总credits。普通P0/P1动作也占后台账，缺lane的旧调用不改变行为。
+        if lane == "highfrequency" and p == 1 then
+            current.visualGranted = current.visualGranted + 1
+            current.visualCostUnits = current.visualCostUnits + cost
+        else
+            current.budgetedGranted = current.budgetedGranted + 1
+            current.budgetedCostUnits = current.budgetedCostUnits + cost
+        end
         current.creditsRemaining = math.max(0, current.creditsRemaining - cost)
         self.totals.granted = self.totals.granted + 1
         self.totals.criticalGranted = self.totals.criticalGranted + 1
@@ -192,11 +214,23 @@ function B:Request(owner, priority, costUnits, deferCount, lateRatio)
 
     local executionRoom = current.granted < current.maxExecutions
     local creditRoom = current.creditsRemaining >= cost
-    if executionRoom and creditRoom then
+    -- 中文维护：仅原生帧已恢复（<40ms）但后台lateRatio仍高时，确保最多2个普通
+    -- slots/credits可运行。已执行的普通工作（包括P0/P1）抵扣预留，不能额外叠加2次。
+    -- 原生长帧保持旧总预算/饥饿保护，不把全部后台配额叠在视觉之后，不新增追赶循环。
+    local reserveRoom = current.visualGranted > 0 and current.frameDtMs < 40
+        and current.budgetedGranted < 2 and current.budgetedCostUnits + cost <= 2
+    if (executionRoom and creditRoom) or reserveRoom then
         current.granted = current.granted + 1
+        current.budgetedGranted = current.budgetedGranted + 1
+        current.budgetedCostUnits = current.budgetedCostUnits + cost
         current.creditsRemaining = current.creditsRemaining - cost
+        if current.creditsRemaining < 0 then current.creditsRemaining = 0 end
         self.totals.granted = self.totals.granted + 1
         stats.granted = stats.granted + 1
+        if not (executionRoom and creditRoom) then
+            current.backgroundReserveRuns = current.backgroundReserveRuns + 1
+            return true, "background_reserve"
+        end
         return true, "budget"
     end
 
@@ -206,6 +240,8 @@ function B:Request(owner, priority, costUnits, deferCount, lateRatio)
     local starving = self:IsStarving(p,deferCount,lateRatio) -- 中文维护：只轮转“已达旧阈值”的任务；仍严格每帧最多一个 escape，不放宽 credits/maxExecutions。
     if starving and current.starvationRuns < 1 then
         current.granted = current.granted + 1
+        current.budgetedGranted = current.budgetedGranted + 1
+        current.budgetedCostUnits = current.budgetedCostUnits + cost
         current.starvationRuns = current.starvationRuns + 1
         current.creditsRemaining = math.max(0, current.creditsRemaining - cost)
         self.totals.granted = self.totals.granted + 1
@@ -251,6 +287,11 @@ function B:Describe()
         creditsTotal = tonumber(c.creditsTotal) or 0, creditsRemaining = tonumber(c.creditsRemaining) or 0,
         maxExecutions = tonumber(c.maxExecutions) or 0, granted = tonumber(c.granted) or 0,
         deferred = tonumber(c.deferred) or 0, criticalGranted = tonumber(c.criticalGranted) or 0,
+        budgetedGranted = tonumber(c.budgetedGranted) or 0, visualGranted = tonumber(c.visualGranted) or 0,
+        visualCostUnits = tonumber(c.visualCostUnits) or 0,
+        budgetedCostUnits = tonumber(c.budgetedCostUnits) or 0,
+        backgroundReserveRuns = tonumber(c.backgroundReserveRuns) or 0,
+        accountingPatch = "visual-background-budget-1",
         starvationRuns = tonumber(c.starvationRuns) or 0,
         totals = {
             frames=tonumber(self.totals.frames) or 0, requests=tonumber(self.totals.requests) or 0,

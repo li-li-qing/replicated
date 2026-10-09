@@ -379,7 +379,8 @@ Test('fully offscreen circle clears old pool and never clamps dots to edges',fun
     local S,R,G,c=Boot({24});local projection=R:GetProjection()
     projection.rows[1].points={{x=7425,y=2209},{x=8000,y=2209},{x=9000,y=2209}}
     projection.viewportWidth=c.width;projection.viewportHeight=c.height
-    R.GetProjection=function()return projection end
+    -- 中文维护：屏外注入走Presenter现用的独立绘制快照；断言与输入坐标保持不变。
+    R.GetRenderProjection=function()return projection end
     local placements=c.placements;assert(G:RenderRange())
     assert(G.lastRangeSampling.points==0 and G.lastRangeSampling.offscreenPoints==3)
     assert(G.lastRangeSampling.placementFailures==0 and not G.rangeHost.visible)
@@ -388,7 +389,7 @@ end)
 Test('invalid range screen coordinates are rejected before Native anchors',function()
     local S,R,G,c=Boot({24});local projection=R:GetProjection()
     projection.rows[1].points={{x=math.huge,y=0},{x=0/0,y=0},{x=100,y=100}}
-    R.GetProjection=function()return projection end
+    R.GetRenderProjection=function()return projection end
     local placements=c.placements;assert(G:RenderRange())
     assert(G.lastRangeSampling.points==1 and G.lastRangeSampling.invalidPoints==2)
     assert(c.placements==placements+1,'non-finite point reached Native anchor')
@@ -397,7 +398,7 @@ Test('unknown viewport preserves finite coordinates without guessing logical bou
     local S,R,G,c=Boot({24});local projection=R:GetProjection()
     projection.rows[1].points={{x=7425,y=2209},{x=8000,y=2209},{x=9000,y=2209}}
     projection.viewportWidth=nil;projection.viewportHeight=nil
-    R.GetProjection=function()return projection end
+    R.GetRenderProjection=function()return projection end
     S.Services.ScreenProjectionV3.GetUiParentViewport=function()return nil,nil end
     assert(G:RenderRange())
     assert(G.lastRangeSampling.points==3 and G.lastRangeSampling.viewportKnown==false)

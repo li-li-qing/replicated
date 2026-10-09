@@ -50,7 +50,9 @@ P.TargetAliasHudContractVersion = 2 -- .18.322：目标别名升级为可独立�
 -- 维护（pvp-hud-1）：内容dirty与运动分离；指标固定规模，不保存/逐帧打印。
 P.PvpPatch = "pvp-hud-1"
 P.contentDirty = true
+P.dynamicDirty = {distance=false,cast=false}
 P.motionMetrics = { frames=0, rootWrites=0, contentBuilds=0, textureFailures=0, anchorFailures=0 }
+P.motionMetrics.partialUpdates,P.motionMetrics.partialDistanceWrites,P.motionMetrics.partialCastUpdates=0,0,0
 P.cooldownEvidence = {inputRows=0,drawn=0,rejected=0,nonemptyRenders=0}
 
 
@@ -69,12 +71,23 @@ local function Settings()
     if type(value) ~= "table" and type(Feature.GetSettingsProjection) == "function" then value = Feature:GetSettingsProjection() end
     return type(value) == "table" and value or {}
 end
+local scopeLayoutCache,scopeLayoutRevision={},nil
 local function ScopeSettings(scope)
     -- 中文维护注释（双 HUD Presentation 读取，2026-09-11）：renderer 不再直接把
     -- player settings.components 套到 target。Feature 是 scope profile 的投影边界；
     -- Presentation 只消费 detached snapshot，避免 Proxy/Presentation 反向改 Authority。
+    -- 中文维护（performance-snapshot-1）：只复用Renderer拥有的独立设置快照，固定两个scope。
+    -- 设置代际变化才重新复制；实时单位事实仍每次读取，缺代际的旧宿主保留不缓存路径。
+    local revision=tonumber(Feature.settingsRevision)
+    if revision==nil or revision~=scopeLayoutRevision then
+        scopeLayoutCache,scopeLayoutRevision={},revision
+    end
+    if revision~=nil and scopeLayoutCache[scope] then return scopeLayoutCache[scope] end
     local value = type(Feature.GetScopeSettingsProjection) == "function" and Feature:GetScopeSettingsProjection(scope) or nil
-    if type(value) == "table" then return value end
+    if type(value) == "table" then
+        if revision~=nil then scopeLayoutCache[scope]=value end
+        return value
+    end
     return Settings()
 end
 local function FeatureEnabled()
@@ -262,6 +275,7 @@ end
 local function HideScope(scope)
     local pool = P.pools[scope]
     if pool == nil then return end
+    pool.dynamicLayout=nil
     if pool.root then
         pool.visibilityRequested=false
         if type(S.UI.EnsureVisible)=="function" then
@@ -654,6 +668,34 @@ P.CastYOffsetContractVersion = 1
 -- Render
 ------------------------------------------------------------------------
 
+-- 中文维护（dynamic-hud-1）：只提交变化的文字/进度；明确false或异常不提交缓存。
+-- 失败先隐藏旧内容，由既有50ms内容重试恢复，不增加任务或Native采集。
+local function CommitDynamicText(widget, cache, key, text)
+    if cache[key]==text then return true end
+    local ok,result=pcall(widget.SetText,widget,text)
+    if ok~=true or result==false then
+        P.textureRetryAt=(S.NowMs and S.NowMs() or 0)+50
+        return false
+    end
+    cache[key]=text
+    return true
+end
+local function RenderCastContent(bar, cast)
+    local cache=bar.layout
+    local ratio=math.max(0,math.min(1,cast.totalMs>0 and cast.currMs/cast.totalMs or 0))
+    local fillW=math.max(1,math.floor(cache.barW*ratio))
+    local accepted=true
+    if type(S.UI.EnsureExtent)=="function" then accepted=S.UI:EnsureExtent(bar.fill,fillW,cache.barH,P.owner)==true
+    else S.UI:SetExtent(bar.fill,fillW,cache.barH,P.owner) end
+    local text=cache.showText and (cast.spellName or "") or ""
+    if not CommitDynamicText(bar.text,cache,"text",text) then accepted=false end
+    if not accepted then
+        S.UI:SetVisible(bar.root,false,P.owner)
+        P.textureRetryAt=(S.NowMs and S.NowMs() or 0)+50
+    end
+    return accepted
+end
+
 local function RenderCastBar(scope, cast, cfg, centerX, y, scale)
     local pool = P.pools[scope]
     if pool == nil or pool.cast == nil or cast == nil then return end
@@ -663,7 +705,6 @@ local function RenderCastBar(scope, cast, cfg, centerX, y, scale)
     local barH = math.max(4, math.floor(N(cfg.size, 6) * scale))
     local showText = cfg.showText ~= false
     local alpha = math.max(0.1, math.min(1, N(cfg.alpha, 1)))
-    local ratio = math.max(0, math.min(1, cast.totalMs > 0 and (cast.currMs / cast.totalMs) or 0))
     local x = math.floor(centerX + N(cfg.x, 0) * scale - barW / 2)
     -- 中文维护注释（施法条 Y Authority，2026-09-11）：旧 renderer 读取 castBar.x 却
     -- 完全忽略 castBar.y，导致 HUD 校准器的上下拖动/方向键“保存成功但画面不动”。
@@ -673,6 +714,7 @@ local function RenderCastBar(scope, cast, cfg, centerX, y, scale)
     local cache = bar.layout
     if cache.alpha ~= alpha then S.UI:SetAlpha(bar.root, alpha, P.owner); cache.alpha = alpha end
     if cache.barW ~= barW then cache.barW = barW end
+    cache.barH,cache.showText=barH,showText
     -- 维护：施法条/文字也归属同一个单位容器；总高度包含文字，避免父裁剪。
     local totalH = barH + (showText and 15 or 0)
     Place(pool, bar.root, x, math.floor(y), barW, totalH)
@@ -680,13 +722,12 @@ local function RenderCastBar(scope, cast, cfg, centerX, y, scale)
     S.UI:SetAnchor(bar.bg, bar.root, 0, 0, P.owner)
     S.UI:SetExtent(bar.bg, barW, barH, P.owner)
     S.UI:SetAnchor(bar.fill, bar.root, 0, 0, P.owner)
-    S.UI:SetExtent(bar.fill, math.max(1, math.floor(barW * ratio)), barH, P.owner)
-    bar.text:SetText(showText and (cast.spellName or "") or "")
+    local committed=RenderCastContent(bar,cast)
     S.UI:SetFontSize(bar.text, math.max(8, math.floor(N(cfg.fontSize, 10) * scale)), P.owner)
     S.UI:SetAnchor(bar.text, bar.root, 0, barH + 1, P.owner)
     S.UI:SetExtent(bar.text, barW, 14, P.owner)
     S.UI:SetVisible(bar.text, showText, P.owner)
-    S.UI:SetVisible(bar.root, true, P.owner)
+    S.UI:SetVisible(bar.root, committed, P.owner)
 end
 
 -- Record why a scope's plates were hidden so RU-side triage has a visible
@@ -893,7 +934,7 @@ local function RenderTextItem(pool, widget, cache, cacheField, item)
     if widget == nil then return end
     if item == nil or item.text == "" then S.UI:SetVisible(widget,false,P.owner); cache[cacheField]=""; return end
     local rendered = item.displayText or item.text
-    if cache[cacheField] ~= rendered then widget:SetText(rendered);cache[cacheField]=rendered end
+    if not CommitDynamicText(widget,cache,cacheField,rendered) then S.UI:SetVisible(widget,false,P.owner);return end
     S.UI:SetFontSize(widget,item.font,P.owner)
     S.UI:SetAlpha(widget,item.alpha or 1,P.owner)
     S.UI:SetExtent(widget,item.width,item.height,P.owner)
@@ -906,6 +947,7 @@ local function RenderInfo(scope, plates, infoCfg, components, centerX, y, fontSi
     if pool == nil or pool.info == nil then return end
     local info = pool.info
     local g = P.ComputeInfoItemsLayout(plates,infoCfg,components,centerX,y,fontSize,scale,scope)
+    pool.dynamicLayout.distance=g.distance
     RenderTextItem(pool,info.classTextRoot,info,"classText",g.classText)
     RenderTextItem(pool,info.gearRoot,info,"gearText",g.gearScore)
     RenderTextItem(pool,info.distanceRoot,info,"distanceText",g.distance)
@@ -953,13 +995,16 @@ local function RenderScope(scope, settings)
     local pool = P.pools[scope]
     if pool == nil then return end
     if ScopeEnabled(scope, settings) ~= true then HideScope(scope); return end
-    local plates = Feature:GetPlatesProjection(scope)
+    local plates = Feature:GetPlatesProjection(scope, settings)
     -- 维护：所有内容在单位原点生成；屏幕移动留给MotionTick，绝不在这里重读投影Native。
     local anchorX, anchorY = 0, 0
     pool.placementCount, pool.minX, pool.minY, pool.maxX, pool.maxY = 0, nil, nil, nil, nil
     P.metrics.projections = P.metrics.projections + 1
     local components = type(settings.components) == "table" and settings.components or {}
     local infoCfg = type(settings.info) == "table" and settings.info or {}
+    pool.dynamicLayout={revision=Feature.settingsRevision,distanceEnabled=infoCfg.enabled~=false
+        and infoCfg.showDistance~=false and (components.distance or {}).enabled~=false,
+        castEnabled=(components.castBar or {}).enabled~=false,castVisible=plates.cast~=nil}
     local showStacks = settings.headShowStacks ~= false
     local showTime = settings.headShowTime ~= false
 
@@ -1133,12 +1178,60 @@ local function MoveRoots()
         end
     end
 end
+
+-- 中文维护（dynamic-hud-1）：动态事件不重投影所有图标/装备/布局。只有已提交的布局、
+-- 相同设置代际、相同距离字宽和施法可见性才局部更新；结构边沿回到原VisualTick。
+local function UpdateDynamicContent()
+    if type(Feature.GetDynamicPlatesProjection)~="function" then return false end
+    for _,scope in ipairs(SCOPES) do
+        local pool=P.pools[scope]
+        local layout=pool and pool.dynamicLayout
+        if layout then
+            if layout.revision~=Feature.settingsRevision then return false end
+            local distance=P.dynamicDirty.distance and scope=="target" and layout.distanceEnabled
+            local casting=P.dynamicDirty.cast and layout.castEnabled
+            if distance or casting then
+                local facts=Feature:GetDynamicPlatesProjection(scope)
+                -- Empty cast-only scopes may stay idle while another scope updates.
+                -- A newly visible item still requires a committed full layout.
+                if pool.ready~=true and (distance or facts.cast or layout.castVisible) then return false end
+                if distance then
+                    local item=layout.distance
+                    local text=facts.distance and facts.distance.value or nil
+                    if (item~=nil)~=(text~=nil) or (item and TextWidth(text,item.font)~=item.width) then return false end
+                    if item and pool.info.distanceText~=text then
+                        if CommitDynamicText(pool.info.distanceRoot,pool.info,"distanceText",text) then
+                            P.motionMetrics.partialDistanceWrites=P.motionMetrics.partialDistanceWrites+1
+                        else S.UI:SetVisible(pool.info.distanceRoot,false,P.owner) end
+                    end
+                end
+                if casting then
+                    if layout.castVisible~=(facts.cast~=nil) then return false end
+                    if facts.cast then
+                        if RenderCastContent(pool.cast,facts.cast) then
+                            P.motionMetrics.partialCastUpdates=P.motionMetrics.partialCastUpdates+1
+                        end
+                    end
+                end
+            end
+        end
+    end
+    P.motionMetrics.partialUpdates=P.motionMetrics.partialUpdates+1
+    return true
+end
 function P:MotionTick()
     if self.running~=true then return false end
     self.motionMetrics.frames=self.motionMetrics.frames+1
     if self.calibrationSuppressed==true then return true end
     local now=S.NowMs and S.NowMs() or 0
     if self.contentDirty or (self.textureRetryAt and now>=self.textureRetryAt) then return self:VisualTick() end
+    if self.dynamicDirty.distance or self.dynamicDirty.cast then
+        -- A rejected write may have skipped placement in the full pass. Recover
+        -- through full layout, even if a new fact arrives before the retry time.
+        if self.textureRetryAt then return self:VisualTick() end
+        if not UpdateDynamicContent() then return self:VisualTick() end
+        self.dynamicDirty.distance,self.dynamicDirty.cast=false,false
+    end
     MoveRoots()
     return true
 end
@@ -1147,6 +1240,7 @@ function P:VisualTick()
     if self.running ~= true then return false end
     self.metrics.ticks = self.metrics.ticks + 1
     self.contentDirty, self.textureRetryAt = false, nil
+    self.dynamicDirty.distance,self.dynamicDirty.cast=false,false
     self.motionMetrics.contentBuilds = self.motionMetrics.contentBuilds + 1
     if self.calibrationSuppressed == true then self:HideAll(); return true end
     local policy = Settings()
@@ -1180,7 +1274,9 @@ function P:Start()
         S.Events:UnsubscribeInternalOwner(self)
         -- 维护：多个数据lane同一帧发布只置一次dirty；身份失效立即清屏，不能等内容轮询。
         S.Events:SubscribeInternal("v3.buff_display.plates.updated", self, function(_,reason)
-            P.contentDirty=true
+            if reason=="distance" then P.dynamicDirty.distance=true
+            elseif reason=="cast" then P.dynamicDirty.cast=true
+            else P.contentDirty=true end
             if reason=="target_identity_invalidated" then HideScope("target") end
         end)
         S.Events:SubscribeInternal("v3.buff_display.plates.motion", self, function() return P:MotionTick() end)
@@ -1232,7 +1328,9 @@ function P:GetDiagnostics()
         version = self.version,
         pvp = { patch=self.PvpPatch, frames=self.motionMetrics.frames, rootWrites=self.motionMetrics.rootWrites,
             contentBuilds=self.motionMetrics.contentBuilds, textureFailures=self.motionMetrics.textureFailures,
-            anchorFailures=self.motionMetrics.anchorFailures, lastTextureError=self.motionMetrics.lastTextureError },
+            anchorFailures=self.motionMetrics.anchorFailures, lastTextureError=self.motionMetrics.lastTextureError,
+            dynamicPatch="dynamic-hud-1",partialUpdates=self.motionMetrics.partialUpdates,
+            partialDistanceWrites=self.motionMetrics.partialDistanceWrites,partialCastUpdates=self.motionMetrics.partialCastUpdates },
         buffIconFontSizeContractVersion = tonumber(self.BuffIconFontSizeContractVersion) or 0,
         castYOffsetContractVersion = tonumber(self.CastYOffsetContractVersion) or 0,
         running = self.running == true,

@@ -225,6 +225,13 @@ Test('actual RSUI layouts keep report visible in small and large page viewports'
         assert(UI.testEdit.width==host.width-8 and UI.testEdit.height==host.height-8,'Native editor missed host resize')
         assert(buttons.v3_diag_output_full.onClick(),'actual layout report not delivered')
         assert(UI.focused==UI.testEdit)
+        -- 中文维护：折叠性能入口也须在窄视口内可点；性能/系统模式切换不能挤掉报告区或清正文。
+        local entry=assert(Find(root,'v3_diag_perf_entry'));assert(entry.x+entry.width<=size[1]+0.01,'performance entry outside viewport')
+        local frozen=root.selfCheckText;assert(entry.onClick());root:Layout(0,0,size[1],size[2])
+        local perf=assert(Find(root,'v3_diag_perf_status'));assert(perf.height>50 and perf.y+perf.height<=size[2]+0.01)
+        local perfExport=assert(Find(root,'v3_diag_perf_export'));assert(perfExport.x+perfExport.width<=size[1]+0.01,'performance export outside viewport')
+        assert(host.visible==false and root.selfCheckText==frozen)
+        assert(entry.onClick());root:Layout(0,0,size[1],size[2]);assert(host.height>50 and root.selfCheckText==frozen)
     end
 end)
 Test('layout-only resize neither reloads snapshot nor changes existing report text',function()
@@ -266,7 +273,7 @@ Test('explicit next delivers all pages and previous returns without rereading',f
     assert(h.widgets.v3_diag_output_full.onClick());local session=assert(root.selfCheckDelivery)
     local first=h.edit.text;local total=session.parts;local collected={first}
     local buttons=0;for _,w in pairs(h.widgets)do if w.onClick then buttons=buttons+1 end end
-    assert(buttons==6 and h.widgets.v3_diag_export_file,'pagination and independent file export actions missing') -- 中文维护：导出按钮加入后仍须保留五个既有操作。
+    assert(buttons==12 and h.widgets.v3_diag_export_file,'pagination and independent file export actions missing') -- 中文维护：6个原操作+折叠性能入口/5个手动操作；新增操作不能删除翻页和普通导出。
     for i=2,total do
         assert(h.widgets.v3_diag_report_next.onClick());assert(root.selfCheckPart==i)
         assert(h.edit.text:find('PAGE='..i..'/'..total,1,true));assert(#h.edit.text<=9215)

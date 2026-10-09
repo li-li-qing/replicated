@@ -26,6 +26,39 @@ local RANGE_ASSIST_REFRESH_MS = 16
 -- 这个 IIFE 的子函数作用域；主 chunk 只增加/保留 RangeAssist 一个引用。数据流仍是
 -- Persistence -> Feature.State.circles -> Authority rows -> Presenter rangePools，不改变任何其它业务 Feature。
 -- 后续维护若要增加多圆 helper，也必须放在此内部作用域或对象字段，禁止再消耗主 chunk local 预算。
+-- 中文维护（performance-hotpath-1）：诊断文字只在完整页面投影被显式读取时格式化。
+-- 只使用本模块保存的批次/标定事实，不触发Native、Refresh或Consumer，不进入绘制热路径。
+local function RangeAssistDescribeFrame(feature)
+    local batch = type(feature.RangeLastBatch)=="table" and feature.RangeLastBatch or {}
+    local metricCalibration = type(feature.RangeMetricFacts)=="table" and feature.RangeMetricFacts or {}
+    local worldUnitsPerMeter = tonumber(metricCalibration.worldUnitsPerMeter) or 1
+    local metricScreenScale = tonumber(metricCalibration.projectionScale) or 1
+    local depthBand = (batch.depthMin ~= nil) and string.format("%.0f..%.0f", batch.depthMin, batch.depthMax) or "-"
+    local refresh = type(feature.RangeRefreshHealth) == "table" and feature.RangeRefreshHealth or {}
+    local calibration = "-"
+    if tostring(batch.calibrationStatus or "") == "applied" then
+        calibration = string.format("%d,%d", math.floor((tonumber(batch.calibrationDx) or 0) + 0.5), math.floor((tonumber(batch.calibrationDy) or 0) + 0.5))
+    elseif batch.calibrationStatus ~= nil then
+        calibration = tostring(batch.calibrationStatus)
+        if batch.calibrationErr ~= nil then calibration = calibration .. ":" .. tostring(batch.calibrationErr) end
+    end
+    local metricFacts = string.format("米标定=%.4fwu/m[%s/%d] · 屏标定=%.3f[%s/%d/%s]",
+        worldUnitsPerMeter, tostring(metricCalibration.worldScaleStatus or "default"), tonumber(metricCalibration.worldSampleCount) or 0,
+        metricScreenScale, tostring(metricCalibration.projectionScaleStatus or "default"), tonumber(metricCalibration.projectionSampleCount) or 0,
+        tostring(batch.metricScreenScaleStatus or "-"))
+    local anchorFacts = ""
+    if tonumber(batch.calibrationRawDy) ~= nil and tonumber(batch.calibrationStableDy) ~= nil then
+        anchorFacts = string.format(" · 锚Y %.2f>%.2f[%s]", tonumber(batch.calibrationRawDy), tonumber(batch.calibrationStableDy), tostring(batch.calibrationStableSamples or 0))
+    end
+    local aspectFacts = batch.aspectSafeCamera==true and string.format("正交相机/dir=%.4f", tonumber(batch.rawCameraDirLength) or 1) or "兼容相机"
+    local projFacts = string.format("刚性%s · %s · EasyPull原生%d/相机%d/原拒%d/相拒%d 深度%s · 锚校%s%s · %s · 刷新%dms 尝试%d/失%d/连续%d · 样本%s",
+        tostring(batch.rigidSource or "-"), aspectFacts, tonumber(batch.native) or 0, tonumber(batch.camera) or 0, tonumber(batch.nativeRejected) or 0, tonumber(batch.cameraRejected) or 0, depthBand,
+        tostring(batch.calibrationStatus or "-"), anchorFacts, metricFacts, tonumber(refresh.targetIntervalMs) or RANGE_ASSIST_REFRESH_MS,
+        tonumber(refresh.attempts) or 0, tonumber(refresh.failures) or 0, tonumber(refresh.consecutiveFailures) or 0,
+        tostring(batch.sample or "-"))
+    return calibration, projFacts
+end
+
 local RangeAssist = (function()
 local RANGE_ASSIST_DEFAULT_RADIUS = 10
 local RANGE_ASSIST_DEFAULT_POINT_COUNT = 24
@@ -433,29 +466,6 @@ return NewFeature("combat_range_assist", {
         })
         projected = type(projected) == "table" and projected or {}
         local batch = type(ringBatch) == "table" and ringBatch or {}
-        local depthBand = (batch.depthMin ~= nil) and string.format("%.0f..%.0f", batch.depthMin, batch.depthMax) or "-"
-        local refresh = type(feature.RangeRefreshHealth) == "table" and feature.RangeRefreshHealth or {}
-        local calibration = "-"
-        if tostring(batch.calibrationStatus or "") == "applied" then
-            calibration = string.format("%d,%d", math.floor((tonumber(batch.calibrationDx) or 0) + 0.5), math.floor((tonumber(batch.calibrationDy) or 0) + 0.5))
-        elseif batch.calibrationStatus ~= nil then
-            calibration = tostring(batch.calibrationStatus)
-            if batch.calibrationErr ~= nil then calibration = calibration .. ":" .. tostring(batch.calibrationErr) end
-        end
-        local metricFacts = string.format("米标定=%.4fwu/m[%s/%d] · 屏标定=%.3f[%s/%d/%s]",
-            worldUnitsPerMeter, tostring(metricCalibration.worldScaleStatus or "default"), tonumber(metricCalibration.worldSampleCount) or 0,
-            metricScreenScale, tostring(metricCalibration.projectionScaleStatus or "default"), tonumber(metricCalibration.projectionSampleCount) or 0,
-            tostring(batch.metricScreenScaleStatus or "-"))
-        local anchorFacts = ""
-        if tonumber(batch.calibrationRawDy) ~= nil and tonumber(batch.calibrationStableDy) ~= nil then
-            anchorFacts = string.format(" · 锚Y %.2f>%.2f[%s]", tonumber(batch.calibrationRawDy), tonumber(batch.calibrationStableDy), tostring(batch.calibrationStableSamples or 0))
-        end
-        local aspectFacts = batch.aspectSafeCamera==true and string.format("正交相机/dir=%.4f", tonumber(batch.rawCameraDirLength) or 1) or "兼容相机"
-        local projFacts = string.format("刚性%s · %s · EasyPull原生%d/相机%d/原拒%d/相拒%d 深度%s · 锚校%s%s · %s · 刷新%dms 尝试%d/失%d/连续%d · 样本%s",
-            tostring(batch.rigidSource or "-"), aspectFacts, tonumber(batch.native) or 0, tonumber(batch.camera) or 0, tonumber(batch.nativeRejected) or 0, tonumber(batch.cameraRejected) or 0, depthBand,
-            tostring(batch.calibrationStatus or "-"), anchorFacts, metricFacts, tonumber(refresh.targetIntervalMs) or RANGE_ASSIST_REFRESH_MS,
-            tonumber(refresh.attempts) or 0, tonumber(refresh.failures) or 0, tonumber(refresh.consecutiveFailures) or 0,
-            tostring(batch.sample or "-"))
 
         for _, plan in ipairs(plans) do
             local circle=plan.circle
@@ -465,7 +475,9 @@ return NewFeature("combat_range_assist", {
                 local screenPoint=projected[index]
                 if type(screenPoint)=="table" and tonumber(screenPoint.x)~=nil and tonumber(screenPoint.y)~=nil
                     and screenPoint.visible~=false and tonumber(screenPoint.depth)~=nil and tonumber(screenPoint.depth)>0 then
-                    points[#points+1]={x=screenPoint.x,y=screenPoint.y}
+                    -- 中文维护：本次batch的新点由Authority持有，不再多分配一份x/y点表。
+                    -- 外部读取仍走独立快照，禁止把这些点暴露给Presentation反向写入。
+                    points[#points+1]=screenPoint
                 end
             end
             if #points < 3 then partialCount = partialCount + 1 end
@@ -477,10 +489,10 @@ return NewFeature("combat_range_assist", {
             rows[#rows + 1] = {
                 key = "self_radius_" .. tostring(circle.id), circleId = circle.id, circleKey = "circle_" .. tostring(circle.id),
                 name = tostring(circle.name or ("范围圆 " .. tostring(circle.id))),
-                text = string.format("半径 %.1fm · 投影点 %d/%d · %s", circle.radius, #points, plan.renderCount, tostring(batchSource or "projection")),
+                batchSource = batchSource,
                 statusText = #points >= 3 and (metricVerified and "实时 · 米已校准" or "实时 · 待米校准") or "投影不足",
                 tone = #points >= 3 and (metricVerified and "green" or "warn") or "warn",
-                points = points, radius = circle.radius, worldRadius = plan.worldRadius, calibration = calibration, projFacts = projFacts,
+                points = points, radius = circle.radius, worldRadius = plan.worldRadius,
                 metricVerified = metricVerified,
                 worldUnitsPerMeter = worldUnitsPerMeter, projectionScale = metricScreenScale,
                 metricWorldStatus = metricCalibration.worldScaleStatus, metricProjectionStatus = metricCalibration.projectionScaleStatus,
@@ -625,6 +637,41 @@ return NewFeature("combat_range_assist", {
     },
 })
 end)()
+-- 中文维护：完整页面快照保持旧字段与复制边界；诊断文字按需由已有事实补齐。
+local RangeAssistFullProjection = RangeAssist.GetProjection
+function RangeAssist:GetProjection()
+    local snapshot = RangeAssistFullProjection(self)
+    if #snapshot.rows > 0 then
+        local calibration, projFacts = RangeAssistDescribeFrame(self)
+        for _, row in ipairs(snapshot.rows) do
+            row.calibration, row.projFacts = calibration, projFacts
+            row.text = string.format("半径 %.1fm · 投影点 %d/%d · %s", row.radius, #row.points,
+                row.renderPointCount, tostring(row.batchSource or "projection"))
+        end
+    end
+    return snapshot
+end
+
+-- 中文维护：绘制专用小快照只复制坐标/样式，不复制页面圆列表、限制、诊断长串。
+-- 快照仍完全独立，上一帧的读者不能修改Authority，后续刷新不会改写旧快照。
+RangeAssist.RenderProjectionContractVersion = 1
+function RangeAssist:GetRenderProjection()
+    local batch = self.RangeLastBatch or {}
+    local snapshot = {revision=self.Authority.revision,status=self.Authority.status,error=self.Authority.error,
+        rows={},circleCount=0,enabledCircleCount=0,viewportWidth=batch.viewportWidth,viewportHeight=batch.viewportHeight}
+    for _, circle in ipairs(self.State.circles or {}) do
+        snapshot.circleCount=snapshot.circleCount+1
+        if circle.enabled~=false then snapshot.enabledCircleCount=snapshot.enabledCircleCount+1 end
+    end
+    for _, row in ipairs(self.Authority.rows) do
+        local points={}
+        for i, point in ipairs(row.points) do points[i]={x=point.x,y=point.y} end
+        snapshot.rows[#snapshot.rows+1]={key=row.key,circleKey=row.circleKey,points=points,
+            color={row.color[1],row.color[2],row.color[3]},pointSize=row.pointSize,opacity=row.opacity}
+    end
+    return snapshot
+end
+
 RangeAssist.VisualGuideContractVersion = 9
 RangeAssist.WorldSpaceContractVersion = 3
 RangeAssist.ProjectionFactsContractVersion = 7

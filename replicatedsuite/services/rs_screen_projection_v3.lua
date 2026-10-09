@@ -131,13 +131,24 @@ function P:GetUnitWorldPosition(unitToken, isLocal)
     if unitToken == "" then return nil,nil,nil,"unit_token_required" end
     if S.Api == nil or type(S.Api.CallCapability) ~= "function" then return nil,nil,nil,"api_unavailable" end
     self.metrics.worldReads = (tonumber(self.metrics.worldReads) or 0) + 1
-    local ok, x, err, y, z = S.Api:CallCapability("X2Unit:GetUnitWorldPositionByTarget", X2Unit, "GetUnitWorldPositionByTarget", unitToken, isLocal == true)
+    -- 中文维护（2026-10-09）：官方坐标 API 第四个数据返回值是弧度朝向；保留到第五返回位，
+    -- 前四位 x/y/z/error 不变，不能把 angle 塞进旧消费者的 error 位或把缺失 angle 伪造为零。
+    local ok, x, err, y, z, angle = S.Api:CallCapability("X2Unit:GetUnitWorldPositionByTarget", X2Unit, "GetUnitWorldPositionByTarget", unitToken, isLocal == true)
     x, y, z = N(x), N(y), N(z)
     if ok ~= true or x == nil or y == nil or z == nil then
         RecordFailure("unit_world:" .. tostring(err or "unavailable"))
         return nil,nil,nil,err or "unit_world_position_unavailable"
     end
-    return x, y, z, nil
+    return x, y, z, nil, N(angle)
+end
+
+-- 中文维护：朝向事实只归属共享投影服务，不新增轮询或保存；没有合法角度时返回未知，
+-- 坐标仍能供旧范围圆/连线使用。调用者负责目标身份边界，不能缓存上一目标的朝向。
+function P:GetUnitPose(unitToken, isLocal)
+    local x, y, z, err, angle = self:GetUnitWorldPosition(unitToken, isLocal)
+    if x == nil then return nil, err end
+    if angle == nil then return nil, "unit_orientation_unavailable" end
+    return { x=x, y=y, z=z, angle=angle % (2 * math.pi) }, nil
 end
 
 -- 中文维护注释（2026-09-15，range-meter-authority-1）：RangeAssist 页面里的“m”不能由

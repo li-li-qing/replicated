@@ -70,7 +70,10 @@ end
 Test('diagnostics has run print and explicitly requested previous next actions',function()
     local S,D=Boot();local root,h=Page(S);local buttons={}
     for _,v in pairs(h.widgets)do if v.onClick then buttons[#buttons+1]=v.spec.text end end
-    table.sort(buttons);assert(#buttons==6,'visible action count='..#buttons)
+    -- 中文维护：保留6个原报告操作，另有性能入口+5个明确手动操作；性能区默认折叠，不自动开始。
+    table.sort(buttons);assert(#buttons==12,'registered action count='..#buttons)
+    assert(h.widgets.v3_diag_perf_actions.visible==false and h.widgets.v3_diag_perf_status.visible==false)
+    assert(h.widgets.v3_diag_perf_entry.onClick and h.widgets.v3_diag_perf_start.onClick and h.widgets.v3_diag_perf_stop.onClick and h.widgets.v3_diag_perf_export.onClick)
     assert(h.widgets.v3_diag_export_file.spec.text=='导出文件','explicit file export action missing')
     assert(h.widgets.v3_diag_output.spec.text=='打印故障报告' and h.widgets.v3_diag_output_full.spec.text=='完整报告' and h.widgets.v3_diag_full_check.spec.text=='运行自检')
     assert(h.widgets.v3_diag_report_prev.spec.text=='上一页' and h.widgets.v3_diag_report_next.spec.text=='下一页')

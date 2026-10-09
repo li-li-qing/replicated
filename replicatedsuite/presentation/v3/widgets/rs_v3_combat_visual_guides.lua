@@ -124,10 +124,12 @@ local UNIT_LINE_TOTAL_BUDGET_NORMAL = 384
 local UNIT_LINE_TOTAL_BUDGET_SLOW = 480
 -- Smooth Refresh Contract v1: high-frequency unit lines must not be deferred as
 -- one monolithic P3 burst under crowd/frame pressure.  Instead the producer
--- stays frame-cadence eligible while Presentation sheds only adaptive EXTRA
+-- stays frame-cadence eligible while Presentation caps adaptive EXTRA
 -- density and grows Native dot pools progressively.  The user's configured
 -- base density remains the hard floor.
-local UNIT_LINE_PRESSURE_FACTOR = { Normal=1.00, Busy=0.82, Heavy=0.68, Critical=0.55 }
+-- 中文维护（dynamic-hud-1）：取旧Critical档保守上限固定额外点预算，后台积压恢复不能
+-- 自动将连线加密近一倍。用户基础密度仍为硬下限，Native点池增长仍受当帧压力约束。
+local UNIT_LINE_EXTRA_BUDGET_FACTOR = 0.55
 local UNIT_LINE_POOL_GROWTH = { Normal=48, Busy=32, Heavy=24, Critical=16 }
 
 local function UnitLineTotalBudget(refreshMs)
@@ -139,8 +141,7 @@ local function UnitLineTotalBudget(refreshMs)
 end
 
 local function UnitLinePressureBudget(baseBudget, totalBase, pressure)
-    local factor=UNIT_LINE_PRESSURE_FACTOR[tostring(pressure or "Normal")] or 1
-    local pressured=math.floor(math.max(0,tonumber(baseBudget) or 0)*factor)
+    local pressured=math.floor(math.max(0,tonumber(baseBudget) or 0)*UNIT_LINE_EXTRA_BUDGET_FACTOR)
     return math.max(math.max(0,math.floor(tonumber(totalBase) or 0)),pressured)
 end
 
@@ -198,7 +199,7 @@ function P:BuildUnitLineSamplePlan(rows, projection, viewportW, viewportH, press
     viewportW,viewportH=FinitePointNumber(viewportW),FinitePointNumber(viewportH)
     local known=viewportW~=nil and viewportH~=nil and viewportW>1 and viewportH>1
     local stats={inputEdges=#rows,clippedEdges=0,outsideEdges=0,invalidEdges=0,shortEdges=0,viewportKnown=known}
-    for _,row in ipairs(rows) do
+    for sourceIndex,row in ipairs(rows) do
         if type(row)=="table" then
             local x1,y1,x2,y2=FinitePointNumber(row.x1),FinitePointNumber(row.y1),FinitePointNumber(row.x2),FinitePointNumber(row.y2)
             if x1~=nil and y1~=nil and x2~=nil and y2~=nil and FinitePointNumber(x2-x1) and FinitePointNumber(y2-y1) then
@@ -215,7 +216,7 @@ function P:BuildUnitLineSamplePlan(rows, projection, viewportW, viewportH, press
                         local base=math.max(UNIT_LINE_DENSITY_HARD_MIN,math.min(UNIT_LINE_PAIR_HARD_CAP,
                             math.floor(tonumber(pairPoints[row.pairKey]) or tonumber(projection.pointCount) or 24)))
                         local desired=DesiredUnitLinePointCount(length,base)
-                        local plan={row=row,x1=x1,y1=y1,x2=x2,y2=y2,length=length,base=base,desired=desired,count=base,clipped=clipped==true}
+                        local plan={row=row,sourceIndex=sourceIndex,x1=x1,y1=y1,x2=x2,y2=y2,length=length,base=base,desired=desired,count=base,clipped=clipped==true}
                         plans[#plans+1]=plan;totalBase=totalBase+base;totalDesired=totalDesired+desired
                     end
                 end
@@ -245,6 +246,40 @@ function P:BuildUnitLineSamplePlan(rows, projection, viewportW, viewportH, press
             if canGrow~=true then break end
         end
     end
+    return plans,budget,stats
+end
+
+-- 中文维护（performance-visual-hotpath-1）：只缓存已读端点的纯几何结果，不跳过Feature采样。
+-- 逐项比较端点/顺序/密度/视口/压力/间隔，不用revision（每帧都增加），不拼接长签名。
+-- 样式不参与采样，命中后仍绑定本次独立row并执行放置/失败重试/点池渐进增长。
+function P:GetUnitRenderPlan(rows, projection, viewportW, viewportH, pressure)
+    local cache=self.unitRenderPlanCache
+    local pairPoints=type(projection.pairPoints)=="table" and projection.pairPoints or {}
+    local hit=cache~=nil and cache.count==#rows and cache.width==viewportW and cache.height==viewportH
+        and cache.pressure==pressure and cache.refreshMs==projection.refreshMs and cache.pointCount==projection.pointCount
+    if hit then
+        for i,row in ipairs(rows) do
+            local input=cache.inputs[i]
+            local valid=type(row)=="table"
+            if input.valid~=valid or (valid and (input.x1~=row.x1 or input.y1~=row.y1 or input.x2~=row.x2
+                or input.y2~=row.y2 or input.pairKey~=row.pairKey or input.pairPoints~=pairPoints[row.pairKey])) then hit=false;break end
+        end
+    end
+    if hit then
+        for _,plan in ipairs(cache.plans) do plan.row=rows[plan.sourceIndex] end
+        self.unitPlanReuses=(self.unitPlanReuses or 0)+1
+        return cache.plans,cache.budget,cache.stats
+    end
+    local plans,budget,stats=self:BuildUnitLineSamplePlan(rows,projection,viewportW,viewportH,pressure)
+    local inputs={}
+    for i,row in ipairs(rows) do
+        if type(row)=="table" then inputs[i]={valid=true,x1=row.x1,y1=row.y1,x2=row.x2,y2=row.y2,
+            pairKey=row.pairKey,pairPoints=pairPoints[row.pairKey]}
+        else inputs[i]={valid=false} end
+    end
+    self.unitRenderPlanCache={count=#rows,width=viewportW,height=viewportH,pressure=pressure,
+        refreshMs=projection.refreshMs,pointCount=projection.pointCount,inputs=inputs,plans=plans,budget=budget,stats=stats}
+    self.unitPlanBuilds=(self.unitPlanBuilds or 0)+1
     return plans,budget,stats
 end
 
@@ -572,9 +607,11 @@ function P:RenderUnit()
     -- 维护：先清本帧telemetry再处理空集/关闭，否则上次“176点”在目标消失后仍被报告为可见。
     -- 无跨帧单位缓存；仅有界Native池复用，禁用时隐藏且Feature释放自己的刷新任务。
     self.lastUnitSampling={inputEdges=0,visibleEdges=0,visibleDots=0,uniquePositions=0,requestedDots=0,clippedEdges=0,outsideEdges=0,invalidEdges=0}
-    if self.unitHeld ~= true then self:HideUnitPools();S.UI:SetVisible(self.unitHost,false,self.owner);return true end
-    local projection=UnitFeature:GetProjection() or {}; local rows=type(projection.rows)=="table" and projection.rows or {}
+    if self.unitHeld ~= true then self.unitRenderPlanCache=nil;self:HideUnitPools();S.UI:SetVisible(self.unitHost,false,self.owner);return true end
+    local projection=(type(UnitFeature.GetRenderProjection)=="function" and UnitFeature:GetRenderProjection()
+        or UnitFeature:GetProjection()) or {}; local rows=type(projection.rows)=="table" and projection.rows or {}
     if #rows==0 then
+        self.unitRenderPlanCache=nil
         self:HideUnitPools()
         S.UI:SetVisible(self.unitHost,false,self.owner)
         return true
@@ -583,7 +620,7 @@ function P:RenderUnit()
     local pressure="Normal"
     if type(S.FrameBudget)=="table" and type(S.FrameBudget.current)=="table" then pressure=tostring(S.FrameBudget.current.pressure or "Normal") end
     local viewportW,viewportH=self:ReadUnitViewport()
-    local plans,budget,sampleStats=self:BuildUnitLineSamplePlan(rows,projection,viewportW,viewportH,pressure)
+    local plans,budget,sampleStats=self:GetUnitRenderPlan(rows,projection,viewportW,viewportH,pressure)
     local hostTransform=self:ResolveHostTransform(self.unitHost)
     local active={}
     local visibleDots,requestedDots,placementFailures=0,0,0
@@ -653,7 +690,10 @@ function P:RenderRange()
     if self.rangeHeld ~= true then
         self:HideRangePools(); S.UI:SetVisible(self.rangeHost,false,self.owner); sample.status="no_consumer"; return true
     end
-    local projection=RangeFeature:GetProjection() or {}; local rows=type(projection.rows)=="table" and projection.rows or {}
+    -- 中文维护（performance-hotpath-1）：范围绘制只消费独立坐标/样式快照，完整页面投影
+    -- 保留给设置与诊断；不用Authority裸引用，旧宿主兼容仍可回退原GetProjection。
+    local projection=(type(RangeFeature.GetRenderProjection)=="function" and RangeFeature:GetRenderProjection()
+        or RangeFeature:GetProjection()) or {}; local rows=type(projection.rows)=="table" and projection.rows or {}
     sample.totalCircles, sample.enabledCircles = tonumber(projection.circleCount) or 0, tonumber(projection.enabledCircleCount) or 0
     sample.status = tostring(projection.status or "ready")
     if #rows<1 then self:HideRangePools(); S.UI:SetVisible(self.rangeHost,false,self.owner); return true end
@@ -795,6 +835,10 @@ end
 -- Registered unconditionally; a disabled-but-converged state costs nothing.
 function P:ConvergeTick()
     self.watchdogTicks=(tonumber(self.watchdogTicks) or 0)+1
+    -- 中文维护（2026-10-09）：正背面显示复用现有一秒租约收敛任务；只查开关/租约，不造第二个
+    -- watchdog，不读取目标/相机。新 Presenter 在视觉共享文件之后加载，因此运行时再取得引用。
+    local facing=S.UIV3 and S.UIV3.FacingIndicatorV3
+    if facing and type(facing.ConvergeTick)=="function" then facing:ConvergeTick() end
     local unitEnabled=S.FeatureRuntime:IsEnabled("combat_unit_lines")==true
     local rangeEnabled=S.FeatureRuntime:IsEnabled("combat_range_assist")==true
     local unitHealthy=self.unitHeld==true and (type(UnitFeature.HasConsumer)~="function" or UnitFeature:HasConsumer(self.unitToken)==true)
@@ -809,6 +853,8 @@ function P:Describe()
     return {
         version=self.version,adaptiveUnitLineSampling=tonumber(self.AdaptiveUnitLineSamplingContractVersion) or 0,unitLinePressureBudget=tonumber(self.UnitLinePressureBudgetContractVersion) or 0,unitLineDiffRender=tonumber(self.UnitLineDiffRenderContractVersion) or 0,unitLineProgressivePool=tonumber(self.UnitLineProgressivePoolContractVersion) or 0,
         unitHeld=self.unitHeld==true,rangeHeld=self.rangeHeld==true,
+        unitPlanBuilds=tonumber(self.unitPlanBuilds) or 0,unitPlanReuses=tonumber(self.unitPlanReuses) or 0,
+        unitDensityPatch="dynamic-hud-1",unitExtraBudgetFactor=UNIT_LINE_EXTRA_BUDGET_FACTOR,
         unitDots=(function() local n=0; for _,pool in pairs(self.unitPools) do n=n+#pool end; return n end)(),
         unitVisibleDots=tonumber(sample.visibleDots) or 0,unitRequestedDots=tonumber(sample.requestedDots) or 0,unitVisibleEdges=tonumber(sample.visibleEdges) or 0,unitClippedEdges=tonumber(sample.clippedEdges) or 0,unitBudget=tonumber(sample.budget) or 0,unitPressure=tostring(sample.pressure or "Normal"),unitPoolGrowth=tonumber(sample.poolGrowth) or 0,unitAnchorWrites=tonumber(sample.anchorWrites) or 0,unitStyleWrites=tonumber(sample.styleWrites) or 0,unitVisibilityWrites=tonumber(sample.visibilityWrites) or 0,
         rangeDots=RangePoolDotCount(self.rangePools),rangeCircles=tonumber(rangeSample.circles) or 0,rangeEnabledCircles=tonumber(rangeSample.enabledCircles) or 0,rangeConfiguredCircles=tonumber(rangeSample.totalCircles) or 0,

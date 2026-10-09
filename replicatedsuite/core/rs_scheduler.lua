@@ -440,7 +440,7 @@ function Scheduler:Start()
                 local lateRatio = lateMs / interval
                 local allowed = executed < fallbackBudget
                 if frameBudget ~= nil and type(frameBudget.Request) == "function" then
-                    allowed = frameBudget:Request(task.budgetOwner or tostring(name), task.priority, task.costUnits, task.deferCount, lateRatio) == true
+                    allowed = frameBudget:Request(task.budgetOwner or tostring(name), task.priority, task.costUnits, task.deferCount, lateRatio, task.lane) == true
                 end
                 if allowed then
                     -- Consume one periodic occurrence. We intentionally do not run

@@ -23,7 +23,12 @@ function P:Render()
     -- 中文维护（2026-10-09）：分辨率/画质/UI 重载可能清掉 Native TextStyle；同现有世界引导一起失效两层缓存。
     -- 检查只读环境 revision，不查询配置、不扫背包；下一帧重放样式与位置，仍复用原池。
     local revision = S.Layout and tonumber(S.Layout.metricsRevision) or 0
-    if S.Layout and type(S.Layout.GetUiEnvironmentRevision) == "function" then revision = tonumber(S.Layout:GetUiEnvironmentRevision()) or 0 end
+    if S.Layout and type(S.Layout.GetUiEnvironmentRevision) == "function" then
+        -- 中文维护（facing-revision-return-1）：同源扫描发现这里也把 revision,reason 展开给 tonumber。
+        -- 只接收首值再转换，防止原因字符串被当作进制而中断寻宝圈/箭头；不改业务或环境版本契约。
+        local environmentRevision = S.Layout:GetUiEnvironmentRevision()
+        revision = tonumber(environmentRevision) or 0
+    end
     if self.environmentRevision ~= revision then
         self.environmentRevision = revision
         if self.host and type(S.UI.InvalidateNativeState) == "function" then S.UI:InvalidateNativeState(self.host) end

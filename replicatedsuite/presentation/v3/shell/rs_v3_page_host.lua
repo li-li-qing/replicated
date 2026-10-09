@@ -204,6 +204,12 @@ end
 function H:CreatePage(route)
     route = tostring(route or "")
     if self.switcher == nil then return nil, "page host not attached" end
+    -- 中文维护：直接 PageHost 调用也检查开放，不能只依赖 Shell/Router。先于缓存页和 Native build，
+    -- 拒绝不进入 quarantine，也不调用页面 Initialize/AcquireConsumer。
+    local accessMeta = S.FeatureRegistry and S.FeatureRegistry:GetByRoute(route)
+    local accessRoute = S.UIV3.Router and S.UIV3.Router.routes and S.UIV3.Router.routes[route]
+    local accessId = accessMeta and accessMeta.id or accessRoute and accessRoute.featureId
+    if accessId and not S.FeatureRegistry:IsAccessible(accessId) then return nil, "功能未在手动配置中开放" end
     if self.pages[route] ~= nil then return self.pages[route] end
 
     local failed = self.failedPages[route]

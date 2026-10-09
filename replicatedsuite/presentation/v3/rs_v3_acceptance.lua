@@ -47,6 +47,7 @@ A.migratedPresentation = {
     { route = "combat.target_monitor" },
     { route = "combat.unit_lines" },
     { route = "combat.range_assist" },
+    { route = "combat.facing_indicator" }, -- 中文维护（2026-10-09）：新设置页须经过真实 PageHost 构建，不能回退成占位页。
     { route = "combat.buff_cap" },
     { route = "combat.team_tools" }, { route = "combat.sac_highlight" }, -- 中文维护：职责/牺牲独立页面都必须有工厂。
     { route = "combat.raid_recruitment" },
