@@ -96,15 +96,15 @@ class TreasureCompassRuntimeTests(unittest.TestCase):
         assert(next(H.tasks)==nil and #f.Authority.compass.points==0,'last consumer leaked compass task')
         ''')
 
-    def test_transparent_outline_survives_palette_refresh_and_resets(self):
+    def test_transparent_shadow_survives_palette_refresh_without_outline(self):
         lua = LuaRuntime()
         lua.execute("ReplicatedSuite={Constants={Color={text={1,1,1,1},textMuted={1,1,1,1}}}}")
         lua.execute((ROOT / "core/rs_theme.lua").read_text(encoding="utf-8-sig"))
         lua.execute('''
-        local style={SetColor=function()end,SetOutline=function(self,v)self.outline=v end}
-        local w={style=style};local t=ReplicatedSuite.Theme
-        t:SetBackgroundOpacity(w,0);assert(style.outline==true,'transparent text lacks outline')
-        t:RefreshTextColor(w);assert(style.outline==true)
+        local style={SetColor=function()end,SetOutline=function(self,v)self.outline=v end,SetShadow=function(self,v)self.shadow=v end}
+        local w={style=style,rsLabelTone='default'};local t=ReplicatedSuite.Theme
+        t:SetBackgroundOpacity(w,0);assert(style.outline==false and style.shadow==true,'transparent text has blurry outline')
+        t:RefreshTextColor(w);assert(style.outline==false and style.shadow==true)
         t:SetBackgroundOpacity(w,1);assert(style.outline==false)
         style.SetOutline=nil;t:SetBackgroundOpacity(w,0)
         ''')

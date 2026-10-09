@@ -105,6 +105,7 @@ RSUI:RegisterType("Section", function(spec)
     if raw == nil or raw.root == nil then return nil, "section_create_failed" end
     local c = RSUI:NewComponent("Section", spec, raw.root)
     c.raw, c.header, c.title, c.body = raw, raw.header, raw.title, raw.body
+    c.appearanceWidgets = { raw.header, raw.title } -- 中文维护（2026-10-09）：标题底板与标题必须共同继承透明度，避免亮字落在不透明浅底。
     c.padding, c.headerHeight = raw.padding, raw.headerHeight
     c.items = {}
     c.gap = tonumber(spec.gap) or Token("spacing.sm", 8)

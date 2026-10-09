@@ -461,6 +461,7 @@ RSUI:RegisterType("GroupBox", function(spec)
         if title ~= nil then title.rsUiOwner = c.owner end
     end
     c.title = title
+    c.appearanceWidgets = title and { title } or {} -- 中文维护（2026-10-09）：原生标题显式继承组件外观通道。
 
     local baseAdd = c.AddChild
     function c:AddChild(child, slot)
@@ -588,6 +589,9 @@ RSUI:RegisterType("CollapsibleGroup", function(spec)
     local chevron = UI:CreateLabel(border, spec.id .. "_chevron", c.expanded and "\226\150\190" or "\226\150\184", c.padding.left, 2, 12, c.headerHeight - 4, N(spec.chevronFontSize, Token("font.small", 10)), spec.tone or "muted", ALIGN_CENTER, true)
     if chevron ~= nil then chevron.rsUiOwner = c.owner end
     c.chevron = chevron
+    c.appearanceWidgets = {} -- 中文维护：原生文字不参与 Measure children，但必须跟随同一透明表面策略。
+    if title ~= nil then c.appearanceWidgets[#c.appearanceWidgets + 1] = title end
+    if chevron ~= nil then c.appearanceWidgets[#c.appearanceWidgets + 1] = chevron end
 
     local baseAdd = c.AddChild
     function c:AddChild(child, slot)

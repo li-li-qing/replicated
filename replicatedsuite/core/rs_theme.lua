@@ -114,6 +114,23 @@ function T:Token(path, fallback) return Token(path, fallback) end
 function T:Metric(path, fallback) return TokenNumber(path, fallback) end
 function T:IsLightWorkspacePalette() return self.workspacePaletteMode=='light' or self.workspacePalette=='light' end
 
+-- 中文维护（2026-10-09）：透明表面没有浅色底板可供深色字依赖。按继承的背景通道切换文字，
+-- 不采样游戏画面、不混成过渡灰、不改用户文字 alpha；0.6 是待 RU 实机调校的初始分界。
+local TRANSPARENT_TEXT_BACKGROUND = 0.6
+local transparentTextColors = { text = { 0.96, 0.97, 0.98, 1 }, textMuted = { 0.82, 0.85, 0.89, 1 } }
+local textRoleAliases = { ['input.text'] = 'text', ['input.placeholder'] = 'textMuted', ['input.caret'] = 'blue', headerText = 'text', warn = 'yellow' }
+function T:ResolveTextColor(role, widget)
+    local color = self:ColorRole(role)
+    if widget and widget.rsWorldTextPalette == true then return self:ToneColor(role, widget) end
+    if self:IsLightWorkspacePalette() and (tonumber(widget and widget.rsBackgroundOpacity) or 1) <= TRANSPARENT_TEXT_BACKGROUND then
+        local key = textRoleAliases[role] or worldToneAliases[role] or role
+        -- 状态文字使用已有 world-HUD 的明亮语义色；不能把错误/警告/成功统一刷成白字。
+        -- 未登记的 tone 旧契约回退正文；透明表面同样回退亮色正文，而非浅色主题的深色默认字。
+        return transparentTextColors[key] or worldColors[key] or transparentTextColors.text
+    end
+    return color
+end
+
 -- 一个 Theme Authority 管理组件自己创建的实色装饰。只记录 owner 已拥有的 Drawable，
 -- 不遍历 Native 父子链、不新建背景、不改几何/输入/滚动事务；每次显式切换原位重绘。
 function T:ColorRole(role)
@@ -147,18 +164,37 @@ end
 function T:RefreshTextColor(widget)
     if not widget or not widget.style or widget.rsManualTextColor==true or widget.rsManualTypography==true then return false end
     local role=widget.rsThemeTextRole
-    local color=role and self:ColorRole(role) or self:ToneColor(widget.rsLabelTone or 'default',widget)
-    if (self:IsLightWorkspacePalette() or self.workspaceStatusBands) and widget.rsButtonStatusTone then color=self:ToneColor(widget.rsButtonStatusTone,widget) end
+    local color=self:ResolveTextColor(role or widget.rsLabelTone or 'default',widget)
+    if (self:IsLightWorkspacePalette() or self.workspaceStatusBands) and widget.rsButtonStatusTone then color=self:ResolveTextColor(widget.rsButtonStatusTone,widget) end
     ApplyTextColor(widget,color,widget.rsTextOpacity)
-    -- 中文维护（2026-10-09）：调色板刷新也恢复透明背景描边；显式手工 HUD 字形仍由专属 Presenter 管理。
-    if widget.rsTransparentTextOutline ~= nil then self:SetTextOutline(widget, widget.rsTransparentTextOutline) end
-    if widget.rsThemeShadowWanted~=nil and type(widget.style.SetShadow)=='function' then
-        widget.style:SetShadow(widget.rsThemeShadowWanted and (not self:IsLightWorkspacePalette() or widget.rsWorldTextPalette==true))
+    -- 中文维护（2026-10-09）：原生 BUTTON 的 normal/highlighted/pushed/disabled 字色独立于 TextStyle。
+    -- 点击进入 Native 状态时不能回到默认浅字；四个色槽共用已解析的主题/语义色与用户文字 alpha。
+    -- 只更新已有按钮，不监听额外鼠标事件、不改变按钮状态；缺少可选 setter 时保留 TextStyle 降级。
+    if type(widget.rsButtonBgs) == 'table' then
+        local base = widget.rsTextBaseColor
+        local alpha = base[4] * widget.rsTextOpacity
+        for _, method in ipairs({'SetTextColor','SetHighlightTextColor','SetPushedTextColor','SetDisabledTextColor'}) do
+            if type(widget[method]) == 'function' then
+                local ok, accepted = pcall(widget[method], widget, base[1], base[2], base[3], alpha)
+                if not ok or accepted == false then error('theme_button_text_color_rejected:' .. method) end
+            end
+        end
+    end
+    -- 中文维护：普通文字始终关闭自动粗描边，透明表面改用原生阴影；手工字形在入口即退出。
+    self:SetTextOutline(widget, false)
+    local transparent = (tonumber(widget.rsBackgroundOpacity) or 1) <= TRANSPARENT_TEXT_BACKGROUND
+    local shadow = transparent or (widget.rsThemeShadowWanted==true and (not self:IsLightWorkspacePalette() or widget.rsWorldTextPalette==true))
+    if type(widget.style.SetShadow)=='function' then
+        pcall(widget.style.SetShadow, widget.style, shadow)
     end
     if widget.rsThemeTextRole=='input.text' and widget.guideTextStyle and type(widget.guideTextStyle.SetColor)=='function' then
-        SafeColor(widget.guideTextStyle,self:ColorRole('input.placeholder'))
+        local placeholder = CopyColor(self:ResolveTextColor('input.placeholder',widget))
+        placeholder[4] = placeholder[4] * (tonumber(widget.rsTextOpacity) or 1)
+        SafeColor(widget.guideTextStyle,placeholder)
+        if type(widget.guideTextStyle.SetOutline)=='function' then pcall(widget.guideTextStyle.SetOutline,widget.guideTextStyle,false) end
+        if type(widget.guideTextStyle.SetShadow)=='function' then pcall(widget.guideTextStyle.SetShadow,widget.guideTextStyle,shadow) end
     end
-    if widget.rsThemeTextRole=='input.text' and type(widget.SetCursorColor)=='function' then widget:SetCursorColor(unpack(self:ColorRole('input.caret'))) end
+    if widget.rsThemeTextRole=='input.text' and type(widget.SetCursorColor)=='function' then widget:SetCursorColor(unpack(self:ResolveTextColor('input.caret',widget))) end
     return true
 end
 function T:SetWorldTextPalette(widget)
@@ -575,7 +611,7 @@ function T:SetTextOutline(widget, enabled)
     local wanted = enabled == true
     if widget.rsAppliedTextOutline == wanted then return true end
     local ok, result = pcall(widget.style.SetOutline, widget.style, wanted)
-    if ok ~= true or result == false and wanted then return false end
+    if ok ~= true or result == false then return false end
     widget.rsAppliedTextOutline = wanted
     return true
 end
@@ -591,9 +627,8 @@ function T:SetBackgroundOpacity(widget, opacity)
         end
     end
     widget.rsBackgroundOpacity = value
-    -- 中文维护：背景趋于透明时自动开描边，恢复背景即撤销此自动样式；设置/继承驱动，无新的轮询或存档字段。
-    widget.rsTransparentTextOutline = value <= 0.01
-    self:SetTextOutline(widget, widget.rsTransparentTextOutline)
+    -- 中文维护：仅刷新 Theme 管理的文字；背景继承和调色板切换都从原始色表重算，不能累乘或覆盖手工 HUD。
+    if widget.rsLabelTone ~= nil or widget.rsThemeTextRole ~= nil then self:RefreshTextColor(widget) end
     -- 中文维护：只刷新显式归入背景通道的宿主装饰；复用现有 Drawable，不碰文字、几何或输入代理。
     for drawable,binding in pairs(widget.rsThemeColorDrawables or {}) do
         if binding.opacityChannel=='background' then self:BindColorDrawable(widget,drawable,binding.role,binding.alpha) end
@@ -602,6 +637,10 @@ end
 
 function T:SetTextOpacity(widget, opacity)
     if widget == nil or widget.style == nil then return false end
+    if widget.rsManualTextColor ~= true and widget.rsManualTypography ~= true and (widget.rsLabelTone ~= nil or widget.rsThemeTextRole ~= nil) then
+        widget.rsTextOpacity = math.max(0.0, math.min(1.0, tonumber(opacity) or 1.0))
+        return self:RefreshTextColor(widget) -- 同时更新输入占位文字；不复用上次适配色作为主题基色。
+    end
     local base = widget.rsTextBaseColor
     if type(base) ~= "table" then
         base = widget.rsLabelTone ~= nil and self:ToneColor(widget.rsLabelTone) or C.Color.text

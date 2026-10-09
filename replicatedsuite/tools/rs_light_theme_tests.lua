@@ -9,9 +9,9 @@ local function Boot()
   h.widgets=h.widgets+1
   local n={id=id,parent=parent,width=500,height=500,x=0,y=0,shown=true,enabled=true,text='',events={},draws={}}
   n.style={SetColor=function(self,...)self.rgba={...}end,SetShadow=function(self,v)self.shadow=v end,
-   SetOutline=function(self,v)self.outline=v end, -- 中文维护（2026-10-09）：模拟原生描边值，验证真实 Theme 与包装子行继承。
+   SetOutline=function(self,v)self.outline=v end, -- 中文维护（2026-10-09）：记录原生描边值，透明文字必须关闭粗描边。
    SetAlign=function()end,SetFontSize=function(self,v)self.font=v end,SetEllipsis=function()end}
-  n.guideTextStyle={SetColor=n.style.SetColor,SetAlign=function()end}
+  n.guideTextStyle={SetColor=n.style.SetColor,SetAlign=function()end,SetShadow=n.style.SetShadow,SetOutline=n.style.SetOutline}
   function n:SetExtent(w,ht)h.geometry=h.geometry+1;self.width=w;self.height=ht end
   function n:GetWidth()return self.width end;function n:GetHeight()return self.height end
   function n:SetWidth(w)self.width=w end;function n:SetHeight(ht)self.height=ht end
@@ -46,13 +46,15 @@ local function Boot()
   GameIds={Item={BLUE_SALT_BOND=1,BOND_MATERIAL={},AURORIA_BOND_MATERIAL={}},Quest={ResidentBond={MaterialByQuantity={},AuroriaByTokenQuantity={}}}}}
  local S=ReplicatedSuite
  S.NativeObjectFactory={CreateChildByObject=function(_,p,kind,id)return Native(p,id)end,CreateChild=function(_,p,kind,id)return Native(p,id)end}
- for _,name in ipairs({'CreateEmptyWidget','CreateButton','CreateLabel','CreateWindow'})do S.NativeObjectFactory[name]=function(_,p,id)return Native(p,id)end end
+ -- 工厂原生根创建签名为 id,parent；嵌套面板的 parent 可是对象，不能把它误作 id。
+ for _,name in ipairs({'CreateEmptyWidget','CreateButton','CreateWindow'})do S.NativeObjectFactory[name]=function(_,id,p)return Native(type(p)=='table' and p or UIParent,id)end end
  S.NativeObjectFactory.Create=function(_,kind,id)return Native(UIParent,id)end
  for _,path in ipairs({'core/rs_utils.lua','core/rs_reuse.lua','core/rs_events.lua','core/rs_scheduler.lua',
   'core/rs_constants.lua','ui/framework/rs_ui_tokens.lua','core/rs_theme.lua','core/rs_workspace_theme.lua',
   'ui/rs_ui_native_primitives.lua','ui/rs_ui_framework.lua','ui/framework/rs_ui_binding_v2.lua','ui/framework/rs_ui_component_core.lua',
   'ui/framework/rs_ui_panels.lua','ui/framework/rs_ui_primitives.lua','ui/framework/rs_ui_scrollbar.lua','ui/framework/rs_ui_controls.lua','ui/framework/rs_ui_adaptive_panels.lua',
-  'ui/framework/rs_ui_selection.lua','ui/framework/rs_ui_view_state.lua','ui/framework/rs_ui_data_views.lua'})do dofile(path)end
+  'ui/framework/rs_ui_selection.lua','ui/framework/rs_ui_view_state.lua','ui/framework/rs_ui_data_views.lua','ui/framework/rs_ui_layout_templates.lua',
+  'ui/framework/rs_ui_containers.lua','ui/framework/rs_ui_forms.lua'})do dofile(path)end
  h.S=S;h.UI=S.UI;h.R=S.RSUI;return h
 end
 Test('single and multiline inputs retain draft focus selection and geometry while every input color changes',function()
@@ -162,15 +164,117 @@ Test('late controls use saved active palette and manual HUD points are never rec
  point.style:SetColor(.3,.8,.2,.6);local custom={unpack(point.style.rgba)}
  assert(S.Theme:ApplyWorkspacePalette('dark'));assert(S.Theme:ApplyWorkspacePalette('light'));Eq(world.style.rgba,before);Eq(point.style.rgba,custom)
 end)
-Test('transparent outline reaches existing and lazy wrapped lines and resets without new widgets',function()
+Test('transparent readable text reaches existing and lazy wrapped lines without outline or new widgets',function()
  -- 中文维护：使用真实 RSUI 换行池/外观继承/调色板；缺陷反例是 root 已透明而子行仍无描边。
  local h=Boot();local S,R=h.S,h.R
  local c=assert(R:Text({id='transparent_wrap',parent=UIParent,text='first',overflow='wrap',fontSize=12,maxLines=4,nativeLineLimit=4}))
  c:Layout(0,0,180,80);local first=assert(c.lineLabels[1]);assert(R:ApplyOpacityChannels(c,0,1))
- assert(first.style.outline==true)
- local late=assert(c:_EnsureLine(2));assert(late.style.outline==true,'late wrapped line did not inherit outline')
+ assert(first.style.outline==false and first.style.shadow==true)
+ local late=assert(c:_EnsureLine(2));assert(late.style.outline==false and late.style.shadow==true,'late wrapped line did not inherit readable text')
  local count=h.widgets;assert(S.Theme:ApplyWorkspacePalette('light'));assert(S.Theme:ApplyWorkspacePalette('dark'))
- assert(first.style.outline and late.style.outline and h.widgets==count)
+ assert(first.style.outline==false and late.style.outline==false and first.style.shadow and late.style.shadow and h.widgets==count)
  assert(R:ApplyOpacityChannels(c,1,nil));assert(first.style.outline==false and late.style.outline==false)
+end)
+-- 中文维护（2026-10-09）：反例覆盖旧逻辑在 alpha=0 打开粗描边、alpha=.2 仍用浅底深色字；Native 不证明实际阴影像素。
+Test('light palettes switch transparent text to bright shadowed colors and restore opaque colors',function()
+ local h=Boot();local S,UI=h.S,h.UI
+ local label=assert(UI:CreateLabel(UIParent,'readable', '中文小字',0,0,180,24,12,'default','LEFT',false))
+ local muted=assert(UI:CreateLabel(UIParent,'readable_muted','辅助说明',0,24,180,24,12,'muted','LEFT',false))
+ local danger=assert(UI:CreateLabel(UIParent,'readable_danger','失败',0,48,180,24,12,'danger','LEFT',false))
+ local count,geo,txt,focus=h.widgets,h.geometry,h.textWrites,h.focusWrites
+ for _,name in ipairs({'light','dawn','sage'})do
+  assert(S.Theme:ApplyWorkspacePalette(name))
+  S.Theme:SetBackgroundOpacity(label,1);Eq(label.style.rgba,S.Constants.Color.text);assert(label.style.shadow==false)
+  for _,alpha in ipairs({.5,.2,0})do
+   for _,w in ipairs({label,muted,danger})do S.Theme:SetBackgroundOpacity(w,alpha);assert(w.style.outline==false and w.style.shadow==true)end
+   assert(label.style.rgba[1]>.8 and label.style.rgba[2]>.8,'transparent primary text remains dark')
+   assert(muted.style.rgba[1]>.7 and muted.style.rgba[4]==1,'auxiliary text too faint')
+   assert(danger.style.rgba[1]>danger.style.rgba[2]*2,'failure color lost its meaning')
+   S.Theme:SetTextOpacity(label,.35);assert(math.abs(label.style.rgba[4]-.35)<.000001)
+   S.Theme:SetBackgroundOpacity(label,alpha);assert(math.abs(label.style.rgba[4]-.35)<.000001,'background changed text alpha')
+  end
+  S.Theme:SetTextOpacity(label,1);S.Theme:SetBackgroundOpacity(label,1)
+  Eq(label.style.rgba,S.Constants.Color.text);assert(label.style.outline==false and label.style.shadow==false)
+ end
+ assert(h.widgets==count and h.geometry==geo and h.textWrites==txt and h.focusWrites==focus,'readability touched layout or input')
+end)
+Test('transparent input placeholder caret and theme changes preserve draft and opacity',function()
+ local h=Boot();local S,UI=h.S,h.UI
+ local input=assert(UI:CreateEditBox(UIParent,'readable_input',0,0,180,24,64))
+ input.text='未提交草稿';input.selected=true;h.focusId=input.rsNativePhysicalId
+ S.Theme:SetTextOpacity(input,.4);S.Theme:SetBackgroundOpacity(input,.2)
+ for _,name in ipairs({'light','dark','dawn','sage','light'})do
+  assert(S.Theme:ApplyWorkspacePalette(name))
+  assert(input.style.rgba[1]>.7 and input.guideTextStyle.rgba[1]>.6,'input or guide remains dark')
+  assert(input.style.shadow==true and input.guideTextStyle.shadow==true and input.style.outline==false)
+  assert(math.abs(input.style.rgba[4]-.4)<.000001 and math.abs(input.guideTextStyle.rgba[4]-.4)<.000001)
+  assert(math.max(input.caret[1],input.caret[2],input.caret[3])>.6,'transparent caret remains dark')
+  assert(math.abs(input.rsUiEditBackgroundDrawable.rgba[4]-S.UITokens.input.background[4]*.2)<.000001,'input kept an opaque light background behind bright text')
+  UI:ConfigureEditCaret(input,24)
+  assert(math.max(input.caret[1],input.caret[2],input.caret[3])>.6,'caret layout restored the dark light-palette color')
+  assert(input.text=='未提交草稿' and input.selected and h.focusId==input.rsNativePhysicalId)
+ end
+ S.Theme:SetBackgroundOpacity(input,1);Eq(input.style.rgba,{40/255,51/255,61/255,.4});assert(input.style.shadow==false)
+end)
+Test('manual HUD glyphs keep their color outline and shadow when appearance is inherited',function()
+ local h=Boot();local S,UI=h.S,h.UI
+ local w=assert(UI:CreateLabel(UIParent,'manual_readability','.',0,0,20,20,15,'default','LEFT',false))
+ w.rsManualTypography=true;w.style.rgba={.2,.4,.6,.8};w.style.outline=true;w.style.shadow=false
+ S.Theme:SetBackgroundOpacity(w,0);assert(S.Theme:ApplyWorkspacePalette('light'))
+ Eq(w.style.rgba,{.2,.4,.6,.8});assert(w.style.outline==true and w.style.shadow==false,'theme took manual glyph ownership')
+end)
+Test('multiline input inherits transparent surface and restores its background without losing text',function()
+ local h=Boot();local S,UI=h.S,h.UI
+ assert(S.Theme:ApplyWorkspacePalette('light'))
+ local w=assert(UI:CreateMultiEditBox(UIParent,'transparent_multi',0,0,200,100,512));w.text='第一行\n第二行'
+ S.Theme:SetTextOpacity(w,.7);S.Theme:SetBackgroundOpacity(w,0)
+ assert(w.rsUiEditBackgroundDrawable.rgba[4]==0 and w.style.rgba[1]>.8 and w.style.shadow==true and w.style.outline==false)
+ assert(S.Theme:ApplyWorkspacePalette('sage'));assert(w.style.rgba[1]>.8 and math.abs(w.style.rgba[4]-.7)<.000001)
+ S.Theme:SetBackgroundOpacity(w,1)
+ assert(w.rsUiEditBackgroundDrawable.rgba[4]==S.UITokens.input.background[4] and w.style.shadow==false and w.text=='第一行\n第二行')
+end)
+Test('rejected outline disable retries instead of caching a blurry state',function()
+ local h=Boot();local S=h.S;local attempts=0
+ local w={style={SetOutline=function(_,enabled)attempts=attempts+1;if attempts==1 then return false end end}}
+ assert(S.Theme:SetTextOutline(w,false)==false,'rejected disable reported accepted')
+ assert(S.Theme:SetTextOutline(w,false)==true and attempts==2,'rejected disable was cached')
+end)
+Test('group titles and collapse indicators inherit transparency without changing collapse input',function()
+ local h=Boot();local S,R=h.S,h.R
+ assert(S.Theme:ApplyWorkspacePalette('light'))
+ local group=assert(R:GroupBox({id='readable_group',parent=UIParent,title='主菜单外观'}))
+ local collapse=assert(R:CollapsibleGroup({id='readable_collapse',parent=UIParent,title='高级设置'}))
+ local count,geo=h.widgets,h.geometry
+ for _,c in ipairs({group,collapse})do
+  assert(R:ApplyOpacityChannels(c,0,.5))
+  assert(c.title.style.rgba[1]>.8 and c.title.style.shadow==true and c.title.style.outline==false,'native group title missed transparent policy')
+  assert(math.abs(c.title.style.rgba[4]-.5)<.000001)
+ end
+ assert(collapse.chevron.style.rgba[1]>.7 and collapse.chevron.style.shadow==true and math.abs(collapse.chevron.style.rgba[4]-.5)<.000001)
+ assert(collapse:SetExpanded(false,true) and collapse:SetExpanded(true,true),'appearance broke collapse')
+ for _,c in ipairs({group,collapse})do
+  assert(R:ApplyOpacityChannels(c,1,1));Eq(c.title.style.rgba,S.Constants.Color.text);assert(c.title.style.shadow==false)
+ end
+ assert(h.widgets==count and h.geometry==geo,'appearance rebuilt group or changed geometry')
+end)
+Test('warning aliases and fallback tones remain readable on transparent light surfaces',function()
+ local h=Boot();local S,UI=h.S,h.UI;assert(S.Theme:ApplyWorkspacePalette('light'))
+ local warning=assert(UI:CreateLabel(UIParent,'readable_warn','读取失败',0,0,180,24,12,'warn','LEFT',false))
+ local fallback=assert(UI:CreateLabel(UIParent,'readable_fallback','等待中',0,24,180,24,12,'pending','LEFT',false))
+ S.Theme:SetBackgroundOpacity(warning,0);S.Theme:SetBackgroundOpacity(fallback,0)
+ assert(warning.style.rgba[1]>.8 and warning.style.rgba[2]>.6 and warning.style.rgba[3]<.4,'warn alias kept dark default text')
+ assert(fallback.style.rgba[1]>.8 and fallback.style.shadow==true,'fallback tone kept dark default text')
+end)
+Test('section and form section title strips inherit both background and text channels',function()
+ local h=Boot();local S,R=h.S,h.R;assert(S.Theme:ApplyWorkspacePalette('light'))
+ S.Constants.Theme.modern=false -- 此宿主只提供实色 Drawable，Section 以受支持的实色表面验证通道。
+ for _,kind in ipairs({'Section','FormSection'})do
+  local c=assert(R[kind](R,{id='readable_'..kind,parent=UIParent,title='设置',gradient=false}));local raw=c.raw
+  assert(R:ApplyOpacityChannels(c,0,.5))
+  assert(raw.header.rsBackground.rgba[4]==0,'section title strip kept opaque light background')
+  assert(raw.title.style.rgba[1]>.8 and raw.title.style.shadow==true and math.abs(raw.title.style.rgba[4]-.5)<.000001)
+  assert(R:ApplyOpacityChannels(c,1,1));Eq(raw.title.style.rgba,S.Constants.Color.text)
+  assert(raw.header.rsBackground.rgba[4]==S.Constants.Color.cardHeader[4] and raw.title.style.shadow==false)
+ end
 end)
 print('LIGHT THEME RESULT '..passed..' passed / '..failed..' failed');if failed>0 then error('light theme failures')end

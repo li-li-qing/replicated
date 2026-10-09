@@ -622,7 +622,8 @@ function UIX:ConfigureEditCaret(edit, height)
     local desiredVisual = math.max(11, math.min(19, outer - 6))
     local nativeHalf = math.max(5, math.min(9, math.floor((desiredVisual - 1) * 0.5)))
     if type(edit.SetCursorColor) == "function" then
-        local c=S.UITokens and S.UITokens.input and S.UITokens.input.caret or {1,.82,.36,1};edit:SetCursorColor(unpack(c))
+        -- 中文维护（2026-10-09）：布局只调光标几何，颜色仍遵循 Theme 的透明表面策略，不能恢复浅底深色。
+        local c=S.Theme and type(S.Theme.ResolveTextColor)=='function' and S.Theme:ResolveTextColor('input.caret',edit) or (S.UITokens and S.UITokens.input and S.UITokens.input.caret) or {1,.82,.36,1};edit:SetCursorColor(unpack(c))
     end
     if type(edit.SetCursorHeight) == "function" then
         edit:SetCursorHeight(nativeHalf)
@@ -695,7 +696,8 @@ function UIX:CreateEditBox(parent, id, x, y, width, height, maxLength)
             local bg=edit:CreateColorDrawable(0.015,0.022,0.032,0.995,"background")
             edit.rsUiEditBackgroundDrawable=bg
             if bg and bg.AddAnchor then bg:AddAnchor("TOPLEFT",edit,1,1); bg:AddAnchor("BOTTOMRIGHT",edit,-1,-1) end
-            if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(edit,bg,'input.background') end
+            -- 中文维护：原生输入底板显式归入背景通道，避免透明页面变亮字后仍留一块不透明浅底。
+            if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(edit,bg,'input.background',nil,'background') end
         end
         if S.Theme and S.Theme.RefreshTextColor then edit.rsThemeTextRole='input.text';S.Theme:RefreshTextColor(edit) end
         edit:AddAnchor("TOPLEFT", anchorParent, x or 0, y or 0)
@@ -764,7 +766,7 @@ function UIX:CreateMultiEditBox(parent, id, x, y, width, height, maxLength)
             local bg=edit:CreateColorDrawable(0.015,0.022,0.032,0.995,"background")
             edit.rsUiEditBackgroundDrawable=bg
             if bg and bg.AddAnchor then bg:AddAnchor("TOPLEFT",edit,1,1); bg:AddAnchor("BOTTOMRIGHT",edit,-1,-1) end
-            if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(edit,bg,'input.background') end
+            if S.Theme and S.Theme.BindColorDrawable then S.Theme:BindColorDrawable(edit,bg,'input.background',nil,'background') end
         end
         if S.Theme and S.Theme.RefreshTextColor then edit.rsThemeTextRole='input.text';S.Theme:RefreshTextColor(edit) end
         edit:AddAnchor("TOPLEFT", anchorParent, x or 0, y or 0)

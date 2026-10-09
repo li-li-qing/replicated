@@ -71,6 +71,65 @@ end
 
 function G:IsWeaponSlot(slot) return self.WeaponSlots[tonumber(slot)] == true end
 function G:GetWeaponPriority(slot) return self.WeaponPriority[tonumber(slot)] or 999 end
+function G:IsRingSlot(slot) return tonumber(slot) == 12 or tonumber(slot) == 13 end
+-- RU 官方数据库：wiki.archerage.to/ru-cn/db/items/48559（关联 48628），充盈的拉玛哈的戒指。
+-- 用户实机契约：可持有两枚但只佩戴一枚；不按“大象”昵称猜物品，不增加装备/卸装能力。
+function G:IsSingleWearRing(itemType) return tonumber(itemType) == 48559 or tonumber(itemType) == 48628 end
+function G:RequiresRingIdentity(saved)
+    return type(saved)=='table' and self:IsRingSlot(saved.slot)
+        and (MeaningfulId(saved.itemType)==nil or self:IsSingleWearRing(saved.itemType)
+            or type(saved.ringIdentity)=='table' or Trim(saved.modifierSignature)~='')
+end
+function G:HasSingleWearRingConflict(payload)
+    local count=0
+    for _,saved in ipairs(type(payload)=='table' and payload.items or {})do
+        if self:IsRingSlot(saved.slot) and saved.managed~=false and saved.empty~=true and self:IsSingleWearRing(saved.itemType) then count=count+1 end
+    end
+    return count>1
+end
+
+function G:ExtractRingIdentity(item)
+    -- 只由戒指捕获/同名候选/回读使用。完整读取与未知分离；不把 ipairs 截断、空值或畸形词条当作无属性。
+    local function Unknown(reason) return { version=1, status='unknown', reason=reason, summary='词条不可读：'..reason } end
+    local list=type(item)=='table' and type(item.evolvingInfo)=='table' and item.evolvingInfo.modifier or nil
+    if type(list)~='table' then return Unknown('未提供 evolvingInfo.modifier') end
+    if self:ExtractBagType(item)==nil or self:ExtractGrade(item)==nil then return Unknown('物品类型或品质缺失') end
+    local count,ordered=0,{}
+    for key,entry in pairs(list)do
+        local index=tonumber(key)
+        if index==nil or index<1 or index~=math.floor(index) or index>16 or ordered[index]~=nil then return Unknown('词条列表不完整或超过16项') end
+        ordered[index]=entry;count=count+1
+    end
+    local rows={}
+    for index=1,count do
+        local entry=ordered[index]
+        if type(entry)~='table' or type(entry.name)~='string' then return Unknown('词条名称缺失或列表稀疏') end
+        local name,value=Trim(entry.name),entry.value
+        if name=='' or #name>128 or (type(value)~='string' and type(value)~='number') then return Unknown('词条名称或数值无效') end
+        -- 数字原值直接规范化，先 tostring/Trim 会丢失 Lua 5.1 的有效精度。
+        if type(value)=='string' then
+            value=Trim(value);if value=='' or #value>128 then return Unknown('词条数值缺失或过长') end
+        end
+        local number=tonumber(value)
+        if number~=nil then
+            if number~=number or number==math.huge or number==-math.huge then return Unknown('词条数值不是有限数') end
+            value=string.format('%.17g',number==0 and 0 or number)
+        elseif type(entry.value)=='number' then return Unknown('词条数值不是有限数') end
+        -- 长度编码避免名称中的 =/; 与不同词条形成同一签名；文字值保留单位，不猜百分比。
+        local key=Lower(name)
+        rows[#rows+1]={ key=tostring(#key)..':'..key..tostring(#value)..':'..value, text=name..' '..value }
+    end
+    table.sort(rows,function(a,b)return a.key<b.key end)
+    local signature,summary={'ring1'},{}
+    for _,row in ipairs(rows)do signature[#signature+1]=row.key;summary[#summary+1]=row.text end
+    return {version=1,status='known',signature=table.concat(signature,'|'),summary=#summary>0 and table.concat(summary,'；') or '无成长词条（已读取）'}
+end
+
+function G:SavedRingIdentityError(saved)
+    local identity=type(saved)=='table' and saved.ringIdentity or nil
+    if type(identity)~='table' or identity.version~=1 then return '戒指词条未记录，请重新获取当前并保存方案','ring_recapture_required' end
+    if identity.status~='known' or Trim(identity.signature)=='' then return '戒指词条不可读：'..tostring(identity.reason or '请重新获取当前并保存方案'),'ring_identity_unknown' end
+end
 
 function G:NormalizeItemName(name)
     local value = Trim(name)
@@ -242,6 +301,9 @@ function G:CapturePayload(previous)
             item.itemType = self:ExtractBagType(tooltip)
             item.icon = Primitive(tooltip.icon)
             item.modifierSignature = self:ModifierSignature(self:ExtractModifiers(tooltip))
+            if self:IsRingSlot(def.slot) and (self:RequiresRingIdentity(item) or type(tooltip.evolvingInfo)=='table') then
+                item.ringIdentity=self:ExtractRingIdentity(tooltip)
+            end
         end
         items[#items + 1] = item
     end
@@ -251,6 +313,7 @@ end
 
 function G:SavedItemMatchesTooltip(saved, tooltip)
     if type(saved) ~= "table" or saved.empty == true or type(tooltip) ~= "table" then return false end
+    if self:RequiresRingIdentity(saved) and self:SavedRingIdentityError(saved)~=nil then return false end
     local wantedName, currentName = self:NormalizeItemName(saved.name), self:NormalizeItemName(tooltip.name)
     if wantedName == "" or currentName == "" or wantedName ~= currentName then return false end
     -- 维护（2026-09-30）：稳定ID都存在时冲突必须失败，不能只因同名同品质判定已匹配。
@@ -259,6 +322,11 @@ function G:SavedItemMatchesTooltip(saved, tooltip)
     if saved.itemType ~= nil and currentType ~= nil and tostring(saved.itemType) ~= tostring(currentType) then return false end
     local wantedGrade, currentGrade = tonumber(saved.grade), self:ExtractGrade(tooltip)
     if wantedGrade ~= nil and currentGrade ~= nil and wantedGrade ~= currentGrade then return false end
+    if self:RequiresRingIdentity(saved) then
+        local current=self:ExtractRingIdentity(tooltip)
+        return saved.itemType~=nil and currentType~=nil and tostring(saved.itemType)==tostring(currentType)
+            and wantedGrade~=nil and wantedGrade==currentGrade and current.status=='known' and saved.ringIdentity.signature==current.signature
+    end
     local wantedMods = Trim(saved.modifierSignature)
     local currentMods = self:ModifierSignature(self:ExtractModifiers(tooltip))
     if wantedMods ~= "" and currentMods ~= "" and wantedMods ~= currentMods then return false end
@@ -271,6 +339,14 @@ function G:CurrentItemMatches(saved)
     -- 保留第二返回值给显式换装事务：该槽不可验证时跳过，不能用未知状态授权装备动作。
     local tooltip, err = self:GetLoadoutEquipped(saved.slot)
     if err ~= nil then return false, err end
+    if self:RequiresRingIdentity(saved) then
+        local reason,code=self:SavedRingIdentityError(saved);if reason then return false,reason,code end
+        if type(tooltip)=='table' and self:NormalizeItemName(saved.name)==self:NormalizeItemName(tooltip.name)
+            and (self:ExtractBagType(tooltip)==nil or tostring(saved.itemType)==tostring(self:ExtractBagType(tooltip))) then
+            local identity=self:ExtractRingIdentity(tooltip)
+            if identity.status~='known' then return false,'当前戒指词条不可读：'..identity.reason,'ring_identity_unknown' end
+        end
+    end
     return self:SavedItemMatchesTooltip(saved, tooltip), nil
 end
 
@@ -298,6 +374,7 @@ end
 
 function G:PayloadMatchScore(payload, snapshot)
     if type(payload) ~= "table" or payload.configured ~= true or type(snapshot) ~= "table" then return false, 0 end
+    if self:HasSingleWearRingConflict(payload) then return false,0 end
     local score = 0
     for _, saved in ipairs(payload.items or {}) do
         if saved.managed ~= false and saved.empty ~= true then
@@ -371,8 +448,9 @@ end
 
 function G:ValidatePayload(payload)
     local mismatches = {}
+    local conflict=self:HasSingleWearRingConflict(payload)
     for _, saved in ipairs(type(payload) == "table" and payload.items or {}) do
-        if saved.managed ~= false and saved.empty ~= true and not self:CurrentItemMatches(saved) then
+        if saved.managed ~= false and saved.empty ~= true and ((conflict and self:IsRingSlot(saved.slot) and self:IsSingleWearRing(saved.itemType)) or not self:CurrentItemMatches(saved)) then
             mismatches[#mismatches + 1] = { slot = saved.slot, slotName = saved.slotName, name = saved.name, kind = self:IsWeaponSlot(saved.slot) and "武器" or "装备" }
         end
     end
@@ -400,6 +478,8 @@ function G:BuildBagCandidate(bagId, slot, info)
         bagId = bagId, slot = slot, name = Trim(info.name), normalizedName = self:NormalizeItemName(info.name),
         grade = self:ExtractGrade(info), itemType = self:ExtractBagType(info),
         modifierSignature = self:ModifierSignature(self:ExtractModifiers(info)),
+        -- 保留本次读取的有限词条来源，详细解析只在戒指候选匹配时执行，不增加每帧/额外背包读取。
+        ringSource = { itemType=self:ExtractBagType(info), itemGrade=self:ExtractGrade(info), evolvingInfo=info.evolvingInfo },
     }
 end
 
@@ -419,6 +499,7 @@ function G:CandidateFingerprint(candidate)
         tostring(candidate and candidate.normalizedName or ""),
         tostring(candidate and candidate.grade or ""),
         tostring(candidate and candidate.modifierSignature or ""),
+        tostring(candidate and candidate.ringIdentity and candidate.ringIdentity.signature or ''),
     }, "|")
 end
 
@@ -462,6 +543,14 @@ function G:CandidateMatches(saved, candidate)
     if saved.itemType ~= nil and candidate.itemType ~= nil and tostring(saved.itemType) ~= tostring(candidate.itemType) then return false, 0 end
     local wantedGrade, gotGrade = tonumber(saved.grade), tonumber(candidate.grade)
     if wantedGrade ~= nil and gotGrade ~= nil and wantedGrade ~= gotGrade then return false, 0 end
+    if self:RequiresRingIdentity(saved) then
+        if self:SavedRingIdentityError(saved)~=nil then return false,0 end
+        candidate.ringIdentity=candidate.ringIdentity or self:ExtractRingIdentity(candidate.ringSource)
+        if candidate.ringIdentity.status~='known' then return false,0,'ring_identity_unknown' end
+        return saved.itemType~=nil and candidate.itemType~=nil and tostring(saved.itemType)==tostring(candidate.itemType)
+            and wantedGrade~=nil and wantedGrade==gotGrade and candidate.ringIdentity.status=='known'
+            and candidate.ringIdentity.signature==saved.ringIdentity.signature,185
+    end
     local wantedMods, gotMods = Trim(saved.modifierSignature), Trim(candidate.modifierSignature)
     if wantedMods ~= "" and wantedMods ~= gotMods then return false, 0 end
     local score = 50
@@ -473,21 +562,28 @@ end
 
 function G:FindCandidate(saved, snapshot, reserved)
     reserved = type(reserved) == "table" and reserved or {}
-    local topScore, top = nil, {}
+    if self:RequiresRingIdentity(saved) then
+        local reason,code=self:SavedRingIdentityError(saved);if reason then return nil,reason,code end
+    end
+    local topScore, top, unknownRing = nil, {}, false
     for _, candidate in ipairs(type(snapshot) == "table" and snapshot.items or {}) do
         if reserved[tonumber(candidate.slot)] ~= true then
-            local matched, score = self:CandidateMatches(saved, candidate)
+            local matched, score, identityError = self:CandidateMatches(saved, candidate)
+            -- 只记录本次目标的同名候选错误，不能让另一个戒指留下的缓存污染共享快照。
+            if identityError=='ring_identity_unknown' then unknownRing=true end
             if matched then
                 if topScore == nil or score > topScore then topScore, top = score, { candidate }
                 elseif score == topScore then top[#top + 1] = candidate end
             end
         end
     end
+    if unknownRing then return nil,'同名戒指候选词条不可读，无法安全区分','ring_identity_unknown' end
     if #top == 0 then
         if type(snapshot) == "table" and (tonumber(snapshot.errors) or 0) > 0 then return nil, "读取背包时发生错误", "read_error" end
         return nil, "背包中未找到目标装备", "not_found"
     end
     if #top == 1 then return top[1], nil, nil end
+    if self:RequiresRingIdentity(saved) then return nil,'存在多枚词条完全相同的戒指，无法唯一判断','ring_ambiguous' end
     local fingerprint = self:CandidateFingerprint(top[1])
     for index = 2, #top do
         if self:CandidateFingerprint(top[index]) ~= fingerprint then return nil, "存在多个不同候选，无法安全判断", "ambiguous" end
@@ -500,6 +596,7 @@ end
 
 function G:BuildSession(setId, payload, mismatchRows, options)
     options = type(options) == "table" and options or {}
+    local uniqueConflict=self:HasSingleWearRingConflict(payload)
     local wantedSlots = nil
     if type(mismatchRows) == "table" then
         wantedSlots = {}
@@ -515,6 +612,7 @@ function G:BuildSession(setId, payload, mismatchRows, options)
             local mismatch
             if wantedSlots ~= nil then mismatch = wantedSlots[tonumber(saved.slot)] == true
             else mismatch = not self:CurrentItemMatches(saved) end
+            if uniqueConflict and self:IsRingSlot(saved.slot) and self:IsSingleWearRing(saved.itemType) then mismatch=true end
             if mismatch and (options.weaponOnly ~= true or self:IsWeaponSlot(saved.slot)) then
                 pendingSaved[#pendingSaved + 1] = saved
             end
@@ -535,7 +633,10 @@ function G:BuildSession(setId, payload, mismatchRows, options)
     local snapshot = self:BuildBagSnapshot()
     local queue, reserved, blocked = {}, {}, {}
     for _, saved in ipairs(pendingSaved) do
-        local candidate, reason, reasonCode = self:FindCandidate(saved, snapshot, reserved)
+        local candidate, reason, reasonCode
+        if uniqueConflict and self:IsRingSlot(saved.slot) and self:IsSingleWearRing(saved.itemType) then
+            reason,reasonCode='充盈的拉玛哈的戒指只能佩戴一枚，请重新获取当前并保存方案','ring_unique_conflict'
+        else candidate,reason,reasonCode=self:FindCandidate(saved,snapshot,reserved) end
         if candidate == nil then blocked[#blocked + 1] = { slot = saved.slot, slotName = saved.slotName, name = saved.name, reason = reason, code = reasonCode }
         else
             reserved[tonumber(candidate.slot)] = true
@@ -697,10 +798,10 @@ function G:RuntimeTick()
     -- 都单独空等一个 220ms 拍。循环只消费已匹配项目，动作分支仍立即 return，
     -- 每拍最多一次原生写入；候选指纹、战斗门和未生效的验证预算均保留。
     while step ~= nil do
-        local itemMatched, equippedErr = self:CurrentItemMatches(step.saved)
+        local itemMatched, equippedErr, ringErrorCode = self:CurrentItemMatches(step.saved)
         -- Native 回读可能同步触发取消/停用；旧会话不能继续下一项。
         if r.busy ~= true or r.session ~= session then return true end
-        if equippedErr ~= nil then return self:SkipRuntimeStep(session, step, equippedErr, "equipped_read_error") end
+        if equippedErr ~= nil then return self:SkipRuntimeStep(session, step, equippedErr, ringErrorCode or "equipped_read_error") end
         if itemMatched ~= true then break end
         r.index = r.index + 1
         r.stage = "ACTION"

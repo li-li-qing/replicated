@@ -763,7 +763,7 @@ function RSUI:ApplyOpacityChannels(component, backgroundOpacity, textOpacity)
         visited = visited + 1
         if background ~= nil then
             node.appearanceBackgroundOpacity = background
-            -- 中文维护（2026-10-09）：包装式多行 Text 的 Native 子行不在逻辑 children 中，交给组件一起继承透明描边。
+            -- 中文维护（2026-10-09）：包装式多行 Text 的 Native 子行不在逻辑 children 中，交给组件一起继承透明表面文字样式。
             if type(node.ApplyBackgroundOpacity) == "function" then node:ApplyBackgroundOpacity(background)
             elseif theme ~= nil and type(theme.SetBackgroundOpacity) == "function" then theme:SetBackgroundOpacity(node.root, background) end
         end
@@ -773,6 +773,14 @@ function RSUI:ApplyOpacityChannels(component, backgroundOpacity, textOpacity)
                 node:ApplyTextOpacity(text)
             elseif theme ~= nil and type(theme.SetTextOpacity) == "function" then
                 theme:SetTextOpacity(node.root, text)
+            end
+        end
+        -- 中文维护（2026-10-09）：组件显式登记的原生标题/标题底板不在 children 中；仅处理 owner 登记列表，
+        -- 不扫描 Native 父子树，也不改布局/输入。背景与文字通道仍独立，延迟挂接复用本入口。
+        for _, widget in ipairs(type(node.appearanceWidgets) == "table" and node.appearanceWidgets or {}) do
+            if theme ~= nil then
+                if background ~= nil and type(theme.SetBackgroundOpacity) == "function" then theme:SetBackgroundOpacity(widget, background) end
+                if text ~= nil and type(theme.SetTextOpacity) == "function" then theme:SetTextOpacity(widget, text) end
             end
         end
         for _, child in ipairs(type(node.children) == "table" and node.children or {}) do Walk(child) end

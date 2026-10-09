@@ -10,6 +10,11 @@ local function Boot()
  local h={drawables=0}
  function h:Widget(id,gradient)
   local w={style={SetColor=function(self,...)self.rgba={...}end,SetShadow=function(self,v)self.shadow=v end}}
+  -- 中文维护（2026-10-09）：原生按钮状态文字是独立色槽，style.SetColor 不会覆盖 pressed/highlighted 默认浅字。
+  w.nativeTextColors={normal={1,1,1,1},highlighted={1,1,1,1},pushed={1,1,1,1},disabled={1,1,1,1}}
+  for method,state in pairs({SetTextColor='normal',SetHighlightTextColor='highlighted',SetPushedTextColor='pushed',SetDisabledTextColor='disabled'})do
+   local key=state;w[method]=function(self,...)self.nativeTextColors[key]={...}end
+  end
   function w:CreateColorDrawable(r,g,b,a)h.drawables=h.drawables+1;return {rgba={r,g,b,a},AddAnchor=function()end,SetColor=function(d,...)d.rgba={...}end}end
   if gradient then function w:CreateThreeColorDrawable()
    h.drawables=h.drawables+1
@@ -59,7 +64,8 @@ T('light semantic buttons preserve active hover and opacity without allocations'
  local S,h=Boot();local w=h:Widget('green',true);S.Theme:StyleButton(w,80,24,11,true,true);S.Theme:SetButtonStatusTone(w,'green');S.Theme:SetButtonHovered(w,true);S.Theme:SetBackgroundOpacity(w,.4)
  local before=w.rsButtonBgs[1].bands[2][2];local count=h.drawables
  assert(S.Theme:ApplyWorkspacePalette('light'));assert(w.rsButtonStatusTone=='green' and w.rsButtonActive and w.rsButtonHovered)
- assert(w.rsButtonBgs[1].bands[2][2]>.7 and w.style.rgba[1]<.3 and h.drawables==count and w.rsBackgroundOpacity==.4)
+ -- 中文维护（2026-10-09）：.4 背景走透明文字策略，仍保持绿色语义/阴影与原有 hover/分配数量。
+ assert(w.rsButtonBgs[1].bands[2][2]>.7 and w.style.rgba[2]>w.style.rgba[1] and w.style.shadow==true and h.drawables==count and w.rsBackgroundOpacity==.4)
  assert(S.Theme:ApplyWorkspacePalette('dark'));assert(w.rsButtonBgs[1].bands[2][2]==before)
 end)
 T('theme owned decorations repaint but custom and world colors remain intact',function()
@@ -137,5 +143,40 @@ T('new palettes keep body inputs and semantic buttons readable on every native b
    for _,hover in ipairs({false,true})do S.Theme:SetButtonHovered(b,hover);for i=1,3 do for _,bg in ipairs(b.rsButtonBgs[i].bands)do Check(b.style.rgba,bg,name..'/button/'..tone)end end end
   end
  end
+end)
+T('native pressed highlighted and disabled button text follows the actual theme foreground',function()
+ local S,h=Boot();local b=h:Widget('native_state_text',true);S.Theme:StyleButton(b,80,24,11,false,true)
+ local count=h.drawables
+ local function Lum(c)local l=0;for i,w in ipairs({.2126,.7152,.0722})do local v=c[i];l=l+w*(v<=.04045 and v/12.92 or ((v+.055)/1.055)^2.4)end;return l end
+ for _,name in ipairs({'light','dawn','sage','dark','light'})do
+  assert(S.Theme:ApplyWorkspacePalette(name))
+  for _,tone in ipairs({'plain','green','red'})do
+   S.Theme:SetButtonStatusTone(b,tone)
+   for _,hover in ipairs({false,true})do
+    S.Theme:SetButtonHovered(b,hover);S.Theme:SetButtonActive(b,hover)
+    for index,state in ipairs({'normal','highlighted','pushed','disabled'})do
+     local foreground=b.nativeTextColors[state]
+     assert(Equal(foreground,b.style.rgba),'native '..state..' retained its default text color in '..name)
+     if S.Theme:IsLightWorkspacePalette()then
+      for _,band in ipairs(b.rsButtonBgs[index].bands)do
+       local x,y=Lum(foreground),Lum(band);local ratio=(math.max(x,y)+.05)/(math.min(x,y)+.05)
+       assert(ratio>=4.5,'native '..state..' light text on light button: '..ratio)
+      end
+     end
+    end
+   end
+  end
+ end
+ S.Theme:SetBackgroundOpacity(b,0);S.Theme:SetTextOpacity(b,.35)
+ for state,c in pairs(b.nativeTextColors)do assert(Equal(c,b.style.rgba) and math.abs(c[4]-.35)<.000001,'native '..state..' ignored text opacity')end
+ S.Theme:SetBackgroundOpacity(b,1);S.Theme:SetTextOpacity(b,1)
+ assert(h.drawables==count and Equal(b.nativeTextColors.pushed,S.Constants.Color.red),'restoring background retained bright pressed text')
+end)
+T('rejected native pressed text repaint is reported and can retry the same palette',function()
+ local S,h=Boot();local b=h:Widget('reject_pressed');S.Theme:StyleButton(b,80,24,11,false,false)
+ local setter=b.SetPushedTextColor;b.SetPushedTextColor=function()return false end
+ assert(S.Theme:ApplyWorkspacePalette('light')==false and S.Theme.workspacePaletteFailures==1,'rejected state color looked successful')
+ b.SetPushedTextColor=setter;assert(S.Theme:ApplyWorkspacePalette('light'))
+ assert(Equal(b.nativeTextColors.pushed,S.Constants.Color.text),'rejected state color was not retried')
 end)
 print('THEME RESULT '..p..' passed / '..f..' failed');if f>0 then error('theme failures')end

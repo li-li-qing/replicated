@@ -71,6 +71,13 @@ local function EquipmentOrder(slot)
     return slot ~= nil and (SLOT_ORDER[slot] or (1000 + slot)) or 9999
 end
 
+local function NormalizeRingIdentity(value)
+    -- 可选的戒指身份元数据；旧方案保持 nil，不改变旧载荷 canonical，也不自动补写/升级用户存档。
+    if type(value)~='table' then return nil end
+    return {version=tonumber(value.version),status=Trim(value.status),signature=value.signature~=nil and Trim(value.signature) or nil,
+        summary=Trim(value.summary),reason=value.reason~=nil and Trim(value.reason) or nil}
+end
+
 local function NormalizeItem(item)
     item = type(item) == "table" and item or {}
     local slot = tonumber(item.slot or item.s)
@@ -90,6 +97,7 @@ local function NormalizeItem(item)
         itemType = empty and nil or (item.itemType ~= nil and item.itemType or item.t),
         icon = empty and nil or (item.icon ~= nil and item.icon or item.i),
         modifierSignature = empty and nil or Trim(item.modifierSignature or item.x),
+        ringIdentity = not empty and (slot==12 or slot==13) and NormalizeRingIdentity(item.ringIdentity or item.ri) or nil,
     }
 end
 
@@ -183,6 +191,7 @@ local function EncodeCompactPayload(value)
         local row = { s = item.slot, e = item.empty == true, m = item.managed ~= false }
         if item.empty ~= true then
             row.n, row.g, row.t, row.i, row.x = item.name, item.grade, item.itemType, item.icon, item.modifierSignature
+            if item.ringIdentity~=nil then row.ri=DeepCopy(item.ringIdentity) end
         end
         raw.it[#raw.it + 1] = row
     end

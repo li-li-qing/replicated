@@ -336,6 +336,10 @@ local function BuildPage(parent, route)
 
 
 
+    -- 戒指详细属性在已有饰品面板内换行显示，供同名成品核对；只读保存快照，不在 UI 扫背包。
+    local ringDetails=RSUI:Text({id='v3_gear_ring_details',parent=combatStack,text='',fontSize=10,tone='muted',overflow='wrap',maxLines=6,
+        slot={size='auto',hAlign='fill'}})
+
     function root:SetStatus(text, tone)
         status:SetText(text or "")
         status:SetTone(tone or "muted")
@@ -407,6 +411,10 @@ local function BuildPage(parent, route)
             local detail = enhance
             if not empty and grade ~= nil then detail = enhance .. "·品质" .. tostring(math.floor(grade)) end
             local modCount = empty and 0 or ModifierCount(item.modifierSignature)
+            local ring=not empty and (tonumber(item.slot)==12 or tonumber(item.slot)==13)
+            local identity=ring and item.ringIdentity or nil
+            local detailed=ring and S.Services.GearV3:RequiresRingIdentity(item)
+            local ringText=detailed and (type(identity)=='table' and tostring(identity.summary or '') or '词条未记录，请重新获取当前并保存') or nil
             rows[#rows + 1] = {
                 slot = item.slot,
                 slotName = tostring(item.slotName or item.key or item.slot),
@@ -415,8 +423,9 @@ local function BuildPage(parent, route)
                 managedText = empty and "--" or (managed and "参与" or "忽略"),
                 kindText = SlotCategory(item.slot),
                 detailText = detail,
-                modifierText = empty and "--" or (modCount > 0 and (tostring(modCount) .. "词条") or "无"),
-                compactText = CompactSavedItemText(empty and "（空）" or tostring(item.name or "未知装备"), enhance, grade, modCount, false),
+                modifierText = ringText or (empty and "--" or (modCount > 0 and (tostring(modCount) .. "词条") or "无")),
+                compactText = CompactSavedItemText(empty and "（空）" or tostring(item.name or "未知装备"), enhance, grade, modCount, false)
+                    .. (detailed and (type(identity)=='table' and identity.status=='known' and ' · 词条已记录' or ' · 需重新获取词条') or ''),
                 validationText = verifyText,
                 validationShort = CompactValidationText(verifyText),
                 validationTone = verifyTone,
@@ -467,6 +476,7 @@ local function BuildPage(parent, route)
             combatTable:SetItems({}, "gear:none:combat")
             armorTitle:SetText("防具 / 时装 · 0/10 参与")
             combatTitle:SetText("饰品 / 武器 / 称号 · 0/10 参与")
+            ringDetails:SetText('');ringDetails:SetVisible(false)
             screenButton:SetText("屏幕快捷按钮：--")
             editorMeta:SetText("参与 0/20 · 武器 0 · 其它/称号 0")
             return true
@@ -476,6 +486,13 @@ local function BuildPage(parent, route)
         screenButton:SetText("屏幕快捷按钮：" .. (draft.quick ~= false and "显示" or "隐藏"))
 
         local rows = self:BuildSlotRows()
+        local ringLines={}
+        for _,row in ipairs(rows)do
+            if (tonumber(row.slot)==12 or tonumber(row.slot)==13) and row.name~='（空）' then
+                ringLines[#ringLines+1]=row.slotName..'：'..row.name..' · '..row.modifierText
+            end
+        end
+        ringDetails:SetText(table.concat(ringLines,'\n'));ringDetails:SetVisible(#ringLines>0)
         local managed, weapon, other = 0, 0, 0
         for _, row in ipairs(rows) do
             if row.managed then

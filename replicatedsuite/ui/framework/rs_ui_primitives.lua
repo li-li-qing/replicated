@@ -399,7 +399,7 @@ local function CreateWrappedText(spec)
         end
         label.rsLocalFontScale = tonumber(self.appearanceFontScale) or tonumber(self.root and self.root.rsLocalFontScale) or 1.0
         self.lineLabels[index] = label
-        -- 中文维护（2026-10-09）：延迟创建的换行子 Label 继承背景通道及其描边，避免首次布局后新行仍看不清。
+        -- 中文维护（2026-10-09）：延迟创建的换行子 Label 继承背景通道及其文字样式，避免首次布局后新行仍看不清。
         if self.appearanceBackgroundOpacity ~= nil and S.Theme and type(S.Theme.SetBackgroundOpacity) == "function" then
             S.Theme:SetBackgroundOpacity(label, self.appearanceBackgroundOpacity)
         end

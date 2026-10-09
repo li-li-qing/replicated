@@ -1065,6 +1065,7 @@ RSUI:RegisterType("FormSection", function(spec)
     if raw == nil or raw.root == nil then return nil, "form_section_create_failed" end
     local c = RSUI:NewComponent("FormSection", spec, raw.root)
     c.raw = raw
+    c.appearanceWidgets = { raw.header, raw.title } -- 中文维护（2026-10-09）：复合表单原生标题条显式继承组件外观通道。
     c.padding = raw.padding or N(spec.padding, Token("component.card.padding", 10))
     c.headerHeight = raw.headerHeight or N(spec.headerHeight, Token("size.sectionHeaderH", 28))
     c.fields = {}

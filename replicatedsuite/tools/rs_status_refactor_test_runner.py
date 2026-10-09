@@ -119,6 +119,7 @@ TRADE_GEAR_RELIABILITY_TESTS = [
     "tools/rs_trade_quote_isolation_price_safety_tests.lua",
     "tools/rs_trade_cost_retry_tests.lua",
     "tools/rs_gear_partial_continuation_tests.lua",
+    "tools/rs_gear_ring_identity_tests.lua",
     "tools/rs_trade_quote_unit_price_tests.lua",
     "tools/rs_material_price_swr_tests.lua",
     "tools/rs_gear_costume_title_apply_tests.lua",
