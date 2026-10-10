@@ -22,17 +22,19 @@ local U = S.Utils
 local INDEX_STORE = "v3.death_review"
 local INDEX_SCHEMA = 2 -- 中文维护注释：.18.193 把 DeathReview Index 的 codec1 + FloatingSurface v11 canonical 正式划为 schema2，结束 schema1 内多代 canonical 共存造成的重复假损坏。
 local INDEX_CODEC_VERSION = 1
-local RECORD_SCHEMA = 1
+local RECORD_SCHEMA = 2
 local RECORD_PREFIX = P.V3KeyPrefix .. "death_review_record_"
 local MAX_HISTORY = 30
 local RECORD_SLOTS = MAX_HISTORY + 1
 local MAX_EVENTS = 96
 local MAX_DEBUFFS = 10
+local MAX_STATUSES = 32
 
 -- Sized against encoded SaveData envelopes. Index stays small; every timeline
 -- record is independently bounded so no setting can create an unbounded write.
 local INDEX_BUDGET = { maxDepth = 6, maxNodes = 1800, maxStringBytes = 24000, maxEntriesPerTable = 128 }
-local RECORD_BUDGET = { maxDepth = 7, maxNodes = 1800, maxStringBytes = 14000, maxEntriesPerTable = 128 }
+local RECORD_BUDGET = { maxDepth = 7, maxNodes = 2400, maxStringBytes = 48000, maxEntriesPerTable = 128 }
+local RECORD_ENCODED_BUDGET = { maxDepth = 7, maxNodes = 2400, maxStringBytes = 48000, maxEntriesPerTable = 512 }
 
 -- The death-review index persists shared FloatingSurface state.  This state
 -- MUST be canonicalized by the same pure Foundation normalizer on every
@@ -124,46 +126,55 @@ local function NormalizeSettings(value)
     }
 end
 
-local function NormalizeDebuff(value)
+local function NormalizeDebuff(value, extended)
     value = type(value) == "table" and value or {}
-    return {
+    local out = {
         effectId = tonumber(value.effectId),
         name = Text(value.name, "未知 Debuff", 120),
         stack = math.max(0, math.floor(tonumber(value.stack) or 0)),
         path = value.path ~= nil and Text(value.path, "", 240) or nil,
     }
+    if extended and tonumber(value.timeLeft) ~= nil then out.timeLeft = math.max(0, tonumber(value.timeLeft)) end
+    return out
 end
 
-local function NormalizeEvent(value)
+local function NormalizeEvent(value, extended)
     value = type(value) == "table" and value or {}
-    return {
+    local out = {
         time = math.max(0, tonumber(value.time) or 0),
         source = Text(value.source, "未知来源", 120),
         ability = Text(value.ability, "普通攻击", 160),
         amount = math.max(0, math.floor((tonumber(value.amount) or 0) + 0.5)),
         environmental = value.environmental == true and true or nil,
     }
+    if extended then
+        out.abilityId = tonumber(value.abilityId) and tonumber(value.abilityId) > 0 and math.floor(tonumber(value.abilityId)) or nil
+        out.iconPath = value.iconPath ~= nil and Text(value.iconPath, "", 240) or nil
+    end
+    return out
 end
 
 local function NormalizeRecord(value, fallbackSerial)
     value = type(value) == "table" and value or {}
+    -- 保留 schema1 完整字段与默认值，旧章认证不会因新 Buff 字段而改变。
+    local extended = tonumber(value.schemaVersion) == 2
     local events = {}
     for index, row in ipairs(type(value.events) == "table" and value.events or {}) do
         if index > MAX_EVENTS then break end
-        local event = NormalizeEvent(row)
+        local event = NormalizeEvent(row, extended)
         if event.amount > 0 then events[#events + 1] = event end
     end
     local debuffs = {}
     for index, row in ipairs(type(value.debuffs) == "table" and value.debuffs or {}) do
-        if index > MAX_DEBUFFS then break end
-        debuffs[#debuffs + 1] = NormalizeDebuff(row)
+        if index > (extended and MAX_STATUSES or MAX_DEBUFFS) then break end
+        debuffs[#debuffs + 1] = NormalizeDebuff(row, extended)
     end
-    local lethal = type(value.lethal) == "table" and NormalizeEvent(value.lethal) or nil
-    if lethal == nil and #events > 0 then lethal = NormalizeEvent(events[#events]) end
+    local lethal = type(value.lethal) == "table" and NormalizeEvent(value.lethal, extended) or nil
+    if lethal == nil and #events > 0 then lethal = NormalizeEvent(events[#events], extended) end
     local total = 0
     for _, row in ipairs(events) do total = total + (tonumber(row.amount) or 0) end
-    return {
-        schemaVersion = RECORD_SCHEMA,
+    local out = {
+        schemaVersion = extended and 2 or 1,
         serial = math.max(1, math.floor(tonumber(value.serial) or tonumber(fallbackSerial) or 1)),
         time = math.max(0, tonumber(value.time) or 0),
         noticeTime = math.max(0, tonumber(value.noticeTime) or tonumber(value.time) or 0),
@@ -174,6 +185,107 @@ local function NormalizeRecord(value, fallbackSerial)
         events = events,
         debuffs = debuffs,
     }
+    if extended then
+        out.buffs = {}
+        for index, row in ipairs(type(value.buffs) == "table" and value.buffs or {}) do
+            if index > MAX_STATUSES then break end
+            out.buffs[#out.buffs + 1] = NormalizeDebuff(row, true)
+        end
+        local snapshot = type(value.statusSnapshot) == "table" and value.statusSnapshot or {}
+        local function State(v)
+            return (v == "complete" or v == "partial" or v == "unavailable" or v == "disabled") and v or "uncollected"
+        end
+        out.statusSnapshot = { time = tonumber(snapshot.time) and math.max(0, tonumber(snapshot.time)) or nil,
+            buff = State(snapshot.buff), debuff = State(snapshot.debuff) }
+    end
+    return out
+end
+
+-- codec2 用字符串字典与定长数值行压紧记录。字符串本身只在字典出现，逗号不会污染字段；
+-- 14336 Native 字节硬门保持不变。旧记录返回旧 canonical，decode 永久读取原 payload。
+local function EncodeRecord(value)
+    local r = NormalizeRecord(value)
+    if r.schemaVersion == 1 then return r end
+    local pool, keys = {}, {}
+    local function Ref(v)
+        if v == nil then return 0 end
+        if keys[v] == nil then pool[#pool + 1] = v; keys[v] = #pool end
+        return keys[v]
+    end
+    local function Event(e)
+        if e == nil then return "" end
+        return table.concat({ e.time, Ref(e.source), Ref(e.ability), e.amount, e.environmental and 1 or 0, e.abilityId or 0, Ref(e.iconPath) }, ",")
+    end
+    local function Status(rows)
+        local result = {}
+        for _, row in ipairs(rows) do result[#result + 1] = table.concat({ row.effectId or 0, Ref(row.name), row.stack, row.timeLeft or -1, Ref(row.path) }, ",") end
+        return table.concat(result, ";")
+    end
+    local out = { codec = 2, serial = r.serial, time = r.time, noticeTime = r.noticeTime, clock = r.clock,
+        windowMs = r.windowMs, totalDamage = r.totalDamage, lethal = Event(r.lethal), events = {},
+        statusSnapshot = r.statusSnapshot }
+    for _, row in ipairs(r.events) do out.events[#out.events + 1] = Event(row) end
+    out.events = table.concat(out.events, ";")
+    out.debuffs, out.buffs = Status(r.debuffs), Status(r.buffs)
+    local packed = {}
+    for _, text in ipairs(pool) do packed[#packed + 1] = tostring(#text) .. ":" .. text end
+    out.strings = table.concat(packed)
+    return out
+end
+
+local function DecodeRecord(raw)
+    if type(raw) ~= "table" then return nil, "death record shape invalid" end
+    if raw.codec == nil then return NormalizeRecord(raw.payload or raw) end
+    if raw.codec ~= 2 or type(raw.strings) ~= "string" then return nil, "death record codec invalid" end
+    local strings, cursor = {}, 1
+    while cursor <= #raw.strings do
+        local start, finish, length = raw.strings:find("^(%d+):", cursor)
+        length = tonumber(length)
+        if start == nil or length > 240 or #strings >= 512 or finish + length > #raw.strings then return nil, "death record dictionary invalid" end
+        strings[#strings + 1] = raw.strings:sub(finish + 1, finish + length)
+        cursor = finish + length + 1
+    end
+    local function Lines(packed, maximum)
+        if type(packed) ~= "string" or #packed > maximum * 256 then error("death record rows invalid") end
+        if packed == "" then return {} end
+        if packed:sub(1,1) == ";" or packed:sub(-1) == ";" or packed:find(";;",1,true) then error("death record empty row") end
+        local rows = {}
+        for line in packed:gmatch("[^;]+") do rows[#rows + 1] = line;if #rows > maximum then error("death record too many rows") end end
+        return rows
+    end
+    local function Numbers(line, count)
+        if type(line) ~= "string" or #line > 256 or line:sub(1,1) == "," or line:sub(-1) == "," or line:find(",,",1,true) then error("death record row invalid") end
+        local row = {}
+        for token in line:gmatch("[^,]+") do
+            local n = tonumber(token); if n == nil or n ~= n or n == math.huge or n == -math.huge then error("death record number invalid") end
+            row[#row + 1] = n
+        end
+        if #row ~= count then error("death record column count invalid") end
+        return row
+    end
+    local function Str(index)
+        if index == 0 then return nil end
+        if index % 1 ~= 0 or type(strings[index]) ~= "string" then error("death record string reference invalid") end
+        return strings[index]
+    end
+    local function Event(line)
+        if line == "" then return nil end
+        local n = Numbers(line, 7)
+        return { time = n[1], source = Str(n[2]), ability = Str(n[3]), amount = n[4], environmental = n[5] == 1 and true or nil,
+            abilityId = n[6] > 0 and n[6] or nil, iconPath = Str(n[7]) }
+    end
+    local function Status(rows)
+        rows = Lines(rows, MAX_STATUSES)
+        local out = {}
+        for _, line in ipairs(rows) do local n = Numbers(line, 5);out[#out + 1] = { effectId = n[1] ~= 0 and n[1] or nil,
+            name = Str(n[2]), stack = n[3], timeLeft = n[4] >= 0 and n[4] or nil, path = Str(n[5]) } end
+        return out
+    end
+    local r = { schemaVersion = 2, serial = raw.serial, time = raw.time, noticeTime = raw.noticeTime, clock = raw.clock,
+        windowMs = raw.windowMs, totalDamage = raw.totalDamage, lethal = Event(raw.lethal), events = {},
+        debuffs = Status(raw.debuffs), buffs = Status(raw.buffs), statusSnapshot = raw.statusSnapshot }
+    for _, line in ipairs(Lines(raw.events, MAX_EVENTS)) do r.events[#r.events + 1] = Event(line) end
+    return NormalizeRecord(r)
 end
 
 local function NormalizeSummary(value, fallbackSerial, fallbackStorageId)
@@ -238,6 +350,11 @@ end
 
 local function NormalizeIndex(value)
     return NormalizeIndexWithWindow(value, "current")
+end
+
+local function DefaultIndex()
+    -- 仅发行默认使用20；旧 schema2 缺失字段仍按 NormalizeSettings 的10验章。
+    return NormalizeIndex({ settings = { maxHistory = 20 } })
 end
 
 -- Serializer-stable index codec (.18.149). The RU serializer may omit false,
@@ -1129,7 +1246,7 @@ F.IndexBudget = INDEX_BUDGET
 F.RecordBudget = RECORD_BUDGET
 F.MaxHistory = MAX_HISTORY
 F.RecordSlots = RECORD_SLOTS
-F.State = NormalizeIndex(F.State)
+F.State = type(F.State) == "table" and NormalizeIndex(F.State) or DefaultIndex()
 F.Records = type(F.Records) == "table" and F.Records or {}
 F.RecordStoreIds = type(F.RecordStoreIds) == "table" and F.RecordStoreIds or {}
 F.StoreLoaded = F.StoreLoaded == true
@@ -1142,13 +1259,13 @@ if P:GetStore(INDEX_STORE) == nil then
         owner = "v3.death_review",
         scope = P.Scope.Account,
         lifetime = P.Lifetime.Permanent,
-        schemaVersion = INDEX_SCHEMA, -- 中文维护注释：Index 当前写入 schema2；record 分片仍保持独立 schema1，本轮只修 Index canonical generation。
+        schemaVersion = INDEX_SCHEMA, -- Index 仍为 schema2；record 分片独立支持 schema1 历史和 schema2 状态图标。
         legacySchemaVersion = 0, -- 中文维护注释：保留无元数据历史档的原 fallback 口径，带元数据 schema1 由正式 migrate/hook 迁移到 schema2。
         key = P.V3KeyPrefix .. "death_review_index",
         budget = INDEX_BUDGET,
         transportVersion = 6, -- 中文维护：仅物理摘要压紧；历史1..5解码永久兼容，Domain/schema/指纹不变。
         nativeByteBudget = 14336, -- 中文维护：预留实机16383字节边界余量，超预算先拒绝再写入。
-        default = function() return NormalizeIndex(nil) end,
+        default = DefaultIndex,
         get = function() return NormalizeIndex(F.State) end,
         apply = ApplyIndex,
         encode = EncodeIndex,
@@ -1197,7 +1314,10 @@ function F:EnsureRecordStore(storageId)
         legacySchemaVersion = 0,
         key = RECORD_PREFIX .. tostring(sid),
         budget = RECORD_BUDGET,
+        encodedBudget = RECORD_ENCODED_BUDGET,
         nativeByteBudget = 14336,
+        encode = EncodeRecord,
+        decode = DecodeRecord,
         default = function() return nil end,
         get = function() return self.Records[sid] ~= nil and NormalizeRecord(self.Records[sid]) or nil end,
         apply = function(value) self.Records[sid] = type(value) == "table" and NormalizeRecord(value) or nil end,
@@ -1308,7 +1428,7 @@ function F:EnsureStoreLoaded()
     if store == nil then return false, "死亡回顾索引存档不可用" end
     local status, _, err = P:LoadStore(INDEX_STORE)
     if status ~= true and status ~= "empty" then return false, err or tostring(status or "读取失败") end
-    if status == "empty" then ApplyIndex(nil) end
+    if status == "empty" then ApplyIndex(DefaultIndex()) end
     return Finish()
 end
 

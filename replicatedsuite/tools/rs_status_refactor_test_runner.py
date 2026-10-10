@@ -100,6 +100,10 @@ TRADE_COPY_EVIDENCE_TESTS = [
 FEATURE_PROFILE_FAILURE_TESTS = [
     "tools/rs_feature_profiles_tests.lua",
     "tools/rs_death_review_integrity_failure_tests.lua",
+    "tools/rs_death_review_auto_show_tests.lua",
+    "tools/rs_death_review_layout_tests.lua",
+    "tools/rs_death_review_status_tests.lua",
+    "tools/rs_death_review_content_tests.lua",
 ]
 
 
@@ -141,6 +145,7 @@ TRADE_REQUOTE_TESTS = [
 # must remain mandatory, not silently disappear behind a passing legacy group.
 # Native boundaries are models; this gate does not certify live RU behavior.
 RELEASE_READINESS_TESTS = [
+    "tools/rs_treasure_double_click_tests.lua",
     "tools/rs_buff_tracking_ux_tests.lua",
     "tools/rs_status_tracking_grid_tests.lua",
     "tools/rs_unified_cooldown_tests.lua",

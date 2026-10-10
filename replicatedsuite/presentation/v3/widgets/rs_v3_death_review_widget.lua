@@ -16,6 +16,12 @@ local function Policy()
     return { defaultWidth = 470, defaultHeight = 330, minWidth = 1, minHeight = 1,
         defaultOverallOpacity = 0.96, defaultBackgroundOpacity = 1.0, defaultTextOpacity = 1.0 }
 end
+local function RuntimePolicy()
+    -- 只约束本轮内容所需的显示尺寸；Store 的历史 canonical/min=1 不变。
+    local policy = Policy()
+    policy.minWidth, policy.minHeight = 420, 300
+    return policy
+end
 local function Persist(reason, delayMs) return Feature.Commands:MarkStoreDirty(delayMs or 300, "widget_" .. tostring(reason or "state")) end
 
 local function CreateWidget()
@@ -23,8 +29,12 @@ local function CreateWidget()
     local surface, err = Floating:Create({
         id = "v3_death_review_widget", owner = OWNER, title = "死亡回顾", status = "--", footer = true,
         movable = true, resizable = true, minimizeMode = "compact", boundaryMode = "free", defaultPlacement = "center",
-        statePolicy = Policy(), getState = function() return Feature:GetWidgetWindowState() end,
+        statePolicy = RuntimePolicy(), getState = function() return Feature:GetWidgetWindowState() end,
         setState = function(value, reason) return Feature.Commands:SetWidgetWindowState(value, reason) end, persist = Persist,
+        onStateChanged = function()
+            -- 中文维护：拖动、缩放和锁定只刷新布局读数，不重建历史列表或增加定时任务。
+            if S.Events and type(S.Events.Publish) == "function" then S.Events:Publish("v3.death_review.layout") end
+        end,
         onClosed = function(_, reason)
             return Host:NotifyWindowClosed(WIDGET_ID, { persist = false, source = tostring(reason or "widget_close") })
         end,
@@ -33,44 +43,16 @@ local function CreateWidget()
     instance.surface, instance.shell, instance.window = surface, surface.shell, surface.window
     instance.root, instance.windowController = surface.shell.root, surface.windowController
 
-    local stack = RSUI:VerticalBox({ id = "v3_death_review_widget_stack", parent = surface:GetContentRoot(), gap = 5 })
-    instance.summary = RSUI:Text({ id = "v3_death_review_widget_summary", parent = stack, text = "暂无死亡记录", fontSize = 10, tone = "strong", overflow = "wrap", maxLines = 4, minHeight = 42, slot = { size = "auto", minHeight = 42, hAlign = "fill" } })
-    instance.timeline = RSUI:TableView({
-        id = "v3_death_review_widget_timeline", parent = stack, items = {}, rowHeight = 25, headerHeight = 23, desiredRows = 7,
-        scrollbar = true, selectable = false, columnResize = true,
-        columns = {
-            { id = "time", title = "时间", field = "timeText", size = "fixed", width = 46, minWidth = 38 },
-            { id = "source", title = "来源", field = "source", size = "fill", minWidth = 74, fill = 0.8 },
-            { id = "ability", title = "技能", field = "ability", size = "fill", minWidth = 88, fill = 1.1 },
-            { id = "amount", title = "伤害", field = "amount", size = "fixed", width = 58, minWidth = 48, getTone = function() return "red" end },
-        },
-        slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
-    })
-    instance.debuffs = RSUI:Text({ id = "v3_death_review_widget_debuffs", parent = stack, text = "死亡时 Debuff：--", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
+    local content = S.UIV3.DeathReviewContent:Create(surface:GetContentRoot(), "v3_death_review_widget")
+    instance.content = content
+    instance.summary, instance.timeline = content.summary, content.timeline
+    instance.debuffs, instance.buffs = content.debuffs, content.buffs
 
     function instance:Refresh()
-        local projection = Feature:GetProjection({ historyLimit = 1, timelineLimit = 12 })
-        local rows, record = projection.timelineRows or {}, projection.record
-        self.timeline:SetItems(rows, record and record.serial or 0)
-        if record == nil then
-            self.summary:SetText("最近死亡记录：--")
-            -- The floating widget already has a summary line + footer status.
-            -- Keeping the empty-state overlay here duplicated copy in a narrow
-            -- viewport and visually stacked two status messages on top of each
-            -- other. Show an empty table body instead.
-            self.timeline:SetViewState("ready")
-            self.debuffs:SetText("死亡时 Debuff：--")
-            self.surface:SetStatus("等待记录", "muted")
-            return true
-        end
-        local lethal = type(record.lethal) == "table" and record.lethal or {}
-        self.summary:SetText("" .. tostring(record.clock or "--:--:--") .. " · 窗口 " .. string.format("%.1fs", (tonumber(record.windowMs) or 0) / 1000)
-            .. " · 总伤害 " .. tostring(record.totalDamage or 0) .. "\n致命：" .. tostring(lethal.source or "--") .. " · " .. tostring(lethal.ability or "--") .. " · " .. tostring(lethal.amount or 0))
-        self.timeline:SetViewState(#rows > 0 and "ready" or "empty", #rows > 0 and nil or { title = "没有可用伤害行", detail = "死亡通知已记录，但当前窗口内没有满足最低伤害过滤的受伤事件。" })
-        local names = {}
-        for _, row in ipairs(record.debuffs or {}) do names[#names + 1] = tostring(row.name or "未知") .. ((tonumber(row.stack) or 0) > 1 and ("×" .. tostring(row.stack)) or "") end
-        self.debuffs:SetText("死亡时 Debuff：" .. (#names > 0 and table.concat(names, " · ") or "无 / 未采集"))
-        self.surface:SetStatus("记录 #" .. tostring(record.serial or 0), "red")
+        local projection = Feature:GetProjection({ historyLimit = 1, timelineLimit = 96 })
+        local record = projection.record
+        self.content:Render(projection.timelineRows or {}, record)
+        self.surface:SetStatus(record and ("记录 #" .. tostring(record.serial or 0)) or "等待记录", record and "red" or "muted")
         return true
     end
 
@@ -150,7 +132,8 @@ if ok ~= true then error(err) end
 -- lifecycle/death facts only and never touches WidgetHost from combat callbacks.
 local AutoPresenter = { id = "v3:death_review:auto_presenter" }
 if S.Events and type(S.Events.SubscribeInternal) == "function" then
-    S.Events:SubscribeInternal("v3.death_review.updated", AutoPresenter, function(_, reason)
+    -- 中文维护：Events 先传 owner，Authority 再传 revision、reason、record；跳过 revision 才能识别死亡通知。
+    S.Events:SubscribeInternal("v3.death_review.updated", AutoPresenter, function(_, revision, reason)
         if tostring(reason or "") ~= "death" or S.FeatureRuntime:IsEnabled(FEATURE_ID) ~= true or Feature:GetSettingsProjection().autoShow ~= true then return end
         local okShow, showErr = Host:SetVisible(WIDGET_ID, true, { source = "death_auto", persist = false })
         if okShow ~= true and S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarningRateLimited) == "function" then

@@ -105,6 +105,43 @@ end
 -- 每个实例独立id/owner/控件，Feature投影/Command唯一，构建和刷新绝不发出材料询价。
 local Contents={specs={}}
 S.UIV3.LifeEconomyContent=Contents
+-- 主页面和助手共用同一双击门控，瞬时点击状态只属于各自UI实例。
+local TreasureMapInteraction = { version = 1, hint = "双击藏宝图，在地图上显示位置" }
+S.UIV3.TreasureMapInteraction = TreasureMapInteraction
+function TreasureMapInteraction:Reset(instance)
+    instance.treasureLastActivateKey, instance.treasureLastActivateAt = nil, nil
+    return true
+end
+function TreasureMapInteraction:SyncSelection(view, projection)
+    local key = type(projection.selected) == "table" and projection.selected.key or nil
+    for index = 1, view:GetItemCount() do
+        local row = view:GetItem(index)
+        if key ~= nil and row and row.key == key then view:SetSelectedIndex(index);return true end
+    end
+    view:ClearSelection()
+    return true
+end
+function TreasureMapInteraction:Activate(instance, row, Feature)
+    if type(row) ~= "table" or row.key == nil then self:Reset(instance);return false, "藏宝图已失效" end
+    if S.FeatureRuntime:IsEnabled(Feature.Id) ~= true then self:Reset(instance);return false, "寻宝功能已关闭" end
+    local now = type(S.NowMs) == "function" and tonumber(S.NowMs()) or nil
+    if now == nil then self:Reset(instance);return false, "双击计时不可用" end
+    local previousAt = tonumber(instance.treasureLastActivateAt)
+    local isDouble = instance.treasureLastActivateKey == tostring(row.key) and previousAt ~= nil
+        and now >= previousAt and now - previousAt <= 450
+    -- 每次真实点击都走同一选择命令，不能依赖某个视图的旧高亮状态。
+    -- 先确认选择成功，再记录点击；失败恢复后的下一击不能误判为双击。
+    local selected, selectErr = Feature.Commands:Select(row.key)
+    instance.treasureActionError = selected ~= true and tostring(selectErr or "选择藏宝图失败") or nil
+    instance:Refresh()
+    if selected ~= true then self:Reset(instance);return false, selectErr end
+    instance.treasureLastActivateKey, instance.treasureLastActivateAt = tostring(row.key), now
+    if not isDouble then return true end
+    self:Reset(instance)
+    local opened, openErr = Feature.Commands:ShowSelectedOnMap()
+    instance:Refresh()
+    return opened, openErr
+end
 -- 首页标题栏保留单入口；首次点击才创建独立字段表单，复用 FloatingSurface/Dropdown 的原生生命周期。
 -- 子 Dropdown 继续由 PopupCoordinator 管理，父表单不注册为 Dropdown，避免打开选项时把表单关掉。
 -- 表单只读 Feature 投影并分派原有 Command；不增加消费者、询价任务或业务设置副本。
@@ -403,7 +440,7 @@ function Contents:Create(parent,name,prefix,options)
         return true
     end
     function instance:SetAvailable(available,reason)
-        if not available then self:CloseHeaderSettings()end
+        if not available then self:CloseHeaderSettings();TreasureMapInteraction:Reset(self)end
         self.controls:SetVisible(available)
         if available then return self:Refresh() end
         self.table:SetItems({},"unavailable");self.table:SetViewState("empty",{title=reason or "未启用",detail="点击右上角打开功能页面；首页不会自动启用模块。"})
@@ -551,14 +588,14 @@ local function Register(spec)
             if hidden ~= true then return false, hideErr end
             local released, releaseErr = true, nil
             if self.visible then released, releaseErr = ReleaseConsumer() end
-            self.visible = false; self:Unsubscribe()
+            self.visible = false; self:Unsubscribe();TreasureMapInteraction:Reset(self)
             if type(context) ~= "table" or context.persist ~= false then Feature.Commands:SetWidgetVisible(false, "hide") end
             if released ~= true then return false, releaseErr end
             return true
         end
         function instance:OnWindowClosed(context)
             local released, releaseErr = ReleaseConsumer()
-            self.visible = false; self:Unsubscribe()
+            self.visible = false; self:Unsubscribe();TreasureMapInteraction:Reset(self)
             if type(context) ~= "table" or context.persist ~= false then Feature.Commands:SetWidgetVisible(false, "native_close") end
             if released ~= true then return false, releaseErr end
             return true
@@ -978,12 +1015,16 @@ ok, err = Register({
     rootId = "v3_life_treasure_widget", contentId = "v3_life_treasure_widget_content", tableId = "v3_life_treasure_widget_table", title = "寻宝助手",
     emptyTitle = "没有可用藏宝图", emptyDetail = "背包中没有读取到带坐标的藏宝图。", selectable = true,
     buildControls = function(instance, content, Feature)
-        -- 中文维护注释（2026-09-16，寻宝悬浮窗地图动作）：悬浮窗只提供显式“地图定位”入口，Native X2Map 调用仍由 Feature Command/Capability Gate 所有；
+        -- 地图按钮与双击均为显式动作，Native X2Map 仍由 Feature Command/Capability Gate 所有；
         -- 不在 Presentation 保存坐标、worldId 或第二份选择状态。按钮自身不启动 Scheduler，也不会因为悬浮窗刷新自动打开地图。
         if type(Feature.Commands.ShowSelectedOnMap) ~= "function" then return false, "寻宝地图定位命令缺失" end
+        instance.treasureInteractionHint = RSUI:Text({ id = (instance.contentPrefix or "v3_life_treasure_widget_") .. "hint",
+            parent = content, text = TreasureMapInteraction.hint, fontSize = 9, tone = "muted", overflow = "ellipsis",
+            slot = { size = "fixed", height = 18, hAlign = "fill" } })
         local row = RSUI:HorizontalBox({ id = (instance.contentPrefix or "v3_life_treasure_widget_") .. "actions", parent = content, gap = 4, slot = { size = "fixed", height = 28, hAlign = "fill" } })
         instance.treasureMapButton = RSUI:Button({ id = (instance.contentPrefix or "v3_life_treasure_widget_") .. "map", parent = row, text = "地图定位", compact = true, slot = { size = "fill", fill = 1, minWidth = 90 } })
         instance.treasureMapButton.onClick = function()
+            TreasureMapInteraction:Reset(instance)
             local actionOk, actionErr = Feature.Commands:ShowSelectedOnMap()
             instance:Refresh()
             return actionOk, actionErr
@@ -991,26 +1032,21 @@ ok, err = Register({
         return true
     end,
     refreshControls = function(instance, projection)
+        TreasureMapInteraction:SyncSelection(instance.table, projection)
         if instance.treasureMapButton then instance.treasureMapButton:SetEnabled(type(projection.selected) == "table") end
+        if instance.treasureInteractionHint then
+            local errorText = instance.treasureActionError or projection.lastMapActionError
+            instance.treasureInteractionHint:SetText(errorText and ("定位未完成：" .. tostring(errorText)) or TreasureMapInteraction.hint)
+        end
     end,
     rows = function(projection)
         local rows = projection.maps or {}
         for _, row in ipairs(rows) do row.directionText = tostring(row.direction or "--") .. (row.distance and (" · " .. tostring(math.floor(row.distance + 0.5)) .. "m") or "") end
         return rows
     end,
-    onSelection = function(instance, row, Feature)
-        if row == nil or row.key == nil then return false end
-        local selectOk, selectErr = Feature.Commands:Select(row.key); if selectOk then instance:Refresh() end; return selectOk, selectErr
-    end,
     onItemActivated = function(instance, row, Feature)
-        -- 中文维护注释（2026-09-16，双击快捷定位）：单击继续只改变当前追踪目标；双击才在 Select 成功后触发地图定位，
-        -- 避免用户浏览列表时地图反复弹出。两步都走同一 Feature Commands，不绕过持久选择或 Capability Gate。
-        if type(row) ~= "table" or row.key == nil then return false end
-        local selectOk, selectErr = Feature.Commands:Select(row.key)
-        if selectOk ~= true then return false, selectErr end
-        local mapOk, mapErr = Feature.Commands:ShowSelectedOnMap()
-        instance:Refresh()
-        return mapOk, mapErr
+        -- TableView每次行点击都会activated，必须先识别同一张图的第二次点击。
+        return TreasureMapInteraction:Activate(instance, row, Feature)
     end,
     columns = {
         { id="name", title="藏宝图", field="name", size="fill", minWidth=120, fill=1 },

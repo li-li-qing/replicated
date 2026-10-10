@@ -36,7 +36,7 @@ local A = {
     lastDeathNoticeAt = 0,
     maxIncoming = 96,
     maxDebuffSamples = 8,
-    maxDebuffsPerSample = 10,
+    maxDebuffsPerSample = 32,
     pendingDeath = nil,
     finalizeScheduled = false,
     deferredFinalizes = 0,
@@ -75,6 +75,7 @@ function A:ResetTransient()
     self.debuffSamples = {}
     self.lastDebuffSampleAt = 0
     self.debuffSampleScheduled = false
+    self.debuffSampleForceRefresh = false
     self.pendingDeath = nil
     self.finalizeScheduled = false
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then
@@ -88,27 +89,29 @@ end
 -- callback. The callback only records that a sample is due; the actual Native
 -- Aura read happens on the shared Scheduler so it is covered by FrameBudget
 -- and can never add latency to the game's combat event dispatch.
-function A:RequestDebuffSample(now)
+function A:RequestDebuffSample(now, forceRefresh)
     local settings = F:GetSettings()
-    if settings.showDebuffs ~= true or F.auraConsumerHeld ~= true then return true end
+    if settings.showDebuffs ~= true or F.auraConsumerHeld ~= true or self.pendingDeath ~= nil then return true end
+    if forceRefresh == true then self.debuffSampleForceRefresh = true end
     now = tonumber(now) or NowMs()
     if self.debuffSampleScheduled == true then return true end
-    if now - (tonumber(self.lastDebuffSampleAt) or 0) < (tonumber(self.debuffSampleMinIntervalMs) or 150) then
+    local delay = math.max(0, (tonumber(self.debuffSampleMinIntervalMs) or 150) - (now - (tonumber(self.lastDebuffSampleAt) or 0)))
+    if delay > 0 then
         self.debuffSampleSkips = self.debuffSampleSkips + 1
-        return true
     end
     local scheduler = S.Scheduler
     if type(scheduler) ~= "table" or type(scheduler.AddOneShot) ~= "function" then
-        -- No scheduler to defer onto: keep the bounded direct read rather than
-        -- silently losing the sample.
+        -- 调度不可用时明确留失败证据，不能把两路 Native 扫描退回战斗回调。
         self.debuffDeferFailures = self.debuffDeferFailures + 1
-        return self:SampleDebuffs(now, false)
+        return false, "scheduler unavailable for death status sample"
     end
     self.debuffSampleScheduled = true
-    local added = scheduler:AddOneShot(self.debuffSampleTask, 0, function()
+    local added = scheduler:AddOneShot(self.debuffSampleTask, delay, function()
         A.debuffSampleScheduled = false
+        local refresh = A.debuffSampleForceRefresh == true
+        A.debuffSampleForceRefresh = false
         if F.enabled ~= true then return true end
-        local sampled, sampleErr = A:SampleDebuffs(nil, false)
+        local sampled, sampleErr = A:SampleDebuffs(nil, refresh)
         if sampled == false then
             A.debuffDeferFailures = A.debuffDeferFailures + 1
             return false, sampleErr
@@ -119,7 +122,7 @@ function A:RequestDebuffSample(now)
     if added ~= true then
         self.debuffSampleScheduled = false
         self.debuffDeferFailures = self.debuffDeferFailures + 1
-        return self:SampleDebuffs(now, false)
+        return false, "death status sample schedule rejected"
     end
     return true
 end
@@ -169,26 +172,9 @@ function A:PruneIncoming(now)
     end
 end
 
-local function DebuffName(row)
-    local tip = type(row) == "table" and row.tooltip or nil
-    local data = type(row) == "table" and row.data or nil
-    local name = type(tip) == "table" and (tip.name or tip.buffName or tip.title) or nil
-    if name == nil and type(data) == "table" then name = data.name or data.buffName or data.title end
-    local text = Trim(name)
-    if text == "" and row ~= nil and row.effectId ~= nil then text = "效果 #" .. tostring(row.effectId) end
-    return text ~= "" and text or "未知 Debuff"
-end
-
-local function DebuffStack(row)
-    local tip = type(row) == "table" and row.tooltip or nil
-    local data = type(row) == "table" and row.data or nil
-    return math.max(0, math.floor(tonumber(type(tip) == "table" and (tip.stack or tip.count) or nil)
-        or tonumber(type(data) == "table" and (data.stack or data.count) or nil) or 0))
-end
-
 function A:SampleDebuffs(now, force)
     local settings = F:GetSettings()
-    if settings.showDebuffs ~= true or F.auraConsumerHeld ~= true then return true end
+    if settings.showDebuffs ~= true or F.auraConsumerHeld ~= true or self.pendingDeath ~= nil then return true end
     now = tonumber(now) or NowMs()
     if force ~= true and now - (tonumber(self.lastDebuffSampleAt) or 0) < (tonumber(self.debuffSampleMinIntervalMs) or 150) then
         self.debuffSampleSkips = self.debuffSampleSkips + 1
@@ -198,37 +184,62 @@ function A:SampleDebuffs(now, force)
     if Aura == nil or type(Aura.GetSnapshot) ~= "function" then self.debuffFailures = self.debuffFailures + 1; return false end
     self.debuffReads = self.debuffReads + 1
     local snapshot, err = Aura:GetSnapshot("player", {
-        buff = false, hidden = false, debuff = true,
+        buff = true, hidden = false, debuff = true,
+        buffLimit = self.maxDebuffsPerSample,
         debuffLimit = self.maxDebuffsPerSample,
         ttlMs = force == true and 0 or 120,
+        forceRefresh = force == true,
     })
-    if type(snapshot) ~= "table" or type(snapshot.debuff) ~= "table" then
+    if type(snapshot) ~= "table" then
         self.debuffFailures = self.debuffFailures + 1
         return false, err
     end
-    local debuffs = {}
-    for index, row in ipairs(type(snapshot.debuff.rows) == "table" and snapshot.debuff.rows or {}) do
-        if index > self.maxDebuffsPerSample then break end
-        local data = type(row.data) == "table" and row.data or {}
-        debuffs[#debuffs + 1] = {
-            effectId = tonumber(row.effectId),
-            name = DebuffName(row),
-            stack = DebuffStack(row),
-            path = data.path,
-        }
+    -- 两路分别归一，不能让相同效果ID跨 Buff/Debuff 合并而丢失归属。
+    local sample = { time = tonumber(snapshot.at) or now, debuffs = {}, buffs = {}, statusSnapshot = {} }
+    for _, lane in ipairs({ "buff", "debuff" }) do
+        local observed = snapshot[lane]
+        if type(observed) == "table" and tonumber(observed.at) then sample.time = math.min(sample.time, observed.at) end
+        local state = "unavailable"
+        if type(observed) == "table" and observed.available == true then
+            state = observed.complete == true and observed.reliable == true and "complete" or "partial"
+        end
+        sample.statusSnapshot[lane] = state
+        if type(observed) == "table" and observed.available == true then
+            local map = Aura:GetStatusMap(snapshot, { buff = lane == "buff", debuff = lane == "debuff", hidden = false })
+            local target = lane == "buff" and sample.buffs or sample.debuffs
+            local seen = {}
+            for _, raw in ipairs(observed.rows or {}) do
+                local id = tonumber(raw.effectId)
+                local row = id and map[id] or nil
+                if row and not seen[id] and #target < self.maxDebuffsPerSample then
+                    seen[id] = true
+                    target[#target + 1] = { effectId = id, name = row.name, stack = row.stack,
+                        path = row.iconPath ~= "" and row.iconPath or nil, timeLeft = row.timeKnown == true and row.timeLeft or nil }
+                elseif row == nil then
+                    sample.statusSnapshot[lane] = "partial"
+                end
+            end
+            if (tonumber(observed.count) or 0) > self.maxDebuffsPerSample then sample.statusSnapshot[lane] = "partial" end
+        end
     end
-    self.debuffSamples[#self.debuffSamples + 1] = { time = tonumber(now) or NowMs(), debuffs = debuffs }
+    self.debuffSamples[#self.debuffSamples + 1] = sample
     while #self.debuffSamples > self.maxDebuffSamples do table.remove(self.debuffSamples, 1) end
     return true
 end
 
-function A:CopyDeathDebuffs(now)
+function A:CopyDeathStatus(now)
     local selected = nil
     for _, sample in ipairs(self.debuffSamples) do
-        if (tonumber(sample.time) or 0) <= now then selected = sample end
+        if (tonumber(sample.time) or 0) <= now and (selected == nil or sample.time >= selected.time) then selected = sample end
     end
-    if selected == nil then selected = self.debuffSamples[#self.debuffSamples] end
-    return DeepCopy(type(selected) == "table" and selected.debuffs or {})
+    if selected == nil then return { buffs = {}, debuffs = {}, statusSnapshot = { buff = "uncollected", debuff = "uncollected" } } end
+    local copy = DeepCopy(selected)
+    copy.statusSnapshot.time = copy.time
+    return copy
+end
+
+function A:CopyDeathDebuffs(now)
+    return self:CopyDeathStatus(now).debuffs
 end
 
 function A:OnCombatFact(fact)
@@ -264,6 +275,9 @@ function A:OnCombatFact(fact)
         sequence = math.max(0, tonumber(fact.sequence) or 0),
         source = source,
         ability = ability,
+        -- RU MELEE_DAMAGE 的 rawAbilityId 是伤害金额；仅 spell_damage 携带真实技能ID。
+        abilityId = fact.kind == "spell_damage" and tonumber(fact.rawAbilityId) and tonumber(fact.rawAbilityId) > 0
+            and math.floor(tonumber(fact.rawAbilityId)) or nil,
         amount = amount,
         environmental = fact.environmental == true and true or nil,
     }
@@ -283,11 +297,11 @@ function A:FinalizeDeath(noticeAt, noticeSequence)
     local settings = F:GetSettings()
     noticeAt = tonumber(noticeAt) or NowMs()
     noticeSequence = math.max(0, tonumber(noticeSequence) or math.huge)
-    -- Finalize already runs on the Scheduler, so the forced Aura read here is
-    -- outside the native callback by construction.
+    -- 死亡后客户端会清空状态；仅冻结通知前观测，收尾禁止强制重读。
     self.debuffSampleScheduled = false
     if S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.debuffSampleTask) end
-    if settings.showDebuffs == true then self:SampleDebuffs(noticeAt, true) end
+    local captured = settings.showDebuffs == true and self:CopyDeathStatus(noticeAt)
+        or { buffs = {}, debuffs = {}, statusSnapshot = { buff = "disabled", debuff = "disabled" } }
     local anchorAt = noticeAt
     local latest = self.incoming[#self.incoming]
     local latestAt = latest ~= nil and tonumber(latest.time) or nil
@@ -298,6 +312,10 @@ function A:FinalizeDeath(noticeAt, noticeSequence)
         local at = tonumber(event.time) or 0
         if at >= cutoff and at <= anchorAt + 250 and (tonumber(event.sequence) or 0) <= noticeSequence then
             local copy = DeepCopy(event)
+            local metadata = S.Services and S.Services.SkillMetadataV3
+            if copy.abilityId and metadata and type(metadata.GetSkillInfo) == "function" then
+                copy.iconPath = (metadata:GetSkillInfo(copy.abilityId, copy.ability) or {}).iconPath
+            end
             events[#events + 1] = copy
             total = total + (tonumber(copy.amount) or 0)
         end
@@ -305,7 +323,7 @@ function A:FinalizeDeath(noticeAt, noticeSequence)
     local lethal = events[#events]
     local nextSerial = math.max(0, tonumber(F.State.history.serial) or 0) + 1
     local record = {
-        schemaVersion = 1,
+        schemaVersion = 2,
         serial = nextSerial,
         time = anchorAt,
         noticeTime = noticeAt,
@@ -314,7 +332,9 @@ function A:FinalizeDeath(noticeAt, noticeSequence)
         totalDamage = math.floor(total + 0.5),
         lethal = lethal and DeepCopy(lethal) or nil,
         events = events,
-        debuffs = settings.showDebuffs == true and self:CopyDeathDebuffs(anchorAt) or {},
+        debuffs = captured.debuffs,
+        buffs = captured.buffs,
+        statusSnapshot = captured.statusSnapshot,
     }
     local committed, committedRecord = F:CommitDeathRecord(record)
     if committed == true then
@@ -401,6 +421,8 @@ function A:GetTimelineRows(serial, limit)
             source = event.source,
             ability = event.ability,
             amount = event.amount,
+            abilityId = event.abilityId,
+            iconPath = event.iconPath,
         }
     end
     limit = math.max(1, math.floor(tonumber(limit) or #rows))

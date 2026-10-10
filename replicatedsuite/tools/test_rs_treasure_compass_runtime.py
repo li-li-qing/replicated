@@ -48,6 +48,54 @@ end
 '''
 
 
+UI_HOST = r'''
+local Copy=ReplicatedSuite.LifeSliceFactory.Copy
+H.nodes=0;H.draws=0;H.labels=0;H.env=1;H.yaw=0;H.originX=17;H.originY=23
+ReplicatedSuite.Layout={GetUiEnvironmentRevision=function()return H.env,'mock-environment'end,
+ GetUiParentLocalOrigin=function()return H.originX,H.originY,true end,
+ GetContext=function()return {logicalWidth=1280,logicalHeight=800}end}
+ReplicatedSuite.Services.ScreenProjectionV3.ProjectWorldBatch=function(_,points,options)
+ H.points=Copy(points);H.options=Copy(options);local r={};local c,s=math.cos(H.yaw),math.sin(H.yaw)
+ for i,p in ipairs(points)do local x,y=p.x-100,p.y-200
+  r[i]={x=640+60*(x*c-y*s),y=380-30*(x*s+y*c)-45*(p.z-10),visible=not H.behind}
+ end
+ return r,'mock',{}
+end
+ReplicatedSuite.UI={
+ CreateOverlayWindow=function()return {visible=false}end,
+ CreateEmptyWidget=function(_,_,id,_,_,w,h,pickable)
+  H.nodes=H.nodes+1
+  local n={id=id,width=w,height=h,pickable=pickable}
+  function n:CreateColorDrawable(r,g,b,a)
+   H.draws=H.draws+1
+   if H.rejectDrawable then return nil end
+   local d={color={r,g,b,a},root=self}
+   function d:AddAnchor()if H.rejectDrawableAnchor then return false end end
+   function d:SetColor(r,g,b,a)self.color={r,g,b,a}end
+   return d
+  end
+  return n
+ end,
+ CreateLabel=function(_,_,id,text,_,_,w,h,font)
+  H.labels=H.labels+1;return {id=id,text=text,width=w,height=h,font=font}
+ end,
+ SetPickable=function(_,n,v)n.pickable=v;return true end,
+ SetColor=function(_,n,r,g,b,a)if H.rejectColor then return false end;n.color={r,g,b,a};if n.SetColor then n:SetColor(r,g,b,a)end;return true end,
+ SetText=function(_,n,t)if H.rejectText then return false end;n.text=t;return true end,
+ EnsureFontSize=function(_,n,v)n.font=v;return true end,
+ EnsureExtent=function(_,n,w,h)if H.rejectExtent then return false end;n.width,n.height=w,h;return true end,
+ InvalidateNativeState=function()return true end,
+ SetVisible=function(_,n,v)n.visible=v;return true end,
+ EnsureAnchor=function(_,n,_,x,y)if H.rejectAnchor then return false end;n.x,n.y=x,y;return true end,
+}
+ReplicatedSuite.Events.SubscribeInternal=function(_,_,_,fn)H.callback=fn;return true end
+H.items[1]=H.Item(100)
+function H.Render()
+ local f=ReplicatedSuite.Features.Treasure;assert(f.Authority:UpdateCompass())
+ local p=ReplicatedSuite.UIV3.TreasureCompassV3;assert(p:Render());return f,p
+end
+'''
+
 class TreasureCompassRuntimeTests(unittest.TestCase):
     def boot(self):
         lua = LuaRuntime(unpack_returned_tuples=True)
@@ -85,13 +133,14 @@ class TreasureCompassRuntimeTests(unittest.TestCase):
 
     def test_compass_uses_world_delta_and_local_projection_without_bag_scan(self):
         self.boot().execute('''
-        local f=H.Start();assert(type(f.Authority.UpdateCompass)=='function','compass missing')
+        H.items[1]=H.Item(100);local f=H.Start();assert(type(f.Authority.UpdateCompass)=='function','compass missing')
         local scans,reads=H.scans,H.reads
         assert(f.Authority:UpdateCompass());assert(H.scans==scans and H.reads==reads)
-        assert(#H.points==96,'unbounded or missing ring/arrow geometry')
+        assert(#H.points==310 and #f.Authority.compass.points==306,'unbounded or missing ground compass geometry')
         assert(H.options.rigidBatch and H.options.aspectSafeCamera)
         assert(H.options.anchorWorld.x==100 and H.options.anchorWorld.y==200)
-        assert(H.points[80].x>100 and math.abs(H.points[80].y-200)<0.001,'east treasure points wrong way')
+        assert(H.points[208].x>100 and math.abs(H.points[208].y-200)<0.001,'east treasure points wrong way')
+        assert(H.points[1].z==8.4 and H.options.anchorWorld.z==10,'ground circle offset contaminated player calibration')
         f:ReconcileDemand(nil,{count=1},{count=0})
         assert(next(H.tasks)==nil and #f.Authority.compass.points==0,'last consumer leaked compass task')
         ''')
@@ -112,31 +161,19 @@ class TreasureCompassRuntimeTests(unittest.TestCase):
     def test_presenter_reuses_pool_hides_consumed_target_and_retries_rejected_anchor(self):
         # 中文维护：执行真实 Presenter；UI 替身记录接受/拒写，禁止把点池数量与离线显示状态当成 RU 像素证据。
         lua = self.boot()
-        lua.execute('''
-        H.labels=0;H.reject=false;H.env=1
-        ReplicatedSuite.Layout={GetUiEnvironmentRevision=function()return H.env end}
-        ReplicatedSuite.UI={
-         CreateOverlayWindow=function()return {visible=false}end,
-         CreateLabel=function()H.labels=H.labels+1;return {}end,
-         SetPickable=function()return true end,
-         SetColor=function(_,w,r,g,b)w.color={r,g,b};return true end,
-         EnsureFontSize=function(_,w,v)w.font=v;return true end,
-         InvalidateNativeState=function()return true end,
-         SetVisible=function(_,w,v)w.visible=v;return true end,
-         EnsureAnchor=function(_,w,_,x,y)if H.reject then return false end;w.x=x;w.y=y;return true end}
-        ReplicatedSuite.Events.SubscribeInternal=function(_,topic,_,fn)H.callback=fn;return true end
-        ''')
+        lua.execute(UI_HOST)
         lua.execute((ROOT / "presentation/v3/widgets/rs_v3_treasure_compass.lua").read_text(encoding="utf-8-sig"))
         lua.execute('''
         local f=H.Start();assert(f.Authority:UpdateCompass())
         local p=ReplicatedSuite.UIV3.TreasureCompassV3
-        assert(p:Render() and H.labels==96 and p.host.visible)
-        assert(p:Render() and H.labels==96,'pool grew on same frame')
-        local old=p.pool[1].x;H.reject=true;f.Authority.compass.points[1].x=old+10
+        local count=#f.Authority.compass.points
+        assert(p:Render() and H.draws==count and H.labels==5 and p.host.visible)
+        assert(p:Render() and H.draws==count and H.labels==5,'pool grew on same frame')
+        local old=p.pool[1].x;H.rejectAnchor=true;f.Authority.compass.points[1].x=f.Authority.compass.points[1].x+10
         p:Render();assert(p.pool[1].x==old and p.pool[1].root.visible==false)
-        H.reject=false;p:Render();assert(p.pool[1].x==old+10 and p.pool[1].root.visible)
-        local label=p.pool[1].root;label.x=nil;label.color=nil;label.font=0;H.env=2
-        p:Render();assert(label.x==old+10 and label.color and label.font==15 and H.labels==96,'UI environment did not restore existing dots')
+        H.rejectAnchor=false;p:Render();assert(p.pool[1].x==old+10 and p.pool[1].root.visible)
+        local dot=p.pool[1];dot.root.x=nil;dot.drawable.color=nil;p.distanceLabel.root.font=0;H.env=2
+        p:Render();assert(dot.root.x==old+10 and dot.drawable.color and p.distanceLabel.root.font==12 and H.draws==count,'UI environment did not restore existing dots')
         f.Authority.compass.points[1].visible=false;p:Render();assert(p.pool[1].root.visible==false)
         H.items={};H.Tick(500);H.callback();assert(p.host.visible==false)
         ''')

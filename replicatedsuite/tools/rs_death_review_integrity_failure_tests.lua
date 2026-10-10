@@ -57,6 +57,30 @@ local function DamageIndex(P,h,key)
     else entries[i]={lethalSource=entries[i].lethalSource,windowMs=entries[i].windowMs} end
     h.disk[key]=assert(P:EncodePhysicalEnvelope(raw))
 end
+Test('fresh history retains the latest twenty deaths and reloads that default',function()
+    local F,P,h=Boot();assert(F:EnsureStoreLoaded())
+    assert(h.writes==0,'opening an empty index must not write defaults')
+    for i=1,21 do assert(F:CommitDeathRecord(Record(i)))end
+    assert(#F.State.history.entries==20 and F.State.history.entries[1].serial==2,'fresh history still trims at ten')
+    local F2,P2,h2=Boot(h.disk);assert(F2:EnsureStoreLoaded())
+    assert(F2:GetSettings().maxHistory==20 and #F2.State.history.entries==20 and h2.writes==0)
+    assert(P2:GetStore('v3.death_review').writeFenced~=true)
+end)
+Test('saved limits and missing schema2 history setting keep their original canonical',function()
+    for _,maximum in ipairs({7,10,30})do
+        local F,P,h=Boot();assert(F:EnsureStoreLoaded());assert(F:SetMaxHistoryPersistent(maximum))
+        local F2,_,h2=Boot(h.disk);assert(F2:EnsureStoreLoaded())
+        assert(F2:GetSettings().maxHistory==maximum and h2.writes==0,'saved history limit was replaced')
+    end
+    local F,P,h=Boot();assert(F:EnsureStoreLoaded());assert(F:SetMaxHistoryPersistent(10))
+    local st=P:GetStore('v3.death_review');local raw=assert(P:DecodePhysicalEnvelope(h.disk[st.resolvedKey]))
+    raw.payload.settings.maxHistory=nil
+    -- 旧 schema2 canonical 的缺省值是10，声明指纹保留；只重封物理输入的 envelope。
+    raw.__rsmeta.envelopeFingerprint=assert(P:FingerprintEnvelopeIntegrity(raw))
+    h.disk[st.resolvedKey]=assert(P:EncodePhysicalEnvelope(raw))
+    local F2,P2,h2=Boot(h.disk);assert(F2:EnsureStoreLoaded())
+    assert(F2:GetSettings().maxHistory==10 and h2.writes==0 and not P2:GetStore(st.id).writeFenced)
+end)
 Test('incomplete 27th summary stays fenced without a false historical candidate',function()
     local _,P,h,st=Prepare(27);local key=st.resolvedKey;DamageIndex(P,h,key)
     local _,P2,h2=Boot(h.disk);local s=P2:GetStore(st.id)
@@ -98,7 +122,7 @@ Test('shard readback failure cannot publish an index reference',function()
     h.saved={}
     h.corrupt=function(key,physical)
         if key:find('death_review_record_',1,true) then
-            local raw=assert(P:DecodePhysicalEnvelope(physical));raw.payload.totalDamage=123
+            local raw=assert(P:DecodePhysicalEnvelope(physical));(raw.payload or raw).totalDamage=123
             h.disk[key]=assert(P:EncodePhysicalEnvelope(raw))
         end
     end
@@ -134,10 +158,10 @@ Test('healthy commit and cold reload retain records and settings',function()
     end
     assert(h2.writes==0 and h2.clears==0)
 end)
-Test('write verification does not change legacy registration gates or schema',function()
+Test('record schema2 retains prior index and write verification gates',function()
     local F,P=Boot();local st=P:GetStore('v3.death_review');local rid=assert(F:EnsureRecordStore(1))
     assert(st.schemaVersion==2 and st.verifyAfterSave==false and st.allowIntegrityUpgrade==true)
-    assert(P:GetStore(rid).schemaVersion==1 and P:GetStore(rid).verifyAfterSave==false)
+    assert(P:GetStore(rid).schemaVersion==2 and P:GetStore(rid).verifyAfterSave==false)
 end)
 -- 中文维护：复刻本次 Native 截断的 settings 丢失 + 第27行不完整 + 后3行消失。
 local function NativeCut(P,h,st)

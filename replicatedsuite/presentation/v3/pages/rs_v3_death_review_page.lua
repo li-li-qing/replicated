@@ -71,10 +71,72 @@ local function Build(parent, route)
     -- FloatingSurface owns `v3_death_review_widget`; keep the page action on a
     -- distinct logical identity so auto-show and page creation can coexist.
     local showWidget = RSUI:Button({ id = "v3_death_review_widget_toggle", parent = top, text = "查看最近记录", compact = true, slot = { size = "fixed", width = 110 } })
+    local layoutButton = RSUI:Button({ id = "v3_death_review_layout_toggle", parent = top, text = "弹窗布局", compact = true, slot = { size = "fixed", width = 88 } })
     local deleteSelected = RSUI:Button({ id = "v3_death_review_delete_selected", parent = top, text = "删除选中", compact = true, enabled = false, slot = { size = "fixed", width = 88 } })
     clearHistory = RSUI:Button({ id = "v3_death_review_clear", parent = top, text = "清空历史", compact = true, slot = { size = "fixed", width = 98 } })
     local settingsButton = RSUI:Button({ id = "v3_death_review_settings_toggle", parent = top, text = "展开设置", compact = true, slot = { size = "fixed", width = 88 } })
     local healthText = RSUI:Text({ id = "v3_death_review_health", parent = top, text = "--", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
+
+    -- 中文维护：布局入口复用死亡自动弹出的同一个 FloatingSurface；不创建第二份预览窗口或布局配置。
+    local widgetHost = S.UIV3.WidgetHost
+    local widgetId = "combat.death_review"
+    local layoutControls = RSUI:VerticalBox({ id = "v3_death_review_layout_controls", parent = root, gap = 4, slot = { size = "auto", hAlign = "fill" } })
+    local layoutActions = RSUI:HorizontalBox({ id = "v3_death_review_layout_actions", parent = layoutControls, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
+    local lockWidget = RSUI:Button({ id = "v3_death_review_widget_lock", parent = layoutActions, text = "锁定位置", compact = true, slot = { size = "fixed", width = 98 } })
+    local resetWidget = RSUI:Button({ id = "v3_death_review_widget_reset", parent = layoutActions, text = "恢复默认布局", compact = true, slot = { size = "fixed", width = 110 } })
+    RSUI:Text({ id = "v3_death_review_layout_hint", parent = layoutControls,
+        text = "拖动弹窗标题调整位置，拖动边缘或右下角调整大小，松开后自动保存。也可输入宽度和高度；下次死亡弹出时沿用。",
+        fontSize = 10, tone = "muted", overflow = "wrap", maxLines = 3, slot = { size = "auto", minHeight = 30, hAlign = "fill" } })
+    local sizeRow = RSUI:HorizontalBox({ id = "v3_death_review_widget_size", parent = layoutControls, gap = 8, slot = { size = "auto", hAlign = "fill" } })
+    local function ResizeWidget(key, value)
+        local instance = widgetHost:GetInstance(widgetId)
+        if instance == nil or type(instance.SetSize) ~= "function" then return false, "请先打开弹窗布局" end
+        local state = Feature:GetWidgetWindowState() or {}
+        local width = key == "width" and value or state.width or 470
+        local height = key == "height" and value or state.height or 330
+        -- FloatingSurface 拥有原生几何校验、失败回滚及持久化；NumericSetting 不再创建另一条保存路径。
+        return instance:SetSize(width, height, true)
+    end
+    local widgetWidth = D:NumericSetting(sizeRow, { id = "v3_death_review_widget_width", label = "弹窗宽度", min = 420, max = 1400, step = 10, integer = true,
+        get = function() return (Feature:GetWidgetWindowState() or {}).width or 470 end,
+        set = function(value) return ResizeWidget("width", value) end, slot = { size = "fill", fill = 1 } })
+    local widgetHeight = D:NumericSetting(sizeRow, { id = "v3_death_review_widget_height", label = "弹窗高度", min = 300, max = 1000, step = 10, integer = true,
+        get = function() return (Feature:GetWidgetWindowState() or {}).height or 330 end,
+        set = function(value) return ResizeWidget("height", value) end, slot = { size = "fill", fill = 1 } })
+    root.widgetLayoutVisible = false
+    layoutControls:SetVisible(false)
+    function root:RefreshWidgetLayout()
+        local state = Feature:GetWidgetWindowState() or {}
+        lockWidget:SetText(state.locked == true and "解锁位置" or "锁定位置")
+        if self.widgetLayoutVisible then widgetWidth:Render(); widgetHeight:Render() end
+        return true
+    end
+    function root:SetWidgetLayoutVisible(visible)
+        if visible == true then
+            local shown, showErr = widgetHost:SetVisible(widgetId, true, { source = "death_review_layout", persist = false })
+            if shown ~= true then return false, showErr end
+            local restored, restoreErr = widgetHost:SetMinimized(widgetId, false, true)
+            if restored ~= true then return false, restoreErr end
+            local unlocked, unlockErr = widgetHost:SetLocked(widgetId, false, true)
+            if unlocked ~= true then return false, unlockErr end
+            local instance = widgetHost:GetInstance(widgetId)
+            if instance and instance.windowController then instance.windowController:BringToFront() end
+        end
+        self.widgetLayoutVisible = visible == true
+        layoutControls:SetVisible(self.widgetLayoutVisible)
+        layoutButton:SetText(self.widgetLayoutVisible and "收起布局" or "弹窗布局")
+        return self:RefreshWidgetLayout()
+    end
+    layoutButton.spec.onClick = function() return root:SetWidgetLayoutVisible(not root.widgetLayoutVisible) end
+    lockWidget.spec.onClick = function()
+        local locked = (Feature:GetWidgetWindowState() or {}).locked == true
+        local ok, err = widgetHost:SetLocked(widgetId, not locked, true)
+        root:RefreshWidgetLayout(); return ok, err
+    end
+    resetWidget.spec.onClick = function()
+        local ok, err = widgetHost:ResetLayout(widgetId)
+        root:RefreshWidgetLayout(); return ok, err
+    end
 
     local settings = RSUI:VerticalBox({ id = "v3_death_review_settings", parent = root, gap = 4, slot = { size = "auto", hAlign = "fill" } })
     local settingsTop = RSUI:HorizontalBox({ id = "v3_death_review_settings_top", parent = settings, gap = 6, slot = { size = "auto", hAlign = "fill" } })
@@ -85,7 +147,7 @@ local function Build(parent, route)
         storeId = STORE_ID, persistDelayMs = 300, persistReason = "death_review_auto_show", slot = { size = "fixed", width = 142 },
     })
     local showDebuffs = RSUI:Toggle({
-        id = "v3_death_review_debuff", parent = settingsTop, onText = "记录 Debuff：开", offText = "记录 Debuff：关",
+        id = "v3_death_review_debuff", parent = settingsTop, onText = "记录状态：开", offText = "记录状态：关",
         get = function() return Settings().showDebuffs == true end, set = function(v) return Feature.Commands:ApplyShowDebuffs(v) end,
         storeId = STORE_ID, persistDelayMs = 300, persistReason = "death_review_debuff", slot = { size = "fixed", width = 132 },
     })
@@ -114,63 +176,23 @@ local function Build(parent, route)
         return true
     end
 
-    local body = RSUI:HorizontalBox({ id = "v3_death_review_body", parent = root, gap = 8, slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" } })
-    local left = RSUI:Border({ id = "v3_death_review_history_panel", parent = body, padding = 5, variant = "card", slot = { size = "fixed", width = 300, vAlign = "fill" } })
-    local leftStack = RSUI:VerticalBox({ id = "v3_death_review_history_stack", parent = left, gap = 4 })
-    RSUI:Text({ id = "v3_death_review_history_title", parent = leftStack, text = "历史记录", fontSize = 10, tone = "strong", slot = { size = "fixed", height = 20 } })
-    local history = RSUI:TableView({
-        id = "v3_death_review_history", parent = leftStack, items = {}, rowHeight = 27, headerHeight = 24, scrollbar = true,
-        selectable = true, selectionMode = "single", columnResize = true,
-        getKey = function(item) return item and item.serial or nil end,
-        onSelectionChanged = function(_, _, view)
-            root.selectedSerial = view and type(view.GetSelectedKey) == "function" and tonumber(view:GetSelectedKey()) or nil
+    -- 顶部选择历史，内容区完整留给伤害与状态两列。
+    local historyRow = RSUI:HorizontalBox({ id = "v3_death_review_history_row", parent = root, gap = 6,
+        slot = { size = "fixed", height = 30, hAlign = "fill" } })
+    RSUI:Text({ id = "v3_death_review_history_title", parent = historyRow, text = "历史记录", fontSize = 10,
+        tone = "strong", slot = { size = "fixed", width = 62 } })
+    local history = RSUI:Dropdown({ id = "v3_death_review_history", parent = historyRow, items = {}, maxVisible = 8,
+        placeholder = "暂无死亡记录", get = function() return root.selectedSerial end,
+        set = function(serial)
+            root.selectedSerial = tonumber(serial)
             deleteSelected:SetEnabled(root.selectedSerial ~= nil)
-            if type(root.RefreshDetail) == "function" then root:RefreshDetail() end
-        end,
-        columns = {
-            { id = "clock", title = "时间", field = "clock", size = "fixed", width = 58, minWidth = 48 },
-            { id = "lethal", title = "致命来源 / 技能", size = "fill", minWidth = 110, fill = 1,
-                getText = function(item) return tostring(item.lethalSource or "--") .. " · " .. tostring(item.lethalAbility or "--") end },
-            { id = "total", title = "总伤害", field = "totalDamage", size = "fixed", width = 62, minWidth = 50, getTone = function() return "red" end },
-        },
-        slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
-    })
-
-    local right = RSUI:Border({ id = "v3_death_review_detail_panel", parent = body, padding = 5, variant = "card", slot = { size = "fill", fill = 1, vAlign = "fill" } })
-    local rightStack = RSUI:VerticalBox({ id = "v3_death_review_detail_stack", parent = right, gap = 4 })
-    local summary = RSUI:Text({ id = "v3_death_review_summary", parent = rightStack, text = "请选择一条死亡记录", fontSize = 10, tone = "strong", overflow = "wrap", slot = { size = "fixed", height = 42 } })
-    local timeline = RSUI:TableView({
-        id = "v3_death_review_timeline", parent = rightStack, items = {}, rowHeight = 26, headerHeight = 24, scrollbar = true,
-        selectable = false, columnResize = true,
-        columns = {
-            { id = "time", title = "距死亡", field = "timeText", size = "fixed", width = 56, minWidth = 44 },
-            { id = "source", title = "来源", field = "source", size = "fill", minWidth = 82, fill = 0.8 },
-            { id = "ability", title = "技能", field = "ability", size = "fill", minWidth = 100, fill = 1.2 },
-            { id = "amount", title = "伤害", field = "amount", size = "fixed", width = 66, minWidth = 50, getTone = function() return "red" end },
-        },
-        slot = { size = "fill", fill = 1, hAlign = "fill", vAlign = "fill" },
-    })
-    local debuffs = RSUI:Text({ id = "v3_death_review_detail_debuffs", parent = rightStack, text = "死亡时 Debuff：--", fontSize = 9, tone = "muted", overflow = "wrap", slot = { size = "fixed", height = 34 } })
-
+            return root:RefreshDetail()
+        end, slot = { size = "fill", fill = 1 } })
+    local detail = S.UIV3.DeathReviewContent:Create(root, "v3_death_review")
+    root.detail, root.historyPicker = detail, history
     function root:RefreshDetail()
         local projection = Feature:GetProjection({ serial = self.selectedSerial, historyLimit = 30, timelineLimit = 96 })
-        local rows, record = projection.timelineRows or {}, projection.record
-        timeline:SetItems(rows, record and record.serial or 0)
-        if record == nil then
-            summary:SetText("请选择一条死亡记录")
-            timeline:SetViewState("empty", { title = "未选择记录", detail = "从左侧历史中选择一次死亡查看完整时间线。" })
-            debuffs:SetText("死亡时 Debuff：--")
-            return true
-        end
-        local lethal = type(record.lethal) == "table" and record.lethal or {}
-        summary:SetText(tostring(record.clock or "--:--:--") .. " · 总伤害 " .. tostring(record.totalDamage or 0)
-            .. " · 窗口 " .. string.format("%.1fs", (tonumber(record.windowMs) or 0) / 1000)
-            .. "\n致命：" .. tostring(lethal.source or "--") .. " · " .. tostring(lethal.ability or "--") .. " · " .. tostring(lethal.amount or 0))
-        timeline:SetViewState(#rows > 0 and "ready" or "empty", #rows > 0 and nil or { title = "没有伤害行", detail = "该死亡记录中没有满足过滤条件的受伤事件。" })
-        local names = {}
-        for _, row in ipairs(record.debuffs or {}) do names[#names + 1] = tostring(row.name or "未知") .. ((tonumber(row.stack) or 0) > 1 and ("×" .. tostring(row.stack)) or "") end
-        debuffs:SetText("死亡时 Debuff：" .. (#names > 0 and table.concat(names, " · ") or "无 / 未采集"))
-        return true
+        return detail:Render(projection.timelineRows or {}, projection.record)
     end
 
     function root:Refresh()
@@ -178,6 +200,8 @@ local function Build(parent, route)
         local enabled = projection.enabled == true
         featureToggle:SetText(enabled and "关闭死亡回顾" or "启用死亡回顾")
         showWidget:SetEnabled(enabled)
+        layoutButton:SetEnabled(enabled); lockWidget:SetEnabled(enabled); resetWidget:SetEnabled(enabled)
+        self:RefreshWidgetLayout()
         local h = projection.health or {}
         healthText:SetText((enabled and "运行中" or "已关闭") .. " · 历史 " .. tostring(h.history or 0) .. " · 缓冲 " .. tostring(h.incoming or 0)
             .. " · Combat " .. tostring(h.busScope or "none") .. " · Aura " .. tostring(h.auraConsumer == true and "按需" or "关闭")
@@ -185,18 +209,16 @@ local function Build(parent, route)
         healthText:SetTone(enabled and "green" or "muted")
         local previousSerial = self.selectedSerial
         self.rows = projection.historyRows or {}
-        history:SetItems(self.rows, h.revision or 0)
-        if #self.rows == 0 then
-            history:SetViewState("empty", { title = "暂无死亡记录", detail = enabled and "发生死亡后会记录最近受伤时间线。" or "先启用死亡回顾；功能关闭时不会监听战斗事件。" })
-            self.selectedSerial = nil
-            history:ClearSelection()
-        else
-            history:SetViewState("ready")
-            local selectedIndex = nil
-            for index, row in ipairs(self.rows) do if tonumber(row.serial) == tonumber(previousSerial) then selectedIndex = index; break end end
-            if selectedIndex == nil then selectedIndex = 1; self.selectedSerial = tonumber(self.rows[1].serial) end
-            history:SetSelectedIndex(selectedIndex)
+        local options, selected = {}, nil
+        for _, row in ipairs(self.rows) do
+            options[#options + 1] = { value = tonumber(row.serial), text = tostring(row.clock or "--:--:--")
+                .. " · " .. tostring(row.lethalSource or "--") .. " · " .. tostring(row.lethalAbility or "--")
+                .. " · 总伤害 " .. tostring(row.totalDamage or 0) }
+            if tonumber(row.serial) == tonumber(previousSerial) then selected = tonumber(row.serial) end
         end
+        self.selectedSerial = selected or (#self.rows > 0 and tonumber(self.rows[1].serial) or nil)
+        history:SetItems(options)
+        history:Render()
         self:RefreshDetail()
         deleteSelected:SetEnabled(self.selectedSerial ~= nil)
         autoShow:Render(); showDebuffs:Render(); windowMs:Render(); minDamage:Render(); maxHistory:Render()
@@ -251,6 +273,7 @@ local function Build(parent, route)
         if S.Events and type(S.Events.SubscribeInternal) == "function" then
             S.Events:SubscribeInternal("v3.death_review.updated", self, function() root:Refresh() end)
             S.Events:SubscribeInternal("v3.death_review.settings", self, function() root:Refresh() end)
+            S.Events:SubscribeInternal("v3.death_review.layout", self, function() root:RefreshWidgetLayout() end)
         end
         self.subscribed = true
         return true

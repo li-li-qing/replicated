@@ -81,7 +81,9 @@ local function ValidateFeatureContract(feature, kind)
             return false, "钓鱼页面 Feature 契约不完整"
         end
     elseif kind == "treasure" then
-        if type(commands.Select) ~= "function" or type(feature.GetWidgetVisible) ~= "function" or type(commands.SetWidgetVisible) ~= "function" then return false, "寻宝页面 Feature 契约不完整" end
+        if type(commands.Select) ~= "function" or type(commands.ShowSelectedOnMap) ~= "function"
+            or type(feature.GetWidgetVisible) ~= "function" or type(commands.SetWidgetVisible) ~= "function" then return false, "寻宝页面 Feature 契约不完整" end
+        if type(S.UIV3.TreasureMapInteraction) ~= "table" or type(S.UIV3.TreasureMapInteraction.Activate) ~= "function" then return false, "寻宝双击入口缺失" end
     else
         return false, "未知生活页面类型: " .. tostring(kind)
     end
@@ -112,7 +114,7 @@ local function Build(parent, route, feature, kind)
     local title, subtitle = "", ""
     if kind == "trade" then title, subtitle = "跑商", "选择路线后查看实时货率与预计售价；单击选中货物，双击该行查询它的材料价格并自动计算毛利。"
     elseif kind == "bonds" then title, subtitle = "债券 / 居民板", "分别在西大陆、东大陆（以及原大陆）刷新一次即可保存当天快照；页面会合并显示已读取大陆，排序不会隐藏另一大陆。"
-    elseif kind == "treasure" then title, subtitle = "寻宝", "直接扫描有限背包槽位中的藏宝图坐标，并在单位世界坐标可用时计算方向与距离。"
+    elseif kind == "treasure" then title, subtitle = "寻宝", "单击藏宝图切换追踪目标；双击藏宝图，在地图上显示位置。"
     else title, subtitle = "钓鱼", "按需识别目标鱼动作并可安全切换 R；关闭、切区、战斗恢复或重载时按持久恢复快照还原原键位。" end
     D:PageHeader(root, "v3_" .. kind .. "_header", title, subtitle, "刷新", function()
         local ok, refreshErr = feature.Commands:Refresh("page_manual")
@@ -411,12 +413,9 @@ local function Build(parent, route, feature, kind)
             return ok, quoteErr
         end
     elseif kind == "treasure" then
-        tableView.onSelectionChanged = function(index)
-            local row = tableView:GetItem(index)
-            if row == nil or row.key == nil then return false end
-            local ok, selectErr = feature.Commands:Select(row.key)
-            if ok == true then root:Refresh() end
-            return ok, selectErr
+        tableView.onItemActivated = function(item, index)
+            local row = type(item) == "table" and item or tableView:GetItem(index)
+            return S.UIV3.TreasureMapInteraction:Activate(root, row, feature)
         end
     elseif kind == "bonds" then
         tableView.onSelectionChanged = function(index)
@@ -586,7 +585,13 @@ local function Build(parent, route, feature, kind)
                 widgetButton:SetText(WidgetHost:IsVisible("life.trade") and "关闭悬浮窗" or "打开悬浮窗")
             end
         elseif kind == "treasure" then
-            status:SetText(enabled and ((projection.status or "--") .. " · " .. tostring(#(projection.maps or {})) .. " 张地图" .. (projection.selected and (" · 当前 " .. tostring(projection.selected.name or "--")) or "")) or "功能已关闭")
+            S.UIV3.TreasureMapInteraction:SyncSelection(tableView, projection)
+            if not enabled then S.UIV3.TreasureMapInteraction:Reset(root) end
+            local treasureStatus = (projection.status or "--") .. " · " .. tostring(#(projection.maps or {})) .. " 张地图"
+                .. (projection.selected and (" · 当前 " .. tostring(projection.selected.name or "--")) or "")
+            local treasureError = root.treasureActionError or projection.lastMapActionError
+            if treasureError then treasureStatus = "定位未完成：" .. tostring(treasureError) end
+            status:SetText(enabled and treasureStatus or "功能已关闭")
             if widgetButton then widgetButton:SetEnabled(enabled); widgetButton:SetText(WidgetHost:IsVisible("life.treasure") and "关闭悬浮窗" or "打开悬浮窗") end
         elseif kind == "fishing" then
             local fishingText = projection.message or "--"
@@ -658,6 +663,7 @@ local function Build(parent, route, feature, kind)
         return Host:SyncFeatureConsumer(self, consumerBinding, "page_activated")
     end
     function root:OnDeactivated()
+        if kind == "treasure" then S.UIV3.TreasureMapInteraction:Reset(self) end
         self:UnbindFeatureUpdates()
         return Host:ReleaseFeatureConsumer(self, consumerBinding, "page_deactivated")
     end

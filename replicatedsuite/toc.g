@@ -251,6 +251,7 @@ presentation/v3/widgets/rs_v3_activity_widget.lua
 presentation/v3/widgets/rs_v3_task_widget.lua
 presentation/v3/widgets/rs_v3_gear_widget.lua
 presentation/v3/widgets/rs_v3_feature_profiles_widget.lua
+presentation/v3/widgets/rs_v3_death_review_content.lua
 presentation/v3/widgets/rs_v3_death_review_widget.lua
 presentation/v3/widgets/rs_v3_dps_widget.lua
 presentation/v3/widgets/rs_v3_buff_display_widget.lua

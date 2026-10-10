@@ -495,7 +495,7 @@ function Shell:Create()
     -- Authority / 数据流：仍由 v3:shell 经 RSUI:Text 创建展示文本，不直接写 Native 或业务 Store。
     -- 兼容边界：保留逻辑 ID、响应式宽度及样式；不改 ESC 注册名、聊天前缀或用户配置，无迁移。
     -- 后续维护：联系信息仅在此展示；窄窗沿用省略规则，不扩大拖动命中区或挤占右侧按钮。
-    self.brandTitle=RSUI:Text({ id = "v3_shell_title", parent = brand, text = "作者:Replicated   QQ群:1104129461   正式版5.0", fontSize = 15, tone = "accent", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
+    self.brandTitle=RSUI:Text({ id = "v3_shell_title", parent = brand, text = "作者:Replicated   QQ群:1104129461   正式版5.2", fontSize = 15, tone = "accent", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
     self.supportText=RSUI:Text({ id = "v3_shell_support_text", parent = brand, text = "如果觉得功能好用，可以邮件给作者提供一点打赏", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 14 } })
     -- 中文维护：窄窗可省略顶栏文字，悬停时仍能读到完整文案；不改变右侧按钮的命中区域。
     if RSUI.Tooltip and type(RSUI.Tooltip.BindOverflowText) == "function" then RSUI.Tooltip:BindOverflowText(self.brandTitle,self.brandTitle,{cursorFollow=true,maxWidth=440}); RSUI.Tooltip:BindOverflowText(self.supportText,self.supportText,{cursorFollow=true,maxWidth=440}) end

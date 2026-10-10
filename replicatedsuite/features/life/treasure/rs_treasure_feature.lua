@@ -30,6 +30,11 @@ S.Features.Treasure = Treasure
 Treasure.UpdateTopic = "v3.life.treasure.updated"
 -- 中文维护（2026-10-09）：罗盘帧单独通知 Presenter，禁止让 30Hz 镜头更新重建生活列表或写入存档。
 Treasure.CompassTopic = "v3.life.treasure.compass"
+Treasure.CompassDisplayContractVersion = 2
+-- GroundCompass v2.4 的显示语义：米制地面圈、四正方位、金色寻宝箭头、进圈变金并收箭。
+-- 属于显示参数而非第二份寻宝状态，不改变选择/历史配置的 canonical。
+Treasure.CompassStyle = { radius = 2.5, groundLift = 1.6, maxDistance = 60000,
+    ringSegments = 120, maxPoints = 316, labelSize = 12, labelOut = 1.16, reachedDistance = 10 }
 Treasure.ObservationContractVersion = 2 -- 中文维护：藏宝图仍由 InventorySnapshotV3 选择物理背包；2026-10-09 加入 500ms 选中槽核对、3 秒有限补采，罗盘帧不扫描背包。
 Treasure.MapLocationContractVersion = 2 -- 中文维护注释（2026-09-19，原生地图定位区域 Authority）：v2 修复旧版把 ShowWorldmapLocation 首参固定为 2 的错误假设。RU 2025-11 后签名明确要求 zoneGroupId + 全局坐标；优先使用藏宝图原生条目显式区域组，缺失时只退化到玩家当前区域组，绝不再用魔数伪造地图上下文。
 Treasure.State = { selectedKey = nil, widgetVisible = false, widgetWindow = nil }
@@ -175,6 +180,39 @@ function XA:CheckInventory()
     if self.status ~= "ready" then return self:Refresh() end -- 中文维护：读取恢复后重新核对列表，不能一直挂 unavailable。
     return true
 end
+local function CompassGeometry(style, previous)
+    if previous and previous.radius == style.radius and previous.ringSegments == style.ringSegments then return previous end
+    -- 固定圈、刻度和箭头模板只在显示参数变化时计算；每帧仍使用本帧位置/方向作平移旋转。
+    -- 私有会话缓存，不保存坐标事实、不改变投影来源、点数或33ms刷新频率。
+    local geometry = { radius = style.radius, ringSegments = style.ringSegments, base = {}, arrow = {} }
+    local radius = style.radius
+    local function Add(rows, x, y, kind, size)
+        rows[#rows + 1] = { x = x, y = y, kind = kind, size = size or 3 }
+    end
+    for i = 1, style.ringSegments do
+        local a = (i - 1) * math.pi * 2 / style.ringSegments
+        Add(geometry.base, math.cos(a) * radius, math.sin(a) * radius, "ring")
+    end
+    for degree = 0, 345, 15 do
+        local a = degree * math.pi / 180
+        local length = degree % 45 == 0 and 0.11 or 0.05
+        for step = 1, 2 do
+            local r = radius * (1 + length * step / 2)
+            Add(geometry.base, math.sin(a) * r, math.cos(a) * r, "tick")
+        end
+    end
+    for i = 1, 40 do Add(geometry.arrow, radius * (0.06 + 0.66 * i / 40), 0, "arrow", 6) end
+    for row = 0, 12 do
+        local fraction = row / 12
+        local halfSteps = math.ceil((1 - fraction) * 6)
+        local length = radius * (0.72 + 0.26 * fraction)
+        for column = -halfSteps, halfSteps do
+            local side = radius * 0.085 * (1 - fraction) * (halfSteps > 0 and column / halfSteps or 0)
+            Add(geometry.arrow, length, side, "arrow")
+        end
+    end
+    return geometry
+end
 function XA:UpdateCompass()
     -- 中文维护（2026-10-09）：参考 GroundCompass 的坐标分离规则：藏宝图减 world(false)，相机只投影 local(true)。
     -- 这里只把世界差向量平移到玩家局部基准；不拿全局藏宝坐标直接与局部相机位置相减。
@@ -189,35 +227,82 @@ function XA:UpdateCompass()
     if wx == nil or wy == nil or px == nil or py == nil or pz == nil then ClearCompass("position_unavailable"); return false end
     local dx, dy = map.worldX - wx, map.worldY - wy
     local distance = math.sqrt(dx * dx + dy * dy)
-    local radius, points = 4, self.compassWorldPoints or {}
-    self.compassWorldPoints = points -- 中文维护：固定最多 96 点的会话工作区，重复更新复用表，不增长 Native 控件或 Drawable 层。
+    local style = Treasure.CompassStyle
+    if distance ~= distance or distance == math.huge or distance > style.maxDistance then
+        ClearCompass("coordinate_space_mismatch"); return false
+    end
+    local radius, points = style.radius, self.compassWorldPoints or {}
+    self.compassWorldPoints = points -- 有界工作区：120环点＋48刻度＋137箭头＋圆心＋4方位，共310个投影点。
+    local pointPool = self.compassWorldPointPool or {}
+    self.compassWorldPointPool = pointPool -- 进圈裁掉活动数组的箭头时，保留有界工作表供出圈复用。
+    local geometry = CompassGeometry(style, self.compassGeometry)
+    self.compassGeometry = geometry
+    local near = distance <= radius
     local used = 0
-    local function Point(x, y)
+    local function Point(x, y, kind, size, text)
         used = used + 1
-        local point = points[used] or {}; points[used] = point
-        point.x, point.y, point.z = px + x, py + y, pz + 0.25
+        local point = pointPool[used] or {}; pointPool[used] = point; points[used] = point
+        -- 此客户端的 playerPos 是头/胸部锚点；参考包已证实下移1.6米。
+        -- 相机校准仍对应原 playerPos，不能把地面点反过来校准到头部屏幕锚点。
+        point.x, point.y, point.z = px + x, py + y, pz - style.groundLift
+        point.kind, point.size, point.text = kind, size or 3, text
     end
-    for i = 1, 64 do
-        local a = (i - 1) * math.pi * 2 / 64
-        Point(math.cos(a) * radius, math.sin(a) * radius)
+    for _, offset in ipairs(geometry.base) do Point(offset.x, offset.y, offset.kind, offset.size) end
+    if not near then
+        local ux, uy = dx / distance, dy / distance
+        -- 三角形在地面平面内填充，同一投影自然随俯角压扁，不能用V形轮廓代替箭头。
+        for _, offset in ipairs(geometry.arrow) do Point(ux * offset.x - uy * offset.y, uy * offset.x + ux * offset.y, "arrow", offset.size) end
     end
-    if distance > 0.01 then
-        local ux, uy, tip = dx / distance, dy / distance, radius * 0.9
-        for i = 1, 16 do Point(ux * tip * i / 16, uy * tip * i / 16) end
-        for side = -1, 1, 2 do
-            for i = 1, 8 do
-                local back = i * radius * 0.22 / 8
-                Point(ux * (tip - back) - uy * back * side, uy * (tip - back) + ux * back * side)
-            end
-        end
-    end
+    Point(0, 0, "center")
+    local centerIndex = used
+    local dotCount = used
+    local labelRadius = radius * style.labelOut
+    Point(0, labelRadius, "label", 0, "北")
+    Point(labelRadius, 0, "label", 0, "东")
+    Point(0, -labelRadius, "label", 0, "南")
+    Point(-labelRadius, 0, "label", 0, "西")
     for i = #points, used + 1, -1 do points[i] = nil end
     -- 中文维护：圆环与箭头使用同一帧刚性投影，深度/镜头/FOV 失败由共享服务否决；不自行猜投影或放大 UI scale。
     local screen, source = projection:ProjectWorldBatch(points, {
         easyPullCompat = true, rigidBatch = true, stabilizeAnchor = true, aspectSafeCamera = true,
-        anchorUnit = "player", anchorWorld = { x = px, y = py, z = pz + 0.25 },
+        anchorUnit = "player", anchorWorld = { x = px, y = py, z = pz },
     })
-    self.compass = { points = screen or {}, status = source or "unavailable", near = distance <= radius }
+    local dots, cardinals = {}, {}
+    local bottom = nil
+    for i = 1, dotCount do
+        local row = type(screen) == "table" and screen[i] or nil
+        row = type(row) == "table" and row or { visible = false }
+        row.kind, row.size = points[i].kind, points[i].size
+        dots[i] = row
+        if i <= style.ringSegments and row.visible == true and tonumber(row.y) then bottom = math.max(bottom or row.y, row.y) end
+    end
+    for i = 1, 4 do
+        local row = type(screen) == "table" and screen[dotCount + i] or nil
+        row = type(row) == "table" and row or { visible = false }
+        row.text = points[dotCount + i].text
+        cardinals[i] = row
+    end
+    local center = dots[centerIndex]
+    local distanceLabel = nil
+    if center and center.visible == true and tonumber(center.x) and tonumber(center.y) and bottom then
+        local text
+        if distance <= style.reachedDistance then text = "已到达"
+        elseif distance < 1000 then text = string.format("%.0f m", distance)
+        elseif distance < 10000 then text = string.format("%.2f km", distance / 1000)
+        else text = string.format("%.1f km", distance / 1000) end
+        -- 屏幕上圈的正下方，不挂世界正南；转镜头时距离文字不沿刻度转圈。
+        local labelY = center.y + math.max(0, bottom - center.y) * style.labelOut + style.labelSize + 14
+        -- 透视下外圈方位的投影不能由内圈屏幕半径线性外推。
+        -- 按本帧实际方位文字的20px高度，给24px距离文字保留4px间隔。
+        for _, cardinal in ipairs(cardinals) do
+            local y = cardinal.visible == true and tonumber(cardinal.y) or nil
+            if y and y == y and math.abs(y) < math.huge then labelY = math.max(labelY, y + 10 + 12 + 4) end
+        end
+        distanceLabel = { x = center.x, y = labelY,
+            text = text, visible = true }
+    end
+    self.compass = { points = dots, cardinals = cardinals, center = center, distanceLabel = distanceLabel,
+        status = source or "unavailable", near = near, distance = distance, radius = radius }
     if S.Events and type(S.Events.Publish) == "function" then S.Events:Publish(Treasure.CompassTopic) end
     return true
 end
@@ -227,8 +312,12 @@ function XA:UpdatePosition()
     local ok, x, _, y = Call("X2Unit:GetUnitWorldPositionByTarget", UnitApi, "GetUnitWorldPositionByTarget", "player", false)
     x, y = ok and Number(x) or nil, ok and Number(y) or nil; if not x or not y then return false end
     local dx, dy = map.worldX - x, map.worldY - y
-    map.distance = math.sqrt(dx * dx + dy * dy)
-    map.direction = math.abs(dx) >= math.abs(dy) and (dx >= 0 and "东" or "西") or (dy >= 0 and "北" or "南")
+    local distance = math.sqrt(dx * dx + dy * dy)
+    local direction = math.abs(dx) >= math.abs(dy) and (dx >= 0 and "东" or "西") or (dy >= 0 and "北" or "南")
+    -- 事实读取仍为500ms；相同位置不再让主页面/助手复制全列表并重绑表格。
+    -- 同距离的另一张图仍必须发布选择变化，不能只比较数值。
+    if self.lastPositionPublishedKey == map.key and map.distance == distance and map.direction == direction then return true end
+    map.distance, map.direction, self.lastPositionPublishedKey = distance, direction, map.key
     self.revision = self.revision + 1
     PublishFeatureUpdate(Treasure, self.revision, "treasure_position")
     return true
@@ -281,7 +370,8 @@ function Treasure:ReconcileDemand(_, before, after)
     elseif beforeCount > 0 and afterCount <= 0 and S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then
         S.Scheduler:RemoveTask(TREASURE_POSITION_TASK)
         S.Scheduler:RemoveTask(TREASURE_COMPASS_TASK)
-        self.Authority.compassWorldPoints = nil; ClearCompass("inactive") -- 中文维护：关闭后马上隐藏点池并释放几何工作区。
+        self.Authority.compassWorldPoints, self.Authority.compassWorldPointPool, self.Authority.compassGeometry = nil, nil, nil
+        ClearCompass("inactive") -- 中文维护：关闭后马上隐藏点池并释放几何工作区。
     end
     return true
 end
@@ -290,7 +380,9 @@ function Treasure:Disable(reason)
     -- 中文维护：停用即使 Demand 已为空，也要幂等撤销两条任务及所有世界标记，不能残留指向旧藏宝图的箭头。
     local ok, err = self.Demand:Clear(reason or "treasure_disable"); if ok ~= true then return false, err end
     if S.Scheduler and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(TREASURE_POSITION_TASK); S.Scheduler:RemoveTask(TREASURE_COMPASS_TASK) end
-    self.enabled = false; XA.compassWorldPoints = nil; ClearCompass("disabled"); return true
+    self.enabled = false
+    XA.compassWorldPoints, XA.compassWorldPointPool, XA.compassGeometry = nil, nil, nil
+    ClearCompass("disabled"); return true
 end
 function Treasure:AcquireConsumer(token) if not self.enabled then return false, "寻宝功能已关闭" end return self.Demand:Acquire(token, {}, "treasure_consumer") end
 function Treasure:ReleaseConsumer(token) return self.Demand:Release(token, "treasure_consumer") end

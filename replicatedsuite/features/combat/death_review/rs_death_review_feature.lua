@@ -38,6 +38,15 @@ function F:_AcquireAuraIfNeeded()
     local ok, err = aura:AcquireConsumer(self.auraToken, { purpose = "death_review" })
     if ok ~= true then return false, err end
     self.auraConsumerHeld = true
+    -- 只在功能启用且状态采集开关打开时持有事件；扫描仍交统一调度合并。
+    if S.Events and type(S.Events.SubscribeOptional) == "function" then
+        for _, event in ipairs({ "BUFF_UPDATE", "DEBUFF_UPDATE" }) do
+            S.Events:SubscribeOptional(event, self, function()
+                if F.enabled and F.auraConsumerHeld then return F.Authority:RequestDebuffSample(nil, true) end
+                return true
+            end)
+        end
+    end
     return true
 end
 
@@ -48,6 +57,9 @@ function F:_ReleaseAura()
     local ok, err = aura:ReleaseConsumer(self.auraToken)
     if ok ~= true then return false, err end
     self.auraConsumerHeld = false
+    if S.Events and type(S.Events.UnsubscribeOwner) == "function" then S.Events:UnsubscribeOwner(self) end
+    self.Authority.debuffSampleScheduled = false
+    if S.Scheduler and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(self.Authority.debuffSampleTask) end
     return true
 end
 
@@ -80,6 +92,7 @@ function F:ReconcileDemand(before, after, context)
         local auraOk, auraErr = self:_AcquireAuraIfNeeded()
         if auraOk ~= true then return false, auraErr end
         if not (type(context) == "table" and context.rollback == true) then self.Authority:ResetTransient() end
+        if self.auraConsumerHeld then self.Authority:RequestDebuffSample() end
     elseif beforeCount > 0 and afterCount <= 0 then
         local busOk, busErr = self:_UnsubscribeCombat()
         if busOk ~= true then return false, busErr end
@@ -142,7 +155,7 @@ function F:SetSettingValue(key, value)
             if oldShowDebuffs then self:_AcquireAuraIfNeeded() else self:_ReleaseAura() end
             return false, resourceErr
         end
-        if target ~= true then self.Authority.debuffSamples = {} end
+        if target ~= true then self.Authority.debuffSamples = {} else self.Authority:RequestDebuffSample() end
     end
     if S.Events ~= nil and type(S.Events.Publish) == "function" then S.Events:Publish("v3.death_review.settings", tostring(key)) end
     return true

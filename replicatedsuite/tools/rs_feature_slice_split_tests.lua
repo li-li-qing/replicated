@@ -892,7 +892,7 @@ local LifeSlices = {
         commands = { 'Refresh', 'Select', 'ShowSelectedOnMap', 'GetWidgetVisible', 'SetWidgetVisible',
             'SetWidgetWindowState', 'MarkStoreDirty' },
         apiDependencies = { 'X2Bag:GetBagItemInfo', 'X2Bag:Capacity', 'X2Unit:GetUnitWorldPositionByTarget',
-            'X2Unit:GetCurrentZoneGroup', 'X2Map:ShowWorldmapLocation' },
+            'X2Unit:GetUnitScreenPosition', 'X2Unit:GetCurrentZoneGroup', 'X2Map:ShowWorldmapLocation' },
         contractVersions = { ObservationContractVersion = 2, MapLocationContractVersion = 2 },
     },
     life_fishing = {
