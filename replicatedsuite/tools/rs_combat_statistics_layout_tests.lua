@@ -4,12 +4,24 @@ local NativeHost=dofile('tools/rs_gear_page_test_host.lua')
 local function Boot(width,height,options)
     options=options or {}
     local h=NativeHost({width=width,height=height});local S=h.S
+    -- 配置页通过真实 PageHost 创建，必须提供 NumericField 所用的 Native Slider 叶节点。
+    S.UI.CreateSlider=function(_,parent,id,x,y,w,ht,mn,mx,step,value)
+        local n=h.Native(parent,id,x,y,w,ht);n.value=value
+        function n:SetValue(v)self.value=v end;function n:GetValue()return self.value end
+        function n:SetRange(a,b)self.min,self.max=a,b end
+        function n:SetValueChangedHandler(fn)self.valueChanged=fn end
+        return n
+    end
     dofile('ui/framework/rs_ui_text_layout.lua')
     dofile('ui/framework/rs_ui_scrollbar.lua')
     dofile('ui/framework/rs_ui_forms.lua')
     S.UIV3.WidgetHost={IsVisible=function()return false end}
-    S.UIV3.Router={Get=function()return nil end,Register=function()return {} end}
-    S.UIV3.Shell={Navigate=function()return true end}
+    S.UIV3.Router={routes={},Get=function(self,id)return self.routes[id]end,
+        Register=function(self,id,meta)meta.id=id;self.routes[id]=meta;return true end}
+    S.UIV3.Shell={Navigate=function(_,route,context)
+        h.navigationCalls=(h.navigationCalls or 0)+1
+        return S.UIV3.PageHost:Navigate(route,context)
+    end}
     S.FeatureRuntime.GetSnapshot=function(_,id)
         local f=id=='combat_stats' and S.Features.DPS or S.Features.CombatAnalytics
         return {enabled=f and f.enabled==true}
@@ -39,9 +51,12 @@ local function Boot(width,height,options)
     end
     dofile('presentation/v3/shell/rs_v3_page_host.lua')
     S.FeatureRegistry={Get=function(_,id)if id=='combat_stats'then return {id=id,route='combat.stats',name='战斗统计与分析'}end end,
-        GetByRoute=function(self,route)if route=='combat.stats'then return self:Get('combat_stats')end end}
+        GetByRoute=function(self,route)if route=='combat.stats'then return self:Get('combat_stats')end end,
+        IsAccessible=function(_,id)return id=='combat_stats'end}
     dofile('core/rs_module_diagnostics.lua')
     dofile('presentation/v3/pages/rs_v3_combat_statistics_controls.lua')
+    dofile('presentation/v3/pages/rs_v3_combat_personal_history_page.lua')
+    dofile('presentation/v3/pages/rs_v3_combat_statistics_settings_page.lua')
     dofile('presentation/v3/pages/rs_v3_dps_page.lua')
     h.H=S.UIV3.PageHost
     assert(h.H:Attach(h.page.spec.parent))
@@ -200,5 +215,94 @@ Test('new facts still update overview and skill detail after a skipped refresh',
     assert(order.GearTest and order.Other and order.GearTest<order.Other,'ascending sort was skipped')
     h:Arrange(620,680);h:AssertContained()
 end)
+-- Native 故障模型：按下期间隐藏任一祖先会取消本次点击；仍使用真实战斗投影、布局和 OnClick。
+for _,case in ipairs({
+    {id='v3_dps_mode',check=function(h)return h.stats.detailMode=='PVP'end},
+    {id='v3_dps_metric_segment_3',check=function(h)return h.S.Features.DPS:GetSettingsProjection().metric=='heal'end},
+    {id='v3_dps_detail_selector_segment_2',check=function(h)return h.stats.detailView=='counterparts'end},
+})do
+    Test('one click survives a new combat fact: '..case.id,function()
+        local h=Boot(620,680);h:Arrange(620,680)
+        local button=assert(h.tree[case.id]);assert(h:VisibleRect(button))
+        local ancestors={};local n=button.root
+        while n do ancestors[n]=true;n=n.parent end
+        local cancelled=false;local ensure=h.UI.EnsureVisible
+        h.UI.EnsureVisible=function(ui,n,visible,...)
+            if ancestors[n] and n.shown~=false and visible==false then cancelled=true end
+            return ensure(ui,n,visible,...)
+        end
+        h.ms=h.ms+100
+        h.S.Services.CombatAnalyticsV3:_DispatchFact({category='damage',kind='damage',sourceName='GearTest',targetName='Npc',
+            sourceKind='PLAYER',targetKind='NPC',amount=75,receivedAt=h.ms,sequence=2,abilityId=11,abilityName='Hit'})
+        assert(h.stats:RefreshStats());h.S.RSUI:FlushLayoutQueue(32)
+        assert(not cancelled,'combat refresh hid the pressed button ancestor and cancelled its click')
+        assert(button.root.events.OnClick(button.root,'LeftButton'),'single native click rejected')
+        assert(case.check(h),'single click did not switch the requested view')
+    end)
+end
+-- 顶部三子页在真实 PageHost 中反复切换；点击经 Native OnClick，不直接调用 SetValue。
+local views={
+    {route='combat.stats',id='damage',segment=1},
+    {route='combat.personal_history',id='history',segment=2},
+    {route='combat.statistics_settings',id='settings',segment=3},
+}
+local function PageTree(page)
+    local tree={};local function Index(n)tree[n.id]=n;for _,ch in ipairs(n.children or {})do Index(ch)end end
+    Index(page);return tree
+end
+local function PressDuringRefresh(h,button)
+    assert(h:VisibleRect(button),'top button is not reachable')
+    local ancestors={};local n=button.root
+    while n do ancestors[n]=true;n=n.parent end
+    local cancelled=false;local ensure=h.UI.EnsureVisible
+    h.UI.EnsureVisible=function(ui,n,visible,...)
+        if ancestors[n] and n.shown~=false and visible==false then cancelled=true end
+        return ensure(ui,n,visible,...)
+    end
+    -- 历史页重提交列表、设置页刷新当前投影、总览页消费战斗事件；保留真实订阅派发。
+    h.S.Events:Publish('v3.combat_analytics.updated')
+    h.S.Events:Publish('v3.combat_analytics.feature_updated','click_regression')
+    h.S.Events:Publish('v3.dps.settings','click_regression')
+    h.S.RSUI:FlushLayoutQueue(32)
+    h.UI.EnsureVisible=ensure
+    assert(not cancelled,'top button ancestor was hidden during refresh')
+    assert(button.root.events.OnClick(button.root,'LeftButton'),'single top button click rejected')
+    h.S.RSUI:FlushLayoutQueue(32)
+end
+for _,width in ipairs({620,480})do
+    for _,view in ipairs(views)do
+        Test('top navigation one click from '..view.id..' at '..width,function()
+            local h=Boot(width,680)
+            assert(h.H:Navigate(view.route));h:Arrange(width,680)
+            local current=view
+            for iteration=1,6 do
+                local target=views[(current.segment%3)+1]
+                local tree=PageTree(h.H.pages[current.route])
+                local calls=h.navigationCalls or 0
+                PressDuringRefresh(h,assert(tree['v3_statistics_'..current.id..'_views_segment_'..target.segment]))
+                assert(h.H.activeRoute==target.route,'one click did not reach target subpage')
+                assert(h.navigationCalls==calls+1,'one click navigated more than once')
+                current=target
+            end
+        end)
+        Test('top collection scope one click on '..view.id..' at '..width,function()
+            local h=Boot(width,680)
+            assert(h.H:Navigate(view.route));h:Arrange(width,680)
+            local tree=PageTree(h.H.pages[view.route]);local F=h.S.Features.CombatAnalytics
+            local calls=0;local command=F.Commands.SetCollectionScope
+            F.Commands.SetCollectionScope=function(self,value)calls=calls+1;return command(self,value)end
+            local selector=assert(tree['v3_statistics_'..view.id..'_scope'])
+            for iteration=1,4 do
+                local value=iteration%2==1 and 'all' or 'self';local index=value=='all' and 2 or 1
+                PressDuringRefresh(h,assert(tree['v3_statistics_'..view.id..'_scope_segment_'..index]))
+                assert(F:GetCollectionScope()==value and selector:GetValue()==value,'one click did not set collection scope')
+                assert(selector.buttons[index].state.selected==true,'scope highlight does not match authority')
+                assert(calls==iteration,'one click submitted duplicate scope commands')
+                assert(h.H.activeRoute==view.route,'scope click unexpectedly changed route')
+            end
+            assert(not h.S.LastInternalEventError,'refresh subscription failed')
+        end)
+    end
+end
 print('RESULT combat-layout passed='..passed..' failed='..failed)
 if failed>0 then os.exit(1)end

@@ -763,14 +763,15 @@ RSUI:RegisterType("SplitView", function(spec)
         local crossAvail=horizontal and math.max(0,height-p.top-p.bottom) or math.max(0,width-p.left-p.right)
         local primary,secondary,divider=self:ResolvePrimary(primaryAvail)
         local first,second=self:GetPaneEntries()
-        for _,entry in ipairs(self.slots or {}) do SetViewport(entry.child,false) end
+        -- 与 ScrollBox 相同，排版直接提交最终显隐，避免短暂隐藏可见面板中正在按下的按钮。
+        for _,entry in ipairs(self.slots or {}) do
+            SetViewport(entry.child,(entry==first and primary>0) or (entry==second and secondary>0))
+        end
         if first ~= nil and primary > 0 then
-            SetViewport(first.child,true)
             if horizontal then Arrange(first.child,p.left,p.top,math.max(1,primary),math.max(1,crossAvail))
             else Arrange(first.child,p.left,p.top,math.max(1,crossAvail),math.max(1,primary)) end
         end
         if second ~= nil and secondary > 0 then
-            SetViewport(second.child,true)
             if horizontal then Arrange(second.child,p.left+primary+divider,p.top,math.max(1,secondary),math.max(1,crossAvail))
             else Arrange(second.child,p.left,p.top+primary+divider,math.max(1,crossAvail),math.max(1,secondary)) end
         end
@@ -1047,10 +1048,10 @@ RSUI:RegisterType("ScrollBox", function(spec)
         local crossAvail = math.max(0, fullCrossAvail - reserve)
         self.maxScrollOffset = self:ComputeBottomOffset(entries, primaryAvail, crossAvail, horizontal)
         self.scrollOffset = math.max(0, math.min(self:GetMaxOffset(), self.scrollOffset))
-        for _, entry in ipairs(entries) do SetViewport(entry.child, false) end
         local cursor = horizontal and p.left or p.top
         local start = self.scrollOffset + 1
         local shown = 0
+        local placements = {}
         self.visibleStart, self.visibleEnd = start, start - 1
         self.lastOverflow = 0
         for index = start, #entries do
@@ -1073,8 +1074,7 @@ RSUI:RegisterType("ScrollBox", function(spec)
                 local cy, ch = Align(cursor + pad.top, contentPrimary, dh, slot.vAlign)
                 px, py, pw, ph = cx, cy, cw, ch
             end
-            SetViewport(entry.child, true)
-            Arrange(entry.child, px, py, math.max(1, pw), math.max(1, ph))
+            placements[#placements + 1] = { child = entry.child, x = px, y = py, width = math.max(1, pw), height = math.max(1, ph) }
             shown = shown + 1
             self.visibleEnd = index
             cursor = cursor + allocated + self.gap
@@ -1082,6 +1082,14 @@ RSUI:RegisterType("ScrollBox", function(spec)
                 self.lastOverflow = math.max(self.lastOverflow, outerPrimary - allocated)
                 break
             end
+        end
+        -- 中文维护（2026-10-10）：先计算最终可见区，再一次提交显隐。旧版每次排版先全隐藏再显示，
+        -- 战斗刷新会隐藏正在按下的按钮祖先，导致 Native 取消点击；留在视口的控件必须持续可见。
+        for index, entry in ipairs(entries) do
+            SetViewport(entry.child, index >= self.visibleStart and index <= self.visibleEnd)
+        end
+        for _, placement in ipairs(placements) do
+            Arrange(placement.child, placement.x, placement.y, placement.width, placement.height)
         end
         RecordOverflow(self, self.lastOverflow)
         self.canScrollBackward = self.scrollOffset > 0
