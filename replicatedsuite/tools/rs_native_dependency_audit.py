@@ -46,6 +46,13 @@ STANDALONE_REQUIRED_NAMESPACES = {
 # lazy: namespace is needed only when a user-enabled sub-capability or drill-down
 #       actually executes; it must be owned by the service/lazy capability boundary.
 SERVICE_EDGE_NATIVE_POLICY = {
+    # 中文维护（2026-10-13）：人员备注选家族时才调用ReadFamilyList，由名单Service取得Native lease。
+    # 好友、黑名单、团队及已保存备注不能为此强制导入FAMILY；此策略与实际AcquireApi边界成对维护。
+    ("tools_player_notes", "PlayerNotesSurfaceV3"): {
+        "required": set(),
+        "optional": set(),
+        "lazy": {"X2Family"},
+    },
     ("combat_buff_display", "GearV3"): {
         "required": {"X2Equipment"},
         "optional": {"X2Bag", "X2Player"},

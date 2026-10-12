@@ -215,6 +215,9 @@ local CAPABILITIES = {
     -- not start polling or enable any planned feature.
     ["X2Friend:IsMyFriend"] = { OfficialState="OfficialEnabled", Since="2026-04-28", SideEffectFree=true },
     ["X2Friend:GetFriendList"] = { OfficialState="OfficialEnabled", Since="2026-04-28", SideEffectFree=true },
+    -- 中文维护（2026-10-13）：本地Allowed清单及RU 2026-04-28公告已开放此getter；只读成员名单，
+    -- 返回字段仍由消费者保守校验，nil/拒读必须降级不可用，不能据此开放Family写接口。
+    ["X2Family:GetMemberList"] = { OfficialState="OfficialEnabled", Since="2026-04-28", SideEffectFree=true },
     ["X2Friend:GetBlockList"] = { OfficialState="OfficialEnabled", Since="2026-08-05", SideEffectFree=true },
     ["X2Friend:BlockUser"] = { OfficialState="OfficialEnabled", Since="2026-08-05", Cooldown=1000, Risk="write" },
     ["X2Friend:UnblockUser"] = { OfficialState="OfficialEnabled", Since="2026-08-05", Cooldown=1000, Risk="write" },

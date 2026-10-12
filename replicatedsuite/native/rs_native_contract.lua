@@ -41,6 +41,9 @@ S.NativeContract = {
         CRAFT                = { id = 9,  nativeName = "X2Craft",               feature = true },
         EQUIPMENT            = { id = 13, nativeName = "X2Equipment",           feature = true },
         FRIEND               = { id = 15, nativeName = "X2Friend",              feature = true },
+        -- 中文维护（2026-10-13）：FAMILY=17取自用户历史Addon1.2.zip!globals/apitypes.lua，
+        -- 与FRIEND=15/TEAM=38/UNIT=42同一客户端ABI；仅人员备注选家族时惰性导入，不进入Foundation依赖。
+        FAMILY               = { id = 17, nativeName = "X2Family",              feature = true },
         HOTKEY               = { id = 19, nativeName = "X2Hotkey",              feature = true },
         HOUSE                = { id = 20, nativeName = "X2House",               feature = true },
         PLAYER               = { id = 32, nativeName = "X2Player",              feature = true },

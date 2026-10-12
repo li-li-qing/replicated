@@ -568,9 +568,10 @@ Add("tools_social", "tools.social", "社交名单", "tools", 50, "好友列表�
 })
 -- 中文维护：备注独立于社交写操作；启用时只观察原生窗可见性，名单/团队需求随备注窗或页面释放。
 -- 中文维护：社交窗口Getter在RU实机返回nil；用户认可名单响应触发独立备注窗，注册信息必须与事件路径及两项真实Getter一致。
-Add("tools_player_notes", "tools.player_notes", "人员备注", "tools", 55, "好友名单返回时自动弹出本地备注窗；手动关闭，可编辑好友、团队及已保存备注。", {
-    status="implemented_pending_ru",lifecycle="friend_list_event_and_demand",authority="v3.business.tools_player_notes",defaultEnabled=true,
-    settingsCapable=true,apiDependencies={"X2Unit:UnitName","X2Friend:GetFriendList"},apiReadiness="friend_list_event",apiPolicy="explicit_local_notes",
+-- 中文维护（2026-10-13）：对应expnote四类名单及联合团队，共用旧备注Store；家族是选视图时的lazy依赖。
+Add("tools_player_notes", "tools.player_notes", "人员备注", "tools", 55, "好友、黑名单、家族、远征队和团队共用账号备注；名单事件弹窗，手动关闭，远征队按原生当前页显示。", {
+    status="implemented_pending_ru",lifecycle="social_list_event_and_demand",authority="v3.business.tools_player_notes",defaultEnabled=true,
+    settingsCapable=true,apiDependencies={"X2Unit:UnitName","X2Friend:GetFriendList","X2Friend:GetBlockList"},apiReadiness="social_list_event",apiPolicy="explicit_local_notes",
 })
 Add("tools_feature_profiles", "tools.feature_profiles", "功能方案", "tools", 65,
     "自定义一组功能开关并生成屏幕快捷按钮；应用时开启已选功能、关闭其它可控业务功能，但保留各模块自己的配置。", {

@@ -11,7 +11,7 @@ local function Build(parent)
     local root,err=D:PageRoot(parent,"v3_player_notes_page");if not root then return nil,err end
     local binding={feature=F,featureId=F.Id,token="page:player_notes",refresh=function(page)return page:Refresh()end}
     -- 中文维护：名单事件不等于窗口开关；说明实际触发与手动关闭方式，不能继续承诺跟随原生社交窗口收起。
-    D:PageHeader(root,"v3_player_notes_header","人员备注","收到好友名单时自动弹出备注窗，用关闭按钮收起；后台名单更新也可能弹出。这里管理同一份账号备注。","刷新",function()return F.Commands:Refresh("notes_manual")end)
+    D:PageHeader(root,"v3_player_notes_header","人员备注","好友、黑名单、家族、远征队及团队共用账号备注；名单事件弹窗，手动关闭。远征队按原生成员当前页显示。","刷新",function()return F.Commands:Refresh("notes_manual")end)
     local actions=R:HorizontalBox({id="v3_player_notes_views",parent=root,gap=6,slot={size="fixed",height=30,hAlign="fill"}})
     local toggle=D:ModuleToggleButton({id="v3_player_notes_toggle",parent=actions,text="启用功能",compact=true,slot={size="fixed",width=90}})
     local status=R:Text({id="v3_player_notes_feedback",parent=root,text="保存的备注可在社交名单中显示；请保留名字中的服务器后缀。",overflow="wrap",fontSize=10,slot={size="auto",minHeight=28,hAlign="fill"}})
@@ -23,13 +23,25 @@ local function Build(parent)
     local function LoadName(value)
         deleteArm=nil;name:SetValue(value,false,"notes_select");note:SetValue(F:GetNote(value),false,"notes_select");return true
     end
-    for _,view in ipairs({{id="saved",text="已保存备注"},{id="friends",text="好友名单"},{id="team",text="当前团队"}})do
+    for _,view in ipairs({{id="saved",text="已保存备注"},{id="team",text="当前团队"}})do
         local key,label=view.id,view.text
         local button=R:Button({id="v3_player_notes_view_"..key,parent=actions,text=label,compact=true,slot={size="fixed",width=104}})
         button.onClick=function()deleteArm=nil;return Report(F.Commands:SetView(key))end
     end
     local target=R:Button({id="v3_player_notes_target",parent=actions,text="载入当前目标",compact=true,slot={size="fixed",width=116}})
     target.onClick=function()local ok,value=F.Commands:GetTargetName();if ok then LoadName(value)end;return Report(ok,value,"已载入目标，编辑后保存")end
+    -- 中文维护（2026-10-13）：新增四类名单独占一排，沿用Commands和PageHost；不扩大原工具排宽度。
+    local socialViews=R:SegmentedSelector({id="v3_player_notes_social_views",parent=root,itemWidth=96,gap=4,height=28,
+        items={{value="friends",text="好友"},{value="block",text="黑名单"},{value="family",text="家族"},{value="expedition",text="远征队"}},
+        get=function()return F:GetProjection().view end,set=function(v)deleteArm=nil;return F.Commands:SetView(v)end,
+        slot={size="fixed",height=32,hAlign="fill"}})
+    local teamScope=R:Dropdown({id="v3_player_notes_team_scope",parent=actions,
+        items={{value=0,text="全部团队"},{value=1,text="团队1"},{value=2,text="团队2"}},
+        get=function()return F:GetProjection().teamScope end,set=function(v)return F.Commands:SetTeamScope(v)end,
+        slot={size="fixed",width=112}})
+    local coverage=R:Text({id="v3_player_notes_coverage",parent=root,text="",overflow="wrap",fontSize=10,maxLines=2,
+        slot={size="fixed",height=32,hAlign="fill"}})
+    if not socialViews or not teamScope or not coverage then return nil,"人员名单选择器创建失败"end
     local save=R:Button({id="v3_player_notes_save",parent=names,text="保存",compact=true,slot={size="fixed",width=64}})
     save.onClick=function()deleteArm=nil;local ok,why=F.Commands:SaveNote(name:GetDraftValue(),note:GetDraftValue());return Report(ok,why,"备注已提交保存")end
     local remove=R:Button({id="v3_player_notes_delete",parent=names,text="删除",compact=true,slot={size="fixed",width=64}})
@@ -46,9 +58,12 @@ local function Build(parent)
         {id="source",title="来源",field="source",size="fixed",width=100}},slot={size="fill",fill=1,hAlign="fill",vAlign="fill"}})
     tableView.onSelectionChanged=function(index)local row=tableView:GetItem(index);if row then LoadName(row.name)end end
     function root:Refresh()
-        local p=F:GetProjection();tableView:SetItems(p.rows,p.revision)
+        local p=F:GetProjection();tableView:SetItems(p.rows,p.revision);socialViews:Render()
+        -- 中文维护：与浮窗同源筛选框保留Hidden布局槽，防止切团队时先在旧/初始坐标露出，再等待异步重排。
+        teamScope:SetVisibility(p.view=="team"and R.Visibility.Visible or R.Visibility.Hidden);teamScope:Render()
+        coverage:SetText(p.error or (p.view=="team"and "联合团队可按团队1/2查看，来源列显示团号与队伍。"or "同一完整角色名在各名单里共用备注。"))
         toggle:SetText(S.FeatureRuntime:IsEnabled(F.Id) and "关闭功能" or "启用功能")
-        tableView:SetViewState(#p.rows>0 and "ready" or (p.status=="unavailable" and "error"or "empty"),{title=p.view=="team" and "当前没有可读团队名单" or (p.view=="friends"and "当前没有可读好友名单"or "尚未保存备注"),detail=p.error or "输入角色名和备注后保存；也可载入当前目标。"})
+        tableView:SetViewState(#p.rows>0 and "ready" or (p.status=="unavailable" and "error"or "empty"),{title=p.view=="saved"and "尚未保存备注"or ("当前没有可读"..tostring(p.viewLabel or "").."名单"),detail=p.error or "输入角色名和备注后保存；也可载入当前目标。"})
         return true
     end
     toggle.onClick=function()
