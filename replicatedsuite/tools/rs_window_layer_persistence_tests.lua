@@ -79,6 +79,35 @@ Test("WindowShell geometry callback forwards committed rect instead of rereading
     assert(snapshot.width == 333 and snapshot.height == 244, "committed extent was replaced by native reread")
 end)
 
+Test("floating show follows a visible pinned menu without changing its own preference", function()
+    local S,UI=ShellHost(false)
+    local mainVisible=true
+    S.UIV3={Shell={window={IsVisible=function()return mainVisible end},GetTopmost=function()return true end}}
+    local shell=assert(UI.WindowShell:Create({id="menu_detail",layerRole="floating",width=360,height=240,footer=false,resizable=false,appearanceControls=false}))
+    shell.RevalidatePlacement=function()return true end
+    assert(shell:Show(true));assert(shell.window.layer=="system","floating remains behind pinned menu")
+    assert(shell:GetTopmost()==false and S.prefPersist==nil,"transient layer changed saved pin")
+    mainVisible=false;assert(UI.WindowShell:RefreshFloatingLayers())
+    assert(shell.window.layer=="normal","closed menu left floating permanently system")
+    assert(shell:SetTopmost(true,true));mainVisible=true;assert(UI.WindowShell:RefreshFloatingLayers())
+    mainVisible=false;assert(UI.WindowShell:RefreshFloatingLayers());assert(shell.window.layer=="system","user pin lost")
+    assert(shell:Destroy());assert(UI.WindowShell.floatingById.menu_detail==nil,"destroy leaked layer observer")
+end)
+
+Test("menu unpin updates visible floating and rejected layer prevents showing", function()
+    local S,UI=ShellHost(false);local mainTopmost=false
+    S.UIV3={Shell={window={IsVisible=function()return true end},GetTopmost=function()return mainTopmost end}}
+    local shell=assert(UI.WindowShell:Create({id="menu_layer_rejection",layerRole="floating",width=360,height=240,footer=false,resizable=false,appearanceControls=false}))
+    shell.RevalidatePlacement=function()return true end
+    assert(shell:Show(true) and shell.window.layer=="normal")
+    mainTopmost=true;assert(UI.WindowShell:RefreshFloatingLayers());assert(shell.window.layer=="system")
+    assert(shell:SetTopmost(true,false));assert(shell:SetTopmost(false,false));assert(shell.window.layer=="system","unpin went behind still-pinned menu")
+    mainTopmost=false;assert(UI.WindowShell:RefreshFloatingLayers());assert(shell.window.layer=="normal")
+    assert(shell:Show(false));mainTopmost=true
+    shell.window.SetUILayer=function()return false end
+    local shown,why=shell:Show(true);assert(shown==false and why and shell.visible==false,"rejected layer still shown")
+end)
+
 Test("FloatingSurface persists the committed geometry rect and requests immediate dirty edge", function()
     ReplicatedSuite = { BootError=nil, Generation=917, SafeTraceback=function(e)return tostring(e)end, UI={}, RSUI={}, }
     local S, UI, R = ReplicatedSuite, ReplicatedSuite.UI, ReplicatedSuite.RSUI

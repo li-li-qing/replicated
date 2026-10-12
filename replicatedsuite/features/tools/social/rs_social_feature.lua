@@ -104,6 +104,10 @@ local function AppendSocialList(rows, spec, list)
             end
             local fact = online == nil and "在线状态未知" or (online and "在线" or "离线")
             if level ~= nil then fact = fact .. " · 等级 " .. tostring(level) end
+            -- 中文维护：社交名单只读独立备注的标量，不建立第二份备注 Store，也不因展示备注额外读取 Native 名单。
+            local notes = S.Features and S.Features.PlayerNotes
+            local note = notes and notes:GetNote(name) or ""
+            if note ~= "" then fact = fact .. " · 备注：" .. note end
             local tone = spec.toneUnknown or "default"
             if spec.key == "好友" then tone = (online == true and "green") or (online == false and "muted") or "default" end
             rows[#rows + 1] = { key = "social:" .. spec.key .. ":" .. index, memberName = name, listKind = spec.key,

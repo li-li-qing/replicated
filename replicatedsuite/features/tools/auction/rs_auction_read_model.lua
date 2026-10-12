@@ -128,7 +128,8 @@ function R.Rows(feature,includeFavorites)
 end
 
 function R.Projection(feature)
-    local snapshot=R.Snapshot(feature)
+    local query=R.QueryService()
+    local snapshot=query and type(query.GetStatusSnapshot)=="function" and query:GetStatusSnapshot(feature.Id) or R.Snapshot(feature)
     -- Lowest-price quote result (explicit + async via PriceQuoteQueueV3). The
     -- queue is the single authority; this only mirrors its snapshot for the
     -- page, never issues server queries.

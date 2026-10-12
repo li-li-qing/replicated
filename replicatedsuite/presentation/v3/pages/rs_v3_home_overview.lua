@@ -184,9 +184,27 @@ function Home:Build(parent,route)
             card.table=BuildTable({id=spec.prefix..'table',parent=body,items={},rowHeight=21,headerHeight=20,desiredRows=4,overscan=1,
                 scrollbar=true,selectable=true,selectionMode='single',columnResize=true,headerInteractive=false,columns=columns,
                 getKey=function(item)return item and (item.id or item.key)end,
-                -- TableView 的 Activated 是单击，不是假定的双击。任务单击只选中，详情走显式按钮。
-                onItemActivated=not isTask and function(item)return Detail(item)end or nil,
-                onSelectionChanged=function(index)card.selected=card.table:GetItem(index);if card.detail then card.detail:SetEnabled(card.selected~=nil)end end,
+                -- Activated 每次单击都会派发，包括已选中的行；日常/周常各自保留短暂双击状态。
+                onItemActivated=function(item)
+                    if not isTask then return Detail(item)end
+                    if not root.active or not card.held or not Enabled(spec.id) or card.panel.viewportVisible==false then
+                        card.lastClickKey,card.lastClickMs=nil,nil;return false
+                    end
+                    local key=item and (item.id or item.key or item.groupKey)
+                    local now=S.NowMs and S.NowMs() or nil
+                    if key==nil or type(now)~='number' then card.lastClickKey,card.lastClickMs=nil,nil;return false end
+                    local elapsed=card.lastClickMs and (now-card.lastClickMs)
+                    if card.lastClickKey==key and elapsed and elapsed>=0 and elapsed<=450 then
+                        card.lastClickKey,card.lastClickMs=nil,nil;return Detail(item)
+                    end
+                    card.lastClickKey,card.lastClickMs=key,now;return true
+                end,
+                onSelectionChanged=function(index)
+                    local selected=card.table:GetItem(index)
+                    local key=selected and (selected.id or selected.key or selected.groupKey)
+                    if card.lastClickKey~=key then card.lastClickKey,card.lastClickMs=nil,nil end
+                    card.selected=selected;if card.detail then card.detail:SetEnabled(selected~=nil)end
+                end,
                 slot={size='fill',fill=1,hAlign='fill',vAlign='fill'}})
             local footer=R:HorizontalBox({id=spec.prefix..'footer',parent=body,gap=4,slot={size='fixed',height=18,hAlign='fill'}})
             card.status=Text(footer,spec.prefix..'status','',10,'muted',{size='fill',fill=1})
@@ -198,6 +216,7 @@ function Home:Build(parent,route)
         card.status:SetText(message or '');card.status:SetVisible(message~=nil and message~='')
     end
     local function Release(card)
+        card.lastClickKey,card.lastClickMs=nil,nil
         if card.content and card.content.CloseHeaderSettings then card.content:CloseHeaderSettings()end
         if not card.held then return true end
         if card.service then local ok,why=card.service:ReleaseConsumer(card.spec.token);if ok then card.held=false end;return ok,why end
@@ -266,8 +285,9 @@ function Home:Build(parent,route)
         card.dataKnown=true
         card.table:SetViewState(#rows>0 and 'ready' or 'empty',{title='当前没有关注内容',detail='点击自定义选择；完成项也可能已被隐藏。'})
         if card.selected then local selected=nil;for _,row in ipairs(rows)do if (row.id or row.key)==(card.selected.id or card.selected.key)then selected=row;break end end;card.selected=selected end
+        if not card.selected then card.lastClickKey,card.lastClickMs=nil,nil end
         card.detail:SetEnabled(card.selected~=nil);card.badge:SetText('我的关注 · '..#rows..' 项')
-        card.status:SetText('共 '..#rows..' 项 · '..(card.spec.name=='Tasks' and '选中查看详情' or '活动 / 区域状态'))
+        card.status:SetText('共 '..#rows..' 项 · '..(card.spec.name=='Tasks' and '双击查看详情' or '活动 / 区域状态'))
         return true
     end
     function root:RefreshReminders()

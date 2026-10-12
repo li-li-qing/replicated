@@ -36,7 +36,8 @@ local function BuildActivityPage(parent, route)
         end
         return execute()
     end
-    D:PageHeader(root, "v3_activity_header", "活动", "Activity Timeline v2：可计算时间的活动按时间线排序；战争/纷争/和平/危险阶段固定放在实时区域段，不再与未来活动混排。任务读取仍由共享 V3 Progress Service 按需运行。", "刷新", function()
+    -- 中文维护：时间说明面对玩家；计划结束只是日程估计，实时区域的剩余时间属于当前阶段，两者不能混作首领存活时间。
+    D:PageHeader(root, "v3_activity_header", "活动", "“后开始”表示等待开场；“后结束”是计划结束估计。右侧显示计划时段；下方实时区域显示当前阶段。“任务未完成”表示已过计划窗口但任务仍在进行。", "刷新", function()
         return RunAction("refresh", nil, function()
             if S.FeatureRuntime == nil or S.FeatureRuntime:IsEnabled("life_activities") ~= true then return false end
             local progress = S.Services and S.Services.QuestProgressV3 or nil
@@ -130,7 +131,7 @@ local function BuildActivityPage(parent, route)
                 getTone = function(item) return "default" end },
             { id = "status", title = "时间 / 区域状态", field = "status", size = "fill", minWidth = 176, fill = 1.35,
                 getTone = function(item) return item and item.tone or "muted" end },
-            { id = "schedule", title = "来源 / 下次", field = "scheduleText", size = "fill", minWidth = 116, fill = 0.85,
+            { id = "schedule", title = "计划时段 / 来源", field = "scheduleText", size = "fill", minWidth = 116, fill = 0.85,
                 getTone = function(item) return item and item.zoneState and "accent" or "muted" end },
             { id = "progress", title = "任务 / 参与", field = "progressText", size = "fill", minWidth = 70, absoluteMinWidth = 42, fill = 0.75,
                 getTone = function(item) return item and item.progressTone or "muted" end },

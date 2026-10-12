@@ -194,11 +194,12 @@ local function BuildPage(parent, route)
     local function AddPresentationNumeric(parentBox, id, label, hint, scope, key, minimum, maximum, step, unit)
         local field = D:CompactNumericSetting(parentBox, {
             id = id, label = label, hint = hint, min = minimum, max = maximum, step = step,
+            fixedSliderRange=key=="refreshMs",hardMin=key=="refreshMs" and 1 or nil,hardMax=key=="refreshMs" and 60000 or nil,
             integer = step >= 1, unit = unit or "", slider = true, stepButtons = false,
             labelWidth = 66, inputWidth = 58,
             get = function()
                 local value = Feature:GetPresentationProjection(scope)
-                return type(value) == "table" and value[key] or minimum
+                return type(value) == "table" and value[key] or (key=="refreshMs" and (scope=="raid" and 100 or 50) or minimum)
             end,
             set = function(v) return Feature.Commands:ApplyPresentationSettingFromBinding(scope, key, v) end,
             storeId = STORE_ID, persistDelayMs = 350, persistReason = "healer_" .. scope .. "_" .. key,
@@ -224,6 +225,7 @@ local function BuildPage(parent, route)
 
     AddPresentationToggle(visualRowA, "v3_healer_head_enabled", "头顶标记：开", "头顶标记：关", "head", "enabled", 0.9)
     AddPresentationNumeric(visualRowA, "v3_healer_head_count", "标记人数", "只影响显示数量，不影响后台推荐。", "head", "count", 1, 50, 1, "人")
+    AddPresentationNumeric(visualRowA, "v3_healer_head_refresh", "绘制间隔", "1～100毫秒，越小越快；不改变治疗推荐采样。", "head", "refreshMs", 1, 100, 1, "ms")
     AddPresentationNumeric(visualRowA, "v3_healer_head_shape", "标记形状", "1=整块 2=方块 3=十字 4=箭头。", "head", "shapeMode", 1, 4, 1, "")
     AddPresentationToggle(visualRowA, "v3_healer_head_name", "显示名字：开", "显示名字：关", "head", "showName", 0.8)
     AddPresentationToggle(visualRowA, "v3_healer_head_distance", "显示距离：开", "显示距离：关", "head", "showDistance", 0.8)
@@ -232,6 +234,7 @@ local function BuildPage(parent, route)
     AddPresentationToggle(visualRowB, "v3_healer_raid_enabled", "团队覆盖：开", "团队覆盖：关", "raid", "enabled", 0.9)
     AddPresentationToggle(visualRowB, "v3_healer_raid_ranks", "名次：开", "名次：关", "raid", "showRanks", 0.75)
     AddPresentationNumeric(visualRowB, "v3_healer_raid_rank_count", "名次数量", "只显示前 N 名推荐编号。", "raid", "rankCount", 0, 50, 1, "")
+    AddPresentationNumeric(visualRowB, "v3_healer_raid_refresh", "特效间隔", "仅呼吸/闪烁表现；推荐与名次仍随数据事件更新。", "raid", "refreshMs", 1, 100, 1, "ms")
     AddPresentationNumeric(visualRowB, "v3_healer_raid_rank_font", "名次字号", "团队槽位上的推荐名次字号。", "raid", "rankFontSize", 8, 20, 1, "")
     AddPresentationToggle(visualRowB, "v3_healer_raid_calibration", "校准：开", "校准：关", "raid", "calibration", 0.75)
     local resetRaidButton = RSUI:Button({ id = "v3_healer_raid_reset", parent = visualRowB, text = "重置覆盖位置", compact = true,

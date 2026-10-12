@@ -10,8 +10,9 @@ if type(Factory) ~= "table" then error("FeatureSliceFactory unavailable for comb
 local TASK, INTERVAL, COUNT = "v3_facing_indicator_refresh", 16, 17
 -- 中文维护（facing-independent-sides-1）：侧显示属于本 Feature 永久设置；旧存档缺字段时两侧默认开，
 -- 明确 false 必须原样回读，不能以 and/or fallback 把用户关闭意图恢复成 true；数值校准不改。
-local DEFAULT = { radius=2, arcDegrees=90, pointSize=4, opacity=0.85, angleOffset=0, showFront=true, showBack=true }
-local LIMITS = { radius={0.5,50}, arcDegrees={20,160}, pointSize={2,10}, opacity={0.1,1}, angleOffset={-180,180} }
+-- 中文维护：refreshMs只属于绘制采样设置，旧配置默认16ms；实际调度不能再忽略玩家保存的间隔。
+local DEFAULT = { radius=2, arcDegrees=90, pointSize=4, opacity=0.85, angleOffset=0, showFront=true, showBack=true, refreshMs=16 }
+local LIMITS = { radius={0.5,50}, arcDegrees={20,160}, pointSize={2,10}, opacity={0.1,1}, angleOffset={-180,180}, refreshMs={1,60000} }
 local SIDES = { {key="front",setting="showFront",label="正面",color={1,0.28,0.22},sign=1}, {key="back",setting="showBack",label="背面",color={0.25,1,0.4},sign=-1} }
 
 -- 中文维护：非有限数是输入错误；归一只在配置读入/显式事务进行，不在高频路径回写 State。
@@ -27,7 +28,7 @@ local function Normalize(key, value)
     end
     local n=Finite(value) or DEFAULT[key]
     n=math.max(LIMITS[key][1],math.min(LIMITS[key][2],n))
-    if key=="pointSize" then n=math.floor(n) end
+    if key=="pointSize" or key=="refreshMs" then n=math.floor(n) end
     return n
 end
 local function Frame(feature, rows, status, reason)
@@ -74,7 +75,7 @@ local F=Factory.NewFeature("combat_facing_indicator", {
         if b<=0 and a>0 then
             if S.Scheduler==nil or type(S.Scheduler.AddHighFrequencyTask)~="function" then return false,"正背面刷新 Scheduler 不可用" end
             -- 中文维护：仅一个共享 Scheduler 高频任务；无目标仍可等待下一目标，关闭/无租约立即停。
-            local added=S.Scheduler:AddHighFrequencyTask(TASK,INTERVAL,function()
+            local added=S.Scheduler:AddHighFrequencyTask(TASK,feature.State.refreshMs or INTERVAL,function()
                 if feature.enabled~=true or (tonumber(feature.consumerCount) or 0)<=0 then return true end
                 local ok,err=xpcall(function()return feature.Authority:Refresh("visual_tick")end,S.SafeTraceback)
                 if not ok then
@@ -161,7 +162,10 @@ local F=Factory.NewFeature("combat_facing_indicator", {
         if LIMITS[key]==nil or value==nil then return false,"正背面设置值无效" end
         if value<LIMITS[key][1] or value>LIMITS[key][2] then return false,"设置值超出允许范围" end
         local ok,err=Factory.PersistStateMutation(feature,"facing_setting_"..key,function(state)state[key]=Normalize(key,value);return true end)
-        if ok then feature:Refresh("settings_changed") end
+        if ok then
+            if key=="refreshMs" and S.Scheduler and type(S.Scheduler.SetTaskInterval)=="function" then S.Scheduler:SetTaskInterval(TASK,feature.State.refreshMs,true) end
+            feature:Refresh("settings_changed")
+        end
         return ok,err
     end,SetSideEnabled=function(feature,side,value)
         local key=side=="front" and "showFront" or (side=="back" and "showBack" or nil)

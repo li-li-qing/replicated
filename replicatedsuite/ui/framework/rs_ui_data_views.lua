@@ -824,14 +824,20 @@ local function NewVirtualList(kind, spec)
         return changed
     end
 
-    function c:SetItems(items, revision)
+    function c:SetItems(items, revision, skipUnchanged)
+        -- 中文维护（performance-cache-1）：显式承诺 revision 描述数据的消费者可省去重复测量失效。
+        -- Layout/Arrange 仍执行 Native Diff/失败重试；不能把“同 revision”当成几何/显隐已提交。
+        -- 普通 SetItems 仍强制刷新，数量/测量/布局变化同样不走快路径。
+        local same = skipUnchanged == true and revision ~= nil and self.getCount == nil and self.getItem == nil
+            and type(items) == "table" and type(self.items) == "table" and #items == #self.items
+            and self.dataRevision == tostring(revision) and not self.measureDirty and not self.layoutDirty
         self.items = type(items) == "table" and items or {}
         self.getCount, self.getItem = nil, nil
         self.internalRevision = self.internalRevision + 1
         self.dataRevision = revision ~= nil and tostring(revision) or ("items:" .. tostring(self.internalRevision))
         self.scrollOffset = math.max(0, math.min(self.scrollOffset, self:GetMaxOffset()))
         self:_SyncViewState()
-        self:InvalidateMeasure("items_changed")
+        if not same then self:InvalidateMeasure("items_changed") end -- 中文维护：只省测量失效，保留后续原生提交重试。
         RSUI.metrics.virtualDataRefreshes = (tonumber(RSUI.metrics.virtualDataRefreshes) or 0) + 1
         if self.width and self.height then self:Layout(self.x or 0, self.y or 0, self.width, self.height) end
         return true
@@ -1541,14 +1547,18 @@ local function NewTileView(kind, spec)
         RSUI.metrics.tileReconciles = (tonumber(RSUI.metrics.tileReconciles) or 0) + 1
     end
 
-    function c:SetItems(items, revision)
+    function c:SetItems(items, revision, skipUnchanged)
+        -- 中文维护（performance-cache-1）：Tile 与 List 共享显式 revision 契约；不跳过 Native Diff 重试。
+        local same = skipUnchanged == true and revision ~= nil and self.getCount == nil and self.getItem == nil
+            and type(items) == "table" and type(self.items) == "table" and #items == #self.items
+            and self.dataRevision == tostring(revision) and not self.measureDirty and not self.layoutDirty
         self.items = type(items) == "table" and items or {}
         self.getCount, self.getItem = nil, nil
         self.internalRevision = self.internalRevision + 1
         self.dataRevision = revision ~= nil and tostring(revision) or ("items:" .. tostring(self.internalRevision))
         self.scrollRowOffset = math.max(0, math.min(self.scrollRowOffset, self:GetMaxScrollRow()))
         self:_SyncViewState()
-        self:InvalidateMeasure("items_changed")
+        if not same then self:InvalidateMeasure("items_changed") end -- 中文维护：仍通过 Layout 重试此前拒写的几何/显隐。
         RSUI.metrics.virtualDataRefreshes = (tonumber(RSUI.metrics.virtualDataRefreshes) or 0) + 1
         if self.width and self.height then self:Layout(self.x or 0, self.y or 0, self.width, self.height) end
         return true
@@ -2602,7 +2612,8 @@ local function NewTableView(kind, spec)
         return result
     end
 
-    function c:SetItems(items, revision) return self.list:SetItems(items, revision) end
+    -- 中文维护：TableView 透传可选快路径；不改变其它调用者的强制刷新行为。
+    function c:SetItems(items, revision, skipUnchanged) return self.list:SetItems(items, revision, skipUnchanged) end
     function c:SetDataSource(source, revision) return self.list:SetDataSource(source, revision) end
     function c:RefreshVisible(revision, force) return self.list:RefreshVisible(revision, force) end
     function c:InvalidateItem(index) return self.list:InvalidateItem(index) end

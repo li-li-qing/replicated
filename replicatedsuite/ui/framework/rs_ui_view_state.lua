@@ -101,27 +101,42 @@ function V:Create(view, spec)
         options = type(options) == "table" and options or {}
         state = NormalizeState(state)
         local defaults = DEFAULTS[state] or DEFAULTS.ready
+        -- 中文维护（performance-cache-1）：同一状态/文案/重试权限不能反复使整张列表布局失效。
+        -- 比较最终值而非 options 表身份；同值仍走 Setter 的 Native 拒绝重试/读回修复，
+        -- 只有连续两轮显隐都被原生接受才省去额外的整表布局失效。
+        local title = tostring(options.title ~= nil and options.title or defaults.title or "")
+        local detail = tostring(options.detail ~= nil and options.detail or defaults.detail or "")
+        local tone = tostring(options.tone ~= nil and options.tone or defaults.tone or "default")
+        local explicit = state ~= "ready" and state ~= "empty"
+        if options.explicit ~= nil then explicit = options.explicit == true end
+        local same = options.force ~= true and self.state == state and self.title == title and self.detail == detail
+            and self.tone == tone and self.explicit == explicit and (options.retry == nil or options.retry == self.retry)
         local previous = self.state
         self.state = state
-        self.title = tostring(options.title ~= nil and options.title or defaults.title or "")
-        self.detail = tostring(options.detail ~= nil and options.detail or defaults.detail or "")
-        self.tone = tostring(options.tone ~= nil and options.tone or defaults.tone or "default")
+        self.title, self.detail, self.tone = title, detail, tone
         if options.retry ~= nil then self.retry = options.retry end
-        if options.explicit ~= nil then self.explicit = options.explicit == true
-        else self.explicit = state ~= "ready" and state ~= "empty" end
+        self.explicit = explicit
         self.revision = (tonumber(self.revision) or 0) + 1
         local showOverlay = state ~= "ready"
+        local accepted = true -- 中文维护：未被 Native 接受的状态不能成为后续跳过布局的依据。
         if self.message ~= nil then
             local text = self.title
             if self.detail ~= "" then text = text ~= "" and (text .. "\n" .. self.detail) or self.detail end
             self.message:SetText(text)
             self.message:SetTone(self.tone)
-            self.message:SetVisibility(showOverlay and "visible" or "collapsed")
+            local _, confirmed = self.message:SetVisibility(showOverlay and "visible" or "collapsed")
+            accepted = confirmed == true
         end
         local canRetry = showOverlay and type(self.retry) == "function" and (state == "error" or state == "unavailable")
-        if self.retryButton ~= nil then self.retryButton:SetVisibility(canRetry and "visible" or "collapsed") end
+        if self.retryButton ~= nil then
+            local _, confirmed = self.retryButton:SetVisibility(canRetry and "visible" or "collapsed")
+            accepted = accepted and confirmed == true
+        end
         if previous ~= state then V.metrics.changes = (tonumber(V.metrics.changes) or 0) + 1 end
-        if type(self.view.InvalidateLayout) == "function" then self.view:InvalidateLayout("view_state:" .. state) end
+        if (not same or not accepted or self.visibilityAccepted ~= true) and type(self.view.InvalidateLayout) == "function" then
+            self.view:InvalidateLayout("view_state:" .. state)
+        end
+        self.visibilityAccepted = accepted
         return true
     end
 

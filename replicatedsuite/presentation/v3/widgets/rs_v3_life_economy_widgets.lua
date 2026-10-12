@@ -175,7 +175,9 @@ local function ApplySettingsCommand(instance,Feature,command,...)
 end
 local function BuildTradeSettings(instance,panel,Feature)
     local controls=panel.controls
-    local function Projection()return Feature:GetProjection() or {}end
+    -- 中文维护（performance-cache-1）：本次设置窗刷新共享一个 detached 投影，
+    -- 下拉框 get 不再反复复制全部路线/材料；动作校验仍由 Feature Commands 实时负责。
+    local function Projection()return panel.controlProjection or Feature:GetProjection() or {}end
     local function RouteCommand(command,value)
         if Projection().viewMode=='cargo'then return false,'请先切换到全部或关注货物'end
         return ApplySettingsCommand(instance,Feature,command,value)
@@ -213,6 +215,7 @@ local function BuildTradeSettings(instance,panel,Feature)
             return ApplySettingsCommand(instance,Feature,'ToggleTrackedProduct',row.itemType or row.key)
         end})
     panel.refresh=function(projection)
+        panel.controlProjection=projection -- 中文维护：每轮覆盖旧快照，配置窗口不持有第二份业务状态。
         Contents.specs.Trade.refreshControls(controls,projection,projection.rows or {},Feature)
         controls.refreshButton:SetEnabled(projection.isRefreshing~=true and (projection.viewMode=='cargo' or projection.fromZone~=nil and projection.toZone~=nil))
         controls.refreshButton:SetText(projection.isRefreshing and '刷新中' or '刷新货率')
@@ -348,9 +351,10 @@ local function BuildBody(instance,parent,spec,Feature)
 end
 local function RefreshBody(self,spec,Feature)
             local projection = Feature:GetProjection() or {}
+            self.controlProjection = projection -- 中文维护：主页面、首页卡片与悬浮窗使用同一轮投影契约。
             local rows = type(spec.rows) == "function" and spec.rows(projection) or (projection.rows or {})
             rows = type(rows) == "table" and rows or {}
-            self.table:SetItems(rows, projection.revision or 0)
+            self.table:SetItems(rows, projection.revision or 0, spec.featureName == "Trade") -- 中文维护：仅 Trade 行承诺 revision 完整描述数据。
             -- 维护（2026-09-24，life-widget-control-refresh-isolation-1）：Feature Projection/rows 与顶部交互控件属于
             -- 两个不同的 Presentation 子域。18.297 中任一 Dropdown/按钮同步异常都会从 refreshControls 抛出，导致整个
             -- RefreshBody 中止；即使 Authority 已有正确路线数据，TableView 仍停在默认“暂无数据”，Show() 最终只显示
@@ -660,7 +664,7 @@ local ok, err = Register({
         if type(Feature.Commands.SetFrom) ~= "function" or type(Feature.Commands.SetTo) ~= "function"
             or type(Feature.Commands.SetViewMode) ~= "function" or type(Feature.Commands.SelectFavorite) ~= "function"
             or type(Feature.Commands.ToggleCurrentFavorite) ~= "function" or type(Feature.Commands.ToggleTrackedProduct) ~= "function"
-            or type(Feature.Commands.QuoteRowMaterials) ~= "function" then
+            or type(Feature.Commands.QuoteRowMaterials) ~= "function" or type(Feature.Commands.SetRatioMode) ~= "function" then
             return false, "跑商悬浮窗 Feature 路线/显示/收藏/关注/单行询价命令缺失"
         end
         if instance.headerMode then return BuildSettingsHeader(instance,content,Feature,'Trade')end
@@ -719,7 +723,7 @@ local ok, err = Register({
             id = (instance.contentPrefix or "v3_life_trade_widget_") .. "favorite", parent = favoriteRow, items = {}, maxVisible = 6,
             popupWidth = 230, placeholder = "收藏路线",
             get = function()
-                local projection = Feature:GetProjection() or {}
+                local projection = instance.controlProjection or Feature:GetProjection() or {} -- 中文维护：收藏控件复用已提交展示快照。
                 return projection.currentRouteFavorite and projection.currentFavoriteKey or nil
             end,
             set = function(value)
@@ -757,18 +761,18 @@ local ok, err = Register({
                 { value = "tracked", text = "关注" },
                 { value = "cargo", text = "随身" },
             },
-            itemWidth = 40, gap = 2, height = 26, fontSize = 9,
-            get = function() return (Feature:GetProjection() or {}).viewMode or "all" end,
+            itemWidth = floatingFavoriteManagement and 32 or 40, gap = 2, height = 26, fontSize = 9,
+            get = function() return (instance.controlProjection or Feature:GetProjection() or {}).viewMode or "all" end, -- 中文维护：模式标量不触发全量投影。
             set = function(value)
                 local ok, commandErr = Feature.Commands:SetViewMode(value)
                 if ok == true then instance:Refresh() end
                 return ok, commandErr
             end,
-            slot = { size = "fixed", width = 124, vAlign = "fill" },
+            slot = { size = "fixed", width = floatingFavoriteManagement and 100 or 124, vAlign = "fill" },
         })
         instance.trackButton = RSUI:Button({
             id = (instance.contentPrefix or "v3_life_trade_widget_") .. "track", parent = modeRow, text = "关注货物", compact = true,
-            slot = { size = "fixed", width = 74 },
+            slot = { size = "fixed", width = floatingFavoriteManagement and 64 or 74 },
         })
         instance.trackButton.onClick = function()
             local row = type(Feature.GetSelectedRow) == "function" and Feature:GetSelectedRow() or nil
@@ -776,6 +780,15 @@ local ok, err = Register({
             local ok, trackErr = Feature.Commands:ToggleTrackedProduct(row.itemType or row.key)
             if ok == true then instance:Refresh() end
             return ok, trackErr
+        end
+        if floatingFavoriteManagement then
+            -- 中文维护：悬浮窗直接提供两个货率选项；同一行保留320px客户区预算，单套金额由Feature切换。
+            instance.ratioSelector=RSUI:SegmentedSelector({id=(instance.contentPrefix or "v3_life_trade_widget_").."ratio_mode",parent=modeRow,
+                items={{value="current",text="实时货率"},{value="full",text="满货率"}},itemWidth=60,gap=2,height=26,fontSize=9,
+                get=function()return (instance.controlProjection or Feature:GetProjection()or {}).ratioMode or "current"end,
+                set=function(value)local ok,why=Feature.Commands:SetRatioMode(value);if ok then instance:Refresh()end;return ok,why end,
+                slot={size="fixed",width=124,vAlign="fill"}})
+            if not instance.ratioSelector then return false,"货率选项创建失败"end
         end
 
         return instance.fromDropdown ~= nil and instance.toDropdown ~= nil and instance.favoriteDropdown ~= nil
@@ -825,6 +838,7 @@ local ok, err = Register({
             instance.viewSelector:SetEnabled(true)
             instance.viewSelector:Render()
         end
+        if instance.ratioSelector then instance.ratioSelector:Render()end
         if instance.trackButton then
             local row = type(Feature.GetSelectedRow) == "function" and Feature:GetSelectedRow() or nil
             local canTrack = type(row) == "table" and (tonumber(row.itemType) ~= nil or row.key ~= nil)
@@ -876,9 +890,9 @@ local ok, err = Register({
                 return detail:Open(row.key)
             end },
         { id = "name", title = "货物", field = "name", size = "fill", minWidth = 108, fill = 1 }, -- 中文维护注释：货物列仍负责吸收剩余宽度，仅略降最小值以支持 320px 紧凑窗口。
-        { id = "rate", title = "货率", field = "rate", size = "fixed", width = 54, minWidth = 48, getTone = function(item) return item and item.tone or "muted" end }, -- 中文维护注释：货率列收紧但保留原 tone 规则，不改变 130%/实时货率业务判断。
-        { id = "price", title = "售价", field = "price", size = "fixed", width = 74, minWidth = 60 }, -- 中文维护注释：售价列缩窄到可读金币文本预算，字段来源仍是 Authority 已计算结果。
-        { id = "profit", title = "毛利", field = "profit", size = "fixed", width = 78, minWidth = 64 }, -- 中文维护注释：毛利列仅调整 Presentation 宽度，不更改材料成本/询价公式。
+        { id = "rate", title = "货率", field = "rate", size = "fixed", width = 54, minWidth = 48, getTone = function(item) return item and item.tone or "muted" end },
+        { id = "price", title = "售价", field = "price", size = "fixed", width = 74, minWidth = 60 },
+        { id = "profit", title = "毛利", field = "profit", size = "fixed", width = 78, minWidth = 64 },
     },
     status = function(projection, rows)
         -- 维护（2026-09-23，trade-floating-status-density-2）：悬浮窗底部只显示当前动作/下一步操作，

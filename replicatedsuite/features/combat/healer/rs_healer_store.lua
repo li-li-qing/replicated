@@ -197,10 +197,13 @@ local function NormalizePresentation(value)
             showName = head.showName == true,
             showDistance = head.showDistance == true,
             showScore = head.showScore == true,
-            refreshMs = ClampInt(head.refreshMs, 50, 250, defaults.head.refreshMs),
+            -- 中文维护：头标只控制表现间隔，允许1ms；推荐与健康扫描频率仍由其原有服务决定。
+            refreshMs = ClampInt(head.refreshMs, 1, 60000, defaults.head.refreshMs),
         },
         raid = {
             enabled = raid.enabled == true,
+            -- 旧配置缺字段保持 nil；不改变历史 canonical，新设置才保存特效绘制间隔。
+            refreshMs = raid.refreshMs ~= nil and ClampInt(raid.refreshMs,1,60000,100) or nil,
             effectMode = ClampInt(raid.effectMode, 1, 3, defaults.raid.effectMode),
             showRanks = raid.showRanks ~= false,
             rankCount = ClampInt(raid.rankCount, 0, 50, defaults.raid.rankCount),
@@ -639,7 +642,7 @@ local HEAD_PRESENTATION_KEYS = {
     showName=true, showDistance=true, showScore=true, refreshMs=true,
 }
 local RAID_PRESENTATION_KEYS = {
-    enabled=true, effectMode=true, showRanks=true, rankCount=true,
+    enabled=true, effectMode=true, showRanks=true, rankCount=true, refreshMs=true,
     rankFontSize=true, rankAlpha=true, rankCorner=true, rankOffsetX=true,
     rankOffsetY=true, proximityMode=true, calibration=true,
     mode=true, singleTeamId=true, testColors=true, slotNumbers=true,

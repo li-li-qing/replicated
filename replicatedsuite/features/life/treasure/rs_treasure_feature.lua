@@ -327,6 +327,7 @@ end
 function XA:GetProjection()
     return {
         revision = self.revision, maps = Copy(self.maps), selected = Copy(self.selected), status = self.status, error = self.error,
+        refreshMs = Treasure.State.refreshMs or 33, -- 中文维护：只读绘制偏好，无额外Native采样。
         observationContractVersion = Treasure.ObservationContractVersion, mapLocationContractVersion = Treasure.MapLocationContractVersion,
         inventoryBagId = self.inventoryBagId, inventoryFallbackUsed = self.inventoryFallbackUsed == true,
         lastMapActionError = self.lastMapActionError, mapOpenAttempts = self.mapOpenAttempts,
@@ -338,6 +339,8 @@ local function NormalizeTreasureState(value)
     value = type(value) == "table" and value or {}
     return {
         selectedKey = value.selectedKey ~= nil and tostring(value.selectedKey) or nil,
+        -- 中文维护：旧档缺字段保持 nil，避免改变历史 canonical 指纹；投影和调度回退33ms。
+        refreshMs = value.refreshMs ~= nil and math.max(1,math.min(60000,math.floor(Number(value.refreshMs) or 33))) or nil,
         widgetVisible = value.widgetVisible == true,
         widgetWindow = type(value.widgetWindow) == "table" and Copy(value.widgetWindow) or nil,
     }
@@ -345,6 +348,7 @@ end
 RegisterStore(Treasure.storeId, "v3.life.treasure", function() return NormalizeTreasureState(nil) end, function() return Copy(Treasure.State) end, function(value)
     value = type(value) == "table" and value or {}
     Treasure.State.selectedKey = value.selectedKey
+    Treasure.State.refreshMs = NormalizeTreasureState(value).refreshMs
     Treasure.State.widgetVisible = value.widgetVisible == true
     Treasure.State.widgetWindow = type(value.widgetWindow) == "table" and Copy(value.widgetWindow) or nil
 end, NormalizeTreasureState)
@@ -365,7 +369,7 @@ function Treasure:ReconcileDemand(_, before, after)
         if added ~= true then return false, "寻宝位置刷新任务创建失败" end
         if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(TREASURE_POSITION_TASK, Treasure.Id, false) end
         -- 中文维护：Scheduler/Demand 是唯一生命周期入口；Presenter 只订阅帧，不自建常驻轮询或第二份选择。
-        local compassAdded = S.Scheduler:AddHighFrequencyTask(TREASURE_COMPASS_TASK, 33, function()
+        local compassAdded = S.Scheduler:AddHighFrequencyTask(TREASURE_COMPASS_TASK, Treasure.State.refreshMs or 33, function()
             if Treasure.enabled == true and (tonumber(Treasure.consumerCount) or 0) > 0 then XA:UpdateCompass() end
         end, false, Treasure, "P2", 1)
         if compassAdded ~= true then S.Scheduler:RemoveTask(TREASURE_POSITION_TASK); return false, "寻宝罗盘任务创建失败" end
@@ -480,6 +484,17 @@ function Treasure:ShowSelectedOnMap(deferred)
     return true
 end
 Treasure.Commands = {
+    -- 中文维护：设置成功后更新同一绘制任务；不加快背包扫描、不改变藏宝图选择及原生地图动作。
+    SetRefreshMs = function(_, value)
+        value=Number(value)
+        if not value or value<1 or value>60000 or value~=math.floor(value) then return false,"刷新间隔必须为1～60000毫秒整数" end
+        local ok,why=PersistLifeMutation(Treasure,"treasure_refresh_ms",function(state)state.refreshMs=value;return true end)
+        if ok then
+            if S.Scheduler and type(S.Scheduler.SetTaskInterval)=="function" then S.Scheduler:SetTaskInterval(TREASURE_COMPASS_TASK,value,true) end
+            XA.revision=XA.revision+1;PublishFeatureUpdate(Treasure,XA.revision,"treasure_refresh_ms")
+        end
+        return ok,why
+    end,
     Refresh = function(_, reason) return Treasure:Refresh(reason) end,
     Select = function(_, key) return Treasure:Select(key) end,
     ShowSelectedOnMap = function() return Treasure:ShowSelectedOnMap() end, -- 中文维护注释：Presentation 只调用 Feature Command，不直接触碰 X2Map；主页面与悬浮窗因此共享同一选择和失败诊断。

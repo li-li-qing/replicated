@@ -75,7 +75,7 @@ end
 function P:Stop(reason)
     if self.running == true then S.Scheduler:RemoveTask(self.taskName) end
     self.running = false
-    self.active = {}
+    self.active, self.tokens = {}, {} -- 中文维护：释放成员token缓存；不让停用后的表保留上一团队。
     self:HideAll()
     return true
 end
@@ -84,8 +84,7 @@ function P:VisualTick()
     if self.running ~= true or #self.active == 0 then return true end
     local projection = S.Services and S.Services.ScreenProjectionV3 or nil
     if type(projection) ~= "table" or type(projection.ProjectUnitBatch) ~= "function" then self.lastError="screen_projection_unavailable"; self:HideAll(); return false end -- 中文维护：无显示时必须区分没有 Buff 与投影服务缺失，导出只读此事实。
-    local tokens = {}
-    for index = 1, math.min(#self.active, #self.pool) do tokens[index] = self.active[index].unitToken end
+    local tokens = self.tokens or {} -- 中文维护：名单在Reconcile时变化，位置每帧实时投影；不缓存坐标或目标身份事实。
     -- 中文维护（2026-10-03，sac-native-screen-authority）：真机报告证明本人 Buff 已命中，但严格相机世界门
     -- 算出 forward=-2026.44，先于 Native screen 读取直接隐藏。RU 相机/单位 world 空间不能在本高亮中混用。
     -- 与 UnitLines/BuffDisplay 一样以共享服务的原生 screen 坐标为 Authority；非正 Native depth 和读不到点
@@ -130,9 +129,13 @@ function P:Reconcile(reason)
     local ok, err = self:EnsurePool(#active)
     if ok ~= true then self.lastError=err; self:Stop("pool_failed"); return false, err end
     self.active = active
+    self.tokens = {}
+    for index=1,math.min(#active,#self.pool) do self.tokens[index]=active[index].unitToken end
     -- 中文维护：重复投影边沿保留待执行视觉任务；只有从无活跃成员进入活跃状态才分配调度资源。
     if self.running ~= true or not (S.Scheduler.tasks and S.Scheduler.tasks[self.taskName]) then
-        ok = S.Scheduler:AddTask(self.taskName, 50, function() return P:VisualTick() end, false, self, "P4", 1)
+        ok = (S.Scheduler.AddHighFrequencyTask or S.Scheduler.AddTask)(S.Scheduler,self.taskName, projection.sacRefreshMs or 50, function() return P:VisualTick() end, false, self, "P4", 1)
+    elseif type(S.Scheduler.SetTaskInterval)=="function" then
+        S.Scheduler:SetTaskInterval(self.taskName,projection.sacRefreshMs or 50,true)
     end
     if ok ~= true then self.lastError="team sac overlay task failed"; self:Stop("task_failed"); return false, self.lastError end
     if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(self.taskName, Feature.Id, true) end

@@ -21,9 +21,10 @@ local Shell = {
     compactDragSurfaceContract = 1,
     titleAppearanceContract = 3,
     titleBarInteractionContract = 1,
-    topLevelLayerContractVersion = 2,
+    topLevelLayerContractVersion = 3,
     topmostPreferenceContractVersion = 1,
     consumedById = {},
+    floatingById = {},
     metrics = {
         created = 0, shown = 0, hidden = 0, minimized = 0, restored = 0, destroyed = 0, layouts = 0, failures = 0,
         closeRequests = 0, closeVetoes = 0, closeCallbackFailures = 0, closedCallbacks = 0, quarantinedRejects = 0,
@@ -32,6 +33,34 @@ local Shell = {
     },
 }
 UI.WindowShell = Shell
+
+-- 中文维护：仅可见主菜单的置顶影响浮窗会话层级，不写入各窗口的用户置顶偏好。
+local function EffectiveTopmost(value,role)
+    if value==true then return true end
+    if role~="floating" then return false end
+    local main=S.UIV3 and S.UIV3.Shell
+    if not main or not main.window or type(main.GetTopmost)~="function" or main:GetTopmost()~=true then return false end
+    if type(main.window.IsVisible)~="function" then return false end
+    local ok,visible=pcall(main.window.IsVisible,main.window)
+    return ok and visible==true
+end
+
+function Shell:RefreshFloatingLayers()
+    local accepted,detail=true,nil
+    for _,shell in pairs(self.floatingById)do
+        if not shell.destroyed and shell.visible==true then
+            local ok,why=shell:RefreshNativeLayer()
+            if ok~=true then
+                accepted,detail=false,why
+                self.metrics.layerFailures=self.metrics.layerFailures+1
+                if S.DiagnosticsManager and type(S.DiagnosticsManager.Error)=="function"then
+                    S.DiagnosticsManager:Error("ui","FLOATING_LAYER_REFRESH_FAILED","悬浮窗层级同步失败",{id=shell.id,error=why})
+                end
+            end
+        end
+    end
+    return accepted,detail
+end
 
 local function Clamp(value, minimum, maximum, fallback)
     local n = tonumber(value) or tonumber(fallback) or minimum
@@ -148,17 +177,20 @@ function Shell:Create(spec)
 
     -- 维护（2026-09-16，native-layer-policy-2）：旧版把所有独立窗口固定放进 system，
     -- 因此普通插件面板会压住客户端 normal/dialog UI。Native layer 现在由独立 WindowPreferences
-    -- Authority 决定：默认 normal，不置顶；用户显式勾选 [顶] 才进入 system。SetDrawPriority 仍只
+    -- Authority 决定：默认 normal；显式 [顶] 或可见的置顶主菜单下的浮窗进入 system。SetDrawPriority 仍只
     -- 负责 Replicated Suite 自身同层窗口的顺序，不能再冒充跨原生层级的置顶。兼容边界：旧用户
     -- 没有新偏好记录时 initialTopmost=false；不改 Feature store，不引入 Tick。Native 拒绝层级时
     -- 构建/切换 fail-closed，避免逻辑状态与实际层级分叉。
+    local appliedNativeLayer
     local function ApplyNativeLayer(topmost)
-        local layerName = topmost == true and "system" or "normal"
+        local layerName = EffectiveTopmost(topmost,spec.layerRole) and "system" or "normal"
+        if appliedNativeLayer==layerName then return true,nil,false end
         if type(window.SetUILayer) == "function" then
             local ok, result = pcall(function() return window:SetUILayer(layerName) end)
             if ok ~= true or result == false then return false, "window_shell_layer_rejected:" .. layerName end
         end
-        return true, nil
+        appliedNativeLayer=layerName
+        return true, nil, true
     end
 
     local function ApplyRootWindowPolicy(topmost)
@@ -568,6 +600,7 @@ function Shell:Create(spec)
         local result = {}
         for k,v in pairs(self.placementInfo or {}) do result[k]=v end
         result.windowId,result.visibleRequested,result.lastError = self.id,self.visible==true,self.placementError
+        result.topmostPreference,result.appliedNativeLayer,result.layerRole=self.topmost==true,appliedNativeLayer,tostring(self.spec.layerRole or "window")
         local ok,visible = pcall(function() return self.window:IsVisible() end)
         result.nativeVisibleKnown = ok and type(visible)=="boolean"
         result.nativeVisible = result.nativeVisibleKnown and visible or false
@@ -595,6 +628,8 @@ function Shell:Create(spec)
         local nextValue = visible ~= false
         local previousMinimized = self.minimized == true
         if nextValue then
+            local layerOk,layerErr=self:RefreshNativeLayer()
+            if layerOk~=true then return false,layerErr end
             if self.minimized == true and self.minimizeMode ~= "collapse" and self.minimizeMode ~= "compact" then
                 self.minimized = false
                 self.minimizeButton:SetText("—")
@@ -670,6 +705,7 @@ function Shell:Create(spec)
     function shell:Destroy()
         if self.destroyed == true then return 0 end
         self.destroyed = true
+        Shell.floatingById[self.id]=nil
         -- 维护：销毁同时释放统一注册回调；避免注册表强引用旧 Shell 和重载后迟到布局。
         if S.Layout then S.Layout:UnregisterFloating("window_shell:" .. self.id) end
         self.placementDelegate,self.placementIntent,self.resetDelegate = nil,nil,nil
@@ -1065,6 +1101,13 @@ function Shell:Create(spec)
     end
     function shell:GetTopmost() return self.topmost == true end
 
+    function shell:RefreshNativeLayer()
+        if self.destroyed then return false,"window_destroyed"end
+        local ok,why,changed=ApplyNativeLayer(self.topmost)
+        if ok==true and changed and self.visible and self.windowController then self.windowController:BringToFront()end
+        return ok,why
+    end
+
     function shell:SetTitle(text) self.title = tostring(text or ""); self.titleText:SetText(self.title); return true end
     function shell:SetStatus(text, tone)
         if self.statusText == nil then return false end
@@ -1214,6 +1257,7 @@ function Shell:Create(spec)
         return shell:RevalidatePlacement(changed,"resolution_migration")
     end})
     self.metrics.created = (tonumber(self.metrics.created) or 0) + 1
+    if spec.layerRole=="floating" then self.floatingById[id]=shell end
     return shell
 end
 

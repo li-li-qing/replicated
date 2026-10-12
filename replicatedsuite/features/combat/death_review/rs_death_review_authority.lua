@@ -407,7 +407,7 @@ function A:GetRecord(serial)
         end
         return nil
     end
-    return DeepCopy(record)
+    return record -- 中文维护：LoadRecord已经返回独立副本；这里不再复制同一完整时间线，仍不暴露Store引用。
 end
 
 function A:GetTimelineRows(serial, limit)

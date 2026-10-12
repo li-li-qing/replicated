@@ -399,12 +399,17 @@ end
 
 function UI:DisarmInputWithin(widget, owner, reason)
     if widget == nil then return true, 0, nil end
+    -- 中文维护（performance-cache-1）：无输入子树的 HUD 隐藏不能扫描其它窗口的输入框。
+    -- 计数由 Register/UnregisterInputTarget 沿真实父链维护；全局停用与输入框自身仍执行清理，
+    -- 不把“已隐藏”当成失去键盘权限的证明，保留原有焦点/重载安全边界。
+    local allSuiteInputs = widget == UIParent or widget == "UIParent"
+    if not allSuiteInputs and not IsInputTarget(widget)
+        and (tonumber(widget.rsUiKeyboardInputSubtreeCount) or 0) <= 0 then return true, 0, nil end
     local snapshot = {}
     for input in pairs(lifecycle.armedInputs) do
         if input ~= nil then snapshot[#snapshot + 1] = input end
     end
     local count, failed = 0, nil
-    local allSuiteInputs = widget == UIParent or widget == "UIParent"
     for _, input in ipairs(snapshot) do
         local inputId = PhysicalIdOf(input)
         if allSuiteInputs or input == widget or FocusedInputDescendsFrom(input, widget, inputId) == true then

@@ -162,6 +162,18 @@ local function TaskInterval(task)
     return math.max(minimum, Finite(task and task.intervalMs, 1000))
 end
 
+-- 中文维护：显式设置只调整现有任务的间隔/视觉通道，保留实例、回调、模块与断路器状态；不重建任务或新增 OnUpdate。
+-- 高频选项只能由绘制设置入口使用；业务扫描、原生写操作及其冷却不得通过本接口提速。
+function Scheduler:SetTaskInterval(name, intervalMs, highFrequency)
+    local task=self.tasks[name]
+    local value=tonumber(intervalMs)
+    if not task or not value or value~=value or value<1 or value>60000 then return false,"invalid_task_interval" end
+    if highFrequency==true then task.lane="highfrequency" end
+    task.intervalMs=math.floor(value)
+    task.elapsedMs=math.min(tonumber(task.elapsedMs) or 0,TaskInterval(task))
+    return true
+end
+
 -- Bounded one-shot work shares the same single scheduler driver. The task is
 -- removed BEFORE user code runs so callback failure/re-entry can never leave a
 -- zombie timer behind. This is intended for UI notifications, delayed commits

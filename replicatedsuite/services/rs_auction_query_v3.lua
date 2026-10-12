@@ -318,6 +318,12 @@ function Q:GetSnapshot(requester)
     return Copy(self.snapshots[requester] or { requester = requester, status = "idle", rows = {}, count = 0 })
 end
 
+-- 中文维护：状态/控件读者只取标量，不复制完整挂单后丢弃；结果行仍通过GetSnapshot取得隔离快照。
+function Q:GetStatusSnapshot(requester)
+    local s=self.snapshots[tostring(requester or "")] or {}
+    return {status=s.status or "idle",count=tonumber(s.count) or 0,error=s.error,contract=s.contract}
+end
+
 -- 一次性严格消费者可释放已读快照；取消在途时只标记待释放，不缩短原生隔离期。
 function Q:ReleaseSnapshot(requester, searchGeneration)
     local pending = self.pending

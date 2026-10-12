@@ -182,5 +182,17 @@ Test('legacy saved loadout without ItemID still uses its exact name grade finger
     local h=Boot();for _,saved in ipairs(h.payload.items)do saved.itemType=nil end
     h:start():run();Eq(h.G:GetRuntimeSnapshot().outcome,'complete');Eq(#h.calls,3)
 end)
+-- 中文维护：主手切换后才进入背包的目标副手，必须由真实事务在副手动作前重新确认，不能被预检永久排除。
+Test('offhand released by queued mainhand is resolved after the mainhand swap',function()
+    local h=Boot();h.payload.items={};h.bag={};h.equipped={};h.payload.title.apply=false
+    h:add(16,1,'new mainhand')
+    h.payload.items[#h.payload.items+1]={slot=17,slotName='副手',name='old16',itemType=2016,grade=5,managed=true,empty=false,alternative=true}
+    h.equipped[17]={name='old shield',itemType=7017,itemGrade=5,equipSlot=17}
+    function h:afterAction()
+        for _,item in pairs(self.bag)do if item.itemType==2016 then item.equipSlot=17 end end
+    end
+    h:start():run();Eq(h.equipped[16].itemType,1016);Eq(h.equipped[17].itemType,2016)
+    Eq(h.G:GetRuntimeSnapshot().outcome,'complete');Eq(#h.calls,2);Eq(h.calls[2].alternate,true)
+end)
 print(string.format('GEAR_PARTIAL_CONTINUATION: %d/%d passed (%s)',passed,total,_VERSION))
 assert(passed==total,'gear continuation regression failures')

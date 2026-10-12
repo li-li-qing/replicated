@@ -132,6 +132,8 @@ local function NormalizeState(value, missingSacDefault) -- 中文维护注释：
     end
     return {
         sacEnabled = sacEnabled,
+        -- 中文维护：缺字段保持nil，历史schema1/2指纹不被新默认值改写；getter才回退原50ms。
+        sacRefreshMs = tonumber(value.sacRefreshMs) and math.max(1,math.min(60000,math.floor(tonumber(value.sacRefreshMs)))) or nil,
         savedMarks = NormalizeSavedMarks(value.savedMarks),
     }
 end
@@ -670,6 +672,7 @@ function Feature:GetProjection()
     local projection = BaseGetProjection(self) or {}
     projection.teamVisualRevision = tonumber(V.visualRevision) or 0
     projection.sacEnabled = V.state.sacEnabled == true
+    projection.sacRefreshMs = V.state.sacRefreshMs or 50
     projection.sacRunning = V.running == true
     projection.sacCandidateCount = tonumber(V.candidateCount) or 0
     projection.sacActiveCount = tonumber(V.activeCount) or 0
@@ -720,6 +723,14 @@ Feature.Commands.SetSacHighlightEnabled = function(_, enabled)
     end
     Publish("sac_setting")
     return true
+end
+-- 中文维护：只保存视觉间隔并发布原投影事件；Aura1200ms和头标恢复1100ms保持原冷却/观察职责。
+Feature.Commands.SetSacRefreshMs = function(_,value)
+    value=tonumber(value)
+    if not value or value~=value or value<1 or value>60000 or value~=math.floor(value) then return false,"绘制间隔必须为1～60000毫秒整数" end
+    local ok,why=Mutate("team_sac_refresh",function(state)state.sacRefreshMs=value;return true end)
+    if ok then Publish("sac_refresh") end
+    return ok,why
 end
 Feature.Commands.SaveRaidMarkers = function() return Feature:SaveCurrentRaidMarkers() end
 Feature.Commands.RestoreRaidMarkers = function() return Feature:RestoreSavedRaidMarkers() end

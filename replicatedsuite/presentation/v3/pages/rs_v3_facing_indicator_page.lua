@@ -52,11 +52,13 @@ local function Build(parent,route)
         {key="pointSize",label="点大小",step=1,integer=true},
         {key="opacity",label="透明度",step=0.05},
         {key="angleOffset",label="朝向校准",step=5,unit="°",integer=true},
+        -- 中文维护：滑块只覆盖常用1～100ms；精确输入保留旧技术上限，数值越小跟随越快。
+        {key="refreshMs",label="绘制间隔",step=1,unit="ms",integer=true},
     }
     for _,spec in ipairs(specs) do
         local key=spec.key
-        local field=D:CompactNumericSetting(grid,{id="v3_facing_"..key,label=spec.label,min=F.Limits[key][1],max=F.Limits[key][2],
-            hardMin=F.Limits[key][1],hardMax=F.Limits[key][2],fixedRange=true,step=spec.step,integer=spec.integer==true,unit=spec.unit,
+        local field=D:CompactNumericSetting(grid,{id="v3_facing_"..key,label=spec.label,min=F.Limits[key][1],max=key=="refreshMs" and 100 or F.Limits[key][2],
+            hardMin=F.Limits[key][1],hardMax=F.Limits[key][2],fixedRange=key~="refreshMs",fixedSliderRange=key=="refreshMs",step=spec.step,integer=spec.integer==true,unit=spec.unit,
             labelWidth=74,inputWidth=62,slider=true,stepButtons=false,
             get=function()return F:GetProjection().settings[key]end,
             set=function(value)return Result(F.Commands:SetValue(key,value))end,

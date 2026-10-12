@@ -327,7 +327,8 @@ function M:Refresh(reason)
         or (" · " .. PlayerPriceStatusText(row.priceBreakdown or row.priceEstimateStatus))
     local resourceCount = math.max(0, tonumber(row.boundResourceCount) or 0) + math.max(0, tonumber(row.nonMarketResourceCount) or 0)
     local resourceHint = resourceCount > 0 and (" · 另含" .. tostring(resourceCount) .. "项绑定/非市场资源") or ""
-    self.summary:SetText("货率 " .. tostring(row.rate or "--") .. " · 预计售价 " .. tostring(row.price or "--") .. payoutFactors
+    -- 中文维护：详情跟随已选择的货率模式，始终只显示一套金额。
+    self.summary:SetText((projection.ratioMode=="full" and "满货率估算 " or "实时货率 ") .. tostring(row.rate or "--") .. " · 预计售价 " .. tostring(row.price or "--") .. payoutFactors
         .. "\n材料金币成本 " .. Money(row.materialCostCopper) .. resourceHint .. " · 毛利 " .. tostring(row.profit or "--"))
 
     local items, pending, inflight, failed, marketCount = {}, 0, 0, 0, 0

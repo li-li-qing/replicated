@@ -164,7 +164,9 @@ function F.NewFeature(id, spec)
             self.rows = { { key = id .. ":blocked", name = "运行时阻塞", text = spec.blocker, statusText = "Runtime Blocked", tone = "warn" } }
             self.status, self.error = "runtime_blocked", spec.blocker
         else
-            local rows, status, err = spec.read(feature)
+            -- 中文维护（performance-cache-1）：把本轮刷新原因传给读模型，让报价等纯展示变化
+            -- 能复用业务已有的静态事实；旧单参 read 忽略额外参数，工厂不判断任何具体功能。
+            local rows, status, err = spec.read(feature, tostring(reason or "refresh"))
             self.rows, self.status, self.error = type(rows) == "table" and rows or {}, status or "ready", err
         end
         self.revision = self.revision + 1

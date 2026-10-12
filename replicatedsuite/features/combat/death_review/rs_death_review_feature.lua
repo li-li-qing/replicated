@@ -223,9 +223,10 @@ function F:GetProjection(request)
         enabled = runtime ~= nil and runtime.enabled == true or false,
         settings = S.Utils.DeepCopy(self:GetSettings()),
         health = S.Utils.DeepCopy(self:GetHealth()),
-        historyRows = S.Utils.DeepCopy(historyRows),
-        timelineRows = S.Utils.DeepCopy(timelineRows),
-        record = S.Utils.DeepCopy(record),
+        -- 中文维护：Authority每次创建列表，record由LoadRecord/volatile分支隔离；只转交本次独立投影，避免三遍复制记录。
+        historyRows = historyRows,
+        timelineRows = timelineRows,
+        record = record,
     }
 end
 

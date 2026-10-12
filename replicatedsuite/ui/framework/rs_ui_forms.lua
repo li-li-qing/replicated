@@ -447,11 +447,12 @@ RSUI:RegisterType("NumericField", function(spec)
     -- Domain setters remain authoritative: a clamped/rejected request is read
     -- back first, so the slider never expands to a value the Feature did not
     -- actually accept. This keeps Presentation metadata separate from Authority.
-    c.adaptiveRange = c.useSlider and spec.adaptiveRange ~= false and spec.fixedRange ~= true
+    -- 中文维护：绘制间隔可固定滑块窗口而保留独立精确输入上限；不恢复旧动态端点，也不写回范围元数据。
+    c.adaptiveRange = c.useSlider and spec.adaptiveRange ~= false and spec.fixedRange ~= true and spec.fixedSliderRange ~= true
     c.rangePolicy = c.adaptiveRange == true and "adaptive" or "fixed"
     c.hardMinimum = tonumber(spec.hardMin)
     c.hardMaximum = tonumber(spec.hardMax)
-    if c.adaptiveRange ~= true then
+    if c.adaptiveRange ~= true and spec.fixedSliderRange ~= true then
         c.hardMinimum, c.hardMaximum = c.baseMinimum, c.baseMaximum
     elseif c.hardMinimum ~= nil and c.hardMaximum ~= nil and c.hardMaximum < c.hardMinimum then
         c.hardMinimum, c.hardMaximum = c.hardMaximum, c.hardMinimum

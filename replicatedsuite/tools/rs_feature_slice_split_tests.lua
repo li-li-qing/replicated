@@ -778,7 +778,7 @@ Test('BatchE：公开 Commands 集合含全放且保留原动作', function()
             'SetPointCount', 'SetPointSize', 'SetRefreshMs' } },
         { RangeAssistSplit, { 'Refresh', 'SetColor', 'SetOpacity', 'SetPointCount', 'SetPointSize', 'SetRadius',
             'AddCircle', 'RemoveCircle', 'SetCircleEnabled', 'SetCircleColor', 'SetCircleOpacity',
-            'SetCirclePointCount', 'SetCirclePointSize', 'SetCircleRadius' } },
+            'SetCirclePointCount', 'SetCirclePointSize', 'SetCircleRadius', 'SetRefreshMs' } },
     }
     for _, case in ipairs(expected) do
         local feature, names = case[1], case[2]
@@ -889,7 +889,7 @@ end
 local LifeSlices = {
     life_treasure = {
         storeId = 'v3.life.treasure', topic = 'v3.life.treasure.updated',
-        commands = { 'Refresh', 'Select', 'ShowSelectedOnMap', 'GetWidgetVisible', 'SetWidgetVisible',
+        commands = { 'Refresh', 'SetRefreshMs', 'Select', 'ShowSelectedOnMap', 'GetWidgetVisible', 'SetWidgetVisible',
             'SetWidgetWindowState', 'MarkStoreDirty' },
         apiDependencies = { 'X2Bag:GetBagItemInfo', 'X2Bag:Capacity', 'X2Unit:GetUnitWorldPositionByTarget',
             'X2Unit:GetUnitScreenPosition', 'X2Unit:GetCurrentZoneGroup', 'X2Map:ShowWorldmapLocation' },

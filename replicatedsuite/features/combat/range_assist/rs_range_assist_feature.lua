@@ -167,6 +167,9 @@ end
 -- 数据流：Demand Consumer -> 单 Scheduler task -> Authority Refresh；关闭/无 Consumer 仍释放任务。
 -- 这里只控制会话刷新节奏，不改 circle.pointCount 持久配置，也不在循环内做额外 Static/API 查找。
 local function RangeAssistRefreshInterval(feature)
+    -- 中文维护：用户显式绘制间隔优先；旧档缺值保留原密度自适应节奏，不扩大实际 Native 点预算。
+    local configured=tonumber(feature.State.refreshMs)
+    if configured and configured>=1 then return configured end
     local total = 0
     -- 热路径只读已经由 Apply/Commands 归一化的 State，不再调用 RangeAssistResolveCircles。
     -- ResolveCircles 会复制整个 circles 数组并回写 state；放在 16ms cadence gate 会制造持续分配、
@@ -333,9 +336,10 @@ return NewFeature("combat_range_assist", {
     apiDependencies = { "X2Unit:GetUnitWorldPositionByTarget", "X2Unit:GetUnitScreenPosition", "X2Unit:UnitDistance" },
     state = { circles = {}, nextCircleId = 1 },
     default = { circles = {}, nextCircleId = 1 },
-    persistentKeys = { "circles", "nextCircleId" },
+    persistentKeys = { "circles", "nextCircleId", "refreshMs" },
     apply = function(value, state)
         value = type(value) == "table" and value or {}
+        state.refreshMs = tonumber(value.refreshMs) and math.max(1,math.min(60000,math.floor(tonumber(value.refreshMs)))) or nil
         -- 中文维护注释（range-multi-circle-store-1）：默认空 circles 才符合“新用户不送圆”的产品要求；
         -- 但老版本只存一组 radius/pointCount/...，这里要做单次兼容迁移，避免已有玩家的半径/颜色设置在升级后丢失。
         -- Authority 仍是 feature.State.circles；Persistence 只负责把旧单圆快照转为新数组快照，不自动为真正新用户造圆。
@@ -362,7 +366,7 @@ return NewFeature("combat_range_assist", {
         if b <= 0 and a > 0 then
             if S.Scheduler == nil or type(S.Scheduler.AddHighFrequencyTask) ~= "function" then return false, "范围辅助高频 Scheduler 不可用" end
             RangeAssistResetSession(feature)
-            local added = S.Scheduler:AddHighFrequencyTask(RANGE_ASSIST_TASK, RANGE_ASSIST_REFRESH_MS, function()
+            local added = S.Scheduler:AddHighFrequencyTask(RANGE_ASSIST_TASK, feature.State.refreshMs or RANGE_ASSIST_REFRESH_MS, function()
                 if feature.enabled ~= true or (tonumber(feature.consumerCount) or 0) <= 0 then return true end
                 feature.RangeRefreshHealth = type(feature.RangeRefreshHealth) == "table" and feature.RangeRefreshHealth
                     or { attempts=0, successes=0, failures=0, consecutiveFailures=0, skippedByCadence=0 }
@@ -532,7 +536,7 @@ return NewFeature("combat_range_assist", {
             -- 原始 UIParent 视口，复用本批 Camera frame；不能拿 Layout logical 尺寸代替。
             viewportWidth = feature.RangeLastBatch and feature.RangeLastBatch.viewportWidth,
             viewportHeight = feature.RangeLastBatch and feature.RangeLastBatch.viewportHeight,
-            refreshMs = tonumber(feature.RangeRefreshHealth and feature.RangeRefreshHealth.targetIntervalMs) or RangeAssistRefreshInterval(feature),
+            refreshMs = RangeAssistRefreshInterval(feature), -- 中文维护：控件回显当前偏好，不能被上一帧旧诊断节奏覆盖。
             pointCountHardMin = RANGE_ASSIST_POINT_HARD_MIN, pointCountHardMax = RANGE_ASSIST_POINT_HARD_MAX,
             radiusHardMin = RANGE_ASSIST_RADIUS_HARD_MIN, radiusHardMax = RANGE_ASSIST_RADIUS_HARD_MAX,
             pointSizeMin = S.VisualGuideLimits.pointSizeMin,
@@ -541,6 +545,18 @@ return NewFeature("combat_range_assist", {
         }
     end,
     commands = {
+        SetRefreshMs = function(feature,value)
+            value=tonumber(value)
+            if not value or value~=value or value<1 or value>60000 or value~=math.floor(value) then return false,"绘制间隔必须为1～60000毫秒整数" end
+            local ok,why=PersistStateMutation(feature,"range_refresh_ms",function(state)state.refreshMs=value;return true end)
+            if ok then
+                if S.Scheduler and type(S.Scheduler.SetTaskInterval)=="function" then S.Scheduler:SetTaskInterval(RANGE_ASSIST_TASK,value,true) end
+                -- 显式节奏变化清除旧回调余量；几何与事实保持原所有权，下一帧采当前位置，不追赶历史帧。
+                if feature.RangeRefreshHealth then feature.RangeRefreshHealth.lastCallbackAtMs=nil end
+                feature:Refresh("settings_changed") -- 中文维护：关闭/无Consumer时只保存设置，不从配置操作触发Native采样。
+            end
+            return ok,why
+        end,
         AddCircle = function(feature)
             return PersistStateMutation(feature, "range_add_circle", function(state)
                 local circles = RangeAssistResolveCircles(state)

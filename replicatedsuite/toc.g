@@ -133,6 +133,7 @@ services/rs_auction_surface_v3.lua
 services/rs_auction_search_bridge_v3.lua
 services/rs_auction_session_list_v3.lua
 services/rs_craft_surface_v3.lua
+services/rs_player_notes_surface_v3.lua
 services/rs_trade_payout_v3.lua
 services/rs_trade_material_identity_v3.lua
 services/rs_daily_auction_materials_v3.lua
@@ -203,6 +204,7 @@ features/tools/auction/rs_auction_read_model.lua
 -- 2026-09-28 Phase 1 Batch E：rs_business_bridge.lua 已全部拆完并退役（文件删除）。
 -- 以下是从它拆出的全部独立 Feature 源码单元；每个 Feature 只在这里登记一次。
 features/tools/social/rs_social_feature.lua
+features/tools/social/rs_player_notes_feature.lua
 features/tools/market_analysis/rs_market_analysis_feature.lua
 features/combat/siege_readiness/rs_siege_readiness_feature.lua
 features/combat/boss_alerts/rs_boss_alerts_feature.lua
@@ -245,6 +247,7 @@ presentation/v3/widgets/rs_v3_bag_settings_floating.lua
 presentation/v3/widgets/rs_v3_bag_quick_overlay.lua
 presentation/v3/widgets/rs_v3_auction_sidecar.lua
 presentation/v3/widgets/rs_v3_craft_sidecar.lua
+presentation/v3/widgets/rs_v3_player_notes_sidecar.lua
 presentation/v3/widgets/rs_v3_quest_detail_floating.lua
 presentation/v3/widgets/rs_v3_activity_lists.lua
 presentation/v3/widgets/rs_v3_activity_widget.lua
@@ -271,6 +274,7 @@ presentation/v3/pages/rs_v3_workspace_page.lua
 presentation/v3/pages/rs_v3_foundation_pages.lua
 presentation/v3/pages/rs_v3_gear_page.lua
 presentation/v3/pages/rs_v3_housing_page.lua
+presentation/v3/pages/rs_v3_player_notes_page.lua
 presentation/v3/pages/rs_v3_death_review_page.lua
 presentation/v3/pages/rs_v3_combat_statistics_controls.lua
 presentation/v3/pages/rs_v3_combat_personal_history_page.lua

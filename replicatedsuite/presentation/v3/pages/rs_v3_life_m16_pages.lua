@@ -99,6 +99,9 @@ local function Build(parent, route, feature, kind)
     local root, err = D:PageRoot(parent, "v3_page_" .. tostring(kind))
     if root == nil then return nil, err end
     root.consumerHeld = false
+    -- 中文维护（performance-cache-1）：下拉框 Render 只读页面已取得的 detached 快照，
+    -- 同一次 Refresh 不为每个标量再构建全量 Trade 投影。每次刷新覆盖，用户动作仍走 Commands。
+    local function ControlProjection() return root.controlProjection or feature:GetProjection() or {} end
     -- 中文维护注释（2026-09-25，life-page-consumer-binding-1）：life.trade / life.bonds / life.treasure /
     -- life.fishing 共用本 Builder。18.309 接入 PageHost Feature 生命周期桥时若只替换 Activate/Deactivate，
     -- 却漏掉这个共享 consumerBinding，BindFeatureConsumerLifecycle 会收到 nil 并让所有生活页在激活阶段报
@@ -148,7 +151,7 @@ local function Build(parent, route, feature, kind)
         local favoriteRow = RSUI:HorizontalBox({ id = "v3_trade_favorite_row", parent = root, gap = 6, slot = { size = "fixed", height = 30, hAlign = "fill" } })
         RSUI:Text({ id = "v3_trade_favorite_label", parent = favoriteRow, text = "收藏", fontSize = 10, tone = "muted", slot = { size = "fixed", width = 52 } })
         tradeFavoriteDropdown = RSUI:Dropdown({ id = "v3_trade_favorite_dropdown", parent = favoriteRow, items = {}, maxVisible = 12, popupWidth = 360,
-            placeholder = "选择已收藏路线", get = function() local projection = feature:GetProjection() or {}; return projection.currentRouteFavorite and projection.currentFavoriteKey or nil end,
+            placeholder = "选择已收藏路线", get = function() local projection = ControlProjection(); return projection.currentRouteFavorite and projection.currentFavoriteKey or nil end,
             set = function(value) return feature.Commands:SelectFavorite(value) end, slot = { size = "fill", fill = 1, minWidth = 150 } })
         local tradeFavoriteButton = RSUI:Button({ id = "v3_trade_favorite_toggle", parent = favoriteRow, text = "收藏路线", compact = true, slot = { size = "fixed", width = 94 } })
         tradeFavoriteButton.onClick = function()
@@ -167,7 +170,7 @@ local function Build(parent, route, feature, kind)
                 { value = "price", text = "售价" },
                 { value = "name", text = "名字" },
             },
-            get = function() local projection = feature:GetProjection() or {}; return projection.sortMode or "ratio" end,
+            get = function() local projection = ControlProjection(); return projection.sortMode or "ratio" end,
             set = function(value) return feature.Commands:SetSortMode(value) end,
             slot = { size = "fixed", width = 132, vAlign = "fill" },
         })
@@ -182,7 +185,7 @@ local function Build(parent, route, feature, kind)
         local tradeViewSelector = RSUI:SegmentedSelector({
             id = "v3_trade_view_mode", parent = tradeViewRow, itemWidth = 82, gap = 2, height = 26, fontSize = 9,
             items = { { value = "all", text = "全部货物" }, { value = "tracked", text = "关注货物" }, { value = "cargo", text = "随身贸易包" } },
-            get = function() local projection = feature:GetProjection() or {}; return projection.viewMode or "all" end,
+            get = function() local projection = ControlProjection(); return projection.viewMode or "all" end,
             set = function(value) return feature.Commands:SetViewMode(value) end,
             slot = { size = "fixed", width = 252, vAlign = "fill" },
         })
@@ -205,13 +208,12 @@ local function Build(parent, route, feature, kind)
         local tradeViewHint = RSUI:Text({ id = "v3_trade_view_hint", parent = tradeViewRow, text = "", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1, minWidth = 80 } })
         root.tradeViewSelector, root.tradeAutoRefreshButton, root.tradeQuoteListButton, root.tradeViewHint = tradeViewSelector, tradeAutoRefreshButton, tradeQuoteListButton, tradeViewHint
 
-        local tradeRatioModeButton = RSUI:Button({ id = "v3_trade_ratio_mode", parent = actionRow, text = "货率：实时", compact = true, slot = { size = "fixed", width = 94 } })
-        tradeRatioModeButton.onClick = function()
-            local projection = feature:GetProjection() or {}
-            local ok, modeErr = feature.Commands:SetRatioMode(projection.ratioMode == "full" and "current" or "full")
-            if ok == true then root:Refresh() end
-            return ok, modeErr
-        end
+        -- 中文维护：两个明确选项只切换同一 Authority 的计算模式；列表不并排显示两套金额。
+        local tradeRatioModeButton = RSUI:SegmentedSelector({ id="v3_trade_ratio_mode",parent=actionRow,
+            items={{value="current",text="实时货率"},{value="full",text="满货率"}},itemWidth=74,gap=2,height=26,fontSize=9,
+            get=function()return ControlProjection().ratioMode or "current"end,
+            set=function(value)local ok,why=feature.Commands:SetRatioMode(value);if ok then root:Refresh()end;return ok,why end,
+            slot={size="fixed",width=154,vAlign="fill"} })
         local tradeCommerceModeButton = RSUI:Button({ id = "v3_trade_commerce_mode", parent = actionRow, text = "售价：计熟练", compact = true, slot = { size = "fixed", width = 108 } })
         tradeCommerceModeButton.onClick = function()
             local projection = feature:GetProjection() or {}
@@ -245,7 +247,7 @@ local function Build(parent, route, feature, kind)
         end
         root.tradeInteractionHint = RSUI:Text({
             id = "v3_trade_interaction_hint", parent = root,
-            text = "本地材料价即时计算毛利 · 后台自动更新 · 双击货物可强制刷新材料价",
+            text = "满货率按130%估算；切换选项显示对应售价和毛利 · 双击货物刷新材料价",
             fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 22, hAlign = "fill" },
         })
         root.tradeRatioModeButton, root.tradeCommerceModeButton, root.tradeQuoteListButton, root.tradeDetailButton, root.tradeTrackButton = tradeRatioModeButton, tradeCommerceModeButton, tradeQuoteListButton, tradeDetailButton, tradeTrackButton
@@ -301,6 +303,15 @@ local function Build(parent, route, feature, kind)
         root.autoButton = autoButton
     end
 
+    if kind == "treasure" and type(feature.Commands.SetRefreshMs)=="function" then
+        -- 中文维护：寻宝滑块只调整罗盘绘制，不加快500ms背包/地图观察；旧偏好与选择完整保留。
+        root.treasureRefreshField = D:SettingsNumericSlider(root, {
+            id="v3_treasure_refresh",label="罗盘绘制间隔",min=1,max=100,fixedSliderRange=true,hardMin=1,hardMax=60000,step=1,integer=true,unit="ms",
+            get=function()return feature:GetProjection().refreshMs or 33 end,
+            set=function(value)return feature.Commands:SetRefreshMs(value)end,
+            slot={size="fixed",height=42,hAlign="fill"},
+        })
+    end
     status = RSUI:Text({ id = "v3_" .. kind .. "_status", parent = root, text = "尚未读取", fontSize = 9, tone = "muted", overflow = "wrap", slot = { size = "auto", minHeight = 28, hAlign = "fill" } })
 
     featureButton.onClick = function()
@@ -452,8 +463,10 @@ local function Build(parent, route, feature, kind)
     end
 
     function root:Refresh()
+        if self.treasureRefreshField then self.treasureRefreshField:Render() end
         local rows, projection = Rows()
-        tableView:SetItems(rows, projection.revision or 0)
+        root.controlProjection = projection -- 缓存仅属页面这一轮展示；不回写 Feature/Store。
+        tableView:SetItems(rows, projection.revision or 0, kind == "trade") -- Trade 行由 revision 提交，其它生活倒计时保留原刷新。
         local enabled = S.FeatureRuntime:IsEnabled(feature.Id) == true
         featureButton:SetText(enabled and "关闭功能" or "启用功能")
         if kind == "trade" then
@@ -508,9 +521,7 @@ local function Build(parent, route, feature, kind)
             end
             if root.tradeRatioModeButton then
                 root.tradeRatioModeButton:SetEnabled(enabled)
-                root.tradeRatioModeButton:SetText(projection.ratioMode == "full"
-                    and ("货率：满" .. tostring(projection.fullRatio or 130) .. "%")
-                    or "货率：实时")
+                root.tradeRatioModeButton:Render()
             end
             if root.tradeCommerceModeButton then
                 root.tradeCommerceModeButton:SetEnabled(enabled)

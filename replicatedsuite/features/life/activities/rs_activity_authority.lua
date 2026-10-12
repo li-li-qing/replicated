@@ -320,16 +320,44 @@ function A:AttachProgress(row)
     return row
 end
 
+-- 中文维护（performance-cache-1）：静态发生时间/计划文案只随目录或 Generation 改变。
+-- 缓存归 Activity Authority 的会话生命周期，ResetTransient 同时释放；日期有效期、任务尾部、
+-- 当前活动/倒计时/颜色与进度仍每轮从真实钟和 provider 求值，绝不缓存这些动态结论。
+local function CompiledSchedules(self)
+    local source = S.Data and S.Data.RuEvents
+    local cached = self.compiledSchedules
+    if cached ~= nil and cached.source == source and cached.generation == S.Generation then return cached.rows end
+    local rows = {}
+    for _, event in ipairs(source or {}) do
+        local duration = math.max(0, tonumber(event.duration) or 0) * 60
+        local endMinute = (tonumber(event.hour) or 0)*60 + (tonumber(event.minute) or 0) + duration/60
+        local endText = string.format("%02d:%02d", math.floor(endMinute/60)%24, math.floor(endMinute)%60)
+        if endMinute >= 1440 then endText = "次日 " .. endText end
+        local occurrences = {}
+        for day = 1, 7 do
+            if HasDay(event.days, day) then
+                occurrences[#occurrences+1] = { day=day,
+                    start=(day-1)*DAY_SECONDS+(tonumber(event.hour) or 0)*3600+(tonumber(event.minute) or 0)*60,
+                    scheduleText=FormatSchedule(day,event.hour,event.minute).." →计划 "..endText }
+            end
+        end
+        rows[#rows+1] = { event=event, duration=duration, occurrences=occurrences }
+    end
+    self.compiledSchedules = { source=source, generation=S.Generation, rows=rows }
+    return rows
+end
+
 function A:BuildStaticRows()
     local now = self:GetWeekSeconds()
     if now == nil then return {} end
     local currentDateSerial = self:GetDateSerial()
     local grouped = {}
 
-    for _, event in ipairs(S.Data and S.Data.RuEvents or {}) do
+    for _, schedule in ipairs(CompiledSchedules(self)) do
+        local event = schedule.event -- 中文维护：动态日期/任务字段仍来自当前静态目录，不复制一份业务 Authority。
         if EventDateEnabled(event, currentDateSerial) then
             local best = nil
-            local duration = math.max(0, tonumber(event.duration) or 0) * 60
+            local duration = schedule.duration
             -- 中文维护注释：支持活动 taskTailMinutes 后续任务保持期（如征兆之痕90分钟、煦日120分钟）。
             -- 当玩家身上已接受或待交后续 Boss/恶魔阶段任务（tailInFlightCount > 0）时，
             -- 即使首个计划时长（如10分钟）已过，仍将当期活动保持为“进行中”，防止在击杀过程中倒计时过早跳到 4 小时后的下一次。
@@ -343,83 +371,79 @@ function A:BuildStaticRows()
             end
             local tailInFlight = type(progressSnapshot) == "table" and (tonumber(progressSnapshot.tailInFlightCount) or 0) > 0
 
-            for day = 1, 7 do
-                if HasDay(event.days, day) then
-                    local start = ((day - 1) * DAY_SECONDS) + (tonumber(event.hour) or 0) * 3600 + (tonumber(event.minute) or 0) * 60
-                    local elapsed = NormalizeWeekSeconds(now - start)
-                    local baseActive = duration > 0 and elapsed < duration
-                    local tailActive = tailInFlight and (elapsed >= duration and elapsed < tailDuration)
-                    local active = baseActive or tailActive
-                    local seconds
-                    if baseActive then
-                        seconds = math.max(0, math.floor(duration - elapsed))
-                    elseif tailActive then
-                        seconds = math.max(0, math.floor(tailDuration - elapsed))
-                    else
-                        seconds = math.max(0, math.ceil(NormalizeWeekSeconds(start - now)))
-                    end
-
-                    -- 每个 occurrence 都要校验日期；仅检查 today 会让限时活动在最后一天指向已结束的下一周。
-                    local daySeconds = now % DAY_SECONDS
-                    local occurrenceDate = currentDateSerial and (currentDateSerial+math.floor((daySeconds+(active and -elapsed or seconds))/DAY_SECONDS)) or nil
-                    local confidence = event.scheduleConfidence or "curated"
-                    local minutePrecision = self.clockAnchor and self.clockAnchor.precision == "minute"
-                    -- 中文维护注释（2026-09-18，活动时间文案可读性）：
-                    -- Authority 仍然只投影“静态日程 + 当前服务器钟”得到的计划窗口，不能把计划结束误写成首领实际存活时间。
-                    -- 旧“计划余1分”属于内部术语，玩家无法判断是开始还是结束；因此 Presentation 字段改为方向明确的自然语言：
-                    -- 秒级服务器钟使用“预计X后结束”，分钟级服务器钟使用“约X后结束”；尚未开始统一写“X后开始”。
-                    -- 兼容边界：active/seconds/sortSeconds/taskTailActive/scheduleConfidence 均保持原语义，排序、Store、任务尾部逻辑不变。
-                    local stateText
-                    if tailActive then
-                        stateText = "后续≤" .. FormatCountdown(seconds)
-                    elseif active then
-                        stateText = (minutePrecision and "约" or "预计") .. FormatCountdown(seconds) .. "后结束"
-                    else
-                        stateText = (minutePrecision and "约" or "") .. FormatCountdown(seconds) .. "后开始"
-                    end
-                    local endMinute = ((tonumber(event.hour) or 0)*60+(tonumber(event.minute) or 0)+duration/60)
-                    local endText = string.format("%02d:%02d",math.floor(endMinute/60)%24,math.floor(endMinute)%60)
-                    if endMinute >= 1440 then endText="次日 "..endText end
-                    local candidate = {
-                        key = "event:" .. tostring(event.fullName or event.name or "unknown"),
-                        name = tostring(event.name or event.fullName or "活动"),
-                        fullName = tostring(event.fullName or event.name or "活动"),
-                        shortName = tostring(event.shortName or event.name or "活动"),
-                        microName = tostring(event.microName or event.shortName or event.name or "活动"),
-                        kind = "schedule",
-                        source = "curated",
-                        presentationSection = "timeline",
-                        timelineState = active and "active" or "upcoming",
-                        questScope = event.questScope,
-                        questKey = event.questKey,
-                        active = active,
-                        seconds = seconds,
-                        secondsUntilStart = active and 0 or seconds,
-                        secondsUntilEnd = active and seconds or nil,
-                        -- sortSeconds 仅作为旧 Presentation/诊断兼容字段；v2 comparator 不再把 live 状态和它比较。
-                        sortSeconds = active and 0 or seconds,
-                        -- 中文维护注释（2026-09-18，活动进行中视觉状态）：
-                        -- 用户需要在密集时间线里一眼识别“当前正在进行”的计划活动，因此 timeline active 统一使用 red。
-                        -- Authority：颜色只由本 Activity Authority 根据现有 active 事实投影；Presentation 仅消费 row.tone，
-                        -- 不重复判断时间窗口。数据流仍为日程/服务器钟 -> active -> tone，不新增 Tick、Native 查询或持久化字段。
-                        -- 兼容边界：upcoming 仅在 10 分钟内切 red，超过 10 分钟仍为 default；实时区域仍由 ZONE_VIEW 自己决定红/橙/蓝，不复用 timeline 规则；
-                        -- active/seconds/sortSeconds/occurrenceKey、排序、Store 与任务尾部语义全部保持不变。
-                        tone = TimelineTone(active, active and 0 or seconds),
-                        -- 中文维护注释（2026-09-19，隐藏内部可信度标签）：
-                        -- scheduleConfidence / scheduleEvidence 是维护与诊断 Authority，不是玩家活动状态。旧版把 reference
-                        -- 直接拼成“参考·X后开始 / ·参考”，普通用户无法理解，还会误把来源可信度当成活动阶段。
-                        -- 因此 Presentation 字段只保留“何时开始/结束”及计划窗口；可信度元数据继续独立保存，供诊断和核对使用。
-                        -- 兼容边界：不改变日程、排序、active/seconds、任务尾部、Store 或诊断证据；主页面/首页/悬浮窗共用此投影。
-                        status = stateText,
-                        scheduleText = FormatSchedule(day, event.hour, event.minute).." →计划 "..endText,
-                        scheduleConfidence = confidence,
-                        scheduleEvidence = event.scheduleEvidence or "existing RU curated table",
-                        plannedDurationSeconds = duration,
-                        taskTailActive = tailActive,
-                        occurrenceKey = tostring(event.fullName or event.name) .. ":" .. tostring(day) .. ":" .. tostring(start),
-                    }
-                    if EventDateEnabled(event,occurrenceDate) and BetterOccurrence(candidate, best) then best = candidate end
+            for _, occurrence in ipairs(schedule.occurrences) do
+                local day, start = occurrence.day, occurrence.start -- 中文维护：复用预编译周时间，动态窗口算法保持不变。
+                local elapsed = NormalizeWeekSeconds(now - start)
+                local baseActive = duration > 0 and elapsed < duration
+                local tailActive = tailInFlight and (elapsed >= duration and elapsed < tailDuration)
+                local active = baseActive or tailActive
+                local seconds
+                if baseActive then
+                    seconds = math.max(0, math.floor(duration - elapsed))
+                elseif tailActive then
+                    seconds = math.max(0, math.floor(tailDuration - elapsed))
+                else
+                    seconds = math.max(0, math.ceil(NormalizeWeekSeconds(start - now)))
                 end
+
+                -- 每个 occurrence 都要校验日期；仅检查 today 会让限时活动在最后一天指向已结束的下一周。
+                local daySeconds = now % DAY_SECONDS
+                local occurrenceDate = currentDateSerial and (currentDateSerial+math.floor((daySeconds+(active and -elapsed or seconds))/DAY_SECONDS)) or nil
+                local confidence = event.scheduleConfidence or "curated"
+                local minutePrecision = self.clockAnchor and self.clockAnchor.precision == "minute"
+                -- 中文维护注释（2026-09-18，活动时间文案可读性）：
+                -- Authority 仍然只投影“静态日程 + 当前服务器钟”得到的计划窗口，不能把计划结束误写成首领实际存活时间。
+                -- 旧“计划余1分”属于内部术语，玩家无法判断是开始还是结束；因此 Presentation 字段改为方向明确的自然语言：
+                -- 秒级服务器钟使用“预计X后结束”，分钟级服务器钟使用“约X后结束”；尚未开始统一写“X后开始”。
+                -- 兼容边界：active/seconds/sortSeconds/taskTailActive/scheduleConfidence 均保持原语义，排序、Store、任务尾部逻辑不变。
+                local stateText
+                if tailActive then
+                    -- 中文维护：seconds 是内部任务保持上限，不代表下一场或首领存活时间，页面不显示该上限。
+                    stateText = "任务未完成"
+                elseif active then
+                    stateText = (minutePrecision and "约" or "预计") .. FormatCountdown(seconds) .. "后结束"
+                else
+                    stateText = (minutePrecision and "约" or "") .. FormatCountdown(seconds) .. "后开始"
+                end
+                local candidate = {
+                    key = "event:" .. tostring(event.fullName or event.name or "unknown"),
+                    name = tostring(event.name or event.fullName or "活动"),
+                    fullName = tostring(event.fullName or event.name or "活动"),
+                    shortName = tostring(event.shortName or event.name or "活动"),
+                    microName = tostring(event.microName or event.shortName or event.name or "活动"),
+                    kind = "schedule",
+                    source = "curated",
+                    presentationSection = "timeline",
+                    timelineState = active and "active" or "upcoming",
+                    questScope = event.questScope,
+                    questKey = event.questKey,
+                    active = active,
+                    seconds = seconds,
+                    secondsUntilStart = active and 0 or seconds,
+                    secondsUntilEnd = active and seconds or nil,
+                    -- sortSeconds 仅作为旧 Presentation/诊断兼容字段；v2 comparator 不再把 live 状态和它比较。
+                    sortSeconds = active and 0 or seconds,
+                    -- 中文维护注释（2026-09-18，活动进行中视觉状态）：
+                    -- 用户需要在密集时间线里一眼识别“当前正在进行”的计划活动，因此 timeline active 统一使用 red。
+                    -- Authority：颜色只由本 Activity Authority 根据现有 active 事实投影；Presentation 仅消费 row.tone，
+                    -- 不重复判断时间窗口。数据流仍为日程/服务器钟 -> active -> tone，不新增 Tick、Native 查询或持久化字段。
+                    -- 兼容边界：upcoming 仅在 10 分钟内切 red，超过 10 分钟仍为 default；实时区域仍由 ZONE_VIEW 自己决定红/橙/蓝，不复用 timeline 规则；
+                    -- active/seconds/sortSeconds/occurrenceKey、排序、Store 与任务尾部语义全部保持不变。
+                    tone = TimelineTone(active, active and 0 or seconds),
+                    -- 中文维护注释（2026-09-19，隐藏内部可信度标签）：
+                    -- scheduleConfidence / scheduleEvidence 是维护与诊断 Authority，不是玩家活动状态。旧版把 reference
+                    -- 直接拼成“参考·X后开始 / ·参考”，普通用户无法理解，还会误把来源可信度当成活动阶段。
+                    -- 因此 Presentation 字段只保留“何时开始/结束”及计划窗口；可信度元数据继续独立保存，供诊断和核对使用。
+                    -- 兼容边界：不改变日程、排序、active/seconds、任务尾部、Store 或诊断证据；主页面/首页/悬浮窗共用此投影。
+                    status = stateText,
+                    scheduleText = occurrence.scheduleText, -- 中文维护：固定文本不再每秒为每个周发生点重新格式化。
+                    scheduleConfidence = confidence,
+                    scheduleEvidence = event.scheduleEvidence or "existing RU curated table",
+                    plannedDurationSeconds = duration,
+                    taskTailActive = tailActive,
+                    occurrenceKey = tostring(event.fullName or event.name) .. ":" .. tostring(day) .. ":" .. tostring(start),
+                }
+                if EventDateEnabled(event,occurrenceDate) and BetterOccurrence(candidate, best) then best = candidate end
             end
             if best ~= nil then
                 local key = best.key
@@ -615,7 +639,8 @@ local function MakeDynamicOccurrence(options)
         -- live 区域本身继续由 ZONE_VIEW 独立着色；不改变区域 Authority、扫描频率、排序或存档。
         tone = TimelineTone(active, active and 0 or seconds),
         -- 区域推导倒计时仍需明确方向；不将 Boss/战争计划窗口声称为存活事实。
-        status = active and ("预计余"..FormatCountdown(seconds)) or (FormatCountdown(seconds).."后"),
+        -- 中文维护：区域推导活动与固定日程采用同样的开始/结束方向；不把计划结束声明为首领死亡时间。
+        status = active and ("预计"..FormatCountdown(seconds).."后结束") or (FormatCountdown(seconds).."后开始"),
         scheduleText = "实时推导",
         occurrenceKey = tostring(options.key or "dynamic:unknown") .. ":" .. tostring(options.phase or "derived"),
     }
@@ -867,6 +892,7 @@ function A:RestoreHiddenEvents()
 end
 
 function A:ResetTransient()
+    self.compiledSchedules = nil -- 中文维护：进入世界/重置释放静态编译缓存，允许同代目录原地调整后显式重建。
     self.zoneStates, self.zoneRemainSeconds, self.zoneObservedAtMs = {}, {}, {}
     self.clockAnchor = nil
     self.lastClockSampleAtMs = -1

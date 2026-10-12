@@ -637,7 +637,18 @@ function G:BuildSession(setId, payload, mismatchRows, options)
         if uniqueConflict and self:IsRingSlot(saved.slot) and self:IsSingleWearRing(saved.itemType) then
             reason,reasonCode='充盈的拉玛哈的戒指只能佩戴一枚，请重新获取当前并保存方案','ring_unique_conflict'
         else candidate,reason,reasonCode=self:FindCandidate(saved,snapshot,reserved) end
-        if candidate == nil then blocked[#blocked + 1] = { slot = saved.slot, slotName = saved.slotName, name = saved.name, reason = reason, code = reasonCode }
+        -- 中文维护（gear-hand-dependency）：目标副手可能正装在主手；只有主手已有可执行替换步骤，且当前主手身份可验证时，
+        -- 才延后解析副手。它仍只能从动作前真实背包快照装备，不能直接操作装备槽，也不能把普通缺失/歧义放宽为重试。
+        local deferred = false
+        if candidate == nil and reasonCode == "not_found" and tonumber(saved.slot) == 17 then
+            local mainStep
+            for _, planned in ipairs(queue) do if tonumber(planned.saved.slot) == 16 then mainStep = planned; break end end
+            local currentMain, readErr = self:GetLoadoutEquipped(16)
+            deferred = mainStep ~= nil and readErr == nil and self:SavedItemMatchesTooltip(saved, currentMain)
+        end
+        if deferred then
+            queue[#queue + 1] = { saved=saved, alternative=true, deferredCandidate=true, attempts=0, verifyPolls=0 }
+        elseif candidate == nil then blocked[#blocked + 1] = { slot = saved.slot, slotName = saved.slotName, name = saved.name, reason = reason, code = reasonCode }
         else
             reserved[tonumber(candidate.slot)] = true
             queue[#queue + 1] = { saved = saved, bagSlot = candidate.slot, bagId = snapshot.bagId,
@@ -674,6 +685,12 @@ function G:RefreshStepCandidate(step, session)
 end
 
 function G:ValidateStepCandidate(step, session)
+    -- 中文维护：前项真实回读成功后再解析延后副手；重新扫描失败仍走原跳过反馈，不向 nil/旧物理槽发起写入。
+    if step.deferredCandidate == true then
+        local ok, reason, code = self:RefreshStepCandidate(step, session)
+        if ok == true then step.deferredCandidate = nil end
+        return ok, reason, code
+    end
     -- 维护（2026-09-30，gear-partial-continuation-1）：前项换装/背包操作可能改变物理槽。
     -- 动作前只回读当前候选的一个槽；指纹变化才进入现有有界扫描，不对旧槽盲目 Equip。
     -- 继续后项不等于放宽身份校验；歧义、缺失、读错仍交给 SkipRuntimeStep 留证后跳过。

@@ -219,7 +219,9 @@ function F:GetSettingsProjection()
 end
 
 function F:GetPresentationProjection(scope)
-    return S.Utils.DeepCopy(self:GetPresentationSettings(scope) or {})
+    -- 中文维护（performance-cache-1）：Store 查询已返回 detached 深拷贝；保留唯一隔离边界，
+    -- 避免外层再次递归复制 panels/geometry。UI 仍不能持有或修改 Store 原表。
+    return self:GetPresentationSettings(scope) or {}
 end
 
 function F:GetMemberDetail(key)

@@ -2593,9 +2593,13 @@ function TA:GetProjection()
     local now = S.NowMs and tonumber(S.NowMs()) or 0
     local dataAt = tonumber(self.lastRatioAt) or 0
     local displayStatus, displayError = self.status, self.error
-    local cargoProjection = Copy(self.cargo)
-    cargoProjection.results = nil
-    cargoProjection.queue = nil
+    -- 中文维护（performance-cache-1）：货物扫描 results/queue 只属于 Authority；UI 仅需摘要。
+    -- 在复制前排除它们，避免遍历整套路线/材料结果后立即丢弃；其余字段仍逐项深拷贝，
+    -- 不把优化变成共享可变引用，也不缓存 cooldown/age/报价新旧状态。
+    local cargoProjection = {}
+    for key, value in pairs(self.cargo) do
+        if key ~= "results" and key ~= "queue" then cargoProjection[key] = Copy(value) end
+    end
     cargoProjection.resultCount = 0
     for _ in pairs(type(self.cargo.results) == "table" and self.cargo.results or {}) do cargoProjection.resultCount = cargoProjection.resultCount + 1 end
     cargoProjection.queueCount = #(self.cargo.queue or {})

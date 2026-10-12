@@ -484,6 +484,13 @@ end
 function F:GetCombatOverview()
     local d,a=Domain(),Analytics()
     if not d or not a then return {rows={},revision="unavailable",statsAvailable=false,assistsAvailable=false} end
+    -- 中文维护：先读现有指标版本和开关标量，缓存命中前不得构建/排序击杀列表；缺轻量契约的宿主仍走原投影路径。
+    local metric=type(a.GetMetric)=="function" and a:GetMetric("kills") or nil
+    local analyticsFeature=S.Features and S.Features.CombatAnalytics
+    if metric and metric.state and analyticsFeature and type(analyticsFeature.IsMetricPreferenceEnabled)=="function" then
+        local quickToken=tostring(S.Generation)..":"..tostring(d.revision)..":"..tostring(tonumber(metric.state.revision) or 0)..":"..a:GetCollectionScope()..":"..tostring(analyticsFeature:IsMetricPreferenceEnabled("kills"))
+        if self.combatOverviewToken==quickToken then return self.combatOverview end
+    end
     local scores=a:GetMetricProjection("kills",{valueKey="kills",includeZero=true,limit=512}) or {}
     local token=tostring(S.Generation)..":"..tostring(d.revision)..":"..tostring(scores.dataRevision)..":"..a:GetCollectionScope()..":"..tostring(scores.statsAvailable)
     if self.combatOverviewToken==token then return self.combatOverview end

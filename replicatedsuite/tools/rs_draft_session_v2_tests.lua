@@ -156,6 +156,19 @@ Test('NumericField slider commit supersedes suspended exact-input draft',functio
 end)
 
 
+Test('fixed slider window ignores saved expansion while exact input preserves slower values',function()
+    local h=Base({width=820,height=680});LoadForms(h)
+    local reads,writes=0,0
+    h.S.RSUI.NumericRangeStore={Get=function()reads=reads+1;return 1,2000 end,Set=function()writes=writes+1;return true end}
+    local p=h.Native(nil,'fixed_refresh_parent',0,0,620,90);local authority=500
+    local field=assert(h.S.RSUI:NumericField({id='fixed_refresh',parent=p,min=1,max=100,hardMin=1,hardMax=60000,fixedSliderRange=true,
+        step=1,integer=true,slider=true,applyButton=true,inline=true,get=function()return authority end,set=function(v)authority=v;return true end}))
+    local low,high=field:GetPresentationRange();assert(low==1 and high==100 and reads==0 and authority==500)
+    assert(field.input:BeginEditing('test'));field.input.root.text='1000';assert(field:ApplyDraft('apply_button'))
+    low,high=field:GetPresentationRange();assert(authority==1000 and low==1 and high==100 and writes==0)
+    assert(field.slider:CommitValue(1,'slider'));assert(authority==1)
+end)
+
 Test('switching away from legacy blur input still commits for compatibility',function()
     local h=Base({width=820,height=680})
     local p=h.Native(nil,'draft_switch_blur_parent',0,0,420,100)

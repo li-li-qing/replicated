@@ -382,6 +382,7 @@ function Shell:SetTopmost(value, persist)
         end
     end
     if nextValue and type(Adapter.Raise) == "function" then Adapter:Raise(self.window) end
+    if UI.WindowShell and type(UI.WindowShell.RefreshFloatingLayers)=="function"then UI.WindowShell:RefreshFloatingLayers()end
     return true, nextValue, true
 end
 
@@ -756,6 +757,7 @@ function Shell:Open()
     if not wasVisible then self:AdvanceMenuTip() end
     if wasMinimized then MarkDirty("minimized_changed") end
     Adapter:Raise(self.window)
+    if UI.WindowShell and type(UI.WindowShell.RefreshFloatingLayers)=="function"then UI.WindowShell:RefreshFloatingLayers()end
     return true
 end
 
@@ -810,6 +812,7 @@ function Shell:Close(reason)
     if restored~=true then return false,restoreErr end
     local hidden, hideErr = Adapter:SetVisible(self.window, self.owner, false)
     if hidden ~= true then return false, hideErr or "主窗口隐藏失败" end
+    if UI.WindowShell and type(UI.WindowShell.RefreshFloatingLayers)=="function"then UI.WindowShell:RefreshFloatingLayers()end
     self.lastCloseReason = tostring(reason or "close")
     if ModalHost ~= nil and type(ModalHost.Clear) == "function" then ModalHost:Clear() end
     if ToastHost ~= nil and type(ToastHost.Clear) == "function" then ToastHost:Clear("shell_close") end

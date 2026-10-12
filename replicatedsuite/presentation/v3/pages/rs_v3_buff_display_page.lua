@@ -530,7 +530,8 @@ local function BuildPage(parent, route)
     local refreshGrid = RSUI:UniformGrid({ id = "v3_buff_display_layout_refresh_grid", parent = refreshStack, minCellWidth = 320, minCellHeight = 34, maxColumns = 1, gap = 4, slot = { size = "auto", hAlign = "fill" } })
     -- 维护（pvp-hud-1）：位置已独立逐帧跟随；旧headRefreshMs继续控制距离/读条，不能仍标成全HUD刷新。
     local refreshField = D:CompactNumericSetting(refreshGrid, {
-        id = "v3_buff_display_layout_refresh", label = "距离/读条刷新", min = 25, max = 2000, hardMin = 1, hardMax = 2000, step = 25, integer = true, unit = "ms", slider = true,
+        -- 中文维护：仅距离/读条表现滑块提速，Aura事实采样仍由原观察通道决定，不能混作每帧全量Buff扫描。
+        id = "v3_buff_display_layout_refresh", label = "距离/读条刷新", min = 1, max = 100, fixedSliderRange = true, hardMin = 1, hardMax = 2000, step = 1, integer = true, unit = "ms", slider = true,
         get = function() return tonumber((Feature:GetSettingsProjection() or {}).headRefreshMs) or 50 end,
         set = function(v) return ApplySetting("headRefreshMs", math.floor((tonumber(v) or 50) + 0.5)) end,
         slot = { size = "fill", fill = 1 },

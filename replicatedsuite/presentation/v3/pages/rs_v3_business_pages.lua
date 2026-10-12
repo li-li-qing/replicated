@@ -515,7 +515,8 @@ local function Build(parent, route, id)
             slot = { size = "fill", fill = 1, hAlign = "fill" },
         }))
         TrackField(D:SettingsNumericSlider(globalGrid, {
-            id = "v3_business_combat_unit_lines_refresh", label = "刷新间隔", min = 1, max = 1000, hardMin = REFRESH_HARD_MIN, hardMax = REFRESH_HARD_MAX, step = 25, integer = true, unit = "ms", labelWidth = 68, inputWidth = 58, applyButtonWidth = 38,
+            -- 中文维护：视觉常用范围1～100ms，步长1；精确输入仍允许原技术上限，不破坏已有慢速配置。
+            id = "v3_business_combat_unit_lines_refresh", label = "绘制间隔", min = 1, max = 100, fixedSliderRange = true, hardMin = REFRESH_HARD_MIN, hardMax = REFRESH_HARD_MAX, step = 1, integer = true, unit = "ms", labelWidth = 68, inputWidth = 58, applyButtonWidth = 38,
             controlHeight = 22, minHeight = 30, stackBelow = 274, sliderMinWidth = 74, sliderPreferredShare = 0.44,
             get = function() return (feature:GetProjection() or {}).refreshMs or 100 end,
             set = function(v) return feature.Commands:SetRefreshMs(v) end,
@@ -610,6 +611,13 @@ local function Build(parent, route, id)
         local circles = type(rangeProjection.circles) == "table" and rangeProjection.circles or {}
         if circles[1] ~= nil then rangeSelectedCircleId = tonumber(circles[1].id) end
 
+        -- 中文维护：范围绘制间隔独立于点数；保持几何预算，缺偏好仍用原自动节奏。
+        TrackField(D:SettingsNumericSlider(root, {
+            id="v3_business_range_refresh",label="绘制间隔",min=1,max=100,fixedSliderRange=true,hardMin=1,hardMax=60000,step=1,integer=true,unit="ms",
+            get=function()return (feature:GetProjection() or {}).refreshMs or 16 end,
+            set=function(value)return feature.Commands:SetRefreshMs(value)end,
+            slot={size="fixed",height=42,hAlign="fill"},
+        }))
         local listSection, listErr = D:SettingsSection(root, {
             id = "v3_business_combat_range_assist_list", title = "范围圆列表",
             -- 中文维护注释（range-layout-budget-1）：保留完整 title/divider/intro/action 的最小纵向预算。
@@ -1256,6 +1264,12 @@ local function Build(parent, route, id)
         teamExtra.status = RSUI:Text({ id = teamComponentPrefix .. "visual_status", parent = assistInner,
             text = "牺牲之舞高亮默认开启 · 尚未保存团队头标", fontSize = 8, tone = "muted", overflow = "wrap", maxLines = 2,
             slot = { size = "auto", minHeight = 22, hAlign = "fill" } }) -- 中文维护注释：只展示 TeamVisuals detached projection，不进行 Aura/Marker Native 读取；高频事实仍由共享 Service + 按需 Consumer 提供。
+        TrackField(D:SettingsNumericSlider(assistInner, {
+            id=teamComponentPrefix.."sac_refresh",label="高亮绘制间隔",min=1,max=100,fixedSliderRange=true,hardMin=1,hardMax=60000,step=1,integer=true,unit="ms",
+            get=function()return feature:GetProjection().sacRefreshMs or 50 end,
+            set=function(value)return feature.Commands:SetSacRefreshMs(value)end,
+            slot={size="fixed",height=42,hAlign="fill"},
+        }))
 
         end -- 中文维护：视觉与头标控件不进入职责页。
         if id == "combat_sac_highlight" then

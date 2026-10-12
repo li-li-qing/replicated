@@ -235,7 +235,7 @@ end
 function P:LayoutPanel(id)
     local panel = self.panels[id]
     if panel == nil or panel.moving == true then return true end
-    local settings = Settings()
+    local settings = self.settings or Settings() -- 中文维护：布局与本轮高亮共用 Start/Reconcile 的 detached 配置。
     local geometry = nil
     for _, b in ipairs(self.bindings) do if b.id == id then geometry = b.geometry; break end end
     if geometry == nil then
@@ -341,11 +341,20 @@ end
 
 function P:RefreshHighlights(nowMs)
     if self.running ~= true then return false end
-    local settings = Settings()
+    -- 中文维护（performance-cache-1）：Start/Reconcile 在设置事件边沿取得 detached 配置，
+    -- 生命发布/颜色动画复用它；不在每次高亮刷新重复复制 panels/geometry。
+    local settings = self.settings or Settings()
     local calibration = settings.calibration == true
     local useRaidRuntime = self.rosterCount > 1
+    nowMs = nowMs or (S.NowMs and S.NowMs() or 0)
+    -- 中文维护：先计算本轮最终占用，再逐格提交。旧“全隐藏→重显示”绕过 Diff，
+    -- 每个未变化成员也产生两次 Show；该索引仅属 Presenter，不共享业务可变状态。
+    local slotRows = {}
+    for _, row in ipairs(self.displayRows) do
+        local panel, index = self:GetOverlaySlot(row)
+        if panel ~= nil and index ~= nil and panel.slots[index] ~= nil then slotRows[panel.slots[index]] = row end
+    end
     for id, panel in pairs(self.panels) do
-        local isActive = self.activePanels[id] == true or calibration == true
         local show = calibration == true or (useRaidRuntime and self.activePanels[id] == true)
         S.UI:SetVisible(panel.window, show, self.owner)
         if type(S.UI.EnsurePickable) ~= "function" then return false, "healer_raid_pickable_contract_unavailable" end
@@ -371,51 +380,39 @@ function P:RefreshHighlights(nowMs)
         local calibrationSlots = SLOTS_PER_PANEL
         for i = 1, SLOTS_PER_PANEL do
             local calibrationCell = calibration and i <= calibrationSlots
-            S.UI:SetVisible(panel.ranks[i], false, self.owner)
+            local slot, row = panel.slots[i], slotRows[panel.slots[i]]
+            local runtimeCell = useRaidRuntime and row ~= nil
+            local rankVisible = runtimeCell and not calibration and row.isCandidate == true
+                and settings.showRanks == true and N(row.rank, 99) <= N(settings.rankCount, 10)
+            -- 中文维护：rank/slot 都只提交最终可见性；退出校准、成员离队和定位闪光结束
+            -- 同样通过这一轮最终状态隐藏，避免保留已离队成员或旧排名。
+            S.UI:SetVisible(panel.ranks[i], rankVisible == true, self.owner)
             S.UI:SetVisible(panel.calibrationLabels[i], calibrationCell, self.owner)
-            S.UI:SetVisible(panel.slots[i], calibrationCell, self.owner)
-            if calibrationCell then S.UI:SetColor(panel.slots[i], 0.18, 0.72, 1.00, 0.16, self.owner) end
-        end
-    end
-    if not useRaidRuntime and not calibration then return true end
-    nowMs = nowMs or (S.NowMs and S.NowMs() or 0)
-    local testColors = settings.testColors == true
-    for _, row in ipairs(self.displayRows) do
-        local panel, localIndex = self:GetOverlaySlot(row)
-        if panel ~= nil and localIndex ~= nil then
-            local slot = panel.slots[localIndex]
-            if slot ~= nil then
-                if calibration then
-                    S.UI:SetVisible(slot, true, self.owner)
+            local locateCell = (useRaidRuntime or calibration) and nowMs < self.locateUntil and self.selfSlot ~= nil
+                and self.selfSlot.id == id and self.selfSlot.index == i
+            S.UI:SetVisible(slot, calibrationCell or runtimeCell or locateCell, self.owner)
+            if calibrationCell then
+                S.UI:SetColor(slot, 0.18, 0.72, 1.00, 0.16, self.owner)
+            elseif runtimeCell then
+                local r, g, b, a
+                if settings.testColors == true then
+                    local hue = ((tonumber(row.teamIndex) or 1) - 1) * 0.5 + (tonumber(row.memberIndex) or 1) / (SLOTS_PER_PANEL + 1)
+                    r, g, b = HslColor(hue, 0.65, 0.55)
+                    a = 0.55
                 else
-                    local r, g, b, a
-                    if testColors then
-                        local hue = ((tonumber(row.teamIndex) or 1) - 1) * 0.5 + (tonumber(row.memberIndex) or 1) / (SLOTS_PER_PANEL + 1)
-                        r, g, b = HslColor(hue, 0.65, 0.55)
-                        a = 0.55
-                    else
-                        local color = type(row.color) == "table" and row.color or { r=1, g=0.2, b=0.2, a=0.9 }
-                        r, g, b = N(color.r, 1), N(color.g, 0.2), N(color.b, 0.2)
-                        a = row.isCandidate == true and AnimatedAlpha(color, settings.effectMode, nowMs) or N(color.a, 0.42)
-                    end
-                    S.UI:SetColor(slot, r, g, b, a, self.owner)
-                    S.UI:SetVisible(slot, true, self.owner)
-                    if row.isCandidate == true and not calibration and settings.showRanks == true and N(row.rank, 99) <= N(settings.rankCount, 10) then
-                        S.UI:SetText(panel.ranks[localIndex], tostring(row.rank or ""), self.owner)
-                        if panel.ranks[localIndex].style ~= nil then S.UI:SetColor(panel.ranks[localIndex].style, 1, 1, 1, N(settings.rankAlpha, 1), self.owner) end
-                        S.UI:SetVisible(panel.ranks[localIndex], true, self.owner)
-                    end
+                    local color = type(row.color) == "table" and row.color or { r=1, g=0.2, b=0.2, a=0.9 }
+                    r, g, b = N(color.r, 1), N(color.g, 0.2), N(color.b, 0.2)
+                    a = row.isCandidate == true and AnimatedAlpha(color, settings.effectMode, nowMs) or N(color.a, 0.42)
                 end
+                S.UI:SetColor(slot, r, g, b, a, self.owner)
             end
-        end
-    end
-    -- Locate-self diagnostic flash.
-    if nowMs < self.locateUntil and self.selfSlot ~= nil then
-        local panel = self.panels[self.selfSlot.id]
-        local slot = panel and panel.slots[self.selfSlot.index]
-        if slot ~= nil then
-            S.UI:SetColor(slot, 1, 1, 0.2, 0.95, self.owner)
-            S.UI:SetVisible(slot, true, self.owner)
+            if rankVisible then
+                S.UI:SetText(panel.ranks[i], tostring(row.rank or ""), self.owner)
+                if panel.ranks[i].style ~= nil then S.UI:SetColor(panel.ranks[i].style, 1, 1, 1, N(settings.rankAlpha, 1), self.owner) end
+            end
+            if locateCell then
+                S.UI:SetColor(slot, 1, 1, 0.2, 0.95, self.owner)
+            end
         end
     end
     return true
@@ -423,7 +420,7 @@ end
 
 function P:AnimateTick()
     if self.running ~= true then return false end
-    local settings = Settings()
+    local settings = self.settings or Settings() -- 中文维护：动画只读已提交配置，设置事件由 Reconcile 失效缓存。
     if math.floor(N(settings.effectMode, 1)) == 1 then return true end
     local nowMs = S.NowMs and S.NowMs() or 0
     for _, candidate in ipairs(self.candidates) do
@@ -440,10 +437,11 @@ function P:AnimateTick()
 end
 
 function P:ReconcileEffectTask()
-    local settings = Settings()
+    local settings = self.settings or Settings() -- 中文维护：任务需求与高亮共用同一配置快照。
     local needTask = self.running == true and self.calibrationMode ~= true and math.floor(N(settings.effectMode, 1)) ~= 1
+    if needTask and self.taskActive and type(S.Scheduler.SetTaskInterval)=="function" then S.Scheduler:SetTaskInterval(self.taskName,N(settings.refreshMs,100),true) end
     if needTask and self.taskActive ~= true then
-        self.taskActive = S.Scheduler:AddTask(self.taskName, 100, function()
+        self.taskActive = (S.Scheduler.AddHighFrequencyTask or S.Scheduler.AddTask)(S.Scheduler,self.taskName, N(settings.refreshMs,100), function()
             self.metrics.effectTicks = (tonumber(self.metrics.effectTicks) or 0) + 1
             return self:AnimateTick()
         end, false, self, "P4", 1) == true

@@ -60,4 +60,23 @@ Test('a rejected deferred native action stays a real error and never loops',func
     assert(f:GetProjection().lastMapActionError and not f:GetProjection().mapActionPending)
     assert(s.Scheduler.tasks[TASK]==nil and #h.mapCalls==2)
 end)
+Test('render interval changes the existing compass task and leaves bag observation at 500ms',function()
+    local h,s,f=Boot();assert(f:AcquireConsumer('test_refresh'))
+    local compass=s.Scheduler.tasks.v3_life_treasure_compass
+    assert(compass and compass.intervalMs==33)
+    assert(f.Commands:SetRefreshMs(1));assert(s.Scheduler.tasks.v3_life_treasure_compass==compass and compass.intervalMs==1)
+    assert(s.Scheduler.tasks.v3_life_treasure_position.intervalMs==500)
+    assert(f.Commands:SetRefreshMs(100));assert(compass.intervalMs==100)
+    assert(f.Commands:SetRefreshMs(0)==false and f:GetProjection().refreshMs==100)
+    assert(f:ReleaseConsumer('test_refresh'));assert(s.Scheduler.tasks.v3_life_treasure_compass==nil and s.Scheduler.tasks.v3_life_treasure_position==nil)
+end)
+Test('historical iv4 treasure save survives optional refresh preference addition',function()
+    local h,s,f=Boot();local p=s.Persistence;local st=p:GetStore(f.storeId);local current=st.migrate
+    -- 中文维护：旧 canonical 的字段集来自上版；用真实编码盖章后重新经过当前 canonical 读取，不跳过完整性检查。
+    st.migrate=function(v)return {selectedKey=v.selectedKey,widgetVisible=v.widgetVisible==true,widgetWindow=v.widgetWindow and h.Copy(v.widgetWindow)or nil}end
+    f.State.selectedKey='saved_map';assert(p:SaveStore(f.storeId,{consumeDirty=true,verifyAfterSave=true}))
+    st.migrate=current;f.storeLoaded=false
+    local ok,why=p:LoadStore(f.storeId);assert(ok,why)
+    assert(f.State.selectedKey=='saved_map' and f.State.refreshMs==nil and f:GetProjection().refreshMs==33)
+end)
 print('TREASURE_MAP_COOLDOWN PASS: '..passed..' cases (Native modeled)')

@@ -51,6 +51,19 @@ Fishing.Authority = {
     polls = 0, nativeEventRefreshes = 0, writeFailures = 0, lastWriteError = nil,
 } -- 中文维护：诊断保留“事件/兜底/动作/写失败”边界，后续 RU 报告可以直接区分没事件、ID 不对还是 Hotkey 事务失败。
 local FA = Fishing.Authority
+local FISHING_DISPLAY_FIELDS={"status","message","buffId","slot","zoneGroup","autoArmed","autoAvailable","autoBlockedReason","lastWriteError"}
+-- 中文维护：实时扫描/Hotkey事务仍每次执行；只有展示状态不变的100ms兜底才合并通知，诊断计数照常更新。
+local function PublishFishingObservation(reason)
+    local old=FA.lastDisplayState
+    local same=type(old)=="table" and old.recoveryPending==Fishing:IsRecoveryPending()
+    if same then for _,key in ipairs(FISHING_DISPLAY_FIELDS) do if old[key]~=FA[key] then same=false;break end end end
+    if same and reason=="poll" then return true end
+    old={recoveryPending=Fishing:IsRecoveryPending()}
+    for _,key in ipairs(FISHING_DISPLAY_FIELDS) do old[key]=FA[key] end
+    FA.lastDisplayState=old;FA.revision=FA.revision+1
+    PublishFeatureUpdate(Fishing,FA.revision,"fishing_observation:"..reason)
+    return true
+end
 
 local function NormalizeFishingSnapshot(snapshot) -- 中文维护：恢复快照经过持久化后不信任表形；只接受 v3 所需标量/槽位，防止旧实验记录触发 Native 写入。
     if type(snapshot) ~= "table" or (tonumber(snapshot.contractVersion) or 0) < 3 then return nil end
@@ -282,9 +295,7 @@ function FA:Refresh(reason) -- 中文维护：鱼动作识别是唯一 projectio
     end
 
     Fishing:RefreshAutoAvailability()
-    self.revision = self.revision + 1
-    PublishFeatureUpdate(Fishing, self.revision, "fishing_observation:" .. reason)
-    return true
+    return PublishFishingObservation(reason)
 end
 
 function FA:GetProjection() -- 中文维护：Presentation 只读 detached projection；Hotkey 服务内部快照/真实按键内容永不暴露给 UI。

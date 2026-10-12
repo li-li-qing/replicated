@@ -576,5 +576,18 @@ Test("T16: Documentation no longer lists fishing Auto-R as SPECIFIC_RUNTIME_BLOC
     assert(text:find("HotkeyContractVersion = 3", 1, true) ~= nil, "README must record the v3 reversible transaction contract")
 end)
 
+Test("unchanged polls still scan native buffs but coalesce display revisions", function()
+    resetNative();setFishBuff(5264)
+    Fishing.State.autoPreference=false;Fishing.Authority.lastDisplayState=nil
+    local scans=0;local original=X2Unit.UnitBuffCount
+    X2Unit.UnitBuffCount=function(...)scans=scans+1;return original(...)end
+    assert(Fishing.Authority:Refresh('poll'));local revision=Fishing.Authority.revision
+    for i=1,10 do assert(Fishing.Authority:Refresh('poll'))end
+    assert(scans==11 and Fishing.Authority.revision==revision,'same polls must scan without redrawing')
+    setFishBuff(5265);assert(Fishing.Authority:Refresh('poll'))
+    assert(scans==12 and Fishing.Authority.revision==revision+1 and Fishing.Authority.buffId==5265,'changed action must publish immediately')
+    X2Unit.UnitBuffCount=original
+end)
+
 print(string.format("=== RESULT: %d/%d PASS ===", passed, total))
 if passed ~= total then error(string.format("Fishing tests failed: %d/%d", passed, total)) end

@@ -23,7 +23,7 @@ return function(options)
  -- 这些命令在 features/life/trade/rs_trade_feature.lua 与 features/life/bonds/rs_bonds_feature.lua 中均真实存在，
  -- （2026-09-28，Phase 2 Step 4：原 features/life/rs_life_m16_bundle.lua 已退役）故只补桩，不改生产契约。
  function F:GetDisplayOrderKey()return 'default'end;function F:GetFilterMask()return 7 end;function F:GetDuplicateMode()return 'keep'end
- for _,k in ipairs({'SetFrom','SetTo','SetSortMode','SetRatioMode','SetCommerceMode','SetViewMode','ToggleCurrentFavorite','ToggleTrackedProduct','SelectFavorite','QuoteRowMaterials','SetBondFilterOption','SetContinentOrder','SetDuplicatePriority','SetDisplayOrder','SetFilterMask','SetDuplicateMode','SetWidgetWindowState','MarkStoreDirty','SetWidgetVisible'}) do F.Commands[k]=function()return true end end
+ for _,k in ipairs({'SetFrom','SetTo','SetSortMode','SetRatioMode','SetCommerceMode','SetAutoRefresh','Refresh','SetViewMode','ToggleCurrentFavorite','ToggleTrackedProduct','SelectFavorite','QuoteRowMaterials','SetBondFilterOption','SetContinentOrder','SetDuplicatePriority','SetDisplayOrder','SetFilterMask','SetDuplicateMode','SetWidgetWindowState','MarkStoreDirty','SetWidgetVisible'}) do F.Commands[k]=function()return true end end
   F.Commands.QuotePendingMaterials=function(_,mode)counts.quotes=counts.quotes+1;counts.lastMode=mode;return true end
   F.Commands.CancelQuoteBatch=function()counts.cancelled=true;return true end
   S.Features[name]=F;return F

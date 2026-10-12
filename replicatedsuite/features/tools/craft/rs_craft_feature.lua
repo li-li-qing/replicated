@@ -472,7 +472,7 @@ local function CraftResolveTypes(feature)
     return types, { status = "ready", source = "X2Craft:GetCraftTypeByItemType", itemType = itemType, craftTypes = Copy(types) }
 end
 
-local function CraftRead(feature)
+local function CraftRead(feature, reason)
     local rows, recipes = {}, {}
     local function RefreshSectionText(section)
         if type(section) ~= "table" or type(section.items) ~= "table" or #section.items == 0 or section.status ~= "ready" then return false end
@@ -494,7 +494,25 @@ local function CraftRead(feature)
         feature.State.craftType = math.floor(tonumber(selectedRecipe.craftId))
         feature.State.itemType = nil
     end
-    local craftTypes, resolution = CraftResolveTypes(feature)
+    -- 中文维护（performance-cache-1）：只有“本次报价完成”复用已验证的配方结构。
+    -- 缓存归当前 Feature 会话，键覆盖所选配方/物品/制作台/Generation；手工刷新、重开
+    -- 与上下文变化都重新采样，失败/空结果不负缓存，绝不冻结 Native 错误或报价状态。
+    local cache = feature.CraftRecipeCache
+    local quoteOnly = reason == "craft_quote_completed" or reason == "craft_quote_batch_completed"
+    if not quoteOnly or cache == nil or cache.generation ~= S.Generation
+        or cache.selectedRecipeKey ~= feature.State.selectedRecipeKey or cache.itemType ~= feature.State.itemType
+        or cache.craftType ~= feature.State.craftType or cache.doodadId ~= feature.State.doodadId then
+        cache = { generation=S.Generation, selectedRecipeKey=feature.State.selectedRecipeKey,
+            itemType=feature.State.itemType, craftType=feature.State.craftType, doodadId=feature.State.doodadId, recipes={} }
+        feature.CraftRecipeCache = cache
+    end
+    local craftTypes, resolution
+    if cache.craftTypes ~= nil then
+        craftTypes, resolution = cache.craftTypes, Copy(cache.resolution)
+    else
+        craftTypes, resolution = CraftResolveTypes(feature)
+        if #craftTypes > 0 then cache.craftTypes, cache.resolution = craftTypes, Copy(resolution) end
+    end
     if #craftTypes == 0 then
         rows[#rows + 1] = { key = "craft:resolution", name = "制作上下文", text = resolution.status == "empty" and "请从上方制作物列表选择需要规划的配方" or Text(resolution.error, "制作上下文不可用"), statusText = CraftStatusText(resolution.status), tone = resolution.status == "failed" and "warn" or "default", source = resolution.source, failed = resolution.status == "failed", empty = resolution.status == "empty" }
         feature.CraftProjection = { context = resolution, recipes = {}, source = resolution.source, status = resolution.status, error = resolution.error }
@@ -502,25 +520,36 @@ local function CraftRead(feature)
     end
     rows[#rows + 1] = { key = "craft:resolution", name = "当前制作物", text = selectedRecipe ~= nil and (CraftZoneName(selectedRecipe.originZoneId) .. " · " .. CraftFamilyLabel(selectedRecipe)) or "已读取当前制作上下文", statusText = "已匹配", tone = "default", source = resolution.source, itemType = resolution.itemType, craftTypes = Copy(craftTypes) }
     local anyReadable, anyReady, errors = false, false, {}
+    -- 中文维护：当前 RU 入口没有已证实的完整背包变更事件。数量/缺口仍现场读取，
+    -- 避免为了省扫描把报价期间拿取/消耗的材料冻结；本轮只缓存可证明静态的配方。
     local held, bagDiagnostics = CraftHeldCounts()
     local doodadId = feature.State.doodadId == nil and 0 or CraftInteger(feature.State.doodadId, true)
     if doodadId == nil then doodadId = 0 end
     local craftApi = CraftApi or rawget(_G, "X2Craft")
     for _, craftType in ipairs(craftTypes) do
-        local okBase, base, baseError = Call("X2Craft:GetCraftBaseInfo", craftApi, "GetCraftBaseInfo", craftType)
-        local okProduct, product, productError = Call("X2Craft:GetCraftProductInfo", craftApi, "GetCraftProductInfo", craftType)
-        local okMaterial, material, materialError = Call("X2Craft:GetCraftMaterialInfo", craftApi, "GetCraftMaterialInfo", craftType, doodadId)
-        local recipe = { craftType = craftType, base = CraftBaseSection(okBase, base, baseError, craftType), product = CraftSection("product", okProduct, product, productError, craftType, doodadId), materials = CraftSection("materials", okMaterial, material, materialError, craftType, doodadId) }
-        if selectedRecipe ~= nil and tonumber(selectedRecipe.craftId) == tonumber(craftType) then
-            if (recipe.product.failed or recipe.product.opaque or #(recipe.product.items or {}) == 0) and tonumber(selectedRecipe.productItemId) ~= nil then
-                recipe.product = { kind="product", source="TradeStaticV2", craftType=craftType, doodadId=doodadId, failed=false, empty=false, opaque=false, truncated=false, sourceCount=1, status="ready", items={{ itemType=tonumber(selectedRecipe.productItemId), count=1, name=CraftItemName(selectedRecipe.productItemId,nil), status="ready", source="TradeStaticV2" }}, text="产物：" .. CraftItemName(selectedRecipe.productItemId,nil) .. " × 1", staticFallback=true }
-            end
-            if recipe.materials.failed or recipe.materials.opaque or #(recipe.materials.items or {}) == 0 then
-                local staticItems = CraftStaticItems(selectedRecipe)
-                if #staticItems > 0 then
-                    local parts={}; for _, item in ipairs(staticItems) do parts[#parts+1]=CraftItemText(item) end
-                    recipe.materials = { kind="materials", source="TradeStaticV2", craftType=craftType, doodadId=doodadId, failed=false, empty=false, opaque=false, truncated=false, sourceCount=#staticItems, status="ready", items=staticItems, text="材料：" .. table.concat(parts,"；"), staticFallback=true }
+        local recipe = cache.recipes[craftType] and Copy(cache.recipes[craftType]) or nil
+        if recipe == nil then
+            local okBase, base, baseError = Call("X2Craft:GetCraftBaseInfo", craftApi, "GetCraftBaseInfo", craftType)
+            local okProduct, product, productError = Call("X2Craft:GetCraftProductInfo", craftApi, "GetCraftProductInfo", craftType)
+            local okMaterial, material, materialError = Call("X2Craft:GetCraftMaterialInfo", craftApi, "GetCraftMaterialInfo", craftType, doodadId)
+            recipe = { craftType = craftType, base = CraftBaseSection(okBase, base, baseError, craftType), product = CraftSection("product", okProduct, product, productError, craftType, doodadId), materials = CraftSection("materials", okMaterial, material, materialError, craftType, doodadId) }
+            if selectedRecipe ~= nil and tonumber(selectedRecipe.craftId) == tonumber(craftType) then
+                if (recipe.product.failed or recipe.product.opaque or #(recipe.product.items or {}) == 0) and tonumber(selectedRecipe.productItemId) ~= nil then
+                    recipe.product = { kind="product", source="TradeStaticV2", craftType=craftType, doodadId=doodadId, failed=false, empty=false, opaque=false, truncated=false, sourceCount=1, status="ready", items={{ itemType=tonumber(selectedRecipe.productItemId), count=1, name=CraftItemName(selectedRecipe.productItemId,nil), status="ready", source="TradeStaticV2" }}, text="产物：" .. CraftItemName(selectedRecipe.productItemId,nil) .. " × 1", staticFallback=true }
                 end
+                if recipe.materials.failed or recipe.materials.opaque or #(recipe.materials.items or {}) == 0 then
+                    local staticItems = CraftStaticItems(selectedRecipe)
+                    if #staticItems > 0 then
+                        local parts={}; for _, item in ipairs(staticItems) do parts[#parts+1]=CraftItemText(item) end
+                        recipe.materials = { kind="materials", source="TradeStaticV2", craftType=craftType, doodadId=doodadId, failed=false, empty=false, opaque=false, truncated=false, sourceCount=#staticItems, status="ready", items=staticItems, text="材料：" .. table.concat(parts,"；"), staticFallback=true }
+                    end
+                end
+            end
+            -- 中文维护：在价格/数量 enrich 前保存 detached 原始解析；最多 CRAFT_MAX_TYPES 个
+            -- 配方，每个材料解析仍受原有行数/节点上界约束，不累计多制作台或历史报价。
+            if okBase and okProduct and okMaterial and recipe.base.status == "ready"
+                and recipe.product.status == "ready" and recipe.materials.status == "ready" then
+                cache.recipes[craftType] = Copy(recipe)
             end
         end
         recipe.product.incomplete = CraftEnrichItems(recipe.product.items, held, bagDiagnostics)
@@ -670,5 +699,12 @@ local CRAFT_API_DEPENDENCIES = { "X2Craft:GetCraftBaseInfo", "X2Craft:GetCraftMa
 -- 中文维护注释（2026-09-15，移除 life_craft_planner）：共享 CraftRead/CraftProjection 仍由制作台助手使用，
 -- 但不再实例化 life_craft_planner，因此不会注册 v3.business.life_craft_planner Store、Demand 或 Runtime Implementation。
 -- 旧磁盘键保持原样不主动清除，避免“删除功能”变成不可逆用户数据写操作；toc 同时停止加载 Planner extension。
-local CraftAssistant = NewFeature("tools_craft", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, persistentKeys = { "selectedRecipeKey", "craftType", "itemType" }, read = CraftRead, projection = CraftProjection, commands = CraftCommands() })
+local CraftAssistant = NewFeature("tools_craft", { apiDependencies = CRAFT_API_DEPENDENCIES, state = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, default = { selectedRecipeKey = nil, craftType = nil, itemType = nil, doodadId = 0, autoSidecar = true }, persistentKeys = { "selectedRecipeKey", "craftType", "itemType" }, read = CraftRead, projection = CraftProjection, commands = CraftCommands(),
+    -- 中文维护（performance-cache-1）：最后一个消费端关闭时释放静态工作缓存；重开由
+    -- consumer_acquire 完整采样，不让无需求的 Feature 保留配方副本，也不增加任何任务。
+    reconcileDemand = function(feature, before, after)
+        if (tonumber(after and after.count) or 0) <= 0 then feature.CraftRecipeCache = nil end
+        return true
+    end,
+})
 CraftAssistant.CraftUserSelectionContractVersion = 1

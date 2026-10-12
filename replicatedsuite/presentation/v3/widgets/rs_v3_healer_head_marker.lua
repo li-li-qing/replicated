@@ -216,8 +216,8 @@ function P:Start(reason)
     if S.Events == nil or type(S.Events.SubscribeInternal) ~= "function" then Feature:ReleaseConsumer(self.consumerToken); self.consumerHeld=false; return false, "event bus unavailable" end
     ok = S.Events:SubscribeInternal("v3.healer.updated", self.activeOwner, function() self:RefreshProjection() end)
     if ok ~= true then Feature:ReleaseConsumer(self.consumerToken); self.consumerHeld=false; return false, "head marker event subscribe failed" end
-    local interval = math.max(50, math.floor(N(settings.refreshMs, 50)))
-    ok = S.Scheduler:AddTask(self.taskName, interval, function() return self:VisualTick() end, false, self, "P4", 1)
+    local interval = math.max(1, math.floor(N(settings.refreshMs, 50))) -- 中文维护：沿用已归一化视觉设置，不再额外抬高到50ms。
+    ok = (S.Scheduler.AddHighFrequencyTask or S.Scheduler.AddTask)(S.Scheduler,self.taskName, interval, function() return self:VisualTick() end, false, self, "P4", 1)
     if ok ~= true then
         if type(S.Events.UnsubscribeInternalOwner) == "function" then S.Events:UnsubscribeInternalOwner(self.activeOwner) end
         Feature:ReleaseConsumer(self.consumerToken); self.consumerHeld=false
@@ -258,7 +258,7 @@ function P:Reconcile(reason)
         -- AddTask is an atomic replace-by-name in the shared Scheduler; do not
         -- remove the old task first or a rejected update would create a gap.
         if self.taskActive == true then
-            self.taskActive = S.Scheduler:AddTask(self.taskName, math.max(50, math.floor(N(settings.refreshMs,50))), function() return self:VisualTick() end, false, self, "P4", 1) == true
+            self.taskActive = (S.Scheduler.AddHighFrequencyTask or S.Scheduler.AddTask)(S.Scheduler,self.taskName, math.max(1, math.floor(N(settings.refreshMs,50))), function() return self:VisualTick() end, false, self, "P4", 1) == true
         end
         self:RefreshProjection()
         return self.taskActive == true

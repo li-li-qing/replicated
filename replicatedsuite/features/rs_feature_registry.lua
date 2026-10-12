@@ -566,6 +566,12 @@ Add("tools_social", "tools.social", "社交名单", "tools", 50, "好友列表�
     apiDependencies = { "X2Friend:IsMyFriend", "X2Friend:GetFriendList", "X2Friend:GetBlockList", "X2Friend:BlockUser", "X2Friend:UnblockUser", "X2Friend:GetMuteList", "X2Friend:MuteUser", "X2Friend:UnmuteUser" },
     apiReadiness = "official", apiPolicy = "cooldown_writes", evidence = "ArcheRage RU official addon API updates 2026-04-28 / 2026-08-05; central Api CapabilityCooldown contract enforces 1000ms writes",
 })
+-- 中文维护：备注独立于社交写操作；启用时只观察原生窗可见性，名单/团队需求随备注窗或页面释放。
+-- 中文维护：社交窗口Getter在RU实机返回nil；用户认可名单响应触发独立备注窗，注册信息必须与事件路径及两项真实Getter一致。
+Add("tools_player_notes", "tools.player_notes", "人员备注", "tools", 55, "好友名单返回时自动弹出本地备注窗；手动关闭，可编辑好友、团队及已保存备注。", {
+    status="implemented_pending_ru",lifecycle="friend_list_event_and_demand",authority="v3.business.tools_player_notes",defaultEnabled=true,
+    settingsCapable=true,apiDependencies={"X2Unit:UnitName","X2Friend:GetFriendList"},apiReadiness="friend_list_event",apiPolicy="explicit_local_notes",
+})
 Add("tools_feature_profiles", "tools.feature_profiles", "功能方案", "tools", 65,
     "自定义一组功能开关并生成屏幕快捷按钮；应用时开启已选功能、关闭其它可控业务功能，但保留各模块自己的配置。", {
     -- 中文维护注释（2026-09-25，feature-profile-v1）：方案不内置“生活/战斗”等语义；用户名称与选择是唯一配置。
