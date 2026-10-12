@@ -114,6 +114,12 @@ local function BuildPage(parent, route)
         slot = { size = "fill", fill = 1 } })
     local deleteButton = RSUI:Button({ id = "v3_feature_profiles_delete", parent = deleteRow, text = "删除选中", compact = true,
         slot = { size = "fill", fill = 1 } })
+    -- 中文维护：所有功能方案快捷按钮共享一个防误拖偏好；主菜单编辑不依赖当前选中的方案。
+    local quickLock = RSUI:Toggle({ id = "v3_feature_profiles_quick_lock", parent = leftStack, compact = true,
+        onText = "快捷按钮：已锁定", offText = "快捷按钮：可拖动", slot = { size = "fixed", height = 27, hAlign = "fill" },
+        get = function() return Feature:GetProjection().quickButtonsLocked == true end,
+        set = function(value) return Feature.Commands:SetQuickButtonsLocked(value) end,
+    })
 
     local summaryText = RSUI:Text({ id = "v3_feature_profiles_summary", parent = leftStack, text = "--", fontSize = 8, tone = "muted",
         overflow = "wrap", maxLines = 3, slot = { size = "auto", minHeight = 34, hAlign = "fill" } })
@@ -192,6 +198,7 @@ local function BuildPage(parent, route)
 
     function root:RefreshEditor(selectionChanged)
         local projection = Feature:GetProjection() or {}
+        quickLock:Render() -- 中文维护：锁设置与方案选择独立，空方案列表也允许调整偏好。
         if self.selectedProfileId == nil then self.selectedProfileId = tonumber(projection.selectedId) end
         local row, index = ProfileRow(projection, self.selectedProfileId)
         if row == nil then

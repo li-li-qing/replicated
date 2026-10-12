@@ -46,7 +46,19 @@ local function NormalizeState(value)
     table.sort(keys)
     local out = {}
     for index = 1, math.min(#keys, MAX_WINDOWS) do out[keys[index]] = true end
-    return { topmost = out }
+    local normalized = { topmost = out }
+    -- 中文维护：会话设置窗只保存小锁，不提升几何为业务存档；空锁表省略，旧 schema1 canonical 完全不变。
+    local lockedKeys = {}
+    for key, enabled in pairs(type(value.locked) == "table" and value.locked or {}) do
+        key = tostring(key or "")
+        if enabled == true and key ~= "" and #key <= 180 then lockedKeys[#lockedKeys + 1] = key end
+    end
+    table.sort(lockedKeys)
+    if #lockedKeys > 0 then
+        normalized.locked = {}
+        for index = 1, math.min(#lockedKeys, MAX_WINDOWS) do normalized.locked[lockedKeys[index]] = true end
+    end
+    return normalized
 end
 
 local function ApplyState(value)
@@ -143,4 +155,30 @@ function Store:Describe(windowId)
         sessionFallback = self.sessionFallback == true,
         lastLoadError = self.lastLoadError,
     }
+end
+
+function Store:GetLocked(windowId)
+    self:EnsureLoaded()
+    return self.state and self.state.locked and self.state.locked[tostring(windowId or "")] == true or false
+end
+
+function Store:SetLocked(windowId, value, persist)
+    -- 中文维护：仅显式声明 persistSessionLock 的窗口使用此 Authority；Feature HUD 继续由自身 widgetWindow 保存锁。
+    self:EnsureLoaded()
+    local key, nextValue = tostring(windowId or ""), value == true
+    if key == "" or #key > 180 then return false, "invalid_window_preference_key" end
+    if self:GetLocked(key) == nextValue then return true, nextValue, false end
+    local function Mutate()
+        self.state = NormalizeState(self.state)
+        self.state.locked = self.state.locked or {}
+        self.state.locked[key] = nextValue and true or nil
+        if next(self.state.locked) == nil then self.state.locked = nil end
+        return true
+    end
+    if persist == false or self.sessionFallback == true then
+        Mutate(); return true, nextValue, true, self.sessionFallback and "session_fallback_no_persist" or nil
+    end
+    local ok, err = P:MutateStore(STORE_ID, Mutate, { durable = true, reason = "window_lock:" .. key })
+    if ok ~= true then return false, err end
+    return true, nextValue, true
 end

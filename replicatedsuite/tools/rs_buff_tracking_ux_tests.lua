@@ -163,4 +163,51 @@ T('real pooled row toggles once for current binding after another row is removed
     assert(button.root.events.OnClick(button.root,'LeftButton'));assert(not F:IsTrackedId(nextId),'reused cell changed old ID')
     Layout(640,560);assert(button.root.events.OnClick(button.root,'LeftButton')==false,'retired row accepted click')
 end)
+T('freezing current rows survives aura churn while tracking remains live and performs no scan or save',function()
+    local h,S,F,ui,page=Build();F.enabled=true;S.FeatureRuntime.IsEnabled=function()return true end;page:Refresh()
+    local freeze=assert(ui.widgets.v3_buff_display_track_freeze,'current-list freeze entry missing')
+    local reads,writes=0,h.io.writes;S.Services.AuraObservationV3.GetSnapshot=function()reads=reads+1;return nil end
+    assert(freeze.onClick());assert(F:GetManagementListFreezeState().active)
+    local tableView=ui.widgets.v3_buff_display_tracking_table
+    F.projections={player={{id=9001,key='player:9001',name='随后状态',category='buff',timeText='1'}},target={}};F.revision=F.revision+1
+    assert(page:Refresh());assert(#tableView.items==2 and tableView.items[1].id==21,'frozen rows disappeared or new rows shifted selection')
+    local live=F:GetProjection('player');assert(live[1].id==9001,'HUD facts were frozen with management list')
+    assert(reads==0 and h.io.writes==writes,'presentation freeze crossed Native or permanent Store')
+    assert(Column(ui,tableView.id,'player_buff').onClick(tableView.items[1]));assert(F:IsTrackedPlacement(21,'player','buff'))
+    assert(#tableView.items==2 and Column(ui,tableView.id,'player_buff').getText(tableView.items[1])=='追踪')
+    assert(freeze.onClick());assert(not F:GetManagementListFreezeState().active)
+    assert(#tableView.items==1 and tableView.items[1].id==9001,'unfreeze did not return to current facts')
+end)
+T('current freeze is shared by compact and floating projections and clears on feature lifecycle cleanup',function()
+    local h,S,F,ui,page=Build();F.enabled=true
+    assert(F.Commands:SetManagementListFrozen(true))
+    F.projections={player={},target={}};F.revision=F.revision+1
+    local rows=F:GetManagementProjection({view='live',cacheOwner='widget',preserveLive=true,sort='id'})
+    assert(#rows==2 and rows[1].id==21,'floating view did not use same frozen snapshot')
+    assert(F:ClearFrozenRows());assert(F:GetManagementListFreezeState().active,'stopping retention cleared independent list freeze')
+    assert(F:Disable());assert(not F:GetManagementListFreezeState().active)
+    rows=F:GetManagementProjection({view='live',compact=true,preserveLive=true,sort='id'});assert(#rows==0)
+end)
+T('floating freeze action uses real shared projection and keeps narrow actions visible',function()
+    local h,S,F,page,widgets,Layout=BuildReal()
+    F.projections={player={{id=21,key='player:21',name='自己的状态',category='buff',timeText='10'},{id=82,key='player:82',name='第二状态',category='buff',timeText='4'}},target={}}
+    F.coverage={player={available=true},target={available=true}};F.revision=F.revision+1
+    local R=S.RSUI;local spec
+    S.UIV3.WidgetHost.Register=function(_,_,value)spec=value;return true end
+    S.UIV3.WidgetHost.BindFeatureLifecycle=function()return true end
+    local parent=h.Native(nil,'buff-freeze-widget-parent',0,0,330,270)
+    local body=assert(R:VerticalBox({id='buff-freeze-widget-root',parent=parent}))
+    R.FloatingSurface.Create=function()
+        return {shell={root=body},GetContentRoot=function()return body end,SetStatus=function(self,text)self.status=text;return true end}
+    end
+    dofile('presentation/v3/widgets/rs_v3_buff_display_widget.lua');local instance=assert(spec.create())
+    assert(instance:Refresh());assert(instance.listFreezeButton,'floating current freeze missing')
+    assert(instance.listFreezeButton.onClick());assert(F:GetManagementListFreezeState().active)
+    F.projections.player={};F.revision=F.revision+1;assert(instance:Refresh());assert(#instance.rows==2)
+    assert(instance.table.spec.onItemActivated(instance.rows[2]));assert(instance.channelButtons.v3_buff_widget_player_buff.onClick())
+    assert(instance.rows[1].id==21 and instance.rows[2].id==82,'tracking reordered frozen list')
+    body:SetBounds(0,0,330,270);body:InvalidateMeasure('test_widget');R:FlushLayoutQueue(64)
+    assert(h:VisibleRect(instance.listFreezeButton));assert(h:VisibleRect(instance.captureButton))
+    assert(instance.listFreezeButton.onClick());assert(not F:GetManagementListFreezeState().active and #instance.rows==0)
+end)
 print(('BUFF_TRACKING_UX_RESULT passed=%d failed=%d'):format(passed,failed));if failed>0 then error('Buff tracking UX tests failed') end

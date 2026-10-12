@@ -29,6 +29,15 @@ local function RunAction(id, button, execute, busyText)
     return execute()
 end
 
+local function AdvancedRowsRevision(prefix,rows,fields)
+    -- 中文维护：行数不变时规则/追踪仍可修改；虚拟表格必须按实际显示字段重绑，未变化时继续复用池。
+    -- 长度前缀避免名称含分隔符时碰撞；签名只属于 Presentation，不写配置、不依赖运行时扫描 revision。
+    local parts={prefix,tostring(#rows)}
+    for _,row in ipairs(rows) do
+        for _,field in ipairs(fields) do local value=tostring(row[field] or "");parts[#parts+1]=#value..":"..value end
+    end
+    return table.concat(parts,"|")
+end
 local function N(value, fallback) return tonumber(value) or tonumber(fallback) or 0 end
 local function Percent(value) return value ~= nil and string.format("%.1f%%", N(value)) or "--" end
 local function Distance(value) return value ~= nil and string.format("%.1fm", N(value)) or "--" end
@@ -590,7 +599,7 @@ local function BuildPage(parent, route)
                 ids = table.concat(rule.ids or {}, ","), effect = tostring(rule.effectType or "-"), priority = tostring(rule.displayPriority or 0),
                 enabled = rule.enabled == true and "是" or "否" }
         end
-        ruleTable:SetItems(ruleRows, "healer_rules:" .. tostring(#ruleRows))
+        ruleTable:SetItems(ruleRows, AdvancedRowsRevision("healer_rules",ruleRows,{"key","indexText","name","ids","effect","priority","enabled"}))
         ruleIndex = math.max(1, math.min(#rules, tonumber(ruleIndex) or 1))
         if #rules > 0 and ruleTable:GetSelectedIndex() ~= ruleIndex then ruleTable:SetSelectedIndex(ruleIndex) end
         ruleRemoveButton:SetEnabled(#rules > 1 and #rules >= ruleIndex)
@@ -603,7 +612,7 @@ local function BuildPage(parent, route)
             trackedRows[index] = { key = "tracked_" .. tostring(index), indexText = tostring(index), idText = tostring(row.id or "-"),
                 name = tostring(row.name or "Tracked Buff"), enabled = row.enabled == true and "是" or "否" }
         end
-        trackedTable:SetItems(trackedRows, "healer_tracked:" .. tostring(#trackedRows))
+        trackedTable:SetItems(trackedRows, AdvancedRowsRevision("healer_tracked",trackedRows,{"key","indexText","idText","name","enabled"}))
         if #tracked > 0 then
             trackedIndex = math.max(1, math.min(#tracked, tonumber(trackedIndex) or 1))
             if trackedTable:GetSelectedIndex() ~= trackedIndex then trackedTable:SetSelectedIndex(trackedIndex) end

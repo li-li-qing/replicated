@@ -45,9 +45,10 @@ local function CreateWidget()
         get=function()return instance.query end,set=function(v)instance.query=tostring(v or "");return instance:Refresh()end,
         slot={size="fill",fill=1,minWidth=68}})
     local actions=RSUI:HorizontalBox({id="v3_buff_display_widget_actions",parent=content,gap=4,slot={size="fixed",height=26}})
-    instance.captureButton=RSUI:Button({id="v3_buff_widget_capture",parent=actions,text="持续留存",compact=true,slot={size="fixed",width=108}})
-    local clear=RSUI:Button({id="v3_buff_widget_clear",parent=actions,text="清空留存",compact=true,slot={size="fixed",width=76}})
-    local settings=RSUI:Button({id="v3_buff_display_widget_settings",parent=actions,text="设置",compact=true,slot={size="fixed",width=48}})
+    instance.listFreezeButton=RSUI:Button({id="v3_buff_widget_list_freeze",parent=actions,text="冻结列表",compact=true,slot={size="fixed",width=84}})
+    instance.captureButton=RSUI:Button({id="v3_buff_widget_capture",parent=actions,text="开始记录",compact=true,slot={size="fixed",width=84}})
+    local clear=RSUI:Button({id="v3_buff_widget_clear",parent=actions,text="清空记录",compact=true,slot={size="fixed",width=66}})
+    local settings=RSUI:Button({id="v3_buff_display_widget_settings",parent=actions,text="设置",compact=true,slot={size="fixed",width=44}})
     settings.onClick=function()
         local shell=S.UIV3 and S.UIV3.shell
         if shell and type(shell.Navigate)=="function" then return shell:Navigate("combat.buff_display",{source="buff_display_widget"}) end
@@ -57,7 +58,13 @@ local function CreateWidget()
         local active=Feature:GetManagementFreezeState().active
         local ok,err
         if active then ok,err=Feature.Commands:ClearManagementFreeze() else ok,err=Feature.Commands:CaptureManagementFreeze() end
-        if ok then instance:Refresh() else instance.surface:SetStatus(tostring(err),"warn") end
+        if ok then instance:SetView(active and "live" or "frozen") else instance.surface:SetStatus(tostring(err),"warn") end
+        return ok,err
+    end
+    instance.listFreezeButton.onClick=function()
+        -- 中文维护：页面与悬浮窗共用 Feature 会话快照；冻结名单后仍能设置四个追踪通道，HUD 继续实时更新。
+        local ok,err=Feature.Commands:SetManagementListFrozen(not Feature:GetManagementListFreezeState().active)
+        if ok then instance:Refresh()else instance.surface:SetStatus(tostring(err),"warn")end
         return ok,err
     end
     clear.onClick=function()local ok,err=Feature.Commands:ResetManagementCapture();if ok then instance:Refresh()end;return ok,err end
@@ -129,11 +136,14 @@ local function CreateWidget()
             self.table:SetViewState(#rows>0 and "ready" or "empty",{title="此视图暂无状态",detail="当前：观察状态；留存：保留短状态；已追踪：管理收藏。"})
         end
         local capture=Feature:GetManagementFreezeState()
-        self.captureButton:SetText(capture.active and "停止并清空" or "持续留存")
+        local listFrozen=Feature:GetManagementListFreezeState().active
+        self.listFreezeButton:SetVisible(self.view=="live");self.listFreezeButton:SetText(listFrozen and "解冻列表" or "冻结列表")
+        if type(self.listFreezeButton.SetSelected)=="function" then self.listFreezeButton:SetSelected(listFrozen)end
+        self.captureButton:SetText(capture.active and "停止并清空" or "开始记录")
         self:RefreshSelectedControls()
         local selected=self.selectedRow and (" · 所选 "..tostring(self.selectedRow.name or self.selectedRow.id).."："..tostring(self.selectedTrackingText or "不可设置")) or ""
         self.surface:SetStatus((self.view=="tracked" and "已追踪 " or self.view=="frozen" and "留存 " or "当前 ")..#rows
-            ..selected..(capture.active and " · 持续留存中" or "")..(capture.overflow and " · 留存已达上限" or ""),capture.overflow and "warn" or "accent")
+            ..selected..(self.view=="live" and listFrozen and " · 已冻结" or "")..(capture.active and " · 持续留存中" or "")..(capture.overflow and " · 留存已达上限" or ""),capture.overflow and "warn" or "accent")
         return true
     end
     function instance:Subscribe()

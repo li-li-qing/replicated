@@ -307,6 +307,14 @@ function F:Create(spec)
     local policy = ReadPolicy(spec.statePolicy or spec.sizePolicy)
     local state = type(spec.getState) == "function" and spec.getState() or spec.state
     if type(state) ~= "table" then return nil, "floating surface state unavailable" end
+    -- 中文维护：明确为会话状态的设置窗复用 Chrome 偏好保存小锁；不覆盖 Feature/AuxWindow 的持久锁 Authority。
+    local sessionLockPreferences
+    if spec.persistSessionLock == true then
+        sessionLockPreferences = RSUI.WindowPreferences
+        if type(sessionLockPreferences) ~= "table" or type(sessionLockPreferences.GetLocked) ~= "function"
+            or type(sessionLockPreferences.SetLocked) ~= "function" then return nil, "session_window_lock_preferences_unavailable" end
+        state.locked = sessionLockPreferences:GetLocked(id)
+    end
     state = self:ReadRuntimeState(state, policy)
 
     local context = S.Layout and S.Layout:GetContext(true) or { logicalWidth = 1024, logicalHeight = 768, addonScale = 1 }
@@ -351,6 +359,9 @@ function F:Create(spec)
 
         if persist ~= false then
             local ok, err = PersistSpec(spec, reason)
+            if ok == true and sessionLockPreferences and (reason == "lock" or reason == "locked") then
+                ok, err = sessionLockPreferences:SetLocked(id, nextState.locked, true) -- 中文维护：一次锁动作只提交一份 Chrome 偏好，拒绝时沿用 Surface/Shell 回滚。
+            end
             if ok ~= true then
                 if type(spec.setState) == "function" then
                     pcall(spec.setState, previous, tostring(reason or "state") .. ":rollback")

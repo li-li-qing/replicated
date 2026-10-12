@@ -9,9 +9,12 @@ local function Boot(saved, realPersistence)
     local h = NewHost()
     local s, r = h.S, h.S.RSUI
     local nodes = {}
+    -- 中文维护：记录真实 Page/WindowShell/Content 的创建序列；叶节点模型不能吞掉重复身份。
+    local componentSpecs = {}
     for _, name in ipairs({'Overlay','Border','HorizontalBox','VerticalBox','Text','Button'}) do
         local create = r[name]
         r[name] = function(self, spec)
+            componentSpecs[#componentSpecs + 1] = { name = name, spec = spec }
             local c = create(self, spec); nodes[spec.id] = c
             function c:SetVisible(v) return self:SetVisibility(v and 'visible' or 'collapsed') end
             function c:SetEnabled(v) self.enabled = v; return self end
@@ -62,6 +65,7 @@ local function Boot(saved, realPersistence)
     dofile('presentation/v3/pages/rs_v3_death_review_page.lua')
     h.page=assert(h.build(UIParent,'combat.death_review')); assert(h.page:OnActivated())
     h.nodes, h.f, h.host = nodes, f, s.UIV3.WidgetHost
+    h.componentSpecs = componentSpecs
     function h:Click(id) return assert(self.nodes[id], 'missing layout entry: '..id).spec.onClick() end
     function h:OpenLayout() return self:Click('v3_death_review_layout_toggle') end
     return h
@@ -130,5 +134,16 @@ Test('tiny historical sizes render at the usable runtime minimum without changin
     local w=assert(h.host:GetInstance('combat.death_review'))
     assert(w.window.w>=420 and w.window.h>=300,'status lists have no row viewport')
     assert(h.nodes.v3_death_review_widget_width.spec.min==420 and h.nodes.v3_death_review_widget_height.spec.min==300)
+end)
+Test('layout preview identities pass the real RSUI generation fence',function()
+    local h=Boot();assert(h:OpenLayout())
+    -- 中文维护：只替代 Native 绘制；重复 ID 判定调用生产 ValidateSpec，不能用手写假门禁。
+    local realHost=dofile('tools/rs_gear_page_test_host.lua')()
+    local rsui=realHost.S.RSUI
+    for _,entry in ipairs(h.componentSpecs) do
+        local accepted,err=rsui:ValidateSpec(entry.name,entry.spec)
+        assert(accepted,err)
+        rsui.consumedLogicalIds[tostring(entry.spec.id)]=true
+    end
 end)
 print('DEATH_REVIEW_LAYOUT PASS: '..passed..' cases (Native and storage boundaries modeled)')

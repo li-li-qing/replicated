@@ -1502,6 +1502,7 @@ function F:ReconcileDemand(before, after)
         self.coverage = { player = {}, target = {} }
         self.laneData = { player = {}, target = {} }
         if type(self.ClearFrozenRows)=="function" then self:ClearFrozenRows() end
+        if type(self.SetManagementListFrozen)=="function" then self:SetManagementListFrozen(false) end -- 中文维护：最后一个事实消费者退出后，丢弃会话列表快照。
     end
     return true
 end
@@ -1519,6 +1520,7 @@ local demand, demandErr = S.Demand:Create({
         F:_ReleaseAura()
         F.laneData = { player = {}, target = {} }
         if type(F.ClearFrozenRows)=="function" then F:ClearFrozenRows() end
+        if type(F.SetManagementListFrozen)=="function" then F:SetManagementListFrozen(false) end
         return true
     end,
 })
@@ -1565,6 +1567,7 @@ function F:Disable(reason)
     local ok, err = self.Demand:Clear(reason or "feature_disable")
     if ok ~= true then return false, err end
     self.enabled = false
+    if type(self.SetManagementListFrozen)=="function" then self:SetManagementListFrozen(false) end -- 中文维护：无 Consumer 的关闭路径也必须清掉列表冻结。
     return true
 end
 function F:GetHealth()

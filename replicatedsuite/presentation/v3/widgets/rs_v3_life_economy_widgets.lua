@@ -191,6 +191,12 @@ local function BuildTradeSettings(instance,panel,Feature)
         get=function()return Projection().viewMode or 'all'end,
         set=function(value)return ApplySettingsCommand(instance,Feature,'SetViewMode',value)end,
         slot={size='fill',fill=1,hAlign='fill'}})
+    -- 中文维护：设置窗迁移时漏掉满货率入口；只切换既有 Authority 模式，本地重算售价/毛利，不发起服务器查询。
+    controls.ratioSelector=RSUI:SegmentedSelector({id=panel.prefix..'ratio_mode',parent=SettingsRow(panel,'ratio','售价货率'),
+        items={{value='current',text='实时货率'},{value='full',text='满货率 130%'}},itemWidth=96,height=26,gap=3,
+        get=function()return Projection().ratioMode or 'current'end,
+        set=function(value)return ApplySettingsCommand(instance,Feature,'SetRatioMode',value)end,
+        slot={size='fill',fill=1,hAlign='fill'}})
     local actions=RSUI:HorizontalBox({id=panel.prefix..'actions',parent=panel.body,gap=5,slot={size='fixed',height=28,hAlign='fill'}})
     controls.refreshButton=RSUI:Button({id=panel.prefix..'refresh',parent=actions,text='刷新货率',compact=true,
         slot={size='fill',fill=1,minWidth=70},onClick=function()
@@ -210,10 +216,11 @@ local function BuildTradeSettings(instance,panel,Feature)
         Contents.specs.Trade.refreshControls(controls,projection,projection.rows or {},Feature)
         controls.refreshButton:SetEnabled(projection.isRefreshing~=true and (projection.viewMode=='cargo' or projection.fromZone~=nil and projection.toZone~=nil))
         controls.refreshButton:SetText(projection.isRefreshing and '刷新中' or '刷新货率')
+        controls.ratioSelector:Render()
         return true
     end
     return controls.fromDropdown~=nil and controls.toDropdown~=nil and controls.favoriteDropdown~=nil
-        and controls.viewSelector~=nil and controls.refreshButton~=nil and controls.favoriteButton~=nil and controls.trackButton~=nil
+        and controls.viewSelector~=nil and controls.ratioSelector~=nil and controls.refreshButton~=nil and controls.favoriteButton~=nil and controls.trackButton~=nil
 end
 local function BuildBondSettings(instance,panel,Feature)
     local controls=panel.controls
@@ -242,8 +249,9 @@ local function BuildSettingsHeader(instance,parent,Feature,name)
                 local state={} -- 只保留本次会话的窗口几何，不保存第二份业务设置。
                 local prefix=instance.contentPrefix..'settings_'
                 local surface,err=Floating:Create({id=prefix..'window',owner='v3:'..prefix,title=name=='Trade' and '贸易设置' or '债券设置',
+                    persistSessionLock=true, -- 中文维护：会话几何不升级为业务存档；标题小锁由统一 Chrome 偏好永久保存。
                     movable=true,resizable=false,appearanceControls=false,footer=true,boundaryMode='clamp',defaultPlacement='center',
-                    statePolicy={defaultWidth=380,defaultHeight=name=='Trade' and 286 or 210,minWidth=320,minHeight=name=='Trade' and 260 or 190},
+                    statePolicy={defaultWidth=380,defaultHeight=name=='Trade' and 320 or 210,minWidth=320,minHeight=name=='Trade' and 294 or 190},
                     getState=function()return state end,setState=function(value)state=value;return true end,persist=function()return true end,
                     onStateChanged=function(_,value)if value.minimized then CloseSettingsChoices(instance)end end,
                     onClosed=function()
@@ -1037,6 +1045,7 @@ ok, err = Register({
         if instance.treasureInteractionHint then
             local errorText = instance.treasureActionError or projection.lastMapActionError
             instance.treasureInteractionHint:SetText(errorText and ("定位未完成：" .. tostring(errorText)) or TreasureMapInteraction.hint)
+            if projection.mapActionPending == true then instance.treasureInteractionHint:SetText("地图定位等待中，冷却结束后自动执行") end -- 中文维护：助手复用同一待执行请求，不另启计时器。
         end
     end,
     rows = function(projection)

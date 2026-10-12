@@ -94,7 +94,8 @@ local function Boot(id, reused, strict)
     end
     S.Features[id]=F
     S.FeatureRegistry={Get=function(_,wanted)return {id=wanted,name=wanted,description='test'} end,
-        GetByRoute=function(_,route)return {id=route=='combat.team_tools' and 'combat_team_tools' or 'combat_sac_highlight',name=route} end}
+        GetByRoute=function(_,route)return {id=route=='combat.team_tools' and 'combat_team_tools' or 'combat_sac_highlight',name=route} end,
+        IsAccessible=function(_,wanted)return wanted=='combat_team_tools' or wanted=='combat_sac_highlight'end} -- 中文维护：真实 PageHost 会先校验开放；宿主仅允许本套件的两个已配置页面。
     S.FeatureRuntime={IsEnabled=function(_,wanted)return S.Features[wanted] and S.Features[wanted].enabled==true end,
         SetPreferredEnabled=function(_,wanted,v)S.Features[wanted].enabled=v;return true end}
     if not reused then dofile('presentation/v3/pages/rs_v3_business_pages.lua') end

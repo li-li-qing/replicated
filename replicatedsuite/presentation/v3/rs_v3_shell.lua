@@ -308,14 +308,19 @@ end
 function Shell:SetLocked(locked, persist)
     local state = V3.ShellState or {}
     local nextValue = locked == true
-    if state.locked == nextValue then return true, false end
+    if state.locked == nextValue then self:RefreshLockFeedback(); return true, false end
     if self.windowController ~= nil then
         local accepted, _, detail = self.windowController:SetLocked(nextValue)
         if accepted ~= true then return false, detail or "主窗口锁定状态应用失败" end
     end
     state.locked = nextValue
+    self:RefreshLockFeedback() -- 中文维护：主菜单使用自有 Shell，标题小锁只映射现有 ShellState，不另存位置或锁偏好。
     if persist ~= false then MarkDirty("window_locked") end
     return true, true
+end
+
+function Shell:RefreshLockFeedback()
+    if self.lockButton then self.lockButton:SetText(self:IsLocked() and "锁" or "开"); SetButtonSelected(self.lockButton, self:IsLocked()) end
 end
 
 function Shell:IsLocked()
@@ -511,11 +516,18 @@ function Shell:Create()
         end})
     RSUI:Button({ id = "v3_shell_diag_button", parent = topRow, text = "诊断", compact = true,
         onClick = function() return self:Navigate("system.diagnostics", { source = "topbar" }) end,
-        slot = { size = "fixed", width = 64 } })
+        slot = { size = "auto", minWidth = 36, maxWidth = 64 } }) -- 中文维护：新增小锁后，窄窗允许短标签收缩，保留关闭按钮的完整命中区域。
     self.topmostButton = RSUI:Button({ id = "v3_shell_topmost_button", parent = topRow, text = "顶", compact = true,
         onClick = function() return self:SetTopmost(not self.topmost, true) end,
         slot = { size = "fixed", width = 36 } })
     SetButtonSelected(self.topmostButton, self.topmost == true)
+    -- 中文维护：主菜单自有标题栏也暴露同一小锁；设置页与标题按钮共同消费 Shell:SetLocked。
+    self.lockButton = RSUI:Button({ id = "v3_shell_lock_button", parent = topRow, text = self:IsLocked() and "锁" or "开", compact = true,
+        slot = { size = "fixed", width = 22 }, onClick = function() return self:SetLocked(not self:IsLocked(), true) end })
+    self:RefreshLockFeedback()
+    if RSUI.Tooltip and type(RSUI.Tooltip.Bind) == "function" then RSUI.Tooltip:Bind(self.lockButton, { provider = function()
+        return self:IsLocked() and "已锁定：禁止拖动和缩放。点击解锁。" or "未锁定：点击锁定主窗口位置。"
+    end }) end
     self.minimizeButton = RSUI:Button({ id = "v3_shell_minimize_button", parent = topRow, text = "—", compact = true,
         onClick = function() return self:ToggleMinimized() end,
         slot = { size = "fixed", width = 36 } })

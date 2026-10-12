@@ -47,6 +47,21 @@ local function BusinessStatusText(value)
     local key = tostring(value or "ready")
     return BUSINESS_STATUS_ZH[key] or key
 end
+local function AuctionRowKey(row,index)
+    -- 中文维护：收藏下标会随删除/移动变化；管理选择属于关键词，分页表不能复用上一页的行号作身份。
+    if type(row)=="table" and row.kind=="favorite" then return "favorite:"..tostring(row.name or "") end
+    return type(row)=="table" and (row.key or row.id) or tostring(index)
+end
+local function SelectedAuctionRow(view)
+    -- 中文维护：GetSelectedIndex 在 key 消失/不在池中时会回退旧索引，不能作为删除/询价身份。
+    local key=view:GetSelectedKey()
+    if key==nil then return nil end
+    for index=1,view:GetItemCount() do
+        local row=view:GetItem(index)
+        if tostring(view:GetItemKey(row,index))==tostring(key) then return row end
+    end
+    return nil
+end
 
 local function ValidateBusinessFeature(feature, id)
     if type(feature) ~= "table" then return false, "Feature implementation unavailable: " .. tostring(id) end
@@ -764,7 +779,7 @@ local function Build(parent, route, id)
         SyncRangeCircleEditor(rangeProjection, true)
     end
     local auctionKeywordInput, auctionStatus, auctionPage = nil, nil, 1
-    local auctionPageSize, auctionSelectedIndex = 10, nil
+    local auctionPageSize, auctionSelectedKeyword = 10, nil
     local auctionQuoteRow, auctionRemoveArm = nil, nil
     local auctionQuoteButton, auctionRemoveButton = nil, nil
     local auctionExactField, auctionLimitField = nil, nil
@@ -924,18 +939,18 @@ local function Build(parent, route, id)
         prev.onClick=function() auctionPage=math.max(1,auctionPage-1); root:Refresh(); return true end
         next.onClick=function() auctionPage=auctionPage+1; root:Refresh(); return true end
         if remove~=nil then remove.onClick=function()
-            if auctionSelectedIndex==nil then auctionRemoveArm=nil; remove:SetText("删除收藏"); auctionStatus:SetText("请先选择一条收藏关键词"); return false end
+            if auctionSelectedKeyword==nil then auctionRemoveArm=nil; remove:SetText("删除收藏"); auctionStatus:SetText("请先选择一条收藏关键词"); return false end
             -- Two-click confirm: favorites are not recoverable, and an accidental
             -- click used to delete immediately with no undo.
-            if auctionRemoveArm~=auctionSelectedIndex then
-                auctionRemoveArm=auctionSelectedIndex
+            if auctionRemoveArm~=auctionSelectedKeyword then
+                auctionRemoveArm=auctionSelectedKeyword
                 remove:SetText("确认删除?")
                 auctionStatus:SetText("再点一次“确认删除?”才会删除该收藏。")
                 return true
             end
             auctionRemoveArm=nil; remove:SetText("删除收藏")
-            local ok,removeErr=feature.Commands:RemoveFavorite(auctionSelectedIndex)
-            if ok then auctionSelectedIndex=nil; feature.Commands:Refresh("auction_remove"); root:Refresh() else auctionStatus:SetText("删除失败："..tostring(removeErr or "未执行")) end
+            local ok,removeErr=feature.Commands:RemoveFavoriteByKeyword(auctionSelectedKeyword)
+            if ok then auctionSelectedKeyword=nil; feature.Commands:Refresh("auction_remove"); root:Refresh() else auctionStatus:SetText("删除失败："..tostring(removeErr or "未执行")) end
             return ok,removeErr
         end end
         root.RefreshAuctionPaging=function(self,projection,tableView)
@@ -943,7 +958,15 @@ local function Build(parent, route, id)
             local pagesCount=math.max(1,math.ceil(total/auctionPageSize)); auctionPage=math.min(auctionPage,pagesCount)
             local first=(auctionPage-1)*auctionPageSize+1; local pageRows={}
             for i=first,math.min(first+auctionPageSize-1,total) do pageRows[#pageRows+1]=source[i] end
-            tableView:SetItems(pageRows,projection.revision or 0)
+            -- 中文维护：分页改变可见切片，不推进业务 revision；加入页码后才能让 Native 池重绑到当前行。
+            local pageChanged=self.auctionDisplayedPage~=auctionPage
+            if pageChanged then tableView:ClearSelection() end
+            tableView:SetItems(pageRows,"auction:"..tostring(projection.revision or 0)..":page:"..auctionPage)
+            if pageChanged then tableView:ScrollToTop() end
+            self.auctionDisplayedPage=auctionPage
+            -- 当前页删除/重排也会移动索引；选择不存在时清空，存在时只更新动作绑定，不覆盖用户输入草稿。
+            if tableView:GetSelectedKey()~=nil and SelectedAuctionRow(tableView)==nil then tableView:ClearSelection() end
+            if self.SyncAuctionSelection then self:SyncAuctionSelection(false) end
             pageText:SetText("第 "..tostring(auctionPage).."/"..tostring(pagesCount).." 页 · 当前 "..tostring(total).." 条"..(id=="tools_auction" and (" · 收藏 "..tostring(projection.favoriteCount or 0)) or ""))
             prev:SetEnabled(auctionPage>1); next:SetEnabled(auctionPage<pagesCount)
         end
@@ -1279,6 +1302,7 @@ local function Build(parent, route, id)
         -- Authority 刷新会改变可见点/status，删除也会改变行位置；若使用默认 index key，用户可能在刷新后编辑错圆。
         getKey = id == "combat_range_assist" and function(row) return row and row.circleId end
             or id == "combat_boss_alerts" and function(row) return row and row.key end
+            or (id == "tools_auction" or id == "tools_market_analysis") and AuctionRowKey
             or nil,
         onSelectionChanged = id == "combat_range_assist" and function(index, _, view)
             local row = index ~= nil and view:GetItem(index) or nil
@@ -1335,23 +1359,25 @@ local function Build(parent, route, id)
             { id = "status", title = "状态", field = "statusText", size = "fixed", width = 110, minWidth = 82, getTone = function(item) return item and item.tone or "muted" end },
         }, slot = tableSlot })
     if id == "tools_auction" then
-        tableView.onSelectionChanged = function(index)
-            local row = tableView:GetItem(index)
-            auctionSelectedIndex = row and row.favoriteIndex or nil
-            auctionRemoveArm = nil
-            if auctionRemoveButton ~= nil then auctionRemoveButton:SetText("删除收藏") end
+        function root:SyncAuctionSelection(updateInput)
+            -- 中文维护：ClearSelection 的回调可能携带旧 index，只从当前 primary key 解析选择。
+            local row=SelectedAuctionRow(tableView)
+            auctionSelectedKeyword=row and row.kind=="favorite" and tostring(row.name or "") or nil
+            if auctionRemoveArm~=auctionSelectedKeyword then auctionRemoveArm=nil end
+            if auctionRemoveButton ~= nil then auctionRemoveButton:SetText(auctionRemoveArm and "确认删除?" or "删除收藏") end
             auctionQuoteRow = (row ~= nil and row.kind == "result") and row or nil
             if auctionQuoteButton ~= nil and type(auctionQuoteButton.SetEnabled) == "function" then
                 auctionQuoteButton:SetEnabled(auctionQuoteRow ~= nil and auctionQuoteRow.itemType ~= nil)
             end
-            if row ~= nil and row.kind == "favorite" and auctionKeywordInput ~= nil and type(auctionKeywordInput.SetValue) == "function" then
+            if updateInput~=false and row ~= nil and row.kind == "favorite" and auctionKeywordInput ~= nil and type(auctionKeywordInput.SetValue) == "function" then
                 auctionKeywordInput:SetValue(tostring(row.name or ""), false, "auction_favorite_select")
                 if auctionStatus ~= nil then auctionStatus:SetText("已载入收藏关键词，点击“查询当前挂单”即可搜索。") end
-            elseif row ~= nil and row.kind == "result" and row.name ~= nil and auctionKeywordInput ~= nil and type(auctionKeywordInput.SetValue) == "function" then
+            elseif updateInput~=false and row ~= nil and row.kind == "result" and row.name ~= nil and auctionKeywordInput ~= nil and type(auctionKeywordInput.SetValue) == "function" then
                 auctionKeywordInput:SetValue(tostring(row.name), false, "auction_result_select")
                 if auctionStatus ~= nil then auctionStatus:SetText("已载入结果名称，可直接“加入收藏”或“结果询价”。") end
             end
         end
+        tableView.onSelectionChanged=function() auctionRemoveArm=nil;return root:SyncAuctionSelection(true) end
     end
     if id == "tools_social" then
         -- Clicking a list row loads that member name into the action input;

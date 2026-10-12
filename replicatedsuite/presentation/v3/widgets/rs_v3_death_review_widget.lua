@@ -43,7 +43,8 @@ local function CreateWidget()
     instance.surface, instance.shell, instance.window = surface, surface.shell, surface.window
     instance.root, instance.windowController = surface.shell.root, surface.windowController
 
-    local content = S.UIV3.DeathReviewContent:Create(surface:GetContentRoot(), "v3_death_review_widget")
+    -- 中文维护：内容区与 WindowShell 使用独立身份前缀，避免状态列撞到 Shell 的 _status，导致整窗构建隔离。
+    local content = S.UIV3.DeathReviewContent:Create(surface:GetContentRoot(), "v3_death_review_widget_detail")
     instance.content = content
     instance.summary, instance.timeline = content.summary, content.timeline
     instance.debuffs, instance.buffs = content.debuffs, content.buffs

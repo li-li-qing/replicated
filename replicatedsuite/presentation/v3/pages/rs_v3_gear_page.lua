@@ -235,6 +235,16 @@ local function BuildPage(parent, route)
         slot = { size = "fill", fill = 1, hAlign = "fill" },
     })
     local snapSettings = RSUI:Button({ id = "v3_gear_snap_settings", parent = snapActions, text = "设置", compact = true, slot = { size = "fixed", width = 58 } })
+    -- 中文维护：主菜单的快捷设置复用 Gear 既有锁状态；WidgetHost 同步已存在 Native，未创建时只保存偏好。
+    local quickLock = RSUI:Toggle({ id = "v3_gear_quick_lock", parent = gSnapInner, compact = true,
+        onText = "快捷按钮：已锁定", offText = "快捷按钮：可拖动", slot = { size = "fixed", height = 24, hAlign = "fill" },
+        get = function() return Feature:GetQuickHudProjection().locked == true end,
+        set = function(value)
+            local host = S.UIV3 and S.UIV3.WidgetHost
+            if host and type(host.SetLocked) == "function" then return host:SetLocked("combat.gear.quick", value, true) end
+            return Feature.Commands:SetQuickHudAppearance("locked", value, true, "gear_quick_buttons_locked")
+        end,
+    })
 
     ------------------------------------------------------------------------
     -- Group 5: 状态与反馈 (live runtime + editor status)
@@ -565,6 +575,7 @@ local function BuildPage(parent, route)
     end
 
     function root:Refresh()
+        quickLock:Render() -- 中文维护：外部窗口管理入口改锁后，页面只同步当前状态。
         self:RefreshPlanList()
         if snapToggle ~= nil and type(snapToggle.Render) == "function" then snapToggle:Render() end
         self:RefreshEditor()

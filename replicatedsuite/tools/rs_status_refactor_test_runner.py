@@ -145,6 +145,10 @@ TRADE_REQUOTE_TESTS = [
 # must remain mandatory, not silently disappear behind a passing legacy group.
 # Native boundaries are models; this gate does not certify live RU behavior.
 RELEASE_READINESS_TESTS = [
+    "tools/rs_auction_paging_tests.lua", # 中文维护：真实分页/Native 行复用及删除询价选择边界。
+    "tools/rs_list_refresh_regressions_tests.lua", # 中文维护：治疗同数量编辑与债券行激活契约。
+    "tools/rs_treasure_map_cooldown_tests.lua", # 中文维护：真实 Capability/Scheduler 的55ms定位冷却反例。
+    "tools/rs_position_lock_store_tests.lua", # 中文维护：Launcher/方案/换装锁偏好的真实存档往返。
     "tools/rs_treasure_double_click_tests.lua",
     "tools/rs_buff_tracking_ux_tests.lua",
     "tools/rs_status_tracking_grid_tests.lua",

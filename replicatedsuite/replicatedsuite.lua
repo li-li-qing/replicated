@@ -835,6 +835,7 @@ local function InstallRecoveryHandlers(button)
     local leftOk, leftResult = pcall(button.SetHandler, button, "OnClick", RecoveryLeftClick)
     local rightOk, rightResult = pcall(button.SetHandler, button, "OnRButtonUp", RecoveryRightClick)
     local dragStartOk, dragStartResult = pcall(button.SetHandler, button, "OnDragStart", function()
+        if S.UIV3 and S.UIV3.LauncherState and S.UIV3.LauncherState.locked == true then return false end -- 中文维护：晚加载的 Launcher 偏好保护 Bootstrap 入口，锁定仍保留左右键恢复动作。
         if type(button.StartMoving) ~= "function" then return false end
         -- 维护：早期 Bootstrap 不依赖 V3；可用时仅在开始读一次单位与 viewport 身份。
         if S.Layout and type(S.Layout.GetWindowLogicalRect)=="function" then

@@ -310,6 +310,7 @@ local function BootLauncher(h,state)
     S.Persistence={Scope={Account='account'},Lifetime={Permanent='permanent'},V3KeyPrefix='v3.',
         GetStore=function(_,id)return stores[id]end,RegisterV3Store=function(_,spec)stores[spec.id]=spec;return true end,
         MarkDirty=function()h.writes=h.writes+1;return not h.rejectPersist,'injected_persist_rejection'end}
+    S.Persistence.LoadStore=function(_,id)stores[id].apply(stores[id].get());return true end -- 中文维护：读取本宿主已种入的 Launcher 偏好，新增锁命令必须先安全读档。
     S.RecoveryEntry=h.Native(UIParent,'launcher',300,100,30,30);S.RecoveryEntry.visible=true
     dofile('presentation/v3/rs_v3_launcher_store.lua');return S.UIV3
 end
@@ -553,6 +554,44 @@ Test('Gear stationary native drag does not suppress click or persist placement',
     local record=assert(gear:EnsureButton(row,1));gear.rows={row}
     record.button.handlers.OnDragStart();record.button.handlers.OnDragStop()
     assert(record.ignoreClick==false and h.writes==0,'stationary Gear gesture was treated as movement')
+end)
+Test('title lock button changes state and blocks drag plus resize with persistence rollback',function()
+    local h=Boot();local state={width=420,height=286,locked=false};local surface=h:Surface(state)
+    local button=assert(surface.shell.lockButton,'title bar lock entry missing')
+    assert(button.spec.onClick());assert(surface:IsLocked() and state.locked==true)
+    assert(button.text=='锁' and button.selected==true,'locked state is not visible')
+    assert(surface.shell.titleBar.root.handlers.OnDragStart()==false) -- 中文维护：实际 Native 入口先检查 IsDragAllowed，不能绕过入口调用内部事务。
+    assert(surface.windowController:IsResizeAllowed()==false)
+    assert(button.spec.onClick());assert(not surface:IsLocked() and button.selected==false)
+    local rejected=h:Surface({width=420,height=286,locked=false},{id='rejected_lock',persist=function()return false,'save rejected'end})
+    assert(rejected.shell.lockButton.spec.onClick()==false)
+    assert(not rejected:IsLocked() and rejected.shell.lockButton.selected==false,'save rejection left a fake locked indicator')
+end)
+Test('launcher lock blocks the real bootstrap drag handler and retains click access',function()
+    local h=Boot();local v=BootLauncher(h,{userMoved=false});assert(v:ApplyLauncherPlacement())
+    assert(BootRecoveryHandlers(h)(h.S.RecoveryEntry))
+    assert(type(v.SetLauncherLocked)=='function','launcher lock command missing')
+    assert(v:SetLauncherLocked(true));assert(v.LauncherState.locked==true)
+    assert(h.S.RecoveryEntry.handlers.OnDragStart()==false,'locked launcher still moves')
+    assert(type(h.S.RecoveryEntry.handlers.OnClick)=='function','locking removed launch action')
+    assert(v:SetLauncherLocked(false));assert(h.S.RecoveryEntry.handlers.OnDragStart())
+end)
+Test('resetting launcher placement preserves the selected lock and native drag state',function()
+    local h=Boot();local v=BootLauncher(h,{userMoved=false});local n=h.S.RecoveryEntry
+    function n:EnableDrag(value)self.dragEnabled=value;return true end
+    assert(v:ApplyLauncherPlacement());assert(v:SetLauncherLocked(true));assert(not n.dragEnabled)
+    assert(v:ResetLauncherPlacement(true));assert(v.LauncherState.locked==true and not n.dragEnabled,'reset split lock preference from Native drag state')
+    assert(v:SetLauncherLocked(false));assert(n.dragEnabled)
+end)
+Test('session settings surface reloads its lock from chrome preferences and rolls back rejected saves',function()
+    local h=Boot();local saved=true;local prefs=h.S.RSUI.WindowPreferences
+    function prefs:GetLocked()return saved end
+    function prefs:SetLocked(_,value)if h.rejectLockSave then return false,'lock save rejected' end;saved=value;return true end
+    local surface=h:Surface({width=420,height=286},{persistSessionLock=true})
+    assert(surface:IsLocked(),'session window ignored saved lock preference')
+    assert(surface.shell.lockButton.spec.onClick());assert(not saved and not surface:IsLocked())
+    h.rejectLockSave=true;assert(surface.shell.lockButton.spec.onClick()==false)
+    assert(not surface:IsLocked() and not surface.shell.lockButton.selected,'session save rejection left a fake lock')
 end)
 print(string.format('VIEWPORT RESULT %d passed / %d failed (%s)',pass,fail,_VERSION))
 assert(fail==0,'viewport regression failures: '..fail)

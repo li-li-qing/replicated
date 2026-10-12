@@ -26,6 +26,7 @@ local RegisterStore, LoadStore, PersistLifeMutation = LF.RegisterStore, LF.LoadS
 -- Treasure maps (shared InventorySnapshotV3 + DMS coordinates + native world-map location)
 ------------------------------------------------------------------------
 local Treasure = { Id = "life_treasure", storeId = "v3.life.treasure", enabled = false, storeLoaded = false }
+local TREASURE_MAP_REQUEST_TASK = "v3_life_treasure_map_request" -- 中文维护：仅显式地图请求的一次性冷却等待，不是新的扫描/重试循环。
 S.Features.Treasure = Treasure
 Treasure.UpdateTopic = "v3.life.treasure.updated"
 -- 中文维护（2026-10-09）：罗盘帧单独通知 Presenter，禁止让 30Hz 镜头更新重建生活列表或写入存档。
@@ -146,6 +147,7 @@ function XA:Refresh()
         Treasure.State.selectedKey = selected
     end
     self.maps, self.selected = maps, selectedMap
+    if self.pendingMapKey ~= nil and (selectedMap == nil or tostring(selectedMap.key) ~= self.pendingMapKey) then Treasure:CancelPendingMapAction() end -- 中文维护：物品消耗/重排改变选择时立即取消旧地图请求。
     self.inventoryBagId = snapshot.bagId
     self.inventoryFallbackUsed = snapshot.fallbackUsed == true
     self.status, self.error = (#maps > 0 and "ready" or "empty"), nil
@@ -328,6 +330,7 @@ function XA:GetProjection()
         observationContractVersion = Treasure.ObservationContractVersion, mapLocationContractVersion = Treasure.MapLocationContractVersion,
         inventoryBagId = self.inventoryBagId, inventoryFallbackUsed = self.inventoryFallbackUsed == true,
         lastMapActionError = self.lastMapActionError, mapOpenAttempts = self.mapOpenAttempts,
+        mapActionPending = self.pendingMapKey ~= nil, -- 中文维护：等待由寻宝 Authority 所有，页面和助手只呈现，不另建计时器。
         lastMapZoneGroup = self.lastMapZoneGroup, lastMapZoneSource = self.lastMapZoneSource,
     }
 end
@@ -368,6 +371,7 @@ function Treasure:ReconcileDemand(_, before, after)
         if compassAdded ~= true then S.Scheduler:RemoveTask(TREASURE_POSITION_TASK); return false, "寻宝罗盘任务创建失败" end
         if type(S.Scheduler.SetTaskModule) == "function" then S.Scheduler:SetTaskModule(TREASURE_COMPASS_TASK, Treasure.Id, false) end
     elseif beforeCount > 0 and afterCount <= 0 and S.Scheduler ~= nil and type(S.Scheduler.RemoveTask) == "function" then
+        self:CancelPendingMapAction() -- 中文维护：最后一个可见 Consumer 离开后，不保留会晚开原生地图的请求。
         S.Scheduler:RemoveTask(TREASURE_POSITION_TASK)
         S.Scheduler:RemoveTask(TREASURE_COMPASS_TASK)
         self.Authority.compassWorldPoints, self.Authority.compassWorldPointPool, self.Authority.compassGeometry = nil, nil, nil
@@ -377,6 +381,7 @@ function Treasure:ReconcileDemand(_, before, after)
 end
 function Treasure:Enable() self.enabled = true; return true end
 function Treasure:Disable(reason)
+    self:CancelPendingMapAction() -- 中文维护：停用先撤销延后 Native 写，Demand 清理失败也不能让旧请求执行。
     -- 中文维护：停用即使 Demand 已为空，也要幂等撤销两条任务及所有世界标记，不能残留指向旧藏宝图的箭头。
     local ok, err = self.Demand:Clear(reason or "treasure_disable"); if ok ~= true then return false, err end
     if S.Scheduler and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(TREASURE_POSITION_TASK); S.Scheduler:RemoveTask(TREASURE_COMPASS_TASK) end
@@ -393,6 +398,7 @@ function Treasure:Select(key)
         if map.key == key then
             local persisted, persistErr = PersistLifeMutation(self, "treasure_select", function(state) state.selectedKey = key; return true end)
             if persisted ~= true then return false, persistErr end
+            if XA.pendingMapKey ~= nil and XA.pendingMapKey ~= tostring(map.key) then self:CancelPendingMapAction() end -- 中文维护：用户换图取消等待，换回原图也不能复活旧点击。
             XA.selected = map; XA:UpdatePosition(); return true
         end
     end
@@ -409,13 +415,48 @@ local function ResolveTreasureMapZoneGroup(map)
     if zone ~= nil then return zone, "current_zone" end
     return nil, tostring(err or "藏宝图未提供区域组，且当前区域组不可用")
 end
-function Treasure:ShowSelectedOnMap()
+function Treasure:CancelPendingMapAction()
+    -- 中文维护：固定任务身份由 Feature 生命周期拥有；选择过期/停用/后继请求都只取消这一份请求。
+    if S.Scheduler and type(S.Scheduler.RemoveTask) == "function" then S.Scheduler:RemoveTask(TREASURE_MAP_REQUEST_TASK) end
+    XA.pendingMapKey = nil
+end
+function Treasure:ShowSelectedOnMap(deferred)
     -- 中文维护注释（2026-09-16，Native 写边界）：地图打开属于显式用户动作，只能从 Command 进入并经 Capability Gate；
-    -- Scheduler/UpdatePosition 永远不能调用它。失败只记录诊断并保留当前选择/距离追踪，不清 Store、不切换藏宝图，避免 UI 能力故障污染 Domain Authority。
+    -- UpdatePosition 不发起定位；Scheduler 只执行 Command 已授权的一次冷却等待。失败只记录诊断并保留当前选择/距离追踪，不清 Store、不切换藏宝图，避免 UI 能力故障污染 Domain Authority。
+    if self.enabled ~= true then return false, "寻宝功能已关闭" end -- 中文维护：即时和延后请求都遵守同一个 Feature 生命周期，不靠 UI 可见性判断授权。
     local map = XA.selected
     if type(map) ~= "table" then return false, "请先选择一张藏宝图" end
     local worldX, worldY = Number(map.worldX), Number(map.worldY)
     if worldX == nil or worldY == nil then return false, "藏宝图坐标不可用" end
+    -- 中文维护：保留 Capability 的250ms间隔；用户重复双击的最后一次请求只等待实际剩余时间。
+    -- 回调最多执行一次；目标已改、模块停用或图已失效时取消，不从轮询/恢复路径自动打开地图。
+    local cooldown = S.Api and type(S.Api.GetCapabilityCooldownState) == "function"
+        and S.Api:GetCapabilityCooldownState("X2Map:ShowWorldmapLocation") or nil
+    local remaining = tonumber(cooldown and cooldown.remainingMs) or 0
+    self:CancelPendingMapAction()
+    if deferred ~= true and remaining > 0 then
+        if not self.enabled then return false, "寻宝功能已关闭" end
+        local scheduler = S.Scheduler
+        if scheduler == nil or type(scheduler.AddHighFrequencyOneShot) ~= "function" then return false, "地图定位等待任务不可用" end
+        local key = tostring(map.key)
+        -- 中文维护：短剩余时间使用已有1ms下限的一次性通道，不能被背景 AddOneShot 的50ms下限额外延迟。
+        local queued = scheduler:AddHighFrequencyOneShot(TREASURE_MAP_REQUEST_TASK, math.ceil(remaining), function()
+            XA.pendingMapKey = nil
+            local current = XA.selected
+            if self.enabled ~= true or XA.status ~= "ready" or type(current) ~= "table" or tostring(current.key) ~= key then
+                XA.revision = XA.revision + 1
+                PublishFeatureUpdate(self, XA.revision, "treasure_map_cancelled")
+                return true
+            end
+            return self:ShowSelectedOnMap(true)
+        end, self, "P2", 1)
+        if queued ~= true then return false, "地图定位等待任务创建失败" end
+        XA.pendingMapKey, XA.lastMapActionError = key, nil
+        if type(scheduler.SetTaskModule) == "function" then scheduler:SetTaskModule(TREASURE_MAP_REQUEST_TASK, self.Id, true) end
+        XA.revision = XA.revision + 1
+        PublishFeatureUpdate(self, XA.revision, "treasure_map_pending")
+        return true, "pending"
+    end
     local zoneGroupId, zoneSourceOrErr = ResolveTreasureMapZoneGroup(map)
     if zoneGroupId == nil then
         XA.lastMapActionError = "地图定位缺少区域组：" .. tostring(zoneSourceOrErr or "unknown")

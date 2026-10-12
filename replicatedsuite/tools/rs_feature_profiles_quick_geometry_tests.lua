@@ -89,6 +89,8 @@ local function NewSuite(options)
     S.FeatureRegistry = { categories = { life = { name = '生活' }, combat = { name = '战斗' }, tools = { name = '工具' } } }
     function S.FeatureRegistry:Get(id) return metaById[id] end
     function S.FeatureRegistry:List() return metas end
+    function S.FeatureRegistry:IsAccessible(id) return metaById[id] ~= nil end -- 中文维护：测试目录只开放已声明的三项；补齐当前 Runtime 的必需只读接口。
+    function S.FeatureRegistry:ListAccessible() return metas end -- 中文维护：上述目录无受限条目，生产的只读可见目录接口与 List 一致。
 
     S.Persistence = {
         Scope = { Account = 'account' }, Lifetime = { Permanent = 'permanent' }, V3KeyPrefix = 'replicated_suite_v1_v3_',
@@ -607,6 +609,22 @@ Test('quick apply rejection shows reason without claiming success', function()
     record.button.handlers.OnClick()
     Eq(#messages, 1, 'failure needs one visible notice')
     assert(messages[1]:find('故障目标', 1, true), 'notice must retain actual failure reason')
+end)
+Test('quick button position lock survives reload and preserves applying the profile',function()
+    local ctx=BootSession(SeedStore({}),{1920,1080,1920,1080,1})
+    local f=ctx.S.Features.FeatureProfiles
+    assert(type(f.Commands.SetQuickButtonsLocked)=='function','quick button lock command missing')
+    assert(f.Commands:SetQuickButtonsLocked(true))
+    local instance=ctx.S.UIV3.WidgetHost._instance;assert(instance:Refresh())
+    assert(instance.buttons['1'].button.handlers.OnDragStart()==false,'locked profile button starts dragging')
+    assert(instance.buttons['1'].button.text:find('锁',1,true),'profile lock feedback missing')
+    local nextCtx=BootSession(DeepCopy(ctx.S.Persistence.disk),{1920,1080,1920,1080,1})
+    assert(nextCtx.S.Features.FeatureProfiles:GetProjection().quickButtonsLocked==true)
+    assert(nextCtx.S.UIV3.WidgetHost._instance.buttons['1'].button.handlers.OnDragStart()==false)
+    assert(type(nextCtx.S.UIV3.WidgetHost._instance.buttons['1'].button.handlers.OnClick)=='function')
+    assert(nextCtx.S.Features.FeatureProfiles.Commands:SetQuickButtonsLocked(false))
+    assert(nextCtx.S.UIV3.WidgetHost._instance:Refresh())
+    assert(nextCtx.S.UIV3.WidgetHost._instance.buttons['1'].button.handlers.OnDragStart())
 end)
 print(string.format('FEATURE_PROFILES_QUICK_GEOMETRY RESULT %d passed / %d failed (%s)', pass, fail, _VERSION))
 assert(fail == 0, 'feature profile quick geometry regression failures: ' .. tostring(fail))

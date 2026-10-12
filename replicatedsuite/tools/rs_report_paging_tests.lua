@@ -31,9 +31,12 @@ local function Ready(S)assert(type(S.ReportCopyTransport.BuildTextPages)=='funct
 local function Data(text)local n=tonumber(text:match(';DATA_BYTES=(%d+);'));local p=assert(text:find(';DATA=',1,true))+6;return text:sub(p,p+n-1)end
 local function Unescape(s)return (s:gsub('\\(.)',function(c)return ({n='\n',r='\r',['\\']='\\'})[c] or error('bad escape')end))end
 Test('explicit previous and next accompany focused and full report actions',function()
- local S,D,c,r,h=Boot();local n=0;for _,v in pairs(h.widgets)do if v.onClick then n=n+1 end end
- -- 维护（2026-10-07）：诊断已新增显式文件导出；保留原五项并验证导出入口，不把新版正常按钮误判为多余。
- assert(n==6 and h.widgets.v3_diag_export_file and type(h.widgets.v3_diag_export_file.onClick)=='function','expected run/fault/full/export/previous/next');assert(h.widgets.v3_diag_report_prev.spec.text=='上一页');assert(h.widgets.v3_diag_report_next.spec.text=='下一页')
+ local S,D,c,r,h=Boot()
+ -- 中文维护：新版另有性能采样操作；逐一验证原六个报告/翻页入口，不能用整页按钮总数把正常扩展判为分页失效。
+ for _,id in ipairs({'v3_diag_full_check','v3_diag_output','v3_diag_output_full','v3_diag_export_file','v3_diag_report_prev','v3_diag_report_next'})do
+  assert(h.widgets[id] and type(h.widgets[id].onClick)=='function','required report action missing: '..id)
+ end
+ assert(h.widgets.v3_diag_report_prev.spec.text=='上一页');assert(h.widgets.v3_diag_report_next.spec.text=='下一页')
  assert(c.checks==0 and c.reads==0 and c.chats==0)
 end)
 Test('normal builder includes all fenced originals without copy budget deletion',function()

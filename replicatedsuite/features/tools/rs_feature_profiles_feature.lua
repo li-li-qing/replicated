@@ -152,6 +152,7 @@ end
 local function NormalizeState(value)
     value = type(value) == "table" and value or {}
     local out, used, maxId = { profiles = {}, nextId = 1, selectedId = nil }, {}, 0
+    out.quickButtonsLocked = value.quickButtonsLocked == true and true or nil -- 中文维护：可选 true 字段；未锁定旧档不增加 canonical 键，保留原 schema1 指纹。
     for index, raw in ipairs(type(value.profiles) == "table" and value.profiles or {}) do
         if #out.profiles >= MAX_PROFILES then break end
         local profile = NormalizeProfile(raw, index)
@@ -427,6 +428,7 @@ function F:GetProjection()
         applyStatus = self.applying == true and "applying" or (self.RuntimeState.lastApplyFailure ~= nil and "failed" or (self.RuntimeState.lastAppliedId ~= nil and "applied" or "idle")),
         lastApplyFailure = Copy(self.RuntimeState.lastApplyFailure),
         enabled = self.enabled == true,
+        quickButtonsLocked = self.State.quickButtonsLocked == true, -- 中文维护：按钮和主菜单只读同一 Feature 偏好，不各存锁状态。
     }
 end
 
@@ -538,6 +540,12 @@ local function NormalizeViewportIntent(intent)
 end
 
 F.Commands = {}
+function F.Commands:SetQuickButtonsLocked(value)
+    -- 中文维护：沿用方案 Store 的 durable 事务，锁定不改变方案启用状态、快捷位置或应用动作。
+    local ok, err = F:Persist("feature_profile_quick_lock", function(state) state.quickButtonsLocked = value == true and true or nil; return true end)
+    if ok == true then F.Authority:Refresh("profile_quick_lock") end
+    return ok, err
+end
 function F.Commands:Refresh(reason) return F:Refresh(reason) end
 function F.Commands:SelectProfile(profileId)
     local profile = ProfileById(profileId); if profile == nil then return false, "方案不存在" end

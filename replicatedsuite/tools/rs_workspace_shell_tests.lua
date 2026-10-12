@@ -110,7 +110,7 @@ Test('appearance shortcut stays clickable in the main title bar and opens the ac
  for _,width in ipairs({400,620,1000})do
   assert(shell:ApplyLayout(false,width,700))
   local previousRight=0
-  for _,id in ipairs({'v3_shell_running','v3_shell_appearance_button','v3_shell_diag_button','v3_shell_topmost_button','v3_shell_minimize_button','v3_shell_close_button'})do
+  for _,id in ipairs({'v3_shell_running','v3_shell_appearance_button','v3_shell_diag_button','v3_shell_topmost_button','v3_shell_lock_button','v3_shell_minimize_button','v3_shell_close_button'})do
    local button=assert(n[id]);assert(button.x>=previousRight and button.x+button.width<=button.parentComponent.width+1,id..' overlaps or leaves title bar at '..width)
    previousRight=button.x+button.width
    local visible,why=h:VisibleRect(button);assert(visible,why)
@@ -268,5 +268,10 @@ Test('main appearance diagnostics are owned by workspace and never load or save 
  local report,err,detail=S.ModuleDiagnosticsHub:BuildReport('system_workspace',{detailed=true})
  assert(report,err);assert(report:find(A.storeId,1,true) and detail:find('provider.main_appearance',1,true))
  assert(h.reads==reads and h.writes==writes)
+end)
+Test('main title lock exposes the saved state and changes through the existing Shell command',function()
+ local shell,S,h,n=Boot();local button=assert(n.v3_shell_lock_button,'main title lock missing')
+ assert(button.root.events.OnClick(button.root,'LeftButton'));assert(shell:IsLocked() and button.state.selected)
+ assert(button.text=='锁');assert(button.root.events.OnClick(button.root,'LeftButton'));assert(not shell:IsLocked() and not button.state.selected)
 end)
 print('WORKSPACE SHELL RESULT '..passed..' passed / '..failed..' failed');if failed>0 then error('workspace shell failures')end

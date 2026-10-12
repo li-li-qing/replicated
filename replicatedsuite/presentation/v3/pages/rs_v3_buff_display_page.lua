@@ -259,6 +259,8 @@ local function BuildPage(parent, route)
         placeholder="搜索名称 / ID",onSubmit=function(value)root.filterText=tostring(value or "");return root:Refresh()end,
         slot={size="fill",fill=1,minWidth=90}})
     local searchClear=RSUI:Button({id="v3_buff_display_track_search_clear",parent=toolbar,text="清除",compact=true,slot={size="fixed",width=52}})
+    -- 中文维护：冻结直接放在当前状态入口旁，固定名单方便逐条追踪；持续记录仍由独立记录按钮控制。
+    local listFreezeButton=RSUI:Button({id="v3_buff_display_track_freeze",parent=toolbar,text="冻结列表",compact=true,slot={size="fixed",width=84}})
     local recordRow=RSUI:HorizontalBox({id="v3_buff_record_actions",parent=tabTrack,gap=5,slot={size="fixed",height=27,hAlign="fill"}})
     local freezeButton=RSUI:Button({id="v3_buff_capture_record",parent=recordRow,text="开始记录",compact=true,slot={size="fixed",width=100}})
     local updateFreezeButton=RSUI:Button({id="v3_buff_capture_reset",parent=recordRow,text="清空记录",compact=true,slot={size="fixed",width=86}})
@@ -373,6 +375,11 @@ local function BuildPage(parent, route)
         local ok,err
         if state.active then ok,err=Feature.Commands:ClearManagementFreeze()else ok,err=Feature.Commands:CaptureManagementFreeze()end
         return ShowResult(ok,err,state.active and "已停止并清空记录" or "开始记录实际观察的状态")
+    end
+    listFreezeButton.onClick=function()
+        local active=Feature:GetManagementListFreezeState().active
+        local ok,err=Feature.Commands:SetManagementListFrozen(not active)
+        return ShowResult(ok,err,active and "列表已恢复实时刷新" or "列表已冻结，可逐条设置追踪；HUD 继续实时更新")
     end
     updateFreezeButton.onClick=function()local ok,err=Feature.Commands:ResetManagementCapture();return ShowResult(ok,err,"已清空记录")end
     cooldownAddButton.onClick=function()
@@ -664,6 +671,10 @@ local function BuildPage(parent, route)
         widgetButton:SetText(WidgetHost:IsVisible("combat.buff_display") and "关闭悬浮窗" or "打开悬浮窗")
         if self.activeTab=="library" then return self:RefreshLibrary()end
         local source=sourceNames[self.managementView] and self.managementView or "live"
+        local listFrozen=Feature:GetManagementListFreezeState().active
+        listFreezeButton:SetVisible(source=="live");listFreezeButton:SetEnabled(enabled or listFrozen)
+        listFreezeButton:SetText(listFrozen and "解冻列表" or "冻结列表")
+        if type(listFreezeButton.SetSelected)=="function" then listFreezeButton:SetSelected(listFrozen)end
         local rows,revision,coverage=Feature:GetManagementProjection({view=source,compact=true,preserveLive=true,sort="id",query=self.filterText})
         local cooldown=source=="cooldowns";local view=cooldown and cooldownTable or trackingTable
         -- 只有已被控件接受的 revision 才算显示成功；静态库不跟着 Aura/CD 节拍重绑。
@@ -675,7 +686,7 @@ local function BuildPage(parent, route)
         end
         trackingTable:SetVisible(not cooldown);cooldownTable:SetVisible(cooldown)
         recordRow:SetVisible(source=="frozen");cooldownEditorRow:SetVisible(cooldown)
-        trackingCaption:SetText(sourceNames[source].." · "..tostring(#(rows or {})).." 条"..(source=="live" and " · 未知：未读到剩余时间" or cooldown and " · 目标真实 CD 暂不支持" or ""))
+        trackingCaption:SetText(sourceNames[source].." · "..tostring(#(rows or {})).." 条"..(source=="live" and (listFrozen and " · 已冻结" or " · 未知：未读到剩余时间") or cooldown and " · 目标真实 CD 暂不支持" or ""))
         if #(rows or {})>0 then view:SetViewState("normal")
         elseif source=="live" and tostring(self.filterText or "")=="" and (not enabled or not coverage or not ((coverage.player and coverage.player.available==true) or (coverage.target and coverage.target.available==true))) then
             view:SetViewState("unavailable",{title="当前状态尚未取得",message=enabled and "等待自身或目标状态采样；可从诊断查看读取情况。" or "请开启状态显示以读取当前自身和目标状态。"})

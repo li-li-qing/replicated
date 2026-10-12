@@ -236,6 +236,24 @@ function Shell:Create(spec)
     shell.titleRow = RSUI:HorizontalBox({ id = id .. "_title_row", parent = shell.titleBar, gap = titleGap, slot = { hAlign = "fill", vAlign = "fill" } })
     shell.titleText = RSUI:Text({ id = id .. "_title", parent = shell.titleRow, text = shell.title, fontSize = tonumber(spec.titleFontSize) or 13,
         tone = "accent", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
+    -- 中文维护：标题栏只呈现 Shell 的既有锁状态；锁定继续走 Windowing/NotifyState，禁止第二份位置状态。
+    shell.lockButton = spec.lockControl ~= false and (spec.movable ~= false or spec.resizable ~= false) and RSUI:Button({
+        id = id .. "_title_lock", parent = shell.titleRow, text = shell.locked and "锁" or "开", compact = true,
+        slot = { size = "fixed", width = 22 }, onClick = function() return shell:SetLocked(not shell.locked, true) end,
+    }) or nil
+    local function SyncLockFeedback()
+        if shell.lockButton then
+            shell.lockButton:SetText(shell.locked and "锁" or "开")
+            if type(shell.lockButton.SetSelected) == "function" then shell.lockButton:SetSelected(shell.locked) end
+        end
+        if shell.appearanceLock then shell.appearanceLock:SetText(shell.locked and "解锁" or "锁定") end
+    end
+    SyncLockFeedback() -- 中文维护：首次显示也反映已保存的锁状态，不能等到第一次点击才高亮。
+    if shell.lockButton and RSUI.Tooltip and type(RSUI.Tooltip.Bind) == "function" then
+        RSUI.Tooltip:Bind(shell.lockButton, { provider = function()
+            return shell.locked and "已锁定：禁止拖动和缩放。点击解锁。" or "未锁定：可拖动和缩放。点击锁定位置。"
+        end })
+    end
     shell.appearanceButton = spec.appearanceControls == true and RSUI:Button({ id = id .. "_appearance", parent = shell.titleRow, text = "外", compact = true,
         slot = { size = "fixed", width = titleControlWidth } }) or nil
     shell.topmostButton = spec.topmostControl == false and nil or RSUI:Button({ id = id .. "_topmost", parent = shell.titleRow, text = "顶", compact = true,
@@ -751,19 +769,19 @@ function Shell:Create(spec)
         if self.destroyed == true then return false, "window_destroyed" end
         local nextValue = locked == true
         local previous = self.locked == true
-        if previous == nextValue then return true, false end
+        if previous == nextValue then SyncLockFeedback(); return true, false end
         if self.windowController ~= nil then
             local accepted, _, detail = self.windowController:SetLocked(nextValue)
             if accepted ~= true then return false, detail or "window_lock_native_rejected" end
         end
         self.locked = nextValue
-        if self.appearanceLock ~= nil then self.appearanceLock:SetText(self.locked and "解锁" or "锁定") end
+        SyncLockFeedback() -- 中文维护：标题小锁与外观面板显示同一已接受的状态。
         if persist ~= false then
             local stateOk, stateErr = self:NotifyState("lock")
             if stateOk ~= true then
                 if self.windowController ~= nil then self.windowController:SetLocked(previous) end
                 self.locked = previous
-                if self.appearanceLock ~= nil then self.appearanceLock:SetText(self.locked and "解锁" or "锁定") end
+                SyncLockFeedback() -- 中文维护：持久化拒绝时，颜色与文字必须随真实锁状态回滚。
                 return false, stateErr or "window_lock_state_rejected"
             end
         end

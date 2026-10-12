@@ -10,14 +10,15 @@ local function Boot()
  local S,p,n,c,enabled,h=Host({visible={'trade','bonds'},enabled={life_trade=true,life_bonds=true,life_daily_stats=true}})
  local surfaces={}
  S.RSUI.FloatingSurface.Create=function(_,spec)
-  local native=h.Native(nil,spec.id,0,0,380,300)
+  local height=spec.statePolicy.defaultHeight
+  local native=h.Native(nil,spec.id,0,0,380,height)
   local body=assert(S.RSUI:VerticalBox({id=spec.id..'_body',parent=native,slot={size='fill',fill=1}}))
   local surface={spec=spec,body=body,visible=false}
   function surface:GetContentRoot()return body end
   function surface:SetStatus(text)self.status=text;return true end
   function surface:SetMinimized()return true end
-  function surface:Show(value)self.visible=value~=false;body:Layout(0,0,380,230);return true end
-  function surface:Layout(width)native:SetExtent(width,300);body:Layout(0,0,width,230);return true end
+  function surface:Show(value)self.visible=value~=false;body:Layout(0,0,380,height-56);return true end
+  function surface:Layout(width)native:SetExtent(width,height);body:Layout(0,0,width,height-56);return true end
   function surface:Close()self.visible=false;return spec.onClosed(self)end
   function surface:Destroy()self.destroyed=true;body:Release();return true end
   surfaces[#surfaces+1]=surface;return surface
@@ -27,11 +28,11 @@ local function Boot()
   ApplyNativeRelativePopup=function(_,popup,control,owner,opts)popup:SetExtent(opts.width,opts.height);return true end,
   CorrectNativePopupToScreen=function()return true end,
  }
- local state={fromZone=1,toZone=2,viewMode='all',currentFavoriteKey='route-a',currentRouteFavorite=true}
+ local state={fromZone=1,toZone=2,viewMode='all',ratioMode='current',currentFavoriteKey='route-a',currentRouteFavorite=true}
  local F=S.Features.Trade
  function F:GetProjection()
   return {rows={{key='cargo-a',itemType=99,name='测试货物'}},revision=1,status='ready',
-   fromZone=state.fromZone,toZone=state.toZone,viewMode=state.viewMode,
+   fromZone=state.fromZone,toZone=state.toZone,viewMode=state.viewMode,ratioMode=state.ratioMode,fullRatio=130,
    zones={{id=1,name='起点甲'},{id=3,name='起点丙'}},sellableZones={{id=2,name='目的乙'},{id=4,name='目的丁'}},
    favoriteItems={{value='route-a',text='起点甲 → 目的乙'},{value='route-b',text='起点丙 → 目的丁'}},
    currentFavoriteKey=state.currentFavoriteKey,currentRouteFavorite=state.currentRouteFavorite}
@@ -41,6 +42,7 @@ local function Boot()
  F.Commands.SetTo=function(_,v)state.toZone=v;return true end
  F.Commands.SelectFavorite=function(_,v)state.currentFavoriteKey=v;state.fromZone=3;state.toZone=4;return true end
  F.Commands.SetViewMode=function(_,v)state.viewMode=v;return true end
+ F.Commands.SetRatioMode=function(_,v)if v~='current' and v~='full' then return false,'货率模式无效' end;state.ratioMode=v;return true end
  F.Commands.Refresh=function()c.manualRefresh=(c.manualRefresh or 0)+1;return true end
  local B=S.Features.Bonds;local bond={order='continent:west_first',mask=7,duplicate='all'}
  function B:GetDisplayOrderKey()return bond.order end
@@ -75,6 +77,14 @@ Test('trade selections read back authoritative route and failed commands retain 
  assert(not controls.fromDropdown:SetSelectedValue(999));assert(state.fromZone==3 and controls.fromDropdown.value==3)
  assert(panel.surface.status:find('地区不可用',1,true),'failed save has no visible explanation')
  assert(c.quotes==0,'route selection issued a material quote')
+end)
+Test('full ratio prices are selectable from shared home and floating settings without querying',function()
+ local S,p,n,c,e,s,state,bond,Settings=Boot();assert(n.v3_home_trade_settings.onClick())
+ local controls=Settings('trade').controls;local ratio=assert(controls.ratioSelector,'full-ratio setting missing')
+ assert(ratio:SetValue('full'));assert(state.ratioMode=='full' and ratio:GetValue()=='full')
+ state.ratioMode='current';local _,content=Settings('trade');assert(content:Refresh());assert(ratio:GetValue()=='current','setting ignored authoritative mode')
+ assert(controls.viewSelector:SetValue('cargo'));assert(ratio:SetValue('full'),'cargo comparison was disabled')
+ assert(c.manualRefresh==nil and c.quotes==0,'local price comparison issued a server query')
 end)
 Test('child dropdowns keep settings open and close on card/page exit',function()
  local S,p,n,c,e,s,state,bond,Settings=Boot();assert(n.v3_home_trade_settings.onClick())
@@ -146,7 +156,13 @@ Test('real FloatingSurface and WindowShell build, show, minimize and dispose the
  UI.EnsureAlpha=function(_,native,value)native.alpha=value;return true,false end
  UI.InvalidateNativeState=function()return true end
  R.ApplyOpacityChannels=function()return true end;R.ApplyFontScale=function()return true end
- R.WindowPreferences={GetTopmost=function()return false end,SetTopmost=function()return true end}
+ -- 中文维护：此宿主只替代存档边界；小锁沿用窗口偏好接口，真实磁盘回读另由 lock-store 套件验收。
+ local sessionLocks={}
+ R.WindowPreferences={
+  GetTopmost=function()return false end,SetTopmost=function()return true end,
+  GetLocked=function(_,id)return sessionLocks[id]==true end,
+  SetLocked=function(_,id,value)sessionLocks[id]=value==true or nil;return true end,
+ }
  dofile('core/rs_layout.lua')
  dofile('ui/framework/rs_ui_windowing.lua')
  dofile('ui/framework/rs_ui_window_shell_v3.lua')

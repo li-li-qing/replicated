@@ -228,7 +228,7 @@ local function CreateWidget()
         if type(UI.TryInteractionCall) ~= "function" or type(UI.RequireHandler) ~= "function" then
             return FailInteraction("critical_interaction_contract_unavailable")
         end
-        local dragEnabled, dragErr = UI:TryInteractionCall(button, "EnableDrag", true)
+        local dragEnabled, dragErr = UI:TryInteractionCall(button, "EnableDrag", Feature:GetProjection().quickButtonsLocked ~= true) -- 中文维护：新建按钮立即应用已保存的锁偏好。
         if dragEnabled ~= true then return FailInteraction("feature_profile_enable_drag_failed:" .. tostring(dragErr or "rejected")) end
         if button.SetDragCondition ~= nil and DC_ALWAYS ~= nil then
             local conditionOk, conditionErr = UI:TryInteractionCall(button, "SetDragCondition", DC_ALWAYS)
@@ -236,7 +236,7 @@ local function CreateWidget()
         end
 
         local dragStartOk, dragStartErr = UI:RequireHandler(button, "OnDragStart", function()
-            if instance.visible ~= true then return false end
+            if instance.visible ~= true or Feature:GetProjection().quickButtonsLocked == true then return false end -- 中文维护：Native 可能继续发送拖动通知，入口必须再核实当前锁状态。
             local moving = UI:TryInteractionCall(button, "StartMoving")
             if moving ~= true then return false end
             -- 中文维护：以 Native 实际起点判断移动；未移动的 drag 通知仍属于一次普通点击。
@@ -379,13 +379,16 @@ local function CreateWidget()
 
     function instance:Refresh()
         self.rows = Feature:GetQuickRows() or {}
+        local locked = Feature:GetProjection().quickButtonsLocked == true -- 中文维护：刷新只应用 Feature 已提交的偏好，不保存或重排位置。
         local plan = self:BuildPlan(true)
         local planned, failures = {}, {}
         for _, row in ipairs(plan) do planned[tostring(row.meta.profileId or "")] = true end
         for _, row in ipairs(plan) do
             local record, meta = row.record, row.meta
             local prefix = meta.active and "● " or (meta.dirty and "* " or "")
-            UI:SetText(record.button, prefix .. tostring(meta.name or "方案"), OWNER)
+            UI:SetText(record.button, (locked and "锁 " or "") .. prefix .. tostring(meta.name or "方案"), OWNER) -- 中文维护：锁定保留原方案激活颜色，以短文字明确反馈。
+            local dragOk = UI:TryInteractionCall(record.button, "EnableDrag", not locked) -- 中文维护：已存在按钮同步锁偏好；点击应用方案仍可用。
+            if dragOk ~= true then failures[#failures + 1] = tostring(meta.name or meta.profileId) .. "(锁状态)" end -- 中文维护：原生拒绝必须保留在既有降级诊断里。
             if type(UI.EnsureEnabled) == "function" then
                 local enabled = UI:EnsureEnabled(record.button, true, OWNER)
                 if enabled ~= true then failures[#failures + 1] = tostring(meta.name or meta.profileId) .. "(启用状态)" end

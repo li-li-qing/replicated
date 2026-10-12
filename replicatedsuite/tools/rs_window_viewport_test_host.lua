@@ -92,6 +92,7 @@ return function(options)
         function c:SetVisibility(v)self.visibility=v;local ok,changed,err=UI:EnsureVisible(self.root,v=='visible');return self,ok,err end
         function c:SetText(v)self.text=v;return self end;function c:SetTone(v)self.tone=v;return self end
         function c:SetOnClick(fn)self.onClick=fn;return self end
+        function c:SetSelected(v)self.selected=v==true;return true end -- 中文维护：模拟 Button 已有的选中外观叶节点，不替代 Shell 锁/保存逻辑。
         function c:SetLayoutHost(v)self.layoutHost=v end
         function c:Release()return 1 end
         function c:SetSlot(v)self.slot=v;return self end

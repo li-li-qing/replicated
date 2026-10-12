@@ -84,6 +84,7 @@ function M:EnsureCreated()
     if self.surface then return true end
     local surface,err=R.FloatingSurface:Create({
         id="v3_bag_settings_floating",owner="v3:bag_settings:floating",title="整理背包设置",footer=true,
+        persistSessionLock=true, -- 中文维护：窗口会话几何沿用原设计，小锁复用统一 Chrome 偏好并在重载后恢复。
         movable=true,resizable=true,minimizeMode="compact",boundaryMode="free",defaultPlacement="center",
         statePolicy={defaultWidth=530,defaultHeight=430,minWidth=410,minHeight=300},
         getState=function()return self.windowState end,

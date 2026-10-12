@@ -26,6 +26,7 @@ local function EmptyCapture(revision,active)
         byId={player={},target={}},coverage={},count=0,overflow=false,rejectedObservations=0}
 end
 F.managementFreeze=EmptyCapture(0,false)
+F.managementListFreeze={active=false,revision=0,rows={player={},target={}},coverage={}}
 local function Copy(value)
     if type(value)~="table" then return value end
     local out={};for key,item in pairs(value) do out[key]=Copy(item) end;return out
@@ -167,6 +168,26 @@ function F:GetManagementFreezeState()
 end
 local function InvalidateManagement()
     F.managementCache=nil;F.managementCaches={}
+end
+function F:GetManagementListFreezeState()
+    local state=self.managementListFreeze
+    return {active=state.active,revision=state.revision}
+end
+function F:SetManagementListFrozen(value)
+    -- 中文维护：当前列表冻结与持续留存分开。只复制已取得的有界 Aura 投影，不暂停 HUD、扫描 Native 或保存永久配置。
+    local previous=self.managementListFreeze;local active=value==true
+    if previous.active==active then return true end
+    if active and self.enabled~=true then return false,"请先启用状态显示" end
+    if active then
+        local coverage=self.coverage or {}
+        if not ((coverage.player and coverage.player.available==true) or (coverage.target and coverage.target.available==true)) then
+            return false,"当前状态尚未取得，无法冻结列表"
+        end
+    end
+    self.managementListFreeze={active=active,revision=previous.revision+1,
+        rows=active and Copy(self.projections) or {player={},target={}},coverage=active and Copy(self.coverage) or {}}
+    InvalidateManagement();Publish(active and "management_list_frozen" or "management_list_unfrozen")
+    return true
 end
 function F:ClearFrozenRows()
     if self.clearingManagementCapture then return true end
@@ -395,9 +416,10 @@ function F:GetManagementProjection(options)
     local view=options.view or "live"
     if view~="live" and view~="frozen" and view~="tracked" and view~="library" and view~="cooldowns" then view="live" end
     local frozen=self.managementFreeze
+    local listFreeze=self.managementListFreeze
     -- 维护：小窗有明确“当前/留存”两个入口；保留旧页面live随冻结切换的兼容行为。
-    if view=="live" and frozen.active and options.preserveLive~=true and options.compact~=true then view="frozen" end
-    local revision=(view=="live" and self.revision) or (view=="frozen" and frozen.revision) or Catalog.version
+    if view=="live" and not listFreeze.active and frozen.active and options.preserveLive~=true and options.compact~=true then view="frozen" end
+    local revision=(view=="live" and (listFreeze.active and ("snapshot:"..listFreeze.revision) or self.revision)) or (view=="frozen" and frozen.revision) or Catalog.version
     local metaService=S.Services and S.Services.BuffMetadataV3
     local metaRevision=metaService and type(metaService.GetRevision)=="function" and metaService:GetRevision() or 0
     local cooldownService=S.Services and S.Services.CooldownObservationV3
@@ -485,7 +507,7 @@ function F:GetManagementProjection(options)
             end
         end
     else
-        local source=view=="frozen" and frozen.rows or self.projections
+        local source=view=="frozen" and frozen.rows or (listFreeze.active and listFreeze.rows or self.projections)
         for _,scope in ipairs({"player","target"}) do
             for _,raw in ipairs(source[scope] or {}) do
                 local row=Copy(raw);row.scope=scope;rows[#rows+1]=Decorate(row,index)
@@ -521,7 +543,7 @@ function F:GetManagementProjection(options)
         rows=merged
     end
     local filtered={};for _,row in ipairs(rows) do if Matches(row,options) then filtered[#filtered+1]=row end end
-    local sort=options.sort or "tracked"
+    local sort=view=="live" and listFreeze.active and "id" or options.sort or "tracked" -- 中文维护：冻结期间点击追踪不按 tracked 重排行序，避免下一次点击落到别的状态。
     table.sort(filtered,function(a,b)
         if sort=="tracked" and a.tracked~=b.tracked then return a.tracked==true end
         if sort=="category" and a.category~=b.category then return tostring(a.category)<tostring(b.category) end
@@ -531,7 +553,7 @@ function F:GetManagementProjection(options)
         if a.id~=b.id then return a.id<b.id end
         return tostring(a.key)<tostring(b.key)
     end)
-    local coverage=view=="frozen" and frozen.coverage or (view=="live" and self.coverage or {})
+    local coverage=view=="frozen" and frozen.coverage or (view=="live" and (listFreeze.active and listFreeze.coverage or self.coverage) or {})
     self.managementCaches[cacheSlot]={key=key,rows=filtered,coverage=coverage}
     return filtered,key,coverage
 end
@@ -665,6 +687,7 @@ function F:GetManagementHealth()
             resolver=S.Services.BuffMetadataV3 and type(S.Services.BuffMetadataV3.GetHealth)=="function" and S.Services.BuffMetadataV3:GetHealth() or nil}}
 end
 F.Commands.CaptureManagementFreeze=function() return F:CaptureManagementFreeze() end
+F.Commands.SetManagementListFrozen=function(_,value) return F:SetManagementListFrozen(value) end
 F.Commands.ClearManagementFreeze=function() return F:ClearFrozenRows() end
 F.Commands.ResetManagementCapture=function() return F:ResetManagementCapture() end
 F.Commands.ImportBuiltinPack=function(_,key,newOnly) return F:ImportBuiltinPack(key,newOnly) end

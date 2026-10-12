@@ -583,6 +583,20 @@ local function BuildSettings(parent, route)
         end)
     end })
     local shellLockHint = RSUI:Text({ id = "v3_settings_shell_lock_hint", parent = windowPolicy, text = "", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
+    -- 中文维护：独立 R 悬浮按钮没有标题栏，小锁入口放在所属主菜单设置，并沿用 Launcher Store。
+    local launcherPolicy = RSUI:HorizontalBox({ id = "v3_settings_launcher_policy", parent = root, gap = 8, slot = { size = "fixed", height = 32, hAlign = "fill" } })
+    local launcherLockButton = RSUI:Button({ id = "v3_settings_launcher_lock", parent = launcherPolicy, text = "锁定启动按钮", compact = true,
+        slot = { size = "fixed", width = 154 }, onClick = function()
+            return RunSettingAction("launcher_lock", function()
+                local v3 = S.UIV3
+                if v3 == nil or type(v3.SetLauncherLocked) ~= "function" then return false, "启动按钮锁定入口不可用" end
+                local ok, err = v3:SetLauncherLocked(not (v3.LauncherState and v3.LauncherState.locked == true))
+                if ok == true then root:Refresh() end
+                return ok, err
+            end)
+        end })
+    RSUI:Text({ id = "v3_settings_launcher_lock_hint", parent = launcherPolicy, text = "锁定位置后，启动按钮仍可点击打开菜单。", fontSize = 9,
+        tone = "muted", overflow = "ellipsis", slot = { size = "fill", fill = 1 } })
 
     local shellWidthField = D:NumericSetting(root, {
         id = "v3_settings_shell_width", label = "主窗口宽度", hint = "直接输入设计宽度；不设屏幕/预设上限，拖动边缘缩放与这里使用同一份尺寸。",
@@ -624,6 +638,9 @@ local function BuildSettings(parent, route)
         shellCard:SetData({ value = tostring(math.floor(tonumber(shellState.width) or shellSize.defaultWidth)) .. " × " .. tostring(math.floor(tonumber(shellState.height) or shellSize.defaultHeight)) })
         shellLockButton:SetText(shellState.locked == true and "解除窗口锁定" or "锁定主窗口")
         shellLockHint:SetText(shellState.locked == true and "已锁定：标题栏拖动和边缘缩放暂时关闭" or "未锁定：可以拖动标题栏并从八个方向调整大小")
+        local launcherLocked = S.UIV3 and S.UIV3.LauncherState and S.UIV3.LauncherState.locked == true
+        launcherLockButton:SetText(launcherLocked and "启动按钮：已锁定" or "启动按钮：可拖动")
+        launcherLockButton:SetSelected(launcherLocked == true) -- 中文维护：颜色与文字都显示已保存的锁偏好。
         return true
     end
     function root:OnActivated() return self:Refresh() end

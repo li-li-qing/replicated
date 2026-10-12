@@ -427,8 +427,9 @@ local function Build(parent, route, feature, kind)
             if root.bondDetailButton then root.bondDetailButton:SetEnabled(true) end
             return true
         end
-        tableView.onItemActivated = function(index)
-            local row = tableView:GetItem(index)
+        tableView.onItemActivated = function(item,index)
+            -- 中文维护：TableView 激活契约首参是行对象；不能把它当 index，否则债券详情点击始终无效。
+            local row = type(item)=="table" and item or tableView:GetItem(index)
             if row == nil then return false end
             local floating = S.UIV3 and S.UIV3.QuestDetailFloatingV3 or nil
             if type(floating) == "table" and type(floating.Open) == "function" then
@@ -591,6 +592,7 @@ local function Build(parent, route, feature, kind)
                 .. (projection.selected and (" · 当前 " .. tostring(projection.selected.name or "--")) or "")
             local treasureError = root.treasureActionError or projection.lastMapActionError
             if treasureError then treasureStatus = "定位未完成：" .. tostring(treasureError) end
+            if projection.mapActionPending == true then treasureStatus = "地图定位等待中，冷却结束后自动执行" end -- 中文维护：冷却等待不是定位失败；只显示 Feature 请求状态。
             status:SetText(enabled and treasureStatus or "功能已关闭")
             if widgetButton then widgetButton:SetEnabled(enabled); widgetButton:SetText(WidgetHost:IsVisible("life.treasure") and "关闭悬浮窗" or "打开悬浮窗") end
         elseif kind == "fishing" then
