@@ -37,7 +37,7 @@ local function BuildActivityPage(parent, route)
         return execute()
     end
     -- 中文维护：时间说明面对玩家；计划结束只是日程估计，实时区域的剩余时间属于当前阶段，两者不能混作首领存活时间。
-    D:PageHeader(root, "v3_activity_header", "活动", "“后开始”表示等待开场；“后结束”是计划结束估计。右侧显示计划时段；下方实时区域显示当前阶段。“任务未完成”表示已过计划窗口但任务仍在进行。", "刷新", function()
+    D:PageHeader(root, "v3_activity_header", "活动", "“后开始”表示距离开场的时间；“后结束”是计划结束估计。右侧显示计划时段，任务进度单独显示；下方实时区域显示当前阶段。", "刷新", function()
         return RunAction("refresh", nil, function()
             if S.FeatureRuntime == nil or S.FeatureRuntime:IsEnabled("life_activities") ~= true then return false end
             local progress = S.Services and S.Services.QuestProgressV3 or nil

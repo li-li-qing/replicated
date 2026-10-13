@@ -6,7 +6,8 @@ local function Test(name, fn)
     else fail = fail + 1; print("FAIL compact-window " .. name .. ": " .. tostring(err)) end
 end
 
-local function Boot()
+local function Boot(options)
+    options=options or {}
     local h = dofile("tools/rs_gear_page_test_host.lua")()
     local S, UI, R = h.S, h.S.UI, h.S.RSUI
     S.Generation = 901
@@ -23,7 +24,14 @@ local function Boot()
     S.NativeObjectFactory = { CreateWindow = function(_, id)
         local n = h.Native(UIParent, id, 0, 0, 1, 1)
         function n:SetUILayer() return true end
-        function n:SetCloseOnEscape() return true end
+        function n:SetCloseOnEscape(value) self.nativeCloseOnEscape=value;return true end
+        -- 中文维护：模拟原生直接隐藏及 OnHide，仍使用真实 Shell 的显隐与关闭通知链。
+        local originalShow=n.Show
+        function n:Show(value)
+            local wasVisible=self.shown==true;local result=originalShow(self,value)
+            if wasVisible and value==false and self.events.OnHide then self.events.OnHide(self)end
+            return result
+        end
         function n:SetWindowModal() return true end
         function n:SetDrawPriority() return true end
         return n
@@ -53,13 +61,39 @@ local function Boot()
     dofile("ui/framework/rs_ui_window_shell_v3.lua")
     local shell, err = assert(UI.WindowShell:Create({
         id="compact_drag_contract", owner="test:compact", title="测试", width=360, height=260,
-        minWidth=200, minHeight=120, compactChrome=true, minimizeMode="compact", minimizedSize=30,
+        minWidth=200, minHeight=120, compactChrome=true, minimizeMode=options.minimizeMode or "compact", minimizedSize=30,
         resizable=false, appearanceControls=false, footer=false,
+        closeOnEscape=options.closeOnEscape,onClosed=options.onClosed,
     }))
     assert(shell, err)
     assert(shell:Show(true))
     return S, shell
 end
+
+Test("native Escape opt-in synchronizes visibility and notifies close exactly once",function()
+    local closes=0
+    local S,shell=Boot({closeOnEscape=true,onClosed=function(_,reason)closes=closes+1;assert(reason=='native_hide');return true end})
+    assert(shell.window.nativeCloseOnEscape==true,'native Escape close was disabled')
+    shell.window:Show(false)
+    assert(shell.visible==false and closes==1,'native hide left a visible Shell or skipped cleanup')
+    shell.window.events.OnHide(shell.window);assert(closes==1,'duplicate hide repeated cleanup')
+    assert(shell:Show(true));assert(shell.window.nativeCloseOnEscape==true,'reopen lost Escape close')
+end)
+Test("explicit hide and close do not duplicate the native Escape callback",function()
+    local closes=0
+    local S,shell=Boot({closeOnEscape=true,onClosed=function()closes=closes+1;return true end})
+    assert(shell:Show(false));assert(closes==0,'programmatic hide was treated as a user close')
+    assert(shell:Show(true));assert(shell:Close('button'));assert(closes==1,'X close notified twice')
+end)
+Test("ordinary floating windows retain their existing Escape policy",function()
+    local S,shell=Boot();assert(shell.window.nativeCloseOnEscape==false,'opt-in changed all floating windows')
+end)
+Test("native Escape opt-in does not turn minimize hiding into a close",function()
+    local closes=0
+    local S,shell=Boot({closeOnEscape=true,minimizeMode='hide',onClosed=function()closes=closes+1;return true end})
+    assert(shell:SetMinimized(true,false));assert(shell.minimized and not shell.visible and closes==0)
+    assert(shell:SetMinimized(false,false));assert(not shell.minimized and shell.visible and closes==0)
+end)
 
 Test("normal state keeps minimize button clickable", function()
     local S, shell = Boot()

@@ -29,6 +29,8 @@ S.Events = {
     -- 维护（foundation-lifecycle-1）：Owner 释放立即撤销在途回调，Epoch 隔离同代 Stop/Start。
     -- 仅治理事件执行权限，不拥有 Feature/UI 状态；不改变 owner-first 参数或 Native 注册策略。
     dispatchEpoch = 0,
+    -- 中文维护：全局 UI 事件单独桥接，不能假定私有 Window:RegisterEvent 会收到；每个事件只注册一个可释放的 Native 回调。
+    globalBridges = {}, globalRegisterFailures = 0, globalReleaseFailures = 0,
     lifecycleContractVersion = 1,
 }
 local E = S.Events
@@ -202,6 +204,7 @@ function E:UnsubscribeInternal(topic, owner)
         else kept[#kept + 1] = listener end
     end
     if #kept > 0 then self.internalListeners[topic] = kept else self.internalListeners[topic] = nil end
+    self:ReleaseUnusedGlobalBridges()
     return removed
 end
 
@@ -222,6 +225,49 @@ function E:UnsubscribeInternalOwner(owner)
             if #kept > 0 then self.internalListeners[topic] = kept else self.internalListeners[topic] = nil end
         end
     end
+    self:ReleaseUnusedGlobalBridges()
+    return removed
+end
+
+function E:ReleaseUnusedGlobalBridges(force)
+    for name,row in pairs(self.globalBridges)do
+        if (force or self.internalListeners[row.topic]==nil)and not row.releaseFailed then
+            -- 中文维护：先撤销在途 Native 闭包的执行权，再释放精确 handler；不移除游戏/其它插件的订阅。
+            row.active=false
+            local ok=S.Api and S.Api:ActionCapability("UIParent:ReleaseEventHandler",row.host,"ReleaseEventHandler",name,row.handler)
+            if ok~=true then
+                -- 中文维护：释放被拒后保留一个永不执行的记录，禁止重新注册累积闭包或每次内部取消都重复尝试。
+                self.globalReleaseFailures=self.globalReleaseFailures+1;row.releaseFailed=true
+            else self.globalBridges[name]=nil end
+        end
+    end
+end
+function E:SubscribeGlobalOptional(name,owner,callback)
+    if type(name)~="string"or name==""or type(callback)~="function"or owner==nil then return false end
+    local row=self.globalBridges[name]
+    if row and not row.active then return false end
+    local topic="native.global."..name
+    if row==nil then
+        local host,api=rawget(_G,"UIParent"),S.Api
+        -- 中文维护：不注册无法释放的全局回调，避免禁用/重载累积；缺此入口不影响现有私有事件和手动功能。
+        if not api or not host or type(host.SetEventHandler)~="function"or type(host.ReleaseEventHandler)~="function"
+            or api:IsCapabilityAllowed("UIParent:SetEventHandler")~=true or api:IsCapabilityAllowed("UIParent:ReleaseEventHandler")~=true then
+            self.globalRegisterFailures=self.globalRegisterFailures+1;return false
+        end
+        row={host=host,topic=topic,active=true};local generation=S.Generation
+        row.handler=function(...)
+            if ReplicatedSuite~=S or S.Generation~=generation or not E.running or not row.active then return end
+            return E:Publish(topic,...)
+        end
+        local ok=api:ActionCapability("UIParent:SetEventHandler",host,"SetEventHandler",name,row.handler)
+        if ok~=true then row.active=false;self.globalRegisterFailures=self.globalRegisterFailures+1;return false end
+        self.globalBridges[name]=row
+    end
+    return self:SubscribeInternal(topic,owner,callback)
+end
+function E:UnsubscribeGlobalOwner(owner)
+    local topics={};for _,row in pairs(self.globalBridges)do topics[#topics+1]=row.topic end
+    local removed=0;for _,topic in ipairs(topics)do removed=removed+self:UnsubscribeInternal(topic,owner)end
     return removed
 end
 
@@ -382,6 +428,7 @@ function E:GetHealth()
     end
     return {
         version = self.version, running = self.running == true, nativeTopics = nativeTopics, nativeListeners = nativeListeners,
+        globalRegisterFailures=self.globalRegisterFailures,globalReleaseFailures=self.globalReleaseFailures,
         internalTopics = internalTopics, internalListeners = internalListeners, registered = registered,
         registerFailures = self.registerFailures, unregisterFailures = self.unregisterFailures,
         startFailures = self.startFailures, subscribeFailures = self.subscribeFailures,
@@ -398,6 +445,7 @@ end
 function E:Stop()
     -- 维护：先撤销在途分发和旧 Native 闭包，再释放订阅；禁止先清表却留下快照可调用。
     self.dispatchEpoch = self.dispatchEpoch + 1
+    self:ReleaseUnusedGlobalBridges(true)
     self.running = false
     local registeredNames = {}
     for eventName in pairs(self.registered or {}) do registeredNames[#registeredNames + 1] = eventName end

@@ -183,13 +183,16 @@ Test('real TOC retains all 27 migrated runtime checks even with missing implemen
         'v3_m16_dps_shared_analytics_contract', 'v3_combat_range_assist_visual_guide_contract',
         'v3_combat_boss_alerts_hud_contract', 'v3_combat_buff_cap_observation_contract',
         'v3_combat_unit_lines_visual_guide_contract', 'v3_m15_2h_death_review_contract',
+        -- 中文维护（5.3 发布自检）：朝向功能已加入实际 TOC，必须计入只读契约并保留缺实现的失败证据。
+        'v3_facing_indicator_contract',
     }
     local report = g:Run({skipSequences=true})
     assert(report.runtimeContracts.total == #required and report.runtimeContracts.failed == #required)
     for _, id in ipairs(required) do
         local row = Find(report, 'runtime_contract:' .. id)
         -- 职责/牺牲之舞已拆分：视觉实现缺失由独立 visual 错误码报告；保留逐项严格失败断言。
-        local expected = id == 'v3_combat_team_tools_visual_marker_contract' and 'visual_implementation_not_registered' or 'implementation_not_registered'
+        local expected = id == 'v3_combat_team_tools_visual_marker_contract' and 'visual_implementation_not_registered'
+            or id == 'v3_facing_indicator_contract' and 'facing_feature_unavailable' or 'implementation_not_registered'
         assert(row and not row.ok and row.detail == expected, id .. ' silently omitted or wrong failure')
     end
     for _, id in ipairs({'v3_m16_dps_skill_proxy_source','v3_m15_2h_death_review_widget_close','v3_m16_18_buff_display_plate_geometry'}) do

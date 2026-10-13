@@ -57,7 +57,7 @@ local function RejectRoot(window, owner, reason)
     return nil, tostring(reason or "v3_root_policy_failed")
 end
 
-function A:CreateRootWindow(logicalId, owner, requestedLayer)
+function A:CreateRootWindow(logicalId, owner, requestedLayer, options)
     logicalId = tostring(logicalId or "")
     owner = tostring(owner or "")
     if logicalId == "" or owner:sub(1, 3) ~= "v3:" then return nil, "invalid v3 native identity" end
@@ -96,9 +96,14 @@ function A:CreateRootWindow(logicalId, owner, requestedLayer)
         if layerName == "normal" then self.metrics.normalLayerApplied = (tonumber(self.metrics.normalLayerApplied) or 0) + 1
         else self.metrics.systemLayerApplied = (tonumber(self.metrics.systemLayerApplied) or 0) + 1 end
     end
-    local escapeOk, escapePresent = OptionalNativeAccepted(window, "SetCloseOnEscape", false)
-    if escapeOk ~= true then return RejectRoot(window, owner, "v3 root escape policy rejected") end
-    if escapePresent then self.metrics.nativeEscapeCloseDisabled = (tonumber(self.metrics.nativeEscapeCloseDisabled) or 0) + 1 end
+    -- 中文维护：只有主菜单等明确接入 OnHide 清理的根窗口选择 Esc；其它调用保持原策略，不改变战斗/HUD输入层级。
+    local closeOnEscape=type(options)=="table"and options.closeOnEscape==true
+    local escapeOk, escapePresent = OptionalNativeAccepted(window, "SetCloseOnEscape", closeOnEscape)
+    if escapeOk ~= true or (closeOnEscape and not escapePresent)then return RejectRoot(window, owner, "v3 root escape policy rejected") end
+    if escapePresent then
+        local key=closeOnEscape and "nativeEscapeCloseEnabled"or "nativeEscapeCloseDisabled"
+        self.metrics[key]=(tonumber(self.metrics[key])or 0)+1
+    end
     local modalOk, modalPresent = OptionalNativeAccepted(window, "SetWindowModal", false)
     if modalOk ~= true then return RejectRoot(window, owner, "v3 root modal policy rejected") end
     if modalPresent then self.metrics.nativeModalDisabled = (tonumber(self.metrics.nativeModalDisabled) or 0) + 1 end

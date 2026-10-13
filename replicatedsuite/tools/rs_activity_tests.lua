@@ -3,7 +3,7 @@
 -- 不通过清配置、跳过加载或恢复 Legacy 绕过错误。兼容边界：须与完整 toc.g 及 .18.247 UI 配套；
 -- 后续合并必须先检查冲突标记、清单完整性与 Lua 语法，再做运行时验收；注释不增加运行期开销。
 -- Maintenance: comprehensive regression suite for Activity feature, authority, store,
--- live zone mapping (Whalesong/Aegis), taskTailMinutes, and floating widget lifecycle.
+-- live zone mapping (Whalesong/Aegis), independent quest progress, and floating widget lifecycle.
 local pass, fail = 0, 0
 local function Test(name, fn)
     local ok, err = xpcall(fn, debug.traceback)
@@ -166,11 +166,8 @@ Test("activating live zone row opens QuestDetailFloating with correct questKey",
     assert(h.lastDetailOpen.scope == "event")
 end)
 
-Test("taskTailMinutes keeps event active when tailInFlightCount > 0", function()
-    -- Mock server time to 12:45 (start was 12:20, duration 10m -> ended 12:30, tail until 13:50)
-    -- Crimson Rift runs at 12:20 on all days. At 12:45, elapsed is 25m.
-    -- Without tail: elapsed (25m) >= duration (10m) -> inactive.
-    -- With tail (tailInFlightCount=1): tailDuration is 90m -> active!
+Test("unfinished follow-up quests preserve progress but do not hide the next activity start", function()
+    -- 中文维护：12:20 场次的计划窗口已结束；即使仍有后续任务，也必须显示 16:20 开场。
     local S, F, h = ActivityBoot({ crimsonTailInFlight = 1 })
     -- Set server clock anchor at Sunday 12:45:00
     -- day 1 (Sunday), hour 12, minute 45
@@ -184,11 +181,11 @@ Test("taskTailMinutes keeps event active when tailInFlightCount > 0", function()
     assert(F.Authority:Refresh("test_tail"))
     local crimsonRow = F.Authority:GetRow("event:征兆之痕")
     assert(crimsonRow ~= nil, "crimson row not found")
-    assert(crimsonRow.active == true, "crimson should be active during tail in flight")
-    assert(crimsonRow.tone == "red", "active scheduled activity must render red during active tail")
-    assert(not tostring(crimsonRow.status or ""):find("进行中", 1, true), "ordinary activity status must not show 进行中")
-    -- 90m - 25m = 65m = 1时5分
-    assert(crimsonRow.seconds == 65 * 60, "remaining tail seconds should be 65m, got: " .. tostring(crimsonRow.seconds))
+    assert(crimsonRow.active == false, "quest progress must not extend the schedule")
+    assert(crimsonRow.tone == "default", "distant next occurrence must not retain the active color")
+    assert(crimsonRow.status:find("后开始", 1, true), "next start countdown missing")
+    assert(crimsonRow.seconds == 215 * 60, "next start should be in 215m, got: " .. tostring(crimsonRow.seconds))
+    assert(crimsonRow.progressText == "3/6", "unfinished progress must remain independently visible")
 end)
 
 

@@ -55,6 +55,15 @@ V3.Shell = V3.Shell or {
     buildQuarantinedRejects = 0,
 }
 local Shell = V3.Shell
+-- 中文维护：区分本 Shell 的主动显隐与引擎 Esc 隐藏；同步 OnHide 不能重入 Close 或把最小化/失败回滚记成用户关闭。
+local function SetWindowVisible(shell,visible)
+    local before=shell.visibilityMutation;shell.visibilityMutation=true
+    local ok,result,why=pcall(Adapter.SetVisible,Adapter,shell.window,shell.owner,visible)
+    shell.visibilityMutation=before
+    if not ok then return false,result end
+    if result==true then shell.nativeShown=visible==true end
+    return result,why
+end
 Shell.navigationCallbackContractVersion = 1
 Shell.NavigationCallbackCaptureContractVersion = 1
 Shell.StateMutationTransactionContractVersion = 1
@@ -275,7 +284,7 @@ function Shell:ApplyMinimizedState(persist)
             RSUI.DropdownService:CloseAll()
         end
         if self.window ~= nil then
-            local hidden, hideErr = Adapter:SetVisible(self.window, self.owner, false)
+            local hidden, hideErr = SetWindowVisible(self,false)
             if hidden ~= true then return false, hideErr or "主窗口最小化隐藏失败" end
         end
     end
@@ -298,7 +307,7 @@ function Shell:ToggleMinimized()
     if closed ~= true then
         state.minimized = previous
         self:ApplyMinimizedState(false)
-        if previous ~= true and self.window ~= nil then Adapter:SetVisible(self.window, self.owner, true) end
+        if previous ~= true and self.window ~= nil then SetWindowVisible(self,true)end
         return false, closeErr or "主窗口最小化关闭失败"
     end
     MarkDirty("minimized_changed")
@@ -470,9 +479,19 @@ function Shell:Create()
     -- 才请求 system。偏好由 RSUI.WindowPreferences 独立持久化，避免修改 v3.shell schema。
     local prefs = RSUI.WindowPreferences
     self.topmost = type(prefs) == "table" and type(prefs.GetTopmost) == "function" and prefs:GetTopmost("main_shell") == true or false
-    local window, createErr = Adapter:CreateRootWindow(self.logicalId, self.owner, self.topmost and "system" or "normal")
+    local window, createErr = Adapter:CreateRootWindow(self.logicalId, self.owner, self.topmost and "system" or "normal",{closeOnEscape=true})
     if window == nil then return FailBuild(createErr) end
     self.window = window
+    -- 中文维护：Esc 是原生隐藏边沿，先交回 Diff 和输入所有权，再执行与 X 相同的预览取消、菜单/弹层清理；不写窗口偏好。
+    local bound,bindErr=UI:RequireHandler(window,"OnHide",function()
+        if Shell.visibilityMutation or Shell.nativeShown~=true then return true end
+        Shell.nativeShown=false;Shell.nativeHideCount=(Shell.nativeHideCount or 0)+1
+        if type(UI.InvalidateNativeState)=="function"then UI:InvalidateNativeState(window,"visible")end
+        if type(UI.ReleaseFocusWithin)=="function"then UI:ReleaseFocusWithin(window,Shell.owner,"native_hide")end
+        if type(UI.DisarmInputWithin)=="function"then UI:DisarmInputWithin(window,Shell.owner,"native_hide")end
+        return Shell:Close("native_hide")
+    end,"main_shell_native_escape")
+    if bound~=true then return FailBuild(bindErr or "主菜单关闭事件绑定失败")end
     self.window.rsUiTopmost = self.topmost == true
     -- DrawPriority orders Replicated Suite roots only inside the selected Native layer.
     local shellPriority = (S.UITokens and type(S.UITokens.Number) == "function"
@@ -497,11 +516,11 @@ function Shell:Create()
     })
     local topRow = RSUI:HorizontalBox({ id = "v3_shell_top_row", parent = self.topBar, gap = 4 })
     local brand = RSUI:VerticalBox({ id = "v3_shell_brand", parent = topRow, gap = 1, slot = { size = "fill", fill = 1 } })
-    -- 维护：发行标记紧跟 QQ 群；第二行只是联系文案，不添加邮件发送或业务写入口。
+    -- 维护（5.4 发布）：发行标记紧跟 QQ 群；第二行只是联系文案，不添加邮件发送或业务写入口。
     -- Authority / 数据流：仍由 v3:shell 经 RSUI:Text 创建展示文本，不直接写 Native 或业务 Store。
     -- 兼容边界：保留逻辑 ID、响应式宽度及样式；不改 ESC 注册名、聊天前缀或用户配置，无迁移。
     -- 后续维护：联系信息仅在此展示；窄窗沿用省略规则，不扩大拖动命中区或挤占右侧按钮。
-    self.brandTitle=RSUI:Text({ id = "v3_shell_title", parent = brand, text = "作者:Replicated   QQ群:1104129461   正式版5.2", fontSize = 15, tone = "accent", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
+    self.brandTitle=RSUI:Text({ id = "v3_shell_title", parent = brand, text = "作者:Replicated   QQ群:1104129461   正式版5.4", fontSize = 15, tone = "accent", overflow = "ellipsis", slot = { size = "fixed", height = 20 } })
     self.supportText=RSUI:Text({ id = "v3_shell_support_text", parent = brand, text = "如果觉得功能好用，可以邮件给作者提供一点打赏", fontSize = 9, tone = "muted", overflow = "ellipsis", slot = { size = "fixed", height = 14 } })
     -- 中文维护：窄窗可省略顶栏文字，悬停时仍能读到完整文案；不改变右侧按钮的命中区域。
     if RSUI.Tooltip and type(RSUI.Tooltip.BindOverflowText) == "function" then RSUI.Tooltip:BindOverflowText(self.brandTitle,self.brandTitle,{cursorFollow=true,maxWidth=440}); RSUI.Tooltip:BindOverflowText(self.supportText,self.supportText,{cursorFollow=true,maxWidth=440}) end
@@ -728,7 +747,7 @@ function Shell:Open()
         return false, layoutErr or "主窗口布局应用失败"
     end
     if not wasVisible and type(UI.InvalidateNativeState)=="function" then UI:InvalidateNativeState(self.window,"visible") end
-    local shown, showErr = Adapter:SetVisible(self.window, self.owner, true)
+    local shown, showErr = SetWindowVisible(self,true)
     if shown ~= true then
         if wasMinimized then
             state.minimized = true
@@ -743,7 +762,7 @@ function Shell:Open()
         local rect = self.lastRect
         local rectOk, rectErr = Windowing:ApplyGeometry(self.window,self.owner,rect.x,rect.y,rect.width,rect.height,true)
         if rectOk ~= true then
-            local hidden, hideErr = Adapter:SetVisible(self.window,self.owner,false)
+            local hidden, hideErr = SetWindowVisible(self,false)
             if wasMinimized then
                 state.minimized = true
                 self:ApplyMinimizedState(false)
@@ -780,7 +799,7 @@ function Shell:ResetLayout(persist)
     local ok,err=self:ApplyLayout(true)
     if ok==true and shown then
         if type(UI.InvalidateNativeState)=="function" then UI:InvalidateNativeState(self.window,"visible") end
-        ok,err=Adapter:SetVisible(self.window,self.owner,true)
+        ok,err=SetWindowVisible(self,true)
     end
     if ok==true and persist~=false and type(V3.MarkShellStoreDirty)=="function" then ok,err=V3:MarkShellStoreDirty(0,"shell_layout_reset") end
     self.placementReason=nil
@@ -810,7 +829,7 @@ function Shell:Close(reason)
     if self.window == nil then return true end
     local restored,restoreErr=self:RestoreAppearancePreview()
     if restored~=true then return false,restoreErr end
-    local hidden, hideErr = Adapter:SetVisible(self.window, self.owner, false)
+    local hidden, hideErr = SetWindowVisible(self,false)
     if hidden ~= true then return false, hideErr or "主窗口隐藏失败" end
     if UI.WindowShell and type(UI.WindowShell.RefreshFloatingLayers)=="function"then UI.WindowShell:RefreshFloatingLayers()end
     self.lastCloseReason = tostring(reason or "close")
@@ -876,6 +895,9 @@ function Shell:GetSnapshot()
     local authority = self.window and UI:GetNativeAuthority(self.window) or nil
     return {
         created = self.created == true,
+        nativeEscapeEnabled = self.created == true,
+        nativeHideCount = self.nativeHideCount or 0,
+        lastCloseReason = self.lastCloseReason,
         visible = Adapter:IsVisible(self.window),
         width = width,
         height = height,

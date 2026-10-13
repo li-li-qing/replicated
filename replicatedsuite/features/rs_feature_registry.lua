@@ -566,12 +566,13 @@ Add("tools_social", "tools.social", "社交名单", "tools", 50, "好友列表�
     apiDependencies = { "X2Friend:IsMyFriend", "X2Friend:GetFriendList", "X2Friend:GetBlockList", "X2Friend:BlockUser", "X2Friend:UnblockUser", "X2Friend:GetMuteList", "X2Friend:MuteUser", "X2Friend:UnmuteUser" },
     apiReadiness = "official", apiPolicy = "cooldown_writes", evidence = "ArcheRage RU official addon API updates 2026-04-28 / 2026-08-05; central Api CapabilityCooldown contract enforces 1000ms writes",
 })
--- 中文维护：备注独立于社交写操作；启用时只观察原生窗可见性，名单/团队需求随备注窗或页面释放。
--- 中文维护：社交窗口Getter在RU实机返回nil；用户认可名单响应触发独立备注窗，注册信息必须与事件路径及两项真实Getter一致。
+-- 中文维护：备注独立于社交写操作；观察原生已有名单响应，名单/团队需求随备注窗或页面释放。
+-- 中文维护：恢复用户实测有效的好友/远征名单响应启窗链，单独排除上线/成员变化；不再用RU全nil的可见性Getter阻断显示。
 -- 中文维护（2026-10-13）：对应expnote四类名单及联合团队，共用旧备注Store；家族是选视图时的lazy依赖。
-Add("tools_player_notes", "tools.player_notes", "人员备注", "tools", 55, "好友、黑名单、家族、远征队和团队共用账号备注；名单事件弹窗，手动关闭，远征队按原生当前页显示。", {
-    status="implemented_pending_ru",lifecycle="social_list_event_and_demand",authority="v3.business.tools_player_notes",defaultEnabled=true,
-    settingsCapable=true,apiDependencies={"X2Unit:UnitName","X2Friend:GetFriendList","X2Friend:GetBlockList"},apiReadiness="social_list_event",apiPolicy="explicit_local_notes",
+Add("tools_player_notes", "tools.player_notes", "人员备注", "tools", 55, "各名单共用账号备注；社交窗口可见性可读时跟随开关，未知时沿用好友/远征回包；支持团队分组与本人 /bz 命令，上线通知不弹窗。", {
+    status="implemented_pending_ru",lifecycle="native_list_response_and_demand",authority="v3.business.tools_player_notes",defaultEnabled=true,
+    -- 中文维护：本地编辑及回包观察沿用原依赖，不把未开放的窗口对象或原生Trigger重注册列为功能硬依赖。
+    settingsCapable=true,apiDependencies={"X2Unit:UnitName","X2Friend:GetFriendList","X2Friend:GetBlockList"},apiReadiness="social_list_response",apiPolicy="explicit_local_notes",
 })
 Add("tools_feature_profiles", "tools.feature_profiles", "功能方案", "tools", 65,
     "自定义一组功能开关并生成屏幕快捷按钮；应用时开启已选功能、关闭其它可控业务功能，但保留各模块自己的配置。", {

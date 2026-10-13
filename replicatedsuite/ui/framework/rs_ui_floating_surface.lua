@@ -425,6 +425,8 @@ function F:Create(spec)
         scaleWithAddon = spec.scaleWithAddon ~= false,
         initialRect = { x = x, y = y, width = width, height = height },
         allowCloseVeto = spec.allowCloseVeto == true,
+        -- 中文维护：原生 Escape 关闭由 WindowShell 收口，并沿既有 onClosed 同步 Surface/Host 与租约。
+        closeOnEscape = spec.closeOnEscape == true,
         onAppearanceReset = function() return surface:ResetLayout(true) end,
         onClose = function(_, reason)
             if type(spec.onClose) == "function" then return spec.onClose(surface, tostring(reason or "close")) end

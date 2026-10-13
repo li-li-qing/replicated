@@ -332,5 +332,30 @@ Test("generation change inside a task aborts old frame", function()
     Q:AddTask("b", 50, function() called = called + 1 end, true)
     assert(Q:Start()); Tick(50); Equal(called, 0)
 end)
+Test('global UI bridge shares one registration and revokes exact owners during dispatch',function()
+    local S=Boot();local E=S.Events;local registrations,releases,callbacks=0,0,{}
+    UIParent={SetEventHandler=function(_,name,fn)registrations=registrations+1;callbacks[name]=fn;return true end,
+        ReleaseEventHandler=function(_,name,fn)assert(callbacks[name]==fn);releases=releases+1;callbacks[name]=nil;return true end}
+    dofile('core/rs_utils.lua');dofile('core/rs_reuse.lua');dofile('core/rs_api.lua');dofile('core/rs_api_capabilities.lua')
+    local a,b,called={}, {},0
+    assert(E:SubscribeGlobalOptional('TOGGLE_RAID_FRAME2',a,function(_,...)assert(select('#',...)==4 and select(2,...)==false);E:UnsubscribeGlobalOwner(b);called=called+1 end))
+    assert(E:SubscribeGlobalOptional('TOGGLE_RAID_FRAME2',b,function()called=called+100 end));assert(registrations==1)
+    local native=callbacks.TOGGLE_RAID_FRAME2;native(nil,false,33,nil);assert(called==0,'inactive bus delivered global callback')
+    assert(E:Start());native(nil,false,33,nil);assert(called==1,'cancelled global subscriber consumed in-flight callback')
+    E:UnsubscribeGlobalOwner(a);assert(releases==1);native(nil,false,33,nil);assert(called==1)
+    E:Stop();assert(releases==1)
+end)
+Test('global bridge refuses unreleaseable registration and parks a rejected release once',function()
+    local S=Boot();local E=S.Events;local registrations,releases=0,0
+    UIParent={SetEventHandler=function()registrations=registrations+1;return true end}
+    dofile('core/rs_utils.lua');dofile('core/rs_reuse.lua');dofile('core/rs_api.lua');dofile('core/rs_api_capabilities.lua');local owner={}
+    assert(E:SubscribeGlobalOptional('TOGGLE_COMMUNITY',owner,function()end)==false and registrations==0)
+    UIParent.ReleaseEventHandler=function()releases=releases+1;return false end
+    assert(E:SubscribeGlobalOptional('TOGGLE_COMMUNITY',owner,function()error('parked callback executed')end));assert(E:Start())
+    local callback=E.globalBridges.TOGGLE_COMMUNITY.handler;E:UnsubscribeGlobalOwner(owner)
+    callback();E:ReleaseUnusedGlobalBridges();assert(releases==1)
+    assert(E:SubscribeGlobalOptional('TOGGLE_COMMUNITY',owner,function()end)==false and registrations==1)
+    E:Stop();assert(releases==1)
+end)
 print("FOUNDATION LIFECYCLE RESULT " .. passed .. " passed / " .. failed .. " failed (" .. _VERSION .. ")")
 if failed > 0 then error("foundation lifecycle failures: " .. failed) end

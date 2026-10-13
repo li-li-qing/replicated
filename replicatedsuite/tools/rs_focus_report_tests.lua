@@ -86,6 +86,16 @@ local function Page(S,calls,cap)
     function h.edit:SetText(v)self.text=v:gsub('[\r\n]',''):sub(1,cap or 4096)end
     return root,h
 end
+-- 中文维护（5.3 发布自检）：诊断页已增加性能入口和五个性能操作；逐个核对原报告操作和性能操作，
+-- 保留严格数量检查，避免按钮重复或旧报告/分页入口消失被忽略。
+local function CheckDiagnosticActions(h)
+    local ids={'v3_diag_full_check','v3_diag_output','v3_diag_output_full','v3_diag_export_file',
+        'v3_diag_perf_entry','v3_diag_perf_start','v3_diag_perf_stop','v3_diag_perf_refresh','v3_diag_perf_clear','v3_diag_perf_export',
+        'v3_diag_report_prev','v3_diag_report_next'}
+    local count=0;for _,w in pairs(h.widgets)do if w.onClick then count=count+1 end end
+    assert(count==#ids,'diagnostic action count mismatch: '..count)
+    for _,id in ipairs(ids)do assert(h.widgets[id] and type(h.widgets[id].onClick)=='function','diagnostic action missing: '..id)end
+end
 Test('transport decode failure includes physical repair probe in focused store row',function()
     local S,D=Boot();local st=S.Persistence.stores['v3.buff_display']
     st.lastIntegrityMismatchEvidence={}
@@ -175,8 +185,7 @@ Test('many fences report omissions and never output half a fingerprint',function
 end)
 Test('default page prints complete paged faults while focused format stays compatibility-only',function()
     local S,D,c=Boot();local root,h=Page(S,c)
-    local buttons=0;for _,w in pairs(h.widgets) do if w.onClick then buttons=buttons+1 end end
-    assert(buttons==6 and h.widgets.v3_diag_export_file and type(h.widgets.v3_diag_export_file.onClick)=='function','run/fault/full/export/previous/next actions must remain available')
+    CheckDiagnosticActions(h)
     assert(h.widgets.v3_diag_output.onClick());assert(root.selfCheckMeta.kind=='paged','default print must be paged')
     assert(root.selfCheckDelivery.parts>=1 and h.edit.text:find('RS-ERROR-PAGE-END',1,true))
     assert(root.selfCheckText:find('RS-SELF-CHECK-1',1,true) and not root.selfCheckText:find('RS-FOCUS-1',1,true))
@@ -302,8 +311,8 @@ Test('default paged fault report retains oversized failed-store evidence instead
         c.reads[#c.reads+1]=id;return ('x'):rep(50000)
     end
     local root,h=Page(S,c);assert(h.widgets.v3_diag_output.onClick())
-    local buttons=0;for _,w in pairs(h.widgets)do if w.onClick then buttons=buttons+1 end end
-    assert(buttons==6 and h.widgets.v3_diag_export_file and root.selfCheckMeta.kind=='paged' and #c.reads==3)
+    CheckDiagnosticActions(h)
+    assert(root.selfCheckMeta.kind=='paged' and #c.reads==3)
     assert(root.selfCheckDelivery.parts>1 and root.selfCheckText:find(('x'):rep(50000),1,true))
 end)
 

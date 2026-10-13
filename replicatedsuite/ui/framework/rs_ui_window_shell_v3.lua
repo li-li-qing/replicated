@@ -86,7 +86,11 @@ local function EnsureWindowVisible(shell, visible, reason)
     -- 维护：Show/Reset 是显式 Native 可见性事务，不能让旧 logical visible 缓存屏蔽
     -- 客户端自行隐藏后的恢复。不改变关闭/最小化语义，不主动启动隐藏模块。
     if visible == true and type(UI.InvalidateNativeState) == "function" then UI:InvalidateNativeState(shell.window,"visible") end
+    -- 中文维护：所有显隐事务（包括最小化/初始化）统一标记来源；原生同步 OnHide 不得把内部隐藏误报为用户关闭。
+    local previousMutation = shell.visibilityMutation
+    shell.visibilityMutation = true
     local accepted, _, detail = UI:EnsureVisible(shell.window, visible == true, shell.owner)
+    shell.visibilityMutation = previousMutation
     if accepted ~= true then
         Shell.metrics.visibilityFailures = (tonumber(Shell.metrics.visibilityFailures) or 0) + 1
         if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.Error) == "function" then
@@ -197,12 +201,15 @@ function Shell:Create(spec)
         local layerOk, layerErr = ApplyNativeLayer(topmost)
         if layerOk ~= true then return false, layerErr end
         for _, row in ipairs({
-            { method = "SetCloseOnEscape", value = false },
+            -- 中文维护：只有明确选择原生 Escape 关闭的工具窗进入该机制；普通浮窗保持现有策略。
+            { method = "SetCloseOnEscape", value = spec.closeOnEscape == true },
             { method = "SetWindowModal", value = false },
         }) do
             if type(window[row.method]) == "function" then
-                local ok = pcall(function() window[row.method](window, row.value) end)
-                if ok ~= true then return false, "window_shell_policy_failed:" .. tostring(row.method) end
+                local ok, result = pcall(function() return window[row.method](window, row.value) end)
+                if ok ~= true or (row.value == true and result == false) then return false, "window_shell_policy_failed:" .. tostring(row.method) end
+            elseif row.value == true then
+                return false, "window_shell_policy_unavailable:" .. tostring(row.method)
             end
         end
         local priorityPath = tostring(spec.layerRole or "window") == "floating"
@@ -659,6 +666,22 @@ function Shell:Create(spec)
         return true
     end
 
+    -- 中文维护：按钮关闭和原生 Escape 隐藏共用关闭后通知；业务清理失败不阻止已完成的视觉关闭。
+    function shell:NotifyClosed(reason)
+        if type(self.spec.onClosed) == "function" then
+            local ok, result, detail = pcall(self.spec.onClosed, self, reason)
+            Shell.metrics.closedCallbacks = (tonumber(Shell.metrics.closedCallbacks) or 0) + 1
+            if ok ~= true or result == false then
+                Shell.metrics.closeCallbackFailures = (tonumber(Shell.metrics.closeCallbackFailures) or 0) + 1
+                if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarningRateLimited) == "function" then
+                    S.DiagnosticsManager:WarningRateLimited("rsui_window_shell", "WINDOW_CLOSED_CLEANUP_FAILED", 3000,
+                        "窗口已经关闭，但关闭后的业务清理失败。", { id = tostring(self.id), reason = reason, error = tostring(ok and detail or result) })
+                end
+            end
+        end
+        return true
+    end
+
     function shell:Close(reason)
         if self.destroyed == true then return false end
         reason = tostring(reason or "close")
@@ -684,18 +707,7 @@ function Shell:Create(spec)
 
         local hidden = self:Show(false)
         if hidden ~= true then return false, "window hide failed" end
-        if type(self.spec.onClosed) == "function" then
-            local ok, result, detail = pcall(self.spec.onClosed, self, reason)
-            Shell.metrics.closedCallbacks = (tonumber(Shell.metrics.closedCallbacks) or 0) + 1
-            if ok ~= true or result == false then
-                Shell.metrics.closeCallbackFailures = (tonumber(Shell.metrics.closeCallbackFailures) or 0) + 1
-                if S.DiagnosticsManager ~= nil and type(S.DiagnosticsManager.WarningRateLimited) == "function" then
-                    S.DiagnosticsManager:WarningRateLimited("rsui_window_shell", "WINDOW_CLOSED_CLEANUP_FAILED", 3000,
-                        "窗口已经关闭，但关闭后的业务清理失败。", { id = tostring(self.id), reason = reason, error = tostring(ok and detail or result) })
-                end
-            end
-        end
-        return true
+        return self:NotifyClosed(reason)
     end
 
     -- SettingsPage owns a WindowShell when it is created without an explicit
@@ -1164,6 +1176,21 @@ function Shell:Create(spec)
     end
     if shell.closeButton ~= nil then
         shell.closeButton.onClick = function() return shell:Close("button") end
+    end
+    if spec.closeOnEscape == true then
+        -- 中文维护：只观察 Suite 自己创建的原生窗口，不覆盖游戏社交窗口的处理器。
+        -- SafeHandler 负责 owner/generation 防护；外部隐藏必须同步逻辑显隐和 Native Diff，才能正确重新打开。
+        local bound, bindErr = UI:RequireHandler(window, "OnHide", function()
+            if shell.destroyed or shell.visibilityMutation or shell.visible ~= true then return true end
+            shell.visible = false
+            if type(UI.InvalidateNativeState) == "function" then UI:InvalidateNativeState(window) end
+            -- 中文维护：原生直接隐藏绕过 EnsureVisible，也须释放本窗口输入；不能清理游戏聊天或其它窗的焦点。
+            if type(UI.ReleaseFocusWithin) == "function" then UI:ReleaseFocusWithin(window, shell.owner, "native_hide") end
+            if type(UI.DisarmInputWithin) == "function" then UI:DisarmInputWithin(window, shell.owner, "native_hide") end
+            Shell.metrics.hidden = (tonumber(Shell.metrics.hidden) or 0) + 1
+            return shell:NotifyClosed("native_hide")
+        end, "window_shell_native_escape_close")
+        if bound ~= true then return FailBuild(bindErr or "native_escape_close_bind_failed") end
     end
 
     local x, y, width, height = DefaultRect(spec)

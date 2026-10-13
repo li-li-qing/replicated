@@ -167,8 +167,10 @@ end
 -- 侧栏关闭后的 idle/stopped 缓存视为玩家没在用拍卖行。此入口只按需读取可见性，不启动观察任务、
 -- 不 Publish、不更新几何快照；显式 boolean 优先于几何，兼容四返回值时才读短父链。
 -- 可见性不可证实时返回 known=false；两个 getter 成功返回的“内容不存在”形态由共享空内容判定证明关闭。
-function V:ReadVisibility()
-    local addon, contentId = rawget(_G, "ADDON"), rawget(_G, "UIC_AUCTION")
+-- 中文维护：社交与拍卖共用受能力门保护的可见性读取；服务不持有外部窗口对象、不覆盖原生处理器。
+-- content-absent 关闭证明仅有拍卖实机契约，社交全 nil 必须返回 unknown，不能抹掉有效名单回包。
+function V:ReadNativeVisibility(contentId, allowAbsent)
+    local addon = rawget(_G, "ADDON")
     -- 维护（trade-requote-2）：只在既有按需采样中附带字段形状，不在生成诊断时重读 Native。
     -- 不记录原生对象/全文错误、不持有 UI；unknown 的因果证据有界，权限/可见性决策不放宽。
     local probe = { contractVersion = 1, patch = "auction-closed-content-1", contentId = Number(contentId), contentIdType = type(contentId),
@@ -200,8 +202,12 @@ function V:ReadVisibility()
     probe.plausibleGeometry = ok == true and PlausibleRect(x, y, width, height, logicalWidth, logicalHeight)
     if probe.plausibleGeometry then return true, true, "main-script-geometry", probe end
     probe.contentAbsent = ContentAbsent(ok, x, y, width, height, visible, probe.contentReadOk, content)
-    if probe.contentAbsent then return true, false, "content-absent", probe end
+    if probe.contentAbsent and allowAbsent==true then return true, false, "content-absent", probe end
     return false, false, "auction_visibility_unknown", probe
+end
+
+function V:ReadVisibility()
+    return self:ReadNativeVisibility(rawget(_G, "UIC_AUCTION"), true)
 end
 
 function V:_Read()

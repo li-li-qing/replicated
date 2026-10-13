@@ -34,9 +34,9 @@ local function Boot(options)
  dofile('core/rs_constants.lua');dofile('core/rs_layout.lua')
  S.Layout.GetContext=function()return {logicalWidth=1024,logicalHeight=768,addonScale=1,uiScale=1,
   usableWidth=1024,usableHeight=768,safeLeft=0,safeRight=0,safeTop=0,safeBottom=0}end
- S.UIV3NativeAdapter={CreateRootWindow=function(_,id)return h.Native(nil,id,0,0,1000,700)end,
+ S.UIV3NativeAdapter={CreateRootWindow=function(_,id,owner,layer,options)local n=h.Native(nil,id,0,0,1000,700);n.closeOnEscape=options and options.closeOnEscape==true;return n end,
   ApplyRect=function(_,n,owner,x,y,w,ht)n.x=x;n.y=y;n.width=w;n.height=ht;return true end,
-  SetVisible=function(_,n,owner,v)n.shown=v;return true end,IsVisible=function(_,n)return n.shown==true end,Raise=function()return true end,
+  SetVisible=function(_,n,owner,v)local hidden=n.shown and not v;n.shown=v;if hidden and n.events.OnHide then n.events.OnHide(n)end;return true end,IsVisible=function(_,n)return n.shown==true end,Raise=function()return true end,
   SetRootLayer=function()return true end}
  V.PageHost.Attach=function()return true end;V.PageHost.Navigate=function(_,id)h.route=id;return true end
  V.PageHost.SetVisible=function()return true end;V.PageHost.RefreshData=function()return true end
@@ -127,8 +127,8 @@ Test('appearance shortcut stays clickable in the main title bar and opens the ac
 end)
 Test('release label, support line and menu tips use visible open edges',function()
  local shell,S,h,n=Boot()
- -- 当前 HEAD 已为正式版5.2；旧5.0断言在本轮修改前同样失败。
- assert(shell.brandTitle.text:find('QQ群:1104129461   正式版5.2',1,true),'release label missing beside QQ group')
+ -- 中文维护（5.4 发布）：核对实际创建的标题，避免发行名称仍停留在上一个版本。
+ assert(shell.brandTitle.text:find('QQ群:1104129461   正式版5.4',1,true),'release label missing beside QQ group')
  assert(n.v3_shell_support_text.text=='如果觉得功能好用，可以邮件给作者提供一点打赏','support line missing')
  local tips={
   '债券功能','装备升级或者翻新','血条太大挡视野','想给朋友取别称吗',
@@ -274,5 +274,22 @@ Test('main title lock exposes the saved state and changes through the existing S
  local shell,S,h,n=Boot();local button=assert(n.v3_shell_lock_button,'main title lock missing')
  assert(button.root.events.OnClick(button.root,'LeftButton'));assert(shell:IsLocked() and button.state.selected)
  assert(button.text=='锁');assert(button.root.events.OnClick(button.root,'LeftButton'));assert(not shell:IsLocked() and not button.state.selected)
+end)
+Test('main native Escape performs full cleanup and reopens without saving previews',function()
+ local shell,S,h,n=Boot({actualWorkspaceHost=true,mainAppearance=true});assert(shell.window.closeOnEscape,'main has not opted into native Escape')
+ assert(n.v3_shell_appearance_button.root.events.OnClick(n.v3_shell_appearance_button.root,'LeftButton'))
+ local page=S.UIV3.PageHost.pages['system.workspace'];local field=page.mainAppearanceFields.overallOpacity
+ assert(field.slider:Preview(55,'test'));local writes=h.writes;local cleared,released,disarmed=0,0,0
+ S.UIV3.ModalHost.Clear=function()cleared=cleared+1 end
+ S.UI.ReleaseFocusWithin=function(_,window)assert(window==shell.window);released=released+1 end
+ S.UI.DisarmInputWithin=function(_,window)assert(window==shell.window);disarmed=disarmed+1 end
+ shell.window.shown=false;assert(shell.window.events.OnHide(shell.window))
+ assert(shell.lastCloseReason=='native_hide'and shell.nativeHideCount==1 and cleared==1 and released==1 and disarmed==1)
+ assert(shell.window.alpha==1 and h.writes==writes,'Escape saved appearance preview or failed to cancel it')
+ assert(shell.window.events.OnHide(shell.window));assert(cleared==1,'duplicate OnHide closed twice')
+ assert(shell:Open()and shell.window.shown);assert(shell:Close('button'))
+ assert(cleared==2 and shell.nativeHideCount==1 and shell.lastCloseReason=='button','explicit close replayed native cleanup')
+ assert(shell:Open());assert(shell:ToggleMinimized());assert(shell.nativeHideCount==1 and shell.lastCloseReason=='minimized_to_launcher')
+ assert(shell:Open()and not S.UIV3.ShellState.minimized)
 end)
 print('WORKSPACE SHELL RESULT '..passed..' passed / '..failed..' failed');if failed>0 then error('workspace shell failures')end

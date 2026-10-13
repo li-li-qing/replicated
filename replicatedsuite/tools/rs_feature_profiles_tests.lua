@@ -52,7 +52,11 @@ local metas = {
 local byId = {}; for _,m in ipairs(metas) do byId[m.id]=m end
 S.FeatureRegistry = { categories={life={name='生活'},combat={name='战斗'},tools={name='工具'}} }
 function S.FeatureRegistry:Get(id) return byId[id] end
+-- 中文维护（5.3 发布自检）：测试目录内的已登记功能均开放；真实 Runtime 仍执行访问检查，未知 ID 必须拒绝。
+function S.FeatureRegistry:IsAccessible(id) return byId[id] ~= nil end
 function S.FeatureRegistry:List() return metas end
+-- 中文维护：当前方案浏览只列开放项；本宿主的目录全为开放项，复用同一目录而非绕过生产筛选调用。
+function S.FeatureRegistry:ListAccessible() return metas end
 
 S.Persistence = {
     Scope={Account='account'}, Lifetime={Permanent='permanent'}, V3KeyPrefix='rs.v3.',

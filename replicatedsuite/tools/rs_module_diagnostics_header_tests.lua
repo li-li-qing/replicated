@@ -26,6 +26,11 @@ local function Boot()
     ['system.diagnostics']={id='system_diagnostics',route='system.diagnostics',name='系统诊断',initialized=true,enabled=true},
   }
   function S.FeatureRegistry:GetByRoute(route)return features[route]end
+  -- 中文维护（5.3 发布自检）：补齐 PageHost 在创建页面前使用的访问接口；仅开放本测试登记的功能。
+  function S.FeatureRegistry:IsAccessible(id)
+    for _,feature in pairs(features)do if feature.id==id then return true end end
+    return id=='combat_fail' -- 故障页面用于验证构建事务清理，须先通过访问检查。
+  end
   function S.FeatureRegistry:InitializeFeature()calls.init=calls.init+1;return true end
   function S.FeatureRegistry:SetEnabled()calls.enable=calls.enable+1;return true end
   S.UIV3.ModuleDiagnosticsWindowV3={}

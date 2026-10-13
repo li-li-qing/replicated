@@ -68,7 +68,25 @@ Test('clock diagnostics are read-only and contain JMG start and end evidence',fu
     local d=a:GetTimingDiagnostics();assert(h.samples==calls and h.mapCalls==0)
     assert(d.serverSample and d.jmg and d.jmg:find('11:20',1,true))
 end)
-Test('broken quest tail provider cannot stop all activity projections',function()
+Test('Sungold next start is independent of completed or unfinished follow-up quests',function()
+    for _,progress in ipairs({
+        {text='6/6',tone='green',completed=6,total=6,tailInFlightCount=1},
+        {text='3/6',tone='yellow',completed=3,total=6,tailInFlightCount=1},
+        {text='6/6',tone='green',completed=6,total=6,tailInFlightCount=0},
+    })do
+        local h,a=Boot({year=2026,month=9,day=18,hour=9,minute=45,second=0})
+        a:SetQuestProgressProvider(function()return progress end);assert(a:Refresh('sungold-progress'))
+        local row
+        for _,r in ipairs(a:GetTimelineRows())do if r.questKey=='sungold_crimson'then row=r;break end end
+        assert(row,'missing Sungold')
+        assert(not row.active and row.timelineState=='upcoming','quest progress retained an expired occurrence')
+        assert(row.secondsUntilStart==215*60 and row.seconds==215*60,'next start should be 13:20')
+        assert(row.status:find('后开始',1,true) and not row.status:find('任务',1,true),row.status)
+        assert(row.scheduleText:find('13:20',1,true),'schedule must match the next occurrence')
+        assert(row.progressText==progress.text and row.progressTone==progress.tone,'independent progress was lost')
+    end
+end)
+Test('broken quest progress provider cannot stop all activity projections',function()
     local h,a=Boot();a:SetQuestProgressProvider(function()error('provider-failure')end)
     assert(a:Refresh('broken-provider'));assert(#a:GetTimelineRows()>0)
 end)

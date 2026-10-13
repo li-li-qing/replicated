@@ -12,5 +12,7 @@ Test('activity page summary explains schedule uncertainty in player language',fu
     assert(not src:find('计划余≠首领存活',1,true),'developer shorthand leaked into normal activity page')
     assert(src:find('时间按活动日程估算，实际结束时间可能有偏差',1,true),'plain-language schedule uncertainty hint missing')
     assert(not src:find('参考场次待核对',1,true),'internal confidence wording leaked into normal activity page')
+    assert(not src:find('任务未完成',1,true),'task state must not replace the activity time column')
+    assert(src:find('任务进度单独显示',1,true),'independent time and progress explanation missing')
 end)
 print(string.format('RESULT %d passed, %d failed',pass,fail));if fail>0 then os.exit(1)end

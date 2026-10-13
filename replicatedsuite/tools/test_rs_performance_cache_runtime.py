@@ -305,7 +305,7 @@ class AdditionalPerformanceTests(unittest.TestCase):
         """)
 
 class FeatureRegressionTests(unittest.TestCase):
-    def test_activity_tail_never_describes_retention_as_next_occurrence(self):
+    def test_activity_quest_tail_does_not_override_next_occurrence(self):
         lua = LuaRuntime()
         lua.execute("ReplicatedSuite={Generation=1,Data={RuEvents={{name='event',days={1},hour=2,minute=0,duration=10,taskTailMinutes=90,questKey='tail'}}}}")
         lua.execute(source("features/life/activities/rs_activity_authority.lua"))
@@ -314,8 +314,8 @@ class FeatureRegressionTests(unittest.TestCase):
         function A:GetWeekSeconds() return 8400 end;function A:GetDateSerial() return 739900 end
         A.questProgressProvider=function()return {tailInFlightCount=1}end
         local r=A:BuildStaticRows()[1]
-        assert(r.active and r.taskTailActive and r.seconds==4200)
-        assert(r.status=='任务未完成','internal retention must not appear as a start/end countdown')
+        assert(not r.active and r.seconds==603600 and r.secondsUntilStart==603600)
+        assert(r.status:find('后开始',1,true),'quest retention must not replace the next start countdown')
         """)
 
     def test_dps_warm_overview_skips_metric_ranking_and_invalidates(self):

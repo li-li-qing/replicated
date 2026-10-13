@@ -40,11 +40,6 @@ local function Add(fullName, shortName, entries, questKey, options)
         -- never produce rows or reminders outside their official active window.
         item.activeFrom = options.activeFrom
         item.activeUntil = options.activeUntil
-        -- Some activities continue into quest-driven boss/follow-up phases after
-        -- the short schedule presentation window. EventService may keep only the
-        -- most recent occurrence visible while one of the group's explicitly
-        -- marked follow-up objectives is still active/ready.
-        item.taskTailMinutes = tonumber(options.taskTailMinutes)
         -- 维护（activity-time-audit）：证据等级仅供显示/诊断；不改 fullName/key 或旧关注配置。
         -- 两份第三方表一致也不等于当前官方核验，计划时长不能作为首领存活 Authority。
         item.scheduleConfidence = options.scheduleConfidence
@@ -62,14 +57,13 @@ end
 -- the single task-start time; do not add a separate combat-start row.
 Add(O.GR or "迷雾战争", "迷雾", Times(ALL,20,{{2,20},{6,20},{10,20},{14,20},{18,20},{22,20}}), "ghost", { microName="迷雾" })
 -- Continental Crimson Rift: Rank 1-3 -> Hounds -> Shadow Demons -> Shadow Fang.
--- Anthalon is never part of this row. Keep the row alive after the short wave
--- window while one of the explicitly marked later objectives is active/ready.
-Add(O.CR or "征兆之痕", "征兆", Times(ALL,10,{{0,20},{4,20},{8,20},{12,20},{16,20},{20,20}}), "crimson", { microName="征兆", taskTailMinutes=90 })
+-- Anthalon is never part of this row. Quest progress is separate from the schedule.
+Add(O.CR or "征兆之痕", "征兆", Times(ALL,10,{{0,20},{4,20},{8,20},{12,20},{16,20},{20,20}}), "crimson", { microName="征兆" })
 Add(O.HIRAM_T6 or "空虚军团入侵", "空虚军团", Times(ALL,40,{{1,50},{5,50},{9,50},{13,50},{17,50},{21,50}}), "hiram_t6", { microName="空虚" })
 -- Sungold/Auroria uses its own activity group. It shares the early Rift ranks,
 -- but Anthalon is the Auroria-only world-boss gate before Shadow Totem / Shadow
 -- Demons / Xarkath. Shadow Fang quest 10734 belongs to the continental branch.
-Add(O.SUNGOLD_CRIMSON or "煦日之野征兆", "煦日征兆", Times(ALL,10,{{1,20},{5,20},{9,20},{13,20},{17,20},{21,20}}), "sungold_crimson", { microName="煦日", taskTailMinutes=120 })
+Add(O.SUNGOLD_CRIMSON or "煦日之野征兆", "煦日征兆", Times(ALL,10,{{1,20},{5,20},{9,20},{13,20},{17,20},{21,20}}), "sungold_crimson", { microName="煦日" })
 -- JMG is one of the RU schedules that may be adjusted for regional prime time.
 -- These are server-clock slots from the current addon baseline; do NOT apply a
 -- blanket Beijing +/-5h conversion. Change them only after a current RU schedule
